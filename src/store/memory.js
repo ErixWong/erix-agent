@@ -17,6 +17,7 @@ import { dedupConflictError, payloadFingerprint, recordKey } from "./transcript-
  *   textPreview?:string,
  *   toolUses?:number,
  *   summary?:{action:string,note:string}|"missing",
+ *   foldedFacts?:{text:string,source:string,strategy:string,bytes:number,from?:number,to?:number,rounds?:number,truncated?:boolean,bytesBefore?:number,degradeReason?:string,fingerprint?:string},
  *   l0facts?:object
  * }} RoundRecord
  */

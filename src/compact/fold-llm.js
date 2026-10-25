@@ -320,6 +320,9 @@ export function createFoldLlmStrategy({
       });
 
       let compactedHead = head;
+      // issue #470（A1）：本次折叠的**机械替代物**与**LLM 摘要在场标记**（进账本用，不进消息流）。
+      /** @type {{ source: string, text?: string, degradeReason?: string }|undefined} */
+      let foldSummary = undefined;
       if (folded.length > 0) {
         const range = roundRange ?? { from: 1, to: folded.length };
         // 降级摘要的恢复信息（评审修复）：与 fold-statistical 共用 resolveFoldStubs /
@@ -355,19 +358,22 @@ export function createFoldLlmStrategy({
         if (summary === undefined && fallbackAnchors?.text !== "") {
           settings.onLayer?.({ layerId: "anchors" });
         }
+        const statisticalFallbackText = summary === undefined
+          ? summarizeFoldedPayload(foldedPayload, {
+            from: range.from,
+            to: range.to,
+            count: folded.length,
+            recoveryHint,
+            stubs: foldedStubs,
+            ...(navigationRecord === undefined ? {} : { navigationRecord }),
+            ...(settings.anchors === false
+              ? {}
+              : { anchors: fallbackAnchors }),
+          })
+          : undefined;
         const compactedSummary = summary === undefined
           ? `[fold-llm 摘要失败，已降级为统计摘要（原因: ${degradeReason}）]\n`
-            + summarizeFoldedPayload(foldedPayload, {
-              from: range.from,
-              to: range.to,
-              count: folded.length,
-              recoveryHint,
-              stubs: foldedStubs,
-              ...(navigationRecord === undefined ? {} : { navigationRecord }),
-              ...(settings.anchors === false
-                ? {}
-                : { anchors: fallbackAnchors }),
-            })
+            + statisticalFallbackText
           : appendFoldFidelity(
             enforceSummarySize(
               withRecoveryHint(summary, recoveryHint),
@@ -378,6 +384,13 @@ export function createFoldLlmStrategy({
             settings.anchors,
             settings.onLayer,
           );
+        // #470：`source` 说清「嗬给模型的那份是 LLM 摘要还是机械降级」；降级时 `text` 就是
+        // 那份机械文本（上面已经算过，不重负）；LLM 成功时不重造摘要，由引擎投影实际喂出去那份。
+        foldSummary = {
+          source: summary === undefined ? "statistical" : "llm",
+          ...(statisticalFallbackText === undefined ? {} : { text: statisticalFallbackText }),
+          ...(degradeReason === undefined ? {} : { degradeReason }),
+        };
         compactedHead = prependSummary(
           head,
           compactedSummary,
@@ -400,6 +413,7 @@ export function createFoldLlmStrategy({
         tokensAfter,
         foldedPayload,
         ...(roundRange === undefined ? {} : { foldedRoundRange: roundRange }),
+        ...(foldSummary === undefined ? {} : { foldSummary }),
       };
       await runFoldHook(settings.onAfterFold, { ...result, roundRange });
       return result;

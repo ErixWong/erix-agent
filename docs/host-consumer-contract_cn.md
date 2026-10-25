@@ -3081,6 +3081,7 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 | `textPreview` | 展示 | 有界的 assistant 文本预览。可安全渲染；投影仅在 `response` 缺失（旧记录）时用它兜底。 |
 | `summary` | 展示 | 每轮的 `{ action, note }` 摘要（或 `"missing"`）。可安全渲染，通常作单行轮次注解。它**不是**折叠摘要。 |
 | `folded` / `foldedRoundRange` | 展示 | 标记早期上下文被折叠的轮次及被折叠的 round 区间。可安全渲染为“此段已折叠”横幅。 |
+| `foldedFacts` | 展示 / 取证（有界） | 被折掉的**早期历史**的机械替代物：`src/compact/fold-summary-journal.js` 的 `buildFoldedFacts()` 返回值 `{ text, source, strategy, from, to, rounds, bytes, truncated?, degradeReason? }`，按 `FOLDED_FACTS_MAX_BYTES` 夹断。纯加法：`summary` 仍是**本轮自身**摘要，不被它覆盖；`source` 交代文本出自策略还是摘要器。resume 侧 `planFoldedHistoryTrim` 会拿它当替代物，按水位线把正文从重建的上下文里摘掉，并在 `summarySource` 里如实标 `strategy`（模型未必见过这份文本）——issue #470。 |
 | `foldedPayload` | 展示（有界） | 被折叠移除的原始消息，**仅含本轮新折走的那部分**：引擎会对着本会话已归档的内容去重，并把归档夹到一个字节预算（默认 262144 字节，`context.maxFoldedPayloadBytes` > 环境变量 `ERIX_FOLD_ARCHIVE_MAX_BYTES` > 默认值，`0` = 只留指针）——issue #460。它仍然是归档而不是展示文本：**不要**倒进聊天视图。投影只报 `meta.foldedPayloadMessages`（计数）。 |
 > **resume 会按折叠水位线裁正文（#462）。** 恢复时引擎从轮行推导水位线（`foldedRoundRange.to`），把水位线及以下的那些轮从重建的上下文里摘掉，再把模型本来就在看的那份折叠摘要（`record.foldedSummary`，由 `src/compact/resume-fold-trim.js` 的 `planFoldedHistoryTrim` / `injectFoldSummaryIntoHead` 规划并回填）接回头部。于是宿主在续跑后看到的重放正文会变少——账本本身不改写，被摘掉的正文各自那一行都还在。挑不出**覆盖水位线**的摘要事实时（老账本，或折走来自预算兜底那条没有摘要的路径），续跑上下文与今天逐字一致，所有正文保持可见。
 | `foldedPayloadMeta` | 展示 / 取证 | `{ messages, bytes, capBytes, droppedMessages, droppedBytes, dedupedMessages, dedupedBytes }`——这份归档实际携带了本次折叠的多少，外加 `rejectedByHost: true`（宿主对单条记录定界、引擎剥掉归档重试后拿下的那条）。咨询性字段；可渲染为“归档已夹断”的标注。 |

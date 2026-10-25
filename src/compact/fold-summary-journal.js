@@ -28,6 +28,23 @@ export const FOLD_SUMMARY_RECORD_FIELD = "foldedSummary";
 /** 轮记录上承载 TTL 降级事实的字段名（同上）。 */
 export const TTL_DEGRADATION_RECORD_FIELD = "ttlDegradations";
 
+/**
+ * 轮记录上承载**折叠替代物投影**的字段名（issue #470-A）。
+ *
+ * 与 `foldedSummary` 的分工：那条是**引擎事实行**（`messages: []`，只在「首次喂出去」时记一次）；
+ * `foldedFacts` 挂在**发生折叠的那一轮的轮记录**上，宿主与 judge 读轮记录就能看见「被折掉的早期
+ * 历史长什么样」，不必再去翻事实行、或为一个占位字面量自建 `hasSummary`（erix-station #390）。
+ * 它是纯加法：`record.summary`（本轮自身摘要）的语义一字未动。
+ */
+export const FOLDED_FACTS_RECORD_FIELD = "foldedFacts";
+
+/**
+ * 替代物投影的字节上界（issue #470-B）。
+ * 机械文本本身有界（锚点索引带 `maxPerKind`/`maxChars`），这里再夹一刀，
+ * 防 #460 那条 O(n) 在摘要面复发（与 #335 重复存储同族）。
+ */
+export const FOLDED_FACTS_MAX_BYTES = 2048;
+
 /** @param {any} value @param {WeakSet<object>} seen @returns {string} */
 function canonicalJson(value, seen) {
   if (value === null) return "null";
@@ -149,5 +166,89 @@ export function createFoldSummaryLedger() {
     },
     size: () => summaries.size,
     fingerprints: () => [...summaries.keys()],
+  };
+}
+
+const foldedFactsEncoder = new TextEncoder();
+
+/**
+ * 归一化「折叠替代物」投影（issue #470-A/B）——**纯函数，不调模型**。
+ *
+ * 文本由调用方给出（本次折叠**实际喂给模型**的那份摘要；策略没往消息流里 prepend 东西时，
+ * 用策略带出的机械文本，如 `sliding-window` 的 `foldedSummaryText`）。本函数只做三件事：
+ * 字段归一、按字节上限夹断、尺寸记账（`bytes`/`bytesBefore`/`truncated`）。
+ *
+ * @param {{
+ *   text?: unknown,
+ *   source?: unknown,
+ *   strategy?: unknown,
+ *   roundRange?: { from?: unknown, to?: unknown }|null,
+ *   rounds?: unknown,
+ *   degradeReason?: unknown,
+ *   fingerprint?: unknown,
+ *   maxBytes?: number,
+ * }} [input]
+ * @returns {{
+ *   text: string, source: string, strategy: string, bytes: number,
+ *   from?: number, to?: number, rounds?: number,
+ *   truncated?: boolean, bytesBefore?: number,
+ *   degradeReason?: string, fingerprint?: string
+ * }|undefined} 没有可投影的文本 ⇒ `undefined`（调用方据此**不写该键**，而不是写占位字面量）
+ */
+export function buildFoldedFacts(input = {}) {
+  const raw = typeof input.text === "string" ? input.text.trim() : "";
+  if (raw === "") return undefined;
+  const maxBytes = Number.isSafeInteger(input.maxBytes) && input.maxBytes > 0
+    ? input.maxBytes
+    : FOLDED_FACTS_MAX_BYTES;
+  const bytesOf = (value) => foldedFactsEncoder.encode(value).length;
+  const marker = "\n[替代物已按字节上限夹断]";
+  let text = raw;
+  let truncated = false;
+  if (bytesOf(text) > maxBytes) {
+    // 二分找「前缀 + 夹断标记」还能装下的最长前缀（口径同 fold-llm 的整体截断）。
+    const characters = Array.from(text);
+    let low = 0;
+    let high = characters.length;
+    let best = "";
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      const candidate = `${characters.slice(0, middle).join("")}${marker}`;
+      if (bytesOf(candidate) <= maxBytes) {
+        best = candidate;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+    text = best === "" ? marker.trim() : best;
+    truncated = true;
+  }
+  const range = input.roundRange ?? undefined;
+  // `Number.isSafeInteger` 不是类型谓词，tsc 不会因此收窄；这里显式收口成 `number` 局部。
+  // 不这么做的话下面三个可选键会带着 `unknown` 去撞 `FoldedFact` 的声明（types:build 直接红，
+  // 而 `--checkJs` 棘轮清单不含这两个文件 —— 只有 prepack 那条路拦得住，见 #470 闭环）。
+  const from = Number.isSafeInteger(range?.from) ? /** @type {number} */ (range?.from) : undefined;
+  const to = Number.isSafeInteger(range?.to) ? /** @type {number} */ (range?.to) : undefined;
+  const rounds = Number.isSafeInteger(input.rounds) && /** @type {number} */ (input.rounds) > 0
+    ? /** @type {number} */ (input.rounds)
+    : undefined;
+  const fingerprint = typeof input.fingerprint === "string" ? input.fingerprint : "";
+  const degradeReason = typeof input.degradeReason === "string" ? input.degradeReason : "";
+  return {
+    text,
+    source: typeof input.source === "string" && input.source !== ""
+      ? input.source
+      : "strategy",
+    strategy: typeof input.strategy === "string" && input.strategy !== ""
+      ? input.strategy
+      : "unknown",
+    ...(from !== undefined ? { from } : {}),
+    ...(to !== undefined ? { to } : {}),
+    ...(rounds !== undefined ? { rounds } : {}),
+    bytes: bytesOf(text),
+    ...(truncated ? { truncated: true, bytesBefore: bytesOf(raw) } : {}),
+    ...(degradeReason !== "" ? { degradeReason: degradeReason.slice(0, 120) } : {}),
+    ...(fingerprint !== "" ? { fingerprint } : {}),
   };
 }

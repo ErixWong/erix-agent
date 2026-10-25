@@ -118,10 +118,13 @@ import {
   TOOL_RESULT_TTL_DEFAULT,
 } from "./tool-result-ttl.js";
 import {
+  buildFoldedFacts,
   createFoldSummaryLedger,
+  FOLDED_FACTS_RECORD_FIELD,
   foldSummaryFingerprint,
   stableFingerprint,
 } from "../compact/fold-summary-journal.js";
+import { summarizeFoldedPayload } from "../compact/fold-statistical.js";
 import { createRunSnapshotExecutor } from "./run-snapshot-executor.js";
 import {
   buildToolResultFact,
@@ -3043,6 +3046,12 @@ export async function runToolLoop(options) {
     let compacted = false;
     /** @type {{ text: string, fingerprint: string, strategy: string, summary?: string, foldedRoundRange?: any }|undefined} */
     let foldedSummaryFact = undefined;
+    // issue #470（A1）：策略顺手带出的**机械替代物**（`fold-statistical` 的统计摘要 /
+    // `fold-llm` 降级分支的那份）。没配内置策略、或宿主自带策略不产它 ⇒ `undefined`，语义照旧。
+    /** @type {{ source: string, text?: string, degradeReason?: string }|undefined} */
+    let strategyFoldSummary = undefined;
+    /** @type {ReturnType<typeof buildFoldedFacts>} 投影到本轮轮记录的 `foldedFacts`（#470-B 已夹字节） */
+    let pendingFoldedFacts = undefined;
     let protectedDowngraded = 0;
     // issue #326 wo-C：折叠前的消息**引用集合**——用来认出折叠新造出来、实际喂给模型的那份摘要消息
     // （折叠策略把摘要 prepend 进 head，而轮记录只写 `messages.slice(roundStart)`⇒它永远不入账）。
@@ -3108,6 +3117,36 @@ export async function runToolLoop(options) {
         : [];
       foldedRoundRange = result.foldedRoundRange;
       navigationRecord = result.navigationRecord;
+      strategyFoldSummary = result.foldSummary
+        // issue #470（判据②）：零 LLM 策略（`sliding-window`）带出的键名是 `foldedSummaryText`，
+        // 不是 `foldSummary` —— 只读后者的话，C 档那份机械文本**没有任何消费者**（既不进
+        // `record.foldedFacts`，也不进消息流），"落账"就只是 return 对象上的一个死键。
+        ?? (typeof result.foldedSummaryText === "string" && result.foldedSummaryText !== ""
+          ? {
+            text: result.foldedSummaryText,
+            source: "strategy",
+            strategy: typeof strategy?.name === "string" ? strategy.name : "unknown",
+          }
+          : undefined);
+      // issue #470（判据②）就地兜底：引擎的折叠链路（TTL / 预算兜底 / 宿主策略包装）会把策略返回值
+      // **重新组对象**，`foldedSummaryText` 在这一层就被丢掉（实测 onAfterFold 看到的 result 只有 7 个键）
+      // ⇒ 只读策略键仍然等于没有消费者。这里用**同一份现成零件**就地现算机械替代物，并如实标
+      // `source: "strategy"`：它是机械替代物，不是模型写的摘要。
+      if (strategyFoldSummary === undefined
+        && Array.isArray(foldedPayload) && foldedPayload.length > 0
+        && Number.isSafeInteger(result.foldedRounds) && result.foldedRounds > 0) {
+        const foldRangeForFacts = result.foldedRoundRange ?? undefined;
+        strategyFoldSummary = {
+          text: summarizeFoldedPayload(foldedPayload, {
+            from: foldRangeForFacts?.from ?? 1,
+            to: foldRangeForFacts?.to ?? result.foldedRounds,
+            count: result.foldedRounds,
+            recoveryHint: compactionContext.recoveryHint,
+          }),
+          source: "strategy",
+          strategy: typeof strategy?.name === "string" ? strategy.name : "unknown",
+        };
+      }
       foldedRounds = Number.isSafeInteger(result.foldedRounds)
         ? result.foldedRounds
         : 0;
@@ -3272,6 +3311,41 @@ export async function runToolLoop(options) {
           foldedSummary: foldedSummaryFact,
         });
       }
+      // issue #470（A1，纯加法）：同一份替代物**同时投影到轮记录**的新键 `foldedFacts`。
+      // 此前它只进消息流（`compactedHead`）：模型看得见，而读轮记录的两面——宿主横幅与
+      // `resume_manager` 喨给 judge 的轮次历史（`record.summary ?? "missing"`，#470 ④）——什么也看不见。
+      // 文本优先级：**策略带出的机械替代物**（零 LLM、形状稳定、天然有界）> 实际喂出去的那份正文
+      // > **在定稿处就地现算的机械替代物**；三者都空 ⇒ `undefined` ⇒ 调用方**不写该键**
+      //（#470-A2 的「不写占位字面量」口径）。
+      // 实测红因（#470 判据②，现场探针输出见 docs/tasks/wip-470/tmp-dbg-470.txt）：
+      //   `strategy.compact()` 那一层返回的对象键面只有
+      //   `["messages","compacted","foldedRounds","tokensBefore","tokensAfter","foldedPayload"]`
+      //   ⇒ **没有** `foldedSummaryText`；且那一层 `foldedRounds` 是 **0**，真正折走的轮是**后面
+      //   预算兜底 / safety 兜底那两发**加进来的。所以只读策略键、或在 3109 那一层用
+      //   `result.foldedRounds > 0` 当兜底闸门，都必然落空 ⇒ 必须在 `foldedPayload`/`foldedRounds`
+      //   **定稿处**就地现算。用同一份现成零件 `summarizeFoldedPayload`，如实标 `source:"strategy"`：
+      //   它是机械替代物，不是模型写的摘要。
+      const factsTextFromSummary = strategyFoldSummary?.text ?? fedSummaryText;
+      const factsText = factsTextFromSummary !== undefined && factsTextFromSummary !== ""
+        ? factsTextFromSummary
+        : (compacted && foldedRounds > 0 && foldedPayload.length > 0
+          ? summarizeFoldedPayload(foldedPayload, {
+            from: foldedRoundRange?.from ?? 1,
+            to: foldedRoundRange?.to ?? foldedRounds,
+            count: foldedRounds,
+            recoveryHint: compactionContext.recoveryHint,
+          })
+          : "");
+      pendingFoldedFacts = buildFoldedFacts({
+        text: factsText,
+        source: strategyFoldSummary?.source
+          ?? (lastFoldSummaryOutcome === undefined ? "strategy" : "llm"),
+        strategy: typeof strategy?.name === "string" ? strategy.name : "unknown",
+        roundRange: foldedRoundRange ?? undefined,
+        rounds: foldedRounds,
+        degradeReason: strategyFoldSummary?.degradeReason,
+        fingerprint: foldedFingerprint,
+      });
       const compactionStat = {
         compacted,
         foldedRounds,
@@ -3327,6 +3401,8 @@ export async function runToolLoop(options) {
       foldedPayloadMeta: compacted ? foldedArchive?.meta : undefined,
       foldedRoundRange,
       navigationRecord,
+      // issue #470（A1）：只在**发生折叠的那一轮**出现，不往每轮重复写 ⇒ 天然不累积（#470 判据 4）。
+      foldedFacts: pendingFoldedFacts,
       runState,
       requestStateBlock: requestInject ? runState?.rendered : undefined,
     };
@@ -4300,6 +4376,11 @@ export async function runToolLoop(options) {
       }
       if (compaction.navigationRecord !== undefined) {
         roundRecord.navigationRecord = compaction.navigationRecord;
+      }
+      // issue #470（A1，纯加法）：被折掉的早期历史的**机械替代物**落进轮记录。
+      // `record.summary`（本轮自身摘要）一字不动 ⇒ 既有的横幅语义、`#326` 守卫、归档都不受影响。
+      if (compaction.foldedFacts !== undefined) {
+        roundRecord[FOLDED_FACTS_RECORD_FIELD] = cloneState(compaction.foldedFacts);
       }
     }
     // issue #460：宿主有权对**单条记录**定界（本站 1 MB）。归档是咨询性字段 —— 正文早已按轮
