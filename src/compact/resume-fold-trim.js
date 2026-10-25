@@ -28,10 +28,14 @@
 //      （`fold-statistical.js` 的 `prependSummary`，`summaryRole` 默认 `"user"`），本模块也并进同一条，
 //      不新造消息、不改角色交替 —— 摘要文本因此落回崩溃前那个位置。
 
-import { FOLD_SUMMARY_RECORD_FIELD } from "./fold-summary-journal.js";
+import { FOLDED_FACTS_RECORD_FIELD, FOLD_SUMMARY_RECORD_FIELD } from "./fold-summary-journal.js";
 
 /** 一条「覆盖到水位线」的折叠摘要事实。
- * @typedef {{ text: string, summary?: string, foldedRoundRange?: { from?: number, to?: number } }} FoldSummaryFact
+ * `origin` 如实交代这份替代物从哪来（#462 放宽的那一格）：
+ *   · `"journal"` —— `record.foldedSummary` 事实行，即**模型当时真的见过**的那份摘要；
+ *   · `"strategy"` —— 轮记录上的 `record.foldedFacts`（#470-B 落的策略替代物），
+ *     机械摘要 / 宿主注入文本，模型未必见过 ⇒ 回填的是「等价信息」，不是「模型看过的那份」。
+ * @typedef {{ text: string, summary?: string, foldedRoundRange?: { from?: number, to?: number }, from?: number, to?: number, origin?: "journal"|"strategy" }} FoldSummaryFact
  */
 
 /** 真实 user 消息（与 `fold-statistical.js` 里 `prependSummary` 找的 `isRealUser` 同口径）：
@@ -92,6 +96,47 @@ export function pickCoveringFoldSummary(records, foldedThrough) {
 }
 
 /**
+ * #462 放宽一格：挑「能补齐已折正文」的替代物，按可靠性排序。
+ *
+ * ① `record.foldedSummary` 事实行（`pickCoveringFoldSummary`）—— 模型当时真的在上下文里见过它，
+ *    裁正文后回填它，续跑形状与崩溃前**逐字一致** ⇒ 有它就用它，行为与今天一字不变。
+ * ② `record.foldedFacts`（#470-B 投影到轮记录的**策略替代物**）—— 机械摘要 / 宿主注入文本。
+ *    这条路（`context.strategy = "sliding-window"` 尤其）永远不 prepend 进消息流 ⇒
+ *    **永远写不出** ①，守卫的等待条件对它逻辑上不可能满足 ⇒ 只落账不给裁用，
+ *    不调 LLM 摘要器的宿主每次续跑仍从第 1 轮重折。这里接受它，裁的判据（覆盖水位线）
+ *    一条不放宽，只放宽「替代物从哪来」。
+ *
+ * 两处形状不同，必须显式适配（不是换个字段名）：① 的区间是嵌套 `foldedRoundRange.{from,to}`，
+ * ② 是平铺 `{from,to}`（`buildFoldedFacts` 的落盘形状）。
+ *
+ * @param {object[]} records
+ * @param {number} foldedThrough
+ * @returns {{ fact: FoldSummaryFact, origin: "journal"|"strategy" }|undefined}
+ */
+export function pickCoveringFoldAlternative(records, foldedThrough) {
+  const journal = pickCoveringFoldSummary(records, foldedThrough);
+  if (journal !== undefined) return { fact: journal, origin: "journal" };
+  if (!Number.isSafeInteger(foldedThrough) || foldedThrough < 1) return undefined;
+  let best;
+  let bestTo = 0;
+  for (const record of Array.isArray(records) ? records : []) {
+    for (const entry of Array.isArray(record?.[FOLDED_FACTS_RECORD_FIELD])
+      ? record[FOLDED_FACTS_RECORD_FIELD]
+      : []) {
+      if (typeof entry?.text !== "string" || entry.text === "") continue;
+      const to = Number.isSafeInteger(entry?.to) ? /** @type {number} */ (entry.to) : 0;
+      // 与 ① 同一条硬约束：替代物必须**覆盖**到水位线，否则补不齐裁掉的正文（#462 边界①）。
+      if (to < foldedThrough) continue;
+      if (to >= bestTo) {
+        best = { ...entry, origin: "strategy" };
+        bestTo = to;
+      }
+    }
+  }
+  return best === undefined ? undefined : { fact: best, origin: "strategy" };
+}
+
+/**
  * 从事实体里还原「要回填进上下文的那段摘要正文」。
  *
  * 两个来源，按可靠性排序：
@@ -133,6 +178,7 @@ export function deriveFoldSummaryText(fact, headTexts = []) {
  *   messages: { message: any, round: number }[],
  *   dropped: { message: any, round: number }[],
  *   summaryText: string,
+ *   summarySource: string,
  *   droppedRounds: number,
  * }}
  */
@@ -147,6 +193,7 @@ export function planFoldedHistoryTrim(input = {}) {
     messages: entries,
     dropped: [],
     summaryText: "",
+    summarySource: "",
     droppedRounds: 0,
   });
 
@@ -161,7 +208,8 @@ export function planFoldedHistoryTrim(input = {}) {
   const droppedSet = new Set(dropped);
   const kept = entries.filter((entry) => !droppedSet.has(entry));
 
-  const fact = pickCoveringFoldSummary(input.records, foldedThrough);
+  const picked = pickCoveringFoldAlternative(input.records, foldedThrough);
+  const fact = picked?.fact;
   if (fact === undefined) return passthrough("no-covering-summary");
   const summaryText = deriveFoldSummaryText(
     fact,
@@ -175,6 +223,9 @@ export function planFoldedHistoryTrim(input = {}) {
     messages: kept,
     dropped,
     summaryText,
+    // 如实交代回填的替代物来源："journal" = 模型当时见过的那份摘要；
+    // "strategy" = 策略算出的机械摘要 / 宿主注入文本（模型未必见过，但信息等价）。
+    summarySource: picked.origin,
     droppedRounds: new Set(dropped.map((entry) => entry.round)).size,
   };
 }

@@ -531,6 +531,9 @@ export function createFoldStatisticalStrategy(options = {}) {
       }
 
       let compactedHead = head;
+      // issue #470（A1）：本次折叠的**机械替代物**（进账本用，不进消息流）。
+      /** @type {{ source: string, text?: string, degradeReason?: string }|undefined} */
+      let foldSummary = undefined;
       if (folded.length > 0) {
         const range = roundRange ?? { from: 1, to: folded.length };
         const summary = formatFoldSummary({
@@ -551,6 +554,8 @@ export function createFoldStatisticalStrategy(options = {}) {
           anchorClamp,
           anchorsEnabled,
         );
+        // 机械摘要本来就在手里，顺手带一份给轮记录（#470-A1）。
+        foldSummary = { source: "statistical", text: summary };
       }
 
       const compactedMessages = [
@@ -568,6 +573,7 @@ export function createFoldStatisticalStrategy(options = {}) {
         foldedPayload,
         ...(roundRange === undefined ? {} : { foldedRoundRange: roundRange }),
         ...(navigationRecord === undefined ? {} : { navigationRecord }),
+        ...(foldSummary === undefined ? {} : { foldSummary }),
       };
       await runFoldHook(settings.onAfterFold, { ...result, roundRange });
       return result;
