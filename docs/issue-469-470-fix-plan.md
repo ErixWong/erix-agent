@@ -178,3 +178,5 @@ degradeKind = err?.code === "summarizer_timeout" ? "timeout"
 5. 白名单缺口：`summarizerTimeoutMs` 在原型里只在 `createProviderSummarizer` 层面默认生效，**没进** `ASSEMBLY_POLICY_OPTION_NAMES` / `RUN_TOOL_LOOP_OPTION_NAMES` ⇒ 宿主开不出 `context.summarizerTimeoutMs`。实现 PR 必须补，否则判据①只到「引擎自己不挂死」而不到「宿主可调」。
 
 **下一刀（实现 PR）的形状**：按 patch 重新落地 + 上面 5 条修正；新增 `test/compact/fold-llm-degrade-469.test.js`（5 格，零真实 LLM，原型下 5/5 绿、相邻回归 547/547 绿）；CHANGELOG 条目正文见 §9，**由有写权限的一侧**搬进 `## [Unreleased] / ### Fixed`（`CHANGELOG.md` 是 `root:root 644`，本 worker `edit` 报 `EACCES`）；版本口径：**0.26.0 已发布**，本改动属 `[Unreleased]`，不 bump 版本三件套。
+
+**CHANGELOG 口径（替代此前那句含权限理由的旁注，以本条为准）**：本轮**不改** `## [Unreleased]`。理由不是「写不进去」，而是**主干里没有行为变更**——`src/` 已回退到 HEAD，默认 30 s 限时那套四层修法只存在于 `docs/issue-469-470-wip.patch`，未合入 ⇒ 按 Keep a Changelog 的口径，`[Unreleased]` 应当保持空段（写一条描述不存在于本树的行为变更，是比空段更坏的文档债）。§9 的条目正文是**预备稿**：谁落地那份 patch，条目与它同一个 PR 进。硬约束也顺带实测清楚：`CHANGELOG.md` 是 `root:root 644`，`edit` 报 `EACCES`、`test -w` 判不可写；但仓库目录本身可替换该文件（`rename` 覆盖成功 ⇒ 需要时可由本侧改写，只是不属本轮决定）。
