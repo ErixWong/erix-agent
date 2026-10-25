@@ -152,7 +152,21 @@ export function observeCompactionLayer(
  *   layers: Record<string, { triggered: number, tokensSaved: number }>,
  *   protectedDowngraded?: number,
  *   userTurnGuard?: string,
- *   userTurnGuardChannel?: string
+ *   userTurnGuardChannel?: string,
+ *   strategyName?: string,
+ *   foldSummary?: {
+ *     source?: string,
+ *     degradeKind?: string,
+ *     degradeReason?: string,
+ *     inputTruncated?: boolean,
+ *     droppedMessages?: number,
+ *     finishReason?: string,
+ *     inputTokens?: number,
+ *     outputTokens?: number,
+ *     estimatedInputTokens?: number,
+ *     inputMessages?: number,
+ *     reused?: boolean,
+ *   }
  * }}
  */
 export function createCompactionStat({
@@ -170,6 +184,9 @@ export function createCompactionStat({
   // issue #464 A（additive）：本次折叠**实际执行**的策略名。调用方从策略实例取，
   // 因此写的是「真做了折叠的那个」（含引擎库层兜底），不是宿主配置项原文。
   strategyName,
+  // issue #469-④（additive）：折叠摘要这一发的**结果状态**——「为什么没拿到摘要」与
+  // 「被裁过多少」。只存小字段：摘要正文本身走轮记录 `foldedFacts`，不进这里（#460 尺蠖）。
+  foldSummary,
 } = {}) {
   const stat = {
     compacted: compacted === true,
@@ -197,6 +214,35 @@ export function createCompactionStat({
   if (typeof strategyName === "string" && strategyName !== "") {
     stat.strategyName = strategyName;
   }
+  // issue #469-④（additive）：与 strategyName 同口径——**只在真取得到时才出现这个键**。
+  // 真机 #469 三次折叠全降级而账上只有一个 `layers.enforceSize`，成本与原因双重隐身。
+  if (foldSummary !== null && typeof foldSummary === "object") {
+    // 只收**诊断信号**：`source`（llm/statistical/strategy）不算——它已在轮记录
+    // `foldedFacts.source` 上，再进一份只会把既有精确断言洗脏（无事发生 ⇒ 无键）。
+    const projected = {
+      ...(typeof foldSummary.degradeKind === "string" && foldSummary.degradeKind !== ""
+        ? { degradeKind: foldSummary.degradeKind }
+        : {}),
+      ...(typeof foldSummary.degradeReason === "string" && foldSummary.degradeReason !== ""
+        ? { degradeReason: foldSummary.degradeReason }
+        : {}),
+      ...(foldSummary.inputTruncated === true ? { inputTruncated: true } : {}),
+      ...(Number.isSafeInteger(foldSummary.droppedMessages) && foldSummary.droppedMessages > 0
+        ? { droppedMessages: foldSummary.droppedMessages }
+        : {}),
+      ...(typeof foldSummary.finishReason === "string" && foldSummary.finishReason !== ""
+        ? { finishReason: foldSummary.finishReason }
+        : {}),
+      ...(Number.isSafeInteger(foldSummary.inputTokens) && foldSummary.inputTokens > 0
+        ? { inputTokens: foldSummary.inputTokens }
+        : {}),
+      ...(Number.isSafeInteger(foldSummary.outputTokens) && foldSummary.outputTokens > 0
+        ? { outputTokens: foldSummary.outputTokens }
+        : {}),
+      ...(foldSummary.reused === true ? { reused: true } : {}),
+    };
+    if (Object.keys(projected).length > 0) stat.foldSummary = projected;
+  }
   return stat;
 }
 
@@ -221,6 +267,8 @@ export function normalizeCompactionStats(value, limit = COMPACTION_STATS_STATE_L
     // issue #464 A：`strategyName` 同样要过这道重建——runState / `state.json` 里那份是从上一份
     // 归一化副本再推导的，不在此列就会丢键，于是「事件里有、state 里没」与契约声称相反。
     strategyName: entry?.strategyName,
+    // issue #469-④：同样要过这道重建，否则「`compaction` 事件里有、state 里没」。
+    foldSummary: entry?.foldSummary,
     layers: Object.fromEntries(COMPACTION_LAYER_IDS.map((id) => {
       const layerStats = entry?.layers?.[id];
       return [id, {

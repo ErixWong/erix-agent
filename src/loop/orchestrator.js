@@ -1251,6 +1251,13 @@ export async function runToolLoop(options) {
   // addUsage（trackLatest:false，与 wrapup judge 同口径：并入 run 总账但不污染压缩判断用的
   // latestApiInputTokens），并转发宿主 onUsage；这次调用在轮次循环之外，故天然不计轮次/stall。
   // 闭包引用后文才声明的 awaitWithAbort/addUsage：只在压缩触发时才被调用，无 TDZ 风险。
+  // issue #469-②③：摘要这一发的**输入上限**与**结果状态**。上限复用上面算出的 `budgetTokens`（
+  // 不新引第二套窗口口径），预留 prompt guide / 省略注 / 分词误差的余量；无窗口配置 ⇒ 不设上限。
+  const summarizerInputBoundTokens = Number.isFinite(budgetTokens) && budgetTokens > 0
+    ? Math.max(1024, Math.floor(budgetTokens) - 2048)
+    : undefined;
+  /** @type {{finishReason?: string, inputTokens?: number, outputTokens?: number, inputTruncated?: boolean}|undefined} */
+  let lastSummarizerMeta = undefined;
   const compactionSummarizer = createProviderSummarizer({
     chat: async (request) => {
       if (typeof provider?.chat !== "function" && typeof provider?.chatStream !== "function") {
@@ -1258,7 +1265,9 @@ export async function runToolLoop(options) {
       }
       const summarizerRequest = {
         ...request,
-        signal,
+        // issue #469-①：摘要器自带超时时它已把 `request.signal` 换成子 controller 的 signal
+        // （父 signal 已转发进去），这里不得再用 run 的 signal 覆盖；没配超时时无处赋值 ⇒ 逐字不变。
+        signal: request.signal ?? signal,
         ...(maxTokens === undefined ? {} : { maxTokens }),
       };
       const response = await awaitWithAbort(
@@ -1271,6 +1280,13 @@ export async function runToolLoop(options) {
       return response;
     },
     ...(onUsage === undefined ? {} : { onUsage }),
+    ...(summarizerInputBoundTokens === undefined
+      ? {}
+      : { maxSummarizerInputTokens: summarizerInputBoundTokens }),
+    // issue #469-③：今天引擎**从不看**这次调用的结果状态（被 `max_tokens` 截成半截也当完整
+    // 摘要嗬下去）；先把 finish_reason / token / 被裁条数暂存在闭包，由 `recordCompactionStat`
+    // 写进 `compactionStats[].foldSummary`（#469-④）。观察性质，失败不得影响折叠。
+    onMeta: (meta) => { lastSummarizerMeta = meta; },
   });
   // issue #326（wo-C）：**折叠摘要的「落账 + 复用」缝在引擎自产摘要这一处**（三档内置策略的生成
   // 逻辑一字不动）。账本 = 折叠输入指纹 → 已经喂出去的那份摘要：
@@ -3409,6 +3425,14 @@ export async function runToolLoop(options) {
         // issue #464 A：写实例上的名字（含库层兜底的 `"sliding-window"`），不是配置项原文。
         strategyName: typeof strategy?.name === "string" ? strategy.name : undefined,
         ...(userTurnGuard === undefined ? {} : { userTurnGuard, userTurnGuardChannel }),
+        // issue #469-④：“为什么没拿到摘要”与“成本去哪了”同时入账（只取小字段，不搬正文）。
+        foldSummary: {
+          ...(strategyFoldSummary ?? {}),
+          ...(lastFoldSummaryOutcome?.reused === true ? { reused: true } : {}),
+          ...(lastSummarizerMeta ?? {}),
+          // 正文与指纹不进这里（#460/#470-B 尺寸尺蠖），`foldedFacts` 已有完整一份。
+          text: undefined,
+        },
       }, round);
     }
     const foldedStateChanged = foldedRounds > 0
