@@ -143,3 +143,23 @@ export function collectLoopCapabilitiesMissing({
   }
   return missing;
 }
+
+/**
+ * issue #470-D：折叠替代物投递钩子 `onFoldSummary` 的形状校验（返回问题列表，空 = 通过）。
+ *
+ * 口径：`undefined` = 不订阅（逐字等于今天的行为，纯加法）；给了就必须是函数。
+ * 只校到这一层——payload 的**形状由引擎写侧唯一产出点 `buildFoldedFacts()` 决定**，
+ * 钩子只能读，不能反过来影响投递内容。
+ *
+ * @param {unknown} hook
+ * @returns {string[]}
+ */
+export function validateFoldSummaryHook(hook) {
+  // `undefined` = 未订阅（纯加法，逐字等于今天的行为）；`null` 属于「给了但给错」⇒ 与其余端口
+  // （`NotesStore clock must be a function` 等）同口径：只有省略才放行，非函数一律报错。
+  if (hook === undefined) return [];
+  if (typeof hook !== "function") {
+    return ["assembly policy option onFoldSummary must be a function (or omitted)"];
+  }
+  return [];
+}

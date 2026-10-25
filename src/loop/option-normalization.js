@@ -110,6 +110,9 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // 默认 `"reject"`（不执行 + 把解析器原判词作为 `is_error` 的 `tool_result` 回给模型），
   // `"execute"` 是显式回退（行为逐字等于 #409 之前）。同样追加在末尾，理由同上。
   "invalidArguments",
+  // issue #470-D：`onFoldSummary` 是折叠替代物（`record.foldedFacts`）的**强制投递出口**。
+  // 纯加法（默认未传 = 今天的行为）。同样追加在末尾：旧未知键的「did you mean」建议逐字不变。
+  "onFoldSummary",
 ];
 
 /** 白名单的查询视图（与 `RUN_TOOL_LOOP_OPTION_NAMES` 同源，勿另行维护）。 */

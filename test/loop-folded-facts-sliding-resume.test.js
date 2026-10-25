@@ -61,7 +61,7 @@ test("判据①：record.foldedFacts 是 buildFoldedFacts 的真实返回值时�
 });
 
 // 判据②（本轮已解 skip 跑绿）。红因与修法（实测，不是推测）：
-// 实测红因（`scripts/tmp-dbg-470.mjs` 输出见 docs/tasks/wip-470/tmp-dbg-470.txt）：
+// 实测红因（调试脚本 tmp-dbg-470 的输出见 docs/tasks/wip-470/tmp-dbg-470.txt（脚本是一次性的，已清理））：
 // 折叠确实发生（`compactionStats` 每轮 `compacted:true`、`slidingWindow.triggered:1`、轮记录带
 // `foldedRoundRange`），但 8 条记录里 **0 条**有 `foldedFacts` ⇒ 写入端那一步（`orchestrator.js`
 // 里 `pendingFoldedFacts = buildFoldedFacts({ text: strategyFoldSummary?.text ?? fedSummaryText … })`）

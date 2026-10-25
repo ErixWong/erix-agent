@@ -1341,3 +1341,7 @@ guarantee. The judge design decision is documented in
 ## License
 
 MIT © 2026 ErixWong (see [LICENSE](LICENSE)).
+
+## Fold-summary delivery hook (`context.onFoldSummary`)
+
+When the engine folds older rounds it computes a **deterministic substitute** for what it removed (range sentence + tool footprint + mechanical anchor index) and lands it on the round record as `record.foldedFacts` — bounded at 2 KiB by default, no LLM in the loop. Hosts that render a "this segment was folded" banner can subscribe instead of polling the ledger: `context.onFoldSummary?.({ ...foldedFacts, round })`) fires **once per fold, at the point the facts are final**, and never when there is no text to deliver. A throwing hook surfaces as `persistence_error` (`operation: "onFoldSummary"`, `fatal: false`) and **never** changes the run's outcome; not passing it leaves behaviour byte-identical. Related: issues #470 (substitute must be both booked and trimmable), #462 (resume trims below the fold watermark using that substitute), #475/#476 (open follow-ups on forced final replies). Contract is the source of truth: `docs/host-consumer-contract.md`.

@@ -1,6 +1,7 @@
 
 import {
   MODEL_CONFIG_RESOLVER_HINT,
+  validateFoldSummaryHook,
   validateModelConfigResolver,
   validateProviderBoundary,
   validateTranscriptStore,
@@ -46,6 +47,9 @@ const ASSEMBLY_POLICY_OPTION_NAMES = new Set([
   "onJudge",
   "onToolResult",
   "onPersistenceError",
+  // issue #470-D：折叠替代物 `record.foldedFacts` 的强制投递出口（形状校验见
+  // `validateFoldSummaryHook`：给了就必须是函数，给错名字/给错形状都不静默宽容）。
+  "onFoldSummary",
   "diagnostics",
   "onObserverError",
   "signal",
@@ -156,6 +160,13 @@ export function createAssemblyPort(input = {}) {
     if (!ASSEMBLY_POLICY_OPTION_NAMES.has(key)) {
       throw new TypeError(`unknown assembly policy option: ${JSON.stringify(key)}`);
     }
+  }
+  // issue #470-D：`policy.onFoldSummary` 是可选钩子，但**给了就必须是函数**。
+  // 不校形状的话，宿主把字符串/对象当钩子递进来会在真正发生折叠那一轮才炸（或默默不投递
+  // ——两种都是“跑了很久才知道配错了”），而装配期一条 TypeError 就能说清。
+  const foldSummaryHookProblems = validateFoldSummaryHook(port.policy?.onFoldSummary);
+  if (foldSummaryHookProblems.length > 0) {
+    throw new TypeError(foldSummaryHookProblems.join("; "));
   }
   return Object.freeze(port);
 }
