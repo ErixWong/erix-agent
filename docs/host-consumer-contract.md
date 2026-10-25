@@ -1741,7 +1741,10 @@ Within one round, exactly one mechanism gets to decide, in this order
    and `continuation_exhausted` (the mapping prefers `judge_done` anyway,
    `src/loop/termination.js:94`).
 7. **post-stop verification** — after a stop reason exists, forced wrap-up may
-   add one more provider call for the three non-continuable reasons
+   add one more provider call for the four wrap-up-eligible reasons — the three
+   non-continuable ones plus `judge_done` (issue #467) — and only when
+   `hasFinalDraft` (`src/loop/termination.js`) is false, i.e. only when the run
+   would otherwise end with no terminal text
    (`src/loop/termination.js:203-256`), then `finalGuard` may accept, skip,
    revise, or fail. A `revise` verdict is not terminal: it injects a user
    message and governance starts over for that round
@@ -1749,6 +1752,16 @@ Within one round, exactly one mechanism gets to decide, in this order
    `finalGuardMaxRetries` (default 2, `budgetRounds` at `src/loop/orchestrator.js`),
    and the guard's own timeout defaults to 30 s
    (`budgetRounds` at `src/loop/orchestrator.js`).
+   The wrap-up text is **payload-only** (issue #467): it reaches the host through
+   `result.finalText`, plus one extra journal row written by
+   `appendEngineMessagesToTranscript` (`src/loop/orchestrator.js`) whose
+   `roundKey` is **shared** with the last round record — only `dedupKey`
+   distinguishes the two — and it never reaches the host through an event:
+   `forced_final` carries only `{type, round, reason}` and `run_outcome` carries
+   no `finalText`. A host that renders from events alone therefore still shows the
+   judge card last, even after issue #467. And since an `accept` verdict must never
+   rest on `finalText` being non-empty (see `S6a`), a host-side acceptance decision
+   has to read `termination.forcedFinal`.
 8. **`fail()` classification** — any throw at any point replaces all of the
    above with `aborted` (signal set) or `failed` / `persistence_failed`
    (`src/loop/orchestrator.js:1058-1116`).
