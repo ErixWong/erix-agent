@@ -378,6 +378,8 @@ quoted blocks below against it):
   "docs/host-upgrade-guide-0.24.0_cn.md",
   "docs/host-upgrade-guide-0.25.0.md",
   "docs/host-upgrade-guide-0.25.0_cn.md",
+  "docs/host-upgrade-guide-0.26.0.md",
+  "docs/host-upgrade-guide-0.26.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -1043,14 +1045,16 @@ library-level controls
 - [docs/testing.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing.md) - test strategy and behavior metrics
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0
   breaking-window migration steps
-- [docs/host-upgrade-guide-0.25.0.md](docs/host-upgrade-guide-0.25.0.md) / [docs/host-upgrade-guide-0.25.0_cn.md](docs/host-upgrade-guide-0.25.0_cn.md) - the latest
+- [docs/host-upgrade-guide-0.26.0.md](docs/host-upgrade-guide-0.26.0.md) / [docs/host-upgrade-guide-0.26.0_cn.md](docs/host-upgrade-guide-0.26.0_cn.md) - the latest
+  host-facing migration guide (EN/CN pair), **0.25.0 → 0.26.0**: the "a fold hands you its substitute, and a finished run always has a body" release. Additive: `record.foldedFacts` is a bounded machine index of what each fold removed, and `context.onFoldSummary` hands that same text to the host the moment the fold is finalised (a fold-to-note journal no longer has to poll the ledger), with `context.maxFoldedFactsBytes` sizing it from one source. Behavior: a `judge_done` stop now forces a final instead of ending with no body (#467), resume replays only what the fold watermark has not already accounted for (#462), and `compaction.strategyName` says which compaction actually ran (#464 A). Nothing removed or renamed; no store signature, export or dependency moved.
+- [docs/host-upgrade-guide-0.25.0.md](docs/host-upgrade-guide-0.25.0.md) / [docs/host-upgrade-guide-0.25.0_cn.md](docs/host-upgrade-guide-0.25.0_cn.md) - the previous
   host-facing migration guide (EN/CN pair), **0.24.0 → 0.25.0**: the "a fold stops re-billing you for bytes the ledger already
   has" release. Purely additive: `record.foldedPayload` is de-duplicated per session and clamped to a byte budget (default
   262144; `context.maxFoldedPayloadBytes` > env `ERIX_FOLD_ARCHIVE_MAX_BYTES` > default, `0` = pointers only),
   `record.foldedPayloadMeta` reports what was deduplicated or clamped (`rejectedByHost` when the store rejected the record),
   and one oversized round record now degrades instead of ending the run. No store signature, option, export or dependency moved.
-- [docs/host-upgrade-guide-0.24.0.md](docs/host-upgrade-guide-0.24.0.md) / [docs/host-upgrade-guide-0.24.0_cn.md](docs/host-upgrade-guide-0.24.0_cn.md) - the
-  previous host-facing migration guide (EN/CN pair), **0.23.0 → 0.24.0**: the "the runtime stops guessing on your
+- [docs/host-upgrade-guide-0.24.0.md](docs/host-upgrade-guide-0.24.0.md) / [docs/host-upgrade-guide-0.24.0_cn.md](docs/host-upgrade-guide-0.24.0_cn.md) - an earlier
+  host-facing migration guide (EN/CN pair), **0.23.0 → 0.24.0**: the "the runtime stops guessing on your
   behalf" release. Two additive/fixed information surfaces — `<runId>.state.json` now reports
   `deterministic.compactionStatsWindow` (`{ limit, dropped, total }`), and `checkpoint_failed` carries `cause` /
   `errorCode` / `unpersisted` with the **same names and the same value types** as `persistence_failed` — plus four
@@ -1086,10 +1090,10 @@ Not every Markdown file in this repository claims the same thing, and the gate k
 
 - **Live documentation — gated, must be true *today*.** `README*.md`, `AGENTS*.md`, the consumer contract pair
   (`docs/host-consumer-contract.md` / `docs/host-consumer-contract_cn.md`), **every** `docs/host-upgrade-guide*.md`
-  (24 today, discovered from the directory), plus — since 工单 261021-03 B1 — the architecture pair
+  (26 today, discovered from the directory), plus — since 工单 261021-03 B1 — the architecture pair
   (`docs/architecture.md` / `docs/architecture_cn.md`), the chart pair (`docs/charts.md` / `docs/charts_cn.md`),
   the requirements pair (`docs/requirements.md` / `docs/requirements_cn.md`) and the `erix_run` README
-  (`examples/pi-extension/README.md`). That is 37 documents (`REF_SCAN_DOCS_MINIMUM = 37`): a renamed file, a moved
+  (`examples/pi-extension/README.md`). That is 39 documents (`REF_SCAN_DOCS_MINIMUM = 39`): a renamed file, a moved
   line or a symbol that no longer exists in `src/` turns `npm run check:docs` red.
 - **Snapshot archives — true at the date in their own header.** `docs/v0.0-contracts*.md` /
   `docs/v0.1-contracts*.md` / `docs/v0.2-contracts*.md`, `docs/design/`, `docs/research/`, `docs/harness-comparison/`
@@ -1109,12 +1113,13 @@ current contract. And a path that points into **another** repository is written 
 
 The authoritative version is the `version` field of
 [`package.json`](package.json), and `npm run check:docs` verifies the release
-line below against it. Current release: **v0.25.0** (2026-10-24). The complete,
+line below against it. Current release: **v0.26.0** (2026-10-26). The complete,
 authoritative history is [CHANGELOG.md](CHANGELOG.md); the bullets below list
 only the releases that changed how a host consumes the runtime. The 0.6.0
 migration steps remain in
 [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md).
 
+- **v0.26.0 (2026-10-26)**: the "a fold hands you its substitute, and a finished run always has a body" release — every fold now writes a bounded `record.foldedFacts` and can deliver the same text to the host through `context.onFoldSummary` (#470); a `judge_done` stop forces a final instead of ending with zero body (#467); resume trims what the fold watermark already accounts for (#462); `compaction.strategyName` plus a one-time `compaction_strategy_fallback` say when the configured compaction was not the one that ran (#464 A). Still open on this surface: `end_turn` / `no_tool` do not force a final yet (#475 / #476), and the judge's own criteria still do not look at the deliverable (#473).
 - **v0.25.0 (2026-10-24)**: the "a fold stops re-billing you for bytes the ledger already has" release — `record.foldedPayload` becomes a bounded, session-deduplicated archive (new `context.maxFoldedPayloadBytes`, env `ERIX_FOLD_ARCHIVE_MAX_BYTES`, default 256 KiB, `0` = pointer only) and truncation is now reported in the new `record.foldedPayloadMeta`; a host that rejects an oversized round record degrades that record instead of ending the run as `persistence_failed`. Purely additive: no store signature, option, export or dependency moved, so no host migration is required. Read-side context trimming is tracked separately as #462. See [CHANGELOG.md](CHANGELOG.md).
 - **v0.24.0 (2026-10-22)**: the "the runtime stops guessing on your behalf" release — the engine did not change
   what it does, it changed what it *says*. `<runId>.state.json` now reports its own compaction window

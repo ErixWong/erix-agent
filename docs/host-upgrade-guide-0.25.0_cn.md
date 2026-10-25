@@ -102,7 +102,3 @@ npm run check:release                           # 打包 + 契约套件 + tsc �
 再拿一个真实会话对着你自己的上限核一遍：每条带 `foldedPayloadMeta` 的记录都必须满足 `bytes <= capBytes`，
 而 `capBytes` 必须不高于你 store 的单记录闸。如果你已经把 `capBytes` 设在那道闸之下却仍看到
 `rejectedByHost`，那说明你的 store 是因为归档以外的东西拒收的。
-
-## 折叠替代物投递出口（随下一个 minor 生效，#470）
-
-`context.onFoldSummary?.(payload)` 是纯加法：在**替代物定稿处**触发、**一次折叠一次**，递的是 `{ ...record.foldedFacts, round }`（`text` / `source` / `strategy` / `from` / `to` / `rounds` / `bytes`，外加只在有值时才带的 `truncated` / `degradeReason`）；**没有文本就不调用**。钩子抛错变成 `persistence_error`（`operation: "onFoldSummary"`、`phase: "fold_summary_delivery"`、`fatal: false`），**绝不改写 run 的终局**。字节上界用同一个键 `context.maxFoldedFactsBytes`（默认 2048），于是宿主的「输入上限 / 输出预算 / 容器上限」可以同一个来源。两个键都不传时行为逐字不变。装配期校验：`onFoldSummary` 非函数 ⇒ `TypeError: onFoldSummary must be a function`；`maxFoldedFactsBytes` 不是安全正整数 ⇒ `maxFoldedFactsBytes must be a positive integer`。
