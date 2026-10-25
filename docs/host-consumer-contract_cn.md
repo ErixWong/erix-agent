@@ -1271,6 +1271,8 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `runId` | 每条 `onJudge` 记录与 `run_outcome` 事件 | 宿主传给 `runToolLoop` 的 run 标识，也是流式决策与终局记录之间的 join 键。宿主没传 `runId` 时该字段**缺省**——引擎不自己编一个。 |
 | `model` | 每条 `onJudge` 记录与 `run_outcome` 事件 | 被评决策发生时 run **实际使用**的模型标识，从 run 选项 / provider 配置解析。探测顺序与 `modelMetadataFor()` 一致（`modelConfig` → `modelMetadata` → `model` → `provider` → `context`），键顺序 `model` → `model_name`（与 provider 构造侧同口径），首个命中且**不合并**。绝不硬编码。任一候选都探不到非空名字时该字段**缺省**：写 `"unknown"` 会让「没配模型」与「真有个叫 unknown 的模型」在账面上无法区分。 |
 | `judgeModel` | `onJudge` 记录，仅当 judge 走了与 run 不同的 evaluator 模型 | 让 per-model 校准能区分「被评的模型」与「评它的模型」。judge 与 run 同模型时缺省。 |
+| `compaction` 统计 | `onEvent`（`type: "compaction"`）与 `<runId>.state.json` 里的 `deterministic.compactionStats` 窗口 | 既有键-round-for-round 不动。**additive（issue #464 A）：** `strategyName` 只在引擎能如实说出时才出现——它写的是**真正执行了本次折叠**的那个策略（含库层兜底的 `"sliding-window"`），不是宿主配置项原文。忽略它的宿主看到的形状与从前逐字一致。 |
+| `compaction_strategy_fallback` 事件 | `onEvent`，一个 run 最多一条 | **additive（issue #464 A）。** `{ type: "compaction_strategy_fallback", round, detail }`，仅在 `context.strategy` **未配置**且折叠是**预算兜底触发**的那一刻发出——也就是引擎库层的 `sliding-window` 真的跑了（整轮头部丢弃、无摘要、无锚点，即 issue #464 B）。形状对齐 `model_metadata_missing`（issue #182）：`detail` 首句是宿主可直接断言的固定原文，能解析出预算时再附上 `budgetTokens` / `estimatedTokens`。 |
 | `run_outcome` 事件 | `onEvent`，一次 run 恰好一条——judge 从未运行的 run 同样发 | `{ type: "run_outcome", runId?, model?, judgeModel?, rounds, judgeRecordCount, termination, verification }`。成功路径在持久化落地后发，抛错路径在 `fail()` 里发；去重门保证一个 run 恰好一条。`termination` / `verification` 是 `runToolLoop` 返回值（或 `fail()` 构造出的终局）的副本。 |
 
 为什么是一条独立的终局记录，而不是把 outcome 回写进决策记录：judge 记录是 run 还在跑时
@@ -1516,7 +1518,7 @@ if ("value" in unparsable || "value" in shapeMismatch || "value" in noCandidate)
 | `parseReflectionDecision`（`src/loop/reflection.js`） | **已迁**（缺省档 + `requireKeys` = 六个决策键） | 行为与 issue #306 发布的版本逐字相同；对拍用例拿它和那份实现的副本比，覆盖已知形状加 3000 条确定性随机输入 |
 | `parseJudgeDecision`（`src/reflection/judge.js`） | 扫描器换成公共入口的 `topOnly: false`，**它自己的逐候选循环留着** | judge 必须跳过「能解析但不合格」的候选（`done` 不是字面布尔、`confidence` 不在 [0,1]）再试下一个；公共入口只返回单个 `value`，直接拿它当结论会把「跳过这个候选」变成「整次解析失败」 |
 | `tryParseWrapupJson`（`src/reflection/wrapup.js`） | **未迁**，仍直接调 `jsonCandidates` | 它的门槛比键存在性严（`done` 必须字面布尔；出现 `action`/`note` 就把对象退回内联 L1 路径），而且同样必须「跳过并续试」。跳过是承重的：`{"done":"true"}{"done":true}` 必须返回第二个。内层的 `{"done":…}` 不得绕过那条 mandatory-done 守卫（issue #30 follow-up），所以这里的扫描继续保持只认顶层 |
-| `extractL0Facts`（`src/reflection/l0.js`）、`parseFoldSummaryMatch`（`src/compact/fold-statistical.js`） | **不在本单** | 两者都不是「在模型散文里找 JSON」：L0 取的是引擎要求模型写的 `<erix-summary>` 标签，折叠摘要读的是**引擎自己**写下的 `导航记录：{…}` 行并且 fail-closed 到 `undefined`。去掉标签 / 行锚定会放宽它们接受的形状 —— 那是行为变更，不是去重 |
+| `extractL0Facts`（`src/reflection/l0.js`）、`parseFoldSummaryMatch`（`src/compact/fold-statistical.js`） | **不在本单** | 两者都不是「在模型散文里找 JSON」：L0 取的是模型散文里的 `<erix-summary>` 标签——注意**引擎并不要求模型写它**（issue #465：`parseL1Summary` 只做读侧解析，`src/` 内没有任何提示词注入点，宿主既不注入也不提示时恒落 `summary: "missing"`），折叠摘要读的是**引擎自己**写下的 `导航记录：{…}` 行并且 fail-closed 到 `undefined`。去掉标签 / 行锚定会放宽它们接受的形状 —— 那是行为变更，不是去重 |
 
 ## 带可选兜底的模型输出归一化：`normalizeModelJson`（issue #406）
 

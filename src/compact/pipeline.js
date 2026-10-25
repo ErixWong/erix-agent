@@ -167,6 +167,9 @@ export function createCompactionStat({
   userTurnGuard,
   userTurnGuardChannel,
   layers,
+  // issue #464 A（additive）：本次折叠**实际执行**的策略名。调用方从策略实例取，
+  // 因此写的是「真做了折叠的那个」（含引擎库层兜底），不是宿主配置项原文。
+  strategyName,
 } = {}) {
   const stat = {
     compacted: compacted === true,
@@ -189,6 +192,11 @@ export function createCompactionStat({
       stat.userTurnGuardChannel = userTurnGuardChannel;
     }
   }
+  // issue #464 A（additive）：与 userTurnGuard 同口径——**只在真取得到时才出现这个键**，
+  // 未配置/取不到名字时 compactionStats 的读取形状与从前逐字一致（既有宿主零改动）。
+  if (typeof strategyName === "string" && strategyName !== "") {
+    stat.strategyName = strategyName;
+  }
   return stat;
 }
 
@@ -210,6 +218,9 @@ export function normalizeCompactionStats(value, limit = COMPACTION_STATS_STATE_L
     protectedDowngraded: entry?.protectedDowngraded,
     userTurnGuard: entry?.userTurnGuard,
     userTurnGuardChannel: entry?.userTurnGuardChannel,
+    // issue #464 A：`strategyName` 同样要过这道重建——runState / `state.json` 里那份是从上一份
+    // 归一化副本再推导的，不在此列就会丢键，于是「事件里有、state 里没」与契约声称相反。
+    strategyName: entry?.strategyName,
     layers: Object.fromEntries(COMPACTION_LAYER_IDS.map((id) => {
       const layerStats = entry?.layers?.[id];
       return [id, {
