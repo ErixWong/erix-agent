@@ -116,3 +116,7 @@ Then check one real session against your own limits: for each record with `folde
 `bytes <= capBytes` must hold, and `capBytes` must be at or below your store's per-record gate. If
 `rejectedByHost` appears in a session where you set `capBytes` below that gate, you are looking at a store
 that rejects on something other than the archive.
+
+## Fold-summary delivery hook (lands with the next minor, #470)
+
+`context.onFoldSummary?.(payload)` is additive: it fires once per fold, at the point the deterministic fold substitute is finalised, with `{ ...record.foldedFacts, round }` (`text` / `source` / `strategy` / `from` / `to` / `rounds` / `bytes`, plus `truncated` / `degradeReason` only when set). No text ⇒ no call. A throwing hook becomes `persistence_error` with `operation: "onFoldSummary"`, `phase: "fold_summary_delivery"`, `fatal: false` — it never changes the run outcome. `context.maxFoldedFactsBytes` (default 2048) is the same byte cap that lands on the record, so a host's input limit / output budget / container cap can share one source. Not passing either option keeps behaviour byte-identical. Validation at assembly: non-function `onFoldSummary` ⇒ `TypeError: onFoldSummary must be a function`; a non positive-integer `maxFoldedFactsBytes` ⇒ `maxFoldedFactsBytes must be a positive integer`.

@@ -709,3 +709,7 @@ Notes 实验脚本同样按 `--model`、`ERIX_EXPERIMENT_MODEL` 或 `--config`/`
 ## 许可证
 
 MIT © 2026 ErixWong（见 [LICENSE](LICENSE)）。
+
+## 折叠替代物投递出口（`context.onFoldSummary`）
+
+引擎折掉早期轮次时，会为「被折掉的内容」算出一份**确定性替代物**（范围句 + 工具足迹 + 机械锚点索引），落到轮记录就是 `record.foldedFacts`——默认 2 KiB 夹断，全程不走 LLM。要渲染「此段已折叠」横幅的宿主可以直接订阅，不必自己去轮询账本：`context.onFoldSummary?.({ ...foldedFacts, round })` 在**替代物定稿处**触发、**一次折叠一次**，且**没有文本时不调用**（不造空横幅）。钩子抛错走 `persistence_error`（`operation: "onFoldSummary"`、`fatal: false`），**绝不改写 run 的终局**；不传这个钩子时行为逐字不变。相关：#470（替代物既要落账也要能裁）、#462（续跑按折叠水位线用这份替代物裁正文）、#475/#476（强制收尾的两条残留口径，已立案）。口径正本在 `docs/host-consumer-contract_cn.md`。

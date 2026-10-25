@@ -228,7 +228,11 @@ export async function restoreResume(ctx) {
         const isEngineFactRow = (record?.messages?.length ?? 0) === 0
           && (record?.foldedSummary !== undefined || record?.ttlDegradations !== undefined);
         if ((record.round ?? 0) > 0 && !isEngineFactRow) {
-          const summary = record.summary ?? "missing";
+          // issue #470 判据②：这一格**不再合成字面量** `"missing"`。写侧 `parseL1Summary` 的既定
+          // 兜底串（#465 已确认它是 L1 摘要的既定形状）在这里同样归一成「无摘要」⇒ judge 看到的轮次
+          // 历史里不会再出现一串它没法判别真假的占位文本。条目**本身**照旧生成：governor 的历史条数
+          // 与 `stalled` 的输入逐字不变，上面 `isEngineFactRow`（#326）的守卫也不动。
+          const summary = record.summary === "missing" ? undefined : record.summary;
           const l0facts = record.l0facts
             // 无 l0facts 的远古记录：用共享 errorSeen 重新提取（跨记录累计；
             // 随后 restoreErrorSeen 的 Math.max 幂等，不会双计）

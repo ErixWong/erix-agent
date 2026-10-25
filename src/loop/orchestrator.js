@@ -400,6 +400,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   onJudge?:(info:JudgeEvent) => void,     // 观察者（issue #173 PR-B）：抛错被隔离
  *   onToolResult?: (name:string, result:string, metadata?:object) => any,
  *   onPersistenceError?: (error:Error) => void,
+ *   onFoldSummary?: ((payload: object) => void | Promise<void>)|undefined,
  *   onObserverError?: (error:Error, context:{channel:string, runId?:string, type?:string, round?:number, toolName?:string, method?:string}) => void,
  *   signal?: AbortSignal,
  *   stream?: boolean,
@@ -568,6 +569,7 @@ export async function runToolLoop(options) {
     onJudge,
     onToolResult,
     onPersistenceError,
+    onFoldSummary,
     diagnostics,
     onObserverError,
     signal,
@@ -3367,7 +3369,33 @@ export async function runToolLoop(options) {
         rounds: foldedRounds,
         degradeReason: strategyFoldSummary?.degradeReason,
         fingerprint: foldedFingerprint,
+        // issue #470-D：夹断上界开了 `context` 旋钮（默认不变 = `FOLDED_FACTS_MAX_BYTES`），
+        // 让宿主的「输入上限 / 输出预算 / 容器上限」三者可以同源；非法值（非正整数）
+        // 由 `buildFoldedFacts` 自己退回默认，不静默变成 0 字节的空横幅。
+        maxBytes: compactionContext.maxFoldedFactsBytes,
       });
+      // issue #470-D：折叠替代物的**强制投递出口**。落点就在替代物定稿处，递的是
+      // **落进轮记录的那一份**（`cloneState` 后加 `round` 供宿主归档），不给“更漂亮的副本”。
+      // 三条口径（与契约同步）：
+      //   ① **无 `text` 不调用**——`buildFoldedFacts()` 无文本时返回 `undefined` ⇒ 本块整体
+      //      不发生，既不占通道也不造空横幅（与 A2「不写占位字面量」同口径）；
+      //   ② 投递失败**不许改写 run 的终局**：经 `reportHostPersistenceFailure` 落
+      //      `persistence_error{port:"notes"}`（账本 + `diagnostics.error` + `onPersistenceError`）；
+      //   ③ 钩子自己抱错不能拖死循环：与其余观察者通道一样是 best-effort。⚠ 故意**不用**
+      //      `reportObserverError`：它的出口是 `console.error`，而替代物是宿主侧的**数据**
+      //      而不是诊断噪声，必须进持久化账本（口径由 #109 的 notes 端口同构而来）。
+      if (pendingFoldedFacts !== undefined && typeof onFoldSummary === "function") {
+        try {
+          await onFoldSummary(cloneState({ ...pendingFoldedFacts, round }));
+        } catch (foldSummaryError) {
+          await reportHostPersistenceFailure({
+            port: "notes",
+            operation: "onFoldSummary",
+            phase: "fold_summary_delivery",
+            error: foldSummaryError,
+          });
+        }
+      }
       const compactionStat = {
         compacted,
         foldedRounds,
