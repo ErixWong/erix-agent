@@ -44,25 +44,6 @@ export const FINAL_GUARD_EXTENDABLE_REASONS = new Set([
   "continuation_exhausted",
 ]);
 
-/**
- * issue #475：强制收尾里**保留 `hasFinalDraft()` 截断语义**的那三条 reason。
- *
- * 模块内私有，**不导出**（不进公共 API、不进 `FINAL_GUARD_*` 那一族）：它回答的是「这一路的停机是
- * 被预算/截断掐断的吗」，只有这一问需要「末轮正文非空也要再问一发」的截断语义；其余 reason 一律
- * 只看「手里有没有终稿正文」。为什么不复用 `TRUNCATED_TERMINATION_REASONS`：那个集合还含
- * `final_guard_unverified`，而它今天**从不**走到强制收尾（两个调用点只喂 `stop` 动作与
- * `max_rounds_cap`），复用会把一个未被要求的格顺手放进成本面。
- *
- * 为什么不导出去让测试直接钉：导出的口径由 `docs/` 与 `.d.ts` 声称值跟着涨，而本单要钉的是
- * **可观察行为**（哑局多一发 / 有正文零多发），不是又一个枚举 —— 见
- * `test/loop-forced-final-by-state-475.test.js`。
- */
-const FORCED_FINAL_TRUNCATED_REASONS = new Set([
-  "max_rounds_cap",
-  "stall",
-  "continuation_exhausted",
-]);
-
 export function makeTermination(reason, detail) {
   return {
     reason,
@@ -535,6 +516,20 @@ export function createTerminationManager(ctx) {
       clearTimeout(timeoutId);
     }
   };
+
+  // issue #475：强制收尾里**保留 `hasFinalDraft()` 截断语义**的那三条 reason（函数作用域内私有，**不导出**）。
+  // 它回答的是「这一路的停机是被预算/截断掐断的吗」，只有这一问需要「末轮正文非空也要再问一发」；
+  // 其余 reason 一律只看「手里有没有终稿正文」。**不复用** `TRUNCATED_TERMINATION_REASONS`：那个集合还含
+  // `final_guard_unverified`，而它今天从不走到强制收尾（两个调用点只喂 `stop` 动作与 `max_rounds_cap`）。
+  // **为什么开在函数里而不是模块顶层**：`docs-drift-check --self-test` 的三个变异体把靶子钉在
+  // `termination.js:111`（`terminationReasonForAction`）与 `:116`（`max_rounds_cap` 字面量）上，模块顶层插 19 行
+  // 会把这两个声明行推走 ⇒ 自测报「变异没落上」（按 #210 R2，变异没落上就算失败）。位置选在这里，
+  // 111 / 116 两个声明行**一字不动**，契约的符号锚点与自测变异体同时成立。
+  const FORCED_FINAL_TRUNCATED_REASONS = new Set([
+    "max_rounds_cap",
+    "stall",
+    "continuation_exhausted",
+  ]);
 
   const hasFinalDraft = () => (
     ctx.finalText.trim() !== ""
