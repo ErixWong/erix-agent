@@ -167,6 +167,7 @@ src/
     fold-summary-journal.js         折叠摘要事实账本：指纹、复用备忘、事实回读
     fold-statistical.js             统计折叠与导航记录
     fold-archive.js                 轮记录折叠归档的写侧边界：会话级去重与字节上限（issue #460）
+    resume-fold-trim.js             折叠水位线的读侧：按水位线裁续跑正文并回填已入账摘要（issue #462）
     provider-summarizer.js          用本 run provider 的 fold-llm 默认 summarizer
     strategy-resolution.js          context.strategy 内置策略名解析
     anchors.js                      机械锚点抽取（路径/SHA/issue/URL/错误行）
