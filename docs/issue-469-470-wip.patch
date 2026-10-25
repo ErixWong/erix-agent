@@ -1,18 +1,29 @@
+# issue #469 折叠摘要四条 —— 实现原型（存档，未合入）
+# 基座: 5363a58d (0.26.0 + #480 docs)。已在此基座验证: git apply --check OK; check:types 112(与 HEAD 持平, 净增 0); 新测试 5/5; test/loop-*+contract+compact 547/547。
+# 含 JSDoc 修法(类型字面量内不放 // 注释)、Error 交叉类型、pipeline stat 类型、chat request 的 signal/maxTokens。
+# 落地时还需: 把 summarizerTimeoutMs 开成 context 旋钮(进 ASSEMBLY_POLICY_OPTION_NAMES/RUN_TOOL_LOOP_OPTION_NAMES) + CHANGELOG 条目(见 docs/issue-469-470-fix-plan.md §9)。
+
 diff --git a/src/compact/fold-llm.js b/src/compact/fold-llm.js
-index 60cdcdba..95997c9c 100644
+index 60cdcdba..205717c7 100644
 --- a/src/compact/fold-llm.js
 +++ b/src/compact/fold-llm.js
-@@ -254,6 +254,9 @@ function enforceSummarySize(summary, maxSummaryTokens, onLayer) {
+@@ -251,9 +251,15 @@ function enforceSummarySize(summary, maxSummaryTokens, onLayer) {
+ /**
+  * Create an LLM-backed whole-round folding strategy.
+  *
++ * issue #469-②：`maxSummarizerInputTokens` 是交给 summarizer 的被折消息上限（token），
++ * 不传 ⇒ 不裁（旧行为）；超窗失败（网关 400）无论配不配都会**带更短的输入重试一次**再降级。
++ * 说明写在这里而不是类型字面量内部：JSDoc 的类型字面量里不能写 `//` 注释行，否则
++ * `TS1131` 会把整块类型打断（这条坑在本文件与 `provider-summarizer.js` 各踩过一次）。
++ *
   * @param {{
   *   summarizer: (input: {messages: object[], roundRange: {from:number, to:number}}) => Promise<string>|string,
   *   maxSummaryTokens?: number,
-+ *   // issue #469-②：交给 summarizer 的被折消息上限（token）。不传 ⇒ 不裁（旧行为）；
-+ *   // 超窗失败（网关 400）无论配不配都会**带更短的输入重试一次**再降级。
 + *   maxSummarizerInputTokens?: number,
   *   summaryRole?: "user"|"system",
   *   recoveryHint?: string,
   *   protectedMessage?: Function|string|string[],
-@@ -335,20 +338,23 @@ export function createFoldLlmStrategy({
+@@ -335,20 +341,23 @@ export function createFoldLlmStrategy({
          // 构造期参数错误（summarizer 非函数）在 createFoldLlmStrategy 里已 fail-loud，不经此路径。
          let summary;
          let degradeReason;
@@ -50,7 +61,7 @@ index 60cdcdba..95997c9c 100644
          const fallbackAnchors = summary === undefined && settings.anchors !== false
            ? extractAnchors(
              foldedPayload,
-@@ -384,12 +390,16 @@ export function createFoldLlmStrategy({
+@@ -384,12 +393,16 @@ export function createFoldLlmStrategy({
              settings.anchors,
              settings.onLayer,
            );
@@ -68,7 +79,7 @@ index 60cdcdba..95997c9c 100644
          };
          compactedHead = prependSummary(
            head,
-@@ -420,3 +430,116 @@ export function createFoldLlmStrategy({
+@@ -420,3 +433,116 @@ export function createFoldLlmStrategy({
      },
    };
  }
@@ -78,7 +89,7 @@ index 60cdcdba..95997c9c 100644
 + * 同一条文案**，所以宿主从记录上分不出「这次降级本可以自愈」还是「摘要器真的挂了」。
 + * 只分类不改文案（`degradeReason` 原文照旧保留，以免动既有断言）。
 + *
-+ * @param {unknown} error
++ * @param {*} error 可以是 Error / 带 `code` 的自定义错 / 字符串（降级路径上什么都会抛上来）
 + * @returns {"timeout"|"context_window_exceeded"|"error"}
 + */
 +export function classifyFoldDegradeKind(error) {
@@ -186,10 +197,33 @@ index 60cdcdba..95997c9c 100644
 +  }
 +}
 diff --git a/src/compact/pipeline.js b/src/compact/pipeline.js
-index 13c401ea..c805f233 100644
+index 13c401ea..6824ec6f 100644
 --- a/src/compact/pipeline.js
 +++ b/src/compact/pipeline.js
-@@ -170,6 +170,9 @@ export function createCompactionStat({
+@@ -152,7 +152,21 @@ export function observeCompactionLayer(
+  *   layers: Record<string, { triggered: number, tokensSaved: number }>,
+  *   protectedDowngraded?: number,
+  *   userTurnGuard?: string,
+- *   userTurnGuardChannel?: string
++ *   userTurnGuardChannel?: string,
++ *   strategyName?: string,
++ *   foldSummary?: {
++ *     source?: string,
++ *     degradeKind?: string,
++ *     degradeReason?: string,
++ *     inputTruncated?: boolean,
++ *     droppedMessages?: number,
++ *     finishReason?: string,
++ *     inputTokens?: number,
++ *     outputTokens?: number,
++ *     estimatedInputTokens?: number,
++ *     inputMessages?: number,
++ *     reused?: boolean,
++ *   }
+  * }}
+  */
+ export function createCompactionStat({
+@@ -170,6 +184,9 @@ export function createCompactionStat({
    // issue #464 A（additive）：本次折叠**实际执行**的策略名。调用方从策略实例取，
    // 因此写的是「真做了折叠的那个」（含引擎库层兜底），不是宿主配置项原文。
    strategyName,
@@ -199,7 +233,7 @@ index 13c401ea..c805f233 100644
  } = {}) {
    const stat = {
      compacted: compacted === true,
-@@ -197,6 +200,35 @@ export function createCompactionStat({
+@@ -197,6 +214,35 @@ export function createCompactionStat({
    if (typeof strategyName === "string" && strategyName !== "") {
      stat.strategyName = strategyName;
    }
@@ -235,7 +269,7 @@ index 13c401ea..c805f233 100644
    return stat;
  }
  
-@@ -221,6 +253,8 @@ export function normalizeCompactionStats(value, limit = COMPACTION_STATS_STATE_L
+@@ -221,6 +267,8 @@ export function normalizeCompactionStats(value, limit = COMPACTION_STATS_STATE_L
      // issue #464 A：`strategyName` 同样要过这道重建——runState / `state.json` 里那份是从上一份
      // 归一化副本再推导的，不在此列就会丢键，于是「事件里有、state 里没」与契约声称相反。
      strategyName: entry?.strategyName,
@@ -245,7 +279,7 @@ index 13c401ea..c805f233 100644
        const layerStats = entry?.layers?.[id];
        return [id, {
 diff --git a/src/compact/provider-summarizer.js b/src/compact/provider-summarizer.js
-index 2cf8de53..622fd4db 100644
+index 2cf8de53..65b15f53 100644
 --- a/src/compact/provider-summarizer.js
 +++ b/src/compact/provider-summarizer.js
 @@ -1,5 +1,6 @@
@@ -336,25 +370,35 @@ index 2cf8de53..622fd4db 100644
  /**
   * Default `fold-llm` summarizer backed by the run's own provider (issue #167 方案 C).
   *
-@@ -77,6 +134,17 @@ export function serializeFoldedMessages(messages, roundRange) {
+@@ -72,11 +129,26 @@ export function serializeFoldedMessages(messages, roundRange) {
+  * Usage accounting belongs to the caller-supplied `chat` (the engine merges it into the
+  * run ledger); `onUsage` is only the host-visible notification.
+  *
++ * issue #469 的四条边界（说明只能写在这里，**不能**写进下面那个类型字面量：JSDoc 的
++ * `@param {{…}}` 内部放 `//` 注释行会被当类型 token 解析（`TS1131`），整块 config 类型崩掉
++ * 并级联出一串假的 `Property 'x' does not exist`——这条坑踩过两次，别再犯）：
++ *   · `maxSummarizerInputTokens`：交给摘要器的那一份的**输入**上限（token）；不传 ⇒ 不裁（旧行为）。
++ *   · `summarizerTimeoutMs`：摘要专属超时（ms），**默认 30 000**（不传不是「无超时」：真机
++ *     61 960 ms 那一发就是旧「无超时」行为挂出来的）。**不复用 run 的 signal 做超时**，
++ *     否则一次摘要超时会连坐整轮 run。
++ *   · `signal`：父 signal（run/宿主）——只做转发，到时间只中断摘要这一发。
++ *   · `onMeta`：把**结果状态**带出去（finish_reason / token / 被裁条数）供入账；返回值仍是
++ *     string（`fold-llm.js` 对非 string 报错、宿主自带 summarizer 也是 string）。
++ *
+  * @param {{
+- *   chat: (request: { system: string, messages: object[] }) => Promise<object>|object,
++ *   chat: (request: { system: string, messages: object[], signal?: AbortSignal, maxTokens?: number }) => Promise<object>|object,
   *   onUsage?: (usage: object) => void,
   *   system?: string,
   *   promptGuide?: string,
-+ *   // issue #469-②：交给摘要器的那一份的**输入**上限（token）；不传 ⇒ 不裁（旧行为）。
 + *   maxSummarizerInputTokens?: number,
-+ *   // issue #469-①：摘要专属超时（ms），**默认 30 000**（不传不是「无超时」：真机 61 960 ms
-+ *   // 那一发就是旧「无超时」行为挂出来的）。**不复用 run 的 signal 做超时**，
-+ *   // 否则一次摘要超时会连坐整轮 run。
 + *   summarizerTimeoutMs?: number,
-+ *   // 父 signal（run/宿主）：只做转发，到时间只中断摘要这一发。
 + *   signal?: AbortSignal,
-+ *   // issue #469-③/④：把**结果状态**带出去（finish_reason / token / 被裁条数），供入账。
-+ *   // 返回值仍是 string（`fold-llm.js` 对非 string 招错、宿主自带 summarizer 也是 string）。
 + *   onMeta?: (meta: object) => void,
   * }} config
   * @returns {(input: { messages?: object[], roundRange?: object, promptGuide?: string }) => Promise<string>}
   */
-@@ -85,20 +153,56 @@ export function createProviderSummarizer({
+@@ -85,20 +157,56 @@ export function createProviderSummarizer({
    onUsage,
    system = DEFAULT_SUMMARY_SYSTEM,
    promptGuide = SUMMARIZER_PROMPT_GUIDE,
@@ -416,7 +460,7 @@ index 2cf8de53..622fd4db 100644
      const usage = response?.usage;
      if (usage !== undefined && typeof onUsage === "function") {
        try {
-@@ -107,6 +211,30 @@ export function createProviderSummarizer({
+@@ -107,6 +215,30 @@ export function createProviderSummarizer({
          // Observer failures must not affect compaction.
        }
      }
@@ -447,7 +491,7 @@ index 2cf8de53..622fd4db 100644
      const summary = textOfContent(response?.content).trim();
      if (summary === "") {
        throw new TypeError("default fold-llm summarizer returned no text");
-@@ -114,3 +242,17 @@ export function createProviderSummarizer({
+@@ -114,3 +246,21 @@ export function createProviderSummarizer({
      return summary;
    };
  }
@@ -456,7 +500,11 @@ index 2cf8de53..622fd4db 100644
 +  return new Promise((_, reject) => {
 +    const timer = setTimeout(() => {
 +      controller?.abort();
-+      const error = new Error(`fold summarizer timed out after ${timeoutMs}ms`);
++      // `code` / `droppedMessages` 不是 Error 的声明字段——显式标注这个交叉类型，否则
++      // `--checkJs` 下挂字段就是 TS2339（同一个坑在 #469 原型上踩过）。
++      const error = /** @type {Error & { code?: string, droppedMessages?: number }} */ (
++        new Error(`fold summarizer timed out after ${timeoutMs}ms`)
++      );
 +      error.code = "summarizer_timeout";
 +      // 被裁过多少也带上：重试时 fold-llm 需要知道「已经裁到哪里」。
 +      error.droppedMessages = dropped > 0 ? dropped : 0;

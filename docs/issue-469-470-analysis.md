@@ -32,7 +32,7 @@
 | ① 零件齐备 | `formatFoldSummary` / `summarizeFoldedPayload` / `extractAnchors`（带夹取） | `src/compact/fold-statistical.js:284`、`:450`；`src/compact/anchors.js:23 ANCHOR_KINDS=["paths","shas","issues","urls","errors"]`（带 `maxPerKind`/`maxChars`） | ✅ 成立 |
 | ② 产物只进消息流 | 统计策略只把摘要 prepend 进 head | `fold-statistical.js:526-545` + `prependSummary`；`sliding-window.js:71-85` 结果里**根本没有 summary 字段**，只有 `navigationRecord` | ✅ 成立 |
 | ③ `summarizeFoldedPayload` 折叠路径上唯一调用点在 fold-llm 降级分支 | 全仓调用点：`fold-llm.js:360`（降级分支）+ 定义处 | ✅ 字面成立 | ⚠️ **结论要改**（见下） |
-| ④ 账本那格与下游 | `record.summary` 唯一来源是本轮摘要；`resume_manager` 读 `record.summary ?? "missing"` | `orchestrator.js:4255 summary: roundSummary`；`src/loop/resume-manager.js:231`；`:533` 种子记录硬编码 `summary:"missing"`；`isEngineFactRow` 守卫（`:229-231`）只挡带 `foldedSummary`/`ttlDegradations` 的行 | ✅ 成立 |
+| ④ 账本那格与下游 | `record.summary` 唯一来源是本轮摘要（**写侧 + 投影那格仍成立**）；读侧的 `"missing"` **已由 #477 补平**，不再是本判据的一部分 | `orchestrator.js:4382 summary: roundSummary`；`src/loop/resume-manager.js:235` 现在是 `record.summary === "missing" ? undefined : record.summary`（#477 判据②，提交 `5ad2d78e`）；`:537` 种子记录仍硬编码 `summary:"missing"`；`isEngineFactRow` 守卫（`:229-230`）只挡带 `foldedSummary`/`ttlDegradations` 的行 | ⚠️ **半成立**（写侧成立 / 读侧已补平——本行原先写的是 `record.summary ?? "missing"` ⇒ 已过期） |
 
 **③ 的重要修正（会直接改变 #470 的实现范围）**：机械替代物**并非完全没落账**。`orchestrator.js:3241-3273` 的 #326 wo-C 缝是按**对象身份**取「本次折叠造出来、确实进了请求的那条消息」的正文写 `foldedSummary` 事实行：
 
