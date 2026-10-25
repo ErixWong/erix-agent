@@ -291,7 +291,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
 
 /**
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"run_outcome"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"run_outcome"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -299,7 +299,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  * @property {object} [toolUse] Completed canonical tool_use block.
  * @property {object} [toolResult] Canonical tool_result block.
  * @property {string} [runId] Run identity on host-facing diagnostics.
- * @property {string} [detail] One-shot capability diagnostic text (persistence_capability_degraded, model_metadata_missing).
+ * @property {string} [detail] One-shot capability diagnostic text (persistence_capability_degraded, model_metadata_missing, compaction_strategy_fallback).
  * @property {string} [toolUseId] Tool invocation requiring host replay decision.
  * @property {string} [toolName] Tool name requiring host replay decision.
  * @property {boolean} [requiresHostDecision] Whether the host must decide whether to retry.
@@ -3021,6 +3021,9 @@ export async function runToolLoop(options) {
   // issue #460：会话级归档去重账本（同一份正文只往轮记录里写一次）。
   // 它必须活在 run 作用域（`compactBeforeRound` 每次折叠都调），所以跟折叠入口同层声明。
   const foldArchiveLedger = createFoldArchiveLedger({ store, runId });
+  // issue #464 A：库层兜底诊断事件的去重标记（每 run 恰好一条，口径同 #182 的
+  // `modelMetadataNoticeSent`）。声明在 run 作用域、折叠入口之前，故跨该 run 内所有折叠调用共享。
+  let compactionFallbackNoticeSent = false;
   const compactBeforeRound = async (round = runLoopState.rounds + 1) => {
     normalizeMessages(messages);
     // 每次折叠前清空「引擎自产摘要现场」：只有本次 compact 真的调了摘要器才会重新赋值（#326 wo-C）。
@@ -3065,6 +3068,25 @@ export async function runToolLoop(options) {
       const strategy = strategyRequestsCompaction
         ? configuredStrategy
         : createSlidingWindowStrategy();
+      // issue #464 A：兜底路径此前**零可观测痕迹**——`context.strategy` 未配置而预算又兜底触发时，
+      // 实际执行的是引擎库层的 `sliding-window`（整轮 tail keep / head drop，无摘要、无锚点），
+      // 而宿主从 `compaction` 事件里根本看不出来。形状对齐 #182 `model_metadata_missing`：
+      // 每 run 恰好一条，detail 首句是固定原文（宿主可直接断言）。
+      if (!configuredStrategy && !compactionFallbackNoticeSent) {
+        compactionFallbackNoticeSent = true;
+        emitEvent({
+          type: "compaction_strategy_fallback",
+          // runId 只在宿主传了时才写键（与 #182 `model_metadata_missing` 同口径：引擎不自编标识）。
+          ...(runId === undefined ? {} : { runId }),
+          round,
+          detail: 'engine compaction fallback in effect: context.strategy is not configured, '
+            + 'the library default "sliding-window" strategy drops whole head rounds without '
+            + 'summary or anchors'
+            + (budgetTokens === undefined
+              ? ""
+              : `; budgetTokens=${budgetTokens}, estimatedTokens=${estimatedTokens}`),
+        });
+      }
       // messages 自 estimatedTokens 起只被读取（shouldCompact 为纯判定），直接复用（#172 A2）
       const tokensBefore = estimatedTokens;
       const layers = createEmptyCompactionLayers();
@@ -3356,6 +3378,8 @@ export async function runToolLoop(options) {
       recordCompactionStat({
         ...compactionStat,
         protectedDowngraded,
+        // issue #464 A：写实例上的名字（含库层兜底的 `"sliding-window"`），不是配置项原文。
+        strategyName: typeof strategy?.name === "string" ? strategy.name : undefined,
         ...(userTurnGuard === undefined ? {} : { userTurnGuard, userTurnGuardChannel }),
       }, round);
     }
