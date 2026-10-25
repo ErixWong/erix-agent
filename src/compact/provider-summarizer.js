@@ -51,11 +51,17 @@ function roundRangeLabel(roundRange) {
 /**
  * Deterministically serialize the folded payload for a summarizing completion.
  *
- * issue #469-②：输入尺寸**不再**默认「由已在上下文里的量兜住」——真机 #469 就是这条假设塌的：
- * 一次折叠把 16 584 token 整坨发给摘要器（引擎账本只有 16 518），网关回
- * `400 message = input length '16584' is longer than configured context length '16384'`，
- * 于是整次折叠摘要**静默**降级。现在可选传 `options.maxTokens`：超限时从**最旧**一侧整条丢弃、
- * 保留尾部（最近性优先），并在正文开头注一行「前 N 条已省略」，让被裁这件事本身可读。
+ * issue #469-②：
+ * 输入尺寸**不再**默认「由已在上下文里的量兜住」——真机 #469 
+ * 就是这条假设塌的：
+ * 一次折叠把 16 584 token 整坨发给摘要器（引擎账本只有 16 518），
+ * 网关回
+ * `400 message = input length '16584' is longer than configured context length 
+ * '16384'`，
+ * 于是整次折叠摘要**静默**降级。现在可选传 `options.maxTokens`：
+ * 超限时从**最旧**一侧整条丢弃、
+ * 保留尾部（最近性优先），并在正文开头注一行「前 N 
+ * 条已省略」，让被裁这件事本身可读。
  * 不传（默认）⇒ 逐字行为与今天一致。
  *
  * @param {object[]} messages
@@ -67,8 +73,10 @@ export function serializeFoldedMessages(messages, roundRange, options = {}) {
 }
 
 /**
- * Same serialization, plus how much had to be dropped（#469-② 的入账口径：被裁过要留痕，
- * 不能既裁了又不告诉任何人——那正是「降级静默」的同一种失败）。
+ * Same serialization, plus how much had to be dropped（#469-② 的入账口径：
+ * 被裁过要留痕，
+ * 不能既裁了又不告诉任何人——那正是「降级静默」的同一种失败
+ * ）。
  *
  * @returns {{ text: string, dropped: number, total: number, bounded: boolean }}
  */
@@ -101,7 +109,8 @@ export function serializeFoldedMessagesWithMeta(messages, roundRange, options = 
   };
 }
 
-// 省略注本身也占位：估工时先给它留出固定余量，避免「裁到刚好又因为注超长」的来回。
+// 省略注本身也占位：估工时先给它留出固定余量，
+// 避免「裁到刚好又因为注超长」的来回。
 const TRIM_NOTE_RESERVE_TOKENS = 48;
 
 function trimOldestEntries(entries, header, maxTokens) {
@@ -113,9 +122,12 @@ function trimOldestEntries(entries, header, maxTokens) {
   return { kept: entries.slice(start), dropped: start };
 }
 
-// issue #469-①：摘要这一发的默认限时。取 30 s 的依据：同形状的 judge 拦截调用是 15 s，
-// 而摘要的输入比 judge 大一两个量级（真机正常值 11 987 ms）；61 960 ms 那一发在真实数据里
-// 是离群值，30 s 既不误杀正常摘要，也不会让离群值拖死整轮。传 `Infinity`/0/负数 ⇒ 不计时。
+// issue #469-①：摘要这一发的默认限时。取 30 s 的依据：同形状的 
+// judge 拦截调用是 15 s，
+// 而摘要的输入比 judge 大一两个量级（真机正常值 11 987 ms）；61 960 
+// ms 那一发在真实数据里
+// 是离群值，30 s 既不误杀正常摘要，也不会让离群值拖死整轮。传 
+// `Infinity`/0/负数 ⇒ 不计时。
 const DEFAULT_FOLD_SUMMARIZER_TIMEOUT_MS = 30_000;
 
 /**
@@ -129,19 +141,30 @@ const DEFAULT_FOLD_SUMMARIZER_TIMEOUT_MS = 30_000;
  * Usage accounting belongs to the caller-supplied `chat` (the engine merges it into the
  * run ledger); `onUsage` is only the host-visible notification.
  *
- * issue #469 的四条边界（说明只能写在这里，**不能**写进下面那个类型字面量：JSDoc 的
- * `@param {{…}}` 内部放 `//` 注释行会被当类型 token 解析（`TS1131`），整块 config 类型崩掉
- * 并级联出一串假的 `Property 'x' does not exist`——这条坑踩过两次，别再犯）：
- *   · `maxSummarizerInputTokens`：交给摘要器的那一份的**输入**上限（token）；不传 ⇒ 不裁（旧行为）。
- *   · `summarizerTimeoutMs`：摘要专属超时（ms），**默认 30 000**（不传不是「无超时」：真机
- *     61 960 ms 那一发就是旧「无超时」行为挂出来的）。**不复用 run 的 signal 做超时**，
+ * issue #469 的四条边界（说明只能写在这里，
+ * **不能**写进下面那个类型字面量：JSDoc 的
+ * `@param {{…}}` 内部放 `//` 注释行会被当类型 token 解析（`TS1131`），
+ * 整块 config 类型崩掉
+ * 并级联出一串假的 `Property 'x' does not exist`——这条坑踩过两次，
+ * 别再犯）：
+ *   · `maxSummarizerInputTokens`：
+ * 交给摘要器的那一份的**输入**上限（token）；不传 ⇒ 
+ * 不裁（旧行为）。
+ *   · `summarizerTimeoutMs`：摘要专属超时（ms），**默认 30 
+ * 000**（不传不是「无超时」：真机
+ *     61 960 ms 那一发就是旧「无超时」行为挂出来的）。**不复用 run 
+ * 的 signal 做超时**，
  *     否则一次摘要超时会连坐整轮 run。
- *   · `signal`：父 signal（run/宿主）——只做转发，到时间只中断摘要这一发。
- *   · `onMeta`：把**结果状态**带出去（finish_reason / token / 被裁条数）供入账；返回值仍是
- *     string（`fold-llm.js` 对非 string 报错、宿主自带 summarizer 也是 string）。
+ *   · `signal`：父 signal（run/宿主）——只做转发，
+ * 到时间只中断摘要这一发。
+ *   · `onMeta`：把**结果状态**带出去（finish_reason / token / 被裁条数）
+ * 供入账；返回值仍是
+ *     string（`fold-llm.js` 对非 string 报错、宿主自带 summarizer 也是 
+ * string）。
  *
  * @param {{
- *   chat: (request: { system: string, messages: object[], signal?: AbortSignal, maxTokens?: number }) => Promise<object>|object,
+ *   chat: (request: { system: string, messages: object[], signal?: AbortSignal, 
+ * maxTokens?: number }) => Promise<object>|object,
  *   onUsage?: (usage: object) => void,
  *   system?: string,
  *   promptGuide?: string,
@@ -158,8 +181,10 @@ export function createProviderSummarizer({
   system = DEFAULT_SUMMARY_SYSTEM,
   promptGuide = SUMMARIZER_PROMPT_GUIDE,
   maxSummarizerInputTokens,
-  // issue #469-①：默认 **限时**（旧行为是「无超时」，真机 61 960 ms 那一发就在旧行为里挂着）。
-  // 要关掉：传 `Infinity`（非有限 ⇒ 不计时的分支）；传 0 / 负数同样退回不计时。
+  // issue #469-①：默认 **限时**（旧行为是「无超时」，真机 61 960 ms 
+  // 那一发就在旧行为里挂着）。
+  // 要关掉：传 `Infinity`（非有限 ⇒ 不计时的分支）；传 0 / 
+  // 负数同样退回不计时。
   summarizerTimeoutMs = DEFAULT_FOLD_SUMMARIZER_TIMEOUT_MS,
   signal,
   onMeta,
@@ -180,7 +205,8 @@ export function createProviderSummarizer({
     const timeoutMs = Number.isFinite(summarizerTimeoutMs) && summarizerTimeoutMs > 0
       ? summarizerTimeoutMs
       : undefined;
-    // 超时只住这一发请求：子 controller + 父 signal 转发 + Promise.race，与 judge 拦截调用
+    // 超时只住这一发请求：子 controller + 父 signal 转发 + Promise.race，
+    // 与 judge 拦截调用
     // （orchestrator 里的同形模板）一致；run 的 signal 不参与计时。
     let controller;
     let timer;
@@ -217,13 +243,18 @@ export function createProviderSummarizer({
     }
     if (typeof onMeta === "function") {
       try {
-        // 今天 fold-llm **从不看**这次调用的结果状态：被 `max_tokens` 截成半截（finish_reason
-        // ="length"）也当完整摘要吞下去。这里只负责**带出**，不在此处改变降级决定。
-        // 位置在「空正文抛错」之前：空正文恰恰是最需要看到 finish_reason 的那一种。
+        // 今天 fold-llm **从不看**这次调用的结果状态：被 `max_tokens` 
+        // 截成半截（finish_reason
+        // ="length"）也当完整摘要吞下去。这里只负责**带出**，
+        // 不在此处改变降级决定。
+        // 位置在「空正文抛错」之前：空正文恰恰是最需要看到 
+        // finish_reason 的那一种。
         onMeta({
           finishReason: response?.finish_reason ?? response?.stop_reason ?? response?.stopReason,
-          // 注意括号：`a ?? b === undefined` 会被解析成 `a ?? (b === undefined)`，
-          // 于是三元的判据变成「有 token ⇒ 返回 {}」——写反过一次，token 静默丢掉。
+          // 注意括号：`a ?? b === undefined` 会被解析成 `a ?? (b === undefined)
+          // `，
+          // 于是三元的判据变成「有 token ⇒ 返回 
+          // {}」——写反过一次，token 静默丢掉。
           ...((usage?.input_tokens ?? usage?.inputTokens) === undefined
             ? {}
             : { inputTokens: usage?.input_tokens ?? usage?.inputTokens }),
@@ -251,13 +282,16 @@ function timeoutRejection(timeoutMs, controller, dropped) {
   return new Promise((_, reject) => {
     const timer = setTimeout(() => {
       controller?.abort();
-      // `code` / `droppedMessages` 不是 Error 的声明字段——显式标注这个交叉类型，否则
-      // `--checkJs` 下挂字段就是 TS2339（同一个坑在 #469 原型上踩过）。
+      // `code` / `droppedMessages` 不是 Error 
+      // 的声明字段——显式标注这个交叉类型，否则
+      // `--checkJs` 下挂字段就是 TS2339（同一个坑在 #469 原型上踩过）
+      // 。
       const error = /** @type {Error & { code?: string, droppedMessages?: number }} */ (
         new Error(`fold summarizer timed out after ${timeoutMs}ms`)
       );
       error.code = "summarizer_timeout";
-      // 被裁过多少也带上：重试时 fold-llm 需要知道「已经裁到哪里」。
+      // 被裁过多少也带上：重试时 fold-llm 
+      // 需要知道「已经裁到哪里」。
       error.droppedMessages = dropped > 0 ? dropped : 0;
       reject(error);
     }, timeoutMs);

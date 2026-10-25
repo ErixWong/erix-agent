@@ -251,10 +251,14 @@ function enforceSummarySize(summary, maxSummaryTokens, onLayer) {
 /**
  * Create an LLM-backed whole-round folding strategy.
  *
- * issue #469-②：`maxSummarizerInputTokens` 是交给 summarizer 的被折消息上限（token），
- * 不传 ⇒ 不裁（旧行为）；超窗失败（网关 400）无论配不配都会**带更短的输入重试一次**再降级。
- * 说明写在这里而不是类型字面量内部：JSDoc 的类型字面量里不能写 `//` 注释行，否则
- * `TS1131` 会把整块类型打断（这条坑在本文件与 `provider-summarizer.js` 各踩过一次）。
+ * issue #469-②：`maxSummarizerInputTokens` 是交给 summarizer 
+ * 的被折消息上限（token），
+ * 不传 ⇒ 不裁（旧行为）；超窗失败（网关 400）
+ * 无论配不配都会**带更短的输入重试一次**再降级。
+ * 说明写在这里而不是类型字面量内部：JSDoc 
+ * 的类型字面量里不能写 `//` 注释行，否则
+ * `TS1131` 会把整块类型打断（这条坑在本文件与 `provider-summarizer.js` 
+ * 各踩过一次）。
  *
  * @param {{
  *   summarizer: (input: {messages: object[], roundRange: {from:number, to:number}}) => Promise<string>|string,
@@ -341,8 +345,10 @@ export function createFoldLlmStrategy({
         // 构造期参数错误（summarizer 非函数）在 createFoldLlmStrategy 里已 fail-loud，不经此路径。
         let summary;
         let degradeReason;
-        // issue #469-①②③：失败不再是「一条 `slice(0,120)` 字符串」。分类后：可自愈的先重试，
-        // 不可自愈的把**原因类型**留到账上（timeout / context_window_exceeded / error）。
+        // issue #469-①②③：失败不再是「一条 `slice(0,120)` 字符串」。
+        // 分类后：可自愈的先重试，
+        // 不可自愈的把**原因类型**留到账上（timeout / 
+        // context_window_exceeded / error）。
         let degradeKind;
         let droppedInputMessages = 0;
         const summarizerOutcome = await callSummarizerWithBound({
@@ -393,7 +399,8 @@ export function createFoldLlmStrategy({
             settings.anchors,
             settings.onLayer,
           );
-        // #470：`source` 说清「交给模型的那份是 LLM 摘要还是机械降级」；降级时 `text` 就是
+        // #470：`source` 说清「交给模型的那份是 LLM 
+        // 摘要还是机械降级」；降级时 `text` 就是
         // 那份机械文本（上面已经算过，不重负）；LLM 成功时不重造摘要，由引擎投影实际喂出去那份。
         foldSummary = {
           source: summary === undefined ? "statistical" : "llm",
@@ -435,11 +442,16 @@ export function createFoldLlmStrategy({
 }
 
 /**
- * issue #469-①：降级原因分类。今天超时（无任何阀门）、超窗（网关 400）、普通报错**三堆塌成
- * 同一条文案**，所以宿主从记录上分不出「这次降级本可以自愈」还是「摘要器真的挂了」。
- * 只分类不改文案（`degradeReason` 原文照旧保留，以免动既有断言）。
+ * issue #469-①：降级原因分类。今天超时（无任何阀门）、
+ * 超窗（网关 400）、普通报错**三堆塌成
+ * 同一条文案**，
+ * 所以宿主从记录上分不出「这次降级本可以自愈」还是「摘要器真
+ * 的挂了」。
+ * 只分类不改文案（`degradeReason` 原文照旧保留，以免动既有断言）
+ * 。
  *
- * @param {*} error 可以是 Error / 带 `code` 的自定义错 / 字符串（降级路径上什么都会抛上来）
+ * @param {*} error 可以是 Error / 带 `code` 的自定义错 / 
+ * 字符串（降级路径上什么都会抛上来）
  * @returns {"timeout"|"context_window_exceeded"|"error"}
  */
 export function classifyFoldDegradeKind(error) {
@@ -462,7 +474,8 @@ function normalizedInputBound(value) {
 }
 
 /**
- * 从**最旧**一侧整条丢弃、保留尾部（最近性），并留一条省略注。
+ * 从**最旧**一侧整条丢弃、保留尾部（最近性），
+ * 并留一条省略注。
  * 至少留最后一条：全丢掉就等于「折了一个什么都没有的折叠」。
  */
 function trimFoldedPayload(payload, maxTokens) {
@@ -486,7 +499,8 @@ function trimFoldedPayload(payload, maxTokens) {
   return { messages: [note, ...list.slice(start)], dropped: start };
 }
 
-/** 重试用的上限：配了就配的一半，没配就当前输入的一半；剩一条以下无从再减 ⇒ 不重试。 */
+/** * 重试用的上限：配了就配的一半，没配就当前输入的一半；
+/** 剩一条以下无从再减 ⇒ 不重试。 */
 function retryBoundFor(configuredBound, messages) {
   if (!Array.isArray(messages) || messages.length <= 1) return undefined;
   const current = configuredBound ?? estimateMessageTokens(messages);
@@ -496,7 +510,8 @@ function retryBoundFor(configuredBound, messages) {
 
 /**
  * issue #469-②：一次摘要调用加上「输入有界 + 超窗自愈重试」。
- * 失败时不抛（沿用 #33 D 的降级语义），而是把分类后的原因带回去。
+ * 失败时不抛（沿用 #33 D 的降级语义），
+ * 而是把分类后的原因带回去。
  */
 async function callSummarizerWithBound({
   summarizer,
@@ -536,7 +551,8 @@ async function callSummarizerWithBound({
       }
       return { summary: retrySummary, droppedMessages: first.dropped + retry.dropped, retried: true };
     } catch (retryError) {
-      // 重试又失败：若仍是超窗，原因仍记超窗（否则会被后面的普通错误掩盖）。
+      // 重试又失败：若仍是超窗，
+      // 原因仍记超窗（否则会被后面的普通错误掩盖）。
       const kind = classifyFoldDegradeKind(retryError);
       return {
         degradeKind: kind === "error" ? "context_window_exceeded" : kind,
