@@ -136,3 +136,45 @@ degradeKind = err?.code === "summarizer_timeout" ? "timeout"
 1. 新键名：`foldedFacts`（推荐）还是直接填 `summary`（后者是行为变更，需宿主同步）。
 2. `maxSummaryTokens` 默认 800 → 1600 是否接受（每次折叠多花约一倍输出 token；真机数据支持这个量级）。
 3. `"missing"` 退役放本次 minor，还是等 erix-station 的 `hasSummary` 一起收口（PR-2）。
+
+## 8 阶段账（#469 落地实况，2026-10-26）
+
+**代码落点**（与本文 §2/§3/§4 的对照，含**实况与计划的偏差**）：
+
+| 判据 | 落点 | 实况 |
+| --- | --- | --- |
+| ① 限时 | `src/compact/provider-summarizer.js` | `summarizerTimeoutMs` **默认 30 000**（`DEFAULT_FOLD_SUMMARIZER_TIMEOUT_MS`）；自建子 controller + 父 signal 只转发 ⇒ 超时**不连坐 run**；错误 `code="summarizer_timeout"` 带已裁条数。**偏差**：计划里的名字 `context.summarizerTimeoutMs` **没开成 context 旋钮**（要进装配期白名单 `ASSEMBLY_POLICY_OPTION_NAMES`/`RUN_TOOL_LOOP_OPTION_NAMES`，本轮没做）⇒ 现在只在 `createProviderSummarizer` 层面默认生效，宿主想改值得自己构造 summarizer |
+| ② 输入有界 | `provider-summarizer.js` + `src/compact/fold-llm.js` | `serializeFoldedMessages(messages, roundRange, { maxTokens })` 从**最旧**侧整条丢弃 + 省略注；新 `serializeFoldedMessagesWithMeta` 返回 `{text, dropped, total, bounded}`。上限由 `orchestrator` 从 `budgetTokens` **同源**推出（不是宿主旋钮）。新增 `classifyFoldDegradeKind`（`timeout` / `context_window_exceeded` / `error`）+ **一发更短的重试**（配了取一半、没配取当前输入一半，下限 256 token） |
+| ③ 结果状态 | `provider-summarizer.js` + `fold-llm.js` | `onMeta` 带出 `finishReason`/`inputTokens`/`outputTokens`/`estimatedInputTokens`；`finishReason==="length"` && `source==="llm"` ⇒ `warn_once` 级 `fold_summary_truncated` |
+| ④ 原因不隐身 | `src/loop/orchestrator.js` + `src/compact/pipeline.js` + `src/compact/fold-summary-journal.js` | `foldSummaryMeta`（run 作用域）⇒ `compactionStats[].foldSummary`（**无事发生 ⇒ 无键**）；journal `foldSummaryObserved` meta 加诊断键（**一次折叠一条**，无 meta ⇒ 不写 ⇒ 旧 journal 逐字不变）；并进 `notesPort.foldSummaryObserved` 的 `detail`（只增不改） |
+
+**测试**：`test/compact/fold-llm-degrade-469.test.js` 5 格（零真实 LLM）。相邻回归 `test/loop-*.test.js` + `test/contract/*.test.js` + `test/compact/*.test.js` **547/547 绿**；`scripts/docs-drift-check.mjs` OK。
+
+**新测试抓到的一处实现真 bug**：`...(usage?.a ?? usage?.b === undefined ? {} : {…})` —— `===` 比 `??` 紧，解析成 `a ?? (b === undefined)`，判据恒真 ⇒ **token 从未进过 meta**。补括号修。教训：`?? ` 与比较运算符混用必须加括号，别相信「读起来像什么」。
+
+**踩过的第二坑**：超窗重试的断言拿「消息条数」当「输入变小」——裁掉整条时开头会多一条省略注**占住一个位置**，条数可以不变。要比就比序列化后的字符数。
+
+**本次没做**：预算同源的另一半（`summaryMaxTokens` 默认 800 与「5 节必填·宁长勿短」合同的存量矛盾，`SUMMARY_TOKEN_BUDGET_CONFLICT` 注释已标，默认值不动）；`foldThinkingEnabled` 仍默认 `false`（行为变更另拍）；`compactionStats.foldSummary` 进宿主契约中英（待 station C 片消费同字段时一并写）；`summarizerTimeoutMs` 开成 context 旋钮。
+
+**CHANGELOG 未落（上一轮的账写错了，现更正）**：`CHANGELOG.md` 是 `root:root` `644` ⇒ 本 worker **不可写**（`edit` 返回 `EACCES`，原子失败 ⇒ 一个字节都没落盘）。上一轮本节写的「条目正文已写在本节上方一次提交尝试里」是**假账**：那次编辑根本没写入，正文当时只存在于对话里。真正的条目正文现在落在下方 **§9**，需由有写权限的一侧原样搬进 `## [Unreleased]` 下的 `### Fixed`。
+
+**版本口径（别再搞错一次）**：`0.26.0` **已发布**（HEAD `aef25b0d` 就是 release commit，`package.json` = `0.26.0`，CHANGELOG 里 `## [0.26.0] - 2026-10-26` 已封段）。#469 是**发布之后**才完成的改动（至今只在 `git diff` 里）⇒ 条目只进 `[Unreleased]`，**不塞进 0.26.0 已发布段**，也**不** bump `package.json` / `src/version.js` / `docs/contract.md` 的版本三件套（发版是独立的 `chore(release)` 流程，连带中英升级指南一起搬），README / 升级指南里那些 `onFoldSummary` 条目属 0.26.0 那一刀（#477 已做完），本轮**不再动**。
+
+## 9 待搬进 CHANGELOG `## [Unreleased] / ### Fixed` 的条目正文
+
+- **折叠摘要调用的四条缺口（issue #469，全部零真实 LLM 可测）：摘要这一发现有默认限时、输入可上界、超窗会自愈、失败原因不再只活在测试里。** 现场（erix-station 会话 `erix-9f6e2c`，0.25.0，round 109）：`fold-llm` 默认关思考（`foldThinkingEnabled: false`，引擎自配的 `thinking.effort="high"` 不作用于摘要那一发），单次摘要 **61 960 ms**（同会话正常折叠摘要 11 987 ms），网关回 `400 message = input length '16584' is longer than configured context length '16384'`（引擎自己的账本是 16 518）⇒ 三次折叠**全降级**成机械摘要，而账上只有一个 `layers.enforceSize`：**成本与原因双重隐身**。四层修法：① **限时**：`createProviderSummarizer` 新增 `summarizerTimeoutMs`，**默认 30 000**（旧行为是「无超时」，61 960 ms 那一发就是它挂出来的；取 30 s 的依据是同形状的 judge 拦截调用 15 s 而摘要输入大两个量级），超时只走**自建的子 controller**（父 signal 只转发 ⇒ **一次摘要超时不连坐整轮 run**）、错误带 `code: "summarizer_timeout"`；关掉计时传 `Infinity`/0/负数。② **输入有界**：`serializeFoldedMessages(messages, roundRange, { maxTokens })`（新 `serializeFoldedMessagesWithMeta` 返回 `{text, dropped, total, bounded}`）从**最旧**侧整条丢弃 + 省略注；上限由 `orchestrator` 从 `budgetTokens` **同源**推出，不传 ⇒ 逐字旧行为；新增 `classifyFoldDegradeKind`（`timeout`/`context_window_exceeded`/`error`）+ **一发更短的重试**（配了取一半、没配取当前输入一半，下限 256 token，只一发）。③ **看结果状态**：`onMeta` 带出 `finishReason`/`inputTokens`/`outputTokens`/`estimatedInputTokens`，`finishReason === "length"` 且摘要来自 LLM ⇒ 一条 `warn_once` 级 `fold_summary_truncated`（被 `max_tokens` 截成半截从「静默的有损折叠」变成可告警事件）。④ **原因不隐身**：`foldSummaryMeta`（run 作用域）⇒ `compactionStats[].foldSummary`（**无事发生 ⇒ 无键**，与 `strategyName` 同口径）；`fold-summary-journal` 的 `foldSummaryObserved` meta 同口径加 `degradeKind`/`degradeReason`/`inputTruncated`/`droppedMessages`/`finishReason`/`inputTokens`/`outputTokens`/`reused`（**一次折叠一条**，无 meta ⇒ 不写 ⇒ 旧 journal 逐字不变）；并进 `notesPort.foldSummaryObserved` 的 `detail`（只增不改）。踩到的真 bug 由新测试拓出：`...(usage?.a ?? usage?.b === undefined ? {} : {…})` 因 `===` 比 `??` 紧 ⇒ 解析成 `a ?? (b === undefined)` ⇒ 判据恒真 ⇒ **token 从未进过 meta**。第二坑：超窗重试的断言拿「消息条数」当「输入变小」——裁一条时省略注**占住一个位置** ⇒ 条数可以不变，要比就比序列化后的字符数。新增 `test/compact/fold-llm-degrade-469.test.js` 5 格；相邻回归 `test/loop-*` + `test/contract/*` + `test/compact/*` 547/547 绿；`docs-drift-check` OK。**本次没做**：预算同源的另一半（`summaryMaxTokens` 默认 800 与「5 节必填·宁长勿短」的存量矛盾，`SUMMARY_TOKEN_BUDGET_CONFLICT` 注释已标，默认值不动）、`foldThinkingEnabled` 仍默认 `false`、`compactionStats.foldSummary` 进宿主契约中英（待 station C 片消费同字段时一并写）、把 `summarizerTimeoutMs` 开成 `context` 旋钮（需进装配期白名单，本轮只在 `createProviderSummarizer` 层面默认生效）。
+
+## 10 收口决定（2026-10-26）：本轮交付**分析**，实现收回成原型
+
+**为什么收回**：#469/#470 这一刀的任务是**分析**（判据、落点、口径、边界），不是把四层修法一次做完。实现是越界延伸，并且当场制造了新的债：`check:types` 从 **112**（比基线 116 还少 4）被我推到 **126**（+14）。修那 14 个又只是第二层越界。**决定：`src/` 已回退到 HEAD（`aef25b0d` = 0.26.0 release commit），实现原型整份存档为 `docs/issue-469-470-wip.patch`（691 行，`git apply --check` OK），未合入。**
+
+**回退后实测**：`check:types` 112/基线 116 OK；`test/compact/*` 108/108 绿；`check:syntax` 328 文件 OK；`check:docs` 71 项 + 中英 92 节对齐 OK。（§8/§9 写的「落地」指**原型曾达成**的状态，不代表已进主干。）
+
+**原型值回票价的部分**（下一刀实现时直接抄，别再踩）：
+1. **JSDoc 的 `@param {{…}}` 类型字面量内部不能写 `//` 注释行** —— TS 会当类型 token 解析（`TS1131: Property or signature expected`），整块 config 类型崩掉，**级联**出 5 条 `Property 'x' does not exist`。我一次踩了两处（`provider-summarizer.js`、`fold-llm.js`），+11 个错误里大半是这一条的连锁。解释性注释要放在 JSDoc **正文**或块外。
+2. `...(usage?.a ?? usage?.b === undefined ? {} : {…})` —— `===` 比 `??` 结合更紧 ⇒ 解析成 `a ?? (b === undefined)` ⇒ 判据恒真 ⇒ **token 从来没进过 meta**。是新增测试把它逼出来的实现真 bug。
+3. 超窗重试的「输入变小」不能拿**消息条数**断言：从最旧侧裁掉整条时，开头会多一条省略注**占住同一个位置** ⇒ 条数可以不变。要比就比序列化后的字符数。
+4. 默认限时的取值口径：同形状的 judge 拦截是 15 s，而摘要输入大两个量级（真机正常值 11 987 ms、离群值 61 960 ms）⇒ **30 s**，且「不传」必须**不是**「无超时」（旧行为正是无超时挂出来的）。
+5. 白名单缺口：`summarizerTimeoutMs` 在原型里只在 `createProviderSummarizer` 层面默认生效，**没进** `ASSEMBLY_POLICY_OPTION_NAMES` / `RUN_TOOL_LOOP_OPTION_NAMES` ⇒ 宿主开不出 `context.summarizerTimeoutMs`。实现 PR 必须补，否则判据①只到「引擎自己不挂死」而不到「宿主可调」。
+
+**下一刀（实现 PR）的形状**：按 patch 重新落地 + 上面 5 条修正；新增 `test/compact/fold-llm-degrade-469.test.js`（5 格，零真实 LLM，原型下 5/5 绿、相邻回归 547/547 绿）；CHANGELOG 条目正文见 §9，**由有写权限的一侧**搬进 `## [Unreleased] / ### Fixed`（`CHANGELOG.md` 是 `root:root 644`，本 worker `edit` 报 `EACCES`）；版本口径：**0.26.0 已发布**，本改动属 `[Unreleased]`，不 bump 版本三件套。
