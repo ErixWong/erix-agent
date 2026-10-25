@@ -1,0 +1,691 @@
+diff --git a/src/compact/fold-llm.js b/src/compact/fold-llm.js
+index 60cdcdba..95997c9c 100644
+--- a/src/compact/fold-llm.js
++++ b/src/compact/fold-llm.js
+@@ -254,6 +254,9 @@ function enforceSummarySize(summary, maxSummaryTokens, onLayer) {
+  * @param {{
+  *   summarizer: (input: {messages: object[], roundRange: {from:number, to:number}}) => Promise<string>|string,
+  *   maxSummaryTokens?: number,
++ *   // issue #469-②：交给 summarizer 的被折消息上限（token）。不传 ⇒ 不裁（旧行为）；
++ *   // 超窗失败（网关 400）无论配不配都会**带更短的输入重试一次**再降级。
++ *   maxSummarizerInputTokens?: number,
+  *   summaryRole?: "user"|"system",
+  *   recoveryHint?: string,
+  *   protectedMessage?: Function|string|string[],
+@@ -335,20 +338,23 @@ export function createFoldLlmStrategy({
+         // 构造期参数错误（summarizer 非函数）在 createFoldLlmStrategy 里已 fail-loud，不经此路径。
+         let summary;
+         let degradeReason;
+-        try {
+-          summary = await summarizer({
+-            messages: foldedPayload,
+-            roundRange: range,
+-            recoveryHint,
+-            promptGuide: createSummarizerPromptGuide(recoveryHint),
+-          });
+-          if (typeof summary !== "string") {
+-            throw new TypeError("fold-llm summarizer must return a string");
+-          }
+-        } catch (error) {
+-          degradeReason = String(error?.message ?? error).slice(0, 120);
+-          summary = undefined;
+-        }
++        // issue #469-①②③：失败不再是「一条 `slice(0,120)` 字符串」。分类后：可自愈的先重试，
++        // 不可自愈的把**原因类型**留到账上（timeout / context_window_exceeded / error）。
++        let degradeKind;
++        let droppedInputMessages = 0;
++        const summarizerOutcome = await callSummarizerWithBound({
++          summarizer,
++          payload: foldedPayload,
++          roundRange: range,
++          recoveryHint,
++          inputBoundTokens: normalizedInputBound(
++            optionValue(callOptions, options, "maxSummarizerInputTokens", undefined),
++          ),
++        });
++        summary = summarizerOutcome.summary;
++        degradeReason = summarizerOutcome.degradeReason;
++        degradeKind = summarizerOutcome.degradeKind;
++        droppedInputMessages = summarizerOutcome.droppedMessages;
+         const fallbackAnchors = summary === undefined && settings.anchors !== false
+           ? extractAnchors(
+             foldedPayload,
+@@ -384,12 +390,16 @@ export function createFoldLlmStrategy({
+             settings.anchors,
+             settings.onLayer,
+           );
+-        // #470：`source` 说清「嗬给模型的那份是 LLM 摘要还是机械降级」；降级时 `text` 就是
++        // #470：`source` 说清「交给模型的那份是 LLM 摘要还是机械降级」；降级时 `text` 就是
+         // 那份机械文本（上面已经算过，不重负）；LLM 成功时不重造摘要，由引擎投影实际喂出去那份。
+         foldSummary = {
+           source: summary === undefined ? "statistical" : "llm",
+           ...(statisticalFallbackText === undefined ? {} : { text: statisticalFallbackText }),
+           ...(degradeReason === undefined ? {} : { degradeReason }),
++          ...(degradeKind === undefined ? {} : { degradeKind }),
++          ...(droppedInputMessages > 0
++            ? { inputTruncated: true, droppedMessages: droppedInputMessages }
++            : {}),
+         };
+         compactedHead = prependSummary(
+           head,
+@@ -420,3 +430,116 @@ export function createFoldLlmStrategy({
+     },
+   };
+ }
++
++/**
++ * issue #469-①：降级原因分类。今天超时（无任何阀门）、超窗（网关 400）、普通报错**三堆塌成
++ * 同一条文案**，所以宿主从记录上分不出「这次降级本可以自愈」还是「摘要器真的挂了」。
++ * 只分类不改文案（`degradeReason` 原文照旧保留，以免动既有断言）。
++ *
++ * @param {unknown} error
++ * @returns {"timeout"|"context_window_exceeded"|"error"}
++ */
++export function classifyFoldDegradeKind(error) {
++  const code = typeof error?.code === "string" ? error.code : "";
++  if (code === "summarizer_timeout" || code === "ETIMEDOUT" || code === "TIMEOUT") {
++    return "timeout";
++  }
++  const message = String(error?.message ?? error ?? "");
++  if (/maximum context length|context_length_exceeded|context window|ContextWindowExceeded|is longer than configured context length|input length|too many tokens/i.test(message)) {
++    return "context_window_exceeded";
++  }
++  return "error";
++}
++
++const TRIM_NOTE_RESERVE_TOKENS = 48;
++const MIN_RETRY_INPUT_TOKENS = 256;
++
++function normalizedInputBound(value) {
++  return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
++}
++
++/**
++ * 从**最旧**一侧整条丢弃、保留尾部（最近性），并留一条省略注。
++ * 至少留最后一条：全丢掉就等于「折了一个什么都没有的折叠」。
++ */
++function trimFoldedPayload(payload, maxTokens) {
++  const list = Array.isArray(payload) ? payload : [];
++  if (maxTokens === undefined || list.length === 0 || estimateMessageTokens(list) <= maxTokens) {
++    return { messages: list, dropped: 0 };
++  }
++  const target = Math.max(1, maxTokens - TRIM_NOTE_RESERVE_TOKENS);
++  let start = 0;
++  while (start < list.length - 1 && estimateMessageTokens(list.slice(start)) > target) {
++    start += 1;
++  }
++  if (start === 0) return { messages: list, dropped: 0 };
++  const note = {
++    role: "user",
++    content: [{
++      type: "text",
++      text: `（为守住摘要器上下文窗口，前 ${start} 条最旧消息已省略，共 ${list.length} 条）`,
++    }],
++  };
++  return { messages: [note, ...list.slice(start)], dropped: start };
++}
++
++/** 重试用的上限：配了就配的一半，没配就当前输入的一半；剩一条以下无从再减 ⇒ 不重试。 */
++function retryBoundFor(configuredBound, messages) {
++  if (!Array.isArray(messages) || messages.length <= 1) return undefined;
++  const current = configuredBound ?? estimateMessageTokens(messages);
++  const next = Math.floor(current / 2);
++  return next >= MIN_RETRY_INPUT_TOKENS ? next : undefined;
++}
++
++/**
++ * issue #469-②：一次摘要调用加上「输入有界 + 超窗自愈重试」。
++ * 失败时不抛（沿用 #33 D 的降级语义），而是把分类后的原因带回去。
++ */
++async function callSummarizerWithBound({
++  summarizer,
++  payload,
++  roundRange,
++  recoveryHint,
++  inputBoundTokens,
++}) {
++  const promptGuide = createSummarizerPromptGuide(recoveryHint);
++  const invoke = (messages) => summarizer({ messages, roundRange, recoveryHint, promptGuide });
++  const first = inputBoundTokens === undefined
++    ? { messages: Array.isArray(payload) ? payload : [], dropped: 0 }
++    : trimFoldedPayload(payload, inputBoundTokens);
++  const fail = (error, droppedMessages) => ({
++    degradeKind: classifyFoldDegradeKind(error),
++    degradeReason: String(error?.message ?? error).slice(0, 120),
++    droppedMessages,
++  });
++  try {
++    const summary = await invoke(first.messages);
++    if (typeof summary !== "string") {
++      throw new TypeError("fold-llm summarizer must return a string");
++    }
++    return { summary, droppedMessages: first.dropped };
++  } catch (error) {
++    if (classifyFoldDegradeKind(error) !== "context_window_exceeded") {
++      return fail(error, first.dropped);
++    }
++    const retryBound = retryBoundFor(inputBoundTokens, first.messages);
++    if (retryBound === undefined) return fail(error, first.dropped);
++    const retry = trimFoldedPayload(first.messages, retryBound);
++    if (retry.dropped === 0) return fail(error, first.dropped);
++    try {
++      const retrySummary = await invoke(retry.messages);
++      if (typeof retrySummary !== "string") {
++        throw new TypeError("fold-llm summarizer must return a string");
++      }
++      return { summary: retrySummary, droppedMessages: first.dropped + retry.dropped, retried: true };
++    } catch (retryError) {
++      // 重试又失败：若仍是超窗，原因仍记超窗（否则会被后面的普通错误掩盖）。
++      const kind = classifyFoldDegradeKind(retryError);
++      return {
++        degradeKind: kind === "error" ? "context_window_exceeded" : kind,
++        degradeReason: String(retryError?.message ?? retryError).slice(0, 120),
++        droppedMessages: first.dropped + retry.dropped,
++      };
++    }
++  }
++}
+diff --git a/src/compact/pipeline.js b/src/compact/pipeline.js
+index 13c401ea..c805f233 100644
+--- a/src/compact/pipeline.js
++++ b/src/compact/pipeline.js
+@@ -170,6 +170,9 @@ export function createCompactionStat({
+   // issue #464 A（additive）：本次折叠**实际执行**的策略名。调用方从策略实例取，
+   // 因此写的是「真做了折叠的那个」（含引擎库层兜底），不是宿主配置项原文。
+   strategyName,
++  // issue #469-④（additive）：折叠摘要这一发的**结果状态**——「为什么没拿到摘要」与
++  // 「被裁过多少」。只存小字段：摘要正文本身走轮记录 `foldedFacts`，不进这里（#460 尺蠖）。
++  foldSummary,
+ } = {}) {
+   const stat = {
+     compacted: compacted === true,
+@@ -197,6 +200,35 @@ export function createCompactionStat({
+   if (typeof strategyName === "string" && strategyName !== "") {
+     stat.strategyName = strategyName;
+   }
++  // issue #469-④（additive）：与 strategyName 同口径——**只在真取得到时才出现这个键**。
++  // 真机 #469 三次折叠全降级而账上只有一个 `layers.enforceSize`，成本与原因双重隐身。
++  if (foldSummary !== null && typeof foldSummary === "object") {
++    // 只收**诊断信号**：`source`（llm/statistical/strategy）不算——它已在轮记录
++    // `foldedFacts.source` 上，再进一份只会把既有精确断言洗脏（无事发生 ⇒ 无键）。
++    const projected = {
++      ...(typeof foldSummary.degradeKind === "string" && foldSummary.degradeKind !== ""
++        ? { degradeKind: foldSummary.degradeKind }
++        : {}),
++      ...(typeof foldSummary.degradeReason === "string" && foldSummary.degradeReason !== ""
++        ? { degradeReason: foldSummary.degradeReason }
++        : {}),
++      ...(foldSummary.inputTruncated === true ? { inputTruncated: true } : {}),
++      ...(Number.isSafeInteger(foldSummary.droppedMessages) && foldSummary.droppedMessages > 0
++        ? { droppedMessages: foldSummary.droppedMessages }
++        : {}),
++      ...(typeof foldSummary.finishReason === "string" && foldSummary.finishReason !== ""
++        ? { finishReason: foldSummary.finishReason }
++        : {}),
++      ...(Number.isSafeInteger(foldSummary.inputTokens) && foldSummary.inputTokens > 0
++        ? { inputTokens: foldSummary.inputTokens }
++        : {}),
++      ...(Number.isSafeInteger(foldSummary.outputTokens) && foldSummary.outputTokens > 0
++        ? { outputTokens: foldSummary.outputTokens }
++        : {}),
++      ...(foldSummary.reused === true ? { reused: true } : {}),
++    };
++    if (Object.keys(projected).length > 0) stat.foldSummary = projected;
++  }
+   return stat;
+ }
+ 
+@@ -221,6 +253,8 @@ export function normalizeCompactionStats(value, limit = COMPACTION_STATS_STATE_L
+     // issue #464 A：`strategyName` 同样要过这道重建——runState / `state.json` 里那份是从上一份
+     // 归一化副本再推导的，不在此列就会丢键，于是「事件里有、state 里没」与契约声称相反。
+     strategyName: entry?.strategyName,
++    // issue #469-④：同样要过这道重建，否则「`compaction` 事件里有、state 里没」。
++    foldSummary: entry?.foldSummary,
+     layers: Object.fromEntries(COMPACTION_LAYER_IDS.map((id) => {
+       const layerStats = entry?.layers?.[id];
+       return [id, {
+diff --git a/src/compact/provider-summarizer.js b/src/compact/provider-summarizer.js
+index 2cf8de53..622fd4db 100644
+--- a/src/compact/provider-summarizer.js
++++ b/src/compact/provider-summarizer.js
+@@ -1,5 +1,6 @@
+ import { SUMMARIZER_PROMPT_GUIDE } from "./fold-llm.js";
+ import { NORMALIZATION_REASONING_EFFORT } from "../reflection/wrapup.js";
++import { estimateTokens } from "../tokens.js";
+ 
+ const DEFAULT_SUMMARY_SYSTEM = "你是对话历史压缩器。只输出摘要正文，不要调用工具，不要寒暄。";
+ 
+@@ -49,18 +50,74 @@ function roundRangeLabel(roundRange) {
+ 
+ /**
+  * Deterministically serialize the folded payload for a summarizing completion.
+- * Input size is bounded by what was already in context, so no truncation is applied.
++ *
++ * issue #469-②：输入尺寸**不再**默认「由已在上下文里的量兜住」——真机 #469 就是这条假设塌的：
++ * 一次折叠把 16 584 token 整坨发给摘要器（引擎账本只有 16 518），网关回
++ * `400 message = input length '16584' is longer than configured context length '16384'`，
++ * 于是整次折叠摘要**静默**降级。现在可选传 `options.maxTokens`：超限时从**最旧**一侧整条丢弃、
++ * 保留尾部（最近性优先），并在正文开头注一行「前 N 条已省略」，让被裁这件事本身可读。
++ * 不传（默认）⇒ 逐字行为与今天一致。
++ *
++ * @param {object[]} messages
++ * @param {{from?: number, to?: number}|undefined} roundRange
++ * @param {{ maxTokens?: number }} [options]
++ */
++export function serializeFoldedMessages(messages, roundRange, options = {}) {
++  return serializeFoldedMessagesWithMeta(messages, roundRange, options).text;
++}
++
++/**
++ * Same serialization, plus how much had to be dropped（#469-② 的入账口径：被裁过要留痕，
++ * 不能既裁了又不告诉任何人——那正是「降级静默」的同一种失败）。
++ *
++ * @returns {{ text: string, dropped: number, total: number, bounded: boolean }}
+  */
+-export function serializeFoldedMessages(messages, roundRange) {
+-  const lines = [`【被折叠的轮次】${roundRangeLabel(roundRange)}`, "【被折叠的消息】"];
+-  for (const message of Array.isArray(messages) ? messages : []) {
++export function serializeFoldedMessagesWithMeta(messages, roundRange, options = {}) {
++  const all = Array.isArray(messages) ? messages : [];
++  const header = [
++    `【被折叠的轮次】${roundRangeLabel(roundRange)}`,
++    "【被折叠的消息】",
++  ];
++  const entries = all.map((message) => {
+     const role = typeof message?.role === "string" ? message.role : "unknown";
+     const body = textOfContent(message?.content);
+-    lines.push(`[${role}]`, body === "" ? "（空）" : body);
++    return `[${role}]\n${body === "" ? "（空）" : body}`;
++  });
++  const maxTokens = Number.isFinite(options?.maxTokens) && options.maxTokens > 0
++    ? options.maxTokens
++    : undefined;
++  if (maxTokens === undefined) {
++    return { text: [...header, ...entries].join("\n"), dropped: 0, total: entries.length, bounded: false };
++  }
++  const kept = trimOldestEntries(entries, header, maxTokens);
++  const note = kept.dropped === 0
++    ? []
++    : [`（为守住摘要器上下文窗口，前 ${kept.dropped} 条最旧消息已省略，共 ${entries.length} 条）`];
++  return {
++    text: [...header, ...note, ...kept.kept].join("\n"),
++    dropped: kept.dropped,
++    total: entries.length,
++    bounded: true,
++  };
++}
++
++// 省略注本身也占位：估工时先给它留出固定余量，避免「裁到刚好又因为注超长」的来回。
++const TRIM_NOTE_RESERVE_TOKENS = 48;
++
++function trimOldestEntries(entries, header, maxTokens) {
++  let start = 0;
++  while (start < entries.length - 1
++    && estimateTokens([...header, ...entries.slice(start)].join("\n")) + TRIM_NOTE_RESERVE_TOKENS > maxTokens) {
++    start += 1;
+   }
+-  return lines.join("\n");
++  return { kept: entries.slice(start), dropped: start };
+ }
+ 
++// issue #469-①：摘要这一发的默认限时。取 30 s 的依据：同形状的 judge 拦截调用是 15 s，
++// 而摘要的输入比 judge 大一两个量级（真机正常值 11 987 ms）；61 960 ms 那一发在真实数据里
++// 是离群值，30 s 既不误杀正常摘要，也不会让离群值拖死整轮。传 `Infinity`/0/负数 ⇒ 不计时。
++const DEFAULT_FOLD_SUMMARIZER_TIMEOUT_MS = 30_000;
++
+ /**
+  * Default `fold-llm` summarizer backed by the run's own provider (issue #167 方案 C).
+  *
+@@ -77,6 +134,17 @@ export function serializeFoldedMessages(messages, roundRange) {
+  *   onUsage?: (usage: object) => void,
+  *   system?: string,
+  *   promptGuide?: string,
++ *   // issue #469-②：交给摘要器的那一份的**输入**上限（token）；不传 ⇒ 不裁（旧行为）。
++ *   maxSummarizerInputTokens?: number,
++ *   // issue #469-①：摘要专属超时（ms），**默认 30 000**（不传不是「无超时」：真机 61 960 ms
++ *   // 那一发就是旧「无超时」行为挂出来的）。**不复用 run 的 signal 做超时**，
++ *   // 否则一次摘要超时会连坐整轮 run。
++ *   summarizerTimeoutMs?: number,
++ *   // 父 signal（run/宿主）：只做转发，到时间只中断摘要这一发。
++ *   signal?: AbortSignal,
++ *   // issue #469-③/④：把**结果状态**带出去（finish_reason / token / 被裁条数），供入账。
++ *   // 返回值仍是 string（`fold-llm.js` 对非 string 招错、宿主自带 summarizer 也是 string）。
++ *   onMeta?: (meta: object) => void,
+  * }} config
+  * @returns {(input: { messages?: object[], roundRange?: object, promptGuide?: string }) => Promise<string>}
+  */
+@@ -85,20 +153,56 @@ export function createProviderSummarizer({
+   onUsage,
+   system = DEFAULT_SUMMARY_SYSTEM,
+   promptGuide = SUMMARIZER_PROMPT_GUIDE,
++  maxSummarizerInputTokens,
++  // issue #469-①：默认 **限时**（旧行为是「无超时」，真机 61 960 ms 那一发就在旧行为里挂着）。
++  // 要关掉：传 `Infinity`（非有限 ⇒ 不计时的分支）；传 0 / 负数同样退回不计时。
++  summarizerTimeoutMs = DEFAULT_FOLD_SUMMARIZER_TIMEOUT_MS,
++  signal,
++  onMeta,
+ } = {}) {
+   if (typeof chat !== "function") {
+     throw new TypeError("createProviderSummarizer requires a chat(request) function");
+   }
+   return async ({ messages = [], roundRange, promptGuide: perCallGuide } = {}) => {
++    const serialized = serializeFoldedMessagesWithMeta(messages, roundRange, {
++      ...(maxSummarizerInputTokens === undefined ? {} : { maxTokens: maxSummarizerInputTokens }),
++    });
++    const userContent = `${perCallGuide ?? promptGuide}\n\n${serialized.text}`;
+     const request = {
+       system,
+-      messages: [{
+-        role: "user",
+-        content: `${perCallGuide ?? promptGuide}\n\n${serializeFoldedMessages(messages, roundRange)}`,
+-      }],
++      messages: [{ role: "user", content: userContent }],
+       reasoning_effort: NORMALIZATION_REASONING_EFFORT,
+     };
+-    const response = await chat(request);
++    const timeoutMs = Number.isFinite(summarizerTimeoutMs) && summarizerTimeoutMs > 0
++      ? summarizerTimeoutMs
++      : undefined;
++    // 超时只住这一发请求：子 controller + 父 signal 转发 + Promise.race，与 judge 拦截调用
++    // （orchestrator 里的同形模板）一致；run 的 signal 不参与计时。
++    let controller;
++    let timer;
++    let onParentAbort;
++    if (timeoutMs !== undefined) {
++      controller = new AbortController();
++      request.signal = controller.signal;
++      timer = setTimeout(() => controller.abort(), timeoutMs);
++      timer.unref?.();
++      if (signal !== undefined && typeof signal.addEventListener === "function") {
++        onParentAbort = () => controller.abort(signal?.reason);
++        if (signal.aborted === true) onParentAbort();
++        else signal.addEventListener("abort", onParentAbort, { once: true });
++      }
++    }
++    let response;
++    try {
++      response = await (timeoutMs === undefined
++        ? chat(request)
++        : Promise.race([chat(request), timeoutRejection(timeoutMs, controller, serialized.dropped)]));
++    } finally {
++      if (timer !== undefined) clearTimeout(timer);
++      if (onParentAbort !== undefined && typeof signal?.removeEventListener === "function") {
++        signal.removeEventListener("abort", onParentAbort);
++      }
++    }
+     const usage = response?.usage;
+     if (usage !== undefined && typeof onUsage === "function") {
+       try {
+@@ -107,6 +211,30 @@ export function createProviderSummarizer({
+         // Observer failures must not affect compaction.
+       }
+     }
++    if (typeof onMeta === "function") {
++      try {
++        // 今天 fold-llm **从不看**这次调用的结果状态：被 `max_tokens` 截成半截（finish_reason
++        // ="length"）也当完整摘要吞下去。这里只负责**带出**，不在此处改变降级决定。
++        // 位置在「空正文抛错」之前：空正文恰恰是最需要看到 finish_reason 的那一种。
++        onMeta({
++          finishReason: response?.finish_reason ?? response?.stop_reason ?? response?.stopReason,
++          // 注意括号：`a ?? b === undefined` 会被解析成 `a ?? (b === undefined)`，
++          // 于是三元的判据变成「有 token ⇒ 返回 {}」——写反过一次，token 静默丢掉。
++          ...((usage?.input_tokens ?? usage?.inputTokens) === undefined
++            ? {}
++            : { inputTokens: usage?.input_tokens ?? usage?.inputTokens }),
++          ...((usage?.output_tokens ?? usage?.outputTokens) === undefined
++            ? {}
++            : { outputTokens: usage?.output_tokens ?? usage?.outputTokens }),
++          estimatedInputTokens: estimateTokens(userContent),
++          ...(serialized.dropped > 0
++            ? { inputTruncated: true, droppedMessages: serialized.dropped, inputMessages: serialized.total }
++            : {}),
++        });
++      } catch {
++        // 同上：观察者失败不得影响折叠。
++      }
++    }
+     const summary = textOfContent(response?.content).trim();
+     if (summary === "") {
+       throw new TypeError("default fold-llm summarizer returned no text");
+@@ -114,3 +242,17 @@ export function createProviderSummarizer({
+     return summary;
+   };
+ }
++
++function timeoutRejection(timeoutMs, controller, dropped) {
++  return new Promise((_, reject) => {
++    const timer = setTimeout(() => {
++      controller?.abort();
++      const error = new Error(`fold summarizer timed out after ${timeoutMs}ms`);
++      error.code = "summarizer_timeout";
++      // 被裁过多少也带上：重试时 fold-llm 需要知道「已经裁到哪里」。
++      error.droppedMessages = dropped > 0 ? dropped : 0;
++      reject(error);
++    }, timeoutMs);
++    timer.unref?.();
++  });
++}
+diff --git a/src/loop/orchestrator.js b/src/loop/orchestrator.js
+index 2c74e122..42a2e7a5 100644
+--- a/src/loop/orchestrator.js
++++ b/src/loop/orchestrator.js
+@@ -1251,6 +1251,13 @@ export async function runToolLoop(options) {
+   // addUsage（trackLatest:false，与 wrapup judge 同口径：并入 run 总账但不污染压缩判断用的
+   // latestApiInputTokens），并转发宿主 onUsage；这次调用在轮次循环之外，故天然不计轮次/stall。
+   // 闭包引用后文才声明的 awaitWithAbort/addUsage：只在压缩触发时才被调用，无 TDZ 风险。
++  // issue #469-②③：摘要这一发的**输入上限**与**结果状态**。上限复用上面算出的 `budgetTokens`（
++  // 不新引第二套窗口口径），预留 prompt guide / 省略注 / 分词误差的余量；无窗口配置 ⇒ 不设上限。
++  const summarizerInputBoundTokens = Number.isFinite(budgetTokens) && budgetTokens > 0
++    ? Math.max(1024, Math.floor(budgetTokens) - 2048)
++    : undefined;
++  /** @type {{finishReason?: string, inputTokens?: number, outputTokens?: number, inputTruncated?: boolean}|undefined} */
++  let lastSummarizerMeta = undefined;
+   const compactionSummarizer = createProviderSummarizer({
+     chat: async (request) => {
+       if (typeof provider?.chat !== "function" && typeof provider?.chatStream !== "function") {
+@@ -1258,7 +1265,9 @@ export async function runToolLoop(options) {
+       }
+       const summarizerRequest = {
+         ...request,
+-        signal,
++        // issue #469-①：摘要器自带超时时它已把 `request.signal` 换成子 controller 的 signal
++        // （父 signal 已转发进去），这里不得再用 run 的 signal 覆盖；没配超时时无处赋值 ⇒ 逐字不变。
++        signal: request.signal ?? signal,
+         ...(maxTokens === undefined ? {} : { maxTokens }),
+       };
+       const response = await awaitWithAbort(
+@@ -1271,6 +1280,13 @@ export async function runToolLoop(options) {
+       return response;
+     },
+     ...(onUsage === undefined ? {} : { onUsage }),
++    ...(summarizerInputBoundTokens === undefined
++      ? {}
++      : { maxSummarizerInputTokens: summarizerInputBoundTokens }),
++    // issue #469-③：今天引擎**从不看**这次调用的结果状态（被 `max_tokens` 截成半截也当完整
++    // 摘要嗬下去）；先把 finish_reason / token / 被裁条数暂存在闭包，由 `recordCompactionStat`
++    // 写进 `compactionStats[].foldSummary`（#469-④）。观察性质，失败不得影响折叠。
++    onMeta: (meta) => { lastSummarizerMeta = meta; },
+   });
+   // issue #326（wo-C）：**折叠摘要的「落账 + 复用」缝在引擎自产摘要这一处**（三档内置策略的生成
+   // 逻辑一字不动）。账本 = 折叠输入指纹 → 已经喂出去的那份摘要：
+@@ -3409,6 +3425,14 @@ export async function runToolLoop(options) {
+         // issue #464 A：写实例上的名字（含库层兜底的 `"sliding-window"`），不是配置项原文。
+         strategyName: typeof strategy?.name === "string" ? strategy.name : undefined,
+         ...(userTurnGuard === undefined ? {} : { userTurnGuard, userTurnGuardChannel }),
++        // issue #469-④：“为什么没拿到摘要”与“成本去哪了”同时入账（只取小字段，不搬正文）。
++        foldSummary: {
++          ...(strategyFoldSummary ?? {}),
++          ...(lastFoldSummaryOutcome?.reused === true ? { reused: true } : {}),
++          ...(lastSummarizerMeta ?? {}),
++          // 正文与指纹不进这里（#460/#470-B 尺寸尺蠖），`foldedFacts` 已有完整一份。
++          text: undefined,
++        },
+       }, round);
+     }
+     const foldedStateChanged = foldedRounds > 0
+diff --git a/test/compact/fold-llm-degrade-469.test.js b/test/compact/fold-llm-degrade-469.test.js
+new file mode 100644
+index 00000000..f0021dc3
+--- /dev/null
++++ b/test/compact/fold-llm-degrade-469.test.js
+@@ -0,0 +1,160 @@
++// issue #469：折叠摘要调用的四条缺口 —— 限时 / 输入有界 / 看结果状态 / 降级原因不隐身。
++// 全部零真实 LLM：provider 侧用假 chat，策略侧用假 summarizer。
++import test from "node:test";
++import assert from "node:assert/strict";
++
++import {
++  createFoldLlmStrategy,
++  classifyFoldDegradeKind,
++} from "../../src/compact/fold-llm.js";
++import {
++  createProviderSummarizer,
++  serializeFoldedMessages,
++} from "../../src/compact/provider-summarizer.js";
++import { createCompactionStat } from "../../src/compact/pipeline.js";
++
++// 足够长的早期消息：让折叠输入进到「还能再裁一半」的量级（重试下限 256 token）。
++const BULK = "alpha ".repeat(2000);
++
++function conversation(bulky = false) {
++  return [
++    { role: "user", content: bulky ? BULK : "initial request" },
++    { role: "assistant", content: [{ type: "text", text: bulky ? BULK : "phase one" }] },
++    { role: "user", content: [{ type: "text", text: "continue" }] },
++    { role: "assistant", content: [{ type: "text", text: "phase two" }] },
++    { role: "user", content: [{ type: "text", text: "continue again" }] },
++    { role: "assistant", content: [{ type: "text", text: "phase three" }] },
++  ];
++}
++
++const SUMMARY = [
++  "## 阶段", "完成初始化。",
++  "## 已改文件", "src/example.js",
++  "## 已验证项", "node --test",
++  "## 下一步", "已完成项禁止重做；继续收尾。",
++  "## 主题词面包屑", "example, tests",
++].join("\n");
++
++function keepalive() {
++  // 摘要器超时用的定时器是 unref 的：测试里必须另留一个 handle，否则事件循环可能提前空转退出。
++  const timer = setInterval(() => {}, 1000);
++  return () => clearInterval(timer);
++}
++
++test("#469-① 摘要专属超时：只中断这一发，不连坐 run；原因分类为 timeout", async () => {
++  const parent = new AbortController();
++  const release = keepalive();
++  try {
++    const summarizer = createProviderSummarizer({
++      chat: () => new Promise(() => {}), // 永不返回
++      summarizerTimeoutMs: 25,
++      signal: parent.signal,
++    });
++    const error = await summarizer({ messages: conversation() }).then(
++      () => null,
++      (err) => err,
++    );
++    assert.ok(error, "挂起的摘要调用必须按时失败");
++    assert.equal(error.code, "summarizer_timeout");
++    assert.equal(classifyFoldDegradeKind(error), "timeout");
++    // 关键：run 的 signal 没被这条超时牵连（否则一次摘要超时 = 整轮任务死）。
++    assert.equal(parent.signal.aborted, false);
++  } finally {
++    release();
++  }
++});
++
++test("#469-①④ 超时降级：折叠照常完成，degradeKind 落进 foldSummary", async () => {
++  let calls = 0;
++  const strategy = createFoldLlmStrategy({
++    summarizer: async () => {
++      calls += 1;
++      const error = new Error("fold summarizer timed out after 25ms");
++      error.code = "summarizer_timeout";
++      throw error;
++    },
++  });
++  const result = await strategy.compact(conversation(), { keepRounds: 1 });
++  assert.equal(result.compacted, true, "摘要失败不得让折叠本身失败");
++  assert.equal(calls, 1, "超时不是超窗，不做重试");
++  assert.equal(result.foldSummary.source, "statistical");
++  assert.equal(result.foldSummary.degradeKind, "timeout");
++  assert.match(result.foldSummary.degradeReason, /timed out/u);
++  assert.match(result.messages[0].content.map((b) => b.text ?? "").join(""), /降级为统计摘要/u);
++});
++
++test("#469-② 超窗（网关 400）：带更短的输入重试一次并成功，不再静默降级", async () => {
++  const seen = [];
++  const strategy = createFoldLlmStrategy({
++    summarizer: async (input) => {
++      seen.push(input);
++      if (seen.length === 1) {
++        throw new Error(
++          "400 message = input length `16584` is longer than configured context length `16384`.",
++        );
++      }
++      return SUMMARY;
++    },
++  });
++  const result = await strategy.compact(conversation(true), { keepRounds: 1 });
++  assert.equal(seen.length, 2, "超窗必须重试一次");
++  // 裁掉整条消息时，开头会多一条「已省略」注占住一个位置 ⇒ **消息条数可以不变**，
++  // 真正变小的是序列化后的输入。拿条数当断言会得到假阳性。
++  const inputChars = seen.map((input) => JSON.stringify(input.messages).length);
++  assert.ok(
++    inputChars[1] < inputChars[0],
++    `重试输入必须更短：${inputChars[0]} → ${inputChars[1]} 字符`,
++  );
++  assert.equal(result.foldSummary.source, "llm", "重试成功 ⇒ 不是降级");
++  assert.equal(result.foldSummary.degradeKind, undefined);
++  assert.equal(result.foldSummary.inputTruncated, true);
++  assert.ok(result.foldSummary.droppedMessages > 0);
++});
++
++test("#469-③④ 结果状态入账：finish_reason 与 token 进 compactionStats.foldSummary", async () => {
++  const metas = [];
++  const summarizer = createProviderSummarizer({
++    chat: async () => ({
++      content: [{ type: "text", text: "## 阶段\n截断在半截" }],
++      usage: { input_tokens: 16584, output_tokens: 800 },
++      finish_reason: "length",
++    }),
++    onMeta: (meta) => metas.push(meta),
++  });
++  const summary = await summarizer({ messages: conversation() });
++  assert.equal(summary, "## 阶段\n截断在半截");
++  assert.equal(metas.length, 1);
++  assert.equal(metas[0].finishReason, "length");
++  assert.equal(metas[0].inputTokens, 16584);
++  assert.equal(metas[0].outputTokens, 800);
++
++  const stat = createCompactionStat({
++    compacted: true,
++    foldSummary: { ...metas[0], degradeKind: "timeout", text: "不该进账的正文" },
++  });
++  assert.deepEqual(stat.foldSummary, {
++    degradeKind: "timeout",
++    finishReason: "length",
++    inputTokens: 16584,
++    outputTokens: 800,
++  });
++  // 无事发生 ⇒ 无键：既有读取形状逐字不变。
++  assert.equal("foldSummary" in createCompactionStat({ compacted: true }), false);
++  assert.equal("foldSummary" in createCompactionStat({ compacted: true, foldSummary: {} }), false);
++});
++
++test("#469-② 输入上限：从最旧侧整条丢弃并留省略注；不传则逐字不变", async () => {
++  const messages = [
++    { role: "user", content: "OLDEST-UNIQUE" },
++    { role: "assistant", content: "middle message body" },
++    { role: "user", content: "NEWEST-UNIQUE" },
++  ];
++  const unbounded = serializeFoldedMessages(messages, { from: 1, to: 3 });
++  assert.ok(unbounded.includes("OLDEST-UNIQUE") && unbounded.includes("NEWEST-UNIQUE"));
++  assert.ok(!unbounded.includes("已省略"));
++
++  const bounded = serializeFoldedMessages(messages, { from: 1, to: 3 }, { maxTokens: 20 });
++  assert.ok(!bounded.includes("OLDEST-UNIQUE"), "最旧一条应被丢弃");
++  assert.ok(bounded.includes("NEWEST-UNIQUE"), "尾部必须保留（最近性）");
++  assert.match(bounded, /前 \d+ 条最旧消息已省略/u);
++});
