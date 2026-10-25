@@ -524,9 +524,26 @@ export function createTerminationManager(ctx) {
   );
 
   const forceFinalIfNeeded = async (reason) => {
+    // ── issue #467：`judge_done` 必须在白名单里 ────────────────────────────────────────────────────────
+    // 病灶：评审卡是 end_turn 轮的**后置**调用（`orchestrator.js` 的 `isEndTurn` 门），于是存在一种形状：
+    // 模型末轮**只出 reasoning 不出正文**（真机：167 个 reasoning delta + 0 个正文字块），judge 仍按
+    // `done:true / confidence>=0.7` 直接终局 ⇒ 白名单不含 `judge_done` 时，那条路上
+    // `hasFinalDraft()` 的三个条件里后两项与 `isEndTurn` 同式、恒真 ⇒ 它**只等价于「正文非空吗」**，
+    // 而那个「正文非空」恰好就是我们要的判据——早就写好了，只是这条路一个字节都没读它。
+    // 真机形状：宿主时间线上最后一条可见内容是评审卡，模型没有终稿（同库 90 次 `judge_done` 里 6 次）。
+    //
+    // 为什么放开不会「收不住」：这条结构上开不出新轮——下面那次请求是 `tools: []`（无工具面，写
+    // 「我还得去改 X」也不会执行任何东西）、调用点在本轮记录落盘之后、`rounds` 与 termination reason
+    // 都不变、`ctx.forcedFinal` 一次性不重试。而成本由 `hasFinalDraft()` 兜住：末轮已有正文就一发不发
+    // （真机账：90 次里挡掉 84 次，只有真需要的那 6 次掏钱）。
+    //
+    // 形状债（#467 分析文档 §7.3，等上游裁）：白名单用**原因枚举**回答一个**状态**问题（手里有没有终稿），
+    // 所以它天然会漏——`end_turn` / `no_tool` 上有同一个洞（已实测），而 `kind:"stop"` 的生产者全部经过
+    // 同一个收口点。更彻底的写法是把判据下沉到状态（老三条保留 `hasFinalDraft()` 的截断语义，新 reason
+    // 用「正文非空」）；本站先只加 `judge_done`，不把未裁的口径混进这一行。
     if (
       ctx.forcedFinal
-      || !["max_rounds_cap", "stall", "continuation_exhausted"].includes(reason)
+      || !["max_rounds_cap", "stall", "continuation_exhausted", "judge_done"].includes(reason)
       || hasFinalDraft()
       || process.env.ERIX_NO_FORCED_FINAL?.trim() === "1"
     ) return;
