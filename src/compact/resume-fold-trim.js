@@ -120,9 +120,15 @@ export function pickCoveringFoldAlternative(records, foldedThrough) {
   let best;
   let bestTo = 0;
   for (const record of Array.isArray(records) ? records : []) {
-    for (const entry of Array.isArray(record?.[FOLDED_FACTS_RECORD_FIELD])
-      ? record[FOLDED_FACTS_RECORD_FIELD]
-      : []) {
+    // 写入端（`orchestrator.js` 的 `roundRecord[FOLDED_FACTS_RECORD_FIELD] = buildFoldedFacts(...)`）
+    // 落的是 `buildFoldedFacts()` 的**单个平铺对象**（`{text,source,strategy,from,to,bytes}`），
+    // 不是数组 —— 这里曾经只认数组，于是"放宽的那一格"对真实账本**永远不会触发**（#470 判据①）。
+    // 两种形状都收：平铺对象是当前唯一的写入形状，数组留给"宿主直接塞一批事实"这种显式输入。
+    const field = record?.[FOLDED_FACTS_RECORD_FIELD];
+    const entries = Array.isArray(field)
+      ? field
+      : (field && typeof field === "object" && typeof field.text === "string" ? [field] : []);
+    for (const entry of entries) {
       if (typeof entry?.text !== "string" || entry.text === "") continue;
       const to = Number.isSafeInteger(entry?.to) ? /** @type {number} */ (entry.to) : 0;
       // 与 ① 同一条硬约束：替代物必须**覆盖**到水位线，否则补不齐裁掉的正文（#462 边界①）。

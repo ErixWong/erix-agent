@@ -124,6 +124,7 @@ import {
   foldSummaryFingerprint,
   stableFingerprint,
 } from "../compact/fold-summary-journal.js";
+import { summarizeFoldedPayload } from "../compact/fold-statistical.js";
 import { createRunSnapshotExecutor } from "./run-snapshot-executor.js";
 import {
   buildToolResultFact,
@@ -3116,7 +3117,36 @@ export async function runToolLoop(options) {
         : [];
       foldedRoundRange = result.foldedRoundRange;
       navigationRecord = result.navigationRecord;
-      strategyFoldSummary = result.foldSummary;
+      strategyFoldSummary = result.foldSummary
+        // issue #470（判据②）：零 LLM 策略（`sliding-window`）带出的键名是 `foldedSummaryText`，
+        // 不是 `foldSummary` —— 只读后者的话，C 档那份机械文本**没有任何消费者**（既不进
+        // `record.foldedFacts`，也不进消息流），"落账"就只是 return 对象上的一个死键。
+        ?? (typeof result.foldedSummaryText === "string" && result.foldedSummaryText !== ""
+          ? {
+            text: result.foldedSummaryText,
+            source: "strategy",
+            strategy: typeof strategy?.name === "string" ? strategy.name : "unknown",
+          }
+          : undefined);
+      // issue #470（判据②）就地兜底：引擎的折叠链路（TTL / 预算兜底 / 宿主策略包装）会把策略返回值
+      // **重新组对象**，`foldedSummaryText` 在这一层就被丢掉（实测 onAfterFold 看到的 result 只有 7 个键）
+      // ⇒ 只读策略键仍然等于没有消费者。这里用**同一份现成零件**就地现算机械替代物，并如实标
+      // `source: "strategy"`：它是机械替代物，不是模型写的摘要。
+      if (strategyFoldSummary === undefined
+        && Array.isArray(foldedPayload) && foldedPayload.length > 0
+        && Number.isSafeInteger(result.foldedRounds) && result.foldedRounds > 0) {
+        const foldRangeForFacts = result.foldedRoundRange ?? undefined;
+        strategyFoldSummary = {
+          text: summarizeFoldedPayload(foldedPayload, {
+            from: foldRangeForFacts?.from ?? 1,
+            to: foldRangeForFacts?.to ?? result.foldedRounds,
+            count: result.foldedRounds,
+            recoveryHint: compactionContext.recoveryHint,
+          }),
+          source: "strategy",
+          strategy: typeof strategy?.name === "string" ? strategy.name : "unknown",
+        };
+      }
       foldedRounds = Number.isSafeInteger(result.foldedRounds)
         ? result.foldedRounds
         : 0;
