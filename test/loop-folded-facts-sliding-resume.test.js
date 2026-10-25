@@ -60,14 +60,14 @@ test("判据①：record.foldedFacts 是 buildFoldedFacts 的真实返回值时�
     "被裁的那些轮不得留在续跑上下文里");
 });
 
-// TODO(#470 判据②)：先 skip 让分支绿着推上去，**下一轮解 skip**（不许删本格）。
+// 判据②（本轮已解 skip 跑绿）。红因与修法（实测，不是推测）：
 // 实测红因（`scripts/tmp-dbg-470.mjs` 输出见 docs/tasks/wip-470/tmp-dbg-470.txt）：
 // 折叠确实发生（`compactionStats` 每轮 `compacted:true`、`slidingWindow.triggered:1`、轮记录带
 // `foldedRoundRange`），但 8 条记录里 **0 条**有 `foldedFacts` ⇒ 写入端那一步（`orchestrator.js`
 // 里 `pendingFoldedFacts = buildFoldedFacts({ text: strategyFoldSummary?.text ?? fedSummaryText … })`）
 // 在这条端到端路径上没有被执行/没落到轮记录。解 skip 时断言口径不动：
 // `source === "strategy"` / `record.summary` 不被替代物覆盖 / resume 侧 `summarySource === "strategy"`。
-test.skip("判据②+端到端：滑窗折叠 → foldedFacts 落账（用的是策略文本）→ resume 裁正文 (#470)", { skip: "TODO #470 判据②：写入端未投影，下一轮解 skip" }, async () => {
+test("判据②+端到端：滑窗折叠 → foldedFacts 落账（用的是策略文本）→ resume 裁正文 (#470)", async () => {
   const store = createMemoryTranscriptStore();
   const runId = "s-470-e2e";
   let turns = 0;

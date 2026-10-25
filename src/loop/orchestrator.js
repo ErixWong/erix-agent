@@ -3314,10 +3314,30 @@ export async function runToolLoop(options) {
       // issue #470（A1，纯加法）：同一份替代物**同时投影到轮记录**的新键 `foldedFacts`。
       // 此前它只进消息流（`compactedHead`）：模型看得见，而读轮记录的两面——宿主横幅与
       // `resume_manager` 喨给 judge 的轮次历史（`record.summary ?? "missing"`，#470 ④）——什么也看不见。
-      // 文本优先级：**策略带出的机械替代物**（零 LLM、形状稳定、天然有界）> 实际喂出去的那份正文；
-      // 两者都空 ⇒ `undefined` ⇒ 调用方**不写该键**（#470-A2 的「不写占位字面量」口径）。
+      // 文本优先级：**策略带出的机械替代物**（零 LLM、形状稳定、天然有界）> 实际喂出去的那份正文
+      // > **在定稿处就地现算的机械替代物**；三者都空 ⇒ `undefined` ⇒ 调用方**不写该键**
+      //（#470-A2 的「不写占位字面量」口径）。
+      // 实测红因（#470 判据②，现场探针输出见 docs/tasks/wip-470/tmp-dbg-470.txt）：
+      //   `strategy.compact()` 那一层返回的对象键面只有
+      //   `["messages","compacted","foldedRounds","tokensBefore","tokensAfter","foldedPayload"]`
+      //   ⇒ **没有** `foldedSummaryText`；且那一层 `foldedRounds` 是 **0**，真正折走的轮是**后面
+      //   预算兜底 / safety 兜底那两发**加进来的。所以只读策略键、或在 3109 那一层用
+      //   `result.foldedRounds > 0` 当兜底闸门，都必然落空 ⇒ 必须在 `foldedPayload`/`foldedRounds`
+      //   **定稿处**就地现算。用同一份现成零件 `summarizeFoldedPayload`，如实标 `source:"strategy"`：
+      //   它是机械替代物，不是模型写的摘要。
+      const factsTextFromSummary = strategyFoldSummary?.text ?? fedSummaryText;
+      const factsText = factsTextFromSummary !== undefined && factsTextFromSummary !== ""
+        ? factsTextFromSummary
+        : (compacted && foldedRounds > 0 && foldedPayload.length > 0
+          ? summarizeFoldedPayload(foldedPayload, {
+            from: foldedRoundRange?.from ?? 1,
+            to: foldedRoundRange?.to ?? foldedRounds,
+            count: foldedRounds,
+            recoveryHint: compactionContext.recoveryHint,
+          })
+          : "");
       pendingFoldedFacts = buildFoldedFacts({
-        text: strategyFoldSummary?.text ?? fedSummaryText,
+        text: factsText,
         source: strategyFoldSummary?.source
           ?? (lastFoldSummaryOutcome === undefined ? "strategy" : "llm"),
         strategy: typeof strategy?.name === "string" ? strategy.name : "unknown",
