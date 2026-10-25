@@ -5,6 +5,7 @@ import { extractL0Facts } from "../reflection/l0.js";
 import { buildTimeline } from "../reflection/judge.js";
 import { pendingTailToolUses } from "./pending-tool-result.js";
 import { planResumeNotice } from "./resume-notice.js";
+import { injectFoldSummaryIntoHead, planFoldedHistoryTrim } from "../compact/resume-fold-trim.js";
 import { validateRunState } from "../run-state.js";
 
 const rowKeyOf = (record) => {
@@ -462,6 +463,56 @@ export async function restoreResume(ctx) {
         // issue #78 验收修正：resume 想消费 run snapshot 但 store 无任何 loader——
         // 单条去重诊断（loadLatestCheckpoint 旧名也缺才走到这里），跳过崩溃现场恢复。
         ctx.notifyCapabilitySkipped?.("loadLatestRunSnapshot");
+      }
+      // issue #462：**按折叠水位线裁续跑正文**（#460 只修了写侧，读侧一个字节都没省）。
+      // 今天 `ctx.messages` 是整段未折账本 ⇒ 续跑第一次折叠必然从 round 1 重折：摘要器重算
+      // （#326 的复用因区间漂移而 miss）、`keepRounds` 被 2× 判据压到 2、`tokensBefore` 虚高。
+      // 这里把水位线以下的轮次从上下文里摘掉，并把**模型本来就在看的那份摘要**（#326 落的
+      // `record.foldedSummary` 事实）按折叠自己的形状并回头部 ⇒ 续跑形状回到崩溃前那一刻。
+      // 挑不出覆盖水位线的摘要事实时**整段原样保留**（判据 3：被误判成未折的区间必须在上下文
+      // 里可见，不许档案与上下文两边都静默）。口径与边界见 `src/compact/resume-fold-trim.js`。
+      const foldWatermark = ctx.foldedThrough;
+      const contextEntries = ctx.messages.map((message) => ({
+        message,
+        round: ctx.messageRounds.get(message) ?? 0,
+      }));
+      const foldTrim = planFoldedHistoryTrim({
+        ledgerEntries: contextEntries,
+        records,
+        foldedThrough: foldWatermark,
+      });
+      if (foldTrim.applied) {
+        const keptMessages = foldTrim.messages.map((entry) => entry.message);
+        const trimmedMessages = injectFoldSummaryIntoHead(keptMessages, foldTrim.summaryText);
+        // 轮号表按**对象身份**查（`orchestrator.js#roundNumbersForMessages`），而注入会换掉那条
+        // head 消息的对象（或插一条新的）⇒ 必须把轮号一并搬过去，否则那条 seed 任务的轮号会从
+        // 0 掉进兜底分支，把已折区间重新数进轮号。
+        const roundByNewMessage = new Map();
+        if (trimmedMessages.length === keptMessages.length) {
+          for (const [index, message] of trimmedMessages.entries()) {
+            roundByNewMessage.set(message, foldTrim.messages[index].round);
+          }
+        } else {
+          // 注入成独立 user 消息（只有 head 里没有真实 user 消息时才走到这里）：那条正文属于
+          // 已折区间，按水位线记轮号最贴近它被折走时的身份。
+          let cursor = 0;
+          for (const message of trimmedMessages) {
+            const entry = foldTrim.messages[cursor];
+            if (entry !== undefined && entry.message === message) {
+              roundByNewMessage.set(message, entry.round);
+              cursor += 1;
+            } else {
+              roundByNewMessage.set(message, foldWatermark);
+            }
+          }
+        }
+        for (const entry of foldTrim.dropped) {
+          ctx.messageRounds.delete(entry.message);
+        }
+        for (const [message, round] of roundByNewMessage) {
+          ctx.messageRounds.set(message, round);
+        }
+        ctx.messages = trimmedMessages;
       }
       // issue #404：恢复运行要告诉模型这是复活赛（拼装/幂等见 `src/loop/resume-notice.js`）。
       ctx.resumeNotice = planResumeNotice(ctx, records, pendingTail);

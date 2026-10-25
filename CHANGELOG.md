@@ -3,6 +3,10 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Fixed
+
+- **折叠水位线的读侧（#462，#460 的收尾遗留）：`resume` 现在按 `foldedThrough` 裁续跑正文，并把模型本来就在看的那份摘要回填到原位置。** 此前恢复只认账本：`restoreResume()` 把整段**未折**账本当上下文，于是续跑的第一次折叠每次都是从 `round 1` 重折 —— 探针实测（16 轮、每 2 轮 resume 一次，`scripts/probe-462-resume-refold.mjs`）喂进 `compact` 的消息数 8→11→16→21→26→31→36 线性上升、折走区间恒为 `{from:1,…}`、`foldedRounds` 7→19（那时只新增了 2 轮）；`fold-llm` 的摘要器因此每次续跑都重算（重折区间在变 ⇒ `foldSummaryFingerprint` 必 miss，#326 的「复用不重算」跨 resume 不生效）：同样 16 轮，连续跑摘要 0 次 / 0 字节，续跑摘要 7 次 / 累计输入 210 645 B / 单次最大 58 348 B；且 `estimatedTokens / budgetTokens > 2` 必然命中 ⇒ `keepRounds` 被压到 2 ⇒ 续跑比连续跑多砍一倍历史轮次。现在裁掉水位线以下的轮次，并把 #326 落的 `record.foldedSummary` 摘要**按折叠自己的形状**并进最后一条真实 user 消息（不新造消息、不改角色交替）。边界：挑不出**覆盖水位线**的摘要事实（老账本 / 兜底折叠没摘要）⇒ 整段原样保留，于是「区间被误判成未折」时正文始终在上下文里可见，不允许档案与上下文两边都静默。新增 `src/compact/resume-fold-trim.js`（纯函数规划器）与 `test/compact/resume-fold-trim.test.js`（判据 1/2/3/4，7 格）。本次没做：`tokensBefore` 的口径改写与真模型 soak。
+
 ## [0.25.0] - 2026-10-24
 
 ### Added
