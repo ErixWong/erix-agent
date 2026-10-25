@@ -44,6 +44,25 @@ export const FINAL_GUARD_EXTENDABLE_REASONS = new Set([
   "continuation_exhausted",
 ]);
 
+/**
+ * issue #475：强制收尾里**保留 `hasFinalDraft()` 截断语义**的那三条 reason。
+ *
+ * 模块内私有，**不导出**（不进公共 API、不进 `FINAL_GUARD_*` 那一族）：它回答的是「这一路的停机是
+ * 被预算/截断掐断的吗」，只有这一问需要「末轮正文非空也要再问一发」的截断语义；其余 reason 一律
+ * 只看「手里有没有终稿正文」。为什么不复用 `TRUNCATED_TERMINATION_REASONS`：那个集合还含
+ * `final_guard_unverified`，而它今天**从不**走到强制收尾（两个调用点只喂 `stop` 动作与
+ * `max_rounds_cap`），复用会把一个未被要求的格顺手放进成本面。
+ *
+ * 为什么不导出去让测试直接钉：导出的口径由 `docs/` 与 `.d.ts` 声称值跟着涨，而本单要钉的是
+ * **可观察行为**（哑局多一发 / 有正文零多发），不是又一个枚举 —— 见
+ * `test/loop-forced-final-by-state-475.test.js`。
+ */
+const FORCED_FINAL_TRUNCATED_REASONS = new Set([
+  "max_rounds_cap",
+  "stall",
+  "continuation_exhausted",
+]);
+
 export function makeTermination(reason, detail) {
   return {
     reason,
@@ -537,14 +556,25 @@ export function createTerminationManager(ctx) {
     // 都不变、`ctx.forcedFinal` 一次性不重试。而成本由 `hasFinalDraft()` 兜住：末轮已有正文就一发不发
     // （真机账：90 次里挡掉 84 次，只有真需要的那 6 次掏钱）。
     //
-    // 形状债（#467 分析文档 §7.3，等上游裁）：白名单用**原因枚举**回答一个**状态**问题（手里有没有终稿），
-    // 所以它天然会漏——`end_turn` / `no_tool` 上有同一个洞（已实测），而 `kind:"stop"` 的生产者全部经过
-    // 同一个收口点。更彻底的写法是把判据下沉到状态（老三条保留 `hasFinalDraft()` 的截断语义，新 reason
-    // 用「正文非空」）；本站先只加 `judge_done`，不把未裁的口径混进这一行。
+    // ── issue #475：判据从**原因枚举**下沉到**状态** ────────────────────────────────────────────────
+    // #467 的修法是往白名单上贴一条 `judge_done`，而白名单回答的是一个状态问题（手里有没有终稿正文），
+    // 所以它天然会漏：把停机 reason 全集穷举一遍，未覆盖的是且仅是 `end_turn` / `no_tool`（`aborted`
+    // 结构上不经过本收口点），而这两格上「末轮只出 reasoning ⇒ 终局零正文」与 #467 完全同构。
+    // 现在判据自己说话：
+    //   · 被预算/截断掐断的（`FORCED_FINAL_TRUNCATED_REASONS`）→ 沿用 `hasFinalDraft()`，**逐字不变**；
+    //   · 其余 reason（`end_turn` / `no_tool` / `judge_done` / 未来新增的）→ 只看「终稿正文是否为空」。
+    // ⇒ 对未来新增的 reason 免疫（不再需要「新增一个 reason 就记得回来贴一条」），且 `judge_done` 的
+    //   口径**实际没变**：评审卡是 end_turn 轮的后置调用，那条路上 `hasFinalDraft()` 的后两个条件与
+    //   `isEndTurn` 同式、恒真 ⇒ 它与「正文非空吗」等价（#467 上面那段已经写过这件事）。
+    // 成本面：`end_turn` / `no_tool` 只在**哑局**（终稿正文为空）才多一发请求，末轮有正文照旧一发不发；
+    // `tools: []` + `ctx.forcedFinal` 一次性 ⇒ 开不出新轮、不重试，与 #467 同一道界。
+    // ⚠ 二阶风险不在本单里改：`FINAL_GUARD_TERMINATION_REASONS` **含** `end_turn` / `no_tool`，宿主接了
+    //   finalGuard 时这两格本来就会跑 guard；「guard 覆盖了这两格」≠「这两格是安全的」。
     if (
       ctx.forcedFinal
-      || !["max_rounds_cap", "stall", "continuation_exhausted", "judge_done"].includes(reason)
-      || hasFinalDraft()
+      || !(FORCED_FINAL_TRUNCATED_REASONS.has(reason)
+        ? !hasFinalDraft()
+        : ctx.finalText.trim() === "")
       || process.env.ERIX_NO_FORCED_FINAL?.trim() === "1"
     ) return;
 
