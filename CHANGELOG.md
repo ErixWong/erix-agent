@@ -3,6 +3,12 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+## [0.25.0] - 2026-10-24
+
+### Added
+
+- **随包发布文档（#460 的发布收尾）：新增 `docs/host-upgrade-guide-0.25.0.md` / `docs/host-upgrade-guide-0.25.0_cn.md`（中英成对）。** 写清折叠归档的新口径（会话级 sha256 去重、`0` 为合法上限的保尾夹断、预算解析顺序 `context.maxFoldedPayloadBytes` > env `ERIX_FOLD_ARCHIVE_MAX_BYTES` > 262144）、`record.foldedPayloadMeta` 逐键含义与「两组数不是朴素可加」的口径，以及宿主拒收单条超大轮记录时的降级路径（`rejectedByHost` + 一条 `fatal: false` 事实）；同时明写**本次没做**的读侧裁剪归 #462。登记进 #286 的覆盖面棘轮：`test/docs-anchor-ratchet.test.js` 的 `GUIDE_DOCS_PINNED` 22 → 24 份，`scripts/docs-drift-check.mjs` 的 `REF_SCAN_DOCS_MINIMUM` 35 → 37（AGENTS 中英两侧的声称值同步），并随包入 `package.json` `files` 与两份 README 的清单、迁移指南索引（0.24.0 那份降为「上一份」）。
+
 ### Fixed
 
 - **折叠（issue #460）：`record.foldedPayload` 从「每次折叠全量重发」改成**有界差分**，定界宿主上单轮记录不再随会话线性膨胀，超限也不再判死。** 真机（erix-station v0.1.32，会话 `9e0c8a17`）：折叠轮 100/121/137 的记录 569 518 / 742 771 / 960 703 B，其中归档占 550 000 / 721 538 / 940 278 B（非归档部分三行都稳定 ≈ 20 425 B），round 162 的归档 ≈ 1 114 000 B 把那条记录顶过本站 1 MB 单记录闸 ⇒ `appendRound` 回 400 ⇒ `reason=persistence_failed`、`sideEffect=executed_uncommitted`、run 终局。根因三条全部成立：① 那份归档**引擎从不回读**（`grep foldedPayload src/loop/resume-manager.js` 零命中，record 级消费者只有 `record.foldedSummary`）；② 它是账本已有行的逐字节复制（round 137 归档 940 278 B vs `round ≤ 133` 那些行自己的 `messages` 合计 941 379 B，差 0.1%）；③ 上游是 resume 把整段账本重灌回上下文（`resume-manager.js` 只用 `foldedThrough` 做轮号偏移，没用来裁上下文），于是每次折叠从 round 1 重抄 ⇒ 差分总量 O(n²)。修法落在新增的 `src/compact/fold-archive.js`：内容源仍是策略给的 `result.foldedPayload`（权威口径，宿主 `onAfterFold`/`recoveryHint`/stub 解析吃的那份内存全量一字未动），但落盘前过三道 ——`createFoldArchiveLedger` 按消息规范化 JSON 的 sha256 做**会话级去重**（resume 过的会话从 `store.load()` 把旧归档预入账）、按 UTF-8 字节**夹断**（默认 256 KiB，`context.maxFoldedPayloadBytes` > env `ERIX_FOLD_ARCHIVE_MAX_BYTES` > 默认，`0` = 只留指针；超限保尾丢头）、丢掉的条数/字节数写进**新字段 `record.foldedPayloadMeta`**（否则「被夹断」与「没折过」在账本上同形）。另在 `appendRound` 外面包一层降级：宿主因单记录超限拒 ⇒ 剥掉归档重试一次并记一条 `fatal:false` 事实，剥完仍失败才照旧终局（咨询性字段不得升格成 run 失败）。反证有效：`test/compact/fold-archive.test.js` 5 格按工单三条判据建（A 记录字节 ≤ 上限、B 同一份正文只归档一次且跨 run 从账本预入账、C 宿主回 400 时 run 不得终局为 `persistence_failed`）；过程中踩过一个坑——第一版按「折叠前后**对象身份**」反推被折走的原文，把被 `normalizeMessages` 原地改写的保留消息误判成折走，`test/loop-fr2.test.js` 当场转红，改成「策略 payload 为内容源 + 指纹只做排除」后转绿。新增模块已在 README 中英两份模块地图登记（`docs-drift-check` 的 modulemap 会漏新模块而把 `test/docs-anchor-ratchet.test.js` 两格拖红）。未动：`resume-manager` 按 `foldedThrough` 裁正文（工单里标 ⚠ 需单独拍；**后续单 #462** 跟踪读侧裁剪与水位线推进/重算口径，含「摘要不进任何轮记录 `messages`」这条可对账缺口）。
