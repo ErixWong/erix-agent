@@ -233,11 +233,11 @@ scripts/          # experiment scripts and results
   plus **every** `docs/host-upgrade-guide*.md` (discovered from the directory, so a new guide is
   covered the moment it exists). Directory discovery has a silent failure mode — renaming a guide away from that
   pattern shrinks the coverage in the script **and** in the test that mirrors the same glob, so both numbers still
-  agree: `REF_SCAN_DOCS_MINIMUM = 37` is the floor (13 pinned documents + the 24 guides found today; raised from 22
+  agree: `REF_SCAN_DOCS_MINIMUM = 39` is the floor (13 pinned documents + the 26 guides found today; raised from 22
   when the 0.22.0 guide pair landed, and from 24 to **31** in 工单 261021-03 B1 because 架构×2 + 图表×2 + 需求对照×2 +
   `examples/pi-extension/README.md` were brought into scope — those seven documents are read as *current state*, so a dead
   reference in them is worth at least as much as one in an entry document), and `test/docs-anchor-ratchet.test.js`
-  keeps its own pinned list of those 13 + 24
+  keeps its own pinned list of those 13 + 26
   file names. Renaming or adding a guide is
   red until both places are updated. `CHANGELOG.md` is deliberately out of scope: its line numbers record what was true at
   release time, and rewriting them would fake history (same reasoning as the #278 shorthand register).
@@ -272,7 +272,7 @@ scripts/          # experiment scripts and results
   Historical values, kept as history: 67 (post-#307, measured 2026-10-16), 66 (after #305 added `src/text/json-candidates.js`),
   65 (post-#292, measured 2026-10-15), 64 (the 0.20.0 tarball), 63 (the 0.19.0 era); +~44 kB packed / +~139 kB unpacked measured on 0.18.0.
   `npm run check:types-build` is the gate that they still generate.
-- Current version: `0.25.0`; use `npm version <x.y.z> --no-git-tag-version` for version changes (do not use 0.0.0 for a feature-complete first release). `0.24.0` was **never published** to the registry (the published line is 0.23.0 -> 0.25.0) and is deliberately not back-filled: `0.25.0` supersedes it, and `CHANGELOG.md` keeps its 0.24.0 section as what was true at that moment.
+- Current version: `0.26.0`; use `npm version <x.y.z> --no-git-tag-version` for version changes (do not use 0.0.0 for a feature-complete first release). `0.24.0` was **never published** to the registry (the published line is 0.23.0 -> 0.25.0) and is deliberately not back-filled: `0.25.0` supersedes it, and `CHANGELOG.md` keeps its 0.24.0 section as what was true at that moment.
 
 ### npm 2026 policy changes (TOTP discontinued + bypass token restrictions)
 - ❌ New TOTP enrollment is no longer supported (`enable-2fa` returns 404).

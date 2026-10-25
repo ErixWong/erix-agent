@@ -309,7 +309,7 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
 - 永远不要提交 token、API key 或其他凭据。
 
 权威的版本口径是 [`package.json`](package.json) 的 `version` 字段（`npm run check:docs` 会校验本文的
-发布行）。当前发布版本：**v0.25.0**。下面引用的 `files` 清单以 `package.json` 为权威：
+发布行）。当前发布版本：**v0.26.0**。下面引用的 `files` 清单以 `package.json` 为权威：
 
 ```json
 [
@@ -344,6 +344,8 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
   "docs/host-upgrade-guide-0.24.0_cn.md",
   "docs/host-upgrade-guide-0.25.0.md",
   "docs/host-upgrade-guide-0.25.0_cn.md",
+  "docs/host-upgrade-guide-0.26.0.md",
+  "docs/host-upgrade-guide-0.26.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -594,8 +596,9 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 - [docs/testing_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing_cn.md) - 测试策略与行为指标
 - [docs/host-consumer-contract_cn.md](docs/host-consumer-contract_cn.md) - 关于核验、note-first 取回、provenance 和重跑的宿主消费者契约；内含终止裁决决策表（逐 reason 的触发机制、优先级位置、宿主开关、推荐动作）与模型元数据 / 预算推导字段契约及多模型槽位装配示例
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0 破坏窗口迁移步骤（英文）
-- [docs/host-upgrade-guide-0.25.0.md](docs/host-upgrade-guide-0.25.0.md) / [docs/host-upgrade-guide-0.25.0_cn.md](docs/host-upgrade-guide-0.25.0_cn.md) - 最新的宿主迁移指南（中英成对），**0.24.0 → 0.25.0**：「折叠不再为你已经付过钱的字节重复计费」那一版。纯新增：`record.foldedPayload` 会话级去重 + 字节夹断（默认 262144 字节；`context.maxFoldedPayloadBytes` > env `ERIX_FOLD_ARCHIVE_MAX_BYTES` > 默认，`0` = 只留指针），`record.foldedPayloadMeta` 汇报去重与夹断量（宿主拒收那条记录时带 `rejectedByHost`），单条超大轮记录降级而不再判死整个 run。没有 store 签名、选项、导出或依赖搬家（上一份见 [docs/host-upgrade-guide-0.24.0_cn.md](docs/host-upgrade-guide-0.24.0_cn.md)，覆盖 0.23.0 → 0.24.0）
-- [docs/host-upgrade-guide-0.24.0.md](docs/host-upgrade-guide-0.24.0.md) / [docs/host-upgrade-guide-0.24.0_cn.md](docs/host-upgrade-guide-0.24.0_cn.md) - 上一份的宿主迁移指南（中英成对），**0.23.0 → 0.24.0**：「运行时不再替你做猜测」那一版。两处增量/修好的信息面——`<runId>.state.json` 自报 `deterministic.compactionStatsWindow`（`{ limit, dropped, total }`），`checkpoint_failed` 的 `cause` / `errorCode` / `unpersisted` 与 `persistence_failed` **键名与取值类型都相同**——加上四处**模型可见**的工具输出修正：`tree` 非根目标首行改成可回放的相对路径、`readFile` 改写你入参时给 `[参数校正：…]`、读到末尾给 `[已到末尾：…]` 而不是空串、搜索根不存在返回错误文本而不是 `（无命中）`、`rg`/`grep` 的弃用提示按本次调用的真实 mode 说话。没有 store 签名、选项或导出搬家（更早一份见 [docs/host-upgrade-guide-0.23.0.md](docs/host-upgrade-guide-0.23.0.md)，覆盖 0.22.0 → 0.23.0）
+- [docs/host-upgrade-guide-0.26.0.md](docs/host-upgrade-guide-0.26.0.md) / [docs/host-upgrade-guide-0.26.0_cn.md](docs/host-upgrade-guide-0.26.0_cn.md) - 最新的宿主迁移指南（中英成对），**0.25.0 → 0.26.0**：「折叠把它的替代物交到你手上，且成功终局一定有正文」那一版。纯新增：`record.foldedFacts` 为每次折叠落一份有界机械索引，`context.onFoldSummary` 在折叠定稿的那一刻把同一份文本投递给宿主（折叠入注不再需要轮询账本），`context.maxFoldedFactsBytes` 让输入上限 / 输出预算 / 容器上限共用一个来源。行为变化：`judge_done` 停机补上强制收尾、不再终局零正文（#467）；续跑只重放水位线之后未入账的那部分（#462）；`compaction.strategyName` 说明真正跑起来的是哪个压缩策略（#464 A）。没有删除、没有改名，store 签名 / 选项 / 导出 / 依赖一个没搬家（上一份见 [docs/host-upgrade-guide-0.25.0_cn.md](docs/host-upgrade-guide-0.25.0_cn.md)，覆盖 0.24.0 → 0.25.0）
+- [docs/host-upgrade-guide-0.25.0.md](docs/host-upgrade-guide-0.25.0.md) / [docs/host-upgrade-guide-0.25.0_cn.md](docs/host-upgrade-guide-0.25.0_cn.md) - 上一份的宿主迁移指南（中英成对），**0.24.0 → 0.25.0**：「折叠不再为你已经付过钱的字节重复计费」那一版。纯新增：`record.foldedPayload` 会话级去重 + 字节夹断（默认 262144 字节；`context.maxFoldedPayloadBytes` > env `ERIX_FOLD_ARCHIVE_MAX_BYTES` > 默认，`0` = 只留指针），`record.foldedPayloadMeta` 汇报去重与夹断量（宿主拒收那条记录时带 `rejectedByHost`），单条超大轮记录降级而不再判死整个 run。没有 store 签名、选项、导出或依赖搬家（上一份见 [docs/host-upgrade-guide-0.24.0_cn.md](docs/host-upgrade-guide-0.24.0_cn.md)，覆盖 0.23.0 → 0.24.0）
+- [docs/host-upgrade-guide-0.24.0.md](docs/host-upgrade-guide-0.24.0.md) / [docs/host-upgrade-guide-0.24.0_cn.md](docs/host-upgrade-guide-0.24.0_cn.md) - 更早一份的宿主迁移指南（中英成对），**0.23.0 → 0.24.0**：「运行时不再替你做猜测」那一版。两处增量/修好的信息面——`<runId>.state.json` 自报 `deterministic.compactionStatsWindow`（`{ limit, dropped, total }`），`checkpoint_failed` 的 `cause` / `errorCode` / `unpersisted` 与 `persistence_failed` **键名与取值类型都相同**——加上四处**模型可见**的工具输出修正：`tree` 非根目标首行改成可回放的相对路径、`readFile` 改写你入参时给 `[参数校正：…]`、读到末尾给 `[已到末尾：…]` 而不是空串、搜索根不存在返回错误文本而不是 `（无命中）`、`rg`/`grep` 的弃用提示按本次调用的真实 mode 说话。没有 store 签名、选项或导出搬家（更早一份见 [docs/host-upgrade-guide-0.23.0.md](docs/host-upgrade-guide-0.23.0.md)，覆盖 0.22.0 → 0.23.0）
 - [docs/host-upgrade-guide-0.18.0.md](docs/host-upgrade-guide-0.18.0.md) / [docs/host-upgrade-guide-0.18.0_cn.md](docs/host-upgrade-guide-0.18.0_cn.md) - 更早一个破坏窗口的宿主迁移指南（中英成对）：judge 的 `writeToolNames` 默认值、七项文件工具清单、`rg`/`grep` 的弃用提示行、属 Experimental 的 marker 文案、以及 `erix-agent/tools` 导入路径；之后每个破坏窗口都随包发一份 `docs/host-upgrade-guide-<version>.md`（随包清单见上文）
 - [docs/host-upgrade-guide-0.17.0.md](docs/host-upgrade-guide-0.17.0.md) - 更早的破坏窗口迁移指南：成对可选快路径探针（英文）
 - [docs/host-upgrade-guide-v030_cn.md](https://github.com/ErixWong/erix-agent/blob/main/docs/host-upgrade-guide-v030_cn.md) - 面向 `touwaka` / `app_container` 的宿主升级指南与 v0.3.x 行为
@@ -608,10 +611,10 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 本仓不是每份 Markdown 都在声明同一件事，门禁也按不同的口径筛（`scripts/docs-drift-check.mjs` + `test/docs-anchor-ratchet.test.js`）。三类：
 
 - **活文档——有门禁，必须「今天为真」。** `README*.md`、`AGENTS*.md`、中英契约（`docs/host-consumer-contract.md` /
-  `docs/host-consumer-contract_cn.md`）、**全部** `docs/host-upgrade-guide*.md`（当前 24 份，按目录实扫），再加上
+  `docs/host-consumer-contract_cn.md`）、**全部** `docs/host-upgrade-guide*.md`（当前 26 份，按目录实扫），再加上
   工单 261021-03 B1 新纳面的中英架构（`docs/architecture.md` / `docs/architecture_cn.md`）、中英图表
   （`docs/charts.md` / `docs/charts_cn.md`）、中英需求对照（`docs/requirements.md` / `docs/requirements_cn.md`）
-  与 `erix_run` 的 README（`examples/pi-extension/README.md`）。共 37 份（`REF_SCAN_DOCS_MINIMUM = 37`）：文件改名、
+  与 `erix_run` 的 README（`examples/pi-extension/README.md`）。共 39 份（`REF_SCAN_DOCS_MINIMUM = 39`）：文件改名、
   行号漂到另一个函数、符号在 `src/` 里已不存在，都会把 `npm run check:docs` 压红。
 - **快照档案——「首部写的那一日为真」。** `docs/v0.0-contracts*.md` / `docs/v0.1-contracts*.md` /
   `docs/v0.2-contracts*.md`、`docs/design/`、`docs/research/`、`docs/harness-comparison/`（共 28 份）。每份首部都有一行
@@ -626,9 +629,10 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 
 ## 状态与版本历史
 
-权威的版本口径是 [`package.json`](package.json) 的 `version` 字段，`npm run check:docs` 会校验下面这行发布声明。当前发布版本：**v0.25.0**（2026-10-24）。完整且权威的历史见 [CHANGELOG.md](CHANGELOG.md)；下面条目只列出改变了宿主消费方式的发布。0.6.0 破坏窗口的迁移步骤见
+权威的版本口径是 [`package.json`](package.json) 的 `version` 字段，`npm run check:docs` 会校验下面这行发布声明。当前发布版本：**v0.26.0**（2026-10-24）。完整且权威的历史见 [CHANGELOG.md](CHANGELOG.md)；下面条目只列出改变了宿主消费方式的发布。0.6.0 破坏窗口的迁移步骤见
 [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md)。
 
+- **v0.26.0 (2026-10-26)**：「折叠把替代物交到你手上，且成功终局一定有正文」那一版——每次折叠都落一份有界的 `record.foldedFacts`，并可用 `context.onFoldSummary` 把同一份文本投递给宿主（#470）；`judge_done` 停机补上强制收尾（#467）；续跑按折叠水位线裁掉已入账正文（#462）；`compaction.strategyName` 与一次性 `compaction_strategy_fallback` 说明配置的策略是否真的跑了（#464 A）。这一面仍未收口：`end_turn` / `no_tool` 还不强制收尾（#475 / #476），评审自己的判据仍不看交付物（#473）。
 - **v0.25.0 (2026-10-24)**：「折叠不再为你已经付过钱的字节重复计费」那一版——`record.foldedPayload` 变成有界且会话级去重的归档（新增 `context.maxFoldedPayloadBytes`，env `ERIX_FOLD_ARCHIVE_MAX_BYTES`，默认 256 KiB，`0` = 只留指针），被夹断的条数与字节数写进新字段 `record.foldedPayloadMeta`；宿主因单轮记录超限拒收时，本站降级那一条记录，而不是把 run 判成 `persistence_failed`。纯新增：store 签名、选项、导出与依赖都没搬家，宿主无需迁移。读侧正文裁剪另由 #462 跟踪。详见 [CHANGELOG.md](CHANGELOG.md)。
 - **v0.24.0 (2026-10-22)**：「运行时不再替你做猜测」那一版——引擎没有改它**做**什么，改的是它**说**什么。
   `<runId>.state.json` 自报削减账窗口（`deterministic.compactionStatsWindow = { limit, dropped, total }`，
