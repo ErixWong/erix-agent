@@ -266,10 +266,15 @@ export function createProviderSummarizer({
     let controller;
     let timer;
     let onParentAbort;
+    // issue #486 P1-A：归因必须按「死线是否已到」判，不能按「哪个 promise 先 reject」。
+    // 死线一到，先 `controller.abort()` 让请求收工 ⇒ **会尊重 signal 的真 provider** 立刻
+    // 以 `AbortError` / `KitError(code="aborted")` 同步 reject，`Promise.race` 当场定型；
+    // 带 `summarizer_timeout` 的那条腿晚一拍落地、无人认领，于是超时被记成 `error`。
+    let deadlineFired = false;
     if (timeoutMs !== undefined) {
       controller = new AbortController();
       request.signal = controller.signal;
-      timer = setTimeout(() => controller.abort(), timeoutMs);
+      timer = setTimeout(() => { deadlineFired = true; controller.abort(); }, timeoutMs);
       timer.unref?.();
       if (signal !== undefined && typeof signal.addEventListener === "function") {
         onParentAbort = () => controller.abort(signal?.reason);
@@ -282,6 +287,15 @@ export function createProviderSummarizer({
       response = await (timeoutMs === undefined
         ? chat(request)
         : Promise.race([chat(request), timeoutRejection(timeoutMs, controller, serialized.dropped)]));
+    } catch (error) {
+      // issue #486 P1-A：死线先到、provider 自己回了 aborted 时，形状是
+      // `KitError(code="aborted")` / `AbortError`——`classifyFoldDegradeKind` 认不出它。
+      // 只在「死线已到 且 不是宿主 abort」时改写成 `summarizer_timeout`：宿主主动 abort
+      // 属于 `error`（不是超时），不许被这条改写成 timeout。
+      if (deadlineFired && (signal === undefined || signal.aborted !== true)) {
+        throw timeoutError(timeoutMs, serialized.dropped);
+      }
+      throw error;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       if (onParentAbort !== undefined && typeof signal?.removeEventListener === "function") {
@@ -333,22 +347,26 @@ export function createProviderSummarizer({
   };
 }
 
+// `code` / `droppedMessages` 不是 Error 
+// 的声明字段——显式标注这个交叉类型，否则
+// `--checkJs` 下挂字段就是 TS2339（同一个坑在 #469 原型上踩过）
+// 。
+function timeoutError(timeoutMs, dropped) {
+  const error = /** @type {Error & { code?: string, droppedMessages?: number }} */ (
+    new Error(`fold summarizer timed out after ${timeoutMs}ms`)
+  );
+  error.code = "summarizer_timeout";
+  // 被裁过多少也带上：重试时 fold-llm 
+  // 需要知道「已经裁到哪里」。
+  error.droppedMessages = dropped > 0 ? dropped : 0;
+  return error;
+}
+
 function timeoutRejection(timeoutMs, controller, dropped) {
   return new Promise((_, reject) => {
     const timer = setTimeout(() => {
       controller?.abort();
-      // `code` / `droppedMessages` 不是 Error 
-      // 的声明字段——显式标注这个交叉类型，否则
-      // `--checkJs` 下挂字段就是 TS2339（同一个坑在 #469 原型上踩过）
-      // 。
-      const error = /** @type {Error & { code?: string, droppedMessages?: number }} */ (
-        new Error(`fold summarizer timed out after ${timeoutMs}ms`)
-      );
-      error.code = "summarizer_timeout";
-      // 被裁过多少也带上：重试时 fold-llm 
-      // 需要知道「已经裁到哪里」。
-      error.droppedMessages = dropped > 0 ? dropped : 0;
-      reject(error);
+      reject(timeoutError(timeoutMs, dropped));
     }, timeoutMs);
     timer.unref?.();
   });
