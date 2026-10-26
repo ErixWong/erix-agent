@@ -3386,7 +3386,19 @@ export async function runToolLoop(options) {
       //      而不是诊断噪声，必须进持久化账本（口径由 #109 的 notes 端口同构而来）。
       if (pendingFoldedFacts !== undefined && typeof onFoldSummary === "function") {
         try {
-          await onFoldSummary(cloneState({ ...pendingFoldedFacts, round }));
+          // issue #479：宿主写「折走第 a–b 轮」需要的三个数，全部取自本轮的**同一份**事实，
+          // 不让宿主侧二次推导（`runLoopState` 的水位线与累计已在上面 :3293-3301 更新过）：
+          //   · `foldedRoundRange{from,to}` —— 本次折叠的区间（与轮记录同源，同形）；
+          //   · `foldedThrough` —— 折叠后的水位线（run 作用域，最大已折轮号）；
+          //   · `foldedRoundCount` —— run 内累计折过的轮数。
+          // 三个键都是纯加法：既有键逐字不动，老宿主忽略它们时看到的形状与从前一致。
+          await onFoldSummary(cloneState({
+            ...pendingFoldedFacts,
+            round,
+            ...(foldedRoundRange === undefined ? {} : { foldedRoundRange }),
+            foldedThrough: runLoopState.foldedThrough,
+            foldedRoundCount: runLoopState.foldedRoundCount,
+          }));
         } catch (foldSummaryError) {
           await reportHostPersistenceFailure({
             port: "notes",

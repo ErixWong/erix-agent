@@ -108,12 +108,24 @@ test("①投递：折叠落账处调用钩子，递的就是落进轮记录的�
   assert.equal(payloads.length, factRecords.length, "一次折叠落账 = 一次投递（不多投、不漏投）");
 
   const delivered = payloads[0];
-  const { round, ...withoutRound } = delivered;
+  const {
+    round,
+    foldedRoundRange,
+    foldedThrough,
+    foldedRoundCount,
+    ...withoutRound
+  } = delivered;
   const ledgerRecord = factRecords.find((record) => Number(record.round) === round) ?? factRecords[0];
   const ledger = ledgerRecord[FOLDED_FACTS_RECORD_FIELD];
   assert.ok(Number.isSafeInteger(round), `payload 必须带轮号供宿主归档，实测 ${String(round)}`);
   // 「递的就是那一份」= 除新增的 `round` 外逐字段相等；宿主拿到的不是另算的漂亮副本。
   assert.deepEqual(withoutRound, ledger, "投递载荷必须与轮记录里那份逐字段相等");
+
+  // issue #479：宿主写「折走第 a–b 轮」所需的三个数由引擎算好（宿主侧只能正则解析自己那行中文摘要）。
+  assert.deepEqual(foldedRoundRange, { from: ledger.from, to: ledger.to },
+    "区间必须与账本同一份（同形 {from,to}），不是另算一遍");
+  assert.ok(Number.isSafeInteger(foldedThrough), `水位线必须是整数，实测 ${String(foldedThrough)}`);
+  assert.ok(Number.isSafeInteger(foldedRoundCount), `累计轮数必须是整数，实测 ${String(foldedRoundCount)}`);
   assert.ok(typeof delivered.text === "string" && delivered.text !== "", "有替代物才谈得上投递");
   assert.equal(delivered.source, "strategy", "零 LLM 的机械替代物不得被标成模型摘要");
   assert.ok(Number.isSafeInteger(delivered.bytes) && delivered.bytes > 0);
@@ -290,4 +302,42 @@ test("⑤旋钮非法值与默认值：非正整数退回 FOLDED_FACTS_MAX_BYTES
     assert.ok(fact.bytes <= FOLDED_FACTS_MAX_BYTES);
     assert.ok(!Object.hasOwn(fact, "maxBytesRequested"), "旋钮是输入上界，不是载荷字段");
   }
+});
+
+test("④#479：区间/水位线/累计三键在多轮折叠上的口径（水位线取折叠后最大值，累计是各次之和）", async () => {
+  const payloads = [];
+  const { factRecords } = await runFolding({
+    onFoldSummary: (payload) => { payloads.push(payload); },
+  });
+  assert.ok(payloads.length >= 1, "前提：这条路径必须真的折叠过");
+  const roundsOf = (record) => Number(record[FOLDED_FACTS_RECORD_FIELD]?.rounds ?? 0);
+  const totalRounds = factRecords.reduce((sum, record) => sum + roundsOf(record), 0);
+  const maxTo = Math.max(...factRecords.map((record) => Number(record.foldedRoundRange?.to ?? 0)));
+
+  // 每一条投递都自带三个整数（不必等最后一条才可用）。
+  for (const payload of payloads) {
+    assert.ok(Number.isSafeInteger(payload.foldedRoundCount) && payload.foldedRoundCount >= 0);
+    assert.ok(Number.isSafeInteger(payload.foldedThrough) && payload.foldedThrough >= 0);
+    assert.ok(payload.foldedRoundRange === undefined
+      || Number.isSafeInteger(payload.foldedRoundRange.from), "带区间就必须带 from");
+  }
+  // 累计单调不减（run 作用域计数器），最后一条等于账本各次之和。
+  const counts = payloads.map((payload) => payload.foldedRoundCount);
+  for (let index = 1; index < counts.length; index += 1) {
+    assert.ok(counts[index] >= counts[index - 1], `累计轮数不得回退：${counts.join(" → ")}`);
+  }
+  const last = payloads[payloads.length - 1];
+  assert.equal(last.foldedRoundCount, totalRounds, "最后一条的累计 == 账本各次折叠轮数之和");
+  // 水位线是**折叠之后**的值：等于账本里出现过的最大 `foldedRoundRange.to`。
+  assert.equal(last.foldedThrough, maxTo, "水位线 == 折叠后 run 作用域的最大已折轮号");
+  // 与轮记录同源：最后一条的区间逐字段等于最后一次折叠那条记录上的区间。
+  const lastRecord = factRecords[factRecords.length - 1];
+  if (lastRecord.foldedRoundRange !== undefined) {
+    assert.deepEqual(last.foldedRoundRange, lastRecord.foldedRoundRange,
+      "区间必须与轮记录那份逐字段相等（同源，不二次推导）");
+  }
+  // 老宿主兼容：忽略这三个键时，载荷里既有的键一个不少、一个不变。
+  const { foldedRoundRange: _r, foldedThrough: _t, foldedRoundCount: _c, round: _round, ...legacy } = last;
+  assert.ok(typeof legacy.text === "string" && legacy.text !== "", "既有键 text 仍在");
+  assert.ok(typeof legacy.source === "string" && legacy.source !== "", "既有键 source 仍在");
 });
