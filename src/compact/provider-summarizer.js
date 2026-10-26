@@ -142,6 +142,21 @@ const FOLD_THINKING_OFF_FIELDS = Object.freeze({
   chat_template_kwargs: Object.freeze({ thinking: false }),
 });
 
+/**
+ * issue #469-①（评审 P1）：**关思考的形态按 provider 协议选**。
+ *
+ * `enable_thinking` / `chat_template_kwargs` 是 vLLM / Qwen 一类 chat-template 后端的开关；
+ * Anthropic 侧 `thinking` 是**对象形态**（`{type:"enabled", budget_tokens}`），而且它的请求体
+ * 对未知字段是 400——把这两个键发过去会让**每一次折叠都失败**（降级成统计摘要，账上只留一条
+ * `degradeKind:"error"`）。Anthropic 的思考本来就是默认关的，不需要显式关 ⇒ 那边退回 `"inherit"`。
+ *
+ * @param {string|undefined} protocol provider 的 `protocol` 判别键（`"openai"` / `"anthropic"` / …）
+ * @returns {"off"|"inherit"}
+ */
+export function summarizerThinkingMode(protocol) {
+  return protocol === "anthropic" ? "inherit" : "off";
+}
+
 const DEFAULT_FOLD_SUMMARIZER_TIMEOUT_MS = 30_000;
 
 /**

@@ -1,6 +1,6 @@
 import { KitError } from "../providers/errors.js";
 import { computeBudget } from "../compact/budget.js";
-import { createProviderSummarizer } from "../compact/provider-summarizer.js";
+import { createProviderSummarizer, summarizerThinkingMode } from "../compact/provider-summarizer.js";
 import { resolveCompactionStrategy } from "../compact/strategy-resolution.js";
 import { createSlidingWindowStrategy } from "../compact/sliding-window.js";
 import { mergeFoldNavigationRecords } from "../compact/fold-statistical.js";
@@ -1283,6 +1283,10 @@ export async function runToolLoop(options) {
     ...(summarizerInputBoundTokens === undefined
       ? {}
       : { maxSummarizerInputTokens: summarizerInputBoundTokens }),
+    // issue #469-①（评审 P1）：关思考的**形态**按协议选——vLLM/Qwen 用
+    // `enable_thinking` + `chat_template_kwargs`，Anthropic 不认这两个键（400）且思考默认就关，
+    // 那边退回 `"inherit"`。判据只有 provider 自己声明的 `protocol`，不猜模型名。
+    thinkingMode: summarizerThinkingMode(provider?.protocol),
     // issue #469-③：今天引擎**从不看**这次调用的结果状态（被 `max_tokens` 截成半截也当完整
     // 摘要嗬下去）；先把 finish_reason / token / 被裁条数暂存在闭包，由 `recordCompactionStat`
     // 写进 `compactionStats[].foldSummary`（#469-④）。观察性质，失败不得影响折叠。

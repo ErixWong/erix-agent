@@ -5,7 +5,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createFoldLlmStrategy } from "../../src/compact/fold-llm.js";
-import { createProviderSummarizer } from "../../src/compact/provider-summarizer.js";
+import {
+  createProviderSummarizer,
+  summarizerThinkingMode,
+} from "../../src/compact/provider-summarizer.js";
 import { createCompactionStat } from "../../src/compact/pipeline.js";
 
 const SUMMARY = [
@@ -217,4 +220,22 @@ test("#469-③④ 新的诊断键只在真有事时进账（无事发生 ⇒ 无
     budgetExhausted: true,
   });
   assert.equal("foldSummary" in createCompactionStat({ compacted: true, foldSummary: {} }), false);
+});
+
+test("#469-① 关思考的形态按协议选：Anthropic 不认 vLLM 那两个键（否则每次折叠都 400）", () => {
+  assert.equal(summarizerThinkingMode("anthropic"), "inherit");
+  assert.equal(summarizerThinkingMode("openai"), "off");
+  assert.equal(summarizerThinkingMode(undefined), "off");
+  // 反向钉：Anthropic 形态的请求体里**不得**出现 vLLM 专用键（它的 `thinking` 是对象，不认这两格）。
+  const summarizer = createProviderSummarizer({
+    thinkingMode: summarizerThinkingMode("anthropic"),
+    chat: async (request) => {
+      assert.equal("enable_thinking" in request, false);
+      assert.equal("chat_template_kwargs" in request, false);
+      return { content: [{ type: "text", text: "## 阶段\nok" }] };
+    },
+  });
+  return summarizer({ messages: bulkyRound("R1") }).then((summary) => {
+    assert.equal(summary, "## 阶段\nok");
+  });
 });
