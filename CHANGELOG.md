@@ -3,6 +3,11 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Fixed
+
+- **契约里两处「说了假话」的地方改齐（issue #470 / #479 / #485 的文档债，零行为变更）**：① `docs/host-consumer-contract.md` 在 `#485` 的合并里**带着未解冲突标记上了主干**（`<<<<<<< HEAD` / `=======` / `>>>>>>> origin/main` 共 7 行，同一段 `onFoldSummary` 钩子写了两遍、英文契约第 3978–3984 行）——已解掉，保留含 `#469` 段的那一侧。② 中英契约都写着「`context.onFoldSummary`」，而引擎**从不从 `context` 读**这个键：装配端口是策略项 `policy.onFoldSummary`、直接入口是顶层选项 `runToolLoop({ onFoldSummary })`（`orchestrator.js` 解构处）⇒ 按文档写 `context.onFoldSummary` 的宿主会得到一个**静默无效**的钩子。中英同时改成真实位置，并明确写出「`context.onFoldSummary` 会被忽略」。③ `#479` 的折叠范围三键只写了形状、没写作用域：补上 `foldedRoundRange {from,to}` = 本次折叠区间、`foldedThrough` = 折叠**之后**的水位线、`foldedRoundCount` = **run 作用域**累计已折轮数（resume 后只数本 run 折的，宿主若要会话级数字得自己相加）。`check:docs`（71 项）+ `docs-sync`（92 节）+ `check:docs:strict` + `--self-test` 全绿。
+
+
 ### Added
 
 - **`context.onFoldSummary` 的载荷补上折叠范围三键（issue #479，纯加法）**：宿主（erix-station）把这条
