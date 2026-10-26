@@ -7,6 +7,25 @@
 
 - **强制收口的判据从「停机 reason 枚举」下沉到「状态」（#475，即 #467 交付时登记的残留项 B1）：`end_turn` / `no_tool` 上的同一个哑局补上。** 病灶不是两个 bug 而是一个形状 bug 的两次现形：`forceFinalIfNeeded()`（`src/loop/termination.js`）的闸门原先是一串 reason 字符串 `["max_rounds_cap","stall","continuation_exhausted","judge_done"]`，而它要回答的是一个**状态**问题（手里有没有可交付的终局正文）——用枚举回答状态问题就天然会漏。把停机 reason 全集穷举一遍（票面 §1，闭集）：未覆盖的是且仅是 `end_turn`（`decideTermination` 末尾兜底）与 `no_tool`（governor `noTool`），`aborted` 结构上不经过本收口点，**不存在第三格**；而这两格上「末轮只出 `content:[reasoning]` + `stopReason:"end_turn"` ⇒ 终局零正文、judge 侧 `judge:"missing"`」与 #467 完全同构。新形状：被预算/截断掐断的（新增模块内私有集合 `FORCED_FINAL_TRUNCATED_REASONS` = `max_rounds_cap` / `stall` / `continuation_exhausted`）继续走 `hasFinalDraft()`，**截断语义逐字不变**；其余 reason（`end_turn` / `no_tool` / `judge_done` / 未来新增的）只看「终稿正文是否为空」⇒ 对未来新增的 reason 免疫，不再需要「新增一个 reason 就记得回来贴一条」。该集合**不导出**（不进公共 API，也就不抬 `.d.ts` 与契约的声称值；不复用 `TRUNCATED_TERMINATION_REASONS` 是因为它还含 `final_guard_unverified`，那一格今天从不走到强制收尾，复用等于把一个未被要求的格顺手放进成本面）。**`judge_done` 的口径实际没变**：评审卡是 end_turn 轮的后置调用，那条路上 `hasFinalDraft()` 的后两个条件与 `isEndTurn` 同式、恒真 ⇒ 与「正文非空吗」等价（#467 已在代码里写过这件事）。**成本口径**：`end_turn` / `no_tool` 只在**哑局**（终稿正文为空）多一发请求，末轮有正文照旧一发不发；收尾那一发仍是 `tools: []`、`ctx.forcedFinal` 一次性不重试、`rounds` 与 reason 都不变（与 #467 同一道界）；逃生阀 `ERIX_NO_FORCED_FINAL=1` 对这两格同样有效（票面成本可退回）。新增 `test/loop-forced-final-by-state-475.test.js` 5 格（零真实 LLM）：① `end_turn` 哑局 ⇒ 终稿非空 + `forcedFinal` + **恰好多发一发**（2 发=没修、4 发=没收住）+ `tools: []` + `rounds` 不变；② `end_turn` 末轮有正文 ⇒ 一发都不多花（正常收尾不得白问）；③ `no_tool` 哑局同构修好且 reason 不被改写；④ 回归界 `max_rounds_cap` 的 `hasFinalDraft()` 语义不被新判据吃掉；⑤ 逃生阀形状。断言一律按 **run 终稿口径**（强制收尾的正文落在最后一条 `round_end` 之后，拿 `round_end.finalText` 量会把修好的场景误报成空——#467 踩过的坑）。**一条既有断言随行为变更改写**：`test/wrapup.test.js` 的 #406 B2-b「empty-text end_turn」——该用例原意钉的是**归一化那一发**（空原文 ⇒ 候选为空 ⇒ 归一化器 0 次），这条**未动**；变的是「空正文 + `end_turn`」本身现在正是哑局，于是主 provider 从 1 发变 2 发、终局带 `forcedFinal`、终稿由收尾那一发充当（改后断言不依赖 wrapup 信封是否解析）。门禁附带（**CI 拓到的，本地当时没报**）：本改动原先在 `src/loop/termination.js` 模块顶层插 19 行，把两个声明行推走了（`terminationReasonForAction` 111→130、`max_rounds_cap` 字面量 116→135），契约里两处**自带行号区间**的符号锚点（中英共四处）因此报 `symbol-anchor-span` 漂移。第一版按 `#286` 的首选修法删了区间只留符号，本地 `check:docs` 与全量绿，但 **CI 的 `docs-drift-check --self-test` 三例红**：那三个变异体把靶子钉在 `termination.js:111` / `:116` 的锚点上，区间被删后变异「没落上」，按 `#210` R2「变异没落上也算失败」⇒ 修文档锺点不能只看正向门禁。**最终形状**：那个私有集合改开到 `createTerminationManager` **函数作用域内**（而不是模块顶层），111 / 116 两个声明行一字不动 ⇒ 契约的符号锚点（含区间）与自测变异体同时成立，**代码面（契约锺点与自测靶子）零改动**。合入前的自评审（本单原先 `reviews` / `comments` 为空 —— 根本没做过评审）另外抓到三处**过期口径**并改齐：契约 EN/CN 第 7 点的「四个可收尾 reason」→ **六个**（三条截断 + `judge_done` + `end_turn` / `no_tool`，并注明后两者只在零正文时才会走到）、README 中英「#475 / #476 仍是残留」→ #475 已落、只剩 #476；而 `README*` 的 v0.26.0 发版条目与 `docs/host-upgrade-guide-0.26.0*` 里「本条不覆盖 `end_turn` / `no_tool`」是**版本限定的历史陈述**，不改写历史。教训登记：改 `src/loop/termination.js` 这类「被契约用带区间锺点引用」的文件，本地验证必须跑 `node scripts/docs-drift-check.mjs --self-test`，不能只跑 `npm run check:docs`。另提醒宿主的二阶风险（票面 §2，本单**不改**）：`FINAL_GUARD_TERMINATION_REASONS` **含** `end_turn` / `no_tool` ⇒ 这两格虽原先不发强制收尾，宿主接了 finalGuard 时 guard 仍会跑；「guard 覆盖了这两格」≠「这两格是安全的」，橡皮章式 guard（`finalText.trim() !== ""`）会把哑局一并洗成 `verified`。**本次没做**：收尾问过之后终局仍空正文要不要补一发或落一条固定终稿文案（⇒ #476，固定文案属引擎自写正文、须按 #323 打 marker）；评审自承缺项仍判 `done:true`（⇒ #473，属 done 判据语义）；`accept` 永远不得建立在 `finalText` 非空之上（`S6a`）。
 
+### Changed
+
+- **折叠摘要调用按宿主裁决收敛（issue #469 ①②③，erix-station 2026-10-26 裁决）**：`fold-llm` 这一次
+  provider 调用现在有**显式的三条边界**。①**关思考是显式的**：请求同时带 `reasoning_effort:"none"` +
+  `enable_thinking:false` + `chat_template_kwargs:{"thinking":false}`——真机那三发只带前者仍产出 584 个
+  `reasoning_token`，靠模型默认值等于把这条裁决交给别人的配置表；不接受未知字段的上游可传
+  `thinkingMode:"inherit"` 退回旧形状。②**30 s 是整条摘要步骤的死线，不是每次尝试的**：剩余预算按
+  `timeoutMs` 下发到每次调用，超窗自愈重试与首发共享同一条 30 s；剩余不足 2 s 不再重试，改记
+  `budgetExhausted`；**超时永不重试**（重试只是把一次卡顿变成两次）。③**输入只喂被折走的轮次 + 上一份
+  折叠摘要**：窗口 48 KB 按**整轮**从旧到新截（绝不截断单轮中部），续写基底单独计 24 KB、超了从头部截
+  并留 `priorSummaryTruncated`；未折走的活上下文不进请求（重复付费 + 诱导复述模型仍看得见的东西）。
+  诊断面同步扩键：`compactionStats[].foldSummary` 增 `priorSummaryTruncated` / `priorSummaryBytes` /
+  `droppedRounds` / `attempts` / `budgetExhausted`（与 `strategyName` 同口径：**无事发生 ⇒ 无键**）。
+  两条**既有断言**随之改写：`#419 ②` 那条「不许出现 `enable_thinking` / `chat_template_kwargs`」的反向
+  钉被裁决推翻（改成「必须出现」）；`#271` 的行数容量中位锚点因本轮改动落到 `src/compact/fold-llm.js`
+  上，角色从 `src/tools/notes.js` 改钉它，描述 `median 6,952 (37.7)` → `median 6,756 (38.8)`
+  （同位数替换，对本文件字节中性；容差常量一个没动）。
+
+
 ## [0.26.0] - 2026-10-26
 
 ### Added
