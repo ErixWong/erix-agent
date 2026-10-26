@@ -1370,10 +1370,10 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
    其余 reason —— `judge_done`（issue #467）、`end_turn` / `no_tool`（issue #475）、
    以及后续版本新增的任何 reason —— 只过一个判据：整个 run 一个字都没写过。
    ⇒ 新增 reason 天然被覆盖，不必再「记着回来贴一条」。对那三条截断 reason，
-   这次调用只在
-   `hasFinalDraft`（`src/loop/termination.js`）为假时——也就是这个 run 本来会以零
-   终稿收场时（`src/loop/termination.js:203-256`），然后 `finalGuard` 可以 accept /
-   skip / revise / 失败。`revise` 不是终局：它注入一条用户消息，本轮治理重新开始
+   这次调用是否发出，
+   由下面更严的那条判据决定：`hasFinalDraft`（`src/loop/termination.js`）为假时——
+   也就是这个 run 本来会以零终稿收场时（`src/loop/termination.js:203-256`）——才发。
+   发完之后 `finalGuard` 才可以 accept / skip / revise / 失败。`revise` 不是终局：它注入一条用户消息，本轮治理重新开始
    （`src/loop/orchestrator.js:3156-3178`）。修订重试次数受 `finalGuardMaxRetries`
    约束（默认 2，`budgetRounds`，`src/loop/orchestrator.js`），guard 自身超时默认 30s
    （`budgetRounds`，`src/loop/orchestrator.js`）。

@@ -1750,11 +1750,11 @@ Within one round, exactly one mechanism gets to decide, in this order
    `end_turn` and `no_tool` (issue #475), and any reason a later release adds —
    is eligible on one test only: the whole run wrote not a single character.
    A new reason is therefore covered by construction; nobody has to "append a
-   row to the whitelist" again. For those three truncation reasons, the call
-   fires only when
-   `hasFinalDraft` (`src/loop/termination.js`) is false, i.e. only when the run
-   would otherwise end with no terminal text
-   (`src/loop/termination.js:203-256`), then `finalGuard` may accept, skip,
+   row to the whitelist" again. Those three keep the stricter test, which is
+   what decides them: the call fires only when `hasFinalDraft`
+   (`src/loop/termination.js`) is false, i.e. only when the run would otherwise
+   end with no terminal text (`src/loop/termination.js:203-256`). Once that call
+   returns, `finalGuard` may accept, skip,
    revise, or fail. A `revise` verdict is not terminal: it injects a user
    message and governance starts over for that round
    (`src/loop/orchestrator.js:3156-3178`). Revision retries are bounded by
