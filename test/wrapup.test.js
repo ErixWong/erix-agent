@@ -574,11 +574,18 @@ test("empty-text end_turn 不再白烧归一化请求（候选为空 ⇒ 一次�
       completion: { signals: [], maxNoToolRounds: 3 },
       reflection: { wrapupNormalize: true, roundJudge: false, judgeIntercept: false, judge: { provider: normalizer } },
     });
+    // 本用例的原意（#406 B2-b）钉的是**归一化那一发**：空原文 ⇒ 候选为空 ⇒ 归一化器一次都不被调。
+    // 下面四条自 issue #475 起换了形状，且**不在**归一化通路上：「空正文 + `end_turn`」正是哑局，
+    // 强制收尾的判据从原因枚举下沉到状态后开始覆盖它 ⇒ 主 provider 多一发收尾、终局带上
+    // `forcedFinal`、终稿由那一发充当（不再是零正文终局）。成本可退：`ERIX_NO_FORCED_FINAL=1`。
     assert.equal(normalizer.requests.length, 0, "空原文 ⇒ 归一化器一次都不该被调（B2-a 的候选为空判据）");
-    assert.equal(sequence.requests.length, 1, "主 provider 只跑了那一轮空文本");
-    assert.equal(result.rounds, 1);
-    assert.deepEqual(result.termination, { reason: "end_turn" });
-    assert.equal(result.finalText, "", "终稿就是模型这一轮的真实输出（空串），不再被归一化器替换");
+    assert.equal(sequence.requests.length, 2, "1 轮空文本 + #475 补的那一发强制收尾");
+    assert.equal(result.rounds, 1, "收尾不增加轮数");
+    assert.deepEqual(result.termination, { reason: "end_turn", forcedFinal: true });
+    assert.ok(
+      result.finalText.includes("无结论"),
+      "哑局不再零正文终局：终稿来自强制收尾那一发（本断言不依赖 wrapup 信封是否解析）",
+    );
   } finally {
     if (prev === undefined) delete process.env.ERIX_WRAPUP_NORMALIZE;
     else process.env.ERIX_WRAPUP_NORMALIZE = prev;
