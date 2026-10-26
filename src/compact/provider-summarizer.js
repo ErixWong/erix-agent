@@ -128,6 +128,20 @@ function trimOldestEntries(entries, header, maxTokens) {
 // ms 那一发在真实数据里
 // 是离群值，30 s 既不误杀正常摘要，也不会让离群值拖死整轮。传 
 // `Infinity`/0/负数 ⇒ 不计时。
+// issue #469-①（宿主裁决 2026-10-26）：折叠摘要在每个 run 的**关键路径**上，
+// 思考是拿"看得见的延迟"换"没人看见的质量" ⇒ **显式关**，不靠模型默认值
+// （换上游模型时默认值会变，等于把这条裁决交给别人的配置表）。三个键同时发：
+//   · `reasoning_effort` 是引擎既有口径（judge 同款，`"none"` = 不思考）；
+//   · `enable_thinking` / `chat_template_kwargs.thinking` 是 vLLM / Qwen 一类
+//     chat-template 后端的开关——真机 #469 那几发带着 `reasoning_effort:"none"`
+//     仍产出 584 个 reasoning token，只发前者不够。
+// 上游 provider 不接受未知字段时传 `thinkingMode: "inherit"` 退回旧形状。
+const FOLD_THINKING_OFF_FIELDS = Object.freeze({
+  reasoning_effort: NORMALIZATION_REASONING_EFFORT,
+  enable_thinking: false,
+  chat_template_kwargs: Object.freeze({ thinking: false }),
+});
+
 const DEFAULT_FOLD_SUMMARIZER_TIMEOUT_MS = 30_000;
 
 /**
@@ -172,8 +186,10 @@ const DEFAULT_FOLD_SUMMARIZER_TIMEOUT_MS = 30_000;
  *   summarizerTimeoutMs?: number,
  *   signal?: AbortSignal,
  *   onMeta?: (meta: object) => void,
+ *   thinkingMode?: "off"|"inherit",
  * }} config
- * @returns {(input: { messages?: object[], roundRange?: object, promptGuide?: string }) => Promise<string>}
+@returns {(input: { messages?: object[], roundRange?: object, promptGuide?: string,
+ *   priorSummary?: string, timeoutMs?: number }) => Promise<string>}
  */
 export function createProviderSummarizer({
   chat,
@@ -186,25 +202,49 @@ export function createProviderSummarizer({
   // 要关掉：传 `Infinity`（非有限 ⇒ 不计时的分支）；传 0 / 
   // 负数同样退回不计时。
   summarizerTimeoutMs = DEFAULT_FOLD_SUMMARIZER_TIMEOUT_MS,
+  thinkingMode = "off",
   signal,
   onMeta,
 } = {}) {
   if (typeof chat !== "function") {
     throw new TypeError("createProviderSummarizer requires a chat(request) function");
   }
-  return async ({ messages = [], roundRange, promptGuide: perCallGuide } = {}) => {
+  return async ({
+    messages = [],
+    roundRange,
+    promptGuide: perCallGuide,
+    priorSummary,
+    timeoutMs: perCallTimeoutMs,
+  } = {}) => {
     const serialized = serializeFoldedMessagesWithMeta(messages, roundRange, {
       ...(maxSummarizerInputTokens === undefined ? {} : { maxTokens: maxSummarizerInputTokens }),
     });
-    const userContent = `${perCallGuide ?? promptGuide}\n\n${serialized.text}`;
+    // issue #469-③（宿主裁决）：上一份折叠摘要作**续写基底**，单独一节摆到窗口正文之前。
+    // 24 KB 上限与截断事实由调用方（`fold-llm`）负责——这里只渲染。
+    const prior = typeof priorSummary === "string" && priorSummary.trim() !== ""
+      ? `【上一份折叠摘要（续写基底，只作脉络，不要重述）】\n${priorSummary}`
+      : undefined;
+    const userContent = [perCallGuide ?? promptGuide, prior, serialized.text]
+      .filter((part) => part !== undefined)
+      .join("\n\n");
+    // 显式标注类型：条件展开会让字面量推成**联合类型**，`request.signal = …` 就报
+    // TS2339（`Property 'signal' does not exist`）。这不是风格问题，是把它收敛回单一对象。
+    /** @type {{ system: string, messages: { role: string, content: string }[],
+     * signal?: AbortSignal, reasoning_effort?: string, enable_thinking?: boolean,
+     * chat_template_kwargs?: { thinking: boolean } }} */
     const request = {
       system,
       messages: [{ role: "user", content: userContent }],
-      reasoning_effort: NORMALIZATION_REASONING_EFFORT,
+      ...(thinkingMode === "inherit" ? {} : FOLD_THINKING_OFF_FIELDS),
     };
-    const timeoutMs = Number.isFinite(summarizerTimeoutMs) && summarizerTimeoutMs > 0
-      ? summarizerTimeoutMs
-      : undefined;
+    // issue #469-②（宿主裁决）：整条摘要步骤**共用一条死线**。调用方把「这一发还能用
+    // 多久」按剩余预算传下来（超窗自愈重试与首发共享同一个 30 s，不是各给 30 s）；
+    // 不传 ⇒ 用本实例的默认值。
+    const timeoutMs = Number.isFinite(perCallTimeoutMs) && perCallTimeoutMs > 0
+      ? perCallTimeoutMs
+      : Number.isFinite(summarizerTimeoutMs) && summarizerTimeoutMs > 0
+        ? summarizerTimeoutMs
+        : undefined;
     // 超时只住这一发请求：子 controller + 父 signal 转发 + Promise.race，
     // 与 judge 拦截调用
     // （orchestrator 里的同形模板）一致；run 的 signal 不参与计时。

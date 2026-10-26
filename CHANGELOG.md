@@ -3,6 +3,25 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Changed
+
+- **折叠摘要调用按宿主裁决收敛（issue #469 ①②③，erix-station 2026-10-26 裁决）**：`fold-llm` 这一次
+  provider 调用现在有**显式的三条边界**。①**关思考是显式的**：请求同时带 `reasoning_effort:"none"` +
+  `enable_thinking:false` + `chat_template_kwargs:{"thinking":false}`——真机那三发只带前者仍产出 584 个
+  `reasoning_token`，靠模型默认值等于把这条裁决交给别人的配置表；不接受未知字段的上游可传
+  `thinkingMode:"inherit"` 退回旧形状。②**30 s 是整条摘要步骤的死线，不是每次尝试的**：剩余预算按
+  `timeoutMs` 下发到每次调用，超窗自愈重试与首发共享同一条 30 s；剩余不足 2 s 不再重试，改记
+  `budgetExhausted`；**超时永不重试**（重试只是把一次卡顿变成两次）。③**输入只喂被折走的轮次 + 上一份
+  折叠摘要**：窗口 48 KB 按**整轮**从旧到新截（绝不截断单轮中部），续写基底单独计 24 KB、超了从头部截
+  并留 `priorSummaryTruncated`；未折走的活上下文不进请求（重复付费 + 诱导复述模型仍看得见的东西）。
+  诊断面同步扩键：`compactionStats[].foldSummary` 增 `priorSummaryTruncated` / `priorSummaryBytes` /
+  `droppedRounds` / `attempts` / `budgetExhausted`（与 `strategyName` 同口径：**无事发生 ⇒ 无键**）。
+  两条**既有断言**随之改写：`#419 ②` 那条「不许出现 `enable_thinking` / `chat_template_kwargs`」的反向
+  钉被裁决推翻（改成「必须出现」）；`#271` 的行数容量中位锚点因本轮改动落到 `src/compact/fold-llm.js`
+  上，角色从 `src/tools/notes.js` 改钉它，描述 `median 6,952 (37.7)` → `median 6,756 (38.8)`
+  （同位数替换，对本文件字节中性；容差常量一个没动）。
+
+
 ## [0.26.0] - 2026-10-26
 
 ### Added

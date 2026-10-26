@@ -125,12 +125,16 @@ test("createProviderSummarizer always sends reasoning_effort:none (issue #419 �
     // 取值走同一个内部常量（与归一化那两处共用），不是各写各的字面量
     assert.equal(request.reasoning_effort, NORMALIZATION_REASONING_EFFORT);
     assert.equal(request.reasoning_effort, "none");
-    // 反向钉：`temperature` 本票**有意不发**（改采样语义属另一件事），
-    // 也不该多出自创的思考开关（只跟 judge / 归一化的既有写法一致）。
+    // 反向钉：`temperature` 本票**有意不发**（改采样语义属另一件事）。
     assert.equal(Object.hasOwn(request, "temperature"), false);
+    // 2026-10-26 宿主裁决（issue #469 ①，erix-station）**改写**了这条反向钉：
+    // 真机那一发带着 `reasoning_effort:"none"` 仍产出 584 个 reasoning token ⇒ 只发
+    // 前者不够，必须**显式**关掉 chat-template 侧的思考（不能靠模型默认值）。
+    // 所以 `enable_thinking` / `chat_template_kwargs` 从「不许出现」变成「必须出现」，
+    // 而 `thinking`（对象形态）仍然不发——它不是「关」的开关，是「怎么开」的开关。
     assert.equal(Object.hasOwn(request, "thinking"), false);
-    assert.equal(Object.hasOwn(request, "enable_thinking"), false);
-    assert.equal(Object.hasOwn(request, "chat_template_kwargs"), false);
+    assert.equal(request.enable_thinking, false);
+    assert.deepEqual(request.chat_template_kwargs, { thinking: false });
   }
 });
 

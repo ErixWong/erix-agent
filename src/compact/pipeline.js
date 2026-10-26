@@ -166,6 +166,11 @@ export function observeCompactionLayer(
  *     estimatedInputTokens?: number,
  *     inputMessages?: number,
  *     reused?: boolean,
+ *     priorSummaryTruncated?: boolean,
+ *     priorSummaryBytes?: number,
+ *     droppedRounds?: number,
+ *     attempts?: number,
+ *     budgetExhausted?: boolean,
  *   }
  * }}
  */
@@ -246,6 +251,20 @@ export function createCompactionStat({
         ? { outputTokens: foldSummary.outputTokens }
         : {}),
       ...(foldSummary.reused === true ? { reused: true } : {}),
+      // issue #469-③（宿主裁决 2026-10-26）：续写基底被截过要说，
+      // 否则「脉络断了」与「本来就没有上一份」在账上分不开。
+      ...(foldSummary.priorSummaryTruncated === true ? { priorSummaryTruncated: true } : {}),
+      ...(Number.isSafeInteger(foldSummary.priorSummaryBytes) && foldSummary.priorSummaryBytes > 0
+        ? { priorSummaryBytes: foldSummary.priorSummaryBytes }
+        : {}),
+      // 按**整轮**裁掉的轮数（裁决 ③ 的字节帽）与「这一发试了几次 / 是不是没时间试」。
+      ...(Number.isSafeInteger(foldSummary.droppedRounds) && foldSummary.droppedRounds > 0
+        ? { droppedRounds: foldSummary.droppedRounds }
+        : {}),
+      ...(Number.isSafeInteger(foldSummary.attempts) && foldSummary.attempts > 1
+        ? { attempts: foldSummary.attempts }
+        : {}),
+      ...(foldSummary.budgetExhausted === true ? { budgetExhausted: true } : {}),
     };
     if (Object.keys(projected).length > 0) stat.foldSummary = projected;
   }
