@@ -1364,8 +1364,9 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
    （`src/loop/orchestrator.js`）。工具轮因此永远不可能产生 `judge_done`；
    `max_tokens` 轮也不可能同时产生 `judge_done` 与 `continuation_exhausted`
    （映射先优 `judge_done`，`src/loop/termination.js:94`）。
-7. **停止后验证**——stop reason 定下来后，四个可收尾 reason（三条不可续跑的 +
-   `judge_done`，issue #467）可能多一次强制收尾的 provider 调用，且只在
+7. **停止后验证**——stop reason 定下来后，六个可收尾 reason（三条不可续跑的 +
+   `judge_done`（issue #467）+ `end_turn` / `no_tool`（issue #475，只在整个 run 一个
+   字都没写过时才会走到））可能多一次强制收尾的 provider 调用，且只在
    `hasFinalDraft`（`src/loop/termination.js`）为假时——也就是这个 run 本来会以零
    终稿收场时（`src/loop/termination.js:203-256`），然后 `finalGuard` 可以 accept /
    skip / revise / 失败。`revise` 不是终局：它注入一条用户消息，本轮治理重新开始
