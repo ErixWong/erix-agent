@@ -1743,19 +1743,31 @@ Within one round, exactly one mechanism gets to decide, in this order
    and `continuation_exhausted` (the mapping prefers `judge_done` anyway,
    `src/loop/termination.js:94`).
 7. **post-stop verification** — after a stop reason exists, forced wrap-up may
-   add one more provider call for the six wrap-up-eligible reasons — the three
-   non-continuable ones plus `judge_done` (issue #467) plus `end_turn` and
-   `no_tool`, which reach it only when the run has no body at all (issue #475) —
-   and only when
-   `hasFinalDraft` (`src/loop/termination.js`) is false, i.e. only when the run
-   would otherwise end with no terminal text
-   (`src/loop/termination.js:203-256`), then `finalGuard` may accept, skip,
+   add one more provider call. Eligibility is a **state, not a whitelist of
+   reasons** (issue #475): the three non-continuable reasons
+   (`max_rounds_cap` / `stall` / `continuation_exhausted`) keep the stricter
+   truncation test below, while every other reason — `judge_done` (issue #467),
+   `end_turn` and `no_tool` (issue #475), and any reason a later release adds —
+   is eligible on one test only: the whole run wrote not a single character.
+   A new reason is therefore covered by construction; nobody has to "append a
+   row to the whitelist" again. Those three keep the stricter test, which is
+   what decides them: the call fires only when `hasFinalDraft`
+   (`src/loop/termination.js`) is false, i.e. only when the run would otherwise
+   end with no terminal text (`src/loop/termination.js:203-256`). Once that call
+   returns, `finalGuard` may accept, skip,
    revise, or fail. A `revise` verdict is not terminal: it injects a user
    message and governance starts over for that round
    (`src/loop/orchestrator.js:3156-3178`). Revision retries are bounded by
    `finalGuardMaxRetries` (default 2, `budgetRounds` at `src/loop/orchestrator.js`),
    and the guard's own timeout defaults to 30 s
    (`budgetRounds` at `src/loop/orchestrator.js`).
+   **Coverage is not safety (issue #475 §2)**: `FINAL_GUARD_TERMINATION_REASONS`
+   (`src/loop/termination.js:14-21`) already contains `end_turn` and `no_tool`,
+   so a host that wires a `finalGuard` has always run it on those two reasons.
+   If the guard judges by the deliverable, a silent run gets caught; if it is a
+   rubber stamp (`finalText.trim() !== ""`), it certifies that silent run as
+   `verified`. Reading "the guard covers those reasons" as "those reasons are
+   safe" is the error this clause exists to prevent.
    The wrap-up text is **payload-only** (issue #467): it reaches the host through
    `result.finalText`, plus one extra journal row written by
    `appendEngineMessagesToTranscript` (`src/loop/orchestrator.js`) whose
