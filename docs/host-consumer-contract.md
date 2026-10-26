@@ -1743,8 +1743,10 @@ Within one round, exactly one mechanism gets to decide, in this order
    and `continuation_exhausted` (the mapping prefers `judge_done` anyway,
    `src/loop/termination.js:94`).
 7. **post-stop verification** — after a stop reason exists, forced wrap-up may
-   add one more provider call for the four wrap-up-eligible reasons — the three
-   non-continuable ones plus `judge_done` (issue #467) — and only when
+   add one more provider call for the six wrap-up-eligible reasons — the three
+   non-continuable ones plus `judge_done` (issue #467) plus `end_turn` and
+   `no_tool`, which reach it only when the run has no body at all (issue #475) —
+   and only when
    `hasFinalDraft` (`src/loop/termination.js`) is false, i.e. only when the run
    would otherwise end with no terminal text
    (`src/loop/termination.js:203-256`), then `finalGuard` may accept, skip,
