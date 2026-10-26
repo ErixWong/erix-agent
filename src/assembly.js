@@ -1,6 +1,8 @@
 
 import {
   MODEL_CONFIG_RESOLVER_HINT,
+  validateContextOptionNames,
+  validateFoldSummarizerCaps,
   validateFoldSummaryHook,
   validateModelConfigResolver,
   validateProviderBoundary,
@@ -167,6 +169,16 @@ export function createAssemblyPort(input = {}) {
   const foldSummaryHookProblems = validateFoldSummaryHook(port.policy?.onFoldSummary);
   if (foldSummaryHookProblems.length > 0) {
     throw new TypeError(foldSummaryHookProblems.join("; "));
+  }
+  // issue #469：`context` 的未知子键与四个折叠摘要上限都在装配期校。
+  // 以前写错键名是**静默丢弃**（宿主以为配上了，实际跑默认值，`#331` 的病），
+  // 而 `0` / 负数 / 字符串会等到真发生折叠那一轮才现形。
+  const contextOptionProblems = [
+    ...validateContextOptionNames(port.policy?.context),
+    ...validateFoldSummarizerCaps(port.policy?.context),
+  ];
+  if (contextOptionProblems.length > 0) {
+    throw new TypeError(contextOptionProblems.join("; "));
   }
   return Object.freeze(port);
 }
