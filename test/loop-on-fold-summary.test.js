@@ -122,8 +122,14 @@ test("①投递：折叠落账处调用钩子，递的就是落进轮记录的�
   assert.deepEqual(withoutRound, ledger, "投递载荷必须与轮记录里那份逐字段相等");
 
   // issue #479：宿主写「折走第 a–b 轮」所需的三个数由引擎算好（宿主侧只能正则解析自己那行中文摘要）。
-  assert.deepEqual(foldedRoundRange, { from: ledger.from, to: ledger.to },
-    "区间必须与账本同一份（同形 {from,to}），不是另算一遍");
+  // 不写成 `deepEqual(range, {from: ledger.from, to: ledger.to})`：若哪天 `from` 缺失，那条会退化成
+  // `{from: undefined}` 的恒真比较（假绿）。这里两侧都先断言是整数，再比。
+  assert.ok(Number.isSafeInteger(foldedRoundRange.from) && foldedRoundRange.from >= 1,
+    `payload 的区间必须带 from，实测 ${JSON.stringify(foldedRoundRange)}`);
+  assert.ok(Number.isSafeInteger(foldedRoundRange.to) && foldedRoundRange.to >= foldedRoundRange.from,
+    `payload 的区间必须带 to 且 >= from，实测 ${JSON.stringify(foldedRoundRange)}`);
+  assert.equal(foldedRoundRange.from, ledger.from, "from 与账本同一份");
+  assert.equal(foldedRoundRange.to, ledger.to, "to 与账本同一份");
   assert.ok(Number.isSafeInteger(foldedThrough), `水位线必须是整数，实测 ${String(foldedThrough)}`);
   assert.ok(Number.isSafeInteger(foldedRoundCount), `累计轮数必须是整数，实测 ${String(foldedRoundCount)}`);
   assert.ok(typeof delivered.text === "string" && delivered.text !== "", "有替代物才谈得上投递");
