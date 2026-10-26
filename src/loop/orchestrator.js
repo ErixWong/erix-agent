@@ -2,6 +2,8 @@ import { KitError } from "../providers/errors.js";
 import { computeBudget } from "../compact/budget.js";
 import { createProviderSummarizer, summarizerThinkingMode } from "../compact/provider-summarizer.js";
 import { resolveCompactionStrategy } from "../compact/strategy-resolution.js";
+// issue #469（裁决 A）：resume 后的续写基底从账本播种，取源就复用 #462 的「按水位线挑覆盖事实」。
+import { pickCoveringFoldAlternative } from "../compact/resume-fold-trim.js";
 import { createSlidingWindowStrategy } from "../compact/sliding-window.js";
 import { mergeFoldNavigationRecords } from "../compact/fold-statistical.js";
 import {
@@ -1307,6 +1309,34 @@ export async function runToolLoop(options) {
   // summarizer** 上才有确定性钩子；宿主自带的策略对象（自带 summarizer）由宿主自己负责重算，
   // 引擎照旧把喂出去的摘要入账（可解释性不受影响）。见 docs/host-consumer-contract.md「折叠摘要与 TTL 降级事实」。
   const foldSummaryLedger = createFoldSummaryLedger();
+  /**
+   * issue #469（裁决 A）：resume 灌回来的账本（`seedFoldSummaries` 里赋值）。
+   * 续写基底播种只能取这份——策略实例是新造的，in-run 闭包在 resume 后第一次折叠时是空的。
+   * @type {object[]|undefined}
+   */
+  let resumedLedgerRecords;
+  /**
+   * issue #469（裁决 A）：账本自己声明的最大已折轮号（三种落盘形状都收）。
+   * 只在 run 的水位线还没推出来时兜底——播种要的是「账本折到哪了」，不是「这一轮 run 记到哪了」。
+   *
+   * @param {object[]|undefined} records
+   * @returns {number}
+   */
+  const ledgerWatermark = (records) => {
+    if (!Array.isArray(records)) return 0;
+    let watermark = 0;
+    for (const record of records) {
+      const candidates = [
+        record?.foldedRoundRange?.to,
+        record?.foldedSummary?.foldedRoundRange?.to,
+        record?.foldedFacts?.to,
+      ];
+      for (const value of candidates) {
+        if (Number.isSafeInteger(value) && value > watermark) watermark = value;
+      }
+    }
+    return watermark;
+  };
   /** @type {{ fingerprint: string, summary: string, reused: boolean, roundRange?: any}|undefined} */
   let lastFoldSummaryOutcome = undefined;
   const reusableCompactionSummarizer = async (input = {}) => {
@@ -1342,6 +1372,23 @@ export async function runToolLoop(options) {
       // `optionValue()` 是「callOptions 优先、构造 options 兜底」，所以这里透传即生效。
       foldLlmOptions: {
         summarizer: reusableCompactionSummarizer,
+        // issue #469（宿主裁决 A）：**账本播种**。resume 出来的 run 第一次折叠的续写基底
+        // = 「按水位线覆盖当上下文的那份折叠摘要」。取源走 `pickCoveringFoldAlternative`
+        // （不只 `foldedSummary` 事实行，`foldedFacts` 策略替代物也算；嵌套 `foldedRoundRange.{from,to}`
+        // 与平铺 `{from,to}` 两种形状都在它里面收）。
+        // 优先级**最低**（见 `fold-llm.js#resolveContinuationBase`）：显式参数 > 构造参数 >
+        // in-run 闭包 > 账本；非 resume 或挑不出覆盖事实 ⇒ 返回空 ⇒ 逐字退回今天的形状。
+        // 取值器而非常量：水位线要到恢复之后才定，且同一 run 内折叠后它会被 in-run 闭包接管。
+        ledgerPreviousSummary: () => pickCoveringFoldAlternative(
+          resumedLedgerRecords,
+          // 水位线优先用 run 自己的那份（restore 从账本推导）；它为 0 时退回「账本自己声明的
+          // 最大已折轮号」——否则「账本里有折叠事实、但本轮 run state 还没推出水位线」这一格
+          // 会让播种静默失效（A 在最需要它的那一次折叠上归零）。三种落盘形状都要收：
+          // 顶层 `foldedRoundRange.to`、`foldedSummary.foldedRoundRange.to`、`foldedFacts.to`。
+          runLoopState.foldedThrough >= 1
+            ? runLoopState.foldedThrough
+            : ledgerWatermark(resumedLedgerRecords),
+        )?.fact?.text,
         ...(context.summarizerBudgetMs === undefined
           ? {}
           : { summarizerBudgetMs: context.summarizerBudgetMs }),
@@ -1673,7 +1720,12 @@ export async function runToolLoop(options) {
     notifyCapabilitySkipped,
     // issue #326（wo-C）：恢复时把**已入账的折叠摘要**灌回引擎的复用账本 ⇒ 同一折叠输入不再调摘要器。
     // 写成「属性 + 箭头函数」（`test/loop-callback-this.test.js` 钉住的口径），不是方法简写。
-    seedFoldSummaries: (records) => foldSummaryLedger.seedFromRecords(records),
+    seedFoldSummaries: (records) => {
+      foldSummaryLedger.seedFromRecords(records);
+      // issue #469（裁决 A）：把账本留给「续写基底播种」用——resume 出来的 run 第一次折叠
+      // 拿不到 in-run 闭包（策略实例是新造的），只能靠这份账本。非 resume ⇒ 永不赋值。
+      resumedLedgerRecords = records;
+    },
     get currentRunState() {
       return runLoopState.currentRunState;
     },

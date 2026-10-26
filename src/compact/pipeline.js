@@ -254,6 +254,11 @@ export function createCompactionStat({
       // issue #469-③（宿主裁决 2026-10-26）：续写基底被截过要说，
       // 否则「脉络断了」与「本来就没有上一份」在账上分不开。
       ...(foldSummary.priorSummaryTruncated === true ? { priorSummaryTruncated: true } : {}),
+    // issue #469（裁决 A）：基底从哪来——`"ledger"` = resume 后从账本播的，`"in-run"` = 本 run 攒的。
+    // 口径同「无事实不写键」：没基底（`fold-llm` 不写这个键）就整条不出现。
+    ...(foldSummary.priorSummaryOrigin === "ledger" || foldSummary.priorSummaryOrigin === "in-run"
+      ? { priorSummaryOrigin: foldSummary.priorSummaryOrigin }
+      : {}),
       ...(Number.isSafeInteger(foldSummary.priorSummaryBytes) && foldSummary.priorSummaryBytes > 0
         ? { priorSummaryBytes: foldSummary.priorSummaryBytes }
         : {}),

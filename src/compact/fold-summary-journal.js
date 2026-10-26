@@ -77,7 +77,7 @@ export function stableFingerprint(value) {
 /**
  * 折叠摘要的复用键：由**喂给摘要器的输入**决定，不由轮号决定。
  *
- * @param {{ messages?: unknown, roundRange?: unknown, recoveryHint?: unknown }} [input]
+ * @param {{ messages?: unknown, roundRange?: unknown, recoveryHint?: unknown, priorSummary?: unknown }} [input]
  * @returns {string}
  */
 export function foldSummaryFingerprint(input = {}) {
@@ -85,6 +85,12 @@ export function foldSummaryFingerprint(input = {}) {
     messages: input?.messages ?? [],
     roundRange: input?.roundRange ?? null,
     recoveryHint: input?.recoveryHint ?? null,
+    // issue #469（裁决 A 实施条件 4）：续写基底必须进键。否则 resume 第一折若命中 #326
+    // 播进来的账本，**播进去的基底会被无声忽略**——A 的效果在最需要它的那一次折叠上归零。
+    // 代价是既有账本（用旧键算的）在升级后首次跑会 miss 一次，重算一份摘要。
+    priorSummary: typeof input?.priorSummary === "string" && input.priorSummary !== ""
+      ? input.priorSummary
+      : null,
   });
 }
 

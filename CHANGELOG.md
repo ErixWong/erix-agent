@@ -3,6 +3,12 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Fixed
+
+- **续写基底跨 resume 按账本播种（issue #469，宿主裁决 A）**：折叠摘要的「上一份」以前只是策略实例里的闭包（`fold-llm.js#lastFoldSummaryText`）⇒ 同一个 run 内第 2 次及以后的折叠拿得到基底，**resume 出来的 run 第一次折叠拿不到**（策略实例是新造的，闭包是空的）。而模型那边 resume 后是**看得见**上一份摘要的（`#462` 把覆盖水位线的替代物回填进上下文），于是只有「该知道脉络的那一方」被蒙住，写出来的必然只是重述。现在按宿主裁决按**账本/会话作用域**播种：取源复用 `#462` 的`pickCoveringFoldAlternative`（先 `foldedSummary` 事实行，再 `foldedFacts` 策略替代物；嵌套与平铺两种区间形状都收），装配处经 `foldLlmOptions.ledgerPreviousSummary` 注入（取值器：水位线要到恢复之后才定，run 自己的水位线为 0 时退回「账本自己声明的最大已折轮号」，否则这一格会让播种静默失效）。优先级按裁决写死：**显式调用参数 > 策略构造参数 >in-run 闭包 > 账本播种** ⇒ 非 resume / 挑不出覆盖事实时行为逐字退回今天。`compactionStats[].foldSummary` 增`priorSummaryOrigin: "ledger" | "in-run"`（无基底不写键）。**复用键纳入基底**（`foldSummaryFingerprint` 增 `priorSummary`）：这是宿主实施条件 4 的硬要求——不纳入的话 resume 首折若命中 `#326` 播进来的账本，播进去的基底会被无声忽略，A 在最需要它的那一次折叠上归零；代价是既有账本（旧键）升级后首次跑 miss 一次，`test/loop-persist-compaction-facts.js` 的 `#326-C` 两处断言因此随行为改写（「resume 不再调 summarizer」→「恰好重算一次」；「只有一条事实行」→「多条同区间事实、读侧仍只挑一份」），并在注释里写明这是宿主选择的取舍。新增 `test/loop-resume-prior-seed-469.test.js` 4 格（零真实 LLM）：账本播种带基底且 `origin="ledger"`、优先级链与「无基底不写键」、指纹含基底（不同基底 ⇒ 不同键）、以及 resume 端到端（首折基底来自账本、摘要器入参真的带「续写基底」那一节）。契约中英同步。
+   顺带：`src/compact/fold-llm.js` 长了约 2.05 KB（取源链 + 注释），`readFile` 行数容量的 `median` 角色记录值随之按 `#271` 口径复测刷新（`28,360 B / 731 行 / 6,756` → `30,410 B / 765 行 / 6,594`），描述里的 `median` 档同位数同步（字节中性），容差常量一个没动。
+
+
 ### Added
 
 - **`context.onFoldSummary` 的载荷补上折叠范围三键（issue #479，纯加法）**：宿主（erix-station）把这条
