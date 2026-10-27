@@ -12,7 +12,11 @@
 //      只差 `error.via`；正例两条路线都不抛。
 //   C. 旋钮家族闭集**派生**：对 `FOLD_SUMMARIZER_CAP_NAMES` 每个键造一次手滑 ⇒ 两条路线都抛；
 //      合法键 ⇒ 都不抛；宿主业务键 ⇒ 不抛且留 `context_unknown_option` 事件（#469 的回归）。
-//   D. 回调形状：9 个承载宿主回调的字段，省略/给对都照旧工作（旧位置回归），给错则启动即抛。
+//   D. 回调形状：9 个承载宿主回调的字段，给错则启动即抛；给对时**逐格分开说**——
+//      `context.onBeforeFold` / `context.onAfterFold` / 顶层 `onFoldSummary` / `retry.sleepImpl` /
+//      `finalGuard` / `deliverables[].check` 六格在 D① 里**真跑一次**并断言投递次数，
+//      `reflection.onReflection` / `diagnostics.error` 的投递条件（judge 扩轮 / 持久化失败）不塞进同一格
+//      ——见 D① 的注释：它们只作为「形状正例」出现，不假装被断言过。
 //   E. 可达性：`maxRounds` / `deliverables` / `partialPersistence` / `persistence` 这类取值校验
 //      **仍由 orchestrator 承担**，两条路线都汇到那里（`error.via === undefined` 就是机器判据：
 //      闸口抛的错一定带 via 标签，不带标签 ⇒ 不是闸口抛的）。这条用例防的是「以为语义相全权负责，
@@ -26,7 +30,9 @@
 //   · `validateFoldSummarizerCaps` 的 `problems.push(...)` 降级 ⇒ B 段 knob-value 反例红；
 //   · `validateContextCallbackShapes` 的 `problems.push(...)` 降级 ⇒ B 段三个 context 回调反例红；
 //   · `CALLBACK_OPTION_PATHS` 的循环体 `problems.push(...)` 降级 ⇒ B 段四个顶层回调反例红；
-//   · `assertSemanticOptionValues` 的 `throw` 降级成 `return` ⇒ B 段全部反例红、A 段次序用例红。
+//   · `assertSemanticOptionValues` 的 `throw` 降级成 `return` ⇒ B 段全部反例红、A 段次序用例红；
+//   · `orchestrator.js` 的 `compactOptions` 透传名单里删掉 `"onBeforeFold"` ⇒ D① 的
+//     `context.onBeforeFold` 那格红（这是本单新加抛错面的投递路径，必须有锁）。
 //
 // 零真实 LLM（fake provider），不写盘、不碰真实 `~/.erix`。
 import test from "node:test";
@@ -38,6 +44,7 @@ import {
   FOLD_SUMMARIZER_CAP_NAMES,
   isSummarizerKnobKey,
 } from "../src/assembly-validators.js";
+import { createSlidingWindowStrategy } from "../src/compact/sliding-window.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -60,6 +67,38 @@ function runDirect(extra = {}) {
 
 /** 直连路线的「抛了什么」（不抛返回 null）。 */
 const directError = (extra = {}) => runDirect(extra).then(() => null, (error) => error);
+
+/**
+ * 一条**必然折叠**的直连 run（issue #496 必改4：旧位置投递必须有真跑的夹具）。
+ *
+ * 与 `test/loop-on-fold-summary.test.js` 的 `runFolding` 同形：预算压到 300 token + `keepRounds: 1`，
+ * 先 6 发工具调用把上下文撑过预算，再收尾 ⇒ `sliding-window`（零 LLM）机械折叠必然发生。
+ * 首步是一次**可重试**失败，用来让 `retry.sleepImpl` 也真的被走一遍。
+ */
+const FOLD_TOOLS = [{
+  name: "echo",
+  description: "回显输入",
+  inputSchema: { type: "object", properties: { text: { type: "string" } } },
+}];
+
+function foldingProvider() {
+  const retryable = new Error("temporary failure");
+  retryable.retryable = true;
+  const toolTurns = Array.from({ length: 6 }, (_unused, index) => ({
+    content: [{
+      type: "tool_use",
+      id: `tu_${index + 1}`,
+      name: "echo",
+      input: { text: `R${index + 1}_${"填充".repeat(300)}` },
+    }],
+    stopReason: "tool_use",
+  }));
+  return createFakeProvider([
+    { throw: retryable },
+    ...toolTurns,
+    { content: [{ type: "text", text: "收尾结论" }], stopReason: "end_turn" },
+  ]);
+}
 
 /** 装配口路线的端口（`policy` 在构造期就过闸口）。 */
 function makePort(policy = {}, { emit } = {}) {
@@ -304,31 +343,75 @@ test("C③ 宿主业务键照旧放行（#469 回归）：不抛，且留一条 
   assert.deepEqual(warning.event.keys, ["workspaceName"], "只报真正未知的那个");
 });
 
-// ================================================================ D. 回调形状（旧位置回归 + 新规则）
-test("D① 9 个承载宿主回调的字段：省略 = 不订阅，两条路线都照旧跑完（旧位置回归）", async () => {
-  const calls = { onBeforeFold: 0, onAfterFold: 0, onFoldSummary: 0, finalGuard: 0, onReflection: 0, error: 0, check: 0 };
-  const hooks = {
-    onBeforeFold: () => { calls.onBeforeFold += 1; },
-    onAfterFold: () => { calls.onAfterFold += 1; },
-    onFoldSummary: () => { calls.onFoldSummary += 1; },
-  };
-  const full = {
+// ================================================================ D. 回调形状（旧位置投递 + 新规则）
+test("D① 承载宿主回调的字段：省略 = 不订阅，给对就**真的被投递**（折叠 / 重试 / 终局 / 交付物四处各断言一次）", async () => {
+  // 这一格以前只断言 `finalGuard` 与 `deliverables[].check`，其余 5 个计数器**写了不断言** ⇒
+  // 删掉 orchestrator 里 `context.onBeforeFold` 的透传，全量测试 0 红。现在改成**真跑一次折叠**：
+  // `budgetTokens: 300` + `keepRounds: 1` + `sliding-window`（零 LLM）⇒ 6 发工具调用后必然折叠，
+  // `context.onBeforeFold` / `context.onAfterFold` / 顶层 `onFoldSummary` 三格都必须 >= 1。
+  // 另外两格**不在这里装样子**（它们的触发条件不在本格射程内，硬塞只会再造一格假绿）：
+  //   · `reflection.onReflection` 只在 judge 扩轮时调用（要跑到 nearLimit + reflection 扩展），
+  //     本格给的是一个**不被计数**的真函数，只用来证明「形状对 ⇒ 不抛」；
+  //   · `diagnostics.error` 只在持久化失败时调用，本格用它真的接住 `onFoldSummary` 抱错那一条。
+  const calls = { onBeforeFold: 0, onAfterFold: 0, onFoldSummary: 0, finalGuard: 0, check: 0, sleepImpl: 0, error: 0 };
+  const sleeps = [];
+  const persistenceEvents = [];
+
+  const direct = await runDirect({
+    provider: foldingProvider(),
+    tools: FOLD_TOOLS,
+    executeTool: async ({ input }) => `ECHO:${String(input?.text ?? "").slice(0, 40)}`,
+    maxRounds: 20,
+    wrapup: false,
+    stallDetection: false,
     finalGuard: async () => { calls.finalGuard += 1; return { action: "accept" }; },
     deliverables: [{ name: "always", check: async () => { calls.check += 1; return true; } }],
-    retry: { attempts: 1, sleepImpl: async () => {} },
-    reflection: { enabled: false, onReflection: () => { calls.onReflection += 1; } },
-    diagnostics: { error: () => { calls.error += 1; } },
-    context: { budgetTokens: 1000, strategy: "sliding-window", ...hooks },
-  };
+    // 首步是一次可重试失败 ⇒ 重试闸口必须真的走一遍 `sleepImpl`（否则这一格又是死计数器）。
+    retry: { attempts: 2, sleepImpl: async (ms) => { calls.sleepImpl += 1; sleeps.push(ms); } },
+    reflection: { enabled: false, onReflection: () => {} },
+    diagnostics: { error: (event) => { calls.error += 1; persistenceEvents.push(event); } },
+    // 钩子**先计数再抛**：投递真的发生了（计数 >= 1），失败走持久化账本（`diagnostics.error` 真的被调）。
+    onFoldSummary: () => { calls.onFoldSummary += 1; throw new Error("宿主归档器炸了"); },
+    context: {
+      budgetTokens: 300,
+      keepRounds: 1,
+      strategy: createSlidingWindowStrategy({ keepRounds: 1 }),
+      onBeforeFold: () => { calls.onBeforeFold += 1; },
+      onAfterFold: () => { calls.onAfterFold += 1; },
+    },
+  });
 
-  // 直连：全部给对 ⇒ 不抛，且 guard / deliverables 判据真的被调用（证明「接受」不是「没接线」）。
-  const direct = await runDirect(full);
-  assert.equal(direct.termination.reason, "end_turn");
+  // 前提：这条路径确实折叠了 —— 否则下面三格只是在测空气。
+  assert.ok(
+    (direct.compactionStats ?? []).some((stat) => stat.compacted === true),
+    `前提：这条路径必须真的折叠，实测 ${JSON.stringify(direct.compactionStats ?? [])}`,
+  );
+  assert.equal(direct.termination.reason, "end_turn", "钩子抱错不得改写终局");
+
+  // 旧位置投递：六个计数器各断言一次（这才是「行为逐字不变」的可证伪面）。
+  assert.ok(calls.onBeforeFold >= 1, `context.onBeforeFold 必须被投递，实测 ${calls.onBeforeFold} 次`);
+  assert.ok(calls.onAfterFold >= 1, `context.onAfterFold 必须被投递，实测 ${calls.onAfterFold} 次`);
+  assert.equal(calls.onAfterFold, calls.onBeforeFold, "同一次折叠的 before/after 必须成对（不多不少）");
+  assert.ok(calls.onFoldSummary >= 1, `顶层 onFoldSummary 必须被投递，实测 ${calls.onFoldSummary} 次`);
+  assert.equal(calls.sleepImpl, 1, `retry.sleepImpl 必须被重试闸口调一次，实测 ${calls.sleepImpl} 次`);
+  assert.deepEqual(sleeps, [1500], "重试退避起点沿用既有口径");
   assert.equal(calls.finalGuard, 1, "finalGuard 旧位置必须照旧被调用");
   assert.equal(calls.check, 1, "deliverables[].check 旧位置必须照旧被调用");
+  assert.ok(calls.error >= 1, `投递失败必须落到 diagnostics.error，实测 ${calls.error} 次`);
+  assert.ok(
+    persistenceEvents.every((event) => event.port === "notes" && event.operation === "onFoldSummary"),
+    `diagnostics.error 收到的必须是 onFoldSummary 的持久化事件，实测 ${JSON.stringify(persistenceEvents)}`,
+  );
 
   // 装配口：policy 侧给同样的回调 ⇒ 不抛（装配口的 `context` 形状照旧合法）。
-  const assemblyOk = await assemblyError({ context: { budgetTokens: 1000, ...hooks } });
+  const assemblyOk = await assemblyError({
+    context: {
+      budgetTokens: 1000,
+      onBeforeFold: () => {},
+      onAfterFold: () => {},
+    },
+    onFoldSummary: () => {},
+  });
   assert.equal(assemblyOk, null, `装配口：合法回调不得抛（实测 ${assemblyOk?.message}）`);
 
   // 省略全部 ⇒ 同样不抛（缺省不报错）。
