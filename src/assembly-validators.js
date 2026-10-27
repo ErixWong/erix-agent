@@ -21,6 +21,9 @@ export const FOLD_SUMMARIZER_CAP_NAMES = [
   "summarizerBudgetMs",
   "maxSummarizerInputBytes",
   "maxPriorSummaryBytes",
+  // issue #493（下游 fde-station 反馈）：它偏偏是唯一没开的那个 —— 直连路径静默无效、
+  // 装配口反倒报错，于是「摘要该写多长」在两条入口上各有各的答案。
+  "maxSummaryTokens",
 ];
 
 /**
@@ -212,6 +215,15 @@ export const CONTEXT_OPTION_NAMES = [
   "onFoldSummary",
   "maxFoldedPayloadBytes",
   "maxFoldedFactsBytes",
+  // issue #493（下游 fde-station 反馈）：这五个键引擎自己在 `budget.js` 里读
+  // （`context.toolContext` / `.expert` / `.user` / `.session` / `.requestId`），
+  // 而契约第 21-22 行明说「宿主私有元数据放 `toolContext` 或 `context`」——
+  // 漏列它们就是「把宿主合法配置打成 TypeError」，白名单少列一个都算事故。
+  "toolContext",
+  "expert",
+  "user",
+  "session",
+  "requestId",
   // issue #469：四个新旋钮（两层语义见 `validateFoldSummarizerCaps`）。
   "summarizerTimeoutMs",
   "summarizerBudgetMs",
@@ -230,11 +242,34 @@ const CONTEXT_OPTION_NAME_SET = new Set(CONTEXT_OPTION_NAMES);
  * @param {unknown} context
  * @returns {string[]}
  */
+const KNOB_FAMILY_PATTERN = /summar|PriorSummary/iu;
+
+/**
+ * 这个 `context` 子键是否属于「折叠摘要旋钮家族」（#493）。
+ *
+ * 强校验只对家族生效：写错一个旋钮名（`maxPriorSummaryByte`、`summarizeBudgetMs`）是**明确的事故**，
+ * 而宿主往 `context` 里放业务元数据是**契约允许的**（第 21-22 行）。
+ * @param {string} key
+ * @returns {boolean}
+ */
+export function isSummarizerKnobKey(key) {
+  return KNOB_FAMILY_PATTERN.test(String(key ?? ""));
+}
+
+/** 未知的 `context` 子键全集（**不**分家族，供 diagnostics 用）。 */
+export function collectUnknownContextOptions(context) {
+  if (context === undefined || context === null || typeof context !== "object") return [];
+  return Object.keys(/** @type {object} */ (context))
+    .filter((key) => !CONTEXT_OPTION_NAME_SET.has(key));
+}
+
 export function validateContextOptionNames(context) {
   if (context === undefined || context === null || typeof context !== "object") return [];
   const problems = [];
   for (const key of Object.keys(/** @type {object} */ (context))) {
-    if (!CONTEXT_OPTION_NAME_SET.has(key)) {
+    // 只有「旋钮家族的拼错」才抛（#493）：其余未知键是宿主业务字段，见
+    // `collectUnknownContextOptions` 的 diagnostics 口径。
+    if (!CONTEXT_OPTION_NAME_SET.has(key) && isSummarizerKnobKey(key)) {
       problems.push(`unknown assembly policy context option: ${JSON.stringify(key)}`);
     }
   }

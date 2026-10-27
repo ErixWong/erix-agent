@@ -81,7 +81,8 @@ function assembleWithContext(context) {
 }
 
 test("#469-B1 装配期：未知 context 子键报错（不再静默丢弃，#331 的病）", () => {
-  for (const key of ["maxPriorSummaryByte", "summarizerTimeouts", "maxFoldedFactsByte"]) {
+  // issue #493：强校验只对**旋钮家族**的拼错生效（`summar*` / `maxPriorSummary*`）。
+  for (const key of ["maxPriorSummaryByte", "summarizerTimeouts", "summarizeBudgetMs", "maxSummarizerInputByte"]) {
     assert.throws(
       () => assembleWithContext({ strategy: "fold-llm", [key]: 1024 }),
       (error) => {
@@ -211,4 +212,69 @@ test("#469-B1 传了就真生效：maxSummarizerInputBytes 极小 ⇒ 按整轮�
     false,
     "默认 48 KB 下 6 KB/轮的输入不该被丢（否则这个断言是恒真的）",
   );
+});
+
+test("#493 业务元数据键不再被打成 TypeError：toolContext/expert/user/session/requestId 与任意未知键都放行", () => {
+  const events = [];
+  const port = createAssemblyPort({
+    modelConfig: { resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1000 }) },
+    provider: createFakeProvider(),
+    tools: { definitions: [], async executeTool() {} },
+    store: createMemoryTranscriptStore(),
+    session: { id: `493-metadata-${process.pid}` },
+    emit: (type, event) => events.push({ type, event }),
+    policy: {
+      context: {
+        budgetTokens: 8000,
+        strategy: "fold-llm",
+        // 引擎自己在 budget.js 里读的五个键（白名单漏列过一次，导致装配期直接 TypeError）。
+        toolContext: { repo: "demo" },
+        expert: "backend",
+        user: "erix",
+        session: "s-1",
+        requestId: "req-1",
+        // 纯业务字段：契约允许放 context，不得抛。
+        workspaceName: "fde-station",
+      },
+    },
+  });
+  assert.ok(port !== undefined);
+  const warning = events.find((entry) => entry.type === "context_unknown_option");
+  assert.ok(warning, "未知业务键必须至少留下一条事件（不静默）");
+  assert.deepEqual(warning.event.keys, ["workspaceName"], "只报真正未知的那个");
+});
+
+test("#493 maxSummaryTokens 也是 context 旋钮：非法值装配期抛，传了就同时约束摘要预算与那一发的 maxTokens", async () => {
+  for (const value of [0, -1, 1.5, "1400", null]) {
+    assert.throws(
+      () => assembleWithContext({ strategy: "fold-llm", maxSummaryTokens: value }),
+      (error) => error instanceof TypeError
+        && /maxSummaryTokens must be a positive integer/u.test(error.message),
+    );
+  }
+  const seen = [];
+  const provider = createFakeProvider({
+    summaryChat: (request) => {
+      seen.push(request);
+      return { content: [{ type: "text", text: "## 阶段\nok" }], stopReason: "end_turn" };
+    },
+  });
+  await runFolding(provider, { maxSummaryTokens: 200 }, { maxTokens: 32_768 });
+  assert.ok(seen.length > 0, "前提：摘要那一发真的发出去了");
+  for (const request of seen) {
+    assert.equal(request.maxTokens, 200,
+      `摘要那一发的 maxTokens 必须与摘要预算取小对齐（实测 ${String(request.maxTokens)}）`);
+  }
+  // 不传旋钮 ⇒ 默认 1400（不再原样继承 run 的 32768）。
+  const fallback = [];
+  const provider2 = createFakeProvider({
+    summaryChat: (request) => {
+      fallback.push(request);
+      return { content: [{ type: "text", text: "## 阶段\nok" }], stopReason: "end_turn" };
+    },
+  });
+  await runFolding(provider2, {}, { maxTokens: 32_768 });
+  for (const request of fallback) {
+    assert.equal(request.maxTokens, 1_400, "默认必须落在摘要预算上，而不是 run 的 32768");
+  }
 });

@@ -3,6 +3,11 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Fixed
+
+- **`context` 未知键校验把我方白名单的漏列变成了宿主的装配期 TypeError（issue #493，下游 fde-station 实测）**：上一版对 `context` 的未知子键一刀切抛错，但白名单漏了引擎**自己在 `src/loop/budget.js` 里读**的五个键（`toolContext` / `expert` / `user` / `session` / `requestId`），而契约开头明说「宿主私有元数据放 `toolContext` 或 `context`」⇒ 往 `context` 放业务字段的宿主装配期直接炸。现在：① 补齐这五个键；② 强校验**只对旋钮家族**生效（`maxPriorSummaryByte` / `summarizeBudgetMs` 这类拼错照旧抛），其余未知键**当宿主元数据放行**并通过一条 `context_unknown_option` 事件如实报出（不静默、也不阻断）；③ 顺手把 `maxSummaryTokens` 开成 `context` 旋钮——它偏偏是唯一没开的那个（直连路径静默无效、装配口反倒报错），并且摘要那一发的 `maxTokens` 现在与摘要预算**取小对齐**（`min(run maxTokens, maxSummaryTokens)`）：此前原样继承 run 的 32768，模型按 32k 写满再被 1400 剪回，纯白烧。新增/改写测试：`test/loop-fold-context-knobs-469.test.js` 的未知键那格改为「家族拼错抛、业务键放行并留事件」，另加一格钉 `maxSummaryTokens` 的非法值抛错 + 摘要请求 `maxTokens` 对齐（传 200 时实测 200、不传时 1400，两者都在 run `maxTokens: 32768` 之下）。契约中英补：第五个旋钮、按家族校验的口径、以及两条运维注记（指纹含基底 ⇒ 既有账本升级后首次必 miss 一次；单轮即超 48 KB 时无整轮可丢、`droppedRounds` 仍为 0，由 token 守卫逐条裁）。
+
+
 ### Changed
 
 - **折叠摘要的「5 节合同」在默认配置下自洽（issue #469，宿主审计 C 片判据 3 后半）**：查出来是三件事叠在一起。① **默认预算太小**：`maxSummaryTokens` 默认 `800`，而五节 × 每节 150 个中文字实测约 **1,335 token** ⇒ 模型按合同写满也会被剪成两节（宿主实测「每节 80 字 5/5、150 字 2/5」正是这个边界）；默认上调到 `1400`，合同在**默认配置**下就成立。② **裁剪把骨架一起抹掉**：`enforceSize` 旧形状把整节（含 `## 标题`）换成一行 `[已修剪]` ⇒ 读的人与下一次折叠的摘要器都看不出「曾经有这一节」；现在只剪正文、保留标题（`## 标题\n[已修剪]`）。③ **主题词排错档**：`## 主题词面包屑` 原在第 3 档（`已验证项` 1 / `已改文件` 2 之后），预算一紧就先被剪，而它恰恰是「下次按什么搜回来」的唯一线索 ⇒ 提到第 1 档（与 `## 下一步` 同级），档位顺序改为 下一步/恢复提示 > 主题词 > 已验证项 > 已改文件。另把 `foldSummary.finishReason` 的**值域**写进契约（provider 归一后原样透出；`max_tokens` = 摘要被输出预算截断、不是完整摘要；未知值按「未知」处理，不得当「正常」）——这是审计里点名的「三态判据缺值域」那一格。新增 `test/compact/fold-llm-summary-budget-469.test.js` 3 格（零真实 LLM）：默认预算下 5×150 字全在且无 `[已修剪]`（先断言这份输入在旧默认 800 下必然被剪，防恒真）、被剪的节必须是 `## 标题\n[已修剪]`、紧预算下「下一步」与「主题词」不剪而「已改文件」先剪且留骨架。

@@ -281,7 +281,7 @@ function enforceSummarySize(summary, maxSummaryTokens, onLayer) {
  */
 export function createFoldLlmStrategy({
   summarizer,
-  maxSummaryTokens = 1_400,
+  maxSummaryTokens = DEFAULT_SUMMARY_MAX_TOKENS,
   ...options
 } = {}) {
   if (typeof summarizer !== "function") {
@@ -522,6 +522,13 @@ const DEFAULT_PRIOR_SUMMARY_MAX_BYTES = 24 * 1024;
 // 剩余时间不足一个最小尝试窗口就不再重试——30 s 是硬上限，不是每次尝试的上限。
 const DEFAULT_SUMMARIZER_BUDGET_MS = 30_000;
 const MIN_RETRY_REMAINING_MS = 2_000;
+
+/**
+ * issue #493：折叠摘要的输出预算默认值（`createFoldLlmStrategy` 的 `maxSummaryTokens` 默认，
+ * 也是 `context.maxSummaryTokens` 不传时的值）。导出给 `orchestrator` 用——摘要那一发的
+ * `maxTokens` 必须与这个预算**取小对齐**，否则模型按大预算写满再被剪回来，白烧 token。
+ */
+export const DEFAULT_SUMMARY_MAX_TOKENS = 1_400;
 
 /**
  * issue #469（宿主裁决 A）：续写基底的**取源链**——显式调用参数 > 策略构造参数 > in-run 闭包 >
