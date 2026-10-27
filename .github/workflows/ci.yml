@@ -63,6 +63,15 @@ jobs:
       - name: Packaged markdown link closure
         run: npm run check:pack-links
 
+      # 阻塞（issue #505）：`test/contract/` 发布面判据自己的反向证——同一套判据跑在**内存夹具**上
+      # （不跑 npm pack、不联网、不写盘）：从 files 删一条真实存在的 test/contract/*.js 必须红并点名、
+      # 加一条不存在的 test/contract/ghost.js 必须红并点名、什么都不改必须绿，登记表空转（文件没了 /
+      # 其实随包了 / why 为空 / path 不是具体文件 / 条数偏离上限）也必须红，变异没落上同样算失败（#210 R2）。
+      # 为什么不并进上面那条：那条证的是「今天的树对得上」，这条证的是「判据还拦得住」——把判据改坏时
+      # 前者照样 exit 0（判据 1 一旦只查 files→包方向，漏包方向就再也红不了）。
+      - name: Pack-link contract publish-surface self-test
+        run: node scripts/pack-link-check.mjs --self-test
+
       - name: Test hygiene guard
         run: npm run check:tests
 
