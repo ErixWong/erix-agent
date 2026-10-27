@@ -5,8 +5,12 @@
 //   ② 再断言等价：同类、同消息、只差 `error.via`（`assembly` | `direct`）。
 // 逐条规则的**正例 / 反例**在 `test/loop-option-gate-496.test.js` 里各自成立，不靠本文件代劳。
 //
-// 本文件随包发布（`files` 收 `test/contract/`），所以**不得** import `test/helpers/`：
-// 夹具在本文件内自足，只依赖 `src/`。
+// 本文件**不**随包发布：它是 `node --test` 套件（`*.test.js`），而 `package.json` 的 `files` 是
+// **逐个列举** `test/contract/*.js`（不收目录），`npm pack --dry-run --json` 里 `.test.js` 文件数
+// = 0。随包的是 `files` 里逐条列出的 `test/contract/*.js`（如 `assembly-port.js` /
+// `transcript-store.js`）——那些才是宿主安装后自己跑的契约套件。
+// 既然不进 tarball，本文件**不必**回避 `test/helpers/`；但它仍然自足（夹具写在文件内、只依赖
+// `src/`），这样 `node --test test/contract/` 单跑也成立，不依赖 `test/` 之外的布局。
 
 import test from "node:test";
 import assert from "node:assert/strict";
