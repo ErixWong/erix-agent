@@ -205,6 +205,12 @@ export function validateFoldSummarizerCaps(context) {
  * 红线：退役只动 `context.` 侧；顶层 `onFoldSummary` 仍是活选项（`RUN_TOOL_LOOP_OPTION_NAMES`
  * 里那一个不许动，它有自己的投递路径与次数断言）。
  *
+ * **退役（issue #510 / #498 S4b）**：`channel` 曾在这份名单里，而引擎**从不从 `context` 读它**
+ * （`orchestrator.js` 里那个 `context?.channel` 是**观察者错账户**的第二参，与 `context` 选项
+ * 无关；`persistence_error` 事件上的 `channel` 是引擎自己算的，也不是读这个键）⇒ 它就是
+ * 「配了、不生效、连事件都没有」的静默键，比未知键更糟。与 `onFoldSummary` 同一处置：从名单移除
+ * ⇒ 落**宿主元数据**分支（装配口报一条 `context_unknown_option`、直连静默放行、都不抛）。
+ *
  * @type {string[]}
  */
 export const CONTEXT_OPTION_NAMES = [
@@ -215,7 +221,6 @@ export const CONTEXT_OPTION_NAMES = [
   "stripHistoricalImages",
   "stubFor",
   "recoveryHint",
-  "channel",
   "task",
   "summaryRole",
   "onBeforeFold",

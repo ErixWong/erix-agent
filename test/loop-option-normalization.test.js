@@ -589,11 +589,14 @@ test("次序②：assemblyPortOptions 早于 runToolLoop 的能力缺失检查",
       modelConfig: { resolve: async () => ({}) },
       provider: { chat: async () => ({ content: [], stopReason: "end_turn" }) },
       tools: { definitions: [], executeTool: async () => "ok" },
-      session: { id: "run-port-first", resume: "yes" }, // resume 必须是布尔：只有 createAssemblyPort 会这样报
+      // `session.initialMessages` 必须是数组：这条形状校只在 createAssemblyPort 里，
+      // 所以它同时是「assemblyPortOptions 早于能力缺失检查」的探针（#498 S4b 把原来那条
+      // `session.resume` 别名删掉了，见 `test/assembly-port-498-s4b` 的 R4 反向证）。
+      session: { id: "run-port-first", initialMessages: "nope" },
     },
     initialUserMessage: "go",
   }).then(() => null, (caught) => caught);
-  assert.equal(error.message, "assembly port session.resume must be a boolean");
+  assert.equal(error.message, "assembly port session.initialMessages must be an array");
 
   // 对照组：同样缺 provider/executeTool 的细粒度形态，能力检查的措辞完全不同。
   const capabilityError = await runToolLoop({ initialUserMessage: "go" }).then(() => null, (caught) => caught);
@@ -765,4 +768,30 @@ test("测试卫生：全程只用注入的临时 home/cwd，真实 ~/.erix 未�
   assert.notEqual(process.cwd(), savedCwd, "cwd 必须已经落在临时目录里");
   assert.equal(existsSync(join(sandboxHome, ".erix")), false, "临时 home 里不该出现 .erix");
   assert.deepEqual(realHomeSnapshot(), homeSnapshotAtStart, "真实 ~/.erix 必须一个字节都没动");
+});
+
+// ---------------------------------------------------------------- #498 S4b：`session.resume` 幻影别名退役
+// `session` 是**纯数据**（`config.metadata.session`），而 `resume` 是旋钮。0.27 草案里 `src/assembly.js`
+// 有一条 `session.resume` → 顶层 `resume` 的别名（校验段 + 转换段），于是同一个键有了第三个住处。
+// 本刀删掉那条别名，并把 `resume` 归位到 `config.run.resume`；顶层扁平 `resume` 一字未动。
+// 反向证：把别名塞回 `src/assembly.js` ⇒ 下面第一格红（它不再抛）。
+test("#498 S4b session.resume 别名已删：写它启动即抛并指出 config.run.resume", async () => {
+  const error = await runToolLoop({
+    assemblyPort: {
+      modelConfig: { resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1024 }) },
+      provider: createFakeProvider([{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" }]),
+      tools: { definitions: [], executeTool: async () => "ok" },
+      session: { id: "run-port-session-resume", resume: true },
+    },
+    initialUserMessage: "go",
+    completion: false,
+    wrapup: false,
+  }).then(() => null, (caught) => caught);
+  assert.equal(error instanceof TypeError, true, "`session.resume` 不许再被静默接受");
+  assert.equal(
+    error.message,
+    "assembly port session.resume is not accepted: session is data only"
+      + " (pass resume as the top-level option or as config.run.resume)",
+  );
+  assert.equal(error.via, undefined, "构造期抛（与其它装配口形状错同一相位）");
 });

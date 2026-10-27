@@ -7,13 +7,13 @@
 //      对着 `RUN_TOOL_LOOP_OPTION_NAMES` 核「每个顶层选项恰好落在配置面或能力面之一」——
 //      往白名单加一个键却忘了分类 ⇒ 这里红。
 //   B. **结构等价**（判据 1）：同一份配置写成扁平形态与 `config` 形态，`effectiveOptions` 逐键
-//      深度相等。两层：52 个配置键**逐个**扫一遍（`expandConfigNamespace`，机械穷举），
-//      再加一份跨 8 个分组的**端到端** `normalizeRunToolLoopOptions` 对比（走真闸口）。
+//      深度相等。两层：43 个配置键**逐个**扫一遍（`expandConfigNamespace`，机械穷举），
+//      再加一份跨 7 个分组的**端到端** `normalizeRunToolLoopOptions` 对比（走真闸口）。
 //      断言一律 `deepStrictEqual` / `assert.equal`，不用 `toBeTruthy` 糊。
 //   C. **优先级与冲突**（判据 2）：同名时 `config.*` 赢，且发一条 `config_override_conflict` 事件。
 //      优先级不只比对象：真跑一次两轮 run，`maxRounds` 扁平 1 / config 2 ⇒ `end_turn`
 //      （扁平赢的话会是 `max_rounds_cap`）。冲突事件在「值相同」「只给一边」时**不发**。
-//   D. **能力面不收配置覆盖**（判据 3）：13 个能力键写进 `config`（顶层或组内）⇒ 启动即抛，
+//   D. **能力面不收配置覆盖**（判据 3）：22 个能力键写进 `config`（顶层或组内）⇒ 启动即抛，
 //      报错点名该键，`error.via` 按入口路线是 `direct` / `assembly`。**既有「显式细粒度选项覆盖
 //      装配口同名成员」语义不动**（`resolveAssemblyMember`（`src/assembly.js`））：
 //      `test/contract/assembly-port.js` 的「显式细粒度 provider 覆盖端口 provider」照旧绿。
@@ -55,6 +55,7 @@ import { createAssemblyPort } from "../src/assembly.js";
 import {
   CAPABILITY_OPTION_NAMES,
   CONFIG_ALIAS_PATHS,
+  CONFIG_LEAF_ALIAS_PATHS,
   CONFIG_NAMESPACE_GROUPS,
   CONFIG_NAMESPACE_OPTION_NAME,
   CONFIG_NAMESPACE_SCHEMA,
@@ -118,9 +119,11 @@ test("A1 schema 自检：67 个顶层选项恰好分成 43 配置面 + 22 能力
   // 样本自证：总数先钉住，免得「两边一起漏」也算通过。
   // #498 S4a：66 → 67（`capabilities` 容器入列）、配置面 52 → 43（`observers` 整组 8 个回调 +
   // `finalGuard` 移走）、能力面 13 → 22（8 个观察者通道 + finalGuard 移入）。
+  // #498 S4b：三个数**一个都没变**，组成变了——`tools` 从能力面归配置面（`config.input.tools`）、
+  // `deliverables` 反向搬进能力面（`capabilities.checks.deliverables`）、`finalGuard` 收进 hooks。
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.length, 67, "顶层白名单 = 66 + capabilities 这个容器");
-  assert.equal(CONFIG_SURFACE_OPTION_NAMES.length, 43, "配置面 43 个键（52 − 8 个 observers − finalGuard）");
-  assert.equal(CAPABILITY_OPTION_NAMES.length, 22, "能力面 22 项（13 + 8 个观察者通道 + finalGuard）");
+  assert.equal(CONFIG_SURFACE_OPTION_NAMES.length, 43, "配置面 43 个键（S4b：deliverables 换成 tools，条数不变）");
+  assert.equal(CAPABILITY_OPTION_NAMES.length, 22, "能力面 22 项（12 端口/出口 + 9 回调 + deliverables）");
   assert.equal(NAMESPACE_CONTAINER_OPTION_NAMES.length, 2, "容器两个：config 与 capabilities（#498 S4a）");
   assert.equal(
     CONFIG_SURFACE_OPTION_NAMES.length + CAPABILITY_OPTION_NAMES.length + NAMESPACE_CONTAINER_OPTION_NAMES.length,
@@ -131,18 +134,29 @@ test("A1 schema 自检：67 个顶层选项恰好分成 43 配置面 + 22 能力
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(CONFIG_NAMESPACE_OPTION_NAME), true);
 });
 
-test("A2 别名 = schema 路径：每个配置键恰好一条路径，叶子名逐字等于顶层键名", () => {
+test("A2 别名 = schema 路径：每个配置键恰好一条路径，叶子名逐字等于顶层键名（唯一例外见别名表）", () => {
   assert.equal(CONFIG_ALIAS_PATHS.size, CONFIG_SURFACE_OPTION_NAMES.length, "一个配置键一条路径，不多不少");
   for (const key of CONFIG_SURFACE_OPTION_NAMES) {
     const path = configPathForOption(key);
     assert.equal(typeof path, "string", `${key} 必须有 schema 路径`);
-    assert.equal(path, `${path.split(".")[0]}.${key}`, `${key} 的路径叶子必须逐字等于键名（不许重命名）`);
+    const [group, leaf] = path.split(".");
+    // #498 S4b：叶子名逐字等于键名是**规则**，唯一例外是 `input.messages` → `initialMessages`。
+    // 例外必须是**显式登记的**那一条（`CONFIG_LEAF_ALIAS_PATHS`），不是「谁都能改名」。
+    const registered = CONFIG_LEAF_ALIAS_PATHS[group]?.[leaf];
+    if (registered === undefined) {
+      assert.equal(leaf, key, `${key} 的路径叶子必须逐字等于键名（不许重命名）`);
+    } else {
+      assert.equal(registered, key, `${group}.${leaf} 的登记别名必须是 ${key}`);
+    }
     assert.equal(CONFIG_ALIAS_PATHS.get(path), key, `${path} 必须展开回 ${key}`);
     // 分组名必须是真的分组，且该组确实声明了这个叶子（派生关系的反向核对）。
-    const [group, leaf] = path.split(".");
     assert.equal(CONFIG_NAMESPACE_GROUPS.includes(group), true, `${group} 必须是已知分组`);
     assert.equal(CONFIG_NAMESPACE_SCHEMA[group].includes(leaf), true, `${group} 必须声明 ${leaf}`);
   }
+  // 例外表只有一条（本刀主 agent 裁决的那条）——长成第二张重命名表就不再有「别名 = schema 路径」。
+  assert.deepEqual(Object.entries(CONFIG_LEAF_ALIAS_PATHS), [
+    ["input", { messages: "initialMessages" }],
+  ], "叶子别名表只许有一条记录（`input.messages` → `initialMessages`）");
   // 能力面一个都不在配置面里（交叉核对，不靠「我记得」）。
   const surface = new Set(CONFIG_SURFACE_OPTION_NAMES);
   for (const name of CAPABILITY_OPTION_NAMES) {
@@ -162,8 +176,13 @@ test("A3 自检会咬人：漏分类 / 漏白名单 / 漏容器三个方向都�
     'top-level option "brandNewKnob" is classified nowhere (config surface or capability list)',
   ]);
   // 方向②：schema 里有个键已经不在白名单里了（「删了选项忘了删 schema」）。
+  // #498 S4b：这一方向现在报**两条**（叶子映射核对先看到它、总账核对再说一次），两条都点名
+  // 同一个键——多一条重复信号不算噪声，少一条才是不静默的反面。
   const dropped = configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES.filter((name) => name !== "maxRounds"));
-  assert.deepEqual(dropped, ['schema names "maxRounds", which is not a top-level option']);
+  assert.deepEqual(dropped, [
+    'config.run.maxRounds maps to "maxRounds", which is not a top-level option',
+    'schema names "maxRounds", which is not a top-level option',
+  ]);
   // 方向③：白名单里没有 `config` 这个容器本身（「把容器当成配置键删掉」）。
   // #498 S4a：容器是复数，两个都要在——`capabilities` 那一条在 `test/loop-capabilities-namespace-498.test.js`
   // 的 S1b 里同形钉住（这里只保留本单自己的那一半）。
@@ -266,10 +285,10 @@ test("B1 43 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平�
   let covered = 0;
   for (const key of CONFIG_SURFACE_OPTION_NAMES) {
     const path = configPathForOption(key);
-    const [group] = path.split(".");
+    const [group, leaf] = path.split(".");
     const value = `sweep:${key}`;
     const flat = { [key]: value };
-    const nested = { config: { [group]: { [key]: value } } };
+    const nested = { config: { [group]: { [leaf]: value } } };
     const flatExpanded = expandConfigNamespace(flat);
     const nestedExpanded = expandConfigNamespace(nested);
     assert.deepEqual(nestedExpanded.conflicts, [], `${path} 只给一边时不该有冲突`);
@@ -278,7 +297,7 @@ test("B1 43 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平�
     assert.equal(Object.hasOwn(nestedExpanded.options, "config"), false, `${path} 展开后 config 必须消失`);
     // 迁移场景（等价 + 优先级同一条断言）：这个键以前写在扁平、现在挪到 config，其余照旧 ⇒
     // 展开结果必须与「只用扁平新值」逐键相等。优先级反转（让扁平赢）会在这里红。
-    const mixed = expandConfigNamespace({ [key]: `stale:${key}`, config: { [group]: { [key]: value } } });
+    const mixed = expandConfigNamespace({ [key]: `stale:${key}`, config: { [group]: { [leaf]: value } } });
     assert.deepEqual(mixed.options, flat, `${path} 混合写法（扁平旧值 + config 新值）必须等于只用扁平新值`);
     assert.deepEqual(mixed.conflicts, [{ path, key }], `${path} 混合写法必须记一条冲突`);
     covered += 1;
@@ -286,13 +305,15 @@ test("B1 43 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平�
   assert.equal(covered, 43, "穷举必须覆盖全部 43 个配置键（漏一个就少一条等价证明）");
 });
 
-/** 跨 8 个分组的代表性配置：同一个 `VALUES` 同时生成扁平形态与 config 形态。 */
+/** 跨 7 个分组的代表性配置：同一个 `VALUES` 同时生成扁平形态与 config 形态。 */
 const VALUES = {
   system: "you are a test",
   cacheStablePrefix: false,
   initialUserMessage: "go",
   initialMessages: [],
   wrapup: false,
+  // #498 S4b：`tools` 归配置面（`config.input.tools`）——它是工具声明数组，按判据是数据。
+  tools: [{ name: "echo", description: "回显", inputSchema: { type: "object", properties: {} } }],
   maxRounds: 3,
   maxTokenContinuations: 2,
   stallDetection: false,
@@ -319,7 +340,6 @@ const VALUES = {
   finalGuardMaxRetries: 1,
   finalGuardTimeoutMs: 5000,
   finalGuardExtend: false,
-  deliverables: [],
   expert: "expert",
   user: "user",
   task: "task",
@@ -337,15 +357,14 @@ const VALUES = {
   // （回调的规范之家是 `capabilities.hooks`，见 `test/loop-capabilities-namespace-498.test.js`）。
 };
 
-/** 把 `VALUES` 摊成 `config: { … }` 形态（分组从 schema 派生，不手写）。 */
+/** 把 `VALUES` 摊成 `config: { … }` 形态（分组/叶子从 schema 派生，不手写）。 */
 function nestedConfigShape(values) {
   const config = {};
   for (const [key, value] of Object.entries(values)) {
     const path = configPathForOption(key);
     assert.equal(typeof path, "string", `${key} 必须有 schema 路径`);
     const [group, leaf] = path.split(".");
-    assert.equal(leaf, key);
-    config[group] = { ...(config[group] ?? {}), [key]: value };
+    config[group] = { ...(config[group] ?? {}), [leaf]: value };
   }
   return config;
 }
@@ -650,8 +669,9 @@ test("E4 config 里的回调字段给错型 ⇒ 与扁平形态同一句（语�
 test("F1 未知分组 / 未知叶子 / 扁平键写进 config / 组内放错位置，四种都点名", async () => {
   const unknownGroup = await directError({ config: { rund: { maxRounds: 1 } } });
   assert.match(unknownGroup.message, /unknown config namespace: "rund"/u);
-  assert.match(unknownGroup.message, /accepted: prompt, run, tuning, timing, folding, guard, metadata/u);
+  assert.match(unknownGroup.message, /accepted: input, run, tuning, timing, folding, guard, metadata/u);
   assert.doesNotMatch(unknownGroup.message, /observers/u, "#498 S4a：observers 组已整组删除");
+  assert.doesNotMatch(unknownGroup.message, /prompt/u, "#498 S4b：prompt 组改名 input");
 
   const unknownLeaf = await directError({ config: { run: { maxRond: 1 } } });
   assert.match(unknownLeaf.message, /unknown config\.run option: "maxRond"/u);
@@ -793,7 +813,7 @@ test("H1 JSDoc 的 config 组名集合恰等于 schema 组名（类型面锁进�
   const schemaGroups = Object.keys(CONFIG_NAMESPACE_SCHEMA); // 派生，不手抄
   // 派生自证：这份期望值确实来自模块导出（与分组名单逐字同一份）。
   assert.deepEqual(schemaGroups, [...CONFIG_NAMESPACE_GROUPS], "期望值必须来自 CONFIG_NAMESPACE_SCHEMA 的键集");
-  assert.equal(schemaGroups.length, 7, "七组（schema 侧的自证；#498 S4a 删掉了 observers）");
+  assert.equal(schemaGroups.length, 7, "七组（schema 侧的自证；#498 S4a 删 observers、S4b 把 prompt 改名 input）");
 
   const duplicated = jsDocGroups.filter((group, index) => jsDocGroups.indexOf(group) !== index);
   const extra = jsDocGroups.filter((group) => !schemaGroups.includes(group));
@@ -811,4 +831,84 @@ test("H1 JSDoc 的 config 组名集合恰等于 schema 组名（类型面锁进�
     `JSDoc 的 config 类型面缺组：${missing.join(", ")}（合法分组在类型面上被说成不存在）`,
   );
   assert.deepEqual([...jsDocGroups].sort(), [...schemaGroups].sort(), "组名集合必须与 schema 键集逐字相等");
+});
+
+// ================================================================ I. #498 S4b：`input` 组与叶子别名
+test("I1 老写法 `config.prompt` 必须报错并指出去处（`config.input.system`），不许静默接受", async () => {
+  assert.equal(CONFIG_NAMESPACE_GROUPS.includes("prompt"), false, "prompt 组已改名 input");
+  assert.equal(Object.hasOwn(CONFIG_NAMESPACE_SCHEMA, "prompt"), false);
+  const error = await directError({ config: { prompt: { system: "you are" } } });
+  assert.equal(error instanceof TypeError, true);
+  assert.match(error.message, /unknown config namespace: "prompt"/u);
+  assert.match(error.message, /accepted: input, run, tuning, timing, folding, guard, metadata/u);
+  assert.equal(error.via, "direct");
+  // 叶子写错组同样指出去处（不是含糊的「未知叶子」）。
+  const leafError = await directError({ config: { run: { system: "you are" } } });
+  assert.match(leafError.message, /"system" belongs to config\.input\.system/u);
+  // 装配口路线同一道闸口（构造期就抛，via 不同）。
+  const portError = await assemblyError({ config: { prompt: { system: "you are" } } });
+  assert.match(portError.message, /unknown config namespace: "prompt"/u);
+  assert.equal(portError.via, "assembly");
+});
+
+test("I2 `config.input.messages` 是顶层 `initialMessages` 的嵌套别名（展开 + 冲突 path/key 逐字）", async () => {
+  const messages = [{ role: "user", content: "hi" }];
+  const expanded = expandConfigNamespace({ config: { input: { messages } } });
+  assert.deepEqual(expanded.conflicts, []);
+  assert.deepEqual(expanded.options.initialMessages, messages, "展开后回到顶层 initialMessages");
+  assert.equal(Object.hasOwn(expanded.options, "messages"), false, "别名叶子本身不许漏进有效选项");
+
+  // 冲突：path 是 schema 路径（`input.messages`），key 是顶层键名（`initialMessages`）。
+  const conflict = expandConfigNamespace({
+    initialMessages: [],
+    config: { input: { messages } },
+  });
+  assert.deepEqual(conflict.conflicts, [{ path: "input.messages", key: "initialMessages" }]);
+  assert.deepEqual(conflict.options.initialMessages, messages, "config 侧赢");
+
+  // 把顶层键名当叶子写 ⇒ 指到正确的叶子（不是「未知叶子」）。
+  const wrongLeaf = await directError({ config: { input: { initialMessages: [] } } });
+  assert.match(wrongLeaf.message, /unknown config\.input option: "initialMessages"/u);
+  assert.match(wrongLeaf.message, /"initialMessages" belongs to config\.input\.messages/u);
+  // 把叶子写在 config 顶层 ⇒ 指到它真正的组。
+  const flatLeaf = await directError({ config: { messages: [] } });
+  assert.match(flatLeaf.message, /config\.messages: leaf names are not accepted at the top of config/u);
+  assert.match(flatLeaf.message, /write config\.input\.messages instead/u);
+});
+
+test("I3 `config.input.tools` 是顶层 `tools` 的嵌套别名，且真被引擎读（工具声明真的进了请求）", async () => {
+  const tools = [{ name: "echo", description: "回显", inputSchema: { type: "object", properties: {} } }];
+  const { effectiveOptions } = await normalizeRunToolLoopOptions({ config: { input: { tools } } });
+  assert.deepEqual(effectiveOptions.tools, tools, "config.input.tools 展开成顶层 tools");
+
+  // 行为层：声明了工具、模型第一轮就调它 ⇒ 真的执行了一次（不是「展开了但没人读」）。
+  const twoRounds = [
+    { content: [{ type: "tool_use", id: "tu_1", name: "echo", input: { text: "x" } }], stopReason: "tool_use" },
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ];
+  let executed = 0;
+  const result = await runToolLoop({
+    provider: createFakeProvider(twoRounds),
+    executeTool: async () => { executed += 1; return "ok"; },
+    config: { input: { tools } },
+    initialUserMessage: "go",
+    completion: false,
+    wrapup: false,
+  });
+  assert.equal(result.termination.reason, "end_turn");
+  assert.equal(executed, 1, "config.input.tools 里的工具声明必须真的可用");
+});
+
+test("I4 `resume` 归位到 `config.run.resume`：别名路径与顶层扁平键是同一个键", async () => {
+  assert.equal(configPathForOption("resume"), "run.resume");
+  const { effectiveOptions } = await normalizeRunToolLoopOptions({ config: { run: { resume: true } } });
+  assert.equal(effectiveOptions.resume, true, "config.run.resume 展开成顶层 resume");
+  // 顶层扁平写法一字未动（纯新增别名，不是迁移）。
+  const flat = await normalizeRunToolLoopOptions({ resume: false });
+  assert.equal(flat.effectiveOptions.resume, false);
+  // 幻影组 `session` 的别名已删（`src/assembly.js`）：`session` 只装数据。
+  const { effectiveOptions: withSession } = await normalizeRunToolLoopOptions({
+    session: { id: "config-497-i4" },
+  });
+  assert.equal(Object.hasOwn(withSession, "resume"), false, "session 不再产出 resume（别名已删）");
 });

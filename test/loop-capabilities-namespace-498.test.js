@@ -5,14 +5,17 @@
 //
 //   S1（三向闭合）：`configSchemaSelfCheck` 必须仍 `[]`，且四个数可枚举闭合——
 //      配置面 43 + 能力面 22 + 容器 2 = 顶层白名单 67。容器是 {`config`, `capabilities`}，
-//      两个容器**同等待遇**（都不算配置/能力键，都有未知子键闸口）。
-//   S2（`capabilities.hooks` 是回调的规范之家）：11 个回调逐个点名；`capabilities.hooks.onEvent`
+//      两个容器**同等待遇**（都不算配置/能力键，都有未知子键闸口）。#498 S4b 之后两面的**条数
+//      都没变、组成变了**：`tools` 归配置面（`config.input.tools`）、`deliverables` 反向搬进
+//      能力面（`capabilities.checks.deliverables`），而 `finalGuard` 从散项收进 `hooks`。
+//   S2（`capabilities.hooks` 是回调的规范之家）：12 个回调逐个点名；`capabilities.hooks.onEvent`
 //      与顶层 `onEvent` 是同一个键（别名 = schema 路径）；展开后扁平键生效（行为证据：真收到事件）；
 //      与扁平键冲突时 capabilities 赢且**不静默**（同一条 `config_override_conflict`）。
 //   S3（`config.observers` 整组删除 + `config` 里不许有函数值）：8 个观察者键写进 `config` 一律抛并
 //      指向 `capabilities.hooks`；**壳里的函数字段**（`retry.sleepImpl` / `reflection.onReflection` /
-//      `reflection.judge.provider` / `context.onBeforeFold` / `onAfterFold` / `deliverables[].check`）
-//      逐个点名**完整路径**；`config.guard.finalGuard`（值必须是函数的那个叶子）现在属能力面。
+//      `reflection.judge.provider` / `context.onBeforeFold` / `onAfterFold`）逐个点名**完整路径**；
+//      `config.guard.finalGuard` 与 `config.guard.deliverables` 都属能力面（#498 S4b 起
+//      `deliverables` 整键搬进 `capabilities.checks`，所以它不再是「只能写 `[]`」的过渡态）。
 //      「收下再在展开时丢函数」不可能：抛在 intake（读任何宿主端口之前）。
 //   S4（可枚举的 round-trip 机器断言）：按 `CONFIG_NAMESPACE_SCHEMA` **逐叶子**构造一份代表性纯数据
 //      取值，断言 `JSON.parse(JSON.stringify(cfg))` 与原值逐字等值，并断言展开后的有效选项与直接传
@@ -28,6 +31,8 @@ import {
   CAPABILITIES_NAMESPACE_GROUPS,
   CAPABILITIES_NAMESPACE_OPTION_NAME,
   CAPABILITIES_NAMESPACE_SCHEMA,
+  CAPABILITIES_SURFACE_OPTION_NAMES,
+  CAPABILITY_CHECK_NAMES,
   CAPABILITY_HOOK_NAMES,
   capabilitiesPathForOption,
   collectCapabilitiesNamespaceProblems,
@@ -41,6 +46,7 @@ import {
   CONFIG_SURFACE_OPTION_NAMES,
   NAMESPACE_CONTAINER_OPTION_NAMES,
   collectConfigNamespaceProblems,
+  configOptionNameForLeaf,
   configSchemaSelfCheck,
   configPathForOption,
   expandConfigNamespace,
@@ -104,8 +110,8 @@ function functionPathsIn(value, path) {
 test("S1 三向闭合：配置面 43 + 能力面 22 + 容器 2 = 顶层白名单 67，自检仍 []", () => {
   // 四个数逐个钉住（漏一个就少一条等价证明；也免得「两边一起漏」算通过）。
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.length, 67, "顶层白名单 = 66 + capabilities 这个容器（#498 S4a）");
-  assert.equal(CONFIG_SURFACE_OPTION_NAMES.length, 43, "配置面 43 键（52 − 8 个 observers − finalGuard）");
-  assert.equal(CAPABILITY_OPTION_NAMES.length, 22, "能力面 22 项（13 端口/出口 + 8 观察者通道 + finalGuard）");
+  assert.equal(CONFIG_SURFACE_OPTION_NAMES.length, 43, "配置面 43 键（S4b 只是把 deliverables 换成了 tools，条数不变）");
+  assert.equal(CAPABILITY_OPTION_NAMES.length, 22, "能力面 22 项（12 端口/出口 + 9 回调 + deliverables）");
   assert.equal(NAMESPACE_CONTAINER_OPTION_NAMES.length, 2, "容器两个：config 与 capabilities");
   assert.equal(
     CONFIG_SURFACE_OPTION_NAMES.length + CAPABILITY_OPTION_NAMES.length + NAMESPACE_CONTAINER_OPTION_NAMES.length,
@@ -141,9 +147,20 @@ test("S1b 自检会咬人：容器漏一个 / hooks 里的回调没分类 / hook
   const dropped = optionNames.filter((name) => name !== "onJudge");
   assert.deepEqual(
     configSchemaSelfCheck(dropped),
-    ['schema names "onJudge", which is not a top-level option'],
-    "hooks 里的回调必须是真选项，否则这条闭合是空转",
+    [
+      'capabilities.hooks names "onJudge", which is not a top-level option',
+      'schema names "onJudge", which is not a top-level option',
+    ],
+    "hooks 里的回调必须是真选项，否则这条闭合是空转（两条报错都点名同一个键）",
   );
+  // #498 S4b：`checks` 组的叶子同一条规矩（`deliverables` 离开白名单 ⇒ 两边都红）。
+  const noDeliverables = configSchemaSelfCheck(
+    optionNames.filter((name) => name !== "deliverables"),
+  );
+  assert.deepEqual(noDeliverables, [
+    'capabilities.checks names "deliverables", which is not a top-level option',
+    'schema names "deliverables", which is not a top-level option',
+  ], "checks 组的叶子必须是真选项（#498 S4b）");
 });
 
 test("S1c 容器与两面对称：两个容器都不在配置面/能力面里，且都有未知子键闸口", () => {
@@ -156,16 +173,33 @@ test("S1c 容器与两面对称：两个容器都不在配置面/能力面里，
   // 未知子键闸口：两个容器各抛一条（同一道相位、同一套文案口径）。
   assert.match(
     collectConfigNamespaceProblems({ rund: { maxRounds: 1 } })[0],
-    /unknown config namespace: "rund" \(accepted: prompt, run, tuning, timing, folding, guard, metadata\)/u,
+    /unknown config namespace: "rund" \(accepted: input, run, tuning, timing, folding, guard, metadata\)/u,
   );
   assert.match(
     collectCapabilitiesNamespaceProblems({ hoks: {} })[0],
-    /unknown capabilities namespace: "hoks" \(accepted: hooks; ports are not collected under capabilities/u,
+    /unknown capabilities namespace: "hoks" \(accepted: hooks, checks; ports are not collected under capabilities/u,
+  );
+  // #498 S4b 的两面对称：`capabilities.check`（少一个 s）必须抛，且**列出可接受值**（含 checks）。
+  const singular = collectCapabilitiesNamespaceProblems({ check: { deliverables: [] } });
+  assert.deepEqual(singular, [
+    'unknown capabilities namespace: "check" (accepted: hooks, checks;'
+      + " ports are not collected under capabilities — pass them as top-level options"
+      + " or through the assembly port)",
+  ], "`capabilities.check` 必须抛并列出可接受值（#498 S4b 的闸口对称性）");
+  assert.deepEqual(
+    collectCapabilitiesNamespaceProblems({ checks: { check: [] } }),
+    ['unknown capabilities.checks option: "check" (accepted: deliverables)'],
+    "checks 组的未知叶子点名该层接受的名字",
+  );
+  // 叶子写在容器顶层 ⇒ 指到它真正的组（而不是含糊的「未知分组」）。
+  assert.deepEqual(
+    collectCapabilitiesNamespaceProblems({ deliverables: [] }),
+    ["capabilities.deliverables: checks live under capabilities.checks (write capabilities.checks.deliverables)"],
   );
 });
 
 // ================================================================ S2. capabilities.hooks 是规范之家
-test("S2 11 个回调逐个点名：名单、别名表、schema 三者互相对得上", () => {
+test("S2 12 个回调逐个点名：名单、别名表、schema 三者互相对得上", () => {
   assert.deepEqual([...CAPABILITY_HOOK_NAMES], [
     "onEvent",
     "onObserverError",
@@ -178,11 +212,19 @@ test("S2 11 个回调逐个点名：名单、别名表、schema 三者互相对�
     "onToolCall",
     "onUsage",
     "onFoldSummary",
-  ], "11 个回调的名单是本刀的判据面，逐字钉住");
-  assert.equal(CAPABILITY_HOOK_NAMES.length, 11);
-  assert.deepEqual([...CAPABILITIES_NAMESPACE_GROUPS], ["hooks"], "本刀只收 hooks 一组（ports 待后续刀裁）");
-  assert.deepEqual(Object.keys(CAPABILITIES_NAMESPACE_SCHEMA), ["hooks"]);
-  assert.equal(CAPABILITIES_ALIAS_PATHS.size, 11, "一个回调一条别名路径，不多不少");
+    // #498 S4b：第 12 个（值必须是函数，消费点 `hasFinalDraft`（`src/loop/termination.js`））。
+    "finalGuard",
+  ], "12 个回调的名单是本刀的判据面，逐字钉住");
+  assert.equal(CAPABILITY_HOOK_NAMES.length, 12);
+  assert.deepEqual([...CAPABILITIES_NAMESPACE_GROUPS], ["hooks", "checks"], "两组：hooks（12）+ checks（1）");
+  assert.deepEqual(Object.keys(CAPABILITIES_NAMESPACE_SCHEMA), ["hooks", "checks"]);
+  assert.deepEqual([...CAPABILITY_CHECK_NAMES], ["deliverables"], "checks 组只有交付物判据");
+  assert.equal(CAPABILITIES_ALIAS_PATHS.size, 13, "12 个回调 + 1 个 checks 叶子，一条别名路径不多不少");
+  assert.equal(CAPABILITIES_SURFACE_OPTION_NAMES.length, 13, "能力面 schema 的叶子全集 = 13");
+  assert.equal(capabilitiesPathForOption("deliverables"), "checks.deliverables");
+  assert.equal(CAPABILITIES_ALIAS_PATHS.get("checks.deliverables"), "deliverables");
+  assert.equal(CAPABILITY_OPTION_NAMES.includes("deliverables"), true, "deliverables 必须在能力面名单里");
+  assert.equal(CONFIG_SURFACE_OPTION_NAMES.includes("deliverables"), false, "deliverables 不得再出现在配置面");
   for (const hook of CAPABILITY_HOOK_NAMES) {
     const path = capabilitiesPathForOption(hook);
     assert.equal(path, `hooks.${hook}`, `${hook} 的路径叶子必须逐字等于键名（别名 = schema 路径）`);
@@ -407,9 +449,12 @@ test("S5 壳里的函数字段逐个点名完整路径（这些键实测真被�
       { config: { folding: { context: { onAfterFold: () => {} } } } },
       "config.folding.context.onAfterFold",
     ],
+    // #498 S4b：`config.guard.deliverables` 这个壳**整键不在配置面**了（搬去
+    // `capabilities.checks.deliverables`），所以它的函数不再走「函数值」这条报错，
+    // 而是走能力键那条（见 S5e）。这里换成仍在配置面的数据键塞函数：`config.input.tools`。
     [
-      { config: { guard: { deliverables: [{ name: "x", check: () => {} }] } } },
-      "config.guard.deliverables[0].check",
+      { config: { input: { tools: () => {} } } },
+      "config.input.tools",
     ],
   ];
   for (const [options, path] of cases) {
@@ -418,7 +463,7 @@ test("S5 壳里的函数字段逐个点名完整路径（这些键实测真被�
     assert.match(error.message, new RegExp(`${path.replace(/[.[\]]/gu, (ch) => `\\${ch}`)} is not accepted`, "u"), `${path} 必须被点名`);
     assert.match(error.message, /is a function, and the config namespace holds data only/u);
     assert.match(error.message, /JSON round-trip/u, "报错必须说清原因");
-    assert.match(error.message, /canonical home is capabilities/u, "报错必须说出去处");
+    assert.match(error.message, /canonical home is/u, "报错必须说出去处");
     assert.equal(error.via, "direct");
   }
 });
@@ -433,20 +478,19 @@ test("S5b 函数拒绝不是「收下再丢」：抛在 intake（任何宿主端
   });
   const error = await runToolLoop({
     assemblyPort: proxyPort,
-    config: { guard: { deliverables: [{ check: () => {} }] } },
+    config: { folding: { context: { onBeforeFold: () => {} } } },
   }).then(() => null, (caught) => caught);
   assert.equal(error instanceof TypeError, true);
-  assert.match(error.message, /config\.guard\.deliverables\[0\]\.check is not accepted/u);
+  assert.match(error.message, /config\.folding\.context\.onBeforeFold is not accepted/u);
   assert.deepEqual(touched, [], "函数值必须在任何端口读取之前被拒");
 
   // 纯数据照旧过（不是「一律拒绝嵌套对象」）。
-  // ⚠ `deliverables` 只写空数组：每条判据的 `check` 都是函数，所以**有内容的** deliverables 在
-  // `config` 里必然被函数闸口拒（`config.guard.deliverables[0].check`）——那条是判据要的形状，
-  // 见 S5。空数组规范化成「未声明」，是它唯一能写进配置面的值。
+  // #498 S4b：`deliverables` 不再能从 `config` 里写（整键搬去 `capabilities.checks`），所以这条
+  // 「合法数据」用例换成仍在配置面的 `input.tools` —— 它以前是能力键、写进 config 会抛。
   const ok = await runDirect({
     config: {
       folding: { context: { budgetTokens: 1000, summarizerBudgetMs: 5000 } },
-      guard: { deliverables: [] },
+      input: { tools: [{ name: "echo", description: "回显", inputSchema: { type: "object" } }] },
       metadata: { toolContext: { workspace: "w" } },
     },
   });
@@ -512,12 +556,14 @@ test("S6 collectConfigNamespaceProblems 纯函数：函数问题逐条可断言�
  * 并点名该叶子（这正是「将来谁把函数键放进 config，它会立刻红」的机制）。
  */
 const REPRESENTATIVE_CONFIG_VALUES = {
-  // prompt
+  // input（#498 S4b：`prompt` 改名 `input`，成员 = system + cacheStablePrefix + initialUserMessage
+  // + `messages`（顶层 `initialMessages` 的嵌套别名）+ wrapup + `tools`（顶层 `tools` 的嵌套别名））
   system: "you are a test",
   cacheStablePrefix: false,
   initialUserMessage: "go",
-  initialMessages: [],
+  messages: [],
   wrapup: false,
+  tools: [{ name: "echo", description: "回显", inputSchema: { type: "object", properties: {} } }],
   // run
   maxRounds: 3,
   maxTokenContinuations: 2,
@@ -552,7 +598,6 @@ const REPRESENTATIVE_CONFIG_VALUES = {
   finalGuardMaxRetries: 1,
   finalGuardTimeoutMs: 5000,
   finalGuardExtend: false,
-  deliverables: [],
   // metadata
   expert: "expert",
   user: "user",
@@ -617,7 +662,8 @@ test("S8 逐叶子穷举：config.<group>.<leaf> 展开后与扁平形态逐键�
   for (const group of CONFIG_NAMESPACE_GROUPS) {
     for (const leaf of CONFIG_NAMESPACE_SCHEMA[group]) {
       const value = REPRESENTATIVE_CONFIG_VALUES[leaf];
-      const flat = { [leaf]: value };
+      // 扁平形态用的是**顶层键名**（`input.messages` 的扁平孪生是 `initialMessages`）。
+      const flat = { [configOptionNameForLeaf(group, leaf)]: value };
       const nested = expandConfigNamespace({ config: { [group]: { [leaf]: value } } });
       assert.deepEqual(nested.conflicts, [], `${group}.${leaf} 只给一边时不该有冲突`);
       assert.deepEqual(nested.options, flat, `${group}.${leaf} 展开后必须回到扁平形态`);
@@ -632,7 +678,9 @@ test("S9 端到端语义等价：整棵 config 与直接传扁平键规范化后
   const config = buildRepresentativeConfig();
   const flat = {};
   for (const group of CONFIG_NAMESPACE_GROUPS) {
-    for (const leaf of CONFIG_NAMESPACE_SCHEMA[group]) flat[leaf] = config[group][leaf];
+    for (const leaf of CONFIG_NAMESPACE_SCHEMA[group]) {
+      flat[configOptionNameForLeaf(group, leaf)] = config[group][leaf];
+    }
   }
   const nestedResult = await normalizeRunToolLoopOptions({ config });
   const flatResult = await normalizeRunToolLoopOptions({ ...flat });
@@ -651,4 +699,110 @@ test("S9 端到端语义等价：整棵 config 与直接传扁平键规范化后
     modelConfig: { resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1024 }) },
   });
   assert.equal(result.termination.reason, "end_turn");
+});
+
+// ================================================================ S10. `capabilities.checks`（#498 S4b）
+//
+// 交付物判据是宿主**行为**（`check` 是函数），所以它属能力面。以前它挂在 `config.guard.deliverables`
+// 上，而配置面只装数据 ⇒ 能写的只有 `[]`（一个「只能写空数组」的过渡态）。本刀把它整键搬进
+// `capabilities.checks.deliverables`，过渡态消失，而顶层扁平 `deliverables` 一字未动。
+test("S10 capabilities.checks.deliverables：展开回扁平键、形状逐条校、与扁平键冲突不静默", () => {
+  const entry = { name: "report", check: () => true };
+  const expanded = expandCapabilitiesNamespace({ capabilities: { checks: { deliverables: [entry] } } });
+  assert.deepEqual(expanded.conflicts, []);
+  assert.deepEqual(expanded.options.deliverables, [entry], "展开后就是顶层 deliverables 那一个数组");
+  assert.equal(Object.hasOwn(expanded.options, "capabilities"), false);
+
+  // 只给一边 / 两边同值 ⇒ 不算冲突；两边不同（不同条目）⇒ 记一条，path/key 逐字。
+  assert.deepEqual(
+    expandCapabilitiesNamespace({ deliverables: [entry], capabilities: { checks: { deliverables: [entry] } } }).conflicts,
+    [],
+  );
+  const conflict = expandCapabilitiesNamespace({
+    deliverables: [entry],
+    capabilities: { checks: { deliverables: [{ name: "other", check: () => true }] } },
+  });
+  assert.deepEqual(conflict.conflicts, [{ path: "checks.deliverables", key: "deliverables" }]);
+  // capabilities 侧赢（与 hooks 侧同向优先级）。
+  assert.equal(conflict.options.deliverables[0].name, "other");
+
+  // 形状规则复用 `normalizeDeliverables`（不在这里手抄第二份），判词挂在完整路径上。
+  assert.deepEqual(
+    collectCapabilitiesNamespaceProblems({ checks: { deliverables: "nope" } }),
+    ["capabilities.checks.deliverables is not accepted: deliverables must be an array of { name, check }"],
+  );
+  assert.deepEqual(
+    collectCapabilitiesNamespaceProblems({ checks: { deliverables: [{ name: "x" }] } }),
+    ["capabilities.checks.deliverables is not accepted: deliverables[0].check must be a function"],
+  );
+  assert.deepEqual(collectCapabilitiesNamespaceProblems({ checks: "nope" }), ["capabilities.checks must be an object"]);
+  // 空数组 = 未声明（与扁平 `deliverables: []` 同口径），不是错误。
+  assert.deepEqual(collectCapabilitiesNamespaceProblems({ checks: { deliverables: [] } }), []);
+});
+
+test("S10b capabilities.checks.deliverables 真被引擎核（不是「展开了但没人读」）", async () => {
+  const seen = [];
+  const result = await runDirect({
+    finalGuard: async () => ({ action: "accept" }),
+    capabilities: {
+      checks: {
+        deliverables: [{
+          name: "report",
+          check: (facts) => {
+            seen.push(facts);
+            return true;
+          },
+        }],
+      },
+    },
+  });
+  assert.equal(result.termination.reason, "end_turn");
+  assert.equal(seen.length, 1, "判据恰好被核一次（guard 调用之前）");
+  assert.equal(result.verification.status, "verified", "判据通过 + guard accept ⇒ verified");
+  // 对照组：同一份判据写扁平写法必须同形（纯加法，不是搬家）。
+  const flatSeen = [];
+  const flatRun = await runDirect({
+    finalGuard: async () => ({ action: "accept" }),
+    deliverables: [{ name: "report", check: () => { flatSeen.push(1); return true; } }],
+  });
+  assert.equal(flatRun.verification.status, "verified");
+  assert.equal(flatSeen.length, 1);
+});
+
+test("S10c 能力键那条闸口覆盖 deliverables：写进 config 抛并指向 capabilities.checks", async () => {
+  const error = await directError({ config: { guard: { deliverables: [] } } });
+  assert.equal(error instanceof TypeError, true);
+  assert.match(error.message, /config\.guard\.deliverables is not accepted/u);
+  assert.match(error.message, /capability\/injection option/u);
+  assert.match(error.message, /capabilities\.checks\.deliverables/u, "报错必须点出新家（不是含糊的「能力面」）");
+  assert.equal(configPathForOption("deliverables"), undefined, "配置面不许再给它别名");
+});
+
+// ================================================================ S11. `capabilities.hooks.finalGuard`（#498 S4b）
+test("S11 finalGuard 是 hooks 的第 12 个成员：config.guard.finalGuard 抛，capabilities.hooks.finalGuard 真被调", async () => {
+  // 形状闸口：hooks 的叶子给了就必须是函数（与其它 11 个同一条规则）。
+  assert.deepEqual(
+    collectCapabilitiesNamespaceProblems({ hooks: { finalGuard: "nope" } }),
+    ["capabilities.hooks.finalGuard must be a function (or omitted)"],
+  );
+  // 配置面里仍然拒绝（值必须是函数 ⇒ 按判据它是行为载体）。
+  const error = await directError({ config: { guard: { finalGuard: async () => ({ action: "accept" }) } } });
+  assert.match(error.message, /config\.guard\.finalGuard is not accepted/u);
+  assert.match(error.message, /capabilities\.hooks\.finalGuard/u, "报错必须点出新家");
+
+  // 行为证据：`capabilities.hooks.finalGuard` 与顶层扁平 `finalGuard` 是同一个键（真被调一次）。
+  let calls = 0;
+  const result = await runDirect({
+    capabilities: {
+      hooks: {
+        finalGuard: async () => {
+          calls += 1;
+          return { action: "accept" };
+        },
+      },
+    },
+  });
+  assert.equal(result.termination.reason, "end_turn");
+  assert.equal(calls, 1, "capabilities.hooks.finalGuard 必须被调用（消费点 hasFinalDraft）");
+  assert.equal(result.verification.status, "verified");
 });

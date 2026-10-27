@@ -589,7 +589,6 @@ judgeFailureLimit
 extensionStep
 maxExtensions
 maxRoundsCap
-format
 wrapupNormalize
 judge: { provider, evaluator }
 onReflection

@@ -131,7 +131,7 @@ function missingAssemblyMethods(port) {
  *   `loadRunState`); missing optional methods degrade, they do not fail.
  *   `loadRunStateStatus` is an optional host-facing terminal-status reader;
  *   the engine does not consume or validate it.
- * @property {{id:string,modelSlot?:string,resume?:boolean,initialMessages?:object[]}} session
+ * @property {{id:string,modelSlot?:string,initialMessages?:object[]}} session
  *   Run identity and optional resume seed.
  * @property {object} [policy]
  *   Explicit run options; unknown policy keys are rejected.
@@ -163,8 +163,14 @@ export function createAssemblyPort(input = {}) {
   if (missing.length > 0) {
     throw new TypeError(`assembly port is missing methods: ${missing.join(", ")}`);
   }
-  if (port.session.resume !== undefined && typeof port.session.resume !== "boolean") {
-    throw new TypeError("assembly port session.resume must be a boolean");
+  if (port.session.resume !== undefined) {
+    // #498 S4b：幻影组 `session` 的那条别名（`session.resume` → 顶层 `resume`）删掉了。
+    // `session` 是**纯数据**（`config.metadata.session`），一个「看起来像旋钮」的键留在里面
+    // 只会让宿主以为它生效了——所以拒绝并指出去处，而不是静默忽略。
+    throw new TypeError(
+      "assembly port session.resume is not accepted: session is data only"
+      + " (pass resume as the top-level option or as config.run.resume)",
+    );
   }
   if (port.session.initialMessages !== undefined && !Array.isArray(port.session.initialMessages)) {
     throw new TypeError("assembly port session.initialMessages must be an array");
@@ -240,7 +246,8 @@ export async function assemblyPortOptions(input, overrides = {}) {
     ...(port.store === undefined ? {} : { store: port.store }),
     runId: port.session.id,
     session: port.session,
-    ...(port.session.resume === undefined ? {} : { resume: port.session.resume }),
+    // #498 S4b：这里曾有 `session.resume` → `resume` 的转换（幻影组）。`session` 是纯数据，
+    // `resume` 的规范之家是顶层 `resume` / `config.run.resume`；构造期已拒绝 `session.resume`。
     ...(port.session.initialMessages === undefined
       ? {}
       : { initialMessages: port.session.initialMessages }),
