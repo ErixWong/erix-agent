@@ -218,6 +218,43 @@ test("A4 按新判据改归的四个键真被引擎读：persistence / modelMeta
   assert.equal(withSession.termination.reason, "end_turn");
 });
 
+// 第二轮裁决的落地形状：`runId` / `cwd` 从能力面移到 `config.run`。别名不是死键——这两条是**行为证据**
+// （run_outcome 的 `runId` 与 `finalGuard` 载荷的 `cwd` 都来自 config 里写的那份），外加「不给就不写假值」
+// 的对照组（与顶层扁平键同口径）。
+test("A5 移到配置面的 runId / cwd 真被引擎读：run_outcome 的 runId 与 finalGuard 载荷的 cwd", async () => {
+  const events = [];
+  let payload;
+  const result = await runDirect({
+    modelMetadata: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
+    config: { run: { runId: "config-497-runid", cwd: "/tmp/config-497-cwd" } },
+    finalGuard: async (captured) => {
+      payload = captured;
+      return { action: "accept" };
+    },
+    onEvent: (event) => events.push(event),
+  });
+  assert.equal(result.termination.reason, "end_turn");
+  const outcome = events.filter((event) => event.type === "run_outcome");
+  assert.equal(outcome.length, 1, "样本自证：run_outcome 恰一条");
+  assert.equal(outcome[0].runId, "config-497-runid", "config.run.runId 被读（不是死别名）");
+  assert.equal(payload?.runId, "config-497-runid");
+  assert.equal(payload?.cwd, "/tmp/config-497-cwd", "config.run.cwd 进 finalGuard 载荷");
+
+  // 对照：不给这两个键 ⇒ 两个字段都缺省（与扁平键「没给就不编造字段」同口径）。
+  const bareEvents = [];
+  let barePayload;
+  await runDirect({
+    modelMetadata: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
+    finalGuard: async (captured) => {
+      barePayload = captured;
+      return { action: "accept" };
+    },
+    onEvent: (event) => bareEvents.push(event),
+  });
+  assert.equal(Object.hasOwn(bareEvents.filter((event) => event.type === "run_outcome")[0], "runId"), false);
+  assert.equal(Object.hasOwn(barePayload, "cwd"), false);
+});
+
 // ================================================================ B. 结构等价（判据 1）
 test("B1 52 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平形态逐键深度相等", () => {
   let covered = 0;
