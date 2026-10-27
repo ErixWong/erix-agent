@@ -3,6 +3,8 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+## [0.27.0] - 2026-10-27
+
 ### Fixed
 
 - **`context` 未知键校验：白名单漏了 `maxSummaryTokens`、家族判据又太宽（issue #493 复核）**：① `maxSummaryTokens` 只进了 `FOLD_SUMMARIZER_CAP_NAMES`、没进 `CONTEXT_OPTION_NAMES` ⇒ 宿主给**对的**值仍被判未知键抛 `TypeError`（把「静默无效」翻成「装配口报错」，分裂没变）；现在两条名单都收，并新增 `contextOptionNameSelfCheck()`做 **`FOLD_SUMMARIZER_CAP_NAMES ⊆ CONTEXT_OPTION_NAMES`** 的交叉核对（单条顶五条，下一个旋钮再漏也会被这条钉住，测试直接断言两名单一致）。② 家族判据从 `/summar|PriorSummary/i` 改成**与已知旋钮名的编辑距离 ≤ 2**：旧判据把 `summaryStyle` / `summarizerNote` 也判成旋钮 ⇒ 等于悄悄立了「`context` 里不许有含 `summar` 的业务键」，与契约开头「私有元数据可放 `context`」冲突。③ `readFile` 描述里的中位档改 `median 6,600 (40.0)`：同一句文案被两条 ±2% 断言夹住（对样本中位 6,699、对锚点自身 6,532），声称值必须落在交集 [6565, 6662] 里，取中间值 —— **容差常量一个没动**（放宽 0.02 会废掉 `#275` 的反向证）。
@@ -66,6 +68,8 @@
   上，角色从 `src/tools/notes.js` 改钉它，描述 `median 6,952 (37.7)` → `median 6,756 (38.8)`
   （同位数替换，对本文件字节中性；容差常量一个没动）。
 
+
+- **随包发布文档（0.27.0 的发布收尾）：新增 `docs/host-upgrade-guide-0.27.0.md` / `docs/host-upgrade-guide-0.27.0_cn.md`（中英成对）**，写的不是变更清单而是**宿主侧真正要动的四格**：五个摘要旋钮与它们的默认值（五个都不传就是推荐配置）、摘要请求 `maxTokens` 的 `min(run maxTokens, maxSummaryTokens)` 取小对齐（断言过请求体的宿主必看）、`context` 未知键的两类判据（旋钮手滑抛 / 宿主元数据放行并留 `context_unknown_option`），以及两条运维预期（**升级后每份既有账本预期重算一次摘要**、**单轮即超 48 KB 时 `droppedRounds` 恒 0**）。另写明一条本站够不到的边界：那套 `context` 校验只挂在 `createAssemblyPort` 上，直连 `runToolLoop` 的宿主对 `context` 拿不到任何校验。`package.json` 的 `files` 同步加这两份；覆盖面下限 `REF_SCAN_DOCS_MINIMUM` 由 **39 抬到 41**（13 份点名文档 + 当前实扫到的 28 份指南），四处声称（README 中英 / AGENTS 中英）与 `test/docs-anchor-ratchet.test.js` 的 `GUIDE_DOCS_PINNED`、那条 `assert.equal(minimum, …)` 同步抬；README 中英发布行升到 **v0.27.0**、`docs/requirements{,_cn}.md` 的对照版本与 §4 current 行升到 0.27.0。发版前门禁：`check:docs`（71 项）+ `docs-sync`（92 节）+ `check:docs:strict` + `check:syntax` + `check:tests` + `check:types`（116 == 基线）+ `check:release` 五步（tarball `erix-agent-0.27.0.tgz` / 随包契约套件 137 全绿 / `tsc --strict` / `erix --version=0.27.0`）全绿。
 
 ## [0.26.0] - 2026-10-26
 
