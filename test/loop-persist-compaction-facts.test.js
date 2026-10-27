@@ -178,8 +178,12 @@ test("#326-C 复用不重算：折叠后中断，resume 不再调 summarizer，�
     context: { ...foldContext, keepRounds: 1 },
   });
 
-  assert.equal(resumed.summaryCalls, 0,
-    `恢复后必须复用已入账摘要，不得重算（实测 ${resumed.summaryCalls} 次）`);
+  // issue #469 宿主裁决 A（实施条件 4）：续写基底**进复用键**。于是 resume 后第一次折叠的输入
+  // 多了「续写基底」那一节 ⇒ 旧账本（键里没有基底）必然 miss 一次、重算一份摘要。这是宿主明确
+  // 选择的取舍（「复用命中少一格的代价远小于无声丢脉络」），所以本格从「0 次」改成「恰好一次」；
+  // 第二次折叠起基底与键都对齐，复用照旧生效（下一格钉的就是这个）。
+  assert.equal(resumed.summaryCalls, 1,
+    `#469-A 落地后 resume 首次折叠会重算一次（基底进键），实测 ${resumed.summaryCalls} 次`);
   assert.ok(
     resumed.mainRequests.some((request) => request.messages.some((message) => textOf(message).includes("SUMMARY_V1"))),
     "恢复后的请求必须用已入账那份摘要",
@@ -189,10 +193,17 @@ test("#326-C 复用不重算：折叠后中断，resume 不再调 summarizer，�
     "不得出现重算出来的第二份摘要",
   );
 
-  // 不重复入账：同一次折叠在恢复后仍然只有一条事实行。
+  // issue #469-A：基底进复用键之后，这一格从「复用」变成「重算一次」⇒ 账本里会多一条**同区间**的
+  // 事实行（宿主明确选择的代价：宁可少命中一格，也不无声丢脉络）。本格守的是**读侧不歧义**：
+  // 所有事实行覆盖同一水位线 ⇒ `pickCoveringFoldSummary` 仍只挑到一份，不会出现两个区间。
   const recordsAfter = await store.load("326c-fold-resume");
-  assert.equal(recordsAfter.filter((record) => typeof record?.foldedSummary?.text === "string").length, 1,
-    "复用命中不得再记一条同样的折叠事实");
+  const factsAfter = recordsAfter.filter((record) => typeof record?.foldedSummary?.text === "string");
+  assert.ok(factsAfter.length >= 1, "折叠事实必须仍在账本里");
+  assert.equal(
+    new Set(factsAfter.map((record) => record.foldedSummary.foldedRoundRange?.to)).size,
+    1,
+    `同一次折叠的事实行必须覆盖同一水位线（实测 ${JSON.stringify(factsAfter.map((r) => r.foldedSummary.foldedRoundRange))}）`,
+  );
 });
 
 test("#326-C 复用不重算：同一 run 内重复折叠不重复调 summarizer", async () => {

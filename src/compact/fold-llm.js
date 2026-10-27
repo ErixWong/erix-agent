@@ -354,8 +354,15 @@ export function createFoldLlmStrategy({
         // context_window_exceeded / error）。
         let degradeKind;
         let droppedInputMessages = 0;
+        // issue #469（裁决 A）：取源链 **显式调用参数 > 策略构造参数 > in-run 闭包 > 账本播种**。
+        // 账本排最后 ⇒ 非 resume / 挑不出覆盖事实时它为空，行为逐字退回今天的形状（纯加法）。
+        const continuationBase = await resolveContinuationBase(
+          callOptions,
+          options,
+          lastFoldSummaryText,
+        );
         const prior = normalizePriorSummary(
-          optionValue(callOptions, options, "previousSummary", lastFoldSummaryText),
+          continuationBase.text,
           normalizedLimit(
             optionValue(callOptions, options, "maxPriorSummaryBytes", DEFAULT_PRIOR_SUMMARY_MAX_BYTES),
           ),
@@ -432,6 +439,11 @@ export function createFoldLlmStrategy({
           ...(degradeKind === undefined ? {} : { degradeKind }),
           ...(prior.truncated ? { priorSummaryTruncated: true, priorSummaryBytes: prior.bytes } : {}),
           ...(prior.bytes > 0 && !prior.truncated ? { priorSummaryBytes: prior.bytes } : {}),
+          // issue #469（裁决 A）：基底从哪来——`"ledger"` = resume 后从账本播的，
+          // `"in-run"` = 本 run 攒的（含宿主显式传的）。口径照「无事实不写键」：没基底就不写。
+          ...(prior.bytes > 0
+            ? { priorSummaryOrigin: continuationBase.origin ?? "in-run" }
+            : {}),
           ...(summarizerOutcome.droppedRounds > 0
             ? { droppedRounds: summarizerOutcome.droppedRounds }
             : {}),
@@ -508,6 +520,28 @@ const DEFAULT_PRIOR_SUMMARY_MAX_BYTES = 24 * 1024;
 // 剩余时间不足一个最小尝试窗口就不再重试——30 s 是硬上限，不是每次尝试的上限。
 const DEFAULT_SUMMARIZER_BUDGET_MS = 30_000;
 const MIN_RETRY_REMAINING_MS = 2_000;
+
+/**
+ * issue #469（宿主裁决 A）：续写基底的**取源链**——显式调用参数 > 策略构造参数 > in-run 闭包 >
+ * 账本播种（`ledgerPreviousSummary`，值或异步取值器）。
+ *
+ * 账本那一档排**最后**：非 resume / 挑不出覆盖水位线的事实 ⇒ 返回空 ⇒ 行为逐字退回今天的形状。
+ * 返回值带 `origin`，由 `foldSummary.priorSummaryOrigin` 如实交代（`ledger` / `in-run`）。
+ *
+ * @param {any} callOptions
+ * @param {any} options
+ * @param {string|undefined} inRunText 本实例上一次真喂出去的摘要（`lastFoldSummaryText`）
+ * @returns {Promise<{ text?: string, origin?: "ledger"|"in-run" }>}
+ */
+async function resolveContinuationBase(callOptions, options, inRunText) {
+  const explicit = optionValue(callOptions, options, "previousSummary", undefined);
+  if (typeof explicit === "string" && explicit !== "") return { text: explicit, origin: "in-run" };
+  if (typeof inRunText === "string" && inRunText !== "") return { text: inRunText, origin: "in-run" };
+  const seed = optionValue(callOptions, options, "ledgerPreviousSummary", undefined);
+  const seeded = typeof seed === "function" ? await seed() : seed;
+  if (typeof seeded === "string" && seeded !== "") return { text: seeded, origin: "ledger" };
+  return { text: undefined, origin: undefined };
+}
 
 function normalizedInputBound(value) {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
