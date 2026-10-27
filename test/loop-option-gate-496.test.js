@@ -12,11 +12,14 @@
 //      只差 `error.via`；正例两条路线都不抛。
 //   C. 旋钮家族闭集**派生**：对 `FOLD_SUMMARIZER_CAP_NAMES` 每个键造一次手滑 ⇒ 两条路线都抛；
 //      合法键 ⇒ 都不抛；宿主业务键 ⇒ 不抛且留 `context_unknown_option` 事件（#469 的回归）。
-//   D. 回调形状：9 个承载宿主回调的字段，给错则启动即抛；给对时**逐格分开说**——
-//      `context.onBeforeFold` / `context.onAfterFold` / 顶层 `onFoldSummary` / `retry.sleepImpl` /
-//      `finalGuard` / `deliverables[].check` 六格在 D① 里**真跑一次**并断言投递次数，
-//      `reflection.onReflection` / `diagnostics.error` 的投递条件（judge 扩轮 / 持久化失败）不塞进同一格
-//      ——见 D① 的注释：它们只作为「形状正例」出现，不假装被断言过。
+//   D. 回调形状：语义相管 **7** 个承载宿主回调的字段（`finalGuard` / `retry.sleepImpl` /
+//      `reflection.onReflection` / `diagnostics.error` / 顶层 `onFoldSummary` / `context.onBeforeFold` /
+//      `context.onAfterFold`），另加闸口之外的 `deliverables[].check`；给错则启动即抛。给对时**逐格分开说**：
+//      六格在 D① 里**真跑一次**并断言投递次数（`context.onBeforeFold` / `context.onAfterFold` /
+//      顶层 `onFoldSummary` / `retry.sleepImpl` / `finalGuard` / `deliverables[].check`），
+//      `diagnostics.error` 用「投递失败落持久化账本」这个真条件触发并断言；
+//      `reflection.onReflection` 的投递条件是 judge 扩轮（要跑到 nearLimit），本格只把它当**形状正例**，
+//      **不声称**被断言过（以前那个计数器写了不断言，等于装样子）。
 //   E. 可达性：`maxRounds` / `deliverables` / `partialPersistence` / `persistence` 这类取值校验
 //      **仍由 orchestrator 承担**，两条路线都汇到那里（`error.via === undefined` 就是机器判据：
 //      闸口抛的错一定带 via 标签，不带标签 ⇒ 不是闸口抛的）。这条用例防的是「以为语义相全权负责，
@@ -384,10 +387,11 @@ test("D① 承载宿主回调的字段：省略 = 不订阅，给对就**真的�
   // 删掉 orchestrator 里 `context.onBeforeFold` 的透传，全量测试 0 红。现在改成**真跑一次折叠**：
   // `budgetTokens: 300` + `keepRounds: 1` + `sliding-window`（零 LLM）⇒ 6 发工具调用后必然折叠，
   // `context.onBeforeFold` / `context.onAfterFold` / 顶层 `onFoldSummary` 三格都必须 >= 1。
-  // 另外两格**不在这里装样子**（它们的触发条件不在本格射程内，硬塞只会再造一格假绿）：
+  // 另两格**不在这里装样子**（它们的触发条件不在本格射程内，硬塞只会再造一格假绿）：
   //   · `reflection.onReflection` 只在 judge 扩轮时调用（要跑到 nearLimit + reflection 扩展），
   //     本格给的是一个**不被计数**的真函数，只用来证明「形状对 ⇒ 不抛」；
-  //   · `diagnostics.error` 只在持久化失败时调用，本格用它真的接住 `onFoldSummary` 抱错那一条。
+  //   · `diagnostics.error` 由本格的真条件触发：`onFoldSummary` 抱错 ⇒ `persistence_error{port:"notes"}`
+  //     ⇒ `diagnostics.error` 真的被调一次（不是空计数器）。
   const calls = { onBeforeFold: 0, onAfterFold: 0, onFoldSummary: 0, finalGuard: 0, check: 0, sleepImpl: 0, error: 0 };
   const sleeps = [];
   const persistenceEvents = [];
