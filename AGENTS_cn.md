@@ -189,8 +189,9 @@ scripts/          # 实验脚本和结果
 - `repository.url` 使用 `git+https://...` 格式（或运行 `npm pkg fix`）。
 - 类型面（issue #213）：顶层 `types` 指向 `./src/index.d.ts`，`exports["."]` 与 `exports["./tools"]` 各带对应的 `types` 条件；
   `exports["./contract-tests"]` **刻意不带** `types`（其目标在 `test/` 下，不在声明依赖图里）。声明由 `prepack` 钩子生成，
-  因此干净检出里一个 `.d.ts` 都没有——装包后应列出 **80** 个 `.d.ts`（在 #497 的树上实测：`npm pack --dry-run --json`
-  列出整整 80 个，因为本单新增 `src/loop/config-namespace.js`；此前 **79**（2026-10-25 在 #462 的树上实测，因为该单新增
+  因此干净检出里一个 `.d.ts` 都没有——装包后应列出 **81** 个 `.d.ts`（在 #498 S4a 的树上实测：`npm pack --dry-run --json`
+  列出整整 81 个，因为本单新增 `src/loop/capabilities-namespace.js`；此前 **80**（在 #497 的树上实测，因为该单新增
+  `src/loop/config-namespace.js`）；此前 **79**（2026-10-25 在 #462 的树上实测，因为该单新增
   `src/compact/resume-fold-trim.js`；再此前 78（2026-10-24 在 #460 的树上实测，因为该单新增
   `src/compact/fold-archive.js`）；此前 77（2026-10-23 在 #406 B2-a 的树上实测，因为该单新增 `src/normalization/parse-model-json.js`
   与 `src/config/slot-provider.js`）；此前是 75，因为 #409 新增 `src/text/repair-json.js` 与 `src/messages/tool-arguments.js`；再此前 73，因为 #404 新增 `src/loop/resume-notice.js`；再此前 72，因为 #394 新增 `src/loop/pending-tool-result.js`；再此前 71，因为 #386 切片 2 新增 `src/loop/deliverables.js`；再此前 70，因为 #333 新增 `src/store/message-rows.js`；再此前 69，因为 #326 新增 `src/store/transcript-dedup.js`、#322 新增 `src/compact/fold-summary-journal.js`）。**这个数由
