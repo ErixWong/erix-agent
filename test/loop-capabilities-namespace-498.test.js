@@ -191,6 +191,12 @@ test("S1c 容器与两面对称：两个容器都不在配置面/能力面里，
     ['unknown capabilities.checks option: "check" (accepted: deliverables)'],
     "checks 组的未知叶子点名该层接受的名字",
   );
+  // 反向对称：把能力面的**组名**写进 config ⇒ 不是「未知配置分组」，而是指回 capabilities。
+  assert.deepEqual(
+    collectConfigNamespaceProblems({ checks: { deliverables: [] } }),
+    ["config.checks: capabilities.checks is a capability group, not a config group"
+      + " (write capabilities.checks.<leaf> at the top level)"],
+  );
   // 叶子写在容器顶层 ⇒ 指到它真正的组（而不是含糊的「未知分组」）。
   assert.deepEqual(
     collectCapabilitiesNamespaceProblems({ deliverables: [] }),
