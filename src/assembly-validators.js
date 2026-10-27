@@ -445,6 +445,12 @@ function readOptionPath(options, path) {
 }
 
 /**
+ * 校验错误上的**路线标签**（issue #496 裁决④）：只有两个取值，别的地方不许往错误上贴属性。
+ *
+ * @typedef {{via?: "assembly"|"direct"}} RouteTag
+ */
+
+/**
  * 给校验错误贴**路线标签**（issue #496 裁决④）。
  *
  * 只加一个自有属性，**不动消息、不动原型链**：装配口今天那句
@@ -458,7 +464,9 @@ function readOptionPath(options, path) {
  */
 export function tagValidationRoute(error, via) {
   if (error !== null && typeof error === "object" && (via === "assembly" || via === "direct")) {
-    /** @type {any} */ (error).via = via;
+    // 用 `Object.assign` 而不是 `/** @type {any} */ (error).via = via`：贴标签这一步不该打开
+    // 「任何地方都能往任意对象上贴属性」的口子，`RouteTag` 是这条属性的唯一类型来源。
+    return /** @type {T & RouteTag} */ (Object.assign(error, { via }));
   }
   return error;
 }
@@ -467,7 +475,7 @@ export function tagValidationRoute(error, via) {
  * 语义相的抛错包装：两条路线共用同一份规则与同一条消息，只差 `via` 标签。
  *
  * @param {unknown} options
- * @param {{via?: "assembly"|"direct"}} [route]
+ * @param {RouteTag} [route]
  * @returns {void}
  */
 export function assertSemanticOptionValues(options, route = {}) {
