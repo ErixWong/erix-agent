@@ -382,6 +382,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   finalGuardTimeoutMs?: number, // Defaults to 30000; non-positive values use the default.
  *   finalGuardExtend?: boolean, // issue #386 slice 3: let a `revise` on a budget-type stop (max_rounds_cap / continuation_exhausted) borrow the mid-run extension mechanism **once per run**. Defaults to false = today's behaviour byte for byte; `stall` is never extended.
  *   maxTokenContinuations?: number,
+ *   config?: {prompt?: object, run?: object, tuning?: object, timeouts?: object, folding?: object, reflection?: object, retry?: object, guard?: object, metadata?: object, observers?: object}, // issue #497（S2）：嵌套配置命名空间——叶子名逐字等于同名顶层选项（`config.run.maxRounds` ⇔ `maxRounds`），类型也与顶层同名选项一致。同名时 config 赢，并会发一条 `config_override_conflict` 事件。能力/注入键（provider / tools / store / session / signal / 回调出口 …）不接受写在这里，启动即抛；schema 与分组见 src/loop/config-namespace.js。
  *   context?: {strategy?: object|"sliding-window"|"fold-statistical"|"fold-llm", budgetTokens?:number, keepRounds?:number, toolContext?:object, task?:string}, // strategy accepts a strategy object or a built-in name (#167); task is the judge/reflection/wrapup brief fallback after explicit task; see task param.
  *   todoStateProvider?:(payload:{runId?:string,rounds:number})=>object|Promise<object>,
  *   semanticStateProvider?:(payload:{runId?:string,state:object,previous?:object})=>{text:string,version:number}|Promise<{text:string,version:number}>,
@@ -510,7 +511,7 @@ export async function runToolLoop(options) {
   // 选项规范化（形状/未知键白名单 + 未知键建议 + assemblyPort 合并）已外提到
   // src/loop/option-normalization.js（issue #177 刀1）；检查次序不变：
   // 形状检查 → 未知键检查 → assemblyPortOptions → 显式值合并（`!== undefined` 才覆盖）。
-  const { assemblyPort, explicitOptions, effectiveOptions } = await normalizeRunToolLoopOptions(options);
+  const { assemblyPort, explicitOptions, effectiveOptions, configConflicts } = await normalizeRunToolLoopOptions(options);
 
   const {
     provider,
@@ -1021,6 +1022,27 @@ export async function runToolLoop(options) {
       });
     }
   };
+  // issue #497（S2）：`config` 与同名扁平键同时给了**不同的值**时 config 赢，且必须让宿主看见
+  // （范围 2：冲突不许静默）。与上面两条启动期诊断同口径：直调 `onEvent`（`emitEvent` 定义在
+  // 下方，引用会踩 TDZ），本地复刻隔离防护。与它们不同的是本事件**只可能在启动期发生一次**，
+  // 所以不需要去重标记。载荷只带路径与键名（值可能是函数/大对象，不进事件）。
+  const notifyConfigOverrideConflicts = () => {
+    if (configConflicts.length === 0) return;
+    try {
+      onEvent?.({
+        type: "config_override_conflict",
+        runId,
+        conflicts: configConflicts,
+        detail: "config.* wins over the same-named flat option; the flat key is still accepted",
+      });
+    } catch (hostError) {
+      reportObserverError(hostError, {
+        channel: "onEvent",
+        type: "config_override_conflict",
+      });
+    }
+  };
+  notifyConfigOverrideConflicts();
   // issue #182：预算元数据缺失时本 run 的压缩总开关不进入（budgetTokens 未定义 → overBudget 恒
   // false）、单轮聚合输出预算（#120）整体关闭、输出截断上限退回 4096，而此前全链路零告警
   // （真机 92 轮 run compaction=0）。一次性诊断事件让宿主能在验收/CI 里直接断言「我的装配是否

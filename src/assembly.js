@@ -51,6 +51,11 @@ const ASSEMBLY_POLICY_OPTION_NAMES = new Set([
   // issue #470-D：折叠替代物 `record.foldedFacts` 的强制投递出口（形状校验见
   // `validateFoldSummaryHook`：给了就必须是函数，给错名字/给错形状都不静默宽容）。
   "onFoldSummary",
+  // issue #497（S2）：嵌套命名空间。**装配口也接受**，否则同一份配置换个入口就变成
+  // `unknown assembly policy option`，又回到「校验绑在入口路线上」的老病（#496 的病根）。
+  // 它的展开与校验都在 `normalizeRunToolLoopOptions`（合并之后、语义相之前）做：装配口这里
+  // 只保证名字被放行，于是 `policy.config` 与直连 `config` 走的是**同一棵树、同一套规则**。
+  "config",
   "diagnostics",
   "onObserverError",
   "signal",
