@@ -62,7 +62,8 @@ import {
  *
  * ⚠ 这份名单的**顺序**同时是未知键建议的平局优先级（`optionSuggestion` 用严格 `<`），
  * 所以它不是集合语义、不许排序、不许增删项而不同时确认建议行为。
- * 计数与顺序都由 `test/loop-option-normalization.test.js` 钉住（66 项）。
+ * 计数与顺序都由 `test/loop-option-normalization.test.js` 钉住（67 项：66 + `capabilities` 这个容器；
+ * #498 S4b 的新键全是子键，所以条数不变）。
  *
  * @type {string[]}
  */
@@ -150,8 +151,9 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // 它**不进** `effectiveOptions`——展开后就地消失，下游看到的仍是扁平表示。同样追加在末尾：
   // 旧未知键的「did you mean」建议逐字不变（新名字只会影响离 `config` 更近的未知键）。
   "config",
-  // issue #498（S4a）：`capabilities` 是**第二个容器**（`capabilities.hooks` = 11 个宿主回调的规范
-  // 之家，见 `src/loop/capabilities-namespace.js`）。它同样追加在末尾，理由同上。
+  // issue #498（S4a）：`capabilities` 是**第二个容器**（`capabilities.hooks` = 12 个宿主回调、
+  // `capabilities.checks` = 交付物判据的规范之家，见 `src/loop/capabilities-namespace.js`）。
+  // 它同样追加在末尾，理由同上。
   // 为什么必须进这份名单：本品「被接受的选项」只有一个来源（#496 / #502 立的规矩），另开一条
   // 容器豁免路径就等于把「接受面 ≠ 白名单」那张第二张表请回来。代价是条数 66 → 67，
   // `test/loop-option-normalization.test.js` 的三处字面值与 A0 对账一并跟进。

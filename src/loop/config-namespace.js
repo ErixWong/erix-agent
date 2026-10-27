@@ -204,7 +204,8 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
   // ⚠ 这里曾有第八组 `observers`（8 个 `on*` 回调）——**#498 S4a 整组删除**。
   // 回调不是数据：它们让 `config` 子树过不了 JSON round-trip，而「`config` 子树必须 round-trip
   // 等值」是 0.28 的硬判据。规范之家是 `capabilities.hooks`（`src/loop/capabilities-namespace.js`），
-  // 11 个回调逐个在那边点名；顶层扁平 `onRound` 等 0.26 已发布面**照旧可用**（搬家是 S5/S6/S7
+  // 12 个回调逐个在那边点名（#498 S4b 起 `finalGuard` 也在其中）；顶层扁平 `onRound` 等 0.26
+  // 已发布面**照旧可用**（搬家是 S5/S6/S7
   // 的事，不在本刀）。0.27.0 未发布 ⇒ 删掉这组对任何外部宿主都是零成本。
 });
 

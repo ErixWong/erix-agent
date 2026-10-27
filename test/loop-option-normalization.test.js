@@ -262,7 +262,8 @@ const OPTION_WHITELIST = [
   "onFoldSummary",
   // issue #497（S2）：嵌套配置命名空间（别名 = schema 路径）。同样追加在末尾。
   "config",
-  // issue #498（S4a）：**第二个容器**（`capabilities.hooks` = 11 个宿主回调的规范之家）。
+  // issue #498（S4a）：**第二个容器**（`capabilities.hooks` = 12 个宿主回调、`capabilities.checks`
+  // = 交付物判据的规范之家；#498 S4b 收成两组）。
   // 它进这份名单是「被接受的选项只有一个来源」那条规矩的代价：不进名单，就只能给容器另开一条
   // 豁免路径，而那条路径正是 #502 刚杀掉的那张「接受面 ≠ 白名单」的第二张表。条数 66 → 67。
   "capabilities",

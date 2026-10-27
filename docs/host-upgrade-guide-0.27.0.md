@@ -203,9 +203,10 @@ Then, in your own acceptance:
 ## 10. One namespace for a run's configuration: `config`
 
 0.27.0 adds a second, nested spelling for the configuration keys. `config.run.maxRounds` and the flat
-`maxRounds` are the same knob: the leaf name is always verbatim the flat option name, and the alias *is*
-the schema path — nothing to remember, and no second mapping table to drift. The eight groups are
-`prompt` / `run` / `tuning` / `timing` / `folding` / `guard` / `metadata` / `observers`; the contract section
+`maxRounds` are the same knob: the leaf name is verbatim the flat option name (one registered
+exception: `config.input.messages` is the flat `initialMessages`), and the alias *is* the schema path
+— nothing to remember, and no second mapping table to drift. The seven groups are
+`input` / `run` / `tuning` / `timing` / `folding` / `guard` / `metadata`; the contract section
 “The `config` namespace (issue #497)” lists every knob one by one.
 
 **Callbacks are not in the config tree** (issue #498 S4a). `capabilities.hooks` is their canonical
@@ -215,8 +216,16 @@ spellings keep working unchanged. There is no `config.observers` group: the grou
 draft carried was **removed before release**, because a callback is behaviour, not data, and a
 `config` subtree holding one cannot survive a JSON round-trip. For the same reason any function
 value inside `config` is now refused at intake with its full path named
-(`config.timing.retry.sleepImpl`, `config.guard.deliverables[0].check`, …), and `finalGuard` —
+(`config.timing.retry.sleepImpl`, `config.folding.context.onBeforeFold`, …), and `finalGuard` —
 whose value must be a function — left the config surface (the flat `finalGuard` is untouched).
+
+**Two more moves in the same release** (issue #498 S4b): `deliverables` also left the config surface
+(every entry carries a function `check`), so it now lives in `capabilities.checks.deliverables` — the
+"only `deliverables: []` can be written in `config`" transitional state is gone. And `finalGuard`
+joined `capabilities.hooks`, which is therefore 12 members. `tools` went the other way: it is data, so
+it is now `config.input.tools` (the flat `tools` is untouched) and the capability surface is purely
+behaviour carriers. `session` is data only — the draft's `session.resume` alias is gone; write
+`resume` (or `config.run.resume`) instead.
 
 What you have to act on: **nothing**. The flat keys you pass today keep being accepted and behave
 exactly as before. Two things to know if you adopt it:
@@ -230,12 +239,13 @@ exactly as before. Two things to know if you adopt it:
    values is reported leaf by leaf. Equal values are not conflicts; a leaf only the overridden tree
    sets is **dropped** by that whole-tree override, so do not treat the two sources as a per-leaf
    merge.
-2. **Capability keys are refused** — `provider`, `tools`, `executeTool`, `store`, `modelConfig`,
+2. **Capability keys are refused** — `provider`, `executeTool`, `store`, `modelConfig`,
    `assemblyPort`, `signal`, `todoStateProvider`, `semanticStateProvider`,
    `onEvent`, `onObserverError`, `onPersistenceError`, `diagnostics`, the eight observer channels
    (`onRound`, `onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`,
-   `onFoldSummary`) and `finalGuard` are not configuration. Writing one inside `config` throws at
-   startup and names the key; for a callback the message also names `capabilities.hooks.<name>`.
+   `onFoldSummary`), `finalGuard` and `deliverables` are not configuration. Writing one inside
+   `config` throws at startup and names the key; the message also names the new home
+   (`capabilities.hooks.<name>` / `capabilities.checks.<leaf>`).
    The line is behavioural: the capability surface is what you hand in as **behaviour carriers**
    (functions / port objects the engine calls or dereferences), while the config surface is
    **data the engine validates and interprets by known field**. That is why `persistence`
@@ -252,7 +262,8 @@ exactly as before. Two things to know if you adopt it:
    (`resolveAssemblyMember` (`src/assembly.js`)), e.g. an explicit `provider` still beats the port's
    provider — is untouched, and `test/contract/assembly-port.js` keeps asserting it.
 
-New hosts should use `config` for configuration and `capabilities.hooks` for callbacks. The flat
+New hosts should use `config` for configuration and `capabilities` for behaviour carriers
+(`hooks` for callbacks, `checks` for deliverables). The flat
 top-level keys are the **primitive / transitional** surface — still accepted, still validated, still
 documented — and their removal window belongs to the mother issue's release ladder (#495). This
 release removes none of them.
