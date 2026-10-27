@@ -16,7 +16,7 @@ behavior you will notice as a smaller prompt, §5 is the terminal behavior your 
 | Change | Do you have to act |
 | --- | --- |
 | Every fold writes a bounded machine index `record.foldedFacts` (§2) | no — additive; rounds that did not fold simply do not have it |
-| New `context.onFoldSummary` hook and `context.maxFoldedFactsBytes` knob (§3) | no — omit both and behavior is byte-identical |
+| New **top-level** `onFoldSummary` hook (the §3 heading's `context.` prefix was wrong — see the correction appended to §3) and `context.maxFoldedFactsBytes` knob (§3) | no — omit both and behavior is byte-identical |
 | Resume replays only what the fold watermark has not already accounted for (§4) | yes, if you assert on resumed prompt content or size |
 | A `judge_done` stop force-writes a final; acceptance reads `termination.forcedFinal` (§5) | yes, if you accept runs by "final text is non-empty" |
 | `compaction.strategyName` plus a one-time `compaction_strategy_fallback` event (§6) | no — additive event fields |
@@ -28,7 +28,7 @@ behavior you will notice as a smaller prompt, §5 is the terminal behavior your 
 - `src/compact/resume-fold-trim.js` — `planFoldedHistoryTrim`: watermark trimming plus summary backfill.
 - `src/compact/sliding-window.js` — zero-LLM strategies now hand out the same mechanical text (`foldedSummaryText`).
 - `src/loop/resume-manager.js` — resumed history, and the judge's round history no longer receives `"missing"`.
-- `context.onFoldSummary`, `context.maxFoldedFactsBytes` — new options.
+- top-level `onFoldSummary` (**not** `context.onFoldSummary` — see the §3 correction) and `context.maxFoldedFactsBytes` — new options.
 - `compaction.strategyName` and the `compaction_strategy_fallback` event — new observability fields.
 
 ## 2. `record.foldedFacts`: every fold now leaves a bounded machine index
@@ -81,6 +81,17 @@ integer`.
 What to do with it: write it into your notes or journal store as the timeline entry for that fold, tagged with
 the folded range, and stop polling the ledger for folds you have already seen. If you prefer to keep polling,
 `record.foldedFacts` is still there and identical.
+
+⚠ **Correction (2026-10-28, issue #499).** Everything above about the **`context.`** location of the hook
+was wrong at publication time. In 0.26.0 the engine read the **top-level** `onFoldSummary` and **never**
+read `context.onFoldSummary`; unknown `context` sub-keys were silently dropped, and there was **no
+`context` sub-key whitelist at all in 0.26.0** — that list arrived with issue #469 during the 0.27.0 cycle,
+so a misplaced hook could not even be reported. A host that configured the hook under `context` got no
+call, no error and no event. (`context.maxFoldedFactsBytes` by contrast was real: 0.26.0 read it.) The hook has always been the **top-level**
+`onFoldSummary`; the `context.` prefix in this section is a documentation defect of 0.26.0, not a supported
+location. `context.onFoldSummary` has now been retired from the whitelist (it is treated as host metadata
+and reported through `context_unknown_option` on the assembly-port route); the top-level hook is unchanged.
+See the 0.27.0 guide for the retirement. The original text above is kept verbatim as history.
 
 ## 4. Resume no longer replays what the fold watermark already accounts for
 

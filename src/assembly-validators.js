@@ -197,6 +197,14 @@ export function validateFoldSummarizerCaps(context) {
  * 宿主合法配置打成 `TypeError`。来源：`orchestrator.js` 对 `compactionContext.*` /
  * `context.*` 的全部读取点 + `compactOptions` 透传名单 + 四个新旋钮。
  *
+ * **退役（issue #499）**：`onFoldSummary` 曾在这份名单里，但引擎**从不从 `context` 读它**
+ * （真实投递点是顶层 `onFoldSummary` / 装配口 `policy.onFoldSummary`）⇒ 它在名单里只买到
+ * 「配了、不生效、连 `context_unknown_option` 事件都没有」的三重静默，比未知键更糟。
+ * 现在按处置 2 退役：从名单移除 ⇒ 它落**宿主元数据**分支（装配口报一条事件、直连静默放行、
+ * 都不抛——抛是破坏，它与已知旋钮名的编辑距离 > 2，不属于 #493 的旋钮家族）。
+ * 红线：退役只动 `context.` 侧；顶层 `onFoldSummary` 仍是活选项（`RUN_TOOL_LOOP_OPTION_NAMES`
+ * 里那一个不许动，它有自己的投递路径与次数断言）。
+ *
  * @type {string[]}
  */
 export const CONTEXT_OPTION_NAMES = [
@@ -212,7 +220,8 @@ export const CONTEXT_OPTION_NAMES = [
   "summaryRole",
   "onBeforeFold",
   "onAfterFold",
-  "onFoldSummary",
+  // `onFoldSummary` 不在这里：issue #499 退役（见函数头注释）。它只是**看起来**该在这里——
+  // 引擎从不从 `context` 读这个键，留在白名单里等于给它发一张「合法」的假证明。
   "maxFoldedPayloadBytes",
   "maxFoldedFactsBytes",
   // issue #493（下游 fde-station 反馈）：这五个键引擎自己在 `budget.js` 里读
@@ -408,9 +417,11 @@ export function collectSemanticOptionProblems(options) {
  * `context` 上承载回调的两个子键：给了就必须是函数，否则今天会被 `runFoldHook` 的
  * `typeof hook === "function"` 静默跳过——又一根「配了等于没配」的旋钮。
  *
- * 刻意**不含** `context.onFoldSummary`：引擎从不从 `context` 读这个键（契约里明写「会被忽略」，
- * 真实位置是顶层 `onFoldSummary` / 装配口 `policy.onFoldSummary`），给一个「被忽略的键」校形状
- * 只会反过来暗示它有用。
+ * 刻意**不含** `context.onFoldSummary`：引擎从不从 `context` 读这个键（真实位置是顶层
+ * `onFoldSummary` / 装配口 `policy.onFoldSummary`），给一个没有读取点的键校形状只会反过来暗示它有用。
+ * issue #499 起它已从 `CONTEXT_OPTION_NAMES` 退役 ⇒ 落「宿主元数据」分支（装配口报一条
+ * `context_unknown_option`、直连静默放行），所以这里更不该有它：一个**被放行的元数据键**
+ * 若同时又校形状，就等于用报错把「退役」说成「还活着」。
  *
  * @param {Record<string, any>} context
  * @returns {string[]}
