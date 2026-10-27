@@ -160,7 +160,7 @@ test("S1c 容器与两面对称：两个容器都不在配置面/能力面里，
   );
   assert.match(
     collectCapabilitiesNamespaceProblems({ hoks: {} })[0],
-    /unknown capabilities namespace: "hoks" \(accepted: hooks; ports are not collected under capabilities yet/u,
+    /unknown capabilities namespace: "hoks" \(accepted: hooks; ports are not collected under capabilities/u,
   );
 });
 
@@ -226,10 +226,16 @@ test("S2c 行为证据：capabilities.hooks.onEvent / onRound 真的被投递（
   assert.ok(events.length > 0, "onEvent 必须收到事件");
   assert.equal(events.filter((event) => event.type === "run_outcome").length, 1);
   assert.equal(records.length, 1, "onRound 必须收到轮记录");
-  // 对照：不传就一个都不投递（纯加法，行为逐字不变）。
-  const none = [];
-  await runDirect({ capabilities: {} });
-  assert.deepEqual(none, []);
+    // 对照（必改 #8：原来那条 `assert.deepEqual(none, [])` 里的 none 从未被任何回调引用，恒真）。
+    // 真对照 = 只传扁平写法时必须照常投递 ⇒ 证明本刀是**加法**，不是搬家。
+    const flatOnly = [];
+    const flatRun = await runDirect({ onEvent: (event) => flatOnly.push(event) });
+    assert.equal(flatRun.termination.reason, "end_turn");
+    assert.ok(flatOnly.length > 0, "只传扁平 onEvent 时必须照常投递（纯加法）");
+    assert.equal(flatOnly.filter((event) => event.type === "run_outcome").length, 1,
+      "扁平写法的 run_outcome 恰一条（与上面 capabilities.hooks 侧同形）");
+    assert.equal(flatOnly.filter((event) => event.type === "config_override_conflict").length, 0,
+      "只有一侧在场 ⇒ 没有冲突可报");
 });
 
 test("S2d capabilities 赢扁平键，且冲突不静默：同一条 config_override_conflict，path = hooks.<name>", async () => {

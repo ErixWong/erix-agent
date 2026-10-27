@@ -143,7 +143,7 @@ export function collectCapabilitiesNamespaceProblems(capabilities) {
       problems.push(
         `unknown capabilities namespace: ${JSON.stringify(group)}`
         + ` (accepted: ${CAPABILITIES_NAMESPACE_GROUPS.join(", ")};`
-        + " ports are not collected under capabilities yet — pass them as top-level options"
+        + " ports are not collected under capabilities — pass them as top-level options"
         + " or through the assembly port)",
       );
       continue;

@@ -182,7 +182,7 @@ node -e 'import("erix-agent").then(m=>console.log(Object.keys(m).length))'   # �
 
 0.27.0 给配置键加了第二种写法，而且是嵌套的。`config.run.maxRounds` 与扁平的 `maxRounds` 是同一个
 旋钮：叶子名永远逐字等于扁平选项名，别名**就是** schema 路径——没有要记的东西，也没有会漂的第二张映射表。
-七个分组是 `prompt` / `run` / `tuning` / `timing` / `folding` / `guard` / `metadata`，
+八个分组是 `prompt` / `run` / `tuning` / `timing` / `folding` / `guard` / `metadata` / `observers`，
 契约里「config 命名空间（issue #497）」那一节把每个旋钮逐个列出。
 
 **回调不在配置树里**（issue #498 S4a）。`capabilities.hooks` 是它们的规范之家——`onEvent`、

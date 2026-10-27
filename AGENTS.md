@@ -273,7 +273,7 @@ scripts/          # experiment scripts and results
   Historical values, kept as history: 67 (post-#307, measured 2026-10-16), 66 (after #305 added `src/text/json-candidates.js`),
   65 (post-#292, measured 2026-10-15), 64 (the 0.20.0 tarball), 63 (the 0.19.0 era); +~44 kB packed / +~139 kB unpacked measured on 0.18.0.
   `npm run check:types-build` is the gate that they still generate.
-- Current version: `0.26.0`; use `npm version <x.y.z> --no-git-tag-version` for version changes (do not use 0.0.0 for a feature-complete first release). `0.24.0` was **never published** to the registry (the published line is 0.23.0 -> 0.25.0) and is deliberately not back-filled: `0.25.0` supersedes it, and `CHANGELOG.md` keeps its 0.24.0 section as what was true at that moment.
+- Current version: `package.json` says `0.27.0`, **unpublished** — the npm registry still serves `0.26.0` (measured `npm view erix-agent version`, 2026-10-28); use `npm version <x.y.z> --no-git-tag-version` for version changes (do not use 0.0.0 for a feature-complete first release). `0.24.0` was **never published** to the registry (the published line is 0.23.0 -> 0.25.0) and is deliberately not back-filled: `0.25.0` supersedes it, and `CHANGELOG.md` keeps its 0.24.0 section as what was true at that moment.
 
 ### npm 2026 policy changes (TOTP discontinued + bypass token restrictions)
 - ❌ New TOTP enrollment is no longer supported (`enable-2fa` returns 404).

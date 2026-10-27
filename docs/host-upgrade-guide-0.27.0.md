@@ -204,8 +204,8 @@ Then, in your own acceptance:
 
 0.27.0 adds a second, nested spelling for the configuration keys. `config.run.maxRounds` and the flat
 `maxRounds` are the same knob: the leaf name is always verbatim the flat option name, and the alias *is*
-the schema path — nothing to remember, and no second mapping table to drift. The seven groups are
-`prompt` / `run` / `tuning` / `timing` / `folding` / `guard` / `metadata`; the contract section
+the schema path — nothing to remember, and no second mapping table to drift. The eight groups are
+`prompt` / `run` / `tuning` / `timing` / `folding` / `guard` / `metadata` / `observers`; the contract section
 “The `config` namespace (issue #497)” lists every knob one by one.
 
 **Callbacks are not in the config tree** (issue #498 S4a). `capabilities.hooks` is their canonical
