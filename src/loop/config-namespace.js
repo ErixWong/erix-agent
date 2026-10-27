@@ -319,6 +319,16 @@ const CONFIG_LEAF_ALIASES = Object.freeze({
 });
 
 /**
+ * **改名过的分组**：老组名 → 新组名（#498 S4b）。
+ *
+ * 报错必须指出去处——`config.prompt` 只回一句「未知分组 + 接受名单」，宿主得自己猜它变成了什么。
+ * 这张表只有一条（`prompt` → `input`），它只影响**报错文案**，不参与任何取值逻辑。
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+const CONFIG_RENAMED_GROUPS = Object.freeze({ prompt: "input" });
+
+/**
  * 某个配置叶子对应的顶层键名（`("input", "messages")` → `"initialMessages"`）。
  *
  * @param {string} group
@@ -536,9 +546,13 @@ export function collectConfigNamespaceProblems(config) {
       continue;
     }
     if (!CONFIG_GROUP_SET.has(group)) {
+      const renamed = CONFIG_RENAMED_GROUPS[group];
       problems.push(
-        `unknown config namespace: ${JSON.stringify(group)}`
-        + ` (accepted: ${CONFIG_NAMESPACE_GROUPS.join(", ")})`,
+        renamed === undefined
+          ? `unknown config namespace: ${JSON.stringify(group)}`
+            + ` (accepted: ${CONFIG_NAMESPACE_GROUPS.join(", ")})`
+          : `config.${group}: the ${JSON.stringify(group)} group is now ${JSON.stringify(renamed)}`
+            + ` (write config.${renamed}.<leaf> instead, e.g. config.${renamed}.${CONFIG_NAMESPACE_SCHEMA[renamed][0]})`,
       );
       continue;
     }

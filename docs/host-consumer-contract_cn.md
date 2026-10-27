@@ -218,8 +218,12 @@ executeTool({ id, name, input, context, signal })
      那条 0.28 判据就得反过来开例外——一条要豁免两个字符串键的 round-trip 规则已经不算规则。
 - **形状与名称** —— `config` 本身必须是对象（`null`、数组、字符串都抛）；未知分组、未知叶子、
   把扁平键写在 `config` 顶层（`config.maxRounds` 会被回一句「写 `config.run.maxRounds`」）、
+  把叶子写在 `config` 顶层（`config.messages` 会被回一句「写 `config.input.messages`」）、
   以及把叶子写错组（`config.run.temperature` 会指向 `config.tuning.temperature`）都在
-  **任何宿主端口被读取之前**抛，并把该层接受的名字按 schema 枚举出来。
+  **任何宿主端口被读取之前**抛，并把该层接受的名字按 schema 枚举出来。**改过名的分组**回的是去处
+  而不是一句光秃秃的「未知」：`config.prompt` 会得到
+  `config.prompt: the "prompt" group is now "input" (write config.input.<leaf> instead, e.g.
+  config.input.system)`。
 
 `config` 从不进引擎：展开会把它删掉，所以 `effectiveOptions`——以及 `normalizeRunToolLoopOptions`
 （`src/loop/option-normalization.js`）返回的 `explicitOptions`——里只剩扁平键。装配口的 `policy`

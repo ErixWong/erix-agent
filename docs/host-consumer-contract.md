@@ -272,9 +272,13 @@ Five rules govern it:
      in the other direction — a round-trip rule with two string exemptions is no longer a rule.
 - **Shape and names** — `config` itself must be an object (`null`, an array and a string all
   throw); an unknown group, an unknown leaf, a flat key written at the top of `config`
-  (`config.maxRounds` is answered with "write `config.run.maxRounds`"), and a leaf written in the
-  wrong group (`config.run.temperature` points at `config.tuning.temperature`) all throw **before
-  any host port is read**, with the accepted names enumerated from the schema.
+  (`config.maxRounds` is answered with "write `config.run.maxRounds`"), a leaf written at the top of
+  `config` (`config.messages` is answered with "write `config.input.messages`"), and a leaf written
+  in the wrong group (`config.run.temperature` points at `config.tuning.temperature`) all throw
+  **before any host port is read**, with the accepted names enumerated from the schema. A group name
+  that was **renamed** is answered with its destination rather than a bare "unknown":
+  `config.prompt` gets `config.prompt: the "prompt" group is now "input" (write
+  config.input.<leaf> instead, e.g. config.input.system)`.
 
 `config` never reaches the engine: expansion removes it, so `effectiveOptions` — and the
 `explicitOptions` returned by `normalizeRunToolLoopOptions` (`src/loop/option-normalization.js`) —

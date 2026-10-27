@@ -839,16 +839,24 @@ test("I1 老写法 `config.prompt` 必须报错并指出去处（`config.input.s
   assert.equal(Object.hasOwn(CONFIG_NAMESPACE_SCHEMA, "prompt"), false);
   const error = await directError({ config: { prompt: { system: "you are" } } });
   assert.equal(error instanceof TypeError, true);
-  assert.match(error.message, /unknown config namespace: "prompt"/u);
-  assert.match(error.message, /accepted: input, run, tuning, timing, folding, guard, metadata/u);
+  // 报错必须**指出去处**（不是只回一句「未知分组」）：老组名 → 新组名 + 一个具体叶子示例。
+  assert.equal(
+    error.message,
+    'config.prompt: the "prompt" group is now "input"'
+      + " (write config.input.<leaf> instead, e.g. config.input.system)",
+  );
   assert.equal(error.via, "direct");
   // 叶子写错组同样指出去处（不是含糊的「未知叶子」）。
   const leafError = await directError({ config: { run: { system: "you are" } } });
   assert.match(leafError.message, /"system" belongs to config\.input\.system/u);
   // 装配口路线同一道闸口（构造期就抛，via 不同）。
   const portError = await assemblyError({ config: { prompt: { system: "you are" } } });
-  assert.match(portError.message, /unknown config namespace: "prompt"/u);
+  assert.match(portError.message, /config\.prompt: the "prompt" group is now "input"/u);
+  assert.match(portError.message, /config\.input\.system/u);
   assert.equal(portError.via, "assembly");
+  // 未知分组照旧只回「未知 + 接受名单」（不编造改名）。
+  const unknown = await directError({ config: { rund: { maxRounds: 1 } } });
+  assert.match(unknown.message, /unknown config namespace: "rund"/u);
 });
 
 test("I2 `config.input.messages` 是顶层 `initialMessages` 的嵌套别名（展开 + 冲突 path/key 逐字）", async () => {
