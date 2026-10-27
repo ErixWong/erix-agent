@@ -15,11 +15,21 @@
 //      每个顶层选项必须**恰好**落在「配置面」或「能力/注入面」之一（漏一个、重一个都算问题）。
 //      于是「往白名单加一个选项但忘了分类」不会静默——它会让自检报红（见
 //      `test/loop-config-namespace-497.test.js`）。
-//   3. **能力/注入面不接受配置覆盖**（母单裁决）。`provider` / `tools` / `store` / `session` /
-//      `signal` / 回调出口 … 这 19 项是宿主**递进来的东西**，不是引擎解释的值：写进 `config`
-//      一律启动即抛，报错点名该键。注意这条**只作用于新命名空间**——既有
-//      `overrides` / `withOverrides` 的「显式覆盖能盖 provider」是已发布契约
-//      （`test/contract/assembly-port.js` 有断言），本单一个字都没改。
+//   3. **能力/注入面不接受配置覆盖**（母单裁决），而**这条面的判据是行为、不是「引擎不解释」**
+//      （#497 复审 R1 更正：旧判据「能力面 = 引擎不解释其值」是**假的**——`session` 的
+//      `id`/`modelSlot`/`resume`/`initialMessages` 都被读，`model`/`modelMetadata` 的
+//      `contextWindowTokens`/`maxOutputTokens` 数字被拿去算预算，`persistence` 的字面量被校验
+//      并决定整条持久化路径。按旧判据分类等于把四个**配置**键锁在配置树外面）。
+//      现判据（中英成对地写在契约里，见 `docs/host-consumer-contract{,_cn}.md` 的
+//      「config 命名空间 / The `config` namespace」一节）：
+//        · **能力面** = 宿主提供的**行为载体**（函数 / 端口对象）与身份/环境注入，引擎**调用或
+//          解引用**它（端口方法被调、信号被监听、身份与环境被原样带进事件与 payload）；
+//        · **配置面** = 引擎**按已知字段校值并解释**的数据（枚举字面量、数字、布尔、结构已知的
+//          对象）。
+//      于是 `provider` / `tools` / `store` / `modelConfig` / `signal` / 回调出口 … 这 15 项写进
+//      `config` 一律启动即抛，报错点名该键。注意这条**只作用于新命名空间**——显式细粒度选项
+//      覆盖装配口同名成员（`resolveAssemblyMember`（`src/assembly.js`））是既有行为，
+//      `test/contract/assembly-port.js` 有断言，本单一个字都没改。
 //
 // 优先级（范围 2）：同名时 `config.*` 覆盖顶层扁平键；顶层扁平键继续接受、行为一字不变。
 // 冲突不静默——`expandConfigNamespace` 把「同一个键两种写法给了不同的值」记进 `conflicts`，
@@ -44,6 +54,10 @@ import { tagValidationRoute } from "../assembly-validators.js";
  * 45 个配置键的分类草稿在 `docs/delivery/analysis-261023-406-normalization-design.md`
  * （15 run + 10 tuning 核心 + 10 folding + 10 其它）——该文件在本仓库树上**不存在**（`docs/delivery/`
  * 是 gitignore 的本机档案目录），所以这里的分组是照代码实测重新分类的结果，不是照抄草稿。
+ * 现表共 **50 键 / 8 组**（草稿的 45 键 + #497 复审 R1 按新判据从能力面移进来的
+ * `persistence`（→ `run`）与 `model` / `modelMetadata` / `session`（→ `metadata`））。
+ * 现表共 **50 键 / 8 组**（草稿的 45 键 + #497 复审 R1 按新判据从能力面移进来的
+ * `persistence`（→ `run`）与 `model` / `modelMetadata` / `session`（→ `metadata`））。
  *
  * @type {Readonly<Record<string, readonly string[]>>}
  */
@@ -56,7 +70,9 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
     "initialMessages",
     "wrapup",
   ]),
-  // 轮次与循环控制：跑多久、什么算卡住、什么时候续、什么时候停、中途治理（judge/扩轮）。
+  // 轮次与循环控制：跑多久、什么算卡住、什么时候续、什么时候停、中途治理（judge/扩轮）、
+  // 以及持久化**模式**（`persistence` 是「这次 run 要不要落盘」的旋钮，与同组的
+  // `partialPersistence` / `replayPolicy` 同族；它以前被错归进能力面，见文件头约束 3）。
   run: Object.freeze([
     "maxRounds",
     "maxTokenContinuations",
@@ -65,6 +81,7 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
     "replayPolicy",
     "invalidArguments",
     "partialPersistence",
+    "persistence",
     "outputHygiene",
     "writeToolNames",
     "writeToolPathKeys",
@@ -99,13 +116,23 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
     "finalGuardExtend",
     "deliverables",
   ]),
-  // 宿主私有元数据（透传/拼进 payload，引擎不解释其内部结构）。
+  // 宿主带来的数据：引擎**按已知字段**读其中的值，其余键原样透传 / 拼进 payload。
+  //   · `model` / `modelMetadata`：`contextWindowTokens` / `maxOutputTokens` 两个数字被读
+  //     （`modelMetadataFor`（`src/loop/budget.js`）→ 压缩预算与输出卫生的 15% 窗口钳制）；
+  //   · `session`：`id` / `modelSlot` / `resume` / `initialMessages` 被读（启动校验、
+  //     `modelConfig.resolve(session?.modelSlot)`、续跑与初始消息）；
+  //   · `expert` / `user` / `task` / `requestId` / `toolContext`：拼进工具上下文与 judge 简报。
+  // 这五个键里的后五个曾经只有「透传」一面，所以本组以前写成「引擎不解释其内部结构」；
+  // 按现判据（文件头约束 3）它们同属配置面，描述按实测改。
   metadata: Object.freeze([
     "expert",
     "user",
     "task",
     "requestId",
     "toolContext",
+    "model",
+    "modelMetadata",
+    "session",
   ]),
   // 宿主观察者回调（纯观察；`onToolResult` 是改写钩子，但它同样是「宿主给的东西」而不是值）。
   observers: Object.freeze([
@@ -121,34 +148,43 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
 });
 
 /**
- * 能力/注入面（19 项）：宿主**递进来**的适配器、状态源、身份、环境与出口，不是引擎解释的值。
+ * 能力/注入面（15 项）：宿主**递进来**的行为载体与身份/环境注入。
  *
- * 判据（为什么这 19 个、不是别的）：删掉它整个 run 跑不起来（适配器/身份），或者它把**外部世界**
- * 带进引擎（状态源、中止信号、工作目录、持久化模式），或者它是**错误/事件出口**（回调抛错的
- * 记账与投递面）。`config` 里出现其中任何一个 ⇒ 启动即抛（母单裁决）。
+ * 判据（#497 复审 R1 更正后的版本，与文件头约束 3 同一句话）：**能力面 = 宿主提供的行为载体
+ * （函数 / 端口对象）与身份/环境注入，引擎调用或解引用它；配置面 = 引擎按已知字段校值并解释
+ * 的数据**。所以这里的成员只有三类：
+ *   · 适配器 / 端口对象（方法被引擎调用）：`provider`、`tools`、`executeTool`、`store`、
+ *     `modelConfig`、`assemblyPort`、`todoStateProvider`、`semanticStateProvider`；
+ *   · 身份与环境（原样带进事件 / payload / 端口）：`runId`、`cwd`；
+ *   · 中止信号与错误/事件出口（被监听 / 被调用）：`signal`、`onEvent`、`onObserverError`、
+ *     `onPersistenceError`、`diagnostics`。
  *
- * ⚠ 这条收窄**只作用于新命名空间**：既有 `overrides` / `withOverrides` 的「显式覆盖能盖 provider」
- * 是已发布契约（`test/contract/assembly-port.js` 有断言），本单不改。
+ * 反例（为什么 `persistence` / `model` / `modelMetadata` / `session` **不在**这里）：引擎读它们的
+ * 已知字段并据值改行为（`persistence` 的模式字面量被校验并选持久化路径；`model`/`modelMetadata`
+ * 的窗口数字被拿去算预算；`session` 的 `id`/`modelSlot`/`resume`/`initialMessages` 被读）——
+ * 那是配置，不是行为载体。
+ *
+ * `config` 里出现其中任何一个 ⇒ 启动即抛（母单裁决）。
+ *
+ * ⚠ 这条收窄**只作用于新命名空间**：显式细粒度选项覆盖装配口同名成员
+ * （`resolveAssemblyMember`（`src/assembly.js`）；`test/contract/assembly-port.js` 的
+ * 「显式细粒度 provider 覆盖端口 provider」断言）是既有行为，本单不改。
  *
  * @type {readonly string[]}
  */
 export const CAPABILITY_OPTION_NAMES = Object.freeze([
-  // 适配器（装配口成员）
+  // 适配器（装配口成员）/ 端口对象：方法被引擎调用
   "assemblyPort",
   "provider",
   "tools",
   "executeTool",
   "store",
   "modelConfig",
-  // 身份 / 环境 / 持久化模式
-  "session",
+  // 身份 / 环境
   "runId",
-  "signal",
   "cwd",
-  "persistence",
-  // 宿主带来的元数据与状态源
-  "model",
-  "modelMetadata",
+  // 中止信号与状态源
+  "signal",
   "todoStateProvider",
   "semanticStateProvider",
   // 错误 / 事件出口
@@ -332,6 +368,54 @@ export function assertConfigNamespace(config, route = {}) {
   const problems = collectConfigNamespaceProblems(config);
   if (problems.length === 0) return;
   throw tagValidationRoute(new TypeError(problems.join("; ")), route.via);
+}
+
+/**
+ * 两个 `config` 源同时在场时的**逐叶冲突**（#497 复审 R4）。
+ *
+ * 病根：装配口 `policy.config` 与调用级 `config` 是同一棵树的两个来源，而合并规则是
+ * 「后写者胜」——调用级的那份**整棵**覆盖 policy 的那份。语义保留（这是既有合并规则的性质，
+ * 不是本单发明的），但覆盖以前**零事件**：policy 里写了 `run.maxRounds: 4`、调用级写了 1，
+ * 实测 4 轮变 1 轮、`onEvent` 一条都没收到。而「扁平 vs `config`」的冲突是会发
+ * `config_override_conflict` 的，于是同一个引擎里出现两套静默度不同的规则。
+ *
+ * 本函数只做一件事：把两个源里**同一个叶子路径都给了值、且值不同**的那些叶子列出来，
+ * 形状与 `expandConfigNamespace` 的 `conflicts` 逐字一致（`{ path, key }`，只带路径与键名——
+ * 值可能是函数/大对象，不进事件载荷）。规则也与扁平冲突逐字同口径：
+ *   · 只有一边给了值（另一边 `undefined` 或没有这个键）⇒ **不算冲突**；
+ *   · 两边深度相等 ⇒ 不算冲突；
+ *   · 顺序 = schema 分组顺序 + 组内顺序（确定、可断言）。
+ *
+ * 注意「整棵覆盖」的另一面：只写在**被覆盖的那棵树**里的叶子会被丢掉（回到默认值）——那是
+ * 既有取值语义的一部分，本函数不改它，只在契约里写清（宿主不该把它当逐叶合并用）。
+ *
+ * @param {unknown} previousConfig 被覆盖的那棵树（装配口 `policy.config`）
+ * @param {unknown} nextConfig 胜出的那棵树（调用级 `config`）
+ * @returns {Array<{path: string, key: string}>} 逐叶冲突（空 = 没有可报的）
+ */
+export function collectConfigSourceConflicts(previousConfig, nextConfig) {
+  const conflicts = [];
+  if (!isConfigObject(previousConfig) || !isConfigObject(nextConfig)) return conflicts;
+  const previous = /** @type {Record<string, any>} */ (previousConfig);
+  const next = /** @type {Record<string, any>} */ (nextConfig);
+  for (const group of CONFIG_NAMESPACE_GROUPS) {
+    const previousBag = previous[group];
+    const nextBag = next[group];
+    if (!isConfigObject(previousBag) || !isConfigObject(nextBag)) continue;
+    for (const key of CONFIG_NAMESPACE_SCHEMA[group]) {
+      const previousValue = previousBag[key];
+      const nextValue = nextBag[key];
+      if (previousValue === undefined || nextValue === undefined) continue;
+      if (isDeepStrictEqual(previousValue, nextValue)) continue;
+      conflicts.push({ path: `${group}.${key}`, key });
+    }
+  }
+  return conflicts;
+}
+
+/** `config` 树的一层是否为「普通对象」（`null` / 数组 / 标量都不是）。 */
+function isConfigObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /**

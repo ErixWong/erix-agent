@@ -214,14 +214,26 @@ exactly as before. Two things to know if you adopt it:
 1. **Precedence** — when the same knob is given both ways, `config.*` wins, and the engine emits one
    `config_override_conflict` event before the first round:
    `{ type, runId?, conflicts: [{ path, key }], detail }`. Nothing is silent — if you see that event,
-   one knob has two sources of truth in that run.
+   one knob has two sources of truth in that run. The **same event covers the assembly port's
+   `policy.config` versus the call-level `config`**: the call-level tree wins as a whole (the
+   pre-existing "last writer wins" merge, unchanged), and every leaf both sources set to different
+   values is reported leaf by leaf. Equal values are not conflicts; a leaf only the overridden tree
+   sets is **dropped** by that whole-tree override, so do not treat the two sources as a per-leaf
+   merge.
 2. **Capability keys are refused** — `provider`, `tools`, `executeTool`, `store`, `modelConfig`,
-   `assemblyPort`, `session`, `runId`, `signal`, `cwd`, `persistence`, `model`, `modelMetadata`,
-   `todoStateProvider`, `semanticStateProvider`, `onEvent`, `onObserverError`, `onPersistenceError`
-   and `diagnostics` are not configuration. Writing one inside `config` throws at startup and names the
-   key. This narrowing applies to the **new namespace only**: the existing `overrides` /
-   `withOverrides` promise — an explicit fine-grained `provider` still overrides the port's provider —
-   is untouched, and the AssemblyPort contract suite keeps asserting it.
+   `assemblyPort`, `runId`, `cwd`, `signal`, `todoStateProvider`, `semanticStateProvider`,
+   `onEvent`, `onObserverError`, `onPersistenceError` and `diagnostics` are not configuration.
+   Writing one inside `config` throws at startup and names the key. The line is behavioural: the
+   capability surface is what you hand in as **behaviour carriers** (functions / port objects the
+   engine calls or dereferences, plus the identity and environment values it carries into events),
+   while the config surface is **data the engine validates and interprets by known field**. That is
+   why `persistence` (`config.run.persistence`) and `model` / `modelMetadata` / `session`
+   (`config.metadata.*`) are configuration in this version — the engine reads their known fields
+   (the persistence mode literal, the window numbers, `session.id` / `modelSlot`). This narrowing
+   applies to the **new namespace only**: the pre-existing precedence rule — an explicit
+   fine-grained option overrides the same-named member the assembly port supplies
+   (`resolveAssemblyMember` (`src/assembly.js`)), e.g. an explicit `provider` still beats the port's
+   provider — is untouched, and `test/contract/assembly-port.js` keeps asserting it.
 
 New hosts should use `config` alone. The flat top-level keys are the **primitive / transitional**
 surface — still accepted, still validated, still documented — and their removal window belongs to the

@@ -189,13 +189,20 @@ node -e 'import("erix-agent").then(m=>console.log(Object.keys(m).length))'   # �
 
 1. **优先级** —— 同一个旋钮两种写法都给时 `config.*` 赢，且引擎在第一轮之前发一条
    `config_override_conflict` 事件：`{ type, runId?, conflicts: [{ path, key }], detail }`。
-   没有静默——看到这条事件，说明那一次 run 里有一个旋钮有两个真相来源。
+   没有静默——看到这条事件，说明那一次 run 里有一个旋钮有两个真相来源。**同一条事件也管装配口的
+   `policy.config` 与调用级 `config`**：调用级那棵树按整棵覆盖（既有「后写者胜」的合并规则，一字未改），
+   两个源里同一个叶子给了不同值的，逐叶上报。值相同不算冲突；只写在被覆盖那棵树里的叶子会被
+   **丢掉**，所以别把两个源当逐叶合并用。
 2. **能力键一律拒绝** —— `provider`、`tools`、`executeTool`、`store`、`modelConfig`、`assemblyPort`、
-   `session`、`runId`、`signal`、`cwd`、`persistence`、`model`、`modelMetadata`、
-   `todoStateProvider`、`semanticStateProvider`、`onEvent`、`onObserverError`、`onPersistenceError`
-   与 `diagnostics` 都不是配置。把它们写进 `config` ⇒ 启动即抛并点名该键。这条收窄**只作用于新命名空间**：
-   既有 `overrides` / `withOverrides` 的承诺——显式细粒度 `provider` 仍能盖端口 provider——一字未动，
-   AssemblyPort 契约套件照旧断言它。
+   `runId`、`cwd`、`signal`、`todoStateProvider`、`semanticStateProvider`、`onEvent`、
+   `onObserverError`、`onPersistenceError` 与 `diagnostics` 都不是配置。把它们写进 `config` ⇒
+   启动即抛并点名该键。这条线是**行为面**的：能力面 = 你递进来的**行为载体**（引擎调用或解引用的
+   函数 / 端口对象，加上它带进事件的身份与环境值），配置面 = 引擎**按已知字段校值并解释**的数据。
+   所以本版里 `persistence`（`config.run.persistence`）与 `model` / `modelMetadata` / `session`
+   （`config.metadata.*`）都是配置——引擎读它们的已知字段（持久化模式字面量、窗口数字、
+   `session.id` / `modelSlot`）。这条收窄**只作用于新命名空间**：既有优先级规则——显式细粒度选项
+   覆盖装配口提供的同名成员（`resolveAssemblyMember`（`src/assembly.js`），例如显式 `provider`
+   仍能盖端口 provider）——一字未动，`test/contract/assembly-port.js` 照旧断言它。
 
 新宿主只用 `config`。顶层扁平键是**原语 / 过渡面**——继续接受、继续校验、继续有文档——它们的删除窗口
 属母单（#495）的发布阶梯，计划在 0.28。0.27.0 一个都不删。

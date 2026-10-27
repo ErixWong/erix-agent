@@ -7,15 +7,19 @@
 //      对着 `RUN_TOOL_LOOP_OPTION_NAMES` 核「每个顶层选项恰好落在配置面或能力面之一」——
 //      往白名单加一个键却忘了分类 ⇒ 这里红。
 //   B. **结构等价**（判据 1）：同一份配置写成扁平形态与 `config` 形态，`effectiveOptions` 逐键
-//      深度相等。两层：46 个配置键**逐个**扫一遍（`expandConfigNamespace`，机械穷举），
+//      深度相等。两层：50 个配置键**逐个**扫一遍（`expandConfigNamespace`，机械穷举），
 //      再加一份跨 10 个分组的**端到端** `normalizeRunToolLoopOptions` 对比（走真闸口）。
 //      断言一律 `deepStrictEqual` / `assert.equal`，不用 `toBeTruthy` 糊。
 //   C. **优先级与冲突**（判据 2）：同名时 `config.*` 赢，且发一条 `config_override_conflict` 事件。
 //      优先级不只比对象：真跑一次两轮 run，`maxRounds` 扁平 1 / config 2 ⇒ `end_turn`
 //      （扁平赢的话会是 `max_rounds_cap`）。冲突事件在「值相同」「只给一边」时**不发**。
-//   D. **能力面不收配置覆盖**（判据 3）：19 个能力/注入键写进 `config`（顶层或组内）⇒ 启动即抛，
-//      报错点名该键，`error.via` 按入口路线是 `direct` / `assembly`。**既有 overrides 语义不动**：
+//   D. **能力面不收配置覆盖**（判据 3）：15 个能力/注入键写进 `config`（顶层或组内）⇒ 启动即抛，
+//      报错点名该键，`error.via` 按入口路线是 `direct` / `assembly`。**既有「显式细粒度选项覆盖
+//      装配口同名成员」语义不动**（`resolveAssemblyMember`（`src/assembly.js`））：
 //      `test/contract/assembly-port.js` 的「显式细粒度 provider 覆盖端口 provider」照旧绿。
+//      **能力面的判据是行为面不是「引擎不解释」**（#497 复审 R1）：A4 用行为证据钉住按新判据
+//      改归的四个键（`persistence` / `model` / `modelMetadata` / `session`）确实被引擎读，
+//      A5 钉住「旧判据会把它们错锁在配置树外」这件事不再成立。
 //   E. **#496 的语义相闸口吃的是展开后的表示**（判据 5）：`config.folding.context` 里拼错的旋钮名
 //      抛的错与扁平 `context` 里拼错的**同一句**，只差 `via` 标签。
 //
@@ -41,6 +45,7 @@ import {
   CONFIG_NAMESPACE_SCHEMA,
   CONFIG_SURFACE_OPTION_NAMES,
   collectConfigNamespaceProblems,
+  collectConfigSourceConflicts,
   configPathForOption,
   configSchemaSelfCheck,
   expandConfigNamespace,
@@ -93,11 +98,11 @@ const assemblyError = async (policy = {}) => {
 };
 
 // ================================================================ A. 只有一张表（派生，不是手抄）
-test("A1 schema 自检：65 个顶层选项恰好分成 46 配置面 + 19 能力面，且 config 自己是容器", () => {
+test("A1 schema 自检：65 个顶层选项恰好分成 50 配置面 + 15 能力面，且 config 自己是容器", () => {
   // 样本自证：总数先钉住，免得「两边一起漏」也算通过。
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.length, 66, "顶层白名单 = 65 个既有选项 + config");
-  assert.equal(CONFIG_SURFACE_OPTION_NAMES.length, 46, "配置面 46 个键");
-  assert.equal(CAPABILITY_OPTION_NAMES.length, 19, "能力/注入面 19 项（母单裁决的数字）");
+  assert.equal(CONFIG_SURFACE_OPTION_NAMES.length, 50, "配置面 50 个键（#497 复审 R1 按新判据从能力面移入 4 个）");
+  assert.equal(CAPABILITY_OPTION_NAMES.length, 15, "能力/注入面 15 项（#497 复审 R1 按新判据重新分类后的数字）");
   assert.equal(
     CONFIG_SURFACE_OPTION_NAMES.length + CAPABILITY_OPTION_NAMES.length,
     RUN_TOOL_LOOP_OPTION_NAMES.length - 1,
@@ -126,7 +131,7 @@ test("A2 别名 = schema 路径：每个配置键恰好一条路径，叶子名�
   }
 });
 
-test("A3 自检会咬人：漏分类 / 漏白名单两个方向都红", () => {
+test("A3 自检会咬人：漏分类 / 漏白名单 / 漏容器三个方向都红", () => {
   // 方向①：白名单多出一个没分类的键（「加了选项忘了分类」的真实形状）。
   const extra = configSchemaSelfCheck([...RUN_TOOL_LOOP_OPTION_NAMES, "brandNewKnob"]);
   assert.deepEqual(extra, [
@@ -135,10 +140,66 @@ test("A3 自检会咬人：漏分类 / 漏白名单两个方向都红", () => {
   // 方向②：schema 里有个键已经不在白名单里了（「删了选项忘了删 schema」）。
   const dropped = configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES.filter((name) => name !== "maxRounds"));
   assert.deepEqual(dropped, ['schema names "maxRounds", which is not a top-level option']);
+  // 方向③：白名单里没有 `config` 这个容器本身（「把容器当成配置键删掉」）。
+  const noContainer = configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES.filter((name) => name !== "config"));
+  assert.deepEqual(noContainer, [
+    'top-level options do not accept "config" (the config namespace itself)',
+  ]);
+});
+
+// issue #497 复审 R1：能力面的判据从「引擎不解释其值」（**假**）改成「宿主提供的行为载体 /
+// 身份环境，引擎调用或解引用它」，于是四个**被引擎读**的键从能力面移回配置面：
+// `persistence` → `config.run`（与同族 `partialPersistence` / `replayPolicy` 同组）、
+// `model` / `modelMetadata` / `session` → `config.metadata`。下面四条是**行为证据**（不是
+// 「展开了但没人读」）：每一条都让引擎因为读了这个键而做出可观测的不同决定。
+test("A4 按新判据改归的四个键真被引擎读：persistence / modelMetadata / model / session 的行为证据", async () => {
+  // ① `persistence`：字面量被校验，并决定「要不要走 required 的 store 方法校验」这条路径。
+  const noneMode = await runDirect({
+    store: {},
+    config: { run: { persistence: "none" } },
+  });
+  assert.equal(noneMode.termination.reason, "end_turn", "persistence:none 时不要求 store 有方法");
+  const requiredError = await directError({ store: {}, config: { run: { persistence: "required" } } });
+  assert.match(requiredError.message, /required persistence store is missing methods: store\.appendRound, store\.load/u);
+  const badLiteral = await directError({ config: { run: { persistence: "always" } } });
+  assert.match(badLiteral.message, /persistence must be "none" or "required"/u);
+
+  // ② `modelMetadata` / ③ `model`：窗口数字被读去算预算 ⇒ 有它就没有 model_metadata_missing 事件。
+  const missingWithout = [];
+  await runDirect({ onEvent: (event) => missingWithout.push(event) });
+  assert.equal(
+    missingWithout.filter((event) => event.type === "model_metadata_missing").length,
+    1,
+    "样本自证：不给窗口数字时这条诊断事件确实会发",
+  );
+  for (const key of ["modelMetadata", "model"]) {
+    const events = [];
+    await runDirect({
+      config: { metadata: { [key]: { contextWindowTokens: 100000, maxOutputTokens: 1024 } } },
+      onEvent: (event) => events.push(event),
+    });
+    assert.deepEqual(
+      events.filter((event) => event.type === "model_metadata_missing"),
+      [],
+      `${key} 里的窗口数字被读了（预算推得出来，所以不再告警）`,
+    );
+  }
+
+  // ④ `session`：已知字段 `id` 被校验、`modelSlot` 被读来解析模型。
+  const sessionWithoutId = await directError({
+    modelConfig: { resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1024 }) },
+    config: { metadata: { session: {} } },
+  });
+  assert.match(sessionWithoutId.message, /assembly port is missing methods: session\.id/u);
+  const withSession = await runDirect({
+    modelConfig: { resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1024 }) },
+    config: { metadata: { session: { id: `config-497-a4-${process.pid}`, modelSlot: "default" } } },
+  });
+  assert.equal(withSession.termination.reason, "end_turn");
 });
 
 // ================================================================ B. 结构等价（判据 1）
-test("B1 46 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平形态逐键深度相等", () => {
+test("B1 50 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平形态逐键深度相等", () => {
   let covered = 0;
   for (const key of CONFIG_SURFACE_OPTION_NAMES) {
     const path = configPathForOption(key);
@@ -159,10 +220,10 @@ test("B1 46 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平�
     assert.deepEqual(mixed.conflicts, [{ path, key }], `${path} 混合写法必须记一条冲突`);
     covered += 1;
   }
-  assert.equal(covered, 46, "穷举必须覆盖全部 46 个配置键（漏一个就少一条等价证明）");
+  assert.equal(covered, 50, "穷举必须覆盖全部 50 个配置键（漏一个就少一条等价证明）");
 });
 
-/** 跨 10 个分组的代表性配置：同一个 `VALUES` 同时生成扁平形态与 config 形态。 */
+/** 跨 8 个分组的代表性配置：同一个 `VALUES` 同时生成扁平形态与 config 形态。 */
 const VALUES = {
   system: "you are a test",
   cacheStablePrefix: false,
@@ -201,6 +262,11 @@ const VALUES = {
   task: "task",
   requestId: "req-497",
   toolContext: { a: 1 },
+  // issue #497 复审 R1：按新判据从能力面移回配置面的四个键（端到端等价也要覆盖它们）。
+  persistence: "none",
+  model: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
+  modelMetadata: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
+  session: { id: "config-497-b2", modelSlot: "default" },
   onRound: () => {},
   onJudge: () => {},
   onToolResult: () => {},
@@ -342,9 +408,80 @@ test("C5 config 叶子的 undefined 逐字等于「没给」：不覆盖扁平�
   assert.deepEqual(configConflicts, []);
 });
 
+// issue #497 复审 R4：装配口 `policy.config` 与调用级 `config` 同时在场时，取值仍是「后写者胜、
+// 整棵覆盖」（既有合并规则，一字未改），但**不许静默**：同一个叶子两边都给了不同的值 ⇒ 逐叶发
+// `config_override_conflict`，与「扁平 vs config」同一条事件、同一套字段（`{ path, key }`）。
+test("C6 两个 config 源同时在场：后写者胜（4 轮变 1 轮）+ 逐叶事件恰一条、path 集合逐字相等", async () => {
+  const twoRounds = [
+    {
+      content: [{ type: "tool_use", id: "tu_1", name: "echo", input: { text: "x" } }],
+      stopReason: "tool_use",
+    },
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ];
+  const tools = [{
+    name: "echo",
+    description: "回显",
+    inputSchema: { type: "object", properties: { text: { type: "string" } } },
+  }];
+  const port = makePort({ config: { run: { maxRounds: 4 }, tuning: { temperature: 0.1 } } });
+  const events = [];
+  const result = await runToolLoop({
+    assemblyPort: port,
+    provider: createFakeProvider(twoRounds),
+    executeTool: async () => "ok",
+    tools,
+    completion: false,
+    wrapup: false,
+    // 调用级 config：`run.maxRounds` 与 policy 不同（1 vs 4）、`tuning.temperature` 与 policy 相同。
+    config: { run: { maxRounds: 1 }, tuning: { temperature: 0.1 } },
+    onEvent: (event) => events.push(event),
+  });
+  assert.equal(result.termination.reason, "max_rounds_cap", "调用级 config 整棵覆盖 policy：1 轮就到顶");
+  assert.equal(result.rounds, 1);
+  const conflicts = events.filter((event) => event.type === "config_override_conflict");
+  assert.equal(conflicts.length, 1, "冲突事件恰一条（不是 >= 1）");
+  assert.deepEqual(
+    conflicts[0].conflicts,
+    [{ path: "run.maxRounds", key: "maxRounds" }],
+    "path 集合逐字相等：同值的 tuning.temperature 不算冲突",
+  );
+  assert.equal(typeof conflicts[0].detail, "string");
+});
+
+test("C7 两个 config 源同值 / 只给一边 ⇒ 不发事件（判据与扁平冲突同一套）", async () => {
+  const events = [];
+  const same = await runToolLoop({
+    assemblyPort: makePort({ config: { run: { maxRounds: 1 } } }),
+    completion: false,
+    wrapup: false,
+    config: { run: { maxRounds: 1 } },
+    onEvent: (event) => events.push(event),
+  });
+  assert.equal(same.termination.reason, "end_turn");
+  await runToolLoop({
+    assemblyPort: makePort({ config: { run: { maxRounds: 1 } } }),
+    completion: false,
+    wrapup: false,
+    onEvent: (event) => events.push(event),
+  });
+  await runToolLoop({
+    assemblyPort: makePort({}),
+    completion: false,
+    wrapup: false,
+    config: { run: { maxRounds: 1 } },
+    onEvent: (event) => events.push(event),
+  });
+  assert.deepEqual(
+    events.filter((event) => event.type === "config_override_conflict"),
+    [],
+    "值相同或只有一边给了 ⇒ 零事件",
+  );
+});
+
 // ================================================================ D. 能力面不收配置覆盖（判据 3）
-test("D1 19 个能力/注入键写进 config 顶层 ⇒ 启动即抛，点名该键，via=direct", async () => {
-  assert.equal(CAPABILITY_OPTION_NAMES.length, 19);
+test("D1 15 个能力/注入键写进 config 顶层 ⇒ 启动即抛，点名该键，via=direct", async () => {
+  assert.equal(CAPABILITY_OPTION_NAMES.length, 15);
   for (const name of CAPABILITY_OPTION_NAMES) {
     const error = await directError({ config: { [name]: null } });
     assert.equal(error instanceof TypeError, true, `${name} 必须启动即抛 TypeError`);
@@ -506,6 +643,23 @@ test("G1 collectConfigNamespaceProblems 是纯函数：问题清单不抛、可�
       'unknown config.tuning option: "nope" (accepted: maxTokens, temperature, topP, cacheCapable)',
     ],
   );
+});
+
+test("G3 collectConfigSourceConflicts 是纯函数：逐叶、同值不算、顺序按 schema", () => {
+  const policy = { run: { maxRounds: 4, stream: true }, tuning: { temperature: 0.1 } };
+  const call = { run: { maxRounds: 1, stream: true }, tuning: { temperature: 0.2 }, guard: { finalGuardExtend: true } };
+  assert.deepEqual(collectConfigSourceConflicts(policy, call), [
+    { path: "run.maxRounds", key: "maxRounds" },
+    { path: "tuning.temperature", key: "temperature" },
+  ], "同值（stream）与被覆盖树里没有的叶子（finalGuardExtend）都不算冲突；顺序 = 分组顺序");
+  // 形状不合法的一侧直接当「没有可报的」，不抛（装配口的 policy.config 已在构造期过闸口）。
+  assert.deepEqual(collectConfigSourceConflicts(undefined, call), []);
+  assert.deepEqual(collectConfigSourceConflicts("nope", call), []);
+  assert.deepEqual(collectConfigSourceConflicts(policy, []), []);
+  // 叶子显式 undefined 逐字等于「没给」。
+  assert.deepEqual(collectConfigSourceConflicts({ run: { maxRounds: 4 } }, { run: { maxRounds: undefined } }), []);
+  // 不改入参。
+  assert.deepEqual(policy, { run: { maxRounds: 4, stream: true }, tuning: { temperature: 0.1 } });
 });
 
 test("G2 expandConfigNamespace 不改入参：返回新对象，原 options 原样保留", () => {

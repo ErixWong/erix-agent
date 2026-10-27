@@ -11,6 +11,9 @@
 //   6. issue #497（S2）：`config` 嵌套命名空间的展开（`expandConfigNamespace`，schema 与
 //      别名表都在 `src/loop/config-namespace.js`）——它把 `config.<group>.<leaf>` 写回顶层
 //      扁平键、让 config 赢过同名扁平键，并把冲突交给调用方发事件。
+//      复审 R4: the two config sources (`policy.config` vs the call-level `config`) keep the
+//      "last writer wins" merge, but their per-leaf conflicts go out through the same channel
+//      (`collectConfigSourceConflicts` in `src/loop/config-namespace.js`).
 //
 // 顺序即语义，且被 test/loop-option-normalization.test.js 逐条钉住，所以本模块严格按
 //   形状检查 → 未知键检查 → config 名称/形状预检 → assemblyPortOptions → 显式值合并
@@ -41,6 +44,7 @@ import { assemblyPortOptions } from "../assembly.js";
 import { assertSemanticOptionValues } from "../assembly-validators.js";
 import {
   assertConfigNamespace,
+  collectConfigSourceConflicts,
   expandConfigNamespace,
 } from "./config-namespace.js";
 
@@ -227,8 +231,10 @@ export function assertRunToolLoopOptionNames(options) {
  *   effectiveOptions: Record<string, any>,
  *   configConflicts: Array<{path: string, key: string}>,
  * }>} `effectiveOptions` 是 assembled 值与显式值的合并结果（`config` 已展开、已消失），
- *   由调用方继续做解构默认值与后续校验；`configConflicts` 是「同一个键既写了扁平又写了
- *   `config.<path>`，且值不同」的清单（issue #497）——调用方负责发事件，本模块不发事件。
+ *   由调用方继续做解构默认值与后续校验；`configConflicts` 是冲突清单（issue #497）：既含
+ *   「同一个键既写了扁平又写了 `config.<path>`，且值不同」，也含「`policy.config` 与调用级
+ *   `config` 里同一个叶子值不同」（复审 R4）；按 path 去重、只带路径与键名——调用方负责发
+ *   事件，本模块不发事件。
  */
 export async function normalizeRunToolLoopOptions(options) {
   assertRunToolLoopOptionNames(options);
@@ -253,13 +259,26 @@ export async function normalizeRunToolLoopOptions(options) {
   for (const [key, value] of Object.entries(explicitOptions)) {
     if (value !== undefined) mergedOptions[key] = value;
   }
-  // 装配口 `policy.config` 与直连 `config` 都是**同一棵树**：显式值整体覆盖 policy 的那份
-  // 遵循既有合并规则（`explicitOptions` 在 `assemblyPortOptions` 之后合并），这里不另立规则。
-  if (explicitConfig !== undefined) mergedOptions.config = explicitConfig;
-  const { options: effectiveOptions, conflicts: configConflicts } = expandConfigNamespace(
+  // The assembly port's `policy.config` and the call-level `config` are the same tree: the
+  // explicit value overrides the policy one wholesale (the pre-existing merge rule), no new rule.
+  // R4: the value semantics stay; the override is reported leaf by leaf (same event, same fields).
+  const policyConfig = assembledOptions.config;
+  const configSourceConflicts = [];
+  if (explicitConfig !== undefined) {
+    configSourceConflicts.push(...collectConfigSourceConflicts(policyConfig, explicitConfig));
+    mergedOptions.config = explicitConfig;
+  }
+  const { options: effectiveOptions, conflicts: expansionConflicts } = expandConfigNamespace(
     mergedOptions,
     { via },
   );
+  // One leaf can be hit by both rules (flat vs config, policy vs call): the payload is only
+  // `{ path, key }`, so duplicates carry no information — dedupe by path, keep first-seen order.
+  const configConflicts = [];
+  for (const conflict of [...configSourceConflicts, ...expansionConflicts]) {
+    if (configConflicts.some((seen) => seen.path === conflict.path)) continue;
+    configConflicts.push(conflict);
+  }
   // ⚠ 这一行必须校**合并后**的表示。今天改校 `explicitOptions` 是可观察等价的，前提有两条：
   //   ① `assemblyPortOptions` 第一行无条件重跑 `createAssemblyPort`，policy 的坏值到不了这里；
   //   ② `assembledOptions` 的派生键（provider / tools / session / modelConfig / onEvent …）都不在语义相规则集内。
