@@ -40,13 +40,16 @@
 //     ⇒ 5 红：A1 / A2 / A3 / B1 / F1——自检与枚举两侧同时红；
 //   · M7（R4）把逐叶事件降级成 `void collectConfigSourceConflicts(…)`（算而不发）
 //     ⇒ 1 红：C6（「冲突事件恰一条」实测 0 !== 1）；
-//   · M8（R3）把 JSDoc 的 `tuning?:` 改成假组名 `reflection?:` ⇒ 本文件不红（类型面不在
-//     单测里），但 `npm run check:release` 第 4 步红：宿主 `config.tuning` 报
-//     `TS2353: … 'tuning' does not exist in type …`——见报告里那条实测输出。
+//   · M8（R3）把 JSDoc 的 `tuning?:` 改成假组名 `reflection?:` ⇒ `npm run check:release` 第 4 步
+//     （真实 TS 宿主）红：宿主 `config.tuning` 报 `TS2353: … 'tuning' does not exist in type …`。
+//     **但那条锁以前只在 node 22 那一档跑**（CI 里 `check:release` 只跑一档），`npm test` 与
+//     `check:types-build` 都不红；第二轮复审补了 **H1**（默认套件里扫 `config?:` 的 JSDoc 文本，
+//     组名集合必须恰等于 `Object.keys(CONFIG_NAMESPACE_SCHEMA)`），同一个变异现在 `npm test` 就红。
 //
 // 零真实 LLM（fake provider），不写盘、不碰真实 `~/.erix`。
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import { createAssemblyPort } from "../src/assembly.js";
 import {
@@ -693,4 +696,71 @@ test("G2 expandConfigNamespace 不改入参：返回新对象，原 options 原�
   assert.equal(expanded.maxRounds, 2);
   assert.equal(options.maxRounds, 1, "入参不得被改写");
   assert.deepEqual(options.config, { run: { maxRounds: 2 } }, "入参的 config 不得被删");
+});
+
+// ================================================================ H. 类型面锁进默认套件（第二轮复审 T2）
+//
+// R3 把 `config` 的 JSDoc 类型面改成八组真名，但那条锁只活在 `check:release` 第 4 步（真实 TS
+// 宿主）——CI 里 `check:release` 只在 node 22 一档跑。实测：把 JSDoc 的 `tuning?:` 写成假组名
+// `reflection?:`，`npm test` 与 `check:types-build` **都不红**，只有 `check:release` 红。
+// H1 把同一条性质搬进默认套件：直接扫 `src/loop/orchestrator.js` 的 `config?:` JSDoc 文本，
+// 断言其中出现的组名集合**恰等于** `Object.keys(CONFIG_NAMESPACE_SCHEMA)`（缺组、多组、假组名、
+// 重复组名都红，报错点名是哪个名字）。
+// **不许手工维护第二份名单**：期望值必须从模块导出派生（`CONFIG_NAMESPACE_SCHEMA` 的键集）。
+const ORCHESTRATOR_SOURCE_PATH = new URL("../src/loop/orchestrator.js", import.meta.url);
+
+/** 从 `config?: { … }` 的 JSDoc 类型字面里抽出**组名**（深度 1 上的 `<name>?:`，按出现顺序）。 */
+function jsDocConfigGroupNames(source) {
+  const marker = "config?: {";
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, "orchestrator.js 的 JSDoc 里必须还有 `config?: {` 这个类型字面");
+  const open = start + marker.length - 1;
+  const names = [];
+  let depth = 0;
+  for (let i = open; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === "{") {
+      depth += 1;
+      continue;
+    }
+    if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return names;
+      continue;
+    }
+    if (depth !== 1) continue;
+    if (/[\w$]/u.test(source[i - 1] ?? "")) continue;
+    const match = /^([A-Za-z_$][\w$]*)\?:/u.exec(source.slice(i, i + 64));
+    if (match === null) continue;
+    names.push(match[1]);
+    i += match[1].length;
+  }
+  assert.fail("`config?: {` 的类型字面没有闭合——抽不到组名就等于这条锁在空转");
+  return names;
+}
+
+test("H1 JSDoc 的 config 组名集合恰等于 schema 组名（类型面锁进默认套件）", () => {
+  const source = readFileSync(ORCHESTRATOR_SOURCE_PATH, "utf8");
+  const jsDocGroups = jsDocConfigGroupNames(source);
+  const schemaGroups = Object.keys(CONFIG_NAMESPACE_SCHEMA); // 派生，不手抄
+  // 派生自证：这份期望值确实来自模块导出（与分组名单逐字同一份）。
+  assert.deepEqual(schemaGroups, [...CONFIG_NAMESPACE_GROUPS], "期望值必须来自 CONFIG_NAMESPACE_SCHEMA 的键集");
+  assert.equal(schemaGroups.length, 8, "八组（schema 侧的自证）");
+
+  const duplicated = jsDocGroups.filter((group, index) => jsDocGroups.indexOf(group) !== index);
+  const extra = jsDocGroups.filter((group) => !schemaGroups.includes(group));
+  const missing = schemaGroups.filter((group) => !jsDocGroups.includes(group));
+  assert.deepEqual(duplicated, [], `JSDoc 的 config 类型面重复声明了组名：${duplicated.join(", ")}`);
+  assert.deepEqual(
+    extra,
+    [],
+    `JSDoc 的 config 类型面里有 schema 里不存在的组名：${extra.join(", ")}`
+      + `（宿主会以为 config.${extra[0] ?? "…"} 合法，而运行时它是未知分组）`,
+  );
+  assert.deepEqual(
+    missing,
+    [],
+    `JSDoc 的 config 类型面缺组：${missing.join(", ")}（合法分组在类型面上被说成不存在）`,
+  );
+  assert.deepEqual([...jsDocGroups].sort(), [...schemaGroups].sort(), "组名集合必须与 schema 键集逐字相等");
 });
