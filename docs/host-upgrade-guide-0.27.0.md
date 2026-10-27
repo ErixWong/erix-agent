@@ -82,6 +82,14 @@ Also whitelisted, because the engine reads them itself in `src/loop/budget.js`: 
 `session`, `requestId`. A host that put them in `context` on 0.26.x got a `TypeError` at assembly — that was a
 bug in our whitelist, and it is fixed here.
 
+**`context.onFoldSummary` is retired in this release (issue #499).** It used to sit on the accepted list even
+though the engine **never** read it from `context` — the delivery hook lives at the top level
+(`runToolLoop({ onFoldSummary })`) or on the assembly policy (`policy.onFoldSummary`). That entry therefore
+bought a host a green light and **no** event: configured, ineffective, and invisible. It is now an ordinary
+tolerated key — the assembly-port route reports it in `context_unknown_option`, the fine-grained route passes it
+in silence, and **neither route throws** (it is host-metadata shaped, not a misspelled knob). If you configured
+it under `context`, move it to one of the two real positions; if you did not, nothing changes.
+
 ⚠ **This validation now runs on both entry routes** (issue #496). A host that calls `runToolLoop(options)`
 directly used to get no `context` validation at all — a misspelled knob there was silently ignored. That
 asymmetry is gone: both routes now raise the same `TypeError` with the same message, and the error object

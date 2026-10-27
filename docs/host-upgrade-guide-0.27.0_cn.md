@@ -73,6 +73,12 @@ note: "unknown context keys are tolerated as host metadata; summarizer knob typo
 另外补齐了 `toolContext`、`expert`、`user`、`session`、`requestId`——引擎自己在 `src/loop/budget.js` 里读它们。
 在 0.26.x 上往 `context` 放这几个键的宿主会在装配期吃一个 `TypeError`：那是我方白名单的漏列，本版修掉。
 
+**`context.onFoldSummary` 在本版退役（issue #499）。** 它以前留在「合法键」名单里，而引擎**从不**从 `context`
+读它——投递钩子的真实位置是顶层（`runToolLoop({ onFoldSummary })`）或装配端口策略项（`policy.onFoldSummary`）。
+那一条白名单只买到「绿灯 + **零**事件」：配上了、不生效、还看不见。现在它是普通的放行键——装配口路线通过一条
+`context_unknown_option` 报出，直连路线静默放行，**两条路线都不抛**（它是宿主元数据的形状，不是拼错的旋钮名）。
+若你曾在 `context` 下配过它，请搬到上面两个真实位置之一；没配过则一切照旧。
+
 ⚠ **这套校验现在两条路线都跑**（issue #496）。以前直接调 `runToolLoop(options)` 的宿主对 `context` 拿不到任何
 校验，拼错的旋钮静默无效；这处不对称已经消除：两条路线抛**同一个 `TypeError`、同一句文案**，错误对象上带
 `via: "direct" | "assembly"`，让你看得出是从哪道门进来的。**只剩一处不对称，且只有这一处**：
