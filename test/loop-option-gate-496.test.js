@@ -31,6 +31,8 @@
 //   · `validateContextCallbackShapes` 的 `problems.push(...)` 降级 ⇒ B 段三个 context 回调反例红；
 //   · `CALLBACK_OPTION_PATHS` 的循环体 `problems.push(...)` 降级 ⇒ B 段四个顶层回调反例红；
 //   · `assertSemanticOptionValues` 的 `throw` 降级成 `return` ⇒ B 段全部反例红、A 段次序用例红；
+//   · 语义相挪到**合并之前**（只看 assembled 值）⇒ A③ 与 B 段「policy 给对值 + 显式给错值」逐条红；
+//   · `collectSemanticOptionProblems` 把 `context: null` 也当错误 ⇒ `B(null)` 红；
 //   · `orchestrator.js` 的 `compactOptions` 透传名单里删掉 `"onBeforeFold"` ⇒ D① 的
 //     `context.onBeforeFold` 那格红（这是本单新加抛错面的投递路径，必须有锁）。
 //
@@ -280,6 +282,14 @@ test("B 每条闸口规则：反例两条路线都抛同一句（只差 via）�
     assert.equal(directOk, null, `${rule.id}: 直连正例不得抛（实测 ${directOk?.message}）`);
     const assemblyOk = await assemblyError(rule.good);
     assert.equal(assemblyOk, null, `${rule.id}: 装配口正例不得抛（实测 ${assemblyOk?.message}）`);
+
+    // ── 合并后：装配口给**对值**、显式选项给**错值** ⇒ 必须抛。
+    // 这条锁的是「语义相吃的是**合并后**的表示」：闸口若跑在合并之前（只看 assembled 值），
+    // 每条规则这里都会变成 null。以前这条性质只有 A③ 一格独锁，现在两条路线都有锁。
+    const overridden = await assemblyError(rule.good, rule.bad);
+    assert.ok(overridden instanceof TypeError, `${rule.id}: 显式覆盖 policy 值后必须被校，实测 ${String(overridden)}`);
+    assert.equal(overridden.message, rule.message, `${rule.id}: 覆盖后的文案必须与直连同一句`);
+    assert.equal(overridden.via, "assembly", `${rule.id}: 覆盖后的路线标签`);
   }
 });
 
