@@ -2108,6 +2108,9 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  `normalizeDeliverables`（`src/loop/deliverables.js`）—— 在**本分支的树**上 `--verbose` 实测
  *  **138 组 / 412 处**（契约 EN 113 → 117 处 / CN 107 → 111 处，中英 AGENTS 各 11 → 14 / 31 → 34 处；
  *  裸行号一处未增、仍 130 vs 130）。
+ *  issue #499（退役 `context.onFoldSummary`）让契约中英与 README 中英各多引一处
+ *  `CONTEXT_OPTION_NAMES`（`src/assembly-validators.js`）⇒ +1 组 / +4 处，在本分支树上
+ *  `--verbose` 实测 **139 组 / 416 处**（裸行号一处未增、仍 130 vs 130）。
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
 const SYMBOL_ANCHOR_MIN_UNIQUE = 139;
 

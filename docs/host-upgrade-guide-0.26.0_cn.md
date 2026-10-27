@@ -14,7 +14,7 @@
 | 变更 | 你要不要动手 |
 | --- | --- |
 | 每次折叠都写一份有界机械索引 `record.foldedFacts`（§2） | 不要——纯新增；没折叠的轮次就是没有这个键 |
-| 新钩子 `context.onFoldSummary` 与新旋钮 `context.maxFoldedFactsBytes`（§3） | 不要——两个都不传，行为逐字节不变 |
+| 新钩子**顶层** `onFoldSummary`（§3 标题里的 `context.` 前缀是错的——见 §3 末了指正）与新旋钮 `context.maxFoldedFactsBytes`（§3） | 不要——两个都不传，行为逐字节不变 |
 | 续跑只重放折叠水位线尚未入账的那部分（§4） | 要——如果你对续跑正文的内容或大小有断言 |
 | `judge_done` 停机补写终稿，验收改看 `termination.forcedFinal`（§5） | 要——如果你的验收口径是「终稿非空」 |
 | `compaction.strategyName` 与一次性 `compaction_strategy_fallback` 事件（§6） | 不要——事件字段纯新增 |
@@ -26,7 +26,7 @@
 - `src/compact/resume-fold-trim.js` — `planFoldedHistoryTrim`：按水位线裁剪 + 摘要回填。
 - `src/compact/sliding-window.js` — 零 LLM 策略现在也交出同一份机械文本（`foldedSummaryText`）。
 - `src/loop/resume-manager.js` — 续跑历史，以及 judge 的轮次历史不再吃到 `"missing"`。
-- `context.onFoldSummary`、`context.maxFoldedFactsBytes` — 两个新选项。
+- 顶层 `onFoldSummary`（**不是** `context.onFoldSummary`——见 §3 末指正）与 `context.maxFoldedFactsBytes` — 两个新选项。
 - `compaction.strategyName` 与 `compaction_strategy_fallback` 事件 — 新的可观测字段。
 
 ## 2. `record.foldedFacts`：每次折叠都留下一份有界机械索引
@@ -76,9 +76,11 @@
 `note_take`），打上被折区间的标签，然后不再轮询账本去找你已经见过的折叠。要是你更愿意继续轮询，
 `record.foldedFacts` 一直都在，而且内容完全一致。
 
-⚠ **指正（2026-10-28，issue #499）。**上面关于 **`context.`** 这个落点的说法**在发布当时就是错的**：
-`context.onFoldSummary` 被选项白名单接受，但引擎**从不读它**——配在那里的宿主拿不到调用、拿不到错误、
-也拿不到事件。这个钩子一直是**顶层** `onFoldSummary`；本节里的 `context.` 前缀是 0.26.0 的文档缺陷，
+⚠ **指正（2026-10-28，issue #499）。**上面关于钩子 **`context.`** 落点的说法**在发布当时就是错的**。
+0.26.0 读的是**顶层** `onFoldSummary`，**从不读** `context.onFoldSummary`；当时未知的 `context` 子键是
+**静默丢弃**的，而且 **0.26.0 根本没有 `context` 子键白名单**——那份名单是 0.27.0 周期的 issue #469
+才引入的，所以放错位置的钩子连「被报出来」都做不到。把钩子配在 `context` 下的宿主：零调用、零错误、零事件。
+（对照：`context.maxFoldedFactsBytes` 是真的，0.26.0 会读它。）这个钩子一直是**顶层** `onFoldSummary`；本节里的 `context.` 前缀是 0.26.0 的文档缺陷，
 从来不是受支持的落点。现在 `context.onFoldSummary` 已从白名单退役（按宿主元数据对待，装配口路线经
 `context_unknown_option` 报出），顶层钩子一字未动。退役细节见 0.27.0 指南。上方原文逐字保留作历史。
 
