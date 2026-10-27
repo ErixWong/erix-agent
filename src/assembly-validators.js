@@ -406,16 +406,19 @@ export function collectSemanticOptionProblems(options) {
 
 
 /**
- * `context` 上承载回调的三个子键（`onFoldSummary` 在这里是**白名单里的既有键**，见
- * `CONTEXT_OPTION_NAMES`）：给了就必须是函数，否则今天会被 `runFoldHook` 的
+ * `context` 上承载回调的两个子键：给了就必须是函数，否则今天会被 `runFoldHook` 的
  * `typeof hook === "function"` 静默跳过——又一根「配了等于没配」的旋钮。
+ *
+ * 刻意**不含** `context.onFoldSummary`：引擎从不从 `context` 读这个键（契约里明写「会被忽略」，
+ * 真实位置是顶层 `onFoldSummary` / 装配口 `policy.onFoldSummary`），给一个「被忽略的键」校形状
+ * 只会反过来暗示它有用。
  *
  * @param {Record<string, any>} context
  * @returns {string[]}
  */
 function validateContextCallbackShapes(context) {
   const problems = [];
-  for (const key of ["onBeforeFold", "onAfterFold", "onFoldSummary"]) {
+  for (const key of ["onBeforeFold", "onAfterFold"]) {
     const value = context[key];
     if (value !== undefined && typeof value !== "function") {
       problems.push(`context.${key} must be a function (or omitted)`);

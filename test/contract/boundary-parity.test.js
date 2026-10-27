@@ -335,8 +335,6 @@ test("boundary parity: 承载宿主回调的字段形状错误在两条路线上
       "context.onBeforeFold must be a function (or omitted)"],
     ["context.onAfterFold", { context: { onAfterFold: {} } },
       "context.onAfterFold must be a function (or omitted)"],
-    ["context.onFoldSummary", { context: { onFoldSummary: false } },
-      "context.onFoldSummary must be a function (or omitted)"],
   ];
   for (const [label, bad, message] of cells) {
     await assertGateParity({ label, bad, message });

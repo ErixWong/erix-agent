@@ -114,12 +114,6 @@ const GATE_RULES = [
     message: "assembly policy option onFoldSummary must be a function (or omitted)",
   },
   {
-    id: "context.onFoldSummary-shape",
-    bad: { context: { onFoldSummary: "notes" } },
-    good: { context: { onFoldSummary: () => {} } },
-    message: "context.onFoldSummary must be a function (or omitted)",
-  },
-  {
     id: "context.onBeforeFold-shape",
     bad: { context: { onBeforeFold: "hooks" } },
     good: { context: { onBeforeFold: () => {} } },
@@ -344,6 +338,8 @@ test("D① 9 个承载宿主回调的字段：省略 = 不订阅，两条路线�
 test("D② 承载回调的字段给错就启动即抛：反例清单逐条（含 null / 数字 / 对象 / 字符串）", async () => {
   const cases = [
     // 顶层 `onFoldSummary` 沿用 #470-D 的既有文案（装配口今天逐字如此，零破坏），其余同范式。
+    // `context.onFoldSummary` 刻意**不在**规则表里：引擎从不从 `context` 读它（契约明写「会被忽略」），
+    // 给一个被忽略的键校形状只会反过来暗示它有用。
     [{ onFoldSummary: null }, "assembly policy option onFoldSummary must be a function (or omitted)"],
     [{ onFoldSummary: {} }, "assembly policy option onFoldSummary must be a function (or omitted)"],
     [{ finalGuard: null }, "finalGuard must be a function (or omitted)"],
@@ -355,7 +351,6 @@ test("D② 承载回调的字段给错就启动即抛：反例清单逐条（含
     [{ diagnostics: { error: [] } }, "diagnostics.error must be a function (or omitted)"],
     [{ context: { onBeforeFold: null } }, "context.onBeforeFold must be a function (or omitted)"],
     [{ context: { onAfterFold: 0 } }, "context.onAfterFold must be a function (or omitted)"],
-    [{ context: { onFoldSummary: false } }, "context.onFoldSummary must be a function (or omitted)"],
   ];
   for (const [bad, message] of cases) {
     const label = Object.keys(bad)[0];
