@@ -11,7 +11,7 @@
 //   B. 每条闸口规则各自配**正例 + 反例**（不靠 parity 代劳正确性）：反例两条路线都抛**同一句**，
 //      只差 `error.via`；正例两条路线都不抛。
 //   C. 旋钮家族闭集**派生**：对 `FOLD_SUMMARIZER_CAP_NAMES` 每个键造一次手滑 ⇒ 两条路线都抛；
-//      合法键 ⇒ 都不抛；宿主业务键 ⇒ 不抛且留 `context_unknown_option` 事件（#469 的回归）。
+//      合法键 ⇒ 都不抛；宿主业务键 ⇒ 两条路线都不抛；`context_unknown_option` 事件只在装配口有（直连从不发）（#469 的回归）。
 //   D. 回调形状：语义相管 **7** 个承载宿主回调的字段（`finalGuard` / `retry.sleepImpl` /
 //      `reflection.onReflection` / `diagnostics.error` / 顶层 `onFoldSummary` / `context.onBeforeFold` /
 //      `context.onAfterFold`），另加闸口之外的 `deliverables[].check`；给错则启动即抛。给对时**逐格分开说**：
@@ -362,7 +362,7 @@ test("B(null) `context: null` 逐字等于省略：两条路线都不抛，且�
   assert.equal(viaPort.termination.reason, "end_turn", "装配口 `context: null` 的 run 必须照旧跑完");
 });
 
-test("C③ 宿主业务键照旧放行（#469 回归）：不抛，且留一条 context_unknown_option 事件", async () => {
+test("C③ 宿主业务键照旧放行（#469 回归）：两条路线都不抛；事件只有装配口路线发（直连从不发）", async () => {
   // 直连侧：业务键不是旋钮家族 ⇒ 语义相不拦；引擎也不发事件（没有 emit 端口），但绝不抛。
   const directOk = await directError({
     context: { budgetTokens: 1000, workspaceName: "fde-station", summaryStyle: "brief" },
@@ -382,7 +382,7 @@ test("C③ 宿主业务键照旧放行（#469 回归）：不抛，且留一条 
 });
 
 // ================================================================ D. 回调形状（旧位置投递 + 新规则）
-test("D① 承载宿主回调的字段：省略 = 不订阅，给对就**真的被投递**（折叠 / 重试 / 终局 / 交付物四处各断言一次）", async () => {
+test("D① 承载宿主回调的字段：省略 = 不订阅，给对就**真的被投递**（折叠 / 重试 / 终局 / 交付物四处各断言一次，外加投递失败落 `diagnostics.error`）", async () => {
   // 这一格以前只断言 `finalGuard` 与 `deliverables[].check`，其余 5 个计数器**写了不断言** ⇒
   // 删掉 orchestrator 里 `context.onBeforeFold` 的透传，全量测试 0 红。现在改成**真跑一次折叠**：
   // `budgetTokens: 300` + `keepRounds: 1` + `sliding-window`（零 LLM）⇒ 6 发工具调用后必然折叠，

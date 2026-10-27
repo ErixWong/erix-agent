@@ -231,6 +231,10 @@ export async function normalizeRunToolLoopOptions(options) {
   // 路线标签取**入口形状**（宿主调的是哪条 API），不是「这个值来自哪一层」：
   // 显式选项与端口 policy 都会汇进同一份 `effectiveOptions`，按来源拆标签只会让宿主
   // 在同一个 run 里看到两种标签。
+  // ⚠ 这一行必须校**合并后**的表示。今天改校 `explicitOptions` 是可观察等价的，前提有两条：
+  //   ① `assemblyPortOptions` 第一行无条件重跑 `createAssemblyPort`，policy 的坏值到不了这里；
+  //   ② `assembledOptions` 的派生键（provider / tools / session / modelConfig / onEvent …）都不在语义相规则集内。
+  // 任一前提变了（新增一条未经闸口的选项来源、或给派生键加进规则集里的字段），这条性质会**静默失效**——测试不红。
   assertSemanticOptionValues(effectiveOptions, {
     via: assemblyPort === undefined ? "direct" : "assembly",
   });

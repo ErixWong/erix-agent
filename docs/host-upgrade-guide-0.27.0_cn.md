@@ -62,7 +62,7 @@ summaryMaxTokens = Math.min(run.maxTokens ?? Infinity, context.maxSummaryTokens 
   `summarizerTimeouts`…）是明确事故，在装配期报 `unknown … context option`。判据是**编辑距离，不是词根包含**：
   名字里带个 `summar` 不构成旋钮。
 - **其余都算宿主元数据**——契约一直说宿主私有元数据可以放 `context`（`workspaceName`、`summaryStyle`、
-  `summarizerNote`…）。这类键**放行**，并且如实报一条事件、不静默：
+  `summarizerNote`…）。这类键**放行**，并在**装配口路线**上如实报一条事件、不静默（直连路线从不发这条事件，见本节末）：
 
 ```
 type: "context_unknown_option"
@@ -73,8 +73,20 @@ note: "unknown context keys are tolerated as host metadata; summarizer knob typo
 另外补齐了 `toolContext`、`expert`、`user`、`session`、`requestId`——引擎自己在 `src/loop/budget.js` 里读它们。
 在 0.26.x 上往 `context` 放这几个键的宿主会在装配期吃一个 `TypeError`：那是我方白名单的漏列，本版修掉。
 
-⚠ **这套校验只挂在 `createAssemblyPort` 上。** 直接调 `runToolLoop(options)` 的宿主对 `context` 拿不到任何校验，
-那条路径上拼错的旋钮仍然静默无效。走这条路的宿主请自己校一遍。
+⚠ **这套校验现在两条路线都跑**（issue #496）。以前直接调 `runToolLoop(options)` 的宿主对 `context` 拿不到任何
+校验，拼错的旋钮静默无效；这处不对称已经消除：两条路线抛**同一个 `TypeError`、同一句文案**，错误对象上带
+`via: "direct" | "assembly"`，让你看得出是从哪道门进来的。**只剩一处不对称，且只有这一处**：
+`context_unknown_option` 事件只由装配口发出，直连路线永远收不到（`onEvent` 在那条路线上照常工作，只是收不到
+这一条事件）。
+
+这次修复带来两个宿主可见后果，两个都不是静默无操作：
+
+- **旋钮家族判据的爆炸半径随修复一起变大了。**判据本身一字未改（对已知旋钮名取编辑距离 ≤ 2，从不按子串），
+  但 0.27.0 之前只有走装配口的宿主吃它，现在**所有**宿主都吃。实测：`summarizerBudget`、`summarizerTimeout`、
+  `maxSummaryToken` 现在**会抛**；`summaryStyle`、`summarizerNote`、`maxSummaryChars`、`workspaceName` 照旧放行。
+- **回调给了非函数值现在启动即抛**，不再悄悄当没给：`finalGuard`、`retry.sleepImpl`、`reflection.onReflection`、
+  `diagnostics.error`、`onFoldSummary`、`context.onBeforeFold`、`context.onAfterFold`。`null` 算「给了但给错」。
+  **唯一例外**是 `context: null`，它逐字等于「没配」（实测与省略该键行为完全相同）。
 
 ## 4. 摘要预算：默认值挪了，裁剪也不再糊掉骨架
 
