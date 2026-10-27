@@ -82,6 +82,14 @@ What to do with it: write it into your notes or journal store as the timeline en
 the folded range, and stop polling the ledger for folds you have already seen. If you prefer to keep polling,
 `record.foldedFacts` is still there and identical.
 
+⚠ **Correction (2026-10-28, issue #499).** Everything above about the **`context.`** location was wrong at
+publication time: `context.onFoldSummary` was accepted by the option whitelist but **never read** — a host
+that configured it there got no call, no error and no event. The hook has always been the **top-level**
+`onFoldSummary`; the `context.` prefix in this section is a documentation defect of 0.26.0, not a supported
+location. `context.onFoldSummary` has now been retired from the whitelist (it is treated as host metadata
+and reported through `context_unknown_option` on the assembly-port route); the top-level hook is unchanged.
+See the 0.27.0 guide for the retirement. The original text above is kept verbatim as history.
+
 ## 4. Resume no longer replays what the fold watermark already accounts for
 
 `planFoldedHistoryTrim` (`src/compact/resume-fold-trim.js`) trims the resumed context at the fold watermark:

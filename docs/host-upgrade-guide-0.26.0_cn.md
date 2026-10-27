@@ -76,6 +76,12 @@
 `note_take`），打上被折区间的标签，然后不再轮询账本去找你已经见过的折叠。要是你更愿意继续轮询，
 `record.foldedFacts` 一直都在，而且内容完全一致。
 
+⚠ **指正（2026-10-28，issue #499）。**上面关于 **`context.`** 这个落点的说法**在发布当时就是错的**：
+`context.onFoldSummary` 被选项白名单接受，但引擎**从不读它**——配在那里的宿主拿不到调用、拿不到错误、
+也拿不到事件。这个钩子一直是**顶层** `onFoldSummary`；本节里的 `context.` 前缀是 0.26.0 的文档缺陷，
+从来不是受支持的落点。现在 `context.onFoldSummary` 已从白名单退役（按宿主元数据对待，装配口路线经
+`context_unknown_option` 报出），顶层钩子一字未动。退役细节见 0.27.0 指南。上方原文逐字保留作历史。
+
 ## 4. 续跑不再重放水位线已经入账的正文
 
 `planFoldedHistoryTrim`（`src/compact/resume-fold-trim.js`）按折叠水位线裁续跑上下文：属于 `round <= foldedThrough`
