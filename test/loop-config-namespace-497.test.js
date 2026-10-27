@@ -146,6 +146,11 @@ test("B1 46 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平�
     assert.deepEqual(nestedExpanded.options, flatExpanded.options, `${path} 展开后必须与扁平形态逐键相等`);
     assert.deepEqual(nestedExpanded.options, flat, `${path} 展开后必须回到扁平形态`);
     assert.equal(Object.hasOwn(nestedExpanded.options, "config"), false, `${path} 展开后 config 必须消失`);
+    // 迁移场景（等价 + 优先级同一条断言）：这个键以前写在扁平、现在挪到 config，其余照旧 ⇒
+    // 展开结果必须与「只用扁平新值」逐键相等。优先级反转（让扁平赢）会在这里红。
+    const mixed = expandConfigNamespace({ [key]: `stale:${key}`, config: { [group]: { [key]: value } } });
+    assert.deepEqual(mixed.options, flat, `${path} 混合写法（扁平旧值 + config 新值）必须等于只用扁平新值`);
+    assert.deepEqual(mixed.conflicts, [{ path, key }], `${path} 混合写法必须记一条冲突`);
     covered += 1;
   }
   assert.equal(covered, 46, "穷举必须覆盖全部 46 个配置键（漏一个就少一条等价证明）");
