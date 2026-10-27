@@ -324,6 +324,31 @@ test("C② 每个旋钮的合法值都在两条路线放行；非法值（0 / �
   }
 });
 
+test("B(null) `context: null` 逐字等于省略：两条路线都不抛，且直连结果与省略逐字相同", async () => {
+  // 契约明写「省略或 `null` = 没配」。这条放行口以前**零断言**（把它改成抛错，全量测试 0 红），
+  // 而它是本单唯一一处「非函数 / 非对象值仍放行」的例外，最容易被下一轮「收紧 context 形状」静默破掉。
+  const omitted = await runDirect();
+  const nulled = await runDirect({ context: null });
+  assert.equal(nulled.termination.reason, omitted.termination.reason, "`context: null` 必须与省略同一终局");
+  assert.equal(nulled.termination.reason, "end_turn");
+  assert.equal(nulled.rounds, omitted.rounds, "`context: null` 必须与省略同轮数");
+  assert.equal(nulled.finalText, omitted.finalText, "`context: null` 必须与省略同一终文");
+  assert.deepEqual(
+    nulled.compactionStats ?? [],
+    omitted.compactionStats ?? [],
+    "`context: null` 必须与省略同一压缩记录（两条都是「没配」）",
+  );
+
+  // 装配口：`policy.context: null` 同样放行（构造期不抛）。
+  assert.doesNotThrow(() => makePort({ context: null }), "`policy.context: null` 不得在构造期抛");
+  const viaPort = await runToolLoop({
+    assemblyPort: makePort({ context: null }),
+    initialUserMessage: "go",
+    completion: false,
+  });
+  assert.equal(viaPort.termination.reason, "end_turn", "装配口 `context: null` 的 run 必须照旧跑完");
+});
+
 test("C③ 宿主业务键照旧放行（#469 回归）：不抛，且留一条 context_unknown_option 事件", async () => {
   // 直连侧：业务键不是旋钮家族 ⇒ 语义相不拦；引擎也不发事件（没有 emit 端口），但绝不抛。
   const directOk = await directError({
