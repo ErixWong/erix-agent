@@ -53,6 +53,35 @@ executeTool({ id, name, input, context, signal })
 旧的 `{ data, success, ... }` 形态与其他鸭子类型形态为兼容起见仍被宽松归一化，但已废弃，
 不得依赖。
 
+### 选项校验发生在哪里（issue #496）
+
+选项校验是**规范化表示的性质**，不是宿主恰好调了哪条入口路线的性质。两相共用同一份规则来源：
+
+- **预检相** —— 对象形状 + 顶层名称白名单，在**任何宿主端口被读取之前**跑
+  （`assertRunToolLoopOptionNames`（`src/loop/option-normalization.js`））。所以未知顶层键仍然早于
+  `assemblyPortOptions`、早于 `modelConfig.resolve`、早于能力缺失检查抛出。
+- **语义相** —— 取值与回调形状规则，跑在**合并后**的表示上：`assertSemanticOptionValues`（`src/assembly-validators.js`）
+  在显式选项覆盖完 assembled 值之后被调用，而 `createAssemblyPort`
+  对它的 `policy` 调的是**同一个函数**。规则本体住在 `collectSemanticOptionProblems`（`src/assembly-validators.js`）：
+  一个条件、一句文案，没有按路线抄的第二份。
+
+于是两条路线抛的是**同一个 `TypeError`、同一句文案**，唯一差别是错误对象上的自有属性 `via`：
+装配口形态是 `"assembly"`，细粒度 `runToolLoop` 选项是 `"direct"`。这些文案**不带**
+`did you mean` 后缀（那个后缀只属于顶层名称白名单）。
+
+语义相只管这几条：`context` 给了就必须是对象（省略或 `null` = 没配）；`context` 里**拼错的摘要
+旋钮名**抛；旋钮取值必须是正安全整数；每个承载宿主回调的字段给了就必须是函数——`finalGuard`、
+`retry.sleepImpl`、`reflection.onReflection`、`diagnostics.error`、`onFoldSummary`（顶层）、
+`context.onBeforeFold`、`context.onAfterFold`。有两族**刻意留在原地**：
+`deliverables[].check` 由 `normalizeDeliverables`（`src/loop/deliverables.js`）校，其余取值规则
+（`maxRounds` / `partialPersistence` / `persistence` …）是 `runToolLoop` 自己的启动校验——它们本来就
+对每条路线都跑，因为两条路线都汇到那里。`context` 里的宿主元数据键（既不是引擎读的键、也不是拼错的
+旋钮名）照旧**放行**，并照旧通过一条 `context_unknown_option` 事件如实报出，不抛。
+
+0.27.0 里需要知道的行为变化：`context` 下拼错的摘要旋钮名、以及上面任一回调字段里的非函数值，以前在
+细粒度路线上是**静默忽略**（run 直接用默认值跑）。现在两者都启动即抛。把这些回调接出配置树的能力面
+**不在** 0.27.0 里——它在 0.28.0 落地（issue #498），在那之前现有位置照旧工作。
+
 ### 工具引数解析不了的时候（issue #409）
 
 每一次工具调用都带着一段模型自己写的引数。引擎分两层解析它，且**从不发明值**。L0 是对原文的
@@ -3092,7 +3121,7 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 
 > **钩子配在哪、三个区间键的作用域是什么。** `onFoldSummary` 配在装配端口策略项（`policy.onFoldSummary`）或直接入口的顶层选项（`runToolLoop({ onFoldSummary })`）——它**不从 `context` 读**（`context.onFoldSummary` 会被忽略；本文档早前的修订版写错了这一点）。同一份载荷还带折叠范围三键（issue #479）：`foldedRoundRange {from,to}` 是**本次**折叠的轮次区间，`foldedThrough` 是**本次折叠之后**的水位线，`foldedRoundCount` 是**run 作用域**的累计已折轮数——刻意不是会话/账本总账：resume 之后它只数这个 run 折过的部分，宿主若需要会话级数字，得自己把此前各 run 收到的计数相加。
 >
-> **四个上限都是 `context` 旋钮（issue #469，宿主审计 B1）：** `context.summarizerTimeoutMs`（provider 层**单发**超时，默认 `30000`）、`context.summarizerBudgetMs`（策略层**整条步骤死线**，首发与超窗自愈重试共用，默认 `30000`）、`context.maxSummarizerInputBytes`（被折窗口的字节上限，默认 `49152`）、`context.maxPriorSummaryBytes`（续写基底的字节上限，默认 `24576`）。两个超时名**刻意不合并**：单发上限与整步骤死线回答的是两个问题。省略即逐字等于今天的值；显式传入的 `summarizerTimeoutMs` 语义是**上限**（与调用方剩余预算取小），否则它会被步骤死线静默盖掉。装配期两条都校：非安全正整数抛 `TypeError: <key> must be a positive integer`，**未知** `context` 子键抛 `unknown assembly policy context option: "…"` 而不是被静默丢弃（`#331` 的形状）。四个键只对**内置名字形态**生效（`context.strategy: "fold-llm"`）；对象形态自带策略时上限归宿主自己。 **`context.maxSummaryTokens` 是第五个旋钮（issue #493，下游 fde-station）：** 它定摘要的输出预算（默认 `1400`），并且**同时给那一发的 `maxTokens` 封顶**——摘要调用以前原样继承 run 的 `maxTokens`（实测 32768），模型按 32k 写满、结果再被 1400 剪回，纯白烧。现在两者按 `min(run 的 maxTokens, maxSummaryTokens)` 对齐。**未知 `context` 子键按家族校验，不搞一刀切：** 拼错的摘要旋钮名（`maxPriorSummaryByte`、`summarizeBudgetMs`，判据是**与已知旋钮名的编辑距离 ≤ 2**，不是「含 `summar` 就算」，所以 `summaryStyle` / `summarizerNote` 这类业务键照旧合法）装配期照旧抛，其余未知键**当宿主元数据放行**（`src/loop/budget.js` 自己就从 `context` 读 `toolContext` / `expert` / `user` / `session` / `requestId`，文档开头也让宿主把私有元数据放这里）——放行的键通过一条 `context_unknown_option` 事件如实报出，不阻断装配。**两条运维注记：** 复用指纹现在包含续写基底，所以**既有账本升级后首次必然 miss 一次**，那次 resume 首折叠会重算一份摘要；以及当**单独一轮就超过** 48 KB 输入上限时，没有整轮可丢（`droppedRounds` 仍为 0）——那一格由 token 守卫逐条裁消息，并在省略注里留痕。
+> **四个上限都是 `context` 旋钮（issue #469，宿主审计 B1）：** `context.summarizerTimeoutMs`（provider 层**单发**超时，默认 `30000`）、`context.summarizerBudgetMs`（策略层**整条步骤死线**，首发与超窗自愈重试共用，默认 `30000`）、`context.maxSummarizerInputBytes`（被折窗口的字节上限，默认 `49152`）、`context.maxPriorSummaryBytes`（续写基底的字节上限，默认 `24576`）。两个超时名**刻意不合并**：单发上限与整步骤死线回答的是两个问题。省略即逐字等于今天的值；显式传入的 `summarizerTimeoutMs` 语义是**上限**（与调用方剩余预算取小），否则它会被步骤死线静默盖掉。两条入口路线现在共用同一道闸口、都在启动期校（issue #496）：非安全正整数抛 `TypeError: <key> must be a positive integer`，**未知** `context` 子键抛 `unknown assembly policy context option: "…"` 而不是被静默丢弃（`#331` 的形状）。四个键只对**内置名字形态**生效（`context.strategy: "fold-llm"`）；对象形态自带策略时上限归宿主自己。 **`context.maxSummaryTokens` 是第五个旋钮（issue #493，下游 fde-station）：** 它定摘要的输出预算（默认 `1400`），并且**同时给那一发的 `maxTokens` 封顶**——摘要调用以前原样继承 run 的 `maxTokens`（实测 32768），模型按 32k 写满、结果再被 1400 剪回，纯白烧。现在两者按 `min(run 的 maxTokens, maxSummaryTokens)` 对齐。**未知 `context` 子键按家族校验，不搞一刀切：** 拼错的摘要旋钮名（`maxPriorSummaryByte`、`summarizeBudgetMs`，判据是**与已知旋钮名的编辑距离 ≤ 2**，不是「含 `summar` 就算」，所以 `summaryStyle` / `summarizerNote` 这类业务键照旧合法）两条路线都抛，其余未知键**当宿主元数据放行**（`src/loop/budget.js` 自己就从 `context` 读 `toolContext` / `expert` / `user` / `session` / `requestId`，文档开头也让宿主把私有元数据放这里）——放行的键通过一条 `context_unknown_option` 事件如实报出，不阻断装配。**两条运维注记：** 复用指纹现在包含续写基底，所以**既有账本升级后首次必然 miss 一次**，那次 resume 首折叠会重算一份摘要；以及当**单独一轮就超过** 48 KB 输入上限时，没有整轮可丢（`droppedRounds` 仍为 0）——那一格由 token 守卫逐条裁消息，并在省略注里留痕。
 >
 > **续写基底按账本作用域播（issue #469，宿主裁决 A）：** resume 出来的 run 第一次折叠从**账本**播种，取源与读侧裁剪同一条规则（先 `pickCoveringFoldSummary`，再 `record.foldedFacts`；嵌套 `foldedRoundRange.{from,to}` 与平铺 `{from,to}` 两种形状都收）。优先级是契约：**显式调用参数 > 策略构造参数 > in-run 闭包 > 账本播种**——非 resume、或挑不出覆盖水位线的事实时，行为逐字退回今天。`compactionStats[].foldSummary` 增 `priorSummaryOrigin: "ledger" | "in-run"`（没有基底就不写键，与家族其余键同口径）。复用指纹**包含基底**：resume 后第一次折叠会重算一次而不是无声忽略播进来的基底（有意的取舍：宁可少命中一格，也不无声丢脉络）。
 >
