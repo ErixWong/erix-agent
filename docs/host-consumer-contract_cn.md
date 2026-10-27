@@ -75,8 +75,26 @@ executeTool({ id, name, input, context, signal })
 `context.onBeforeFold`、`context.onAfterFold`。有两族**刻意留在原地**：
 `deliverables[].check` 由 `normalizeDeliverables`（`src/loop/deliverables.js`）校，其余取值规则
 （`maxRounds` / `partialPersistence` / `persistence` …）是 `runToolLoop` 自己的启动校验——它们本来就
-对每条路线都跑，因为两条路线都汇到那里。`context` 里的宿主元数据键（既不是引擎读的键、也不是拼错的
-旋钮名）照旧**放行**，并照旧通过一条 `context_unknown_option` 事件如实报出，不抛。
+对每条路线都跑，因为两条路线都汇到那里。
+
+回调字段只有一条口径：**省略 = 不订阅**；`null` 与其余非函数值一律 = 给了但给错 ⇒ 启动即抛。
+**唯一例外**是 `context: null`，它逐字等于省略 `context`——理由不是宽容，而是引擎在那里的读取本来
+就对 `undefined` 与 `null` 完全相同，把它改成抛错只会破坏「把可空字段原样传下去」的宿主，买不到
+任何性质。顶层回调**刻意不给**这条例外：`finalGuard: null` / `retry.sleepImpl: null` /
+`onFoldSummary: null` 一律抛。口径统一优先于少一类半破坏，而「`null` 钩子悄悄等于没钩子」正是本
+版要喊出来的那类静默配置。
+
+`context` 里的宿主元数据键（既不是引擎读的键、也不是拼错的旋钮名）照旧**放行**——它们绝不抛。
+两条路线在这里**只差这一处**可观察事实：装配口路线仍通过一条 `context_unknown_option` 事件如实报出，
+直连路线则根本没有观察者端口，因此静默放行。在直连侧等这条事件的宿主会永远等不到——这是路线的性质，
+不是校验的性质。
+
+`unknown assembly policy context option: …` 这句是**历史措辞**：宿主在按这个串做匹配，所以逐字保留。
+直连路线上并不存在 `policy` 这回事——它留在这里只因为改名会打断宿主既有的字符串匹配。
+
+旋钮家族判据本身（与已知旋钮名的编辑距离 ≤ 2）一字未改，但它的**爆炸半径变了**：以前只有装配口
+宿主吃它，现在**所有** `runToolLoop` 宿主都吃。实测边界——`summarizerBudget` / `summarizerTimeout` /
+`maxSummaryToken` 会被判成手滑而抛；`summaryStyle` / `summarizerNote` / `maxSummaryChars` 照旧放行。
 
 0.27.0 里需要知道的行为变化：`context` 下拼错的摘要旋钮名、以及上面任一回调字段里的非函数值，以前在
 细粒度路线上是**静默忽略**（run 直接用默认值跑）。现在两者都启动即抛。把这些回调接出配置树的能力面

@@ -88,9 +88,33 @@ field that carries a host callback must be a function when provided — `finalGu
 level), `context.onBeforeFold`, `context.onAfterFold`. Two families
 stay where they are on purpose: `deliverables[].check` is validated by `normalizeDeliverables` (`src/loop/deliverables.js`), and the remaining value rules (`maxRounds`, `partialPersistence`,
 `persistence`, …) are `runToolLoop`'s own startup checks — both already run for every route
-because both routes converge there. Host metadata keys inside `context` (anything that is not
-an engine-read key and not a misspelled knob) are still **tolerated** and still reported
-through a `context_unknown_option` event instead of throwing.
+because both routes converge there.
+
+One doctrine covers every callback field: **omitted means "not subscribed"**; `null` and any
+other non-function value mean "provided but wrong" and throw at startup. There is exactly one
+exception — `context: null` is verbatim identical to omitting `context`. The reason is that the
+engine already reads `undefined` and `null` identically there, so throwing would only break hosts
+that pass a nullable field straight through, and it would buy no property. Top-level callbacks
+deliberately get **no** such pass: `finalGuard: null`, `retry.sleepImpl: null` and
+`onFoldSummary: null` all throw. Uniform doctrine beats one fewer half-break, and "a `null` hook
+silently means no hook" is exactly the class of quiet configuration this change makes loud.
+
+Host metadata keys inside `context` (anything that is not an engine-read key and not a misspelled
+knob) are still **tolerated** — they never throw. The two routes differ in exactly this one
+observable: the assembly-port route still reports them through a `context_unknown_option` event,
+while the fine-grained route has no observer port at all, so they pass silently. Hosts waiting for
+that event on the fine-grained route will wait forever; that is a property of the route, not of
+the validation.
+
+The message `unknown assembly policy context option: …` is **historical wording**: hosts match
+that string verbatim, so it is preserved character for character. On the fine-grained route there
+is no `policy` — the phrase survives only because renaming it would break existing string matching.
+
+The misspelled-knob criterion (edit distance ≤ 2 to a known summarizer knob name) is itself
+unchanged, but its **blast radius is not**: it used to be applied only to assembly-port hosts and
+now applies to every `runToolLoop` host. Measured boundary — `summarizerBudget`,
+`summarizerTimeout` and `maxSummaryToken` are read as slips and throw; `summaryStyle`,
+`summarizerNote` and `maxSummaryChars` still pass.
 
 Behaviour change to know about in 0.27.0: a misspelled summarizer knob under `context`, and a
 non-function value in any of the callback fields above, used to be **silently ignored** on the
