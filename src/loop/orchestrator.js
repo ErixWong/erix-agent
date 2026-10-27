@@ -497,8 +497,11 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   `config_override_conflict`（`conflicts: [{ path, key }]`，只带路径与键名）。装配口的
  *   `policy.config` 与调用级 `config` 同时在场时取值仍是「后写者胜、整棵覆盖」，但逐叶冲突走
  *   同一条事件（复审 R4）——只写在被覆盖那棵树里的叶子会被丢掉，别把它当逐叶合并用。
- *   能力/注入面（`provider` / `tools` / `executeTool` / `store` / `modelConfig` / `assemblyPort` /
- *   `runId` / `cwd` / `signal` / 状态源 / 回调出口 …）写进 `config` 一律启动即抛并点名该键。
+ *   能力面（`provider` / `tools` / `executeTool` / `store` / `modelConfig` / `assemblyPort` /
+ *   `signal` / 状态源 / 回调出口 …）写进 `config` 一律启动即抛并点名该键。`runId` / `cwd` 是
+ *   配置面（`config.run.runId` / `config.run.cwd`）：它们是字符串标量，而 0.28 要检的
+ *   「`config` 子树过 JSON round-trip 等值」要求能力面只剩函数/端口对象（见
+ *   `src/loop/config-namespace.js` 文件头约束 3）。
  *
  * `onToolResult`:
  *   改写钩子（非纯观察者）：返回值会替换工具结果。抛错/rejected Promise 被隔离，

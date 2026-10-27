@@ -32,7 +32,7 @@ longer inherited verbatim from the run (§2). A host that compiles against 0.26.
 - `src/assembly-validators.js` / `src/assembly.js` — `context` whitelist (five engine-read keys + all knobs), knob-family detection by edit distance, `contextOptionNameSelfCheck()`.
 - `src/loop/budget.js` — the `context.toolContext` / `expert` / `user` / `session` / `requestId` keys that were always read but never whitelisted.
 - `src/tools/file-tools.js` — `readFile` description's median tier re-measured (byte-neutral; the test tolerances did not move).
-- `src/loop/config-namespace.js` — the `config` namespace schema, its derived alias table and the capability/injection refusal list.
+- `src/loop/config-namespace.js` — the `config` namespace schema, its derived alias table and the capability refusal list (`runId` / `cwd` are configuration, not capability: string scalars, JSON-safe).
 
 ## 2. The five summarizer knobs, and one cap that is now actually a cap
 

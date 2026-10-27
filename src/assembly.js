@@ -182,7 +182,7 @@ export function createAssemblyPort(input = {}) {
   // 同一份配置走两条路线结论相反（`context.summarizeBudgetMs` 装配口抛、直连静默 `end_turn`）。
   // 路线只贴标签：装配口 `via:"assembly"`，直连 `via:"direct"`。
   // issue #497（S2）：`policy.config` 的**名称/形状**在构造期就校（与上面那条 policy 白名单同相）——
-  // 能力/注入键写进 config、未知分组/叶子、把扁平键写在 config 顶层，都在这里抛，`via:"assembly"`。
+  // 能力键写进 config、未知分组/叶子、把扁平键写在 config 顶层，都在这里抛，`via:"assembly"`。
   // **取值**不在这里校：展开发生在 `normalizeRunToolLoopOptions`（合并之后、语义相之前），
   // 展开后的扁平键由同一道语义相覆盖（`config.folding.context` 的旋钮拼错照样抛）。
   assertConfigNamespace(port.policy?.config, { via: "assembly" });

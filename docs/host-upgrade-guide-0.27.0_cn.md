@@ -29,7 +29,7 @@ store 方法签名变动、没有导出或依赖搬迁，运行时依赖仍然�
 - `src/assembly-validators.js` / `src/assembly.js` —— `context` 白名单（五个引擎自读键 + 全部旋钮）、按编辑距离判旋钮家族、`contextOptionNameSelfCheck()`。
 - `src/loop/budget.js` —— `context.toolContext` / `expert` / `user` / `session` / `requestId`：一直在被读，此前却没进白名单。
 - `src/tools/file-tools.js` —— `readFile` 描述里的中位档按新口径复测（字节中性；测试容差常量一个没动）。
-- `src/loop/config-namespace.js` —— `config` 命名空间的 schema、从它派生的别名表，以及能力/注入面的拒绝名单。
+- `src/loop/config-namespace.js` —— `config` 命名空间的 schema、从它派生的别名表，以及能力面的拒绝名单（`runId` / `cwd` 是配置面不是能力面：字符串标量、JSON 安全）。
 
 ## 2. 五个摘要旋钮，以及一根终于真的生效的上限
 
