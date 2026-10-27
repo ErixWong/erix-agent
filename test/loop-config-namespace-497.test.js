@@ -19,15 +19,14 @@
 //   E. **#496 的语义相闸口吃的是展开后的表示**（判据 5）：`config.folding.context` 里拼错的旋钮名
 //      抛的错与扁平 `context` 里拼错的**同一句**，只差 `via` 标签。
 //
-// mutation 自证（改的是**代码行**不是注释；实测输出见交付报告）：
-//   · `expandConfigNamespace` 里把优先级反转（先写扁平、后写 config 改成先写 config、后写扁平）
-//     ⇒ B 段的 46 键穷举与 C 段行为用例全红；
-//   · 删掉 `expanded[key] = value`（config 值不落地）⇒ B 段红；
-//   · `collectConfigNamespaceProblems` 的能力键分支降级成 `continue` ⇒ D 段 19 条逐条红；
-//   · `assertConfigNamespace` 的 `throw` 降级成 `return` ⇒ D/E 段红；
-//   · `notifyConfigOverrideConflicts` 的 `onEvent?.({…})` 整块删掉 ⇒ C 段事件用例红；
-//   · `option-normalization` 里 `expandConfigNamespace` 挪到合并**之前**（只看 assembled）
-//     ⇒ B 段端到端与 C 段「显式扁平 + config」红。
+// mutation 自证（改的是**代码行**不是注释；五个变异的实测红单见交付报告 /tmp/i497-report.md）：
+//   · M1 优先级反转（`expanded[key] = value` → `if (flatValue === undefined) …`）⇒ 4 红：
+//     B1（含「迁移场景」断言）/ C1 / C2 / G2；
+//   · M2 config 值不落地（同一行改成 `void flatValue`）⇒ 8 红：B1 / B2 / C1 / C2 / E1 / E2 / E4 / G2；
+//   · M3 顶层能力键分支降级成 `continue` ⇒ 3 红：D1 / D3 / F3；
+//   · M4 `assertConfigNamespace` 的 `throw` 降级成 `return` ⇒ 6 红：D1 / D2 / D3 / F1 / F2 / F3；
+//   · M5 `notifyConfigOverrideConflicts` 的 `onEvent?.({…})` 整块换成 `void configConflicts`
+//     ⇒ 2 红：C2（事件恰一条）/ C4（观察者隔离）。
 //
 // 零真实 LLM（fake provider），不写盘、不碰真实 `~/.erix`。
 import test from "node:test";
@@ -82,9 +81,16 @@ function makePort(policy = {}, { emit } = {}) {
   });
 }
 
-/** 装配口路线：跑一次（构造期或合并后抛都算）。 */
-const assemblyError = (policy = {}) => runToolLoop({ assemblyPort: makePort(policy) })
-  .then(() => null, (error) => error);
+/** 装配口路线：跑一次（构造期或合并后抛都算——构造期是同步抛，必须在这里接住）。 */
+const assemblyError = async (policy = {}) => {
+  let port;
+  try {
+    port = makePort(policy);
+  } catch (error) {
+    return error;
+  }
+  return runToolLoop({ assemblyPort: port }).then(() => null, (error) => error);
+};
 
 // ================================================================ A. 只有一张表（派生，不是手抄）
 test("A1 schema 自检：65 个顶层选项恰好分成 46 配置面 + 19 能力面，且 config 自己是容器", () => {
@@ -363,6 +369,14 @@ test("D3 装配口路线的 policy.config 走同一棵树：能力键 via=assemb
   assert.equal(error instanceof TypeError, true);
   assert.match(error.message, /config\.provider is not accepted/u);
   assert.equal(error.via, "assembly", "装配口路线的路线标签必须是 assembly");
+  // 构造期就抛（不必等到 run）：`createAssemblyPort` 直接调用同样抛，via 相同。
+  assert.throws(
+    () => makePort({ config: { provider: null } }),
+    (thrown) => thrown instanceof TypeError
+      && /config\.provider is not accepted/u.test(thrown.message)
+      && thrown.via === "assembly",
+    "policy.config 的名称闸口必须在构造期就抛",
+  );
 
   const port = makePort({ config: { run: { maxRounds: 1 } } });
   const result = await runToolLoop({ assemblyPort: port, completion: false, wrapup: false });
