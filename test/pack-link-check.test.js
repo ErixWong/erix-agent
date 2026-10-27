@@ -409,3 +409,73 @@ test("reclaimGeneratedDeclarations：只删 before 之外的；kept 如实；目
   assert.deepEqual(all.removed, ["src/late.d.ts"]);
   assert.equal(all.kept, 0);
 });
+
+// ── test/contract/ 发布面对账（issue #505）：端到端接线 ────────────────────────────
+// 判据本身的反向证在 `node scripts/pack-link-check.mjs --self-test` 的内存夹具上（16 例）；
+// 这里只补自测证明不了的那一半：**它真的接进了门禁**（`checkPackLinks` → 退出码），
+// 以及注入假 pack 时三个方向的真实行为。临时树由 makeTmp 造，不碰真实仓库。
+
+/**
+ * 造一棵带 package.json 与 test/contract/ 的假仓库。
+ * `test/contract/doc-examples.js` 是真实树里登记在豁免表里的那个文件，合成树也必须把它落到盘上
+ * （否则登记表自证会报「空转条目」——那是对的，但对这棵假树是噪音）。
+ */
+async function makeContractProject({ files, disk = [], packed = [] }) {
+  const withExempt = [...disk, "test/contract/doc-examples.js"];
+  const root = await makeTmp("505-contract-surface-");
+  await mkdir(path.join(root, "src"), { recursive: true });
+  await writeFile(
+    path.join(root, "package.json"),
+    `${JSON.stringify({ name: "fake", files, scripts: { test: "node --test" } }, null, 2)}\n`,
+    "utf8",
+  );
+  for (const rel of withExempt) {
+    const abs = path.join(root, rel);
+    await mkdir(path.dirname(abs), { recursive: true });
+    await writeFile(abs, `// fake: ${rel}\n`, "utf8");
+  }
+  const stdout = JSON.stringify([{ files: packed.map((rel) => ({ path: `package/${rel}` })) }]);
+  return { root, runPack: fakePack({ result: { status: 0, stdout, stderr: "" } }) };
+}
+
+test("#505 判据 1 接进门禁：test/contract/ 里忘加进 files 的 .js ⇒ 红并点名", async () => {
+  const { root, runPack } = await makeContractProject({
+    files: ["src", "test/contract/index.js"],
+    disk: ["test/contract/index.js", "test/contract/forgotten.js"],
+    packed: ["src/index.js", "test/contract/index.js"],
+  });
+
+  const out = capture(() => checkPackLinks({ root, runPack }));
+
+  assert.equal(out.code, 1, "忘了加进 files 必须让门禁红");
+  assert.match(out.stderr.join("\n"), /test\/contract\/forgotten\.js 在磁盘上、却不在 npm tarball 清单里/);
+});
+
+test("#505 判据 2 接进门禁：files 里的死条目 ⇒ 红并点名", async () => {
+  const { root, runPack } = await makeContractProject({
+    files: ["src", "test/contract/index.js", "test/contract/ghost.js"],
+    disk: ["test/contract/index.js"],
+    packed: ["src/index.js", "test/contract/index.js"],
+  });
+
+  const out = capture(() => checkPackLinks({ root, runPack }));
+
+  assert.equal(out.code, 1);
+  assert.match(out.stderr.join("\n"), /files 里列的 test\/contract\/ghost\.js 在磁盘上不存在——死条目/);
+});
+
+test("#505 判据 3 接进门禁：*.test.js 不随包 ⇒ 不红，且逐条打印「不随包发布」与谁跑它", async () => {
+  const { root, runPack } = await makeContractProject({
+    files: ["src", "test/contract/index.js"],
+    disk: ["test/contract/index.js", "test/contract/index.test.js"],
+    packed: ["src/index.js", "test/contract/index.js"],
+  });
+
+  const out = capture(() => checkPackLinks({ root, runPack }));
+
+  assert.equal(out.code, 0, `stderr=${out.stderr.join("\n")}`);
+  const stdout = out.stdout.join("\n");
+  assert.match(stdout, /test\/contract\/ 发布面对账：磁盘 3 个 \.js（非测试 2 \/ 测试 1）/);
+  assert.match(stdout, /test\/contract\/index\.test\.js：不随包发布.*node --test 套件.*npm test/);
+  assert.match(stdout, /这是有意为之，不是漏包/);
+});
