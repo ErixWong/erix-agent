@@ -4,9 +4,13 @@
 // 显式值合并 → 能力缺失检查 → modelConfig.resolve → 解构默认值）的**现有语义**钉死，
 // 让刀1 的搬迁可以宣称「零行为变化」——搬完之后这批用例必须一条不红。
 //
-// 全部用例只走公共入口 `runToolLoop`（不 import 任何内部模块），所以将来抽出
-// `src/loop/option-normalization.js` 时本文件**不需要改**：它钉的是外部可观察行为，
+// 行为断言全部只走公共入口 `runToolLoop`（不 import 任何**被测**内部模块），所以抽出
+// `src/loop/option-normalization.js` 时本文件的断言**不需要改**：它钉的是外部可观察行为，
 // 不是内部函数名/文件位置。
+//
+// issue #502 的**唯一例外是夹具对账**：本文件 import 了 `RUN_TOOL_LOOP_OPTION_NAMES`
+// （`src/loop/option-normalization.js`），只用它核对下面那份内联白名单副本（见「A0」）。
+// 那是「夹具的出处」，不是被测逻辑的入口：没有任何一条行为断言直接调用它。
 //
 // 反向证（防「恒绿装饰」）——每条断言都对应一处「顺手就会改错」的写法，实测见 WORK-REPORT：
 //   ① 合并改成无条件覆盖（`effectiveOptions[key] = value`）→ 「显式 undefined 不覆盖」用例红
@@ -14,6 +18,8 @@
 //   ③ 能力缺失检查与 `modelConfig.resolve` 换序 → 「检查先于 resolve」用例红
 //   ④ 合并改成 `!= null` / truthy 判断 → `null` 覆盖、`false` 覆盖用例红
 //   ⑤ 建议平局把 `<` 写成 `<=` → 「平局取白名单在前」用例红
+//   ⑥ 源名单 `RUN_TOOL_LOOP_OPTION_NAMES` 改动（加 / 删 / 改名 / 换序）而不同步内联副本
+//      → 「A0：副本 ≡ 源名单」用例红（issue #502）
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, realpathSync, statSync } from "node:fs";
@@ -21,6 +27,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before } from "node:test";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+// issue #502：夹具的**出处**（不是被测入口）——只用于核对下面那份内联白名单副本。
+import { RUN_TOOL_LOOP_OPTION_NAMES } from "../src/loop/option-normalization.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { makeTmp } from "./helpers/tmp.js";
 
@@ -163,9 +171,22 @@ function editDistance(left, right) {
 
 const suggestionThreshold = (unknownName) => Math.max(2, Math.floor(unknownName.length / 3));
 
-// 白名单 = `RUN_TOOL_LOOP_OPTION_NAMES`（**66 项**，顺序即平局优先级）。这里内联复制而不是
-// import：表征测试要能在刀1 之后继续钉住同一份名单——名单被改动时本用例应**主动变红**，
-// 逼着改动者确认「建议行为」是否随之变化。
+// 白名单 = `RUN_TOOL_LOOP_OPTION_NAMES`（**66 项**，顺序即平局优先级）。
+//
+// issue #502：这份内联副本**不是**自由 fixture，它必须与源名单（`src/loop/option-normalization.js`
+// 的 `RUN_TOOL_LOOP_OPTION_NAMES`）**逐项逐字一致——成员和顺序都是**。下面「A0」用例就是这条
+// 约束的机器判据（双向差集 + 首个位置差异）：
+//   · 源名单**加 / 删 / 改名**任一键 ⇒ 红（报错点名差集）；
+//   · 源名单**改顺序** ⇒ 红（报错点名首个分叉位置与两边的值）。顺序**不是**本用例自造的候选池：
+//     `optionSuggestion` 按源名单顺序遍历、用严格 `<` 比较，**顺序就是平局优先级**，所以它是被测
+//     语义的一部分，不是 fixture。
+//
+// 为什么保留副本、而不是干脆把源名单直接当候选池用（那样也能省掉一份维护）：**只读源名单抓不到
+// 「加一项」**。新增键会让 `runToolLoop({ 新键: null, provider: {} })` 不再抛
+// `unknown runToolLoop option`，而下面「每一项都被接受」的断言对「被接受」恰好是**绿**的——
+// #470-D 的 `onFoldSummary` 就是这么漏掉的（当时源 65 项 / 副本 64 项，两边各自「自洽」）。
+// 副本的作用是**强制同步**：源名单动一处，本文件必红，逼着改动者回来确认建议行为（阈值矩阵 /
+// 平局矩阵）是否随之变化。
 const OPTION_WHITELIST = [
   "assemblyPort",
   "provider",
@@ -243,6 +264,54 @@ const OPTION_WHITELIST = [
   "config",
 ];
 
+// ================================================================ A0. 副本 ≡ 源名单（issue #502）
+// 本用例就是上面那段注释里「名单被改动时本用例应主动变红」的**兑现处**：
+// 源名单是**唯一权威**，内联副本必须跟得上；不跟 ⇒ 这条红，并且报错必须点名「差哪些键」
+// 「从第几位开始分叉」。
+test("内联白名单副本与源名单 RUN_TOOL_LOOP_OPTION_NAMES 逐项逐字一致（成员 + 顺序）", () => {
+  // ① 成员双向对账：两个方向各报一次，谁漏了、谁多了都点名。
+  //    （放在最前：加 / 删 / 改名这三种漂移的报错必须是「差集名单」，不是后面那条计数。）
+  const sourceNames = new Set(RUN_TOOL_LOOP_OPTION_NAMES);
+  const copyNames = new Set(OPTION_WHITELIST);
+  const missingInCopy = RUN_TOOL_LOOP_OPTION_NAMES.filter((name) => !copyNames.has(name));
+  const extraInCopy = OPTION_WHITELIST.filter((name) => !sourceNames.has(name));
+  assert.deepEqual(
+    missingInCopy,
+    [],
+    `源名单有、内联副本没有（${missingInCopy.length} 项）：${JSON.stringify(missingInCopy)}`
+      + " —— 请把这几项按源名单位置补进 OPTION_WHITELIST，并确认建议行为未变",
+  );
+  assert.deepEqual(
+    extraInCopy,
+    [],
+    `内联副本有、源名单没有（${extraInCopy.length} 项）：${JSON.stringify(extraInCopy)}`
+      + " —— 副本不得比源名单多出任何键",
+  );
+
+  // ② 顺序对账：成员已相等时，首个位置差异 ⇔ 顺序不同。报错点名位置与两边的值。
+  const firstDiff = OPTION_WHITELIST.findIndex(
+    (name, index) => name !== RUN_TOOL_LOOP_OPTION_NAMES[index],
+  );
+  assert.equal(
+    firstDiff,
+    -1,
+    firstDiff === -1
+      ? ""
+      : `白名单顺序在第 ${firstDiff} 位分叉：源名单 = ${JSON.stringify(RUN_TOOL_LOOP_OPTION_NAMES[firstDiff])}`
+        + `，内联副本 = ${JSON.stringify(OPTION_WHITELIST[firstDiff])}`
+        + " —— 顺序即平局优先级，不是可自由重排的 fixture",
+  );
+
+  // ③ 条数：源名单也钉一遍。以前只有副本被钉住，源名单怎么变都不会红。
+  assert.equal(
+    RUN_TOOL_LOOP_OPTION_NAMES.length,
+    66,
+    `源名单条数变了（实测 ${RUN_TOOL_LOOP_OPTION_NAMES.length} 项）：确认「建议行为」是否随之变化后，`
+      + "同步本文件的 OPTION_WHITELIST 与这里的 66",
+  );
+  assert.equal(OPTION_WHITELIST.length, 66, `内联副本条数变了（实测 ${OPTION_WHITELIST.length} 项）`);
+});
+
 // ================================================================ A. 未知选项建议
 // 阈值 = `Math.max(2, Math.floor(未知名长度 / 3))`；下表逐行钉住两个分支与两侧边界。
 const SUGGESTION_MATRIX = [
@@ -281,6 +350,8 @@ test("未知选项建议阈值 = Math.max(2, floor(len/3))，两侧边界都钉�
 // 白名单（= 建议候选池）的**顺序**参与决策：`optionSuggestion` 用严格 `<` 比较，
 // 所以等距平局时**名单里靠前的那个**赢——既不是字典序，也不是「后出现的覆盖」。
 // 下面每一行的两个候选到未知键的距离严格相等。
+// issue #502：(a) 取舍下 `OPTION_WHITELIST` 已与源名单逐字对账（见「A0」），所以下面那句
+// `indexOf` 自证比的是**源名单里的真实平局优先级**，不是副本自己的偏好。
 const TIE_MATRIX = [
   {
     key: "too",
@@ -317,7 +388,7 @@ test("建议平局取白名单顺序在前者（严格 < 比较，非字典序�
     assert.equal(distance <= suggestionThreshold(row.key), true, `${row.key} 的平局候选必须在阈值内`);
     assert.ok(
       OPTION_WHITELIST.indexOf(first) < OPTION_WHITELIST.indexOf(second),
-      `${first} 必须排在 ${second} 之前`,
+      `${first} 必须排在 ${second} 之前（副本与源名单逐字对账，所以这就是源名单里的顺序）`,
     );
     const error = await errorForUnknownKey(row.key);
     assert.equal(
@@ -333,6 +404,8 @@ test("建议平局取白名单顺序在前者（严格 < 比较，非字典序�
 
 
 test("白名单恰为 66 项：每一项都被接受，未知键一律被拒", async () => {
+  // 条数在这里再钉一次（与「A0」重叠）：这一条钉的是**副本自身的自洽**（无重复、不是字典序），
+  // 「副本 ≡ 源名单」在 A0。两处都写 66 是故意的：多一处要同步，就多一次让人看见的停顿。
   assert.equal(OPTION_WHITELIST.length, 66);
   assert.equal(new Set(OPTION_WHITELIST).size, 66);
   // 平局断言依赖这份顺序，先自证它没被顺手排序成字典序。
