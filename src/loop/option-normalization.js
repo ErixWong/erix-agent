@@ -48,6 +48,7 @@ import { assemblyPortOptions } from "../assembly.js";
 import { assertSemanticOptionValues } from "../assembly-validators.js";
 import {
   assertCapabilitiesNamespace,
+  collectCapabilitiesSourceConflicts,
   expandCapabilitiesNamespace,
 } from "./capabilities-namespace.js";
 import {
@@ -291,7 +292,13 @@ export async function normalizeRunToolLoopOptions(options) {
     mergedOptions.config = explicitConfig;
   }
   // 同一个合并规则也适用于第二个容器：调用级 `capabilities` 整棵覆盖 `policy.capabilities`。
-  if (explicitCapabilities !== undefined) mergedOptions.capabilities = explicitCapabilities;
+  // 覆盖同样**不许静默**（与 R4 的 config 那一侧逐条同构）：逐叶冲突走同一条事件。
+  if (explicitCapabilities !== undefined) {
+    configSourceConflicts.push(
+      ...collectCapabilitiesSourceConflicts(assembledOptions.capabilities, explicitCapabilities),
+    );
+    mergedOptions.capabilities = explicitCapabilities;
+  }
   const configExpansion = expandConfigNamespace(mergedOptions, { via });
   // #498 S4a：容器展开按 config → capabilities 的顺序跑（两个容器的叶子集不相交，顺序只为确定性）。
   const { options: effectiveOptions, conflicts: capabilityConflicts } = expandCapabilitiesNamespace(

@@ -259,6 +259,46 @@ test("S2d capabilities 赢扁平键，且冲突不静默：同一条 config_over
   assert.equal(typeof conflicts[0].detail, "string");
 });
 
+test("S2d2 两个 capabilities 源同时在场：调用级整棵覆盖（后写者胜），逐叶冲突恰一条", async () => {
+  const policyCalls = [];
+  const callCalls = [];
+  const events = [];
+  const port = makePort({
+    capabilities: { hooks: { onEvent: (event) => policyCalls.push(event) } },
+  });
+  const result = await runToolLoop({
+    assemblyPort: port,
+    completion: false,
+    wrapup: false,
+    capabilities: {
+      hooks: {
+        onEvent: (event) => {
+          callCalls.push(event);
+          events.push(event);
+        },
+      },
+    },
+  });
+  assert.equal(result.termination.reason, "end_turn");
+  assert.deepEqual(policyCalls, [], "调用级整棵覆盖 ⇒ policy 那个钩子一次都不被调（既有合并规则）");
+  assert.ok(callCalls.length > 0);
+  const conflicts = events.filter((event) => event.type === "config_override_conflict");
+  assert.equal(conflicts.length, 1, "覆盖不许静默：恰一条事件（与 R4 的 config 那一侧同一条出口）");
+  assert.deepEqual(conflicts[0].conflicts, [{ path: "hooks.onEvent", key: "onEvent" }]);
+
+  // 只给一边 / 两边同一个函数 ⇒ 零事件。
+  const sameHook = () => {};
+  const quiet = [];
+  await runToolLoop({
+    assemblyPort: makePort({ capabilities: { hooks: { onEvent: sameHook } } }),
+    completion: false,
+    wrapup: false,
+    capabilities: { hooks: { onEvent: sameHook } },
+    onEvent: (event) => quiet.push(event),
+  });
+  assert.deepEqual(quiet.filter((event) => event.type === "config_override_conflict"), []);
+});
+
 test("S2e 装配口路线：policy.capabilities 同相接受并生效，未知子键 via=assembly", async () => {
   const seen = [];
   const port = makePort({ capabilities: { hooks: { onEvent: (event) => seen.push(event) } } });

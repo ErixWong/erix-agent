@@ -27,7 +27,8 @@ todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
 toolContext, store, persistence, runId, cwd, deliverables, invalidArguments, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
-onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, finalGuardExtend, config
+onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, finalGuardExtend, config,
+capabilities
 ```
 
 `partialPersistence` 默认为 `false`，保持既有的流式零写入行为。设为
@@ -243,6 +244,9 @@ executeTool({ id, name, input, context, signal })
   `conflicts: [{ path, key }]`，其中 `path` 形如 `hooks.<name>`（`{ path: "hooks.onEvent", key: "onEvent" }`）。
   同一条事件、同一套字段、不新增事件类型：载荷说的是「这个旋钮有两个真相来源」，path 说明是哪个容器。
   在这条事件上抛错的观察者与其他观察者通道同口径被隔离。
+  **同一条事件也管第二对来源**：装配口的 `policy.capabilities` 与调用级 `capabilities` 是**同一个
+  容器**的两个来源，调用级那份按**整棵**覆盖（与 `config` 用的是同一条「后写者胜」规则）；两个源里
+  同一个钩子给了**不同的函数**的，逐叶上报、按 path 去重。值相同、或只有一边给了的不算冲突。
 - **未知子键当场抛，并点名完整路径** —— `capabilities: { hoks: … }` 回的是
   `unknown capabilities namespace: "hoks" (accepted: hooks; ports are not collected under
   capabilities yet — pass them as top-level options or through the assembly port)`；

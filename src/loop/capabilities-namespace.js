@@ -186,6 +186,47 @@ export function assertCapabilitiesNamespace(capabilities, route = {}) {
 }
 
 /**
+ * 两个 `capabilities` 源同时在场时的**逐叶冲突**（与 `collectConfigSourceConflicts` 逐条同构）。
+ *
+ * 病根与 `config` 那一侧逐字相同（#497 复审 R4）：装配口 `policy.capabilities` 与调用级
+ * `capabilities` 是同一个容器的两个来源，而合并规则是「后写者胜、整棵覆盖」。语义保留，但覆盖
+ * **不许静默**——两个源里同一个钩子都给了不同的函数 ⇒ 记一条 `{ path, key }`，由调用方经同一条
+ * `config_override_conflict` 发出去。两个容器同等待遇，这一侧就不该比 `config` 更静默。
+ *
+ * 值一律是函数 ⇒ 用**同一性**比较（`===`），不做深度比较。
+ *
+ * @param {unknown} previousCapabilities 被覆盖的那棵树（装配口 `policy.capabilities`）
+ * @param {unknown} nextCapabilities 胜出的那棵树（调用级 `capabilities`）
+ * @returns {Array<{path: string, key: string}>} 逐叶冲突（空 = 没有可报的）
+ */
+export function collectCapabilitiesSourceConflicts(previousCapabilities, nextCapabilities) {
+  const conflicts = [];
+  if (!isCapabilitiesObject(previousCapabilities) || !isCapabilitiesObject(nextCapabilities)) {
+    return conflicts;
+  }
+  const previous = /** @type {Record<string, any>} */ (previousCapabilities);
+  const next = /** @type {Record<string, any>} */ (nextCapabilities);
+  for (const group of CAPABILITIES_NAMESPACE_GROUPS) {
+    const previousBag = previous[group];
+    const nextBag = next[group];
+    if (!isCapabilitiesObject(previousBag) || !isCapabilitiesObject(nextBag)) continue;
+    for (const key of CAPABILITIES_NAMESPACE_SCHEMA[group]) {
+      const previousValue = previousBag[key];
+      const nextValue = nextBag[key];
+      if (previousValue === undefined || nextValue === undefined) continue;
+      if (previousValue === nextValue) continue;
+      conflicts.push({ path: `${group}.${key}`, key });
+    }
+  }
+  return conflicts;
+}
+
+/** `capabilities` 树的一层是否为「普通对象」（`null` / 数组 / 标量都不是）。 */
+function isCapabilitiesObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
  * 展开 `capabilities` 命名空间：把每个钩子写回它的顶层扁平键，并记下**冲突**。
  *
  * 规则与 `expandConfigNamespace`（`config-namespace.js`）逐条同构：

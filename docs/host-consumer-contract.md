@@ -31,7 +31,8 @@ todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
 toolContext, store, persistence, runId, cwd, deliverables, invalidArguments, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
-onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, finalGuardExtend, config
+onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, finalGuardExtend, config,
+capabilities
 ```
 
 `partialPersistence` defaults to `false`, preserving the existing no-write
@@ -304,6 +305,11 @@ Five rules, deliberately symmetric with `config` (two containers, one set of rul
   `path` is `hooks.<name>` (`{ path: "hooks.onEvent", key: "onEvent" }`). Same event, same fields,
   no new event type: the payload says "this knob has two sources of truth" and the path says which
   container. An observer that throws on it is isolated like every other observer channel.
+  **The same event covers the second pair of sources**: the assembly port's `policy.capabilities`
+  and the call-level `capabilities` are two sources of the *same* container, and the call-level one
+  wins as a **whole tree** (the same "last writer wins" rule `config` uses); every hook both sources
+  set to **different** functions is reported leaf by leaf, deduplicated by path. Equal hooks, or a
+  hook only one side sets, are not conflicts.
 - **Unknown sub-keys throw, with the full path** — `capabilities: { hoks: … }` answers
   `unknown capabilities namespace: "hoks" (accepted: hooks; ports are not collected under
   capabilities yet — pass them as top-level options or through the assembly port)`, and
