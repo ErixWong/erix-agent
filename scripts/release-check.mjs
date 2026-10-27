@@ -760,7 +760,15 @@ const result = await runToolLoop({
   assemblyPort,
   provider: { chat: stubChat },
   executeTool: async (toolCall) => "ran:" + String(toolCall.name),
-  maxRounds: 2,
+  // issue #497 复审 R3: the type surface must match the real group names. This host uses three
+  // real groups (run / tuning / metadata); a fake group name (timeouts / reflection / retry, the
+  // three that used to sit in the JSDoc) makes tsc --strict report TS2353 here, so "the published
+  // type surface disagrees with the code" no longer needs someone to read the .d.ts.
+  config: {
+    run: { maxRounds: 2 },
+    tuning: { temperature: 0 },
+    metadata: { requestId: "release-check-host" },
+  },
   reflection: false,
 });
 

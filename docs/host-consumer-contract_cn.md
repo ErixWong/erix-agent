@@ -27,7 +27,7 @@ todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
 toolContext, store, persistence, runId, cwd, deliverables, invalidArguments, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
-onDelta, onReasoningDelta, onToolCall, onUsage, onEvent
+onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, finalGuardExtend, config
 ```
 
 `partialPersistence` 默认为 `false`，保持既有的流式零写入行为。设为
@@ -101,6 +101,101 @@ executeTool({ id, name, input, context, signal })
 0.27.0 里需要知道的行为变化：`context` 下拼错的摘要旋钮名、以及上面任一回调字段里的非函数值，以前在
 细粒度路线上是**静默忽略**（run 直接用默认值跑）。现在两者都启动即抛。把这些回调接出配置树的能力面
 **不在** 0.27.0 里——它在 0.28.0 落地（issue #498），在那之前现有位置照旧工作。
+
+### config 命名空间（issue #497）
+
+一次 run 的配置从此有第二种写法。`config` 是一棵**嵌套命名空间**，它的叶子是顶层扁平键的别名，
+而别名**就是** schema 路径：`config.run.maxRounds` 与扁平的 `maxRounds` 是同一个旋钮，叶子名
+永远逐字等于扁平选项名。这里没有重命名表：唯一手写的部分只有一张 schema
+`CONFIG_NAMESPACE_SCHEMA`（`src/loop/config-namespace.js`），别名表 `CONFIG_ALIAS_PATHS`
+（`src/loop/config-namespace.js`）与配置面名单 `CONFIG_SURFACE_OPTION_NAMES`
+（`src/loop/config-namespace.js`）都从它派生，再由 `configSchemaSelfCheck`
+（`src/loop/config-namespace.js`）对着顶层白名单核账：每个顶层选项必须**恰好**被归入
+*配置面*（52 键）或*能力面*（13 键）之一，而 `config` 自己是那个容器。
+
+| 命名空间 | 旋钮 |
+| --- | --- |
+| `config.prompt` | `system`、`cacheStablePrefix`、`initialUserMessage`、`initialMessages`、`wrapup` |
+| `config.run` | `maxRounds`、`maxTokenContinuations`、`stallDetection`、`completion`、`replayPolicy`、`invalidArguments`、`partialPersistence`、`persistence`、`outputHygiene`、`writeToolNames`、`writeToolPathKeys`、`resume`、`stream`、`reflection`、`runId`、`cwd` |
+| `config.tuning` | `maxTokens`、`temperature`、`topP`、`cacheCapable` |
+| `config.timing` | `timeoutMs`、`deadlineMs`、`retry` |
+| `config.folding` | `context`、`toolResultTtl`、`toolResultFoldMinTokens` |
+| `config.guard` | `finalGuard`、`finalGuardMaxRetries`、`finalGuardTimeoutMs`、`finalGuardExtend`、`deliverables` |
+| `config.metadata` | `expert`、`user`、`task`、`requestId`、`toolContext`、`model`、`modelMetadata`、`session` |
+| `config.observers` | `onRound`、`onJudge`、`onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary` |
+
+它由五条规则管着：
+
+- **优先级** —— 同一个旋钮两种写法都给时，`config.*` 赢。扁平键继续被接受，且只要它是唯一写法，
+  行为与今天逐字相同。叶子设成 `undefined` 逐字等于「没给」（与扁平合并用的是同一条规则），
+  所以它既不覆盖扁平值、也不算冲突。
+- **冲突不静默** —— 两种写法都给了**不同的值**时，引擎在第一轮之前发一条
+  `config_override_conflict` 事件：`{ type: "config_override_conflict", runId?, conflicts: [{ path, key }], detail }`。
+  载荷只带路径与键名（值可能是函数或大对象）。这条事件上的观察者抛错与其他观察者通道同口径被隔离——
+  经 `onObserverError` 记账，run 继续跑。
+  **同一条事件也管第二对来源**（issue #497 复审 R4）：装配口的 `policy.config` 与调用级 `config`
+  是**同一棵树**的两种来源，而调用级那份按**整棵**覆盖（既有「后写者胜」的合并规则，一字未改）。
+  这次覆盖逐叶上报，用的就是同一条事件、同一套字段：两个源里**同一个叶子都给了不同的值**时，
+  该叶子在 `conflicts` 里出现一次（`{ path, key }`，按 path 去重，顺序 = 分组顺序 + 组内声明顺序）。
+  值相同、或只有一边给了值的叶子都不算冲突——同时注意整棵覆盖的另一面：只写在**被覆盖的那棵树**
+  里的叶子会被**丢掉**（回到默认值），别把两个源当逐叶合并用。修之前实测：policy 写
+  `run.maxRounds: 4`、调用级写 `1` ⇒ 只跑 **1** 轮、**零**事件。
+- **结构等价** —— 同一份配置写成扁平与写成 `config`，规范化后的 `effectiveOptions` 逐键相同。
+  展开发生在**合并后**的表示上（装配口已折进来之后、语义相之前），所以 `config` 里的值走的是与
+  扁平孪生完全相同的那套校验：`config.folding.context` 里拼错的摘要旋钮名抛的是与扁平 `context`
+  同一句，`config.guard.finalGuard` 必须是函数的原因与 `finalGuard` 必须是函数完全一样。
+- **能力键一律拒绝** —— `CAPABILITY_OPTION_NAMES`（`src/loop/config-namespace.js`）里的 13 项能力
+  选项不是配置：`provider`、`tools`、`executeTool`、`store`、`modelConfig`、`assemblyPort`、
+  `signal`、`todoStateProvider`、`semanticStateProvider`、`onEvent`、
+  `onObserverError`、`onPersistenceError`、`diagnostics`。把它们写进 `config`（顶层或组内）⇒
+  启动即抛并点名该键，错误带着与其他闸口相同的 `via` 标签（`"direct"` / `"assembly"`）。
+  **这条收窄只作用于新命名空间**：既有优先级规则——显式细粒度选项覆盖装配口提供的同名成员
+  （`resolveAssemblyMember`（`src/assembly.js`），例如显式 `provider` 仍能盖端口 provider）——
+  一字未动，`test/contract/assembly-port.js` 照旧断言它（「显式细粒度 provider 覆盖端口 provider」）。
+
+  **这条线画在哪里（issue #497 复审 R1，判据是行为面）：** 能力面 = 宿主递进来的**行为载体**——
+  引擎**调用或解引用**的函数与端口对象（端口方法被调、信号被监听、回调被投递）。配置面 = 引擎
+  **按已知字段校值并解释**的数据——枚举字面量、数字、布尔、字符串标量、结构已知的对象。所以有
+  四个键从能力面移到了配置面（写进 `config` 会被接受并真的生效）：`persistence`
+  （`config.run.persistence`；`"none"` / `"required"` 字面量被校验并决定持久化路径——`"required"`
+  会打开 transcript store 的方法校验）、`model` / `modelMetadata`（`config.metadata.*`；
+  `contextWindowTokens` / `maxOutputTokens` 两个数字被 `modelMetadataFor`（`src/loop/budget.js`）
+  读去推压缩预算与「15% 窗口」的输出上限）、`session`（`config.metadata.session`；`id` 被校验、
+  `modelSlot` 被交给 `modelConfig.resolve`、`resume` / `initialMessages` 被读）。旧判据
+  「能力面 = 引擎不解释其值」对这四个键**实测为假**。
+  
+  `tools` 是**目前唯一不满足这条判据**的键，而 0.27.0 故意把它留在能力面：引擎从不**调用**工具声明的
+  成员——它校 `replay`（枚举字面量）、读 `name` / `inputSchema`，然后把这个对象原样送进请求体，按上面的
+  判据 `tools` 是数据。它是「输入载荷族」里**最后一个还留在能力面**的成员——`initialUserMessage` 已在 `config.prompt` 下——
+  这一族剩下的归属由 issue #498 **整族一起裁**；提前单移等于把同一个决定裁两次、还跨两个版本。可观察后果如实写出：0.27.0
+  里写 `config.tools` 会启动即抛同样的「能力面/注入面选项」错，所以**本版本的能力面并不是纯粹的「只有函数
+  与端口对象」**；这条拒绝正是 #498 要翻转的东西，届时实测，不在现在声称。
+  
+  这条判据描述的是 **0.28 目标面，不是 0.27.0 现状**。`config.observers` 在 0.27.0 装着 8 个 `on*` 函数——
+  过渡位置（回调出树要等 0.28.0，issue #498）——所以 0.27.0 的 `config` 子树**不是** JSON round-trip 安全，
+  上面那条 round-trip 性质不能被读成本版本的性质。
+
+
+  **`runId` / `cwd` 也是配置**（issue #497 复审第二轮——上一轮给判据加的那条「身份/环境注入」腿
+  **取消**），所以它们是 `config.run.runId` / `config.run.cwd`；顶层扁平键一字未动（这是新增别名，
+  不是迁移）。两条理由：
+  1. 判据的价值在于**机械可检验**：能力面 = 被调用/被解引用的行为载体，配置面 = 被校值并解释的
+     数据。为两个键单开一条例外，判据就退化成「先分好类、再补理由」——谁来分类都能自证。
+  2. 更强的正向理由：0.28 的可检验目标是「`config` 子树必须过 JSON round-trip 等值」。`runId` /
+     `cwd` 是**字符串标量、天然 JSON 安全**，而能力面应当只剩函数/端口对象。把它们留在能力面，
+     那条 0.28 判据就得反过来开例外——一条要豁免两个字符串键的 round-trip 规则已经不算规则。
+- **形状与名称** —— `config` 本身必须是对象（`null`、数组、字符串都抛）；未知分组、未知叶子、
+  把扁平键写在 `config` 顶层（`config.maxRounds` 会被回一句「写 `config.run.maxRounds`」）、
+  以及把叶子写错组（`config.run.temperature` 会指向 `config.tuning.temperature`）都在
+  **任何宿主端口被读取之前**抛，并把该层接受的名字按 schema 枚举出来。
+
+`config` 从不进引擎：展开会把它删掉，所以 `effectiveOptions`——以及 `normalizeRunToolLoopOptions`
+（`src/loop/option-normalization.js`）返回的 `explicitOptions`——里只剩扁平键。装配口的 `policy`
+同样接受 `config`，于是两条入口路线共用这一次展开（`via` 标签负责说明是哪条路线抛的）。
+
+过渡口径：新宿主只用 `config`。顶层扁平键是**原语 / 过渡面**——继续接受、继续校验、继续有文档——
+但行进方向是一面。删除窗口属 #495 的发布阶梯，**计划在 0.28**（是计划，不是本版给出的承诺）；
+0.27.0 一个扁平键都不删。
 
 ### 工具引数解析不了的时候（issue #409）
 
@@ -3335,14 +3430,30 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
 ## 契约测试套件（issue #183）
 
 `erix-agent/contract-tests`（即 `./contract-tests` 子路径导出，`test/contract/index.js`）
-随包发布九个套件文件、共**十一个**可复用的 `node:test` 注册函数（`execute-tool.js` 里有两个：
+随包发布十个套件文件、共**十二个**可复用的 `node:test` 注册函数（`execute-tool.js` 里有两个：
 现行形状与迁移形状；`notes-store.js` 自 issue #183 起也有两个：通用套件与可选的 CAS
 子套件）。每一个的签名都是 `xxxContract(label, factory)`：调用它即注册一批以
 `label` 命名的断言，在 `node --test` 跑起来之前什么都不会执行。`npm run check:docs:strict`
 会对「被 `test/contract/index.js` 再导出、但 `files` 白名单漏掉」的套件直接失败（在普通的
-`npm run check:docs` 下它是 warn），因此随包集合不可能无声变小。十一个里最新的是
-`skillsLoaderContract`（issue #197），其次是 `fileToolsContract`（issue #184）：
-装在已发布的 0.18.0 上的宿主只有九个，不是十一个。
+`npm run check:docs` 下它是 warn），因此随包集合不可能无声变小。十二个里最新的是
+`toolResultEnvelopeContract`（issue #284 / #285），其次是 `skillsLoaderContract`（issue #197），
+再是 `fileToolsContract`（issue #184）：装在已发布的 0.18.0 上的宿主只有九个套件文件、
+十一个注册函数，不是十个文件、十二个函数。
+
+**两个数各自数的是什么（实测）**：套件文件 = `test/contract/` 下除 `test/contract/index.js`
+之外的 `.js` 文件，共十个（`test/contract/transcript-store.js`、
+`test/contract/model-config-provider.js`、`test/contract/execute-tool.js`、
+`test/contract/assembly-port.js`、`test/contract/notes-store.js`、
+`test/contract/engine-api.js`、`test/contract/termination-payload.js`、
+`test/contract/file-tools.js`、`test/contract/skills-loader.js`、
+`test/contract/tool-result-envelope.js`）；注册函数 = `test/contract/index.js` 再导出的导出名，
+共十二个（`import("erix-agent/contract-tests")` 实测 `Object.keys(...)` 长度 = 12）。两个数都
+不含 `test/contract/index.js` 本身，也不含同目录里不进包的 `*.test.js`。
+
+**随包的是那些文件本身、一条一条列出来的**：`package.json` 的 `files` 逐条枚举
+`test/contract/*.js`，**不收目录**——所以同一目录下的 `node --test` 套件被刻意留在包外
+（`test/contract/boundary-parity.test.js` 就 import 了 `test/helpers/`，永远进不了 tarball）。
+实测：`npm pack --dry-run --json` 里 `.test.js` 文件数 = **0**，而上面那些套件文件全部按名字逐个在列。
 
 ### 套件能证明什么、不能证明什么（issue #183）
 

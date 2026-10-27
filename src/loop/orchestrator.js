@@ -294,7 +294,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
 
 /**
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"run_outcome"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"run_outcome"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -312,6 +312,10 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  * @property {"accept"|"skip"|"revise"|"degraded"|"error"} [action]
  * @property {string} [reason]
  * @property {number} [count] issue #424（additive）：被跳过/涉及的消息条数（`resume_journal_skipped` 用它报 A 集合大小）
+ * @property {Array<{path: string, key: string}>} [conflicts] issue #497（S2，additive）：`config_override_conflict`
+ *   的载荷——冲突叶子的 schema 路径（`"run.maxRounds"`）与顶层键名，**只带路径与键名**（值可能是
+ *   函数/大对象，不进事件）。两个来源都算：`config.*` vs 同名扁平键、调用级 `config` vs 装配口
+ *   `policy.config`（复审 R4）。按 path 去重，顺序 = schema 分组顺序 + 组内顺序。
  */
 
 /**
@@ -382,6 +386,34 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   finalGuardTimeoutMs?: number, // Defaults to 30000; non-positive values use the default.
  *   finalGuardExtend?: boolean, // issue #386 slice 3: let a `revise` on a budget-type stop (max_rounds_cap / continuation_exhausted) borrow the mid-run extension mechanism **once per run**. Defaults to false = today's behaviour byte for byte; `stall` is never extended.
  *   maxTokenContinuations?: number,
+ *   config?: { // issue #497（S2）：嵌套配置命名空间，八组见下（叶子名逐字等于同名顶层选项，类型也一致）。
+ *     prompt?: {system?: string, cacheStablePrefix?: boolean, initialUserMessage?: string, initialMessages?: object[], wrapup?: boolean},
+ *     run?: {maxRounds?: number, maxTokenContinuations?: number,
+ *       stallDetection?: {window?: number, mode?: "appear"|"consecutive"}|false,
+ *       completion?: {signals?: string[], maxNoToolRounds?: number}|false,
+ *       replayPolicy?: "always-replay"|"per-tool-declaration", invalidArguments?: "reject"|"execute",
+ *       partialPersistence?: false|{intervalMs: number, minBytes?: number}, persistence?: "none"|"required",
+ *       outputHygiene?: false|{limit?: number}, writeToolNames?: string[], writeToolPathKeys?: string[],
+ *       resume?: boolean, stream?: boolean, reflection?: object|false,
+ *       runId?: string, cwd?: string},
+ *     tuning?: {maxTokens?: number, temperature?: number, topP?: number, cacheCapable?: boolean},
+ *     timing?: {timeoutMs?: number, deadlineMs?: number,
+ *       retry?: {attempts?: number, backoffBaseMs?: number, backoffMaxMs?: number,
+ *         sleepImpl?: (ms: number) => Promise<void>}|false},
+ *     folding?: {context?: {strategy?: object|"sliding-window"|"fold-statistical"|"fold-llm", budgetTokens?: number,
+ *       keepRounds?: number, toolContext?: object, task?: string},
+ *       toolResultTtl?: number, toolResultFoldMinTokens?: number},
+ *     guard?: {finalGuard?: (payload: object) => Promise<{action: "accept"}|{action: "skip", reason: string}|{action: "revise", message: string}>,
+ *       finalGuardMaxRetries?: number, finalGuardTimeoutMs?: number, finalGuardExtend?: boolean, deliverables?: object[]},
+ *     metadata?: {expert?: any, user?: any, task?: any, requestId?: string, toolContext?: object,
+ *       model?: {contextWindowTokens?: number, maxOutputTokens?: number},
+ *       modelMetadata?: {contextWindowTokens?: number, maxOutputTokens?: number}, session?: any},
+ *     observers?: {onRound?: (record: object) => void, onJudge?: (info: JudgeEvent) => void,
+ *       onToolResult?: (name: string, result: string, metadata?: object) => any,
+ *       onDelta?: (chunk: string) => void, onReasoningDelta?: (chunk: string) => void,
+ *       onToolCall?: (fragment: object) => void, onUsage?: (usage: object) => void,
+ *       onFoldSummary?: (payload: object) => void|Promise<void>},
+ *   },
  *   context?: {strategy?: object|"sliding-window"|"fold-statistical"|"fold-llm", budgetTokens?:number, keepRounds?:number, toolContext?:object, task?:string}, // strategy accepts a strategy object or a built-in name (#167); task is the judge/reflection/wrapup brief fallback after explicit task; see task param.
  *   todoStateProvider?:(payload:{runId?:string,rounds:number})=>object|Promise<object>,
  *   semanticStateProvider?:(payload:{runId?:string,state:object,previous?:object})=>{text:string,version:number}|Promise<{text:string,version:number}>,
@@ -456,6 +488,21 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  * `store`:
  *   Deprecated aliases still honoured at runtime: saveCheckpoint/appendCheckpoint/loadLatestCheckpoint.
  *
+ * `config`:
+ *   issue #497（S2）：`config` 是一棵**嵌套命名空间**，叶子是既有顶层扁平键的别名（别名 = schema
+ *   路径，叶子名逐字等于顶层键名，没有重命名表）。八个分组**就是**这八个：
+ *   `prompt` / `run` / `tuning` / `timing` / `folding` / `guard` / `metadata` / `observers`
+ *   （schema 见 `CONFIG_NAMESPACE_SCHEMA`（`src/loop/config-namespace.js`）；写错组名启动即抛）。
+ *   同名时 `config.*` 赢，扁平键继续接受；两种写法给了**不同的值**时发一条
+ *   `config_override_conflict`（`conflicts: [{ path, key }]`，只带路径与键名）。装配口的
+ *   `policy.config` 与调用级 `config` 同时在场时取值仍是「后写者胜、整棵覆盖」，但逐叶冲突走
+ *   同一条事件（复审 R4）——只写在被覆盖那棵树里的叶子会被丢掉，别把它当逐叶合并用。
+ *   能力面（`provider` / `tools` / `executeTool` / `store` / `modelConfig` / `assemblyPort` /
+ *   `signal` / 状态源 / 回调出口 …）写进 `config` 一律启动即抛并点名该键。`runId` / `cwd` 是
+ *   配置面（`config.run.runId` / `config.run.cwd`）：它们是字符串标量，而 0.28 要检的
+ *   「`config` 子树过 JSON round-trip 等值」要求能力面只剩函数/端口对象（见
+ *   `src/loop/config-namespace.js` 文件头约束 3）。
+ *
  * `onToolResult`:
  *   改写钩子（非纯观察者）：返回值会替换工具结果。抛错/rejected Promise 被隔离，
  *   fallback 是【保留引擎原始执行结果】后继续跑——改写/脱敏逻辑必须在本 hook 内自防（issue #173 PR-B）
@@ -510,7 +557,7 @@ export async function runToolLoop(options) {
   // 选项规范化（形状/未知键白名单 + 未知键建议 + assemblyPort 合并）已外提到
   // src/loop/option-normalization.js（issue #177 刀1）；检查次序不变：
   // 形状检查 → 未知键检查 → assemblyPortOptions → 显式值合并（`!== undefined` 才覆盖）。
-  const { assemblyPort, explicitOptions, effectiveOptions } = await normalizeRunToolLoopOptions(options);
+  const { assemblyPort, explicitOptions, effectiveOptions, configConflicts } = await normalizeRunToolLoopOptions(options);
 
   const {
     provider,
@@ -1021,6 +1068,32 @@ export async function runToolLoop(options) {
       });
     }
   };
+  // issue #497（S2）：`config` 与同名扁平键同时给了**不同的值**时 config 赢，且必须让宿主看见
+  // （范围 2：冲突不许静默）。复审 R4：装配口 `policy.config` 与调用级 `config` 两个源同时在场时
+  // 也一样——取值仍是「后写者胜、整棵覆盖」，但逐叶冲突走**同一条事件、同一套字段**
+  // （`conflicts: [{ path, key }]`），否则同一棵树的两种来源会比「扁平 vs config」更静默。
+  // 与上面两条启动期诊断同口径：直调 `onEvent`（`emitEvent` 定义在
+  // 下方，引用会踩 TDZ），本地复刻隔离防护。与它们不同的是本事件**只可能在启动期发生一次**，
+  // 所以不需要去重标记。载荷只带路径与键名（值可能是函数/大对象，不进事件）。
+  const notifyConfigOverrideConflicts = () => {
+    if (configConflicts.length === 0) return;
+    try {
+      onEvent?.({
+        type: "config_override_conflict",
+        runId,
+        conflicts: configConflicts,
+        detail: "config.* wins over the same-named flat option (the flat key is still accepted),"
+          + " and a call-level config overrides the assembly port's policy.config as a whole tree;"
+          + " every leaf that both sources set to different values is listed in conflicts",
+      });
+    } catch (hostError) {
+      reportObserverError(hostError, {
+        channel: "onEvent",
+        type: "config_override_conflict",
+      });
+    }
+  };
+  notifyConfigOverrideConflicts();
   // issue #182：预算元数据缺失时本 run 的压缩总开关不进入（budgetTokens 未定义 → overBudget 恒
   // false）、单轮聚合输出预算（#120）整体关闭、输出截断上限退回 4096，而此前全链路零告警
   // （真机 92 轮 run compaction=0）。一次性诊断事件让宿主能在验收/CI 里直接断言「我的装配是否

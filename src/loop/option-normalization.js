@@ -7,12 +7,23 @@
 //   3. 未知键的「did you mean」建议（编辑距离 + 阈值 `Math.max(2, ⌊len/3⌋)`）；
 //   4. 把 `assemblyPortOptions(assemblyPort)` 的结果与显式选项合并成 `effectiveOptions`；
 //   5. issue #496（S1）：合并之后的**语义相**校验（`assertSemanticOptionValues`，规则与文案
-//      的唯一来源在 `src/assembly-validators.js`，装配口调的是同一个函数）。
+//      的唯一来源在 `src/assembly-validators.js`，装配口调的是同一个函数）；
+//   6. issue #497（S2）：`config` 嵌套命名空间的展开（`expandConfigNamespace`，schema 与
+//      别名表都在 `src/loop/config-namespace.js`）——它把 `config.<group>.<leaf>` 写回顶层
+//      扁平键、让 config 赢过同名扁平键，并把冲突交给调用方发事件。
+//      复审 R4: the two config sources (`policy.config` vs the call-level `config`) keep the
+//      "last writer wins" merge, but their per-leaf conflicts go out through the same channel
+//      (`collectConfigSourceConflicts` in `src/loop/config-namespace.js`).
 //
 // 顺序即语义，且被 test/loop-option-normalization.test.js 逐条钉住，所以本模块严格按
-//   形状检查 → 未知键检查 → assemblyPortOptions → 显式值合并 → 语义相校验
+//   形状检查 → 未知键检查 → config 名称/形状预检 → assemblyPortOptions → 显式值合并
+//   → config 展开 → 语义相校验
 // 的次序执行；调用方（orchestrator）在此之后才做「解构默认值 → 能力缺失检查 →
 // modelConfig.resolve」，能力缺失检查早于 resolve 的那条次序不受本模块影响。
+//
+// config 名称/形状预检刻意**早于** `assemblyPortOptions`：那是「读宿主端口之前」的相位
+// （与顶层名称检查同相），配置写错不该等到端口被解析完才说。展开本身必须在合并**之后**——
+// 冲突与优先级都是「同一个键两种写法」的性质，只有合并后的表示才看得见两边。
 //
 // issue #496 的「两相」在这里是分开的两步，刻意**不**把全部校验推到合并之后：
 // 预检相（形状 + 顶层名称）必须在任何宿主端口被读取之前抛（`test/loop-option-normalization.test.js`
@@ -31,13 +42,18 @@
 
 import { assemblyPortOptions } from "../assembly.js";
 import { assertSemanticOptionValues } from "../assembly-validators.js";
+import {
+  assertConfigNamespace,
+  collectConfigSourceConflicts,
+  expandConfigNamespace,
+} from "./config-namespace.js";
 
 /**
  * `runToolLoop` 接受的选项名白名单。
  *
  * ⚠ 这份名单的**顺序**同时是未知键建议的平局优先级（`optionSuggestion` 用严格 `<`），
  * 所以它不是集合语义、不许排序、不许增删项而不同时确认建议行为。
- * 计数与顺序都由 `test/loop-option-normalization.test.js` 钉住（64 项）。
+ * 计数与顺序都由 `test/loop-option-normalization.test.js` 钉住（66 项）。
  *
  * @type {string[]}
  */
@@ -121,6 +137,10 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // issue #470-D：`onFoldSummary` 是折叠替代物（`record.foldedFacts`）的**强制投递出口**。
   // 纯加法（默认未传 = 今天的行为）。同样追加在末尾：旧未知键的「did you mean」建议逐字不变。
   "onFoldSummary",
+  // issue #497（S2）：`config` 是嵌套命名空间（别名 = schema 路径，见 `src/loop/config-namespace.js`）。
+  // 它**不进** `effectiveOptions`——展开后就地消失，下游看到的仍是扁平表示。同样追加在末尾：
+  // 旧未知键的「did you mean」建议逐字不变（新名字只会影响离 `config` 更近的未知键）。
+  "config",
 ];
 
 /** 白名单的查询视图（与 `RUN_TOOL_LOOP_OPTION_NAMES` 同源，勿另行维护）。 */
@@ -209,13 +229,24 @@ export function assertRunToolLoopOptionNames(options) {
  *   assemblyPort: import("../assembly.js").AssemblyPort | undefined,
  *   explicitOptions: Record<string, any>,
  *   effectiveOptions: Record<string, any>,
- * }>} `effectiveOptions` 是 assembled 值与显式值的合并结果，由调用方继续做
- *   解构默认值与后续校验。
+ *   configConflicts: Array<{path: string, key: string}>,
+ * }>} `effectiveOptions` 是 assembled 值与显式值的合并结果（`config` 已展开、已消失），
+ *   由调用方继续做解构默认值与后续校验；`configConflicts` 是冲突清单（issue #497）：既含
+ *   「同一个键既写了扁平又写了 `config.<path>`，且值不同」，也含「`policy.config` 与调用级
+ *   `config` 里同一个叶子值不同」（复审 R4）；按 path 去重、只带路径与键名——调用方负责发
+ *   事件，本模块不发事件。
  */
 export async function normalizeRunToolLoopOptions(options) {
   assertRunToolLoopOptionNames(options);
 
-  const { assemblyPort, ...explicitOptions } = options;
+  const { assemblyPort, config: explicitConfig, ...explicitOptions } = options;
+  // 路线标签取**入口形状**（宿主调的是哪条 API），不是「这个值来自哪一层」：
+  // 显式选项与端口 policy 都会汇进同一份 `effectiveOptions`，按来源拆标签只会让宿主
+  // 在同一个 run 里看到两种标签。
+  const via = assemblyPort === undefined ? "direct" : "assembly";
+  // issue #497：`config` 的名称/形状预检在**读任何宿主端口之前**抛（与顶层名称检查同相）。
+  // 展开则必须在合并之后（见文件头）：优先级与冲突都是「同一个键两种写法」的性质。
+  assertConfigNamespace(explicitConfig, { via });
   const assembledOptions = assemblyPort === undefined
     ? {}
     : await assemblyPortOptions(
@@ -224,20 +255,35 @@ export async function normalizeRunToolLoopOptions(options) {
         ? {}
         : { modelConfig: explicitOptions.modelConfig },
     );
-  const effectiveOptions = { ...assembledOptions };
+  const mergedOptions = { ...assembledOptions };
   for (const [key, value] of Object.entries(explicitOptions)) {
-    if (value !== undefined) effectiveOptions[key] = value;
+    if (value !== undefined) mergedOptions[key] = value;
   }
-  // 路线标签取**入口形状**（宿主调的是哪条 API），不是「这个值来自哪一层」：
-  // 显式选项与端口 policy 都会汇进同一份 `effectiveOptions`，按来源拆标签只会让宿主
-  // 在同一个 run 里看到两种标签。
+  // The assembly port's `policy.config` and the call-level `config` are the same tree: the
+  // explicit value overrides the policy one wholesale (the pre-existing merge rule), no new rule.
+  // R4: the value semantics stay; the override is reported leaf by leaf (same event, same fields).
+  const policyConfig = assembledOptions.config;
+  const configSourceConflicts = [];
+  if (explicitConfig !== undefined) {
+    configSourceConflicts.push(...collectConfigSourceConflicts(policyConfig, explicitConfig));
+    mergedOptions.config = explicitConfig;
+  }
+  const { options: effectiveOptions, conflicts: expansionConflicts } = expandConfigNamespace(
+    mergedOptions,
+    { via },
+  );
+  // One leaf can be hit by both rules (flat vs config, policy vs call): the payload is only
+  // `{ path, key }`, so duplicates carry no information — dedupe by path, keep first-seen order.
+  const configConflicts = [];
+  for (const conflict of [...configSourceConflicts, ...expansionConflicts]) {
+    if (configConflicts.some((seen) => seen.path === conflict.path)) continue;
+    configConflicts.push(conflict);
+  }
   // ⚠ 这一行必须校**合并后**的表示。今天改校 `explicitOptions` 是可观察等价的，前提有两条：
   //   ① `assemblyPortOptions` 第一行无条件重跑 `createAssemblyPort`，policy 的坏值到不了这里；
   //   ② `assembledOptions` 的派生键（provider / tools / session / modelConfig / onEvent …）都不在语义相规则集内。
   // 任一前提变了（新增一条未经闸口的选项来源、或给派生键加进规则集里的字段），这条性质会**静默失效**——测试不红。
-  assertSemanticOptionValues(effectiveOptions, {
-    via: assemblyPort === undefined ? "direct" : "assembly",
-  });
+  assertSemanticOptionValues(effectiveOptions, { via });
 
-  return { assemblyPort, explicitOptions, effectiveOptions };
+  return { assemblyPort, explicitOptions, effectiveOptions, configConflicts };
 }

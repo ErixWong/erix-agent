@@ -171,6 +171,7 @@ src/
   loop/                            # orchestration core
     orchestrator.js                runToolLoop main loop
     option-normalization.js        runToolLoop option whitelist, unknown-key suggestion, merge
+    config-namespace.js            `config` namespace schema: alias = schema path, capability keys rejected
     provider-runner.js             Provider call, retry, and snapshot rollback
     run-snapshot-executor.js       Pre/post tool checkpoints and aggregate gate
     budget.js                      Budget validation and state cloning helpers

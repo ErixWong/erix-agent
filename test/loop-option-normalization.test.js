@@ -163,7 +163,7 @@ function editDistance(left, right) {
 
 const suggestionThreshold = (unknownName) => Math.max(2, Math.floor(unknownName.length / 3));
 
-// 白名单 = `RUN_TOOL_LOOP_OPTION_NAMES`（**64 项**，顺序即平局优先级）。这里内联复制而不是
+// 白名单 = `RUN_TOOL_LOOP_OPTION_NAMES`（**66 项**，顺序即平局优先级）。这里内联复制而不是
 // import：表征测试要能在刀1 之后继续钉住同一份名单——名单被改动时本用例应**主动变红**，
 // 逼着改动者确认「建议行为」是否随之变化。
 const OPTION_WHITELIST = [
@@ -236,6 +236,11 @@ const OPTION_WHITELIST = [
   "finalGuardExtend",
   // issue #409 需求②：引数解析失败时的裁决（默认 `"reject"`）。同样追加在末尾。
   "invalidArguments",
+  // issue #470-D：折叠替代物的强制投递出口。**这一项此前漏在这份内联副本里**（源名单 65 项、
+  // 副本 64 项，两边都「自洽」所以没人红）——issue #497 顺手补齐，副本从此与源名单逐项相等。
+  "onFoldSummary",
+  // issue #497（S2）：嵌套配置命名空间（别名 = schema 路径）。同样追加在末尾。
+  "config",
 ];
 
 // ================================================================ A. 未知选项建议
@@ -327,9 +332,9 @@ test("建议平局取白名单顺序在前者（严格 < 比较，非字典序�
 });
 
 
-test("白名单恰为 64 项：每一项都被接受，未知键一律被拒", async () => {
-  assert.equal(OPTION_WHITELIST.length, 64);
-  assert.equal(new Set(OPTION_WHITELIST).size, 64);
+test("白名单恰为 66 项：每一项都被接受，未知键一律被拒", async () => {
+  assert.equal(OPTION_WHITELIST.length, 66);
+  assert.equal(new Set(OPTION_WHITELIST).size, 66);
   // 平局断言依赖这份顺序，先自证它没被顺手排序成字典序。
   assert.notEqual(
     JSON.stringify(OPTION_WHITELIST),

@@ -1,4 +1,5 @@
 
+import { assertConfigNamespace } from "./loop/config-namespace.js";
 import {
   MODEL_CONFIG_RESOLVER_HINT,
   assertSemanticOptionValues,
@@ -51,6 +52,11 @@ const ASSEMBLY_POLICY_OPTION_NAMES = new Set([
   // issue #470-D：折叠替代物 `record.foldedFacts` 的强制投递出口（形状校验见
   // `validateFoldSummaryHook`：给了就必须是函数，给错名字/给错形状都不静默宽容）。
   "onFoldSummary",
+  // issue #497（S2）：嵌套命名空间。**装配口也接受**，否则同一份配置换个入口就变成
+  // `unknown assembly policy option`，又回到「校验绑在入口路线上」的老病（#496 的病根）。
+  // 它的展开与校验都在 `normalizeRunToolLoopOptions`（合并之后、语义相之前）做：装配口这里
+  // 只保证名字被放行，于是 `policy.config` 与直连 `config` 走的是**同一棵树、同一套规则**。
+  "config",
   "diagnostics",
   "onObserverError",
   "signal",
@@ -175,6 +181,11 @@ export function createAssemblyPort(input = {}) {
   // `effectiveOptions` 之后）调的是同一个函数。以前这里是「装配口有闭集、直连侧零校验」，
   // 同一份配置走两条路线结论相反（`context.summarizeBudgetMs` 装配口抛、直连静默 `end_turn`）。
   // 路线只贴标签：装配口 `via:"assembly"`，直连 `via:"direct"`。
+  // issue #497（S2）：`policy.config` 的**名称/形状**在构造期就校（与上面那条 policy 白名单同相）——
+  // 能力键写进 config、未知分组/叶子、把扁平键写在 config 顶层，都在这里抛，`via:"assembly"`。
+  // **取值**不在这里校：展开发生在 `normalizeRunToolLoopOptions`（合并之后、语义相之前），
+  // 展开后的扁平键由同一道语义相覆盖（`config.folding.context` 的旋钮拼错照样抛）。
+  assertConfigNamespace(port.policy?.config, { via: "assembly" });
   assertSemanticOptionValues(port.policy ?? {}, { via: "assembly" });
   // issue #493：非「旋钮家族」的未知 `context` 子键**不抛**——契约允许宿主把私有元数据放这里
   // （`budget.js` 自己也读 `toolContext` / `expert` / `user` / `session` / `requestId`）。

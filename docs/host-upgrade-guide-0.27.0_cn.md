@@ -19,6 +19,7 @@ store 方法签名变动、没有导出或依赖搬迁，运行时依赖仍然�
 | 续写基底跨 resume 播种，复用键把它算进去（§5） | 需要，**每份既有账本预期会重算一次** |
 | `compaction.foldSummary` 上的降级事实，含 `degradeKind` 与 `finishReason`（§6） | 不需要——纯加法，无事实不写键 |
 | 单轮就超过输入上限时没有整轮可丢（§7） | 不需要，但钉 `droppedRounds` 之前先读这段 |
+| 同一批旋钮的嵌套 `config` 命名空间（§10） | 不需要——扁平键照旧工作；两种写法都给时 `config.*` 赢 |
 
 ### 本次发版动到的面（宿主可见）
 
@@ -28,6 +29,7 @@ store 方法签名变动、没有导出或依赖搬迁，运行时依赖仍然�
 - `src/assembly-validators.js` / `src/assembly.js` —— `context` 白名单（五个引擎自读键 + 全部旋钮）、按编辑距离判旋钮家族、`contextOptionNameSelfCheck()`。
 - `src/loop/budget.js` —— `context.toolContext` / `expert` / `user` / `session` / `requestId`：一直在被读，此前却没进白名单。
 - `src/tools/file-tools.js` —— `readFile` 描述里的中位档按新口径复测（字节中性；测试容差常量一个没动）。
+- `src/loop/config-namespace.js` —— `config` 命名空间的 schema、从它派生的别名表，以及能力面的拒绝名单（`runId` / `cwd` 是配置面不是能力面：字符串标量、JSON 安全）。
 
 ## 2. 五个摘要旋钮，以及一根终于真的生效的上限
 
@@ -175,3 +177,34 @@ node -e 'import("erix-agent").then(m=>console.log(Object.keys(m).length))'   # �
    且这个 run 照常正常收尾。
 4. **升级那一次 miss 只有一次**：在一个既有会话上连折两次，断言第一次重算了（`priorSummaryOrigin` 在），第二次没有
    再烧同一份基底。
+
+## 10. 一次 run 的配置只有一面：`config`
+
+0.27.0 给配置键加了第二种写法，而且是嵌套的。`config.run.maxRounds` 与扁平的 `maxRounds` 是同一个
+旋钮：叶子名永远逐字等于扁平选项名，别名**就是** schema 路径——没有要记的东西，也没有会漂的第二张映射表。
+八个分组是 `prompt` / `run` / `tuning` / `timing` / `folding` / `guard` / `metadata` / `observers`，
+契约里「config 命名空间（issue #497）」那一节把每个旋钮逐个列出。
+
+你需要动手的：**没有**。今天在传的扁平键继续被接受，行为与以前逐字相同。若你打算采用它，有两点要知道：
+
+1. **优先级** —— 同一个旋钮两种写法都给时 `config.*` 赢，且引擎在第一轮之前发一条
+   `config_override_conflict` 事件：`{ type, runId?, conflicts: [{ path, key }], detail }`。
+   没有静默——看到这条事件，说明那一次 run 里有一个旋钮有两个真相来源。**同一条事件也管装配口的
+   `policy.config` 与调用级 `config`**：调用级那棵树按整棵覆盖（既有「后写者胜」的合并规则，一字未改），
+   两个源里同一个叶子给了不同值的，逐叶上报。值相同不算冲突；只写在被覆盖那棵树里的叶子会被
+   **丢掉**，所以别把两个源当逐叶合并用。
+2. **能力键一律拒绝** —— `provider`、`tools`、`executeTool`、`store`、`modelConfig`、`assemblyPort`、
+   `signal`、`todoStateProvider`、`semanticStateProvider`、`onEvent`、
+   `onObserverError`、`onPersistenceError` 与 `diagnostics` 都不是配置。把它们写进 `config` ⇒
+   启动即抛并点名该键。这条线是**行为面**的：能力面 = 你递进来的**行为载体**（引擎调用或解引用的
+   函数 / 端口对象），配置面 = 引擎**按已知字段校值并解释**的数据。所以本版里 `persistence`
+   （`config.run.persistence`）与 `model` / `modelMetadata` / `session`（`config.metadata.*`）都是
+   配置——引擎读它们的已知字段（持久化模式字面量、窗口数字、`session.id` / `modelSlot`）。
+   `runId` / `cwd` 同样在配置面（`config.run.runId` / `config.run.cwd`）：它们是字符串标量、天然
+   JSON 安全，而 0.28 要检的「`config` 子树过 JSON round-trip 等值」要求能力面只剩函数/端口对象。
+   这条收窄**只作用于新命名空间**：既有优先级规则——显式细粒度选项
+   覆盖装配口提供的同名成员（`resolveAssemblyMember`（`src/assembly.js`），例如显式 `provider`
+   仍能盖端口 provider）——一字未动，`test/contract/assembly-port.js` 照旧断言它。
+
+新宿主只用 `config`。顶层扁平键是**原语 / 过渡面**——继续接受、继续校验、继续有文档——它们的删除窗口
+属母单（#495）的发布阶梯，计划在 0.28。0.27.0 一个都不删。

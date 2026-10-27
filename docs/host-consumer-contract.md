@@ -31,7 +31,7 @@ todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
 toolContext, store, persistence, runId, cwd, deliverables, invalidArguments, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
-onDelta, onReasoningDelta, onToolCall, onUsage, onEvent
+onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, finalGuardExtend, config
 ```
 
 `partialPersistence` defaults to `false`, preserving the existing no-write
@@ -124,6 +124,129 @@ non-function value in any of the callback fields above, used to be **silently ig
 fine-grained route (the run simply used the defaults). Both now throw at startup. A capability
 plane that accepts these callbacks outside the config tree is **not** part of 0.27.0 — it lands
 in 0.28.0 (issue #498), and the current positions keep working until then.
+
+### The `config` namespace (issue #497)
+
+A run's configuration has a second spelling. `config` is a **nested namespace** whose leaves are
+aliases of the flat top-level keys, and the alias **is** the schema path: `config.run.maxRounds`
+and the flat `maxRounds` are the same knob, and a leaf name is always verbatim the flat option
+name. There is no rename table. One schema, `CONFIG_NAMESPACE_SCHEMA`
+(`src/loop/config-namespace.js`), is the only hand-written part; the alias map
+`CONFIG_ALIAS_PATHS` (`src/loop/config-namespace.js`) and the config-surface list
+`CONFIG_SURFACE_OPTION_NAMES` (`src/loop/config-namespace.js`) are derived from it, and
+`configSchemaSelfCheck` (`src/loop/config-namespace.js`) keeps the pair honest against the
+top-level allowlist: every top-level option must be classified as exactly one of *config surface*
+(52 keys) or *capability* (13 keys), with `config` itself being the container.
+
+| namespace | knobs |
+| --- | --- |
+| `config.prompt` | `system`, `cacheStablePrefix`, `initialUserMessage`, `initialMessages`, `wrapup` |
+| `config.run` | `maxRounds`, `maxTokenContinuations`, `stallDetection`, `completion`, `replayPolicy`, `invalidArguments`, `partialPersistence`, `persistence`, `outputHygiene`, `writeToolNames`, `writeToolPathKeys`, `resume`, `stream`, `reflection`, `runId`, `cwd` |
+| `config.tuning` | `maxTokens`, `temperature`, `topP`, `cacheCapable` |
+| `config.timing` | `timeoutMs`, `deadlineMs`, `retry` |
+| `config.folding` | `context`, `toolResultTtl`, `toolResultFoldMinTokens` |
+| `config.guard` | `finalGuard`, `finalGuardMaxRetries`, `finalGuardTimeoutMs`, `finalGuardExtend`, `deliverables` |
+| `config.metadata` | `expert`, `user`, `task`, `requestId`, `toolContext`, `model`, `modelMetadata`, `session` |
+| `config.observers` | `onRound`, `onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary` |
+
+Five rules govern it:
+
+- **Precedence** — when the same knob is given both ways, `config.*` wins. The flat key keeps being
+  accepted and behaves exactly as before whenever it is the only spelling. A leaf set to
+  `undefined` is verbatim "not provided" (the same rule the flat merge uses), so it neither
+  overrides a flat value nor counts as a conflict.
+- **Conflicts are not silent** — when both spellings are present with **different** values the
+  engine emits one `config_override_conflict` event before the first round:
+  `{ type: "config_override_conflict", runId?, conflicts: [{ path, key }], detail }`. The payload
+  carries paths and key names only (values may be functions or large objects). An observer that
+  throws on that event is isolated like every other observer channel — recorded through
+  `onObserverError`, and the run continues.
+  **The same event covers the second pair of sources** (issue #497 review R4): the assembly port's
+  `policy.config` and the call-level `config` are two spellings of the *same* tree, and the
+  call-level one wins as a **whole tree** (the pre-existing "last writer wins" merge rule, kept
+  byte for byte). That override is reported leaf by leaf through the same event and the same
+  fields: every leaf that both sources set to **different** values appears once in `conflicts`
+  (`{ path, key }`, deduplicated by path, ordered by schema group then declaration order). Equal
+  values, or a leaf only one side sets, are not conflicts — and note the flip side of a whole-tree
+  override: a leaf that only the overridden tree sets is **dropped** (it falls back to the
+  default), so do not use the two sources as a per-leaf merge. Measured before this fix: policy
+  `run.maxRounds: 4` plus call-level `1` ran **1** round and emitted **zero** events.
+- **Structural equivalence** — the same configuration written flat and written as `config` produces
+  the same `effectiveOptions`, key for key. Expansion runs on the **merged** representation (after
+  the assembly port has been folded in, before the semantic phase), so a `config` value goes
+  through exactly the same validation as its flat twin: a misspelled summarizer knob under
+  `config.folding.context` throws the same message as under the flat `context`, and
+  `config.guard.finalGuard` must be a function for the same reason `finalGuard` must be.
+- **Capability keys are refused** — the 13 capability options in
+  `CAPABILITY_OPTION_NAMES` (`src/loop/config-namespace.js`) are not configuration: `provider`,
+  `tools`, `executeTool`, `store`, `modelConfig`, `assemblyPort`, `signal`, `todoStateProvider`,
+  `semanticStateProvider`, `onEvent`, `onObserverError`, `onPersistenceError`, `diagnostics`.
+  Writing one inside `config` (at the top level or under a group) throws at startup and names the
+  key; the error carries the same `via` tag as every other gate error (`"direct"` / `"assembly"`). **This narrowing applies to the new namespace only**:
+  the pre-existing precedence rule — an explicit fine-grained option overrides the same-named
+  member the assembly port supplies (`resolveAssemblyMember` (`src/assembly.js`)), e.g. an explicit
+  `provider` still beats the port's provider — is unchanged, and `test/contract/assembly-port.js`
+  keeps asserting it ("显式细粒度 provider 覆盖端口 provider").
+
+  **Where the line runs (issue #497 review R1, the criterion is behavioural):** the capability
+  surface is what the host hands in as **behaviour carriers** — functions and port objects the
+  engine *calls or dereferences* (a port method is invoked, a signal is listened to, callbacks are
+  delivered to). The config surface is **data the engine validates and interprets by known
+  field** — enum literals, numbers, booleans, string scalars, objects with a known shape. That is
+  why four keys that used to sit on the capability list are configuration, and why writing them
+  under `config` is accepted and takes effect: `persistence` (`config.run.persistence`; its
+  `"none"` / `"required"` literal is validated and picks the persistence path — `"required"`
+  turns on the transcript-store method check), `model` / `modelMetadata` (`config.metadata.*`;
+  their `contextWindowTokens` / `maxOutputTokens` numbers are read by `modelMetadataFor`
+  (`src/loop/budget.js`) to derive the compaction budget and the 15%-of-window output limit) and
+  `session` (`config.metadata.session`; `id` is validated, `modelSlot` is passed to
+  `modelConfig.resolve`, `resume` / `initialMessages` are read). The old wording — "capability
+  means the engine does not interpret its value" — was measurably false for all four.
+  
+  `tools` is the one key that does **not** yet satisfy that criterion, and 0.27.0 keeps it on the capability
+  list on purpose: the engine never *calls* a member of a tool definition — it validates `replay` (an enum
+  literal), reads `name` / `inputSchema`, and forwards the object into the request payload, so by the
+  criterion above `tools` is data. It is the last member of the input-payload family still on the capability side —
+  `initialUserMessage` already sits under `config.prompt` — and the remaining family decision is made
+  **as a family** in issue #498; splitting it across two releases would mean re-deciding one question twice. The observable consequence, stated plainly: in 0.27.0 `config.tools` is
+  rejected at startup with the same "capability/injection option" error, and the capability surface is
+  therefore **not** purely functions-and-port-objects in this release. That rejection is exactly what #498
+  flips, and it will be measured then, not claimed now.
+  
+  The criterion describes the **0.28 target surface, not the 0.27.0 status quo**. `config.observers` holds
+  eight `on*` functions in 0.27.0 — a transitional position (callbacks leave the config tree only in 0.28.0,
+  issue #498) — so the 0.27.0 `config` subtree is **not** JSON round-trip safe, and the round-trip property
+  above must not be read as a property of this release.
+
+
+  **`runId` / `cwd` are configuration too** (issue #497 review, second round — the "identity /
+  environment injection" leg that the first round added to the criterion is **cancelled**), so
+  they are `config.run.runId` / `config.run.cwd`; the flat top-level keys are untouched (this is
+  an added alias, not a migration). Two reasons:
+  1. The criterion is worth only what is **mechanically checkable**: the capability surface is the
+     behaviour carriers that get called or dereferenced, the config surface is data that gets
+     validated and interpreted. A carve-out opened for two keys degenerates the criterion into
+     "classify first, then write the justification" — anyone can pass it.
+  2. The stronger, positive reason: the checkable target for 0.28 is "the `config` subtree must
+     survive a JSON round-trip unchanged". `runId` / `cwd` are **string scalars, JSON-safe by
+     construction**, and the capability surface should be left with functions and port objects
+     only. Keeping them on the capability side would force that 0.28 check to open the exception
+     in the other direction — a round-trip rule with two string exemptions is no longer a rule.
+- **Shape and names** — `config` itself must be an object (`null`, an array and a string all
+  throw); an unknown group, an unknown leaf, a flat key written at the top of `config`
+  (`config.maxRounds` is answered with "write `config.run.maxRounds`"), and a leaf written in the
+  wrong group (`config.run.temperature` points at `config.tuning.temperature`) all throw **before
+  any host port is read**, with the accepted names enumerated from the schema.
+
+`config` never reaches the engine: expansion removes it, so `effectiveOptions` — and the
+`explicitOptions` returned by `normalizeRunToolLoopOptions` (`src/loop/option-normalization.js`) —
+contain flat keys only. The assembly port accepts `config` in its `policy` as well, so both entry
+routes share this one expansion (and the `via` tag says which route threw).
+
+Transition: new hosts should use `config` alone. The flat top-level keys are the **primitive /
+transitional** surface — still accepted, still validated, still documented — but the direction of
+travel is one namespace. The removal window belongs to #495's release ladder and is **planned for
+0.28** (a plan, not a promise made by this version); 0.27.0 removes nothing.
 
 ### Tool arguments that cannot be parsed (issue #409)
 
@@ -4297,10 +4420,28 @@ calling it registers assertions titled with `label`, and nothing executes until
 `node --test` runs them. `npm run check:docs:strict` fails on any suite that
 `test/contract/index.js` re-exports but the packaged `files` list omits (it is a
 warn under the plain `npm run check:docs`), so the shipped set cannot shrink
-unnoticed. `toolResultEnvelopeContract` is the newest of the twelve (issue #284 / #285),
+unnoticed. **What ships is those files one by one**: `package.json`'s `files`
+enumerates `test/contract/*.js` entry by entry — it does **not** take the
+directory — so a `node --test` suite in the same folder is deliberately left
+out. Measured: `npm pack --dry-run --json` lists **zero** `.test.js` files
+(which is why `boundary-parity.test.js` (`test/contract/boundary-parity.test.js`),
+which imports `test/helpers/`, never lands in a tarball), while the ten suite
+files above are all listed by name. `toolResultEnvelopeContract` is the newest of the twelve (issue #284 / #285),
 `skillsLoaderContract` is next (issue #197) and `fileToolsContract` follows
 (issue #184): a host on an installed 0.18.0
-has nine, not twelve.
+has nine suite files and eleven registration functions, not ten and twelve.
+
+**What each of the two numbers counts (measured)**: suite files = the `.js` files under
+`test/contract/` other than `test/contract/index.js`, ten of them
+(`test/contract/transcript-store.js`, `test/contract/model-config-provider.js`,
+`test/contract/execute-tool.js`, `test/contract/assembly-port.js`,
+`test/contract/notes-store.js`, `test/contract/engine-api.js`,
+`test/contract/termination-payload.js`, `test/contract/file-tools.js`,
+`test/contract/skills-loader.js`, `test/contract/tool-result-envelope.js`);
+registration functions = the names `test/contract/index.js` re-exports, twelve of them
+(`Object.keys(await import("erix-agent/contract-tests")).length` measured 12). Neither number
+includes `test/contract/index.js` itself, and neither includes the same-directory `*.test.js`
+files that are deliberately left out of the tarball.
 
 ### What the suites prove, and what they cannot prove (issue #183)
 
