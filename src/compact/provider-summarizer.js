@@ -216,7 +216,11 @@ export function createProviderSummarizer({
   // 那一发就在旧行为里挂着）。
   // 要关掉：传 `Infinity`（非有限 ⇒ 不计时的分支）；传 0 / 
   // 负数同样退回不计时。
-  summarizerTimeoutMs = DEFAULT_FOLD_SUMMARIZER_TIMEOUT_MS,
+  // issue #469（宿主要求 B1）：**不传** = 30 s 默认且 `timeoutMs` 仍 per-call 优先（逐字等于今天）；
+  // **显式传入** = 单发**上限**（与调用方给的剩余预算取小）——否则这个键在引擎装配下是空转
+  // （`fold-llm` 恒把剩余预算当 `timeoutMs` 传下来，旧写法会直接盖掉本实例的值，
+  // 就是 `#331` 那根「没人读的旋钮」）。
+  summarizerTimeoutMs,
   thinkingMode = "off",
   signal,
   onMeta,
@@ -255,11 +259,21 @@ export function createProviderSummarizer({
     // issue #469-②（宿主裁决）：整条摘要步骤**共用一条死线**。调用方把「这一发还能用
     // 多久」按剩余预算传下来（超窗自愈重试与首发共享同一个 30 s，不是各给 30 s）；
     // 不传 ⇒ 用本实例的默认值。
-    const timeoutMs = Number.isFinite(perCallTimeoutMs) && perCallTimeoutMs > 0
-      ? perCallTimeoutMs
+    const instanceTimeoutMs = summarizerTimeoutMs === undefined
+      ? DEFAULT_FOLD_SUMMARIZER_TIMEOUT_MS
       : Number.isFinite(summarizerTimeoutMs) && summarizerTimeoutMs > 0
         ? summarizerTimeoutMs
         : undefined;
+    const perCallMs = Number.isFinite(perCallTimeoutMs) && perCallTimeoutMs > 0
+      ? perCallTimeoutMs
+      : undefined;
+    // issue #469：省略 ⇒ 逐字等于今天（per-call 优先，否则 30 s 默认）；
+    // 显式传入 ⇒ 取小（单发上限，与本实例声明的那道红线一致）。
+    const timeoutMs = summarizerTimeoutMs === undefined
+      ? (perCallMs ?? instanceTimeoutMs)
+      : (perCallMs === undefined || instanceTimeoutMs === undefined
+        ? (perCallMs ?? instanceTimeoutMs)
+        : Math.min(perCallMs, instanceTimeoutMs));
     // 超时只住这一发请求：子 controller + 父 signal 转发 + Promise.race，
     // 与 judge 拦截调用
     // （orchestrator 里的同形模板）一致；run 的 signal 不参与计时。

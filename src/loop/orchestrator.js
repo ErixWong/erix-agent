@@ -1283,6 +1283,13 @@ export async function runToolLoop(options) {
     ...(summarizerInputBoundTokens === undefined
       ? {}
       : { maxSummarizerInputTokens: summarizerInputBoundTokens }),
+    // issue #469（宿主要求「上限开成 `context` 旋钮」）：provider 层**单发**超时。
+    // 不传 = 逐字等于今天（`createProviderSummarizer` 自己的 30 s 默认）；非法值已在装配期
+    // 被 `validateFoldSummarizerCaps` 拦下。注意它只管**单发**，整条步骤的死线是另一个
+    // 键 `context.summarizerBudgetMs`（两层语义刻意不合并）。
+    ...(context?.summarizerTimeoutMs === undefined
+      ? {}
+      : { summarizerTimeoutMs: context.summarizerTimeoutMs }),
     // issue #486 P1-B：父 signal 必须真的接进摘要器。超时恒开（默认 30 s）⇒
     // `request.signal` 恒存在，上面 chat 包装的 `request.signal ?? signal` 就把 run 的
     // signal 永久短路了；子 controller 没接父 abort ⇒ 宿主 abort 之后这一发 HTTP 继续跑
@@ -1333,7 +1340,23 @@ export async function runToolLoop(options) {
         ...(context.recoveryHint === undefined ? {} : { recoveryHint: context.recoveryHint }),
         ...(context.stubFor === undefined ? {} : { stubFor: context.stubFor }),
       },
-      foldLlmOptions: { summarizer: reusableCompactionSummarizer },
+      // issue #469（宿主要求 B1）：三个**策略层**上限经这里透传。落点必须是 `foldLlmOptions`
+      // —— `resolveCompactionStrategy` 只对**内置名字形态**把 `foldLlmOptions` 展进工厂
+      // （`strategy-resolution.js`），所以：宿主用对象形态自带策略时这三个键**不适用**
+      // （契约里写明，不让它变成静默无效）。
+      // `optionValue()` 是「callOptions 优先、构造 options 兜底」，所以这里透传即生效。
+      foldLlmOptions: {
+        summarizer: reusableCompactionSummarizer,
+        ...(context.summarizerBudgetMs === undefined
+          ? {}
+          : { summarizerBudgetMs: context.summarizerBudgetMs }),
+        ...(context.maxSummarizerInputBytes === undefined
+          ? {}
+          : { maxSummarizerInputBytes: context.maxSummarizerInputBytes }),
+        ...(context.maxPriorSummaryBytes === undefined
+          ? {}
+          : { maxPriorSummaryBytes: context.maxPriorSummaryBytes }),
+      },
     });
   const compactionContext = context === undefined && budgetTokens === undefined
     ? undefined

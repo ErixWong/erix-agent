@@ -33,6 +33,9 @@
 
 ### Changed
 
+- **四个折叠摘要上限开成 `context` 旋钮 + `context` 未知子键装配期报错（issue #469，宿主审计 B1）**：`summarizerTimeoutMs` / `summarizerBudgetMs` / `maxSummarizerInputBytes` / `maxPriorSummaryBytes` 以前**只在工厂选项上生效**，宿主写进 `context` 里是**静默无效**（`strategy-resolution.js` 只透传 `recoveryHint` / `stubFor`）——实测 `context:{strategy:"fold-llm", maxSummarizerInputBytes:2000, …}` 摘要输入一字不变，正是 `#331` 那根「没人读的旋钮」。现在四键都经 `resolveCompactionStrategy` 的 `foldLlmOptions` / `createProviderSummarizer` 真正透传，**默认值逐字不变**（30000 / 30000 / 49152 / 24576）。名字有两层语义、刻意不合并成一条：`summarizerTimeoutMs` 是 provider 层**单发**超时，`summarizerBudgetMs` 是策略层**整条步骤死线**（首发 + 超窗自愈共用），issue 正文只提了前者，只开一个就会让「整步骤 30 s」这条裁决失去旋钮。`summarizerTimeoutMs` 显式传入时语义是**上限**（与调用方剩余预算取小）——不这么定，`fold-llm` 恒把剩余预算当 `timeoutMs` 传下来会直接盖掉它，等于又一根空转旋钮。装配期新增两条校验（`createAssemblyPort`）：`context` 的**未知子键**报 `unknown assembly policy context option: "…"`、四个键的非安全正整数报 `<key> must be a positive integer`（`0` / 负数 / 小数 / 字符串 / `null` 一律拦下，只有省略才退回默认）；白名单 `CONTEXT_OPTION_NAMES` 收全引擎真的读过的键（含既有 `maxFoldedFactsBytes` / `maxFoldedPayloadBytes` / `summaryRole` / `onBeforeFold` / `onAfterFold` 等），宁多放不少列。新增 `test/loop-fold-context-knobs-469.test.js` 6 格（零真实 LLM）：未知键与非法值装配期抛、**不传 ⇔ 显式传默认值请求体逐字节相同**、极小 `maxPriorSummaryBytes` ⇒ `priorSummaryTruncated`、极小 `summarizerTimeoutMs` ⇒ `degradeKind:"timeout"`、极小 `maxSummarizerInputBytes` ⇒ 整轮丢弃痕迹，且每条都配了「默认下不出现」的反向断言（防恒真）。**已知边界（写进契约）**：这四个键只对**内置名字形态**策略生效；宿主传对象形态自带策略时上限归它自己。
+
+
 - **折叠摘要调用按宿主裁决收敛（issue #469 ①②③，erix-station 2026-10-26 裁决）**：`fold-llm` 这一次
   provider 调用现在有**显式的三条边界**。①**关思考是显式的**：请求同时带 `reasoning_effort:"none"` +
   `enable_thinking:false` + `chat_template_kwargs:{"thinking":false}`——真机那三发只带前者仍产出 584 个
