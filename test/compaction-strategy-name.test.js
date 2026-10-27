@@ -206,3 +206,59 @@ test("object-form strategies keep working verbatim, including their own summariz
   assert.equal(statisticalRun.result.termination.reason, "end_turn");
   assert.ok(statisticalRun.result.compactionStats.some((stat) => stat.compacted === true));
 });
+
+// issue #486 P1-B：宿主 abort run 之后，折叠摘要那一发必须真的被中止。
+// 补丁前 `createProviderSummarizer` 没接 `signal`，而超时恒开 ⇒ `request.signal` 恒是子
+// controller，chat 包装里 `request.signal ?? signal` 把 run 的 signal 永久短路，子 controller
+// 从未接父 abort ⇒ 摘要 HTTP 继续跑到自然完成（token 照扣且不进 engineUsage）。
+test("#486 P1-B 宿主 abort 必须真的中止摘要请求（run 的 signal 不再被短路）", async () => {
+  const summaryRequests = [];
+  const controller = new AbortController();
+  const provider = {
+    protocol: "fake",
+    model: "fake-model",
+    async chat(request) {
+      const isSummary = typeof request?.system === "string"
+        && request.system.includes(SUMMARY_SYSTEM);
+      if (!isSummary) {
+        return {
+          content: [{ type: "tool_use", id: "work-1", name: "work", input: { path: "src/a.js" } }],
+          stopReason: "tool_use",
+          usage: { input_tokens: 100, output_tokens: 20 },
+        };
+      }
+      summaryRequests.push(request);
+      // 真 provider 的形状：HTTP 挂着，只有 signal abort 才收工。
+      setTimeout(() => controller.abort(), 20);
+      return new Promise((_, reject) => {
+        const fail = () => {
+          const error = new Error("This operation was aborted");
+          error.name = "AbortError";
+          error.code = "aborted";
+          reject(error);
+        };
+        if (request?.signal?.aborted === true) fail();
+        else request?.signal?.addEventListener("abort", fail, { once: true });
+      });
+    },
+  };
+  const startedAt = Date.now();
+  // 回归时 run 会挂到摘要器 30 s 默认死线：用 5 s 上限把「挂住」变成可读的断言失败。
+  await Promise.race([
+    runToolLoop({
+      signal: controller.signal,
+      provider,
+      initialUserMessage: `start ${"y".repeat(600)}`,
+      executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
+      maxRounds: 3,
+      completion: false,
+      context: { budgetTokens: 400, keepRounds: 0, strategy: "fold-llm" },
+      store: createMemoryTranscriptStore(),
+      runId: "issue-486-p1b",
+    }).catch(() => {}),
+    new Promise((resolve) => { setTimeout(resolve, 5_000); }),
+  ]);
+  assert.equal(summaryRequests.length, 1, "前提：这条路径确实发起了摘要调用");
+  assert.equal(summaryRequests[0].signal?.aborted, true, "宿主 abort 后摘要请求必须被中止");
+  assert.ok(Date.now() - startedAt < 5_000, "不得等摘要器自然完成（旧形状会跑到 30 s 死线）");
+});

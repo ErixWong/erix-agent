@@ -158,3 +158,61 @@ test("#469-② 输入上限：从最旧侧整条丢弃并留省略注；不传�
   assert.ok(bounded.includes("NEWEST-UNIQUE"), "尾部必须保留（最近性）");
   assert.match(bounded, /前 \d+ 条最旧消息已省略/u);
 });
+
+// issue #486 P1-A：归因按「死线是否已到」，不按「哪个 promise 先 reject」。
+// 旧形状的盲区就在这个假 provider 上——它会**尊重 signal**（真 provider 恰恰如此）：
+// 死线一到 `controller.abort()` ⇒ 它同步 reject `code="aborted"`，`Promise.race` 当场定型，
+// 带 `summarizer_timeout` 的那条腿晚一拍落地、无人认领。
+function abortableFakeChat(request) {
+  return new Promise((_, reject) => {
+    const fail = () => {
+      const error = new Error("This operation was aborted");
+      error.name = "AbortError";
+      error.code = "aborted";
+      reject(error);
+    };
+    if (request?.signal?.aborted === true) fail();
+    else request?.signal?.addEventListener("abort", fail, { once: true });
+  });
+}
+
+test("#486 P1-A 会尊重 signal 的假 provider：死线到点仍记成 timeout，不是 error", async () => {
+  const release = keepalive();
+  try {
+    const summarizer = createProviderSummarizer({
+      chat: abortableFakeChat,
+      summarizerTimeoutMs: 25,
+    });
+    const error = await summarizer({ messages: conversation() }).then(
+      () => null,
+      (err) => err,
+    );
+    assert.ok(error, "挂起的摘要调用必须按时失败");
+    assert.equal(error.code, "summarizer_timeout", "归因必须按死线，不按谁先 reject");
+    assert.equal(classifyFoldDegradeKind(error), "timeout");
+  } finally {
+    release();
+  }
+});
+
+test("#486 P1-A 宿主 abort 不是超时：不许被改写成 summarizer_timeout", async () => {
+  const parent = new AbortController();
+  const release = keepalive();
+  try {
+    const summarizer = createProviderSummarizer({
+      chat: abortableFakeChat,
+      summarizerTimeoutMs: 30_000,
+      signal: parent.signal,
+    });
+    const pending = summarizer({ messages: conversation() }).then(
+      () => null,
+      (err) => err,
+    );
+    parent.abort();
+    const error = await pending;
+    assert.ok(error, "宿主 abort 必须让这一发收工");
+    assert.notEqual(error.code, "summarizer_timeout", "宿主主动 abort 属于 error，不是超时");
+  } finally {
+    release();
+  }
+});
