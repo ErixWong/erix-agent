@@ -1,10 +1,8 @@
 
 import {
   MODEL_CONFIG_RESOLVER_HINT,
+  assertSemanticOptionValues,
   collectUnknownContextOptions,
-  validateContextOptionNames,
-  validateFoldSummarizerCaps,
-  validateFoldSummaryHook,
   validateModelConfigResolver,
   validateProviderBoundary,
   validateTranscriptStore,
@@ -167,20 +165,16 @@ export function createAssemblyPort(input = {}) {
   // issue #470-D：`policy.onFoldSummary` 是可选钩子，但**给了就必须是函数**。
   // 不校形状的话，宿主把字符串/对象当钩子递进来会在真正发生折叠那一轮才炸（或默默不投递
   // ——两种都是“跑了很久才知道配错了”），而装配期一条 TypeError 就能说清。
-  const foldSummaryHookProblems = validateFoldSummaryHook(port.policy?.onFoldSummary);
-  if (foldSummaryHookProblems.length > 0) {
-    throw new TypeError(foldSummaryHookProblems.join("; "));
-  }
-  // issue #469：`context` 的未知子键与四个折叠摘要上限都在装配期校。
-  // 以前写错键名是**静默丢弃**（宿主以为配上了，实际跑默认值，`#331` 的病），
-  // 而 `0` / 负数 / 字符串会等到真发生折叠那一轮才现形。
-  const contextOptionProblems = [
-    ...validateContextOptionNames(port.policy?.context),
-    ...validateFoldSummarizerCaps(port.policy?.context),
-  ];
-  if (contextOptionProblems.length > 0) {
-    throw new TypeError(contextOptionProblems.join("; "));
-  }
+  //
+  // issue #496（S1）：`onFoldSummary` 的形状、`context` 的未知子键（#469 / #493 的旋钮家族闭集）、
+  // 四个折叠上限的取值（#469）与**所有承载宿主回调的字段**（`finalGuard` / `retry.sleepImpl` /
+  // `reflection.onReflection` / `diagnostics.error` / `context.onBeforeFold|onAfterFold|onFoldSummary`）
+  // 现在都由**同一个语义相闸口**校：条件与文案只写在 `collectSemanticOptionProblems`
+  // （`src/assembly-validators.js`）一处，直连侧（`normalizeRunToolLoopOptions` 合并出
+  // `effectiveOptions` 之后）调的是同一个函数。以前这里是「装配口有闭集、直连侧零校验」，
+  // 同一份配置走两条路线结论相反（`context.summarizeBudgetMs` 装配口抛、直连静默 `end_turn`）。
+  // 路线只贴标签：装配口 `via:"assembly"`，直连 `via:"direct"`。
+  assertSemanticOptionValues(port.policy ?? {}, { via: "assembly" });
   // issue #493：非「旋钮家族」的未知 `context` 子键**不抛**——契约允许宿主把私有元数据放这里
   // （`budget.js` 自己也读 `toolContext` / `expert` / `user` / `session` / `requestId`）。
   // 但也不静默：给一条事件，宿主接 `onEvent` / `emit` 就能看见（拼错旋钮名的照旧由上面抛）。
