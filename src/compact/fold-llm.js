@@ -141,11 +141,13 @@ function prependSummary(head, summary, summaryRole = "user", anchorsEnabled = tr
 }
 
 function priorityForHeading(heading) {
+  // issue #469（宿主审计 C 片）：主题词必须优先保。它排第 3 档时，预算一紧就先被剪，
+  // 而它恰恰是「下次按什么搜回来」的唯一线索（比「已改文件」更不可重建）。
   if (heading.includes("下一步")) return 0;
   if (heading.includes("恢复提示")) return 0;
-  if (heading.includes("已验证项")) return 1;
-  if (heading.includes("已改文件")) return 2;
-  if (heading.includes("主题词")) return 3;
+  if (heading.includes("主题词")) return 1;
+  if (heading.includes("已验证项")) return 2;
+  if (heading.includes("已改文件")) return 3;
   return 4;
 }
 
@@ -279,7 +281,7 @@ function enforceSummarySize(summary, maxSummaryTokens, onLayer) {
  */
 export function createFoldLlmStrategy({
   summarizer,
-  maxSummaryTokens = 800,
+  maxSummaryTokens = 1_400,
   ...options
 } = {}) {
   if (typeof summarizer !== "function") {
