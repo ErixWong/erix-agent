@@ -61,7 +61,8 @@ Strictly tighter, never looser. If you want the old ceiling back, set `context.m
 ## 3. Unknown `context` sub-keys: a typo throws, your metadata does not
 
 0.26.0 silently dropped unknown `context` keys (a host believed it had configured something; the engine used a
-default). Assembly now distinguishes two cases:
+default). **As of this release both entry routes** distinguish the two cases — issue #496 moved the check
+onto the canonical merged options, so it is no longer assembly-only:
 
 - **Knob-family typos throw** — a key within edit distance 2 of a known knob name (`maxPriorSummaryByte`,
   `summarizeBudgetMs`, `summarizerTimeouts`, …) is an accident, and it is reported at assembly time as
@@ -81,9 +82,23 @@ Also whitelisted, because the engine reads them itself in `src/loop/budget.js`: 
 `session`, `requestId`. A host that put them in `context` on 0.26.x got a `TypeError` at assembly — that was a
 bug in our whitelist, and it is fixed here.
 
-⚠ **This validation lives on `createAssemblyPort` only.** A host that calls `runToolLoop(options)` directly gets
-no validation on `context` at all — a misspelled knob there is still silently ignored. Validate such keys on
-your side if you take that path.
+⚠ **This validation now runs on both entry routes** (issue #496). A host that calls `runToolLoop(options)`
+directly used to get no `context` validation at all — a misspelled knob there was silently ignored. That
+asymmetry is gone: both routes now raise the same `TypeError` with the same message, and the error object
+carries `via: "direct" | "assembly"` so you can tell which door you came in through. **One asymmetry is
+left, and it is only this one**: the `context_unknown_option` event is emitted by the assembly port only,
+so a direct-route host never receives it (`onEvent` still works there — it just never gets that event).
+
+Two consequences of that fix are host-visible and neither is a silent no-op:
+
+- **The knob-family check's blast radius grew with the fix.** The rule itself is unchanged (edit distance
+  ≤ 2 against a known knob name, never substring), but before 0.27.0 only assembly-port hosts paid for it;
+  now every host does. Measured: `summarizerBudget`, `summarizerTimeout`, `maxSummaryToken` now **throw**,
+  while `summaryStyle`, `summarizerNote`, `maxSummaryChars`, `workspaceName` stay tolerated metadata.
+- **A callback that is not a function now throws at startup** instead of being quietly unused:
+  `finalGuard`, `retry.sleepImpl`, `reflection.onReflection`, `diagnostics.error`, `onFoldSummary`,
+  `context.onBeforeFold`, `context.onAfterFold`. `null` counts as *given but wrong*. The single exception
+  is `context: null`, which is literally *not configured* (measured equal to omitting the key).
 
 ## 4. Summary budget: the default moved, and trimming got less destructive
 

@@ -1,16 +1,23 @@
 // @ts-check
 // runToolLoop 的「选项规范化」（issue #177 刀1）：从 src/loop/orchestrator.js 原样外提，
-// 公共 API 与行为零变化。职责边界**只有**下面四件事，其余选项校验仍留在 orchestrator 里
+// 公共 API 与行为零变化。职责边界**只有**下面五件事，其余选项校验仍留在 orchestrator 里
 // ——它们消费的是参数解构里的默认值（`maxRounds = 8` 之类），搬过来会把默认值复制成两份：
 //   1. 选项对象形状检查（`options` 必须是非数组对象）；
 //   2. 未知键白名单检查（`RUN_TOOL_LOOP_OPTION_NAMES`）；
 //   3. 未知键的「did you mean」建议（编辑距离 + 阈值 `Math.max(2, ⌊len/3⌋)`）；
-//   4. 把 `assemblyPortOptions(assemblyPort)` 的结果与显式选项合并成 `effectiveOptions`。
+//   4. 把 `assemblyPortOptions(assemblyPort)` 的结果与显式选项合并成 `effectiveOptions`；
+//   5. issue #496（S1）：合并之后的**语义相**校验（`assertSemanticOptionValues`，规则与文案
+//      的唯一来源在 `src/assembly-validators.js`，装配口调的是同一个函数）。
 //
 // 顺序即语义，且被 test/loop-option-normalization.test.js 逐条钉住，所以本模块严格按
-//   形状检查 → 未知键检查 → assemblyPortOptions → 显式值合并
+//   形状检查 → 未知键检查 → assemblyPortOptions → 显式值合并 → 语义相校验
 // 的次序执行；调用方（orchestrator）在此之后才做「解构默认值 → 能力缺失检查 →
 // modelConfig.resolve」，能力缺失检查早于 resolve 的那条次序不受本模块影响。
+//
+// issue #496 的「两相」在这里是分开的两步，刻意**不**把全部校验推到合并之后：
+// 预检相（形状 + 顶层名称）必须在任何宿主端口被读取之前抛（`test/loop-option-normalization.test.js`
+// 的「次序①」用 `Proxy` 钉住「端口未被触碰、`modelConfig.resolve` 未被调用」），
+// 语义相（取值 + 回调形状）需要的是**合并后**的表示（装配口给的值也要被同一套规则覆盖）。
 //
 // 两处「顺手就会改错」的写法，刻意保留原样，勿改：
 //   · 合并条件必须是 `value !== undefined`：`false`/`null` 要能覆盖 assembled 值，
@@ -23,6 +30,7 @@
 // 零运行时依赖：只用相对路径。
 
 import { assemblyPortOptions } from "../assembly.js";
+import { assertSemanticOptionValues } from "../assembly-validators.js";
 
 /**
  * `runToolLoop` 接受的选项名白名单。
@@ -186,10 +194,15 @@ export function assertRunToolLoopOptionNames(options) {
 }
 
 /**
- * 规范化 `runToolLoop` 的入参：形状/未知键检查 → `assemblyPortOptions` → 显式值合并。
+ * 规范化 `runToolLoop` 的入参：形状/未知键检查 → `assemblyPortOptions` → 显式值合并 → 语义相校验。
  *
  * 合并语义（`value !== undefined` 才覆盖）与调用顺序全部沿用外提前的实现，
  * 见文件头的两处「勿改」说明。
+ *
+ * issue #496（S1）：合并出 `effectiveOptions` **之后**再跑一次语义相校验。以前校验只绑在
+ * **入口路线**上（`context` 子键只有装配口校），于是同一份配置走直连会静默按默认跑。
+ * 现在两条路线共用同一个闸口（`collectSemanticOptionProblems`，在 `src/assembly-validators.js`），
+ * 只差 `via` 标签：装配口 `"assembly"`、直连 `"direct"`。
  *
  * @param {Record<string, any>} options
  * @returns {Promise<{
@@ -215,6 +228,16 @@ export async function normalizeRunToolLoopOptions(options) {
   for (const [key, value] of Object.entries(explicitOptions)) {
     if (value !== undefined) effectiveOptions[key] = value;
   }
+  // 路线标签取**入口形状**（宿主调的是哪条 API），不是「这个值来自哪一层」：
+  // 显式选项与端口 policy 都会汇进同一份 `effectiveOptions`，按来源拆标签只会让宿主
+  // 在同一个 run 里看到两种标签。
+  // ⚠ 这一行必须校**合并后**的表示。今天改校 `explicitOptions` 是可观察等价的，前提有两条：
+  //   ① `assemblyPortOptions` 第一行无条件重跑 `createAssemblyPort`，policy 的坏值到不了这里；
+  //   ② `assembledOptions` 的派生键（provider / tools / session / modelConfig / onEvent …）都不在语义相规则集内。
+  // 任一前提变了（新增一条未经闸口的选项来源、或给派生键加进规则集里的字段），这条性质会**静默失效**——测试不红。
+  assertSemanticOptionValues(effectiveOptions, {
+    via: assemblyPort === undefined ? "direct" : "assembly",
+  });
 
   return { assemblyPort, explicitOptions, effectiveOptions };
 }

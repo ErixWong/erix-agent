@@ -336,3 +336,150 @@ export function validateFoldSummaryHook(hook) {
   }
   return [];
 }
+
+/**
+ * 语义相里承载**宿主回调**的字段（issue #496 / #495 v2）：它们是行为，不是数据。
+ *
+ * 只列「给了就必须是函数」的那一类；`deliverables[].check` 不在表里——它的形状由
+ * `normalizeDeliverables`（`src/loop/deliverables.js`）在 orchestrator 侧校，两条路线都汇到那里，
+ * 再抄一份只会多出第二套文案（见 `test/loop-option-gate-496.test.js` 的可达性断言）。
+ *
+ * @type {Array<[string[], string]>}
+ */
+const CALLBACK_OPTION_PATHS = [
+  [["finalGuard"], "finalGuard"],
+  [["retry", "sleepImpl"], "retry.sleepImpl"],
+  [["reflection", "onReflection"], "reflection.onReflection"],
+  [["diagnostics", "error"], "diagnostics.error"],
+];
+
+/**
+ * issue #496（S1）：**语义相**的规则表——合并出 `effectiveOptions` 之后才跑的取值 / 回调形状规则。
+ *
+ * 为什么要有这一相：校验以前绑在**入口路线**上。`context` 子键只有 `createAssemblyPort` 校
+ * （`validateContextOptionNames` 在 `src/assembly.js` 里被调），直连 `runToolLoop` 一个都不校，
+ * 于是同一份配置走装配口抛 `TypeError`、走直连**静默按默认跑**（`context.summarizeBudgetMs`
+ * 实测能跑完 `end_turn`）。校验绑在路线上而不是绑在**规范化表示**上，这是病根。
+ *
+ * 现在条件与文案都只在这里写一份，两条路线都调它：
+ *   · 装配口（`createAssemblyPort`）在构造期校 `policy`，`via:"assembly"`；
+ *   · 直连在 `normalizeRunToolLoopOptions` 合并出 `effectiveOptions` **之后**校，`via:"direct"`。
+ *
+ * 两相分工（刻意不重叠，见 #496 的更正评论②）：
+ *   · **预检相**（`assertRunToolLoopOptionNames`，在 `src/loop/option-normalization.js`）只管
+ *     **顶层名称 / 对象形状**，必须在任何宿主端口被读取之前抛——那条次序承诺被
+ *     `test/loop-option-normalization.test.js` 的「次序①」用 `Proxy` 钉住；
+ *   · **语义相**（本函数）只管**取值与回调形状**，输入是合并后的表示，不碰任何端口；
+ *   · 两条路线都会汇到 `orchestrator` 的取值校验（`maxRounds` / `deliverables` /
+ *     `partialPersistence` / `persistence` …）**留在原地不动**：搬进来只增加次序风险，
+ *     不增加覆盖（它们本来就不是路线相关的）。
+ *
+ * @param {unknown} options 合并后的选项表示（`effectiveOptions`），或装配口的 `policy`
+ * @returns {string[]} 问题列表（空 = 通过）
+ */
+export function collectSemanticOptionProblems(options) {
+  if (options === null || typeof options !== "object" || Array.isArray(options)) return [];
+  const bag = /** @type {Record<string, any>} */ (options);
+  const problems = [];
+  // `undefined` = 没配 `context`；`null` 逐字等于「没配」（引擎今天对两者的读取结果相同），
+  // 所以只把**非 null 的非对象**当配置错误——那一类今天同样是静默按默认跑（`#331` 的形状）。
+  const context = bag.context;
+  if (context !== undefined && context !== null) {
+    if (typeof context !== "object" || Array.isArray(context)) {
+      problems.push("context must be an object");
+    } else {
+      problems.push(...validateContextOptionNames(context));
+      problems.push(...validateFoldSummarizerCaps(context));
+      problems.push(...validateContextCallbackShapes(context));
+    }
+  }
+  problems.push(...validateFoldSummaryHook(bag.onFoldSummary));
+  for (const [path, label] of CALLBACK_OPTION_PATHS) {
+    const value = readOptionPath(bag, path);
+    // `undefined` = 未订阅（逐字等于今天的行为）；给了就必须是函数。
+    if (value !== undefined && typeof value !== "function") {
+      problems.push(`${label} must be a function (or omitted)`);
+    }
+  }
+  return problems;
+}
+
+/**
+ * `context` 上承载回调的两个子键：给了就必须是函数，否则今天会被 `runFoldHook` 的
+ * `typeof hook === "function"` 静默跳过——又一根「配了等于没配」的旋钮。
+ *
+ * 刻意**不含** `context.onFoldSummary`：引擎从不从 `context` 读这个键（契约里明写「会被忽略」，
+ * 真实位置是顶层 `onFoldSummary` / 装配口 `policy.onFoldSummary`），给一个「被忽略的键」校形状
+ * 只会反过来暗示它有用。
+ *
+ * @param {Record<string, any>} context
+ * @returns {string[]}
+ */
+function validateContextCallbackShapes(context) {
+  const problems = [];
+  for (const key of ["onBeforeFold", "onAfterFold"]) {
+    const value = context[key];
+    if (value !== undefined && typeof value !== "function") {
+      problems.push(`context.${key} must be a function (or omitted)`);
+    }
+  }
+  return problems;
+}
+
+/**
+ * 沿路径读一个选项（`["retry", "sleepImpl"]`）：中途任何一层不是非数组对象就当作未提供。
+ *
+ * 容器本身的形状（`retry: false` / `reflection: false` 是合法值）归 orchestrator 管，这里只取叶子。
+ *
+ * @param {Record<string, any>} options
+ * @param {string[]} path
+ * @returns {unknown}
+ */
+function readOptionPath(options, path) {
+  let current = /** @type {any} */ (options);
+  for (const key of path) {
+    if (current === null || typeof current !== "object" || Array.isArray(current)) return undefined;
+    current = current[key];
+  }
+  return current;
+}
+
+/**
+ * 校验错误上的**路线标签**（issue #496 裁决④）：只有两个取值，别的地方不许往错误上贴属性。
+ *
+ * @typedef {{via?: "assembly"|"direct"}} RouteTag
+ */
+
+/**
+ * 给校验错误贴**路线标签**（issue #496 裁决④）。
+ *
+ * 只加一个自有属性，**不动消息、不动原型链**：装配口今天那句
+ * `unknown assembly policy context option: "…"` 逐字保留，直连侧从此抛**同一句**，
+ * 于是宿主按字符串匹配的既有代码不会因为「路线不同」而失效；哪条路线由 `via` 区分。
+ *
+ * @template {Error} T
+ * @param {T} error
+ * @param {"assembly"|"direct"|undefined} via
+ * @returns {T}
+ */
+export function tagValidationRoute(error, via) {
+  if (error !== null && typeof error === "object" && (via === "assembly" || via === "direct")) {
+    // 用 `Object.assign` 而不是 `/** @type {any} */ (error).via = via`：贴标签这一步不该打开
+    // 「任何地方都能往任意对象上贴属性」的口子，`RouteTag` 是这条属性的唯一类型来源。
+    return /** @type {T & RouteTag} */ (Object.assign(error, { via }));
+  }
+  return error;
+}
+
+/**
+ * 语义相的抛错包装：两条路线共用同一份规则与同一条消息，只差 `via` 标签。
+ *
+ * @param {unknown} options
+ * @param {RouteTag} [route]
+ * @returns {void}
+ */
+export function assertSemanticOptionValues(options, route = {}) {
+  const problems = collectSemanticOptionProblems(options);
+  if (problems.length === 0) return;
+  throw tagValidationRoute(new TypeError(problems.join("; ")), route.via);
+}

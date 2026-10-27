@@ -61,6 +61,70 @@ The older `{ data, success, ... }` shape and other duck-typed shapes are
 normalized permissively for compatibility, but are deprecated and must not be
 depended on.
 
+### Where option validation happens (issue #496)
+
+Option validation is a property of the **normalised option representation**, not of the entry
+route a host happens to call. Two phases share one rule source:
+
+- **Pre-check phase** — object shape plus the top-level name allowlist, run before any host
+  port is read (`assertRunToolLoopOptionNames` (`src/loop/option-normalization.js`)). An
+  unknown top-level key therefore still throws before `assemblyPortOptions`, before
+  `modelConfig.resolve`, and before the capability check.
+- **Semantic phase** — value and callback-shape rules, run on the **merged** representation:
+  `assertSemanticOptionValues` (`src/assembly-validators.js`) is called after the explicit
+  options have been merged over the assembled ones, and `createAssemblyPort` calls the same
+  function on its `policy`. The rules themselves live in `collectSemanticOptionProblems` (`src/assembly-validators.js`) — one condition, one message, no per-route copy.
+
+Both routes therefore raise the same `TypeError` with the same message. The only difference is
+the `via` own-property on the error object: `"assembly"` for the assembly-port shape,
+`"direct"` for fine-grained `runToolLoop` options. These messages carry no `did you mean`
+suffix (that suffix belongs to the top-level name allowlist alone).
+
+The semantic phase owns exactly these rules: `context` must be an object when present
+(omitted or `null` means "no context"); an unknown `context` key that is a **misspelled
+summarizer knob** throws; summarizer knob values must be positive safe integers; and every
+field that carries a host callback must be a function when provided — `finalGuard`,
+`retry.sleepImpl`, `reflection.onReflection`, `diagnostics.error`, `onFoldSummary` (top
+level), `context.onBeforeFold`, `context.onAfterFold`. Two families
+stay where they are on purpose: `deliverables[].check` is validated by `normalizeDeliverables` (`src/loop/deliverables.js`), and the remaining value rules (`maxRounds`, `partialPersistence`,
+`persistence`, …) are `runToolLoop`'s own startup checks — both already run for every route
+because both routes converge there.
+
+One doctrine covers every callback field: **omitted means "not subscribed"**; `null` and any
+other non-function value mean "provided but wrong" and throw at startup. There is exactly one
+exception — `context: null` is verbatim identical to omitting `context`. The reason is that the
+engine already reads `undefined` and `null` identically there, so throwing would only break hosts
+that pass a nullable field straight through, and it would buy no property. Top-level callbacks
+deliberately get **no** such pass: `finalGuard: null`, `retry.sleepImpl: null` and
+`onFoldSummary: null` all throw. Uniform doctrine beats one fewer half-break, and "a `null` hook
+silently means no hook" is exactly the class of quiet configuration this change makes loud.
+
+Host metadata keys inside `context` (anything that is not an engine-read key and not a misspelled
+knob) are still **tolerated** — they never throw. In this one respect the two routes differ: the
+assembly-port route reports them through a `context_unknown_option` event, while the fine-grained
+route **never emits that event** — the assembly port is its only emission point — so the keys pass
+in silence. That is not because the fine-grained route lacks an observer channel: `onEvent` is a
+first-class option there and receives `round_start` / `attempt` / `usage` / `round_end` /
+`run_outcome` (see “Nine host callbacks observe a run”). It is only *this* event that never arrives,
+and a host waiting for it on the fine-grained route will wait forever; that is a property of the
+route, not of the validation.
+
+The message `unknown assembly policy context option: …` is **historical wording**: hosts match
+that string verbatim, so it is preserved character for character. On the fine-grained route there
+is no `policy` — the phrase survives only because renaming it would break existing string matching.
+
+The misspelled-knob criterion (edit distance ≤ 2 to a known summarizer knob name) is itself
+unchanged, but its **blast radius is not**: it used to be applied only to assembly-port hosts and
+now applies to every `runToolLoop` host. Measured boundary — `summarizerBudget`,
+`summarizerTimeout` and `maxSummaryToken` are read as slips and throw; `summaryStyle`,
+`summarizerNote` and `maxSummaryChars` still pass.
+
+Behaviour change to know about in 0.27.0: a misspelled summarizer knob under `context`, and a
+non-function value in any of the callback fields above, used to be **silently ignored** on the
+fine-grained route (the run simply used the defaults). Both now throw at startup. A capability
+plane that accepts these callbacks outside the config tree is **not** part of 0.27.0 — it lands
+in 0.28.0 (issue #498), and the current positions keep working until then.
+
 ### Tool arguments that cannot be parsed (issue #409)
 
 Every tool call carries an arguments payload the model wrote. The engine parses it in two
@@ -3979,7 +4043,7 @@ records must remain unchanged.
 
 > **Where the hook lives, and what the range keys scope to.** `onFoldSummary` is configured as the assembly policy option (`policy.onFoldSummary`) or as the top-level `runToolLoop({ onFoldSummary })` option — it is **not** read from `context` (a `context.onFoldSummary` is ignored; earlier revisions of this document said otherwise). The same payload carries the fold range (issue #479): `foldedRoundRange {from,to}` is **this** fold's round span, `foldedThrough` is the watermark **after** this fold, and `foldedRoundCount` is the **run-scoped** running total of rounds folded in this run — deliberately not a session/ledger total: after a resume it counts only what the resumed run folded, so a host that wants a session number must add the counts it already received from earlier runs.
 >
-> **The four caps are `context` knobs (issue #469, host audit B1):** `context.summarizerTimeoutMs` (provider-level **per-call** timeout, default `30000`), `context.summarizerBudgetMs` (strategy-level **whole-step deadline** shared by the first attempt and the context-window self-heal retry, default `30000`), `context.maxSummarizerInputBytes` (folded-window byte cap, default `49152`) and `context.maxPriorSummaryBytes` (continuation-base byte cap, default `24576`). The two timeout names are deliberately **not** collapsed into one: a per-call cap and a whole-step deadline answer different questions. Omitting a key leaves today's value byte-for-byte; an explicitly passed `summarizerTimeoutMs` acts as a **cap** (the smaller of it and the caller's remaining budget), otherwise the key would be silently overridden by the step deadline. Assembly validates both shapes up front: a non-safe positive integer throws `TypeError: <key> must be a positive integer`, and an **unknown** `context` sub-key throws `unknown assembly policy context option: "…"` instead of being silently ignored (the `#331` shape). All four apply to the **built-in name form** only (`context.strategy: "fold-llm"`); an object-form strategy brings its own summarizer, so those caps are the host's own. **`context.maxSummaryTokens` is the fifth knob (issue #493, downstream fde-station):** it sets the summary's output budget (default `1400`) and it also **caps that one request's `maxTokens`** — the summary call used to inherit the run's `maxTokens` verbatim (32768 measured), so the model filled 32k and the result was then trimmed back to 1400: pure waste. The two are now aligned as `min(run maxTokens, maxSummaryTokens)`. **Unknown `context` keys are validated by family, not wholesale:** a misspelled summarizer knob (`maxPriorSummaryByte`, `summarizeBudgetMs`) — detected as **edit distance ≤ 2 to a known knob name**, not as "anything containing `summar`", so business keys such as `summaryStyle` or `summarizerNote` stay legal — throws at assembly, while any other unknown key is **tolerated as host metadata** (`src/loop/budget.js` itself reads `toolContext`, `expert`, `user`, `session`, `requestId` from `context`, and the opening section tells hosts to keep private metadata there) — a tolerated key is reported through a `context_unknown_option` event instead of blocking the host. **Two operational notes:** the reuse fingerprint now includes the continuation base, so an **existing ledger misses once after upgrading** and that first resumed fold recomputes one summary; and when a **single round alone exceeds** the 48 KB input cap, no whole round can be dropped (`droppedRounds` stays 0) — the token guard is what trims individual messages in that case, and the omission note records it.
+> **The four caps are `context` knobs (issue #469, host audit B1):** `context.summarizerTimeoutMs` (provider-level **per-call** timeout, default `30000`), `context.summarizerBudgetMs` (strategy-level **whole-step deadline** shared by the first attempt and the context-window self-heal retry, default `30000`), `context.maxSummarizerInputBytes` (folded-window byte cap, default `49152`) and `context.maxPriorSummaryBytes` (continuation-base byte cap, default `24576`). The two timeout names are deliberately **not** collapsed into one: a per-call cap and a whole-step deadline answer different questions. Omitting a key leaves today's value byte-for-byte; an explicitly passed `summarizerTimeoutMs` acts as a **cap** (the smaller of it and the caller's remaining budget), otherwise the key would be silently overridden by the step deadline. Both entry routes validate both shapes up front through one shared gate (issue #496): a non-safe positive integer throws `TypeError: <key> must be a positive integer`, and an **unknown** `context` sub-key throws `unknown assembly policy context option: "…"` instead of being silently ignored (the `#331` shape). All four apply to the **built-in name form** only (`context.strategy: "fold-llm"`); an object-form strategy brings its own summarizer, so those caps are the host's own. **`context.maxSummaryTokens` is the fifth knob (issue #493, downstream fde-station):** it sets the summary's output budget (default `1400`) and it also **caps that one request's `maxTokens`** — the summary call used to inherit the run's `maxTokens` verbatim (32768 measured), so the model filled 32k and the result was then trimmed back to 1400: pure waste. The two are now aligned as `min(run maxTokens, maxSummaryTokens)`. **Unknown `context` keys are validated by family, not wholesale:** a misspelled summarizer knob (`maxPriorSummaryByte`, `summarizeBudgetMs`) — detected as **edit distance ≤ 2 to a known knob name**, not as "anything containing `summar`", so business keys such as `summaryStyle` or `summarizerNote` stay legal — throws on both routes, while any other unknown key is **tolerated as host metadata** (`src/loop/budget.js` itself reads `toolContext`, `expert`, `user`, `session`, `requestId` from `context`, and the opening section tells hosts to keep private metadata there) — a tolerated key is reported through a `context_unknown_option` event on the assembly-port route (the fine-grained route never emits that event, so it passes silently) instead of blocking the host. **Two operational notes:** the reuse fingerprint now includes the continuation base, so an **existing ledger misses once after upgrading** and that first resumed fold recomputes one summary; and when a **single round alone exceeds** the 48 KB input cap, no whole round can be dropped (`droppedRounds` stays 0) — the token guard is what trims individual messages in that case, and the omission note records it.
 >
 > **The continuation base is ledger-scoped (issue #469, host ruling A):** on a resumed run the first fold is seeded from the ledger, using the same "pick the alternative that covers the current watermark" rule the read-side trim uses (`pickCoveringFoldSummary` first, then `record.foldedFacts`; both the nested `foldedRoundRange.{from,to}` and the flat `{from,to}` shapes are accepted). Priority is contractual: **explicit call argument > strategy construction option > in-run closure > ledger seed**, so a non-resumed run — or one where no fact covers the watermark — is byte-for-byte what it was before. `compactionStats[].foldSummary` gains `priorSummaryOrigin: "ledger" | "in-run"` (no base ⇒ no key, the family's "no fact, no key" rule). The reuse fingerprint **includes the base**, so the first fold of a resumed run recomputes once instead of silently ignoring the seeded base (deliberate trade: one fewer cache hit beats a silently dropped thread).
 >

@@ -14,9 +14,10 @@
 // （= `FOLDED_FACTS_MAX_BYTES` 2048）、非法值（0 / 负数 / 非整数）由 `buildFoldedFacts` 退回默认
 // 而不是静默变成 0 字节的空横幅、且**钩子看到的字节上界 == 账本里那份的上界**（三者同源）。
 //
-// 入口不对称（实测，不是推测）：`createAssemblyPort`/`createAgent` 对**非函数**值启动期即抛
-// （`assembly-validators.js#validateFoldSummaryHook`）；`runToolLoop` 直接入口只把名字收进白名单
-// （不报 `unknown_option`），非函数值= 不投递。两格都钉住，免得宿主以为两处都校验。
+// 入口不对称（#470-D 时实测）：`createAssemblyPort`/`createAgent` 对**非函数**值启动期即抛
+// （`assembly-validators.js#validateFoldSummaryHook`），而 `runToolLoop` 直接入口当时只把名字收进白名单
+// （不报 `unknown_option`）、非函数值= 不投递。**issue #496（S1）已把这条不对称收掉**：两条路线现在抛
+// **同一句**形状错，只差 `error.via`（`assembly` | `direct`）——见 ④ 的两格。
 //
 // 零真实 LLM：fake provider + 内置内存 store（AGENTS.md 测试隔离规则：不写真实 `~/.erix`）。
 import assert from "node:assert/strict";
@@ -240,32 +241,34 @@ test("④形状校验：assembly 入口对非函数值启动期即抛，undefine
   assert.doesNotThrow(() => createAssemblyPort(base()));
 });
 
-test("④直接入口：runToolLoop 认这个名字（不报 unknown_option），非函数值=不投递 (#470-D)", async () => {
-  const diagnostics = collectDiagnostics();
-  const store = createMemoryTranscriptStore();
-  const runId = "s-470d-badhooks";
-  // 白名单没收录这个键（P3 漏加）时这里会抛 unknown_option —— 那正是本格要拦的红。
-  const run = await runToolLoop({
-    provider: makeProvider(),
-    runId,
-    store,
-    initialUserMessage: "开始任务",
-    tools: TOOLS,
-    executeTool: async ({ input }) => `ECHO:${String(input?.text ?? "").slice(0, 40)}`,
-    maxRounds: 20,
-    completion: false,
-    wrapup: false,
-    stallDetection: false,
-    onFoldSummary: "notes", // 非函数：直接入口不校验，但绝不当函数调
-    diagnostics,
-    context: { budgetTokens: 300, keepRounds: 1, strategy: createSlidingWindowStrategy({ keepRounds: 1 }) },
-  });
-  const records = await store.load(runId);
-  assert.ok(String(run?.finalText ?? "").includes("收尾结论"), `非函数值把 run 炸了：${JSON.stringify(run?.termination ?? {})}`);
-  assert.ok(records.some((record) => record[FOLDED_FACTS_RECORD_FIELD] !== undefined),
-    "前提：这条路径确实落账了替代物（说明「没炸」不是「没折叠」）");
-  assert.deepEqual(diagnostics.events.filter((event) => event.type === "persistence_error"), [],
-    "未配置钩子不得发 persistence_error");
+test("④直接入口：非函数值启动期即抛（与装配口同一句，issue #496），省略/函数照旧 (#470-D)", async () => {
+  // #470-D 当时钉的是「入口不对称」：装配口对非函数值启动期抛，直接入口只把名字收进白名单、
+  // 非函数值=不投递。issue #496（S1）把这条不对称收掉——校验绑在**规范化表示**上以后，两条路线
+  // 抛的是**同一句**文案，只有 `error.via` 不同。本格同时钉住「名字仍在白名单里」（报的必须是
+  // 形状错，不是 `unknown runToolLoop option`），否则「收掉不对称」会退化成「把键删掉」。
+  for (const bad of ["notes", {}, 1, null, false]) {
+    const error = await runFolding({ onFoldSummary: bad }).then(() => null, (caught) => caught);
+    assert.equal(error instanceof TypeError, true, `非函数值必须启动期即抛：${String(bad)}`);
+    assert.equal(
+      error.message,
+      "assembly policy option onFoldSummary must be a function (or omitted)",
+      "两条路线必须同一句文案（装配口逐字不变）",
+    );
+    assert.equal(/^unknown runToolLoop option/u.test(error.message), false,
+      "白名单没收录这个键时这里会抛 unknown_option —— 那正是本格要拦的红");
+    assert.equal(error.via, "direct", "直连侧贴 direct 标签");
+  }
+
+  // 正例一：省略 = 不订阅，run 照常收尾且替代物照旧落账（证明上面的「抛」不是「这条路径根本不折叠」）。
+  const omitted = await runFolding({});
+  assert.ok(String(omitted.run?.finalText ?? "").includes("收尾结论"));
+  assert.ok(omitted.factRecords.length > 0, "省略钩子不得影响落账");
+
+  // 正例二：真函数照旧投递（一次折叠 = 一次调用）。
+  const payloads = [];
+  const wired = await runFolding({ onFoldSummary: (payload) => { payloads.push(payload); } });
+  assert.ok(String(wired.run?.finalText ?? "").includes("收尾结论"));
+  assert.equal(payloads.length, wired.factRecords.length, "真函数必须逐次投递");
 });
 
 test("⑤旋钮 context.maxFoldedFactsBytes：夹断生效，且钩子与账本同一份同一上界 (#470-D)", async () => {
