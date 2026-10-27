@@ -419,6 +419,17 @@ export function collectSemanticOptionProblems(options) {
       + " (pass resume as the top-level option or as config.run.resume)",
     );
   }
+  // #498 S4c: `reflection.judge.evaluator` was a pure alias of `reflection.judge.provider`
+  // (`judge?.provider ?? judge?.evaluator ?? provider` — the same slot written twice). 0.28 retires
+  // it instead of moving it: it throws and names the canonical port. Accepting it silently is the
+  // "configured but inert" shape this ticket exists to kill, and the two routes must agree, so the
+  // rule lives here (the assembly port calls this same function for its `policy`).
+  if (readOptionPath(bag, ["reflection", "judge", "evaluator"]) !== undefined) {
+    problems.push(
+      "reflection.judge.evaluator is not accepted: it was an alias of reflection.judge.provider"
+      + " (pass reflection.judge.provider, or the canonical capabilities.ports.judgeProvider)",
+    );
+  }
   for (const [path, label] of CALLBACK_OPTION_PATHS) {
     const value = readOptionPath(bag, path);
     // `undefined` = 未订阅（逐字等于今天的行为）；给了就必须是函数。
