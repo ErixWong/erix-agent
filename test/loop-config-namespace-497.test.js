@@ -32,6 +32,16 @@
 //   · M5 `notifyConfigOverrideConflicts` 的 `onEvent?.({…})` 整块换成 `void configConflicts`
 //     ⇒ 2 红：C2（事件恰一条）/ C4（观察者隔离）。
 //
+// issue #497 复审的六条必改又加了三个变异（改的同样是**代码行**；实测红单见
+// /tmp/i497fix-report.md）：
+//   · M6（R1）把能力键 `provider` 偷偷塞回配置面（`CONFIG_NAMESPACE_SCHEMA.run` 首项）
+//     ⇒ 5 红：A1 / A2 / A3 / B1 / F1——自检与枚举两侧同时红；
+//   · M7（R4）把逐叶事件降级成 `void collectConfigSourceConflicts(…)`（算而不发）
+//     ⇒ 1 红：C6（「冲突事件恰一条」实测 0 !== 1）；
+//   · M8（R3）把 JSDoc 的 `tuning?:` 改回假组名 `reflection?:` ⇒ 本文件不红（类型面不在
+//     单测里），但 `npm run check:release` 第 4 步红：宿主 `config.tuning` 报
+//     `TS2353: … 'tuning' does not exist in type …`——见报告里那条实测输出。
+//
 // 零真实 LLM（fake provider），不写盘、不碰真实 `~/.erix`。
 import test from "node:test";
 import assert from "node:assert/strict";
