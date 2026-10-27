@@ -206,9 +206,9 @@ Five rules govern it:
   `tools` is the one key that does **not** yet satisfy that criterion, and 0.27.0 keeps it on the capability
   list on purpose: the engine never *calls* a member of a tool definition — it validates `replay` (an enum
   literal), reads `name` / `inputSchema`, and forwards the object into the request payload, so by the
-  criterion above `tools` is data. It belongs to the input-payload family (`tools`, `initialUserMessage`, …)
-  whose home in the 0.28 target is decided **as a family** in issue #498; moving one member early would split
-  one decision across two releases. The observable consequence, stated plainly: in 0.27.0 `config.tools` is
+  criterion above `tools` is data. It is the last member of the input-payload family still on the capability side —
+  `initialUserMessage` already sits under `config.prompt` — and the remaining family decision is made
+  **as a family** in issue #498; splitting it across two releases would mean re-deciding one question twice. The observable consequence, stated plainly: in 0.27.0 `config.tools` is
   rejected at startup with the same "capability/injection option" error, and the capability surface is
   therefore **not** purely functions-and-port-objects in this release. That rejection is exactly what #498
   flips, and it will be measured then, not claimed now.
