@@ -3418,14 +3418,25 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
 ## 契约测试套件（issue #183）
 
 `erix-agent/contract-tests`（即 `./contract-tests` 子路径导出，`test/contract/index.js`）
-随包发布九个套件文件、共**十一个**可复用的 `node:test` 注册函数（`execute-tool.js` 里有两个：
+随包发布十个套件文件、共**十二个**可复用的 `node:test` 注册函数（`execute-tool.js` 里有两个：
 现行形状与迁移形状；`notes-store.js` 自 issue #183 起也有两个：通用套件与可选的 CAS
 子套件）。每一个的签名都是 `xxxContract(label, factory)`：调用它即注册一批以
 `label` 命名的断言，在 `node --test` 跑起来之前什么都不会执行。`npm run check:docs:strict`
 会对「被 `test/contract/index.js` 再导出、但 `files` 白名单漏掉」的套件直接失败（在普通的
-`npm run check:docs` 下它是 warn），因此随包集合不可能无声变小。十一个里最新的是
-`skillsLoaderContract`（issue #197），其次是 `fileToolsContract`（issue #184）：
-装在已发布的 0.18.0 上的宿主只有九个，不是十一个。
+`npm run check:docs` 下它是 warn），因此随包集合不可能无声变小。十二个里最新的是
+`toolResultEnvelopeContract`（issue #284 / #285），其次是 `skillsLoaderContract`（issue #197），
+再是 `fileToolsContract`（issue #184）：装在已发布的 0.18.0 上的宿主只有九个套件文件、
+十一个注册函数，不是十个文件、十二个函数。
+
+**两个数各自数的是什么（实测）**：套件文件 = `test/contract/` 下除 `test/contract/index.js`
+之外的 `.js` 文件，共十个（`test/contract/transcript-store.js`、
+`test/contract/model-config-provider.js`、`test/contract/execute-tool.js`、
+`test/contract/assembly-port.js`、`test/contract/notes-store.js`、
+`test/contract/engine-api.js`、`test/contract/termination-payload.js`、
+`test/contract/file-tools.js`、`test/contract/skills-loader.js`、
+`test/contract/tool-result-envelope.js`）；注册函数 = `test/contract/index.js` 再导出的导出名，
+共十二个（`import("erix-agent/contract-tests")` 实测 `Object.keys(...)` 长度 = 12）。两个数都
+不含 `test/contract/index.js` 本身，也不含同目录里不进包的 `*.test.js`。
 
 **随包的是那些文件本身、一条一条列出来的**：`package.json` 的 `files` 逐条枚举
 `test/contract/*.js`，**不收目录**——所以同一目录下的 `node --test` 套件被刻意留在包外

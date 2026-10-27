@@ -177,13 +177,12 @@ Five rules govern it:
   through exactly the same validation as its flat twin: a misspelled summarizer knob under
   `config.folding.context` throws the same message as under the flat `context`, and
   `config.guard.finalGuard` must be a function for the same reason `finalGuard` must be.
-- **Capability keys are refused** — the 13 capability options in `CAPABILITY_OPTION_NAMES`
-  (`src/loop/config-namespace.js`) are not configuration: `provider`, `tools`, `executeTool`,
-  `store`, `modelConfig`, `assemblyPort`, `signal`, `todoStateProvider`,
+- **Capability keys are refused** — the 13 capability options in
+  `CAPABILITY_OPTION_NAMES` (`src/loop/config-namespace.js`) are not configuration: `provider`,
+  `tools`, `executeTool`, `store`, `modelConfig`, `assemblyPort`, `signal`, `todoStateProvider`,
   `semanticStateProvider`, `onEvent`, `onObserverError`, `onPersistenceError`, `diagnostics`.
-  Writing one inside `config` (at the top level or under a
-  group) throws at startup and names the key; the error carries the same `via` tag as every other
-  gate error (`"direct"` / `"assembly"`). **This narrowing applies to the new namespace only**:
+  Writing one inside `config` (at the top level or under a group) throws at startup and names the
+  key; the error carries the same `via` tag as every other gate error (`"direct"` / `"assembly"`). **This narrowing applies to the new namespace only**:
   the pre-existing precedence rule — an explicit fine-grained option overrides the same-named
   member the assembly port supplies (`resolveAssemblyMember` (`src/assembly.js`)), e.g. an explicit
   `provider` still beats the port's provider — is unchanged, and `test/contract/assembly-port.js`
@@ -4414,7 +4413,19 @@ which imports `test/helpers/`, never lands in a tarball), while the ten suite
 files above are all listed by name. `toolResultEnvelopeContract` is the newest of the twelve (issue #284 / #285),
 `skillsLoaderContract` is next (issue #197) and `fileToolsContract` follows
 (issue #184): a host on an installed 0.18.0
-has nine, not twelve.
+has nine suite files and eleven registration functions, not ten and twelve.
+
+**What each of the two numbers counts (measured)**: suite files = the `.js` files under
+`test/contract/` other than `test/contract/index.js`, ten of them
+(`test/contract/transcript-store.js`, `test/contract/model-config-provider.js`,
+`test/contract/execute-tool.js`, `test/contract/assembly-port.js`,
+`test/contract/notes-store.js`, `test/contract/engine-api.js`,
+`test/contract/termination-payload.js`, `test/contract/file-tools.js`,
+`test/contract/skills-loader.js`, `test/contract/tool-result-envelope.js`);
+registration functions = the names `test/contract/index.js` re-exports, twelve of them
+(`Object.keys(await import("erix-agent/contract-tests")).length` measured 12). Neither number
+includes `test/contract/index.js` itself, and neither includes the same-directory `*.test.js`
+files that are deliberately left out of the tarball.
 
 ### What the suites prove, and what they cannot prove (issue #183)
 
