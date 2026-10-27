@@ -108,7 +108,10 @@ executeTool({ id, name, input, context, signal })
 
 一次 run 的配置从此有第二种写法。`config` 是一棵**嵌套命名空间**，它的叶子是顶层扁平键的别名，
 而别名**就是** schema 路径：`config.run.maxRounds` 与扁平的 `maxRounds` 是同一个旋钮，叶子名
-永远逐字等于扁平选项名。这里没有重命名表：唯一手写的部分只有一张 schema
+逐字等于扁平选项名——只有**一条**登记在案的例外：`config.input.messages`，它是扁平
+`initialMessages` 的嵌套别名（issue #498 S4b）。那条例外是一张只有一条记录的表
+（`CONFIG_LEAF_ALIAS_PATHS`（`src/loop/config-namespace.js`）），自检会双向核它，它不是你
+可以随手加长的重命名表。唯一手写的部分只有一张 schema
 `CONFIG_NAMESPACE_SCHEMA`（`src/loop/config-namespace.js`），别名表 `CONFIG_ALIAS_PATHS`
 （`src/loop/config-namespace.js`）与配置面名单 `CONFIG_SURFACE_OPTION_NAMES`
 （`src/loop/config-namespace.js`）都从它派生，再由 `configSchemaSelfCheck`
@@ -118,18 +121,21 @@ executeTool({ id, name, input, context, signal })
 
 | 命名空间 | 旋钮 |
 | --- | --- |
-| `config.prompt` | `system`、`cacheStablePrefix`、`initialUserMessage`、`initialMessages`、`wrapup` |
+| `config.input` | `system`、`cacheStablePrefix`、`initialUserMessage`、`messages`（扁平 `initialMessages`）、`wrapup`、`tools` |
 | `config.run` | `maxRounds`、`maxTokenContinuations`、`stallDetection`、`completion`、`replayPolicy`、`invalidArguments`、`partialPersistence`、`persistence`、`outputHygiene`、`writeToolNames`、`writeToolPathKeys`、`resume`、`stream`、`reflection`、`runId`、`cwd` |
 | `config.tuning` | `maxTokens`、`temperature`、`topP`、`cacheCapable` |
 | `config.timing` | `timeoutMs`、`deadlineMs`、`retry` |
 | `config.folding` | `context`、`toolResultTtl`、`toolResultFoldMinTokens` |
-| `config.guard` | `finalGuardMaxRetries`、`finalGuardTimeoutMs`、`finalGuardExtend`、`deliverables` |
+| `config.guard` | `finalGuardMaxRetries`、`finalGuardTimeoutMs`、`finalGuardExtend` |
 | `config.metadata` | `expert`、`user`、`task`、`requestId`、`toolContext`、`model`、`modelMetadata`、`session` |
 
 0.27.0 里那张 `config.observers` 分组在 **0.28.0 已被整组删除**（issue #498 S4a）：回调不是数据，
 装着一个回调的 `config` 子树过不了 JSON round-trip。回调住在 `capabilities.hooks`（下一节）。
 `finalGuard` 因同一个理由离开了这张表——它的值**必须**是函数，按下面的判据它是行为载体、不是数据；
-顶层扁平 `finalGuard` 一字未动。
+顶层扁平 `finalGuard` 一字未动，它的嵌套之家是 `capabilities.hooks.finalGuard`（issue #498 S4b）。
+同一刀里 `deliverables` 也离开了这张表，理由相同：它的每一条都带函数 `check`，所以住在
+`capabilities.checks.deliverables`。`prompt` 组改名为 `input`（issue #498 S4b），并收进了
+`tools`——`tools` 那段历史见下面的披露。
 
 它由五条规则管着：
 
@@ -153,22 +159,25 @@ executeTool({ id, name, input, context, signal })
   同一句，`config.timing.retry.sleepImpl` 必须是函数的原因与 `retry.sleepImpl` 必须是函数完全一样。
 - **函数值 intake 当场拒绝**（issue #498 S4a）。JSON round-trip 是事后体检，拒绝才是保证——它让
   「宿主以为设置了、其实没设置」不可能发生。整棵 `config` 子树逐节点走（含数组元素），任何函数值
-  启动即抛并点名**完整路径**（`config.guard.deliverables[0].check`，不是含糊的 `deliverables`）：
+  启动即抛并点名**完整路径**（`config.folding.context.onBeforeFold`，不是含糊的 `onBeforeFold`）：
   实测真被当函数用的那些壳字段是 `config.timing.retry.sleepImpl`、
   `config.run.reflection.onReflection`、`config.run.reflection.judge.provider`、
-  `config.folding.context.onBeforeFold` / `onAfterFold`、`config.guard.deliverables[].check`。
-  报错同时说清规范之家：宿主回调是 `capabilities.hooks.<name>`，其余是对应的能力面端口位。
-  **不存在「收下再在展开时丢函数」**——抛发生在**任何宿主端口被读取之前**。一个后果如实写出来：
-  `config.guard.deliverables` 的每一条都带函数 `check`，所以配置面里能写的只有 `deliverables: []`
-  （逐字等于「未声明」）；有内容的判据走顶层选项。而 `config.guard.finalGuard` 已经不是配置键了
-  ——见上面那张表。
+  `config.folding.context.onBeforeFold` / `onAfterFold`。
+  报错同时说清规范之家：宿主回调是 `capabilities.hooks.<name>`，交付物判据是
+  `capabilities.checks.deliverables`，其余是对应的能力面端口位；配置面自己的**数据键**
+  （例如 `config.input.tools`）根本没有能力面之家，文案就直说
+  `there is no capability home for it: …`，不编一个出来。
+  **不存在「收下再在展开时丢函数」**——抛发生在**任何宿主端口被读取之前**。两个曾经是这条规则
+  尴尬处的叶子现在**根本不在配置面上**：`config.guard.finalGuard` 与 `config.guard.deliverables`
+  （issue #498 S4b）——见上面那张表与下面的 `capabilities` 一节。
 - **能力键一律拒绝** —— `CAPABILITY_OPTION_NAMES`（`src/loop/config-namespace.js`）里的 22 项能力
-  选项不是配置：`provider`、`tools`、`executeTool`、`store`、`modelConfig`、`assemblyPort`、
+  选项不是配置：`provider`、`executeTool`、`store`、`modelConfig`、`assemblyPort`、
   `signal`、`todoStateProvider`、`semanticStateProvider`、`onEvent`、
   `onObserverError`、`onPersistenceError`、`diagnostics`、八个观察者通道（`onRound`、`onJudge`、
-  `onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`）与
-  `finalGuard`。把它们写进 `config`（顶层或组内）⇒ 启动即抛并点名该键；回调的报错还会点出新家
-  （`capabilities.hooks.<name>`），错误带着与其他闸口相同的 `via` 标签（`"direct"` / `"assembly"`）。
+  `onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`）、
+  `finalGuard` 与 `deliverables`。把它们写进 `config`（顶层或组内）⇒ 启动即抛并点名该键；有
+  新家的还会点出新家（`capabilities.hooks.<name>` / `capabilities.checks.<leaf>`），错误带着与
+  其他闸口相同的 `via` 标签（`"direct"` / `"assembly"`）。
   **这条收窄只作用于新命名空间**：既有优先级规则——显式细粒度选项覆盖装配口提供的同名成员
   （`resolveAssemblyMember`（`src/assembly.js`），例如显式 `provider` 仍能盖端口 provider）——
   一字未动，`test/contract/assembly-port.js` 照旧断言它（「显式细粒度 provider 覆盖端口 provider」）。
@@ -181,16 +190,23 @@ executeTool({ id, name, input, context, signal })
   会打开 transcript store 的方法校验）、`model` / `modelMetadata`（`config.metadata.*`；
   `contextWindowTokens` / `maxOutputTokens` 两个数字被 `modelMetadataFor`（`src/loop/budget.js`）
   读去推压缩预算与「15% 窗口」的输出上限）、`session`（`config.metadata.session`；`id` 被校验、
-  `modelSlot` 被交给 `modelConfig.resolve`、`resume` / `initialMessages` 被读）。旧判据
-  「能力面 = 引擎不解释其值」对这四个键**实测为假**。
+  `modelSlot` 被交给 `modelConfig.resolve`、`initialMessages` 被读）。旧判据
+  「能力面 = 引擎不解释其值」对这四个键**实测为假**。注意 `session` 只装数据：0.27 草案里还有一条
+  `session.resume` → 扁平 `resume` 的别名，那条别名已经删掉（issue #498 S4b）——现在写
+  `session.resume` 在**两条入口路线**上都会抛（装配口的 `createAssemblyPort`，以及直连
+  `runToolLoop` 选项经同一道语义相（`collectSemanticOptionProblems`，规则本体与文件出处见本文开头），
+  并点名完整路径 `session.resume`、指向 `config.run.resume` / 扁平 `resume`。它不会被静默丢掉：
+  直连路线以前收下这个键然后照常跑（没有续跑），那正是本版要消掉的「配了等于没配」。
+  `config.metadata.session` 展开后就是这同一个顶层 `session`，所以那个写法撞的是同一道闸口。
   
-  `tools` 是**目前唯一不满足这条判据**的键，而 0.28.0 故意把它留在能力面：引擎从不**调用**工具声明的
-  成员——它校 `replay`（枚举字面量）、读 `name` / `inputSchema`，然后把这个对象原样送进请求体，按上面的
-  判据 `tools` 是数据。它是「输入载荷族」里**最后一个还留在能力面**的成员——`initialUserMessage` 已在 `config.prompt` 下——
-  这一族的归属（连同端口对象要不要搬进 `capabilities.ports`）是**下一刀**的裁决，不是本刀的：
-  提前单移等于把同一个决定裁两次、还跨两个版本。可观察后果如实写出：0.28.0 里写 `config.tools`
-  会启动即抛同样的「能力面/注入面选项」错，所以**能力面目前并不是纯粹的「只有函数与端口对象」**。
-  这条拒绝什么时候翻转，这里不给时间表，也不在实测之前声称。
+  **历史：`tools` 曾是最后一个不满足这条判据的键**（issue #498 S4a 发布时它还在能力面上）。
+  引擎从不**调用**工具声明的成员——它校 `replay`（枚举字面量）、读 `name` / `inputSchema`，然后把这个
+  对象原样送进请求体，按上面的判据 `tools` 是数据。S4a 当时留着它，只因「输入载荷族」的归属被推到
+  下一刀；**issue #498 S4b 作出了那个裁决**：`tools` 现在是配置键（`config.input.tools`，扁平
+  `tools` 的嵌套别名），于是能力面**就是**纯粹的「行为载体」——那个反例不再存在。同一刀把交付物
+  判据反向搬走（`config.guard.deliverables` → `capabilities.checks.deliverables`），所以两个条数
+  **一个都没变**，变的是成员。`capabilities.provider`（端口容器）仍然没被收；那是更后面那一刀的
+  裁决，这里不作承诺。
   
   已经落地的是这条判据的另一半：自 0.28.0 起 `config` 子树**只装数据**，所以它**真的**过 JSON
   round-trip 等值——而且这条性质由默认套件机器断言（每个 schema 叶子一个代表性数据取值，然后
@@ -208,8 +224,12 @@ executeTool({ id, name, input, context, signal })
      那条 0.28 判据就得反过来开例外——一条要豁免两个字符串键的 round-trip 规则已经不算规则。
 - **形状与名称** —— `config` 本身必须是对象（`null`、数组、字符串都抛）；未知分组、未知叶子、
   把扁平键写在 `config` 顶层（`config.maxRounds` 会被回一句「写 `config.run.maxRounds`」）、
+  把叶子写在 `config` 顶层（`config.messages` 会被回一句「写 `config.input.messages`」）、
   以及把叶子写错组（`config.run.temperature` 会指向 `config.tuning.temperature`）都在
-  **任何宿主端口被读取之前**抛，并把该层接受的名字按 schema 枚举出来。
+  **任何宿主端口被读取之前**抛，并把该层接受的名字按 schema 枚举出来。**改过名的分组**回的是去处
+  而不是一句光秃秃的「未知」：`config.prompt` 会得到
+  `config.prompt: the "prompt" group is now "input" (write config.input.<leaf> instead, e.g.
+  config.input.system)`。
 
 `config` 从不进引擎：展开会把它删掉，所以 `effectiveOptions`——以及 `normalizeRunToolLoopOptions`
 （`src/loop/option-normalization.js`）返回的 `explicitOptions`——里只剩扁平键。装配口的 `policy`
@@ -222,18 +242,20 @@ executeTool({ id, name, input, context, signal })
 
 ### capabilities 命名空间（issue #498）
 
-回调是行为，不是数据，所以 0.28.0 给它们一个自己的容器：`capabilities.hooks`。11 个宿主回调——
-`onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、`onToolResult`、
-`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`——逐个写在
-`CAPABILITY_HOOK_NAMES`（`src/loop/capabilities-namespace.js`）里，分组表
+行为载体不是数据，所以 0.28.0 给它们一个自己的容器。它**有两组**（issue #498 S4b——第二组存在
+是为了不让 `hooks` 变成口袋）：`capabilities.hooks` 装宿主回调，`capabilities.checks` 装交付物判据。
+12 个宿主回调——`onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、
+`onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`、
+`finalGuard`——逐个写在 `CAPABILITY_HOOK_NAMES`（`src/loop/capabilities-namespace.js`）里，分组表
 `CAPABILITIES_NAMESPACE_SCHEMA`（`src/loop/capabilities-namespace.js`）是它唯一手写的来源：别名表
 `CAPABILITIES_ALIAS_PATHS`（`src/loop/capabilities-namespace.js`）从它派生，与 `config` 的别名表
 派生方式逐字相同——所以 `capabilities.hooks.onEvent` 与扁平 `onEvent` 是同一个键（别名 = schema
 路径，叶子名逐字等于扁平选项名）。
 
-| 命名空间 | 回调 |
+| 命名空间 | 成员 |
 | --- | --- |
-| `capabilities.hooks` | `onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、`onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary` |
+| `capabilities.hooks` | `onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、`onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`、`finalGuard` |
+| `capabilities.checks` | `deliverables`（每项 `{ name, check }`；`check` 是函数、`name` 是标签） |
 
 五条规则，刻意与 `config` **对称**（两个容器，一套规则）：
 
@@ -247,18 +269,31 @@ executeTool({ id, name, input, context, signal })
   **同一条事件也管第二对来源**：装配口的 `policy.capabilities` 与调用级 `capabilities` 是**同一个
   容器**的两个来源，调用级那份按**整棵**覆盖（与 `config` 用的是同一条「后写者胜」规则）；两个源里
   同一个钩子给了**不同的函数**的，逐叶上报、按 path 去重。值相同、或只有一边给了的不算冲突。
+  **「值相同」的口径逐字就是 `isDeepStrictEqual`**（`src/loop/capabilities-namespace.js`）——写出来
+  是为了宿主不必猜：`hooks` 下按**同一性**比较（同一个函数对象算相同；两处各写一个箭头函数，
+  哪怕函数体逐字一样也不算），`checks` 下的 `{ name, check }` 数组按**逐项**深度比较（两种写法用
+  **同一个** `check` 引用不算冲突，另写一个 `check` 函数就算）。没有更宽松的「看起来一样」规则。
 - **未知子键当场抛，并点名完整路径** —— `capabilities: { hoks: … }` 回的是
-  `unknown capabilities namespace: "hoks" (accepted: hooks; ports are not collected under
-  capabilities yet — pass them as top-level options or through the assembly port)`；
+  `unknown capabilities namespace: "hoks" (accepted: hooks, checks; ports are not collected under
+  capabilities — pass them as top-level options or through the assembly port)`；
+  `capabilities: { check: … }`（少一个 `s`）回同一份枚举（`checks` 在可接受名单里）；
   `capabilities.hooks.onEtent` 回的是 `unknown capabilities.hooks option: "onEtent" (accepted: …)`。
-  回调写高了一层（`capabilities.onEvent`）会被回一句「hooks live under capabilities.hooks」。
-  没有一条是静默忽略——新容器绝不许把「配了等于没配」那类静默重新请回来。
-- **钩子必须是函数** —— `undefined` = 未订阅；其余非函数值（`null`、字符串、对象）启动即抛并点名
-  `capabilities.hooks.<name>`。顶层扁平 `onRound: "x"` 的宽容是 0.26 已发布面，本版不动它；
-  新容器从第一天起就是严的。
-- **端口还没收** —— 本版没有 `capabilities.ports`；端口对象（`provider`、`tools`、`store`、
-  `signal` …）留在原处（顶层选项或装配口），写进 `capabilities` 会抛并说明这一点。它们要不要搬，
-  是后面那一刀的裁决，不是这里给出的承诺。
+  叶子写高了一层（`capabilities.onEvent`、`capabilities.deliverables`）会被回一句
+  「<组> live under capabilities.<组>」。没有一条是静默忽略——新容器绝不许把「配了等于没配」那类
+  静默重新请回来。
+- **值必须符合该组的形状** —— `hooks` 下 `undefined` = 未订阅，其余非函数值（`null`、字符串、
+  对象）启动即抛并点名 `capabilities.hooks.<name>`；顶层扁平 `onRound: "x"` 的宽容是 0.26 已发布面，
+  本版不动它。`checks` 下必须是 `{ name, check }[]`，而形状规则**不在这里复述**：校验器调的是
+  `normalizeDeliverables`（`src/loop/deliverables.js`），与扁平选项**同一份**唯一来源，所以
+  `capabilities.checks.deliverables` 与扁平 `deliverables` 不可能漂开。空数组逐字等于「未声明」。
+  **空组逐字等于「什么都没配」**——`capabilities: { hooks: {} }` 与 `capabilities: { checks: {} }`
+  照常通过校验、展开后一个键都不产生、不发 `config_override_conflict`、也不遮蔽任何扁平键：两组
+  同一条口径，因为空对象被读成「没有」，不是「有但是空」。（`checks: { deliverables: [] }` 是
+  同一件事往下一层：空数组 = 未声明。）
+- **端口还没收** —— 本版没有 `capabilities.ports`；端口对象（`provider`、`store`、`signal` …）
+  留在原处（顶层选项或装配口），写进 `capabilities` 会抛并说明这一点。它们要不要搬，是后面那一刀
+  的裁决，不是这里给出的承诺。`tools` **不再是端口**（issue #498 S4b）：它是数据，所以住在
+  `config.input.tools` / 扁平 `tools`。
 
 `capabilities` 同样从不进引擎：展开会把它删掉，所以 `effectiveOptions`——以及
 `normalizeRunToolLoopOptions`（`src/loop/option-normalization.js`）返回的 `explicitOptions`——
@@ -619,7 +654,7 @@ const assemblyPort = createAssemblyPort({
   provider,    // Provider
   tools: { definitions, executeTool, getToolMetadata? },
   store?,      // 可选 TranscriptStore
-  session: { id, resume?, initialMessages? },
+  session: { id, initialMessages? }, // 只装数据：resume 是顶层选项 / config.run.resume
   policy?,     // 显式 run 选项
   emit?,       // (eventType, payload) => void
 });

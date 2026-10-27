@@ -376,7 +376,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *     judgeIntervalRound?:number, judgeInterceptTimeoutMs?:number,
  *     judgeDoneAdvisory?:boolean, // #322: feed an intercepted "goal looks achieved" verdict back to the main model as a soft advisory (default false, never blocks or stops)
  *     extensionStep?:number,
- *     maxExtensions?:number, maxRoundsCap?:number, format?:"json"|"text",
+ *     maxExtensions?:number, maxRoundsCap?:number,
  *     judge?:{provider?:object,evaluator?:object},
  *     onReflection?:(info:{round:number, decision:object, extendedTo:number}) => void}|false,
  *   stallDetection?: {window?:number, mode?:"appear"|"consecutive"}|false, // Defaults to consecutive mode.
@@ -388,8 +388,8 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   finalGuardTimeoutMs?: number, // Defaults to 30000; non-positive values use the default.
  *   finalGuardExtend?: boolean, // issue #386 slice 3: let a `revise` on a budget-type stop (max_rounds_cap / continuation_exhausted) borrow the mid-run extension mechanism **once per run**. Defaults to false = today's behaviour byte for byte; `stall` is never extended.
  *   maxTokenContinuations?: number,
- *   config?: { // issue #497（S2）：嵌套配置命名空间，七组见下（叶子名逐字等于同名顶层选项，类型也一致）。
- *     prompt?: {system?: string, cacheStablePrefix?: boolean, initialUserMessage?: string, initialMessages?: object[], wrapup?: boolean},
+ *   config?: { // issue #497（S2）：嵌套配置命名空间，七组见下（叶子名逐字等于同名顶层选项，类型也一致；唯一例外是 `input.messages` → `initialMessages`，见 `CONFIG_LEAF_ALIASES`）。
+ *     input?: {system?: string, cacheStablePrefix?: boolean, initialUserMessage?: string, messages?: object[], wrapup?: boolean, tools?: object[]},
  *     run?: {maxRounds?: number, maxTokenContinuations?: number,
  *       stallDetection?: {window?: number, mode?: "appear"|"consecutive"}|false,
  *       completion?: {signals?: string[], maxNoToolRounds?: number}|false,
@@ -405,19 +405,21 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *     folding?: {context?: {strategy?: object|"sliding-window"|"fold-statistical"|"fold-llm", budgetTokens?: number,
  *       keepRounds?: number, toolContext?: object, task?: string},
  *       toolResultTtl?: number, toolResultFoldMinTokens?: number},
- *     guard?: {finalGuardMaxRetries?: number, finalGuardTimeoutMs?: number, finalGuardExtend?: boolean, deliverables?: object[]},
+ *     guard?: {finalGuardMaxRetries?: number, finalGuardTimeoutMs?: number, finalGuardExtend?: boolean},
  *     metadata?: {expert?: any, user?: any, task?: any, requestId?: string, toolContext?: object,
  *       model?: {contextWindowTokens?: number, maxOutputTokens?: number},
  *       modelMetadata?: {contextWindowTokens?: number, maxOutputTokens?: number}, session?: any},
  *   },
- *   capabilities?: { // issue #498（S4a）：能力面容器。本版只收 `hooks`（11 个宿主回调的规范之家）。
+ *   capabilities?: { // issue #498（S4a / S4b）：能力面容器。两组：`hooks`（12 个宿主回调）与 `checks`（交付物判据）。
  *     hooks?: {onEvent?: (event: LoopEvent) => void, onObserverError?: (error: Error, context: {channel: string, runId?: string, type?: string, round?: number, toolName?: string, method?: string}) => void,
  *       onPersistenceError?: (error: Error) => void,
  *       onRound?: (record: object) => void, onJudge?: (info: JudgeEvent) => void,
  *       onToolResult?: (name: string, result: string, metadata?: object) => any,
  *       onDelta?: (chunk: string) => void, onReasoningDelta?: (chunk: string) => void,
  *       onToolCall?: (fragment: object) => void, onUsage?: (usage: object) => void,
- *       onFoldSummary?: (payload: object) => void|Promise<void>},
+ *       onFoldSummary?: (payload: object) => void|Promise<void>,
+ *       finalGuard?: (payload: object) => Promise<{action: "accept"}|{action: "skip", reason: string}|{action: "revise", message: string}>},
+ *     checks?: {deliverables?: {name: string, check: (facts: object) => any}[]},
  *   },
  *   context?: {strategy?: object|"sliding-window"|"fold-statistical"|"fold-llm", budgetTokens?:number, keepRounds?:number, toolContext?:object, task?:string}, // strategy accepts a strategy object or a built-in name (#167); task is the judge/reflection/wrapup brief fallback after explicit task; see task param.
  *   todoStateProvider?:(payload:{runId?:string,rounds:number})=>object|Promise<object>,
@@ -495,30 +497,34 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *
  * `config`:
  *   issue #497（S2）：`config` 是一棵**嵌套命名空间**，叶子是既有顶层扁平键的别名（别名 = schema
- *   路径，叶子名逐字等于顶层键名，没有重命名表）。七个分组**就是**这七个：
- *   `prompt` / `run` / `tuning` / `timing` / `folding` / `guard` / `metadata`
+ *   路径，叶子名逐字等于顶层键名，唯一例外是 `input.messages` → `initialMessages`）。七个分组
+ *   **就是**这七个：`input` / `run` / `tuning` / `timing` / `folding` / `guard` / `metadata`
  *   （schema 见 `CONFIG_NAMESPACE_SCHEMA`（`src/loop/config-namespace.js`）；写错组名启动即抛）。
  *   同名时 `config.*` 赢，扁平键继续接受；两种写法给了**不同的值**时发一条
  *   `config_override_conflict`（`conflicts: [{ path, key }]`，只带路径与键名）。装配口的
  *   `policy.config` 与调用级 `config` 同时在场时取值仍是「后写者胜、整棵覆盖」，但逐叶冲突走
  *   同一条事件（复审 R4）——只写在被覆盖那棵树里的叶子会被丢掉，别把它当逐叶合并用。
- *   能力面（`provider` / `tools` / `executeTool` / `store` / `modelConfig` / `assemblyPort` /
- *   `signal` / 状态源 / 回调出口 / `finalGuard` …）写进 `config` 一律启动即抛并点名该键。
+ *   能力面（`provider` / `executeTool` / `store` / `modelConfig` / `assemblyPort` /
+ *   `signal` / 状态源 / 回调出口 / `finalGuard` / `deliverables` …）写进 `config` 一律启动即抛
+ *   并点名该键。
  *   **`config` 里不许有函数值**（#498 S4a）：整棵树逐节点扫，函数一律启动即抛并点名完整路径
- *   （`config.guard.deliverables[0].check`），报错说清规范之家 `capabilities.hooks.<name>`。
- *   `runId` / `cwd` 是配置面（`config.run.runId` / `config.run.cwd`）：它们是字符串标量，而
- *   「`config` 子树过 JSON round-trip 等值」要求能力面只剩函数/端口对象（见
- *   `src/loop/config-namespace.js` 文件头约束 3 / 4）。
+ *   （`config.folding.context.onBeforeFold`），报错说清规范之家（`capabilities.hooks.<name>` /
+ *   `capabilities.checks.deliverables`）。
+ *   `runId` / `cwd` / `tools` 是配置面（`config.run.runId` / `config.run.cwd` /
+ *   `config.input.tools`）：它们是字符串标量 / 工具声明数组，而「`config` 子树过 JSON round-trip
+ *   等值」要求能力面只剩函数/端口对象（见 `src/loop/config-namespace.js` 文件头约束 3 / 4）。
  *
  * `capabilities`:
- *   issue #498（S4a）：能力面容器，与 `config` **同等待遇**（同一道预检相位、同一套「容器赢扁平」
- *   优先级、同一条冲突事件）。本版只收一组 `hooks` —— 11 个宿主回调的规范之家
- *   （`onEvent` / `onObserverError` / `onPersistenceError` / `onRound` / `onJudge` / `onToolResult` /
- *   `onDelta` / `onReasoningDelta` / `onToolCall` / `onUsage` / `onFoldSummary`，名单见
- *   `CAPABILITY_HOOK_NAMES`（`src/loop/capabilities-namespace.js`））。
- *   顶层扁平 `onRound` 等**照旧可用**（0.26 已发布面，本版不删）。未知子键（`capabilities.hoks` /
- *   `capabilities.hooks.onEtent`）与「叶子不是函数」一律启动即抛并点名完整路径。
- *   `config.observers` 这组已整组删除（0.27 未发布 ⇒ 零成本）。
+ *   issue #498（S4a / S4b）：能力面容器，与 `config` **同等待遇**（同一道预检相位、同一套「容器赢扁平」
+ *   优先级、同一条冲突事件）。两组：
+ *   · `hooks` —— 12 个宿主回调的规范之家（`onEvent` / `onObserverError` / `onPersistenceError` /
+ *     `onRound` / `onJudge` / `onToolResult` / `onDelta` / `onReasoningDelta` / `onToolCall` /
+ *     `onUsage` / `onFoldSummary` / `finalGuard`，名单见 `CAPABILITY_HOOK_NAMES`
+ *     （`src/loop/capabilities-namespace.js`））；
+ *   · `checks` —— 交付物判据（`deliverables`，每项 `{name, check}`，`check` 是函数）。
+ *   顶层扁平 `onRound` / `deliverables` 等**照旧可用**（0.26 已发布面，本版不删）。未知子键
+ *   （`capabilities.hoks` / `capabilities.check` / `capabilities.hooks.onEtent`）与「值给错型」
+ *   一律启动即抛并点名完整路径。`config.observers` 这组已整组删除（0.27 未发布 ⇒ 零成本）。
  *
  * `onToolResult`:
  *   改写钩子（非纯观察者）：返回值会替换工具结果。抛错/rejected Promise 被隔离，

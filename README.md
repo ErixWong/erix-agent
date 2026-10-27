@@ -173,7 +173,8 @@ src/
     option-normalization.js        runToolLoop option whitelist, unknown-key suggestion, merge
     config-namespace.js            `config` namespace schema: alias = schema path, capability keys rejected,
                                    function values refused at intake
-    capabilities-namespace.js      `capabilities.hooks` schema: the canonical home of the 11 host callbacks
+    capabilities-namespace.js      `capabilities` schema (hooks + checks): the canonical home of the 12 host
+                                   callbacks and of the deliverables checks
     provider-runner.js             Provider call, retry, and snapshot rollback
     run-snapshot-executor.js       Pre/post tool checkpoints and aggregate gate
     budget.js                      Budget validation and state cloning helpers
@@ -589,7 +590,6 @@ judgeFailureLimit
 extensionStep
 maxExtensions
 maxRoundsCap
-format
 wrapupNormalize
 judge: { provider, evaluator }
 onReflection

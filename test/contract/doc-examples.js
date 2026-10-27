@@ -195,7 +195,6 @@ const executeTool = async () => "unused";
 const getToolMetadata = undefined;
 const store = createMemoryTranscriptStore();
 const id = \`doc-example-assembly-\${process.pid}-\${Date.now()}\`;
-const resume = undefined;
 const initialMessages = undefined;
 const policy = {};
 const emit = () => {};

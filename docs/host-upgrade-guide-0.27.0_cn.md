@@ -181,8 +181,9 @@ node -e 'import("erix-agent").then(m=>console.log(Object.keys(m).length))'   # �
 ## 10. 一次 run 的配置只有一面：`config`
 
 0.27.0 给配置键加了第二种写法，而且是嵌套的。`config.run.maxRounds` 与扁平的 `maxRounds` 是同一个
-旋钮：叶子名永远逐字等于扁平选项名，别名**就是** schema 路径——没有要记的东西，也没有会漂的第二张映射表。
-八个分组是 `prompt` / `run` / `tuning` / `timing` / `folding` / `guard` / `metadata` / `observers`，
+旋钮：叶子名逐字等于扁平选项名（唯一一条登记在案的例外：`config.input.messages` 是扁平
+`initialMessages`），别名**就是** schema 路径——没有要记的东西，也没有会漂的第二张映射表。
+七个分组是 `input` / `run` / `tuning` / `timing` / `folding` / `guard` / `metadata`，
 契约里「config 命名空间（issue #497）」那一节把每个旋钮逐个列出。
 
 **回调不在配置树里**（issue #498 S4a）。`capabilities.hooks` 是它们的规范之家——`onEvent`、
@@ -191,8 +192,16 @@ node -e 'import("erix-agent").then(m=>console.log(Object.keys(m).length))'   # �
 **没有** `config.observers` 这一组：0.27.0 草案里带着的那组**在发布前就删掉了**，因为回调是行为
 而不是数据，装着一个回调的 `config` 子树过不了 JSON round-trip。同一个理由：`config` 里出现任何
 函数值现在 intake 当场拒绝并点名完整路径（`config.timing.retry.sleepImpl`、
-`config.guard.deliverables[0].check` …），而 `finalGuard`（值必须是函数）离开了配置面
+`config.folding.context.onBeforeFold` …），而 `finalGuard`（值必须是函数）离开了配置面
 （顶层扁平 `finalGuard` 一字未动）。
+
+**同一个版本里还有两处搬动**（issue #498 S4b）：`deliverables` 也离开了配置面（它的每一条都带函数
+`check`），现在住在 `capabilities.checks.deliverables`——「`config` 里只能写 `deliverables: []`」
+那个过渡态因此消失。`finalGuard` 收进了 `capabilities.hooks`，所以那一组是 12 个成员。`tools`
+反向归位：它是数据，现在是 `config.input.tools`（扁平 `tools` 一字未动），于是能力面就是纯粹的
+「行为载体」。`session` 只装数据——草案里的 `session.resume` 别名已删，现在写它在**两条入口路线**上都会抛
+（装配口的 `createAssemblyPort` 与直连的 `runToolLoop` 选项，共用同一道语义相），并点名完整路径
+`session.resume`；要续跑请写 `resume`（或 `config.run.resume`）。两条路线都不静默忽略它。
 
 你需要动手的：**没有**。今天在传的扁平键继续被接受，行为与以前逐字相同。若你打算采用它，有两点要知道：
 
@@ -202,12 +211,12 @@ node -e 'import("erix-agent").then(m=>console.log(Object.keys(m).length))'   # �
    `policy.config` 与调用级 `config`**：调用级那棵树按整棵覆盖（既有「后写者胜」的合并规则，一字未改），
    两个源里同一个叶子给了不同值的，逐叶上报。值相同不算冲突；只写在被覆盖那棵树里的叶子会被
    **丢掉**，所以别把两个源当逐叶合并用。
-2. **能力键一律拒绝** —— `provider`、`tools`、`executeTool`、`store`、`modelConfig`、`assemblyPort`、
+2. **能力键一律拒绝** —— `provider`、`executeTool`、`store`、`modelConfig`、`assemblyPort`、
    `signal`、`todoStateProvider`、`semanticStateProvider`、`onEvent`、
    `onObserverError`、`onPersistenceError`、`diagnostics`、八个观察者通道（`onRound`、`onJudge`、
-   `onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`）与
-   `finalGuard` 都不是配置。把它们写进 `config` ⇒ 启动即抛并点名该键；回调的报错还会点出
-   `capabilities.hooks.<name>`。这条线是**行为面**的：能力面 = 你递进来的**行为载体**（引擎调用或
+   `onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`）、
+   `finalGuard` 与 `deliverables` 都不是配置。把它们写进 `config` ⇒ 启动即抛并点名该键；有新家的
+   还会点出 `capabilities.hooks.<name>` / `capabilities.checks.<leaf>`。这条线是**行为面**的：能力面 = 你递进来的**行为载体**（引擎调用或
    解引用的函数 / 端口对象），配置面 = 引擎**按已知字段校值并解释**的数据。所以本版里 `persistence`
    （`config.run.persistence`）与 `model` / `modelMetadata` / `session`（`config.metadata.*`）都是
    配置——引擎读它们的已知字段（持久化模式字面量、窗口数字、`session.id` / `modelSlot`）。
@@ -218,5 +227,5 @@ node -e 'import("erix-agent").then(m=>console.log(Object.keys(m).length))'   # �
    覆盖装配口提供的同名成员（`resolveAssemblyMember`（`src/assembly.js`），例如显式 `provider`
    仍能盖端口 provider）——一字未动，`test/contract/assembly-port.js` 照旧断言它。
 
-新宿主：配置写 `config`，回调写 `capabilities.hooks`。顶层扁平键是**原语 / 过渡面**——继续接受、
+新宿主：配置写 `config`，行为载体写 `capabilities`（回调进 `hooks`、交付物判据进 `checks`）。顶层扁平键是**原语 / 过渡面**——继续接受、
 继续校验、继续有文档——它们的删除窗口属母单（#495）的发布阶梯。本版一个都不删。
