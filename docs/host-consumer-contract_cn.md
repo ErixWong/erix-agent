@@ -163,6 +163,18 @@ executeTool({ id, name, input, context, signal })
   读去推压缩预算与「15% 窗口」的输出上限）、`session`（`config.metadata.session`；`id` 被校验、
   `modelSlot` 被交给 `modelConfig.resolve`、`resume` / `initialMessages` 被读）。旧判据
   「能力面 = 引擎不解释其值」对这四个键**实测为假**。
+  
+  `tools` 是**目前唯一不满足这条判据**的键，而 0.27.0 故意把它留在能力面：引擎从不**调用**工具声明的
+  成员——它校 `replay`（枚举字面量）、读 `name` / `inputSchema`，然后把这个对象原样送进请求体，按上面的
+  判据 `tools` 是数据。它属「输入载荷族」（`tools`、`initialUserMessage` …），这一族在 0.28 目标面的归属
+  由 issue #498 **整族一起裁**；提前单移一个成员等于把一个决定拆到两个版本里。可观察后果如实写出：0.27.0
+  里写 `config.tools` 会启动即抛同样的「能力面/注入面选项」错，所以**本版本的能力面并不是纯粹的「只有函数
+  与端口对象」**；这条拒绝正是 #498 要翻转的东西，届时实测，不在现在声称。
+  
+  这条判据描述的是 **0.28 目标面，不是 0.27.0 现状**。`config.observers` 在 0.27.0 装着 8 个 `on*` 函数——
+  过渡位置（回调出树要等 0.28.0，issue #498）——所以 0.27.0 的 `config` 子树**不是** JSON round-trip 安全，
+  上面那条 round-trip 性质不能被读成本版本的性质。
+
 
   **`runId` / `cwd` 也是配置**（issue #497 复审第二轮——上一轮给判据加的那条「身份/环境注入」腿
   **取消**），所以它们是 `config.run.runId` / `config.run.cwd`；顶层扁平键一字未动（这是新增别名，

@@ -202,6 +202,22 @@ Five rules govern it:
   `session` (`config.metadata.session`; `id` is validated, `modelSlot` is passed to
   `modelConfig.resolve`, `resume` / `initialMessages` are read). The old wording — "capability
   means the engine does not interpret its value" — was measurably false for all four.
+  
+  `tools` is the one key that does **not** yet satisfy that criterion, and 0.27.0 keeps it on the capability
+  list on purpose: the engine never *calls* a member of a tool definition — it validates `replay` (an enum
+  literal), reads `name` / `inputSchema`, and forwards the object into the request payload, so by the
+  criterion above `tools` is data. It belongs to the input-payload family (`tools`, `initialUserMessage`, …)
+  whose home in the 0.28 target is decided **as a family** in issue #498; moving one member early would split
+  one decision across two releases. The observable consequence, stated plainly: in 0.27.0 `config.tools` is
+  rejected at startup with the same "capability/injection option" error, and the capability surface is
+  therefore **not** purely functions-and-port-objects in this release. That rejection is exactly what #498
+  flips, and it will be measured then, not claimed now.
+  
+  The criterion describes the **0.28 target surface, not the 0.27.0 status quo**. `config.observers` holds
+  eight `on*` functions in 0.27.0 — a transitional position (callbacks leave the config tree only in 0.28.0,
+  issue #498) — so the 0.27.0 `config` subtree is **not** JSON round-trip safe, and the round-trip property
+  above must not be read as a property of this release.
+
 
   **`runId` / `cwd` are configuration too** (issue #497 review, second round — the "identity /
   environment injection" leg that the first round added to the criterion is **cancelled**), so
