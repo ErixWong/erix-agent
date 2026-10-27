@@ -121,9 +121,10 @@ now applies to every `runToolLoop` host. Measured boundary — `summarizerBudget
 
 Behaviour change to know about in 0.27.0: a misspelled summarizer knob under `context`, and a
 non-function value in any of the callback fields above, used to be **silently ignored** on the
-fine-grained route (the run simply used the defaults). Both now throw at startup. A capability
-plane that accepts these callbacks outside the config tree is **not** part of 0.27.0 — it lands
-in 0.28.0 (issue #498), and the current positions keep working until then.
+fine-grained route (the run simply used the defaults). Both now throw at startup. The capability
+plane that accepts these callbacks outside the config tree **landed in 0.28.0** (issue #498 S4a):
+`capabilities.hooks` is their canonical home, and the flat positions listed above keep working
+unchanged (the move is additive — see “The `capabilities` namespace” below).
 
 ### The `config` namespace (issue #497)
 
@@ -135,8 +136,9 @@ name. There is no rename table. One schema, `CONFIG_NAMESPACE_SCHEMA`
 `CONFIG_ALIAS_PATHS` (`src/loop/config-namespace.js`) and the config-surface list
 `CONFIG_SURFACE_OPTION_NAMES` (`src/loop/config-namespace.js`) are derived from it, and
 `configSchemaSelfCheck` (`src/loop/config-namespace.js`) keeps the pair honest against the
-top-level allowlist: every top-level option must be classified as exactly one of *config surface*
-(52 keys) or *capability* (13 keys), with `config` itself being the container.
+top-level allowlist in three directions: every top-level option must be classified as exactly one
+of *config surface* (43 keys), *capability* (22 keys) or *container* (2: `config` and
+`capabilities`), and the three buckets must add up to the allowlist (43 + 22 + 2 = 67).
 
 | namespace | knobs |
 | --- | --- |
@@ -145,9 +147,14 @@ top-level allowlist: every top-level option must be classified as exactly one of
 | `config.tuning` | `maxTokens`, `temperature`, `topP`, `cacheCapable` |
 | `config.timing` | `timeoutMs`, `deadlineMs`, `retry` |
 | `config.folding` | `context`, `toolResultTtl`, `toolResultFoldMinTokens` |
-| `config.guard` | `finalGuard`, `finalGuardMaxRetries`, `finalGuardTimeoutMs`, `finalGuardExtend`, `deliverables` |
+| `config.guard` | `finalGuardMaxRetries`, `finalGuardTimeoutMs`, `finalGuardExtend`, `deliverables` |
 | `config.metadata` | `expert`, `user`, `task`, `requestId`, `toolContext`, `model`, `modelMetadata`, `session` |
-| `config.observers` | `onRound`, `onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary` |
+
+The `config.observers` group that 0.27.0 carried is **gone in 0.28.0** (issue #498 S4a): a callback
+is not data, and a `config` subtree that holds one cannot survive a JSON round-trip. Callbacks live
+in `capabilities.hooks` (next section). `finalGuard` left the table for the same reason — its value
+*must* be a function, so by the criterion below it is a behaviour carrier, not data; the flat
+top-level `finalGuard` is untouched.
 
 Five rules govern it:
 
@@ -176,13 +183,30 @@ Five rules govern it:
   the assembly port has been folded in, before the semantic phase), so a `config` value goes
   through exactly the same validation as its flat twin: a misspelled summarizer knob under
   `config.folding.context` throws the same message as under the flat `context`, and
-  `config.guard.finalGuard` must be a function for the same reason `finalGuard` must be.
-- **Capability keys are refused** — the 13 capability options in
+  `config.timing.retry.sleepImpl` must be a function for the same reason `retry.sleepImpl` must be.
+- **Function values are refused at intake** (issue #498 S4a). A JSON round-trip check is a
+  post-mortem; refusal is the guarantee that "you thought you configured it, and it was never
+  configured" cannot happen. The whole `config` subtree is walked node by node — arrays included —
+  and any function value throws at startup with the **full path** named
+  (`config.guard.deliverables[0].check`, not `deliverables`): the field shells that really are
+  called as functions are `config.timing.retry.sleepImpl`, `config.run.reflection.onReflection`,
+  `config.run.reflection.judge.provider`, `config.folding.context.onBeforeFold` /
+  `onAfterFold`, and `config.guard.deliverables[].check`. The message also names the canonical
+  home: `capabilities.hooks.<name>` for a host callback, or the matching capability port slot for
+  anything else. Nothing is "accepted and then dropped during expansion" — the throw happens
+  **before any host port is read**. One consequence is stated plainly: an entry in
+  `config.guard.deliverables` always carries a function `check`, so only `deliverables: []`
+  (verbatim "not declared") can be written inside `config`; entries go through the top-level
+  option. And `config.guard.finalGuard` is not a config key at all any more — see the table above.
+- **Capability keys are refused** — the 22 capability options in
   `CAPABILITY_OPTION_NAMES` (`src/loop/config-namespace.js`) are not configuration: `provider`,
   `tools`, `executeTool`, `store`, `modelConfig`, `assemblyPort`, `signal`, `todoStateProvider`,
-  `semanticStateProvider`, `onEvent`, `onObserverError`, `onPersistenceError`, `diagnostics`.
-  Writing one inside `config` (at the top level or under a group) throws at startup and names the
-  key; the error carries the same `via` tag as every other gate error (`"direct"` / `"assembly"`). **This narrowing applies to the new namespace only**:
+  `semanticStateProvider`, `onEvent`, `onObserverError`, `onPersistenceError`, `diagnostics`, the
+  eight observer channels (`onRound`, `onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`,
+  `onToolCall`, `onUsage`, `onFoldSummary`) and `finalGuard`. Writing one inside `config` (at the
+  top level or under a group) throws at startup and names the key; for a callback the message also
+  names the new home (`capabilities.hooks.<name>`), and the error carries the same `via` tag as
+  every other gate error (`"direct"` / `"assembly"`). **This narrowing applies to the new namespace only**:
   the pre-existing precedence rule — an explicit fine-grained option overrides the same-named
   member the assembly port supplies (`resolveAssemblyMember` (`src/assembly.js`)), e.g. an explicit
   `provider` still beats the port's provider — is unchanged, and `test/contract/assembly-port.js`
@@ -203,20 +227,23 @@ Five rules govern it:
   `modelConfig.resolve`, `resume` / `initialMessages` are read). The old wording — "capability
   means the engine does not interpret its value" — was measurably false for all four.
   
-  `tools` is the one key that does **not** yet satisfy that criterion, and 0.27.0 keeps it on the capability
+  `tools` is the one key that does **not** yet satisfy that criterion, and 0.28.0 keeps it on the capability
   list on purpose: the engine never *calls* a member of a tool definition — it validates `replay` (an enum
   literal), reads `name` / `inputSchema`, and forwards the object into the request payload, so by the
   criterion above `tools` is data. It is the last member of the input-payload family still on the capability side —
-  `initialUserMessage` already sits under `config.prompt` — and the remaining family decision is made
-  **as a family** in issue #498; splitting it across two releases would mean re-deciding one question twice. The observable consequence, stated plainly: in 0.27.0 `config.tools` is
-  rejected at startup with the same "capability/injection option" error, and the capability surface is
-  therefore **not** purely functions-and-port-objects in this release. That rejection is exactly what #498
-  flips, and it will be measured then, not claimed now.
-  
-  The criterion describes the **0.28 target surface, not the 0.27.0 status quo**. `config.observers` holds
-  eight `on*` functions in 0.27.0 — a transitional position (callbacks leave the config tree only in 0.28.0,
-  issue #498) — so the 0.27.0 `config` subtree is **not** JSON round-trip safe, and the round-trip property
-  above must not be read as a property of this release.
+  `initialUserMessage` already sits under `config.prompt` — and that family's ownership (together with
+  whether port objects move under `capabilities.ports`) is the next slice's ruling, not this one's:
+  splitting it across two releases would mean re-deciding one question twice. The observable consequence,
+  stated plainly: in 0.28.0 `config.tools` is rejected at startup with the same "capability/injection
+  option" error, and the capability surface is therefore **not** purely functions-and-port-objects yet.
+  No date is promised for flipping that, and nothing here is claimed before it is measured.
+
+  What *did* land is the other half of the criterion: as of 0.28.0 the `config` subtree holds **data
+  only**, so it **does** survive a JSON round-trip unchanged, and that property is asserted mechanically
+  in the default suite (one representative data value per schema leaf, then
+  `JSON.parse(JSON.stringify(cfg))` compared leaf by leaf). Two guards keep it true: the function
+  refusal above, and the fact that a leaf whose value must be a function is simply not on the config
+  surface.
 
 
   **`runId` / `cwd` are configuration too** (issue #497 review, second round — the "identity /
@@ -245,8 +272,58 @@ routes share this one expansion (and the `via` tag says which route threw).
 
 Transition: new hosts should use `config` alone. The flat top-level keys are the **primitive /
 transitional** surface — still accepted, still validated, still documented — but the direction of
-travel is one namespace. The removal window belongs to #495's release ladder and is **planned for
-0.28** (a plan, not a promise made by this version); 0.27.0 removes nothing.
+travel is one namespace. Their removal window belongs to #495's release ladder and has **not**
+happened: this change removes no flat key.
+
+Everything in this section and the next describes the tree on this branch (the 0.28.0 line —
+`package.json` is bumped by the release cut, not by a feature change).
+
+### The `capabilities` namespace (issue #498)
+
+Callbacks are behaviour, not data, so 0.28.0 gives them their own container: `capabilities.hooks`.
+The eleven host callbacks — `onEvent`, `onObserverError`, `onPersistenceError`, `onRound`, `onJudge`,
+`onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary` — are
+enumerated in `CAPABILITY_HOOK_NAMES` (`src/loop/capabilities-namespace.js`), and the group table
+`CAPABILITIES_NAMESPACE_SCHEMA` (`src/loop/capabilities-namespace.js`) is its single hand-written
+source: the alias map `CAPABILITIES_ALIAS_PATHS` (`src/loop/capabilities-namespace.js`) is derived
+from it exactly the way the `config` alias map is, so `capabilities.hooks.onEvent` and the flat
+`onEvent` are the same key (alias = schema path, leaf name verbatim the flat option name).
+
+| namespace | callbacks |
+| --- | --- |
+| `capabilities.hooks` | `onEvent`, `onObserverError`, `onPersistenceError`, `onRound`, `onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary` |
+
+Five rules, deliberately symmetric with `config` (two containers, one set of rules):
+
+- **Precedence** — when a callback is given both ways, `capabilities.hooks.*` wins over the flat key;
+  the flat key keeps being accepted and behaves exactly as before when it is the only spelling. A
+  leaf set to `undefined` is verbatim "not subscribed", so it neither overrides a flat hook nor
+  counts as a conflict.
+- **Conflicts are not silent** — different values under both spellings emit one
+  `config_override_conflict` event before the first round, with `conflicts: [{ path, key }]` where
+  `path` is `hooks.<name>` (`{ path: "hooks.onEvent", key: "onEvent" }`). Same event, same fields,
+  no new event type: the payload says "this knob has two sources of truth" and the path says which
+  container. An observer that throws on it is isolated like every other observer channel.
+- **Unknown sub-keys throw, with the full path** — `capabilities: { hoks: … }` answers
+  `unknown capabilities namespace: "hoks" (accepted: hooks; ports are not collected under
+  capabilities yet — pass them as top-level options or through the assembly port)`, and
+  `capabilities.hooks.onEtent` answers `unknown capabilities.hooks option: "onEtent" (accepted: …)`.
+  A callback written one level too high (`capabilities.onEvent`) is answered with "hooks live under
+  capabilities.hooks". Nothing is silently ignored — that is the class of quiet configuration this
+  container must not reintroduce.
+- **A hook must be a function** — `undefined` means "not subscribed"; any other non-function value
+  (`null`, a string, an object) throws at startup, naming `capabilities.hooks.<name>`. The flat
+  top-level `onRound: "x"` tolerance is the published 0.26 surface and is unchanged; the new
+  container is strict from day one.
+- **Ports are not collected yet** — `capabilities.ports` does not exist in this release; port
+  objects (`provider`, `tools`, `store`, `signal`, …) stay where they are (top-level options or the
+  assembly port) and writing one under `capabilities` throws with a message that says so. Whether
+  they move is a later ruling, not a promise made here.
+
+`capabilities` never reaches the engine either: expansion removes it, so `effectiveOptions` — and
+the `explicitOptions` returned by `normalizeRunToolLoopOptions` (`src/loop/option-normalization.js`)
+— carry flat keys only. The assembly port accepts `capabilities` in its `policy` as well, so both
+entry routes share this one expansion, and the `via` tag says which route threw.
 
 ### Tool arguments that cannot be parsed (issue #409)
 

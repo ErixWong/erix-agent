@@ -171,7 +171,7 @@ function editDistance(left, right) {
 
 const suggestionThreshold = (unknownName) => Math.max(2, Math.floor(unknownName.length / 3));
 
-// 白名单 = `RUN_TOOL_LOOP_OPTION_NAMES`（**66 项**，顺序即平局优先级）。
+// 白名单 = `RUN_TOOL_LOOP_OPTION_NAMES`（**67 项**，顺序即平局优先级）。
 //
 // issue #502：这份内联副本**不是**自由 fixture，它必须与源名单（`src/loop/option-normalization.js`
 // 的 `RUN_TOOL_LOOP_OPTION_NAMES`）**逐项逐字一致——成员和顺序都是**。下面「A0」用例就是这条
@@ -262,6 +262,10 @@ const OPTION_WHITELIST = [
   "onFoldSummary",
   // issue #497（S2）：嵌套配置命名空间（别名 = schema 路径）。同样追加在末尾。
   "config",
+  // issue #498（S4a）：**第二个容器**（`capabilities.hooks` = 11 个宿主回调的规范之家）。
+  // 它进这份名单是「被接受的选项只有一个来源」那条规矩的代价：不进名单，就只能给容器另开一条
+  // 豁免路径，而那条路径正是 #502 刚杀掉的那张「接受面 ≠ 白名单」的第二张表。条数 66 → 67。
+  "capabilities",
 ];
 
 // ================================================================ A0. 副本 ≡ 源名单（issue #502）
@@ -303,13 +307,17 @@ test("内联白名单副本与源名单 RUN_TOOL_LOOP_OPTION_NAMES 逐项逐字�
   );
 
   // ③ 条数：源名单也钉一遍。以前只有副本被钉住，源名单怎么变都不会红。
+  // #498 S4a：66 → 67。**为什么变了**：`capabilities` 容器入列（它必须进名单才可能被接受，
+  // 见源名单里那条注释）。这条评论测试存在的原因就是「名单变化必须被看见」——所以改数字时必须
+  // 同时确认建议行为没变（`SUGGESTION_MATRIX` / `TIE_MATRIX` 全绿即为证据：追加在末尾只影响
+  // 离 `capabilities` 更近的未知键，旧建议逐字不变）。
   assert.equal(
     RUN_TOOL_LOOP_OPTION_NAMES.length,
-    66,
+    67,
     `源名单条数变了（实测 ${RUN_TOOL_LOOP_OPTION_NAMES.length} 项）：确认「建议行为」是否随之变化后，`
-      + "同步本文件的 OPTION_WHITELIST 与这里的 66",
+      + "同步本文件的 OPTION_WHITELIST 与这里的 67",
   );
-  assert.equal(OPTION_WHITELIST.length, 66, `内联副本条数变了（实测 ${OPTION_WHITELIST.length} 项）`);
+  assert.equal(OPTION_WHITELIST.length, 67, `内联副本条数变了（实测 ${OPTION_WHITELIST.length} 项）`);
 });
 
 // ================================================================ A. 未知选项建议
@@ -403,11 +411,11 @@ test("建议平局取白名单顺序在前者（严格 < 比较，非字典序�
 });
 
 
-test("白名单恰为 66 项：每一项都被接受，未知键一律被拒", async () => {
+test("白名单恰为 67 项：每一项都被接受，未知键一律被拒", async () => {
   // 条数在这里再钉一次（与「A0」重叠）：这一条钉的是**副本自身的自洽**（无重复、不是字典序），
-  // 「副本 ≡ 源名单」在 A0。两处都写 66 是故意的：多一处要同步，就多一次让人看见的停顿。
-  assert.equal(OPTION_WHITELIST.length, 66);
-  assert.equal(new Set(OPTION_WHITELIST).size, 66);
+  // 「副本 ≡ 源名单」在 A0。两处都写 67 是故意的：多一处要同步，就多一次让人看见的停顿。
+  assert.equal(OPTION_WHITELIST.length, 67);
+  assert.equal(new Set(OPTION_WHITELIST).size, 67);
   // 平局断言依赖这份顺序，先自证它没被顺手排序成字典序。
   assert.notEqual(
     JSON.stringify(OPTION_WHITELIST),

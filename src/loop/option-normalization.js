@@ -14,15 +14,19 @@
 //      复审 R4: the two config sources (`policy.config` vs the call-level `config`) keep the
 //      "last writer wins" merge, but their per-leaf conflicts go out through the same channel
 //      (`collectConfigSourceConflicts` in `src/loop/config-namespace.js`).
+//   7. issue #498（S4a）：`capabilities` 容器的展开（`expandCapabilitiesNamespace`，schema 在
+//      `src/loop/capabilities-namespace.js`）——`capabilities.hooks.<name>` 写回顶层同名回调键，
+//      与扁平键冲突时同样记一条（path 形如 `hooks.onEvent`，走**同一条**事件）。两个容器
+//      **同等待遇**：同一道预检相位、同一套「容器赢扁平」优先级、同一条冲突出口。
 //
 // 顺序即语义，且被 test/loop-option-normalization.test.js 逐条钉住，所以本模块严格按
-//   形状检查 → 未知键检查 → config 名称/形状预检 → assemblyPortOptions → 显式值合并
-//   → config 展开 → 语义相校验
+//   形状检查 → 未知键检查 → config 名称/形状预检 → capabilities 名称/形状预检 →
+//   assemblyPortOptions → 显式值合并 → config 展开 → capabilities 展开 → 语义相校验
 // 的次序执行；调用方（orchestrator）在此之后才做「解构默认值 → 能力缺失检查 →
 // modelConfig.resolve」，能力缺失检查早于 resolve 的那条次序不受本模块影响。
 //
-// config 名称/形状预检刻意**早于** `assemblyPortOptions`：那是「读宿主端口之前」的相位
-// （与顶层名称检查同相），配置写错不该等到端口被解析完才说。展开本身必须在合并**之后**——
+// 两个容器的名称/形状预检刻意**早于** `assemblyPortOptions`：那是「读宿主端口之前」的相位
+// （与顶层名称检查同相），配置/能力写错不该等到端口被解析完才说。展开本身必须在合并**之后**——
 // 冲突与优先级都是「同一个键两种写法」的性质，只有合并后的表示才看得见两边。
 //
 // issue #496 的「两相」在这里是分开的两步，刻意**不**把全部校验推到合并之后：
@@ -42,6 +46,10 @@
 
 import { assemblyPortOptions } from "../assembly.js";
 import { assertSemanticOptionValues } from "../assembly-validators.js";
+import {
+  assertCapabilitiesNamespace,
+  expandCapabilitiesNamespace,
+} from "./capabilities-namespace.js";
 import {
   assertConfigNamespace,
   collectConfigSourceConflicts,
@@ -141,6 +149,12 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // 它**不进** `effectiveOptions`——展开后就地消失，下游看到的仍是扁平表示。同样追加在末尾：
   // 旧未知键的「did you mean」建议逐字不变（新名字只会影响离 `config` 更近的未知键）。
   "config",
+  // issue #498（S4a）：`capabilities` 是**第二个容器**（`capabilities.hooks` = 11 个宿主回调的规范
+  // 之家，见 `src/loop/capabilities-namespace.js`）。它同样追加在末尾，理由同上。
+  // 为什么必须进这份名单：本品「被接受的选项」只有一个来源（#496 / #502 立的规矩），另开一条
+  // 容器豁免路径就等于把「接受面 ≠ 白名单」那张第二张表请回来。代价是条数 66 → 67，
+  // `test/loop-option-normalization.test.js` 的三处字面值与 A0 对账一并跟进。
+  "capabilities",
 ];
 
 /** 白名单的查询视图（与 `RUN_TOOL_LOOP_OPTION_NAMES` 同源，勿另行维护）。 */
@@ -230,16 +244,22 @@ export function assertRunToolLoopOptionNames(options) {
  *   explicitOptions: Record<string, any>,
  *   effectiveOptions: Record<string, any>,
  *   configConflicts: Array<{path: string, key: string}>,
- * }>} `effectiveOptions` 是 assembled 值与显式值的合并结果（`config` 已展开、已消失），
- *   由调用方继续做解构默认值与后续校验；`configConflicts` 是冲突清单（issue #497）：既含
+ * }>} `effectiveOptions` 是 assembled 值与显式值的合并结果（`config` / `capabilities` 已展开、已消失），
+ *   由调用方继续做解构默认值与后续校验；`configConflicts` 是冲突清单（issue #497 / #498）：既含
  *   「同一个键既写了扁平又写了 `config.<path>`，且值不同」，也含「`policy.config` 与调用级
- *   `config` 里同一个叶子值不同」（复审 R4）；按 path 去重、只带路径与键名——调用方负责发
- *   事件，本模块不发事件。
+ *   `config` 里同一个叶子值不同」（复审 R4），又含「`capabilities.hooks.<name>` 与扁平同名键值不同」
+ *   （S4a，path 形如 `hooks.onEvent`）；按 path 去重、只带路径与键名——调用方负责发事件，
+ *   本模块不发事件。
  */
 export async function normalizeRunToolLoopOptions(options) {
   assertRunToolLoopOptionNames(options);
 
-  const { assemblyPort, config: explicitConfig, ...explicitOptions } = options;
+  const {
+    assemblyPort,
+    config: explicitConfig,
+    capabilities: explicitCapabilities,
+    ...explicitOptions
+  } = options;
   // 路线标签取**入口形状**（宿主调的是哪条 API），不是「这个值来自哪一层」：
   // 显式选项与端口 policy 都会汇进同一份 `effectiveOptions`，按来源拆标签只会让宿主
   // 在同一个 run 里看到两种标签。
@@ -247,6 +267,8 @@ export async function normalizeRunToolLoopOptions(options) {
   // issue #497：`config` 的名称/形状预检在**读任何宿主端口之前**抛（与顶层名称检查同相）。
   // 展开则必须在合并之后（见文件头）：优先级与冲突都是「同一个键两种写法」的性质。
   assertConfigNamespace(explicitConfig, { via });
+  // #498 S4a：第二个容器走同一道相位与同一条规则（对称，不是复制一份逻辑）。
+  assertCapabilitiesNamespace(explicitCapabilities, { via });
   const assembledOptions = assemblyPort === undefined
     ? {}
     : await assemblyPortOptions(
@@ -268,10 +290,15 @@ export async function normalizeRunToolLoopOptions(options) {
     configSourceConflicts.push(...collectConfigSourceConflicts(policyConfig, explicitConfig));
     mergedOptions.config = explicitConfig;
   }
-  const { options: effectiveOptions, conflicts: expansionConflicts } = expandConfigNamespace(
-    mergedOptions,
+  // 同一个合并规则也适用于第二个容器：调用级 `capabilities` 整棵覆盖 `policy.capabilities`。
+  if (explicitCapabilities !== undefined) mergedOptions.capabilities = explicitCapabilities;
+  const configExpansion = expandConfigNamespace(mergedOptions, { via });
+  // #498 S4a：容器展开按 config → capabilities 的顺序跑（两个容器的叶子集不相交，顺序只为确定性）。
+  const { options: effectiveOptions, conflicts: capabilityConflicts } = expandCapabilitiesNamespace(
+    configExpansion.options,
     { via },
   );
+  const expansionConflicts = [...configExpansion.conflicts, ...capabilityConflicts];
   // One leaf can be hit by both rules (flat vs config, policy vs call): the payload is only
   // `{ path, key }`, so duplicates carry no information — dedupe by path, keep first-seen order.
   const configConflicts = [];
