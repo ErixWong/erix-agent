@@ -404,7 +404,6 @@ export function collectSemanticOptionProblems(options) {
   return problems;
 }
 
-
 /**
  * `context` 上承载回调的两个子键：给了就必须是函数，否则今天会被 `runFoldHook` 的
  * `typeof hook === "function"` 静默跳过——又一根「配了等于没配」的旋钮。

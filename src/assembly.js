@@ -167,8 +167,9 @@ export function createAssemblyPort(input = {}) {
   // ——两种都是“跑了很久才知道配错了”），而装配期一条 TypeError 就能说清。
   //
   // issue #496（S1）：`onFoldSummary` 的形状、`context` 的未知子键（#469 / #493 的旋钮家族闭集）、
-  // 四个折叠上限的取值（#469）与**所有承载宿主回调的字段**（`finalGuard` / `retry.sleepImpl` /
-  // `reflection.onReflection` / `diagnostics.error` / `context.onBeforeFold|onAfterFold|onFoldSummary`）
+  // 折叠摘要旋钮的取值（#469 / #493）与**所有承载宿主回调的字段**（`finalGuard` / `retry.sleepImpl` /
+  // `reflection.onReflection` / `diagnostics.error` / 顶层 `onFoldSummary` / `context.onBeforeFold` /
+  // `context.onAfterFold`）
   // 现在都由**同一个语义相闸口**校：条件与文案只写在 `collectSemanticOptionProblems`
   // （`src/assembly-validators.js`）一处，直连侧（`normalizeRunToolLoopOptions` 合并出
   // `effectiveOptions` 之后）调的是同一个函数。以前这里是「装配口有闭集、直连侧零校验」，
