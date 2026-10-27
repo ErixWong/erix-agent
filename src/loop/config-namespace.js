@@ -1,5 +1,8 @@
 // @ts-check
 // issue #497（S2）—— `config: { … }` 嵌套命名空间：**别名 = schema 路径**，不是第二张映射表。
+// issue #498（S4a）—— 回调出树：`config.observers` 整组删除，规范之家是 `capabilities.hooks`
+// （`src/loop/capabilities-namespace.js`），于是「`config` 子树过 JSON round-trip 等值」从
+// **目标**变成**现状**；同时 `config` 里的函数值 intake 当场拒绝并点名完整路径（约束 4）。
 //
 // 病根（母单 #495）：同一个 run 的配置住在两个命名空间——顶层 65 个选项里的配置键，加上装配口
 // `policy` 里仅存的两个。宿主要给「一次 run 的旋钮」时没有一棵可读的树，也没有一个可以整体
@@ -26,15 +29,25 @@
 //          （端口方法被调、信号被监听、回调被投递）；
 //        · **配置面** = 引擎**按已知字段校值并解释**的数据（枚举字面量、数字、布尔、字符串标量、
 //          结构已知的对象）。
-  //      ⚠ 两点如实披露（#497 复审第二轮）：
+  //      ⚠ 两点如实披露（#497 复审第二轮，第二点已由 #498 S4a 兑现）：
   //      ① `tools` 目前**不满足**这条判据——引擎从不调用工具声明的成员，只校 `replay`、读 `name`/
   //        `inputSchema` 并原样送进请求体，按判据它是数据。它留在能力面是因为它属「输入载荷族」，
-  //        0.28 由 #498 整族一起裁归属；提前单移一个成员等于把一个决定拆到两个版本。可观察后果：
-  //        0.27 里 `config.tools` 启动即抛同样的能力面报错，且本版本能力面并非纯函数/端口对象——
-  //        这条拒绝正是 #498 要翻转的东西，届时实测，不在现在声称。
-  //      ② 这条判据描述的是 **0.28 目标面**，不是 0.27 现状：`config.observers` 在 0.27 装 8 个 `on*`
-  //        函数（回调出树要等 0.28.0 / #498），所以 0.27 的 `config` 子树**不是** JSON round-trip 安全。
-//      于是 `provider` / `tools` / `store` / `modelConfig` / `signal` / 回调出口 … 这 13 项写进
+  //        整族的归属（连同端口对象要不要搬进 `capabilities.ports`）是 S4b 之后那一刀的裁决，
+  //        不在本刀：提前单移一个成员等于把一个决定拆到两个版本。可观察后果：0.28.0 的 S4a 里
+  //        `config.tools` 启动即抛同样的能力面报错，能力面**不是**纯函数/端口对象——这一点由
+  //        后续刀翻转，届时实测，不在现在声称。
+  //      ② 这条判据**已是现状**（不再是目标）：0.28.0 的 S4a 删掉了 `config.observers` 整组，11 个
+  //        回调的规范之家是 `capabilities.hooks`，于是 `config` 子树只剩纯数据、过 JSON round-trip
+  //        等值；反向由下面的约束 4 守住——`config` 里出现函数值，intake 当场拒绝。
+  //
+  //   4. **`config` 里不许有函数值**（#498 S4a 的核心判据）。round-trip 是事后体检，拒绝能保证
+  //      「宿主以为设置了、其实没设置」不可能发生。整棵树（含数组元素）逐节点走一遍，函数值
+  //      一律启动即抛并点名**完整路径**（`config.guard.deliverables[0].check` 这种形态），报错里
+  //      说清规范之家：`capabilities.hooks.<name>`（宿主回调）或对应的能力面端口位。
+  //      **不收下再在展开时丢函数**——那正是「配了等于没配」的静默形状。
+  //      因此 `finalGuard`（值必须是函数的那个配置叶子）在本刀**离开配置面**、回到能力面：
+  //      一个「永远只能写函数」的叶子留在配置树里，会让本条的判据与 round-trip 断言同时失真。
+//      于是 `provider` / `tools` / `store` / `modelConfig` / `signal` / 回调出口 … 这 22 项写进
 //      `config` 一律启动即抛，报错点名该键。注意这条**只作用于新命名空间**——显式细粒度选项
 //      覆盖装配口同名成员（`resolveAssemblyMember`（`src/assembly.js`））是既有行为，
 //      `test/contract/assembly-port.js` 有断言，本单一个字都没改。
@@ -59,22 +72,31 @@
 import { isDeepStrictEqual } from "node:util";
 
 import { tagValidationRoute } from "../assembly-validators.js";
+import {
+  CAPABILITIES_NAMESPACE_OPTION_NAME,
+  CAPABILITIES_NAMESPACE_SCHEMA,
+  CAPABILITY_HOOK_NAMES,
+  capabilitiesPathForOption,
+} from "./capabilities-namespace.js";
 
 /**
  * 配置面的**唯一手写表**：分组 → 该组接受的叶子名。
  *
  * 叶子名必须逐字等于 `RUN_TOOL_LOOP_OPTION_NAMES` 里的顶层键名（见文件头约束 1）。
  * 分组的判据是「引擎里由谁消费」：同一子系统/同一生命周期阶段的旋钮放在一起，于是
- * `config.folding.*` 全是压缩与折叠、`config.guard.*` 全是强制收尾、`config.observers.*`
- * 全是宿主观察者回调。分组本身**不参与语义**（展开后一律回到顶层扁平键），它只影响可读性、
+ * `config.folding.*` 全是压缩与折叠、`config.guard.*` 全是强制收尾、`config.timing.*`
+ * 全是时间预算。分组本身**不参与语义**（展开后一律回到顶层扁平键），它只影响可读性、
  * 报错文案与文档。
  *
  * 45 个配置键的分类草稿在 `docs/delivery/analysis-261023-406-normalization-design.md`
  * （15 run + 10 tuning 核心 + 10 folding + 10 其它）——该文件在本仓库树上**不存在**（`docs/delivery/`
  * 是 gitignore 的本机档案目录），所以这里的分组是照代码实测重新分类的结果，不是照抄草稿。
- * 现表共 **52 键 / 8 组**（草稿的 45 键 + #497 复审 R1 按新判据从能力面移进来的
+ * 现表共 **43 键 / 7 组**：草稿的 45 键 + #497 复审 R1 按新判据从能力面移进来的
  * `persistence`（→ `run`）与 `model` / `modelMetadata` / `session`（→ `metadata`）+ #497 复审
- * 第二轮按「字符串标量属数据」裁决从能力面移进来的 `runId` / `cwd`（→ `run`））。
+ * 第二轮按「字符串标量属数据」裁决从能力面移进来的 `runId` / `cwd`（→ `run`）；
+ * **#498 S4a 又减去 9 个**：`observers` 整组（8 个回调，搬去 `capabilities.hooks`）与
+ * `finalGuard`（值必须是函数 ⇒ 按判据它是行为载体，回能力面；见文件头约束 4）。
+ * 52 − 9 = 43。
  *
  * @type {Readonly<Record<string, readonly string[]>>}
  */
@@ -131,8 +153,10 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
     "toolResultFoldMinTokens",
   ]),
   // 强制收尾（final guard）与交付物判据。
+  // ⚠ `finalGuard` **不在这里**（#498 S4a）：它的值必须是函数，而 `config` 里不许有函数值
+  // （文件头约束 4）——一个「永远只能写函数」的叶子留在配置树里，会让 round-trip 判据失真。
+  // 它现在属能力面（`CAPABILITY_OPTION_NAMES`），顶层扁平 `finalGuard` 一字未动。
   guard: Object.freeze([
-    "finalGuard",
     "finalGuardMaxRetries",
     "finalGuardTimeoutMs",
     "finalGuardExtend",
@@ -156,21 +180,15 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
     "modelMetadata",
     "session",
   ]),
-  // 宿主观察者回调（纯观察；`onToolResult` 是改写钩子，但它同样是「宿主给的东西」而不是值）。
-  observers: Object.freeze([
-    "onRound",
-    "onJudge",
-    "onToolResult",
-    "onDelta",
-    "onReasoningDelta",
-    "onToolCall",
-    "onUsage",
-    "onFoldSummary",
-  ]),
+  // ⚠ 这里曾有第八组 `observers`（8 个 `on*` 回调）——**#498 S4a 整组删除**。
+  // 回调不是数据：它们让 `config` 子树过不了 JSON round-trip，而「`config` 子树必须 round-trip
+  // 等值」是 0.28 的硬判据。规范之家是 `capabilities.hooks`（`src/loop/capabilities-namespace.js`），
+  // 11 个回调逐个在那边点名；顶层扁平 `onRound` 等 0.26 已发布面**照旧可用**（搬家是 S5/S6/S7
+  // 的事，不在本刀）。0.27.0 未发布 ⇒ 删掉这组对任何外部宿主都是零成本。
 });
 
 /**
- * 能力面（13 项）：宿主**递进来**的行为载体。
+ * 能力面（**22 项**）：宿主**递进来**的行为载体。
  *
  * 判据（#497 复审 R1 更正后的版本，与文件头约束 3 同一句话）：**能力面 = 宿主提供的行为载体
  * （函数 / 端口对象），引擎调用或解引用它；配置面 = 引擎按已知字段校值并解释的数据**。
@@ -178,7 +196,13 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
  *   · 适配器 / 端口对象（方法被引擎调用）：`provider`、`tools`、`executeTool`、`store`、
  *     `modelConfig`、`assemblyPort`、`todoStateProvider`、`semanticStateProvider`；
  *   · 中止信号（被监听）：`signal`；
- *   · 错误 / 事件出口（被调用）：`onEvent`、`onObserverError`、`onPersistenceError`、`diagnostics`。
+ *   · 宿主回调（被投递）：`onEvent`、`onObserverError`、`onPersistenceError`、`diagnostics`，
+ *     加上 `CAPABILITY_HOOK_NAMES`（`src/loop/capabilities-namespace.js`）里尚未列到的
+ *     **8 个观察者通道**（#498 S4a：从 `config.observers` 整组移过来），再加 `finalGuard`
+ *     （同一个理由：它的值必须是函数，放在配置面就会让「`config` 里不许有函数值」这条判据失真）。
+ *
+ * 派生而不是手抄：第三类里的 8 条从 `CAPABILITY_HOOK_NAMES` 机械减去已在上面列过的三条，
+ * 于是「往 `capabilities.hooks` 加一个回调却忘了分类」不会静默（`configSchemaSelfCheck` 报红）。
  *
  * 反例（为什么 `persistence` / `model` / `modelMetadata` / `session` **不在**这里）：引擎读它们的
  * 已知字段并据值改行为（`persistence` 的模式字面量被校验并选持久化路径；`model`/`modelMetadata`
@@ -190,7 +214,8 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
  * 一条腿来留住它们，**本轮取消**：为两个键单开的例外会让判据退化成「先分类再补理由」，而 0.28 的
  * 「`config` 子树必须过 JSON round-trip 等值」正要求能力面只剩函数/端口对象（见文件头约束 3）。
  *
- * `config` 里出现其中任何一个 ⇒ 启动即抛（母单裁决）。
+ * `config` 里出现其中任何一个 ⇒ 启动即抛（母单裁决）；回调的**规范之家**是
+ * `capabilities.hooks`（`src/loop/capabilities-namespace.js`），不是 `config`。
  *
  * ⚠ 这条收窄**只作用于新命名空间**：显式细粒度选项覆盖装配口同名成员
  * （`resolveAssemblyMember`（`src/assembly.js`）；`test/contract/assembly-port.js` 的
@@ -198,7 +223,7 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
  *
  * @type {readonly string[]}
  */
-export const CAPABILITY_OPTION_NAMES = Object.freeze([
+const CAPABILITY_PORT_OPTION_NAMES = Object.freeze([
   // 适配器（装配口成员）/ 端口对象：方法被引擎调用
   "assemblyPort",
   "provider",
@@ -217,6 +242,21 @@ export const CAPABILITY_OPTION_NAMES = Object.freeze([
   "diagnostics",
 ]);
 
+/** 上面的 13 项（端口 / 信号 / 出口）——与 `CAPABILITY_HOOK_NAMES` 的差集就是本刀新增的 8 个通道。 */
+export const CAPABILITY_PLANE_BASE_OPTION_NAMES = CAPABILITY_PORT_OPTION_NAMES;
+
+export const CAPABILITY_OPTION_NAMES = Object.freeze([
+  ...CAPABILITY_PORT_OPTION_NAMES,
+  // #498 S4a：8 个观察者通道（`onRound` / `onJudge` / `onToolResult` / `onDelta` /
+  // `onReasoningDelta` / `onToolCall` / `onUsage` / `onFoldSummary`）从 `config.observers`
+  // 整组移进能力面。它们本来就是回调——判据一直说它们在能力面，只是 0.27 把它们关在配置树里。
+  ...CAPABILITY_HOOK_NAMES.filter((name) => !CAPABILITY_PORT_OPTION_NAMES.includes(name)),
+  // #498 S4a：`finalGuard` 的值必须是函数（`collectSemanticOptionProblems` 里那条
+  // `finalGuard must be a function (or omitted)`）⇒ 按判据它是行为载体，不是数据。
+  // 顶层扁平键一字未动；变的是 `config.guard.finalGuard` 这个别名（0.27 未发布 ⇒ 零成本）。
+  "finalGuard",
+]);
+
 /** 配置面的分组名（顺序即报错文案里的枚举顺序）。 */
 export const CONFIG_NAMESPACE_GROUPS = Object.freeze(Object.keys(CONFIG_NAMESPACE_SCHEMA));
 
@@ -225,6 +265,19 @@ export const CONFIG_NAMESPACE_GROUPS = Object.freeze(Object.keys(CONFIG_NAMESPAC
  * 所以 `configSchemaSelfCheck` 把它排除在「必须分类」的集合之外（但要求它确实在顶层白名单里）。
  */
 export const CONFIG_NAMESPACE_OPTION_NAME = "config";
+
+/**
+ * 两个容器的名单（#498 S4a 起是复数：`capabilities` 与 `config` **同等待遇**）。
+ *
+ * 容器 = 一棵树的入口键：它自己不是旋钮、不是能力键，展开后就消失。三向闭合的第三向就是它——
+ * 「能力面 + 配置面 + 容器 = 顶层白名单」这条恒等式由 `configSchemaSelfCheck` 逐项核。
+ */
+export const NAMESPACE_CONTAINER_OPTION_NAMES = Object.freeze([
+  CONFIG_NAMESPACE_OPTION_NAME,
+  CAPABILITIES_NAMESPACE_OPTION_NAME,
+]);
+
+const NAMESPACE_CONTAINER_OPTION_SET = new Set(NAMESPACE_CONTAINER_OPTION_NAMES);
 
 /**
  * 展开后的**别名表**：`"<group>.<leaf>"` → 顶层键名。
@@ -261,11 +314,15 @@ export function configPathForOption(optionName) {
 }
 
 /**
- * schema 自检：每个顶层选项必须**恰好**落在配置面或能力面之一。
+ * schema 自检：**三向闭合**——每个顶层选项必须**恰好**落在「配置面 / 能力面 / 容器」之一。
  *
  * 这条自检是「只有一张表」的锁：新增一个顶层选项却忘了分类 ⇒ 这里报「未分类」；
  * 同一个键同时出现在两处（或同一组里出现两次）⇒ 这里报「重复」。测试对着
  * `RUN_TOOL_LOOP_OPTION_NAMES` 跑它，于是白名单与 schema 不可能各改各的。
+ *
+ * #498 S4a 把它从「两向」改成「三向」：容器从 1 个（`config`）变成 2 个（+ `capabilities`），
+ * 且 `capabilities.hooks` 里的每个回调都必须在能力面名单里、并且是顶层白名单里的真选项——
+ * 于是「往 hooks 加一个回调却忘了分类」「hooks 里的名字根本不存在」两种漂移都红。
  *
  * @param {readonly string[]} optionNames 顶层选项白名单（`RUN_TOOL_LOOP_OPTION_NAMES`）
  * @returns {string[]} 问题列表（空 = 通过）
@@ -283,20 +340,42 @@ export function configSchemaSelfCheck(optionNames) {
     if (CAPABILITY_OPTION_SET.has(name)) {
       problems.push(`${JSON.stringify(name)} is both a config surface key and a capability option`);
     }
+    if (NAMESPACE_CONTAINER_OPTION_SET.has(name)) {
+      problems.push(`${JSON.stringify(name)} is a namespace container and cannot also be a config surface key`);
+    }
   }
   const capabilitySeen = new Set();
   for (const name of CAPABILITY_OPTION_NAMES) {
     if (capabilitySeen.has(name)) problems.push(`capability list repeats ${JSON.stringify(name)}`);
     capabilitySeen.add(name);
+    if (NAMESPACE_CONTAINER_OPTION_SET.has(name)) {
+      problems.push(`${JSON.stringify(name)} is a namespace container and cannot also be a capability option`);
+    }
+  }
+  // `capabilities.hooks` 的每个回调都必须在能力面名单里（否则「加了回调却忘了分类」会静默）。
+  for (const hook of CAPABILITY_HOOK_NAMES) {
+    if (!CAPABILITY_OPTION_SET.has(hook)) {
+      problems.push(`capabilities.hooks names ${JSON.stringify(hook)}, which is not on the capability list`);
+    }
+  }
+  for (const group of Object.keys(CAPABILITIES_NAMESPACE_SCHEMA)) {
+    for (const leaf of CAPABILITIES_NAMESPACE_SCHEMA[group]) {
+      const path = capabilitiesPathForOption(leaf);
+      if (path !== `${group}.${leaf}`) {
+        problems.push(`capabilities alias for ${JSON.stringify(leaf)} is not ${JSON.stringify(`${group}.${leaf}`)}`);
+      }
+    }
   }
   for (const name of optionNames) {
-    if (name === CONFIG_NAMESPACE_OPTION_NAME) continue;
+    if (NAMESPACE_CONTAINER_OPTION_SET.has(name)) continue;
     if (!CONFIG_SURFACE_OPTION_SET.has(name) && !CAPABILITY_OPTION_SET.has(name)) {
       problems.push(`top-level option ${JSON.stringify(name)} is classified nowhere (config surface or capability list)`);
     }
   }
-  if (!optionNames.includes(CONFIG_NAMESPACE_OPTION_NAME)) {
-    problems.push(`top-level options do not accept ${JSON.stringify(CONFIG_NAMESPACE_OPTION_NAME)} (the config namespace itself)`);
+  for (const container of NAMESPACE_CONTAINER_OPTION_NAMES) {
+    if (!optionNames.includes(container)) {
+      problems.push(`top-level options do not accept ${JSON.stringify(container)} (a namespace container)`);
+    }
   }
   for (const name of [...CONFIG_SURFACE_OPTION_NAMES, ...CAPABILITY_OPTION_NAMES]) {
     if (!optionNames.includes(name)) {
@@ -325,6 +404,13 @@ export function collectConfigNamespaceProblems(config) {
   for (const [group, value] of Object.entries(/** @type {Record<string, unknown>} */ (config))) {
     if (CAPABILITY_OPTION_SET.has(group)) {
       problems.push(capabilityProblemMessage(`config.${group}`, group));
+      continue;
+    }
+    if (group === CAPABILITIES_NAMESPACE_OPTION_NAME) {
+      problems.push(
+        "config.capabilities: capabilities is a sibling namespace, not a config group"
+        + " (write capabilities.hooks.<name> at the top level)",
+      );
       continue;
     }
     const path = configPathForOption(group);
@@ -360,6 +446,14 @@ export function collectConfigNamespaceProblems(config) {
             ? ` (accepted: ${CONFIG_NAMESPACE_SCHEMA[group].join(", ")})`
             : ` (${JSON.stringify(leaf)} belongs to config.${misplaced})`),
         );
+        continue;
+      }
+      // #498 S4a 约束 4：**合法叶子的值里不许有函数**。只走结构上已被接受的叶子（未知分组 /
+      // 未知叶子已经在上面报过，不再拿它们的内部形状叠一条噪声）。
+      const leafValue = /** @type {Record<string, unknown>} */ (value)[leaf];
+      if (leafValue === undefined) continue;
+      for (const functionPath of collectFunctionPaths(leafValue, `config.${group}.${leaf}`)) {
+        problems.push(functionValueProblemMessage(functionPath));
       }
     }
   }
@@ -367,7 +461,51 @@ export function collectConfigNamespaceProblems(config) {
 }
 
 /**
+ * 一棵子树里所有**函数值**的完整路径（含数组下标：`config.guard.deliverables[0].check`）。
+ *
+ * 逐节点走，不做类型推断：这条判据要回答的只有「这棵树能不能过 JSON round-trip」，
+ * 而函数恰好是 `JSON.stringify` 会静默丢掉的那一类值（丢在数组里就是 `null`）。
+ *
+ * @param {unknown} value
+ * @param {string} path
+ * @returns {string[]}
+ */
+function collectFunctionPaths(value, path) {
+  if (typeof value === "function") return [path];
+  if (value === null || typeof value !== "object") return [];
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) => collectFunctionPaths(item, `${path}[${index}]`));
+  }
+  return Object.entries(/** @type {Record<string, unknown>} */ (value))
+    .flatMap(([key, item]) => collectFunctionPaths(item, `${path}.${key}`));
+}
+
+/**
+ * 函数值的统一文案：点名**完整路径**，说清原因（round-trip）与**规范之家**。
+ *
+ * 「规范之家」分两档，因为两类函数的目的地不同：
+ *   · 11 个宿主回调 ⇒ `capabilities.hooks.<name>`（可以逐字点出来）；
+ *   · 其余（`sleepImpl` / `judge.provider` / `deliverables[].check` …）⇒ 能力面里的对应端口位，
+ *     端口容器本刀未收（S4b 之后裁），所以只能说到「能力面」这一层，不编造 `capabilities.ports.x`。
+ *
+ * @param {string} path
+ * @returns {string}
+ */
+function functionValueProblemMessage(path) {
+  const leaf = path.replace(/\[\d+\]$/u, "").split(".").at(-1) ?? "";
+  const home = CAPABILITY_HOOK_NAMES.includes(leaf)
+    ? `capabilities.hooks.${leaf}`
+    : "capabilities (capabilities.hooks.<name> for a host callback, or the matching capability port slot)";
+  return `${path} is not accepted: ${JSON.stringify(leaf)} is a function, and the config namespace`
+    + " holds data only (the config subtree must survive a JSON round-trip unchanged)"
+    + ` — its canonical home is ${home}`;
+}
+
+/**
  * 能力键的统一文案：点名该键，并说清「能力面不接受配置覆盖」。
+ *
+ * 回调多一句去处（#498 S4a）：它们的规范之家是 `capabilities.hooks.<name>`——报错不说去处，
+ * 宿主只会把同一个回调换个位置再撞一次。
  *
  * @param {string} path
  * @param {string} name
@@ -376,7 +514,9 @@ export function collectConfigNamespaceProblems(config) {
 function capabilityProblemMessage(path, name) {
   return `${path} is not accepted: ${JSON.stringify(name)} is a capability/injection option,`
     + " and the capability surface cannot be overridden through the config namespace"
-    + " (pass it as a top-level option or through the assembly port)";
+    + (CAPABILITY_HOOK_NAMES.includes(name)
+      ? ` (pass it as capabilities.hooks.${name} or as the top-level option)`
+      : " (pass it as a top-level option or through the assembly port)");
 }
 
 /**

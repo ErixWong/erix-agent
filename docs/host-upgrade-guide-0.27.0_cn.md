@@ -185,6 +185,15 @@ node -e 'import("erix-agent").then(m=>console.log(Object.keys(m).length))'   # �
 八个分组是 `prompt` / `run` / `tuning` / `timing` / `folding` / `guard` / `metadata` / `observers`，
 契约里「config 命名空间（issue #497）」那一节把每个旋钮逐个列出。
 
+**回调不在配置树里**（issue #498 S4a）。`capabilities.hooks` 是它们的规范之家——`onEvent`、
+`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、`onToolResult`、`onDelta`、
+`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`——而顶层扁平写法继续逐字可用。
+**没有** `config.observers` 这一组：0.27.0 草案里带着的那组**在发布前就删掉了**，因为回调是行为
+而不是数据，装着一个回调的 `config` 子树过不了 JSON round-trip。同一个理由：`config` 里出现任何
+函数值现在 intake 当场拒绝并点名完整路径（`config.timing.retry.sleepImpl`、
+`config.guard.deliverables[0].check` …），而 `finalGuard`（值必须是函数）离开了配置面
+（顶层扁平 `finalGuard` 一字未动）。
+
 你需要动手的：**没有**。今天在传的扁平键继续被接受，行为与以前逐字相同。若你打算采用它，有两点要知道：
 
 1. **优先级** —— 同一个旋钮两种写法都给时 `config.*` 赢，且引擎在第一轮之前发一条
@@ -195,16 +204,19 @@ node -e 'import("erix-agent").then(m=>console.log(Object.keys(m).length))'   # �
    **丢掉**，所以别把两个源当逐叶合并用。
 2. **能力键一律拒绝** —— `provider`、`tools`、`executeTool`、`store`、`modelConfig`、`assemblyPort`、
    `signal`、`todoStateProvider`、`semanticStateProvider`、`onEvent`、
-   `onObserverError`、`onPersistenceError` 与 `diagnostics` 都不是配置。把它们写进 `config` ⇒
-   启动即抛并点名该键。这条线是**行为面**的：能力面 = 你递进来的**行为载体**（引擎调用或解引用的
-   函数 / 端口对象），配置面 = 引擎**按已知字段校值并解释**的数据。所以本版里 `persistence`
+   `onObserverError`、`onPersistenceError`、`diagnostics`、八个观察者通道（`onRound`、`onJudge`、
+   `onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`）与
+   `finalGuard` 都不是配置。把它们写进 `config` ⇒ 启动即抛并点名该键；回调的报错还会点出
+   `capabilities.hooks.<name>`。这条线是**行为面**的：能力面 = 你递进来的**行为载体**（引擎调用或
+   解引用的函数 / 端口对象），配置面 = 引擎**按已知字段校值并解释**的数据。所以本版里 `persistence`
    （`config.run.persistence`）与 `model` / `modelMetadata` / `session`（`config.metadata.*`）都是
    配置——引擎读它们的已知字段（持久化模式字面量、窗口数字、`session.id` / `modelSlot`）。
    `runId` / `cwd` 同样在配置面（`config.run.runId` / `config.run.cwd`）：它们是字符串标量、天然
-   JSON 安全，而 0.28 要检的「`config` 子树过 JSON round-trip 等值」要求能力面只剩函数/端口对象。
-   这条收窄**只作用于新命名空间**：既有优先级规则——显式细粒度选项
+   JSON 安全，而「`config` 子树过 JSON round-trip 等值」要求能力面只剩函数/端口对象——这条性质现在
+   由默认套件**机器断言**（每个 schema 叶子一个代表性数据取值，然后 `JSON.parse(JSON.stringify(cfg))`
+   逐叶比），不再只是一句承诺。这条收窄**只作用于新命名空间**：既有优先级规则——显式细粒度选项
    覆盖装配口提供的同名成员（`resolveAssemblyMember`（`src/assembly.js`），例如显式 `provider`
    仍能盖端口 provider）——一字未动，`test/contract/assembly-port.js` 照旧断言它。
 
-新宿主只用 `config`。顶层扁平键是**原语 / 过渡面**——继续接受、继续校验、继续有文档——它们的删除窗口
-属母单（#495）的发布阶梯，计划在 0.28。0.27.0 一个都不删。
+新宿主：配置写 `config`，回调写 `capabilities.hooks`。顶层扁平键是**原语 / 过渡面**——继续接受、
+继续校验、继续有文档——它们的删除窗口属母单（#495）的发布阶梯。本版一个都不删。

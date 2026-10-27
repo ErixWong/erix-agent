@@ -59,6 +59,7 @@ import {
   CONFIG_NAMESPACE_OPTION_NAME,
   CONFIG_NAMESPACE_SCHEMA,
   CONFIG_SURFACE_OPTION_NAMES,
+  NAMESPACE_CONTAINER_OPTION_NAMES,
   collectConfigNamespaceProblems,
   collectConfigSourceConflicts,
   configPathForOption,
@@ -113,15 +114,18 @@ const assemblyError = async (policy = {}) => {
 };
 
 // ================================================================ A. 只有一张表（派生，不是手抄）
-test("A1 schema 自检：65 个顶层选项恰好分成 52 配置面 + 13 能力面，且 config 自己是容器", () => {
+test("A1 schema 自检：67 个顶层选项恰好分成 43 配置面 + 22 能力面 + 2 容器", () => {
   // 样本自证：总数先钉住，免得「两边一起漏」也算通过。
-  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.length, 66, "顶层白名单 = 65 个既有选项 + config");
-  assert.equal(CONFIG_SURFACE_OPTION_NAMES.length, 52, "配置面 52 个键（R1 从能力面移入 4 个 + 第二轮移入 runId / cwd）");
-  assert.equal(CAPABILITY_OPTION_NAMES.length, 13, "能力面 13 项（第二轮把 runId / cwd 按「字符串标量属数据」移进配置面）");
+  // #498 S4a：66 → 67（`capabilities` 容器入列）、配置面 52 → 43（`observers` 整组 8 个回调 +
+  // `finalGuard` 移走）、能力面 13 → 22（8 个观察者通道 + finalGuard 移入）。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.length, 67, "顶层白名单 = 66 + capabilities 这个容器");
+  assert.equal(CONFIG_SURFACE_OPTION_NAMES.length, 43, "配置面 43 个键（52 − 8 个 observers − finalGuard）");
+  assert.equal(CAPABILITY_OPTION_NAMES.length, 22, "能力面 22 项（13 + 8 个观察者通道 + finalGuard）");
+  assert.equal(NAMESPACE_CONTAINER_OPTION_NAMES.length, 2, "容器两个：config 与 capabilities（#498 S4a）");
   assert.equal(
-    CONFIG_SURFACE_OPTION_NAMES.length + CAPABILITY_OPTION_NAMES.length,
-    RUN_TOOL_LOOP_OPTION_NAMES.length - 1,
-    "配置面 + 能力面 = 白名单减去 config 这个容器本身",
+    CONFIG_SURFACE_OPTION_NAMES.length + CAPABILITY_OPTION_NAMES.length + NAMESPACE_CONTAINER_OPTION_NAMES.length,
+    RUN_TOOL_LOOP_OPTION_NAMES.length,
+    "配置面 + 能力面 + 容器 = 白名单（三向闭合）",
   );
   assert.deepEqual(configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES), []);
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(CONFIG_NAMESPACE_OPTION_NAME), true);
@@ -161,9 +165,11 @@ test("A3 自检会咬人：漏分类 / 漏白名单 / 漏容器三个方向都�
   const dropped = configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES.filter((name) => name !== "maxRounds"));
   assert.deepEqual(dropped, ['schema names "maxRounds", which is not a top-level option']);
   // 方向③：白名单里没有 `config` 这个容器本身（「把容器当成配置键删掉」）。
+  // #498 S4a：容器是复数，两个都要在——`capabilities` 那一条在 `test/loop-capabilities-namespace-498.test.js`
+  // 的 S1b 里同形钉住（这里只保留本单自己的那一半）。
   const noContainer = configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES.filter((name) => name !== "config"));
   assert.deepEqual(noContainer, [
-    'top-level options do not accept "config" (the config namespace itself)',
+    'top-level options do not accept "config" (a namespace container)',
   ]);
 });
 
@@ -256,7 +262,7 @@ test("A5 移到配置面的 runId / cwd 真被引擎读：run_outcome 的 runId 
 });
 
 // ================================================================ B. 结构等价（判据 1）
-test("B1 52 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平形态逐键深度相等", () => {
+test("B1 43 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平形态逐键深度相等", () => {
   let covered = 0;
   for (const key of CONFIG_SURFACE_OPTION_NAMES) {
     const path = configPathForOption(key);
@@ -277,7 +283,7 @@ test("B1 52 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平�
     assert.deepEqual(mixed.conflicts, [{ path, key }], `${path} 混合写法必须记一条冲突`);
     covered += 1;
   }
-  assert.equal(covered, 52, "穷举必须覆盖全部 52 个配置键（漏一个就少一条等价证明）");
+  assert.equal(covered, 43, "穷举必须覆盖全部 43 个配置键（漏一个就少一条等价证明）");
 });
 
 /** 跨 8 个分组的代表性配置：同一个 `VALUES` 同时生成扁平形态与 config 形态。 */
@@ -327,14 +333,8 @@ const VALUES = {
   session: { id: "config-497-b2", modelSlot: "default" },
   runId: "config-497-run",
   cwd: "/tmp/config-497",
-  onRound: () => {},
-  onJudge: () => {},
-  onToolResult: () => {},
-  onDelta: () => {},
-  onReasoningDelta: () => {},
-  onToolCall: () => {},
-  onUsage: () => {},
-  onFoldSummary: () => {},
+  // #498 S4a：这里曾有 8 个 `on*: () => {}`——`config.observers` 整组删除后它们不再是配置叶子
+  // （回调的规范之家是 `capabilities.hooks`，见 `test/loop-capabilities-namespace-498.test.js`）。
 };
 
 /** 把 `VALUES` 摊成 `config: { … }` 形态（分组从 schema 派生，不手写）。 */
@@ -540,8 +540,8 @@ test("C7 两个 config 源同值 / 只给一边 ⇒ 不发事件（判据与扁�
 });
 
 // ================================================================ D. 能力面不收配置覆盖（判据 3）
-test("D1 13 个能力键写进 config 顶层 ⇒ 启动即抛，点名该键，via=direct", async () => {
-  assert.equal(CAPABILITY_OPTION_NAMES.length, 13);
+test("D1 22 个能力键写进 config 顶层 ⇒ 启动即抛，点名该键，via=direct", async () => {
+  assert.equal(CAPABILITY_OPTION_NAMES.length, 22);
   // 逐条枚举（**不是抽样**）：每一条都跑一次真 run，报错点名该键、带能力面文案与 via 标签。
   const enumerated = [];
   for (const name of CAPABILITY_OPTION_NAMES) {
@@ -617,22 +617,32 @@ test("E2 装配口路线的 policy.config.folding.context 走同一道语义相�
   assert.equal(error.via, "assembly");
 });
 
-test("E3 合法 config 值不被误杀：context / 回调形状都过", async () => {
+// #498 S4a 把这条**反过来**了：0.27 里 `config.observers.onFoldSummary` 与
+// `config.guard.finalGuard`（函数值）是「合法 config 值」；0.28 起 `config` 只装数据，
+// 两者都是能力面，写进 config 一律启动即抛并指出去处。合法的**数据**照旧不被误杀。
+test("E3 config 只装数据：context 照旧过，observers 组与 finalGuard 一律抛并指出去处", async () => {
   const result = await runDirect({
-    config: {
-      folding: { context: { budgetTokens: 1000, summarizerBudgetMs: 5000 } },
-      guard: { finalGuard: async () => ({ action: "accept" }) },
-      observers: { onFoldSummary: () => {} },
-    },
+    config: { folding: { context: { budgetTokens: 1000, summarizerBudgetMs: 5000 } } },
   });
   assert.equal(result.termination.reason, "end_turn");
+
+  const observersError = await directError({ config: { observers: { onFoldSummary: () => {} } } });
+  assert.match(observersError.message, /unknown config namespace: "observers"/u);
+
+  const finalGuardError = await directError({
+    config: { guard: { finalGuard: async () => ({ action: "accept" }) } },
+  });
+  assert.match(finalGuardError.message, /config\.guard\.finalGuard is not accepted/u);
+  assert.match(finalGuardError.message, /capability\/injection option/u);
 });
 
-test("E4 config 里的回调给错型 ⇒ 与扁平形态同一句（语义相管到 config 展开后的键）", async () => {
-  const flatError = await directError({ finalGuard: "nope" });
-  const nestedError = await directError({ config: { guard: { finalGuard: "nope" } } });
+// #498 S4a：`config.guard.finalGuard` 已是能力键（见 E3 / S5c），所以这条改用**仍在配置面**的
+// 回调字段 `retry.sleepImpl` 做同一件事：非函数值走语义相，两条形态抛同一句。
+test("E4 config 里的回调字段给错型 ⇒ 与扁平形态同一句（语义相管到 config 展开后的键）", async () => {
+  const flatError = await directError({ retry: { sleepImpl: "nope" } });
+  const nestedError = await directError({ config: { timing: { retry: { sleepImpl: "nope" } } } });
   assert.equal(nestedError.message, flatError.message);
-  assert.match(nestedError.message, /finalGuard must be a function \(or omitted\)/u);
+  assert.match(nestedError.message, /retry\.sleepImpl must be a function \(or omitted\)/u);
   assert.equal(nestedError.via, "direct");
 });
 
@@ -640,7 +650,8 @@ test("E4 config 里的回调给错型 ⇒ 与扁平形态同一句（语义相�
 test("F1 未知分组 / 未知叶子 / 扁平键写进 config / 组内放错位置，四种都点名", async () => {
   const unknownGroup = await directError({ config: { rund: { maxRounds: 1 } } });
   assert.match(unknownGroup.message, /unknown config namespace: "rund"/u);
-  assert.match(unknownGroup.message, /accepted: prompt, run, tuning, timing, folding, guard, metadata, observers/u);
+  assert.match(unknownGroup.message, /accepted: prompt, run, tuning, timing, folding, guard, metadata/u);
+  assert.doesNotMatch(unknownGroup.message, /observers/u, "#498 S4a：observers 组已整组删除");
 
   const unknownLeaf = await directError({ config: { run: { maxRond: 1 } } });
   assert.match(unknownLeaf.message, /unknown config\.run option: "maxRond"/u);
@@ -782,7 +793,7 @@ test("H1 JSDoc 的 config 组名集合恰等于 schema 组名（类型面锁进�
   const schemaGroups = Object.keys(CONFIG_NAMESPACE_SCHEMA); // 派生，不手抄
   // 派生自证：这份期望值确实来自模块导出（与分组名单逐字同一份）。
   assert.deepEqual(schemaGroups, [...CONFIG_NAMESPACE_GROUPS], "期望值必须来自 CONFIG_NAMESPACE_SCHEMA 的键集");
-  assert.equal(schemaGroups.length, 8, "八组（schema 侧的自证）");
+  assert.equal(schemaGroups.length, 7, "七组（schema 侧的自证；#498 S4a 删掉了 observers）");
 
   const duplicated = jsDocGroups.filter((group, index) => jsDocGroups.indexOf(group) !== index);
   const extra = jsDocGroups.filter((group) => !schemaGroups.includes(group));

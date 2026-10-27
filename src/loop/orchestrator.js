@@ -316,6 +316,8 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   的载荷——冲突叶子的 schema 路径（`"run.maxRounds"`）与顶层键名，**只带路径与键名**（值可能是
  *   函数/大对象，不进事件）。两个来源都算：`config.*` vs 同名扁平键、调用级 `config` vs 装配口
  *   `policy.config`（复审 R4）。按 path 去重，顺序 = schema 分组顺序 + 组内顺序。
+ *   issue #498（S4a，additive）：第二个容器同一条出口——`capabilities.hooks.*` vs 同名扁平回调，
+ *   path 形如 `"hooks.onEvent"`（同一个载荷、同一个去重与排序规则）。
  */
 
 /**
@@ -386,7 +388,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   finalGuardTimeoutMs?: number, // Defaults to 30000; non-positive values use the default.
  *   finalGuardExtend?: boolean, // issue #386 slice 3: let a `revise` on a budget-type stop (max_rounds_cap / continuation_exhausted) borrow the mid-run extension mechanism **once per run**. Defaults to false = today's behaviour byte for byte; `stall` is never extended.
  *   maxTokenContinuations?: number,
- *   config?: { // issue #497（S2）：嵌套配置命名空间，八组见下（叶子名逐字等于同名顶层选项，类型也一致）。
+ *   config?: { // issue #497（S2）：嵌套配置命名空间，七组见下（叶子名逐字等于同名顶层选项，类型也一致）。
  *     prompt?: {system?: string, cacheStablePrefix?: boolean, initialUserMessage?: string, initialMessages?: object[], wrapup?: boolean},
  *     run?: {maxRounds?: number, maxTokenContinuations?: number,
  *       stallDetection?: {window?: number, mode?: "appear"|"consecutive"}|false,
@@ -403,12 +405,15 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *     folding?: {context?: {strategy?: object|"sliding-window"|"fold-statistical"|"fold-llm", budgetTokens?: number,
  *       keepRounds?: number, toolContext?: object, task?: string},
  *       toolResultTtl?: number, toolResultFoldMinTokens?: number},
- *     guard?: {finalGuard?: (payload: object) => Promise<{action: "accept"}|{action: "skip", reason: string}|{action: "revise", message: string}>,
- *       finalGuardMaxRetries?: number, finalGuardTimeoutMs?: number, finalGuardExtend?: boolean, deliverables?: object[]},
+ *     guard?: {finalGuardMaxRetries?: number, finalGuardTimeoutMs?: number, finalGuardExtend?: boolean, deliverables?: object[]},
  *     metadata?: {expert?: any, user?: any, task?: any, requestId?: string, toolContext?: object,
  *       model?: {contextWindowTokens?: number, maxOutputTokens?: number},
  *       modelMetadata?: {contextWindowTokens?: number, maxOutputTokens?: number}, session?: any},
- *     observers?: {onRound?: (record: object) => void, onJudge?: (info: JudgeEvent) => void,
+ *   },
+ *   capabilities?: { // issue #498（S4a）：能力面容器。本版只收 `hooks`（11 个宿主回调的规范之家）。
+ *     hooks?: {onEvent?: (event: LoopEvent) => void, onObserverError?: (error: Error, context: {channel: string, runId?: string, type?: string, round?: number, toolName?: string, method?: string}) => void,
+ *       onPersistenceError?: (error: Error) => void,
+ *       onRound?: (record: object) => void, onJudge?: (info: JudgeEvent) => void,
  *       onToolResult?: (name: string, result: string, metadata?: object) => any,
  *       onDelta?: (chunk: string) => void, onReasoningDelta?: (chunk: string) => void,
  *       onToolCall?: (fragment: object) => void, onUsage?: (usage: object) => void,
@@ -490,18 +495,30 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *
  * `config`:
  *   issue #497（S2）：`config` 是一棵**嵌套命名空间**，叶子是既有顶层扁平键的别名（别名 = schema
- *   路径，叶子名逐字等于顶层键名，没有重命名表）。八个分组**就是**这八个：
- *   `prompt` / `run` / `tuning` / `timing` / `folding` / `guard` / `metadata` / `observers`
+ *   路径，叶子名逐字等于顶层键名，没有重命名表）。七个分组**就是**这七个：
+ *   `prompt` / `run` / `tuning` / `timing` / `folding` / `guard` / `metadata`
  *   （schema 见 `CONFIG_NAMESPACE_SCHEMA`（`src/loop/config-namespace.js`）；写错组名启动即抛）。
  *   同名时 `config.*` 赢，扁平键继续接受；两种写法给了**不同的值**时发一条
  *   `config_override_conflict`（`conflicts: [{ path, key }]`，只带路径与键名）。装配口的
  *   `policy.config` 与调用级 `config` 同时在场时取值仍是「后写者胜、整棵覆盖」，但逐叶冲突走
  *   同一条事件（复审 R4）——只写在被覆盖那棵树里的叶子会被丢掉，别把它当逐叶合并用。
  *   能力面（`provider` / `tools` / `executeTool` / `store` / `modelConfig` / `assemblyPort` /
- *   `signal` / 状态源 / 回调出口 …）写进 `config` 一律启动即抛并点名该键。`runId` / `cwd` 是
- *   配置面（`config.run.runId` / `config.run.cwd`）：它们是字符串标量，而 0.28 要检的
+ *   `signal` / 状态源 / 回调出口 / `finalGuard` …）写进 `config` 一律启动即抛并点名该键。
+ *   **`config` 里不许有函数值**（#498 S4a）：整棵树逐节点扫，函数一律启动即抛并点名完整路径
+ *   （`config.guard.deliverables[0].check`），报错说清规范之家 `capabilities.hooks.<name>`。
+ *   `runId` / `cwd` 是配置面（`config.run.runId` / `config.run.cwd`）：它们是字符串标量，而
  *   「`config` 子树过 JSON round-trip 等值」要求能力面只剩函数/端口对象（见
- *   `src/loop/config-namespace.js` 文件头约束 3）。
+ *   `src/loop/config-namespace.js` 文件头约束 3 / 4）。
+ *
+ * `capabilities`:
+ *   issue #498（S4a）：能力面容器，与 `config` **同等待遇**（同一道预检相位、同一套「容器赢扁平」
+ *   优先级、同一条冲突事件）。本版只收一组 `hooks` —— 11 个宿主回调的规范之家
+ *   （`onEvent` / `onObserverError` / `onPersistenceError` / `onRound` / `onJudge` / `onToolResult` /
+ *   `onDelta` / `onReasoningDelta` / `onToolCall` / `onUsage` / `onFoldSummary`，名单见
+ *   `CAPABILITY_HOOK_NAMES`（`src/loop/capabilities-namespace.js`））。
+ *   顶层扁平 `onRound` 等**照旧可用**（0.26 已发布面，本版不删）。未知子键（`capabilities.hoks` /
+ *   `capabilities.hooks.onEtent`）与「叶子不是函数」一律启动即抛并点名完整路径。
+ *   `config.observers` 这组已整组删除（0.27 未发布 ⇒ 零成本）。
  *
  * `onToolResult`:
  *   改写钩子（非纯观察者）：返回值会替换工具结果。抛错/rejected Promise 被隔离，
@@ -1072,6 +1089,9 @@ export async function runToolLoop(options) {
   // （范围 2：冲突不许静默）。复审 R4：装配口 `policy.config` 与调用级 `config` 两个源同时在场时
   // 也一样——取值仍是「后写者胜、整棵覆盖」，但逐叶冲突走**同一条事件、同一套字段**
   // （`conflicts: [{ path, key }]`），否则同一棵树的两种来源会比「扁平 vs config」更静默。
+  // issue #498（S4a）：第二个容器 `capabilities` 走同一条出口——`capabilities.hooks.<name>` 与同名
+  // 扁平回调都给了不同的值 ⇒ 同一条事件、同一套字段，只是 path 形如 `hooks.onEvent`。
+  // 不新增事件类型是刻意的：载荷说的是「一个旋钮两个真相来源」，path 说明是哪个容器。
   // 与上面两条启动期诊断同口径：直调 `onEvent`（`emitEvent` 定义在
   // 下方，引用会踩 TDZ），本地复刻隔离防护。与它们不同的是本事件**只可能在启动期发生一次**，
   // 所以不需要去重标记。载荷只带路径与键名（值可能是函数/大对象，不进事件）。
@@ -1082,9 +1102,10 @@ export async function runToolLoop(options) {
         type: "config_override_conflict",
         runId,
         conflicts: configConflicts,
-        detail: "config.* wins over the same-named flat option (the flat key is still accepted),"
-          + " and a call-level config overrides the assembly port's policy.config as a whole tree;"
-          + " every leaf that both sources set to different values is listed in conflicts",
+        detail: "config.* / capabilities.hooks.* win over the same-named flat option (the flat key is"
+          + " still accepted), and a call-level config or capabilities tree overrides the assembly port's"
+          + " policy.config / policy.capabilities as a whole tree; every leaf that both sources set to"
+          + " different values is listed in conflicts",
       });
     } catch (hostError) {
       reportObserverError(hostError, {

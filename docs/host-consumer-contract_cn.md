@@ -27,7 +27,8 @@ todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
 toolContext, store, persistence, runId, cwd, deliverables, invalidArguments, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
-onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, finalGuardExtend, config
+onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, finalGuardExtend, config,
+capabilities
 ```
 
 `partialPersistence` 默认为 `false`，保持既有的流式零写入行为。设为
@@ -99,8 +100,9 @@ executeTool({ id, name, input, context, signal })
 `maxSummaryToken` 会被判成手滑而抛；`summaryStyle` / `summarizerNote` / `maxSummaryChars` 照旧放行。
 
 0.27.0 里需要知道的行为变化：`context` 下拼错的摘要旋钮名、以及上面任一回调字段里的非函数值，以前在
-细粒度路线上是**静默忽略**（run 直接用默认值跑）。现在两者都启动即抛。把这些回调接出配置树的能力面
-**不在** 0.27.0 里——它在 0.28.0 落地（issue #498），在那之前现有位置照旧工作。
+细粒度路线上是**静默忽略**（run 直接用默认值跑）。现在两者都启动即抛。把回调接出配置树的能力面
+**已在 0.28.0 落地**（issue #498 S4a）：`capabilities.hooks` 就是它们的规范之家，而上面列的那些扁平
+位置照旧工作（这是纯加法——见下面的「capabilities 命名空间」一节）。
 
 ### config 命名空间（issue #497）
 
@@ -110,8 +112,9 @@ executeTool({ id, name, input, context, signal })
 `CONFIG_NAMESPACE_SCHEMA`（`src/loop/config-namespace.js`），别名表 `CONFIG_ALIAS_PATHS`
 （`src/loop/config-namespace.js`）与配置面名单 `CONFIG_SURFACE_OPTION_NAMES`
 （`src/loop/config-namespace.js`）都从它派生，再由 `configSchemaSelfCheck`
-（`src/loop/config-namespace.js`）对着顶层白名单核账：每个顶层选项必须**恰好**被归入
-*配置面*（52 键）或*能力面*（13 键）之一，而 `config` 自己是那个容器。
+（`src/loop/config-namespace.js`）对着顶层白名单按**三个方向**核账：每个顶层选项必须**恰好**被归入
+*配置面*（43 键）、*能力面*（22 键）或*容器*（2 个：`config` 与 `capabilities`）之一，且三桶之和
+必须等于白名单条数（43 + 22 + 2 = 67）。
 
 | 命名空间 | 旋钮 |
 | --- | --- |
@@ -120,9 +123,13 @@ executeTool({ id, name, input, context, signal })
 | `config.tuning` | `maxTokens`、`temperature`、`topP`、`cacheCapable` |
 | `config.timing` | `timeoutMs`、`deadlineMs`、`retry` |
 | `config.folding` | `context`、`toolResultTtl`、`toolResultFoldMinTokens` |
-| `config.guard` | `finalGuard`、`finalGuardMaxRetries`、`finalGuardTimeoutMs`、`finalGuardExtend`、`deliverables` |
+| `config.guard` | `finalGuardMaxRetries`、`finalGuardTimeoutMs`、`finalGuardExtend`、`deliverables` |
 | `config.metadata` | `expert`、`user`、`task`、`requestId`、`toolContext`、`model`、`modelMetadata`、`session` |
-| `config.observers` | `onRound`、`onJudge`、`onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary` |
+
+0.27.0 里那张 `config.observers` 分组在 **0.28.0 已被整组删除**（issue #498 S4a）：回调不是数据，
+装着一个回调的 `config` 子树过不了 JSON round-trip。回调住在 `capabilities.hooks`（下一节）。
+`finalGuard` 因同一个理由离开了这张表——它的值**必须**是函数，按下面的判据它是行为载体、不是数据；
+顶层扁平 `finalGuard` 一字未动。
 
 它由五条规则管着：
 
@@ -143,12 +150,25 @@ executeTool({ id, name, input, context, signal })
 - **结构等价** —— 同一份配置写成扁平与写成 `config`，规范化后的 `effectiveOptions` 逐键相同。
   展开发生在**合并后**的表示上（装配口已折进来之后、语义相之前），所以 `config` 里的值走的是与
   扁平孪生完全相同的那套校验：`config.folding.context` 里拼错的摘要旋钮名抛的是与扁平 `context`
-  同一句，`config.guard.finalGuard` 必须是函数的原因与 `finalGuard` 必须是函数完全一样。
-- **能力键一律拒绝** —— `CAPABILITY_OPTION_NAMES`（`src/loop/config-namespace.js`）里的 13 项能力
+  同一句，`config.timing.retry.sleepImpl` 必须是函数的原因与 `retry.sleepImpl` 必须是函数完全一样。
+- **函数值 intake 当场拒绝**（issue #498 S4a）。JSON round-trip 是事后体检，拒绝才是保证——它让
+  「宿主以为设置了、其实没设置」不可能发生。整棵 `config` 子树逐节点走（含数组元素），任何函数值
+  启动即抛并点名**完整路径**（`config.guard.deliverables[0].check`，不是含糊的 `deliverables`）：
+  实测真被当函数用的那些壳字段是 `config.timing.retry.sleepImpl`、
+  `config.run.reflection.onReflection`、`config.run.reflection.judge.provider`、
+  `config.folding.context.onBeforeFold` / `onAfterFold`、`config.guard.deliverables[].check`。
+  报错同时说清规范之家：宿主回调是 `capabilities.hooks.<name>`，其余是对应的能力面端口位。
+  **不存在「收下再在展开时丢函数」**——抛发生在**任何宿主端口被读取之前**。一个后果如实写出来：
+  `config.guard.deliverables` 的每一条都带函数 `check`，所以配置面里能写的只有 `deliverables: []`
+  （逐字等于「未声明」）；有内容的判据走顶层选项。而 `config.guard.finalGuard` 已经不是配置键了
+  ——见上面那张表。
+- **能力键一律拒绝** —— `CAPABILITY_OPTION_NAMES`（`src/loop/config-namespace.js`）里的 22 项能力
   选项不是配置：`provider`、`tools`、`executeTool`、`store`、`modelConfig`、`assemblyPort`、
   `signal`、`todoStateProvider`、`semanticStateProvider`、`onEvent`、
-  `onObserverError`、`onPersistenceError`、`diagnostics`。把它们写进 `config`（顶层或组内）⇒
-  启动即抛并点名该键，错误带着与其他闸口相同的 `via` 标签（`"direct"` / `"assembly"`）。
+  `onObserverError`、`onPersistenceError`、`diagnostics`、八个观察者通道（`onRound`、`onJudge`、
+  `onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`）与
+  `finalGuard`。把它们写进 `config`（顶层或组内）⇒ 启动即抛并点名该键；回调的报错还会点出新家
+  （`capabilities.hooks.<name>`），错误带着与其他闸口相同的 `via` 标签（`"direct"` / `"assembly"`）。
   **这条收窄只作用于新命名空间**：既有优先级规则——显式细粒度选项覆盖装配口提供的同名成员
   （`resolveAssemblyMember`（`src/assembly.js`），例如显式 `provider` 仍能盖端口 provider）——
   一字未动，`test/contract/assembly-port.js` 照旧断言它（「显式细粒度 provider 覆盖端口 provider」）。
@@ -164,16 +184,18 @@ executeTool({ id, name, input, context, signal })
   `modelSlot` 被交给 `modelConfig.resolve`、`resume` / `initialMessages` 被读）。旧判据
   「能力面 = 引擎不解释其值」对这四个键**实测为假**。
   
-  `tools` 是**目前唯一不满足这条判据**的键，而 0.27.0 故意把它留在能力面：引擎从不**调用**工具声明的
+  `tools` 是**目前唯一不满足这条判据**的键，而 0.28.0 故意把它留在能力面：引擎从不**调用**工具声明的
   成员——它校 `replay`（枚举字面量）、读 `name` / `inputSchema`，然后把这个对象原样送进请求体，按上面的
   判据 `tools` 是数据。它是「输入载荷族」里**最后一个还留在能力面**的成员——`initialUserMessage` 已在 `config.prompt` 下——
-  这一族剩下的归属由 issue #498 **整族一起裁**；提前单移等于把同一个决定裁两次、还跨两个版本。可观察后果如实写出：0.27.0
-  里写 `config.tools` 会启动即抛同样的「能力面/注入面选项」错，所以**本版本的能力面并不是纯粹的「只有函数
-  与端口对象」**；这条拒绝正是 #498 要翻转的东西，届时实测，不在现在声称。
+  这一族的归属（连同端口对象要不要搬进 `capabilities.ports`）是**下一刀**的裁决，不是本刀的：
+  提前单移等于把同一个决定裁两次、还跨两个版本。可观察后果如实写出：0.28.0 里写 `config.tools`
+  会启动即抛同样的「能力面/注入面选项」错，所以**能力面目前并不是纯粹的「只有函数与端口对象」**。
+  这条拒绝什么时候翻转，这里不给时间表，也不在实测之前声称。
   
-  这条判据描述的是 **0.28 目标面，不是 0.27.0 现状**。`config.observers` 在 0.27.0 装着 8 个 `on*` 函数——
-  过渡位置（回调出树要等 0.28.0，issue #498）——所以 0.27.0 的 `config` 子树**不是** JSON round-trip 安全，
-  上面那条 round-trip 性质不能被读成本版本的性质。
+  已经落地的是这条判据的另一半：自 0.28.0 起 `config` 子树**只装数据**，所以它**真的**过 JSON
+  round-trip 等值——而且这条性质由默认套件机器断言（每个 schema 叶子一个代表性数据取值，然后
+  `JSON.parse(JSON.stringify(cfg))` 逐叶比）。两条闸口守着它：上面那条函数拒绝，以及「值必须是函数的
+  叶子根本不在配置面上」。
 
 
   **`runId` / `cwd` 也是配置**（issue #497 复审第二轮——上一轮给判据加的那条「身份/环境注入」腿
@@ -194,8 +216,54 @@ executeTool({ id, name, input, context, signal })
 同样接受 `config`，于是两条入口路线共用这一次展开（`via` 标签负责说明是哪条路线抛的）。
 
 过渡口径：新宿主只用 `config`。顶层扁平键是**原语 / 过渡面**——继续接受、继续校验、继续有文档——
-但行进方向是一面。删除窗口属 #495 的发布阶梯，**计划在 0.28**（是计划，不是本版给出的承诺）；
-0.27.0 一个扁平键都不删。
+但行进方向是一面。它们的删除窗口属 #495 的发布阶梯，且**还没有发生**：本次改动一个扁平键都没删。
+
+本节与下一节描述的都是**本分支这棵树**（0.28.0 那条线——`package.json` 由发版那一刀抬，不由功能改动抬）。
+
+### capabilities 命名空间（issue #498）
+
+回调是行为，不是数据，所以 0.28.0 给它们一个自己的容器：`capabilities.hooks`。11 个宿主回调——
+`onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、`onToolResult`、
+`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`——逐个写在
+`CAPABILITY_HOOK_NAMES`（`src/loop/capabilities-namespace.js`）里，分组表
+`CAPABILITIES_NAMESPACE_SCHEMA`（`src/loop/capabilities-namespace.js`）是它唯一手写的来源：别名表
+`CAPABILITIES_ALIAS_PATHS`（`src/loop/capabilities-namespace.js`）从它派生，与 `config` 的别名表
+派生方式逐字相同——所以 `capabilities.hooks.onEvent` 与扁平 `onEvent` 是同一个键（别名 = schema
+路径，叶子名逐字等于扁平选项名）。
+
+| 命名空间 | 回调 |
+| --- | --- |
+| `capabilities.hooks` | `onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、`onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary` |
+
+五条规则，刻意与 `config` **对称**（两个容器，一套规则）：
+
+- **优先级** —— 同一个回调两种写法都给时，`capabilities.hooks.*` 赢过扁平键；扁平键继续被接受，且
+  只要它是唯一写法，行为与今天逐字相同。叶子设成 `undefined` 逐字等于「没订阅」，所以它既不覆盖
+  扁平钩子、也不算冲突。
+- **冲突不静默** —— 两种写法给了**不同的值**时，引擎在第一轮之前发一条 `config_override_conflict`：
+  `conflicts: [{ path, key }]`，其中 `path` 形如 `hooks.<name>`（`{ path: "hooks.onEvent", key: "onEvent" }`）。
+  同一条事件、同一套字段、不新增事件类型：载荷说的是「这个旋钮有两个真相来源」，path 说明是哪个容器。
+  在这条事件上抛错的观察者与其他观察者通道同口径被隔离。
+  **同一条事件也管第二对来源**：装配口的 `policy.capabilities` 与调用级 `capabilities` 是**同一个
+  容器**的两个来源，调用级那份按**整棵**覆盖（与 `config` 用的是同一条「后写者胜」规则）；两个源里
+  同一个钩子给了**不同的函数**的，逐叶上报、按 path 去重。值相同、或只有一边给了的不算冲突。
+- **未知子键当场抛，并点名完整路径** —— `capabilities: { hoks: … }` 回的是
+  `unknown capabilities namespace: "hoks" (accepted: hooks; ports are not collected under
+  capabilities yet — pass them as top-level options or through the assembly port)`；
+  `capabilities.hooks.onEtent` 回的是 `unknown capabilities.hooks option: "onEtent" (accepted: …)`。
+  回调写高了一层（`capabilities.onEvent`）会被回一句「hooks live under capabilities.hooks」。
+  没有一条是静默忽略——新容器绝不许把「配了等于没配」那类静默重新请回来。
+- **钩子必须是函数** —— `undefined` = 未订阅；其余非函数值（`null`、字符串、对象）启动即抛并点名
+  `capabilities.hooks.<name>`。顶层扁平 `onRound: "x"` 的宽容是 0.26 已发布面，本版不动它；
+  新容器从第一天起就是严的。
+- **端口还没收** —— 本版没有 `capabilities.ports`；端口对象（`provider`、`tools`、`store`、
+  `signal` …）留在原处（顶层选项或装配口），写进 `capabilities` 会抛并说明这一点。它们要不要搬，
+  是后面那一刀的裁决，不是这里给出的承诺。
+
+`capabilities` 同样从不进引擎：展开会把它删掉，所以 `effectiveOptions`——以及
+`normalizeRunToolLoopOptions`（`src/loop/option-normalization.js`）返回的 `explicitOptions`——
+里只剩扁平键。装配口的 `policy` 同样接受 `capabilities`，于是两条入口路线共用这一次展开，
+`via` 标签负责说明是哪条路线抛的。
 
 ### 工具引数解析不了的时候（issue #409）
 

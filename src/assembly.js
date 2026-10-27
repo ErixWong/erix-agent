@@ -1,4 +1,5 @@
 
+import { assertCapabilitiesNamespace } from "./loop/capabilities-namespace.js";
 import { assertConfigNamespace } from "./loop/config-namespace.js";
 import {
   MODEL_CONFIG_RESOLVER_HINT,
@@ -57,6 +58,11 @@ const ASSEMBLY_POLICY_OPTION_NAMES = new Set([
   // 它的展开与校验都在 `normalizeRunToolLoopOptions`（合并之后、语义相之前）做：装配口这里
   // 只保证名字被放行，于是 `policy.config` 与直连 `config` 走的是**同一棵树、同一套规则**。
   "config",
+  // issue #498（S4a）：第二个容器。装配口也接受，理由与 `config` 逐字相同——否则同一份能力面
+  // 换个入口就变成 `unknown assembly policy option`，又回到「校验绑在入口路线上」的老病。
+  // 名称/形状/取值在构造期校（`assertCapabilitiesNamespace`），展开在
+  // `normalizeRunToolLoopOptions`（合并之后、语义相之前）。
+  "capabilities",
   "diagnostics",
   "onObserverError",
   "signal",
@@ -186,6 +192,8 @@ export function createAssemblyPort(input = {}) {
   // **取值**不在这里校：展开发生在 `normalizeRunToolLoopOptions`（合并之后、语义相之前），
   // 展开后的扁平键由同一道语义相覆盖（`config.folding.context` 的旋钮拼错照样抛）。
   assertConfigNamespace(port.policy?.config, { via: "assembly" });
+  // issue #498（S4a）：`policy.capabilities` 与调用级 `capabilities` 是同一个容器，构造期同相校。
+  assertCapabilitiesNamespace(port.policy?.capabilities, { via: "assembly" });
   assertSemanticOptionValues(port.policy ?? {}, { via: "assembly" });
   // issue #493：非「旋钮家族」的未知 `context` 子键**不抛**——契约允许宿主把私有元数据放这里
   // （`budget.js` 自己也读 `toolContext` / `expert` / `user` / `session` / `requestId`）。
