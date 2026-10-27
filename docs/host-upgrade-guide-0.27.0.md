@@ -22,6 +22,7 @@ longer inherited verbatim from the run (§2). A host that compiles against 0.26.
 | Prior summary seeded across resume; the reuse key now includes it (§5) | yes, expect **one** recomputed summary per existing ledger |
 | Degrade facts on `compaction.foldSummary`, including `degradeKind` and `finishReason` (§6) | no — additive; no fact, no key |
 | A single round larger than the input cap has no whole round to drop (§7) | no — but read this before asserting on `droppedRounds` |
+| Nested `config` namespace for the same knobs (§10) | no — the flat keys keep working; `config.*` wins when both are given |
 
 ### Files touched by this release (host-visible surface)
 
@@ -31,6 +32,7 @@ longer inherited verbatim from the run (§2). A host that compiles against 0.26.
 - `src/assembly-validators.js` / `src/assembly.js` — `context` whitelist (five engine-read keys + all knobs), knob-family detection by edit distance, `contextOptionNameSelfCheck()`.
 - `src/loop/budget.js` — the `context.toolContext` / `expert` / `user` / `session` / `requestId` keys that were always read but never whitelisted.
 - `src/tools/file-tools.js` — `readFile` description's median tier re-measured (byte-neutral; the test tolerances did not move).
+- `src/loop/config-namespace.js` — the `config` namespace schema, its derived alias table and the capability/injection refusal list.
 
 ## 2. The five summarizer knobs, and one cap that is now actually a cap
 
@@ -189,3 +191,30 @@ Then, in your own acceptance:
    on the `compaction` event, with the run still finishing normally.
 4. **The upgrade miss is one, not many**: on a pre-existing session, fold twice and assert the first fold
    recomputed (`priorSummaryOrigin` present) and the second did not re-burn the same base.
+
+## 10. One namespace for a run's configuration: `config`
+
+0.27.0 adds a second, nested spelling for the configuration keys. `config.run.maxRounds` and the flat
+`maxRounds` are the same knob: the leaf name is always verbatim the flat option name, and the alias *is*
+the schema path — nothing to remember, and no second mapping table to drift. The eight groups are
+`prompt` / `run` / `tuning` / `timing` / `folding` / `guard` / `metadata` / `observers`; the contract
+section “The `config` namespace (issue #497)” lists every knob one by one.
+
+What you have to act on: **nothing**. The flat keys you pass today keep being accepted and behave
+exactly as before. Two things to know if you adopt it:
+
+1. **Precedence** — when the same knob is given both ways, `config.*` wins, and the engine emits one
+   `config_override_conflict` event before the first round:
+   `{ type, runId?, conflicts: [{ path, key }], detail }`. Nothing is silent — if you see that event,
+   one knob has two sources of truth in that run.
+2. **Capability keys are refused** — `provider`, `tools`, `executeTool`, `store`, `modelConfig`,
+   `assemblyPort`, `session`, `runId`, `signal`, `cwd`, `persistence`, `model`, `modelMetadata`,
+   `todoStateProvider`, `semanticStateProvider`, `onEvent`, `onObserverError`, `onPersistenceError`
+   and `diagnostics` are not configuration. Writing one inside `config` throws at startup and names the
+   key. This narrowing applies to the **new namespace only**: the existing `overrides` /
+   `withOverrides` promise — an explicit fine-grained `provider` still overrides the port's provider —
+   is untouched, and the AssemblyPort contract suite keeps asserting it.
+
+New hosts should use `config` alone. The flat top-level keys are the **primitive / transitional**
+surface — still accepted, still validated, still documented — and their removal window belongs to the
+mother issue's release ladder (#495), planned for 0.28. 0.27.0 removes nothing.

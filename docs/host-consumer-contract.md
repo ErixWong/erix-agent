@@ -31,7 +31,7 @@ todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
 toolContext, store, persistence, runId, cwd, deliverables, invalidArguments, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
-onDelta, onReasoningDelta, onToolCall, onUsage, onEvent
+onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, finalGuardExtend, config
 ```
 
 `partialPersistence` defaults to `false`, preserving the existing no-write
@@ -124,6 +124,74 @@ non-function value in any of the callback fields above, used to be **silently ig
 fine-grained route (the run simply used the defaults). Both now throw at startup. A capability
 plane that accepts these callbacks outside the config tree is **not** part of 0.27.0 — it lands
 in 0.28.0 (issue #498), and the current positions keep working until then.
+
+### The `config` namespace (issue #497)
+
+A run's configuration has a second spelling. `config` is a **nested namespace** whose leaves are
+aliases of the flat top-level keys, and the alias **is** the schema path: `config.run.maxRounds`
+and the flat `maxRounds` are the same knob, and a leaf name is always verbatim the flat option
+name. There is no rename table. One schema, `CONFIG_NAMESPACE_SCHEMA`
+(`src/loop/config-namespace.js`), is the only hand-written part; the alias map
+`CONFIG_ALIAS_PATHS` (`src/loop/config-namespace.js`) and the config-surface list
+`CONFIG_SURFACE_OPTION_NAMES` (`src/loop/config-namespace.js`) are derived from it, and
+`configSchemaSelfCheck` (`src/loop/config-namespace.js`) keeps the pair honest against the
+top-level allowlist: every top-level option must be classified as exactly one of *config surface*
+(46 keys) or *capability/injection* (19 keys), with `config` itself being the container.
+
+| namespace | knobs |
+| --- | --- |
+| `config.prompt` | `system`, `cacheStablePrefix`, `initialUserMessage`, `initialMessages`, `wrapup` |
+| `config.run` | `maxRounds`, `maxTokenContinuations`, `stallDetection`, `completion`, `replayPolicy`, `invalidArguments`, `partialPersistence`, `outputHygiene`, `writeToolNames`, `writeToolPathKeys`, `resume`, `stream`, `reflection` |
+| `config.tuning` | `maxTokens`, `temperature`, `topP`, `cacheCapable` |
+| `config.timing` | `timeoutMs`, `deadlineMs`, `retry` |
+| `config.folding` | `context`, `toolResultTtl`, `toolResultFoldMinTokens` |
+| `config.guard` | `finalGuard`, `finalGuardMaxRetries`, `finalGuardTimeoutMs`, `finalGuardExtend`, `deliverables` |
+| `config.metadata` | `expert`, `user`, `task`, `requestId`, `toolContext` |
+| `config.observers` | `onRound`, `onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary` |
+
+Five rules govern it:
+
+- **Precedence** — when the same knob is given both ways, `config.*` wins. The flat key keeps being
+  accepted and behaves exactly as before whenever it is the only spelling. A leaf set to
+  `undefined` is verbatim "not provided" (the same rule the flat merge uses), so it neither
+  overrides a flat value nor counts as a conflict.
+- **Conflicts are not silent** — when both spellings are present with **different** values the
+  engine emits one `config_override_conflict` event before the first round:
+  `{ type: "config_override_conflict", runId?, conflicts: [{ path, key }], detail }`. The payload
+  carries paths and key names only (values may be functions or large objects). An observer that
+  throws on that event is isolated like every other observer channel — recorded through
+  `onObserverError`, and the run continues.
+- **Structural equivalence** — the same configuration written flat and written as `config` produces
+  the same `effectiveOptions`, key for key. Expansion runs on the **merged** representation (after
+  the assembly port has been folded in, before the semantic phase), so a `config` value goes
+  through exactly the same validation as its flat twin: a misspelled summarizer knob under
+  `config.folding.context` throws the same message as under the flat `context`, and
+  `config.guard.finalGuard` must be a function for the same reason `finalGuard` must be.
+- **Capability keys are refused** — the 19 capability/injection options in
+  `CAPABILITY_OPTION_NAMES` (`src/loop/config-namespace.js`) are not configuration: `provider`,
+  `tools`, `executeTool`, `store`, `modelConfig`, `assemblyPort`, `session`, `runId`, `signal`,
+  `cwd`, `persistence`, `model`, `modelMetadata`, `todoStateProvider`, `semanticStateProvider`,
+  `onEvent`, `onObserverError`, `onPersistenceError`, `diagnostics`. Writing one inside `config`
+  (at the top level or under a group) throws at startup and names the key; the error carries the
+  same `via` tag as every other gate error (`"direct"` / `"assembly"`). **This narrowing applies
+  to the new namespace only**: the existing `overrides` / `withOverrides` contract — an explicit
+  fine-grained `provider` still overrides the port's provider — is unchanged, and the AssemblyPort
+  contract suite keeps asserting it.
+- **Shape and names** — `config` itself must be an object (`null`, an array and a string all
+  throw); an unknown group, an unknown leaf, a flat key written at the top of `config`
+  (`config.maxRounds` is answered with "write `config.run.maxRounds`"), and a leaf written in the
+  wrong group (`config.run.temperature` points at `config.tuning.temperature`) all throw **before
+  any host port is read**, with the accepted names enumerated from the schema.
+
+`config` never reaches the engine: expansion removes it, so `effectiveOptions` — and the
+`explicitOptions` returned by `normalizeRunToolLoopOptions` (`src/loop/option-normalization.js`) —
+contain flat keys only. The assembly port accepts `config` in its `policy` as well, so both entry
+routes share this one expansion (and the `via` tag says which route threw).
+
+Transition: new hosts should use `config` alone. The flat top-level keys are the **primitive /
+transitional** surface — still accepted, still validated, still documented — but the direction of
+travel is one namespace. The removal window belongs to #495's release ladder and is **planned for
+0.28** (a plan, not a promise made by this version); 0.27.0 removes nothing.
 
 ### Tool arguments that cannot be parsed (issue #409)
 

@@ -2107,9 +2107,14 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  `assertSemanticOptionValues` 与 `collectSemanticOptionProblems`（`src/assembly-validators.js`）、
  *  `normalizeDeliverables`（`src/loop/deliverables.js`）—— 在**本分支的树**上 `--verbose` 实测
  *  **138 组 / 412 处**（契约 EN 113 → 117 处 / CN 107 → 111 处，中英 AGENTS 各 11 → 14 / 31 → 34 处；
- *  裸行号一处未增、仍 130 vs 130）。
+ *  裸行号一处未增、仍 130 vs 130）。issue #497（S2）新增 `config` 嵌套命名空间后，契约中英各多一节
+ *  `### The config namespace (issue #497)` / `### config 命名空间（issue #497）`，引用六个符号：
+ *  `CONFIG_NAMESPACE_SCHEMA` / `CONFIG_ALIAS_PATHS` / `CONFIG_SURFACE_OPTION_NAMES` /
+ *  `configSchemaSelfCheck` / `CAPABILITY_OPTION_NAMES`（`src/loop/config-namespace.js`）与
+ *  `normalizeRunToolLoopOptions`（`src/loop/option-normalization.js`）—— 在**本分支的树**上
+ *  `--verbose` 实测 **144 组 / 419 处**（+6 组 / +7 处；裸行号一处未增、仍 130 vs 130）。
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 138;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 144;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {

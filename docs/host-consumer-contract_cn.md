@@ -27,7 +27,7 @@ todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
 toolContext, store, persistence, runId, cwd, deliverables, invalidArguments, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
-onDelta, onReasoningDelta, onToolCall, onUsage, onEvent
+onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, finalGuardExtend, config
 ```
 
 `partialPersistence` 默认为 `false`，保持既有的流式零写入行为。设为
@@ -101,6 +101,62 @@ executeTool({ id, name, input, context, signal })
 0.27.0 里需要知道的行为变化：`context` 下拼错的摘要旋钮名、以及上面任一回调字段里的非函数值，以前在
 细粒度路线上是**静默忽略**（run 直接用默认值跑）。现在两者都启动即抛。把这些回调接出配置树的能力面
 **不在** 0.27.0 里——它在 0.28.0 落地（issue #498），在那之前现有位置照旧工作。
+
+### config 命名空间（issue #497）
+
+一次 run 的配置从此有第二种写法。`config` 是一棵**嵌套命名空间**，它的叶子是顶层扁平键的别名，
+而别名**就是** schema 路径：`config.run.maxRounds` 与扁平的 `maxRounds` 是同一个旋钮，叶子名
+永远逐字等于扁平选项名。这里没有重命名表：唯一手写的部分只有一张 schema
+`CONFIG_NAMESPACE_SCHEMA`（`src/loop/config-namespace.js`），别名表 `CONFIG_ALIAS_PATHS`
+（`src/loop/config-namespace.js`）与配置面名单 `CONFIG_SURFACE_OPTION_NAMES`
+（`src/loop/config-namespace.js`）都从它派生，再由 `configSchemaSelfCheck`
+（`src/loop/config-namespace.js`）对着顶层白名单核账：每个顶层选项必须**恰好**被归入
+*配置面*（46 键）或*能力/注入面*（19 键）之一，而 `config` 自己是那个容器。
+
+| 命名空间 | 旋钮 |
+| --- | --- |
+| `config.prompt` | `system`、`cacheStablePrefix`、`initialUserMessage`、`initialMessages`、`wrapup` |
+| `config.run` | `maxRounds`、`maxTokenContinuations`、`stallDetection`、`completion`、`replayPolicy`、`invalidArguments`、`partialPersistence`、`outputHygiene`、`writeToolNames`、`writeToolPathKeys`、`resume`、`stream`、`reflection` |
+| `config.tuning` | `maxTokens`、`temperature`、`topP`、`cacheCapable` |
+| `config.timing` | `timeoutMs`、`deadlineMs`、`retry` |
+| `config.folding` | `context`、`toolResultTtl`、`toolResultFoldMinTokens` |
+| `config.guard` | `finalGuard`、`finalGuardMaxRetries`、`finalGuardTimeoutMs`、`finalGuardExtend`、`deliverables` |
+| `config.metadata` | `expert`、`user`、`task`、`requestId`、`toolContext` |
+| `config.observers` | `onRound`、`onJudge`、`onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary` |
+
+它由五条规则管着：
+
+- **优先级** —— 同一个旋钮两种写法都给时，`config.*` 赢。扁平键继续被接受，且只要它是唯一写法，
+  行为与今天逐字相同。叶子设成 `undefined` 逐字等于「没给」（与扁平合并用的是同一条规则），
+  所以它既不覆盖扁平值、也不算冲突。
+- **冲突不静默** —— 两种写法都给了**不同的值**时，引擎在第一轮之前发一条
+  `config_override_conflict` 事件：`{ type: "config_override_conflict", runId?, conflicts: [{ path, key }], detail }`。
+  载荷只带路径与键名（值可能是函数或大对象）。这条事件上的观察者抛错与其他观察者通道同口径被隔离——
+  经 `onObserverError` 记账，run 继续跑。
+- **结构等价** —— 同一份配置写成扁平与写成 `config`，规范化后的 `effectiveOptions` 逐键相同。
+  展开发生在**合并后**的表示上（装配口已折进来之后、语义相之前），所以 `config` 里的值走的是与
+  扁平孪生完全相同的那套校验：`config.folding.context` 里拼错的摘要旋钮名抛的是与扁平 `context`
+  同一句，`config.guard.finalGuard` 必须是函数的原因与 `finalGuard` 必须是函数完全一样。
+- **能力键一律拒绝** —— `CAPABILITY_OPTION_NAMES`（`src/loop/config-namespace.js`）里的 19 项能力/注入
+  选项不是配置：`provider`、`tools`、`executeTool`、`store`、`modelConfig`、`assemblyPort`、
+  `session`、`runId`、`signal`、`cwd`、`persistence`、`model`、`modelMetadata`、
+  `todoStateProvider`、`semanticStateProvider`、`onEvent`、`onObserverError`、
+  `onPersistenceError`、`diagnostics`。把它们写进 `config`（顶层或组内）⇒ 启动即抛并点名该键，
+  错误带着与其他闸口相同的 `via` 标签（`"direct"` / `"assembly"`）。**这条收窄只作用于新命名空间**：
+  既有 `overrides` / `withOverrides` 契约——显式细粒度 `provider` 仍能盖端口 provider——一字未动，
+  AssemblyPort 契约套件照旧断言它。
+- **形状与名称** —— `config` 本身必须是对象（`null`、数组、字符串都抛）；未知分组、未知叶子、
+  把扁平键写在 `config` 顶层（`config.maxRounds` 会被回一句「写 `config.run.maxRounds`」）、
+  以及把叶子写错组（`config.run.temperature` 会指向 `config.tuning.temperature`）都在
+  **任何宿主端口被读取之前**抛，并把该层接受的名字按 schema 枚举出来。
+
+`config` 从不进引擎：展开会把它删掉，所以 `effectiveOptions`——以及 `normalizeRunToolLoopOptions`
+（`src/loop/option-normalization.js`）返回的 `explicitOptions`——里只剩扁平键。装配口的 `policy`
+同样接受 `config`，于是两条入口路线共用这一次展开（`via` 标签负责说明是哪条路线抛的）。
+
+过渡口径：新宿主只用 `config`。顶层扁平键是**原语 / 过渡面**——继续接受、继续校验、继续有文档——
+但行进方向是一面。删除窗口属 #495 的发布阶梯，**计划在 0.28**（是计划，不是本版给出的承诺）；
+0.27.0 一个扁平键都不删。
 
 ### 工具引数解析不了的时候（issue #409）
 
