@@ -197,6 +197,13 @@ test("S1c 容器与两面对称：两个容器都不在配置面/能力面里，
     ["config.checks: capabilities.checks is a capability group, not a config group"
       + " (write capabilities.checks.<leaf> at the top level)"],
   );
+  // #498 S4b 复审：反向对称必须是**两组**都对称，不是只钉 `checks` 这一格。
+  assert.deepEqual(
+    collectConfigNamespaceProblems({ hooks: { onRound: () => {} } }),
+    ["config.hooks: capabilities.hooks is a capability group, not a config group"
+      + " (write capabilities.hooks.<leaf> at the top level)"],
+    "`hooks` 与 `checks` 必须同一条反向报错（两组对称）",
+  );
   // 叶子写在容器顶层 ⇒ 指到它真正的组（而不是含糊的「未知分组」）。
   assert.deepEqual(
     collectCapabilitiesNamespaceProblems({ deliverables: [] }),
@@ -218,7 +225,8 @@ test("S2 12 个回调逐个点名：名单、别名表、schema 三者互相对�
     "onToolCall",
     "onUsage",
     "onFoldSummary",
-    // #498 S4b：第 12 个（值必须是函数，消费点 `hasFinalDraft`（`src/loop/termination.js`））。
+    // #498 S4b：第 12 个（值必须是函数，消费点是 `callFinalGuard` 里那行 `finalGuard(payload)`
+    // （`src/loop/termination.js`）；`hasFinalDraft()` 是强制收尾的私有判定，与 `finalGuard` 无关）。
     "finalGuard",
   ], "12 个回调的名单是本刀的判据面，逐字钉住");
   assert.equal(CAPABILITY_HOOK_NAMES.length, 12);
@@ -458,18 +466,21 @@ test("S5 壳里的函数字段逐个点名完整路径（这些键实测真被�
     // #498 S4b：`config.guard.deliverables` 这个壳**整键不在配置面**了（搬去
     // `capabilities.checks.deliverables`），所以它的函数不再走「函数值」这条报错，
     // 而是走能力键那条（见 S5e）。这里换成仍在配置面的数据键塞函数：`config.input.tools`。
+    // 复审：数据键**没有**能力面之家，所以它的尾巴是「there is no capability home for it」，
+    // 而不是「its canonical home is none: …」（后者读不通）。
     [
       { config: { input: { tools: () => {} } } },
       "config.input.tools",
+      /— there is no capability home for it: "tools" is a data key of the config namespace/u,
     ],
   ];
-  for (const [options, path] of cases) {
+  for (const [options, path, homePattern = /— its canonical home is/u] of cases) {
     const error = await directError(options);
     assert.equal(error instanceof TypeError, true, path);
     assert.match(error.message, new RegExp(`${path.replace(/[.[\]]/gu, (ch) => `\\${ch}`)} is not accepted`, "u"), `${path} 必须被点名`);
     assert.match(error.message, /is a function, and the config namespace holds data only/u);
     assert.match(error.message, /JSON round-trip/u, "报错必须说清原因");
-    assert.match(error.message, /canonical home is/u, "报错必须说出去处");
+    assert.match(error.message, homePattern, `报错必须说出去处（${path}）`);
     assert.equal(error.via, "direct");
   }
 });
@@ -809,6 +820,6 @@ test("S11 finalGuard 是 hooks 的第 12 个成员：config.guard.finalGuard 抛
     },
   });
   assert.equal(result.termination.reason, "end_turn");
-  assert.equal(calls, 1, "capabilities.hooks.finalGuard 必须被调用（消费点 hasFinalDraft）");
+  assert.equal(calls, 1, "capabilities.hooks.finalGuard 必须被调用（消费点 `callFinalGuard` → `finalGuard(payload)`）");
   assert.equal(result.verification.status, "verified");
 });

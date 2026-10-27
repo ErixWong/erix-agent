@@ -224,8 +224,10 @@ whose value must be a function — left the config surface (the flat `finalGuard
 "only `deliverables: []` can be written in `config`" transitional state is gone. And `finalGuard`
 joined `capabilities.hooks`, which is therefore 12 members. `tools` went the other way: it is data, so
 it is now `config.input.tools` (the flat `tools` is untouched) and the capability surface is purely
-behaviour carriers. `session` is data only — the draft's `session.resume` alias is gone; write
-`resume` (or `config.run.resume`) instead.
+behaviour carriers. `session` is data only — the draft's `session.resume` alias is gone, and writing
+it now throws on **both** entry routes (the assembly port's `createAssemblyPort` and the direct
+`runToolLoop` options, via the shared semantic phase), naming the full path `session.resume`; write
+`resume` (or `config.run.resume`) instead. It is never silently ignored on either route.
 
 What you have to act on: **nothing**. The flat keys you pass today keep being accepted and behave
 exactly as before. Two things to know if you adopt it:

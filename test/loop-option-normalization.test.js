@@ -592,7 +592,7 @@ test("次序②：assemblyPortOptions 早于 runToolLoop 的能力缺失检查",
       tools: { definitions: [], executeTool: async () => "ok" },
       // `session.initialMessages` 必须是数组：这条形状校只在 createAssemblyPort 里，
       // 所以它同时是「assemblyPortOptions 早于能力缺失检查」的探针（#498 S4b 把原来那条
-      // `session.resume` 别名删掉了，见 `test/assembly-port-498-s4b` 的 R4 反向证）。
+      // `session.resume` 别名删掉了，见本文件「#498 S4b session.resume 别名已删」那一格）。
       session: { id: "run-port-first", initialMessages: "nope" },
     },
     initialUserMessage: "go",
@@ -775,7 +775,8 @@ test("测试卫生：全程只用注入的临时 home/cwd，真实 ~/.erix 未�
 // `session` 是**纯数据**（`config.metadata.session`），而 `resume` 是旋钮。0.27 草案里 `src/assembly.js`
 // 有一条 `session.resume` → 顶层 `resume` 的别名（校验段 + 转换段），于是同一个键有了第三个住处。
 // 本刀删掉那条别名，并把 `resume` 归位到 `config.run.resume`；顶层扁平 `resume` 一字未动。
-// 反向证：把别名塞回 `src/assembly.js` ⇒ 下面第一格红（它不再抛）。
+// 反向证：把校验段塞回 `src/assembly.js` ⇒ 下面第一格红（它不再抛）；删掉直连侧（语义相）那条拒绝
+// ⇒ 第二格红（直连曾经收下这个键、照常跑、`effectiveOptions.resume` 是 `undefined`，无事件无异常）。
 test("#498 S4b session.resume 别名已删：写它启动即抛并指出 config.run.resume", async () => {
   const error = await runToolLoop({
     assemblyPort: {
@@ -795,4 +796,48 @@ test("#498 S4b session.resume 别名已删：写它启动即抛并指出 config.
       + " (pass resume as the top-level option or as config.run.resume)",
   );
   assert.equal(error.via, undefined, "构造期抛（与其它装配口形状错同一相位）");
+});
+
+// 复审实测的那一半：装配口会抛，但**直连路线**当时收下 `session.resume` 然后照常跑（没有续跑、
+// 没有事件、`effectiveOptions.resume === undefined`）——「不是静默忽略」只对装配口成立，那是说错一半。
+// 现在两条路线都抛：直连侧走的是与装配口同一条语义相（`collectSemanticOptionProblems`），
+// 所以这条用例同时钉住「直连不再静默」与「报错逐字点名完整路径 `session.resume`」。
+test("#498 S4b session.resume 直连路线同样拒绝：不许收下键、又不续跑", async () => {
+  // 这条用例的**选项是完整可跑的**（provider / tools / modelConfig 都给齐）：删掉直连侧那条拒绝，
+  // 它会一路跑完 `end_turn` 而不是撞上别的错——于是红的是「它居然跑完了」，不是「它报错了」。
+  const runnable = {
+    provider: createFakeProvider([{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" }]),
+    tools: [],
+    executeTool: async () => "ok",
+    initialUserMessage: "go",
+    modelConfig: { resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1024 }) },
+    completion: false,
+    wrapup: false,
+  };
+  const directError = await runToolLoop({
+    ...runnable,
+    session: { id: "run-direct-session-resume", resume: true },
+  }).then(() => null, (caught) => caught);
+  assert.equal(directError instanceof TypeError, true, "直连也不许静默接受 `session.resume`");
+  assert.equal(
+    directError.message,
+    "session.resume is not accepted: session is data only"
+      + " (pass resume as the top-level option or as config.run.resume)",
+  );
+  assert.equal(directError.via, "direct", "直连侧抛的是语义相（via:\"direct\"）");
+
+  // 同一道闸口也覆盖 `config.metadata.session`：它展开后就是顶层 `session`，不是第二个户口。
+  const viaConfig = await runToolLoop({
+    ...runnable,
+    config: { metadata: { session: { id: "run-direct-session-resume", resume: true } } },
+  }).then(() => null, (caught) => caught);
+  assert.equal(viaConfig instanceof TypeError, true);
+  assert.match(viaConfig.message, /^session\.resume is not accepted/u);
+
+  // 对照：同一个 `session` 不带 `resume` 照常过（这不是「一律拒绝 session」）。
+  const ok = await runToolLoop({
+    ...runnable,
+    session: { id: "run-direct-session-plain" },
+  });
+  assert.equal(ok.termination.reason, "end_turn");
 });

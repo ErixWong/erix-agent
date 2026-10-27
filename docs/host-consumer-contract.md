@@ -201,7 +201,9 @@ Five rules govern it:
   `config.run.reflection.judge.provider` and `config.folding.context.onBeforeFold` /
   `onAfterFold`. The message also names the canonical home: `capabilities.hooks.<name>` for a host
   callback, `capabilities.checks.deliverables` for a deliverables check, or the matching capability
-  port slot for anything else. Nothing is "accepted and then dropped during expansion" — the throw
+  port slot for anything else. A config **data** key (such as `config.input.tools`) has no capability
+  home at all, and the message says exactly that — `there is no capability home for it: …` — instead
+  of inventing one. Nothing is "accepted and then dropped during expansion" — the throw
   happens **before any host port is read**. Two leaves that used to be the awkward part of this
   rule are simply not config keys any more: `config.guard.finalGuard` and `config.guard.deliverables`
   (issue #498 S4b) — see the table above and the `capabilities` section below.
@@ -234,8 +236,13 @@ Five rules govern it:
   `modelConfig.resolve`, `initialMessages` is read). The old wording — "capability
   means the engine does not interpret its value" — was measurably false for all four. Note that
   `session` is data **only**: the 0.27 draft also accepted `session.resume` as an alias of the flat
-  `resume`, and that alias is gone (issue #498 S4b) — `session.resume` now throws at the assembly
-  boundary and points at `config.run.resume` / the flat `resume`.
+  `resume`, and that alias is gone (issue #498 S4b) — `session.resume` now throws on **both** entry
+  routes (the assembly port's `createAssemblyPort`, and the direct `runToolLoop` options through the
+  shared semantic phase `collectSemanticOptionProblems` in `src/assembly-validators.js`), naming the
+  full path `session.resume` and pointing at `config.run.resume` / the flat `resume`. It is never
+  silently dropped: the direct route used to accept the key and run without resuming, which is the
+  "configured but inert" shape this release removes. `config.metadata.session` expands to this same
+  top-level `session`, so that spelling hits the same gate.
   
   **History: `tools` was the last key that did not satisfy that criterion** (issue #498 S4a shipped
   with it on the capability list). The engine never *calls* a member of a tool definition — it
@@ -326,7 +333,13 @@ Five rules, deliberately symmetric with `config` (two containers, one set of rul
   and the call-level `capabilities` are two sources of the *same* container, and the call-level one
   wins as a **whole tree** (the same "last writer wins" rule `config` uses); every hook both sources
   set to **different** functions is reported leaf by leaf, deduplicated by path. Equal hooks, or a
-  hook only one side sets, are not conflicts.
+  hook only one side sets, are not conflicts. **"Equal" is exactly `isDeepStrictEqual`**
+  (`src/loop/capabilities-namespace.js`) — that is the predicate the engine runs, stated here so
+  hosts do not have to guess: under `hooks` a value compares **by reference** (the same function
+  object is equal, two separately written arrow functions never are, even with identical bodies),
+  and under `checks` the `{ name, check }` array compares **element by element** (so passing the
+  same `check` reference under both spellings is *not* a conflict, while a freshly written `check`
+  function is). There is no looser "looks the same" rule.
 - **Unknown sub-keys throw, with the full path** — `capabilities: { hoks: … }` answers
   `unknown capabilities namespace: "hoks" (accepted: hooks, checks; ports are not collected under
   capabilities — pass them as top-level options or through the assembly port)`, `capabilities: {
@@ -343,6 +356,11 @@ Five rules, deliberately symmetric with `config` (two containers, one set of rul
   (`src/loop/deliverables.js`), the same single source the flat option uses, so
   `capabilities.checks.deliverables` and the flat `deliverables` cannot drift apart. An empty array
   is verbatim "not declared".
+  **An empty group is verbatim "nothing configured"** — `capabilities: { hooks: {} }` and
+  `capabilities: { checks: {} }` validate, expand to no keys at all, emit no
+  `config_override_conflict`, and shadow nothing: same behaviour for both groups, because an empty
+  object is read as "absent", not as "present but empty". (`checks: { deliverables: [] }` is the
+  same story one level down: an empty array is "not declared".)
 - **Ports are not collected yet** — `capabilities.ports` does not exist in this release; port
   objects (`provider`, `store`, `signal`, …) stay where they are (top-level options or the assembly
   port) and writing one under `capabilities` throws with a message that says so. Whether they move
@@ -802,7 +820,7 @@ const assemblyPort = createAssemblyPort({
   provider,    // Provider
   tools: { definitions, executeTool, getToolMetadata? },
   store?,      // optional TranscriptStore
-  session: { id, resume?, initialMessages? },
+  session: { id, initialMessages? }, // data only: resume is a top-level option / config.run.resume
   policy?,     // explicit run options
   emit?,       // (eventType, payload) => void
 });

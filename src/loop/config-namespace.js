@@ -394,9 +394,13 @@ export function configPathForOption(optionName) {
  * 于是「往 hooks 加一个回调却忘了分类」「hooks 里的名字根本不存在」两种漂移都红。
  *
  * @param {readonly string[]} optionNames 顶层选项白名单（`RUN_TOOL_LOOP_OPTION_NAMES`）
+ * @param {{leafAliases?: Readonly<Record<string, Readonly<Record<string, string>>>>}} [overrides]
+ *   Self-check hook (#498 S4b review): lets a test inject a leaf-alias table so the "an alias must
+ *   not rename onto an existing leaf name" branch is reachable. Production callers omit it and get
+ *   the real `CONFIG_LEAF_ALIASES`; nothing else in the check is injectable.
  * @returns {string[]} 问题列表（空 = 通过）
  */
-export function configSchemaSelfCheck(optionNames) {
+export function configSchemaSelfCheck(optionNames, { leafAliases = CONFIG_LEAF_ALIASES } = {}) {
   const problems = [];
   const seen = new Map();
   for (const name of CONFIG_SURFACE_OPTION_NAMES) {
@@ -446,11 +450,11 @@ export function configSchemaSelfCheck(optionNames) {
       + ` for ${CONFIG_SURFACE_OPTION_NAMES.length} surface keys (two leaves map to the same key)`,
     );
   }
-  for (const group of Object.keys(CONFIG_LEAF_ALIASES)) {
+  for (const group of Object.keys(leafAliases)) {
     if (!CONFIG_GROUP_SET.has(group)) {
       problems.push(`leaf alias table names unknown group ${JSON.stringify(group)}`);
     }
-    for (const [leaf, option] of Object.entries(CONFIG_LEAF_ALIASES[group])) {
+    for (const [leaf, option] of Object.entries(leafAliases[group])) {
       if (!CONFIG_NAMESPACE_SCHEMA[group]?.includes(leaf)) {
         problems.push(`leaf alias ${group}.${leaf} is not a leaf of that group`);
       }
@@ -612,9 +616,10 @@ function collectFunctionPaths(value, path) {
  * 函数值的统一文案：点名**完整路径**，说清原因（round-trip）与**规范之家**。
  *
  * 「规范之家」分三档，因为三类函数的目的地不同：
- *   · 宿主回调 / 交付物判据（名字就在能力面 schema 里）⇒ `capabilities.<group>.<leaf>`
+ *   · 宿主回调 / 交付物判据（名字就在能力面 schema 里）⇒ `its canonical home is capabilities.<group>.<leaf>`
  *     （可以逐字点出来，例如 `capabilities.hooks.onRound` / `capabilities.checks.deliverables`）；
- *   · 配置面自己的**数据键**（`tools` 之类）⇒ 它本来就该是纯数据，没有别处可搬；
+ *   · 配置面自己的**数据键**（`tools` 之类）⇒ 它本来就该是纯数据，没有别处可搬，所以文案是
+ *     `there is no capability home for it: …`（不要说「its canonical home is none」，那读不通）；
  *   · 其余（`sleepImpl` / `judge.provider` …）⇒ 能力面里的对应端口位，端口容器本刀未收
  *     （S4b 之后裁），所以只能说到「能力面」这一层，不编造 `capabilities.ports.x`。
  *
@@ -625,14 +630,15 @@ function functionValueProblemMessage(path) {
   const leaf = path.replace(/\[\d+\]$/u, "").split(".").at(-1) ?? "";
   const capabilityPath = capabilitiesPathForOption(leaf);
   const home = capabilityPath !== undefined
-    ? `capabilities.${capabilityPath}`
+    ? `its canonical home is capabilities.${capabilityPath}`
     : CONFIG_SURFACE_OPTION_SET.has(leaf)
-      ? `none: ${JSON.stringify(leaf)} is a data key of the config namespace, so pass plain data`
-        + " (host callbacks belong under capabilities.hooks.<name>)"
-      : "capabilities (capabilities.hooks.<name> for a host callback, or the matching capability port slot)";
+      ? `there is no capability home for it: ${JSON.stringify(leaf)} is a data key of the config namespace,`
+        + " so pass plain data (host callbacks belong under capabilities.hooks.<name>)"
+      : "its canonical home is capabilities (capabilities.hooks.<name> for a host callback,"
+        + " or the matching capability port slot)";
   return `${path} is not accepted: ${JSON.stringify(leaf)} is a function, and the config namespace`
     + " holds data only (the config subtree must survive a JSON round-trip unchanged)"
-    + ` — its canonical home is ${home}`;
+    + ` — ${home}`;
 }
 
 /**

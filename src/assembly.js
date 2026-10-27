@@ -167,6 +167,8 @@ export function createAssemblyPort(input = {}) {
     // #498 S4b：幻影组 `session` 的那条别名（`session.resume` → 顶层 `resume`）删掉了。
     // `session` 是**纯数据**（`config.metadata.session`），一个「看起来像旋钮」的键留在里面
     // 只会让宿主以为它生效了——所以拒绝并指出去处，而不是静默忽略。
+    // 直连路线（`normalizeRunToolLoopOptions`）由语义相的同一条规则拒绝（
+    // `collectSemanticOptionProblems`，`src/assembly-validators.js`）——两条路线都不静默。
     throw new TypeError(
       "assembly port session.resume is not accepted: session is data only"
       + " (pass resume as the top-level option or as config.run.resume)",
@@ -247,7 +249,8 @@ export async function assemblyPortOptions(input, overrides = {}) {
     runId: port.session.id,
     session: port.session,
     // #498 S4b：这里曾有 `session.resume` → `resume` 的转换（幻影组）。`session` 是纯数据，
-    // `resume` 的规范之家是顶层 `resume` / `config.run.resume`；构造期已拒绝 `session.resume`。
+    // `resume` 的规范之家是顶层 `resume` / `config.run.resume`；两条路线都已拒绝 `session.resume`
+    // （装配期在上面那段校验，直连侧在语义相），所以这里不再需要任何转换。
     ...(port.session.initialMessages === undefined
       ? {}
       : { initialMessages: port.session.initialMessages }),

@@ -408,6 +408,17 @@ export function collectSemanticOptionProblems(options) {
     }
   }
   problems.push(...validateFoldSummaryHook(bag.onFoldSummary));
+  // #498 S4b review fix: `session` is data only, so `session.resume` is rejected on **both** entry
+  // routes. The assembly port throws in `createAssemblyPort`; without this line the direct route
+  // (`normalizeRunToolLoopOptions`) silently dropped the key and ran without resuming — the exact
+  // "configured but inert" shape this ticket exists to kill. `config.metadata.session` expands to
+  // this same top-level `session`, so the check covers that spelling too.
+  if (readOptionPath(bag, ["session", "resume"]) !== undefined) {
+    problems.push(
+      "session.resume is not accepted: session is data only"
+      + " (pass resume as the top-level option or as config.run.resume)",
+    );
+  }
   for (const [path, label] of CALLBACK_OPTION_PATHS) {
     const value = readOptionPath(bag, path);
     // `undefined` = 未订阅（逐字等于今天的行为）；给了就必须是函数。

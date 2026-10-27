@@ -164,7 +164,9 @@ executeTool({ id, name, input, context, signal })
   `config.run.reflection.onReflection`、`config.run.reflection.judge.provider`、
   `config.folding.context.onBeforeFold` / `onAfterFold`。
   报错同时说清规范之家：宿主回调是 `capabilities.hooks.<name>`，交付物判据是
-  `capabilities.checks.deliverables`，其余是对应的能力面端口位。
+  `capabilities.checks.deliverables`，其余是对应的能力面端口位；配置面自己的**数据键**
+  （例如 `config.input.tools`）根本没有能力面之家，文案就直说
+  `there is no capability home for it: …`，不编一个出来。
   **不存在「收下再在展开时丢函数」**——抛发生在**任何宿主端口被读取之前**。两个曾经是这条规则
   尴尬处的叶子现在**根本不在配置面上**：`config.guard.finalGuard` 与 `config.guard.deliverables`
   （issue #498 S4b）——见上面那张表与下面的 `capabilities` 一节。
@@ -191,7 +193,11 @@ executeTool({ id, name, input, context, signal })
   `modelSlot` 被交给 `modelConfig.resolve`、`initialMessages` 被读）。旧判据
   「能力面 = 引擎不解释其值」对这四个键**实测为假**。注意 `session` 只装数据：0.27 草案里还有一条
   `session.resume` → 扁平 `resume` 的别名，那条别名已经删掉（issue #498 S4b）——现在写
-  `session.resume` 会在装配期抛，并指向 `config.run.resume` / 扁平 `resume`。
+  `session.resume` 在**两条入口路线**上都会抛（装配口的 `createAssemblyPort`，以及直连
+  `runToolLoop` 选项经同一道语义相（`collectSemanticOptionProblems`，规则本体与文件出处见本文开头），
+  并点名完整路径 `session.resume`、指向 `config.run.resume` / 扁平 `resume`。它不会被静默丢掉：
+  直连路线以前收下这个键然后照常跑（没有续跑），那正是本版要消掉的「配了等于没配」。
+  `config.metadata.session` 展开后就是这同一个顶层 `session`，所以那个写法撞的是同一道闸口。
   
   **历史：`tools` 曾是最后一个不满足这条判据的键**（issue #498 S4a 发布时它还在能力面上）。
   引擎从不**调用**工具声明的成员——它校 `replay`（枚举字面量）、读 `name` / `inputSchema`，然后把这个
@@ -263,6 +269,10 @@ executeTool({ id, name, input, context, signal })
   **同一条事件也管第二对来源**：装配口的 `policy.capabilities` 与调用级 `capabilities` 是**同一个
   容器**的两个来源，调用级那份按**整棵**覆盖（与 `config` 用的是同一条「后写者胜」规则）；两个源里
   同一个钩子给了**不同的函数**的，逐叶上报、按 path 去重。值相同、或只有一边给了的不算冲突。
+  **「值相同」的口径逐字就是 `isDeepStrictEqual`**（`src/loop/capabilities-namespace.js`）——写出来
+  是为了宿主不必猜：`hooks` 下按**同一性**比较（同一个函数对象算相同；两处各写一个箭头函数，
+  哪怕函数体逐字一样也不算），`checks` 下的 `{ name, check }` 数组按**逐项**深度比较（两种写法用
+  **同一个** `check` 引用不算冲突，另写一个 `check` 函数就算）。没有更宽松的「看起来一样」规则。
 - **未知子键当场抛，并点名完整路径** —— `capabilities: { hoks: … }` 回的是
   `unknown capabilities namespace: "hoks" (accepted: hooks, checks; ports are not collected under
   capabilities — pass them as top-level options or through the assembly port)`；
@@ -276,6 +286,10 @@ executeTool({ id, name, input, context, signal })
   本版不动它。`checks` 下必须是 `{ name, check }[]`，而形状规则**不在这里复述**：校验器调的是
   `normalizeDeliverables`（`src/loop/deliverables.js`），与扁平选项**同一份**唯一来源，所以
   `capabilities.checks.deliverables` 与扁平 `deliverables` 不可能漂开。空数组逐字等于「未声明」。
+  **空组逐字等于「什么都没配」**——`capabilities: { hooks: {} }` 与 `capabilities: { checks: {} }`
+  照常通过校验、展开后一个键都不产生、不发 `config_override_conflict`、也不遮蔽任何扁平键：两组
+  同一条口径，因为空对象被读成「没有」，不是「有但是空」。（`checks: { deliverables: [] }` 是
+  同一件事往下一层：空数组 = 未声明。）
 - **端口还没收** —— 本版没有 `capabilities.ports`；端口对象（`provider`、`store`、`signal` …）
   留在原处（顶层选项或装配口），写进 `capabilities` 会抛并说明这一点。它们要不要搬，是后面那一刀
   的裁决，不是这里给出的承诺。`tools` **不再是端口**（issue #498 S4b）：它是数据，所以住在
@@ -640,7 +654,7 @@ const assemblyPort = createAssemblyPort({
   provider,    // Provider
   tools: { definitions, executeTool, getToolMetadata? },
   store?,      // 可选 TranscriptStore
-  session: { id, resume?, initialMessages? },
+  session: { id, initialMessages? }, // 只装数据：resume 是顶层选项 / config.run.resume
   policy?,     // 显式 run 选项
   emit?,       // (eventType, payload) => void
 });

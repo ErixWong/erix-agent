@@ -199,8 +199,9 @@ node -e 'import("erix-agent").then(m=>console.log(Object.keys(m).length))'   # �
 `check`），现在住在 `capabilities.checks.deliverables`——「`config` 里只能写 `deliverables: []`」
 那个过渡态因此消失。`finalGuard` 收进了 `capabilities.hooks`，所以那一组是 12 个成员。`tools`
 反向归位：它是数据，现在是 `config.input.tools`（扁平 `tools` 一字未动），于是能力面就是纯粹的
-「行为载体」。`session` 只装数据——草案里的 `session.resume` 别名已删；要续跑请写 `resume`
-（或 `config.run.resume`）。
+「行为载体」。`session` 只装数据——草案里的 `session.resume` 别名已删，现在写它在**两条入口路线**上都会抛
+（装配口的 `createAssemblyPort` 与直连的 `runToolLoop` 选项，共用同一道语义相），并点名完整路径
+`session.resume`；要续跑请写 `resume`（或 `config.run.resume`）。两条路线都不静默忽略它。
 
 你需要动手的：**没有**。今天在传的扁平键继续被接受，行为与以前逐字相同。若你打算采用它，有两点要知道：
 

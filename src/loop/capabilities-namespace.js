@@ -2,8 +2,10 @@
 // issue #498（S4a）—— `capabilities: { hooks: { … } }`：宿主回调的**规范之家**。
 // issue #498（S4b）—— 能力面收成**两组**（`hooks` 12 项 + `checks` 1 项），避免 `hooks` 变成口袋：
 //   · `capabilities.hooks.finalGuard`：值必须是函数，消费点是 `src/loop/termination.js` 的
-//     `hasFinalDraft(finalDraft)` —— 它一直按判据属能力面，只是 0.27 的配置树把它关在
-//     `config.guard.finalGuard` 里（`config.guard.deliverables` 同理，见下一组）；
+//     `callFinalGuard` 里那一行 `finalGuard(payload)`（装配点在 `src/loop/orchestrator.js` 的
+//     `ctx.finalGuard`）；同文件的 `hasFinalDraft()` 是强制收尾的私有判定，**与 `finalGuard` 无关**。
+//     它一直按判据属能力面，只是 0.27 的配置树把它关在 `config.guard.finalGuard` 里
+//     （`config.guard.deliverables` 同理，见下一组）；
 //   · `capabilities.checks.deliverables`：每项 `{ name, check }`，`check` 是函数、`name` 是标签。
 //     交付物判据以前挂在 `config.guard.deliverables` 上，而它的每一条都带函数 ⇒ 配置面里能写的
 //     只有 `[]`（一个「只能写空数组」的过渡态）。本刀把它整键搬进能力面，过渡态随之消失；
@@ -55,7 +57,9 @@ import { normalizeDeliverables } from "./deliverables.js";
  * `config.observers`（本版整组删除），三条出口（`onEvent` / `onObserverError` /
  * `onPersistenceError`）来自 0.26 已发布的能力面——它们在**顶层**一直可用，现在只是多了一个
  * 规范之家。`finalGuard` 是 #498 S4b 收进来的第 12 个：它的值必须是函数，消费点是
- * `hasFinalDraft`（`src/loop/termination.js`），按判据它是行为载体。搬家的消费者由 S5 / S6 / S7 迁，
+ * `callFinalGuard`（`src/loop/termination.js`）里的 `finalGuard(payload)` 那一行（装配点是
+ * `src/loop/orchestrator.js` 的 `ctx.finalGuard`）；`hasFinalDraft()` 是强制收尾的私有判定，
+ * **与 `finalGuard` 无关**，别把它当消费点。按判据它是行为载体。搬家的消费者由 S5 / S6 / S7 迁，
  * 顶层扁平键本刀一个都不删。
  *
  * @type {readonly string[]}
@@ -129,7 +133,6 @@ export const CAPABILITIES_SURFACE_OPTION_NAMES = Object.freeze(
 );
 
 const CAPABILITIES_GROUP_SET = new Set(CAPABILITIES_NAMESPACE_GROUPS);
-const CAPABILITY_HOOK_SET = new Set(CAPABILITY_HOOK_NAMES);
 
 /**
  * 每组的**值形状**校验器：返回问题清单（空 = 通过），`path` 是该叶子的完整路径。

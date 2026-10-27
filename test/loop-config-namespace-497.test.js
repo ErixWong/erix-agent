@@ -192,6 +192,34 @@ test("A3 自检会咬人：漏分类 / 漏白名单 / 漏容器三个方向都�
   ]);
 });
 
+// #498 S4b 复审：自检的**别名表**那一段（「别名目标必须真是顶层选项」「不许映射到已存在的叶子名」）
+// 原先一格测试都没有——把整段删掉，全量仍然 EXIT=0 全绿，而 CHANGELOG 声称「自检双向核它」。
+// 这格把它钉住：用自检的注入钩子把三条分支逐条弄成可达的（生产调用不传这个参数，
+// 拿到的是真的 `CONFIG_LEAF_ALIASES`），于是删掉那一段 ⇒ 本格红。
+test("A3b 自检的别名表那一段会咬人：改名撞到本组已有叶子 / 未知分组 / 不是该组叶子", () => {
+  // 方向①（本单声称的那条）：别名把 `input.messages` 改成一个本组**已有**的叶子名（`system`）
+  // ⇒ 同一个键会有两个写法，「别名 = schema 路径」退化成重命名表。
+  assert.deepEqual(
+    configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES, { leafAliases: { input: { messages: "system" } } }),
+    ["leaf alias input.messages renames to system, which is already a leaf name"],
+  );
+  // 方向②：别名表里写了不存在的分组。
+  assert.deepEqual(
+    configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES, { leafAliases: { nope: { messages: "initialMessages" } } }),
+    [
+      'leaf alias table names unknown group "nope"',
+      "leaf alias nope.messages is not a leaf of that group",
+    ],
+  );
+  // 方向③：别名键不是该组的叶子（「给一个不存在的叶子登记了改名」）。
+  assert.deepEqual(
+    configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES, { leafAliases: { input: { nope: "initialMessages" } } }),
+    ["leaf alias input.nope is not a leaf of that group"],
+  );
+  // 注入钩子只换表、不换语义：真正的表仍然 []（否则这格就变成了「自检被测试改松了」）。
+  assert.deepEqual(configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES), []);
+});
+
 // issue #497 复审 R1：能力面的判据从「引擎不解释其值」（**假**）改成「宿主提供的行为载体 /
 // 身份环境，引擎调用或解引用它」，于是四个**被引擎读**的键从能力面移回配置面：
 // `persistence` → `config.run`（与同族 `partialPersistence` / `replayPolicy` 同组）、
