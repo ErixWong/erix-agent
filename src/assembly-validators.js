@@ -229,9 +229,26 @@ export const CONTEXT_OPTION_NAMES = [
   "summarizerBudgetMs",
   "maxSummarizerInputBytes",
   "maxPriorSummaryBytes",
+  // issue #493 复核：`maxSummaryTokens` 只加进了 `FOLD_SUMMARIZER_CAP_NAMES`、漏在白名单里
+  // ⇒ 宿主给对了值仍然被判「未知 context 子键」抛 TypeError，等于把「静默无效」翻成「装配口报错」，
+  // 分裂没变。现在两条名单都收，并有 `contextOptionNameSelfCheck()` 交叉核对兜住下一个漏项。
+  "maxSummaryTokens",
 ];
 
 const CONTEXT_OPTION_NAME_SET = new Set(CONTEXT_OPTION_NAMES);
+
+/**
+ * issue #493 复核：**每个旋钮都必须同时在 `context` 白名单里**（单条顶五条）。
+ *
+ * 只往 `FOLD_SUMMARIZER_CAP_NAMES` 加、忘了往 `CONTEXT_OPTION_NAMES` 加，就会出现
+ * 「装配期校验认这个键、白名单不认」⇒ 宿主给对了值反而被抛 `TypeError`（#493 现场）。
+ * 两个名单本来就是这个模块里的两份手抄，靠人记必漏 ⇒ 用这条自检把漏项钉在测试里。
+ *
+ * @returns {string[]} 缺在白名单里的旋钮名（空 = 通过）
+ */
+export function contextOptionNameSelfCheck() {
+  return FOLD_SUMMARIZER_CAP_NAMES.filter((name) => !CONTEXT_OPTION_NAME_SET.has(name));
+}
 
 /**
  * `context` 的未知子键检查（issue #469，宿主要求「未知键报错」）。
@@ -243,6 +260,26 @@ const CONTEXT_OPTION_NAME_SET = new Set(CONTEXT_OPTION_NAMES);
  * @returns {string[]}
  */
 const KNOB_FAMILY_PATTERN = /summar|PriorSummary/iu;
+/** 编辑距离（Levenshtein，带长度剪枝）：判「这个键是不是某个已知旋钮名的手滑」。 */
+function editDistanceWithin(a, b, limit) {
+  if (Math.abs(a.length - b.length) > limit) return false;
+  const prev = new Array(b.length + 1);
+  const cur = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j += 1) prev[j] = j;
+  for (let i = 1; i <= a.length; i += 1) {
+    cur[0] = i;
+    let rowMin = cur[0];
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      if (cur[j] < rowMin) rowMin = cur[j];
+    }
+    if (rowMin > limit) return false;
+    for (let j = 0; j <= b.length; j += 1) prev[j] = cur[j];
+  }
+  return prev[b.length] <= limit;
+}
+
 
 /**
  * 这个 `context` 子键是否属于「折叠摘要旋钮家族」（#493）。
@@ -253,7 +290,11 @@ const KNOB_FAMILY_PATTERN = /summar|PriorSummary/iu;
  * @returns {boolean}
  */
 export function isSummarizerKnobKey(key) {
-  return KNOB_FAMILY_PATTERN.test(String(key ?? ""));
+  const needle = String(key ?? "").toLowerCase();
+  if (needle === "") return false;
+  // 只认「某个已知旋钮名的手滑」（距离 ≤ 2），不在字面上立规矩：`summaryStyle`、
+  // `summarizerNote` 这类业务键与任何旋钮名都差得远 ⇒ 不算旋钮（上游现场实测过）。
+  return FOLD_SUMMARIZER_CAP_NAMES.some((name) => editDistanceWithin(needle, name.toLowerCase(), 2));
 }
 
 /** 未知的 `context` 子键全集（**不**分家族，供 diagnostics 用）。 */
