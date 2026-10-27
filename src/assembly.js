@@ -1,6 +1,7 @@
 
 import {
   MODEL_CONFIG_RESOLVER_HINT,
+  collectUnknownContextOptions,
   validateContextOptionNames,
   validateFoldSummarizerCaps,
   validateFoldSummaryHook,
@@ -179,6 +180,21 @@ export function createAssemblyPort(input = {}) {
   ];
   if (contextOptionProblems.length > 0) {
     throw new TypeError(contextOptionProblems.join("; "));
+  }
+  // issue #493：非「旋钮家族」的未知 `context` 子键**不抛**——契约允许宿主把私有元数据放这里
+  // （`budget.js` 自己也读 `toolContext` / `expert` / `user` / `session` / `requestId`）。
+  // 但也不静默：给一条事件，宿主接 `onEvent` / `emit` 就能看见（拼错旋钮名的照旧由上面抛）。
+  const toleratedKeys = collectUnknownContextOptions(port.policy?.context);
+  if (toleratedKeys.length > 0 && typeof port.emit === "function") {
+    try {
+      port.emit("context_unknown_option", {
+        type: "context_unknown_option",
+        keys: toleratedKeys,
+        note: "unknown context keys are tolerated as host metadata; summarizer knob typos throw instead",
+      });
+    } catch {
+      // 观察者失败不得影响装配。
+    }
   }
   return Object.freeze(port);
 }

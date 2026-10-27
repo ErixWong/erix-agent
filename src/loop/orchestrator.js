@@ -1,6 +1,7 @@
 import { KitError } from "../providers/errors.js";
 import { computeBudget } from "../compact/budget.js";
 import { createProviderSummarizer, summarizerThinkingMode } from "../compact/provider-summarizer.js";
+import { DEFAULT_SUMMARY_MAX_TOKENS } from "../compact/fold-llm.js";
 import { resolveCompactionStrategy } from "../compact/strategy-resolution.js";
 // issue #469（裁决 A）：resume 后的续写基底从账本播种，取源就复用 #462 的「按水位线挑覆盖事实」。
 import { pickCoveringFoldAlternative } from "../compact/resume-fold-trim.js";
@@ -1260,6 +1261,13 @@ export async function runToolLoop(options) {
     : undefined;
   /** @type {{finishReason?: string, inputTokens?: number, outputTokens?: number, inputTruncated?: boolean}|undefined} */
   let lastSummarizerMeta = undefined;
+  // issue #493（下游 fde-station 实测）：摘要那一发的 `maxTokens` 以前**原样继承 run 的**
+  // （实测 32768），与摘要预算 `maxSummaryTokens`（默认 1400）完全脱钩 ⇒ 模型按 32k 写满、
+  // 再被 1400 剪回，白烧 token。这里**取小对齐**：`min(run 的 maxTokens, context.maxSummaryTokens)`。
+  const summaryMaxTokens = Math.min(
+    maxTokens === undefined ? Number.POSITIVE_INFINITY : maxTokens,
+    context?.maxSummaryTokens ?? DEFAULT_SUMMARY_MAX_TOKENS,
+  );
   const compactionSummarizer = createProviderSummarizer({
     chat: async (request) => {
       if (typeof provider?.chat !== "function" && typeof provider?.chatStream !== "function") {
@@ -1270,7 +1278,8 @@ export async function runToolLoop(options) {
         // issue #469-①：摘要器自带超时时它已把 `request.signal` 换成子 controller 的 signal
         // （父 signal 已转发进去），这里不得再用 run 的 signal 覆盖；没配超时时无处赋值 ⇒ 逐字不变。
         signal: request.signal ?? signal,
-        ...(maxTokens === undefined ? {} : { maxTokens }),
+        // issue #493：与摘要预算取小对齐（不再原样继承 run 的 maxTokens）。
+        ...(Number.isFinite(summaryMaxTokens) ? { maxTokens: summaryMaxTokens } : {}),
       };
       const response = await awaitWithAbort(
         typeof provider.chat === "function"
@@ -1403,6 +1412,10 @@ export async function runToolLoop(options) {
         ...(context.maxPriorSummaryBytes === undefined
           ? {}
           : { maxPriorSummaryBytes: context.maxPriorSummaryBytes }),
+        // issue #493：它以前是唯一没开的那个（直连路径静默无效、装配口反倒报错）。
+        ...(context.maxSummaryTokens === undefined
+          ? {}
+          : { maxSummaryTokens: context.maxSummaryTokens }),
       },
     });
   const compactionContext = context === undefined && budgetTokens === undefined
