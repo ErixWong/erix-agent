@@ -7,19 +7,21 @@
 //      对着 `RUN_TOOL_LOOP_OPTION_NAMES` 核「每个顶层选项恰好落在配置面或能力面之一」——
 //      往白名单加一个键却忘了分类 ⇒ 这里红。
 //   B. **结构等价**（判据 1）：同一份配置写成扁平形态与 `config` 形态，`effectiveOptions` 逐键
-//      深度相等。两层：50 个配置键**逐个**扫一遍（`expandConfigNamespace`，机械穷举），
-//      再加一份跨 10 个分组的**端到端** `normalizeRunToolLoopOptions` 对比（走真闸口）。
+//      深度相等。两层：52 个配置键**逐个**扫一遍（`expandConfigNamespace`，机械穷举），
+//      再加一份跨 8 个分组的**端到端** `normalizeRunToolLoopOptions` 对比（走真闸口）。
 //      断言一律 `deepStrictEqual` / `assert.equal`，不用 `toBeTruthy` 糊。
 //   C. **优先级与冲突**（判据 2）：同名时 `config.*` 赢，且发一条 `config_override_conflict` 事件。
 //      优先级不只比对象：真跑一次两轮 run，`maxRounds` 扁平 1 / config 2 ⇒ `end_turn`
 //      （扁平赢的话会是 `max_rounds_cap`）。冲突事件在「值相同」「只给一边」时**不发**。
-//   D. **能力面不收配置覆盖**（判据 3）：15 个能力/注入键写进 `config`（顶层或组内）⇒ 启动即抛，
+//   D. **能力面不收配置覆盖**（判据 3）：13 个能力键写进 `config`（顶层或组内）⇒ 启动即抛，
 //      报错点名该键，`error.via` 按入口路线是 `direct` / `assembly`。**既有「显式细粒度选项覆盖
 //      装配口同名成员」语义不动**（`resolveAssemblyMember`（`src/assembly.js`））：
 //      `test/contract/assembly-port.js` 的「显式细粒度 provider 覆盖端口 provider」照旧绿。
 //      **能力面的判据是行为面不是「引擎不解释」**（#497 复审 R1）：A4 用行为证据钉住按新判据
-//      改归的四个键（`persistence` / `model` / `modelMetadata` / `session`）确实被引擎读，
-//      A5 钉住「旧判据会把它们错锁在配置树外」这件事不再成立。
+//      改归的四个键（`persistence` / `model` / `modelMetadata` / `session`）确实被引擎读。
+//      `runId` / `cwd` 在**配置面**（`config.run.*`）：第二轮裁决取消了上一轮给判据加的
+//      「身份/环境注入」那条腿，理由见 `src/loop/config-namespace.js` 文件头约束 3（判据要机械
+//      可检验 + 0.28 的「`config` 子树过 JSON round-trip 等值」要求能力面只剩函数/端口对象）。
 //   E. **#496 的语义相闸口吃的是展开后的表示**（判据 5）：`config.folding.context` 里拼错的旋钮名
 //      抛的错与扁平 `context` 里拼错的**同一句**，只差 `via` 标签。
 //
@@ -38,7 +40,7 @@
 //     ⇒ 5 红：A1 / A2 / A3 / B1 / F1——自检与枚举两侧同时红；
 //   · M7（R4）把逐叶事件降级成 `void collectConfigSourceConflicts(…)`（算而不发）
 //     ⇒ 1 红：C6（「冲突事件恰一条」实测 0 !== 1）；
-//   · M8（R3）把 JSDoc 的 `tuning?:` 改回假组名 `reflection?:` ⇒ 本文件不红（类型面不在
+//   · M8（R3）把 JSDoc 的 `tuning?:` 改成假组名 `reflection?:` ⇒ 本文件不红（类型面不在
 //     单测里），但 `npm run check:release` 第 4 步红：宿主 `config.tuning` 报
 //     `TS2353: … 'tuning' does not exist in type …`——见报告里那条实测输出。
 //
@@ -108,11 +110,11 @@ const assemblyError = async (policy = {}) => {
 };
 
 // ================================================================ A. 只有一张表（派生，不是手抄）
-test("A1 schema 自检：65 个顶层选项恰好分成 50 配置面 + 15 能力面，且 config 自己是容器", () => {
+test("A1 schema 自检：65 个顶层选项恰好分成 52 配置面 + 13 能力面，且 config 自己是容器", () => {
   // 样本自证：总数先钉住，免得「两边一起漏」也算通过。
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.length, 66, "顶层白名单 = 65 个既有选项 + config");
-  assert.equal(CONFIG_SURFACE_OPTION_NAMES.length, 50, "配置面 50 个键（#497 复审 R1 按新判据从能力面移入 4 个）");
-  assert.equal(CAPABILITY_OPTION_NAMES.length, 15, "能力/注入面 15 项（#497 复审 R1 按新判据重新分类后的数字）");
+  assert.equal(CONFIG_SURFACE_OPTION_NAMES.length, 52, "配置面 52 个键（R1 从能力面移入 4 个 + 第二轮移入 runId / cwd）");
+  assert.equal(CAPABILITY_OPTION_NAMES.length, 13, "能力面 13 项（第二轮把 runId / cwd 按「字符串标量属数据」移进配置面）");
   assert.equal(
     CONFIG_SURFACE_OPTION_NAMES.length + CAPABILITY_OPTION_NAMES.length,
     RUN_TOOL_LOOP_OPTION_NAMES.length - 1,
@@ -137,7 +139,12 @@ test("A2 别名 = schema 路径：每个配置键恰好一条路径，叶子名�
   // 能力面一个都不在配置面里（交叉核对，不靠「我记得」）。
   const surface = new Set(CONFIG_SURFACE_OPTION_NAMES);
   for (const name of CAPABILITY_OPTION_NAMES) {
-    assert.equal(surface.has(name), false, `${name} 是能力/注入键，不能出现在配置面`);
+    assert.equal(surface.has(name), false, `${name} 是能力键，不能出现在配置面`);
+  }
+  // 反向（第二轮裁决的落地形状，逐条点名，免得「悄悄移回能力面」也没人红）。
+  for (const name of ["runId", "cwd"]) {
+    assert.equal(configPathForOption(name), `run.${name}`, `${name} 必须落在 config.run`);
+    assert.equal(CAPABILITY_OPTION_NAMES.includes(name), false, `${name} 不得再出现在能力面`);
   }
 });
 
@@ -209,7 +216,7 @@ test("A4 按新判据改归的四个键真被引擎读：persistence / modelMeta
 });
 
 // ================================================================ B. 结构等价（判据 1）
-test("B1 50 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平形态逐键深度相等", () => {
+test("B1 52 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平形态逐键深度相等", () => {
   let covered = 0;
   for (const key of CONFIG_SURFACE_OPTION_NAMES) {
     const path = configPathForOption(key);
@@ -230,7 +237,7 @@ test("B1 50 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平�
     assert.deepEqual(mixed.conflicts, [{ path, key }], `${path} 混合写法必须记一条冲突`);
     covered += 1;
   }
-  assert.equal(covered, 50, "穷举必须覆盖全部 50 个配置键（漏一个就少一条等价证明）");
+  assert.equal(covered, 52, "穷举必须覆盖全部 52 个配置键（漏一个就少一条等价证明）");
 });
 
 /** 跨 8 个分组的代表性配置：同一个 `VALUES` 同时生成扁平形态与 config 形态。 */
@@ -272,11 +279,14 @@ const VALUES = {
   task: "task",
   requestId: "req-497",
   toolContext: { a: 1 },
-  // issue #497 复审 R1：按新判据从能力面移回配置面的四个键（端到端等价也要覆盖它们）。
+  // issue #497 复审 R1：按新判据从能力面移回配置面的四个键（端到端等价也要覆盖它们）；
+  // 第二轮又从能力面移入两个字符串标量 `runId` / `cwd`（`config.run.*`）。
   persistence: "none",
   model: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
   modelMetadata: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
   session: { id: "config-497-b2", modelSlot: "default" },
+  runId: "config-497-run",
+  cwd: "/tmp/config-497",
   onRound: () => {},
   onJudge: () => {},
   onToolResult: () => {},
@@ -490,16 +500,20 @@ test("C7 两个 config 源同值 / 只给一边 ⇒ 不发事件（判据与扁�
 });
 
 // ================================================================ D. 能力面不收配置覆盖（判据 3）
-test("D1 15 个能力/注入键写进 config 顶层 ⇒ 启动即抛，点名该键，via=direct", async () => {
-  assert.equal(CAPABILITY_OPTION_NAMES.length, 15);
+test("D1 13 个能力键写进 config 顶层 ⇒ 启动即抛，点名该键，via=direct", async () => {
+  assert.equal(CAPABILITY_OPTION_NAMES.length, 13);
+  // 逐条枚举（**不是抽样**）：每一条都跑一次真 run，报错点名该键、带能力面文案与 via 标签。
+  const enumerated = [];
   for (const name of CAPABILITY_OPTION_NAMES) {
     const error = await directError({ config: { [name]: null } });
     assert.equal(error instanceof TypeError, true, `${name} 必须启动即抛 TypeError`);
     assert.match(error.message, new RegExp(`config\\.${name} is not accepted`, "u"), `${name} 的报错必须点名该键`);
-    assert.match(error.message, /capability\/injection option/u, `${name} 的报错必须说明是能力/注入面`);
+    assert.match(error.message, /capability\/injection option/u, `${name} 的报错必须说明是能力面`);
     assert.match(error.message, /cannot be overridden through the config namespace/u);
     assert.equal(error.via, "direct", `${name} 的路线标签必须是 direct`);
+    enumerated.push(name);
   }
+  assert.deepEqual(enumerated, [...CAPABILITY_OPTION_NAMES], "逐条枚举的名单必须与导出名单逐字相等（不许漏条）");
 });
 
 test("D2 能力键写在分组里 ⇒ 同一套规则（config.<group>.<capability> 也拒）", async () => {

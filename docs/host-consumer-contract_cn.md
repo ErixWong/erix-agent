@@ -111,12 +111,12 @@ executeTool({ id, name, input, context, signal })
 （`src/loop/config-namespace.js`）与配置面名单 `CONFIG_SURFACE_OPTION_NAMES`
 （`src/loop/config-namespace.js`）都从它派生，再由 `configSchemaSelfCheck`
 （`src/loop/config-namespace.js`）对着顶层白名单核账：每个顶层选项必须**恰好**被归入
-*配置面*（50 键）或*能力/注入面*（15 键）之一，而 `config` 自己是那个容器。
+*配置面*（52 键）或*能力面*（13 键）之一，而 `config` 自己是那个容器。
 
 | 命名空间 | 旋钮 |
 | --- | --- |
 | `config.prompt` | `system`、`cacheStablePrefix`、`initialUserMessage`、`initialMessages`、`wrapup` |
-| `config.run` | `maxRounds`、`maxTokenContinuations`、`stallDetection`、`completion`、`replayPolicy`、`invalidArguments`、`partialPersistence`、`persistence`、`outputHygiene`、`writeToolNames`、`writeToolPathKeys`、`resume`、`stream`、`reflection` |
+| `config.run` | `maxRounds`、`maxTokenContinuations`、`stallDetection`、`completion`、`replayPolicy`、`invalidArguments`、`partialPersistence`、`persistence`、`outputHygiene`、`writeToolNames`、`writeToolPathKeys`、`resume`、`stream`、`reflection`、`runId`、`cwd` |
 | `config.tuning` | `maxTokens`、`temperature`、`topP`、`cacheCapable` |
 | `config.timing` | `timeoutMs`、`deadlineMs`、`retry` |
 | `config.folding` | `context`、`toolResultTtl`、`toolResultFoldMinTokens` |
@@ -144,9 +144,9 @@ executeTool({ id, name, input, context, signal })
   展开发生在**合并后**的表示上（装配口已折进来之后、语义相之前），所以 `config` 里的值走的是与
   扁平孪生完全相同的那套校验：`config.folding.context` 里拼错的摘要旋钮名抛的是与扁平 `context`
   同一句，`config.guard.finalGuard` 必须是函数的原因与 `finalGuard` 必须是函数完全一样。
-- **能力键一律拒绝** —— `CAPABILITY_OPTION_NAMES`（`src/loop/config-namespace.js`）里的 15 项能力/注入
+- **能力键一律拒绝** —— `CAPABILITY_OPTION_NAMES`（`src/loop/config-namespace.js`）里的 13 项能力
   选项不是配置：`provider`、`tools`、`executeTool`、`store`、`modelConfig`、`assemblyPort`、
-  `runId`、`cwd`、`signal`、`todoStateProvider`、`semanticStateProvider`、`onEvent`、
+  `signal`、`todoStateProvider`、`semanticStateProvider`、`onEvent`、
   `onObserverError`、`onPersistenceError`、`diagnostics`。把它们写进 `config`（顶层或组内）⇒
   启动即抛并点名该键，错误带着与其他闸口相同的 `via` 标签（`"direct"` / `"assembly"`）。
   **这条收窄只作用于新命名空间**：既有优先级规则——显式细粒度选项覆盖装配口提供的同名成员
@@ -154,15 +154,24 @@ executeTool({ id, name, input, context, signal })
   一字未动，`test/contract/assembly-port.js` 照旧断言它（「显式细粒度 provider 覆盖端口 provider」）。
 
   **这条线画在哪里（issue #497 复审 R1，判据是行为面）：** 能力面 = 宿主递进来的**行为载体**——
-  引擎**调用或解引用**的函数与端口对象（端口方法被调、信号被监听、回调被投递），加上引擎原样
-  带进事件与 payload 的**身份/环境**值（`runId`、`cwd`）。配置面 = 引擎**按已知字段校值并解释**
-  的数据——枚举字面量、数字、布尔、结构已知的对象。所以有四个键从能力面移到了配置面（写进
-  `config` 会被接受并真的生效）：`persistence`（`config.run.persistence`；`"none"` / `"required"`
-  字面量被校验并决定持久化路径——`"required"` 会打开 transcript store 的方法校验）、
-  `model` / `modelMetadata`（`config.metadata.*`；`contextWindowTokens` / `maxOutputTokens`
-  两个数字被 `modelMetadataFor`（`src/loop/budget.js`）读去推压缩预算与「15% 窗口」的输出上限）、
-  `session`（`config.metadata.session`；`id` 被校验、`modelSlot` 被交给 `modelConfig.resolve`、
-  `resume` / `initialMessages` 被读）。旧判据「能力面 = 引擎不解释其值」对这四个键**实测为假**。
+  引擎**调用或解引用**的函数与端口对象（端口方法被调、信号被监听、回调被投递）。配置面 = 引擎
+  **按已知字段校值并解释**的数据——枚举字面量、数字、布尔、字符串标量、结构已知的对象。所以有
+  四个键从能力面移到了配置面（写进 `config` 会被接受并真的生效）：`persistence`
+  （`config.run.persistence`；`"none"` / `"required"` 字面量被校验并决定持久化路径——`"required"`
+  会打开 transcript store 的方法校验）、`model` / `modelMetadata`（`config.metadata.*`；
+  `contextWindowTokens` / `maxOutputTokens` 两个数字被 `modelMetadataFor`（`src/loop/budget.js`）
+  读去推压缩预算与「15% 窗口」的输出上限）、`session`（`config.metadata.session`；`id` 被校验、
+  `modelSlot` 被交给 `modelConfig.resolve`、`resume` / `initialMessages` 被读）。旧判据
+  「能力面 = 引擎不解释其值」对这四个键**实测为假**。
+
+  **`runId` / `cwd` 也是配置**（issue #497 复审第二轮——上一轮给判据加的那条「身份/环境注入」腿
+  **取消**），所以它们是 `config.run.runId` / `config.run.cwd`；顶层扁平键一字未动（这是新增别名，
+  不是迁移）。两条理由：
+  1. 判据的价值在于**机械可检验**：能力面 = 被调用/被解引用的行为载体，配置面 = 被校值并解释的
+     数据。为两个键单开一条例外，判据就退化成「先分好类、再补理由」——谁来分类都能自证。
+  2. 更强的正向理由：0.28 的可检验目标是「`config` 子树必须过 JSON round-trip 等值」。`runId` /
+     `cwd` 是**字符串标量、天然 JSON 安全**，而能力面应当只剩函数/端口对象。把它们留在能力面，
+     那条 0.28 判据就得反过来开例外——一条要豁免两个字符串键的 round-trip 规则已经不算规则。
 - **形状与名称** —— `config` 本身必须是对象（`null`、数组、字符串都抛）；未知分组、未知叶子、
   把扁平键写在 `config` 顶层（`config.maxRounds` 会被回一句「写 `config.run.maxRounds`」）、
   以及把叶子写错组（`config.run.temperature` 会指向 `config.tuning.temperature`）都在

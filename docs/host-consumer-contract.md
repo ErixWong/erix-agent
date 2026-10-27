@@ -136,12 +136,12 @@ name. There is no rename table. One schema, `CONFIG_NAMESPACE_SCHEMA`
 `CONFIG_SURFACE_OPTION_NAMES` (`src/loop/config-namespace.js`) are derived from it, and
 `configSchemaSelfCheck` (`src/loop/config-namespace.js`) keeps the pair honest against the
 top-level allowlist: every top-level option must be classified as exactly one of *config surface*
-(50 keys) or *capability/injection* (15 keys), with `config` itself being the container.
+(52 keys) or *capability* (13 keys), with `config` itself being the container.
 
 | namespace | knobs |
 | --- | --- |
 | `config.prompt` | `system`, `cacheStablePrefix`, `initialUserMessage`, `initialMessages`, `wrapup` |
-| `config.run` | `maxRounds`, `maxTokenContinuations`, `stallDetection`, `completion`, `replayPolicy`, `invalidArguments`, `partialPersistence`, `persistence`, `outputHygiene`, `writeToolNames`, `writeToolPathKeys`, `resume`, `stream`, `reflection` |
+| `config.run` | `maxRounds`, `maxTokenContinuations`, `stallDetection`, `completion`, `replayPolicy`, `invalidArguments`, `partialPersistence`, `persistence`, `outputHygiene`, `writeToolNames`, `writeToolPathKeys`, `resume`, `stream`, `reflection`, `runId`, `cwd` |
 | `config.tuning` | `maxTokens`, `temperature`, `topP`, `cacheCapable` |
 | `config.timing` | `timeoutMs`, `deadlineMs`, `retry` |
 | `config.folding` | `context`, `toolResultTtl`, `toolResultFoldMinTokens` |
@@ -177,11 +177,11 @@ Five rules govern it:
   through exactly the same validation as its flat twin: a misspelled summarizer knob under
   `config.folding.context` throws the same message as under the flat `context`, and
   `config.guard.finalGuard` must be a function for the same reason `finalGuard` must be.
-- **Capability keys are refused** — the 15 capability/injection options in
-  `CAPABILITY_OPTION_NAMES` (`src/loop/config-namespace.js`) are not configuration: `provider`,
-  `tools`, `executeTool`, `store`, `modelConfig`, `assemblyPort`, `runId`, `cwd`, `signal`,
-  `todoStateProvider`, `semanticStateProvider`, `onEvent`, `onObserverError`,
-  `onPersistenceError`, `diagnostics`. Writing one inside `config` (at the top level or under a
+- **Capability keys are refused** — the 13 capability options in `CAPABILITY_OPTION_NAMES`
+  (`src/loop/config-namespace.js`) are not configuration: `provider`, `tools`, `executeTool`,
+  `store`, `modelConfig`, `assemblyPort`, `signal`, `todoStateProvider`,
+  `semanticStateProvider`, `onEvent`, `onObserverError`, `onPersistenceError`, `diagnostics`.
+  Writing one inside `config` (at the top level or under a
   group) throws at startup and names the key; the error carries the same `via` tag as every other
   gate error (`"direct"` / `"assembly"`). **This narrowing applies to the new namespace only**:
   the pre-existing precedence rule — an explicit fine-grained option overrides the same-named
@@ -192,18 +192,31 @@ Five rules govern it:
   **Where the line runs (issue #497 review R1, the criterion is behavioural):** the capability
   surface is what the host hands in as **behaviour carriers** — functions and port objects the
   engine *calls or dereferences* (a port method is invoked, a signal is listened to, callbacks are
-  delivered to) plus the identity/environment values it carries into events and payloads
-  (`runId`, `cwd`). The config surface is **data the engine validates and interprets by known
-  field** — enum literals, numbers, booleans, objects with a known shape. That is why four keys
-  that used to sit on the capability list are configuration, and why writing them under `config`
-  is accepted and takes effect: `persistence` (`config.run.persistence`; its `"none"` /
-  `"required"` literal is validated and picks the persistence path — `"required"` turns on the
-  transcript-store method check), `model` / `modelMetadata` (`config.metadata.*`; their
-  `contextWindowTokens` / `maxOutputTokens` numbers are read by `modelMetadataFor`
+  delivered to). The config surface is **data the engine validates and interprets by known
+  field** — enum literals, numbers, booleans, string scalars, objects with a known shape. That is
+  why four keys that used to sit on the capability list are configuration, and why writing them
+  under `config` is accepted and takes effect: `persistence` (`config.run.persistence`; its
+  `"none"` / `"required"` literal is validated and picks the persistence path — `"required"`
+  turns on the transcript-store method check), `model` / `modelMetadata` (`config.metadata.*`;
+  their `contextWindowTokens` / `maxOutputTokens` numbers are read by `modelMetadataFor`
   (`src/loop/budget.js`) to derive the compaction budget and the 15%-of-window output limit) and
   `session` (`config.metadata.session`; `id` is validated, `modelSlot` is passed to
   `modelConfig.resolve`, `resume` / `initialMessages` are read). The old wording — "capability
   means the engine does not interpret its value" — was measurably false for all four.
+
+  **`runId` / `cwd` are configuration too** (issue #497 review, second round — the "identity /
+  environment injection" leg that the first round added to the criterion is **cancelled**), so
+  they are `config.run.runId` / `config.run.cwd`; the flat top-level keys are untouched (this is
+  an added alias, not a migration). Two reasons:
+  1. The criterion is worth only what is **mechanically checkable**: the capability surface is the
+     behaviour carriers that get called or dereferenced, the config surface is data that gets
+     validated and interpreted. A carve-out opened for two keys degenerates the criterion into
+     "classify first, then write the justification" — anyone can pass it.
+  2. The stronger, positive reason: the checkable target for 0.28 is "the `config` subtree must
+     survive a JSON round-trip unchanged". `runId` / `cwd` are **string scalars, JSON-safe by
+     construction**, and the capability surface should be left with functions and port objects
+     only. Keeping them on the capability side would force that 0.28 check to open the exception
+     in the other direction — a round-trip rule with two string exemptions is no longer a rule.
 - **Shape and names** — `config` itself must be an object (`null`, an array and a string all
   throw); an unknown group, an unknown leaf, a flat key written at the top of `config`
   (`config.maxRounds` is answered with "write `config.run.maxRounds`"), and a leaf written in the

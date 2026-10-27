@@ -12,24 +12,34 @@
 //   2. **只有一张表**。分组表 `CONFIG_NAMESPACE_SCHEMA` 是唯一手写的部分；展开映射
 //      (`CONFIG_ALIAS_PATHS`)、配置面名单 (`CONFIG_SURFACE_OPTION_NAMES`) 都从它机械派生。
 //      完整性由 `configSchemaSelfCheck()` 对着 `RUN_TOOL_LOOP_OPTION_NAMES` 核：
-//      每个顶层选项必须**恰好**落在「配置面」或「能力/注入面」之一（漏一个、重一个都算问题）。
+//      每个顶层选项必须**恰好**落在「配置面」或「能力面」之一（漏一个、重一个都算问题）。
 //      于是「往白名单加一个选项但忘了分类」不会静默——它会让自检报红（见
 //      `test/loop-config-namespace-497.test.js`）。
-//   3. **能力/注入面不接受配置覆盖**（母单裁决），而**这条面的判据是行为、不是「引擎不解释」**
+//   3. **能力面不接受配置覆盖**（母单裁决），而**这条面的判据是行为、不是「引擎不解释」**
 //      （#497 复审 R1 更正：旧判据「能力面 = 引擎不解释其值」是**假的**——`session` 的
 //      `id`/`modelSlot`/`resume`/`initialMessages` 都被读，`model`/`modelMetadata` 的
 //      `contextWindowTokens`/`maxOutputTokens` 数字被拿去算预算，`persistence` 的字面量被校验
 //      并决定整条持久化路径。按旧判据分类等于把四个**配置**键锁在配置树外面）。
 //      现判据（中英成对地写在契约里，见 `docs/host-consumer-contract{,_cn}.md` 的
 //      「config 命名空间 / The `config` namespace」一节）：
-//        · **能力面** = 宿主提供的**行为载体**（函数 / 端口对象）与身份/环境注入，引擎**调用或
-//          解引用**它（端口方法被调、信号被监听、身份与环境被原样带进事件与 payload）；
-//        · **配置面** = 引擎**按已知字段校值并解释**的数据（枚举字面量、数字、布尔、结构已知的
-//          对象）。
-//      于是 `provider` / `tools` / `store` / `modelConfig` / `signal` / 回调出口 … 这 15 项写进
+//        · **能力面** = 宿主提供的**行为载体**（函数 / 端口对象），引擎**调用或解引用**它
+//          （端口方法被调、信号被监听、回调被投递）；
+//        · **配置面** = 引擎**按已知字段校值并解释**的数据（枚举字面量、数字、布尔、字符串标量、
+//          结构已知的对象）。
+//      于是 `provider` / `tools` / `store` / `modelConfig` / `signal` / 回调出口 … 这 13 项写进
 //      `config` 一律启动即抛，报错点名该键。注意这条**只作用于新命名空间**——显式细粒度选项
 //      覆盖装配口同名成员（`resolveAssemblyMember`（`src/assembly.js`））是既有行为，
 //      `test/contract/assembly-port.js` 有断言，本单一个字都没改。
+//
+//      **`runId` / `cwd` 为什么在配置面**（#497 复审第二轮裁决，取消了上一轮给判据加的
+//      「以及身份/环境注入」那一条腿）。两条理由，第一条是判据自身的健康，第二条是更强的正向理由：
+//        1. 判据的价值在于**机械可检验**：能力面 = 被调用/被解引用的行为载体，配置面 = 被校值并
+//           解释的数据。为两个键单开一条例外，判据就退化成「先分好类、再补理由」——谁来分类都能
+//           自证。
+//        2. 0.28 的可检验目标是「`config` 子树必须过 JSON round-trip 等值」。`runId` / `cwd` 是
+//           **字符串标量、天然 JSON 安全**；能力面应当只剩函数/端口对象。把它们留在能力面，那条
+//           0.28 判据就得反过来开例外（一条 round-trip 判据要豁免两个字符串键，它也就不再是判据）。
+//      所以它们是 `config.run.runId` / `config.run.cwd`：别名新增，**顶层扁平键一字未动**。
 //
 // 优先级（范围 2）：同名时 `config.*` 覆盖顶层扁平键；顶层扁平键继续接受、行为一字不变。
 // 冲突不静默——`expandConfigNamespace` 把「同一个键两种写法给了不同的值」记进 `conflicts`，
@@ -54,10 +64,9 @@ import { tagValidationRoute } from "../assembly-validators.js";
  * 45 个配置键的分类草稿在 `docs/delivery/analysis-261023-406-normalization-design.md`
  * （15 run + 10 tuning 核心 + 10 folding + 10 其它）——该文件在本仓库树上**不存在**（`docs/delivery/`
  * 是 gitignore 的本机档案目录），所以这里的分组是照代码实测重新分类的结果，不是照抄草稿。
- * 现表共 **50 键 / 8 组**（草稿的 45 键 + #497 复审 R1 按新判据从能力面移进来的
- * `persistence`（→ `run`）与 `model` / `modelMetadata` / `session`（→ `metadata`））。
- * 现表共 **50 键 / 8 组**（草稿的 45 键 + #497 复审 R1 按新判据从能力面移进来的
- * `persistence`（→ `run`）与 `model` / `modelMetadata` / `session`（→ `metadata`））。
+ * 现表共 **52 键 / 8 组**（草稿的 45 键 + #497 复审 R1 按新判据从能力面移进来的
+ * `persistence`（→ `run`）与 `model` / `modelMetadata` / `session`（→ `metadata`）+ #497 复审
+ * 第二轮按「字符串标量属数据」裁决从能力面移进来的 `runId` / `cwd`（→ `run`））。
  *
  * @type {Readonly<Record<string, readonly string[]>>}
  */
@@ -88,6 +97,11 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
     "resume",
     "stream",
     "reflection",
+    // 身份与环境：两个**字符串标量**。它们以前按「身份/环境注入」留在能力面，现在按判据
+    // （字符串标量 = 被原样带走的数据，不是被调用的行为载体）归配置面；0.28 的「`config` 子树
+    // 必须过 JSON round-trip 等值」也要求它们是数据（见文件头约束 3 的两条理由）。
+    "runId",
+    "cwd",
   ]),
   // 请求侧的取值：每一发模型调用都带上的采样参数与端点能力。
   tuning: Object.freeze([
@@ -148,21 +162,25 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
 });
 
 /**
- * 能力/注入面（15 项）：宿主**递进来**的行为载体与身份/环境注入。
+ * 能力面（13 项）：宿主**递进来**的行为载体。
  *
  * 判据（#497 复审 R1 更正后的版本，与文件头约束 3 同一句话）：**能力面 = 宿主提供的行为载体
- * （函数 / 端口对象）与身份/环境注入，引擎调用或解引用它；配置面 = 引擎按已知字段校值并解释
- * 的数据**。所以这里的成员只有三类：
+ * （函数 / 端口对象），引擎调用或解引用它；配置面 = 引擎按已知字段校值并解释的数据**。
+ * 所以这里的成员只有三类：
  *   · 适配器 / 端口对象（方法被引擎调用）：`provider`、`tools`、`executeTool`、`store`、
  *     `modelConfig`、`assemblyPort`、`todoStateProvider`、`semanticStateProvider`；
- *   · 身份与环境（原样带进事件 / payload / 端口）：`runId`、`cwd`；
- *   · 中止信号与错误/事件出口（被监听 / 被调用）：`signal`、`onEvent`、`onObserverError`、
- *     `onPersistenceError`、`diagnostics`。
+ *   · 中止信号（被监听）：`signal`；
+ *   · 错误 / 事件出口（被调用）：`onEvent`、`onObserverError`、`onPersistenceError`、`diagnostics`。
  *
  * 反例（为什么 `persistence` / `model` / `modelMetadata` / `session` **不在**这里）：引擎读它们的
  * 已知字段并据值改行为（`persistence` 的模式字面量被校验并选持久化路径；`model`/`modelMetadata`
  * 的窗口数字被拿去算预算；`session` 的 `id`/`modelSlot`/`resume`/`initialMessages` 被读）——
  * 那是配置，不是行为载体。
+ *
+ * 反例（为什么 `runId` / `cwd` **不在**这里）：它们是**字符串标量**，引擎不调用它们、只把它们原样
+ * 带进事件与 payload —— 那是「被校值并解释的数据」这一侧。上一轮曾给判据加过「以及身份/环境注入」
+ * 一条腿来留住它们，**本轮取消**：为两个键单开的例外会让判据退化成「先分类再补理由」，而 0.28 的
+ * 「`config` 子树必须过 JSON round-trip 等值」正要求能力面只剩函数/端口对象（见文件头约束 3）。
  *
  * `config` 里出现其中任何一个 ⇒ 启动即抛（母单裁决）。
  *
@@ -180,9 +198,6 @@ export const CAPABILITY_OPTION_NAMES = Object.freeze([
   "executeTool",
   "store",
   "modelConfig",
-  // 身份 / 环境
-  "runId",
-  "cwd",
   // 中止信号与状态源
   "signal",
   "todoStateProvider",
@@ -238,7 +253,7 @@ export function configPathForOption(optionName) {
 }
 
 /**
- * schema 自检：每个顶层选项必须**恰好**落在配置面或能力/注入面之一。
+ * schema 自检：每个顶层选项必须**恰好**落在配置面或能力面之一。
  *
  * 这条自检是「只有一张表」的锁：新增一个顶层选项却忘了分类 ⇒ 这里报「未分类」；
  * 同一个键同时出现在两处（或同一组里出现两次）⇒ 这里报「重复」。测试对着
@@ -287,7 +302,7 @@ export function configSchemaSelfCheck(optionNames) {
  * `config` 命名空间的**名称/形状**问题（纯函数，不抛）。
  *
  * 三类问题分开说，因为它们的修法不同：
- *   · 能力/注入键 ⇒ 这条路本来就不该走（配置面不接受能力覆盖）；
+ *   · 能力键 ⇒ 这条路本来就不该走（配置面不接受能力覆盖）；
  *   · 扁平键写进了 config ⇒ 教他写成 `config.<group>.<key>`（路径由 schema 派生）；
  *   · 真·未知的名字 ⇒ 报「未知」并枚举该层接受的名单。
  *
@@ -344,7 +359,7 @@ export function collectConfigNamespaceProblems(config) {
 }
 
 /**
- * 能力/注入键的统一文案：点名该键，并说清「能力面不接受配置覆盖」。
+ * 能力键的统一文案：点名该键，并说清「能力面不接受配置覆盖」。
  *
  * @param {string} path
  * @param {string} name

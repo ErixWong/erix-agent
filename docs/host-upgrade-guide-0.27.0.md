@@ -221,15 +221,18 @@ exactly as before. Two things to know if you adopt it:
    sets is **dropped** by that whole-tree override, so do not treat the two sources as a per-leaf
    merge.
 2. **Capability keys are refused** — `provider`, `tools`, `executeTool`, `store`, `modelConfig`,
-   `assemblyPort`, `runId`, `cwd`, `signal`, `todoStateProvider`, `semanticStateProvider`,
+   `assemblyPort`, `signal`, `todoStateProvider`, `semanticStateProvider`,
    `onEvent`, `onObserverError`, `onPersistenceError` and `diagnostics` are not configuration.
    Writing one inside `config` throws at startup and names the key. The line is behavioural: the
    capability surface is what you hand in as **behaviour carriers** (functions / port objects the
-   engine calls or dereferences, plus the identity and environment values it carries into events),
-   while the config surface is **data the engine validates and interprets by known field**. That is
-   why `persistence` (`config.run.persistence`) and `model` / `modelMetadata` / `session`
-   (`config.metadata.*`) are configuration in this version — the engine reads their known fields
-   (the persistence mode literal, the window numbers, `session.id` / `modelSlot`). This narrowing
+   engine calls or dereferences), while the config surface is **data the engine validates and
+   interprets by known field**. That is why `persistence` (`config.run.persistence`) and `model` /
+   `modelMetadata` / `session` (`config.metadata.*`) are configuration in this version — the engine
+   reads their known fields (the persistence mode literal, the window numbers, `session.id` /
+   `modelSlot`). `runId` / `cwd` are configuration too (`config.run.runId` / `config.run.cwd`):
+   they are string scalars, JSON-safe by construction, and the 0.28 check ("the `config` subtree
+   survives a JSON round-trip") wants the capability surface to hold functions and port objects
+   only. This narrowing
    applies to the **new namespace only**: the pre-existing precedence rule — an explicit
    fine-grained option overrides the same-named member the assembly port supplies
    (`resolveAssemblyMember` (`src/assembly.js`)), e.g. an explicit `provider` still beats the port's
