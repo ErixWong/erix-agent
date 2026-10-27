@@ -1292,6 +1292,11 @@ export async function runToolLoop(options) {
     ...(context?.summarizerTimeoutMs === undefined
       ? {}
       : { summarizerTimeoutMs: context.summarizerTimeoutMs }),
+    // issue #486 P1-B：父 signal 必须真的接进摘要器。超时恒开（默认 30 s）⇒
+    // `request.signal` 恒存在，上面 chat 包装的 `request.signal ?? signal` 就把 run 的
+    // signal 永久短路了；子 controller 没接父 abort ⇒ 宿主 abort 之后这一发 HTTP 继续跑
+    // （token 照扣且不进 engineUsage，因为 `awaitWithAbort` 已经抛出）。这里补上转发。
+    signal,
     // issue #469-①（评审 P1）：关思考的**形态**按协议选——vLLM/Qwen 用
     // `enable_thinking` + `chat_template_kwargs`，Anthropic 不认这两个键（400）且思考默认就关，
     // 那边退回 `"inherit"`。判据只有 provider 自己声明的 `protocol`，不猜模型名。
