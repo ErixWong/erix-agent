@@ -113,6 +113,13 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // field `system` (`src/messages/anthropic.js`), the message-conversion argument
   // (`canonicalToAnthropicRequest({ system })`) and the CLI/README wording are not runToolLoop options.
   "wrapup",
+  // issue #527: `tools` stays here **permanently**. The #498 S3 A6 reachability check proved that a
+  // tool declaration may carry function members (`handler` / `validate` / `execute` / a function inside
+  // `inputSchema`); the config subtree holds data only, so `config.input.tools` was **flat-reachable,
+  // nested-unreachable**. The ruling removed that leaf: `tools` is a **permanent top-level option**
+  // (the third station, alongside `provider` / `executeTool` / `store`), and writing
+  // `config.input.tools` is now rejected as an unknown leaf whose message points at the top level.
+  // The engine's read side is unchanged: it still reads `effectiveOptions.tools`.
   "tools",
   "outputHygiene",
   "writeToolNames",

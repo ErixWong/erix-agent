@@ -165,8 +165,8 @@ test("#266①：成功终局把 sessionDir 下的笔记从 active 收到 done", 
         probe: async (options) => {
           // 前提：run 进行到一半时这条记录确实是 active（否则「变 done」这条断言是空的）
           stateWhileRunning = findNoteRecord(sessionDir, "k266-success")?.record?.state;
-          // #498 S6：工具声明数组的规位是 `config.input.tools`（引擎展开后仍是扁平 `tools`）。
-          assert.ok(options.config.input.tools.some((tool) => tool.name === "note_take"), "前提：note_* 在内层工具面里");
+          // #527：工具声明数组是永久顶层面（第三站），住在顶层 `tools`。
+          assert.ok(options.tools.some((tool) => tool.name === "note_take"), "前提：note_* 在内层工具面里");
         },
       }),
     }),

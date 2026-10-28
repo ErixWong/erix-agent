@@ -144,7 +144,7 @@ test("P2 顶层 initialMessages ⇒ 当场拒，文案逐字指向 config.input.
 });
 
 // 旧名**真的**不在白名单里了（不是「拒了但又留着」）。
-test("P3 三个旧名都不在白名单里，而 config.input 组原样保留六个叶子", () => {
+test("P3 三个旧名都不在白名单里，而 config.input 组原样保留五个叶子", () => {
   // #498 S3 A2b：`initialUserMessage` 是第三个（`input` 组最后一个离开顶层白名单的成员）。
   for (const name of ["cacheStablePrefix", "initialMessages", "initialUserMessage"]) {
     assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(name), false, `${name} 必须已经离开顶层白名单`);
@@ -152,8 +152,8 @@ test("P3 三个旧名都不在白名单里，而 config.input 组原样保留六
   // 新家还在（本刀删的是**写法**，不是叶子）：否则 P1/P2 的文案会指向一个不存在的组。
   assert.deepEqual(
     [...CONFIG_NAMESPACE_SCHEMA.input].sort(),
-    ["cacheStablePrefix", "initialUserMessage", "messages", "system", "tools", "wrapup"],
-    "config.input 组必须原样保留六个叶子（它就是新家）",
+    ["cacheStablePrefix", "initialUserMessage", "messages", "system", "wrapup"],
+    "config.input 组必须原样保留五个叶子（它就是新家；#527 已把 tools 拆成永久顶层面）",
   );
   // 纯数据键不该被塞「第二站」（它们不是混装壳）：两条文案都是「一句话」形态。
   for (const name of ["cacheStablePrefix", "initialMessages", "initialUserMessage"]) {

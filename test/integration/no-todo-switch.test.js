@@ -59,10 +59,21 @@ function optionAt(ref, path) {
   return value;
 }
 
+/** issue #527：`tools` 是永久顶层面（第三站），住在顶层；`config.input.tools` 不得存在。 */
+function toolsAt(ref) {
+  assert.equal(Array.isArray(ref.options.tools), true, "tools 必须在顶层（永久顶层面，第三站）");
+  assert.equal(
+    Object.hasOwn(ref.options.config?.input ?? {}, "tools"),
+    false,
+    "config.input.tools 叶子已被 #527 拆掉：它不得再出现在规位",
+  );
+  return ref.options.tools;
+}
+
 const TODO_NAMES = ["todo_add", "todo_list", "todo_done", "todo_clear"];
 
 function assertNoTodo(ref, label) {
-  const names = optionAt(ref, "config.input.tools").map((tool) => tool.name);
+  const names = toolsAt(ref).map((tool) => tool.name);
   for (const name of TODO_NAMES) {
     assert.ok(!names.includes(name), `${label}：工具表不得包含 ${name}`);
   }
@@ -111,7 +122,7 @@ test("runChat 默认路径：todo 四工具在模型工具表中（回归）", a
       toolOutput: () => {},
       loop: captureLoop(ref),
     });
-    const names = optionAt(ref, "config.input.tools").map((tool) => tool.name);
+    const names = toolsAt(ref).map((tool) => tool.name);
     for (const name of TODO_NAMES) {
       assert.ok(names.includes(name), `默认路径应包含 ${name}`);
     }
@@ -147,7 +158,7 @@ test("runChat --no-todo：工具表无 todo_*、系统提示无 todo、用户级
     });
     assertNoTodo(ref, "--no-todo");
     // 用户级 todo skill 经 excludeSkillIds 排除：不得出现任何 todo_* 实现（含 skill 版）
-    const names = optionAt(ref, "config.input.tools").map((tool) => tool.name);
+    const names = toolsAt(ref).map((tool) => tool.name);
     assert.equal(names.filter((name) => name.startsWith("todo_")).length, 0);
     // 排除后不存在同名冲突，warnBuiltinToolConflicts 不得产生告警噪音
     assert.equal(
@@ -184,7 +195,7 @@ test("runChat --no-todo 与 --tools 白名单正交：先关 todo 再过白名�
       toolOutput: () => {},
       loop: captureLoop(ref),
     });
-    assert.deepEqual(optionAt(ref, "config.input.tools").map((tool) => tool.name), ["exec"]);
+    assert.deepEqual(toolsAt(ref).map((tool) => tool.name), ["exec"]);
     assert.ok(
       stderrLines.some((line) => line.includes("todo_add") && line.includes("不存在")),
       `todo_add 已被 --no-todo 移除，出现在 --tools 里应警告不存在：${stderrLines.join(" | ")}`,
@@ -251,7 +262,7 @@ test("runChat 用户级 todo skill 默认路径产生同名冲突告警（issue 
       stderrLines.some((line) => /同名/u.test(line) && /todo/u.test(line)),
       `默认路径应保留同名告警：${stderrLines.join(" | ")}`,
     );
-    const names = optionAt(ref, "config.input.tools").map((tool) => tool.name);
+    const names = toolsAt(ref).map((tool) => tool.name);
     assert.equal(names.filter((name) => name === "todo_add").length, 1, "只保留内置实现");
   } finally {
     console.error = originalError;

@@ -293,7 +293,7 @@ test("buildLoopOptions：参数 → runToolLoop 选项装配（策略名/预算�
   assert.equal(at(options, "config.input.system"), "SYS");
   assert.equal(at(options, "config.input.initialUserMessage"), "修 bug");
   assert.equal(at(options, "config.metadata.task"), "修 bug", "契约要求显式传 task 作为简报来源");
-  assert.equal(at(options, "config.input.tools"), assembly.tools);
+  assert.equal(options.tools, assembly.tools, "#527：tools 是永久顶层面（第三站）");
   assert.equal(options.executeTool, assembly.executeTool, "端口对象仍留在顶层");
   assert.equal(at(options, "config.run.maxRounds"), 9);
   assert.equal(at(options, "config.timing.timeoutMs"), 60_000);

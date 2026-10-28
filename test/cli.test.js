@@ -64,6 +64,24 @@ function canonicalLoopOption(captured, path) {
   return value;
 }
 
+/**
+ * issue #527：`tools` 是**永久顶层面（第三站）**——与 provider / executeTool / store 同类，住在顶层。
+ * 本读取器两个方向都断言：顶层必须读到数组，且 `config.input.tools` 这个叶子**不得**存在（拆掉它
+ * 正是本刀的主张；谁把它加回来，这里会红）。
+ *
+ * @param {Record<string, any>} captured `loop` 收到的选项对象
+ * @returns {any[]} 顶层 `tools`
+ */
+function flatLoopTools(captured) {
+  assert.equal(Array.isArray(captured.tools), true, "tools 必须在顶层（永久顶层面，第三站）");
+  assert.equal(
+    Object.hasOwn(captured.config?.input ?? {}, "tools"),
+    false,
+    "config.input.tools 叶子已被 #527 拆掉：它不得再出现在规位",
+  );
+  return captured.tools;
+}
+
 function normalizeGoldenEnvironment(value, cwd, fixtureCwd, goldenDirs = []) {
   // issue #185：落盘目录不再钉死在 /tmp，比较前把「实际临时目录」与「fixture 里记录的 dir」
   // 都归一化成同一个占位符，golden 断言因此与 TMPDIR 无关（长串先替换，避免前缀互吃）。
@@ -564,7 +582,7 @@ test("runChat filters tools via --tools allowlist and warns on unknown names", a
   }
 
   assert.ok(captured);
-  const names = canonicalLoopOption(captured, "config.input.tools").map((tool) => tool.name);
+  const names = flatLoopTools(captured).map((tool) => tool.name);
   assert.ok(names.includes("readFile"));
   assert.ok(names.includes("tree"));
   assert.ok(!names.includes("exec"));
@@ -603,7 +621,7 @@ test("runChat assembles note tools via the factory and --no-notes removes them",
       toolOutput: () => {},
       loop: captureLoop,
     });
-    const noteNamesOn = canonicalLoopOption(captured, "config.input.tools")
+    const noteNamesOn = flatLoopTools(captured)
       .map((tool) => tool.name)
       .filter((name) => name.startsWith("note_"));
     assert.deepEqual(noteNamesOn, ["note_take", "note_read", "note_list", "note_forget"]);
@@ -634,7 +652,7 @@ test("runChat assembles note tools via the factory and --no-notes removes them",
       loop: captureLoop,
     });
     assert.equal(
-      canonicalLoopOption(captured, "config.input.tools")
+      flatLoopTools(captured)
         .map((tool) => tool.name)
         .filter((name) => name.startsWith("note_"))
         .length,
@@ -666,7 +684,7 @@ test("runChat assembles note tools via the factory and --no-notes removes them",
       else process.env.ERIX_NO_NOTES = saved;
     }
     assert.equal(
-      canonicalLoopOption(captured, "config.input.tools")
+      flatLoopTools(captured)
         .map((tool) => tool.name)
         .filter((name) => name.startsWith("note_"))
         .length,
@@ -709,7 +727,7 @@ test("runChat --tools allowlist also applies to factory note tools", async () =>
         };
       },
     });
-    assert.deepEqual(canonicalLoopOption(captured, "config.input.tools").map((tool) => tool.name).sort(), ["exec", "note_take"]);
+    assert.deepEqual(flatLoopTools(captured).map((tool) => tool.name).sort(), ["exec", "note_take"]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -182,14 +182,17 @@ function readCapabilitiesPath(options, capabilityPath) {
 }
 
 /**
- * 端口对象 / 信号 / 错误出口——**唯一允许留在顶层**的五项。
+ * 端口对象 / 信号 / 错误出口 + `tools`——**唯一允许留在顶层**的六项（issue #527 起）。
  *
  * 它们没有命名空间规位不是漏了：`capabilities.ports` 只收「壳内实现」
  * （`sleepImpl` / `judgeProvider` / `strategy`），适配器端口对象明确不进（见
  * `src/loop/capabilities-namespace.js` 的文件头）。所以这张名单是「无处可搬」的清单，
  * 不是「先放这儿以后再说」。
+ *
+ * `tools` 是 #527 的裁决：工具声明可以带函数成员，所以它既不能进只装数据的 `config`，
+ * 引擎也不调用那些成员，所以它不是能力面 ⇒ **永久顶层面（第三站）**，与端口对象同类。
  */
-const TOP_LEVEL_ONLY_KEYS = ["provider", "executeTool", "store", "signal", "diagnostics"];
+const TOP_LEVEL_ONLY_KEYS = ["provider", "executeTool", "store", "signal", "diagnostics", "tools"];
 
 /** 容器键（展开后消失，既不是配置面也不是能力面）。 */
 const CONTAINER_KEYS = ["config", "capabilities"];
@@ -207,7 +210,7 @@ test("S6-A 迁移前的每个扁平键都有唯一新规位，且顶层不再有
   assert.deepEqual(
     Object.keys(options).sort(),
     [...TOP_LEVEL_ONLY_KEYS, ...CONTAINER_KEYS].sort(),
-    "顶层只允许端口对象/信号/错误出口 + 两个容器",
+    "顶层只允许端口对象/信号/错误出口 + tools + 两个容器",
   );
 
   const unclassified = [];

@@ -1,19 +1,16 @@
-// issue #498（S3）—— `input` 组的**收尾刀（A6 段）**。
+// issue #498（S3）—— `input` 组的**收尾刀（A6 段）**，并在 #527 之后继续作为 `tools` 的钉子。
 //
-// 工单点名三个键：`system` / `wrapup` / `tools`。本片**只退役了 `system`**（家 =
-// `config.input.system`，`CONFIG_NAMESPACE_SCHEMA.input`），另两个**原样退回**，理由都在下面
-// 用可执行的证据钉住，不是散文：
+// 工单点名三个键：`system` / `wrapup` / `tools`。A6 当时只退役了 `system`（家 =
+// `config.input.system`，`CONFIG_NAMESPACE_SCHEMA.input`）；另两个原样退回。**#527 落地了
+// `tools` 的裁决**：它不是配置键，是**永久顶层面（第三站）**，所以 `config.input.tools`
+// 这个叶子被拆掉。本文件保留并加强 A6 的 G1–G4 as-is 钉，另加 G5「闭门」证据：
 //
-//   · `tools` —— **闸口二（函数成员可达性）没过**。宿主今天经扁平 `tools` 能交进去的每一种形状里，
-//     「条目带函数成员」（`handler` / `validate` / `execute` / 甚至 `inputSchema` 里的函数）这一族
-//     **扁平可达、规位不可达**：`config` 只装数据（`collectFunctionPaths`，见
-//     `src/loop/config-namespace.js` 文件头约束 4），函数值 intake 当场拒。这就是 #520 同类的
-//     **静默收窄**（`timing` 那刀发现 `retry.sleepImpl` 宿主根本不可达，最后开了 #520）。按工单裁决
-//     `tools` **退回不删**，本文件把「现在是什么样」逐字钉住（G 段）——将来谁要删它，先过这一格。
-//   · `wrapup` —— 本片**没做**（时间预算）。它的写点摊在 ~35 个测试文件 / ~106 处 `wrapup: false`
-//     夹具写点上（删键后全量红 **189** 格），一次改拼写等于重演 #521 的 475 写点问题；正确做法是先
-//     落一条「夹具级翻译」的前置刀（`test/helpers/run-direct.js` 的 `withSeed` 就是那样收口的），
-//     再删键。S 段把「`input` 组还剩哪两个扁平孪生」机器派生出来，于是「没做完」是可见的，不靠记忆。
+//   · `tools` —— A6 的**闸口二（函数成员可达性）**实测：条目里带函数成员（`handler` / `validate` /
+//     `execute` / `inputSchema` 内的函数）这四族**扁平可达、规位不可达**（`config` 只装数据）。
+//     #527 据此拆掉叶子：扁平 `tools` 照旧收下（引擎只校 `replay`、读 `name`/`inputSchema`），
+//     写 `config.input.tools` 现在是**未知叶子**当场拒，文案指向「第三站在顶层」。
+//   · `wrapup` —— 仍**没做**（时间预算，删键后全量红 189 格）；S 段机器派生「`input` 组只剩它一个
+//     扁平孪生」，于是「没做完」是可见的，不靠记忆。
 //
 // ⚠ 这一刀**只动 `runToolLoop` 那一张面**。同一个词在别的面上照旧存在，一个字都不许动 —— 由 P5
 // 逐面钉住（每条都有可执行证据）：
@@ -37,12 +34,12 @@ import {
   CONFIG_NAMESPACE_SCHEMA,
   configOptionNameForLeaf,
   configPathForOption,
-  configPlaneOptionNames,
   configSchemaSelfCheck,
-  CAPABILITY_OPTION_NAMES,
+  optionHomeBuckets,
   NAMESPACE_CONTAINER_OPTION_NAMES,
+  TOP_LEVEL_SURFACE_OPTION_NAMES,
 } from "../src/loop/config-namespace.js";
-import { capabilityDestinationsForShell } from "../src/loop/capabilities-namespace.js";
+import { capabilitiesPathForOption, capabilityDestinationsForShell } from "../src/loop/capabilities-namespace.js";
 import {
   RUN_TOOL_LOOP_OPTION_NAMES,
   normalizeRunToolLoopOptions,
@@ -58,8 +55,8 @@ const DONE = [{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" 
 /** 本片退役的键 → 规范之家（逐字）。表只在这里出现一次，后面全部从它派生。 */
 const RETIRED = [{ key: "system", home: "input.system" }];
 
-/** 本片**退回不删**的键（理由见文件头；S / G 两段把它们钉住）。 */
-const RETURNED = ["wrapup", "tools"];
+/** 本片**仍可扁平写**的键（#527 之后 `input` 组只剩它一个；理由见文件头）。 */
+const RETURNED = ["wrapup"];
 
 /** 直连路线的最小合法 run（一次 end_turn 就结束）。 */
 function runDirect(extra = {}) {
@@ -241,24 +238,22 @@ test("P5-c 专项：顶层 wrapup 仍是活选项；wrapup 组的嵌套容器是
 });
 
 test("P5-d 专项：./tools 子路径导出与 createToolRegistry 不是顶层选项", async () => {
-  // `tools` 这个**词**在三张面上：顶层选项键（`config.input.tools`）、`erix-agent/tools` 子路径、
-  // 以及 `createToolRegistry` 这个符号。后两张面本片一个字都没动。
+  // `tools` 这个**词**在三张面上：永久顶层面选项键（#527 之后它**没有**嵌套家）、
+  // `erix-agent/tools` 子路径、以及 `createToolRegistry` 这个符号。后两张面本片一个字都没动。
   const registry = createToolRegistry([]);
   assert.equal(typeof registry.executeTool, "function", "工具注册表仍是同一个实现（本片不动能力面）");
   assert.equal(typeof registry.resolveTools, "function");
-  assert.equal(
-    configPathForOption("tools"),
-    "input.tools",
-    "顶层 tools 的规位仍是 input.tools（本片退回，不删）",
-  );
+  assert.equal(configPathForOption("tools"), undefined, "#527 之后 tools 没有配置面之家");
+  assert.equal(capabilitiesPathForOption("tools"), undefined, "tools 也不是能力面叶子");
+  assert.equal(TOP_LEVEL_SURFACE_OPTION_NAMES.includes("tools"), true, "tools 是永久顶层面（第三站）");
 });
 
-// ================================================================ G. 闸口二：`tools` 的函数成员可达性（as-is 钉）
+// ================================================================ G. `tools`：函数成员可达性 + #527 的闭门
 //
-// **这是本片最重要的钉子**：它把「现在是什么样」逐字钉住，而不是钉「应该是什么样」。
-// 结论（逐例实测，见报告 §闸口二）：条目里带函数成员的形状**扁平可达、规位不可达** ⇒ `tools`
-// 退回不删。谁要删它，必须先让这一格变绿——要么放宽该叶子（`config.input.tools` 豁免函数值），
-// 要么把该成员移到能力面（`capabilities.ports.*`），两条都是裁决，不是实现细节。
+// G1–G4 是 A6 的 as-is 钉，**原样保留**：它们证明「条目带函数成员」这一族经扁平 `tools` 可达、
+// 且成员是惰性的（两个协议都投影掉）。#527 据此把 `tools` 定为永久顶层面，并拆掉
+// `config.input.tools` 叶子——G5 就是「半开的门变成闭门」的证据：同一个值写进那个叶子现在是
+// **未知叶子**当场拒，文案指向顶层第三站。
 
 test("G1 as-is：扁平 tools 收下带函数成员的条目（引擎不校成员类型，只校 replay）", async () => {
   const shapes = [
@@ -278,26 +273,48 @@ test("G1 as-is：扁平 tools 收下带函数成员的条目（引擎不校成�
   }
 });
 
-test("G2 as-is：同一个形状写进 config.input.tools 被当场拒（数据面只装数据）", async () => {
+test("G2 #527 闭门：同一个形状写进 config.input.tools 现在是未知叶子，文案指向顶层第三站", async () => {
   const error = await directError({
     config: { input: { tools: [{ name: "t", inputSchema: { type: "object" }, handler: () => {} }] } },
   });
-  assert.equal(error instanceof TypeError, true, "规位必须当场拒（这就是「扁平可达、规位不可达」）");
-  // 文案逐字：**完整路径**（含数组下标）+ 理由（round-trip）+ 去向（能力面三档里命中的那一档）。
-  // 注意命中的是第三档（叶子名 `handler` 本身不在能力面 schema 上），所以它枚举真正存在的三个端口槽，
-  // 而不是含糊地说「去能力面」——这正是 #498 S4c 把那句话从「指个方向」改成「点名目的地」的地方。
+  assert.equal(error instanceof TypeError, true, "叶子拆掉后，规位必须当场拒（不是「收下再忽略」）");
+  // 文案逐字：**未知叶子** + 指向第三站（顶层），而不是「函数值 + 能力面三档」——后者是叶子还在
+  // 时候的形状。`tools` 现在既不是配置叶子也不是能力叶子，所以「未知叶子」才是正确的门。
   assert.equal(
     error.message,
-    "config.input.tools[0].handler is not accepted: \"handler\" is a function, and the config namespace"
-      + " holds data only (the config subtree must survive a JSON round-trip unchanged)"
-      + " — its canonical home is capabilities (capabilities.hooks.<name> for a host callback,"
-      + " capabilities.ports.<slot> for a port implementation — the accepted slots are"
-      + " sleepImpl, judgeProvider, strategy)",
-    "文案必须点名完整路径（含数组下标）并给出可执行的去向",
+    "unknown config.input option: \"tools\" (\"tools\" is a permanent top-level option — the third station —"
+      + " write it at the top level: tools: …)",
+    "文案必须点名未知叶子并指向「第三站在顶层」",
   );
+  // 行为证据：扁平写法逐字可用，且函数成员照旧原样交给 provider（G1 的同一件事，写在一个 run 里）。
+  const provider = createFakeProvider(DONE);
+  const flat = await runDirect({ provider, tools: [{ name: "t", inputSchema: { type: "object" }, handler: () => {} }] });
+  assert.equal(flat.termination.reason, "end_turn");
+  assert.equal(typeof provider.requests[0].tools[0].handler, "function", "扁平写法照旧原样透传函数成员");
 });
 
-test("G3 as-is：纯数据形状两边都收（对照格——收窄只发生在函数成员上）", async () => {
+test("G5 #527 闭门（独立一格）：`config.input.tools` 与 `config.tools` 都被拒，且都指向顶层第三站", async () => {
+  // G2 钉的是「同一个函数形状」；G5 钉的是「叶子本身没了」——纯数据、标量、甚至 undefined 都拒。
+  // 这就是「半开的门变成闭门」的唯一证据：不是收窄某个形状，而是整条路不再存在。
+  for (const value of [[{ name: "t" }], null, "x", 1, true, undefined]) {
+    const error = await directError({ config: { input: { tools: value } } });
+    assert.equal(error instanceof TypeError, true, `config.input.tools=${JSON.stringify(value)} 必须拒`);
+    assert.match(error.message, /unknown config\.input option: "tools"/u);
+    assert.match(error.message, /permanent top-level option/u);
+    assert.match(error.message, /third station/u);
+    assert.match(error.message, /top level/u);
+  }
+  // 写在 config 顶层也是同一个答案（不是「未知分组 + 接受名单」那种读起来像「tools 消失了」的文案）。
+  const topLevel = await directError({ config: { tools: [] } });
+  assert.equal(topLevel instanceof TypeError, true);
+  assert.match(topLevel.message, /config\.tools: "tools" is a permanent top-level option/u);
+  assert.match(topLevel.message, /third station/u);
+  // 结构上叶子真的不在 schema 里（反向证会把这个断言打红）。
+  assert.equal(CONFIG_NAMESPACE_SCHEMA.input.includes("tools"), false);
+  assert.equal(configPathForOption("tools"), undefined);
+});
+
+test("G3 as-is：纯数据形状扁平照旧收，而规位（无论纯数据还是函数）一律是未知叶子", async () => {
   const plain = [
     { name: "t", description: "d", inputSchema: { type: "object" } },
     { name: "t2", description: "d", inputSchema: { type: "object" }, replay: "safe" },
@@ -305,14 +322,12 @@ test("G3 as-is：纯数据形状两边都收（对照格——收窄只发生在
   ];
   const flat = await runDirect({ tools: plain });
   assert.equal(flat.termination.reason, "end_turn", "扁平纯数据形状照旧可用");
-  const atCanonicalHome = await runDirect({ config: { input: { tools: plain } } });
-  assert.equal(atCanonicalHome.termination.reason, "end_turn", "规位纯数据形状必须可用（对照组）");
-  // 非对象条目 / 非数组值：两边都照旧收（引擎对 `tools` 只做 `Array.isArray` 与 `replay` 两件事）。
-  for (const odd of [[null], ["t"], "not-an-array"]) {
-    const asFlat = await runDirect({ tools: odd });
-    assert.equal(asFlat.termination.reason, "end_turn", `扁平 ${JSON.stringify(odd)} 照旧收`);
-    const asConfig = await runDirect({ config: { input: { tools: odd } } });
-    assert.equal(asConfig.termination.reason, "end_turn", `规位 ${JSON.stringify(odd)} 照旧收`);
+  // #527：规位不再收任何形状（叶子没了）——纯数据也不行，这正是「闭门」而不是「收窄」。
+  for (const odd of [plain, [null], ["t"], "not-an-array"]) {
+    const asConfig = await directError({ config: { input: { tools: odd } } });
+    assert.equal(asConfig instanceof TypeError, true, `规位 ${JSON.stringify(odd)} 必须被拒`);
+    assert.match(asConfig.message, /unknown config\.input option: "tools"/u, "必须是未知叶子那条文案");
+    assert.match(asConfig.message, /permanent top-level option/u, "文案必须指向第三站");
   }
 });
 
@@ -390,16 +405,20 @@ test("R3 真 run：新家不给 ⇒ 请求体上连 system 键都没有（删键
 //
 // 「`input` 组收口了吗」不是一句话，是一个派生集合：组里还剩哪些叶子仍有顶层扁平孪生。
 
-test("A1 白名单 = 配置面 ∩ 白名单 + 能力面 + 容器，且 schema 自检为空", () => {
-  const configPlane = configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES);
-  const union = [...configPlane, ...CAPABILITY_OPTION_NAMES, ...NAMESPACE_CONTAINER_OPTION_NAMES];
+test("A1 白名单 = 配置面 ∩ 白名单 + 能力面 + 第三站 + 容器，且 schema 自检为空", () => {
+  const { configPlane, capability, topLevelSurface, containers } = optionHomeBuckets(RUN_TOOL_LOOP_OPTION_NAMES);
+  const union = [...configPlane, ...capability, ...topLevelSurface, ...containers];
   assert.deepEqual(
     [...union].sort(),
     [...RUN_TOOL_LOOP_OPTION_NAMES].sort(),
-    "三向闭合：每个顶层选项恰好落在一个家里（期望值从符号派生，不抄条数）",
+    "四向闭合：每个顶层选项恰好落在一个家里（期望值从符号派生，不抄条数）",
   );
-  assert.equal(new Set(union).size, union.length, "三个面不许重叠");
+  assert.equal(new Set(union).size, union.length, "四个面不许重叠");
   assert.deepEqual(configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES), [], "schema 自检必须为空");
+  // #527：`tools` 没有嵌套家，但在第三站里；这是 11 → 12 账目的机器口径。
+  assert.equal(configPathForOption("tools"), undefined);
+  assert.equal(capabilitiesPathForOption("tools"), undefined);
+  assert.equal(TOP_LEVEL_SURFACE_OPTION_NAMES.includes("tools"), true);
   // 键已离开白名单，但**叶子仍在 schema 里**（新家）；两边一起断言，防「删键顺手把叶子也删了」。
   for (const { key, home } of RETIRED) {
     assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(key), false, `${key} 必须已离开顶层白名单`);
@@ -413,7 +432,7 @@ test("A1 白名单 = 配置面 ∩ 白名单 + 能力面 + 容器，且 schema �
   }
 });
 
-test("S `input` 组**没有**收口：仍可扁平写的成员逐字等于本片退回的那两个键（机器派生）", () => {
+test("S `input` 组仍未收口：仍可扁平写的成员逐字等于退回清单（#527 后只剩 `wrapup`）", () => {
   // 判据全部从符号派生：组里的叶子 → 顶层键名（含唯一那条别名）→ 是否还在白名单里。
   // 于是「本片少做了一键」不会静默：退回清单必须与派生集合逐字相等，多一个少一个都红。
   const flatTwins = CONFIG_NAMESPACE_SCHEMA.input
@@ -422,7 +441,7 @@ test("S `input` 组**没有**收口：仍可扁平写的成员逐字等于本片
   assert.deepEqual(
     [...flatTwins].sort(),
     [...RETURNED].sort(),
-    "`input` 组仍未收口：只剩这两个键还有扁平孪生（本片退回 `tools`（闸口二）/ `wrapup`（预算））",
+    "`input` 组仍未收口：只剩 `wrapup` 还有扁平孪生（#527 已把 `tools` 拆成永久顶层面）",
   );
   // 其余成员都已是「只在 config.input.* 里」的形状——本片与前三片合起来就是这句话的证据。
   const nestedOnly = CONFIG_NAMESPACE_SCHEMA.input
@@ -434,6 +453,24 @@ test("S `input` 组**没有**收口：仍可扁平写的成员逐字等于本片
     "system 必须已进入「只在 config.input.* 里」的那一半",
   );
   assert.equal(nestedOnly.length + flatTwins.length, CONFIG_NAMESPACE_SCHEMA.input.length, "两半必须恰好覆盖整组");
+});
+
+test("T 第三站账目（#527）：两个家都没有的键 11 → 12，`tools` 是新增的那一个", () => {
+  // 口径逐字来自工单：`configPathForOption(name) === undefined` 且
+  // `capabilitiesPathForOption(name) === undefined`。这条**不读**任何手写名单，只读两个 schema。
+  const noNestedHome = RUN_TOOL_LOOP_OPTION_NAMES.filter(
+    (name) => configPathForOption(name) === undefined && capabilitiesPathForOption(name) === undefined,
+  );
+  assert.equal(noNestedHome.length, 12, "#527 之后「两个家都没有」的键必须是 12（之前 11）");
+  assert.deepEqual(
+    [...noNestedHome].sort(),
+    [...TOP_LEVEL_SURFACE_OPTION_NAMES, ...NAMESPACE_CONTAINER_OPTION_NAMES].sort(),
+    "这 12 个必须逐字等于第三站 + 两个容器（多一个少一个都红）",
+  );
+  assert.equal(noNestedHome.includes("tools"), true, "tools 必须在这 12 个里——它就是 11 → 12 的新增成员");
+  assert.equal(configPathForOption("tools"), undefined, "tools 的配置面之家已拆（这是 12 的算法的一半）");
+  assert.equal(capabilitiesPathForOption("tools"), undefined, "tools 也不是能力面叶子（另一半）");
+  assert.equal(TOP_LEVEL_SURFACE_OPTION_NAMES.includes("tools"), true, "tools 的所有权分类 = 永久顶层面（第三站）");
 });
 
 test("A2 本仓库 test/ 里不许再出现手抄的顶层键数（口径：`RUN_TOOL_LOOP_OPTION_NAMES.length, <数字>`）", () => {
