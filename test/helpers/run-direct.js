@@ -83,6 +83,10 @@ const RUN_FAMILY_FIXTURE_KEYS = Object.freeze([
   // #498 S3 A15: `cwd` (home `config.run.cwd`). Same reasoning; the value is a plain string, and the
   // engine's own type check still runs after expansion (a non-string is still `cwd must be a string`).
   "cwd",
+  // #498 S3 A16: `stream` (home `config.run.stream`). Same reasoning again — the fixture only moves
+  // spellings. The engine's read side (the one truthiness test in `src/loop/orchestrator.js`) is
+  // unchanged, so `true` / `false` / object values behave exactly as before.
+  "stream",
 ]);
 
 /**

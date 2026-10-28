@@ -873,7 +873,8 @@ A12 落的翻译点（`test/helpers/run-direct.js` 的 `withRunFamily`）本来�
 得到「只装数据」那两句；R：值逐字到达 `effectiveOptions` **并且**上面两个终局原因成立；N：`maxTokens` 仍是
 另一个键、本组剩下的六个成员一件没动）。
 
-**`run` 组 A15 段的扁平写法版本口径**（issue #498 S3，第十五片——`cwd` 退役、`stream` **退回**）：
+**`run` 组 A15 段的扁平写法版本口径**（issue #498 S3，第十五片——`cwd` 退役；`stream` 在该片**退回**、
+由 A16 退役，见下）：
 
 | 版本 | 顶层写 `cwd` |
 | --- | --- |
@@ -901,17 +902,38 @@ golden）。
 `createCliTools({ cwd })` / `assemblyPort.cwd` / `params.cwd`（pi 扩展的工具入参）全是**同词不同物**，一个
 字节都没动。退役一个入口不是「迁一个词」。
 
-**`stream` 是退回，不是退役**——闸口二量了四种取值，量出一只混装壳：
+**`stream`：A15 退回，A16 退役。** 闸口二量了四种取值，量出一只混装壳；A15 把那个形状交给裁决、
+没有自裁。下面这张表就是那次测量，它仍然是「裁决为什么这么选」的依据：
 
-| `stream` 取值 | 扁平侧 | 规位侧（`config.run.stream`） |
+| `stream` 取值 | 扁平侧（A16 之前） | 规位侧（`config.run.stream`） |
 | --- | --- | --- |
-| `true` / `false` / 对象 | exit 0 | exit 0（PARITY） |
+| `true` / `false` / 对象 / `1` | exit 0 | exit 0（PARITY） |
 | **函数** | **exit 0** | **被拒**——`config.run.stream is not accepted … holds data only` |
 
-`stream` 没有值校验器（引擎只做一处真值判断），所以任何 truthy 值都会打开流式路径，函数取值于是
-**扁平可达**，而「只装数据」的 `config` 拒它。按本仓对「扁平可达」的操作性口径（今天不报错地接受），这是
-混装壳 ⇒ 该键留在白名单、行为一字未改，候选（按 as-is 退役 / 先加布尔校验器再退役 / 立第三站）交给裁决，
-不在本片自裁。四种取值的逐格证据在钉子文件的 `S1`–`S3`。
+裁决（issue #495）退役了扁平拼写，并**接受由此产生的收窄**：函数取值现在**两个拼写都被拒**。依据是上面
+那张表的第二行配上引擎的读侧——`stream` 只被做一处真值判断（`src/loop/orchestrator.js` 里的
+`if (partialPersistence !== false && !stream)`），**从不被调用**，所以函数在这个位置从来不是行为；
+`config` 只装数据，函数在那里本来就已被拒。本片**刻意没做**的两件事：没有先加布尔校验器（那是 issue #538
+的活，裁决明确否掉了「先加校验器再退役」这个顺序），也没有动 `src/loop/provider-runner.js` 的两处读法——
+issue #538（这里按真值判断、那里按严格比较）是**已知缺陷，本片不修**。
+
+`stream` 的版本口径（issue #498 S3，第十六片）：
+
+| 版本 | 顶层写 `stream` |
+| --- | --- |
+| 0.26.0 及更早（最后一个**已发布**版本） | 顶层接受 |
+| 0.27.0 | **从未发布**，所以没有任何宿主装过「这件事有影响」的树 |
+| 0.28.0 及以后（issue #498 S3，第十六片） | **当场拒**——改写 `config.run.stream`。名称闸口抛 `unknown runToolLoop option: "stream" (its canonical home is config.run.stream; the flat spelling is rejected)` |
+
+**取值面没动，动的只有拼写。** `stream` 仍然没有值校验器：`true` / `false` / 对象 / 数字 `1` 都逐字到达
+`effectiveOptions.stream`，唯一那处真值判断（`partialPersistence !== false && !stream`）一字未改——
+`partialPersistence` 不给 `stream: true` 时照旧抛 `partialPersistence requires stream: true`。夹具
+（`test/helpers/run-direct.js` 的 `withRunFamily`）同样一行新代码都没加——键加进 `RUN_FAMILY_FIXTURE_KEYS`
+即可。实测红格：单删 **49**、夹具翻译拼写之后 **15**、迁完十个手写点 **0**（内联白名单镜像、两形态等价
+样本、`C1` 的冲突通道、pi 扩展的迁移 golden、契约套件的流式那一格、resume 夹具，以及 A11 / A14 / A15 的
+邻接清单）。钉子文件是 `test/loop-run-slice-498s3a16.test.js`（`P` 拒绝文案逐字且早于任何宿主端口被调用；
+`G` 上面那张数据取值矩阵；`F` 函数值两个拼写都被拒；`R` 真 run 仍分别走 `chatStream` / `chat`，以及
+`partialPersistence` 那条真值判断；`N` 四向账目与撞名归属表；`S` 夹具翻译点）。
 
 ### capabilities 命名空间（issue #498）
 

@@ -252,14 +252,15 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   "diagnostics",
   "onObserverError",
   "signal",
-  // #498 S3 A15: `stream` **stays** (returned, not retired).
-  // Gate-2, four shapes: true / false / object are flat *and*
-  // nested reachable; a function is flat-reachable but nested-rejected
-  // (`config` holds data only, and `stream` has no value validator —
-  // any truthy value turns streaming on). Under the operational reading
-  // of "flat-reachable" used here (A6 G4: accepted today without an
-  // error) that is a mixed shell, so it goes back for a ruling.
-  "stream",
+  // #498 S3 A16: `stream` left this list; home `config.run.stream`.
+  // A15 returned it (a function value was flat-reachable but rejected at
+  // the canonical home) and the ruling retired it anyway: the config plane
+  // holds data, and the engine only ever *tests* `stream` for truthiness
+  // (`partialPersistence !== false && !stream`) — it never calls it, so a
+  // function was never behaviour at this position. That accepts the
+  // narrowing (a function value is now rejected on both spellings) instead
+  // of adding a boolean validator first; the mixed read in
+  // `src/loop/provider-runner.js` is issue #538, untouched here.
   "onDelta",
   "onReasoningDelta",
   "onToolCall",

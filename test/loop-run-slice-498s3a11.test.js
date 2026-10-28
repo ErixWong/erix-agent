@@ -463,7 +463,10 @@ test("A2 `run` 组**没有**整组收口：四个退役叶子被派生认出，�
     assert.equal(STILL_FLAT_RUN.includes(key), false, `${key} 不许还在扁平名单里`);
   }
   // 本片**没碰**的 `run` 叶子照旧是扁平选项（每个都派生自查名单，不手抄）。
-  for (const leaf of ["maxRounds", "completion", "reflection", "resume", "stream"]) {
+  // #498 S3 A16：`stream` 也退役了扁平写法（家 `config.run.stream`），所以它从这条循环里移出，
+  // 翻成反向钉（与 A15 对 `cwd` 的改法逐字同形）。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("stream"), false, "A16 已退役 `stream` 的扁平写法");
+  for (const leaf of ["maxRounds", "completion", "reflection", "resume"]) {
     assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(leaf), true, `${leaf} 本片一个字没动`);
   }
   assert.equal(
