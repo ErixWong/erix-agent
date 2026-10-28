@@ -46,9 +46,8 @@ async function runExecutor(executeTool) {
   const provider = createProvider();
   const result = await runToolLoop({
     provider,
-    config: { input: { initialUserMessage: "lookup value" } },
+    config: { input: { initialUserMessage: "lookup value" }, run: { completion: false } },
     executeTool,
-    completion: false,
   });
   return { provider, result };
 }

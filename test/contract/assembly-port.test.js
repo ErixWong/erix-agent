@@ -83,9 +83,8 @@ test("assembly port supports default and explicit modelConfig paths", async () =
 
   const defaultResult = await runToolLoop({
     assemblyPort: port,
-    completion: false,
     // #498 S3 A21: `maxRounds` retired its flat spelling; its home is `config.run.maxRounds`.
-    config: { input: { wrapup: false }, run: { maxRounds: 1 } },
+    config: { input: { wrapup: false }, run: { maxRounds: 1, completion: false } },
   });
   assert.equal(defaultResult.termination.reason, "end_turn");
   resolveCount = 0;
@@ -97,9 +96,8 @@ test("assembly port supports default and explicit modelConfig paths", async () =
         return { contextWindowTokens: 100000, maxOutputTokens: 1000 };
       },
     },
-    completion: false,
     // #498 S3 A21: `maxRounds` retired its flat spelling; its home is `config.run.maxRounds`.
-    config: { input: { wrapup: false }, run: { maxRounds: 1 } },
+    config: { input: { wrapup: false }, run: { maxRounds: 1, completion: false } },
   });
   assert.equal(explicitResult.termination.reason, "end_turn");
   assert.equal(resolveCount, 0);
@@ -129,9 +127,8 @@ test("plain explicit modelConfig is rejected with resolver migration guidance", 
     runToolLoop({
       assemblyPort: port,
       modelConfig: plainConfig,
-      completion: false,
       // #498 S3 A21: `maxRounds` retired its flat spelling; its home is `config.run.maxRounds`.
-      config: { input: { wrapup: false }, run: { maxRounds: 1 } },
+      config: { input: { wrapup: false }, run: { maxRounds: 1, completion: false } },
     }),
     (error) => error instanceof TypeError
       && /modelConfig\.resolve/u.test(error.message)
@@ -167,9 +164,8 @@ test("assembly port without a store runs with no persistence", async () => {
 
   const result = await runToolLoop({
     assemblyPort: port,
-    completion: false,
     // #498 S3 A21: `maxRounds` retired its flat spelling; its home is `config.run.maxRounds`.
-    config: { input: { wrapup: false }, run: { maxRounds: 1 } },
+    config: { input: { wrapup: false }, run: { maxRounds: 1, completion: false } },
   });
 
   assert.equal(result.finalText, "assembled");
@@ -209,13 +205,23 @@ function createOverridePort({ policy, emit } = {}) {
 
 test("冲突：构造期有值 + 调用期又给 ⇒ 启动期抛，点名键名与两个来源（issue #498）", async () => {
   // #498 S3 A21: `maxRounds` left the top-level allowlist (home `config.run.maxRounds`), so an
-  // override of it hits the **name** gate instead of the conflict gate. The sample moves to
-  // `completion` — still flat, still produced by `policy` — and the assertion shape is unchanged.
-  const port = createOverridePort({ policy: { completion: false } });
+  // override of it hits the **name** gate instead of the conflict gate. #498 S3 A23b: `completion`
+  // followed it. The live conflict sample moves to `reflection` — still flat, still produced by
+  // `policy` — and the assertion shape is unchanged; the retired spelling keeps a reverse pin (①-b).
+  const port = createOverridePort({ policy: { reflection: false } });
   // ① policy 给的键 —— 来源是 `port.policy.<key>`
   await assert.rejects(
-    assemblyPortOptions(port, { completion: { signals: [], maxNoToolRounds: 1 } }),
-    (error) => error instanceof TypeError && error.message === OVERRIDE_CONFLICT("completion", "port.policy.completion"),
+    assemblyPortOptions(port, { reflection: false }),
+    (error) => error instanceof TypeError && error.message === OVERRIDE_CONFLICT("reflection", "port.policy.reflection"),
+  );
+  // ①-b 反向钉：`completion` 的扁平写法已退役 ⇒ 调用期覆盖撞的是**名称闸口**，冲突闸口测不到它了。
+  // 文案逐字钉（与下面 `runId` 同一条派生：覆盖闭集 = `RUN_TOOL_LOOP_OPTION_NAMES`，不是手抄）。
+  const retiredPort = createOverridePort({ policy: { completion: false } });
+  await assert.rejects(
+    assemblyPortOptions(retiredPort, { completion: { signals: [], maxNoToolRounds: 1 } }),
+    (error) => error instanceof TypeError
+      && error.message === 'unknown assembly port override option: "completion"',
+    "`completion` 已退役扁平写法 ⇒ 覆盖名也不合法（派生：覆盖闭集 = 白名单）",
   );
   // ② 端口派生的键 —— 逐个点名真实来源（这是「两个来源」里构造期那一半）
   const derived = [
@@ -341,8 +347,11 @@ test("正向钉：调用期新键仍然合法（端口没产出的 signal / stor
   const result = await runToolLoop({
     ...options,
     modelConfig: port.modelConfig,
-    completion: false,
-    config: { ...options.config, input: { ...options.config.input, wrapup: false } },
+    config: {
+      ...options.config,
+      input: { ...options.config.input, wrapup: false },
+      run: { ...options.config.run, completion: false },
+    },
   });
   assert.equal(result.termination.reason, "end_turn");
 });

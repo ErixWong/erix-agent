@@ -236,7 +236,7 @@ test("boundary parity: minimal store (required methods only) assembles and runs 
     modelConfig: createValidModelConfig(),
     store: minimalStore,
     session: { id: `parity-minimal-${process.pid}` },
-    completion: false,
+    config: { run: { completion: false } },
   });
   assert.equal(result.finalText, "ok");
   assert.ok(appendCalls.length > 0, "transcript appendRound 必须被调用");
@@ -267,8 +267,11 @@ function directInput(bad) {
     // into the cell's own `config` (not spread over it, and not spread before it) so the cell keeps
     // testing exactly what it says it tests — a plain `...bad` after this key would replace the whole
     // `config` tree and silently drop the seed.
-    config: { ...(config ?? {}), input: { initialUserMessage: "go" } },
-    completion: false,
+    config: {
+      ...(config ?? {}),
+      input: { initialUserMessage: "go" },
+      run: { completion: false, ...(config?.run ?? {}) },
+    },
     ...rest,
   };
 }

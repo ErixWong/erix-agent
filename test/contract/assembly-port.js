@@ -20,9 +20,8 @@ export function assemblyPortContract(label, createPort) {
     const port = await resolvePort(createPort);
     const result = await runToolLoop({
       assemblyPort: port,
-      completion: false,
       // #498 S3 A21: `maxRounds` retired its flat spelling; its home is `config.run.maxRounds`.
-      config: { input: { wrapup: false }, run: { maxRounds: 1 } },
+      config: { input: { wrapup: false }, run: { maxRounds: 1, completion: false } },
     });
     assert.equal(result.finalText, "assembled");
     assert.equal(result.termination.reason, "end_turn");
@@ -33,9 +32,8 @@ export function assemblyPortContract(label, createPort) {
     const events = [];
     const result = await runToolLoop({
       assemblyPort: { ...port, emit: (type, payload) => events.push({ type, payload }) },
-      completion: false,
       // #498 S3 A21: `maxRounds` retired its flat spelling; its home is `config.run.maxRounds`.
-      config: { input: { wrapup: false }, run: { maxRounds: 1 } },
+      config: { input: { wrapup: false }, run: { maxRounds: 1, completion: false } },
     });
     assert.equal(result.termination.reason, "end_turn");
     assert.ok(events.some(({ type, payload }) => (
@@ -58,9 +56,8 @@ export function assemblyPortContract(label, createPort) {
           };
         },
       },
-      completion: false,
       // #498 S3 A21: `maxRounds` retired its flat spelling; its home is `config.run.maxRounds`.
-      config: { input: { wrapup: false }, run: { maxRounds: 1 } },
+      config: { input: { wrapup: false }, run: { maxRounds: 1, completion: false } },
     });
     assert.equal(result.finalText, "explicit");
   });
@@ -94,9 +91,8 @@ export function assemblyPortContract(label, createPort) {
     await assert.rejects(
       runToolLoop({
         assemblyPort: invalid,
-        completion: false,
         // #498 S3 A21: `maxRounds` retired its flat spelling; its home is `config.run.maxRounds`.
-        config: { input: { wrapup: false }, run: { maxRounds: 1 } },
+        config: { input: { wrapup: false }, run: { maxRounds: 1, completion: false } },
       }),
       (error) => error instanceof TypeError && /provider\.chat/u.test(error.message),
     );

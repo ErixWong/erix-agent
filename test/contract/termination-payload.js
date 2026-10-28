@@ -126,10 +126,9 @@ export function terminationPayloadContract(label, getEntry) {
         // the only home now. It stays inside the **same** `config` container — a second `config`
         // key in one object literal would silently win.
         // #498 S3 A21: `maxRounds` retired its flat spelling too (home `config.run.maxRounds`).
-        config: { input: { initialUserMessage: "work" }, run: { stallDetection: false, maxRounds: 10 } },
+        config: { input: { initialUserMessage: "work" }, run: { stallDetection: false, maxRounds: 10, completion: false } },
         executeTool: async () => "worked",
         signal: controller.signal,
-        completion: false,
         onEvent: (event) => {
           if (event.type === "round_end" && event.round === 2) controller.abort(new Error("user stopped"));
         },
@@ -161,9 +160,8 @@ export function terminationPayloadContract(label, getEntry) {
       ]),
       // #498 S3 A13: same move as the abort case above — one `config` container.
       // #498 S3 A21: `maxRounds` joins the same `run` group (home `config.run.maxRounds`).
-      config: { input: { initialUserMessage: "work" }, run: { stallDetection: false, maxRounds: 10 } },
+      config: { input: { initialUserMessage: "work" }, run: { stallDetection: false, maxRounds: 10, completion: false } },
       executeTool: async () => "worked",
-      completion: false,
     });
 
     assert.equal(result.termination.reason, "end_turn");

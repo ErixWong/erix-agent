@@ -194,7 +194,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
     // leaf. The caller's tree is merged into the base one (same container — a second `config` key
     // would silently replace the seed message / runId this helper depends on).
     const { onEvent, onToolCall, config: extraConfig, ...rest } = options;
-    const baseConfig = { input: { initialUserMessage: "task" }, run: { runId } };
+    const baseConfig = { input: { initialUserMessage: "task" }, run: { runId, completion: false } };
     const config = extraConfig === undefined ? baseConfig : {
       ...baseConfig,
       ...extraConfig,
@@ -206,7 +206,6 @@ export function toolResultEnvelopeContract(label, getEntry) {
       config,
       executeTool,
       store,
-      completion: false,
       ...rest,
       onEvent: (event) => {
         events.push(event);
@@ -491,10 +490,12 @@ export function toolResultEnvelopeContract(label, getEntry) {
     await runToolLoop({
       provider,
       // #498 S3 A16: `stream` has no flat spelling any more — canonical home `config.run.stream`.
-      config: { input: { initialUserMessage: "task" }, run: { stream: true, runId: "contract-stream-key" } },
+      config: {
+        input: { initialUserMessage: "task" },
+        run: { stream: true, runId: "contract-stream-key", completion: false },
+      },
       executeTool: async () => "ok",
       store: createMemoryTranscriptStore(),
-      completion: false,
       onToolCall: (fragment) => fragments.push(fragment),
       onEvent: (event) => events.push(event),
     });
@@ -532,8 +533,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
       runToolLoop({
         provider: scriptedProvider([toolRound("hang-1"), DONE]),
         store,
-        config: { run: { runId } },
-        completion: false,
+        config: { run: { runId, completion: false } },
         signal: controller.signal,
         executeTool: async () => {
           executorEntered = true;
@@ -699,9 +699,8 @@ export function toolResultEnvelopeContract(label, getEntry) {
     await runToolLoop({
       // 模型把己执行过的调用又发了一遍（复放路径），下一轮自然收尾。
       provider: scriptedProvider([toolRound("done-1"), DONE]),
-      config: { run: { resume: true, runId } },
+      config: { run: { resume: true, runId, completion: false } },
       store,
-      completion: false,
       executeTool: async () => {
         calls += 1;
         return "must not execute again";
@@ -756,9 +755,8 @@ export function toolResultEnvelopeContract(label, getEntry) {
     const events = [];
     await runToolLoop({
       provider: scriptedProvider([toolRound("old-1"), DONE]),
-      config: { run: { resume: true, runId } },
+      config: { run: { resume: true, runId, completion: false } },
       store,
-      completion: false,
       executeTool: async () => {
         calls += 1;
         return "must not execute again";
@@ -920,11 +918,10 @@ export function toolResultEnvelopeContract(label, getEntry) {
     await runToolLoop({
       provider: scriptedProvider([DONE]),
       store,
-      completion: false,
       // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役，规位是 `config.run.replayPolicy`。
       // #498 S3 A19：`resume` 同样退役（家 `config.run.resume`），并进**同一个** `config` 容器
       // ——两个 `config` 键会后者静默胜，那正是本文件里另一格要防的形状。
-      config: { run: { resume: true, replayPolicy: "per-tool-declaration", runId } },
+      config: { run: { resume: true, replayPolicy: "per-tool-declaration", runId, completion: false } },
       executeTool: async () => "should not run",
       onEvent: (event) => events.push(event),
     });
