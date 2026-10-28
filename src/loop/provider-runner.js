@@ -96,18 +96,22 @@ export async function callProvider(ctx, {
     // 回补来源是未折叠的 ctx.messages。放在折叠策略内部只能管住那一层，管不住这里。
     const userTurnGuard = {};
     requestMessages = ensureUserTurnView(requestMessages, ctx.messages, userTurnGuard);
-    // issue #547: **who still reaches this recording branch** (the channel name below has a producer,
-    // so it is not dead code). Neither folding nor the run-state append can make the view *miss* user
-    // turns the source still has — folding only rewrites tool_result bodies, the run-state append only
-    // adds one. What does reach it is a **pairing** break: on a `max_tokens` continuation
-    // (`allowPendingToolUse: true`, the only such call site) a run-state block is appended behind a
-    // trailing `assistant[tool_use]`, so the view is `[…, assistant(tool_use), user(text)]` — illegal
-    // for a different reason than "no user turn". The guard then falls through to
-    // `preserved_latest_user_turn`. Producer chain: low-budget `requestInject`
-    // (`orchestrator.js` `compactBeforeRound` → `requestStateBlock`, kept across the continuation
-    // loop) × truncation on a `tool_use`. Pinned by `test/loop-547-provider-guard-channel.test.js`
-    // (T2/T3: `chat` / `chatStream` recorded; T4: the same provider without the injection records
-    // nothing; T1: folding / run-state reuse / snapshot resume never land here).
+    // issue #547 asked "who still reaches this recording branch" and #548 answered it: the one
+    // shape that did (a `max_tokens` continuation — `allowPendingToolUse: true`, the only such call
+    // site — with a low-budget run-state block appended behind a trailing `assistant[tool_use]`) was
+    // **not** a legal shape, it was #548's defect: the append broke the pairing, the guard fell
+    // through to `preserved_latest_user_turn` and the whole request context was dropped
+    // (`count=1`). #548 made the append skip a dangling tail, so the branch is back to **no
+    // behavioural producer**: folding only rewrites `tool_result` bodies and the run-state append
+    // now only ever appends behind a legal tail, so neither can make the view illegal or miss user
+    // turns the source still has.
+    //
+    // The branch and the channel name **stay** (removing the name is #547's follow-up decision, not
+    // a side effect of removing the producer); the guard's own accounting is still pinned at the unit
+    // level (`test/loop-request-user-invariant.test.js` T5) and the wiring here is pinned
+    // structurally by `test/loop-547-provider-guard-channel.test.js` T3. What that file's T2/T3 now
+    // assert is the current fact: this shape records **nothing** and keeps the full view (T1's four
+    // natural shapes + this fifth one are the whole enumeration — no shape reaches this branch).
     if (userTurnGuard.action !== undefined && userTurnGuard.action !== "unrecoverable") {
       ctx.recordUserTurnGuard?.({
         round,

@@ -3,6 +3,9 @@ import {
   COMPACTION_STATS_STATE_LIMIT,
   normalizeCompactionStats,
 } from "./compact/pipeline.js";
+// issue #548: the pairing predicate has exactly one home (`src/loop/pending-tool-result.js`,
+// `#394`); this file only reads it through the shared read-side entry.
+import { pendingTailToolUses } from "./loop/pending-tool-result.js";
 
 const MAX_RENDERED_CHARS = 1600;
 // 序列化超限时的第二道压缩把 compactionStats 再切成最后 8 条（体积约束），窗口账要跟着改口。
@@ -589,13 +592,38 @@ export function upsertRunStateInMessages(messages, rendered) {
 }
 
 /**
- * 仅向本次 provider 请求视图追加 run-state，不修改持久消息；
- * 尾部追加保持原前缀不变，实现前缀缓存零失效。
+ * Append the run-state block to **this provider request view only** (never to the persistent
+ * messages); appending at the tail keeps the original prefix intact so the prefix cache never
+ * goes stale.
+ *
+ * issue #548 — **the one shape where the append must not happen**: a view whose tail is an
+ * assistant message carrying `tool_use` blocks that have no `tool_result` yet. That shape is
+ * *deliberately* allowed on the `max_tokens` continuation route (`allowPendingToolUse: true`, the
+ * only such call site in the tree, `src/loop/orchestrator.js`), so the append is the intruder, not
+ * the shape: a bare `user` text message right behind a dangling `tool_use` breaks the pairing, the
+ * request-view guard (`src/loop/request-user-view.js`) can no longer pass the view through and
+ * falls back to `preserved_latest_user_turn` — which keeps **only the latest user turn**, i.e. the
+ * whole context of the request is dropped (`count=1`).
+ *
+ * Why skip instead of settling the dangling call first (the discipline the *control-text* injection
+ * sites follow, `#393`/`#394`): a synthetic `[erix] This tool call was never executed` result would
+ * be a **false fact** here — on a `max_tokens` continuation that call is executed right after the
+ * continuation finishes. Settling would also need a third settlement implementation (or an `async`
+ * public function), which `#394`'s structural criterion forbids.
+ *
+ * Skipping costs one round of run-state visibility; the alternative costs the entire history. The
+ * predicate is the shared read-side entry `pendingTailToolUses` (`src/loop/pending-tool-result.js`,
+ * the same pairing rule as `validateMessages`) — never a second copy of the pairing logic.
+ *
+ * @param {any[]} messages
+ * @param {string} [rendered]
+ * @returns {any[]}
  */
 export function appendRunStateToRequestView(messages, rendered) {
   if (!Array.isArray(messages) || typeof rendered !== "string" || rendered === "") {
     return messages;
   }
+  if (pendingTailToolUses(messages).length > 0) return messages;
   return [
     ...messages,
     { role: "user", content: [{ type: "text", text: rendered }] },
