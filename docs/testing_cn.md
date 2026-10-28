@@ -20,7 +20,9 @@ package 将 `./contract-tests` 导出定义为 `./test/contract/index.js`。契�
 ```js
 import { transcriptStoreContract, modelConfigProviderContract } from "erix-agent/contract-tests";
 transcriptStoreContract("mariadb", () => createMariaTranscriptStore(...));
-modelConfigProviderContract("mariadb", async () => ({ provider, slot, expect }));
+modelConfigProviderContract("mariadb", async () => ({ provider, slot, expect }), {
+  mode: "throws", name: "no-such-slot", available: ["default", "audit"],
+});
 ```
 
 ### 测试基础设施

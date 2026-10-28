@@ -20,7 +20,9 @@ The package defines the `./contract-tests` export as `./test/contract/index.js`.
 ```js
 import { transcriptStoreContract, modelConfigProviderContract } from "erix-agent/contract-tests";
 transcriptStoreContract("mariadb", () => createMariaTranscriptStore(...));
-modelConfigProviderContract("mariadb", async () => ({ provider, slot, expect }));
+modelConfigProviderContract("mariadb", async () => ({ provider, slot, expect }), {
+  mode: "throws", name: "no-such-slot", available: ["default", "audit"],
+});
 ```
 
 ### Test infrastructure
