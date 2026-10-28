@@ -270,10 +270,11 @@ issue #531 的「两个入口、一个家」讲的是这个**容器**，与载�
   `effectiveOptions.initialUserMessage`，所以**引擎读侧一字未改**；
 * 两者都在时读侧仍是 `initialMessages` 优先（那条优先级没动），所以带种子历史的续跑照旧忽略种子消息。
 
-有一个后果必须点名：调用级 `config` 会**整棵覆盖** `policy.config`（既有合并规则，会发一条
-`config_override_conflict` 事件）。种子现在住在 `config.input` 里，于是「把种子放在
+有一个后果必须点名：调用级 `config` 会**整棵覆盖** `policy.config`（既有合并规则）。种子现在住在 `config.input` 里，于是「把种子放在
 `policy.config.input.initialUserMessage`、又为了别的事传了一个调用级 `config`」的宿主会丢掉 policy 那份——
 规则与以前一样，只是它现在落在几乎每个宿主都会用的键上。
+
+**诊断报什么、不报什么（issue #524，装配口那一路实测）。** `config_override_conflict` 事件列的是**两边都写了、且值不同的叶子**，所以它只在两棵树**重叠**时发：`policy.config.input.initialUserMessage = "A"` 加上调用级 `config.input.initialUserMessage = "B"` 会发一条，载荷是 `conflicts: [{path: "input.initialUserMessage", key: "initialUserMessage"}]`。而上面那段自己讲的情形——调用级 `config` 是**为了别的事**写的（比如只写 `config.run.*`）——一个叶子都不重叠，那次整棵覆盖**什么都不报**：零事件，终局载荷里也没有对应字段。把这种静默情形做成「不挂 observer 也看得见」留到后续 minor 版本；语义本身不变（#406 复审 R6：每个值只有一个来源、不做深合并），种子也**刻意不再搬第二次**（#524 裁决）。
 
 **扁平写法的版本口径**（issue #498 S3，`tuning` 切片——第五片，也是第一个退掉**标量**旋钮、
 而不是壳的切片）：

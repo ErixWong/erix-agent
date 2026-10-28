@@ -332,10 +332,21 @@ spelling out. Two properties hold, both machine-checked:
   untouched), so a resumed run with seed history ignores the seed message exactly as before.
 
 One consequence worth naming: an explicit call-level `config` **replaces** `policy.config` wholesale
-(the pre-existing merge rule, reported as one `config_override_conflict` event). Now that the seed
+(the pre-existing merge rule). Now that the seed
 lives in `config.input`, a host that puts its seed in `policy.config.input.initialUserMessage` and
 then passes a call-level `config` for something else loses the policy one — same rule as before, but
 it now reaches a key nearly every host uses.
+
+**What the diagnostic does and does not report (issue #524, measured on the assembly-port route).**
+The `config_override_conflict` event lists **leaves both sources set to different values**, so it
+fires exactly when the two trees overlap: `policy.config.input.initialUserMessage = "A"` plus a
+call-level `config.input.initialUserMessage = "B"` yields one event carrying
+`conflicts: [{path: "input.initialUserMessage", key: "initialUserMessage"}]`. The paragraph's own
+case — a call-level `config` written **for something else** (say only `config.run.*`) — overlaps on
+no leaf, and that whole-tree override is reported by **nothing at all**: zero events, no field in
+the terminal payload. Making that silent case observable without an observer is deferred to a later
+minor release; the semantics themselves are unchanged (issue #406 R6: one source per value, no deep
+merge), and the seed is deliberately not moved a second time (issue #524 ruling).
 
 **Flat-spelling version policy** (issue #498 S3, the `tuning` slice — the fifth slice, and the first
 one that retires a **scalar** knob instead of a shell):
