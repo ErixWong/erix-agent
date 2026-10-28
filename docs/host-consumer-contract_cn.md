@@ -193,7 +193,15 @@ executeTool({ id, name, input, context, signal })
 | `config.timing` | `timeoutMs`、`deadlineMs`、`retry` |
 | `config.folding` | `context`、`toolResultTtl`、`toolResultFoldMinTokens` |
 | `config.guard` | `finalGuardMaxRetries`、`finalGuardTimeoutMs`、`finalGuardExtend` |
-| `config.metadata` | `expert`、`user`、`task`、`requestId`、`toolContext`、`model`、`modelMetadata`——**没有** `session`（issue #531：它是永久顶层面，第三站） |
+| `config.metadata` | `expert`、`user`、`task`、`requestId`、`toolContext`、`model`、`modelMetadata`——**没有** `session`：身份容器是永久顶层面、第三站（issue #531），而不透明载荷住在 `config.folding.context.session`（issue #551） |
+
+**不透明 per-run 载荷只有一个家：`config.folding.context.session`（issue #551，裁决甲）。**
+`config.folding.context` 是折叠策略的**自由壳**，`session` 是它的**保留键**：引擎把它的值作为
+`context.session` 交给 `executeTool`。`config.metadata.*` 装的是引擎**按字段名**读的宿主数据
+（`expert`、`user`、`task`、`requestId`、`toolContext`、`model`、`modelMetadata`）——它**不是**载荷的家，
+写 `config.metadata.session` 会被拒，且判词点名折叠壳里那个键。顶层 `session` 选项是运行身份的**容器**
+（`session.id` / `session.modelSlot` / `session.initialMessages`），永远不是第二个载荷入口：
+issue #531 的「两个入口、一个家」讲的是这个**容器**，与载荷无关。
 
 **扁平写法的版本口径**（issue #498 S3，`timing` 切片）。这是第一个真正**退掉**顶层扁平键的切片，
 所以规则按版本写，不按「今天」写：
@@ -548,8 +556,8 @@ unknown runToolLoop option: "context" (its canonical home is config.folding.cont
   并点名完整路径 `session.resume`、指向 `config.run.resume`（扁平 `resume` 本身也已在 0.28 被
   issue #498 S3 A19 退役，所以文案不再把它当作可行出路）。它不会被静默丢掉：
   直连路线以前收下这个键然后照常跑（没有续跑），那正是本版要消掉的「配了等于没配」。
-  `session` 是数据，但它**唯一**的家是顶层（issue #531）：规位 `config.metadata.session` 是**未知叶子**
-  当场拒——见下面「`session` 是端口类键」一节。
+  `session` 是数据，但**容器**唯一的家是顶层（issue #531）：规位 `config.metadata.session` 当场被拒，
+而判词点名载荷的家 `config.folding.context.session`（issue #551）——见下面「`session` 是端口类键」一节。
   
   **历史：`tools` 曾是最后一个不满足这条判据的键**（issue #498 S4a 发布时它还在能力面上）。
   引擎从不**调用**工具声明的成员——它校 `replay`（枚举字面量）、读 `name` / `inputSchema`，然后把这个
@@ -664,7 +672,8 @@ value — so pass plain data (host callbacks belong under capabilities.hooks.<na
   它，只把值转发出去*）。这三个值都是不透明身份载荷——引擎只按名字读已知字段（`model` 的两个窗口
   数字），其余原样转发。
 
-**`session` 是端口类键：两个入口、一个家（issue #531）。** #498 S3 量过它之后是*退回*（19 格红，所以
+**`session` 是端口类键：两个入口、一个家（issue #531）。** 本节讲的是**容器**；不透明载荷是另一个键，
+住在 `config.folding.context.session`（issue #551）。#498 S3 量过它之后是*退回*（19 格红，所以
 拦下它的不是体量）；#531 把这个问题的另一半裁决完。`session` 与 `provider` / `executeTool` / `store` /
 `modelConfig` **同类**：它是**装配口成员**，而顶层选项与端口成员是**同一个值的两个入口**——
 `assemblyPortOptions(port).session === port.session`（引用相等，不是 deepEqual），构造期冲突文案也把
@@ -674,17 +683,18 @@ value — so pass plain data (host callbacks belong under capabilities.hooks.<na
 
 所以裁决是**两个入口、一个家**：家在**顶层**——`session` 是永久顶层面，即第三站
 （`TOP_LEVEL_SURFACE_OPTION_NAMES`，10 → 11），与 `provider` / `executeTool` / `store` / `modelConfig` /
-`tools` 同一个桶。`config.metadata.session` 叶子已被拆掉，现在写它是**未知叶子当场拒**：
+`tools` 同一个桶。`config.metadata.session` 叶子已被拆掉，写它当场被拒；#551 之后判词还会**点名载荷的家**，
+不再只把宿主推回顶层：
 
 ```
-unknown config.metadata option: "session" ("session" is a permanent top-level option — the third station — write it at the top level: session: …)
+config.metadata.session: the opaque per-run payload's home is config.folding.context.session (the fold-context shell's reserved key — the engine hands it to executeTool as context.session); the top-level `session` option is the run identity container (session.id / session.modelSlot / session.initialMessages), not a payload home
 ```
 
 | 版本 | 写 `config.metadata.session` |
 | --- | --- |
 | 0.26.0 及更早（最后一个**已发布**版本） | 根本没有 `config` 命名空间，所以这个问题不存在——`session` 是顶层选项，那是那些版本唯一认识的写法 |
 | 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「那个叶子存在」的树 |
-| 0.28.0 起（issue #531） | **当场拒**——写顶层 `session`。上面那句就是闭门文案；引擎读侧一字未动（`effectiveOptions.session` 还是原来那个值） |
+| 0.28.0 起（issue #531，判词文案 issue #551） | **当场拒**——运行身份写顶层 `session`，不透明载荷写 `config.folding.context.session`。上面那句就是闭门文案；引擎读侧一字未动（`effectiveOptions.session` 还是原来那个值） |
 
 三半都有机器判据（`test/loop-metadata-keys-slice-498s3a9.test.js` S1–S3）：两个入口同值（S1）、冲突文案
 点名 `port.session`（S2）、闭门——顶层照收而 `config.metadata.session` 逐字回上面那句（S3）。于是这组

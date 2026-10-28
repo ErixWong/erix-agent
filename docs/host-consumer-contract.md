@@ -242,7 +242,17 @@ total that goes stale the next time a group moves.
 | `config.timing` | `timeoutMs`, `deadlineMs`, `retry` |
 | `config.folding` | `context`, `toolResultTtl`, `toolResultFoldMinTokens` |
 | `config.guard` | `finalGuardMaxRetries`, `finalGuardTimeoutMs`, `finalGuardExtend` |
-| `config.metadata` | `expert`, `user`, `task`, `requestId`, `toolContext`, `model`, `modelMetadata` — **not** `session` (issue #531: it is a permanent top-level option, the third station) |
+| `config.metadata` | `expert`, `user`, `task`, `requestId`, `toolContext`, `model`, `modelMetadata` — **not** `session`: the identity container is a permanent top-level option, the third station (issue #531), and the opaque payload lives in `config.folding.context.session` (issue #551) |
+
+**The opaque per-run payload has exactly one home: `config.folding.context.session` (issue #551,
+ruling 甲).** `config.folding.context` is a free-form shell for the fold strategy, and `session` is
+its **reserved key**: the engine hands its value to `executeTool` as `context.session`.
+`config.metadata.*` holds the host data the engine reads **by field name** (`expert`, `user`, `task`,
+`requestId`, `toolContext`, `model`, `modelMetadata`) — it is **not** a payload home, and
+`config.metadata.session` is refused with a message that names the shell. The top-level `session`
+option is the run identity **container** (`session.id` / `session.modelSlot` /
+`session.initialMessages`), never a second payload entry: the "two entries, one home" argument of
+issue #531 is about that container and says nothing about the payload.
 
 **Version scope of the flat spelling** (issue #498 S3, the `timing` slice). This is the first slice
 that actually **retires** flat top-level keys, so the rule is stated as versions, not as "today":
@@ -665,9 +675,10 @@ Five rules govern it:
   full path `session.resume` and pointing at `config.run.resume` (the flat `resume` was itself
   retired in 0.28 by issue #498 S3 A19, so the message no longer offers it as a way out). It is never
   silently dropped: the direct route used to accept the key and run without resuming, which is the
-  "configured but inert" shape this release removes. `session` is data, but its **only** home is the
-  top level (issue #531): the nested spelling `config.metadata.session` is an unknown leaf rejected on
-  the spot — see "`session` is a port-class key" below.
+  "configured but inert" shape this release removes. `session` is data, but the **container's** only home is the
+top level (issue #531): the nested spelling `config.metadata.session` is refused on the spot, and its
+message names the payload's home `config.folding.context.session` (issue #551) — see
+"`session` is a port-class key" below.
   
   **History: `tools` was the last key that did not satisfy that criterion** (issue #498 S4a shipped
   with it on the capability list). The engine never *calls* a member of a tool definition — it
@@ -812,7 +823,9 @@ Two properties hold, both machine-checked (`test/loop-metadata-keys-slice-498s3a
   value*). These three values are opaque identity payloads — the engine reads only known fields
   (`model`'s two window numbers) and forwards the rest.
 
-**`session` is a port-class key: two entries, one home (issue #531).** Issue #498 S3 measured it and
+**`session` is a port-class key: two entries, one home (issue #531).** This section is about the
+**container**; the opaque payload is a different key and lives in `config.folding.context.session`
+(issue #551). Issue #498 S3 measured it and
 *returned* it (19 red cells, so size was not what stopped it); issue #531 then settled the question the
 other way round. `session` belongs to the same class as `provider` / `executeTool` / `store` /
 `modelConfig`: it is an **assembly-port member**, and the top-level option and the port member are
@@ -825,17 +838,18 @@ explicit top-level option wins over the port's member on the direct route.
 So the ruling is **two entries, one home**: the home is the **top level** — `session` is a permanent
 top-level option, the third station (`TOP_LEVEL_SURFACE_OPTION_NAMES`, 10 → 11), the same bucket as
 `provider` / `executeTool` / `store` / `modelConfig` / `tools`. The `config.metadata.session` leaf was
-removed, and writing it is now an **unknown leaf rejected on the spot**:
+removed, and writing it is refused on the spot; since issue #551 the message **names the payload's
+home** instead of only sending the host back to the top level:
 
 ```
-unknown config.metadata option: "session" ("session" is a permanent top-level option — the third station — write it at the top level: session: …)
+config.metadata.session: the opaque per-run payload's home is config.folding.context.session (the fold-context shell's reserved key — the engine hands it to executeTool as context.session); the top-level `session` option is the run identity container (session.id / session.modelSlot / session.initialMessages), not a payload home
 ```
 
 | release | writing `config.metadata.session` |
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | there is no `config` namespace at all, so the question does not arise — `session` is a top-level option, and that is the only spelling those versions know |
 | 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which the leaf existed |
-| 0.28.0 and later (issue #531) | **rejected on the spot** — write the top-level `session`. The message above is the closed door; the engine's read side is untouched (`effectiveOptions.session` is still what it always was) |
+| 0.28.0 and later (issue #531, message wording issue #551) | **rejected on the spot** — the run identity belongs at the top level `session`, and an opaque payload belongs in `config.folding.context.session`. The message above is the closed door; the engine read side is untouched (`effectiveOptions.session` still resolves the same value) |
 
 Three halves are machine-pinned (`test/loop-metadata-keys-slice-498s3a9.test.js` S1–S3): the same
 value on both entries (S1), the conflict message naming `port.session` (S2), and the closed door —
