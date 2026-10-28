@@ -1680,6 +1680,11 @@ await runToolLoop({ assemblyPort });
   `tools` / `executeTool` / `store` / `modelConfig` / `session` / `signal`）被拒时判词指向端口本身——同一能力
   再带一份，就是两个来源。
 
+**端口顶层的未知成员现在当场拒，不再静默丢掉（issue #556，breaking）。** 到 0.27 为止，`createAssemblyPort` 接受任意多出来的键然后把它丢掉，而宿主最容易写错的那两个名字**恰好是另一条路的两个容器**：现在写
+`unknown assembly port option: "config" (accepted: modelConfig, provider, tools, store, session, policy, emit); its canonical home is policy.config: the port keeps the data plane inside policy (write { policy: { config: … } }), while the top-level config container is the direct route's spelling`
+或 `unknown assembly port option: "capabilities" (accepted: modelConfig, provider, tools, store, session, policy, emit); its canonical home is policy.capabilities: the port keeps the behaviour plane inside policy (write { policy: { capabilities: … } }), while the top-level capabilities container is the direct route's spelling`
+会拿到一个错误，而不是一次「策略数据其实一个字都没吃进去」的 run。可接受集合**从构造端口的那张表派生**（`src/assembly.js` 的 `ASSEMBLY_PORT_MEMBER_READ_POINTS`），所以「读了没登记」与「登记了不读」在结构上都不可能只发生一半；普通拼错不带指路子句，只给可接受集合与拼写建议：`unknown assembly port option: "bogusMember" (accepted: modelConfig, provider, tools, store, session, policy, emit)`、`unknown assembly port option: "provder" (did you mean "provider"?) (accepted: modelConfig, provider, tools, store, session, policy, emit)`。非对象入参现在读作 `assembly port must be an object (got null)`，而不是 `TypeError: Cannot read properties of null`。
+
 ### TranscriptStore capability 分级（issue #78）
 
 原 "checkpoint" 表面更名为 **run snapshot** 并降级为可选 capability。实际语义从来就是

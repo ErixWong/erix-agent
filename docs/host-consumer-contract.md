@@ -2063,6 +2063,18 @@ missing required method throws `TypeError` before the run starts. `policy` carri
   `store` / `modelConfig` / `session` / `signal`) is rejected with a pointer to the port itself, because a
   second copy of a capability would mean two sources for one thing.
 
+**Unknown top-level port members are refused, not dropped (issue #556, breaking).** Until 0.27
+`createAssemblyPort` accepted any extra key and silently discarded it, and the two names hosts most
+often get wrong are exactly the two containers of the *other* route. A host that writes
+`unknown assembly port option: "config" (accepted: modelConfig, provider, tools, store, session, policy, emit); its canonical home is policy.config: the port keeps the data plane inside policy (write { policy: { config: … } }), while the top-level config container is the direct route's spelling`
+or `unknown assembly port option: "capabilities" (accepted: modelConfig, provider, tools, store, session, policy, emit); its canonical home is policy.capabilities: the port keeps the behaviour plane inside policy (write { policy: { capabilities: … } }), while the top-level capabilities container is the direct route's spelling`
+now gets an error instead of a run whose policy data quietly never arrived. The accepted set is
+**derived from the same table that builds the port** (`ASSEMBLY_PORT_MEMBER_READ_POINTS` in
+`src/assembly.js`), so a read point nobody registered and a listed name nobody reads are both
+structurally impossible. An ordinary misspelling carries no pointer clause, only the accepted set and
+a spelling suggestion: `unknown assembly port option: "bogusMember" (accepted: modelConfig, provider, tools, store, session, policy, emit)`, `unknown assembly port option: "provder" (did you mean "provider"?) (accepted: modelConfig, provider, tools, store, session, policy, emit)`. A non-object input now reads
+`assembly port must be an object (got null)` instead of `TypeError: Cannot read properties of null`.
+
 ### TranscriptStore capability tiers (issue #78)
 
 The former "checkpoint" surface was renamed to **run snapshot** and demoted
