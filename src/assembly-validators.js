@@ -473,9 +473,11 @@ function validateContextCallbackShapes(context) {
 }
 
 /**
- * 沿路径读一个选项（`["reflection", "onReflection"]`）：中途任何一层不是非数组对象就当作未提供。
+ * Read one option along a path (`["reflection", "onReflection"]`): any intermediate layer that is
+ * not a non-array object counts as "not given".
  *
- * 容器本身的形状（`retry: false` / `reflection: false` 是合法值）归 orchestrator 管，这里只取叶子。
+ * The shape of the container itself (`retry: false` / `reflection: false` are legal values) belongs
+ * to the orchestrator; this helper only reads the leaf.
  *
  * @param {Record<string, any>} options
  * @param {string[]} path
