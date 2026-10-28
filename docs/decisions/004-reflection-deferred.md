@@ -1,5 +1,12 @@
 # ADR-004: Reflection Deferred from the First Release, Reserved as an Optional summarizer Hook
 
+> **Status (2026-10-29) — retired spelling in the body.** This document records a decision **as it was
+> made**. It was written in the flat-spelling era (≤ 0.27 — and **0.27 was never released**), so the
+> option names in its body are the flat spellings the name gate now rejects (`timeoutMs`,
+> `toolResultTtl`, `initialMessages`, …). The spelling in force today is the `config.*` path for the
+> same knob; the authoritative table is in `docs/host-consumer-contract.md`. The body below is left
+> **verbatim on purpose** — rewriting a decision record into today's spelling would forge history.
+
 > Chinese version: [004-reflection-deferred_cn.md](004-reflection-deferred_cn.md)
 
 - Status: Decided (2026-08-29)

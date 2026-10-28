@@ -1,5 +1,12 @@
 # ADR-003: Compaction Strategy Lineage—from sliding-window to three levels of fold-llm + psyche outside the lineage (later corrected by ADR-010), pluggable
 
+> **Status (2026-10-29) — retired spelling in the body.** This document records a decision **as it was
+> made**. It was written in the flat-spelling era (≤ 0.27 — and **0.27 was never released**), so the
+> option names in its body are the flat spellings the name gate now rejects (`timeoutMs`,
+> `toolResultTtl`, `initialMessages`, …). The spelling in force today is the `config.*` path for the
+> same knob; the authoritative table is in `docs/host-consumer-contract.md`. The body below is left
+> **verbatim on purpose** — rewriting a decision record into today's spelling would forge history.
+
 > Chinese version: [003-compaction-strategies_cn.md](003-compaction-strategies_cn.md)
 
 - Status: Decided (2026-08-29; the psyche entry corrected according to ADR-010 on 2026-08-31)

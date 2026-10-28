@@ -1,5 +1,12 @@
 # ADR-020: Transcript single source of truth — official engine channels for host writes and reads (`appendUserTurn` + `projectTranscriptForDisplay`)
 
+> **Status (2026-10-29) — retired spelling in the body.** This document records a decision **as it was
+> made**. It was written in the flat-spelling era (≤ 0.27 — and **0.27 was never released**), so the
+> option names in its body are the flat spellings the name gate now rejects (`timeoutMs`,
+> `toolResultTtl`, `initialMessages`, …). The spelling in force today is the `config.*` path for the
+> same knob; the authoritative table is in `docs/host-consumer-contract.md`. The body below is left
+> **verbatim on purpose** — rewriting a decision record into today's spelling would forge history.
+
 - Status: Accepted (2026-10-07) — implemented and released in 0.15.0 (GitHub PR #146 read side, PR #147 write side, audit closure PR #148)
 - Related: ADR-009 (safety layering), ADR-012 (engine truth model / host policy), ADR-019 (run-state store authority — the run-state side of the same single-store theme); Gitea issues #91 / #95 / #97, recorded by #99; GitHub-era mirror issue #135 was this line's early request before the mirror froze
 - Basis: `src/store/append-user-turn.js`, `src/display/projection.js`, `src/loop/resume-manager.js`, `test/contract/engine-api.js`; contract text in `docs/host-consumer-contract.md` ("Multi-turn resume contract", "Host display projection" → "Anti-pattern"); `CHANGELOG.md` 0.15.0; `docs/host-upgrade-guide-0.15.0.md`
