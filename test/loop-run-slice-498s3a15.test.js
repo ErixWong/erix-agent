@@ -200,7 +200,8 @@ test(`F1 规位里给函数值（${KEY}）：逐字两句话（只装数据 + �
 // 于是「扁平面」整个消失——但**不许把这一段删掉**：这三格是「这条收窄是有意的」的证据。
 // 改法（逐格保留信息量，不是把断言删空）：
 //   S1  两向钉不变（叶子仍在 schema、顶层键已不在白名单），只把「仍在白名单」翻成反向；
-//   S2  四格闸口二：数据取值（true / false / 对象 / 数字 1）规位侧全 ACCEPT、扁平侧全拒；
+//   S2  四格闸口二：布尔（true / false）规位侧 ACCEPT、非布尔（对象 / 数字 1）由 **#538 的值规则**
+//       在规位侧拒、扁平侧一律名称闸口拒；
 //   S3  函数取值**两侧都拒**（这正是裁决接受的收窄：函数在这个位置从来不是行为）。
 // 裁决原文的依据：引擎对 `stream` 只做真值判断、从不调用（`src/loop/orchestrator.js` 的
 // `partialPersistence !== false && !stream`），所以函数值在配置面被拒不会删掉任何行为。
@@ -212,17 +213,30 @@ test(`S1 ${RETURNED} 已退役：顶层键不在白名单，但它的 config 叶
   assert.equal(CONFIG_NAMESPACE_SCHEMA.run.includes(RETURNED), true, "叶子不许被顺手删掉");
 });
 
-test(`S2 ${RETURNED} 闸口二：数据取值规位侧全 ACCEPT，扁平侧全被名称闸口拒`, async () => {
-  // 取值面：true / false / 对象 / 数字 1。**这一格里不存在两侧差异**——数据取值在规位侧
-  // 一个都不被拒（`stream` 仍没有值校验器），差异只出现在「拼写」这一维上。
+test(`S2 ${RETURNED} 闸口二：布尔规位侧 ACCEPT，非布尔由 #538 值规则拒，扁平侧全被名称闸口拒`, async () => {
+  // A16 当时这一格是「数据取值在规位侧一个都不被拒（`stream` 仍没有值校验器）」。
+  // **issue #538 加了值规则**（`config.run.stream` 必须是布尔）：布尔照旧可达，非布尔
+  // （对象 / 数字 1）在规位侧也当场拒。扁平侧照旧：名称闸口先开火，文案逐字不变。
   const nameGate = `unknown runToolLoop option: "${RETURNED}" (its canonical home is `
     + `config.run.${RETURNED}; the flat spelling is rejected)`;
-  for (const value of [true, false, { onChunk: "x" }, 1]) {
+  for (const value of [true, false]) {
     const label = `${RETURNED}=${JSON.stringify(value)}`;
     const nested = await exitCode(base({
       config: { input: { initialUserMessage: "go" }, run: { [RETURNED]: value } },
     }));
-    assert.equal(nested, 0, `${label}：规位侧照旧可达（没有值校验器，退役不放宽也不收紧取值面）`);
+    assert.equal(nested, 0, `${label}：布尔在规位侧必须可达（值规则不许误伤合法取值）`);
+    const flat = await rawError(base({ [RETURNED]: value }));
+    assert.equal(flat instanceof TypeError, true, `${label}：扁平拼写已退役 ⇒ 当场拒`);
+    assert.equal(flat.message, nameGate, `${label}：扁平侧拒在名称闸口，文案逐字点名新家`);
+  }
+  for (const value of [{ onChunk: "x" }, 1]) {
+    const label = `${RETURNED}=${JSON.stringify(value)}`;
+    const nested = await rawError(base({
+      config: { input: { initialUserMessage: "go" }, run: { [RETURNED]: value } },
+    }));
+    assert.equal(nested instanceof TypeError, true, `${label}：#538 值规则必须在规位侧拒`);
+    assert.match(nested.message,
+      new RegExp(`^config\\.run\\.${RETURNED} must be a boolean \\(received: `, "u"));
     const flat = await rawError(base({ [RETURNED]: value }));
     assert.equal(flat instanceof TypeError, true, `${label}：扁平拼写已退役 ⇒ 当场拒`);
     assert.equal(flat.message, nameGate, `${label}：扁平侧拒在名称闸口，文案逐字点名新家`);
@@ -247,14 +261,20 @@ test(`S3 ${RETURNED} 函数取值：两侧**都**被拒（裁决接受的收窄�
   assert.match(nestedFn.message, /the engine never calls it, it only forwards the value/u,
     "引擎从不调用它——这就是「函数在这个位置从来不是行为」的逐字出处");
 
-  // 而「从不调用」的另一面：数据取值逐字到达 `effectiveOptions`（引擎只做真值判断，不校验不改写）。
-  // 这是 S2 那条「规位侧全 ACCEPT」的机制证据，也是本收窄正当性的来源。
-  for (const value of [true, false, 1]) {
+  // 而「从不调用」的另一面：**布尔**取值逐字到达 `effectiveOptions`（引擎不改写）。
+  // 这是 S2 那条「布尔规位侧 ACCEPT」的机制证据。`1` 不在这一格里了——#538 的值规则把它拦在
+  // 展开相（`config.run.stream must be a boolean (received: number)`），这正是那条宿主可见收紧。
+  for (const value of [true, false]) {
     const { effectiveOptions } = await normalizeRunToolLoopOptions({
       config: { run: { [RETURNED]: value } },
     });
-    assert.equal(effectiveOptions[RETURNED], value, "数据取值逐字到达 effectiveOptions（没有校验器）");
+    assert.equal(effectiveOptions[RETURNED], value, "布尔取值逐字到达 effectiveOptions（引擎不改写）");
   }
+  await assert.rejects(
+    normalizeRunToolLoopOptions({ config: { run: { [RETURNED]: 1 } } }),
+    { name: "TypeError", message: `config.run.${RETURNED} must be a boolean (received: number)` },
+    "#538：非布尔在展开相即抛（不再到达 effectiveOptions）",
+  );
 });
 
 // ================================================================ R. 读侧不动

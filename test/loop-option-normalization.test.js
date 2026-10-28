@@ -588,10 +588,19 @@ test("显式 null 覆盖 assembled 值（改成 ?? / != null 必红）", async (
       && error.message === "maxRounds must be a finite positive integer",
   );
 
-  // 通道③：布尔 —— null 是假值，assembled 的 true 被覆盖后走 chat
+  // 通道③：布尔 —— **issue #538 起这一格不再是「覆盖」，而是拒绝**。`config.run.stream` 有了值规则
+  // （必须是布尔），所以 `null` 连生效值都当不上：它在展开相就抛，走不到「被覆盖成假值 ⇒ 走 chat」
+  // 那一步。旧语义（null 是假值、覆盖掉 assembled 的 true）随之消失，这不是丢一条覆盖力证据——
+  // 「null 覆盖 assembled」这条性质仍由上面①②两条非布尔通道钉着；它消失的是「布尔通道也能收 null」
+  // 这个**已经不该存在**的形状。
   const stream = assemblyPortFixture({ policy: { stream: true }, script: DONE });
-  await runToolLoop(withSeed({ assemblyPort: stream.port, initialUserMessage: "go", stream: null }));
-  assert.deepEqual(stream.provider.calls, { chat: 1, chatStream: 0 });
+  await assert.rejects(
+    runToolLoop(withSeed({ assemblyPort: stream.port, initialUserMessage: "go", stream: null })),
+    (error) => error instanceof TypeError
+      && error.message === "config.run.stream must be a boolean (received: null)",
+    "#538：null 必须在展开相被值规则拒（不许再静默当成 false 覆盖 assembled 的 true）",
+  );
+  assert.deepEqual(stream.provider.calls, { chat: 0, chatStream: 0 }, "被拒的运行一次 provider 都不该调");
 });
 
 test("显式非 undefined 值覆盖 assembled 值（含 modelConfig 覆盖的透传门）", async () => {

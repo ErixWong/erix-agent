@@ -444,6 +444,63 @@ export function configOptionNameForLeaf(group, leaf) {
 export const CONFIG_LEAF_ALIAS_PATHS = CONFIG_LEAF_ALIASES;
 
 /**
+ * The value-type name used in **error text only**: `null` / `array` / `typeof` for everything else.
+ *
+ * `typeof null === "object"` would report "the host passed an object" for an empty value, so `null`
+ * is named first; arrays get their own word too — a host writing `stream: []` should read `array`,
+ * not `object`. Naming the type the engine actually received is half of the value-rule verdict (the
+ * other half is the full config path), so this stays a separate, testable function.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function describeConfigValueType(value) {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+/**
+ * **Leaf value rules** (issue #538): `"<group>.<leaf>"` → a check returning a verdict string
+ * (`undefined` = pass).
+ *
+ * Why the table exists: the name/shape gate only answers "does this key exist", never "is this key's
+ * value the right type". `config.run.stream` broke because **one value was read with two different
+ * truthiness tests** (`=== true` vs truthy, both in `src/loop/provider-runner.js`), so `stream: 1`
+ * made the recorded channel and the actual provider method disagree **inside one run**. The ruling
+ * was not "make both truthy" (that would make `stream: "yes"` really stream — the disagreement would
+ * merely move), but "the value must be a boolean" **plus** "both sites share one derived value".
+ * This table is the first half; `streamsThisRun` in `provider-runner.js` is the second.
+ *
+ * A verdict must name the **full path** (`config.run.stream`, not the flat `stream`) and the type the
+ * engine actually received, so a host that wrote the wrong thing can fix it from the message instead
+ * of guessing the default.
+ *
+ * The check runs in the **expansion phase** (`expandConfigNamespace` → `assertConfigNamespace`), which
+ * both entry routes share: direct `runToolLoop({ config: { run: { stream: 1 } } })` and the assembly
+ * port's `policy: { stream: 1 }` (#545 translates policy leaves into `config.run.stream`, so the
+ * assembly route is refused at construction time).
+ *
+ * Only leaves that **need** a value rule are registered (one, today); an absent entry means "no extra
+ * value rule for this leaf", not "forgotten" — and every registered key must really be a schema leaf,
+ * which `configSchemaSelfCheck` pins as a dead-entry check.
+ *
+ * @type {Readonly<Record<string, (value: unknown, path: string) => string | undefined>>}
+ */
+const CONFIG_LEAF_VALUE_RULES = Object.freeze({
+  // issue #538: `config.run.stream` must be a boolean. A non-boolean throws **at startup** and the
+  // verdict names the full path plus the received type. `1` / `0` / `"yes"` / `null` / `[]` are all
+  // refused: the two truthiness readings (`=== true` and truthy) disagree on every one of them, and a
+  // run may only have one answer to "are we streaming".
+  "run.stream": (value, path) => (typeof value === "boolean"
+    ? undefined
+    : `${path} must be a boolean (received: ${describeConfigValueType(value)})`),
+});
+
+/** The leaf value-rule table (exported for the self-check and tests to read; read-only). */
+export const CONFIG_LEAF_VALUE_RULE_PATHS = CONFIG_LEAF_VALUE_RULES;
+
+/**
  * 展开后的**别名表**：`"<group>.<leaf>"` → 顶层键名。
  *
  * 机械派生（叶子名逐字等于顶层键名，唯一例外见 `CONFIG_LEAF_ALIASES`），不是手写映射：
@@ -655,6 +712,15 @@ export function configSchemaSelfCheck(optionNames, { leafAliases = CONFIG_LEAF_A
       }
     }
   }
+  // issue #538: **dead entries** in the leaf value-rule table. The table is indexed by
+  // `"<group>.<leaf>"`, so a rule is only honoured while that leaf really is in the schema —
+  // rename or delete the leaf and the rule goes silent (non-booleans reach the run again). This turns
+  // "renamed the leaf, forgot the rule table" into a red.
+  for (const path of Object.keys(CONFIG_LEAF_VALUE_RULES)) {
+    if (!CONFIG_ALIAS_PATHS.has(path)) {
+      problems.push(`leaf value rule ${JSON.stringify(path)} does not name a leaf of the config schema`);
+    }
+  }
   const unclassified = new Set();
   for (const name of optionNames) {
     if (NAMESPACE_CONTAINER_OPTION_SET.has(name)) continue;
@@ -825,9 +891,18 @@ export function collectConfigNamespaceProblems(config) {
       // 未知叶子已经在上面报过，不再拿它们的内部形状叠一条噪声）。
       const leafValue = /** @type {Record<string, unknown>} */ (value)[leaf];
       if (leafValue === undefined) continue;
+      let functionValueReported = false;
       for (const functionPath of collectFunctionPaths(leafValue, `config.${group}.${leaf}`)) {
+        functionValueReported = true;
         problems.push(functionValueProblemMessage(functionPath));
       }
+      // issue #538: the **leaf value rule**. Checked after the function-value row on purpose: a
+      // function value has already been pointed at its capability home (a more specific answer), so
+      // it does not also get a "must be a boolean" line.
+      const valueRule = CONFIG_LEAF_VALUE_RULES[`${group}.${leaf}`];
+      if (valueRule === undefined || functionValueReported) continue;
+      const valueProblem = valueRule(leafValue, `config.${group}.${leaf}`);
+      if (valueProblem !== undefined) problems.push(valueProblem);
     }
   }
   return problems;
