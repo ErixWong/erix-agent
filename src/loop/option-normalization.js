@@ -81,9 +81,10 @@ import {
  * 任何「顶层总数」都由符号派生（`RUN_TOOL_LOOP_OPTION_NAMES.length` 与三个面的并集对账）。
  * #498 S3（`timing` 组垂直切片）：`timeoutMs` / `deadlineMs` / `retry` 已从这里删掉，它们的家是
  * `config.timing.*`（展开相写回 `effectiveOptions`，引擎读侧不变）。
- * #498 S3（`input` 组 A 段）：`cacheStablePrefix` 与 `initialMessages` 同去，家是
- * `config.input.cacheStablePrefix` / `config.input.messages`（后者是**唯一**一条登记别名，
- * `CONFIG_LEAF_ALIASES`：展开相把它写回 `effectiveOptions.initialMessages`）。
+ * #498 S3 (`input` group, segment A): `cacheStablePrefix` and `initialMessages` leave together. Their
+ * home is `config.input.cacheStablePrefix` / `config.input.messages` — the latter is the **only**
+ * registered leaf alias (`CONFIG_LEAF_ALIASES`), and the expansion phase writes it back onto
+ * `effectiveOptions.initialMessages`.
  *
  * @type {string[]}
  */
