@@ -215,11 +215,12 @@ const OPTION_WHITELIST = [
   // #498 S3 (`folding` slice): `context` / `toolResultTtl` / `toolResultFoldMinTokens` left the
   // allowlist — their canonical home is `config.folding.*`. The copy tracks the source list verbatim
   // (that is exactly what A0 checks), so they are gone here too.
-  "maxTokens",
-  "temperature",
-  "topP",
   // #498 S3 (`timing` slice): `timeoutMs` / `deadlineMs` / `retry` left the allowlist — their canonical
   // home is `config.timing.*`. The copy tracks the source list verbatim (that is what A0 checks).
+  // #498 S3 (`tuning` slice, segment A5): `maxTokens` / `temperature` / `topP` left the allowlist —
+  // their canonical home is `config.tuning.*`. The copy tracks the source list verbatim (that is what
+  // A0 checks), so they are gone here too; the flat spellings are now **rejection** cells, see
+  // `test/loop-tuning-keys-slice-498s3a5.test.js`.
   "reflection",
   "stallDetection",
   "completion",
@@ -380,10 +381,13 @@ test("未知选项建议阈值 = Math.max(2, floor(len/3))，两侧边界都钉�
 // `indexOf` 自证比的是**源名单里的真实平局优先级**，不是副本自己的偏好。
 const TIE_MATRIX = [
   {
-    key: "too",
-    tied: ["tools", "topP"],
+    // #498 S3 (`tuning` slice, segment A5)：这一行原来用 `too` → {tools, topP}，而 `topP` 已随本片
+    // 离开白名单（建议候选池 = 白名单，删了键就不再是候选）。换一个**仍在白名单里**的平局对，
+    // 钉的是同一条性质：`tos` 到 `tools` / `task` 的距离严格相等（都是 2），阈值也都在 2 以内。
+    key: "tos",
+    tied: ["tools", "task"],
     expected: "tools",
-    note: "白名单顺序（tools 在前）压过字典序（topP 更小）",
+    note: "白名单顺序（tools 在前）压过字典序（task 更小）",
   },
   {
     key: "writeToolPath",
@@ -477,12 +481,17 @@ test("assembled（assemblyPortOptions）值原样生效：作为合并语义的�
 });
 
 test("显式值仅当 !== undefined 才覆盖：undefined 保留 assembled 值（改成无条件覆盖必红）", async () => {
-  // 通道①：数值 —— assembled maxTokens 必须留在 provider 请求里
+  // 通道①：数值 —— assembled maxTokens 必须留在 provider 请求里。
+  // #498 S3（`tuning` A5）：扁平 `maxTokens` 已退役（家 = `config.tuning.maxTokens`），所以这条
+  // 「显式 undefined 不覆盖 assembled」的写法也跟着搬家。**语义逐字未变**：`expandConfigNamespace`
+  // 把叶子的 `undefined` 逐字当「没给」（与合并规则 `value !== undefined` 同口径），所以它既不覆盖
+  // assembled 值、也不记冲突。
   const tokens = assemblyPortFixture({ policy: { maxTokens: 4096 }, script: DONE });
   await runToolLoop(withSeed({
     assemblyPort: tokens.port,
     initialUserMessage: "go",
-    maxTokens: undefined, // 显式存在但值为 undefined：不是「没传」的省略，是「传了 undefined」
+    // 显式存在但值为 undefined：不是「没传」的省略，是「传了 undefined」
+    config: { tuning: { maxTokens: undefined } },
   }));
   assert.equal("maxTokens" in tokens.provider.requests[0], true, "undefined 不该把 assembled maxTokens 抹掉");
   assert.equal(tokens.provider.requests[0].maxTokens, 4096);
@@ -514,9 +523,15 @@ test("显式 false 覆盖 assembled 真值（改成 truthy 判断必红）", asy
 });
 
 test("显式 null 覆盖 assembled 值（改成 ?? / != null 必红）", async () => {
-  // 通道①：null 原样透传到 provider 请求（`??` 会把它退回 assembled 的 4096）
+  // 通道①：null 原样透传到 provider 请求（`??` 会把它退回 assembled 的 4096）。
+  // #498 S3（`tuning` A5）：搬家到 `config.tuning.maxTokens` 之后语义不变——展开相只把 `undefined`
+  // 当「没给」，`null` 照旧**覆盖**（这正是这一格要钉的那条边界）。
   const tokens = assemblyPortFixture({ policy: { maxTokens: 4096 }, script: DONE });
-  await runToolLoop(withSeed({ assemblyPort: tokens.port, initialUserMessage: "go", maxTokens: null }));
+  await runToolLoop(withSeed({
+    assemblyPort: tokens.port,
+    initialUserMessage: "go",
+    config: { tuning: { maxTokens: null } },
+  }));
   assert.equal("maxTokens" in tokens.provider.requests[0], true);
   assert.equal(tokens.provider.requests[0].maxTokens, null);
 
@@ -539,7 +554,8 @@ test("显式非 undefined 值覆盖 assembled 值（含 modelConfig 覆盖的透
   const result = await runToolLoop(withSeed({
     assemblyPort: tokens.port,
     initialUserMessage: "go",
-    maxTokens: 128,
+    // #498 S3（`tuning` A5）：扁平 `maxTokens` 退役，同一个值写在新家里 —— 覆盖力一字不变。
+    config: { tuning: { maxTokens: 128 } },
     maxRounds: 2,
   }));
   assert.equal(tokens.provider.requests[0].maxTokens, 128);

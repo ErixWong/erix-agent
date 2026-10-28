@@ -31,6 +31,13 @@
 //      Writing the old flat spelling is now rejected at the name gate, and the message names the new
 //      home (`configPathForOption`, `src/loop/config-namespace.js`) so a host upgrading from 0.26
 //      is told where to put the value instead of just "unknown option".
+//  10. issue #498 (S3, `tuning` group, segment A5): `maxTokens` / `temperature` / `topP` leave the
+//      top-level allowlist as well. They are not gone — they move to `config.tuning.*`, and the
+//      expansion phase writes them back onto `effectiveOptions.maxTokens` / `.temperature` / `.topP`,
+//      which is exactly why the engine's read side (request assembly) needs no change. The other
+//      planes that spell the same word (the config-file / model-slot field `slots.default.maxTokens`,
+//      the provider request field, and the assembly `policy.maxTokens`) never went through this
+//      allowlist and are untouched.
 //
 // 顺序即语义，且被 test/loop-option-normalization.test.js 逐条钉住，所以本模块严格按
 //   形状检查 → 未知键检查 → config 名称/形状预检 → capabilities 名称/形状预检 →
@@ -113,13 +120,21 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // (`orchestrator.js`: "no explicit toolResultTtl + cacheCapable === true ⇒ TTL folding off") is
   // unchanged; only the *write* spelling moved, and the name gate now rejects the flat one while
   // naming the new home.
-  "maxTokens",
-  "temperature",
-  "topP",
   // #498 S3 (`timing` slice): `timeoutMs` / `deadlineMs` / `retry` used to sit here. Their canonical
   // home is now `config.timing.*` (`CONFIG_NAMESPACE_SCHEMA.timing` in `src/loop/config-namespace.js`).
   // The expansion phase writes them back to `effectiveOptions.timeoutMs` / `.deadlineMs` / `.retry`,
   // so every engine-side reader keeps working unchanged; only the *write* spelling moved.
+  // #498 S3 (`tuning` slice, segment A5): `maxTokens` / `temperature` / `topP` used to sit between the
+  // `cacheCapable` note above and this `timing` note. Their canonical home is `config.tuning.*`
+  // (`CONFIG_NAMESPACE_SCHEMA.tuning` in `src/loop/config-namespace.js`), and the expansion phase
+  // writes them back onto `effectiveOptions.maxTokens` / `.temperature` / `.topP` — so every
+  // engine-side reader (request assembly in `src/loop/provider-runner.js` / `src/loop/termination.js`)
+  // is unchanged. Only the *write* spelling moved, and the name gate now rejects the flat spellings
+  // while naming the new home. The planes that carry the **same word** are deliberately untouched:
+  // the model-slot / config-file field `slots.default.maxTokens` (`src/config/slot-provider.js`), the
+  // config-file sampling defaults (`src/config/env.js`), the provider request field `maxTokens`
+  // (`src/messages/anthropic.js`), and the assembly `policy.maxTokens` (`src/assembly.js`) — none of
+  // them goes through this allowlist.
   "reflection",
   "stallDetection",
   "completion",

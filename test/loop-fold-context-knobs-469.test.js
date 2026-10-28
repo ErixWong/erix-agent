@@ -61,6 +61,11 @@ function createFakeProvider({ summaryText = LONG_SUMMARY, summaryChat } = {}) {
 
 /** 多轮折叠：每轮都产出一段足够长的历史，`keepRounds:0` ⇒ 每轮都折。 */
 function runFolding(provider, context, extra = {}) {
+  // #498 S3（`tuning` A5）：扁平 `maxTokens` 已退役（家 = `config.tuning.maxTokens`）。本函数是这一族
+  // 格子的**唯一** run 装配点，所以「run 级输出预算」在夹具里收成一个 `tuning` 入参，由它并进
+  // **同一个** `config` 容器（与 `test/helpers/run-direct.js` 的 `withSeed` 同一条纪律：同一个对象
+  // 字面量里不许有两个 `config` 键，后者会静默胜）。
+  const { tuning, ...rest } = extra;
   return runDirect({
     provider,
     initialUserMessage: `start ${"y".repeat(600)}`,
@@ -68,10 +73,13 @@ function runFolding(provider, context, extra = {}) {
     maxRounds: 4,
     completion: false,
     wrapup: false,
-    config: { folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm", ...context } } },
+    config: {
+      folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm", ...context } },
+      ...(tuning === undefined ? {} : { tuning }),
+    },
     store: createMemoryTranscriptStore(),
     runId: `issue-469-knobs-${process.pid}`,
-    ...extra,
+    ...rest,
   });
 }
 
@@ -265,7 +273,7 @@ test("#493 maxSummaryTokens 也是 context 旋钮：非法值装配期抛，传�
       return { content: [{ type: "text", text: "## 阶段\nok" }], stopReason: "end_turn" };
     },
   });
-  await runFolding(provider, { maxSummaryTokens: 200 }, { maxTokens: 32_768 });
+  await runFolding(provider, { maxSummaryTokens: 200 }, { tuning: { maxTokens: 32_768 } });
   assert.ok(seen.length > 0, "前提：摘要那一发真的发出去了");
   for (const request of seen) {
     assert.equal(request.maxTokens, 200,
@@ -279,7 +287,7 @@ test("#493 maxSummaryTokens 也是 context 旋钮：非法值装配期抛，传�
       return { content: [{ type: "text", text: "## 阶段\nok" }], stopReason: "end_turn" };
     },
   });
-  await runFolding(provider2, {}, { maxTokens: 32_768 });
+  await runFolding(provider2, {}, { tuning: { maxTokens: 32_768 } });
   for (const request of fallback) {
     assert.equal(request.maxTokens, 1_400, "默认必须落在摘要预算上，而不是 run 的 32768");
   }

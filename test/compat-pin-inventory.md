@@ -18,8 +18,15 @@
 >    `onRound` 算一个，`test/loop-usage-accounting.test.js` 的 8 个就是这么来的）；只有落在**已被数过的键
 >    的值**里的不再下钻。
 >
-> 按这五条：**迁移前 388 / S7a 后 351 / S7b 后 256 / S7c 后 170 / 附表 1276 / COMPAT-PIN 67**。复跑命令在
-> ⚠ **附表口径刷新（#498 S3 第六片 `guard` 段收尾，本片）**：附表 **1270 → 1276**（+6，行数 109 → 110）、
+> 按这五条：**迁移前 388 / S7a 后 351 / S7b 后 256 / S7c 后 170 / 附表 1283 / COMPAT-PIN 67**。复跑命令在
+> ⚠ **附表口径刷新（#498 S3 第七片 `tuning` A5 段收尾，本片）**：附表 **1276 → 1283**（+7，行数 110 → 111）、
+> 主表 **170 → 170**（不变，行数 23 → 23）。这 7 点**全部来自本片新增的切片钉子文件**
+> `test/loop-tuning-keys-slice-498s3a5.test.js`（`completion`×2 / `wrapup`×2 / `context`×1 / `session`×1 /
+> `tools`×1 —— 都是搭台写点）。本片删的三个顶层扁平键（`maxTokens` / `temperature` / `topP`）**都是标量**
+> （无子键 ⇒ 按顶部「生成方式」不是壳），它们本来就不在计数口径里，所以删键**不改变任何既有行**；
+> 只增了新文件那一行。复跑：`node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md`
+> **exit=0**，逐行零误差（主表 170 / 附表 1283 都是 AST 实测）。
+> ⚠ **附表口径刷新（#498 S3 第六片 `guard` 段收尾）**：附表 **1270 → 1276**（+6，行数 109 → 110）、
 > 主表 **169 → 170**（+1，行数 22 → 23）。这 7 点**全部来自本片新增的切片钉子文件**
 > `test/loop-guard-slice-498s3e.test.js`（附表 6：`completion`×2 / `wrapup`×2 / `context`×1 / `reflection`×1；
 > 主表 1：`finalGuard`×1 —— 都是搭台写点）。本片删的三个顶层扁平键
@@ -136,8 +143,29 @@
 | `test/loop-capabilities-ports-hooks-498s4c.test.js` | 7 | `ports.*` / 4 个 in-shell 回调 / 两个形态多态旋钮的**目的地表**与冲突路径、`sleepImpl` 被真的调到（行为证据） |
 | `test/loop-option-gate-496.test.js` | 15 | 选项闸：接受面 = 白名单（`unknown runToolLoop option`）、语义相取值校验、`onFoldSummary` / `finalGuard` / `deliverables` 的形状报错 |
 | `test/loop-guard-slice-498s3e.test.js` | 1 | #498 S3 `guard` 片的**选项面钉**：三个数据键的旧名反向拒绝（逐字文案 + 新家路径）、混装壳只点一站、**`finalGuard` / `finalGuardVerdict` 没被本刀动过**（P5）、三向闭合与 schema 自检、禁手抄键数（A2 扫全 `test/`） |
+| `test/loop-tuning-keys-slice-498s3a5.test.js` | 0（容器/白名单面） | #498 S3 `tuning` A5 片的**选项面钉**：三个采样/预算键的旧名反向拒绝（逐字文案 + 新家路径）、混装壳只点一站、**`maxTokenContinuations` 与槽位面同名字段没被本刀动过**（P5，另加装配口 `policy.maxTokens` 与 provider 请求字段两个旁证面）、三向闭合与 schema 自检、禁手抄键数（A2 扫全 `test/`）。**能力面 0 写点**（它不碰任何 `on*` 回调），所以本表这一行是 `0` 而不是数字 |
 | `test/loop-context-on-fold-summary-retired-499.test.js` | 8 | #499 的**范围钉**：`context.onFoldSummary` 退役、**顶层扁平 `onFoldSummary` 必须还在**（它 `import` 了 `RUN_TOOL_LOOP_OPTION_NAMES` 并断言 `includes("onFoldSummary")`）⇒ S9 之前这里必须保持扁平 |
 
+
+### COMPAT-PIN 逐文件判定（#498 S3 第七片 `tuning` A5：三个采样/预算键删键）
+
+判据同上：**数据面就地翻成反向拒绝钉；行为面 `on*` 一个字不动**。本片动到的只有**数据面**那两格；
+八个 COMPAT-PIN 文件逐个给证据（不是「我看过了」）：
+
+| 文件 | 面 | 本片（`tuning` A5）的处置 | 证据 |
+| --- | --- | --- | --- |
+| `test/loop-option-normalization.test.js` | **数据面** | 翻成反向钉 | 内联白名单副本（`OPTION_WHITELIST`）删掉 `maxTokens` / `temperature` / `topP` 三项（A0 的双向差集 + 位置对账保证副本 ≡ 源名单）；建议矩阵的**平局行**换键：`too` → {tools, topP} 里的 `topP` 已不在候选池，改钉 `tos` → {tools, task}（同为长度 3 / 阈值 2 / 距离 2 的分支，白名单顺序仍压过字典序）；三处合并语义格（`undefined` 不覆盖 / `null` 覆盖 / 非 `undefined` 覆盖）的写点从扁平搬到 `config.tuning.maxTokens`，**断言一字未改**。反向钉本体在 `test/loop-tuning-keys-slice-498s3a5.test.js` 的 **P / P2**（逐字文案 + 叶子仍在 schema + 顶层键已不在白名单） |
+| `test/loop-config-namespace-497.test.js` | **数据面** | 翻成反向钉 | `RETIRED_FLAT_VALUES` 增三条（`maxTokens: 512` / `temperature: 0.2` / `topP: 0.9`）；`VALUES`（仍可扁平写的那张）同步删掉它们。B2 开头断言两张表键集**逐字相等**（派生自 `CONFIG_SURFACE_OPTION_NAMES ∖ RUN_TOOL_LOOP_OPTION_NAMES`）⇒ 删键而漏给取值会红；于是 B2 同时证明：扁平形态**不再产生**这三个 `effectiveOptions.*`、config 形态**逐字写回**它们。C1 的「同一个值写两边 ⇒ 不记冲突」通道从 `temperature` 换成 `maxTokenContinuations`（仍可扁平写的配置叶子）——顺带证明本刀没动它 |
+| `test/loop-capabilities-namespace-498.test.js` | **行为面 `on*` + 数据面（叶子名索引）** | **未动**（本片零改动） | `git diff --stat` 里没有它。它那张 `REPRESENTATIVE_CONFIG_VALUES` 是**按叶子名索引**的代表性取值表（`tuning: maxTokens / temperature / topP / cacheCapable` 四行照旧），不是顶层扁平写点——叶子仍在 schema 里，所以这四行**必须**留着，删了反而漏测 round-trip |
+| `test/loop-capabilities-ports-hooks-498s4c.test.js` | **行为面 `on*`** | **未动**（本片零改动） | `git diff --stat` 里没有它 |
+| `test/loop-option-gate-496.test.js` | 数据面（闸口相位） | **未动**（本片零改动） | `git diff --stat` 里没有它；它的闸口断言测的是「接受面 = 白名单」这条机制，与具体哪三个键退役无关 |
+| `test/loop-context-on-fold-summary-retired-499.test.js` | **行为面 `on*`** | **未动**（本片零改动） | `git diff --stat` 里没有它 |
+| `test/loop-guard-slice-498s3e.test.js` | 数据面（`guard` 片的钉子） | **未动**（本片零改动） | `git diff --stat` 里没有它。它钉的是 `guard` 组三键，与 `tuning` 组无关 |
+| `test/loop-tuning-keys-slice-498s3a5.test.js` | **选项面本身** | **本片新增** | 它测的就是「扁平写法现在抛错」这件事，所以按判据登记为 COMPAT-PIN（同 `loop-option-normalization.test.js` 那一行）。能力面写点 **0** ⇒ 主表不受影响 |
+
+合计仍是 **67** 个写点（本片新增的钉子文件在**能力面**上 0 个写点：它不写任何 `on*` 回调）。
+⚠ `tuning` 组这三个键是**标量**，本来就不在附表口径里（顶部「生成方式」：标量无子键 ⇒ 不是壳），
+所以本片删键**不改变附表任何既有行**——只增了新钉子文件的 7 点（附表 1276 → 1283）。
 
 ### COMPAT-PIN 逐文件判定（#498 S3 第六片 `guard`：三个数据键删键）
 
@@ -285,10 +313,10 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `MIGRATE · S7c`（**本刀已迁完 90 点中的 87**；另 3 点重分类，见下条） | 17 | 0 |
 | `MIGRATE · 含 COMPAT-PIN 格`（迁搭台写点，**逐格**跳过选项面断言） | 3 | 38 |
 | `MIGRATE · NOT-OPTION-SURFACE`（重分类：不是 `runToolLoop` 选项面，**没有规位**） | 9 | 31 |
-| `COMPAT-PIN` | 7 | 67 |
+| `COMPAT-PIN` | 8 | 67 |
 | `OWNED-BY-S5` | 5 | 13 |
 | `OWNED-BY-S6` | 5 | 21 |
-| **合计（现在实测）** | **63** | **170** |
+| **合计（现在实测）** | **64** | **170** |
 
 脚注：
 
@@ -611,6 +639,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/run-snapshot-executor.test.js` | 1 | `context`×1, `onToolResult`×1 |
 | `test/loop-seed-fixture-521.test.js` | 4 | `completion`×2, `wrapup`×2 |
 | `test/loop-tuning-slice-498s3d.test.js` | 7 | `completion`×3, `wrapup`×2, `context`×1, `stallDetection`×1 |
+| `test/loop-tuning-keys-slice-498s3a5.test.js` | 7 | `completion`×2, `wrapup`×2, `context`×1, `session`×1, `tools`×1 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 
