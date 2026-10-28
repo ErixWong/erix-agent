@@ -14,7 +14,7 @@
 // capability surface therefore has **three groups** (`hooks` / `checks` / `ports`):
 //   · `capabilities.ports` opens. Its members are the infrastructure / strategy implementations the
 //     engine **dereferences or calls**: `sleepImpl` (the timer injection point, consumed as
-//     `retryOptions?.sleepImpl ?? defaultSleep`), `judgeProvider` (the judge-only evaluator; accepts
+//     `capabilityPorts.sleepImpl ?? defaultSleep`), `judgeProvider` (the judge-only evaluator; accepts
 //     a callable or a `{ chat }` object) and `strategy` (a compaction strategy object that
 //     `resolveCompactionStrategy` passes through verbatim; `shouldCompact` / `compact` are called).
 //     They used to be writable only inside a shell (`retry.sleepImpl` / `reflection.judge.provider` /
@@ -258,7 +258,7 @@ export const CAPABILITY_SLOT_DESTINATIONS = Object.freeze({
     }),
   ]))),
   // Timer injection point: legacy home `retry.sleepImpl` (consumed as
-  // `retryOptions?.sleepImpl ?? defaultSleep`).
+  // `capabilityPorts.sleepImpl ?? defaultSleep`).
   "ports.sleepImpl": Object.freeze({
     path: Object.freeze(["retry", "sleepImpl"]),
     conflictPath: "ports.sleepImpl",

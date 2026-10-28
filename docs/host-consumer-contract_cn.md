@@ -79,10 +79,10 @@ executeTool({ id, name, input, context, signal })
 `did you mean` 后缀（那个后缀只属于顶层名称白名单）。
 
 语义相只管这几条：`context` 给了就必须是对象（省略或 `null` = 没配）；`context` 里**拼错的摘要
-旋钮名**抛；旋钮取值必须是正安全整数；每个承载宿主回调的字段给了就必须是函数——`finalGuard`、
-`config.timing.retry.sleepImpl`（issue #498 S3：`retry` 现在是 `config.timing.retry`，扁平写法
-被名称闸口早一相就拒了）、`reflection.onReflection`、`diagnostics.error`、`onFoldSummary`（顶层）、
-`context.onBeforeFold`、`context.onAfterFold`。有两族**刻意留在原地**：
+旋钮名**抛；旋钮取值必须是正安全整数；每个承载宿主回调的字段给了就必须是函数——`finalGuard`、`capabilities.ports.sleepImpl`（#520：定时器已离开配置面——写在
+  `config` 下的函数是启动错误，不是形状校验）、`capabilities.hooks.onReflection`（#530 已把它搬出
+  `reflection`）、`diagnostics.error`、`onFoldSummary`（顶层）、`capabilities.hooks.onBeforeFold` /
+  `capabilities.hooks.onAfterFold`。有两族**刻意留在原地**：
 `deliverables[].check` 由 `normalizeDeliverables`（`src/loop/deliverables.js`）校，其余取值规则
 （`maxRounds` / `partialPersistence` / `persistence` …）是 `runToolLoop` 自己的启动校验——它们本来就
 对每条路线都跑，因为两条路线都汇到那里。
@@ -90,8 +90,8 @@ executeTool({ id, name, input, context, signal })
 回调字段只有一条口径：**省略 = 不订阅**；`null` 与其余非函数值一律 = 给了但给错 ⇒ 启动即抛。
 **唯一例外**是 `context: null`，它逐字等于省略 `context`——理由不是宽容，而是引擎在那里的读取本来
 就对 `undefined` 与 `null` 完全相同，把它改成抛错只会破坏「把可空字段原样传下去」的宿主，买不到
-任何性质。顶层回调**刻意不给**这条例外：`finalGuard: null` / `config.timing.retry.sleepImpl: null` /
-`onFoldSummary: null` 一律抛。口径统一优先于少一类半破坏，而「`null` 钩子悄悄等于没钩子」正是本
+任何性质。顶层回调**刻意不给**这条例外：`finalGuard: null` / `onFoldSummary: null` 一律抛。
+`config.timing.retry.sleepImpl: null` 已经**不属于这一族**（#520）：它在配置面只是惰性数据，那里会抛的是**函数**。口径统一优先于少一类半破坏，而「`null` 钩子悄悄等于没钩子」正是本
 版要喊出来的那类静默配置。
 
 `context` 里的宿主元数据键（既不是引擎读的键、也不是拼错的旋钮名）照旧**放行**——它们绝不抛。
@@ -488,14 +488,14 @@ unknown runToolLoop option: "context" (its canonical home is config.folding.cont
 - **结构等价** —— 同一份配置写成扁平与写成 `config`，规范化后的 `effectiveOptions` 逐键相同。
   展开发生在**合并后**的表示上（装配口已折进来之后、语义相之前），所以 `config` 里的值走的是与
   扁平孪生完全相同的那套校验：`config.folding.context` 里拼错的摘要旋钮名抛的是与扁平 `context`
-  同一句，`config.timing.retry.sleepImpl` 必须是函数的原因与它那个扁平孪生（issue #498 S3 起已不存在：
-  `retry` 只能写成 `config.timing.retry`）完全一样。
+  同一句，`config.timing.retry.sleepImpl` 已经不是回调字段了（#520）：引擎只从
+    `capabilities.ports.sleepImpl` 读定时器，所以 `config` 下的函数按函数被拒，非函数值留在原地当惰性数据。
 - **函数值 intake 当场拒绝**（issue #498 S4a）。JSON round-trip 是事后体检，拒绝才是保证——它让
   「宿主以为设置了、其实没设置」不可能发生。整棵 `config` 子树逐节点走（含数组元素），任何函数值
   启动即抛并点名**完整路径**（`config.folding.context.onBeforeFold`，不是含糊的 `onBeforeFold`）：
-  实测真被当函数用的那些壳字段是 `config.timing.retry.sleepImpl`、
-  `config.run.reflection.onReflection`、`config.run.reflection.judge.provider`、
-  `config.folding.context.onBeforeFold` / `onAfterFold`。
+  `config` 面真正装的是数据，这句话当年点名的那些壳**如今在配置面全部被拒**——
+    被调用的字段都在能力面：`capabilities.ports.sleepImpl`（#520）、`capabilities.hooks.onReflection` 与
+    `capabilities.ports.judgeProvider`（#530）、以及 `capabilities.hooks.onBeforeFold` / `onAfterFold`。
   报错同时说清规范之家，而且**点名真实路径**：宿主回调是 `capabilities.hooks.<name>`
   （`config.folding.context.onBeforeFold` → `capabilities.hooks.onBeforeFold`），交付物判据是
   `capabilities.checks.deliverables`，端口实现是 `capabilities.ports.<slot>`——

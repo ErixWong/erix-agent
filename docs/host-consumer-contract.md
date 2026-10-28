@@ -98,9 +98,10 @@ The semantic phase owns exactly these rules: `context` must be an object when pr
 (omitted or `null` means "no context"); an unknown `context` key that is a **misspelled
 summarizer knob** throws; summarizer knob values must be positive safe integers; and every
 field that carries a host callback must be a function when provided — `finalGuard`,
-`config.timing.retry.sleepImpl` (issue #498 S3: `retry` is `config.timing.retry` now, so the flat
-spelling is refused one phase earlier by the name gate), `reflection.onReflection`,
-`diagnostics.error`, `onFoldSummary` (top level), `context.onBeforeFold`, `context.onAfterFold`. Two families
+  `capabilities.ports.sleepImpl` (#520: the timer left the config plane — under `config` a function is a
+  startup error, not a shape check), `capabilities.hooks.onReflection` (#530 moved it out of `reflection`),
+  `diagnostics.error`, `onFoldSummary` (top level), `capabilities.hooks.onBeforeFold` /
+  `capabilities.hooks.onAfterFold`. Two families
 stay where they are on purpose: `deliverables[].check` is validated by `normalizeDeliverables` (`src/loop/deliverables.js`), and the remaining value rules (`maxRounds`, `partialPersistence`,
 `persistence`, …) are `runToolLoop`'s own startup checks — both already run for every route
 because both routes converge there.
@@ -110,8 +111,9 @@ other non-function value mean "provided but wrong" and throw at startup. There i
 exception — `context: null` is verbatim identical to omitting `context`. The reason is that the
 engine already reads `undefined` and `null` identically there, so throwing would only break hosts
 that pass a nullable field straight through, and it would buy no property. Top-level callbacks
-deliberately get **no** such pass: `finalGuard: null`, `config.timing.retry.sleepImpl: null` and
-`onFoldSummary: null` all throw. Uniform doctrine beats one fewer half-break, and "a `null` hook
+deliberately get **no** such pass: `finalGuard: null` and `onFoldSummary: null` throw.
+`config.timing.retry.sleepImpl: null` no longer belongs to this family at all (#520): it is inert data in
+the config plane, and what throws there is a **function**. Uniform doctrine beats one fewer half-break, and "a `null` hook
 silently means no hook" is exactly the class of quiet configuration this change makes loud.
 
 Host metadata keys inside `context` (anything that is not an engine-read key and not a misspelled
@@ -591,16 +593,18 @@ Five rules govern it:
   the assembly port has been folded in, before the semantic phase), so a `config` value goes
   through exactly the same validation as its flat twin: a misspelled summarizer knob under
   `config.folding.context` throws the same message as under the flat `context`, and
-  `config.timing.retry.sleepImpl` must be a function for the same reason its flat twin used to have to
-  be (issue #498 S3: that flat twin is gone — `retry` is now only writable as `config.timing.retry`).
+  `config.timing.retry.sleepImpl` is no longer a callback field at
+    all (#520): the engine reads the timer only from `capabilities.ports.sleepImpl`, so a function under
+    `config` is refused as a function and a non-function value there stays inert data.
 - **Function values are refused at intake** (issue #498 S4a). A JSON round-trip check is a
   post-mortem; refusal is the guarantee that "you thought you configured it, and it was never
   configured" cannot happen. The whole `config` subtree is walked node by node — arrays included —
   and any function value throws at startup with the **full path** named
-  (`config.folding.context.onBeforeFold`, not `onBeforeFold`): the field shells that really are
-  called as functions are `config.timing.retry.sleepImpl`, `config.run.reflection.onReflection`,
-  `config.run.reflection.judge.provider` and `config.folding.context.onBeforeFold` /
-  `onAfterFold`. The message also names the canonical home, **by real path**: `capabilities.hooks.<name>`
+  (`config.folding.context.onBeforeFold`, not `onBeforeFold`): what the `config` plane really holds is data, and every
+    shell this sentence used to name is now refused there — the invoked fields live in the capability plane:
+    `capabilities.ports.sleepImpl` (#520), `capabilities.hooks.onReflection` and
+    `capabilities.ports.judgeProvider` (#530), and `capabilities.hooks.onBeforeFold` /
+    `capabilities.hooks.onAfterFold`. The message also names the canonical home, **by real path**: `capabilities.hooks.<name>`
   for a host callback (`config.folding.context.onBeforeFold` → `capabilities.hooks.onBeforeFold`),
   `capabilities.checks.deliverables` for a deliverables check, and `capabilities.ports.<slot>` for a
   port implementation — `config.timing.retry.sleepImpl` → `capabilities.ports.sleepImpl`,
