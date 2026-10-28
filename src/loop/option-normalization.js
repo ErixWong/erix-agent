@@ -180,10 +180,14 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // `.toolContext` — so every engine-side reader (`modelMetadataFor` / `toolContextFor` in
   // `src/loop/budget.js`, and the orchestrator destructuring that hands them over) is unchanged.
   // Only the *write* spelling moved: the flat ones are now rejected at the name gate, and the message
-  // names the new home. `user` / `task` / `session` stay: this slice retires four small keys, and
-  // their write sites are the host identity payloads that the #528-style fixture has to cover first.
+  // names the new home.
+  // #498 S3 (`metadata` slice, segment A9): `user` leaves this list too — the measured red-cell count
+  // was 6, far below the fixture-level threshold, so no #521-style translation point was needed.
+  // `session` is deliberately **not** part of A9: the assembly port's `session` member and the
+  // top-level `session` option are the *same value* (`assemblyPortOptions(port).session ===
+  // port.session`), and the repo's ruling says `config.metadata.session` is not a second home for
+  // the session port — so retiring the flat spelling would promote that leaf into one. Returned.
   "model",
-  "user",
   "task",
   "session",
   "store",

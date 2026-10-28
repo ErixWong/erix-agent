@@ -3,6 +3,8 @@
 // （`CONFIG_NAMESPACE_SCHEMA.metadata`，`src/loop/config-namespace.js`）。
 // 同组的大四件（`user` / `task` / `model` / `session`）**不在本刀**：它们的写点要先有夹具级翻译点
 // （#528 那种前置风格），本片一个字都没动，P5-c 逐键钉住这条边界。
+// **#498 S3 A9 起**：`user` / `model` / `task` 已经退役（实测单删红格 6 / 5 / 13，远低于夹具级阈值
+// ⇒ 不需要翻译点），P5-c 改成**派生**边界；`session` 经同值判定退回（见 `...slice-498s3a9.test.js`）。
 //
 // 本文件钉的是六件事：
 //
@@ -15,9 +17,10 @@
 //      而写在**新家**里的函数值必须直说两件事：`config` 只装数据，**且引擎从来没调用过它**
 //      （`budget.js` 只把值转发进工具上下文 / judge 简报）。对照组 `context` 证明「两站」这条
 //      机制仍然咬得住——不是把提示整段删掉也能绿。
-//   F. **函数差异 as-is 钉**（本片工单点名的那一格）：扁平写法今天**收**函数（`user: () => 1`
-//      通过、`typeof` 一路保持到工具上下文），规位**拒**（`config.metadata.user = () => 1` 当场抛）。
+//   F. **函数差异 as-is 钉**（本片工单点名的那一格）：扁平写法今天**收**函数（`session: () => 1`
+//      通过、`typeof` 一路保持到工具上下文），规位**拒**（`config.metadata.session = () => 1` 当场抛）。
 //      把这个**差异本身**钉成 as-is：将来谁放宽了（或谁把扁平也一起收了）这里就会红。
+//      （A9 起钉子从 `user` 搬到 `session`：`user` 退役后扁平写法不再收函数。）
 //   S. **建议噪声**（本片特有的坑）：`model` 与 `modelMetadata` 是编辑距离很近的兄弟键。退役之后
 //      写错 `modelMetadata` 的人**不许**被建议成 `model`（那样他会把预算元数据写成模型名），
 //      而要看到规位路径。判据是实测文案，不是「我觉得」；对照组 `modle` 证明建议机制仍在工作。
@@ -70,13 +73,16 @@ const RETIRED = [
   { key: "expert", home: "metadata.expert", value: "backend" },
 ];
 
-/** 本片**不许**碰的同组大四件（另一片）。 */
-const STILL_FLAT = [
-  { key: "user", home: "metadata.user" },
-  { key: "task", home: "metadata.task" },
-  { key: "model", home: "metadata.model" },
-  { key: "session", home: "metadata.session" },
-];
+/**
+ * 本片（A8）**不许**碰的同组大四件（另一片）。
+ *
+ * #498 S3 A9 起这条边界是**派生**的：叶子仍在 schema 里，而扁平拼写是否仍在白名单由源名单说了算。
+ * 于是 A9 每退役一个键（`user` / `model` / `task`），这张表自动变短，不需要改判断逻辑；
+ * `session` 经同值判定退回，继续留在这张表里。
+ */
+const STILL_FLAT = ["user", "task", "model", "session"]
+  .filter((key) => RUN_TOOL_LOOP_OPTION_NAMES.includes(key))
+  .map((key) => ({ key, home: configPathForOption(key) }));
 
 /** 直连路线的最小合法 run（一次 end_turn 就结束）。 */
 function runDirect(extra = {}) {
@@ -297,22 +303,26 @@ test("P5-b expert 的 fallback 链读侧不动：context.expert 仍生效，显�
   assert.equal(explicit?.tenant, "cfg", "toolContext 两源合并时显式那一份在后（既有合并顺序）");
 });
 
-test("P5-c 同组大四件（user / task / model / session）不在本刀：扁平写法照旧可用", async () => {
+test("P5-c 同组大四件里仍未退役的那些：扁平写法照旧可用（A9 起派生）", async () => {
   for (const { key, home } of STILL_FLAT) {
-    assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(key), true, `${key} 必须仍在白名单（本片只退四个小键）`);
+    assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(key), true, `${key} 必须仍在白名单（还在等它自己那一片）`);
     assert.equal(configPathForOption(key), home, `${key} 的规位仍是 ${home}`);
     const { effectiveOptions } = await normalizeRunToolLoopOptions({ [key]: "still-flat" });
-    assert.equal(effectiveOptions[key], "still-flat", `扁平 ${key} 必须仍被接受（本刀不许顺手带上大四件）`);
+    assert.equal(effectiveOptions[key], "still-flat", `扁平 ${key} 必须仍被接受`);
   }
+  assert.equal(STILL_FLAT.some(({ key }) => key === "session"), true, "`session` 是本片经同值判定退回的那个键");
 });
 
 // ================================================================ F. 函数差异 as-is 钉（工单硬义务 ②）
 //
-// 事实（实测，不是推断）：**扁平写法今天收函数**（`user: () => 1` 通过、`typeof` 一路保持到工具
-// 上下文），**规位拒**（`config.metadata.user = () => 1` 当场抛）。本刀接受这条收窄，但必须把
+// 事实（实测，不是推断）：**扁平写法今天收函数**（`session: () => 1` 通过、`typeof` 一路保持到工具
+// 上下文），**规位拒**（`config.metadata.session = () => 1` 当场抛）。本刀接受这条收窄，但必须把
 // **差异本身**钉住：将来谁放宽了（规位开始收函数）或谁收紧了（扁平也开始拒函数），这一格都会红。
+//
+// #498 S3 A9：这条钉子原来挂在 `user` 上；`user` 退役后扁平写法不再收函数（名称闸口先抛），
+// 所以钉子**原样搬到仍在扁平面上的 `session`**——不是放宽，是同一性质的现役实例。
 
-test("F1 as-is：扁平 user 收函数且 typeof 保持到工具上下文，而 config.metadata.user 拒", async () => {
+test("F1 as-is：扁平 session 收函数且 typeof 保持到工具上下文，而 config.metadata.session 拒", async () => {
   let seen;
   const result = await runDirect({
     provider: createFakeProvider(TOOL_ROUND),
@@ -322,15 +332,15 @@ test("F1 as-is：扁平 user 收函数且 typeof 保持到工具上下文，而 
     },
     tools: WORK_TOOL,
     maxRounds: 2,
-    user: () => 1,
+    session: () => 1,
   });
-  assert.equal(result.termination.reason, "end_turn", "扁平 user 今天必须收下函数值（as-is）");
-  assert.equal(typeof seen?.user, "function", "函数值必须原样到达工具上下文（引擎不调用它，只转发）");
-  assert.equal(seen.user(), 1, "同一份值仍可被**宿主自己的**工具调用（引擎从不调用它）");
+  assert.equal(result.termination.reason, "end_turn", "扁平 session 今天必须收下函数值（as-is）");
+  assert.equal(typeof seen?.session, "function", "函数值必须原样到达工具上下文（引擎不调用它，只转发）");
+  assert.equal(seen.session(), 1, "同一份值仍可被**宿主自己的**工具调用（引擎从不调用它）");
 
-  const rejected = await directError({ config: { metadata: { user: () => 1 } } });
+  const rejected = await directError({ config: { metadata: { session: () => 1 } } });
   assert.equal(rejected instanceof TypeError, true, "规位今天必须拒函数值（这就是那条收窄）");
-  assert.match(rejected.message, /^config\.metadata\.user is not accepted/u);
+  assert.match(rejected.message, /^config\.metadata\.session is not accepted/u);
   assert.match(rejected.message, /the engine never calls it, it only forwards the value/u, "文案必须说清「没丢能力」");
 });
 

@@ -238,8 +238,10 @@ const OPTION_WHITELIST = [
   // left the allowlist — their canonical home is `config.metadata.*`. The copy tracks the source list
   // verbatim (that is exactly what A0 checks), so they are gone here too; the flat spellings are now
   // **rejection** cells, see `test/loop-metadata-keys-slice-498s3a8.test.js`.
+  // #498 S3 (`metadata` slice, segment A9): `user` left the allowlist as well (home
+  // `config.metadata.user`); `session` stays on purpose (same value as the assembly port's
+  // `session`, see `test/loop-metadata-keys-slice-498s3a9.test.js`).
   "model",
-  "user",
   "task",
   "session",
   "store",
