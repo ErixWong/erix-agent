@@ -55,16 +55,17 @@ import {
   normalizeRunToolLoopOptions,
 } from "../src/loop/option-normalization.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect as sharedRunDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const DONE = [{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" }];
 
 /** 直连路线的最小合法 run（一次 end_turn 就结束）。 */
 function runDirect(extra = {}) {
-  return runToolLoop({
+  return sharedRunDirect({
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
-    initialUserMessage: "go",
+    seed: "go",
     completion: false,
     wrapup: false,
     ...extra,
@@ -131,7 +132,7 @@ function toolScript(rounds) {
 
 /** 一次真的发生折叠的 run（预算极小 + 不保留轮次）。 */
 function foldingRun(extra = {}) {
-  return runToolLoop({
+  return runDirect({
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output",
     initialUserMessage: "go",
@@ -156,7 +157,7 @@ function extendingRun(extra = {}, reflectionExtra = {}) {
     extendReason: "当前上限不足",
     plan: "完成最后验证",
   };
-  return runToolLoop({
+  return runDirect({
     provider: createFakeProvider(toolScript(8)),
     executeTool: async () => "ok",
     initialUserMessage: "go",
@@ -391,7 +392,7 @@ test("C3 端口位不进扁平表示（走 slots），与壳里老槽位不等�
   const shellStrategy = { name: "shell", async shouldCompact() { return false; }, async compact(messages) { return { messages }; } };
   const portStrategy = { name: "port", async shouldCompact() { return false; }, async compact(messages) { return { messages }; } };
   const conflictEvents = [];
-  await runToolLoop({
+  await sharedRunDirect({
     assemblyPort: makePort({
       context: { strategy: shellStrategy },
       capabilities: { ports: { strategy: portStrategy } },
@@ -410,7 +411,7 @@ test("C3 端口位不进扁平表示（走 slots），与壳里老槽位不等�
 test("C4 行为证据：ports.sleepImpl 真被调用并记录延迟（默认兜底 defaultSleep 也被钉）", async () => {
   const counter = { calls: 0 };
   const sleeps = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: retryingProvider(counter),
     executeTool: async () => "ok",
     initialUserMessage: "go",
@@ -426,7 +427,7 @@ test("C4 行为证据：ports.sleepImpl 真被调用并记录延迟（默认兜�
   // 反向兜底：**不注入**时走 `defaultSleep`（`retryOptions?.sleepImpl ?? defaultSleep` 的右半边）。
   // 删掉那个 `??` 兜底，这一格会以 `sleepImpl is not a function` 红。
   const fallbackCounter = { calls: 0 };
-  const fallback = await runToolLoop({
+  const fallback = await runDirect({
     provider: retryingProvider(fallbackCounter),
     executeTool: async () => "ok",
     initialUserMessage: "go",
@@ -453,7 +454,7 @@ test("C5 行为证据：ports.judgeProvider 让 judge 请求走它，主模型�
       };
     },
   };
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: main,
     executeTool: async () => "ok",
     initialUserMessage: "go",
@@ -500,7 +501,7 @@ test("C6 行为证据：ports.strategy 的 shouldCompact / compact 真被调（�
       return { messages, foldedRoundRange: { from: 1, to: 1 } };
     },
   };
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
     initialUserMessage: "go",
@@ -645,7 +646,7 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   // in-shell slot. The equivalence rule itself (`isDeepStrictEqual` / identity) is unchanged.
   const sameHook = () => false;
   const same = [];
-  await runToolLoop({
+  await sharedRunDirect({
     assemblyPort: makePort({ context: { protectedMessage: sameHook } }),
     initialUserMessage: "go",
     completion: false,
@@ -697,7 +698,7 @@ test("C9 壳内老槽位零回归：config.timing.retry / context.onBeforeFold /
   //    ⚠ 壳里的 `retry.sleepImpl` 已不可写（函数不许进 config），所以这一格只钉**数据叶子**
   //    （`attempts` / `backoffBaseMs`）真的到了引擎的 `effectiveOptions.retry` 上。
   const counter = { calls: 0 };
-  const retried = await runToolLoop({
+  const retried = await runDirect({
     provider: retryingProvider(counter),
     executeTool: async () => "ok",
     initialUserMessage: "go",
@@ -722,7 +723,7 @@ test("C9 壳内老槽位零回归：config.timing.retry / context.onBeforeFold /
   const judge = createFakeProvider([{
     content: [{ type: "text", text: JSON.stringify({ done: false, confidence: 0.8, reason: "x", evidence: "y" }) }],
   }]);
-  await runToolLoop({
+  await runDirect({
     provider: createFakeProvider(toolScript(8)),
     executeTool: async () => "ok",
     initialUserMessage: "go",
@@ -740,7 +741,7 @@ test("C9 壳内老槽位零回归：config.timing.retry / context.onBeforeFold /
     async shouldCompact() { return true; },
     async compact(messages) { compacted += 1; return { messages }; },
   };
-  await runToolLoop({ assemblyPort: makePort({ context: { strategy: flatStrategy, budgetTokens: 1 } }),
+  await sharedRunDirect({ assemblyPort: makePort({ context: { strategy: flatStrategy, budgetTokens: 1 } }),
     initialUserMessage: "go",
     completion: false,
     wrapup: false,
@@ -857,7 +858,7 @@ test("C12 逐叶冲突（真 run，3 个折叠 hooks）：onBeforeFold / onAfter
     };
     // #498 S3: a function cannot live in `config`, so "the old in-shell slot is still callable"
     // is proven through the assembly port's `policy.context` (the one route that was not narrowed).
-    const result = await runToolLoop({
+    const result = await sharedRunDirect({
       assemblyPort: foldingPort({
         context: { budgetTokens: 1, keepRounds: 0, [leaf]: shellFn },
         capabilities: { hooks: { [leaf]: portFn } },
@@ -903,7 +904,7 @@ test("C14 逐叶等价（真 run，4 个 hooks）：同一函数引用同时写�
     const events = [];
     // #498 S3: the old in-shell slot is only reachable through the assembly port now, so "same
     // reference in both places ⇒ zero conflicts" is proven on that route (真 run).
-    await runToolLoop({
+    await sharedRunDirect({
       assemblyPort: makePort({ ...shellHomeOptions(leaf, same), capabilities: { hooks: { [leaf]: same } } }),
       initialUserMessage: "go",
       completion: false,
@@ -938,7 +939,7 @@ test("C15 优先级方向（sleepImpl）：端口位是唯一入口（壳里那�
 
   const counter = { calls: 0 };
   const portSleeps = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: retryingProvider(counter),
     executeTool: async () => "ok",
     initialUserMessage: "go",
@@ -964,7 +965,7 @@ test("C16 优先级方向（judgeProvider）：reflection.judge.provider 与 cap
       return { content: [{ type: "text", text: JSON.stringify({ done: false, confidence: 0.8, reason: "端口", evidence: "端口" }) }] };
     },
   };
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: main,
     executeTool: async () => "ok",
     initialUserMessage: "go",
@@ -999,7 +1000,7 @@ test("C17 优先级方向（strategy）：context.strategy 与 capabilities.port
     async shouldCompact() { portShouldCompact += 1; return true; },
     async compact(messages) { portCompact += 1; return { messages, foldedRoundRange: { from: 1, to: 1 } }; },
   };
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
     initialUserMessage: "go",
@@ -1035,7 +1036,7 @@ test("C18 装配口路线的真 run：policy.capabilities.ports.sleepImpl 真的
       capabilities: { ports: { sleepImpl: async (ms) => { sleeps.push(ms); } } },
     },
   });
-  const result = await runToolLoop({
+  const result = await sharedRunDirect({
     assemblyPort: port,
     initialUserMessage: "go",
     completion: false,

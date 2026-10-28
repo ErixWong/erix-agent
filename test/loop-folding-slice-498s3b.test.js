@@ -36,16 +36,17 @@ import {
   normalizeRunToolLoopOptions,
 } from "../src/loop/option-normalization.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect as sharedRunDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const DONE = [{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" }];
 
 /** 直连路线的最小合法 run（一次 end_turn 就结束）。 */
 function runDirect(extra = {}) {
-  return runToolLoop({
+  return sharedRunDirect({
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
-    initialUserMessage: "go",
+    seed: "go",
     completion: false,
     wrapup: false,
     ...extra,

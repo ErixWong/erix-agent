@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -33,7 +33,7 @@ test("F-1 早退路径：接管前的 fail() 读到默认桩（usage 全 0 / rou
   ]);
 
   await assert.rejects(
-    () => runToolLoop({
+    () => runDirect({
       provider,
       store,
       resume: true,
@@ -85,7 +85,7 @@ test("F-1 接管路径：接管后的 fail() 读到累计量实值与真实 veri
   ]);
 
   await assert.rejects(
-    () => runToolLoop({
+    () => runDirect({
       provider,
       initialUserMessage: "task",
       executeTool: async () => "ok",
@@ -139,7 +139,7 @@ async function runJudgeCase({ withOnJudge }) {
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
   const judge = createFakeProvider([judgeResponse(ON_TRACK)]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "ok",

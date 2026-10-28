@@ -16,7 +16,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import {
   NORMALIZATION_REASONING_EFFORT,
   normalizeWrapupWithLlm,
@@ -43,7 +43,7 @@ async function runInlineNormalization({ text, reply, maxRounds = 3 }) {
     { content: [{ type: "text", text: reply }], times: 8 },
   ]);
   const guards = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "工作",
     executeTool: async () => "ok",

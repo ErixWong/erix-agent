@@ -7,7 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createAssemblyPort } from "../src/assembly.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
@@ -41,7 +41,7 @@ const noticesOf = (events) => events.filter((event) => event.type === EVENT_TYPE
 
 test("no model metadata assembly emits exactly one model_metadata_missing (issue #182)", async () => {
   const events = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: textProvider(),
     initialUserMessage: "start",
     executeTool: async () => "unused",
@@ -71,7 +71,7 @@ test("the diagnostic also reaches the assemblyPort emit sink and a store-less ru
     session: { id: "metadata-missing-port" },
     emit: (type, payload) => emitted.push({ type, payload }),
   });
-  await runToolLoop({ assemblyPort: port, initialUserMessage: "start" });
+  await runDirect({ assemblyPort: port, initialUserMessage: "start" });
   assert.deepEqual(emitted.filter((entry) => entry.type === EVENT_TYPE), [{
     type: EVENT_TYPE,
     payload: { type: EVENT_TYPE, runId: "metadata-missing-port", detail: DETAIL },
@@ -79,7 +79,7 @@ test("the diagnostic also reaches the assemblyPort emit sink and a store-less ru
 
   // 无 store（persistence 全旁路）时元数据缺失同样成立：事件必须照发。
   const events = [];
-  await runToolLoop({
+  await runDirect({
     provider: textProvider(),
     initialUserMessage: "start",
     executeTool: async () => "unused",
@@ -91,7 +91,7 @@ test("the diagnostic also reaches the assemblyPort emit sink and a store-less ru
 
 test("complete model metadata emits zero model_metadata_missing and keeps compaction enabled", async () => {
   const events = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: toolProvider(2),
     initialUserMessage: "start",
     // 小窗口 → budgetTokens = 4096 - 512 - max(2000, 410) = 1584，工具输出足以越预算。
@@ -115,7 +115,7 @@ test("complete model metadata emits zero model_metadata_missing and keeps compac
 
 test("the diagnostic does not repeat across rounds or runs (issue #182)", async () => {
   const events = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: toolProvider(5),
     initialUserMessage: "start",
     executeTool: async () => "x".repeat(200),
@@ -132,7 +132,7 @@ test("the diagnostic does not repeat across rounds or runs (issue #182)", async 
 
   // 每个 run 各一条（去重是 run 作用域，不是进程作用域）。
   const second = [];
-  await runToolLoop({
+  await runDirect({
     provider: textProvider(),
     initialUserMessage: "again",
     executeTool: async () => "unused",
@@ -147,7 +147,7 @@ test("the diagnostic does not repeat across rounds or runs (issue #182)", async 
 test("partial metadata still disables the budget and reports the resolved output limit", async () => {
   // 只有 contextWindowTokens：computeBudget 需要两个字段，缺 maxOutputTokens 同样推不出预算。
   const events = [];
-  await runToolLoop({
+  await runDirect({
     provider: textProvider(),
     initialUserMessage: "start",
     executeTool: async () => "unused",
@@ -169,7 +169,7 @@ test("partial metadata still disables the budget and reports the resolved output
 
 test("an explicit outputHygiene.limit is reported instead of the 4096 fallback", async () => {
   const events = [];
-  await runToolLoop({
+  await runDirect({
     provider: textProvider(),
     initialUserMessage: "start",
     executeTool: async () => "unused",
@@ -188,7 +188,7 @@ test("an explicit outputHygiene.limit is reported instead of the 4096 fallback",
 
 test("no diagnostic when the host supplies its own budgetTokens (compaction stays on)", async () => {
   const events = [];
-  await runToolLoop({
+  await runDirect({
     provider: textProvider(),
     initialUserMessage: "start",
     executeTool: async () => "unused",
@@ -206,7 +206,7 @@ test("complete metadata keeps the derived output limit and budget numbers unchan
   // 不得因为走“预算元数据齐备”分支而漂移；同时不得误发诊断事件。
   const store = createMemoryTranscriptStore();
   const events = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: toolProvider(1),
     initialUserMessage: "start",
     modelMetadata: { contextWindowTokens: 131072, maxOutputTokens: 8192 },
@@ -241,7 +241,7 @@ test("metadata reachable through modelConfig or a metadata-carrying context also
     }],
   ]) {
     const events = [];
-    await runToolLoop({
+    await runDirect({
       provider: textProvider(),
       initialUserMessage: "start",
       executeTool: async () => "unused",
@@ -260,7 +260,7 @@ test("the diagnostic fires before the first provider call, so a host can bail ou
   const provider = textProvider();
   // issue #173 PR-B：宿主想提前停机只能用 signal.abort()（抛错不再是控制流，见下一条用例）。
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider,
       initialUserMessage: "start",
       executeTool: async () => "unused",
@@ -289,7 +289,7 @@ test("startup diagnostic host-callback throw is isolated and the run continues (
   const observerErrors = [];
   const provider = textProvider();
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "go",
     executeTool: async () => "ok",
@@ -324,7 +324,7 @@ test("startup diagnostic throw plus abort: the abort is the only thing that ends
   const controller = new AbortController();
   const observerErrors = [];
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider: textProvider(),
       initialUserMessage: "go",
       executeTool: async () => "ok",

@@ -51,6 +51,7 @@ import {
 } from "../src/assembly-validators.js";
 import { createSlidingWindowStrategy } from "../src/compact/sliding-window.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect as sharedRunDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const DONE = [{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" }];
@@ -61,10 +62,10 @@ const providerOnce = () => createFakeProvider(DONE);
 
 /** 直连路线：只带需要被测的那几个选项，其余给到「能跑完一轮」的最小合法集。 */
 function runDirect(extra = {}) {
-  return runToolLoop({
+  return sharedRunDirect({
     provider: providerOnce(),
     executeTool: async () => "ok",
-    initialUserMessage: "go",
+    seed: "go",
     completion: false,
     ...extra,
   });

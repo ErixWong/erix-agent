@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 // issue #282（0.20.0 发版阻断项）：终局裁决的 `stop` 分支原先**不看** `signal.aborted`。
@@ -90,7 +90,7 @@ async function settle(promise) {
 test("abort in the window after the end-turn judge returns terminates as aborted, not judge_done (issue #282)", async () => {
   const controller = new AbortController();
   const harness = makeHarness();
-  const run = runToolLoop({
+  const run = runDirect({
     provider: harness.provider,
     initialUserMessage: "把活干完",
     executeTool: async () => "unused",
@@ -137,7 +137,7 @@ test("abort during the judge call still terminates as aborted (issue #282 反向
     },
   });
 
-  const error = await settle(runToolLoop({
+  const error = await settle(runDirect({
     provider: harness.provider,
     initialUserMessage: "把活干完",
     executeTool: async () => "unused",
@@ -159,7 +159,7 @@ test("once aborted, the end-turn judge must not issue another model call (issue 
   // 假 provider 不看 signal，所以中止一定先落在 signal 上、再走到 judge 的入口守卫。
   const harness = makeHarness({ onMainCall: () => controller.abort(new Error("user stop")) });
 
-  const error = await settle(runToolLoop({
+  const error = await settle(runDirect({
     provider: harness.provider,
     initialUserMessage: "把活干完",
     executeTool: async () => "unused",
@@ -199,7 +199,7 @@ test("abort in the judge nudge window terminates as aborted and issues no furthe
     }),
   });
 
-  const error = await settle(runToolLoop({
+  const error = await settle(runDirect({
     provider: harness.provider,
     initialUserMessage: "把活干完",
     executeTool: async () => "unused",
@@ -235,7 +235,7 @@ test("abort inside the post-loop max_rounds_cap finalization terminates as abort
   ]);
   let guardCalls = 0;
 
-  const error = await settle(runToolLoop({
+  const error = await settle(runDirect({
     provider,
     initialUserMessage: "continue",
     executeTool: async () => "worked",
@@ -290,7 +290,7 @@ test("abort during the forced-final call of the cap finalization carries the #18
     },
   };
 
-  const error = await settle(runToolLoop({
+  const error = await settle(runDirect({
     provider,
     initialUserMessage: "continue",
     executeTool: async () => "worked",
@@ -318,7 +318,7 @@ test("abort in the tail of the last budget round terminates as aborted before th
     { content: [{ type: "text", text: FINAL_TEXT }], stopReason: "end_turn" },
   ]);
 
-  const error = await settle(runToolLoop({
+  const error = await settle(runDirect({
     provider,
     initialUserMessage: "continue",
     executeTool: async () => "worked",
@@ -356,7 +356,7 @@ test("abort reaching the cap finalization with no value-added call left still te
   process.env.ERIX_NO_FORCED_FINAL = "1";
   let error;
   try {
-    error = await settle(runToolLoop({
+    error = await settle(runDirect({
       provider,
       initialUserMessage: "continue",
       executeTool: async () => "worked",

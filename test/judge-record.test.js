@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import {
   judgeRecordFields,
   resolveModelName,
@@ -34,7 +34,7 @@ const ON_TRACK = {
 async function runCase({ provider, judge, reflection, options = {} }) {
   const records = [];
   const events = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "ok",
@@ -314,7 +314,7 @@ test("run_outcome carries verification once a final guard ran", async () => {
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
   const events = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "unused",
@@ -344,7 +344,7 @@ test("run_outcome is also emitted on the throwing terminal path (abort/failed)",
   };
   const events = [];
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider,
       initialUserMessage: "task",
       executeTool: async () => "unused",
@@ -374,7 +374,7 @@ test("aborted runs get exactly one run_outcome with reason aborted", async () =>
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider,
       initialUserMessage: "task",
       executeTool: async () => {
@@ -400,7 +400,7 @@ test("a host callback throwing on run_outcome never changes the run outcome", as
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "unused",

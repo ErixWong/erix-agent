@@ -14,6 +14,7 @@ import {
   withSemanticRunState,
 } from "../src/run-state.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
@@ -270,7 +271,7 @@ test("#315 真跑一个 >32 条 compactionStats 的 run：<runId>.state.json 文
   const dir = await makeTmp("erix-compaction-window-");
   const store = createFileTranscriptStore({ dir });
   const runId = "compaction-window-run";
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       ...Array.from({ length: 40 }, (_unused, index) => toolResponse(`t-${index}`)),
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
@@ -316,7 +317,7 @@ test("resume exposes unknown persisted schema instead of silently resetting it",
   });
   store.loadRunState = async () => ({ schemaVersion: 99, deterministic: {} });
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]),
@@ -429,7 +430,7 @@ test("run state records tool facts, files, budget prompts, todo status, and pers
     },
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "write a file",
     executeTool: async () => ({ success: true, data: "written" }),
@@ -465,7 +466,7 @@ test("resume keeps one persisted run-state block", async () => {
       { ...options, keepRounds: 0 },
     ),
   };
-  await runToolLoop({ capabilities: { ports: { strategy: strategy } },
+  await runDirect({ capabilities: { ports: { strategy: strategy } },
     provider: createFakeProvider([
       {
         content: [{ type: "tool_use", id: "fold-tool", name: "work", input: {} }],
@@ -516,7 +517,7 @@ test("semantic state with an old version is explicitly stale", () => {
 test("single-session runs keep both counters equal and drain remainingRounds monotonically", async () => {
   const store = createMemoryTranscriptStore();
   const budgets = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       {
         content: [{ type: "tool_use", id: "a", name: "work", input: { step: 1 } }],

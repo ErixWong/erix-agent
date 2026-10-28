@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 
 function createStreamingProvider(script) {
   const streamCalls = [];
@@ -38,7 +38,7 @@ test("streams text deltas and keeps the batch loop result", async () => {
       usage: {},
     },
   }]);
-  const streamed = await runToolLoop({
+  const streamed = await runDirect({
     provider: streamProvider,
     initialUserMessage: "hello",
     executeTool: async () => "unused",
@@ -55,7 +55,7 @@ test("streams text deltas and keeps the batch loop result", async () => {
       };
     },
   };
-  const batch = await runToolLoop({
+  const batch = await runDirect({
     provider: batchProvider,
     initialUserMessage: "hello",
     executeTool: async () => "unused",
@@ -84,7 +84,7 @@ test("passes deltas through before chatStream returns when retry is disabled", a
     },
   };
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "hello",
     executeTool: async () => "unused",
@@ -118,7 +118,7 @@ test("isolates streaming observer failures from a successful provider call", asy
     },
   };
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "unused",
@@ -169,7 +169,7 @@ test("isolates streaming observer failures while flushing a retried attempt", as
     },
   };
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "unused",
@@ -196,7 +196,7 @@ test("keeps streaming functional when observer error reporting is not configured
   const logged = [];
   console.error = (...args) => logged.push(args);
   try {
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider: {
         async chatStream(request) {
           request.onDelta?.("done");
@@ -248,7 +248,7 @@ test("holds deltas until the successful attempt when retry is enabled", async ()
     },
   };
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "hello",
     executeTool: async () => "unused",
@@ -295,7 +295,7 @@ test("streams tool-loop responses while executing tools normally", async () => {
     },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "find x",
     executeTool: async ({ name, input }) => {
@@ -327,7 +327,7 @@ test("falls back to chat when streaming is unavailable", async () => {
     },
   };
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "hello",
     executeTool: async () => "unused",
@@ -358,7 +358,7 @@ test("does not stream unless explicitly enabled", async () => {
     };
   };
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "hello",
     executeTool: async () => "unused",
@@ -391,7 +391,7 @@ test("partial persistence restores the latest committed text after an interrupti
     },
   };
 
-  const interrupted = runToolLoop({
+  const interrupted = runDirect({
     provider,
     initialUserMessage: "resume partial",
     executeTool: async () => "unused",
@@ -418,7 +418,7 @@ test("partial persistence restores the latest committed text after an interrupti
   assert.equal(store.latestSnapshot.partialText, "committed partial ");
 
   let resumedRequest;
-  const resumed = await runToolLoop({
+  const resumed = await runDirect({
     provider: {
       async chatStream(request) {
         resumedRequest = request;
@@ -466,7 +466,7 @@ test("partial persistence respects interval and minBytes with single-flight writ
     },
   };
 
-  const running = runToolLoop({
+  const running = runDirect({
     provider,
     initialUserMessage: "throttle partial",
     executeTool: async () => "unused",
@@ -514,7 +514,7 @@ test("partial snapshot from a retryable attempt is cleared before retry", async 
   const intervalMs = 20;
   const store = createSnapshotStore();
   let calls = 0;
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: {
       async chatStream(request) {
         calls += 1;

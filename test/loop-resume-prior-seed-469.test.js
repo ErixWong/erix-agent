@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { createFoldLlmStrategy } from "../src/compact/fold-llm.js";
 import { foldSummaryFingerprint } from "../src/compact/fold-summary-journal.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 
 const SUMMARY_SYSTEM = "你是对话历史压缩器";
@@ -134,7 +135,7 @@ test("#469-A 端到端：resume 出来的 run 第一次折叠带账本基底（�
   const runId = `469a-resume-seed-${process.pid}`;
   const store = createMemoryTranscriptStore();
   const first = createProvider();
-  await runToolLoop({
+  await runDirect({
     provider: first,
     initialUserMessage: `start ${"y".repeat(600)}`,
     executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,

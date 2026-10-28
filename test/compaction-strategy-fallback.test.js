@@ -10,7 +10,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -38,7 +38,7 @@ function toolProvider(rounds) {
 
 async function run(options = {}) {
   const events = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: toolProvider(8),
     initialUserMessage: "start",
     // 小窗口 → budgetTokens = 4096 - 512 - max(2000, 410) = 1584，20k 字符的工具输出必超预算。

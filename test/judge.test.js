@@ -8,6 +8,7 @@ import {
   renderConversation,
 } from "../src/reflection/judge.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -188,7 +189,7 @@ test("counts configured write tools and extracts file_path for judge filesWritte
     }) }] },
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "write one file",
     executeTool: async () => "written",
@@ -219,7 +220,7 @@ test("默认写工具集把 edit 计入 judge 的 filesWritten（issue #191）",
     judgeResponse({ done: true, confidence: 1, reason: "done", evidence: "written" }),
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "edit one file",
     executeTool: async () => "已编辑 touched.txt：1 处替换",
@@ -246,7 +247,7 @@ test("宿主显式传 writeToolNames 时整体替换默认集，edit 不再算�
     judgeResponse({ done: true, confidence: 1, reason: "done", evidence: "done" }),
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "edit one file",
     executeTool: async () => "已编辑 touched.txt：1 处替换",
@@ -274,7 +275,7 @@ test("loop keeps at most the latest 50 distinct written files for the judge", as
     judgeResponse({ done: true, confidence: 1, reason: "done", evidence: "done" }),
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "write files",
     executeTool: async () => "written",
@@ -306,7 +307,7 @@ test("loop keeps only the latest entry when a file is written repeatedly", async
     judgeResponse({ done: true, confidence: 1, reason: "done", evidence: "done" }),
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "rewrite one file",
     executeTool: async () => "written",
@@ -406,7 +407,7 @@ test("judge runs on non-tool rounds only, with reasoning disabled (tool rounds s
     judgeResponse({ done: true, confidence: 0.9, reason: "完成", evidence: "产物就绪" }),
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "ok",
@@ -437,7 +438,7 @@ test("high-confidence judge completion on an end-turn round stops with judge_don
     // end_turn 轮 judge（允许完成判定）
     judgeResponse({ done: true, confidence: 0.9, reason: "已完成", evidence: "验证通过" }),
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "ok",
@@ -466,7 +467,7 @@ test("round judge emits an onJudge decision event", async () => {
   const judge = createFakeProvider([judgeResponse(judgeDecision)]);
   const events = [];
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "unused",
@@ -494,7 +495,7 @@ test("onJudge callback errors do not abort the loop", async () => {
     judgeResponse({ done: true, confidence: 0.9, reason: "完成", evidence: "通过" }),
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "unused",
@@ -522,7 +523,7 @@ test("tool-use round judge done does not preempt the model's own wind-down (real
   const judge = createFakeProvider([
     judgeResponse({ done: true, confidence: 1.0, reason: "已运行且模型收尾", evidence: "有输出" }), // end_turn 轮: 允许 judge_done
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "ok",
@@ -548,7 +549,7 @@ test("not-done round judge evidence is injected into the next user request", asy
   const judge = createFakeProvider([
     judgeResponse({ done: false, confidence: 0.8, reason: "方向偏了", evidence: "期望 377，实际 104" }),
   ]);
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "ok",
@@ -579,7 +580,7 @@ test("off-track round judge nudge includes the direction hint", async () => {
       directionReason: "持续反复调试同一实现细节",
     }),
   ]);
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "unused",
@@ -661,7 +662,7 @@ test("round judge sees the inline deliverable in the full conversation", async (
     judgeResponse({ done: true, confidence: 0.9, reason: "已交付清单", evidence: "对话中已给出清单" }),
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "只做只读分析，输出问题清单，不要修改任何文件",
     executeTool: async () => "unused",
@@ -803,7 +804,7 @@ test("explicit task briefs keep content beyond the legacy 500-code-point cap", a
   ]);
   const task = `${"任务内容".repeat(220)}TAIL_MARKER_9F3C`;
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     task,
@@ -954,7 +955,7 @@ test("single-task entry fallback remains the same for the round judge", async ()
     judgeResponse({ done: false, confidence: 0.8, reason: "继续", evidence: "还需工作" }),
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "unused",
@@ -985,7 +986,7 @@ test("round judge task brief stays on the entry snapshot after injecting directi
     judgeResponse({ done: false, confidence: 0.8, reason: "继续", evidence: "还需工作" }),
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "unused",
@@ -1013,7 +1014,7 @@ test("round judge errors degrade to the existing loop path", async () => {
   ]);
   const judge = createFakeProvider([{ throw: new Error("judge unavailable"), times: 20 }]);
   const events = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "ok",
@@ -1037,7 +1038,7 @@ test("reflection false does not call the round judge", async () => {
     content: [{ type: "text", text: "done" }],
     stopReason: "end_turn",
   }]);
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "unused",
@@ -1059,7 +1060,7 @@ test("long runs enable the round judge by default", async () => {
       judgeResponse({ done: true, confidence: 0.9, reason: "完成", evidence: "已验证" }),
     ]);
 
-    await runToolLoop({
+    await runDirect({
       provider,
       initialUserMessage: "task",
       executeTool: async () => "ok",
@@ -1086,7 +1087,7 @@ test("short runs do not enable the round judge by default", async () => {
       { content: [{ type: "text", text: "完成" }], stopReason: "end_turn" },
     ]);
 
-    await runToolLoop({
+    await runDirect({
       provider,
       initialUserMessage: "task",
       executeTool: async () => "ok",
@@ -1109,7 +1110,7 @@ test("explicit reflection false disables the default round judge", async () => {
     { content: [{ type: "text", text: "完成" }], stopReason: "end_turn" },
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "ok",
@@ -1132,7 +1133,7 @@ test("ERIX_NO_REFLECTION disables automatic reflection", async () => {
       { content: [{ type: "text", text: "完成" }], stopReason: "end_turn" },
     ]);
 
-    await runToolLoop({
+    await runDirect({
       provider,
       initialUserMessage: "task",
       executeTool: async () => "ok",
@@ -1154,7 +1155,7 @@ test("round judge decisions are persisted in round records", async () => {
   const judge = createFakeProvider([
     judgeResponse({ done: true, confidence: 0.9, reason: "交付", evidence: "产物存在" }),
   ]);
-  await runToolLoop({
+  await runDirect({
     provider: createFakeProvider([{
       content: [{ type: "text", text: "完成" }],
       stopReason: "end_turn",
@@ -1186,7 +1187,7 @@ test("low-confidence done falls back to existing logic, no deadlock (reviewer P2
   const judge = createFakeProvider([
     { content: [{ type: "text", text: '{"done":true,"confidence":0.5,"reason":"低置信"}' }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "ok",
@@ -1207,7 +1208,7 @@ test("judge disables after consecutive failures reaching the limit (reviewer P2#
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
   const judge = createFakeProvider([{ throw: new Error("boom"), times: 20 }]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "ok",
@@ -1229,7 +1230,7 @@ test("ERIX_NO_ROUND_JUDGE env disables the round judge (reviewer P2#3)", async (
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]);
     const judge = createFakeProvider([{ content: [{ type: "text", text: '{"done":true,"confidence":0.9}' }], stopReason: "end_turn" }]);
-    await runToolLoop({
+    await runDirect({
       provider,
       initialUserMessage: "task",
       executeTool: async () => "ok",
@@ -1296,7 +1297,7 @@ test("tool-use rounds get transparent interception without preempting prior work
     judgeResponse({ done: true, confidence: 0.9, reason: "确认完成", evidence: "允许收尾" }),
   ]);
   const executed = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async ({ input }) => {
@@ -1336,7 +1337,7 @@ test("near-limit interception feeds an extension decision back into the governor
   const events = [];
   const executed = [];
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "完成验证任务",
     executeTool: async ({ input }) => {
@@ -1397,7 +1398,7 @@ test("transparent interception returns correction evidence without executing the
     judgeResponse({ done: false, confidence: 0.8, reason: "方向偏了", evidence: "写 microsim 而非 gates.txt" }),
   ]);
   const executed = [];
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async ({ input }) => {
@@ -1438,7 +1439,7 @@ test("judge intercept interval defaults to 10 (runtime eval §5.1: the denser de
       judgeResponse({ done: false, confidence: 0.8, reason: "方向偏了", evidence: "未创建产物" }),
     ]);
     const executed = [];
-    await runToolLoop({
+    await runDirect({
       provider,
       initialUserMessage: "task",
       executeTool: async ({ input }) => {
@@ -1470,7 +1471,7 @@ test("ERIX_JUDGE_INTERVAL overrides the intercept interval and invalid values fa
       judgeResponse({ done: false, confidence: 0.8, reason: "方向偏了", evidence: "未创建产物" }),
     ]);
     const executed = [];
-    await runToolLoop({
+    await runDirect({
       provider,
       initialUserMessage: "task",
       executeTool: async ({ input }) => {
@@ -1522,7 +1523,7 @@ test("transparent interception releases the exact cached tool call when approved
     }),
   ]);
   const calls = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async (options) => {
@@ -1566,7 +1567,7 @@ test("transparent interception executes done tools marked off-track and appends 
     }),
   ]);
   const executed = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async ({ input }) => {
@@ -1615,7 +1616,7 @@ test("transparent interception emits an executed onJudge event when approved", a
   const judge = createFakeProvider([judgeResponse(decision)]);
   const events = [];
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "ok",
@@ -1659,7 +1660,7 @@ test("transparent interception emits a blocked onJudge event when denied", async
   const events = [];
   const executed = [];
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async ({ input }) => {
@@ -1707,7 +1708,7 @@ test("transparent interception executes on-track calls even when the judge repor
   const events = [];
   const calls = [];
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async ({ id, name, input }) => {
@@ -1770,7 +1771,7 @@ test("transparent interception still blocks done:false calls marked off-track", 
   const events = [];
   const executed = [];
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async ({ input }) => {
@@ -1813,7 +1814,7 @@ test("transparent interception emits degraded when the judge fails", async () =>
   const judge = createFakeProvider([{ throw: new Error("judge unavailable") }]);
   const events = [];
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "ok",
@@ -1847,7 +1848,7 @@ test("transparent interception degrades to direct execution when the judge fails
   ]);
   const judge = createFakeProvider([{ throw: new Error("judge unavailable") }]);
   const executed = [];
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async ({ input }) => {
@@ -1884,7 +1885,7 @@ test("transparent interception degrades to direct execution on timeout", async (
     },
   };
   const executed = [];
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async ({ input }) => {
@@ -1922,7 +1923,7 @@ test("transparent interception resets its counter after an audit", async () => {
       judgeResponse({ done: true, confidence: 0.9, reason: "继续", evidence: "仍在目标方向" }),
     ]);
     const executed = [];
-    await runToolLoop({
+    await runDirect({
       provider,
       initialUserMessage: "task",
       executeTool: async ({ input }) => {
@@ -1958,7 +1959,7 @@ test("round judge decision event carries the call usage for transcript accountin
   }]);
   const events = [];
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "unused",
@@ -1998,7 +1999,7 @@ test("round judge parse failure still reports usage on the degraded event (revie
   }]);
   const events = [];
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "unused",
@@ -2034,7 +2035,7 @@ test("intercept judge parse failure still reports usage on the degraded event (r
   const events = [];
   const executed = [];
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async ({ input }) => {
@@ -2087,7 +2088,7 @@ test("intercept judge event carries usage and omits it on timeout (issue #33 B)"
   }]);
   const events = [];
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "ok",
@@ -2131,7 +2132,7 @@ test("intercept judge event carries usage and omits it on timeout (issue #33 B)"
     },
   };
   const timeoutEvents = [];
-  await runToolLoop({
+  await runDirect({
     provider: createFakeProvider([
       toolResponse("first", "work", { step: 1 }),
       toolResponse("second", "work", { step: 2 }),
@@ -2193,7 +2194,7 @@ test("readonly tools pass through interception even when off-track, exec stays b
   const events = [];
   const executed = [];
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async ({ name, input }) => {
@@ -2269,7 +2270,7 @@ test("readonly pass-through also applies to uncertain direction", async () => {
   const events = [];
   const executed = [];
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async ({ input }) => {

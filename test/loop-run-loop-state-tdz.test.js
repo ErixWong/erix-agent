@@ -15,7 +15,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const ON_TRACK = {
@@ -34,7 +34,7 @@ const isRoundJudgeRequest = (request) => request.temperature === 0 && request.ma
 test("F-2 时序（行为侧）：真值赋值早于首读点，开着的配置第一次 end_turn 就走 judge", async () => {
   const judge = createFakeProvider([judgeJson(ON_TRACK)]);
   const provider = createFakeProvider([textEndTurn("最终答案")]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "ok",

@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { makeTmp } from "./helpers/tmp.js";
@@ -94,7 +95,7 @@ const foldRunOptions = (runId, store, provider, extra = {}) => ({
 test("#326-C fold-llm 摘要：实际喂出去的那份在 store.load() 里读得到（memory store）", async () => {
   const store = createMemoryTranscriptStore();
   const provider = createProvider({ mainScript: [toolTurn("a"), endTurn("收尾结论")] });
-  await runToolLoop(foldRunOptions("326c-fold", store, provider, {
+  await runDirect(foldRunOptions("326c-fold", store, provider, {
     initialUserMessage: `start ${"y".repeat(600)}`,
   }));
 
@@ -119,7 +120,7 @@ test("#326-C fold-llm 摘要：file store（真落盘 JSONL）里也读得到，
   const dir = await makeTmp("erix-326c-fold-file-");
   const store = createFileTranscriptStore({ dir });
   const provider = createProvider({ mainScript: [toolTurn("a"), endTurn("收尾结论")] });
-  await runToolLoop(foldRunOptions("326c-fold-file", store, provider, {
+  await runDirect(foldRunOptions("326c-fold-file", store, provider, {
     initialUserMessage: `start ${"y".repeat(600)}`,
   }));
 
@@ -140,7 +141,7 @@ test("#326-C 复用不重算：折叠后中断，resume 不再调 summarizer，�
   const store = createMemoryTranscriptStore();
   // 崩溃现场：折叠发生在轮 2 圈顶，而轮 2 的模型调用直接抛 ⇒ 轮 2 的记录没写成。
   const first = createProvider({ mainScript: [toolTurn("a"), { throw: new Error("boom: 轮 2 的模型调用炸了") }] });
-  await assert.rejects(() => runToolLoop({
+  await assert.rejects(() => runDirect({
     ...foldRunOptions("326c-fold-resume", store, first, {
       initialUserMessage: `start ${"y".repeat(600)}`,
       maxRounds: 5,
@@ -211,7 +212,7 @@ test("#326-C 复用不重算：同一 run 内重复折叠不重复调 summarizer
   const provider = createProvider({
     mainScript: [toolTurn("a"), toolTurn("b"), toolTurn("c"), endTurn("收尾结论")],
   });
-  await runToolLoop(foldRunOptions("326c-fold-repeat", store, provider, {
+  await runDirect(foldRunOptions("326c-fold-repeat", store, provider, {
     maxRounds: 4,
     initialUserMessage: `start ${"y".repeat(600)}`,
   }));

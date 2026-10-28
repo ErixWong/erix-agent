@@ -19,6 +19,7 @@ import { dirname } from "node:path";
 import test from "node:test";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { buildFinalGuardPayload, FILE_LEDGER_LIMIT } from "../src/loop/termination.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { makeTmp } from "./helpers/tmp.js";
@@ -59,7 +60,7 @@ test("#388 fileWrites[].path 是 input 原值（>40 码点长路径逐字相等�
   assert.ok(Array.from(deep).length > 40, `测试路径不够长（${Array.from(deep).length} 码点），造不出摘要截断`);
 
   let payload;
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       toolUse("w1", "writeFile", { path: deep, content: "42" }),
       wrapup({ done: true, summary: "已写入", output: "done" }),
@@ -119,7 +120,7 @@ test("#388 fileWrites 与 filesWritten 共用同一个上限常量，超限只�
 test("#388 非写工具不进 fileWrites；写工具但没带路径键也不进（不写空壳）", async () => {
   const dir = await makeTmp("erix-deliverables-fw2-");
   let payload;
-  await runToolLoop({
+  await runDirect({
     provider: createFakeProvider([
       toolUse("r1", "readFile", { path: `${dir}/whatever.txt` }),
       toolUse("w1", "writeFile", { content: "no path key here" }),
@@ -145,7 +146,7 @@ test("#386-2 R4-1 未声明 deliverables：payload 无相关键，verification �
   const dir = await makeTmp("erix-deliverables-reg-");
   let payload;
   const events = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       toolUse("w1", "writeFile", { path: `${dir}/a.txt`, content: "1" }),
       wrapup({ done: true, summary: "s", output: "o" }),
@@ -180,7 +181,7 @@ test("#386-2 R4-2 判据通过 + guard accept ⇒ verified，deliverables_checke
   const target = `${dir}/answer.txt`;
   const sink = {};
   const facts = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       toolUse("w1", "writeFile", { path: target, content: "42" }),
       wrapup({ done: true, summary: "s", output: "o" }),
@@ -230,7 +231,7 @@ test("#386-2 R4-3 判据失败 + 天真 guard accept ⇒ unverified:deliverables
   const target = `${dir}/never-written.txt`;
   const sink = {};
   const events = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       wrapup({ done: true, summary: "完成", output: `已生成 ${target}，内容为 42` }),
     ]),
@@ -278,7 +279,7 @@ test("#386-2 R4-4 判据失败 → guard revise → 模型补做 → 第二次�
     toolUse("w2", "writeFile", { path: target, content: "42" }),
     wrapup({ done: true, summary: "已写入", output: "完成" }),
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: `把 42 写进 ${target}`,
     cwd: dir,
@@ -315,7 +316,7 @@ test("#386-2 R4-4 判据失败 → guard revise → 模型补做 → 第二次�
 test("#386-2 R4-5 check 抛异常 ⇒ ok:false + detail:\"threw\"，且绝不出现 verified", async () => {
   const dir = await makeTmp("erix-deliverables-threw-");
   let payload;
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([wrapup({ done: true, summary: "s", output: "o" })]),
     initialUserMessage: "x",
     cwd: dir,
@@ -333,7 +334,7 @@ test("#386-2 R4-5 check 抛异常 ⇒ ok:false + detail:\"threw\"，且绝不出
 
 test("#386-2 R4-5 check 超时 ⇒ ok:false + detail:\"timeout\"（复用 finalGuardTimeoutMs），且绝不出现 verified", async () => {
   const dir = await makeTmp("erix-deliverables-timeout-");
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([wrapup({ done: true, summary: "s", output: "o" })]),
     initialUserMessage: "x",
     cwd: dir,
@@ -359,7 +360,7 @@ test("#386-2 R4-6 判据返回非法值（字符串 / 缺 ok 的对象）⇒ ok:
   const dir = await makeTmp("erix-deliverables-invalid-");
   for (const [label, value] of [["字符串", "yes"], ["缺 ok 的对象", { passed: true }], ["undefined", undefined]]) {
     let payload;
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider: createFakeProvider([wrapup({ done: true, summary: "s", output: "o" })]),
       initialUserMessage: "x",
       cwd: dir,
@@ -378,7 +379,7 @@ test("#386-2 R4-6 判据返回非法值（字符串 / 缺 ok 的对象）⇒ ok:
   }
   // 反向：对象形态 `{ok:false, detail}` 原样搬（detail 不许被吞）。
   let payload;
-  await runToolLoop({
+  await runDirect({
     provider: createFakeProvider([wrapup({ done: true, summary: "s", output: "o" })]),
     initialUserMessage: "x",
     cwd: dir,
@@ -398,7 +399,7 @@ test("#386-2 R4-7 max_rounds_cap 终局：判据照核、non_continuable 与 fin
   const dir = await makeTmp("erix-deliverables-cap-");
   const target = `${dir}/answer.txt`;
   const checks = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       // 只有一轮预算：这一轮用掉工具，随后出圈 ⇒ max_rounds_cap。
       toolUse("w1", "writeFile", { path: target, content: "42" }),

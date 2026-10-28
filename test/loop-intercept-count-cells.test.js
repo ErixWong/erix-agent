@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -53,7 +54,7 @@ test("F-2 judgeInterceptCount 经 runSnapshotContext：interval=1 时第三次�
     const judge = createFakeProvider([judgeResponse({ done: true, confidence: 0.9, reason: "继续", evidence: "仍在方向" })]);
     const records = [];
     const executed = [];
-    await runToolLoop({
+    await runDirect({
       provider,
       initialUserMessage: "task",
       executeTool: async ({ input }) => {
@@ -147,7 +148,7 @@ async function runNearLimitIntercept({ maxExtensions = 1, withStore = false } = 
   const records = [];
   const executed = [];
   const runId = withStore ? "intercept-decision-store" : "intercept-near-limit";
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     runId,
     ...(store ? { store } : {}),

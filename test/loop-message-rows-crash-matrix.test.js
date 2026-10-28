@@ -13,7 +13,7 @@
 // 反向证（实测写进报告）：把「工具结果一产生就写」那一步去掉 ⇒ state2 / state3 必须红。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { foldMessageRows } from "../src/store/message-rows.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
@@ -44,7 +44,7 @@ async function runUntilCrash(shouldCrash) {
   const store = crashOnNthAppend(inner, shouldCrash);
   let thrown = "";
   try {
-    await runToolLoop({
+    await runDirect({
       tools: TOOLS,
       wrapup: false,
       completion: false,

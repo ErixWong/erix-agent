@@ -2,6 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -23,7 +24,7 @@ test("oversized tool result: context gets a stub and the record keeps full conte
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
   const hostCalls = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "run big tool",
     executeTool: async (options) => {
@@ -65,7 +66,7 @@ test("outputHygiene: false keeps full content in context (opt-out)", async () =>
     },
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "x",
     executeTool: async () => bigOutput(),
@@ -91,7 +92,7 @@ test("custom limit: outputHygiene { limit } lowers the threshold", async () => {
     },
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "x",
     executeTool: async () => "x".repeat(5000),
@@ -138,7 +139,7 @@ test("outputHygiene default limit scales with the host context window (issue #32
       })),
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]);
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider,
       initialUserMessage: "run tools",
       executeTool: async () => {
@@ -229,7 +230,7 @@ test("archive stub warns about side effects of the truncated command", async () 
     },
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "run deploy",
     executeTool: async () => bigOutput(),
@@ -260,7 +261,7 @@ test("crash mid-round: archived output survives via checkpoint", async () => {
     },
   ]);
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider: firstProvider,
       initialUserMessage: "run",
       executeTool: async ({ id }) => {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createAnthropicProvider } from "../src/providers/anthropic.js";
 import {
   KitError,
@@ -91,7 +91,7 @@ test("uses Anthropic max_tokens=4096 through direct and loop requests", async ()
   assert.equal(directFetch.calls[0].body.max_tokens, 4096);
 
   const loopFetch = createMockFetch([successfulAnthropicResponse()]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createAnthropicProvider(validProviderOptions(loopFetch)),
     initialUserMessage: "hello",
     executeTool: async () => "unused",
@@ -144,7 +144,7 @@ test("does not retry a fetch AbortError during an OpenAI stream", async () => {
   const sleeps = [];
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider: createOpenAIProvider(validProviderOptions(fetchImpl)),
       initialUserMessage: "hello",
       executeTool: async () => "unused",
@@ -189,7 +189,7 @@ test("returns truncated when max-token continuations are exhausted", async () =>
     { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "write",
     executeTool: async () => "unused",
@@ -220,7 +220,7 @@ test("includes the canonical response summary in onRound records", async () => {
     },
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "write",
     executeTool: async () => "written",
@@ -285,7 +285,7 @@ test("stall detection consecutive mode softens repeats and stops only after a st
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]);
 
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider,
       initialUserMessage: "repeat",
       executeTool: async () => "ok",
@@ -313,7 +313,7 @@ test("stall detection consecutive mode softens repeats and stops only after a st
       stopReason: "tool_use",
     }]);
 
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider,
       initialUserMessage: "repeat",
       maxRounds: 9,
@@ -336,7 +336,7 @@ test("stall detection consecutive mode softens repeats and stops only after a st
       { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
     ]);
 
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider,
       initialUserMessage: "interleave",
       executeTool: async () => "ok",

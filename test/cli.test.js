@@ -24,6 +24,7 @@ import { createFileTranscriptStore } from "../src/store/file.js";
 import { createFileNotesStore } from "../src/store/notes.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { makeTmp } from "./helpers/tmp.js";
 
@@ -838,7 +839,7 @@ test("file transcript preserves folded payload", async () => {
       },
     };
 
-    await runToolLoop({ capabilities: { ports: { strategy: strategy } },
+    await runDirect({ capabilities: { ports: { strategy: strategy } },
       provider,
       initialUserMessage: "fold-me initial context",
       executeTool: async () => "fold-me tool result",

@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 //     从头开始删未保护的消息，连唯一的 user 轮一起删光）在离线估算下必然为空列表
 // 真上游的失败面在 (400, 1200] 之间；离线估算系数不同，所以把同一档位的判据下推到 8。
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { validateMessages } from "../src/messages/rounds.js";
 import {
   ensureUserTurnView,
@@ -375,7 +376,7 @@ test("T7 #292-R1 max_tokens 续写的第二个请求必须还是「1 条 user �
     },
   };
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "start",
     executeTool: async () => "unused",
@@ -424,7 +425,7 @@ test("T8 #292-R1 续跑的第一个请求必须保住历史里的每条 tool_use
   ]);
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider: firstProvider,
       initialUserMessage: "run two tools",
       tools: [{ name: "pad", description: "d", inputSchema: { type: "object", properties: {} } }],

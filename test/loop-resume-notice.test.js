@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { pendingTrailingToolUses, validateMessages } from "../src/messages/rounds.js";
 import {
   RESUME_NOTICE_NO_PENDING,
@@ -60,7 +61,7 @@ const stableKeys = (messages) => JSON.parse(
 /** 崩溃一次：第一次工具执行时中止（于是账本尾部是那条带 `tool_use` 的 assistant，结果一条都没落）。 */
 async function crashMidTool(store, runId, ids) {
   const controller = new AbortController();
-  await assert.rejects(runToolLoop({
+  await assert.rejects(runDirect({
     provider: createFakeProvider([toolTurn(...ids)]),
     initialUserMessage: "跑工具",
     executeTool: async () => {
@@ -121,7 +122,7 @@ test("#404 格1：恢复时逐条列出崩溃现场未结清的 tool_use（id + 
 test("#404 格2：尾部已结清的账本恢复时仍然注入，但「未结清调用」一节缺席", async () => {
   const store = createMemoryTranscriptStore();
   const runId = "bb-settled";
-  await runToolLoop({
+  await runDirect({
     provider: createFakeProvider([toolTurn("t1"), textTurn("第一段收口")]),
     initialUserMessage: "跑一轮",
     executeTool: async () => "ok",
@@ -154,7 +155,7 @@ test("#404 格2：尾部已结清的账本恢复时仍然注入，但「未结�
 // ── 3. 非 resume ⇒ messages 与今天逐字一致（deepEqual 回归锚）────────────────────────
 test("#404 格3：首次运行（非 resume）的 messages 与今天逐字一致（多一个字都算红）", async () => {
   const provider = createFakeProvider([toolTurn("t1"), textTurn("收工")]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "干活",
     executeTool: async () => "ok",
@@ -377,7 +378,7 @@ test("#404 附2：已知边界——全折叠配置（keepRounds=0）下告示�
     },
   };
   const store = createMemoryTranscriptStore();
-  await assert.rejects(runToolLoop({
+  await assert.rejects(runDirect({
     provider: firstProvider,
     initialUserMessage: `start ${"y".repeat(600)}`,
     executeTool: async ({ id }) => `tool output ${id} ${"z".repeat(400)}`,

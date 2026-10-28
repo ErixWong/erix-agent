@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createFoldLlmStrategy } from "../src/compact/fold-llm.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
@@ -66,7 +66,7 @@ async function runWithProvider(provider, context, usageSink) {
   const strategyObject = strategy !== null && typeof strategy === "object" ? strategy : undefined;
   const dataOnly = { ...context };
   if (strategyObject !== undefined) delete dataOnly.strategy;
-  const result = await runToolLoop({
+  const result = await runDirect({
     signal: controller.signal,
     provider,
     initialUserMessage: `start ${"y".repeat(600)}`,
@@ -257,7 +257,7 @@ test("#486 P1-B 宿主 abort 必须真的中止摘要请求（run 的 signal 不
   const startedAt = Date.now();
   // 回归时 run 会挂到摘要器 30 s 默认死线：用 5 s 上限把「挂住」变成可读的断言失败。
   await Promise.race([
-    runToolLoop({
+    runDirect({
       signal: controller.signal,
       provider,
       initialUserMessage: `start ${"y".repeat(600)}`,

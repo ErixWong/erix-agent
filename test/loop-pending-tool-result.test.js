@@ -11,7 +11,8 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
-import { PENDING_TOOL_RESULT_TEXT, runToolLoop } from "../src/loop/orchestrator.js";
+import { PENDING_TOOL_RESULT_TEXT } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { pendingTrailingToolUses, validateMessages } from "../src/messages/rounds.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
@@ -84,7 +85,7 @@ test("#394 R5-1 兄弟洞：end_turn + 悬空 tool_use + guard 判 revise ⇒ �
     textTurn("还没收"),
   ]);
   let guardCalls = 0;
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "做点事",
     maxRounds: 3,
@@ -141,7 +142,7 @@ async function forcedFinalWithPendingTail(store, runId) {
     { content: [{ type: "tool_use", id: "t1", name: "noop", input: {} }], stopReason: "max_tokens" },
     textTurn("收尾"),
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "做点事",
     maxRounds: 3,

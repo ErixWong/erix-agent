@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import { runChat, parseChatArgs } from "../bin/cli.js";
 import { runRepl } from "../bin/repl.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import * as core from "../examples/pi-extension/erix-run-core.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 // issue #391 R3：出厂判据本体（CLI 与扩展共用同一份，见 bin/final-guard.js）。
@@ -163,7 +164,7 @@ test("#391 R1-b2 反证（不抛版本）：判据自己挡 cwd 缺席，也一�
   const dir = await makeTmp("erix-cwd-recipe-defensive-");
   const target = join(dir, "report.md");
   let observed;
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       toolUse("w1", "writeFile", { path: target, content: "42" }),
       wrapup({ done: true, summary: "写完了", output: "done" }),
@@ -198,7 +199,7 @@ test("#391 R3-a 出厂命名判据 + 宿主接了 cwd ⇒ 按 cwd 解析相对�
   const dir = await makeTmp("erix-cwd-named-ok-");
   const target = join(dir, "report.md");
   let seenPayload;
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       toolUse("w1", "writeFile", { path: target, content: "42" }),
       wrapup({ done: true, summary: "写完了", output: "done" }),
@@ -223,7 +224,7 @@ test("#391 R3-b 出厂命名判据 + 宿主**没接** cwd ⇒ 恒 ok:false（#39
   const dir = await makeTmp("erix-cwd-named-nocwd-");
   const target = join(dir, "report.md");
   let seenPayload;
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       toolUse("w1", "writeFile", { path: target, content: "42" }),
       wrapup({ done: true, summary: "写完了", output: "done" }),

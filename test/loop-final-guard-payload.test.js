@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import {
   FINAL_GUARD_PAYLOAD_LIMITS,
   buildFinalGuardPayload,
@@ -64,7 +65,7 @@ test("#386 既有 7 键的名字/顺序/类型/取值逐字不变（同一 scrip
   const dir = await makeTmp("erix-fg-legacy-");
   const answerPath = `${dir}/answer.txt`;
   let payload;
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       toolUse("w1", "writeFile", { path: answerPath, content: "42" }),
       wrapup(
@@ -113,7 +114,7 @@ test("#386 每个加法键都在场且形状正确，toolStats 是 plain object 
   const dir = await makeTmp("erix-fg-shape-");
   const answerPath = `${dir}/answer.txt`;
   let payload;
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       toolUse("w1", "writeFile", { path: answerPath, content: "42" }),
       toolUse("w2", "writeFile", { path: `${dir}/second.txt`, content: "7" }),
@@ -277,7 +278,7 @@ test("#386 selfReport 的 output/summary 各截到 2000 码点，findings 恒等
 test("#386 cwd：传了就有（含空串），不传就没有该键，非字符串抛 TypeError", async () => {
   const runWith = async (extra) => {
     let payload;
-    await runToolLoop({
+    await runDirect({
       provider: createFakeProvider([text("done")]),
       initialUserMessage: "hi",
       maxRounds: 2,
@@ -323,7 +324,7 @@ test("#386 cwd：传了就有（含空串），不传就没有该键，非字符
 test("#386 attempt 在连续 revise 中 1→2→3 单调递增，guardBudget 等于 finalGuardMaxRetries", async () => {
   const run = async (finalGuardMaxRetries) => {
     const seen = [];
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider: createFakeProvider([
         text("draft-1"),
         { times: 10, ...text("draft-again") },
@@ -362,7 +363,7 @@ test("#386 attempt 在连续 revise 中 1→2→3 单调递增，guardBudget 等
 test("#386 selfReport 与 findings 同源：有 findings 就两边都有，没声明就两边都没有", async () => {
   const run = async (steps) => {
     let payload;
-    await runToolLoop({
+    await runDirect({
       provider: createFakeProvider(steps),
       initialUserMessage: "hi",
       maxRounds: 4,

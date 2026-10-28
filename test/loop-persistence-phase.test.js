@@ -35,7 +35,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { makeTmp } from "./helpers/tmp.js";
 
 // 定时器周期：足够小让一次流式尝试内必然落一条 partial 快照，又足够大避免抖动。
@@ -154,7 +154,7 @@ async function runScenario({ failWriteAt = -1, cwd, toolContextSeen, storeErrorC
   let result;
   let thrown;
   try {
-    result = await runToolLoop({
+    result = await runDirect({
       provider: createInterleavedStreamingProvider(),
       store,
       runId: `phase-channels-write-${String(failWriteAt)}`,

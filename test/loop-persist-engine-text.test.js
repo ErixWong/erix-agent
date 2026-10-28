@@ -21,6 +21,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
@@ -61,7 +62,7 @@ test("#326-B1 强制收尾终稿：产生后 store.load() 里恰有一条（memo
   const marker = "PERSIST_TRUTH_326_FORCED_FINAL";
   const store = createMemoryTranscriptStore();
   const provider = createFakeProvider([toolTurn("last"), endTurn(marker)]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     ...baseOptions, maxRounds: 1, store, runId: "326-ff",
     initialUserMessage: "local task", provider, reflection: false,
   });
@@ -84,7 +85,7 @@ test("#326-B1 强制收尾终稿：file store（真落盘 JSONL）里也恰有�
   const dir = await makeTmp("erix-326-ff-file-");
   const store = createFileTranscriptStore({ dir });
   const provider = createFakeProvider([toolTurn("last"), endTurn(marker)]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     ...baseOptions, maxRounds: 1, store, runId: "326-ff-file",
     initialUserMessage: "local task", provider, reflection: false,
   });
@@ -98,7 +99,7 @@ test("#326-B1 强制收尾终稿：file store（真落盘 JSONL）里也恰有�
 test("#326-B1 强制收尾指令（引擎注入的纯文本 judge-control）：journal 里恰有一条", async () => {
   const store = createMemoryTranscriptStore();
   const provider = createFakeProvider([toolTurn("last"), endTurn("收尾终稿")]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     ...baseOptions, maxRounds: 1, store, runId: "326-ff-instruction",
     initialUserMessage: "local task", provider, reflection: false,
   });
@@ -120,7 +121,7 @@ test("#326-B1 judge 评审意见（nudge，纯文本 judge-control）：journal 
     judgeJson({ done: false, confidence: 1, reason: "MARKER_326_NUDGE", evidence: "本地证据", direction: "on_track" }),
     judgeJson({ done: true, confidence: 0.95, reason: "已达成", evidence: "本地证据", direction: "on_track" }),
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     ...baseOptions, maxRounds: 6, store, runId: "326-nudge",
     initialUserMessage: "local task", provider,
     reflection: { enabled: true, roundJudge: true, judgeIntercept: false, judge: { provider: judge } },
@@ -151,7 +152,7 @@ test("#326-B1 扩轮续跑提示（extend，纯文本 judge-control）：journal
     }),
     judgeJson({ done: true, confidence: 0.95, reason: "达成", evidence: "证据", direction: "on_track" }),
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     ...baseOptions, maxRounds: 2, store, runId: "326-extend",
     initialUserMessage: "local task", provider,
     reflection: {
@@ -174,7 +175,7 @@ test("#326-B1 finalGuard revise 意见（纯文本 judge-control）：journal �
   const store = createMemoryTranscriptStore();
   const provider = createFakeProvider([endTurn("第一版结论"), endTurn("第二版结论")]);
   let guardCalls = 0;
-  const result = await runToolLoop({
+  const result = await runDirect({
     ...baseOptions, maxRounds: 6, store, runId: "326-revise",
     initialUserMessage: "local task", provider,
     capabilities: {
@@ -204,7 +205,7 @@ test("#326-B1 守卫：正常轮的 judge advisory 仍恰有一条（既不许 0
     { content: [toolUse("a1"), toolUse("a2")], stopReason: "tool_use" },
     endTurn("结论"),
   ]);
-  await runToolLoop({
+  await runDirect({
     ...baseOptions, maxRounds: 6, store, runId: "326-advisory",
     initialUserMessage: "local task", provider,
     reflection: {
@@ -259,7 +260,7 @@ test("#326 续（方向提示·主循环 flush）：store.load() 全部行里**�
   // 于是 `directionHintText` 在第二次的工具块里入队、并在同一轮的 flush 点发出。
   const provider = createFakeProvider([toolTurn("c1"), toolTurn("c2"), endTurn("收尾结论")]);
   const { tools, ...withoutTools } = hintOptions({ marker });
-  const result = await runToolLoop({
+  const result = await runDirect({
     ...withoutTools, tools: hintTools,
     maxRounds: 6, store, runId: "326-hint-main", initialUserMessage: "local task", provider,
   });
@@ -343,7 +344,7 @@ test("#326 续（方向提示·resume 侧重建）：模型只收到 **1 条**�
   const runId = "326-hint-double-feed";
   const firstRun = createFakeProvider([toolTurn("c1"), toolTurn("c2"), endTurn("收尾结论")]);
   const { tools, ...withoutTools } = hintOptions({ marker });
-  await runToolLoop({
+  await runDirect({
     ...withoutTools, tools: hintTools,
     maxRounds: 6, store, runId, initialUserMessage: "local task", provider: firstRun,
   });

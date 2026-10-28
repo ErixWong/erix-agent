@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { validateMessages } from "../src/messages/rounds.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
@@ -13,7 +13,7 @@ const finalGuardEvents = (events) => events.filter((event) => event.type === "fi
 test("finalGuard accept preserves normal completion", async () => {
   const events = [];
   let payload;
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]),
@@ -42,7 +42,7 @@ test("finalGuard accept preserves normal completion", async () => {
 });
 
 test("disabled finalGuard returns skipped and is never treated as verified", async () => {
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]),
@@ -61,7 +61,7 @@ test("finalGuard revision is injected as a paired-safe user text message", async
     { content: [{ type: "text", text: "verified" }], stopReason: "end_turn" },
   ]);
   let calls = 0;
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "hello",
     executeTool: async () => "unused",
@@ -92,7 +92,7 @@ test("finalGuard revision is injected as a paired-safe user text message", async
 });
 
 test("finalGuard can skip verification when no candidate is extractable", async () => {
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       { content: [{ type: "text", text: "plain prose" }], stopReason: "end_turn" },
     ]),
@@ -117,7 +117,7 @@ test("finalGuard can skip verification when no candidate is extractable", async 
 test("finalGuard fail-closes after the retry limit without rewriting finalText", async () => {
   const events = [];
   const store = createMemoryTranscriptStore();
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       { content: [{ type: "text", text: "unsafe-1" }], stopReason: "end_turn" },
       { content: [{ type: "text", text: "unsafe-2" }], stopReason: "end_turn" },
@@ -160,7 +160,7 @@ test("finalGuard fail-closes after the retry limit without rewriting finalText",
 test("finalGuard errors fail open and emit an error event", async () => {
   const events = [];
   const store = createMemoryTranscriptStore();
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]),
@@ -193,7 +193,7 @@ test("finalGuard errors fail open and emit an error event", async () => {
 test("finalGuard timeout is observable and returns an error verification", async () => {
   const events = [];
   const store = createMemoryTranscriptStore();
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]),
@@ -277,7 +277,7 @@ test("finalGuard is called for non-continuable stop paths without another model 
 
   for (const testCase of cases) {
     let guardCalls = 0;
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider: createFakeProvider(testCase.options.providerResponses),
       initialUserMessage: "hello",
       executeTool: async () => "ok",
@@ -338,7 +338,7 @@ test("finalGuard covers no-tool, completion, and judge_done stops", async () => 
   ];
   for (const testCase of cases) {
     let guardCalls = 0;
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider: createFakeProvider(testCase.responses),
       initialUserMessage: "hello",
       executeTool: async () => "ok",
@@ -363,7 +363,7 @@ test("abort during finalGuard propagates the abort", async () => {
   const started = new Promise((resolve) => {
     called = resolve;
   });
-  const run = runToolLoop({
+  const run = runDirect({
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]),
@@ -409,7 +409,7 @@ test("#323 finalGuard revise 的 message 对主模型可见、但不进真实 ju
     { content: [{ type: "text", text: '{"done":true,"confidence":0.9,"reason":"完成","evidence":"已验证"}' }], stopReason: "end_turn" },
   ]);
   let calls = 0;
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "hello",
     executeTool: async () => "unused",

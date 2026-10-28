@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runToolLoop } from "../../src/loop/orchestrator.js";
+import { runDirect } from "./../helpers/run-direct.js";
 import { KitError, classifyHttpError } from "../../src/providers/errors.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
 
@@ -83,7 +83,7 @@ test("新 code 不进重试路径：retry:{attempts:2} 下 404 仍只调用一�
   const provider = createFakeProvider([{ throw: notFound }, { throw: notFound }, { throw: notFound }]);
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider,
       config: { timing: { retry: { attempts: 2 } } },
       initialUserMessage: "fail",
@@ -102,7 +102,7 @@ test("新 code 经 termination.errorCode 上行到宿主（issue #176 的透传�
   const provider = createFakeProvider([{ throw: conflict }]);
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider,
       initialUserMessage: "fail",
       executeTool: async () => "unused",

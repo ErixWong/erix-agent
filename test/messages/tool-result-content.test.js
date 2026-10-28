@@ -6,6 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { runToolLoop } from "../../src/loop/orchestrator.js";
+import { runDirect } from "./../helpers/run-direct.js";
 import { toolResultContent, toolResultData } from "../../src/loop/messages.js";
 
 test("字符串结果原样返回（含空串）", () => {
@@ -71,7 +72,7 @@ test("runToolLoop 集成：{ data } 结构化结果的 content 可读且 metadat
     },
   };
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "lookup",
     executeTool: async () => ({ data: { rows: [1, 2] }, success: true }),
@@ -110,7 +111,7 @@ test("runToolLoop 集成：裸对象工具结果（无 data 键）序列化为 p
     },
   };
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "stats",
     executeTool: async () => ({ count: 7, items: ["a"] }),
