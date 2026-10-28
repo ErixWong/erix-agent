@@ -75,10 +75,16 @@ function base(extra = {}) {
   return {
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
-    config: { input: { initialUserMessage: "go" } },
     completion: false,
-    wrapup: false,
     ...extra,
+    // #498 S3 A18: `wrapup` left the allowlist, so the fixture-era flat switch is gone; the home is
+    // `config.input.wrapup`. The container is **merged** instead of spread over: a call site that
+    // passes its own `config` keeps both the seed and the wrap-up switch (a plain `config` key after
+    // `...extra` would silently drop one of them).
+    config: {
+      ...extra.config,
+      input: { initialUserMessage: "go", wrapup: false, ...extra.config?.input },
+    },
   };
 }
 
@@ -322,7 +328,9 @@ test("N2 邻接面没动：`run` 组剩下的大件一件没动，`runId` 仍是
   // #498 S3 A16：`stream` 也退役了（家 `config.run.stream`），所以它从这条循环里移出、翻成
   // 反向钉——与 A15 对 `cwd` 的改法逐字同形；其余邻接键的断言一字未动。
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("stream"), false, "A16 已退役 `stream` 的扁平写法");
-  for (const key of ["runId", "completion", "maxRounds", "resume", "reflection", "wrapup"]) {
+  // #498 S3 A18：`wrapup` 也退役了（家 `config.input.wrapup`），同样从这条循环里移出、翻成反向钉。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("wrapup"), false, "A18 已退役 `wrapup` 的扁平写法");
+  for (const key of ["runId", "completion", "maxRounds", "resume", "reflection"]) {
     assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(key), true, `${key} 仍可扁平写（本片不许收它）`);
   }
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("store"), true, "`store` 是永久顶层面，不许动");

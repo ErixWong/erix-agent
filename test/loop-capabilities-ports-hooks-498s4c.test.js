@@ -561,9 +561,9 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output",
     completion: false,
-    wrapup: false,
     maxRounds: 4,
-    config: { input: { messages: [
+    // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
+    config: { input: { wrapup: false, messages: [
       { role: "user", content: "PROTECTED-TASK" },
       { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
     ] }, folding: { context: { budgetTokens: 300, keepRounds: 1, protectedMessage: "user" } } },
@@ -578,10 +578,10 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output",
     completion: false,
-    wrapup: false,
     maxRounds: 4,
     capabilities: { hooks: { protectedMessage: (message) => message?.role === "user" } },
-    config: { input: { messages: [
+    // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
+    config: { input: { wrapup: false, messages: [
       { role: "user", content: "PROTECTED-TASK" },
       { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
     ] }, folding: { context: { budgetTokens: 300, keepRounds: 1 } } },
@@ -598,9 +598,9 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output",
     completion: false,
-    wrapup: false,
     maxRounds: 4,
-    config: { input: { messages: [
+    // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
+    config: { input: { wrapup: false, messages: [
       { role: "user", content: "PROTECTED-TASK" },
       { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
     ] }, folding: { context: { budgetTokens: 300, keepRounds: 1, protectedMessage: "system" } } },
@@ -623,9 +623,9 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output ".repeat(20),
     completion: false,
-    wrapup: false,
     maxRounds: 4,
-    config: { input: { messages: [
+    // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
+    config: { input: { wrapup: false, messages: [
       { role: "user", content: "task" },
       { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
     ] }, folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-statistical", recoveryHint: "DATA-HINT" } } },
@@ -669,10 +669,10 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output ".repeat(20),
     completion: false,
-    wrapup: false,
     maxRounds: 4,
+    // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
     config: {
-      input: { messages: [
+      input: { wrapup: false, messages: [
         { role: "user", content: "task" },
         { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
       ] },
@@ -766,7 +766,8 @@ test("C10 装配口路线：policy.capabilities.ports 与 hooks 同相生效（s
   const normalized = await normalizeRunToolLoopOptions({
     assemblyPort: port,
     completion: false,
-    wrapup: false,
+    // #498 S3 A18: `wrapup` 退役扁平写法，家在 `config.input.wrapup`。
+    config: { input: { wrapup: false } },
   });
   assert.equal(typeof normalized.capabilitySlots.ports.sleepImpl, "function", "policy 侧的端口位进了 slots");
   assert.equal(typeof normalized.capabilitySlots.hooks.onBeforeFold, "function", "policy 侧的钩子进了 slots");

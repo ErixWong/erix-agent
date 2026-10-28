@@ -55,8 +55,13 @@ const DONE = [{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" 
 /** 本片退役的键 → 规范之家（逐字）。表只在这里出现一次，后面全部从它派生。 */
 const RETIRED = [{ key: "system", home: "input.system" }];
 
-/** 本片**仍可扁平写**的键（#527 之后 `input` 组只剩它一个；理由见文件头）。 */
-const RETURNED = ["wrapup"];
+/**
+ * 本片**仍可扁平写**的键。
+ *
+ * #527 之后这里是 `["wrapup"]`；**#498 S3 A18 把它也退役了**，于是这张表为空——空表就是
+ * 「`input` 组已收口」这句话的可执行版本（S 段直接拿它与派生集合对账，不手抄条数）。
+ */
+const RETURNED = [];
 
 /** 直连路线的最小合法 run（一次 end_turn 就结束）。 */
 function runDirect(extra = {}) {
@@ -213,21 +218,43 @@ test("P5-b 专项：provider 请求字段 system 与消息转换入参没被本�
   assert.equal(openaiMessages[0].content, "SYS");
 });
 
-test("P5-c 专项：顶层 wrapup 仍是活选项；wrapup 组的嵌套容器是另一个东西", async () => {
+test("P5-c 专项：顶层 wrapup 已退役（#498 S3 A18 收口）；wrapup 组的嵌套容器是另一个东西", async () => {
   // 整词 grep `wrapup` 会把两件东西一起捞出来：
-  //   ① 顶层 `wrapup`（布尔，家 `config.input.wrapup`）——本片**退回不删**，仍是活选项；
+  //   ① 顶层 `wrapup`（布尔，家 `config.input.wrapup`）——#528 退回、**A18 退役**：扁平拼写现在
+  //      被名称闸口当场拒，规位照旧生效；
   //   ② 反思收尾的**嵌套容器**：`config.run.reflection.wrapupNormalize`（`run.reflection` 那一带）。
-  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("wrapup"), true, "顶层 wrapup 本片退回 ⇒ 必须仍在白名单");
-  assert.equal(configPathForOption("wrapup"), "input.wrapup", "顶层 wrapup 的规位在 input 组");
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("wrapup"), false, "A18 已退役顶层 wrapup");
+  assert.equal(configPathForOption("wrapup"), "input.wrapup", "叶子仍在，规位仍是 input.wrapup（删键 ≠ 删叶子）");
+  assert.equal(
+    CONFIG_NAMESPACE_SCHEMA.input.includes("wrapup"),
+    true,
+    "`wrapup` 叶子必须留在 CONFIG_NAMESPACE_SCHEMA.input 里",
+  );
   assert.equal(
     CONFIG_NAMESPACE_SCHEMA.run.includes("reflection"),
     true,
     "reflection 是 config.run 的叶子（嵌套容器的壳），与顶层 wrapup 无关",
   );
-  // 行为证据：扁平 `wrapup:false` 仍照旧生效（关掉收尾协议 ⇒ 系统提示里没有那段 JSON 信封）。
+  // 反向钉：扁平拼写当场被拒，文案点名新家（这条就是「退役」的可执行定义）。
+  // ⚠ 这一格必须**绕过夹具**：`sharedDirectError` 会把扁平 `wrapup` 翻译进规位（那正是夹具的
+  // 职责），于是「扁平拼写被拒」永远测不到。这里走 `normalizeRunToolLoopOptions`（名称闸口的
+  // 同一处入口，纯函数、不跑 run）。
+  const rejected = await normalizeRunToolLoopOptions({
+    provider: createFakeProvider(DONE),
+    executeTool: async () => "ok",
+    wrapup: false,
+  }).then(() => null, (error) => error);
+  assert.equal(rejected instanceof TypeError, true, `必须当场抛，实际：${rejected}`);
+  assert.match(rejected.message, /unknown runToolLoop option: "wrapup"/u);
+  assert.match(rejected.message, /config\.input\.wrapup/u, "报错必须点名新家");
+  // 行为证据：规位 `config.input.wrapup:false` 仍照旧生效（关掉收尾协议 ⇒ 系统提示里没有那段 JSON 信封）。
   const provider = createFakeProvider(DONE);
-  await runDirect({ provider, wrapup: false, config: { input: { system: "SYS", cacheStablePrefix: false } } });
-  assert.equal(provider.requests[0].system, "SYS", "wrapup:false ⇒ 系统提示不被追加收尾协议");
+  await sharedRunDirect({
+    provider,
+    executeTool: async () => "ok",
+    config: { input: { system: "SYS", cacheStablePrefix: false, wrapup: false } },
+  });
+  assert.equal(provider.requests[0].system, "SYS", "config.input.wrapup:false ⇒ 系统提示不被追加收尾协议");
   // 同一份 run 开回默认（`wrapup` 未给 = true）⇒ 收尾协议回来。两个方向都在，才叫「仍是活选项」。
   const withWrapup = createFakeProvider(DONE);
   await sharedRunDirect({
@@ -435,7 +462,7 @@ test("A1 白名单 = 配置面 ∩ 白名单 + 能力面 + 第三站 + 容器，
   }
 });
 
-test("S `input` 组仍未收口：仍可扁平写的成员逐字等于退回清单（#527 后只剩 `wrapup`）", () => {
+test("S `input` 组已收口（#498 S3 A18）：仍可扁平写的成员为空，派生集合逐字相等", () => {
   // 判据全部从符号派生：组里的叶子 → 顶层键名（含唯一那条别名）→ 是否还在白名单里。
   // 于是「本片少做了一键」不会静默：退回清单必须与派生集合逐字相等，多一个少一个都红。
   const flatTwins = CONFIG_NAMESPACE_SCHEMA.input
@@ -444,7 +471,7 @@ test("S `input` 组仍未收口：仍可扁平写的成员逐字等于退回清�
   assert.deepEqual(
     [...flatTwins].sort(),
     [...RETURNED].sort(),
-    "`input` 组仍未收口：只剩 `wrapup` 还有扁平孪生（#527 已把 `tools` 拆成永久顶层面）",
+    "`input` 组已收口：不该再有扁平孪生（#527 拆掉 `tools`、A18 退役 `wrapup`）",
   );
   // 其余成员都已是「只在 config.input.* 里」的形状——本片与前三片合起来就是这句话的证据。
   const nestedOnly = CONFIG_NAMESPACE_SCHEMA.input
