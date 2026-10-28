@@ -180,7 +180,7 @@ function extendingRun(extra = {}, reflectionExtra = {}) {
 }
 
 // ================================================================ C1. 账目 + 不发明扁平别名
-test("C1 账目：白名单被三个面恰好切一遍，9 个新叶子一律是嵌套槽（没有新顶层选项）", () => {
+test("C1 账目：白名单被四个面恰好切一遍，9 个新叶子一律是嵌套槽（没有新顶层选项）", () => {
   // #498 S3：四个字面总数（顶层 / 配置面 / 能力面 / 容器）全部删掉，改成集合等式。
   const { configPlane, capability, topLevelSurface, containers } = optionHomeBuckets(RUN_TOOL_LOOP_OPTION_NAMES);
   const partition = [...configPlane, ...capability, ...topLevelSurface, ...containers];

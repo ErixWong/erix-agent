@@ -118,7 +118,7 @@ function functionPathsIn(value, path) {
 }
 
 // ================================================================ S1. 三向闭合（派生，不手抄总数）
-test("S1 三向闭合：白名单被配置面 / 能力面 / 容器恰好切一遍，自检仍 []", () => {
+test("S1 四向闭合：白名单被配置面 / 嵌套能力面 / 第三站 / 容器恰好切一遍，自检仍 []", () => {
   // #498 S3：这里原本手抄四个字面总数。删掉 `timing` 组的三个顶层键之后配置面那一项自动少三个，
   // 于是四个数得手追——本刀把那四个数全部删掉，改成**集合等式**（比条数强，且与条数无关）。
   const { configPlane, capability, topLevelSurface, containers } = optionHomeBuckets(RUN_TOOL_LOOP_OPTION_NAMES);

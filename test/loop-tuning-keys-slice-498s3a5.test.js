@@ -302,7 +302,7 @@ test("A1 白名单 = 配置面 ∩ 白名单 + 能力面 + 容器，且 schema �
   assert.deepEqual(
     [...union].sort(),
     [...RUN_TOOL_LOOP_OPTION_NAMES].sort(),
-    "三向闭合：每个顶层选项恰好落在一个家里（期望值从符号派生，不抄条数）",
+    "四向闭合：每个顶层选项恰好落在一个家里（期望值从符号派生，不抄条数）",
   );
   assert.equal(new Set(union).size, union.length, "三个面不许重叠");
   assert.deepEqual(configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES), [], "schema 自检必须为空");
