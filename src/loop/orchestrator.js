@@ -845,7 +845,12 @@ export async function runToolLoop(options) {
     ? Math.max(0, retryOptions.backoffMaxMs)
     : 10000;
   // #498 S4c: `capabilities.ports.sleepImpl` is the canonical home of the timer injection point;
-  // `retry.sleepImpl` stays accepted as the legacy nested spelling. The `?? defaultSleep` fallback is
+  // Since issue #498 S3 (timing slice) a host can no longer write `retry.sleepImpl` at all: the
+  // flat `retry` spelling is refused by the name gate (its home is `config.timing.retry`), and a
+  // function inside `config.timing.retry` is refused by the "config holds data only" rule. So the
+  // only host-reachable spelling of a retry timer is `capabilities.ports.sleepImpl`. The
+  // `retryOptions?.sleepImpl` term below stays only for in-engine callers; issue #520 tracks
+  // removing it once no producer can reach it. The `?? defaultSleep` fallback is
   // load-bearing: without it a run that retries with no injected timer would call `undefined`.
   const sleepImpl = capabilityPorts.sleepImpl ?? retryOptions?.sleepImpl ?? defaultSleep;
   // issue #177 刀5：runToolLoop 可变状态收口对象（闭包 `let` → 显式状态对象，分组迁入）。

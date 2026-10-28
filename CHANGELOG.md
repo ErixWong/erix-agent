@@ -3,6 +3,30 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Breaking
+
+- **`timeoutMs` / `deadlineMs` / `retry` must be written as `config.timing.*` (issue #498 S3).**
+  The three top-level keys left the `runToolLoop` allowlist; writing them flat now throws
+  `unknown runToolLoop option: "timeoutMs" (its canonical home is config.timing.timeoutMs; the flat
+  spelling is rejected)` at startup. The engine's read side is unchanged — the expansion phase still
+  writes each value back onto `effectiveOptions.timeoutMs` / `.deadlineMs` / `.retry` — so this is a
+  *write-spelling* change only. 0.26.0 and earlier accepted the flat spelling; 0.27.0 was **never
+  published**, so no released version ever shipped the intermediate shape. One silent consequence
+  worth naming: the legacy shell slot `retry.sleepImpl` is no longer reachable from a host at all
+  (the flat spelling is refused by the name gate, and `config.timing.retry.sleepImpl` is refused by
+  the "`config` holds data only" rule) — the canonical home for a retry timer is, and was,
+  `capabilities.ports.sleepImpl`.
+
+- **`timeoutMs` / `deadlineMs` / `retry` 必须写成 `config.timing.*`（issue #498 S3）。**
+  这三个键已离开 `runToolLoop` 顶层白名单；再写扁平形态会在启动时抛
+  `unknown runToolLoop option: "timeoutMs" (its canonical home is config.timing.timeoutMs; the flat
+  spelling is rejected)`。引擎**读侧一字未改**——展开相仍把每个值写回
+  `effectiveOptions.timeoutMs` / `.deadlineMs` / `.retry`，所以这只是**写侧写法**的变化。
+  0.26.0 及以前接受扁平写法；**0.27.0 从未发布**，因此没有任何已发布版本承载过中间形状。
+  有一个静默后果必须点名：老壳槽位 `retry.sleepImpl` 宿主**已经完全写不进去**了（扁平写法被名称闸口拒，
+  `config.timing.retry.sleepImpl` 被「`config` 只装数据」拒）——重试定时器的规范之家一直是
+  `capabilities.ports.sleepImpl`。
+
 ### Added
 
 - **壳内行为载体获得真实归宿：开 `capabilities.ports`、`hooks` 补 4 个回调、`judge.evaluator` 退役（issue #498 S4c，母单 #495）**：S4a/S4b 把「能力面 = 被调用/被解引用的行为载体」这条判据落到了**顶层选项**那一层，但壳**里面**还住着一批行为载体——它们只能写在 `retry.sleepImpl` / `reflection.judge.provider` / `context.strategy` / `context.onBeforeFold` 这些嵌套槽里，而壳要过 `config` 子树的 JSON round-trip ⇒ 想要 `retry.sleepImpl` 的宿主连**数据半**都没法用 `config.timing.retry`（扁平 `retry` 带函数会与 config 侧冲突），S4a 的拒绝文案第三档又指向一个当时**不存在**的目的地（"the matching capability port slot"）。本刀开 `capabilities.ports` 让那些壳**可迁移**。**① 新组 `capabilities.ports`**（`src/loop/capabilities-namespace.js`）：`sleepImpl`（函数 `(ms, signal) => Promise<void>`，消费点 `retryOptions?.sleepImpl ?? defaultSleep`）、`judgeProvider`（judge 专用评估器，**接受 callable 或 `{ chat }` 对象**）、`strategy`（压缩策略对象，`resolveCompactionStrategy`（`src/compact/strategy-resolution.js`）对象形态原样透传，`shouldCompact` / `compact` 被引擎调）。**② `hooks` 12 → 16**：`onReflection`（扩轮决策通知）、`onBeforeFold` / `onAfterFold`（折叠前后通知，消费点 `runFoldHook`（`src/compact/helpers.js`））、`stubFor`（逐条消息的桩判定，消费点 `resolveFoldStubs`（同文件））；`hooks` 的值校验器**保持**「给了就必须是函数」，不为迁就对象形态放宽。**③ 两个形态多态旋钮**：`protectedMessage`（`string` / `string[]`）与 `recoveryHint`（`string`）的数据形态留在 `config.folding.context`，函数形态进 `capabilities.hooks`；两侧都给了**不等价**的值 ⇒ 恰一条 `config_override_conflict`（复用**同一个**容器冲突机制，不新开出口；path 点名该旋钮的配置侧路径 `folding.context.protectedMessage`），等价（`isDeepStrictEqual`，函数按同一性）⇒ 零事件。**④ 报错第三档落到真实目的地**：`config-namespace.js` 的 `functionValueProblemMessage` 不再说「对应的能力面端口位」，而是点名 `capabilities.ports.sleepImpl` / `capabilities.ports.judgeProvider` / `capabilities.ports.strategy` / `capabilities.hooks.onBeforeFold` 等——叶子名说不清的那种（`provider`）靠**完整路径**去对 `CAPABILITY_SLOT_DESTINATIONS` 的长前缀。**⑤ `reflection.judge.evaluator` 退役**（0.28 是破坏版本，按 #499 的「退役不是搬家」口径）：它与 `provider` 是同一行 `??` 的纯别名，现在写它在两条入口路线上都抛并指向 `capabilities.ports.judgeProvider`，不静默接受。**账目一字未变**：9 个新叶子**一律没有**顶层扁平别名（它们是容器成员位、不是搬家）⇒ 顶层白名单仍是 **67**、能力面仍是 **22**、三向闭合（43 + 22 + 2 = 67）不变，`configSchemaSelfCheck` 仍 `[]`；自检反向核「有槽的叶子不得同时是顶层选项」，所以「给它们发明扁平别名」会红。**行为证据（不是「没抛」）**：注入 `capabilities.ports.sleepImpl` ⇒ 假定时器真的被调用且记到延迟；注入 `judgeProvider` ⇒ judge 请求走它、主模型一条都不走；注入 `strategy` 对象 ⇒ `shouldCompact` / `compact` 真被调且对象同一性保留；4 个新 hooks 各断言真收到投递（折叠前后 / 桩解析 / 扩轮）；`?? defaultSleep` 兜底也被一格钉住。**扁平老写法零回归**：`retry.sleepImpl`、`context.onBeforeFold`、`reflection.judge.provider`、`context.strategy`（对象形态）各一条断言。**测试**：新增 `test/loop-capabilities-ports-hooks-498s4c.test.js` 13 格（独立复审后又补 8 格到 **21 格**，见下条「复审退回」）；`test/loop-capabilities-namespace-498.test.js` 的 S1c/S2/S6 与 `test/loop-abort-terminal-priority.test.js` 的 judge 注入点按新面同步（后者原来用 `judge.evaluator`，改走规范之家 `capabilities.ports.judgeProvider`，判据一字未改）。随包文字同步：契约中英新增成对一节 `#### capabilities.ports`（成员表 + 值形状 + 「端口位可以是对象，`hooks` 必须 callable」这条区别 + 两条历史口径），0.27.0 指南中英补同一刀的三条后果，README 中英的 `judge: { provider, evaluator }` 草图与模块地图同步。
