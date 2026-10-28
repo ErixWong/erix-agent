@@ -669,8 +669,12 @@ function stepTypeScriptHost({ hostDir }) {
   }
   const hostTs = join(hostDir, "host.ts");
   const hostBadTs = join(hostDir, "host-bad-option-key.ts");
+  const hostFlatRetiredTs = join(hostDir, "host-flat-retired-key.ts");
+  const hostNestedLegalTs = join(hostDir, "host-nested-legal-key.ts");
   writeFileSync(hostTs, TS_HOST_SOURCE, "utf8");
   writeFileSync(hostBadTs, TS_HOST_BAD_SOURCE, "utf8");
+  writeFileSync(hostFlatRetiredTs, TS_HOST_FLAT_RETIRED_SOURCE, "utf8");
+  writeFileSync(hostNestedLegalTs, TS_HOST_NESTED_LEGAL_SOURCE, "utf8");
 
   const tscEnv = childEnv();
   const compile = (file, extraArgs, label) => run(process.execPath, [
@@ -720,7 +724,30 @@ function stepTypeScriptHost({ hostDir }) {
   if (!hostRun.stdout.includes("release-check-final-answer")) {
     fail(`编译产物的输出里没有模型终稿文本：${tail(hostRun.stdout)}`);
   }
+
+  // (d) #522: 退役的**扁平拼写**必须被类型面拦住。运行时早已拒 `maxRounds`（它的家是
+  //     `config.run.maxRounds`），但 JSDoc 的顶层曾经还写着它 ⇒ 宿主 `tsc --strict` 放过一个
+  //     运行时必抛的写法。这条断言让“类型面比运行时更宽松”再也活不下来。
+  const flatRetired = compile(hostFlatRetiredTs, ["--noEmit"], "tsc 退役扁平拼写 maxRounds（期望 TS2353）");
+  const flatRetiredOutput = `${flatRetired.stdout}\n${flatRetired.stderr}`;
+  if (flatRetired.status === 0) {
+    fail("扁平 `maxRounds` 的编译**通过了**：类型面还在声明退役写法（运行时却拒它）");
+  }
+  if (!flatRetiredOutput.includes("TS2353")) {
+    fail(`扁平 \`maxRounds\` 编译失败了，但**不是** TS2353（期望多余属性检查）：\n${tail(flatRetiredOutput)}`);
+  }
+  if (!flatRetiredOutput.includes("maxRounds")) {
+    fail(`扁平 \`maxRounds\` 的编译错误没有点名这个键：\n${tail(flatRetiredOutput)}`);
+  }
+
+  // (e) 同一套写法的**嵌套等价拼写**必须编译通过（否则 (d) 只要把选项全删掉就能变绿）。
+  const nestedLegal = compile(hostNestedLegalTs, ["--noEmit"], "tsc 嵌套写法 config.run.maxRounds（期望 exit 0）");
+  if (nestedLegal.status !== 0) {
+    fail(`嵌套 \`config.run.maxRounds\` 在 --strict 下编译不过（退出码 ${nestedLegal.status}）\n${tail(nestedLegal.stdout)}\n${tail(nestedLegal.stderr)}`);
+  }
+
   notes.push(`tsc --strict：正向 exit 0｜未知 option 键报 TS2353｜编译产物运行输出：${tail(hostRun.stdout, 220)}`);
+  notes.push(`tsc --strict #522：扁平 \`maxRounds\` exit ${flatRetired.status}（TS2353 且点名该键）｜嵌套 \`config.run.maxRounds\` exit ${nestedLegal.status}`);
 }
 
 const TS_HOST_SOURCE = `// 由 scripts/release-check.mjs 生成：真 TypeScript 宿主（编译期断言的对象）。
@@ -807,6 +834,28 @@ await runToolLoop({
   // 而断言只要求「编译失败」，所以一直绿。
   thisOptionKeyDoesNotExistInRunToolLoopOptions: 1,
   config: { run: { maxRounds: 1, reflection: false } },
+});
+`;
+
+const TS_HOST_FLAT_RETIRED_SOURCE = `// 由 scripts/release-check.mjs 生成：#522 反向自证——退役的**扁平**拼写必须被类型面拦住。
+// maxRounds 的规范之家是 config.run.maxRounds：运行时拒绝扁平写法，所以类型面也必须拒绝。
+import { runToolLoop } from "erix-agent";
+
+await runToolLoop({
+  provider: { chat: async () => ({}) },
+  executeTool: async () => "ok",
+  maxRounds: 5,
+});
+`;
+
+const TS_HOST_NESTED_LEGAL_SOURCE = `// 由 scripts/release-check.mjs 生成：#522 正向自证——同一个选项的**嵌套**拼写必须编译通过。
+// 少了这一条，(d) 只要把选项从类型面里全删掉就能变绿。
+import { runToolLoop } from "erix-agent";
+
+await runToolLoop({
+  provider: { chat: async () => ({}) },
+  executeTool: async () => "ok",
+  config: { run: { maxRounds: 5 } },
 });
 `;
 
