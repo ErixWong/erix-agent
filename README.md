@@ -387,6 +387,8 @@ quoted blocks below against it):
   "docs/host-upgrade-guide-0.26.0_cn.md",
   "docs/host-upgrade-guide-0.27.0.md",
   "docs/host-upgrade-guide-0.27.0_cn.md",
+  "docs/host-upgrade-guide-0.28.0.md",
+  "docs/host-upgrade-guide-0.28.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -1051,6 +1053,12 @@ library-level controls
 - [docs/testing.md](https://github.com/ErixWong/erix-agent/blob/main/docs/testing.md) - test strategy and behavior metrics
 - [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md) - 0.6.0
   breaking-window migration steps
+- [docs/host-upgrade-guide-0.28.0.md](docs/host-upgrade-guide-0.28.0.md) / [docs/host-upgrade-guide-0.28.0_cn.md](docs/host-upgrade-guide-0.28.0_cn.md)
+  host-facing migration guide (EN/CN pair), **0.26.0 → 0.28.0**: the "your options finally have two
+  planes and one address" release - 44 flat spellings rejected in favour of `config.<group>.<leaf>`,
+  behaviour under `capabilities.*`, `policy` data-only, the assembly-port member gate, and `session`
+  demoted to an identity container with the payload at `config.folding.context.session`
+  (issues #498 S3, #513, #530, #538, #544, #545, #550, #551, #556; **0.27.0 was never published**)
 - [docs/host-upgrade-guide-0.27.0.md](docs/host-upgrade-guide-0.27.0.md) / [docs/host-upgrade-guide-0.27.0_cn.md](docs/host-upgrade-guide-0.27.0_cn.md) - the latest
   host-facing migration guide (EN/CN pair), **0.26.0 → 0.27.0**: the "the fold summarizer finally gets a deadline, a budget and a size limit" release. Five summarizer knobs on `context` (`summarizerTimeoutMs` / `summarizerBudgetMs` / `maxSummarizerInputBytes` / `maxPriorSummaryBytes` / `maxSummaryTokens`, defaults 30000 / 30000 / 49152 / 24576 / 1400), the summary request’s `maxTokens` now `min(run maxTokens, maxSummaryTokens)`, the output budget default `800 → 1400` with skeleton-preserving trimming and topic crumbs promoted to tier 1, cross-resume prior-summary seeding (expect one recompute per pre-existing ledger), and degrade facts reported on `compaction.foldSummary` (`degradeKind`, `finishReason`, …) without inventing an event type. Purely additive: no API removed or renamed, no store signature moved, runtime dependencies still zero.
 - [docs/host-upgrade-guide-0.26.0.md](docs/host-upgrade-guide-0.26.0.md) / [docs/host-upgrade-guide-0.26.0_cn.md](docs/host-upgrade-guide-0.26.0_cn.md) - the previous
@@ -1121,12 +1129,13 @@ current contract. And a path that points into **another** repository is written 
 
 The authoritative version is the `version` field of
 [`package.json`](package.json), and `npm run check:docs` verifies the release
-line below against it. Current release: **v0.27.0** (2026-10-27). The complete,
+line below against it. Current release: **v0.28.0** (2026-10-29). The complete,
 authoritative history is [CHANGELOG.md](CHANGELOG.md); the bullets below list
 only the releases that changed how a host consumes the runtime. The 0.6.0
 migration steps remain in
 [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md).
 
+- **v0.28.0 (2026-10-29)**: the "your options finally have two planes and one address" release - every retired flat configuration spelling now has exactly one home (`config.<group>.<leaf>`; the canonical schema has 41 leaves and no flat alias is registered any more), host behaviour is configured under `capabilities.*`, `policy` carries data only, `createAssemblyPort` refuses the top-level members it used to silently drop, and the declared `.d.ts` surface matches the accepted option set. **0.27.0 was never published** (the registry went 0.26.0 -> 0.28.0), so no host ever installed it. Migration steps: [docs/host-upgrade-guide-0.28.0.md](docs/host-upgrade-guide-0.28.0.md) / [CN](docs/host-upgrade-guide-0.28.0_cn.md).
 - **v0.27.0 (2026-10-27)**: the "the fold summarizer finally gets a deadline, a budget and a size limit" release — five summarizer knobs on `context`, with a two-layer timeout (30000 provider-call / 30000 whole-step), a 48 KB input cap and a 24 KB prior-summary cap (#488), and the summary request’s `maxTokens` aligned by `min(run maxTokens, maxSummaryTokens)` so a summary is no longer written up to the run’s 32k ceiling only to be trimmed back (#493); the summary output budget default moved `800 → 1400` so the five-section contract holds under defaults, trimming keeps `## heading` and topic crumbs rose to tier 1 (#490); the continuation base is seeded from the ledger across resume and is now part of the reuse key — one recompute per pre-existing session is expected, not a regression (#489); degrade facts are visible on `compaction.foldSummary` (`degradeKind` = `timeout` / `context_window_exceeded` / `error`, plus `finishReason`) without a new event type (#486 / #487 / #491); `context` unknown-key validation now distinguishes knob typos (throw, edit distance ≤ 2) from host metadata (tolerated, one `context_unknown_option` event), and the five engine-read keys are finally whitelisted (#493). Migration: [docs/host-upgrade-guide-0.27.0.md](docs/host-upgrade-guide-0.27.0.md).
 - **v0.26.0 (2026-10-26)**: the "a fold hands you its substitute, and a finished run always has a body" release — every fold now writes a bounded `record.foldedFacts` and can deliver the same text to the host through `context.onFoldSummary` (#470); a `judge_done` stop forces a final instead of ending with zero body (#467); resume trims what the fold watermark already accounts for (#462); `compaction.strategyName` plus a one-time `compaction_strategy_fallback` say when the configured compaction was not the one that ran (#464 A). Still open on this surface: `end_turn` / `no_tool` do not force a final yet (#475 / #476), and the judge's own criteria still do not look at the deliverable (#473).
 - **v0.25.0 (2026-10-24)**: the "a fold stops re-billing you for bytes the ledger already has" release — `record.foldedPayload` becomes a bounded, session-deduplicated archive (new `context.maxFoldedPayloadBytes`, env `ERIX_FOLD_ARCHIVE_MAX_BYTES`, default 256 KiB, `0` = pointer only) and truncation is now reported in the new `record.foldedPayloadMeta`; a host that rejects an oversized round record degrades that record instead of ending the run as `persistence_failed`. Purely additive: no store signature, option, export or dependency moved, so no host migration is required. Read-side context trimming is tracked separately as #462. See [CHANGELOG.md](CHANGELOG.md).
