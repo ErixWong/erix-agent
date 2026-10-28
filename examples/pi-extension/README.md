@@ -82,10 +82,10 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | `model` | | 槽位里的 model | 覆盖 `slots.default` 的模型名（endpoint / apiKey 仍走该槽位） |
 | `sessionDir` | | 不落盘 | **过程落盘目录**（绝对路径，`~` 会展开；不存在则递归创建）。给了它就把内层 transcript 落到 `<sessionDir>/<runId>.jsonl`、judge 决策落到 `<sessionDir>/outputs/<runId>/judge.log`，并在返回的 `artifacts` 里给出真路径。坏目录（指到文件 / 不可写）归一成 `bad_params` 终局 |
 | `transcript` | | — | `sessionDir` 的同义写法：`"file"` → 缺省目录 `~/.erix/transcripts`；其它非空串按目录路径处理；`"memory"` / `"none"` / `"off"` → 显式不落盘。两个都给时 `sessionDir` 赢 |
-| `maxExtensions` | | 引擎缺省 `2` | 扩轮上限，直传引擎 `reflection.maxExtensions`。**`0` 是有效值 = 关掉扩轮**（引擎侧是 `>= 0` 判断，所以本层不能用「正整数」卡它）。非法值（负数 / 小数 / 非数字 / >1000）归 `bad_params` |
-| `maxRoundsCap` | | 引擎缺省 `256` | 扩轮后的总轮数硬顶，直传 `reflection.maxRoundsCap`（正整数；引擎会抬到不低于 `maxRounds`）。上限 100000 |
-| `extensionStep` | | 引擎缺省 `max(8, ⌊maxRounds/2⌋)` | 每次扩轮加的轮数，直传 `reflection.extensionStep`（正整数，上限 10000） |
-| `finalGuard` | | **`false`** | **#314：终稿核验开关。`true` = 向 `runToolLoop` 透传 `finalGuard` 回调**，终局 `verification` 才可能是 `verified`；默认关 ⇒ 透传的 options 里连这个键都没有（不是写 `undefined`），`verification` 恒 `skipped`。只认真布尔：`"true"` / `1` 归 `bad_params`（详见下文「终稿核验 finalGuard」） |
+| `maxExtensions` | | 引擎缺省 `2` | 扩轮上限，落到引擎的 `reflection.maxExtensions`（#498 S6 起装配位置是 `config.run.reflection`，见下文「参数 ⇒ 引擎选项的落点」）。**`0` 是有效值 = 关掉扩轮**（引擎侧是 `>= 0` 判断，所以本层不能用「正整数」卡它）。非法值（负数 / 小数 / 非数字 / >1000）归 `bad_params` |
+| `maxRoundsCap` | | 引擎缺省 `256` | 扩轮后的总轮数硬顶，落到 `reflection.maxRoundsCap`（正整数；引擎会抬到不低于 `maxRounds`）。上限 100000 |
+| `extensionStep` | | 引擎缺省 `max(8, ⌊maxRounds/2⌋)` | 每次扩轮加的轮数，落到 `reflection.extensionStep`（正整数，上限 10000） |
+| `finalGuard` | | **`false`** | **#314：终稿核验开关。`true` = 把 `finalGuard` 回调交给 `runToolLoop`**（#498 S6 起的规位是 `capabilities.hooks.finalGuard`），终局 `verification` 才可能是 `verified`；默认关 ⇒ 递过去的 options 里连这个键都没有（不是写 `undefined`），`verification` 恒 `skipped`。只认真布尔：`"true"` / `1` 归 `bad_params`（详见下文「终稿核验 finalGuard」） |
 | `finalGuardTimeoutMs` | | `10000` | 单次 guard 等待上限（200..600000）；**只在 `finalGuard: true` 时有意义**，没开却传 ⇒ `bad_params`。**不靠引擎默认的 30000**，理由见下文坑 ①。⚠ 它**同时**是交付物判据的超时（引擎复用同一个旋钮，不新增配置）：一次 attempt 的最坏等待 = 判据条数 × 该上限 + guard 上限 |
 | `requireDeliverable` | | **`false`** | **#391：交付物机器判据（命名开关）。** 为 `true` 时启用一条磁盘事实判据——「本次 run 用写工具声明过的每个路径，收尾时都必须真的在盘上」（读 `fileWrites` 原始路径，不是 40 码点摘要）。判据跑在 guard **之前**：guard 说 `accept` 而判据没过 ⇒ `verification.status = "unverified"` + `reason: "deliverables_failed"`（机器证据压过 guard 意见），`termination.reason` 不变。**必须与 `finalGuard: true` 同用**（判据是拦 `accept` 的闸门，没有 guard 就没有闸门；单独开是 `bad_params`，不静默空转）。只认真布尔。判据本体复用 `bin/final-guard.js` 的 `createDeliverableChecks()`；**本工具不开放宿主自定义 `check` 函数**——跨扩展边界传函数不安全（pi 的扩展装载面与 `details`/`structuredContent` 都要求纯数据），所以这里只给「用不用」这个命名开关，不给你塞谓词。⚠ **它判的是「你说过要写的东西还在盘上」，模型什么都不声明时空集合恒真 ⇒ 一次工具都没调也能 `verified`**（#391 回帖实测）；要「这次必须交付 report.md」请用 `deliverablePaths`（见下文「交付物判据的两种语义」） |
 | `deliverablePaths` | | — | **#391：命名交付物判据（`string[]`，1..20 条）。** 每条一个判据：**这次任务必须交付的这个文件**收尾时必须在盘上。与 `requireDeliverable` 是**两种语义**（不是同一个开关的细化，见下文「交付物判据的两种语义」）：这一条不读模型说了什么，只读你声明的清单 ⇒ 模型一次工具都没调也照样判不过。相对路径按本次 run 的 `cwd` 解析（引擎不 join，它把宿主传的 `cwd` 原样放进 payload）；绝对路径不需要 `cwd`。非数组 / 空串 / 空数组 / 超 20 条 / 重复路径 ⇒ `bad_params`（**宿主侧就挡**，不等引擎 `TypeError`）；**必须与 `finalGuard: true` 同用**。成本：每条判据让每次 attempt 的上限再加一个 `finalGuardTimeoutMs` |
@@ -103,6 +103,27 @@ pi --extension ./examples/pi-extension/erix-run.ts
 > 这个开关**不会被塞进去**，而 `diagnostics.reflection.judgeDoneAdvisory` 会写 `{requested:true, enabled:false, reason}`
 > 并多一行「judgeDoneAdvisory 未生效」（不许拿「我传了」当成「它生效了」）。
 > 另：`maxRounds` 的 1..100 是**入参校验上限**，不是引擎的总轮数上限（扩轮后由 `maxRoundsCap` 说话）。
+
+### 参数 ⇒ 引擎选项的落点（issue #498 S6）
+
+**参数名与语义一个字都没变**（上表就是全部入参，schema 在 `erix-run.ts`）；变的是**这一层把选项递给引擎时的形状**：
+数据走 `config.*`、回调走 `capabilities.*`，顶层只剩端口对象 / 信号 / 错误出口。迁移前的扁平写法
+（`options.maxRounds` 之类）**已经不存在**——同一个键既写扁平又写 `config.*` 会记一条
+`config_override_conflict`（引擎把「一个旋钮两个真相来源」报出来，不静默取胜者）。
+
+| 参数 | 引擎侧看到的选项 | 本层递给引擎的位置 |
+|---|---|---|
+| `task` / `cwd` / `maxRounds` / `timeoutMs` / `strategy` | 同名扁平键 / `context.strategy` | `config.metadata.task` / `config.run.cwd` / `config.run.maxRounds` / `config.timing.timeoutMs` / `config.folding.context.strategy` |
+| `maxExtensions` / `maxRoundsCap` / `extensionStep` / `judgeDoneAdvisory` | `reflection.*`（judge 闸门关着时整块不下发） | `config.run.reflection.*` |
+| `finalGuard` | `finalGuard`（回调） | `capabilities.hooks.finalGuard` |
+| `finalGuardTimeoutMs` | `finalGuardTimeoutMs` | `config.guard.finalGuardTimeoutMs` |
+| `requireDeliverable` / `deliverablePaths` | `deliverables`（`{name, check}` 数组） | `capabilities.checks.deliverables` |
+| `sessionDir` / `transcript` / `async` / `quiet` / `action` / `runId` / `model` | —（本层的落盘与异步面，不是引擎选项） | 不进 `runToolLoop` |
+
+留在顶层的只有 `provider` / `executeTool` / `store` / `signal` / `diagnostics`：它们是引擎的适配器端口对象、
+中止信号与错误出口，能力面**没有**它们的规位（`capabilities.ports` 只收壳内实现，不收适配器端口对象）。
+`examples/pi-extension/erix-run-config-migration.test.mjs` 把这张表变成机器判据：逐键去向 +
+「展开后的有效选项与迁移前逐键相等」+ 三条反向证 + 一次离线端到端（真引擎 + 本地脚本化上游）。
 
 ## 过程落盘与审计面（issue #207）
 
