@@ -20,7 +20,7 @@
 ```text
 assemblyPort, provider, system, wrapup, initialUserMessage, initialMessages, tools,
 writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
-temperature, topP, timeoutMs, deadlineMs, reflection, stallDetection, retry,
+temperature, topP, reflection, stallDetection,
 completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
 maxTokenContinuations, toolResultTtl, toolResultFoldMinTokens, context,
 todoStateProvider, semanticStateProvider, partialPersistence,
@@ -72,7 +72,8 @@ executeTool({ id, name, input, context, signal })
 
 语义相只管这几条：`context` 给了就必须是对象（省略或 `null` = 没配）；`context` 里**拼错的摘要
 旋钮名**抛；旋钮取值必须是正安全整数；每个承载宿主回调的字段给了就必须是函数——`finalGuard`、
-`retry.sleepImpl`、`reflection.onReflection`、`diagnostics.error`、`onFoldSummary`（顶层）、
+`config.timing.retry.sleepImpl`（issue #498 S3：`retry` 现在是 `config.timing.retry`，扁平写法
+被名称闸口早一相就拒了）、`reflection.onReflection`、`diagnostics.error`、`onFoldSummary`（顶层）、
 `context.onBeforeFold`、`context.onAfterFold`。有两族**刻意留在原地**：
 `deliverables[].check` 由 `normalizeDeliverables`（`src/loop/deliverables.js`）校，其余取值规则
 （`maxRounds` / `partialPersistence` / `persistence` …）是 `runToolLoop` 自己的启动校验——它们本来就
@@ -81,7 +82,7 @@ executeTool({ id, name, input, context, signal })
 回调字段只有一条口径：**省略 = 不订阅**；`null` 与其余非函数值一律 = 给了但给错 ⇒ 启动即抛。
 **唯一例外**是 `context: null`，它逐字等于省略 `context`——理由不是宽容，而是引擎在那里的读取本来
 就对 `undefined` 与 `null` 完全相同，把它改成抛错只会破坏「把可空字段原样传下去」的宿主，买不到
-任何性质。顶层回调**刻意不给**这条例外：`finalGuard: null` / `retry.sleepImpl: null` /
+任何性质。顶层回调**刻意不给**这条例外：`finalGuard: null` / `config.timing.retry.sleepImpl: null` /
 `onFoldSummary: null` 一律抛。口径统一优先于少一类半破坏，而「`null` 钩子悄悄等于没钩子」正是本
 版要喊出来的那类静默配置。
 
@@ -162,10 +163,13 @@ executeTool({ id, name, input, context, signal })
 （`src/loop/config-namespace.js`）与配置面名单 `CONFIG_SURFACE_OPTION_NAMES`
 （`src/loop/config-namespace.js`）都从它派生，再由 `configSchemaSelfCheck`
 （`src/loop/config-namespace.js`）对着顶层白名单按**三个方向**核账：每个顶层选项必须**恰好**被归入
-*配置面*（43 键）、*能力面*（22 键）或*容器*（2 个：`config` 与 `capabilities`）之一，且三桶之和
-必须等于白名单条数（43 + 22 + 2 = 67）。issue #517 起「配置面」这一桶取「schema 映射到的键」与
-白名单的**交集**，所以一个叶子失去顶层键时它只从桶里掉出去、不会把恒等式弄红（本版 43 与 43 逐字
-相等，一个键都没删）。
+*配置面*、*能力面*（22 键）或*容器*（2 个：`config` 与 `capabilities`）之一，且三桶之和
+必须等于白名单条数。issue #517 起「配置面」这一桶取「schema 映射到的键」与白名单的**交集**，
+所以一个叶子失去顶层键时它只从桶里掉出去、不会把恒等式弄红。**issue #498 S3（`timing` 切片）之后
+这个差集不再是空的**：`config.timing.timeoutMs` / `.deadlineMs` / `.retry` 失去了顶层扁平写法，
+所以配置面那一桶比叶子总数恰好少这三个。这里的数字**故意不重述**——请现场派生
+（`configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES).length`、`CAPABILITY_OPTION_NAMES.length`、
+`NAMESPACE_CONTAINER_OPTION_NAMES.length`），而不是抄一个下次搬组就过期的总数。
 
 | 命名空间 | 旋钮 |
 | --- | --- |
@@ -176,6 +180,22 @@ executeTool({ id, name, input, context, signal })
 | `config.folding` | `context`、`toolResultTtl`、`toolResultFoldMinTokens` |
 | `config.guard` | `finalGuardMaxRetries`、`finalGuardTimeoutMs`、`finalGuardExtend` |
 | `config.metadata` | `expert`、`user`、`task`、`requestId`、`toolContext`、`model`、`modelMetadata`、`session` |
+
+**扁平写法的版本口径**（issue #498 S3，`timing` 切片）。这是第一个真正**退掉**顶层扁平键的切片，
+所以规则按版本写，不按「今天」写：
+
+| 版本 | 写 `timeoutMs` / `deadlineMs` / `retry` |
+| --- | --- |
+| 0.26.0 及以前（最后一个**已发布**版本） | 顶层可写——那些版本只认这一种写法 |
+| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「这件事有影响」的树 |
+| 0.28.0 及以后（issue #498 S3） | **当场拒**——请写 `config.timing.timeoutMs` / `.deadlineMs` / `.retry`。名称闸口抛 `unknown runToolLoop option: "timeoutMs" (its canonical home is config.timing.timeoutMs; the flat spelling is rejected)`，文案**总是点名新家**：那句话是升级宿主与「自己猜」之间唯一的东西 |
+
+这三个键就是本切片的全部：其它配置分组照旧接受扁平写法，这一点没变。变的是宿主读回值时该依赖的
+机制：展开相仍把这三个逐字写到 `effectiveOptions.timeoutMs` / `.deadlineMs` / `.retry` 上，所以
+**引擎的读侧一字未改**——这次退场只是**写侧写法**的变化。有一个后果必须点名，否则它是静默的：
+壳里的老槽位 `retry.sleepImpl` 宿主**已经完全写不进去**了。扁平写法被名称闸口拒，
+`config.timing.retry.sleepImpl` 被「`config` 只装数据」那条规则拒；重试定时器的规范之家一直是
+`capabilities.ports.sleepImpl`。
 
 0.27.0 里那张 `config.observers` 分组在 **0.28.0 已被整组删除**（issue #498 S4a）：回调不是数据，
 装着一个回调的 `config` 子树过不了 JSON round-trip。回调住在 `capabilities.hooks`（下一节）。
@@ -204,7 +224,8 @@ executeTool({ id, name, input, context, signal })
 - **结构等价** —— 同一份配置写成扁平与写成 `config`，规范化后的 `effectiveOptions` 逐键相同。
   展开发生在**合并后**的表示上（装配口已折进来之后、语义相之前），所以 `config` 里的值走的是与
   扁平孪生完全相同的那套校验：`config.folding.context` 里拼错的摘要旋钮名抛的是与扁平 `context`
-  同一句，`config.timing.retry.sleepImpl` 必须是函数的原因与 `retry.sleepImpl` 必须是函数完全一样。
+  同一句，`config.timing.retry.sleepImpl` 必须是函数的原因与它那个扁平孪生（issue #498 S3 起已不存在：
+  `retry` 只能写成 `config.timing.retry`）完全一样。
 - **函数值 intake 当场拒绝**（issue #498 S4a）。JSON round-trip 是事后体检，拒绝才是保证——它让
   「宿主以为设置了、其实没设置」不可能发生。整棵 `config` 子树逐节点走（含数组元素），任何函数值
   启动即抛并点名**完整路径**（`config.folding.context.onBeforeFold`，不是含糊的 `onBeforeFold`）：
@@ -402,7 +423,7 @@ executeTool({ id, name, input, context, signal })
 
 | 槽位 | 值形状 | 嵌套老住处（照旧可用） | 引擎拿它做什么 |
 | --- | --- | --- | --- |
-| `capabilities.ports.sleepImpl` | 函数 `(ms, signal) => Promise<void>` | `retry.sleepImpl` / `config.timing.retry.sleepImpl` | 替换重试定时器：每一次退避都走它，宿主因此能不付墙钟代价记录每一个 `delay` |
+| `capabilities.ports.sleepImpl` | 函数 `(ms, signal) => Promise<void>` | `config.timing.retry.sleepImpl`（以及 issue #498 S3 之前的扁平 `retry.sleepImpl`） | 替换重试定时器：每一次退避都走它，宿主因此能不付墙钟代价记录每一个 `delay` |
 | `capabilities.ports.judgeProvider` | 可调用的 `(request) => Promise<response>` **或**带 `chat(request)` 方法的对象 | `reflection.judge.provider` / `config.run.reflection.judge.provider` | judge 的评估器。它喂三处：轮次 judge、收尾 LLM 归一化、以及上报的 `judgeModel`——与嵌套老槽位喂的是同三处。不写就用 run 的主 provider |
 | `capabilities.ports.strategy` | 压缩策略**对象**，带 `shouldCompact(messages, budgetTokens)` 与 `compact(messages, options)` | `context.strategy`（对象形态）/ `config.folding.context.strategy` | 原样透传（`resolveCompactionStrategy`（`src/compact/strategy-resolution.js`）对对象形态原样返回），所以被调的方法就是宿主自己的。内置**名字**是数据、不是端口：`"sliding-window"` / `"fold-statistical"` / `"fold-llm"` 写 `context.strategy` / `config.folding.context.strategy`，端口位收到字符串会抛并说明这一点 |
 
@@ -412,7 +433,9 @@ executeTool({ id, name, input, context, signal })
    规范写法是 `capabilities.ports.sleepImpl`。
 2. **两种写法同时在场是冲突，不是静默胜出。** `capabilities.ports.sleepImpl` 与 `retry.sleepImpl`
    给了**不同**函数 ⇒ 恰一条 `config_override_conflict`，`{ path: "ports.sleepImpl", key: "sleepImpl" }`，
-   端口位赢。`judgeProvider` 对 `reflection.judge.provider`、`strategy` 对 `context.strategy` 同一条
+   端口位赢。**issue #498 S3 起宿主已经造不出这个形状**（`retry` 搬进了 `config.timing.retry`，而函数值
+   进不了 `config`），所以端口位成了唯一入口；展开层那条规则保留并仍被直接断言，因为「端口位说了算」
+   正是它保证的。`judgeProvider` 对 `reflection.judge.provider`、`strategy` 对 `context.strategy` 同一条
    规则（深度相等的值不算冲突）。
 3. **`reflection.judge.evaluator` 已退役**（issue #498 S4c）。它曾是 `reflection.judge.provider` 的
    纯别名——同一个 `??` 槽位写两遍。0.28.0 按「退役不是搬家」的口径处理：现在写它在**两条入口路线**
@@ -595,6 +618,11 @@ await provider.chat({ messages });
 `error.status` 始终保留原始数字，想要数字而不是类别的宿主该读它。
 
 ## 重试预算（issue #183）
+
+> **写法说明（issue #498 S3）。** 下面每一处 `retry: …` 说的是**值**，不是顶层写法。0.28.0 起这个旋钮
+> 写 `config.timing.retry`——扁平 `retry` 会被名称闸口当场拒（0.26.0 及以前接受它；0.27.0 从未发布）。
+> 下面的表**故意不改**：派生值、夹取规则、两条独立循环、观测点，全都正是引擎从
+> `effectiveOptions.retry` 算出来的东西，而展开相把 `config.timing.retry` 放在那里。
 
 **不配置就是不重试。** `retry` 默认 `false`（`resolvedModelConfig`，`src/loop/orchestrator.js`），在该状态下
 引擎每轮**恰好**发一次 provider 调用、每次 store 调用**恰好**写一次。想要重试的宿主必须显式

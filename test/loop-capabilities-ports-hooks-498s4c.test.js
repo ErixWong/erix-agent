@@ -4,9 +4,10 @@
 //
 //   C1（账目 + 「只加目的地，不发明扁平别名」的机器证明）：9 个新叶子（`ports.sleepImpl` /
 //      `ports.judgeProvider` / `ports.strategy` / `hooks.{onReflection,onBeforeFold,onAfterFold,
-//      stubFor,protectedMessage,recoveryHint}`）**一律没有**顶层扁平别名 ⇒ 顶层白名单仍是 67，
-//      能力面仍是 22 项，三向闭合（43 + 22 + 2 = 67）一字未动。这 9 个是「嵌套槽叶子」，
+//      stubFor,protectedMessage,recoveryHint}`）**一律没有**顶层扁平别名 ⇒ 能力面名单不因它们变长，
+//      三向闭合（配置面 / 能力面 / 容器）依旧成立。这 9 个是「嵌套槽叶子」，
 //      去向登记在 `CAPABILITY_SLOT_DESTINATIONS`（`src/loop/capabilities-namespace.js`）。
+//      **#498 S3 之后本格不再手抄任何顶层总数**：闭合改成集合等式（与条数无关）。
 //   C2（`capabilities.ports` 的形状闸口）：拼错子键抛并列出可接受值；三条端口各有各的值形状
 //      （`sleepImpl` = 函数、`judgeProvider` = callable 或 `{chat}` 对象、`strategy` = 策略对象，
 //      内置名字是**数据**、不住端口位）；`hooks` 的值校验器**不因为多态旋钮而放宽**（仍是函数）。
@@ -18,8 +19,10 @@
 //      各收到投递（折叠前后 / 扩轮 / 桩解析）。`?? defaultSleep` 兜底也被钉（删掉它这格红）。
 //   C8（形态多态旋钮：本刀最容易开「同一旋钮两个户口」的地方）：数据形态留 `config.folding.context`、
 //      函数形态进 `capabilities.hooks`；两侧不等价 ⇒ **恰一条**冲突事件、等价 ⇒ **零**事件。
-//   C9（扁平老写法零回归）：`retry.sleepImpl` / `context.onBeforeFold` / `reflection.judge.provider` /
-//      `context.strategy`（对象形态）**照旧可用**——本刀只加目的地，不撤顶层。
+//   C9（壳内老槽位零回归）：`context.onBeforeFold` / `reflection.judge.provider` /
+//      `context.strategy`（对象形态）**照旧可用**，`retry.sleepImpl` 则改走它的新家
+//      `config.timing.retry`（#498 S3 把 `retry` 的扁平写法撤了，但展开相仍写回
+//      `effectiveOptions.retry`，所以壳内读侧一字未改）。
 //
 // 零真实 LLM（fake provider），不写盘、不碰真实 `~/.erix`。
 import test from "node:test";
@@ -44,6 +47,7 @@ import {
   CAPABILITY_OPTION_NAMES,
   CONFIG_SURFACE_OPTION_NAMES,
   NAMESPACE_CONTAINER_OPTION_NAMES,
+  configPlaneOptionNames,
   configSchemaSelfCheck,
 } from "../src/loop/config-namespace.js";
 import {
@@ -157,17 +161,12 @@ function extendingRun(extra = {}, reflectionExtra = {}) {
 }
 
 // ================================================================ C1. 账目 + 不发明扁平别名
-test("C1 账目：白名单仍是 67，9 个新叶子一律是嵌套槽（没有新顶层选项）", () => {
-  // 四个数逐个钉住（与 S4a / S4b 同一张对账表，本刀一个都没动）。
-  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.length, 67, "顶层白名单仍是 67（ports/hooks 的成员都是子键）");
-  assert.equal(CONFIG_SURFACE_OPTION_NAMES.length, 43, "配置面 43");
-  assert.equal(CAPABILITY_OPTION_NAMES.length, 22, "能力面（顶层选项那一层）22");
-  assert.equal(NAMESPACE_CONTAINER_OPTION_NAMES.length, 2, "容器两个：config 与 capabilities");
-  assert.equal(
-    CONFIG_SURFACE_OPTION_NAMES.length + CAPABILITY_OPTION_NAMES.length + NAMESPACE_CONTAINER_OPTION_NAMES.length,
-    RUN_TOOL_LOOP_OPTION_NAMES.length,
-    "三向闭合一字未动",
-  );
+test("C1 账目：白名单被三个面恰好切一遍，9 个新叶子一律是嵌套槽（没有新顶层选项）", () => {
+  // #498 S3：四个字面总数（顶层 / 配置面 / 能力面 / 容器）全部删掉，改成集合等式。
+  const configPlane = configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES);
+  const partition = [...configPlane, ...CAPABILITY_OPTION_NAMES, ...NAMESPACE_CONTAINER_OPTION_NAMES];
+  assert.equal(new Set(partition).size, partition.length, "三个面两两不相交");
+  assert.deepEqual([...partition].sort(), [...RUN_TOOL_LOOP_OPTION_NAMES].sort(), "三向闭合（逐键，不靠条数）");
   assert.deepEqual(configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES), [], "自检必须仍 []");
 
   // 能力面 schema 的三组与成员数（本刀的判据面）。
@@ -183,7 +182,7 @@ test("C1 账目：白名单仍是 67，9 个新叶子一律是嵌套槽（没有
   // **本刀的核心硬判据**：9 个新叶子一个都不许出现在顶层白名单里——它们不是「搬过来的扁平键」，
   // 而是从来就没有过的容器成员位。若哪天有人给它们发明了顶层别名，这里先红。
   for (const leaf of CAPABILITIES_SLOT_LEAF_NAMES) {
-    assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(leaf), false, `${leaf} 不许成为顶层选项（白名单 67 不变）`);
+    assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(leaf), false, `${leaf} 不许成为顶层选项（嵌套槽叶子不发明扁平键）`);
     assert.equal(CAPABILITY_OPTION_NAMES.includes(leaf), false, `${leaf} 不是顶层能力键`);
     assert.equal(CONFIG_SURFACE_OPTION_NAMES.includes(leaf), false, `${leaf} 不是配置键`);
     // 它是行为载体 ⇒ 不进 round-trip 覆盖度名单（那份名单只收配置面叶子）。
@@ -208,8 +207,8 @@ test("C1 账目：白名单仍是 67，9 个新叶子一律是嵌套槽（没有
   );
 });
 
-test("C1b 自检会咬人：给嵌套槽叶子发明顶层扁平别名 ⇒ 红（证明 67 不是嘴上说的）", () => {
-  // 模拟「有人把 `sleepImpl` 塞进顶层白名单」——本刀最危险的错法（会变成 76）。
+test("C1b 自检会咬人：给嵌套槽叶子发明顶层扁平别名 ⇒ 红（证明「只加目的地」不是嘴上说的）", () => {
+  // 模拟「有人把 `sleepImpl` 塞进顶层白名单」——本刀最危险的错法。
   const invented = [...RUN_TOOL_LOOP_OPTION_NAMES, "sleepImpl"];
   assert.deepEqual(
     configSchemaSelfCheck(invented),
@@ -299,7 +298,7 @@ test("C2b 装配口路线：policy.capabilities.ports 同相校，via=assembly",
 });
 
 // ================================================================ C3. 展开层：槽位 + 冲突
-test("C3 端口位不进扁平表示（走 slots），与壳里老槽位不等价 ⇒ 恰一条冲突、等价 ⇒ 零", () => {
+test("C3 端口位不进扁平表示（走 slots），与壳里老槽位不等价 ⇒ 恰一条冲突、等价 ⇒ 零", async () => {
   const sleepImpl = async () => {};
   const expanded = expandCapabilitiesNamespace({ capabilities: { ports: { sleepImpl } } });
   assert.deepEqual(expanded.conflicts, []);
@@ -350,14 +349,19 @@ test("C3 端口位不进扁平表示（走 slots），与壳里老槽位不等�
     [],
   );
   // 冲突经同一条事件出口出去：一次 run 里恰好一条 `config_override_conflict`。
-  return runDirect({
-    retry: { attempts: 1, backoffBaseMs: 0, sleepImpl: otherSleep },
-    capabilities: { ports: { sleepImpl } },
-    onEvent: (event) => {
-      if (event.type !== "config_override_conflict") return;
-      assert.deepEqual(event.conflicts, [{ path: "ports.sleepImpl", key: "sleepImpl" }]);
-    },
+  // ⚠ #498 S3 的**真实后果**（本刀必须如实披露，不是测试技巧）：`retry` 搬进 `config.timing.retry`
+  // 之后，壳里的 `retry.sleepImpl` 就**再也写不进去了**——扁平写法被名称闸口拒，而
+  // `config.timing.retry.sleepImpl` 是函数值，被「config 只装数据」当场拒。于是「壳 vs 端口位同时
+  // 在场 ⇒ 一条冲突事件」这个**真实 run** 已经构造不出来（纯展开层仍可以，见上面）。
+  // 这里改为钉住宿主实际会撞上的那条链（两级报错各自指向下一站），这是本刀能给出的最强证据。
+  const flatShell = await directError({ retry: { attempts: 1, sleepImpl: async () => {} } });
+  assert.match(flatShell.message, /^unknown runToolLoop option: "retry"/u);
+  assert.match(flatShell.message, /its canonical home is config\.timing\.retry/u);
+  const nestedShell = await directError({
+    config: { timing: { retry: { attempts: 1, sleepImpl: async () => {} } } },
   });
+  assert.match(nestedShell.message, /config\.timing\.retry\.sleepImpl is not accepted/u);
+  assert.match(nestedShell.message, /its canonical home is capabilities\.ports\.sleepImpl/u);
 });
 
 // ================================================================ C4. sleepImpl 行为证据
@@ -370,7 +374,7 @@ test("C4 行为证据：ports.sleepImpl 真被调用并记录延迟（默认兜�
     initialUserMessage: "go",
     completion: false,
     wrapup: false,
-    retry: { attempts: 2, backoffBaseMs: 10 },
+    config: { timing: { retry: { attempts: 2, backoffBaseMs: 10 } } },
     capabilities: { ports: { sleepImpl: async (ms) => { sleeps.push(ms); } } },
   });
   assert.equal(result.termination.reason, "end_turn");
@@ -386,7 +390,7 @@ test("C4 行为证据：ports.sleepImpl 真被调用并记录延迟（默认兜�
     initialUserMessage: "go",
     completion: false,
     wrapup: false,
-    retry: { attempts: 1, backoffBaseMs: 0 },
+    config: { timing: { retry: { attempts: 1, backoffBaseMs: 0 } } },
   });
   assert.equal(fallback.termination.reason, "end_turn", "没有注入定时器时必须退回 defaultSleep");
   assert.equal(fallbackCounter.calls, 2);
@@ -630,20 +634,21 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
 });
 
 // ================================================================ C9. 扁平老写法零回归
-test("C9 扁平老写法零回归：retry.sleepImpl / context.onBeforeFold / reflection.judge.provider / context.strategy 照旧可用", async () => {
-  // ① `retry: { sleepImpl }`（顶层扁平老写法）
+test("C9 壳内老槽位零回归：config.timing.retry / context.onBeforeFold / reflection.judge.provider / context.strategy 照旧可用", async () => {
+  // ① `config.timing.retry`（`retry` 的新家；#498 S3 把它的扁平写法撤了）。
+  //    ⚠ 壳里的 `retry.sleepImpl` 已不可写（函数不许进 config），所以这一格只钉**数据叶子**
+  //    （`attempts` / `backoffBaseMs`）真的到了引擎的 `effectiveOptions.retry` 上。
   const counter = { calls: 0 };
-  const flatSleeps = [];
   const retried = await runToolLoop({
     provider: retryingProvider(counter),
     executeTool: async () => "ok",
     initialUserMessage: "go",
     completion: false,
     wrapup: false,
-    retry: { attempts: 1, backoffBaseMs: 0, sleepImpl: async (ms) => { flatSleeps.push(ms); } },
+    config: { timing: { retry: { attempts: 1, backoffBaseMs: 0 } } },
   });
   assert.equal(retried.termination.reason, "end_turn");
-  assert.deepEqual(flatSleeps, [0], "扁平 retry.sleepImpl 照旧被调用");
+  assert.equal(counter.calls, 2, "config.timing.retry.attempts 真的生效（一次重试 ⇒ 两次调用）");
 
   // ② `context: { onBeforeFold }` / `onAfterFold` / `stubFor`
   const flatBefore = [];
@@ -851,23 +856,31 @@ test("C14 逐叶等价（真 run，4 个 hooks）：同一函数引用同时写�
 // 下面三格都是**行为证据**：两侧同时在场、实现不同 ⇒ 实际被调用的是 `capabilities.ports.*` 那份，
 // 壳里那份零调用（不是读返回值，是看谁真的被调）。
 
-test("C15 优先级方向（sleepImpl）：retry.sleepImpl 与 capabilities.ports.sleepImpl 同时在场 ⇒ 端口位赢、壳里零调用", async () => {
+test("C15 优先级方向（sleepImpl）：端口位是唯一入口（壳里那份已被 S3 退掉），且它真的被调用", async () => {
+  // ⚠ #498 S3 把「壳 vs 端口位同时在场」这个**形状**本身退掉了：`retry.sleepImpl` 扁平写法被名称闸口拒，
+  // `config.timing.retry.sleepImpl` 被「config 只装数据」拒。所以本格从「比优先级」改成
+  // 「两条旧入口各自指向下一站 + 端口位真的被调用」——残留见交付报告的「不同意裁决」一节。
+  const flatShell = await directError({ retry: { attempts: 2, sleepImpl: async () => {} } });
+  assert.match(flatShell.message, /its canonical home is config\.timing\.retry/u);
+  const nestedShell = await directError({
+    config: { timing: { retry: { attempts: 2, sleepImpl: async () => {} } } },
+  });
+  assert.match(nestedShell.message, /its canonical home is capabilities\.ports\.sleepImpl/u);
+
   const counter = { calls: 0 };
   const portSleeps = [];
-  const shellSleeps = [];
   const result = await runToolLoop({
     provider: retryingProvider(counter),
     executeTool: async () => "ok",
     initialUserMessage: "go",
     completion: false,
     wrapup: false,
-    retry: { attempts: 2, backoffBaseMs: 10, sleepImpl: async (ms) => { shellSleeps.push(ms); } },
+    config: { timing: { retry: { attempts: 2, backoffBaseMs: 10 } } },
     capabilities: { ports: { sleepImpl: async (ms) => { portSleeps.push(ms); } } },
   });
   assert.equal(result.termination.reason, "end_turn");
   assert.equal(counter.calls, 2, "前提：真的重试了一次（否则「谁被调用」无从谈起）");
-  assert.deepEqual(portSleeps, [10], "capabilities.ports.sleepImpl 赢：它拿到实际退避延迟");
-  assert.deepEqual(shellSleeps, [], "retry.sleepImpl（壳内那份）零调用——`??` 顺序翻转这里就红");
+  assert.deepEqual(portSleeps, [10], "capabilities.ports.sleepImpl 拿到实际退避延迟（它是唯一入口）");
 });
 
 test("C16 优先级方向（judgeProvider）：reflection.judge.provider 与 capabilities.ports.judgeProvider 同时在场 ⇒ 端口位赢、壳里零请求", async () => {

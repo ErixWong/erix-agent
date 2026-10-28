@@ -38,11 +38,15 @@ test("restores a round snapshot and flushes only the successful attempt events",
         onReasoningDelta: (delta) => reasoning.push(delta),
         onEvent: (event) => events.push(event),
       },
+      ports: { sleepImpl: async () => {} },
     },
-    retry: {
-      attempts: 1,
-      backoffBaseMs: 0,
-      sleepImpl: async () => {},
+    config: {
+      timing: {
+        retry: {
+          attempts: 1,
+          backoffBaseMs: 0,
+        },
+      },
     },
   });
 
@@ -84,7 +88,8 @@ test("aborting during retry backoff stops without starting another provider atte
     initialUserMessage: "hello",
     executeTool: async () => "unused",
     signal: controller.signal,
-    retry: { attempts: 3, sleepImpl },
+    config: { timing: { retry: { attempts: 3 } } },
+    capabilities: { ports: { sleepImpl } },
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
   controller.abort(new Error("user stopped"));

@@ -149,10 +149,8 @@ test("does not retry a fetch AbortError during an OpenAI stream", async () => {
       initialUserMessage: "hello",
       executeTool: async () => "unused",
       stream: true,
-      retry: {
-        attempts: 3,
-        sleepImpl: async (ms) => sleeps.push(ms),
-      },
+      config: { timing: { retry: { attempts: 3 } } },
+      capabilities: { ports: { sleepImpl: async (ms) => sleeps.push(ms) } },
     }),
     (error) => error instanceof KitError
       && error.code === "aborted"

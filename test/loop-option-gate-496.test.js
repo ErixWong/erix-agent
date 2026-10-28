@@ -176,9 +176,15 @@ const GATE_RULES = [
     message: "finalGuard must be a function (or omitted)",
   },
   {
-    id: "retry.sleepImpl-shape",
-    bad: { retry: { attempts: 1, sleepImpl: 10 } },
-    good: { retry: { attempts: 1, sleepImpl: async () => {} } },
+    // #498 S3: `retry` moved to `config.timing.retry` (data keys) — the flat spelling is rejected one
+    // phase earlier by the name gate, so the semantic-phase cell uses the nested spelling.
+    id: "timing.retry.sleepImpl-shape",
+    bad: { config: { timing: { retry: { attempts: 1, sleepImpl: 10 } } } },
+    // The positive case is data-only: a function inside `config` is rejected by the namespace gate
+    // (#498 S4a constraint 4), which is a *different* rule than this cell's. The function carrier's
+    // canonical home (`capabilities.ports.sleepImpl`) is covered in
+    // `test/loop-capabilities-ports-hooks-498s4c.test.js`.
+    good: { config: { timing: { retry: { attempts: 1 } } } },
     message: "retry.sleepImpl must be a function (or omitted)",
   },
   {
@@ -406,7 +412,8 @@ test("D① 承载宿主回调的字段：省略 = 不订阅，给对就**真的�
     finalGuard: async () => { calls.finalGuard += 1; return { action: "accept" }; },
     deliverables: [{ name: "always", check: async () => { calls.check += 1; return true; } }],
     // 首步是一次可重试失败 ⇒ 重试闸口必须真的走一遍 `sleepImpl`（否则这一格又是死计数器）。
-    retry: { attempts: 2, sleepImpl: async (ms) => { calls.sleepImpl += 1; sleeps.push(ms); } },
+    config: { timing: { retry: { attempts: 2 } } },
+    capabilities: { ports: { sleepImpl: async (ms) => { calls.sleepImpl += 1; sleeps.push(ms); } } },
     reflection: { enabled: false, onReflection: () => {} },
     diagnostics: { error: (event) => { calls.error += 1; persistenceEvents.push(event); } },
     // 钩子**先计数再抛**：投递真的发生了（计数 >= 1），失败走持久化账本（`diagnostics.error` 真的被调）。
@@ -466,8 +473,9 @@ test("D② 承载回调的字段给错就启动即抛：反例清单逐条（含
     [{ onFoldSummary: {} }, "assembly policy option onFoldSummary must be a function (or omitted)"],
     [{ finalGuard: null }, "finalGuard must be a function (or omitted)"],
     [{ finalGuard: "accept" }, "finalGuard must be a function (or omitted)"],
-    [{ retry: { sleepImpl: null } }, "retry.sleepImpl must be a function (or omitted)"],
-    [{ retry: { sleepImpl: {} } }, "retry.sleepImpl must be a function (or omitted)"],
+    // #498 S3: `retry` is `config.timing.retry` now; the flat spelling is rejected one phase earlier.
+    [{ config: { timing: { retry: { sleepImpl: null } } } }, "retry.sleepImpl must be a function (or omitted)"],
+    [{ config: { timing: { retry: { sleepImpl: {} } } } }, "retry.sleepImpl must be a function (or omitted)"],
     [{ reflection: { enabled: false, onReflection: 1 } }, "reflection.onReflection must be a function (or omitted)"],
     [{ reflection: { enabled: false, onReflection: null } }, "reflection.onReflection must be a function (or omitted)"],
     [{ diagnostics: { error: [] } }, "diagnostics.error must be a function (or omitted)"],

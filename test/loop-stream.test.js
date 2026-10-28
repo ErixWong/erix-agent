@@ -134,12 +134,9 @@ test("isolates streaming observer failures from a successful provider call", asy
         onEvent: (event) => events.push(event),
         onObserverError: (error) => reported.push(error.message),
       },
+      ports: { sleepImpl: async () => {} },
     },
-    retry: {
-      attempts: 1,
-      backoffBaseMs: 0,
-      sleepImpl: async () => {},
-    },
+    config: { timing: { retry: { attempts: 1, backoffBaseMs: 0 } } },
   });
 
   assert.equal(result.finalText, "done");
@@ -184,12 +181,9 @@ test("isolates streaming observer failures while flushing a retried attempt", as
         },
         onObserverError: (error) => reported.push(error.message),
       },
+      ports: { sleepImpl: async () => {} },
     },
-    retry: {
-      attempts: 1,
-      backoffBaseMs: 0,
-      sleepImpl: async () => {},
-    },
+    config: { timing: { retry: { attempts: 1, backoffBaseMs: 0 } } },
   });
 
   assert.equal(result.finalText, "done");
@@ -259,12 +253,11 @@ test("holds deltas until the successful attempt when retry is enabled", async ()
     initialUserMessage: "hello",
     executeTool: async () => "unused",
     stream: true,
-    capabilities: { hooks: { onDelta: (chunk) => order.push(`onDelta:${chunk}`) } },
-    retry: {
-      attempts: 1,
-      backoffBaseMs: 0,
-      sleepImpl: async () => {},
+    capabilities: {
+      hooks: { onDelta: (chunk) => order.push(`onDelta:${chunk}`) },
+      ports: { sleepImpl: async () => {} },
     },
+    config: { timing: { retry: { attempts: 1, backoffBaseMs: 0 } } },
   });
 
   assert.deepEqual(order, [
@@ -544,7 +537,8 @@ test("partial snapshot from a retryable attempt is cleared before retry", async 
     runId: "partial-retry",
     stream: true,
     partialPersistence: { intervalMs },
-    retry: { attempts: 1, backoffBaseMs: 0, sleepImpl: async () => {} },
+    config: { timing: { retry: { attempts: 1, backoffBaseMs: 0 } } },
+    capabilities: { ports: { sleepImpl: async () => {} } },
     completion: false,
     wrapup: false,
     maxRounds: 1,

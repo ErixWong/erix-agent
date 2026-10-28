@@ -642,13 +642,23 @@ function readSlotPath(options, path) {
  *     that does not exist);
  *   · a **nested-slot** leaf **must not** be on the top-level allowlist — being there would mean
  *     somebody invented a flat alias for it, while this slice's hard requirement is "the allowlist
- *     stays at 67". Its `path[0]` (the shell) must really be a top-level option.
+ *     stays at 67". Its `path[0]` (the shell) must really exist as a key the engine still reads.
  * Together they are the machine proof of "only add destinations, do not invent new keys".
  *
+ * #498 S3: "the shell must exist" stopped being the same question as "the shell is a top-level
+ * option". The `ports.sleepImpl` shell is `retry`, which this slice moved to `config.timing.retry`;
+ * the expansion phase still writes it back to `effectiveOptions.retry` (that is why `path` stays
+ * `["retry", "sleepImpl"]` — it is the **flat** read path, not a write spelling). So the caller may
+ * pass `shellIsKnown`, which is exactly "this name still resolves to something the engine reads".
+ * `configSchemaSelfCheck` passes a resolver that also accepts config leaves that lost their
+ * top-level key; called without it, the behaviour is the old `optionNames.includes` one.
+ *
  * @param {readonly string[]} optionNames 顶层选项白名单
+ * @param {{shellIsKnown?: (name: string) => boolean}} [overrides] S3 hook: see above.
  * @returns {string[]} 问题列表（空 = 通过）
  */
-export function capabilitiesSchemaSelfCheck(optionNames) {
+export function capabilitiesSchemaSelfCheck(optionNames, { shellIsKnown } = {}) {
+  const isKnownShell = shellIsKnown ?? ((name) => optionNames.includes(name));
   const problems = [];
   for (const group of CAPABILITIES_NAMESPACE_GROUPS) {
     if (typeof CAPABILITIES_GROUP_VALIDATORS[group] !== "function") {
@@ -671,7 +681,7 @@ export function capabilitiesSchemaSelfCheck(optionNames) {
           + " (that would be a new flat alias, not a destination)",
         );
       }
-      if (!optionNames.includes(destination.path[0])) {
+      if (!isKnownShell(destination.path[0])) {
         problems.push(
           `capabilities.${group}.${leaf} is destined for ${JSON.stringify(destination.path[0])},`
           + " which is not a top-level option",

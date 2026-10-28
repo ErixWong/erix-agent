@@ -85,7 +85,7 @@ test("新 code 不进重试路径：retry:{attempts:2} 下 404 仍只调用一�
   await assert.rejects(
     runToolLoop({
       provider,
-      retry: { attempts: 2 },
+      config: { timing: { retry: { attempts: 2 } } },
       initialUserMessage: "fail",
       executeTool: async () => "unused",
     }),

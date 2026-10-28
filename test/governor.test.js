@@ -176,7 +176,7 @@ test("loop injects the wrap-up nudge once near a configured deadline", async () 
       return { data: "worked", success: true };
     },
     maxRounds: 3,
-    timeoutMs: 100,
+    config: { timing: { timeoutMs: 100 } },
     completion: false,
     stallDetection: false,
   });

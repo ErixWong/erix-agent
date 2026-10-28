@@ -111,13 +111,16 @@ function legacyFlatOptions(input) {
     tools: tools.tools,
     executeTool: tools.executeTool,
     maxRounds: params.maxRounds,
-    timeoutMs: params.timeoutMs,
     stream: false,
     signal,
     runId,
     store,
     wrapup: false,
-    retry: { attempts: 2 },
+    // #498 S3 (`timing` slice): `timeoutMs` / `retry` no longer have a flat spelling — the golden
+    // uses their canonical home `config.timing.*`. The equivalence claim is unaffected: the
+    // expansion phase writes them back to `effectiveOptions.timeoutMs` / `.retry`, which is exactly
+    // the mechanism this slice relies on.
+    config: { timing: { timeoutMs: params.timeoutMs, retry: { attempts: 2 } } },
     completion: { signals: ["任务已完成", "已完成", "全部完成", "无需继续", "任务结束", "没有更多步骤"], maxNoToolRounds: 3 },
     ...(reflection === undefined ? {} : { reflection }),
     ...(params.strategy === undefined ? {} : { context: { strategy: params.strategy } }),
@@ -189,6 +192,10 @@ test("S6-A 迁移前的每个扁平键都有唯一新规位，且顶层不再有
 
   const unclassified = [];
   for (const [flatKey, legacyValue] of Object.entries(legacy)) {
+    // #498 S3: the golden itself carries the `config` container now (the three `timing` keys lost
+    // their flat spelling), and a container is neither a config leaf nor a capability member — it
+    // disappears during expansion. Skip it instead of calling it "unclassified".
+    if (CONTAINER_KEYS.includes(flatKey)) continue;
     const configPath = configPathForOption(flatKey);
     const capabilityPath = capabilitiesPathForOption(flatKey);
     if (configPath === undefined && capabilityPath === undefined) {
