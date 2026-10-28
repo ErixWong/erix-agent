@@ -268,8 +268,11 @@ test("任意名字：键名必须落在 loop 选项闭集内，否则抛（含 d
   // 闭集**来源自证**：`RUN_TOOL_LOOP_OPTION_NAMES` 里的每一个名字都不是「unknown」——
   // 它们只可能撞上冲突闸口（端口产出的那些）或容器闸口（`config` / `capabilities`）。
   // 这条把「键集从代码枚举」钉成机器可查：实现里换掉这个来源、或手抄一份清单，都会红。
-  const { RUN_TOOL_LOOP_OPTION_NAMES } = await import("../../src/loop/option-normalization.js");
-  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.length, 67);
+  const { RUN_TOOL_LOOP_OPTION_NAMES, RUN_TOOL_LOOP_OPTION_SET } = await import(
+    "../../src/loop/option-normalization.js",
+  );
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.length, RUN_TOOL_LOOP_OPTION_SET.size,
+    "闭集大小必须与来源符号一致（手抄总数会在删键时假红，#498 S3 口径）");
   for (const name of RUN_TOOL_LOOP_OPTION_NAMES) {
     const error = await assemblyPortOptions(port, { [name]: null }).then(() => null, (caught) => caught);
     assert.equal(
