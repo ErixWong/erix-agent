@@ -584,8 +584,8 @@ export function createAssemblyPort(input = {}) {
     throw new TypeError("assembly port session.initialMessages must be an array");
   }
   for (const [key, value] of Object.entries(port.policy ?? {})) {
-    // `undefined` 逐字等于「没给」——与全仓的合并口径（`value !== undefined`）同源，所以一个
-    // `policy: { <name>: undefined }` 的展开对象不会被当成「给了个非法名字」。
+    // `undefined` means "not given" (the repo-wide `value !== undefined` merge rule), so a spread
+    // options object (`policy: { <name>: undefined }`) is not read as "a bad name was given".
     if (value === undefined) continue;
     if (ASSEMBLY_POLICY_CONFIG_LEAF_NAMES.has(key) || ASSEMBLY_POLICY_CONTAINER_NAMES.has(key)) continue;
     throw new TypeError(assemblyPolicyNameProblem(key));

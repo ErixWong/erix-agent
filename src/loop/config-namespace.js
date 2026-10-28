@@ -85,12 +85,13 @@
 //           0.28 判据就得反过来开例外（一条 round-trip 判据要豁免两个字符串键，它也就不再是判据）。
 //      所以它们是 `config.run.runId` / `config.run.cwd`：别名新增，**顶层扁平键一字未动**。
 //
-// 优先级（范围 2）：同名时 `config.*` 覆盖顶层扁平键。
-// 冲突不静默——两个 `config` 源（`policy.config` / 调用级 `config`）同时给同一个叶子时，
-// `collectConfigSourceConflicts` 逐叶记一条，由 orchestrator 发一条 `config_override_conflict`
-// 事件（唯一的发射点，与 #469 的 `context_unknown_option` 同口径：观察者抛错不得影响 run）。
-// #545：「扁平 vs config」这一支不再是**冲突**，而是一条内部不变量（没有入口能同时给出两种写法，
-// 见 `expandConfigNamespace` 的 JSDoc）。
+// Priority (scope 2): `config.*` wins over the flat top-level key of the same knob.
+// Conflicts are never silent: when two `config` sources (`policy.config` / the call-level `config`)
+// both give one leaf, `collectConfigSourceConflicts` records it per leaf and the orchestrator emits
+// one `config_override_conflict` event (the single emission point, same rule as #469's
+// `context_unknown_option`: an observer that throws must not affect the run).
+// #545: the "flat vs config" branch is no longer a **conflict** but an internal invariant — no entry
+// route can produce both spellings (see the JSDoc of `expandConfigNamespace`).
 //
 // 零运行时依赖：只用相对路径 + `node:` 内置。
 
@@ -1039,35 +1040,39 @@ function isConfigObject(value) {
 /**
  * 展开 `config` 命名空间：把每个叶子写回它的顶层扁平键，并记下**冲突**。
  *
- * 展开规则（逐条都是本单的验收判据）：
- *   · `config.<group>.<leaf>` 写回它的顶层扁平键（叶子过 `CONFIG_LEAF_ALIASES` 后才是顶层键名，
- *     `input.messages` → `initialMessages`），于是下游看到的仍是一份扁平表示，#496 的语义相闸口
- *     对 config 里写的值一视同仁；
- *   · 叶子的 `undefined` 逐字等于「没给」（与既有合并规则 `value !== undefined` 同口径）；
- *   · `config` 本身从展开结果里消失。
+ * Expansion rules (each one is a criterion of this slice):
+ *   · `config.<group>.<leaf>` is written back to its flat top-level key (the leaf goes through
+ *     `CONFIG_LEAF_ALIASES` first, so `input.messages` → `initialMessages`); downstream still sees a
+ *     flat representation, which is why #496's semantic phase judges config values the same way;
+ *   · a leaf's `undefined` means "not given" (the existing `value !== undefined` merge rule);
+ *   · `config` itself disappears from the result.
  *
- * **「扁平 vs config」这一支已经删了（#545）**，换成一条内部不变量：写回之前，那个扁平键在
- * `options` 里必须**没有值**。谁还走得到这条断言？**没有人**——三条来源逐一关死了：
- *   ① 调用级显式选项：名称闸口（`assertRunToolLoopOptionNames`）只放行
- *      `RUN_TOOL_LOOP_OPTION_NAMES`，而 S3 之后**没有一个配置叶子还留在白名单里**
- *      （`configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES)` 为空，测试钉住）；
- *   ② 装配口 `policy`：#545 起它**只收数据**且叶子名一律翻译成 `config.<path>`
- *      （`translatedPolicyConfigLeaves`），产出的合并树里没有任何扁平配置键；
- *   ③ 端口派生键（`provider` / `tools` / `session` / `onEvent` …）：它们是第三站或能力面，
- *      一个都不是配置叶子。
- * 所以「同一个键两种写法」在**合并表示**里不可能同时出现，这一支不再是「没人走但门禁全绿」的死
- * 代码：它变成一条会咬人的不变量——将来谁新增一条未经闸口的选项来源，这里立刻抛并点名叶子，
- * 而不是静默让 `config` 赢（那正是 #497 之前的样子）。
+ * **The "flat vs config" branch was removed (issue #545)** and replaced by an internal invariant: the
+ * flat twin must have **no** value before a leaf is written back. Who can still reach that assertion?
+ * **Nobody** — all three sources are closed one by one:
+ *   ① call-level explicit options: the name gate (`assertRunToolLoopOptionNames`) only admits
+ *      `RUN_TOOL_LOOP_OPTION_NAMES`, and after S3 **no config leaf is left on the allowlist**
+ *      (`configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES)` is empty; a test pins it);
+ *   ② the assembly port's `policy`: since #545 it takes **data only** and translates every leaf name
+ *      into `config.<path>` (`translatedPolicyConfigLeaves`), so the merged tree it produces holds no
+ *      flat config key at all;
+ *   ③ port-derived keys (`provider` / `tools` / `session` / `onEvent` …): third station or capability
+ *      plane — not one of them is a config leaf.
+ * So "one knob, two spellings" cannot occur in the **merged representation** any more, and this is not
+ * "unreachable code that the gates call green": it is an invariant with teeth — a future option source
+ * that skips its name gate throws here and names the leaf, instead of silently letting `config` win
+ * (which is exactly what happened before #497).
  *
- * 返回新对象，不改入参。
+ * Returns a new object; the input is not mutated.
  *
- * @param {Record<string, any>} options 合并后的选项表示（可能带 `config`）
+ * @param {Record<string, any>} options the merged option representation (may carry `config`)
  * @param {{via?: "assembly"|"direct"}} [route]
  * @returns {{
  *   options: Record<string, any>,
  *   conflicts: Array<{path: string, key: string}>,
- * }} `conflicts` 恒为空（`expandConfigNamespace` 这一侧已经没有可报的冲突：见上面的不变量）；
- *   保留这个字段是因为调用方按 `{ options, conflicts }` 解构，且 `capabilities` 那一侧同形。
+ * }} `conflicts` is always empty on this side (there is nothing left to report here — see the
+ *   invariant above); the field stays because callers destructure `{ options, conflicts }` and the
+ *   `capabilities` side has the same shape.
  */
 export function expandConfigNamespace(options, route = {}) {
   const config = options.config;
