@@ -22,6 +22,11 @@ modelConfigProviderContract("env", async () => {
     slot: "audit",
     expect: { defaultModel: "env-model", slotModel: "env-model", materializedKey: "env-contract-secret" },
   };
+}, {
+  // issue #518: env carries exactly one config and ignores the slot name — a shape
+  // difference from the slot maps, not the retired "unknown falls back to default".
+  mode: "single-config",
+  name: "no-such-slot",
 });
 
 // ---- 实现特有：数字字段转换 ----
