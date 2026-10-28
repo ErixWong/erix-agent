@@ -362,11 +362,13 @@ export function validateFoldSummaryHook(hook) {
  * This table is the **one** place the accepted set is written; every message below interpolates it
  * (`sessionMemberPaths()`), so no name is ever spelled twice and a message cannot drift from the
  * gate. The read points recorded here are the engine's actual readers, not a copy of the docs:
- *   · `id` — `assemblyPortDerivedConfigLeaves()` (`src/assembly.js`, → `config.run.runId`) and
- *     `missingAssemblyMethods()` / `collectLoopCapabilitiesMissing()` (the required `session.id`);
+ *   · `id` — `sessionDerivedConfigLeaves()` (`src/assembly.js`, → `config.run.runId`, now folded on
+ *     **both** routes) and `missingAssemblyMethods()` / `collectLoopCapabilitiesMissing()` (the
+ *     required `session.id`);
  *   · `modelSlot` — `assemblyPortOptions()` (`src/assembly.js`) and `runToolLoop`
  *     (`src/loop/orchestrator.js`), both feeding `modelConfig.resolve(session.modelSlot)`;
- *   · `initialMessages` — `assemblyPortDerivedConfigLeaves()` (→ `config.input.messages`).
+ *   · `initialMessages` — `sessionDerivedConfigLeaves()` (→ `config.input.messages`, both routes
+ *     since #550; the assembly route was the only reader before it).
  *
  * The list is not trusted on its own: `test/session-container-513.test.js` re-derives the set from
  * `src/**` by scanning for `session.<name>` / `session?.<name>` member reads and asserts equality in
@@ -379,7 +381,7 @@ export function validateFoldSummaryHook(hook) {
 export const SESSION_MEMBER_READ_POINTS = Object.freeze([
   {
     name: "id",
-    readBy: "src/assembly.js assemblyPortDerivedConfigLeaves() → config.run.runId"
+    readBy: "src/assembly.js sessionDerivedConfigLeaves() → config.run.runId (both entry routes)"
       + "; src/assembly.js missingAssemblyMethods() / src/assembly-validators.js"
       + " collectLoopCapabilitiesMissing() (required session.id)",
   },
@@ -390,7 +392,8 @@ export const SESSION_MEMBER_READ_POINTS = Object.freeze([
   },
   {
     name: "initialMessages",
-    readBy: "src/assembly.js assemblyPortDerivedConfigLeaves() → config.input.messages",
+    readBy: "src/assembly.js sessionDerivedConfigLeaves() → config.input.messages"
+      + " (both entry routes)",
   },
 ]);
 
@@ -430,48 +433,56 @@ function describeSessionValue(value) {
 }
 
 /**
- * The one message a non-object `session` gets when the engine requires a container (issue #513 ④).
+ * The one message a non-object `session` gets on **both** entry routes (issue #513 ④, #550 ①).
  *
  * It has to be its own sentence: without it the assembly port reported `assembly port is missing
  * methods: session`, which talks about methods for a value that is not a port and hides the real
  * problem (`session: "abc"` is a *shape* mistake, not a missing capability).
+ *
+ * #550 appended the second half. Until then the sentence named only the container's members, so a
+ * host whose string used to travel as an opaque payload was told what `session` *is* but not where
+ * its value went — the one thing a breaking narrowing owes the host.
  *
  * @param {unknown} value
  * @returns {string}
  */
 export function sessionContainerTypeProblem(value) {
   return `session must be an object (got ${describeSessionValue(value)}):`
-    + ` the run identity lives in its members (${sessionMemberPaths().join(", ")})`;
+    + ` the run identity lives in its members (${sessionMemberPaths().join(", ")})`
+    + "; the opaque payload that reaches executeTool as context.session lives in"
+    + " config.folding.context.session";
 }
 
 /**
- * The `session` container's member allowlist (issue #513 ①②).
+ * The `session` container's member allowlist and member shapes (issue #513 ①②, #550).
  *
  * Runs on **both** entry routes through {@link collectSemanticOptionProblems} (the shared semantic
  * phase) and, earlier, on the assembly port member in `createAssemblyPort` — one function, one
  * message, so the two routes cannot disagree about what a legal `session` is.
  *
- * Scope, deliberately narrow:
- *   · an **object** is the identity container ⇒ unknown members are refused;
- *   · an **array** is refused with the type message: the engine already treats any non-null object as
- *     the container (`fineGrainedPortShape`), so an array could only ever fail on `session.id` — a
- *     sentence about a missing id for a value that can never carry one;
- *   · `null` / string / number / boolean / function are **left alone here**: on the direct route
- *     `session` is also the opaque payload the engine forwards to `context.session`
- *     (`src/loop/budget.js`, `session?: any`), and that spelling is live (the CLI passes a session id
- *     string, `test/loop-v020-rc.test.js` pins it). Refusing it is not this ticket's to break; the
- *     assembly port, where `session` is the container by contract, refuses it in
- *     `createAssemblyPort`.
+ * Scope (widened by #550, which adjudicated the one-name-two-meanings shape #513 left open):
+ *   · an **object** is the identity container ⇒ unknown members are refused, and
+ *     `session.initialMessages` must be an array (the seed is a message list, and it is now folded
+ *     into `config.input.messages` on both routes — a string there would be spread into characters
+ *     by the loop's `[...initialMessages]`);
+ *   · **anything that is not an object** — array, string, number, boolean, function, `null` — is
+ *     refused with the type message. Before #550 only arrays were: a string was read as the opaque
+ *     payload on the direct route and refused on the assembly route, i.e. one key, two verdicts for
+ *     one shape. The ruling made `session` **the container only**; the payload's home is
+ *     `config.folding.context.session` (already read by `toolContextFor`'s fallback chain), which is
+ *     why the message can name a destination instead of just closing the door.
  *
  * @param {unknown} session
  * @returns {string[]} problems (empty = accepted)
  */
 export function collectSessionContainerProblems(session) {
-  if (session === null || session === undefined) return [];
-  if (Array.isArray(session)) return [sessionContainerTypeProblem(session)];
-  if (typeof session !== "object") return [];
+  if (session === undefined) return [];
+  if (session === null || typeof session !== "object" || Array.isArray(session)) {
+    return [sessionContainerTypeProblem(session)];
+  }
+  const container = /** @type {Record<string, unknown>} */ (session);
   const problems = [];
-  for (const [key, value] of Object.entries(/** @type {Record<string, unknown>} */ (session))) {
+  for (const [key, value] of Object.entries(container)) {
     // `undefined` means "not given" (the repo-wide merge rule), so a spread options object does not
     // turn into an unknown-member report.
     if (value === undefined) continue;
@@ -479,6 +490,9 @@ export function collectSessionContainerProblems(session) {
     // Retired members keep their own message (see SESSION_RETIRED_MEMBERS).
     if (SESSION_RETIRED_MEMBERS.includes(key)) continue;
     problems.push(`unknown session option: session.${key} (accepted: ${sessionMemberPaths().join(", ")})`);
+  }
+  if (container.initialMessages !== undefined && !Array.isArray(container.initialMessages)) {
+    problems.push("session.initialMessages must be an array");
   }
   return problems;
 }

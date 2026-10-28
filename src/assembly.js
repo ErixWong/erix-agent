@@ -234,11 +234,57 @@ export function collectAssemblyPolicyConfigConflicts(port) {
 }
 
 function assemblyPortDerivedConfigLeaves(port) {
-  const leaves = { run: { runId: port.session.id } };
-  if (port.session.initialMessages !== undefined) {
-    leaves.input = { messages: port.session.initialMessages };
+  return sessionDerivedConfigLeaves(port.session) ?? {};
+}
+
+/**
+ * The `session` container's contribution to the option tree, **as a function of the session value**
+ * (issue #550).
+ *
+ * #544 wrote this derivation inside the assembly port only, and the direct route never had it: a
+ * direct host that spelled `session: { id, initialMessages }` got the container *validated* (the
+ * #513 member gate) and then ignored — the run id never reached `config.run.runId` (transcripts were
+ * keyed `undefined`) and the seed never reached the request. One key, two behaviours for one shape is
+ * the same defect #513 fixed for unknown members, one level down; #550 adjudicated `session` as
+ * **the container only**, so both routes now derive from it through this one function.
+ *
+ * `undefined` when the value is not a container or carries neither member: the caller must not
+ * manufacture an empty `config` tree out of nothing.
+ *
+ * The member reads are spelled `session.<name>` on purpose: `test/session-container-513.test.js`
+ * re-derives the accepted member set by scanning `src/**` for exactly that shape, and this function
+ * is the read point the table now points at for both `id` and `initialMessages`. Reading them off an
+ * aliased local (`container.id`) would make the derived set report "declared but never read" — the
+ * guard biting on a rename is the guard working, so the spelling stays.
+ *
+ * @param {{id?: unknown, initialMessages?: unknown}|null|undefined} session
+ * @returns {Record<string, Record<string, any>>|undefined}
+ */
+export function sessionDerivedConfigLeaves(session) {
+  if (session === null || typeof session !== "object" || Array.isArray(session)) return undefined;
+  /** @type {Record<string, Record<string, any>>} */
+  const leaves = {};
+  if (typeof session.id === "string" && session.id.length > 0) {
+    leaves.run = { runId: session.id };
   }
-  return leaves;
+  if (session.initialMessages !== undefined) {
+    leaves.input = { messages: session.initialMessages };
+  }
+  return Object.keys(leaves).length === 0 ? undefined : leaves;
+}
+
+/**
+ * Fold the container's derived leaves into a config tree, per leaf, only where the tree has no value
+ * (issue #550 — the same rung-3 rule #544 applies on the assembly port, now shared).
+ *
+ * @param {Record<string, any>|undefined} configTree
+ * @param {unknown} session
+ * @returns {Record<string, any>|undefined}
+ */
+export function withSessionDerivedConfigLeaves(configTree, session) {
+  const leaves = sessionDerivedConfigLeaves(session);
+  if (leaves === undefined) return configTree;
+  return fillConfigLeafHoles(configTree, leaves);
 }
 
 /**
@@ -599,9 +645,9 @@ export function createAssemblyPort(input = {}) {
       + " (pass it as config.run.resume; the flat top-level spelling was retired in 0.28)",
     );
   }
-  if (port.session.initialMessages !== undefined && !Array.isArray(port.session.initialMessages)) {
-    throw new TypeError("assembly port session.initialMessages must be an array");
-  }
+  // #550: the `session.initialMessages` shape rule moved into `collectSessionContainerProblems`
+  // (the shared gate above), so both routes say the same sentence — the port no longer owns a second
+  // copy of it (`session.initialMessages must be an array`).
   for (const [key, value] of Object.entries(port.policy ?? {})) {
     // `undefined` means "not given" (the repo-wide `value !== undefined` merge rule), so a spread
     // options object (`policy: { <name>: undefined }`) is not read as "a bad name was given".

@@ -322,32 +322,39 @@ test("P5-c 同组大四件里仍未退役的那些：扁平写法照旧可用（
 
 // ================================================================ F. 函数差异 as-is 钉（工单硬义务 ②）
 //
-// 事实（实测，不是推断）：**扁平写法今天收函数**（`session: () => 1` 通过、`typeof` 一路保持到工具
-// 上下文），**规位拒**（`config.metadata.expert = () => 1` 当场抛）。本刀接受这条收窄，但必须把
-// **差异本身**钉住：将来谁放宽了（规位开始收函数）或谁收紧了（扁平也开始拒函数），这一格都会红。
+// 事实（实测，不是推断）：**扁平写法收函数**曾是这条收窄的现役实例（`session: () => 1` 通过、
+// `typeof` 一路保持到工具上下文），**规位拒**（`config.metadata.expert = () => 1` 当场抛）。
+// **#550 把这条差异关掉了**：`session` 是**容器**（`id` / `modelSlot` / `initialMessages` 全是数据），
+// 两条路线对它的结论现在一致——函数和字符串、数组一样当场拒（`session must be an object (got a
+// function)`）。于是「同一个键两种拼写、值的规则不同」在**数据键**上已经没有现役实例：数据键只剩
+// `config.*` 一个家，函数只能活在能力面（`capabilities.*` / 第三站的端口位）。
 //
-// #498 S3 A9：这条钉子原来挂在 `user` 上；`user` 退役后扁平写法不再收函数（名称闸口先抛），
-// 所以钉子**原样搬到仍在扁平面上的 `session`**——不是放宽，是同一性质的现役实例。
-// **#531**：`session` 仍是扁平（现在是第三站成员），所以「扁平收函数」那一半一字未改；
-// 而 `config.metadata.session` 那个叶子被拆掉了，它的拒绝换成了**未知叶子 + 指向第三站**
-// （钉在 A9 的 S3）。函数差异的那一半改挂到 `config.metadata.expert`——它仍在配置面、仍是数据键，
-// 于是「规位拒函数、且文案说清引擎从没调用过它」这条判据仍有现役实例可钉。
+// 这一格因此改成钉**关门之后的事实**（不是删格：删掉就没人记得这条差异存在过、也没人会发现它回来）：
+//   · `session: () => 1` 在直连与装配两条路线上都拒，判词是容器类型判词；
+//   · 函数值不再有任何路径到达工具上下文（`context.session` 现在只从 `config.folding.context.session` 读）；
+//   · 规位那一半（`config.metadata.expert` 拒函数、且文案说清引擎从没调用过它）一字未改。
 
-test("F1 as-is：扁平 session 收函数且 typeof 保持到工具上下文，而规位（config.metadata.expert）拒", async () => {
-  let seen;
-  const result = await runDirect({
-    provider: createFakeProvider(TOOL_ROUND),
-    executeTool: async ({ context }) => {
-      seen = context;
-      return "ok";
-    },
-    tools: WORK_TOOL,
-    maxRounds: 2,
-    session: () => 1,
-  });
-  assert.equal(result.termination.reason, "end_turn", "扁平 session 今天必须收下函数值（as-is）");
-  assert.equal(typeof seen?.session, "function", "函数值必须原样到达工具上下文（引擎不调用它，只转发）");
-  assert.equal(seen.session(), 1, "同一份值仍可被**宿主自己的**工具调用（引擎从不调用它）");
+test("F1 as-is：#550 之后扁平 session 不再收函数——两条路线同一句容器判词，规位照旧拒", async () => {
+  const direct = await directError({ session: () => 1 });
+  assert.equal(direct instanceof TypeError, true, "函数不是容器：直连必须当场拒");
+  assert.equal(
+    direct.message,
+    "session must be an object (got a function): the run identity lives in its members"
+    + " (session.id, session.modelSlot, session.initialMessages); the opaque payload that reaches"
+    + " executeTool as context.session lives in config.folding.context.session",
+  );
+  // 装配路线的函数是**端口工厂**（`resolveAssemblyMember` 先调用它），所以它判的是返回值；
+  // 这一条不是两路分歧，是装配口的工厂约定（#513 C2 逐字钉过），返回值不是容器时同样拒。
+  const assembly = await Promise.resolve()
+    .then(() => createAssemblyPort({
+      modelConfig: { resolve: async () => ({}) },
+      provider: createFakeProvider(TOOL_ROUND),
+      tools: { definitions: [], executeTool: async () => "ok" },
+      session: () => 1,
+    }))
+    .then(() => null, (error) => error);
+  assert.match(assembly?.message, /^session must be an object \(got a number\)/u,
+    "装配路线先解析工厂、再判型（与 #513 C2 同一句）");
 
   const rejected = await directError({ config: { metadata: { expert: () => 1 } } });
   assert.equal(rejected instanceof TypeError, true, "规位今天必须拒函数值（这就是那条收窄）");

@@ -68,13 +68,23 @@ export function modelMetadataFor({ modelConfig, modelMetadata, model, provider, 
   ));
 }
 
+/**
+ * The bag handed to `executeTool` (and the judge brief).
+ *
+ * #550: the `session` term used to be `session !== undefined ? session : context?.session`, i.e. the
+ * **top-level** option won. Once `session` became the identity container on both routes (it is an
+ * object with `id` / `modelSlot` / `initialMessages`), that term could only do harm: every host that
+ * wrote a container had the whole container leak into `context.session`, and the documented opaque
+ * payload (`config.folding.context.session`) became unreachable for exactly those hosts. The payload
+ * therefore has one reader left — the fold-context shell — and the container has no path into tool
+ * context at all.
+ */
 export function toolContextFor({
   toolContext,
   context,
   expert,
   user,
   task,
-  session,
   requestId,
 }) {
   const result = {
@@ -87,7 +97,7 @@ export function toolContextFor({
     expert: expert !== undefined ? expert : context?.expert,
     user: user !== undefined ? user : context?.user,
     task: task !== undefined ? task : context?.task,
-    session: session !== undefined ? session : context?.session,
+    session: context?.session,
     requestId: requestId !== undefined ? requestId : context?.requestId,
   })) {
     if (value !== undefined) result[key] = value;

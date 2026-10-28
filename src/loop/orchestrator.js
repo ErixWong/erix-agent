@@ -1560,13 +1560,14 @@ export async function runToolLoop(options) {
         ...(resolvedContextStrategy === undefined ? {} : { strategy: resolvedContextStrategy }),
       };
   const baseToolContext = {
+    // #550: `session` is not a term here any more — the container must not leak into the tool
+    // context, and the opaque payload's one reader is the fold-context shell (`context.session`).
     ...toolContextFor({
       toolContext,
       context,
       expert,
       user,
       task,
-      session,
       requestId,
     }),
     // #109 第2步：宿主侧端口（notes 等）持久化失败的通用报告桥

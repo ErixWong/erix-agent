@@ -648,7 +648,10 @@ const READ_LINE_CAPACITY_ROLES = [
   //   按 #537 的承诺粒度必须换档：描述里两个数 `fewest \u2265 3,900` 与 `reads fewer than 3,900`
   //   一起改成 **3,850**（句子结构一字未动，两处同位数 ⇒ 对本文件字节中性 ⇒ `self` 行不用重测）。
   //   这正是 #543 拆掉「floor 身份牵着文案」之后要的那种复测：**跨档才刷，换人不刷**。
-  { role: "fewest", file: "src/loop/option-normalization.js", recorded: { bytes: 36_074, lines: 536, bytesPerLine: 67.3022, capacity: 3_895, cjkShare: 0.1748 } },
+  // 2026-10-29 第十二刷（issue #550）：`option-normalization.js` 加了一行 session 派生折叠 +
+  // 一个 import 符号（+238 B / +1 行），bytes 越过 ±2% ⇒ 按 #543 机制复测这一行（描述只改 67.2→68.0
+  // 那个平均行字节数，档位 3,850 不变：实测容量 3,853 仍在 [3850, 3899) 里）。
+  { role: "fewest", file: "src/loop/option-normalization.js", recorded: { bytes: 37_079, lines: 545, bytesPerLine: 68.0349, capacity: 3_853, cjkShare: 0.19 } },
   // CJK 字节占比最高的那一个（2026-10-13 到今一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
   { role: "densest", file: "src/loop/state-view.js", recorded: { bytes: 2_629, lines: 44, bytesPerLine: 59.75, capacity: 4_387, cjkShare: 0.3731 } },
   // median 这一行 2026-10-22 换了**文件**（不是只刷数字）：issue #386 切片 1 给
