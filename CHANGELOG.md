@@ -27,6 +27,48 @@
   `config.timing.retry.sleepImpl` 被「`config` 只装数据」拒）——重试定时器的规范之家一直是
   `capabilities.ports.sleepImpl`。
 
+### Breaking
+
+- **Three top-level keys of the `folding` group are retired (#498 S3, second slice)**: `context`,
+  `toolResultTtl` and `toolResultFoldMinTokens` are no longer accepted as `runToolLoop` options. Data
+  moves to `config.folding.context` / `config.folding.toolResultTtl` /
+  `config.folding.toolResultFoldMinTokens` (the expansion phase writes them back to
+  `effectiveOptions.<flat name>`, so the engine's read side and behaviour are unchanged); the
+  **function** members of `context` (`onBeforeFold` / `onAfterFold` / `stubFor` / `protectedMessage` /
+  `recoveryHint`) and the **object** form of `context.strategy` belong to the capability surface —
+  write `capabilities.hooks.<name>` and `capabilities.ports.strategy` respectively. `config` holds
+  data only (the subtree must survive a JSON round-trip unchanged); a function leaf is rejected by
+  name, with the canonical home spelled out. The old flat spelling now fails with
+  `unknown runToolLoop option: "…" (its canonical home is config.folding.…; the flat spelling is
+  rejected)`. **Upgrade signpost hardened (defect fixed in this slice)**: for a shell that holds
+  **both** data and functions (`context`, `retry`), the rejection now names **both stations in one
+  sentence** — "`this shell holds both data and functions: write data as
+  config.folding.context.<leaf>, and behaviour members as capabilities.hooks.<name> (…) or
+  capabilities.ports.strategy`". It used to name only `config.folding.context`, which refuses
+  function leaves, so a host that followed it hit a second wall and only *that* message mentioned
+  `capabilities.hooks.onBeforeFold`; now one step is enough. The assembly port's `policy.context` is
+  not narrowed (function leaves still get through that route), but the shipped contract only
+  promises `capabilities.*`. 0.27.0 was never published — the last published version is 0.26.0 — so
+  no released host is affected.
+
+### Breaking
+
+- **`folding` 组三个顶层键退役（#498 S3 第二片）**：`context`、`toolResultTtl`、`toolResultFoldMinTokens`
+  不再作为 `runToolLoop` 顶层选项接受。数据写法迁到 `config.folding.context` /
+  `config.folding.toolResultTtl` / `config.folding.toolResultFoldMinTokens`（展开相写回
+  `effectiveOptions.<扁平名>`，引擎读侧与行为不变）；`context` 里的**函数**成员（`onBeforeFold` /
+  `onAfterFold` / `stubFor` / `protectedMessage` / `recoveryHint`）与 `context.strategy` 的**对象**形态属
+  能力面，分别写 `capabilities.hooks.<name>` 与 `capabilities.ports.strategy` —— `config` 只装数据
+  （子树必须过 JSON round-trip 等值），函数叶子会被当场点名拒绝并指向规范之家。旧扁平写法现在报
+  `unknown runToolLoop option: "…" (its canonical home is config.folding.…; the flat spelling is rejected)`。
+  **升级救命索补强（本片修的缺陷）**：`context` / `retry` 这类**同时容得下数据与函数**的壳，被拒时
+  文案**一次点名两站**——「`this shell holds both data and functions: write data as
+  config.folding.context.<leaf>, and behaviour members as capabilities.hooks.<name> (…) or
+  capabilities.ports.strategy`」。以前只指 `config.folding.context`，宿主照做会撞第二次（那一家拒绝
+  函数叶子），第二次的文案才告诉他 `capabilities.hooks.onBeforeFold`；现在一步到位。装配口
+  `policy.context` 未收窄（函数叶子仍可经此送达），但**随包契约只承诺 `capabilities.*`**。
+  0.27.0 从未发布，最后一个已发布版本是 0.26.0，因此没有已发布宿主受影响。
+
 ### Added
 
 - **壳内行为载体获得真实归宿：开 `capabilities.ports`、`hooks` 补 4 个回调、`judge.evaluator` 退役（issue #498 S4c，母单 #495）**：S4a/S4b 把「能力面 = 被调用/被解引用的行为载体」这条判据落到了**顶层选项**那一层，但壳**里面**还住着一批行为载体——它们只能写在 `retry.sleepImpl` / `reflection.judge.provider` / `context.strategy` / `context.onBeforeFold` 这些嵌套槽里，而壳要过 `config` 子树的 JSON round-trip ⇒ 想要 `retry.sleepImpl` 的宿主连**数据半**都没法用 `config.timing.retry`（扁平 `retry` 带函数会与 config 侧冲突），S4a 的拒绝文案第三档又指向一个当时**不存在**的目的地（"the matching capability port slot"）。本刀开 `capabilities.ports` 让那些壳**可迁移**。**① 新组 `capabilities.ports`**（`src/loop/capabilities-namespace.js`）：`sleepImpl`（函数 `(ms, signal) => Promise<void>`，消费点 `retryOptions?.sleepImpl ?? defaultSleep`）、`judgeProvider`（judge 专用评估器，**接受 callable 或 `{ chat }` 对象**）、`strategy`（压缩策略对象，`resolveCompactionStrategy`（`src/compact/strategy-resolution.js`）对象形态原样透传，`shouldCompact` / `compact` 被引擎调）。**② `hooks` 12 → 16**：`onReflection`（扩轮决策通知）、`onBeforeFold` / `onAfterFold`（折叠前后通知，消费点 `runFoldHook`（`src/compact/helpers.js`））、`stubFor`（逐条消息的桩判定，消费点 `resolveFoldStubs`（同文件））；`hooks` 的值校验器**保持**「给了就必须是函数」，不为迁就对象形态放宽。**③ 两个形态多态旋钮**：`protectedMessage`（`string` / `string[]`）与 `recoveryHint`（`string`）的数据形态留在 `config.folding.context`，函数形态进 `capabilities.hooks`；两侧都给了**不等价**的值 ⇒ 恰一条 `config_override_conflict`（复用**同一个**容器冲突机制，不新开出口；path 点名该旋钮的配置侧路径 `folding.context.protectedMessage`），等价（`isDeepStrictEqual`，函数按同一性）⇒ 零事件。**④ 报错第三档落到真实目的地**：`config-namespace.js` 的 `functionValueProblemMessage` 不再说「对应的能力面端口位」，而是点名 `capabilities.ports.sleepImpl` / `capabilities.ports.judgeProvider` / `capabilities.ports.strategy` / `capabilities.hooks.onBeforeFold` 等——叶子名说不清的那种（`provider`）靠**完整路径**去对 `CAPABILITY_SLOT_DESTINATIONS` 的长前缀。**⑤ `reflection.judge.evaluator` 退役**（0.28 是破坏版本，按 #499 的「退役不是搬家」口径）：它与 `provider` 是同一行 `??` 的纯别名，现在写它在两条入口路线上都抛并指向 `capabilities.ports.judgeProvider`，不静默接受。**账目一字未变**：9 个新叶子**一律没有**顶层扁平别名（它们是容器成员位、不是搬家）⇒ 顶层白名单仍是 **67**、能力面仍是 **22**、三向闭合（43 + 22 + 2 = 67）不变，`configSchemaSelfCheck` 仍 `[]`；自检反向核「有槽的叶子不得同时是顶层选项」，所以「给它们发明扁平别名」会红。**行为证据（不是「没抛」）**：注入 `capabilities.ports.sleepImpl` ⇒ 假定时器真的被调用且记到延迟；注入 `judgeProvider` ⇒ judge 请求走它、主模型一条都不走；注入 `strategy` 对象 ⇒ `shouldCompact` / `compact` 真被调且对象同一性保留；4 个新 hooks 各断言真收到投递（折叠前后 / 桩解析 / 扩轮）；`?? defaultSleep` 兜底也被一格钉住。**扁平老写法零回归**：`retry.sleepImpl`、`context.onBeforeFold`、`reflection.judge.provider`、`context.strategy`（对象形态）各一条断言。**测试**：新增 `test/loop-capabilities-ports-hooks-498s4c.test.js` 13 格（独立复审后又补 8 格到 **21 格**，见下条「复审退回」）；`test/loop-capabilities-namespace-498.test.js` 的 S1c/S2/S6 与 `test/loop-abort-terminal-priority.test.js` 的 judge 注入点按新面同步（后者原来用 `judge.evaluator`，改走规范之家 `capabilities.ports.judgeProvider`，判据一字未改）。随包文字同步：契约中英新增成对一节 `#### capabilities.ports`（成员表 + 值形状 + 「端口位可以是对象，`hooks` 必须 callable」这条区别 + 两条历史口径），0.27.0 指南中英补同一刀的三条后果，README 中英的 `judge: { provider, evaluator }` 草图与模块地图同步。
