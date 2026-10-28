@@ -25,7 +25,12 @@ import {
   idleTimeoutFailure,
   withToolHeartbeat,
 } from "./idle.js";
-import { buildCompactionContext, loadCliConfig, normalizeCompactionOption } from "./config.js";
+import {
+  buildCompactionContext,
+  loadCliConfig,
+  normalizeCompactionOption,
+  splitCompactionContext,
+} from "./config.js";
 // issue #441：把引擎自带的可重试静默相位截止接到 provider（取值关系见 bin/provider-timeouts.js 头注释）。
 import { resolveProviderPhaseTimeouts } from "./provider-timeouts.js";
 import {
@@ -259,6 +264,58 @@ export function resolveReflection(reflection, maxRounds) {
   if (raw === "on") return { enabled: true };
   if (raw === "off") return false;
   return maxRounds >= DEFAULT_REFLECTION_MIN_ROUNDS ? { enabled: true } : false;
+}
+
+/**
+ * issue #498 S5：把 `resolveReflection` 的结果（一块**壳**）拆成规位的三半。
+ *
+ * 为什么要拆：`reflection` 里混着数据（`enabled` / `roundJudge` / `judgeIntervalRound` …）与行为
+ * 载体（`judge.provider` 是一个带 `chat` / `chatStream` 的 `{ chat }` 对象；宿主也可能把
+ * `onReflection` 回调放在这里）。函数值不能进 `config` 子树——`config` 必须过 JSON round-trip，
+ * intake 的 `collectFunctionPaths` 会点名 `config.run.reflection.judge.provider.chat` 并抛。
+ * 拆分口径与 S4c 的端口表同源：
+ *   · `judge.provider` ⇒ `capabilities.ports.judgeProvider`（引擎读
+ *     `capabilityPorts.judgeProvider ?? judgeConfig?.provider`，同一个值、同一个优先级）；
+ *   · 壳里其余函数值 ⇒ `capabilities.hooks.<name>`（如 `onReflection`，引擎读
+ *     `capabilityHooks.onReflection ?? effectiveReflection?.onReflection`）；
+ *   · 剩下的是数据 ⇒ `config.run.reflection`。
+ *
+ * ⚠ 原对象是普通对象时**总是**输出 `data`（哪怕拆完为空）：`reflection === undefined` 在引擎里
+ * 是「长任务（>=16 轮）默认开 judge」的触发器（`resolvedReflectionOption`），把空壳改回
+ * `undefined` 会静默把默认打开。宿主给了对象 ⇒ 永远不落到那条默认分支。
+ *
+ * @param {unknown} resolved `resolveReflection` 的返回值
+ * @returns {{
+ *   data?: unknown,
+ *   hooks?: Record<string, Function>,
+ *   judgeProvider?: unknown,
+ * }}
+ */
+export function splitReflectionShell(resolved) {
+  if (resolved === null || typeof resolved !== "object" || Array.isArray(resolved)) {
+    return { data: resolved };
+  }
+  const { judge, ...rest } = /** @type {Record<string, any>} */ (resolved);
+  const data = {};
+  const hooks = {};
+  for (const [key, value] of Object.entries(rest)) {
+    if (typeof value === "function") hooks[key] = value;
+    else data[key] = value;
+  }
+  let judgeProvider;
+  if (judge !== undefined && judge !== null && typeof judge === "object" && !Array.isArray(judge)) {
+    const { provider, ...judgeRest } = /** @type {Record<string, any>} */ (judge);
+    if (provider !== undefined) judgeProvider = provider;
+    // 只剩 provider 时整个 `judge` 壳消失：引擎的 `judge?.provider` 两边都读不到，取值等价。
+    if (Object.keys(judgeRest).length > 0) data.judge = judgeRest;
+  } else if (judge !== undefined) {
+    data.judge = judge;
+  }
+  return {
+    data,
+    ...(Object.keys(hooks).length === 0 ? {} : { hooks }),
+    ...(judgeProvider === undefined ? {} : { judgeProvider }),
+  };
 }
 
 function resolveFinalGuard(
@@ -939,27 +996,45 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
   // 每轮先一句话声明计划再动手。
   systemPrompt += "\n\n每轮开始先用一句话（≤30字）说明当前计划，再调用工具。";
 
+  // issue #498 S5：这一块按**规位**书写（数据 ⇒ `config.*`、宿主回调 ⇒ `capabilities.hooks.*`、
+  // 交付物判据 ⇒ `capabilities.checks.deliverables`、壳内端口 ⇒ `capabilities.ports.*`）。
+  // 顶层扁平键**仍然被引擎接受**（0.26 已发布面，S5 不撤任何键），CLI 只是不再用它。
+  // 铁律：**同一个旋钮只写一侧**——这里没有任何一个键同时出现在扁平位与容器里，否则引擎会记一条
+  // `config_override_conflict`（「一个旋钮两个真相来源」）。端口对象（`provider` / `store` /
+  // `executeTool` / `signal` / `diagnostics` / `semanticStateProvider`）留在顶层位：`capabilities`
+  // 只收壳内实现（S4c），没有它们的成员位。
+  //
+  // `context` 这一块**不能**整块进 `config.folding.context`：它混着函数值（`protectedMessage` /
+  // `recoveryHint` / `stubFor`），`config` 子树必须过 JSON round-trip ⇒ intake 会当场拒。
+  // `splitCompactionContext` 按**值的形态**拆两半（数据 → `config.folding.context`，函数 →
+  // `capabilities.hooks`），口径与 S4c 的形态多态旋钮同源。
+  const { data: compactionData, hooks: compactionHooks } = splitCompactionContext(context);
+  // `reflection` 也是壳：`judge.provider`（一个 `{ chat }` 对象）按 S4c 的规位搬到
+  // `capabilities.ports.judgeProvider`，其余函数值（如 `onReflection`）进 `capabilities.hooks`，
+  // 剩下的数据留在 `config.run.reflection`。整块塞进 `config` 会被 intake 当场拒。
+  const {
+    data: reflectionData,
+    hooks: reflectionHooks,
+    judgeProvider,
+  } = splitReflectionShell(resolveReflection(reflection, resolvedMaxRounds));
+  // issue #386 切片 2 / #391 R2：`--require-deliverable`（默认关闭）——把机器判据交给引擎，
+  // 闸门因此能在 guard 说 accept 之后仍然拒绝盖章。两种语义都留（见帮助文本）：
+  //   裸用 ⇒ `createDeliverableChecks()`（「你说过要写的东西还在盘上吗」，读 fileWrites）；
+  //   带值 ⇒ `createNamedDeliverableChecks(paths)`（「这次必须交付的这些文件在盘上吗」）。
+  // 两个工厂都在 `bin/final-guard.js`，与 pi 扩展复用同一份判据本体。
+  const deliverableCriteria = [];
+  if (requireDeliverable === true) deliverableCriteria.push(...createDeliverableChecks());
+  if (deliverablePaths !== undefined && deliverablePaths.length > 0) {
+    deliverableCriteria.push(...createNamedDeliverableChecks(deliverablePaths));
+  }
+
   // `let`（不是 `const`）：issue #433 fix 1 的续跑会换一份 signal 并把 `resume` 置真（同一个对象
-  // 的浅拷贝），其余字段逐字不动。
+  // 的浅拷贝），其余字段逐字不动。⚠ 续跑改的也是**规位**（`config.run.resume`），别在顶层再写一份。
   let loopOptions = {
-    ...(context ? { context } : {}),
+    // —————————— 能力面：端口对象（顶层位，`capabilities` 无此成员位） ——————————
     provider,
-    system: systemPrompt,
-    initialUserMessage: prompt,
-    task: prompt,
     store,
     diagnostics,
-    runId,
-    resume,
-    // issue #391 R1：`cwd` 是引擎的**纯透传**选项（只进 finalGuard/deliverables 的事实载荷）。
-    // 不接的后果不是报错而是静默恒假：升级指南 §9 的判据 `path.join(cwd, "report.md")` 会拼成
-    // `"undefined/report.md"`，每次 accept 都被闸门判成 `unverified:deliverables_failed`。
-    cwd,
-    // ADR-015：notes 小抄目录经 semantic 槽位注入 run-state 块（折叠时注入，正好对准失忆点）
-    ...(notesAssembler === undefined ? {} : {
-      semanticStateProvider: notesAssembler.semanticStateProvider,
-    }),
-    tools: tools.tools,
     // issue #433 T0：工具执行期**周期性喂表**（不是「返回后补一次」——那样长命令执行期间静默表
     // 一直在走，到点把整个 run 打死）。喂表有上限（install 档 exec 天花板），口径与理由见
     // bin/idle.js#withToolHeartbeat；返回后仍补一次 touch()，把工具尾部的静默一并抹平。
@@ -970,87 +1045,109 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       idle?.touch();
       return result;
     }, { label: execution?.name, log: idleLog }),
-    maxRounds: resolvedMaxRounds,
-    toolResultTtl: resolveToolResultTtl(config),
-    toolResultFoldMinTokens: resolveToolResultFoldMinTokens(),
-    reflection: resolveReflection(reflection, resolvedMaxRounds),
-    ...(resolvedFinalGuard === undefined
-      ? {}
-      : {
-          finalGuard: resolvedFinalGuard,
-          finalGuardMaxRetries,
-        }),
-    // issue #386 切片 2 / #391 R2：`--require-deliverable`（默认关闭）——把机器判据交给引擎，
-    // 闸门因此能在 guard 说 accept 之后仍然拒绝盖章。两种语义都留（见帮助文本）：
-    //   裸用 ⇒ `createDeliverableChecks()`（「你说过要写的东西还在盘上吗」，读 fileWrites）；
-    //   带值 ⇒ `createNamedDeliverableChecks(paths)`（「这次必须交付的这些文件在盘上吗」）。
-    // 两个工厂都在 `bin/final-guard.js`，与 pi 扩展复用同一份判据本体。
-    ...(() => {
-      const criteria = [];
-      if (requireDeliverable === true) criteria.push(...createDeliverableChecks());
-      if (deliverablePaths !== undefined && deliverablePaths.length > 0) {
-        criteria.push(...createNamedDeliverableChecks(deliverablePaths));
-      }
-      return criteria.length === 0 ? {} : { deliverables: criteria };
-    })(),
-    ...(timeoutMs === undefined ? {} : { timeoutMs }),
-    maxTokens,
-    retry: {
-      attempts: (() => {
-        const raw = process.env.ERIX_RETRY_ATTEMPTS?.trim();
-        if (raw === undefined || raw === "") return 2;
-        const value = Number(raw);
-        return Number.isSafeInteger(value) && value >= 0 ? value : 2;
-      })(),
-    },
-    completion: completion === false ? false : {
-      signals: [
-        "任务已完成",
-        "已完成",
-        "全部完成",
-        "无需继续",
-        "任务结束",
-        "没有更多步骤",
-        ...(Array.isArray(completion?.signals) ? completion.signals : []),
-      ],
-      // 模型连续 N 轮无工具调用才强制完成（默认 3）；
-      // 之前写死 1 导致模型思考一轮没动手就被判定完成（benchmark 实测 9 个任务过早放弃）
-      maxNoToolRounds: (() => {
-        if (Number.isSafeInteger(completion?.maxNoToolRounds)
-          && completion.maxNoToolRounds > 0) {
-          return completion.maxNoToolRounds;
-        }
-        const raw = process.env.ERIX_NO_TOOL_ROUNDS?.trim();
-        if (raw === undefined || raw === "") return 3;
-        const value = Number(raw);
-        return Number.isSafeInteger(value) && value > 0 ? value : 3;
-      })(),
-    },
-    stream,
     signal: idle?.controller.signal,
-    // issue #433 T0：`onDelta` **无条件**注册（此前是 `stream ? (chunk) => { touch; write } : undefined`）。
-    // 理由：`--stream` 是 opt-in，默认 `erix chat` 不流式 ⇒ 两次轮边界（onRound / onToolResult）
-    // 之间看门狗**没有任何字节级粒度**，「正在正常吐字但慢」与「真挂起」不可区分；喂表这件事
-    // 不该由「要不要把字打到终端」决定。输出行为一字未改：只有 `stream` 时才写 stdout。
-    // 如实记下的残留（本刀不修，属 src/ 契约面）：引擎只在 `stream: true` 时把 onDelta 传给
-    // provider（`src/loop/provider-runner.js` 的非流式分支直接 `provider.chat(request)`），
-    // 所以非流式路径上这道门去掉后**今天仍然没有**逐块粒度；本项是让喂表与输出解耦的
-    // 准备动作，真正的非流式粒度要动引擎侧。
-    onDelta: (chunk) => {
-      idle?.touch();
-      if (stream) process.stdout.write(chunk);
+    // ADR-015：notes 小抄目录经 semantic 槽位注入 run-state 块（折叠时注入，正好对准失忆点）
+    ...(notesAssembler === undefined ? {} : {
+      semanticStateProvider: notesAssembler.semanticStateProvider,
+    }),
+    // —————————— 配置面：引擎校值并解释的数据 ——————————
+    config: {
+      input: {
+        system: systemPrompt,
+        initialUserMessage: prompt,
+        tools: tools.tools,
+      },
+      run: {
+        runId,
+        // issue #391 R1：`cwd` 是引擎的**纯透传**选项（只进 finalGuard/deliverables 的事实载荷）。
+        // 不接的后果不是报错而是静默恒假：升级指南 §9 的判据 `path.join(cwd, "report.md")` 会拼成
+        // `"undefined/report.md"`，每次 accept 都被闸门判成 `unverified:deliverables_failed`。
+        cwd,
+        resume,
+        maxRounds: resolvedMaxRounds,
+        reflection: reflectionData,
+        completion: completion === false ? false : {
+          signals: [
+            "任务已完成",
+            "已完成",
+            "全部完成",
+            "无需继续",
+            "任务结束",
+            "没有更多步骤",
+            ...(Array.isArray(completion?.signals) ? completion.signals : []),
+          ],
+          // 模型连续 N 轮无工具调用才强制完成（默认 3）；
+          // 之前写死 1 导致模型思考一轮没动手就被判定完成（benchmark 实测 9 个任务过早放弃）
+          maxNoToolRounds: (() => {
+            if (Number.isSafeInteger(completion?.maxNoToolRounds)
+              && completion.maxNoToolRounds > 0) {
+              return completion.maxNoToolRounds;
+            }
+            const raw = process.env.ERIX_NO_TOOL_ROUNDS?.trim();
+            if (raw === undefined || raw === "") return 3;
+            const value = Number(raw);
+            return Number.isSafeInteger(value) && value > 0 ? value : 3;
+          })(),
+        },
+        stream,
+      },
+      metadata: { task: prompt },
+      tuning: { maxTokens },
+      timing: {
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        retry: {
+          attempts: (() => {
+            const raw = process.env.ERIX_RETRY_ATTEMPTS?.trim();
+            if (raw === undefined || raw === "") return 2;
+            const value = Number(raw);
+            return Number.isSafeInteger(value) && value >= 0 ? value : 2;
+          })(),
+        },
+      },
+      folding: {
+        ...(compactionData === undefined ? {} : { context: compactionData }),
+        toolResultTtl: resolveToolResultTtl(config),
+        toolResultFoldMinTokens: resolveToolResultFoldMinTokens(),
+      },
+      // ⚠ 只有真给了 guard 才写这个预算（与迁移前的形状逐字一致：没有 guard 时顶层连
+      // `finalGuardMaxRetries` 都没有）。`finalGuard` 自己属能力面（值必须是函数）。
+      guard: resolvedFinalGuard === undefined ? {} : { finalGuardMaxRetries },
     },
-    onToolResult: (_name, result) => {
-      idle?.touch();
-      // ADR-015 4a：截断/归档退役给引擎（outputHygiene），CLI 不再二次截断
-      return result;
+    // —————————— 能力面：宿主回调 / 交付物判据 / 壳内端口 ——————————
+    capabilities: {
+      hooks: {
+        ...(resolvedFinalGuard === undefined ? {} : { finalGuard: resolvedFinalGuard }),
+        ...(compactionHooks ?? {}),
+        ...(reflectionHooks ?? {}),
+        // issue #433 T0：`onDelta` **无条件**注册（此前是 `stream ? (chunk) => { touch; write } : undefined`）。
+        // 理由：`--stream` 是 opt-in，默认 `erix chat` 不流式 ⇒ 两次轮边界（onRound / onToolResult）
+        // 之间看门狗**没有任何字节级粒度**，「正在正常吐字但慢」与「真挂起」不可区分；喂表这件事
+        // 不该由「要不要把字打到终端」决定。输出行为一字未改：只有 `stream` 时才写 stdout。
+        // 如实记下的残留（本刀不修，属 src/ 契约面）：引擎只在 `stream: true` 时把 onDelta 传给
+        // provider（`src/loop/provider-runner.js` 的非流式分支直接 `provider.chat(request)`），
+        // 所以非流式路径上这道门去掉后**今天仍然没有**逐块粒度；本项是让喂表与输出解耦的
+        // 准备动作，真正的非流式粒度要动引擎侧。
+        onDelta: (chunk) => {
+          idle?.touch();
+          if (stream) process.stdout.write(chunk);
+        },
+        onToolResult: (_name, result) => {
+          idle?.touch();
+          // ADR-015 4a：截断/归档退役给引擎（outputHygiene），CLI 不再二次截断
+          return result;
+        },
+        onRound: (info) => {
+          idle?.touch();
+          console.log(`[round ${info.round}]${info.folded ? "（含折叠）" : ""}`);
+        },
+        onJudge,
+        onEvent,
+      },
+      ...(deliverableCriteria.length === 0
+        ? {}
+        : { checks: { deliverables: deliverableCriteria } }),
+      ...(judgeProvider === undefined ? {} : { ports: { judgeProvider } }),
     },
-    onRound: (info) => {
-      idle?.touch();
-      console.log(`[round ${info.round}]${info.folded ? "（含折叠）" : ""}`);
-    },
-    onJudge,
-    onEvent,
   };
 
   // issue #433 fix 1：判死 → 退避 → **从账本续跑**（`resume: true`），不是整单重跑——已经付过费的
@@ -1137,7 +1234,16 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         idle?.dispose();
         // 新窗口：旧 controller 已经 abort 过了，`timedOut()` 又是单向的，所以只能造一个新的。
         idle = createIdleTimeout(idleTimeout);
-        loopOptions = { ...loopOptions, resume: true, signal: idle?.controller.signal };
+        // issue #498 S5：`resume` 的**现算**点也走规位——只写 `config.run.resume`，顶层不再留一份
+        // （两份不同值会触发 `config_override_conflict`；同值则是无意义的重复真相来源）。
+        loopOptions = {
+          ...loopOptions,
+          signal: idle?.controller.signal,
+          config: {
+            ...loopOptions.config,
+            run: { ...loopOptions.config.run, resume: true },
+          },
+        };
       }
     }
     const result = loopResult;

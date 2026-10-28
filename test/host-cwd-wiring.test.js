@@ -30,6 +30,30 @@ import { createMemoryTranscriptStore } from "../src/store/memory.js";
 // issue #391 R3：出厂判据本体（CLI 与扩展共用同一份，见 bin/final-guard.js）。
 import { createNamedDeliverableChecks } from "../bin/final-guard.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+
+/**
+ * issue #498 S5：`bin/` 的选项按**规位**书写（数据 ⇒ `config.*`、回调 ⇒ `capabilities.hooks.*`）。
+ * 本读取器两个方向都断言：规位必须真读到值（`undefined` 就红，防止映射改错退化成恒真格），
+ * 且扁平位**不得**同时存在（同一个旋钮两个真相来源 ⇒ `config_override_conflict`）。
+ *
+ * @param {Record<string, any>} captured `loop` 收到的选项对象
+ * @param {string} path 规位路径
+ * @returns {any}
+ */
+function canonicalLoopOption(captured, path) {
+  const value = path.split(".").reduce(
+    (node, key) => (node === undefined || node === null ? undefined : node[key]),
+    captured,
+  );
+  assert.notEqual(value, undefined, `规位 ${path} 读不到值（映射断了，或又写回了扁平位）`);
+  const flatName = path.split(".").at(-1);
+  assert.equal(
+    Object.hasOwn(captured, flatName),
+    false,
+    `${flatName} 不得同时出现在扁平位：同一个旋钮两个真相来源 ⇒ config_override_conflict`,
+  );
+  return value;
+}
 import { makeTmp } from "./helpers/tmp.js";
 
 const REPO_ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -257,7 +281,7 @@ test("#391 R1-c `erix chat --cwd <dir>`：解析 → loopOptions.cwd（缺省 = 
     toolOutput: () => {},
     loop,
   });
-  assert.equal(captured.cwd, dir, "chat 的 loopOptions 必须把 --cwd 交给引擎");
+  assert.equal(canonicalLoopOption(captured, "config.run.cwd"), dir, "chat 的 loopOptions 必须把 --cwd 交给引擎");
 
   // 不给 --cwd ⇒ 进程工作目录（既有行为逐字不变）
   captured = undefined;
@@ -273,7 +297,7 @@ test("#391 R1-c `erix chat --cwd <dir>`：解析 → loopOptions.cwd（缺省 = 
     toolOutput: () => {},
     loop,
   });
-  assert.equal(captured.cwd, process.cwd());
+  assert.equal(canonicalLoopOption(captured, "config.run.cwd"), process.cwd());
 });
 
 test("#391 R1-d `erix repl`：loopOptions.cwd = 进程工作目录", async () => {
@@ -304,7 +328,7 @@ test("#391 R1-d `erix repl`：loopOptions.cwd = 进程工作目录", async () =>
     writeFileSync(join(home, "mcp.json"), JSON.stringify({ mcpServers: {} }), "utf8");
     input.end("hi\n/exit\n");
     await run;
-    assert.equal(captured.cwd, process.cwd());
+    assert.equal(canonicalLoopOption(captured, "config.run.cwd"), process.cwd());
   } finally {
     input.destroy();
     output.destroy();

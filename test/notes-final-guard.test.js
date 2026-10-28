@@ -17,6 +17,30 @@ import { createFileNotesStore } from "../src/store/notes.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { makeTmp } from "./helpers/tmp.js";
 
+/**
+ * issue #498 S5：`bin/` 的选项按**规位**书写（数据 ⇒ `config.*`、回调 ⇒ `capabilities.hooks.*`）。
+ * 本读取器两个方向都断言：规位必须真读到值（`undefined` 就红，防止映射改错退化成恒真格），
+ * 且扁平位**不得**同时存在（同一个旋钮两个真相来源 ⇒ `config_override_conflict`）。
+ *
+ * @param {Record<string, any>} captured `loop` 收到的选项对象
+ * @param {string} path 规位路径
+ * @returns {any}
+ */
+function canonicalLoopOption(captured, path) {
+  const value = path.split(".").reduce(
+    (node, key) => (node === undefined || node === null ? undefined : node[key]),
+    captured,
+  );
+  assert.notEqual(value, undefined, `规位 ${path} 读不到值（映射断了，或又写回了扁平位）`);
+  const flatName = path.split(".").at(-1);
+  assert.equal(
+    Object.hasOwn(captured, flatName),
+    false,
+    `${flatName} 不得同时出现在扁平位：同一个旋钮两个真相来源 ⇒ config_override_conflict`,
+  );
+  return value;
+}
+
 async function withNotes(callback) {
   const directory = await makeTmp("erix-final-guard-");
   const previous = {
@@ -437,7 +461,9 @@ test("chat leaves the final guard disabled by default", async () => {
       },
       toolOutput: () => {},
     });
-    assert.equal(captured.finalGuard, undefined);
+    // 没给 guard ⇒ 能力面连这个回调都没有（不是「给了一个 undefined」）。
+    assert.equal(captured.capabilities.hooks.finalGuard, undefined);
+    assert.equal("finalGuard" in captured, false, "finalGuard 不得写回扁平位");
   });
 });
 
@@ -469,7 +495,7 @@ test("chat enables the final guard explicitly", async () => {
       },
       toolOutput: () => {},
     });
-    assert.equal(typeof captured.finalGuard, "function");
-    assert.equal(captured.finalGuardMaxRetries, 2);
+    assert.equal(typeof canonicalLoopOption(captured, "capabilities.hooks.finalGuard"), "function");
+    assert.equal(canonicalLoopOption(captured, "config.guard.finalGuardMaxRetries"), 2);
   });
 });

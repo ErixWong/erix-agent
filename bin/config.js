@@ -175,6 +175,42 @@ function withRecoveryHint(context, strategyName, recoveryHint, stubFor) {
   };
 }
 
+/**
+ * issue #498 S5：把 `buildCompactionContext` 的那一块拆成**规位**的两半。
+ *
+ * 为什么必须拆（不是「整块搬」）：这一块里混着两类值——`budgetTokens` / `strategy` 是数据
+ * （数字、内置策略名），`protectedMessage` / `recoveryHint` / `stubFor` 是函数。按母单 #495 的
+ * 归属规则，数据进 `config.folding.context`，函数进 `capabilities.hooks.*`（S4c 的形态多态旋钮
+ * 与折叠回调各归各位）。整块塞进 `config.folding.context` 会被 intake 当场拒绝——`config` 子树
+ * 必须过 JSON round-trip，`collectFunctionPaths` 会点名 `config.folding.context.recoveryHint`
+ * 并抛。
+ *
+ * 拆分口径是**值的形态**，不是键名白名单：函数 ⇒ 能力面，其余 ⇒ 配置面。这与 S4c 给
+ * `protectedMessage` / `recoveryHint` 定的规则逐字同源（数据形态留 `config.folding.context`，
+ * 函数形态进 `capabilities.hooks`），所以以后这一块多一个函数值也不会静默留在数据侧。
+ *
+ * ⚠ `strategy` 在本机 CLI 里**永远**是内置策略名（`resolveCompactionStrategyName` 返回字符串），
+ * 所以它落数据侧；对象形态的策略对象属 `capabilities.ports.strategy`，CLI 不产生它——真出现时
+ * 这里会把它当数据放进 `config.folding.context.strategy`，引擎照旧原样透传（`context.strategy`
+ * 的对象形态语义不变），不是静默丢弃。
+ *
+ * @param {Record<string, unknown>|undefined} context `buildCompactionContext` 的返回值
+ * @returns {{data?: Record<string, unknown>, hooks?: Record<string, Function>}}
+ */
+export function splitCompactionContext(context) {
+  if (context === undefined) return {};
+  const data = {};
+  const hooks = {};
+  for (const [key, value] of Object.entries(context)) {
+    if (typeof value === "function") hooks[key] = value;
+    else data[key] = value;
+  }
+  return {
+    ...(Object.keys(data).length === 0 ? {} : { data }),
+    ...(Object.keys(hooks).length === 0 ? {} : { hooks }),
+  };
+}
+
 export function buildCompactionContext(config, explicitBudget, recoveryHint, stubFor) {
   const strategyName = resolveCompactionStrategyName(config?.compaction);
   if (explicitBudget !== undefined) {

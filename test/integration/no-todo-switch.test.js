@@ -35,15 +35,39 @@ function captureLoop(ref) {
   };
 }
 
+/**
+ * issue #498 S5：`bin/` 的 `runToolLoop` 选项按**规位**书写（数据 ⇒ `config.*`）。
+ * 本读取器两个方向都断言：规位必须真读到值（`undefined` 就红，防止映射改错退化成恒真格），
+ * 且扁平位**不得**同时存在（同一个旋钮两个真相来源 ⇒ `config_override_conflict`）。
+ *
+ * @param {{options?: Record<string, any>}} ref `captureLoop` 的捕获桶
+ * @param {string} path 规位路径
+ * @returns {any}
+ */
+function optionAt(ref, path) {
+  const value = path.split(".").reduce(
+    (node, key) => (node === undefined || node === null ? undefined : node[key]),
+    ref.options,
+  );
+  assert.notEqual(value, undefined, `规位 ${path} 读不到值（映射断了，或又写回了扁平位）`);
+  const flatName = path.split(".").at(-1);
+  assert.equal(
+    Object.hasOwn(ref.options, flatName),
+    false,
+    `${flatName} 不得同时出现在扁平位：同一个旋钮两个真相来源 ⇒ config_override_conflict`,
+  );
+  return value;
+}
+
 const TODO_NAMES = ["todo_add", "todo_list", "todo_done", "todo_clear"];
 
 function assertNoTodo(ref, label) {
-  const names = ref.options.tools.map((tool) => tool.name);
+  const names = optionAt(ref, "config.input.tools").map((tool) => tool.name);
   for (const name of TODO_NAMES) {
     assert.ok(!names.includes(name), `${label}：工具表不得包含 ${name}`);
   }
   assert.ok(names.includes("exec"), `${label}：非 todo 工具应保持可用`);
-  assert.doesNotMatch(ref.options.system, /todo/i, `${label}：系统提示不得含 todo 字样`);
+  assert.doesNotMatch(optionAt(ref, "config.input.system"), /todo/i, `${label}：系统提示不得含 todo 字样`);
 }
 
 async function writeTodoSkill(skillsDir) {
@@ -87,11 +111,11 @@ test("runChat 默认路径：todo 四工具在模型工具表中（回归）", a
       toolOutput: () => {},
       loop: captureLoop(ref),
     });
-    const names = ref.options.tools.map((tool) => tool.name);
+    const names = optionAt(ref, "config.input.tools").map((tool) => tool.name);
     for (const name of TODO_NAMES) {
       assert.ok(names.includes(name), `默认路径应包含 ${name}`);
     }
-    assert.match(ref.options.system, /todo_add 添加待办任务/u);
+    assert.match(optionAt(ref, "config.input.system"), /todo_add 添加待办任务/u);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -123,7 +147,7 @@ test("runChat --no-todo：工具表无 todo_*、系统提示无 todo、用户级
     });
     assertNoTodo(ref, "--no-todo");
     // 用户级 todo skill 经 excludeSkillIds 排除：不得出现任何 todo_* 实现（含 skill 版）
-    const names = ref.options.tools.map((tool) => tool.name);
+    const names = optionAt(ref, "config.input.tools").map((tool) => tool.name);
     assert.equal(names.filter((name) => name.startsWith("todo_")).length, 0);
     // 排除后不存在同名冲突，warnBuiltinToolConflicts 不得产生告警噪音
     assert.equal(
@@ -160,7 +184,7 @@ test("runChat --no-todo 与 --tools 白名单正交：先关 todo 再过白名�
       toolOutput: () => {},
       loop: captureLoop(ref),
     });
-    assert.deepEqual(ref.options.tools.map((tool) => tool.name), ["exec"]);
+    assert.deepEqual(optionAt(ref, "config.input.tools").map((tool) => tool.name), ["exec"]);
     assert.ok(
       stderrLines.some((line) => line.includes("todo_add") && line.includes("不存在")),
       `todo_add 已被 --no-todo 移除，出现在 --tools 里应警告不存在：${stderrLines.join(" | ")}`,
@@ -227,7 +251,7 @@ test("runChat 用户级 todo skill 默认路径产生同名冲突告警（issue 
       stderrLines.some((line) => /同名/u.test(line) && /todo/u.test(line)),
       `默认路径应保留同名告警：${stderrLines.join(" | ")}`,
     );
-    const names = ref.options.tools.map((tool) => tool.name);
+    const names = optionAt(ref, "config.input.tools").map((tool) => tool.name);
     assert.equal(names.filter((name) => name === "todo_add").length, 1, "只保留内置实现");
   } finally {
     console.error = originalError;
