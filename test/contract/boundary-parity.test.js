@@ -364,3 +364,41 @@ test("boundary parity: 合法配置在两条路线上都不抛（防 parity 只�
   assert.equal(direct, null, `直连正例不得抛（实测 ${direct?.message}）`);
   assert.equal(assembly, null, `装配口正例不得抛（实测 ${assembly?.message}）`);
 });
+
+test("boundary parity: 调用期未知选项名在两条路线上都启动期拒，同名同建议（issue #498 第 1 条）", async () => {
+  const sessionId = `parity-override-${process.pid}`;
+  // ① 装配口的覆盖通道（`assemblyPortOptions` 的 `overrides`）：`overrides` 的键必须落在
+  //    loop 选项闭集内（来源是 `RUN_TOOL_LOOP_OPTION_NAMES`），拼错时给同一条建议。
+  const helperError = await assemblyPortOptions(
+    {
+      modelConfig: createValidModelConfig(),
+      provider: createValidProvider(),
+      tools: createValidTools(),
+      session: { id: sessionId },
+    },
+    { maxRound: 1 },
+  ).then(() => null, (error) => error);
+  assert.ok(helperError instanceof TypeError, `装配口必须抛 TypeError，实测 ${String(helperError)}`);
+  assert.equal(
+    helperError.message,
+    'unknown assembly port override option: "maxRound" (did you mean "maxRounds"?)',
+  );
+
+  // ② 直连路线：同一条白名单，同一套「did you mean」。
+  const directError = await runToolLoop({
+    provider: createValidProvider(),
+    executeTool: async () => "unused",
+    modelConfig: createValidModelConfig(),
+    session: { id: sessionId },
+    maxRound: 1,
+  }).then(() => null, (error) => error);
+  assert.ok(directError instanceof TypeError, `直连必须抛 TypeError，实测 ${String(directError)}`);
+  assert.equal(directError.message, 'unknown runToolLoop option: "maxRound" (did you mean "maxRounds"?)');
+
+  // ③ 等价：同错误类、同被点名的键、同建议；只差路线前缀（两条路线各自说自己的入口）。
+  assert.equal(Object.getPrototypeOf(helperError), Object.getPrototypeOf(directError));
+  const suggestion = /\(did you mean "([^"]+)"\?\)$/u;
+  assert.equal(helperError.message.match(suggestion)[1], "maxRounds");
+  assert.equal(directError.message.match(suggestion)[1], "maxRounds");
+  assert.ok(helperError.message.includes('"maxRound"') && directError.message.includes('"maxRound"'));
+});

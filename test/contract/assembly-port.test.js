@@ -56,7 +56,9 @@ test("assembly port supports default and explicit modelConfig paths", async () =
     { intervalMs: 25, minBytes: 1 },
   );
 
-  test("assemblyPortOptions applies explicit fine-grained overrides", async () => {
+  // issue #498 第 1 条：`modelConfig` 是**唯一**存活的调用期覆盖通道（它自带
+  // `validateModelConfigResolver` 校验，见下一个断言）；其余「构造期给过、调用期又给」一律抛。
+  test("assemblyPortOptions keeps the validated modelConfig override channel", async () => {
     const explicitModelConfig = { resolve: async () => ({ model: "explicit" }) };
     const port = createAssemblyPort({
       modelConfig: { resolve: async () => ({ model: "assembly" }) },
@@ -182,4 +184,154 @@ test("assembly port rejects a store missing one of the required methods", () => 
     }),
     (error) => error instanceof TypeError && /store\.load/u.test(error.message),
   );
+});
+
+// ================================================================ issue #498 第 1 条
+// 调用期 capability/port 覆盖不得静默赢（母单 #495 的裁决：能力集在**构造期**定）。
+// 三条规则各一格 + 一格正向钉（合法用法没被打死）+ 一格「键集从代码枚举」的自证。
+const OVERRIDE_CONFLICT = (key, origin) => `assembly port option override conflicts with the port: ${JSON.stringify(key)}`
+  + ` comes from ${origin} (construction) and overrides.${key} (call); pass it in one place only`;
+
+function createOverridePort({ policy, emit } = {}) {
+  return createAssemblyPort({
+    modelConfig: { resolve: async () => ({}) },
+    provider: createProvider(),
+    tools: { definitions: [], async executeTool() {} },
+    store: createMemoryTranscriptStore(),
+    session: { id: `assembly-override-${process.pid}` },
+    ...(policy === undefined ? {} : { policy }),
+    ...(emit === undefined ? {} : { emit }),
+  });
+}
+
+test("冲突：构造期有值 + 调用期又给 ⇒ 启动期抛，点名键名与两个来源（issue #498）", async () => {
+  const port = createOverridePort({ policy: { maxRounds: 3 } });
+  // ① policy 给的键 —— 来源是 `port.policy.<key>`
+  await assert.rejects(
+    assemblyPortOptions(port, { maxRounds: 1 }),
+    (error) => error instanceof TypeError && error.message === OVERRIDE_CONFLICT("maxRounds", "port.policy.maxRounds"),
+  );
+  // ② 端口派生的键 —— 逐个点名真实来源（这是「两个来源」里构造期那一半）
+  const derived = [
+    ["provider", "port.provider"],
+    ["tools", "port.tools.definitions"],
+    ["executeTool", "port.tools.executeTool"],
+    ["store", "port.store"],
+    ["runId", "port.session.id"],
+    ["session", "port.session"],
+  ];
+  for (const [key, origin] of derived) {
+    await assert.rejects(
+      assemblyPortOptions(port, { [key]: null }),
+      (error) => error instanceof TypeError && error.message === OVERRIDE_CONFLICT(key, origin),
+      `${key} 的冲突文案必须点名 ${origin}`,
+    );
+  }
+  // ③ `emit` 派生的 `onEvent`：以前是「显式 onEvent 存在就不装」（静默），现在同一条闸口。
+  const emitting = createOverridePort({ emit: () => {} });
+  await assert.rejects(
+    assemblyPortOptions(emitting, { onEvent: () => {} }),
+    (error) => error instanceof TypeError && error.message === OVERRIDE_CONFLICT("onEvent", "port.emit"),
+  );
+  // ④ 冲突闸口在 `modelConfig.resolve` **之前**：会抛的调用不该先调一次宿主回调。
+  let resolves = 0;
+  const counting = createAssemblyPort({
+    modelConfig: {
+      async resolve() {
+        resolves += 1;
+        return {};
+      },
+    },
+    provider: createProvider(),
+    tools: { definitions: [], async executeTool() {} },
+    session: { id: `assembly-override-no-resolve-${process.pid}` },
+  });
+  await assert.rejects(
+    assemblyPortOptions(counting, { provider: createProvider() }),
+    (error) => error instanceof TypeError && /conflicts with the port/u.test(error.message),
+  );
+  assert.equal(resolves, 0, "冲突必须在 modelConfig.resolve 之前抛出");
+});
+
+test("任意名字：键名必须落在 loop 选项闭集内，否则抛（含 did you mean）", async () => {
+  const port = createOverridePort();
+  await assert.rejects(
+    assemblyPortOptions(port, { maxRound: 1 }),
+    (error) => error instanceof TypeError
+      && error.message === 'unknown assembly port override option: "maxRound" (did you mean "maxRounds"?)',
+  );
+  await assert.rejects(
+    assemblyPortOptions(port, { bogusKey: 1 }),
+    (error) => error instanceof TypeError
+      && error.message === 'unknown assembly port override option: "bogusKey"',
+  );
+  // 闭集**来源自证**：`RUN_TOOL_LOOP_OPTION_NAMES` 里的每一个名字都不是「unknown」——
+  // 它们只可能撞上冲突闸口（端口产出的那些）或容器闸口（`config` / `capabilities`）。
+  // 这条把「键集从代码枚举」钉成机器可查：实现里换掉这个来源、或手抄一份清单，都会红。
+  const { RUN_TOOL_LOOP_OPTION_NAMES } = await import("../../src/loop/option-normalization.js");
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.length, 67);
+  for (const name of RUN_TOOL_LOOP_OPTION_NAMES) {
+    const error = await assemblyPortOptions(port, { [name]: null }).then(() => null, (caught) => caught);
+    assert.equal(
+      error !== null && /^unknown assembly port override option/u.test(error.message),
+      false,
+      `${name} 必须在闭集内（实际抛：${error === null ? "无" : error.message}）`,
+    );
+  }
+});
+
+test("容器整块替换：config / capabilities 一律抛，并把消息指向具体子键", async () => {
+  const port = createOverridePort();
+  await assert.rejects(
+    assemblyPortOptions(port, { config: { run: { maxRounds: 1 } } }),
+    (error) => error instanceof TypeError
+      && error.message === 'assembly port override must not replace the "config" container:'
+        + " pass the specific sub-keys instead (e.g. config.run.maxRounds)",
+  );
+  await assert.rejects(
+    assemblyPortOptions(port, { capabilities: { hooks: { onEvent: async () => {} } } }),
+    (error) => error instanceof TypeError
+      && error.message === 'assembly port override must not replace the "capabilities" container:'
+        + " pass the specific sub-keys instead (e.g. capabilities.hooks.onEvent)",
+  );
+});
+
+test("正向钉：调用期新键仍然合法（端口没产出的 signal / store 照常生效，值逐字等于传入）", async () => {
+  // 端口**不给** store：于是 `store` 是「调用期新键」；`signal` 每轮都换，端口永远不产出。
+  const port = createAssemblyPort({
+    modelConfig: { resolve: async () => ({}) },
+    provider: createProvider(),
+    tools: { definitions: [], async executeTool() {} },
+    session: { id: `assembly-new-keys-${process.pid}` },
+  });
+  const controller = new AbortController();
+  const store = createMemoryTranscriptStore();
+  const options = await assemblyPortOptions(port, { signal: controller.signal, store });
+  assert.equal(options.signal, controller.signal);
+  assert.equal(options.store, store);
+  assert.equal(options.session.id, `assembly-new-keys-${process.pid}`);
+  // 这条不是「没抛」：上面三行都在断言**具体值**，而下面证明合法新键真的能被引擎用起来。
+  const result = await runToolLoop({ ...options, modelConfig: port.modelConfig, completion: false, wrapup: false });
+  assert.equal(result.termination.reason, "end_turn");
+});
+
+test("键集自证：构造期产出的每一个键都在冲突闸口内（从实际产物枚举，不手抄清单）", async () => {
+  const port = createOverridePort({
+    policy: { maxRounds: 3, maxTokens: 1000, temperature: 0.1, stream: false, replayPolicy: "per-tool-declaration" },
+    emit: () => {},
+  });
+  const produced = Object.keys(await assemblyPortOptions(port));
+  // 探针自证：这批键真的是构造期产出的（不是空循环恒绿）。
+  for (const expected of ["provider", "tools", "executeTool", "store", "runId", "session", "onEvent", "maxRounds", "maxTokens"]) {
+    assert.ok(produced.includes(expected), `${expected} 必须出现在构造期产物里`);
+  }
+  for (const key of produced) {
+    if (key === "modelConfig") continue; // 唯一既有例外：自带校验的覆盖通道
+    await assert.rejects(
+      assemblyPortOptions(port, { [key]: null }),
+      (error) => error instanceof TypeError
+        && error.message.includes(`conflicts with the port: ${JSON.stringify(key)}`),
+      `${key} 是构造期产出的键，调用期再给必须抛`,
+    );
+  }
 });
