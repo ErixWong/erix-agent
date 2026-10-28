@@ -519,8 +519,10 @@ test("中英契约文档引用的 readMoreLines marker 字面与源码产出同�
 //   ⚠ **2026-10-25 起 floor 换到 `bin/provider-timeouts.js`；2026-10-26（issue #537）起承诺值不再是逐字节实测值，而是**
 //     **「实测最小值向下取整到 50 行一档」**（`fewest ≥ 3,900 lines`，实测最小值 3,903）。所以该文件不再「±1 字节敏感」：
 //     加 1 个字节（11,888 → 11,889 ⇒ 67.1695 B/line）容量从 3,903 掉到 3,902，**仍落在 3,900 那一档里 ⇒ 不红**（这正是 #537 要拆的税）。
-//     跨档（实测最小值跌出 3,900..3,949，或涨到 3,950 以上）才红：那条断言把承诺值与 `Math.floor(实测 / 50) * 50` 用 `assert.equal`
-//     钉死（**仍是零容差**，锚点从「逐字节」换成「50 行一档」），失败消息会点名修法。
+//     跨档（实测最小值跌出 3,900..3,949，或涨到 3,950 以上）才红：**2026-10-28（issue #543）起判据是档位紧致性**
+//     `tier_floor ≤ 实测 < tier_floor + 50`（`assertTierTight`，零容差），取代 #537 的 `|实测 − 承诺| ≤ 50`：
+//     旧形态是双向 50，会把「承诺 3,950 / 实测 3,901」（差 47）判绿——档位虚高就是描述在说谎。新形态同时排
+//     虚高（承诺不许高过实测）、虚低（承诺不许落后实测 ≥ 50）与「承诺不在 50 行档边界上」，失败消息会点名修法。
 //
 // ⚠ **2026-10-25 复测（issue #453）：floor 的**口径**错了，不是数字算错。**
 //   #271 以来 `fewest` 钉的是**写死 83 文件样本**的最小值，而描述里那句 floor 读起来是「本仓没有文件比这更少」。
@@ -730,7 +732,15 @@ const READ_LINE_CAPACITY_ROLES = [
   //   111,133 → **112,481** 字节 / 2,014 → **2,025** 行 / 均行字节 55.1802 → **55.5462** / 容量 4,750 → **4,719**
   //   （描述里「this tool's own source fits」同步 4,750 → 4,719，同位数 ⇒ 字节中性）。
   //   容量 4,719 仍低于样本中位 6,532，「CJK 按比例压低行数」那条断言仍成立。容差常量一个都没动。
-  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 112_481, lines: 2_025, bytesPerLine: 55.5462, capacity: 4_719, cjkShare: 0.277407 } },
+  // 2026-10-28 第十一刷（issue #543，**不是数字漂了，是把证据从承诺里摘出去**）：
+  //   描述里 `measured minimum 3,903` 这半句**删掉了**（它不是承诺，是证据；A20 之后全树真最小值已是 3,901，
+  //   而 #537 的 `|实测 − 承诺| ≤ 50` 照样绿 ⇒ 一个活在绿色门禁里的假数字）。保留的是换算式
+  //   （`rounded down to the nearest 50`）与档位下界（`fewest ≥ 3,900 … no file … fewer than 3,900 lines`）。
+  //   本文件自己的描述句改了（净 +1,518 字节 / +11 行）⇒ `self` 行同片复测：
+  //   112,481 → **113,999** 字节 / 2,025 → **2,036** 行 / 均行字节 55.5462 → **55.9917** / 容量 4,719 → **4,681**
+  //   （描述里「this tool's own source fits」同步 4,719 → 4,681，同位数 ⇒ 字节中性，所以上面这一行就是终值）。
+  //   容量 4,681 仍低于样本中位 6,532，「CJK 按比例压低行数」那条断言仍成立。容差常量一个都没动。
+  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 113_999, lines: 2_036, bytesPerLine: 55.9917, capacity: 4_681, cjkShare: 0.281002 } },
 ];
 
 const READ_LINE_CAPACITY_DIRS = ["src", "bin", "examples"];
@@ -786,6 +796,32 @@ function assertClose(actual, expected, tolerance, label) {
   assert.ok(Math.abs(actual - expected) <= Math.abs(expected) * tolerance,
     `${label}：实测/基准 ${expected}，另一次 ${actual}，差 ${(Math.abs(actual - expected) / Math.abs(expected) * 100).toFixed(2)}%`
     + ` 超出 ±${(tolerance * 100).toFixed(1)}% → 事实漂移：复测后把 readFile 描述、本测试的记录值、CHANGELOG 的 #271 条目一起改`);
+}
+
+// issue #543：floor 承诺的判据是**档位紧致性**，不是「离实测不太远」。
+// `tier_floor ≤ measured < tier_floor + 50`（零容差，三条一起）：
+//   ① `tier_floor ≤ measured`：承诺**不许高过**实测。否则描述里那句「no file … reads fewer than 3,900」
+//      就是在说谎——真有文件读得比它少。这是 #537 的 `|measured − claim| ≤ 50` **放过**的那一侧：
+//      实测 3,901 / 承诺 3,950 只差 47 ⇒ 旧形态**绿**，一个虚高一档的假数字活在绿色门禁里。
+//   ② `measured < tier_floor + 50`：承诺**不许低到没意义**（长期不刷、漂成过度保守的假小数字，
+//      让模型保守分批）。这一侧旧形态也有，但它按「离实测多远」量，新形态按「档位边界」量。
+//   ③ `tier_floor % 50 === 0`：承诺必须真的落在 50 行档的边界上，否则「rounded down to the nearest 50」
+//      这句换算式本身是假的（旧形态对承诺值是否为档位边界**一个字都没说**）。
+// 为什么这比「逐字节等于实测最小值」（#453 的零容差 `assert.equal`）强而不是弱：档位紧致性同时排除了
+// 「档位虚高」（①）与「档位虚低」（②），而它**永不因换人而陈旧**——floor 换文件只要实测仍在同一档，
+// 描述一个字都不用改（这正是 #537/#540 铺的路，本片把断言也搬到同一条路上）。
+// ⚠ 谁把这里退回旧的 `|measured − tierFloor| ≤ 50` 形态，下面那条「比 ±50 更严」的测试会当场红。
+function assertTierTight(measured, tierFloor, label, step = 50) {
+  assert.equal(tierFloor % step, 0,
+    `${label}：承诺值 ${tierFloor} 不是 ${step} 的整数倍 → 「实测最小值向下取整到 ${step}」这句换算式成了假话（#543）`);
+  assert.ok(tierFloor <= measured,
+    `${label}：档位虚高（承诺高于实测）—— 描述承诺 no file reads fewer than ${tierFloor}，`
+    + `但全树实测最小值是 ${measured} 行（差 ${tierFloor - measured} 行）⇒ 这句话在说谎。`
+    + `把描述里的档位改成 ${Math.floor(measured / step) * step}（#543 档位紧致性 ①）`);
+  assert.ok(measured < tierFloor + step,
+    `${label}：档位虚低（承诺落后实测 ≥ ${step} 行）—— 实测最小值 ${measured} 行已经掉出 ${tierFloor} 这一档`
+    + `（[${tierFloor}, ${tierFloor + step})），承诺变成过度保守的假小数字 ⇒ 把描述里的档位改成 ${Math.floor(measured / step) * step}`
+    + `（#543 档位紧致性 ②）`);
 }
 
 test("readFile 行数容量的五个角色锚点未漂移，样本清单仍盘上可寻（#271：数不许静默过期；#275：不再与全树钉死）", () => {
@@ -981,10 +1017,13 @@ test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,00
 // 而当时没有一格会红（描述里那句 floor 对全树已经不是真话，测试只复测样本）。这一格就是补上的那块：
 // 新增文件把真最小值拉低 ⇒ 红；描述里的数字与全树实测对不上 ⇒ 红（不靠 ±2% 容差：floor 是承诺，不是估计）。
 // issue #537（2026-10-26）：承诺**粒度**改了——不再是「逐字节等于实测最小值」，而是
-// 「实测最小值向下取整到 50 行一档」。零容差保留（`assert.equal`），只是锚点从「字节级噪声」换成「50 行档」：
-//   (a) 描述里的承诺值 == `Math.floor(实测最小值 / 50) * 50`（由实测推导，禁止手写常量）；
-//   (b) `|实测最小值 − 承诺值| ≤ 50`（保守度：承诺既不许漂成过度保守的假小数字，也不许高过实测）。
-// 于是同一个 50 行档内实测最小值怎么挪都不需要改描述，跨档才红。
+// 「实测最小值向下取整到 50 行一档」。零容差保留，只是锚点从「字节级噪声」换成「50 行档」。
+// issue #543（2026-10-28）：判据从「离实测多远」换成**档位紧致性**（`assertTierTight`）：
+//   (a) `tier_floor ≤ 实测最小值`（承诺不许高过实测——#537 的 `|差| ≤ 50` 是双向的，会放过虚高一档）；
+//   (b) `实测最小值 < tier_floor + 50`（承诺不许落后实测 ≥ 50 行，否则变成过度保守的假小数字）；
+//   (c) `tier_floor % 50 === 0`（承诺必须真的落在 50 行档边界上，否则换算式本身是假的）。
+// 三条一起 ⇒ 同一个 50 行档内实测最小值怎么挪都不需要改描述，跨档才红；而且它**永不因 floor 换人而陈旧**。
+// 另：描述里不再自报精确实测最小值（#543）——那是**证据**不是承诺，所以本节不再解析 `measured minimum N`。
 // ---------------------------------------------------------------------------
 test("readFile 描述里的 floor == 全树真最小值（#453：样本外新文件把下限拉低时，旧断言无感；#537：承诺粒度 = 向下取整到 50）", () => {
   const description = FILE_TOOL_DEFINITIONS.find((definition) => definition.name === "readFile").description;
@@ -992,12 +1031,13 @@ test("readFile 描述里的 floor == 全树真最小值（#453：样本外新文
   const claimMatch = description.match(/fewest\s*(?:\u2265\s*)?([\d,]+) lines/u);
   assert.ok(claimMatch, "描述里不再有 `fewest <数字> lines` 这一档 → 本测试的解析面失效（同步本测试，不许让断言静默变成永真）");
   const claim = Number(claimMatch[1].replace(/,/g, ""));
-  // #537：描述必须**自报这档是怎么来的**（实测最小值 + 取整方式），否则承诺值又退回一个无出处的裸数字。
-  const roundedMatch = description.match(/measured minimum ([\d,]+), rounded down to the nearest (\d+)/u);
-  assert.ok(roundedMatch, "描述不再自报 `measured minimum N, rounded down to the nearest 50`：承诺值会退回「裸数字」口径（#537）");
-  const disclosedMin = Number(roundedMatch[1].replace(/,/g, ""));
-  const roundingStep = Number(roundedMatch[2]);
-  assert.equal(roundingStep, 50, `描述的取整粒度是 ${roundingStep}，与本测试的推导口径（50 行一档）不一致 → 两边一起改`);
+  // #543：描述**不再**自报精确的 `measured minimum N`（精确实测值是**证据**，不是承诺：写进对外文案就等于
+  // 让每次 floor 换人都欠一次文案同步），但「档位是怎么来的」这句换算式必须还在，否则承诺值又退回一个无出处的裸数字。
+  assert.match(description, /rounded down to the nearest 50/u,
+    "描述不再说明档位是「向下取整到 50 行」得来的：承诺值会退回一个无出处的裸数字（#543）");
+  assert.doesNotMatch(description, /measured minimum [\d,]+/u,
+    "描述又自报了精确的 `measured minimum N`：实测最小值是**证据**不是承诺，写进面向模型的文案就等于让每次 floor 换人都欠一次文案同步"
+    + "（#543；承诺只有档位，档位由 `assertTierTight` 钉住）");
   // 全称句的**下界**也要与承诺值一致（比实测更宽 ⇒ 依然为真且不夸大）。
   const universalMatch = description.match(/no file in those three trees reads fewer than ([\d,]+)/u);
   assert.ok(universalMatch,
@@ -1015,39 +1055,21 @@ test("readFile 描述里的 floor == 全树真最小值（#453：样本外新文
   assert.equal(fewest.capacity, pinned.capacity,
     `${fewest.rel} 容量实测 ${fewest.capacity} 与角色表记录值 ${pinned.capacity} 不同（同一个文件的两份实测对不上）`);
 
-  // 2) #537 (b)：保守度——承诺值必须落在实测最小值的同一个 50 行档里（误差 [0, 50)）。
-  //    写的是带符号差 `实测 − 承诺 ≤ 50` 加上它的镜像（`承诺 − 实测 ≤ 50`，即承诺不许高过实测）：
-  //    前者防「承诺长期不刷、漂成过度保守的假小数字」，后者防「承诺在说谎」。
-  //    ⚠ 这一条排在 (a) 前面：它比 (a) 粗，并且当**实测最小值比承诺低 > 50** 时它是**唯一**能先喊出来的那条
-  //    （反向证：造一个容量 3,8xx 的更密文件并把它钉成 `fewest` 角色 ⇒ 本断言红，失败消息点名修法）。
-  const claimed = Math.floor(fewest.capacity / 50) * 50;
-  const drift = fewest.capacity - claim;
-  assert.ok(Math.abs(drift) <= 50,
-    `描述声称 fewest ${claim} 行，全树实测最小值 ${fewest.capacity} 行（${fewest.rel}），差 ${drift} 行（|差| > 50）`
-    + " → 承诺值必须与实测最小值同档："
-    + (drift > 0
-      ? `承诺偏小 ${drift} 行 = 过度保守的假小数字，把描述里的 ${claim} 改成 ${claimed}`
-      : `承诺偏大 ${-drift} 行 = 承诺在说谎，把描述里的 ${claim} 改成 ${claimed}`));
+  // 2) #543：**档位紧致性**（零容差、双向、锚点是描述里的档位而不是实测值）——
+  //    `tier_floor ≤ 实测 < tier_floor + 50`，判据本体在 `assertTierTight`（上面有注释说明三条）。
+  //    本条取代 #537 的 `|实测 − 承诺| ≤ 50`：旧形态是**双向 50**，会把「承诺 3,950 / 实测 3,901」（差 47）
+  //    判绿 —— 那就是「档位虚高、描述在说谎」这条假数字通道。新形态同时排除虚高（①）与虚低（②），
+  //    并额外要求承诺落在 50 行档的边界上（③），而它**永不因 floor 换人而陈旧**（同档内一个字都不用改）。
+  assertTierTight(fewest.capacity, claim, `描述承诺的 floor vs 全树实测最小值（${fewest.rel}）`);
 
-  // 3) #537 (a)：描述声称的承诺值 == **由全树实测最小值推导**的档位（`Math.floor(实测 / 50) * 50`）。
-  //    仍然是 `assert.equal`（零容差），锚点从「逐字节的实测最小值」换成「50 行一档」。
-  assert.equal(claim, claimed,
-    `描述声称 fewest ${claim} 行，但全树实测最小值 ${fewest.capacity} 行（${fewest.rel}）向下取整到 50 行一档是 ${claimed} 行`
-    + ` → 承诺粒度 = 「实测最小值向下取整到 50」：把描述里的 ${claim} 改成 ${claimed}`
-    + "（同一个 50 行档内实测最小值怎么挪都不用改描述；跨档才刷）");
-
-  // 4) #537：描述里自报的 `measured minimum` 与全称句的下界也必须与承诺**同档**（不逐字节钉死：
-  //    实测最小值在同一个 50 行档里挪动时描述不用改；跨档才红）。
+  // 3) 描述里自报的 `measured minimum` 已按 #543 从**面向模型的承诺**里摘掉（它只是证据，不是承诺：
+  //    写进去等于让每次 floor 换人都欠一次文案同步）。这里只钉**剩下的那一半**：
+  //    全称句的下界与承诺值必须一字不差（同一段话里两个下界互相矛盾 = 读者会信那个更小的）。
   assert.equal(universalBound, claim,
-    `全称句说「no file … reads fewer than ${universalBound}」而承诺值是 ${claim}：同一段话里两个下界必须一致（#537）`);
-  assert.ok(disclosedMin >= claim && disclosedMin < claim + 50,
-    `描述自报的实测最小值 ${disclosedMin} 不在承诺 ${claim} 的那一档（[${claim}, ${claim + 50})）里 → 两个数互相矛盾（#537）`);
-  assert.ok(Math.abs(disclosedMin - fewest.capacity) <= 50,
-    `描述自报的实测最小值 ${disclosedMin} 与当场实测 ${fewest.capacity}（${fewest.rel}）差 ${disclosedMin - fewest.capacity} 行（|差| > 50）`
-    + ` → 自报值已不在实测的同一档里：把描述里的 measured minimum 改成 ${fewest.capacity}（同一个 50 行档内不用逐字节刷）`);
+    `全称句说「no file … reads fewer than ${universalBound}」而承诺值是 ${claim}：同一段话里两个下界必须一致（#543）`);
 
-  // 5) 口径证明（信息性 + 一条恒真的包含关系）：#271 的写死样本只覆盖全树的一部分，它的下界**不低于**全树下界；
-  //    今天样本下界更高（3,953 vs 3,903）—— 这正是 #453 的缺口，也是为什么这一格必须枚举全树而不是复测样本。
+  // 4) 口径证明（信息性 + 一条恒真的包含关系）：#271 的写死样本只覆盖全树的一部分，它的下界**不低于**全树下界；
+  //    样本下界高于全树下界—— 这正是 #453 的缺口，也是为什么这一格必须枚举全树而不是复测样本。
   const sampleRows = READ_LINE_CAPACITY_SAMPLE.map(measureReadLineCapacity);
   const sampleFewest = sampleRows.reduce((a, b) => (b.capacity < a.capacity ? b : a));
   assert.ok(sampleFewest.capacity >= fewest.capacity,
@@ -1066,11 +1088,37 @@ test("readFile 描述里的 floor == 全树真最小值（#453：样本外新文
     pinnedFewest: { file: pinned.rel, capacity: pinned.capacity },
     pinnedSampleFewest: { file: sampleFewest.rel, capacity: sampleFewest.capacity },
     claim,
-    claimed: Math.floor(fewest.capacity / 50) * 50,
-    disclosedMin,
+    tierFloorFromMeasurement: Math.floor(fewest.capacity / 50) * 50,
     universalBound,
-    drift: fewest.capacity - claim,
+    tierTight: { floor: claim, measured: fewest.capacity, span: [claim, claim + 50] },
   }));
+});
+
+// ---------------------------------------------------------------------------
+// issue #543 反向证 ②：**新的档位紧致性断言真的比旧的 ±50 形态更严**。
+// 这条测试存在的理由：把 `assertTierTight` 退回 #537 的 `|实测 − 承诺| ≤ 50` 语义，**它必须红**。
+// 它红的方式不是看源码文本，而是真的调用那个谓词：旧语义会放过（3,901, 3,950）这一对（差 47），
+// 于是下面那两条 `assert.throws` 当场变成「它没抛」⇒ 红。这是「退回旧形态」的可执行闸门。
+// ---------------------------------------------------------------------------
+test("readFile floor 的档位紧致性断言比 #537 的 ±50 形态更严（#543 反向证：承诺虚高到 3,950 必须判红）", () => {
+  // 先记录旧形态的语义（不是断言目标，是**对照物**）：双向 50 ⇒ 实测 3,901 / 承诺 3,950 只差 47，旧形态绿。
+  const legacyWithinFifty = (measured, claim) => Math.abs(measured - claim) <= 50;
+  assert.ok(legacyWithinFifty(3_901, 3_950),
+    "旧形态（|实测 − 承诺| ≤ 50）应当放过「实测 3,901 / 承诺 3,950」这一对：它是本片要拆的假数字通道的入口"
+    + "（如果这条红了，说明本测试的对照物写错了，不是被测代码的问题）");
+  // ① 档位虚高（承诺高于实测）：3,950 > 3,901 ⇒ 必须判红。旧形态在这一对上**绿** ⇒ 新形态严格更严。
+  assert.throws(() => assertTierTight(3_901, 3_950, "反向证：承诺虚高一档"), /档位虚高/u,
+    "紧致性断言没把「承诺 3,950 / 实测 3,901」判红 —— 要么断言被退回旧的 ±50 形态（#543 不许），"
+    + "要么三条判据少了一条（档位虚高 = 描述在对模型说谎）");
+  // ② 档位虚低（承诺落后实测 ≥ 50）：3,901 已掉出 [3,850, 3,900) ⇒ 也必须判红（这一侧旧形态也有，但它按距离量）。
+  assert.throws(() => assertTierTight(3_901, 3_850, "反向证：承诺虚低一档"), /档位虚低/u,
+    "紧致性断言没把「实测 3,901 / 承诺 3,850」判红 —— 承诺落后实测 ≥ 50 行就是过度保守的假小数字");
+  // ③ 承诺不在档位边界上（3,903 不是 50 的整数倍）：旧形态对这一点**一个字都没说**，新形态必须判红。
+  assert.throws(() => assertTierTight(3_901, 3_903, "反向证：承诺不是档位边界"), /不是 50 的整数倍/u,
+    "紧致性断言没把「承诺值不在 50 行档边界上」判红 —— 那样「rounded down to the nearest 50」这句换算式就是假话");
+  // ④ 正向：今天这对（实测 3,901 / 承诺 3,900）必须通过 —— 否则本测试会以「把所有值都判红」的方式假绿。
+  assert.doesNotThrow(() => assertTierTight(3_901, 3_900, "正向：今天这一对"),
+    "紧致性断言把今天这一对（实测 3,901 / 承诺 3,900）也判红了：三条判据里有一条方向反了");
 });
 
 // ---------------------------------------------------------------------------

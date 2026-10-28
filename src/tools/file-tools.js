@@ -942,6 +942,17 @@ export const FILE_TOOL_DEFINITIONS = [
     //   （描述里不许再把 CJK 属性绑在 floor 身份上 / 不许点名 floor 那个文件），`densest` 一侧的实测断言原样保留。
     //   身份迁移反向证已实跑：临时给 `src/loop/option-normalization.js` 加一行注释 ⇒ 只红角色表（`fewest.rel` /
     //   `fewest.capacity` 对不上），**描述相关断言全绿**；撤掉后恢复。
+    // ⚠ 2026-10-28 第十一刷（issue #543，**这一刷不是数字漂了，是把证据从承诺里摘出去**）：
+    //   A20 之后全树最小容量是 `src/loop/option-normalization.js` 3,901，而描述里还写着 `measured minimum 3,903`——
+    //   门禁**不红**：#537 的防退化断言是 `|实测 − 承诺| ≤ 50`，2 行的偏差当然过 ⇒ 一个**活在绿色门禁里的假数字**。
+    //   根因不是那个数过期了，而是它**本不该在承诺里**：面向模型的承诺只有**档位**（fewest ≥ 3,900，全称句
+    //   `no file in those three trees reads fewer than 3,900`），精确实测最小值是**证据**（复测记录、角色表里的
+    //   `fewest.capacity` 才是它的家）。写进对外文案的代价是：每次 floor 换人都欠一次文案同步，而换人已经发生过两次
+    //   （provider-timeouts.js → option-normalization.js），承诺本身却一次都没变过。
+    //   所以这一段只删那半句、保留换算式（`rounded down to the nearest 50`）与档位下界，句子结构不动。
+    //   测试侧同步：`|实测 − 承诺| ≤ 50` → **档位紧致性** `tier_floor ≤ 实测 < tier_floor + 50`（更严：
+    //   旧形态会放过「承诺 3,950 / 实测 3,901」这种档位虚高），并加一条结构性反向证——描述里不许再出现
+    //   `measured minimum N`。本轮描述净删 25 字节 / 增 27 字节（同一个句子），`self` 角色行同片复测。
     description: "Read a text file by line range. "
       + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` continues after line 200); default 0. "
       + "`limit` is a **line count**, default 200. "
@@ -949,12 +960,12 @@ export const FILE_TOOL_DEFINITIONS = [
       + "lines fit is `max_bytes ÷ average bytes per line`: divide the file's byte size by its line count (e.g. `wc -c` ÷ `wc -l`) "
       + "and fold that for the file in hand, instead of assuming a line count. Measured that way on this repo's own `.js` sources "
       + "under `src/`, `bin/` and `examples/` at the default budget (this codebase, not your tree) \u2014 fewest \u2265 3,900 lines "
-      + "(67.2 bytes/line, the widest lines; measured minimum 3,903, rounded down to the nearest 50, so no file in those three trees reads fewer than 3,900), "
+      + "(67.2 bytes/line, the widest lines; the whole-tree minimum rounded down to the nearest 50, so no file in those three trees reads fewer than 3,900 lines), "
       + "median 6,600 (40.0), most 9,407 (27.9). "
       + "The floor is a whole-tree minimum rounded down to a multiple of 50 (a promise, not a per-file estimate); median and most come from a fixed sample of those sources and describe that sample, not every file here. "
       + "Wide lines cut this proportionally and CJK cuts hardest (3 UTF-8 bytes per character): "
       + "the most CJK-dense file in that fixed sample (`src/loop/state-view.js`, 37% of its bytes are CJK) fits 4,387 and "
-      + "this tool's own source fits 4,719. "
+      + "this tool's own source fits 4,681. "
       + "Nothing outside this repo "
       + "was measured, so for CJK-heavy code elsewhere fold the formula rather than reusing these numbers. Either way the cap is "
       + "far more than a single `limit` will ask for, so it is rarely what stops you. "
