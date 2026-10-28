@@ -14,7 +14,9 @@
 > 4. **进 `context` 同名壳也停**（`context: { onFoldSummary }` 与 `context: foldContext({ onFoldSummary })`
 >    都只算 `context` 一个——壳内写点不是扁平写点）；
 > 5. 不数「同名变量落进记录对象」的简写（`onObserverError: (error, context) => seen.push({ error, context })`
->    里的 `context` 不算）——这条是规则 2 的推论。
+>    里的 `context` 不算）——这条是规则 2 的推论。**简写本身照数**（`return { rounds, onRound }` 里的
+>    `onRound` 算一个，`test/loop-usage-accounting.test.js` 的 8 个就是这么来的）；只有落在**已被数过的键
+>    的值**里的不再下钻。
 >
 > 按这五条：**迁移前 388 / 迁移后 351 / 附表 678 / COMPAT-PIN 66**。复跑命令在文末「复跑方法」，
 > 跑出来逐字就是这四个数；**漏掉规则 2/4 会得 390 / 353**（多出来的 2 个写点都藏在「被数的键的值」里，
