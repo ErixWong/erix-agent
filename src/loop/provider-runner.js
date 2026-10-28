@@ -96,6 +96,18 @@ export async function callProvider(ctx, {
     // 回补来源是未折叠的 ctx.messages。放在折叠策略内部只能管住那一层，管不住这里。
     const userTurnGuard = {};
     requestMessages = ensureUserTurnView(requestMessages, ctx.messages, userTurnGuard);
+    // issue #547: **who still reaches this recording branch** (the channel name below has a producer,
+    // so it is not dead code). Neither folding nor the run-state append can make the view *miss* user
+    // turns the source still has — folding only rewrites tool_result bodies, the run-state append only
+    // adds one. What does reach it is a **pairing** break: on a `max_tokens` continuation
+    // (`allowPendingToolUse: true`, the only such call site) a run-state block is appended behind a
+    // trailing `assistant[tool_use]`, so the view is `[…, assistant(tool_use), user(text)]` — illegal
+    // for a different reason than "no user turn". The guard then falls through to
+    // `preserved_latest_user_turn`. Producer chain: low-budget `requestInject`
+    // (`orchestrator.js` `compactBeforeRound` → `requestStateBlock`, kept across the continuation
+    // loop) × truncation on a `tool_use`. Pinned by `test/loop-547-provider-guard-channel.test.js`
+    // (T2/T3: `chat` / `chatStream` recorded; T4: the same provider without the injection records
+    // nothing; T1: folding / run-state reuse / snapshot resume never land here).
     if (userTurnGuard.action !== undefined && userTurnGuard.action !== "unrecoverable") {
       ctx.recordUserTurnGuard?.({
         round,
