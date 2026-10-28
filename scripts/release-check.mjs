@@ -801,9 +801,9 @@ await runToolLoop({
   provider: { chat: async () => ({}) },
   executeTool: async () => "ok",
   store: createMemoryTranscriptStore(),
-  // #546: 本样本是**故意坏**的：只保留 `thisOptionKeyDoesNotExistInRunToolLoopOptions` 这一个
+  // #546: 本样本是**故意坏**的：只保留 thisOptionKeyDoesNotExistInRunToolLoopOptions 这一个
   // 坏点。其余拼写必须是当前**合法**写法，否则「红的原因」不再是我埋的那一个（#498 S3 A21
-  // 已退役扁平 `maxRounds`，它的家是 `config.run.maxRounds`）——旧写法让样本变成「双坏」，
+  // 已退役扁平 maxRounds，它的家是 config.run.maxRounds）——旧写法让样本变成「双坏」，
   // 而断言只要求「编译失败」，所以一直绿。
   thisOptionKeyDoesNotExistInRunToolLoopOptions: 1,
   config: { run: { maxRounds: 1, reflection: false } },
