@@ -4,6 +4,8 @@
 //      （`CONFIG_NAMESPACE_SCHEMA.run`，`src/loop/config-namespace.js`）。本文件 P/G/F/R/N 五段钉它。
 //   ② `stream` **退回**（留在白名单，行为一字未改）。本文件 S 段把它钉成 as-is：
 //      闸口二四格取值（`true` / `false` / 对象 / 函数）逐格记录，理由写在下面。
+//      ⚠ **#498 S3 A16 已按裁决退役它**（家 `config.run.stream`），S 段随之**改写成退役现实**
+//      （不是删掉：那三格是「这条收窄是有意的」的证据）。改法逐格写在 S 段抬头。
 //
 // ⚠ 撞名提醒（本片最容易被改坏的地方）：整词 grep `cwd` 在 `src`/`bin`/`test` 里有上千处命中，
 // 其中**只有一类**是「`runToolLoop` 的顶层选项」——`process.cwd()`、`options.cwd`（CLI 旗标）、
@@ -186,50 +188,67 @@ test(`F1 规位里给函数值（${KEY}）：逐字两句话（只装数据 + �
   assert.match(nested.message, /the engine never calls it, it only forwards the value/u);
 });
 
-// ================================================================ S. `stream` 退回（as-is）
+// ================================================================ S. `stream` 退役（A16 改写：as-is → 退役现实）
+//
+// ⚠ 这三格**原来钉的是 as-is**（A15 的退回：函数扁平可达、规位被拒）。A16 按裁决退役了它，
+// 于是「扁平面」整个消失——但**不许把这一段删掉**：这三格是「这条收窄是有意的」的证据。
+// 改法（逐格保留信息量，不是把断言删空）：
+//   S1  两向钉不变（叶子仍在 schema、顶层键已不在白名单），只把「仍在白名单」翻成反向；
+//   S2  四格闸口二：数据取值（true / false / 对象 / 数字 1）规位侧全 ACCEPT、扁平侧全拒；
+//   S3  函数取值**两侧都拒**（这正是裁决接受的收窄：函数在这个位置从来不是行为）。
+// 裁决原文的依据：引擎对 `stream` 只做真值判断、从不调用（`src/loop/orchestrator.js` 的
+// `partialPersistence !== false && !stream`），所以函数值在配置面被拒不会删掉任何行为。
 
-test(`S1 ${RETURNED} 退回：仍在白名单，且它的 config 叶子仍在 schema 里（两向钉）`, () => {
-  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(RETURNED), true,
-    `${RETURNED} 是**退回**的那一件，本片不许收它`);
-  assert.equal(configPathForOption(RETURNED), "run.stream", "它的规位家仍在（本片不删叶子）");
+test(`S1 ${RETURNED} 已退役：顶层键不在白名单，但它的 config 叶子仍在 schema 里（两向钉）`, () => {
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(RETURNED), false,
+    `${RETURNED} 的扁平拼写已退役（A16 按裁决收口）`);
+  assert.equal(configPathForOption(RETURNED), "run.stream", "它的规位家仍在（删扁平键 ≠ 删叶子）");
   assert.equal(CONFIG_NAMESPACE_SCHEMA.run.includes(RETURNED), true, "叶子不许被顺手删掉");
 });
 
-test(`S2 ${RETURNED} 闸口二四格（as-is）：true / false / 对象两侧可达，函数扁平可达而规位被拒`, async () => {
-  // 这一格就是退回的**证据**（不是猜测）：函数 handler 是「扁平可达、规位被拒」的形态。
-  // 先钉三格 PARITY。
-  for (const value of [true, false, { onChunk: "x" }]) {
+test(`S2 ${RETURNED} 闸口二：数据取值规位侧全 ACCEPT，扁平侧全被名称闸口拒`, async () => {
+  // 取值面：true / false / 对象 / 数字 1。**这一格里不存在两侧差异**——数据取值在规位侧
+  // 一个都不被拒（`stream` 仍没有值校验器），差异只出现在「拼写」这一维上。
+  const nameGate = `unknown runToolLoop option: "${RETURNED}" (its canonical home is `
+    + `config.run.${RETURNED}; the flat spelling is rejected)`;
+  for (const value of [true, false, { onChunk: "x" }, 1]) {
     const label = `${RETURNED}=${JSON.stringify(value)}`;
-    const flat = await exitCode(base({ [RETURNED]: value }));
     const nested = await exitCode(base({
       config: { input: { initialUserMessage: "go" }, run: { [RETURNED]: value } },
     }));
-    assert.equal(flat, 0, `${label}：扁平侧今天可达`);
-    assert.equal(nested, 0, `${label}：规位侧同样可达（PARITY）`);
+    assert.equal(nested, 0, `${label}：规位侧照旧可达（没有值校验器，退役不放宽也不收紧取值面）`);
+    const flat = await rawError(base({ [RETURNED]: value }));
+    assert.equal(flat instanceof TypeError, true, `${label}：扁平拼写已退役 ⇒ 当场拒`);
+    assert.equal(flat.message, nameGate, `${label}：扁平侧拒在名称闸口，文案逐字点名新家`);
   }
-  // 第四格：函数 —— 两侧不同（这就是退回的理由，钉成 as-is，不许「为了让闸口过」放宽 schema）。
-  const flatFn = await exitCode(base({ [RETURNED]: () => 1 }));
+});
+
+test(`S3 ${RETURNED} 函数取值：两侧**都**被拒（裁决接受的收窄，不是抹掉这条差异）`, async () => {
+  // 收窄的事实面：函数值现在在**两个**拼写上都到不了引擎。
+  //   扁平侧：名称闸口（它已经不在白名单）；
+  //   规位侧：`config` 的 intake（「只装数据」那两句），这一句逐字保留。
+  const flatFn = await rawError(base({ [RETURNED]: () => 1 }));
+  assert.equal(flatFn instanceof TypeError, true, "函数值扁平侧同样被拒（A16 之前它是 exit 0）");
+  assert.match(flatFn.message, new RegExp(`^unknown runToolLoop option: "${RETURNED}"`, "u"),
+    "扁平侧拒在名称闸口");
+
   const nestedFn = await rawError(base({
     config: { input: { initialUserMessage: "go" }, run: { [RETURNED]: () => 1 } },
   }));
-  assert.equal(flatFn, 0, "函数值今天扁平可达（`stream` 没有值校验器，任何 truthy 值都开流式路径）");
-  assert.equal(nestedFn instanceof TypeError, true, "函数值规位被拒（`config` 只装数据）");
+  assert.equal(nestedFn instanceof TypeError, true, "函数值规位侧仍被拒（这条 A16 一个字没动）");
   assert.match(nestedFn.message, /^config\.run\.stream is not accepted/u);
   assert.match(nestedFn.message, /the config namespace holds data only/u);
-});
+  assert.match(nestedFn.message, /the engine never calls it, it only forwards the value/u,
+    "引擎从不调用它——这就是「函数在这个位置从来不是行为」的逐字出处");
 
-test(`S3 ${RETURNED} 没有值校验器：任何 truthy 值都走流式路径（退回判据的事实来源）`, async () => {
-  // 「函数 handler」之所以扁平可达，是因为引擎只做真值判断。这里用数字与函数各跑一次，
-  // 证明 `effectiveOptions.stream` 逐字就是宿主给的那个值（引擎既不校验也不改写）。
-  for (const value of [1, () => 1]) {
-    const { effectiveOptions } = await normalizeRunToolLoopOptions({ [RETURNED]: value });
-    assert.equal(effectiveOptions[RETURNED], value, "扁平值逐字到达 effectiveOptions（没有校验器）");
+  // 而「从不调用」的另一面：数据取值逐字到达 `effectiveOptions`（引擎只做真值判断，不校验不改写）。
+  // 这是 S2 那条「规位侧全 ACCEPT」的机制证据，也是本收窄正当性的来源。
+  for (const value of [true, false, 1]) {
+    const { effectiveOptions } = await normalizeRunToolLoopOptions({
+      config: { run: { [RETURNED]: value } },
+    });
+    assert.equal(effectiveOptions[RETURNED], value, "数据取值逐字到达 effectiveOptions（没有校验器）");
   }
-  // 而规位侧连「值到了没有」都问不到：函数在 intake 就被拒（见 S2 第四格）。
-  const { effectiveOptions } = await normalizeRunToolLoopOptions({
-    config: { run: { [RETURNED]: true } },
-  });
-  assert.equal(effectiveOptions[RETURNED], true, "规位侧的纯数据取值照旧展开到 effectiveOptions");
 });
 
 // ================================================================ R. 读侧不动
@@ -300,7 +319,10 @@ test("N1 撞名面逐类钉住：只有 `runToolLoop` 的顶层选项被退役�
 });
 
 test("N2 邻接面没动：`run` 组剩下的大件一件没动，`runId` 仍是扁平可写", () => {
-  for (const key of ["runId", "stream", "completion", "maxRounds", "resume", "reflection", "wrapup"]) {
+  // #498 S3 A16：`stream` 也退役了（家 `config.run.stream`），所以它从这条循环里移出、翻成
+  // 反向钉——与 A15 对 `cwd` 的改法逐字同形；其余邻接键的断言一字未动。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("stream"), false, "A16 已退役 `stream` 的扁平写法");
+  for (const key of ["runId", "completion", "maxRounds", "resume", "reflection", "wrapup"]) {
     assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(key), true, `${key} 仍可扁平写（本片不许收它）`);
   }
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("store"), true, "`store` 是永久顶层面，不许动");

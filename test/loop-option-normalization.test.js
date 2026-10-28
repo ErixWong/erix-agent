@@ -272,7 +272,10 @@ const OPTION_WHITELIST = [
   "diagnostics",
   "onObserverError",
   "signal",
-  "stream",
+  // #498 S3 (`run` slice A16): `stream` left the allowlist — its canonical home is
+  // `config.run.stream`. The copy tracks the source list verbatim (that is exactly what A0 checks),
+  // so it is gone here too; the flat spelling is now a **rejection** cell, see
+  // `test/loop-run-slice-498s3a16.test.js`.
   "onDelta",
   "onReasoningDelta",
   "onToolCall",

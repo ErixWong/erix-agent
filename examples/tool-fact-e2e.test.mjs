@@ -192,14 +192,18 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
     const outA = await runToolLoop({
       provider: createOpenAIProvider(providerFields),
       // #498 S3 A2b: the seed's canonical home is `config.input.initialUserMessage`.
-      config: { input: { initialUserMessage: "先用 readFile 读 a.txt；再用 searchText 搜 needle；最后一句话回答命中几次。" } },
+      // #498 S3 A16: `stream` lost its flat spelling too — canonical home `config.run.stream`
+      // (the expansion phase writes it back to `effectiveOptions.stream`).
+      config: {
+        input: { initialUserMessage: "先用 readFile 读 a.txt；再用 searchText 搜 needle；最后一句话回答命中几次。" },
+        run: { stream: true },
+      },
       task: "读 a.txt 并搜索 needle",
       tools: TOOLS,
       executeTool: makeExecutor(dirA),
       store: storeA,
       runId: "e2e-a",
       maxRounds: 6,
-      stream: true,
       onEvent: (event) => events.push(event),
       onToolCall: (fragment) => fragments.push(fragment),
     });

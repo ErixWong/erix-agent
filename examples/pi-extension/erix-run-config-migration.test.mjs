@@ -107,7 +107,9 @@ function legacyFlatOptions(input) {
     tools: tools.tools,
     executeTool: tools.executeTool,
     maxRounds: params.maxRounds,
-    stream: false,
+    // #498 S3 A16: `stream` lost its flat spelling too; canonical home `config.run.stream`
+    // (expansion writes it back to `effectiveOptions.stream`, so the equivalence claim is unaffected).
+    // It joins the **same** `config.run` group as `cwd` below.
     signal,
     runId,
     store,
@@ -129,7 +131,7 @@ function legacyFlatOptions(input) {
       // #498 S3 A15: `cwd` is retired as a flat option too; its canonical home is `config.run.cwd`
       // (the expansion phase writes it back to `effectiveOptions.cwd`, so the equivalence claim is
       // unaffected). Merged into the **same** `config` tree.
-      run: { cwd: params.cwd },
+      run: { cwd: params.cwd, stream: false },
       // #498 S3 A9: `task` is retired as a flat option too; its canonical home is
       // `config.metadata.task`. Merged into the **same** `config` tree (a second `config:` key would
       // silently replace the `input` / `timing` groups above).

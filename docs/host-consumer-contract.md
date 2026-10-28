@@ -1048,7 +1048,7 @@ reaches `effectiveOptions` byte for byte **and** the two termination reasons abo
 stays a different key, and the group's six remaining members are untouched).
 
 **Flat-spelling version policy for the `run` group's A15 segment** (issue #498 S3, the fifteenth
-slice — `cwd` retired, `stream` **returned**):
+slice — `cwd` retired; `stream` was **returned** by that slice and retired by A16, see below):
 
 | release | writing `cwd` at the top level |
 | --- | --- |
@@ -1080,20 +1080,47 @@ pinned by `N1` of `test/loop-run-slice-498s3a15.test.js`: `process.cwd()` / the 
 `options.cwd` / `createCliTools({ cwd })` / `assemblyPort.cwd` / `params.cwd` (the pi extension's tool
 argument) are **different things** and were not touched. Retiring one entry is not migrating a word.
 
-**`stream` is returned, not retired** — gate 2 measured four value shapes and found a mixed shell:
+**`stream`: returned by A15, retired by A16.** Gate 2 measured four value shapes and found a mixed
+shell; A15 handed that shape to the ruling instead of deciding it. The table is the measurement, and
+it is still the justification for what the ruling chose:
 
-| `stream` value | flat | nested (`config.run.stream`) |
+| `stream` value | flat (before A16) | nested (`config.run.stream`) |
 | --- | --- | --- |
-| `true` / `false` / object | exit 0 | exit 0 (parity) |
+| `true` / `false` / object / `1` | exit 0 | exit 0 (parity) |
 | **function** | **exit 0** | **rejected** — `config.run.stream is not accepted … holds data only` |
 
-`stream` has no value validator (the engine only does one truthiness test), so *any* truthy value turns
-the streaming path on and a function value is **flat-reachable** while `config` — which holds data
-only — rejects it. Under this repository's operational reading of "flat-reachable" (accepted today
-without an error) that is a mixed-shell shape, so the key stays on the allowlist with its behaviour
-unchanged, and the candidates (retire with an as-is pin / add a boolean validator first / promote it to
-the third station) are handed to the ruling rather than decided here. `S1`–`S3` of the pin file hold
-the four cells verbatim.
+The ruling (issue #495) retired the flat spelling and **accepted the narrowing that implies**: a
+function value is now rejected on **both** spellings. The justification is the second half of that
+table read together with the engine's read side — `stream` is only ever *tested* for truthiness
+(`if (partialPersistence !== false && !stream)` in `src/loop/orchestrator.js`) and **never called**, so
+a function was never behaviour at this position; `config` holds data only, and a function there was
+already rejected before the retirement. What the slice deliberately did **not** do: it did not add a
+boolean validator first (that is issue #538's job — the ruling explicitly rejected "add the validator,
+then retire" as the order), and it did not touch the two reads in `src/loop/provider-runner.js` —
+issue #538 (the truthiness read here versus the strict comparison there) is a **known defect that this
+slice does not fix**.
+
+Version policy for `stream` (issue #498 S3, sixteenth slice):
+
+| release | writing `stream` at the top level |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level |
+| 0.27.0 | **never published**, so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, sixteenth slice) | **rejected on the spot** — write `config.run.stream`. The name gate throws `unknown runToolLoop option: "stream" (its canonical home is config.run.stream; the flat spelling is rejected)` |
+
+**The value surface did not move, only the spelling.** `stream` still has no value validator: `true` /
+`false` / an object / the number `1` all reach `effectiveOptions.stream` byte for byte, and the one
+read that matters (`partialPersistence !== false && !stream`) is untouched — `partialPersistence`
+without `stream: true` still throws `partialPersistence requires stream: true`. The fixture
+(`withRunFamily` in `test/helpers/run-direct.js`) again needed no new code — the key joined
+`RUN_FAMILY_FIXTURE_KEYS`. Measured red cells: **49** on the single delete, **15** once the fixture
+translated the spelling, **0** after ten hand-written sites were migrated (the inline allowlist mirror,
+the two-shape equivalence sample, the conflict channel in `C1`, the pi-extension migration golden, the
+contract suite's streaming cell, the resume fixture, and the adjacency lists in A11 / A14 / A15). The
+pin file is `test/loop-run-slice-498s3a16.test.js` (`P` rejection text verbatim and before any host
+port is called; `G` the data-value matrix above; `F` the function value rejected on both spellings;
+`R` a real run still reaching `chatStream` / `chat`, and the `partialPersistence` truthiness test;
+`N` the four-way account and the name-collision table; `S` the fixture translation point).
 
 ### The `capabilities` namespace (issue #498)
 

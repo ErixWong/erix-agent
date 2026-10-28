@@ -66,7 +66,8 @@ test("partial persistence requires streaming mode", async () => {
     config: { run: { partialPersistence: { intervalMs: 10 } } },
   };
 
-  for (const streamOption of [{}, { stream: false }]) {
+  // #498 S3 A16：`stream` 的扁平拼写退役（家 = `config.run.stream`），所以两格改成规位拼写。
+  for (const streamOption of [{}, { config: { ...options.config, run: { ...options.config.run, stream: false } } }]) {
     await assert.rejects(
       runToolLoop({ ...options, ...streamOption }),
       {
@@ -76,7 +77,10 @@ test("partial persistence requires streaming mode", async () => {
     );
   }
 
-  const result = await runToolLoop({ ...options, stream: true });
+  const result = await runToolLoop({
+    ...options,
+    config: { ...options.config, run: { ...options.config.run, stream: true } },
+  });
   assert.equal(result.finalText, "done");
 });
 

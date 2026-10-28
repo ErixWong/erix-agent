@@ -97,15 +97,17 @@ test("G1 闸口二矩阵：三个合法形状规位侧 exit 0，扁平侧是名�
   const shapes = [false, { intervalMs: 100 }, { intervalMs: 100, minBytes: 0 }];
   for (const value of shapes) {
     const label = `${KEY}=${JSON.stringify(value)}`;
-    const nested = await exitCode(base({ stream: true, config: { run: { [KEY]: value } } }));
-    const flat = await exitCode(base({ stream: true, [KEY]: value }));
+    // #498 S3 A16：`stream` 的扁平拼写退役（家 = `config.run.stream`），这两格的
+    // 「让 run 走流式路径」改成规位拼写——测的是 `partialPersistence`，不是 `stream` 的写法。
+    const nested = await exitCode(base({ config: { run: { [KEY]: value, stream: true } } }));
+    const flat = await exitCode(base({ [KEY]: value, config: { run: { stream: true } } }));
     assert.equal(nested, 0, `${label}：规位必须可达（exit 0）`);
     assert.equal(flat, 1, `${label}：扁平拼写已退役 ⇒ 必须当场拒（不是静默忽略）`);
   }
 });
 
 test("G2 非法形状两侧都拒（`true` 不是本键的合法形状，规位侧不比扁平侧松）", async () => {
-  const nested = await exitCode(base({ stream: true, config: { run: { [KEY]: true } } }));
+  const nested = await exitCode(base({ config: { run: { [KEY]: true, stream: true } } }));
   assert.equal(nested, 1, "规位侧也必须是 exit 1（形状校验仍在 orchestrator 里）");
 });
 
@@ -133,8 +135,7 @@ test("R2 真 run：规位值驱动 stream 快照路径（终局正文只出现�
   const result = await runToolLoop(base({
     store,
     runId: "a12-partial",
-    stream: true,
-    config: { run: { [KEY]: { intervalMs: 1 } } },
+    config: { run: { [KEY]: { intervalMs: 1 }, stream: true } },
   }));
   assert.equal(result.finalText, "ok");
   assert.equal(result.termination.reason, "end_turn");

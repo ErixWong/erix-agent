@@ -433,7 +433,8 @@ const VALUES = {
   // (their home is `config.run.*`). #498 S3 A12: `partialPersistence` joined them.
   // #498 S3 A13: `outputHygiene` joined them too (home `config.run.outputHygiene`).
   resume: false,
-  stream: false,
+  // #498 S3 A16（`run` 片）：`stream` 退役扁平写法（家 `config.run.stream`），样本搬到
+  // `RETIRED_FLAT_VALUES`。
   // #498 S3 (`tuning` slice, segment A5): `maxTokens` / `temperature` / `topP` are no longer flat
   // top-level keys — they moved to `RETIRED_FLAT_VALUES` below (their home is `config.tuning.*`).
   // #498 S3 (`tuning` slice): `cacheCapable` is no longer a flat top-level key — it moved to
@@ -547,6 +548,10 @@ const RETIRED_FLAT_VALUES = {
   // `effectiveOptions.cwd`（读侧一行未改：`orchestrator.js` 的 `typeof cwd !== "string"` 校验与
   // `finalGuard` / deliverables 事实载荷里那个键）。
   cwd: "/tmp/config-497",
+  // #498 S3 A16（`run` 片）：`stream` 退役。**布尔数据**（默认 `false`）；展开相仍逐字写回
+  // `effectiveOptions.stream`（读侧一行未改：`orchestrator.js` 的 `partialPersistence !== false && !stream`
+  // 真值判断，以及 `provider-runner.js` 两处读法——后者是 #538，本片不碰）。
+  stream: true,
 };
 
 /** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */
@@ -622,15 +627,16 @@ test("B3 config 形态真的被引擎读：maxRounds 经 config 生效（不是�
 test("C1 同名时 config 赢，并记一条冲突（规范化层）", async () => {
   const { effectiveOptions, configConflicts } = await normalizeRunToolLoopOptions({
     maxRounds: 9,
-    stream: false,
+    resume: false,
     // #498 S3（`tuning` A5）：`temperature` 已退役扁平写法（家 = `config.tuning.temperature`），所以
     // 「同一个值写两边 ⇒ 不记冲突」这条通道换成一个**仍可扁平写**的配置叶子。A5 那一版用的是
     // `maxTokenContinuations`，而 A14 把它也退役了 ⇒ 再换一次：`stream`（家 = `config.run.stream`，
-    // 仍是扁平可写的配置叶子）。通道形状一字未变：同一个值写两边不记冲突。
-    config: { run: { maxRounds: 5, stream: false } },
+    // 仍是扁平可写的配置叶子）。A16 把 `stream` 也退役了 ⇒ 换成 `resume`（家 = `config.run.resume`，
+    // 仍是扁平可写的布尔叶子）。通道形状一字未变：同一个值写两边不记冲突。
+    config: { run: { maxRounds: 5, resume: false } },
   });
   assert.equal(effectiveOptions.maxRounds, 5, "config.run.maxRounds 覆盖扁平 maxRounds");
-  assert.equal(effectiveOptions.stream, false, "值相同时照旧生效");
+  assert.equal(effectiveOptions.resume, false, "值相同时照旧生效");
   assert.deepEqual(configConflicts, [{ path: "run.maxRounds", key: "maxRounds" }], "只有值不同才算冲突");
 });
 

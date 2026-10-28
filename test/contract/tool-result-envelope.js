@@ -481,8 +481,8 @@ export function toolResultEnvelopeContract(label, getEntry) {
     const events = [];
     await runToolLoop({
       provider,
-      stream: true,
-      config: { input: { initialUserMessage: "task" } },
+      // #498 S3 A16: `stream` has no flat spelling any more — canonical home `config.run.stream`.
+      config: { input: { initialUserMessage: "task" }, run: { stream: true } },
       executeTool: async () => "ok",
       store: createMemoryTranscriptStore(),
       runId: "contract-stream-key",
