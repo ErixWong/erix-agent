@@ -2046,3 +2046,308 @@ describe("静态守卫：idle → exec 天花板的装配接线（issue #433 T0�
     t.diagnostic("①–⑦ 放行证 / 变异证 / 面证 逐条按预期");
   });
 });
+
+// ── 规则 6：随包契约套件 `modelConfigProviderContract(` 的每一处调用都必须传满 3 个实参（issue #518a） ──
+//
+// 病根（#518a 修复轮现场）：#518 把 `modelConfigProviderContract(label, setup, unknownSlot)` 的第三参
+// 改成**必填**（设计上认可：强制每个适配器显式声明自己的未知槽位策略，给默认值会把这件事藏起来），
+// 仓内消费者只补齐了 `test/config/*.test.js` 三份——**漏了 `scripts/release-check.mjs`**。那一处
+// 不是普通的调用点：它是发布自检脚本在临时根里**生成**的一份消费者视角自检源码（模板字符串里的
+// `modelConfigProviderContract(label + " static model config provider", async () => ({…}))`）。
+// 于是 `node --test`（含 `node --test test/contract/`）全绿，而 `npm run check:release` 的第 3/5 步
+// 当场红（`contract-selftest.test.mjs`，not ok 1）——**破坏面只落在一条不在常规 CI 路径上那么显眼
+// 的门禁里**，签名再变一次还会同样漏。这条守卫就是把那一格补上：不靠「今天恰好想起来跑 check:release」，
+// 而是让「有调用点少传一个实参」这件事在 `npm test` 里就红。
+//
+// 判据（纯函数，读文本可注入——反向证直接喂改过的真实文本，不碰磁盘）：
+//   · 扫描面：`bin/ scripts/ src/ test/ examples/ fixtures/` 的 js/mjs/cjs（整份文本，**含模板字符串
+//     内容**——发布自检那份源码整个是模板字符串，跳过反引号等于把最该管的那一处漏掉）；
+//     外加根 `*.md` + `docs/**/*.md` + `examples/**/*.md` 里 **js 围栏**（`docs/testing.md` 的契约示例
+//     就是两参写法，本轮一并修掉了）。散文与表格里的签名行不算调用点，不进面（宁可窄而真）。
+//   · 每一处 `modelConfigProviderContract(` 都要按括号配对取出实参、按顶层逗号切分，**恰好 3 个**；
+//     红时点名 `文件:行` 与实际个数。整行注释里的提及不算（`isCommentLine`）。
+//   · 覆盖面**逐份点名**（`EXPECTED_CONTRACT_CALL_SITES`）：漏扫一份 = 少一处调用点，且会静默缩面。
+//   · 本文件自己的反向证样本用 `CONTRACT_FN + "("` 在运行时拼出来，不写字面量：否则规则会咬自己的
+//     靶子（与规则 5 的「代码串不算散文」同一口径）。
+
+/** 只在这一个常量里出现一次：样本用 `CONTRACT_FN + "("` 拼，避免本文件自己被自己的规则咬到。 */
+const CONTRACT_FN = "modelConfigProviderContract";
+
+/** 代码面：整份文本都扫（含模板字符串内容）。 */
+const CONTRACT_CALL_CODE_ROOTS = Object.freeze(["bin", "scripts", "src", "test", "examples", "fixtures"]);
+
+/** 文档面：只扫 js 围栏（散文/表格里的签名行不是调用点）。 */
+const CONTRACT_CALL_MD_ROOTS = Object.freeze(["docs", "examples"]);
+
+/** 围栏语言标记：只认真正会被当成 js 跑的那几种。 */
+const JS_FENCE_LANGS = new Set(["js", "javascript", "mjs", "cjs"]);
+
+/** 覆盖面：每一份**已知**调用点都逐份点名（含发布自检那一份——本轮的病根就在这里）。 */
+const EXPECTED_CONTRACT_CALL_SITES = Object.freeze([
+  ["scripts/release-check.mjs", "发布自检生成的随包契约自检源码（#518a 的病根：漏传第三参 ⇒ check:release 第 3/5 步红）"],
+  ["test/config/env.test.js", "env provider（单配置形态）"],
+  ["test/config/json-file.test.js", "json-file provider（槽位图形态）"],
+  ["test/config/static.test.js", "static provider（槽位图形态）"],
+  ["docs/testing.md", "`docs/testing.md` 的契约套件示例围栏（示例不该教两参写法）"],
+  ["docs/testing_cn.md", "`docs/testing_cn.md` 的同一处示例围栏"],
+]);
+
+/**
+ * 从 `open`（必须是 `(`）起做括号配对，返回闭合下标（找不到返 -1）。
+ * 跟踪 `()` / `[]` / `{}`，跳过 `'…'` 与 `"…"` 字符串（含转义）；**不跳反引号**——
+ * 发布自检那份源码整个是模板字符串，跳过它就等于把最该管的那一处漏掉。
+ */
+function matchParen(text, open) {
+  const closers = { "(": ")", "[": "]", "{": "}" };
+  const stack = [];
+  let i = open;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"' || ch === "'") {
+      i += 1;
+      while (i < text.length && text[i] !== ch) i += text[i] === "\\" ? 2 : 1;
+      i += 1;
+      continue;
+    }
+    if (closers[ch]) {
+      stack.push(closers[ch]);
+      i += 1;
+      continue;
+    }
+    if (ch === ")" || ch === "]" || ch === "}") {
+      if (stack.pop() !== ch) return -1;
+      if (stack.length === 0) return i;
+    }
+    i += 1;
+  }
+  return -1;
+}
+
+/** 按**顶层**逗号切分实参，返回每个实参的 `[start, end)`（相对 `inner`）。空串（`f()`）返回空数组。 */
+function splitTopLevelArgs(inner) {
+  const spans = [];
+  let depth = 0;
+  let start = 0;
+  let i = 0;
+  while (i < inner.length) {
+    const ch = inner[i];
+    if (ch === '"' || ch === "'") {
+      i += 1;
+      while (i < inner.length && inner[i] !== ch) i += inner[i] === "\\" ? 2 : 1;
+      i += 1;
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") depth += 1;
+    else if (ch === ")" || ch === "]" || ch === "}") depth -= 1;
+    else if (ch === "," && depth === 0) {
+      spans.push([start, i]);
+      start = i + 1;
+    }
+    i += 1;
+  }
+  spans.push([start, inner.length]);
+  const args = spans.map(([s, e]) => inner.slice(s, e).trim()).filter((a) => a !== "");
+  return args;
+}
+
+/**
+ * 纯函数：给定 `文件相对路径 → 文本`，返回每一处 `modelConfigProviderContract(` 的实参个数。
+ * `lineOffset` 由调用方给（md 围栏要换算回文档里的绝对行号）。
+ *
+ * @param {Record<string, string|null>} textByFile
+ * @returns {{sites: {file: string, line: number, kind: "call"|"declaration", argCount: number}[], unparsable: string[]}}
+ */
+function contractCallSites(textByFile) {
+  const re = new RegExp(`\\b${CONTRACT_FN}\\s*\\(`, "g");
+  const sites = [];
+  const unparsable = [];
+  for (const [file, text] of Object.entries(textByFile)) {
+    if (typeof text !== "string") continue;
+    const lines = text.split(/\r?\n/);
+    for (const m of text.matchAll(re)) {
+      const open = m.index + m[0].length - 1;
+      const line = text.slice(0, m.index).split(/\r?\n/).length;
+      // 整行注释里的提及不算调用点（文档式注释里提名字是正当的）
+      if (isCommentLine(lines[line - 1] ?? "")) continue;
+      const close = matchParen(text, open);
+      if (close === -1) {
+        unparsable.push(`${file}:${line} 的 \`${CONTRACT_FN}(\` 括号配不上（扫描口径被改坏了？不许静默放行）`);
+        continue;
+      }
+      const kind = /\bfunction\s+$/.test(text.slice(Math.max(0, m.index - 40), m.index)) ? "declaration" : "call";
+      sites.push({ file, line, kind, argCount: splitTopLevelArgs(text.slice(open + 1, close)).length });
+    }
+  }
+  return { sites, unparsable };
+}
+
+/** 判据：返回每一处「没传满 3 个实参」的缺口（空数组 = 全仓调用点都合规）。 */
+function contractArityErrors(textByFile) {
+  const { sites, unparsable } = contractCallSites(textByFile);
+  const errors = [...unparsable];
+  for (const site of sites) {
+    if (site.argCount === 3) continue;
+    errors.push(
+      `${site.file}:${site.line} \`${CONTRACT_FN}(\` 的${site.kind === "declaration" ? "声明只写了" : "调用只传了"}`
+      + ` ${site.argCount} 个实参，必须恰好 3 个（label, setup, unknownSlot）——`
+      + "第三参 `unknownSlot` 自 issue #518 起**必填**（强制每个适配器显式声明自己的未知槽位策略："
+      + "`{mode:\"throws\", name, available}` 槽位图 / `{mode:\"single-config\", name}` 单配置）",
+    );
+  }
+  return errors;
+}
+
+/** 扫一份 md 的 js 围栏，返回 `{ [虚拟文件名]: 围栏正文 }`（行号按围栏在文档里的位置补 `\n` 对齐）。 */
+function jsFenceTexts(rel, text) {
+  const out = {};
+  const lines = text.split(/\r?\n/);
+  let i = 0;
+  while (i < lines.length) {
+    const open = /^```(\w*)\s*$/.exec(lines[i]);
+    if (!open || !JS_FENCE_LANGS.has(open[1].toLowerCase())) {
+      i += 1;
+      continue;
+    }
+    const startLine = i + 2; // 围栏正文第一行的绝对行号（1-based；`i` 是 0-based 的围栏行）
+    const body = [];
+    i += 1;
+    while (i < lines.length && !/^```\s*$/.test(lines[i])) {
+      body.push(lines[i]);
+      i += 1;
+    }
+    i += 1;
+    out[`${rel}#L${startLine}`] = "\n".repeat(startLine - 1) + body.join("\n");
+  }
+  return out;
+}
+
+/** 扫描面（真实树）：代码面整份文本 + 文档面的 js 围栏。 */
+function contractCallSurface() {
+  const surface = {};
+  for (const { rel, abs } of listScannable(CODE_EXTS, ...CONTRACT_CALL_CODE_ROOTS)) {
+    surface[rel] = readFileSync(abs, "utf8");
+  }
+  const mdFiles = [
+    ...readdirSync(ROOT).filter((n) => n.endsWith(".md")).map((n) => n),
+    ...[...listScannable(new Set([".md"]), ...CONTRACT_CALL_MD_ROOTS)].map((f) => f.rel),
+  ];
+  for (const rel of [...new Set(mdFiles)].sort()) {
+    const text = realReadText(rel);
+    if (typeof text !== "string") continue;
+    Object.assign(surface, jsFenceTexts(rel, text));
+  }
+  return surface;
+}
+
+describe("静态守卫：随包契约套件的 modelConfigProviderContract 调用点必须传满 3 个实参（issue #518a）", () => {
+  it("前置：扫描面逐份点名已知调用点（含发布自检那一份），否则本规则恒绿", (t) => {
+    const surface = contractCallSurface();
+    const files = Object.keys(surface);
+    const { sites } = contractCallSites(surface);
+    t.diagnostic(`规则 6：扫描面 ${files.length} 份（代码面 ${CONTRACT_CALL_CODE_ROOTS.join("/ ")} + md js 围栏），`
+      + `命中 ${sites.length} 处调用点`);
+    for (const site of sites) t.diagnostic(`  ${site.file}:${site.line} ${site.kind} args=${site.argCount}`);
+
+    // 面本身不许缩水：代码面三个根目录都得扫到东西
+    for (const root of ["scripts", "test", "bin", "src"]) {
+      assert.ok(files.some((f) => f.startsWith(`${root}/`)),
+        `扫描面里一份 ${root}/ 下的文件都没有：规则 6 的代码面被拆了`);
+    }
+    assert.ok(files.some((f) => f.startsWith("docs/") && f.includes("#L")),
+      "扫描面里一份 docs/ 的 js 围栏都没有：文档面被拆了（`docs/testing.md` 的示例就是靠这一格看住的）");
+
+    // 逐份点名：每一处已知调用点都必须被扫到
+    for (const [rel, why] of EXPECTED_CONTRACT_CALL_SITES) {
+      const hit = sites.some((s) => s.file === rel || s.file.startsWith(`${rel}#L`));
+      assert.ok(hit, `扫描面里找不到 ${rel} 的调用点（${why}）——漏扫一份 = 少一处调用点，`
+        + "本规则会对那一份恒绿（#518a 的病根正是「漏了发布自检那一处」）");
+    }
+    t.diagnostic(`规则 6 覆盖面：${EXPECTED_CONTRACT_CALL_SITES.map(([rel]) => rel).join(" / ")} 全部扫到`);
+  });
+
+  it("真实树 = 回归基线：每一处调用都传满 3 个实参（release-check 也在面内）", (t) => {
+    const errors = contractArityErrors(contractCallSurface());
+    t.diagnostic(`规则 6：${errors.length ? errors.join(" / ") : "全仓调用点都是 3 实参"}`);
+    assert.deepEqual(
+      errors,
+      [],
+      `有 \`${CONTRACT_FN}(\` 调用点没传满 3 个实参（#518 起第三参必填）：\n${errors.join("\n")}\n`
+      + "修法：给每个调用点补第三参 `unknownSlot`——槽位图形态（static / json-file）写 "
+      + "`{ mode: \"throws\", name: \"<一个图里没有的名字>\", available: [\"default\", …] }`，"
+      + "单配置形态（env）写 `{ mode: \"single-config\", name: \"<任意名字>\" }`。"
+      + "**别把必填改回可选**：给默认值等于把「这个适配器对未知槽名的策略」藏起来。",
+    );
+  });
+
+  it("反向证：把真实调用点改成两参 ⇒ 红并点名文件与行（变异没落上也算失败）", (t) => {
+    const rel = "test/config/static.test.js";
+    const real = realReadText(rel);
+    assert.equal(typeof real, "string", `${rel} 读不到：反向证的靶子没了`);
+
+    // 用同一个解析器把最后一个实参切掉——不手写「改成两参」的字面量，避免靶子改写后这一例静默失效
+    const open = real.search(new RegExp(`\\b${CONTRACT_FN}\\s*\\(`));
+    assert.notEqual(open, -1, `变异没落上：${rel} 里找不到调用点`);
+    const openParen = real.indexOf("(", open);
+    const closeParen = matchParen(real, openParen);
+    assert.notEqual(closeParen, -1, `变异没落上：${rel} 的调用括号配不上`);
+    const inner = real.slice(openParen + 1, closeParen);
+    const args = splitTopLevelArgs(inner);
+    assert.equal(args.length, 3, `变异前 ${rel} 的调用应当是 3 实参，实测 ${args.length}（靶子被改写了，先修靶子）`);
+    const lastArg = args[2];
+    const lastArgAt = inner.lastIndexOf(lastArg);
+    assert.notEqual(lastArgAt, -1, "变异没落上：切不出最后一个实参");
+    const dropped = real.slice(0, openParen + 1) + inner.slice(0, lastArgAt).replace(/,\s*$/, "") + real.slice(closeParen);
+    const mutatedSites = contractCallSites({ [rel]: dropped }).sites;
+    assert.equal(mutatedSites[0]?.argCount, 2, `变异没落上：改成两参后实测 ${mutatedSites[0]?.argCount} 个实参`);
+
+    const errors = contractArityErrors({ [rel]: dropped });
+    assert.equal(errors.length, 1, `把 ${rel} 改成两参应恰好 1 处红，实测：\n${errors.join("\n")}`);
+    assert.match(errors.join("\n"), new RegExp(`^${rel.replace(/\./g, "\\.")}:\\d+ \`${CONTRACT_FN}\\(\` 的调用只传了 2 个实参`),
+      `红的时候必须点名文件与行：${errors.join("\n")}`);
+    t.diagnostic(`① 把 ${rel} 的调用改成两参 ⇒ ${errors.length} 处红：${errors.join("\n")}`);
+
+    // ② 发布自检那一份（本轮真出事的调用点）：同样切成两参 ⇒ 红并点名 scripts/release-check.mjs
+    const releaseRel = "scripts/release-check.mjs";
+    const releaseText = realReadText(releaseRel);
+    const rOpen = releaseText.search(new RegExp(`\\b${CONTRACT_FN}\\s*\\(`));
+    assert.notEqual(rOpen, -1, `变异没落上：${releaseRel} 里找不到调用点（发布自检不再消费契约套件了？）`);
+    const rOpenParen = releaseText.indexOf("(", rOpen);
+    const rCloseParen = matchParen(releaseText, rOpenParen);
+    const rInner = releaseText.slice(rOpenParen + 1, rCloseParen);
+    const rArgs = splitTopLevelArgs(rInner);
+    assert.equal(rArgs.length, 3, `变异前 ${releaseRel} 的调用应当是 3 实参，实测 ${rArgs.length}`);
+    const rLast = rInner.lastIndexOf(rArgs[2]);
+    const rDropped = releaseText.slice(0, rOpenParen + 1) + rInner.slice(0, rLast).replace(/,\s*$/, "") + releaseText.slice(rCloseParen);
+    const rErrors = contractArityErrors({ [releaseRel]: rDropped });
+    assert.equal(rErrors.length, 1, `把 ${releaseRel} 改成两参应恰好 1 处红，实测：\n${rErrors.join("\n")}`);
+    assert.match(rErrors.join("\n"), /scripts\/release-check\.mjs:\d+ .*只传了 2 个实参/,
+      `红的时候必须点名发布自检那一行：${rErrors.join("\n")}`);
+    t.diagnostic(`② 把 ${releaseRel} 的调用改成两参 ⇒ ${rErrors.length} 处红：${rErrors.join("\n")}`);
+  });
+
+  it("放行证与范围证：3 实参绿、模板字符串里的调用也算、整行注释与散文不算", (t) => {
+    const fn = `${CONTRACT_FN}(`; // 运行时拼，避免本文件自己被自己的规则咬到
+    // ① 放行证：3 实参 ⇒ 绿（否则下面几条只是「永远有话说」）
+    assert.deepEqual(contractArityErrors({ "fake/ok.js": `x = ${fn}"a", async () => ({}), { mode: "single-config", name: "s" });` }), [],
+      "3 实参的调用被判红：判据口径有问题");
+    // ② 两参 ⇒ 恰好 1 处红，点名文件与行
+    const two = contractArityErrors({ "fake/two.js": `// 头注释\nx = ${fn}"a", async () => ({}));` });
+    assert.equal(two.length, 1, `两参应恰好 1 处红，实测：${JSON.stringify(two)}`);
+    assert.match(two[0], /^fake\/two\.js:2 /);
+    // ③ 模板字符串里的调用**要**被扫到（发布自检就是这么写的，跳过反引号 = 漏掉本轮病根）
+    assert.equal(contractArityErrors({ "fake/tpl.mjs": `const SRC = \`\n${fn}"a", setup\n\`;` }).length, 1,
+      "模板字符串里的两参调用没被扫到：本规则会对发布自检那一份恒绿");
+    // ④ 整行注释里的提及不算（文档式注释里提签名是正当的）
+    assert.deepEqual(contractArityErrors({ "fake/c.js": `// ${fn}label, setup) 是旧写法` }), [],
+      "整行注释里的提及被当成了调用点");
+    // ⑤ 字符串里的逗号/括号不参与切分（否则 3 实参会因为引号里的逗号被算成 4 个）
+    assert.deepEqual(contractArityErrors({ "fake/str.js": `x = ${fn}"a,b)", setup, { mode: "single-config", name: "s)" });` }), [],
+      "字符串里的逗号/括号被算进了实参切分");
+    // ⑥ 括号配不上 ⇒ 红（不许静默放行）
+    assert.equal(contractArityErrors({ "fake/bad.js": `x = ${fn}"a", setup` }).length, 1,
+      "括号配不上时没有报错（扫描口径坏了也不红）");
+    // ⑦ 空实参不算：`f()` 是 0 个
+    assert.equal(contractArityErrors({ "fake/empty.js": `x = ${fn});` }).length, 1, "空实参没被算成 0 个");
+    t.diagnostic("①–⑦ 放行证 / 变异证 / 范围证 逐条按预期");
+  });
+});
