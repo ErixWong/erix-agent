@@ -77,8 +77,7 @@ function runDirect(extra = {}) {
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
     seed: "go",
-    completion: false,
-    config: { input: { wrapup: false } },
+    config: { input: { wrapup: false }, run: { completion: false } },
     ...extra,
   });
 }
@@ -375,8 +374,7 @@ test("S2d2 两个 capabilities 源同时在场：调用级整棵覆盖（后写�
   });
   const result = await runToolLoop({
     assemblyPort: port,
-    completion: false,
-    config: { input: { wrapup: false } },
+    config: { input: { wrapup: false }, run: { completion: false } },
     capabilities: {
       hooks: {
         onEvent: (event) => {
@@ -398,8 +396,7 @@ test("S2d2 两个 capabilities 源同时在场：调用级整棵覆盖（后写�
   const quiet = [];
   await runToolLoop({
     assemblyPort: makePort({ capabilities: { hooks: { onEvent: sameHook } } }),
-    completion: false,
-    config: { input: { wrapup: false } },
+    config: { input: { wrapup: false }, run: { completion: false } },
     capabilities: { hooks: { onEvent: sameHook } },
     onEvent: (event) => quiet.push(event),
   });
@@ -410,7 +407,8 @@ test("S2e 装配口路线：policy.capabilities 同相接受并生效，未知�
   const seen = [];
   const port = makePort({ capabilities: { hooks: { onEvent: (event) => seen.push(event) } } });
   // #498 S3 A18: the flat `wrapup` switch is retired — its home is `config.input.wrapup`.
-  const result = await runToolLoop({ assemblyPort: port, completion: false, config: { input: { wrapup: false } } });
+  // #498 S3 A23a：`completion` 并进同一个 `config` 容器（规位 `config.run.completion`）。
+  const result = await runToolLoop({ assemblyPort: port, config: { input: { wrapup: false }, run: { completion: false } } });
   assert.equal(result.termination.reason, "end_turn");
   assert.ok(seen.length > 0, "policy.capabilities.hooks.onEvent 必须被投递");
 

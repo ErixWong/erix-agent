@@ -66,8 +66,10 @@ function runDirect(extra = {}) {
     provider: providerOnce(),
     executeTool: async () => "ok",
     seed: "go",
-    completion: false,
     ...extra,
+    // #498 S3 A23a：并进**同一个** `config` 容器，且写在 `...extra` 之后（否则 `extra.config`
+    // 会静默顶掉这一行——对象字面量重复键，后者胜）。
+    config: { ...(extra.config ?? {}), run: { ...(extra.config?.run ?? {}), completion: false } },
   });
 }
 
@@ -136,7 +138,30 @@ const assemblyError = (policy = {}, explicit = {}) => {
   } catch (error) {
     return Promise.resolve(error);
   }
-  return runToolLoop({ assemblyPort: makePort(seeded), completion: false, ...explicit })
+  // #498 S3 A23a：默认的 `completion: false` 从扁平拼写搬进规位家 `config.run.completion`。
+  // 这里有一个**本文件特有**的陷阱：调用级 `config` 会**整棵覆盖** `policy.config`（既有合并规则），
+  // 所以「往调用级 config 里补一个默认值」等于把 policy 侧那棵配置树整个顶掉——B 段那些
+  // 「policy 侧坏值必须抛」的反例格会变成假绿。于是默认值的落点按 explicit 的形状分三种：
+  //   · `explicit.config` 是对象 ⇒ 并进**同一个** `config` 容器（不造第二个键）；
+  //   · `explicit.config` 省略 ⇒ 默认值并进 **policy 侧**那棵树（调用级不出现 `config` 键）；
+  //   · `explicit.config` / `.run` 是**非对象**（本文件的形状拒绝格）⇒ 原样透传，什么都不补。
+  const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const explicitConfig = explicit.config;
+  const runIsMergeable = explicitConfig === undefined || (isPlainObject(explicitConfig)
+    && (explicitConfig.run === undefined || isPlainObject(explicitConfig.run)));
+  let port = makePort(seeded);
+  const callOptions = { ...explicit };
+  if (!runIsMergeable) {
+    // 形状拒绝格：原样透传（补任何东西都会把那一格的拒绝换成另一条红）。
+  } else if (explicitConfig !== undefined) {
+    callOptions.config = {
+      ...explicitConfig,
+      run: { ...explicitConfig.run, completion: false },
+    };
+  } else if (isPlainObject(seeded.config) && (seeded.config.run === undefined || isPlainObject(seeded.config.run))) {
+    port = makePort({ ...seeded, config: { ...seeded.config, run: { ...seeded.config.run, completion: false } } });
+  }
+  return runToolLoop({ assemblyPort: port, ...callOptions })
     .then(() => null, (error) => error);
 };
 
@@ -273,8 +298,7 @@ test("A③ 语义相吃的是**合并后**的表示：装配口的合法值 + �
   const result = await runToolLoop(withSeed({
     assemblyPort: port,
     initialUserMessage: "go",
-    completion: false,
-    config: { folding: { context: undefined } },
+    config: { folding: { context: undefined }, run: { completion: false } },
   }));
   assert.equal(result.termination.reason, "end_turn");
 
@@ -282,8 +306,7 @@ test("A③ 语义相吃的是**合并后**的表示：装配口的合法值 + �
   const overridden = await runToolLoop(withSeed({
     assemblyPort: makePort({ context: { budgetTokens: 1000 } }),
     initialUserMessage: "go",
-    completion: false,
-    config: { folding: { context: { budgetTokens: 1000, summarizeBudgetMs: 5 } } },
+    config: { folding: { context: { budgetTokens: 1000, summarizeBudgetMs: 5 } }, run: { completion: false } },
   })).then(() => null, (caught) => caught);
   assert.equal(overridden.message, 'unknown assembly policy context option: "summarizeBudgetMs"');
   assert.equal(overridden.via, "assembly", "路线标签取入口形状（这次调的是装配口 API）");
@@ -383,7 +406,7 @@ test("B(null) `context: null` 逐字等于省略：两条路线都不抛，且�
   const viaPort = await runToolLoop(withSeed({
     assemblyPort: makePort({ context: null }),
     initialUserMessage: "go",
-    completion: false,
+    config: { run: { completion: false } },
   }));
   assert.equal(viaPort.termination.reason, "end_turn", "装配口 `context: null` 的 run 必须照旧跑完");
 });
@@ -537,7 +560,7 @@ test("E 取值校验仍由 orchestrator 承担，两条路线都汇到那里（�
     const assembly = await runToolLoop(withSeed({
       assemblyPort: makePort(),
       initialUserMessage: "go",
-      completion: false,
+      config: { run: { completion: false } },
       ...bad,
     })).then(() => null, (caught) => caught);
     assert.equal(assembly?.message, message, `${label}: 装配口也必须到同一个校验点`);
@@ -548,7 +571,7 @@ test("E 取值校验仍由 orchestrator 承担，两条路线都汇到那里（�
   const policyError = await runToolLoop(withSeed({
     assemblyPort: makePort({ maxRounds: 0 }),
     initialUserMessage: "go",
-    completion: false,
+    config: { run: { completion: false } },
   })).then(() => null, (caught) => caught);
   assert.equal(policyError.message, "maxRounds must be a finite positive integer");
   assert.equal(policyError.via, undefined);

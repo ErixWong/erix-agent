@@ -94,14 +94,28 @@ const DONE = [{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" 
 function runDirect(extra = {}) {
   const { config, ...rest } = extra;
   const configIsObject = config !== null && typeof config === "object" && !Array.isArray(config);
+  // #498 S3 A23a：默认的 `completion: false` 从扁平拼写搬进规位家 `config.run.completion`，与
+  // `wrapup` 同一条纪律——并进**同一个** `config` 容器，绝不造第二个 `config` 键（后者静默胜）。
+  // 它是**默认值**，所以必须让位给调用方自己给的样本：`rest` 里带扁平 `completion`（B2 / C1 / C2 /
+  // C5 / C7 的「扁平 vs 规位」对照样本就是靠它写的）或 `config.run.completion` 已经给了值时，这一行
+  // 不补。不这么写的话，规位默认会盖掉那些样本（展开相「config 赢扁平」），冲突格当场测不到东西。
+  const hasCompletionSample = Object.prototype.hasOwnProperty.call(rest, "completion")
+    || config?.run?.completion !== undefined;
+  // F2 那组「`config.run` 不是对象」的形状拒绝格：`run` 是 `"fast"` / `null` 时**原样透传**，
+  // 不补默认（展开一个字符串会把拒绝换成另一条红，等于把那一格测没了）。
+  const runIsObject = config?.run === undefined
+    || (config.run !== null && typeof config.run === "object" && !Array.isArray(config.run));
   const mergedConfig = config === undefined || configIsObject
-    ? { ...config, input: { ...config?.input, wrapup: false } }
+    ? {
+      ...config,
+      input: { ...config?.input, wrapup: false },
+      ...(hasCompletionSample || !runIsObject ? {} : { run: { ...config?.run, completion: false } }),
+    }
     : config;
   return sharedRunDirect({
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
     seed: "go",
-    completion: false,
     ...rest,
     config: mergedConfig,
   });
@@ -807,11 +821,11 @@ test("C6 两个 config 源同时在场：后写者胜（4 轮变 1 轮）+ 逐�
     provider: createFakeProvider(twoRounds),
     executeTool: async () => "ok",
     tools,
-    completion: false,
     // 调用级 config：`run.maxRounds` 与 policy 不同（1 vs 4）、`tuning.temperature` 与 policy 相同。
     // #498 S3 A18：`wrapup` 的扁平写法退役，开关随其他叶子一起写在 `config.input.wrapup`
     // （policy 侧没有 `input` 组 ⇒ 它不参与下面那条冲突清单）。
-    config: { input: { wrapup: false }, run: { maxRounds: 1 }, tuning: { temperature: 0.1 } },
+    // #498 S3 A23a：`completion` 同样并进同一棵 `config.run` 子树（不造第二个 `config` 键）。
+    config: { input: { wrapup: false }, run: { maxRounds: 1, completion: false }, tuning: { temperature: 0.1 } },
     onEvent: (event) => events.push(event),
   });
   assert.equal(result.termination.reason, "max_rounds_cap", "调用级 config 整棵覆盖 policy：1 轮就到顶");
@@ -830,21 +844,18 @@ test("C7 两个 config 源同值 / 只给一边 ⇒ 不发事件（判据与扁�
   const events = [];
   const same = await runToolLoop({
     assemblyPort: makePort({ config: { run: { maxRounds: 1 } } }),
-    completion: false,
-    config: { input: { wrapup: false }, run: { maxRounds: 1 } },
+    config: { input: { wrapup: false }, run: { maxRounds: 1, completion: false } },
     onEvent: (event) => events.push(event),
   });
   assert.equal(same.termination.reason, "end_turn");
   await runToolLoop({
     assemblyPort: makePort({ config: { run: { maxRounds: 1 } } }),
-    completion: false,
-    config: { input: { wrapup: false } },
+    config: { input: { wrapup: false }, run: { completion: false } },
     onEvent: (event) => events.push(event),
   });
   await runToolLoop({
     assemblyPort: makePort({}),
-    completion: false,
-    config: { input: { wrapup: false }, run: { maxRounds: 1 } },
+    config: { input: { wrapup: false }, run: { maxRounds: 1, completion: false } },
     onEvent: (event) => events.push(event),
   });
   assert.deepEqual(
@@ -896,7 +907,8 @@ test("D3 装配口路线的 policy.config 走同一棵树：能力键 via=assemb
 
   const port = makePort({ config: { run: { maxRounds: 1 } } });
   // #498 S3 A18: the flat `wrapup` switch is retired — its home is `config.input.wrapup`.
-  const result = await runToolLoop({ assemblyPort: port, completion: false, config: { input: { wrapup: false } } });
+  // #498 S3 A23a：`completion` 并进同一个 `config` 容器（规位 `config.run.completion`）。
+  const result = await runToolLoop({ assemblyPort: port, config: { input: { wrapup: false }, run: { completion: false } } });
   assert.equal(result.rounds, 1);
   assert.equal(result.termination.reason, "end_turn");
 });
@@ -906,10 +918,10 @@ test("D4 既有 overrides 语义一字未动：显式 provider 仍能盖端口 p
   const result = await runToolLoop({
     assemblyPort: port,
     provider: createFakeProvider([{ content: [{ type: "text", text: "explicit" }], stopReason: "end_turn" }]),
-    completion: false,
     // #498 S3 A18: `wrapup` 退役扁平写法，家在 `config.input.wrapup`。
     // #498 S3 A21: `maxRounds` 同样退役扁平写法，家在 `config.run.maxRounds`（并进同一棵树）。
-    config: { input: { wrapup: false }, run: { maxRounds: 1 } },
+    // #498 S3 A23a: `completion` 也并进这棵 `run` 子树。
+    config: { input: { wrapup: false }, run: { maxRounds: 1, completion: false } },
   });
   assert.equal(result.finalText, "explicit");
 });

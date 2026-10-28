@@ -772,7 +772,7 @@ test("默认值 completion = { signals: [], maxNoToolRounds: 3 }", async () => {
     provider: off,
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    completion: false,
+    config: { run: { completion: false } },
   }));
   assert.equal(offResult.rounds, 2);
   assert.equal(offResult.termination.reason, "end_turn");
@@ -782,7 +782,7 @@ test("默认值 completion = { signals: [], maxNoToolRounds: 3 }", async () => {
     provider: signaled,
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    completion: { signals: ["DONE"] },
+    config: { run: { completion: { signals: ["DONE"] } } },
   }));
   assert.equal(signalResult.rounds, 2);
   assert.equal(signalResult.termination.reason, "end_turn");
@@ -801,7 +801,7 @@ test("默认值 stallDetection = { window: 4, mode: \"consecutive\" }", async ()
     provider: atWindow,
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    completion: false,
+    config: { run: { completion: false } },
   }));
   assert.equal(atWindowResult.rounds, 5);
   assert.equal(nudged(atWindow), false, "4 次连续相同调用仍在窗口内，不应 nudge");
@@ -811,7 +811,7 @@ test("默认值 stallDetection = { window: 4, mode: \"consecutive\" }", async ()
     provider: pastWindow,
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    completion: false,
+    config: { run: { completion: false } },
   }));
   assert.equal(pastWindowResult.rounds, 6);
   assert.equal(nudged(pastWindow), true, "第 5 次连续相同调用应触发停滞 nudge");
@@ -830,7 +830,7 @@ test("默认值 stallDetection = { window: 4, mode: \"consecutive\" }", async ()
     provider: alternating,
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    completion: false,
+    config: { run: { completion: false } },
   }));
   assert.equal(alternatingResult.rounds, 7);
   assert.equal(alternatingResult.termination.reason, "end_turn");
@@ -864,7 +864,7 @@ test("#498 S4b session.resume 别名已删：写它启动即抛并指出 config.
       session: { id: "run-port-session-resume", resume: true },
     },
     initialUserMessage: "go",
-    completion: false,
+    config: { run: { completion: false } },
     wrapup: false,
   })).then(() => null, (caught) => caught);
   assert.equal(error instanceof TypeError, true, "`session.resume` 不许再被静默接受");
@@ -891,7 +891,9 @@ test("#498 S4b session.resume 直连路线同样拒绝：不许收下键、又�
     // 都直接 `...runnable` 展开（写法一字不改，引擎看到的是新家）。
     seed: "go",
     modelConfig: { resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1024 }) },
-    completion: false,
+    // #498 S3 A23a：`completion` 的规位家是 `config.run.completion`（与 `wrapup` 同一条纪律：
+    // 并进**同一个** `config` 容器，别造第二个键）。
+    config: { run: { completion: false } },
     wrapup: false,
   });
   const directError = await runToolLoop({

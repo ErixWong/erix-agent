@@ -73,7 +73,8 @@ test("E1 走夹具的 run 与宿主直接写新家：provider 收到的 messages
   const viaCanonical = createFakeProvider(DONE);
   // #498 S3 A18: `wrapup` 退役扁平写法（家 `config.input.wrapup`）；对照组直接写规位，
   // 所以这里把开关放进 `config.input` 并**合并**（不是让 `config` 被后写者整棵覆盖）。
-  const base = { executeTool: async () => "ok", completion: false };
+  // #498 S3 A23a：`completion: false` 走规位（家 `config.run.completion`）。
+  const base = { executeTool: async () => "ok", config: { run: { completion: false } } };
   // 夹具侧照旧写**扁平拼写**（那是夹具级 API，见文件头与 `withSeed` 的 JSDoc）。
   await runDirect({ ...base, provider: viaFixture, initialUserMessage: "同一句话" });
   // 对照组 = 宿主**直接写规位家**（`config.input.initialUserMessage`），不经夹具。
@@ -107,7 +108,13 @@ test("E1 走夹具的 run 与宿主直接写新家：provider 收到的 messages
 
 test("E2 config.input.initialUserMessage 这条规位路径真的被引擎读（不是「翻了但没人读」）", async () => {
   const provider = createFakeProvider(DONE);
-  await runDirect({ provider, executeTool: async () => "ok", completion: false, wrapup: false, seed: "规位路径" });
+  await runDirect({
+    provider,
+    executeTool: async () => "ok",
+    config: { run: { completion: false } },
+    wrapup: false,
+    seed: "规位路径",
+  });
   const first = provider.requests[0].messages;
   assert.equal(first.length, 1, "只有一条种子消息");
   assert.equal(first[0].role, "user");

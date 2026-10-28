@@ -60,7 +60,8 @@ async function producedNames(port) {
 
 test("A1 装配路线真跑：end_turn + 端口种子历史到达 provider 请求", async () => {
   const port = makePort();
-  const result = await runToolLoop({ assemblyPort: port, completion: false });
+  // #498 S3 A23a：`completion` 的规位家是 `config.run.completion`（扁平拼写仍可写，但本片在搬家）。
+  const result = await runToolLoop({ assemblyPort: port, config: { run: { completion: false } } });
   assert.equal(result.termination.reason, "end_turn");
   assert.equal(result.finalText, "ok");
   assert.deepEqual(
@@ -73,7 +74,7 @@ test("A1 装配路线真跑：end_turn + 端口种子历史到达 provider 请�
 test("A2 端口的 run identity 真的到达账本的键上（config.run.runId 不是「展开了没人读」）", async () => {
   const store = createMemoryTranscriptStore();
   const port = makePort({ store });
-  const result = await runToolLoop({ assemblyPort: port, completion: false });
+  const result = await runToolLoop({ assemblyPort: port, config: { run: { completion: false } } });
   assert.equal(result.termination.reason, "end_turn");
   const records = await store.load("derived-544");
   assert.ok(records.length > 0, "session.id 必须真的到 `appendRound(runId, …)`");
@@ -101,9 +102,9 @@ test("B1 合并后表示里没有任何不在白名单内的名字（键集从 R
   // 同一份树走一遍真规范化：装配路线 + 调用级显式键都算在内，闸口不许抛。
   const { effectiveOptions } = await normalizeRunToolLoopOptions({
     assemblyPort: port,
-    completion: false,
     // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`).
-    config: { run: { maxRounds: 1 } },
+    // #498 S3 A23a: `completion` joins the same `config.run` subtree.
+    config: { run: { maxRounds: 1, completion: false } },
   });
   // 反向那半边：展开相**确实**把两条叶写回成扁平键（读侧不变的证据），所以上面那条判据如果
   // 直接套在 `effectiveOptions` 上会红——这正是它必须校**展开前**的合并树的原因。
@@ -163,9 +164,8 @@ test("D1 调用级 config 整棵覆盖不许抹掉端口的身份叶（扁平时
   const port = makePort({ store });
   const result = await runToolLoop({
     assemblyPort: port,
-    completion: false,
     // 宿主只关心一个叶子，却整棵交出了 `config`（既有语义：整棵覆盖 policy.config）。
-    config: { input: { wrapup: false } },
+    config: { input: { wrapup: false }, run: { completion: false } },
   });
   assert.equal(result.termination.reason, "end_turn");
   assert.ok((await store.load("derived-544")).length > 0, "runId 必须活过整棵覆盖（以前扁平键就是这么活下来的）");
@@ -181,8 +181,7 @@ test("D2 宿主自己的值仍然赢（per leaf）：config.input.messages 覆�
   const port = makePort();
   const result = await runToolLoop({
     assemblyPort: port,
-    completion: false,
-    config: { input: { messages: hostSeed } },
+    config: { input: { messages: hostSeed }, run: { completion: false } },
   });
   assert.equal(result.termination.reason, "end_turn");
   assert.deepEqual(
@@ -207,13 +206,12 @@ test("E1 端口叶与 policy.config 撞车 ⇒ 恰好一条冲突（path / key �
   // 真规范化：事件清单里那一条仍然只出现一次（按 path 去重）。
   const { configConflicts } = await normalizeRunToolLoopOptions({
     assemblyPort: port,
-    completion: false,
-    config: { input: { messages: [{ role: "user", content: "调用级种子" }] } },
+    config: { input: { messages: [{ role: "user", content: "调用级种子" }] }, run: { completion: false } },
   });
   assert.deepEqual(configConflicts, [{ path: "input.messages", key: "initialMessages" }]);
 });
 
 test("E2 没撞车时一条冲突都不发（不许多发事件）", async () => {
-  const { configConflicts } = await normalizeRunToolLoopOptions({ assemblyPort: makePort(), completion: false });
+  const { configConflicts } = await normalizeRunToolLoopOptions({ assemblyPort: makePort(), config: { run: { completion: false } } });
   assert.deepEqual(configConflicts, [], "端口单方面给值不是冲突");
 });

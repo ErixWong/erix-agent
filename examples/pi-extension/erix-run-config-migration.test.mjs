@@ -138,13 +138,12 @@ function legacyFlatOptions(input) {
       // #498 S3 A15: `cwd` is retired as a flat option too; its canonical home is `config.run.cwd`
       // (the expansion phase writes it back to `effectiveOptions.cwd`, so the equivalence claim is
       // unaffected). Merged into the **same** `config` tree.
-      run: { cwd: params.cwd, stream: false, runId, maxRounds: params.maxRounds },
+      run: { cwd: params.cwd, stream: false, runId, maxRounds: params.maxRounds, completion: { signals: ["任务已完成", "已完成", "全部完成", "无需继续", "任务结束", "没有更多步骤"], maxNoToolRounds: 3 } },
       // #498 S3 A9: `task` is retired as a flat option too; its canonical home is
       // `config.metadata.task`. Merged into the **same** `config` tree (a second `config:` key would
       // silently replace the `input` / `timing` groups above).
       metadata: { task: params.task },
     },
-    completion: { signals: ["任务已完成", "已完成", "全部完成", "无需继续", "任务结束", "没有更多步骤"], maxNoToolRounds: 3 },
     ...(reflection === undefined ? {} : { reflection }),
     ...(onEvent === undefined ? {} : { onEvent }),
     ...(onObserverError === undefined ? {} : { onObserverError }),

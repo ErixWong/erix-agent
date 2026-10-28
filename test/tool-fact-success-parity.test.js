@@ -37,8 +37,10 @@ async function runOnce(executeTool, { script = [toolRound("call-1"), DONE], opti
     executeTool,
     store: createMemoryTranscriptStore(),
     runId: `success-parity-${Math.random().toString(16).slice(2)}`,
-    completion: false,
     ...options,
+    // #498 S3 A23a：`completion` 并进**同一个** `config` 容器，且写在 `...options` 之后
+    // （`options.config` 会顶掉先写的那个 `config` 键）。
+    config: { ...(options.config ?? {}), run: { ...(options.config?.run ?? {}), completion: false } },
     // 规位：`onEvent` 与 `options` 可能带来的另一个 `hooks` 叶子必须落在**同一个**容器里。
     // 并列两个 `capabilities` 键是对象字面量重复键、后者静默胜（S7a 评审记过这个坑），
     // 这里显式合并 hooks，`options` 侧只覆盖同名叶子。
@@ -256,9 +258,8 @@ test("erix.success 迁移等价：复放已完成结果 ⇒ 沿用原记录的�
       { content: [{ type: "tool_use", id: "done-1", name: "work", input: {} }], stopReason: "tool_use" },
       DONE,
     ]),
-    config: { run: { resume: true, runId } },
+    config: { run: { resume: true, runId, completion: false } },
     store,
-    completion: false,
     executeTool: async () => {
       calls += 1;
       return "must not execute again";
