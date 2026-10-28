@@ -274,10 +274,13 @@ exactly as before. Two things to know if you adopt it:
    capability surface to hold functions and port objects only — and it is now **asserted
    mechanically** in the default suite (one representative data value per schema leaf, then
    `JSON.parse(JSON.stringify(cfg))` compared leaf by leaf), not merely promised. This narrowing
-   applies to the **new namespace only**: the pre-existing precedence rule — an explicit
+   applies to the **new namespace only**: the direct-route precedence rule — an explicit
    fine-grained option overrides the same-named member the assembly port supplies
-   (`resolveAssemblyMember` (`src/assembly.js`)), e.g. an explicit `provider` still beats the port's
-   provider — is untouched, and `test/contract/assembly-port.js` keeps asserting it.
+   (`src/loop/option-normalization.js`), e.g. `runToolLoop({ assemblyPort, provider })` still lets
+   the explicit `provider` beat the port's provider — is untouched, and `test/contract/assembly-port.js`
+   keeps asserting it for that route. The one place that **does** change (issue #498, from 0.28.0) is
+   `assemblyPortOptions`'s second parameter: an `overrides` key the port already supplies now throws
+   at startup instead of silently winning (see "The call-level override channel" in the contract).
 
 New hosts should use `config` for configuration and `capabilities` for behaviour carriers
 (`hooks` for callbacks, `checks` for deliverables, `ports` for infrastructure and strategy
