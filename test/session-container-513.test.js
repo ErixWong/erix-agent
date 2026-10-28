@@ -25,10 +25,14 @@
 //      `collectSessionContainerProblems` 的输出（#538 的教训：只校直连、装配路漏校是这类修复最常见的洞）。
 //   E. 判词的「accepted」子句与派生集合同源：逐字钉住整句（删空 / 改错可接受列表 ⇒ 红）。
 //
-// **不**做的事（工单红线）：`initialMessages` 不改成必需；`provider` / `tools` 不加未知方法检查
+// **不**做的事（本单红线）：`initialMessages` 不改成必需；`provider` / `tools` 不加未知方法检查
 // （它们由 missing-methods 覆盖，加两条判词会互相竞争）；直连路线上 `session` 作为**不透明载荷**的
-// 拼写（`context.session`，`src/loop/budget.js` 的 `session?: any`，CLI 传的就是 session id 字符串）
-// 一字未动 —— 见 F 段：那是活行为，收紧它不是本单的事。
+// 拼写（`context.session`，`src/loop/budget.js` 的 `session?: any`）本单一字未动 —— 见 F 段。
+//
+// **#550 改写了 F 段与 B3/C2 的期望**：那条二义（一个键两种含义）由 #550 裁决为**甲**——顶层
+// `session` 只是容器，不透明载荷的家是 `config.folding.context.session`（`toolContextFor` 的
+// fallback 链今天就在读它）。所以 F 段从「字符串照旧生效」变成「字符串两条路线同一句拒、并点名
+// 新家」；B3 的「initialMessages 在直连路线惰性」边界也被接线抹掉（两条路线都播种子）。
 //
 // 零真实 LLM（fake provider），不写盘、不碰真实 `~/.erix`。
 import test from "node:test";
@@ -223,7 +227,8 @@ test("#513 B2：直连路线——数组给类型判词，不是 missing-methods
   assert.equal(
     error.message,
     "session must be an object (got an array): the run identity lives in its members"
-    + " (session.id, session.modelSlot, session.initialMessages)",
+    + " (session.id, session.modelSlot, session.initialMessages); the opaque payload that reaches"
+    + " executeTool as context.session lives in config.folding.context.session",
   );
   assert.equal(error.via, "direct");
 });
@@ -240,12 +245,12 @@ test("#513 B3：直连路线——合法 session 照旧跑完，`modelSlot` 真�
   });
   assert.equal(result.termination.reason, "end_turn");
   assert.equal(slot, "slotA", "session.modelSlot 必须真的传给 modelConfig.resolve");
-  // ⚠ 已知边界（本单**不**修，见报告「遗留」）：直连路线上 `session.initialMessages` 今天是**惰性**的
-  // ——它只有装配路线读（`assemblyPortDerivedConfigLeaves` → `config.input.messages`），直连的种子
-  // 唯一活写法是 `config.input.messages`。所以本格**不**声称它被播；那条读点在 C4 里用装配路线证。
+  // #550 抹掉了原来那条「直连路线惰性」的边界：`session.initialMessages` 现在由**同一个**
+  // `sessionDerivedConfigLeaves`（`src/assembly.js`）折进 `config.input.messages`，两条路线都播。
+  // 这里只放一条最小前提（本格没给种子 ⇒ 请求里没有它），接线本身由 #550 的格与 C4 证。
   assert.ok(
     !JSON.stringify(provider.requests[0]?.messages ?? []).includes("seed-from-session"),
-    "前提：直连路线不播 session.initialMessages（写死这条边界，免得将来它被接上时本格变成假绿）",
+    "本格没给 session.initialMessages ⇒ 请求里不该有种子（接线格在 #550 的文件里）",
   );
 });
 
@@ -281,7 +286,8 @@ test("#513 C2：装配路线——非对象 session 给类型判词（不是 mis
         assert.equal(
           error.message,
           `session must be an object (got ${described}): the run identity lives in its members`
-          + " (session.id, session.modelSlot, session.initialMessages)",
+          + " (session.id, session.modelSlot, session.initialMessages); the opaque payload that"
+          + " reaches executeTool as context.session lives in config.folding.context.session",
         );
         assert.equal(error.via, "assembly");
         assert.ok(
@@ -352,10 +358,24 @@ test("#513 D：两条路线抛同一句（只差 via），且都等于共用校�
 // F. 红线：直连路线上 `session` 作为不透明载荷的拼写不许被顺手收紧
 // ---------------------------------------------------------------------------------------------------
 
-test("#513 F：直连路线 `session` 的不透明载荷拼写（字符串）照旧生效——那是活行为，不是容器", async () => {
+test("#513 F（#550 改写）：直连路线 `session` 的字符串不再是容器——当场拒，并点名新家", async () => {
+  // #550 的甲裁决：顶层 `session` **只是容器**，不透明载荷改名的家是 `config.folding.context.session`
+  // （同一个字符串写在那里今天就生效，见下面第二半）。本格从「照旧生效」翻成「两条路线同一句拒」，
+  // 是那次裁决的直接后果，不是放宽或收紧判据。
+  const error = await thrown(runToolLoop(directOptions({ session: "s-513-opaque" })));
+  assert.ok(error instanceof TypeError, `必须抛 TypeError，实际 ${error && error.message}`);
+  assert.equal(
+    error.message,
+    "session must be an object (got a string): the run identity lives in its members"
+    + " (session.id, session.modelSlot, session.initialMessages); the opaque payload that reaches"
+    + " executeTool as context.session lives in config.folding.context.session",
+  );
+  assert.equal(error.via, "direct");
+
+  // 迁移后的写法：同一个值、同一个工具上下文键，一行不差。
   let seen;
   const result = await runToolLoop(directOptions({
-    session: "s-513-opaque",
+    config: { run: { completion: false }, folding: { context: { session: "s-513-opaque" } } },
     executeTool: async (options) => {
       seen = options.context;
       return "ok";
@@ -366,5 +386,5 @@ test("#513 F：直连路线 `session` 的不透明载荷拼写（字符串）照
     ]),
   }));
   assert.equal(result.termination.reason, "end_turn");
-  assert.equal(seen?.session, "s-513-opaque", "context.session 必须照旧拿到那个字符串");
+  assert.equal(seen?.session, "s-513-opaque", "context.session 必须拿到那个字符串（新家）");
 });

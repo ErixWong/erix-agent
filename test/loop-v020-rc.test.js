@@ -34,8 +34,9 @@ test("structured executeTool receives context and returns tool metadata", async 
     },
     // #498 S3（`metadata` A8）：`expert` / `requestId` / `toolContext` 三个扁平键已退役，
     // 写点是 `config.metadata.*`（展开相写回 `effectiveOptions.*`，`toolContextFor` 读侧一字未动）。
-    // #498 S3 A9：`user` 也退役了（同一组、同一个容器）；`task` / `session` 仍走扁平拼写
-    // （`session` 经同值判定退回，见 `test/loop-metadata-keys-slice-498s3a9.test.js`）。
+    // #498 S3 A9：`user` 也退役了（同一组、同一个容器）；`task` 仍走扁平拼写。
+    // #550：`session` 不再是「不透明载荷」的拼写——顶层 `session` 只是容器，载荷走
+    // `config.folding.context.session`（见下面那条注释）。
     config: {
       metadata: {
         expert: "expert-1",
@@ -45,8 +46,12 @@ test("structured executeTool receives context and returns tool metadata", async 
         task: { id: "task-1" },
       },
       run: { completion: false },
+      // #550（甲裁决）：顶层 `session` **只是容器**，不透明载荷改名——它的家是折叠上下文的
+      // `session` 叶（`toolContextFor` 的 fallback 链今天就在读它，`config.folding.context.session`
+      // 在 0.27 已经生效，所以这条迁移可以**先写新家再升级**）。旧拼写 `session: "session-1"`
+      // 现在两条路线都拒（`session must be an object (got a string)`），本格是那条迁移的对照。
+      folding: { context: { session: "session-1" } },
     },
-    session: "session-1",
   });
 
   assert.equal(received.id, "structured-1");

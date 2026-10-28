@@ -83,7 +83,7 @@
 // 声明顺序依赖（`notifyCapabilitySkipped` 等 TDZ 陷阱）无关。
 // 零运行时依赖：只用相对路径。
 
-import { assemblyPortOptions, assertMergedOptionNames, collectAssemblyDerivedConfigConflicts, collectAssemblyPolicyConfigConflicts, withAssemblyPolicyConfigLeaves } from "../assembly.js";
+import { assemblyPortOptions, assertMergedOptionNames, collectAssemblyDerivedConfigConflicts, collectAssemblyPolicyConfigConflicts, withAssemblyPolicyConfigLeaves, withSessionDerivedConfigLeaves } from "../assembly.js";
 import { assertSemanticOptionValues } from "../assembly-validators.js";
 import {
   assertCapabilitiesNamespace,
@@ -508,6 +508,9 @@ export async function normalizeRunToolLoopOptions(options) {
     configSourceConflicts.push(...collectAssemblyDerivedConfigConflicts(assemblyPort));
     configSourceConflicts.push(...collectAssemblyPolicyConfigConflicts(assemblyPort));
   }
+  // #550: both routes honour the session container alike (rung 3, holes only; no invented config key).
+  const sessionDerived = withSessionDerivedConfigLeaves(mergedOptions.config, mergedOptions.session);
+  if (sessionDerived !== undefined) mergedOptions.config = sessionDerived;
   assertMergedOptionNames(mergedOptions);
   const configExpansion = expandConfigNamespace(mergedOptions, { via });
   // #498 S4a：容器展开按 config → capabilities 的顺序跑（两个容器的叶子集不相交，顺序只为确定性）。

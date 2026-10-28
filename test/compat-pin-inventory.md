@@ -681,7 +681,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-option-gate-496.test.js` | 17 | `context`×7, `onFoldSummary`×7, `finalGuard`×6, `tools`×3, `deliverables`×2, `session`×2, `completion`×1, `partialPersistence`×1, `sleepImpl`×1, `stallDetection`×1, `wrapup`×1 |
 | `test/loop-config-namespace-497.test.js` | 36 | `onEvent`×13, `reflection`×8, `tools`×6, `session`×4, `completion`×3, `wrapup`×3, `context`×2, `finalGuard`×2, `initialMessages`×2, `resume`×2, `retry`×2, `modelMetadata`×1, `onObserverError`×1, `outputHygiene`×1, `partialPersistence`×1, `stallDetection`×1 |
 | `test/loop-resume-anchor.test.js` | 38 | `completion`×8, `stallDetection`×8, `wrapup`×8, `resume`×7, `tools`×6, `partialPersistence`×1 |
-| `test/loop-v020-rc.test.js` | 4 | `session`×3, `stallDetection`×1 |
+| `test/loop-v020-rc.test.js` | 3 | `session`×2, `stallDetection`×1 |
 | `test/loop-resume-notice.test.js` | 10 | `tools`×9, `reflection`×1 |
 | `test/loop.test.js` | 31 | `completion`×15, `stallDetection`×12, `reflection`×2, `onToolResult`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-core.test.js` | 24 | `finalGuard`×19, `tools`×14, `strategy`×4, `context`×3, `reflection`×3, `onEvent`×1, `onObserverError`×1 |
@@ -701,7 +701,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-context-on-fold-summary-retired-499.test.js` | 16 | `context`×7, `onFoldSummary`×7, `completion`×2, `stallDetection`×2, `tools`×2, `wrapup`×2, `onEvent`×1, `session`×1 |
 | `test/sessions.test.js` | 16 | `session`×16 |
 | `test/loop-abort-terminal-priority.test.js` | 15 | `reflection`×5, `stallDetection`×5, `completion`×4, `judgeProvider`×1 |
-| `test/loop-metadata-keys-slice-498s3a8.test.js` | 16 | `tools`×6, `modelMetadata`×3, `completion`×2, `session`×2, `wrapup`×2, `context`×1 |
+| `test/loop-metadata-keys-slice-498s3a8.test.js` | 17 | `tools`×6, `modelMetadata`×3, `session`×3, `completion`×2, `wrapup`×2, `context`×1 |
 | `test/loop-run-slice-498s3a11.test.js` | 13 | `completion`×5, `wrapup`×4, `reflection`×2, `context`×1, `tools`×1 |
 | `test/loop-metadata-keys-slice-498s3a9.test.js` | 19 | `completion`×4, `session`×4, `wrapup`×4, `context`×3, `reflection`×2, `tools`×2 |
 | `test/loop-fold-context-knobs-469.test.js` | 14 | `strategy`×6, `context`×2, `session`×2, `tools`×2, `completion`×1, `wrapup`×1 |
@@ -807,6 +807,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-547-provider-guard-channel.test.js` | 3 | `resume`×2, `tools`×1 |
 | `test/run-state-548-append-after-pending-tool-use.test.js` | 2 | `tools`×2 |
 | `test/session-container-513.test.js` | 13 | `session`×12, `tools`×1 |
+| `test/session-container-550.test.js` | 14 | `session`×12, `initialMessages`×1, `tools`×1 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 

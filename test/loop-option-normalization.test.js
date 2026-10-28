@@ -677,14 +677,16 @@ test("次序②：assemblyPortOptions 早于 runToolLoop 的能力缺失检查",
       modelConfig: { resolve: async () => ({}) },
       provider: { chat: async () => ({ content: [], stopReason: "end_turn" }) },
       tools: { definitions: [], executeTool: async () => "ok" },
-      // `session.initialMessages` 必须是数组：这条形状校只在 createAssemblyPort 里，
+      // `session.initialMessages` 必须是数组：#550 之后这条形状校在**共用闸门**
+      // （`collectSessionContainerProblems`）里，仍由 `createAssemblyPort` 在构造期调用，
       // 所以它同时是「assemblyPortOptions 早于能力缺失检查」的探针（#498 S4b 把原来那条
       // `session.resume` 别名删掉了，见本文件「#498 S4b session.resume 别名已删」那一格）。
       session: { id: "run-port-first", initialMessages: "nope" },
     },
     initialUserMessage: "go",
   })).then(() => null, (caught) => caught);
-  assert.equal(error.message, "assembly port session.initialMessages must be an array");
+  // #550：判词从「assembly port …」改成容器自己的名字——同一条规则现在两条路线共用一句。
+  assert.equal(error.message, "session.initialMessages must be an array");
 
   // 对照组：同样缺 provider/executeTool 的细粒度形态，能力检查的措辞完全不同。
   const capabilityError = await runToolLoop(withSeed({ initialUserMessage: "go" })).then(() => null, (caught) => caught);

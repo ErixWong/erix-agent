@@ -960,7 +960,7 @@ export const FILE_TOOL_DEFINITIONS = [
       + "lines fit is `max_bytes ÷ average bytes per line`: divide the file's byte size by its line count (e.g. `wc -c` ÷ `wc -l`) "
       + "and fold that for the file in hand, instead of assuming a line count. Measured that way on this repo's own `.js` sources "
       + "under `src/`, `bin/` and `examples/` at the default budget (this codebase, not your tree) \u2014 fewest \u2265 3,850 lines "
-      + "(67.2 bytes/line, the widest lines; the whole-tree minimum rounded down to the nearest 50, so no file in those three trees reads fewer than 3,850 lines), "
+      + "(68.0 bytes/line, the widest lines; the whole-tree minimum rounded down to the nearest 50, so no file in those three trees reads fewer than 3,850 lines), "
       + "median 6,600 (40.0), most 9,407 (27.9). "
       + "The floor is a whole-tree minimum rounded down to a multiple of 50 (a promise, not a per-file estimate); median and most come from a fixed sample of those sources and describe that sample, not every file here. "
       + "Wide lines cut this proportionally and CJK cuts hardest (3 UTF-8 bytes per character): "
