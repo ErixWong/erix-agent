@@ -38,6 +38,15 @@
 //      planes that spell the same word (the config-file / model-slot field `slots.default.maxTokens`,
 //      the provider request field, and the assembly `policy.maxTokens`) never went through this
 //      allowlist and are untouched.
+//  11. issue #498 (S3, `metadata` group, segment A8): `modelMetadata` / `requestId` / `toolContext` /
+//      `expert` leave the top-level allowlist. They are **not** gone — they move to
+//      `config.metadata.*`, and the expansion phase writes them back onto
+//      `effectiveOptions.modelMetadata` / `.requestId` / `.toolContext` / `.expert`, which is exactly
+//      why the engine's read side (`budget.js` `modelMetadataFor` / `toolContextFor`, and the
+//      orchestrator destructuring that feeds them) needs no change. Writing the old flat spelling is
+//      now rejected at the name gate, and the message names the new home. The other three members of
+//      the `metadata` group (`user` / `task` / `session`) are **not** part of this slice: their write
+//      sites are the host-facing identity payloads that the #528-style fixture has to cover first.
 //
 // 顺序即语义，且被 test/loop-option-normalization.test.js 逐条钉住，所以本模块严格按
 //   形状检查 → 未知键检查 → config 名称/形状预检 → capabilities 名称/形状预检 →
@@ -164,14 +173,19 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   "todoStateProvider",
   "semanticStateProvider",
   "modelConfig",
-  "modelMetadata",
+  // #498 S3 (`metadata` slice, segment A8): `modelMetadata` / `expert` / `requestId` / `toolContext`
+  // used to sit here. Their canonical home is `config.metadata.*`
+  // (`CONFIG_NAMESPACE_SCHEMA.metadata` in `src/loop/config-namespace.js`), and the expansion phase
+  // writes them back onto `effectiveOptions.modelMetadata` / `.expert` / `.requestId` /
+  // `.toolContext` — so every engine-side reader (`modelMetadataFor` / `toolContextFor` in
+  // `src/loop/budget.js`, and the orchestrator destructuring that hands them over) is unchanged.
+  // Only the *write* spelling moved: the flat ones are now rejected at the name gate, and the message
+  // names the new home. `user` / `task` / `session` stay: this slice retires four small keys, and
+  // their write sites are the host identity payloads that the #528-style fixture has to cover first.
   "model",
-  "expert",
   "user",
   "task",
   "session",
-  "requestId",
-  "toolContext",
   "store",
   "persistence",
   "runId",

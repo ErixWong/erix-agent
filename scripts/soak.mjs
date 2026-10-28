@@ -1451,9 +1451,6 @@ async function main() {
   const expectedCompactions = Math.max(1, idealCompactions - 1);
   const common = {
     provider: upstream.provider,
-    ...(upstream.modelMetadata && Object.keys(upstream.modelMetadata).length > 0
-      ? { modelMetadata: upstream.modelMetadata }
-      : {}),
     tools: [SOAK_TOOL],
     executeTool: makeExecuteTool({ tokensPerRound: 40 }),
     // 注：文档写的 governor 选项**不在** src/loop/option-normalization.js:36-97 的白名单里
@@ -1462,6 +1459,11 @@ async function main() {
     store: createFileTranscriptStore({ dir: storeDir }),
     persistence: "required",
     config: {
+      // #498 S3（`metadata` A8）：顶层 `modelMetadata` 已退役，家是 `config.metadata.modelMetadata`
+      // （展开相写回 `effectiveOptions.modelMetadata`，`modelMetadataFor` 读侧不变）。
+      ...(upstream.modelMetadata && Object.keys(upstream.modelMetadata).length > 0
+        ? { metadata: { modelMetadata: upstream.modelMetadata } }
+        : {}),
       // #498 S3 A6：顶层 `system` 已退役，家是 `config.input.system`（展开相写回
       // `effectiveOptions.system`，引擎读侧不变）。
       input: { system: "soak：长跑一致性观察（工具循环、压缩、落盘）" },

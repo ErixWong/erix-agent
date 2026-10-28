@@ -38,18 +38,24 @@ function toolProvider(rounds) {
 
 async function run(options = {}) {
   const events = [];
+  // #498 S3（`metadata` A8）：扁平 `modelMetadata` 已退役，预算元数据的写点是
+  // `config.metadata.modelMetadata`（展开相写回 `effectiveOptions.modelMetadata`，
+  // `modelMetadataFor` 的读侧一字未动）。调用方仍可传自己的 `config`（例如
+  // `config.folding.context.strategy`），这里**并进同一个容器**——第二个 `config` 键会静默盖掉
+  // 前一个，那会让「配了策略」的两格悄悄丢掉预算元数据（压缩整体不进，断言全绿而判据失效）。
+  const { config, ...rest } = options;
   const result = await runDirect({
     provider: toolProvider(8),
     initialUserMessage: "start",
     // 小窗口 → budgetTokens = 4096 - 512 - max(2000, 410) = 1584，20k 字符的工具输出必超预算。
-    modelMetadata: { contextWindowTokens: 4096, maxOutputTokens: 512 },
+    config: { metadata: { modelMetadata: { contextWindowTokens: 4096, maxOutputTokens: 512 } }, ...config },
     executeTool: async () => "y".repeat(20000),
     maxRounds: 10,
     completion: false,
     store: createMemoryTranscriptStore(),
     runId: "464-fallback",
     capabilities: { hooks: { onEvent: (event) => events.push(event) } },
-    ...options,
+    ...rest,
   });
   return {
     result,

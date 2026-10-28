@@ -152,10 +152,17 @@ function legacyFlatOptions(input) {
   if (finalGuard !== undefined) {
     options.config.guard = { finalGuardTimeoutMs: params.finalGuardTimeoutMs ?? 10_000 };
   }
+  // #498 S3 (`metadata` slice, segment A8): `modelMetadata` / `requestId` / `toolContext` / `expert`
+  // are retired as flat options as well. Their canonical home is `config.metadata.*`; the expansion
+  // phase writes them back onto `effectiveOptions.modelMetadata` / `.requestId` / `.toolContext` /
+  // `.expert`, so the equivalence claim below is unaffected. Merged into the **same** `config` tree
+  // (a second `config:` key would replace the `input` / `timing` / `guard` groups above).
   if (Number.isSafeInteger(slot.contextWindowTokens) && Number.isSafeInteger(slot.maxOutputTokens)) {
-    options.modelMetadata = {
-      contextWindowTokens: slot.contextWindowTokens,
-      maxOutputTokens: slot.maxOutputTokens,
+    options.config.metadata = {
+      modelMetadata: {
+        contextWindowTokens: slot.contextWindowTokens,
+        maxOutputTokens: slot.maxOutputTokens,
+      },
     };
   }
   return options;

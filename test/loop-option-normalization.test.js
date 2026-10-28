@@ -234,14 +234,14 @@ const OPTION_WHITELIST = [
   "todoStateProvider",
   "semanticStateProvider",
   "modelConfig",
-  "modelMetadata",
+  // #498 S3 (`metadata` slice, segment A8): `modelMetadata` / `expert` / `requestId` / `toolContext`
+  // left the allowlist — their canonical home is `config.metadata.*`. The copy tracks the source list
+  // verbatim (that is exactly what A0 checks), so they are gone here too; the flat spellings are now
+  // **rejection** cells, see `test/loop-metadata-keys-slice-498s3a8.test.js`.
   "model",
-  "expert",
   "user",
   "task",
   "session",
-  "requestId",
-  "toolContext",
   "store",
   "persistence",
   "runId",
