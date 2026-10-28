@@ -157,63 +157,71 @@ createAnthropicProvider({
 
 ### 3.2 `runToolLoop`
 
-`runToolLoop` 是单任务生命周期入口。当前选项表面为：
+`runToolLoop` 是单任务生命周期入口。当前选项表面分为**三站**，拼写由站决定：
+
+- **能力面**与永久的**顶层面**键（行为载体、身份容器、工具清单）留在顶层；
+- 每个**数据**旋钮都在 `config` 命名空间下——`config.input.*`、`config.run.*`、
+  `config.tuning.*`、`config.timing.*`、`config.folding.*`、`config.guard.*`、
+  `config.metadata.*`；
+- 0.28 之前的草稿展示的**扁平**拼写已**退役**（`system`、`timeoutMs`、`toolResultTtl`、
+  `initialMessages`、`context` …）：这些扁平拼写被名称闸口当场拒，判词点名规范之家，例如
+  `unknown runToolLoop option: "timeoutMs" (its canonical home is
+  config.timing.timeoutMs; the flat spelling is rejected)`。
+
+权威对照表（哪个叶子在哪一组、每个扁平键在哪一版退役）在
+`docs/host-consumer-contract.md`。
 
 ```js
 runToolLoop({
+  // 能力面 + 永久顶层面键（不是数据——一字未改）
   provider,
-  system,
-  wrapup = true,
-  initialUserMessage,
-  initialMessages,
   tools = [],
-  writeToolNames = ["writeFile", "edit"],
-  writeToolPathKeys = ["path", "file_path"],
   executeTool,
-  maxRounds = 8,
-  maxTokens,
-  temperature,
-  topP,
-  timeoutMs,
-  deadlineMs,
-  reflection,
-  stallDetection = { window: 4 },
-  retry = false,
-  completion = { signals: [], maxNoToolRounds: 3 },
-  finalGuard,
-  finalGuardMaxRetries = 2,
-  finalGuardTimeoutMs = 30000,
-  maxTokenContinuations = 3,
-  toolResultTtl = 2,
-  toolResultFoldMinTokens = 4000,
-  context,
+  store,
   todoStateProvider,
   semanticStateProvider,
   modelConfig,
-  modelMetadata,
-  model,
-  expert,
-  user,
-  task,
   session,
-  requestId,
-  toolContext,
-  store,
-  runId,
   runState,
-  resume = false,
+  finalGuard,
+  signal,
   onRound,
   onJudge,
   onToolResult,
   onPersistenceError,
   onObserverError,
-  signal,
-  stream = false,
   onDelta,
   onReasoningDelta,
   onToolCall,
   onUsage,
   onEvent,
+  // 配置面：只装数据（这棵子树必须过 JSON round-trip）
+  config: {
+    input: {
+      system,
+      wrapup = true,
+      initialUserMessage,
+      messages,          // 叶子；扁平 `initialMessages` 已退役
+    },
+    run: {
+      partialPersistence = false,
+      maxRounds = 8,
+      reflection,
+      stallDetection = { window: 4 },
+      completion = { signals: [], maxNoToolRounds: 3 },
+      maxTokenContinuations = 3,
+      writeToolNames = ["writeFile", "edit"],
+      writeToolPathKeys = ["path", "file_path"],
+      runId,
+      resume = false,
+      stream = false,
+    },
+    tuning: { maxTokens, temperature, topP },
+    timing: { timeoutMs, deadlineMs, retry = false },
+    folding: { context, toolResultTtl = 2, toolResultFoldMinTokens = 4000 },
+    guard: { finalGuardMaxRetries = 2, finalGuardTimeoutMs = 30000 },
+    metadata: { modelMetadata, model, expert, user, task, requestId, toolContext },
+  },
 }) => Promise<{
   finalText,
   messages,
@@ -228,7 +236,9 @@ runToolLoop({
 }>
 ```
 
-`initialMessages` 优先于 `initialUserMessage`。当 `resume: true` 时，循环加载 `runId` 对应的 transcript 和最新 run snapshot，使用持久化的消息及轮次状态，而不是初始消息。
+`config.input.messages` 优先于 `config.input.initialUserMessage`。当
+`config.run.resume: true` 时，循环加载 `config.run.runId` 对应的 transcript 和最新
+run snapshot，使用持久化的消息及轮次状态，而不是初始消息。
 
 `executeTool` 支持以下任一形式：
 
@@ -240,24 +250,24 @@ runToolLoop({
 
 结构化形式会接收合并后的 `toolContext`，以及 `expert`、`user`、`task`、`session` 和 `requestId` 值。结构化结果使用 `data` 作为工具结果内容；循环会添加执行元数据，并将失败结果转换为带有 `is_error` 的规范 `tool_result` 块。
 
-`writeToolNames` 是仅用于 judge 文件足迹报告的显式集合；它不会推断写工具。对于每个配置的写工具，`writeToolPathKeys` 提供提取路径的优先级顺序。
+`config.run.writeToolNames` 是仅用于 judge 文件足迹报告的显式集合；它不会推断写工具。对于每个配置的写工具，`config.run.writeToolPathKeys` 提供提取路径的优先级顺序。
 
 #### 完成、重试与终止
 
-- `retry` 是选择启用的。`false` 或省略表示不重试提供器。使用对象时，`attempts` 默认为初始调用之后重试 `2` 次，`backoffBaseMs` 默认为 `1500`，`backoffMaxMs` 默认为 `10000`，`sleepImpl` 默认为循环中支持 abort 的 sleeper。仅标记为 `retryable` 的错误会重试。
-- 存在但没有文本、工具调用或 reasoning block 的 assistant 消息会被标记为可重试。`retry: {}` 因此会在初始调用后默认重试两次；CLI 读取 `ERIX_RETRY_ATTEMPTS`（默认 `2`）使用同一策略。
-- `completion` 默认为 `{ signals: [], maxNoToolRounds: 3 }`。完成信号可以停止无工具响应；工具使用后，无工具连续轮次在达到 `maxNoToolRounds` 时停止。`completion: false` 会禁用此策略。
-- `stallDetection` 默认为 `{ window: 4, mode: "consecutive" }`：整个窗口内必须是同一个工具签名。传 `{ mode: "appear" }` 表示窗口内出现过同一签名即判停滞，传 `false` 会禁用检测。除非选项显式为 `false`，否则 `ERIX_STALL_MODE` 可以提供该模式。
-- `maxTokenContinuations` 默认为 `3`。因此，以 `stopReason === "max_tokens"` 结束的响应可以在同一轮中最多接收三次续接调用。
-- `maxRounds` 默认为 `8`，且必须是正的安全整数。正常终止原因包括 `end_turn`、`no_tool`、`stall`、`max_rounds_cap`、`judge_done` 和 `continuation_exhausted`；中止和未捕获失败使用 `aborted` 和 `failed`。
+- `config.timing.retry` 是选择启用的。`false` 或省略表示不重试提供器。使用对象时，`attempts` 默认为初始调用之后重试 `2` 次，`backoffBaseMs` 默认为 `1500`，`backoffMaxMs` 默认为 `10000`，`sleepImpl` 默认为循环中支持 abort 的 sleeper。仅标记为 `retryable` 的错误会重试。
+- 存在但没有文本、工具调用或 reasoning block 的 assistant 消息会被标记为可重试。`config.timing.retry: {}` 因此会在初始调用后默认重试两次；CLI 读取 `ERIX_RETRY_ATTEMPTS`（默认 `2`）使用同一策略。
+- `config.run.completion` 默认为 `{ signals: [], maxNoToolRounds: 3 }`。完成信号可以停止无工具响应；工具使用后，无工具连续轮次在达到 `maxNoToolRounds` 时停止。`config.run.completion: false` 会禁用此策略。
+- `config.run.stallDetection` 默认为 `{ window: 4, mode: "consecutive" }`：整个窗口内必须是同一个工具签名。传 `{ mode: "appear" }` 表示窗口内出现过同一签名即判停滞，传 `false` 会禁用检测。除非选项显式为 `false`，否则 `ERIX_STALL_MODE` 可以提供该模式。
+- `config.run.maxTokenContinuations` 默认为 `3`。因此，以 `stopReason === "max_tokens"` 结束的响应可以在同一轮中最多接收三次续接调用。
+- `config.run.maxRounds` 默认为 `8`，且必须是正的安全整数。正常终止原因包括 `end_turn`、`no_tool`、`stall`、`max_rounds_cap`、`judge_done` 和 `continuation_exhausted`；中止和未捕获失败使用 `aborted` 和 `failed`。
 
-启用时，`wrapup` 会追加要求以下 JSON 形状的回合结束指令：
+启用时，`config.input.wrapup` 会追加要求以下 JSON 形状的回合结束指令：
 
 ```json
 {"done":true,"summary":"任务摘要","output":"给用户的最终结果"}
 ```
 
-解析器要求 `done` 是对象自身的布尔属性。`done: true` 会使响应完成，并用 `output` 或 `summary` 替换 `finalText`；`done: false` 会继续循环。`wrapup: false` 或 `ERIX_NO_WRAPUP_INSTRUCTION=1` 会一并禁用指令注入、JSON 解析、`finalText` 替换和收尾规范化。可选规范化由 `ERIX_WRAPUP_NORMALIZE=1` 或 `reflection.wrapupNormalize === true` 启用。
+解析器要求 `done` 是对象自身的布尔属性。`done: true` 会使响应完成，并用 `output` 或 `summary` 替换 `finalText`；`done: false` 会继续循环。`config.input.wrapup: false` 或 `ERIX_NO_WRAPUP_INSTRUCTION=1` 会一并禁用指令注入、JSON 解析、`finalText` 替换和收尾规范化。可选规范化由 `ERIX_WRAPUP_NORMALIZE=1` 或 `config.run.reflection.wrapupNormalize === true` 启用。
 
 `finalGuard` 是可选的、由宿主提供的 provenance 或完成检查：
 
@@ -277,7 +287,7 @@ finalGuard({
 >
 ```
 
-默认 `finalGuardMaxRetries` 为 `2`。正的 `finalGuardTimeoutMs` 按原值使用；非正值或非有限值使用默认值 `30000` ms。对于包括 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`、`continuation_exhausted` 在内的非 abort 停止路径，都会运行 guard。`accept` 产生 `verification.status === "verified"`。`skip` 产生 `"skipped"`。当循环可以继续时，`revise` 会将返回的消息作为 user 消息注入。如果不可继续的停止路径无法修订，或达到重试上限，结果为 `"unverified"`，且 `termination.reason === "final_guard_unverified"`。guard 错误或超时会返回最终文本并使用 `"error"` 状态；不会将其视为已验证。未配置 guard 会产生原因是 `"no_final_guard"` 的 `"skipped"`。
+默认 `config.guard.finalGuardMaxRetries` 为 `2`。正的 `config.guard.finalGuardTimeoutMs` 按原值使用；非正值或非有限值使用默认值 `30000` ms。对于包括 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`、`continuation_exhausted` 在内的非 abort 停止路径，都会运行 guard。`accept` 产生 `verification.status === "verified"`。`skip` 产生 `"skipped"`。当循环可以继续时，`revise` 会将返回的消息作为 user 消息注入。如果不可继续的停止路径无法修订，或达到重试上限，结果为 `"unverified"`，且 `termination.reason === "final_guard_unverified"`。guard 错误或超时会返回最终文本并使用 `"error"` 状态；不会将其视为已验证。未配置 guard 会产生原因是 `"no_final_guard"` 的 `"skipped"`。
 
 结果形状为：
 
@@ -313,23 +323,23 @@ finalGuard({
 
 #### 反思与 judge 治理
 
-如果省略 `reflection`、`maxRounds >= 16` 且 `ERIX_NO_REFLECTION` 不为 `1`，循环会自动启用 `{ enabled: true }`。`reflection: false` 会禁用它；`reflection: true` 会使用以下默认值启用它。对象可以配置：
+如果省略 `config.run.reflection`、`config.run.maxRounds >= 16` 且 `ERIX_NO_REFLECTION` 不为 `1`，循环会自动启用 `{ enabled: true }`。`config.run.reflection: false` 会禁用它；`config.run.reflection: true` 会使用以下默认值启用它。对象可以配置：
 
 ```js
-reflection: {
+config: { run: { reflection: {
   enabled,
   roundJudge = true,
   judgeIntercept = true,
   judgeIntervalRound = 10,
   judgeInterceptTimeoutMs = 30000,
   judgeFailureLimit = 3,
-  extensionStep = Math.max(8, Math.floor(maxRounds * 0.5)),
+  extensionStep = Math.max(8, Math.floor(config.run.maxRounds * 0.5)),
   maxExtensions = 2,
-  maxRoundsCap = Math.max(maxRounds, 256),
+  maxRoundsCap = Math.max(config.run.maxRounds, 256),
   wrapupNormalize,
   judge: { provider }, // `evaluator` 已退役（issue #498 S4c）
   onReflection,
-}
+} } }
 ```
 
 `ERIX_NO_ROUND_JUDGE=1` 会独立于工具拦截禁用回合结束 judge。回合 judge 使用独立或共享的提供器评估 `end_turn` 响应。只有 `done: true` 且 `confidence >= 0.7` 才会产生 `judge_done`；`done: false` 会注入纠正性的续接消息。解析失败和评估器错误会降级到普通 governor；连续失败达到 `judgeFailureLimit` 后，回合 judge 会被禁用。
@@ -363,7 +373,7 @@ Judge 拦截使用 6,000 token 的会话预算；round judge 请求最多输出 
  */
 ```
 
-`context` 选项接受 `strategy`、`budgetTokens`、`keepRounds`、`toolContext` 和 `task`。循环转发的策略选项包括 `summaryRole`（默认 `"user"`）、`recoveryHint`、`protectedMessage`、`stripHistoricalImages`（默认 `false`）、`onBeforeFold`、`onAfterFold` 和 `stubFor`。`keepRounds` 默认为 `6`。如果未配置 `context` 或预算，循环不会压缩。如果配置了预算但没有策略，超出预算时循环使用滑动窗口回退。
+`config.folding.context` 选项接受 `strategy`、`budgetTokens`、`keepRounds`、`toolContext` 和 `task`。循环转发的策略选项包括 `summaryRole`（默认 `"user"`）、`recoveryHint`、`protectedMessage`、`stripHistoricalImages`（默认 `false`）、`onBeforeFold`、`onAfterFold` 和 `stubFor`。`keepRounds` 默认为 `6`。如果未配置 `config.folding.context` 或预算，循环不会压缩。如果配置了预算但没有策略，超出预算时循环使用滑动窗口回退。
 
 ```js
 computeBudget({ contextWindowTokens, maxOutputTokens }) => number
@@ -389,7 +399,7 @@ createFoldLlmStrategy({
 
 #### Tool-result TTL 折叠
 
-独立于上下文压缩，旧的或较大的工具结果可以在 provider request view 中折叠。`toolResultTtl` 默认是 `2` 轮（`0` 表示禁用），`toolResultFoldMinTokens` 默认是估算的 `4000` token。在 `age === ttl - 1` 时，warning round 会要求模型使用 `note_take` 提取重要事实；达到 TTL 后，request view 会将结果替换为 navigation digest，并在适合的 JSON 内容中附带 JSON skeleton。checkpoint 和 transcript 持久化保留完整工具结果文本。`note_*`、todo、错误以及显式保护的结果不会折叠。
+独立于上下文压缩，旧的或较大的工具结果可以在 provider request view 中折叠。`config.folding.toolResultTtl` 默认是 `2` 轮（`0` 表示禁用），`config.folding.toolResultFoldMinTokens` 默认是估算的 `4000` token。在 `age === ttl - 1` 时，warning round 会要求模型使用 `note_take` 提取重要事实；达到 TTL 后，request view 会将结果替换为 navigation digest，并在适合的 JSON 内容中附带 JSON skeleton。checkpoint 和 transcript 持久化保留完整工具结果文本。`note_*`、todo、错误以及显式保护的结果不会折叠。
 
 ### 3.4 模型配置提供器
 
@@ -429,7 +439,7 @@ resolveApiKey(config = {})
 
 该存储器设计为每个 `runId` 和每个进程一个写入方。它会修复缺少末尾换行符的完整 JSONL 记录，并隔离不完整的尾部片段。跨进程锁定不属于存储器契约。
 
-`runToolLoop` 在提供 store 时默认使用 `persistence: "required"`，并在 provider 调用前校验两个必需方法；run-snapshot 与 run-state 方法为可选 capability。可选方法缺失时，引擎对每个缺失方法只发一条 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`，整轮 run 去重），并跳过对应持久化——run 正常跑完，仅不支持中途 crash resume。过渡期内引擎也接受只实现旧名的 store：快照写入按 `saveRunSnapshot` → `saveCheckpoint` → `appendCheckpoint` 解析，快照读取按 `loadLatestRunSnapshot` → `loadLatestCheckpoint` 解析（库内 store 的旧方法名以 `@deprecated` 别名保留）。`persistence: "none"` 是显式的完全 no-op 模式。对 store 已实现的方法，required 写入复用 loop retry 策略，重试耗尽后通过 `diagnostics.error` 发出 `persistence_error`，并以 `persistence_failed` 终止。snapshot 在工具前后都执行：前置失败报告 `sideEffect: "not_started"` 且阻止工具执行；后置失败报告 `sideEffect: "executed_uncommitted"`，同时保留 `checkpoint_failed` 错误类。恢复会按原始顺序重放待处理的工具调用；宿主仍必须使有副作用的 `executeTool` 实现具备幂等性。
+`runToolLoop` 在提供 store 时默认使用 `config.run.persistence: "required"`，并在 provider 调用前校验两个必需方法；run-snapshot 与 run-state 方法为可选 capability。可选方法缺失时，引擎对每个缺失方法只发一条 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`，整轮 run 去重），并跳过对应持久化——run 正常跑完，仅不支持中途 crash resume。过渡期内引擎也接受只实现旧名的 store：快照写入按 `saveRunSnapshot` → `saveCheckpoint` → `appendCheckpoint` 解析，快照读取按 `loadLatestRunSnapshot` → `loadLatestCheckpoint` 解析（库内 store 的旧方法名以 `@deprecated` 别名保留）。`config.run.persistence: "none"` 是显式的完全 no-op 模式。对 store 已实现的方法，required 写入复用 loop retry 策略，重试耗尽后通过 `diagnostics.error` 发出 `persistence_error`，并以 `persistence_failed` 终止。snapshot 在工具前后都执行：前置失败报告 `sideEffect: "not_started"` 且阻止工具执行；后置失败报告 `sideEffect: "executed_uncommitted"`，同时保留 `checkpoint_failed` 错误类。恢复会按原始顺序重放待处理的工具调用；宿主仍必须使有副作用的 `executeTool` 实现具备幂等性。
 
 安全文件名命名空间会让匹配 `[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*` 的简单 ID 保持可读，但 `"."`、`".."` 和保留的 `run-h-` 前缀除外。其他 ID 会变成 `run-h-` 加其 SHA-256 摘要的前 24 个十六进制字符。
 

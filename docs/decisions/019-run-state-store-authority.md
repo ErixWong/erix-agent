@@ -1,5 +1,11 @@
 # ADR-019：run-state 存储形态与权威模型（保留双写 + 终态/快照拆通道；拒绝删除任一份拷贝；记录两条未排期架构备选）
 
+> **状态（2026-10-29）——正文用的是已退役拼写。** 本文记录的是**当时**作出的决定。它写于扁平拼写
+> 时代（≤ 0.27，而 **0.27 从未发布**），因此正文里的选项名是名称闸口现在当场拒的扁平拼写
+> （`timeoutMs`、`toolResultTtl`、`initialMessages` …）。这些扁平拼写已退役；同一个旋钮今天在役的拼写是 `config.*`
+> 路径，权威对照表见 `docs/host-consumer-contract.md`。下面正文**一字未改**，这是**有意**的：
+> 把决定记录改写成今天的拼写等于伪造历史。
+
 - 状态：Accepted（2026-10-03）
 - 关联：issue #82（决策 C：双写收口）、#89（同源缺陷修复：损坏态回落 + 可用性棘轮）、#91（项 1/项 2 交付 + 两条备选停放处，本 ADR 落定后关闭）、#78（run snapshot / run-state 降级为可选 capability）、#83（引擎内部机制名统一为 run snapshot）
 - 依据：issue #82 三方案分析（含 touwaka store 实测：只实现 `{appendRound, load}`，不实现 run-state）；#91 评论中的 `@earendil-works/pi-durable` 对照（本机 clone `~/projects/github/pi/packages/durable`）；PR #90 / #92 / #93 / #94

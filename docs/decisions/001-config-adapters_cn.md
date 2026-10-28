@@ -1,5 +1,11 @@
 # ADR-001：LLM 配置走 ModelConfigProvider 适配器，内置 json-file
 
+> **状态（2026-10-29）——正文用的是已退役拼写。** 本文记录的是**当时**作出的决定。它写于扁平拼写
+> 时代（≤ 0.27，而 **0.27 从未发布**），因此正文里的选项名是名称闸口现在当场拒的扁平拼写
+> （`timeoutMs`、`toolResultTtl`、`initialMessages` …）。这些扁平拼写已退役；同一个旋钮今天在役的拼写是 `config.*`
+> 路径，权威对照表见 `docs/host-consumer-contract.md`。下面正文**一字未改**，这是**有意**的：
+> 把决定记录改写成今天的拼写等于伪造历史。
+
 > English version: [001-config-adapters.md](001-config-adapters.md)
 
 - 状态：已决策（2026-08-29）

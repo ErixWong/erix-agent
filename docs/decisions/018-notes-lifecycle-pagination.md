@@ -1,5 +1,11 @@
 # ADR-018：notes 生命周期收敛（仅 onRunComplete）、会话时钟统一保留期（janitor 删除）、list 朴素数组契约（revision/分页协议 YAGNI 削减）；liveness 端口出厂前整体删除（决策反转）
 
+> **状态（2026-10-29）——正文用的是已退役拼写。** 本文记录的是**当时**作出的决定。它写于扁平拼写
+> 时代（≤ 0.27，而 **0.27 从未发布**），因此正文里的选项名是名称闸口现在当场拒的扁平拼写
+> （`timeoutMs`、`toolResultTtl`、`initialMessages` …）。这些扁平拼写已退役；同一个旋钮今天在役的拼写是 `config.*`
+> 路径，权威对照表见 `docs/host-consumer-contract.md`。下面正文**一字未改**，这是**有意**的：
+> 把决定记录改写成今天的拼写等于伪造历史。
+
 - 状态：Accepted（2026-09-27；D7/D8 为出厂前外部审计后的终版修订，同日）
 - 关联：实施 issue #67（PR 1 #71 / PR 2 #72 list 契约与 semantic 缓存 / PR 3 #73）；D3 记录决策反转：初版实现 revision+分页后由维护者复盘削减（单 run 实测平均 2 条、峰值 9 条，YAGNI）；修订 ADR-015（notes 小抄目录）与 ADR-016（replayable 退役）中 notes 写入与 janitor 的表述；破坏面落在 0.12.0
 - 依据：issue #67 方案（issuecomment-1555 第 4 节）；0.11.x janitor 时间启发式在宿主调度场景下的误杀分析

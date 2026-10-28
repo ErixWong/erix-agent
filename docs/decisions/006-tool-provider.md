@@ -1,5 +1,12 @@
 # ADR-006: ToolProvider Layering—Pluggable Definitions (json/db), with Executors Always in Code
 
+> **Status (2026-10-29) — retired spelling in the body.** This document records a decision **as it was
+> made**. It was written in the flat-spelling era (≤ 0.27 — and **0.27 was never released**), so the
+> option names in its body are the flat spellings the name gate now rejects (`timeoutMs`,
+> `toolResultTtl`, `initialMessages`, …). The spelling in force today is the `config.*` path for the
+> same knob; the authoritative table is in `docs/host-consumer-contract.md`. The body below is left
+> **verbatim on purpose** — rewriting a decision record into today's spelling would forge history.
+
 > Chinese version: [006-tool-provider_cn.md](006-tool-provider_cn.md)
 
 - Status: Decided (2026-08-29)

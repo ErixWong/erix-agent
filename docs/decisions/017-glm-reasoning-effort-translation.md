@@ -1,5 +1,12 @@
 # ADR-017: GLM-5.3 always-on reasoning — payload-level `reasoning_effort` none→low translation
 
+> **Status (2026-10-29) — retired spelling in the body.** This document records a decision **as it was
+> made**. It was written in the flat-spelling era (≤ 0.27 — and **0.27 was never released**), so the
+> option names in its body are the flat spellings the name gate now rejects (`timeoutMs`,
+> `toolResultTtl`, `initialMessages`, …). The spelling in force today is the `config.*` path for the
+> same knob; the authoritative table is in `docs/host-consumer-contract.md`. The body below is left
+> **verbatim on purpose** — rewriting a decision record into today's spelling would forge history.
+
 - Status: Accepted (2026-09-22), implemented in commit `6523ff7`
 - Related: judge/wrapup normalize callers of `reasoning_effort:"none"`; bench evidence in erix-bench REPORT.md (260928 glm run, judge degraded §4)
 - Upstream: vLLM issue #54744, fix PR #54825, frontend fix PR #56994; Z.ai GLM-5.3 docs; unsloth GLM-5.3-GGUF card

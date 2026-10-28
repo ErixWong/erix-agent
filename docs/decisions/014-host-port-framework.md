@@ -1,5 +1,11 @@
 # ADR-014：宿主端口框架（Ports & Adapters）——三宿主共性下沉与契约冻结
 
+> **状态（2026-10-29）——正文用的是已退役拼写。** 本文记录的是**当时**作出的决定。它写于扁平拼写
+> 时代（≤ 0.27，而 **0.27 从未发布**），因此正文里的选项名是名称闸口现在当场拒的扁平拼写
+> （`timeoutMs`、`toolResultTtl`、`initialMessages` …）。这些扁平拼写已退役；同一个旋钮今天在役的拼写是 `config.*`
+> 路径，权威对照表见 `docs/host-consumer-contract.md`。下面正文**一字未改**，这是**有意**的：
+> 把决定记录改写成今天的拼写等于伪造历史。
+
 - 状态：**草案**（2026-09-15，待评审）
 - 关联：ADR-001（ModelConfigProvider）、ADR-002（TranscriptStore）、ADR-006（tool provider）、
   ADR-009（安全分层）、issue #49（AssemblyPort + 三宿主共性下沉）、#98（持久化静默降级）、
