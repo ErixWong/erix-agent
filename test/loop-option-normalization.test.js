@@ -204,8 +204,9 @@ const OPTION_WHITELIST = [
   "partialPersistence",
   "maxRounds",
   "cacheCapable",
-  "toolResultTtl",
-  "toolResultFoldMinTokens",
+  // #498 S3 (`folding` slice): `context` / `toolResultTtl` / `toolResultFoldMinTokens` left the
+  // allowlist — their canonical home is `config.folding.*`. The copy tracks the source list verbatim
+  // (that is exactly what A0 checks), so they are gone here too.
   "maxTokens",
   "temperature",
   "topP",
@@ -218,7 +219,6 @@ const OPTION_WHITELIST = [
   "finalGuardMaxRetries",
   "finalGuardTimeoutMs",
   "maxTokenContinuations",
-  "context",
   "todoStateProvider",
   "semanticStateProvider",
   "modelConfig",
@@ -333,7 +333,10 @@ const SUGGESTION_MATRIX = [
   { key: "zzztem", distance: 3, threshold: 2, suggested: undefined, note: "长度 6：超出阈值 1 → 不建议" },
   // ── `⌊len/3⌋` 分支：阈值随长度放大（阈值恒为 2 就会红）
   { key: "zzzRounds", distance: 3, threshold: 3, suggested: "maxRounds", note: "长度 9：阈值放大到 3" },
-  { key: "toolResultTxxx", distance: 3, threshold: 4, suggested: "toolResultTtl", note: "长度 14：阈值 4，距离 3 在阈内" },
+  // #498 S3：这一行原来用 `toolResultTxxx` → `toolResultTtl`，而后者已随 `folding` 切片离开白名单
+  // （建议候选池 = 白名单，删了键就不再是候选）。换一个**仍在白名单里**的 14 字键，钉的是同一条
+  // 分支：长度 14 ⇒ 阈值 ⌊14/3⌋ = 4，距离 3 落在阈内 ⇒ 必须给建议。
+  { key: "writeToolPathK", distance: 3, threshold: 4, suggested: "writeToolPathKeys", note: "长度 14：阈值 4，距离 3 在阈内" },
   { key: "finalGuardTimout", distance: 3, threshold: 5, suggested: "finalGuardTimeoutMs", note: "长度 16：阈值 5" },
   { key: "zzzzounds", distance: 4, threshold: 3, suggested: undefined, note: "长度 9：距离 4 超出阈值 3" },
   // ── 短到无可建议：`(did you mean …?)` 后缀整段缺席
