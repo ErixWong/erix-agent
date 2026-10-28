@@ -34,6 +34,11 @@
 //      上面所有格子的**地基**：#555 之前它在 CN 契约 `:2715` 那个合法 4 反引号跨度上错位，
 //      CN 从那里之后的引用**全部静默漏检**（旧分词器数出 3803 个跨度 vs EN 6092，
 //      且同一句能力面真值在 CN 上命中 0 处——不是红，是看不见）。
+//   G. **端口顶层成员闸判词**（#557 新增）：`1be8d00` 往中英契约的 `## AssemblyPort` 段各插了
+//      5 处逐字引用（EN 5 + CN 5 = 10 处），但覆盖面按分组枚举（A/B/C/E），这 5 条**不在任何
+//      一组里**——没有判据的逐字引用就是等着的债（#553 抓出 2 处、#554 抓出 1 处，都是这个形状）。
+//      取真值现调 `createAssemblyPort` 取 `error.message`；另给 G2 一格**只钉指路子句**
+//      （`; its canonical home is …`），G3 是它的内存反向证。
 //
 // 本文件导出的 `auditDocument()` / `auditFences()` / `auditCapabilityVerdicts()` /
 // `truthForFlatName()` / `inlineSpans()` / `scanInlineSpans()` 给反向证用（工单 §4）：
@@ -45,6 +50,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { createAssemblyPort } from "../src/assembly.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const DONE = [{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" }];
@@ -346,7 +352,131 @@ export async function auditCapabilityVerdicts(text) {
   return out;
 }
 
-/** 整份文档的审计（四条判据一起跑），给反向证与正式断言共用同一条代码路径。 */
+// ---------------------------------------------------------------- G. 端口顶层成员闸判词（#556 / #557）
+//
+// 来由（#557）：`1be8d00` 往中英契约的 `## AssemblyPort` 段各插了 **5 处逐字引用**（EN 5 + CN 5 =
+// 10 处），但 #553 的覆盖面按分组枚举（A/B/C/E）——这 5 条**不在任何一组里**。没有判据的逐字
+// 引用就是等着的债：#553 抓出 2 处、#554 抓出 1 处，全是这个形状。
+//
+// 取真值：**现调 `createAssemblyPort`** 取 `error.message`（#556 的闸口在构造期**同步**抛，且在
+// 读任何宿主工厂之前跑 ⇒ 这条真值来源是纯本地的：不发请求、不碰盘）。本文件依旧**零判词副本**：
+// 下表只有**入参**（成员名 / `null`）与**处数**，句子一个字都不写。
+//
+// 三个形状坑（#557 工单，都是空跑过的）：
+//   ① `createAssemblyPort` 的**数据面住在 `policy` 里**，顶层 `config` / `capabilities` 正是 #556
+//      刚加的闸要拒的两个名字（也是 G 组第 1、2 条的成因）——所以那两格的入参是「合法端口 +
+//      一个顶层容器」，证明被拒的原因只能是那个名字，不是端口不完整。
+//   ② `{ ...base, ...null }` 展开成**空对象** ⇒ 非对象入参必须**直接**传 `null`。
+//   ③ 端口成员表用 `Map` 而不是对象字面量写：`test/**` 里 `session` / `tools` 这类字面量属性名
+//      会被 `npm run check:inventory` 计成**扁平写点**（本片零新增写点，见工单 §地盘与禁改）。
+
+const PORT_MEMBERS = new Map([
+  ["modelConfig", () => ({ resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1024 }) })],
+  ["provider", () => createFakeProvider(DONE)],
+  ["tools", () => ({ definitions: [], executeTool: async () => "ok" })],
+  ["session", { id: "port-557" }],
+]);
+
+/** 一份**合法**端口入参，再挂上 `name`（要被闸口拒的那个名字）。`name` 缺省 ⇒ 纯合法端口。 */
+function portInputWith(name, value = 1) {
+  const input = {};
+  for (const [member, memberValue] of PORT_MEMBERS) input[member] = memberValue;
+  if (name !== undefined) input[name] = value;
+  return input;
+}
+
+/** 描述入参（只用于报错文本，不参与判定）：非对象入参直接把值写出来，对象写出它的键。 */
+function describePortInput(input) {
+  if (input === null || typeof input !== "object") return String(input);
+  return JSON.stringify(Object.keys(input));
+}
+
+/**
+ * **真值来源 ③**：把入参喂给 `createAssemblyPort`，取它当场抛出来的那句原文。
+ *
+ * 闸口在构造期同步跑，所以这里不需要 await；它拒的是**名字**（或非对象入参的形状），
+ * 在任何一个宿主工厂被调之前——与直连路线 `assertRunToolLoopOptionNames` 同一条次序承诺。
+ *
+ * @param {any} input
+ * @returns {string}
+ */
+export function truthForPortInput(input) {
+  try {
+    createAssemblyPort(input);
+  } catch (error) {
+    // 契约里这五句都是裸句引用（没有 `TypeError: ` 前缀），所以「抛出者确实是 TypeError」
+    // 是引用成立的一半：它要是换了错误类别，文档的写法也得跟着变。
+    assert.equal(
+      error instanceof TypeError,
+      true,
+      `端口闸口对 ${describePortInput(input)} 抛的不是 TypeError（${error?.constructor?.name}）`,
+    );
+    return error.message;
+  }
+  throw new Error(`端口闸口没有拒绝 ${describePortInput(input)}——判据的输入已经不对了`);
+}
+
+// 五条 = 契约里那 5 处引用。`expect` 是**每处恰好 1 次**（EN 5 + CN 5 = 10 处，与 A/C/E 同一套数法）。
+const ASSEMBLY_PORT_VERDICTS = [
+  { id: "port-top-level-config", input: () => portInputWith("config", { input: { initialUserMessage: "go" } }), expect: 1 },
+  { id: "port-top-level-capabilities", input: () => portInputWith("capabilities", { hooks: {} }), expect: 1 },
+  { id: "port-unknown-member", input: () => portInputWith("bogusMember"), expect: 1 },
+  { id: "port-misspelled-member", input: () => portInputWith("provder"), expect: 1 },
+  // 非对象入参：**直接**传 `null`（不是 spread，见上面形状坑 ②）。
+  { id: "port-non-object", input: () => null, expect: 1 },
+];
+
+/**
+ * 返回 [{ id, truth, expect, occurrences }]——`occurrences` 是**整段等于真值**的行内引用处数。
+ *
+ * 比对是 `span === truth`：**不接受** `TypeError: ` 前缀（契约这五处是裸句），也**不接受**子串包含
+ * ——子串判据恰好漏掉「整句被换掉一句看着合理的」那一类（#551 就是那么错的）。
+ *
+ * @param {string} text
+ * @returns {{ id: string, truth: string, expect: number, occurrences: number }[]}
+ */
+export function auditAssemblyPortVerdicts(text) {
+  const spans = inlineSpans(text);
+  return ASSEMBLY_PORT_VERDICTS.map((verdict) => {
+    const truth = truthForPortInput(verdict.input());
+    return {
+      id: verdict.id,
+      truth,
+      expect: verdict.expect,
+      occurrences: spans.filter((span) => span === truth).length,
+    };
+  });
+}
+
+// ---------------------------------------------------------------- G2. 指路子句单钉（#556 留的一笔）
+//
+// `; its canonical home is …` 这条**指路子句**今天只有一处报警面：#556 自己套件的 B2（那里是**手抄**
+// 的整句）。对齐套件里它只是 G 组那两格**整句**的一部分——整句变了当然红，但「指路指错了地方」与
+// 「可接受集合变了」在报警文本上分不开；更要紧的是**引擎哪天不再指路**时，G 组只会说「整句不等」。
+// 所以单独给一格，只钉指路子句：
+//   · 目标住所由**规则**算出（端口的两个容器都住在 `policy` 下一层 ⇒ `policy.<name>`），不手抄；
+//   · 子句的字面值仍**取自运行时**（`splitPointerClause()` 的切点来自引擎那句原文）。
+// 于是这一格的三种红各不相同：引擎不再指路 / 指错了住所 / 文档没有逐字复述。
+
+const POINTER_MARKER = "; its canonical home is ";
+const POINTER_CONTAINERS = ["config", "capabilities"];
+
+/**
+ * 把一句判词切成「主体 + 指路子句」；没有指路子句 ⇒ `null`（引擎不再指路时 G2 必须红）。
+ *
+ * `POINTER_MARKER` 只是**定位器**（与 A 组的 `FLAT_NAME_QUOTE`、C 组的 `TYPE_ERROR_PREFIX` 同一性质），
+ * 不是判词副本：它只用来找切点，两边切出来的子句再**逐字相等**地比。
+ *
+ * @param {string} verdict
+ * @returns {{ head: string, pointer: string } | null}
+ */
+export function splitPointerClause(verdict) {
+  const at = verdict.indexOf(POINTER_MARKER);
+  if (at === -1) return null;
+  return { head: verdict.slice(0, at), pointer: verdict.slice(at) };
+}
+
+/** 整份文档的审计（五条判据一起跑），给反向证与正式断言共用同一条代码路径。 */
 export async function auditDocument(text) {
   const flat = flatNameQuotes(text);
   const truths = new Map();
@@ -358,6 +488,7 @@ export async function auditDocument(text) {
     fences: await auditFences(text),
     shorts: await auditShortVerdicts(text),
     capabilities: await auditCapabilityVerdicts(text),
+    assembly: auditAssemblyPortVerdicts(text),
   };
 }
 
@@ -443,6 +574,91 @@ for (const which of ["en", "cn"]) {
     }
   });
 }
+
+// ================================================================ G. 端口顶层成员闸判词（#557）
+//
+// 一格一份文档：逐条处数（每处恰好 1）+ 本语言合计（5）。两件事分开断言，红了能直接看出是哪一层。
+// 中英合计 10 处是工单的数字：**每处引用必须恰好 1 次**（EN 5 + CN 5）。
+
+const ASSEMBLY_PORT_TOTAL = 5; // EN 5 / CN 5；中英合计 10。
+
+for (const which of ["en", "cn"]) {
+  test(`G-${which}: 端口顶层成员闸的五句判词逐字等于运行时真值（${which.toUpperCase()}）`, () => {
+    const audit = auditAssemblyPortVerdicts(read(which));
+    for (const verdict of audit) {
+      assert.equal(
+        verdict.occurrences,
+        verdict.expect,
+        `${verdict.id} 那句（真值：${JSON.stringify(verdict.truth)}）在 ${which.toUpperCase()} 契约里的整句引用处数`
+          + `从 ${verdict.expect} 变成 ${verdict.occurrences}`
+          + "（契约引用的句子必须**逐字**等于 `createAssemblyPort` 当场抛出的那一句）",
+      );
+    }
+    const total = audit.reduce((sum, verdict) => sum + verdict.occurrences, 0);
+    assert.equal(
+      total,
+      ASSEMBLY_PORT_TOTAL,
+      `${which.toUpperCase()} 契约里这五句的整句引用合计 ${total} 处（应为 ${ASSEMBLY_PORT_TOTAL}）`
+        + "——少一处不是「问题消失」，是宿主照文档抄不到了",
+    );
+  });
+}
+
+// G2：指路子句单钉（与 G 共用 `inlineSpans()` 与同一个真值来源，不是第二套数法）。
+for (const which of ["en", "cn"]) {
+  test(`G2-${which}: 指路子句单独钉——住所按规则算出 policy.<name>，文档逐字复述（${which.toUpperCase()}）`, () => {
+    const spans = inlineSpans(read(which));
+    for (const name of POINTER_CONTAINERS) {
+      const truth = truthForPortInput(portInputWith(name, {}));
+      const runtime = splitPointerClause(truth);
+      assert.notEqual(
+        runtime,
+        null,
+        `引擎对顶层 ${name} 的判词不再带指路子句——契约里那句指路就成了没有出处的引用`,
+      );
+      // 住所是**算出来的**：端口的两个容器都住在 `policy` 下一层，所以指路目标恒为 `policy.<name>`。
+      const home = runtime.pointer.slice(POINTER_MARKER.length).split(":")[0].trim();
+      assert.equal(
+        home,
+        `policy.${name}`,
+        `指路子句把 ${name} 指向了 ${home}——端口的两个容器只能住在 policy 下一层`,
+      );
+      const matching = spans.filter((span) => {
+        const doc = splitPointerClause(span);
+        return doc !== null && doc.pointer === runtime.pointer;
+      });
+      assert.equal(
+        matching.length,
+        1,
+        `${name} 的指路子句在 ${which.toUpperCase()} 契约里的逐字复述处数从 1 变成 ${matching.length}`
+          + `（真值：${JSON.stringify(runtime.pointer)}）`,
+      );
+    }
+  });
+}
+
+// G3：反向证（内存）——证明上面两格不是常数绿。盘上 `docs/**` 一个字节不动。
+// 与工单 §4 的盘上探针同一条代码路径，这里是它在内存里的对应格。
+test("G3-自证不是常数：端口判词改一个词 ⇒ 审计翻红（不改盘上文件）", () => {
+  const original = read("en");
+  const green = auditAssemblyPortVerdicts(original);
+  assert.equal(
+    green.every((verdict) => verdict.occurrences === verdict.expect),
+    true,
+    "原文档必须是绿的（否则下面的反向证没有意义）",
+  );
+  // 锚点**取自运行时**（不手抄）：只把 `bogusMember` 那句里的一个词改掉。
+  const truth = green.find((verdict) => verdict.id === "port-unknown-member").truth;
+  assert.equal(original.includes(truth), true, "变异锚点必须存在（否则这条自证是空的）");
+  const mutatedDoc = original.replace(truth, truth.replace("accepted:", "accepted set:"));
+  assert.notEqual(mutatedDoc, original, "变异必须真的落到文本上");
+  const red = auditAssemblyPortVerdicts(mutatedDoc);
+  assert.equal(
+    red.find((verdict) => verdict.id === "port-unknown-member").occurrences,
+    0,
+    "改一个词的端口判词必须翻红——处数还是 1 说明判据在拿子串/常数比对",
+  );
+});
 
 // ================================================================ D. 判据自身不许是常数
 //
