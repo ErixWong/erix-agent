@@ -77,7 +77,7 @@
 #498 S5 迁 `bin/` 时必须同步改「捕获到的扁平选项」那 24 行断言
 （`captured.cwd` / `captured.tools` / `captured.deliverables` / `captured.finalGuard` /
 `captured.finalGuardMaxRetries` / `captured.context.recoveryHint`），
-那 24 行按本表的分类规则本来也属 MIGRATE，现**提前由 S5 做**，因此这 4 个文件本轮任何切片都不得改：
+那 24 行按本表的分类规则本来也属 MIGRATE，现**提前由 S5 做**，因此这 **5** 个文件本轮任何切片都不得改：
 
 | 文件 | 扁平写点 | 谁拥有哪一区 |
 | --- | --- | --- |
@@ -85,10 +85,16 @@
 | `test/repl.test.js` | 1（`finalGuard`×1） | 同上（REPL 侧的同族捕获断言） |
 | `test/host-cwd-wiring.test.js` | 8（`finalGuard`×5, `deliverables`×3） | **整个文件的选项装配断言区**归 S5（cwd 透传与交付物判据的装配断言） |
 | `test/notes-final-guard.test.js` | 2（`finalGuard`×2） | 同上（notes 侧 finalGuard 装配断言） |
+| `test/integration/no-todo-switch.test.js` | 0（能力面口径） | 同上：S5 在里面加**双向读取器**（规位 `config.input.*` 读不到值就红 + 扁平位不得与规位同存），断言测的是装配形状。本树里它的 6 个写点全在数据面（`prompt`×5 / `tools`×1，见附表），**能力面 0 个** |
 
-合计 **13** 个写点。理由：这 4 个文件的扁平写点**与 `bin/` 的捕获断言是同一批**——S5 改 `bin/` 的
-同时必须改它们，两边分开做会出现「`bin/` 已改、断言还按旧形状读」的中间态红。S9 退役时这 4 个文件
-由 S5 的交接口径直接处理，不需要 S7 再插一手。
+合计 **13** 个能力面写点 / **5** 个文件（第 5 个文件贡献 0 个能力面写点，它的 6 个写点在附表里清点）。
+理由：这些文件的扁平写点**与 `bin/` 的捕获断言是同一批**——S5 改 `bin/` 的同时必须改它们，两边分开做
+会出现「`bin/` 已改、断言还按旧形状读」的中间态红。S9 退役时这 5 个文件由 S5 的交接口径直接处理，
+不需要 S7 再插一手。
+
+⚠ **S5 的实况会继续变**：S5 在自己的树上（`/tmp/v498s5`）已落两个提交、多领了第 5 个文件。上表的写点数
+是**按本树 HEAD 实测**的（命令见文末「复跑方法」第 1/3 条）；S5 落盘后必须用**同一条命令重测**并把这里
+与「分派小结」一起改——**不许手改数字**，`--verify` 退出码非 0 就说明表又和树脱钩了。
 
 ## OWNED-BY-S6（本轮别碰，S6 提前做）
 
@@ -182,9 +188,9 @@
 | `MIGRATE · S7c`（含 S7a 遗留 3 + S7b 让出的 `loop-callback-this` 1） | 17 | 90 |
 | `MIGRATE · 含 COMPAT-PIN 格`（迁搭台写点，**逐格**跳过选项面断言） | 3 | 38 |
 | `COMPAT-PIN` | 6 | 66 |
-| `OWNED-BY-S5` | 4 | 13 |
+| `OWNED-BY-S5` | 5 | 13 |
 | `OWNED-BY-S6` | 5 | 21 |
-| **合计（迁移后实测）** | **62** | **351** |
+| **合计（迁移后实测）** | **63** | **351** |
 
 脚注：
 
@@ -194,8 +200,11 @@
   同一列里会让列和变成 385（= 351 + 37 − 3），那是**列语义坏了**，不是数错了。
 * S7a 遗留的 **3** 个 `finalGuard`（`judge-record` / `loop-abort-terminal-priority` / `loop-governance-cells`）
   已补进 S7c 清单 ⇒ 只在 S7c 的 90 里数**一次**。
-* 文件数 **62** 是**去重后**的 `7 + 24 + 13 + 3 + 6 + 4 + 5`：S7c 的 17 里有 4 个是借来的（3 个来自 S7a 的 7、
-  1 个 `loop-callback-this` 来自 S7b 的 24），所以把各行文件数直接相加得 69 是**交叉引用**不是漏计。
+* 文件数 **63** 是**去重后**的 `7 + 24 + 13 + 3 + 6 + 5 + 5`（S7a 7 / S7b 24 / S7c 独有 13 / 含 COMPAT-PIN 格 3 /
+  COMPAT-PIN 6 / S5 5 / S6 5）：S7c 的 17 里有 4 个是借来的（3 个来自 S7a 的 7、1 个 `loop-callback-this`
+  来自 S7b 的 24），所以把各行文件数直接相加得 70 是**交叉引用**不是漏计。**算数写在脚注里**：
+  文件数不是写点列和，它按「去重后的文件」算；写点列和按「逐点只算一次」算，两者口径不同，所以
+  `63 ≠ 62` 不是错，`0+0+123+90+38+66+13+21 = 351` 才是这张表的硬约束。
 * 上表「分类」列是逐点归片的**唯一权威**：同一文件跨片时写 `MIGRATE · S7b（3）+ S7c（1）`，两片各数各的。
   核对命令（文末「复跑方法」第 3 条）会把这张小结与本表逐行对账，退出码非 0 就是列语义又坏了。
 
@@ -483,6 +492,11 @@ function verify(root, mdPath) {
   const mainRows = [];
   const appRows = [];
   const summary = [];
+  const listRows = new Map(); // 分派清单（S7b/S7c/S5/S6/COMPAT/含COMPAT）逐行：文件 → 表列写点
+  const groupRows = (g, row) => {
+    if (!listRows.has(g)) listRows.set(g, []);
+    listRows.get(g).push(row);
+  };
   let section = "";
   let inSummary = false;
   for (const line of lines) {
@@ -498,16 +512,27 @@ function verify(root, mdPath) {
       summary.push({ label: cells[1].replace(/`/g, "").replace(/\*\*/g, ""), files: Number(files), points: Number(points) });
       continue;
     }
+    if (line.startsWith("含 COMPAT-PIN 格（")) { section = "## 含 COMPAT-PIN 格"; continue; }
     const m = line.match(/^\| `(test\/[^`]+)` \| (\d+)（?[^|]*\| ?(.*)$/);
     if (!m) continue;
     const row = { file: m[1], claimed: Number(m[2]), tail: m[3] };
     if (section.startsWith("## 附表")) appRows.push(row);
     else if (section.startsWith("## MIGRATE（")) mainRows.push(row);
+    else if (section.startsWith("## S7b 清单")) groupRows("S7b", row);
+    else if (section.startsWith("## S7c 清单")) groupRows("S7c", row);
+    else if (section.startsWith("## OWNED-BY-S5")) groupRows("OWNED-BY-S5", row);
+    else if (section.startsWith("## OWNED-BY-S6")) groupRows("OWNED-BY-S6", row);
+    else if (section.startsWith("## COMPAT-PIN（")) groupRows("COMPAT-PIN", row);
+    else if (section === "## 含 COMPAT-PIN 格") groupRows("含 COMPAT-PIN 格", row);
   }
   const astCap = (f) => (per.get(f)?.cap ?? 0);
   const astData = (f) => (per.get(f)?.data ?? 0);
 
   for (const row of mainRows) if (row.claimed !== astCap(row.file)) bad.push(`主表 ${row.file}：表 ${row.claimed} / AST ${astCap(row.file)}`);
+  // 同一文件可能被两片各分一段（如 `loop-callback-this`：S7b 3 + S7c 1）⇒ 按文件汇总后再与 AST 对账
+  const perFileClaimed = new Map();
+  for (const [, rows] of listRows) for (const row of rows) perFileClaimed.set(row.file, (perFileClaimed.get(row.file) ?? 0) + row.claimed);
+  for (const [f, claimed] of perFileClaimed) if (claimed !== astCap(f)) bad.push(`分派清单 ${f}：表合计 ${claimed} / AST ${astCap(f)}`);
   for (const row of appRows) if (row.claimed !== astData(row.file)) bad.push(`附表 ${row.file}：表 ${row.claimed} / AST ${astData(row.file)}`);
   const mainSum = mainRows.reduce((s, r) => s + r.claimed, 0);
   const appSum = appRows.reduce((s, r) => s + r.claimed, 0);
@@ -557,7 +582,12 @@ function verify(root, mdPath) {
       const actual = isTotal ? astMain : (groups.get(g) ?? 0);
       const ok = s.points === actual;
       if (!ok) bad.push(`分派小结 ${s.label}：表 ${s.points} / 逐点归片 ${actual}`);
-      console.log(`  表 ${s.label}：文件 ${s.files} / 写点 ${s.points}（逐点归片 ${actual}）${ok ? " ✅" : " ✗"}`);
+      let filesOk = true;
+      if (!isTotal && g !== "S7a") {
+        const rows = listRows.get(g);
+        if (rows) { filesOk = rows.length === s.files; if (!filesOk) bad.push(`分派小结 ${s.label}：文件 ${s.files} / 清单 ${rows.length} 行`); }
+      }
+      console.log(`  表 ${s.label}：文件 ${s.files} / 写点 ${s.points}（逐点归片 ${actual}${filesOk ? "" : "，文件数不符"}）${ok && filesOk ? " ✅" : " ✗"}`);
     }
     if (totalPoints !== null && sumPoints !== totalPoints) {
       bad.push(`分派小结列和 ${sumPoints} ≠ 合计 ${totalPoints}`);
@@ -565,6 +595,9 @@ function verify(root, mdPath) {
     } else if (totalPoints !== null) {
       console.log(`  列和 ${sumPoints} = 合计 ${totalPoints} ✅`);
     }
+  }
+  for (const [g, rows] of listRows) {
+    console.log(`  清单 ${g.padEnd(16)} ${rows.length} 行 / 表列写点 ${rows.reduce((a, r) => a + r.claimed, 0)}`);
   }
   if (bad.length) { console.log("不一致："); for (const b of bad) console.log("  ✗ " + b); }
   else console.log("逐文件：0 处不一致");
