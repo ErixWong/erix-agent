@@ -339,56 +339,32 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
 /**
  * Run the minimum tool-calling loop against an injected provider.
  *
- * When `reflection` is omitted, the basic judge is enabled automatically for
- * runs with `maxRounds >= 16`; pass `reflection: false` to disable it.
+ * When `config.run.reflection` is omitted, the basic judge is enabled
+ * automatically for runs with `config.run.maxRounds >= 16`; pass
+ * `config.run.reflection: false` to disable it.
  *
  * Stall detection defaults to `consecutive`, which requires the entire window to
  * hold the same signature (legitimate re-reads of a file no longer count as a
- * stall); pass `{ mode: "appear" }` to detect a signature anywhere in the
- * window instead. `ERIX_STALL_MODE` overrides the mode unless `stallDetection`
- * is explicitly `false`.
+ * stall); pass `{ mode: "appear" }` as `config.run.stallDetection` to detect a
+ * signature anywhere in the window instead. `ERIX_STALL_MODE` overrides the mode
+ * unless `config.run.stallDetection` is explicitly `false`.
+ *
+ * The top-level property set of the `options` type below is **exactly**
+ * `RUN_TOOL_LOOP_OPTION_NAMES` (`src/loop/option-normalization.js`) — the single
+ * source of "which options `runToolLoop` accepts". Every retired flat spelling
+ * moved into the nested `config` / `capabilities` containers and is rejected at
+ * startup when written flat, so declaring it here would advertise a spelling the
+ * runtime refuses. `test/type-surface-522.test.js` compares the two sets both
+ * ways, so a name added to one side only goes red.
  *
  * @param {{
  *   assemblyPort?: import("../assembly.js").AssemblyPort,
  *   provider: {chat?: (request: object) => Promise<object>, chatStream?: (request: object) => Promise<object>},
- *   system?: string,
- *   cacheStablePrefix?: boolean, // Marks the stable system and first user prefix boundaries by default.
- *   wrapup?: boolean, // Controls instruction injection, JSON parsing, finalText replacement, and LLM normalization.
- *   initialUserMessage?: string,
- *   initialMessages?: object[],
  *   tools?: object[],
- *   outputHygiene?: false | { limit?: number }, // Engine-side output hygiene (ADR-015); see `outputHygiene` below.
- *   writeToolNames?: string[], // Explicit tool names counted in judge filesWritten.
- *   writeToolPathKeys?: string[], // Path argument priority for configured write tools.
  *   executeTool: (options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
  *     => Promise<string|{content:any, metadata?:object, success?:boolean}|Error>,
- *   replayPolicy?:"always-replay"|"per-tool-declaration", // Default always-replay preserves existing resume behavior.
- *   invalidArguments?:"reject"|"execute", // issue #409: what to do when a tool call's arguments cannot be parsed (default "reject" = do not execute the tool, return the parser's own verdict as an `is_error` tool_result; "execute" restores the pre-#409 behaviour byte for byte)
- *   partialPersistence?:false|{intervalMs:number,minBytes?:number}, // Default false; persist partial streamed text on an interval.
- *   maxRounds?: number,
- *   cacheCapable?: boolean, // cache-capable 端点默认关闭工具结果 TTL 折叠；显式 toolResultTtl 优先。
- *   toolResultTtl?: number, // 工具结果 TTL 折叠存活轮数；未设置时默认 2。
- *   maxTokens?: number,
- *   temperature?: number,
- *   topP?: number,
- *   timeoutMs?: number,
- *   deadlineMs?: number,
- *   reflection?: {enabled?:boolean, roundJudge?:boolean, judgeIntercept?:boolean,
- *     judgeIntervalRound?:number, judgeInterceptTimeoutMs?:number,
- *     judgeDoneAdvisory?:boolean, // #322: feed an intercepted "goal looks achieved" verdict back to the main model as a soft advisory (default false, never blocks or stops)
- *     extensionStep?:number,
- *     maxExtensions?:number, maxRoundsCap?:number,
- *     judge?:{provider?:object}, // issue #498 S4c: the pure alias `judge.evaluator` is retired — it now throws and points at capabilities.ports.judgeProvider (which accepts a callable or a `{chat}` object). `judge.provider` keeps working.
- *     onReflection?:(info:{round:number, decision:object, extendedTo:number}) => void}|false, // legacy nested home of `capabilities.hooks.onReflection`.
- *   stallDetection?: {window?:number, mode?:"appear"|"consecutive"}|false, // Defaults to consecutive mode.
- *   retry?: {attempts?:number, backoffBaseMs?:number, backoffMaxMs?:number,
- *     sleepImpl?:(ms:number)=>Promise<void>}|false,
- *   completion?: {signals?:string[], maxNoToolRounds?:number}|false,
  *   finalGuard?:(payload:{finalText:string,messages:object[],round:number,rounds:number,signal:AbortSignal,termination:object}) => Promise<{action:"accept"}|{action:"skip",reason:string}|{action:"revise",message:string}>,
- *   finalGuardMaxRetries?: number,
- *   finalGuardTimeoutMs?: number, // Defaults to 30000; non-positive values use the default.
- *   finalGuardExtend?: boolean, // issue #386 slice 3: let a `revise` on a budget-type stop (max_rounds_cap / continuation_exhausted) borrow the mid-run extension mechanism **once per run**. Defaults to false = today's behaviour byte for byte; `stall` is never extended.
- *   maxTokenContinuations?: number,
+ *   deliverables?: {name: string, check: (facts: object) => any}[], // issue #386 slice 2: host-declared delivery checks, verified before every guard call (the canonical home is `capabilities.checks.deliverables`; the flat spelling is a live option).
  *   config?: { // issue #497（S2）：嵌套配置命名空间，七组见下（叶子名逐字等于同名顶层选项，类型也一致；唯一例外是 `input.messages` → `initialMessages`，见 `CONFIG_LEAF_ALIASES`）。
  *     input?: {system?: string, cacheStablePrefix?: boolean, initialUserMessage?: string, messages?: object[], wrapup?: boolean, tools?: object[]},
  *     run?: {maxRounds?: number, maxTokenContinuations?: number,
@@ -430,23 +406,14 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *       judgeProvider?: object|((request: object) => Promise<object>), // callable or `{chat}`
  *       strategy?: {shouldCompact: Function, compact: Function}}, // a strategy object, not a built-in name (a name is data: use context.strategy / config.folding.context.strategy)
  *   },
- *   context?: {strategy?: object|"sliding-window"|"fold-statistical"|"fold-llm", budgetTokens?:number, keepRounds?:number, toolContext?:object, task?:string}, // strategy accepts a strategy object or a built-in name (#167); task is the judge/reflection/wrapup brief fallback after explicit task; see task param.
  *   todoStateProvider?:(payload:{runId?:string,rounds:number})=>object|Promise<object>,
  *   semanticStateProvider?:(payload:{runId?:string,state:object,previous?:object})=>{text:string,version:number}|Promise<{text:string,version:number}>,
  *   modelConfig?: {contextWindowTokens?:number, maxOutputTokens?:number},
- *   modelMetadata?: {contextWindowTokens?:number, maxOutputTokens?:number},
- *   model?: {contextWindowTokens?:number, maxOutputTokens?:number},
- *   expert?:any, user?:any,
- *   task?:any, // Explicit judge/reflection/wrapup brief; non-empty values take precedence as task > context.task > entry transcript's last user text. Explicit values use a 1500-code-point budget; message fallback uses 500. Multi-turn hosts should pass the current/latest instruction as a string.
- *   session?:any, requestId?:string, toolContext?:object,
+ *   session?:any,
  *   store?: {appendRound?: Function, load?:Function, // required pair (issue #78)
  *     saveRunSnapshot?:Function, loadLatestRunSnapshot?:Function, // optional run-snapshot capability
  *     markRunState?:Function, saveRunState?:Function, loadRunState?:Function}, // optional run-state capability
- *   persistence?:"none"|"required", // Defaults to required with a store and none without one.
  *   diagnostics?: {error:(event:object)=>void|Promise<void>},
- *   runId?: string,
- *   cwd?: string, // issue #386: the host's working directory. The engine never uses it (no chdir, no existence check, no path joins) — it is passed through to the `finalGuard` payload's `cwd` key only, and the key is absent when the host did not pass one.
- *   resume?: boolean,
  *   onRound?: (record:object) => void,      // 观察者（issue #173 PR-B）：抛错/rejected Promise 均被隔离
  *   onJudge?:(info:JudgeEvent) => void,     // 观察者（issue #173 PR-B）：抛错被隔离
  *   onToolResult?: (name:string, result:string, metadata?:object) => any,
@@ -454,7 +421,6 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   onFoldSummary?: ((payload: object) => void | Promise<void>)|undefined,
  *   onObserverError?: (error:Error, context:{channel:string, runId?:string, type?:string, round?:number, toolName?:string, method?:string}) => void,
  *   signal?: AbortSignal,
- *   stream?: boolean,
  *   onDelta?: (chunk:string) => void,       // 观察者（issue #173 PR-B）：抛错被隔离
  *   onReasoningDelta?: (chunk:string) => void, // 同上
  *   onToolCall?: (fragment:object) => void, // 同上
@@ -469,11 +435,11 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  * left the single most host-facing type of the package untyped). A trailing `//` on a
  * property line is safe; a comment line of its own is not. Grouped by the option.
  *
- * `wrapup`:
+ * `config.input.wrapup`:
  *   Defaults to true (omit = enabled). ERIX_NO_WRAPUP_INSTRUCTION=1 env overrides even an
  *   explicit wrapup:true — either off disables the whole protocol.
  *
- * `outputHygiene`:
+ * `config.run.outputHygiene`:
  *   When enabled, tool results larger than `limit` characters are archived in full into
  *   the round record
  *   (toolOutputs) and stubbed in the context view. Requires a
@@ -491,13 +457,13 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   rewritten after its run snapshot, so snapshot/resume semantics are unchanged.
  *   The layer is off when budgetTokens is absent or outputHygiene is false.
  *
- * `writeToolNames`:
+ * `config.run.writeToolNames`:
  *   Defaults to ["writeFile", "edit"] (DEFAULT_WRITE_TOOL_NAMES in src/reflection/judge.js — the single
  *   truth shared by this default, the normalizeToolNameSet fallback below, and the judge
  *   timeline; issue #191 added `edit`). An explicit host value always wins: it replaces the
  *   default outright and is never merged with it.
  *
- * `stallDetection`:
+ * `config.run.stallDetection`:
  *   {window:4, mode:"consecutive"} (the entire window must hold the same signature);
  *   ERIX_STALL_MODE overrides the mode unless the option is explicitly false.
  *
