@@ -780,7 +780,12 @@ export function createAssemblyPort(input = {}) {
   // "configured but inert" shape this gate exists to kill — and the two most likely offenders
   // (`config` / `capabilities`) are exactly the names the direct route *does* take.
   assertAssemblyPortMemberNames(input);
-  const port = readAssemblyPortMembers(input);
+  // `port` is deliberately typed `any` here, exactly as the object literal it replaced was: the
+  // members are validated one by one right below (`missingAssemblyMethods`, the `session` container
+  // gate, the `policy` allowlist), and one of those checks reads a **retired** member
+  // (`port.session.resume`) that the `AssemblyPort` typedef intentionally does not declare —
+  // declaring it would document a retired key as legal (#498 S4b).
+  const port = /** @type {any} */ (readAssemblyPortMembers(input));
   // issue #513 ④: `session` is the port's identity container by contract, so a non-object value is a
   // *shape* mistake and says so. Without this line it surfaced as `assembly port is missing methods:
   // session` — a sentence about methods for a value that is not a port at all, which is what made
@@ -801,11 +806,7 @@ export function createAssemblyPort(input = {}) {
   if (sessionProblems.length > 0) {
     throw tagValidationRoute(new TypeError(sessionProblems.join("; ")), "assembly");
   }
-  // The retired member is read **on purpose** in order to refuse it, and the `AssemblyPort` typedef
-  // deliberately does not declare it (declaring it would document it as legal) — so the read is
-  // widened here instead of loosening the whole port back to `any` (#556 moved the port's shape from
-  // an object literal to the derived table, which is what made the type visible at all).
-  if (/** @type {any} */ (port.session).resume !== undefined) {
+  if (port.session.resume !== undefined) {
     // #498 S4b：幻影组 `session` 的那条别名（`session.resume` → 顶层 `resume`）删掉了。
     // `session` 是**纯数据**（`config.metadata.session`），一个「看起来像旋钮」的键留在里面
     // 只会让宿主以为它生效了——所以拒绝并指出去处，而不是静默忽略。
