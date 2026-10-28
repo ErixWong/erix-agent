@@ -707,4 +707,21 @@ test("C10 装配口路线：policy.capabilities.ports 与 hooks 同相生效（s
   assert.equal(typeof normalized.capabilitySlots.hooks.onBeforeFold, "function", "policy 侧的钩子进了 slots");
   assert.equal(Object.hasOwn(normalized.effectiveOptions, "sleepImpl"), false, "仍然没有扁平别名");
   assert.equal(counter.calls, 0);
+
+  // 两个 `capabilities` 源同时在场：逐叶冲突的 path 也是**目的地**（与扁平 vs 容器同一条口径），
+  // 不是 `hooks.protectedMessage` 这种「组内路径」。
+  const policySleep = async () => {};
+  const callSleep = async () => {};
+  const events = [];
+  const twoSources = await normalizeRunToolLoopOptions({
+    assemblyPort: makePort({ capabilities: { ports: { sleepImpl: policySleep } } }),
+    capabilities: { ports: { sleepImpl: callSleep } },
+  });
+  assert.deepEqual(
+    twoSources.configConflicts,
+    [{ path: "ports.sleepImpl", key: "sleepImpl" }],
+    "policy 与调用级的逐叶冲突同样点名目的地",
+  );
+  assert.equal(twoSources.capabilitySlots.ports.sleepImpl, callSleep, "调用级整棵覆盖（后写者胜）");
+  assert.deepEqual(events, []);
 });

@@ -490,7 +490,11 @@ export function collectCapabilitiesSourceConflicts(previousCapabilities, nextCap
       const nextValue = nextBag[key];
       if (previousValue === undefined || nextValue === undefined) continue;
       if (isDeepStrictEqual(previousValue, nextValue)) continue;
-      conflicts.push({ path: `${group}.${key}`, key });
+      // #498 S4c: the path is the leaf's **destination** — the same rule `expandCapabilitiesNamespace`
+      // uses, so one knob never shows up under two different paths depending on which pair of sources
+      // disagreed (a port slot stays `ports.<slot>`, a polymorphic knob names its config-side path).
+      const destination = CAPABILITY_SLOT_DESTINATIONS[`${group}.${key}`];
+      conflicts.push({ path: destination?.conflictPath ?? `${group}.${key}`, key });
     }
   }
   return conflicts;
