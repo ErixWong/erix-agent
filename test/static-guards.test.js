@@ -2833,3 +2833,455 @@ describe("静态守卫：scripts 里 runToolLoop 的顶层选项名必须来自�
     t.diagnostic("①–⑧ 放行证 / 变异证 / 范围证 / 登记式样 逐条按预期");
   });
 });
+
+// ── 规则 8（issue #541）：CHANGELOG 顶部版本节的卫生 ──
+// ---------------------------------------------------------------------------
+//
+// 病根（本仓本月真事，不是规范洁癖）：
+//   · `CHANGELOG.md` 归主 agent 维护，但一片 worker **越界自己写了同主题条目**（A19 的 `resume`
+//     那条）⇒ 主 agent 得手工去重，还把另一条里的**逐字拒绝文案**嫁接进自己那条；
+//   · 用来查重的临时正则**不可信**：按字节去重看不见**语义重复**（同主题两条各写各的）；而中英片号是
+//     **两套键空间**（EN `S3, <ord> slice` / CN `S3 第N片`，还有 ` b 段` 这种后缀），那套正则一度报
+//     「CN `三` 重复」——到底是真重复还是正则产物，没人核过；
+//   · 真实标签错位也发生过：A2b 那条 CN 写成「第三片」，实际应是「第三片 b 段」（手工修的）。
+//
+// 判据五条（解析单位 = **整条 bullet**：从 `- ` 行到下一条 `- ` / `### ` / 空行之前；本仓条目普遍
+// 4~10 行，只扫首行等于看不见一半内容——EN 那条 `S3, third slice` 就是**折行**的）：
+//   R1 字节唯一：同节内 bullet 不得逐字重复；
+//   R2 片号唯一：EN `S3, <ord> slice` 与 CN `S3 第<ord>片`（**含 ` b 段` 后缀**）**各自内部**不得重复；
+//      **两套键空间不许互相折算**——EN 的 `c` 不等于 CN 的 `三`，折算会造出假重复；
+//   R3 中英配对数相等：带 EN 片号标签的条数 == 带 CN 片号标签的条数（专抓「某一侧整句被删掉」）；
+//   R4 语义近重复：两条 bullet 若 **issue 引用集合相同**且**反引号符号集合相同** ⇒ 判重
+//      （这正是 A19 那对「各写各的」的形状：字节不同、语义同）；
+//   R5 结构：版本节内 `### Breaking` → `### Changed` → `### Fixed` 的相对顺序成立，且节内没有既不是
+//      bullet 也不是缩进/惰性续行的游离正文行。
+//
+// 扫描面与口径（如实写清，别把「扫到」当「扫全」）：
+//   · 范围 = 顶部版本节 `## [Unreleased]`（发布时它被改名，本规则会红并点名「找不到版本节」——
+//     那是**该补一个新 Unreleased** 的信号，不是静默放过）；
+//   · **R1 / R4 是全节口径**（跨小节）：逐字复制和「同 issue + 同符号集」的重复跨小节也是错的；
+//   · **R2 是逐小节口径**：同一个片号合法地会出现在两个小节里（今天 `S3, sixteenth slice` 在 Breaking
+//     是 `runId` 退役、在 Fixed 是拒绝文案，两条是**同一个片的两个事实**）。整节一个键空间会把这种
+//     正常形态判红，正是本规则要避免的那类**假红**。代价明写：**跨小节**的同片号重复 R2 不抓，
+//     由 R4 兜（同 issue 集合同符号集合），两者都不中的留给人工评审；
+//   · **R4 只在同一语言内比**：中英是同一件事的两份译本（issue 集合天然相同、符号集合高度重合），
+//     跨语言比会把**每一对译本**都判成重复；
+//   · 空集合不参与 R4（两条都没引用的 bullet 天然「同集合」，那是没有信息，不是重复）。
+
+const CHANGELOG_REL = "CHANGELOG.md";
+const CHANGELOG_VERSION_HEADING = "## [Unreleased]";
+/** 版本节里必须出现、且必须按这个相对顺序出现的小节（其余小节名不硬编码：KaC 允许 `Added` 之类插在中间）。 */
+const CHANGELOG_REQUIRED_SUBSECTIONS = Object.freeze(["Breaking", "Changed", "Fixed"]);
+/**
+ * 片号标签的**两套**键空间。`space` 是键空间名，两套之间**永不互相折算**。
+ * 后缀（EN ` b` / CN ` b 段`）是键的一部分：`第三片` 与 `第三片 b 段` 是两个不同的片。
+ */
+const CHANGELOG_SLICE_LABEL_SPACES = Object.freeze([
+  { space: "en", source: String.raw`\bS3,?\s+([A-Za-z]+)\s+slice(?:\s+([A-Za-z])\b)?` },
+  { space: "cn", source: String.raw`S3\s*第\s*([一二三四五六七八九十百零两〇]+)\s*片(?:\s*([A-Za-z])\s*段)?` },
+]);
+/** issue 引用 / 反引号符号：用正则字面量（源码里带反引号，写成模板串会被当成字符串边界）。 */
+const CHANGELOG_ISSUE_REF_RE = /(?<![A-Za-z0-9_#])#(\d{2,5})\b/g;
+const CHANGELOG_SYMBOL_RE = /`([^`\n]+)`/g;
+/** 每次现造一份（`matchAll` 要 `g`，而共享的 `lastIndex` 是这类守卫最经典的坑）。 */
+const freshRe = (re) => new RegExp(re.source, re.flags);
+const CHANGELOG_CJK = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
+
+/** 片号标签 → `[{ space, key, raw }]`（同一 bullet 内同键出现两次只算一个键）。 */
+function changelogSliceLabels(text) {
+  const flat = text.replace(/\s+/g, " ");
+  const out = [];
+  for (const spec of CHANGELOG_SLICE_LABEL_SPACES) {
+    for (const m of flat.matchAll(new RegExp(spec.source, "g"))) {
+      const ord = m[1];
+      const suffix = m[2] ?? "";
+      const key = spec.space === "en"
+        ? `${ord.toLowerCase()} slice${suffix ? ` ${suffix.toLowerCase()}` : ""}`
+        : `第${ord}片${suffix ? ` ${suffix} 段` : ""}`;
+      out.push({ space: spec.space, key, raw: m[0].trim() });
+    }
+  }
+  return out;
+}
+
+/** issue 引用集合（`#541` 这类；`#` 前面是字母数字时不算，避免吃掉 `foo#12`）。 */
+function changelogIssueRefs(text) {
+  return new Set([...text.matchAll(freshRe(CHANGELOG_ISSUE_REF_RE))].map((m) => m[1]));
+}
+
+/** 反引号符号集合（去掉首尾空白、内部空白折叠成一个空格）。 */
+function changelogSymbols(text) {
+  return new Set([...text.matchAll(freshRe(CHANGELOG_SYMBOL_RE))]
+    .map((m) => m[1].trim().replace(/\s+/g, " "))
+    .filter((s) => s !== ""));
+}
+
+const sameSet = (a, b) => a.size === b.size && [...a].every((x) => b.has(x));
+
+/**
+ * 解析 `## [Unreleased]` 这一节，并把五条规则的违规一次算清（**纯函数，文本可注入**——
+ * 反向证直接喂改过的真实文本，不碰磁盘）。
+ *
+ * @param {string} text 整份 CHANGELOG
+ * @param {string} [heading] 版本节标题（默认 `## [Unreleased]`）
+ */
+function collectChangelogProblems(text, heading = CHANGELOG_VERSION_HEADING) {
+  const lines = text.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+  const problems = {
+    found: false,
+    subsections: [],
+    bullets: [],
+    byteDuplicates: [],
+    sliceDuplicates: [],
+    labelCounts: { en: 0, cn: 0 },
+    sectionLabelCounts: {},
+    pairingProblems: [],
+    nearDuplicates: [],
+    structureProblems: [],
+  };
+  let from = -1;
+  let to = lines.length;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i].startsWith(heading)) { from = i + 1; continue; }
+    if (from !== -1 && /^## /.test(lines[i])) { to = i; break; }
+  }
+  if (from === -1) {
+    problems.structureProblems.push(`找不到版本节标题 ${JSON.stringify(heading)}：本规则会对整份文件恒绿`);
+    return problems;
+  }
+  problems.found = true;
+
+  // ── 小节切分（每个小节的终点 = 下一个小节标题；最后一个小节到版本节末尾） ──
+  let current = null;
+  for (let i = from; i < to; i += 1) {
+    const m = /^### (.*)$/.exec(lines[i]);
+    if (!m) continue;
+    if (current) current.to = i;
+    current = { name: m[1].trim(), line: i + 1, from: i + 1, to };
+    problems.subsections.push(current);
+  }
+
+  // ── R5 结构：小节顺序（`Added` 之类可以插在中间，只钉三者的**相对**顺序 + 各出现一次） ──
+  const names = problems.subsections.map((s) => s.name);
+  const present = names.filter((name) => CHANGELOG_REQUIRED_SUBSECTIONS.includes(name));
+  if (present.join(" → ") !== CHANGELOG_REQUIRED_SUBSECTIONS.join(" → ")) {
+    problems.structureProblems.push(
+      `小节顺序应为 ${CHANGELOG_REQUIRED_SUBSECTIONS.join(" → ")}（各出现一次），实测 ${names.join(" → ") || "（无小节）"}`,
+    );
+  }
+
+  // ── R5 结构：游离正文行（既不是 bullet、也不是缩进续行 / 惰性续行） ──
+  let prevKind = "heading";
+  for (let i = from; i < to; i += 1) {
+    const line = lines[i];
+    if (line.trim() === "") { prevKind = "blank"; continue; }
+    if (/^#{1,6} /.test(line)) { prevKind = "heading"; continue; }
+    if (line.startsWith("- ")) { prevKind = "bullet"; continue; }
+    if (/^[ \t]/.test(line)) { prevKind = "continuation"; continue; }
+    // 非缩进、非 bullet、非标题：紧跟在 bullet 正文后面 ⇒ 合法的「惰性续行」（Markdown 允许）
+    if (prevKind === "bullet" || prevKind === "continuation") { prevKind = "continuation"; continue; }
+    problems.structureProblems.push(
+      `第 ${i + 1} 行是游离正文（${prevKind === "heading" ? "小节标题下直接写正文" : "段首散文"}，`
+      + `既不是 bullet 也不是续行）：${JSON.stringify(line.slice(0, 60))}`,
+    );
+    prevKind = "prose";
+  }
+
+  // ── bullet 解析（整条：`- ` 行 + 后续非空、非 bullet、非标题的行） ──
+  for (const section of problems.subsections) {
+    for (let i = section.from; i < section.to; i += 1) {
+      if (!lines[i].startsWith("- ")) continue;
+      const body = [lines[i]];
+      let j = i + 1;
+      while (j < section.to) {
+        const line = lines[j];
+        if (line.startsWith("- ") || /^#{1,6} /.test(line) || line.trim() === "") break;
+        body.push(line);
+        j += 1;
+      }
+      const raw = body.join("\n");
+      problems.bullets.push({
+        section: section.name,
+        line: i + 1,
+        raw,
+        text: raw,
+        labels: changelogSliceLabels(raw),
+      });
+      i = j - 1;
+    }
+  }
+
+  // ── R1 字节唯一（全节口径） ──
+  const byRaw = new Map();
+  for (const bullet of problems.bullets) {
+    const first = byRaw.get(bullet.raw);
+    if (first) problems.byteDuplicates.push({ first: first.line, second: bullet.line, section: bullet.section });
+    else byRaw.set(bullet.raw, bullet);
+  }
+
+  // ── R2 片号唯一（**逐小节** + 两套键空间互不折算） ──
+  const keysBySection = new Map();
+  for (const bullet of problems.bullets) {
+    for (const label of bullet.labels) {
+      const id = `${bullet.section}\u0000${label.space}\u0000${label.key}`;
+      if (!keysBySection.has(id)) keysBySection.set(id, { section: bullet.section, space: label.space, key: label.key, lines: [] });
+      keysBySection.get(id).lines.push(bullet.line);
+    }
+  }
+  for (const entry of keysBySection.values()) {
+    if (entry.lines.length > 1) problems.sliceDuplicates.push(entry);
+  }
+
+  // ── R3 中英配对数相等（全节口径；逐小节数字只打印，不做判据——避免多余假红面） ──
+  for (const bullet of problems.bullets) {
+    const spaces = new Set(bullet.labels.map((label) => label.space));
+    for (const space of spaces) problems.labelCounts[space] += 1;
+    const key = bullet.section;
+    problems.sectionLabelCounts[key] ??= { en: 0, cn: 0 };
+    for (const space of spaces) problems.sectionLabelCounts[key][space] += 1;
+  }
+  if (problems.labelCounts.en !== problems.labelCounts.cn) {
+    problems.pairingProblems.push(
+      `带 EN 片号标签的 ${problems.labelCounts.en} 条 ≠ 带 CN 片号标签的 ${problems.labelCounts.cn} 条`
+      + "（某一侧整句被删掉了？）",
+    );
+  }
+
+  // ── R4 语义近重复（全节口径，**同一语言内**比） ──
+  for (const group of ["cn", "en"]) {
+    const bullets = problems.bullets.filter((bullet) => (CHANGELOG_CJK.test(bullet.text) ? "cn" : "en") === group);
+    for (let i = 0; i < bullets.length; i += 1) {
+      for (let j = i + 1; j < bullets.length; j += 1) {
+        const a = bullets[i];
+        const b = bullets[j];
+        const issuesA = changelogIssueRefs(a.text);
+        const issuesB = changelogIssueRefs(b.text);
+        const symbolsA = changelogSymbols(a.text);
+        const symbolsB = changelogSymbols(b.text);
+        if (issuesA.size === 0 || issuesB.size === 0) continue;
+        if (symbolsA.size === 0 || symbolsB.size === 0) continue;
+        if (!sameSet(issuesA, issuesB) || !sameSet(symbolsA, symbolsB)) continue;
+        problems.nearDuplicates.push({
+          first: a.line,
+          second: b.line,
+          issues: [...issuesA].sort(),
+          symbols: symbolsA.size,
+        });
+      }
+    }
+  }
+
+  return problems;
+}
+
+/** 真实树上的 CHANGELOG（只读一次；反向证走内存文本，不写盘）。 */
+const changelogText = () => readFileSync(resolve(ROOT, CHANGELOG_REL), "utf8");
+
+/** 变异：锚点必须**恰好出现一次**，否则抛——「变异没落上」按 #210 R2 也算失败。 */
+function replaceExactlyOnce(text, from, to, what = "变异锚点") {
+  const hits = text.split(from).length - 1;
+  assert.equal(hits, 1, `${what}必须恰好出现一次，实测 ${hits} 次：${JSON.stringify(from.slice(0, 60))}`);
+  return text.replace(from, to);
+}
+
+/** 版本节在整份文件里的字符区间（`## [Unreleased]` 标题行之后 → 下一个 `## ` 之前）。 */
+function changelogVersionSectionSpan(text, heading = CHANGELOG_VERSION_HEADING) {
+  const marker = `${heading}\n`;
+  const at = text.indexOf(marker);
+  assert.notEqual(at, -1, `找不到版本节标题行 ${JSON.stringify(marker)}`);
+  const next = text.indexOf("\n## ", at + marker.length);
+  return { start: at + marker.length, end: next === -1 ? text.length : next + 1 };
+}
+
+/**
+ * 只在**版本节内部**做变异：`### Changed` 这类小节标题在别的（已发布）版本节里也有，
+ * 拿全文件当锚点会「不唯一」而变异失败——那不是判据问题，是靶子选错了。
+ */
+function replaceExactlyOnceInVersionSection(text, from, to, what = "变异锚点") {
+  const { start, end } = changelogVersionSectionSpan(text);
+  return text.slice(0, start) + replaceExactlyOnce(text.slice(start, end), from, to, what) + text.slice(end);
+}
+
+describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", () => {
+  it("前置：解析面不退化成空转（小节 / bullet / 两套片号标签都真解析出来了）", (t) => {
+    const problems = collectChangelogProblems(changelogText());
+    t.diagnostic(`规则 8：${CHANGELOG_REL} 版本节 = ${problems.subsections.map((s) => `${s.name}@${s.line}`).join(" / ")}；`
+      + `${problems.bullets.length} 条 bullet；片号标签 EN ${problems.labelCounts.en} / CN ${problems.labelCounts.cn}`);
+    assert.equal(problems.found, true, `找不到 ${CHANGELOG_VERSION_HEADING}`);
+    assert.ok(problems.subsections.length >= 3, `版本节只有 ${problems.subsections.length} 个小节：解析面坏了`);
+    assert.ok(problems.bullets.length >= 40, `版本节只解析出 ${problems.bullets.length} 条 bullet：解析面坏了`);
+    for (const name of CHANGELOG_REQUIRED_SUBSECTIONS) {
+      assert.ok(problems.subsections.some((s) => s.name === name), `版本节里没有 ### ${name}`);
+    }
+    assert.ok(problems.labelCounts.en >= 10 && problems.labelCounts.cn >= 10,
+      `片号标签只解析出 EN ${problems.labelCounts.en} / CN ${problems.labelCounts.cn} 条：R2/R3 会退化成恒绿`);
+    // 多行 bullet 必须真的被当成一整条（只扫首行就看不见折行的标签）
+    const multiLine = problems.bullets.filter((bullet) => bullet.text.includes("\n"));
+    assert.ok(multiLine.length >= 10, `多行 bullet 只认出 ${multiLine.length} 条：解析单位退化成首行了`);
+    const wrapped = problems.bullets.find((bullet) => bullet.labels.length > 0 && /S3,\s*[a-z]+\s*\n/.test(bullet.text));
+    assert.ok(wrapped, "没找到「片号标签被折行切开」的 bullet：多行解析没被真实样本覆盖");
+    // R4 不是恒绿：同语言、issue 集合完全相同的对子有几十对，R4 仍能只挑出「符号集也相同」的
+    let sameIssuePairs = 0;
+    for (const group of ["cn", "en"]) {
+      const groupBullets = problems.bullets.filter((bullet) => (CHANGELOG_CJK.test(bullet.text) ? "cn" : "en") === group);
+      for (let i = 0; i < groupBullets.length; i += 1) {
+        for (let j = i + 1; j < groupBullets.length; j += 1) {
+          const a = changelogIssueRefs(groupBullets[i].text);
+          const b = changelogIssueRefs(groupBullets[j].text);
+          if (a.size > 0 && b.size > 0 && sameSet(a, b)) sameIssuePairs += 1;
+        }
+      }
+    }
+    t.diagnostic(`规则 8：R4 的判别面 = ${sameIssuePairs} 对「同语言 + issue 集合相同」的 bullet，`
+      + `其中符号集合也相同的 = ${problems.nearDuplicates.length} 对`);
+    assert.ok(sameIssuePairs >= 50, `同 issue 集合的对子只有 ${sameIssuePairs} 对：R4 的判别面塌了`);
+  });
+
+  it("R1 字节唯一 / R2 片号唯一（两套键空间不折算）/ R3 中英配对数相等（真实树 = 回归基线）", (t) => {
+    const problems = collectChangelogProblems(changelogText());
+    t.diagnostic(`规则 8 R1：${problems.bullets.length} 条 bullet，逐字重复 ${problems.byteDuplicates.length} 对`);
+    t.diagnostic(`规则 8 R2：EN 键 ${problems.labelCounts.en} / CN 键 ${problems.labelCounts.cn}，`
+      + `逐小节重复 ${problems.sliceDuplicates.length} 处`);
+    t.diagnostic(`规则 8 R3：逐小节标签条数 ${JSON.stringify(problems.sectionLabelCounts)}`);
+    assert.deepEqual(problems.byteDuplicates, [],
+      `版本节里有逐字重复的 bullet（同一条写了两遍）：\n${JSON.stringify(problems.byteDuplicates, null, 2)}`);
+    assert.deepEqual(problems.sliceDuplicates, [],
+      `同一个片号标签在**同一小节**里出现了两次（EN / CN 各自一套键空间，不互相折算）：\n`
+      + `${problems.sliceDuplicates.map((d) => `${d.section} / ${d.space} / ${d.key} @ 行 ${d.lines.join(",")}`).join("\n")}`);
+    assert.deepEqual(problems.pairingProblems, [],
+      `中英片号条数不等：${problems.pairingProblems.join(" / ")}`);
+  });
+
+  it("R4 语义近重复：同 issue 引用集合 + 同反引号符号集合 ⇒ 判重（真实树零命中）", (t) => {
+    const problems = collectChangelogProblems(changelogText());
+    t.diagnostic(`规则 8 R4：命中 ${problems.nearDuplicates.length} 对`);
+    assert.deepEqual(problems.nearDuplicates, [],
+      "有两条 bullet 引用了同一组 issue 且反引号符号集合相同——字节查重看不见这种「各写各的」重复：\n"
+      + `${problems.nearDuplicates.map((d) => `行 ${d.first} vs 行 ${d.second}（issue ${d.issues.map((i) => `#${i}`).join(",")}，`
+        + `${d.symbols} 个符号）`).join("\n")}`);
+  });
+
+  it("R5 结构：Breaking → Changed → Fixed 的相对顺序 + 无游离正文行（真实树 = 回归基线）", (t) => {
+    const problems = collectChangelogProblems(changelogText());
+    t.diagnostic(`规则 8 R5：小节顺序 ${problems.subsections.map((s) => s.name).join(" → ")}；`
+      + `游离正文 ${problems.structureProblems.length} 处`);
+    assert.deepEqual(problems.structureProblems, [],
+      `版本节结构漂了：\n${problems.structureProblems.join("\n")}`);
+  });
+
+  it("R2 的「三」是正则产物、不是重复：`第三片` 与 `第三片 b 段` 是两个键（真实树证据）", (t) => {
+    const problems = collectChangelogProblems(changelogText());
+    const cnKeys = new Map();
+    for (const bullet of problems.bullets) {
+      for (const label of bullet.labels) {
+        if (label.space !== "cn") continue;
+        if (!cnKeys.has(label.key)) cnKeys.set(label.key, []);
+        cnKeys.get(label.key).push({ line: bullet.line, raw: label.raw });
+      }
+    }
+    t.diagnostic(`规则 8 R2 的 CN 键空间：${[...cnKeys.keys()].join(" / ")}`);
+    const third = cnKeys.get("第三片") ?? [];
+    const thirdB = cnKeys.get("第三片 b 段") ?? [];
+    assert.equal(third.length, 1, `CN 键「第三片」应有且只有 1 条，实测 ${JSON.stringify(third)}`);
+    assert.equal(thirdB.length, 1, `CN 键「第三片 b 段」应有且只有 1 条，实测 ${JSON.stringify(thirdB)}`);
+    assert.notEqual(third[0].line, thirdB[0].line, "「第三片」与「第三片 b 段」指到了同一条 bullet：后缀没进键");
+    // 对照：只用 `第N片` 的粗正则会把这两条报成「三 重复」——那正是没人核过的那条报法
+    const naive = [...changelogText().replace(/\s+/g, " ").matchAll(/S3\s*第([一二三四五六七八九十]+)片/g)]
+      .filter((m) => m[1] === "三").length;
+    t.diagnostic(`规则 8：粗正则 \`S3\\s*第([一二三四五六七八九十]+)片\` 在「三」上命中 ${naive} 次`
+      + `（= 假重复的来源）；本规则把它们解析成两个键：${JSON.stringify([third[0].raw, thirdB[0].raw])}`);
+    assert.equal(naive, 2, "粗正则的假重复样本没了：这一格的对照失去意义，请同步靶子");
+    assert.deepEqual(problems.sliceDuplicates, [], "真实树上 R2 有真重复（不是正则产物）：这要人工处理，不能改规则");
+  });
+
+  it("反向证 ①：把一条现有 bullet 原文复制进同节 ⇒ R1 红（变异没落上也算失败）", (t) => {
+    const text = changelogText();
+    const target = collectChangelogProblems(text).bullets
+      .find((bullet) => bullet.text.includes("`test/contract/` 的「发布面」从人工口径变成机器判据"));
+    assert.ok(target, "找不到复制靶子：CHANGELOG 里那条 test/contract 发布面条目被改了，请同步靶子");
+    const mutated = replaceExactlyOnce(text, target.raw, `${target.raw}\n\n${target.raw}`, "复制靶子");
+    const problems = collectChangelogProblems(mutated);
+    assert.equal(problems.byteDuplicates.length, 1,
+      `逐字复制一条 bullet 后 R1 应恰好 1 对红，实测 ${JSON.stringify(problems.byteDuplicates)}`);
+    assert.equal(problems.byteDuplicates[0].section, target.section, "红要落在同一个小节里");
+    t.diagnostic(`规则 8 反向证 ①：复制第 ${target.line} 行 ⇒ R1 红 ${JSON.stringify(problems.byteDuplicates[0])}；原文 ⇒ 绿`);
+    assert.deepEqual(collectChangelogProblems(text).byteDuplicates, [], "原文必须绿");
+  });
+
+  it("反向证 ②：字节不同但同 issue 引用 + 同符号集 ⇒ R4 红（字节查重看不见它）", (t) => {
+    const text = changelogText();
+    const target = collectChangelogProblems(text).bullets
+      .find((bullet) => bullet.text.includes("`cacheStablePrefix` / `initialMessages` 必须写成"));
+    assert.ok(target, "找不到近重复靶子：那条 cacheStablePrefix/initialMessages 条目被改了，请同步靶子");
+    const issues = [...changelogIssueRefs(target.text)].sort();
+    const symbols = [...changelogSymbols(target.text)];
+    assert.ok(issues.length > 0 && symbols.length > 0, "靶子的 issue / 符号集合为空：这一格会退化成恒真");
+    const fake = `- 近重复样本（${issues.map((id) => `#${id}`).join("、")}）：`
+      + `${symbols.map((s) => `\`${s}\``).join("、")}。正文一字不同，但 issue 集合与反引号符号集合完全相同。`;
+    assert.notEqual(fake, target.raw, "变异没落上：合成的近重复条目与靶子逐字相同");
+    const mutated = replaceExactlyOnce(text, target.raw, `${target.raw}\n${fake}`, "近重复靶子");
+    const problems = collectChangelogProblems(mutated);
+    assert.equal(problems.byteDuplicates.length, 0, "这一格要证的是「字节查重看不见」：不许让 R1 替 R4 抓住");
+    assert.equal(problems.nearDuplicates.length, 1,
+      `合成一条「同 issue + 同符号集」的 bullet 后 R4 应恰好 1 对红，实测 ${JSON.stringify(problems.nearDuplicates)}`);
+    assert.deepEqual(problems.nearDuplicates[0].issues, issues, "红要按 issue 集合点名");
+    t.diagnostic(`规则 8 反向证 ②：字节不同、issue 集合 ${JSON.stringify(issues)}、符号集合 ${symbols.length} 个 ⇒ R4 红；`
+      + "R1 不响（正是「按字节查重看不见语义重复」）");
+  });
+
+  it("反向证 ③：把一个 CN 片号改成与另一条同值 ⇒ R2 红，改回 ⇒ 绿", (t) => {
+    const text = changelogText();
+    const mutated = replaceExactlyOnce(text, "S3 第四片", "S3 第三片", "CN 片号靶子");
+    const problems = collectChangelogProblems(mutated);
+    assert.equal(problems.sliceDuplicates.length, 1,
+      `CN 片号改成同值后 R2 应恰好 1 处红，实测 ${JSON.stringify(problems.sliceDuplicates)}`);
+    assert.equal(problems.sliceDuplicates[0].space, "cn", "红要落在 CN 键空间里");
+    assert.equal(problems.sliceDuplicates[0].key, "第三片", `红的键应是「第三片」，实测 ${problems.sliceDuplicates[0].key}`);
+    assert.equal(problems.sliceDuplicates[0].lines.length, 2, "红要点名两条 bullet 的行号");
+    t.diagnostic(`规则 8 反向证 ③：CN 第四片 → 第三片 ⇒ R2 红 ${JSON.stringify(problems.sliceDuplicates[0])}；`
+      + "改回 ⇒ 绿（注意「第三片 b 段」不受牵连：后缀是键的一部分）");
+    assert.deepEqual(collectChangelogProblems(text).sliceDuplicates, [], "改回原文必须绿");
+  });
+
+  it("反向证 ④：删掉一侧带片号 bullet ⇒ R3 红（配对数不等），补回 ⇒ 绿", (t) => {
+    const text = changelogText();
+    const target = collectChangelogProblems(text).bullets.find((bullet) => bullet.text.includes("S3 第十五片"));
+    assert.ok(target, "找不到配对靶子：那条 CN「S3 第十五片」条目被改了，请同步靶子");
+    const before = collectChangelogProblems(text);
+    assert.equal(before.pairingProblems.length, 0, "原文的配对数必须先是相等的");
+    const mutated = replaceExactlyOnce(text, `${target.raw}\n`, "", "配对靶子");
+    const problems = collectChangelogProblems(mutated);
+    assert.equal(problems.pairingProblems.length, 1,
+      `删掉一侧带片号的 bullet 后 R3 应红，实测 ${JSON.stringify(problems.pairingProblems)}`);
+    assert.equal(problems.labelCounts.cn, before.labelCounts.cn - 1, "CN 条数应减一");
+    assert.equal(problems.labelCounts.en, before.labelCounts.en, "EN 条数不该动（这一格证的是「一侧被删」）");
+    t.diagnostic(`规则 8 反向证 ④：删掉第 ${target.line} 行（CN 片号）⇒ R3 红：${problems.pairingProblems[0]}；补回 ⇒ 绿`);
+    assert.deepEqual(collectChangelogProblems(text).pairingProblems, [], "补回原文必须绿");
+  });
+
+  it("反向证 ⑤：变异没落上 / 找不到版本节 / 结构漂移都要判失败（#210 R2 惯例）", (t) => {
+    const text = changelogText();
+    // ① 变异没落上 ⇒ 变异器自己抛（每个反向证都走它，所以「没落上」不会静默变绿）
+    assert.throws(() => replaceExactlyOnce(text, "这条锚点在 CHANGELOG 里绝对不存在", "x"), /必须恰好出现一次/,
+      "变异没落上时没有判失败：反向证会变成永远绿");
+    // ② 锚点出现两次也抛（避免「改错了一处」被当成变异成功）——靶子自带，不依赖 CHANGELOG 现内容
+    assert.throws(() => replaceExactlyOnce(`${text}\nREPEAT-MARKER\nREPEAT-MARKER\n`, "REPEAT-MARKER", "x"), /必须恰好出现一次/,
+      "锚点出现两次时没有判失败：变异可能落到了另一条上");
+    // ③ 版本节被改名（发布时的正常动作）⇒ 红并点名，不许静默恒绿
+    // 锚点带换行：正文里还有一处 `## [Unreleased]`（0.27.0 那节引用它），只认标题行
+    const renamed = replaceExactlyOnce(text, `${CHANGELOG_VERSION_HEADING}\n`, "## [0.28.0] - 2026-11-01\n", "版本节标题");
+    const noSection = collectChangelogProblems(renamed);
+    assert.equal(noSection.found, false, "版本节改名后仍说找到了：规则会静默缩面");
+    assert.equal(noSection.structureProblems.length, 1, "版本节改名后没有判红");
+    assert.match(noSection.structureProblems[0], /找不到版本节标题/, "红要点名找不到标题");
+    // ④ 小节顺序被换 ⇒ R5 红（锚点只在版本节里找：别的版本节也有 `### Changed`）
+    const swapped = replaceExactlyOnceInVersionSection(text, "### Changed", "### Fixed", "小节标题");
+    assert.equal(collectChangelogProblems(swapped).structureProblems.some((p) => p.includes("小节顺序")), true,
+      "小节顺序被换后 R5 没红");
+    // ⑤ 游离正文行（缩进续行与惰性续行都不算，只有段首散文才算）⇒ R5 红
+    const stray = replaceExactlyOnceInVersionSection(text, "### Added\n", "### Added\n\n这一行是段首散文，不是 bullet。\n", "小节标题");
+    const strayProblems = collectChangelogProblems(stray).structureProblems;
+    assert.equal(strayProblems.some((p) => p.includes("游离正文")), true, `游离正文行没被判红：${JSON.stringify(strayProblems)}`);
+    t.diagnostic("规则 8 反向证 ⑤：变异没落上 / 锚点不唯一 / 版本节改名 / 小节顺序被换 / 游离正文行 —— 五格逐条按预期");
+  });
+});
