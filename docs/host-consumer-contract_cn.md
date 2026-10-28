@@ -99,7 +99,7 @@ executeTool({ id, name, input, context, signal })
 宿主吃它，现在**所有** `runToolLoop` 宿主都吃。实测边界——`summarizerBudget` / `summarizerTimeout` /
 `maxSummaryToken` 会被判成手滑而抛；`summaryStyle` / `summarizerNote` / `maxSummaryChars` 照旧放行。
 
-0.27.0 里需要知道的行为变化：`context` 下拼错的摘要旋钮名、以及上面任一回调字段里的非函数值，以前在
+0.27.0 里需要知道的行为变化（**0.27.0 从未发布**——最后一个已发布版本是 0.26.0，所以本段说的一切第一次到达宿主是随 **0.28.0**）：`context` 下拼错的摘要旋钮名、以及上面任一回调字段里的非函数值，以前在
 细粒度路线上是**静默忽略**（run 直接用默认值跑）。现在两者都启动即抛。把回调接出配置树的能力面
 **已在 0.28.0 落地**（issue #498 S4a）：`capabilities.hooks` 就是它们的规范之家，而上面列的那些扁平
 位置照旧工作（这是纯加法——见下面的「capabilities 命名空间」一节）。

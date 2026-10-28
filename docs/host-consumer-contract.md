@@ -120,7 +120,9 @@ now applies to every `runToolLoop` host. Measured boundary — `summarizerBudget
 `summarizerTimeout` and `maxSummaryToken` are read as slips and throw; `summaryStyle`,
 `summarizerNote` and `maxSummaryChars` still pass.
 
-Behaviour change to know about in 0.27.0: a misspelled summarizer knob under `context`, and a
+Behaviour change to know about in 0.27.0 — a number that was **never published** (the last
+published release is 0.26.0, so everything in this paragraph reaches a host for the first time in
+**0.28.0**): a misspelled summarizer knob under `context`, and a
 non-function value in any of the callback fields above, used to be **silently ignored** on the
 fine-grained route (the run simply used the defaults). Both now throw at startup. The capability
 plane that accepts these callbacks outside the config tree **landed in 0.28.0** (issue #498 S4a):
