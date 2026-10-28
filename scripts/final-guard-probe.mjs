@@ -129,8 +129,13 @@ try {
       ]),
       // #498 S3 (`guard` slice): the budget lives at its canonical home `config.guard.finalGuardMaxRetries`
       // (the flat spelling is rejected at the name gate; the expansion phase writes it back).
-      config: { input: { initialUserMessage: `把 42 写进 ${answerPath}` }, guard: { finalGuardMaxRetries: 2 } },
-      task: `把 42 写进 ${answerPath}`,
+      // #498 S3 (`metadata` A9): the flat `task` is retired at the name gate; its canonical home is
+      // `config.metadata.task`, and the expansion phase writes it back onto `effectiveOptions.task`.
+      config: {
+        input: { initialUserMessage: `把 42 写进 ${answerPath}` },
+        guard: { finalGuardMaxRetries: 2 },
+        metadata: { task: `把 42 写进 ${answerPath}` },
+      },
       cwd: sandbox,
       runId: "probe-run-1",
       maxRounds: 4,
@@ -564,13 +569,17 @@ try {
     let payload;
     const result = await runToolLoop({
       provider: createFakeProvider(script),
-      task: "把 30 个 4KB 文件写进工作目录",
       cwd: sandbox,
       runId: "probe-run-overhead",
       maxRounds: 30,
       // 关掉两件会改动 payload 体积的既有机制，让这个数只反映「新键 vs messages」：
       // 工具结果 TTL 折叠（0 = 关闭）与 reflection（maxRounds ≥ 16 会自动开启 judge）。
-      config: { folding: { toolResultTtl: 0 }, input: { initialUserMessage: `把 30 个 4KB 文件写进 ${sandbox}` } },
+      // #498 S3 (`metadata` A9): `task` 的规位家是 `config.metadata.task`（展开相写回 `effectiveOptions.task`）。
+      config: {
+        folding: { toolResultTtl: 0 },
+        input: { initialUserMessage: `把 30 个 4KB 文件写进 ${sandbox}` },
+        metadata: { task: "把 30 个 4KB 文件写进工作目录" },
+      },
       reflection: false,
       executeTool: async () => BIG,
       finalGuard: async (value) => {
