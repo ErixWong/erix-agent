@@ -15,6 +15,17 @@
  *   node scripts/flat-count-inventory.mjs . --sync   test/compat-pin-inventory.md   # 机器刷表（数字/明细来自 AST，不手改）
  *   node scripts/flat-count-inventory.mjs /tmp/base-498           # 迁移前基线（388 / 678）
  *
+ * 两种模式（语义相反，**别混**）：
+ *   · `--sync <表>`：**刷表**。数字与明细列由 AST 重写，表里漏掉的行按实测补上 ——
+ *     这是**唯一合法**的改表方式（表是量出来的，不是写出来的）。
+ *   · `--verify <表>`：**验表**。逐行对账，**不改任何文件**；任一处不一致 ⇒ exit 1 并点名
+ *     （`✗ 附表 test/x.test.js：表 125 / AST 122`）。CI 的阻塞门禁 `npm run check:inventory` 跑的就是它。
+ *
+ * 纪律（#534 起由 CI 阻塞门禁兜住，不再靠人手跑）：
+ *   · 改动 `test/**` 里的兼容钉子（顶层扁平选项写点 / 壳）**必须同片 `--sync` 刷表**；
+ *   · **禁止手改表里的数字** —— 手改只会让 `--verify` 红，且下一个 worker 分不清
+ *     「表漂了」还是「数算错了」（A12 的 3 处不一致就是这么来的）。
+ *
  * 口径（五条，缺一条数就对不上本表）：
  *   1. 走 <root>/test/**，跳过 <root>/test/contract/**（#498 S8 独占）；
  *   2. 只数属性写法（`PropertyAssignment` / `ShorthandPropertyAssignment`）的**名字**；
