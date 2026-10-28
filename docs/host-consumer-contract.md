@@ -1296,8 +1296,9 @@ Measured red cells: **438** on the single delete, **64** once the fixture transl
 call sites across 24 test files, the inline allowlist mirror, the suggestion matrix rows that used
 `maxRounds` as the live sample, the two-shape equivalence sample, the `C1` / `C2` / `C3` / `C4` / `C5`
 priority-and-conflict channels, the adjacency lists in A11 / A13 / A14 / A15 / A20, the shipped
-contract suites (`assembly-port`, `boundary-parity`, `termination-payload`, `tool-result-envelope`,
-`doc-examples`), and the three observation scripts `scripts/soak.mjs` /
+contract suites (`assembly-port`, `boundary-parity`, `termination-payload`, `tool-result-envelope`;
+`doc-examples` was among them at the time and has since moved to `test/doc-examples.js`, outside the
+publish surface — #549 S8), and the three observation scripts `scripts/soak.mjs` /
 `scripts/message-journal-golden.mjs` / `scripts/final-guard-probe.mjs`). The pin file is
 `test/loop-run-slice-498s3a21.test.js` (`P` rejection text verbatim and before any host port is
 called; `G` the data-value matrix above; `F` the function value rejected on both spellings, with the

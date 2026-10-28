@@ -1072,7 +1072,8 @@ DEFAULT_REFLECTION_MIN_ROUNDS` 的 judge 闸门、以及 `Math.max(8, Math.floor
 `runToolLoop` / `normalizeRunToolLoopOptions` 直连写点、内联白名单镜像、把 `maxRounds` 当活样本的
 建议矩阵行、两形态等价样本、`C1` / `C2` / `C3` / `C4` / `C5` 的优先级与冲突通道、A11 / A13 / A14 /
 A15 / A20 的邻接清单、随包发布契约套件（`assembly-port` / `boundary-parity` / `termination-payload` /
-`tool-result-envelope` / `doc-examples`），以及三个观察脚本 `scripts/soak.mjs` /
+`tool-result-envelope`；`doc-examples` 当时也在其中，现已搬到 `test/doc-examples.js`（发布面之外，
+#549 S8）），以及三个观察脚本 `scripts/soak.mjs` /
 `scripts/message-journal-golden.mjs` / `scripts/final-guard-probe.mjs`）。钉子文件是
 `test/loop-run-slice-498s3a21.test.js`（`P` 拒绝文案逐字且早于任何宿主端口被调用；`G` 上面那张取值
 矩阵；`F` 函数值两个拼写都被拒、两条理由分开；`R` 真 run 里轮预算仍然咬合、解构默认值未动，以及
