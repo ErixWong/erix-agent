@@ -72,6 +72,15 @@ jobs:
       - name: Pack-link contract publish-surface self-test
         run: node scripts/pack-link-check.mjs --self-test
 
+      # 阻塞（issue #534）：清点表 `test/compat-pin-inventory.md` 自称「逐行零误差」，但在此之前
+      # **没有任何东西跑它的 `--verify`**——表漂移完全静默（活证：A12 以 3 处不一致交上来，
+      # 只因主 agent 手跑 `--verify` 才被抓到）。成本实测 1.82 s / 150 MB，比 check:release 便宜一个量级。
+      # 放在 Test suite 之后：表是对 test/**.js 的清点，测试还没跑就验表没意义。
+      # ⚠ 表漂了**不许手改数字**：改测试文件里的兼容钉子必须同片机器刷表
+      #   `node scripts/flat-count-inventory.mjs . --sync test/compat-pin-inventory.md`。
+      - name: Compatibility-pin inventory verify
+        run: npm run check:inventory
+
       - name: Test hygiene guard
         run: npm run check:tests
 
