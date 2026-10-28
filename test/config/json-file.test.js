@@ -36,6 +36,11 @@ modelConfigProviderContract("json-file", async () => {
     slot: "fold",
     expect: { defaultModel: "default-model", slotModel: "fold-model", materializedKey: "json-contract-secret" },
   };
+}, {
+  // issue #518: json-file is a slot map — an explicit unknown name must throw.
+  mode: "throws",
+  name: "no-such-slot",
+  available: ["default", "fold"],
 });
 
 // ---- 实现特有行为 ----
@@ -60,24 +65,78 @@ test("json-file: apiKeyFile 物化且每次 resolve 重读文件", async () => {
   });
 });
 
-test("json-file: 请求的槽位与 default 都不存在时抛 KitError", async () => {
+// ---- issue #518：「没写槽位」与「槽位写错」是两个请求，不许塌成同一个答案 ----
+
+// 正向钉：省略槽位仍然走 default（行为一字不变）。这一格存在，是为了让「显式未知必须抛」
+// 不能被一刀切扩成「全都抛」。
+test("json-file: 省略槽位 ⇒ default（issue #518，行为不变）", async () => {
+  await withConfig({
+    slots: {
+      default: { model: "default-model" },
+      fold: { model: "fold-model" },
+    },
+  }, async (path) => {
+    const provider = createJsonFileModelConfigProvider({ path });
+    assert.equal((await provider.resolve()).model, "default-model");
+    assert.equal((await provider.resolve(undefined)).model, "default-model");
+    assert.equal((await provider.resolve(null)).model, "default-model");
+  });
+});
+
+// 反向钉：显式给了一个不存在的槽位必须抛，且错误里点名槽位 + 列出可用槽位。
+// #518 之前这里静默回落 default ⇒ 宿主写错槽位、跑的是另一个模型，且永远不知道。
+test("json-file: 显式未知槽位 ⇒ 抛 KitError 并点名槽位与可用槽位（issue #518）", async () => {
+  await withConfig({
+    slots: {
+      default: { model: "default-model" },
+      fold: { model: "fold-model" },
+    },
+  }, async (path) => {
+    const provider = createJsonFileModelConfigProvider({ path });
+    await assert.rejects(
+      provider.resolve("misstyped"),
+      (error) => {
+        assert.equal(error instanceof KitError, true);
+        assert.equal(error.code, "unknown");
+        assert.match(error.message, /配置槽位不存在: misstyped/);
+        assert.match(error.message, /可用槽位: default, fold/);
+        return true;
+      },
+    );
+    // 非字符串的槽位名同样是「显式但写错」，不许悄悄折成 default。
+    await assert.rejects(
+      provider.resolve(42),
+      (error) => error instanceof KitError && /配置槽位不存在: 42/.test(error.message),
+    );
+  });
+});
+
+test("json-file: 请求的槽位与 default 都不存在时抛 KitError（可用槽位一并点名）", async () => {
   await withConfig({ slots: { fold: { model: "fold-model" } } }, async (path) => {
     const provider = createJsonFileModelConfigProvider({ path });
     await assert.rejects(
       provider.resolve("missing"),
       (error) => error instanceof KitError
         && error.code === "unknown"
-        && error.message === "配置槽位不存在: missing",
+        && error.message === "配置槽位不存在: missing（可用槽位: fold）",
     );
   });
 });
 
-test("json-file: prototype properties fall back to default", async () => {
+// `Object.hasOwn` 守卫在 #518 语义下的重述：原型属性名是「未知槽位」
+//（以前回落 default，现在与其他未知名字一样硬失败），永远不会解析成 `Object.prototype` 的成员。
+test("json-file: 原型属性名是未知槽位，不会解析成配置对象", async () => {
   await withConfig({
     slots: { default: { model: "default-model" } },
   }, async (path) => {
     const provider = createJsonFileModelConfigProvider({ path });
-    assert.equal((await provider.resolve("__proto__")).model, "default-model");
-    assert.equal((await provider.resolve("constructor")).model, "default-model");
+    for (const name of ["__proto__", "constructor"]) {
+      await assert.rejects(
+        provider.resolve(name),
+        (error) => error instanceof KitError
+          && error.message.includes(`配置槽位不存在: ${name}`)
+          && /可用槽位: default/.test(error.message),
+      );
+    }
   });
 });

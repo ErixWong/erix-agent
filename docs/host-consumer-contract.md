@@ -1219,9 +1219,16 @@ run; the only signal is the `model_metadata_missing` event named below.
   name is read as a port whenever it is present (`persistenceMode` at `src/loop/orchestrator.js`).
   The resolved value — not the resolver — is what the probe reads.
 - Slot selection is per run: the slot name travels in `session.modelSlot`
-  (`persistenceMode` at `src/loop/orchestrator.js`). Both built-in providers fall back to the
-  `default` slot for an unknown name, so per-run selection never fails a run
-  that only misspelled a slot.
+  (`persistenceMode` at `src/loop/orchestrator.js`). **Up to and including 0.27.0** — a version
+  that was **never published** (the last published release is 0.26.0, so the first release a host
+  can actually install with the new behaviour is 0.28.0) — both built-in providers fell back to
+  the `default` slot for an unknown name, so per-run selection never failed a run that only
+  misspelled a slot. **Since 0.28.0 (breaking,
+  issue #518)** that silent fallback is gone — "no slot named" and "a slot named wrong"
+  are two different requests: omitting the slot (`undefined` / `null`) still resolves
+  `default`, while an explicit name the slot map does not own **throws at startup**,
+  naming the slot and listing the available ones. A host that misspells a slot can no
+  longer run with a different model than the one it asked for.
 - `createJsonFileModelConfigProvider` reads `{ "slots": { "<name>": { … } } }`
   from a JSON file; `createStaticModelConfigProvider` takes the same shape in
   memory. Both return the slot **verbatim** plus a materialized `apiKey`
@@ -1364,7 +1371,10 @@ import { createJsonFileModelConfigProvider, createOpenAIProvider, runToolLoop } 
 const modelConfig = createJsonFileModelConfigProvider({ path: configPath });
 
 // Per-run slot choice travels with the run, not with the process.
-// An unknown name falls back to the "default" slot instead of failing the run.
+// Omitting the slot resolves the "default" slot; an explicit unknown name throws at
+// startup (since 0.28.0 — up to 0.27.0 it silently fell back to "default"; 0.27.0 was never
+// published, the last published release is 0.26.0, so 0.28.0 is the first release a host can
+// actually install with the throwing behaviour, issue #518).
 const modelSlot = run.triage ? "triage" : undefined;
 const slot = await modelConfig.resolve(modelSlot);
 
@@ -4766,7 +4776,7 @@ The same shape covers the rest; only the second argument differs:
 | `transcriptStoreContract(label, createStore)` | factory | a clean `TranscriptStore` (required tier `appendRound`/`load`; the run-snapshot, run-state, and issue #157 probe methods are exercised when present) |
 | `notesStoreContract(label, createStore)` | factory | a clean `NotesStore` (write/read/list/complete/revoke/purge) |
 | `notesStoreCasContract(label, createStore)` | factory | the same `NotesStore`, registered **in addition** by a compare-and-swap host (issue #183): the concurrency assertion tolerates one writer being rejected instead of requiring both writes to land |
-| `modelConfigProviderContract(label, setup)` | async setup | `{ provider, slot, expect: { defaultModel, slotModel, materializedKey } }`; the provider needs a `default` slot plus `slot`, whose key is reachable through an indirect reference |
+| `modelConfigProviderContract(label, setup, unknownSlot)` | async setup + a **mandatory** shape declaration | `{ provider, slot, expect: { defaultModel, slotModel, materializedKey } }`; the provider needs a `default` slot plus `slot`, whose key is reachable through an indirect reference. `unknownSlot` says which shape the provider is (issue #518): `{ mode: "throws", name, available }` for a slot map (an explicit unknown name must throw, naming the name and listing `available`), `{ mode: "single-config", name }` for a provider that carries exactly one config and ignores the slot name |
 | `executeToolContract(label, createExecutor)` | factory | your `executeTool` function (or `{ executeTool }`) |
 | `executeToolMigrationContract(label, createExecutor)` | factory | the same executor, asserted against the retired positional call shape |
 | `assemblyPortContract(label, createPort)` | factory | your `AssemblyPort` object; the suite starts a real `runToolLoop` on it |

@@ -8,10 +8,35 @@ function isRecord(value) {
 }
 
 /**
+ * Slot names for error messages ("(none)" when the map is empty).
+ *
+ * @param {Record<string, unknown>} slots
+ * @returns {string}
+ */
+function availableSlots(slots) {
+  const names = Object.keys(slots);
+  return names.length === 0 ? "(none)" : names.join(", ");
+}
+
+/**
  * Create a model config provider backed by a JSON file.
  *
+ * Slot semantics (issue #518) — "no slot named" and "a slot named wrong" are two
+ * different requests and must not collapse into the same answer:
+ *
+ *   - `resolve()` / `resolve(undefined)` / `resolve(null)`: the caller did not name
+ *     a slot -> `default`, exactly as before;
+ *   - `resolve("name")` where `slots` owns `name`: that slot;
+ *   - `resolve("name")` where it does not own `name`: **throws**, naming the slot
+ *     and listing the available ones. Before #518 this silently returned
+ *     `slots.default`, so a host that misspelled a slot ran a different model and
+ *     never found out (the failure #498 item 1 forbids).
+ *
+ * The lookup is `Object.hasOwn`, never `in` / `slots[name]`: prototype members
+ * (`__proto__`, `constructor`) are unknown names and never resolve to a config.
+ *
  * @param {{path:string}} options
- * @returns {{resolve: (slot?:string) => Promise<object>}}
+ * @returns {{resolve: (slot?:string|null) => Promise<object>}}
  */
 export function createJsonFileModelConfigProvider({ path } = {}) {
   if (typeof path !== "string" || path.length === 0) {
@@ -19,18 +44,29 @@ export function createJsonFileModelConfigProvider({ path } = {}) {
   }
 
   return {
-    async resolve(slot = "default") {
-      const requestedSlot = slot ?? "default";
+    async resolve(slot) {
+      const requestedSlot = slot === undefined || slot === null ? "default" : slot;
       const parsed = JSON.parse(await readFile(path, "utf8"));
       const slots = parsed?.slots;
-      const config = isRecord(slots)
-        ? Object.hasOwn(slots, requestedSlot)
-          ? slots[requestedSlot]
-          : Object.hasOwn(slots, "default")
-            ? slots.default
-            : undefined
-        : undefined;
+      if (!isRecord(slots)) {
+        throw new KitError("unknown", `配置槽位不存在: ${requestedSlot}`);
+      }
 
+      if (typeof requestedSlot !== "string") {
+        throw new KitError(
+          "unknown",
+          `配置槽位不存在: ${String(requestedSlot)}（可用槽位: ${availableSlots(slots)}）`,
+        );
+      }
+      if (!Object.hasOwn(slots, requestedSlot)) {
+        // Explicitly named, explicitly unknown: hard failure, no fallback.
+        throw new KitError(
+          "unknown",
+          `配置槽位不存在: ${requestedSlot}（可用槽位: ${availableSlots(slots)}）`,
+        );
+      }
+
+      const config = slots[requestedSlot];
       if (!isRecord(config)) {
         throw new KitError("unknown", `配置槽位不存在: ${requestedSlot}`);
       }

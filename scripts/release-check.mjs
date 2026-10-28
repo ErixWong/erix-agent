@@ -624,7 +624,13 @@ modelConfigProviderContract(label + " static model config provider", async () =>
   }),
   slot: "audit",
   expect: { defaultModel: "default-model", slotModel: "audit-model", materializedKey: "release-check-secret" },
-}));
+}), {
+  // issue #518: the third argument is mandatory. A static provider is a slot map, so an
+  // explicit unknown slot name must throw (naming it and listing the available slots).
+  mode: "throws",
+  name: "no-such-slot",
+  available: ["default", "audit"],
+});
 assemblyPortContract(label + " createAssemblyPort", () => ({
   modelConfig: createStaticModelConfigProvider({ model: "release-check-model" }),
   provider: {

@@ -976,8 +976,13 @@ server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那�
   modelConfig.resolve`——因为这个选项名一出现就被当成端口读
   （`persistenceMode`，`src/loop/orchestrator.js`）。被探测的是**解析后的值**，不是解析器。
 - 槽位选择是 per-run 的：槽位名经 `session.modelSlot` 传入
-  （`persistenceMode`，`src/loop/orchestrator.js`）。两个内置 provider 对不认识的槽位名都
-  回落到 `default` 槽，所以拼错槽位名不会让这个 run 失败。
+  （`persistenceMode`，`src/loop/orchestrator.js`）。**0.27.0 及以前**——但 **0.27.0 从未发布**
+  （最后一个已发布版本是 0.26.0，所以宿主真正能装到这套新行为的第一个版本是 0.28.0）——
+  两个内置 provider 对不认识的槽位名都回落到 `default` 槽，所以拼错槽位名不会让这个 run 失败。
+  **自 0.28.0 起（破坏面，issue #518）** 这条静默回落被取消——「没写槽位」与「槽位写错」是
+  两个请求：省略槽位（`undefined` / `null`）仍解析 `default`，而显式给出一个槽位图里没有的名字
+  **启动期抛错**，错误点名该槽位并列出可用槽位。宿主写错槽位名，再也不可能拿着另一个模型跑完
+  整个 run。
 - `createJsonFileModelConfigProvider` 从 JSON 文件读
   `{ "slots": { "<name>": { … } } }`；`createStaticModelConfigProvider` 接内存里的同构形状。
   两者都是**原样**返回 slot，只额外物化一个 `apiKey`
@@ -1102,7 +1107,9 @@ import { createJsonFileModelConfigProvider, createOpenAIProvider, runToolLoop } 
 const modelConfig = createJsonFileModelConfigProvider({ path: configPath });
 
 // per-run 的槽位选择跟着 run 走，不跟着进程走。
-// 不认识的槽位名会回落到 "default" 槽，而不是让这个 run 失败。
+// 省略槽位 ⇒ 解析 "default" 槽；显式给出不认识的名字 ⇒ 启动期抛
+//（自 0.28.0 起；0.27.0 及以前是静默回落 "default"——但 **0.27.0 从未发布**，最后一个已发布
+// 版本是 0.26.0，所以宿主真正能装到这套新行为的第一个版本是 0.28.0，issue #518）。
 const modelSlot = run.triage ? "triage" : undefined;
 const slot = await modelConfig.resolve(modelSlot);
 
@@ -3712,7 +3719,7 @@ table-driven 各跑一遍。它们共用**同一份**端口语义实现（`src/s
 | `transcriptStoreContract(label, createStore)` | factory | 一个干净的 `TranscriptStore`（必需层 `appendRound`/`load`；run snapshot、run-state 与 issue #157 探针这些方法在存在时会被检验） |
 | `notesStoreContract(label, createStore)` | factory | 一个干净的 `NotesStore`（write/read/list/complete/revoke/purge） |
 | `notesStoreCasContract(label, createStore)` | factory | 同一个 `NotesStore`，由比较-交换型宿主**额外**注册（issue #183）：并发那条断言容忍一方被拒，不再要求两写都落盘 |
-| `modelConfigProviderContract(label, setup)` | async setup | `{ provider, slot, expect: { defaultModel, slotModel, materializedKey } }`；provider 需要一个 `default` 槽加上 `slot`，且 `slot` 的 key 要能经间接引用被物化 |
+| `modelConfigProviderContract(label, setup, unknownSlot)` | async setup + **必填的形态声明** | `{ provider, slot, expect: { defaultModel, slotModel, materializedKey } }`；provider 需要一个 `default` 槽加上 `slot`，且 `slot` 的 key 要能经间接引用被物化。`unknownSlot` 声明 provider 是哪种形态（issue #518）：槽位图形态写 `{ mode: "throws", name, available }`（显式未知槽名必须抛，错误点名该名字并列出 `available`），单配置形态写 `{ mode: "single-config", name }`（只带一份配置、槽位名不选任何东西） |
 | `executeToolContract(label, createExecutor)` | factory | 你的 `executeTool` 函数（或 `{ executeTool }`） |
 | `executeToolMigrationContract(label, createExecutor)` | factory | 同一个执行器，针对已退役的位置参数调用形状做断言 |
 | `assemblyPortContract(label, createPort)` | factory | 你的 `AssemblyPort` 对象；套件会在它之上启动一个真实的 `runToolLoop` |
