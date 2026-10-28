@@ -107,7 +107,12 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   "replayPolicy",
   "partialPersistence",
   "maxRounds",
-  "cacheCapable",
+  // #498 S3 (`tuning` slice): `cacheCapable` left the allowlist. Its canonical home is
+  // `config.tuning.cacheCapable` (`CONFIG_NAMESPACE_SCHEMA.tuning` in `src/loop/config-namespace.js`).
+  // The expansion phase writes it back onto `effectiveOptions.cacheCapable`, so the engine's read side
+  // (`orchestrator.js`: "no explicit toolResultTtl + cacheCapable === true ⇒ TTL folding off") is
+  // unchanged; only the *write* spelling moved, and the name gate now rejects the flat one while
+  // naming the new home.
   "maxTokens",
   "temperature",
   "topP",

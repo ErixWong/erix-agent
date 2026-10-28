@@ -195,8 +195,8 @@ verbatim a top-level option name; **since 0.28.0 (the issue #517 preparatory ref
 have no top-level alias, while every top-level option must still have exactly one home** — the
 self-check is **one-directional** (top-level option → exactly one home: config surface / capability /
 container), and "every leaf must be reached by the round-trip coverage table" is held by a
-**per-leaf** assertion in the suite (independent of whether the leaf has a top-level key). One schema, `CONFIG_NAMESPACE_SCHEMA`
-(`src/loop/config-namespace.js`), is the only hand-written part; the alias map
+**per-leaf** assertion in the suite (independent of whether the leaf has a top-level key). One schema,
+`CONFIG_NAMESPACE_SCHEMA` (`src/loop/config-namespace.js`), is the only hand-written part; the alias map
 `CONFIG_ALIAS_PATHS` (`src/loop/config-namespace.js`) and the config-surface list
 `CONFIG_SURFACE_OPTION_NAMES` (`src/loop/config-namespace.js`) are derived from it, and
 `configSchemaSelfCheck` (`src/loop/config-namespace.js`) keeps the pair honest against the
@@ -205,11 +205,14 @@ of *config surface*, *capability* (22 keys) or *container* (2: `config` and `cap
 three buckets must add up to the allowlist. Since issue #517 the *config surface* bucket is the
 **intersection** of "the names the schema maps onto" with the allowlist, so a leaf that loses its
 top-level key merely drops out of that bucket instead of turning the identity red. **Since issue
-#498 S3 (the `timing` slice) that difference is no longer empty**: `config.timing.timeoutMs` /
-`.deadlineMs` / `.retry` lost their flat top-level spelling, so the config-surface bucket is now
-smaller than the leaf count by exactly those three. The numbers are not restated here on purpose —
-derive them (`configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES).length`,
-`CAPABILITY_OPTION_NAMES.length`, `NAMESPACE_CONTAINER_OPTION_NAMES.length`) instead of copying a
+#498 S3 (the `timing` slice, the first one) that difference is no longer empty**: `config.timing.timeoutMs` /
+`.deadlineMs` / `.retry` lost their flat top-level spelling, and every later S3 slice takes more
+(`folding.*`, `input.cacheStablePrefix` / `initialMessages` / `initialUserMessage`, `tuning.cacheCapable`),
+so the config-surface bucket is smaller than the leaf count by **however many S3 has retired so far** —
+derive it (`CONFIG_SURFACE_OPTION_NAMES.length - configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES).length`)
+instead of copying a number; the three buckets still have to add up to the allowlist. The totals are
+not restated here on purpose — derive them (`configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES).length`,
+`CAPABILITY_OPTION_NAMES.length`, `NAMESPACE_CONTAINER_OPTION_NAMES.length`) rather than copying a
 total that goes stale the next time a group moves.
 
 | namespace | knobs |
@@ -304,6 +307,37 @@ One consequence worth naming: an explicit call-level `config` **replaces** `poli
 lives in `config.input`, a host that puts its seed in `policy.config.input.initialUserMessage` and
 then passes a call-level `config` for something else loses the policy one — same rule as before, but
 it now reaches a key nearly every host uses.
+
+**Flat-spelling version policy** (issue #498 S3, the `tuning` slice — the fifth slice, and the first
+one that retires a **scalar** knob instead of a shell):
+
+| release | writing `cacheCapable` |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
+| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, fifth slice) | **rejected on the spot** — write `config.tuning.cacheCapable`. The name gate throws `unknown runToolLoop option: "cacheCapable" (its canonical home is config.tuning.cacheCapable; the flat spelling is rejected)` |
+
+Two properties hold, both machine-checked:
+
+* the expansion phase still writes it onto `effectiveOptions.cacheCapable`, so **the engine's read side
+  is unchanged** — the only reader is the TTL-folding default (`cacheCapable === true` together with
+  no explicit `toolResultTtl` ⇒ tool-result TTL folding off). The retirement is a *write-spelling*
+  change only, exactly like the four slices before it;
+* the rejection message names **one station and only one**. Every earlier slice could not say that:
+  `context` and `retry` are **mixed shells**, so their message appends a second station
+  (`capabilities.hooks.<name>` / `capabilities.ports.<name>`). `cacheCapable` is a boolean, it has no
+  behaviour members, and the second station is derived from `CAPABILITY_SLOT_DESTINATIONS`
+  (`src/loop/capabilities-namespace.js`), which registers nothing for it — so the message deliberately
+  carries **no** `capabilities.*` hint. That is a derived
+  fact, not a promise: if the key ever grows a behaviour member the second station appears on its own,
+  and the suite goes red if the message does not follow.
+
+One naming trap is worth spelling out, because the same word lives on **two different surfaces**.
+The `cacheCapable` this section retires is the **`runToolLoop` option**. The other one is the
+**model-slot / config-file** field `slots.default.cacheCapable` (`src/config/env.js` reads it from
+`CACHE_CAPABLE`; `bin/config.js` forwards it; `bin/cli.js` reads it in `resolveToolResultTtl`) — that
+surface never went through the name gate, it is unchanged by this slice, and writing it is still
+correct. Do not "migrate" a config file into `config.tuning`.
 
 The `context` row carries one sentence that **must** be read: it is a **mixed shell** — it holds
 data members (`budgetTokens` / `keepRounds` / a strategy *name*) **and** behaviour members (the five

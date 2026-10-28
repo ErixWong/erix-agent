@@ -166,9 +166,12 @@ executeTool({ id, name, input, context, signal })
 （`src/loop/config-namespace.js`）对着顶层白名单按**三个方向**核账：每个顶层选项必须**恰好**被归入
 *配置面*、*能力面*（22 键）或*容器*（2 个：`config` 与 `capabilities`）之一，且三桶之和
 必须等于白名单条数。issue #517 起「配置面」这一桶取「schema 映射到的键」与白名单的**交集**，
-所以一个叶子失去顶层键时它只从桶里掉出去、不会把恒等式弄红。**issue #498 S3（`timing` 切片）之后
+所以一个叶子失去顶层键时它只从桶里掉出去、不会把恒等式弄红。**issue #498 S3（`timing` 切片，第一片）之后
 这个差集不再是空的**：`config.timing.timeoutMs` / `.deadlineMs` / `.retry` 失去了顶层扁平写法，
-所以配置面那一桶比叶子总数恰好少这三个。这里的数字**故意不重述**——请现场派生
+后续每一片又添了几个（`folding.*`、`input.cacheStablePrefix` / `initialMessages` / `initialUserMessage`、
+`tuning.cacheCapable`），所以配置面那一桶比叶子总数少的数目是**「S3 至今退掉的个数」**——
+请现场派生（`CONFIG_SURFACE_OPTION_NAMES.length - configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES).length`），
+而不是抄一个数字；三桶之和仍必须等于白名单条数。这里的总数**故意不重述**——请现场派生
 （`configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES).length`、`CAPABILITY_OPTION_NAMES.length`、
 `NAMESPACE_CONTAINER_OPTION_NAMES.length`），而不是抄一个下次搬组就过期的总数。
 
@@ -253,6 +256,33 @@ executeTool({ id, name, input, context, signal })
 `config_override_conflict` 事件）。种子现在住在 `config.input` 里，于是「把种子放在
 `policy.config.input.initialUserMessage`、又为了别的事传了一个调用级 `config`」的宿主会丢掉 policy 那份——
 规则与以前一样，只是它现在落在几乎每个宿主都会用的键上。
+
+**扁平写法的版本口径**（issue #498 S3，`tuning` 切片——第五片，也是第一个退掉**标量**旋钮、
+而不是壳的切片）：
+
+| 版本 | 写 `cacheCapable` |
+| --- | --- |
+| 0.26.0 及以前（最后一个**已发布**版本） | 顶层可写——那些版本只认这一种写法 |
+| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「这件事有影响」的树 |
+| 0.28.0 及以后（issue #498 S3 第五片） | **当场拒**——请写 `config.tuning.cacheCapable`。名称闸口抛 `unknown runToolLoop option: "cacheCapable" (its canonical home is config.tuning.cacheCapable; the flat spelling is rejected)` |
+
+两条性质都由机器核住：
+
+* 展开相仍把它逐字写到 `effectiveOptions.cacheCapable`，所以**引擎读侧一字未改**——唯一的读者是
+  工具结果 TTL 折叠的默认值（`cacheCapable === true` 且没有显式 `toolResultTtl` ⇒ TTL 折叠默认关闭）。
+  与前面四片一样，这是一次**写侧拼写**变更，不是行为变更；
+* 拒绝文案**只点一站**。前面每一片都做不到这一点：`context` / `retry` 是**混装壳**，文案必须补第二站
+  （`capabilities.hooks.<name>` / `capabilities.ports.<name>`）。`cacheCapable` 是布尔值，没有行为成员，
+  而第二站是从 `CAPABILITY_SLOT_DESTINATIONS`（`src/loop/capabilities-namespace.js`）派生的，那里没为它
+  登记任何东西 ⇒ 文案**故意不夹**
+  `capabilities.*` 那一句。这是**派生**事实而不是承诺：哪天它长出行为成员，第二站会自己出现，
+  而文案跟不上就会红。
+
+有一个同名陷阱必须点名，因为同一个词活在**两个不同的面**上。本节退掉的 `cacheCapable` 是
+**`runToolLoop` 选项**；另一个是**模型槽位 / 配置文件**字段 `slots.default.cacheCapable`
+（`src/config/env.js` 从 `CACHE_CAPABLE` 读它、`bin/config.js` 透传它、`bin/cli.js` 在
+`resolveToolResultTtl` 里读它）——那个面从不经过名称闸口，本片一字未动，继续写它是对的。
+不要把配置文件「迁移」成 `config.tuning`。
 
 `context` 这一条比另外两个多一句**必须读**的话：它是一个**混装壳**——同时容得下数据成员
 （`budgetTokens` / `keepRounds` / `strategy` 名字）与行为成员（`onBeforeFold` / `onAfterFold` /

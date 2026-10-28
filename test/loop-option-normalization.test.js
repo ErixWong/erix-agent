@@ -205,7 +205,10 @@ const OPTION_WHITELIST = [
   "replayPolicy",
   "partialPersistence",
   "maxRounds",
-  "cacheCapable",
+  // #498 S3 (`tuning` slice): `cacheCapable` left the allowlist — its canonical home is
+  // `config.tuning.cacheCapable`. The copy tracks the source list verbatim (that is what A0 checks),
+  // so it is gone here too; the flat spelling is now a **rejection** cell, see
+  // `test/loop-tuning-slice-498s3d.test.js`.
   // #498 S3 (`input` slice A): `cacheStablePrefix` / `initialMessages` left the allowlist — their
   // canonical home is `config.input.cacheStablePrefix` / `config.input.messages`. The copy tracks the
   // source list verbatim (that is exactly what A0 checks), so they are gone here too.
