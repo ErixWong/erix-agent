@@ -83,10 +83,14 @@ test("P2 顶层 deadlineMs ⇒ 当场拒，文案逐字指向 config.timing.dead
 test("P3 顶层 retry ⇒ 当场拒，文案逐字指向 config.timing.retry", async () => {
   const error = await directError({ retry: { attempts: 1 } });
   assert.equal(error instanceof TypeError, true);
+  // #498 S3 收尾（folding 片）补的一句：`retry` 也是**混装壳**（数据 `attempts` + 行为
+  // `sleepImpl`），所以文案必须一次把两站都点名——只指 `config.timing.retry` 会让宿主把函数写进去、
+  // 撞第二次才看到 `capabilities.ports.sleepImpl`。逐字相等仍然成立（少一个字符都不行）。
   assert.equal(
     error.message,
     'unknown runToolLoop option: "retry" (its canonical home is config.timing.retry;'
-      + " the flat spelling is rejected)",
+      + " the flat spelling is rejected) — this shell holds both data and functions:"
+      + " write data as config.timing.retry.<leaf>, and behaviour members as capabilities.ports.sleepImpl",
   );
   const { effectiveOptions } = await normalizeRunToolLoopOptions({
     config: { timing: { retry: { attempts: 1 } } },

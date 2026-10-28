@@ -56,11 +56,24 @@ function foldingProvider() {
   ]);
 }
 
+/**
+ * #498 S3: the `context` shell is split by **value shape** — the strategy **object** is a behaviour
+ * carrier (`capabilities.ports.strategy`), the rest is data (`config.folding.context`). Keeping the
+ * object inside `config` would be rejected by the intake (config holds data only).
+ *
+ * @param {Record<string, any>} [extra] extra **data** leaves
+ * @returns {{config: {folding: {context: Record<string, any>}}, capabilities: {ports: {strategy: any}}}}
+ */
 const foldContext = (extra = {}) => ({
   budgetTokens: 300,
   keepRounds: 1,
   strategy: createSlidingWindowStrategy({ keepRounds: 1 }),
   ...extra,
+});
+
+const foldOptions = (extra = {}) => ({
+  config: { folding: { context: { budgetTokens: 300, keepRounds: 1, ...extra } } },
+  capabilities: { ports: { strategy: createSlidingWindowStrategy({ keepRounds: 1 }) } },
 });
 
 /** 直连路线的一条折叠 run；`contextExtra` 只多带被测的那一个 `context` 子键。 */
@@ -76,7 +89,7 @@ function runDirectFolding(contextExtra = {}, { onFoldSummary, diagnostics } = {}
     wrapup: false,
     stallDetection: false,
     onEvent: (event) => events.push(event),
-    config: { folding: { context: foldContext(contextExtra) } },
+    ...foldOptions(contextExtra),
     ...(onFoldSummary === undefined ? {} : { onFoldSummary }),
     ...(diagnostics === undefined ? {} : { diagnostics }),
   };
@@ -183,18 +196,26 @@ test("A② 退役的边界：`context.onFoldSummary` 给非函数值也不抛（
 });
 
 // ================================================================ B. 正例（直连）：静默放行、不抛、零事件
-test("B 退役（直连路线正例）：不抛、钩子零调用、也收不到那条事件（直连从不发这条事件）", async () => {
-  let hookCalls = 0;
-  const { result, events } = await runDirectFolding({
-    onFoldSummary: () => { hookCalls += 1; },
-  });
+test("B 退役（直连路线正例）：`config.folding.context.onFoldSummary` 是宿主元数据 ⇒ 不抛、零事件、零投递", async () => {
+  // ⚠ #498 S3 改变了这一格能写的东西（如实披露）：`onFoldSummary` 是**函数**，而 `config` 只装数据
+  // ——函数形态写进 `config.folding.context` 会被 intake 当场拒（那是 S4a 的约束 4，不是本刀新增）。
+  // 退役本身说的是「引擎从不从 context 读它」⇒ 它落在**宿主元数据**分支：直连路线静默放行、零事件。
+  // 所以这里用**数据形态**（`"notes"`）钉同一件事：不抛、不发事件、不投递。
+  const { result, events } = await runDirectFolding({ onFoldSummary: "notes" });
   assert.ok(folded(result), "前提：这条路径必须真的折叠");
   assert.equal(result.termination.reason, "end_turn", "退役后直连路线照旧跑完（不抛）");
-  assert.equal(hookCalls, 0, "退役 ≠ 开始读它：直连路线仍然零投递");
   assert.equal(
     events.filter((event) => event.type === "context_unknown_option").length,
     0,
     "直连路线从不发这条事件（#469 口径），退役不改这一点",
+  );
+  // 与一个普通业务键逐格同形（C 组在装配口路线上钉同一条）。
+  const { result: control, events: controlEvents } = await runDirectFolding({ workspaceName: "w" });
+  assert.equal(control.termination.reason, result.termination.reason);
+  assert.equal(
+    controlEvents.filter((event) => event.type === "context_unknown_option").length,
+    0,
+    "对照：普通业务键在直连路线同样零事件",
   );
 });
 
