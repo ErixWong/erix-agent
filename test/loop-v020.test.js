@@ -113,12 +113,12 @@ test("compacts over-budget messages during max_tokens continuation", async () =>
     },
   };
 
-  const result = await runToolLoop({
+  const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "start",
     executeTool: async () => "unused",
     completion: false,
-    context: { strategy, budgetTokens: 10 }, // 小预算确保超限
+    config: { folding: { context: { budgetTokens: 10 } } }, // 小预算确保超限
   });
 
   assert.ok(compactedCalls >= 1, "补全循环内应触发至少一次压缩");

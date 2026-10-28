@@ -498,11 +498,11 @@ test("S5 壳里的函数字段逐个点名完整路径（这些键实测真被�
       "config.run.reflection.judge.provider",
     ],
     [
-      { config: { folding: { context: { onBeforeFold: () => {} } } } },
+      { capabilities: { hooks: { onBeforeFold: () => {} } }, config: { folding: { toolResultTtl: 1, toolResultFoldMinTokens: 10, context: { } } } },
       "config.folding.context.onBeforeFold",
     ],
     [
-      { config: { folding: { context: { onAfterFold: () => {} } } } },
+      { capabilities: { hooks: { onAfterFold: () => {} } }, config: { folding: { context: { } } } },
       "config.folding.context.onAfterFold",
     ],
     // #498 S4b：`config.guard.deliverables` 这个壳**整键不在配置面**了（搬去
@@ -535,9 +535,9 @@ test("S5b 函数拒绝不是「收下再丢」：抛在 intake（任何宿主端
       throw new Error(`assembly port was read before the config function check: ${String(property)}`);
     },
   });
-  const error = await runToolLoop({
+  const error = await runToolLoop({ capabilities: { hooks: { onBeforeFold: () => {} } },
     assemblyPort: proxyPort,
-    config: { folding: { context: { onBeforeFold: () => {} } } },
+    config: { folding: { context: { } } },
   }).then(() => null, (caught) => caught);
   assert.equal(error instanceof TypeError, true);
   assert.match(error.message, /config\.folding\.context\.onBeforeFold is not accepted/u);
@@ -655,14 +655,12 @@ const REPRESENTATIVE_CONFIG_VALUES = {
   // folding
   // #498 S4c：两个**形态多态**旋钮的**数据形态**住在这里（`string` / `string[]`），所以它们必须进
   // round-trip 覆盖度名单并过逐字等值；它们的函数形态是 `capabilities.hooks.*`（行为载体，不进）。
-  context: {
+  config: { folding: { context: {
     budgetTokens: 1000,
     keepRounds: 2,
     protectedMessage: ["system", "user"],
     recoveryHint: "需要原文请重读文件",
-  },
-  toolResultTtl: 1,
-  toolResultFoldMinTokens: 10,
+  } } },
   // guard
   finalGuardMaxRetries: 1,
   finalGuardTimeoutMs: 5000,

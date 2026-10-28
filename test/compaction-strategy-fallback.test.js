@@ -84,7 +84,7 @@ test("unconfigured context.strategy + budget fallback emits exactly one diagnost
 test("configured strategy suppresses the diagnostic and reports its own name (issue #464 A)", async () => {
   const { compactions, notices } = await run({
     runId: "464-configured",
-    context: { strategy: "fold-statistical" },
+    config: { folding: { context: { strategy: "fold-statistical" } } },
   });
 
   assert.ok(compactions.length >= 1, "配置策略也必须真的折叠");
@@ -113,7 +113,7 @@ test("hosts that ignore the additive keys still see the previous compaction shap
   const { compactions } = await run({ runId: "464-shape" });
   const { compactions: configured } = await run({
     runId: "464-shape-configured",
-    context: { strategy: "fold-statistical" },
+    config: { folding: { context: { strategy: "fold-statistical" } } },
   });
 
   for (const event of [...compactions, ...configured]) {

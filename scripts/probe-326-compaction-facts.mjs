@@ -58,7 +58,7 @@ const first = await runToolLoop({
   maxRounds: 3,
   completion: false,
   reflection: false,
-  context: { budgetTokens: 400, keepRounds: 0, strategy: "fold-llm" },
+  config: { folding: { context: { budgetTokens: 400, keepRounds: 0, strategy: "fold-llm" } } },
   store,
   runId,
 });
@@ -91,7 +91,7 @@ const second = await runToolLoop({
   maxRounds: 3,
   completion: false,
   reflection: false,
-  context: { budgetTokens: 400, keepRounds: 0, strategy: "fold-llm" },
+  config: { folding: { context: { budgetTokens: 400, keepRounds: 0, strategy: "fold-llm" } } },
 });
 console.log("resume termination:", second.termination.reason);
 console.log("resume summarizer calls:", p2.summaryRequests.length);
@@ -125,8 +125,7 @@ const third = await runToolLoop({
   maxRounds: 6,
   completion: false,
   reflection: false,
-  toolResultTtl: 1,
-  toolResultFoldMinTokens: 200,
+  config: { folding: { toolResultTtl: 1, toolResultFoldMinTokens: 200 } },
   store: ttlStore,
   runId: ttlRunId,
 });

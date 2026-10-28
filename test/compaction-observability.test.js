@@ -35,11 +35,10 @@ test("compactionStats exposes selected layer details through result, state, arch
     executeTool: async ({ id }) => `result for ${id} ${"x".repeat(200)}`,
     maxRounds: 3,
     completion: false,
-    context: {
-      strategy: createFoldStatisticalStrategy(),
-      budgetTokens: 30,
+    config: { folding: { context: {
+            budgetTokens: 30,
       keepRounds: 0,
-    },
+    } } },
     store,
     runId: "compaction-observability",
     capabilities: { hooks: { onEvent: (event) => events.push(event) } },

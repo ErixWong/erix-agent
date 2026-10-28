@@ -356,17 +356,13 @@ test("boundary parity: 承载宿主回调的字段形状错误在两条路线上
 
 test("boundary parity: 合法配置在两条路线上都不抛（防 parity 只在错误路径上成立）", async () => {
   const good = {
-    context: {
-      budgetTokens: 1000,
-      maxSummaryTokens: 900,
-      onBeforeFold: () => {},
-      onAfterFold: () => {},
-      onFoldSummary: () => {},
-    },
     onFoldSummary: () => {},
     finalGuard: async () => ({ action: "accept" }),
     // #498 S3: data keys go to `config.timing.retry`, the function carrier to `capabilities.ports`.
-    config: { timing: { retry: { attempts: 1 } } },
+    config: { folding: { context: {
+      budgetTokens: 1000,
+      maxSummaryTokens: 900,
+                      } }, timing: { retry: { attempts: 1 } } },
     capabilities: { ports: { sleepImpl: async () => {} } },
     reflection: { enabled: false, onReflection: () => {} },
     diagnostics: { error: () => {} },

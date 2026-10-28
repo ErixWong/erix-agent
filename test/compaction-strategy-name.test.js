@@ -69,7 +69,7 @@ async function runWithProvider(provider, context, usageSink) {
     executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
     maxRounds: 3,
     completion: false,
-    context: { budgetTokens: 400, keepRounds: 0, ...context },
+    config: { folding: { context: { budgetTokens: 400, keepRounds: 0, ...context } } },
     store: createMemoryTranscriptStore(),
     runId: "compaction-strategy-name",
     capabilities: {
@@ -255,7 +255,7 @@ test("#486 P1-B 宿主 abort 必须真的中止摘要请求（run 的 signal 不
       executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
       maxRounds: 3,
       completion: false,
-      context: { budgetTokens: 400, keepRounds: 0, strategy: "fold-llm" },
+      config: { folding: { context: { budgetTokens: 400, keepRounds: 0, strategy: "fold-llm" } } },
       store: createMemoryTranscriptStore(),
       runId: "issue-486-p1b",
     }).catch(() => {}),

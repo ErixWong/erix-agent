@@ -539,7 +539,7 @@ test("tool result TTL fold: placeholder replaces aged large results in later req
     maxRounds: 6,
     stallDetection: false,
     completion: false,
-    toolResultTtl: 2,
+    config: { folding: { toolResultTtl: 2 } },
     semanticStateProvider: ({ state }) => ({
       text: "notes: use note_list before note_read",
       version: state.stateVersion,
@@ -663,7 +663,7 @@ test("tool result TTL fold: disabled via ttl=0 keeps originals in every request"
     maxRounds: 4,
     stallDetection: false,
     completion: false,
-    toolResultTtl: 0,
+    config: { folding: { toolResultTtl: 0 } },
   });
 
   assert.equal(result.truncated, false);
@@ -710,11 +710,11 @@ test("cacheCapable defaults TTL folding off while explicit TTL remains authorita
   const cacheCapable = await runProbe({ cacheCapable: true });
   assert.ok(resultContentsAt(cacheCapable, 2).every((content) => content.startsWith(big)));
 
-  const explicitThree = await runProbe({ cacheCapable: true, toolResultTtl: 3 });
+  const explicitThree = await runProbe({ cacheCapable: true, config: { folding: { toolResultTtl: 3 } } });
   assert.ok(resultContentsAt(explicitThree, 2).every((content) => content.startsWith(big)));
   assert.match(resultContentsAt(explicitThree, 3)[0], /【已折叠·TTL】/u);
 
-  const explicitZero = await runProbe({ cacheCapable: true, toolResultTtl: 0 });
+  const explicitZero = await runProbe({ cacheCapable: true, config: { folding: { toolResultTtl: 0 } } });
   assert.ok(resultContentsAt(explicitZero, 3).every((content) => content.startsWith(big)));
 
   const defaultTtl = await runProbe();

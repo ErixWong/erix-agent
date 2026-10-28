@@ -838,13 +838,13 @@ test("file transcript preserves folded payload", async () => {
       },
     };
 
-    await runToolLoop({
+    await runToolLoop({ capabilities: { ports: { strategy: strategy } },
       provider,
       initialUserMessage: "fold-me initial context",
       executeTool: async () => "fold-me tool result",
       maxRounds: 2,
       completion: false,
-      context: { strategy, budgetTokens: 30 },
+      config: { folding: { context: { budgetTokens: 30 } } },
       store,
       runId: "fold-file",
     });

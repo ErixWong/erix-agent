@@ -572,7 +572,7 @@ try {
       maxRounds: 30,
       // 关掉两件会改动 payload 体积的既有机制，让这个数只反映「新键 vs messages」：
       // 工具结果 TTL 折叠（0 = 关闭）与 reflection（maxRounds ≥ 16 会自动开启 judge）。
-      toolResultTtl: 0,
+      config: { folding: { toolResultTtl: 0 } },
       reflection: false,
       executeTool: async () => BIG,
       finalGuard: async (value) => {

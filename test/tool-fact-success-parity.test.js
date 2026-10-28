@@ -149,7 +149,7 @@ const MIGRATION_TABLE = [
   {
     name: "单轮聚合 stub 化（只换 content，不动成败）",
     executor: async () => ({ content: "巨".repeat(120000), metadata: { artifactStatus: "ok" } }),
-    options: { context: { budgetTokens: 53337 }, outputHygiene: { limit: 1_000_000 } },
+    options: { config: { folding: { context: { budgetTokens: 53337 } } }, outputHygiene: { limit: 1_000_000 } },
     legacyTopLevelSuccess: undefined,   // 未声明，且聚合层只替换 content
     expectedSuccess: true,
     expectIsError: false,

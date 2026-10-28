@@ -85,7 +85,7 @@ const foldRunOptions = (runId, store, provider, extra = {}) => ({
   maxRounds: 2,
   completion: false,
   reflection: false,
-  context: foldContext,
+  config: { folding: { context: foldContext } },
   store,
   runId,
   ...extra,
@@ -175,7 +175,7 @@ test("#326-C 复用不重算：折叠后中断，resume 不再调 summarizer，�
     // 本用例要钉的是**同一份折叠输入不重算**，不是「上下文变了也不许重算」。
     // 告示自己落进折叠区间那一格另有专门的锚（`test/loop-resume-notice.test.js` 的
     // 「告示在同一轮被折进摘要」条）。
-    context: { ...foldContext, keepRounds: 1 },
+    config: { folding: { context: { ...foldContext, keepRounds: 1 } } },
   });
 
   // issue #469 宿主裁决 A（实施条件 4）：续写基底**进复用键**。于是 resume 后第一次折叠的输入
@@ -246,8 +246,7 @@ const ttlRunOptions = (runId, store, provider, extra = {}) => ({
   maxRounds: 6,
   completion: false,
   reflection: false,
-  toolResultTtl: 1,
-  toolResultFoldMinTokens: 200,
+  config: { folding: { toolResultTtl: 1, toolResultFoldMinTokens: 200 } },
   store,
   runId,
   ...extra,

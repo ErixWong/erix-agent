@@ -279,7 +279,7 @@ test("#315 真跑一个 >32 条 compactionStats 的 run：<runId>.state.json 文
     // 每轮工具结果都不同，避免 stall 裁决提前收工（本用例要的是长 run，不是终止行为）
     executeTool: async (options) => `worked-${options?.id ?? "?"}`,
     completion: false,
-    context: { budgetTokens: 10 },
+    config: { folding: { context: { budgetTokens: 10 } } },
     maxRounds: 60,
     store,
     runId,
@@ -465,7 +465,7 @@ test("resume keeps one persisted run-state block", async () => {
       { ...options, keepRounds: 0 },
     ),
   };
-  await runToolLoop({
+  await runToolLoop({ capabilities: { ports: { strategy: strategy } },
     provider: createFakeProvider([
       {
         content: [{ type: "tool_use", id: "fold-tool", name: "work", input: {} }],
@@ -477,19 +477,19 @@ test("resume keeps one persisted run-state block", async () => {
     executeTool: async () => "result",
     maxRounds: 2,
     completion: false,
-    context: { strategy, budgetTokens: 100 },
+    config: { folding: { context: { budgetTokens: 100 } } },
     store,
     runId: "resume-state",
   });
 
-  const resumed = await runToolLoop({
+  const resumed = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
     provider: createFakeProvider([
       { content: [{ type: "text", text: "resumed" }], stopReason: "end_turn" },
     ]),
     executeTool: async () => "unused",
     maxRounds: 3,
     completion: false,
-    context: { strategy, budgetTokens: 100 },
+    config: { folding: { context: { budgetTokens: 100 } } },
     store,
     runId: "resume-state",
     resume: true,

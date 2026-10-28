@@ -754,7 +754,7 @@ test("context.task takes precedence over the multi-turn entry messages for the r
       { role: "assistant", content: "我是助手" },
       { role: "user", content: "新任务：在当前任务目录创建一个俄罗斯方块网页游戏，网页版的。" },
     ],
-    context: { task: "CTX任务摘要" },
+    config: { folding: { context: { task: "CTX任务摘要" } } },
     executeTool: async () => "unused",
     maxRounds: 1,
     completion: false,

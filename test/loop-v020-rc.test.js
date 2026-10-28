@@ -151,7 +151,7 @@ test("derives the compaction budget from model metadata", async () => {
     },
   };
 
-  await runToolLoop({
+  await runToolLoop({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "budget",
     executeTool: async () => "unused",
@@ -160,7 +160,7 @@ test("derives the compaction budget from model metadata", async () => {
       maxOutputTokens: 1_000,
     }),
     session: { id: "budget-model-config" },
-    context: { strategy },
+    config: { folding: { context: { } } },
   });
 
   assert.deepEqual(calls, [computeBudget({
@@ -192,7 +192,7 @@ test("rejects invalid explicit compaction budgets", async () => {
       provider: createFakeProvider([]),
       initialUserMessage: "invalid",
       executeTool: async () => "unused",
-      context: { budgetTokens: 0 },
+      config: { folding: { context: { budgetTokens: 0 } } },
     }),
     (error) => error instanceof KitError && error.code === "invalid_budget",
   );
@@ -221,11 +221,11 @@ test("enforces the budget after an oversized fold result", async () => {
     },
   };
 
-  const result = await runToolLoop({
+  const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "budget",
     executeTool: async () => "worked",
-    context: { strategy, budgetTokens },
+    config: { folding: { context: { budgetTokens } } },
     completion: false,
   });
 
@@ -250,7 +250,7 @@ test("downgrades the oldest protected message when the protected set exceeds the
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runToolLoop({ capabilities: { hooks: { protectedMessage: (message) => message?.role === "user" } },
     provider,
     initialMessages: [
       first,
@@ -259,10 +259,9 @@ test("downgrades the oldest protected message when the protected set exceeds the
     ],
     executeTool: async () => "unused",
     completion: false,
-    context: {
+    config: { folding: { context: {
       budgetTokens,
-      protectedMessage: (message) => message?.role === "user",
-    },
+          } } },
   });
 
   assert.equal(result.compactionStats[0].protectedDowngraded, 1);
@@ -279,15 +278,14 @@ test("rejects a single protected message that cannot fit the budget", async () =
   };
 
   await assert.rejects(
-    runToolLoop({
+    runToolLoop({ capabilities: { hooks: { protectedMessage: () => true } },
       provider: createFakeProvider([]),
       initialMessages: [protectedMessage],
       executeTool: async () => "unused",
       completion: false,
-      context: {
+      config: { folding: { context: {
         budgetTokens: 20,
-        protectedMessage: () => true,
-      },
+              } } },
     }),
     (error) => error instanceof KitError
       && error.code === "invalid_budget"
@@ -319,12 +317,12 @@ test("does not compact from cumulative API usage when local context fits", async
     },
   };
 
-  const result = await runToolLoop({
+  const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",
     completion: false,
-    context: { strategy, budgetTokens: 100 },
+    config: { folding: { context: { budgetTokens: 100 } } },
   });
 
   assert.equal(compactions, 0);
@@ -355,12 +353,12 @@ test("keeps the configured keepRounds when only API usage is over budget", async
     },
   };
 
-  await runToolLoop({
+  await runToolLoop({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",
     completion: false,
-    context: { strategy, budgetTokens: 20, keepRounds: 6 },
+    config: { folding: { context: { budgetTokens: 20, keepRounds: 6 } } },
   });
 
   assert.deepEqual(keepRounds, [6, 6]);
@@ -400,12 +398,12 @@ test("does not compact when per-request input fits budget and local context fits
     },
   };
 
-  const result = await runToolLoop({
+  const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",
     completion: false,
-    context: { strategy, budgetTokens: 30 },
+    config: { folding: { context: { budgetTokens: 30 } } },
   });
 
   assert.equal(provider.requests.length, 2);
@@ -424,7 +422,7 @@ test("compacts when the local context estimate exceeds the budget", async () => 
     initialUserMessage: "start",
     executeTool: async () => "worked",
     completion: false,
-    context: { budgetTokens: 10 },
+    config: { folding: { context: { budgetTokens: 10 } } },
   });
 
   assert.ok(result.compactionStats.length >= 1);
@@ -721,13 +719,13 @@ test("keeps fold round numbers global across loop compactions", async () => {
     },
   };
 
-  const result = await runToolLoop({
+  const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "global rounds",
     executeTool: async () => "worked",
     maxRounds: 3,
     completion: false,
-    context: { strategy, budgetTokens: 20 },
+    config: { folding: { context: { budgetTokens: 20 } } },
     store,
     runId: "global-folds",
   });

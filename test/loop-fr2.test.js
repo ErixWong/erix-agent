@@ -292,12 +292,12 @@ test("compacts context before the second round and records its payload and stats
     },
   };
 
-  const result = await runToolLoop({
+  const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",
     completion: false,
-    context: { strategy, budgetTokens: 99, keepRounds: 4 },
+    config: { folding: { context: { budgetTokens: 99, keepRounds: 4 } } },
     cacheStablePrefix: false,
     store: (() => {
       const store = createMemoryTranscriptStore();
@@ -361,12 +361,12 @@ test("folding remains terminating with and without a transcript store", async ()
       },
     };
 
-    const result = await runToolLoop({
+    const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
       provider,
       initialUserMessage: "fold task",
       executeTool: async () => "tool result",
       completion: false,
-      context: { strategy, budgetTokens: 1000 },
+      config: { folding: { context: { budgetTokens: 1000 } } },
       ...(store === undefined ? {} : { store, runId: "fold-contract" }),
     });
 

@@ -173,7 +173,7 @@ async function runProvenanceChain({
       return output;
     };
     const provider = makeProvider(cfg);
-    const result = await runToolLoop({
+    const result = await runToolLoop({ capabilities: { ports: { strategy: createFoldStatisticalStrategy() } },
       provider,
       system: CLI_TOOLS_SYSTEM_PROMPT,
       initialMessages: initialHistory(command),
@@ -184,11 +184,10 @@ async function runProvenanceChain({
       reflection: false,
       wrapup: false,
       stallDetection: false,
-      context: {
-        strategy: createFoldStatisticalStrategy(),
-        budgetTokens: 2_000,
+      config: { folding: { context: {
+                budgetTokens: 2_000,
         keepRounds: 1,
-      },
+      } } },
       onRound: onRound ?? (() => {}),
     });
     return {

@@ -68,7 +68,7 @@ function runFolding(provider, context, extra = {}) {
     maxRounds: 4,
     completion: false,
     wrapup: false,
-    context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm", ...context },
+    config: { folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm", ...context } } },
     store: createMemoryTranscriptStore(),
     runId: `issue-469-knobs-${process.pid}`,
     ...extra,

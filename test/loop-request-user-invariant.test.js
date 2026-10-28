@@ -93,14 +93,12 @@ function toolLoopOptions({ budgetTokens, stream, provider, initialMessages }) {
     completion: false,
     stallDetection: false,
     stream,
-    toolResultTtl: 1,
-    toolResultFoldMinTokens: 1,
-    context: {
+    config: { folding: { toolResultTtl: 1, toolResultFoldMinTokens: 1, context: {
       strategy: "fold-statistical",
       budgetTokens,
       keepRounds: 2,
       task: "issue #292 复现",
-    },
+    } } },
   };
 }
 

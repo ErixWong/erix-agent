@@ -192,7 +192,7 @@ test("no diagnostic when the host supplies its own budgetTokens (compaction stay
     provider: textProvider(),
     initialUserMessage: "start",
     executeTool: async () => "unused",
-    context: { budgetTokens: 5000 },
+    config: { folding: { context: { budgetTokens: 5000 } } },
     store: createMemoryTranscriptStore(),
     runId: "metadata-missing-explicit-budget",
     capabilities: { hooks: { onEvent: (event) => events.push(event) } },

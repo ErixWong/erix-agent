@@ -121,7 +121,7 @@ function foldingRun(extra = {}) {
     completion: false,
     wrapup: false,
     maxRounds: 4,
-    context: { budgetTokens: 1, keepRounds: 0 },
+    config: { folding: { context: { budgetTokens: 1, keepRounds: 0 } } },
     ...extra,
   });
 }
@@ -333,13 +333,13 @@ test("C3 端口位不进扁平表示（走 slots），与壳里老槽位不等�
   const strategy = { shouldCompact: async () => false, compact: async (messages) => ({ messages }) };
   assert.deepEqual(
     expandCapabilitiesNamespace({
-      context: { strategy: { shouldCompact: async () => false, compact: async (messages) => ({ messages }) } },
+      config: { folding: { context: { } } },
       capabilities: { ports: { strategy } },
     }).conflicts,
     [{ path: "ports.strategy", key: "strategy" }],
   );
   assert.deepEqual(
-    expandCapabilitiesNamespace({ context: { strategy }, capabilities: { ports: { strategy } } }).conflicts,
+    expandCapabilitiesNamespace({ config: { folding: { context: { } } }, capabilities: { ports: { strategy } } }).conflicts,
     [],
     "同一个策略对象 ⇒ 不算冲突",
   );
@@ -464,7 +464,7 @@ test("C6 行为证据：ports.strategy 的 shouldCompact / compact 真被调（�
     initialUserMessage: "go",
     completion: false,
     wrapup: false,
-    context: { budgetTokens: 1 },
+    config: { folding: { context: { budgetTokens: 1 } } },
     capabilities: { ports: { strategy } },
   });
   assert.equal(result.termination.reason, "end_turn");
@@ -542,7 +542,7 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
     wrapup: false,
     maxRounds: 4,
     capabilities: { hooks: { protectedMessage: (message) => message?.role === "user" } },
-    context: { budgetTokens: 300, keepRounds: 1 },
+    config: { folding: { context: { budgetTokens: 300, keepRounds: 1 } } },
   });
   assert.equal(
     functionRun.messages.some((message) => JSON.stringify(message.content).includes("PROTECTED-TASK")),
@@ -588,7 +588,7 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
     completion: false,
     wrapup: false,
     maxRounds: 4,
-    context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-statistical", recoveryHint: "DATA-HINT" },
+    config: { folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-statistical", recoveryHint: "DATA-HINT" } } },
     capabilities: { hooks: { recoveryHint: () => "FUNC-HINT" } },
     onEvent: (event) => { winnerEvents.push(event); },
   });
@@ -605,7 +605,7 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   const sameHook = () => false;
   const same = [];
   await runDirect({
-    context: { protectedMessage: sameHook },
+    config: { folding: { context: { protectedMessage: sameHook } } },
     capabilities: { hooks: { protectedMessage: sameHook } },
     onEvent: (event) => { same.push(event); },
   });
@@ -626,7 +626,7 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
     completion: false,
     wrapup: false,
     maxRounds: 4,
-    context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-statistical" },
+    config: { folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-statistical" } } },
     ...extra,
   }).then((result) => JSON.stringify(result.messages));
   assert.equal((await hinted({ context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-statistical", recoveryHint: "DATA-HINT" } })).includes("DATA-HINT"), true, "数据形态进折叠摘要");
@@ -680,13 +680,13 @@ test("C9 壳内老槽位零回归：config.timing.retry / context.onBeforeFold /
     async shouldCompact() { return true; },
     async compact(messages) { compacted += 1; return { messages }; },
   };
-  await runToolLoop({
+  await runToolLoop({ capabilities: { ports: { strategy: flatStrategy } },
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
     initialUserMessage: "go",
     completion: false,
     wrapup: false,
-    context: { budgetTokens: 1, strategy: flatStrategy },
+    config: { folding: { context: { budgetTokens: 1, } } },
   });
   assert.equal(compacted, 1, "扁平 context.strategy 对象照旧被调");
 });
@@ -799,7 +799,7 @@ test("C12 逐叶冲突（真 run，3 个折叠 hooks）：onBeforeFold / onAfter
       return leaf === "stubFor" ? "PORT-STUB" : undefined;
     };
     const result = await foldingRun({
-      context: { budgetTokens: 1, keepRounds: 0, [leaf]: shellFn },
+      config: { folding: { context: { budgetTokens: 1, keepRounds: 0, [leaf]: shellFn } } },
       capabilities: { hooks: { [leaf]: portFn } },
       onEvent: (event) => events.push(event),
     });
@@ -936,7 +936,7 @@ test("C17 优先级方向（strategy）：context.strategy 与 capabilities.port
     initialUserMessage: "go",
     completion: false,
     wrapup: false,
-    context: { budgetTokens: 1, strategy: shellStrategy },
+    config: { folding: { context: { budgetTokens: 1, } } },
     capabilities: { ports: { strategy: portStrategy } },
   });
   assert.equal(result.termination.reason, "end_turn");

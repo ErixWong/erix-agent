@@ -1462,17 +1462,19 @@ async function main() {
     stallDetection: false,
     store: createFileTranscriptStore({ dir: storeDir }),
     persistence: "required",
-    context: {
-      strategy: "fold-statistical",
-      budgetTokens,
-      keepRounds: 2,
-      task: "soak 观察",
-    },
+    config: { folding: {
+      context: {
+        strategy: "fold-statistical",
+        budgetTokens,
+        keepRounds: 2,
+        task: "soak 观察",
+      },
     // 引擎要的是**数字**（src/loop/orchestrator.js:321 `toolResultTtl?: number`）。
     // 传对象会被 src/loop/tool-result-ttl.js:231-234 的 `!Number.isFinite(ttl)` 当场返回原消息，
     // 即 TTL 折叠一次都没跑（前一版就是这里空的）。ttl=1 ⇒ 下一条请求就能折上一条结果。
-    toolResultTtl: TOOL_RESULT_TTL,
-    toolResultFoldMinTokens: 1,
+      toolResultTtl: TOOL_RESULT_TTL,
+      toolResultFoldMinTokens: 1,
+    } },
   };
 
   // ---------- 阶段 A：长轮回放（含强制压缩）

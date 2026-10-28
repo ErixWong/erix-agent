@@ -86,7 +86,7 @@ test("model name resolution: provider/modelConfig/model_name, no hardcoding, no 
   }), "slot-model");
   assert.equal(resolveRunModelName({
     provider: { model: "provider-model" },
-    context: { model: "context-model" },
+    config: { folding: { context: { model: "context-model" } } },
   }), "provider-model");
   assert.equal(resolveRunModelName({
     context: { model_name: "context-model" },

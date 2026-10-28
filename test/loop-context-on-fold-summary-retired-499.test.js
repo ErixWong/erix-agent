@@ -76,7 +76,7 @@ function runDirectFolding(contextExtra = {}, { onFoldSummary, diagnostics } = {}
     wrapup: false,
     stallDetection: false,
     onEvent: (event) => events.push(event),
-    context: foldContext(contextExtra),
+    config: { folding: { context: foldContext(contextExtra) } },
     ...(onFoldSummary === undefined ? {} : { onFoldSummary }),
     ...(diagnostics === undefined ? {} : { diagnostics }),
   };

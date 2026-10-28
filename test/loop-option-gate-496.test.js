@@ -222,7 +222,7 @@ test("A① 预检相仍早于一切：顶层未知键压过语义相违规（网
     assemblyPort: port,
     initialUserMessage: "go",
     // 语义相会拒的值（`context` 不是对象）与顶层未知键同时存在 ⇒ 必须先报未知键。
-    context: "not-an-object",
+    config: { folding: { context: "not-an-object" } },
     modelConfig: { resolve: async () => { resolved += 1; return {}; } },
     bogusKey: 1,
   }).then(() => null, (caught) => caught);
@@ -243,7 +243,7 @@ test("A② 语义相晚于 assemblyPortOptions、早于能力缺失检查（配�
   // 语义相违规 + 缺能力 ⇒ 必须先报语义相（它在能力检查之前）。
   const gateError = await runToolLoop({
     initialUserMessage: "go",
-    context: { summarizeBudgetMs: 5 },
+    config: { folding: { context: { summarizeBudgetMs: 5 } } },
   }).then(() => null, (caught) => caught);
   assert.equal(gateError.message, 'unknown assembly policy context option: "summarizeBudgetMs"');
   assert.equal(gateError.via, "direct");
@@ -256,7 +256,7 @@ test("A③ 语义相吃的是**合并后**的表示：装配口的合法值 + �
     assemblyPort: port,
     initialUserMessage: "go",
     completion: false,
-    context: undefined,
+    config: { folding: { context: undefined } },
   });
   assert.equal(result.termination.reason, "end_turn");
 
@@ -265,7 +265,7 @@ test("A③ 语义相吃的是**合并后**的表示：装配口的合法值 + �
     assemblyPort: makePort({ context: { budgetTokens: 1000 } }),
     initialUserMessage: "go",
     completion: false,
-    context: { budgetTokens: 1000, summarizeBudgetMs: 5 },
+    config: { folding: { context: { budgetTokens: 1000, summarizeBudgetMs: 5 } } },
   }).then(() => null, (caught) => caught);
   assert.equal(overridden.message, 'unknown assembly policy context option: "summarizeBudgetMs"');
   assert.equal(overridden.via, "assembly", "路线标签取入口形状（这次调的是装配口 API）");
@@ -412,19 +412,15 @@ test("D① 承载宿主回调的字段：省略 = 不订阅，给对就**真的�
     finalGuard: async () => { calls.finalGuard += 1; return { action: "accept" }; },
     deliverables: [{ name: "always", check: async () => { calls.check += 1; return true; } }],
     // 首步是一次可重试失败 ⇒ 重试闸口必须真的走一遍 `sleepImpl`（否则这一格又是死计数器）。
-    config: { timing: { retry: { attempts: 2 } } },
+    config: { folding: { context: {
+      budgetTokens: 300,
+      keepRounds: 1,
+                      } }, timing: { retry: { attempts: 2 } } },
     capabilities: { ports: { sleepImpl: async (ms) => { calls.sleepImpl += 1; sleeps.push(ms); } } },
     reflection: { enabled: false, onReflection: () => {} },
     diagnostics: { error: (event) => { calls.error += 1; persistenceEvents.push(event); } },
     // 钩子**先计数再抛**：投递真的发生了（计数 >= 1），失败走持久化账本（`diagnostics.error` 真的被调）。
     onFoldSummary: () => { calls.onFoldSummary += 1; throw new Error("宿主归档器炸了"); },
-    context: {
-      budgetTokens: 300,
-      keepRounds: 1,
-      strategy: createSlidingWindowStrategy({ keepRounds: 1 }),
-      onBeforeFold: () => { calls.onBeforeFold += 1; },
-      onAfterFold: () => { calls.onAfterFold += 1; },
-    },
   });
 
   // 前提：这条路径确实折叠了 —— 否则下面三格只是在测空气。
@@ -450,12 +446,10 @@ test("D① 承载宿主回调的字段：省略 = 不订阅，给对就**真的�
   );
 
   // 装配口：policy 侧给同样的回调 ⇒ 不抛（装配口的 `context` 形状照旧合法）。
-  const assemblyOk = await assemblyError({
-    context: {
+  const assemblyOk = await assemblyError({ capabilities: { hooks: { onBeforeFold: () => {}, onAfterFold: () => {} } },
+    config: { folding: { context: {
       budgetTokens: 1000,
-      onBeforeFold: () => {},
-      onAfterFold: () => {},
-    },
+                } } },
     onFoldSummary: () => {},
   });
   assert.equal(assemblyOk, null, `装配口：合法回调不得抛（实测 ${assemblyOk?.message}）`);
