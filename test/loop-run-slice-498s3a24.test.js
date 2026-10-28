@@ -351,6 +351,36 @@ test("N2 四向闭合与自检：账目是派生的，白名单仍被四个面�
   );
 });
 
+/**
+ * 「构造期有值 + 调用期又给 ⇒ 启动期抛」那条冲突通道的**活样本**（`test/contract/assembly-port.test.js`）。
+ *
+ * #530 的前置：`reflection` 是最后一个能当样本的扁平配置叶子，它退役之后样本必须换人。换人这件事
+ * 本身要**可执行地**钉住，否则下一个改冲突通道的人会把它当普通钉子删掉。所以这里不硬编码名字，
+ * 而是从符号派生「谁还配当样本」，再去**读**那个文件里实际用的名字。
+ */
+test("N3 冲突通道的活样本是派生的：必须仍在白名单、且 `policy` 能给（第三站永久顶层面）", async () => {
+  const { readFileSync } = await import("node:fs");
+  // 派生池①：`policy` 只能给「仍在白名单」的名字（覆盖名闭集 = 白名单，见 `assertAssemblyOverrideShape`）。
+  // 派生池②：样本必须是**第三站**成员（无嵌套家 ⇒ 不会被本片这类「搬进 config」的动作带走）。
+  const thirdStation = optionHomeBuckets(RUN_TOOL_LOOP_OPTION_NAMES).topLevelSurface;
+  assert.equal(thirdStation.length > 0, true, "第三站必须非空（否则冲突通道连一个合法样本都没有）");
+  const pool = thirdStation.filter((name) => RUN_TOOL_LOOP_OPTION_NAMES.includes(name));
+  assert.deepEqual(pool, thirdStation, "第三站成员本来就都在白名单里");
+
+  // 读实际样本：`OVERRIDE_CONFLICT("<key>", "port.policy.<key>")` 那一格（origin 是 policy ⇒ 样本键）。
+  const source = readFileSync(new URL("./contract/assembly-port.test.js", import.meta.url), "utf8");
+  const policySamples = [...source.matchAll(/OVERRIDE_CONFLICT\("([^"]+)", "port\.policy\.([^"]+)"\)/gu)]
+    .map((match) => match[1]);
+  assert.equal(policySamples.length > 0, true, "装配口那一格必须有一个 policy 侧样本（否则冲突通道无人守）");
+  for (const sample of policySamples) {
+    assert.equal(pool.includes(sample), true,
+      `冲突样本 ${JSON.stringify(sample)} 必须从派生池里挑（仍在白名单 + 第三站），不许是会被退役的扁平配置键`);
+  }
+  // 反向证：`reflection` 已经不在白名单里 ⇒ 它**不可能**再当样本（这正是「样本必须换人」的判据）。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(KEY), false);
+  assert.equal(pool.includes(KEY), false, "`reflection` 已不是合法样本：把它写回覆盖位撞的是名称闸口");
+});
+
 // ================================================================ S. 夹具是翻译点
 
 test("S1 夹具把扁平 `reflection` 拆成两站：数据进 config，函数值进能力面", () => {

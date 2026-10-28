@@ -588,9 +588,10 @@ try {
         // #498 S3 A15: `cwd` 的规位家是 `config.run.cwd`（扁平拼写已在名称闸口退役）。
         // #498 S3 A20: `runId` 同理（家 `config.run.runId`），并进**同一个** `run` 组。
         // #498 S3 A21: `maxRounds` 同理（家 `config.run.maxRounds`）。
-        run: { cwd: sandbox, runId: "probe-run-overhead", maxRounds: 30 },
+        // #530: `reflection` 退役扁平写法（家 `config.run.reflection`）——本脚本是**观察探针**：
+        // 只改拼写，payload 键集与全部判据一字未改。
+        run: { cwd: sandbox, runId: "probe-run-overhead", maxRounds: 30, reflection: false },
       },
-      reflection: false,
       executeTool: async () => BIG,
       finalGuard: async (value) => {
         payload = value;
@@ -695,10 +696,10 @@ try {
       config: {
         input: { initialUserMessage: `把 42 写进 ${answerPath}` },
         guard: { finalGuardExtend: cell.optIn },
-        run: { maxRounds: 1 },
+        // #530: 扩轮参数是数据 ⇒ 并进**同一棵** `run` 子树（拼写搬家，判据不动）。
+        // 显式给全扩轮参数：默认 step 是 max(8, maxRounds/2)，不显式给的话「抬到多少」会漂。
+        run: { maxRounds: 1, reflection: { enabled: true, extensionStep: 2, maxExtensions: 2, maxRoundsCap: 8 } },
       },
-      // 显式给全扩轮参数：默认 step 是 max(8, maxRounds/2)，不显式给的话「抬到多少」会漂。
-      reflection: { enabled: true, extensionStep: 2, maxExtensions: 2, maxRoundsCap: 8 },
       executeTool: async (call) => {
         fs.writeFileSync(call.input.path, call.input.content);
         executed.push(call.id);
