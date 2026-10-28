@@ -173,8 +173,12 @@ test("carries accumulated usage and rounds on the thrown abort error (issue #180
       stallDetection: false,
       // 第 2 轮完整产出（响应已计入 usage、轮号已自增）后置 abort：PR #291 必修 1 之后，圈顶的
       // `throwIfAborted` 会在**发起第 3 次模型请求之前**就收口 ⇒ 永悬分支进不到（见下方 calls 断言）。
-      onEvent: (event) => {
-        if (event.type === "round_end" && event.round === 2) controller.abort(new Error("user stopped"));
+      capabilities: {
+        hooks: {
+          onEvent: (event) => {
+            if (event.type === "round_end" && event.round === 2) controller.abort(new Error("user stopped"));
+          },
+        },
       },
     }),
     (error) => {

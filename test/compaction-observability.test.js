@@ -42,7 +42,7 @@ test("compactionStats exposes selected layer details through result, state, arch
     },
     store,
     runId: "compaction-observability",
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
 
   const stat = result.compactionStats.find((entry) => (

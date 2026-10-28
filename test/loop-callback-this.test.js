@@ -49,12 +49,16 @@ test("invokes loop callbacks with undefined this", async () => {
     provider,
     initialUserMessage: "find x",
     executeTool,
-    onToolResult,
+    capabilities: {
+      hooks: {
+        onToolResult,
+        onDelta,
+        onObserverError: (error) => observerErrors.push(error),
+      },
+    },
     finalGuard,
     completion: false,
     stream: true,
-    onDelta,
-    onObserverError: (error) => observerErrors.push(error),
   });
 
   assert.equal(result.finalText, "done");

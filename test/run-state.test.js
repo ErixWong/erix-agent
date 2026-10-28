@@ -534,7 +534,7 @@ test("single-session runs keep both counters equal and drain remainingRounds mon
     completion: false,
     store,
     runId: "budget-monotonic",
-    onRound: (record) => budgets.push(record.runState.deterministic.budget),
+    capabilities: { hooks: { onRound: (record) => budgets.push(record.runState.deterministic.budget) } },
   });
 
   // 非 resume 单段调用：身份轮号与预算轮数恒等

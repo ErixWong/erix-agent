@@ -77,7 +77,7 @@ async function runOnce({ rawArguments, options = {}, executeTool }) {
     maxRounds: 4,
     completion: false,
     ...options,
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
   return { result, events, executed, fetchImpl };
 }

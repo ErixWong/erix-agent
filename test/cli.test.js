@@ -382,6 +382,68 @@ test("runChat injects archive status at fold time instead of into loop context",
   }
 });
 
+test("splitReflectionShell: 函数形态的 onReflection 落到 capabilities.hooks，扁平位不同时在场（#498 S7b 补格）", async () => {
+  // #498 S5 的耐久缺口：`bin/cli.js` 的 `splitReflectionShell` 按**值的形态**拆 `reflection` 壳——
+  // 函数值 ⇒ `capabilities.hooks.<name>`、数据 ⇒ `config.run.reflection`。当时只有一次性 /tmp 脚本
+  // 证据，仓库里没有断言格。这里把它钉成真断言：读到的必须是**同一个函数引用**，且两侧不同时在场。
+  // ⚠ 不是「没抛」——`canonicalLoopOption` 双向读（规位必须有值 / 扁平位必须不存在），
+  // 再加值身份断言，映射改错（例如把 onReflection 漏出 hooks、或写回扁平位）必红。
+  const dir = await makeTmp("erix-cli-reflection-shell-test-");
+  let captured;
+  const seen = [];
+  const onReflection = (decision) => seen.push(decision);
+  try {
+    const configPath = await writeEmptyMcpConfig(dir);
+    await runChat({
+      prompt: "capture reflection shell",
+      session: "chat-reflection-shell",
+      dir,
+      notesDir: join(dir, "notes"),
+      skillsDir: join(dir, "skills"),
+      configPath,
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      compactBudget: 100,
+      // 宿主把回调放在 `reflection` 壳里（0.27 的写法），CLI 必须按形态拆开、不留第二真相来源。
+      reflection: { enabled: true, onReflection },
+      provider: createFakeProvider([]),
+      loop: async (options) => {
+        captured = options;
+        return {
+          finalText: "done",
+          messages: [],
+          rounds: 1,
+          truncated: false,
+          usage: { input_tokens: 0, output_tokens: 0 },
+          compactionStats: [],
+        };
+      },
+      toolOutput: () => {},
+    });
+
+    assert.ok(captured);
+    assert.equal(
+      canonicalLoopOption(captured, "capabilities.hooks.onReflection"),
+      onReflection,
+      "函数形态的 onReflection 必须原样出现在 capabilities.hooks.onReflection（同一个引用）",
+    );
+    // 数据侧不得留下同名函数（`config` 子树必须过 JSON round-trip ⇒ intake 会当场拒）。
+    assert.equal(
+      captured.config.run.reflection?.onReflection,
+      undefined,
+      "onReflection 不得留在配置面：config 子树必须过 JSON round-trip",
+    );
+    assert.equal(captured.config.run.reflection?.enabled, true, "其余数据照旧归 config.run.reflection");
+    // 壳本身不许再以顶层扁平键出现（`reflection` 是 S3 要删的那类壳）。
+    assert.equal(
+      Object.hasOwn(captured, "reflection"),
+      false,
+      "reflection 壳不得留在顶层扁平位：同一个旋钮两个真相来源 ⇒ config_override_conflict",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("parseChatArgs parses --no-todo (issue #69)", () => {
   const options = parseChatArgs(["hello", "--no-todo"], "/tmp/project");
   assert.equal(options.noTodo, true);

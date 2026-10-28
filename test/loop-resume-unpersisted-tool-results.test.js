@@ -69,7 +69,7 @@ const ledgerResults = (records) => blocksOf(records.flatMap((record) => record.m
   .map((block) => `${String(block.tool_use_id)}=${String(block.content).split("\n")[0]}`);
 
 /** 跑一次 runToolLoop，把失败压成 `{ ok, error }`（崩溃注入与 `invalid_messages` 都是预期路径）。 */
-async function runLoop({ store, provider, executeTool, resume = true, initialUserMessage, onEvent }) {
+async function runLoop({ store, provider, executeTool, resume = true, initialUserMessage, capabilities }) {
   try {
     const result = await runToolLoop({
       provider,
@@ -84,7 +84,7 @@ async function runLoop({ store, provider, executeTool, resume = true, initialUse
       // 的正文里，那会让「内容逐字相同」这条断言测到别的东西。
       maxRounds: 8,
       ...(initialUserMessage === undefined ? {} : { initialUserMessage }),
-      ...(onEvent === undefined ? {} : { onEvent }),
+      ...(capabilities === undefined ? {} : { capabilities }),
       executeTool,
     });
     return { ok: true, finalText: result.finalText };
@@ -406,7 +406,7 @@ test("#424 升级路径 · 崩溃轮的 assistant 正文只在快照里 ⇒ A �
     executeTool: async () => {
       throw new Error("补跑不该发生：两个工具都已在 executedToolIds 里（A 集合）");
     },
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
   assert.equal(first.ok, false, "前置：第一次恢复必须真的崩在 `:control:` 行");
   assert.match(first.error, /simulated crash after journaling/u);
@@ -508,7 +508,7 @@ test("#424 守卫精度 · 新账本（崩溃轮 assistant 已落盘）照旧入
     store: inner,
     provider: createFakeProvider([endTurn("续接完成")]),
     executeTool: async () => "unused",
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
   assert.equal(resumed.ok, true, "前置：第一次恢复成功");
   assert.equal(events.some((event) => event?.type === "resume_journal_skipped"), false,

@@ -46,7 +46,7 @@ async function run({ script, maxRounds = 8, completion = false, env = {} }) {
       executeTool: async () => "ok",
       maxRounds,
       completion,
-      onEvent: (event) => events.push(event),
+      capabilities: { hooks: { onEvent: (event) => events.push(event) } },
     });
     return { result, events, provider };
   } finally {

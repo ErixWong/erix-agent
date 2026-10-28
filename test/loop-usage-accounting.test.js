@@ -43,10 +43,12 @@ const THREE_SHOT_700_700_7 = [
   { content: [text("done")], stopReason: "end_turn", usage: { input_tokens: 13, output_tokens: 7 } },
 ];
 
-/** 把一次 run 的轮记录收齐（`onRound` 是轮记录落盘后的宿主钩子，拿到的就是那份 record）。 */
+/** 把一次 run 的轮记录收齐（`onRound` 是轮记录落盘后的宿主钩子，拿到的就是那份 record）。
+ *  规位写法：钩子住 `capabilities.hooks`，辅助函数直接把**容器**交回去（`{ ...BASE, ...capabilities }`），
+ *  于是每一格都只写一侧，不再出现「扁平 `onRound` + 容器」两个真相来源。 */
 function collectRounds() {
   const rounds = [];
-  return { rounds, onRound: (record) => rounds.push(record) };
+  return { rounds, capabilities: { hooks: { onRound: (record) => rounds.push(record) } } };
 }
 
 const BASE = {
@@ -60,9 +62,9 @@ const BASE = {
 // ── ① 续写轮：新键必须累计全部三发（本单的核心格；改之前实测 7）────────────────────────────
 test("#438 ① 续写轮（700+700+7）：`record.usage` 累计 1407，`record.response.usage` 仍是最后一发的 7", async () => {
   const provider = createFakeProvider(THREE_SHOT_700_700_7);
-  const { rounds, onRound } = collectRounds();
+  const { rounds, capabilities } = collectRounds();
 
-  const result = await runToolLoop({ ...BASE, provider, onRound });
+  const result = await runToolLoop({ ...BASE, provider, capabilities });
 
   assert.equal(result.rounds, 1, "三发续写合并成**一轮**（续写不是新轮）");
   assert.equal(provider.requests.length, 3, "三次 provider 调用 = 三次真花钱的响应");
@@ -101,9 +103,9 @@ test("#438 ② 无续写的轮：`record.usage` 与 `record.response.usage` 逐�
     usage: { input_tokens: 21, output_tokens: 34, cacheRead: 500, cacheWrite: 2 },
   };
   const provider = createFakeProvider([single]);
-  const { rounds, onRound } = collectRounds();
+  const { rounds, capabilities } = collectRounds();
 
-  const result = await runToolLoop({ ...BASE, provider, onRound });
+  const result = await runToolLoop({ ...BASE, provider, capabilities });
 
   const record = rounds.at(-1);
   assert.equal(provider.requests.length, 1);
@@ -135,12 +137,12 @@ test("#438 ③a judge + 归一化的用量进 `engineUsage`，轮账仍是模型
     },
   ]);
   const provider = createFakeProvider(THREE_SHOT_700_700_7);
-  const { rounds, onRound } = collectRounds();
+  const { rounds, capabilities } = collectRounds();
 
   const result = await runToolLoop({
     ...BASE,
     provider,
-    onRound,
+    capabilities,
     reflection: {
       enabled: true,
       roundJudge: true,
@@ -189,9 +191,9 @@ test("#438 ③b 强制收尾的用量只进 `result.engineUsage`，轮账与最�
       usage: { input_tokens: 90, output_tokens: 30 },
     },
   ]);
-  const { rounds, onRound } = collectRounds();
+  const { rounds, capabilities } = collectRounds();
 
-  const result = await runToolLoop({ ...BASE, provider, onRound, maxRounds: 1 });
+  const result = await runToolLoop({ ...BASE, provider, capabilities, maxRounds: 1 });
 
   assert.equal(result.termination.reason, "max_rounds_cap");
   assert.equal(result.termination.forcedFinal, true, "这一格必须真的走到强制收尾");
@@ -215,9 +217,9 @@ test("#438 ④ provider 不报 usage ⇒ `record.usage` 是零值对象（不是
   const provider = createFakeProvider([
     { content: [text("done")], stopReason: "end_turn" },
   ]);
-  const { rounds, onRound } = collectRounds();
+  const { rounds, capabilities } = collectRounds();
 
-  const result = await runToolLoop({ ...BASE, provider, onRound });
+  const result = await runToolLoop({ ...BASE, provider, capabilities });
 
   const record = rounds.at(-1);
   assert.equal("usage" in record.response, false, "provider 没报 ⇒ 历史那份照旧缺键");
@@ -238,9 +240,9 @@ test("#438 ⑤ 两轮各自一发：`rounds[0].usage` 只有第一发，`rounds[
     { content: [toolUse("t1")], stopReason: "tool_use", usage: { input_tokens: 100, output_tokens: 700 } },
     { content: [text("done")], stopReason: "end_turn", usage: { input_tokens: 200, output_tokens: 34 } },
   ]);
-  const { rounds, onRound } = collectRounds();
+  const { rounds, capabilities } = collectRounds();
 
-  const result = await runToolLoop({ ...BASE, provider, onRound });
+  const result = await runToolLoop({ ...BASE, provider, capabilities });
 
   assert.equal(result.rounds, 2, "两轮（第一轮 tool_use，第二轮 end_turn）");
   assert.equal(rounds.length, 2);
@@ -311,12 +313,12 @@ test("#438 ⑥ 折叠摘要那一发（900/50）落在**当轮** `record.engineU
       { content: [text("收尾结论")], stopReason: "end_turn" },
     ],
   });
-  const { rounds, onRound } = collectRounds();
+  const { rounds, capabilities } = collectRounds();
 
   const result = await runToolLoop({
     ...BASE,
     provider,
-    onRound,
+    capabilities,
     maxRounds: 2,
     reflection: false,
     initialUserMessage: `start ${"y".repeat(600)}`,

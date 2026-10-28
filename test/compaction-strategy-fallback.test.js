@@ -48,7 +48,7 @@ async function run(options = {}) {
     completion: false,
     store: createMemoryTranscriptStore(),
     runId: "464-fallback",
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
     ...options,
   });
   return {

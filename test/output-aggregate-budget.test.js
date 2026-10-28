@@ -104,7 +104,7 @@ async function runRound({
     ...(outputHygiene === undefined ? {} : { outputHygiene }),
     ...(controller === undefined ? {} : { signal: controller.signal }),
     completion: false,
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
     ...extra,
   });
   return { result, events, store, provider };
@@ -406,7 +406,7 @@ test("intercepted control results are neither counted nor archived", async (t) =
       maxRounds: 20,
       completion: false,
       reflection: { enabled: true, roundJudge: false, judge: { provider: judge } },
-      onEvent: (event) => events.push(event),
+      capabilities: { hooks: { onEvent: (event) => events.push(event) } },
     });
     const records = await store.load("agg-intercept");
     const contents = toolResultContents(records.flatMap((record) => record.messages));
@@ -439,7 +439,7 @@ test("failed results: is_error and the key error snippet survive the stub", asyn
     context: { budgetTokens: BUDGET_BASE },
     outputHygiene: BIG_LIMIT,
     completion: false,
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
   const failed = toolResultBlocks(result.messages)
     .find((block) => block.tool_use_id === "f2");
