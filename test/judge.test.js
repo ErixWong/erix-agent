@@ -887,11 +887,11 @@ test("resumed judge briefs scan only the original round-zero seed messages", asy
 
   await runToolLoop({
     provider: resumedProvider,
-    resume: true,
+    // #498 S3 A19：`resume` 退役扁平写法，并进**同一个** `config` 容器（家 `config.run.resume`）。
     executeTool: async () => "unused",
     maxRounds: 3,
     completion: false,
-    config: { input: { wrapup: false } },
+    config: { input: { wrapup: false }, run: { resume: true } },
     reflection: { enabled: true, judge: { provider: resumedJudge } },
     store,
     runId,
@@ -930,13 +930,13 @@ test("resume without a round-zero seed keeps the judge brief empty", async () =>
 
   await runToolLoop({
     provider: resumedProvider,
-    resume: true,
+    // #498 S3 A19：`resume` 退役扁平写法，并进**同一个** `config` 容器（家 `config.run.resume`）。
     executeTool: async () => "unused",
     // 预算计数器拆分（issue #32 #8）后 resume 的轮预算从 0 起算，
     // maxRounds=1 即续接会话只跑一轮（judge 恰好被调用一次）
     maxRounds: 1,
     completion: false,
-    config: { input: { wrapup: false } },
+    config: { input: { wrapup: false }, run: { resume: true } },
     reflection: { enabled: true, judge: { provider: resumedJudge } },
     store,
     runId,

@@ -1969,7 +1969,10 @@ async function main() {
       const resumed = await runToolLoop({
         ...common,
         runId: resumeRunId,
-        resume: true,
+        // #498 S3 A19: `resume` left the top-level allowlist; home `config.run.resume`
+        // (expansion writes it back onto `effectiveOptions.resume`, so the read side is unchanged).
+        // soak is an **observation script**: only the spelling moves, the observation logic does not.
+        config: { ...common.config, run: { ...common.config.run, resume: true } },
         maxRounds: resumeRounds,
         onEvent: onEventFor(resumeCounter),
       });

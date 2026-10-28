@@ -57,7 +57,7 @@ test("resume restores run-state cells (stateVersion / todo / semantic) into the 
   ]);
   const result = await runToolLoop({
     provider,
-    resume: true,
+    config: { run: { resume: true } },
     completion: false,
     store,
     runId: RUN_ID,
@@ -95,7 +95,7 @@ test("a resume that breaks after the run-state was restored still annotates that
   await assert.rejects(
     () => runToolLoop({
       provider,
-      resume: true,
+      config: { run: { resume: true } },
       completion: false,
       store,
       runId: "run-state-cells-fail",

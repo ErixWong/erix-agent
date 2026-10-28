@@ -384,8 +384,10 @@ test("N2 `replayPolicy` 与 `session.resume` 是两张面：#531 的裁决原样
   assert.equal(configPathForOption("session"), undefined, "`session` 不许有任何嵌套家（#531）");
   const closed = await directError(minimalRun({ config: { metadata: { session: { id: "a11" } } } }));
   assert.match(closed.message, /^unknown config\.metadata option: "session"/u, "#531 的闭门钉子原样保留");
-  // 而 `resume` 仍是**扁平合法**键（本片没动它），`replayPolicy` 的规位与它各住一处。
-  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("resume"), true, "`resume` 仍是扁平合法选项");
+  // 而 `replayPolicy` 的规位与 `session` 各住一处。`resume` 当时仍是**扁平合法**键（本片没动它）——
+  // #498 S3 A19 把它退役了（家 `config.run.resume`），所以那条 as-is 钉**翻成反向钉**（改而不删：
+  // 同一个符号、同一个闸口，只把方向翻过来），与 A15/A16 对 `cwd` / `stream` 的改法逐字同形。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("resume"), false, "A19 已退役 `resume` 的扁平写法");
   assert.equal(configPathForOption("replayPolicy"), "run.replayPolicy", "`replayPolicy` 的家是 config.run");
 });
 
@@ -466,7 +468,9 @@ test("A2 `run` 组**没有**整组收口：四个退役叶子被派生认出，�
   // #498 S3 A16：`stream` 也退役了扁平写法（家 `config.run.stream`），所以它从这条循环里移出，
   // 翻成反向钉（与 A15 对 `cwd` 的改法逐字同形）。
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("stream"), false, "A16 已退役 `stream` 的扁平写法");
-  for (const leaf of ["maxRounds", "completion", "reflection", "resume"]) {
+  // #498 S3 A19：`resume` 也退役了（家 `config.run.resume`），同样从这条循环里移出、翻成反向钉。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("resume"), false, "A19 已退役 `resume` 的扁平写法");
+  for (const leaf of ["maxRounds", "completion", "reflection"]) {
     assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(leaf), true, `${leaf} 本片一个字没动`);
   }
   assert.equal(

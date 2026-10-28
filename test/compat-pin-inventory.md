@@ -5,6 +5,19 @@
 >
 > 本文件随 `test/` 落盘、**不进 npm 包**（`package.json` 的 `files` 没有它）。
 >
+> ⚠ **附表口径刷新（#498 S3 第十九片 `run` 组 A19：退役 `resume`，本片）**：
+> 附表 **1318 → 1282**（净 −36，行数 121 → 122）、主表 **170 → 170**（不变，行数 23 → 23）。
+> 净 −36 是两笔的差：
+>   · **−41**：14 个文件里的扁平 `resume` 写点搬进 `config: { run: { resume: … } }` —— `config` 是容器、
+>     数到就停，所以这些点**离开**计数口径（`test/loop-resume.test.js` 67 → 48 是最大的一笔：23 → 4）；
+>   · **+5**：本片新增的切片钉子文件 `test/loop-run-slice-498s3a19.test.js`（`completion`×3 /
+>     `wrapup`×2 —— 都是搭台写点；它的能力面写点是 **0**，所以主表不受影响）。
+> `test/loop-resume.test.js` 剩下的 `resume`×4 是**夹具级入参**（`runDirect({ resume: true })`）：
+> 那是 51 个既有测试文件的调用方拼写，`test/helpers/run-direct.js` 在调 `runToolLoop` 之前把它翻译进
+> `config.run.resume` 并摘掉扁平键，引擎永远看不到旧拼写（A19 切片测试的 S1 钉住这件事）。
+> 复跑：`node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
+> （主表 170 / 附表 1282 都是 AST 实测）。
+>
 > ⚠ **附表口径刷新（#498 S3 第十二片 `run` 组 A12 + A12b：退役 `partialPersistence`，本片）**：
 > 附表 **1342 → 1343**（净 +1，行数 115 → 116）、主表 **170 → 170**（不变，行数 23 → 23）。净 +1 是两笔的差：
 >   · **−2**：`test/loop-resume.test.js` 71 → **69**。本片把顶层扁平 `partialPersistence` 退役（规范之家
@@ -661,15 +674,15 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 
 | 文件 | 写点 | 明细 |
 | --- | --- | --- |
-| `test/judge.test.js` | 111 | `completion`×55, `reflection`×52, `resume`×2, `stallDetection`×2 |
+| `test/judge.test.js` | 109 | `completion`×55, `reflection`×52, `stallDetection`×2 |
 | `test/loop-capabilities-ports-hooks-498s4c.test.js` | 76 | `completion`×24, `wrapup`×18, `context`×7, `onEvent`×7, `reflection`×6, `retry`×6, `judgeProvider`×3, `session`×3, `sleepImpl`×3, `strategy`×3, `tools`×3 |
 | `test/cli.test.js` | 74 | `session`×36, `prompt`×29, `reflection`×4, `tools`×3, `finalGuard`×2, `completion`×1, `context`×1 |
-| `test/loop-resume.test.js` | 67 | `completion`×33, `resume`×23, `tools`×8, `reflection`×3 |
+| `test/loop-resume.test.js` | 48 | `completion`×33, `tools`×8, `resume`×4, `reflection`×3 |
 | `test/loop-option-gate-496.test.js` | 28 | `completion`×7, `context`×7, `onFoldSummary`×7, `finalGuard`×6, `reflection`×5, `tools`×3, `deliverables`×2, `session`×2, `partialPersistence`×1, `sleepImpl`×1, `stallDetection`×1, `wrapup`×1 |
-| `test/loop-config-namespace-497.test.js` | 40 | `onEvent`×13, `completion`×11, `tools`×6, `wrapup`×5, `session`×4, `resume`×3, `context`×2, `finalGuard`×2, `initialMessages`×2, `retry`×2, `modelMetadata`×1, `onObserverError`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `stallDetection`×1 |
+| `test/loop-config-namespace-497.test.js` | 39 | `onEvent`×13, `completion`×11, `tools`×6, `wrapup`×5, `session`×4, `context`×2, `finalGuard`×2, `initialMessages`×2, `resume`×2, `retry`×2, `modelMetadata`×1, `onObserverError`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `stallDetection`×1 |
 | `test/loop-resume-anchor.test.js` | 38 | `completion`×8, `stallDetection`×8, `wrapup`×8, `resume`×7, `tools`×6, `partialPersistence`×1 |
-| `test/loop-v020-rc.test.js` | 24 | `completion`×19, `session`×3, `resume`×1, `stallDetection`×1 |
-| `test/loop-resume-notice.test.js` | 29 | `completion`×11, `tools`×9, `resume`×7, `reflection`×2 |
+| `test/loop-v020-rc.test.js` | 23 | `completion`×19, `session`×3, `stallDetection`×1 |
+| `test/loop-resume-notice.test.js` | 22 | `completion`×11, `tools`×9, `reflection`×2 |
 | `test/loop.test.js` | 31 | `completion`×15, `stallDetection`×12, `reflection`×2, `onToolResult`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-core.test.js` | 24 | `finalGuard`×19, `tools`×14, `strategy`×4, `context`×3, `reflection`×3, `onEvent`×1, `onObserverError`×1 |
 | `test/loop-capabilities-namespace-498.test.js` | 18 | `deliverables`×9, `completion`×5, `onEvent`×5, `finalGuard`×4, `retry`×3, `onRound`×2, `context`×1, `modelMetadata`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `resume`×1, `session`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
@@ -699,7 +712,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-fr2.test.js` | 7 | `completion`×7 |
 | `test/model-metadata-diagnostics.test.js` | 8 | `completion`×5, `outputHygiene`×1, `session`×1, `tools`×1 |
 | `test/persistence-diagnostics.test.js` | 11 | `completion`×9, `reflection`×2 |
-| `test/run-state.test.js` | 10 | `completion`×7, `resume`×3 |
+| `test/run-state.test.js` | 8 | `completion`×7, `resume`×1 |
 | `test/compaction-strategy-name.test.js` | 10 | `strategy`×8, `completion`×2 |
 | `test/loop-termination.test.js` | 12 | `completion`×6, `stallDetection`×5, `reflection`×1 |
 | `test/cli-idle-retry.test.js` | 11 | `retry`×5, `prompt`×3, `session`×3 |
@@ -711,33 +724,33 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-persist-compaction-facts.test.js` | 8 | `completion`×3, `reflection`×3, `resume`×1, `strategy`×1 |
 | `test/loop-resume-unpersisted-tool-results.test.js` | 10 | `resume`×6, `completion`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-tool-list.test.js` | 9 | `tools`×7, `prompt`×2 |
-| `test/loop-resume-fold-immunity.test.js` | 7 | `completion`×2, `reflection`×2, `tools`×2, `resume`×1 |
+| `test/loop-resume-fold-immunity.test.js` | 6 | `completion`×2, `reflection`×2, `tools`×2 |
 | `test/notes-candidates-and-scopes.test.js` | 9 | `session`×7, `finalGuard`×2, `prompt`×2 |
 | `test/repl.test.js` | 9 | `session`×6, `completion`×1, `finalGuard`×1, `prompt`×1, `tools`×1 |
 | `test/governor.test.js` | 8 | `completion`×4, `stallDetection`×4 |
-| `test/loop-error-budget-cells.test.js` | 8 | `completion`×4, `stallDetection`×3, `resume`×1 |
+| `test/loop-error-budget-cells.test.js` | 7 | `completion`×4, `stallDetection`×3 |
 | `test/loop-guard-slice-498s3e.test.js` | 6 | `completion`×2, `wrapup`×2, `context`×1, `finalGuard`×1, `reflection`×1 |
 | `test/app-container-p0.test.js` | 6 | `completion`×3, `stallDetection`×3 |
 | `test/compact/folded-facts.test.js` | 6 | `strategy`×4, `completion`×1, `reflection`×1 |
 | `test/loop-governance-cells.test.js` | 7 | `completion`×3, `reflection`×3, `resume`×1 |
-| `test/loop-intercept-count-cells.test.js` | 7 | `completion`×3, `reflection`×3, `resume`×1 |
-| `test/loop-invalid-arguments.test.js` | 7 | `completion`×3, `tools`×3, `resume`×1 |
-| `test/loop-resume-prior-seed-469.test.js` | 5 | `completion`×2, `reflection`×2, `resume`×1 |
+| `test/loop-intercept-count-cells.test.js` | 6 | `completion`×3, `reflection`×3 |
+| `test/loop-invalid-arguments.test.js` | 6 | `completion`×3, `tools`×3 |
+| `test/loop-resume-prior-seed-469.test.js` | 4 | `completion`×2, `reflection`×2 |
 | `test/capture-honesty.test.js` | 6 | `prompt`×3, `session`×3 |
 | `test/examples/erix-run-async.test.js` | 6 | `tools`×4, `context`×1, `strategy`×1 |
 | `test/loop-folded-facts-sliding-resume.test.js` | 5 | `completion`×1, `stallDetection`×1, `strategy`×1, `tools`×1, `wrapup`×1 |
 | `test/loop-persistence-phase.test.js` | 5 | `completion`×1, `partialPersistence`×1, `reflection`×1, `tools`×1, `wrapup`×1 |
 | `test/notes-final-guard.test.js` | 6 | `prompt`×3, `session`×3, `finalGuard`×2 |
-| `test/tool-fact-success-parity.test.js` | 5 | `completion`×2, `onToolResult`×1, `outputHygiene`×1, `reflection`×1, `resume`×1 |
+| `test/tool-fact-success-parity.test.js` | 4 | `completion`×2, `onToolResult`×1, `outputHygiene`×1, `reflection`×1 |
 | `test/display/projection.test.js` | 4 | `wrapup`×2, `completion`×1, `reflection`×1 |
-| `test/loop-fold-count-cells.test.js` | 4 | `completion`×2, `resume`×1, `stallDetection`×1 |
+| `test/loop-fold-count-cells.test.js` | 3 | `completion`×2, `stallDetection`×1 |
 | `test/loop-usage-accounting.test.js` | 4 | `reflection`×2, `completion`×1, `stallDetection`×1 |
 | `test/loop-v020.test.js` | 3 | `completion`×3 |
 | `test/compact/fold-archive.test.js` | 2 | `completion`×2 |
 | `test/compaction-strategy-fallback.test.js` | 1 | `completion`×1 |
 | `test/loop-message-rows-crash-matrix.test.js` | 4 | `completion`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/loop-observer-isolation.test.js` | 4 | `completion`×2, `context`×1, `reflection`×1 |
-| `test/loop-run-state-cells.test.js` | 4 | `completion`×2, `resume`×2 |
+| `test/loop-run-state-cells.test.js` | 2 | `completion`×2 |
 | `test/loop-termination-reason-cell.test.js` | 4 | `completion`×2, `stallDetection`×2 |
 | `test/cli-process.test.js` | 3 | `prompt`×3 |
 | `test/e2e/upstream.test.js` | 2 | `onDelta`×5, `onUsage`×2, `completion`×1, `onEvent`×1, `stallDetection`×1 |
@@ -782,6 +795,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-run-slice-498s3a15.test.js` | 3 | `completion`×2, `wrapup`×1 |
 | `test/loop-run-slice-498s3a16.test.js` | 5 | `completion`×3, `wrapup`×2 |
 | `test/loop-input-keys-slice-498s3a18.test.js` | 1 | `completion`×1 |
+| `test/loop-run-slice-498s3a19.test.js` | 5 | `completion`×2, `session`×2, `tools`×1 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 

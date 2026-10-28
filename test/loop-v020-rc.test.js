@@ -546,7 +546,7 @@ test("checkpoints before tools and resumes without replaying an executed tool", 
     },
     store: resumeStore,
     runId: "resume-checkpoint",
-    resume: true,
+    config: { run: { resume: true } },
     completion: false,
   });
 

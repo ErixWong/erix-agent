@@ -1136,6 +1136,53 @@ port is called; `G` the data-value matrix above; `F` the function value rejected
 `R` a real run still reaching `chatStream` / `chat`, and the `partialPersistence` truthiness test;
 `N` the four-way account and the name-collision table; `S` the fixture translation point).
 
+**`resume`: the same precedent, measured the same way (issue #498 S3, nineteenth slice).** Gate 2 ran
+five value shapes through the real entry — a boolean `true` / `false`, a string, a run-snapshot object
+and the number `1` — and every one of them is **nested-accepted** (`exit 0`, with a seeded transcript so
+that "accepted" cannot be confused with "resume had nothing to restore") and **flat-rejected** at the
+name gate. The function shape is the only divergence, and it is the same one `stream` had:
+
+| `resume` value | flat (before A19) | nested (`config.run.resume`) |
+| --- | --- | --- |
+| `true` / `false` / string / snapshot object / `1` | exit 0 | exit 0 (parity) |
+| **function** | **exit 0** | **rejected** — `config.run.resume is not accepted … holds data only` |
+
+`resume` is only ever *tested* for truthiness in the engine — `if (!ctx.resume || ctx.runId ===
+undefined) return "absent";` and `if (ctx.resume && ctx.store && ctx.runId !== undefined) { … }` in
+`src/loop/resume-manager.js`, with no `typeof` check and no call site (a `grep` for `resume(` /
+`resume.call` / `resume.apply` is empty) — so a function was never behaviour at this position. The
+slice therefore retired the flat spelling and **accepted the narrowing** (a function is now rejected on
+both spellings) instead of adding a boolean validator or moving `resume` to the capability plane; that
+would have been the `reflection` treatment, which is for members the engine *does* call. No read-side
+line was touched.
+
+Version policy for `resume` (issue #498 S3, nineteenth slice):
+
+| release | writing `resume` at the top level |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level |
+| 0.27.0 | **never published**, so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, nineteenth slice) | **rejected on the spot** — write `config.run.resume`. The name gate throws `unknown runToolLoop option: "resume" (its canonical home is config.run.resume; the flat spelling is rejected)` |
+
+**The value surface did not move, only the spelling.** `resume` still has no value validator: `true`,
+`false`, a string and a snapshot object all reach `effectiveOptions.resume` byte for byte and still
+drive the same truthiness reads, so a non-boolean truthy value still resumes (pinned by `R2`). The
+fixture (`withRunFamily` in `test/helpers/run-direct.js`) again needed no new code — the key joined
+`RUN_FAMILY_FIXTURE_KEYS`, which is what kept this slice from becoming a 51-file rewrite. Measured red
+cells: **98** on the single delete, **60** once the fixture translated the spelling, **0** after the
+hand-written sites were migrated (18 in `test/loop-resume.test.js`, 7 in `test/loop-resume-notice.test.js`,
+the resume fixtures of `run-state` / `loop-run-state-cells` / `loop-resume-fold-immunity` /
+`loop-resume-prior-seed-469` / `judge` / `tool-fact-success-parity` / `loop-v020-rc` /
+`loop-invalid-arguments` / the three cell tests, the inline allowlist mirror, the two-shape equivalence
+sample, the `C1` conflict channel, the `I4` alias pin, the adjacency lists in A11 / A14 / A15, the
+shipped contract suite's resume cell, and the two observation scripts `scripts/soak.mjs` /
+`scripts/message-journal-golden.mjs`). The pin file is `test/loop-run-slice-498s3a19.test.js` (`P`
+rejection text verbatim and before any host port is called; `G` the data-value matrix above; `F` the
+function value rejected on both spellings, with the two reasons kept apart; `R` a real resume still
+resuming, and the truthiness read unchanged; `N` the four-way account, the untouched `session.resume`
+ruling and the untouched `journalResumeUnpersistedToolResults` / `resumeRunSnapshot` annotations;
+`S` the fixture translation point).
+
 ### The `capabilities` namespace (issue #498)
 
 Behaviour carriers are not data, so 0.28.0 gives them their own container. It has **three groups**

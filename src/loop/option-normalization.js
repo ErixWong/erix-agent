@@ -244,7 +244,14 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   "session",
   "store",
   "runId",
-  "resume",
+  // #498 S3 A19: `resume` left this list; home
+  // `config.run.resume`. Expansion writes it back onto
+  // `effectiveOptions.resume`, so the read side (the two
+  // truthiness tests in `resume-manager.js`) is unchanged.
+  // Gate 2: data shapes are nested-accepted and flat-rejected;
+  // a function is rejected on **both** spellings — the engine
+  // never calls it, only tests it (the `stream` / `metadata`
+  // precedent: a narrowing, not a lost capability).
   "onRound",
   "onJudge",
   "onToolResult",
