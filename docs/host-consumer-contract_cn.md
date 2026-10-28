@@ -12,6 +12,8 @@
 展示投影增量变更的迁移步骤见
 [host-upgrade-guide-0.16.0.md](host-upgrade-guide-0.16.0.md)。
 
+
+装配口产出的选项：端口的 `session.id` 与 `session.initialMessages` 以配置叶子 `config.run.runId`、`config.input.messages` 的形态进入选项树，**永不**以已退役的扁平名 `runId` / `initialMessages` 出现——名称闸口如今也校**合并后的表示**，所以引擎不可能产出一个「宿主写了会被拒」的拼写（#544）。值与读侧一字未动；派生叶子只补洞，因此宿主在 `policy.config` 里逐叶给过的值照旧赢，调用级 `config` 也照旧整棵覆盖那棵树。
 ## `runToolLoop` 选项与工具执行契约
 
 `runToolLoop` 只接受以下顶层选项键。陌生键抛 `TypeError`，不再被静默忽略。宿主的私有

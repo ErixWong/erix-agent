@@ -15,6 +15,8 @@ store-fidelity, same-round ordering, and additive display-projection migration
 steps are in
 [host-upgrade-guide-0.16.0.md](host-upgrade-guide-0.16.0.md).
 
+
+Assembly-derived options: the port's `session.id` and `session.initialMessages` reach the option tree as the config leaves `config.run.runId` and `config.input.messages` — never as the retired flat names `runId` / `initialMessages`, which the name gate now rejects on the **merged** representation as well, so the engine cannot emit a spelling a host would be refused for writing (#544). Values and the read side are unchanged; derived leaves only fill holes, so a leaf the host set in `policy.config` still wins, and a call-level `config` still overrides that tree wholesale.
 ## `runToolLoop` options
 
 `runToolLoop` accepts only the following top-level option keys. An unknown key
