@@ -968,7 +968,8 @@ server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那�
   modelConfig.resolve`——因为这个选项名一出现就被当成端口读
   （`persistenceMode`，`src/loop/orchestrator.js`）。被探测的是**解析后的值**，不是解析器。
 - 槽位选择是 per-run 的：槽位名经 `session.modelSlot` 传入
-  （`persistenceMode`，`src/loop/orchestrator.js`）。**0.27.0 及以前（含已发布的 0.27.0）**
+  （`persistenceMode`，`src/loop/orchestrator.js`）。**0.27.0 及以前**——但 **0.27.0 从未发布**
+  （最后一个已发布版本是 0.26.0，所以宿主真正能装到这套新行为的第一个版本是 0.28.0）——
   两个内置 provider 对不认识的槽位名都回落到 `default` 槽，所以拼错槽位名不会让这个 run 失败。
   **自 0.28.0 起（破坏面，issue #518）** 这条静默回落被取消——「没写槽位」与「槽位写错」是
   两个请求：省略槽位（`undefined` / `null`）仍解析 `default`，而显式给出一个槽位图里没有的名字
@@ -1099,7 +1100,8 @@ const modelConfig = createJsonFileModelConfigProvider({ path: configPath });
 
 // per-run 的槽位选择跟着 run 走，不跟着进程走。
 // 省略槽位 ⇒ 解析 "default" 槽；显式给出不认识的名字 ⇒ 启动期抛
-//（自 0.28.0 起；0.27.0 及以前是静默回落 "default"，issue #518）。
+//（自 0.28.0 起；0.27.0 及以前是静默回落 "default"——但 **0.27.0 从未发布**，最后一个已发布
+// 版本是 0.26.0，所以宿主真正能装到这套新行为的第一个版本是 0.28.0，issue #518）。
 const modelSlot = run.triage ? "triage" : undefined;
 const slot = await modelConfig.resolve(modelSlot);
 

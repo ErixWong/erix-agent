@@ -1207,9 +1207,11 @@ run; the only signal is the `model_metadata_missing` event named below.
   name is read as a port whenever it is present (`persistenceMode` at `src/loop/orchestrator.js`).
   The resolved value — not the resolver — is what the probe reads.
 - Slot selection is per run: the slot name travels in `session.modelSlot`
-  (`persistenceMode` at `src/loop/orchestrator.js`). **Up to and including 0.27.0** both
-  built-in providers fell back to the `default` slot for an unknown name, so per-run
-  selection never failed a run that only misspelled a slot. **Since 0.28.0 (breaking,
+  (`persistenceMode` at `src/loop/orchestrator.js`). **Up to and including 0.27.0** — a version
+  that was **never published** (the last published release is 0.26.0, so the first release a host
+  can actually install with the new behaviour is 0.28.0) — both built-in providers fell back to
+  the `default` slot for an unknown name, so per-run selection never failed a run that only
+  misspelled a slot. **Since 0.28.0 (breaking,
   issue #518)** that silent fallback is gone — "no slot named" and "a slot named wrong"
   are two different requests: omitting the slot (`undefined` / `null`) still resolves
   `default`, while an explicit name the slot map does not own **throws at startup**,
@@ -1358,7 +1360,9 @@ const modelConfig = createJsonFileModelConfigProvider({ path: configPath });
 
 // Per-run slot choice travels with the run, not with the process.
 // Omitting the slot resolves the "default" slot; an explicit unknown name throws at
-// startup (since 0.28.0 — up to 0.27.0 it silently fell back to "default", issue #518).
+// startup (since 0.28.0 — up to 0.27.0 it silently fell back to "default"; 0.27.0 was never
+// published, the last published release is 0.26.0, so 0.28.0 is the first release a host can
+// actually install with the throwing behaviour, issue #518).
 const modelSlot = run.triage ? "triage" : undefined;
 const slot = await modelConfig.resolve(modelSlot);
 
