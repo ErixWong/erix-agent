@@ -104,7 +104,6 @@ function legacyFlatOptions(input) {
   } = input;
   const options = {
     provider,
-    cwd: params.cwd,
     tools: tools.tools,
     executeTool: tools.executeTool,
     maxRounds: params.maxRounds,
@@ -127,6 +126,10 @@ function legacyFlatOptions(input) {
         initialUserMessage: params.task,
       },
       timing: { timeoutMs: params.timeoutMs, retry: { attempts: 2 } },
+      // #498 S3 A15: `cwd` is retired as a flat option too; its canonical home is `config.run.cwd`
+      // (the expansion phase writes it back to `effectiveOptions.cwd`, so the equivalence claim is
+      // unaffected). Merged into the **same** `config` tree.
+      run: { cwd: params.cwd },
       // #498 S3 A9: `task` is retired as a flat option too; its canonical home is
       // `config.metadata.task`. Merged into the **same** `config` tree (a second `config:` key would
       // silently replace the `input` / `timing` groups above).

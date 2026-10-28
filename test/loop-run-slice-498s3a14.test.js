@@ -185,7 +185,10 @@ test("N2 撞名面没动：`maxTokenContinuations`（run 组）与 A5 退役的 
 });
 
 test("N3 邻接面没动：`run` 组剩下六个大件一件没动，`maxRounds` / 端口照旧", () => {
-  for (const key of ["runId", "cwd", "stream", "completion", "maxRounds", "resume", "reflection", "wrapup"]) {
+  // #498 S3 A15：`cwd` 也退役了扁平写法（家 `config.run.cwd`），所以它从这条循环里移出、
+  // 翻成反向钉；其余邻接键的断言一字未动。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("cwd"), false, "A15 已退役 `cwd` 的扁平写法");
+  for (const key of ["runId", "stream", "completion", "maxRounds", "resume", "reflection", "wrapup"]) {
     assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(key), true, `${key} 仍可扁平写（本片不许收它）`);
   }
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("store"), true, "`store` 是永久顶层面，不许动");

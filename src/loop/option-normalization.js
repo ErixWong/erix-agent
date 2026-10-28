@@ -258,11 +258,12 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   "onToolCall",
   "onUsage",
   "onEvent",
-  // issue #386 切片 1：`cwd` 只被**透传**给 `finalGuard` 的 payload，引擎自己不解释它
-  // （不 chdir、不校验存在性、不读盘）。**追加在名单末尾而不是插进上面的分组**：
-  // 这份名单的顺序是未知键建议的平局优先级（严格 `<`），插队会改写既有未知键的建议结果；
-  // 追加在尾部则只对「离 `cwd` 更近」的新未知键生效，旧建议逐字不变。
-  "cwd",
+  // #498 S3 A15: `cwd` left this list; home `config.run.cwd`.
+  // Expansion writes it back onto `effectiveOptions.cwd`, so the type
+  // check (issue #386: a non-string is `cwd must be a string` on both
+  // sides) and the `finalGuard` payload path are unchanged. Cells: 29
+  // single-delete, 0 after the fixture moved the spelling — see
+  // `test/loop-run-slice-498s3a15.test.js`.
   // issue #386 切片 2：`deliverables` 是宿主声明的交付物判据（引擎在每次 guard 调用前核一遍，
   // 核不过就不许盖 `verified` 章）。同样追加在末尾，理由同上（旧未知键的建议结果一字不改）。
   "deliverables",
