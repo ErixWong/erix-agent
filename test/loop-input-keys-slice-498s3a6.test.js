@@ -19,7 +19,7 @@
 //   · provider 请求字段 `system`（`src/messages/anthropic.js`）与消息转换入参
 //     `canonicalToAnthropicRequest({ system })`：不是选项面，从不经过名称闸口；
 //   · `wrapup` 组的**嵌套容器**（`config.run.reflection.wrapupNormalize` 那一带）与顶层 `wrapup`
-//     是两个东西；顶层 `wrapup` 本片退回、仍是活选项；
+//     是两个东西；顶层 `wrapup` 本片退回，**#498 S3 A18 已把它退役**（P5-c 现在钉的是退役后的语义）；
 //   · `./tools` 子路径导出 / `createToolRegistry` / 槽位面同名字段：都不是顶层选项。
 //
 // 零真实 LLM（fake provider）、不写盘、不碰真实 `~/.erix`。
@@ -255,7 +255,7 @@ test("P5-c 专项：顶层 wrapup 已退役（#498 S3 A18 收口）；wrapup 组
     config: { input: { system: "SYS", cacheStablePrefix: false, wrapup: false } },
   });
   assert.equal(provider.requests[0].system, "SYS", "config.input.wrapup:false ⇒ 系统提示不被追加收尾协议");
-  // 同一份 run 开回默认（`wrapup` 未给 = true）⇒ 收尾协议回来。两个方向都在，才叫「仍是活选项」。
+  // 同一份 run 开回默认（`wrapup` 未给 = true）⇒ 收尾协议回来。两个方向都在，才叫「叶子仍是活旋钮」。
   const withWrapup = createFakeProvider(DONE);
   await sharedRunDirect({
     provider: withWrapup,

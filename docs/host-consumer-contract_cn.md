@@ -180,7 +180,7 @@ executeTool({ id, name, input, context, signal })
 
 | 命名空间 | 旋钮 |
 | --- | --- |
-| `config.input` | `system`、`cacheStablePrefix`、`initialUserMessage`、`messages`（扁平 `initialMessages`）、`wrapup`——**没有** `tools`（issue #527：它是永久顶层面，第三站） |
+| `config.input` | `system`、`cacheStablePrefix`、`initialUserMessage`、`messages`（扁平 `initialMessages`）、`wrapup`——**没有一个是还能扁平写的**（本组自 A18 起收口）；**没有** `tools`（issue #527：它是永久顶层面，第三站） |
 | `config.run` | `maxRounds`、`maxTokenContinuations`、`stallDetection`、`completion`、`replayPolicy`、`invalidArguments`、`partialPersistence`、`persistence`、`outputHygiene`、`writeToolNames`、`writeToolPathKeys`、`resume`、`stream`、`reflection`、`runId`、`cwd` |
 | `config.tuning` | `maxTokens`、`temperature`、`topP`、`cacheCapable` |
 | `config.timing` | `timeoutMs`、`deadlineMs`、`retry` |
@@ -368,9 +368,10 @@ executeTool({ id, name, input, context, signal })
   里没有为它登记任何东西，所以文案**不带** `capabilities.*` 那一站。同一个叶子上的**函数值**文案更进一步：
   它直说「没有能力面之家」——`system` 是数据键，修法是「传纯数据」，不是「搬到能力面」。
 
-**`config.input` 除 `wrapup` 外已收口；`tools` 根本不是配置键（issue #527）。** A6 当时把 `tools` 退回等裁决；
-裁决已经落地。两件事都钉在 `test/loop-input-keys-slice-498s3a6.test.js`（G1–G5、S）与
-`test/loop-config-namespace-497.test.js`（I3）里：
+**`config.input` 已收口——组里没有任何叶子还带扁平孪生；`tools` 根本不是配置键（issue #527）。**
+A6 当时把 `tools` 退回等裁决、把 `wrapup` 退回待做；两条裁决都已落地。这些事钉在
+`test/loop-input-keys-slice-498s3a6.test.js`（G1–G5、S）、`test/loop-input-keys-slice-498s3a18.test.js`
+（P/G/F/R/N/S）与 `test/loop-config-namespace-497.test.js`（I3）里：
 
 * **`tools` 是永久顶层面（第三站），与 `provider` / `executeTool` / `store` 同类。** A6 的可达性闸口
   证明了理由：宿主交进来的工具声明，其**条目里可以带函数成员**——`handler`、`validate`、`execute`，
@@ -396,14 +397,25 @@ executeTool({ id, name, input, context, signal })
   | 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主的树里这件事生效过 |
   | 0.28.0 及以后（issue #527） | **当场拒**——请写顶层 `tools`；叶子不在 schema 上，文案点名第三站 |
 
-* **`wrapup` 是退回待做。** 它的扁平写点摊在约 35 个测试文件 / 约 106 处（`wrapup: false` 是夹具里关掉
-  收尾协议的惯用写法）；删键会一次红 **189** 个测试格，而朴素改写会重演 #521 的问题（475 个写点，外加
-  「这个文件已经有 `config:` 键」——朴素替换会造出后者静默胜的重复键）。正确顺序是先落一条**夹具级翻译**
-  （`test/helpers/run-direct.js` 的 `withSeed` 就是先例），再删键。所以 `wrapup` 仍是合法的扁平选项；
-  它的规位 `config.input.wrapup` 早就存在，且被真的用到。
+* **`wrapup` 已退役（issue #498 S3 A18）——它是这一组最后一个扁平孪生。** A6 定下的顺序被逐字执行：
+  先落**夹具级翻译点**（#528 在 `test/helpers/run-direct.js` 里把 `withInputFamily` 加在 `withSeed` /
+  `withRunFamily` 旁边，于是 88 个既有调用方一行没改），再删键。裁决（#495）接受这条**收窄**：*函数*值
+  过去在扁平侧是被接受的（引擎只求 `wrapup !== false` 这一个真值——`src/loop/orchestrator.js`——所以函数
+  只是恰好 truthy，**从不被执行**；JSDoc 一直声明 `wrapup?: boolean`），而 `config` 子树只装数据。
+  于是函数形状现在**两个拼写都被拒**，而 schema **没有**为了让扁平那道门开着被放宽。这条**故意不是**
+  `reflection`（issue #530）的处置方式：那一组的成员真的被调用，所以它必须拆成数据半与行为半——
+  `wrapup` 没有需要保留的行为半。
 
-这条账目是**派生**的、不是记出来的：`input` 组里仍带扁平孪生的成员现在**恰好一个**（`wrapup`），
-测试断言这个集合等于退回清单。第三站也双向派生：**两个家都没有**的键（`configPathForOption` 与
+  | 发布 | 写扁平 `wrapup` | 写 `config.input.wrapup` |
+  | --- | --- | --- |
+  | 0.26.0 及以前（**最后已发布**的版本） | 合法——而且它是当时**唯一**的拼写（`config` 命名空间还不存在） | 不适用（没有 `config` 命名空间） |
+  | 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主的树里这件事生效过 | 同样**从未发布** |
+  | 0.28.0 及以后（issue #498 S3 A18） | **当场拒**——文案点名新家：`unknown runToolLoop option: "wrapup" (its canonical home is config.input.wrapup; the flat spelling is rejected)` | 唯一合法拼写；叶子仍在 schema 上，展开相把它写回 `effectiveOptions.wrapup`，所以引擎每个读侧都不变 |
+
+这条账目是**派生**的、不是记出来的：`input` 组里仍带扁平孪生的成员现在是**零**，而且判据不数叶子——
+它拿白名单里**每一个名字**去问 `configPathForOption`，断言没有任何一条答出 `input.` 开头的路径
+（`test/loop-input-keys-slice-498s3a18.test.js` 的 N 段）。这就是为什么没有人需要复述「组里今天有几个
+叶子」：判据说的是**映射**，不是条数。第三站也双向派生：**两个家都没有**的键（`configPathForOption` 与
 `capabilitiesPathForOption` 都返回 `undefined`）恰好等于 `TOP_LEVEL_SURFACE_OPTION_NAMES` 加两个容器——
 #527 之后是 **12**（之前 11），新增的成员就是 `tools`。把 `config.input.tools` 叶子加回去会让自检变红
 并点名该键，这就是「账目在跑、不是抄的期望值」的反向证。
@@ -413,7 +425,7 @@ executeTool({ id, name, input, context, signal })
 
 | 面 | 住在哪 | 状态 |
 | --- | --- | --- |
-| `runToolLoop` 顶层选项 | `RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`） | `system` **已被 A6 退役**；`wrapup` 仍是合法扁平写法；`tools` 是**永久顶层面（第三站）**，与 `provider` / `executeTool` / `store` 同类——它根本没有嵌套家 |
+| `runToolLoop` 顶层选项 | `RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`） | `system` **已被 A6 退役**；`wrapup` **已被 A18 退役**（扁平写法当场拒，家 `config.input.wrapup`）；`tools` 是**永久顶层面（第三站）**，与 `provider` / `executeTool` / `store` 同类——它根本没有嵌套家 |
 | `config.input.*` | `CONFIG_NAMESPACE_SCHEMA.input`（`src/loop/config-namespace.js`） | **数据**叶子的规位之家——`tools` 自 #527 起**不在其中**（叶子已拆） |
 | provider 请求字段 `system` / OpenAI 的 `role: "system"` | `src/messages/anthropic.js`、`src/messages/canonical.js` | **一字未动**——那是引擎的**读侧**，展开相就是喂它的 |
 | `systemPrompt` / `systemPromptMode` / `systemPromptFile` | issue #505 那两片——**独立选项**，从来不是本组的成员 | **一字未动**；两个都不是 `runToolLoop` 的顶层键，也没有配置面之家 |
