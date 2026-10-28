@@ -1455,10 +1455,14 @@ async function main() {
     executeTool: makeExecuteTool({ tokensPerRound: 40 }),
     // 注：文档写的 governor 选项**不在** src/loop/option-normalization.js:36-97 的白名单里
     // （传入即 unknown runToolLoop option），soak 只观察不改：见报告 engineDefects。
-    stallDetection: false,
     store: createFileTranscriptStore({ dir: storeDir }),
-    persistence: "required",
     config: {
+      // #498 S3（`run` 片 A13）：顶层 `stallDetection` 已退役，家是 `config.run.stallDetection`
+      // （展开相写回 `effectiveOptions.stallDetection`，引擎读侧不变）。soak 是**观察脚本**，
+      // 本片只改拼写、不改观察逻辑（仍是 `false`：不让停顿检测污染长跑样本）。
+      // #498 S3 A13：`persistence`（模式）也退役了扁平写法，同样并进 `config.run`
+      // （`store` 是端口，**没动**）。soak 仍是 `required` + 文件 store，观察口径一字未改。
+      run: { stallDetection: false, persistence: "required" },
       // #498 S3（`metadata` A8）：顶层 `modelMetadata` 已退役，家是 `config.metadata.modelMetadata`
       // （展开相写回 `effectiveOptions.modelMetadata`，`modelMetadataFor` 读侧不变）。
       ...(upstream.modelMetadata && Object.keys(upstream.modelMetadata).length > 0

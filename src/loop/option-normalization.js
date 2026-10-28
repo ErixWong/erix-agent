@@ -140,7 +140,6 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // `config.input.tools` is now rejected as an unknown leaf whose message points at the top level.
   // The engine's read side is unchanged: it still reads `effectiveOptions.tools`.
   "tools",
-  "outputHygiene",
   // #498 S3 (`run` slice, segment A11): `writeToolNames` / `writeToolPathKeys` / `replayPolicy` /
   // `invalidArguments` left the allowlist here. Their canonical home is `config.run.*`
   // (`CONFIG_NAMESPACE_SCHEMA.run` in `src/loop/config-namespace.js`), and the expansion phase writes
@@ -198,7 +197,12 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // (`src/messages/anthropic.js`), and the assembly `policy.maxTokens` (`src/assembly.js`) — none of
   // them goes through this allowlist.
   "reflection",
-  "stallDetection",
+  // #498 S3 A13: three data shells left this list.
+  // `stallDetection` / `outputHygiene` / `persistence` now
+  // live at `config.run.<key>`; expansion writes each one
+  // back onto `effectiveOptions.<key>`, so every engine
+  // reader is unchanged and the name gate names the home.
+  // Gate-2 parity + red-cell counts: the A13 slice test.
   "completion",
   "finalGuard",
   // #498 S3 (`guard` slice): `finalGuardMaxRetries` / `finalGuardTimeoutMs` left the allowlist here.
@@ -232,7 +236,6 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // the session port — so retiring the flat spelling would promote that leaf into one. Returned.
   "session",
   "store",
-  "persistence",
   "runId",
   "resume",
   "onRound",

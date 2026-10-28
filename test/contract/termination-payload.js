@@ -122,12 +122,14 @@ export function terminationPayloadContract(label, getEntry) {
     await assert.rejects(
       runToolLoop({
         provider,
-        config: { input: { initialUserMessage: "work" } },
+        // #498 S3 A13: `stallDetection` retired its flat spelling; `config.run.stallDetection` is
+        // the only home now. It stays inside the **same** `config` container — a second `config`
+        // key in one object literal would silently win.
+        config: { input: { initialUserMessage: "work" }, run: { stallDetection: false } },
         executeTool: async () => "worked",
         signal: controller.signal,
         maxRounds: 10,
         completion: false,
-        stallDetection: false,
         onEvent: (event) => {
           if (event.type === "round_end" && event.round === 2) controller.abort(new Error("user stopped"));
         },
@@ -157,11 +159,11 @@ export function terminationPayloadContract(label, getEntry) {
         { ...toolRound("c1"), usage: { input_tokens: 42, output_tokens: 7 } },
         { content: [{ type: "text", text: "done" }], stopReason: "end_turn", usage: { input_tokens: 8, output_tokens: 2 } },
       ]),
-      config: { input: { initialUserMessage: "work" } },
+      // #498 S3 A13: same move as the abort case above — one `config` container.
+      config: { input: { initialUserMessage: "work" }, run: { stallDetection: false } },
       executeTool: async () => "worked",
       maxRounds: 10,
       completion: false,
-      stallDetection: false,
     });
 
     assert.equal(result.termination.reason, "end_turn");

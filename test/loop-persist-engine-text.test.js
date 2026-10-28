@@ -20,7 +20,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
 import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
@@ -319,7 +318,7 @@ test("#326 续（方向提示·resume flush）：store.load() 全部行里**恰�
   // intercept 立刻开审 ⇒ 提示在 resume 补跑段入队，由 resume 路径的 flush 点发出。
   const provider = createFakeProvider([toolTurn("c"), endTurn("收尾结论")]);
   const { tools, ...withoutTools } = hintOptions({ marker });
-  await runToolLoop({
+  await runDirect({
     ...withoutTools, tools: hintTools,
     maxRounds: 6, store, runId, provider, resume: true, executeTool: async ({ id }) => `done-${id}`,
   });
@@ -352,7 +351,7 @@ test("#326 续（方向提示·resume 侧重建）：模型只收到 **1 条**�
   assert.equal(countIn(messagesOf(firstRecords), marker), 1, "前置：档案里恰有一条");
 
   const resumed = createFakeProvider([endTurn("续接结论")]);
-  await runToolLoop({
+  await runDirect({
     ...baseOptions, tools: hintTools,
     maxRounds: 6, store, runId, provider: resumed, resume: true, reflection: false,
   });

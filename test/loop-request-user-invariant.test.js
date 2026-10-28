@@ -11,7 +11,6 @@ import assert from "node:assert/strict";
 //   · budgetTokens=8    ：同一代码路径（safety 层 safeTruncateMessages 的逐条删除循环
 //     从头开始删未保护的消息，连唯一的 user 轮一起删光）在离线估算下必然为空列表
 // 真上游的失败面在 (400, 1200] 之间；离线估算系数不同，所以把同一档位的判据下推到 8。
-import { runToolLoop } from "../src/loop/orchestrator.js";
 import { runDirect } from "./helpers/run-direct.js";
 import { validateMessages } from "../src/messages/rounds.js";
 import {
@@ -131,7 +130,7 @@ test("T1 #292 极小预算下发给上游的 messages 不得为空/不得没有 
   for (const budgetTokens of [400, 8]) {
     const views = [];
     const provider = createStrictUpstream(TOOL_CALL_SCRIPT, { views });
-    const result = await runToolLoop(toolLoopOptions({
+    const result = await runDirect(toolLoopOptions({
       budgetTokens,
       stream: false,
       provider,
@@ -152,7 +151,7 @@ test("T4 #292 同一条不变量必须同时覆盖 chatStream 通道", async () 
   for (const budgetTokens of [400, 8]) {
     const views = [];
     const provider = createStrictUpstream(TOOL_CALL_SCRIPT, { views });
-    const result = await runToolLoop(toolLoopOptions({
+    const result = await runDirect(toolLoopOptions({
       budgetTokens,
       stream: true,
       provider,
@@ -175,7 +174,7 @@ test("T4 #292 同一条不变量必须同时覆盖 chatStream 通道", async () 
 test("T3 #292 对照：健康预算（1200）下压缩必须照常发生，且每条请求都有 user 轮", async () => {
   const views = [];
   const provider = createStrictUpstream(TOOL_CALL_SCRIPT, { views });
-  const result = await runToolLoop(toolLoopOptions({
+  const result = await runDirect(toolLoopOptions({
     budgetTokens: 1200,
     stream: false,
     provider,
@@ -210,7 +209,7 @@ test("T3 #292 对照：健康预算（1200）下压缩必须照常发生，且�
   // 变异证「预算 < N 就跳过压缩」必须在这里变红，而不是只在 1200 档变红。
   const tinyViews = [];
   const tinyProvider = createStrictUpstream(TOOL_CALL_SCRIPT, { views: tinyViews });
-  const tiny = await runToolLoop(toolLoopOptions({
+  const tiny = await runDirect(toolLoopOptions({
     budgetTokens: 8,
     stream: false,
     provider: tinyProvider,
@@ -238,7 +237,7 @@ test("T3 #292 对照：健康预算（1200）下压缩必须照常发生，且�
 test("T2 #292 保底必须保留「最新」那条 user 轮，且视图配对合法", async () => {
   const views = [];
   const provider = createStrictUpstream(TOOL_CALL_SCRIPT, { views });
-  const result = await runToolLoop(toolLoopOptions({
+  const result = await runDirect(toolLoopOptions({
     budgetTokens: 8,
     stream: false,
     provider,
@@ -450,7 +449,7 @@ test("T8 #292-R1 续跑的第一个请求必须保住历史里的每条 tool_use
   const resumedProvider = createStrictUpstream([
     { content: [{ type: "text", text: "resumed-done" }], stopReason: "end_turn" },
   ], { views: resumedViews });
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: resumedProvider,
     resume: true,
     completion: false,

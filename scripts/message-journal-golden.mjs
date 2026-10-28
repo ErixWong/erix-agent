@@ -75,7 +75,10 @@ const BASE = {
   tools: TOOLS,
   wrapup: false,
   completion: false,
-  stallDetection: false,
+  // #498 S3（`run` 片 A13）：顶层 `stallDetection` 已退役，家是 `config.run.stallDetection`
+  // （展开相写回 `effectiveOptions.stallDetection`，引擎读侧不变）。本脚本是**观察脚本**：
+  // 只改拼写，观察逻辑与金样字节都一字未改（`false` 仍是 `false`）。
+  config: { run: { stallDetection: false } },
   executeTool: async ({ id }) => `done-${id}`,
 };
 
@@ -95,7 +98,8 @@ export async function scenarioSingleRun() {
     maxRounds: 8,
     store,
     runId: "golden-single",
-    config: { input: { initialUserMessage: "金样任务" } },
+    // 并进**同一个** `config` 容器：写第二个 `config` 键会让 BASE 里的 `run.stallDetection` 静默消失。
+    config: { ...BASE.config, input: { initialUserMessage: "金样任务" } },
     provider,
     finalGuard: async () => {
       guardCalls += 1;
@@ -126,7 +130,8 @@ export async function scenarioCrashResume() {
   let thrown = "";
   try {
     await runToolLoop({
-      ...BASE, maxRounds: 8, store, runId, config: { input: { initialUserMessage: "金样任务" } }, provider: first,
+      ...BASE, maxRounds: 8, store, runId,
+      config: { ...BASE.config, input: { initialUserMessage: "金样任务" } }, provider: first,
       reflection: {
         enabled: true, roundJudge: true, judgeIntercept: false,
         judge: { provider: createFakeProvider([judgeNotDone("还没完"), judgeNotDone("还没完"), judgeDone()]) },

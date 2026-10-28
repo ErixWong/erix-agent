@@ -777,6 +777,66 @@ unknown config.metadata option: "session" ("session" is a permanent top-level op
 R 格断言写在规位里的值逐字到达 `effectiveOptions.partialPersistence`，并且仍然真的驱动
 `stream` + `partialPersistence` 的恢复路径。
 
+**`run` 组 A13 段的扁平写法版本口径**（issue #498 S3，第十三片——A12 刻意压住的那三件：
+`stallDetection` / `outputHygiene` / `persistence`）：
+
+| 版本 | 顶层写 `stallDetection` / `outputHygiene` / `persistence` |
+| --- | --- |
+| 0.26.0 及更早（最后一个**已发布**版本） | 顶层接受——那些版本只认这个拼写 |
+| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装过「这件事有影响」的树 |
+| 0.28.0 及以后（issue #498 S3，第十三片） | **当场拒**——改写 `config.run.stallDetection` / `config.run.outputHygiene` / `config.run.persistence`。名称闸口抛 `unknown runToolLoop option: "<key>" (its canonical home is config.run.<key>; the flat spelling is rejected)` |
+
+**为什么一起走、为什么现在才走。** A12 量到 `run` 组四件数据壳**同删**牵动 **176 格**——远高于「必须停止
+逐处改调用点」的阈值。所以 A12 先落了**唯一一个**翻译点（`test/helpers/run-direct.js` 的 `withRunFamily`，
+与 #521 的种子夹具同一条纪律），把同一次删除压到 **31 格**，然后只交了 `partialPersistence`。夹具已在
+`main` 上，本片吃这个红利，而不是再付一遍：
+
+| 键 | 无夹具红格 | 有夹具红格 | 迁完手写点后 |
+| --- | --- | --- | --- |
+| `stallDetection` | 120 | 32 | 0 |
+| `outputHygiene` | 29 | 4 | 0 |
+| `persistence` | 38 | 10 | 0 |
+| 三件同删 | — | **38** | 0 |
+
+夹具之后剩下的 38 格是**手写点**，也就是本片的全部工作量：直连 `runToolLoop` 的调用方、
+`test/loop-option-normalization.test.js` 里的内联白名单镜像、`test/loop-config-namespace-497.test.js`
+里的两形态等价样本、契约载荷演示、`examples/provenance-repro.test.mjs`、两个观察脚本
+（`scripts/soak.mjs` / `scripts/message-journal-golden.mjs`——只改拼写，观察逻辑一字未改），以及本文档里
+那个**可执行**围栏。其中三个测试文件把直连调用改走夹具（`runDirect`）而不是逐处手译：扩展夹具的覆盖
+范围在每个调用点只花一个词，下一片不必再付一遍。
+
+**闸口二（可达性检查）逐键跑过，每键两个合法形状，扁平 vs 规位，走真 `runToolLoop` 入口**——正是拦下过
+`tools`（#527）与 `session`（#531）的那一步：
+
+| 键 | 合法形状 | 扁平侧 | 规位侧 |
+| --- | --- | --- | --- |
+| `stallDetection` | `false` / `{ window: 4 }` | exit 0 / 0 | exit 0 / 0 |
+| `outputHygiene` | `false` / `{ limit: 4096 }` | exit 0 / 0 | exit 0 / 0 |
+| `persistence` | `"none"` / `"required"` | exit 0 / 0 | exit 0 / 0 |
+
+非法形状两侧同样同拒（`persistence: true` 两侧都是 `persistence must be "none" or "required"`），所以这是
+**名字**搬家，不是形状收窄。三件都是纯数据壳：没有回调，没有东西要提升到 `capabilities.hooks`。
+
+**没有搬走的是含义，读侧一行未改。** 展开相仍把每个值逐字写回 `effectiveOptions.stallDetection` /
+`.outputHygiene` / `.persistence`；读它的是 `src/loop/orchestrator.js` 顶部的停顿解析分支
+（`false` 优先于 `ERIX_STALL_MODE`）、`outputHygieneEnabled` / `outputHygieneLimit` 的派生与
+`src/loop/run-snapshot-executor.js` 的截断分支、以及 `persistenceMode` 的派生与
+`validateTranscriptStore` 的 `required` 分支。叶子仍然留在 `CONFIG_NAMESPACE_SCHEMA.run` 里，虽然顶层键
+已经离开 `RUN_TOOL_LOOP_OPTION_NAMES`：删扁平键**不是**删叶子。
+
+**本片刻意不动的三个邻接面：**
+
+| 名字 | 另一条面 | 证据 | 动了吗 |
+| --- | --- | --- | --- |
+| `store` | 第三站的**端口**（一个 `TranscriptStore` 实现），不是模式 | `src/assembly-validators.js`（`TRANSCRIPT_STORE_METHODS`）、`test/loop-run-slice-498s3a13.test.js`（N2） | **没有** |
+| `partialPersistence` | 间隔节流的快照旋钮，由 A12 退役——**另一个键**，自己的家在 `config.run.partialPersistence` | `src/loop/resume-manager.js`、`test/loop-run-slice-498s3a12.test.js` | **没有**——不许改回扁平 |
+| `writeToolNames` / `writeToolPathKeys` | judge 的写工具集与路径键优先级，由 A11 退役——同样以 `write` 开头的**另一族** | `src/reflection/judge.js` | **没有** |
+| `maxRounds` / `deadlineMs` | 轮数预算（仍是扁平选项）与已退役的 run 死线（`config.timing.deadlineMs`）——都不是停顿检测 | `CONFIG_NAMESPACE_SCHEMA.run` vs `.timing` | **没有** |
+
+钉子文件是 `test/loop-run-slice-498s3a13.test.js`。P 格逐字断言每个键的拒绝**文案**（一个站，且只有一个），
+G 格就是上面那张闸口二矩阵（`outputHygiene` 与 `persistence` 两行两侧给**同一个** store——没有 store 时
+两侧会因为另一条理由被拒），R 格断言写在规位里的值逐字到达 `effectiveOptions.<key>`，N 格钉住上面四个邻接面。
+
 ### capabilities 命名空间（issue #498）
 
 行为载体不是数据，所以 0.28.0 给它们一个自己的容器。它**有三组**（issue #498 S4b 加了第二组，
@@ -1645,11 +1705,14 @@ const result = await runToolLoop({
   provider: createOpenAIProvider(slot),  // 请求参数：model / max_tokens / temperature 均来自 slot
   modelConfig,                           // 预算元数据：经 session.modelSlot 重新解析
   session: { id: run.id, modelSlot },
-  // 种子消息的规位家（扁平 `initialUserMessage` 自 0.28.0 起退役，见下文「扁平写法的版本口径」）。
-  config: { input: { initialUserMessage: run.prompt } },
+  // 种子消息与持久化模式的规位家（扁平 `initialUserMessage` / `persistence` 自 0.28.0 起退役，
+  // 见下文「扁平写法的版本口径」）。**同一个** `config` 容器——写第二个会静默盖掉第一个。
+  config: {
+    input: { initialUserMessage: run.prompt },
+    run: { persistence: "none" },
+  },
   executeTool,
   maxRounds: 8,
-  persistence: "none",
   signal: controller.signal,
   onEvent: (event) => {
     events.push(event.type);

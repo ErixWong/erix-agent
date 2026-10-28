@@ -58,7 +58,9 @@ function base(extra = {}) {
     config: { input: { initialUserMessage: "go" } },
     completion: false,
     wrapup: false,
-    stallDetection: false,
+    // #498 S3 A13：`stallDetection` 也退役了扁平写法（家在 `config.run.stallDetection`），所以
+    // 这里不再拿它当「仍在白名单的填充键」——那会让本文件随下一片一起红。填充键只留仍在
+    // 白名单里的 `completion` / `wrapup`。
     ...extra,
   };
 }
@@ -145,9 +147,12 @@ test("N1 只点一站：本键的值是纯数据，报错里不出现 `capabilit
   assert.equal(error.message.includes("capabilities."), false);
 });
 
-test("N2 `persistence`（模式）与 `store`（端口）没动：本片只退 `partialPersistence` 的扁平写法", () => {
-  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("persistence"), true);
+test("N2 `store`（端口）没动；`persistence`（模式）与 `partialPersistence` 是两个键、两条路", () => {
+  // A12 当时还能断言 `persistence` 仍在白名单（「本片只退 partialPersistence」）。A13 之后
+  // 它**也**退役了扁平写法 —— 所以这条改成断言「同族不同物」：两条规位路径不同，叶子都还在。
+  // `store` 是第三站的端口，A12/A13 都不动它。
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("store"), true);
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("persistence"), false, "A13 之后它也退役了");
   assert.equal(configPathForOption(KEY), "run.partialPersistence");
   assert.equal(configPathForOption("persistence"), "run.persistence");
   // 叶子仍在 schema 里（删扁平键 ≠ 删叶子）。

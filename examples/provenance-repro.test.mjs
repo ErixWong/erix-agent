@@ -181,11 +181,12 @@ async function runProvenanceChain({
       completion: false,
       reflection: false,
       wrapup: false,
-      stallDetection: false,
       // #498 S3 (`input` slice A): `initialMessages` retired; `config.input.messages` is its one
       // registered leaf alias (expansion writes it back to `effectiveOptions.initialMessages`).
       // #498 S3 A6: `system` retired as well — same group, same mechanism (`config.input.system`).
-      config: { input: { system: CLI_TOOLS_SYSTEM_PROMPT, messages: initialHistory(command) }, folding: { context: {
+      // #498 S3 A13: `stallDetection` retired too (`config.run.stallDetection`); it joins the
+      // **same** `config` container below — a second `config` key would silently win.
+      config: { input: { system: CLI_TOOLS_SYSTEM_PROMPT, messages: initialHistory(command) }, run: { stallDetection: false }, folding: { context: {
                 budgetTokens: 2_000,
         keepRounds: 1,
       } } },
