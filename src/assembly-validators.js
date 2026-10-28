@@ -125,6 +125,12 @@ export function validateTranscriptStore(store) {
  * fine-grained port shape (or an explicit modelConfig override on an
  * assembly port).
  *
+ * **`session` here is presence only, never type (issue #552).** The type test this function used to
+ * carry (`!session` / `typeof session !== "object"` / `Array.isArray(session)`) could not decide
+ * anything: see the internal invariant at its former place. Only `session.id` — a member the
+ * engine really reads (`SESSION_MEMBER_READ_POINTS`) — is reported as a missing capability, and
+ * only when the container is present.
+ *
  * @param {object} input
  * @param {object} input.provider
  * @param {Function} input.executeTool
@@ -133,6 +139,8 @@ export function validateTranscriptStore(store) {
  * @param {boolean} [input.fineGrainedPortShape]
  * @param {boolean} [input.hasExplicitModelConfigOverride]
  * @returns {string[]} missing capability descriptions (empty when satisfied)
+ * @throws {TypeError} only on a broken internal invariant (a non-object `session` reaching this
+ *   line), never for a host mistake — both entry routes refuse that shape in the semantic phase.
  */
 export function collectLoopCapabilitiesMissing({
   provider,
@@ -148,9 +156,33 @@ export function collectLoopCapabilitiesMissing({
   if (typeof executeTool !== "function") missing.push("executeTool");
   if (fineGrainedPortShape) {
     missing.push(...validateModelConfigResolver(modelConfig));
-    if (session !== undefined && (!session || typeof session !== "object"
-      || Array.isArray(session)
-      || typeof session.id !== "string" || session.id.length === 0)) {
+    // #552 (#545 discipline): the three type sub-conditions that used to share the test below
+    // (`!session` / `typeof session !== "object"` / `Array.isArray(session)`) could never be true.
+    // Who can still reach them? **Nobody** — the six entry shapes are closed one by one, and
+    // `test/loop-capabilities-invariant-552.test.js` walks all of them with `null`, a string, a
+    // number and an array (`session must be an object (got …)`, never this gate):
+    //   ① the assembly route never enters this branch at all (`fineGrainedPortShape` requires
+    //      `assemblyPort === undefined`), and `createAssemblyPort` refuses a non-object `session`
+    //      at construction, `via:"assembly"`;
+    //   ② the direct route runs the semantic phase first (`assertSemanticOptionValues` inside
+    //      `normalizeRunToolLoopOptions`) and `collectSessionContainerProblems` refuses the same
+    //      shapes with the same sentence, `via:"direct"`;
+    //   ③ every other producer of a merged option tree (translated `policy` leaves, the port's
+    //      derived keys, `config.metadata.session`) is folded **before** that phase and answers to
+    //      the same gate — no source lands in the merged tree unvalidated.
+    // So by this line `session` is `undefined` or a non-array object, and all that is left to decide
+    // is **presence** of `session.id` — the reachable half #551's `D2` pins.
+    // The type test stays as an **internal invariant with teeth** instead of a capability report: a
+    // future option source that skips its semantic gate must fail loudly here, not be reported as a
+    // missing port method (a sentence about the host's port for a mistake the engine would be making).
+    if (session !== undefined && (!session || typeof session !== "object" || Array.isArray(session))) {
+      throw new TypeError(
+        "internal invariant: the loop capability check received"
+        + ` ${describeSessionValue(session)} as session, but both entry routes refuse that shape in`
+        + " the semantic phase (issue #552). A new option source is bypassing its semantic gate.",
+      );
+    }
+    if (session !== undefined && (typeof session.id !== "string" || session.id.length === 0)) {
       missing.push("session.id");
     }
   } else if (hasExplicitModelConfigOverride) {

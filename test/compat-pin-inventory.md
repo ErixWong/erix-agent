@@ -809,6 +809,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/session-container-513.test.js` | 13 | `session`×12, `tools`×1 |
 | `test/session-container-550.test.js` | 14 | `session`×12, `initialMessages`×1, `tools`×1 |
 | `test/payload-home-551.test.js` | 5 | `session`×4, `tools`×1 |
+| `test/loop-capabilities-invariant-552.test.js` | 11 | `session`×9, `tools`×2 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 
