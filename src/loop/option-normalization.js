@@ -104,7 +104,14 @@ import {
 export const RUN_TOOL_LOOP_OPTION_NAMES = [
   "assemblyPort",
   "provider",
-  "system",
+  // #498 S3 (`input` group, segment A6): `system` left the allowlist. Its canonical home is
+  // `config.input.system` (`CONFIG_NAMESPACE_SCHEMA.input` in `src/loop/config-namespace.js`), and the
+  // expansion phase writes it back onto `effectiveOptions.system` — so the engine's read side (the
+  // system-prompt assembly that folds in the wrap-up instruction, `src/loop/orchestrator.js`) is
+  // unchanged. Only the *write* spelling moved, and the name gate now rejects the flat one while
+  // naming the new home. The other `system` words are deliberately untouched: the provider request
+  // field `system` (`src/messages/anthropic.js`), the message-conversion argument
+  // (`canonicalToAnthropicRequest({ system })`) and the CLI/README wording are not runToolLoop options.
   "wrapup",
   "tools",
   "outputHygiene",

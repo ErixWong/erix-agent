@@ -224,6 +224,12 @@ export async function runExecDemo(task = "查看当前目录有哪些文件，�
   // `config.input.initialUserMessage`. Same object as the seed history above, so the two never race
   // for the `config` key (and `initialMessages` still wins on the read side, unchanged).
   if (!opts.initialMessages) config.input = { ...(config.input ?? {}), initialUserMessage: task };
+  // #498 S3 A6: the top-level `system` retired — its home is `config.input.system` (expansion writes
+  // it back to `effectiveOptions.system`, so the prompt assembly is unchanged).
+  config.input = {
+    ...(config.input ?? {}),
+    system: "你是一个命令行助手。用 exec 工具完成用户的查看类任务，然后用中文简要总结。命令必须在白名单内。",
+  };
   // #498 S3: the top-level `context` shell is retired. The bag mixes data with a **behaviour**
   // carrier (the strategy object), so it splits by value shape: numbers/strings go to
   // `config.folding.context`, the strategy object to `capabilities.ports.strategy`.
@@ -236,7 +242,6 @@ export async function runExecDemo(task = "查看当前目录有哪些文件，�
 
   const result = await runToolLoop({
     provider,
-    system: "你是一个命令行助手。用 exec 工具完成用户的查看类任务，然后用中文简要总结。命令必须在白名单内。",
     tools,
     executeTool,
     maxRounds: 8,

@@ -175,7 +175,6 @@ async function runProvenanceChain({
     const provider = makeProvider(cfg);
     const result = await runToolLoop({ capabilities: { ports: { strategy: createFoldStatisticalStrategy() } },
       provider,
-      system: CLI_TOOLS_SYSTEM_PROMPT,
       tools: [execTool],
       executeTool,
       maxRounds: 8,
@@ -185,7 +184,8 @@ async function runProvenanceChain({
       stallDetection: false,
       // #498 S3 (`input` slice A): `initialMessages` retired; `config.input.messages` is its one
       // registered leaf alias (expansion writes it back to `effectiveOptions.initialMessages`).
-      config: { input: { messages: initialHistory(command) }, folding: { context: {
+      // #498 S3 A6: `system` retired as well — same group, same mechanism (`config.input.system`).
+      config: { input: { system: CLI_TOOLS_SYSTEM_PROMPT, messages: initialHistory(command) }, folding: { context: {
                 budgetTokens: 2_000,
         keepRounds: 1,
       } } },

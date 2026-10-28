@@ -410,6 +410,74 @@ One near-miss worth naming: `maxTokenContinuations` is a **different key** (its 
 `config.run.maxTokenContinuations`, and it stays a legal flat option). A whole-word grep for
 `maxTokens` drags it in; it is not part of this slice and the flat spelling keeps working.
 
+**Flat-spelling version policy for the `input` group's A6 segment** (issue #498 S3, the eighth
+slice — the one that was supposed to close `config.input`; it does **not**, see below):
+
+| release | writing `system` |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
+| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, eighth slice) | **rejected on the spot** — write `config.input.system`. The name gate throws `unknown runToolLoop option: "system" (its canonical home is config.input.system; the flat spelling is rejected)` |
+
+Two properties hold, both machine-checked:
+
+* the expansion phase still writes it onto `effectiveOptions.system`, so **the engine's read side is
+  unchanged** — the reader is the system-prompt assembly that folds the wrap-up instruction in
+  (`src/loop/orchestrator.js`), and it was not touched. The leaf stays in
+  `CONFIG_NAMESPACE_SCHEMA.input` (`src/loop/config-namespace.js`) even though the top-level key left
+  `RUN_TOOL_LOOP_OPTION_NAMES` (`src/loop/option-normalization.js`): deleting the flat key is **not**
+  deleting the leaf. Retirement is a *write-spelling* change only, exactly like the seven slices
+  before it;
+* the rejection message names **one station and only one**. The value is a scalar, so nothing is
+  registered for it in `CAPABILITY_SLOT_DESTINATIONS` (`src/loop/capabilities-namespace.js`) and the
+  message deliberately carries **no** `capabilities.*` hint. The *function-value* message for this
+  same leaf goes one step further and says outright that there is no capability home for it — `system`
+  is a data key, so the fix is "pass plain data", not "move it to the capability surface".
+
+**`config.input` is not closed: `wrapup` and `tools` stay legal flat options, on purpose.** The other
+two keys this slice was chartered to retire were **returned**, and neither return is a scheduling
+accident — both are pinned in `test/loop-input-keys-slice-498s3a6.test.js`:
+
+* **`tools` is blocked by a reachability check, not by time.** A host may hand in tool definitions
+  whose entries carry **function members** — `handler`, `validate`, `execute`, or a function inside
+  `inputSchema`. Every one of those shapes is **accepted** through the flat `tools` today and
+  **rejected** at `config.input.tools`, because `config` holds data only (the subtree must survive a
+  JSON round-trip, so a function value is refused at intake with its full path:
+  `config.input.tools[0].handler is not accepted: …`). Retiring the flat spelling would therefore
+  narrow what a host can hand in — the same class of silent narrowing that issue #520 was opened for
+  (there, `retry.sleepImpl` turned out to be unreachable from the host). So `tools` stays a legal flat
+  option and the current shape is pinned as-is (G1–G4). Two candidates are on the table and the
+  ruling is **not** this slice's: (a) let that one leaf exempt function values, (b) move the member to
+  the capability surface. Worth knowing when ruling: both protocol adapters project each tool entry
+  down to `{name, description, inputSchema}` (the OpenAI projection in `src/messages/canonical.js`,
+  the Anthropic payload builder in `src/messages/anthropic.js`), so today such a member is **inert** —
+  accepted, never called, never sent. The narrowing is therefore "accepted silently" versus "rejected
+  loudly", not "works" versus "breaks".
+* **`wrapup` is deferred.** Its flat write points are spread over ~35 test files / ~106 occurrences
+  (`wrapup: false` is the fixture idiom for turning the wrap-up protocol off); deleting the key turns
+  **189** test cases red at once, and a naive rewrite repeats the #521 problem (475 write points plus
+  "this file already has a `config:` key" collisions that a plain replace turns into a silently
+  winning duplicate). The right order is a fixture-level translation point first — `withSeed` in
+  `test/helpers/run-direct.js` is the precedent — and the key second. `wrapup` therefore stays a
+  legal flat option; its canonical home `config.input.wrapup` already exists and is exercised.
+
+The accounting is machine-derived rather than remembered: the `input` group still has exactly **two**
+members with a flat twin, and the suite asserts that the set equals the returned pair, so "this slice
+did one key less than chartered" cannot go unnoticed.
+
+**These three words live on six other planes, and this slice moved none of them.** A repo-wide grep
+for `system` / `tools` / `wrapup` returns far more than the three options, and migrating any of the
+rest would be a regression:
+
+| plane | where it lives | status |
+| --- | --- | --- |
+| `runToolLoop` top-level option | `RUN_TOOL_LOOP_OPTION_NAMES` (`src/loop/option-normalization.js`) | `system` **retired by this slice**; `wrapup` / `tools` still legal flat (see above) |
+| `config.input.*` | `CONFIG_NAMESPACE_SCHEMA.input` (`src/loop/config-namespace.js`) | the canonical home — write here |
+| provider request field `system` / OpenAI `role: "system"` | `src/messages/anthropic.js`, `src/messages/canonical.js` | **untouched** — that is the engine's *read* side, and the expansion phase feeds it |
+| `systemPrompt` / `systemPromptMode` / `systemPromptFile` | issue #505's two slices — **independent options**, never members of this group | **untouched**; neither is a `runToolLoop` top-level key, and neither has a config home |
+| the reflection wrap-up container (`config.run.reflection.wrapupNormalize`) | `src/loop/orchestrator.js`, `src/reflection/wrapup.js` | **untouched** — a different thing from the top-level boolean `wrapup` |
+| `erix-agent/tools` subpath export and the tool registry (`src/tools/index.js`) | capability surface | **untouched** — a module export, not an option key |
+
 The `context` row carries one sentence that **must** be read: it is a **mixed shell** — it holds
 data members (`budgetTokens` / `keepRounds` / a strategy *name*) **and** behaviour members (the five
 functions `onBeforeFold` / `onAfterFold` / `stubFor` / `protectedMessage` / `recoveryHint`, plus the
