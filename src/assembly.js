@@ -24,7 +24,10 @@ import {
 import {
   MODEL_CONFIG_RESOLVER_HINT,
   assertSemanticOptionValues,
+  collectSessionContainerProblems,
   collectUnknownContextOptions,
+  sessionContainerTypeProblem,
+  tagValidationRoute,
   validateModelConfigResolver,
   validateProviderBoundary,
   validateTranscriptStore,
@@ -565,9 +568,25 @@ export function createAssemblyPort(input = {}) {
     policy: resolveAssemblyMember(input.policy, "policy"),
     ...(input.emit === undefined ? {} : { emit: input.emit }),
   };
+  // issue #513 ④: `session` is the port's identity container by contract, so a non-object value is a
+  // *shape* mistake and says so. Without this line it surfaced as `assembly port is missing methods:
+  // session` — a sentence about methods for a value that is not a port at all, which is what made
+  // `createAssemblyPort({ session: "x" })` unreadable.
+  if (port.session !== undefined
+    && (port.session === null || typeof port.session !== "object" || Array.isArray(port.session))) {
+    throw tagValidationRoute(new TypeError(sessionContainerTypeProblem(port.session)), "assembly");
+  }
   const missing = missingAssemblyMethods(port);
   if (missing.length > 0) {
     throw new TypeError(`assembly port is missing methods: ${missing.join(", ")}`);
+  }
+  // issue #513 ①②: the port member answers to the same allowlist the direct route's semantic phase
+  // runs (`collectSessionContainerProblems`) — one function, one message, so the two routes cannot
+  // disagree about what a legal `session` is. `session.resume` keeps its own message below (it is a
+  // retired member, not an unknown one), so the two rules never compete for the same key.
+  const sessionProblems = collectSessionContainerProblems(port.session);
+  if (sessionProblems.length > 0) {
+    throw tagValidationRoute(new TypeError(sessionProblems.join("; ")), "assembly");
   }
   if (port.session.resume !== undefined) {
     // #498 S4b：幻影组 `session` 的那条别名（`session.resume` → 顶层 `resume`）删掉了。

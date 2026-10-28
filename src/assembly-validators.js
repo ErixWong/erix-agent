@@ -352,6 +352,138 @@ export function validateFoldSummaryHook(hook) {
 }
 
 /**
+ * The members of the top-level `session` container, **derived from the engine's real read points**
+ * (issue #513). `session` is the only container whose members are all optional (`initialMessages`
+ * may be omitted), so a misspelled member hits no gate at all: every other container
+ * (`provider` / `tools` / `store` / `modelConfig`) has *required* members, and a typo there collides
+ * with the missing-methods gate. Here a typo just evaporates — `session.intialMessages` used to be
+ * accepted on **both** routes and the seed history was never played.
+ *
+ * This table is the **one** place the accepted set is written; every message below interpolates it
+ * (`sessionMemberPaths()`), so no name is ever spelled twice and a message cannot drift from the
+ * gate. The read points recorded here are the engine's actual readers, not a copy of the docs:
+ *   · `id` — `assemblyPortDerivedConfigLeaves()` (`src/assembly.js`, → `config.run.runId`) and
+ *     `missingAssemblyMethods()` / `collectLoopCapabilitiesMissing()` (the required `session.id`);
+ *   · `modelSlot` — `assemblyPortOptions()` (`src/assembly.js`) and `runToolLoop`
+ *     (`src/loop/orchestrator.js`), both feeding `modelConfig.resolve(session.modelSlot)`;
+ *   · `initialMessages` — `assemblyPortDerivedConfigLeaves()` (→ `config.input.messages`).
+ *
+ * The list is not trusted on its own: `test/session-container-513.test.js` re-derives the set from
+ * `src/**` by scanning for `session.<name>` / `session?.<name>` member reads and asserts equality in
+ * **both** directions — a name here with no read point fails, and a new read point missing here
+ * fails. That is what keeps the "accepted" clause of the message from becoming a lie the next time
+ * somebody reads one more member.
+ *
+ * @type {ReadonlyArray<{name: string, readBy: string}>}
+ */
+export const SESSION_MEMBER_READ_POINTS = Object.freeze([
+  {
+    name: "id",
+    readBy: "src/assembly.js assemblyPortDerivedConfigLeaves() → config.run.runId"
+      + "; src/assembly.js missingAssemblyMethods() / src/assembly-validators.js"
+      + " collectLoopCapabilitiesMissing() (required session.id)",
+  },
+  {
+    name: "modelSlot",
+    readBy: "src/assembly.js assemblyPortOptions() and src/loop/orchestrator.js"
+      + " → modelConfig.resolve(session.modelSlot)",
+  },
+  {
+    name: "initialMessages",
+    readBy: "src/assembly.js assemblyPortDerivedConfigLeaves() → config.input.messages",
+  },
+]);
+
+/**
+ * Members the engine reads **only in order to refuse them** (issue #498 S4b). They are excluded from
+ * the accepted set but must not be reported as unknown either: each has its own rule with its own
+ * advice (`pass it as config.run.resume`), and two competing messages for one key is exactly the
+ * failure mode that keeps `provider` / `tools` on the missing-methods gate instead of a name list.
+ *
+ * @type {string[]}
+ */
+export const SESSION_RETIRED_MEMBERS = ["resume"];
+
+/** The accepted `session` members, derived from {@link SESSION_MEMBER_READ_POINTS}. */
+export const SESSION_MEMBER_NAMES = SESSION_MEMBER_READ_POINTS.map(({ name }) => name);
+
+/**
+ * The accepted `session` members as **full paths** (`session.id`), for messages.
+ *
+ * @returns {string[]}
+ */
+export function sessionMemberPaths() {
+  return SESSION_MEMBER_NAMES.map((name) => `session.${name}`);
+}
+
+/**
+ * How a `session` value reads in a message (`a string` / `an array` / `null`).
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function describeSessionValue(value) {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "an array";
+  if (typeof value === "function") return "a function";
+  return `a ${typeof value}`;
+}
+
+/**
+ * The one message a non-object `session` gets when the engine requires a container (issue #513 ④).
+ *
+ * It has to be its own sentence: without it the assembly port reported `assembly port is missing
+ * methods: session`, which talks about methods for a value that is not a port and hides the real
+ * problem (`session: "abc"` is a *shape* mistake, not a missing capability).
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function sessionContainerTypeProblem(value) {
+  return `session must be an object (got ${describeSessionValue(value)}):`
+    + ` the run identity lives in its members (${sessionMemberPaths().join(", ")})`;
+}
+
+/**
+ * The `session` container's member allowlist (issue #513 ①②).
+ *
+ * Runs on **both** entry routes through {@link collectSemanticOptionProblems} (the shared semantic
+ * phase) and, earlier, on the assembly port member in `createAssemblyPort` — one function, one
+ * message, so the two routes cannot disagree about what a legal `session` is.
+ *
+ * Scope, deliberately narrow:
+ *   · an **object** is the identity container ⇒ unknown members are refused;
+ *   · an **array** is refused with the type message: the engine already treats any non-null object as
+ *     the container (`fineGrainedPortShape`), so an array could only ever fail on `session.id` — a
+ *     sentence about a missing id for a value that can never carry one;
+ *   · `null` / string / number / boolean / function are **left alone here**: on the direct route
+ *     `session` is also the opaque payload the engine forwards to `context.session`
+ *     (`src/loop/budget.js`, `session?: any`), and that spelling is live (the CLI passes a session id
+ *     string, `test/loop-v020-rc.test.js` pins it). Refusing it is not this ticket's to break; the
+ *     assembly port, where `session` is the container by contract, refuses it in
+ *     `createAssemblyPort`.
+ *
+ * @param {unknown} session
+ * @returns {string[]} problems (empty = accepted)
+ */
+export function collectSessionContainerProblems(session) {
+  if (session === null || session === undefined) return [];
+  if (Array.isArray(session)) return [sessionContainerTypeProblem(session)];
+  if (typeof session !== "object") return [];
+  const problems = [];
+  for (const [key, value] of Object.entries(/** @type {Record<string, unknown>} */ (session))) {
+    // `undefined` means "not given" (the repo-wide merge rule), so a spread options object does not
+    // turn into an unknown-member report.
+    if (value === undefined) continue;
+    if (SESSION_MEMBER_NAMES.includes(key)) continue;
+    // Retired members keep their own message (see SESSION_RETIRED_MEMBERS).
+    if (SESSION_RETIRED_MEMBERS.includes(key)) continue;
+    problems.push(`unknown session option: session.${key} (accepted: ${sessionMemberPaths().join(", ")})`);
+  }
+  return problems;
+}
+
+/**
  * 语义相里承载**宿主回调**的字段（issue #496 / #495 v2）：它们是行为，不是数据。
  *
  * 只列「给了就必须是函数」的那一类；`deliverables[].check` 不在表里——它的形状由
@@ -416,6 +548,10 @@ export function collectSemanticOptionProblems(options) {
     }
   }
   problems.push(...validateFoldSummaryHook(bag.onFoldSummary));
+  // issue #513: `session` is the only container whose members are all optional, so it was also the
+  // only one whose typos were silent on both routes (`session.intialMessages` ran without the seed
+  // history, no event, no error). Same gate as `context` / `capabilities`, same message, both routes.
+  problems.push(...collectSessionContainerProblems(bag.session));
   // #498 S4b review fix: `session` is data only, so `session.resume` is rejected on **both** entry
   // routes. The assembly port throws in `createAssemblyPort`; without this line the direct route
   // (`normalizeRunToolLoopOptions`) silently dropped the key and ran without resuming — the exact
