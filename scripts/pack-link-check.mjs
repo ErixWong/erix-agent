@@ -178,8 +178,10 @@ export function checkDeclarationClaims({ root, packedDeclarationCount, reclaim }
 //
 // 豁免登记表（`CONTRACT_PUBLISH_EXEMPTIONS`）：判据 1 需要一个「有意不发布」的出口，但它**不是放宽**——
 // 登记表自己也被看守（空转即红）：登记的文件不在磁盘上 / 已经随包了 / `why` 为空 / `path` 不是
-// `test/contract/` 下的具体文件 / 条数超过上限 ⇒ 全部红。上限是**双向**的：现值 1，第二份 harness
-// 不搬走就想加豁免 ⇒ 红并提示「先问该不该放进发布面目录」（豁免表不许慢慢长成后门）。
+// `test/contract/` 下的具体文件 / 条数偏离上限 ⇒ 全部红。上限是**双向**的：现值 **0**（issue #549 S8），
+// 也就是「这张表现在是空的」本身被断言——空表不是空转：上限 0 + 0 条 ⇒ 绿（没有东西可空转），
+// 谁再想往表里塞一条（哪怕塞得完全合法）⇒ 红并提示「先问该不该放进发布面目录」
+// （豁免表不许慢慢长成后门）。
 //
 // 本条判据与既有两道判据一样**只读已经拿到的 pack 清单**：不额外跑 pack、不跑 tsc、不联网。
 
@@ -190,23 +192,16 @@ const CONTRACT_TEST_SUFFIX = ".test.js";
  * 「有意不随包发布」的登记表。每条的 `why` 必须同时写清**谁在用它**与**为什么不发布**——
  * 只写「宿主不需要」是不够的（那是结论，不是理由）。
  *
- * 当前唯一一条：`test/contract/doc-examples.js` 是**文档示例三层验证 harness**（issue #158），
- * 唯一使用者是 `test/contract/doc-examples.test.js`（`npm run check:docs-examples`），发布入口
- * `test/contract/index.js` 不引用它 ⇒ 宿主拿不到也不需要它；而 `*.test.js` 本来就不随包发布，
- * 故它也不发布。**正解是搬家**（`test/contract/` 是宿主契约套件目录，harness 放错了目录），
- * 但搬家牵动 `check:docs-examples` 与 #498 S8 的迁移面 ⇒ 本单先用登记表转绿，搬家留给 S8。
+ * **现在是空的**（issue #549 S8）：最后一条 `test/contract/doc-examples.js` 已经**搬出发布面目录**
+ * （`test/doc-examples.js`，唯一使用者 `test/doc-examples.test.js` 跟着搬到 `test/`，`npm run
+ * check:docs-examples` 的命令名不变、路径同步），于是 `test/contract/` 下再也没有「放着但不发布」
+ * 的 `.js`。空表 + 上限 0 是**通过**状态，不是「判据被关掉了」：判据 1 仍在逐个核对磁盘上的
+ * 非 `*.test.js` 文件是否随包（反向证见 `--self-test` 的「复制回 test/contract/ ⇒ 红」一例）。
  */
-const CONTRACT_PUBLISH_EXEMPTIONS = Object.freeze([
-  Object.freeze({
-    path: "test/contract/doc-examples.js",
-    why: "文档示例三层验证 harness（issue #158）：唯一使用者是 test/contract/doc-examples.test.js"
-      + "（npm run check:docs-examples），发布入口 test/contract/index.js 不引用它 ⇒ 宿主不需要、"
-      + "装完也用不到；而 *.test.js 本来就不随包发布，所以它也不发布。正解是搬出发布面目录"
-      + "（test/contract/ 是宿主契约套件目录），搬家牵动 check:docs-examples 与 #498 S8，留给 S8",
-  }),
-]);
-/** 登记表条数上限（现值 1，实测）。双向：多了红、少了也要么删条目要么降上限（见 `--self-test`）。 */
-const CONTRACT_PUBLISH_EXEMPTION_MAX = 1;
+const CONTRACT_PUBLISH_EXEMPTIONS = Object.freeze([]);
+/** 登记表条数上限（现值 **0**，issue #549 S8：最后一条豁免随搬家一起删掉）。
+ *  双向：多一条红、少一条（也就是上限没跟着降）也红——不许留余量（余量就是下一个人悄悄塞一条的空间）。 */
+const CONTRACT_PUBLISH_EXEMPTION_MAX = 0;
 
 /**
  * 判据三口的**纯函数核心**：只吃已经拿到的四份事实（`files` 数组、磁盘上的文件/目录、tarball 清单、
@@ -604,45 +599,68 @@ export function checkPackLinks({ root = ROOT, runPack = runNpmPackDryRun } = {})
 // **变异没落上也算红**（#210 R2 的约定）。最后一例跑在**本仓真树**上（packed 取 `files` 条目），
 // 用它证明真登记表没有空转条目——它只读 `package.json` 与 `test/contract/` 的实物，不跑 pack。
 
-const MIN_SELF_TEST_CASES = 15;
+const MIN_SELF_TEST_CASES = 18;
 
-/** 基准夹具：形状对齐真树（`files` 逐个列举 `test/contract/*.js`，`doc-examples.js` 登记豁免、不在 `files` 里）。 */
+/**
+ * 基准夹具：形状对齐**搬家后**的真树（issue #549 S8）——`files` 逐个列举 `test/contract/*.js`，
+ * 目录里只剩「随包的套件 + `*.test.js`」，**豁免表是空的、上限 0**。
+ *
+ * 夹具里的文件名一律是**合成占位名**（`sample-*` / `new-harness` / `ghost`）：不引用真树里任何一个
+ * 具体路径，于是「这台机器的树长什么样」不改变本自测的结论（#302 的教训：夹具与真树解耦）。
+ * 真树那一半只出现在最后一例，它自己从 `package.json` 与 `test/contract/` 的实物读事实。
+ */
 function contractFixture(overrides = {}) {
   return {
     files: [
       "src",
       "bin",
-      "test/contract/assembly-port.js",
+      "test/contract/sample-suite.js",
       "test/contract/index.js",
       "test/helpers/tmp.js",
     ],
     diskFiles: [
-      "test/contract/assembly-port.js",
-      "test/contract/assembly-port.test.js",
-      "test/contract/doc-examples.js",
-      "test/contract/doc-examples.test.js",
+      "test/contract/sample-suite.js",
+      "test/contract/sample-suite.test.js",
       "test/contract/index.js",
+      "test/contract/index.test.js",
     ],
     diskDirs: ["test/contract"],
     packedPaths: new Set([
       "src/index.js",
-      "test/contract/assembly-port.js",
+      "test/contract/sample-suite.js",
       "test/contract/index.js",
       "test/helpers/tmp.js",
     ]),
-    exemptions: [
-      {
-        path: "test/contract/doc-examples.js",
-        why: "夹具：只被 doc-examples.test.js 用，宿主不需要，所以不发布",
-      },
-    ],
-    maxExemptions: 1,
+    exemptions: [],
+    maxExemptions: 0,
     scriptCommands: {
       test: "node --test",
-      "check:docs-examples": "node --test test/contract/doc-examples.test.js",
+      "check:sample": "node --test test/contract/sample-suite.test.js",
+      "check:docs-examples": "node --test test/doc-examples.test.js",
     },
     ...overrides,
   };
+}
+
+/** 夹具里的「已登记豁免」靶子（合成占位名，与真树无关）。 */
+const EXEMPT_HARNESS = "test/contract/sample-harness.js";
+
+/**
+ * 带一条**合法**豁免的夹具：只给「登记表自己的看守」那几例用（空转 / 过期 / 缺理由 / 错路径 / 条数）。
+ * 上限跟着设成 1，于是这几例的靶子是**条目本身**，不是条数。
+ */
+function exemptFixture(overrides = {}) {
+  return contractFixture({
+    diskFiles: [...contractFixture().diskFiles, EXEMPT_HARNESS],
+    exemptions: [
+      {
+        path: EXEMPT_HARNESS,
+        why: "夹具：只被 sample-harness.test.js 用，宿主不需要，所以不发布",
+      },
+    ],
+    maxExemptions: 1,
+    ...overrides,
+  });
 }
 
 /** 变异：从数组里删掉一项。靶子不在 ⇒ 抛错（**变异没落上也算红**）。 */
@@ -666,16 +684,28 @@ function withPacked(packed, item) {
 
 const SELF_TEST_CASES = [
   {
-    name: "干净夹具 ⇒ 绿（判据 1/2 都不红，判据 3 打印 2 个 *.test.js + 1 条已登记豁免）",
+    name: "干净夹具（豁免表空 + 上限 0，= #549 搬家后的真树形状）⇒ 绿（判据 1/2 都不红，判据 3 打印 2 个 *.test.js + 0 条豁免）",
     build: () => contractFixture(),
     expectGreen: true,
     expectTestFileLines: 2,
-    expectExemptionLines: 1,
+    expectExemptionLines: 0,
     expectLines: [
-      /assembly-port\.test\.js：不随包发布.*node --test 套件.*npm test/,
-      /doc-examples\.test\.js：不随包发布.*npm run check:docs-examples/,
-      /doc-examples\.js：已登记豁免（不随包）——夹具/,
+      /sample-suite\.test\.js：不随包发布.*node --test 套件.*npm run check:sample/,
+      /index\.test\.js：不随包发布.*node --test 套件.*npm test/,
+      /这是有意为之，不是漏包/,
     ],
+  },
+  {
+    name: "上限 0 时塞一条**完全合法**的豁免（文件在盘上、没随包、理由写清）⇒ 红：判的是条数，不是条目质量",
+    build: () => contractFixture({
+      diskFiles: [...contractFixture().diskFiles, "test/contract/another-harness.js"],
+      exemptions: [
+        { path: "test/contract/another-harness.js", why: "完全合法：文件在盘上、没随包、谁用与为什么不发布都写清了" },
+      ],
+      maxExemptions: 0,
+    }),
+    expect: [/CONTRACT_PUBLISH_EXEMPTIONS 有 1 条，上限 0 条——/],
+    expectCount: 1,
   },
   {
     name: "从 files 里删一条真实存在的 test/contract/*.js ⇒ 判据 1 红并点名该文件",
@@ -683,13 +713,13 @@ const SELF_TEST_CASES = [
     build: () => {
       const base = contractFixture();
       const packed = new Set(base.packedPaths);
-      packed.delete("test/contract/assembly-port.js");
+      packed.delete("test/contract/sample-suite.js");
       return contractFixture({
-        files: withoutItem(base.files, "test/contract/assembly-port.js"),
+        files: withoutItem(base.files, "test/contract/sample-suite.js"),
         packedPaths: packed,
       });
     },
-    expect: [/test\/contract\/assembly-port\.js 在磁盘上、却不在 npm tarball 清单里（也没登记豁免）/],
+    expect: [/test\/contract\/sample-suite\.js 在磁盘上、却不在 npm tarball 清单里（也没登记豁免）/],
     expectCount: 1,
   },
   {
@@ -714,33 +744,43 @@ const SELF_TEST_CASES = [
     expectCount: 1,
   },
   {
+    name: "登记表放行证：一条合法豁免（文件在盘上、不随包、理由写清）⇒ 绿，且判据 3 打印它（证明豁免分支真被读到，不是恒绿）",
+    build: () => exemptFixture(),
+    expectGreen: true,
+    expectTestFileLines: 2,
+    expectExemptionLines: 1,
+    expectLines: [/sample-harness\.js：已登记豁免（不随包）——夹具/],
+  },
+  {
     name: "登记表空转：登记的文件从磁盘消失 ⇒ 红",
-    build: () => contractFixture({
-      diskFiles: withoutItem(contractFixture().diskFiles, "test/contract/doc-examples.js"),
+    build: () => exemptFixture({
+      diskFiles: withoutItem(exemptFixture().diskFiles, EXEMPT_HARNESS),
     }),
-    expect: [/豁免登记项 test\/contract\/doc-examples\.js 在磁盘上不存在——空转条目/],
+    expect: [/豁免登记项 test\/contract\/sample-harness\.js 在磁盘上不存在——空转条目/],
     expectCount: 1,
   },
   {
     name: "登记表过期：登记的文件已经随包 ⇒ 红（两个说法不能同时成立）",
-    build: () => contractFixture({
-      packedPaths: withPacked(contractFixture().packedPaths, "test/contract/doc-examples.js"),
+    build: () => exemptFixture({
+      packedPaths: withPacked(exemptFixture().packedPaths, EXEMPT_HARNESS),
     }),
-    expect: [/豁免登记项 test\/contract\/doc-examples\.js 已经出现在 tarball 清单里——它其实随包了/],
+    expect: [/豁免登记项 test\/contract\/sample-harness\.js 已经出现在 tarball 清单里——它其实随包了/],
     expectCount: 1,
   },
   {
     name: "登记表缺理由：why 只有空白 ⇒ 红（「宿主不需要」这种结论不算理由）",
-    build: () => contractFixture({
-      exemptions: [{ path: "test/contract/doc-examples.js", why: "   " }],
+    build: () => exemptFixture({
+      exemptions: [{ path: EXEMPT_HARNESS, why: "   " }],
     }),
-    expect: [/豁免登记项 test\/contract\/doc-examples\.js 的 why 为空/],
+    expect: [/豁免登记项 test\/contract\/sample-harness\.js 的 why 为空/],
     expectCount: 1,
   },
   {
     name: "登记项 path 写成目录（test/contract/）⇒ 红",
-    build: () => contractFixture({
-      diskFiles: withoutItem(contractFixture().diskFiles, "test/contract/doc-examples.js"),
+    // 用 exemptFixture 做底（上限 1、靶子在盘上），把靶子换成坏路径并把原靶子从盘上撤掉：
+    // 于是唯一该红的就是「path 不是具体文件」这一条，条数/判据 1 都不掺进来。
+    build: () => exemptFixture({
+      diskFiles: withoutItem(exemptFixture().diskFiles, EXEMPT_HARNESS),
       exemptions: [{ path: "test/contract/", why: "x" }],
     }),
     expect: [/豁免登记项 "test\/contract\/" 不是 test\/contract\/ 下的具体文件路径/],
@@ -748,8 +788,8 @@ const SELF_TEST_CASES = [
   },
   {
     name: "登记项 path 在别的目录（test/helpers/tmp.js）⇒ 红",
-    build: () => contractFixture({
-      diskFiles: withoutItem(contractFixture().diskFiles, "test/contract/doc-examples.js"),
+    build: () => exemptFixture({
+      diskFiles: withoutItem(exemptFixture().diskFiles, EXEMPT_HARNESS),
       exemptions: [{ path: "test/helpers/tmp.js", why: "x" }],
     }),
     expect: [/豁免登记项 "test\/helpers\/tmp\.js" 不是 test\/contract\/ 下的具体文件路径/],
@@ -757,10 +797,10 @@ const SELF_TEST_CASES = [
   },
   {
     name: "登记表想长到 2 条（第二份 harness 不搬走就加豁免）⇒ 红并提示「先问该不该放进发布面目录」",
-    build: () => contractFixture({
+    build: () => exemptFixture({
       exemptions: [
-        ...contractFixture().exemptions,
-        { path: "test/contract/assembly-port.test.js", why: "第二份" },
+        ...exemptFixture().exemptions,
+        { path: "test/contract/index.test.js", why: "第二份" },
       ],
     }),
     expect: [/CONTRACT_PUBLISH_EXEMPTIONS 有 2 条，上限 1 条.*先问「该不该放进发布面目录」/],
@@ -769,7 +809,6 @@ const SELF_TEST_CASES = [
   {
     name: "登记表反向：条目删了却没降上限（余量）⇒ 红",
     build: () => contractFixture({
-      diskFiles: withoutItem(contractFixture().diskFiles, "test/contract/doc-examples.js"),
       exemptions: [],
       maxExemptions: 1,
     }),
@@ -791,20 +830,18 @@ const SELF_TEST_CASES = [
     name: "只有 *.test.js 的树 ⇒ 绿，且逐条打印「不随包发布」+ 谁跑它（判据 3 不红）",
     build: () => contractFixture({
       files: ["src"],
-      diskFiles: ["test/contract/index.test.js", "test/contract/doc-examples.test.js"],
+      diskFiles: ["test/contract/index.test.js", "test/contract/sample-suite.test.js"],
       packedPaths: new Set(["src/index.js"]),
-      exemptions: [],
-      maxExemptions: 0,
     }),
     expectGreen: true,
     expectTestFileLines: 2,
     expectLines: [
       /index\.test\.js：不随包发布.*npm test（node --test 自动发现 \*\.test\.js）/,
-      /doc-examples\.test\.js：不随包发布.*npm run check:docs-examples/,
+      /sample-suite\.test\.js：不随包发布.*npm run check:sample/,
     ],
   },
   {
-    name: "本仓真树 + 真登记表（packed 取 files 条目，不跑 npm）⇒ 绿：登记表没有空转条目",
+    name: "本仓真树 + 真登记表（空表、上限 0，packed 取 files 条目，不跑 npm）⇒ 绿：没有空转条目，也没有豁免条目",
     build: () => {
       const facts = readContractSurfaceFacts(ROOT);
       if (!facts) throw new Error(`变异没落上：${ROOT} 下读不到 package.json`);
@@ -820,7 +857,7 @@ const SELF_TEST_CASES = [
     },
     expectGreen: true,
     expectTestFileLinesAtLeast: 1,
-    expectExemptionLines: 1,
+    expectExemptionLines: 0,
     expectLines: [/不随包发布.*这是有意为之，不是漏包/],
   },
 ];

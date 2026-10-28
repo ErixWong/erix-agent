@@ -411,17 +411,16 @@ test("reclaimGeneratedDeclarations：只删 before 之外的；kept 如实；目
 });
 
 // ── test/contract/ 发布面对账（issue #505）：端到端接线 ────────────────────────────
-// 判据本身的反向证在 `node scripts/pack-link-check.mjs --self-test` 的内存夹具上（16 例）；
+// 判据本身的反向证在 `node scripts/pack-link-check.mjs --self-test` 的内存夹具上（18 例）；
 // 这里只补自测证明不了的那一半：**它真的接进了门禁**（`checkPackLinks` → 退出码），
 // 以及注入假 pack 时三个方向的真实行为。临时树由 makeTmp 造，不碰真实仓库。
 
 /**
  * 造一棵带 package.json 与 test/contract/ 的假仓库。
- * `test/contract/doc-examples.js` 是真实树里登记在豁免表里的那个文件，合成树也必须把它落到盘上
- * （否则登记表自证会报「空转条目」——那是对的，但对这棵假树是噪音）。
+ * 只落 `disk` 里给的文件：真豁免表（`CONTRACT_PUBLISH_EXEMPTIONS`）自 #549 S8 起是**空表 + 上限 0**，
+ * 所以合成树不需要再补一个「已登记豁免」的靶子（补了反而会撞判据 1：盘上有、包里没有、没登记）。
  */
 async function makeContractProject({ files, disk = [], packed = [] }) {
-  const withExempt = [...disk, "test/contract/doc-examples.js"];
   const root = await makeTmp("505-contract-surface-");
   await mkdir(path.join(root, "src"), { recursive: true });
   await writeFile(
@@ -429,7 +428,7 @@ async function makeContractProject({ files, disk = [], packed = [] }) {
     `${JSON.stringify({ name: "fake", files, scripts: { test: "node --test" } }, null, 2)}\n`,
     "utf8",
   );
-  for (const rel of withExempt) {
+  for (const rel of disk) {
     const abs = path.join(root, rel);
     await mkdir(path.dirname(abs), { recursive: true });
     await writeFile(abs, `// fake: ${rel}\n`, "utf8");
@@ -475,7 +474,7 @@ test("#505 判据 3 接进门禁：*.test.js 不随包 ⇒ 不红，且逐条打
 
   assert.equal(out.code, 0, `stderr=${out.stderr.join("\n")}`);
   const stdout = out.stdout.join("\n");
-  assert.match(stdout, /test\/contract\/ 发布面对账：磁盘 3 个 \.js（非测试 2 \/ 测试 1）/);
+  assert.match(stdout, /test\/contract\/ 发布面对账：磁盘 2 个 \.js（非测试 1 \/ 测试 1）/);
   assert.match(stdout, /test\/contract\/index\.test\.js：不随包发布.*node --test 套件.*npm test/);
   assert.match(stdout, /这是有意为之，不是漏包/);
 });
