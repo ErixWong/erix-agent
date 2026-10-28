@@ -177,7 +177,7 @@ async function runScenario({ failWriteAt = -1, cwd, toolContextSeen, storeErrorC
       wrapup: false,
       maxRounds: 3,
       // 持久化重试关掉：一次写失败即定论，事件与抛出的都是同一次失败（不掺入重试噪声）。
-      retry: { attempts: 0, backoffBaseMs: 0 },
+      config: { timing: { retry: { attempts: 0, backoffBaseMs: 0 } } },
       diagnostics: { error: (event) => store.events.push(event) },
     });
   } catch (error) {

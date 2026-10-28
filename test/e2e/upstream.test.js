@@ -858,7 +858,7 @@ test("真上游：runToolLoop 一轮——429 触发真重发，终局与 usage 
     stallDetection: false,
     completion: false,
     stream: true,
-    retry: { attempts: 1, backoffBaseMs: 0 },
+    config: { timing: { retry: { attempts: 1, backoffBaseMs: 0 } } },
   });
 
   assert.equal(result.termination.reason, "end_turn");

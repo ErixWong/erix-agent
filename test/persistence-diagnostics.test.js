@@ -107,12 +107,8 @@ test("required persistence retries appendRound and terminates with a transcript 
       initialUserMessage: "persist",
       executeTool: async () => "unused",
       completion: false,
-      retry: {
-        attempts: 2,
-        backoffBaseMs: 1,
-        backoffMaxMs: 2,
-        sleepImpl: async (ms) => sleeps.push(ms),
-      },
+      config: { timing: { retry: { attempts: 2, backoffBaseMs: 1, backoffMaxMs: 2 } } },
+      capabilities: { ports: { sleepImpl: async (ms) => sleeps.push(ms) } },
       diagnostics: { error: (event) => events.push(event) },
     }),
     (error) => error.termination?.reason === "persistence_failed"
@@ -368,7 +364,7 @@ test("appendRound failure preserves the independent failed run-state", async () 
       initialUserMessage: "persist",
       executeTool: async () => "unused",
       completion: false,
-      retry: { attempts: 0 },
+      config: { timing: { retry: { attempts: 0 } } },
     }),
     (error) => error.termination?.reason === "persistence_failed"
       && error.operation === "appendRound",

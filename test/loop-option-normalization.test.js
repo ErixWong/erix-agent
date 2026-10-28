@@ -171,7 +171,7 @@ function editDistance(left, right) {
 
 const suggestionThreshold = (unknownName) => Math.max(2, Math.floor(unknownName.length / 3));
 
-// 白名单 = `RUN_TOOL_LOOP_OPTION_NAMES`（**67 项**，顺序即平局优先级）。
+// 白名单 = `RUN_TOOL_LOOP_OPTION_NAMES`（顺序即平局优先级；条数由 A0 派生对账，不手抄总数）。
 //
 // issue #502：这份内联副本**不是**自由 fixture，它必须与源名单（`src/loop/option-normalization.js`
 // 的 `RUN_TOOL_LOOP_OPTION_NAMES`）**逐项逐字一致——成员和顺序都是**。下面「A0」用例就是这条
@@ -209,11 +209,10 @@ const OPTION_WHITELIST = [
   "maxTokens",
   "temperature",
   "topP",
-  "timeoutMs",
-  "deadlineMs",
+  // #498 S3 (`timing` slice): `timeoutMs` / `deadlineMs` / `retry` left the allowlist — their canonical
+  // home is `config.timing.*`. The copy tracks the source list verbatim (that is what A0 checks).
   "reflection",
   "stallDetection",
-  "retry",
   "completion",
   "finalGuard",
   "finalGuardMaxRetries",
@@ -308,17 +307,20 @@ test("内联白名单副本与源名单 RUN_TOOL_LOOP_OPTION_NAMES 逐项逐字�
   );
 
   // ③ 条数：源名单也钉一遍。以前只有副本被钉住，源名单怎么变都不会红。
-  // #498 S4a：66 → 67。**为什么变了**：`capabilities` 容器入列（它必须进名单才可能被接受，
-  // 见源名单里那条注释）。这条评论测试存在的原因就是「名单变化必须被看见」——所以改数字时必须
-  // 同时确认建议行为没变（`SUGGESTION_MATRIX` / `TIE_MATRIX` 全绿即为证据：追加在末尾只影响
-  // 离 `capabilities` 更近的未知键，旧建议逐字不变）。
+  // #498 S3：**这里不再手抄任何总数**。原来写的是两个字面值（源名单与副本各一个），每次增删键
+  // 都要手追两个数，而「名单变化必须被看见」这件事本来就由 ①② 的差集与位置对账负责。
+  // 现在钉的是两条与条数无关的性质：副本无重复，且副本与源名单的**长度相等**（派生，不抄数）。
+  // 增删键时该确认的仍然是「建议行为没变」——`SUGGESTION_MATRIX` / `TIE_MATRIX` 全绿即为证据。
   assert.equal(
-    RUN_TOOL_LOOP_OPTION_NAMES.length,
-    67,
-    `源名单条数变了（实测 ${RUN_TOOL_LOOP_OPTION_NAMES.length} 项）：确认「建议行为」是否随之变化后，`
-      + "同步本文件的 OPTION_WHITELIST 与这里的 67",
+    new Set(OPTION_WHITELIST).size,
+    OPTION_WHITELIST.length,
+    `内联副本有重复项（实测 ${OPTION_WHITELIST.length} 项、去重后 ${new Set(OPTION_WHITELIST).size} 项）`,
   );
-  assert.equal(OPTION_WHITELIST.length, 67, `内联副本条数变了（实测 ${OPTION_WHITELIST.length} 项）`);
+  assert.equal(
+    OPTION_WHITELIST.length,
+    RUN_TOOL_LOOP_OPTION_NAMES.length,
+    `内联副本条数与源名单不等（副本 ${OPTION_WHITELIST.length} 项、源名单 ${RUN_TOOL_LOOP_OPTION_NAMES.length} 项）`,
+  );
 });
 
 // ================================================================ A. 未知选项建议
@@ -412,11 +414,11 @@ test("建议平局取白名单顺序在前者（严格 < 比较，非字典序�
 });
 
 
-test("白名单恰为 67 项：每一项都被接受，未知键一律被拒", async () => {
-  // 条数在这里再钉一次（与「A0」重叠）：这一条钉的是**副本自身的自洽**（无重复、不是字典序），
-  // 「副本 ≡ 源名单」在 A0。两处都写 67 是故意的：多一处要同步，就多一次让人看见的停顿。
-  assert.equal(OPTION_WHITELIST.length, 67);
-  assert.equal(new Set(OPTION_WHITELIST).size, 67);
+test("白名单逐项都被接受、未知键一律被拒，且副本无重复、不是字典序", async () => {
+  // #498 S3：这里原来手抄了两次总数（`length` 与去重后的 `size`）。删掉 `timing` 三键之后本仓
+  // 不再有「手抄的顶层总数」，所以改成派生对账：条数与源名单相等、去重后不变。
+  assert.equal(OPTION_WHITELIST.length, RUN_TOOL_LOOP_OPTION_NAMES.length);
+  assert.equal(new Set(OPTION_WHITELIST).size, OPTION_WHITELIST.length);
   // 平局断言依赖这份顺序，先自证它没被顺手排序成字典序。
   assert.notEqual(
     JSON.stringify(OPTION_WHITELIST),

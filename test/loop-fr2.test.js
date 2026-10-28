@@ -22,7 +22,8 @@ test("retries a retryable provider error with the original messages", async () =
     provider,
     initialUserMessage: "hello",
     executeTool: async () => "unused",
-    retry: { sleepImpl: async (ms) => sleeps.push(ms) },
+    config: { timing: { retry: { attempts: 1 } } },
+    capabilities: { ports: { sleepImpl: async (ms) => sleeps.push(ms) } },
   });
 
   assert.equal(result.finalText, "done");
@@ -42,10 +43,14 @@ test("exhausts retry attempts and uses exponential capped backoff", async () => 
       provider,
       initialUserMessage: "hello",
       executeTool: async () => "unused",
-      retry: {
-        attempts: 2,
-        sleepImpl: async (ms) => sleeps.push(ms),
+      config: {
+        timing: {
+          retry: {
+            attempts: 2,
+          },
+        },
       },
+      capabilities: { ports: { sleepImpl: async (ms) => sleeps.push(ms) } },
     }),
     (error) => error === exhausted,
   );
@@ -64,10 +69,18 @@ test("does not retry a non-retryable provider error", async () => {
       provider,
       initialUserMessage: "hello",
       executeTool: async () => "unused",
-      retry: {
-        attempts: 3,
-        sleepImpl: async () => {
-          slept = true;
+      config: {
+        timing: {
+          retry: {
+            attempts: 3,
+          },
+        },
+      },
+      capabilities: {
+        ports: {
+          sleepImpl: async () => {
+            slept = true;
+          },
         },
       },
     }),

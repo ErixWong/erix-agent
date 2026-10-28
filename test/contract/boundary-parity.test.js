@@ -273,7 +273,13 @@ async function errorsOnBothRoutes(bad) {
   const direct = await runToolLoop(directInput(bad)).then(() => null, (error) => error);
   let assembly = null;
   try {
-    createAssemblyPort(assemblyInput(bad));
+    const port = createAssemblyPort(assemblyInput(bad));
+    // #498 S3: the assembly route can also reject **after** construction — `config` /
+    // `capabilities` expansion runs inside `normalizeRunToolLoopOptions`, so a nested spelling
+    // (`config.timing.retry.sleepImpl`) is only judged when the loop actually starts. Running it
+    // here keeps the parity claim ("same error, only `via` differs") honest for both shapes; the
+    // cells that already throw at construction are unaffected (the catch below).
+    assembly = await runToolLoop({ assemblyPort: port }).then(() => null, (error) => error);
   } catch (error) {
     assembly = error;
   }
@@ -330,7 +336,10 @@ test("boundary parity: 承载宿主回调的字段形状错误在两条路线上
     ["onFoldSummary", { onFoldSummary: "notes" },
       "assembly policy option onFoldSummary must be a function (or omitted)"],
     ["finalGuard", { finalGuard: true }, "finalGuard must be a function (or omitted)"],
-    ["retry.sleepImpl", { retry: { sleepImpl: 10 } }, "retry.sleepImpl must be a function (or omitted)"],
+    // #498 S3: `retry` moved to `config.timing.retry`, so the parity cell uses the new spelling on
+    // both routes (the flat one is now rejected one phase earlier by the name gate).
+    ["timing.retry.sleepImpl", { config: { timing: { retry: { sleepImpl: 10 } } } },
+      "retry.sleepImpl must be a function (or omitted)"],
     ["reflection.onReflection", { reflection: { onReflection: "cb" } },
       "reflection.onReflection must be a function (or omitted)"],
     ["diagnostics.error", { diagnostics: { error: "cb" } },
@@ -356,7 +365,9 @@ test("boundary parity: 合法配置在两条路线上都不抛（防 parity 只�
     },
     onFoldSummary: () => {},
     finalGuard: async () => ({ action: "accept" }),
-    retry: { attempts: 1, sleepImpl: async () => {} },
+    // #498 S3: data keys go to `config.timing.retry`, the function carrier to `capabilities.ports`.
+    config: { timing: { retry: { attempts: 1 } } },
+    capabilities: { ports: { sleepImpl: async () => {} } },
     reflection: { enabled: false, onReflection: () => {} },
     diagnostics: { error: () => {} },
   };
