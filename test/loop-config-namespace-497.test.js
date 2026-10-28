@@ -444,14 +444,12 @@ const VALUES = {
   // `config.guard.*`). `finalGuard` (the hook) stays: its home is `capabilities.hooks.finalGuard`.
   // #498 S3 (`metadata` slice, segment A8): `expert` / `requestId` / `toolContext` /
   // `modelMetadata` are no longer flat top-level keys — they moved to `RETIRED_FLAT_VALUES` below
-  // (their home is `config.metadata.*`). `user` / `task` / `session` / `model` stay: this slice
-  // retires four small keys, not the whole group.
-  user: "user",
-  task: "task",
+  // (their home is `config.metadata.*`).
+  // #498 S3 A9: `user` and `model` moved there as well (same group, same tree). `task` / `session`
+  // stay: `session` is the key the same-value ruling returned (see the A9 slice test).
   // issue #497 复审 R1：按新判据从能力面移回配置面的四个键（端到端等价也要覆盖它们）；
   // 第二轮又从能力面移入两个字符串标量 `runId` / `cwd`（`config.run.*`）。
   persistence: "none",
-  model: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
   session: { id: "config-497-b2", modelSlot: "default" },
   runId: "config-497-run",
   cwd: "/tmp/config-497",
@@ -507,6 +505,14 @@ const RETIRED_FLAT_VALUES = {
   requestId: "req-497",
   toolContext: { a: 1 },
   modelMetadata: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
+  // #498 S3 A9：`user`（不透明身份载荷，`toolContextFor` 只转发、引擎从不调用）。
+  user: { id: "user-497" },
+  // #498 S3 A9：`model`——`modelMetadataFor`（`budget.js`）仍从展开后的 `effectiveOptions.model`
+  // 读窗口数字（读侧一行未改）。
+  model: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
+  // #498 S3 A9：`task`——judge 简报 / 工具上下文 / `finalGuard` 的 `taskBrief` 都从展开后的
+  // `effectiveOptions.task` 读（`task-brief.js` 只做字符串检查），读侧一行未改。
+  task: "task-497",
 };
 
 /** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */

@@ -719,14 +719,18 @@ test("explicit task overrides the multi-turn entry messages for the round judge"
 
   await runToolLoop({
     provider,
-    config: { input: { messages: [
-      { role: "user", content: "请用一句话介绍你自己" },
-      { role: "assistant", content: "我是助手" },
-      { role: "user", content: "哈罗" },
-      { role: "assistant", content: "你好" },
-      { role: "user", content: "新任务：在当前任务目录创建一个俄罗斯方块网页游戏，网页版的。" },
-    ] } },
-    task: "全新任务：写一个俄罗斯方块网页游戏",
+    // #498 S3 A9：`task` 的扁平写法已退役，写点并进**同一个** `config` 容器
+    // （同一对象字面量里两个 `config` 键是后者静默胜）。
+    config: {
+      input: { messages: [
+        { role: "user", content: "请用一句话介绍你自己" },
+        { role: "assistant", content: "我是助手" },
+        { role: "user", content: "哈罗" },
+        { role: "assistant", content: "你好" },
+        { role: "user", content: "新任务：在当前任务目录创建一个俄罗斯方块网页游戏，网页版的。" },
+      ] },
+      metadata: { task: "全新任务：写一个俄罗斯方块网页游戏" },
+    },
     executeTool: async () => "unused",
     maxRounds: 1,
     completion: false,
@@ -776,12 +780,15 @@ test("whitespace task falls back to the latest non-empty entry user text", async
 
   await runToolLoop({
     provider,
-    config: { input: { messages: [
-      { role: "user", content: "请用一句话介绍你自己" },
-      { role: "assistant", content: "我是助手" },
-      { role: "user", content: "新任务：在当前任务目录创建一个俄罗斯方块网页游戏，网页版的。" },
-    ] } },
-    task: "   ",
+    // #498 S3 A9：同上，并进同一个 `config` 容器。
+    config: {
+      input: { messages: [
+        { role: "user", content: "请用一句话介绍你自己" },
+        { role: "assistant", content: "我是助手" },
+        { role: "user", content: "新任务：在当前任务目录创建一个俄罗斯方块网页游戏，网页版的。" },
+      ] },
+      metadata: { task: "   " },
+    },
     executeTool: async () => "unused",
     maxRounds: 1,
     completion: false,
@@ -807,7 +814,7 @@ test("explicit task briefs keep content beyond the legacy 500-code-point cap", a
   await runDirect({
     provider,
     initialUserMessage: "task",
-    task,
+    config: { metadata: { task } },
     executeTool: async () => "unused",
     maxRounds: 1,
     completion: false,

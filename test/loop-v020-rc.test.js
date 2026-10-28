@@ -34,16 +34,17 @@ test("structured executeTool receives context and returns tool metadata", async 
     },
     // #498 S3（`metadata` A8）：`expert` / `requestId` / `toolContext` 三个扁平键已退役，
     // 写点是 `config.metadata.*`（展开相写回 `effectiveOptions.*`，`toolContextFor` 读侧一字未动）。
-    // `user` / `task` / `session` 不在本刀（它们是另一片，写点仍走扁平拼写）。
+    // #498 S3 A9：`user` 也退役了（同一组、同一个容器）；`task` / `session` 仍走扁平拼写
+    // （`session` 经同值判定退回，见 `test/loop-metadata-keys-slice-498s3a9.test.js`）。
     config: {
       metadata: {
         expert: "expert-1",
         requestId: "request-1",
         toolContext: { tenant: "tenant-1" },
+        user: { id: "user-1" },
+        task: { id: "task-1" },
       },
     },
-    user: { id: "user-1" },
-    task: { id: "task-1" },
     session: "session-1",
     completion: false,
   });

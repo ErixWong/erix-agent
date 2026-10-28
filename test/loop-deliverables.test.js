@@ -187,7 +187,9 @@ test("#386-2 R4-2 判据通过 + guard accept ⇒ verified，deliverables_checke
       wrapup({ done: true, summary: "s", output: "o" }),
     ]),
     initialUserMessage: `把 42 写进 ${target}`,
-    task: "写 answer.txt",
+    // #498 S3 A9：`task` 的扁平写法已退役，写点是 `config.metadata.task`
+    // （`finalGuard` 载荷里的 `taskBrief` 就是它，读侧一行未改）。
+    config: { metadata: { task: "写 answer.txt" } },
     cwd: dir,
     maxRounds: 4,
     executeTool: diskWriteTool,

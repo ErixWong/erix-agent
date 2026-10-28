@@ -25,7 +25,7 @@ reflection, stallDetection,
 completion, finalGuard,
 maxTokenContinuations,
 todoStateProvider, semanticStateProvider, partialPersistence,
-modelConfig, modelMetadata, model, expert, user, task, session, requestId,
+modelConfig, modelMetadata, expert, session, requestId,
 toolContext, store, persistence, runId, cwd, deliverables, invalidArguments, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
 onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, config,
@@ -610,13 +610,57 @@ it: "expert" is a data key of the config namespace — the engine never calls it
 value — so pass plain data (host callbacks belong under capabilities.hooks.<name>)
 ```
 
-这条**不对称**被钉成 as-is，而不是抹平：同组**另外四个**成员（`user` / `task` / `model` / `session`，
-本片**没动**）的扁平写法今天照旧**收**函数，且 `typeof` 一路保持到工具上下文；而规位**拒**。
-`test/loop-metadata-keys-slice-498s3a8.test.js`（F1 / F2）就是这根钉子：谁放宽或收紧了任何一边，
-它都会红。
+这条**不对称**被钉成 as-is，而不是抹平：同组仍在扁平面上的成员的扁平写法今天照旧**收**函数，
+且 `typeof` 一路保持到工具上下文；而规位**拒**。`test/loop-metadata-keys-slice-498s3a8.test.js`
+（F1 / F2）就是这根钉子——下面的 A9 段之后它指向 `session`（组里唯一还能扁平写的成员）：谁放宽或
+收紧了任何一边，它都会红。
 
-**大四件是另一片。** `user` / `task` / `model` / `session` 在本片仍可扁平写；它们的写点要先有夹具级
-翻译点（#528 那种风格），所以本片只退四个小键（P5-c 逐键钉住这条边界）。
+**扁平写法的版本口径（issue #498 S3，`metadata` 组 A9 段——第十片：本组的*大三个*
+`user` / `model` / `task`）**：
+
+| 发布 | 写 `user` / `model` / `task` |
+| --- | --- |
+| 0.26.0 及以前（**最后已发布**的版本） | 顶层照旧接受——那些版本只认这一种写法 |
+| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主的树里这件事生效过 |
+| 0.28.0 及以后（issue #498 S3 第十片） | **当场拒**——请写 `config.metadata.user` / `.model` / `.task`。名称闸口抛 `unknown runToolLoop option: "task" (its canonical home is config.metadata.task; the flat spelling is rejected)` |
+
+这一片是**先量后写**的，而那个量正是它不需要夹具的原因：只从白名单删掉一个键时，全量分别红
+**`user` 6 格 / `model` 5 格 / `task` 13 格**（和 24；三个一起删 **15** 格 ⇒ 重叠 9 格——三个单键红格
+集合的并集，这个方法用实测的四键全删校验过：并集 29 = 实测 29），远低于「~150 格 ⇒ 需要 #521 式
+夹具级翻译点」的阈值。**没有任何东西在宿主背后被翻译**：每一个写点都在同一个 commit 里搬到了规位。
+
+两条性质成立，且都有机器判据（`test/loop-metadata-keys-slice-498s3a9.test.js`）：
+
+* 展开相仍把它们逐字写到 `effectiveOptions.user` / `.model` / `.task`，所以**引擎的读侧一字未改**——
+  读它们的是 `src/loop/budget.js` 的 `toolContextFor` / `modelMetadataFor`、
+  `src/loop/task-brief.js` 的 `resolveTaskBrief`，以及把值转交出去的 orchestrator 解构。叶子仍留在
+  `CONFIG_NAMESPACE_SCHEMA.metadata` 里，尽管顶层键已离开 `RUN_TOOL_LOOP_OPTION_NAMES`：
+  **删扁平键 ≠ 删叶子**（P2/P3）；
+* 与 A8 相同的收窄：规位里**函数值被拒**，文案把两半都说出来（只装数据 **以及** *引擎从来没调用过
+  它，只把值转发出去*）。这三个值都是不透明身份载荷——引擎只按名字读已知字段（`model` 的两个窗口
+  数字），其余原样转发。
+
+**`session` 量过之后是*退回*，不是退役。** 它有 19 格红，所以拦下它的不是体量：顶层 `session` 选项与
+装配口的 `session` 成员是**同一个值**——`assemblyPortOptions(port).session === port.session`（引用相等，
+不是 deepEqual），且构造期冲突文案把 `port.session` 点成同一个键的来源。本仓裁决说
+**`config.metadata.session` 不是 session 端口的第二个家**，那么退役扁平拼写就等于把那个叶子升成第二个家。
+所以它留在扁平面，裁决保持完整（S1–S3 把三半都钉住）。
+
+**这三个词还活在别的面上，本片一个都没动：**
+
+| 名字 | 另一张面 | 证据 | 动了吗 |
+| --- | --- | --- | --- |
+| `user` | 消息 role `"user"`（轮次分组、请求用户视图） | `src/messages/rounds.js`、`src/loop/request-user-view.js`、`test/loop-request-user-invariant.test.js` | **没动**（N1） |
+| `user` | fold-context 壳 `context.user` | `src/loop/budget.js`（`toolContextFor` 的 fallback 链）、`src/assembly-validators.js` | **没动** |
+| `user` | provider 请求体字段 `user`（`extraBody` / `providerOptions`） | `src/providers/*`、`test/providers/request-injection.test.js` | **没动** |
+| `model` | `modelConfig` 端口（第三站） | `src/assembly.js`、`src/loop/orchestrator.js` | **没动**（N3） |
+| `model` | 模型槽位字段 `slots.default.model` | `src/config/slot-provider.js`、`bin/cli.js` | **没动** |
+| `model` | provider 请求体字段 `model` | `src/providers/openai.js`、`src/providers/anthropic.js` | **没动** |
+| `task` | fold-context 壳 `context.task`（显式 task 赢过它——as-is） | `src/loop/task-brief.js`（`resolveTaskBrief`）、`src/assembly-validators.js` | **没动**（N2） |
+| `task` | `task-brief.js` 的字符串读（`typeof === "string"` + `trim()`） | `src/loop/task-brief.js` | **没动**——读侧 |
+| `task` | `erix_run` 扩展自己的 `task` 入参（`core.run({ task })`） | `examples/pi-extension/erix-run-core.js` | **没动**——另一张 API 面 |
+| `session` | 装配口成员 `port.session` | `src/assembly.js`（`assemblyPortOptions`） | **没动**——同值 ⇒ 退回 |
+| `session` | CLI `--session <id>` 参数（会话 id 字符串，喂给 `runId`） | `bin/cli.js` | **没动**——完全是另一个键 |
 
 **建议噪声是实测的，不是假设。** 「did you mean」的候选池是**现役**白名单，而 `model` 与
 `modelMetadata` 只差一个编辑距离。退役之后，精确拼写**完全不会**得到建议（距离 8 > 阈值 5），
