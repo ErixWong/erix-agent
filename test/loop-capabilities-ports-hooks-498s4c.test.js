@@ -122,8 +122,8 @@ function foldingRun(extra = {}) {
   });
 }
 
-/** 一次真的发生扩轮的 run（judge 给 extend:true）。 */
-function extendingRun(extra = {}) {
+/** 一次真的发生扩轮的 run（judge 给 extend:true）；`reflectionExtra` 只多带 `reflection` 的子键。 */
+function extendingRun(extra = {}, reflectionExtra = {}) {
   const decision = {
     done: false,
     confidence: 0.8,
@@ -149,6 +149,7 @@ function extendingRun(extra = {}) {
       extensionStep: 2,
       maxExtensions: 1,
       maxRoundsCap: 20,
+      ...reflectionExtra,
       judge: { provider: createFakeProvider([{ content: [{ type: "text", text: JSON.stringify(decision) }] }]) },
     },
     ...extra,
@@ -724,4 +725,241 @@ test("C10 装配口路线：policy.capabilities.ports 与 hooks 同相生效（s
   );
   assert.equal(twoSources.capabilitySlots.ports.sleepImpl, callSleep, "调用级整棵覆盖（后写者胜）");
   assert.deepEqual(events, []);
+});
+
+// ================================================================ C11–C14. 逐叶冲突（4 个 hooks）
+//
+// 复审 mut-a：把「壳内写法与 `capabilities.hooks.<name>` 不等价 ⇒ 记一条冲突」的比较对
+// `onReflection` / `onBeforeFold` / `onAfterFold` / `stubFor` 这四个叶子**静默掉**，全量 2373 格
+// **0 fail**——这条比较没有任何回归网。下面四格就是那张网：每个叶子都钉「不等价 ⇒ 恰一条、
+// `path` 逐字 = 该叶子的 `conflictPath`（真实目的地）」与「等价（同一函数引用）⇒ 零」。
+//
+// 表驱动：壳内老家直接取 `CAPABILITY_SLOT_DESTINATIONS` 登记的 `path`，所以「去哪读壳里那份」
+// 与「事件报哪个 path」两件事都由同一张表说了算，不会各写一份。
+
+/** 把 `value` 放进该叶子登记的壳内老家（例如 `context.onBeforeFold` / `reflection.onReflection`）。 */
+function shellHomeOptions(leaf, value) {
+  const { path } = CAPABILITY_SLOT_DESTINATIONS[`hooks.${leaf}`];
+  const options = {};
+  let cursor = options;
+  for (const key of path.slice(0, -1)) cursor = (cursor[key] = {});
+  cursor[path[path.length - 1]] = value;
+  return options;
+}
+
+const HOOK_SLOT_LEAVES = ["onReflection", "onBeforeFold", "onAfterFold", "stubFor"];
+
+test("C11 逐叶冲突（表驱动，4 个 hooks）：壳内 + capabilities.hooks 不等价 ⇒ 恰一条、path 点名真实目的地；等价 ⇒ 零", () => {
+  for (const leaf of HOOK_SLOT_LEAVES) {
+    const destination = CAPABILITY_SLOT_DESTINATIONS[`hooks.${leaf}`];
+    // 前提：这四个叶子的 `conflictPath` 就是「组内路径」`hooks.<leaf>`（契约里那句写的就是它）。
+    assert.equal(destination?.conflictPath, `hooks.${leaf}`, `${leaf} 的冲突 path 必须是 hooks.${leaf}`);
+
+    const shellFn = () => {};
+    const portFn = () => {};
+    const unequal = expandCapabilitiesNamespace({
+      ...shellHomeOptions(leaf, shellFn),
+      capabilities: { hooks: { [leaf]: portFn } },
+    });
+    assert.deepEqual(
+      unequal.conflicts,
+      [{ path: `hooks.${leaf}`, key: leaf }],
+      `${leaf}：两侧不等价必须**恰一条**冲突（静默掉这条比较就是复审 mut-a）`,
+    );
+    assert.equal(unequal.slots.hooks[leaf], portFn, `${leaf}：容器赢，槽位里是 capabilities 侧那份`);
+
+    // 等价 = 同一个函数引用 ⇒ 零事件（把等价分支短路，这一条红）。
+    const same = () => {};
+    assert.deepEqual(
+      expandCapabilitiesNamespace({
+        ...shellHomeOptions(leaf, same),
+        capabilities: { hooks: { [leaf]: same } },
+      }).conflicts,
+      [],
+      `${leaf}：同一个函数引用不算冲突`,
+    );
+    // 只有壳内那份、没有容器那份 ⇒ 零冲突（对照组：别把「只有一边」也当成冲突）。
+    assert.deepEqual(expandCapabilitiesNamespace(shellHomeOptions(leaf, shellFn)).conflicts, []);
+  }
+});
+
+test("C12 逐叶冲突（真 run，3 个折叠 hooks）：onBeforeFold / onAfterFold / stubFor 各恰一条事件，且壳里那份零调用", async () => {
+  for (const leaf of ["onBeforeFold", "onAfterFold", "stubFor"]) {
+    const shellCalls = [];
+    const portCalls = [];
+    const events = [];
+    const shellFn = (payload) => { shellCalls.push(payload); return "SHELL-STUB"; };
+    const portFn = (payload) => {
+      portCalls.push(payload);
+      return leaf === "stubFor" ? "PORT-STUB" : undefined;
+    };
+    const result = await foldingRun({
+      context: { budgetTokens: 1, keepRounds: 0, [leaf]: shellFn },
+      capabilities: { hooks: { [leaf]: portFn } },
+      onEvent: (event) => events.push(event),
+    });
+    assert.equal(
+      result.termination.reason === "end_turn" || result.termination.reason === "max_rounds_cap",
+      true,
+      `${leaf}：这条 run 必须跑完`,
+    );
+    const conflicts = events.filter((event) => event.type === "config_override_conflict");
+    assert.equal(conflicts.length, 1, `${leaf}：不等价 ⇒ 恰一条 config_override_conflict，实测 ${conflicts.length}`);
+    assert.deepEqual(conflicts[0].conflicts, [{ path: `hooks.${leaf}`, key: leaf }], `${leaf}：path 点名真实目的地`);
+    assert.equal(portCalls.length > 0, true, `${leaf}：capabilities 侧那份必须真被调用（否则「容器赢」只是嘴上说的）`);
+    assert.deepEqual(shellCalls, [], `${leaf}：壳里那份必须**零调用**（容器赢）`);
+  }
+});
+
+test("C13 逐叶冲突（真 run，onReflection）：扩轮通知恰一条事件、path = hooks.onReflection，壳里那份零调用", async () => {
+  const shellCalls = [];
+  const portCalls = [];
+  const events = [];
+  const result = await extendingRun(
+    { capabilities: { hooks: { onReflection: (info) => { portCalls.push(info); } } }, onEvent: (event) => events.push(event) },
+    { onReflection: (info) => { shellCalls.push(info); } },
+  );
+  assert.equal(result.rounds > 5, true, "前提：扩轮真的发生了（否则这格只是在测空气）");
+  const conflicts = events.filter((event) => event.type === "config_override_conflict");
+  assert.equal(conflicts.length, 1, `不等价 ⇒ 恰一条事件，实测 ${conflicts.length}`);
+  assert.deepEqual(conflicts[0].conflicts, [{ path: "hooks.onReflection", key: "onReflection" }]);
+  assert.equal(portCalls.length, 1, "capabilities 侧那份收到唯一一次扩轮通知");
+  assert.deepEqual(shellCalls, [], "壳里那份（reflection.onReflection）零调用");
+});
+
+test("C14 逐叶等价（真 run，4 个 hooks）：同一函数引用同时写在两处 ⇒ 零冲突事件", async () => {
+  for (const leaf of HOOK_SLOT_LEAVES) {
+    const same = () => {};
+    const events = [];
+    await runDirect({
+      ...shellHomeOptions(leaf, same),
+      capabilities: { hooks: { [leaf]: same } },
+      onEvent: (event) => events.push(event),
+    });
+    assert.deepEqual(
+      events.filter((event) => event.type === "config_override_conflict"),
+      [],
+      `${leaf}：同一个函数引用 ⇒ 零冲突事件（等价口径 = 同一性）`,
+    );
+  }
+});
+
+// ================================================================ C15–C17. 优先级方向（三个端口位）
+//
+// 复审 mut-d / mut-e / mut-h：把 `capabilityPorts.X ?? 壳里那份` 的顺序**翻转**，全量 2373 格
+// **0 fail**——「容器赢」这条语义（契约第 1 条规则 + 冲突事件的话术）没有任何断言。
+// 下面三格都是**行为证据**：两侧同时在场、实现不同 ⇒ 实际被调用的是 `capabilities.ports.*` 那份，
+// 壳里那份零调用（不是读返回值，是看谁真的被调）。
+
+test("C15 优先级方向（sleepImpl）：retry.sleepImpl 与 capabilities.ports.sleepImpl 同时在场 ⇒ 端口位赢、壳里零调用", async () => {
+  const counter = { calls: 0 };
+  const portSleeps = [];
+  const shellSleeps = [];
+  const result = await runToolLoop({
+    provider: retryingProvider(counter),
+    executeTool: async () => "ok",
+    initialUserMessage: "go",
+    completion: false,
+    wrapup: false,
+    retry: { attempts: 2, backoffBaseMs: 10, sleepImpl: async (ms) => { shellSleeps.push(ms); } },
+    capabilities: { ports: { sleepImpl: async (ms) => { portSleeps.push(ms); } } },
+  });
+  assert.equal(result.termination.reason, "end_turn");
+  assert.equal(counter.calls, 2, "前提：真的重试了一次（否则「谁被调用」无从谈起）");
+  assert.deepEqual(portSleeps, [10], "capabilities.ports.sleepImpl 赢：它拿到实际退避延迟");
+  assert.deepEqual(shellSleeps, [], "retry.sleepImpl（壳内那份）零调用——`??` 顺序翻转这里就红");
+});
+
+test("C16 优先级方向（judgeProvider）：reflection.judge.provider 与 capabilities.ports.judgeProvider 同时在场 ⇒ 端口位赢、壳里零请求", async () => {
+  const main = createFakeProvider(toolScript(8));
+  const shellJudge = createFakeProvider([{
+    content: [{ type: "text", text: JSON.stringify({ done: false, confidence: 0.8, reason: "壳", evidence: "壳" }) }],
+  }]);
+  const portRequests = [];
+  const portJudge = {
+    async chat(request) {
+      portRequests.push(request);
+      return { content: [{ type: "text", text: JSON.stringify({ done: false, confidence: 0.8, reason: "端口", evidence: "端口" }) }] };
+    },
+  };
+  const result = await runToolLoop({
+    provider: main,
+    executeTool: async () => "ok",
+    initialUserMessage: "go",
+    completion: false,
+    wrapup: false,
+    maxRounds: 6,
+    reflection: { enabled: true, judgeIntervalRound: 2, judge: { provider: shellJudge } },
+    capabilities: { ports: { judgeProvider: portJudge } },
+  });
+  assert.equal(result.termination.reason, "max_rounds_cap");
+  assert.equal(portRequests.length, 1, "judge 请求走端口位（恰一发）");
+  assert.equal(shellJudge.requests.length, 0, "reflection.judge.provider（壳内那份）零请求——`??` 顺序翻转这里就红");
+  assert.equal(
+    main.requests.filter((request) => /交付评审者/u.test(String(request.system))).length,
+    0,
+    "主模型也没有收到 judge 请求",
+  );
+});
+
+test("C17 优先级方向（strategy）：context.strategy 与 capabilities.ports.strategy 同时在场 ⇒ 端口位赢、壳里零调用", async () => {
+  let shellShouldCompact = 0;
+  let shellCompact = 0;
+  const shellStrategy = {
+    name: "shell-strategy",
+    async shouldCompact() { shellShouldCompact += 1; return true; },
+    async compact(messages) { shellCompact += 1; return { messages }; },
+  };
+  let portShouldCompact = 0;
+  let portCompact = 0;
+  const portStrategy = {
+    name: "port-strategy",
+    async shouldCompact() { portShouldCompact += 1; return true; },
+    async compact(messages) { portCompact += 1; return { messages, foldedRoundRange: { from: 1, to: 1 } }; },
+  };
+  const result = await runToolLoop({
+    provider: createFakeProvider(DONE),
+    executeTool: async () => "ok",
+    initialUserMessage: "go",
+    completion: false,
+    wrapup: false,
+    context: { budgetTokens: 1, strategy: shellStrategy },
+    capabilities: { ports: { strategy: portStrategy } },
+  });
+  assert.equal(result.termination.reason, "end_turn");
+  assert.equal(portShouldCompact, 1, "capabilities.ports.strategy.shouldCompact 真被调");
+  assert.equal(portCompact, 1, "capabilities.ports.strategy.compact 真被调");
+  assert.deepEqual([shellShouldCompact, shellCompact], [0, 0], "context.strategy（壳内那份）零调用——`??` 顺序翻转这里就红");
+  assert.equal(result.compactionStats[0].strategyName, "port-strategy", "轮记录里记的是端口位那个策略");
+});
+
+// ================================================================ C18. 装配口路线的真 run
+//
+// 复审 mut-b：`capabilityPorts = assemblyPort === undefined ? slots.ports : {}`（装配口路线把
+// 端口位丢掉）⇒ 全量 2373 格 0 fail。C10 只验 `normalizeRunToolLoopOptions` 的返回值，
+// 不跑真 run，所以 `slots` 在装配口路线上的**端到端**透传没有任何断言。这一格补上（与 S2e 同族：
+// 「policy 侧的面在同一条 run 里真的生效」）。
+
+test("C18 装配口路线的真 run：policy.capabilities.ports.sleepImpl 真的被调用（slots 端到端，不只 normalize 返回值）", async () => {
+  const sleeps = [];
+  const counter = { calls: 0 };
+  const port = createAssemblyPort({
+    modelConfig: { resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1024 }) },
+    provider: retryingProvider(counter),
+    tools: { definitions: [], executeTool: async () => "ok" },
+    session: { id: `ports-498s4c-assembly-${process.pid}` },
+    policy: {
+      retry: { attempts: 1, backoffBaseMs: 10 },
+      capabilities: { ports: { sleepImpl: async (ms) => { sleeps.push(ms); } } },
+    },
+  });
+  const result = await runToolLoop({
+    assemblyPort: port,
+    initialUserMessage: "go",
+    completion: false,
+    wrapup: false,
+  });
+  assert.equal(result.termination.reason, "end_turn");
+  assert.equal(counter.calls, 2, "前提：端口 provider 真的重试了一次");
+  assert.deepEqual(sleeps, [10], "policy.capabilities.ports.sleepImpl 在这条真 run 里必须被调用（丢掉 slots 这里就红）");
 });
