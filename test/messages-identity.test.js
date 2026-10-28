@@ -69,7 +69,10 @@ async function runLoop({ script, strategy, context, options = {} }) {
     completion: false,
     tools: TOOL,
     ...options,
-    config: { folding: { context: { ...(context ?? {}), ...(strategy ? { strategy } : {}) } } },
+    config: { folding: { context: { ...(context ?? {}) } } },
+    // #498 S3: `context.strategy` is an **object** (a behaviour carrier), so its canonical home is
+    // `capabilities.ports.strategy` — the config namespace holds data only and rejects it by name.
+    ...(strategy ? { capabilities: { ports: { strategy } } } : {}),
   });
 }
 

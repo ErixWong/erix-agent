@@ -100,7 +100,7 @@ async function runRound({
     runId,
     ...(budgetTokens === undefined || budgetTokens === null
       ? {}
-      : { context: { budgetTokens } }),
+      : { config: { folding: { context: { budgetTokens } } } }),
     ...(outputHygiene === undefined ? {} : { outputHygiene }),
     ...(controller === undefined ? {} : { signal: controller.signal }),
     completion: false,

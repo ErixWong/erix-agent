@@ -418,6 +418,31 @@ export function capabilitiesPathForOption(optionName) {
   return undefined;
 }
 
+/**
+ * Every **nested-slot destination** whose shell is `shellName` (`"context"` → the five `hooks` leaves
+ * plus `ports.strategy`; `"retry"` → `ports.sleepImpl`).
+ *
+ * Why this is a function and not a table: a shell can hold **both** data and behaviour members
+ * (`context` = `budgetTokens` … plus `onBeforeFold` …), so "the shell moved to `config.folding.context`"
+ * is only half a signpost — a host that follows it with a function in hand is rejected a second time by
+ * the config namespace (which holds data only) and only *then* learns about `capabilities.hooks`.
+ * The rejection at the top-level name gate must therefore name **both** stations in one sentence, and it
+ * has to derive them from the destination table so a new shell cannot be forgotten (#498 S3).
+ *
+ * @param {string} shellName a top-level option name that used to be a shell (`context` / `retry` / …)
+ * @returns {Array<{capabilityPath: string, group: string, leaf: string}>} empty when the shell carries
+ *   no behaviour members (then the single-station message is already complete)
+ */
+export function capabilityDestinationsForShell(shellName) {
+  const found = [];
+  for (const [capabilityPath, destination] of Object.entries(CAPABILITY_SLOT_DESTINATIONS)) {
+    if (destination.path[0] !== shellName) continue;
+    const [group, ...rest] = capabilityPath.split(".");
+    found.push({ capabilityPath, group, leaf: rest.join(".") });
+  }
+  return found;
+}
+
 /** 某个叶子名在哪个组里（`deliverables` → `"checks"`）；不在任何组里时 undefined。 */
 function capabilitiesGroupForLeaf(leaf) {
   for (const group of CAPABILITIES_NAMESPACE_GROUPS) {
