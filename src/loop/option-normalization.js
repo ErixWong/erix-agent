@@ -212,7 +212,14 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // unchanged; only the *write* spelling moved, and the name gate now rejects the flat ones while
   // naming the new home. `finalGuard` itself is **not** part of this slice: it is a hook whose value
   // must be a function, so it lives in `capabilities.hooks.finalGuard` and retires in S9.
-  "maxTokenContinuations",
+  // #498 S3 A14: `maxTokenContinuations` left this list too.
+  // Its canonical home is `config.run.maxTokenContinuations`;
+  // expansion writes the value back onto
+  // `effectiveOptions.maxTokenContinuations`, so the same-round
+  // continuation budget reader in `src/loop/orchestrator.js` is
+  // untouched. Red cells: 18 before the fixture, 8 after it, 0 once
+  // migrated; gate-2 exit codes and the verbatim rejection text live in
+  // `test/loop-run-slice-498s3a14.test.js`.
   "todoStateProvider",
   "semanticStateProvider",
   "modelConfig",

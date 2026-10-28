@@ -76,6 +76,10 @@ const RUN_FAMILY_FIXTURE_KEYS = Object.freeze([
   "outputHygiene",
   "persistence",
   "partialPersistence",
+  // #498 S3 A14: `maxTokenContinuations` joins the same group (home `config.run.maxTokenContinuations`).
+  // It is a **scalar** rather than a data shell, but the fixture only moves spellings, so the same
+  // translation applies verbatim. `undefined` is treated as "not given" (same rule as the seed below).
+  "maxTokenContinuations",
 ]);
 
 /**

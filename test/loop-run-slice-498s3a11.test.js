@@ -410,7 +410,8 @@ test("N3 `writeToolNames` / `writeToolPathKeys` 在 judge / termination 侧是**
 });
 
 test("N4 `maxTokenContinuations`（run 组）与已退役的 `maxTokens`（tuning 组）不同物", async () => {
-  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("maxTokenContinuations"), true);
+  // #498 S3 A14：本键的扁平拼写也退役了，所以第一条从「仍在白名单」翻成反向钉；两条的家仍然不同物。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("maxTokenContinuations"), false);
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("maxTokens"), false, "`maxTokens` 由 A5 退役");
   assert.equal(configPathForOption("maxTokenContinuations"), "run.maxTokenContinuations");
   assert.equal(configPathForOption("maxTokens"), "tuning.maxTokens");
