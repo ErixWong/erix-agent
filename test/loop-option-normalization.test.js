@@ -227,7 +227,10 @@ const OPTION_WHITELIST = [
   // A0 checks), so they are gone here too; the flat spellings are now **rejection** cells, see
   // `test/loop-tuning-keys-slice-498s3a5.test.js`.
   "reflection",
-  "stallDetection",
+  // #498 S3 (`run` slice A13): `stallDetection` left the allowlist — its canonical home is
+  // `config.run.stallDetection`. The copy tracks the source list verbatim (that is what A0 checks),
+  // so it is gone here too; the flat spelling is now a **rejection** cell, see
+  // `test/loop-run-slice-498s3a13.test.js`.
   "completion",
   "finalGuard",
   // #498 S3 (`guard` slice): `finalGuardMaxRetries` / `finalGuardTimeoutMs` left the allowlist —
@@ -355,7 +358,10 @@ const SUGGESTION_MATRIX = [
   // #498 S3（`run` 片 A11）：上一版用的是 `writeToolPathK` → `writeToolPathKeys`，而后者本片退役 ⇒
   // 候选池里再没有它。换成 `tsallDetection` → `stallDetection`（长度 14 ⇒ 阈值仍是 4，距离 2），
   // 钉的**是同一条分支**：阈值由 ⌊len/3⌋ 放大到 4，不是 `Math.max(2, …)` 的下限档。
-  { key: "tsallDetection", distance: 2, threshold: 4, suggested: "stallDetection", note: "长度 14：阈值 4，距离 2 在阈内" },
+  // #498 S3（`run` 片 A13）：`stallDetection` 也退役了 ⇒ 候选池里同样没有它。换 `delXverXbleX`
+  // → `deliverables`（长度 12 ⇒ 阈值 ⌊12/3⌋ = 4，距离 3）：距离 3 **大于**下限 2，所以这一行仍然
+  // 只在「阈值随长度放大」时才绿——阈值退回 `Math.max(2, …)` 就会红，钉的还是同一条分支。
+  { key: "delXverXbleX", distance: 3, threshold: 4, suggested: "deliverables", note: "长度 12：阈值 4，距离 3 在阈内" },
   // #498 S3：这一行原来用 `finalGuardTimout` → `finalGuardTimeoutMs`，而后者已随 `guard` 切片离开
   // 白名单（建议候选池 = 白名单，删了键就不再是候选）。换一个**仍在白名单里**的 16 字键，钉的是同
   // 一条分支：长度 16 ⇒ 阈值 ⌊16/3⌋ = 5，距离 3 落在阈内 ⇒ 必须给建议。

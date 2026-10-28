@@ -58,7 +58,9 @@ function base(extra = {}) {
     config: { input: { initialUserMessage: "go" } },
     completion: false,
     wrapup: false,
-    stallDetection: false,
+    // #498 S3 A13：`stallDetection` 也退役了扁平写法（家在 `config.run.stallDetection`），所以
+    // 这里不再拿它当「仍在白名单的填充键」——那会让本文件随下一片一起红。填充键只留仍在
+    // 白名单里的 `completion` / `wrapup`。
     ...extra,
   };
 }

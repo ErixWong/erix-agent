@@ -426,7 +426,7 @@ const VALUES = {
   // #527：`tools` 已拆出配置面（永久顶层面），不再属于这份配置样本。
   maxRounds: 3,
   maxTokenContinuations: 2,
-  stallDetection: false,
+  // #498 S3（`run` 片 A13）：`stallDetection` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
   completion: false,
   // #498 S3 (`run` slice A11): `replayPolicy` / `invalidArguments` / `writeToolNames` /
   // `writeToolPathKeys` are no longer flat top-level keys — they moved to `RETIRED_FLAT_VALUES` below
@@ -527,6 +527,10 @@ const RETIRED_FLAT_VALUES = {
   // `config.run.partialPersistence`；展开相仍逐字写回 `effectiveOptions.partialPersistence`
   // （读侧一行未改：`src/loop/orchestrator.js` 的定时器分支与 `resume-manager.js` 的快照采样）。
   partialPersistence: { intervalMs: 500 },
+  // #498 S3 A13（`run` 片）：`stallDetection` 退役。它的值是**结构已知的对象或 `false`**；
+  // 展开相仍逐字写回 `effectiveOptions.stallDetection`（读侧一行未改：`orchestrator.js` 顶部
+  // 的 `resolvedStallDetection` 分支）。样本给对象形态（`false` 由 A13 切片测试的 G 段覆盖）。
+  stallDetection: { window: 4, mode: "consecutive" },
 };
 
 /** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */

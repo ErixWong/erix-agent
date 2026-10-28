@@ -198,7 +198,7 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // (`src/messages/anthropic.js`), and the assembly `policy.maxTokens` (`src/assembly.js`) — none of
   // them goes through this allowlist.
   "reflection",
-  "stallDetection",
+  // #498 S3 A13: `stallDetection` → `config.run.stallDetection` (see the A13 slice test).
   "completion",
   "finalGuard",
   // #498 S3 (`guard` slice): `finalGuardMaxRetries` / `finalGuardTimeoutMs` left the allowlist here.

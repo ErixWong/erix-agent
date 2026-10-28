@@ -14,7 +14,6 @@
 //   ④ 恢复**不消费**快照锚点：写成 0 / 超大都不改变上下文（写侧多算的残留也在这条里被中和）。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runToolLoop } from "../src/loop/orchestrator.js";
 import { runDirect } from "./helpers/run-direct.js";
 import { countResumeAnchor } from "../src/loop/resume-manager.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
@@ -154,7 +153,7 @@ test("#425 stream + partialPersistence：恢复后终稿正文只出现一次（
   assert.equal(ledger.length, 2, "前提：账本里已有 seed + 终稿 assistant");
 
   const resumedProvider = streamingProvider({ bodies: ["追问的答复"], store: inner, runId: RUN_ID });
-  await runToolLoop({
+  await runDirect({
     provider: resumedProvider,
     resume: true,
     stream: true,
@@ -224,7 +223,7 @@ test("#425 反向证：现算锚点人为少 1 ⇒ 配对断裂，invalid_messag
   // 对照（锚点不少）：同一份现场恢复成功，t2 的补跑结果接回 t1 那条聚合消息。
   const healthyStore = await buildStore(engineRows);
   const healthyProvider = createFakeProvider([{ content: [text("done")], stopReason: "end_turn" }]);
-  const healthy = await runToolLoop({
+  const healthy = await runDirect({
     provider: healthyProvider,
     resume: true,
     store: healthyStore,
@@ -244,7 +243,7 @@ test("#425 反向证：现算锚点人为少 1 ⇒ 配对断裂，invalid_messag
   const brokenStore = await buildStore(shrunkRows);
   const brokenProvider = createFakeProvider([{ content: [text("done")], stopReason: "end_turn" }]);
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider: brokenProvider,
       resume: true,
       store: brokenStore,
@@ -295,7 +294,7 @@ test("#425 恢复不读快照锚点：写成 0（旧口径下必然 invalid_mess
       ts: new Date().toISOString(),
     });
     const provider = createFakeProvider([{ content: [text("done")], stopReason: "end_turn" }]);
-    await runToolLoop({
+    await runDirect({
       provider,
       resume: true,
       store,
@@ -398,7 +397,7 @@ async function resumeWithHostRow(keyShape, { landedT1 = false } = {}) {
     ts: new Date().toISOString(),
   });
   const provider = createFakeProvider([{ content: [text("done")], stopReason: "end_turn" }]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     resume: true,
     store,
@@ -524,7 +523,7 @@ test("#425 方向敏感复证：默认键现场下锚点人为少 1 ⇒ 仍 inva
       ts: new Date().toISOString(),
     });
     const provider = createFakeProvider([{ content: [text("done")], stopReason: "end_turn" }]);
-    const error = await runToolLoop({
+    const error = await runDirect({
       provider,
       resume: true,
       store,
@@ -590,7 +589,7 @@ test("#425 边界：`:round:` 键 + `kind:\"message\"` 的尾行判引擎（anch
     ts: new Date().toISOString(),
   });
   const provider = createFakeProvider([{ content: [text("done")], stopReason: "end_turn" }]);
-  const error = await runToolLoop({
+  const error = await runDirect({
     provider,
     resume: true,
     store,
