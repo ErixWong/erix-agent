@@ -576,11 +576,14 @@ test("S5c finalGuard 属能力面：config.guard.finalGuard 抛，顶层扁平�
   assert.equal(calls, 1, "顶层 finalGuard 一字未动");
 });
 
-test("S5d 语义相仍管 config 展开后的键：config 里的 sleepImpl 给错型 ⇒ 语义相点名；扁平写法被名称闸口先拒", async () => {
+test("S5d 配置面只拒函数：`config.timing.retry.sleepImpl` 写函数 ⇒ 当场拒并指新家；扁平写法被名称闸口先拒（#520）", async () => {
   // #498 S3：`retry` 已无扁平写法（名称闸口先拒），所以「同一句」不再成立；这里改成两条各自钉住，
   // 反而多了一条升级线索的证据：扁平写法的报错必须**指向新家**。
-  const nestedError = await directError({ config: { timing: { retry: { sleepImpl: "nope" } } } });
-  assert.match(nestedError.message, /retry\.sleepImpl must be a function \(or omitted\)/u);
+  // #520：语义相不再管这个键（`retry.sleepImpl` 的形状规则已随它的读点退役），所以这一格改成钉
+  // 「配置面拒函数」那条 intake 规则——非函数值现在是惰性数据，不在这里当反例。
+  const nestedError = await directError({ config: { timing: { retry: { sleepImpl: () => {} } } } });
+  assert.match(nestedError.message, /config\.timing\.retry\.sleepImpl is not accepted/u);
+  assert.match(nestedError.message, /its canonical home is capabilities\.ports\.sleepImpl/u);
   assert.equal(nestedError.via, "direct");
 
   const flatError = await directError({ retry: { sleepImpl: "nope" } });

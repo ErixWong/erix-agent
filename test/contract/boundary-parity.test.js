@@ -372,10 +372,14 @@ test("boundary parity: 承载宿主回调的字段形状错误在两条路线上
     ["onFoldSummary", { onFoldSummary: "notes" },
       "assembly policy option onFoldSummary must be a function (or omitted)"],
     ["finalGuard", { finalGuard: true }, "finalGuard must be a function (or omitted)"],
-    // #498 S3: `retry` moved to `config.timing.retry`, so the parity cell uses the new spelling on
-    // both routes (the flat one is now rejected one phase earlier by the name gate).
-    ["timing.retry.sleepImpl", { config: { timing: { retry: { sleepImpl: 10 } } } },
-      "retry.sleepImpl must be a function (or omitted)"],
+    // #520: the `retry.sleepImpl` **shape** rule is retired (its only reader, the
+    // `retryOptions?.sleepImpl` term in the orchestrator, had no producer), so this cell pins the rule
+    // that already owned this spelling: a function inside `config.timing.retry` is refused by the
+    // "config holds data only" intake walk, and both routes say exactly the same thing.
+    ["timing.retry.sleepImpl", { config: { timing: { retry: { sleepImpl: () => {} } } } },
+      'config.timing.retry.sleepImpl is not accepted: "sleepImpl" is a function,'
+      + " and the config namespace holds data only (the config subtree must survive a JSON round-trip unchanged)"
+      + " — its canonical home is capabilities.ports.sleepImpl"],
     // #530: `reflection` 退役扁平写法 ⇒ 这一格用规位拼写。**非函数**留在数据半边
     // （只有函数值才搬去能力面），所以语义相照旧报同一条文案——这一格测的是形状，不是去处。
     ["reflection.onReflection", { config: { run: { reflection: { onReflection: "cb" } } } },

@@ -1000,12 +1000,15 @@ test("E3 config 只装数据：context 照旧过，observers 组与 finalGuard �
 });
 
 // #498 S4a：`config.guard.finalGuard` 已是能力键（见 E3 / S5c），所以这条改用**仍在配置面**的
-// 回调字段 `retry.sleepImpl` 做同一件事：非函数值走语义相，同一句文案。
-// #498 S3：`retry` 已经没有扁平写法（写了会在**名称闸口**当场拒，比语义相更早），所以这里的
-// 「两种写法」变成「config 形态走语义相」+「扁平形态走名称闸口且文案指向新家」。
-test("E4 config 里的回调字段给错型 ⇒ 语义相点名叶子路径；扁平写法更早一步被名称闸口拒并指新家", async () => {
-  const nestedError = await directError({ config: { timing: { retry: { sleepImpl: "nope" } } } });
-  assert.match(nestedError.message, /retry\.sleepImpl must be a function \(or omitted\)/u);
+// 回调字段 `retry.sleepImpl` 做同一件事。
+// #498 S3：`retry` 已经没有扁平写法（写了会在**名称闸口**当场拒）。
+// #520：`retry.sleepImpl` 的**形状规则退役**（它的读点 `retryOptions?.sleepImpl` 已删，无生产者可达），
+// 所以这一格改钉它退役后仅剩的那一面——**配置面拒函数**（值是函数才抛，且判词点名新家），
+// 非函数值现在是惰性数据（`null` / `"nope"` 都不再抛，见 `test/loop-option-gate-496.test.js` D③）。
+test("E4 config 里的 `retry.sleepImpl` 写函数 ⇒ 配置面当场拒并指新家；扁平写法更早一步被名称闸口拒", async () => {
+  const nestedError = await directError({ config: { timing: { retry: { sleepImpl: () => {} } } } });
+  assert.match(nestedError.message, /config\.timing\.retry\.sleepImpl is not accepted/u);
+  assert.match(nestedError.message, /its canonical home is capabilities\.ports\.sleepImpl/u);
   assert.equal(nestedError.via, "direct");
 
   const flatError = await directError({ retry: { sleepImpl: "nope" } });

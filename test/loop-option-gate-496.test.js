@@ -12,14 +12,17 @@
 //      只差 `error.via`；正例两条路线都不抛。
 //   C. 旋钮家族闭集**派生**：对 `FOLD_SUMMARIZER_CAP_NAMES` 每个键造一次手滑 ⇒ 两条路线都抛；
 //      合法键 ⇒ 都不抛；宿主业务键 ⇒ 两条路线都不抛；`context_unknown_option` 事件只在装配口有（直连从不发）（#469 的回归）。
-//   D. 回调形状：语义相管 **7** 个承载宿主回调的字段（`finalGuard` / `retry.sleepImpl` /
+//   D. 回调形状：语义相管 **6** 个承载宿主回调的字段（`finalGuard` /
 //      `reflection.onReflection` / `diagnostics.error` / 顶层 `onFoldSummary` / `context.onBeforeFold` /
 //      `context.onAfterFold`），另加闸口之外的 `deliverables[].check`；给错则启动即抛。给对时**逐格分开说**：
 //      六格在 D① 里**真跑一次**并断言投递次数（`context.onBeforeFold` / `context.onAfterFold` /
-//      顶层 `onFoldSummary` / `retry.sleepImpl` / `finalGuard` / `deliverables[].check`），
+//      顶层 `onFoldSummary` / `capabilities.ports.sleepImpl` / `finalGuard` / `deliverables[].check`），
 //      `diagnostics.error` 用「投递失败落持久化账本」这个真条件触发并断言；
 //      `reflection.onReflection` 的投递条件是 judge 扩轮（要跑到 nearLimit），本格只把它当**形状正例**，
 //      **不声称**被断言过（以前那个计数器写了不断言，等于装样子）。
+//      #520 retired the seventh field, `retry.sleepImpl`: its shape rule is gone (nothing reads the
+//      key any more), so the cells that used to pin it now pin the **config-plane** refusal of a
+//      function there instead — see D②/D③.
 //   E. 可达性：`maxRounds` / `deliverables` / `partialPersistence` / `persistence` 这类取值校验
 //      **仍由 orchestrator 承担**，两条路线都汇到那里（`error.via === undefined` 就是机器判据：
 //      闸口抛的错一定带 via 标签，不带标签 ⇒ 不是闸口抛的）。这条用例防的是「以为语义相全权负责，
@@ -32,7 +35,7 @@
 //     ⇒ C 段「每个旋钮手滑」逐条红；
 //   · `validateFoldSummarizerCaps` 的 `problems.push(...)` 降级 ⇒ B 段 knob-value 反例红；
 //   · `validateContextCallbackShapes` 的 `problems.push(...)` 降级 ⇒ B 段三个 context 回调反例红；
-//   · `CALLBACK_OPTION_PATHS` 的循环体 `problems.push(...)` 降级 ⇒ B 段四个顶层回调反例红；
+//   · `CALLBACK_OPTION_PATHS` 的循环体 `problems.push(...)` 降级 ⇒ B 段三个顶层回调反例红；
 //   · `assertSemanticOptionValues` 的 `throw` 降级成 `return` ⇒ B 段全部反例红、A 段次序用例红；
 //   · 语义相挪到**合并之前**（只看 assembled 值）⇒ A③ 与 B 段「policy 给对值 + 显式给错值」逐条红；
 //   · `collectSemanticOptionProblems` 把 `context: null` 也当错误 ⇒ `B(null)` 红；
@@ -62,6 +65,18 @@ import { createFakeProvider } from "./helpers/fake-provider.js";
 const DONE = [{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" }];
 const GATE_MESSAGE = /unknown assembly policy context option|must be a function \(or omitted\)|must be an object|must be a positive integer/u;
 
+/**
+ * #520：`config.timing.retry.sleepImpl` 塞函数时那句判词，**逐字**钉住。
+ *
+ * 它不是被撤掉的那条形状规则（`retry.sleepImpl must be a function (or omitted)`）——那条连同它的
+ * 读点一起退役了：文案在教宿主把函数写进 `config`，而 `config` 只装数据，那条路**进不了执行路径**。
+ * 留下的是 intake 的数据面规则：拒的是**函数值**（JSON round-trip 那一族），且判词点名真实目的地。
+ * 同一个字符串在 `test/loop-capabilities-namespace-498.test.js` S6 里从纯函数侧再钉一次。
+ */
+const CONFIG_PLANE_FUNCTION_MESSAGE = 'config.timing.retry.sleepImpl is not accepted: "sleepImpl" is a function,'
+  + " and the config namespace holds data only (the config subtree must survive a JSON round-trip unchanged)"
+  + " — its canonical home is capabilities.ports.sleepImpl";
+
 /** 一次成功的 fake provider（每个 run 一份，脚本不共享）。 */
 const providerOnce = () => createFakeProvider(DONE);
 
@@ -88,7 +103,7 @@ const directError = (extra = {}) => runDirect(extra).then(() => null, (error) =>
  *
  * 与 `test/loop-on-fold-summary.test.js` 的 `runFolding` 同形：预算压到 300 token + `keepRounds: 1`，
  * 先 6 发工具调用把上下文撑过预算，再收尾 ⇒ `sliding-window`（零 LLM）机械折叠必然发生。
- * 首步是一次**可重试**失败，用来让 `retry.sleepImpl` 也真的被走一遍。
+ * 首步是一次**可重试**失败，用来让 `capabilities.ports.sleepImpl` 也真的被走一遍。
  */
 const FOLD_TOOLS = [{
   name: "echo",
@@ -253,16 +268,14 @@ const GATE_RULES = [
     message: "finalGuard must be a function (or omitted)",
   },
   {
-    // #498 S3: `retry` moved to `config.timing.retry` (data keys) — the flat spelling is rejected one
-    // phase earlier by the name gate, so the semantic-phase cell uses the nested spelling.
-    id: "timing.retry.sleepImpl-shape",
-    bad: { config: { timing: { retry: { attempts: 1, sleepImpl: 10 } } } },
-    // The positive case is data-only: a function inside `config` is rejected by the namespace gate
-    // (#498 S4a constraint 4), which is a *different* rule than this cell's. The function carrier's
-    // canonical home (`capabilities.ports.sleepImpl`) is covered in
-    // `test/loop-capabilities-ports-hooks-498s4c.test.js`.
+    // #520：这一格以前钉的是**形状规则**（`sleepImpl: 10` ⇒ "retry.sleepImpl must be a function
+    // (or omitted)"）。那条规则退役了（读点已删、无生产者可达），所以这一格翻成它原本该钉的那一面：
+    // **配置面拒函数**。值从 `10` 改成函数——因为拒函数的从来不是被撤掉的那条形状规则，而是
+    // 「`config` 只装数据」那条 intake 规则；判词逐字钉住，且点名真实目的地。
+    id: "timing.retry.sleepImpl-config-plane-refuses-functions",
+    bad: { config: { timing: { retry: { attempts: 1, sleepImpl: () => {} } } } },
     good: { config: { timing: { retry: { attempts: 1 } } } },
-    message: "retry.sleepImpl must be a function (or omitted)",
+    message: CONFIG_PLANE_FUNCTION_MESSAGE,
   },
   {
     id: "reflection.onReflection-shape",
@@ -530,7 +543,7 @@ test("D① 承载宿主回调的字段：省略 = 不订阅，给对就**真的�
   assert.ok(calls.onAfterFold >= 1, `context.onAfterFold 必须被投递，实测 ${calls.onAfterFold} 次`);
   assert.equal(calls.onAfterFold, calls.onBeforeFold, "同一次折叠的 before/after 必须成对（不多不少）");
   assert.ok(calls.onFoldSummary >= 1, `顶层 onFoldSummary 必须被投递，实测 ${calls.onFoldSummary} 次`);
-  assert.equal(calls.sleepImpl, 1, `retry.sleepImpl 必须被重试闸口调一次，实测 ${calls.sleepImpl} 次`);
+  assert.equal(calls.sleepImpl, 1, `capabilities.ports.sleepImpl 必须被重试闸口调一次，实测 ${calls.sleepImpl} 次`);
   assert.deepEqual(sleeps, [1500], "重试退避起点沿用既有口径");
   assert.equal(calls.finalGuard, 1, "finalGuard 旧位置必须照旧被调用");
   assert.equal(calls.check, 1, "deliverables[].check 旧位置必须照旧被调用");
@@ -562,9 +575,10 @@ test("D② 承载回调的字段给错就启动即抛：反例清单逐条（含
     [{ onFoldSummary: {} }, "assembly policy option onFoldSummary must be a function (or omitted)"],
     [{ finalGuard: null }, "finalGuard must be a function (or omitted)"],
     [{ finalGuard: "accept" }, "finalGuard must be a function (or omitted)"],
-    // #498 S3: `retry` is `config.timing.retry` now; the flat spelling is rejected one phase earlier.
-    [{ config: { timing: { retry: { sleepImpl: null } } } }, "retry.sleepImpl must be a function (or omitted)"],
-    [{ config: { timing: { retry: { sleepImpl: {} } } } }, "retry.sleepImpl must be a function (or omitted)"],
+    // #520: the `retry.sleepImpl` shape rule is retired, so `null` / `{}` there are plain data now
+    // (silently unread, exactly like any other unknown member of `retry`) — pinned as such in D③.
+    // What still throws is a **function**, refused by the config-plane intake rule.
+    [{ config: { timing: { retry: { sleepImpl: () => {} } } } }, CONFIG_PLANE_FUNCTION_MESSAGE],
     // #530: `reflection` 的扁平写法已退役 ⇒ 形状规则用规位拼写；非函数留在数据半边，文案不变。
     [{ config: { run: { reflection: { enabled: false, onReflection: 1 } } } },
       "reflection.onReflection must be a function (or omitted)"],
@@ -581,6 +595,52 @@ test("D② 承载回调的字段给错就启动即抛：反例清单逐条（含
     const assembly = await assemblyError(bad);
     assert.equal(assembly?.message, message, `${label}: 两条路线必须同一句`);
   }
+});
+
+test("D③ 配置面的 `retry.sleepImpl` 退役后**只拒函数**：非函数值是惰性数据，不当场抛也不被读（#520 的正向面）", async () => {
+  // 退役裁决有两面，这一格钉第二面：被撤掉的是**形状规则**（`retry.sleepImpl must be a function
+  // (or omitted)`），不是「拒函数」那一条。撤掉后 `config.timing.retry.sleepImpl` 上写 `null` / `{}` /
+  // 数字 / 字符串都**不再抛**——它们和 `retry` 里任何其他引擎不读的成员同待遇（惰性数据，静默不读），
+  // 而写函数仍然当场抛，判词逐字指向 `capabilities.ports.sleepImpl`。
+  // 为什么可以接受“不抛”：这条键在引擎里**已经没有读点**（`orchestrator.js` 的
+  // `retryOptions?.sleepImpl` 项已删），给一个没有读点的键校形状只会反过来暗示它有用——
+  // 与 `context.onFoldSummary` 那条既定裁决同口径。
+  for (const value of [null, {}, 10, "nope"]) {
+    const error = await directError({ config: { timing: { retry: { attempts: 0, sleepImpl: value } } } });
+    assert.equal(
+      error,
+      null,
+      `config.timing.retry.sleepImpl = ${JSON.stringify(value)} 必须被当惰性数据放行（实测 ${error?.message}）`,
+    );
+  }
+  // 拒函数那一面：**两条路线同一句**，且点名新家。
+  const fnBad = { config: { timing: { retry: { attempts: 0, sleepImpl: () => {} } } } };
+  const direct = await directError(fnBad);
+  assert.equal(direct?.message, CONFIG_PLANE_FUNCTION_MESSAGE, "直连：函数值必须被配置面当场拒");
+  assert.equal(direct?.via, "direct", "拒错的来源仍是贴路线标签的闸口（不是 orchestrator 的取值校验）");
+  const assembly = await assemblyError(fnBad);
+  assert.equal(assembly?.message, CONFIG_PLANE_FUNCTION_MESSAGE, "装配口：同一句");
+  assert.equal(assembly?.via, "assembly");
+});
+
+test("D④ 没注入定时器时 `?? defaultSleep` 承重：重试闸口真的等过一次（摘掉它必红）", async () => {
+  // 承重钉（#520 不许顺手删它）：`capabilities.ports.sleepImpl` 省略时，`?? defaultSleep` 是唯一
+  // 兜底——没有它，一次「可重试失败」就会去调 `undefined`。这一格**不**注入定时器，只把退避压到 0ms
+  // （`defaultSleep(0)` 立刻 resolve，不引入真实等待），然后断言重试真的发生了。
+  const retryable = new Error("temporary failure");
+  retryable.retryable = true;
+  const provider = createFakeProvider([{ throw: retryable }, ...DONE]);
+  const startedAt = Date.now();
+  const result = await runDirect({
+    provider,
+    config: { timing: { retry: { attempts: 1, backoffBaseMs: 0 } } },
+  });
+  assert.equal(provider.requests.length, 2, `前提：重试必须真的发生（实测 ${provider.requests.length} 发）`);
+  assert.equal(result.termination.reason, "end_turn");
+  assert.ok(
+    Date.now() - startedAt < 1000,
+    `退避必须走 0ms 那条（实测 ${Date.now() - startedAt}ms，默认 1500ms 说明配置没生效）`,
+  );
 });
 
 // ================================================================ E. 可达性（语义相不越权）

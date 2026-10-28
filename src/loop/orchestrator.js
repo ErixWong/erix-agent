@@ -810,15 +810,15 @@ export async function runToolLoop(options) {
   const backoffMaxMs = Number.isFinite(retryOptions?.backoffMaxMs)
     ? Math.max(0, retryOptions.backoffMaxMs)
     : 10000;
-  // #498 S4c: `capabilities.ports.sleepImpl` is the canonical home of the timer injection point;
-  // Since issue #498 S3 (timing slice) a host can no longer write `retry.sleepImpl` at all: the
-  // flat `retry` spelling is refused by the name gate (its home is `config.timing.retry`), and a
-  // function inside `config.timing.retry` is refused by the "config holds data only" rule. So the
-  // only host-reachable spelling of a retry timer is `capabilities.ports.sleepImpl`. The
-  // `retryOptions?.sleepImpl` term below stays only for in-engine callers; issue #520 tracks
-  // removing it once no producer can reach it. The `?? defaultSleep` fallback is
-  // load-bearing: without it a run that retries with no injected timer would call `undefined`.
-  const sleepImpl = capabilityPorts.sleepImpl ?? retryOptions?.sleepImpl ?? defaultSleep;
+  // #498 S4c: `capabilities.ports.sleepImpl` is the canonical home of the timer injection point,
+  // and since issue #498 S3 (timing slice) it is the **only** host-reachable spelling: the flat
+  // `retry` spelling is refused by the name gate (its home is `config.timing.retry`), and a
+  // function inside `config.timing.retry` is refused by the "config holds data only" rule. #520
+  // removed the `retryOptions?.sleepImpl` term that used to sit in the middle of this chain: no
+  // producer could reach it (the producer sweep is in that issue), so it was a dead read. The
+  // `?? defaultSleep` fallback is load-bearing: without it a run that retries with no injected
+  // timer would call `undefined` (pinned by `test/loop-option-gate-496.test.js` D③).
+  const sleepImpl = capabilityPorts.sleepImpl ?? defaultSleep;
   // issue #177 刀5：runToolLoop 可变状态收口对象（闭包 `let` → 显式状态对象，分组迁入）。
   // 初值与语义与原 `let` 逐字一致（`foldedThrough` 原初值就是数字 `0`，不是 `false`）：
   // 【A 轮次记账 + 一次性去重标记】`rounds` / `foldedThrough`（原 :1235 / :1237，双计数器口径
