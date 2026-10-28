@@ -277,14 +277,19 @@ test("S3 #531 闭门：第三站 ⇒ 写顶层；写 `config.metadata.session` �
   // ② 顶层照旧收（同一个值、同一个入口）。
   const { effectiveOptions } = await normalizeRunToolLoopOptions({ session: { id: "a9-flat-session" } });
   assert.deepEqual(effectiveOptions.session, { id: "a9-flat-session" }, "扁平 `session` 照旧被接受");
-  // ③ 闭门：同一个值写进旧规位 ⇒ **未知叶子**当场拒，文案逐字（照 `config.input.tools` 那条的格式）。
+  // ③ 闭门：同一个值写进旧规位 ⇒ 当场拒，文案逐字。
+  // #551：判词不再是「未知叶子 + 接受名单」那句通用话术，而是**点名载荷的家**（甲裁决：载荷住
+  // `config.folding.context.session`，顶层 `session` 只做身份容器）——宿主拿到的是一句指路，
+  // 不是一句「没有这个键」。
   const error = await directError({ config: { metadata: { session: { id: "a9-nested" } } } });
   assert.equal(error instanceof TypeError, true, "config.metadata.session 必须当场拒");
   assert.equal(
     error.message,
-    'unknown config.metadata option: "session" ("session" is a permanent top-level option —'
-      + " the third station — write it at the top level: session: …)",
-    "文案必须逐字：未知叶子 + 指向「第三站在顶层」（半开门 ⇒ 闭门）",
+    "config.metadata.session: the opaque per-run payload's home is config.folding.context.session"
+      + " (the fold-context shell's reserved key — the engine hands it to executeTool as"
+      + " context.session); the top-level `session` option is the run identity container"
+      + " (session.id / session.modelSlot / session.initialMessages), not a payload home",
+    "文案必须逐字：点名载荷的家（#551），不是未知叶子的通用话术",
   );
 });
 

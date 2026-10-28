@@ -380,12 +380,12 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *       retry?: {attempts?: number, backoffBaseMs?: number, backoffMaxMs?: number,
  *         sleepImpl?: (ms: number) => Promise<void>}|false},
  *     folding?: {context?: {strategy?: object|"sliding-window"|"fold-statistical"|"fold-llm", budgetTokens?: number,
- *       keepRounds?: number, toolContext?: object, task?: string},
+ *       keepRounds?: number, toolContext?: object, task?: string, session?: any},
  *       toolResultTtl?: number, toolResultFoldMinTokens?: number},
  *     guard?: {finalGuardMaxRetries?: number, finalGuardTimeoutMs?: number, finalGuardExtend?: boolean},
  *     metadata?: {expert?: any, user?: any, task?: any, requestId?: string, toolContext?: object,
  *       model?: {contextWindowTokens?: number, maxOutputTokens?: number},
- *       modelMetadata?: {contextWindowTokens?: number, maxOutputTokens?: number}, session?: any},
+ *       modelMetadata?: {contextWindowTokens?: number, maxOutputTokens?: number}},
  *   },
  *   capabilities?: { // issue #498 (S4a / S4b / S4c): the capability container. Three groups: `hooks` (16 host callbacks + 2 polymorphic knobs), `checks` (deliverables checks), `ports` (infrastructure / strategy implementations).
  *     hooks?: {onEvent?: (event: LoopEvent) => void, onObserverError?: (error: Error, context: {channel: string, runId?: string, type?: string, round?: number, toolName?: string, method?: string}) => void,
@@ -490,6 +490,12 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   `runId` / `cwd` / `tools` 是配置面（`config.run.runId` / `config.run.cwd` /
  *   `config.input.tools`）：它们是字符串标量 / 工具声明数组，而「`config` 子树过 JSON round-trip
  *   等值」要求能力面只剩函数/端口对象（见 `src/loop/config-namespace.js` 文件头约束 3 / 4）。
+ *   **不透明 per-run 载荷的家（#551 裁决甲）是 `config.folding.context.session`**——折叠壳的**保留键**，
+ *   引擎把它作为 `context.session` 交给 `executeTool`。`config.metadata.*` 装的是引擎**按字段名**读的
+ *   宿主数据（`expert` / `user` / `task` / `requestId` / `toolContext` / `model` / `modelMetadata`），
+ *   所以它**不是**载荷的家：写 `config.metadata.session` 会被拒，判词直接点名折叠壳那个键。
+ *   顶层 `session` 是**身份容器**（`session.id` / `session.modelSlot` / `session.initialMessages`），
+ *   不是第二个载荷入口。
  *
  * `capabilities`:
  *   issue #498 (S4a / S4b / S4c): the capability container, treated **exactly like `config`** (same
@@ -670,8 +676,14 @@ export async function runToolLoop(options) {
   const resolvedToolResultTtl = toolResultTtl === undefined && cacheCapable === true
     ? 0
     : toolResultTtl ?? TOOL_RESULT_TTL_DEFAULT;
+  // #551 (#545 discipline): the `typeof session === "object"` test that used to sit here could
+  // never be false. The semantic phase runs earlier (`assertSemanticOptionValues` inside
+  // `normalizeRunToolLoopOptions`, above) and `collectSessionContainerProblems` refuses every
+  // non-object `session` on **both** routes, so by this line "session is an object" is already
+  // guaranteed — the criterion was permanently true. The live discriminator is **presence**: a
+  // session container means the direct route must satisfy the assembly-port member contract.
   const fineGrainedPortShape = assemblyPort === undefined && (
-    (session !== undefined && session !== null && typeof session === "object")
+    session !== undefined
     || Object.hasOwn(explicitOptions, "modelConfig")
     || typeof modelConfig?.resolve === "function"
   );

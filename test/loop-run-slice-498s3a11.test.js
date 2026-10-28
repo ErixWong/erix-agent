@@ -381,7 +381,9 @@ test("N2 `replayPolicy` 与 `session.resume` 是两张面：#531 的裁决原样
   assert.equal(TOP_LEVEL_SURFACE_OPTION_NAMES.includes("session"), true, "`session` 必须仍是第三站成员");
   assert.equal(configPathForOption("session"), undefined, "`session` 不许有任何嵌套家（#531）");
   const closed = await directError(minimalRun({ config: { metadata: { session: { id: "a11" } } } }));
-  assert.match(closed.message, /^unknown config\.metadata option: "session"/u, "#531 的闭门钉子原样保留");
+  // #551：闭门本身不变，只把判词换成「点名载荷的家」（`config.folding.context.session`）。
+  assert.match(closed.message, /^config\.metadata\.session: /u, "#531 的闭门钉子原样保留（#551 只换判词）");
+  assert.match(closed.message, /config\.folding\.context\.session/u, "判词必须点名载荷的家");
   // 而 `replayPolicy` 的规位与 `session` 各住一处。`resume` 当时仍是**扁平合法**键（本片没动它）——
   // #498 S3 A19 把它退役了（家 `config.run.resume`），所以那条 as-is 钉**翻成反向钉**（改而不删：
   // 同一个符号、同一个闸口，只把方向翻过来），与 A15/A16 对 `cwd` / `stream` 的改法逐字同形。

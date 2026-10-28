@@ -270,8 +270,10 @@ test("N2 邻接钉子原样：`session.resume` 两条路仍都拒（#531 的裁�
     "`session.resume` 的直连判词逐字原样（本片一个字没改）",
   );
   // 幻影别名也不许回来：`config.metadata.session` 仍是闭门。
+  // #551：闭门不变，判词换成「点名载荷的家」（`config.folding.context.session`）。
   const closed = await rawError(base({ config: { metadata: { session: { id: "a19" } } } }));
-  assert.match(closed.message, /^unknown config\.metadata option: "session"/u, "#531 的闭门钉子原样保留");
+  assert.match(closed.message, /^config\.metadata\.session: /u, "#531 的闭门钉子原样保留（#551 只换判词）");
+  assert.match(closed.message, /config\.folding\.context\.session/u, "判词必须点名载荷的家");
 });
 
 test("N3 邻接钉子原样：`journalResumeUnpersistedToolResults` / `resumeRunSnapshot` 的注解不在本片", () => {
