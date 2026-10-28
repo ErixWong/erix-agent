@@ -190,64 +190,73 @@ plus available status, phase, and elapsed-time metadata.
 ### 3.2 `runToolLoop`
 
 `runToolLoop` is the single-task lifecycle entry point. Its current option
-surface is:
+surface has **three stations**, and the station decides the spelling:
+
+- the **capability plane** and the permanent **top-level** keys (behaviour
+  carriers, identity containers, the tool list) stay top-level;
+- every **data** knob lives under the `config` namespace — `config.input.*`,
+  `config.run.*`, `config.tuning.*`, `config.timing.*`, `config.folding.*`,
+  `config.guard.*`, `config.metadata.*`;
+- the **flat** spellings the pre-0.28 drafts showed (`system`, `timeoutMs`,
+  `toolResultTtl`, `initialMessages`, `context`, …) are **retired**: the name
+  gate rejects them on the spot and the message names the canonical home, e.g.
+  `unknown runToolLoop option: "timeoutMs" (its canonical home is
+  config.timing.timeoutMs; the flat spelling is rejected)`.
+
+The authoritative table (which leaf lives in which group, and the version each
+flat key was retired in) is in `docs/host-consumer-contract.md`.
 
 ```js
 runToolLoop({
+  // capability plane + permanent top-level keys (not data — unchanged)
   provider,
-  system,
-  wrapup = true,
-  initialUserMessage,
-  initialMessages,
   tools = [],
-  writeToolNames = ["writeFile", "edit"],
-  writeToolPathKeys = ["path", "file_path"],
   executeTool,
-  partialPersistence = false,
-  maxRounds = 8,
-  maxTokens,
-  temperature,
-  topP,
-  timeoutMs,
-  deadlineMs,
-  reflection,
-  stallDetection = { window: 4 },
-  retry = false,
-  completion = { signals: [], maxNoToolRounds: 3 },
-  finalGuard,
-  finalGuardMaxRetries = 2,
-  finalGuardTimeoutMs = 30000,
-  maxTokenContinuations = 3,
-  toolResultTtl = 2,
-  toolResultFoldMinTokens = 4000,
-  context,
+  store,
   todoStateProvider,
   semanticStateProvider,
   modelConfig,
-  modelMetadata,
-  model,
-  expert,
-  user,
-  task,
   session,
-  requestId,
-  toolContext,
-  store,
-  runId,
   runState,
-  resume = false,
+  finalGuard,
+  signal,
   onRound,
   onJudge,
   onToolResult,
   onPersistenceError,
   onObserverError,
-  signal,
-  stream = false,
   onDelta,
   onReasoningDelta,
   onToolCall,
   onUsage,
   onEvent,
+  // the config plane: data only (this subtree must survive a JSON round-trip)
+  config: {
+    input: {
+      system,
+      wrapup = true,
+      initialUserMessage,
+      messages,          // the leaf; the flat `initialMessages` is retired
+    },
+    run: {
+      partialPersistence = false,
+      maxRounds = 8,
+      reflection,
+      stallDetection = { window: 4 },
+      completion = { signals: [], maxNoToolRounds: 3 },
+      maxTokenContinuations = 3,
+      writeToolNames = ["writeFile", "edit"],
+      writeToolPathKeys = ["path", "file_path"],
+      runId,
+      resume = false,
+      stream = false,
+    },
+    tuning: { maxTokens, temperature, topP },
+    timing: { timeoutMs, deadlineMs, retry = false },
+    folding: { context, toolResultTtl = 2, toolResultFoldMinTokens = 4000 },
+    guard: { finalGuardMaxRetries = 2, finalGuardTimeoutMs = 30000 },
+    metadata: { modelMetadata, model, expert, user, task, requestId, toolContext },
+  },
 }) => Promise<{
   finalText,
   messages,
@@ -262,11 +271,12 @@ runToolLoop({
 }>
 ```
 
-`initialMessages` takes precedence over `initialUserMessage`. With `resume:
-true`, the loop loads the transcript and the latest run snapshot for `runId`
-and uses the persisted messages and round state instead of the initial messages.
+`config.input.messages` takes precedence over `config.input.initialUserMessage`.
+With `config.run.resume: true`, the loop loads the transcript and the latest run
+snapshot for `config.run.runId` and uses the persisted messages and round state
+instead of the initial messages.
 
-`partialPersistence` is disabled by default. Opting in with
+`config.run.partialPersistence` is disabled by default. Opting in with
 `{ intervalMs, minBytes? }` writes streamed assistant text into the latest run
 snapshot using the existing snapshot writer; it adds no TranscriptStore method.
 With the default threshold, the engine schedules a partial snapshot at least
@@ -277,7 +287,7 @@ suppresses timer scheduling for smaller individual deltas. New snapshots carry
 `partialText` and `partialRound`; resume appends a matching partial as assistant
 text only when restoring a newer snapshot. Snapshots without these fields are
 unchanged.
-Prerequisite: set `stream: true`; otherwise startup throws.
+Prerequisite: set `config.run.stream: true`; otherwise startup throws.
 
 `executeTool` receives one structured execution object:
 
@@ -292,38 +302,40 @@ converts failed results to canonical `tool_result` blocks with `is_error`.
 Legacy duck-typed results, including `{ data, success, ... }`, are normalized
 for compatibility but deprecated.
 
-`writeToolNames` is an explicit set used only for judge file-footprint
+`config.run.writeToolNames` is an explicit set used only for judge file-footprint
 reporting; it does not infer write tools. For each configured write tool,
-`writeToolPathKeys` supplies the priority order for extracting a path.
+`config.run.writeToolPathKeys` supplies the priority order for extracting a path.
 
 #### Completion, retries, and termination
 
-- `retry` is opt-in. `false` or omission performs no provider retry. With an
-  object, `attempts` defaults to `2` retries after the initial call,
+- `config.timing.retry` is opt-in. `false` or omission performs no provider
+  retry. With an object, `attempts` defaults to `2` retries after the initial call,
   `backoffBaseMs` defaults to `1500`, `backoffMaxMs` defaults to `10000`, and
   `sleepImpl` defaults to the loop's abort-aware sleeper. Only errors marked
   `retryable` are retried.
 - A present assistant message with no text, tool call, or reasoning blocks is
-  retryable. `retry: {}` therefore retries this empty response twice after the
-  initial call; the CLI reads `ERIX_RETRY_ATTEMPTS` (default `2`) for the same
-  policy.
-- `completion` defaults to `{ signals: [], maxNoToolRounds: 3 }`. A completion
-  signal can stop a no-tool response, and after tool use the no-tool streak
-  stops at `maxNoToolRounds`. `completion: false` disables this policy.
-- `stallDetection` defaults to `{ window: 4, mode: "consecutive" }`: the whole
-  window must hold the same tool signature. Pass `{ mode: "appear" }` to treat a
-  signature anywhere in the window as a stall, or `false` to disable detection.
-  `ERIX_STALL_MODE` can provide the mode unless the option is explicitly `false`.
-- `maxTokenContinuations` defaults to `3`. A response ending with
+  retryable. `config.timing.retry: {}` therefore retries this empty response
+  twice after the initial call; the CLI reads `ERIX_RETRY_ATTEMPTS` (default
+  `2`) for the same policy.
+- `config.run.completion` defaults to `{ signals: [], maxNoToolRounds: 3 }`. A
+  completion signal can stop a no-tool response, and after tool use the no-tool
+  streak stops at `maxNoToolRounds`. `config.run.completion: false` disables
+  this policy.
+- `config.run.stallDetection` defaults to `{ window: 4, mode: "consecutive" }`:
+  the whole window must hold the same tool signature. Pass `{ mode: "appear" }`
+  to treat a signature anywhere in the window as a stall, or `false` to disable
+  detection. `ERIX_STALL_MODE` can provide the mode unless the option is
+  explicitly `false`.
+- `config.run.maxTokenContinuations` defaults to `3`. A response ending with
   `stopReason === "max_tokens"` can therefore receive up to three continuation
   calls in the same round.
-- `maxRounds` defaults to `8` and must be a positive safe integer. Normal
+- `config.run.maxRounds` defaults to `8` and must be a positive safe integer. Normal
   termination reasons are `end_turn`, `no_tool`, `stall`, `max_rounds_cap`,
   `judge_done`, and `continuation_exhausted`; aborts and
   uncaught failures use `aborted` and `failed`.
 
-When enabled, `wrapup` appends the end-of-turn instruction requiring this JSON
-shape:
+When enabled, `config.input.wrapup` appends the end-of-turn instruction
+requiring this JSON shape:
 
 ```json
 {"done":true,"summary":"Task summary","output":"Final result for the user"}
@@ -331,11 +343,11 @@ shape:
 
 The parser requires `done` to be an own boolean property. `done: true` makes
 the response complete and replaces `finalText` with `output` or `summary`;
-`done: false` continues the loop. `wrapup: false`, or
+`done: false` continues the loop. `config.input.wrapup: false`, or
 `ERIX_NO_WRAPUP_INSTRUCTION=1`, disables instruction injection, JSON parsing,
 `finalText` replacement, and wrap-up normalization together. Optional
 normalization is enabled by `ERIX_WRAPUP_NORMALIZE=1` or
-`reflection.wrapupNormalize === true`.
+`config.run.reflection.wrapupNormalize === true`.
 
 `finalGuard` is an optional host-supplied provenance or completion check:
 
@@ -355,9 +367,9 @@ finalGuard({
 >
 ```
 
-The default `finalGuardMaxRetries` is `2`. A positive
-`finalGuardTimeoutMs` is used as-is; a non-positive or non-finite value uses
-the default `30000` ms. The guard runs for non-abort stop paths including
+The default `config.guard.finalGuardMaxRetries` is `2`. A positive
+`config.guard.finalGuardTimeoutMs` is used as-is; a non-positive or non-finite
+value uses the default `30000` ms. The guard runs for non-abort stop paths including
 `end_turn`, `no_tool`, `judge_done`, `max_rounds_cap`, `stall`,
 `continuation_exhausted`. `accept` produces
 `verification.status === "verified"`. `skip` produces `"skipped"`.
@@ -404,26 +416,27 @@ that return value.
 
 #### Reflection and judge governance
 
-If `reflection` is omitted, `maxRounds >= 16`, and
+If `config.run.reflection` is omitted, `config.run.maxRounds >= 16`, and
 `ERIX_NO_REFLECTION` is not `1`, the loop enables `{ enabled: true }`
-automatically. `reflection: false` disables it; `reflection: true` enables it
-with the defaults below. An object can configure:
+automatically. `config.run.reflection: false` disables it;
+`config.run.reflection: true` enables it with the defaults below. An object can
+configure:
 
 ```js
-reflection: {
+config: { run: { reflection: {
   enabled,
   roundJudge = true,
   judgeIntercept = true,
   judgeIntervalRound = 10,
   judgeInterceptTimeoutMs = 30000,
   judgeFailureLimit = 3,
-  extensionStep = Math.max(8, Math.floor(maxRounds * 0.5)),
+  extensionStep = Math.max(8, Math.floor(config.run.maxRounds * 0.5)),
   maxExtensions = 2,
-  maxRoundsCap = Math.max(maxRounds, 256),
+  maxRoundsCap = Math.max(config.run.maxRounds, 256),
   wrapupNormalize,
   judge: { provider }, // `evaluator` retired (issue #498 S4c)
   onReflection,
-}
+} } }
 ```
 
 `ERIX_NO_ROUND_JUDGE=1` disables the end-turn judge independently of tool
@@ -457,7 +470,8 @@ errors, memory-loss responses, no-tool streaks, stall streaks, time
 deadlines, judge-driven extensions, and completion. Judge extensions add
 `extensionStep` rounds up to `maxRoundsCap`, at most `maxExtensions` times.
 The task brief used by judge and wrap-up is selected in this order:
-`task`, `context.task`, then the latest user text in the entry transcript.
+`config.metadata.task`, `config.folding.context.task`, then the latest user
+text in the entry transcript.
 
 Judge interception uses a 6,000-token conversation budget, round-judge requests
 cap output at 1,024 tokens and set `reasoning_effort: "none"`. Raw judge output
@@ -485,14 +499,14 @@ request.
  */
 ```
 
-The `context` option accepts `strategy`, `budgetTokens`, `keepRounds`,
-`toolContext`, and `task`. Strategy options forwarded by the loop include
-`summaryRole` (default `"user"`), `recoveryHint`, `protectedMessage`,
+The `config.folding.context` option accepts `strategy`, `budgetTokens`,
+`keepRounds`, `toolContext`, and `task`. Strategy options forwarded by the loop
+include `summaryRole` (default `"user"`), `recoveryHint`, `protectedMessage`,
 `stripHistoricalImages` (default `false`), `onBeforeFold`, `onAfterFold`, and
-`stubFor`. `keepRounds` defaults to `6`. If no `context` or budget is
-configured, the loop does not compact. If a budget is configured without a
-strategy, the loop uses the sliding-window fallback when the budget is
-exceeded.
+`stubFor`. `keepRounds` defaults to `6`. If no `config.folding.context` or
+budget is configured, the loop does not compact. If a budget is configured
+without a strategy, the loop uses the sliding-window fallback when the budget
+is exceeded.
 
 ```js
 computeBudget({ contextWindowTokens, maxOutputTokens }) => number
@@ -531,9 +545,9 @@ protected message that cannot fit produces `KitError("invalid_budget", ...)`.
 #### Tool-result TTL folding
 
 Independent of context compaction, old or large tool results can be folded in
-the provider request view. `toolResultTtl` defaults to `2` rounds (`0`
-disables it), and `toolResultFoldMinTokens` defaults to `4000` estimated
-tokens. At `age === ttl - 1`, a warning round asks the model to extract
+the provider request view. `config.folding.toolResultTtl` defaults to `2` rounds
+(`0` disables it), and `config.folding.toolResultFoldMinTokens` defaults to
+`4000` estimated tokens. At `age === ttl - 1`, a warning round asks the model to extract
 important facts with `note_take`; at the TTL, the request view replaces the
 result with a navigation digest and, for suitable JSON, a JSON skeleton.
 Checkpoint and transcript persistence retain the full tool-result text.
@@ -595,7 +609,7 @@ The store is designed for one writer per `runId` and process. It repairs a
 complete JSONL record missing its final newline and isolates an incomplete
 trailing fragment. Cross-process locking is outside the store contract.
 
-`runToolLoop` uses `persistence: "required"` by default when a store is
+`runToolLoop` uses `config.run.persistence: "required"` by default when a store is
 provided and validates the two required methods before the provider is
 called; the run-snapshot and run-state methods are optional capabilities.
 When an optional method is absent, the engine emits one
@@ -606,7 +620,7 @@ During the transition period the engine also accepts legacy-only stores:
 the snapshot writer resolves as `saveRunSnapshot` → `saveCheckpoint` →
 `appendCheckpoint`, and the snapshot loader as `loadLatestRunSnapshot` →
 `loadLatestCheckpoint` (the built-in stores expose the old names as
-`@deprecated` aliases). `persistence: "none"` is an explicit no-op mode. Writes to methods the store does advertise use the
+`@deprecated` aliases). `config.run.persistence: "none"` is an explicit no-op mode. Writes to methods the store does advertise use the
 loop retry policy; an exhausted write emits a `persistence_error` through
 `diagnostics.error` and terminates with `reason: "persistence_failed"`.
 Snapshot persistence is used before and after tool execution. A pre-tool
@@ -617,7 +631,7 @@ their original order by default; hosts must still make side-effecting
 `executeTool` implementations idempotent. Tool schemas may declare
 `replay: "safe" | "unsafe"` (omission defaults to unsafe), which is captured
 on each `pendingToolUses` intent in the run snapshot. The engine-level
-`replayPolicy: "always-replay"` default ignores that declaration during
+`config.run.replayPolicy: "always-replay"` default ignores that declaration during
 recovery. With `"per-tool-declaration"`, safe calls replay as before and
 unsafe calls are skipped and returned to the model as interrupted tool results;
 the optional `tool_replay_decision_required` event marks them for host
