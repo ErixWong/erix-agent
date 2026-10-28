@@ -338,14 +338,16 @@ test("A4 按新判据改归的四个键真被引擎读：persistence / modelMeta
   }
 
   // ④ `session`：已知字段 `id` 被校验、`modelSlot` 被读来解析模型。
+  // #531：`session` 是**第三站**成员（顶层选项与装配口成员同一个值），所以写点回到扁平拼写；
+  // `config.metadata.session` 现在是未知叶子当场拒（那半由 A9 的 S3 钉住）。
   const sessionWithoutId = await directError({
     modelConfig: { resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1024 }) },
-    config: { metadata: { session: {} } },
+    session: {},
   });
   assert.match(sessionWithoutId.message, /assembly port is missing methods: session\.id/u);
   const withSession = await runDirect({
     modelConfig: { resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1024 }) },
-    config: { metadata: { session: { id: `config-497-a4-${process.pid}`, modelSlot: "default" } } },
+    session: { id: `config-497-a4-${process.pid}`, modelSlot: "default" },
   });
   assert.equal(withSession.termination.reason, "end_turn");
 });
@@ -445,12 +447,13 @@ const VALUES = {
   // #498 S3 (`metadata` slice, segment A8): `expert` / `requestId` / `toolContext` /
   // `modelMetadata` are no longer flat top-level keys — they moved to `RETIRED_FLAT_VALUES` below
   // (their home is `config.metadata.*`).
-  // #498 S3 A9: `user` and `model` moved there as well (same group, same tree). `task` / `session`
-  // stay: `session` is the key the same-value ruling returned (see the A9 slice test).
+  // #498 S3 A9: `user` and `model` moved there as well (same group, same tree). `task` stays.
+  // #531: `session` left `config.metadata` entirely — it is a third-station member (its top-level
+  // option and the assembly port's member are the same value), so it has **no** nested home and is
+  // therefore not part of the two-shape comparison (see A4 ④ for its behavioural evidence).
   // issue #497 复审 R1：按新判据从能力面移回配置面的四个键（端到端等价也要覆盖它们）；
   // 第二轮又从能力面移入两个字符串标量 `runId` / `cwd`（`config.run.*`）。
   persistence: "none",
-  session: { id: "config-497-b2", modelSlot: "default" },
   runId: "config-497-run",
   cwd: "/tmp/config-497",
   // #498 S4a：这里曾有 8 个 `on*: () => {}`——`config.observers` 整组删除后它们不再是配置叶子
@@ -524,6 +527,9 @@ function nestedConfigShape(values) {
   const config = {};
   for (const [key, value] of Object.entries(values)) {
     const path = configPathForOption(key);
+    // #531: a third-station member (`session`) has no nested home by definition, so it is skipped
+    // rather than asserted — the assertion that it has none lives in the A9 slice test (S3).
+    if (path === undefined) continue;
     assert.equal(typeof path, "string", `${key} 必须有 schema 路径`);
     const [group, leaf] = path.split(".");
     config[group] = { ...(config[group] ?? {}), [leaf]: value };

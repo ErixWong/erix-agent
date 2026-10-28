@@ -806,7 +806,7 @@ test("测试卫生：全程只用注入的临时 home/cwd，真实 ~/.erix 未�
 });
 
 // ---------------------------------------------------------------- #498 S4b：`session.resume` 幻影别名退役
-// `session` 是**纯数据**（`config.metadata.session`），而 `resume` 是旋钮。0.27 草案里 `src/assembly.js`
+// `session` 是**纯数据**（#531 起它的唯一家是顶层第三站），而 `resume` 是旋钮。0.27 草案里 `src/assembly.js`
 // 有一条 `session.resume` → 顶层 `resume` 的别名（校验段 + 转换段），于是同一个键有了第三个住处。
 // 本刀删掉那条别名，并把 `resume` 归位到 `config.run.resume`；顶层扁平 `resume` 一字未动。
 // 反向证：把校验段塞回 `src/assembly.js` ⇒ 下面第一格红（它不再抛）；删掉直连侧（语义相）那条拒绝
@@ -862,13 +862,20 @@ test("#498 S4b session.resume 直连路线同样拒绝：不许收下键、又�
   );
   assert.equal(directError.via, "direct", "直连侧抛的是语义相（via:\"direct\"）");
 
-  // 同一道闸口也覆盖 `config.metadata.session`：它展开后就是顶层 `session`，不是第二个户口。
+  // 同一道闸口也覆盖扁平 `session`（它就是顶层选项，不是第二个户口）。
+  // #531：`config.metadata.session` 那个叶子已被拆掉 ⇒ 规位现在是**未知叶子**当场拒，
+  // 文案指向顶层第三站（下面的断言就是那道闭门）。
   const viaConfig = await runToolLoop({
     ...runnable,
     config: { metadata: { session: { id: "run-direct-session-resume", resume: true } } },
   }).then(() => null, (caught) => caught);
   assert.equal(viaConfig instanceof TypeError, true);
-  assert.match(viaConfig.message, /^session\.resume is not accepted/u);
+  assert.equal(
+    viaConfig.message,
+    'unknown config.metadata option: "session" ("session" is a permanent top-level option —'
+      + " the third station — write it at the top level: session: …)",
+    "`config.metadata.session` 已闭门：未知叶子 + 指向第三站（#531）",
+  );
 
   // 对照：同一个 `session` 不带 `resume` 照常过（这不是「一律拒绝 session」）。
   const ok = await runToolLoop({

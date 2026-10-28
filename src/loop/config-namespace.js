@@ -119,7 +119,7 @@ import {
  * 45 个配置键的分类草稿在 `docs/delivery/analysis-261023-406-normalization-design.md`
  * （15 run + 10 tuning 核心 + 10 folding + 10 其它）——该文件在本仓库树上**不存在**（`docs/delivery/`
  * 是 gitignore 的本机档案目录），所以这里的分组是照代码实测重新分类的结果，不是照抄草稿。
- * 现表共 **43 键 / 7 组**：草稿的 45 键 + #497 复审 R1 按新判据从能力面移进来的
+ * 起点是 **43 键 / 7 组**：草稿的 45 键 + #497 复审 R1 按新判据从能力面移进来的
  * `persistence`（→ `run`）与 `model` / `modelMetadata` / `session`（→ `metadata`）+ #497 复审
  * 第二轮按「字符串标量属数据」裁决从能力面移进来的 `runId` / `cwd`（→ `run`）；
  * **#498 S4a 又减去 9 个**：`observers` 整组（8 个回调，搬去 `capabilities.hooks`）与
@@ -128,8 +128,15 @@ import {
  * `tools` moved in from the capability plane (`input.tools`, then considered data).
  * **#527 removed it again**: the reachability check proved an entry may carry function members,
  * and the config plane holds data only ⇒ it is not a config key, it is a **permanent top-level
- * option (the third station)**. The config plane is therefore **42 keys / 7 groups** (43 −
+ * option (the third station)**. The config plane was therefore **42 keys / 7 groups** (43 −
  * `tools`), and the `input` group keeps 5 leaves.
+ * **#531 removes one more**: `session` left the `metadata` group, so the plane is **41 keys / 7
+ * groups**. The reason is not the data/behaviour criterion (session is plain data) but the
+ * **double entry**: the top-level option and the assembly port's member are the *same value*
+ * (`assemblyPortOptions(port).session === port.session`), so a `config.metadata.session` home
+ * would be a second home for one key — the one thing the ruling forbids. It is a permanent
+ * top-level option (the third station) instead, and writing the old nested spelling is an
+ * unknown leaf rejected on the spot.
  *
  * @type {Readonly<Record<string, readonly string[]>>}
  */
@@ -203,11 +210,13 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
   // 宿主带来的数据：引擎**按已知字段**读其中的值，其余键原样透传 / 拼进 payload。
   //   · `model` / `modelMetadata`：`contextWindowTokens` / `maxOutputTokens` 两个数字被读
   //     （`modelMetadataFor`（`src/loop/budget.js`）→ 压缩预算与输出卫生的 15% 窗口钳制）；
-  //   · `session`：`id` / `modelSlot` / `resume` / `initialMessages` 被读（启动校验、
-  //     `modelConfig.resolve(session?.modelSlot)`、续跑与初始消息）；
   //   · `expert` / `user` / `task` / `requestId` / `toolContext`：拼进工具上下文与 judge 简报。
   // 这五个键里的后五个曾经只有「透传」一面，所以本组以前写成「引擎不解释其内部结构」；
   // 按现判据（文件头约束 3）它们同属配置面，描述按实测改。
+  // ⚠ `session` **不在这里**（#531）：它是纯数据，但它的顶层选项与装配口成员是**同一个值**
+  // （`assemblyPortOptions(port).session === port.session`，引用相等），给它一个嵌套家就是
+  // 「一个键两个家」——正是本仓裁决禁止的那件事。所以它属**第三站**（永久顶层面），
+  // 写 `config.metadata.session` 现在是未知叶子当场拒。
   metadata: Object.freeze([
     "expert",
     "user",
@@ -216,7 +225,6 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
     "toolContext",
     "model",
     "modelMetadata",
-    "session",
   ]),
   // ⚠ 这里曾有第八组 `observers`（8 个 `on*` 回调）——**#498 S4a 整组删除**。
   // 回调不是数据：它们让 `config` 子树过不了 JSON round-trip，而「`config` 子树必须 round-trip
@@ -252,10 +260,14 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
  * 第四类从 `CAPABILITIES_SURFACE_OPTION_NAMES` 减去已在上面列过的名字——于是「往
  * `capabilities` 加一个叶子却忘了分类」不会静默（`configSchemaSelfCheck` 报红）。
  *
- * 反例（为什么 `persistence` / `model` / `modelMetadata` / `session` **不在**这里）：引擎读它们的
+ * 反例（为什么 `persistence` / `model` / `modelMetadata` **不在**这里）：引擎读它们的
  * 已知字段并据值改行为（`persistence` 的模式字面量被校验并选持久化路径；`model`/`modelMetadata`
- * 的窗口数字被拿去算预算；`session` 的 `id`/`modelSlot`/`initialMessages` 被读）——
- * 那是配置，不是行为载体。
+ * 的窗口数字被拿去算预算）——那是配置，不是行为载体。
+ *
+ * 反例（为什么 `session` **不在**这里，issue #531）：它是数据不是行为载体（`id` / `modelSlot` /
+ * `initialMessages` 被读），所以按判据它本来该进配置面；但它的顶层选项与装配口成员是**同一个值**
+ * （`assemblyPortOptions(port).session === port.session`），任何嵌套家都会让它有两个入口指向
+ * 两个家。裁决是**两个入口、一个家**：家是第三站（顶层），嵌套拼写是未知叶子。
  *
  * Counter-example (why `runId` / `cwd` are **not** here): they are **string scalars** — the engine
  * does not call them, it only validates the literal, reads known fields and forwards them.
@@ -325,7 +337,10 @@ export const CAPABILITY_OPTION_NAMES = Object.freeze([
  * (`provider`, `executeTool`, `store`, …) have always been like this; `tools` joins them by the #527
  * ruling, which removed the `config.input.tools` leaf (its entries may carry function members, so it
  * cannot live in the data-only `config` subtree, and the engine never calls those members, so it is
- * not a capability either).
+ * not a capability either). `session` joins them by the #531 ruling, for the opposite reason: it *is*
+ * plain data, but its top-level option and the assembly port's member are **the same value**
+ * (`assemblyPortOptions(port).session === port.session`), so a `config.metadata.session` home would
+ * be a **second home for one key**. Two entries, one home: the top level.
  *
  * The table is hand-written on purpose: it is the **ownership classification** the self-check needs
  * to answer "every top-level option has exactly one home". Membership is verified mechanically in
@@ -337,6 +352,9 @@ export const CAPABILITY_OPTION_NAMES = Object.freeze([
  * "no nested home" group was 11 keys; after the leaf is removed it is 12. Re-adding the leaf turns
  * `configSchemaSelfCheck` red (the same key would be both a config surface key and a third-station
  * key), which is exactly the reverse proof that this table is live rather than a copied expectation.
+ * `session` repeats the proof one step later (#531): the third station goes 10 → 11 when the
+ * `config.metadata.session` leaf is removed, and putting that leaf back turns the same self-check
+ * red — which is why the closed-door test can pin the rejection instead of trusting a list.
  *
  * @type {readonly string[]}
  */
@@ -351,6 +369,10 @@ export const TOP_LEVEL_SURFACE_OPTION_NAMES = Object.freeze([
   "semanticStateProvider",
   "diagnostics",
   "tools",
+  // #531: `session` — plain data, but the top-level option and the assembly port member
+  // (`createAssemblyPort({ session })` → `assemblyPortOptions(port).session`) are the same value,
+  // so its one home is here; `config.metadata.session` is now an unknown leaf.
+  "session",
 ]);
 
 /** 配置面的分组名（顺序即报错文案里的枚举顺序）。 */
@@ -480,7 +502,9 @@ const CONFIG_GROUP_SET = new Set(CONFIG_NAMESPACE_GROUPS);
  * capability options (behaviour carriers) **and** permanent top-level options (no nested home). The
  * ownership account needs a disjoint partition, so the third station wins for those nine; the
  * semantic `CAPABILITY_OPTION_NAMES` list is unchanged (22 entries) and still answers "is this a
- * capability option". `tools` is the one third-station member that is **not** a capability option.
+ * capability option". `tools` and `session` are the two third-station members that are **not**
+ * capability options (`tools` because the engine never calls its function members, `session`
+ * because it is plain data whose only home is the top level, #531).
  *
  * @param {readonly string[]} optionNames 顶层选项白名单
  * @returns {{configPlane: string[], capability: string[], topLevelSurface: string[], containers: string[]}}

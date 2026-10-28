@@ -677,7 +677,7 @@ const REPRESENTATIVE_CONFIG_VALUES = {
   toolContext: { a: 1 },
   model: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
   modelMetadata: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
-  session: { id: "config-498-b2", modelSlot: "default" },
+  // #531: `session` 不是配置叶子（第三站成员），所以这张**逐叶子**覆盖表里没有它。
 };
 
 /**
@@ -827,7 +827,8 @@ test("S9 端到端语义等价：整棵 config 与扁平形态规范化后逐键
   assert.deepEqual(nestedResult.configConflicts, []);
 
   // 行为层再钉一次：整棵 config 真的能被引擎跑起来（不是「规范化通过了但一跑就炸」）。
-  // `config.metadata.session` 在场 ⇒ 走细粒度端口形状，于是 `modelConfig` 必须能 resolve（与扁平形态同口径）。
+  // 细粒度端口形状下 `modelConfig` 必须能 resolve（与扁平形态同口径）；#531 起 `session` 是第三站成员，
+  // 规位里没有它，所以这里它走顶层扁平拼写。
   const result = await runDirect({
     config,
     modelConfig: { resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1024 }) },
