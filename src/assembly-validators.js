@@ -358,11 +358,19 @@ export function validateFoldSummaryHook(hook) {
  * `normalizeDeliverables`（`src/loop/deliverables.js`）在 orchestrator 侧校，两条路线都汇到那里，
  * 再抄一份只会多出第二套文案（见 `test/loop-option-gate-496.test.js` 的可达性断言）。
  *
+ * #520 removed the `retry.sleepImpl` entry this table used to carry. Its only reader was the
+ * `retryOptions?.sleepImpl` term in the orchestrator, and no producer could reach that term (a
+ * function inside `config.timing.retry` is refused by the "config holds data only" rule before the
+ * loop starts), so the entry was a shape rule for a key nothing reads — which is exactly the
+ * "validating it implies it is alive" trap the `context.onFoldSummary` note below warns about.
+ * The retry timer's one home is `capabilities.ports.sleepImpl` (shape-checked on the capability
+ * surface, `src/loop/capabilities-namespace.js`); writing a function into
+ * `config.timing.retry.sleepImpl` is still refused at intake, and that message names the home.
+ *
  * @type {Array<[string[], string]>}
  */
 const CALLBACK_OPTION_PATHS = [
   [["finalGuard"], "finalGuard"],
-  [["retry", "sleepImpl"], "retry.sleepImpl"],
   [["reflection", "onReflection"], "reflection.onReflection"],
   [["diagnostics", "error"], "diagnostics.error"],
 ];
@@ -465,7 +473,7 @@ function validateContextCallbackShapes(context) {
 }
 
 /**
- * 沿路径读一个选项（`["retry", "sleepImpl"]`）：中途任何一层不是非数组对象就当作未提供。
+ * 沿路径读一个选项（`["reflection", "onReflection"]`）：中途任何一层不是非数组对象就当作未提供。
  *
  * 容器本身的形状（`retry: false` / `reflection: false` 是合法值）归 orchestrator 管，这里只取叶子。
  *
