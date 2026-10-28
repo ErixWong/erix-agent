@@ -475,9 +475,10 @@ test("A2 `run` 组**没有**整组收口：四个退役叶子被派生认出，�
   // #498 S3 A23b：`completion` 也退役了（家 `config.run.completion`），同样从这条循环里移出、
   // 翻成反向钉——与上面各条逐字同形（改而不删）。
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("completion"), false, "A23b 已退役 `completion` 的扁平写法");
-  for (const leaf of ["reflection"]) {
-    assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(leaf), true, `${leaf} 本片一个字没动`);
-  }
+  // #530：`reflection` 是 `run` 组最后一个扁平配置叶子，也退役了（家 `config.run.reflection`）。
+  // 这一格同样翻成反向钉——与上面七条逐字同形（改而不删）。A11 落地时它是「本片一个字没动」
+  // 的正向钉，现在它的职责反过来了：钉住「不许回潮」。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("reflection"), false, "#530 已退役 `reflection` 的扁平写法");
   assert.equal(
     STILL_FLAT_RUN.length + RETIRED_RUN.length,
     CONFIG_NAMESPACE_SCHEMA.run.length,

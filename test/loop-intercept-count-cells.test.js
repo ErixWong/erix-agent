@@ -109,10 +109,13 @@ test("F-2 judgeInterceptCount 经 restoreResume ctx：resume 播种已执行工�
       provider,
       store,
       // #498 S3 A21：`maxRounds` 退役扁平写法（家 `config.run.maxRounds`），并进同一棵 `run` 子树。
-      config: { run: { resume: true, runId, maxRounds: 6, completion: false } },
+      // #530: `reflection` 分家——数据进 `config.run.reflection`，judge 评估器进端口位。
+      config: { run: { resume: true, runId, maxRounds: 6, completion: false, reflection: { enabled: true, roundJudge: false, judgeIntervalRound: 1 } } },
       executeTool: async () => "done-b",
-      reflection: { enabled: true, roundJudge: false, judgeIntervalRound: 1, judge: { provider: judge } },
-      capabilities: { hooks: { onJudge: (info) => records.push(info) } },
+      capabilities: {
+        hooks: { onJudge: (info) => records.push(info) },
+        ports: { judgeProvider: judge },
+      },
     });
     // 崩溃前已执行 1 个工具 ⇒ 计数播种为 1 ⇒ 续接的第一个工具（id b）就达到审计阈值
     assert.equal(judge.requests.length, 1, "播种写入没进格子（访问器只委托一半）就是 0 次审计");
@@ -156,17 +159,24 @@ async function runNearLimitIntercept({ maxExtensions = 1, withStore = false } = 
       return "ok";
     },
     maxRounds: 5,
-    config: { run: { completion: false } },
-    reflection: {
-      enabled: true,
-      roundJudge: false,
-      judgeIntervalRound: 3,
-      extensionStep: 2,
-      maxExtensions,
-      maxRoundsCap: 20,
-      judge: { provider: judge },
+    // #530: `reflection` 分家——数据进 `config.run.reflection`，judge 评估器进端口位。
+    config: {
+      run: {
+        completion: false,
+        reflection: {
+          enabled: true,
+          roundJudge: false,
+          judgeIntervalRound: 3,
+          extensionStep: 2,
+          maxExtensions,
+          maxRoundsCap: 20,
+        },
+      },
     },
-    capabilities: { hooks: { onJudge: (info) => records.push(info) } },
+    capabilities: {
+      hooks: { onJudge: (info) => records.push(info) },
+      ports: { judgeProvider: judge },
+    },
   });
   return { result, provider, judge, records, executed, store };
 }

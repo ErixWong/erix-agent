@@ -233,7 +233,11 @@ const OPTION_WHITELIST = [
   // their canonical home is `config.tuning.*`. The copy tracks the source list verbatim (that is what
   // A0 checks), so they are gone here too; the flat spellings are now **rejection** cells, see
   // `test/loop-tuning-keys-slice-498s3a5.test.js`.
-  "reflection",
+  // #530: `reflection` left the allowlist too — its canonical home is `config.run.reflection`
+  // (data half) with the behaviour half at `capabilities.hooks.onReflection` /
+  // `capabilities.ports.judgeProvider`. The copy tracks the source list verbatim (that is what A0
+  // checks), so it is gone here too; the flat spelling is now a **rejection** cell, see
+  // `test/loop-run-slice-498s3a22.test.js` (N2) and the two-sided rejection pins there.
   // #498 S3 (`run` slice A13): `stallDetection` left the allowlist — its canonical home is
   // `config.run.stallDetection`. The copy tracks the source list verbatim (that is what A0 checks),
   // so it is gone here too; the flat spelling is now a **rejection** cell, see

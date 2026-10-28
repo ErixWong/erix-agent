@@ -230,8 +230,11 @@ test("N2 账目派生化：`run` 组的「配置家」顶层键只剩一个（�
   // A23b 删 `completion` ⇒ **1**（`reflection`）。两个数都由白名单派生，不写死。
   const runHomeKeys = RUN_TOOL_LOOP_OPTION_NAMES
     .filter((name) => (configPathForOption(name) ?? "").startsWith("run."));
-  assert.deepEqual(runHomeKeys, ["reflection"],
-    "`run` 组只剩一个配置家键（顺序 = 白名单顺序 = 建议平局优先级，不是集合语义）");
+  // #530 收口：`reflection` 是 `run` 组**最后一个**配置家顶层键，退役之后这一组清零。
+  // 判据仍是派生的（白名单 × `configPathForOption`），不是「还剩几个」的手抄。
+  assert.deepEqual(runHomeKeys, [],
+    "`run` 组的配置家顶层键已经清零（#530 退役 `reflection` 之后；顺序语义不再适用）");
+  assert.equal(runHomeKeys.length, 0, "`run` 组：白名单里没有任何名字的配置家落在 `run.*` 下");
   assert.equal(runHomeKeys.includes(KEY), false, `${KEY} 已经不在其中（这就是本片删掉的那一格）`);
   // 反向证：把 `completion` 塞回白名单，本格当场红（`deepEqual` 多一项）。
   assert.notDeepEqual(
@@ -247,12 +250,15 @@ test("N3 删扁平键 ≠ 删叶子：`completion` 仍在 schema 的 `run` 组�
   assert.equal(configPathForOption(KEY), `run.${leaf}`, "别名 = schema 路径（不是第二张映射表）");
 });
 
-test("N4 邻接面没动：`reflection` 与 `store` 一件没动，已退役的邻接键不许回潮", () => {
-  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("reflection"), true, "`reflection` 仍可扁平写（本片不许收它）");
+test("N4 邻接面没动：`reflection` 已由 #530 退役，`store` 与更早的邻接键一件没动", () => {
+  // #530：`reflection` 也退役了扁平写法（家 `config.run.reflection`），于是这一格从
+  // 「邻接面没动」翻成反向钉——与 A15 对 `cwd`、A16 对 `stream`、A18 对 `wrapup`、A19 对
+  // `resume`、A20 对 `runId`、A21 对 `maxRounds` 的改法逐字同形（改而不删）。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("reflection"), false, "#530 已退役 `reflection` 的扁平写法");
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("store"), true, "`store` 是永久顶层面，不许动");
   for (const retired of ["maxTokenContinuations", "stallDetection", "outputHygiene", "persistence",
     "partialPersistence", "replayPolicy", "invalidArguments", "writeToolNames", "writeToolPathKeys",
-    "cwd", "stream", "resume", "runId", "maxRounds"]) {
+    "cwd", "stream", "resume", "runId", "maxRounds", "reflection"]) {
     assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(retired), false, `${retired} 已由更早的切片退役，不许回潮`);
   }
 });

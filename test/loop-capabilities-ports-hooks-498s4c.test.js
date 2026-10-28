@@ -145,6 +145,14 @@ function foldingRun(extra = {}) {
 }
 
 /** 一次真的发生扩轮的 run（judge 给 extend:true）；`reflectionExtra` 只多带 `reflection` 的子键。 */
+/**
+ * 一次真的会扩轮的 run。
+ *
+ * @param {Record<string, any>} extra 其余选项（`assemblyPort` 等）
+ * @param {Record<string, any>|null} reflectionExtra `reflection` 的额外数据成员；
+ *   **`null` = 完全不下发显式 `reflection`**（#530：壳槽位只经 `policy.reflection` 给，显式那份会
+ *   整棵覆盖 policy，把壳槽位抹掉）。
+ */
 function extendingRun(extra = {}, reflectionExtra = {}) {
   const decision = {
     done: false,
@@ -157,14 +165,17 @@ function extendingRun(extra = {}, reflectionExtra = {}) {
     extendReason: "当前上限不足",
     plan: "完成最后验证",
   };
-  return runDirect({
+  const base = {
     provider: createFakeProvider(toolScript(8)),
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    config: { run: { completion: false } },
     wrapup: false,
     maxRounds: 5,
-    reflection: {
+  };
+  if (reflectionExtra !== null) {
+    // #530: the data half of the retired `reflection` shell lives at `config.run.reflection`,
+    // the judge evaluator at `capabilities.ports.judgeProvider`.
+    base.config = { run: { completion: false, reflection: {
       enabled: true,
       roundJudge: false,
       judgeIntervalRound: 3,
@@ -172,10 +183,29 @@ function extendingRun(extra = {}, reflectionExtra = {}) {
       maxExtensions: 1,
       maxRoundsCap: 20,
       ...reflectionExtra,
-      judge: { provider: createFakeProvider([{ content: [{ type: "text", text: JSON.stringify(decision) }] }]) },
-    },
-    ...extra,
-  });
+    } } };
+    base.capabilities = {
+      ports: { judgeProvider: createFakeProvider([{ content: [{ type: "text", text: JSON.stringify(decision) }] }]) },
+    };
+  }
+  const merged = { ...base, ...extra };
+  // `extra` 里再给 `capabilities` / `config` 时**并进同一棵树**（与引擎的两条容器规则同向）。
+  if (base.capabilities !== undefined && extra.capabilities !== undefined) {
+    merged.capabilities = {
+      ...base.capabilities,
+      ...extra.capabilities,
+      hooks: { ...base.capabilities.hooks, ...extra.capabilities.hooks },
+      ports: { ...base.capabilities.ports, ...extra.capabilities.ports },
+    };
+  }
+  if (base.config !== undefined && extra.config !== undefined) {
+    merged.config = {
+      ...base.config,
+      ...extra.config,
+      run: { ...base.config.run, ...extra.config.run },
+    };
+  }
+  return runDirect(merged);
 }
 
 // ================================================================ C1. 账目 + 不发明扁平别名
@@ -475,7 +505,10 @@ test("C5 行为证据：ports.judgeProvider 让 judge 请求走它，主模型�
   assert.equal(main.requests.length >= result.rounds, true, "主模型的请求数只来自它自己的轮次（含强制收尾那一发）");
 
   // `judge.evaluator` 这个纯别名退役：抛并指出去处（反向证 ④ 的那一格）。
-  const retired = await directError({ reflection: { judge: { evaluator: { chat: async () => ({}) } } } });
+  // #530: `reflection` 退役扁平写法 ⇒ 这一格用规位拼写。值必须是**数据**（字符串）：一个
+  // `{ chat }` 对象会被「config 只装数据」先拒（那条文案点名 `capabilities.ports.judgeProvider`，
+  // 是另一条规则），本格要的是语义相那条「纯别名退役」的判词。
+  const retired = await directError({ config: { run: { reflection: { judge: { evaluator: "judge-model" } } } } });
   assert.equal(retired instanceof TypeError, true);
   assert.match(retired.message, /reflection\.judge\.evaluator is not accepted/u);
   assert.match(retired.message, /capabilities\.ports\.judgeProvider/u, "报错必须点出新的规范之家");
@@ -882,10 +915,36 @@ test("C13 逐叶冲突（真 run，onReflection）：扩轮通知恰一条事件
   const shellCalls = [];
   const portCalls = [];
   const events = [];
-  const result = await extendingRun(
-    { capabilities: { hooks: { onReflection: (info) => { portCalls.push(info); } } }, onEvent: (event) => events.push(event) },
-    { onReflection: (info) => { shellCalls.push(info); } },
-  );
+  // #530: 壳里那份（`reflection.onReflection`）在扁平写法退役后**只剩装配口 `policy` 一条路**
+  // ——`policy` 按裁决继续承载退役的扁平名，而 `config` 只装数据（函数进去就被拒）。
+  // 所以本格把两侧都写进 policy，`reflection` 的扁平数据半边也一并搬过去（显式 `reflection`
+  // 会整棵覆盖 policy 的那份，壳槽位就没了）。
+  const result = await extendingRun({
+    assemblyPort: makePort({
+      reflection: {
+        enabled: true,
+        roundJudge: false,
+        judgeIntervalRound: 3,
+        extensionStep: 2,
+        maxExtensions: 1,
+        maxRoundsCap: 20,
+        onReflection: (info) => { shellCalls.push(info); },
+        judge: { provider: createFakeProvider([{ content: [{ type: "text", text: JSON.stringify({
+          done: false,
+          confidence: 0.8,
+          reason: "仍需验证",
+          evidence: "验证尚未完成",
+          direction: "on_track",
+          directionReason: "",
+          extend: true,
+          extendReason: "当前上限不足",
+          plan: "完成最后验证",
+        }) }] }]) },
+      },
+      capabilities: { hooks: { onReflection: (info) => { portCalls.push(info); } } },
+    }),
+    onEvent: (event) => events.push(event),
+  }, null);
   assert.equal(result.rounds > 5, true, "前提：扩轮真的发生了（否则这格只是在测空气）");
   const conflicts = events.filter((event) => event.type === "config_override_conflict");
   assert.equal(conflicts.length, 1, `不等价 ⇒ 恰一条事件，实测 ${conflicts.length}`);
@@ -960,15 +1019,18 @@ test("C16 优先级方向（judgeProvider）：reflection.judge.provider 与 cap
       return { content: [{ type: "text", text: JSON.stringify({ done: false, confidence: 0.8, reason: "端口", evidence: "端口" }) }] };
     },
   };
+  // #530: 壳槽位（`reflection.judge.provider`）在扁平写法退役后只剩装配口 `policy` 一条路；
+  // `reflection` 的数据半边也写进 policy（显式 `reflection` 会整棵覆盖 policy，壳槽位就没了）。
   const result = await runDirect({
+    assemblyPort: makePort({
+      reflection: { enabled: true, judgeIntervalRound: 2, judge: { provider: shellJudge } },
+      capabilities: { ports: { judgeProvider: portJudge } },
+    }),
     provider: main,
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    config: { run: { completion: false } },
     wrapup: false,
     maxRounds: 6,
-    reflection: { enabled: true, judgeIntervalRound: 2, judge: { provider: shellJudge } },
-    capabilities: { ports: { judgeProvider: portJudge } },
   });
   assert.equal(result.termination.reason, "max_rounds_cap");
   assert.equal(portRequests.length, 1, "judge 请求走端口位（恰一发）");

@@ -884,19 +884,16 @@ test("restores judge interception count from executed checkpoint tools", async (
   ]);
   await runToolLoop({
     provider,
-    config: { run: { resume: true, runId, completion: false } },
+    // #530: the retired `reflection` shell is a mixed shell — data goes to
+    // `config.run.reflection`, the judge evaluator to `capabilities.ports.judgeProvider`.
+    config: { run: { resume: true, runId, completion: false, reflection: { enabled: true, roundJudge: false, judgeIntervalRound: 1 } } },
     store,
     executeTool: async ({ id }) => `done-${id}`,
-    reflection: {
-      enabled: true,
-      roundJudge: false,
-      judgeIntervalRound: 1,
-      judge: { provider: judge },
-    },
     capabilities: {
       hooks: {
         onJudge: (info) => audited.push(info.tool?.id),
       },
+      ports: { judgeProvider: judge },
     },
   });
 
@@ -1545,8 +1542,7 @@ async function runTwoRoundsThenResume(runId, { withRunState }) {
     executeTool: async ({ input }) => `wrote ${input?.path ?? ""}`,
     tools: [WRITE_FILE_TOOL],
     maxRounds: 4,
-    config: { input: { wrapup: false }, run: { completion: false } },
-    reflection: false,
+    config: { input: { wrapup: false }, run: { completion: false, reflection: false } },
     store,
     runId,
   });
@@ -1570,8 +1566,8 @@ async function runTwoRoundsThenResume(runId, { withRunState }) {
     provider: resumedProvider,
     executeTool: async () => "unused",
     tools: [WRITE_FILE_TOOL],
-    config: { input: { wrapup: false }, run: { resume: true, runId, maxRounds: 2, completion: false } },
-    reflection: { enabled: true, judge: { provider: resumedJudge } },
+    config: { input: { wrapup: false }, run: { resume: true, runId, maxRounds: 2, completion: false, reflection: { enabled: true } } },
+    capabilities: { ports: { judgeProvider: resumedJudge } },
     store,
   });
 

@@ -249,9 +249,13 @@ test("A3 自检会咬人：漏分类 / 漏容器必须红；叶子失去顶层�
   // 以前这一格报两条红（`config.run.maxRounds maps to "maxRounds", which is not a top-level option`
   // + `schema names "maxRounds", which is not a top-level option`），于是「改闸口」与「删键」
   // 被迫塞进同一刀——#498 S4c 已为这个付过一次真实返工。
-  // #498 S3 A21：`maxRounds` 自己也退役了 ⇒ 样本换成 `reflection`（仍是扁平可写的配置叶子），
-  // 断言形状一字未改：从白名单里摘掉一个**仍在**白名单里的叶子名，自检必须放行、配置面少一格。
-  const droppedOptionNames = RUN_TOOL_LOOP_OPTION_NAMES.filter((name) => name !== "reflection");
+  // #498 S3 A21：`maxRounds` 自己也退役了 ⇒ 样本换成 `reflection`（当时仍是扁平可写的配置叶子）。
+  // #530：`reflection` 也退役了 —— `config` 家**清零**，白名单里再没有任何名字的配置家落在
+  // `config.*` 下。于是「叶子还在、顶层键没了」这个形状只能**构造**出来：先给白名单塞回
+  // `reflection`（合法：它仍有配置家），再把它摘掉。断言形状一字未改。
+  const withSampleKey = [...RUN_TOOL_LOOP_OPTION_NAMES, "reflection"];
+  const droppedOptionNames = withSampleKey.filter((name) => name !== "reflection");
+  assert.deepEqual(configSchemaSelfCheck(withSampleKey), [], "塞回 `reflection` 后自检仍绿（它有配置家）");
   assert.deepEqual(
     configSchemaSelfCheck(droppedOptionNames),
     [],
@@ -267,7 +271,13 @@ test("A3 自检会咬人：漏分类 / 漏容器必须红；叶子失去顶层�
       - CONFIG_SURFACE_OPTION_NAMES.filter((name) => !RUN_TOOL_LOOP_OPTION_NAMES.includes(name)).length,
     "本刀的配置面 = 叶子总数 − 失去顶层键的叶子（派生，不手抄）",
   );
-  assert.equal(configPlaneOptionNames(droppedOptionNames).length, configPlane.length - 1, "少掉的就是那一个失去顶层键的叶子");
+  assert.equal(configPlane.length, 0, "#530 之后配置面在顶层**清零**（每个配置叶子的扁平写法都退役了）");
+  assert.equal(
+    configPlaneOptionNames(withSampleKey).length,
+    configPlane.length + 1,
+    "把 `reflection` 塞回白名单 ⇒ 配置面多一格（这就是「反向证①：键塞回白名单」的账目面）",
+  );
+  assert.equal(configPlaneOptionNames(droppedOptionNames).length, configPlane.length, "少掉的就是那一个失去顶层键的叶子");
   assert.equal(
     configPlaneOptionNames(droppedOptionNames).includes("reflection"),
     false,
@@ -454,8 +464,8 @@ const VALUES = {
   // #498 S3（`run` 片 A14）：`maxTokenContinuations` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
   // #498 S3（`run` 片 A13）：`stallDetection` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
   // #498 S3 A23b：`completion` 也退役扁平写法（家 `config.run.completion`），样本搬到
-  // `RETIRED_FLAT_VALUES`——它是 `run` 组里**最后一个**搬过去的键，`run` 组现在只剩 `reflection`
-  // 一个仍可扁平写的配置叶子。
+  // `RETIRED_FLAT_VALUES`——它是 `run` 组里 A23b 搬过去的键；当时 `run` 组还剩 `reflection`
+  // 一个仍可扁平写的配置叶子（#530 把它也退了，见下）。
   // #498 S3 (`run` slice A11): `replayPolicy` / `invalidArguments` / `writeToolNames` /
   // `writeToolPathKeys` are no longer flat top-level keys — they moved to `RETIRED_FLAT_VALUES` below
   // (their home is `config.run.*`). #498 S3 A12: `partialPersistence` joined them.
@@ -468,7 +478,8 @@ const VALUES = {
   // top-level keys — they moved to `RETIRED_FLAT_VALUES` below (their home is `config.tuning.*`).
   // #498 S3 (`tuning` slice): `cacheCapable` is no longer a flat top-level key — it moved to
   // `RETIRED_FLAT_VALUES` below (its home is `config.tuning.cacheCapable`).
-  reflection: false,
+  // #530：`reflection` 也退役扁平写法（家 `config.run.reflection`，行为半边在能力面），
+  // 样本搬到 `RETIRED_FLAT_VALUES` —— `config` 家由此**清零**。
   // #498 S3 (`guard` slice): `finalGuardMaxRetries` / `finalGuardTimeoutMs` / `finalGuardExtend` are no
   // longer flat top-level keys — they moved to `RETIRED_FLAT_VALUES` below (their home is
   // `config.guard.*`). `finalGuard` (the hook) stays: its home is `capabilities.hooks.finalGuard`.
@@ -605,6 +616,12 @@ const RETIRED_FLAT_VALUES = {
   // `completion?.maxNoToolRounds`）。这里给 `false`：与 `VALUES` 里原先的样本值逐字相同，
   // 所以两形态对照的覆盖面没有缩水；`false` 本身是**真值语义下的真实值**（不是「没给」）。
   completion: false,
+  // #530（`run` 片收口）：`reflection` 退役。值是**混装壳**——数据半边（`enabled` / 扩轮参数 /
+  // `judgeDoneAdvisory`）留 `config.run.reflection`，行为半边去 `capabilities.hooks.onReflection`
+  // 与 `capabilities.ports.judgeProvider`。这里给一个纯数据样本（函数值进不了 `config`），
+  // 展开相仍逐字写回 `effectiveOptions.reflection`（读侧一行未改：`orchestrator.js` 的
+  // `resolvedReflectionOption` 与那一串 `effectiveReflection?.…`）。
+  reflection: { enabled: true, maxExtensions: 1 },
 };
 
 /** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */
@@ -682,8 +699,11 @@ test("C1 同名时 config 赢，并记一条冲突（规范化层）", async () 
   // #498 S3 A23b：`completion` 也退役了 ⇒ 通道换成 `reflection`（家 `config.run.reflection`，
   // 现在是 `run` 组里**最后一个**仍可扁平写的配置叶子）。通道形状一字未变：
   // 「同一个键两种写法 + 值不同 ⇒ 一条冲突」，值相同不记冲突（同一条通道的另一半，见第二段）。
+  // #530：`reflection` 也退役了 ⇒ 调用级已经没有扁平拼写。扁平那一侧改由**装配口的 `policy`**
+  // 供给（裁决：`policy` 是独立拼写面，继续承载退役的扁平名）。机制一字未改——`expandConfigNamespace`
+  // 读的仍是 `mergedOptions.reflection`，只是那份值现在从构造期来。
   const { effectiveOptions, configConflicts } = await normalizeRunToolLoopOptions({
-    reflection: false,
+    assemblyPort: makePort({ reflection: false }),
     config: { run: { reflection: { enabled: true, maxExtensions: 1 } } },
   });
   assert.deepEqual(effectiveOptions.reflection, { enabled: true, maxExtensions: 1 },
@@ -691,16 +711,16 @@ test("C1 同名时 config 赢，并记一条冲突（规范化层）", async () 
   assert.deepEqual(configConflicts, [{ path: "run.reflection", key: "reflection" }], "只有值不同才算冲突");
   // 另一半：同一个值写两边 ⇒ 照旧生效、且**不**记冲突。
   const same = await normalizeRunToolLoopOptions({
-    reflection: false,
+    assemblyPort: makePort({ reflection: false }),
     config: { run: { reflection: false } },
   });
   assert.equal(same.effectiveOptions.reflection, false, "值相同时照旧生效");
   assert.deepEqual(same.configConflicts, [], "值相同不记冲突");
-  // 反向钉（#498 S3 A23b）：`completion` 的扁平写法已经没了 ⇒ 同一个键两种写法在它身上
-  // **不可能**同时出现，冲突通道在它身上正式关闭（不是被静默忽略）。
+  // 反向钉（#530）：`reflection` 的**调用级**扁平写法已经没了 ⇒ 同一个键两种写法在调用级
+  // **不可能**同时出现，那条通道在它身上正式关闭（不是被静默忽略）。
   await assert.rejects(
-    normalizeRunToolLoopOptions({ completion: { signals: [], maxNoToolRounds: 1 } }),
-    /unknown runToolLoop option: "completion" \(its canonical home is config\.run\.completion; the flat spelling is rejected\)/u,
+    normalizeRunToolLoopOptions({ reflection: false }),
+    /unknown runToolLoop option: "reflection" \(its canonical home is config\.run\.reflection; the flat spelling is rejected\)/u,
   );
 });
 
@@ -777,8 +797,9 @@ test("C4 冲突事件的观察者抛错被隔离：run 照旧跑完，错误经 
   // 而 `completion` 已经进了 `test/helpers/run-direct.js` 的 `RUN_FAMILY_FIXTURE_KEYS`（翻译点把
   // 扁平拼写搬进 `config.run.completion`，翻译后只剩一种写法 ⇒ 本格测不到冲突）。`reflection`
   // 是白名单里**最后一个**还没有被夹具翻译、且仍有 `config.run.*` 家的键，机制一字未改。
+  // #530：扁平那一侧改由装配口 `policy` 供给（调用级扁平拼写已退役，见 C1 末尾那条反向钉）。
   const result = await runDirect({
-    reflection: { enabled: true, maxExtensions: 2 },
+    assemblyPort: makePort({ reflection: { enabled: true, maxExtensions: 2 } }),
     config: { run: { reflection: { enabled: false, maxExtensions: 1 } } },
     onEvent: (event) => {
       if (event.type === "config_override_conflict") throw new Error("observer boom");
@@ -796,7 +817,7 @@ test("C5 config 叶子的 undefined 逐字等于「没给」：不覆盖扁平�
   // #498 S3 A23b：`completion` 也退役了 ⇒ 扁平那一侧换成 `reflection`（`run` 组最后一个仍可
   // 扁平写的配置叶子），机制一字未改：叶子写成 `undefined` 就是「没给」。
   const { effectiveOptions, configConflicts } = await normalizeRunToolLoopOptions({
-    reflection: { enabled: true, maxExtensions: 2 },
+    assemblyPort: makePort({ reflection: { enabled: true, maxExtensions: 2 } }),
     config: { run: { reflection: undefined } },
   });
   assert.deepEqual(effectiveOptions.reflection, { enabled: true, maxExtensions: 2 });

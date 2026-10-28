@@ -397,10 +397,10 @@ test("#404 附2：已知边界——全折叠配置（keepRounds=0）下告示�
   await runToolLoop({
     provider: resumedProvider,
     // #498 S3 A19：`resume` 退役扁平写法，并进**同一个** `config` 容器（家 `config.run.resume`）。
-    reflection: false,
+    // #530: `reflection` 同样并进 `config.run`（家 `config.run.reflection`）。
     config: {
       folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm" } },
-      run: { resume: true, runId: "bb-fold-edge", completion: false },
+      run: { resume: true, runId: "bb-fold-edge", completion: false, reflection: false },
     },
     store,
     executeTool: async () => "ok",

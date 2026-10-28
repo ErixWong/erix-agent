@@ -206,13 +206,16 @@ function createOverridePort({ policy, emit } = {}) {
 test("冲突：构造期有值 + 调用期又给 ⇒ 启动期抛，点名键名与两个来源（issue #498）", async () => {
   // #498 S3 A21: `maxRounds` left the top-level allowlist (home `config.run.maxRounds`), so an
   // override of it hits the **name** gate instead of the conflict gate. #498 S3 A23b: `completion`
-  // followed it. The live conflict sample moves to `reflection` — still flat, still produced by
-  // `policy` — and the assertion shape is unchanged; the retired spelling keeps a reverse pin (①-b).
-  const port = createOverridePort({ policy: { reflection: false } });
+  // followed it. #530: `reflection` followed them too — the allowlist no longer has **any** config
+  // leaf, so the `port.policy.<key>` sample moves to `todoStateProvider`: a permanent top-level
+  // option (the third station, never retired) that `policy` can still give at construction time.
+  // The assertion shape is unchanged, and the retired spellings keep their reverse pins (①-b).
+  const port = createOverridePort({ policy: { todoStateProvider: { read: async () => ({}) } } });
   // ① policy 给的键 —— 来源是 `port.policy.<key>`
   await assert.rejects(
-    assemblyPortOptions(port, { reflection: false }),
-    (error) => error instanceof TypeError && error.message === OVERRIDE_CONFLICT("reflection", "port.policy.reflection"),
+    assemblyPortOptions(port, { todoStateProvider: { read: async () => ({}) } }),
+    (error) => error instanceof TypeError
+      && error.message === OVERRIDE_CONFLICT("todoStateProvider", "port.policy.todoStateProvider"),
   );
   // ①-b 反向钉：`completion` 的扁平写法已退役 ⇒ 调用期覆盖撞的是**名称闸口**，冲突闸口测不到它了。
   // 文案逐字钉（与下面 `runId` 同一条派生：覆盖闭集 = `RUN_TOOL_LOOP_OPTION_NAMES`，不是手抄）。
@@ -222,6 +225,16 @@ test("冲突：构造期有值 + 调用期又给 ⇒ 启动期抛，点名键名
     (error) => error instanceof TypeError
       && error.message === 'unknown assembly port override option: "completion"',
     "`completion` 已退役扁平写法 ⇒ 覆盖名也不合法（派生：覆盖闭集 = 白名单）",
+  );
+  // ①-c 反向钉（#530）：`reflection` 是**最后一个**被用作本样本的扁平配置叶子，它退役之后
+  // 「构造期有值 + 调用期又给」这条通道在它身上**测不到**了——覆盖名先撞名称闸口。这是「样本必须
+  // 换人」的证据，不是「冲突闸口被拆了」：上面 ① 与 ② 两段仍走同一条 `assertAssemblyOverrideConflicts`。
+  const retiredReflectionPort = createOverridePort({ policy: { reflection: false } });
+  await assert.rejects(
+    assemblyPortOptions(retiredReflectionPort, { reflection: false }),
+    (error) => error instanceof TypeError
+      && error.message === 'unknown assembly port override option: "reflection"',
+    "`reflection` 已退役扁平写法 ⇒ 覆盖名也不合法（派生：覆盖闭集 = 白名单）",
   );
   // ② 端口派生的键 —— 逐个点名真实来源（这是「两个来源」里构造期那一半）
   const derived = [

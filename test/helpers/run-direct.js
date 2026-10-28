@@ -118,6 +118,16 @@ const RUN_FAMILY_FIXTURE_KEYS = Object.freeze([
   // `completion?.maxNoToolRounds`) never changed. `false` is a real value here, so the
   // `!== undefined` guard above is what keeps it (a truthiness test would silently drop it).
   "completion",
+  // #530: `reflection` (home `config.run.reflection`). Same reasoning once more — the shell is
+  // data (`enabled` / `roundJudge` / `judgeIntervalRound` / `judgeDoneAdvisory` / `wrapupNormalize`
+  // / `extensionStep` / `maxExtensions` / `maxRoundsCap` …), so the fixture only moves the spelling;
+  // the expansion phase writes it back onto `effectiveOptions.reflection` and every engine reader
+  // (`resolvedReflectionOption` and the `effectiveReflection?.…` reads in
+  // `src/loop/orchestrator.js`) is unchanged. Behaviour members are **not** translatable here:
+  // `onReflection` / `judge.provider` have their own homes (`capabilities.hooks.onReflection` /
+  // `capabilities.ports.judgeProvider`) and a function inside `config` is rejected by intake — so a
+  // test that needs them must spell the capability path, exactly like a host.
+  "reflection",
 ]);
 
 /**
@@ -140,6 +150,56 @@ const INPUT_FAMILY_FIXTURE_KEYS = Object.freeze([
  * @param {Record<string, any>} options
  * @returns {Record<string, any>}
  */
+/**
+ * The retired `reflection` shell is a **mixed shell** (#530): data members and behaviour members used
+ * to travel together. Splitting it is not a renaming the fixture invents — it is the destination
+ * table the engine itself reports (`CAPABILITY_SLOT_DESTINATIONS`): `onReflection` →
+ * `capabilities.hooks.onReflection`, `judge.provider` → `capabilities.ports.judgeProvider`, and
+ * everything else is data → `config.run.reflection`.
+ *
+ * Why the fixture does the split instead of 130 call sites: `test/` writes the flat shell 130 times
+ * across ~40 files, and 59 of those sites carry a behaviour member. A plain rename would move a
+ * function into the data-only `config` subtree (intake rejects it) — that is, the retirement would
+ * turn into a 40-file rewrite where each site has to be reclassified by hand. The fixture is the
+ * established single translation point (see the file header), so it does the classification once.
+ *
+ * The engine still rejects **both** wrong spellings: the flat shell at the name gate, a function in
+ * `config.run.reflection` at intake, and a non-function at `capabilities.*` in the shape gate. Cells
+ * that pin those rejections must not go through this fixture.
+ *
+ * @param {unknown} value the flat `reflection` value (`false` / `true` / an object)
+ * @returns {{data: unknown, hooks: Record<string, any>, ports: Record<string, any>}}
+ */
+function splitReflectionShell(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { data: value, hooks: {}, ports: {} };
+  }
+  const data = /** @type {Record<string, any>} */ ({ ...value });
+  const hooks = {};
+  const ports = {};
+  // **Only behaviour values move** — the same rule the pi-extension core applies
+  // (`examples/pi-extension/erix-run-core.js`, `buildLoopOptions`): a non-function `onReflection`
+  // stays in the data half so the engine's semantic phase still reports the unchanged
+  // `reflection.onReflection must be a function (or omitted)` instead of silently dropping it.
+  if (typeof data.onReflection === "function") {
+    hooks.onReflection = data.onReflection;
+    delete data.onReflection;
+  }
+  const judge = data.judge;
+  if (judge !== null && typeof judge === "object" && !Array.isArray(judge)) {
+    const provider = /** @type {Record<string, any>} */ (judge).provider;
+    const isPortValue = typeof provider === "function"
+      || (provider !== null && typeof provider === "object" && typeof (/** @type {any} */ (provider)).chat === "function");
+    if (isPortValue) {
+      ports.judgeProvider = provider;
+      const { provider: _moved, ...restJudge } = /** @type {Record<string, any>} */ (judge);
+      if (Object.keys(restJudge).length > 0) data.judge = restJudge;
+      else delete data.judge;
+    }
+  }
+  return { data, hooks, ports };
+}
+
 function withRunFamily(options) {
   const rest = { ...options };
   const moved = {};
@@ -157,6 +217,25 @@ function withRunFamily(options) {
   const run = base.run;
   if (run !== undefined && (run === null || typeof run !== "object" || Array.isArray(run))) {
     return options;
+  }
+  if (Object.prototype.hasOwnProperty.call(moved, "reflection")) {
+    const split = splitReflectionShell(moved.reflection);
+    moved.reflection = split.data;
+    const capabilities = rest.capabilities;
+    const capabilitiesIsObject = capabilities === undefined
+      || (capabilities !== null && typeof capabilities === "object" && !Array.isArray(capabilities));
+    // A non-object `capabilities` is a shape-rejection cell of its own (constraint 3): pass it
+    // through untouched instead of folding members into it.
+    if (capabilitiesIsObject && (Object.keys(split.hooks).length > 0 || Object.keys(split.ports).length > 0)) {
+      const caps = capabilities ?? {};
+      const hooks = Object.keys(split.hooks).length === 0
+        ? caps.hooks
+        : { ...caps.hooks, ...split.hooks };
+      const ports = Object.keys(split.ports).length === 0
+        ? caps.ports
+        : { ...caps.ports, ...split.ports };
+      rest.capabilities = { ...caps, ...(hooks === undefined ? {} : { hooks }), ...(ports === undefined ? {} : { ports }) };
+    }
   }
   return { ...rest, config: { ...base, run: { ...(run ?? {}), ...moved } } };
 }
