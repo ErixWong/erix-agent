@@ -26,18 +26,20 @@ must be placed in an explicit namespace such as `toolContext` or
 "Flat-spelling version policy" below).
 
 ```text
-assemblyPort, provider, system, wrapup, tools,
-executeTool,
-reflection, stallDetection,
-completion, finalGuard,
-maxTokenContinuations,
+assemblyPort, provider, tools, executeTool,
+reflection, finalGuard,
 todoStateProvider, semanticStateProvider,
-modelConfig, modelMetadata, expert, session, requestId,
-toolContext, store, persistence, runId, cwd, deliverables, resume, onRound, onJudge,
-onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
-onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, config,
-capabilities
+modelConfig, session, store,
+onRound, onJudge, onToolResult, onPersistenceError, diagnostics, onObserverError, signal,
+onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, deliverables, onFoldSummary,
+config, capabilities
 ```
+
+This list is the whitelist itself (27 names since issue #498 S3 A23b, which retired the flat
+`completion`): every name that has left it is rejected at the name gate with a message naming its
+`config.*` (or `capabilities.*`) home — see "Flat-spelling version policy" below. A key **may** keep
+a `config` leaf without keeping a flat spelling, which is why `config.run` still lists leaves such as
+`maxRounds`, `stallDetection` and `completion`.
 
 `config.run.partialPersistence` defaults to `false`, preserving the existing no-write
 streaming behavior. (The **flat** spelling `partialPersistence` is retired by the `run` group's A12
@@ -189,10 +191,12 @@ unchanged (the move is additive — see “The `capabilities` namespace” below
 ### The `config` namespace (issue #497)
 
 A run's configuration has a second spelling. `config` is a **nested namespace** whose leaves are
-aliases of the flat top-level keys, and the alias **is** the schema path: `config.run.completion`
-and the flat `completion` are the same knob, and a leaf name is verbatim the flat option name —
+aliases of the flat top-level keys, and the alias **is** the schema path: `config.run.reflection`
+and the flat `reflection` are the same knob, and a leaf name is verbatim the flat option name —
 with exactly one registered exception, `config.input.messages`, the nested alias of the flat
-`initialMessages` (issue #498 S4b). That exception is a one-entry table (`CONFIG_LEAF_ALIAS_PATHS`
+`initialMessages` (issue #498 S4b). A leaf also **outlives** its flat spelling: `config.run.completion`
+is still the canonical home now that the flat `completion` is rejected (issue #498 S3 A23b) — the
+retirement removes a write spelling, never a knob. That exception is a one-entry table (`CONFIG_LEAF_ALIAS_PATHS`
 (`src/loop/config-namespace.js`)) and the self-check holds it to two things: a registered alias must
 name a leaf that really exists (a dead entry is a failure), and it must not rename onto a leaf name
 that group already has. It is not a rename table you can grow. **Version scope** (issue #517): the
@@ -1294,6 +1298,54 @@ default, and as-is pins for the extension gate / `max_rounds_cap` / the `maxRoun
 gate; `N` the four-way account and the derived "`run` group still has two config-home keys" count;
 `S` the fixture translation point; `T` the reverse pin that no rejection message may recommend a
 retired top-level name).
+
+**`completion`: the same precedent, measured the same way (issue #498 S3, the twenty-third slice).**
+Gate 2 ran the legal value shapes through the real entry — `false` (the switch that turns the whole
+no-tool stop off), `true`, a full shell `{ signals, maxNoToolRounds }`, a partial shell, `{}`,
+`null`, and an illegal member `{ bogus: 1 }`:
+
+| `completion` value | flat (before A23b) | nested (`config.run.completion`) |
+| --- | --- | --- |
+| `false` / `true` / full shell / partial shell / `{}` / `null` / `{ bogus: 1 }` | exit 0 | exit 0 (parity — the engine never interprets the shell's interior) |
+| **function** | **exit 1** — the name gate | **rejected** — `config.run.completion is not accepted … holds data only … the engine never calls it` |
+
+So the **value rules are identical on both sides** — this retirement is a narrowing of the *write
+spelling* only, not of the accepted values. `completion` is a **data shell or the literal `false`**:
+the engine tests it (`completion !== false`), reads two fields off it (`completion?.signals`,
+`completion?.maxNoToolRounds`), and the governor compares a streak against `maxNoToolRounds`
+(`src/reflection/governor.js`). There is no call site (`grep -nE "completion *\("` on `src/` and
+`bin/` is empty), so a function was never behaviour at this position. The slice therefore retired
+the flat spelling and **accepted the narrowing** (a function is now rejected on both spellings, for
+two different reasons) instead of adding a validator. **No read-side line was touched**: the
+expansion phase writes the value back verbatim onto `effectiveOptions.completion`, so
+`completion: false` still makes the `no_tool` reason unreachable (the run ends `end_turn`) and
+`maxNoToolRounds` still decides how many tool-free rounds count as completion.
+
+Version policy for `completion` (issue #498 S3, the twenty-third slice):
+
+| release | writing `completion` at the top level |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level |
+| 0.27.0 | **never published**, so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, the twenty-third slice) | **rejected on the spot** — write `config.run.completion`. The name gate throws `unknown runToolLoop option: "completion" (its canonical home is config.run.completion; the flat spelling is rejected)` |
+
+**Only the *entry option* was retired.** The word `completion` also names, and still names, several
+other things this slice did not touch: the governor's own stop action `completion`
+(`src/reflection/governor.js`, which is what `end_turn` maps from), `result.completionErrors` /
+`error.completionErrors`, the provider wire fields (`chat.completion`, `completion_tokens`), and the
+prose about "completion" throughout this document. The discriminator is exactly one question: *is
+this the value read as a top-level `runToolLoop` parameter?* Only that one write side moved.
+
+Measured red cells: **117** on the single delete — 50 in the shipped contract suite
+(`test/contract/**`), 57 in the earlier slices' reverse pins, and 10 pins that keep the flat spelling
+on purpose (the `497` two-shape samples, the A22 gate-2 flat side, the inline allowlist mirror, the
+golden observation script and the `pi-extension` conflict sample); **0** after every one of them was
+either migrated into the same `config.run` tree or flipped into a "the flat spelling is rejected on
+the spot" pin. The pin file is `test/loop-run-slice-498s3a23b.test.js` (`P` rejection text verbatim
+and before any host port is called; `F` the function value rejected on both spellings with the two
+reasons kept apart; `R` the expansion write-back verbatim and a real run where `maxNoToolRounds` still
+bites and `false` still turns the stop off; `N` the four-way account and the derived "`run` group now
+has one config-home key" count; `S` the fixture translation point).
 
 ### The `capabilities` namespace (issue #498)
 

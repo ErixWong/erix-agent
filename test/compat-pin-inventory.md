@@ -679,7 +679,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/cli.test.js` | 74 | `session`×36, `prompt`×29, `reflection`×4, `tools`×3, `finalGuard`×2, `completion`×1, `context`×1 |
 | `test/loop-resume.test.js` | 15 | `tools`×8, `resume`×4, `reflection`×3 |
 | `test/loop-option-gate-496.test.js` | 22 | `context`×7, `onFoldSummary`×7, `finalGuard`×6, `reflection`×5, `tools`×3, `deliverables`×2, `session`×2, `completion`×1, `partialPersistence`×1, `sleepImpl`×1, `stallDetection`×1, `wrapup`×1 |
-| `test/loop-config-namespace-497.test.js` | 37 | `onEvent`×13, `completion`×7, `tools`×6, `reflection`×5, `session`×4, `wrapup`×3, `context`×2, `finalGuard`×2, `initialMessages`×2, `resume`×2, `retry`×2, `modelMetadata`×1, `onObserverError`×1, `outputHygiene`×1, `partialPersistence`×1, `stallDetection`×1 |
+| `test/loop-config-namespace-497.test.js` | 36 | `onEvent`×13, `reflection`×7, `tools`×6, `completion`×4, `session`×4, `wrapup`×3, `context`×2, `finalGuard`×2, `initialMessages`×2, `resume`×2, `retry`×2, `modelMetadata`×1, `onObserverError`×1, `outputHygiene`×1, `partialPersistence`×1, `stallDetection`×1 |
 | `test/loop-resume-anchor.test.js` | 38 | `completion`×8, `stallDetection`×8, `wrapup`×8, `resume`×7, `tools`×6, `partialPersistence`×1 |
 | `test/loop-v020-rc.test.js` | 4 | `session`×3, `stallDetection`×1 |
 | `test/loop-resume-notice.test.js` | 11 | `tools`×9, `reflection`×2 |
@@ -702,7 +702,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/sessions.test.js` | 16 | `session`×16 |
 | `test/loop-abort-terminal-priority.test.js` | 15 | `reflection`×5, `stallDetection`×5, `completion`×4, `judgeProvider`×1 |
 | `test/loop-metadata-keys-slice-498s3a8.test.js` | 16 | `tools`×6, `modelMetadata`×3, `completion`×2, `session`×2, `wrapup`×2, `context`×1 |
-| `test/loop-run-slice-498s3a11.test.js` | 15 | `completion`×7, `wrapup`×4, `reflection`×2, `context`×1, `tools`×1 |
+| `test/loop-run-slice-498s3a11.test.js` | 13 | `completion`×5, `wrapup`×4, `reflection`×2, `context`×1, `tools`×1 |
 | `test/loop-metadata-keys-slice-498s3a9.test.js` | 19 | `completion`×4, `session`×4, `wrapup`×4, `context`×3, `reflection`×2, `tools`×2 |
 | `test/loop-fold-context-knobs-469.test.js` | 14 | `strategy`×6, `context`×2, `session`×2, `tools`×2, `completion`×1, `wrapup`×1 |
 | `test/loop-on-fold-summary.test.js` | 12 | `onFoldSummary`×11, `tools`×3, `completion`×2, `context`×2, `onPersistenceError`×2, `stallDetection`×2, `wrapup`×2, `session`×1 |
@@ -789,17 +789,18 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-tuning-slice-498s3d.test.js` | 7 | `completion`×3, `wrapup`×2, `context`×1, `stallDetection`×1 |
 | `test/loop-tuning-keys-slice-498s3a5.test.js` | 7 | `completion`×2, `wrapup`×2, `context`×1, `session`×1, `tools`×1 |
 | `test/loop-input-keys-slice-498s3a6.test.js` | 13 | `completion`×4, `tools`×4, `wrapup`×4, `context`×1 |
-| `test/loop-run-slice-498s3a12.test.js` | 1 | `completion`×1 |
-| `test/loop-run-slice-498s3a13.test.js` | 3 | `completion`×1, `outputHygiene`×1, `stallDetection`×1 |
-| `test/loop-run-slice-498s3a14.test.js` | 5 | `completion`×3, `wrapup`×2 |
-| `test/loop-run-slice-498s3a15.test.js` | 3 | `completion`×2, `wrapup`×1 |
-| `test/loop-run-slice-498s3a16.test.js` | 5 | `completion`×3, `wrapup`×2 |
-| `test/loop-input-keys-slice-498s3a18.test.js` | 1 | `completion`×1 |
-| `test/loop-run-slice-498s3a19.test.js` | 5 | `completion`×2, `session`×2, `tools`×1 |
-| `test/loop-run-slice-498s3a20.test.js` | 1 | `completion`×1 |
+| `test/loop-run-slice-498s3a12.test.js` | 0 | |
+| `test/loop-run-slice-498s3a13.test.js` | 2 | `outputHygiene`×1, `stallDetection`×1 |
+| `test/loop-run-slice-498s3a14.test.js` | 4 | `completion`×2, `wrapup`×2 |
+| `test/loop-run-slice-498s3a15.test.js` | 2 | `completion`×1, `wrapup`×1 |
+| `test/loop-run-slice-498s3a16.test.js` | 4 | `completion`×2, `wrapup`×2 |
+| `test/loop-input-keys-slice-498s3a18.test.js` | 0 | |
+| `test/loop-run-slice-498s3a19.test.js` | 4 | `session`×2, `completion`×1, `tools`×1 |
+| `test/loop-run-slice-498s3a20.test.js` | 0 | |
 | `test/loop-assembly-derived-names-544.test.js` | 4 | `session`×2, `initialMessages`×1, `tools`×1 |
-| `test/loop-run-slice-498s3a21.test.js` | 5 | `tools`×4, `completion`×1 |
+| `test/loop-run-slice-498s3a21.test.js` | 4 | `tools`×4 |
 | `test/loop-run-slice-498s3a22.test.js` | 1 | `tools`×1 |
+| `test/loop-run-slice-498s3a23b.test.js` | 1 | `tools`×1 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 

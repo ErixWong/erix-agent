@@ -21,18 +21,19 @@
 0.28.0 起被名称闸口当场拒，见下文「扁平写法的版本口径」）。
 
 ```text
-assemblyPort, provider, system, wrapup, tools,
-executeTool,
-reflection, stallDetection,
-completion, finalGuard,
-maxTokenContinuations,
+assemblyPort, provider, tools, executeTool,
+reflection, finalGuard,
 todoStateProvider, semanticStateProvider,
-modelConfig, modelMetadata, expert, session, requestId,
-toolContext, store, persistence, runId, cwd, deliverables, resume, onRound, onJudge,
-onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
-onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, config,
-capabilities
+modelConfig, session, store,
+onRound, onJudge, onToolResult, onPersistenceError, diagnostics, onObserverError, signal,
+onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, deliverables, onFoldSummary,
+config, capabilities
 ```
+
+这份清单就是白名单本身（issue #498 S3 A23b 起 **27 个**名字，那一片退役了扁平的
+`completion`）：凡离开它的名字都在名称闸口当场被拒，文案点名它的 `config.*`（或
+`capabilities.*`）新家——见下文「扁平写法的版本口径」。一个键**可以**保留 `config` 叶子而不再
+保留扁平拼写，所以 `config.run` 里仍列着 `maxRounds` / `stallDetection` / `completion` 这些叶子。
 
 `config.run.partialPersistence` 默认为 `false`，保持既有的流式零写入行为。（**扁平**拼写
 `partialPersistence` 已被 `run` 组的 A12 片退役，见下文「`run` 组 A12 段的扁平拼写版本口径」。版本口径：
@@ -154,9 +155,11 @@ executeTool({ id, name, input, context, signal })
 ### config 命名空间（issue #497）
 
 一次 run 的配置从此有第二种写法。`config` 是一棵**嵌套命名空间**，它的叶子是顶层扁平键的别名，
-而别名**就是** schema 路径：`config.run.completion` 与扁平的 `completion` 是同一个旋钮，叶子名
+而别名**就是** schema 路径：`config.run.reflection` 与扁平的 `reflection` 是同一个旋钮，叶子名
 逐字等于扁平选项名——只有**一条**登记在案的例外：`config.input.messages`，它是扁平
-`initialMessages` 的嵌套别名（issue #498 S4b）。那条例外是一张只有一条记录的表
+`initialMessages` 的嵌套别名（issue #498 S4b）。叶子也比它的扁平拼写**活得更久**：
+`config.run.completion` 仍是规范之家，尽管扁平的 `completion` 已被拒（issue #498 S3 A23b）——
+退役拿走的是一种**写侧拼写**，从来不是旋钮。那条例外是一张只有一条记录的表
 （`CONFIG_LEAF_ALIAS_PATHS`（`src/loop/config-namespace.js`）），自检核它两件事：登记了别名的
 叶子必须真存在（死条目），且不许改名撞到本组已有的叶子名；它不是你
 可以随手加长的重命名表。**版本口径**（issue #517）：`config` 命名空间自 0.27.0 进入主干，但 **0.27.0 从未发布**
@@ -1074,6 +1077,46 @@ A15 / A20 的邻接清单、随包发布契约套件（`assembly-port` / `bounda
 扩轮闸门 / `max_rounds_cap` / `maxRounds >= 16` 自动开 judge 的 as-is 钉子；`N` 四向账目与「`run`
 组还剩两个配置家键」的派生计数；`S` 夹具翻译点；`T` 反向钉——任何拒绝文案都不许把已退役的顶层名
 当建议）。
+
+**`completion`：同一条先例，同一种量法（issue #498 S3，第二十三片）。** 闸口二把合法取值形态跑过真入口——
+`false`（把整条 no-tool 收尾关掉的开关）、`true`、完整壳 `{ signals, maxNoToolRounds }`、部分壳、`{}`、
+`null`，以及非法成员 `{ bogus: 1 }`：
+
+| `completion` 取值 | 扁平（A23b 之前） | 规位（`config.run.completion`） |
+| --- | --- | --- |
+| `false` / `true` / 完整壳 / 部分壳 / `{}` / `null` / `{ bogus: 1 }` | exit 0 | exit 0（两侧一致——引擎从不解释壳的内部） |
+| **函数** | **exit 1** —— 名称闸口 | **被拒** —— `config.run.completion is not accepted … holds data only … the engine never calls it` |
+
+也就是说**取值规则两侧完全一致**——这次退役收窄的是**写侧拼写**，不是可接受的取值。`completion` 是
+**数据壳或字面量 `false`**：引擎只**测**它（`completion !== false`）、从它上面读两个字段
+（`completion?.signals`、`completion?.maxNoToolRounds`），governor 再拿连续无工具轮数与
+`maxNoToolRounds` 比（`src/reflection/governor.js`）。**没有调用点**（`src/` 与 `bin/` 上
+`grep -nE "completion *\("` 为空），所以函数值在那个位置**从来不是行为**。于是本片退役扁平拼写、
+**接受这条收窄**（函数值现在两个拼写都被拒，理由分开两条），而不是先加一个校验器。**读侧一行未改**：
+展开相把值逐字写回 `effectiveOptions.completion`，所以 `completion: false` 仍然让 `no_tool` 那条理由
+**不可达**（run 以 `end_turn` 收尾），`maxNoToolRounds` 仍然决定「连续几轮无工具调用算完成」。
+
+`completion` 的版本口径（issue #498 S3，第二十三片）：
+
+| 版本 | 在顶层写 `completion` |
+| --- | --- |
+| 0.26.0 及更早（最后一个**已发布**版本） | 顶层接受 |
+| 0.27.0 | **从未发布**，所以没有任何宿主装到过「这件事有意义」的那棵树 |
+| 0.28.0 及以后（issue #498 S3 第二十三片） | **当场拒**——改写 `config.run.completion`。名称闸口抛 `unknown runToolLoop option: "completion" (its canonical home is config.run.completion; the flat spelling is rejected)` |
+
+**退役的只是那个*入口选项*。** `completion` 这个词还命名、并且仍然命名本片没碰的几样东西：
+governor 自己的停机动作 `completion`（`src/reflection/governor.js`，`end_turn` 就是从它映射来的）、
+`result.completionErrors` / `error.completionErrors`、provider 线上的字段（`chat.completion`、
+`completion_tokens`），以及本文档里各处「完成」的叙述。判别式只有一个问题：*这个值是不是被当作
+`runToolLoop` 的顶层参数读的那一个？* 只有那一个写侧搬了家。
+
+实测红格：单删 **117**——随包契约套件（`test/contract/**`）50、前序切片的反向钉 57、以及 10 格
+**故意保留扁平拼写**的钉子（`497` 的两形态样本、A22 闸口二的扁平侧、内联白名单镜像、金样观察脚本、
+`pi-extension` 的冲突样本）；把每一格要么迁进同一棵 `config.run` 树、要么翻成「扁平拼写当场被拒」的
+反向钉之后 **0**。钉子文件是 `test/loop-run-slice-498s3a23b.test.js`（`P` 拒绝文案逐字且早于任何宿主
+端口被调用；`F` 函数值两个拼写都被拒、两条理由分开；`R` 展开相逐字写回，以及真 run 里
+`maxNoToolRounds` 仍然咬合、`false` 仍然关掉判定；`N` 四向账目与「`run` 组现在只剩一个配置家键」的
+派生计数；`S` 夹具翻译点）。
 
 ### capabilities 命名空间（issue #498）
 
