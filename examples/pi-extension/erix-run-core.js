@@ -1261,8 +1261,43 @@ export function formatLoopEvent(event) {
  * runToolLoop 选项装配（#182：预算元数据只走 modelMetadata 单一载体；
  * #167：strategy 用内置名字，由引擎在启动期实例化）。
  *
+ * **issue #498 S6：内部映射搬到两个命名空间**（母单 #495）。本函数以前把 27 个键平铺着递给
+ * `runToolLoop`；现在**数据**走 `config.*`、**回调**走 `capabilities.*`，顶层只剩引擎的端口对象 /
+ * 信号 / 错误出口。⚠ 对 pi 的**工具参数面**零变化：`erix-run.ts` 的 schema（`task` / `cwd` /
+ * `model` / `maxRounds` / `strategy` / `timeoutMs` / `sessionDir` / `transcript` / `maxExtensions` /
+ * `maxRoundsCap` / `extensionStep` / `async` / `quiet` / `action` / `runId` / `finalGuard` /
+ * `requireDeliverable` / `deliverablePaths` / `judgeDoneAdvisory` / `finalGuardTimeoutMs`）一个字节
+ * 没动，返回的四件套（`finalText` / `termination` / `verification` / `artifacts`）也不变——变的只有
+ * **这一层递给引擎的形状**。逐条去向（叶子名 = 顶层键名，别名表在引擎侧，本层不手抄第二套）：
+ *
+ * | 扁平键（旧） | 新规位 |
+ * | --- | --- |
+ * | `system` / `initialUserMessage` / `tools` / `wrapup` | `config.input.*` |
+ * | `maxRounds` / `stream` / `runId` / `cwd` / `completion` | `config.run.*` |
+ * | `reflection`（数据半边：`enabled` / 扩轮三参数 / `judgeDoneAdvisory`） | `config.run.reflection` |
+ * | `timeoutMs` / `retry` | `config.timing.*` |
+ * | `context`（内置策略名是数据，不是端口实现） | `config.folding.context` |
+ * | `finalGuardTimeoutMs` | `config.guard.finalGuardTimeoutMs` |
+ * | `task` / `modelMetadata` | `config.metadata.*` |
+ * | `onEvent` / `onObserverError` / `onPersistenceError` / `onJudge` / `finalGuard` | `capabilities.hooks.*` |
+ * | `reflection.onReflection`（回调半边） | `capabilities.hooks.onReflection`（嵌套槽位：引擎解析回
+ *   `reflection.onReflection`，容器赢） |
+ * | `deliverables`（`requireDeliverable` / `deliverablePaths` 编译出的 `{name, check}`） |
+ *   `capabilities.checks.deliverables` |
+ *
+ * **留在顶层**的只有 `provider` / `executeTool` / `store` / `signal` / `diagnostics`：它们是引擎的
+ * 适配器端口对象 / 中止信号 / 错误出口，`capabilities.ports` 明确**不接**适配器端口对象
+ * （只有 `sleepImpl` / `judgeProvider` / `strategy` 三个「壳内实现」在那一组里，见
+ * `src/loop/capabilities-namespace.js` 的文件头）。所以这五项既没有 `config.*` 也没有
+ * `capabilities.*` 规位，搬它们才是发明第三种类别。
+ *
+ * **一个旋钮只写一侧**：同一个键既写扁平又写 `config.<group>.<leaf>`（值不同）⇒ 引擎记一条
+ * `config_override_conflict`。本层因此**不留扁平兼容键**（`examples/pi-extension/erix-run-config-migration.test.mjs`
+ * 逐键断言「数据在 `config.*`、回调在 `capabilities.*`、顶层没有同名扁平键」）。
+ *
  * @param {{
- *   params: {task:string, cwd:string, maxRounds:number, timeoutMs:number, strategy?:string},
+ *   params: {task:string, cwd:string, maxRounds:number, timeoutMs:number, strategy?:string,
+ *     finalGuardTimeoutMs?:number},
  *   slot: object,
  *   provider: object,
  *   tools: {tools:object[], executeTool:Function},
@@ -1276,7 +1311,6 @@ export function formatLoopEvent(event) {
  *   onJudge?: (record:object)=>void,
  *   onProgress?: (line:string)=>void,
  *   diagnostics?: {error:(event:object)=>void},
- *   diagnostics?: {error:(event:object)=>void},
  *   reflection?: object|false,
  *   // #314 R1：终稿核验回调。引擎要的就是一个函数（载荷 `{finalText, findings, messages,
  *   //   round, rounds, signal, termination}`，见 `src/loop/termination.js` 的 `callFinalGuard`）。
@@ -1287,7 +1321,7 @@ export function formatLoopEvent(event) {
  *   //   不传 ⇒ options 上连这个键都没有（引擎「未声明 ⇒ 逐字不变」的回归锚靠的就是这个形状）。
  *   deliverables?: {name:string, check:Function}[],
  * }} input
- * @returns {object} runToolLoop 的 options 对象
+ * @returns {object} runToolLoop 的 options 对象（`config` / `capabilities` 两个容器 + 端口对象）
  */
 export function buildLoopOptions(input) {
   const {
@@ -1296,57 +1330,92 @@ export function buildLoopOptions(input) {
     reflection, finalGuard, deliverables,
   } = input;
 
+  // #498 S6：`reflection` 是「一块数据 + 一个回调」的复合旋钮，按判据一分为二：
+  //   数据半边（`enabled` / 扩轮三参数 / `judgeDoneAdvisory`）⇒ `config.run.reflection`；
+  //   回调半边（`onReflection`）⇒ `capabilities.hooks.onReflection`（引擎的嵌套槽位把它解析回
+  //   `reflection.onReflection`）。**只搬函数值**：非函数留在数据半边，引擎的语义相仍按老文案
+  //   报 `reflection.onReflection must be a function (or omitted)`，不把「配错型」变成静默丢弃。
+  const reflectionIsObject = reflection !== null && typeof reflection === "object";
+  const onReflection = reflectionIsObject && typeof reflection.onReflection === "function"
+    ? reflection.onReflection
+    : undefined;
+  let reflectionData = reflection;
+  if (onReflection !== undefined) {
+    const { onReflection: _dropped, ...rest } = reflection;
+    reflectionData = rest;
+  }
+
+  /** @type {Record<string, Function>} */
+  const hooks = {};
+  if (onEvent !== undefined) hooks.onEvent = onEvent;
+  if (onObserverError !== undefined) hooks.onObserverError = onObserverError;
+  if (onPersistenceError !== undefined) hooks.onPersistenceError = onPersistenceError;
+  if (onJudge !== undefined) hooks.onJudge = onJudge;
+  // #314 R1 / #498 S4b：`finalGuard` 的值必须是函数 ⇒ 按判据它是行为载体，规位在能力面。
+  if (finalGuard !== undefined) hooks.finalGuard = finalGuard;
+  if (onReflection !== undefined) hooks.onReflection = onReflection;
+
   /** @type {Record<string, unknown>} */
-  const options = {
-    provider,
-    system: system ?? buildSystemPrompt({ lib: { binTools: {} }, cwd: params.cwd, tools: tools.tools }),
-    initialUserMessage: params.task,
+  const config = {
+    input: {
+      system: system ?? buildSystemPrompt({ lib: { binTools: {} }, cwd: params.cwd, tools: tools.tools }),
+      initialUserMessage: params.task,
+      tools: tools.tools,
+      // 对话型宿主（pi 是人机协同侧）：收尾 JSON 信封会污染交回给 pi 的终稿文本，关掉。
+      wrapup: false,
+    },
+    run: {
+      maxRounds: params.maxRounds,
+      stream: false,
+      runId,
+      // #391 R1：`cwd` 是引擎的**纯透传**选项（只进 finalGuard / deliverables 的事实载荷）。
+      // 本层早已有 `params.cwd`（绝对路径 + 存在性都已验），漏的只是往下传：不传的话
+      // 升级指南 §9 的判据会拼成 `"undefined/report.md"`，每次 accept 都被判 `deliverables_failed`。
+      cwd: params.cwd,
+      completion: { signals: [...COMPLETION_SIGNALS], maxNoToolRounds: 3 },
+      ...(reflectionData === undefined ? {} : { reflection: reflectionData }),
+    },
+    timing: {
+      // run 级截止线（引擎在轮边界上按剩余时间收尾）；硬 abort 由 runErixRun 的定时器负责。
+      timeoutMs: params.timeoutMs,
+      retry: { attempts: 2 },
+    },
     // 契约「#1.3 硬注意」/task 选项：判官/收尾的简报取显式 task，多轮宿主必须显式传。
-    task: params.task,
-    // #391 R1：`cwd` 是引擎的**纯透传**选项（只进 finalGuard / deliverables 的事实载荷）。
-    // 本层早已有 `params.cwd`（绝对路径 + 存在性都已验），漏的只是往下传：不传的话
-    // 升级指南 §9 的判据会拼成 `"undefined/report.md"`，每次 accept 都被判 `deliverables_failed`。
-    cwd: params.cwd,
-    tools: tools.tools,
-    executeTool: tools.executeTool,
-    maxRounds: params.maxRounds,
-    // run 级截止线（引擎在轮边界上按剩余时间收尾）；硬 abort 由 runErixRun 的定时器负责。
-    timeoutMs: params.timeoutMs,
-    stream: false,
-    signal,
-    runId,
-    store,
-    // 对话型宿主（pi 是人机协同侧）：收尾 JSON 信封会污染交回给 pi 的终稿文本，关掉。
-    wrapup: false,
-    retry: { attempts: 2 },
-    completion: { signals: [...COMPLETION_SIGNALS], maxNoToolRounds: 3 },
-    ...(reflection === undefined ? {} : { reflection }),
-    ...(params.strategy === undefined ? {} : { context: { strategy: params.strategy } }),
-    ...(onEvent === undefined ? {} : { onEvent }),
-    ...(onObserverError === undefined ? {} : { onObserverError }),
-    ...(onPersistenceError === undefined ? {} : { onPersistenceError }),
-    ...(onJudge === undefined ? {} : { onJudge }),
-    ...(diagnostics === undefined ? {} : { diagnostics }),
-    // #314 R1：只有调用方给了回调才下发这两个键（默认关时 options 对象上**一个字节都不多**，
+    metadata: { task: params.task },
+    // #167：内置策略名是**数据**（引擎在启动期实例化），所以走配置面的 `folding.context`。
+    ...(params.strategy === undefined ? {} : { folding: { context: { strategy: params.strategy } } }),
+    // #314 R1：只有调用方给了 `finalGuard` 才下发它的超时（默认关时 options 对象上**一个字节都不多**，
     // 这正是 C6「默认路径不回归」的硬约束）。`finalGuardTimeoutMs` 必须**显式给**：
     // 引擎默认 30_000 × 最多 3 次等待（1 + 2 次 revise）会撑爆宿主自己那根硬 abort（坑 ①）。
-    ...(finalGuard === undefined ? {} : {
-      finalGuard,
-      finalGuardTimeoutMs: params.finalGuardTimeoutMs ?? FINAL_GUARD_TIMEOUT_MS,
-    }),
-    // #391 R5：交付物判据只在 `requireDeliverable: true` 时存在（默认路径一个键都不多）。
-    ...(deliverables === undefined ? {} : { deliverables }),
+    ...(finalGuard === undefined
+      ? {}
+      : { guard: { finalGuardTimeoutMs: params.finalGuardTimeoutMs ?? FINAL_GUARD_TIMEOUT_MS } }),
   };
 
   // #182：两个预算字段必须成对给（引擎跨候选不合并），缺任何一个都不如不给。
   if (Number.isSafeInteger(slot.contextWindowTokens) && Number.isSafeInteger(slot.maxOutputTokens)) {
-    options.modelMetadata = {
+    config.metadata.modelMetadata = {
       contextWindowTokens: slot.contextWindowTokens,
       maxOutputTokens: slot.maxOutputTokens,
     };
   }
 
-  return options;
+  /** @type {Record<string, unknown>} */
+  const capabilities = {};
+  if (Object.keys(hooks).length > 0) capabilities.hooks = hooks;
+  // #391 R5 / #498 S4b：交付物判据的规位是能力面（每一条都带函数 `check`）；默认关时连这一组都没有。
+  if (deliverables !== undefined) capabilities.checks = { deliverables };
+
+  return {
+    // 端口对象 / 中止信号 / 错误出口：**留在顶层**（`capabilities.ports` 不接适配器端口对象）。
+    provider,
+    executeTool: tools.executeTool,
+    signal,
+    store,
+    ...(diagnostics === undefined ? {} : { diagnostics }),
+    config,
+    ...(Object.keys(capabilities).length === 0 ? {} : { capabilities }),
+  };
 }
 
 /** 引擎 usage（{input_tokens,output_tokens,cacheRead,cacheWrite}）→ pi 的 Usage 形状。 */

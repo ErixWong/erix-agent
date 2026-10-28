@@ -32,6 +32,20 @@ import {
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+/**
+ * #498 S6：`buildLoopOptions` 的输出已经搬到两个命名空间——**数据在 `config.*`、回调在
+ * `capabilities.*`**，顶层只剩端口对象（`provider` / `executeTool` / `store` / `signal` /
+ * `diagnostics`）。所以下面凡断言「本层递了什么给引擎」的地方一律按**新规位**读。
+ *
+ * ⚠ 每一条都配**具体期望值**（数字 / 字符串 / 函数同一性），不写「两边都可能是 undefined」的
+ * 形状——路径写错要当场读到 `undefined` 而红，否则断言会恒真。
+ */
+function at(bag, dottedPath) {
+  return dottedPath.split(".").reduce((current, key) => (
+    current === null || current === undefined ? undefined : current[key]
+  ), bag);
+}
+
 async function tempDir(prefix = "erix-run-core-") {
   return makeTmp(prefix);
 }
@@ -274,26 +288,30 @@ test("buildLoopOptions：参数 → runToolLoop 选项装配（策略名/预算�
     reflection: false,
   });
 
-  assert.equal(options.provider, provider);
-  assert.equal(options.system, "SYS");
-  assert.equal(options.initialUserMessage, "修 bug");
-  assert.equal(options.task, "修 bug", "契约要求显式传 task 作为简报来源");
-  assert.equal(options.tools, assembly.tools);
-  assert.equal(options.executeTool, assembly.executeTool);
-  assert.equal(options.maxRounds, 9);
-  assert.equal(options.timeoutMs, 60_000);
+  assert.equal(options.provider, provider, "端口对象仍留在顶层");
+  assert.equal(at(options, "config.input.system"), "SYS");
+  assert.equal(at(options, "config.input.initialUserMessage"), "修 bug");
+  assert.equal(at(options, "config.metadata.task"), "修 bug", "契约要求显式传 task 作为简报来源");
+  assert.equal(at(options, "config.input.tools"), assembly.tools);
+  assert.equal(options.executeTool, assembly.executeTool, "端口对象仍留在顶层");
+  assert.equal(at(options, "config.run.maxRounds"), 9);
+  assert.equal(at(options, "config.timing.timeoutMs"), 60_000);
   assert.equal(options.signal, controller.signal);
   assert.equal(options.store, store);
-  assert.equal(options.runId, "run-1");
-  assert.equal(options.wrapup, false, "对话型宿主不收 JSON 信封");
-  assert.equal(options.stream, false);
-  assert.equal(options.reflection, false);
-  assert.equal(options.context.strategy, "fold-statistical", "#167：内置名字交给引擎实例化");
-  assert.deepEqual(options.modelMetadata, { contextWindowTokens: 200_000, maxOutputTokens: 4_096 });
-  assert.equal(typeof options.onEvent, "function");
-  assert.equal(typeof options.onObserverError, "function");
-  assert.deepEqual(options.completion.signals.slice(0, 1), ["任务已完成"]);
-  assert.equal(options.completion.maxNoToolRounds, 3);
+  assert.equal(at(options, "config.run.runId"), "run-1");
+  assert.equal(at(options, "config.input.wrapup"), false, "对话型宿主不收 JSON 信封");
+  assert.equal(at(options, "config.run.stream"), false);
+  assert.equal(at(options, "config.run.reflection"), false);
+  assert.equal(at(options, "config.folding.context.strategy"), "fold-statistical", "#167：内置名字交给引擎实例化");
+  assert.deepEqual(at(options, "config.metadata.modelMetadata"), { contextWindowTokens: 200_000, maxOutputTokens: 4_096 });
+  assert.equal(typeof at(options, "capabilities.hooks.onEvent"), "function");
+  assert.equal(typeof at(options, "capabilities.hooks.onObserverError"), "function");
+  assert.deepEqual(at(options, "config.run.completion.signals").slice(0, 1), ["任务已完成"]);
+  assert.equal(at(options, "config.run.completion.maxNoToolRounds"), 3);
+  // 一个旋钮只写一侧：上面那些键在顶层一个都不许留（留了就是「两个真相来源」）。
+  for (const flatKey of ["system", "maxRounds", "timeoutMs", "runId", "reflection", "context", "completion"]) {
+    assert.equal(Object.hasOwn(options, flatKey), false, `${flatKey} 不许再以扁平键出现`);
+  }
 
   // 无 strategy / 元数据不齐 → 两个字段都不给（#182：跨候选不合并，缺一个不如不给）
   const bare = core.buildLoopOptions({
@@ -305,10 +323,10 @@ test("buildLoopOptions：参数 → runToolLoop 选项装配（策略名/预算�
     signal: controller.signal,
     runId: "run-2",
   });
-  assert.equal("context" in bare, false);
-  assert.equal("modelMetadata" in bare, false);
-  assert.equal("reflection" in bare, false, "reflection 未指定时交给引擎缺省");
-  assert.equal("onObserverError" in bare, false);
+  assert.equal(Object.hasOwn(bare.config, "folding"), false, "没传 strategy ⇒ 连 folding 组都没有");
+  assert.equal(Object.hasOwn(bare.config.metadata, "modelMetadata"), false);
+  assert.equal(Object.hasOwn(bare.config.run, "reflection"), false, "reflection 未指定时交给引擎缺省");
+  assert.equal(Object.hasOwn(bare, "capabilities"), false, "没有回调 ⇒ 连 capabilities 容器都没有");
 });
 
 test("runErixRun：正常路径产出结构化载荷（finalText/rounds/usage/termination/diagnostics）", async () => {
@@ -350,11 +368,11 @@ test("runErixRun：正常路径产出结构化载荷（finalText/rounds/usage/te
   assert.equal(payload.diagnostics.compaction.events, 0);
 
   // 装配确实落到 runToolLoop 手上
-  assert.equal(captured.options.maxRounds, 6);
-  assert.equal(captured.options.context.strategy, "sliding-window");
-  assert.deepEqual(captured.options.modelMetadata, { contextWindowTokens: 200_000, maxOutputTokens: 4_096 });
-  assert.match(captured.options.system, /TOOLS\(todo=off\)/u);
-  assert.match(captured.options.system, /工作目录 /u);
+  assert.equal(at(captured.options, "config.run.maxRounds"), 6);
+  assert.equal(at(captured.options, "config.folding.context.strategy"), "sliding-window");
+  assert.deepEqual(at(captured.options, "config.metadata.modelMetadata"), { contextWindowTokens: 200_000, maxOutputTokens: 4_096 });
+  assert.match(at(captured.options, "config.input.system"), /TOOLS\(todo=off\)/u);
+  assert.match(at(captured.options, "config.input.system"), /工作目录 /u);
 
   // 进度通道拿到了轮次与工具事件
   const joined = progressLines.join("\n");
@@ -457,8 +475,8 @@ test("runErixRun：观察者抛错只计数不杀 run（进度通道自防 + 引
     createStore: () => createMemoryTranscriptStore(),
     runLoop: async (options) => {
       // 模拟引擎的错账户上报（docs/host-consumer-contract.md「Observer callback errors」）
-      options.onObserverError(new Error("engine-reported"), { channel: "onJudge", round: 3, type: "judge" });
-      options.onPersistenceError(new Error("store down"));
+      at(options, "capabilities.hooks.onObserverError")(new Error("engine-reported"), { channel: "onJudge", round: 3, type: "judge" });
+      at(options, "capabilities.hooks.onPersistenceError")(new Error("store down"));
       return {
         finalText: "ok",
         rounds: 1,
@@ -631,7 +649,7 @@ test("#207 R3：不传 sessionDir 时一个字节也不落盘（内存行为逐�
   assert.equal(payload.ok, true, `run 必须跑完：${JSON.stringify(payload.termination)}`);
   assert.deepEqual(fileStoreCalls, [], "没给 sessionDir 就不能去造文件 store");
   assert.equal(typeof captured.options.store.appendRound, "function");
-  assert.equal(captured.options.onJudge, undefined, "不落盘时不接 judge 观察者");
+  assert.equal(at(captured.options, "capabilities.hooks.onJudge"), undefined, "不落盘时不接 judge 观察者");
   assert.deepEqual(readdirSync(home), [], "缺省路径不能在注入的 home 下建任何东西（不污染 ~/.erix）");
   assert.equal(existsSync(path.join(home, ".erix")), false);
 });
@@ -646,7 +664,7 @@ test("#207 R3：传 sessionDir 时 transcript 真落盘（文件 store，路径�
   );
 
   assert.equal(payload.ok, true, JSON.stringify(payload.termination));
-  assert.equal(typeof captured.options.onJudge, "function", "落盘时必须接上 judge 写入器");
+  assert.equal(typeof at(captured.options, "capabilities.hooks.onJudge"), "function", "落盘时必须接上 judge 写入器");
   const runId = payload.diagnostics.runId;
   const transcriptPath = path.join(sessionDir, `${runId}.jsonl`);
   assert.equal(existsSync(transcriptPath), true, `transcript 应在 ${transcriptPath}`);
@@ -700,20 +718,20 @@ test("#207 R3：judge 决策与 run_outcome 落进 <sessionDir>/outputs/<runId>/
     createAssembly: () => ({ tools: [], executeTool: async () => "ok" }),
     runLoop: async (options) => {
       // 三种引擎真实会发的形状：明确不扩 / 没给 extend 字段（fail-closed）/ parse 失败
-      options.onJudge({
-        round: 3, kind: "round", action: "decline_extend", runId: options.runId, model: "slot-model",
+      at(options, "capabilities.hooks.onJudge")({
+        round: 3, kind: "round", action: "decline_extend", runId: at(options, "config.run.runId"), model: "slot-model",
         decision: { done: false, confidence: 0.5, reason: "", evidence: "", extend: false, extendReason: "够了" },
       });
-      options.onJudge({
-        round: 4, kind: "round", action: "nudge", runId: options.runId, model: "slot-model",
+      at(options, "capabilities.hooks.onJudge")({
+        round: 4, kind: "round", action: "nudge", runId: at(options, "config.run.runId"), model: "slot-model",
         decision: { done: false, confidence: 0.5, reason: "", evidence: "" },
       });
-      options.onJudge({
+      at(options, "capabilities.hooks.onJudge")({
         round: 5, kind: "round", action: "degraded", error: "parse", decision: null,
-        runId: options.runId, model: "slot-model",
+        runId: at(options, "config.run.runId"), model: "slot-model",
       });
-      options.onEvent({
-        type: "run_outcome", runId: options.runId, model: "slot-model", rounds: 5, judgeRecordCount: 3,
+      at(options, "capabilities.hooks.onEvent")({
+        type: "run_outcome", runId: at(options, "config.run.runId"), model: "slot-model", rounds: 5, judgeRecordCount: 3,
         termination: { reason: "max_rounds_cap" }, verification: { status: "skipped" },
       });
       return {
@@ -756,8 +774,8 @@ test("#207 R3：judge.log 写不进去只记账，不把已跑完的 run 带成 
     createAssembly: () => ({ tools: [], executeTool: async () => "ok" }),
     runLoop: async (options) => {
       // outputs/<runId>/judge.log 位置上站了一个**目录** → append 必炸（ENOTDIR/EISDIR）
-      mkdirSync(path.join(sessionDir, "outputs", options.runId, "judge.log"), { recursive: true });
-      options.onJudge({ round: 1, kind: "round", decision: { done: true, confidence: 1 }, runId: options.runId });
+      mkdirSync(path.join(sessionDir, "outputs", at(options, "config.run.runId"), "judge.log"), { recursive: true });
+      at(options, "capabilities.hooks.onJudge")({ round: 1, kind: "round", decision: { done: true, confidence: 1 }, runId: at(options, "config.run.runId") });
       return {
         finalText: "ok", rounds: 1, usage: { input_tokens: 1, output_tokens: 1 },
         termination: { reason: "end_turn" },
@@ -844,8 +862,8 @@ test("#207 R4：扩轮余量是从引擎回调里数出来的，不是字面量"
     createAssembly: () => ({ tools: [], executeTool: async () => "ok" }),
     runLoop: async (options) => {
       // 引擎只在真的扩了轮时调 reflection.onReflection
-      options.reflection.onReflection({ round: 16, decision: { extend: true }, extendedTo: 28 });
-      options.reflection.onReflection({ round: 28, decision: { extend: true }, extendedTo: 40 });
+      at(options, "capabilities.hooks.onReflection")({ round: 16, decision: { extend: true }, extendedTo: 28 });
+      at(options, "capabilities.hooks.onReflection")({ round: 28, decision: { extend: true }, extendedTo: 40 });
       return {
         finalText: "任务已完成", rounds: 40,
         usage: { input_tokens: 2, output_tokens: 2 }, termination: { reason: "end_turn" },
@@ -920,13 +938,16 @@ test("#207 R1：三个扩轮参数直传引擎 reflection（含 maxExtensions:0�
     { task: "t", cwd: repoRoot, maxRounds: 20, maxExtensions: 0, maxRoundsCap: 24, extensionStep: 2 },
     makeDepsWithoutStore({ provider: createFakeProvider([]), captured }),
   );
+  // #498 S6：`reflection` 拆成两半——数据半边在 `config.run.reflection`，回调半边
+  // （`onReflection`）在 `capabilities.hooks.onReflection`。
   assert.deepEqual(
-    Object.keys(captured.options.reflection).sort(),
-    ["enabled", "extensionStep", "maxExtensions", "maxRoundsCap", "onReflection"],
+    Object.keys(at(captured.options, "config.run.reflection")).sort(),
+    ["enabled", "extensionStep", "maxExtensions", "maxRoundsCap"],
   );
-  assert.equal(captured.options.reflection.maxExtensions, 0, "0 必须真的传给引擎");
-  assert.equal(captured.options.reflection.maxRoundsCap, 24);
-  assert.equal(captured.options.reflection.extensionStep, 2);
+  assert.equal(typeof at(captured.options, "capabilities.hooks.onReflection"), "function", "回调半边在能力面");
+  assert.equal(at(captured.options, "config.run.reflection.maxExtensions"), 0, "0 必须真的传给引擎");
+  assert.equal(at(captured.options, "config.run.reflection.maxRoundsCap"), 24);
+  assert.equal(at(captured.options, "config.run.reflection.extensionStep"), 2);
   assert.equal(zero.maxExtensions, 0);
   assert.deepEqual(zero.diagnostics.reflection, {
     enabled: true,
@@ -939,8 +960,8 @@ test("#207 R1：三个扩轮参数直传引擎 reflection（含 maxExtensions:0�
     { task: "t", cwd: repoRoot, maxRounds: 20 },
     makeDepsWithoutStore({ provider: createFakeProvider([]), captured }),
   );
-  assert.deepEqual(Object.keys(untouched ? captured.options.reflection : {}), ["enabled", "onReflection"]);
-  assert.equal(captured.options.reflection.maxExtensions, undefined, "未传不得替引擎填默认值");
+  assert.deepEqual(Object.keys(at(captured.options, "config.run.reflection")).sort(), ["enabled"]);
+  assert.equal(at(captured.options, "config.run.reflection.maxExtensions"), undefined, "未传不得替引擎填默认值");
   assert.equal(untouched.maxExtensions, core.ENGINE_DEFAULT_MAX_EXTENSIONS, "返回面报的是生效上限（引擎缺省 2）");
 
   // 闸门关着（maxRounds < 16）→ 三个参数整体不下发，但 diagnostics/模型文本里要说清「没生效」
@@ -948,7 +969,7 @@ test("#207 R1：三个扩轮参数直传引擎 reflection（含 maxExtensions:0�
     { task: "t", cwd: repoRoot, maxExtensions: 5 },
     makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT), captured }),
   );
-  assert.equal(captured.options.reflection, false);
+  assert.equal(at(captured.options, "config.run.reflection"), false);
   assert.equal(gated.maxExtensions, 0);
   assert.deepEqual(gated.diagnostics.reflection.requested, { maxExtensions: 5 });
   assert.match(core.formatPayloadForModel(gated), /扩轮参数未生效/u);
@@ -960,7 +981,7 @@ test("#207 R1：三个扩轮参数直传引擎 reflection（含 maxExtensions:0�
       provider: createFakeProvider([]), captured, extra: { env: { ERIX_NO_REFLECTION: "1" } },
     }),
   );
-  assert.equal(captured.options.reflection, false, "ERIX_NO_REFLECTION=1 依旧把整个 reflection 关掉");
+  assert.equal(at(captured.options, "config.run.reflection"), false, "ERIX_NO_REFLECTION=1 依旧把整个 reflection 关掉");
 });
 
 // —— issue #322 的宿主侧口子：`judgeDoneAdvisory`（引擎 reflection.judgeDoneAdvisory 的透传口）——
@@ -1008,11 +1029,12 @@ test("#322 judgeDoneAdvisory 没传时：params 与交给 runToolLoop 的 option
     makeDepsWithoutStore({ provider: createFakeProvider([]), captured }),
   );
   assert.deepEqual(
-    Object.keys(captured.options.reflection),
-    ["enabled", "onReflection"],
-    "未传时下发面一个字节都不许多（与 #207/#234 的「不覆盖引擎默认」同口径）",
+    Object.keys(at(captured.options, "config.run.reflection")),
+    ["enabled"],
+    "未传时下发面一个字节都不许多（与 #207/#234 的「不覆盖引擎默认」同口径）；回调半边在 capabilities.hooks.onReflection",
   );
-  assert.equal("judgeDoneAdvisory" in captured.options.reflection, false);
+  assert.equal(typeof at(captured.options, "capabilities.hooks.onReflection"), "function");
+  assert.equal(Object.hasOwn(at(captured.options, "config.run.reflection"), "judgeDoneAdvisory"), false);
   // diagnostics 同步不出现（现有断言的逐字不变是这里的真护栏）
   assert.deepEqual(untouched.diagnostics.reflection, {
     enabled: true, requested: {}, maxExtensions: core.ENGINE_DEFAULT_MAX_EXTENSIONS,
@@ -1023,7 +1045,7 @@ test("#322 judgeDoneAdvisory 没传时：params 与交给 runToolLoop 的 option
     { task: "t", cwd: repoRoot },
     makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT), captured }),
   );
-  assert.equal(captured.options.reflection, false);
+  assert.equal(at(captured.options, "config.run.reflection"), false);
 });
 
 test("#322 judgeDoneAdvisory 与三个扩轮参数同传时四个键都在（合并而不是互相覆盖）", async () => {
@@ -1037,14 +1059,15 @@ test("#322 judgeDoneAdvisory 与三个扩轮参数同传时四个键都在（合
     makeDepsWithoutStore({ provider: createFakeProvider([]), captured }),
   );
   assert.deepEqual(
-    Object.keys(captured.options.reflection).sort(),
-    ["enabled", "extensionStep", "judgeDoneAdvisory", "maxExtensions", "maxRoundsCap", "onReflection"],
-    "少了任何一个键就是互相覆盖了",
+    Object.keys(at(captured.options, "config.run.reflection")).sort(),
+    ["enabled", "extensionStep", "judgeDoneAdvisory", "maxExtensions", "maxRoundsCap"],
+    "少了任何一个键就是互相覆盖了（回调半边单独在 capabilities.hooks.onReflection）",
   );
-  assert.equal(captured.options.reflection.judgeDoneAdvisory, true, "开关必须真的传给引擎");
-  assert.equal(captured.options.reflection.maxExtensions, 0, "maxExtensions: 0 不许被开关顶掉");
-  assert.equal(captured.options.reflection.maxRoundsCap, 24);
-  assert.equal(captured.options.reflection.extensionStep, 2);
+  assert.equal(typeof at(captured.options, "capabilities.hooks.onReflection"), "function");
+  assert.equal(at(captured.options, "config.run.reflection.judgeDoneAdvisory"), true, "开关必须真的传给引擎");
+  assert.equal(at(captured.options, "config.run.reflection.maxExtensions"), 0, "maxExtensions: 0 不许被开关顶掉");
+  assert.equal(at(captured.options, "config.run.reflection.maxRoundsCap"), 24);
+  assert.equal(at(captured.options, "config.run.reflection.extensionStep"), 2);
   assert.deepEqual(all.diagnostics.reflection.judgeDoneAdvisory, { requested: true, enabled: true });
   assert.deepEqual(all.diagnostics.reflection.requested, {
     maxExtensions: 0, maxRoundsCap: 24, extensionStep: 2,
@@ -1055,8 +1078,8 @@ test("#322 judgeDoneAdvisory 与三个扩轮参数同传时四个键都在（合
     { task: "t", cwd: repoRoot, maxRounds: 20, judgeDoneAdvisory: false },
     makeDepsWithoutStore({ provider: createFakeProvider([]), captured }),
   );
-  assert.deepEqual(Object.keys(captured.options.reflection), ["enabled", "judgeDoneAdvisory", "onReflection"]);
-  assert.equal(captured.options.reflection.judgeDoneAdvisory, false, "明说「关」也要原样下发");
+  assert.deepEqual(Object.keys(at(captured.options, "config.run.reflection")).sort(), ["enabled", "judgeDoneAdvisory"]);
+  assert.equal(at(captured.options, "config.run.reflection.judgeDoneAdvisory"), false, "明说「关」也要原样下发");
 });
 
 test("#322 judge 闸门关着时 judgeDoneAdvisory 不塞进 reflection，且 diagnostics / 模型文本都不静默", async () => {
@@ -1066,7 +1089,7 @@ test("#322 judge 闸门关着时 judgeDoneAdvisory 不塞进 reflection，且 di
     { task: "t", cwd: repoRoot, judgeDoneAdvisory: true },
     makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT), captured }),
   );
-  assert.equal(captured.options.reflection, false, "judge 没跑时这个开关没有意义，不得塞进去");
+  assert.equal(at(captured.options, "config.run.reflection"), false, "judge 没跑时这个开关没有意义，不得塞进去");
   // 但「传了」这件事必须看得见（与 requested/enabled 同族口径）
   const gatedAdvisory = gated.diagnostics.reflection.judgeDoneAdvisory;
   assert.equal(gatedAdvisory.requested, true, "宿主传了什么要照实记");
@@ -1081,7 +1104,7 @@ test("#322 judge 闸门关着时 judgeDoneAdvisory 不塞进 reflection，且 di
       provider: createFakeProvider(TWO_ROUND_SCRIPT), captured, extra: { env: { ERIX_NO_REFLECTION: "1" } },
     }),
   );
-  assert.equal(captured.options.reflection, false);
+  assert.equal(at(captured.options, "config.run.reflection"), false);
   assert.deepEqual(envOff.diagnostics.reflection.judgeDoneAdvisory.enabled, false);
   assert.match(core.formatPayloadForModel(envOff), /judgeDoneAdvisory 未生效/u);
 
@@ -1106,7 +1129,8 @@ test("#322 键名与引擎对账：引擎只认 reflection.judgeDoneAdvisory，�
     { task: "t", cwd: repoRoot, maxRounds: 20, judgeDoneAdvisory: true },
     makeDepsWithoutStore({ provider: createFakeProvider([]), captured }),
   );
-  const sent = captured.options.reflection;
+  // #498 S6：数据半边住在 `config.run.reflection`（展开后引擎看到的仍是扁平 `reflection`）。
+  const sent = at(captured.options, "config.run.reflection");
   assert.equal(sent.judgeDoneAdvisory, true, "本层下发的键名");
   // 把同一份 reflection 里的值换成脏字符串交给**真** runToolLoop：报出来的错名必须就是本层用的那个
   await assert.rejects(
@@ -1280,7 +1304,7 @@ test("#234 R0：judge 开着但没传 maxExtensions 时生效上限 = 引擎缺�
     ...makeDepsWithoutStore({ provider: createFakeProvider([]), captured }),
     home: await tempDir("erix-run-r0-home-"),
   });
-  assert.equal(captured.options.reflection.maxExtensions, undefined, "未传就不得替引擎填默认值");
+  assert.equal(at(captured.options, "config.run.reflection.maxExtensions"), undefined, "未传就不得替引擎填默认值");
   assert.equal(
     reported.maxExtensions,
     2,
@@ -1363,7 +1387,7 @@ test("#234 R0：reflection.onReflection 里注入抛错不得杀 run（契约：
         null,
       ]) {
         try {
-          options.reflection.onReflection(info);
+          at(options, "capabilities.hooks.onReflection")(info);
         } catch (error) {
           escaped.push(error?.message ?? String(error));
         }
@@ -1504,7 +1528,7 @@ test("#313 R3：notes 写/读与 model_metadata_missing 事件数从**事件流*
           { type: "tool_use", toolUse: { name: "note_forget" } },
           { type: "tool_use", toolUse: { name: "readFile" } },
           { type: "tool_use", toolUse: { name: "note_whatever_new" } },
-        ]) await options.onEvent(event);
+        ]) await at(options, "capabilities.hooks.onEvent")(event);
         return {
           finalText: "任务已完成", rounds: 3,
           usage: { input_tokens: 7, output_tokens: 3 }, termination: { reason: "end_turn" },
@@ -1552,9 +1576,11 @@ test("#314 R1：默认关 ⇒ 透传给引擎的 options 里一个 finalGuard �
     { task: "改一行", cwd: repoRoot, maxRounds: 4 },
     makeDeps({ provider: createFakeProvider([DRAFT_END_TURN]), captured }),
   );
-  // 「默认不透传」必须是**结构上**的不透传，不是「传了个 undefined」
-  assert.ok(!("finalGuard" in captured.options), JSON.stringify(Object.keys(captured.options)));
-  assert.ok(!("finalGuardTimeoutMs" in captured.options), "默认关时连超时都不该下发");
+  // 「默认不透传」必须是**结构上**的不透传，不是「传了个 undefined」。#498 S6 之后两个键的
+  // 规位是 `capabilities.hooks.finalGuard` / `config.guard.finalGuardTimeoutMs`。
+  assert.ok(captured.options.capabilities.hooks, "#498 S6：hooks 容器必须在场（否则下面这种「不透传」断言会被 `?? {}` 恒真掉）");
+  assert.equal(Object.hasOwn(captured.options.capabilities.hooks, "finalGuard"), false, JSON.stringify(Object.keys(captured.options.capabilities.hooks)));
+  assert.equal(Object.hasOwn(captured.options.config, "guard"), false, "默认关时连 guard 组都不该出现（超时也不下发）");
   assert.equal(payload.termination.reason, "end_turn");
   assert.equal(payload.verification.status, "skipped", JSON.stringify(payload.verification));
   assert.equal(payload.verification.reason, "no_final_guard");
@@ -1568,7 +1594,7 @@ test("#314 R1：默认关 ⇒ 透传给引擎的 options 里一个 finalGuard �
   const text = core.formatPayloadForModel(payload);
   assert.match(text, /finalGuard=disabled/u);
   assert.doesNotMatch(text, /finalGuard calls=/u);
-  assert.doesNotMatch(captured.options.system, /## 基点/u, "默认关时提示词一个字节都不许多");
+  assert.doesNotMatch(at(captured.options, "config.input.system"), /## 基点/u, "默认关时提示词一个字节都不许多");
 });
 
 test("#314 R1：显式开启 ⇒ 透传回调 + 显式的小 finalGuardTimeoutMs，引擎侧真的落到 verified", async () => {
@@ -1581,8 +1607,8 @@ test("#314 R1：显式开启 ⇒ 透传回调 + 显式的小 finalGuardTimeoutMs
       extra: { finalGuardInspect: acceptAll },
     }),
   );
-  assert.equal(typeof captured.options.finalGuard, "function");
-  assert.equal(captured.options.finalGuardTimeoutMs, FINAL_GUARD_TIMEOUT_MS);
+  assert.equal(typeof at(captured.options, "capabilities.hooks.finalGuard"), "function");
+  assert.equal(at(captured.options, "config.guard.finalGuardTimeoutMs"), FINAL_GUARD_TIMEOUT_MS);
   assert.ok(FINAL_GUARD_TIMEOUT_MS < 30_000, "别靠引擎默认的 30s（坑 ①）");
   assert.equal(payload.verification.status, "verified", JSON.stringify(payload.verification));
   assert.equal(payload.diagnostics.finalGuard.enabled, true);
@@ -1590,7 +1616,7 @@ test("#314 R1：显式开启 ⇒ 透传回调 + 显式的小 finalGuardTimeoutMs
   assert.equal(payload.diagnostics.finalGuard.reviseRounds, 0);
   // 开启时提示词才写四段槽位（段名与 guard 的 `FINAL_DRAFT_SECTIONS` 同源，一处改两处生效）
   for (const section of FINAL_DRAFT_SECTIONS) {
-    assert.ok(captured.options.system.includes(section), `提示词缺槽位 ${section}`);
+    assert.ok(at(captured.options, "config.input.system").includes(section), `提示词缺槽位 ${section}`);
   }
 });
 
@@ -1604,7 +1630,7 @@ test("#314 R1：finalGuardTimeoutMs 可显式覆盖（调用方想更紧就自�
       extra: { finalGuardInspect: acceptAll },
     }),
   );
-  assert.equal(captured.options.finalGuardTimeoutMs, 1_234);
+  assert.equal(at(captured.options, "config.guard.finalGuardTimeoutMs"), 1_234);
 });
 
 test("#314 坑①：guard 的等待晚于 run 截止线，宿主硬 abort 必须留余量（否则钱花了拿不到 verified）", async () => {
@@ -1707,7 +1733,8 @@ test("#391 R5：开了 requireDeliverable ⇒ options 里是 bin/final-guard.js 
     { task: "改一行", cwd: repoRoot, maxRounds: 4 },
     makeDeps({ provider: createFakeProvider([DRAFT_END_TURN]), captured }),
   );
-  assert.equal("deliverables" in captured.options, false, "默认关时不许往 options 里塞 deliverables 键");
+  assert.ok(captured.options.capabilities?.checks === undefined || typeof captured.options.capabilities.checks === "object", "#498 S6：checks 容器若是别的东西必须报错，不许静默当作「没透传」");
+  assert.equal(Object.hasOwn(captured.options.capabilities.checks ?? {}, "deliverables"), false, "默认关时不许往 options 里塞 deliverables 键（#498 S6 的规位是 capabilities.checks.deliverables）");
   assert.equal(payload.diagnostics.finalGuard.enabled, false);
 
   const withDeliverable = {};
@@ -1719,12 +1746,13 @@ test("#391 R5：开了 requireDeliverable ⇒ options 里是 bin/final-guard.js 
       extra: { finalGuardInspect: acceptAll },
     }),
   );
-  assert.ok(Array.isArray(withDeliverable.options.deliverables), "开了开关却没把判据交给引擎（就是静默空转）");
-  assert.deepEqual(withDeliverable.options.deliverables.map((entry) => entry.name), ["files_written_exist"]);
-  assert.equal(typeof withDeliverable.options.deliverables[0].check, "function");
+  const booleanCriteria = at(withDeliverable.options, "capabilities.checks.deliverables");
+  assert.ok(Array.isArray(booleanCriteria), "开了开关却没把判据交给引擎（就是静默空转）");
+  assert.deepEqual(booleanCriteria.map((entry) => entry.name), ["files_written_exist"]);
+  assert.equal(typeof booleanCriteria[0].check, "function");
   // 判据口径必须与 CLI 那一份同源（同一个工厂函数，不是手抄第二份）
   const { createDeliverableChecks } = await import("../../bin/final-guard.js");
-  assert.equal(withDeliverable.options.deliverables[0].name, createDeliverableChecks()[0].name);
+  assert.equal(booleanCriteria[0].name, createDeliverableChecks()[0].name);
   // 成本口径：1 条判据与 guard 共享同一 finalGuardTimeoutMs ⇒ 每次 attempt 的上限翻倍
   assert.equal(onPayload.diagnostics.finalGuard.deliverableCriteria, 1);
   assert.equal(
@@ -1854,7 +1882,7 @@ test("#391 R1：命名判据交给引擎时 name = 声明路径、check 按 fact
       extra: { finalGuardInspect: acceptAll },
     }),
   );
-  const criteria = captured.options.deliverables;
+  const criteria = at(captured.options, "capabilities.checks.deliverables");
   assert.deepEqual(criteria.map((entry) => entry.name), ["report.md", path.join(repoRoot, "absolute.md")]);
   assert.ok(criteria.every((entry) => typeof entry.check === "function"));
   // 相对路径按**判据收到的 cwd** 解析，不是进程 cwd：cwd 指到另一个临时目录时就该看那个目录。
@@ -1891,7 +1919,7 @@ test("#391 R1：命名判据交给引擎时 name = 声明路径、check 按 fact
       extra: { finalGuardInspect: acceptAll },
     }),
   );
-  assert.deepEqual(both.options.deliverables.map((entry) => entry.name), ["files_written_exist", "report.md"]);
+  assert.deepEqual(at(both.options, "capabilities.checks.deliverables").map((entry) => entry.name), ["files_written_exist", "report.md"]);
   assert.equal(payload.diagnostics.finalGuard.deliverableCriteria, 2);
   assert.equal(payload.diagnostics.finalGuard.worstCaseExtraMs, 3 * 3 * FINAL_GUARD_TIMEOUT_MS);
 });
