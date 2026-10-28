@@ -931,6 +931,17 @@ export const FILE_TOOL_DEFINITIONS = [
     //   全称句也跟着改成 `no file in those three trees reads fewer than 3,900`（比实测更宽 ⇒ 依然为真且不夸大）。
     //   效果：实测最小值在 3,900..3,949 这一档里怎么挪都不用改描述；跨档才刷（测试里那条由实测推导的零容差断言管这件事）。
     //   本轮只有**两个数**动（3,903 → 3,900 两处），`self` 角色行同片复测（描述就在本文件里，改句就挪它自己的字节数）。
+    // ⚠ 2026-10-27 第十刷（issue #540，**这一刷一个数字都没动，改的是叙事挂在哪个身份上**）：floor 那句原本
+    //   兼着「floor 自己就是 CJK 重文件（`bin/provider-timeouts.js`, 45%）」这个断言 ⇒ **谁最少**一漂，面向模型的
+    //   文案就跟着变假话。这是 #537 刚拆掉的「复测刷描述」税换了根引线：floor 身份只剩 2 行余量
+    //   （`src/loop/option-normalization.js` 3,905 vs `bin/provider-timeouts.js` 3,903），S3 下一片几乎必然换人，
+    //   而继任者是英文注释文件（CJK 占比 18%，且还在降）⇒ 那句话当场变谎。
+    //   现在 CJK 那句只挂在 `densest` 角色上（`src/loop/state-view.js`, 37%，#271 起一字未动的固定样本锚点），
+    //   floor 那句只留换算式 + 档位下界（`fewest ≥ 3,900 … measured minimum 3,903, rounded down …`），
+    //   **不再点名文件、不再声称 floor 是 CJK 重文件**。测试里 `floorCjkPercentClaim` 那条换成反向证
+    //   （描述里不许再把 CJK 属性绑在 floor 身份上 / 不许点名 floor 那个文件），`densest` 一侧的实测断言原样保留。
+    //   身份迁移反向证已实跑：临时给 `src/loop/option-normalization.js` 加一行注释 ⇒ 只红角色表（`fewest.rel` /
+    //   `fewest.capacity` 对不上），**描述相关断言全绿**；撤掉后恢复。
     description: "Read a text file by line range. "
       + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` continues after line 200); default 0. "
       + "`limit` is a **line count**, default 200. "
@@ -942,8 +953,8 @@ export const FILE_TOOL_DEFINITIONS = [
       + "median 6,600 (40.0), most 9,407 (27.9). "
       + "The floor is a whole-tree minimum rounded down to a multiple of 50 (a promise, not a per-file estimate); median and most come from a fixed sample of those sources and describe that sample, not every file here. "
       + "Wide lines cut this proportionally and CJK cuts hardest (3 UTF-8 bytes per character): "
-      + "the 3,900 floor is itself a CJK-heavy file (`bin/provider-timeouts.js`, 45% of its bytes are CJK), while the most "
-      + "CJK-dense file in that fixed sample (`src/loop/state-view.js`, 37%) fits 4,387 and this tool's own source fits 4,750. "
+      + "the most CJK-dense file in that fixed sample (`src/loop/state-view.js`, 37% of its bytes are CJK) fits 4,387 and "
+      + "this tool's own source fits 4,719. "
       + "Nothing outside this repo "
       + "was measured, so for CJK-heavy code elsewhere fold the formula rather than reusing these numbers. Either way the cap is "
       + "far more than a single `limit` will ask for, so it is rarely what stops you. "
