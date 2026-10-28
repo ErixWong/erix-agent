@@ -145,7 +145,8 @@ test("fine-grained startup validation rejects incomplete assembly-shaped input",
     runToolLoop({
       provider: {},
       session: { id: "fine-invalid" },
-      persistence: "none",
+      // #498 S3 A13: `persistence` retired its flat spelling (`config.run.persistence`).
+      config: { run: { persistence: "none" } },
       maxRounds: 1,
     }),
     (error) => error instanceof TypeError

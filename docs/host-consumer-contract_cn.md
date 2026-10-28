@@ -1645,11 +1645,14 @@ const result = await runToolLoop({
   provider: createOpenAIProvider(slot),  // 请求参数：model / max_tokens / temperature 均来自 slot
   modelConfig,                           // 预算元数据：经 session.modelSlot 重新解析
   session: { id: run.id, modelSlot },
-  // 种子消息的规位家（扁平 `initialUserMessage` 自 0.28.0 起退役，见下文「扁平写法的版本口径」）。
-  config: { input: { initialUserMessage: run.prompt } },
+  // 种子消息与持久化模式的规位家（扁平 `initialUserMessage` / `persistence` 自 0.28.0 起退役，
+  // 见下文「扁平写法的版本口径」）。**同一个** `config` 容器——写第二个会静默盖掉第一个。
+  config: {
+    input: { initialUserMessage: run.prompt },
+    run: { persistence: "none" },
+  },
   executeTool,
   maxRounds: 8,
-  persistence: "none",
   signal: controller.signal,
   onEvent: (event) => {
     events.push(event.type);

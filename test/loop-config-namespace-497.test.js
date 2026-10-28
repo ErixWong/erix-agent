@@ -451,7 +451,7 @@ const VALUES = {
   // therefore not part of the two-shape comparison (see A4 ④ for its behavioural evidence).
   // issue #497 复审 R1：按新判据从能力面移回配置面的四个键（端到端等价也要覆盖它们）；
   // 第二轮又从能力面移入两个字符串标量 `runId` / `cwd`（`config.run.*`）。
-  persistence: "none",
+  // #498 S3（`run` 片 A13）：`persistence` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
   runId: "config-497-run",
   cwd: "/tmp/config-497",
   // #498 S4a：这里曾有 8 个 `on*: () => {}`——`config.observers` 整组删除后它们不再是配置叶子
@@ -535,6 +535,10 @@ const RETIRED_FLAT_VALUES = {
   // `effectiveOptions.outputHygiene`（读侧一行未改：`orchestrator.js` 的 `outputHygieneEnabled` /
   // `outputHygieneLimit` 派生，以及 `run-snapshot-executor.js` 的截断分支）。样本给对象形态。
   outputHygiene: { limit: 4096 },
+  // #498 S3 A13（`run` 片）：`persistence`（模式）退役。值是**枚举标量**（引擎只认两个
+  // 字面量）；展开相仍逐字写回 `effectiveOptions.persistence`（读侧一行未改：`orchestrator.js`
+  // 的 `persistenceMode` 派生与 `validateTranscriptStore` 的 required 分支）。
+  persistence: "required",
 };
 
 /** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */

@@ -2003,10 +2003,14 @@ const result = await runToolLoop({
   session: { id: run.id, modelSlot },
   // The seed message's canonical home (the flat `initialUserMessage` was retired in 0.28.0 — see
   // "Flat-spelling version policy" below).
-  config: { input: { initialUserMessage: run.prompt } },
+  config: {
+    input: { initialUserMessage: run.prompt },
+    // `persistence` retired its flat spelling in 0.28.0 (`config.run.persistence`; same version
+    // policy as the seed message above). One `config` container — a second one would silently win.
+    run: { persistence: "none" },
+  },
   executeTool,
   maxRounds: 8,
-  persistence: "none",
   signal: controller.signal,
   onEvent: (event) => {
     events.push(event.type);

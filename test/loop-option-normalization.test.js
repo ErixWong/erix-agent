@@ -255,7 +255,11 @@ const OPTION_WHITELIST = [
   // `session`, see `test/loop-metadata-keys-slice-498s3a9.test.js`).
   "session",
   "store",
-  "persistence",
+  // #498 S3 (`run` slice A13): `persistence` left the allowlist — its canonical home is
+  // `config.run.persistence`. The copy tracks the source list verbatim (that is what A0 checks),
+  // so it is gone here too; the flat spelling is now a **rejection** cell, see
+  // `test/loop-run-slice-498s3a13.test.js`. `store` (the port) stays.
+
   "runId",
   "resume",
   "onRound",

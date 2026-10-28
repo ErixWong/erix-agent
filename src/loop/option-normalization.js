@@ -236,7 +236,6 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // the session port — so retiring the flat spelling would promote that leaf into one. Returned.
   "session",
   "store",
-  "persistence",
   "runId",
   "resume",
   "onRound",
