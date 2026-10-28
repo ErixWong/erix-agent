@@ -868,7 +868,9 @@ function collectFunctionPaths(value, path) {
  *     `capabilities.checks.deliverables` / `capabilities.ports.sleepImpl`);
  *   · a **data key** of the config surface (`tools` and friends) ⇒ it is supposed to be plain data and
  *     has nowhere else to go, so the message is `there is no capability home for it: …` (never
- *     "its canonical home is none", which does not read);
+ *     "its canonical home is none", which does not read). Since #498 S3 A8 it also says outright
+ *     that **the engine never called the function** — the value is only forwarded (into the tool
+ *     context / judge brief), so a host must not read the rejection as "a capability was lost";
  *   · everything else (the leaf name itself is not on the capability schema, e.g. `provider` inside
  *     `judge.provider`) ⇒ the **full path** is matched against `CAPABILITY_SLOT_DESTINATIONS` by
  *     longest prefix (`timing.retry.sleepImpl` → `ports.sleepImpl`, `run.reflection.judge.provider` →
@@ -884,8 +886,9 @@ function functionValueProblemMessage(path) {
   const home = capabilityPath !== undefined
     ? `its canonical home is capabilities.${capabilityPath}`
     : CONFIG_SURFACE_OPTION_SET.has(leaf)
-      ? `there is no capability home for it: ${JSON.stringify(leaf)} is a data key of the config namespace,`
-        + " so pass plain data (host callbacks belong under capabilities.hooks.<name>)"
+      ? `there is no capability home for it: ${JSON.stringify(leaf)} is a data key of the config namespace`
+        + " — the engine never calls it, it only forwards the value — so pass plain data"
+        + " (host callbacks belong under capabilities.hooks.<name>)"
       : "its canonical home is capabilities (capabilities.hooks.<name> for a host callback,"
         + " capabilities.ports.<slot> for a port implementation — the accepted slots are"
         + ` ${capabilityPortSlotLabels()})`;

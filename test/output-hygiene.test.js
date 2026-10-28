@@ -171,7 +171,7 @@ test("outputHygiene default limit scales with the host context window (issue #32
     const { stubFor, round1 } = await runOnce({
       runId: "hygiene-window-131k",
       outputs: ["a".repeat(20000), "b".repeat(5000)],
-      modelMetadata: { contextWindowTokens: 131072 },
+      config: { metadata: { modelMetadata: { contextWindowTokens: 131072 } } },
     });
     const big = stubFor("call-1");
     assert.ok(big.startsWith("a".repeat(19660)), "阈值应为 floor(0.15 * 131072) = 19660");
@@ -189,7 +189,7 @@ test("outputHygiene default limit scales with the host context window (issue #32
     const { stubFor, round1 } = await runOnce({
       runId: "hygiene-window-explicit",
       outputs: ["c".repeat(5000)],
-      modelMetadata: { contextWindowTokens: 131072 },
+      config: { metadata: { modelMetadata: { contextWindowTokens: 131072 } } },
       outputHygiene: { limit: 100 },
     });
     const stub = stubFor("call-1");
@@ -204,7 +204,7 @@ test("outputHygiene default limit scales with the host context window (issue #32
     const small = await runOnce({
       runId: "hygiene-window-clamp-min",
       outputs: ["d".repeat(9000)],
-      modelMetadata: { contextWindowTokens: 32768 },
+      config: { metadata: { modelMetadata: { contextWindowTokens: 32768 } } },
     });
     const smallStub = small.stubFor("call-1");
     assert.ok(smallStub.startsWith("d".repeat(8192)), "阈值应为 8192（下限），而非 4915");
@@ -213,7 +213,7 @@ test("outputHygiene default limit scales with the host context window (issue #32
     const large = await runOnce({
       runId: "hygiene-window-clamp-max",
       outputs: ["e".repeat(100001)],
-      modelMetadata: { contextWindowTokens: 2000000 },
+      config: { metadata: { modelMetadata: { contextWindowTokens: 2000000 } } },
     });
     const largeStub = large.stubFor("call-1");
     assert.ok(largeStub.startsWith("e".repeat(100000)), "阈值应为 100000（上限），而非 300000");

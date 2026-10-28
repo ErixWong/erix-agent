@@ -357,8 +357,12 @@ test("A5 移到配置面的 runId / cwd 真被引擎读：run_outcome 的 runId 
   const events = [];
   let payload;
   const result = await runDirect({
-    modelMetadata: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
-    config: { run: { runId: "config-497-runid", cwd: "/tmp/config-497-cwd" } },
+    // #498 S3（`metadata` A8）：预算元数据的写点已搬进规位 `config.metadata.modelMetadata`；
+    // 并进**同一个** `config` 容器（第二个 `config` 键会静默盖掉 `run.runId` / `run.cwd`）。
+    config: {
+      metadata: { modelMetadata: { contextWindowTokens: 100000, maxOutputTokens: 1024 } },
+      run: { runId: "config-497-runid", cwd: "/tmp/config-497-cwd" },
+    },
     finalGuard: async (captured) => {
       payload = captured;
       return { action: "accept" };
@@ -376,7 +380,7 @@ test("A5 移到配置面的 runId / cwd 真被引擎读：run_outcome 的 runId 
   const bareEvents = [];
   let barePayload;
   await runDirect({
-    modelMetadata: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
+    config: { metadata: { modelMetadata: { contextWindowTokens: 100000, maxOutputTokens: 1024 } } },
     finalGuard: async (captured) => {
       barePayload = captured;
       return { action: "accept" };
@@ -438,16 +442,16 @@ const VALUES = {
   // #498 S3 (`guard` slice): `finalGuardMaxRetries` / `finalGuardTimeoutMs` / `finalGuardExtend` are no
   // longer flat top-level keys — they moved to `RETIRED_FLAT_VALUES` below (their home is
   // `config.guard.*`). `finalGuard` (the hook) stays: its home is `capabilities.hooks.finalGuard`.
-  expert: "expert",
+  // #498 S3 (`metadata` slice, segment A8): `expert` / `requestId` / `toolContext` /
+  // `modelMetadata` are no longer flat top-level keys — they moved to `RETIRED_FLAT_VALUES` below
+  // (their home is `config.metadata.*`). `user` / `task` / `session` / `model` stay: this slice
+  // retires four small keys, not the whole group.
   user: "user",
   task: "task",
-  requestId: "req-497",
-  toolContext: { a: 1 },
   // issue #497 复审 R1：按新判据从能力面移回配置面的四个键（端到端等价也要覆盖它们）；
   // 第二轮又从能力面移入两个字符串标量 `runId` / `cwd`（`config.run.*`）。
   persistence: "none",
   model: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
-  modelMetadata: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
   session: { id: "config-497-b2", modelSlot: "default" },
   runId: "config-497-run",
   cwd: "/tmp/config-497",
@@ -496,6 +500,13 @@ const RETIRED_FLAT_VALUES = {
   finalGuardMaxRetries: 1,
   finalGuardTimeoutMs: 5000,
   finalGuardExtend: false,
+  // #498 S3（`metadata` 组 A8 段）：四个小键。`expert` / `requestId` 是标量，`toolContext` /
+  // `modelMetadata` 是**结构已知的对象**（`budget.js` 的 `modelMetadataFor` / `toolContextFor`
+  // 读的就是它们，读侧一行未改）。扁平写法一退役就只剩 `config.metadata.*` 一个家。
+  expert: "expert",
+  requestId: "req-497",
+  toolContext: { a: 1 },
+  modelMetadata: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
 };
 
 /** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */

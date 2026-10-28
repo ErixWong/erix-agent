@@ -161,8 +161,11 @@ test("P4 system 没有行为成员 ⇒ 文案只点一站，且这条判据是�
       fnError.message,
       "config.input.system is not accepted: \"system\" is a function, and the config namespace"
         + " holds data only (the config subtree must survive a JSON round-trip unchanged)"
-        + " — there is no capability home for it: \"system\" is a data key of the config namespace,"
-        + " so pass plain data (host callbacks belong under capabilities.hooks.<name>)",
+        + " — there is no capability home for it: \"system\" is a data key of the config namespace"
+        // #498 S3 A8：文案补了「引擎从来没调用过它，只把值转发出去」这一句（工单要求说清「这里
+        // 不收函数、但也没丢能力」），逐字钉跟着改；主张一字未变，只是把「没丢能力」说出来。
+        + " — the engine never calls it, it only forwards the value — so pass plain data"
+        + " (host callbacks belong under capabilities.hooks.<name>)",
       "数据键里的函数值必须直说「没有能力面之家」，不许含糊地指一个不存在的地方",
     );
   }

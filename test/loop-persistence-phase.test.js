@@ -164,7 +164,13 @@ async function runScenario({ failWriteAt = -1, cwd, toolContextSeen, storeErrorC
         toolContextSeen?.push(context?.cwd);
         return "ok";
       },
-      toolContext: { cwd },
+      // #498 S3（`metadata` A8）：扁平 `toolContext` 已退役，写点搬进 `config.metadata.toolContext`
+      // （展开相写回 `effectiveOptions.toolContext`，`toolContextFor` 读侧一字未动）。并进**同一个**
+      // `config` 容器——第二个 `config` 键会静默盖掉下面的 `timing.retry`。
+      config: {
+        metadata: { toolContext: { cwd } },
+        timing: { retry: { attempts: 0, backoffBaseMs: 0 } },
+      },
       stream: true,
       partialPersistence: { intervalMs: PARTIAL_INTERVAL_MS },
       reflection: {
@@ -177,7 +183,7 @@ async function runScenario({ failWriteAt = -1, cwd, toolContextSeen, storeErrorC
       wrapup: false,
       maxRounds: 3,
       // 持久化重试关掉：一次写失败即定论，事件与抛出的都是同一次失败（不掺入重试噪声）。
-      config: { timing: { retry: { attempts: 0, backoffBaseMs: 0 } } },
+      // （重试旋钮已并进上面唯一的 `config` 容器，见 `timing` 那一段。）
       diagnostics: { error: (event) => store.events.push(event) },
     });
   } catch (error) {

@@ -5,6 +5,20 @@
 >
 > 本文件随 `test/` 落盘、**不进 npm 包**（`package.json` 的 `files` 没有它）。
 >
+> ⚠ **附表口径刷新（#498 S3 第九片 `metadata` A8：四个小键删键，本片）**：附表 **1299 → 1304**（净 +5，
+> 行数 112 → 113）、主表 **170 → 170**（不变，行数 23 → 23）。净 +5 是两笔的差：
+>   · **−10**：本片把四个扁平写点搬进规位 `config.metadata.*`，`config` 是容器（规则 4 数到就停）⇒
+>     `output-hygiene` −4、`model-metadata-diagnostics` −3、`loop-config-namespace-497` −2、
+>     `compaction-strategy-fallback` −1；
+>   · **+15**：本片新增的切片钉子文件 `test/loop-metadata-keys-slice-498s3a8.test.js`（`tools`×6 /
+>     `modelMetadata`×3 / `completion`×2 / `wrapup`×2 / `context`×1 / `session`×1 —— 都是搭台写点；
+>     它的能力面写点是 **0**，所以主表不受影响）。
+> 本片删的四个顶层键里，`requestId` / `expert` 是标量（本来就不在计数口径里），`modelMetadata` /
+> `toolContext` 是壳但**叶子仍在 schema 里**（退役的是顶层拼写）——所以删键**不改变任何既有行**的
+> 归属判断，只改变「写点写在哪」的那 10 点。复跑：
+> `node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
+> （主表 170 / 附表 1304 都是 AST 实测）。
+>
 > ⚠ **附表口径刷新（#527 `tools` 拆叶子）**：附表 **1299 → 1299**（不变，行数 112 → 112）、
 > 主表 **170 → 170**（不变，行数 23 → 23）。原因是 #527 只把 `tools` 的**规位写点**（`config.input.tools`）
 > 改回扁平 `tools`：`config` 是容器，按规则 4 数到就停，所以那些写点本来就不在计数口径里；改回扁平后
@@ -163,6 +177,26 @@
 | `test/loop-input-keys-slice-498s3a6.test.js` | 0（容器/白名单面） | #498 S3 `input` 组 A6 片的**选项面钉**：`system` 的旧名反向拒绝（逐字文案 + 新家路径 + 数据键里的函数值只点一站）、**`tools` 的闸口二 as-is 钉（G1–G4：函数成员扁平可达 / 规位不可达，两个协议投影都不带它）**、**#527 的闭门钉（G2/G5：`config.input.tools` 作为未知叶子当场拒，文案指向顶层第三站）**、`wrapup` 退回清单的机器派生（S 段）、四向闭合与 schema 自检、禁手抄键数（A2 扫全 `test/`）。**能力面 0 写点**（它不碰任何 `on*` 回调），所以本表这一行是 `0` 而不是数字 |
 | `test/loop-context-on-fold-summary-retired-499.test.js` | 8 | #499 的**范围钉**：`context.onFoldSummary` 退役、**顶层扁平 `onFoldSummary` 必须还在**（它 `import` 了 `RUN_TOOL_LOOP_OPTION_NAMES` 并断言 `includes("onFoldSummary")`）⇒ S9 之前这里必须保持扁平 |
 
+
+### COMPAT-PIN 逐文件判定（#498 S3 第九片 `metadata` A8：四个小键删键）
+
+判据同上：**数据面就地翻成反向拒绝钉；行为面 `on*` 一个字不动**。本片删的是
+`modelMetadata` / `requestId` / `toolContext` / `expert`（四个都是数据面），所以动到的只有**数据面**
+那几格。九个 COMPAT-PIN 文件逐个给证据：
+
+| 文件 | 面 | 本片（`metadata` A8）的处置 | 证据 |
+| --- | --- | --- | --- |
+| `test/loop-option-normalization.test.js` | **数据面** | 翻成反向钉 | 内联白名单副本（`OPTION_WHITELIST`）删掉四项（A0 的双向差集 + 位置对账保证副本 ≡ 源名单）；建议矩阵**不用换键**——实测 `optionSuggestion("modelMetadata")` = `undefined`（距离 8 > 阈值 5），所以没有「被建议成 `model`」的噪声，矩阵里本来也没有以 `modelMetadata` 为答案的行（这一点与本片工单的担心相反，见新钉子文件 **S1/S2**）。反向钉本体在 `test/loop-metadata-keys-slice-498s3a8.test.js` 的 **P / P2 / P3** |
+| `test/loop-config-namespace-497.test.js` | **数据面** | 翻成反向钉 | `RETIRED_FLAT_VALUES` 增四条（`expert` / `requestId` / `toolContext` / `modelMetadata`）；`VALUES`（仍可扁平写的那张）同步删掉它们。B2 开头断言两张表键集**逐字相等**（派生自 `CONFIG_SURFACE_OPTION_NAMES ∖ RUN_TOOL_LOOP_OPTION_NAMES`）⇒ 删键而漏给取值会红；于是 B2 同时证明：扁平形态**不再产生**这四个 `effectiveOptions.*`、config 形态**逐字写回**它们。⚠ 这段判断逻辑**一行未改**（A2b 那刀就把它派生了），本片只补了四条取值。另：`A5`（runId / cwd）那格的两处扁平 `modelMetadata` 写点并进**同一个** `config` 容器（不造第二个 `config` 键） |
+| `test/loop-capabilities-namespace-498.test.js` | **行为面 `on*` + 数据面（叶子名索引）** | **未动**（本片零改动） | `git diff --stat` 里没有它。它那张 `REPRESENTATIVE_CONFIG_VALUES` 按**叶子名**索引（`metadata: expert / requestId / toolContext / modelMetadata …` 那几行照旧）——叶子仍在 schema 里，删了反而漏测 round-trip |
+| `test/loop-capabilities-ports-hooks-498s4c.test.js` | **行为面 `on*`** | **未动**（本片零改动） | `git diff --stat` 里没有它 |
+| `test/loop-option-gate-496.test.js` | 数据面（闸口相位） | **未动**（本片零改动） | `git diff --stat` 里没有它；它写的 `context.toolContext` 是**壳内**写法（规则 5 数到 `context` 就停），且 `context.toolContext` 的读侧本片一字未动（新钉子文件 P5-b 用真 run 钉住） |
+| `test/loop-context-on-fold-summary-retired-499.test.js` | **行为面 `on*`** | **未动**（本片零改动） | `git diff --stat` 里没有它 |
+| `test/loop-guard-slice-498s3e.test.js` | 数据面（`guard` 片的钉子） | **未动**（本片零改动） | `git diff --stat` 里没有它。它钉的是 `guard` 组三键，与 `metadata` 组无关 |
+| `test/loop-input-keys-slice-498s3a6.test.js` | 数据面（`input` A6 的钉子） | 一处**逐字文案**跟进 | 本片把「数据键里的函数值」那条文案补了一句「the engine never calls it, it only forwards the value」（工单硬义务：别让宿主以为丢了能力）。A6 的 **P4** 是**逐字相等**断言，所以跟着改；**主张一字未变**，只是把「没丢能力」说出来。行为面无改动 |
+| `test/loop-metadata-keys-slice-498s3a8.test.js` | **选项面本身** | **本片新增** | 它测的就是「扁平写法现在抛错」这件事，所以按判据登记为 COMPAT-PIN（同 `loop-option-normalization.test.js` 那一行）。能力面写点 **0** ⇒ 主表不受影响（附表 +15） |
+
+合计仍是 **67** 个写点（本片新增的钉子文件在**能力面**上 0 个写点：它不写任何 `on*` 回调）。
 
 ### COMPAT-PIN 逐文件判定（#498 S3 第八片 `input` A6：`system` 删键）
 
@@ -570,7 +604,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/cli.test.js` | 74 | `session`×36, `prompt`×29, `reflection`×4, `tools`×3, `context`×2, `finalGuard`×2, `completion`×1 |
 | `test/loop-resume.test.js` | 71 | `completion`×33, `resume`×23, `tools`×8, `reflection`×3, `partialPersistence`×2, `wrapup`×2 |
 | `test/loop-option-gate-496.test.js` | 28 | `context`×31, `completion`×7, `onFoldSummary`×7, `finalGuard`×6, `reflection`×5, `retry`×5, `tools`×3, `deliverables`×2, `session`×2, `partialPersistence`×1, `sleepImpl`×1, `stallDetection`×1, `wrapup`×1 |
-| `test/loop-config-namespace-497.test.js` | 46 | `completion`×11, `wrapup`×11, `tools`×6, `modelMetadata`×3, `session`×3, `context`×2, `initialMessages`×2, `resume`×2, `retry`×2, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `stallDetection`×1 |
+| `test/loop-config-namespace-497.test.js` | 44 | `completion`×11, `wrapup`×11, `tools`×6, `session`×3, `context`×2, `finalGuard`×2, `initialMessages`×2, `resume`×2, `retry`×2, `modelMetadata`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `stallDetection`×1 |
 | `test/loop-resume-anchor.test.js` | 38 | `completion`×8, `stallDetection`×8, `wrapup`×8, `resume`×7, `tools`×6, `partialPersistence`×1 |
 | `test/loop-v020-rc.test.js` | 24 | `completion`×19, `session`×3, `resume`×1, `stallDetection`×1 |
 | `test/loop-resume-notice.test.js` | 29 | `completion`×11, `tools`×9, `resume`×7, `context`×2, `reflection`×2 |
@@ -587,18 +621,19 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-request-user-invariant.test.js` | 16 | `initialMessages`×5, `completion`×4, `stallDetection`×3, `tools`×3, `resume`×1 |
 | `test/loop-stream.test.js` | 14 | `completion`×5, `partialPersistence`×4, `retry`×4, `wrapup`×4, `resume`×1 |
 | `test/output-aggregate-budget.test.js` | 14 | `outputHygiene`×7, `completion`×4, `context`×4, `reflection`×2, `resume`×1 |
-| `test/output-hygiene.test.js` | 18 | `completion`×7, `outputHygiene`×6, `modelMetadata`×4, `resume`×1 |
+| `test/output-hygiene.test.js` | 14 | `completion`×7, `outputHygiene`×6, `resume`×1 |
 | `test/wrapup.test.js` | 17 | `completion`×11, `reflection`×3, `wrapup`×3 |
 | `test/loop-context-on-fold-summary-retired-499.test.js` | 16 | `context`×7, `onFoldSummary`×7, `completion`×2, `stallDetection`×2, `tools`×2, `wrapup`×2, `onEvent`×1, `session`×1, `strategy`×1 |
 | `test/sessions.test.js` | 16 | `session`×16 |
 | `test/loop-abort-terminal-priority.test.js` | 15 | `reflection`×5, `stallDetection`×5, `completion`×4, `judgeProvider`×1 |
+| `test/loop-metadata-keys-slice-498s3a8.test.js` | 15 | `tools`×6, `modelMetadata`×3, `completion`×2, `wrapup`×2, `context`×1, `session`×1 |
 | `test/loop-fold-context-knobs-469.test.js` | 14 | `strategy`×6, `context`×3, `session`×2, `tools`×2, `completion`×1, `wrapup`×1 |
 | `test/loop-on-fold-summary.test.js` | 12 | `onFoldSummary`×11, `context`×4, `tools`×3, `completion`×2, `onPersistenceError`×2, `stallDetection`×2, `wrapup`×2, `session`×1 |
 | `test/loop-folding-slice-498s3b.test.js` | 7 | `completion`×3, `wrapup`×3, `context`×1 |
 | `test/loop-timing-slice-498s3.test.js` | 7 | `completion`×3, `stallDetection`×2, `wrapup`×1, `retry`×1 |
 | `test/loop-input-slice-498s3c.test.js` | 12 | `wrapup`×4, `completion`×2, `initialMessages`×2, `session`×2, `tools`×2 |
 | `test/loop-fr2.test.js` | 7 | `completion`×7 |
-| `test/model-metadata-diagnostics.test.js` | 11 | `completion`×5, `modelMetadata`×3, `context`×2, `outputHygiene`×1, `session`×1, `tools`×1 |
+| `test/model-metadata-diagnostics.test.js` | 8 | `completion`×5, `outputHygiene`×1, `session`×1, `tools`×1 |
 | `test/persistence-diagnostics.test.js` | 11 | `completion`×9, `reflection`×2, `retry`×2 |
 | `test/run-state.test.js` | 10 | `completion`×7, `context`×3, `resume`×3 |
 | `test/compaction-strategy-name.test.js` | 10 | `strategy`×8, `completion`×2, `context`×2 |
@@ -635,7 +670,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-usage-accounting.test.js` | 4 | `reflection`×2, `completion`×1, `context`×1, `stallDetection`×1 |
 | `test/loop-v020.test.js` | 3 | `completion`×3 |
 | `test/compact/fold-archive.test.js` | 2 | `completion`×2, `context`×2 |
-| `test/compaction-strategy-fallback.test.js` | 2 | `context`×2, `completion`×1, `modelMetadata`×1 |
+| `test/compaction-strategy-fallback.test.js` | 1 | `completion`×1 |
 | `test/loop-message-rows-crash-matrix.test.js` | 4 | `completion`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/loop-observer-isolation.test.js` | 4 | `completion`×2, `context`×1, `reflection`×1 |
 | `test/loop-run-state-cells.test.js` | 4 | `completion`×2, `resume`×2 |

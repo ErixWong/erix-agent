@@ -95,7 +95,9 @@ test("complete model metadata emits zero model_metadata_missing and keeps compac
     provider: toolProvider(2),
     initialUserMessage: "start",
     // 小窗口 → budgetTokens = 4096 - 512 - max(2000, 410) = 1584，工具输出足以越预算。
-    modelMetadata: { contextWindowTokens: 4096, maxOutputTokens: 512 },
+    // #498 S3（`metadata` A8）：扁平 `modelMetadata` 已退役，写点搬进规位 `config.metadata.*`
+    // （展开相写回 `effectiveOptions.modelMetadata`，`modelMetadataFor` 读侧一字未动）。
+    config: { metadata: { modelMetadata: { contextWindowTokens: 4096, maxOutputTokens: 512 } } },
     executeTool: async () => "y".repeat(20000),
     maxRounds: 4,
     completion: false,
@@ -151,7 +153,7 @@ test("partial metadata still disables the budget and reports the resolved output
     provider: textProvider(),
     initialUserMessage: "start",
     executeTool: async () => "unused",
-    modelMetadata: { contextWindowTokens: 131072 },
+    config: { metadata: { modelMetadata: { contextWindowTokens: 131072 } } },
     store: createMemoryTranscriptStore(),
     runId: "metadata-missing-partial",
     capabilities: { hooks: { onEvent: (event) => events.push(event) } },
@@ -209,7 +211,7 @@ test("complete metadata keeps the derived output limit and budget numbers unchan
   const result = await runDirect({
     provider: toolProvider(1),
     initialUserMessage: "start",
-    modelMetadata: { contextWindowTokens: 131072, maxOutputTokens: 8192 },
+    config: { metadata: { modelMetadata: { contextWindowTokens: 131072, maxOutputTokens: 8192 } } },
     executeTool: async () => "a".repeat(20000),
     maxRounds: 3,
     completion: false,

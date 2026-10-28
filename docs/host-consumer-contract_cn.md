@@ -576,6 +576,65 @@ unknown runToolLoop option: "context" (its canonical home is config.folding.cont
 
 本节与下一节描述的都是**本分支这棵树**（0.28.0 那条线——`package.json` 由发版那一刀抬，不由功能改动抬）。
 
+**扁平写法的版本口径（issue #498 S3，`metadata` 组 A8 段——第九片：`config.metadata` 的四个小键
+`modelMetadata` / `requestId` / `toolContext` / `expert`）**：
+
+| 发布 | 写 `modelMetadata` / `requestId` / `toolContext` / `expert` |
+| --- | --- |
+| 0.26.0 及以前（**最后已发布**的版本） | 顶层照旧接受——那些版本只认这一种写法 |
+| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主的树里这件事生效过 |
+| 0.28.0 及以后（issue #498 S3 第九片） | **当场拒**——请写 `config.metadata.modelMetadata` / `.requestId` / `.toolContext` / `.expert`。名称闸口抛 `unknown runToolLoop option: "modelMetadata" (its canonical home is config.metadata.modelMetadata; the flat spelling is rejected)` |
+
+两条性质成立，且都有机器判据：
+
+* 展开相仍把它们逐字写到 `effectiveOptions.modelMetadata` / `.requestId` / `.toolContext` /
+  `.expert`，所以**引擎的读侧一字未改**——读它们的是 `src/loop/budget.js` 的 `modelMetadataFor` /
+  `toolContextFor`，以及把值转交给它们的 orchestrator 解构，本片一处未碰。叶子仍留在
+  `CONFIG_NAMESPACE_SCHEMA.metadata`（`src/loop/config-namespace.js`）里，尽管顶层键已离开
+  `RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`）：**删扁平键 ≠ 删叶子**。
+  退役只是**写侧拼写**的变更，与前八片同一机制；
+* 文案**只点一站**。`CAPABILITY_SLOT_DESTINATIONS`（`src/loop/capabilities-namespace.js`）里没有为
+  这四个名字登记任何东西，所以文案**不带** `capabilities.*` 那一站。这是派生的，不是承诺：谁给它挂上
+  行为成员，第二站会自己出现。
+
+**本片接受的那条收窄，直说。** 这四个值都是**不透明的身份载荷**——引擎从不调用它们，只把它们**转发**
+出去（进工具上下文、judge 简报与预算推导），其中引擎真正按名字读的只有 `modelMetadata` 的两个数字
+（`contextWindowTokens` / `maxOutputTokens`）。所以搬进 `config.metadata.*` 的代价只有一条：**函数值
+在 intake 当场被拒**，因为 `config` 子树必须过 JSON round-trip 等值。文案把两半都说出来——*这个叶子
+只装数据*，**以及** *引擎从来没调用过它，只把值转发出去*——于是宿主不会把它读成「我丢了一项能力」：
+
+```text
+config.metadata.expert is not accepted: "expert" is a function, and the config namespace holds data
+only (the config subtree must survive a JSON round-trip unchanged) — there is no capability home for
+it: "expert" is a data key of the config namespace — the engine never calls it, it only forwards the
+value — so pass plain data (host callbacks belong under capabilities.hooks.<name>)
+```
+
+这条**不对称**被钉成 as-is，而不是抹平：同组**另外四个**成员（`user` / `task` / `model` / `session`，
+本片**没动**）的扁平写法今天照旧**收**函数，且 `typeof` 一路保持到工具上下文；而规位**拒**。
+`test/loop-metadata-keys-slice-498s3a8.test.js`（F1 / F2）就是这根钉子：谁放宽或收紧了任何一边，
+它都会红。
+
+**大四件是另一片。** `user` / `task` / `model` / `session` 在本片仍可扁平写；它们的写点要先有夹具级
+翻译点（#528 那种风格），所以本片只退四个小键（P5-c 逐键钉住这条边界）。
+
+**建议噪声是实测的，不是假设。** 「did you mean」的候选池是**现役**白名单，而 `model` 与
+`modelMetadata` 只差一个编辑距离。退役之后，精确拼写**完全不会**得到建议（距离 8 > 阈值 5），
+所以文案里只有规位路径——写错 `modelMetadata` 的宿主被指向 `config.metadata.modelMetadata`，永远不会
+被建议成 `model`（S1）。候选池变小的代价也如实写：`modelMetada` 这类**拼写错误**现在既没有建议、也
+没有规位，只剩「未知选项」原句（S2，as-is 钉）。
+
+**这四个词还活在别的面上，本片一个都没动：**
+
+| 面 | 在哪 | 状态 |
+| --- | --- | --- |
+| `runToolLoop` 顶层选项 | `RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`） | **本片退役的**（唯一搬走的那一面） |
+| `config.metadata.*` | `CONFIG_NAMESPACE_SCHEMA.metadata`（`src/loop/config-namespace.js`） | 规位——写这里 |
+| 装配口 `policy.modelMetadata` / `.requestId` / `.toolContext` / `.expert` | `src/assembly.js`——端口成员，不是顶层选项 | **未动**（#525 的面）；它们照旧到达 run |
+| `context.expert` / `.requestId` / `.toolContext`（fold-context 壳） | `src/loop/budget.js`（`toolContextFor` 的 `?? context?.<key>` fallback 链） | **未动**——fallback 链照旧生效，显式 `config.metadata.*` 仍赢过它（P5-b） |
+| 交给 `executeTool` 的工具上下文 / judge 简报 | `src/loop/budget.js` 里的 `toolContextFor`，由 `src/loop/orchestrator.js` 转交 | **未动**——那是引擎的**读侧** |
+| 槽位窗口数字（`slots.default.contextWindowTokens` / `maxOutputTokens`） | `src/config/slot-provider.js` | **未动**——配置文件不是 `runToolLoop` 选项 |
+
 ### capabilities 命名空间（issue #498）
 
 行为载体不是数据，所以 0.28.0 给它们一个自己的容器。它**有三组**（issue #498 S4b 加了第二组，
