@@ -431,7 +431,7 @@ const VALUES = {
   // #498 S3 (`run` slice A11): `replayPolicy` / `invalidArguments` / `writeToolNames` /
   // `writeToolPathKeys` are no longer flat top-level keys — they moved to `RETIRED_FLAT_VALUES` below
   // (their home is `config.run.*`). #498 S3 A12: `partialPersistence` joined them.
-  outputHygiene: false,
+  // #498 S3 A13: `outputHygiene` joined them too (home `config.run.outputHygiene`).
   resume: false,
   stream: false,
   // #498 S3 (`tuning` slice, segment A5): `maxTokens` / `temperature` / `topP` are no longer flat
@@ -531,6 +531,10 @@ const RETIRED_FLAT_VALUES = {
   // 展开相仍逐字写回 `effectiveOptions.stallDetection`（读侧一行未改：`orchestrator.js` 顶部
   // 的 `resolvedStallDetection` 分支）。样本给对象形态（`false` 由 A13 切片测试的 G 段覆盖）。
   stallDetection: { window: 4, mode: "consecutive" },
+  // #498 S3 A13（`run` 片）：`outputHygiene` 退役。值是 `false` 或 `{ limit }`；展开相仍逐字写回
+  // `effectiveOptions.outputHygiene`（读侧一行未改：`orchestrator.js` 的 `outputHygieneEnabled` /
+  // `outputHygieneLimit` 派生，以及 `run-snapshot-executor.js` 的截断分支）。样本给对象形态。
+  outputHygiene: { limit: 4096 },
 };
 
 /** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */

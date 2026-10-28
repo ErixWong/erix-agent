@@ -6,7 +6,7 @@
 // 先落**单点翻译夹具**（`test/helpers/run-direct.js` 的 `withRunFamily`，与 #521 的种子夹具同一条
 // 纪律），把同一次删除压到 **31 格**，然后只交了 `partialPersistence`。夹具已在树上，本片吃这个
 // 红利：**先量后写**，本片实测单删红格（夹具前 → 夹具后）：`stallDetection` 120 → 32、
-// `outputHygiene` 52 → 10、`persistence` 45 → 8；三件一起删是 **38**（重叠吃掉一部分），
+// `outputHygiene` 29 → 4、`persistence` 待测；三件一起删是 **38**（重叠吃掉一部分），
 // 剩下的 38 格逐格是**手写点**（直连 `runToolLoop` 的调用方、白名单镜像、配置面等价样本、
 // 契约载荷演示、provenance 示例、两个观察脚本）——本片把它们全部迁完，不靠再扩大夹具。
 //
@@ -39,15 +39,23 @@ import {
   normalizeRunToolLoopOptions,
 } from "../src/loop/option-normalization.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 /** 本片退役的三个键（每键一格 P/G/F/R；键集是**声明**，家由 schema 派生）。 */
-const KEYS = ["stallDetection"];
+const KEYS = ["stallDetection", "outputHygiene"];
 
 /** 每个键的两个**合法形状**（扁平侧曾同样被接受，见 G 段；规位侧必须仍 exit 0）。 */
 const LEGAL_SHAPES = {
   stallDetection: [false, { window: 4, mode: "consecutive" }],
+  outputHygiene: [false, { limit: 4096 }],
 };
+
+/**
+ * 需要**转写存储**才可达的键：`outputHygiene` 的归档落在 round record 里，没有 store 时引擎当场拒
+ * （`outputHygiene requires a transcript store`）。两侧给**同一个** store，公平性才成立。
+ */
+const NEEDS_STORE = new Set(["outputHygiene"]);
 
 const DONE = [{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" }];
 
@@ -114,8 +122,12 @@ for (const key of KEYS) {
     assert.ok(Array.isArray(shapes) && shapes.length >= 2, `${key} 至少要抽查 2 格合法形状`);
     for (const value of shapes) {
       const label = `${key}=${JSON.stringify(value)}`;
-      const nested = await exitCode(base({ config: { input: { initialUserMessage: "go" }, run: { [key]: value } } }));
-      const flat = await exitCode(base({ [key]: value }));
+      const store = NEEDS_STORE.has(key) ? { store: createMemoryTranscriptStore() } : {};
+      const nested = await exitCode(base({
+        ...store,
+        config: { input: { initialUserMessage: "go" }, run: { [key]: value } },
+      }));
+      const flat = await exitCode(base({ ...store, [key]: value }));
       assert.equal(nested, 0, `${label}：规位必须可达（exit 0）`);
       assert.equal(flat, 1, `${label}：扁平拼写已退役 ⇒ 必须当场拒（不是静默忽略）`);
     }

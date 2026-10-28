@@ -199,7 +199,11 @@ const OPTION_WHITELIST = [
   // checks), so it is gone here too; the flat spelling is now a **rejection** cell, see
   // `test/loop-input-slice-498s3c.test.js` P4.
   "tools",
-  "outputHygiene",
+  // #498 S3 (`run` slice A13): `outputHygiene` left the allowlist — its canonical home is
+  // `config.run.outputHygiene`. The copy tracks the source list verbatim (that is what A0 checks),
+  // so it is gone here too; the flat spelling is now a **rejection** cell, see
+  // `test/loop-run-slice-498s3a13.test.js`.
+
   // #498 S3 (`run` slice A11): `writeToolNames` / `writeToolPathKeys` / `replayPolicy` /
   // `invalidArguments` left the allowlist — their canonical home is `config.run.*`. The copy tracks
   // the source list verbatim (that is exactly what A0 checks), so they are gone here too; the flat
