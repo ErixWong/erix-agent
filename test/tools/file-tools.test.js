@@ -716,7 +716,14 @@ const READ_LINE_CAPACITY_ROLES = [
   // 109,959 → **111,133** 字节 / 2,007 → **2,014** 行 / 均行字节 54.7877 → **55.1802** / 容量 4,784 → **4,750**
   // （描述里「this tool's own source fits」同步 4,784 → 4,750，同位数 ⇒ 字节中性）。
   // 容量 4,750 仍低于样本中位 6,952，「CJK 按比例压低行数」那条断言仍成立。
-  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 111_133, lines: 2_014, bytesPerLine: 55.1802, capacity: 4_750, cjkShare: 0.274131 } },
+  // 2026-10-27 第十刷（issue #540，**不是数字漂了，是把叙事从易变身份上摘下来**）：
+  //   `readFile` 描述里 floor 那句原本兼着「floor 自己是 CJK 重文件（45%）」的断言 ⇒ 谁最少一漂、文案就变假话。
+  //   本片把 CJK 警告改挂 `densest`（`src/loop/state-view.js` 37.31%，#271 起一字未动）⇒ 描述不再点名 floor 那个文件，
+  //   floor 那句只剩换算式 + 档位下界（两个数 `3,900` / `3,903` 一字未动）。本文件自己的描述句改了 ⇒ `self` 行同片复测：
+  //   111,133 → **112,481** 字节 / 2,014 → **2,025** 行 / 均行字节 55.1802 → **55.5462** / 容量 4,750 → **4,719**
+  //   （描述里「this tool's own source fits」同步 4,750 → 4,719，同位数 ⇒ 字节中性）。
+  //   容量 4,719 仍低于样本中位 6,532，「CJK 按比例压低行数」那条断言仍成立。容差常量一个都没动。
+  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 112_481, lines: 2_025, bytesPerLine: 55.5462, capacity: 4_719, cjkShare: 0.277407 } },
 ];
 
 const READ_LINE_CAPACITY_DIRS = ["src", "bin", "examples"];
@@ -843,25 +850,42 @@ test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,00
     "描述里「median and most come from a fixed sample of those sources」的免责声明不见了：删掉它，"
     + "`most` 就重新变成「全树最大值」的谎话（PR #454 评审建议 1）");
   // 2026-10-21：floor 与「CJK 最密」落在两个不同文件上，句子拆成了**两个各自复测的锚点**，解析面跟着拆。
-  // 断言只多不少：捕获位从 4 个变成 7 个（floor 文件 + 它的 CJK 占比、densest 文件 + 它的占比 + 它的容量、本工具自身容量）。
   // 2026-10-25（#453）：句子又加了一个前提——floor 是**全树最小值**（`src`/`bin`/`examples`），中位/最多来自固定样本。
+  // 2026-10-27（#540）：**叙事从易变身份上摘下来**——floor 那句不再点名文件、不再声称「floor 自己是 CJK 重文件」，
+  // CJK 警告只挂在 `densest` 角色上（`src/loop/state-view.js`，固定样本锚点）。于是解析面从 7 个捕获位收成 4 个：
+  // CJK 最密文件 + 它的占比 + 它的容量 + 本工具自身容量。floor 一侧的数字断言仍在上面的 `tiers` 里（一字未动）。
   const cjk = description.match(
-    /the ([\d,]+) floor is itself a CJK-heavy file \(`([^`]+)`, (\d+)% of its bytes are CJK\), while the most CJK-dense file in that fixed sample \(`([^`]+)`, (\d+)%\) fits ([\d,]+) and this tool's own source fits ([\d,]+)/u,
+    /the most CJK-dense file in that fixed sample \(`([^`]+)`, (\d+)% of its bytes are CJK\) fits ([\d,]+) and this tool's own source fits ([\d,]+)/u,
   );
-  assert.ok(cjk, "描述不再按「floor 那个文件 + 它的 CJK 占比 / CJK 最密那个文件 + 它的占比与容量 / 本工具自身源码容量」给出两个 CJK 锚点"
+  assert.ok(cjk, "描述不再按「CJK 最密那个文件 + 它的占比与容量 / 本工具自身源码容量」给出 CJK 锚点"
     + " → 解析面失效（同步本测试，不许让这条断言静默变成永真）");
-  const floorRepeatClaim = Number(cjk[1].replace(/,/g, ""));
-  const floorFileClaim = cjk[2];
-  const floorCjkPercentClaim = Number(cjk[3]);
-  const densestFileClaim = cjk[4];
-  const cjkPercentClaim = Number(cjk[5]);
-  const densestCapacityClaim = Number(cjk[6].replace(/,/g, ""));
-  const selfCapacityClaim = Number(cjk[7].replace(/,/g, ""));
+  const densestFileClaim = cjk[1];
+  const cjkPercentClaim = Number(cjk[2]);
+  const densestCapacityClaim = Number(cjk[3].replace(/,/g, ""));
+  const selfCapacityClaim = Number(cjk[4].replace(/,/g, ""));
   // 旧句子把两件事当成一件（`the 4,387 floor IS the most CJK-dense file`），2026-10-21 的复测已推翻它；
   // 写回来就红（否则两个锚点会重新只在同一个文件上被钉住，floor 一换文件就又静默过期）。
   assert.doesNotMatch(description, /floor IS the most CJK-dense/u,
     "描述又把「floor 恰好就是 CJK 最密那一个」写回来了：2026-10-21 实测 floor 是 `src/loop/resume-manager.js`（CJK 24%）、"
     + "CJK 最密是 `src/loop/state-view.js`（37%），两个锚点必须各自复测各自说");
+  // #540 反向证（**这是本片的重点**）：CJK 属性**不许再绑在 floor 身份上**。
+  // ① 旧句式（`the 3,900 floor is itself a CJK-heavy file (\`…\`, 45% …), while the most …`）写回来就红：
+  //    那句话让「谁最少」牵着面向模型的文案（floor 一换文件、继任者 CJK ≈ 0 ⇒ 当场变谎话），
+  //    而它本来想说的是「CJK 会压低行数」，那件事挂在 `densest` 角色上就够（#271 起一字未动的固定样本锚点）。
+  assert.doesNotMatch(description, /CJK-heavy file/u,
+    "描述又声称某个文件是「CJK-heavy file」并把占比写进去：CJK 警告只挂在 `densest` 角色上（固定样本锚点），"
+    + "不许再绑回 floor（floor 身份会随任何一次注释改动漂移，而它牵着面向模型的文案——#540 拆掉的正是这根引线）");
+  // ② 结构性反向证：**任何含 CJK 的句子都不许提到 floor**（否则属性又跟身份挂在一起了）。
+  const cjkSentences = description.split(/(?<=\.)\s+/u).filter((sentence) => /CJK/u.test(sentence));
+  assert.ok(cjkSentences.length > 0, "描述里不再有 CJK 那一段 → 解析面失效（同步本测试）");
+  for (const sentence of cjkSentences) {
+    assert.doesNotMatch(sentence, /floor/u,
+      `CJK 那句话里又提到了 floor：「${sentence}」→ CJK 属性必须只挂在 \`densest\` 角色上（#540）`);
+  }
+  // ③ 描述**不再点名 floor 那个文件**（换人时一个字都不用改；这也是身份迁移反向证的判据）。
+  assert.ok(!description.includes(roleFile("fewest")),
+    `描述又点名了 floor 那个文件（\`${roleFile("fewest")}\`）：floor 是谁会随任何一次注释改动漂移，`
+    + "面向模型的文案不许依赖它（#540；换人时描述应当一字不动）");
 
   // 当场复测（写死路径，同一口径）
   // 2026-10-25（#453 + PR #454 评审）：**两套口径各取所需，别混** ——
@@ -886,8 +910,11 @@ test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,00
   // 1) 声称的三个档位必须由小到大，且与当场实测同档（旧文案 3,000 / — / 6,000 在这里必红）
   assert.ok(fewestClaim < medianClaim && medianClaim < mostClaim,
     `描述声称的档位必须由小到大，实际是 ${fewestClaim} / ${medianClaim} / ${mostClaim}`);
-  assert.equal(floorRepeatClaim, fewestClaim, "同一句里 floor 出现两次却不同值");
-  assert.equal(floorFileClaim, roleFile("fewest"), "描述点名的 floor 文件与 `fewest` 角色清单不齐");
+  // #540：原先这里还有两条把「floor 那个文件」钉进描述的断言（`floorRepeatClaim == fewestClaim`、
+  // `floorFileClaim == roleFile("fewest")`）。它们量的正是本片要摘掉的东西：floor 是谁会随任何一次注释改动漂移
+  // （`option-normalization.js` 3,905 vs `provider-timeouts.js` 3,903，余量 2 行），而它们却把面向模型的文案
+  // 钉在那个身份上 ⇒ 换人就得改文案。现在反向证接管：上面 ①②③ 三条断言「描述不许把 CJK 绑在 floor 上、
+  // 不许点名 floor 那个文件」，换人时**一个字都不用改**（身份迁移反向证已实跑，见 CHANGELOG #540）。
   assertClose(fewestClaim, measuredFewest, 0.02, "描述声称的「一次最少装多少行」");
   assertClose(medianClaim, measuredMedian, 0.02, "描述声称的中位行数容量");
   assertClose(mostClaim, measuredMost, 0.01, "描述声称的「一次最多装多少行」");
@@ -928,7 +955,12 @@ test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,00
   assert.equal(densestFileClaim, roleFile("densest"), "描述点名的 CJK 锚点文件与 `densest` 角色清单不齐");
   assertClose(cjkPercentClaim, densest.cjkShare * 100, 0.05, "描述声称的 CJK 字节占比");
   assertClose(densestCapacityClaim, byRole.densest.capacity, 0.01, "描述声称的「CJK 最密那个文件一次能装多少行」");
-  assertClose(floorCjkPercentClaim, byRole.fewest.cjkShare * 100, 0.05, "描述声称的 floor 文件的 CJK 字节占比");
+  // #540：`floorCjkPercentClaim` 那条（`assertClose(floorCjkPercentClaim, byRole.fewest.cjkShare * 100, 0.05)`）
+  // 已按工单要求**不是简单删掉**，而是换成语义相反的断言（见上面 ①②③：描述里不许再把 CJK 属性绑在 floor 身份上，
+  // 也不许点名 floor 那个文件）。`densest` 一侧的实测断言（文件身份 + 占比 + 容量）原样保留，一字未动。
+  assert.doesNotMatch(description, /\bfloor\b[^.]*%\s*of its bytes are CJK/iu,
+    "描述又把 CJK 占比挂回 floor 那半句了（`the 3,900 floor is itself a CJK-heavy file …` 的句式）："
+    + "CJK 锚点只属于 `densest` 角色（#540）");
   assertClose(selfCapacityClaim, byRole.self.capacity, 0.01, "描述声称的「本工具自己的源码一次能装多少行」");
   assert.ok(byRole.self.capacity < measuredMedian,
     `描述说 CJK 会按比例压低行数，但 ${byRole.self.rel}（CJK ${(byRole.self.cjkShare * 100).toFixed(1)}%）实测 ${byRole.self.capacity} 行，不低于中位 ${measuredMedian}`);
