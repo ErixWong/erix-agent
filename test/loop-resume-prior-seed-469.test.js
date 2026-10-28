@@ -158,14 +158,13 @@ test("#469-A 端到端：resume 出来的 run 第一次折叠带账本基底（�
     provider: resumed,
     // #498 S3 A9：`task` 的扁平写法已退役，并进**同一个** `config` 容器（下面那行 folding）。
     // #498 S3 A19：`resume` 同样退役（家 `config.run.resume`），并进同一个容器。
-    runId,
     store,
     executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
     maxRounds: 3,
     completion: false,
     reflection: false,
     config: {
-      run: { resume: true },
+      run: { resume: true, runId },
       metadata: { task: "继续" },
       folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-llm" } },
     },

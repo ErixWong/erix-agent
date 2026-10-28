@@ -646,7 +646,8 @@ Five rules govern it:
   `resume`, and that alias is gone (issue #498 S4b) — `session.resume` now throws on **both** entry
   routes (the assembly port's `createAssemblyPort`, and the direct `runToolLoop` options through the
   shared semantic phase `collectSemanticOptionProblems` in `src/assembly-validators.js`), naming the
-  full path `session.resume` and pointing at `config.run.resume` / the flat `resume`. It is never
+  full path `session.resume` and pointing at `config.run.resume` (the flat `resume` was itself
+  retired in 0.28 by issue #498 S3 A19, so the message no longer offers it as a way out). It is never
   silently dropped: the direct route used to accept the key and run without resuming, which is the
   "configured but inert" shape this release removes. `session` is data, but its **only** home is the
   top level (issue #531): the nested spelling `config.metadata.session` is an unknown leaf rejected on
@@ -1182,6 +1183,60 @@ function value rejected on both spellings, with the two reasons kept apart; `R` 
 resuming, and the truthiness read unchanged; `N` the four-way account, the untouched `session.resume`
 ruling and the untouched `journalResumeUnpersistedToolResults` / `resumeRunSnapshot` annotations;
 `S` the fixture translation point).
+
+**`runId`: the same precedent, measured the same way (issue #498 S3, twentieth slice).** Gate 2 ran
+five value shapes through the real entry — a normal id string, the empty string, the number `1`, the
+boolean `false` and an object — and every one of them is **nested-accepted** (`exit 0`) and
+**flat-rejected** at the name gate. The function shape is the only divergence, and it is the same one
+`stream` / `resume` had:
+
+| `runId` value | flat (before A20) | nested (`config.run.runId`) |
+| --- | --- | --- |
+| id string / `""` / `1` / `false` / object | exit 0 | exit 0 (parity) |
+| **function** | **exit 0** | **rejected** — `config.run.runId is not accepted … holds data only` |
+
+`runId` is a **string scalar**: the engine destructures it once at the top of `runToolLoop` and then
+only carries the value around (the `appendRound(runId, …)` key, the #165 judge-record correlation
+field, observer-error attribution). There is no `typeof` check, no call site, and no re-assignment
+anywhere (`grep -nE "runId *=[^=]"` on `src/loop/orchestrator.js` is empty) — so a function was never
+behaviour at this position. The slice therefore retired the flat spelling and **accepted the
+narrowing** instead of adding a validator or moving `runId` to the capability plane. No read-side line
+was touched.
+
+Version policy for `runId` (issue #498 S3, twentieth slice):
+
+| release | writing `runId` at the top level |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level |
+| 0.27.0 | **never published**, so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, twentieth slice) | **rejected on the spot** — write `config.run.runId`. The name gate throws `unknown runToolLoop option: "runId" (its canonical home is config.run.runId; the flat spelling is rejected)` |
+
+**Only the *entry option* was retired.** The word `runId` also names, and still names, four other
+things that this slice did not touch: the `runId` **field** on transcript / round rows
+(`appendRound(runId, …)` in `src/store/*.js`), the `runId` + `model` pair on every `judge.log`
+decision record (#165), the CLI display and the `examples/pi-extension` run handle, and the
+`~/.erix/transcripts/outputs/<runId>/` directory name. The discriminator is exactly one question:
+*is this the value read as a top-level `runToolLoop` parameter?* Only that one write side moved.
+
+**The assembly port still produces the key.** `assemblyPortOptions(port)` keeps emitting `runId`
+(`port.session.id`) — that is a constructor-time fact, unchanged — but its flat spelling is retired,
+so a host that spreads the port's output into `runToolLoop` now has to merge it into `config.run`
+(pinned by `test/contract/assembly-port.test.js`). The engine's own internal call to
+`assemblyPortOptions` is unaffected: it runs *after* the name gate, so `effectiveOptions.runId` still
+receives the session id.
+
+Measured red cells: **307** on the single delete, **88** once the fixture translated the spelling,
+**0** after the hand-written sites were migrated (47 direct `runToolLoop` call sites across 14 test
+files, the inline allowlist mirror, the two-shape equivalence sample, the `C1` conflict channel, the
+adjacency lists in A12 / A14 / A15 / A19, the shipped contract suite's envelope cells, the assembly
+port suite, and the two observation scripts `scripts/soak.mjs` / `scripts/message-journal-golden.mjs`
+plus `scripts/final-guard-probe.mjs`). The pin file is `test/loop-run-slice-498s3a20.test.js` (`P`
+rejection text verbatim and before any host port is called; `G` the data-value matrix above; `F` the
+function value rejected on both spellings; `R` a real run whose records are still keyed by the
+canonical value; `N` the four-way account and the derived "`run` group still has three config-home
+keys" count; `S` the fixture translation point; `T` the reverse pin that no rejection message may
+recommend a retired top-level name — the falsehood this slice also fixed in `src/assembly.js` /
+`src/assembly-validators.js`).
 
 ### The `capabilities` namespace (issue #498)
 

@@ -109,10 +109,9 @@ test("resume prefers a valid independent run-state over the latest record state"
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]),
-    config: { run: { resume: true } },
+    config: { run: { resume: true, runId: "independent-state" } },
     completion: false,
     store,
-    runId: "independent-state",
     executeTool: async () => "unused",
   });
 
@@ -145,10 +144,9 @@ test("resume falls back to the latest record run-state when the store has no loa
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]),
-    config: { run: { resume: true } },
+    config: { run: { resume: true, runId } },
     completion: false,
     store,
-    runId,
     executeTool: async () => "unused",
   });
 
@@ -178,10 +176,9 @@ test("resume does not fall back when an independent run-state is present but inv
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]),
-    config: { run: { resume: true } },
+    config: { run: { resume: true, runId: "invalid-independent-state" } },
     completion: false,
     store,
-    runId: "invalid-independent-state",
     executeTool: async () => "unused",
   });
 
@@ -213,10 +210,9 @@ test("run-state availability does not make the next resume invalid", async () =>
       },
       { content: [{ type: "text", text: "first done" }], stopReason: "end_turn" },
     ]),
-    config: { run: { resume: true } },
+    config: { run: { resume: true, runId } },
     completion: false,
     store,
-    runId,
     maxRounds: 2,
     executeTool: async () => "worked",
   });
@@ -234,10 +230,9 @@ test("run-state availability does not make the next resume invalid", async () =>
     provider: createFakeProvider([
       { content: [{ type: "text", text: "second done" }], stopReason: "end_turn" },
     ]),
-    config: { run: { resume: true } },
+    config: { run: { resume: true, runId } },
     completion: false,
     store,
-    runId,
     maxRounds: 1,
     executeTool: async () => "unused",
   });
@@ -401,10 +396,9 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
   ]);
   const result = await runToolLoop({
     provider: resumedProvider,
-    config: { run: { resume: true } },
+    config: { run: { resume: true, runId: "resume-pending-tools" } },
     completion: false,
     store,
-    runId: "resume-pending-tools",
     tools,
     capabilities: {
       hooks: {
@@ -488,14 +482,13 @@ test("per-tool replay policy replays safe pending tools", async () => {
     provider,
     completion: false,
     // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役，规位是 `config.run.replayPolicy`。
-    config: { run: { resume: true, replayPolicy: "per-tool-declaration" } },
+    config: { run: { resume: true, replayPolicy: "per-tool-declaration", runId } },
     tools: [{
       name: "safe_work",
       inputSchema: { type: "object" },
       replay: "safe",
     }],
     store,
-    runId,
     executeTool: async ({ id }) => {
       executions.push(id);
       return "replayed safely";
@@ -556,14 +549,13 @@ test("per-tool replay policy interrupts unsafe tools and exposes saved partial o
     provider,
     completion: false,
     // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役，规位是 `config.run.replayPolicy`。
-    config: { run: { resume: true, replayPolicy: "per-tool-declaration" } },
+    config: { run: { resume: true, replayPolicy: "per-tool-declaration", runId } },
     tools: [{
       name: "unsafe_work",
       inputSchema: { type: "object" },
       replay: "unsafe",
     }],
     store,
-    runId,
     capabilities: {
       hooks: {
         onEvent: (event) => events.push(event),
@@ -638,10 +630,9 @@ test("升级前记录被中断重放时，不得把过期 attempt 的成败留�
     provider,
     completion: false,
     // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役，规位是 `config.run.replayPolicy`。
-    config: { run: { resume: true, replayPolicy: "per-tool-declaration" } },
+    config: { run: { resume: true, replayPolicy: "per-tool-declaration", runId } },
     tools: [{ name: "unsafe_work", inputSchema: { type: "object" }, replay: "unsafe" }],
     store,
-    runId,
     executeTool: async () => "must not run",
   });
 
@@ -706,10 +697,9 @@ test("resumes a partial tool-result message without dropping text or breaking pa
   ]);
   await runToolLoop({
     provider,
-    config: { run: { resume: true } },
+    config: { run: { resume: true, runId } },
     completion: false,
     store,
-    runId,
     executeTool: async ({ id }) => `done-${id}`,
   });
 
@@ -786,10 +776,9 @@ test("does not merge a tool result whose id belongs to another assistant call", 
       provider: createFakeProvider([
         { content: [{ type: "text", text: "unreachable" }], stopReason: "end_turn" },
       ]),
-      config: { run: { resume: true } },
+      config: { run: { resume: true, runId } },
       completion: false,
       store,
-      runId,
       executeTool: async () => "done-b",
     }),
     (error) => error?.code === "invalid_messages",
@@ -839,10 +828,9 @@ test("resumes tool results before a later direction hint without moving the hint
   ]);
   await runToolLoop({
     provider,
-    config: { run: { resume: true } },
+    config: { run: { resume: true, runId } },
     completion: false,
     store,
-    runId,
     executeTool: async ({ id }) => `done-${id}`,
   });
 
@@ -912,10 +900,9 @@ test("restores judge interception count from executed checkpoint tools", async (
   ]);
   await runToolLoop({
     provider,
-    config: { run: { resume: true } },
+    config: { run: { resume: true, runId } },
     completion: false,
     store,
-    runId,
     executeTool: async ({ id }) => `done-${id}`,
     reflection: {
       enabled: true,
@@ -1024,10 +1011,9 @@ test("resumes folded checkpoints from the persisted transcript anchor", async ()
     ]);
     await runToolLoop({
       provider: resumedProvider,
-      config: { run: { resume: true } },
+      config: { run: { resume: true, runId: `fold-${keepRounds}` } },
       completion: false,
       store,
-      runId: `fold-${keepRounds}`,
       executeTool: async () => "resumed-tool",
     });
 
@@ -1114,10 +1100,9 @@ test("keeps the initial input when request-view injection meets a tiny budget", 
   ]);
   await runToolLoop({
     provider: resumedProvider,
-    config: { run: { resume: true } },
+    config: { run: { resume: true, runId: "small-budget-run-state-regression" } },
     completion: false,
     store,
-    runId: "small-budget-run-state-regression",
     executeTool: async () => "resumed-tool",
   });
 
@@ -1172,10 +1157,9 @@ test("archives replayed tool results without duplicating multiple resume tails",
   ]);
   await runToolLoop({
     provider: resumedProvider,
-    config: { run: { resume: true } },
+    config: { run: { resume: true, runId: "multi-tail" } },
     completion: false,
     store,
-    runId: "multi-tail",
     executeTool: async () => "tool-output",
   });
 
@@ -1199,10 +1183,9 @@ test("archives replayed tool results without duplicating multiple resume tails",
   ]);
   await runToolLoop({
     provider: secondProvider,
-    config: { run: { resume: true } },
+    config: { run: { resume: true, runId: "multi-tail" } },
     completion: false,
     store,
-    runId: "multi-tail",
     executeTool: async () => "unused",
   });
   assert.equal(secondProvider.requests.length, 1);
@@ -1259,7 +1242,7 @@ test("resumed session gets its own round budget and persists the continuation ro
   const executed = [];
   const second = await runToolLoop({
     provider: secondProvider,
-    config: { run: { resume: true } },
+    config: { run: { resume: true, runId } },
     executeTool: async ({ input }) => {
       executed.push(input.step);
       return `resumed-${input.step}`;
@@ -1267,7 +1250,6 @@ test("resumed session gets its own round budget and persists the continuation ro
     maxRounds: 2,
     completion: false,
     store,
-    runId,
   });
 
   // 轮预算（budgetRounds）从 0 起算：续接会话能真正跑满并执行工具。
@@ -1616,10 +1598,9 @@ async function runTwoRoundsThenResume(runId, { withRunState }) {
     tools: [WRITE_FILE_TOOL],
     maxRounds: 2,
     completion: false,
-    config: { input: { wrapup: false }, run: { resume: true } },
+    config: { input: { wrapup: false }, run: { resume: true, runId } },
     reflection: { enabled: true, judge: { provider: resumedJudge } },
     store,
-    runId,
   });
 
   return { rawRows, records: await store.load(runId), judgePrompt: promptTextOf(resumedJudge) };

@@ -207,10 +207,9 @@ async function runTwoRoundsThenResume(runId, shape) {
     tools: [WRITE_FILE_TOOL],
     maxRounds: 2,
     completion: false,
-    config: { input: { wrapup: false }, run: { resume: true } },
+    config: { input: { wrapup: false }, run: { resume: true, runId } },
     reflection: { enabled: true, judge: { provider: resumedJudge } },
     store,
-    runId,
   });
 
   const judgePrompt = promptTextOf(resumedJudge);

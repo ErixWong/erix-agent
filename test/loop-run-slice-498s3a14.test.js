@@ -201,7 +201,10 @@ test("N3 邻接面没动：`run` 组剩下六个大件一件没动，`maxRounds`
   // #498 S3 A19：`resume` 也退役了（家 `config.run.resume`），同样从这条循环里移出、翻成反向钉
   // ——与 A15 对 `cwd`、A16 对 `stream`、A18 对 `wrapup` 的改法逐字同形（改而不删）。
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("resume"), false, "A19 已退役 `resume` 的扁平写法");
-  for (const key of ["runId", "completion", "maxRounds", "reflection"]) {
+  // #498 S3 A20：`runId` 也退役了（家 `config.run.runId`），同样从这条循环里移出、翻成反向钉
+  // ——与 A15 对 `cwd`、A16 对 `stream`、A18 对 `wrapup`、A19 对 `resume` 的改法逐字同形（改而不删）。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("runId"), false, "A20 已退役 `runId` 的扁平写法");
+  for (const key of ["completion", "maxRounds", "reflection"]) {
     assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(key), true, `${key} 仍可扁平写（本片不许收它）`);
   }
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("store"), true, "`store` 是永久顶层面，不许动");

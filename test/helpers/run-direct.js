@@ -95,6 +95,15 @@ const RUN_FAMILY_FIXTURE_KEYS = Object.freeze([
   // (`if (!ctx.resume || …)` in `src/loop/resume-manager.js`), so `true` / `false` behave exactly as
   // before; a function value was never behaviour at this position (see the slice test's gate-2 row).
   "resume",
+  // #498 S3 A20: `runId` (home `config.run.runId`, already in `CONFIG_NAMESPACE_SCHEMA.run` since
+  // #497). Same reasoning once more — a plain string scalar, so the fixture only moves the spelling;
+  // the expansion phase writes it back onto `effectiveOptions.runId`, and the engine's read side
+  // (the `runId` destructure in `src/loop/orchestrator.js`) never changed. Note the words that are
+  // *not* this option: the `runId` **field** on transcript / round rows and on every `judge.log`
+  // decision record (#165), the CLI display and the `examples/pi-extension` run handle, and the
+  // `~/.erix/transcripts/outputs/<runId>/` directory name are all downstream of the value, not
+  // spellings of it.
+  "runId",
 ]);
 
 /**

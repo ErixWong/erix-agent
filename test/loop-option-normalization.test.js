@@ -262,8 +262,10 @@ const OPTION_WHITELIST = [
   // `config.run.persistence`. The copy tracks the source list verbatim (that is what A0 checks),
   // so it is gone here too; the flat spelling is now a **rejection** cell, see
   // `test/loop-run-slice-498s3a13.test.js`. `store` (the port) stays.
-
-  "runId",
+  // #498 S3 (`run` slice A20): `runId` left the allowlist — its canonical home is
+  // `config.run.runId`. The copy tracks the source list verbatim (that is exactly what A0 checks),
+  // so it is gone here too; the flat spelling is now a **rejection** cell, see
+  // `test/loop-run-slice-498s3a20.test.js`.
   // #498 S3 (`run` slice A19): `resume` left the allowlist — its canonical home is
   // `config.run.resume`. The copy tracks the source list verbatim (that is exactly what A0 checks),
   // so it is gone here too; the flat spelling is now a **rejection** cell, see
@@ -860,7 +862,7 @@ test("#498 S4b session.resume 别名已删：写它启动即抛并指出 config.
   assert.equal(
     error.message,
     "assembly port session.resume is not accepted: session is data only"
-      + " (pass resume as the top-level option or as config.run.resume)",
+      + " (pass it as config.run.resume; the flat top-level spelling was retired in 0.28)",
   );
   assert.equal(error.via, undefined, "构造期抛（与其它装配口形状错同一相位）");
 });
@@ -891,7 +893,7 @@ test("#498 S4b session.resume 直连路线同样拒绝：不许收下键、又�
   assert.equal(
     directError.message,
     "session.resume is not accepted: session is data only"
-      + " (pass resume as the top-level option or as config.run.resume)",
+      + " (pass it as config.run.resume; the flat top-level spelling was retired in 0.28)",
   );
   assert.equal(directError.via, "direct", "直连侧抛的是语义相（via:\"direct\"）");
 

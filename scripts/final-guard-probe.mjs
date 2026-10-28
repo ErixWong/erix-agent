@@ -137,9 +137,10 @@ try {
         metadata: { task: `把 42 写进 ${answerPath}` },
       // #498 S3 A15: the flat `cwd` is retired at the name gate; its canonical home is
       // `config.run.cwd` (the expansion phase writes it back onto `effectiveOptions.cwd`).
-        run: { cwd: sandbox },
+      // #498 S3 A20: same for `runId` — canonical home `config.run.runId`, merged into the **same**
+      // `run` group (a second `config:` key would silently replace it).
+        run: { cwd: sandbox, runId: "probe-run-1" },
       },
-      runId: "probe-run-1",
       maxRounds: 4,
       executeTool: async (call) => {
         fs.writeFileSync(call.input.path, call.input.content);
@@ -571,7 +572,6 @@ try {
     let payload;
     const result = await runToolLoop({
       provider: createFakeProvider(script),
-      runId: "probe-run-overhead",
       maxRounds: 30,
       // 关掉两件会改动 payload 体积的既有机制，让这个数只反映「新键 vs messages」：
       // 工具结果 TTL 折叠（0 = 关闭）与 reflection（maxRounds ≥ 16 会自动开启 judge）。
@@ -581,7 +581,8 @@ try {
         input: { initialUserMessage: `把 30 个 4KB 文件写进 ${sandbox}` },
         metadata: { task: "把 30 个 4KB 文件写进工作目录" },
         // #498 S3 A15: `cwd` 的规位家是 `config.run.cwd`（扁平拼写已在名称闸口退役）。
-        run: { cwd: sandbox },
+        // #498 S3 A20: `runId` 同理（家 `config.run.runId`），并进**同一个** `run` 组。
+        run: { cwd: sandbox, runId: "probe-run-overhead" },
       },
       reflection: false,
       executeTool: async () => BIG,

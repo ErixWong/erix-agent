@@ -304,7 +304,7 @@ export function createAssemblyPort(input = {}) {
     // `collectSemanticOptionProblems`，`src/assembly-validators.js`）——两条路线都不静默。
     throw new TypeError(
       "assembly port session.resume is not accepted: session is data only"
-      + " (pass resume as the top-level option or as config.run.resume)",
+      + " (pass it as config.run.resume; the flat top-level spelling was retired in 0.28)",
     );
   }
   if (port.session.initialMessages !== undefined && !Array.isArray(port.session.initialMessages)) {

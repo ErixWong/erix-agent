@@ -243,7 +243,6 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // the session port — so retiring the flat spelling would promote that leaf into one. Returned.
   "session",
   "store",
-  "runId",
   // #498 S3 A19: `resume` left this list; home
   // `config.run.resume`. Expansion writes it back onto
   // `effectiveOptions.resume`, so the read side (the two

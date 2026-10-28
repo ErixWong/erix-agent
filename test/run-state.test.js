@@ -242,10 +242,9 @@ test("#315 旧档没有 compactionStatsWindow 仍可读（validate 与 resume �
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]),
-    config: { run: { resume: true } },
+    config: { run: { resume: true, runId: "window-legacy" } },
     completion: false,
     store,
-    runId: "window-legacy",
     executeTool: async () => "unused",
   });
   assert.equal(result.runState.stateAvailability.status, "available");
@@ -491,9 +490,8 @@ test("resume keeps one persisted run-state block", async () => {
     maxRounds: 3,
     completion: false,
     // #498 S3 A19：`resume` 的扁平写法已退役，并进**同一个** `config` 容器（家 `config.run.resume`）。
-    config: { folding: { context: { budgetTokens: 100 } }, run: { resume: true } },
+    config: { folding: { context: { budgetTokens: 100 } }, run: { resume: true, runId: "resume-state" } },
     store,
-    runId: "resume-state",
   });
   const text = resumed.messages
     .flatMap((message) => message.content ?? [])

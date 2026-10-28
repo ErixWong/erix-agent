@@ -416,7 +416,7 @@ export function collectSemanticOptionProblems(options) {
   if (readOptionPath(bag, ["session", "resume"]) !== undefined) {
     problems.push(
       "session.resume is not accepted: session is data only"
-      + " (pass resume as the top-level option or as config.run.resume)",
+      + " (pass it as config.run.resume; the flat top-level spelling was retired in 0.28)",
     );
   }
   // #498 S4c: `reflection.judge.evaluator` was a pure alias of `reflection.judge.provider`

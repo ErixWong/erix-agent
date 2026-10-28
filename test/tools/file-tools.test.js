@@ -632,7 +632,14 @@ const READ_LINE_CAPACITY_ROLES = [
   //   `densest` / `median` / `most` / `self` 四个角色的 ±2% / ±1% 容差机制**一个都没动**（它们量的是单文件漂移，
   //   与 floor 那个全称命题是两个问题）。本轮只有描述里两个数动（3,903 → 3,900），`self` 行同片复测。
   //   台账口径：本条计数按 **floor 承诺**的谱系走（#271 起），与上面按文件复测的「第 N 刷」不是同一个计数器。
-  { role: "fewest", file: "bin/provider-timeouts.js", recorded: { bytes: 11_888, lines: 177, bytesPerLine: 67.1638, capacity: 3_903, cjkShare: 0.4502 } },
+  // 2026-10-28 身份迁移（issue #498 S3 A20，**描述一字未动**）：`runId` 退役把
+  //   `src/loop/option-normalization.js` 从 3,907 行容量挪到 **3,901**（删掉白名单里的 `"runId",` 那一行：
+  //   删的是一行 11 字节的短行 ⇒ 均行字节 67.06 → **67.1989**、容量 3,907 → **3,901**），
+  //   于是它取代 `bin/provider-timeouts.js`（3,903）成为全树真最小值。**仍在 3,900..3,949 这一档**
+  //   ⇒ 按 #537 的承诺粒度，描述里的 `fewest ≥ 3,900` 与档位下界依然为真，**描述一个字都不用改**；
+  //   本片只改这一行（`fewest.rel` / `fewest.capacity`），也就是 #540 拆掉「floor 身份牵着文案」之后
+  //   承诺兑现的那一次实测：换人只挪锚点，不动面向模型的句子。
+  { role: "fewest", file: "src/loop/option-normalization.js", recorded: { bytes: 35_481, lines: 528, bytesPerLine: 67.1989, capacity: 3_901, cjkShare: 0.1777 } },
   // CJK 字节占比最高的那一个（2026-10-13 到今一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
   { role: "densest", file: "src/loop/state-view.js", recorded: { bytes: 2_629, lines: 44, bytesPerLine: 59.75, capacity: 4_387, cjkShare: 0.3731 } },
   // median 这一行 2026-10-22 换了**文件**（不是只刷数字）：issue #386 切片 1 给

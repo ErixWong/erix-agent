@@ -138,8 +138,8 @@ test("R2 真 run：规位值驱动 stream 快照路径（终局正文只出现�
   const store = createMemoryTranscriptStore();
   const result = await runToolLoop(base({
     store,
-    runId: "a12-partial",
-    config: { run: { [KEY]: { intervalMs: 1 }, stream: true } },
+    // #498 S3 A20：`runId` 的扁平写法也退役了（家 `config.run.runId`），并进**同一个** `config` 容器。
+    config: { run: { [KEY]: { intervalMs: 1 }, stream: true, runId: "a12-partial" } },
   }));
   assert.equal(result.finalText, "ok");
   assert.equal(result.termination.reason, "end_turn");

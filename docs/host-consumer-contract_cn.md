@@ -538,7 +538,8 @@ unknown runToolLoop option: "context" (its canonical home is config.folding.cont
   `session.resume` → 扁平 `resume` 的别名，那条别名已经删掉（issue #498 S4b）——现在写
   `session.resume` 在**两条入口路线**上都会抛（装配口的 `createAssemblyPort`，以及直连
   `runToolLoop` 选项经同一道语义相（`collectSemanticOptionProblems`，规则本体与文件出处见本文开头），
-  并点名完整路径 `session.resume`、指向 `config.run.resume` / 扁平 `resume`。它不会被静默丢掉：
+  并点名完整路径 `session.resume`、指向 `config.run.resume`（扁平 `resume` 本身也已在 0.28 被
+  issue #498 S3 A19 退役，所以文案不再把它当作可行出路）。它不会被静默丢掉：
   直连路线以前收下这个键然后照常跑（没有续跑），那正是本版要消掉的「配了等于没配」。
   `session` 是数据，但它**唯一**的家是顶层（issue #531）：规位 `config.metadata.session` 是**未知叶子**
   当场拒——见下面「`session` 是端口类键」一节。
@@ -985,6 +986,48 @@ undefined) return "absent";` 与 `if (ctx.resume && ctx.store && ctx.runId !== u
 `G` 上面那张数据取值矩阵；`F` 函数值两个拼写都被拒、两条理由分开钉；`R` 真 resume 仍真的续跑、真值读法未改；
 `N` 四向账目、原样保留的 `session.resume` 裁决与未动的 `journalResumeUnpersistedToolResults` /
 `resumeRunSnapshot` 注解；`S` 夹具翻译点）。
+
+**`runId`：同一条先例，同一种量法（issue #498 S3，第二十片）。** 闸口二把五种取值形态跑过真入口——
+普通 id 字符串、空串、数字 `1`、布尔 `false`、一个对象——全部**规位侧 ACCEPT**（`exit 0`）、
+**扁平侧被名称闸口拒**。唯一的差异格仍是函数形状，与 `stream` / `resume` 那两片同形：
+
+| `runId` 取值 | 扁平（A20 之前） | 规位（`config.run.runId`） |
+| --- | --- | --- |
+| id 字符串 / `""` / `1` / `false` / 对象 | exit 0 | exit 0（对齐） |
+| **函数** | **exit 0** | **拒** —— `config.run.runId is not accepted … holds data only` |
+
+`runId` 是**字符串标量**：引擎在 `runToolLoop` 开头解构一次，此后只把值往下传（`appendRound(runId, …)`
+的键、#165 的 judge 记录相关字段、观察者错误归因）。全仓没有 `typeof` 判定、没有调用点、也没有任何
+再赋值（`src/loop/orchestrator.js` 上 `grep -nE "runId *=[^=]"` 为空）——所以函数值在那个位置**从来不是
+行为**。于是本片退役扁平拼写、**接受那条收窄**，不加校验器、也不把 `runId` 搬去能力面。读侧一行未改。
+
+`runId` 的版本口径（issue #498 S3，第二十片）：
+
+| 发布 | 在顶层写 `runId` |
+| --- | --- |
+| 0.26.0 及更早（最后一个**已发布**版本） | 顶层可写 |
+| 0.27.0 | **从未发布**，没有宿主装过「这件事会咬人」的树 |
+| 0.28.0 及以后（issue #498 S3 第二十片） | **当场拒**——改写 `config.run.runId`。名称闸口抛 `unknown runToolLoop option: "runId" (its canonical home is config.run.runId; the flat spelling is rejected)` |
+
+**退役的只是「入口选项」。** `runId` 这个词还（仍然）指另外四样东西，本片一个都没碰：transcript /
+round 行上的 `runId` **字段**（`src/store/*.js` 的 `appendRound(runId, …)`）、`judge.log` 每条决策记录
+上的 `runId` + `model`（#165）、CLI 显示与 `examples/pi-extension` 的 run 句柄、以及
+`~/.erix/transcripts/outputs/<runId>/` 目录名。判据只有一个问题：*这是不是「作为 `runToolLoop` 顶层
+参数被读」的那个值？* 搬的只有那一处写侧。
+
+**装配口仍然产出这个键。** `assemblyPortOptions(port)` 照旧发出 `runId`（`port.session.id`）——那是
+构造期的事实，一字未改——但它的顶层拼写已退役，所以把端口产物直接铺进 `runToolLoop` 的宿主现在必须
+并进 `config.run`（`test/contract/assembly-port.test.js` 钉住）。引擎内部那次 `assemblyPortOptions`
+调用不受影响：它跑在名称闸口**之后**，`effectiveOptions.runId` 照旧拿到 session id。
+
+实测红格：单删 **307**、夹具翻译拼写之后 **88**、迁完手写点 **0**（14 个测试文件里的 47 个
+`runToolLoop` 直连写点、内联白名单镜像、两形态等价样本、`C1` 的冲突通道、A12 / A14 / A15 / A19 的
+邻接清单、随包发布契约套件的信封格、装配口套件，以及两个观察脚本 `scripts/soak.mjs` /
+`scripts/message-journal-golden.mjs` 与 `scripts/final-guard-probe.mjs`）。钉子文件是
+`test/loop-run-slice-498s3a20.test.js`（`P` 拒绝文案逐字且早于任何宿主端口被调用；`G` 上面那张取值
+矩阵；`F` 函数值两个拼写都被拒；`R` 真 run 的账本仍按规位值取回；`N` 四向账目与「`run` 组还剩三个
+配置家键」的派生计数；`S` 夹具翻译点；`T` 反向钉——任何拒绝文案都不许把已退役的顶层名当建议，
+本片顺手在 `src/assembly.js` / `src/assembly-validators.js` 修掉的正是这句假话）。
 
 ### capabilities 命名空间（issue #498）
 

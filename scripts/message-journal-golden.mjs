@@ -98,9 +98,13 @@ export async function scenarioSingleRun() {
     ...BASE,
     maxRounds: 8,
     store,
-    runId: "golden-single",
     // 并进**同一个** `config` 容器：写第二个 `config` 键会让 BASE 里的 `run.stallDetection` 静默消失。
-    config: { ...BASE.config, input: { ...BASE.config.input, initialUserMessage: "金样任务" } },
+    // #498 S3 A20: `runId` 也退役了扁平写法（家 `config.run.runId`），同样并进这棵树。
+    config: {
+      ...BASE.config,
+      input: { ...BASE.config.input, initialUserMessage: "金样任务" },
+      run: { ...BASE.config.run, runId: "golden-single" },
+    },
     provider,
     finalGuard: async () => {
       guardCalls += 1;
@@ -131,8 +135,14 @@ export async function scenarioCrashResume() {
   let thrown = "";
   try {
     await runToolLoop({
-      ...BASE, maxRounds: 8, store, runId,
-      config: { ...BASE.config, input: { ...BASE.config.input, initialUserMessage: "金样任务" } }, provider: first,
+      ...BASE, maxRounds: 8, store,
+      // #498 S3 A20: `runId` 的家是 `config.run.runId`（与下面的种子并进同一棵树）。
+      config: {
+        ...BASE.config,
+        input: { ...BASE.config.input, initialUserMessage: "金样任务" },
+        run: { ...BASE.config.run, runId },
+      },
+      provider: first,
       reflection: {
         enabled: true, roundJudge: true, judgeIntercept: false,
         judge: { provider: createFakeProvider([judgeNotDone("还没完"), judgeNotDone("还没完"), judgeDone()]) },
@@ -146,8 +156,8 @@ export async function scenarioCrashResume() {
   const result = await runToolLoop({
     // #498 S3 A19: `resume` left the top-level allowlist; home `config.run.resume`. This script is an
     // **observation** producer (the golden fixture's generator): only the spelling moves.
-    ...BASE, maxRounds: 8, store, runId,
-    config: { ...BASE.config, run: { ...BASE.config.run, resume: true } },
+    ...BASE, maxRounds: 8, store,
+    config: { ...BASE.config, run: { ...BASE.config.run, resume: true, runId } },
     provider: resumed,
     reflection: {
       enabled: true, roundJudge: true, judgeIntercept: false,

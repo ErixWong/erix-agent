@@ -143,9 +143,8 @@ test(`G1 闸口二矩阵（${KEY}）：数据取值规位侧全 ACCEPT，扁平�
   for (const value of shapes) {
     const label = `${KEY}=${JSON.stringify(value)}`;
     const nested = await exitCode(base({
-      config: { run: { [KEY]: value } },
+      config: { run: { [KEY]: value, runId: "a19-nested" } },
       store: await seededStore("a19-nested"),
-      runId: "a19-nested",
     }));
     assert.equal(nested, 0, `${label}：规位必须可达（exit 0，取值面没被收紧）`);
     const flat = await rawError(base({ [KEY]: value }));
@@ -188,9 +187,8 @@ test(`R1 真 run：规位 ${KEY}: true 仍然真的续跑（从账本重建）�
   const resumedStore = await seededStore("a19-read-resume");
   const resumed = await runToolLoop(base({
     provider: createFakeProvider([{ content: [{ type: "text", text: "续上了" }], stopReason: "end_turn" }]),
-    config: { run: { [KEY]: true } },
+    config: { run: { [KEY]: true, runId: "a19-read-resume" } },
     store: resumedStore,
-    runId: "a19-read-resume",
   }));
   assert.equal(resumed.termination.reason, "end_turn");
   assert.equal(resumed.finalText, "续上了", "规位拼写必须真的走到续跑分支（不是被静默忽略）");
@@ -198,9 +196,8 @@ test(`R1 真 run：规位 ${KEY}: true 仍然真的续跑（从账本重建）�
   const plainStore = await seededStore("a19-read-plain");
   const plain = await runToolLoop(base({
     provider: createFakeProvider([{ content: [{ type: "text", text: "普通 run" }], stopReason: "end_turn" }]),
-    config: { run: { [KEY]: false } },
+    config: { run: { [KEY]: false, runId: "a19-read-plain" } },
     store: plainStore,
-    runId: "a19-read-plain",
   }));
   assert.equal(plain.finalText, "普通 run", "`false` 仍是普通 run（缺省值语义一字未改）");
 });
@@ -215,9 +212,8 @@ test(`R2 读侧唯一的两次读法：真值判断，从不调用（grep 可复
   const store = await seededStore("a19-truthy");
   const result = await runToolLoop(base({
     provider: createFakeProvider([{ content: [{ type: "text", text: "truthy 也续跑" }], stopReason: "end_turn" }]),
-    config: { run: { [KEY]: "yes" } },
+    config: { run: { [KEY]: "yes", runId: "a19-truthy" } },
     store,
-    runId: "a19-truthy",
   }));
   assert.equal(result.finalText, "truthy 也续跑", "真值判断照旧：非布尔真值仍走续跑分支");
   const { effectiveOptions } = await normalizeRunToolLoopOptions({ config: { run: { [KEY]: "yes" } } });
@@ -262,7 +258,7 @@ test("N2 邻接钉子原样：`session.resume` 两条路仍都拒（#531 的裁�
   assert.equal(
     portError.message,
     "assembly port session.resume is not accepted: session is data only"
-      + " (pass resume as the top-level option or as config.run.resume)",
+      + " (pass it as config.run.resume; the flat top-level spelling was retired in 0.28)",
     "装配口判词逐字原样（本片一个字没改；文案里那句 top-level 属 #531 的既有裁决）",
   );
   // 直连一条路：不许收下键又不续跑（#498 S4b 的原判词）。
@@ -270,7 +266,7 @@ test("N2 邻接钉子原样：`session.resume` 两条路仍都拒（#531 的裁�
   assert.equal(
     directError.message,
     "session.resume is not accepted: session is data only"
-      + " (pass resume as the top-level option or as config.run.resume)",
+      + " (pass it as config.run.resume; the flat top-level spelling was retired in 0.28)",
     "`session.resume` 的直连判词逐字原样（本片一个字没改）",
   );
   // 幻影别名也不许回来：`config.metadata.session` 仍是闭门。

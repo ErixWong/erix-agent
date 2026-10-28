@@ -193,10 +193,9 @@ export function toolResultEnvelopeContract(label, getEntry) {
     const { onEvent, onToolCall, ...rest } = options;
     const result = await runToolLoop({
       provider,
-      config: { input: { initialUserMessage: "task" } },
+      config: { input: { initialUserMessage: "task" }, run: { runId } },
       executeTool,
       store,
-      runId,
       completion: false,
       ...rest,
       onEvent: (event) => {
@@ -482,10 +481,9 @@ export function toolResultEnvelopeContract(label, getEntry) {
     await runToolLoop({
       provider,
       // #498 S3 A16: `stream` has no flat spelling any more — canonical home `config.run.stream`.
-      config: { input: { initialUserMessage: "task" }, run: { stream: true } },
+      config: { input: { initialUserMessage: "task" }, run: { stream: true, runId: "contract-stream-key" } },
       executeTool: async () => "ok",
       store: createMemoryTranscriptStore(),
-      runId: "contract-stream-key",
       completion: false,
       onToolCall: (fragment) => fragments.push(fragment),
       onEvent: (event) => events.push(event),
@@ -524,7 +522,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
       runToolLoop({
         provider: scriptedProvider([toolRound("hang-1"), DONE]),
         store,
-        runId,
+        config: { run: { runId } },
         completion: false,
         signal: controller.signal,
         executeTool: async () => {
@@ -691,9 +689,8 @@ export function toolResultEnvelopeContract(label, getEntry) {
     await runToolLoop({
       // 模型把己执行过的调用又发了一遍（复放路径），下一轮自然收尾。
       provider: scriptedProvider([toolRound("done-1"), DONE]),
-      config: { run: { resume: true } },
+      config: { run: { resume: true, runId } },
       store,
-      runId,
       completion: false,
       executeTool: async () => {
         calls += 1;
@@ -749,9 +746,8 @@ export function toolResultEnvelopeContract(label, getEntry) {
     const events = [];
     await runToolLoop({
       provider: scriptedProvider([toolRound("old-1"), DONE]),
-      config: { run: { resume: true } },
+      config: { run: { resume: true, runId } },
       store,
-      runId,
       completion: false,
       executeTool: async () => {
         calls += 1;
@@ -913,12 +909,11 @@ export function toolResultEnvelopeContract(label, getEntry) {
     await runToolLoop({
       provider: scriptedProvider([DONE]),
       store,
-      runId,
       completion: false,
       // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役，规位是 `config.run.replayPolicy`。
       // #498 S3 A19：`resume` 同样退役（家 `config.run.resume`），并进**同一个** `config` 容器
       // ——两个 `config` 键会后者静默胜，那正是本文件里另一格要防的形状。
-      config: { run: { resume: true, replayPolicy: "per-tool-declaration" } },
+      config: { run: { resume: true, replayPolicy: "per-tool-declaration", runId } },
       executeTool: async () => "should not run",
       onEvent: (event) => events.push(event),
     });
