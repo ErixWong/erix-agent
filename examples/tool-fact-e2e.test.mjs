@@ -21,6 +21,15 @@
 // ② **`RoundRecord.messages` 只存本轮新增消息**（设计如此，不是缺陷）：要折叠/回放下文必须自己
 //    按轮拼完整历史。→ 需要完整历史处（TTL 折叠、投影）一律走 `collapseHistory()`；
 //      把最后一条 RoundRecord 当成全量历史去折叠，就会得到「foldedCount=0」这种假红。
+//
+// ③ **真上游格整份 skip，所以「调用点写错」看不见**（0.28 发版清单 [1/5] 红就是这么来的）：
+//    #498 S3 把一片扁平拼写退役进 `config.*`，退役后唯一的执行点是名称闸口；而本文件默认
+//    `npm test` 直接 skip，于是「调用点还写着扁平 `runId`」能一路活到发版清单。
+//    → 本文件因此有**两格「始终跑、不联网」**：
+//      · 「断言集自身的不变量」：查 `tool_result` 的允许键集合 / 退役名单（与调用方式无关）；
+//      · 「选项名闸」：把**真上游格实际用的那两份参数对象**（`loopOptionsA` / `loopOptionsC`）
+//        交给 `assertRunToolLoopOptionNames` 过一遍。两份对象各只有一个装配点，闸格与网络格共用
+//        同一份——所以调用点写回扁平名时，红的是这一格，而不是（被 skip 的）网络格。
 // ---------------------------------------------------------------------------
 
 import assert from "node:assert/strict";
@@ -37,6 +46,9 @@ import {
   TOOL_RESULT_CONTRACT,
 } from "../src/index.js";
 import { foldToolResultsForRequest } from "../src/loop/tool-result-ttl.js";
+// 选项名闸（`RUN_TOOL_LOOP_OPTION_NAMES` 的唯一执行点）。本文件下面那条「始终跑、不联网」的
+// 前置格用它把**真上游格实际交给 `runToolLoop` 的那两份对象**过一遍——理由见文件头 ③。
+import { assertRunToolLoopOptionNames } from "../src/loop/option-normalization.js";
 import { formatSkip, printableEndpoint, resolveRealUpstream, TMP_PREFIX } from "./e2e-real-gate.mjs";
 
 /** 退役名（TOOL_RESULT_CONTRACT.legacy.aliases 的键，去掉宿主摊平那条描述性键）。 */
@@ -107,6 +119,69 @@ const TOOLS = [
   },
 ];
 
+/** 场景 A 的 runId（与 `storeA.load(...)` 同源，不许两处各写一个字面量）。 */
+const RUN_ID_A = "e2e-a";
+/** 场景 C 的 runId（旧账本的文件名就是它）。 */
+const RUN_ID_C = "e2e-c";
+
+/**
+ * 场景 C 的追问话术：**不许直接作答**（否则模型有权据历史回一句话，F9a 就没了主语）。
+ * 抽到模块级是因为它要进「选项装配函数」，而那条函数同时被不联网的选项名闸格调用。
+ */
+const resumePrompt = (attempt) => `第 ${attempt} 次要求：必须调用 searchText 工具在文件里搜 needle（`
+  + "不许根据上面已有的历史结果直接作答），然后一句话回答命中几次。";
+
+// ---------------------------------------------------------------------------
+// 交给 `runToolLoop` 的两份参数对象：**各只有一个装配点**。
+//
+// 为什么抽成函数（本片的结构性修法）：真上游格与下面那条「始终跑、不联网」的选项名闸格必须查
+// **同一份对象**。闸格若另抄一份键表，调用点漂移时它照样绿——那不是覆盖，是第二份真相。
+// 这两个函数只负责**名字与结构**；真件（provider / executeTool / store / 回调）由调用方给，
+// 闸格给替身即可（名称闸只读 `Object.keys`，一个值都不看）。
+//
+// #498 S3 把一片扁平拼写退役进 `config.*`，退役后唯一的执行点是名称闸口；而本套件默认
+// `npm test` **整份 skip**，所以「调用点还写着扁平名」这种漂移只有 `ERIX_E2E_REAL=1` 才露头。
+// `runId` / `maxRounds`（场景 A）与 `resume` / `runId` / `maxRounds`（场景 C）就是这一片最后
+// 漏掉的调用点：0.28 发版清单上 [1/5] 红，报 `unknown runToolLoop option: "runId"`。
+// ---------------------------------------------------------------------------
+
+/** 场景 A：真上游 + 真执行 + 流式。 */
+function loopOptionsA({ provider, executeTool, store, onEvent, onToolCall }) {
+  return {
+    provider,
+    config: {
+      // #498 S3 A2b：种子的规位家。
+      input: { initialUserMessage: "先用 readFile 读 a.txt；再用 searchText 搜 needle；最后一句话回答命中几次。" },
+      // #498 S3 A16：`stream` 的家；A2b/A21：`runId` / `maxRounds` 的家（同一棵 `run` 子树，
+      // 绝不另写第二个 `run` 键——后者会静默覆盖前者）。
+      run: { stream: true, runId: RUN_ID_A, maxRounds: 6 },
+      // #498 S3 A9：`task` 的家。
+      metadata: { task: "读 a.txt 并搜索 needle" },
+    },
+    tools: TOOLS,
+    executeTool,
+    store,
+    onEvent,
+    onToolCall,
+  };
+}
+
+/** 场景 C：resume（0.19 形状的旧账本复放）。 */
+function loopOptionsC({ provider, executeTool, store, initialUserMessage }) {
+  return {
+    provider,
+    // #498 S3 A19：`resume` 的家是 `config.run.resume`（扁平写法在名称闸口就被拒）。
+    config: {
+      input: { initialUserMessage },
+      run: { resume: true, runId: RUN_ID_C, maxRounds: 4 },
+      metadata: { task: "继续旧会话（必须真的调一次工具）" },
+    },
+    tools: TOOLS,
+    executeTool,
+    store,
+  };
+}
+
 /**
  * 宿主执行器：readFile 走**结构化返回**（{content, metadata} → 宿主键必须落 metadata.*），
  * searchText 走**纯文本返回**（工单第 2 项第 5 条：这种结果的 `metadata` 允许缺席，
@@ -141,6 +216,41 @@ test("断言集自身的不变量：允许键集合与退役名单没被偷偷�
   assert.deepEqual([...RETIRED].sort(),
     ["duration", "erixRound", "executionStatus", "success"],
     `退役名单应与 TOOL_RESULT_CONTRACT.legacy.aliases 一致，实际 ${RETIRED.join(",")}`);
+});
+
+// 本片（0.28 发版清单 [1/5] 红）的结构性修法：**不联网**的前置格。
+//
+// 它能杀什么：把 `loopOptionsA` / `loopOptionsC` 里任何一个键挪回扁平拼写（`runId` /
+// `maxRounds` / `resume` / `stream` / `task` …）⇒ 这一格当场红，而且**门关着也红**。
+// 上面那条「断言集自身的不变量」查的是 `tool_result` 的键集合，与「网络格怎么调 runToolLoop」
+// 毫无关系——所以它不是已有覆盖（这正是要补的洞）。
+//
+// 为什么这条要进默认 CI：真上游格整份受 `ERIX_E2E_REAL` 门控，默认 `npm test` 直接 skip；
+// 于是「调用点写着退役名」可以在整夜全绿里活到发版清单。选项名闸本身**不联网、不花模型钱**，
+// 没有任何理由跟着网络格一起被 skip。
+test("选项名闸：本文件交给 runToolLoop 的两份参数对象都合法（始终跑，不联网）", () => {
+  // ① 装置自证：闸口必须**有牙齿**。少了这三条，下面两个 doesNotThrow 在「闸口被改成接受一切」
+  //    的世界里照样绿——那正好是本片要防的那一类漂移。文案逐字点名新家（升级救命索）。
+  assert.throws(() => assertRunToolLoopOptionNames({ runId: RUN_ID_A }),
+    /unknown runToolLoop option: "runId" \(its canonical home is config\.run\.runId; the flat spelling is rejected\)/u,
+    "名称闸必须拒绝扁平 `runId` 并点名 config.run.runId");
+  assert.throws(() => assertRunToolLoopOptionNames({ maxRounds: 6 }),
+    /unknown runToolLoop option: "maxRounds" \(its canonical home is config\.run\.maxRounds; the flat spelling is rejected\)/u,
+    "名称闸必须拒绝扁平 `maxRounds` 并点名 config.run.maxRounds");
+  assert.throws(() => assertRunToolLoopOptionNames({ resume: true }),
+    /unknown runToolLoop option: "resume" \(its canonical home is config\.run\.resume; the flat spelling is rejected\)/u,
+    "名称闸必须拒绝扁平 `resume` 并点名 config.run.resume");
+
+  // ② 本体：两份对象来自**真上游格用的同一个装配函数**（不是另抄的键表）。
+  //    替身只填值、不参与判定：名称闸只读 `Object.keys`，provider / store 一个成员都不碰。
+  const stubValue = {};
+  const stubFn = () => {};
+  assert.doesNotThrow(() => assertRunToolLoopOptionNames(loopOptionsA({
+    provider: stubValue, executeTool: stubFn, store: stubValue, onEvent: stubFn, onToolCall: stubFn,
+  })), "场景 A 的选项对象里有顶层键不在 RUN_TOOL_LOOP_OPTION_NAMES 内（多半是退役名写回了扁平位）");
+  assert.doesNotThrow(() => assertRunToolLoopOptionNames(loopOptionsC({
+    provider: stubValue, executeTool: stubFn, store: stubValue, initialUserMessage: resumePrompt(1),
+  })), "场景 C 的选项对象里有顶层键不在 RUN_TOOL_LOOP_OPTION_NAMES 内（多半是退役名写回了扁平位）");
 });
 
 test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 投影 / 一代读窗口）", {
@@ -189,28 +299,15 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
     const storeA = createFileTranscriptStore({ dir: join(root, "store-a") });
     const events = [];
     const fragments = [];
-    const outA = await runToolLoop({
+    // 选项对象只从 `loopOptionsA` 来：调用点与不联网的选项名闸格查的是**同一份**（见文件头 ③）。
+    const outA = await runToolLoop(loopOptionsA({
       provider: createOpenAIProvider(providerFields),
-      // #498 S3 A2b: the seed's canonical home is `config.input.initialUserMessage`.
-      // #498 S3 A16: `stream` lost its flat spelling too — canonical home `config.run.stream`
-      // (the expansion phase writes it back to `effectiveOptions.stream`).
-      config: {
-        input: { initialUserMessage: "先用 readFile 读 a.txt；再用 searchText 搜 needle；最后一句话回答命中几次。" },
-        run: { stream: true },
-        // #498 S3 A9: `task` lost its flat spelling — canonical home `config.metadata.task`.
-        // The flat `task:` was rejected at the name gate before any upstream call, so this gated
-        // suite only ever went red under `ERIX_E2E_REAL=1`; it joins the **same** `config` tree.
-        metadata: { task: "读 a.txt 并搜索 needle" },
-      },
-      tools: TOOLS,
       executeTool: makeExecutor(dirA),
       store: storeA,
-      runId: "e2e-a",
-      maxRounds: 6,
       onEvent: (event) => events.push(event),
       onToolCall: (fragment) => fragments.push(fragment),
-    });
-    const recordsA = await storeA.load("e2e-a");
+    }));
+    const recordsA = await storeA.load(RUN_ID_A);
     const historyA = collapseHistory(recordsA);
     const evResults = events.filter((e) => e.type === "tool_result").map((e) => e.toolResult);
     const persistedA = blocksOf(historyA, "tool_result");
@@ -400,7 +497,7 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
         return storeC.saveRunSnapshot(runId, snapshot);
       },
     };
-    const runIdC = "e2e-c";
+    const runIdC = RUN_ID_C;
     const legacyBlock = {
       type: "tool_result",
       tool_use_id: "legacy-1",
@@ -440,23 +537,18 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
     // resume 后的新调用靠模型自愿调工具——真模型有权利直接根据历史作答（实测会偶尔发生）。
     // 那不会改变本场景的契约判据（旧块不回写 / TTL 按旧名折叠 / 投影一代回退），但会让
     // 「新块用新形状」这条**没有主语**。工单不许把它断弱成「有就查」，所以这里：
-    // ① 把任务写成不许直接作答；② 首轮没产生新调用就再推一轮 resume（同 store、同 runId），
-    //    最多两次；两次都没有 = 真的坏了，F9a 照样红。
-    const resumePrompt = (attempt) => `第 ${attempt} 次要求：必须调用 searchText 工具在文件里搜 needle（`
-      + "不许根据上面已有的历史结果直接作答），然后一句话回答命中几次。";
+    // ① 把任务写成不许直接作答（话术在模块级 `resumePrompt`，与选项装配函数共用）；
+    // ② 首轮没产生新调用就再推一轮 resume（同 store、同 runId），最多两次；两次都没有 = 真的坏了，
+    //    F9a 照样红。
     let outC = null;
     for (let attempt = 1; attempt <= 2; attempt += 1) {
-      outC = await runToolLoop({
+      // 同 A：选项对象只从 `loopOptionsC` 来（不联网的选项名闸格查的是同一份）。
+      outC = await runToolLoop(loopOptionsC({
         provider: createOpenAIProvider(providerFields),
-        resume: true,
-        // #498 S3 A9: same migration — `task` lives in `config.metadata.task`.
-        config: { input: { initialUserMessage: resumePrompt(attempt) }, metadata: { task: "继续旧会话（必须真的调一次工具）" } },
-        tools: TOOLS,
         executeTool: makeExecutor(dirC),
         store: storeCProbed,
-        runId: runIdC,
-        maxRounds: 4,
-      });
+        initialUserMessage: resumePrompt(attempt),
+      }));
       const freshSoFar = blocksOf(collapseHistory(await storeC.load(runIdC)), "tool_result")
         .filter((block) => block?.tool_use_id !== "legacy-1");
       if (freshSoFar.length > 0) break;

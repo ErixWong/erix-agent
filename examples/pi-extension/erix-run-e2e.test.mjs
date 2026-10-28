@@ -32,6 +32,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { formatSkip, printableEndpoint, resolveRealUpstream, TMP_PREFIX } from "../e2e-real-gate.mjs";
+// 选项名闸（`RUN_TOOL_LOOP_OPTION_NAMES` 的唯一执行点）：见下面那条「始终跑、不联网」的前置格。
+import { assertRunToolLoopOptionNames } from "../../src/loop/option-normalization.js";
 import * as core from "./erix-run-core.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -253,6 +255,47 @@ test("#373 静态守卫：core 里不再有写死条数的截断文案（不联�
   assert.equal(typeof core.readRunStateFile, "function");
   assert.equal(typeof core.compactionStatsWindowOf, "function");
   assert.equal(typeof core.compactionStatsTruncationNote, "function");
+});
+
+// ---------------------------------------------------------------------------
+// 选项名闸（始终跑，不联网）：erix_run 交给 `runToolLoop` 的选项对象必须过闸。
+//
+// 为什么这条属于本文件：erix_run 的**唯一** `runToolLoop` 调用点在 `erix-run-core.js` 的
+// `buildLoopOptions()`，而它也是本文件真机段实际走的那条路径（子进程 → runErixRun →
+// buildLoopOptions）。#498 S3 把一大片扁平拼写退役进 `config.*` / `capabilities.*` 之后，
+// 唯一的执行点就是名称闸口；真机段整份受 `ERIX_E2E_REAL` 门控，默认 `npm test` 直接 skip，
+// 所以「装配点写着退役名」可以一路活到发版清单（0.28 的发版清单 [1/5] 红就是这么来的）。
+//
+// 能杀什么：把 `buildLoopOptions` 里任何一个规位键（`config.run.runId` / `config.run.maxRounds` /
+// `config.run.cwd` / `config.input.system` / `config.metadata.task` …）挪回顶层扁平位 ⇒ 本格当场红。
+// 名称闸不联网、不花模型钱，没有理由跟着网络格一起被 skip。
+
+test("选项名闸：erix_run 交给 runToolLoop 的选项对象合法（始终跑，不联网）", () => {
+  // ① 装置自证：闸口必须有牙齿（否则下面那条 doesNotThrow 在「闸口接受一切」的世界里照样绿）。
+  assert.throws(() => assertRunToolLoopOptionNames({ runId: "gate-check" }),
+    /unknown runToolLoop option: "runId" \(its canonical home is config\.run\.runId; the flat spelling is rejected\)/u,
+    "名称闸必须拒绝扁平 `runId` 并点名 config.run.runId");
+  assert.throws(() => assertRunToolLoopOptionNames({ maxRounds: 4 }),
+    /unknown runToolLoop option: "maxRounds" \(its canonical home is config\.run\.maxRounds; the flat spelling is rejected\)/u,
+    "名称闸必须拒绝扁平 `maxRounds` 并点名 config.run.maxRounds");
+
+  // ② 本体：装配**真件**（buildLoopOptions 是纯函数，只拼对象、不打模型）。
+  const options = core.buildLoopOptions({
+    params: { task: "gate-check", cwd: process.cwd(), maxRounds: 4, timeoutMs: 5_000 },
+    slot: {},
+    provider: {},
+    tools: { tools: [], executeTool: async () => "ok" },
+    store: {},
+    signal: new AbortController().signal,
+    runId: "gate-check",
+    system: "SYS",
+  });
+  assert.doesNotThrow(() => assertRunToolLoopOptionNames(options),
+    "buildLoopOptions 的返回值里有顶层键不在 RUN_TOOL_LOOP_OPTION_NAMES 内（多半是退役名写回了扁平位）");
+  // 反向钉：把已迁走的规位键再加回顶层 ⇒ 闸口当场红（证明本格查的就是这个对象的**名字面**）。
+  assert.throws(() => assertRunToolLoopOptionNames({ ...options, runId: "gate-check" }),
+    /unknown runToolLoop option: "runId"/u,
+    "顶层 `runId` 必须被拒（它的家是 config.run.runId）");
 });
 
 // ---------------------------------------------------------------------------
