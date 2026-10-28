@@ -5,6 +5,7 @@
 
 ### Breaking
 
+
 - **`timeoutMs` / `deadlineMs` / `retry` must be written as `config.timing.*` (issue #498 S3).**
   The three top-level keys left the `runToolLoop` allowlist; writing them flat now throws
   `unknown runToolLoop option: "timeoutMs" (its canonical home is config.timing.timeoutMs; the flat
@@ -17,6 +18,7 @@
   the "`config` holds data only" rule) — the canonical home for a retry timer is, and was,
   `capabilities.ports.sleepImpl`.
 
+
 - **`timeoutMs` / `deadlineMs` / `retry` 必须写成 `config.timing.*`（issue #498 S3）。**
   这三个键已离开 `runToolLoop` 顶层白名单；再写扁平形态会在启动时抛
   `unknown runToolLoop option: "timeoutMs" (its canonical home is config.timing.timeoutMs; the flat
@@ -27,21 +29,6 @@
   `config.timing.retry.sleepImpl` 被「`config` 只装数据」拒）——重试定时器的规范之家一直是
   `capabilities.ports.sleepImpl`。
 
-- **`folding` 组三个顶层键退役（#498 S3 第二片）**：`context`、`toolResultTtl`、`toolResultFoldMinTokens`
-  不再作为 `runToolLoop` 顶层选项接受。数据写法迁到 `config.folding.context` /
-  `config.folding.toolResultTtl` / `config.folding.toolResultFoldMinTokens`（展开相写回
-  `effectiveOptions.<扁平名>`，引擎读侧与行为不变）；`context` 里的**函数**成员（`onBeforeFold` /
-  `onAfterFold` / `stubFor` / `protectedMessage` / `recoveryHint`）与 `context.strategy` 的**对象**形态属
-  能力面，分别写 `capabilities.hooks.<name>` 与 `capabilities.ports.strategy` —— `config` 只装数据
-  （子树必须过 JSON round-trip 等值），函数叶子会被当场点名拒绝并指向规范之家。旧扁平写法现在报
-  `unknown runToolLoop option: "…" (its canonical home is config.folding.…; the flat spelling is rejected)`。
-  **升级救命索补强（本片修的缺陷）**：`context` / `retry` 这类**同时容得下数据与函数**的壳，被拒时
-  文案**一次点名两站**——「`this shell holds both data and functions: write data as
-  config.folding.context.<leaf>, and behaviour members as capabilities.hooks.<name> (…) or
-  capabilities.ports.strategy`」。以前只指 `config.folding.context`，宿主照做会撞第二次（那一家拒绝
-  函数叶子），第二次的文案才告诉他 `capabilities.hooks.onBeforeFold`；现在一步到位。装配口
-  `policy.context` 未收窄（函数叶子仍可经此送达），但**随包契约只承诺 `capabilities.*`**。
-  0.27.0 从未发布，最后一个已发布版本是 0.26.0，因此没有已发布宿主受影响。
 
 - **Three top-level keys of the `folding` group are retired (#498 S3, second slice)**: `context`,
   `toolResultTtl` and `toolResultFoldMinTokens` are no longer accepted as `runToolLoop` options. Data
@@ -65,6 +52,24 @@
   promises `capabilities.*`. 0.27.0 was never published — the last published version is 0.26.0 — so
   no released host is affected.
 
+
+- **`folding` 组三个顶层键退役（#498 S3 第二片）**：`context`、`toolResultTtl`、`toolResultFoldMinTokens`
+  不再作为 `runToolLoop` 顶层选项接受。数据写法迁到 `config.folding.context` /
+  `config.folding.toolResultTtl` / `config.folding.toolResultFoldMinTokens`（展开相写回
+  `effectiveOptions.<扁平名>`，引擎读侧与行为不变）；`context` 里的**函数**成员（`onBeforeFold` /
+  `onAfterFold` / `stubFor` / `protectedMessage` / `recoveryHint`）与 `context.strategy` 的**对象**形态属
+  能力面，分别写 `capabilities.hooks.<name>` 与 `capabilities.ports.strategy` —— `config` 只装数据
+  （子树必须过 JSON round-trip 等值），函数叶子会被当场点名拒绝并指向规范之家。旧扁平写法现在报
+  `unknown runToolLoop option: "…" (its canonical home is config.folding.…; the flat spelling is rejected)`。
+  **升级救命索补强（本片修的缺陷）**：`context` / `retry` 这类**同时容得下数据与函数**的壳，被拒时
+  文案**一次点名两站**——「`this shell holds both data and functions: write data as
+  config.folding.context.<leaf>, and behaviour members as capabilities.hooks.<name> (…) or
+  capabilities.ports.strategy`」。以前只指 `config.folding.context`，宿主照做会撞第二次（那一家拒绝
+  函数叶子），第二次的文案才告诉他 `capabilities.hooks.onBeforeFold`；现在一步到位。装配口
+  `policy.context` 未收窄（函数叶子仍可经此送达），但**随包契约只承诺 `capabilities.*`**。
+  0.27.0 从未发布，最后一个已发布版本是 0.26.0，因此没有已发布宿主受影响。
+
+
 - **`cacheStablePrefix` / `initialMessages` must be written as `config.input.*` (#498 S3, third
   slice — the `input` group's A segment).** Both top-level keys left the `runToolLoop` allowlist;
   writing them flat now throws at startup with the new home spelled out:
@@ -83,6 +88,7 @@
   `config_override_conflict` event (`path: "input.messages"`, `config` wins). 0.26.0 and earlier
   accepted both flat spellings; 0.27.0 was **never published**, so no released host is affected.
 
+
 - **`cacheStablePrefix` / `initialMessages` 必须写成 `config.input.*`（issue #498 S3 第三片，`input` 组 A 段）。**
   这两个键已离开 `runToolLoop` 顶层白名单；再写扁平形态会在启动时抛错，并点名新家：
   `unknown runToolLoop option: "cacheStablePrefix" (its canonical home is
@@ -96,6 +102,12 @@
   `config.input.messages`。装配口不受影响：`policy.session.initialMessages` 照旧给 run 播种；宿主同时写它
   与 `config.input.messages` 时会收到一条 `config_override_conflict`（`path: "input.messages"`，`config` 赢）。
   0.26.0 及以前两种扁平写法都收；**0.27.0 从未发布**，因此没有任何已发布宿主受影响。
+
+- **`initialUserMessage` must be written as `config.input.initialUserMessage` (#498 S3, third slice — the seed key).** The top-level name left the `runToolLoop` allowlist (67 → 58 across the three S3 slices so far); writing it flat now throws `unknown runToolLoop option: "initialUserMessage" (its canonical home is config.input.initialUserMessage; the flat spelling is rejected)`. The engine's read side is unchanged — the expansion phase still writes the value back onto `effectiveOptions.initialUserMessage`. Two secondary facts are worth stating for hosts: the suggestion pool is the allowlist, so the former `did you mean "initialUserMessage"?` noise that used to trail the `initialMessages` rejection is gone (pinned, with its own cell forbidding its return); and `test/helpers/run-direct.js`, the fixture that converged 391 seed write points, is deliberately **not** in the packaged `files` allowlist — `test/contract/**` keeps dependency-free shapes and writes the canonical form inline, with a static guard that derives its rule set from `package.json` `files` and names any contract file importing an unpublished helper.
+
+- **`initialUserMessage` 必须写成 `config.input.initialUserMessage`（issue #498 S3 第三片，种子键）。** 该顶层键已离开 `runToolLoop` 白名单（S3 至今三片累计 67 → 58）；再写扁平形态会在启动时抛 `unknown runToolLoop option: "initialUserMessage" (its canonical home is config.input.initialUserMessage; the flat spelling is rejected)`。引擎**读侧一字未改**——展开相仍把值写回 `effectiveOptions.initialUserMessage`。两个对宿主有意义的次级事实：建议候选池就是白名单，所以过去挂在 `initialMessages` 拒绝文案后面的 `did you mean "initialUserMessage"?` 噪声**随之消失**（已钉，并另加一格禁止它回来）；以及收敛了 391 处种子写点的夹具 `test/helpers/run-direct.js` **刻意不在**随包的 `files` 白名单里——`test/contract/**` 保持无依赖形状、就地写规位形态，另有一条静态守卫把判据**从 `package.json` 的 `files` 派生**，任何契约文件 import 未发布的 helper 都会红并点名。
+
+
 
 ### Added
 
