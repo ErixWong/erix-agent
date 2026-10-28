@@ -439,8 +439,12 @@ test("diagnostics sink failure is recorded in result.unpersisted as a delivery f
       },
     },
     // 观察者通道仍正常：保证 loop 不会因缺 diagnostics 语义而改变终止行为。
-    onPersistenceError: (error) => {
-      sinkErrors.push(error);
+    capabilities: {
+      hooks: {
+        onPersistenceError: (error) => {
+          sinkErrors.push(error);
+        },
+      },
     },
   });
 
@@ -527,7 +531,7 @@ test("minimal store (required methods only) runs to completion with one-shot cap
       return "worked";
     },
     completion: false,
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
 
   // run 正常执行（含工具调用），仅不支持中途 crash resume

@@ -43,7 +43,7 @@ test("streams text deltas and keeps the batch loop result", async () => {
     initialUserMessage: "hello",
     executeTool: async () => "unused",
     stream: true,
-    onDelta: (chunk) => streamedChunks.push(chunk),
+    capabilities: { hooks: { onDelta: (chunk) => streamedChunks.push(chunk) } },
   });
 
   const batchProvider = {
@@ -89,7 +89,7 @@ test("passes deltas through before chatStream returns when retry is disabled", a
     initialUserMessage: "hello",
     executeTool: async () => "unused",
     stream: true,
-    onDelta: (chunk) => order.push(`onDelta:${chunk}`),
+    capabilities: { hooks: { onDelta: (chunk) => order.push(`onDelta:${chunk}`) } },
   });
 
   assert.deepEqual(order, [
@@ -123,14 +123,18 @@ test("isolates streaming observer failures from a successful provider call", asy
     initialUserMessage: "task",
     executeTool: async () => "unused",
     stream: true,
-    onDelta: () => {
-      throw new Error("delta observer failed");
+    capabilities: {
+      hooks: {
+        onDelta: () => {
+          throw new Error("delta observer failed");
+        },
+        onUsage: () => {
+          throw new Error("usage observer failed");
+        },
+        onEvent: (event) => events.push(event),
+        onObserverError: (error) => reported.push(error.message),
+      },
     },
-    onUsage: () => {
-      throw new Error("usage observer failed");
-    },
-    onEvent: (event) => events.push(event),
-    onObserverError: (error) => reported.push(error.message),
     retry: {
       attempts: 1,
       backoffBaseMs: 0,
@@ -173,10 +177,14 @@ test("isolates streaming observer failures while flushing a retried attempt", as
     initialUserMessage: "task",
     executeTool: async () => "unused",
     stream: true,
-    onDelta: () => {
-      throw new Error("queued observer failed");
+    capabilities: {
+      hooks: {
+        onDelta: () => {
+          throw new Error("queued observer failed");
+        },
+        onObserverError: (error) => reported.push(error.message),
+      },
     },
-    onObserverError: (error) => reported.push(error.message),
     retry: {
       attempts: 1,
       backoffBaseMs: 0,
@@ -207,8 +215,12 @@ test("keeps streaming functional when observer error reporting is not configured
       initialUserMessage: "task",
       executeTool: async () => "unused",
       stream: true,
-      onDelta: () => {
-        throw new Error("unhandled observer failed");
+      capabilities: {
+        hooks: {
+          onDelta: () => {
+            throw new Error("unhandled observer failed");
+          },
+        },
       },
     });
 
@@ -247,7 +259,7 @@ test("holds deltas until the successful attempt when retry is enabled", async ()
     initialUserMessage: "hello",
     executeTool: async () => "unused",
     stream: true,
-    onDelta: (chunk) => order.push(`onDelta:${chunk}`),
+    capabilities: { hooks: { onDelta: (chunk) => order.push(`onDelta:${chunk}`) } },
     retry: {
       attempts: 1,
       backoffBaseMs: 0,
@@ -299,7 +311,7 @@ test("streams tool-loop responses while executing tools normally", async () => {
     },
     completion: false,
     stream: true,
-    onDelta: (chunk) => streamedChunks.push(chunk),
+    capabilities: { hooks: { onDelta: (chunk) => streamedChunks.push(chunk) } },
   });
 
   assert.equal(result.finalText, "你好");

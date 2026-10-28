@@ -47,7 +47,7 @@ test("no model metadata assembly emits exactly one model_metadata_missing (issue
     executeTool: async () => "unused",
     store: createMemoryTranscriptStore(),
     runId: "metadata-missing-none",
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
 
   assert.equal(result.finalText, "done");
@@ -84,7 +84,7 @@ test("the diagnostic also reaches the assemblyPort emit sink and a store-less ru
     initialUserMessage: "start",
     executeTool: async () => "unused",
     runId: "metadata-missing-storeless",
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
   assert.equal(noticesOf(events).length, 1);
 });
@@ -101,7 +101,7 @@ test("complete model metadata emits zero model_metadata_missing and keeps compac
     completion: false,
     store: createMemoryTranscriptStore(),
     runId: "metadata-missing-complete",
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
 
   assert.equal(result.finalText, "done");
@@ -123,7 +123,7 @@ test("the diagnostic does not repeat across rounds or runs (issue #182)", async 
     completion: false,
     store: createMemoryTranscriptStore(),
     runId: "metadata-missing-multiround",
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
 
   assert.equal(result.rounds, 6);
@@ -138,7 +138,7 @@ test("the diagnostic does not repeat across rounds or runs (issue #182)", async 
     executeTool: async () => "unused",
     store: createMemoryTranscriptStore(),
     runId: "metadata-missing-second-run",
-    onEvent: (event) => second.push(event),
+    capabilities: { hooks: { onEvent: (event) => second.push(event) } },
   });
   assert.equal(noticesOf(second).length, 1);
   assert.equal(second[0].runId, "metadata-missing-second-run");
@@ -154,7 +154,7 @@ test("partial metadata still disables the budget and reports the resolved output
     modelMetadata: { contextWindowTokens: 131072 },
     store: createMemoryTranscriptStore(),
     runId: "metadata-missing-partial",
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
 
   const notices = noticesOf(events);
@@ -176,7 +176,7 @@ test("an explicit outputHygiene.limit is reported instead of the 4096 fallback",
     outputHygiene: { limit: 1234 },
     store: createMemoryTranscriptStore(),
     runId: "metadata-missing-explicit-limit",
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
 
   const notices = noticesOf(events);
@@ -195,7 +195,7 @@ test("no diagnostic when the host supplies its own budgetTokens (compaction stay
     context: { budgetTokens: 5000 },
     store: createMemoryTranscriptStore(),
     runId: "metadata-missing-explicit-budget",
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
 
   assert.equal(noticesOf(events).length, 0);
@@ -215,7 +215,7 @@ test("complete metadata keeps the derived output limit and budget numbers unchan
     completion: false,
     store,
     runId: "metadata-missing-hygiene-unchanged",
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
 
   assert.equal(noticesOf(events).length, 0);
@@ -243,7 +243,7 @@ test("metadata reachable through modelConfig or a metadata-carrying context also
       executeTool: async () => "unused",
       store: createMemoryTranscriptStore(),
       runId,
-      onEvent: (event) => events.push(event),
+      capabilities: { hooks: { onEvent: (event) => events.push(event) } },
       ...options,
     });
     assert.equal(noticesOf(events).length, 0, runId);
@@ -263,10 +263,14 @@ test("the diagnostic fires before the first provider call, so a host can bail ou
       store: createMemoryTranscriptStore(),
       runId: "metadata-missing-host-abort",
       signal: controller.signal,
-      onEvent: (event) => {
-        seen.push(event.type);
-        // 宿主看到诊断就停机：证明事件在调 provider 之前就到达。
-        if (event.type === EVENT_TYPE) controller.abort();
+      capabilities: {
+        hooks: {
+          onEvent: (event) => {
+            seen.push(event.type);
+            // 宿主看到诊断就停机：证明事件在调 provider 之前就到达。
+            if (event.type === EVENT_TYPE) controller.abort();
+          },
+        },
       },
     }),
   );
@@ -287,11 +291,15 @@ test("startup diagnostic host-callback throw is isolated and the run continues (
     executeTool: async () => "ok",
     persistence: "none",
     completion: false,
-    onEvent: (event) => {
-      events.push(event);
-      throw new Error("host onEvent blew up");
+    capabilities: {
+      hooks: {
+        onEvent: (event) => {
+          events.push(event);
+          throw new Error("host onEvent blew up");
+        },
+        onObserverError: (error, context) => observerErrors.push({ error, context }),
+      },
     },
-    onObserverError: (error, context) => observerErrors.push({ error, context }),
   });
 
   assert.equal(result.finalText, "done");
@@ -319,8 +327,12 @@ test("startup diagnostic throw plus abort: the abort is the only thing that ends
       persistence: "none",
       completion: false,
       signal: controller.signal,
-      onEvent: () => { controller.abort(); throw new Error("host onEvent blew up"); },
-      onObserverError: (error) => observerErrors.push(error),
+      capabilities: {
+        hooks: {
+          onEvent: () => { controller.abort(); throw new Error("host onEvent blew up"); },
+          onObserverError: (error) => observerErrors.push(error),
+        },
+      },
     }),
     (error) => {
       assert.equal(error.termination.reason, "aborted", "终局来自 abort，不是来自抛错");

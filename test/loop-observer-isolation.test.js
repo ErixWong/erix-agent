@@ -109,11 +109,15 @@ test("pr-b #173: a throwing onEvent is isolated into onObserverError and the run
     provider,
     runId: "observer-on-event-isolated",
     store: createMemoryTranscriptStore(),
-    onEvent: (event) => {
-      events.push(event.type);
-      throw boom; // 每个事件都抛（含启动期的 model_metadata_missing 直调路径）
+    capabilities: {
+      hooks: {
+        onEvent: (event) => {
+          events.push(event.type);
+          throw boom; // 每个事件都抛（含启动期的 model_metadata_missing 直调路径）
+        },
+        onObserverError: observers.callback,
+      },
     },
-    onObserverError: observers.callback,
   });
 
   assert.equal(result.finalText, "done");
@@ -162,11 +166,15 @@ test("pr-b #173: onEvent is isolated on every event type, not just the first one
     const result = await runToolLoop({
       ...BASE_OPTIONS,
       provider,
-      onEvent: (event) => {
-        seen.push(event.type);
-        if (event.type === eventType) throw new Error(`boom-${eventType}`);
+      capabilities: {
+        hooks: {
+          onEvent: (event) => {
+            seen.push(event.type);
+            if (event.type === eventType) throw new Error(`boom-${eventType}`);
+          },
+          onObserverError: observers.callback,
+        },
       },
-      onObserverError: observers.callback,
     });
 
     assert.equal(result.finalText, "done", `${eventType} 抛错后 run 照常跑完`);
@@ -202,11 +210,15 @@ test("pr-b #173: a throwing onRound is isolated after the round was persisted an
     runId: "observer-on-round-isolated",
     maxRounds: 4,
     // onRound 是被 await 的：同步 throw 与 rejected Promise 后果同构，都在隔离通道内
-    onRound: async (record) => {
-      rounds.push(record.round);
-      throw boom;
+    capabilities: {
+      hooks: {
+        onRound: async (record) => {
+          rounds.push(record.round);
+          throw boom;
+        },
+        onObserverError: observers.callback,
+      },
     },
-    onObserverError: observers.callback,
   });
 
   assert.deepEqual(result.termination, { reason: "end_turn" }, "onRound 抛错不再改写终局");
@@ -237,12 +249,16 @@ test("pr-b #173: a throwing onToolResult keeps the ORIGINAL engine result and re
   const result = await runToolLoop({
     ...BASE_OPTIONS, // executeTool 固定返回 "ok"
     provider,
-    onToolResult: async (name) => {
-      seen.push(name);
-      throw boom; // 宿主改写结果时抛错
+    capabilities: {
+      hooks: {
+        onToolResult: async (name) => {
+          seen.push(name);
+          throw boom; // 宿主改写结果时抛错
+        },
+        onEvent: (event) => events.push(event.type),
+        onObserverError: observers.callback,
+      },
     },
-    onEvent: (event) => events.push(event.type),
-    onObserverError: observers.callback,
   });
 
   assert.equal(result.finalText, "done");
@@ -268,8 +284,12 @@ test("pr-b #173: a rejected onToolResult promise also falls back to the original
   const result = await runToolLoop({
     ...BASE_OPTIONS,
     provider,
-    onToolResult: () => Promise.reject(new Error("async rewrite failed")),
-    onObserverError: observers.callback,
+    capabilities: {
+      hooks: {
+        onToolResult: () => Promise.reject(new Error("async rewrite failed")),
+        onObserverError: observers.callback,
+      },
+    },
   });
 
   assert.deepEqual(result.termination, { reason: "end_turn" });
@@ -290,8 +310,12 @@ test("pr-b #173: a successful onToolResult rewrite still replaces the result (fa
   const result = await runToolLoop({
     ...BASE_OPTIONS,
     provider,
-    onToolResult: (name, content) => `${content}:${name}`,
-    onObserverError: observers.callback,
+    capabilities: {
+      hooks: {
+        onToolResult: (name, content) => `${content}:${name}`,
+        onObserverError: observers.callback,
+      },
+    },
   });
 
   assert.equal(toolResultContentOf(provider.requests[1]), "ok:work");
@@ -316,11 +340,15 @@ test("pr-b #173: a throwing onDelta is isolated into onObserverError and the run
     ...BASE_OPTIONS,
     provider,
     stream: true,
-    onDelta: (chunk) => {
-      deltas.push(chunk);
-      throw new Error(`host onDelta blew up on ${chunk}`);
+    capabilities: {
+      hooks: {
+        onDelta: (chunk) => {
+          deltas.push(chunk);
+          throw new Error(`host onDelta blew up on ${chunk}`);
+        },
+        onObserverError: observers.callback,
+      },
     },
-    onObserverError: observers.callback,
   });
 
   assert.equal(result.finalText, "done");
@@ -350,11 +378,15 @@ test("pr-b #173: a throwing onReasoningDelta is isolated and names its own chann
     ...BASE_OPTIONS,
     provider,
     stream: true,
-    onReasoningDelta: (chunk) => {
-      chunks.push(chunk);
-      throw new Error("host onReasoningDelta blew up");
+    capabilities: {
+      hooks: {
+        onReasoningDelta: (chunk) => {
+          chunks.push(chunk);
+          throw new Error("host onReasoningDelta blew up");
+        },
+        onObserverError: observers.callback,
+      },
     },
-    onObserverError: observers.callback,
   });
 
   assert.equal(result.finalText, "done");
@@ -380,11 +412,15 @@ test("pr-b #173: a throwing onToolCall is isolated and names its own channel", a
     ...BASE_OPTIONS,
     provider,
     stream: true,
-    onToolCall: (fragment) => {
-      fragments.push(fragment);
-      throw new Error("host onToolCall blew up");
+    capabilities: {
+      hooks: {
+        onToolCall: (fragment) => {
+          fragments.push(fragment);
+          throw new Error("host onToolCall blew up");
+        },
+        onObserverError: observers.callback,
+      },
     },
-    onObserverError: observers.callback,
   });
 
   assert.equal(result.finalText, "done");
@@ -416,13 +452,17 @@ test("pr-b #173: a throwing onUsage is isolated and usage accounting is unaffect
     ...BASE_OPTIONS,
     provider,
     stream: true,
-    onUsage: () => {
-      throw new Error("host onUsage blew up");
+    capabilities: {
+      hooks: {
+        onUsage: () => {
+          throw new Error("host onUsage blew up");
+        },
+        onEvent: (event) => {
+          if (event.type === "usage") usageEvents.push(event.usage);
+        },
+        onObserverError: observers.callback,
+      },
     },
-    onEvent: (event) => {
-      if (event.type === "usage") usageEvents.push(event.usage);
-    },
-    onObserverError: observers.callback,
   });
 
   assert.equal(result.finalText, "done");
@@ -457,11 +497,15 @@ test("pr-b #173: a throwing onJudge is reported to onObserverError (was swallowe
     provider: createFakeProvider([finalResponse("完成")]),
     maxRounds: 1,
     reflection: { enabled: true, judge: { provider: judge } },
-    onJudge: () => {
-      throw new Error("host onJudge blew up");
+    capabilities: {
+      hooks: {
+        onJudge: () => {
+          throw new Error("host onJudge blew up");
+        },
+        onRound: (record) => rounds.push(record.round),
+        onObserverError: observers.callback,
+      },
     },
-    onRound: (record) => rounds.push(record.round),
-    onObserverError: observers.callback,
   });
 
   assert.deepEqual(result.termination, { reason: "judge_done" });
@@ -484,12 +528,16 @@ test("pr-b #173: reportObserverError hands the host (error, {channel, ...}) and 
     const result = await runToolLoop({
       ...BASE_OPTIONS,
       provider,
-      onRound: () => {
-        throw new Error("round blew up");
-      },
-      onObserverError: (error, context) => {
-        seen.push({ error, context });
-        throw new Error("reporter itself blew up"); // 宿主记账口自己炸
+      capabilities: {
+        hooks: {
+          onRound: () => {
+            throw new Error("round blew up");
+          },
+          onObserverError: (error, context) => {
+            seen.push({ error, context });
+            throw new Error("reporter itself blew up"); // 宿主记账口自己炸
+          },
+        },
       },
     });
 
@@ -524,8 +572,12 @@ test("pr-b #173: without onObserverError the isolation still holds and console c
     const result = await runToolLoop({
       ...BASE_OPTIONS,
       provider,
-      onToolResult: () => {
-        throw new Error("unconfigured observer failed");
+      capabilities: {
+        hooks: {
+          onToolResult: () => {
+            throw new Error("unconfigured observer failed");
+          },
+        },
       },
     });
 
@@ -551,11 +603,15 @@ test("pr-b #173: a throwing startup onEvent continues the run with exactly one m
     provider,
     runId: "observer-startup-metadata",
     store: createMemoryTranscriptStore(),
-    onEvent: (event) => {
-      seen.push(event.type);
-      throw new Error("host onEvent blew up at startup");
+    capabilities: {
+      hooks: {
+        onEvent: (event) => {
+          seen.push(event.type);
+          throw new Error("host onEvent blew up at startup");
+        },
+        onObserverError: observers.callback,
+      },
     },
-    onObserverError: observers.callback,
   });
 
   assert.deepEqual(result.termination, { reason: "end_turn" }, "启动期抛错不再是 run 的终止机制");
@@ -582,11 +638,15 @@ test("pr-b #173: a throwing startup onEvent on the capability-degraded path is i
     store,
     runId: "observer-startup-capability",
     // 只放行能力降级事件，其他事件不抛，避免与上一条用例混在一起
-    onEvent: (event) => {
-      seen.push(event.type);
-      if (event.type === "persistence_capability_degraded") throw new Error("startup throw");
+    capabilities: {
+      hooks: {
+        onEvent: (event) => {
+          seen.push(event.type);
+          if (event.type === "persistence_capability_degraded") throw new Error("startup throw");
+        },
+        onObserverError: observers.callback,
+      },
     },
-    onObserverError: observers.callback,
   });
 
   assert.deepEqual(result.termination, { reason: "end_turn" });
@@ -623,7 +683,7 @@ test("pr-b #173: the unified isolation matrix (every observer channel is isolate
         ? createFakeProvider([finalResponse("完成")])
         : createFakeProvider([toolUseResponse(1), finalResponse()]),
       maxRounds: channel === "onJudge" ? 1 : 4,
-      onObserverError: observers.callback,
+      capabilities: { hooks: { onObserverError: observers.callback } },
     };
     if (channel === "onJudge") {
       options.reflection = {

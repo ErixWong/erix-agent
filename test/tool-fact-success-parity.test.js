@@ -38,7 +38,13 @@ async function runOnce(executeTool, { script = [toolRound("call-1"), DONE], opti
     runId: `success-parity-${Math.random().toString(16).slice(2)}`,
     completion: false,
     ...options,
-    onEvent: (event) => events.push(event),
+    // 规位：`onEvent` 与 `options` 可能带来的另一个 `hooks` 叶子必须落在**同一个**容器里。
+    // 并列两个 `capabilities` 键是对象字面量重复键、后者静默胜（S7a 评审记过这个坑），
+    // 这里显式合并 hooks，`options` 侧只覆盖同名叶子。
+    capabilities: {
+      ...options.capabilities,
+      hooks: { onEvent: (event) => events.push(event), ...options.capabilities?.hooks },
+    },
   });
   return events.filter((event) => event?.type === "tool_result").map((event) => event.toolResult);
 }
@@ -157,7 +163,9 @@ for (const entry of MIGRATION_TABLE) {
       script: entry.script ?? [toolRound("call-1"), DONE],
       options: {
         ...(entry.options ?? {}),
-        ...(entry.onToolResult === undefined ? {} : { onToolResult: entry.onToolResult }),
+        ...(entry.onToolResult === undefined
+          ? {}
+          : { capabilities: { hooks: { onToolResult: entry.onToolResult } } }),
       },
     });
     assert.equal(facts.length, 1, `本例必须恰好一条 tool_result，实测 ${facts.length} 条`);
@@ -255,7 +263,7 @@ test("erix.success 迁移等价：复放已完成结果 ⇒ 沿用原记录的�
       calls += 1;
       return "must not execute again";
     },
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
 
   assert.equal(calls, 0, "复放路径不得二次执行 executor");

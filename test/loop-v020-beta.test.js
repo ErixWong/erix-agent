@@ -32,9 +32,13 @@ test("restores a round snapshot and flushes only the successful attempt events",
     initialUserMessage: "hello",
     executeTool: async () => "unused",
     stream: true,
-    onDelta: (delta) => text.push(delta),
-    onReasoningDelta: (delta) => reasoning.push(delta),
-    onEvent: (event) => events.push(event),
+    capabilities: {
+      hooks: {
+        onDelta: (delta) => text.push(delta),
+        onReasoningDelta: (delta) => reasoning.push(delta),
+        onEvent: (event) => events.push(event),
+      },
+    },
     retry: {
       attempts: 1,
       backoffBaseMs: 0,

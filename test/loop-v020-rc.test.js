@@ -577,7 +577,7 @@ test("fails closed when a checkpoint cannot be persisted before a tool", async (
       store,
       runId: "checkpoint-failure-run",
       completion: false,
-      onPersistenceError: () => {},
+      capabilities: { hooks: { onPersistenceError: () => {} } },
     }),
     (error) => error instanceof KitError
       && error.code === "checkpoint_failed"
@@ -612,7 +612,7 @@ test("fails closed after a tool when its executed checkpoint cannot be persisted
       store,
       runId: "post-checkpoint-failure-run",
       completion: false,
-      onPersistenceError: () => {},
+      capabilities: { hooks: { onPersistenceError: () => {} } },
     }),
     (error) => error instanceof KitError
       && error.code === "checkpoint_failed"
@@ -648,7 +648,7 @@ test("none persistence mode does not call a save-only checkpoint writer", async 
     runId: "save-only-run",
     persistence: "none",
     completion: false,
-    onPersistenceError: () => {},
+    capabilities: { hooks: { onPersistenceError: () => {} } },
   });
 
   assert.equal(executions, 1, "save-only store 不应阻止工具执行");
@@ -694,7 +694,7 @@ test("none persistence mode ignores an incomplete store without stopping the loo
     },
     runId: "persistence",
     persistence: "none",
-    onPersistenceError: (error) => errors.push(error),
+    capabilities: { hooks: { onPersistenceError: (error) => errors.push(error) } },
   });
 
   assert.equal(result.finalText, "done");
