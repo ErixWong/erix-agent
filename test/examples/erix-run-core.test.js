@@ -1578,7 +1578,8 @@ test("#314 R1：默认关 ⇒ 透传给引擎的 options 里一个 finalGuard �
   );
   // 「默认不透传」必须是**结构上**的不透传，不是「传了个 undefined」。#498 S6 之后两个键的
   // 规位是 `capabilities.hooks.finalGuard` / `config.guard.finalGuardTimeoutMs`。
-  assert.equal(Object.hasOwn(at(captured.options, "capabilities.hooks") ?? {}, "finalGuard"), false, JSON.stringify(Object.keys(at(captured.options, "capabilities.hooks") ?? {})));
+  assert.ok(captured.options.capabilities.hooks, "#498 S6：hooks 容器必须在场（否则下面这种「不透传」断言会被 `?? {}` 恒真掉）");
+  assert.equal(Object.hasOwn(captured.options.capabilities.hooks, "finalGuard"), false, JSON.stringify(Object.keys(captured.options.capabilities.hooks)));
   assert.equal(Object.hasOwn(captured.options.config, "guard"), false, "默认关时连 guard 组都不该出现（超时也不下发）");
   assert.equal(payload.termination.reason, "end_turn");
   assert.equal(payload.verification.status, "skipped", JSON.stringify(payload.verification));
@@ -1732,7 +1733,8 @@ test("#391 R5：开了 requireDeliverable ⇒ options 里是 bin/final-guard.js 
     { task: "改一行", cwd: repoRoot, maxRounds: 4 },
     makeDeps({ provider: createFakeProvider([DRAFT_END_TURN]), captured }),
   );
-  assert.equal(Object.hasOwn(at(captured.options, "capabilities.checks") ?? {}, "deliverables"), false, "默认关时不许往 options 里塞 deliverables 键（#498 S6 的规位是 capabilities.checks.deliverables）");
+  assert.ok(captured.options.capabilities?.checks === undefined || typeof captured.options.capabilities.checks === "object", "#498 S6：checks 容器若是别的东西必须报错，不许静默当作「没透传」");
+  assert.equal(Object.hasOwn(captured.options.capabilities.checks ?? {}, "deliverables"), false, "默认关时不许往 options 里塞 deliverables 键（#498 S6 的规位是 capabilities.checks.deliverables）");
   assert.equal(payload.diagnostics.finalGuard.enabled, false);
 
   const withDeliverable = {};

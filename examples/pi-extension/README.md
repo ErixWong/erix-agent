@@ -118,12 +118,13 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | `finalGuard` | `finalGuard`（回调） | `capabilities.hooks.finalGuard` |
 | `finalGuardTimeoutMs` | `finalGuardTimeoutMs` | `config.guard.finalGuardTimeoutMs` |
 | `requireDeliverable` / `deliverablePaths` | `deliverables`（`{name, check}` 数组） | `capabilities.checks.deliverables` |
-| `sessionDir` / `transcript` / `async` / `quiet` / `action` / `runId` / `model` | —（本层的落盘与异步面，不是引擎选项） | 不进 `runToolLoop` |
+| `sessionDir` / `transcript` / `async` / `quiet` / `action` / `model` | —（本层的落盘与异步面，不是引擎选项） | 不进 `runToolLoop` |
+| `runId` | `runId` | `config.run.runId`（**会**进引擎选项：它是 run 自己的 id，`finalGuard` / `deliverables` 载荷与落盘文件名都读它）|
 
 留在顶层的只有 `provider` / `executeTool` / `store` / `signal` / `diagnostics`：它们是引擎的适配器端口对象、
 中止信号与错误出口，能力面**没有**它们的规位（`capabilities.ports` 只收壳内实现，不收适配器端口对象）。
 `examples/pi-extension/erix-run-config-migration.test.mjs` 把这张表变成机器判据：逐键去向 +
-「展开后的有效选项与迁移前逐键相等」+ 三条反向证 + 一次离线端到端（真引擎 + 本地脚本化上游）。
+「展开后的有效选项与迁移前逐键相等」+ 三条反向证 + **两次**离线端到端（真引擎 + 本地脚本化上游：同步与异步两条路各一次）。
 
 ## 过程落盘与审计面（issue #207）
 
