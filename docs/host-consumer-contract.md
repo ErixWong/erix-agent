@@ -30,7 +30,7 @@ reflection, stallDetection,
 completion, finalGuard,
 maxTokenContinuations,
 todoStateProvider, semanticStateProvider, partialPersistence,
-modelConfig, modelMetadata, model, expert, user, task, session, requestId,
+modelConfig, modelMetadata, expert, session, requestId,
 toolContext, store, persistence, runId, cwd, deliverables, invalidArguments, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
 onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, config,
@@ -742,14 +742,63 @@ value — so pass plain data (host callbacks belong under capabilities.hooks.<na
 ```
 
 The asymmetry is pinned **as-is**, not papered over: the flat spelling of the group's *other* members
-(`user` / `task` / `model` / `session`, which this slice did **not** touch) still accepts a function
-today and keeps its `typeof` all the way into the tool context, while the canonical home refuses it.
-`test/loop-metadata-keys-slice-498s3a8.test.js` (F1 / F2) is that pin: whoever widens or tightens
-either side sees it go red.
+still accepts a function today and keeps its `typeof` all the way into the tool context, while the
+canonical home refuses it. `test/loop-metadata-keys-slice-498s3a8.test.js` (F1 / F2) is that pin;
+after the A9 slice below it points at `session`, which is the only member of the group still writable
+flat — whoever widens or tightens either side sees it go red.
 
-**The big four are a different slice.** `user` / `task` / `model` / `session` keep their flat spelling
-here; their write points need a fixture-level translation point first (the #528 style), so this slice
-retires four small keys and nothing else (P5-c pins the boundary per key).
+**Flat-spelling version policy for the `metadata` group's A9 segment** (issue #498 S3, the tenth
+slice — the group's *big three*: `user`, `model`, `task`):
+
+| release | writing `user` / `model` / `task` |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
+| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, tenth slice) | **rejected on the spot** — write `config.metadata.user` / `.model` / `.task`. The name gate throws `unknown runToolLoop option: "task" (its canonical home is config.metadata.task; the flat spelling is rejected)` |
+
+The slice was sized **before** it was written, and that measurement is why it needed no fixture: with
+only one key removed from the allowlist the full suite went red in **6 cells for `user`, 5 for `model`,
+13 for `task`** (sum 24; all three removed together **15** ⇒ 9 cells overlap — the union of the three
+per-key failure sets, a method validated against the measured all-four run: union 29 = measured 29), far below the ~150-cell
+threshold that would have required a #521-style translation point in the shared fixture. Nothing was
+translated behind the host's back: every write point moved to its canonical home in the same commit.
+
+Two properties hold, both machine-checked (`test/loop-metadata-keys-slice-498s3a9.test.js`):
+
+* the expansion phase still writes each of them onto `effectiveOptions.user` / `.model` / `.task`, so
+  **the engine's read side is unchanged** — the readers are `toolContextFor` and `modelMetadataFor` in
+  `src/loop/budget.js`, `resolveTaskBrief` in `src/loop/task-brief.js` and the orchestrator
+  destructuring that hands the values over. The leaves stay in `CONFIG_NAMESPACE_SCHEMA.metadata`
+  even though the top-level keys left `RUN_TOOL_LOOP_OPTION_NAMES`: deleting the flat key is **not**
+  deleting the leaf (P2/P3);
+* the same narrowing as A8 applies: a **function value is refused** at the canonical home, and the
+  message says both halves out loud (data only **and** *the engine never calls it, it only forwards the
+  value*). These three values are opaque identity payloads — the engine reads only known fields
+  (`model`'s two window numbers) and forwards the rest.
+
+**`session` was measured and then *returned*, not retired.** It had 19 red cells, so it was not size
+that stopped it: the top-level `session` option and the assembly port's `session` member are the
+**same value** — `assemblyPortOptions(port).session === port.session` (identity, not deep equality),
+and the construction-time conflict message names `port.session` as the source of the very same key.
+The repo's ruling says `config.metadata.session` is **not** a second home for the session port, so
+retiring the flat spelling would have promoted that leaf into exactly that second home. It stays flat
+and the ruling stays intact (S1–S3 pin all three halves).
+
+**These three words live on other planes, and this slice moved none of them:**
+
+| name | other plane | evidence | moved? |
+| --- | --- | --- | --- |
+| `user` | message role `"user"` (round grouping, request user view) | `src/messages/rounds.js`, `src/loop/request-user-view.js`, `test/loop-request-user-invariant.test.js` | **no** (N1) |
+| `user` | the fold-context shell `context.user` | `src/loop/budget.js` (`toolContextFor`'s fallback chain), `src/assembly-validators.js` | **no** |
+| `user` | provider request body field `user` (`extraBody` / `providerOptions`) | `src/providers/*`, `test/providers/request-injection.test.js` | **no** |
+| `model` | the `modelConfig` port (the third station) | `src/assembly.js`, `src/loop/orchestrator.js` | **no** (N3) |
+| `model` | the model-slot field `slots.default.model` | `src/config/slot-provider.js`, `bin/cli.js` | **no** |
+| `model` | the provider request body field `model` | `src/providers/openai.js`, `src/providers/anthropic.js` | **no** |
+| `task` | the fold-context shell `context.task` (explicit task wins over it — as-is) | `src/loop/task-brief.js` (`resolveTaskBrief`), `src/assembly-validators.js` | **no** (N2) |
+| `task` | `task-brief.js`'s string read (`typeof === "string"` + `trim()`) | `src/loop/task-brief.js` | **no** — read side |
+| `task` | the `erix_run` extension's own `task` parameter (`core.run({ task })`) | `examples/pi-extension/erix-run-core.js` | **no** — a different API plane |
+| `session` | the assembly port member `port.session` | `src/assembly.js` (`assemblyPortOptions`) | **no** — same value ⇒ returned |
+| `session` | the CLI `--session <id>` argument (a session id string, fed to `runId`) | `bin/cli.js` | **no** — a different key entirely |
 
 **Suggestion noise is measured, not assumed.** The candidate pool for "did you mean" is the **live**
 allowlist, and `model` sits one edit-distance away from `modelMetadata`. After retirement the exact
