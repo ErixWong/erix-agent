@@ -137,7 +137,9 @@ with exactly one registered exception, `config.input.messages`, the nested alias
 (`src/loop/config-namespace.js`)) and the self-check holds it to two things: a registered alias must
 name a leaf that really exists (a dead entry is a failure), and it must not rename onto a leaf name
 that group already has. It is not a rename table you can grow. **Version scope** (issue #517): the
-`config` namespace has existed since 0.27.0, and up to and including 0.27.0 every leaf name was
+`config` namespace entered the tree at 0.27.0 — a version that was **never published** (the last
+published release is 0.26.0, so the first release a host can actually install with this namespace is
+0.28.0) — and in every tree up to and including 0.27.0 every leaf name was
 verbatim a top-level option name; **since 0.28.0 (the issue #517 preparatory refactor) a leaf may
 have no top-level alias, while every top-level option must still have exactly one home** — the
 self-check is **one-directional** (top-level option → exactly one home: config surface / capability /
