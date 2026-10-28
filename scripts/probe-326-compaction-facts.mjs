@@ -83,7 +83,6 @@ console.log("journal fold fact rows:", JSON.stringify(foldFacts1));
 const p2 = createProvider(runId, script);
 const second = await runToolLoop({
   provider: p2,
-  task: "continue",
   resume: true,
   runId,
   store,
@@ -91,7 +90,9 @@ const second = await runToolLoop({
   maxRounds: 3,
   completion: false,
   reflection: false,
-  config: { folding: { context: { budgetTokens: 400, keepRounds: 0, strategy: "fold-llm" } } },
+  // #498 S3 (`metadata` A9): the flat `task` is retired at the name gate; its canonical home is
+  // `config.metadata.task` (the expansion phase writes it back onto `effectiveOptions.task`).
+  config: { metadata: { task: "continue" }, folding: { context: { budgetTokens: 400, keepRounds: 0, strategy: "fold-llm" } } },
 });
 console.log("resume termination:", second.termination.reason);
 console.log("resume summarizer calls:", p2.summaryRequests.length);
