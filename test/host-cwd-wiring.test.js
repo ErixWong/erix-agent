@@ -347,5 +347,7 @@ test("#391 R1-e `erix_run`：buildLoopOptions 把 params.cwd 透传下去", () =
     signal: controller.signal,
     runId: "run-cwd",
   });
-  assert.equal(options.cwd, "/work/proj");
+  // #498 S6：`cwd` 的规位是 `config.run.cwd`（顶层不再留扁平位）——`canonicalLoopOption`
+  // 两侧都断：规位读不到值就红，扁平位同时在场也红。
+  assert.equal(canonicalLoopOption(options, "config.run.cwd"), "/work/proj");
 });
