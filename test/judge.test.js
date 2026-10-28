@@ -473,7 +473,7 @@ test("round judge emits an onJudge decision event", async () => {
     maxRounds: 1,
     completion: false,
     reflection: { enabled: true, judge: { provider: judge } },
-    onJudge: (info) => events.push(info),
+    capabilities: { hooks: { onJudge: (info) => events.push(info) } },
   });
 
   assert.deepEqual(events, [{
@@ -501,8 +501,12 @@ test("onJudge callback errors do not abort the loop", async () => {
     maxRounds: 1,
     completion: false,
     reflection: { enabled: true, judge: { provider: judge } },
-    onJudge: () => {
-      throw new Error("observer failed");
+    capabilities: {
+      hooks: {
+        onJudge: () => {
+          throw new Error("observer failed");
+        },
+      },
     },
   });
 
@@ -1017,7 +1021,7 @@ test("round judge errors degrade to the existing loop path", async () => {
     maxRounds: 2,
     completion: false,
     reflection: { enabled: true, judge: { provider: judge } },
-    onJudge: (info) => events.push(info),
+    capabilities: { hooks: { onJudge: (info) => events.push(info) } },
   });
 
   assert.deepEqual(result.termination, { reason: "end_turn" });
@@ -1351,7 +1355,7 @@ test("near-limit interception feeds an extension decision back into the governor
       maxRoundsCap: 20,
       judge: { provider: judge },
     },
-    onJudge: (info) => events.push(info),
+    capabilities: { hooks: { onJudge: (info) => events.push(info) } },
   });
 
   assert.equal(result.rounds, 7);
@@ -1624,7 +1628,7 @@ test("transparent interception emits an executed onJudge event when approved", a
       judgeIntervalRound: 1,
       judge: { provider: judge },
     },
-    onJudge: (info) => events.push(info),
+    capabilities: { hooks: { onJudge: (info) => events.push(info) } },
   });
 
   assert.deepEqual(events, [{
@@ -1671,7 +1675,7 @@ test("transparent interception emits a blocked onJudge event when denied", async
       judgeIntervalRound: 1,
       judge: { provider: judge },
     },
-    onJudge: (info) => events.push(info),
+    capabilities: { hooks: { onJudge: (info) => events.push(info) } },
   });
 
   assert.deepEqual(executed, [1]);
@@ -1719,7 +1723,7 @@ test("transparent interception executes on-track calls even when the judge repor
       judgeIntervalRound: 1,
       judge: { provider: judge },
     },
-    onJudge: (info) => events.push(info),
+    capabilities: { hooks: { onJudge: (info) => events.push(info) } },
   });
 
   // 工具照常执行（第二个调用没有被取消）
@@ -1782,7 +1786,7 @@ test("transparent interception still blocks done:false calls marked off-track", 
       judgeIntervalRound: 1,
       judge: { provider: judge },
     },
-    onJudge: (info) => events.push(info),
+    capabilities: { hooks: { onJudge: (info) => events.push(info) } },
   });
 
   // done:false + 非 on_track（off_track/uncertain/缺失）维持拦截：第二个调用未执行
@@ -1822,7 +1826,7 @@ test("transparent interception emits degraded when the judge fails", async () =>
       judgeIntervalRound: 1,
       judge: { provider: judge },
     },
-    onJudge: (info) => events.push(info),
+    capabilities: { hooks: { onJudge: (info) => events.push(info) } },
   });
 
   assert.deepEqual(events, [{
@@ -1962,7 +1966,7 @@ test("round judge decision event carries the call usage for transcript accountin
     maxRounds: 1,
     completion: false,
     reflection: { enabled: true, judge: { provider: judge } },
-    onJudge: (info) => events.push(info),
+    capabilities: { hooks: { onJudge: (info) => events.push(info) } },
   });
 
   assert.deepEqual(events, [{
@@ -2002,7 +2006,7 @@ test("round judge parse failure still reports usage on the degraded event (revie
     maxRounds: 1,
     completion: false,
     reflection: { enabled: true, judge: { provider: judge } },
-    onJudge: (info) => events.push(info),
+    capabilities: { hooks: { onJudge: (info) => events.push(info) } },
   });
 
   assert.deepEqual(result.termination, { reason: "end_turn" });
@@ -2046,7 +2050,7 @@ test("intercept judge parse failure still reports usage on the degraded event (r
       judgeIntervalRound: 1,
       judge: { provider: judge },
     },
-    onJudge: (info) => events.push(info),
+    capabilities: { hooks: { onJudge: (info) => events.push(info) } },
   });
 
   assert.deepEqual(events, [{
@@ -2096,7 +2100,7 @@ test("intercept judge event carries usage and omits it on timeout (issue #33 B)"
       judgeIntervalRound: 1,
       judge: { provider: judge },
     },
-    onJudge: (info) => events.push(info),
+    capabilities: { hooks: { onJudge: (info) => events.push(info) } },
   });
 
   assert.deepEqual(events, [{
@@ -2145,7 +2149,7 @@ test("intercept judge event carries usage and omits it on timeout (issue #33 B)"
       judgeInterceptTimeoutMs: 5,
       judge: { provider: slowJudge },
     },
-    onJudge: (info) => timeoutEvents.push(info),
+    capabilities: { hooks: { onJudge: (info) => timeoutEvents.push(info) } },
   });
 
   assert.deepEqual(timeoutEvents, [{
@@ -2205,7 +2209,7 @@ test("readonly tools pass through interception even when off-track, exec stays b
       judgeIntervalRound: 1,
       judge: { provider: judge },
     },
-    onJudge: (info) => events.push(info),
+    capabilities: { hooks: { onJudge: (info) => events.push(info) } },
   });
 
   // 只读 readFile 照常执行；exec 在同决策下仍 blocked。
@@ -2281,7 +2285,7 @@ test("readonly pass-through also applies to uncertain direction", async () => {
       judgeIntervalRound: 1,
       judge: { provider: judge },
     },
-    onJudge: (info) => events.push(info),
+    capabilities: { hooks: { onJudge: (info) => events.push(info) } },
   });
 
   assert.deepEqual(executed, ["nonce", "anchor"]);

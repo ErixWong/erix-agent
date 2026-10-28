@@ -95,11 +95,13 @@ test("abort in the window after the end-turn judge returns terminates as aborted
     initialUserMessage: "把活干完",
     executeTool: async () => "unused",
     reflection: harness.reflection,
-    capabilities: harness.capabilities,
+    capabilities: {
+      ...harness.capabilities,
+      // `onJudge` 是宿主回调，调用点正好落在「judge 已返回、终局尚未定」这一段——
+      // 也就是宿主用户点停止的真实时刻。
+      hooks: { onJudge: () => controller.abort(new Error("user stop")) },
+    },
     signal: controller.signal,
-    // `onJudge` 是宿主回调，调用点正好落在「judge 已返回、终局尚未定」这一段——
-    // 也就是宿主用户点停止的真实时刻。
-    onJudge: () => controller.abort(new Error("user stop")),
   });
 
   const error = await settle(run);
@@ -191,12 +193,14 @@ test("abort in the judge nudge window terminates as aborted and issues no furthe
     initialUserMessage: "把活干完",
     executeTool: async () => "unused",
     reflection: harness.reflection,
-    capabilities: harness.capabilities,
+    capabilities: {
+      ...harness.capabilities,
+      // onJudge 的调用点正好落在「judge 已返回、终局（nudge→continue）尚未执行」这一段
+      hooks: { onJudge: () => controller.abort(new Error("user stop")) },
+    },
     signal: controller.signal,
     maxRounds: 4,
     stallDetection: false,
-    // onJudge 的调用点正好落在「judge 已返回、终局（nudge→continue）尚未执行」这一段
-    onJudge: () => controller.abort(new Error("user stop")),
   }));
 
   assert.ok(error, "nudge-continue 路径上的中止必须抛错（#180 语义），而不是安静地返回 max_rounds_cap");
@@ -308,8 +312,12 @@ test("abort in the tail of the last budget round terminates as aborted before th
     stallDetection: false,
     signal: controller.signal,
     // 第二轮（= 最后一个预算轮）的记录已经落定，宿主在此按下停止
-    onRound: (record) => {
-      if (record.round === 2) controller.abort(new Error("user stop at the last round"));
+    capabilities: {
+      hooks: {
+        onRound: (record) => {
+          if (record.round === 2) controller.abort(new Error("user stop at the last round"));
+        },
+      },
     },
   }));
 
@@ -341,9 +349,13 @@ test("abort reaching the cap finalization with no value-added call left still te
       completion: false,
       stallDetection: false,
       signal: controller.signal,
-      onRound: (record) => {
-        if (record.round === 2) controller.abort(new Error("user stop before finalization"));
+      capabilities: {
+        hooks: {
+          onRound: (record) => {
+          if (record.round === 2) controller.abort(new Error("user stop before finalization"));
+        },
       },
+    },
     }));
   } finally {
     if (previous === undefined) delete process.env.ERIX_NO_FORCED_FINAL;

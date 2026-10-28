@@ -60,7 +60,7 @@ async function runCase({ lastRound, wrapupResponse, judgeDecision = JUDGE_DONE }
     maxRounds: 4,
     completion: false,
     reflection: { enabled: true, roundJudge: true, judge: { provider: judge } },
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
   return { result, events, provider, judge };
 }
