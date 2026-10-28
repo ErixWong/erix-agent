@@ -1399,8 +1399,15 @@ call time ⇒ startup throws" rule (`assertAssemblyOverrideConflicts`). After th
 is **unreachable** — the override name hits the name gate first — so the sample moved to
 `todoStateProvider` (a permanent top-level option `policy` can still give) and `reflection` keeps a
 **reverse pin** that says so. The same is true one level up: with no flat config twin left, the
-flat-versus-`config` conflict branch can no longer be reached from the **call** side; the surviving
-carrier of retired flat names is the assembly port's `policy`, and the pins use that route.
+  flat-versus-`config` conflict branch can no longer be reached from the **call** side, and #545 closed it
+  from the **port** side as well: `policy` carries **data only** (the accepted key set is **derived** —
+  every `config` schema leaf plus the two containers `config` / `capabilities`), and every accepted leaf is
+  **translated** into its canonical path (`policy.replayPolicy` → `config.run.replayPolicy`), so **no**
+  `policy` key can be named by the override channel any more. The `port.policy.<key>` origin is therefore
+  unreachable, and the live sample is a port-derived key: `session`, origin `port.session` (see
+  `assertAssemblyOverrideConflicts` (`src/assembly.js`)); `policy` keeps its own **reverse pin** naming the
+  rejection that replaced that route. The flat-versus-`config` branch is an internal invariant that throws
+  now, and the code names the three sources that closed it plus the cells covering each.
 
 Measured red cells: **220** on the single delete; **164** once the fixture translated the spelling;
 **40** after the split rule (function values only) was added to the fixture; **0** after the
@@ -2018,8 +2025,13 @@ The required methods are checked at assembly/startup: `modelConfig.resolve`,
 either `provider.chat` or `provider.chatStream`, `tools.definitions`,
 `tools.executeTool`, and `session.id`. When supplied, `store` must implement
 the two required `TranscriptStore` methods — `appendRound` and `load`. A
-missing required method throws `TypeError` before the run starts. `policy`
-contains only named `runToolLoop` options; unknown policy keys are rejected.
+missing required method throws `TypeError` before the run starts. `policy` carries **data only** (#545): its accepted key set is
+  **derived** — every `config` schema leaf plus the two containers `config` / `capabilities` — and every
+  accepted leaf is translated into `config.<group>.<leaf>`, where an explicit `policy.config` tree wins over
+  a translated leaf and the port's derived leaves only fill holes. A capability name is rejected with a
+  pointer to `policy.capabilities.<group>.<leaf>`; a port member (`provider` / `tools` / `executeTool` /
+  `store` / `modelConfig` / `session` / `signal`) is rejected with a pointer to the port itself, because a
+  second copy of a capability would mean two sources for one thing.
 
 ### TranscriptStore capability tiers (issue #78)
 

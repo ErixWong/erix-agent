@@ -1162,8 +1162,13 @@ capabilities.hooks.onReflection`），而写在 `capabilities.hooks.onReflection
 调用期又给 ⇒ 启动期抛」那条规则（`assertAssemblyOverrideConflicts`）的活样本。退役之后那个样本
 **测不到**了——覆盖名先撞名称闸口——所以样本换成 `todoStateProvider`（第三站的永久顶层选项，
 `policy` 仍能给它），而 `reflection` 留一条**反向钉**说明这件事。同一条结论往上还有一层：既然没有
-任何扁平配置孪生剩下，「扁平 vs `config`」那条冲突分支已经不可能从**调用**侧走到；退役扁平名的
-存活载体是装配口的 `policy`，钉子就走那条路线。
+任何扁平配置孪生剩下，「扁平 vs `config`」那条冲突分支已经不可能从**调用**侧走到，而 #545
+  把它从**端口**这一侧也关掉了：`policy` **只装数据**（可接受键集是**派生**的——全部 `config` schema 叶子
+  加两个容器 `config` / `capabilities`），且每个被接受的叶子都**翻译**成规范路径（`policy.replayPolicy` →
+  `config.run.replayPolicy`），于是**没有任何** `policy` 键还能被覆盖通道点名。`port.policy.<key>` 那个来源
+  因此不可达，活样本换成端口派生键：`session`，来源 `port.session`（见 `assertAssemblyOverrideConflicts`
+  （`src/assembly.js`））；`policy` 自己留一条**反向钉**，把取代那条路线的拒绝文案钉住。「扁平 vs
+  `config`」那一支现在是一条**会抛的内部不变量**，代码里写明了关死它的三条来源与各自的覆盖格。
 
 实测红格：单删 **220**；夹具翻译拼写后 **164**；夹具加上分家规则（只搬函数值）后 **40**；手写点
 迁移完成后 **0**（`run` 组的两条账目钉、A11 / A14 / A15 / A20 / A21 / A22 / A23b 的邻接清单、
@@ -1657,8 +1662,11 @@ await runToolLoop({ assemblyPort });
 和 `policy` 也可以是同步的零参工厂。启动时必须具备 `modelConfig.resolve`、
 `provider.chat` 或 `provider.chatStream`、`tools.definitions`、`tools.executeTool`、
 `session.id`。若提供 `store`，它必须具备两个必需方法 `appendRound` 与 `load`；
-缺必需方法在 run 开始前抛 `TypeError`。`policy` 只装具名的 `runToolLoop` 选项；
-陌生 policy 键会被拒绝。
+缺必需方法在 run 开始前抛 `TypeError`。`policy` **只装数据**（#545）：它的可接受键集是**派生**的——全部 `config` schema 叶子加两个容器
+  `config` / `capabilities`——且每个被接受的叶子都翻译成 `config.<组>.<叶>`；显式 `policy.config` 树压过翻译
+  叶，端口派生叶**只补洞**。能力名被拒时判词指向 `policy.capabilities.<组>.<叶>`；端口成员（`provider` /
+  `tools` / `executeTool` / `store` / `modelConfig` / `session` / `signal`）被拒时判词指向端口本身——同一能力
+  再带一份，就是两个来源。
 
 ### TranscriptStore capability 分级（issue #78）
 
