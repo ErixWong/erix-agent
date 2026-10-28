@@ -799,7 +799,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-run-slice-498s3a20.test.js` | 1 | `completion`×1 |
 | `test/loop-assembly-derived-names-544.test.js` | 11 | `completion`×7, `session`×2, `initialMessages`×1, `tools`×1 |
 | `test/loop-run-slice-498s3a21.test.js` | 5 | `tools`×4, `completion`×1 |
-| `test/loop-run-slice-498s3a22.test.js` | 0 | |
+| `test/loop-run-slice-498s3a22.test.js` | 1 | `tools`×1 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 
