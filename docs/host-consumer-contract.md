@@ -701,6 +701,74 @@ happened: this change removes no flat key.
 Everything in this section and the next describes the tree on this branch (the 0.28.0 line —
 `package.json` is bumped by the release cut, not by a feature change).
 
+**Flat-spelling version policy for the `metadata` group's A8 segment** (issue #498 S3, the ninth
+slice — four small keys of `config.metadata`: `modelMetadata`, `requestId`, `toolContext`, `expert`):
+
+| release | writing `modelMetadata` / `requestId` / `toolContext` / `expert` |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
+| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, ninth slice) | **rejected on the spot** — write `config.metadata.modelMetadata` / `.requestId` / `.toolContext` / `.expert`. The name gate throws `unknown runToolLoop option: "modelMetadata" (its canonical home is config.metadata.modelMetadata; the flat spelling is rejected)` |
+
+Two properties hold, both machine-checked:
+
+* the expansion phase still writes each of them onto `effectiveOptions.modelMetadata` /
+  `.requestId` / `.toolContext` / `.expert`, so **the engine's read side is unchanged** — the readers
+  are `modelMetadataFor` / `toolContextFor` in `src/loop/budget.js` and the orchestrator
+  destructuring that hands the values over, none of which was touched. The leaves stay in
+  `CONFIG_NAMESPACE_SCHEMA.metadata` (`src/loop/config-namespace.js`) even though the top-level keys
+  left `RUN_TOOL_LOOP_OPTION_NAMES` (`src/loop/option-normalization.js`): deleting the flat key is
+  **not** deleting the leaf. Retirement is a *write-spelling* change only, exactly like the eight
+  slices before it;
+* the rejection message names **one station and only one**. Nothing is registered for these four names
+  in `CAPABILITY_SLOT_DESTINATIONS` (`src/loop/capabilities-namespace.js`), so the message carries
+  **no** `capabilities.*` hint. Derived, not promised: a behaviour member would make the second
+  station appear on its own.
+
+**The narrowing this slice accepts, stated plainly.** These four values are **opaque identity
+payloads** — the engine never calls them, it only **forwards** them (into the tool context, the judge
+brief and the budget derivation), and the only engine-read fields inside them are the two numbers of
+`modelMetadata` (`contextWindowTokens` / `maxOutputTokens`). Moving them into `config.metadata.*`
+therefore costs one thing: a **function value is refused** at intake, because the `config` subtree must
+survive a JSON round-trip unchanged. The rejection says both halves out loud — *this leaf holds data
+only* **and** *the engine never called it, it only forwards the value* — so a host cannot read it as
+"a capability was lost":
+
+```text
+config.metadata.expert is not accepted: "expert" is a function, and the config namespace holds data
+only (the config subtree must survive a JSON round-trip unchanged) — there is no capability home for
+it: "expert" is a data key of the config namespace — the engine never calls it, it only forwards the
+value — so pass plain data (host callbacks belong under capabilities.hooks.<name>)
+```
+
+The asymmetry is pinned **as-is**, not papered over: the flat spelling of the group's *other* members
+(`user` / `task` / `model` / `session`, which this slice did **not** touch) still accepts a function
+today and keeps its `typeof` all the way into the tool context, while the canonical home refuses it.
+`test/loop-metadata-keys-slice-498s3a8.test.js` (F1 / F2) is that pin: whoever widens or tightens
+either side sees it go red.
+
+**The big four are a different slice.** `user` / `task` / `model` / `session` keep their flat spelling
+here; their write points need a fixture-level translation point first (the #528 style), so this slice
+retires four small keys and nothing else (P5-c pins the boundary per key).
+
+**Suggestion noise is measured, not assumed.** The candidate pool for "did you mean" is the **live**
+allowlist, and `model` sits one edit-distance away from `modelMetadata`. After retirement the exact
+spelling gets **no** suggestion at all (distance 8 > threshold 5), so the message is the canonical home
+and nothing else — a host that mistypes `modelMetadata` is pointed at `config.metadata.modelMetadata`,
+never at `model` (S1). The cost of a smaller pool is stated too: a *misspelling* such as `modelMetada`
+now gets neither a suggestion nor a home, just the bare unknown-option sentence (S2, pinned as-is).
+
+**These four words live on other planes, and this slice moved none of them:**
+
+| plane | where it lives | status |
+| --- | --- | --- |
+| `runToolLoop` top-level option | `RUN_TOOL_LOOP_OPTION_NAMES` (`src/loop/option-normalization.js`) | **retired by this slice** (the only one that moved) |
+| `config.metadata.*` | `CONFIG_NAMESPACE_SCHEMA.metadata` (`src/loop/config-namespace.js`) | the canonical home — write here |
+| assembly `policy.modelMetadata` / `.requestId` / `.toolContext` / `.expert` | `src/assembly.js` — port members, not top-level options | **untouched** (#525's plane); they still reach the run |
+| `context.expert` / `.requestId` / `.toolContext` (the fold-context shell) | `src/loop/budget.js` (`toolContextFor`'s `?? context?.<key>` fallback chain) | **untouched** — the fallback chain still works, and an explicit `config.metadata.*` value still wins over it (P5-b) |
+| tool context handed to `executeTool` / the judge brief | the `toolContextFor` helper in `src/loop/budget.js`, handed over by `src/loop/orchestrator.js` | **untouched** — that is the engine's *read* side |
+| model-slot window numbers (`slots.default.contextWindowTokens` / `maxOutputTokens`) | `src/config/slot-provider.js` | **untouched** — a config file is not a `runToolLoop` option |
+
 ### The `capabilities` namespace (issue #498)
 
 Behaviour carriers are not data, so 0.28.0 gives them their own container. It has **three groups**
