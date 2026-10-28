@@ -406,19 +406,29 @@ test("S6-C1 反向证①：同一个键既写扁平又写 config ⇒ 真 run 里
   });
   // 反向证本体：把已经迁移的一个键再写一份扁平、且值不同。
   // #498 S3 A21：`maxRounds` 自己退役了扁平写法（写它会撞**名称**闸口，不是冲突闸口），
-  // 所以样本换成 `completion`（家 `config.run.completion`，`buildLoopOptions` 总是下发它）。
-  options.completion = { signals: [], maxNoToolRounds: 1 };
+  // 所以样本换成 `completion`。
+  // #498 S3 A23b：`completion` 也退役了 ⇒ 冲突样本换成 `reflection`（白名单里最后一个仍有
+  // `config.run.*` 家的扁平键；`false` 与 `{ enabled: false }` 值不同 ⇒ 一条冲突，且规位那份
+  // 赢 ⇒ 反射仍是关的，不会多打上游）。机制一字未改；`completion` 的扁平写法翻成下面那条反向钉。
+  options.reflection = false;
+  options.config.run.reflection = { enabled: false };
   const result = await runToolLoop(options);
 
   const conflicts = events.filter((event) => event?.type === "config_override_conflict");
   assert.equal(conflicts.length, 1, `应恰好一条 config_override_conflict，实际 ${conflicts.length}`);
   assert.deepEqual(
     conflicts[0].conflicts,
-    [{ path: "run.completion", key: "completion" }],
+    [{ path: "run.reflection", key: "reflection" }],
     "冲突载荷必须点名 schema 路径与顶层键名",
   );
   assert.equal(result.termination.reason, "end_turn");
   assert.equal(upstream.count(), 1, "真 run 只该打一发脚本化上游");
+  // 反向钉（#498 S3 A23b）：扁平 `completion` 已退役 ⇒ 再写一份撞的是**名称**闸口（不是冲突闸口），
+  // 文案逐字点名新家。这是「同一个键两种写法」这条通道在 `completion` 上正式关闭的证据。
+  await assert.rejects(
+    runToolLoop({ ...options, completion: { signals: [], maxNoToolRounds: 1 } }),
+    /unknown runToolLoop option: "completion" \(its canonical home is config\.run\.completion; the flat spelling is rejected\)/u,
+  );
 });
 
 test("S6-C2 反向证②：把交付物判据挪回 config.guard.deliverables ⇒ 启动即抛（S4b 已删那个键）", async () => {

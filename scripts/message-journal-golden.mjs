@@ -73,13 +73,14 @@ const judgeDone = () => judgeJson({
 const TOOLS = [{ name: "work", replay: "safe", inputSchema: { type: "object" } }];
 const BASE = {
   tools: TOOLS,
-  completion: false,
   // #498 S3（`run` 片 A13）：顶层 `stallDetection` 已退役，家是 `config.run.stallDetection`
   // （展开相写回 `effectiveOptions.stallDetection`，引擎读侧不变）。本脚本是**观察脚本**：
   // 只改拼写，观察逻辑与金样字节都一字未改（`false` 仍是 `false`）。
   // #498 S3 A18：`wrapup` 同样退役（家 `config.input.wrapup`）——同一个 `config` 容器里并进
   // `input`，观察逻辑与金样字节照旧一字未改。
-  config: { input: { wrapup: false }, run: { stallDetection: false } },
+  // #498 S3 A23b：`completion` 的扁平写法退役（家 `config.run.completion`），并进**同一个**
+  // `run` 组——本脚本是**观察脚本**：只改拼写，观察逻辑与金样字节都一字未改（`false` 仍是 `false`）。
+  config: { input: { wrapup: false }, run: { stallDetection: false, completion: false } },
   executeTool: async ({ id }) => `done-${id}`,
 };
 

@@ -238,7 +238,10 @@ const OPTION_WHITELIST = [
   // `config.run.stallDetection`. The copy tracks the source list verbatim (that is what A0 checks),
   // so it is gone here too; the flat spelling is now a **rejection** cell, see
   // `test/loop-run-slice-498s3a13.test.js`.
-  "completion",
+  // #498 S3 (`run` slice A23b): `completion` left the allowlist — its canonical home is
+  // `config.run.completion`. The copy tracks the source list verbatim (that is what A0 checks), so it
+  // is gone here too; the flat spelling is now a **rejection** cell, see
+  // `test/loop-run-slice-498s3a22.test.js` (G2) and `test/loop-run-slice-498s3a23b.test.js`.
   "finalGuard",
   // #498 S3 (`guard` slice): `finalGuardMaxRetries` / `finalGuardTimeoutMs` left the allowlist —
   // their canonical home is `config.guard.*`. The copy tracks the source list verbatim (that is

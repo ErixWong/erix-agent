@@ -64,7 +64,6 @@ function base(extra = {}) {
   return {
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
-    completion: false,
     ...extra,
     // #498 S3 A18: `wrapup` left the allowlist, so the fixture-era flat switch is gone; the home is
     // `config.input.wrapup`. The container is **merged** instead of spread over: a call site that
@@ -73,6 +72,7 @@ function base(extra = {}) {
     config: {
       ...extra.config,
       input: { initialUserMessage: "go", wrapup: false, ...extra.config?.input },
+      run: { completion: false, ...extra.config?.run },
     },
   };
 }

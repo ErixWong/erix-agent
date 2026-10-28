@@ -70,14 +70,15 @@ function base(extra = {}) {
   return {
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
-    completion: false,
     ...extra,
     // `config` 是**合并**而不是覆盖：`...extra` 之后再写一个字面量 `config` 会把调用方那份
     // 静默顶掉（后者胜）——那正是 `test/loop-seed-fixture-521.test.js` 的 G1 在扫的雷。
     config: {
       ...extra.config,
       input: { initialUserMessage: "go", wrapup: false, ...extra.config?.input },
-      run: { ...extra.config?.run },
+      // #498 S3 A23b: `completion` retired its flat spelling too (home `config.run.completion`);
+      // it joins the **same** `run` group — a second `config` key would silently win.
+      run: { completion: false, ...extra.config?.run },
     },
   };
 }
@@ -332,12 +333,13 @@ test("N2 删扁平键 ≠ 删叶子：`maxRounds` 仍在 `config.run` 里", () =
 
 test("N3 账目派生化：`run` 组还剩几个「配置家」的顶层键（不手抄 3 / 2）", () => {
   // 「config 家」= 仍是顶层选项、且 `configPathForOption` 落在 `run.` 下的键。删 `runId`（A20）
-  // 之后是 3（`maxRounds` / `reflection` / `completion`），A21 删 `maxRounds` ⇒ 2。
+  // 之后是 3（`maxRounds` / `reflection` / `completion`），A21 删 `maxRounds` ⇒ 2；
+  // #498 S3 A23b 再删 `completion` ⇒ 1（`reflection`）。
   // 两个数都由白名单派生，**不许**在本文件里写死任何一个。
   const runHomeKeys = RUN_TOOL_LOOP_OPTION_NAMES
     .filter((name) => (configPathForOption(name) ?? "").startsWith("run."));
-  assert.deepEqual(runHomeKeys, ["reflection", "completion"],
-    "`run` 组还剩两个配置家键（顺序 = 白名单顺序 = 建议平局优先级，不是集合语义）");
+  assert.deepEqual(runHomeKeys, ["reflection"],
+    "`run` 组只剩一个配置家键（顺序 = 白名单顺序 = 建议平局优先级，不是集合语义）");
   assert.equal(runHomeKeys.includes(KEY), false, `${KEY} 已经不在其中（这就是本片删掉的那一格）`);
   // 反向证：把 `maxRounds` 塞回白名单，本格当场红（`deepEqual` 多一项）。
   const reinserted = [...RUN_TOOL_LOOP_OPTION_NAMES, KEY];
@@ -349,7 +351,10 @@ test("N3 账目派生化：`run` 组还剩几个「配置家」的顶层键（�
 });
 
 test("N4 邻接面没动：`run` 组剩下的两件与 `store` 端口一件没动", () => {
-  for (const key of ["completion", "reflection"]) {
+  // #498 S3 A23b：`completion` 也退役了（家 `config.run.completion`），同样从这条循环里移出、
+  // 翻成反向钉——与上面各条逐字同形（改而不删）。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("completion"), false, "A23b 已退役 `completion` 的扁平写法");
+  for (const key of ["reflection"]) {
     assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(key), true, `${key} 仍可扁平写（本片不许收它）`);
   }
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("store"), true, "`store` 是永久顶层面，不许动");

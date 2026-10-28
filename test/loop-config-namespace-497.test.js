@@ -96,11 +96,10 @@ function runDirect(extra = {}) {
   const configIsObject = config !== null && typeof config === "object" && !Array.isArray(config);
   // #498 S3 A23a：默认的 `completion: false` 从扁平拼写搬进规位家 `config.run.completion`，与
   // `wrapup` 同一条纪律——并进**同一个** `config` 容器，绝不造第二个 `config` 键（后者静默胜）。
-  // 它是**默认值**，所以必须让位给调用方自己给的样本：`rest` 里带扁平 `completion`（B2 / C1 / C2 /
-  // C5 / C7 的「扁平 vs 规位」对照样本就是靠它写的）或 `config.run.completion` 已经给了值时，这一行
-  // 不补。不这么写的话，规位默认会盖掉那些样本（展开相「config 赢扁平」），冲突格当场测不到东西。
-  const hasCompletionSample = Object.prototype.hasOwnProperty.call(rest, "completion")
-    || config?.run?.completion !== undefined;
+  // #498 S3 A23b（拆 A23a 的临时脚手架）：那段「让位给扁平样本」的分支已经删了——扁平拼写退役后
+  // 没有任何调用方能从那个入口递进一个扁平 `completion`，让位条件恒假。默认值现在直接写在
+  // `run` 组的**最前面**：调用方自己给的 `config.run.completion` 照旧赢（与展开相的
+  // 「config 赢扁平」同一个优先级），不需要任何条件表达式。
   // F2 那组「`config.run` 不是对象」的形状拒绝格：`run` 是 `"fast"` / `null` 时**原样透传**，
   // 不补默认（展开一个字符串会把拒绝换成另一条红，等于把那一格测没了）。
   const runIsObject = config?.run === undefined
@@ -109,7 +108,7 @@ function runDirect(extra = {}) {
     ? {
       ...config,
       input: { ...config?.input, wrapup: false },
-      ...(hasCompletionSample || !runIsObject ? {} : { run: { ...config?.run, completion: false } }),
+      ...(runIsObject ? { run: { completion: false, ...config?.run } } : {}),
     }
     : config;
   return sharedRunDirect({
@@ -454,7 +453,9 @@ const VALUES = {
   // #498 S3 A21：`maxRounds` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`（家 `config.run.maxRounds`）。
   // #498 S3（`run` 片 A14）：`maxTokenContinuations` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
   // #498 S3（`run` 片 A13）：`stallDetection` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
-  completion: false,
+  // #498 S3 A23b：`completion` 也退役扁平写法（家 `config.run.completion`），样本搬到
+  // `RETIRED_FLAT_VALUES`——它是 `run` 组里**最后一个**搬过去的键，`run` 组现在只剩 `reflection`
+  // 一个仍可扁平写的配置叶子。
   // #498 S3 (`run` slice A11): `replayPolicy` / `invalidArguments` / `writeToolNames` /
   // `writeToolPathKeys` are no longer flat top-level keys — they moved to `RETIRED_FLAT_VALUES` below
   // (their home is `config.run.*`). #498 S3 A12: `partialPersistence` joined them.
@@ -598,6 +599,12 @@ const RETIRED_FLAT_VALUES = {
   // `forceFinalIfNeeded` 那条 cap）。这里给 3：与 `VALUES` 里原先的样本值逐字相同，所以两形态对照
   // 的覆盖面没有缩水。
   maxRounds: 3,
+  // #498 S3 A23b（`run` 片）：`completion` 退役。值是**数据壳**（`{ signals, maxNoToolRounds }`）
+  // 或字面量 `false`（整条 no-tool 收尾判定关掉）；展开相仍逐字写回 `effectiveOptions.completion`
+  // （读侧一行未改：`orchestrator.js` 的 `completion !== false` / `completion?.signals` /
+  // `completion?.maxNoToolRounds`）。这里给 `false`：与 `VALUES` 里原先的样本值逐字相同，
+  // 所以两形态对照的覆盖面没有缩水；`false` 本身是**真值语义下的真实值**（不是「没给」）。
+  completion: false,
 };
 
 /** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */
@@ -671,34 +678,33 @@ test("B3 config 形态真的被引擎读：maxRounds 经 config 生效（不是�
 
 // ================================================================ C. 优先级与冲突（判据 2）
 test("C1 同名时 config 赢，并记一条冲突（规范化层）", async () => {
-  // #498 S3 A21：`maxRounds` 退役扁平写法 ⇒ 冲突通道换成 `completion`（家 `config.run.completion`，
-  // 现在是 `run` 组里仅剩的两个仍可扁平写的配置叶子之一，另一个是 `reflection`——后者要真 provider
-  // 才能赋值，所以本格用前者测冲突、用后者测「值相同不记冲突」）。通道形状一字未变。
+  // #498 S3 A21：`maxRounds` 退役扁平写法 ⇒ 冲突通道换成 `completion`。
+  // #498 S3 A23b：`completion` 也退役了 ⇒ 通道换成 `reflection`（家 `config.run.reflection`，
+  // 现在是 `run` 组里**最后一个**仍可扁平写的配置叶子）。通道形状一字未变：
+  // 「同一个键两种写法 + 值不同 ⇒ 一条冲突」，值相同不记冲突（同一条通道的另一半，见第二段）。
   const { effectiveOptions, configConflicts } = await normalizeRunToolLoopOptions({
-    completion: { signals: ["扁平"], maxNoToolRounds: 1 },
     reflection: false,
-    // #498 S3（`tuning` A5）：`temperature` 已退役扁平写法（家 = `config.tuning.temperature`），所以
-    // 「同一个值写两边 ⇒ 不记冲突」这条通道换成一个**仍可扁平写**的配置叶子。A5 那一版用的是
-    // `maxTokenContinuations`，而 A14 把它也退役了 ⇒ 再换一次：`stream`（家 = `config.run.stream`，
-    // 仍是扁平可写的配置叶子）。A16 把 `stream` 也退役了 ⇒ 换成 `resume`；A19 又把 `resume` 退役了
-    // ⇒ 换成 `runId`；A20 把 `runId` 也退役了 ⇒ 换成 `completion`（家 = `config.run.completion`，
-    // 现在是 `run` 组里**仅剩的三个**仍可扁平写的配置叶子之一，另两个是 `maxRounds` 与
-    // `reflection`；后者要真 provider 才能赋值，前者已被本格用来测冲突）。通道形状一字未变：
-    // 同一个值写两边不记冲突。
-    config: {
-      run: {
-        completion: { signals: [], maxNoToolRounds: 2 },
-        reflection: false,
-      },
-    },
+    config: { run: { reflection: { enabled: true, maxExtensions: 1 } } },
   });
-  assert.deepEqual(effectiveOptions.completion, { signals: [], maxNoToolRounds: 2 },
-    "config.run.completion 覆盖扁平 completion");
-  assert.equal(effectiveOptions.reflection, false, "值相同时照旧生效");
-  assert.deepEqual(configConflicts, [{ path: "run.completion", key: "completion" }], "只有值不同才算冲突");
+  assert.deepEqual(effectiveOptions.reflection, { enabled: true, maxExtensions: 1 },
+    "config.run.reflection 覆盖扁平 reflection");
+  assert.deepEqual(configConflicts, [{ path: "run.reflection", key: "reflection" }], "只有值不同才算冲突");
+  // 另一半：同一个值写两边 ⇒ 照旧生效、且**不**记冲突。
+  const same = await normalizeRunToolLoopOptions({
+    reflection: false,
+    config: { run: { reflection: false } },
+  });
+  assert.equal(same.effectiveOptions.reflection, false, "值相同时照旧生效");
+  assert.deepEqual(same.configConflicts, [], "值相同不记冲突");
+  // 反向钉（#498 S3 A23b）：`completion` 的扁平写法已经没了 ⇒ 同一个键两种写法在它身上
+  // **不可能**同时出现，冲突通道在它身上正式关闭（不是被静默忽略）。
+  await assert.rejects(
+    normalizeRunToolLoopOptions({ completion: { signals: [], maxNoToolRounds: 1 } }),
+    /unknown runToolLoop option: "completion" \(its canonical home is config\.run\.completion; the flat spelling is rejected\)/u,
+  );
 });
 
-test("C2 优先级的行为证据：扁平 maxNoToolRounds=5 + config maxNoToolRounds=1 ⇒ 早停成 no_tool（不是 max_rounds_cap）", async () => {
+test("C2 优先级的行为证据：`config.run.completion.maxNoToolRounds` 决定早停（no_tool，不是 max_rounds_cap）", async () => {
   const twoRounds = [
     {
       content: [{ type: "tool_use", id: "tu_1", name: "echo", input: { text: "x" } }],
@@ -712,23 +718,24 @@ test("C2 优先级的行为证据：扁平 maxNoToolRounds=5 + config maxNoToolR
     inputSchema: { type: "object", properties: { text: { type: "string" } } },
   }];
   // #498 S3 A21：`maxRounds` 退役扁平写法 ⇒ 这条「config 真的赢」的行为证据换成 `completion`
-  // 的 `maxNoToolRounds`（同一个 `run` 组、同一个「扁平 vs 规位」机制）：轮预算照旧走规位
-  // `config.run.maxRounds`（2 轮），差别只在 `maxNoToolRounds` 是从哪一边读的。
-  // 先证样本本身有效：扁平 5 撑不到早停（这就是「config 赢」的可观测差异）。
-  const flatOnly = await runToolLoop({
+  // 的 `maxNoToolRounds`（同一个 `run` 组、同一个「扁平 vs 规位」机制）。
+  // #498 S3 A23b：`completion` 的**扁平侧**也退役了 ⇒ 「config 赢扁平」这一半在本键上已经
+  // **不可观测**（同一个键两种写法不可能同时在场，见 C1 末尾那条反向钉）。所以本格翻成规位侧
+  // 的行为证据两格——`maxNoToolRounds` 的语义（读侧一字未动，A21 立的钉子原样为绿）：
+  // 5 撑不到早停、1 早停，且**没有**冲突事件（通道关闭，不是静默忽略）。
+  const loose = await runToolLoop({
     provider: createFakeProvider(twoRounds),
     executeTool: async () => "ok",
     tools,
     config: {
       input: { initialUserMessage: "go", wrapup: false },
-      run: { maxRounds: 2 },
+      run: { maxRounds: 2, completion: { signals: [], maxNoToolRounds: 5 } },
     },
-    completion: { signals: [], maxNoToolRounds: 5 },
   });
-  assert.equal(flatOnly.termination.reason, "max_rounds_cap", "样本自证：扁平 5 不会早停，2 轮到顶");
+  assert.equal(loose.termination.reason, "max_rounds_cap", "样本自证：5 不会早停，2 轮到顶");
 
   const events = [];
-  const both = await runToolLoop({
+  const strict = await runToolLoop({
     provider: createFakeProvider(twoRounds),
     executeTool: async () => "ok",
     tools,
@@ -736,15 +743,11 @@ test("C2 优先级的行为证据：扁平 maxNoToolRounds=5 + config maxNoToolR
       input: { initialUserMessage: "go", wrapup: false },
       run: { maxRounds: 2, completion: { signals: [], maxNoToolRounds: 1 } },
     },
-    completion: { signals: [], maxNoToolRounds: 5 },
     onEvent: (event) => events.push(event),
   });
-  assert.equal(both.termination.reason, "no_tool", "config 的 maxNoToolRounds=1 必须真的生效");
+  assert.equal(strict.termination.reason, "no_tool", "config 的 maxNoToolRounds=1 必须真的生效");
   const conflicts = events.filter((event) => event.type === "config_override_conflict");
-  assert.equal(conflicts.length, 1, "冲突事件恰好一条");
-  assert.deepEqual(conflicts[0].conflicts, [{ path: "run.completion", key: "completion" }]);
-  assert.equal(typeof conflicts[0].detail, "string");
-  assert.equal(conflicts[0].runId, undefined, "没给 runId 时不编造字段");
+  assert.equal(conflicts.length, 0, "扁平写法已退役 ⇒ 同一个键不可能两种写法同时在场，冲突通道关闭");
 });
 
 test("C3 冲突事件不发的情况：只给一边、或两边值相同", async () => {
@@ -789,12 +792,14 @@ test("C4 冲突事件的观察者抛错被隔离：run 照旧跑完，错误经 
 });
 
 test("C5 config 叶子的 undefined 逐字等于「没给」：不覆盖扁平值、也不算冲突", async () => {
-  // #498 S3 A21：`maxRounds` 退役扁平写法 ⇒ 样本换成 `completion`（同上），机制一字未改。
+  // #498 S3 A21：`maxRounds` 退役扁平写法 ⇒ 样本换成 `completion`。
+  // #498 S3 A23b：`completion` 也退役了 ⇒ 扁平那一侧换成 `reflection`（`run` 组最后一个仍可
+  // 扁平写的配置叶子），机制一字未改：叶子写成 `undefined` 就是「没给」。
   const { effectiveOptions, configConflicts } = await normalizeRunToolLoopOptions({
-    completion: { signals: [], maxNoToolRounds: 7 },
-    config: { run: { completion: undefined } },
+    reflection: { enabled: true, maxExtensions: 2 },
+    config: { run: { reflection: undefined } },
   });
-  assert.deepEqual(effectiveOptions.completion, { signals: [], maxNoToolRounds: 7 });
+  assert.deepEqual(effectiveOptions.reflection, { enabled: true, maxExtensions: 2 });
   assert.deepEqual(configConflicts, []);
 });
 

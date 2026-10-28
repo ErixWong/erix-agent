@@ -72,12 +72,12 @@ function base(extra = {}) {
   return {
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
-    completion: false,
     ...extra,
     // 种子与收尾开关同住 `config.input`；容器**合并**（调用方自带 `config` 时两者都要留下）。
     config: {
       ...extra.config,
       input: { initialUserMessage: "go", ...extra.config?.input },
+      run: { completion: false, ...extra.config?.run },
     },
   };
 }

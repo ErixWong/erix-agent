@@ -1,6 +1,10 @@
 // issue #498（S3）—— `run` 组的垂直切片 **A22**：`completion` 的**量尺与退回**。
 //
-// 本片**没有**退役 `run.completion`。按纪律它被**退回**（白名单仍是 28、`config` 家仍是 2），
+// ⚠ 状态更新（#498 S3 A23b）：`run.completion` **已经退役**——白名单 28 → 27、`config` 家 2 → 1。
+// 下面 G2 因此按「改而不删」翻成了反向钉（扁平侧拒 / 规位侧仍可达），G1 的闸口二实测与 R1–R4
+// 的读侧钉子原样保留（它们钉的是规位侧的事实，与键在不在白名单无关）。
+//
+// 本片**当时没有**退役 `run.completion`。按纪律它被**退回**（白名单仍是 28、`config` 家仍是 2），
 // 理由是**体量**，不是语义：闸口二逐格实测**没有分歧**（见下面 G1 的规位侧六格），
 // 但夹具翻译之后仍有 **180 格**红，越过本仓 `~150 格` 的「才删」门槛
 // （A14 的定向测量预估「夹具后 ~180 格量级」，实测正好落在那条线上）。
@@ -107,17 +111,26 @@ test("G1 闸口二（规位侧，真 run）：数据形态全 ACCEPT；函数拒
   assert.match(nested.message, /the config namespace holds data only/u);
 });
 
-test("G2 退回状态：扁平拼写**今天仍然接受**（这就是「退回」与「退役」的分界）", async () => {
-  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(KEY), true, "`completion` 必须仍在白名单（本片退回它）");
+test("G2 退役状态（#498 S3 A23b）：扁平拼写**当场被拒**，规位侧同一取值照旧可达", async () => {
+  // A22 当时钉的是「退回状态 = 两种写法都合法」。A23b 删了白名单键 ⇒ 本格按「改而不删」翻成
+  // 反向钉：**扁平侧拒**（文案逐字点名新家）+ **规位侧仍可达**（退役只收写法，不收取值）。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(KEY), false, "`completion` 已离开白名单（A23b 退役它）");
   for (const value of [false, true, { signals: ["done"], maxNoToolRounds: 3 }]) {
+    const error = await rawError(base({ [KEY]: value }));
+    assert.equal(error instanceof TypeError, true, `${JSON.stringify(value)}：扁平拼写必须当场拒`);
     assert.equal(
-      await exitCode(base({ [KEY]: value })),
+      error.message,
+      `unknown runToolLoop option: "${KEY}" (its canonical home is config.run.${KEY}; the flat spelling is rejected)`,
+      `${JSON.stringify(value)}：拒绝文案必须逐字点名新家`,
+    );
+    assert.equal(
+      await exitCode(base({ config: { run: { [KEY]: value } } })),
       0,
-      `${JSON.stringify(value)}：扁平拼写仍然合法（本片不退役）`,
+      `${JSON.stringify(value)}：规位侧必须仍可达（退役 ≠ 丢能力）`,
     );
   }
-  // 反向证：白名单里没有它，这一格就该红——`includes` 断言的承重面。
-  assert.equal([...RUN_TOOL_LOOP_OPTION_NAMES].filter((name) => name === KEY).length, 1);
+  // 反向证：把键塞回白名单，这一格当场红——`includes` 断言的承重面。
+  assert.equal([...RUN_TOOL_LOOP_OPTION_NAMES, KEY].filter((name) => name === KEY).length, 1);
 });
 
 // ================================================================ R. 读侧一字不动
@@ -179,11 +192,11 @@ test("N1 四向闭合 + 自检：本片没搬任何键（白名单与配置面�
   assert.equal(CONFIG_NAMESPACE_SCHEMA.run.includes(KEY), true, "叶子仍在 schema 的 run 组");
 });
 
-test("N2 账目派生化：`run` 组的配置家键仍是两个（不手抄 2 / 28）", () => {
+test("N2 账目派生化：`run` 组的配置家键只剩一个（不手抄 1 / 27）", () => {
   const runHomeKeys = RUN_TOOL_LOOP_OPTION_NAMES
     .filter((name) => (configPathForOption(name) ?? "").startsWith("run."));
-  assert.deepEqual(runHomeKeys, ["reflection", "completion"],
-    "`run` 组还剩两个配置家键（顺序 = 白名单顺序，不是集合语义）");
+  assert.deepEqual(runHomeKeys, ["reflection"],
+    "`run` 组只剩一个配置家键（顺序 = 白名单顺序，不是集合语义）");
   // 反向证：多塞一个 `run` 家键回白名单，本格当场红。
   assert.notDeepEqual(
     [...RUN_TOOL_LOOP_OPTION_NAMES, "maxRounds"].filter((name) => (configPathForOption(name) ?? "").startsWith("run.")),

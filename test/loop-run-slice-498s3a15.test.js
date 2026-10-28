@@ -75,7 +75,6 @@ function base(extra = {}) {
   return {
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
-    completion: false,
     ...extra,
     // #498 S3 A18: `wrapup` left the allowlist, so the fixture-era flat switch is gone; the home is
     // `config.input.wrapup`. The container is **merged** instead of spread over: a call site that
@@ -84,6 +83,7 @@ function base(extra = {}) {
     config: {
       ...extra.config,
       input: { initialUserMessage: "go", wrapup: false, ...extra.config?.input },
+      run: { completion: false, ...extra.config?.run },
     },
   };
 }
@@ -339,7 +339,10 @@ test("N2 邻接面没动：`run` 组剩下的大件一件没动，`runId` 也已
   // #498 S3 A21：`maxRounds` 也退役了（家 `config.run.maxRounds`），同样从这条循环里移出、
   // 翻成反向钉——与上面五条逐字同形（改而不删）。
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("maxRounds"), false, "A21 已退役 `maxRounds` 的扁平写法");
-  for (const key of ["completion", "reflection"]) {
+  // #498 S3 A23b：`completion` 也退役了（家 `config.run.completion`），同样从这条循环里移出、
+  // 翻成反向钉——与上面各条逐字同形（改而不删）。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("completion"), false, "A23b 已退役 `completion` 的扁平写法");
+  for (const key of ["reflection"]) {
     assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(key), true, `${key} 仍可扁平写（本片不许收它）`);
   }
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("store"), true, "`store` 是永久顶层面，不许动");
