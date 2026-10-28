@@ -127,11 +127,12 @@ try {
           { input_tokens: 120, output_tokens: 30 },
         ),
       ]),
-      config: { input: { initialUserMessage: `把 42 写进 ${answerPath}` } },
+      // #498 S3 (`guard` slice): the budget lives at its canonical home `config.guard.finalGuardMaxRetries`
+      // (the flat spelling is rejected at the name gate; the expansion phase writes it back).
+      config: { input: { initialUserMessage: `把 42 写进 ${answerPath}` }, guard: { finalGuardMaxRetries: 2 } },
       task: `把 42 写进 ${answerPath}`,
       cwd: sandbox,
       runId: "probe-run-1",
-      finalGuardMaxRetries: 2,
       maxRounds: 4,
       executeTool: async (call) => {
         fs.writeFileSync(call.input.path, call.input.content);
@@ -299,9 +300,8 @@ try {
         wrapup({ done: true, summary: "完成", output: "已经写好了" }),
         { times: 6, ...wrapup({ done: true, summary: "完成", output: "确实写好了" }) },
       ]),
-      config: { input: { initialUserMessage: "写文件" } },
+      config: { input: { initialUserMessage: "写文件" }, guard: { finalGuardMaxRetries: 2 } },
       maxRounds: 8,
-      finalGuardMaxRetries: 2,
       executeTool: async () => "ok",
       finalGuard: async (payload) => {
         attempts.push(payload.attempt);
@@ -354,14 +354,13 @@ try {
     const payloads = [];
     const result = await runToolLoop({
       provider: createFakeProvider([wrapup({ done: true, summary: "s", output: "o" })]),
-      config: { input: { initialUserMessage: "x" } },
+      config: { input: { initialUserMessage: "x" }, guard: { finalGuardTimeoutMs: 100 } },
       maxRounds: 2,
       executeTool: async () => "ok",
       finalGuard: async (payload) => {
         payloads.push({ attempt: payload.attempt, keys: Object.keys(payload).length });
         return guard(payload);
       },
-      finalGuardTimeoutMs: 100,
     });
 
     expect(payloads.length === 1, `guard 应被调用 1 次，实际 ${payloads.length}`);
@@ -674,11 +673,10 @@ try {
     ]);
     const result = await runToolLoop({
       provider,
-      config: { input: { initialUserMessage: `把 42 写进 ${answerPath}` } },
+      config: { input: { initialUserMessage: `把 42 写进 ${answerPath}` }, guard: { finalGuardExtend: cell.optIn } },
       maxRounds: 1,
       // 显式给全扩轮参数：默认 step 是 max(8, maxRounds/2)，不显式给的话「抬到多少」会漂。
       reflection: { enabled: true, extensionStep: 2, maxExtensions: 2, maxRoundsCap: 8 },
-      finalGuardExtend: cell.optIn,
       executeTool: async (call) => {
         fs.writeFileSync(call.input.path, call.input.content);
         executed.push(call.id);

@@ -27,13 +27,13 @@ must be placed in an explicit namespace such as `toolContext` or
 assemblyPort, provider, system, wrapup, tools,
 writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
 temperature, topP, reflection, stallDetection,
-completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
+completion, finalGuard,
 maxTokenContinuations,
 todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
 toolContext, store, persistence, runId, cwd, deliverables, invalidArguments, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
-onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, finalGuardExtend, config,
+onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, config,
 capabilities
 ```
 
@@ -338,6 +338,36 @@ The `cacheCapable` this section retires is the **`runToolLoop` option**. The oth
 `CACHE_CAPABLE`; `bin/config.js` forwards it; `bin/cli.js` reads it in `resolveToolResultTtl`) — that
 surface never went through the name gate, it is unchanged by this slice, and writing it is still
 correct. Do not "migrate" a config file into `config.tuning`.
+
+**Flat-spelling version policy for the `guard` group** (issue #498 S3, the `guard` slice — the sixth
+slice, and the first one that retires **three** keys at once, all of them scalars):
+
+| release | writing `finalGuardMaxRetries` / `finalGuardTimeoutMs` / `finalGuardExtend` |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
+| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, sixth slice) | **rejected on the spot** — write `config.guard.finalGuardMaxRetries` / `config.guard.finalGuardTimeoutMs` / `config.guard.finalGuardExtend`. The name gate throws `unknown runToolLoop option: "finalGuardTimeoutMs" (its canonical home is config.guard.finalGuardTimeoutMs; the flat spelling is rejected)` |
+
+Two properties hold, both machine-checked:
+
+* the expansion phase still writes each of them onto `effectiveOptions.finalGuardMaxRetries` /
+  `.finalGuardTimeoutMs` / `.finalGuardExtend`, so **the engine's read side is unchanged** — the three
+  readers are the retry limit, the per-attempt guard deadline, and the budget-stop bridge, and none of
+  them was touched. The leaf stays in `CONFIG_NAMESPACE_SCHEMA.guard` (`src/loop/config-namespace.js`)
+  even though the top-level key left `RUN_TOOL_LOOP_OPTION_NAMES`
+  (`src/loop/option-normalization.js`): deleting the flat key is **not** deleting the leaf. Retirement
+  is a *write-spelling* change only, exactly like the five slices before it;
+* the rejection message names **one station and only one**. All three values are scalars, so nothing is
+  registered for them in `CAPABILITY_SLOT_DESTINATIONS`
+  (`src/loop/capabilities-namespace.js`) and the message deliberately carries **no** `capabilities.*`
+  hint. Derived, not promised: a behaviour member would make the second station appear on its own.
+
+**Two names this slice does not touch, and one it must not be confused with.** `finalGuard` is a
+**hook**, not data: its value must be a function, so it has no config home at all — it lives in
+`capabilities.hooks.finalGuard` and the flat top-level spelling stays legal until **S9** retires it.
+`finalGuardVerdict` is an **engine-internal** key: a host may neither write it nor find it in the config
+tree, so writing it is still rejected and the message carries **no** canonical-home hint (there is no
+home to name). Neither name appears in `CONFIG_NAMESPACE_SCHEMA.guard`.
 
 The `context` row carries one sentence that **must** be read: it is a **mixed shell** — it holds
 data members (`budgetTokens` / `keepRounds` / a strategy *name*) **and** behaviour members (the five
@@ -2874,7 +2904,9 @@ and `succeeded` otherwise.
 
 #### Budget-type stops: the opt-in guard bridge — `finalGuardExtend` (issue #386 slice 3)
 
-`finalGuardExtend: boolean`, **default `false`**. Absent or `false`, every budget-type stop
+`finalGuardExtend: boolean`, **default `false`** — written `config.guard.finalGuardExtend` since 0.28.0
+(the flat spelling is rejected on the spot; see the `guard` group's version policy above). Absent or
+`false`, every budget-type stop
 behaves byte-for-byte as described above. With `finalGuardExtend: true`, a `revise` verdict on
 a **budget-type** stop buys **at most one** extra round through the engine's *existing*
 mid-run extension mechanism — `extensionAllowed` (`src/reflection/governor.js`), applied by

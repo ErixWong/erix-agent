@@ -61,7 +61,9 @@ const capThenRevise = ({ optIn, guard, sink }) => {
       executed.push(call.id);
       return "ok";
     },
-    ...(optIn === undefined ? {} : { finalGuardExtend: optIn }),
+    // #498 S3 (`guard` slice): canonical home `config.guard.finalGuardExtend` (the flat spelling is
+    // rejected at the name gate; the expansion phase writes it back to `effectiveOptions.finalGuardExtend`).
+    ...(optIn === undefined ? {} : { config: { guard: { finalGuardExtend: optIn } } }),
     capabilities: {
       hooks: {
         finalGuard: guard,
@@ -157,7 +159,7 @@ test("#386-3 R4-3 stall + opt-in ⇒ 不补跑（stall 的定义就是连续无�
     maxRounds: 20,
     reflection: { ...REFLECTION, maxRoundsCap: 40 },
     executeTool: async () => "ok",
-    finalGuardExtend: true,
+    config: { guard: { finalGuardExtend: true } },
     capabilities: {
       hooks: {
         finalGuard: async () => {
@@ -202,7 +204,7 @@ test("#386-3 R4-4 同一个 run 内第二次撞 cap ⇒ 不再补（每 run 最�
     maxRounds: 1,
     reflection: REFLECTION,
     executeTool: async () => "ok",
-    finalGuardExtend: true,
+    config: { guard: { finalGuardExtend: true } },
     capabilities: {
       hooks: {
         finalGuard: async () => {
@@ -245,7 +247,7 @@ test("#386-3 R4-5 补跑过一次的 run 落账本 → resume → 再撞 cap ⇒
     executeTool: async () => "ok",
     store,
     runId,
-    finalGuardExtend: true,
+    config: { guard: { finalGuardExtend: true } },
     capabilities: {
       hooks: {
         finalGuard: async () => {
@@ -278,7 +280,7 @@ test("#386-3 R4-5 补跑过一次的 run 落账本 → resume → 再撞 cap ⇒
     store,
     runId,
     resume: true,
-    finalGuardExtend: true,
+    config: { guard: { finalGuardExtend: true } },
     capabilities: {
       hooks: {
         finalGuard: async () => {
@@ -319,9 +321,8 @@ test("#386-3 R4-6 聚合输出预算已撞线 + opt-in ⇒ 拒绝补跑，且没
     store,
     runId: "guard-extend-aggregate",
     outputHygiene: { limit: 200_000 },
-    config: { folding: { context: { budgetTokens: 50_000 } } },
+    config: { folding: { context: { budgetTokens: 50_000 } }, guard: { finalGuardExtend: true } },
     executeTool: async () => BIG,
-    finalGuardExtend: true,
     capabilities: {
       hooks: {
         finalGuard: async () => {
@@ -357,9 +358,8 @@ test("#386-3 R4-6 聚合输出预算已撞线 + opt-in ⇒ 拒绝补跑，且没
     store: createMemoryTranscriptStore(),
     runId: "guard-extend-aggregate-control",
     outputHygiene: { limit: 200_000 },
-    config: { folding: { context: { budgetTokens: 50_000 } } },
+    config: { folding: { context: { budgetTokens: 50_000 } }, guard: { finalGuardExtend: true } },
     executeTool: async () => "small",
-    finalGuardExtend: true,
     capabilities: {
       hooks: {
         finalGuard: async () => ({ action: "revise", message: "还差一步" }),
@@ -388,9 +388,8 @@ test("#386-3 R4-6b 最近一次真实 API 输入 token 已超 budgetTokens + opt
       initialUserMessage: "做点事",
       maxRounds: 1,
       reflection: REFLECTION,
-      config: { folding: { context: { budgetTokens: 10_000 } } },
+      config: { folding: { context: { budgetTokens: 10_000 } }, guard: { finalGuardExtend: true } },
       executeTool: async () => "ok",
-      finalGuardExtend: true,
       capabilities: {
         hooks: {
           finalGuard: async () => ({ action: "revise", message: "还差一步" }),
@@ -464,7 +463,7 @@ test("#386-3 R4-8 finalGuardExtend 只接受布尔：null / 数字 / 字符串 �
         provider: createFakeProvider([text("done")]),
         initialUserMessage: "x",
         executeTool: async () => "ok",
-        finalGuardExtend: value,
+        config: { guard: { finalGuardExtend: value } },
       }),
       (error) => {
         assert.equal(error.constructor, TypeError, `${JSON.stringify(value)}：抛的不是 TypeError`);
@@ -479,7 +478,7 @@ test("#386-3 R4-8 finalGuardExtend 只接受布尔：null / 数字 / 字符串 �
     provider: createFakeProvider([text("done")]),
     initialUserMessage: "x",
     executeTool: async () => "ok",
-    finalGuardExtend: false,
+    config: { guard: { finalGuardExtend: false } },
   });
   assert.deepEqual(off.verification, {
     status: "skipped",
@@ -507,7 +506,7 @@ test("#386-3 补充 continuation_exhausted + opt-in ⇒ 同样可以补跑一次
     maxTokenContinuations: 0,
     reflection: REFLECTION,
     executeTool: async () => "ok",
-    finalGuardExtend: true,
+    config: { guard: { finalGuardExtend: true } },
     capabilities: {
       hooks: {
         finalGuard: async () => {
@@ -600,7 +599,7 @@ test("#393 末轮带 tool_use + opt-in：注入前先结清尾部，终局不是
       executed.push(call.id);
       return "ok";
     },
-    finalGuardExtend: true,
+    config: { guard: { finalGuardExtend: true } },
     capabilities: {
       hooks: {
         finalGuard: async () => {
@@ -679,7 +678,7 @@ test("#393 末轮带多个 tool_use + opt-in：一条 user 消息补齐全部 id
     maxRounds: 1,
     reflection: REFLECTION,
     executeTool: async () => "ok",
-    finalGuardExtend: true,
+    config: { guard: { finalGuardExtend: true } },
     capabilities: {
       hooks: {
         finalGuard: async () => {
@@ -715,7 +714,7 @@ test("#393 畸形尾巴（tool_use 没有 id）：拒绝补跑，落回 unverifi
     maxRounds: 1,
     reflection: REFLECTION,
     executeTool: async () => "ok",
-    finalGuardExtend: true,
+    config: { guard: { finalGuardExtend: true } },
     capabilities: {
       hooks: {
         finalGuard: async () => {

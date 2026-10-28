@@ -126,7 +126,8 @@ test("finalGuard fail-closes after the retry limit without rewriting finalText",
     initialUserMessage: "hello",
     executeTool: async () => "unused",
     completion: false,
-    finalGuardMaxRetries: 2,
+    // #498 S3 (`guard` slice): canonical home `config.guard.finalGuardMaxRetries`.
+    config: { guard: { finalGuardMaxRetries: 2 } },
     capabilities: {
       hooks: {
         finalGuard: async () => ({
@@ -199,7 +200,8 @@ test("finalGuard timeout is observable and returns an error verification", async
     ]),
     initialUserMessage: "hello",
     executeTool: async () => "unused",
-    finalGuardTimeoutMs: 5,
+    // #498 S3 (`guard` slice): canonical home `config.guard.finalGuardTimeoutMs`.
+    config: { guard: { finalGuardTimeoutMs: 5 } },
     capabilities: {
       hooks: {
         finalGuard: async () => new Promise(() => {}),

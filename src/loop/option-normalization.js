@@ -124,8 +124,13 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   "stallDetection",
   "completion",
   "finalGuard",
-  "finalGuardMaxRetries",
-  "finalGuardTimeoutMs",
+  // #498 S3 (`guard` slice): `finalGuardMaxRetries` / `finalGuardTimeoutMs` left the allowlist here.
+  // Their canonical home is `config.guard.*` (`CONFIG_NAMESPACE_SCHEMA.guard` in
+  // `src/loop/config-namespace.js`). The expansion phase writes them back onto
+  // `effectiveOptions.finalGuardMaxRetries` / `.finalGuardTimeoutMs`, so the engine's read side is
+  // unchanged; only the *write* spelling moved, and the name gate now rejects the flat ones while
+  // naming the new home. `finalGuard` itself is **not** part of this slice: it is a hook whose value
+  // must be a function, so it lives in `capabilities.hooks.finalGuard` and retires in S9.
   "maxTokenContinuations",
   "todoStateProvider",
   "semanticStateProvider",
@@ -165,8 +170,8 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   "deliverables",
   // issue #386 切片 3：`finalGuardExtend` 是**预算类停机**上的补跑开关（默认 `false` = 今天的行为）。
   // 它**会改停机时的行为**（不是纯加法），所以默认关、只在宿主显式 opt-in 时生效。
-  // 同样追加在末尾：旧未知键的「did you mean」建议逐字不变。
-  "finalGuardExtend",
+  // #498 S3 (`guard` slice): it left the allowlist — its canonical home is `config.guard.finalGuardExtend`,
+  // and the expansion phase writes it back onto `effectiveOptions.finalGuardExtend`.
   // issue #409 需求②：`invalidArguments` 决定「工具引数解析失败时要不要执行该工具」。
   // 默认 `"reject"`（不执行 + 把解析器原判词作为 `is_error` 的 `tool_result` 回给模型），
   // `"execute"` 是显式回退（行为逐字等于 #409 之前）。同样追加在末尾，理由同上。

@@ -332,7 +332,8 @@ test("#386 attempt 在连续 revise 中 1→2→3 单调递增，guardBudget 等
       initialUserMessage: "hi",
       maxRounds: 12,
       completion: false,
-      finalGuardMaxRetries,
+      // #498 S3 (`guard` slice): written at its canonical home `config.guard.finalGuardMaxRetries`.
+      config: { guard: { finalGuardMaxRetries } },
       executeTool: async () => "ok",
       capabilities: {
         hooks: {
