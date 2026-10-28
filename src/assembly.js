@@ -725,6 +725,19 @@ function assemblyPortUnknownMemberProblem(name) {
 }
 
 /**
+ * How a non-object `createAssemblyPort` input reads in the shape message (`null` / `an array` / `a string`).
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function describePortInput(value) {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "an array";
+  if (typeof value === "function") return "a function";
+  return `a ${typeof value}`;
+}
+
+/**
  * The **top-level name gate** of the assembly port (issue #556).
  *
  * Runs before any member is read, i.e. before any host factory is called — the same ordering promise
@@ -739,6 +752,12 @@ function assemblyPortUnknownMemberProblem(name) {
  * @returns {void}
  */
 export function assertAssemblyPortMemberNames(input) {
+  // A non-object input is a *shape* mistake, and it must not be reported as an unknown **member**:
+  // `Object.entries("abc")` yields `["0", "a"]`, i.e. the gate would name a member called `"0"`. Same
+  // sentence shape as the direct route's `runToolLoop options must be an object`.
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    throw new TypeError(`assembly port must be an object (got ${describePortInput(input)})`);
+  }
   for (const [name, value] of Object.entries(input)) {
     if (value === undefined) continue;
     if (ASSEMBLY_PORT_MEMBER_NAME_SET.has(name)) continue;

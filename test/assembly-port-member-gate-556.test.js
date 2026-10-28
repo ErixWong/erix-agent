@@ -243,6 +243,21 @@ test("#556 C：任意未知成员 ⇒ 拒，判词列可接受集合；拼写相
   assert.ok(thrown(() => assertAssemblyPortMemberNames({ nope: 1 })) instanceof TypeError);
 });
 
+test("#556 C2：非对象入参给形状判词，不冒充成「未知成员」", () => {
+  // `Object.entries("abc")` 会产出 `["0","a"]`——没有这条形状判词，闸口会点名一个叫 `"0"` 的成员。
+  const cases = [
+    [null, "null"],
+    [[], "an array"],
+    ["abc", "a string"],
+    [7, "a number"],
+  ];
+  for (const [value, described] of cases) {
+    const error = thrown(() => createAssemblyPort(value));
+    assert.ok(error instanceof TypeError, `${JSON.stringify(value)} 必须抛 TypeError`);
+    assert.equal(error.message, `assembly port must be an object (got ${described})`);
+  }
+});
+
 // ================================================================ D. 次序：先闸口，后宿主
 
 test("#556 D：闸口在读任何宿主端口之前——坏名字一次宿主回调都不许花", () => {
