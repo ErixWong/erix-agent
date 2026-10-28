@@ -50,7 +50,7 @@ test("replay policy and tool declarations reject unsupported values", async () =
     { intervalMs: 10, minBytes: 1.5 },
   ]) {
     await assert.rejects(
-      runToolLoop({ ...options, partialPersistence }),
+      runToolLoop({ ...options, config: { run: { partialPersistence } } }),
       TypeError,
     );
   }
@@ -63,7 +63,7 @@ test("partial persistence requires streaming mode", async () => {
     ]),
     executeTool: async () => "unused",
     completion: false,
-    partialPersistence: { intervalMs: 10 },
+    config: { run: { partialPersistence: { intervalMs: 10 } } },
   };
 
   for (const streamOption of [{}, { stream: false }]) {

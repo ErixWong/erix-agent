@@ -451,11 +451,13 @@ test("A1 四向闭合 + 配置面差额是派生差值（不手抄 43 / 17 / 13 
 test("A2 `run` 组**没有**整组收口：四个退役叶子被派生认出，其余扁平孪生照旧", () => {
   // ⚠ 本片只退小四件，`run` 组的 `maxRounds` / `completion` / `reflection` … 仍是**扁平合法**键。
   // 所以这里不写「STILL_FLAT_RUN === []」——那会把「组收口」这个未发生的事写成事实。
-  assert.deepEqual(
-    [...RETIRED_RUN].sort(),
-    RETIRED.map(({ key }) => key).sort(),
-    "退役叶子集必须与 RETIRED 的键集逐字相等（删了键却漏登记 ⇒ 这里红）",
-  );
+  // ⚠ #498 S3 A12 起这条断言改成**子集**：本片退的四件必须都在派生集合里（删了键却漏登记 ⇒ 红），
+  // 但后续切片会继续退 `run` 组的其它叶子（A12 退的是 `partialPersistence` 那一批），所以
+  // 「派生集合 === 本片四件」这个等式只在 A11 落地那一刻成立，不是永久事实。
+  const retiredRun = [...RETIRED_RUN].sort();
+  for (const { key } of RETIRED) {
+    assert.equal(retiredRun.includes(key), true, `${key} 必须出现在派生退役集合里（漏登记 ⇒ 这里红）`);
+  }
   for (const { key } of RETIRED) {
     assert.equal(STILL_FLAT_RUN.includes(key), false, `${key} 不许还在扁平名单里`);
   }

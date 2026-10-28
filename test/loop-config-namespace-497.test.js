@@ -430,8 +430,7 @@ const VALUES = {
   completion: false,
   // #498 S3 (`run` slice A11): `replayPolicy` / `invalidArguments` / `writeToolNames` /
   // `writeToolPathKeys` are no longer flat top-level keys — they moved to `RETIRED_FLAT_VALUES` below
-  // (their home is `config.run.*`).
-  partialPersistence: false,
+  // (their home is `config.run.*`). #498 S3 A12: `partialPersistence` joined them.
   outputHygiene: false,
   resume: false,
   stream: false,
@@ -524,6 +523,10 @@ const RETIRED_FLAT_VALUES = {
   invalidArguments: "execute",
   writeToolNames: ["writeFile"],
   writeToolPathKeys: ["path"],
+  // #498 S3 A12（`run` 片）：`partialPersistence` 也退役了扁平写法，家在
+  // `config.run.partialPersistence`；展开相仍逐字写回 `effectiveOptions.partialPersistence`
+  // （读侧一行未改：`src/loop/orchestrator.js` 的定时器分支与 `resume-manager.js` 的快照采样）。
+  partialPersistence: { intervalMs: 500 },
 };
 
 /** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */

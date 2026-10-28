@@ -30,6 +30,11 @@
 //   3. **形状拒绝格不许被夹具吃掉**：调用方把 `config` 写成非对象（`null` / `[]` / `"nested"`）时
 //      那格测的是「config 必须是对象」这条拒绝，夹具**不覆盖**它（照原样透传、不并种子），
 //      否则名称闸口会先抛、文案换成另一条，断言跟着失真。
+//   4. **`run` 组四件（#498 S3 A12）同样收在这里**（`withRunFamily`）：`stallDetection` /
+//      `outputHygiene` / `persistence` / `partialPersistence` 的顶层扁平拼写已经退役，而它们在
+//      `test/` 里有 121 处写点、摊在 41 个文件里（多数文件**已经有** `config: {`）——朴素替换会造
+//      重复键、后者静默胜，正是约束 1 那个雷区。夹具把它们并进同一个容器并摘键，与种子同一条
+//      纪律：这是**夹具入参**，不是引擎拼写。
 //
 // 零真实 LLM、不写盘、不碰 `~/.erix`：夹具只做对象合并，run 的隔离仍由调用方负责。
 
@@ -55,9 +60,56 @@ import { runToolLoop } from "../../src/loop/orchestrator.js";
  * @param {Record<string, unknown>} [options]
  * @returns {Record<string, unknown>}
  */
+/**
+ * `run` 组四件（#498 S3 A12）的**夹具级**拼写 → 规位 `config.run.*`。
+ *
+ * 与种子同理（见文件头约束 4）：它们的顶层扁平拼写已经退役，引擎会拒；但这四件在 `test/` 里
+ * 有 121 处写点、摊在 41 个文件里，且其中大部分文件**已经有** `config: {` 容器——朴素替换会造
+ * 重复键（后者静默胜）。所以把「搬进唯一的 `config` 容器」这个动作收在本模块**一处**。
+ * 这里收下的四个名字是**夹具入参约定**，不是引擎拼写：翻译完就摘键，`runToolLoop` 永远看不到
+ * 扁平形态。新写的格子请直接用 `config: { run: { … } }`。
+ *
+ * @type {readonly string[]}
+ */
+const RUN_FAMILY_FIXTURE_KEYS = Object.freeze([
+  "stallDetection",
+  "outputHygiene",
+  "persistence",
+  "partialPersistence",
+]);
+
+/**
+ * 把 `run` 组四件的扁平夹具拼写搬进 `config.run.*`（约束 1：不许造第二个 `config` 键）。
+ * 非对象 `config` / `config.run` 是「形状拒绝」格，原样透传（约束 3）。
+ *
+ * @param {Record<string, any>} options
+ * @returns {Record<string, any>}
+ */
+function withRunFamily(options) {
+  const rest = { ...options };
+  const moved = {};
+  for (const key of RUN_FAMILY_FIXTURE_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(rest, key)) continue;
+    if (rest[key] !== undefined) moved[key] = rest[key];
+    delete rest[key];
+  }
+  if (Object.keys(moved).length === 0) return rest;
+  const config = rest.config;
+  if (config !== undefined && (config === null || typeof config !== "object" || Array.isArray(config))) {
+    return options;
+  }
+  const base = config === undefined ? {} : config;
+  const run = base.run;
+  if (run !== undefined && (run === null || typeof run !== "object" || Array.isArray(run))) {
+    return options;
+  }
+  return { ...rest, config: { ...base, run: { ...(run ?? {}), ...moved } } };
+}
+
 export function withSeed(options = {}) {
-  const { seed, initialUserMessage, ...rest } = options;
+  const { seed, initialUserMessage, ...flat } = withRunFamily(options);
   const message = seed === undefined ? initialUserMessage : seed;
+  const rest = flat;
   const config = rest.config;
   // 约束 3：非对象 `config` 是「形状拒绝」格，原样透传（不并种子、不新建第二个键）。
   if (config !== undefined && (config === null || typeof config !== "object" || Array.isArray(config))) {

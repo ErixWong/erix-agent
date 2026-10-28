@@ -163,7 +163,18 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // is 14 ⇒ overlap 10. Every count is far below the ~150 fixture-level threshold, so this slice
   // needs no #521-style translation point.
   "executeTool",
-  "partialPersistence",
+  // #498 S3 (`run` slice, segment A12): `partialPersistence` left the allowlist. Its canonical home is
+  // `config.run.partialPersistence` (`CONFIG_NAMESPACE_SCHEMA.run` in `src/loop/config-namespace.js`),
+  // and the expansion phase writes it back onto `effectiveOptions.partialPersistence` — so every
+  // engine-side reader (the interval timer branch in `orchestrator.js`, the snapshot sampling in
+  // `src/loop/resume-manager.js`) is unchanged. Only the *write* spelling moved: the flat spelling is
+  // rejected at the name gate, and the message names the new home.
+  //
+  // Gate-2 reachability (run before the deletion, real `runToolLoop` entry): the three legal shapes
+  // (`false`, `{ intervalMs }`, `{ intervalMs, minBytes }`) are **flat-accepted and nested-accepted**
+  // (exit 0 on both sides); the illegal shape `true` is rejected on both sides (exit 1). No divergence
+  // ⇒ no return. Measured red cells for this key alone: 16; with the fixture translation point in
+  // `test/helpers/run-direct.js` it drops to 4 hand-written sites.
   "maxRounds",
   // #498 S3 (`tuning` slice): `cacheCapable` left the allowlist. Its canonical home is
   // `config.tuning.cacheCapable` (`CONFIG_NAMESPACE_SCHEMA.tuning` in `src/loop/config-namespace.js`).

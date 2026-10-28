@@ -5,6 +5,23 @@
 >
 > 本文件随 `test/` 落盘、**不进 npm 包**（`package.json` 的 `files` 没有它）。
 >
+> ⚠ **附表口径刷新（#498 S3 第十二片 `run` 组 A12 + A12b：退役 `partialPersistence`，本片）**：
+> 附表 **1342 → 1343**（净 +1，行数 115 → 116）、主表 **170 → 170**（不变，行数 23 → 23）。净 +1 是两笔的差：
+>   · **−2**：`test/loop-resume.test.js` 71 → **69**。本片把顶层扁平 `partialPersistence` 退役（规范之家
+>     `config.run.partialPersistence`），那两个扁平写点搬进容器 ⇒ `config` 数到就停，两个点**离开**计数口径；
+>   · **+3**：本片新增的切片钉子文件 `test/loop-run-slice-498s3a12.test.js`（`completion`×1 /
+>     `stallDetection`×1 / `wrapup`×1 —— 都是搭台写点；它的能力面写点是 **0**，所以主表不受影响）。
+> 其余 114 行一个数字都没动：本片删的是一个顶层拼写，不是一整组键。
+> 复跑：`node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
+> （主表 170 / 附表 1343 都是 AST 实测）。
+>
+> ⚠ **#529（同一片落账）：量尺进仓库了。** 上面那张表以前只能靠「把 heredoc 粘到 `/tmp/flat-count.cjs`」
+> 复现，复跑命令因此全写成 `node /tmp/flat-count.cjs …` —— **复现路径在仓库外面**，干净检出上跑不通，
+> 于是表一漂移就没人刷得动（第十一片与 A12 都是这么卡住的）。现在生成器是仓库内的
+> **`scripts/flat-count-inventory.mjs`**（口径五条原样搬过去，另加 `--sync` 机器刷表模式），
+> 本节所有复跑命令已改指仓库内路径，**`/tmp/` 不再是复现基准**。本片的表是 `--sync` 机器刷出来的
+> （数字与明细列都由 AST 重写、漏行按实测补），**没有一个数字是手改的**。
+>
 > ⚠ **附表口径刷新（#498 S3 第十一片 `run` 组 A11：小四件删键，本片）**：附表 **1324 → 1342**
 > （净 +18，行数 114 → 115）、主表 **170 → 170**（不变，行数 23 → 23）。这 18 点**全部来自本片新增的
 > 切片钉子文件** `test/loop-run-slice-498s3a11.test.js`（`completion`×7 / `wrapup`×7 / `reflection`×2 /
@@ -16,7 +33,7 @@
 > `test/loop-config-namespace-497.test.js` 61、`test/loop-option-normalization.test.js` 23、
 > `test/loop-invalid-arguments.test.js` 7 —— 五个被本片改过写侧的文件，计数**一个都没变**
 > （写点从扁平搬进 `config.run.*`，而 `config` 是容器、数到就停）。
-> 复跑：`node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
+> 复跑：`node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
 > （主表 170 / 附表 1342 都是 AST 实测）。
 >
 > ⚠ **附表口径刷新（#531 `session` 立为第三站：拆掉 `config.metadata.session` 叶子，本片）**：
@@ -31,7 +48,7 @@
 >     ⇒ 那一行必须删（留着会红：覆盖表键集必须与 schema 叶子集逐字相等），于是少一个 `session` 写点。
 > 本片删的 `config.metadata.session` 是**容器内**写点，本来就不进表；`session` 的顶层扁平写点一个都没
 > 退役（它是第三站成员，不是退役键），所以其余 112 个写点与那 22 个文件一行未动。
-> 复跑：`node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
+> 复跑：`node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
 > （主表 170 / 附表 1324 都是 AST 实测）。
 >
 > ⚠ **附表口径刷新（#498 S3 第十片 `metadata` A9：`user` / `model` / `task` 三键删键，本片）**：
@@ -46,7 +63,7 @@
 >   · **±0**：本片删的三个顶层键 `user` / `model` / `task` **本来就不在计数口径里**（顶部「生成方式」写明：
 >     它们是**不透明载荷**，引擎不按名字读子键 ⇒ 归 NOT-OPTION-SURFACE），所以删键**不改变任何既有行**的
 >     归属判断。`session` 经同值判定**退回**，它那 112 个写点与那 22 个文件一行未动。
-> 复跑：`node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
+> 复跑：`node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
 > （主表 170 / 附表 1324 都是 AST 实测）。
 >
 > ⚠ **附表口径刷新（#498 S3 第九片 `metadata` A8：四个小键删键，本片）**：附表 **1299 → 1304**（净 +5，
@@ -60,14 +77,14 @@
 > 本片删的四个顶层键里，`requestId` / `expert` 是标量（本来就不在计数口径里），`modelMetadata` /
 > `toolContext` 是壳但**叶子仍在 schema 里**（退役的是顶层拼写）——所以删键**不改变任何既有行**的
 > 归属判断，只改变「写点写在哪」的那 10 点。复跑：
-> `node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
+> `node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
 > （主表 170 / 附表 1304 都是 AST 实测）。
 >
 > ⚠ **附表口径刷新（#527 `tools` 拆叶子）**：附表 **1299 → 1299**（不变，行数 112 → 112）、
 > 主表 **170 → 170**（不变，行数 23 → 23）。原因是 #527 只把 `tools` 的**规位写点**（`config.input.tools`）
 > 改回扁平 `tools`：`config` 是容器，按规则 4 数到就停，所以那些写点本来就不在计数口径里；改回扁平后
 > 两处 `tools` 写点重新进表（`loop-config-namespace-497` +1、`loop-capabilities-namespace-498` −1，
-> 两文件此消彼长，总数不变）。复跑：`node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md`
+> 两文件此消彼长，总数不变）。复跑：`node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md`
 > **exit=0**，逐行零误差。
 >
 > 生成方式（可复跑，不许凭感觉）：AST 走 `test/**`（排除 `test/contract/**`，那是 #498 S8 独占），
@@ -91,14 +108,14 @@
 > （无子键 ⇒ 按顶部「生成方式」不是壳），它本来就不在计数口径里（顶部「明确排除」一节已写明
 > `system` 归 NOT-OPTION-SURFACE：它的值是不透明载荷，且还出现在 provider 请求体里），所以删键
 > **不改变任何既有行**；只增了新文件那一行。`wrapup` / `tools` 本片**退回不删**，它们的行一个字未动。
-> 复跑：`node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
+> 复跑：`node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
 > （主表 170 / 附表 1299 都是 AST 实测）。
 > ⚠ **附表口径刷新（#498 S3 第七片 `tuning` A5 段收尾）**：附表 **1276 → 1283**（+7，行数 110 → 111）、
 > 主表 **170 → 170**（不变，行数 23 → 23）。这 7 点**全部来自本片新增的切片钉子文件**
 > `test/loop-tuning-keys-slice-498s3a5.test.js`（`completion`×2 / `wrapup`×2 / `context`×1 / `session`×1 /
 > `tools`×1 —— 都是搭台写点）。本片删的三个顶层扁平键（`maxTokens` / `temperature` / `topP`）**都是标量**
 > （无子键 ⇒ 按顶部「生成方式」不是壳），它们本来就不在计数口径里，所以删键**不改变任何既有行**；
-> 只增了新文件那一行。复跑：`node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md`
+> 只增了新文件那一行。复跑：`node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md`
 > **exit=0**，逐行零误差（主表 170 / 附表 1283 都是 AST 实测）。
 > ⚠ **附表口径刷新（#498 S3 第六片 `guard` 段收尾）**：附表 **1270 → 1276**（+6，行数 109 → 110）、
 > 主表 **169 → 170**（+1，行数 22 → 23）。这 7 点**全部来自本片新增的切片钉子文件**
@@ -106,14 +123,14 @@
 > 主表 1：`finalGuard`×1 —— 都是搭台写点）。本片删的三个顶层扁平键
 > （`finalGuardMaxRetries` / `finalGuardTimeoutMs` / `finalGuardExtend`）**都是标量**（无子键 ⇒ 按顶部
 > 「生成方式」不是壳），它们本来就不在计数口径里，所以删键**不改变任何既有行**；只增了新文件那两行。
-> 复跑：`node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
+> 复跑：`node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
 > （主表 170 / 附表 1276 都是 AST 实测）。
 > ⚠ **附表口径刷新（#498 S3 第五片 `tuning` 段收尾，本片）**：附表从 **1263 → 1270**（+7，行数 108 → 109）。
 > 这 7 点**全部来自本片新增的切片钉子文件** `test/loop-tuning-slice-498s3d.test.js`（`completion`×3 /
 > `wrapup`×2 / `context`×1 / `stallDetection`×1 —— 都是搭台写点）。本片删的顶层扁平键
 > `cacheCapable` 是**布尔标量**（无子键 ⇒ 按顶部「生成方式」不是壳），它本来就不在计数口径里，
 > 所以删键**不改变任何既有行**；只增了新文件那一行。复跑：
-> `node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
+> `node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
 > （主表 169 / 附表 1270 都是 AST 实测）。
 > ⚠ **附表口径刷新（#498 S3 第四片 `input` A2b 段收尾，本片）**：附表从 **1259 → 1263**（+4，行数 107 → 108）。
 > 这 4 点**不是本片新写出来的**：`test/loop-seed-fixture-521.test.js`（#521 的夹具钉子文件）在 A2 那一刀里
@@ -121,20 +138,20 @@
 > 所以「逐行零误差」当时是绿的、总数却是低的。本片补上这一行并重新对账。
 > 本片（A2b）**删掉了 `initialUserMessage` 的扁平写法**，而它本来就不在计数口径里（顶部「生成方式」写明：
 > 标量键没有子键 ⇒ 不是壳），所以删键**不改变任何计数**；本片新增的 `config: { input: { … } }` 写点同样不计
-> （`config` 是容器，规则 4 数到就停）。复跑：`node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md`
+> （`config` 是容器，规则 4 数到就停）。复跑：`node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md`
 > **exit=0**，逐行零误差（主表 169 / 附表 1263 都是 AST 实测）。
 >
 > ⚠ **附表口径刷新（#498 S3 第三片 `input` A 段收尾）**：附表从 **1269 → 1259**（−10，文件数 106 → 107）。
 > 同样是**实测**：本片把顶层扁平 `cacheStablePrefix` / `initialMessages` 摘掉（`initialMessages` 是附表
 > 数据面键表里的一员，它的 12 个扁平写点随写侧迁移一起消失，其中 10 个落在 10 个既有文件里），
 > 新增的切片钉子文件 `test/loop-input-slice-498s3c.test.js` 自己带 12 个搭台写点。
-> `node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
+> `node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
 > （主表 169 / 附表 1263 都是 AST 实测）。
 >
 > ⚠ **附表口径刷新（#498 S3 第二片 `folding` 收尾）**：附表从 **1354 → 1269**（−85，文件数 104 → 106）。
 > 这是**实测**，不是手改：S3 的 `timing` / `folding` 两片把 `retry` / `context` / `toolResultTtl` /
 > `toolResultFoldMinTokens` 的扁平写法从树上摘掉了（写点随写侧迁移一起消失），另外新增两个切片钉子文件
-> 各带 7 个搭台写点。`node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md` **exit=0**，
+> 各带 7 个搭台写点。`node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md` **exit=0**，
 > 逐行零误差（主表 169 / 附表 1269 都是 AST 实测）。
 >
 > 按这五条（历史口径）：**迁移前 388 / S7a 后 351 / S7b 后 256 / S7c 后 169 / 附表 1354 / COMPAT-PIN 66**。复跑命令在
@@ -594,17 +611,17 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 而下面这些写点住的 `context` / `reflection` / `retry` / `wrapup` / `completion` / `session` 等**壳**
 正是 S3 要删的东西 ⇒ **它们是 S3 的硬前置**，不是可选清理：壳删了、写点还按壳写，就是当场红。
 切片方案见文末「数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）」。（那份方案是 S3 之前写的，
-分片数字保留为**历史规划口径**；今天的实测总数是 **1270**，见文末「复跑方法」。）
+分片数字保留为**历史规划口径**；今天的实测总数是 **1343**，见文末「复跑方法」。）
 
 计数口径与上表同（AST、数到被数的键就停、进了同名壳就停，于是 `context: { strategy }` 只算 `context` 一个）。
-**合计 1270**（= `node /tmp/flat-count.cjs .` 的第二个数；下面 **109** 行逐行相加也是 1270）。
+**合计 1343**（= `node scripts/flat-count-inventory.mjs .` 的第二个数；下面 **116** 行逐行相加也是 1343）。
 （S3 之前是 1354 / 104 行，两片之后 1269 / 106 行；差额与原因见文件头的「附表口径刷新」注。）
 
 ### 数据面键表：从白名单枚举（#498 S7c 扩键，680 → 1354）
 
 **判据（机器可判，不凭记忆）**：顶层白名单键 K 进数据面键表 ⇔ **K 属配置面**（`CONFIG_SURFACE_OPTION_NAMES`）
 **且**在 `test/**` 里至少出现过一次 `K: { … }`（对象字面量 ⇒ 引擎按名字读子键的**壳**）。逐键枚举
-（`node /tmp/flat-count.cjs . --keys`）：
+（`node scripts/flat-count-inventory.mjs . --keys`）：
 
 | 键 | 写点 | 文件数 | 进表？ | 备注 |
 | --- | --- | --- | --- | --- |
@@ -645,53 +662,53 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | 文件 | 写点 | 明细 |
 | --- | --- | --- |
 | `test/judge.test.js` | 122 | `completion`×55, `reflection`×52, `wrapup`×11, `resume`×2, `stallDetection`×2 |
-| `test/loop-capabilities-ports-hooks-498s4c.test.js` | 82 | `completion`×24, `wrapup`×24, `context`×7, `reflection`×6, `retry`×6, `judgeProvider`×3, `session`×3, `sleepImpl`×3, `strategy`×3, `tools`×3 |
-| `test/cli.test.js` | 74 | `session`×36, `prompt`×29, `reflection`×4, `tools`×3, `context`×2, `finalGuard`×2, `completion`×1 |
-| `test/loop-resume.test.js` | 71 | `completion`×33, `resume`×23, `tools`×8, `reflection`×3, `partialPersistence`×2, `wrapup`×2 |
-| `test/loop-option-gate-496.test.js` | 28 | `context`×31, `completion`×7, `onFoldSummary`×7, `finalGuard`×6, `reflection`×5, `retry`×5, `tools`×3, `deliverables`×2, `session`×2, `partialPersistence`×1, `sleepImpl`×1, `stallDetection`×1, `wrapup`×1 |
-| `test/loop-config-namespace-497.test.js` | 45 | `completion`×11, `wrapup`×11, `tools`×6, `session`×4, `context`×2, `finalGuard`×2, `initialMessages`×2, `resume`×2, `retry`×2, `modelMetadata`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `stallDetection`×1 |
+| `test/loop-capabilities-ports-hooks-498s4c.test.js` | 82 | `completion`×24, `wrapup`×24, `context`×7, `onEvent`×7, `reflection`×6, `retry`×6, `judgeProvider`×3, `session`×3, `sleepImpl`×3, `strategy`×3, `tools`×3 |
+| `test/cli.test.js` | 74 | `session`×36, `prompt`×29, `reflection`×4, `tools`×3, `finalGuard`×2, `completion`×1, `context`×1 |
+| `test/loop-resume.test.js` | 69 | `completion`×33, `resume`×23, `tools`×8, `reflection`×3, `wrapup`×2 |
+| `test/loop-option-gate-496.test.js` | 28 | `completion`×7, `context`×7, `onFoldSummary`×7, `finalGuard`×6, `reflection`×5, `tools`×3, `deliverables`×2, `session`×2, `partialPersistence`×1, `sleepImpl`×1, `stallDetection`×1, `wrapup`×1 |
+| `test/loop-config-namespace-497.test.js` | 45 | `onEvent`×13, `completion`×11, `wrapup`×11, `tools`×6, `session`×4, `context`×2, `finalGuard`×2, `initialMessages`×2, `resume`×2, `retry`×2, `modelMetadata`×1, `onObserverError`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `stallDetection`×1 |
 | `test/loop-resume-anchor.test.js` | 38 | `completion`×8, `stallDetection`×8, `wrapup`×8, `resume`×7, `tools`×6, `partialPersistence`×1 |
 | `test/loop-v020-rc.test.js` | 24 | `completion`×19, `session`×3, `resume`×1, `stallDetection`×1 |
-| `test/loop-resume-notice.test.js` | 29 | `completion`×11, `tools`×9, `resume`×7, `context`×2, `reflection`×2 |
+| `test/loop-resume-notice.test.js` | 29 | `completion`×11, `tools`×9, `resume`×7, `reflection`×2 |
 | `test/loop.test.js` | 31 | `completion`×15, `stallDetection`×12, `reflection`×2, `onToolResult`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-core.test.js` | 24 | `finalGuard`×19, `tools`×14, `strategy`×4, `context`×3, `reflection`×3, `onEvent`×1, `onObserverError`×1 |
-| `test/loop-capabilities-namespace-498.test.js` | 22 | `completion`×5, `wrapup`×5, `retry`×3, `session`×1, `tools`×1, `context`×1, `modelMetadata`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `resume`×1, `stallDetection`×1 |
+| `test/loop-capabilities-namespace-498.test.js` | 22 | `deliverables`×9, `completion`×5, `onEvent`×5, `wrapup`×5, `finalGuard`×4, `retry`×3, `onRound`×2, `context`×1, `modelMetadata`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `resume`×1, `session`×1, `stallDetection`×1, `tools`×1 |
 | `test/loop-option-normalization.test.js` | 23 | `session`×8, `completion`×7, `tools`×5, `wrapup`×3 |
 | `test/reflection.test.js` | 23 | `completion`×12, `reflection`×10, `resume`×1 |
-| `test/judge-record.test.js` | 20 | `reflection`×13, `completion`×5, `context`×2, `session`×1 |
-| `test/integration/memento-scenario.test.js` | 16 | `completion`×4, `reflection`×4, `tools`×4, `wrapup`×4, `context`×3 |
-| `test/loop-guard-extend.test.js` | 16 | `reflection`×13, `context`×3, `outputHygiene`×2, `resume`×1 |
+| `test/judge-record.test.js` | 20 | `reflection`×13, `completion`×5, `context`×1, `session`×1 |
+| `test/integration/memento-scenario.test.js` | 16 | `completion`×4, `reflection`×4, `tools`×4, `wrapup`×4 |
+| `test/loop-guard-extend.test.js` | 16 | `reflection`×13, `outputHygiene`×2, `resume`×1 |
 | `test/loop-persist-engine-text.test.js` | 19 | `reflection`×8, `tools`×6, `resume`×2, `completion`×1, `stallDetection`×1, `wrapup`×1 |
-| `test/messages-identity.test.js` | 17 | `strategy`×12, `context`×3, `completion`×2, `tools`×2 |
+| `test/messages-identity.test.js` | 17 | `strategy`×12, `completion`×2, `tools`×2, `context`×1 |
 | `test/loop-request-user-invariant.test.js` | 16 | `initialMessages`×5, `completion`×4, `stallDetection`×3, `tools`×3, `resume`×1 |
-| `test/loop-stream.test.js` | 14 | `completion`×5, `partialPersistence`×4, `retry`×4, `wrapup`×4, `resume`×1 |
-| `test/output-aggregate-budget.test.js` | 14 | `outputHygiene`×7, `completion`×4, `context`×4, `reflection`×2, `resume`×1 |
+| `test/loop-stream.test.js` | 14 | `completion`×5, `partialPersistence`×4, `wrapup`×4, `resume`×1 |
+| `test/output-aggregate-budget.test.js` | 14 | `outputHygiene`×7, `completion`×4, `reflection`×2, `resume`×1 |
 | `test/output-hygiene.test.js` | 14 | `completion`×7, `outputHygiene`×6, `resume`×1 |
 | `test/wrapup.test.js` | 17 | `completion`×11, `reflection`×3, `wrapup`×3 |
-| `test/loop-context-on-fold-summary-retired-499.test.js` | 16 | `context`×7, `onFoldSummary`×7, `completion`×2, `stallDetection`×2, `tools`×2, `wrapup`×2, `onEvent`×1, `session`×1, `strategy`×1 |
+| `test/loop-context-on-fold-summary-retired-499.test.js` | 16 | `onFoldSummary`×7, `context`×6, `completion`×2, `stallDetection`×2, `tools`×2, `wrapup`×2, `onEvent`×1, `session`×1, `strategy`×1 |
 | `test/sessions.test.js` | 16 | `session`×16 |
 | `test/loop-abort-terminal-priority.test.js` | 15 | `reflection`×5, `stallDetection`×5, `completion`×4, `judgeProvider`×1 |
 | `test/loop-metadata-keys-slice-498s3a8.test.js` | 16 | `tools`×6, `modelMetadata`×3, `completion`×2, `session`×2, `wrapup`×2, `context`×1 |
 | `test/loop-run-slice-498s3a11.test.js` | 18 | `completion`×7, `wrapup`×7, `reflection`×2, `context`×1, `tools`×1 |
 | `test/loop-metadata-keys-slice-498s3a9.test.js` | 19 | `completion`×4, `session`×4, `wrapup`×4, `context`×3, `reflection`×2, `tools`×2 |
-| `test/loop-fold-context-knobs-469.test.js` | 14 | `strategy`×6, `context`×3, `session`×2, `tools`×2, `completion`×1, `wrapup`×1 |
-| `test/loop-on-fold-summary.test.js` | 12 | `onFoldSummary`×11, `context`×4, `tools`×3, `completion`×2, `onPersistenceError`×2, `stallDetection`×2, `wrapup`×2, `session`×1 |
+| `test/loop-fold-context-knobs-469.test.js` | 14 | `strategy`×6, `context`×2, `session`×2, `tools`×2, `completion`×1, `wrapup`×1 |
+| `test/loop-on-fold-summary.test.js` | 12 | `onFoldSummary`×11, `tools`×3, `completion`×2, `context`×2, `onPersistenceError`×2, `stallDetection`×2, `wrapup`×2, `session`×1 |
 | `test/loop-folding-slice-498s3b.test.js` | 7 | `completion`×3, `wrapup`×3, `context`×1 |
-| `test/loop-timing-slice-498s3.test.js` | 7 | `completion`×3, `stallDetection`×2, `wrapup`×1, `retry`×1 |
+| `test/loop-timing-slice-498s3.test.js` | 7 | `completion`×3, `stallDetection`×2, `retry`×1, `wrapup`×1 |
 | `test/loop-input-slice-498s3c.test.js` | 12 | `wrapup`×4, `completion`×2, `initialMessages`×2, `session`×2, `tools`×2 |
 | `test/loop-fr2.test.js` | 7 | `completion`×7 |
 | `test/model-metadata-diagnostics.test.js` | 8 | `completion`×5, `outputHygiene`×1, `session`×1, `tools`×1 |
-| `test/persistence-diagnostics.test.js` | 11 | `completion`×9, `reflection`×2, `retry`×2 |
-| `test/run-state.test.js` | 10 | `completion`×7, `context`×3, `resume`×3 |
-| `test/compaction-strategy-name.test.js` | 10 | `strategy`×8, `completion`×2, `context`×2 |
+| `test/persistence-diagnostics.test.js` | 11 | `completion`×9, `reflection`×2 |
+| `test/run-state.test.js` | 10 | `completion`×7, `resume`×3 |
+| `test/compaction-strategy-name.test.js` | 10 | `strategy`×8, `completion`×2 |
 | `test/loop-termination.test.js` | 12 | `completion`×6, `stallDetection`×5, `reflection`×1 |
 | `test/cli-idle-retry.test.js` | 11 | `retry`×5, `prompt`×3, `session`×3 |
 | `test/integration/no-todo-switch.test.js` | 11 | `prompt`×5, `session`×5, `tools`×1 |
 | `test/loop-final-guard.test.js` | 11 | `completion`×7, `reflection`×4 |
 | `test/cli-idle.test.js` | 10 | `prompt`×5, `session`×5 |
-| `test/compact/resume-fold-trim.test.js` | 9 | `strategy`×5, `resume`×3, `completion`×1, `context`×1 |
+| `test/compact/resume-fold-trim.test.js` | 9 | `strategy`×5, `resume`×3, `completion`×1 |
 | `test/loop-governance-switch-cells.test.js` | 10 | `completion`×4, `reflection`×4, `wrapup`×2 |
-| `test/loop-persist-compaction-facts.test.js` | 8 | `completion`×3, `reflection`×3, `context`×2, `resume`×1, `strategy`×1 |
+| `test/loop-persist-compaction-facts.test.js` | 8 | `completion`×3, `reflection`×3, `resume`×1, `strategy`×1 |
 | `test/loop-resume-unpersisted-tool-results.test.js` | 10 | `resume`×6, `completion`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-tool-list.test.js` | 9 | `tools`×7, `prompt`×2 |
 | `test/loop-resume-fold-immunity.test.js` | 9 | `completion`×2, `reflection`×2, `tools`×2, `wrapup`×2, `resume`×1 |
@@ -699,50 +716,50 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/repl.test.js` | 9 | `session`×6, `completion`×1, `finalGuard`×1, `prompt`×1, `tools`×1 |
 | `test/governor.test.js` | 8 | `completion`×4, `stallDetection`×4 |
 | `test/loop-error-budget-cells.test.js` | 8 | `completion`×4, `stallDetection`×3, `resume`×1 |
-| `test/loop-guard-slice-498s3e.test.js` | 6 | `completion`×2, `wrapup`×2, `context`×1, `reflection`×1 |
-| `test/app-container-p0.test.js` | 6 | `completion`×3, `stallDetection`×3, `retry`×1 |
-| `test/compact/folded-facts.test.js` | 6 | `strategy`×4, `completion`×1, `context`×1, `reflection`×1 |
+| `test/loop-guard-slice-498s3e.test.js` | 6 | `completion`×2, `wrapup`×2, `context`×1, `finalGuard`×1, `reflection`×1 |
+| `test/app-container-p0.test.js` | 6 | `completion`×3, `stallDetection`×3 |
+| `test/compact/folded-facts.test.js` | 6 | `strategy`×4, `completion`×1, `reflection`×1 |
 | `test/loop-governance-cells.test.js` | 7 | `completion`×3, `reflection`×3, `resume`×1 |
 | `test/loop-intercept-count-cells.test.js` | 7 | `completion`×3, `reflection`×3, `resume`×1 |
 | `test/loop-invalid-arguments.test.js` | 7 | `completion`×3, `tools`×3, `resume`×1 |
-| `test/loop-resume-prior-seed-469.test.js` | 5 | `completion`×2, `context`×2, `reflection`×2, `resume`×1 |
+| `test/loop-resume-prior-seed-469.test.js` | 5 | `completion`×2, `reflection`×2, `resume`×1 |
 | `test/capture-honesty.test.js` | 6 | `prompt`×3, `session`×3 |
 | `test/examples/erix-run-async.test.js` | 6 | `tools`×4, `context`×1, `strategy`×1 |
-| `test/loop-folded-facts-sliding-resume.test.js` | 5 | `completion`×1, `context`×1, `stallDetection`×1, `strategy`×1, `tools`×1, `wrapup`×1 |
-| `test/loop-persistence-phase.test.js` | 5 | `completion`×1, `partialPersistence`×1, `reflection`×1, `retry`×1, `tools`×1, `wrapup`×1 |
+| `test/loop-folded-facts-sliding-resume.test.js` | 5 | `completion`×1, `stallDetection`×1, `strategy`×1, `tools`×1, `wrapup`×1 |
+| `test/loop-persistence-phase.test.js` | 5 | `completion`×1, `partialPersistence`×1, `reflection`×1, `tools`×1, `wrapup`×1 |
 | `test/notes-final-guard.test.js` | 6 | `prompt`×3, `session`×3, `finalGuard`×2 |
-| `test/tool-fact-success-parity.test.js` | 5 | `completion`×2, `context`×1, `onToolResult`×1, `outputHygiene`×1, `reflection`×1, `resume`×1 |
-| `test/display/projection.test.js` | 4 | `wrapup`×2, `completion`×1, `context`×1, `reflection`×1 |
-| `test/loop-fold-count-cells.test.js` | 4 | `completion`×2, `context`×1, `resume`×1, `stallDetection`×1 |
-| `test/loop-usage-accounting.test.js` | 4 | `reflection`×2, `completion`×1, `context`×1, `stallDetection`×1 |
+| `test/tool-fact-success-parity.test.js` | 5 | `completion`×2, `onToolResult`×1, `outputHygiene`×1, `reflection`×1, `resume`×1 |
+| `test/display/projection.test.js` | 4 | `wrapup`×2, `completion`×1, `reflection`×1 |
+| `test/loop-fold-count-cells.test.js` | 4 | `completion`×2, `resume`×1, `stallDetection`×1 |
+| `test/loop-usage-accounting.test.js` | 4 | `reflection`×2, `completion`×1, `stallDetection`×1 |
 | `test/loop-v020.test.js` | 3 | `completion`×3 |
-| `test/compact/fold-archive.test.js` | 2 | `completion`×2, `context`×2 |
+| `test/compact/fold-archive.test.js` | 2 | `completion`×2 |
 | `test/compaction-strategy-fallback.test.js` | 1 | `completion`×1 |
 | `test/loop-message-rows-crash-matrix.test.js` | 4 | `completion`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/loop-observer-isolation.test.js` | 4 | `completion`×2, `context`×1, `reflection`×1 |
 | `test/loop-run-state-cells.test.js` | 4 | `completion`×2, `resume`×2 |
 | `test/loop-termination-reason-cell.test.js` | 4 | `completion`×2, `stallDetection`×2 |
 | `test/cli-process.test.js` | 3 | `prompt`×3 |
-| `test/e2e/upstream.test.js` | 2 | `onDelta`×5, `onUsage`×2, `completion`×1, `onEvent`×1, `retry`×1, `stallDetection`×1 |
+| `test/e2e/upstream.test.js` | 2 | `onDelta`×5, `onUsage`×2, `completion`×1, `onEvent`×1, `stallDetection`×1 |
 | `test/examples/erix-run-notes-lifecycle.test.js` | 3 | `tools`×3 |
 | `test/loop-forced-final-by-state-475.test.js` | 3 | `completion`×3 |
 | `test/tools/notes.test.js` | 3 | `context`×3 |
 | `test/cli-idle-payload.test.js` | 2 | `prompt`×1, `session`×1 |
-| `test/compaction-observability.test.js` | 1 | `completion`×1, `context`×1 |
+| `test/compaction-observability.test.js` | 1 | `completion`×1 |
 | `test/examples/erix-run-core.smoke.test.js` | 2 | `strategy`×2 |
 | `test/examples/erix-run-details.test.js` | 2 | `reflection`×1, `strategy`×1 |
 | `test/integration/todo-builtin.test.js` | 2 | `finalGuard`×1, `prompt`×1, `session`×1 |
 | `test/loop-inject-flags.test.js` | 2 | `completion`×1, `stallDetection`×1 |
 | `test/loop-judge-done-forced-final.test.js` | 2 | `completion`×1, `reflection`×1 |
 | `test/loop-run-loop-state-tdz.test.js` | 2 | `completion`×1, `reflection`×1 |
-| `test/loop-v020-beta.test.js` | 0 | `retry`×2 |
+| `test/loop-v020-beta.test.js` | 0 | |
 | `test/messages/anthropic.test.js` | 2 | `tools`×2 |
 | `test/messages/tool-result-content.test.js` | 2 | `completion`×2 |
 | `test/providers/anthropic.test.js` | 2 | `onDelta`×2, `tools`×2 |
 | `test/providers/openai-stream.test.js` | 2 | `onEvent`×2, `onReasoningDelta`×2, `tools`×2, `onDelta`×1, `onUsage`×1 |
 | `test/providers/openai.test.js` | 2 | `tools`×2 |
 | `test/skills.test.js` | 2 | `tools`×2 |
-| `test/tokens-estimate-hotpath.test.js` | 1 | `completion`×1, `context`×1 |
+| `test/tokens-estimate-hotpath.test.js` | 1 | `completion`×1 |
 | `test/tools.test.js` | 2 | `context`×2 |
 | `test/wrapup-normalization-unified.test.js` | 2 | `completion`×1, `reflection`×1 |
 | `test/wrapup-protocol-observer.test.js` | 2 | `completion`×1, `reflection`×1 |
@@ -753,12 +770,13 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-final-guard-payload.test.js` | 1 | `completion`×1 |
 | `test/loop-resume-summary-history.test.js` | 1 | `resume`×1 |
 | `test/provider-runner.test.js` | 1 | `context`×1 |
-| `test/providers/error-classification.test.js` | 0 | `retry`×1 |
+| `test/providers/error-classification.test.js` | 0 | |
 | `test/run-snapshot-executor.test.js` | 1 | `context`×1, `onToolResult`×1 |
 | `test/loop-seed-fixture-521.test.js` | 4 | `completion`×2, `wrapup`×2 |
 | `test/loop-tuning-slice-498s3d.test.js` | 7 | `completion`×3, `wrapup`×2, `context`×1, `stallDetection`×1 |
 | `test/loop-tuning-keys-slice-498s3a5.test.js` | 7 | `completion`×2, `wrapup`×2, `context`×1, `session`×1, `tools`×1 |
 | `test/loop-input-keys-slice-498s3a6.test.js` | 16 | `wrapup`×7, `completion`×4, `tools`×4, `context`×1 |
+| `test/loop-run-slice-498s3a12.test.js` | 3 | `completion`×1, `stallDetection`×1, `wrapup`×1 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 
@@ -837,315 +855,65 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 
 ## 复跑方法
 
-数字是**一次性 AST 走查**的产物（口径逐字写在顶部「生成方式」里，规则五条）。走查脚本本身**没有随仓库
-落盘**——#498 S7 的红线是「只改 `test/**`」，所以不往 `scripts/` 里加新工具；下面是**可直接跑**的版本
-（粘到 `/tmp/flat-count.cjs`，在仓库根执行；`typescript` 在 `devDependencies` 里，`npm ci` 后就有）。
+数字是**一次性 AST 走查**的产物（口径逐字写在顶部「生成方式」里，规则五条）。走查脚本**就在仓库里**：
+**`scripts/flat-count-inventory.mjs`**。
+
+> ⚠ **#529：`/tmp/` 不再是复现基准。** #529 之前这一节是把脚本 heredoc 粘到 `/tmp/flat-count.cjs` 再跑，
+> 复跑命令因此长成 `node scripts/flat-count-inventory.mjs …` —— 复现路径落在仓库**外面**：干净检出上跑不通，
+> 表一漂移就没人能刷（第十一片与 A12 两片都是这么卡住的）。现在脚本是仓库内的一个文件，
+> **所有复跑 / 刷表 / 反向证命令一律写 `node scripts/flat-count-inventory.mjs …`**；
+> 禁止再以 `/tmp/` 下的副本当复现基准（`/tmp/base-498` 那种**被测的树**是另一回事，见第 2 条）。
+
+放在 `scripts/` 的理由：仓库的 node 工具一律住这里、以 `node scripts/<name>.mjs` 调用（`package.json`
+的 `check:*` 全是这个形状），`test/` 只放**被测**的东西（放量尺进去会被 `node --test` 收走）。
+**`scripts/` 里已有的门禁脚本一个都没改**——这是**新增**的一个文件。
+
+`typescript` 在 `devDependencies` 里，`npm ci` 后就有；脚本按**自身位置**解析它，所以在哪个 cwd 跑都行。
 
 ```bash
-cat > /tmp/flat-count.cjs <<'SCRIPT'
-#!/usr/bin/env node
-/**
- * 扁平选项写点计数器 + 清点表核对器（#498 S7）。
- *
- * 用法（在仓库根跑；需要 `typescript`，仓库 devDependencies 里有）：
- *   node /tmp/flat-count.cjs .                      # 三个总数
- *   node /tmp/flat-count.cjs . --files              # 逐文件明细
- *   node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md   # 与本表逐行对账
- *   node /tmp/flat-count.cjs /tmp/base-498          # 迁移前基线（388 / 678）
- *
- * 口径（五条，缺一条数就对不上本表）：
- *   1. 走 <root>/test/**，跳过 <root>/test/contract/**（#498 S8 独占）；
- *   2. 只数属性写法（`PropertyAssignment` / `ShorthandPropertyAssignment`）的**名字**；
- *   3. **数到被数的键就停**，不再往它的值里走 —— 于是 `retry: { sleepImpl }` 只算 `retry` 一个，
- *      `onObserverError: (error, context) => seen.push({ error, context })` 里的 `context` 不算
- *      （「同名变量落进记录对象」的简写不是扁平写点）；
- *   4. `capabilities` / `config` 容器同样数到就停（容器里的同名叶子是规位写法，不是扁平写点）；
- *   5. `context` 同名壳也停（`context: foldContext({ onFoldSummary })` 只算 `context` 一个）。
- */
-const fs = require("node:fs");
-const path = require("node:path");
-const ts = require(path.join(process.cwd(), "node_modules", "typescript"));
+# 1) 现在的三个总数（本表主表 170 / 附表 1343 / 全部 1513）
+node scripts/flat-count-inventory.mjs .                       # ⇒ 能力面 13 键 170 / 数据面 17 键 1343 / 全部 1513
+node scripts/flat-count-inventory.mjs . --keys                # ⇒ 逐键明细（17 个数据面键 + 13 个能力面键，见「数据面键表」）
+node scripts/flat-count-inventory.mjs . --files               # ⇒ 逐文件明细（117 文件 / 1513 点，与本表逐行零误差）
 
-const RETIRED = [
-  "onEvent", "onRound", "onJudge", "onToolResult", "onDelta", "onReasoningDelta",
-  "onToolCall", "onUsage", "onObserverError", "onPersistenceError", "onFoldSummary",
-];
-const CAPABILITY_FACE = new Set([...RETIRED, "finalGuard", "deliverables"]);
-// 数据面键表（#498 S7c 扩键）：白名单里「值在 test/** 出现过对象字面量」的**配置面**键 —— 也就是
-// 「壳」（引擎按名字读子键的容器）——再加上本表既有的 6 个非对象条目：
-//   · `resume` / `persistence`：整块开关（布尔），S3 删它们时同样是「一键一处改写」；
-//   · `prompt`：`bin/cli.js` 的 `runChat({ prompt })` 入参（不是 runToolLoop 选项）；
-//   · `strategy` / `sleepImpl` / `judgeProvider`：**非白名单**的在壳叶子（`context.strategy` /
-//     `retry.sleepImpl` / `reflection.judge.provider`），它们没有顶层扁平别名，但扁平壳里照样写。
-// 明确**排除**（各有机器可判的理由，不是凭记忆）：
-//   · `system` / `user` / `task` / `model` / `toolContext`：值是不透明**载荷**（`{ id }` / `{ content }`），
-//     引擎不按名字读子键；`system` 还在 provider 请求体里（`test/messages/anthropic.test.js`）出现，
-//     那不是 runToolLoop 的选项面 ⇒ 归 NOT-OPTION-SURFACE，不进本表；
-//   · `writeToolNames` / `writeToolPathKeys`：字符串数组（元素不是子键）；
-//   · 其余标量键（`maxRounds` / `runId` / `cwd` / `initialUserMessage` / `stream` / `maxTokens` …）：
-//     没有子键 ⇒ 不是壳。S3 删它们是一键一处改写，不是拆壳；它们的消费者面用「删键后全量红格数」校准
-//     （见清点表的「校准方法」）。
-const DATA_KEYS = new Set([
-  "reflection", "tools", "context", "resume", "retry", "initialMessages", "prompt",
-  "strategy", "sleepImpl", "judgeProvider",
-  // S7c 扩键：从白名单枚举出来的、此前漏掉的 7 个壳。
-  "completion", "session", "modelMetadata", "outputHygiene", "stallDetection",
-  "partialPersistence", "wrapup",
-]);
-const ALL = new Set([...CAPABILITY_FACE, ...DATA_KEYS]);
-const CONTAINERS = new Set(["capabilities", "config"]);
-
-function walk(dir, out) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name === "node_modules" || entry.name === ".git") continue;
-      walk(full, out);
-    } else if (/\.(js|mjs|cjs)$/.test(entry.name)) out.push(full);
-  }
-  return out;
-}
-
-function count(root) {
-  const hits = [];
-  for (const file of walk(path.join(root, "test"), [])) {
-    const rel = path.relative(root, file).split(path.sep).join("/");
-    if (rel.startsWith("test/contract/")) continue;
-    const sf = ts.createSourceFile(file, fs.readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-    const visit = (n) => {
-      if (!n) return;
-      if (ts.isPropertyAssignment(n)) {
-        const name = ts.isIdentifier(n.name) || ts.isStringLiteral(n.name) ? n.name.text : null;
-        if (name && ALL.has(name)) hits.push({ file: rel, key: name });
-        if (name && (CONTAINERS.has(name) || ALL.has(name))) return; // 规则 3 / 4 / 5
-      } else if (ts.isShorthandPropertyAssignment(n)) {
-        if (ALL.has(n.name.text)) hits.push({ file: rel, key: n.name.text });
-        return;
-      }
-      ts.forEachChild(n, visit);
-    };
-    visit(sf);
-  }
-  const per = new Map();
-  for (const h of hits) {
-    const cur = per.get(h.file) || { total: 0, cap: 0, data: 0, byKey: new Map() };
-    cur.total += 1;
-    if (CAPABILITY_FACE.has(h.key)) cur.cap += 1; else cur.data += 1;
-    cur.byKey.set(h.key, (cur.byKey.get(h.key) || 0) + 1);
-    per.set(h.file, cur);
-  }
-  return { hits, per };
-}
-
-function verify(root, mdPath) {
-  const { per } = count(root);
-  const lines = fs.readFileSync(mdPath, "utf8").split("\n");
-  const bad = [];
-  const mainRows = [];
-  const appRows = [];
-  const summary = [];
-  const listRows = new Map(); // 分派清单（S7b/S7c/S5/S6/COMPAT/含COMPAT）逐行：文件 → 表列写点
-  const groupRows = (g, row) => {
-    if (!listRows.has(g)) listRows.set(g, []);
-    listRows.get(g).push(row);
-  };
-  let section = "";
-  let inSummary = false;
-  for (const line of lines) {
-    if (line.startsWith("## ")) { section = line; inSummary = false; }
-    if (line.startsWith("### 分派小结")) { inSummary = true; continue; }
-    if (inSummary) {
-      if (!line.startsWith("|")) continue;
-      const cells = line.split("|").map((c) => c.trim());
-      if (cells.length < 5) continue;
-      const files = (cells[2].match(/^\*?\*?(\d+)/) || [])[1];
-      const points = (cells[3].match(/^\*?\*?(\d+)/) || [])[1];
-      if (files === undefined || points === undefined) continue;
-      summary.push({ label: cells[1].replace(/`/g, "").replace(/\*\*/g, ""), files: Number(files), points: Number(points) });
-      continue;
-    }
-    if (line.startsWith("含 COMPAT-PIN 格（")) { section = "## 含 COMPAT-PIN 格"; continue; }
-    const m = line.match(/^\| `(test\/[^`]+)` \| (\d+)（?[^|]*\| ?(.*)$/);
-    if (!m) continue;
-    const row = { file: m[1], claimed: Number(m[2]), tail: m[3] };
-    if (section.startsWith("## 附表")) appRows.push(row);
-    else if (section.startsWith("## MIGRATE（")) mainRows.push(row);
-    else if (section.startsWith("## S7b 清单")) groupRows("S7b", row);
-    else if (section.startsWith("## S7c 清单")) groupRows("S7c", row);
-    else if (section.startsWith("## OWNED-BY-S5")) groupRows("OWNED-BY-S5", row);
-    else if (section.startsWith("## OWNED-BY-S6")) groupRows("OWNED-BY-S6", row);
-    else if (section.startsWith("## COMPAT-PIN（")) groupRows("COMPAT-PIN", row);
-    else if (section === "## 含 COMPAT-PIN 格") groupRows("含 COMPAT-PIN 格", row);
-  }
-  const astCap = (f) => (per.get(f)?.cap ?? 0);
-  const astData = (f) => (per.get(f)?.data ?? 0);
-
-  for (const row of mainRows) if (row.claimed !== astCap(row.file)) bad.push(`主表 ${row.file}：表 ${row.claimed} / AST ${astCap(row.file)}`);
-  // 同一文件可能被两片各分一段（如 `loop-callback-this`：S7b 3 + S7c 1）⇒ 按文件汇总后再与 AST 对账
-  const perFileClaimed = new Map();
-  for (const [, rows] of listRows) for (const row of rows) perFileClaimed.set(row.file, (perFileClaimed.get(row.file) ?? 0) + row.claimed);
-  for (const [f, claimed] of perFileClaimed) if (claimed !== astCap(f)) bad.push(`分派清单 ${f}：表合计 ${claimed} / AST ${astCap(f)}`);
-  for (const row of appRows) if (row.claimed !== astData(row.file)) bad.push(`附表 ${row.file}：表 ${row.claimed} / AST ${astData(row.file)}`);
-  const mainSum = mainRows.reduce((s, r) => s + r.claimed, 0);
-  const appSum = appRows.reduce((s, r) => s + r.claimed, 0);
-  const astMain = [...per.values()].reduce((s, v) => s + v.cap, 0);
-  const astApp = [...per.values()].reduce((s, v) => s + v.data, 0);
-
-  // 反证面（#498 S3 A2b 补）：上面的逐行对账只核**已登记的行**，于是「某个文件从 0 点长出写点、
-  // 而它本来就没有附表行」这种漂移是**看不见**的（实测：给 `test/loop-deliverables.test.js` 加 3 个
-  // 数据面写点，旧版只把总数印成 1263/1266 却照样 exit=0）。所以再钉三条与行无关的性质：
-  //   ① 两个合计必须各自等于 AST 合计；② 有任何数据面写点的文件必须有附表行；
-  //   ③ 有任何能力面写点的文件必须落在主表或某张分派清单里。
-  if (mainSum !== astMain) bad.push(`主表合计：表 ${mainSum} / AST ${astMain}`);
-  if (appSum !== astApp) bad.push(`附表合计：表 ${appSum} / AST ${astApp}`);
-  const allGroupRows = [...listRows.values()].flat();
-  for (const [f, v] of per) {
-    if (v.data > 0 && !appRows.some((r) => r.file === f)) bad.push(`附表漏行 ${f}：AST ${v.data} 点，表里没有这一行`);
-    if (v.cap > 0 && !mainRows.some((r) => r.file === f) && !allGroupRows.some((r) => r.file === f)) {
-      bad.push(`主表/分派清单漏行 ${f}：AST ${v.cap} 点，表里没有这一行`);
-    }
-  }
-
-  // 分组：主表「分类」列是唯一权威（同文件跨片时写 `S7b（3）+ S7c（1）` 逐点归片）
-  const groups = new Map();
-  const addTo = (g, n) => groups.set(g, (groups.get(g) || 0) + n);
-  for (const row of mainRows) {
-    const tail = row.tail;
-    const split = [...tail.matchAll(/S7([abc])（(\d+)）/g)];
-    if (split.length) { for (const s of split) addTo(`S7${s[1]}`, Number(s[2])); continue; }
-    const plain = tail.match(/MIGRATE · S7([abc])/);
-    if (plain) { addTo(`S7${plain[1]}`, row.claimed); continue; }
-    if (/NOT-OPTION-SURFACE/.test(tail)) { addTo("NOT-OPTION-SURFACE", row.claimed); continue; }
-    if (/COMPAT-PIN 格/.test(tail)) { addTo("含 COMPAT-PIN 格", row.claimed); continue; }
-    if (/COMPAT-PIN/.test(tail)) { addTo("COMPAT-PIN", row.claimed); continue; }
-    if (/OWNED-BY-S5/.test(tail)) { addTo("OWNED-BY-S5", row.claimed); continue; }
-    if (/OWNED-BY-S6/.test(tail)) { addTo("OWNED-BY-S6", row.claimed); continue; }
-    addTo(`?${tail}`, row.claimed);
-  }
-
-  console.log(`主表 ${mainRows.length} 行：表合计 ${mainSum} / AST 合计 ${astMain}`);
-  console.log(`附表 ${appRows.length} 行：表合计 ${appSum} / AST 合计 ${astApp}`);
-  const groupNames = ["S7a", "S7b", "S7c", "含 COMPAT-PIN 格", "COMPAT-PIN", "OWNED-BY-S5", "OWNED-BY-S6", "NOT-OPTION-SURFACE"];
-  for (const g of groupNames) console.log(`  ${g.padEnd(18)} 逐点归片合计 ${groups.get(g) ?? 0}`);
-  const groupSum = [...groups.entries()].filter(([g]) => g !== "S7a").reduce((s, [, v]) => s + v, 0);
-  console.log(`  非 S7a 合计 ${groupSum}（应 = 主表合计 ${mainSum}）`);
-  if (summary.length) {
-    console.log(`分派小结 ${summary.length} 行：`);
-    const groupOf = (label) => {
-      const m = label.match(/S7([abc])/);
-      if (m) return `S7${m[1]}`;
-      if (/NOT-OPTION-SURFACE/.test(label)) return "NOT-OPTION-SURFACE";
-      if (/含 COMPAT-PIN 格/.test(label)) return "含 COMPAT-PIN 格";
-      if (/COMPAT-PIN/.test(label)) return "COMPAT-PIN";
-      if (/OWNED-BY-S5/.test(label)) return "OWNED-BY-S5";
-      if (/OWNED-BY-S6/.test(label)) return "OWNED-BY-S6";
-      return null;
-    };
-    let sumPoints = 0;
-    let totalPoints = null;
-    for (const s of summary) {
-      const g = groupOf(s.label);
-      const isTotal = /合计/.test(s.label);
-      if (isTotal) totalPoints = s.points;
-      else sumPoints += s.points;
-      const actual = isTotal ? astMain : (groups.get(g) ?? 0);
-      const ok = s.points === actual;
-      if (!ok) bad.push(`分派小结 ${s.label}：表 ${s.points} / 逐点归片 ${actual}`);
-      let filesOk = true;
-      if (!isTotal && g !== "S7a") {
-        const rows = listRows.get(g);
-        if (rows) { filesOk = rows.length === s.files; if (!filesOk) bad.push(`分派小结 ${s.label}：文件 ${s.files} / 清单 ${rows.length} 行`); }
-      }
-      console.log(`  表 ${s.label}：文件 ${s.files} / 写点 ${s.points}（逐点归片 ${actual}${filesOk ? "" : "，文件数不符"}）${ok && filesOk ? " ✅" : " ✗"}`);
-    }
-    if (totalPoints !== null && sumPoints !== totalPoints) {
-      bad.push(`分派小结列和 ${sumPoints} ≠ 合计 ${totalPoints}`);
-      console.log(`  列和 ${sumPoints} ≠ 合计 ${totalPoints} ✗`);
-    } else if (totalPoints !== null) {
-      console.log(`  列和 ${sumPoints} = 合计 ${totalPoints} ✅`);
-    }
-  }
-  for (const [g, rows] of listRows) {
-    console.log(`  清单 ${g.padEnd(16)} ${rows.length} 行 / 表列写点 ${rows.reduce((a, r) => a + r.claimed, 0)}`);
-  }
-  if (bad.length) { console.log("不一致："); for (const b of bad) console.log("  ✗ " + b); }
-  else console.log("逐文件：0 处不一致");
-  return bad.length;
-}
-
-function main() {
-  const root = process.argv[2] || ".";
-  const mode = process.argv[3] || "";
-  const { hits, per } = count(root);
-  if (mode === "--files") {
-    const rows = [...per.entries()].sort((a, b) => b[1].total - a[1].total || a[0].localeCompare(b[0]));
-    for (const [f, v] of rows) {
-      const detail = [...v.byKey.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-        .map(([k, c]) => `${k}×${c}`).join(", ");
-      console.log(`${String(v.total).padStart(3)}  ${f}  |  ${detail}`);
-    }
-    console.log(`--- 文件数 ${rows.length}  写点合计 ${rows.reduce((s, [, v]) => s + v.total, 0)}`);
-    return;
-  }
-  if (mode === "--verify") { process.exitCode = verify(root, process.argv[4]) === 0 ? 0 : 1; return; }
-  if (mode === "--keys") {
-    const byKey = new Map();
-    const files = new Map();
-    for (const h of hits) {
-      byKey.set(h.key, (byKey.get(h.key) || 0) + 1);
-      if (!files.has(h.key)) files.set(h.key, new Set());
-      files.get(h.key).add(h.file);
-    }
-    for (const [k, c] of [...byKey.entries()].sort((a, b) => b[1] - a[1])) {
-      console.log(`${String(c).padStart(4)}  ${String(files.get(k).size).padStart(3)} files  ${CAPABILITY_FACE.has(k) ? "CAP " : "DATA"}  ${k}`);
-    }
-    return;
-  }
-  const cap = hits.filter((h) => CAPABILITY_FACE.has(h.key)).length;
-  const data = hits.filter((h) => DATA_KEYS.has(h.key)).length;
-  console.log(`能力面 13 键（主表口径）：${cap}`);
-  console.log(`数据面 ${DATA_KEYS.size} 键（附表口径）：${data}`);
-  console.log(`全部写点：${hits.length}`);
-}
-
-main();
-SCRIPT
-
-# 1) 现在的三个总数（本表主表 169 / 附表 1263 / 全部 1432）
-node /tmp/flat-count.cjs .                       # ⇒ 能力面 13 键 169 / 数据面 17 键 1263 / 全部 1432
-node /tmp/flat-count.cjs . --keys                # ⇒ 逐键明细（17 个数据面键 + 13 个能力面键，见「数据面键表」）
-node /tmp/flat-count.cjs . --files               # ⇒ 逐文件明细（附表 106 行，与本表逐行零误差）
-
-# 2) 迁移前基线（388 / 678 / 1066）：把 S7a 迁移前的树解到 /tmp/base-498
+# 2) 迁移前基线（388 / 1351 / 1739）：把 S7a 迁移前的树解到 /tmp/base-498
+#    注意 `/tmp/base-498` 是**被测的树**（tree root 参数），不是脚本的存放地——脚本永远从仓库内跑。
 rm -rf /tmp/base-498 && mkdir -p /tmp/base-498 && git archive 0b2d858 test | tar -x -C /tmp/base-498
-node /tmp/flat-count.cjs /tmp/base-498           # ⇒ 能力面 13 键 388 / 数据面 17 键 1351 / 全部 1739
+node scripts/flat-count-inventory.mjs /tmp/base-498           # ⇒ 能力面 13 键 388 / 数据面 17 键 1351 / 全部 1739
                                                  #    388 − 37（S7a 已迁）= 351 ✅
                                                  #    注意：数据面这里是**扩键后**的口径（1351），
                                                  #    旧 10 键口径下才是本表早先写的 678。
 
-# 3) 与本表逐行对账（主表 22 行 + 附表 106 行 + 分派小结的加总式；不一致 ⇒ 退出码 1）
-node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md; echo "EXIT=$?"   # ⇒ EXIT=0
+# 3) 与本表逐行对账（主表 23 行 + 附表 116 行 + 分派小结的加总式；不一致 ⇒ 退出码 1）
+node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md; echo "EXIT=$?"   # ⇒ EXIT=0
 
+# 3b) 表漂移了怎么办：**机器刷**，不许手改数字
+node scripts/flat-count-inventory.mjs . --sync test/compat-pin-inventory.md     # 数字与明细列都由 AST 重写，漏行按实测补
+node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md; echo "EXIT=$?"   # ⇒ 必须 EXIT=0
+```
+
+其余几条核对（同一棵树实测）：
+
+```bash
 # 4) 两个交叉核对的 grep（口径比 AST 宽：会数到注释与断言里的字样，所以数字只会 ≥ 本表）
 #    COMPAT-PIN 记号命中（哪些文件「被测对象就是选项面」）
 grep -rln 'config_override_conflict\|unknown capabilities\|is not accepted\|must be a function\|unknown runToolLoop option\|RUN_TOOL_LOOP_OPTION_NAMES\|CAPABILITY_\|CONFIG_' test --include='*.js' | grep -v '^test/contract/'
 #    11 个退役键的**剩余**扁平写点（S7 每落一片，这个数字必须往下走）
 grep -rc '^ *\(onEvent\|onRound\|onJudge\|onToolResult\|onDelta\|onReasoningDelta\|onToolCall\|onUsage\|onObserverError\|onPersistenceError\|onFoldSummary\) *:' test --include='*.js' | grep -v ':0$'
 
-# 5) 基线计数（本刀前后一致：2390 格 / 2381 通过 / 0 红 / 9 skip）
-node --test 2>&1 | grep -E '^# (tests|pass|fail|skipped) '     # ⇒ 2390 / 2381 / 0 / 9
+# 5) 基线计数（A12b 之后：2557 格 / 2548 通过 / 0 红 / 9 skip）
+node --test 2>&1 | grep -E '^# (tests|pass|fail|skipped) '     # ⇒ 2557 / 2548 / 0 / 9
 
-# 6) 白名单条数（「顶层 65」那个旧数就是没跑这条）
+# 6) 白名单条数（「顶层 65」那个旧数就是没跑这条；A12 退役 `partialPersistence` 后 39 → 38）
 node -e 'import("./src/loop/option-normalization.js").then(m=>console.log(m.RUN_TOOL_LOOP_OPTION_NAMES.length))'
-                                                 # ⇒ 67
+                                                 # ⇒ 38
 
 # 7) 反向证（口径自检真的会红）：把附表里某一行 +3，`--verify` 必须 exit=1 并**点名该文件**
-cp test/compat-pin-inventory.md /tmp/inv-backup.md
-sed -i 's/^| `test\/judge.test.js` | 128 |/| `test\/judge.test.js` | 131 |/' test/compat-pin-inventory.md
-node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md; echo "EXIT=$?"   # ⇒ EXIT=1，且打印
-                                                 #    ✗ 附表 test/judge.test.js：表 131 / AST 128
-cp /tmp/inv-backup.md test/compat-pin-inventory.md
+sed -i 's/^| `test\/judge.test.js` | 122 |/| `test\/judge.test.js` | 125 |/' test/compat-pin-inventory.md
+node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md; echo "EXIT=$?"   # ⇒ EXIT=1，且打印
+                                                 #    ✗ 附表 test/judge.test.js：表 125 / AST 122
+git checkout -- test/compat-pin-inventory.md     # 还原：git 就是备份，不落盘 /tmp 副本
 ```
 
 ⚠ 第 5 条**不能**写成 `grep -c '^test(' test/*.test.js | awk …`：那条命令只数顶层文件里行首的 `test(`，
-实测 **1221**，既漏掉缩进的格、也漏掉子目录（`test/**/**.test.js`），跑不出 2381。
+实测 **1221**，既漏掉缩进的格、也漏掉子目录（`test/**/**.test.js`），跑不出 2548。

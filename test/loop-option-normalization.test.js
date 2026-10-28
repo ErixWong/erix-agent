@@ -205,7 +205,10 @@ const OPTION_WHITELIST = [
   // the source list verbatim (that is exactly what A0 checks), so they are gone here too; the flat
   // spellings are now **rejection** cells, see `test/loop-run-slice-498s3a11.test.js`.
   "executeTool",
-  "partialPersistence",
+  // #498 S3 (`run` slice A12): `partialPersistence` left the allowlist — its canonical home is
+  // `config.run.partialPersistence`. The copy tracks the source list verbatim (that is what A0
+  // checks), so it is gone here too; the flat spelling is now a **rejection** cell, see
+  // `test/loop-run-slice-498s3a12.test.js`.
   "maxRounds",
   // #498 S3 (`tuning` slice): `cacheCapable` left the allowlist — its canonical home is
   // `config.tuning.cacheCapable`. The copy tracks the source list verbatim (that is what A0 checks),
