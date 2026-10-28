@@ -5,6 +5,8 @@
 
 ### Breaking
 
+### Breaking
+
 - **`timeoutMs` / `deadlineMs` / `retry` must be written as `config.timing.*` (issue #498 S3).**
   The three top-level keys left the `runToolLoop` allowlist; writing them flat now throws
   `unknown runToolLoop option: "timeoutMs" (its canonical home is config.timing.timeoutMs; the flat
@@ -30,17 +32,41 @@
 - 并且额外钉一句反面：`error.message.includes("config.input.initialMessages") === false`——文案**不得**
 把顶层键名当叶子（那正是 I2 用例专门教它别写的形态，两处文案互相指认、落到同一处）。
 
-- **M3** 活体反向证：把文案模板里的 `config.` 前缀去掉（锚点取**模板片段**
-  `(its canonical home is config.${configHome}; the flat spelling is rejected)`，
-  不取拼出来的结果字面量——本仓模板字符串坑）⇒ **exit=1**，P1 + P2 两格红。
-- **M5** 活体反向证：删掉 `input.cacheStablePrefix` 叶子（锚点 `src/loop/config-namespace.js:135`）⇒
-  **exit=1**，P1 / P3 / R1 三格红（文案里的新家路径随之消失）。
-- **M4** 活体反向证：把 `"initialMessages"` 加回白名单（锚点 `src/loop/option-normalization.js:95`）⇒
-  **exit=1**，P2 / P3 / A2 三格红。
-
 三件全部做到 ⇒ #517 的放行**没有缺口**（没有触发「停手报告」那条）。
 
 ---
+
+- **`cacheStablePrefix` / `initialMessages` must be written as `config.input.*` (#498 S3, third
+  slice — the `input` group's A segment).** Both top-level keys left the `runToolLoop` allowlist;
+  writing them flat now throws at startup with the new home spelled out:
+  `unknown runToolLoop option: "cacheStablePrefix" (its canonical home is
+  config.input.cacheStablePrefix; the flat spelling is rejected)`. The engine's read side is
+  unchanged — the expansion phase still writes the values back onto
+  `effectiveOptions.cacheStablePrefix` / `effectiveOptions.initialMessages` — so this is a
+  *write-spelling* change only. **`initialMessages` is the interesting one**: its new home is
+  `config.input.messages`, because the leaf is `messages` and the old top-level name was
+  `initialMessages` — the only entry in the leaf-alias table (`CONFIG_LEAF_ALIAS_PATHS`,
+  `src/loop/config-namespace.js`). So `config.input.messages` is now a leaf **without** a top-level
+  twin (the shape issue #517 made legal on purpose), and writing the old *top-level* name as a leaf
+  (`config.input.initialMessages`) is rejected with its own message that points back at
+  `config.input.messages`. The assembly port is unaffected: `policy.session.initialMessages` still
+  seeds a run, and a host that writes both it and `config.input.messages` gets one
+  `config_override_conflict` event (`path: "input.messages"`, `config` wins). 0.26.0 and earlier
+  accepted both flat spellings; 0.27.0 was **never published**, so no released host is affected.
+
+- **`cacheStablePrefix` / `initialMessages` 必须写成 `config.input.*`（issue #498 S3 第三片，`input` 组 A 段）。**
+  这两个键已离开 `runToolLoop` 顶层白名单；再写扁平形态会在启动时抛错，并点名新家：
+  `unknown runToolLoop option: "cacheStablePrefix" (its canonical home is
+  config.input.cacheStablePrefix; the flat spelling is rejected)`。引擎**读侧一字未改**——展开相仍把
+  值写回 `effectiveOptions.cacheStablePrefix` / `effectiveOptions.initialMessages`，所以这只是
+  **写侧写法**的变化。**`initialMessages` 这一条要读**：它的新家是 `config.input.messages`，因为叶子叫
+  `messages`、老的顶层名才叫 `initialMessages`——这也是叶子别名表（`CONFIG_LEAF_ALIAS_PATHS`，
+  `src/loop/config-namespace.js`）里**唯一**一条记录。于是 `config.input.messages` 现在是一个**没有顶层
+  孪生**的叶子（issue #517 有意放行的形状）；把老的**顶层**名字当叶子写
+  （`config.input.initialMessages`）会被单独一句文案拒掉，而那句文案反过来指向
+  `config.input.messages`。装配口不受影响：`policy.session.initialMessages` 照旧给 run 播种；宿主同时写它
+  与 `config.input.messages` 时会收到一条 `config_override_conflict`（`path: "input.messages"`，`config` 赢）。
+  0.26.0 及以前两种扁平写法都收；**0.27.0 从未发布**，因此没有任何已发布宿主受影响。
 
 ## 3. COMPAT-PIN 翻转清单（数据面钉就地翻成反向拒绝钉，行为面 `on*` 一律未动）
 
