@@ -756,9 +756,13 @@ test("C3 冲突事件不发的情况：只给一边、或两边值相同", async
 test("C4 冲突事件的观察者抛错被隔离：run 照旧跑完，错误经 onObserverError 记账", async () => {
   const observerErrors = [];
   // #498 S3 A21：`maxRounds` 退役扁平写法 ⇒ 冲突样本换成 `completion`（同上）。
+  // #498 S3 A22：样本再换成 `reflection` —— 本格要的是「**同一个键两种写法**同时在场」的冲突，
+  // 而 `completion` 已经进了 `test/helpers/run-direct.js` 的 `RUN_FAMILY_FIXTURE_KEYS`（翻译点把
+  // 扁平拼写搬进 `config.run.completion`，翻译后只剩一种写法 ⇒ 本格测不到冲突）。`reflection`
+  // 是白名单里**最后一个**还没有被夹具翻译、且仍有 `config.run.*` 家的键，机制一字未改。
   const result = await runDirect({
-    completion: { signals: ["扁平"], maxNoToolRounds: 5 },
-    config: { run: { completion: { signals: [], maxNoToolRounds: 1 } } },
+    reflection: { enabled: true, maxExtensions: 2 },
+    config: { run: { reflection: { enabled: false, maxExtensions: 1 } } },
     onEvent: (event) => {
       if (event.type === "config_override_conflict") throw new Error("observer boom");
     },

@@ -110,6 +110,14 @@ const RUN_FAMILY_FIXTURE_KEYS = Object.freeze([
   // `maxRounds` destructure in `src/loop/orchestrator.js`, the governor's round budget, the
   // `forceFinalIfNeeded` cap) never changed.
   "maxRounds",
+  // #498 S3 A22: `completion` (home `config.run.completion`, in `CONFIG_NAMESPACE_SCHEMA.run` since
+  // #497). Same reasoning once more — a data shell (`{ signals, maxNoToolRounds }`) or the literal
+  // `false` switch, so the fixture only moves the spelling; the expansion phase writes it back onto
+  // `effectiveOptions.completion`, and the engine's read side (the three `completion` reads in
+  // `src/loop/orchestrator.js`: `completion !== false`, `completion?.signals`,
+  // `completion?.maxNoToolRounds`) never changed. `false` is a real value here, so the
+  // `!== undefined` guard above is what keeps it (a truthiness test would silently drop it).
+  "completion",
 ]);
 
 /**
