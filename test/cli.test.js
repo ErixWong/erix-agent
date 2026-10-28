@@ -36,6 +36,33 @@ async function writeEmptyMcpConfig(dir) {
   return configPath;
 }
 
+/**
+ * issue #498 S5：`bin/` 的 `runToolLoop` 选项现在按**规位**书写（数据 ⇒ `config.*`、宿主回调 ⇒
+ * `capabilities.hooks.*`、交付物判据 ⇒ `capabilities.checks.deliverables`、壳内端口 ⇒
+ * `capabilities.ports.*`）。本读取器把「同一个旋钮现在从规位读到同一个值」变成**两个方向的断言**：
+ *   ① 规位必须真读到值——`undefined` 就报错，否则「映射改错」会退化成两边都 `undefined` 的恒真格；
+ *   ② 扁平位**不得**同时存在——同一个旋钮两个真相来源会让引擎记一条 `config_override_conflict`
+ *      （迁移前那种写法），所以「改回扁平」或「两边都写」都必须红。
+ *
+ * @param {Record<string, any>} captured `loop` 收到的选项对象
+ * @param {string} path 规位路径，例如 `config.run.cwd`
+ * @returns {any} 规位上的值
+ */
+function canonicalLoopOption(captured, path) {
+  const value = path.split(".").reduce(
+    (node, key) => (node === undefined || node === null ? undefined : node[key]),
+    captured,
+  );
+  assert.notEqual(value, undefined, `规位 ${path} 读不到值（映射断了，或又写回了扁平位）`);
+  const flatName = path.split(".").at(-1);
+  assert.equal(
+    Object.hasOwn(captured, flatName),
+    false,
+    `${flatName} 不得同时出现在扁平位：同一个旋钮两个真相来源 ⇒ config_override_conflict`,
+  );
+  return value;
+}
+
 function normalizeGoldenEnvironment(value, cwd, fixtureCwd, goldenDirs = []) {
   // issue #185：落盘目录不再钉死在 /tmp，比较前把「实际临时目录」与「fixture 里记录的 dir」
   // 都归一化成同一个占位符，golden 断言因此与 TMPDIR 无关（长串先替换，避免前缀互吃）。
@@ -341,7 +368,15 @@ test("runChat injects archive status at fold time instead of into loop context",
     });
 
     assert.ok(captured);
-    assert.equal(typeof captured.context.recoveryHint, "function");
+    // issue #498 S5：折叠回调归 `capabilities.hooks`（函数），数据侧 `config.folding.context` 只装数据——
+    // 「两侧各归各位」在这里两侧都断言：函数在能力面，数据侧的同名键**不存在**。
+    assert.equal(typeof canonicalLoopOption(captured, "capabilities.hooks.recoveryHint"), "function");
+    assert.equal(typeof captured.capabilities.hooks.stubFor, "function");
+    assert.equal(
+      captured.config.folding.context?.recoveryHint,
+      undefined,
+      "函数值不得留在配置面（config 子树必须过 JSON round-trip）",
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -466,7 +501,7 @@ test("runChat filters tools via --tools allowlist and warns on unknown names", a
   }
 
   assert.ok(captured);
-  const names = captured.tools.map((tool) => tool.name);
+  const names = canonicalLoopOption(captured, "config.input.tools").map((tool) => tool.name);
   assert.ok(names.includes("readFile"));
   assert.ok(names.includes("tree"));
   assert.ok(!names.includes("exec"));
@@ -505,7 +540,9 @@ test("runChat assembles note tools via the factory and --no-notes removes them",
       toolOutput: () => {},
       loop: captureLoop,
     });
-    const noteNamesOn = captured.tools.map((tool) => tool.name).filter((name) => name.startsWith("note_"));
+    const noteNamesOn = canonicalLoopOption(captured, "config.input.tools")
+      .map((tool) => tool.name)
+      .filter((name) => name.startsWith("note_"));
     assert.deepEqual(noteNamesOn, ["note_take", "note_read", "note_list", "note_forget"]);
     assert.equal(typeof captured.semanticStateProvider, "function");
     const takeResult = await captured.executeTool({
@@ -534,7 +571,10 @@ test("runChat assembles note tools via the factory and --no-notes removes them",
       loop: captureLoop,
     });
     assert.equal(
-      captured.tools.map((tool) => tool.name).filter((name) => name.startsWith("note_")).length,
+      canonicalLoopOption(captured, "config.input.tools")
+        .map((tool) => tool.name)
+        .filter((name) => name.startsWith("note_"))
+        .length,
       0,
       "--no-notes 后不得再装配 note_* 工具",
     );
@@ -563,7 +603,10 @@ test("runChat assembles note tools via the factory and --no-notes removes them",
       else process.env.ERIX_NO_NOTES = saved;
     }
     assert.equal(
-      captured.tools.map((tool) => tool.name).filter((name) => name.startsWith("note_")).length,
+      canonicalLoopOption(captured, "config.input.tools")
+        .map((tool) => tool.name)
+        .filter((name) => name.startsWith("note_"))
+        .length,
       0,
       "ERIX_NO_NOTES=1 后不得再装配 note_* 工具",
     );
@@ -603,7 +646,7 @@ test("runChat --tools allowlist also applies to factory note tools", async () =>
         };
       },
     });
-    assert.deepEqual(captured.tools.map((tool) => tool.name).sort(), ["exec", "note_take"]);
+    assert.deepEqual(canonicalLoopOption(captured, "config.input.tools").map((tool) => tool.name).sort(), ["exec", "note_take"]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1307,7 +1350,7 @@ test("runChat keeps the default compaction strategy and forwards an explicit nam
         truncated: false,
         usage: { input_tokens: 0, output_tokens: 0 },
         compactionStats: [],
-        _context: options.context,
+        _context: options.config?.folding?.context,
       };
     };
     const shared = {
@@ -1649,12 +1692,14 @@ test("runChat：--require-deliverable <path> ⇒ 命名判据真的交给引擎�
     // ① 默认：没有 deliverables 键（引擎「未声明 ⇒ 逐字不变」的回归锚）
     await runChat({ ...base, session: "named-wire-0" });
     assert.equal("deliverables" in captured, false, "没声明判据时不许出现 deliverables 键");
+    assert.equal(captured.capabilities.checks, undefined, "连 capabilities.checks 整组都不该出现");
     // ② 命名路径 ⇒ 一条判据，name = 声明的路径；判据拿到的 cwd 就是本次 run 的 cwd
     await runChat({ ...base, session: "named-wire-1", finalGuard: true, deliverablePaths: ["report.md"], cwd: dir });
-    assert.deepEqual(captured.deliverables.map((entry) => entry.name), ["report.md"]);
-    assert.equal(typeof captured.deliverables[0].check, "function");
-    assert.equal(captured.cwd, dir, "cwd 必须原样交给引擎（判据靠它拼路径）");
-    assert.equal(captured.deliverables[0].check({ cwd: captured.cwd }).ok, false, "盘上没有 report.md ⇒ 判据必须 ok:false");
+    const named1 = canonicalLoopOption(captured, "capabilities.checks.deliverables");
+    assert.deepEqual(named1.map((entry) => entry.name), ["report.md"]);
+    assert.equal(typeof named1[0].check, "function");
+    assert.equal(canonicalLoopOption(captured, "config.run.cwd"), dir, "cwd 必须原样交给引擎（判据靠它拼路径）");
+    assert.equal(named1[0].check({ cwd: captured.config.run.cwd }).ok, false, "盘上没有 report.md ⇒ 判据必须 ok:false");
     // ③ 两种语义同时声明 ⇒ 两条判据（布尔那条在前，与扩展侧同一顺序）
     await runChat({
       ...base,
@@ -1664,7 +1709,10 @@ test("runChat：--require-deliverable <path> ⇒ 命名判据真的交给引擎�
       deliverablePaths: ["a.md", "b.md"],
       cwd: dir,
     });
-    assert.deepEqual(captured.deliverables.map((entry) => entry.name), ["files_written_exist", "a.md", "b.md"]);
+    assert.deepEqual(
+      canonicalLoopOption(captured, "capabilities.checks.deliverables").map((entry) => entry.name),
+      ["files_written_exist", "a.md", "b.md"],
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

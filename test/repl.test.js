@@ -25,6 +25,31 @@ import { makeTmp } from "./helpers/tmp.js";
 // issue #81：runRepl 的 notesDir 缺省解析真实 ~/.erix/notes（收尾 purge 会扫描甚至删除
 // 真实笔记），MCP 配置缺省解析真实 ~/.erix/mcp.json（可能配了真实远端 server）。
 // 每个用例注入 notesDir 与空 MCP 配置，彻底隔离真实 home。
+
+/**
+ * issue #498 S5：`bin/repl.js` 的 `runToolLoop` 选项按**规位**书写（数据 ⇒ `config.*`、宿主回调 ⇒
+ * `capabilities.hooks.*`、交付物判据 ⇒ `capabilities.checks.deliverables`）。本读取器两个方向都断言：
+ *   ① 规位必须真读到值——`undefined` 就红，否则「映射改错」会退化成两边都 `undefined` 的恒真格；
+ *   ② 扁平位**不得**同时存在——同一个旋钮两个真相来源会让引擎记一条 `config_override_conflict`。
+ *
+ * @param {Record<string, any>} captured `loop` 收到的选项对象
+ * @param {string} path 规位路径，例如 `config.run.resume`
+ * @returns {any}
+ */
+function canonicalLoopOption(captured, path) {
+  const value = path.split(".").reduce(
+    (node, key) => (node === undefined || node === null ? undefined : node[key]),
+    captured,
+  );
+  assert.notEqual(value, undefined, `规位 ${path} 读不到值（映射断了，或又写回了扁平位）`);
+  const flatName = path.split(".").at(-1);
+  assert.equal(
+    Object.hasOwn(captured, flatName),
+    false,
+    `${flatName} 不得同时出现在扁平位：同一个旋钮两个真相来源 ⇒ config_override_conflict`,
+  );
+  return value;
+}
 async function writeEmptyMcpConfig(dir) {
   const configPath = join(dir, "mcp.json");
   await writeFile(configPath, JSON.stringify({ mcpServers: {} }), "utf8");
@@ -198,10 +223,11 @@ test("runRepl：--final-guard + --require-deliverable ⇒ loopOptions.deliverabl
     });
     input.end("hi\n/exit\n");
     await run;
-    assert.equal(typeof captured.finalGuard, "function");
-    assert.ok(Array.isArray(captured.deliverables), "旗标开了却没把判据交给引擎（就是静默空转）");
-    assert.deepEqual(captured.deliverables.map((entry) => entry.name), ["files_written_exist"]);
-    assert.equal(typeof captured.deliverables[0].check, "function");
+    assert.equal(typeof canonicalLoopOption(captured, "capabilities.hooks.finalGuard"), "function");
+    const replCriteria = canonicalLoopOption(captured, "capabilities.checks.deliverables");
+    assert.ok(Array.isArray(replCriteria), "旗标开了却没把判据交给引擎（就是静默空转）");
+    assert.deepEqual(replCriteria.map((entry) => entry.name), ["files_written_exist"]);
+    assert.equal(typeof replCriteria[0].check, "function");
   } finally {
     input.destroy();
     output.destroy();
@@ -487,7 +513,13 @@ test("runRepl injects archive status at fold time instead of into loop context",
     await run;
 
     assert.ok(captured);
-    assert.equal(typeof captured.context.recoveryHint, "function");
+    // issue #498 S5：折叠回调归 `capabilities.hooks`（函数），数据侧 `config.folding.context` 只装数据。
+    assert.equal(typeof canonicalLoopOption(captured, "capabilities.hooks.recoveryHint"), "function");
+    assert.equal(
+      captured.config.folding.context?.recoveryHint,
+      undefined,
+      "函数值不得留在配置面（config 子树必须过 JSON round-trip）",
+    );
   } finally {
     input.destroy();
     output.destroy();
@@ -895,9 +927,12 @@ test("runRepl：--require-deliverable <path> ⇒ 命名判据交给引擎（name
     );
     input.end("hi\n/exit\n");
     await run;
-    assert.deepEqual(captured.deliverables.map((entry) => entry.name), ["report.md"]);
+    assert.deepEqual(
+      canonicalLoopOption(captured, "capabilities.checks.deliverables").map((entry) => entry.name),
+      ["report.md"],
+    );
     // repl 没有 --cwd：判据拿到的 cwd 就是进程工作目录（工具与 session 派生也用这一个）
-    assert.equal(captured.cwd, process.cwd());
+    assert.equal(canonicalLoopOption(captured, "config.run.cwd"), process.cwd());
   } finally {
     input.destroy();
     output.destroy();

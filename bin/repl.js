@@ -28,7 +28,12 @@ import {
   withToolHeartbeat,
 } from "./idle.js";
 import { safeRunId } from "../src/store/file.js";
-import { buildCompactionContext, loadCliConfig, normalizeCompactionOption } from "./config.js";
+import {
+  buildCompactionContext,
+  loadCliConfig,
+  normalizeCompactionOption,
+  splitCompactionContext,
+} from "./config.js";
 // issue #441：与 `bin/cli.js` **同一份**取值口径（静默相位截止按 `--idle-timeout` 派生）。
 import { resolveProviderPhaseTimeouts } from "./provider-timeouts.js";
 import {
@@ -770,75 +775,108 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         idle?.touch();
         return result;
       }, { label: execution?.name, log: (line) => console.error(line) });
+      // issue #498 S5：与 `bin/cli.js` 同构——选项按**规位**书写（数据 ⇒ `config.*`、宿主回调 ⇒
+      // `capabilities.hooks.*`、交付物判据 ⇒ `capabilities.checks.deliverables`），端口对象留顶层位。
+      // 同一个旋钮只写一侧：下面没有任何一个键同时出现在扁平位与容器里。
+      //
+      // ⚠ 这一块是**每轮重建**的（`handleInput` 里）：`/model` 改的是闭包里的 `model`，下一轮经
+      // `providerFactory` 重造 `provider`；`/reset` 清空 `messages` 并删会话存档，下一轮 `resume`
+      // 自然现算成 `false`。所以“改配置”类命令**不需要**（也不允许）手写第二份选项——它们改的是
+      // 重建源，不是选项本身。`resume` 也在这里现算（`store.load` 有没有记录），写进 `config.run.resume`。
+      const { data: compactionData, hooks: compactionHooks } = splitCompactionContext(context);
+      // issue #391 R3/R2：与 chat 同一份判据本体，两种语义（裸用 = 声明过的写路径；带值 = 命名清单）。
+      // 未声明 ⇒ 连这个键都没有（引擎的「未声明 deliverables ⇒ 逐字不变」回归锚就靠这个形状）。
+      const deliverableCriteria = [];
+      if (options.requireDeliverable === true) deliverableCriteria.push(...createDeliverableChecks());
+      const namedDeliverables = options.deliverablePaths;
+      if (Array.isArray(namedDeliverables) && namedDeliverables.length > 0) {
+        deliverableCriteria.push(...createNamedDeliverableChecks(namedDeliverables));
+      }
+      const finalGuardImpl = (
+        options.finalGuard === true
+        || process.env.ERIX_FINAL_GUARD?.trim() === "1"
+      )
+        ? createFinalGuard({
+          runId: options.session,
+          notesDir,
+          notesStore,
+          archiveDir,
+          store,
+        })
+        : undefined;
       const loopOptions = {
-        ...(context ? { context } : {}),
+        // —————————— 能力面：端口对象（顶层位，`capabilities` 无此成员位） ——————————
         provider,
-        system: systemPrompt,
-        ...(resume ? {} : { initialMessages: roundMessages, initialUserMessage: line }),
-        maxRounds: options.maxRounds ?? DEFAULT_MAX_ROUNDS,
-        // issue #391 R1：`cwd` 是引擎的**纯透传**选项（只进 finalGuard/deliverables 的事实载荷）。
-        // repl 没有 `--cwd`：交互会话的工作目录就是进程工作目录，工具/session 派生也都用它，
-        // 再造一个「run 的 cwd 与工具的 cwd 不同」的旗标只会让磁盘判据与写入位置错位。
-        cwd,
-        // 交互 REPL 不需要 judge（人在环自己判断）；chat 单次任务的默认开启规则不适用
-        reflection: false,
-        maxTokens: config.maxOutputTokens,
-        completion: { maxNoToolRounds: 1 },
-        ...(
-          options.finalGuard === true
-          || process.env.ERIX_FINAL_GUARD?.trim() === "1"
-          ? {
-              finalGuard: createFinalGuard({
-                runId: options.session,
-                notesDir,
-                notesStore,
-                archiveDir,
-                store,
-              }),
-              finalGuardMaxRetries: 2,
-            }
-          : {}),
-        // issue #391 R3/R2：与 chat 同一份判据本体，两种语义（裸用 = 声明过的写路径；带值 = 命名清单）。
-        // 未声明 ⇒ 连这个键都没有（引擎的「未声明 deliverables ⇒ 逐字不变」回归锚就靠这个形状）。
-        ...(() => {
-          const criteria = [];
-          if (options.requireDeliverable === true) criteria.push(...createDeliverableChecks());
-          const named = options.deliverablePaths;
-          if (Array.isArray(named) && named.length > 0) criteria.push(...createNamedDeliverableChecks(named));
-          return criteria.length === 0 ? {} : { deliverables: criteria };
-        })(),
-        tools: visibleTools,
         executeTool: executeToolForLoop,
         store,
-        runId: options.session,
         diagnostics,
-        resume,
+        signal,
         // ADR-015：notes 小抄目录经 semantic 槽位注入 run-state 块（折叠时注入，对准失忆点）
         ...(notesAssembler === undefined ? {} : {
           semanticStateProvider: notesAssembler.semanticStateProvider,
         }),
-        signal,
-        stream: true,
-        onDelta: (chunk) => {
-          idle?.touch();
-          output.write(chunk);
+        // —————————— 配置面：引擎校值并解释的数据 ——————————
+        config: {
+          input: {
+            system: systemPrompt,
+            tools: visibleTools,
+            ...(resume ? {} : {
+              // `config.input.messages` 是顶层 `initialMessages` 的嵌套别名（S4b 的唯一一条重命名）
+              messages: roundMessages,
+              initialUserMessage: line,
+            }),
+          },
+          run: {
+            runId: options.session,
+            // issue #391 R1：`cwd` 是引擎的**纯透传**选项（只进 finalGuard/deliverables 的事实载荷）。
+            // repl 没有 `--cwd`：交互会话的工作目录就是进程工作目录，工具/session 派生也都用它，
+            // 再造一个「run 的 cwd 与工具的 cwd 不同」的旗标只会让磁盘判据与写入位置错位。
+            cwd,
+            // 续跑与否**现算**（见上方 store.load），只写这一处。
+            resume,
+            maxRounds: options.maxRounds ?? DEFAULT_MAX_ROUNDS,
+            // 交互 REPL 不需要 judge（人在环自己判断）；chat 单次任务的默认开启规则不适用
+            reflection: false,
+            completion: { maxNoToolRounds: 1 },
+            stream: true,
+          },
+          tuning: { maxTokens: config.maxOutputTokens },
+          folding: {
+            ...(compactionData === undefined ? {} : { context: compactionData }),
+          },
+          // `finalGuard` 自己属能力面（值必须是函数），这里只放它的预算（与迁移前形状逐字一致）。
+          guard: finalGuardImpl === undefined ? {} : { finalGuardMaxRetries: 2 },
         },
-        onToolResult: (_name, result) => {
-          idle?.touch();
-          // ADR-015 4a：截断/归档退役给引擎（outputHygiene），CLI 不再二次截断
-          return result;
-        },
-        onRound: (info) => {
-          idle?.touch();
-          writeLine(
-            output,
-            `\n[round ${info.round}]${info.folded ? "（含折叠）" : ""}`,
-          );
-        },
-        // issue #441：与 `bin/cli.js` 同构——重试本身是进展（`attempt` / `recovering` 各喂一次 idle 表），
-        // 否则退避期会被 idle 看门狗打断，又回到不可重试的 abort 路径。
-        onEvent: (event) => {
-          if (event?.type === "attempt" || event?.type === "recovering") idle?.touch();
+        // —————————— 能力面：宿主回调 / 交付物判据 ——————————
+        capabilities: {
+          hooks: {
+            ...(finalGuardImpl === undefined ? {} : { finalGuard: finalGuardImpl }),
+            ...(compactionHooks ?? {}),
+            onDelta: (chunk) => {
+              idle?.touch();
+              output.write(chunk);
+            },
+            onToolResult: (_name, result) => {
+              idle?.touch();
+              // ADR-015 4a：截断/归档退役给引擎（outputHygiene），CLI 不再二次截断
+              return result;
+            },
+            onRound: (info) => {
+              idle?.touch();
+              writeLine(
+                output,
+                `\n[round ${info.round}]${info.folded ? "（含折叠）" : ""}`,
+              );
+            },
+            // issue #441：与 `bin/cli.js` 同构——重试本身是进展（`attempt` / `recovering` 各喂一次 idle 表），
+            // 否则退避期会被 idle 看门狗打断，又回到不可重试的 abort 路径。
+            onEvent: (event) => {
+              if (event?.type === "attempt" || event?.type === "recovering") idle?.touch();
+            },
+          },
+          ...(deliverableCriteria.length === 0
+            ? {}
+            : { checks: { deliverables: deliverableCriteria } }),
         },
       };
 
