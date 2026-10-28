@@ -150,7 +150,7 @@ scripts/          # 实验脚本和结果
   行号越界是**错误**，不是观察项。覆盖面是宿主真会读的 **37** 份文档：两份 README、中英 AGENTS、中英契约、中英架构、中英图表、中英需求对照、`examples/pi-extension/README.md`，加上
   **全部** `docs/host-upgrade-guide*.md`（按目录实扫，新指南一落地就自动在面内）。按目录实扫有一个静默失效的形状：
   把某份指南改名到不再匹配那个模式，脚本侧和用同一个 glob 的测试侧**一起**少一份，两边数字仍然相等 ⇒ 覆盖面悄悄缩面。
-  所以有 `REF_SCAN_DOCS_MINIMUM = 41` 这道下限（13 份点名文档 + 当前实扫到的 28 份指南；0.22.0 中英成对指南落地时
+  所以有 `REF_SCAN_DOCS_MINIMUM = 43` 这道下限（13 份点名文档 + 当前实扫到的 30 份指南；0.22.0 中英成对指南落地时
   由 22 抬到 26，工单 261021-03 B1 因「架构×2 + 图表×2 + 需求对照×2 + `examples/pi-extension/README.md` 纳入 `paths` 判据」由 24 抬到 **31**——那七份是「会被当成现状读」的活文档，它们不在面内时「`src/providers/index.js` 这类路径漂了不会红」），并且 `test/docs-anchor-ratchet.test.js` 里另硬编码了那 13 + 24 个文件名做对照：改名或新增指南，两处不同步就红。`CHANGELOG.md` 明确**不参与**：
   它的行号记的是「发版那一刻为真」的事实，改掉等于伪造历史（与 #278 的简称登记表同一套理由）。
   第一批 T-a 做的是基建与棘轮；第二批 T-b1a 把契约里**自带区间的符号锚点**那一族改绿（中英同一个 PR），基线从 244 降到 232；第三批 T-b1b 收尾同一族——两份契约里剩下的裸 `src/loop/orchestrator.js:N[-M]` 条目要么**删掉区间**（首选，并把真声明处的符号名写进句子：`resolvedModelConfig` / `reportObserverError` / `persist` / `isEndTurn` 等），要么作为**范围性事实**保留并把区间对过代码，基线从 232 降到 144。剩下的 `provider-runner.js` / `termination.js` / `governor.js` 三族属 T-b2，而「把基线常量降下来并在提交信息里写理由」

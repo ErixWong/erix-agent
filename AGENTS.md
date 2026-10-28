@@ -233,7 +233,7 @@ scripts/          # experiment scripts and results
   plus **every** `docs/host-upgrade-guide*.md` (discovered from the directory, so a new guide is
   covered the moment it exists). Directory discovery has a silent failure mode — renaming a guide away from that
   pattern shrinks the coverage in the script **and** in the test that mirrors the same glob, so both numbers still
-  agree: `REF_SCAN_DOCS_MINIMUM = 41` is the floor (13 pinned documents + the 28 guides found today; raised from 22
+  agree: `REF_SCAN_DOCS_MINIMUM = 43` is the floor (13 pinned documents + the 30 guides found today; raised from 22
   when the 0.22.0 guide pair landed, and from 24 to **31** in 工单 261021-03 B1 because 架构×2 + 图表×2 + 需求对照×2 +
   `examples/pi-extension/README.md` were brought into scope — those seven documents are read as *current state*, so a dead
   reference in them is worth at least as much as one in an entry document), and `test/docs-anchor-ratchet.test.js`
