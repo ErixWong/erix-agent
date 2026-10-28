@@ -163,13 +163,22 @@ executeTool({ id, name, input, context, signal })
   实测真被当函数用的那些壳字段是 `config.timing.retry.sleepImpl`、
   `config.run.reflection.onReflection`、`config.run.reflection.judge.provider`、
   `config.folding.context.onBeforeFold` / `onAfterFold`。
-  报错同时说清规范之家：宿主回调是 `capabilities.hooks.<name>`，交付物判据是
-  `capabilities.checks.deliverables`，其余是对应的能力面端口位；配置面自己的**数据键**
+  报错同时说清规范之家，而且**点名真实路径**：宿主回调是 `capabilities.hooks.<name>`
+  （`config.folding.context.onBeforeFold` → `capabilities.hooks.onBeforeFold`），交付物判据是
+  `capabilities.checks.deliverables`，端口实现是 `capabilities.ports.<slot>`——
+  `config.timing.retry.sleepImpl` → `capabilities.ports.sleepImpl`、
+  `config.run.reflection.judge.provider` → `capabilities.ports.judgeProvider`、
+  `config.folding.context.strategy`（及其下一层）→ `capabilities.ports.strategy`。
+  这个映射不是只看叶子名猜的：**完整路径**去对已登记的去向
+  （`CAPABILITY_SLOT_DESTINATIONS`（`src/loop/capabilities-namespace.js`）），所以叶子名本身
+  说明不了什么的那种（`provider`）也能落到真实的槽位。配置面自己的**数据键**
   （例如 `config.input.tools`）根本没有能力面之家，文案就直说
   `there is no capability home for it: …`，不编一个出来。
   **不存在「收下再在展开时丢函数」**——抛发生在**任何宿主端口被读取之前**。两个曾经是这条规则
   尴尬处的叶子现在**根本不在配置面上**：`config.guard.finalGuard` 与 `config.guard.deliverables`
   （issue #498 S4b）——见上面那张表与下面的 `capabilities` 一节。
+  **历史**：issue #498 S4c 之前，这句的尾巴是「其余是对应的能力面端口位」——而那个端口位当时
+  **并不存在**（`capabilities.ports` 还没开）。上面那些路径是现在逐条点出来的结果。
 - **能力键一律拒绝** —— `CAPABILITY_OPTION_NAMES`（`src/loop/config-namespace.js`）里的 22 项能力
   选项不是配置：`provider`、`executeTool`、`store`、`modelConfig`、`assemblyPort`、
   `signal`、`todoStateProvider`、`semanticStateProvider`、`onEvent`、
@@ -178,6 +187,11 @@ executeTool({ id, name, input, context, signal })
   `finalGuard` 与 `deliverables`。把它们写进 `config`（顶层或组内）⇒ 启动即抛并点名该键；有
   新家的还会点出新家（`capabilities.hooks.<name>` / `capabilities.checks.<leaf>`），错误带着与
   其他闸口相同的 `via` 标签（`"direct"` / `"assembly"`）。
+  只以**能力面槽位**存在的 9 个叶子（issue #498 S4c）不在这份名单里，因为它们根本不是顶层选项：
+  把 `sleepImpl` / `onBeforeFold` / … 写在 `config` 顶层、或写高一层（`config.timing.sleepImpl`、
+  `config.folding.onBeforeFold`）回的是 `unknown config.<group> option: … (… belongs to
+  capabilities.<group>.<leaf>)`；写在它真正的嵌套老住处（`config.timing.retry.sleepImpl`）撞的是
+  上面那条函数值拒绝。
   **这条收窄只作用于新命名空间**：既有优先级规则——显式细粒度选项覆盖装配口提供的同名成员
   （`resolveAssemblyMember`（`src/assembly.js`），例如显式 `provider` 仍能盖端口 provider）——
   一字未动，`test/contract/assembly-port.js` 照旧断言它（「显式细粒度 provider 覆盖端口 provider」）。
@@ -242,63 +256,111 @@ executeTool({ id, name, input, context, signal })
 
 ### capabilities 命名空间（issue #498）
 
-行为载体不是数据，所以 0.28.0 给它们一个自己的容器。它**有两组**（issue #498 S4b——第二组存在
-是为了不让 `hooks` 变成口袋）：`capabilities.hooks` 装宿主回调，`capabilities.checks` 装交付物判据。
-12 个宿主回调——`onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、
+行为载体不是数据，所以 0.28.0 给它们一个自己的容器。它**有三组**（issue #498 S4b 加了第二组，
+为的是不让 `hooks` 变成口袋；issue #498 S4c 加了第三组，为的是让「住在壳里嵌套槽中的行为载体」
+有一个**真实归宿**）：`capabilities.hooks` 装宿主回调，`capabilities.checks` 装交付物判据，
+`capabilities.ports` 装引擎会解引用/调用的基础设施与策略实现。
+**16 个**宿主回调——`onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、
 `onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`、
-`finalGuard`——逐个写在 `CAPABILITY_HOOK_NAMES`（`src/loop/capabilities-namespace.js`）里，分组表
+`finalGuard`、`onReflection`、`onBeforeFold`、`onAfterFold`、`stubFor`——逐个写在
+`CAPABILITY_HOOK_NAMES`（`src/loop/capabilities-namespace.js`）里，分组表
 `CAPABILITIES_NAMESPACE_SCHEMA`（`src/loop/capabilities-namespace.js`）是它唯一手写的来源：别名表
 `CAPABILITIES_ALIAS_PATHS`（`src/loop/capabilities-namespace.js`）从它派生，与 `config` 的别名表
 派生方式逐字相同——所以 `capabilities.hooks.onEvent` 与扁平 `onEvent` 是同一个键（别名 = schema
-路径，叶子名逐字等于扁平选项名）。
+路径，叶子名逐字等于扁平选项名）——唯一登记的例外见下面第五条（9 个**从来不是**顶层选项的叶子）。
 
 | 命名空间 | 成员 |
 | --- | --- |
-| `capabilities.hooks` | `onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、`onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`、`finalGuard` |
+| `capabilities.hooks` | 16 个回调：`onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、`onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`、`finalGuard`、`onReflection`、`onBeforeFold`、`onAfterFold`、`stubFor`——外加两个形态多态旋钮的**函数形态**：`protectedMessage`、`recoveryHint` |
 | `capabilities.checks` | `deliverables`（每项 `{ name, check }`；`check` 是函数、`name` 是标签） |
+| `capabilities.ports` | `sleepImpl`、`judgeProvider`、`strategy`——见下面「`capabilities.ports`」那一节 |
 
-五条规则，刻意与 `config` **对称**（两个容器，一套规则）：
+六条规则，刻意与 `config` **对称**（两个容器，一套规则）：
 
-- **优先级** —— 同一个回调两种写法都给时，`capabilities.hooks.*` 赢过扁平键；扁平键继续被接受，且
-  只要它是唯一写法，行为与今天逐字相同。叶子设成 `undefined` 逐字等于「没订阅」，所以它既不覆盖
-  扁平钩子、也不算冲突。
+- **优先级** —— 同一个回调两种写法都给时，`capabilities.hooks.*` 赢过扁平键（有嵌套槽的叶子则赢过
+  壳里那个槽）；老写法继续被接受，且只要它是唯一写法，行为与今天逐字相同。叶子设成 `undefined`
+  逐字等于「没订阅」，所以它既不覆盖扁平钩子、也不算冲突。
 - **冲突不静默** —— 两种写法给了**不同的值**时，引擎在第一轮之前发一条 `config_override_conflict`：
-  `conflicts: [{ path, key }]`，其中 `path` 形如 `hooks.<name>`（`{ path: "hooks.onEvent", key: "onEvent" }`）。
-  同一条事件、同一套字段、不新增事件类型：载荷说的是「这个旋钮有两个真相来源」，path 说明是哪个容器。
+  `conflicts: [{ path, key }]`，其中 `path` 点名该叶子的**目的地**：有扁平孪生的回调是
+  `hooks.<name>`（`{ path: "hooks.onEvent", key: "onEvent" }`），端口槽是 `ports.<slot>`
+  （`{ path: "ports.sleepImpl", key: "sleepImpl" }`），两个形态多态旋钮则点名该旋钮的**配置侧**路径
+  （`{ path: "folding.context.protectedMessage", key: "protectedMessage" }`）——因为它们的两侧是
+  「config 里的数据」对「hooks 里的函数」，宿主需要知道该改哪一边。
+  同一条事件、同一套字段、不新增事件类型：载荷说的是「这个旋钮有两个真相来源」，path 说明目的地在哪。
   在这条事件上抛错的观察者与其他观察者通道同口径被隔离。
   **同一条事件也管第二对来源**：装配口的 `policy.capabilities` 与调用级 `capabilities` 是**同一个
   容器**的两个来源，调用级那份按**整棵**覆盖（与 `config` 用的是同一条「后写者胜」规则）；两个源里
-  同一个钩子给了**不同的函数**的，逐叶上报、按 path 去重。值相同、或只有一边给了的不算冲突。
+  同一个叶子给了**不同的值**的，逐叶上报、按 path 去重。值相同、或只有一边给了的不算冲突。
   **「值相同」的口径逐字就是 `isDeepStrictEqual`**（`src/loop/capabilities-namespace.js`）——写出来
   是为了宿主不必猜：`hooks` 下按**同一性**比较（同一个函数对象算相同；两处各写一个箭头函数，
   哪怕函数体逐字一样也不算），`checks` 下的 `{ name, check }` 数组按**逐项**深度比较（两种写法用
-  **同一个** `check` 引用不算冲突，另写一个 `check` 函数就算）。没有更宽松的「看起来一样」规则。
+  **同一个** `check` 引用不算冲突，另写一个 `check` 函数就算），端口槽按**深度**比较（同一个策略
+  对象算相同，形状一样的另一个对象不算）。没有更宽松的「看起来一样」规则。
 - **未知子键当场抛，并点名完整路径** —— `capabilities: { hoks: … }` 回的是
-  `unknown capabilities namespace: "hoks" (accepted: hooks, checks; ports are not collected under
-  capabilities — pass them as top-level options or through the assembly port)`；
-  `capabilities: { check: … }`（少一个 `s`）回同一份枚举（`checks` 在可接受名单里）；
-  `capabilities.hooks.onEtent` 回的是 `unknown capabilities.hooks option: "onEtent" (accepted: …)`。
-  叶子写高了一层（`capabilities.onEvent`、`capabilities.deliverables`）会被回一句
+  `unknown capabilities namespace: "hoks" (accepted: hooks, checks, ports; port objects such as
+  provider / store / signal stay top-level options or assembly-port members, not capabilities
+  members)`；`capabilities: { check: … }`（少一个 `s`）回同一份枚举（`checks` 在可接受名单里）；
+  `capabilities.hooks.onEtent` 回的是 `unknown capabilities.hooks option: "onEtent" (accepted: …)`；
+  `capabilities.ports.sleeplmp` 回的是 `unknown capabilities.ports option: "sleeplmp"
+  (accepted: sleepImpl, judgeProvider, strategy)`。叶子写高了一层（`capabilities.onEvent`、
+  `capabilities.deliverables`、`capabilities.sleepImpl`）会被回一句
   「<组> live under capabilities.<组>」。没有一条是静默忽略——新容器绝不许把「配了等于没配」那类
   静默重新请回来。
 - **值必须符合该组的形状** —— `hooks` 下 `undefined` = 未订阅，其余非函数值（`null`、字符串、
   对象）启动即抛并点名 `capabilities.hooks.<name>`；顶层扁平 `onRound: "x"` 的宽容是 0.26 已发布面，
-  本版不动它。`checks` 下必须是 `{ name, check }[]`，而形状规则**不在这里复述**：校验器调的是
+  本版不动它。这条规则对两个形态多态旋钮**不放宽**：它们的函数形态要么是函数、要么不写。
+  `checks` 下必须是 `{ name, check }[]`，而形状规则**不在这里复述**：校验器调的是
   `normalizeDeliverables`（`src/loop/deliverables.js`），与扁平选项**同一份**唯一来源，所以
   `capabilities.checks.deliverables` 与扁平 `deliverables` 不可能漂开。空数组逐字等于「未声明」。
-  **空组逐字等于「什么都没配」**——`capabilities: { hooks: {} }` 与 `capabilities: { checks: {} }`
-  照常通过校验、展开后一个键都不产生、不发 `config_override_conflict`、也不遮蔽任何扁平键：两组
-  同一条口径，因为空对象被读成「没有」，不是「有但是空」。（`checks: { deliverables: [] }` 是
-  同一件事往下一层：空数组 = 未声明。）
-- **端口还没收** —— 本版没有 `capabilities.ports`；端口对象（`provider`、`store`、`signal` …）
-  留在原处（顶层选项或装配口），写进 `capabilities` 会抛并说明这一点。它们要不要搬，是后面那一刀
-  的裁决，不是这里给出的承诺。`tools` **不再是端口**（issue #498 S4b）：它是数据，所以住在
-  `config.input.tools` / 扁平 `tools`。
+  **空组逐字等于「什么都没配」**——`capabilities: { hooks: {} }`、`capabilities: { checks: {} }` 与
+  `capabilities: { ports: {} }` 照常通过校验、展开后一个键都不产生、不发 `config_override_conflict`、
+  也不遮蔽任何扁平键：三组同一条口径，因为空对象被读成「没有」，不是「有但是空」。
+  （`checks: { deliverables: [] }` 是同一件事往下一层：空数组 = 未声明。）
+- **9 个叶子没有扁平别名**（issue #498 S4c）——`ports.sleepImpl`、`ports.judgeProvider`、
+  `ports.strategy`、`hooks.onReflection`、`hooks.onBeforeFold`、`hooks.onAfterFold`、`hooks.stubFor`、
+  `hooks.protectedMessage`、`hooks.recoveryHint` **从来不是顶层选项**，所以 0.28.0 给它们发明的是
+  **容器成员位**，不是新的扁平键。去向登记在 `CAPABILITY_SLOT_DESTINATIONS`
+  （`src/loop/capabilities-namespace.js`）里，展开走侧信道而不是写新的扁平键——这就是为什么顶层
+  白名单仍是 **67** 条、三向恒等式（43 配置面 + 22 能力面 + 2 容器）一字未动。它们的老住处是嵌套槽
+  （`reflection.onReflection`、`context.onBeforeFold` …，见上表与下面 ports 那一节），那些写法照旧可用。
+- **端口对象仍然没被收** —— `provider`、`store`、`signal`、`modelConfig`、`executeTool` 与两个状态源
+  留在原处（顶层选项或装配口）；写 `capabilities.provider` 仍会抛并说明这一点。`capabilities.ports`
+  **不是**它们的新家：它只装上面那三个槽位，那是**引擎解引用的实现**，不是适配器。
+  `tools` **也不是端口**（issue #498 S4b）：它是数据，所以住在 `config.input.tools` / 扁平 `tools`。
+  **历史**：issue #498 S4c 之前这一节写的是「本版没有 `capabilities.ports`」——那在 S4a/S4b 时是真的，
+  留在这里是记录裁决怎么变的，不是现状。
 
 `capabilities` 同样从不进引擎：展开会把它删掉，所以 `effectiveOptions`——以及
 `normalizeRunToolLoopOptions`（`src/loop/option-normalization.js`）返回的 `explicitOptions`——
-里只剩扁平键。装配口的 `policy` 同样接受 `capabilities`，于是两条入口路线共用这一次展开，
-`via` 标签负责说明是哪条路线抛的。
+里只剩扁平键（上面那 9 个叶子走 `capabilitySlots` 侧信道，不会变成扁平键）。装配口的 `policy`
+同样接受 `capabilities`，于是两条入口路线共用这一次展开，`via` 标签负责说明是哪条路线抛的。
+
+#### `capabilities.ports`（issue #498 S4c）
+
+端口槽装的是**引擎会解引用或调用的实现**，不是数据、也不是宿主回调：引擎要么直接调它
+（`sleepImpl`；`judgeProvider` 是函数时同理），要么解引用它的方法再调（`judgeProvider.chat`、
+`strategy.compact`）。这就是它与 `hooks` 的区别，也是值形状不同的原因：**端口位可以是对象，
+`hooks` 必须 callable。**
+
+| 槽位 | 值形状 | 嵌套老住处（照旧可用） | 引擎拿它做什么 |
+| --- | --- | --- | --- |
+| `capabilities.ports.sleepImpl` | 函数 `(ms, signal) => Promise<void>` | `retry.sleepImpl` / `config.timing.retry.sleepImpl` | 替换重试定时器：每一次退避都走它，宿主因此能不付墙钟代价记录每一个 `delay` |
+| `capabilities.ports.judgeProvider` | 可调用的 `(request) => Promise<response>` **或**带 `chat(request)` 方法的对象 | `reflection.judge.provider` / `config.run.reflection.judge.provider` | judge 的评估器。它喂三处：轮次 judge、收尾 LLM 归一化、以及上报的 `judgeModel`——与嵌套老槽位喂的是同三处。不写就用 run 的主 provider |
+| `capabilities.ports.strategy` | 压缩策略**对象**，带 `shouldCompact(messages, budgetTokens)` 与 `compact(messages, options)` | `context.strategy`（对象形态）/ `config.folding.context.strategy` | 原样透传（`resolveCompactionStrategy`（`src/compact/strategy-resolution.js`）对对象形态原样返回），所以被调的方法就是宿主自己的。内置**名字**是数据、不是端口：`"sliding-window"` / `"fold-statistical"` / `"fold-llm"` 写 `context.strategy` / `config.folding.context.strategy`，端口位收到字符串会抛并说明这一点 |
+
+三条值得知道的后果：
+
+1. **它们不是新的顶层选项。** `runToolLoop({ sleepImpl })` 仍是未知选项（白名单一字未动）；
+   规范写法是 `capabilities.ports.sleepImpl`。
+2. **两种写法同时在场是冲突，不是静默胜出。** `capabilities.ports.sleepImpl` 与 `retry.sleepImpl`
+   给了**不同**函数 ⇒ 恰一条 `config_override_conflict`，`{ path: "ports.sleepImpl", key: "sleepImpl" }`，
+   端口位赢。`judgeProvider` 对 `reflection.judge.provider`、`strategy` 对 `context.strategy` 同一条
+   规则（深度相等的值不算冲突）。
+3. **`reflection.judge.evaluator` 已退役**（issue #498 S4c）。它曾是 `reflection.judge.provider` 的
+   纯别名——同一个 `??` 槽位写两遍。0.28.0 按「退役不是搬家」的口径处理：现在写它在**两条入口路线**
+   上都抛（`reflection.judge.evaluator is not accepted: it was an alias of reflection.judge.provider
+   (pass reflection.judge.provider, or the canonical capabilities.ports.judgeProvider)`）。
+   `reflection.judge.provider` 照旧可用。
 
 ### 工具引数解析不了的时候（issue #409）
 

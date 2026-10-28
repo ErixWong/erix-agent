@@ -421,7 +421,7 @@ reflection: {
   maxExtensions = 2,
   maxRoundsCap = Math.max(maxRounds, 256),
   wrapupNormalize,
-  judge: { provider, evaluator },
+  judge: { provider }, // `evaluator` retired (issue #498 S4c)
   onReflection,
 }
 ```
