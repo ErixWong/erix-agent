@@ -195,7 +195,6 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // config-file sampling defaults (`src/config/env.js`), the provider request field `maxTokens`
   // (`src/messages/anthropic.js`), and the assembly `policy.maxTokens` (`src/assembly.js`) — none of
   // them goes through this allowlist.
-  "reflection",
   // #498 S3 A13: three data shells left this list.
   // `stallDetection` / `outputHygiene` / `persistence` now
   // live at `config.run.<key>`; expansion writes each one

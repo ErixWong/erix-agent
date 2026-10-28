@@ -804,10 +804,15 @@ export function toolResultEnvelopeContract(label, getEntry) {
         script: [toolRound("a1"), toolRound("a2"), DONE],
         options: {
           // #498 S3 A21: `maxRounds` lives at `config.run.maxRounds` now.
-          config: { run: { maxRounds: 8 } },
-          reflection: {
-            enabled: true, roundJudge: false, judgeIntervalRound: 1, judge: { provider: judge },
+          // #530: the `reflection` shell is split — data at `config.run.reflection`, the judge
+          // evaluator at `capabilities.ports.judgeProvider`.
+          config: {
+            run: {
+              maxRounds: 8,
+              reflection: { enabled: true, roundJudge: false, judgeIntervalRound: 1 },
+            },
           },
+          capabilities: { ports: { judgeProvider: judge } },
         },
       },
     );

@@ -237,8 +237,11 @@ const GATE_RULES = [
   },
   {
     id: "reflection.onReflection-shape",
-    bad: { reflection: { enabled: false, onReflection: "cb" } },
-    good: { reflection: { enabled: false, onReflection: () => {} } },
+    // #530: `reflection` 退役扁平写法（家 `config.run.reflection`）。**非函数**留在数据半边
+    // （只有函数值才搬去 `capabilities.hooks.onReflection`），所以这条形状规则仍然可达、文案一字未改；
+    // 正例走能力面的规位（回调的规范之家）。
+    bad: { config: { run: { reflection: { enabled: false, onReflection: "cb" } } } },
+    good: { config: { run: { reflection: { enabled: false } } }, capabilities: { hooks: { onReflection: () => {} } } },
     message: "reflection.onReflection must be a function (or omitted)",
   },
   {
@@ -463,7 +466,7 @@ test("D① 承载宿主回调的字段：省略 = 不订阅，给对就**真的�
     config: { folding: { context: {
       budgetTokens: 300,
       keepRounds: 1,
-    } }, timing: { retry: { attempts: 2 } } },
+    } }, timing: { retry: { attempts: 2 } }, run: { reflection: { enabled: false } } },
     // #498 S3: `context.strategy` (an **object**) and `context.onBeforeFold` / `.onAfterFold`
     // (functions) are behaviour carriers — their canonical homes are `capabilities.ports.strategy`
     // and `capabilities.hooks.*`. The config namespace rejects them by name, so the split here is by
@@ -476,9 +479,11 @@ test("D① 承载宿主回调的字段：省略 = 不订阅，给对就**真的�
       hooks: {
         onBeforeFold: () => { calls.onBeforeFold += 1; },
         onAfterFold: () => { calls.onAfterFold += 1; },
+        // #530: `reflection.onReflection` 的规范之家（扁平壳已退役）；数据半边 `enabled: false`
+        // 并进上面那棵 `config.run.reflection`。
+        onReflection: () => {},
       },
     },
-    reflection: { enabled: false, onReflection: () => {} },
     diagnostics: { error: (event) => { calls.error += 1; persistenceEvents.push(event); } },
     // 钩子**先计数再抛**：投递真的发生了（计数 >= 1），失败走持久化账本（`diagnostics.error` 真的被调）。
     onFoldSummary: () => { calls.onFoldSummary += 1; throw new Error("宿主归档器炸了"); },
@@ -531,8 +536,11 @@ test("D② 承载回调的字段给错就启动即抛：反例清单逐条（含
     // #498 S3: `retry` is `config.timing.retry` now; the flat spelling is rejected one phase earlier.
     [{ config: { timing: { retry: { sleepImpl: null } } } }, "retry.sleepImpl must be a function (or omitted)"],
     [{ config: { timing: { retry: { sleepImpl: {} } } } }, "retry.sleepImpl must be a function (or omitted)"],
-    [{ reflection: { enabled: false, onReflection: 1 } }, "reflection.onReflection must be a function (or omitted)"],
-    [{ reflection: { enabled: false, onReflection: null } }, "reflection.onReflection must be a function (or omitted)"],
+    // #530: `reflection` 的扁平写法已退役 ⇒ 形状规则用规位拼写；非函数留在数据半边，文案不变。
+    [{ config: { run: { reflection: { enabled: false, onReflection: 1 } } } },
+      "reflection.onReflection must be a function (or omitted)"],
+    [{ config: { run: { reflection: { enabled: false, onReflection: null } } } },
+      "reflection.onReflection must be a function (or omitted)"],
     [{ diagnostics: { error: [] } }, "diagnostics.error must be a function (or omitted)"],
     [{ config: { folding: { context: { onBeforeFold: null } } } }, "context.onBeforeFold must be a function (or omitted)"],
     [{ config: { folding: { context: { onAfterFold: 0 } } } }, "context.onAfterFold must be a function (or omitted)"],

@@ -217,9 +217,10 @@ test("N3 邻接面没动：`run` 组剩下的大件一件没动，`runId` 也已
   // #498 S3 A23b：`completion` 也退役了（家 `config.run.completion`），同样从这条循环里移出、
   // 翻成反向钉——与上面各条逐字同形（改而不删）。
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("completion"), false, "A23b 已退役 `completion` 的扁平写法");
-  for (const key of ["reflection"]) {
-    assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(key), true, `${key} 仍可扁平写（本片不许收它）`);
-  }
+  // #530：`reflection` 也退役了扁平写法（家 `config.run.reflection`），所以这一格从
+  // 「邻接面没动」翻成反向钉——与 A15 对 `cwd`、A16 对 `stream`、A18 对 `wrapup`、A19 对
+  // `resume`、A20 对 `runId`、A21 对 `maxRounds`、A23b 对 `completion` 的改法逐字同形（改而不删）。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("reflection"), false, "#530 已退役 `reflection` 的扁平写法");
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("store"), true, "`store` 是永久顶层面，不许动");
   assert.equal(configPathForOption("runId"), "run.runId", "`runId` 的家一字未动");
 });
@@ -231,8 +232,11 @@ test("N4 账目派生化：`run` 组还剩几个「配置家」的顶层键（�
   // **不许**在本文件里写死任何一个。
   const runHomeKeys = RUN_TOOL_LOOP_OPTION_NAMES
     .filter((name) => (configPathForOption(name) ?? "").startsWith("run."));
-  assert.deepEqual(runHomeKeys, ["reflection"],
-    "`run` 组只剩一个配置家键（顺序 = 白名单顺序 = 建议平局优先级，不是集合语义）");
+  // #530 收口：`reflection` 是 `run` 组**最后一个**配置家顶层键，退役之后这一组清零。
+  // 判据仍是派生的（白名单 × `configPathForOption`），不是「还剩几个」的手抄。
+  assert.deepEqual(runHomeKeys, [],
+    "`run` 组的配置家顶层键已经清零（#530 退役 `reflection` 之后；顺序语义不再适用）");
+  assert.equal(runHomeKeys.length, 0, "`run` 组：白名单里没有任何名字的配置家落在 `run.*` 下");
   assert.equal(runHomeKeys.includes(KEY), false, `${KEY} 已经不在其中（这就是本片删掉的那一格）`);
   // 反向证：把 `runId` 塞回白名单，本格当场红（`deepEqual` 多一项）。
   const reinserted = [...RUN_TOOL_LOOP_OPTION_NAMES, KEY];

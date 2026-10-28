@@ -27,7 +27,7 @@ must be placed in an explicit namespace such as `toolContext` or
 
 ```text
 assemblyPort, provider, tools, executeTool,
-reflection, finalGuard,
+finalGuard,
 todoStateProvider, semanticStateProvider,
 modelConfig, session, store,
 onRound, onJudge, onToolResult, onPersistenceError, diagnostics, onObserverError, signal,
@@ -35,11 +35,14 @@ onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, deliverables, onFoldSum
 config, capabilities
 ```
 
-This list is the whitelist itself (27 names since issue #498 S3 A23b, which retired the flat
-`completion`): every name that has left it is rejected at the name gate with a message naming its
-`config.*` (or `capabilities.*`) home — see "Flat-spelling version policy" below. A key **may** keep
-a `config` leaf without keeping a flat spelling, which is why `config.run` still lists leaves such as
-`maxRounds`, `stallDetection` and `completion`.
+This list is the whitelist itself (26 names since issue #530, which retired the flat `reflection` —
+the last config leaf with a flat twin; issue #498 S3 A23b had retired `completion` before it): every
+name that has left it is rejected at the name gate with a message naming its `config.*` (or
+`capabilities.*`) home — see "Flat-spelling version policy" below. A key **may** keep a `config` leaf
+without keeping a flat spelling, which is why `config.run` still lists leaves such as `maxRounds`,
+`stallDetection` and `completion`. Since #530 **no** allowlisted name has a config home any more: the
+account is derived, not counted — ask `configPathForOption` about every name and assert that no
+answer starts with a config group (`test/loop-run-slice-498s3a22.test.js`, segment N).
 
 `config.run.partialPersistence` defaults to `false`, preserving the existing no-write
 streaming behavior. (The **flat** spelling `partialPersistence` is retired by the `run` group's A12
@@ -192,7 +195,8 @@ unchanged (the move is additive — see “The `capabilities` namespace” below
 
 A run's configuration has a second spelling. `config` is a **nested namespace** whose leaves are
 aliases of the flat top-level keys, and the alias **is** the schema path: `config.run.reflection`
-and the flat `reflection` are the same knob, and a leaf name is verbatim the flat option name —
+**was** the same knob as the flat `reflection` (the flat spelling is rejected since 0.28.0, issue
+#530), and a leaf name is verbatim the flat option name —
 with exactly one registered exception, `config.input.messages`, the nested alias of the flat
 `initialMessages` (issue #498 S4b). A leaf also **outlives** its flat spelling: `config.run.completion`
 is still the canonical home now that the flat `completion` is rejected (issue #498 S3 A23b) — the
@@ -1346,6 +1350,67 @@ and before any host port is called; `F` the function value rejected on both spel
 reasons kept apart; `R` the expansion write-back verbatim and a real run where `maxNoToolRounds` still
 bites and `false` still turns the stop off; `N` the four-way account and the derived "`run` group now
 has one config-home key" count; `S` the fixture translation point).
+
+**`reflection` is split, not deleted (issue #530) — and it is the end of the flat config keys.**
+`reflection` was the **last** allowlisted name with a config home (`config.run.reflection`), and it is
+also the one **mixed shell** in the `run` group: some of its members are data the engine validates and
+reads, and some are behaviour the engine really calls. That is exactly the line between it and the
+`metadata` / `stream` / `wrapup` / `resume` / `maxRounds` / `completion` family — those were retired
+outright because the engine only ever *tests* or *reads* them. `reflection` therefore **splits into
+two stations**, and each member goes where the criterion puts it:
+
+| member | called by the engine? | destination |
+| --- | --- | --- |
+| `enabled`, `roundJudge`, `judgeFailureLimit`, `judgeIntercept`, `judgeIntervalRound`, `judgeInterceptTimeoutMs`, `judgeDoneAdvisory`, `wrapupNormalize`, `extensionStep`, `maxExtensions`, `maxRoundsCap` | **no** — tested / read as numbers, booleans and enums | `config.run.reflection.<member>` (data half; the expansion phase writes the object back onto `effectiveOptions.reflection`, so no engine read side moved) |
+| `onReflection` | **yes** — invoked on every extension decision (`effectiveReflection.onReflection`, resolved as `capabilityHooks.onReflection ?? effectiveReflection.onReflection`) | `capabilities.hooks.onReflection` (registered nested slot `["reflection", "onReflection"]`) |
+| `judge.provider` | **yes** — the judge-only evaluator is called; it also feeds the wrap-up LLM normalizer and the reported `judgeModel` | `capabilities.ports.judgeProvider` (registered nested slot `["reflection", "judge", "provider"]`) |
+
+`wrapupNormalize` deserves its own sentence because its name is misleading: it is a **boolean switch**
+the engine reads (`effectiveReflection?.wrapupNormalize === true`, OR-ed with the
+`ERIX_WRAPUP_NORMALIZE` environment variable) to decide whether the wrap-up text goes through the LLM
+normalizer. The engine never calls it, and the *normalizer itself* is `normalizeWrapupText`
+(`src/reflection/wrapup.js`) — a module import, not a host-provided value. So it is data, and its home
+is `config.run.reflection.wrapupNormalize`. It is **not** the top-level `wrapup` switch (a different
+knob, `config.input.wrapup`), and it is not a capability.
+
+Version policy for `reflection` (issue #530):
+
+| release | writing the flat `reflection` |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | legal — and it was the only spelling (the `config` namespace did not exist yet) |
+| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #530) | **rejected on the spot**, and because this shell is **mixed** the message names **both** stations in one sentence: `unknown runToolLoop option: "reflection" (its canonical home is config.run.reflection; the flat spelling is rejected) — this shell holds both data and functions: write data as config.run.reflection.<leaf>, and behaviour members as capabilities.hooks.onReflection or capabilities.ports.judgeProvider` |
+
+**Two-sided rejection, with the two reasons kept apart** (the A18 / A23b shape). The **flat** side is
+refused by the **name** gate, above. The **canonical** side refuses by **shape**, and the reason is
+different in each station: a *function* inside `config.run.reflection` is refused by the config
+intake (`… is not accepted: "onReflection" is a function, and the config namespace holds data only
+(the config subtree must survive a JSON round-trip unchanged) — its canonical home is
+capabilities.hooks.onReflection`), while a *non-function* written at `capabilities.hooks.onReflection`
+is refused by the capability shape validator (`capabilities.hooks.onReflection must be a function (or
+omitted)`). A non-function left in the **data** half (`config.run.reflection.onReflection: "cb"`) is
+still caught by the semantic phase with the unchanged text `reflection.onReflection must be a function
+(or omitted)` — the fixture-level split moves **only function values**, so a wrong-typed value is
+never silently dropped.
+
+**The conflict channel needed a new sample before the key could go.** `reflection` was the last flat
+config leaf, and it was the live sample for the "value at construction time + the same key again at
+call time ⇒ startup throws" rule (`assertAssemblyOverrideConflicts`). After the retirement that sample
+is **unreachable** — the override name hits the name gate first — so the sample moved to
+`todoStateProvider` (a permanent top-level option `policy` can still give) and `reflection` keeps a
+**reverse pin** that says so. The same is true one level up: with no flat config twin left, the
+flat-versus-`config` conflict branch can no longer be reached from the **call** side; the surviving
+carrier of retired flat names is the assembly port's `policy`, and the pins use that route.
+
+Measured red cells: **220** on the single delete; **164** once the fixture translated the spelling;
+**40** after the split rule (function values only) was added to the fixture; **0** after the
+hand-written sites were migrated (the two `run`-group accounting pins, the A11 / A14 / A15 / A20 /
+A21 / A22 / A23b adjacency lists, the `497` `A3` / `B2` / `C1` / `C4` / `C5` cells, the `496` gate
+matrix and the `boundary-parity` contract suite, the `498s4c` `C5` / `C7` / `C13` / `C16` cells, the
+`assembly-port` conflict sample, the `tool-result-envelope` case and the `pi-extension`
+`S6-A` / `S6-B` / `S6-C1` cells). The fixture (`test/helpers/run-direct.js`) does the split in one
+place because `test/` wrote the flat shell 130 times across ~40 files and 59 of those sites carried a
+behaviour member — the same "single translation point" discipline every earlier retirement used.
 
 ### The `capabilities` namespace (issue #498)
 

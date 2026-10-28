@@ -105,7 +105,14 @@ export async function scenarioSingleRun() {
     config: {
       ...BASE.config,
       input: { ...BASE.config.input, initialUserMessage: "金样任务" },
-      run: { ...BASE.config.run, runId: "golden-single", maxRounds: 8 },
+      // #530: `reflection` 退役扁平写法 —— 数据半边并进**同一棵** `run` 子树，评估器走端口位。
+      // 本脚本是**观察脚本**（金样的生产者）：只改拼写，观察逻辑与金样字节一字未改。
+      run: {
+        ...BASE.config.run,
+        runId: "golden-single",
+        maxRounds: 8,
+        reflection: { enabled: true, roundJudge: true, judgeIntercept: false },
+      },
     },
     provider,
     finalGuard: async () => {
@@ -114,11 +121,8 @@ export async function scenarioSingleRun() {
         ? { action: "revise", message: "请补充证据后再收口" }
         : { action: "accept" };
     },
-    reflection: {
-      enabled: true,
-      roundJudge: true,
-      judgeIntercept: false,
-      judge: { provider: createFakeProvider([judgeNotDone("还差证据"), judgeDone(), judgeDone()]) },
+    capabilities: {
+      ports: { judgeProvider: createFakeProvider([judgeNotDone("还差证据"), judgeDone(), judgeDone()]) },
     },
   });
   return { store, runId: "golden-single", termination: result.termination.reason, rounds: result.rounds };
@@ -143,12 +147,17 @@ export async function scenarioCrashResume() {
       config: {
         ...BASE.config,
         input: { ...BASE.config.input, initialUserMessage: "金样任务" },
-        run: { ...BASE.config.run, runId, maxRounds: 8 },
+        run: {
+          ...BASE.config.run,
+          runId,
+          maxRounds: 8,
+          // #530: 数据半边进规位（拼写搬家，观察逻辑不动）。
+          reflection: { enabled: true, roundJudge: true, judgeIntercept: false },
+        },
       },
       provider: first,
-      reflection: {
-        enabled: true, roundJudge: true, judgeIntercept: false,
-        judge: { provider: createFakeProvider([judgeNotDone("还没完"), judgeNotDone("还没完"), judgeDone()]) },
+      capabilities: {
+        ports: { judgeProvider: createFakeProvider([judgeNotDone("还没完"), judgeNotDone("还没完"), judgeDone()]) },
       },
     });
   } catch (error) {
@@ -161,12 +170,19 @@ export async function scenarioCrashResume() {
     // **observation** producer (the golden fixture's generator): only the spelling moves.
     // #498 S3 A21: `maxRounds` home is `config.run.maxRounds` — merged into the **same** `run` group.
     ...BASE, store,
-    config: { ...BASE.config, run: { ...BASE.config.run, resume: true, runId, maxRounds: 8 } },
-    provider: resumed,
-    reflection: {
-      enabled: true, roundJudge: true, judgeIntercept: false,
-      judge: { provider: createFakeProvider([judgeDone()]) },
+    config: {
+      ...BASE.config,
+      run: {
+        ...BASE.config.run,
+        resume: true,
+        runId,
+        maxRounds: 8,
+        // #530: 同上——拼写搬家，观察逻辑不动。
+        reflection: { enabled: true, roundJudge: true, judgeIntercept: false },
+      },
     },
+    provider: resumed,
+    capabilities: { ports: { judgeProvider: createFakeProvider([judgeDone()]) } },
   });
   return {
     store,

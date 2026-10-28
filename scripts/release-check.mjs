@@ -770,12 +770,13 @@ const result = await runToolLoop({
   // real groups (run / tuning / metadata); a fake group name (timeouts / reflection / retry, the
   // three that used to sit in the JSDoc) makes tsc --strict report TS2353 here, so "the published
   // type surface disagrees with the code" no longer needs someone to read the .d.ts.
+  // #530: reflection 退役扁平写法（家 config.run.reflection）——本模板是**真宿主夹具**：
+  // 只改拼写，断言与类型面自证一字未改。
   config: {
-    run: { maxRounds: 2 },
+    run: { maxRounds: 2, reflection: false },
     tuning: { temperature: 0 },
     metadata: { requestId: "release-check-host" },
   },
-  reflection: false,
 });
 
 console.log(
@@ -802,7 +803,7 @@ await runToolLoop({
   store: createMemoryTranscriptStore(),
   thisOptionKeyDoesNotExistInRunToolLoopOptions: 1,
   maxRounds: 1,
-  reflection: false,
+  config: { run: { reflection: false } },
 });
 `;
 

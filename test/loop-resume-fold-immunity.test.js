@@ -186,8 +186,8 @@ async function runTwoRoundsThenResume(runId, shape) {
     executeTool: async ({ input }) => `wrote ${input?.path ?? ""}`,
     tools: [WRITE_FILE_TOOL],
     maxRounds: 4,
-    config: { input: { wrapup: false }, run: { completion: false } },
-    reflection: false,
+    // #530: `reflection` 退役扁平写法，并进**同一个** `config` 容器（家 `config.run.reflection`）。
+    config: { input: { wrapup: false }, run: { completion: false, reflection: false } },
     store,
     runId,
   });
@@ -205,8 +205,9 @@ async function runTwoRoundsThenResume(runId, shape) {
     executeTool: async () => "unused",
     tools: [WRITE_FILE_TOOL],
     // #498 S3 A21：`maxRounds` 的扁平写法已退役，并进**同一个** `config` 容器（家 `config.run.maxRounds`）。
-    config: { input: { wrapup: false }, run: { resume: true, runId, maxRounds: 2, completion: false } },
-    reflection: { enabled: true, judge: { provider: resumedJudge } },
+    // #530: 混装壳分家——数据半边进 `config.run.reflection`，行为半边进能力面端口位。
+    config: { input: { wrapup: false }, run: { resume: true, runId, maxRounds: 2, completion: false, reflection: { enabled: true } } },
+    capabilities: { ports: { judgeProvider: resumedJudge } },
     store,
   });
 

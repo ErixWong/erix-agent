@@ -675,14 +675,14 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | 文件 | 写点 | 明细 |
 | --- | --- | --- |
 | `test/judge.test.js` | 109 | `completion`×55, `reflection`×52, `stallDetection`×2 |
-| `test/loop-capabilities-ports-hooks-498s4c.test.js` | 52 | `wrapup`×18, `context`×7, `onEvent`×7, `reflection`×6, `retry`×6, `judgeProvider`×3, `session`×3, `sleepImpl`×3, `strategy`×3, `tools`×3 |
+| `test/loop-capabilities-ports-hooks-498s4c.test.js` | 54 | `wrapup`×18, `context`×7, `onEvent`×7, `reflection`×6, `retry`×6, `judgeProvider`×4, `session`×3, `sleepImpl`×3, `strategy`×3, `tools`×3, `completion`×1 |
 | `test/cli.test.js` | 74 | `session`×36, `prompt`×29, `reflection`×4, `tools`×3, `finalGuard`×2, `completion`×1, `context`×1 |
-| `test/loop-resume.test.js` | 15 | `tools`×8, `resume`×4, `reflection`×3 |
-| `test/loop-option-gate-496.test.js` | 22 | `context`×7, `onFoldSummary`×7, `finalGuard`×6, `reflection`×5, `tools`×3, `deliverables`×2, `session`×2, `completion`×1, `partialPersistence`×1, `sleepImpl`×1, `stallDetection`×1, `wrapup`×1 |
-| `test/loop-config-namespace-497.test.js` | 36 | `onEvent`×13, `reflection`×7, `tools`×6, `completion`×4, `session`×4, `wrapup`×3, `context`×2, `finalGuard`×2, `initialMessages`×2, `resume`×2, `retry`×2, `modelMetadata`×1, `onObserverError`×1, `outputHygiene`×1, `partialPersistence`×1, `stallDetection`×1 |
+| `test/loop-resume.test.js` | 12 | `tools`×8, `resume`×4 |
+| `test/loop-option-gate-496.test.js` | 17 | `context`×7, `onFoldSummary`×7, `finalGuard`×6, `tools`×3, `deliverables`×2, `session`×2, `completion`×1, `partialPersistence`×1, `sleepImpl`×1, `stallDetection`×1, `wrapup`×1 |
+| `test/loop-config-namespace-497.test.js` | 36 | `onEvent`×13, `reflection`×8, `tools`×6, `session`×4, `completion`×3, `wrapup`×3, `context`×2, `finalGuard`×2, `initialMessages`×2, `resume`×2, `retry`×2, `modelMetadata`×1, `onObserverError`×1, `outputHygiene`×1, `partialPersistence`×1, `stallDetection`×1 |
 | `test/loop-resume-anchor.test.js` | 38 | `completion`×8, `stallDetection`×8, `wrapup`×8, `resume`×7, `tools`×6, `partialPersistence`×1 |
 | `test/loop-v020-rc.test.js` | 4 | `session`×3, `stallDetection`×1 |
-| `test/loop-resume-notice.test.js` | 11 | `tools`×9, `reflection`×2 |
+| `test/loop-resume-notice.test.js` | 10 | `tools`×9, `reflection`×1 |
 | `test/loop.test.js` | 31 | `completion`×15, `stallDetection`×12, `reflection`×2, `onToolResult`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-core.test.js` | 24 | `finalGuard`×19, `tools`×14, `strategy`×4, `context`×3, `reflection`×3, `onEvent`×1, `onObserverError`×1 |
 | `test/loop-capabilities-namespace-498.test.js` | 14 | `deliverables`×9, `onEvent`×5, `finalGuard`×4, `retry`×3, `onRound`×2, `completion`×1, `context`×1, `modelMetadata`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `resume`×1, `session`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
@@ -724,7 +724,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-persist-compaction-facts.test.js` | 8 | `completion`×3, `reflection`×3, `resume`×1, `strategy`×1 |
 | `test/loop-resume-unpersisted-tool-results.test.js` | 10 | `resume`×6, `completion`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-tool-list.test.js` | 9 | `tools`×7, `prompt`×2 |
-| `test/loop-resume-fold-immunity.test.js` | 4 | `reflection`×2, `tools`×2 |
+| `test/loop-resume-fold-immunity.test.js` | 2 | `tools`×2 |
 | `test/notes-candidates-and-scopes.test.js` | 9 | `session`×7, `finalGuard`×2, `prompt`×2 |
 | `test/repl.test.js` | 9 | `session`×6, `completion`×1, `finalGuard`×1, `prompt`×1, `tools`×1 |
 | `test/governor.test.js` | 8 | `completion`×4, `stallDetection`×4 |
@@ -733,9 +733,9 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/app-container-p0.test.js` | 6 | `completion`×3, `stallDetection`×3 |
 | `test/compact/folded-facts.test.js` | 6 | `strategy`×4, `completion`×1, `reflection`×1 |
 | `test/loop-governance-cells.test.js` | 7 | `completion`×3, `reflection`×3, `resume`×1 |
-| `test/loop-intercept-count-cells.test.js` | 3 | `reflection`×3 |
+| `test/loop-intercept-count-cells.test.js` | 1 | `reflection`×1 |
 | `test/loop-invalid-arguments.test.js` | 3 | `tools`×3 |
-| `test/loop-resume-prior-seed-469.test.js` | 2 | `reflection`×2 |
+| `test/loop-resume-prior-seed-469.test.js` | 0 | |
 | `test/capture-honesty.test.js` | 6 | `prompt`×3, `session`×3 |
 | `test/examples/erix-run-async.test.js` | 6 | `tools`×4, `context`×1, `strategy`×1 |
 | `test/loop-folded-facts-sliding-resume.test.js` | 5 | `completion`×1, `stallDetection`×1, `strategy`×1, `tools`×1, `wrapup`×1 |
@@ -801,6 +801,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-run-slice-498s3a21.test.js` | 4 | `tools`×4 |
 | `test/loop-run-slice-498s3a22.test.js` | 1 | `tools`×1 |
 | `test/loop-run-slice-498s3a23b.test.js` | 1 | `tools`×1 |
+| `test/loop-run-slice-498s3a24.test.js` | 3 | `tools`×3 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 

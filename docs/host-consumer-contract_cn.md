@@ -30,7 +30,8 @@ onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, deliverables, onFoldSum
 config, capabilities
 ```
 
-这份清单就是白名单本身（issue #498 S3 A23b 起 **27 个**名字，那一片退役了扁平的
+这份清单就是白名单本身（issue #530 起 **26 个**名字，那一片退役了扁平的 `reflection`
+——最后一个还有扁平孪生的配置叶子；issue #498 S3 A23b 在它之前退役了扁平的
 `completion`）：凡离开它的名字都在名称闸口当场被拒，文案点名它的 `config.*`（或
 `capabilities.*`）新家——见下文「扁平写法的版本口径」。一个键**可以**保留 `config` 叶子而不再
 保留扁平拼写，所以 `config.run` 里仍列着 `maxRounds` / `stallDetection` / `completion` 这些叶子。
@@ -155,7 +156,8 @@ executeTool({ id, name, input, context, signal })
 ### config 命名空间（issue #497）
 
 一次 run 的配置从此有第二种写法。`config` 是一棵**嵌套命名空间**，它的叶子是顶层扁平键的别名，
-而别名**就是** schema 路径：`config.run.reflection` 与扁平的 `reflection` 是同一个旋钮，叶子名
+而别名**就是** schema 路径：`config.run.reflection` **曾经**与扁平的 `reflection` 是同一个旋钮
+（扁平拼写自 0.28.0 起被拒，issue #530），叶子名
 逐字等于扁平选项名——只有**一条**登记在案的例外：`config.input.messages`，它是扁平
 `initialMessages` 的嵌套别名（issue #498 S4b）。叶子也比它的扁平拼写**活得更久**：
 `config.run.completion` 仍是规范之家，尽管扁平的 `completion` 已被拒（issue #498 S3 A23b）——
@@ -1117,6 +1119,59 @@ governor 自己的停机动作 `completion`（`src/reflection/governor.js`，`en
 端口被调用；`F` 函数值两个拼写都被拒、两条理由分开；`R` 展开相逐字写回，以及真 run 里
 `maxNoToolRounds` 仍然咬合、`false` 仍然关掉判定；`N` 四向账目与「`run` 组现在只剩一个配置家键」的
 派生计数；`S` 夹具翻译点）。
+
+**`reflection` 是分家，不是删除（issue #530）——它也是扁平配置键的终点。**
+`reflection` 是白名单里**最后一个**有配置家的名字（`config.run.reflection`），也是 `run` 组里唯一
+一个**混装壳**：它的一部分成员是引擎按已知字段校值并读取的**数据**，另一部分是被引擎**真的调用**的
+**行为**。这正是它与 `metadata` / `stream` / `wrapup` / `resume` / `maxRounds` / `completion` 那一族
+的分界线——那一族被一刀切退役，是因为引擎只**测**它、只**读**它。所以 `reflection` **分成两站**，
+每个成员按判据归位：
+
+| 成员 | 引擎会调用它吗 | 目的地 |
+| --- | --- | --- |
+| `enabled` / `roundJudge` / `judgeFailureLimit` / `judgeIntercept` / `judgeIntervalRound` / `judgeInterceptTimeoutMs` / `judgeDoneAdvisory` / `wrapupNormalize` / `extensionStep` / `maxExtensions` / `maxRoundsCap` | **不会**——按布尔 / 数字 / 枚举**校值并读取** | `config.run.reflection.<member>`（数据半边；展开相把整个对象写回 `effectiveOptions.reflection`，引擎读侧一行未动） |
+| `onReflection` | **会**——每次扩轮决策都投递（`effectiveReflection.onReflection`，解析为 `capabilityHooks.onReflection ?? effectiveReflection.onReflection`） | `capabilities.hooks.onReflection`（已登记的嵌套槽位 `["reflection", "onReflection"]`） |
+| `judge.provider` | **会**——judge-only 评估器被调用；它还喂 wrapup 的 LLM 归一化与上报的 `judgeModel` | `capabilities.ports.judgeProvider`（已登记的嵌套槽位 `["reflection", "judge", "provider"]`） |
+
+`wrapupNormalize` 值得单独一句，因为它的名字会误导：它是一个**布尔开关**，引擎读它
+（`effectiveReflection?.wrapupNormalize === true`，与 `ERIX_WRAPUP_NORMALIZE` 环境变量取或）来决定
+收尾文本要不要过 LLM 归一化。引擎从不调用它，而**归一化器本身**是 `normalizeWrapupText`
+（`src/reflection/wrapup.js`）——一个模块导入，不是宿主提供的值。所以它是数据，家是
+`config.run.reflection.wrapupNormalize`；它**不是**顶层 `wrapup` 开关（那是另一个旋钮，
+`config.input.wrapup`），也不是能力。
+
+`reflection` 的版本口径（issue #530）：
+
+| 版本 | 写扁平 `reflection` |
+| --- | --- |
+| 0.26.0 及更早（最后一个**已发布**版本） | 合法——而且它是唯一拼写（当时还没有 `config` 命名空间） |
+| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有宿主装到过受这件事影响的树 |
+| 0.28.0 及以后（issue #530） | **当场拒**，且因为它是**混装壳**，文案一句话点名**两站**：`unknown runToolLoop option: "reflection" (its canonical home is config.run.reflection; the flat spelling is rejected) — this shell holds both data and functions: write data as config.run.reflection.<leaf>, and behaviour members as capabilities.hooks.onReflection or capabilities.ports.judgeProvider` |
+
+**两侧拒绝、两条理由分开**（A18 / A23b 的写法）。**扁平**那一侧由**名称**闸口拒（上面那句）。
+**规位**那一侧按**形状**拒，而且两站的理由不同：`config.run.reflection` 里的**函数**由配置面
+intake 拒（`… is not accepted: "onReflection" is a function, and the config namespace holds data only
+(the config subtree must survive a JSON round-trip unchanged) — its canonical home is
+capabilities.hooks.onReflection`），而写在 `capabilities.hooks.onReflection` 上的**非函数**由能力面
+形状校验器拒（`capabilities.hooks.onReflection must be a function (or omitted)`）。留在**数据**半边的
+非函数（`config.run.reflection.onReflection: "cb"`）仍由语义相用**原封不动的**文案抓住
+（`reflection.onReflection must be a function (or omitted)`）——夹具那层的分家**只搬函数值**，
+所以给错型的值不会被静默丢弃。
+
+**删键之前，冲突通道必须先换样本。** `reflection` 是最后一个扁平配置叶子，也是「构造期有值 +
+调用期又给 ⇒ 启动期抛」那条规则（`assertAssemblyOverrideConflicts`）的活样本。退役之后那个样本
+**测不到**了——覆盖名先撞名称闸口——所以样本换成 `todoStateProvider`（第三站的永久顶层选项，
+`policy` 仍能给它），而 `reflection` 留一条**反向钉**说明这件事。同一条结论往上还有一层：既然没有
+任何扁平配置孪生剩下，「扁平 vs `config`」那条冲突分支已经不可能从**调用**侧走到；退役扁平名的
+存活载体是装配口的 `policy`，钉子就走那条路线。
+
+实测红格：单删 **220**；夹具翻译拼写后 **164**；夹具加上分家规则（只搬函数值）后 **40**；手写点
+迁移完成后 **0**（`run` 组的两条账目钉、A11 / A14 / A15 / A20 / A21 / A22 / A23b 的邻接清单、
+`497` 的 `A3` / `B2` / `C1` / `C4` / `C5` 五格、`496` 闸口矩阵与 `boundary-parity` 契约套件、
+`498s4c` 的 `C5` / `C7` / `C13` / `C16`、`assembly-port` 的冲突样本、`tool-result-envelope` 一格、
+以及 `pi-extension` 的 `S6-A` / `S6-B` / `S6-C1`）。夹具（`test/helpers/run-direct.js`）之所以在
+**一处**做分家：`test/` 里那个扁平壳写了 130 处、摊在约 40 个文件，其中 59 处带着行为成员——
+与前面每一刀用的是同一条「唯一翻译点」纪律。
 
 ### capabilities 命名空间（issue #498）
 

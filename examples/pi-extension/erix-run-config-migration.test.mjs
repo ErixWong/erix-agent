@@ -91,6 +91,19 @@ function richInput() {
 }
 
 /**
+ * `reflection` 的数据半边（#530）：只有**函数值**才搬去能力面，非函数留在数据半边
+ * ——与 `examples/pi-extension/erix-run-core.js` 的 `buildLoopOptions` 同一条规则。
+ *
+ * @param {Record<string, any>} reflection
+ * @returns {Record<string, any>}
+ */
+function reflectionDataOf(reflection) {
+  if (reflection === null || typeof reflection !== "object" || Array.isArray(reflection)) return reflection;
+  const { onReflection, ...data } = reflection;
+  return typeof onReflection === "function" ? data : reflection;
+}
+
+/**
  * **迁移前**（main `0b2d858`）的扁平装配——逐字照抄那一版 `buildLoopOptions` 的返回形状。
  *
  * 它是等价断言的 golden：新形状展开后必须与它逐键相等。刻意**照抄而不是引用**：
@@ -144,7 +157,6 @@ function legacyFlatOptions(input) {
       // silently replace the `input` / `timing` groups above).
       metadata: { task: params.task },
     },
-    ...(reflection === undefined ? {} : { reflection }),
     ...(onEvent === undefined ? {} : { onEvent }),
     ...(onObserverError === undefined ? {} : { onObserverError }),
     ...(onPersistenceError === undefined ? {} : { onPersistenceError }),
@@ -153,6 +165,22 @@ function legacyFlatOptions(input) {
     ...(finalGuard === undefined ? {} : { finalGuard }),
     ...(deliverables === undefined ? {} : { deliverables }),
   };
+  // #530: the `reflection` shell lost its flat spelling. The golden keeps the same shape the shipped
+  // `buildLoopOptions` emits — data half at `config.run.reflection`, callback half at
+  // `capabilities.hooks.onReflection` — because the flat spelling is now rejected at the name gate.
+  // Merged into the **same** trees (a second `config:` / `capabilities:` key would silently win).
+  if (reflection !== undefined) {
+    options.config = {
+      ...options.config,
+      run: { ...options.config.run, reflection: reflectionDataOf(reflection) },
+    };
+    if (typeof reflection.onReflection === "function") {
+      options.capabilities = {
+        ...(options.capabilities ?? {}),
+        hooks: { ...(options.capabilities?.hooks ?? {}), onReflection: reflection.onReflection },
+      };
+    }
+  }
   // #498 S3 (`folding` slice): `context` is retired as a flat option. `params.strategy` here is a
   // **built-in name** (data), so it belongs to `config.folding.context.strategy` — the object form
   // would go to `capabilities.ports.strategy` instead. The equivalence claim is unaffected: the
@@ -335,8 +363,9 @@ test("S6-B 展开后的 effectiveOptions 与迁移前扁平 golden 逐键相等�
   assert.deepEqual(migrated.configConflicts, [], "新形状自己不许制造 config_override_conflict");
   assert.deepEqual(before.configConflicts, [], "golden 侧同样零冲突（对照组干净）");
 
-  // 唯一的结构差：`reflection.onReflection` 从数据壳搬到了嵌套槽位（引擎在 orchestrator 里
-  // 以 `capabilityHooks.onReflection ?? effectiveReflection.onReflection` 解析，容器赢）。
+  // #530：`reflection` 的扁平壳退役之后，**两边**都写成规位形状（数据在 `config.run.reflection`，
+  // 回调在 `capabilities.hooks.onReflection`），所以本片落地时这里已经不存在「结构差」——
+  // 断言翻成「两边都不许在数据壳里留回调，回调都必须在能力面嵌套槽位里（按同一性）」。
   const splitReflection = (effective) => {
     const { onReflection, ...rest } = effective.reflection;
     return { rest, onReflection };
@@ -344,11 +373,16 @@ test("S6-B 展开后的 effectiveOptions 与迁移前扁平 golden 逐键相等�
   const migratedReflection = splitReflection(migrated.effectiveOptions);
   const beforeReflection = splitReflection(before.effectiveOptions);
   assert.equal(migratedReflection.onReflection, undefined, "新形状的数据壳里不许再留回调");
-  assert.equal(beforeReflection.onReflection, input.reflection.onReflection, "golden 侧回调仍在壳里");
+  assert.equal(beforeReflection.onReflection, undefined, "golden 侧的数据壳同样不许留回调（扁平壳已退役）");
   assert.equal(
     migrated.capabilitySlots.hooks?.onReflection,
     input.reflection.onReflection,
     "回调必须原样落在能力面嵌套槽位里（引擎按同一性解析）",
+  );
+  assert.equal(
+    before.capabilitySlots.hooks?.onReflection,
+    input.reflection.onReflection,
+    "golden 侧的回调也走同一条能力面槽位（两条路线同一个家）",
   );
 
   assert.deepEqual(
@@ -406,20 +440,27 @@ test("S6-C1 反向证①：同一个键既写扁平又写 config ⇒ 真 run 里
   });
   // 反向证本体：把已经迁移的一个键再写一份扁平、且值不同。
   // #498 S3 A21：`maxRounds` 自己退役了扁平写法（写它会撞**名称**闸口，不是冲突闸口），
-  // 所以样本换成 `completion`。
-  // #498 S3 A23b：`completion` 也退役了 ⇒ 冲突样本换成 `reflection`（白名单里最后一个仍有
-  // `config.run.*` 家的扁平键；`false` 与 `{ enabled: false }` 值不同 ⇒ 一条冲突，且规位那份
-  // 赢 ⇒ 反射仍是关的，不会多打上游）。机制一字未改；`completion` 的扁平写法翻成下面那条反向钉。
-  options.reflection = false;
-  options.config.run.reflection = { enabled: false };
+  // 所以样本换成 `completion`。A23b：`completion` 也退役了 ⇒ 样本换成 `reflection`。
+  // #530：`reflection` 也退役了 ⇒ 白名单里**再没有任何**配置叶子的扁平孪生，调用级已经不可能
+  // 同时写两种拼写。样本改走**能力面**那条同构通道（`capabilities.hooks.<leaf>` vs 顶层同名键，
+  // 同一条 `config_override_conflict`、同一套 `{ path, key }` 载荷）；`reflection` 的扁平写法
+  // 翻成下面那条反向钉。
+  // 样本用 `onRound`（不是 `onEvent`：`onEvent` 是**观察者出口本身**，换掉它这条反向证就连事件
+  // 都收不到了——那会把「冲突没发」和「我看不见」混成同一件事）。
+  const conflictHook = () => {};
+  options.capabilities = {
+    ...(options.capabilities ?? {}),
+    hooks: { ...(options.capabilities?.hooks ?? {}), onRound: conflictHook },
+  };
+  options.onRound = () => {};
   const result = await runToolLoop(options);
 
   const conflicts = events.filter((event) => event?.type === "config_override_conflict");
   assert.equal(conflicts.length, 1, `应恰好一条 config_override_conflict，实际 ${conflicts.length}`);
   assert.deepEqual(
     conflicts[0].conflicts,
-    [{ path: "run.reflection", key: "reflection" }],
-    "冲突载荷必须点名 schema 路径与顶层键名",
+    [{ path: "hooks.onRound", key: "onRound" }],
+    "冲突载荷必须点名规位路径与顶层键名",
   );
   assert.equal(result.termination.reason, "end_turn");
   assert.equal(upstream.count(), 1, "真 run 只该打一发脚本化上游");
@@ -428,6 +469,13 @@ test("S6-C1 反向证①：同一个键既写扁平又写 config ⇒ 真 run 里
   await assert.rejects(
     runToolLoop({ ...options, completion: { signals: [], maxNoToolRounds: 1 } }),
     /unknown runToolLoop option: "completion" \(its canonical home is config\.run\.completion; the flat spelling is rejected\)/u,
+  );
+  // 反向钉（#530）：`reflection` 同样退役 ⇒ 同一个键两种写法在**配置面**上正式关闭；文案点名
+  // 两个站（数据 ⇒ `config.run.reflection`，行为 ⇒ `capabilities.hooks.onReflection` /
+  // `capabilities.ports.judgeProvider`），因为它是混装壳。
+  await assert.rejects(
+    runToolLoop({ ...options, reflection: false }),
+    /unknown runToolLoop option: "reflection" \(its canonical home is config\.run\.reflection; the flat spelling is rejected\)/u,
   );
 });
 

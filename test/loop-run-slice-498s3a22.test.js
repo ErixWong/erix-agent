@@ -192,17 +192,21 @@ test("N1 四向闭合 + 自检：本片没搬任何键（白名单与配置面�
   assert.equal(CONFIG_NAMESPACE_SCHEMA.run.includes(KEY), true, "叶子仍在 schema 的 run 组");
 });
 
-test("N2 账目派生化：`run` 组的配置家键只剩一个（不手抄 1 / 27）", () => {
+test("N2 账目派生化：`run` 组的配置家键清零（#530；不手抄 0 / 26）", () => {
   const runHomeKeys = RUN_TOOL_LOOP_OPTION_NAMES
     .filter((name) => (configPathForOption(name) ?? "").startsWith("run."));
-  assert.deepEqual(runHomeKeys, ["reflection"],
-    "`run` 组只剩一个配置家键（顺序 = 白名单顺序，不是集合语义）");
+  // A22 落地时这里还是 `["reflection"]`（`run` 组最后一个配置家顶层键）。#530 把 `reflection`
+  // 也退役了（家 `config.run.reflection`），于是这一组清零——判据仍是派生的，不写死任何数字。
+  assert.deepEqual(runHomeKeys, [], "`run` 组的配置家顶层键已经清零");
   // 反向证：多塞一个 `run` 家键回白名单，本格当场红。
-  assert.notDeepEqual(
-    [...RUN_TOOL_LOOP_OPTION_NAMES, "maxRounds"].filter((name) => (configPathForOption(name) ?? "").startsWith("run.")),
-    runHomeKeys,
-    "反向证：已退役的 `maxRounds` 回到白名单就必须让本格红",
-  );
+  for (const reinserted of ["maxRounds", "reflection"]) {
+    assert.notDeepEqual(
+      [...RUN_TOOL_LOOP_OPTION_NAMES, reinserted]
+        .filter((name) => (configPathForOption(name) ?? "").startsWith("run.")),
+      runHomeKeys,
+      `反向证：${reinserted} 回到白名单就必须让本格红`,
+    );
+  }
 });
 
 // ================================================================ S. 夹具是翻译点（本片唯一的代码改动）

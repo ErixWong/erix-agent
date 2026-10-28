@@ -348,7 +348,9 @@ test("boundary parity: 承载宿主回调的字段形状错误在两条路线上
     // both routes (the flat one is now rejected one phase earlier by the name gate).
     ["timing.retry.sleepImpl", { config: { timing: { retry: { sleepImpl: 10 } } } },
       "retry.sleepImpl must be a function (or omitted)"],
-    ["reflection.onReflection", { reflection: { onReflection: "cb" } },
+    // #530: `reflection` 退役扁平写法 ⇒ 这一格用规位拼写。**非函数**留在数据半边
+    // （只有函数值才搬去能力面），所以语义相照旧报同一条文案——这一格测的是形状，不是去处。
+    ["reflection.onReflection", { config: { run: { reflection: { onReflection: "cb" } } } },
       "reflection.onReflection must be a function (or omitted)"],
     ["diagnostics.error", { diagnostics: { error: "cb" } },
       "diagnostics.error must be a function (or omitted)"],
@@ -370,9 +372,10 @@ test("boundary parity: 合法配置在两条路线上都不抛（防 parity 只�
     config: { folding: { context: {
       budgetTokens: 1000,
       maxSummaryTokens: 900,
-                      } }, timing: { retry: { attempts: 1 } } },
-    capabilities: { ports: { sleepImpl: async () => {} } },
-    reflection: { enabled: false, onReflection: () => {} },
+                      } }, timing: { retry: { attempts: 1 } },
+      // #530: `reflection` 的数据半边在 `config.run.reflection`，回调半边在 `capabilities.hooks`。
+      run: { reflection: { enabled: false } } },
+    capabilities: { ports: { sleepImpl: async () => {} }, hooks: { onReflection: () => {} } },
     diagnostics: { error: () => {} },
   };
   const { direct, assembly } = await errorsOnBothRoutes(good);
