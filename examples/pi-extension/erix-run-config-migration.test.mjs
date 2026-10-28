@@ -104,7 +104,6 @@ function legacyFlatOptions(input) {
   } = input;
   const options = {
     provider,
-    task: params.task,
     cwd: params.cwd,
     tools: tools.tools,
     executeTool: tools.executeTool,
@@ -128,6 +127,10 @@ function legacyFlatOptions(input) {
         initialUserMessage: params.task,
       },
       timing: { timeoutMs: params.timeoutMs, retry: { attempts: 2 } },
+      // #498 S3 A9: `task` is retired as a flat option too; its canonical home is
+      // `config.metadata.task`. Merged into the **same** `config` tree (a second `config:` key would
+      // silently replace the `input` / `timing` groups above).
+      metadata: { task: params.task },
     },
     completion: { signals: ["任务已完成", "已完成", "全部完成", "无需继续", "任务结束", "没有更多步骤"], maxNoToolRounds: 3 },
     ...(reflection === undefined ? {} : { reflection }),
@@ -158,7 +161,10 @@ function legacyFlatOptions(input) {
   // `.expert`, so the equivalence claim below is unaffected. Merged into the **same** `config` tree
   // (a second `config:` key would replace the `input` / `timing` / `guard` groups above).
   if (Number.isSafeInteger(slot.contextWindowTokens) && Number.isSafeInteger(slot.maxOutputTokens)) {
+    // #498 S3 A9: merge into the **same** `metadata` group — `task` is already there, and assigning
+    // a fresh object would silently drop it.
     options.config.metadata = {
+      ...(options.config.metadata ?? {}),
       modelMetadata: {
         contextWindowTokens: slot.contextWindowTokens,
         maxOutputTokens: slot.maxOutputTokens,

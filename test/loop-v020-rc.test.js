@@ -42,9 +42,9 @@ test("structured executeTool receives context and returns tool metadata", async 
         requestId: "request-1",
         toolContext: { tenant: "tenant-1" },
         user: { id: "user-1" },
+        task: { id: "task-1" },
       },
     },
-    task: { id: "task-1" },
     session: "session-1",
     completion: false,
   });

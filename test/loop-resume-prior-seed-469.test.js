@@ -156,7 +156,7 @@ test("#469-A 端到端：resume 出来的 run 第一次折叠带账本基底（�
   const resumed = createProvider();
   const result = await runToolLoop({
     provider: resumed,
-    task: "继续",
+    // #498 S3 A9：`task` 的扁平写法已退役，并进**同一个** `config` 容器（下面那行 folding）。
     resume: true,
     runId,
     store,
@@ -164,7 +164,10 @@ test("#469-A 端到端：resume 出来的 run 第一次折叠带账本基底（�
     maxRounds: 3,
     completion: false,
     reflection: false,
-    config: { folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-llm" } } },
+    config: {
+      metadata: { task: "继续" },
+      folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-llm" } },
+    },
   });
 
   const stats = (result.compactionStats ?? []).filter((stat) => stat.foldSummary !== undefined);

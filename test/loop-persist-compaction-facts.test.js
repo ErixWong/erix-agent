@@ -162,7 +162,6 @@ test("#326-C 复用不重算：折叠后中断，resume 不再调 summarizer，�
   const resumed = createProvider({ mainScript: [endTurn("续接结论")] });
   await runToolLoop(withSeed({
     provider: resumed,
-    task: "继续",
     resume: true,
     runId: "326c-fold-resume",
     store,
@@ -176,7 +175,8 @@ test("#326-C 复用不重算：折叠后中断，resume 不再调 summarizer，�
     // 本用例要钉的是**同一份折叠输入不重算**，不是「上下文变了也不许重算」。
     // 告示自己落进折叠区间那一格另有专门的锚（`test/loop-resume-notice.test.js` 的
     // 「告示在同一轮被折进摘要」条）。
-    config: { folding: { context: { ...foldContext, keepRounds: 1 } } },
+    // #498 S3 A9：`task` 的扁平写法已退役，并进**同一个** `config` 容器。
+    config: { metadata: { task: "继续" }, folding: { context: { ...foldContext, keepRounds: 1 } } },
   }));
 
   // issue #469 宿主裁决 A（实施条件 4）：续写基底**进复用键**。于是 resume 后第一次折叠的输入

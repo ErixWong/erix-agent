@@ -124,7 +124,9 @@ test("#386 每个加法键都在场且形状正确，toolStats 是 plain object 
       ),
     ]),
     initialUserMessage: `把 42 写进 ${answerPath}`,
-    task: "写两个文件",
+    // #498 S3 A9：`task` 的扁平写法已退役，写点是 `config.metadata.task`
+    // （载荷里的 `taskBrief` 读的就是展开后的 `effectiveOptions.task`）。
+    config: { metadata: { task: "写两个文件" } },
     cwd: dir,
     runId: "run-shape",
     maxRounds: 4,
