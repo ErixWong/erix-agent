@@ -133,6 +133,38 @@ const fixtures = [
   },
   {
     name: "accumulator-object-arguments",
+    // issue #409（6b604e7，2026-10-23）**晚于本脚本的冻结参照**（919eeca，2026-09-16）：
+    // `getToolUseBlocks` 现在把引数解析判词挂在 `tool_use.erix.argumentsParseError` 上（additive
+    // 可选键，执行层 `run-snapshot-executor` 据它决定「不执行这个工具」，契约面因此多了
+    // `executionStatus: "rejected"`）。`legacyAccumulator` 是本脚本手抄的 **#409 之前**那一份，
+    // 它不可能凭空长出这个键 ⇒ 这一格的 `blocks[].erix` 是**有意**不同，不是回归。
+    // 钉法（比原断言更强，不是放宽）：`fragment` / `calls` / `blocks` 除 `erix` 外仍**逐字节**
+    // 相同，另外把判词按字面量逐字钉住——判词消失、`reason` 变、`text` 变、`message` 不再
+    // 是字符串都当场红。
+    documentedDelta: ({ current, legacy }) => {
+      assert.equal(serialize(current.fragment), serialize(legacy.fragment),
+        "accumulator-object-arguments: fragment 必须逐字节相同");
+      assert.equal(serialize(current.calls), serialize(legacy.calls),
+        "accumulator-object-arguments: calls 必须逐字节相同");
+      const [currentBlock] = current.blocks;
+      const [legacyBlock] = legacy.blocks;
+      assert.ok(currentBlock?.erix?.argumentsParseError !== undefined,
+        "accumulator-object-arguments: #409 判词不见了（blocks[].erix.argumentsParseError）");
+      const { erix, ...currentWithoutErix } = currentBlock;
+      assert.equal(serialize(currentWithoutErix), serialize(legacyBlock),
+        "accumulator-object-arguments: 除 erix 外 blocks 必须逐字节相同（#409 只加了这一个键）");
+      assert.deepEqual(erix, {
+        argumentsParseError: {
+          reason: "unparsable",
+          message: erix.argumentsParseError.message,
+          text: "[object Object]",
+        },
+      }, "accumulator-object-arguments: #409 判词形状变了");
+      assert.equal(typeof erix.argumentsParseError.message, "string",
+        "accumulator-object-arguments: 判词里的解析器原话必须是字符串");
+      assert.ok(erix.argumentsParseError.message.includes("[object Object]"),
+        `accumulator-object-arguments: 判词里没带出错的那段文本（实测 ${JSON.stringify(erix.argumentsParseError.message)}）`);
+    },
     legacy: () => {
       const accumulator = legacyAccumulator();
       return {
@@ -243,10 +275,20 @@ const fixtures = [
 ];
 
 for (const fixture of fixtures) {
-  const legacy = serialize(fixture.legacy());
-  const current = serialize(fixture.current());
-  assert.equal(current, legacy, `${fixture.name} differs`);
-  process.stdout.write(`${fixture.name}: ${legacy} === ${current}\n`);
+  const legacyValue = fixture.legacy();
+  const currentValue = fixture.current();
+  const legacy = serialize(legacyValue);
+  const current = serialize(currentValue);
+  if (fixture.documentedDelta === undefined) {
+    assert.equal(current, legacy, `${fixture.name} differs`);
+    process.stdout.write(`${fixture.name}: ${legacy} === ${current}\n`);
+    continue;
+  }
+  // 有已登记的有意差异：除了登记的那一面之外仍然逐字节比对，登记面按字面量钉死。
+  fixture.documentedDelta({ current: currentValue, legacy: legacyValue });
+  process.stdout.write(`${fixture.name}: parity outside the documented #409 delta + delta pinned\n`);
 }
 
-process.stdout.write(`PASS: ${fixtures.length}/${fixtures.length} fixtures byte-identical\n`);
+const deltaCount = fixtures.filter((fixture) => fixture.documentedDelta !== undefined).length;
+process.stdout.write(`PASS: ${fixtures.length}/${fixtures.length} fixtures compared`
+  + ` (${fixtures.length - deltaCount} byte-identical, ${deltaCount} with a documented #409 delta)\n`);
