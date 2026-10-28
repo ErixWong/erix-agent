@@ -444,10 +444,12 @@ export function configOptionNameForLeaf(group, leaf) {
 export const CONFIG_LEAF_ALIAS_PATHS = CONFIG_LEAF_ALIASES;
 
 /**
- * 值类型描述（只用于报错文案）：`null` / `array` / 其它走 `typeof`。
+ * The value-type name used in **error text only**: `null` / `array` / `typeof` for everything else.
  *
- * `typeof null === "object"` 会把「宿主给了个空值」说成「宿主给了个对象」，所以先分出来；
- * 数组同理——宿主写 `stream: []` 时该看见 `array`，而不是 `object`。
+ * `typeof null === "object"` would report "the host passed an object" for an empty value, so `null`
+ * is named first; arrays get their own word too — a host writing `stream: []` should read `array`,
+ * not `object`. Naming the type the engine actually received is half of the value-rule verdict (the
+ * other half is the full config path), so this stays a separate, testable function.
  *
  * @param {unknown} value
  * @returns {string}
@@ -459,37 +461,43 @@ function describeConfigValueType(value) {
 }
 
 /**
- * **叶子值规则**（issue #538）：`"<group>.<leaf>"` → 校值函数（返回判词，`undefined` = 通过）。
+ * **Leaf value rules** (issue #538): `"<group>.<leaf>"` → a check returning a verdict string
+ * (`undefined` = pass).
  *
- * 为什么需要这张表：名称/形状闸口只管「这个键存不存在」，不管「这个键的值是什么类型」。
- * `config.run.stream` 的病根是**同一个值被两处用两种真值判断读**（`src/loop/provider-runner.js`
- * 的 `=== true` 与 `truthy`），于是 `stream: 1` 让同一次运行里「通道名」与「走不走 chatStream」
- * 各说各话。裁决不是「把两处都改成 truthy」（那会让 `stream: "yes"` 真的开始流式，只是把
- * 分歧挪到别处），而是「值必须是布尔」+「两处共用一个派生值」：本表负责前半，后半见
- * `provider-runner.js` 的 `streamsThisRun`。
+ * Why the table exists: the name/shape gate only answers "does this key exist", never "is this key's
+ * value the right type". `config.run.stream` broke because **one value was read with two different
+ * truthiness tests** (`=== true` vs truthy, both in `src/loop/provider-runner.js`), so `stream: 1`
+ * made the recorded channel and the actual provider method disagree **inside one run**. The ruling
+ * was not "make both truthy" (that would make `stream: "yes"` really stream — the disagreement would
+ * merely move), but "the value must be a boolean" **plus** "both sites share one derived value".
+ * This table is the first half; `streamsThisRun` in `provider-runner.js` is the second.
  *
- * 判词必须点名**完整路径**（`config.run.stream`，不是扁平的 `stream`）与**实测收到的类型**：
- * 宿主写错这一格时，能照着报错改，而不是去猜引擎的默认值。
+ * A verdict must name the **full path** (`config.run.stream`, not the flat `stream`) and the type the
+ * engine actually received, so a host that wrote the wrong thing can fix it from the message instead
+ * of guessing the default.
  *
- * 这一层在**展开相**（`expandConfigNamespace` → `assertConfigNamespace`）就校，所以两条路线
- * 都走同一处：直连 `runToolLoop({ config: { run: { stream: 1 } } })` 与装配口
- * `policy: { stream: 1 }`（#545 起 policy 叶子翻译成 `config.run.stream`，构造期就过这道闸）。
+ * The check runs in the **expansion phase** (`expandConfigNamespace` → `assertConfigNamespace`), which
+ * both entry routes share: direct `runToolLoop({ config: { run: { stream: 1 } } })` and the assembly
+ * port's `policy: { stream: 1 }` (#545 translates policy leaves into `config.run.stream`, so the
+ * assembly route is refused at construction time).
  *
- * 表里只登记**需要值规则**的叶子（今天只有一个）；空集合意味着「该叶子没有额外值规则」，
- * 不是「漏登记」——需要那条规则的键必须真在 schema 里，由 `configSchemaSelfCheck` 核死条目。
+ * Only leaves that **need** a value rule are registered (one, today); an absent entry means "no extra
+ * value rule for this leaf", not "forgotten" — and every registered key must really be a schema leaf,
+ * which `configSchemaSelfCheck` pins as a dead-entry check.
  *
  * @type {Readonly<Record<string, (value: unknown, path: string) => string | undefined>>}
  */
 const CONFIG_LEAF_VALUE_RULES = Object.freeze({
-  // issue #538: `config.run.stream` 必须是布尔。非布尔**启动即抛**，判词点名完整路径与收到的类型。
-  // 不收 `1` / `0` / `"yes"` / `null` / `[]`：真值判断的两种写法（`=== true` 与 truthy）对它们
-  // 结论不同，而一次运行里只能有一个「在不在流式」的答案。
+  // issue #538: `config.run.stream` must be a boolean. A non-boolean throws **at startup** and the
+  // verdict names the full path plus the received type. `1` / `0` / `"yes"` / `null` / `[]` are all
+  // refused: the two truthiness readings (`=== true` and truthy) disagree on every one of them, and a
+  // run may only have one answer to "are we streaming".
   "run.stream": (value, path) => (typeof value === "boolean"
     ? undefined
     : `${path} must be a boolean (received: ${describeConfigValueType(value)})`),
 });
 
-/** 叶子值规则表（导出给自检与测试核对，只读）。 */
+/** The leaf value-rule table (exported for the self-check and tests to read; read-only). */
 export const CONFIG_LEAF_VALUE_RULE_PATHS = CONFIG_LEAF_VALUE_RULES;
 
 /**
@@ -704,9 +712,10 @@ export function configSchemaSelfCheck(optionNames, { leafAliases = CONFIG_LEAF_A
       }
     }
   }
-  // issue #538：叶子值规则的**死条目**。规则表按 `"<group>.<leaf>"` 索引，所以一条规则只能由
-  // 「那个叶子真的在 schema 里」来兑现——登记了 `run.stream` 却把叶子改名 / 删除，规则会静默失效
-  // （非布尔又能走到运行期）。这一条把「改了叶子名、忘了改规则表」变成红。
+  // issue #538: **dead entries** in the leaf value-rule table. The table is indexed by
+  // `"<group>.<leaf>"`, so a rule is only honoured while that leaf really is in the schema —
+  // rename or delete the leaf and the rule goes silent (non-booleans reach the run again). This turns
+  // "renamed the leaf, forgot the rule table" into a red.
   for (const path of Object.keys(CONFIG_LEAF_VALUE_RULES)) {
     if (!CONFIG_ALIAS_PATHS.has(path)) {
       problems.push(`leaf value rule ${JSON.stringify(path)} does not name a leaf of the config schema`);
@@ -887,8 +896,9 @@ export function collectConfigNamespaceProblems(config) {
         functionValueReported = true;
         problems.push(functionValueProblemMessage(functionPath));
       }
-      // issue #538：**叶子值规则**。放在函数值那条之后：一个函数值已经由上面点名了它的
-      // 能力面去处（那里说得更具体），不再叠一条「must be a boolean」。
+      // issue #538: the **leaf value rule**. Checked after the function-value row on purpose: a
+      // function value has already been pointed at its capability home (a more specific answer), so
+      // it does not also get a "must be a boolean" line.
       const valueRule = CONFIG_LEAF_VALUE_RULES[`${group}.${leaf}`];
       if (valueRule === undefined || functionValueReported) continue;
       const valueProblem = valueRule(leafValue, `config.${group}.${leaf}`);
