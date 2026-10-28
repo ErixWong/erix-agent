@@ -444,11 +444,15 @@ test("B1 42 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平�
     assert.deepEqual(nestedExpanded.options, flatExpanded.options, `${path} 展开后必须与扁平形态逐键相等`);
     assert.deepEqual(nestedExpanded.options, flat, `${path} 展开后必须回到扁平形态`);
     assert.equal(Object.hasOwn(nestedExpanded.options, "config"), false, `${path} 展开后 config 必须消失`);
-    // 迁移场景（等价 + 优先级同一条断言）：这个键以前写在扁平、现在挪到 config，其余照旧 ⇒
-    // 展开结果必须与「只用扁平新值」逐键相等。优先级反转（让扁平赢）会在这里红。
-    const mixed = expandConfigNamespace({ [key]: `stale:${key}`, config: { [group]: { [leaf]: value } } });
-    assert.deepEqual(mixed.options, flat, `${path} 混合写法（扁平旧值 + config 新值）必须等于只用扁平新值`);
-    assert.deepEqual(mixed.conflicts, [{ path, key }], `${path} 混合写法必须记一条冲突`);
+    // #545：「扁平 vs config」这一支已经不是**冲突**，而是一条内部不变量——合并表示里不可能同时
+    // 出现两种写法（调用级被名称闸口拒、`policy` 只产翻译后的叶子、端口派生键没有配置叶子），
+    // 所以展开层遇到扁平双胞胎就当场抛，而不是静默让 config 赢。这一格钉住那条断言会咬人。
+    assert.throws(
+      () => expandConfigNamespace({ [key]: `stale:${key}`, config: { [group]: { [leaf]: value } } }),
+      (error) => error instanceof TypeError
+        && error.message.startsWith(`internal invariant: config.${path} has a flat twin ${JSON.stringify(key)}`),
+      `${path} 混合写法必须撞内部不变量（那一支没有入口能走到，也不许静默）`,
+    );
     covered += 1;
   }
   assert.equal(covered, CONFIG_SURFACE_OPTION_NAMES.length, "穷举必须覆盖全部配置叶子（漏一个就少一条等价证明）");
@@ -1102,12 +1106,14 @@ test("G3 collectConfigSourceConflicts 是纯函数：逐叶、同值不算、顺
 });
 
 test("G2 expandConfigNamespace 不改入参：返回新对象，原 options 原样保留", () => {
-  const options = { maxRounds: 1, config: { run: { maxRounds: 2 } } };
+  // #545：扁平双胞胎现在撞内部不变量（见 B1），所以「不改入参」这一格用**只有 config** 的输入。
+  const options = { config: { run: { maxRounds: 2 } } };
   const { options: expanded } = expandConfigNamespace(options);
   assert.notEqual(expanded, options);
-  assert.equal(expanded.maxRounds, 2);
-  assert.equal(options.maxRounds, 1, "入参不得被改写");
+  assert.equal(expanded.maxRounds, 2, "展开把叶子写回顶层键");
+  assert.equal(Object.hasOwn(expanded, "config"), false, "展开结果里 config 消失");
   assert.deepEqual(options.config, { run: { maxRounds: 2 } }, "入参的 config 不得被删");
+  assert.equal(Object.hasOwn(options, "maxRounds"), false, "入参不得被改写");
 });
 
 // ================================================================ H. 类型面锁进默认套件（第二轮复审 T2）
@@ -1210,13 +1216,14 @@ test("I2 `config.input.messages` 是顶层 `initialMessages` 的嵌套别名（�
   assert.deepEqual(expanded.options.initialMessages, messages, "展开后回到顶层 initialMessages");
   assert.equal(Object.hasOwn(expanded.options, "messages"), false, "别名叶子本身不许漏进有效选项");
 
-  // 冲突：path 是 schema 路径（`input.messages`），key 是顶层键名（`initialMessages`）。
-  const conflict = expandConfigNamespace({
-    initialMessages: [],
-    config: { input: { messages } },
-  });
-  assert.deepEqual(conflict.conflicts, [{ path: "input.messages", key: "initialMessages" }]);
-  assert.deepEqual(conflict.options.initialMessages, messages, "config 侧赢");
+  // #545：扁平双胞胎（`initialMessages` 与 `config.input.messages` 同时在场）撞内部不变量——
+  // 没有任何入口能同时给出两种写法，所以这一支不再是「config 赢 + 记一条冲突」，而是当场抛。
+  assert.throws(
+    () => expandConfigNamespace({ initialMessages: [], config: { input: { messages } } }),
+    (error) => error instanceof TypeError
+      && error.message.startsWith('internal invariant: config.input.messages has a flat twin "initialMessages"'),
+    "别名叶子同样没有扁平双胞胎的入口",
+  );
 
   // 把顶层键名当叶子写 ⇒ 指到正确的叶子（不是「未知叶子」）。
   const wrongLeaf = await directError({ config: { input: { initialMessages: [] } } });

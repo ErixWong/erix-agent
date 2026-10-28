@@ -138,8 +138,14 @@ test("C1 合并树里出现退役扁平名 ⇒ 当场拒，文案点名它的新
   );
   // 正向：合法名一个都不拦（含容器与端口派生的那几个）。
   assert.doesNotThrow(() => assertMergedOptionNames({ config: {}, session: {}, provider: {} }));
-  // `policy` 面是**另一张**白名单（它按裁决继续携带退役扁平名），所以它不被这道闸判。
-  assert.doesNotThrow(() => assertMergedOptionNames({ maxTokens: 100 }), "policy.maxTokens 不是 loop 选项名");
+  // #545：`policy` 面的豁免**摘掉了**——它不再携带退役扁平名（叶子名一律翻译进 `config`），
+  // 所以这道闸对合并树里的每一个名字一视同仁。这一格是本单「洞已关闭」的直接反向证：
+  assert.throws(
+    () => assertMergedOptionNames({ maxTokens: 100 }),
+    (error) => error instanceof TypeError
+      && error.message.startsWith('unknown runToolLoop option: "maxTokens"'),
+    "policy 的豁免没了：合并树里的退役扁平名必须被拒（哪怕它来自 policy）",
+  );
 });
 
 test("C2 闸口相位：显式拼写仍然在任何端口被读之前抛（phase ① 没被搬走）", async () => {

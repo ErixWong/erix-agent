@@ -65,12 +65,16 @@ function foldingProvider() {
  * @param {Record<string, any>} [extra] extra **data** leaves
  * @returns {{config: {folding: {context: Record<string, any>}}, capabilities: {ports: {strategy: any}}}}
  */
+// #545：`strategy` 是**函数载体**（`shouldCompact` / `compact`），`policy` 只收数据之后它进不了
+// `policy.context`（那是 `config.folding.context`，函数进去当场拒），规范之家是
+// `capabilities.ports.strategy` —— 直连路线（`foldOptions`）本来就这么写，装配口路线现在对齐。
 const foldContext = (extra = {}) => ({
   budgetTokens: 300,
   keepRounds: 1,
-  strategy: createSlidingWindowStrategy({ keepRounds: 1 }),
   ...extra,
 });
+
+const foldStrategy = () => createSlidingWindowStrategy({ keepRounds: 1 });
 
 const foldOptions = (extra = {}) => ({
   config: { folding: { context: { budgetTokens: 300, keepRounds: 1, ...extra } } },
@@ -115,7 +119,10 @@ function makePort(policy, events) {
 /** 装配口路线的一条折叠 run（`context` 来自 `policy.context`，与直连共用同一份语义相规则）。 */
 function runAssemblyFolding(contextExtra = {}) {
   const events = [];
-  const port = makePort({ context: foldContext(contextExtra) }, events);
+  const port = makePort({
+    context: foldContext(contextExtra),
+    capabilities: { ports: { strategy: foldStrategy() } },
+  }, events);
   return runDirect({
     assemblyPort: port,
     initialUserMessage: "go",
@@ -143,10 +150,12 @@ test("A 退役（正例）：`context.onFoldSummary` 不再在白名单里 ⇒ �
     "退役：它必须落进「未知 context 子键」集合（这样装配口才拿得到它去发事件）",
   );
 
-  let hookCalls = 0;
   // 机制面（装配期）：端口**构造一次** ⇒ 恰好一条事件。
+  // #545：这里用**数据**形态（`"notes"`）。函数形态在 `policy.context` 上已经不可写了——`policy`
+  // 只收数据、叶子名一律翻译进 `config`，而 `config` 里的函数当场拒（见本格末尾那条反向钉）。
+  // #499 的契约（退役的键 = 被容忍的宿主元数据，报事件不报错）在**数据**形态上一字未变。
   const constructionEvents = [];
-  const port = makePort({ context: foldContext({ onFoldSummary: () => { hookCalls += 1; } }) }, constructionEvents);
+  const port = makePort({ context: foldContext({ onFoldSummary: "notes" }) }, constructionEvents);
   assert.ok(port, "退役后装配口必须照旧装配成功（不抛）");
   assert.equal(
     unknownEvents(constructionEvents).length,
@@ -158,9 +167,7 @@ test("A 退役（正例）：`context.onFoldSummary` 不再在白名单里 ⇒ �
   // 端到端：`runToolLoop(withSeed({ assemblyPort }))` 会经 `assemblyPortOptions` **再装配一次**
   // （`option-normalization.js` 的既有行为，不是本单引入），所以事件会出现两次；
   // 断言改成「至少一条、且每一条都点名 onFoldSummary」，不把「两次」当成契约。
-  const { result, events } = await runAssemblyFolding({
-    onFoldSummary: () => { hookCalls += 1; },
-  });
+  const { result, events } = await runAssemblyFolding({ onFoldSummary: "notes" });
 
   // ① 不抛：退役**不是**把静默换成报错（那会是破坏，主 agent 裁决的红线）。
   assert.ok(result.termination, "退役后装配口这条 run 必须照旧跑完（不抛）");
@@ -174,8 +181,14 @@ test("A 退役（正例）：`context.onFoldSummary` 不再在白名单里 ⇒ �
     warnings.every((entry) => Array.isArray(entry.event.keys) && entry.event.keys.join(",") === "onFoldSummary"),
     `每条事件都必须点名 onFoldSummary，实测 ${JSON.stringify(warnings)}`,
   );
-  // ④ 语义没变：它仍然不是投递点（退役 ≠ 突然开始读它）。
-  assert.equal(hookCalls, 0, "`context.onFoldSummary` 依旧不被引擎读取，必须零调用");
+  // ④ 语义没变：它仍然不是投递点（退役 ≠ 突然开始读它）。#545 让这条有**机器证据**：这个键上
+  // 唯一还能承载「被投递」的形态是函数，而函数在 `policy.context` 上已经被拒——所以从这个键出发
+  // 根本走不到一次投递；真正的投递点是 `capabilities.hooks.onFoldSummary`。
+  assert.throws(
+    () => makePort({ context: foldContext({ onFoldSummary: () => {} }) }, []),
+    /is a function.*canonical home is capabilities\.hooks\.onFoldSummary/su,
+    "函数形态在 policy.context 上被拒（policy 只收数据）⇒ 这个退役键没有投递通道",
+  );
 });
 
 test("A② 退役的边界：`context.onFoldSummary` 给非函数值也不抛（它现在是宿主元数据，不校形状）", async () => {
@@ -224,7 +237,8 @@ test("B 退役（直连路线正例）：`config.folding.context.onFoldSummary` 
 test("C 同形对照：退役后的 `onFoldSummary` 与 `onFoldSummaryx` 走同一条元数据分支（非破坏的机器判据）", async () => {
   const shapeOf = (key) => {
     const events = [];
-    const port = makePort({ context: { budgetTokens: 1000, [key]: () => {} } }, events);
+    // #545：形状对照用**数据**值（函数在 `policy.context` 上已经被拒，两种键都到不了元数据分支）。
+    const port = makePort({ context: { budgetTokens: 1000, [key]: "notes" } }, events);
     const keys = unknownEvents(events).map((entry) => entry.event.keys);
     return {
       assembled: port !== undefined,

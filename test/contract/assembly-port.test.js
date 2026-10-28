@@ -51,11 +51,14 @@ test("assembly port supports default and explicit modelConfig paths", async () =
       stream: true,
     },
   });
-  assert.equal((await assemblyPortOptions(port)).replayPolicy, "per-tool-declaration");
-  assert.deepEqual(
-    (await assemblyPortOptions(port)).partialPersistence,
-    { intervalMs: 25, minBytes: 1 },
-  );
+  // #545: `policy` carries data only and every leaf name is translated into the config tree
+  // (`policy.replayPolicy` → `config.run.replayPolicy`), so the construction-time product holds the
+  // canonical spelling — there is no flat twin any more.
+  const constructed = await assemblyPortOptions(port);
+  assert.equal(constructed.config.run.replayPolicy, "per-tool-declaration");
+  assert.deepEqual(constructed.config.run.partialPersistence, { intervalMs: 25, minBytes: 1 });
+  assert.equal(constructed.config.run.stream, true);
+  assert.equal(Object.hasOwn(constructed, "replayPolicy"), false, "policy 不再产出扁平拼写");
 
   // issue #498 第 1 条：`modelConfig` 是**唯一**存活的调用期覆盖通道（它自带
   // `validateModelConfigResolver` 校验，见下一个断言）；其余「构造期给过、调用期又给」一律抛。
@@ -206,16 +209,24 @@ function createOverridePort({ policy, emit } = {}) {
 test("冲突：构造期有值 + 调用期又给 ⇒ 启动期抛，点名键名与两个来源（issue #498）", async () => {
   // #498 S3 A21: `maxRounds` left the top-level allowlist (home `config.run.maxRounds`), so an
   // override of it hits the **name** gate instead of the conflict gate. #498 S3 A23b: `completion`
-  // followed it. #530: `reflection` followed them too — the allowlist no longer has **any** config
-  // leaf, so the `port.policy.<key>` sample moves to `todoStateProvider`: a permanent top-level
-  // option (the third station, never retired) that `policy` can still give at construction time.
-  // The assertion shape is unchanged, and the retired spellings keep their reverse pins (①-b).
-  const port = createOverridePort({ policy: { todoStateProvider: { read: async () => ({}) } } });
-  // ① policy 给的键 —— 来源是 `port.policy.<key>`
+  // followed it. #530: `reflection` followed them too. #545 finishes the job: `policy` carries data
+  // only (every leaf is translated into `config.<path>`, and `config` is a container), so **no**
+  // `policy` key can be named by an override any more — the `port.policy.<key>` origin became
+  // unreachable and the sample moves to a port-derived key (`session`, origin `port.session`).
+  // ① 构造期给的键（端口派生）—— 来源是 `port.session`
+  const port = createOverridePort({});
   await assert.rejects(
-    assemblyPortOptions(port, { todoStateProvider: { read: async () => ({}) } }),
+    assemblyPortOptions(port, { session: { id: "override-session" } }),
     (error) => error instanceof TypeError
-      && error.message === OVERRIDE_CONFLICT("todoStateProvider", "port.policy.todoStateProvider"),
+      && error.message === OVERRIDE_CONFLICT("session", "port.session"),
+  );
+  // ①-a #545 的反向钉：`policy` 现在**没有**任何一个名字能被覆盖通道点名（叶子全进了 config，
+  // 容器走容器闸口）⇒ 这条来源在 policy 侧正式关闭，不是被静默绕过。
+  assert.throws(
+    () => createOverridePort({ policy: { todoStateProvider: { read: async () => ({}) } } }),
+    (error) => error instanceof TypeError
+      && error.message.startsWith('unknown assembly policy option: "todoStateProvider"'),
+    "policy 只收数据：能力名当场拒",
   );
   // ①-b 反向钉：`completion` 的扁平写法已退役 ⇒ 调用期覆盖撞的是**名称闸口**，冲突闸口测不到它了。
   // 文案逐字钉（与下面 `runId` 同一条派生：覆盖闭集 = `RUN_TOOL_LOOP_OPTION_NAMES`，不是手抄）。
@@ -378,10 +389,18 @@ test("键集自证：构造期产出的每一个键都在冲突闸口内（从�
   // 探针自证：这批键真的是构造期产出的（不是空循环恒绿）。
   // #544：`runId` / `initialMessages` 已不在产物里（它们成为 `config` 树的叶子），所以这里点名
   // `config`——端口自己的拼写就是那个容器，容器里的叶子由 `config` 的名称闸口管。
-  for (const expected of ["provider", "tools", "executeTool", "store", "config", "session", "onEvent", "maxRounds", "maxTokens"]) {
+  for (const expected of ["provider", "tools", "executeTool", "store", "config", "session", "onEvent"]) {
     assert.ok(produced.includes(expected), `${expected} 必须出现在构造期产物里`);
   }
   assert.equal(produced.includes("runId"), false, "#544：扁平 runId 不再出现在构造期产物里");
+  // #545：配置叶子也不再是扁平键（`policy.maxRounds` → `config.run.maxRounds`），所以「构造期产出
+  // 了哪些键」里没有它们——它们由 `config` 那一格承载（见下面的容器分支）。
+  for (const retiredFlat of ["maxRounds", "maxTokens", "temperature", "stream", "replayPolicy"]) {
+    assert.equal(produced.includes(retiredFlat), false, `${retiredFlat} 不该再以扁平名出现在产物里`);
+  }
+  const constructedTree = (await assemblyPortOptions(port)).config;
+  assert.equal(constructedTree.run.maxRounds, 3);
+  assert.equal(constructedTree.tuning.maxTokens, 1000);
   for (const key of produced) {
     if (key === "modelConfig") continue; // 唯一既有例外：自带校验的覆盖通道
     // #544：`config` 是容器（不是「给一个值」的键）⇒ 覆盖它撞的是容器闸口，不是冲突闸口。

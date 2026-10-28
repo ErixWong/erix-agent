@@ -243,7 +243,7 @@ test("P5-b 专项：槽位面同名字段 slots.default.maxTokens 没被本刀�
   assert.equal(sent[1].max_tokens, 123, "槽位面 slots.default.maxTokens 必须仍被接受并送出门");
 });
 
-test("P5-c 旁证：装配口 policy.maxTokens 仍是另一个面（不经过名称闸口，照旧生效）", async () => {
+test("P5-c 旁证：装配口 policy.maxTokens 翻译进 config 树后照旧生效（#545：不再是第二个拼写面）", async () => {
   const provider = createFakeProvider(DONE);
   const port = createAssemblyPort({
     modelConfig: { resolve: async () => ({ contextWindowTokens: 100_000, maxOutputTokens: 1024 }) },
@@ -253,7 +253,10 @@ test("P5-c 旁证：装配口 policy.maxTokens 仍是另一个面（不经过名
     policy: { maxTokens: 1000 },
   });
   const options = await assemblyPortOptions(port);
-  assert.equal(options.maxTokens, 1000, "装配口 policy.maxTokens 必须仍出现在构造期产物里");
+  // #545：`policy` 只收数据，叶子名一律翻译成规范路径（`policy.maxTokens` → `config.tuning.maxTokens`）
+  // ⇒ 值照旧到达引擎，但不再以扁平名出现（那正是「第二拼写面」被关掉的样子）。
+  assert.equal(options.config?.tuning?.maxTokens, 1000, "policy.maxTokens 必须翻译进 config.tuning.maxTokens");
+  assert.equal(Object.hasOwn(options, "maxTokens"), false, "不许再以扁平名出现在构造期产物里");
   // ⚠ 走**宿主真实路径**：把端口交给引擎（`assemblyPort: port`），由引擎自己展开 policy ——
   // 把 `options` 摊回调用期反而会撞名称闸口（那是另一张面：调用期覆盖的键名闭集 = 白名单）。
   // `provider: undefined` 逐字等于「没给」（合并口径 `value !== undefined`），于是端口那份生效。
