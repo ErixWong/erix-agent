@@ -516,11 +516,11 @@ test("中英契约文档引用的 readMoreLines marker 字面与源码产出同�
 //   全树（`src`/`bin`/`examples` 共 91 个 `*.js`）实测的下界也仍是 resume-manager.js 的 4,286 ⇒ 描述里那句 floor 对全树也为真。
 //   ⚠ 代价照 #275 的口径写明：floor 锚点现在钉在一个**本分支正在反复改**的文件上（±2% 只等于 ±7 行 / ±440 字节），
 //     后续再动它的注释仍会红在这里——那是「描述里的数必须是实测值」这个决定的固有代价，不是新 bug。
-//   ⚠ **2026-10-25 起 floor 换到 `bin/provider-timeouts.js`，该文件 ±1 字节敏感**（不是上面那档 ±2% / ±440 字节）：
-//     `#453` 那一格把「描述声称的 floor」与全树实测最小值用 `assert.equal` 钉死（**零容差**，floor 是承诺不是估计），
-//     所以给 `bin/provider-timeouts.js` 加 **1 个字节**（11,888 → 11,889 ⇒ 67.1695 B/line）容量就从 3,903 掉到 3,902 ⇒ 红。
-//     这是「描述里的数必须是实测值」这条决定的**真实代价**，如实写在这里（不是要放宽容差，也不加「git diff 命中该文件就提示」
-//     那种仓内没有先例的守卫）：动了这个文件就按 `measureReadLineCapacity` 复测、同步描述与角色记录值，失败消息会点名修法。
+//   ⚠ **2026-10-25 起 floor 换到 `bin/provider-timeouts.js`；2026-10-26（issue #537）起承诺值不再是逐字节实测值，而是**
+//     **「实测最小值向下取整到 50 行一档」**（`fewest ≥ 3,900 lines`，实测最小值 3,903）。所以该文件不再「±1 字节敏感」：
+//     加 1 个字节（11,888 → 11,889 ⇒ 67.1695 B/line）容量从 3,903 掉到 3,902，**仍落在 3,900 那一档里 ⇒ 不红**（这正是 #537 要拆的税）。
+//     跨档（实测最小值跌出 3,900..3,949，或涨到 3,950 以上）才红：那条断言把承诺值与 `Math.floor(实测 / 50) * 50` 用 `assert.equal`
+//     钉死（**仍是零容差**，锚点从「逐字节」换成「50 行一档」），失败消息会点名修法。
 //
 // ⚠ **2026-10-25 复测（issue #453）：floor 的**口径**错了，不是数字算错。**
 //   #271 以来 `fewest` 钉的是**写死 83 文件样本**的最小值，而描述里那句 floor 读起来是「本仓没有文件比这更少」。
@@ -620,6 +620,18 @@ const READ_LINE_CAPACITY_ROLES = [
   // 描述里 floor 3,938 → **3,903**、均行字节 66.6 → **67.2**、CJK 32% → **45%**、文件名同步（同位数 ⇒ 对本文件字节中性）。
   // `resume-manager.js` 仍是样本里的最小值（3,938）但不再是全树 floor；它不再占角色，仍在样本清单里被中位/极值断言扫到。
   // 容差常量一个都没动。
+  // 2026-10-26 第九刷（issue #537，**这一刷不是数字漂了，是承诺粒度改了**）：
+  //   上面每一次刷都是「实测最小值挪了 ⇒ 描述跟着挪」，于是给最密那个文件加 **1 个字节**就得多刷一次描述
+  //   （承诺值由排版细节决定翻不翻）。#537 把承诺改成 **实测最小值向下取整到 50 行一档**：
+  //   描述写 `fewest ≥ 3,900 lines … (measured minimum 3,903, rounded down to the nearest 50 …)`，
+  //   全称句同步改成 `no file in those three trees reads fewer than 3,900`（比实测更宽 ⇒ 依然为真且不夸大）。
+  //   断言口径也随之改：下面 #453 那格不再 `assert.equal(claim, 实测最小值)`（零容差，但把承诺钉在逐字节噪声上），
+  //   而是 `claim == Math.floor(实测最小值 / 50) * 50`（**仍是零容差**，只把锚点换成 50 行档）+ 一条保守度断言
+  //   `|实测最小值 − claim| ≤ 50`（防承诺长期不刷、漂成过度保守的假小数字）。
+  //   于是实测最小值在 3,900..3,949 这一档里怎么挪都不用动描述；跨档才刷。
+  //   `densest` / `median` / `most` / `self` 四个角色的 ±2% / ±1% 容差机制**一个都没动**（它们量的是单文件漂移，
+  //   与 floor 那个全称命题是两个问题）。本轮只有描述里两个数动（3,903 → 3,900），`self` 行同片复测。
+  //   台账口径：本条计数按 **floor 承诺**的谱系走（#271 起），与上面按文件复测的「第 N 刷」不是同一个计数器。
   { role: "fewest", file: "bin/provider-timeouts.js", recorded: { bytes: 11_888, lines: 177, bytesPerLine: 67.1638, capacity: 3_903, cjkShare: 0.4502 } },
   // CJK 字节占比最高的那一个（2026-10-13 到今一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
   { role: "densest", file: "src/loop/state-view.js", recorded: { bytes: 2_629, lines: 44, bytesPerLine: 59.75, capacity: 4_387, cjkShare: 0.3731 } },
@@ -699,7 +711,12 @@ const READ_LINE_CAPACITY_ROLES = [
   // 自指锚点照旧当场红，按同口径复测：108,261 → **109,959** 字节 / 1,995 → **2,007** 行 / 容量 4,830 → **4,784**
   // （描述里「this tool's own source fits」同步 4,830 → 4,784，同位数 ⇒ 字节中性）。
   // 容量 4,784 仍低于样本中位 6,952，所以「CJK 按比例压低行数」那条断言照旧成立。
-  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 109_959, lines: 2_007, bytesPerLine: 54.7877, capacity: 4_784, cjkShare: 0.2717 } },
+  // 2026-10-26 第九刷（issue #537，同片复测）：描述里 floor 那句改成「实测最小值向下取整到 50」（两处 3,903 → 3,900）
+  // 并在本文件描述段加了一段 #537 复测注，自指锚点照旧挪动，按同口径复测：
+  // 109,959 → **111,133** 字节 / 2,007 → **2,014** 行 / 均行字节 54.7877 → **55.1802** / 容量 4,784 → **4,750**
+  // （描述里「this tool's own source fits」同步 4,784 → 4,750，同位数 ⇒ 字节中性）。
+  // 容量 4,750 仍低于样本中位 6,952，「CJK 按比例压低行数」那条断言仍成立。
+  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 111_133, lines: 2_014, bytesPerLine: 55.1802, capacity: 4_750, cjkShare: 0.274131 } },
 ];
 
 const READ_LINE_CAPACITY_DIRS = ["src", "bin", "examples"];
@@ -801,8 +818,10 @@ test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,00
   assert.match(description, /far more than a single `limit` will ask for/u,
     "「字节上限远大于一次 limit 会要的量」这条行为指导必须在场（#264/#271 共同要治的保守分批）");
 
+  // #537：`fewest` 那一档现在是**向下取整的承诺**（`fewest ≥ 3,900 lines`，实测最小值 3,903），
+  // 所以解析面允许一个可选的 `≥`；均行字节仍然紧跟在括号里（描述内部自洽那一条靠它算）。
   const tiers = description.match(
-    /fewest ([\d,]+) lines \(([\d.]+) bytes\/line[^)]*\), median ([\d,]+) \(([\d.]+)\), most ([\d,]+) \(([\d.]+)\)/u,
+    /fewest\s*(?:\u2265\s*)?([\d,]+) lines \(([\d.]+) bytes\/line[^)]*\), median ([\d,]+) \(([\d.]+)\), most ([\d,]+) \(([\d.]+)\)/u,
   );
   assert.ok(tiers, "描述不再按「fewest / median / most + 各自 bytes/line」给行数容量 → 本测试的解析面失效。"
     + "改句式可以，但必须同步本测试，不许让这条断言静默变成永真。");
@@ -922,12 +941,29 @@ test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,00
 // 缺口现场：#441 带来的 `bin/provider-timeouts.js` 不在写死样本里，容量 3,903 < 样本 floor 3,938，
 // 而当时没有一格会红（描述里那句 floor 对全树已经不是真话，测试只复测样本）。这一格就是补上的那块：
 // 新增文件把真最小值拉低 ⇒ 红；描述里的数字与全树实测对不上 ⇒ 红（不靠 ±2% 容差：floor 是承诺，不是估计）。
+// issue #537（2026-10-26）：承诺**粒度**改了——不再是「逐字节等于实测最小值」，而是
+// 「实测最小值向下取整到 50 行一档」。零容差保留（`assert.equal`），只是锚点从「字节级噪声」换成「50 行档」：
+//   (a) 描述里的承诺值 == `Math.floor(实测最小值 / 50) * 50`（由实测推导，禁止手写常量）；
+//   (b) `|实测最小值 − 承诺值| ≤ 50`（保守度：承诺既不许漂成过度保守的假小数字，也不许高过实测）。
+// 于是同一个 50 行档内实测最小值怎么挪都不需要改描述，跨档才红。
 // ---------------------------------------------------------------------------
-test("readFile 描述里的 floor == 全树真最小值（#453：样本外新文件把下限拉低时，旧断言无感）", () => {
+test("readFile 描述里的 floor == 全树真最小值（#453：样本外新文件把下限拉低时，旧断言无感；#537：承诺粒度 = 向下取整到 50）", () => {
   const description = FILE_TOOL_DEFINITIONS.find((definition) => definition.name === "readFile").description;
-  const claim = Number(description.match(/fewest ([\d,]+) lines/u)[1].replace(/,/g, ""));
-  assert.match(description, /no file in those three trees reads fewer/u,
+  // #537：承诺句带一个可选的 `≥`（`fewest ≥ 3,900 lines`）；解析不到就红，不许静默变成永真。
+  const claimMatch = description.match(/fewest\s*(?:\u2265\s*)?([\d,]+) lines/u);
+  assert.ok(claimMatch, "描述里不再有 `fewest <数字> lines` 这一档 → 本测试的解析面失效（同步本测试，不许让断言静默变成永真）");
+  const claim = Number(claimMatch[1].replace(/,/g, ""));
+  // #537：描述必须**自报这档是怎么来的**（实测最小值 + 取整方式），否则承诺值又退回一个无出处的裸数字。
+  const roundedMatch = description.match(/measured minimum ([\d,]+), rounded down to the nearest (\d+)/u);
+  assert.ok(roundedMatch, "描述不再自报 `measured minimum N, rounded down to the nearest 50`：承诺值会退回「裸数字」口径（#537）");
+  const disclosedMin = Number(roundedMatch[1].replace(/,/g, ""));
+  const roundingStep = Number(roundedMatch[2]);
+  assert.equal(roundingStep, 50, `描述的取整粒度是 ${roundingStep}，与本测试的推导口径（50 行一档）不一致 → 两边一起改`);
+  // 全称句的**下界**也要与承诺值一致（比实测更宽 ⇒ 依然为真且不夸大）。
+  const universalMatch = description.match(/no file in those three trees reads fewer than ([\d,]+)/u);
+  assert.ok(universalMatch,
     "描述不再明写 floor 的口径（`src`/`bin`/`examples` 三棵树的最小值）→ 读者会把它当成本仓任意 `.js` 的下限（#453）");
+  const universalBound = Number(universalMatch[1].replace(/,/g, ""));
 
   const scanned = listShippedSourceFiles().map(measureReadLineCapacity);
   const fewest = scanned.reduce((a, b) => (b.capacity < a.capacity ? b : a));
@@ -940,13 +976,39 @@ test("readFile 描述里的 floor == 全树真最小值（#453：样本外新文
   assert.equal(fewest.capacity, pinned.capacity,
     `${fewest.rel} 容量实测 ${fewest.capacity} 与角色表记录值 ${pinned.capacity} 不同（同一个文件的两份实测对不上）`);
 
-  // 2) 描述声称的 floor 与全树实测**逐字相等**（这一格是「把描述里的数字改错 ⇒ 必红」的硬闸）。
-  assert.equal(claim, fewest.capacity,
-    `描述声称 fewest ${claim} 行，全树实测最小值是 ${fewest.capacity} 行（${fewest.rel}）→ floor 在说谎：`
-    + "偏小 = 白白保守分批，偏大 = 按它估会超预算（#453 要修的正是偏大这一侧）");
+  // 2) #537 (b)：保守度——承诺值必须落在实测最小值的同一个 50 行档里（误差 [0, 50)）。
+  //    写的是带符号差 `实测 − 承诺 ≤ 50` 加上它的镜像（`承诺 − 实测 ≤ 50`，即承诺不许高过实测）：
+  //    前者防「承诺长期不刷、漂成过度保守的假小数字」，后者防「承诺在说谎」。
+  //    ⚠ 这一条排在 (a) 前面：它比 (a) 粗，并且当**实测最小值比承诺低 > 50** 时它是**唯一**能先喊出来的那条
+  //    （反向证：造一个容量 3,8xx 的更密文件并把它钉成 `fewest` 角色 ⇒ 本断言红，失败消息点名修法）。
+  const claimed = Math.floor(fewest.capacity / 50) * 50;
+  const drift = fewest.capacity - claim;
+  assert.ok(Math.abs(drift) <= 50,
+    `描述声称 fewest ${claim} 行，全树实测最小值 ${fewest.capacity} 行（${fewest.rel}），差 ${drift} 行（|差| > 50）`
+    + " → 承诺值必须与实测最小值同档："
+    + (drift > 0
+      ? `承诺偏小 ${drift} 行 = 过度保守的假小数字，把描述里的 ${claim} 改成 ${claimed}`
+      : `承诺偏大 ${-drift} 行 = 承诺在说谎，把描述里的 ${claim} 改成 ${claimed}`));
 
-  // 3) 口径证明（信息性 + 一条恒真的包含关系）：#271 的写死样本只覆盖全树的一部分，它的下界**不低于**全树下界；
-  //    今天样本下界更高（3,938 vs 3,903）—— 这正是 #453 的缺口，也是为什么这一格必须枚举全树而不是复测样本。
+  // 3) #537 (a)：描述声称的承诺值 == **由全树实测最小值推导**的档位（`Math.floor(实测 / 50) * 50`）。
+  //    仍然是 `assert.equal`（零容差），锚点从「逐字节的实测最小值」换成「50 行一档」。
+  assert.equal(claim, claimed,
+    `描述声称 fewest ${claim} 行，但全树实测最小值 ${fewest.capacity} 行（${fewest.rel}）向下取整到 50 行一档是 ${claimed} 行`
+    + ` → 承诺粒度 = 「实测最小值向下取整到 50」：把描述里的 ${claim} 改成 ${claimed}`
+    + "（同一个 50 行档内实测最小值怎么挪都不用改描述；跨档才刷）");
+
+  // 4) #537：描述里自报的 `measured minimum` 与全称句的下界也必须与承诺**同档**（不逐字节钉死：
+  //    实测最小值在同一个 50 行档里挪动时描述不用改；跨档才红）。
+  assert.equal(universalBound, claim,
+    `全称句说「no file … reads fewer than ${universalBound}」而承诺值是 ${claim}：同一段话里两个下界必须一致（#537）`);
+  assert.ok(disclosedMin >= claim && disclosedMin < claim + 50,
+    `描述自报的实测最小值 ${disclosedMin} 不在承诺 ${claim} 的那一档（[${claim}, ${claim + 50})）里 → 两个数互相矛盾（#537）`);
+  assert.ok(Math.abs(disclosedMin - fewest.capacity) <= 50,
+    `描述自报的实测最小值 ${disclosedMin} 与当场实测 ${fewest.capacity}（${fewest.rel}）差 ${disclosedMin - fewest.capacity} 行（|差| > 50）`
+    + ` → 自报值已不在实测的同一档里：把描述里的 measured minimum 改成 ${fewest.capacity}（同一个 50 行档内不用逐字节刷）`);
+
+  // 5) 口径证明（信息性 + 一条恒真的包含关系）：#271 的写死样本只覆盖全树的一部分，它的下界**不低于**全树下界；
+  //    今天样本下界更高（3,953 vs 3,903）—— 这正是 #453 的缺口，也是为什么这一格必须枚举全树而不是复测样本。
   const sampleRows = READ_LINE_CAPACITY_SAMPLE.map(measureReadLineCapacity);
   const sampleFewest = sampleRows.reduce((a, b) => (b.capacity < a.capacity ? b : a));
   assert.ok(sampleFewest.capacity >= fewest.capacity,
@@ -965,6 +1027,10 @@ test("readFile 描述里的 floor == 全树真最小值（#453：样本外新文
     pinnedFewest: { file: pinned.rel, capacity: pinned.capacity },
     pinnedSampleFewest: { file: sampleFewest.rel, capacity: sampleFewest.capacity },
     claim,
+    claimed: Math.floor(fewest.capacity / 50) * 50,
+    disclosedMin,
+    universalBound,
+    drift: fewest.capacity - claim,
   }));
 });
 
@@ -974,7 +1040,7 @@ test("readFile 描述里的 floor == 全树真最小值（#453：样本外新文
 // 「有人新增了一个普通的 `.js`」而红——旧写法 `assert.deepEqual(盘上枚举, 写死清单)` 正是在这里给全仓加税：
 // 红的是一个测 readFile 额度的文件，而改的人往往不知道为什么红。
 // 单调性说明：本格的阈值是**松的**（旧文案的 3,000），普通新增（平均行字节不超过约 87B）不会碍它；
-// 真正「新文件把 floor 拉低」的硬闸在上一格（`floor == 全树真最小值`，#453），这一格只守旧文案那档底线。
+// 真正「新文件把 floor 拉低」的硬闸在上一格（`承诺值 == 全树真最小值向下取整到 50`，#453/#537），这一格只守旧文案那档底线。
 // ---------------------------------------------------------------------------
 
 test("readFile 行数容量：全仓扫描只留单调性质与信息性输出，新增一个文件不得变红（#275）", () => {
@@ -984,7 +1050,7 @@ test("readFile 行数容量：全仓扫描只留单调性质与信息性输出�
     `盘上 ${READ_LINE_CAPACITY_DIRS.join("/")} 的 *.js 只剩 ${scanned.length} 个，比 #271 的写死样本（${READ_LINE_CAPACITY_SAMPLE.length}）还少`
     + " → 有样本文件被删除，描述里的档位要重测（新增不会走到这条）");
   // 单调性质 2：全树实测下界仍不得跌进 #264 旧文案那档（阈值取旧下界 3,000 而不是描述声称的 floor，
-  // 就是为了让新增宽容件不红；「描述 floor == 全树下界」的硬闸在上一格）。
+  // 就是为了让新增宽容件不红；「承诺值 == 全树下界向下取整到 50」的硬闸在上一格）。
   const fewest = scanned.reduce((a, b) => (b.capacity < a.capacity ? b : a));
   const densest = scanned.reduce((a, b) => (b.cjkShare > a.cjkShare ? b : a));
   assert.ok(fewest.capacity > 3_000,

@@ -925,18 +925,25 @@ export const FILE_TOOL_DEFINITIONS = [
     //   `median` / `most` 仍是写死样本口径（样本中位 6,952 与全树中位 6,517 不同；中位是典型值，随新增文件漂移
     //   会给全仓加税，所以描述里**明写**这两个数来自固定样本）。`densest` 照旧钉样本最密（state-view 37.31%），
     //   全树最密现在也是 floor 那个文件（45.02%）—— 该差异由 `anchorsStillHold.densestIsThePinnedOne: false` 如实报告。
+    // ⚠ 2026-10-26 第九刷（issue #537，**这一刷不是数字漂了，是承诺粒度改了**）：上面每一次刷都是「实测最小值挪了 ⇒ 描述跟着挪」，
+    //   代价是给最密那个文件（`bin/provider-timeouts.js`，67.1638 B/line）**加 1 个字节**就得再刷一次描述——承诺值被排版细节决定。
+    //   现在承诺改成**实测最小值向下取整到 50 行一档**：描述写 `fewest ≥ 3,900 lines (… measured minimum 3,903, rounded down to the nearest 50, …)`，
+    //   全称句也跟着改成 `no file in those three trees reads fewer than 3,900`（比实测更宽 ⇒ 依然为真且不夸大）。
+    //   效果：实测最小值在 3,900..3,949 这一档里怎么挪都不用改描述；跨档才刷（测试里那条由实测推导的零容差断言管这件事）。
+    //   本轮只有**两个数**动（3,903 → 3,900 两处），`self` 角色行同片复测（描述就在本文件里，改句就挪它自己的字节数）。
     description: "Read a text file by line range. "
       + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` continues after line 200); default 0. "
       + "`limit` is a **line count**, default 200. "
       + "One call returns at most `max_bytes` UTF-8 bytes (default 262144 = 256KB) — the budget is counted in BYTES, so how many "
       + "lines fit is `max_bytes ÷ average bytes per line`: divide the file's byte size by its line count (e.g. `wc -c` ÷ `wc -l`) "
       + "and fold that for the file in hand, instead of assuming a line count. Measured that way on this repo's own `.js` sources "
-      + "under `src/`, `bin/` and `examples/` at the default budget (this codebase, not your tree) \u2014 fewest 3,903 lines "
-      + "(67.2 bytes/line, the widest lines; no file in those three trees reads fewer), median 6,600 (40.0), most 9,407 (27.9). "
-      + "The floor is a whole-tree minimum; median and most come from a fixed sample of those sources and describe that sample, not every file here. "
+      + "under `src/`, `bin/` and `examples/` at the default budget (this codebase, not your tree) \u2014 fewest \u2265 3,900 lines "
+      + "(67.2 bytes/line, the widest lines; measured minimum 3,903, rounded down to the nearest 50, so no file in those three trees reads fewer than 3,900), "
+      + "median 6,600 (40.0), most 9,407 (27.9). "
+      + "The floor is a whole-tree minimum rounded down to a multiple of 50 (a promise, not a per-file estimate); median and most come from a fixed sample of those sources and describe that sample, not every file here. "
       + "Wide lines cut this proportionally and CJK cuts hardest (3 UTF-8 bytes per character): "
-      + "the 3,903 floor is itself a CJK-heavy file (`bin/provider-timeouts.js`, 45% of its bytes are CJK), while the most "
-      + "CJK-dense file in that fixed sample (`src/loop/state-view.js`, 37%) fits 4,387 and this tool's own source fits 4,784. "
+      + "the 3,900 floor is itself a CJK-heavy file (`bin/provider-timeouts.js`, 45% of its bytes are CJK), while the most "
+      + "CJK-dense file in that fixed sample (`src/loop/state-view.js`, 37%) fits 4,387 and this tool's own source fits 4,750. "
       + "Nothing outside this repo "
       + "was measured, so for CJK-heavy code elsewhere fold the formula rather than reusing these numbers. Either way the cap is "
       + "far more than a single `limit` will ask for, so it is rarely what stops you. "
