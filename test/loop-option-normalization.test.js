@@ -200,10 +200,11 @@ const OPTION_WHITELIST = [
   // `test/loop-input-slice-498s3c.test.js` P4.
   "tools",
   "outputHygiene",
-  "writeToolNames",
-  "writeToolPathKeys",
+  // #498 S3 (`run` slice A11): `writeToolNames` / `writeToolPathKeys` / `replayPolicy` /
+  // `invalidArguments` left the allowlist — their canonical home is `config.run.*`. The copy tracks
+  // the source list verbatim (that is exactly what A0 checks), so they are gone here too; the flat
+  // spellings are now **rejection** cells, see `test/loop-run-slice-498s3a11.test.js`.
   "executeTool",
-  "replayPolicy",
   "partialPersistence",
   "maxRounds",
   // #498 S3 (`tuning` slice): `cacheCapable` left the allowlist — its canonical home is
@@ -266,8 +267,8 @@ const OPTION_WHITELIST = [
   "deliverables",
   // issue #386 切片 3：预算类停机上的补跑开关（默认 `false`）。
   // #498 S3 (`guard` slice): it left the allowlist too — canonical home `config.guard.finalGuardExtend`.
-  // issue #409 需求②：引数解析失败时的裁决（默认 `"reject"`）。同样追加在末尾。
-  "invalidArguments",
+  // issue #409 需求②：引数解析失败时的裁决（默认 `"reject"`）。
+  // #498 S3 (`run` slice A11): it left the allowlist too — canonical home `config.run.invalidArguments`.
   // issue #470-D：折叠替代物的强制投递出口。**这一项此前漏在这份内联副本里**（源名单 65 项、
   // 副本 64 项，两边都「自洽」所以没人红）——issue #497 顺手补齐，副本从此与源名单逐项相等。
   "onFoldSummary",
@@ -347,8 +348,11 @@ const SUGGESTION_MATRIX = [
   { key: "zzzRounds", distance: 3, threshold: 3, suggested: "maxRounds", note: "长度 9：阈值放大到 3" },
   // #498 S3：这一行原来用 `toolResultTxxx` → `toolResultTtl`，而后者已随 `folding` 切片离开白名单
   // （建议候选池 = 白名单，删了键就不再是候选）。换一个**仍在白名单里**的 14 字键，钉的是同一条
-  // 分支：长度 14 ⇒ 阈值 ⌊14/3⌋ = 4，距离 3 落在阈内 ⇒ 必须给建议。
-  { key: "writeToolPathK", distance: 3, threshold: 4, suggested: "writeToolPathKeys", note: "长度 14：阈值 4，距离 3 在阈内" },
+  // 分支：长度 14 ⇒ 阈值 ⌊14/3⌋ = 4，距离落在阈内 ⇒ 必须给建议。
+  // #498 S3（`run` 片 A11）：上一版用的是 `writeToolPathK` → `writeToolPathKeys`，而后者本片退役 ⇒
+  // 候选池里再没有它。换成 `tsallDetection` → `stallDetection`（长度 14 ⇒ 阈值仍是 4，距离 2），
+  // 钉的**是同一条分支**：阈值由 ⌊len/3⌋ 放大到 4，不是 `Math.max(2, …)` 的下限档。
+  { key: "tsallDetection", distance: 2, threshold: 4, suggested: "stallDetection", note: "长度 14：阈值 4，距离 2 在阈内" },
   // #498 S3：这一行原来用 `finalGuardTimout` → `finalGuardTimeoutMs`，而后者已随 `guard` 切片离开
   // 白名单（建议候选池 = 白名单，删了键就不再是候选）。换一个**仍在白名单里**的 16 字键，钉的是同
   // 一条分支：长度 16 ⇒ 阈值 ⌊16/3⌋ = 5，距离 3 落在阈内 ⇒ 必须给建议。
@@ -385,11 +389,14 @@ const TIE_MATRIX = [
   // #498 S3 (`tuning` A5) 这一行原来用 `too` → {tools, topP}，`topP` 退役后换成
   // `tos` → {tools, task}。**#498 S3 A9**：`task` 也退役了，现役池里再没有能与 `tools` 平局的样本
   // （与 `modls` 那一行同一份穷举实测）⇒ 这一行**删掉**，不造假平局。
+  // #498 S3（`run` 片 A11）：这一行原来是 `writeToolPath` → {writeToolNames, writeToolPathKeys}，
+  // 两个候选本片一起退役 ⇒ 平局样本失效。换成穷举实测找到的 `toore` → {tools, store}（距离 2、
+  // 阈值 2，两个候选严格等距）：`store` 字典序更小，但 `tools` 在白名单里更靠前 ⇒ 必须建议 `tools`。
   {
-    key: "writeToolPath",
-    tied: ["writeToolNames", "writeToolPathKeys"],
-    expected: "writeToolNames",
-    note: "最接近真实打错的键名：距离 4，阈值恰为 4",
+    key: "toore",
+    tied: ["tools", "store"],
+    expected: "tools",
+    note: "距离 2、阈值 2：store 字典序更小，但 tools 在白名单里更靠前",
   },
   // #498 S3 A6 这一行原来用 `strtem` → {system, stream}，`system` 退役后换成 `modls` →
   // {tools, model}。**#498 S3 A9**：`model` 也退役了，而现役池里已经没有能与 `tools` 平局的样本

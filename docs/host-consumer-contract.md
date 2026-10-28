@@ -25,13 +25,13 @@ must be placed in an explicit namespace such as `toolContext` or
 
 ```text
 assemblyPort, provider, system, wrapup, tools,
-writeToolNames, writeToolPathKeys, executeTool, maxRounds,
+executeTool, maxRounds,
 reflection, stallDetection,
 completion, finalGuard,
 maxTokenContinuations,
 todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, expert, session, requestId,
-toolContext, store, persistence, runId, cwd, deliverables, invalidArguments, resume, onRound, onJudge,
+toolContext, store, persistence, runId, cwd, deliverables, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
 onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, config,
 capabilities
@@ -840,6 +840,66 @@ now gets neither a suggestion nor a home, just the bare unknown-option sentence 
 | `context.expert` / `.requestId` / `.toolContext` (the fold-context shell) | `src/loop/budget.js` (`toolContextFor`'s `?? context?.<key>` fallback chain) | **untouched** — the fallback chain still works, and an explicit `config.metadata.*` value still wins over it (P5-b) |
 | tool context handed to `executeTool` / the judge brief | the `toolContextFor` helper in `src/loop/budget.js`, handed over by `src/loop/orchestrator.js` | **untouched** — that is the engine's *read* side |
 | model-slot window numbers (`slots.default.contextWindowTokens` / `maxOutputTokens`) | `src/config/slot-provider.js` | **untouched** — a config file is not a `runToolLoop` option |
+
+**Flat-spelling version policy for the `run` group's A11 segment** (issue #498 S3, the eleventh
+slice — the group's *small four*: `invalidArguments`, `replayPolicy`, `writeToolNames`,
+`writeToolPathKeys`):
+
+| release | writing `invalidArguments` / `replayPolicy` / `writeToolNames` / `writeToolPathKeys` |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
+| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, eleventh slice) | **rejected on the spot** — write `config.run.invalidArguments` / `.replayPolicy` / `.writeToolNames` / `.writeToolPathKeys`. The name gate throws `unknown runToolLoop option: "invalidArguments" (its canonical home is config.run.invalidArguments; the flat spelling is rejected)` |
+
+The slice was sized **before** it was written, and that measurement is why it needed no fixture: with
+only one key removed from the allowlist the full suite went red in **4 cells for `invalidArguments`,
+9 for `replayPolicy`, 6 for `writeToolNames`, 5 for `writeToolPathKeys`** (sum 24; all four removed
+together **14** ⇒ 10 cells overlap), far below the ~150-cell threshold that would have required a
+#521-style translation point in the shared fixture. Every write point moved to its canonical home in
+the same commit.
+
+**The reachability check ran before any key was removed**, because two earlier slices (`tools` in
+#527, `session` in #531) were stopped by exactly this step: a shape that is *flat-reachable but
+nested-unreachable* would have narrowed the surface silently. All eight legal value shapes went
+through the real `runToolLoop` entry, flat versus nested, and both sides exited 0 in every case:
+
+| key | legal shape(s) | flat | nested |
+| --- | --- | --- | --- |
+| `invalidArguments` | `"reject"` / `"execute"` | exit 0 / 0 | exit 0 / 0 |
+| `replayPolicy` | `"always-replay"` / `"per-tool-declaration"` | exit 0 / 0 | exit 0 / 0 |
+| `writeToolNames` | `["work"]` / `[]` | exit 0 / 0 | exit 0 / 0 |
+| `writeToolPathKeys` | `["path", "file_path"]` / `[]` | exit 0 / 0 | exit 0 / 0 |
+
+So all four are **data-shaped keys** (two enum scalars, two string arrays), none is a mixed shell, and
+none was returned. The one delta the check did find sits on an **illegal** shape: an array carrying a
+function element used to be *silently filtered* flat (the name-set normaliser keeps strings only) and
+is now **refused** at the canonical home (the `config` subtree holds data only). That is the same
+narrowing the A8 slice pinned for `metadata.*`, and it is pinned as-is rather than papered over —
+`test/loop-run-slice-498s3a11.test.js` (F2) is that pin. It is not a lost capability: the engine never
+calls those elements, it only reads the string entries.
+
+Two properties hold, both machine-checked (`test/loop-run-slice-498s3a11.test.js`):
+
+* the expansion phase still writes each of them onto `effectiveOptions.invalidArguments` /
+  `.replayPolicy` / `.writeToolNames` / `.writeToolPathKeys`, so **the engine's read side is
+  unchanged** — the readers are the invalid-arguments verdict and the resume replay branch in
+  `src/loop/orchestrator.js`, the name-set normaliser in `src/loop/budget.js` and the write-path key
+  picker in `src/reflection/judge.js`, none of which was touched. The leaves stay in
+  `CONFIG_NAMESPACE_SCHEMA.run` even though the top-level keys left
+  `RUN_TOOL_LOOP_OPTION_NAMES`: deleting the flat key is **not** deleting the leaf (P2/P3);
+* the rejection message names **one station and only one**. Nothing is registered for these four names
+  in `CAPABILITY_SLOT_DESTINATIONS` (`src/loop/capabilities-namespace.js`), so the message carries
+  **no** `capabilities.*` hint (N1) — derived, not promised.
+
+**These four words live on other planes, and this slice moved none of them:**
+
+| name | other plane | evidence | moved? |
+| --- | --- | --- | --- |
+| `writeToolNames` / `writeToolPathKeys` | the judge's *read* side: the write-tool set and the path-key priority that produce `filesWritten` | `src/reflection/judge.js` (`rawWritePath` / `rawWritePaths`), `src/loop/termination.js` | **no** — read side (R3/R4, N3) |
+| `replayPolicy` | the tool-declaration switch `replay: "safe" \| "unsafe"` on each tool entry (a *different* key, rejected with its own message) | `src/loop/orchestrator.js`, `test/loop-resume.test.js` | **no** |
+| `replayPolicy` | the `session.resume` ruling (#531: `session` is a third-station member, `config.metadata.session` is a closed door) | `src/loop/config-namespace.js`, `test/loop-metadata-keys-slice-498s3a9.test.js` | **no** — untouched (N2) |
+| `invalidArguments` | the arguments-repair pipeline and the parser verdict text | `src/messages/tool-arguments.js`, `src/text/repair-json.js` | **no** — read side (R1) |
+| `maxTokenContinuations` | **not** the retired `maxTokens` (a `tuning` group key, retired by A5); two different knobs | `CONFIG_NAMESPACE_SCHEMA.run` vs `.tuning` | **no** (N4) |
 
 ### The `capabilities` namespace (issue #498)
 

@@ -916,7 +916,8 @@ export function toolResultEnvelopeContract(label, getEntry) {
       store,
       runId,
       completion: false,
-      replayPolicy: "per-tool-declaration",
+      // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役，规位是 `config.run.replayPolicy`。
+      config: { run: { replayPolicy: "per-tool-declaration" } },
       executeTool: async () => "should not run",
       onEvent: (event) => events.push(event),
     });
