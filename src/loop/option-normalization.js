@@ -141,10 +141,28 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // The engine's read side is unchanged: it still reads `effectiveOptions.tools`.
   "tools",
   "outputHygiene",
-  "writeToolNames",
-  "writeToolPathKeys",
+  // #498 S3 (`run` slice, segment A11): `writeToolNames` / `writeToolPathKeys` / `replayPolicy` /
+  // `invalidArguments` left the allowlist here. Their canonical home is `config.run.*`
+  // (`CONFIG_NAMESPACE_SCHEMA.run` in `src/loop/config-namespace.js`), and the expansion phase writes
+  // them back onto `effectiveOptions.writeToolNames` / `.writeToolPathKeys` / `.replayPolicy` /
+  // `.invalidArguments` — so every engine-side reader is unchanged (`normalizeToolNameSet` in
+  // `src/loop/budget.js`, the write-path key picker in `src/reflection/judge.js`, the resume replay
+  // branch and the invalid-arguments verdict in `src/loop/orchestrator.js`). Only the *write*
+  // spelling moved: the flat four are rejected at the name gate, and the message names the new home.
+  //
+  // The gate-2 reachability check ran all eight legal value shapes through the real `runToolLoop`
+  // (two enum literals each for the two policy keys, one non-empty and one empty array for the two
+  // name lists): every shape is **flat-accepted and nested-accepted** (exit 0 on both sides), so no
+  // key was returned. The one delta it did find is *not* a legal shape: an array that carries a
+  // function element is silently filtered flat (`normalizeToolNameSet` drops non-strings) and refused
+  // nested (the config subtree holds data only) — the same intended narrowing the A8 slice pinned for
+  // `metadata.*`, not a lost capability: the engine never calls those elements.
+  //
+  // Single-key red-cell measurement (one entry removed, full suite): `invalidArguments` 4,
+  // `replayPolicy` 9, `writeToolNames` 6, `writeToolPathKeys` 5 (sum 24); all four removed together
+  // is 14 ⇒ overlap 10. Every count is far below the ~150 fixture-level threshold, so this slice
+  // needs no #521-style translation point.
   "executeTool",
-  "replayPolicy",
   "partialPersistence",
   "maxRounds",
   // #498 S3 (`tuning` slice): `cacheCapable` left the allowlist. Its canonical home is
@@ -233,8 +251,9 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // and the expansion phase writes it back onto `effectiveOptions.finalGuardExtend`.
   // issue #409 需求②：`invalidArguments` 决定「工具引数解析失败时要不要执行该工具」。
   // 默认 `"reject"`（不执行 + 把解析器原判词作为 `is_error` 的 `tool_result` 回给模型），
-  // `"execute"` 是显式回退（行为逐字等于 #409 之前）。同样追加在末尾，理由同上。
-  "invalidArguments",
+  // `"execute"` 是显式回退（行为逐字等于 #409 之前）。
+  // #498 S3 (`run` slice A11): the flat spelling left the allowlist — its home is
+  // `config.run.invalidArguments` (see the note where it used to sit, above `executeTool`).
   // issue #470-D：`onFoldSummary` 是折叠替代物（`record.foldedFacts`）的**强制投递出口**。
   // 纯加法（默认未传 = 今天的行为）。同样追加在末尾：旧未知键的「did you mean」建议逐字不变。
   "onFoldSummary",

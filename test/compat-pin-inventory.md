@@ -5,6 +5,20 @@
 >
 > 本文件随 `test/` 落盘、**不进 npm 包**（`package.json` 的 `files` 没有它）。
 >
+> ⚠ **附表口径刷新（#498 S3 第十一片 `run` 组 A11：小四件删键，本片）**：附表 **1324 → 1342**
+> （净 +18，行数 114 → 115）、主表 **170 → 170**（不变，行数 23 → 23）。这 18 点**全部来自本片新增的
+> 切片钉子文件** `test/loop-run-slice-498s3a11.test.js`（`completion`×7 / `wrapup`×7 / `reflection`×2 /
+> `context`×1 / `tools`×1 —— 都是搭台写点；它的能力面写点是 **0**，所以主表不受影响）。
+> 本片删的四个顶层扁平键 `invalidArguments` / `replayPolicy` / `writeToolNames` / `writeToolPathKeys`
+> **本来就不在计数口径里**（顶部「生成方式」写明：`writeToolNames` / `writeToolPathKeys` 是字符串数组、
+> 元素不是子键；`invalidArguments` / `replayPolicy` 是标量）⇒ 删键**不改变任何既有行**的归属判断。
+> 实测逐文件零变化：`test/judge.test.js` 122、`test/loop-resume.test.js` 71、
+> `test/loop-config-namespace-497.test.js` 61、`test/loop-option-normalization.test.js` 23、
+> `test/loop-invalid-arguments.test.js` 7 —— 五个被本片改过写侧的文件，计数**一个都没变**
+> （写点从扁平搬进 `config.run.*`，而 `config` 是容器、数到就停）。
+> 复跑：`node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
+> （主表 170 / 附表 1342 都是 AST 实测）。
+>
 > ⚠ **附表口径刷新（#531 `session` 立为第三站：拆掉 `config.metadata.session` 叶子，本片）**：
 > 附表 **1324 → 1324**（净 ±0，行数 114 → 114）、主表 **170 → 170**（不变，行数 23 → 23）。
 > 净 ±0 是两笔的差，方向相反、恰好抵消：
@@ -205,6 +219,7 @@
 | `test/loop-guard-slice-498s3e.test.js` | 1 | #498 S3 `guard` 片的**选项面钉**：三个数据键的旧名反向拒绝（逐字文案 + 新家路径）、混装壳只点一站、**`finalGuard` / `finalGuardVerdict` 没被本刀动过**（P5）、三向闭合与 schema 自检、禁手抄键数（A2 扫全 `test/`） |
 | `test/loop-tuning-keys-slice-498s3a5.test.js` | 0（容器/白名单面） | #498 S3 `tuning` A5 片的**选项面钉**：三个采样/预算键的旧名反向拒绝（逐字文案 + 新家路径）、混装壳只点一站、**`maxTokenContinuations` 与槽位面同名字段没被本刀动过**（P5，另加装配口 `policy.maxTokens` 与 provider 请求字段两个旁证面）、三向闭合与 schema 自检、禁手抄键数（A2 扫全 `test/`）。**能力面 0 写点**（它不碰任何 `on*` 回调），所以本表这一行是 `0` 而不是数字 |
 | `test/loop-input-keys-slice-498s3a6.test.js` | 0（容器/白名单面） | #498 S3 `input` 组 A6 片的**选项面钉**：`system` 的旧名反向拒绝（逐字文案 + 新家路径 + 数据键里的函数值只点一站）、**`tools` 的闸口二 as-is 钉（G1–G4：函数成员扁平可达 / 规位不可达，两个协议投影都不带它）**、**#527 的闭门钉（G2/G5：`config.input.tools` 作为未知叶子当场拒，文案指向顶层第三站）**、`wrapup` 退回清单的机器派生（S 段）、四向闭合与 schema 自检、禁手抄键数（A2 扫全 `test/`）。**能力面 0 写点**（它不碰任何 `on*` 回调），所以本表这一行是 `0` 而不是数字 |
+| `test/loop-run-slice-498s3a11.test.js` | 0（容器/白名单面） | #498 S3 `run` 组 A11 片的**选项面钉**：小四件的旧名反向拒绝（逐字文案 + 新家路径）、**闸口二八格矩阵（合法形状扁平/规位两侧 exit 0，数组夹函数那一格 as-is）**、数据键里的函数值只点一站、**读侧不动**（引数裁决 / resume 重放 / judge 的写工具集与路径键优先级）、`session` #531 裁决与 `maxTokenContinuations` 撞名归属、四向闭合与 schema 自检、禁手抄键数（A3 扫全 `test/`）。**能力面 0 写点**（它不碰任何 `on*` 回调），所以本表这一行是 `0` 而不是数字 |
 | `test/loop-context-on-fold-summary-retired-499.test.js` | 8 | #499 的**范围钉**：`context.onFoldSummary` 退役、**顶层扁平 `onFoldSummary` 必须还在**（它 `import` 了 `RUN_TOOL_LOOP_OPTION_NAMES` 并断言 `includes("onFoldSummary")`）⇒ S9 之前这里必须保持扁平 |
 
 
@@ -413,7 +428,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `MIGRATE · S7c`（**本刀已迁完 90 点中的 87**；另 3 点重分类，见下条） | 17 | 0 |
 | `MIGRATE · 含 COMPAT-PIN 格`（迁搭台写点，**逐格**跳过选项面断言） | 3 | 38 |
 | `MIGRATE · NOT-OPTION-SURFACE`（重分类：不是 `runToolLoop` 选项面，**没有规位**） | 9 | 31 |
-| `COMPAT-PIN` | 9 | 67 |
+| `COMPAT-PIN` | 10 | 67 |
 | `OWNED-BY-S5` | 5 | 13 |
 | `OWNED-BY-S6` | 5 | 21 |
 | **合计（现在实测）** | **64** | **170** |
@@ -657,6 +672,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/sessions.test.js` | 16 | `session`×16 |
 | `test/loop-abort-terminal-priority.test.js` | 15 | `reflection`×5, `stallDetection`×5, `completion`×4, `judgeProvider`×1 |
 | `test/loop-metadata-keys-slice-498s3a8.test.js` | 16 | `tools`×6, `modelMetadata`×3, `completion`×2, `session`×2, `wrapup`×2, `context`×1 |
+| `test/loop-run-slice-498s3a11.test.js` | 18 | `completion`×7, `wrapup`×7, `reflection`×2, `context`×1, `tools`×1 |
 | `test/loop-metadata-keys-slice-498s3a9.test.js` | 19 | `completion`×4, `session`×4, `wrapup`×4, `context`×3, `reflection`×2, `tools`×2 |
 | `test/loop-fold-context-knobs-469.test.js` | 14 | `strategy`×6, `context`×3, `session`×2, `tools`×2, `completion`×1, `wrapup`×1 |
 | `test/loop-on-fold-summary.test.js` | 12 | `onFoldSummary`×11, `context`×4, `tools`×3, `completion`×2, `onPersistenceError`×2, `stallDetection`×2, `wrapup`×2, `session`×1 |

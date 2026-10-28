@@ -31,8 +31,10 @@ test("replay policy and tool declarations reject unsupported values", async () =
     }),
     /tools\[0\]\.replay must be "safe" or "unsafe"/u,
   );
+  // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役 ⇒ 取值校验走规位 `config.run.replayPolicy`。
+  // 仍写扁平的话，这一格撞的是名称闸口（`unknown runToolLoop option`），取值校验就没人测了。
   await assert.rejects(
-    runToolLoop({ ...options, replayPolicy: "sometimes" }),
+    runToolLoop({ ...options, config: { run: { replayPolicy: "sometimes" } } }),
     /replayPolicy must be "always-replay" or "per-tool-declaration"/u,
   );
   for (const partialPersistence of [
@@ -482,7 +484,8 @@ test("per-tool replay policy replays safe pending tools", async () => {
     provider,
     resume: true,
     completion: false,
-    replayPolicy: "per-tool-declaration",
+    // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役，规位是 `config.run.replayPolicy`。
+    config: { run: { replayPolicy: "per-tool-declaration" } },
     tools: [{
       name: "safe_work",
       inputSchema: { type: "object" },
@@ -550,7 +553,8 @@ test("per-tool replay policy interrupts unsafe tools and exposes saved partial o
     provider,
     resume: true,
     completion: false,
-    replayPolicy: "per-tool-declaration",
+    // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役，规位是 `config.run.replayPolicy`。
+    config: { run: { replayPolicy: "per-tool-declaration" } },
     tools: [{
       name: "unsafe_work",
       inputSchema: { type: "object" },
@@ -632,7 +636,8 @@ test("升级前记录被中断重放时，不得把过期 attempt 的成败留�
     provider,
     resume: true,
     completion: false,
-    replayPolicy: "per-tool-declaration",
+    // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役，规位是 `config.run.replayPolicy`。
+    config: { run: { replayPolicy: "per-tool-declaration" } },
     tools: [{ name: "unsafe_work", inputSchema: { type: "object" }, replay: "unsafe" }],
     store,
     runId,

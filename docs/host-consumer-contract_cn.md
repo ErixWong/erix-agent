@@ -20,13 +20,13 @@
 
 ```text
 assemblyPort, provider, system, wrapup, tools,
-writeToolNames, writeToolPathKeys, executeTool, maxRounds,
+executeTool, maxRounds,
 reflection, stallDetection,
 completion, finalGuard,
 maxTokenContinuations,
 todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, expert, session, requestId,
-toolContext, store, persistence, runId, cwd, deliverables, invalidArguments, resume, onRound, onJudge,
+toolContext, store, persistence, runId, cwd, deliverables, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
 onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, config,
 capabilities
@@ -699,6 +699,58 @@ unknown config.metadata option: "session" ("session" is a permanent top-level op
 | `context.expert` / `.requestId` / `.toolContext`（fold-context 壳） | `src/loop/budget.js`（`toolContextFor` 的 `?? context?.<key>` fallback 链） | **未动**——fallback 链照旧生效，显式 `config.metadata.*` 仍赢过它（P5-b） |
 | 交给 `executeTool` 的工具上下文 / judge 简报 | `src/loop/budget.js` 里的 `toolContextFor`，由 `src/loop/orchestrator.js` 转交 | **未动**——那是引擎的**读侧** |
 | 槽位窗口数字（`slots.default.contextWindowTokens` / `maxOutputTokens`） | `src/config/slot-provider.js` | **未动**——配置文件不是 `runToolLoop` 选项 |
+
+**`run` 组 A11 段的扁平写法版本口径**（issue #498 S3，第十一片——本组的**小四件**：
+`invalidArguments` / `replayPolicy` / `writeToolNames` / `writeToolPathKeys`）：
+
+| 发行版 | 写 `invalidArguments` / `replayPolicy` / `writeToolNames` / `writeToolPathKeys` |
+| --- | --- |
+| 0.26.0 及更早（最后一个**已发布**版本） | 顶层照收——那些版本只认这个写法 |
+| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「这件事有影响」的那棵树 |
+| 0.28.0 及以后（issue #498 S3，第十一片） | **当场拒**——写 `config.run.invalidArguments` / `.replayPolicy` / `.writeToolNames` / `.writeToolPathKeys`。名称闸口抛 `unknown runToolLoop option: "invalidArguments" (its canonical home is config.run.invalidArguments; the flat spelling is rejected)` |
+
+本片是**先量后写**：只从白名单删一个键、跑全量，实测红格 **`invalidArguments` 4 /
+`replayPolicy` 9 / `writeToolNames` 6 / `writeToolPathKeys` 5**（和 24；四键同删 **14** ⇒ 重叠 10），
+全部远低于「单键 > ~150 格 ⇒ 先落 #521 式夹具级翻译点」的阈值 ⇒ 本片**没有**翻译点，每个写点都在
+同一个 commit 里搬到了规位。
+
+**闸口二（可达性对照）在任何键被删之前先跑过**——因为前面两片（#527 的 `tools`、#531 的
+`session`）正是被这一步拦下的：一个「扁平可达、规位被拒」的形状会把接受面**静默收窄**。
+八格合法取值形状逐个走 `runToolLoop` 真入口，扁平 vs 规位，两侧退出码全为 0：
+
+| 键 | 合法形状 | 扁平 | 规位 |
+| --- | --- | --- | --- |
+| `invalidArguments` | `"reject"` / `"execute"` | exit 0 / 0 | exit 0 / 0 |
+| `replayPolicy` | `"always-replay"` / `"per-tool-declaration"` | exit 0 / 0 | exit 0 / 0 |
+| `writeToolNames` | `["work"]` / `[]` | exit 0 / 0 | exit 0 / 0 |
+| `writeToolPathKeys` | `["path", "file_path"]` / `[]` | exit 0 / 0 | exit 0 / 0 |
+
+所以四个键都是**数据形状**的键（两个枚举标量 + 两个字符串数组），没有一个是混装壳，**一个都没退回**。
+对照里唯一的差异落在**非法形状**上：数组里夹函数元素过去在扁平侧被**静默过滤**（名字集规范化只留
+字符串），现在在规位侧被**当场拒**（`config` 子树只装数据）。这与 A8 为 `metadata.*` 钉下的收窄
+是同一条，钉成 as-is 而不是抹平——`test/loop-run-slice-498s3a11.test.js` 的 F2 就是那颗钉子。
+它不是丢能力：引擎从不调用那些元素，只读字符串项。
+
+两条性质成立，都有机器判据（`test/loop-run-slice-498s3a11.test.js`）：
+
+* 展开相仍逐字写回 `effectiveOptions.invalidArguments` / `.replayPolicy` / `.writeToolNames` /
+  `.writeToolPathKeys`，所以**引擎读侧一行未改**——读侧是 `src/loop/orchestrator.js` 的引数裁决与
+  resume 重放分支、`src/loop/budget.js` 的名字集规范化、`src/reflection/judge.js` 的路径键选取，
+  三个文件都没动。叶子仍留在 `CONFIG_NAMESPACE_SCHEMA.run` 里，尽管顶层键已离开
+  `RUN_TOOL_LOOP_OPTION_NAMES`：**删扁平键 ≠ 删叶子**（P2/P3）；
+* 拒绝文案只点**一站**。这四个名字在 `CAPABILITY_SLOT_DESTINATIONS`
+  （`src/loop/capabilities-namespace.js`）里一条都没登记，所以文案里**没有** `capabilities.*` 提示
+  （N1）——这是派生结果，不是承诺。
+
+**这四个词还活在别的面上，本片一个都没动：**
+
+| 名字 | 另一张面 | 证据 | 动了吗 |
+| --- | --- | --- | --- |
+| `writeToolNames` / `writeToolPathKeys` | judge 的**读侧**：写工具集与路径键优先级，产出 `filesWritten` | `src/reflection/judge.js`（`rawWritePath` / `rawWritePaths`）、`src/loop/termination.js` | **没动**——读侧（R3/R4、N3） |
+| `replayPolicy` | 每个工具项上的重放声明 `replay: "safe" \| "unsafe"`（**另一个键**，有自己的拒绝文案） | `src/loop/orchestrator.js`、`test/loop-resume.test.js` | **没动** |
+| `replayPolicy` | `session.resume` 那条裁决（#531：`session` 是第三站成员，`config.metadata.session` 是闭门） | `src/loop/config-namespace.js`、`test/loop-metadata-keys-slice-498s3a9.test.js` | **没动**（N2） |
+| `invalidArguments` | 引数修复流水线与解析器判词文本 | `src/messages/tool-arguments.js`、`src/text/repair-json.js` | **没动**——读侧（R1） |
+| `maxTokenContinuations` | **不是**已退役的 `maxTokens`（`tuning` 组的键，A5 退役）；两个不同的旋钮 | `CONFIG_NAMESPACE_SCHEMA.run` 与 `.tuning` | **没动**（N4） |
 
 ### capabilities 命名空间（issue #498）
 

@@ -140,7 +140,8 @@ test("invalidArguments: \"execute\" ⇒ 行为逐字等于今天（假对象 + �
   const raw = '{"path": "a.txt"';
   const { events, executed } = await runOnce({
     rawArguments: raw,
-    options: { invalidArguments: "execute" },
+    // #498 S3（`run` 片 A11）：扁平 `invalidArguments` 已退役，规位是 `config.run.invalidArguments`。
+    options: { config: { run: { invalidArguments: "execute" } } },
     // 工具拿假对象必然报错——这正是今天模型看到的二次错误。
     executeTool: ({ input }) => `错误：readFile 缺少 path 参数（收到 ${JSON.stringify(input)}）`,
   });
@@ -157,16 +158,19 @@ test("invalidArguments: \"execute\" ⇒ 行为逐字等于今天（假对象 + �
 });
 
 test("invalidArguments 只认两个字面量：错型当场 TypeError，不静默折成默认值", async () => {
+  // #498 S3（`run` 片 A11）：这一格问的是**取值**校验，所以走规位 `config.run.invalidArguments`
+  // ——扁平写法本片已退役，它现在撞的是名称闸口（那条由切片钉子文件的 P1 逐字钉住），
+  // 留在这里会让「错型被拒」变成「拼写被拒」，判据静默降级。
   for (const bad of ["execute-if-possible", true, null, 0]) {
     await assert.rejects(
       () => runDirect({
         provider: { async chat() { throw new Error("must not be called"); } },
         initialUserMessage: "x",
         executeTool: async () => "ok",
-        invalidArguments: bad,
+        config: { run: { invalidArguments: bad } },
       }),
-      (error) => error instanceof TypeError && /invalidArguments/.test(error.message),
-      `invalidArguments=${JSON.stringify(bad)} 必须被拒`,
+      (error) => error instanceof TypeError && /invalidArguments must be "reject" or "execute"/.test(error.message),
+      `invalidArguments=${JSON.stringify(bad)} 必须被拒（且是取值校验，不是名称闸口）`,
     );
   }
 });
@@ -275,7 +279,8 @@ test("resume：崩溃现场是一条被拒的调用 ⇒ 不补跑，模型看到
       },
       maxRounds: 4,
       completion: false,
-      replayPolicy,
+      // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役，规位是 `config.run.replayPolicy`。
+      config: { run: { replayPolicy } },
     });
 
     // ① 不补跑

@@ -428,12 +428,11 @@ const VALUES = {
   maxTokenContinuations: 2,
   stallDetection: false,
   completion: false,
-  replayPolicy: "per-tool-declaration",
-  invalidArguments: "execute",
+  // #498 S3 (`run` slice A11): `replayPolicy` / `invalidArguments` / `writeToolNames` /
+  // `writeToolPathKeys` are no longer flat top-level keys — they moved to `RETIRED_FLAT_VALUES` below
+  // (their home is `config.run.*`).
   partialPersistence: false,
   outputHygiene: false,
-  writeToolNames: ["writeFile"],
-  writeToolPathKeys: ["path"],
   resume: false,
   stream: false,
   // #498 S3 (`tuning` slice, segment A5): `maxTokens` / `temperature` / `topP` are no longer flat
@@ -516,6 +515,15 @@ const RETIRED_FLAT_VALUES = {
   // #498 S3 A9：`task`——judge 简报 / 工具上下文 / `finalGuard` 的 `taskBrief` 都从展开后的
   // `effectiveOptions.task` 读（`task-brief.js` 只做字符串检查），读侧一行未改。
   task: "task-497",
+  // #498 S3（`run` 片 A11 段）：`run` 组的小四件。两个**枚举标量**（引擎只认两个字面量）、
+  // 两个**名字数组**（`string[]`，元素不是子键）。扁平写法一退役就只剩 `config.run.*` 一个家；
+  // 展开相仍逐字写回 `effectiveOptions.replayPolicy` / `.invalidArguments` /
+  // `.writeToolNames` / `.writeToolPathKeys`（读侧一行未改：resume 重放分支、引数裁决、
+  // judge 的写工具集与路径键优先级）。
+  replayPolicy: "per-tool-declaration",
+  invalidArguments: "execute",
+  writeToolNames: ["writeFile"],
+  writeToolPathKeys: ["path"],
 };
 
 /** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */

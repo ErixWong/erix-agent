@@ -195,8 +195,9 @@ test("counts configured write tools and extracts file_path for judge filesWritte
     executeTool: async () => "written",
     maxRounds: 2,
     completion: false,
-    writeToolNames: ["fs_write"],
-    writeToolPathKeys: ["file_path"],
+    // #498 S3（`run` 片 A11）：扁平 `writeToolNames` / `writeToolPathKeys` 已退役，
+    // 规位是 `config.run.*`（展开相逐字写回 `effectiveOptions.*`，judge 的读侧一行未改）。
+    config: { run: { writeToolNames: ["fs_write"], writeToolPathKeys: ["file_path"] } },
     reflection: {
       enabled: true,
       judgeIntercept: false,
@@ -253,7 +254,7 @@ test("宿主显式传 writeToolNames 时整体替换默认集，edit 不再算�
     executeTool: async () => "已编辑 touched.txt：1 处替换",
     maxRounds: 2,
     completion: false,
-    writeToolNames: ["fs_write"],
+    config: { run: { writeToolNames: ["fs_write"] } },
     reflection: {
       enabled: true,
       judgeIntercept: false,
