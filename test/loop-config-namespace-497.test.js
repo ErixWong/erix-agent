@@ -425,7 +425,7 @@ const VALUES = {
   wrapup: false,
   // #527：`tools` 已拆出配置面（永久顶层面），不再属于这份配置样本。
   maxRounds: 3,
-  maxTokenContinuations: 2,
+  // #498 S3（`run` 片 A14）：`maxTokenContinuations` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
   // #498 S3（`run` 片 A13）：`stallDetection` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
   completion: false,
   // #498 S3 (`run` slice A11): `replayPolicy` / `invalidArguments` / `writeToolNames` /
@@ -539,6 +539,10 @@ const RETIRED_FLAT_VALUES = {
   // 字面量）；展开相仍逐字写回 `effectiveOptions.persistence`（读侧一行未改：`orchestrator.js`
   // 的 `persistenceMode` 派生与 `validateTranscriptStore` 的 required 分支）。
   persistence: "required",
+  // #498 S3 A14（`run` 片）：`maxTokenContinuations` 退役。**标量**键（默认 3）；展开相仍逐字写回
+  // `effectiveOptions.maxTokenContinuations`（读侧一行未改：`orchestrator.js` 的解构默认值
+  // `maxTokenContinuations = 3` 与同轮续写预算分支）。
+  maxTokenContinuations: 2,
 };
 
 /** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */
@@ -614,14 +618,15 @@ test("B3 config 形态真的被引擎读：maxRounds 经 config 生效（不是�
 test("C1 同名时 config 赢，并记一条冲突（规范化层）", async () => {
   const { effectiveOptions, configConflicts } = await normalizeRunToolLoopOptions({
     maxRounds: 9,
-    maxTokenContinuations: 2,
+    stream: false,
     // #498 S3（`tuning` A5）：`temperature` 已退役扁平写法（家 = `config.tuning.temperature`），所以
-    // 「同一个值写两边 ⇒ 不记冲突」这条通道换成一个**仍可扁平写**的配置叶子 `maxTokenContinuations`
-    // （家 = `config.run.maxTokenContinuations`）。它不属于本刀，所以顺带证明本刀没动它。
-    config: { run: { maxRounds: 5, maxTokenContinuations: 2 } },
+    // 「同一个值写两边 ⇒ 不记冲突」这条通道换成一个**仍可扁平写**的配置叶子。A5 那一版用的是
+    // `maxTokenContinuations`，而 A14 把它也退役了 ⇒ 再换一次：`stream`（家 = `config.run.stream`，
+    // 仍是扁平可写的配置叶子）。通道形状一字未变：同一个值写两边不记冲突。
+    config: { run: { maxRounds: 5, stream: false } },
   });
   assert.equal(effectiveOptions.maxRounds, 5, "config.run.maxRounds 覆盖扁平 maxRounds");
-  assert.equal(effectiveOptions.maxTokenContinuations, 2, "值相同时照旧生效");
+  assert.equal(effectiveOptions.stream, false, "值相同时照旧生效");
   assert.deepEqual(configConflicts, [{ path: "run.maxRounds", key: "maxRounds" }], "只有值不同才算冲突");
 });
 

@@ -241,7 +241,10 @@ const OPTION_WHITELIST = [
   // their canonical home is `config.guard.*`. The copy tracks the source list verbatim (that is
   // exactly what A0 checks), so they are gone here too; the flat spellings are now **rejection**
   // cells, see `test/loop-guard-slice-498s3e.test.js`.
-  "maxTokenContinuations",
+  // #498 S3 (`run` slice A14): `maxTokenContinuations` left the allowlist — its canonical home is
+  // `config.run.maxTokenContinuations`. The copy tracks the source list verbatim (that is exactly what
+  // A0 checks), so it is gone here too; the flat spelling is now a **rejection** cell, see
+  // `test/loop-run-slice-498s3a14.test.js`.
   "todoStateProvider",
   "semanticStateProvider",
   "modelConfig",

@@ -837,6 +837,42 @@ R 格断言写在规位里的值逐字到达 `effectiveOptions.partialPersistenc
 G 格就是上面那张闸口二矩阵（`outputHygiene` 与 `persistence` 两行两侧给**同一个** store——没有 store 时
 两侧会因为另一条理由被拒），R 格断言写在规位里的值逐字到达 `effectiveOptions.<key>`，N 格钉住上面四个邻接面。
 
+**`run` 组 A14 段的扁平写法版本口径**（issue #498 S3，第十四片——`maxTokenContinuations`，本组至今
+唯一离开白名单的**标量**成员）：
+
+| 版本 | 顶层写 `maxTokenContinuations` |
+| --- | --- |
+| 0.26.0 及更早（最后一个**已发布**版本） | 顶层接受——那些版本只认这个拼写 |
+| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装过「这件事有影响」的树 |
+| 0.28.0 及以后（issue #498 S3，第十四片） | **当场拒**——改写 `config.run.maxTokenContinuations`。名称闸口抛 `unknown runToolLoop option: "maxTokenContinuations" (its canonical home is config.run.maxTokenContinuations; the flat spelling is rejected)` |
+
+**它是标量，不是数据壳；夹具一行新代码都没加。** 值是数字（默认 `3`），所以闸口二抽查的是两个数字形状
+而不是两个对象形状，结论一样：纯数据、无回调，没有东西要提升到 `capabilities.hooks`。
+
+| 键 | 合法形状 | 扁平侧（改前） | 规位侧（改后） |
+| --- | --- | --- | --- |
+| `maxTokenContinuations` | `0` / `3` | exit 0 / 0 | exit 0 / 0（扁平侧现在 exit 1 / 1） |
+
+A12 落的翻译点（`test/helpers/run-direct.js` 的 `withRunFamily`）本来就服务整个 `run` 组，所以本片只把键
+加进 `RUN_FAMILY_FIXTURE_KEYS`——**没有新增夹具代码**。实测红格：无夹具 **18**、有夹具 **8**、迁完手写点
+**0**。夹具之后剩下的 8 格是内联白名单镜像、两形态等价样本、A5 的 `P5-a` 与 A11 的 `N4`（这两格从「仍在
+白名单」**就地翻成**反向钉——「与 `maxTokens` 不同物」那几条断言一字未动），外加两个 `readFile` 行数容量
+锚点：它们变红只因为删掉一行短白名单键推高了本文件的平均行长（见 A14 切片报告）。
+
+**要点名两次的撞名面：** `maxTokenContinuations` **不是**已退役的 `maxTokens`（`tuning` 组的键，A5 退役）。
+整词 grep `maxTokens` 会把两个都捞出来；它们的家分别是 `CONFIG_NAMESPACE_SCHEMA.run` 与 `.tuning`。A5 钉住了
+这条区分，本片只翻了其中「还在不在白名单」那一半。
+
+**没有搬走的是含义，读侧一行未改。** 展开相仍把这个数字逐字写回 `effectiveOptions.maxTokenContinuations`；
+读它的是 `src/loop/orchestrator.js` 里的同轮续写预算（解构默认值 `maxTokenContinuations = 3` 与
+`continuationExhausted` 分支）。`0` 仍让首个 `max_tokens` 响应即终局（`termination.reason =
+"continuation_exhausted"`），`1` 仍允许再请求一次——这条是**行为**钉，不只是结构钉。叶子仍然留在
+`CONFIG_NAMESPACE_SCHEMA.run` 里，虽然顶层键已经离开 `RUN_TOOL_LOOP_OPTION_NAMES`：删扁平键**不是**删叶子。
+
+钉子文件是 `test/loop-run-slice-498s3a14.test.js`（P：拒绝文案逐字；G：上面那张闸口二矩阵；F：规位里给函数值
+得到「只装数据」那两句；R：值逐字到达 `effectiveOptions` **并且**上面两个终局原因成立；N：`maxTokens` 仍是
+另一个键、本组剩下的六个成员一件没动）。
+
 ### capabilities 命名空间（issue #498）
 
 行为载体不是数据，所以 0.28.0 给它们一个自己的容器。它**有三组**（issue #498 S4b 加了第二组，

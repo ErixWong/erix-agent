@@ -1003,6 +1003,50 @@ verbatim (one station, and only one), its G case is the gate-2 matrix above (the
 a different reason), its R case asserts that a value written at the canonical home arrives at
 `effectiveOptions.<key>` byte for byte, and its N cases hold the four neighbours above.
 
+**Flat-spelling version policy for the `run` group's A14 segment** (issue #498 S3, the fourteenth
+slice — `maxTokenContinuations`, the group's only **scalar** member to leave so far):
+
+| release | writing `maxTokenContinuations` at the top level |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
+| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, fourteenth slice) | **rejected on the spot** — write `config.run.maxTokenContinuations`. The name gate throws `unknown runToolLoop option: "maxTokenContinuations" (its canonical home is config.run.maxTokenContinuations; the flat spelling is rejected)` |
+
+**A scalar, not a data shell — and the fixture needed no new code.** The value is a number (default
+`3`), so gate 2 is two numeric shapes rather than two object shapes; the conclusion is the same: pure
+data, no callback, nothing to promote to `capabilities.hooks`.
+
+| key | legal shapes | flat (before) | nested (after) |
+| --- | --- | --- | --- |
+| `maxTokenContinuations` | `0` / `3` | exit 0 / 0 | exit 0 / 0 (flat now exit 1 / 1) |
+
+The translation point landed by A12 (`withRunFamily` in `test/helpers/run-direct.js`) already serves
+the whole `run` group, so this slice only adds the key to `RUN_FAMILY_FIXTURE_KEYS` — no new fixture
+code. Measured red cells: **18** without the fixture, **8** with it, **0** once the hand-written sites
+were migrated. The 8 that survive the fixture are the inline allowlist mirror, the two-shape
+equivalence sample, A5's `P5-a` and A11's `N4` (both flipped in place from "still on the allowlist" to
+a reverse pin — the "different key from `maxTokens`" assertions are unchanged), plus two `readFile`
+line-capacity anchors that went red only because deleting a short allowlist line raises this file's
+average line length (see the A14 slice report).
+
+**The near-miss worth naming twice:** `maxTokenContinuations` is **not** the retired `maxTokens`
+(a `tuning` group key, retired by A5). Whole-word grepping `maxTokens` finds both; their homes are
+`CONFIG_NAMESPACE_SCHEMA.run` and `.tuning` respectively. A5 pinned that distinction; this slice only
+flipped the "is it still on the allowlist" half of it.
+
+**What did not move is the meaning, and nothing on the read side was touched.** The expansion phase
+still writes the number onto `effectiveOptions.maxTokenContinuations`; the reader is the same-round
+continuation budget in `src/loop/orchestrator.js` (the destructuring default `maxTokenContinuations = 3`
+and the `continuationExhausted` branch). `0` still makes the first `max_tokens` response terminal
+(`termination.reason = "continuation_exhausted"`), `1` still allows one more request — pinned
+behaviourally, not just structurally. The leaf stays in `CONFIG_NAMESPACE_SCHEMA.run` even though the
+top-level key left `RUN_TOOL_LOOP_OPTION_NAMES`: deleting the flat key is **not** deleting the leaf.
+
+The pin file is `test/loop-run-slice-498s3a14.test.js` (P: rejection text verbatim; G: the gate-2
+matrix above; F: a function value at the canonical home gets the two data-only sentences; R: value
+reaches `effectiveOptions` byte for byte **and** the two termination reasons above; N: `maxTokens`
+stays a different key, and the group's six remaining members are untouched).
+
 ### The `capabilities` namespace (issue #498)
 
 Behaviour carriers are not data, so 0.28.0 gives them their own container. It has **three groups**

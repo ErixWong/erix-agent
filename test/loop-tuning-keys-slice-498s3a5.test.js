@@ -163,12 +163,19 @@ test("P4 三个 tuning 数据键没有行为成员 ⇒ 文案只点一站，且�
 // 另加两个旁证面（装配口 `policy.maxTokens`、provider 请求字段），因为「同一个词四张面」正是
 // 这一刀最容易被顺手改错的地方。
 
-test("P5-a 专项：maxTokenContinuations 是另一个键，仍在白名单里且语义一字未变", async () => {
+test("P5-a 专项：maxTokenContinuations 是另一个键，家在 config.run（A14 退役扁平写法后仍是另一个键）", async () => {
   // ① 名字与家：整词 grep `maxTokens` 会把它捞出来，但它属于 `config.run`，不在本刀。
+  // #498 S3 A14：它自己的扁平拼写也退役了（家 = `config.run.maxTokenContinuations`），所以这里从
+  // 「仍在白名单」翻成**反向钉**——两条断言仍然钉住「它与 `maxTokens` 不同物」，只是翻了一面。
   assert.equal(
     RUN_TOOL_LOOP_OPTION_NAMES.includes("maxTokenContinuations"),
-    true,
-    "maxTokenContinuations 必须仍在白名单（它家在 config.run，本刀不许收它）",
+    false,
+    "#498 S3 A14：扁平 maxTokenContinuations 已退役（家 = config.run.maxTokenContinuations）",
+  );
+  assert.equal(
+    RUN_TOOL_LOOP_OPTION_NAMES.includes("maxTokens"),
+    false,
+    "maxTokens 由 A5 退役（两条都在名单外，但家不同：run.* 与 tuning.*）",
   );
   assert.equal(
     configPathForOption("maxTokenContinuations"),
@@ -177,9 +184,11 @@ test("P5-a 专项：maxTokenContinuations 是另一个键，仍在白名单里�
   );
   assert.equal(CONFIG_NAMESPACE_SCHEMA.tuning.includes("maxTokenContinuations"), false, "它不许出现在 tuning 组里");
 
-  // ② 扁平写法仍被接受，且逐字落到 effectiveOptions（没有跟着三个采样键一起被拒）。
-  const { effectiveOptions } = await normalizeRunToolLoopOptions({ maxTokenContinuations: 0 });
-  assert.equal(effectiveOptions.maxTokenContinuations, 0, "扁平 maxTokenContinuations 必须仍被接受");
+  // ② 规位写法逐字落到 effectiveOptions（A14 之后扁平写法被名称闸口拒，见 A14 切片测试的 P1）。
+  const { effectiveOptions } = await normalizeRunToolLoopOptions({
+    config: { run: { maxTokenContinuations: 0 } },
+  });
+  assert.equal(effectiveOptions.maxTokenContinuations, 0, "config.run.maxTokenContinuations 逐字落到 effectiveOptions");
 
   // ③ 行为证据：预算 0 ⇒ 首个 max_tokens 响应即判用尽；预算 1 ⇒ 还能续写一次。
   //    两个值给出两个不同的终局原因，证明这条通路真的还在工作（不是「名字在、没人读」）。
@@ -190,7 +199,7 @@ test("P5-a 专项：maxTokenContinuations 是另一个键，仍在白名单里�
   const exhausted = await runDirect({
     provider: createFakeProvider(script),
     maxRounds: 4,
-    maxTokenContinuations: 0,
+    maxTokenContinuations: 0, // 夹具入参（A14）：翻译进 `config.run.maxTokenContinuations`
   });
   assert.equal(exhausted.termination.reason, "continuation_exhausted", "预算 0 ⇒ 首发即用尽");
   const continued = await runDirect({
