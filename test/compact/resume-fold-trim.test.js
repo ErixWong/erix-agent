@@ -74,13 +74,13 @@ const KEEP_ROUNDS = 1;
 const TOOL_BYTES = 4000;
 
 function loopOptions({ runId, store, strategy, steps, resume = false, budgetTokens = BUDGET_TOKENS }) {
-  return {
+  return { capabilities: { ports: { strategy: strategy } },
     provider: createFakeProvider(steps),
     initialUserMessage: `start ${big(2000)}`,
     executeTool: async ({ input }) => `MARK-r${String(input.step)} ${big(TOOL_BYTES)}`,
     completion: false,
     cacheStablePrefix: false,
-    context: { strategy, budgetTokens, keepRounds: KEEP_ROUNDS },
+    config: { folding: { context: { budgetTokens, keepRounds: KEEP_ROUNDS } } },
     store,
     runId,
     maxRounds: 10,

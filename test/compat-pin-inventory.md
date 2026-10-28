@@ -18,7 +18,14 @@
 >    `onRound` 算一个，`test/loop-usage-accounting.test.js` 的 8 个就是这么来的）；只有落在**已被数过的键
 >    的值**里的不再下钻。
 >
-> 按这五条：**迁移前 388 / S7a 后 351 / S7b 后 256 / S7c 后 169 / 附表 1354 / COMPAT-PIN 66**。复跑命令在
+> 按这五条：**迁移前 388 / S7a 后 351 / S7b 后 256 / S7c 后 169 / 附表 1269 / COMPAT-PIN 66**。复跑命令在
+> ⚠ **附表口径刷新（#498 S3 第二片 `folding` 收尾）**：附表从 **1354 → 1269**（−85，文件数 104 → 106）。
+> 这是**实测**，不是手改：S3 的 `timing` / `folding` 两片把 `retry` / `context` / `toolResultTtl` /
+> `toolResultFoldMinTokens` 的扁平写法从树上摘掉了（写点随写侧迁移一起消失），另外新增两个切片钉子文件
+> 各带 7 个搭台写点。`node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md` **exit=0**，
+> 逐行零误差（主表 169 / 附表 1269 都是 AST 实测）。
+>
+> 按这五条（历史口径）：**迁移前 388 / S7a 后 351 / S7b 后 256 / S7c 后 169 / 附表 1354 / COMPAT-PIN 66**。复跑命令在
 > 文末「复跑方法」，跑出来逐字就是这几个数；**漏掉规则 2/4 会得 390 / 353**（多出来的 2 个写点都藏在
 > 「被数的键的值」里，例如 `test/loop-context-on-fold-summary-retired-499.test.js` 的
 > `context: foldContext({ onFoldSummary })`）。
@@ -50,13 +57,14 @@
 > * **MIGRATE** —— 断言测的是别的机制（折叠 / 持久化 / 预算 / 续跑 / 工具环 / 压缩策略 / 观察者通道…），
 >   扁平键只是**搭台**。按 S7a / S7b / S7c 三片分派。
 
-## 裁决更正（母单 #495，S7b 落账 / S7c 校准）：数据面 **1354** 是 **S3 的硬前置**，不是可选清理
+## 裁决更正（母单 #495，S7b 落账 / S7c 校准）：数据面 **1354**（今 **1269**）是 **S3 的硬前置**，不是可选清理
 
 早先本表在附表与顶部两处写「迁数据面是可选的整洁 / 不在 0.28 路径上 / S9 不需要等它」。**那句作废。**
 
-* **S3（删顶层扁平配置键）在做，并入 0.28 破坏包**；判据已更正为「顶层 **顶层 67 → **24**（S3 之后）→ **13**（S9 之后）——**机器口径，不传 prose 数字**：今天实测 `RUN_TOOL_LOOP_OPTION_NAMES.length === 67` = 配置面有规位 **43** + 能力面有规位 **13** + 无规位 **11**（`assemblyPort` / `provider` / `executeTool` / `todoStateProvider` / `semanticStateProvider` / `modelConfig` / `store` / `diagnostics` / `signal` / `config` / `capabilities`）；S3 只删「配置面有规位」那 43 个 ⇒ 67 − 43 = **24**；S9 再退 11 个扁平 `on*` 回调 ⇒ **13**。⚠ 母单 #495 里那句「65 → 33」是**当时的分类算术**（提交人自己在 2026-10-27 的更正里就是这么定性那句「45 是我的分类算术，仓库里没有可复现依据」），今天按上式重算，**不要再往工单里抄 33****」。
+* **S3（删顶层扁平配置键）在做，并入 0.28 破坏包**；判据已更正为「顶层 **顶层 67 → **24**（S3 之后）→ **13**（S9 之后）——**机器口径，不传 prose 数字**：S3 之前实测 `RUN_TOOL_LOOP_OPTION_NAMES.length === 67`（**S3 的 `timing` + `folding` 两片之后是 61** = 67 − 3 − 3，现场 `node -e` 直读，别抄）= 配置面有规位 **43** + 能力面有规位 **13** + 无规位 **11**（`assemblyPort` / `provider` / `executeTool` / `todoStateProvider` / `semanticStateProvider` / `modelConfig` / `store` / `diagnostics` / `signal` / `config` / `capabilities`）；S3 只删「配置面有规位」那 43 个 ⇒ 67 − 43 = **24**；S9 再退 11 个扁平 `on*` 回调 ⇒ **13**。⚠ 母单 #495 里那句「65 → 33」是**当时的分类算术**（提交人自己在 2026-10-27 的更正里就是这么定性那句「45 是我的分类算术，仓库里没有可复现依据」），今天按上式重算，**不要再往工单里抄 33****」。
   ⚠ **口径修正（#498 S7c）**：本表早先两处写「顶层 65」，那是**没实测**的旧数。实测
   `RUN_TOOL_LOOP_OPTION_NAMES.length === 67`（`node -e` 直读，见「复跑方法」第 6 条）；65 是 #517 之前的快照。
+  **S3 两片之后是 61**（`timing` 三键 + `folding` 三键离开白名单），同样现场派生、不抄数。
 * 今天实测：`RUN_TOOL_LOOP_OPTION_NAMES` **67** 个顶层键，其中 **56 个已有规位**
   （`config.*` / `capabilities.*`），剩 11 个是纯装配/身份键（`provider` / `executeTool` / `store` /
   `signal` / `assemblyPort` / `modelConfig` / `todoStateProvider` / `semanticStateProvider` /
@@ -377,10 +385,12 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 另立单做」——**那句作废**。S3（删顶层扁平配置键）已并入 0.28 破坏包，判据更正为「顶层 **67** → 33」。
 而下面这些写点住的 `context` / `reflection` / `retry` / `wrapup` / `completion` / `session` 等**壳**
 正是 S3 要删的东西 ⇒ **它们是 S3 的硬前置**，不是可选清理：壳删了、写点还按壳写，就是当场红。
-切片方案见文末「数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）」。
+切片方案见文末「数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）」。（那份方案是 S3 之前写的，
+分片数字保留为**历史规划口径**；今天的实测总数是 **1269**，见文末「复跑方法」。）
 
 计数口径与上表同（AST、数到被数的键就停、进了同名壳就停，于是 `context: { strategy }` 只算 `context` 一个）。
-**合计 1354**（= `node /tmp/flat-count.cjs .` 的第二个数；下面 **104** 行逐行相加也是 1354）。
+**合计 1269**（= `node /tmp/flat-count.cjs .` 的第二个数；下面 **106** 行逐行相加也是 1269）。
+（S3 两片之前是 1354 / 104 行；差额与原因见文件头的「附表口径刷新」注。）
 
 ### 数据面键表：从白名单枚举（#498 S7c 扩键，680 → 1354）
 
@@ -422,52 +432,54 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
   「数到被数的键就停」下不再计（`resume` 77→75、`initialMessages` 25→24）。这是**口径的正确行为**
   （壳内叶子不是扁平写点），也是 680 + 677（7 键裸计数）− 3 = 1354 的来源。
 
-### 逐文件明细（104 行 / 1354 点）
+### 逐文件明细（106 行 / 1269 点；S3 前 104 行 / 1354 点）
 
 | 文件 | 写点 | 明细 |
 | --- | --- | --- |
-| `test/judge.test.js` | 128 | `completion`×55, `reflection`×52, `wrapup`×11, `initialMessages`×5, `resume`×2, `stallDetection`×2, `context`×1 |
+| `test/judge.test.js` | 127 | `completion`×55, `reflection`×52, `wrapup`×11, `initialMessages`×5, `resume`×2, `stallDetection`×2, `context`×1 |
 | `test/loop-capabilities-ports-hooks-498s4c.test.js` | 86 | `completion`×20, `wrapup`×20, `context`×13, `retry`×9, `onEvent`×7, `reflection`×6, `initialMessages`×5, `judgeProvider`×3, `sleepImpl`×3, `strategy`×3, `session`×2, `tools`×2 |
-| `test/cli.test.js` | 75 | `session`×36, `prompt`×29, `reflection`×4, `tools`×3, `context`×2, `finalGuard`×2, `completion`×1 |
-| `test/loop-resume.test.js` | 74 | `completion`×33, `resume`×23, `tools`×8, `reflection`×3, `context`×2, `partialPersistence`×2, `wrapup`×2, `initialMessages`×1 |
-| `test/loop-option-gate-496.test.js` | 57 | `context`×31, `completion`×7, `onFoldSummary`×7, `finalGuard`×6, `reflection`×5, `retry`×5, `tools`×3, `deliverables`×2, `session`×2, `partialPersistence`×1, `sleepImpl`×1, `stallDetection`×1, `wrapup`×1 |
-| `test/loop-config-namespace-497.test.js` | 45 | `onEvent`×13, `completion`×11, `wrapup`×11, `tools`×5, `modelMetadata`×3, `session`×3, `context`×2, `finalGuard`×2, `initialMessages`×2, `resume`×2, `retry`×2, `onObserverError`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `stallDetection`×1 |
+| `test/cli.test.js` | 74 | `session`×36, `prompt`×29, `reflection`×4, `tools`×3, `context`×2, `finalGuard`×2, `completion`×1 |
+| `test/loop-resume.test.js` | 72 | `completion`×33, `resume`×23, `tools`×8, `reflection`×3, `context`×2, `partialPersistence`×2, `wrapup`×2, `initialMessages`×1 |
+| `test/loop-option-gate-496.test.js` | 28 | `context`×31, `completion`×7, `onFoldSummary`×7, `finalGuard`×6, `reflection`×5, `retry`×5, `tools`×3, `deliverables`×2, `session`×2, `partialPersistence`×1, `sleepImpl`×1, `stallDetection`×1, `wrapup`×1 |
+| `test/loop-config-namespace-497.test.js` | 47 | `onEvent`×13, `completion`×11, `wrapup`×11, `tools`×5, `modelMetadata`×3, `session`×3, `context`×2, `finalGuard`×2, `initialMessages`×2, `resume`×2, `retry`×2, `onObserverError`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `stallDetection`×1 |
 | `test/loop-resume-anchor.test.js` | 38 | `completion`×8, `stallDetection`×8, `wrapup`×8, `resume`×7, `tools`×6, `partialPersistence`×1 |
-| `test/loop-v020-rc.test.js` | 36 | `completion`×19, `context`×10, `session`×3, `initialMessages`×2, `resume`×1, `stallDetection`×1 |
-| `test/loop-resume-notice.test.js` | 31 | `completion`×11, `tools`×9, `resume`×7, `context`×2, `reflection`×2 |
+| `test/loop-v020-rc.test.js` | 26 | `completion`×19, `context`×10, `session`×3, `initialMessages`×2, `resume`×1, `stallDetection`×1 |
+| `test/loop-resume-notice.test.js` | 29 | `completion`×11, `tools`×9, `resume`×7, `context`×2, `reflection`×2 |
 | `test/loop.test.js` | 31 | `completion`×15, `stallDetection`×12, `reflection`×2, `onToolResult`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-core.test.js` | 24 | `finalGuard`×19, `tools`×14, `strategy`×4, `context`×3, `reflection`×3, `onEvent`×1, `onObserverError`×1 |
-| `test/loop-capabilities-namespace-498.test.js` | 24 | `deliverables`×9, `completion`×5, `onEvent`×5, `wrapup`×5, `finalGuard`×4, `retry`×3, `onRound`×2, `session`×2, `tools`×2, `context`×1, `modelMetadata`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `resume`×1, `stallDetection`×1 |
+| `test/loop-capabilities-namespace-498.test.js` | 28 | `deliverables`×9, `completion`×5, `onEvent`×5, `wrapup`×5, `finalGuard`×4, `retry`×3, `onRound`×2, `session`×2, `tools`×2, `context`×1, `modelMetadata`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `resume`×1, `stallDetection`×1 |
 | `test/loop-option-normalization.test.js` | 23 | `session`×8, `completion`×7, `tools`×5, `wrapup`×3 |
 | `test/reflection.test.js` | 23 | `completion`×12, `reflection`×10, `resume`×1 |
-| `test/judge-record.test.js` | 21 | `reflection`×13, `completion`×5, `context`×2, `session`×1 |
-| `test/integration/memento-scenario.test.js` | 19 | `completion`×4, `reflection`×4, `tools`×4, `wrapup`×4, `context`×3 |
-| `test/loop-guard-extend.test.js` | 19 | `reflection`×13, `context`×3, `outputHygiene`×2, `resume`×1 |
+| `test/judge-record.test.js` | 20 | `reflection`×13, `completion`×5, `context`×2, `session`×1 |
+| `test/integration/memento-scenario.test.js` | 16 | `completion`×4, `reflection`×4, `tools`×4, `wrapup`×4, `context`×3 |
+| `test/loop-guard-extend.test.js` | 16 | `reflection`×13, `context`×3, `outputHygiene`×2, `resume`×1 |
 | `test/loop-persist-engine-text.test.js` | 19 | `reflection`×8, `tools`×6, `resume`×2, `completion`×1, `stallDetection`×1, `wrapup`×1 |
-| `test/messages-identity.test.js` | 19 | `strategy`×12, `context`×3, `completion`×2, `tools`×2 |
-| `test/loop-request-user-invariant.test.js` | 18 | `initialMessages`×6, `completion`×4, `stallDetection`×3, `tools`×3, `context`×1, `resume`×1 |
-| `test/loop-stream.test.js` | 18 | `completion`×5, `partialPersistence`×4, `retry`×4, `wrapup`×4, `resume`×1 |
-| `test/output-aggregate-budget.test.js` | 18 | `outputHygiene`×7, `completion`×4, `context`×4, `reflection`×2, `resume`×1 |
+| `test/messages-identity.test.js` | 17 | `strategy`×12, `context`×3, `completion`×2, `tools`×2 |
+| `test/loop-request-user-invariant.test.js` | 17 | `initialMessages`×6, `completion`×4, `stallDetection`×3, `tools`×3, `context`×1, `resume`×1 |
+| `test/loop-stream.test.js` | 14 | `completion`×5, `partialPersistence`×4, `retry`×4, `wrapup`×4, `resume`×1 |
+| `test/output-aggregate-budget.test.js` | 14 | `outputHygiene`×7, `completion`×4, `context`×4, `reflection`×2, `resume`×1 |
 | `test/output-hygiene.test.js` | 18 | `completion`×7, `outputHygiene`×6, `modelMetadata`×4, `resume`×1 |
 | `test/wrapup.test.js` | 18 | `completion`×11, `reflection`×3, `wrapup`×3, `initialMessages`×1 |
-| `test/loop-context-on-fold-summary-retired-499.test.js` | 17 | `context`×7, `onFoldSummary`×7, `completion`×2, `stallDetection`×2, `tools`×2, `wrapup`×2, `onEvent`×1, `session`×1, `strategy`×1 |
+| `test/loop-context-on-fold-summary-retired-499.test.js` | 16 | `context`×7, `onFoldSummary`×7, `completion`×2, `stallDetection`×2, `tools`×2, `wrapup`×2, `onEvent`×1, `session`×1, `strategy`×1 |
 | `test/sessions.test.js` | 16 | `session`×16 |
 | `test/loop-abort-terminal-priority.test.js` | 15 | `reflection`×5, `stallDetection`×5, `completion`×4, `judgeProvider`×1 |
-| `test/loop-fold-context-knobs-469.test.js` | 15 | `strategy`×6, `context`×3, `session`×2, `tools`×2, `completion`×1, `wrapup`×1 |
-| `test/loop-on-fold-summary.test.js` | 14 | `onFoldSummary`×11, `context`×4, `tools`×3, `completion`×2, `onPersistenceError`×2, `stallDetection`×2, `wrapup`×2, `session`×1 |
-| `test/loop-fr2.test.js` | 13 | `completion`×7, `retry`×3, `context`×2, `initialMessages`×1 |
-| `test/model-metadata-diagnostics.test.js` | 13 | `completion`×5, `modelMetadata`×3, `context`×2, `outputHygiene`×1, `session`×1, `tools`×1 |
-| `test/persistence-diagnostics.test.js` | 13 | `completion`×9, `reflection`×2, `retry`×2 |
-| `test/run-state.test.js` | 13 | `completion`×7, `context`×3, `resume`×3 |
-| `test/compaction-strategy-name.test.js` | 12 | `strategy`×8, `completion`×2, `context`×2 |
+| `test/loop-fold-context-knobs-469.test.js` | 14 | `strategy`×6, `context`×3, `session`×2, `tools`×2, `completion`×1, `wrapup`×1 |
+| `test/loop-on-fold-summary.test.js` | 12 | `onFoldSummary`×11, `context`×4, `tools`×3, `completion`×2, `onPersistenceError`×2, `stallDetection`×2, `wrapup`×2, `session`×1 |
+| `test/loop-folding-slice-498s3b.test.js` | 7 | `completion`×3, `wrapup`×3, `context`×1 |
+| `test/loop-timing-slice-498s3.test.js` | 7 | `completion`×3, `stallDetection`×2, `wrapup`×1, `retry`×1 |
+| `test/loop-fr2.test.js` | 8 | `completion`×7, `retry`×3, `context`×2, `initialMessages`×1 |
+| `test/model-metadata-diagnostics.test.js` | 11 | `completion`×5, `modelMetadata`×3, `context`×2, `outputHygiene`×1, `session`×1, `tools`×1 |
+| `test/persistence-diagnostics.test.js` | 11 | `completion`×9, `reflection`×2, `retry`×2 |
+| `test/run-state.test.js` | 10 | `completion`×7, `context`×3, `resume`×3 |
+| `test/compaction-strategy-name.test.js` | 10 | `strategy`×8, `completion`×2, `context`×2 |
 | `test/loop-termination.test.js` | 12 | `completion`×6, `stallDetection`×5, `reflection`×1 |
 | `test/cli-idle-retry.test.js` | 11 | `retry`×5, `prompt`×3, `session`×3 |
 | `test/integration/no-todo-switch.test.js` | 11 | `prompt`×5, `session`×5, `tools`×1 |
 | `test/loop-final-guard.test.js` | 11 | `completion`×7, `reflection`×4 |
 | `test/cli-idle.test.js` | 10 | `prompt`×5, `session`×5 |
-| `test/compact/resume-fold-trim.test.js` | 10 | `strategy`×5, `resume`×3, `completion`×1, `context`×1 |
+| `test/compact/resume-fold-trim.test.js` | 9 | `strategy`×5, `resume`×3, `completion`×1, `context`×1 |
 | `test/loop-governance-switch-cells.test.js` | 10 | `completion`×4, `reflection`×4, `wrapup`×2 |
-| `test/loop-persist-compaction-facts.test.js` | 10 | `completion`×3, `reflection`×3, `context`×2, `resume`×1, `strategy`×1 |
+| `test/loop-persist-compaction-facts.test.js` | 8 | `completion`×3, `reflection`×3, `context`×2, `resume`×1, `strategy`×1 |
 | `test/loop-resume-unpersisted-tool-results.test.js` | 10 | `resume`×6, `completion`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-tool-list.test.js` | 9 | `tools`×7, `prompt`×2 |
 | `test/loop-resume-fold-immunity.test.js` | 9 | `completion`×2, `reflection`×2, `tools`×2, `wrapup`×2, `resume`×1 |
@@ -475,49 +487,49 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/repl.test.js` | 9 | `session`×6, `completion`×1, `finalGuard`×1, `prompt`×1, `tools`×1 |
 | `test/governor.test.js` | 8 | `completion`×4, `stallDetection`×4 |
 | `test/loop-error-budget-cells.test.js` | 8 | `completion`×4, `stallDetection`×3, `resume`×1 |
-| `test/app-container-p0.test.js` | 7 | `completion`×3, `stallDetection`×3, `retry`×1 |
-| `test/compact/folded-facts.test.js` | 7 | `strategy`×4, `completion`×1, `context`×1, `reflection`×1 |
+| `test/app-container-p0.test.js` | 6 | `completion`×3, `stallDetection`×3, `retry`×1 |
+| `test/compact/folded-facts.test.js` | 6 | `strategy`×4, `completion`×1, `context`×1, `reflection`×1 |
 | `test/loop-governance-cells.test.js` | 7 | `completion`×3, `reflection`×3, `resume`×1 |
 | `test/loop-intercept-count-cells.test.js` | 7 | `completion`×3, `reflection`×3, `resume`×1 |
 | `test/loop-invalid-arguments.test.js` | 7 | `completion`×3, `tools`×3, `resume`×1 |
-| `test/loop-resume-prior-seed-469.test.js` | 7 | `completion`×2, `context`×2, `reflection`×2, `resume`×1 |
+| `test/loop-resume-prior-seed-469.test.js` | 5 | `completion`×2, `context`×2, `reflection`×2, `resume`×1 |
 | `test/capture-honesty.test.js` | 6 | `prompt`×3, `session`×3 |
 | `test/examples/erix-run-async.test.js` | 6 | `tools`×4, `context`×1, `strategy`×1 |
-| `test/loop-folded-facts-sliding-resume.test.js` | 6 | `completion`×1, `context`×1, `stallDetection`×1, `strategy`×1, `tools`×1, `wrapup`×1 |
-| `test/loop-persistence-phase.test.js` | 6 | `completion`×1, `partialPersistence`×1, `reflection`×1, `retry`×1, `tools`×1, `wrapup`×1 |
+| `test/loop-folded-facts-sliding-resume.test.js` | 5 | `completion`×1, `context`×1, `stallDetection`×1, `strategy`×1, `tools`×1, `wrapup`×1 |
+| `test/loop-persistence-phase.test.js` | 5 | `completion`×1, `partialPersistence`×1, `reflection`×1, `retry`×1, `tools`×1, `wrapup`×1 |
 | `test/notes-final-guard.test.js` | 6 | `prompt`×3, `session`×3, `finalGuard`×2 |
-| `test/tool-fact-success-parity.test.js` | 6 | `completion`×2, `context`×1, `onToolResult`×1, `outputHygiene`×1, `reflection`×1, `resume`×1 |
-| `test/display/projection.test.js` | 5 | `wrapup`×2, `completion`×1, `context`×1, `reflection`×1 |
-| `test/loop-fold-count-cells.test.js` | 5 | `completion`×2, `context`×1, `resume`×1, `stallDetection`×1 |
-| `test/loop-usage-accounting.test.js` | 5 | `reflection`×2, `completion`×1, `context`×1, `stallDetection`×1 |
-| `test/loop-v020.test.js` | 5 | `completion`×3, `context`×1, `initialMessages`×1 |
-| `test/compact/fold-archive.test.js` | 4 | `completion`×2, `context`×2 |
-| `test/compaction-strategy-fallback.test.js` | 4 | `context`×2, `completion`×1, `modelMetadata`×1 |
+| `test/tool-fact-success-parity.test.js` | 5 | `completion`×2, `context`×1, `onToolResult`×1, `outputHygiene`×1, `reflection`×1, `resume`×1 |
+| `test/display/projection.test.js` | 4 | `wrapup`×2, `completion`×1, `context`×1, `reflection`×1 |
+| `test/loop-fold-count-cells.test.js` | 4 | `completion`×2, `context`×1, `resume`×1, `stallDetection`×1 |
+| `test/loop-usage-accounting.test.js` | 4 | `reflection`×2, `completion`×1, `context`×1, `stallDetection`×1 |
+| `test/loop-v020.test.js` | 4 | `completion`×3, `context`×1, `initialMessages`×1 |
+| `test/compact/fold-archive.test.js` | 2 | `completion`×2, `context`×2 |
+| `test/compaction-strategy-fallback.test.js` | 2 | `context`×2, `completion`×1, `modelMetadata`×1 |
 | `test/loop-message-rows-crash-matrix.test.js` | 4 | `completion`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/loop-observer-isolation.test.js` | 4 | `completion`×2, `context`×1, `reflection`×1 |
 | `test/loop-run-state-cells.test.js` | 4 | `completion`×2, `resume`×2 |
 | `test/loop-termination-reason-cell.test.js` | 4 | `completion`×2, `stallDetection`×2 |
 | `test/cli-process.test.js` | 3 | `prompt`×3 |
-| `test/e2e/upstream.test.js` | 3 | `onDelta`×5, `onUsage`×2, `completion`×1, `onEvent`×1, `retry`×1, `stallDetection`×1 |
+| `test/e2e/upstream.test.js` | 2 | `onDelta`×5, `onUsage`×2, `completion`×1, `onEvent`×1, `retry`×1, `stallDetection`×1 |
 | `test/examples/erix-run-notes-lifecycle.test.js` | 3 | `tools`×3 |
 | `test/loop-forced-final-by-state-475.test.js` | 3 | `completion`×3 |
 | `test/tools/notes.test.js` | 3 | `context`×3 |
 | `test/cli-idle-payload.test.js` | 2 | `prompt`×1, `session`×1 |
-| `test/compaction-observability.test.js` | 2 | `completion`×1, `context`×1 |
+| `test/compaction-observability.test.js` | 1 | `completion`×1, `context`×1 |
 | `test/examples/erix-run-core.smoke.test.js` | 2 | `strategy`×2 |
 | `test/examples/erix-run-details.test.js` | 2 | `reflection`×1, `strategy`×1 |
 | `test/integration/todo-builtin.test.js` | 2 | `finalGuard`×1, `prompt`×1, `session`×1 |
 | `test/loop-inject-flags.test.js` | 2 | `completion`×1, `stallDetection`×1 |
 | `test/loop-judge-done-forced-final.test.js` | 2 | `completion`×1, `reflection`×1 |
 | `test/loop-run-loop-state-tdz.test.js` | 2 | `completion`×1, `reflection`×1 |
-| `test/loop-v020-beta.test.js` | 2 | `retry`×2 |
+| `test/loop-v020-beta.test.js` | 0 | `retry`×2 |
 | `test/messages/anthropic.test.js` | 2 | `tools`×2 |
 | `test/messages/tool-result-content.test.js` | 2 | `completion`×2 |
 | `test/providers/anthropic.test.js` | 2 | `onDelta`×2, `tools`×2 |
 | `test/providers/openai-stream.test.js` | 2 | `onEvent`×2, `onReasoningDelta`×2, `tools`×2, `onDelta`×1, `onUsage`×1 |
 | `test/providers/openai.test.js` | 2 | `tools`×2 |
 | `test/skills.test.js` | 2 | `tools`×2 |
-| `test/tokens-estimate-hotpath.test.js` | 2 | `completion`×1, `context`×1 |
+| `test/tokens-estimate-hotpath.test.js` | 1 | `completion`×1, `context`×1 |
 | `test/tools.test.js` | 2 | `context`×2 |
 | `test/wrapup-normalization-unified.test.js` | 2 | `completion`×1, `reflection`×1 |
 | `test/wrapup-protocol-observer.test.js` | 2 | `completion`×1, `reflection`×1 |
@@ -528,10 +540,10 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-final-guard-payload.test.js` | 1 | `completion`×1 |
 | `test/loop-resume-summary-history.test.js` | 1 | `resume`×1 |
 | `test/provider-runner.test.js` | 1 | `context`×1 |
-| `test/providers/error-classification.test.js` | 1 | `retry`×1 |
+| `test/providers/error-classification.test.js` | 0 | `retry`×1 |
 | `test/run-snapshot-executor.test.js` | 1 | `context`×1, `onToolResult`×1 |
 
-## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**
+## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 
 **只交方案，不干活**（S7c 的交付物就是这张切片表）。
 
@@ -560,9 +572,11 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `input` | `tools`(117) + `wrapup`(90) + `initialMessages`(24) | **231** | 45 | 6 文件 | **S7f-2** |
 | `metadata` | `session`(112) + `modelMetadata`(12) | **124** | 24 | 6 文件 | **S7g**（新增：S7b 的表里没有这一组） |
 | 无组（能力面端口位 / CLI 入参） | `prompt`(58) + `judgeProvider`(4) + `sleepImpl`(4) | **66** | 15 | 2 文件 | 不切片：`sleepImpl`/`judgeProvider` 改成 `capabilities.ports.*` 随 `timing`/`run` 顺带；`prompt` 是 `bin/cli.js` 的入参面，归 `bin/` 消费者线（S5 口径），本表只清点 |
-| **合计** | | **1354** | **104（去重）** | | |
+| **合计** | | **1354**（S3 前口径；今实测 **1269**） | **104（去重；今 106）** | | |
 
-`183 + 711 + 39 + 231 + 124 + 66 = 1354` ✅（与 `--verify` 的 AST 合计逐字相等）
+`183 + 711 + 39 + 231 + 124 + 66 = 1354` ✅（**S3 之前**的 AST 合计；S3 的 `timing` / `folding` 两片
+把 `retry` / `context` / `toolResultTtl` / `toolResultFoldMinTokens` 的扁平写法摘掉之后，今天的实测合计是
+**1269**，`--verify` 逐行零误差。分组的逐项数字保留为 S3 前的规划口径。）
 
 ### 三片（+1）的边界与先后
 
@@ -575,7 +589,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 
 ### 校准方法（**必读**：写点数 ≠ 消费者面）
 
-写点数（本表那 1354）只是「扁平写法出现的地方」，**不是**删一个键会红多少格。真实消费者面必须
+写点数（本表那 1269，S3 前是 1354）只是「扁平写法出现的地方」，**不是**删一个键会红多少格。真实消费者面必须
 **实测**，方法是「只删一个键、两侧都摘、跑全量」：
 
 ```
@@ -865,10 +879,10 @@ function main() {
 main();
 SCRIPT
 
-# 1) 现在的三个总数（本表主表 169 / 附表 1354 / 全部 1523）
-node /tmp/flat-count.cjs .                       # ⇒ 能力面 13 键 169 / 数据面 17 键 1354 / 全部 1523
+# 1) 现在的三个总数（本表主表 169 / 附表 1269 / 全部 1438）
+node /tmp/flat-count.cjs .                       # ⇒ 能力面 13 键 169 / 数据面 17 键 1269 / 全部 1438
 node /tmp/flat-count.cjs . --keys                # ⇒ 逐键明细（17 个数据面键 + 13 个能力面键，见「数据面键表」）
-node /tmp/flat-count.cjs . --files               # ⇒ 逐文件明细（104 行，与本表逐行零误差）
+node /tmp/flat-count.cjs . --files               # ⇒ 逐文件明细（附表 106 行，与本表逐行零误差）
 
 # 2) 迁移前基线（388 / 678 / 1066）：把 S7a 迁移前的树解到 /tmp/base-498
 rm -rf /tmp/base-498 && mkdir -p /tmp/base-498 && git archive 0b2d858 test | tar -x -C /tmp/base-498
@@ -877,7 +891,7 @@ node /tmp/flat-count.cjs /tmp/base-498           # ⇒ 能力面 13 键 388 / �
                                                  #    注意：数据面这里是**扩键后**的口径（1351），
                                                  #    旧 10 键口径下才是本表早先写的 678。
 
-# 3) 与本表逐行对账（主表 22 行 + 附表 104 行 + 分派小结的加总式；不一致 ⇒ 退出码 1）
+# 3) 与本表逐行对账（主表 22 行 + 附表 106 行 + 分派小结的加总式；不一致 ⇒ 退出码 1）
 node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md; echo "EXIT=$?"   # ⇒ EXIT=0
 
 # 4) 两个交叉核对的 grep（口径比 AST 宽：会数到注释与断言里的字样，所以数字只会 ≥ 本表）

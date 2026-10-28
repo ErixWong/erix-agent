@@ -15,14 +15,15 @@
 ## `runToolLoop` 选项与工具执行契约
 
 `runToolLoop` 只接受以下顶层选项键。陌生键抛 `TypeError`，不再被静默忽略。宿主的私有
-元数据必须放进显式命名空间，例如 `toolContext` 或 `context`。
+元数据必须放进显式命名空间，例如 `toolContext` 或 `config.folding.context`（扁平 `context` 自
+0.28.0 起被名称闸口当场拒，见下文「扁平写法的版本口径」）。
 
 ```text
 assemblyPort, provider, system, wrapup, initialUserMessage, initialMessages, tools,
 writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
 temperature, topP, reflection, stallDetection,
 completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
-maxTokenContinuations, toolResultTtl, toolResultFoldMinTokens, context,
+maxTokenContinuations,
 todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
 toolContext, store, persistence, runId, cwd, deliverables, invalidArguments, resume, onRound, onJudge,
@@ -196,6 +197,36 @@ executeTool({ id, name, input, context, signal })
 壳里的老槽位 `retry.sleepImpl` 宿主**已经完全写不进去**了。扁平写法被名称闸口拒，
 `config.timing.retry.sleepImpl` 被「`config` 只装数据」那条规则拒；重试定时器的规范之家一直是
 `capabilities.ports.sleepImpl`。
+
+**扁平写法的版本口径**（issue #498 S3，`folding` 切片——第二片，同样**退掉**了顶层扁平键）：
+
+| 版本 | 写 `context` / `toolResultTtl` / `toolResultFoldMinTokens` |
+| --- | --- |
+| 0.26.0 及以前（最后一个**已发布**版本） | 顶层可写——那些版本只认这一种写法 |
+| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「这件事有影响」的树 |
+| 0.28.0 及以后（issue #498 S3 第二片） | **当场拒**——请写 `config.folding.context` / `config.folding.toolResultTtl` / `config.folding.toolResultFoldMinTokens`。名称闸口抛 `unknown runToolLoop option: "toolResultTtl" (its canonical home is config.folding.toolResultTtl; the flat spelling is rejected)` |
+
+`context` 这一条比另外两个多一句**必须读**的话：它是一个**混装壳**——同时容得下数据成员
+（`budgetTokens` / `keepRounds` / `strategy` 名字）与行为成员（`onBeforeFold` / `onAfterFold` /
+`stubFor` / `protectedMessage` / `recoveryHint` 五个函数，加上 `strategy` 的对象形态），而 `config`
+**只装数据**（子树必须过 JSON round-trip 等值）。所以顶层 `context` 被拒时，文案**一次点名两站**：
+
+```text
+unknown runToolLoop option: "context" (its canonical home is config.folding.context; the flat spelling is rejected)
+  — this shell holds both data and functions: write data as config.folding.context.<leaf>,
+    and behaviour members as capabilities.hooks.<name>
+    (onBeforeFold / onAfterFold / stubFor / protectedMessage / recoveryHint) or capabilities.ports.strategy
+```
+
+只指一站等于让宿主照做再撞第二次：把 `onBeforeFold` 写进 `config.folding.context` 会被
+「`config` 只装数据」拒，那时它才被告知 `capabilities.hooks.onBeforeFold`。两站必须在**同一句**里
+出现——升级时那是唯一的路标。这条文案由 `CAPABILITY_SLOT_DESTINATIONS` 派生（不是给 `context`
+写的特例），所以任何「同时容得下数据与行为」的壳都会自动带上第二站：`retry` 的第二站是
+`capabilities.ports.sleepImpl`。
+
+读侧照旧：展开相把这三个叶子逐字写到 `effectiveOptions.context` / `.toolResultTtl` /
+`.toolResultFoldMinTokens` 上，所以**引擎的读侧一字未改**。装配口 `policy.context` 没有被收窄
+（函数叶子仍可经它送达，行为与 0.26 逐字相同），但随包契约只承诺 `capabilities.*`。
 
 0.27.0 里那张 `config.observers` 分组在 **0.28.0 已被整组删除**（issue #498 S4a）：回调不是数据，
 装着一个回调的 `config` 子树过不了 JSON round-trip。回调住在 `capabilities.hooks`（下一节）。

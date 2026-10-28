@@ -148,10 +148,12 @@ test("A1 schema 自检：白名单被三个面恰好切一遍（配置面 / 能�
     CONFIG_SURFACE_OPTION_NAMES.length - orphanLeaves.length,
     "configPlaneOptionNames 就是「叶子映射到的键里白名单仍有的那些」，差集是失去顶层键的叶子",
   );
+  // #498 S3 的两片：`timing`（第一片）+ `folding`（第二片）。组名从 schema 取，条数不手抄，
+  // 所以下一片再切一个组时这里会红——那是**该**红的（它问的是「失去顶层键的叶子是谁」）。
   assert.deepEqual(
     [...orphanLeaves].sort(),
-    [...CONFIG_NAMESPACE_SCHEMA.timing].sort(),
-    "#498 S3 本刀失去顶层键的叶子恰好是 config.timing 的三个（timing 组是它们的**新家**，不是被删的组）",
+    [...CONFIG_NAMESPACE_SCHEMA.timing, ...CONFIG_NAMESPACE_SCHEMA.folding].sort(),
+    "失去顶层键的叶子必须恰好是已切片的两个组（timing + folding）的叶子——它们的新家就是这两个组",
   );
   assert.deepEqual(configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES), []);
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(CONFIG_NAMESPACE_OPTION_NAME), true);
@@ -415,9 +417,6 @@ const VALUES = {
   temperature: 0.2,
   topP: 0.9,
   cacheCapable: false,
-  context: { budgetTokens: 1000, keepRounds: 2 },
-  toolResultTtl: 1,
-  toolResultFoldMinTokens: 10,
   reflection: false,
   finalGuardMaxRetries: 1,
   finalGuardTimeoutMs: 5000,
@@ -450,6 +449,16 @@ const S3_TIMING_VALUES = {
   retry: false,
 };
 
+/**
+ * #498 S3 第二片（`folding` 组）：同样**故意不在 `VALUES` 里**——这三个键的扁平写法也撤了。
+ * 形状与 `S3_TIMING_VALUES` 同构：B2 的对照只盖住仍可扁平写的键，这三个由「展开写回」单独核。
+ */
+const S3_FOLDING_VALUES = {
+  context: { budgetTokens: 1000, keepRounds: 2 },
+  toolResultTtl: 1,
+  toolResultFoldMinTokens: 10,
+};
+
 /** 把 `VALUES` 摊成 `config: { … }` 形态（分组/叶子从 schema 派生，不手写）。 */
 function nestedConfigShape(values) {
   const config = {};
@@ -467,18 +476,27 @@ test("B2 端到端结构等价：扁平形态与 config 形态规范化后的 ef
   //   ① 仍可扁平写的那些键：扁平形态 vs config 形态逐键深度相等；
   //   ② 三个 S3 键：config 形态展开后必须**逐字写回** `effectiveOptions.<扁平名>`（这就是
   //     「删了顶层键、引擎读侧不用改」的机制本身，也是本刀可行性的证据）。
-  const nestedConfig = nestedConfigShape({ ...VALUES, ...S3_TIMING_VALUES });
+  const nestedConfig = nestedConfigShape({ ...VALUES, ...S3_TIMING_VALUES, ...S3_FOLDING_VALUES });
   assert.deepEqual(Object.keys(nestedConfig).sort(), [...CONFIG_NAMESPACE_GROUPS].sort(), "全部分组都被这份样本覆盖");
 
   const flat = await normalizeRunToolLoopOptions({ ...VALUES });
   const nested = await normalizeRunToolLoopOptions({ config: nestedConfig });
 
-  const { timeoutMs, deadlineMs, retry, ...nestedRest } = nested.effectiveOptions;
-  assert.deepEqual(nestedRest, flat.effectiveOptions, "除三个 S3 键以外，两种形态必须逐键深度相等");
+  const {
+    timeoutMs, deadlineMs, retry,
+    context, toolResultTtl, toolResultFoldMinTokens,
+    ...nestedRest
+  } = nested.effectiveOptions;
+  assert.deepEqual(nestedRest, flat.effectiveOptions, "除六个 S3 键以外，两种形态必须逐键深度相等");
   assert.deepEqual(
     { timeoutMs, deadlineMs, retry },
     S3_TIMING_VALUES,
     "config.timing.* 必须逐字写回 effectiveOptions 的扁平名（引擎读侧读的就是这三个）",
+  );
+  assert.deepEqual(
+    { context, toolResultTtl, toolResultFoldMinTokens },
+    S3_FOLDING_VALUES,
+    "config.folding.* 必须逐字写回 effectiveOptions 的扁平名（引擎读侧读的就是这三个）",
   );
   // 逐键再说一遍（deepEqual 之外的可读断言：哪一科不对，报错就点名哪一科）。
   for (const [key, value] of Object.entries(flat.effectiveOptions)) {
@@ -719,16 +737,20 @@ test("D4 既有 overrides 语义一字未动：显式 provider 仍能盖端口 p
 });
 
 // ================================================================ E. #496 的闸口吃展开后的表示（判据 5）
-test("E1 config 里的 context 拼错旋钮名 ⇒ 抛，且与扁平形态同一句（只差 via）", async () => {
-  const flatError = await directError({ context: { budgetTokens: 1000, summarizeBudgetMs: 5 } });
+test("E1 config 里的 context 拼错旋钮名 ⇒ 抛，且与壳内老槽位（policy.context）同一句（只差 via）", async () => {
+  // #498 S3：顶层扁平 `context` 已在**名称闸口**被拒（比语义相更早），所以「两种写法」的另一半
+  // 换成壳内老槽位仍然可达的那条路——装配口 `policy.context`。两边的文案必须逐字相同：
+  // 语义相的规则表只有一份，路线只贴 `via`。
+  const shellError = await assemblyError({ context: { budgetTokens: 1000, summarizeBudgetMs: 5 } });
   const nestedError = await directError({
     config: { folding: { context: { budgetTokens: 1000, summarizeBudgetMs: 5 } } },
   });
-  assert.equal(flatError instanceof TypeError, true);
+  assert.equal(shellError instanceof TypeError, true);
   assert.equal(nestedError instanceof TypeError, true);
   assert.match(nestedError.message, /unknown assembly policy context option: "summarizeBudgetMs"/u);
-  assert.equal(nestedError.message, flatError.message, "两条形态必须抛同一句");
+  assert.equal(nestedError.message, shellError.message, "两条写法必须抛同一句");
   assert.equal(nestedError.via, "direct");
+  assert.equal(shellError.via, "assembly");
 });
 
 test("E2 装配口路线的 policy.config.folding.context 走同一道语义相（via=assembly）", async () => {

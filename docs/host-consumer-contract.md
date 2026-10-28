@@ -19,14 +19,16 @@ steps are in
 
 `runToolLoop` accepts only the following top-level option keys. An unknown key
 throws `TypeError` instead of being silently ignored. Host-private metadata
-must be placed in an explicit namespace such as `toolContext` or `context`.
+must be placed in an explicit namespace such as `toolContext` or
+`config.folding.context` (the flat `context` has been rejected by the name gate since 0.28.0 — see
+"Flat-spelling version policy" below).
 
 ```text
 assemblyPort, provider, system, wrapup, initialUserMessage, initialMessages, tools,
 writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
 temperature, topP, reflection, stallDetection,
 completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
-maxTokenContinuations, toolResultTtl, toolResultFoldMinTokens, context,
+maxTokenContinuations,
 todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
 toolContext, store, persistence, runId, cwd, deliverables, invalidArguments, resume, onRound, onJudge,
@@ -237,6 +239,42 @@ back: the expansion phase still writes each of the three onto `effectiveOptions.
 shell slot `retry.sleepImpl` is no longer reachable from a host at all. Its flat spelling is refused
 by the name gate, and `config.timing.retry.sleepImpl` is refused by the "`config` holds data only"
 rule; the canonical home for a retry timer is, and was, `capabilities.ports.sleepImpl`.
+
+**Flat-spelling version policy** (issue #498 S3, the `folding` slice — the second one, and it
+**retires** flat top-level keys too):
+
+| release | writing `context` / `toolResultTtl` / `toolResultFoldMinTokens` |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
+| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, second slice) | **rejected on the spot** — write `config.folding.context` / `config.folding.toolResultTtl` / `config.folding.toolResultFoldMinTokens`. The name gate throws `unknown runToolLoop option: "toolResultTtl" (its canonical home is config.folding.toolResultTtl; the flat spelling is rejected)` |
+
+The `context` row carries one sentence that **must** be read: it is a **mixed shell** — it holds
+data members (`budgetTokens` / `keepRounds` / a strategy *name*) **and** behaviour members (the five
+functions `onBeforeFold` / `onAfterFold` / `stubFor` / `protectedMessage` / `recoveryHint`, plus the
+object form of `strategy`), while `config` holds **data only** (the subtree must survive a JSON
+round-trip unchanged). So when the top-level `context` is rejected, the message names **both
+stations in one sentence**:
+
+```text
+unknown runToolLoop option: "context" (its canonical home is config.folding.context; the flat spelling is rejected)
+  — this shell holds both data and functions: write data as config.folding.context.<leaf>,
+    and behaviour members as capabilities.hooks.<name>
+    (onBeforeFold / onAfterFold / stubFor / protectedMessage / recoveryHint) or capabilities.ports.strategy
+```
+
+Naming only one station sends the host into a second wall: putting `onBeforeFold` into
+`config.folding.context` is refused by "`config` holds data only", and only *that* message mentions
+`capabilities.hooks.onBeforeFold`. Both stations have to appear in the **same** sentence — during an
+upgrade it is the only signpost there is. The sentence is derived from `CAPABILITY_SLOT_DESTINATIONS`
+(not a `context` special case), so every shell that holds both data and behaviour gets its second
+station automatically: for `retry` it is `capabilities.ports.sleepImpl`.
+
+The read side is unchanged: the expansion phase writes these three leaves onto
+`effectiveOptions.context` / `.toolResultTtl` / `.toolResultFoldMinTokens`, so **the engine's read
+side did not change by a single line**. The assembly port's `policy.context` is **not** narrowed
+(function leaves still get through it, with 0.26 semantics), but the shipped contract only promises
+`capabilities.*`.
 
 The `config.observers` group that 0.27.0 carried is **gone in 0.28.0** (issue #498 S4a): a callback
 is not data, and a `config` subtree that holds one cannot survive a JSON round-trip. Callbacks live

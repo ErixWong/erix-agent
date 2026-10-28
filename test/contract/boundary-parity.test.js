@@ -314,7 +314,7 @@ test("boundary parity: 每个折叠摘要旋钮名的拼错在两条路线上抛
     const typo = `${name}s`;
     await assertGateParity({
       label: typo,
-      bad: { context: { [typo]: 1024 } },
+      bad: { config: { folding: { context: { [typo]: 1024 } } } },
       message: `unknown assembly policy context option: ${JSON.stringify(typo)}`,
     });
   }
@@ -324,7 +324,7 @@ test("boundary parity: 旋钮的非法值在两条路线上抛同一条错", asy
   for (const name of FOLD_SUMMARIZER_CAP_NAMES) {
     await assertGateParity({
       label: `${name}=0`,
-      bad: { context: { [name]: 0 } },
+      bad: { config: { folding: { context: { [name]: 0 } } } },
       message: `${name} must be a positive integer`,
     });
   }
@@ -332,7 +332,7 @@ test("boundary parity: 旋钮的非法值在两条路线上抛同一条错", asy
 
 test("boundary parity: 承载宿主回调的字段形状错误在两条路线上同码同构（issue #496）", async () => {
   const cells = [
-    ["context-shape", { context: "not-an-object" }, "context must be an object"],
+    ["context-shape", { config: { folding: { context: "not-an-object" } } }, "context must be an object"],
     ["onFoldSummary", { onFoldSummary: "notes" },
       "assembly policy option onFoldSummary must be a function (or omitted)"],
     ["finalGuard", { finalGuard: true }, "finalGuard must be a function (or omitted)"],
@@ -344,9 +344,9 @@ test("boundary parity: 承载宿主回调的字段形状错误在两条路线上
       "reflection.onReflection must be a function (or omitted)"],
     ["diagnostics.error", { diagnostics: { error: "cb" } },
       "diagnostics.error must be a function (or omitted)"],
-    ["context.onBeforeFold", { context: { onBeforeFold: "hooks" } },
+    ["context.onBeforeFold", { config: { folding: { context: { onBeforeFold: "hooks" } } } },
       "context.onBeforeFold must be a function (or omitted)"],
-    ["context.onAfterFold", { context: { onAfterFold: {} } },
+    ["context.onAfterFold", { config: { folding: { context: { onAfterFold: {} } } } },
       "context.onAfterFold must be a function (or omitted)"],
   ];
   for (const [label, bad, message] of cells) {
@@ -356,17 +356,13 @@ test("boundary parity: 承载宿主回调的字段形状错误在两条路线上
 
 test("boundary parity: 合法配置在两条路线上都不抛（防 parity 只在错误路径上成立）", async () => {
   const good = {
-    context: {
-      budgetTokens: 1000,
-      maxSummaryTokens: 900,
-      onBeforeFold: () => {},
-      onAfterFold: () => {},
-      onFoldSummary: () => {},
-    },
     onFoldSummary: () => {},
     finalGuard: async () => ({ action: "accept" }),
     // #498 S3: data keys go to `config.timing.retry`, the function carrier to `capabilities.ports`.
-    config: { timing: { retry: { attempts: 1 } } },
+    config: { folding: { context: {
+      budgetTokens: 1000,
+      maxSummaryTokens: 900,
+                      } }, timing: { retry: { attempts: 1 } } },
     capabilities: { ports: { sleepImpl: async () => {} } },
     reflection: { enabled: false, onReflection: () => {} },
     diagnostics: { error: () => {} },

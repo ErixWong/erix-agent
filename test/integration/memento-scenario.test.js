@@ -5,12 +5,29 @@ import path from "node:path";
 
 import { buildCaptureRecoveryHint, buildCaptureStub } from "../../bin/final-guard.js";
 import { createCliTools, wrapExecuteTool } from "../../bin/tools.js";
-import { buildCompactionContext } from "../../bin/config.js";
+import { buildCompactionContext, splitCompactionContext } from "../../bin/config.js";
 import { runToolLoop } from "../../src/loop/orchestrator.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { estimateMessageTokens } from "../../src/tokens.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
 import { makeTmp } from "../helpers/tmp.js";
+
+/**
+ * #498 S3: the top-level `context` shell is retired. Split `buildCompactionContext`'s bag into the two
+ * canonical homes by **value shape** — data to `config.folding.context`, functions to
+ * `capabilities.hooks` — which is exactly what `splitCompactionContext` (`bin/config.js`) does for
+ * `bin/cli.js` and `bin/repl.js`. Not a second rule, just this test's call site for it.
+ *
+ * @param {Record<string, any>|undefined} context
+ * @returns {{config: {folding: {context: Record<string, any>}}, capabilities: {hooks: Record<string, Function>}}}
+ */
+function splitContextForRun(context) {
+  const { data, hooks } = splitCompactionContext(context);
+  return {
+    config: { folding: { context: data ?? {} } },
+    capabilities: { hooks: hooks ?? {} },
+  };
+}
 
 test("S1 folds an early value into the provider request", async () => {
   const directory = await makeTmp("erix-memento-s1-");
@@ -56,7 +73,10 @@ test("S1 folds an early value into the provider request", async () => {
       completion: false,
       wrapup: false,
       reflection: false,
-      context,
+      // #498 S3: the `context` shell is retired at the top level. `buildCompactionContext` mixes data
+      // (`budgetTokens` / `strategy` name) with functions (`protectedMessage` / `recoveryHint` /
+      // `stubFor`), so it is split by value shape exactly the way `bin/cli.js` does it.
+      ...splitContextForRun(context),
       runId: "s1-run",
     });
 
@@ -120,7 +140,7 @@ test("S2 folds a stub verbatim (no agent-side credential filter, #55) while reta
       completion: false,
       wrapup: false,
       reflection: false,
-      context,
+      ...splitContextForRun(context),
       runId: "s2-run",
     });
 
@@ -264,7 +284,7 @@ test("S4 replaces fold state while preserving unique stubs across two folds", as
       completion: false,
       wrapup: false,
       reflection: false,
-      context,
+      ...splitContextForRun(context),
       runId: "s4-run",
     });
 

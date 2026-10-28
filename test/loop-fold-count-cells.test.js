@@ -55,7 +55,7 @@ test("策略折叠的轮数与导航记录累计进 run-state 的 fold 计数（
     },
   };
 
-  const result = await runToolLoop({
+  const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",
@@ -65,7 +65,7 @@ test("策略折叠的轮数与导航记录累计进 run-state 的 fold 计数（
     cacheStablePrefix: false,
     // budgetTokens 放大：让策略自己决定折叠，避免「仍超预算 → 安全截断 fallback」再加一次折叠，
     // 那样累计值就不是策略报的 3 了（实测 3 + 2 = 5，断言会变成在测 fallback 而不是测本格写侧）。
-    context: { strategy, budgetTokens: 100_000, keepRounds: 4 },
+    config: { folding: { context: { budgetTokens: 100_000, keepRounds: 4 } } },
   });
 
   // 前提：折叠确实发生了（否则下面的累计值是空断言）

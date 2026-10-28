@@ -29,7 +29,7 @@ const loopOptions = (runId, store, provider, extra = {}) => ({
   executeTool: async ({ input }) => `out-${input.step}: ${big(TOOL_BYTES)}`,
   completion: false,
   cacheStablePrefix: false,
-  context: { strategy: "fold-statistical", budgetTokens: BUDGET, keepRounds: 4 },
+  config: { folding: { context: { strategy: "fold-statistical", budgetTokens: BUDGET, keepRounds: 4 } } },
   store,
   runId,
   ...extra,
@@ -149,10 +149,10 @@ for (let cycle = 1; cycle <= 8; cycle += 1) {
     },
   };
   try {
-    const r = await runToolLoop(loopOptions("p462-d", storeD, createFakeProvider(steps), {
+    const r = await runToolLoop(loopOptions("p462-d", storeD, createFakeProvider(steps), { capabilities: { ports: { strategy: wrapped } },
       maxRounds: 6,
       ...(cycle > 1 ? { resume: true } : {}),
-      context: { strategy: wrapped, budgetTokens: 4000, keepRounds: 1 },
+      config: { folding: { context: { budgetTokens: 4000, keepRounds: 1 } } },
     }));
     dRoundBase = r?.rounds ?? dRoundBase + 2;
   } catch { dRoundBase += 2; }

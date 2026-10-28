@@ -976,7 +976,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
   test(`${label}: 聚合 stub 只换 content，erix 与 metadata 字段原样保留`, async () => {
     const { toolResultFacts } = await runCase(
       async () => ({ content: "巨".repeat(120000), metadata: { artifactStatus: "ok" } }),
-      { options: { context: { budgetTokens: 53337 }, outputHygiene: { limit: 1_000_000 } } },
+      { options: { config: { folding: { context: { budgetTokens: 53337 } } }, outputHygiene: { limit: 1_000_000 } } },
     );
     const fact = toolResultFacts[0];
     assert.notEqual(fact.content, "巨".repeat(120000), "本例必须真的走到 stub 化，否则等于没测");

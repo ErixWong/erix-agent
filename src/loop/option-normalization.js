@@ -61,6 +61,7 @@ import { assemblyPortOptions } from "../assembly.js";
 import { assertSemanticOptionValues } from "../assembly-validators.js";
 import {
   assertCapabilitiesNamespace,
+  capabilityDestinationsForShell,
   collectCapabilitiesSourceConflicts,
   expandCapabilitiesNamespace,
 } from "./capabilities-namespace.js";
@@ -100,8 +101,6 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   "partialPersistence",
   "maxRounds",
   "cacheCapable",
-  "toolResultTtl",
-  "toolResultFoldMinTokens",
   "maxTokens",
   "temperature",
   "topP",
@@ -116,7 +115,6 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   "finalGuardMaxRetries",
   "finalGuardTimeoutMs",
   "maxTokenContinuations",
-  "context",
   "todoStateProvider",
   "semanticStateProvider",
   "modelConfig",
@@ -234,6 +232,14 @@ export function optionSuggestion(unknownName) {
  * （`config.timing.timeoutMs`）——这是 0.26 → 0.28 升级时唯一能自己找到出路的线索。
  * 没有配置之家的未知键逐字维持旧文案（宿主与既有测试都依赖那句原文）。
  *
+ * ⚠ 只指一站是**不够的**（#498 S3 收尾时实测到的缺陷，本片修）：`context` / `retry` 这类**壳**同时
+ * 容得下数据成员与函数成员，而 `config` 只装数据（函数叶子 intake 当场拒）。宿主照着
+ * 「canonical home is config.folding.context」把 `onBeforeFold` 写进去，会撞**第二次**，且只有第二次
+ * 的文案才告诉他 `capabilities.hooks.onBeforeFold`。所以「壳有行为成员」时，一次就要把两站都点名
+ * （数据 ⇒ `config.<home>.<leaf>`，函数 ⇒ `capabilities.<group>.<leaf>`）。
+ * 两站由 `capabilityDestinationsForShell` 从 `CAPABILITY_SLOT_DESTINATIONS` 派生——不写死 `context`，
+ * 于是将来任何一个混装壳都自动带上这条。
+ *
  * @param {Record<string, any>|null|undefined} options
  * @returns {void}
  */
@@ -250,10 +256,37 @@ export function assertRunToolLoopOptionNames(options) {
         + (suggestion ? ` (did you mean ${JSON.stringify(suggestion)}?)` : "")
         + (configHome === undefined
           ? ""
-          : ` (its canonical home is config.${configHome}; the flat spelling is rejected)`),
+          : ` (its canonical home is config.${configHome}; the flat spelling is rejected)`)
+        + (configHome === undefined ? "" : shellBehaviourStationHint(optionName, configHome)),
       );
     }
   }
+}
+
+/**
+ * The second station of a **mixed shell** (data + behaviour members), or `""` when the shell has none.
+ *
+ * `context` → `data as config.folding.context.<leaf>, functions as capabilities.hooks.<name>
+ * (onBeforeFold / onAfterFold / …) or capabilities.ports.strategy`.
+ * `retry` → `… capabilities.ports.sleepImpl`.
+ * Derived from `CAPABILITY_SLOT_DESTINATIONS`, so no shell name is hard-coded here.
+ *
+ * @param {string} optionName
+ * @param {string} configHome `configPathForOption(optionName)`
+ * @returns {string}
+ */
+function shellBehaviourStationHint(optionName, configHome) {
+  const byGroup = new Map();
+  for (const { group, leaf } of capabilityDestinationsForShell(optionName)) {
+    if (!byGroup.has(group)) byGroup.set(group, []);
+    byGroup.get(group).push(leaf);
+  }
+  if (byGroup.size === 0) return "";
+  const stations = [...byGroup].map(([group, leaves]) => (leaves.length === 1
+    ? `capabilities.${group}.${leaves[0]}`
+    : `capabilities.${group}.<name> (${leaves.join(" / ")})`));
+  return ` — this shell holds both data and functions: write data as config.${configHome}.<leaf>,`
+    + ` and behaviour members as ${stations.join(" or ")}`;
 }
 
 /**

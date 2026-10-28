@@ -136,12 +136,12 @@ test("#460 宿主拒超限记录：剥掉归档重试，run 不终局为 persist
     return appendRound(runId, record);
   };
 
-  const result = await runToolLoop({
+  const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",
     completion: false,
-    context: { strategy, budgetTokens: 99, keepRounds: 4, maxFoldedPayloadBytes: 1_000_000 },
+    config: { folding: { context: { budgetTokens: 99, keepRounds: 4, maxFoldedPayloadBytes: 1_000_000 } } },
     cacheStablePrefix: false,
     store,
     runId: "issue-460",
@@ -258,12 +258,12 @@ test("#460 默认上限：折叠记录不带无界归档（判据 A，默认配�
     return appendRound(runId, record);
   };
 
-  await runToolLoop({
+  await runToolLoop({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",
     completion: false,
-    context: { strategy, budgetTokens: 99, keepRounds: 4 },
+    config: { folding: { context: { budgetTokens: 99, keepRounds: 4 } } },
     cacheStablePrefix: false,
     store,
     runId: "issue-460-cap",

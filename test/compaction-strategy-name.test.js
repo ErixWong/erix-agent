@@ -62,6 +62,10 @@ const BASE_SCRIPT = [
 async function runWithProvider(provider, context, usageSink) {
   const events = [];
   const controller = new AbortController();
+  const strategy = context?.strategy;
+  const strategyObject = strategy !== null && typeof strategy === "object" ? strategy : undefined;
+  const dataOnly = { ...context };
+  if (strategyObject !== undefined) delete dataOnly.strategy;
   const result = await runToolLoop({
     signal: controller.signal,
     provider,
@@ -69,10 +73,15 @@ async function runWithProvider(provider, context, usageSink) {
     executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
     maxRounds: 3,
     completion: false,
-    context: { budgetTokens: 400, keepRounds: 0, ...context },
+    // #498 S3: split by **value shape**, not by key name. A strategy **object** is a behaviour
+    // carrier (`capabilities.ports.strategy`); a strategy **name** (`"fold-llm"`) or a bad scalar
+    // (`7`) is data and stays in `config.folding.context` — which is also why the "non-string,
+    // non-object strategy values fail at startup" cell below still goes red at the same place.
+    config: { folding: { context: { budgetTokens: 400, keepRounds: 0, ...dataOnly } } },
     store: createMemoryTranscriptStore(),
     runId: "compaction-strategy-name",
     capabilities: {
+      ...(strategyObject === undefined ? {} : { ports: { strategy: strategyObject } }),
       hooks: {
         onEvent: (event) => events.push(event),
         // `onUsage` 的规位是 `capabilities.hooks.onUsage`；只有「折叠摘要真的记账了」那一格才订阅。
@@ -255,7 +264,7 @@ test("#486 P1-B 宿主 abort 必须真的中止摘要请求（run 的 signal 不
       executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
       maxRounds: 3,
       completion: false,
-      context: { budgetTokens: 400, keepRounds: 0, strategy: "fold-llm" },
+      config: { folding: { context: { budgetTokens: 400, keepRounds: 0, strategy: "fold-llm" } } },
       store: createMemoryTranscriptStore(),
       runId: "issue-486-p1b",
     }).catch(() => {}),

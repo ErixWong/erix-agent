@@ -972,7 +972,7 @@ test("resumes folded checkpoints from the persisted transcript anchor", async ()
     };
 
     await assert.rejects(
-      runToolLoop({
+      runToolLoop({ capabilities: { ports: { strategy: strategy } },
         provider: firstProvider,
         initialUserMessage: "fold-base-input",
         executeTool: ({ signal }) => {
@@ -985,7 +985,7 @@ test("resumes folded checkpoints from the persisted transcript anchor", async ()
         },
         maxRounds: 6,
         completion: false,
-        context: { strategy, budgetTokens: 30 },
+        config: { folding: { context: { budgetTokens: 30 } } },
         store,
         runId: `fold-${keepRounds}`,
         signal: controller.signal,
@@ -1075,7 +1075,7 @@ test("keeps the initial input when request-view injection meets a tiny budget", 
   };
 
   await assert.rejects(
-    runToolLoop({
+    runToolLoop({ capabilities: { ports: { strategy: strategy } },
       provider: firstProvider,
       initialUserMessage: "fold-base-input",
       executeTool: ({ signal }) => {
@@ -1088,7 +1088,7 @@ test("keeps the initial input when request-view injection meets a tiny budget", 
       },
       maxRounds: 6,
       completion: false,
-      context: { strategy, budgetTokens: 30 },
+      config: { folding: { context: { budgetTokens: 30 } } },
       store,
       runId: "small-budget-run-state-regression",
       signal: controller.signal,

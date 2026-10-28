@@ -42,7 +42,7 @@ const runFolded = async ({ shape, maxRounds }) => {
     maxRounds,
     stallDetection: false,
     completion: false,
-    toolResultTtl: 2,
+    config: { folding: { toolResultTtl: 2 } },
     semanticStateProvider: ({ state }) => ({
       text: "notes: use note_list before note_read",
       version: state.stateVersion,

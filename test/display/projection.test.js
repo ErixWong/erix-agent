@@ -506,7 +506,7 @@ test("projects records produced by a real run (seed, tool rounds, real fold summ
     { content: [{ type: "text", text: "all done" }], stopReason: "end_turn" },
   ]);
   const store = createMemoryTranscriptStore();
-  await runToolLoop({
+  await runToolLoop({ capabilities: { ports: { strategy: createFoldStatisticalStrategy() } },
     provider,
     initialUserMessage: "do the thing",
     executeTool: async ({ id }) => `result for ${id} ${"y".repeat(200)}`,
@@ -514,11 +514,10 @@ test("projects records produced by a real run (seed, tool rounds, real fold summ
     completion: false,
     wrapup: false,
     reflection: false,
-    context: {
-      strategy: createFoldStatisticalStrategy(),
-      budgetTokens: 30,
+    config: { folding: { context: {
+            budgetTokens: 30,
       keepRounds: 0,
-    },
+    } } },
     store,
     runId: "display-projection",
   });

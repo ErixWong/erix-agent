@@ -80,7 +80,9 @@ const runOptions = (runId, store, provider, context, extra = {}) => ({
   maxRounds: 2,
   completion: false,
   reflection: false,
-  context,
+  // #498 S3: the flat `context` option is retired; data-only bags (budgetTokens / keepRounds /
+  // strategy-name) live at `config.folding.context`, the expansion phase writes them back.
+  config: { folding: { context } },
   store,
   runId,
   initialUserMessage: `start ${"y".repeat(600)}`,

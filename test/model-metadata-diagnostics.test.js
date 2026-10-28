@@ -192,7 +192,7 @@ test("no diagnostic when the host supplies its own budgetTokens (compaction stay
     provider: textProvider(),
     initialUserMessage: "start",
     executeTool: async () => "unused",
-    context: { budgetTokens: 5000 },
+    config: { folding: { context: { budgetTokens: 5000 } } },
     store: createMemoryTranscriptStore(),
     runId: "metadata-missing-explicit-budget",
     capabilities: { hooks: { onEvent: (event) => events.push(event) } },
@@ -233,7 +233,11 @@ test("metadata reachable through modelConfig or a metadata-carrying context also
       modelConfig: { async resolve() { return { contextWindowTokens: 32768, maxOutputTokens: 1024 }; } },
     }],
     ["metadata-missing-via-context", {
-      context: { contextWindowTokens: 32768, maxOutputTokens: 1024 },
+      // #498 S3: `context` is retired as a top-level option; the data bag lives at
+      // `config.folding.context` and the expansion phase writes it back to `effectiveOptions.context`
+      // — which is the same object `metadataFor`/`budget.js` dereferences, so this cell still proves
+      // "metadata reachable through a metadata-carrying context silences the notice".
+      config: { folding: { context: { contextWindowTokens: 32768, maxOutputTokens: 1024 } } },
     }],
   ]) {
     const events = [];

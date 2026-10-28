@@ -384,7 +384,7 @@ test("#404 附2：已知边界——全折叠配置（keepRounds=0）下告示�
     maxRounds: 5,
     completion: false,
     reflection: false,
-    context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm" },
+    config: { folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm" } } },
     store,
     runId: "bb-fold-edge",
   }), /boom: 折叠之后炸了/u);
@@ -411,7 +411,7 @@ test("#404 附2：已知边界——全折叠配置（keepRounds=0）下告示�
     resume: true,
     completion: false,
     reflection: false,
-    context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm" },
+    config: { folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm" } } },
     store,
     runId: "bb-fold-edge",
     executeTool: async () => "ok",

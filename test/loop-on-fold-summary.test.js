@@ -64,7 +64,7 @@ function makeProvider({ toolTurns = 6 } = {}) {
 async function runFolding({ onFoldSummary, context = {}, diagnostics, onPersistenceError } = {}) {
   const store = createMemoryTranscriptStore();
   const runId = "s-470d-fold";
-  const run = await runToolLoop({
+  const run = await runToolLoop({ capabilities: { ports: { strategy: createSlidingWindowStrategy({ keepRounds: 1 }) } },
     provider: makeProvider(),
     runId,
     store,
@@ -79,12 +79,11 @@ async function runFolding({ onFoldSummary, context = {}, diagnostics, onPersiste
     ...(diagnostics === undefined ? {} : { diagnostics }),
     ...(onPersistenceError === undefined ? {} : { onPersistenceError }),
     // 折叠开关住在 `context` 里（`budgetTokens` / `keepRounds` / `strategy`），没有 `compaction` 这个键。
-    context: {
+    config: { folding: { context: {
       budgetTokens: 300,
       keepRounds: 1,
-      strategy: createSlidingWindowStrategy({ keepRounds: 1 }),
-      ...context,
-    },
+            ...context,
+    } } },
   });
   const records = await store.load(runId);
   return {
@@ -164,7 +163,7 @@ test("②无替代物不调用：不折叠 ⇒ 钩子 0 次、账本无该键、
     onFoldSummary: () => { calls += 1; },
     diagnostics,
     // 预算宽裕 ⇒ 不触发折叠（下面的前提断言负责证明这一点，不让「没折叠」变成假前提）。
-    context: { budgetTokens: 200_000, keepRounds: 6 },
+    config: { folding: { context: { budgetTokens: 200_000, keepRounds: 6 } } },
   });
   const records = await store.load(runId);
   // 前提必须先成立，否则这格只是在测空气。

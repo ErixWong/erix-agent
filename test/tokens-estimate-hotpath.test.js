@@ -429,7 +429,7 @@ const compactsOnce = async ({ replacement, budgetTokens, keepRounds = 2, runId }
       };
     },
   };
-  const result = await runToolLoop({
+  const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done 完成" }], stopReason: "end_turn" },
     ]),
@@ -437,7 +437,7 @@ const compactsOnce = async ({ replacement, budgetTokens, keepRounds = 2, runId }
     executeTool: async ({ id }) => `result ${id} 漢😀`,
     maxRounds: 1,
     completion: false,
-    context: { strategy, budgetTokens, keepRounds },
+    config: { folding: { context: { budgetTokens, keepRounds } } },
     store: createMemoryTranscriptStore(),
     runId,
   });

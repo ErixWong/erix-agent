@@ -141,7 +141,7 @@ test("#469-A 端到端：resume 出来的 run 第一次折叠带账本基底（�
     maxRounds: 3,
     completion: false,
     reflection: false,
-    context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm" },
+    config: { folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm" } } },
     store,
     runId,
   });
@@ -163,7 +163,7 @@ test("#469-A 端到端：resume 出来的 run 第一次折叠带账本基底（�
     maxRounds: 3,
     completion: false,
     reflection: false,
-    context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-llm" },
+    config: { folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-llm" } } },
   });
 
   const stats = (result.compactionStats ?? []).filter((stat) => stat.foldSummary !== undefined);

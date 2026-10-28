@@ -323,7 +323,7 @@ test("#438 ⑥ 折叠摘要那一发（900/50）落在**当轮** `record.engineU
     reflection: false,
     initialUserMessage: `start ${"y".repeat(600)}`,
     executeTool: async () => `tool output ${"z".repeat(400)}`,
-    context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm" },
+    config: { folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm" } } },
   });
 
   // 前置：这一格必须**真的**发生过一次折叠摘要（否则下面的断言是空断言）。

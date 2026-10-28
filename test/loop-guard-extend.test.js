@@ -319,7 +319,7 @@ test("#386-3 R4-6 聚合输出预算已撞线 + opt-in ⇒ 拒绝补跑，且没
     store,
     runId: "guard-extend-aggregate",
     outputHygiene: { limit: 200_000 },
-    context: { budgetTokens: 50_000 },
+    config: { folding: { context: { budgetTokens: 50_000 } } },
     executeTool: async () => BIG,
     finalGuardExtend: true,
     capabilities: {
@@ -357,7 +357,7 @@ test("#386-3 R4-6 聚合输出预算已撞线 + opt-in ⇒ 拒绝补跑，且没
     store: createMemoryTranscriptStore(),
     runId: "guard-extend-aggregate-control",
     outputHygiene: { limit: 200_000 },
-    context: { budgetTokens: 50_000 },
+    config: { folding: { context: { budgetTokens: 50_000 } } },
     executeTool: async () => "small",
     finalGuardExtend: true,
     capabilities: {
@@ -388,7 +388,7 @@ test("#386-3 R4-6b 最近一次真实 API 输入 token 已超 budgetTokens + opt
       initialUserMessage: "做点事",
       maxRounds: 1,
       reflection: REFLECTION,
-      context: { budgetTokens: 10_000 },
+      config: { folding: { context: { budgetTokens: 10_000 } } },
       executeTool: async () => "ok",
       finalGuardExtend: true,
       capabilities: {

@@ -69,7 +69,10 @@ async function runLoop({ script, strategy, context, options = {} }) {
     completion: false,
     tools: TOOL,
     ...options,
-    context: { ...(context ?? {}), ...(strategy ? { strategy } : {}) },
+    config: { folding: { context: { ...(context ?? {}) } } },
+    // #498 S3: `context.strategy` is an **object** (a behaviour carrier), so its canonical home is
+    // `capabilities.ports.strategy` — the config namespace holds data only and rejects it by name.
+    ...(strategy ? { capabilities: { ports: { strategy } } } : {}),
   });
 }
 
@@ -496,7 +499,7 @@ test("E2 finalGuard 载荷的 messages 是深拷贝，宿主回调改不动循�
     executeTool: async () => "worked",
     completion: false,
     tools: TOOL,
-    context: { strategy: spy.strategy },
+    config: { folding: { context: { } } },
     capabilities: {
       hooks: {
         finalGuard: (payload) => {

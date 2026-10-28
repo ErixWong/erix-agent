@@ -123,7 +123,6 @@ function legacyFlatOptions(input) {
     config: { timing: { timeoutMs: params.timeoutMs, retry: { attempts: 2 } } },
     completion: { signals: ["任务已完成", "已完成", "全部完成", "无需继续", "任务结束", "没有更多步骤"], maxNoToolRounds: 3 },
     ...(reflection === undefined ? {} : { reflection }),
-    ...(params.strategy === undefined ? {} : { context: { strategy: params.strategy } }),
     ...(onEvent === undefined ? {} : { onEvent }),
     ...(onObserverError === undefined ? {} : { onObserverError }),
     ...(onPersistenceError === undefined ? {} : { onPersistenceError }),
@@ -132,6 +131,12 @@ function legacyFlatOptions(input) {
     ...(finalGuard === undefined ? {} : { finalGuard, finalGuardTimeoutMs: params.finalGuardTimeoutMs ?? 10_000 }),
     ...(deliverables === undefined ? {} : { deliverables }),
   };
+  // #498 S3 (`folding` slice): `context` is retired as a flat option. `params.strategy` here is a
+  // **built-in name** (data), so it belongs to `config.folding.context.strategy` — the object form
+  // would go to `capabilities.ports.strategy` instead. The equivalence claim is unaffected: the
+  // expansion phase writes it back to `effectiveOptions.context.strategy`.
+  // Merged into the **same** `config` tree (a second `config:` key would replace the timing one).
+  if (params.strategy !== undefined) options.config.folding = { context: { strategy: params.strategy } };
   if (Number.isSafeInteger(slot.contextWindowTokens) && Number.isSafeInteger(slot.maxOutputTokens)) {
     options.modelMetadata = {
       contextWindowTokens: slot.contextWindowTokens,

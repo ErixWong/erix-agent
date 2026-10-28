@@ -497,6 +497,8 @@ test("S5 壳里的函数字段逐个点名完整路径（这些键实测真被�
       { config: { run: { reflection: { judge: { provider: () => {} } } } } },
       "config.run.reflection.judge.provider",
     ],
+    // #498 S3：这一格问的是「壳里的**函数**字段被拒时，报错点名完整路径」。壳 `context` 现在住在
+    // `config.folding.context`，函数写进去照样被 intake 拒——所以样本值就是函数本身。
     [
       { config: { folding: { context: { onBeforeFold: () => {} } } } },
       "config.folding.context.onBeforeFold",
@@ -652,7 +654,8 @@ const REPRESENTATIVE_CONFIG_VALUES = {
   timeoutMs: 1000,
   deadlineMs: 2000,
   retry: false,
-  // folding
+  // folding（#498 S3 第二片：这三个叶子已经没有顶层扁平键，但**叶子仍在 schema 里**，
+  // 所以它们照旧必须被 round-trip 覆盖名单取到值——「删了顶层键」不许让叶子漏测）
   // #498 S4c：两个**形态多态**旋钮的**数据形态**住在这里（`string` / `string[]`），所以它们必须进
   // round-trip 覆盖度名单并过逐字等值；它们的函数形态是 `capabilities.hooks.*`（行为载体，不进）。
   context: {
@@ -677,6 +680,16 @@ const REPRESENTATIVE_CONFIG_VALUES = {
   modelMetadata: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
   session: { id: "config-498-b2", modelSlot: "default" },
 };
+
+/**
+ * 配置叶子的**总数**——派生自 schema（`CONFIG_NAMESPACE_GROUPS` × `CONFIG_NAMESPACE_SCHEMA`），
+ * 不手抄。删/加一个叶子时这里自动跟着走，「覆盖度」那条断言仍然可证伪（漏测才会红）。
+ *
+ * @returns {number}
+ */
+function configLeafCount() {
+  return CONFIG_NAMESPACE_GROUPS.reduce((total, group) => total + CONFIG_NAMESPACE_SCHEMA[group].length, 0);
+}
 
 /** 按 schema 逐叶子组装整棵 `config`（分组从 schema 派生，不手写）。 */
 function buildRepresentativeConfig() {
@@ -750,7 +763,8 @@ test("S7 逐叶子构造的 config 子树过 JSON round-trip 等值（函数叶�
     false,
     "覆盖度不得改成按顶层键索引（那样 S3 删完顶层键就会漏测叶子）",
   );
-  assert.equal(leafPaths.length, 43);
+  // 条数派生（不手抄）：叶子总数 = schema 各组长度的和。
+  assert.equal(leafPaths.length, configLeafCount(), "leafPaths 必须覆盖 schema 的全部叶子");
 });
 
 test("S8 逐叶子穷举：config.<group>.<leaf> 展开后与扁平形态逐键深度相等（43 条）", () => {
@@ -767,7 +781,7 @@ test("S8 逐叶子穷举：config.<group>.<leaf> 展开后与扁平形态逐键�
       covered += 1;
     }
   }
-  assert.equal(covered, 43, "穷举必须覆盖全部 43 个配置键（漏一个就少一条等价证明）");
+  assert.equal(covered, configLeafCount(), "穷举必须覆盖 schema 的全部配置叶子（漏一个就少一条等价证明）");
 });
 
 test("S9 端到端语义等价：整棵 config 与扁平形态规范化后逐键深度相等（timing 三键走展开写回）", async () => {
@@ -781,16 +795,29 @@ test("S9 端到端语义等价：整棵 config 与扁平形态规范化后逐键
   // #498 S3：`config.timing.*` 的三个叶子已经没有扁平写法，所以对照分两步（与 497 的 B2 同形）：
   //   ① 剩下的键：扁平形态 vs config 形态逐键深度相等；
   //   ② 三个 S3 键：展开相必须逐字写回 `effectiveOptions.<扁平名>`（引擎读侧读的就是它们）。
+  // #498 S3 的两片（`timing` + `folding`）一共六个叶子已经没有扁平写法。
+  const S3_GROUPS = ["timing", "folding"];
   const flatWithoutS3 = { ...flat };
-  for (const leaf of CONFIG_NAMESPACE_SCHEMA.timing) delete flatWithoutS3[configOptionNameForLeaf("timing", leaf)];
+  for (const group of S3_GROUPS) {
+    for (const leaf of CONFIG_NAMESPACE_SCHEMA[group]) delete flatWithoutS3[configOptionNameForLeaf(group, leaf)];
+  }
   const nestedResult = await normalizeRunToolLoopOptions({ config });
   const flatResult = await normalizeRunToolLoopOptions({ ...flatWithoutS3 });
-  const { timeoutMs, deadlineMs, retry, ...nestedRest } = nestedResult.effectiveOptions;
-  assert.deepEqual(nestedRest, flatResult.effectiveOptions, "除 timing 三键以外，两种形态必须逐键深度相等");
+  const { timeoutMs, deadlineMs, retry, context, toolResultTtl, toolResultFoldMinTokens, ...nestedRest } = nestedResult.effectiveOptions;
+  assert.deepEqual(nestedRest, flatResult.effectiveOptions, "除 S3 两片的六个键以外，两种形态必须逐键深度相等");
   assert.deepEqual(
     { timeoutMs, deadlineMs, retry },
     { timeoutMs: flat.timeoutMs, deadlineMs: flat.deadlineMs, retry: flat.retry },
     "config.timing.* 必须逐字写回 effectiveOptions 的扁平名",
+  );
+  assert.deepEqual(
+    { context, toolResultTtl, toolResultFoldMinTokens },
+    {
+      context: flat.context,
+      toolResultTtl: flat.toolResultTtl,
+      toolResultFoldMinTokens: flat.toolResultFoldMinTokens,
+    },
+    "config.folding.* 必须逐字写回 effectiveOptions 的扁平名",
   );
   for (const [key, value] of Object.entries(flatResult.effectiveOptions)) {
     assert.deepEqual(nestedResult.effectiveOptions[key], value, `${key} 两种形态必须逐键相等`);

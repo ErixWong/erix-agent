@@ -89,7 +89,7 @@ test("判据②+端到端：滑窗折叠 → foldedFacts 落账（用的是策�
   provider.chatStream = provider.chat;
 
   // runToolLoop 是**单参数 options**；工具是数组 + executeTool，不是 map。
-  const run = await runToolLoop({
+  const run = await runToolLoop({ capabilities: { ports: { strategy: createSlidingWindowStrategy({ keepRounds: 1 }) } },
     provider,
     runId,
     store,
@@ -101,7 +101,7 @@ test("判据②+端到端：滑窗折叠 → foldedFacts 落账（用的是策�
     wrapup: false,
     stallDetection: false,
     // 折叠开关住在 `context` 里（`budgetTokens` / `keepRounds` / `strategy`），没有 `compaction` 这个键。
-    context: { budgetTokens: 300, keepRounds: 1, strategy: createSlidingWindowStrategy({ keepRounds: 1 }) },
+    config: { folding: { context: { budgetTokens: 300, keepRounds: 1, } } },
   });
   assert.ok(String(run?.finalText ?? "").includes("收尾结论"),
     `run 没正常收尾：${JSON.stringify(run?.termination ?? {})} rounds=${run?.rounds}`);
