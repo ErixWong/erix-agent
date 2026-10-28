@@ -40,7 +40,9 @@ async function runOnce(executeTool, { script = [toolRound("call-1"), DONE], opti
     ...options,
     // #498 S3 A23a：`completion` 并进**同一个** `config` 容器，且写在 `...options` 之后
     // （`options.config` 会顶掉先写的那个 `config` 键）。
-    config: { ...(options.config ?? {}), run: { ...(options.config?.run ?? {}), completion: false } },
+    // #498 S3 A23b（拆 A23a 的临时脚手架）：默认值写在 `run` 组最前面，调用方那份照旧赢；
+    // 扁平拼写退役后已经没有「用扁平样本覆盖默认值」这条路了。
+    config: { ...(options.config ?? {}), run: { completion: false, ...(options.config?.run ?? {}) } },
     // 规位：`onEvent` 与 `options` 可能带来的另一个 `hooks` 叶子必须落在**同一个**容器里。
     // 并列两个 `capabilities` 键是对象字面量重复键、后者静默胜（S7a 评审记过这个坑），
     // 这里显式合并 hooks，`options` 侧只覆盖同名叶子。

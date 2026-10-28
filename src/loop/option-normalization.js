@@ -202,7 +202,12 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // back onto `effectiveOptions.<key>`, so every engine
   // reader is unchanged and the name gate names the home.
   // Gate-2 parity + red-cell counts: the A13 slice test.
-  "completion",
+  // #498 S3 A23b: `completion` left this list; home `config.run.completion`.
+  // Expansion writes it back onto `effectiveOptions.completion`, so every engine
+  // reader (`completion !== false`, `?.signals`, `?.maxNoToolRounds` in orchestrator.js)
+  // is unchanged. A function is rejected on **both** spellings (the `stream`
+  // precedent: the engine only tests `false` / reads two fields, never calls it)
+  // ⇒ a narrowing, not a lost capability. Gate 2: `test/loop-run-slice-498s3a23b.test.js`.
   "finalGuard",
   // #498 S3 (`guard` slice): `finalGuardMaxRetries` / `finalGuardTimeoutMs` left the allowlist here.
   // Their canonical home is `config.guard.*` (`CONFIG_NAMESPACE_SCHEMA.guard` in

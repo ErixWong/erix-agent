@@ -69,7 +69,9 @@ function runDirect(extra = {}) {
     ...extra,
     // #498 S3 A23a：并进**同一个** `config` 容器，且写在 `...extra` 之后（否则 `extra.config`
     // 会静默顶掉这一行——对象字面量重复键，后者胜）。
-    config: { ...(extra.config ?? {}), run: { ...(extra.config?.run ?? {}), completion: false } },
+    // #498 S3 A23b（拆 A23a 的临时脚手架）：默认值写在 `run` 组最前面，`extra` 自己给的
+    // `config.run.completion` 照旧赢；扁平样本那条路已经随键一起退役。
+    config: { ...(extra.config ?? {}), run: { completion: false, ...(extra.config?.run ?? {}) } },
   });
 }
 
@@ -145,6 +147,9 @@ const assemblyError = (policy = {}, explicit = {}) => {
   //   · `explicit.config` 是对象 ⇒ 并进**同一个** `config` 容器（不造第二个键）；
   //   · `explicit.config` 省略 ⇒ 默认值并进 **policy 侧**那棵树（调用级不出现 `config` 键）；
   //   · `explicit.config` / `.run` 是**非对象**（本文件的形状拒绝格）⇒ 原样透传，什么都不补。
+  // #498 S3 A23b（拆 A23a 的临时脚手架）：这里保留三档，是因为它分的是「policy 侧 vs 调用级」的
+  // 落点（与扁平样本无关）；A23a 那半「让位给调用方扁平样本」的让位语义已经删掉——默认值现在
+  // 直接写在 `run` 组最前面，调用方给的 `config.run.completion` 照旧赢。
   const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
   const explicitConfig = explicit.config;
   const runIsMergeable = explicitConfig === undefined || (isPlainObject(explicitConfig)
@@ -156,10 +161,10 @@ const assemblyError = (policy = {}, explicit = {}) => {
   } else if (explicitConfig !== undefined) {
     callOptions.config = {
       ...explicitConfig,
-      run: { ...explicitConfig.run, completion: false },
+      run: { completion: false, ...explicitConfig.run },
     };
   } else if (isPlainObject(seeded.config) && (seeded.config.run === undefined || isPlainObject(seeded.config.run))) {
-    port = makePort({ ...seeded, config: { ...seeded.config, run: { ...seeded.config.run, completion: false } } });
+    port = makePort({ ...seeded, config: { ...seeded.config, run: { completion: false, ...seeded.config.run } } });
   }
   return runToolLoop({ assemblyPort: port, ...callOptions })
     .then(() => null, (error) => error);

@@ -198,15 +198,13 @@ test("G1 八格合法形状：扁平与规位两侧都必须 exit 0（形状可�
     const flat = await exitCode({
       provider: createFakeProvider(DONE),
       executeTool: async () => "ok",
-      config: { input: { initialUserMessage: "go", wrapup: false } },
-      completion: false,
+      config: { input: { initialUserMessage: "go", wrapup: false }, run: { completion: false } },
       [key]: value,
     });
     const nested = await exitCode({
       provider: createFakeProvider(DONE),
       executeTool: async () => "ok",
-      config: { input: { initialUserMessage: "go", wrapup: false }, run: { [key]: value } },
-      completion: false,
+      config: { input: { initialUserMessage: "go", wrapup: false }, run: { completion: false, [key]: value } },
     });
     // 扁平侧此刻**已经**被拒（键退役了）——闸口二在删键**前**跑过，两侧都是 0；删键之后
     // 扁平侧的期望值就是「拒」。这条断言钉的是**规位侧的可达性**（0）与扁平侧的**确定性**
@@ -474,7 +472,10 @@ test("A2 `run` 组**没有**整组收口：四个退役叶子被派生认出，�
   // 翻成反向钉——与 A15 对 `cwd`、A16 对 `stream`、A19 对 `resume`、A20 对 `runId` 的改法逐字同形
   // （改而不删）。
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("maxRounds"), false, "A21 已退役 `maxRounds` 的扁平写法");
-  for (const leaf of ["completion", "reflection"]) {
+  // #498 S3 A23b：`completion` 也退役了（家 `config.run.completion`），同样从这条循环里移出、
+  // 翻成反向钉——与上面各条逐字同形（改而不删）。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("completion"), false, "A23b 已退役 `completion` 的扁平写法");
+  for (const leaf of ["reflection"]) {
     assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(leaf), true, `${leaf} 本片一个字没动`);
   }
   assert.equal(

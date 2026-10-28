@@ -80,7 +80,9 @@ async function runOnce({ rawArguments, options = {}, executeTool }) {
     // #498 S3 A23a：`completion` 并进**同一个** `config` 容器（家 `config.run.completion`）。
     // 调用方可能经 `options.config` 带来自己的 config，所以合并必须写在 `...options` **之后**
     // （并列两个 `config` 键是后者静默胜，A21 在随包契约里踩过这个坑）。
-    config: { ...(options.config ?? {}), run: { ...(options.config?.run ?? {}), completion: false } },
+    // #498 S3 A23b（拆 A23a 的临时脚手架）：默认值直接写在 `run` 组最前面——扁平拼写退役后
+    // 没有「调用方用扁平样本覆盖默认值」这条路了，调用方给的 `config.run.completion` 照旧赢。
+    config: { ...(options.config ?? {}), run: { completion: false, ...(options.config?.run ?? {}) } },
     capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
   return { result, events, executed, fetchImpl };

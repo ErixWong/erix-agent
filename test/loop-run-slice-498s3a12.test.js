@@ -55,16 +55,16 @@ function base(extra = {}) {
   return {
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
-    completion: false,
     // #498 S3 A13：`stallDetection` 也退役了扁平写法（家在 `config.run.stallDetection`），所以
-    // 这里不再拿它当「仍在白名单的填充键」——那会让本文件随下一片一起红。填充键只留仍在
-    // 白名单里的 `completion`。
+    // 这里不再拿它当「仍在白名单的填充键」——那会让本文件随下一片一起红。
+    // #498 S3 A23b：`completion` 也退役了（家 `config.run.completion`），填充键一并搬进 `run` 组。
     ...extra,
     // #498 S3 A18：`wrapup` 的扁平写法也退役了（家在 `config.input.wrapup`）。容器**合并**而不是
     // 被 `...extra` 整体覆盖：调用方自带 `config` 时种子与收尾开关都要留下。
     config: {
       ...extra.config,
       input: { initialUserMessage: "go", wrapup: false, ...extra.config?.input },
+      run: { completion: false, ...extra.config?.run },
     },
   };
 }

@@ -85,13 +85,13 @@ function base(extra = {}) {
   return {
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
-    completion: false,
     ...extra,
     // `config` 是**合并**而不是覆盖：`...extra` 之后再写一个字面量 `config` 会把调用方那份
     // 静默顶掉（后者胜）——那正是 `test/loop-seed-fixture-521.test.js` 的 G1 在扫的雷。
     config: {
       ...extra.config,
       input: { initialUserMessage: "go", wrapup: false, ...extra.config?.input },
+      run: { completion: false, ...extra.config?.run },
     },
   };
 }
