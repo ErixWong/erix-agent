@@ -458,19 +458,25 @@ test("S `input` 组仍未收口：仍可扁平写的成员逐字等于退回清�
   assert.equal(nestedOnly.length + flatTwins.length, CONFIG_NAMESPACE_SCHEMA.input.length, "两半必须恰好覆盖整组");
 });
 
-test("T 第三站账目（#527）：两个家都没有的键 11 → 12，`tools` 是新增的那一个", () => {
+test("T 第三站账目（#527 → #531）：两个家都没有的键 11 → 12 → 13，`tools` / `session` 是新增的那两个", () => {
   // 口径逐字来自工单：`configPathForOption(name) === undefined` 且
   // `capabilitiesPathForOption(name) === undefined`。这条**不读**任何手写名单，只读两个 schema。
   const noNestedHome = RUN_TOOL_LOOP_OPTION_NAMES.filter(
     (name) => configPathForOption(name) === undefined && capabilitiesPathForOption(name) === undefined,
   );
-  assert.equal(noNestedHome.length, 12, "#527 之后「两个家都没有」的键必须是 12（之前 11）");
+  // #531：条数**派生**（第三站 + 两个容器），不手抄——`session` 立为第三站成员后 12 → 13。
+  assert.equal(
+    noNestedHome.length,
+    TOP_LEVEL_SURFACE_OPTION_NAMES.length + NAMESPACE_CONTAINER_OPTION_NAMES.length,
+    "「两个家都没有」的键 = 第三站 + 两个容器（#527 起 12，#531 起 13，条数从符号派生）",
+  );
   assert.deepEqual(
     [...noNestedHome].sort(),
     [...TOP_LEVEL_SURFACE_OPTION_NAMES, ...NAMESPACE_CONTAINER_OPTION_NAMES].sort(),
-    "这 12 个必须逐字等于第三站 + 两个容器（多一个少一个都红）",
+    "这些键必须逐字等于第三站 + 两个容器（多一个少一个都红）",
   );
-  assert.equal(noNestedHome.includes("tools"), true, "tools 必须在这 12 个里——它就是 11 → 12 的新增成员");
+  assert.equal(noNestedHome.includes("tools"), true, "tools 必须在这批里——它就是 11 → 12 的新增成员");
+  assert.equal(noNestedHome.includes("session"), true, "session 必须在这批里——它就是 12 → 13 的新增成员（#531）");
   assert.equal(configPathForOption("tools"), undefined, "tools 的配置面之家已拆（这是 12 的算法的一半）");
   assert.equal(capabilitiesPathForOption("tools"), undefined, "tools 也不是能力面叶子（另一半）");
   assert.equal(TOP_LEVEL_SURFACE_OPTION_NAMES.includes("tools"), true, "tools 的所有权分类 = 永久顶层面（第三站）");

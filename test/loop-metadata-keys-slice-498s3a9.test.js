@@ -1,15 +1,19 @@
 // issue #498（S3）—— `metadata` 组的**大四件（A9 段）**：`user` / `model` / `task` 删掉顶层扁平写法，
-// 规范之家是 `config.metadata.*`；`session` **经同值判定退回**（不删）。
+// 规范之家是 `config.metadata.*`；`session` **经同值判定退回**（本片不删）。
+//
+// **#531 接手 `session` 那一半**：它不进 `config.metadata`（同值判定说顶层选项与装配口成员是同一个值），
+// 而是立为**第三站**（永久顶层面）成员——`TOP_LEVEL_SURFACE_OPTION_NAMES` 10 → 11，`config.metadata.session`
+// 从「半开的门」（能写、且是第二个家）变成**闭门**（未知叶子当场拒，文案指向顶层第三站）。
 //
 // 工单的判据是「先量后动」：逐键只删白名单一项 → 跑全量、数红格。基点树上实测
 // **user 6 / model 5 / task 13 / session 19**（和 43，四键同删 29 ⇒ 重叠 14），全部远低于
 // 「单键 > ~150 格红 ⇒ 先落 #521 式夹具级翻译点」的阈值 ⇒ 本片**没有**翻译点，直接删键。
 //
-// `session` 为什么退回（工单点名的那条裁决，本文件用机器判据钉住，不靠叙述）：
+// `session` 为什么没进 `config.metadata`（工单点名的那条裁决，本文件用机器判据钉住，不靠叙述）：
 // 装配口的 `session` 成员与顶层 `session` 选项是**同一个值**——`assemblyPortOptions(port).session`
 // 与 `port.session` 是同一个对象引用（S1），冲突文案也把 `port.session` 点成 `session` 这个键的
-// 构造期来源（S2）。所以把扁平拼写退役掉，等于把 `config.metadata.session` 升成「session 端口的
-// 第二个家」——正是本仓裁决禁止的那件事。**退回并报告**，不新立家。
+// 构造期来源（S2）。所以给它一个嵌套家，等于让**一个键有两个家**。
+// **#531 的裁决是「两个入口、一个家」**：家 = 第三站（顶层），嵌套拼写 = 未知叶子。
 //
 // 本文件钉的是七件事（全部派生，不手抄键数/组名）：
 //
@@ -81,10 +85,10 @@ const RETIRED = [
 ];
 
 /**
- * `metadata` 组里**仍是顶层扁平选项**的叶子（本片之后只剩 `session`）。
+ * `metadata` 组里**仍是顶层扁平选项**的叶子（#531 之后为**空**）。
  *
  * 派生而不是手抄：叶子名逐字等于扁平选项名（`metadata` 组没有重命名），所以「还在白名单里吗」
- * 就是唯一判据。将来谁退役 `session`，这里自动变空、A8 的 P5-c 也跟着变空，不需要改判断逻辑。
+ * 就是唯一判据。A8 的 P5-c 与本文件的 S3 都读这张表，于是「`metadata` 组收口」不需要手抄组名。
  */
 const STILL_FLAT_METADATA = CONFIG_NAMESPACE_SCHEMA.metadata
   .filter((leaf) => RUN_TOOL_LOOP_OPTION_NAMES.includes(leaf));
@@ -128,7 +132,8 @@ test("P2 新家写回：config.metadata.<key> 展开后逐字写回 effectiveOpt
   for (const { key } of RETIRED) {
     assert.equal(RETIRED_METADATA.includes(key), true, `${key} 必须出现在「已退役叶子」派生集合里`);
   }
-  assert.equal(RETIRED_METADATA.includes("session"), false, "`session` 不许被算成已退役（它是退回的那个）");
+  assert.equal(RETIRED_METADATA.includes("session"), false, "`session` 不是「退役叶子」：它整个离开了 schema（#531）");
+  assert.equal(CONFIG_NAMESPACE_SCHEMA.metadata.includes("session"), false, "`config.metadata.session` 叶子已被 #531 拆掉");
   assert.deepEqual(configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES), [], "四向自检必须仍 []");
   for (const { key, value } of RETIRED) {
     const result = await runDirect(minimalRun({ config: { metadata: { [key]: value } } }));
@@ -262,11 +267,25 @@ test("S2 冲突文案把 port.session 点成 session 这个键的构造期来源
   );
 });
 
-test("S3 session 仍在扁平面：本片没有把它挪进 config.metadata（退回，不是漏做）", async () => {
+test("S3 #531 闭门：第三站 ⇒ 写顶层；写 `config.metadata.session` 作为未知叶子当场拒，文案逐字指向第三站", async () => {
+  // ① 第三站成员：`session` 在表里，且**没有**嵌套家（`configPathForOption` 回答 undefined）。
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("session"), true, "`session` 必须仍在白名单");
-  assert.deepEqual(STILL_FLAT_METADATA, ["session"], "`metadata` 组里只剩 `session` 还是扁平写法");
+  assert.equal(TOP_LEVEL_SURFACE_OPTION_NAMES.includes("session"), true, "`session` 必须是第三站成员");
+  assert.equal(configPathForOption("session"), undefined, "`session` 不许有任何嵌套家");
+  assert.deepEqual(STILL_FLAT_METADATA, [], "`metadata` 组里不再有扁平孪生（组已收口）");
+  assert.equal(CONFIG_NAMESPACE_SCHEMA.metadata.includes("session"), false, "schema 里不许再有 session 叶子");
+  // ② 顶层照旧收（同一个值、同一个入口）。
   const { effectiveOptions } = await normalizeRunToolLoopOptions({ session: { id: "a9-flat-session" } });
   assert.deepEqual(effectiveOptions.session, { id: "a9-flat-session" }, "扁平 `session` 照旧被接受");
+  // ③ 闭门：同一个值写进旧规位 ⇒ **未知叶子**当场拒，文案逐字（照 `config.input.tools` 那条的格式）。
+  const error = await directError({ config: { metadata: { session: { id: "a9-nested" } } } });
+  assert.equal(error instanceof TypeError, true, "config.metadata.session 必须当场拒");
+  assert.equal(
+    error.message,
+    'unknown config.metadata option: "session" ("session" is a permanent top-level option —'
+      + " the third station — write it at the top level: session: …)",
+    "文案必须逐字：未知叶子 + 指向「第三站在顶层」（半开门 ⇒ 闭门）",
+  );
 });
 
 // ================================================================ N. 撞名归属（每个名字只碰一张面）

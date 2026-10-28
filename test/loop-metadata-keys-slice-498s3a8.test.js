@@ -78,10 +78,12 @@ const RETIRED = [
  *
  * #498 S3 A9 起这条边界是**派生**的：叶子仍在 schema 里，而扁平拼写是否仍在白名单由源名单说了算。
  * 于是 A9 每退役一个键（`user` / `model` / `task`），这张表自动变短，不需要改判断逻辑；
- * `session` 经同值判定退回，继续留在这张表里。
+ * **#531** 把 `session` 立成第三站成员、拆掉了 `config.metadata.session` 叶子 ⇒ 它不再在这张表里
+ * （它也没有嵌套家了，`configPathForOption` 回答 undefined）。
  */
 const STILL_FLAT = ["user", "task", "model", "session"]
   .filter((key) => RUN_TOOL_LOOP_OPTION_NAMES.includes(key))
+  .filter((key) => configPathForOption(key) !== undefined)
   .map((key) => ({ key, home: configPathForOption(key) }));
 
 /** 直连路线的最小合法 run（一次 end_turn 就结束）。 */
@@ -310,19 +312,25 @@ test("P5-c 同组大四件里仍未退役的那些：扁平写法照旧可用（
     const { effectiveOptions } = await normalizeRunToolLoopOptions({ [key]: "still-flat" });
     assert.equal(effectiveOptions[key], "still-flat", `扁平 ${key} 必须仍被接受`);
   }
-  assert.equal(STILL_FLAT.some(({ key }) => key === "session"), true, "`session` 是本片经同值判定退回的那个键");
+  // #531：`session` 已不是「仍在等自己那一片」的键——它是第三站成员，嵌套家已被拆掉。
+  assert.equal(STILL_FLAT.some(({ key }) => key === "session"), false, "`session` 不许再留在这张表里");
+  assert.equal(configPathForOption("session"), undefined, "`session` 没有嵌套家（第三站）");
 });
 
 // ================================================================ F. 函数差异 as-is 钉（工单硬义务 ②）
 //
 // 事实（实测，不是推断）：**扁平写法今天收函数**（`session: () => 1` 通过、`typeof` 一路保持到工具
-// 上下文），**规位拒**（`config.metadata.session = () => 1` 当场抛）。本刀接受这条收窄，但必须把
+// 上下文），**规位拒**（`config.metadata.expert = () => 1` 当场抛）。本刀接受这条收窄，但必须把
 // **差异本身**钉住：将来谁放宽了（规位开始收函数）或谁收紧了（扁平也开始拒函数），这一格都会红。
 //
 // #498 S3 A9：这条钉子原来挂在 `user` 上；`user` 退役后扁平写法不再收函数（名称闸口先抛），
 // 所以钉子**原样搬到仍在扁平面上的 `session`**——不是放宽，是同一性质的现役实例。
+// **#531**：`session` 仍是扁平（现在是第三站成员），所以「扁平收函数」那一半一字未改；
+// 而 `config.metadata.session` 那个叶子被拆掉了，它的拒绝换成了**未知叶子 + 指向第三站**
+// （钉在 A9 的 S3）。函数差异的那一半改挂到 `config.metadata.expert`——它仍在配置面、仍是数据键，
+// 于是「规位拒函数、且文案说清引擎从没调用过它」这条判据仍有现役实例可钉。
 
-test("F1 as-is：扁平 session 收函数且 typeof 保持到工具上下文，而 config.metadata.session 拒", async () => {
+test("F1 as-is：扁平 session 收函数且 typeof 保持到工具上下文，而规位（config.metadata.expert）拒", async () => {
   let seen;
   const result = await runDirect({
     provider: createFakeProvider(TOOL_ROUND),
@@ -338,9 +346,9 @@ test("F1 as-is：扁平 session 收函数且 typeof 保持到工具上下文，�
   assert.equal(typeof seen?.session, "function", "函数值必须原样到达工具上下文（引擎不调用它，只转发）");
   assert.equal(seen.session(), 1, "同一份值仍可被**宿主自己的**工具调用（引擎从不调用它）");
 
-  const rejected = await directError({ config: { metadata: { session: () => 1 } } });
+  const rejected = await directError({ config: { metadata: { expert: () => 1 } } });
   assert.equal(rejected instanceof TypeError, true, "规位今天必须拒函数值（这就是那条收窄）");
-  assert.match(rejected.message, /^config\.metadata\.session is not accepted/u);
+  assert.match(rejected.message, /^config\.metadata\.expert is not accepted/u);
   assert.match(rejected.message, /the engine never calls it, it only forwards the value/u, "文案必须说清「没丢能力」");
 });
 

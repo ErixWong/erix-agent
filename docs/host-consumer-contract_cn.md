@@ -183,7 +183,7 @@ executeTool({ id, name, input, context, signal })
 | `config.timing` | `timeoutMs`、`deadlineMs`、`retry` |
 | `config.folding` | `context`、`toolResultTtl`、`toolResultFoldMinTokens` |
 | `config.guard` | `finalGuardMaxRetries`、`finalGuardTimeoutMs`、`finalGuardExtend` |
-| `config.metadata` | `expert`、`user`、`task`、`requestId`、`toolContext`、`model`、`modelMetadata`、`session` |
+| `config.metadata` | `expert`、`user`、`task`、`requestId`、`toolContext`、`model`、`modelMetadata`——**没有** `session`（issue #531：它是永久顶层面，第三站） |
 
 **扁平写法的版本口径**（issue #498 S3，`timing` 切片）。这是第一个真正**退掉**顶层扁平键的切片，
 所以规则按版本写，不按「今天」写：
@@ -517,7 +517,7 @@ unknown runToolLoop option: "context" (its canonical home is config.folding.cont
   （`config.run.persistence`；`"none"` / `"required"` 字面量被校验并决定持久化路径——`"required"`
   会打开 transcript store 的方法校验）、`model` / `modelMetadata`（`config.metadata.*`；
   `contextWindowTokens` / `maxOutputTokens` 两个数字被 `modelMetadataFor`（`src/loop/budget.js`）
-  读去推压缩预算与「15% 窗口」的输出上限）、`session`（`config.metadata.session`；`id` 被校验、
+  读去推压缩预算与「15% 窗口」的输出上限）、`session`（`id` 被校验、
   `modelSlot` 被交给 `modelConfig.resolve`、`initialMessages` 被读）。旧判据
   「能力面 = 引擎不解释其值」对这四个键**实测为假**。注意 `session` 只装数据：0.27 草案里还有一条
   `session.resume` → 扁平 `resume` 的别名，那条别名已经删掉（issue #498 S4b）——现在写
@@ -525,7 +525,8 @@ unknown runToolLoop option: "context" (its canonical home is config.folding.cont
   `runToolLoop` 选项经同一道语义相（`collectSemanticOptionProblems`，规则本体与文件出处见本文开头），
   并点名完整路径 `session.resume`、指向 `config.run.resume` / 扁平 `resume`。它不会被静默丢掉：
   直连路线以前收下这个键然后照常跑（没有续跑），那正是本版要消掉的「配了等于没配」。
-  `config.metadata.session` 展开后就是这同一个顶层 `session`，所以那个写法撞的是同一道闸口。
+  `session` 是数据，但它**唯一**的家是顶层（issue #531）：规位 `config.metadata.session` 是**未知叶子**
+  当场拒——见下面「`session` 是端口类键」一节。
   
   **历史：`tools` 曾是最后一个不满足这条判据的键**（issue #498 S4a 发布时它还在能力面上）。
   引擎从不**调用**工具声明的成员——它校 `replay`（枚举字面量）、读 `name` / `inputSchema`，然后把这个
@@ -640,11 +641,31 @@ value — so pass plain data (host callbacks belong under capabilities.hooks.<na
   它，只把值转发出去*）。这三个值都是不透明身份载荷——引擎只按名字读已知字段（`model` 的两个窗口
   数字），其余原样转发。
 
-**`session` 量过之后是*退回*，不是退役。** 它有 19 格红，所以拦下它的不是体量：顶层 `session` 选项与
-装配口的 `session` 成员是**同一个值**——`assemblyPortOptions(port).session === port.session`（引用相等，
-不是 deepEqual），且构造期冲突文案把 `port.session` 点成同一个键的来源。本仓裁决说
-**`config.metadata.session` 不是 session 端口的第二个家**，那么退役扁平拼写就等于把那个叶子升成第二个家。
-所以它留在扁平面，裁决保持完整（S1–S3 把三半都钉住）。
+**`session` 是端口类键：两个入口、一个家（issue #531）。** #498 S3 量过它之后是*退回*（19 格红，所以
+拦下它的不是体量）；#531 把这个问题的另一半裁决完。`session` 与 `provider` / `executeTool` / `store` /
+`modelConfig` **同类**：它是**装配口成员**，而顶层选项与端口成员是**同一个值的两个入口**——
+`assemblyPortOptions(port).session === port.session`（引用相等，不是 deepEqual），构造期冲突文案也把
+`port.session` 点成同一个键的来源。这个双入口正是宿主最容易踩的坑：`createAssemblyPort({ session })`
+与 `runToolLoop({ session })` 不是两处设置，而是**同一个值被看见两次**；直连路线上显式顶层选项赢过
+端口成员。
+
+所以裁决是**两个入口、一个家**：家在**顶层**——`session` 是永久顶层面，即第三站
+（`TOP_LEVEL_SURFACE_OPTION_NAMES`，10 → 11），与 `provider` / `executeTool` / `store` / `modelConfig` /
+`tools` 同一个桶。`config.metadata.session` 叶子已被拆掉，现在写它是**未知叶子当场拒**：
+
+```
+unknown config.metadata option: "session" ("session" is a permanent top-level option — the third station — write it at the top level: session: …)
+```
+
+| 版本 | 写 `config.metadata.session` |
+| --- | --- |
+| 0.26.0 及更早（最后一个**已发布**版本） | 根本没有 `config` 命名空间，所以这个问题不存在——`session` 是顶层选项，那是那些版本唯一认识的写法 |
+| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「那个叶子存在」的树 |
+| 0.28.0 起（issue #531） | **当场拒**——写顶层 `session`。上面那句就是闭门文案；引擎读侧一字未动（`effectiveOptions.session` 还是原来那个值） |
+
+三半都有机器判据（`test/loop-metadata-keys-slice-498s3a9.test.js` S1–S3）：两个入口同值（S1）、冲突文案
+点名 `port.session`（S2）、闭门——顶层照收而 `config.metadata.session` 逐字回上面那句（S3）。于是这组
+**收口**：`config.metadata` 里不再有扁平孪生。
 
 **这三个词还活在别的面上，本片一个都没动：**
 
@@ -659,7 +680,7 @@ value — so pass plain data (host callbacks belong under capabilities.hooks.<na
 | `task` | fold-context 壳 `context.task`（显式 task 赢过它——as-is） | `src/loop/task-brief.js`（`resolveTaskBrief`）、`src/assembly-validators.js` | **没动**（N2） |
 | `task` | `task-brief.js` 的字符串读（`typeof === "string"` + `trim()`） | `src/loop/task-brief.js` | **没动**——读侧 |
 | `task` | `erix_run` 扩展自己的 `task` 入参（`core.run({ task })`） | `examples/pi-extension/erix-run-core.js` | **没动**——另一张 API 面 |
-| `session` | 装配口成员 `port.session` | `src/assembly.js`（`assemblyPortOptions`） | **没动**——同值 ⇒ 退回 |
+| `session` | 装配口成员 `port.session` | `src/assembly.js`（`assemblyPortOptions`） | **没动**——同一个值，所以顶层就是它唯一的家（两个入口、一个家；#531） |
 | `session` | CLI `--session <id>` 参数（会话 id 字符串，喂给 `runId`） | `bin/cli.js` | **没动**——完全是另一个键 |
 
 **建议噪声是实测的，不是假设。** 「did you mean」的候选池是**现役**白名单，而 `model` 与
@@ -674,7 +695,7 @@ value — so pass plain data (host callbacks belong under capabilities.hooks.<na
 | --- | --- | --- |
 | `runToolLoop` 顶层选项 | `RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`） | **本片退役的**（唯一搬走的那一面） |
 | `config.metadata.*` | `CONFIG_NAMESPACE_SCHEMA.metadata`（`src/loop/config-namespace.js`） | 规位——写这里 |
-| 装配口 `policy.modelMetadata` / `.requestId` / `.toolContext` / `.expert` | `src/assembly.js`——端口成员，不是顶层选项 | **未动**（#525 的面）；它们照旧到达 run |
+| 装配口 `policy.modelMetadata` / `.requestId` / `.toolContext` / `.expert` / `.session` | `src/assembly.js`——端口成员，不是顶层选项 | **未动**（#525 的面）；它们照旧到达 run。`policy.session` 与顶层 `session` 选项是**同一个值**（#531） |
 | `context.expert` / `.requestId` / `.toolContext`（fold-context 壳） | `src/loop/budget.js`（`toolContextFor` 的 `?? context?.<key>` fallback 链） | **未动**——fallback 链照旧生效，显式 `config.metadata.*` 仍赢过它（P5-b） |
 | 交给 `executeTool` 的工具上下文 / judge 简报 | `src/loop/budget.js` 里的 `toolContextFor`，由 `src/loop/orchestrator.js` 转交 | **未动**——那是引擎的**读侧** |
 | 槽位窗口数字（`slots.default.contextWindowTokens` / `maxOutputTokens`） | `src/config/slot-provider.js` | **未动**——配置文件不是 `runToolLoop` 选项 |

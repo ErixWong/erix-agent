@@ -224,7 +224,7 @@ total that goes stale the next time a group moves.
 | `config.timing` | `timeoutMs`, `deadlineMs`, `retry` |
 | `config.folding` | `context`, `toolResultTtl`, `toolResultFoldMinTokens` |
 | `config.guard` | `finalGuardMaxRetries`, `finalGuardTimeoutMs`, `finalGuardExtend` |
-| `config.metadata` | `expert`, `user`, `task`, `requestId`, `toolContext`, `model`, `modelMetadata`, `session` |
+| `config.metadata` | `expert`, `user`, `task`, `requestId`, `toolContext`, `model`, `modelMetadata` — **not** `session` (issue #531: it is a permanent top-level option, the third station) |
 
 **Version scope of the flat spelling** (issue #498 S3, the `timing` slice). This is the first slice
 that actually **retires** flat top-level keys, so the rule is stated as versions, not as "today":
@@ -621,7 +621,7 @@ Five rules govern it:
   turns on the transcript-store method check), `model` / `modelMetadata` (`config.metadata.*`;
   their `contextWindowTokens` / `maxOutputTokens` numbers are read by `modelMetadataFor`
   (`src/loop/budget.js`) to derive the compaction budget and the 15%-of-window output limit) and
-  `session` (`config.metadata.session`; `id` is validated, `modelSlot` is passed to
+  and `session` (`id` is validated, `modelSlot` is passed to
   `modelConfig.resolve`, `initialMessages` is read). The old wording — "capability
   means the engine does not interpret its value" — was measurably false for all four. Note that
   `session` is data **only**: the 0.27 draft also accepted `session.resume` as an alias of the flat
@@ -630,8 +630,9 @@ Five rules govern it:
   shared semantic phase `collectSemanticOptionProblems` in `src/assembly-validators.js`), naming the
   full path `session.resume` and pointing at `config.run.resume` / the flat `resume`. It is never
   silently dropped: the direct route used to accept the key and run without resuming, which is the
-  "configured but inert" shape this release removes. `config.metadata.session` expands to this same
-  top-level `session`, so that spelling hits the same gate.
+  "configured but inert" shape this release removes. `session` is data, but its **only** home is the
+  top level (issue #531): the nested spelling `config.metadata.session` is an unknown leaf rejected on
+  the spot — see "`session` is a port-class key" below.
   
   **History: `tools` was the last key that did not satisfy that criterion** (issue #498 S4a shipped
   with it on the capability list). The engine never *calls* a member of a tool definition — it
@@ -776,13 +777,35 @@ Two properties hold, both machine-checked (`test/loop-metadata-keys-slice-498s3a
   value*). These three values are opaque identity payloads — the engine reads only known fields
   (`model`'s two window numbers) and forwards the rest.
 
-**`session` was measured and then *returned*, not retired.** It had 19 red cells, so it was not size
-that stopped it: the top-level `session` option and the assembly port's `session` member are the
-**same value** — `assemblyPortOptions(port).session === port.session` (identity, not deep equality),
-and the construction-time conflict message names `port.session` as the source of the very same key.
-The repo's ruling says `config.metadata.session` is **not** a second home for the session port, so
-retiring the flat spelling would have promoted that leaf into exactly that second home. It stays flat
-and the ruling stays intact (S1–S3 pin all three halves).
+**`session` is a port-class key: two entries, one home (issue #531).** Issue #498 S3 measured it and
+*returned* it (19 red cells, so size was not what stopped it); issue #531 then settled the question the
+other way round. `session` belongs to the same class as `provider` / `executeTool` / `store` /
+`modelConfig`: it is an **assembly-port member**, and the top-level option and the port member are
+**two entries of the same value** — `assemblyPortOptions(port).session === port.session` (identity,
+not deep equality), and the construction-time conflict message names `port.session` as the source of
+the very same key. That double entry is the trap hosts hit most often: `createAssemblyPort({ session })`
+and `runToolLoop({ session })` are not two different settings, they are one value seen twice, and the
+explicit top-level option wins over the port's member on the direct route.
+
+So the ruling is **two entries, one home**: the home is the **top level** — `session` is a permanent
+top-level option, the third station (`TOP_LEVEL_SURFACE_OPTION_NAMES`, 10 → 11), the same bucket as
+`provider` / `executeTool` / `store` / `modelConfig` / `tools`. The `config.metadata.session` leaf was
+removed, and writing it is now an **unknown leaf rejected on the spot**:
+
+```
+unknown config.metadata option: "session" ("session" is a permanent top-level option — the third station — write it at the top level: session: …)
+```
+
+| release | writing `config.metadata.session` |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | there is no `config` namespace at all, so the question does not arise — `session` is a top-level option, and that is the only spelling those versions know |
+| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which the leaf existed |
+| 0.28.0 and later (issue #531) | **rejected on the spot** — write the top-level `session`. The message above is the closed door; the engine's read side is untouched (`effectiveOptions.session` is still what it always was) |
+
+Three halves are machine-pinned (`test/loop-metadata-keys-slice-498s3a9.test.js` S1–S3): the same
+value on both entries (S1), the conflict message naming `port.session` (S2), and the closed door —
+top level accepted, `config.metadata.session` rejected with the verbatim message above (S3). The
+group is therefore **closed**: `config.metadata` has no flat twin left.
 
 **These three words live on other planes, and this slice moved none of them:**
 
@@ -797,7 +820,7 @@ and the ruling stays intact (S1–S3 pin all three halves).
 | `task` | the fold-context shell `context.task` (explicit task wins over it — as-is) | `src/loop/task-brief.js` (`resolveTaskBrief`), `src/assembly-validators.js` | **no** (N2) |
 | `task` | `task-brief.js`'s string read (`typeof === "string"` + `trim()`) | `src/loop/task-brief.js` | **no** — read side |
 | `task` | the `erix_run` extension's own `task` parameter (`core.run({ task })`) | `examples/pi-extension/erix-run-core.js` | **no** — a different API plane |
-| `session` | the assembly port member `port.session` | `src/assembly.js` (`assemblyPortOptions`) | **no** — same value ⇒ returned |
+| `session` | the assembly port member `port.session` | `src/assembly.js` (`assemblyPortOptions`) | **no** — the same value, so the top level is its one home (two entries, one home; #531) |
 | `session` | the CLI `--session <id>` argument (a session id string, fed to `runId`) | `bin/cli.js` | **no** — a different key entirely |
 
 **Suggestion noise is measured, not assumed.** The candidate pool for "did you mean" is the **live**
@@ -813,7 +836,7 @@ now gets neither a suggestion nor a home, just the bare unknown-option sentence 
 | --- | --- | --- |
 | `runToolLoop` top-level option | `RUN_TOOL_LOOP_OPTION_NAMES` (`src/loop/option-normalization.js`) | **retired by this slice** (the only one that moved) |
 | `config.metadata.*` | `CONFIG_NAMESPACE_SCHEMA.metadata` (`src/loop/config-namespace.js`) | the canonical home — write here |
-| assembly `policy.modelMetadata` / `.requestId` / `.toolContext` / `.expert` | `src/assembly.js` — port members, not top-level options | **untouched** (#525's plane); they still reach the run |
+| assembly `policy.modelMetadata` / `.requestId` / `.toolContext` / `.expert` / `.session` | `src/assembly.js` — port members, not top-level options | **untouched** (#525's plane); they still reach the run. `policy.session` is the *same value* as the top-level `session` option (#531) |
 | `context.expert` / `.requestId` / `.toolContext` (the fold-context shell) | `src/loop/budget.js` (`toolContextFor`'s `?? context?.<key>` fallback chain) | **untouched** — the fallback chain still works, and an explicit `config.metadata.*` value still wins over it (P5-b) |
 | tool context handed to `executeTool` / the judge brief | the `toolContextFor` helper in `src/loop/budget.js`, handed over by `src/loop/orchestrator.js` | **untouched** — that is the engine's *read* side |
 | model-slot window numbers (`slots.default.contextWindowTokens` / `maxOutputTokens`) | `src/config/slot-provider.js` | **untouched** — a config file is not a `runToolLoop` option |

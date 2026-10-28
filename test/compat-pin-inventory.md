@@ -5,6 +5,21 @@
 >
 > 本文件随 `test/` 落盘、**不进 npm 包**（`package.json` 的 `files` 没有它）。
 >
+> ⚠ **附表口径刷新（#531 `session` 立为第三站：拆掉 `config.metadata.session` 叶子，本片）**：
+> 附表 **1324 → 1324**（净 ±0，行数 114 → 114）、主表 **170 → 170**（不变，行数 23 → 23）。
+> 净 ±0 是两笔的差，方向相反、恰好抵消：
+>   · **+1**：`test/loop-config-namespace-497.test.js` 44 → **45**（`session`×3 → ×4）。`config.metadata.session`
+>     那个规位写点（`config` 是容器，规则 4 数到就停 ⇒ 本来就不在计数口径里）改成**扁平** `session` 写点
+>     ——A4 ④ 的两处行为证据（`session: {}` 与 `session: { id, modelSlot }`）现在是顶层写点，另外
+>     B2 的 `VALUES` 里删掉一条 `session`（它没有嵌套家了），三处相抵净 +1；
+>   · **−1**：`test/loop-capabilities-namespace-498.test.js` 23 → **22**（`session`×2 → ×1）。它的
+>     `REPRESENTATIVE_CONFIG_VALUES` 是**按叶子名索引**的 round-trip 覆盖表，`session` 不再是配置叶子
+>     ⇒ 那一行必须删（留着会红：覆盖表键集必须与 schema 叶子集逐字相等），于是少一个 `session` 写点。
+> 本片删的 `config.metadata.session` 是**容器内**写点，本来就不进表；`session` 的顶层扁平写点一个都没
+> 退役（它是第三站成员，不是退役键），所以其余 112 个写点与那 22 个文件一行未动。
+> 复跑：`node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
+> （主表 170 / 附表 1324 都是 AST 实测）。
+>
 > ⚠ **附表口径刷新（#498 S3 第十片 `metadata` A9：`user` / `model` / `task` 三键删键，本片）**：
 > 附表 **1304 → 1324**（净 +20，行数 113 → 114）、主表 **170 → 170**（不变，行数 23 → 23）。
 > 净 +20 是三笔的差：
@@ -619,13 +634,13 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/cli.test.js` | 74 | `session`×36, `prompt`×29, `reflection`×4, `tools`×3, `context`×2, `finalGuard`×2, `completion`×1 |
 | `test/loop-resume.test.js` | 71 | `completion`×33, `resume`×23, `tools`×8, `reflection`×3, `partialPersistence`×2, `wrapup`×2 |
 | `test/loop-option-gate-496.test.js` | 28 | `context`×31, `completion`×7, `onFoldSummary`×7, `finalGuard`×6, `reflection`×5, `retry`×5, `tools`×3, `deliverables`×2, `session`×2, `partialPersistence`×1, `sleepImpl`×1, `stallDetection`×1, `wrapup`×1 |
-| `test/loop-config-namespace-497.test.js` | 44 | `completion`×11, `wrapup`×11, `tools`×6, `session`×3, `context`×2, `finalGuard`×2, `initialMessages`×2, `resume`×2, `retry`×2, `modelMetadata`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `stallDetection`×1 |
+| `test/loop-config-namespace-497.test.js` | 45 | `completion`×11, `wrapup`×11, `tools`×6, `session`×4, `context`×2, `finalGuard`×2, `initialMessages`×2, `resume`×2, `retry`×2, `modelMetadata`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `stallDetection`×1 |
 | `test/loop-resume-anchor.test.js` | 38 | `completion`×8, `stallDetection`×8, `wrapup`×8, `resume`×7, `tools`×6, `partialPersistence`×1 |
 | `test/loop-v020-rc.test.js` | 24 | `completion`×19, `session`×3, `resume`×1, `stallDetection`×1 |
 | `test/loop-resume-notice.test.js` | 29 | `completion`×11, `tools`×9, `resume`×7, `context`×2, `reflection`×2 |
 | `test/loop.test.js` | 31 | `completion`×15, `stallDetection`×12, `reflection`×2, `onToolResult`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-core.test.js` | 24 | `finalGuard`×19, `tools`×14, `strategy`×4, `context`×3, `reflection`×3, `onEvent`×1, `onObserverError`×1 |
-| `test/loop-capabilities-namespace-498.test.js` | 23 | `completion`×5, `wrapup`×5, `retry`×3, `session`×2, `tools`×1, `context`×1, `modelMetadata`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `resume`×1, `stallDetection`×1 |
+| `test/loop-capabilities-namespace-498.test.js` | 22 | `completion`×5, `wrapup`×5, `retry`×3, `session`×1, `tools`×1, `context`×1, `modelMetadata`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `resume`×1, `stallDetection`×1 |
 | `test/loop-option-normalization.test.js` | 23 | `session`×8, `completion`×7, `tools`×5, `wrapup`×3 |
 | `test/reflection.test.js` | 23 | `completion`×12, `reflection`×10, `resume`×1 |
 | `test/judge-record.test.js` | 20 | `reflection`×13, `completion`×5, `context`×2, `session`×1 |
