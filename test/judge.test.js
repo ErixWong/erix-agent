@@ -669,7 +669,7 @@ test("round judge sees the inline deliverable in the full conversation", async (
     executeTool: async () => "unused",
     maxRounds: 1,
     completion: false,
-    wrapup: false,
+    config: { input: { wrapup: false } },
     reflection: { enabled: true, judge: { provider: judge } },
   });
 
@@ -694,11 +694,10 @@ test("round judge fallback uses the latest non-empty user task from a multi-turn
       { role: "user", content: "哈罗" },
       { role: "assistant", content: "你好" },
       { role: "user", content: "新任务：在当前任务目录创建一个俄罗斯方块网页游戏，网页版的。" },
-    ] } },
+    ], wrapup: false } },
     executeTool: async () => "unused",
     maxRounds: 1,
     completion: false,
-    wrapup: false,
     reflection: { enabled: true, judge: { provider: judge } },
   });
 
@@ -729,13 +728,12 @@ test("explicit task overrides the multi-turn entry messages for the round judge"
         { role: "user", content: "哈罗" },
         { role: "assistant", content: "你好" },
         { role: "user", content: "新任务：在当前任务目录创建一个俄罗斯方块网页游戏，网页版的。" },
-      ] },
+      ], wrapup: false },
       metadata: { task: "全新任务：写一个俄罗斯方块网页游戏" },
     },
     executeTool: async () => "unused",
     maxRounds: 1,
     completion: false,
-    wrapup: false,
     reflection: { enabled: true, judge: { provider: judge } },
   });
 
@@ -759,11 +757,10 @@ test("context.task takes precedence over the multi-turn entry messages for the r
       { role: "user", content: "请用一句话介绍你自己" },
       { role: "assistant", content: "我是助手" },
       { role: "user", content: "新任务：在当前任务目录创建一个俄罗斯方块网页游戏，网页版的。" },
-    ] }, folding: { context: { task: "CTX任务摘要" } } },
+    ], wrapup: false }, folding: { context: { task: "CTX任务摘要" } } },
     executeTool: async () => "unused",
     maxRounds: 1,
     completion: false,
-    wrapup: false,
     reflection: { enabled: true, judge: { provider: judge } },
   });
 
@@ -787,13 +784,12 @@ test("whitespace task falls back to the latest non-empty entry user text", async
         { role: "user", content: "请用一句话介绍你自己" },
         { role: "assistant", content: "我是助手" },
         { role: "user", content: "新任务：在当前任务目录创建一个俄罗斯方块网页游戏，网页版的。" },
-      ] },
+      ], wrapup: false },
       metadata: { task: "   " },
     },
     executeTool: async () => "unused",
     maxRounds: 1,
     completion: false,
-    wrapup: false,
     reflection: { enabled: true, judge: { provider: judge } },
   });
 
@@ -819,7 +815,6 @@ test("explicit task briefs keep content beyond the legacy 500-code-point cap", a
     executeTool: async () => "unused",
     maxRounds: 1,
     completion: false,
-    wrapup: false,
     reflection: { enabled: true, judge: { provider: judge } },
   });
 
@@ -862,11 +857,10 @@ test("resumed judge briefs scan only the original round-zero seed messages", asy
 
   await runToolLoop({
     provider: firstProvider,
-    config: { input: { messages: [{ role: "user", content: "任务A：修登录bug" }] } },
+    config: { input: { messages: [{ role: "user", content: "任务A：修登录bug" }], wrapup: false } },
     executeTool: async () => "ok",
     maxRounds: 2,
     completion: false,
-    wrapup: false,
     reflection: {
       enabled: true,
       judgeIntervalRound: 1,
@@ -897,7 +891,7 @@ test("resumed judge briefs scan only the original round-zero seed messages", asy
     executeTool: async () => "unused",
     maxRounds: 3,
     completion: false,
-    wrapup: false,
+    config: { input: { wrapup: false } },
     reflection: { enabled: true, judge: { provider: resumedJudge } },
     store,
     runId,
@@ -942,7 +936,7 @@ test("resume without a round-zero seed keeps the judge brief empty", async () =>
     // maxRounds=1 即续接会话只跑一轮（judge 恰好被调用一次）
     maxRounds: 1,
     completion: false,
-    wrapup: false,
+    config: { input: { wrapup: false } },
     reflection: { enabled: true, judge: { provider: resumedJudge } },
     store,
     runId,
@@ -969,7 +963,7 @@ test("single-task entry fallback remains the same for the round judge", async ()
     executeTool: async () => "unused",
     maxRounds: 1,
     completion: false,
-    wrapup: false,
+    config: { input: { wrapup: false } },
     reflection: { enabled: true, judge: { provider: judge } },
   });
 
@@ -1000,7 +994,7 @@ test("round judge task brief stays on the entry snapshot after injecting directi
     executeTool: async () => "unused",
     maxRounds: 2,
     completion: false,
-    wrapup: false,
+    config: { input: { wrapup: false } },
     reflection: { enabled: true, judge: { provider: judge } },
   });
 

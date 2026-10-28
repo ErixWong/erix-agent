@@ -197,8 +197,11 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
       config: {
         input: { initialUserMessage: "先用 readFile 读 a.txt；再用 searchText 搜 needle；最后一句话回答命中几次。" },
         run: { stream: true },
+        // #498 S3 A9: `task` lost its flat spelling — canonical home `config.metadata.task`.
+        // The flat `task:` was rejected at the name gate before any upstream call, so this gated
+        // suite only ever went red under `ERIX_E2E_REAL=1`; it joins the **same** `config` tree.
+        metadata: { task: "读 a.txt 并搜索 needle" },
       },
-      task: "读 a.txt 并搜索 needle",
       tools: TOOLS,
       executeTool: makeExecutor(dirA),
       store: storeA,
@@ -446,8 +449,8 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
       outC = await runToolLoop({
         provider: createOpenAIProvider(providerFields),
         resume: true,
-        config: { input: { initialUserMessage: resumePrompt(attempt) } },
-        task: "继续旧会话（必须真的调一次工具）",
+        // #498 S3 A9: same migration — `task` lives in `config.metadata.task`.
+        config: { input: { initialUserMessage: resumePrompt(attempt) }, metadata: { task: "继续旧会话（必须真的调一次工具）" } },
         tools: TOOLS,
         executeTool: makeExecutor(dirC),
         store: storeCProbed,

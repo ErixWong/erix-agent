@@ -84,7 +84,7 @@ test("assembly port supports default and explicit modelConfig paths", async () =
   const defaultResult = await runToolLoop({
     assemblyPort: port,
     completion: false,
-    wrapup: false,
+    config: { input: { wrapup: false } },
     maxRounds: 1,
   });
   assert.equal(defaultResult.termination.reason, "end_turn");
@@ -98,7 +98,7 @@ test("assembly port supports default and explicit modelConfig paths", async () =
       },
     },
     completion: false,
-    wrapup: false,
+    config: { input: { wrapup: false } },
     maxRounds: 1,
   });
   assert.equal(explicitResult.termination.reason, "end_turn");
@@ -130,7 +130,7 @@ test("plain explicit modelConfig is rejected with resolver migration guidance", 
       assemblyPort: port,
       modelConfig: plainConfig,
       completion: false,
-      wrapup: false,
+      config: { input: { wrapup: false } },
       maxRounds: 1,
     }),
     (error) => error instanceof TypeError
@@ -167,7 +167,7 @@ test("assembly port without a store runs with no persistence", async () => {
   const result = await runToolLoop({
     assemblyPort: port,
     completion: false,
-    wrapup: false,
+    config: { input: { wrapup: false } },
     maxRounds: 1,
   });
 
