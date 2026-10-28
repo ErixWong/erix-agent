@@ -110,14 +110,21 @@ executeTool({ id, name, input, context, signal })
 而别名**就是** schema 路径：`config.run.maxRounds` 与扁平的 `maxRounds` 是同一个旋钮，叶子名
 逐字等于扁平选项名——只有**一条**登记在案的例外：`config.input.messages`，它是扁平
 `initialMessages` 的嵌套别名（issue #498 S4b）。那条例外是一张只有一条记录的表
-（`CONFIG_LEAF_ALIAS_PATHS`（`src/loop/config-namespace.js`）），自检会双向核它，它不是你
-可以随手加长的重命名表。唯一手写的部分只有一张 schema
+（`CONFIG_LEAF_ALIAS_PATHS`（`src/loop/config-namespace.js`）），自检核它两件事：登记了别名的
+叶子必须真存在（死条目），且不许改名撞到本组已有的叶子名；它不是你
+可以随手加长的重命名表。**版本口径**（issue #517）：`config` 命名空间自 0.27.0 起就有，到 0.27.0
+为止每个叶子名都逐字等于一个顶层选项名；**自 0.28.0（issue #517 前置重构）起，叶子可以没有**
+顶层别名**，但每个**顶层选项**仍必须恰好有一个家**——自检是**单向**的（顶层选项 → 恰好一个家：
+配置面 / 能力面 / 容器），而「每个叶子都得被 round-trip 覆盖名单取到值」由套件里那条**逐叶子**
+断言兜住（与叶子有没有顶层键无关）。唯一手写的部分只有一张 schema
 `CONFIG_NAMESPACE_SCHEMA`（`src/loop/config-namespace.js`），别名表 `CONFIG_ALIAS_PATHS`
 （`src/loop/config-namespace.js`）与配置面名单 `CONFIG_SURFACE_OPTION_NAMES`
 （`src/loop/config-namespace.js`）都从它派生，再由 `configSchemaSelfCheck`
 （`src/loop/config-namespace.js`）对着顶层白名单按**三个方向**核账：每个顶层选项必须**恰好**被归入
 *配置面*（43 键）、*能力面*（22 键）或*容器*（2 个：`config` 与 `capabilities`）之一，且三桶之和
-必须等于白名单条数（43 + 22 + 2 = 67）。
+必须等于白名单条数（43 + 22 + 2 = 67）。issue #517 起「配置面」这一桶取「schema 映射到的键」与
+白名单的**交集**，所以一个叶子失去顶层键时它只从桶里掉出去、不会把恒等式弄红（本版 43 与 43 逐字
+相等，一个键都没删）。
 
 | 命名空间 | 旋钮 |
 | --- | --- |

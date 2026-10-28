@@ -6,6 +6,9 @@
 //      （`CONFIG_ALIAS_PATHS` 从 `CONFIG_NAMESPACE_SCHEMA` 机械派生）。`configSchemaSelfCheck`
 //      对着 `RUN_TOOL_LOOP_OPTION_NAMES` 核「每个顶层选项恰好落在配置面或能力面之一」——
 //      往白名单加一个键却忘了分类 ⇒ 这里红。
+//      **#517 单向化**：这条恒等式只说「每个顶层选项 → 恰好一个家」，不说「每个叶子 ⇔ 一个顶层
+//      键」。A3 的方向② 因此从「红」翻成「绿」——一个 `config` 叶子可以没有对应的顶层选项
+//      （S3 删完顶层扁平配置键之后的形状）。本刀不删任何键，四个数一个没动（67/43/22/2）。
 //   B. **结构等价**（判据 1）：同一份配置写成扁平形态与 `config` 形态，`effectiveOptions` 逐键
 //      深度相等。两层：43 个配置键**逐个**扫一遍（`expandConfigNamespace`，机械穷举），
 //      再加一份跨 7 个分组的**端到端** `normalizeRunToolLoopOptions` 对比（走真闸口）。
@@ -64,6 +67,7 @@ import {
   collectConfigNamespaceProblems,
   collectConfigSourceConflicts,
   configPathForOption,
+  configPlaneOptionNames,
   configSchemaSelfCheck,
   expandConfigNamespace,
 } from "../src/loop/config-namespace.js";
@@ -169,20 +173,37 @@ test("A2 别名 = schema 路径：每个配置键恰好一条路径，叶子名�
   }
 });
 
-test("A3 自检会咬人：漏分类 / 漏白名单 / 漏容器三个方向都红", () => {
+test("A3 自检会咬人：漏分类 / 漏容器必须红；叶子失去顶层键必须绿（#517 单向化）", () => {
   // 方向①：白名单多出一个没分类的键（「加了选项忘了分类」的真实形状）。
   const extra = configSchemaSelfCheck([...RUN_TOOL_LOOP_OPTION_NAMES, "brandNewKnob"]);
   assert.deepEqual(extra, [
     'top-level option "brandNewKnob" is classified nowhere (config surface or capability list)',
   ]);
-  // 方向②：schema 里有个键已经不在白名单里了（「删了选项忘了删 schema」）。
-  // #498 S4b：这一方向现在报**两条**（叶子映射核对先看到它、总账核对再说一次），两条都点名
-  // 同一个键——多一条重复信号不算噪声，少一条才是不静默的反面。
-  const dropped = configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES.filter((name) => name !== "maxRounds"));
-  assert.deepEqual(dropped, [
-    'config.run.maxRounds maps to "maxRounds", which is not a top-level option',
-    'schema names "maxRounds", which is not a top-level option',
-  ]);
+  // 方向②（#517 翻转）：一个真叶子的顶层键从白名单里消失 ⇒ **必须绿**。
+  // 这正是 S3 删完顶层扁平配置键之后 `config.run.maxRounds` 的形状：叶子还在、顶层键没了。
+  // 以前这一格报两条红（`config.run.maxRounds maps to "maxRounds", which is not a top-level option`
+  // + `schema names "maxRounds", which is not a top-level option`），于是「改闸口」与「删键」
+  // 被迫塞进同一刀——#498 S4c 已为这个付过一次真实返工。
+  const droppedOptionNames = RUN_TOOL_LOOP_OPTION_NAMES.filter((name) => name !== "maxRounds");
+  assert.deepEqual(
+    configSchemaSelfCheck(droppedOptionNames),
+    [],
+    "叶子还在、顶层键没了 = S3 的形状，自检必须放行（恒等式只单向：每个顶层选项→恰好一个家）",
+  );
+  // 放行的那一半由另一条锁兜住，不是「什么都没核」：配置面因此少了一格（43 → 42），
+  // 叶子仍在 schema 里（round-trip 覆盖度在 S7 逐叶子核，见 test/loop-capabilities-namespace-498.test.js）。
+  assert.equal(configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES).length, 43, "本刀一个键都没删：配置面仍是 43");
+  assert.equal(configPlaneOptionNames(droppedOptionNames).length, 42, "少掉的就是那一个失去顶层键的叶子");
+  assert.equal(
+    configPlaneOptionNames(droppedOptionNames).includes("maxRounds"),
+    false,
+    "configPlaneOptionNames 就是「配置面里真的还是顶层选项的那些键」",
+  );
+  assert.equal(
+    CONFIG_SURFACE_OPTION_NAMES.includes("maxRounds"),
+    true,
+    "叶子仍在 schema 里（它不是被删掉的叶子，只是丢了顶层键）",
+  );
   // 方向③：白名单里没有 `config` 这个容器本身（「把容器当成配置键删掉」）。
   // #498 S4a：容器是复数，两个都要在——`capabilities` 那一条在 `test/loop-capabilities-namespace-498.test.js`
   // 的 S1b 里同形钉住（这里只保留本单自己的那一半）。
@@ -190,9 +211,19 @@ test("A3 自检会咬人：漏分类 / 漏白名单 / 漏容器三个方向都�
   assert.deepEqual(noContainer, [
     'top-level options do not accept "config" (a namespace container)',
   ]);
+  // 方向④（#517 新增）：能力面那一半的单向性**没有**跟着松——能力面叶子必须是真顶层选项
+  // （S1b 已逐条钉住，这里只锁一句「配置面放行、能力面仍红」的对照，免得哪天把两边一起改成单向）。
+  assert.deepEqual(
+    configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES.filter((name) => name !== "onJudge")),
+    [
+      'capabilities.hooks names "onJudge", which is not a top-level option',
+      'schema names "onJudge", which is not a top-level option',
+    ],
+    "能力面叶子没有顶层键仍然必须红（#517 只改配置面那一条方向）",
+  );
 });
 
-// #498 S4b 复审：自检的**别名表**那一段（「别名目标必须真是顶层选项」「不许映射到已存在的叶子名」）
+// #498 S4b 复审：自检的**别名表**那一段（「登记了别名的叶子必须真存在」「不许映射到已存在的叶子名」）
 // 原先一格测试都没有——把整段删掉，全量仍然 EXIT=0 全绿，而 CHANGELOG 声称「自检双向核它」。
 // 这格把它钉住：用自检的注入钩子把三条分支逐条弄成可达的（生产调用不传这个参数，
 // 拿到的是真的 `CONFIG_LEAF_ALIASES`），于是删掉那一段 ⇒ 本格红。
