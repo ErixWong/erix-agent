@@ -4055,7 +4055,7 @@ Four consequences worth knowing:
   `finalGuard: true`) is a **usage error**, not a silent no-op. In the CLI that combination
   changed from `exit 4` to `exit 1`.
 - **`cwd` is the host's job.** A criterion that resolves a relative path against `cwd`
-  receives `undefined` unless the host passed `runToolLoop({ cwd })`; the engine never fills
+  receives `undefined` unless the host passed `config.run.cwd` (flat `cwd` was retired in #498 S3, A15); the engine never fills
   it in, never `chdir`s and never checks that it exists — the criterion then fails closed
   (`ok:false`), which is exactly the #391 symptom. `erix chat --cwd <dir>` (default: the
   process working directory) and `erix_run`'s required `cwd` parameter are that wiring.

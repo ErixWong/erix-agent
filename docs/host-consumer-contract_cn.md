@@ -3261,7 +3261,7 @@ payload 无键、metrics 无键、事件无字段。引擎自己的发布冒烟�
   ——所以 `--require-deliverable` 不带 `--final-guard`（以及 `requireDeliverable` / `deliverablePaths`
   不带 `finalGuard: true`）是**用法错误**，不是静默空转。CLI 那一种组合的行为从 `exit 4` 变成了 `exit 1`。
 - **`cwd` 是宿主的责任。** 判据按 `cwd` 解析相对路径，而那个 `cwd` 只在宿主传了
-  `runToolLoop({ cwd })` 时才存在；引擎永远不补、不 `chdir`、也不检查它是否存在——判据于是 fail-closed
+  `runToolLoop({ config: { run: { cwd } } })` 时才存在（扁平 `cwd` 已在 issue #498 S3 的 A15 退役）；引擎永远不补、不 `chdir`、也不检查它是否存在——判据于是 fail-closed
   （`ok:false`），这正是 #391 的原始症状。`erix chat --cwd <dir>`（缺省进程工作目录）与 `erix_run`
   必填的 `cwd` 参数就是这处接线。绝对路径不需要 `cwd`。
 - **判据与 guard 共享一份预算。** 两者的上限都是 `finalGuardTimeoutMs`，而判据在**每次** attempt

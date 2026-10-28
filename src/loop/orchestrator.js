@@ -510,7 +510,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   working** (the published 0.26 surface; this release removes none of them); the nine leaves added
  *   by this slice (`ports.*` and
  *   `hooks.{onReflection,onBeforeFold,onAfterFold,stubFor,protectedMessage,recoveryHint}`) have **no**
- *   top-level flat alias (they never were top-level options) — which is why the allowlist is still 67.
+ *   top-level flat alias (they never were top-level options) — which is why none of them ever entered the allowlist.
  *   Unknown sub-keys (`capabilities.hoks` / `capabilities.check` / `capabilities.ports.sleeplmp`) and
  *   "given but wrong shape" all throw at startup with the full path named. The `config.observers`
  *   group is gone entirely (0.27 was never published ⇒ zero cost).
