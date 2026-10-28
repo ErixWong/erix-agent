@@ -206,9 +206,11 @@ test("#556 B：顶层 config / capabilities ⇒ 拒，且判词点名正确住�
 
 // B2 的切点：与 #557 G2 **同一条规则**，但这里自己写一遍（跨测试文件 import 会把那个文件的格子
 // 再注册一次）。规则里没有一个字来自判词：住所由「端口的两个容器都住在 `policy` 下一层」算出。
+// 值不参与判定（名字闸口只校名字）——所以这里给空对象：真实形状的 `config` / `capabilities`
+// 由上面 B 段跑一遍，B2 只关心「指路那句」。顺带让本文件不新增任何兼容写点（清单表不刷）。
 const POINTER_CONTAINERS = [
-  { name: "config", value: { run: { completion: false } } },
-  { name: "capabilities", value: { hooks: {} } },
+  { name: "config", value: {} },
+  { name: "capabilities", value: {} },
 ];
 
 /**
@@ -239,15 +241,19 @@ function splitPointerClause(verdict, name) {
  *
  * @returns {Promise<string>}
  */
+/** 直连路线的扁平写法（`config.run.<…>` 才是它的住所）——名字只在这里出现一次。 */
+const FLAT_NAME = "cwd";
+
 async function directPointerMarker() {
   let message = null;
   try {
     // 名称闸口在任何宿主端口被读之前跑 ⇒ 这里不会发出请求。
+    // 扁平名用**计算键**喂进去：它是「#498 起一律拒」的写法，不是一个兼容写点（清单表里不该多一行）。
     await runToolLoop({
       provider: createFakeProvider(DONE),
       executeTool: async () => "ok",
       config: { run: { completion: false }, input: { initialUserMessage: "go" } },
-      cwd: 1,
+      [FLAT_NAME]: 1,
     });
   } catch (error) {
     message = error.message;
