@@ -42,6 +42,9 @@ import {
   upstreamFields,
 } from "../fixtures/config-shape.mjs";
 import { createScriptedUpstream, jsonResponse } from "../fixtures/upstream.mjs";
+// #546（规则 7）：白名单与 config schema 是**真值**，不另拄一张名单。
+import { CONFIG_SURFACE_OPTION_NAMES, configPathForOption } from "../src/loop/config-namespace.js";
+import { RUN_TOOL_LOOP_OPTION_NAMES } from "../src/loop/option-normalization.js";
 import { makeTmp } from "./helpers/tmp.js";
 
 const ROOT = resolve(dirname(new URL(import.meta.url).pathname), "..");
@@ -2411,5 +2414,422 @@ describe("静态守卫：随包契约套件的 modelConfigProviderContract 调�
     // ⑦ 空实参不算：`f()` 是 0 个
     assert.equal(contractArityErrors({ "fake/empty.js": `x = ${fn});` }).length, 1, "空实参没被算成 0 个");
     t.diagnostic("①–⑦ 放行证 / 变异证 / 范围证 逐条按预期");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 规则 7（issue #546）：`scripts/*.mjs` 里 `runToolLoop({…})` 的**顶层选项名**必须来自白名单
+// ---------------------------------------------------------------------------
+//
+// 病根：#530 之前的那一轮迁移只迁了三个脚本（`message-journal-golden` / `final-guard-probe` /
+// `release-check`），另外几个**观察脚本**（`probe-462-resume-refold` / `probe-326-compaction-facts` /
+// `notes-experiment` / `notes-why-experiment`）仍写着已退役的扁平拼写（`runId` / `resume` /
+// `reflection` / `completion` / `maxRounds` …）⇒ **启动期就抛**，于是「跑 scripts/probe-xxx 可复现」
+// 这类写在 CHANGELOG / issue 回帖里的主张**不可复现**。它们不被任何门禁引用，所以全仓绿着。
+//
+// 判据：调用点的**顶层选项名**必须落在 `RUN_TOOL_LOOP_OPTION_NAMES` 里。名单**从符号派生**
+// （`src/loop/option-normalization.js`），**不硬编码退役名清单**——硬编码的第二张表正是这类
+// 守卫腐烂的方式（#498 S3 每个切片退役一个键，抄一张清单就得跟着抄十一次）。
+//
+// 扫描面（如实写清，别把「扫到」当「扫全」）：
+//   · `scripts/*.mjs` 一份不落（脚本是观察面，不进任何门禁，最容易烂在这里）；
+//   · 锚点 = **代码里的** `runToolLoop(`（注释/字符串/模板串内容先被抹成空格再找，所以
+//     `release-check.mjs` 里那份「故意坏的宿主样本」模板串不会被当成调用点）；
+//   · 实参是对象字面量 ⇒ 取它的**顶层**键（嵌套 `config.run.maxRounds` 不参与：那是 config
+//     schema 的活，`collectConfigNamespaceProblems` 已经在运行时管）；
+//   · 实参是**本文件声明的** helper 调用（`runToolLoop(loopOptions(…))`）⇒ 顺着声明找到它
+//     `return` 的对象字面量，取顶层键（`probe-462` 就是这么写的）；
+//   · `...spread` / `[computed]` ⇒ **无法静态求值**，记为 `...` / `<computed>` 并要求**显式登记**
+//     （照 `docs-drift-check.mjs` 的 `BARE_LINE_EXEMPTIONS`：条目 + 理由，**闲置条目本身判红**）。
+//     这是本规则已知的逃生口，登记表就是它的账：新开一处就要多一条带理由的条目。
+
+const RUN_LOOP_FN = "runToolLoop";
+const RUN_LOOP_SCAN_ROOT = "scripts";
+
+/**
+ * 豁免登记表（`{ file, name, why }`，无通配）。
+ *
+ * 只有「静态上**不可能**求值」的两种形态能登记：`...`（展开一个变量/表达式）与
+ * `<computed>`（计算键）。**静态名字一个都不许登记**——那等于把规则本身撤掉。
+ * 条目闲置（真实树里一处都没命中）⇒ 红：放行表不许长成永久免死金牌（#210 R2 惯例）。
+ */
+const RUN_LOOP_OPTION_EXEMPTIONS = Object.freeze([
+  {
+    file: "scripts/message-journal-golden.mjs",
+    name: "...",
+    why: "金样生产者把公共选项放在文件级 `BASE` 里再展开（`...BASE` / `...BASE, store`）；"
+      + "`BASE` 自己的顶层键（`tools` / `config` / `executeTool`）就在同文件第 74 行，肉眼与运行时闸口都看得见。"
+      + "展开是「同一条选项的复用」，不是藏名字的地方；真要藏，加一处展开就得加一条登记。",
+  },
+  {
+    file: "scripts/soak.mjs",
+    name: "...",
+    why: "soak 的阶段参数由 `common` 装配后展开（`...common`），且有两处条件展开（`...(x ? {k} : {})`）。"
+      + "`common` 是同文件里手写的对象（`provider` / `config` 之类），不是从别处 import 的黑盒。",
+  },
+  {
+    file: "scripts/soak.mjs",
+    name: "<computed>",
+    why: "`probeRunToolLoopOption(name)` 是**故意**拿任意名字去撞名称闸口的只读探针（`runToolLoop({ [name]: false })`）："
+      + "它测的正是「未知键会不会被拒」，静态名字在这里没有意义。",
+  },
+  {
+    file: "scripts/probe-462-resume-refold.mjs",
+    name: "...",
+    why: "`loopOptions(...)` 把 `capabilities` 之类按需透传（`...rest`），其余旋钮走 `run` / `folding` 两个具名组。"
+      + "helper 返回的字面量本身在扫描面内（`provider` / `executeTool` / `store` / `config` 都被核过）。",
+  },
+]);
+
+/**
+ * 把注释、字符串、模板串的**内容**抹成空格（换行保留）⇒ 与原文逐字符同长。
+ *
+ * 为什么必须先抹：`scripts/release-check.mjs` 里有一份**故意坏的宿主样本**（模板串），
+ * 里面就写着 `thisOptionKeyDoesNotExistInRunToolLoopOptions`——不抹就会把它当成真调用点。
+ * 抹完再用同一个下标回原文取文本，行号因此仍然是真的。
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function maskNonCode(text) {
+  const out = [...text];
+  const blank = (from, to) => { for (let k = from; k < to; k += 1) if (out[k] !== "\n") out[k] = " "; };
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === "/" && text[i + 1] === "/") {
+      const end = text.indexOf("\n", i);
+      const stop = end === -1 ? text.length : end;
+      blank(i, stop);
+      i = stop;
+      continue;
+    }
+    if (ch === "/" && text[i + 1] === "*") {
+      const end = text.indexOf("*/", i + 2);
+      const stop = end === -1 ? text.length : end + 2;
+      blank(i, stop);
+      i = stop;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      let j = i + 1;
+      while (j < text.length && text[j] !== ch) j += text[j] === "\\" ? 2 : 1;
+      blank(i, Math.min(j + 1, text.length));
+      i = j + 1;
+      continue;
+    }
+    i += 1;
+  }
+  return out.join("");
+}
+
+const lineAt = (text, index) => text.slice(0, index).split("\n").length;
+
+/** 展开表达式的收尾下标（顶层逗号 / 收尾括号）。 */
+function spreadExpressionEnd(masked, start) {
+  let depth = 0;
+  for (let i = start; i < masked.length; i += 1) {
+    const ch = masked[i];
+    if ("([{".includes(ch)) depth += 1;
+    else if (")]}".includes(ch)) {
+      if (depth === 0) return i;
+      depth -= 1;
+    } else if (ch === "," && depth === 0) return i;
+  }
+  return masked.length;
+}
+
+/** 展开表达式里所有对象字面量的顶层键（条件展开 `...(c ? {} : { k })` ⇒ `k`）。 */
+function spreadLiteralKeys(text, masked, start) {
+  const end = spreadExpressionEnd(masked, start);
+  const keys = [];
+  for (let i = start; i < end; i += 1) {
+    if (masked[i] !== "{" || !looksLikeLiteralBrace(masked, i)) continue;
+    keys.push(...literalTopLevelKeys(text, masked, i));
+    i = matchParen(masked, i);
+  }
+  return keys;
+}
+
+/**
+ * 从 `{` 起点的对象字面量取**顶层**键。`...x` → `...`，`[expr]` → `<computed>`。
+ *
+ * 嵌套的括号/数组/对象整组跳过（深度不变）——`config: { run: { maxRounds } }` 里的
+ * `maxRounds` 不是本规则的靶子（它由 config schema 在运行时管）。
+ *
+ * @param {string} text 原文（取行号用）
+ * @param {string} masked `maskNonCode(text)`
+ * @param {number} brace `{` 的下标
+ * @returns {{name: string, line: number}[]}
+ */
+function literalTopLevelKeys(text, masked, brace) {
+  const keys = [];
+  let expectKey = true;
+  let i = brace + 1;
+  while (i < masked.length) {
+    const ch = masked[i];
+    if (ch === "}" || ch === ")" || ch === "]") return keys;
+    if (ch === ",") { expectKey = true; i += 1; continue; }
+    if (/\s/u.test(ch)) { i += 1; continue; }
+    if (!expectKey) {
+      if ("([{".includes(ch)) { i = matchParen(masked, i) + 1; continue; }
+      i += 1;
+      continue;
+    }
+    if (masked.startsWith("...", i)) {
+      // 展开：先看表达式里有没有对象字面量（`...(cond ? {} : { deliverables })` 这种**条件展开**
+      // 是能静态求值的，核它们的键）；一个都没有（`...BASE` / `...rest`）才记成无法求值的 `...`。
+      const inner = spreadLiteralKeys(text, masked, i + 3);
+      if (inner.length > 0) keys.push(...inner);
+      else keys.push({ name: "...", line: lineAt(text, i) });
+      expectKey = false;
+      i = spreadExpressionEnd(masked, i + 3);
+      continue;
+    }
+    if (ch === "[") { keys.push({ name: "<computed>", line: lineAt(text, i) }); expectKey = false; i = matchParen(masked, i) + 1; continue; }
+    const word = /^[A-Za-z_$][\w$]*|^"[^"]*"|^'[^']*'/u.exec(masked.slice(i));
+    if (word !== null) {
+      keys.push({ name: word[0].replace(/^["']|["']$/gu, ""), line: lineAt(text, i) });
+      expectKey = false;
+      i += word[0].length;
+      continue;
+    }
+    i += 1;
+  }
+  return keys;
+}
+
+/** `{` 是不是对象字面量起点（排除 block 与解构：`=> {` / `const {` 都不算）。 */
+function looksLikeLiteralBrace(masked, brace) {
+  let k = brace - 1;
+  while (k >= 0 && /\s/u.test(masked[k])) k -= 1;
+  if (k < 0) return false;
+  if ("(=,[:?".includes(masked[k])) return true;
+  const word = /([A-Za-z_$][\w$]*)\s*$/u.exec(masked.slice(Math.max(0, k - 12), k + 1));
+  return word !== null && (word[1] === "return" || word[1] === "yield");
+}
+
+/** 本文件里 `name` 的声明区间 `[start, end)`（`const/let/var name =` 或 `function name(`）。 */
+function localDeclarationSpan(masked, name) {
+  const re = new RegExp(`(?:\\b(?:const|let|var)\\s+${name}\\s*=|\\bfunction\\s+${name}\\s*\\()`, "u");
+  const m = re.exec(masked);
+  if (m === null) return null;
+  let depth = 0;
+  for (let i = m.index; i < masked.length; i += 1) {
+    const ch = masked[i];
+    if (ch === "(" || ch === "[" || ch === "{") depth += 1;
+    else if (ch === ")" || ch === "]" || ch === "}") depth -= 1;
+    else if (ch === ";" && depth === 0) return [m.index, i];
+  }
+  return [m.index, masked.length];
+}
+
+/**
+ * 纯函数：`文件相对路径 → 文本` ⇒ 每一处 `runToolLoop({…})` 的顶层选项名。
+ *
+ * @param {Record<string, string|null>} textByFile
+ * @returns {{hits: {file: string, name: string, line: number, site: number, via?: string}[], unparsable: string[]}}
+ */
+function runLoopOptionHits(textByFile) {
+  const hits = [];
+  const unparsable = [];
+  const re = new RegExp(`\\b${RUN_LOOP_FN}\\s*\\(`, "gu");
+  for (const [file, text] of Object.entries(textByFile)) {
+    if (typeof text !== "string") continue;
+    const masked = maskNonCode(text);
+    for (const m of masked.matchAll(re)) {
+      const open = m.index + m[0].length - 1;
+      const close = matchParen(masked, open);
+      if (close === -1) { unparsable.push(`${file}:${lineAt(text, m.index)} 调用括号配不上`); continue; }
+      const argText = masked.slice(open + 1, close);
+      const firstNonSpace = argText.search(/\S/u);
+      if (firstNonSpace === -1) { unparsable.push(`${file}:${lineAt(text, m.index)} 实参为空`); continue; }
+      const argStart = open + 1 + firstNonSpace;
+      const site = lineAt(text, m.index);
+      if (masked[argStart] === "{") {
+        for (const key of literalTopLevelKeys(text, masked, argStart)) hits.push({ file, site, ...key });
+        continue;
+      }
+      // 实参不是字面量：把**本文件声明的** helper 名解析成它 `return` 的字面量（`runToolLoop(loopOptions(…))`）。
+      const names = [...new Set([...argText.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/gu)].map((x) => x[1]))];
+      let resolved = 0;
+      for (const name of names) {
+        const span = localDeclarationSpan(masked, name);
+        if (span === null) continue;
+        for (let i = span[0]; i < span[1]; i += 1) {
+          if (masked[i] !== "{" || !looksLikeLiteralBrace(masked, i)) continue;
+          for (const key of literalTopLevelKeys(text, masked, i)) hits.push({ file, site, via: name, ...key });
+          resolved += 1;
+          i = matchParen(masked, i);
+        }
+      }
+      if (resolved === 0) {
+        unparsable.push(`${file}:${site} 实参既不是字面量、也不是本文件声明的 helper（静态看不见选项名）`);
+      }
+    }
+  }
+  return { hits, unparsable };
+}
+
+/**
+ * 纯函数：违规 = 顶层名字不在白名单、且没有登记豁免。
+ *
+ * @param {Record<string, string|null>} textByFile
+ * @param {{allowlist: readonly string[], exemptions?: readonly {file: string, name: string, why: string}[]}} rules
+ * @returns {{violations: string[], unparsable: string[], idleExemptions: string[], hits: object[]}}
+ */
+function runLoopOptionViolations(textByFile, { allowlist, exemptions = [] }) {
+  const { hits, unparsable } = runLoopOptionHits(textByFile);
+  const allowed = new Set(allowlist);
+  const violations = [];
+  const used = new Set();
+  for (const hit of hits) {
+    if (allowed.has(hit.name)) continue;
+    const entry = exemptions.find((e) => e.file === hit.file && e.name === hit.name);
+    if (entry !== undefined) { used.add(`${entry.file}\u0000${entry.name}`); continue; }
+    const where = hit.via === undefined ? `${hit.file}:${hit.line}` : `${hit.file}:${hit.line}（经 ${hit.via} 的返回值）`;
+    violations.push(`${where} 顶层选项 ${JSON.stringify(hit.name)} 不在 RUN_TOOL_LOOP_OPTION_NAMES 里`
+      + `（调用点在第 ${hit.site} 行）`);
+  }
+  // 闲置豁免 = 后门（#210 R2 惯例：用不上的放行就是永久免死金牌）
+  const idleExemptions = exemptions
+    .filter((e) => !used.has(`${e.file}\u0000${e.name}`))
+    .map((e) => `${e.file} 的 ${JSON.stringify(e.name)} 豁免一处都没命中（闲置条目 = 后门，删掉它或修好理由）`);
+  return { violations, unparsable, idleExemptions, hits };
+}
+
+/** 扫描面：`scripts/` 顶层的 `.mjs`（脚本是观察面，不进任何门禁）。 */
+function runLoopOptionSurface() {
+  const dir = resolve(ROOT, RUN_LOOP_SCAN_ROOT);
+  const surface = {};
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isFile() || extOf(entry.name) !== ".mjs") continue;
+    surface[`${RUN_LOOP_SCAN_ROOT}/${entry.name}`] = readFileSync(join(dir, entry.name), "utf8");
+  }
+  return surface;
+}
+
+describe("静态守卫：scripts 里 runToolLoop 的顶层选项名必须来自白名单（issue #546）", () => {
+  it("前置：扫描面逐份点名已知调用点，否则本规则会静默缩面", (t) => {
+    const surface = runLoopOptionSurface();
+    const { hits, unparsable } = runLoopOptionHits(surface);
+    const filesWithHits = [...new Set(hits.map((h) => h.file))].sort();
+    t.diagnostic(`规则 7：扫描面 ${Object.keys(surface).length} 份脚本，命中 ${hits.length} 个顶层选项名，`
+      + `覆盖 ${filesWithHits.length} 份文件：${filesWithHits.join(" / ")}`);
+    assert.deepEqual(unparsable, [], `有调用点静态解析不了（守卫会对其恒绿）：\n${unparsable.join("\n")}`);
+    // 逐份点名：这 6 份是今天真有**代码里**的 `runToolLoop(` 调用点的脚本（少一份 = 面被拆了）。
+    // `scripts/release-check.mjs` 刻意不在名单里：它的两处 `runToolLoop(` 都住在**模板串**里
+    // （`TS_HOST_GOOD_SOURCE` / `TS_HOST_BAD_SOURCE` = 给 tsc 编译的宿主样本，其中一份**故意坏**），
+    // 抹掉模板串之后它一处调用点都没有。那份好样本由 `check:release` 用 `tsc --strict` 对着
+    // **随包 .d.ts** 编译——比本规则更强（退役名会 TS2353），所以不是漏扫。
+    for (const rel of [
+      "scripts/final-guard-probe.mjs",
+      "scripts/message-journal-golden.mjs",
+      "scripts/notes-why-experiment.mjs",
+      "scripts/probe-326-compaction-facts.mjs",
+      "scripts/probe-462-resume-refold.mjs",
+      "scripts/soak.mjs",
+    ]) {
+      assert.ok(filesWithHits.includes(rel), `扫描面里找不到 ${rel} 的调用点：本规则会对那一份恒绿`);
+    }
+    // 豁免表条目必须点名到**具体文件 + 名字**，并且带理由
+    for (const entry of RUN_LOOP_OPTION_EXEMPTIONS) {
+      assert.ok(typeof entry.why === "string" && entry.why.length >= 20,
+        `豁免条目 ${entry.file} / ${JSON.stringify(entry.name)} 没写理由（豁免必须显式登记理由）`);
+      assert.ok(surface[entry.file] !== undefined, `豁免条目点名的 ${entry.file} 不在扫描面里`);
+      assert.ok(["...", "<computed>"].includes(entry.name),
+        `豁免条目 ${entry.file} / ${JSON.stringify(entry.name)}：静态名字一个都不许登记（那等于撤掉规则）`);
+    }
+  });
+
+  it("真实树 = 回归基线：每一处顶层选项名都在白名单里（scripts/*.mjs 全绿）", (t) => {
+    const surface = runLoopOptionSurface();
+    const { violations, unparsable, idleExemptions } = runLoopOptionViolations(surface, {
+      allowlist: RUN_TOOL_LOOP_OPTION_NAMES,
+      exemptions: RUN_LOOP_OPTION_EXEMPTIONS,
+    });
+    t.diagnostic(`规则 7：${violations.length ? violations.join(" / ") : "0 处违规"}`
+      + `；豁免 ${RUN_LOOP_OPTION_EXEMPTIONS.length} 条（全部命中）`);
+    assert.deepEqual(unparsable, [], `有调用点静态解析不了：\n${unparsable.join("\n")}`);
+    assert.deepEqual(idleExemptions, [], `豁免表里有闲置条目：\n${idleExemptions.join("\n")}`);
+    assert.deepEqual(violations, [],
+      `scripts/*.mjs 里还有 runToolLoop 的**已退役扁平拼写**（启动期就抛 ⇒ 脚本不可复现）：\n${violations.join("\n")}\n`
+      + "修法：按 `configPathForOption(name)` 给出的家搬进 `config.<组>.<叶>`（函数值走 "
+      + "`capabilities.hooks.*` / `capabilities.ports.*`）。名单真值 = `RUN_TOOL_LOOP_OPTION_NAMES`，别另抄一张。");
+  });
+
+  it("派生证：白名单是唯一真值（退役名从 schema 派生，不硬编码）", (t) => {
+    // 白名单非空、且容器/第三站成员真在里面（否则下面的「退役样本」会误判）
+    assert.ok(RUN_TOOL_LOOP_OPTION_NAMES.length > 20, `白名单只有 ${RUN_TOOL_LOOP_OPTION_NAMES.length} 项，抽取坏了`);
+    for (const name of ["config", "capabilities", "provider", "store", "executeTool"]) {
+      assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(name), true, `白名单里没有 ${JSON.stringify(name)}：抽取坏了`);
+    }
+    // 退役样本**从 schema 派生**：一个 config 叶子、名字已不在白名单里（S3 之后这种键一定存在）
+    const retired = CONFIG_SURFACE_OPTION_NAMES.find((name) => !RUN_TOOL_LOOP_OPTION_NAMES.includes(name));
+    assert.equal(typeof retired, "string", "派生不出「已退役的扁平配置键」：本规则失去活样本");
+    t.diagnostic(`规则 7：派生出的退役样本 = ${JSON.stringify(retired)}（它的家是 config.${configPathForOption(retired)}）`);
+    // 反向证：把那个退役名写进一个假脚本的调用点 ⇒ 必须红，且报错点名文件与名字
+    const synthetic = `x = ${RUN_LOOP_FN}({ provider, ${retired}: 1 });`;
+    const { violations } = runLoopOptionViolations({ "scripts/fake.mjs": synthetic }, {
+      allowlist: RUN_TOOL_LOOP_OPTION_NAMES,
+    });
+    assert.equal(violations.length, 1, `派生出的退役名 ${JSON.stringify(retired)} 没被拦：${JSON.stringify(violations)}`);
+    assert.match(violations[0], new RegExp(`scripts/fake\\.mjs:1 顶层选项 "${retired}"`),
+      `红的时候必须点名文件与名字：${violations[0]}`);
+  });
+
+  it("自测（放行证 / 变异证 / 范围证 / 登记式样）：变异没落上也判失败", (t) => {
+    const fn = `${RUN_LOOP_FN}(`; // 运行时拼，避免本文件自己被自己的规则咬到
+    const rules = { allowlist: RUN_TOOL_LOOP_OPTION_NAMES };
+    // ① 放行证：合法名字 ⇒ 绿（否则下面几条只是「永远有话说」）
+    assert.deepEqual(runLoopOptionViolations({ "scripts/ok.mjs": `x = ${fn}{ provider, config: { run: { maxRounds: 3 } }, store });` }, rules).violations, [],
+      "合法调用被判红：判据口径有问题");
+    // ② 嵌套键不是靶子：`config.run.maxRounds` 里的 `maxRounds` 不算顶层（由 config schema 管）
+    assert.deepEqual(runLoopOptionViolations({ "scripts/nested.mjs": `x = ${fn}{ config: { run: { maxRounds: 3, resume: true } } });` }, rules).violations, [],
+      "嵌套 config 键被当成了顶层选项名");
+    // ③ 变异证：塞一个退役名 ⇒ 恰好 1 处红、点名文件与行；变异没落上要失败
+    const clean = "x = " + fn + "{ provider });";
+    const retired = CONFIG_SURFACE_OPTION_NAMES.find((name) => !RUN_TOOL_LOOP_OPTION_NAMES.includes(name));
+    assert.ok(clean.includes("{ provider }"), "变异没落上：靶子里找不到 `{ provider }`");
+    const mutated = clean.replace("{ provider }", `{ provider, ${retired}: 1 }`);
+    assert.ok(mutated.includes(`${retired}: 1`), "变异没落上：退役名没写进靶子");
+    const red = runLoopOptionViolations({ "scripts/mut.mjs": mutated }, rules);
+    assert.equal(red.violations.length, 1, `塞一个退役名应恰好 1 处红，实测：${JSON.stringify(red.violations)}`);
+    assert.match(red.violations[0], /^scripts\/mut\.mjs:1 /, `红必须点名文件与行：${red.violations[0]}`);
+    assert.deepEqual(runLoopOptionViolations({ "scripts/mut.mjs": clean }, rules).violations, [], "改回来之后必须绿");
+    // ④ 注释 / 字符串 / 模板串里的提及不算（发布自检那份坏样本就住在模板串里）
+    assert.deepEqual(runLoopOptionViolations({
+      "scripts/c.mjs": `// ${fn}{ ${retired}: 1 }) 是旧写法\nconst S = \`${fn}{ ${retired}: 1 })\`;`,
+    }, rules).violations, [], "注释/字符串里的提及被当成了调用点");
+    // ⑤ helper 返回值在面内：`runToolLoop(helper(…))` 的选项名从声明里抽
+    const helper = `const opts = (a) => ({\n  provider: a,\n  ${retired}: 1,\n});\nx = ${fn}opts(p));`;
+    const helperRed = runLoopOptionViolations({ "scripts/h.mjs": helper }, rules);
+    assert.equal(helperRed.violations.length, 1, `helper 返回字面量里的退役名没被扫到：${JSON.stringify(helperRed.violations)}`);
+    assert.match(helperRed.violations[0], /经 opts 的返回值/, `红时要说是哪个 helper 的返回值：${helperRed.violations[0]}`);
+    // ⑥ 登记式样：`...` / `<computed>` 可登记 ⇒ 绿；**闲置条目** ⇒ 红（后门）；静态名字不许登记
+    const dynamicSrc = `x = ${fn}{ provider, ...rest });\ny = ${fn}{ [name]: false });`;
+    assert.equal(runLoopOptionViolations({ "scripts/d.mjs": dynamicSrc }, rules).violations.length, 2,
+      "`...` / `<computed>` 没有当成「无法静态求值」处理（要么漏扫，要么误报）");
+    const used = runLoopOptionViolations({ "scripts/d.mjs": dynamicSrc }, {
+      allowlist: RUN_TOOL_LOOP_OPTION_NAMES,
+      exemptions: [
+        { file: "scripts/d.mjs", name: "...", why: "登记式样自测：展开一个变量，静态看不见名字" },
+        { file: "scripts/d.mjs", name: "<computed>", why: "登记式样自测：计算键，静态看不见名字" },
+      ],
+    });
+    assert.deepEqual(used.violations, [], `登记过的动态形态仍被判红：${JSON.stringify(used.violations)}`);
+    assert.deepEqual(used.idleExemptions, [], "登记过的动态形态被当成闲置条目");
+    const idle = runLoopOptionViolations({ "scripts/d.mjs": `x = ${fn}{ provider });` }, {
+      allowlist: RUN_TOOL_LOOP_OPTION_NAMES,
+      exemptions: [{ file: "scripts/d.mjs", name: "...", why: "登记式样自测：这一条一处都没命中，必须判红" }],
+    });
+    assert.equal(idle.idleExemptions.length, 1, "闲置豁免没有判红：放行表会变成永久免死金牌");
+    // ⑦ 括号配不上 ⇒ 红（不许静默放行）
+    assert.equal(runLoopOptionViolations({ "scripts/bad.mjs": `x = ${fn}{ provider` }, rules).unparsable.length, 1,
+      "括号配不上时没有报错（扫描口径坏了也不红）");
+    // ⑧ 实参不是字面量、也不是本文件 helper ⇒ 记为「静态看不见」而不是静默绿
+    assert.equal(runLoopOptionViolations({ "scripts/e.mjs": `x = ${fn}buildOptions());` }, rules).unparsable.length, 1,
+      "实参解析不了时静默放行了");
+    t.diagnostic("①–⑧ 放行证 / 变异证 / 范围证 / 登记式样 逐条按预期");
   });
 });
