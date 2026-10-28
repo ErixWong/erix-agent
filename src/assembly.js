@@ -19,6 +19,7 @@ import {
 import {
   RUN_TOOL_LOOP_OPTION_SET,
   assertRunToolLoopOptionNames,
+  levenshteinDistance,
   optionSuggestion,
 } from "./loop/option-normalization.js";
 import {
@@ -595,6 +596,194 @@ function missingAssemblyMethods(port) {
  */
 
 /**
+ * The **top-level members** of the assembly port, derived from the engine's real read points
+ * (issue #556). This table is the **one** place the accepted set is written *and* the one place the
+ * members are read: `createAssemblyPort` builds the port by iterating it, so a name that is not in
+ * the table can never be a member and a member can never be absent from the table.
+ *
+ * Why the port needed a gate at all: `runToolLoop`'s direct route takes `config` / `capabilities` as
+ * **top-level** containers, while the port route carries the same data plane inside `policy`
+ * (`policy.config` / `policy.capabilities`, #545). A host that writes the direct spelling into
+ * `createAssemblyPort` therefore got the worst possible answer until #556: no throw, no event, the
+ * whole subtree silently dropped, and the run finished `end_turn` with none of the folding / timing
+ * configuration it thought it had set. A typo was just as quiet (`{ provder: … }` also vanished).
+ *
+ * The list is not trusted on its own: `test/assembly-port-member-gate-556.test.js` re-derives the set
+ * from this file's `input.<name>` member reads and compares it with the table in **both** directions
+ * — a name here with no read point fails, and a new read point missing here fails.
+ *
+ * `optional: true` = the key is omitted from the port when the host did not supply it (`emit`); every
+ * other member is always present, even as `undefined`, which is the shape the port has always had.
+ *
+ * @type {ReadonlyArray<{
+ *   name: string,
+ *   read: (input: Record<string, any>) => any,
+ *   optional?: true,
+ *   readBy: string,
+ * }>}
+ */
+export const ASSEMBLY_PORT_MEMBER_READ_POINTS = Object.freeze([
+  {
+    name: "modelConfig",
+    read: (input) => resolveAssemblyMember(input.modelConfig, "modelConfig"),
+    readBy: "createAssemblyPort() → port.modelConfig → assemblyPortOptions() → modelConfig.resolve()",
+  },
+  {
+    name: "provider",
+    read: (input) => resolveAssemblyMember(input.provider, "provider"),
+    readBy: "createAssemblyPort() → port.provider → assemblyPortBaseOptions() → the loop's provider",
+  },
+  {
+    name: "tools",
+    read: (input) => resolveAssemblyMember(input.tools, "tools"),
+    readBy: "createAssemblyPort() → port.tools → assemblyPortBaseOptions()"
+      + " → tools.definitions / executeTool",
+  },
+  {
+    name: "store",
+    read: (input) => resolveAssemblyMember(input.store, "store"),
+    readBy: "createAssemblyPort() → port.store → assemblyPortBaseOptions() (optional)",
+  },
+  {
+    name: "session",
+    read: (input) => resolveAssemblyMember(input.session, "session"),
+    readBy: "createAssemblyPort() → port.session → assemblyPortBaseOptions() / modelConfig.resolve(modelSlot)",
+  },
+  {
+    name: "policy",
+    read: (input) => resolveAssemblyMember(input.policy, "policy"),
+    readBy: "createAssemblyPort() → port.policy → assemblyPortBaseOptions()"
+      + " (data plane: policy.config / policy.capabilities)",
+  },
+  {
+    name: "emit",
+    read: (input) => input.emit,
+    optional: true,
+    readBy: "createAssemblyPort() → port.emit → assemblyPortBaseOptions() → onEvent adapter",
+  },
+]);
+
+/** The accepted top-level port members, derived from {@link ASSEMBLY_PORT_MEMBER_READ_POINTS}. */
+export const ASSEMBLY_PORT_MEMBER_NAMES = ASSEMBLY_PORT_MEMBER_READ_POINTS.map(({ name }) => name);
+
+/** Set form of {@link ASSEMBLY_PORT_MEMBER_NAMES} (the gate's membership test). */
+const ASSEMBLY_PORT_MEMBER_NAME_SET = new Set(ASSEMBLY_PORT_MEMBER_NAMES);
+
+/**
+ * The two containers that exist on the **direct** route's top level and are *not* port members
+ * (issue #556). The port carries the same trees one level down, inside `policy` (#545), so a host
+ * that writes them at the top level is not making a spelling mistake — it is using the other
+ * route's address. The message therefore names the correct home instead of just closing the door.
+ *
+ * @type {ReadonlyMap<string, {home: string, plane: string}>}
+ */
+const ASSEMBLY_PORT_CONTAINER_HOMES = new Map([
+  ["config", { home: "policy.config", plane: "data" }],
+  ["capabilities", { home: "policy.capabilities", plane: "behaviour" }],
+]);
+
+/**
+ * The nearest accepted member name, by the same edit-distance rule (and the same threshold
+ * `max(2, len/3)`) the direct route's `optionSuggestion` uses. Ties go to the earlier table entry.
+ *
+ * @param {string} unknownName
+ * @returns {string|undefined}
+ */
+function assemblyPortMemberSuggestion(unknownName) {
+  let best;
+  for (const memberName of ASSEMBLY_PORT_MEMBER_NAMES) {
+    const distance = levenshteinDistance(unknownName, memberName);
+    if (best === undefined || distance < best.distance) {
+      best = { name: memberName, distance };
+    }
+  }
+  const threshold = Math.max(2, Math.floor(unknownName.length / 3));
+  return best?.distance <= threshold ? best.name : undefined;
+}
+
+/**
+ * The one sentence an unknown top-level port member gets (issue #556).
+ *
+ * Three clauses, in the order a host needs them: what was refused, the accepted set (interpolated
+ * from the derived table — never a second hand-written copy), and — for the two names that are
+ * legal on the *other* route — where the value actually belongs.
+ *
+ * @param {string} name
+ * @returns {string}
+ */
+function assemblyPortUnknownMemberProblem(name) {
+  const suggestion = assemblyPortMemberSuggestion(name);
+  const container = ASSEMBLY_PORT_CONTAINER_HOMES.get(name);
+  return `unknown assembly port option: ${JSON.stringify(name)}`
+    + (suggestion === undefined ? "" : ` (did you mean ${JSON.stringify(suggestion)}?)`)
+    + ` (accepted: ${ASSEMBLY_PORT_MEMBER_NAMES.join(", ")})`
+    + (container === undefined
+      ? ""
+      : `; its canonical home is ${container.home}: the port keeps the ${container.plane} plane`
+        + ` inside policy (write { policy: { ${name}: … } }), while the top-level ${name}`
+        + " container is the direct route's spelling");
+}
+
+/**
+ * How a non-object `createAssemblyPort` input reads in the shape message (`null` / `an array` / `a string`).
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function describePortInput(value) {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "an array";
+  if (typeof value === "function") return "a function";
+  return `a ${typeof value}`;
+}
+
+/**
+ * The **top-level name gate** of the assembly port (issue #556).
+ *
+ * Runs before any member is read, i.e. before any host factory is called — the same ordering promise
+ * `assertRunToolLoopOptionNames` keeps on the direct route (`test/loop-option-normalization.test.js`
+ * pins it with a `Proxy`): a misspelled name must not cost a host callback.
+ *
+ * `undefined` still means "not given" (the repo-wide merge rule), so spreading an options object
+ * with an optional key set to `undefined` does not turn into an unknown-member report — the same
+ * convention `assertAssemblyOverrideShape` and the `policy` allowlist already follow.
+ *
+ * @param {Record<string, any>} input
+ * @returns {void}
+ */
+export function assertAssemblyPortMemberNames(input) {
+  // A non-object input is a *shape* mistake, and it must not be reported as an unknown **member**:
+  // `Object.entries("abc")` yields `["0", "a"]`, i.e. the gate would name a member called `"0"`. Same
+  // sentence shape as the direct route's `runToolLoop options must be an object`.
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    throw new TypeError(`assembly port must be an object (got ${describePortInput(input)})`);
+  }
+  for (const [name, value] of Object.entries(input)) {
+    if (value === undefined) continue;
+    if (ASSEMBLY_PORT_MEMBER_NAME_SET.has(name)) continue;
+    throw new TypeError(assemblyPortUnknownMemberProblem(name));
+  }
+}
+
+/**
+ * Read every port member through {@link ASSEMBLY_PORT_MEMBER_READ_POINTS} — the accepted set and the
+ * construction are the same table, so neither can drift from the other.
+ *
+ * @param {Record<string, any>} input
+ * @returns {AssemblyPort}
+ */
+function readAssemblyPortMembers(input) {
+  /** @type {Record<string, any>} */
+  const port = {};
+  for (const { name, read, optional } of ASSEMBLY_PORT_MEMBER_READ_POINTS) {
+    const value = read(input);
+    if (optional === true && value === undefined) continue;
+    port[name] = value;
+  }
+  return /** @type {AssemblyPort} */ (port);
+}
+
+/**
  * Assemble and validate the host boundary once.
  *
  * Required adapter members may be supplied as synchronous factories. This
@@ -605,15 +794,17 @@ function missingAssemblyMethods(port) {
  * @returns {AssemblyPort}
  */
 export function createAssemblyPort(input = {}) {
-  const port = {
-    modelConfig: resolveAssemblyMember(input.modelConfig, "modelConfig"),
-    provider: resolveAssemblyMember(input.provider, "provider"),
-    tools: resolveAssemblyMember(input.tools, "tools"),
-    store: resolveAssemblyMember(input.store, "store"),
-    session: resolveAssemblyMember(input.session, "session"),
-    policy: resolveAssemblyMember(input.policy, "policy"),
-    ...(input.emit === undefined ? {} : { emit: input.emit }),
-  };
+  // issue #556: the name gate is the **first** thing that runs. Before it, an unknown top-level
+  // member was accepted and silently dropped (the port object simply did not carry it), which is the
+  // "configured but inert" shape this gate exists to kill — and the two most likely offenders
+  // (`config` / `capabilities`) are exactly the names the direct route *does* take.
+  assertAssemblyPortMemberNames(input);
+  // `port` is deliberately typed `any` here, exactly as the object literal it replaced was: the
+  // members are validated one by one right below (`missingAssemblyMethods`, the `session` container
+  // gate, the `policy` allowlist), and one of those checks reads a **retired** member
+  // (`port.session.resume`) that the `AssemblyPort` typedef intentionally does not declare —
+  // declaring it would document a retired key as legal (#498 S4b).
+  const port = /** @type {any} */ (readAssemblyPortMembers(input));
   // issue #513 ④: `session` is the port's identity container by contract, so a non-object value is a
   // *shape* mistake and says so. Without this line it surfaced as `assembly port is missing methods:
   // session` — a sentence about methods for a value that is not a port at all, which is what made
