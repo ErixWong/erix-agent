@@ -1496,14 +1496,15 @@ async function main() {
   try {
     mainResult = await runToolLoop({
       ...common,
-      maxRounds: cli.rounds,
       // #498 S3 A2b: 种子的规位家。与 `common.config`（folding 预算）**并进同一棵树**——
       // 写第二个 `config` 键会让后者静默覆盖前者，soak 的压缩预算就没了。
       // #498 S3 A20: `runId` 也退役了扁平写法（家 `config.run.runId`），同样并进这棵树。
+      // #498 S3 A21: `maxRounds` 同样退役（家 `config.run.maxRounds`），并进同一棵 `run` 子树
+      // ——soak 是**观察脚本**，只改拼写、不改观察逻辑。
       config: {
         ...common.config,
         input: { initialUserMessage: "soak：开始长轮回放" },
-        run: { ...common.config.run, runId: mainRunId },
+        run: { ...common.config.run, runId: mainRunId, maxRounds: cli.rounds },
       },
       onEvent: onEventFor(counter),
       onRound: ({ round }) => {
@@ -1846,13 +1847,13 @@ async function main() {
     try {
       const res = await runToolLoop({
         ...common,
-        maxRounds: cli.rounds,
         // 同上：并进 `common.config`，不造第二个 `config` 键。
         // #498 S3 A20: `runId` 的家是 `config.run.runId`（同上一条）。
+        // #498 S3 A21: `maxRounds` 的家是 `config.run.maxRounds`（同上一条）。
         config: {
           ...common.config,
           input: { initialUserMessage: "soak：abort 与 resume 观察" },
-          run: { ...common.config.run, runId: abortRunId },
+          run: { ...common.config.run, runId: abortRunId, maxRounds: cli.rounds },
         },
         signal: controller.signal,
         // 事件计数触发：第 trigger.at 个 tool_result **落地后**立刻 abort（默认路径，真机跑不了）。
@@ -1979,9 +1980,12 @@ async function main() {
         // #498 S3 A19: `resume` left the top-level allowlist; home `config.run.resume`
         // (expansion writes it back onto `effectiveOptions.resume`, so the read side is unchanged).
         // #498 S3 A20: `runId` left it too, same home group (`config.run.runId`).
+        // #498 S3 A21: `maxRounds` left it as well — home `config.run.maxRounds`.
         // soak is an **observation script**: only the spelling moves, the observation logic does not.
-        config: { ...common.config, run: { ...common.config.run, resume: true, runId: resumeRunId } },
-        maxRounds: resumeRounds,
+        config: {
+          ...common.config,
+          run: { ...common.config.run, resume: true, runId: resumeRunId, maxRounds: resumeRounds },
+        },
         onEvent: onEventFor(resumeCounter),
       });
       resumeInfo = {

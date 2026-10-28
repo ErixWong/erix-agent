@@ -141,10 +141,12 @@ test("rejects unknown runToolLoop options with a close suggestion", async () => 
       provider: createFakeProvider([]),
       initialUserMessage: "invalid option",
       executeTool: async () => "unused",
-      maxRound: 1,
+      // #498 S3 A21：原来这里用 `maxRound` → `maxRounds`，而 `maxRounds` 本片退役（建议候选池 =
+      // 白名单）。换 `providr` → `provider`：同样是「差一个字符就给出建议」的那一格。
+      providr: null,
     }),
     (error) => error instanceof TypeError
-      && error.message === 'unknown runToolLoop option: "maxRound" (did you mean "maxRounds"?)',
+      && error.message === 'unknown runToolLoop option: "providr" (did you mean "provider"?)',
   );
 });
 

@@ -102,7 +102,8 @@ test("B1 合并后表示里没有任何不在白名单内的名字（键集从 R
   const { effectiveOptions } = await normalizeRunToolLoopOptions({
     assemblyPort: port,
     completion: false,
-    maxRounds: 1,
+    // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`).
+    config: { run: { maxRounds: 1 } },
   });
   // 反向那半边：展开相**确实**把两条叶写回成扁平键（读侧不变的证据），所以上面那条判据如果
   // 直接套在 `effectiveOptions` 上会红——这正是它必须校**展开前**的合并树的原因。

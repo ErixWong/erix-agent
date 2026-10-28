@@ -160,11 +160,11 @@ test("#469-A 端到端：resume 出来的 run 第一次折叠带账本基底（�
     // #498 S3 A19：`resume` 同样退役（家 `config.run.resume`），并进同一个容器。
     store,
     executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
-    maxRounds: 3,
     completion: false,
     reflection: false,
     config: {
-      run: { resume: true, runId },
+      // #498 S3 A21：`maxRounds` 退役扁平写法（家 `config.run.maxRounds`），并进同一棵 `run` 子树。
+      run: { resume: true, runId, maxRounds: 3 },
       metadata: { task: "继续" },
       folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-llm" } },
     },

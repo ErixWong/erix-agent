@@ -22,7 +22,7 @@
 
 ```text
 assemblyPort, provider, system, wrapup, tools,
-executeTool, maxRounds,
+executeTool,
 reflection, stallDetection,
 completion, finalGuard,
 maxTokenContinuations,
@@ -124,7 +124,7 @@ executeTool({ id, name, input, context, signal })
 - **白名单外的名字**：`overrides` 的键必须是合法的 `runToolLoop` 选项，集合**从代码里读**
   （`RUN_TOOL_LOOP_OPTION_NAMES`，`src/loop/option-normalization.js`），不另抄第二份，所以
   「接受面只有一个来源」（#496 / #502）这条规矩在覆盖通道上照样成立。拼错抛
-  `unknown assembly port override option: "maxRound" (did you mean "maxRounds"?)`——同一份白名单、
+  `unknown assembly port override option: "providr" (did you mean "provider"?)`——同一份白名单、
   同一套编辑距离规则。
 - **容器**：`overrides.config` / `overrides.capabilities` 抛
   `assembly port override must not replace the "config" container: pass the specific sub-keys
@@ -154,7 +154,7 @@ executeTool({ id, name, input, context, signal })
 ### config 命名空间（issue #497）
 
 一次 run 的配置从此有第二种写法。`config` 是一棵**嵌套命名空间**，它的叶子是顶层扁平键的别名，
-而别名**就是** schema 路径：`config.run.maxRounds` 与扁平的 `maxRounds` 是同一个旋钮，叶子名
+而别名**就是** schema 路径：`config.run.completion` 与扁平的 `completion` 是同一个旋钮，叶子名
 逐字等于扁平选项名——只有**一条**登记在案的例外：`config.input.messages`，它是扁平
 `initialMessages` 的嵌套别名（issue #498 S4b）。那条例外是一张只有一条记录的表
 （`CONFIG_LEAF_ALIAS_PATHS`（`src/loop/config-namespace.js`）），自检核它两件事：登记了别名的
@@ -846,7 +846,7 @@ R 格断言写在规位里的值逐字到达 `effectiveOptions.partialPersistenc
 | `store` | 第三站的**端口**（一个 `TranscriptStore` 实现），不是模式 | `src/assembly-validators.js`（`TRANSCRIPT_STORE_METHODS`）、`test/loop-run-slice-498s3a13.test.js`（N2） | **没有** |
 | `partialPersistence` | 间隔节流的快照旋钮，由 A12 退役——**另一个键**，自己的家在 `config.run.partialPersistence` | `src/loop/resume-manager.js`、`test/loop-run-slice-498s3a12.test.js` | **没有**——不许改回扁平 |
 | `writeToolNames` / `writeToolPathKeys` | judge 的写工具集与路径键优先级，由 A11 退役——同样以 `write` 开头的**另一族** | `src/reflection/judge.js` | **没有** |
-| `maxRounds` / `deadlineMs` | 轮数预算（仍是扁平选项）与已退役的 run 死线（`config.timing.deadlineMs`）——都不是停顿检测 | `CONFIG_NAMESPACE_SCHEMA.run` vs `.timing` | **没有** |
+| `maxRounds` / `deadlineMs` | 轮数预算（A21 之前是扁平选项，现在只剩 `config.run.maxRounds`）与已退役的 run 死线（`config.timing.deadlineMs`）——都不是停顿检测 | `CONFIG_NAMESPACE_SCHEMA.run` vs `.timing` | **没有** |
 
 钉子文件是 `test/loop-run-slice-498s3a13.test.js`。P 格逐字断言每个键的拒绝**文案**（一个站，且只有一个），
 G 格就是上面那张闸口二矩阵（`outputHygiene` 与 `persistence` 两行两侧给**同一个** store——没有 store 时
@@ -1030,6 +1030,50 @@ round 行上的 `runId` **字段**（`src/store/*.js` 的 `appendRound(runId, �
 矩阵；`F` 函数值两个拼写都被拒；`R` 真 run 的账本仍按规位值取回；`N` 四向账目与「`run` 组还剩三个
 配置家键」的派生计数；`S` 夹具翻译点；`T` 反向钉——任何拒绝文案都不许把已退役的顶层名当建议，
 本片顺手在 `src/assembly.js` / `src/assembly-validators.js` 修掉的正是这句假话）。
+
+**`maxRounds`：同一条先例，同一种量法（issue #498 S3，第二十一片）。** 闸口二把六种取值形态跑过真入口——
+整数 `8`、布尔 `true`、字符串 `"8"`、`0`、负数 `-1`、超大 `1e300`：
+
+| `maxRounds` 取值 | 扁平（A21 之前） | 规位（`config.run.maxRounds`） |
+| --- | --- | --- |
+| 整数 `8` | exit 0 | exit 0（等价） |
+| 布尔 / 字符串 / `0` / 负数 / 超大 | exit 1 —— `maxRounds must be a finite positive integer` | exit 1 —— **同一句**（取值校验没搬家） |
+| **函数** | **exit 1** —— 同一句取值校验 | **被拒** —— `config.run.maxRounds is not accepted … holds data only` |
+
+`maxRounds` 是**正整数标量**：引擎按默认值 `8` 解构它，然后只做三件事——
+`Number.isSafeInteger(maxRounds) && maxRounds > 0` 的取值校验、`maxRounds >=
+DEFAULT_REFLECTION_MIN_ROUNDS` 的 judge 闸门、以及 `Math.max(8, Math.floor(maxRounds * 0.5))` 的
+扩轮默认步长。**没有调用点**（`src/loop/orchestrator.js` 上 `grep -nE "maxRounds *\("` 为空）——
+所以函数值在那个位置从来不是行为；扁平侧本来就靠取值校验把它拒了。因此本片退役扁平拼写、
+**接受这条收窄**（函数值现在两个拼写都被拒，理由分开），不加校验器。**读侧一行未改**：扩轮判定
+（`src/reflection/governor.js` 的 `extensionAllowed`）、`applyGovernorExtension`
+（`src/loop/orchestrator.js`）、`max_rounds_cap` 停机与 `forceFinalIfNeeded` 读的都还是
+`effectiveOptions.maxRounds`——展开相逐字写回的那个值。
+
+`maxRounds` 的版本口径（issue #498 S3，第二十一片）：
+
+| 版本 | 在顶层写 `maxRounds` |
+| --- | --- |
+| 0.26.0 及更早（最后一个**已发布**版本） | 顶层可写 |
+| 0.27.0 | **从未发布**，所以没有任何宿主装过「这件事有影响」的树 |
+| 0.28.0 及以后（issue #498 S3 第二十一片） | **当场拒**——改写 `config.run.maxRounds`。名称闸口抛 `unknown runToolLoop option: "maxRounds" (its canonical home is config.run.maxRounds; the flat spelling is rejected)` |
+
+**只有「入口选项」那一处退役了。** `maxRounds` 这个词还命名、且仍然命名另外四件本片没碰的东西：
+`reflection.maxRoundsCap`（扩轮后的总上限）、`~/.erix` run-state 预算块里的 `maxRounds` **字段**
+（`src/run-state.js`）、治理层的 `effectiveMaxRounds` 信号、以及 CLI / `examples/pi-extension` 的
+显示文案。判据只有一个问题：*这是「作为 `runToolLoop` 顶层参数被读」的那个值吗？* 只有那一处写侧动了。
+
+实测红格：单删 **438**、夹具翻译拼写之后 **64**、迁完手写点 **0**（24 个测试文件里的 46 个
+`runToolLoop` / `normalizeRunToolLoopOptions` 直连写点、内联白名单镜像、把 `maxRounds` 当活样本的
+建议矩阵行、两形态等价样本、`C1` / `C2` / `C3` / `C4` / `C5` 的优先级与冲突通道、A11 / A13 / A14 /
+A15 / A20 的邻接清单、随包发布契约套件（`assembly-port` / `boundary-parity` / `termination-payload` /
+`tool-result-envelope` / `doc-examples`），以及三个观察脚本 `scripts/soak.mjs` /
+`scripts/message-journal-golden.mjs` / `scripts/final-guard-probe.mjs`）。钉子文件是
+`test/loop-run-slice-498s3a21.test.js`（`P` 拒绝文案逐字且早于任何宿主端口被调用；`G` 上面那张取值
+矩阵；`F` 函数值两个拼写都被拒、两条理由分开；`R` 真 run 里轮预算仍然咬合、解构默认值未动，以及
+扩轮闸门 / `max_rounds_cap` / `maxRounds >= 16` 自动开 judge 的 as-is 钉子；`N` 四向账目与「`run`
+组还剩两个配置家键」的派生计数；`S` 夹具翻译点；`T` 反向钉——任何拒绝文案都不许把已退役的顶层名
+当建议）。
 
 ### capabilities 命名空间（issue #498）
 
@@ -1901,12 +1945,12 @@ const result = await runToolLoop({
   session: { id: run.id, modelSlot },
   // 种子消息与持久化模式的规位家（扁平 `initialUserMessage` / `persistence` 自 0.28.0 起退役，
   // 见下文「扁平写法的版本口径」）。**同一个** `config` 容器——写第二个会静默盖掉第一个。
+  // `maxRounds` 的扁平写法同样自 0.28.0 起退役（家 `config.run.maxRounds`）。
   config: {
     input: { initialUserMessage: run.prompt },
-    run: { persistence: "none" },
+    run: { persistence: "none", maxRounds: 8 },
   },
   executeTool,
-  maxRounds: 8,
   signal: controller.signal,
   onEvent: (event) => {
     events.push(event.type);

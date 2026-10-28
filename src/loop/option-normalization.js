@@ -174,7 +174,6 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // (exit 0 on both sides); the illegal shape `true` is rejected on both sides (exit 1). No divergence
   // ⇒ no return. Measured red cells for this key alone: 16; with the fixture translation point in
   // `test/helpers/run-direct.js` it drops to 4 hand-written sites.
-  "maxRounds",
   // #498 S3 (`tuning` slice): `cacheCapable` left the allowlist. Its canonical home is
   // `config.tuning.cacheCapable` (`CONFIG_NAMESPACE_SCHEMA.tuning` in `src/loop/config-namespace.js`).
   // The expansion phase writes it back onto `effectiveOptions.cacheCapable`, so the engine's read side

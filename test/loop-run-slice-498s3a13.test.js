@@ -178,7 +178,9 @@ test("N1 只点一站：这三件的值是纯数据，报错里不出现 `capabi
 test("N2 邻接面没动：`store` 端口、`maxRounds`、A11 的写工具集、A12 的 partialPersistence", () => {
   // 第三站的 `store` 是端口，`persistence` 是模式 —— 本片只退后者的扁平写法。
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("store"), true, "`store` 是永久顶层面，不许动");
-  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("maxRounds"), true, "`maxRounds` 仍在白名单");
+  // #498 S3 A21：`maxRounds` 也退役了扁平写法（家 `config.run.maxRounds`）。本格按「改而不删」
+  // 翻成反向钉：邻接面仍然是「`store` 端口没动」，只是 `maxRounds` 这一项的身份换了。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("maxRounds"), false, "A21 已退役 `maxRounds` 的扁平写法");
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("partialPersistence"), false, "A12 的退役不许改回去");
   // A11 退的四件同样不许回潮（同族不同物：名字里都有 write/policy，但都不是本片这三件）。
   for (const key of ["writeToolNames", "writeToolPathKeys", "replayPolicy", "invalidArguments"]) {

@@ -210,10 +210,10 @@ test("run-state availability does not make the next resume invalid", async () =>
       },
       { content: [{ type: "text", text: "first done" }], stopReason: "end_turn" },
     ]),
-    config: { run: { resume: true, runId } },
+    // #498 S3 A21：`maxRounds` 的扁平写法已退役，并进同一棵 `config.run` 子树。
+    config: { run: { resume: true, runId, maxRounds: 2 } },
     completion: false,
     store,
-    maxRounds: 2,
     executeTool: async () => "worked",
   });
 
@@ -230,10 +230,9 @@ test("run-state availability does not make the next resume invalid", async () =>
     provider: createFakeProvider([
       { content: [{ type: "text", text: "second done" }], stopReason: "end_turn" },
     ]),
-    config: { run: { resume: true, runId } },
+    config: { run: { resume: true, runId, maxRounds: 1 } },
     completion: false,
     store,
-    maxRounds: 1,
     executeTool: async () => "unused",
   });
 
@@ -1242,12 +1241,11 @@ test("resumed session gets its own round budget and persists the continuation ro
   const executed = [];
   const second = await runToolLoop({
     provider: secondProvider,
-    config: { run: { resume: true, runId } },
+    config: { run: { resume: true, runId, maxRounds: 2 } },
     executeTool: async ({ input }) => {
       executed.push(input.step);
       return `resumed-${input.step}`;
     },
-    maxRounds: 2,
     completion: false,
     store,
   });
@@ -1596,9 +1594,8 @@ async function runTwoRoundsThenResume(runId, { withRunState }) {
     provider: resumedProvider,
     executeTool: async () => "unused",
     tools: [WRITE_FILE_TOOL],
-    maxRounds: 2,
     completion: false,
-    config: { input: { wrapup: false }, run: { resume: true, runId } },
+    config: { input: { wrapup: false }, run: { resume: true, runId, maxRounds: 2 } },
     reflection: { enabled: true, judge: { provider: resumedJudge } },
     store,
   });

@@ -213,7 +213,10 @@ const OPTION_WHITELIST = [
   // `config.run.partialPersistence`. The copy tracks the source list verbatim (that is what A0
   // checks), so it is gone here too; the flat spelling is now a **rejection** cell, see
   // `test/loop-run-slice-498s3a12.test.js`.
-  "maxRounds",
+  // #498 S3 (`run` slice A21): `maxRounds` left the allowlist — its canonical home is
+  // `config.run.maxRounds`. The copy tracks the source list verbatim (that is what A0 checks), so it
+  // is gone here too; the flat spelling is now a **rejection** cell, see
+  // `test/loop-run-slice-498s3a21.test.js`.
   // #498 S3 (`tuning` slice): `cacheCapable` left the allowlist — its canonical home is
   // `config.tuning.cacheCapable`. The copy tracks the source list verbatim (that is what A0 checks),
   // so it is gone here too; the flat spelling is now a **rejection** cell, see
@@ -367,10 +370,16 @@ const SUGGESTION_MATRIX = [
   // ── `Math.max(2, …)` 下限分支：长度 3 → ⌊3/3⌋=1，仍按 2 放行（去掉 Math.max 就会红）
   { key: "too", distance: 2, threshold: 2, suggested: "tools", note: "长度 3：阈值取 Math.max 下限 2" },
   // ── 长度 6/8 → ⌊len/3⌋ 仍是 2
-  { key: "maxRondz", distance: 2, threshold: 2, suggested: "maxRounds", note: "长度 8：恰好等于阈值" },
+  // #498 S3（`run` 片 A21）：这一行原来是 `maxRondz` → `maxRounds`，而后者本片退役（建议候选池 =
+  // 白名单，删了键就不再是候选）。换成 `provixxr` → `provider`（长度 8 ⇒ 阈值仍是 2，距离 2），
+  // 钉的**是同一条分支**：距离恰好等于下限 2。
+  { key: "provixxr", distance: 2, threshold: 2, suggested: "provider", note: "长度 8：恰好等于阈值" },
   { key: "zzztem", distance: 3, threshold: 2, suggested: undefined, note: "长度 6：超出阈值 1 → 不建议" },
   // ── `⌊len/3⌋` 分支：阈值随长度放大（阈值恒为 2 就会红）
-  { key: "zzzRounds", distance: 3, threshold: 3, suggested: "maxRounds", note: "长度 9：阈值放大到 3" },
+  // #498 S3 A21：原来是 `zzzRounds` → `maxRounds`（长度 9），`maxRounds` 退役后换成
+  // `finalGuxyz` → `finalGuard`（长度 10 ⇒ 阈值 ⌊10/3⌋ = 3，距离 3）：距离 3 **大于**下限 2，
+  // 所以这一行仍然只在「阈值随长度放大」时才绿。
+  { key: "finalGuxyz", distance: 3, threshold: 3, suggested: "finalGuard", note: "长度 10：阈值放大到 3" },
   // #498 S3：这一行原来用 `toolResultTxxx` → `toolResultTtl`，而后者已随 `folding` 切片离开白名单
   // （建议候选池 = 白名单，删了键就不再是候选）。换一个**仍在白名单里**的 14 字键，钉的是同一条
   // 分支：长度 14 ⇒ 阈值 ⌊14/3⌋ = 4，距离落在阈内 ⇒ 必须给建议。

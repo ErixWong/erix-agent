@@ -641,7 +641,14 @@ const READ_LINE_CAPACITY_ROLES = [
   //   ⇒ 按 #537 的承诺粒度，描述里的 `fewest ≥ 3,900` 与档位下界依然为真，**描述一个字都不用改**；
   //   本片只改这一行（`fewest.rel` / `fewest.capacity`），也就是 #540 拆掉「floor 身份牵着文案」之后
   //   承诺兑现的那一次实测：换人只挪锚点，不动面向模型的句子。
-  { role: "fewest", file: "src/loop/option-normalization.js", recorded: { bytes: 35_481, lines: 528, bytesPerLine: 67.1989, capacity: 3_901, cjkShare: 0.1777 } },
+  // 2026-10-29 第十二刷（issue #498 S3 A21，**跨档，不是数字漂了**）：`maxRounds` 退役把
+  //   `src/loop/option-normalization.js` 从 3,901 行容量压到 **3,895**（白名单删掉 `"maxRounds",`
+  //   那一行，另加一段说明退役的英文注释 ⇒ 35,481 → **36,074** 字节 / 528 → **536** 行，均行字节
+  //   67.1989 → **67.3022**）。3,895 < 3,900 ⇒ 实测最小值**掉出了 `[3,900, 3,950)` 这一档**，
+  //   按 #537 的承诺粒度必须换档：描述里两个数 `fewest \u2265 3,900` 与 `reads fewer than 3,900`
+  //   一起改成 **3,850**（句子结构一字未动，两处同位数 ⇒ 对本文件字节中性 ⇒ `self` 行不用重测）。
+  //   这正是 #543 拆掉「floor 身份牵着文案」之后要的那种复测：**跨档才刷，换人不刷**。
+  { role: "fewest", file: "src/loop/option-normalization.js", recorded: { bytes: 36_074, lines: 536, bytesPerLine: 67.3022, capacity: 3_895, cjkShare: 0.1748 } },
   // CJK 字节占比最高的那一个（2026-10-13 到今一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
   { role: "densest", file: "src/loop/state-view.js", recorded: { bytes: 2_629, lines: 44, bytesPerLine: 59.75, capacity: 4_387, cjkShare: 0.3731 } },
   // median 这一行 2026-10-22 换了**文件**（不是只刷数字）：issue #386 切片 1 给

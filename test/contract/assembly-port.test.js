@@ -84,8 +84,8 @@ test("assembly port supports default and explicit modelConfig paths", async () =
   const defaultResult = await runToolLoop({
     assemblyPort: port,
     completion: false,
-    config: { input: { wrapup: false } },
-    maxRounds: 1,
+    // #498 S3 A21: `maxRounds` retired its flat spelling; its home is `config.run.maxRounds`.
+    config: { input: { wrapup: false }, run: { maxRounds: 1 } },
   });
   assert.equal(defaultResult.termination.reason, "end_turn");
   resolveCount = 0;
@@ -98,8 +98,8 @@ test("assembly port supports default and explicit modelConfig paths", async () =
       },
     },
     completion: false,
-    config: { input: { wrapup: false } },
-    maxRounds: 1,
+    // #498 S3 A21: `maxRounds` retired its flat spelling; its home is `config.run.maxRounds`.
+    config: { input: { wrapup: false }, run: { maxRounds: 1 } },
   });
   assert.equal(explicitResult.termination.reason, "end_turn");
   assert.equal(resolveCount, 0);
@@ -130,8 +130,8 @@ test("plain explicit modelConfig is rejected with resolver migration guidance", 
       assemblyPort: port,
       modelConfig: plainConfig,
       completion: false,
-      config: { input: { wrapup: false } },
-      maxRounds: 1,
+      // #498 S3 A21: `maxRounds` retired its flat spelling; its home is `config.run.maxRounds`.
+      config: { input: { wrapup: false }, run: { maxRounds: 1 } },
     }),
     (error) => error instanceof TypeError
       && /modelConfig\.resolve/u.test(error.message)
@@ -146,8 +146,9 @@ test("fine-grained startup validation rejects incomplete assembly-shaped input",
       provider: {},
       session: { id: "fine-invalid" },
       // #498 S3 A13: `persistence` retired its flat spelling (`config.run.persistence`).
-      config: { run: { persistence: "none" } },
-      maxRounds: 1,
+      // #498 S3 A21: `maxRounds` retired its flat spelling; its home is `config.run.maxRounds`
+      // (merged into the **same** `run` group — a second `config:` key would silently replace it).
+      config: { run: { persistence: "none", maxRounds: 1 } },
     }),
     (error) => error instanceof TypeError
       && /provider\.chat or provider\.chatStream/u.test(error.message)
@@ -167,8 +168,8 @@ test("assembly port without a store runs with no persistence", async () => {
   const result = await runToolLoop({
     assemblyPort: port,
     completion: false,
-    config: { input: { wrapup: false } },
-    maxRounds: 1,
+    // #498 S3 A21: `maxRounds` retired its flat spelling; its home is `config.run.maxRounds`.
+    config: { input: { wrapup: false }, run: { maxRounds: 1 } },
   });
 
   assert.equal(result.finalText, "assembled");
@@ -207,11 +208,14 @@ function createOverridePort({ policy, emit } = {}) {
 }
 
 test("冲突：构造期有值 + 调用期又给 ⇒ 启动期抛，点名键名与两个来源（issue #498）", async () => {
-  const port = createOverridePort({ policy: { maxRounds: 3 } });
+  // #498 S3 A21: `maxRounds` left the top-level allowlist (home `config.run.maxRounds`), so an
+  // override of it hits the **name** gate instead of the conflict gate. The sample moves to
+  // `completion` — still flat, still produced by `policy` — and the assertion shape is unchanged.
+  const port = createOverridePort({ policy: { completion: false } });
   // ① policy 给的键 —— 来源是 `port.policy.<key>`
   await assert.rejects(
-    assemblyPortOptions(port, { maxRounds: 1 }),
-    (error) => error instanceof TypeError && error.message === OVERRIDE_CONFLICT("maxRounds", "port.policy.maxRounds"),
+    assemblyPortOptions(port, { completion: { signals: [], maxNoToolRounds: 1 } }),
+    (error) => error instanceof TypeError && error.message === OVERRIDE_CONFLICT("completion", "port.policy.completion"),
   );
   // ② 端口派生的键 —— 逐个点名真实来源（这是「两个来源」里构造期那一半）
   const derived = [
@@ -266,9 +270,11 @@ test("冲突：构造期有值 + 调用期又给 ⇒ 启动期抛，点名键名
 test("任意名字：键名必须落在 loop 选项闭集内，否则抛（含 did you mean）", async () => {
   const port = createOverridePort();
   await assert.rejects(
-    assemblyPortOptions(port, { maxRound: 1 }),
+    // #498 S3 A21: `maxRound` → `maxRounds` is no longer a usable suggestion sample (the candidate
+    // pool is the allowlist). `providr` → `provider` pins the same branch.
+    assemblyPortOptions(port, { providr: 1 }),
     (error) => error instanceof TypeError
-      && error.message === 'unknown assembly port override option: "maxRound" (did you mean "maxRounds"?)',
+      && error.message === 'unknown assembly port override option: "providr" (did you mean "provider"?)',
   );
   await assert.rejects(
     assemblyPortOptions(port, { bogusKey: 1 }),

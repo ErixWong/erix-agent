@@ -190,10 +190,20 @@ export function toolResultEnvelopeContract(label, getEntry) {
     const fragments = [];
     const store = createMemoryTranscriptStore();
     const runId = "contract-tool-envelope";
-    const { onEvent, onToolCall, ...rest } = options;
+    // #498 S3 A21: `maxRounds` retired its flat spelling, so a cell may now need to add a `config`
+    // leaf. The caller's tree is merged into the base one (same container — a second `config` key
+    // would silently replace the seed message / runId this helper depends on).
+    const { onEvent, onToolCall, config: extraConfig, ...rest } = options;
+    const baseConfig = { input: { initialUserMessage: "task" }, run: { runId } };
+    const config = extraConfig === undefined ? baseConfig : {
+      ...baseConfig,
+      ...extraConfig,
+      input: { ...baseConfig.input, ...(extraConfig.input ?? {}) },
+      run: { ...baseConfig.run, ...(extraConfig.run ?? {}) },
+    };
     const result = await runToolLoop({
       provider,
-      config: { input: { initialUserMessage: "task" }, run: { runId } },
+      config,
       executeTool,
       store,
       completion: false,
@@ -795,7 +805,8 @@ export function toolResultEnvelopeContract(label, getEntry) {
       {
         script: [toolRound("a1"), toolRound("a2"), DONE],
         options: {
-          maxRounds: 8,
+          // #498 S3 A21: `maxRounds` lives at `config.run.maxRounds` now.
+          config: { run: { maxRounds: 8 } },
           reflection: {
             enabled: true, roundJudge: false, judgeIntervalRound: 1, judge: { provider: judge },
           },
