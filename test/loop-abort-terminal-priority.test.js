@@ -105,6 +105,17 @@ test("abort in the window after the end-turn judge returns terminates as aborted
   });
 
   const error = await settle(run);
+  // `hooks` 与 `ports` 必须**同场**（本格是 `{ ...harness.capabilities, hooks }` 的展开合并，
+  // 不是并列两个 `capabilities` 键）：并列键是对象字面量重复键、**后者静默胜**，`ports.judgeProvider`
+  // 会被吃掉，judge 回落到主 provider（`judgeProviderPort ?? judge?.provider ?? provider`）——那样
+  // judge 走 degraded 分支，`onJudge` 照样发、abort 照样发生，本格会因为**完全不同的原因**变绿，
+  // 同时多烧一次主模型调用。这条断言是唯一能抓住它的回归网（本格原先没有 `judgeCalls` 护栏）。
+  assert.equal(
+    harness.judgeCalls.length,
+    1,
+    "judge 必须走 capabilities.ports.judgeProvider 一次（不是回落到主 provider）",
+  );
+  assert.equal(harness.mainCalls.length, 1, "主模型只该被调用一次（judge 不得借用主 provider）");
   assert.ok(error, "中止仍然必须抛错（#180 的「abort = 抛错」语义不回退）");
   assert.equal(error?.termination?.reason, "aborted");
   assert.notEqual(error?.termination?.reason, "judge_done");
@@ -352,10 +363,10 @@ test("abort reaching the cap finalization with no value-added call left still te
       capabilities: {
         hooks: {
           onRound: (record) => {
-          if (record.round === 2) controller.abort(new Error("user stop before finalization"));
+            if (record.round === 2) controller.abort(new Error("user stop before finalization"));
+          },
         },
       },
-    },
     }));
   } finally {
     if (previous === undefined) delete process.env.ERIX_NO_FORCED_FINAL;
