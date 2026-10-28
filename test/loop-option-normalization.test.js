@@ -193,7 +193,7 @@ const OPTION_WHITELIST = [
   "provider",
   // #498 S3 (`input` group, segment A6): `system` left the allowlist — its canonical home is
   // `config.input.system`, and the copy tracks the source list verbatim (that is what A0 checks).
-  "wrapup",
+  // #498 S3 A18: `wrapup` left the allowlist too (home `config.input.wrapup`); the copy follows.
   // #498 S3 (`input` slice A2b): `initialUserMessage` left the allowlist — its canonical home is
   // `config.input.initialUserMessage`. The copy tracks the source list verbatim (that is what A0
   // checks), so it is gone here too; the flat spelling is now a **rejection** cell, see

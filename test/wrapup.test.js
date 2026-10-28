@@ -181,7 +181,7 @@ test("non-JSON end-turn text still completes through completion signals", async 
   assert.deepEqual(result.termination, { reason: "end_turn" });
 });
 
-test("wrapup:false disables parsing, replacement, normalization, and injection", async () => {
+test("config.input.wrapup:false disables parsing, replacement, normalization, and injection", async () => {
   const previousNormalization = process.env.ERIX_WRAPUP_NORMALIZE;
   process.env.ERIX_WRAPUP_NORMALIZE = "1";
   try {
@@ -192,10 +192,10 @@ test("wrapup:false disables parsing, replacement, normalization, and injection",
     }]);
     const result = await runToolLoop({
       provider,
-      wrapup: false,
       // #498 S3 (`input` slice A): `config.input.messages` is the one registered leaf alias of the
       // retired flat `initialMessages` (expansion writes it back unchanged).
-      config: { input: { messages: [
+      // #498 S3 A18: `wrapup` left the allowlist too — the switch is `config.input.wrapup`.
+      config: { input: { wrapup: false, messages: [
         { role: "system", content: [{ type: "text", text: "宿主系统" }] },
         { role: "user", content: [{ type: "text", text: "完成任务" }] },
       ] } },

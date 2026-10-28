@@ -78,10 +78,16 @@ function base(extra = {}) {
   return {
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
-    config: { input: { initialUserMessage: "go" } },
     completion: false,
-    wrapup: false,
     ...extra,
+    // #498 S3 A18: `wrapup` left the allowlist, so the fixture-era flat switch is gone; the home is
+    // `config.input.wrapup`. The container is **merged** instead of spread over: a call site that
+    // passes its own `config` keeps both the seed and the wrap-up switch (a plain `config` key after
+    // `...extra` would silently drop one of them).
+    config: {
+      ...extra.config,
+      input: { initialUserMessage: "go", wrapup: false, ...extra.config?.input },
+    },
   };
 }
 

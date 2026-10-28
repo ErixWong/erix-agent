@@ -71,14 +71,16 @@ test("F4 形状拒绝格不被夹具吃掉：非对象 config / 非对象 config
 test("E1 走夹具的 run 与宿主直接写新家：provider 收到的 messages 逐字相同（且扁平键会当场被拒）", async () => {
   const viaFixture = createFakeProvider(DONE);
   const viaCanonical = createFakeProvider(DONE);
-  const base = { executeTool: async () => "ok", completion: false, wrapup: false };
+  // #498 S3 A18: `wrapup` 退役扁平写法（家 `config.input.wrapup`）；对照组直接写规位，
+  // 所以这里把开关放进 `config.input` 并**合并**（不是让 `config` 被后写者整棵覆盖）。
+  const base = { executeTool: async () => "ok", completion: false };
   // 夹具侧照旧写**扁平拼写**（那是夹具级 API，见文件头与 `withSeed` 的 JSDoc）。
   await runDirect({ ...base, provider: viaFixture, initialUserMessage: "同一句话" });
   // 对照组 = 宿主**直接写规位家**（`config.input.initialUserMessage`），不经夹具。
   await runToolLoop({
     ...base,
     provider: viaCanonical,
-    config: { input: { initialUserMessage: "同一句话" } },
+    config: { input: { initialUserMessage: "同一句话", wrapup: false } },
   });
   assert.deepEqual(
     viaFixture.requests[0].messages,
@@ -88,7 +90,13 @@ test("E1 走夹具的 run 与宿主直接写新家：provider 收到的 messages
 
   // 反向（同一格，钉住 F1 不是装饰）：把扁平键**塞回**夹具的产物里，引擎今天当场拒。
   // 也就是说「夹具把扁平键摘掉」是**必需的**，不是形状洁癖——漏摘就再也跑不起来。
-  const leaked = { ...withSeed({ seed: "同一句话" }), initialUserMessage: "同一句话", ...base, provider: createFakeProvider(DONE) };
+  const leaked = {
+    ...withSeed({ seed: "同一句话" }),
+    initialUserMessage: "同一句话",
+    ...base,
+    provider: createFakeProvider(DONE),
+    config: { ...withSeed({ seed: "同一句话" }).config },
+  };
   await assert.rejects(
     () => runToolLoop(leaked),
     (error) => error instanceof TypeError

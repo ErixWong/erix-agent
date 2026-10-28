@@ -117,13 +117,15 @@ const RETIRED_RUN = CONFIG_NAMESPACE_SCHEMA.run
 
 /** 直连路线的最小合法 run（一次 end_turn 就结束）。 */
 function minimalRun(extra = {}) {
+  // #498 S3 A18: `wrapup` 退役扁平写法（家 `config.input.wrapup`），所以这里不再有那个扁平键。
+  // 容器**合并**进去（`...extra` 里的 `config` 不许把它整体盖掉）。
   return {
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
     seed: "go",
     completion: false,
-    wrapup: false,
     ...extra,
+    config: { ...extra.config, input: { wrapup: false, ...extra.config?.input } },
   };
 }
 
@@ -196,17 +198,15 @@ test("G1 八格合法形状：扁平与规位两侧都必须 exit 0（形状可�
     const flat = await exitCode({
       provider: createFakeProvider(DONE),
       executeTool: async () => "ok",
-      config: { input: { initialUserMessage: "go" } },
+      config: { input: { initialUserMessage: "go", wrapup: false } },
       completion: false,
-      wrapup: false,
       [key]: value,
     });
     const nested = await exitCode({
       provider: createFakeProvider(DONE),
       executeTool: async () => "ok",
-      config: { input: { initialUserMessage: "go" }, run: { [key]: value } },
+      config: { input: { initialUserMessage: "go", wrapup: false }, run: { [key]: value } },
       completion: false,
-      wrapup: false,
     });
     // 扁平侧此刻**已经**被拒（键退役了）——闸口二在删键**前**跑过，两侧都是 0；删键之后
     // 扁平侧的期望值就是「拒」。这条断言钉的是**规位侧的可达性**（0）与扁平侧的**确定性**

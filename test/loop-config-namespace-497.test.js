@@ -84,15 +84,26 @@ import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const DONE = [{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" }];
 
-/** 直连路线的最小合法 run（一次 end_turn 就结束）。 */
+/**
+ * 直连路线的最小合法 run（一次 end_turn 就结束）。
+ *
+ * #498 S3 A18：`wrapup` 的扁平写法退役了（家 `config.input.wrapup`），所以这里不再有那个扁平键。
+ * 容器是**合并**进去的，不是被 `...extra` 整体覆盖；`extra.config` 是**非对象**时（F2 那一组
+ * 形状拒绝格）原样透传、不并任何东西——否则那几格测的「config 必须是对象」会被换成别的红。
+ */
 function runDirect(extra = {}) {
+  const { config, ...rest } = extra;
+  const configIsObject = config !== null && typeof config === "object" && !Array.isArray(config);
+  const mergedConfig = config === undefined || configIsObject
+    ? { ...config, input: { ...config?.input, wrapup: false } }
+    : config;
   return sharedRunDirect({
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
     seed: "go",
     completion: false,
-    wrapup: false,
-    ...extra,
+    ...rest,
+    config: mergedConfig,
   });
 }
 
@@ -422,7 +433,7 @@ test("B1 42 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平�
 const VALUES = {
   // #498 S3 A6：`system` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
   // #498 S3 A2b：`initialUserMessage` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
-  wrapup: false,
+  // #498 S3 A18：`wrapup` 同样退役（`input` 组最后一个扁平孪生），样本搬到 `RETIRED_FLAT_VALUES`。
   // #527：`tools` 已拆出配置面（永久顶层面），不再属于这份配置样本。
   maxRounds: 3,
   // #498 S3（`run` 片 A14）：`maxTokenContinuations` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
@@ -485,6 +496,10 @@ const RETIRED_FLAT_VALUES = {
   initialMessages: [],
   // #498 S3（`input` 组 A2b 段）：`initialUserMessage`——种子首轮消息。
   initialUserMessage: "go",
+  // #498 S3（`input` 组 A18 段）：`wrapup`——收尾协议开关。布尔标量 ⇒ 退役后只剩
+  // `config.input.wrapup` 一个家；展开相仍逐字写回 `effectiveOptions.wrapup`（引擎读侧
+  // `wrapup !== false` 一字未改）。
+  wrapup: false,
   // #498 S3（`input` 组 A6 段）：`system`——系统提示。标量 ⇒ 扁平写法一退役就只剩
   // `config.input.system` 一个家；展开相仍逐字写回 `effectiveOptions.system`（读侧一行未改）。
   system: "you are a test",
@@ -746,9 +761,10 @@ test("C6 两个 config 源同时在场：后写者胜（4 轮变 1 轮）+ 逐�
     executeTool: async () => "ok",
     tools,
     completion: false,
-    wrapup: false,
     // 调用级 config：`run.maxRounds` 与 policy 不同（1 vs 4）、`tuning.temperature` 与 policy 相同。
-    config: { run: { maxRounds: 1 }, tuning: { temperature: 0.1 } },
+    // #498 S3 A18：`wrapup` 的扁平写法退役，开关随其他叶子一起写在 `config.input.wrapup`
+    // （policy 侧没有 `input` 组 ⇒ 它不参与下面那条冲突清单）。
+    config: { input: { wrapup: false }, run: { maxRounds: 1 }, tuning: { temperature: 0.1 } },
     onEvent: (event) => events.push(event),
   });
   assert.equal(result.termination.reason, "max_rounds_cap", "调用级 config 整棵覆盖 policy：1 轮就到顶");
@@ -768,22 +784,20 @@ test("C7 两个 config 源同值 / 只给一边 ⇒ 不发事件（判据与扁�
   const same = await runToolLoop({
     assemblyPort: makePort({ config: { run: { maxRounds: 1 } } }),
     completion: false,
-    wrapup: false,
-    config: { run: { maxRounds: 1 } },
+    config: { input: { wrapup: false }, run: { maxRounds: 1 } },
     onEvent: (event) => events.push(event),
   });
   assert.equal(same.termination.reason, "end_turn");
   await runToolLoop({
     assemblyPort: makePort({ config: { run: { maxRounds: 1 } } }),
     completion: false,
-    wrapup: false,
+    config: { input: { wrapup: false } },
     onEvent: (event) => events.push(event),
   });
   await runToolLoop({
     assemblyPort: makePort({}),
     completion: false,
-    wrapup: false,
-    config: { run: { maxRounds: 1 } },
+    config: { input: { wrapup: false }, run: { maxRounds: 1 } },
     onEvent: (event) => events.push(event),
   });
   assert.deepEqual(
@@ -834,7 +848,8 @@ test("D3 装配口路线的 policy.config 走同一棵树：能力键 via=assemb
   );
 
   const port = makePort({ config: { run: { maxRounds: 1 } } });
-  const result = await runToolLoop({ assemblyPort: port, completion: false, wrapup: false });
+  // #498 S3 A18: the flat `wrapup` switch is retired — its home is `config.input.wrapup`.
+  const result = await runToolLoop({ assemblyPort: port, completion: false, config: { input: { wrapup: false } } });
   assert.equal(result.rounds, 1);
   assert.equal(result.termination.reason, "end_turn");
 });
@@ -845,7 +860,8 @@ test("D4 既有 overrides 语义一字未动：显式 provider 仍能盖端口 p
     assemblyPort: port,
     provider: createFakeProvider([{ content: [{ type: "text", text: "explicit" }], stopReason: "end_turn" }]),
     completion: false,
-    wrapup: false,
+    // #498 S3 A18: `wrapup` 退役扁平写法，家在 `config.input.wrapup`。
+    config: { input: { wrapup: false } },
     maxRounds: 1,
   });
   assert.equal(result.finalText, "explicit");

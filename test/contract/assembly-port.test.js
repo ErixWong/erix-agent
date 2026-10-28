@@ -316,7 +316,13 @@ test("正向钉：调用期新键仍然合法（端口没产出的 signal / stor
   assert.equal(options.store, store);
   assert.equal(options.session.id, `assembly-new-keys-${process.pid}`);
   // 这条不是「没抛」：上面三行都在断言**具体值**，而下面证明合法新键真的能被引擎用起来。
-  const result = await runToolLoop({ ...options, modelConfig: port.modelConfig, completion: false, wrapup: false });
+  // #498 S3 A18: `wrapup` is retired as a flat key; the switch lives at `config.input.wrapup`.
+  const result = await runToolLoop({
+    ...options,
+    modelConfig: port.modelConfig,
+    completion: false,
+    config: { ...options.config, input: { ...options.config?.input, wrapup: false } },
+  });
   assert.equal(result.termination.reason, "end_turn");
 });
 

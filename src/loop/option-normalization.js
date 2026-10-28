@@ -138,7 +138,7 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // (the third station, alongside `provider` / `executeTool` / `store`), and writing
   // `config.input.tools` is now rejected as an unknown leaf whose message points at the top level.
   // The engine's read side is unchanged: it still reads `effectiveOptions.tools`.
-  "wrapup",
+  // #498 S3 A18: `wrapup` retired (last flat twin of `input`; see slice a18 segment N).
   "tools",
   // #498 S3 (`run` slice, segment A11): `writeToolNames` / `writeToolPathKeys` / `replayPolicy` /
   // `invalidArguments` left the allowlist here. Their canonical home is `config.run.*`

@@ -222,7 +222,7 @@ total that goes stale the next time a group moves.
 
 | namespace | knobs |
 | --- | --- |
-| `config.input` | `system`, `cacheStablePrefix`, `initialUserMessage`, `messages` (the flat `initialMessages`), `wrapup` — **not** `tools` (issue #527: it is a permanent top-level option, the third station) |
+| `config.input` | `system`, `cacheStablePrefix`, `initialUserMessage`, `messages` (the flat `initialMessages`), `wrapup` — **none** of them is still writable flat (the group is closed since A18); **not** `tools` (issue #527: it is a permanent top-level option, the third station) |
 | `config.run` | `maxRounds`, `maxTokenContinuations`, `stallDetection`, `completion`, `replayPolicy`, `invalidArguments`, `partialPersistence`, `persistence`, `outputHygiene`, `writeToolNames`, `writeToolPathKeys`, `resume`, `stream`, `reflection`, `runId`, `cwd` |
 | `config.tuning` | `maxTokens`, `temperature`, `topP`, `cacheCapable` |
 | `config.timing` | `timeoutMs`, `deadlineMs`, `retry` |
@@ -439,10 +439,11 @@ Two properties hold, both machine-checked:
   same leaf goes one step further and says outright that there is no capability home for it — `system`
   is a data key, so the fix is "pass plain data", not "move it to the capability surface".
 
-**`config.input` is closed except `wrapup`; `tools` is not a config key at all (issue #527).** The
-A6 slice returned `tools` pending a ruling; that ruling has landed. The two keys are pinned in
-`test/loop-input-keys-slice-498s3a6.test.js` (G1–G5, S) and `test/loop-config-namespace-497.test.js`
-(I3):
+**`config.input` is closed — no leaf of it has a flat twin any more; `tools` is not a config key at
+all (issue #527).** The A6 slice returned `tools` pending a ruling and deferred `wrapup`; both
+rulings have landed. The keys are pinned in `test/loop-input-keys-slice-498s3a6.test.js` (G1–G5, S),
+`test/loop-input-keys-slice-498s3a18.test.js` (P/G/F/R/N/S) and
+`test/loop-config-namespace-497.test.js` (I3):
 
 * **`tools` is a permanent top-level option — the third station — alongside `provider` /
   `executeTool` / `store`.** The A6 reachability check proved the reason: a host may hand in tool
@@ -472,16 +473,29 @@ A6 slice returned `tools` pending a ruling; that ruling has landed. The two keys
   | 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
   | 0.28.0 and later (issue #527) | **rejected on the spot** — write the top-level `tools`; the leaf is not on the schema and the message names the third station |
 
-* **`wrapup` is deferred.** Its flat write points are spread over ~35 test files / ~106 occurrences
-  (`wrapup: false` is the fixture idiom for turning the wrap-up protocol off); deleting the key turns
-  **189** test cases red at once, and a naive rewrite repeats the #521 problem (475 write points plus
-  "this file already has a `config:` key" collisions that a plain replace turns into a silently
-  winning duplicate). The right order is a fixture-level translation point first — `withSeed` in
-  `test/helpers/run-direct.js` is the precedent — and the key second. `wrapup` therefore stays a
-  legal flat option; its canonical home `config.input.wrapup` already exists and is exercised.
+* **`wrapup` is retired (issue #498 S3 A18) — the last flat twin of the group.** The order the A6
+  slice prescribed was followed exactly: the fixture-level translation point came first (#528 added
+  `withInputFamily` next to `withSeed` / `withRunFamily` in `test/helpers/run-direct.js`, so the 88
+  existing call sites kept their spelling), the key came second. The ruling (#495) accepted the
+  **narrowing**: a *function* value used to be flat-accepted (the engine only ever evaluates
+  `wrapup !== false` in `src/loop/orchestrator.js`, so a function was merely truthy and was **never
+  called**; the JSDoc has always declared `wrapup?: boolean`), and the config subtree holds data
+  only. So the function shape is refused on **both** spellings now, and the schema was **not**
+  relaxed to keep the flat door open. This is deliberately **not** the `reflection` treatment
+  (issue #530): there the members really are called, so that group has to split into a data half and
+  a behaviour half — `wrapup` has no behaviour half to preserve.
 
-The accounting is machine-derived rather than remembered: the `input` group now has exactly **one**
-member with a flat twin (`wrapup`), and the suite asserts that the set equals the returned list. The
+  | release | writing the flat `wrapup` | writing `config.input.wrapup` |
+  | --- | --- | --- |
+  | 0.26.0 and earlier (the last **published** release) | legal — and it was the only spelling (the `config` namespace did not exist yet) | n/a (no `config` namespace) |
+  | 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered | **never published** either |
+  | 0.28.0 and later (issue #498 S3 A18) | **rejected on the spot** — the message names the new home: `unknown runToolLoop option: "wrapup" (its canonical home is config.input.wrapup; the flat spelling is rejected)` | the one legal spelling; the leaf is still on the schema and the expansion phase writes it back onto `effectiveOptions.wrapup`, so every engine-side reader is unchanged |
+
+The accounting is machine-derived rather than remembered: the `input` group now has **zero** members
+with a flat twin, and the suite proves it by **derivation** rather than by counting leaves — it asks
+`configPathForOption` about every allowlisted name and asserts that no answer starts with `input.`
+(`test/loop-input-keys-slice-498s3a18.test.js`, segment N). That is why nobody has to restate "how
+many leaves the group has today": the criterion is about the mapping, not about the count. The
 third station is derived in both directions too: the keys with **no nested home** (`configPathForOption`
 and `capabilitiesPathForOption` both `undefined`) are exactly `TOP_LEVEL_SURFACE_OPTION_NAMES` plus the
 two containers — **12** after #527, up from 11 before it, with `tools` as the added member. Re-adding
@@ -494,7 +508,7 @@ rest would be a regression:
 
 | plane | where it lives | status |
 | --- | --- | --- |
-| `runToolLoop` top-level option | `RUN_TOOL_LOOP_OPTION_NAMES` (`src/loop/option-normalization.js`) | `system` **retired by the A6 slice**; `wrapup` still legal flat; `tools` is a **permanent top-level option** (the third station, same class as `provider` / `executeTool` / `store`) — it has no nested home at all |
+| `runToolLoop` top-level option | `RUN_TOOL_LOOP_OPTION_NAMES` (`src/loop/option-normalization.js`) | `system` **retired by the A6 slice**; `wrapup` **retired by A18** (its flat spelling is rejected, home `config.input.wrapup`); `tools` is a **permanent top-level option** (the third station, same class as `provider` / `executeTool` / `store`) — it has no nested home at all |
 | `config.input.*` | `CONFIG_NAMESPACE_SCHEMA.input` (`src/loop/config-namespace.js`) | the canonical home for **data** leaves — `tools` is **not** one of them since #527 (the leaf was removed) |
 | provider request field `system` / OpenAI `role: "system"` | `src/messages/anthropic.js`, `src/messages/canonical.js` | **untouched** — that is the engine's *read* side, and the expansion phase feeds it |
 | `systemPrompt` / `systemPromptMode` / `systemPromptFile` | issue #505's two slices — **independent options**, never members of this group | **untouched**; neither is a `runToolLoop` top-level key, and neither has a config home |

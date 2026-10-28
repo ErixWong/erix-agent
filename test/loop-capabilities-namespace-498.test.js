@@ -409,7 +409,8 @@ test("S2d2 两个 capabilities 源同时在场：调用级整棵覆盖（后写�
 test("S2e 装配口路线：policy.capabilities 同相接受并生效，未知子键 via=assembly", async () => {
   const seen = [];
   const port = makePort({ capabilities: { hooks: { onEvent: (event) => seen.push(event) } } });
-  const result = await runToolLoop({ assemblyPort: port, completion: false, wrapup: false });
+  // #498 S3 A18: the flat `wrapup` switch is retired — its home is `config.input.wrapup`.
+  const result = await runToolLoop({ assemblyPort: port, completion: false, config: { input: { wrapup: false } } });
   assert.equal(result.termination.reason, "end_turn");
   assert.ok(seen.length > 0, "policy.capabilities.hooks.onEvent 必须被投递");
 
