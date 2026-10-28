@@ -270,7 +270,6 @@ test("resume：崩溃现场是一条被拒的调用 ⇒ 不补跑，模型看到
         fetchImpl,
       }),
       store,
-      runId: "resume-rejected",
       tools: [READ_FILE_SCHEMA],
       executeTool: async ({ input }) => {
         executed.push(input);
@@ -280,7 +279,7 @@ test("resume：崩溃现场是一条被拒的调用 ⇒ 不补跑，模型看到
       completion: false,
       // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役，规位是 `config.run.replayPolicy`。
       // #498 S3 A19：`resume` 同样退役（家 `config.run.resume`），并进**同一个** `config` 容器。
-      config: { run: { replayPolicy, resume: true } },
+      config: { run: { replayPolicy, resume: true, runId: "resume-rejected" } },
     });
 
     // ① 不补跑

@@ -246,8 +246,10 @@ export async function runExecDemo(task = "查看当前目录有哪些文件，�
     executeTool,
     maxRounds: 8,
     store,
-    runId,
-    ...(Object.keys(config).length === 0 ? {} : { config }),
+    // #498 S3 A20: `runId` lost its flat spelling — canonical home `config.run.runId`, merged into
+    // the **same** `config` tree as the caller's `config` above (a second `config:` key would
+    // silently replace it).
+    config: { ...config, run: { ...config.run, runId } },
     ...(opts.compactBudgetTokens
       ? { capabilities: { ports: { strategy: createFoldStatisticalStrategy() } } }
       : {}),

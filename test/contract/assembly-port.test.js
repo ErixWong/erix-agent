@@ -219,9 +219,17 @@ test("冲突：构造期有值 + 调用期又给 ⇒ 启动期抛，点名键名
     ["tools", "port.tools.definitions"],
     ["executeTool", "port.tools.executeTool"],
     ["store", "port.store"],
-    ["runId", "port.session.id"],
     ["session", "port.session"],
   ];
+  // #498 S3 A20：`runId` 已离开顶层白名单（家 `config.run.runId`）⇒ 调用期覆盖撞的是**名称闸口**
+  // 而不是冲突闸口。这里按「改而不删」翻成反向钉：构造期它仍被产出（下面「键集自证」那一格还在
+  // 断言），只是覆盖写法没了——闭集派生自 `RUN_TOOL_LOOP_OPTION_NAMES`，不是手抄。
+  await assert.rejects(
+    assemblyPortOptions(port, { runId: null }),
+    (error) => error instanceof TypeError
+      && error.message.startsWith("unknown assembly port override option:"),
+    "`runId` 已退役扁平写法 ⇒ 覆盖名也不合法（派生：覆盖闭集 = 白名单）",
+  );
   for (const [key, origin] of derived) {
     await assert.rejects(
       assemblyPortOptions(port, { [key]: null }),
@@ -317,11 +325,20 @@ test("正向钉：调用期新键仍然合法（端口没产出的 signal / stor
   assert.equal(options.session.id, `assembly-new-keys-${process.pid}`);
   // 这条不是「没抛」：上面三行都在断言**具体值**，而下面证明合法新键真的能被引擎用起来。
   // #498 S3 A18: `wrapup` is retired as a flat key; the switch lives at `config.input.wrapup`.
+  // #498 S3 A20：装配口**仍然产出** `runId`（`port.session.id`，构造期的事实，本片一字未改），
+  // 但它的顶层拼写已退役 ⇒ 宿主把端口产物直接铺进 `runToolLoop` 时必须并进 `config.run`。
+  // 这条正是「端口给值 / 顶层拼写」两张面分开之后的真实形状，所以这里按规位拼写喂进去。
+  const { runId: portRunId, ...portOptions } = options;
+  assert.equal(portRunId, `assembly-new-keys-${process.pid}`, "前提：端口确实产出了 runId");
   const result = await runToolLoop({
-    ...options,
+    ...portOptions,
     modelConfig: port.modelConfig,
     completion: false,
-    config: { ...options.config, input: { ...options.config?.input, wrapup: false } },
+    config: {
+      ...portOptions.config,
+      input: { ...portOptions.config?.input, wrapup: false },
+      run: { ...portOptions.config?.run, runId: portRunId },
+    },
   });
   assert.equal(result.termination.reason, "end_turn");
 });

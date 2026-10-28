@@ -111,7 +111,10 @@ function legacyFlatOptions(input) {
     // (expansion writes it back to `effectiveOptions.stream`, so the equivalence claim is unaffected).
     // It joins the **same** `config.run` group as `cwd` below.
     signal,
-    runId,
+    // #498 S3 A20: `runId` lost its flat spelling too — canonical home `config.run.runId`, merged
+    // into the **same** `config.run` group as `cwd` / `stream` below. Same mechanism as every other
+    // key in this golden: the expansion phase writes it back to `effectiveOptions.runId`, so the
+    // equivalence claim is unaffected.
     store,
     // #498 S3 (`timing` slice): `timeoutMs` / `retry` no longer have a flat spelling — the golden
     // uses their canonical home `config.timing.*`. The equivalence claim is unaffected: the
@@ -133,7 +136,7 @@ function legacyFlatOptions(input) {
       // #498 S3 A15: `cwd` is retired as a flat option too; its canonical home is `config.run.cwd`
       // (the expansion phase writes it back to `effectiveOptions.cwd`, so the equivalence claim is
       // unaffected). Merged into the **same** `config` tree.
-      run: { cwd: params.cwd, stream: false },
+      run: { cwd: params.cwd, stream: false, runId },
       // #498 S3 A9: `task` is retired as a flat option too; its canonical home is
       // `config.metadata.task`. Merged into the **same** `config` tree (a second `config:` key would
       // silently replace the `input` / `timing` groups above).

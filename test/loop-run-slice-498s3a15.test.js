@@ -324,7 +324,7 @@ test("N1 撞名面逐类钉住：只有 `runToolLoop` 的顶层选项被退役�
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(KEY), false, "引擎选项面已退役");
 });
 
-test("N2 邻接面没动：`run` 组剩下的大件一件没动，`runId` 仍是扁平可写", () => {
+test("N2 邻接面没动：`run` 组剩下的大件一件没动，`runId` 也已退役（A20）", () => {
   // #498 S3 A16：`stream` 也退役了（家 `config.run.stream`），所以它从这条循环里移出、翻成
   // 反向钉——与 A15 对 `cwd` 的改法逐字同形；其余邻接键的断言一字未动。
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("stream"), false, "A16 已退役 `stream` 的扁平写法");
@@ -333,7 +333,10 @@ test("N2 邻接面没动：`run` 组剩下的大件一件没动，`runId` 仍是
   // #498 S3 A19：`resume` 也退役了（家 `config.run.resume`），同样从这条循环里移出、翻成反向钉
   // ——与 A15 对 `cwd`、A16 对 `stream`、A18 对 `wrapup` 的改法逐字同形（改而不删）。
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("resume"), false, "A19 已退役 `resume` 的扁平写法");
-  for (const key of ["runId", "completion", "maxRounds", "reflection"]) {
+  // #498 S3 A20：`runId` 也退役了（家 `config.run.runId`），同样从这条循环里移出、翻成反向钉
+  // ——与 A15 对 `cwd`、A16 对 `stream`、A18 对 `wrapup`、A19 对 `resume` 的改法逐字同形（改而不删）。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("runId"), false, "A20 已退役 `runId` 的扁平写法");
+  for (const key of ["completion", "maxRounds", "reflection"]) {
     assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(key), true, `${key} 仍可扁平写（本片不许收它）`);
   }
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("store"), true, "`store` 是永久顶层面，不许动");

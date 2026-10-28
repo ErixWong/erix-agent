@@ -108,8 +108,7 @@ test("F-2 judgeInterceptCount 经 restoreResume ctx：resume 播种已执行工�
     await runToolLoop({
       provider,
       store,
-      config: { run: { resume: true } },
-      runId,
+      config: { run: { resume: true, runId } },
       completion: false,
       maxRounds: 6,
       executeTool: async () => "done-b",

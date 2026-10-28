@@ -466,7 +466,7 @@ const VALUES = {
   // 第二轮又从能力面移入两个字符串标量 `runId` / `cwd`（`config.run.*`）。
   // #498 S3（`run` 片 A13）：`persistence` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
   // #498 S3（`run` 片 A15）：`cwd` 同样退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
-  runId: "config-497-run",
+  // #498 S3（`run` 片 A20）：`runId` 同样退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
   // #498 S4a：这里曾有 8 个 `on*: () => {}`——`config.observers` 整组删除后它们不再是配置叶子
   // （回调的规范之家是 `capabilities.hooks`，见 `test/loop-capabilities-namespace-498.test.js`）。
 };
@@ -504,6 +504,10 @@ const RETIRED_FLAT_VALUES = {
   // #498 S3（`input` 组 A6 段）：`system`——系统提示。标量 ⇒ 扁平写法一退役就只剩
   // `config.input.system` 一个家；展开相仍逐字写回 `effectiveOptions.system`（读侧一行未改）。
   system: "you are a test",
+  // #498 S3（`run` 片 A20）：`runId`——run 标识（字符串标量）。退役扁平写法之后只剩
+  // `config.run.runId` 一个家；展开相仍逐字写回 `effectiveOptions.runId`（引擎读侧那一处解构
+  // 一字未改），所以 transcript 的键、judge 记录的相关字段、观察者归因全都照旧。
+  runId: "config-497-run",
   // #498 S3（`tuning` 片）：`cacheCapable`——缓存友好端点的开关（引擎据此默认关掉工具结果 TTL 折叠）。
   cacheCapable: false,
   // #498 S3（`tuning` 片 A5 段）：三个采样/输出预算旋钮。它们是**标量**，所以扁平写法一退役就只剩
@@ -647,17 +651,20 @@ test("B3 config 形态真的被引擎读：maxRounds 经 config 生效（不是�
 test("C1 同名时 config 赢，并记一条冲突（规范化层）", async () => {
   const { effectiveOptions, configConflicts } = await normalizeRunToolLoopOptions({
     maxRounds: 9,
-    runId: "c1-flat-run-id",
     // #498 S3（`tuning` A5）：`temperature` 已退役扁平写法（家 = `config.tuning.temperature`），所以
     // 「同一个值写两边 ⇒ 不记冲突」这条通道换成一个**仍可扁平写**的配置叶子。A5 那一版用的是
     // `maxTokenContinuations`，而 A14 把它也退役了 ⇒ 再换一次：`stream`（家 = `config.run.stream`，
     // 仍是扁平可写的配置叶子）。A16 把 `stream` 也退役了 ⇒ 换成 `resume`；A19 又把 `resume` 退役了
-    // ⇒ 换成 `runId`（家 = `config.run.runId`，仍是扁平可写的字符串标量）。通道形状一字未变：
+    // ⇒ 换成 `runId`；A20 把 `runId` 也退役了 ⇒ 换成 `completion`（家 = `config.run.completion`，
+    // 现在是 `run` 组里**仅剩的三个**仍可扁平写的配置叶子之一，另两个是 `maxRounds` 与
+    // `reflection`；后者要真 provider 才能赋值，前者已被本格用来测冲突）。通道形状一字未变：
     // 同一个值写两边不记冲突。
-    config: { run: { maxRounds: 5, runId: "c1-flat-run-id" } },
+    completion: { signals: [], maxNoToolRounds: 2 },
+    config: { run: { maxRounds: 5, completion: { signals: [], maxNoToolRounds: 2 } } },
   });
   assert.equal(effectiveOptions.maxRounds, 5, "config.run.maxRounds 覆盖扁平 maxRounds");
-  assert.equal(effectiveOptions.runId, "c1-flat-run-id", "值相同时照旧生效");
+  assert.deepEqual(effectiveOptions.completion, { signals: [], maxNoToolRounds: 2 },
+    "值相同时照旧生效");
   assert.deepEqual(configConflicts, [{ path: "run.maxRounds", key: "maxRounds" }], "只有值不同才算冲突");
 });
 

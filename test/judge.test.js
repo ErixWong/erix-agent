@@ -857,7 +857,7 @@ test("resumed judge briefs scan only the original round-zero seed messages", asy
 
   await runToolLoop({
     provider: firstProvider,
-    config: { input: { messages: [{ role: "user", content: "任务A：修登录bug" }], wrapup: false } },
+    config: { input: { messages: [{ role: "user", content: "任务A：修登录bug" }], wrapup: false }, run: { runId } },
     executeTool: async () => "ok",
     maxRounds: 2,
     completion: false,
@@ -867,7 +867,6 @@ test("resumed judge briefs scan only the original round-zero seed messages", asy
       judge: { provider: firstJudge },
     },
     store,
-    runId,
   });
 
   const records = await store.load(runId);
@@ -891,10 +890,9 @@ test("resumed judge briefs scan only the original round-zero seed messages", asy
     executeTool: async () => "unused",
     maxRounds: 3,
     completion: false,
-    config: { input: { wrapup: false }, run: { resume: true } },
+    config: { input: { wrapup: false }, run: { resume: true, runId } },
     reflection: { enabled: true, judge: { provider: resumedJudge } },
     store,
-    runId,
   });
 
   assert.ok(resumedJudge.requests.length >= 1, "resume run should trigger at least one judge call");
@@ -936,10 +934,9 @@ test("resume without a round-zero seed keeps the judge brief empty", async () =>
     // maxRounds=1 即续接会话只跑一轮（judge 恰好被调用一次）
     maxRounds: 1,
     completion: false,
-    config: { input: { wrapup: false }, run: { resume: true } },
+    config: { input: { wrapup: false }, run: { resume: true, runId } },
     reflection: { enabled: true, judge: { provider: resumedJudge } },
     store,
-    runId,
   });
 
   assert.equal(resumedJudge.requests.length, 1);
