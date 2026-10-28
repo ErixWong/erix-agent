@@ -85,10 +85,12 @@
 //           0.28 判据就得反过来开例外（一条 round-trip 判据要豁免两个字符串键，它也就不再是判据）。
 //      所以它们是 `config.run.runId` / `config.run.cwd`：别名新增，**顶层扁平键一字未动**。
 //
-// 优先级（范围 2）：同名时 `config.*` 覆盖顶层扁平键；顶层扁平键继续接受、行为一字不变。
-// 冲突不静默——`expandConfigNamespace` 把「同一个键两种写法给了不同的值」记进 `conflicts`，
-// 由 orchestrator 发一条 `config_override_conflict` 事件（唯一的发射点，与 #469 的
-// `context_unknown_option` 同口径：观察者抛错不得影响 run）。
+// 优先级（范围 2）：同名时 `config.*` 覆盖顶层扁平键。
+// 冲突不静默——两个 `config` 源（`policy.config` / 调用级 `config`）同时给同一个叶子时，
+// `collectConfigSourceConflicts` 逐叶记一条，由 orchestrator 发一条 `config_override_conflict`
+// 事件（唯一的发射点，与 #469 的 `context_unknown_option` 同口径：观察者抛错不得影响 run）。
+// #545：「扁平 vs config」这一支不再是**冲突**，而是一条内部不变量（没有入口能同时给出两种写法，
+// 见 `expandConfigNamespace` 的 JSDoc）。
 //
 // 零运行时依赖：只用相对路径 + `node:` 内置。
 
@@ -1038,15 +1040,24 @@ function isConfigObject(value) {
  * 展开 `config` 命名空间：把每个叶子写回它的顶层扁平键，并记下**冲突**。
  *
  * 展开规则（逐条都是本单的验收判据）：
- *   · `config.<group>.<leaf>` 与顶层 `<leaf>` 是同一个键 ⇒ 展开后只剩顶层那个键；
- *     叶子过 `CONFIG_LEAF_ALIASES` 后才是顶层键名（`input.messages` → `initialMessages`）；
- *   · 同名时 **config 赢**（范围 2 的优先级），顶层扁平键继续接受、行为不变；
- *   · 叶子的 `undefined` 逐字等于「没给」（与既有合并规则 `value !== undefined` 同口径），
- *     于是它既不覆盖扁平值、也不算冲突；
- *   · 两边都给了**不同的值** ⇒ 记一条冲突（`path` 是 schema 路径，`key` 是顶层键名，
- *     所以 `input.messages` 的冲突报成 `{ path: "input.messages", key: "initialMessages" }`）；
- *   · `config` 本身从展开结果里消失（下游看到的仍是一份扁平表示，#496 的语义相闸口
- *     因此对 config 里写的值一视同仁）。
+ *   · `config.<group>.<leaf>` 写回它的顶层扁平键（叶子过 `CONFIG_LEAF_ALIASES` 后才是顶层键名，
+ *     `input.messages` → `initialMessages`），于是下游看到的仍是一份扁平表示，#496 的语义相闸口
+ *     对 config 里写的值一视同仁；
+ *   · 叶子的 `undefined` 逐字等于「没给」（与既有合并规则 `value !== undefined` 同口径）；
+ *   · `config` 本身从展开结果里消失。
+ *
+ * **「扁平 vs config」这一支已经删了（#545）**，换成一条内部不变量：写回之前，那个扁平键在
+ * `options` 里必须**没有值**。谁还走得到这条断言？**没有人**——三条来源逐一关死了：
+ *   ① 调用级显式选项：名称闸口（`assertRunToolLoopOptionNames`）只放行
+ *      `RUN_TOOL_LOOP_OPTION_NAMES`，而 S3 之后**没有一个配置叶子还留在白名单里**
+ *      （`configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES)` 为空，测试钉住）；
+ *   ② 装配口 `policy`：#545 起它**只收数据**且叶子名一律翻译成 `config.<path>`
+ *      （`translatedPolicyConfigLeaves`），产出的合并树里没有任何扁平配置键；
+ *   ③ 端口派生键（`provider` / `tools` / `session` / `onEvent` …）：它们是第三站或能力面，
+ *      一个都不是配置叶子。
+ * 所以「同一个键两种写法」在**合并表示**里不可能同时出现，这一支不再是「没人走但门禁全绿」的死
+ * 代码：它变成一条会咬人的不变量——将来谁新增一条未经闸口的选项来源，这里立刻抛并点名叶子，
+ * 而不是静默让 `config` 赢（那正是 #497 之前的样子）。
  *
  * 返回新对象，不改入参。
  *
@@ -1055,7 +1066,8 @@ function isConfigObject(value) {
  * @returns {{
  *   options: Record<string, any>,
  *   conflicts: Array<{path: string, key: string}>,
- * }} `conflicts` 里只放路径与键名：值可能是函数/大对象，不进事件载荷。
+ * }} `conflicts` 恒为空（`expandConfigNamespace` 这一侧已经没有可报的冲突：见上面的不变量）；
+ *   保留这个字段是因为调用方按 `{ options, conflicts }` 解构，且 `capabilities` 那一侧同形。
  */
 export function expandConfigNamespace(options, route = {}) {
   const config = options.config;
@@ -1063,19 +1075,27 @@ export function expandConfigNamespace(options, route = {}) {
   assertConfigNamespace(config, route);
   const expanded = { ...options };
   delete expanded.config;
-  const conflicts = [];
   for (const group of CONFIG_NAMESPACE_GROUPS) {
     const bag = /** @type {Record<string, any>|undefined} */ (config[group]);
     if (bag === undefined) continue;
     for (const [leaf, value] of Object.entries(bag)) {
       if (value === undefined) continue;
       const key = configOptionNameForLeaf(group, leaf);
-      const flatValue = expanded[key];
-      if (flatValue !== undefined && !isDeepStrictEqual(flatValue, value)) {
-        conflicts.push({ path: `${group}.${leaf}`, key });
+      if (expanded[key] !== undefined) {
+        // Internal invariant (#545), not a user-facing rejection: no entry route can produce a flat
+        // config key any more (see the JSDoc above). Reaching this means a new option source skipped
+        // its name gate — fail loudly instead of letting `config` win in silence.
+        throw tagValidationRoute(
+          new TypeError(
+            `internal invariant: config.${group}.${leaf} has a flat twin ${JSON.stringify(key)} in the`
+            + " merged option tree, but no entry route emits flat config keys (issue #545)."
+            + " A new option source is bypassing its name gate.",
+          ),
+          route.via,
+        );
       }
       expanded[key] = value;
     }
   }
-  return { options: expanded, conflicts };
+  return { options: expanded, conflicts: [] };
 }

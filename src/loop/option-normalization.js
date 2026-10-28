@@ -83,7 +83,7 @@
 // 声明顺序依赖（`notifyCapabilitySkipped` 等 TDZ 陷阱）无关。
 // 零运行时依赖：只用相对路径。
 
-import { assemblyPortOptions, assertMergedOptionNames, collectAssemblyDerivedConfigConflicts, withAssemblyDerivedConfigLeaves } from "../assembly.js";
+import { assemblyPortOptions, assertMergedOptionNames, collectAssemblyDerivedConfigConflicts, collectAssemblyPolicyConfigConflicts, withAssemblyPolicyConfigLeaves } from "../assembly.js";
 import { assertSemanticOptionValues } from "../assembly-validators.js";
 import {
   assertCapabilitiesNamespace,
@@ -502,9 +502,11 @@ export async function normalizeRunToolLoopOptions(options) {
   // per leaf) and still report one `config_override_conflict` vs
   // `policy.config`; the name gate runs on this tree before expansion
   // writes the retired names back.
+  // #545: translated `policy` leaves ride the same tree and the same conflict list.
   if (assemblyPort !== undefined) {
-    mergedOptions.config = withAssemblyDerivedConfigLeaves(mergedOptions.config, assemblyPort);
+    mergedOptions.config = withAssemblyPolicyConfigLeaves(mergedOptions.config, assemblyPort);
     configSourceConflicts.push(...collectAssemblyDerivedConfigConflicts(assemblyPort));
+    configSourceConflicts.push(...collectAssemblyPolicyConfigConflicts(assemblyPort));
   }
   assertMergedOptionNames(mergedOptions);
   const configExpansion = expandConfigNamespace(mergedOptions, { via });
