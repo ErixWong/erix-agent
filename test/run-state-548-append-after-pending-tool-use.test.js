@@ -89,6 +89,9 @@ function scriptedProvider(steps) {
       count: messages.length,
       users: messages.filter((message) => message?.role === "user").length,
       tailRole: messages.at(-1)?.role,
+      tailTypes: Array.isArray(messages.at(-1)?.content)
+        ? messages.at(-1).content.map((block) => block?.type)
+        : [],
       hasRunState: messages.some((message) => textOf(message).includes(MARKER)),
     });
     const step = steps[Math.min(index, steps.length - 1)];
@@ -281,10 +284,13 @@ for (const stream of [false, true]) {
     assert.equal(provider.views[0].hasRunState, true,
       `首轮尾部是 user 轮，run-state 注入必须照旧生效，实际 ${JSON.stringify(provider.views[0])}`);
     // ④ 悬空尾部的续写请求：跳过注入、尾巴仍是那条悬空 assistant（不是被摘掉后补 user）。
-    const continuationViews = provider.views.slice(1);
-    assert.ok(continuationViews.length > 0);
-    for (const view of continuationViews) {
-      assert.equal(view.tailRole, "assistant", `续写请求的尾巴必须仍是悬空的 assistant，实际 ${JSON.stringify(view)}`);
+    const danglingTailViews = provider.views.filter((view) => view.tailRole === "assistant");
+    assert.ok(danglingTailViews.length >= 2,
+      `前提：续写循环必须真的产生多次「尾部是 assistant」的请求，实际 ${JSON.stringify(provider.views)}`);
+    for (const view of danglingTailViews) {
+      assert.ok(view.tailTypes.includes("tool_use"),
+        `续写请求的尾巴必须仍是那条悬空的 tool_use（跳过追加，不摘尾巴），实际 ${JSON.stringify(view)}`);
+      assert.equal(view.hasRunState, false, `悬空尾部这一格必须真的跳过注入，实际 ${JSON.stringify(view)}`);
     }
   });
 }
