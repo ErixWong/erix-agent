@@ -45,8 +45,18 @@
 //      why the engine's read side (`budget.js` `modelMetadataFor` / `toolContextFor`, and the
 //      orchestrator destructuring that feeds them) needs no change. Writing the old flat spelling is
 //      now rejected at the name gate, and the message names the new home. The other three members of
-//      the `metadata` group (`user` / `task` / `session`) are **not** part of this slice: their write
-//      sites are the host-facing identity payloads that the #528-style fixture has to cover first.
+//      the `metadata` group (`user` / `task` / `session`) were **not** part of that slice; the next
+//      entry retires three of them.
+//  12. issue #498 (S3, `metadata` group, segment A9): `user` / `model` / `task` leave the top-level
+//      allowlist as well, same mechanism (`config.metadata.*` → expansion writes back onto
+//      `effectiveOptions.user` / `.model` / `.task`, read side untouched). Sized before it was
+//      written: removing one key at a time reddened 6 / 5 / 13 cells (sum 24; all three together 15
+//      ⇒ 9 overlap), far below the ~150-cell threshold that would have needed a #521-style fixture
+//      translation point — so no write point was translated behind the host's back. `session` is
+//      **deliberately returned**: the assembly port's `session` member and the top-level `session`
+//      option are the *same value* (`assemblyPortOptions(port).session === port.session`), and the
+//      repo's ruling says `config.metadata.session` is not a second home for that port — retiring
+//      the flat spelling would have promoted the leaf into one.
 //
 // 顺序即语义，且被 test/loop-option-normalization.test.js 逐条钉住，所以本模块严格按
 //   形状检查 → 未知键检查 → config 名称/形状预检 → capabilities 名称/形状预检 →
