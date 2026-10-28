@@ -3,11 +3,12 @@
 //
 // #497 当时把这条判据写成「描述 0.28 目标面」；S4a 就是它兑现的地方。四件事，四组用例：
 //
-//   S1（三向闭合）：`configSchemaSelfCheck` 必须仍 `[]`，且四个数可枚举闭合——
-//      配置面 43 + 能力面 22 + 容器 2 = 顶层白名单 67。容器是 {`config`, `capabilities`}，
-//      两个容器**同等待遇**（都不算配置/能力键，都有未知子键闸口）。#498 S4b 之后两面的**条数
-//      都没变、组成变了**：`tools` 归配置面（`config.input.tools`）、`deliverables` 反向搬进
-//      能力面（`capabilities.checks.deliverables`），而 `finalGuard` 从散项收进 `hooks`。
+//   S1（四向闭合）：`configSchemaSelfCheck` 必须仍 `[]`，且各面可枚举闭合——
+//      配置面 25 + 嵌套能力面 13 + 永久顶层面（第三站）10 + 容器 2 = 顶层白名单 50（issue #527 的
+//      数字一律现场派生，别抄）。容器是 {`config`, `capabilities`}，两个容器**同等待遇**（都不算
+//      配置/能力键，都有未知子键闸口）。#498 S4b 之后两面的**条数都没变、组成变了**：
+//      `deliverables` 反向搬进能力面（`capabilities.checks.deliverables`），而 `finalGuard`
+//      从散项收进 `hooks`。#527 把 `tools` 拆出配置面：它是**永久顶层面（第三站）**。
 //   S2（`capabilities.hooks` 是回调的规范之家）：12 个回调逐个点名；`capabilities.hooks.onEvent`
 //      与顶层 `onEvent` 是同一个键（别名 = schema 路径）；展开后扁平键生效（行为证据：真收到事件）；
 //      与扁平键冲突时 capabilities 赢且**不静默**（同一条 `config_override_conflict`）。
@@ -58,6 +59,7 @@ import {
   configSchemaSelfCheck,
   configPathForOption,
   expandConfigNamespace,
+  optionHomeBuckets,
 } from "../src/loop/config-namespace.js";
 import {
   RUN_TOOL_LOOP_OPTION_NAMES,
@@ -116,16 +118,16 @@ function functionPathsIn(value, path) {
 }
 
 // ================================================================ S1. 三向闭合（派生，不手抄总数）
-test("S1 三向闭合：白名单被配置面 / 能力面 / 容器恰好切一遍，自检仍 []", () => {
+test("S1 四向闭合：白名单被配置面 / 嵌套能力面 / 第三站 / 容器恰好切一遍，自检仍 []", () => {
   // #498 S3：这里原本手抄四个字面总数。删掉 `timing` 组的三个顶层键之后配置面那一项自动少三个，
   // 于是四个数得手追——本刀把那四个数全部删掉，改成**集合等式**（比条数强，且与条数无关）。
-  const configPlane = configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES);
-  const partition = [...configPlane, ...CAPABILITY_OPTION_NAMES, ...NAMESPACE_CONTAINER_OPTION_NAMES];
-  assert.equal(new Set(partition).size, partition.length, "三个面两两不相交（一个键只许有一个家）");
+  const { configPlane, capability, topLevelSurface, containers } = optionHomeBuckets(RUN_TOOL_LOOP_OPTION_NAMES);
+  const partition = [...configPlane, ...capability, ...topLevelSurface, ...containers];
+  assert.equal(new Set(partition).size, partition.length, "四个面两两不相交（一个键只许有一个家）");
   assert.deepEqual(
     [...partition].sort(),
     [...RUN_TOOL_LOOP_OPTION_NAMES].sort(),
-    "三向之和必须逐键等于白名单（这就是「闭合」的可枚举形式，不靠条数自证）",
+    "四向之和必须逐键等于白名单（这就是「闭合」的可枚举形式，不靠条数自证）",
   );
   assert.deepEqual(NAMESPACE_CONTAINER_OPTION_NAMES, [CONFIG_NAMESPACE_OPTION_NAME, CAPABILITIES_NAMESPACE_OPTION_NAME]);
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(CAPABILITIES_NAMESPACE_OPTION_NAME), true);
@@ -508,15 +510,13 @@ test("S5 壳里的函数字段逐个点名完整路径（这些键实测真被�
       { config: { folding: { context: { onAfterFold: () => {} } } } },
       "config.folding.context.onAfterFold",
     ],
-    // #498 S4b：`config.guard.deliverables` 这个壳**整键不在配置面**了（搬去
-    // `capabilities.checks.deliverables`），所以它的函数不再走「函数值」这条报错，
-    // 而是走能力键那条（见 S5e）。这里换成仍在配置面的数据键塞函数：`config.input.tools`。
-    // 复审：数据键**没有**能力面之家，所以它的尾巴是「there is no capability home for it」，
-    // 而不是「its canonical home is none: …」（后者读不通）。
+    // #527：`config.input.tools` 已被拆掉（`tools` 是永久顶层面），所以换成仍在配置面的数据键塞
+    // 函数：`config.input.wrapup`。数据键**没有**能力面之家，所以它的尾巴是「there is no
+    // capability home for it」，而不是「its canonical home is none: …」（后者读不通）。
     [
-      { config: { input: { tools: () => {} } } },
-      "config.input.tools",
-      /— there is no capability home for it: "tools" is a data key of the config namespace/u,
+      { config: { input: { wrapup: () => {} } } },
+      "config.input.wrapup",
+      /— there is no capability home for it: "wrapup" is a data key of the config namespace/u,
     ],
   ];
   for (const [options, path, homePattern = /— its canonical home is/u] of cases) {
@@ -547,12 +547,11 @@ test("S5b 函数拒绝不是「收下再丢」：抛在 intake（任何宿主端
   assert.deepEqual(touched, [], "函数值必须在任何端口读取之前被拒");
 
   // 纯数据照旧过（不是「一律拒绝嵌套对象」）。
-  // #498 S4b：`deliverables` 不再能从 `config` 里写（整键搬去 `capabilities.checks`），所以这条
-  // 「合法数据」用例换成仍在配置面的 `input.tools` —— 它以前是能力键、写进 config 会抛。
+  // #527：`tools` 已不在配置面，所以「合法数据」用例改用仍在配置面的 `input.wrapup`。
   const ok = await runDirect({
     config: {
       folding: { context: { budgetTokens: 1000, summarizerBudgetMs: 5000 } },
-      input: { tools: [{ name: "echo", description: "回显", inputSchema: { type: "object" } }] },
+      input: { wrapup: false },
       metadata: { toolContext: { workspace: "w" } },
     },
   });
@@ -622,13 +621,12 @@ test("S6 collectConfigNamespaceProblems 纯函数：函数问题逐条可断言�
  */
 const REPRESENTATIVE_CONFIG_VALUES = {
   // input（#498 S4b：`prompt` 改名 `input`，成员 = system + cacheStablePrefix + initialUserMessage
-  // + `messages`（顶层 `initialMessages` 的嵌套别名）+ wrapup + `tools`（顶层 `tools` 的嵌套别名））
+  // + `messages`（顶层 `initialMessages` 的嵌套别名）+ wrapup；#527 拆掉了 `tools`，它不属配置面）
   system: "you are a test",
   cacheStablePrefix: false,
   initialUserMessage: "go",
   messages: [],
   wrapup: false,
-  tools: [{ name: "echo", description: "回显", inputSchema: { type: "object", properties: {} } }],
   // run
   maxRounds: 3,
   maxTokenContinuations: 2,
@@ -768,7 +766,7 @@ test("S7 逐叶子构造的 config 子树过 JSON round-trip 等值（函数叶�
   assert.equal(leafPaths.length, configLeafCount(), "leafPaths 必须覆盖 schema 的全部叶子");
 });
 
-test("S8 逐叶子穷举：config.<group>.<leaf> 展开后与扁平形态逐键深度相等（43 条）", () => {
+test("S8 逐叶子穷举：config.<group>.<leaf> 展开后与扁平形态逐键深度相等（42 条）", () => {
   let covered = 0;
   for (const group of CONFIG_NAMESPACE_GROUPS) {
     for (const leaf of CONFIG_NAMESPACE_SCHEMA[group]) {

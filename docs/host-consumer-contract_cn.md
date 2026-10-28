@@ -177,7 +177,7 @@ executeTool({ id, name, input, context, signal })
 
 | 命名空间 | 旋钮 |
 | --- | --- |
-| `config.input` | `system`、`cacheStablePrefix`、`initialUserMessage`、`messages`（扁平 `initialMessages`）、`wrapup`、`tools` |
+| `config.input` | `system`、`cacheStablePrefix`、`initialUserMessage`、`messages`（扁平 `initialMessages`）、`wrapup`——**没有** `tools`（issue #527：它是永久顶层面，第三站） |
 | `config.run` | `maxRounds`、`maxTokenContinuations`、`stallDetection`、`completion`、`replayPolicy`、`invalidArguments`、`partialPersistence`、`persistence`、`outputHygiene`、`writeToolNames`、`writeToolPathKeys`、`resume`、`stream`、`reflection`、`runId`、`cwd` |
 | `config.tuning` | `maxTokens`、`temperature`、`topP`、`cacheCapable` |
 | `config.timing` | `timeoutMs`、`deadlineMs`、`retry` |
@@ -365,37 +365,53 @@ executeTool({ id, name, input, context, signal })
   里没有为它登记任何东西，所以文案**不带** `capabilities.*` 那一站。同一个叶子上的**函数值**文案更进一步：
   它直说「没有能力面之家」——`system` 是数据键，修法是「传纯数据」，不是「搬到能力面」。
 
-**`config.input` 没有收口：`wrapup` 与 `tools` 仍然是合法的扁平选项，这是有意的。** 本片工单点名要退役的
-另两个键**原样退回**，两次退回都不是排期失误——两件事都钉在
-`test/loop-input-keys-slice-498s3a6.test.js` 里：
+**`config.input` 除 `wrapup` 外已收口；`tools` 根本不是配置键（issue #527）。** A6 当时把 `tools` 退回等裁决；
+裁决已经落地。两件事都钉在 `test/loop-input-keys-slice-498s3a6.test.js`（G1–G5、S）与
+`test/loop-config-namespace-497.test.js`（I3）里：
 
-* **`tools` 卡在可达性闸口上，不是卡在时间上。** 宿主交进来的工具声明，其**条目里可以带函数成员**——
-  `handler`、`validate`、`execute`，或 `inputSchema` 里的函数。今天这几种形状经扁平 `tools` **都能交进去**，
-  而写进 `config.input.tools` **一律被拒**，因为 `config` 只装数据（子树必须过 JSON round-trip，函数值
-  intake 当场拒并点名完整路径：`config.input.tools[0].handler is not accepted: …`）。于是退役扁平写法
-  会**收窄宿主能交进来的东西**——这正是 issue #520 为它开单的那一类静默收窄（那一刀发现
-  `retry.sleepImpl` 宿主根本不可达）。所以 `tools` **仍是合法的扁平选项**，现状被逐字钉住（G1–G4）。
-  桌上有两条候选，裁决**不在本片**：（a）放宽那一个叶子，允许函数值；（b）把该成员移到能力面。
-  裁决时值得知道：两个协议适配器都把每条工具声明投影成 `{name, description, inputSchema}`
-  （OpenAI 侧在 `src/messages/canonical.js`，Anthropic 侧在 `src/messages/anthropic.js` 的 payload 构造里），
-  所以今天那个成员是**惰性**的——收下了、从不被调用、也从不发出去。因此这条收窄是「静默收下」变成
-  「大声拒绝」，不是「能用」变成「不能用」。
+* **`tools` 是永久顶层面（第三站），与 `provider` / `executeTool` / `store` 同类。** A6 的可达性闸口
+  证明了理由：宿主交进来的工具声明，其**条目里可以带函数成员**——`handler`、`validate`、`execute`，
+  或 `inputSchema` 里的函数。这几种形状经扁平 `tools` **都能交进去**，而写进 `config.input.tools`
+  会被拒，因为 `config` 只装数据（子树必须过 JSON round-trip，函数值 intake 当场拒并点名完整路径）。
+  同时引擎从不调用这些成员，所以 `tools` 也不是能力面——两个协议适配器都把每条工具声明投影成
+  `{name, description, inputSchema}`（OpenAI 侧在 `src/messages/canonical.js`，Anthropic 侧在
+  `src/messages/anthropic.js` 的 payload 构造里）。#527 因此**拆掉了那个叶子**：`tools` 只住顶层，
+  写 `config.input.tools` 现在是**未知叶子**当场拒，文案指向「第三站在顶层」：
+
+  ```text
+  unknown config.input option: "tools" ("tools" is a permanent top-level option — the third station —
+  write it at the top level: tools: …)
+  ```
+
+  引擎读侧一字未改：它读的仍是 `effectiveOptions.tools`，而扁平写法就是宿主该写的那一种。
+  `config.input.tools` 对**所有**形状都不再存在——纯数据、数组、标量、`undefined` 一律拒（G5）——
+  所以这是**闭门**，不是收窄。
+
+  | 发布 | 写 `config.input.tools` |
+  | --- | --- |
+  | 0.26.0 及以前（**最后已发布**的版本） | `config` 命名空间当时还不存在，所以没有任何宿主写过这个路径——无迁移成本 |
+  | 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主的树里这件事生效过 |
+  | 0.28.0 及以后（issue #527） | **当场拒**——请写顶层 `tools`；叶子不在 schema 上，文案点名第三站 |
+
 * **`wrapup` 是退回待做。** 它的扁平写点摊在约 35 个测试文件 / 约 106 处（`wrapup: false` 是夹具里关掉
   收尾协议的惯用写法）；删键会一次红 **189** 个测试格，而朴素改写会重演 #521 的问题（475 个写点，外加
   「这个文件已经有 `config:` 键」——朴素替换会造出后者静默胜的重复键）。正确顺序是先落一条**夹具级翻译**
   （`test/helpers/run-direct.js` 的 `withSeed` 就是先例），再删键。所以 `wrapup` 仍是合法的扁平选项；
   它的规位 `config.input.wrapup` 早就存在，且被真的用到。
 
-这条账目是**派生**的、不是记出来的：`input` 组里仍带扁平孪生的成员**恰好两个**，测试断言这个集合等于
-退回清单——于是「本片少做了一个键」不会静默。
+这条账目是**派生**的、不是记出来的：`input` 组里仍带扁平孪生的成员现在**恰好一个**（`wrapup`），
+测试断言这个集合等于退回清单。第三站也双向派生：**两个家都没有**的键（`configPathForOption` 与
+`capabilitiesPathForOption` 都返回 `undefined`）恰好等于 `TOP_LEVEL_SURFACE_OPTION_NAMES` 加两个容器——
+#527 之后是 **12**（之前 11），新增的成员就是 `tools`。把 `config.input.tools` 叶子加回去会让自检变红
+并点名该键，这就是「账目在跑、不是抄的期望值」的反向证。
 
 **这三个词还活在另外六张面上，本片一张都没动。** 整词 grep `system` / `tools` / `wrapup` 捞出来的远不止
 那三个选项，迁任何一个都是回归：
 
 | 面 | 住在哪 | 状态 |
 | --- | --- | --- |
-| `runToolLoop` 顶层选项 | `RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`） | `system` **已被本片退役**；`wrapup` / `tools` 仍是合法扁平写法（见上） |
-| `config.input.*` | `CONFIG_NAMESPACE_SCHEMA.input`（`src/loop/config-namespace.js`） | 规位之家——请写这里 |
+| `runToolLoop` 顶层选项 | `RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`） | `system` **已被 A6 退役**；`wrapup` 仍是合法扁平写法；`tools` 是**永久顶层面（第三站）**，与 `provider` / `executeTool` / `store` 同类——它根本没有嵌套家 |
+| `config.input.*` | `CONFIG_NAMESPACE_SCHEMA.input`（`src/loop/config-namespace.js`） | **数据**叶子的规位之家——`tools` 自 #527 起**不在其中**（叶子已拆） |
 | provider 请求字段 `system` / OpenAI 的 `role: "system"` | `src/messages/anthropic.js`、`src/messages/canonical.js` | **一字未动**——那是引擎的**读侧**，展开相就是喂它的 |
 | `systemPrompt` / `systemPromptMode` / `systemPromptFile` | issue #505 那两片——**独立选项**，从来不是本组的成员 | **一字未动**；两个都不是 `runToolLoop` 的顶层键，也没有配置面之家 |
 | 反思收尾的容器（`config.run.reflection.wrapupNormalize`） | `src/loop/orchestrator.js`、`src/reflection/wrapup.js` | **一字未动**——与顶层那个布尔 `wrapup` 是两个东西 |
@@ -467,7 +483,7 @@ unknown runToolLoop option: "context" (its canonical home is config.folding.cont
   这个映射不是只看叶子名猜的：**完整路径**去对已登记的去向
   （`CAPABILITY_SLOT_DESTINATIONS`（`src/loop/capabilities-namespace.js`）），所以叶子名本身
   说明不了什么的那种（`provider`）也能落到真实的槽位。配置面自己的**数据键**
-  （例如 `config.input.tools`）根本没有能力面之家，文案就直说
+  （例如 `config.input.wrapup`）根本没有能力面之家，文案就直说
   `there is no capability home for it: …`，不编一个出来。
   **不存在「收下再在展开时丢函数」**——抛发生在**任何宿主端口被读取之前**。两个曾经是这条规则
   尴尬处的叶子现在**根本不在配置面上**：`config.guard.finalGuard` 与 `config.guard.deliverables`
@@ -513,11 +529,12 @@ unknown runToolLoop option: "context" (its canonical home is config.folding.cont
   
   **历史：`tools` 曾是最后一个不满足这条判据的键**（issue #498 S4a 发布时它还在能力面上）。
   引擎从不**调用**工具声明的成员——它校 `replay`（枚举字面量）、读 `name` / `inputSchema`，然后把这个
-  对象原样送进请求体，按上面的判据 `tools` 是数据。S4a 当时留着它，只因「输入载荷族」的归属被推到
-  下一刀；**issue #498 S4b 作出了那个裁决**：`tools` 现在是配置键（`config.input.tools`，扁平
-  `tools` 的嵌套别名），于是能力面**就是**纯粹的「行为载体」——那个反例不再存在。同一刀把交付物
-  判据反向搬走（`config.guard.deliverables` → `capabilities.checks.deliverables`），所以两个条数
-  **一个都没变**，变的是成员。**`capabilities.provider` 仍然被拒**——适配器端口对象（`provider`、
+  对象原样送进请求体。S4b 先把它搬进 `config.input.tools`；**issue #527 随后证明那个家不对**：
+  工具条目可以带函数成员（`handler` / `validate` / `execute` / `inputSchema` 里的函数），所以只装数据的
+  `config` 子树装不下所有合法形状。裁决拆掉了那个叶子，把 `tools` 定为**永久顶层面（第三站）**，
+  与 `provider` / `executeTool` / `store` 同类。于是能力面**就是**纯粹的「行为载体」——那个反例不再
+  存在，而 `config.input.tools` 现在是未知叶子。同一 S4b 刀把交付物判据反向搬走
+  （`config.guard.deliverables` → `capabilities.checks.deliverables`）。**`capabilities.provider` 仍然被拒**——适配器端口对象（`provider`、
   `store`、`signal`、`modelConfig`、`executeTool`）留在顶层选项或装配口成员里，「它们要不要搬进
   `capabilities`」这件事**还没有裁决**。但这已经不等于「没有端口容器」：自 issue #498 S4c 起容器
   `capabilities.ports` **确实存在**——成员只是三个**壳内实现**槽位（`sleepImpl` / `judgeProvider` /
@@ -626,12 +643,15 @@ unknown runToolLoop option: "context" (its canonical home is config.folding.cont
   `hooks.protectedMessage`、`hooks.recoveryHint` **从来不是顶层选项**，所以 0.28.0 给它们发明的是
   **容器成员位**，不是新的扁平键。去向登记在 `CAPABILITY_SLOT_DESTINATIONS`
   （`src/loop/capabilities-namespace.js`）里，展开走侧信道而不是写新的扁平键——这就是为什么顶层
-  白名单仍是 **67** 条、三向恒等式（43 配置面 + 22 能力面 + 2 容器）一字未动。它们的老住处是嵌套槽
+  白名单在那一刀仍是 **67** 条、恒等式当时是三向（43 配置面 + 22 能力面 + 2 容器）。issue #527
+  之后多了「永久顶层面（第三站）」，所以今天是四向账目，且每个数都现场派生、不抄；这句话记录的是
+  那一刀的状态，不是现状。它们的老住处是嵌套槽
   （`reflection.onReflection`、`context.onBeforeFold` …，见上表与下面 ports 那一节），那些写法照旧可用。
 - **端口对象仍然没被收** —— `provider`、`store`、`signal`、`modelConfig`、`executeTool` 与两个状态源
   留在原处（顶层选项或装配口）；写 `capabilities.provider` 仍会抛并说明这一点。`capabilities.ports`
   **不是**它们的新家：它只装上面那三个槽位，那是**引擎解引用的实现**，不是适配器。
-  `tools` **也不是端口**（issue #498 S4b）：它是数据，所以住在 `config.input.tools` / 扁平 `tools`。
+  `tools` **也不是端口**：issue #527 把它定为**永久顶层面（第三站）**，所以它只住顶层；
+  `config.input.tools` 已拆掉，现在写它是未知叶子当场拒。
   **历史**：issue #498 S4c 之前这一节写的是「本版没有 `capabilities.ports`」——那在 S4a/S4b 时是真的，
   留在这里是记录裁决怎么变的，不是现状。
 

@@ -1050,12 +1050,14 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     ...(notesAssembler === undefined ? {} : {
       semanticStateProvider: notesAssembler.semanticStateProvider,
     }),
+    // issue #527：`tools` 是永久顶层面（第三站），与 provider / executeTool / store 同类。
+    // 它不属 config（条目可以带函数成员），也不属 capabilities（引擎不调用这些成员）。
+    tools: tools.tools,
     // —————————— 配置面：引擎校值并解释的数据 ——————————
     config: {
       input: {
         system: systemPrompt,
         initialUserMessage: prompt,
-        tools: tools.tools,
       },
       run: {
         runId,

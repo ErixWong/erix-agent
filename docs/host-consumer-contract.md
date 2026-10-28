@@ -201,8 +201,9 @@ container), and "every leaf must be reached by the round-trip coverage table" is
 `CONFIG_SURFACE_OPTION_NAMES` (`src/loop/config-namespace.js`) are derived from it, and
 `configSchemaSelfCheck` (`src/loop/config-namespace.js`) keeps the pair honest against the
 top-level allowlist in three directions: every top-level option must be classified as exactly one
-of *config surface*, *capability* (22 keys) or *container* (2: `config` and `capabilities`), and the
-three buckets must add up to the allowlist. Since issue #517 the *config surface* bucket is the
+of *config surface*, *capability* (22 keys), *top-level surface* (the permanent top-level options —
+the third station, issue #527) or *container* (2: `config` and `capabilities`), and the buckets must
+add up to the allowlist. Since issue #517 the *config surface* bucket is the
 **intersection** of "the names the schema maps onto" with the allowlist, so a leaf that loses its
 top-level key merely drops out of that bucket instead of turning the identity red. **Since issue
 #498 S3 (the `timing` slice, the first one) that difference is no longer empty**: `config.timing.timeoutMs` /
@@ -210,14 +211,14 @@ top-level key merely drops out of that bucket instead of turning the identity re
 (`folding.*`, `input.cacheStablePrefix` / `initialMessages` / `initialUserMessage`, `tuning.cacheCapable`),
 so the config-surface bucket is smaller than the leaf count by **however many S3 has retired so far** —
 derive it (`CONFIG_SURFACE_OPTION_NAMES.length - configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES).length`)
-instead of copying a number; the three buckets still have to add up to the allowlist. The totals are
+instead of copying a number; the buckets still have to add up to the allowlist. The totals are
 not restated here on purpose — derive them (`configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES).length`,
 `CAPABILITY_OPTION_NAMES.length`, `NAMESPACE_CONTAINER_OPTION_NAMES.length`) rather than copying a
 total that goes stale the next time a group moves.
 
 | namespace | knobs |
 | --- | --- |
-| `config.input` | `system`, `cacheStablePrefix`, `initialUserMessage`, `messages` (the flat `initialMessages`), `wrapup`, `tools` |
+| `config.input` | `system`, `cacheStablePrefix`, `initialUserMessage`, `messages` (the flat `initialMessages`), `wrapup` — **not** `tools` (issue #527: it is a permanent top-level option, the third station) |
 | `config.run` | `maxRounds`, `maxTokenContinuations`, `stallDetection`, `completion`, `replayPolicy`, `invalidArguments`, `partialPersistence`, `persistence`, `outputHygiene`, `writeToolNames`, `writeToolPathKeys`, `resume`, `stream`, `reflection`, `runId`, `cwd` |
 | `config.tuning` | `maxTokens`, `temperature`, `topP`, `cacheCapable` |
 | `config.timing` | `timeoutMs`, `deadlineMs`, `retry` |
@@ -434,25 +435,39 @@ Two properties hold, both machine-checked:
   same leaf goes one step further and says outright that there is no capability home for it — `system`
   is a data key, so the fix is "pass plain data", not "move it to the capability surface".
 
-**`config.input` is not closed: `wrapup` and `tools` stay legal flat options, on purpose.** The other
-two keys this slice was chartered to retire were **returned**, and neither return is a scheduling
-accident — both are pinned in `test/loop-input-keys-slice-498s3a6.test.js`:
+**`config.input` is closed except `wrapup`; `tools` is not a config key at all (issue #527).** The
+A6 slice returned `tools` pending a ruling; that ruling has landed. The two keys are pinned in
+`test/loop-input-keys-slice-498s3a6.test.js` (G1–G5, S) and `test/loop-config-namespace-497.test.js`
+(I3):
 
-* **`tools` is blocked by a reachability check, not by time.** A host may hand in tool definitions
-  whose entries carry **function members** — `handler`, `validate`, `execute`, or a function inside
-  `inputSchema`. Every one of those shapes is **accepted** through the flat `tools` today and
-  **rejected** at `config.input.tools`, because `config` holds data only (the subtree must survive a
-  JSON round-trip, so a function value is refused at intake with its full path:
-  `config.input.tools[0].handler is not accepted: …`). Retiring the flat spelling would therefore
-  narrow what a host can hand in — the same class of silent narrowing that issue #520 was opened for
-  (there, `retry.sleepImpl` turned out to be unreachable from the host). So `tools` stays a legal flat
-  option and the current shape is pinned as-is (G1–G4). Two candidates are on the table and the
-  ruling is **not** this slice's: (a) let that one leaf exempt function values, (b) move the member to
-  the capability surface. Worth knowing when ruling: both protocol adapters project each tool entry
-  down to `{name, description, inputSchema}` (the OpenAI projection in `src/messages/canonical.js`,
-  the Anthropic payload builder in `src/messages/anthropic.js`), so today such a member is **inert** —
-  accepted, never called, never sent. The narrowing is therefore "accepted silently" versus "rejected
-  loudly", not "works" versus "breaks".
+* **`tools` is a permanent top-level option — the third station — alongside `provider` /
+  `executeTool` / `store`.** The A6 reachability check proved the reason: a host may hand in tool
+  definitions whose entries carry **function members** — `handler`, `validate`, `execute`, or a
+  function inside `inputSchema`. Every one of those shapes is **accepted** through the flat `tools`
+  and would be **rejected** at `config.input.tools`, because `config` holds data only (the subtree
+  must survive a JSON round-trip, so a function value is refused at intake with its full path). At
+  the same time the engine never calls those members, so `tools` is not a capability either — the two
+  protocol adapters project each entry down to `{name, description, inputSchema}` (the OpenAI
+  projection in `src/messages/canonical.js`, the Anthropic payload builder in
+  `src/messages/anthropic.js`). The #527 ruling therefore **removed the leaf**: `tools` lives only at
+  the top level, and writing `config.input.tools` is rejected on the spot as an **unknown leaf**
+  whose message points at the third station, at the top level:
+
+  ```text
+  unknown config.input option: "tools" ("tools" is a permanent top-level option — the third station —
+  write it at the top level: tools: …)
+  ```
+
+  The engine's read side is unchanged: it still reads `effectiveOptions.tools`, and the flat
+  spelling is the one the host writes. `config.input.tools` is gone for **every** shape — plain data,
+  arrays, scalars and `undefined` alike (G5) — so this is a closed door, not a narrowed one.
+
+  | release | writing `config.input.tools` |
+  | --- | --- |
+  | 0.26.0 and earlier (the last **published** release) | the `config` namespace did not exist yet, so no host ever wrote this path — there is no migration cost |
+  | 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+  | 0.28.0 and later (issue #527) | **rejected on the spot** — write the top-level `tools`; the leaf is not on the schema and the message names the third station |
+
 * **`wrapup` is deferred.** Its flat write points are spread over ~35 test files / ~106 occurrences
   (`wrapup: false` is the fixture idiom for turning the wrap-up protocol off); deleting the key turns
   **189** test cases red at once, and a naive rewrite repeats the #521 problem (475 write points plus
@@ -461,9 +476,13 @@ accident — both are pinned in `test/loop-input-keys-slice-498s3a6.test.js`:
   `test/helpers/run-direct.js` is the precedent — and the key second. `wrapup` therefore stays a
   legal flat option; its canonical home `config.input.wrapup` already exists and is exercised.
 
-The accounting is machine-derived rather than remembered: the `input` group still has exactly **two**
-members with a flat twin, and the suite asserts that the set equals the returned pair, so "this slice
-did one key less than chartered" cannot go unnoticed.
+The accounting is machine-derived rather than remembered: the `input` group now has exactly **one**
+member with a flat twin (`wrapup`), and the suite asserts that the set equals the returned list. The
+third station is derived in both directions too: the keys with **no nested home** (`configPathForOption`
+and `capabilitiesPathForOption` both `undefined`) are exactly `TOP_LEVEL_SURFACE_OPTION_NAMES` plus the
+two containers — **12** after #527, up from 11 before it, with `tools` as the added member. Re-adding
+the `config.input.tools` leaf makes the self-check red and names the key, which is the reverse proof
+that the account is live rather than a copied expectation.
 
 **These three words live on six other planes, and this slice moved none of them.** A repo-wide grep
 for `system` / `tools` / `wrapup` returns far more than the three options, and migrating any of the
@@ -471,8 +490,8 @@ rest would be a regression:
 
 | plane | where it lives | status |
 | --- | --- | --- |
-| `runToolLoop` top-level option | `RUN_TOOL_LOOP_OPTION_NAMES` (`src/loop/option-normalization.js`) | `system` **retired by this slice**; `wrapup` / `tools` still legal flat (see above) |
-| `config.input.*` | `CONFIG_NAMESPACE_SCHEMA.input` (`src/loop/config-namespace.js`) | the canonical home — write here |
+| `runToolLoop` top-level option | `RUN_TOOL_LOOP_OPTION_NAMES` (`src/loop/option-normalization.js`) | `system` **retired by the A6 slice**; `wrapup` still legal flat; `tools` is a **permanent top-level option** (the third station, same class as `provider` / `executeTool` / `store`) — it has no nested home at all |
+| `config.input.*` | `CONFIG_NAMESPACE_SCHEMA.input` (`src/loop/config-namespace.js`) | the canonical home for **data** leaves — `tools` is **not** one of them since #527 (the leaf was removed) |
 | provider request field `system` / OpenAI `role: "system"` | `src/messages/anthropic.js`, `src/messages/canonical.js` | **untouched** — that is the engine's *read* side, and the expansion phase feeds it |
 | `systemPrompt` / `systemPromptMode` / `systemPromptFile` | issue #505's two slices — **independent options**, never members of this group | **untouched**; neither is a `runToolLoop` top-level key, and neither has a config home |
 | the reflection wrap-up container (`config.run.reflection.wrapupNormalize`) | `src/loop/orchestrator.js`, `src/reflection/wrapup.js` | **untouched** — a different thing from the top-level boolean `wrapup` |
@@ -560,7 +579,7 @@ Five rules govern it:
   mapping is not guessed from the leaf name alone: the full path is matched against the registered
   destinations (`CAPABILITY_SLOT_DESTINATIONS` (`src/loop/capabilities-namespace.js`)), so a leaf
   whose name says nothing (`provider`) still lands on its real slot. A config **data** key (such as
-  `config.input.tools`) has no capability home at all, and the message says exactly that — `there is
+  `config.input.wrapup`) has no capability home at all, and the message says exactly that — `there is
   no capability home for it: …` — instead of inventing one. Nothing is "accepted and then dropped
   during expansion" — the throw happens **before any host port is read**. Two leaves that used to be
   the awkward part of this rule are simply not config keys any more: `config.guard.finalGuard` and
@@ -617,12 +636,14 @@ Five rules govern it:
   **History: `tools` was the last key that did not satisfy that criterion** (issue #498 S4a shipped
   with it on the capability list). The engine never *calls* a member of a tool definition — it
   validates `replay` (an enum literal), reads `name` / `inputSchema`, and forwards the object into the
-  request payload, so by the criterion above `tools` is data. S4a kept it there only because the
-  input-payload family's ownership was the next slice's ruling; **issue #498 S4b made that ruling**:
-  `tools` is now a config key (`config.input.tools`, the nested alias of the flat `tools`) and the
-  capability surface **is** purely behaviour carriers — the counter-example no longer exists. The same
-  slice moved the deliverables checks the other way (`config.guard.deliverables` →
-  `capabilities.checks.deliverables`), so the two counts did not change, only their membership.
+  request payload. S4b first moved it to `config.input.tools`; **issue #527 then proved that home
+  wrong**: a tool entry may carry function members (`handler` / `validate` / `execute` / a function
+  inside `inputSchema`), so the data-only `config` subtree cannot hold every legal shape. The ruling
+  removed that leaf and made `tools` a **permanent top-level option (the third station)**, the same
+  class as `provider` / `executeTool` / `store`. The capability surface **is** purely behaviour
+  carriers — the counter-example no longer exists, and `config.input.tools` is now an unknown leaf.
+  The same S4b slice moved the deliverables checks the other way (`config.guard.deliverables` →
+  `capabilities.checks.deliverables`).
   **`capabilities.provider` is still rejected** — adapter port objects (`provider`, `store`,
   `signal`, `modelConfig`, `executeTool`) stay top-level options or assembly-port members, and
   whether they ever move under `capabilities` is a ruling that has **not** been made. That is no
@@ -762,16 +783,19 @@ Six rules, deliberately symmetric with `config` (two containers, one set of rule
   invents a container member slot for them instead of a new flat key. Their destinations are
   registered in `CAPABILITY_SLOT_DESTINATIONS` (`src/loop/capabilities-namespace.js`) and expansion
   hands them to the engine on a side channel rather than writing new flat keys — which is why the
-  top-level allowlist is still **67** entries and the three-way identity (43 config + 22 capability
-  + 2 containers) is untouched. Their legacy homes are the nested shell slots listed under
+  top-level allowlist was **67** entries at that slice and the identity was three-way then
+  (43 config + 22 capability + 2 containers). Issue #527 later added the permanent top-level
+  surface (the third station), so today the accounting is four-way and every number is derived
+  rather than copied; this sentence records the state of that slice, not the current one. Their legacy homes are the nested shell slots listed under
   “`capabilities.ports`” and in the `hooks` row above (`reflection.onReflection`,
   `context.onBeforeFold`, …); those keep working.
 - **Port objects are still not collected** — `provider`, `store`, `signal`, `modelConfig`,
   `executeTool` and the state providers stay where they are (top-level options or the assembly port);
   writing one under `capabilities` (`capabilities.provider`) still throws with a message that says
   so. `capabilities.ports` is **not** their new home: it holds the three slots above, which are
-  *implementations the engine dereferences*, not adapters. `tools` is **not** a port either (issue
-  #498 S4b): it is data, so it lives at `config.input.tools` / the flat `tools`.
+  *implementations the engine dereferences*, not adapters. `tools` is **not** a port either: issue
+  #527 made it a **permanent top-level option (the third station)**, so it lives only at the top
+  level; `config.input.tools` was removed and is now rejected as an unknown leaf.
   **History**: before issue #498 S4c this section said "`capabilities.ports` does not exist in this
   release" — that was true of S4a/S4b and is kept here as the record of how the ruling changed, not
   as the current state.

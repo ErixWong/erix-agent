@@ -1360,7 +1360,6 @@ export function buildLoopOptions(input) {
     input: {
       system: system ?? buildSystemPrompt({ lib: { binTools: {} }, cwd: params.cwd, tools: tools.tools }),
       initialUserMessage: params.task,
-      tools: tools.tools,
       // 对话型宿主（pi 是人机协同侧）：收尾 JSON 信封会污染交回给 pi 的终稿文本，关掉。
       wrapup: false,
     },
@@ -1410,6 +1409,8 @@ export function buildLoopOptions(input) {
     // 端口对象 / 中止信号 / 错误出口：**留在顶层**（`capabilities.ports` 不接适配器端口对象）。
     provider,
     executeTool: tools.executeTool,
+    // issue #527：`tools` 是永久顶层面（第三站），与 provider / executeTool / store 同类。
+    tools: tools.tools,
     signal,
     store,
     ...(diagnostics === undefined ? {} : { diagnostics }),

@@ -38,6 +38,7 @@ import {
   CONFIG_NAMESPACE_SCHEMA,
   configPathForOption,
   configPlaneOptionNames,
+  optionHomeBuckets,
   configSchemaSelfCheck,
   CAPABILITY_OPTION_NAMES,
   NAMESPACE_CONTAINER_OPTION_NAMES,
@@ -272,12 +273,12 @@ test("R3 真 run：config.guard.finalGuardExtend=true ⇒ max_rounds_cap + revis
 // ================================================================ A. 账目格派生（不手抄键数）
 
 test("A1 白名单 = 配置面 ∩ 白名单 + 能力面 + 容器，且 schema 自检为空", () => {
-  const configPlane = configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES);
-  const union = [...configPlane, ...CAPABILITY_OPTION_NAMES, ...NAMESPACE_CONTAINER_OPTION_NAMES];
+  const { configPlane, capability, topLevelSurface, containers } = optionHomeBuckets(RUN_TOOL_LOOP_OPTION_NAMES);
+  const union = [...configPlane, ...capability, ...topLevelSurface, ...containers];
   assert.deepEqual(
     [...union].sort(),
     [...RUN_TOOL_LOOP_OPTION_NAMES].sort(),
-    "三向闭合：每个顶层选项恰好落在一个家里（期望值从符号派生，不抄条数）",
+    "四向闭合：每个顶层选项恰好落在一个家里（期望值从符号派生，不抄条数）",
   );
   assert.equal(new Set(union).size, union.length, "三个面不许重叠");
   assert.deepEqual(configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES), [], "schema 自检必须为空");

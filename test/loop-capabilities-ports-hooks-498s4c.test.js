@@ -48,6 +48,7 @@ import {
   CONFIG_SURFACE_OPTION_NAMES,
   NAMESPACE_CONTAINER_OPTION_NAMES,
   configPlaneOptionNames,
+  optionHomeBuckets,
   configSchemaSelfCheck,
 } from "../src/loop/config-namespace.js";
 import {
@@ -179,10 +180,10 @@ function extendingRun(extra = {}, reflectionExtra = {}) {
 }
 
 // ================================================================ C1. 账目 + 不发明扁平别名
-test("C1 账目：白名单被三个面恰好切一遍，9 个新叶子一律是嵌套槽（没有新顶层选项）", () => {
+test("C1 账目：白名单被四个面恰好切一遍，9 个新叶子一律是嵌套槽（没有新顶层选项）", () => {
   // #498 S3：四个字面总数（顶层 / 配置面 / 能力面 / 容器）全部删掉，改成集合等式。
-  const configPlane = configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES);
-  const partition = [...configPlane, ...CAPABILITY_OPTION_NAMES, ...NAMESPACE_CONTAINER_OPTION_NAMES];
+  const { configPlane, capability, topLevelSurface, containers } = optionHomeBuckets(RUN_TOOL_LOOP_OPTION_NAMES);
+  const partition = [...configPlane, ...capability, ...topLevelSurface, ...containers];
   assert.equal(new Set(partition).size, partition.length, "三个面两两不相交");
   assert.deepEqual([...partition].sort(), [...RUN_TOOL_LOOP_OPTION_NAMES].sort(), "三向闭合（逐键，不靠条数）");
   assert.deepEqual(configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES), [], "自检必须仍 []");
@@ -233,7 +234,7 @@ test("C1b 自检会咬人：给嵌套槽叶子发明顶层扁平别名 ⇒ 红�
     [
       'capabilities.ports.sleepImpl is a nested slot and must not also be a top-level option'
         + " (that would be a new flat alias, not a destination)",
-      'top-level option "sleepImpl" is classified nowhere (config surface or capability list)',
+      'top-level option "sleepImpl" is classified nowhere (config surface / capability list / top-level surface)',
     ],
     "嵌套槽叶子出现在顶层白名单里必须红，且报错说清它是「槽」不是「扁平别名」",
   );

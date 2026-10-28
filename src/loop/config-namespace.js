@@ -45,13 +45,16 @@
 //        · **配置面** = 引擎**按已知字段校值并解释**的数据（枚举字面量、数字、布尔、字符串标量、
 //          结构已知的对象）。
   //      ⚠ 两点如实披露（#497 复审第二轮，第二点已由 #498 S4a 兑现）：
-  //      ① **历史口径**（#498 S4b 已翻转，留着是因为它记录了判据怎么被兑现的）：S4a 那一版里
-  //        `tools` **不满足**这条判据——引擎从不调用工具声明的成员，只校 `replay`、读 `name` /
-  //        `inputSchema` 并原样送进请求体，按判据它是数据。当时它留在能力面是因为它属「输入
-  //        载荷族」，整族的归属被推迟到 S4b。**S4b 已把它归位**：`tools` 现在是配置键
-  //        （`config.input.tools`，与扁平 `tools` 是同一个键），所以能力面**现在是**纯「函数 /
-  //        端口对象」——`tools` 这个反例不再存在。同一刀把交付物判据（`{name, check}` 数组）
-  //        反向搬进 `capabilities.checks`，能力面因此多了一组，而 `hooks` 不变成口袋。
+  //      ① **History, final ruling in #527.** S4a kept `tools` on the capability list; S4b moved
+  //        it to `config.input.tools` on the reading "the engine only validates `replay`, reads
+  //        `name` / `inputSchema`, and forwards the object". The A6 reachability check disproved
+  //        that: an entry may carry `handler` / `validate` / `execute` / a function inside
+  //        `inputSchema`, and "`config` holds data only" makes those shapes **flat-reachable,
+  //        nested-unreachable**. The #527 ruling therefore says `tools` belongs to neither plane:
+  //        it is a **permanent top-level option (the third station)**, the same class as `provider`
+  //        / `executeTool` / `store`. The `config.input.tools` leaf was removed; writing it is an
+  //        unknown leaf rejected on the spot. The capability plane is now purely behaviour
+  //        carriers — the counter-example no longer exists.
   //      ② 这条判据**已是现状**（不再是目标）：0.28.0 的 S4a 删掉了 `config.observers` 整组，11 个
   //        回调的规范之家是 `capabilities.hooks`，于是 `config` 子树只剩纯数据、过 JSON round-trip
   //        等值；反向由下面的约束 4 守住——`config` 里出现函数值，intake 当场拒绝。
@@ -66,8 +69,9 @@
   //      一个「永远只能写函数」的叶子留在配置树里，会让本条的判据与 round-trip 断言同时失真。
   //      S4b 同理把 `deliverables` 整键搬走（它的每一条都带函数 `check`，留在配置面就只能写 `[]`）。
 //      于是 `provider` / `store` / `modelConfig` / `signal` / 回调出口 … 这 22 项写进
-//      `config` 一律启动即抛，报错点名该键（#498 S4b 之后 `tools` 已归配置面、`deliverables`
-//      反向搬进能力面：两边的**条数没变**，变的是组成）。注意这条**只作用于新命名空间**——显式细粒度选项
+//      `config` throws at startup and names the key (#527: `tools` is on the third station, so
+//      writing it into `config` is rejected too — the message points at the top level). This rule
+//      applies to the **new namespace only** — explicit fine-grained options
 //      覆盖装配口同名成员（`resolveAssemblyMember`（`src/assembly.js`））是既有行为，
 //      `test/contract/assembly-port.js` 有断言，本单一个字都没改。
 //
@@ -121,22 +125,26 @@ import {
  * **#498 S4a 又减去 9 个**：`observers` 整组（8 个回调，搬去 `capabilities.hooks`）与
  * `finalGuard`（值必须是函数 ⇒ 按判据它是行为载体，回能力面；见文件头约束 4）。
  * **#498 S4b 对调两个**：`deliverables` 搬去 `capabilities.checks`（它的每一条都带函数）、
- * `tools` 从能力面搬进来（`input.tools`，按判据它是数据）⇒ 条数仍是 43，组数仍是 7（`prompt`
- * 改名 `input`）。52 − 9 = 43 的算式不变，变的是成员。
+ * `tools` moved in from the capability plane (`input.tools`, then considered data).
+ * **#527 removed it again**: the reachability check proved an entry may carry function members,
+ * and the config plane holds data only ⇒ it is not a config key, it is a **permanent top-level
+ * option (the third station)**. The config plane is therefore **42 keys / 7 groups** (43 −
+ * `tools`), and the `input` group keeps 5 leaves.
  *
  * @type {Readonly<Record<string, readonly string[]>>}
  */
 export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
-  // 输入载荷族：一次 run 开头就定下来的那几块输入（系统提示、种子消息、工具声明）与开关。
-  // #498 S4b 把 `prompt` 改名 `input` 并把两个顶层键收成嵌套别名：`tools`（顶层 `tools`）与
-  // `messages`（顶层 `initialMessages`，唯一一条重命名，见 `CONFIG_LEAF_ALIASES`）。
+  // The input family: the blocks fixed at the start of a run (system prompt, seed messages) and
+  // their switches. S4b renamed `prompt` to `input` and folded `messages` in as a nested alias
+  // (the flat `initialMessages`; the one registered rename, see `CONFIG_LEAF_ALIASES`).
+  // #527 removed `tools`: it is not a data key (entries may carry function members), so its home
+  // is the top level (the third station); writing `config.input.tools` is now an unknown leaf.
   input: Object.freeze([
     "system",
     "cacheStablePrefix",
     "initialUserMessage",
     "messages",
     "wrapup",
-    "tools",
   ]),
   // 轮次与循环控制：跑多久、什么算卡住、什么时候续、什么时候停、中途治理（judge/扩轮）、
   // 以及持久化**模式**（`persistence` 是「这次 run 要不要落盘」的旋钮，与同组的
@@ -249,10 +257,16 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
  * 的窗口数字被拿去算预算；`session` 的 `id`/`modelSlot`/`initialMessages` 被读）——
  * 那是配置，不是行为载体。
  *
- * 反例（为什么 `runId` / `cwd` / `tools` **不在**这里）：`runId` / `cwd` 是**字符串标量**，
- * `tools` 是工具声明的**数组**——引擎不调用它们，只校字面量、读已知字段并原样带进 payload。
- * `tools` 曾在能力面（S4a 的历史口径，见文件头约束 3 披露①），#498 S4b 已把它归到
- * `config.input.tools`。
+ * Counter-example (why `runId` / `cwd` are **not** here): they are **string scalars** — the engine
+ * does not call them, it only validates the literal, reads known fields and forwards them.
+ *
+ * Counter-example (why `tools` is **not** here, issue #527): a tool entry may carry function
+ * members (`handler` / `validate` / `execute` / a function inside `inputSchema`), while the
+ * capability criterion is "the engine calls or dereferences it" — the engine never calls those
+ * members, it only reads `name` / `inputSchema` and projects the entry to the provider. It is not
+ * config either (`config` holds data only, see constraint 4 in the file header) ⇒ it is a
+ * **permanent top-level option (the third station)**, the same class as `provider` /
+ * `executeTool` / `store`. `TOP_LEVEL_SURFACE_OPTION_NAMES` is that station.
  *
  * `config` 里出现其中任何一个 ⇒ 启动即抛（母单裁决）；回调的**规范之家**是
  * `capabilities.hooks`，交付物判据是 `capabilities.checks.deliverables`（都是
@@ -301,6 +315,42 @@ export const CAPABILITY_OPTION_NAMES = Object.freeze([
   // 而配置面只装数据 ⇒ 能写的只有 `[]`；整键搬进能力面之后那个过渡态消失。
   ...CAPABILITIES_SURFACE_OPTION_NAMES.filter((name) => !CAPABILITY_PORT_OPTION_NAMES.includes(name)
     && !CAPABILITY_HOOK_NAMES.includes(name)),
+]);
+
+/**
+ * The **third station** (issue #527): options that live **only** at the top level.
+ *
+ * These are the keys with **no nested home** — `configPathForOption(name)` and
+ * `capabilitiesPathForOption(name)` both return `undefined`. The nine adapter / identity keys
+ * (`provider`, `executeTool`, `store`, …) have always been like this; `tools` joins them by the #527
+ * ruling, which removed the `config.input.tools` leaf (its entries may carry function members, so it
+ * cannot live in the data-only `config` subtree, and the engine never calls those members, so it is
+ * not a capability either).
+ *
+ * The table is hand-written on purpose: it is the **ownership classification** the self-check needs
+ * to answer "every top-level option has exactly one home". Membership is verified mechanically in
+ * both directions (`configSchemaSelfCheck`): every entry must be a top-level option with no nested
+ * home, and every top-level option with no nested home must be an entry. The two containers
+ * (`config` / `capabilities`) are not members — they are their own bucket and disappear on expansion.
+ *
+ * `tools` is the machine proof of the 11 → 12 account: before #527 it had a config home, so the
+ * "no nested home" group was 11 keys; after the leaf is removed it is 12. Re-adding the leaf turns
+ * `configSchemaSelfCheck` red (the same key would be both a config surface key and a third-station
+ * key), which is exactly the reverse proof that this table is live rather than a copied expectation.
+ *
+ * @type {readonly string[]}
+ */
+export const TOP_LEVEL_SURFACE_OPTION_NAMES = Object.freeze([
+  "assemblyPort",
+  "provider",
+  "executeTool",
+  "store",
+  "modelConfig",
+  "signal",
+  "todoStateProvider",
+  "semanticStateProvider",
+  "diagnostics",
+  "tools",
 ]);
 
 /** 配置面的分组名（顺序即报错文案里的枚举顺序）。 */
@@ -413,7 +463,39 @@ export function configPlaneOptionNames(optionNames) {
 
 const CONFIG_SURFACE_OPTION_SET = new Set(CONFIG_SURFACE_OPTION_NAMES);
 const CAPABILITY_OPTION_SET = new Set(CAPABILITY_OPTION_NAMES);
+const TOP_LEVEL_SURFACE_OPTION_SET = new Set(TOP_LEVEL_SURFACE_OPTION_NAMES);
 const CONFIG_GROUP_SET = new Set(CONFIG_NAMESPACE_GROUPS);
+
+/**
+ * The **disjoint home buckets** of the top-level allowlist (issue #527).
+ *
+ * Four buckets, no overlap, and together they add up to the allowlist:
+ *   · `configPlane` — the config leaves that still have a top-level key (intersection);
+ *   · `capability` — capability options that are **not** third-station keys (they have a nested
+ *     `capabilities.*` home or are hooks whose home is `capabilities.hooks`);
+ *   · `topLevelSurface` — the permanent top-level options (no nested home at all);
+ *   · `containers` — `config` / `capabilities`, which disappear on expansion.
+ *
+ * Why the capability bucket subtracts the third station: the nine adapter / identity keys are both
+ * capability options (behaviour carriers) **and** permanent top-level options (no nested home). The
+ * ownership account needs a disjoint partition, so the third station wins for those nine; the
+ * semantic `CAPABILITY_OPTION_NAMES` list is unchanged (22 entries) and still answers "is this a
+ * capability option". `tools` is the one third-station member that is **not** a capability option.
+ *
+ * @param {readonly string[]} optionNames 顶层选项白名单
+ * @returns {{configPlane: string[], capability: string[], topLevelSurface: string[], containers: string[]}}
+ */
+export function optionHomeBuckets(optionNames) {
+  const allowed = new Set(optionNames);
+  const topLevelSurface = TOP_LEVEL_SURFACE_OPTION_NAMES.filter((name) => allowed.has(name));
+  const topLevelSet = new Set(topLevelSurface);
+  return {
+    configPlane: configPlaneOptionNames(optionNames),
+    capability: CAPABILITY_OPTION_NAMES.filter((name) => allowed.has(name) && !topLevelSet.has(name)),
+    topLevelSurface,
+    containers: NAMESPACE_CONTAINER_OPTION_NAMES.filter((name) => allowed.has(name)),
+  };
+}
 
 /**
  * 某个顶层配置键的 schema 路径（`maxRounds` → `"run.maxRounds"`），不属配置面时返回 undefined。
@@ -431,7 +513,9 @@ export function configPathForOption(optionName) {
 }
 
 /**
- * schema 自检：**三向闭合**——每个顶层选项必须**恰好**落在「配置面 / 能力面 / 容器」之一。
+ * Schema self-check: **four-way closure** — every top-level option must fall in exactly one of
+ * "config surface / capability / permanent top-level surface / container" (issue #527 added the
+ * third station; the first three buckets are defined by `optionHomeBuckets`).
  *
  * 这条自检是「只有一张表」的锁：新增一个顶层选项却忘了分类 ⇒ 这里报「未分类」；
  * 同一个键同时出现在两处（或同一组里出现两次）⇒ 这里报「重复」。测试对着
@@ -479,6 +563,12 @@ export function configSchemaSelfCheck(optionNames, { leafAliases = CONFIG_LEAF_A
     }
     if (NAMESPACE_CONTAINER_OPTION_SET.has(name)) {
       problems.push(`${JSON.stringify(name)} is a namespace container and cannot also be a config surface key`);
+    }
+    if (TOP_LEVEL_SURFACE_OPTION_SET.has(name)) {
+      problems.push(
+        `${JSON.stringify(name)} is both a config surface key and a permanent top-level surface option`
+        + " (the third station: a key cannot have a config home and no nested home at the same time)",
+      );
     }
   }
   const capabilitySeen = new Set();
@@ -538,10 +628,52 @@ export function configSchemaSelfCheck(optionNames, { leafAliases = CONFIG_LEAF_A
       }
     }
   }
+  const unclassified = new Set();
   for (const name of optionNames) {
     if (NAMESPACE_CONTAINER_OPTION_SET.has(name)) continue;
-    if (!configPlaneSet.has(name) && !CAPABILITY_OPTION_SET.has(name)) {
-      problems.push(`top-level option ${JSON.stringify(name)} is classified nowhere (config surface or capability list)`);
+    if (!configPlaneSet.has(name) && !CAPABILITY_OPTION_SET.has(name)
+      && !TOP_LEVEL_SURFACE_OPTION_SET.has(name)) {
+      problems.push(
+        `top-level option ${JSON.stringify(name)} is classified nowhere`
+        + " (config surface / capability list / top-level surface)",
+      );
+      unclassified.add(name);
+    }
+  }
+  // #527: the third station is verified in **both directions**, so it cannot degrade into a copied
+  // expectation list. Every entry must be a real top-level option with **no** nested home; every
+  // top-level option with no nested home must be an entry (completeness). `tools` is the reason this
+  // table exists: it used to have `config.input.tools`, and removing that leaf is what moves it here.
+  const topLevelSeen = new Set();
+  for (const name of TOP_LEVEL_SURFACE_OPTION_NAMES) {
+    if (topLevelSeen.has(name)) problems.push(`top-level surface list repeats ${JSON.stringify(name)}`);
+    topLevelSeen.add(name);
+    if (!optionNames.includes(name)) {
+      problems.push(`top-level surface names ${JSON.stringify(name)}, which is not a top-level option`);
+    }
+    if (configPathForOption(name) !== undefined) {
+      problems.push(
+        `${JSON.stringify(name)} is on the top-level surface list but still has a config home`
+        + ` (config.${configPathForOption(name)})`,
+      );
+    }
+    if (capabilitiesPathForOption(name) !== undefined) {
+      problems.push(
+        `${JSON.stringify(name)} is on the top-level surface list but still has a capability home`
+        + ` (capabilities.${capabilitiesPathForOption(name)})`,
+      );
+    }
+  }
+  for (const name of optionNames) {
+    if (NAMESPACE_CONTAINER_OPTION_SET.has(name)) continue;
+    if (unclassified.has(name)) continue;
+    if (configPathForOption(name) !== undefined) continue;
+    if (capabilitiesPathForOption(name) !== undefined) continue;
+    if (!TOP_LEVEL_SURFACE_OPTION_SET.has(name)) {
+      problems.push(
+        `top-level option ${JSON.stringify(name)} has no nested home but is not on the top-level surface list`
+        + " (the third station must name every permanent top-level option)",
+      );
     }
   }
   for (const container of NAMESPACE_CONTAINER_OPTION_NAMES) {
@@ -627,6 +759,16 @@ export function collectConfigNamespaceProblems(config) {
       );
       continue;
     }
+    // #527: a permanent top-level option written at the top of `config` (`config.tools`) is not a
+    // namespace at all. Point at the third station instead of enumerating config groups, which would
+    // send the host looking for a group that does not exist.
+    if (TOP_LEVEL_SURFACE_OPTION_SET.has(group)) {
+      problems.push(
+        `config.${group}: ${JSON.stringify(group)} is a permanent top-level option`
+        + ` (the third station) — write it at the top level as ${group}: …)`,
+      );
+      continue;
+    }
     if (!CONFIG_GROUP_SET.has(group)) {
       const renamed = CONFIG_RENAMED_GROUPS[group];
       problems.push(
@@ -681,6 +823,14 @@ function misplacedLeafHint(group, leaf) {
   if (configHome !== undefined) return ` (${JSON.stringify(leaf)} belongs to config.${configHome})`;
   const capabilityHome = capabilitiesPathForOption(leaf);
   if (capabilityHome !== undefined) return ` (${JSON.stringify(leaf)} belongs to capabilities.${capabilityHome})`;
+  // #527: the closed door. After the leaf is removed, `config.input.tools` must be rejected as an
+  // **unknown leaf**, and the text must say where the value really lives — the third station, at the
+  // top level — not merely enumerate the leaves the group still accepts (that would read as "tools
+  // is gone", which is false).
+  if (TOP_LEVEL_SURFACE_OPTION_SET.has(leaf)) {
+    return ` (${JSON.stringify(leaf)} is a permanent top-level option — the third station —`
+      + ` write it at the top level: ${leaf}: …)`;
+  }
   return ` (accepted: ${CONFIG_NAMESPACE_SCHEMA[group].join(", ")})`;
 }
 

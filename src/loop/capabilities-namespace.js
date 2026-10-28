@@ -71,9 +71,11 @@
 //      `config_override_conflict` 事件发出去（事件类型不新增：它说的就是「一个旋钮两个真相来源」，
 //      只是 path 前缀不同）。capabilities 侧赢（与 `config.*` 对扁平键的优先级同向）。
 //
-// Adapter port objects (`provider` / `tools` / `store` / `signal` …) are **not** members of
-// `capabilities.ports`: `tools` moved to the config surface in #498 S4b (`config.input.tools`, it is
-// data), the rest stay top-level options / assembly-port members. Writing `capabilities.provider`
+// Adapter port objects (`provider` / `store` / `signal` …) are **not** members of `capabilities.ports`:
+// `tools` is a **permanent top-level option** (the third station since issue #527 — its entries may
+// carry function members, so it can live neither in the data-only `config` subtree nor in the
+// capability surface, which is for behaviour carriers the engine calls), the rest stay top-level
+// options / assembly-port members. Writing `capabilities.provider`
 // still throws (and says where port objects live) — nothing is silently accepted, and no half-baked
 // shape is published early. The `ports` group holds the **in-shell** infrastructure / strategy
 // implementations (the three from #498 S4c), not "the migration entry point for every port object".

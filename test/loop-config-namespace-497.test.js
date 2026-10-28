@@ -65,6 +65,7 @@ import {
   CONFIG_NAMESPACE_SCHEMA,
   CONFIG_SURFACE_OPTION_NAMES,
   NAMESPACE_CONTAINER_OPTION_NAMES,
+  optionHomeBuckets,
   collectConfigNamespaceProblems,
   collectConfigSourceConflicts,
   configPathForOption,
@@ -122,24 +123,26 @@ const assemblyError = async (policy = {}) => {
 };
 
 // ================================================================ A. 只有一张表（派生，不是手抄）
-test("A1 schema 自检：白名单被三个面恰好切一遍（配置面 / 能力面 / 容器），自检 []", () => {
+test("A1 schema 自检：白名单被四个面恰好切一遍（配置面 / 能力面 / 第三站 / 容器），自检 []", () => {
   // #498 S3：这里原本手抄四个字面总数（顶层 / 配置面 / 能力面 / 容器）。删掉 `timing` 组的三个
   // 顶层键之后，配置面那一项自动少三个，于是四个数字必须手追——那正是本刀要杀的东西。
   // 现在钉的是**更强的一句**，而且一个总数都不用抄：
-  //   ① 三个面的并集与白名单**逐键相等**（不是比条数，是比集合）；
-  //   ② 三个面两两不相交（一个键只许有一个家）。
+  //   ① 四个面的并集与白名单**逐键相等**（不是比条数，是比集合）；
+  //   ② 四个面两两不相交（一个键只许有一个家）。
   // 这两条合起来就是「闭合」的全部内容，且与具体条数无关。
-  const configPlane = configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES);
-  const partition = [...configPlane, ...CAPABILITY_OPTION_NAMES, ...NAMESPACE_CONTAINER_OPTION_NAMES];
+  // #527 把「永久顶层面（第三站）」作为第四个桶：`tools` 从配置面拆出后必须落在这里，否则
+  // 「配置面 + 能力面 + 容器」只剩 49 个键，第一句就会红。
+  const { configPlane, capability, topLevelSurface, containers } = optionHomeBuckets(RUN_TOOL_LOOP_OPTION_NAMES);
+  const partition = [...configPlane, ...capability, ...topLevelSurface, ...containers];
   assert.equal(
     new Set(partition).size,
     partition.length,
-    "三个面之间不许重叠（同一个键落在两个家里，展开时就会有一个静默盖掉另一个）",
+    "四个面之间不许重叠（同一个键落在两个家里，展开时就会有一个静默盖掉另一个）",
   );
   assert.deepEqual(
     [...partition].sort(),
     [...RUN_TOOL_LOOP_OPTION_NAMES].sort(),
-    "三面并集必须逐键等于白名单（漏一个、多一个都算红；不靠条数自证）",
+    "四面并集必须逐键等于白名单（漏一个、多一个都算红；不靠条数自证）",
   );
   // 配置面那一项 = 叶子总数 − 失去顶层键的叶子（派生；S3 之后这个差非空，这是设计）。
   const orphanLeaves = CONFIG_SURFACE_OPTION_NAMES.filter(
@@ -214,7 +217,8 @@ test("A3 自检会咬人：漏分类 / 漏容器必须红；叶子失去顶层�
   // 方向①：白名单多出一个没分类的键（「加了选项忘了分类」的真实形状）。
   const extra = configSchemaSelfCheck([...RUN_TOOL_LOOP_OPTION_NAMES, "brandNewKnob"]);
   assert.deepEqual(extra, [
-    'top-level option "brandNewKnob" is classified nowhere (config surface or capability list)',
+    'top-level option "brandNewKnob" is classified nowhere'
+      + " (config surface / capability list / top-level surface)",
   ]);
   // 方向②（#517 翻转）：一个真叶子的顶层键从白名单里消失 ⇒ **必须绿**。
   // 这正是 S3 删完顶层扁平配置键之后 `config.run.maxRounds` 的形状：叶子还在、顶层键没了。
@@ -384,7 +388,7 @@ test("A5 移到配置面的 runId / cwd 真被引擎读：run_outcome 的 runId 
 });
 
 // ================================================================ B. 结构等价（判据 1）
-test("B1 43 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平形态逐键深度相等", () => {
+test("B1 42 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平形态逐键深度相等", () => {
   let covered = 0;
   for (const key of CONFIG_SURFACE_OPTION_NAMES) {
     const path = configPathForOption(key);
@@ -413,8 +417,7 @@ const VALUES = {
   // #498 S3 A6：`system` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
   // #498 S3 A2b：`initialUserMessage` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
   wrapup: false,
-  // #498 S4b：`tools` 归配置面（`config.input.tools`）——它是工具声明数组，按判据是数据。
-  tools: [{ name: "echo", description: "回显", inputSchema: { type: "object", properties: {} } }],
+  // #527：`tools` 已拆出配置面（永久顶层面），不再属于这份配置样本。
   maxRounds: 3,
   maxTokenContinuations: 2,
   stallDetection: false,
@@ -1063,12 +1066,17 @@ test("I2 `config.input.messages` 是顶层 `initialMessages` 的嵌套别名（�
   assert.match(flatLeaf.message, /write config\.input\.messages instead/u);
 });
 
-test("I3 `config.input.tools` 是顶层 `tools` 的嵌套别名，且真被引擎读（工具声明真的进了请求）", async () => {
+test("I3 #527：`config.input.tools` 已拆掉（未知叶子 + 指向顶层第三站），扁平 `tools` 真被引擎读", async () => {
   const tools = [{ name: "echo", description: "回显", inputSchema: { type: "object", properties: {} } }];
-  const { effectiveOptions } = await normalizeRunToolLoopOptions({ config: { input: { tools } } });
-  assert.deepEqual(effectiveOptions.tools, tools, "config.input.tools 展开成顶层 tools");
-
-  // 行为层：声明了工具、模型第一轮就调它 ⇒ 真的执行了一次（不是「展开了但没人读」）。
+  // ① 规位现在是闭门：叶子被拆掉，写它就是未知叶子；文案必须指向永久顶层面。
+  const nestedError = await directError({ config: { input: { tools } } });
+  assert.equal(nestedError instanceof TypeError, true, "config.input.tools 必须当场拒");
+  assert.match(nestedError.message, /unknown config\.input option: "tools"/u);
+  assert.match(nestedError.message, /permanent top-level option/u);
+  assert.match(nestedError.message, /third station/u, "文案必须指向第三站在顶层");
+  // ② 扁平写法一字未动，且引擎真的读它（工具声明真的进了请求、真的被调用）。
+  const { effectiveOptions } = await normalizeRunToolLoopOptions({ tools });
+  assert.deepEqual(effectiveOptions.tools, tools, "扁平 tools 仍是那个键");
   const twoRounds = [
     { content: [{ type: "tool_use", id: "tu_1", name: "echo", input: { text: "x" } }], stopReason: "tool_use" },
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
@@ -1077,13 +1085,13 @@ test("I3 `config.input.tools` 是顶层 `tools` 的嵌套别名，且真被引�
   const result = await runToolLoop(withSeed({
     provider: createFakeProvider(twoRounds),
     executeTool: async () => { executed += 1; return "ok"; },
-    config: { input: { tools } },
+    tools,
     initialUserMessage: "go",
     completion: false,
     wrapup: false,
   }));
   assert.equal(result.termination.reason, "end_turn");
-  assert.equal(executed, 1, "config.input.tools 里的工具声明必须真的可用");
+  assert.equal(executed, 1, "扁平 tools 里的工具声明必须真的可用（读侧一行未改）");
 });
 
 test("I4 `resume` 归位到 `config.run.resume`：别名路径与顶层扁平键是同一个键", async () => {

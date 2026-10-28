@@ -815,11 +815,12 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         ...(notesAssembler === undefined ? {} : {
           semanticStateProvider: notesAssembler.semanticStateProvider,
         }),
+        // issue #527：`tools` 是永久顶层面（第三站），与 provider / executeTool / store 同类。
+        tools: visibleTools,
         // —————————— 配置面：引擎校值并解释的数据 ——————————
         config: {
           input: {
             system: systemPrompt,
-            tools: visibleTools,
             ...(resume ? {} : {
               // `config.input.messages` 是顶层 `initialMessages` 的嵌套别名（S4b 的唯一一条重命名）
               messages: roundMessages,

@@ -5,6 +5,13 @@
 >
 > 本文件随 `test/` 落盘、**不进 npm 包**（`package.json` 的 `files` 没有它）。
 >
+> ⚠ **附表口径刷新（#527 `tools` 拆叶子）**：附表 **1299 → 1299**（不变，行数 112 → 112）、
+> 主表 **170 → 170**（不变，行数 23 → 23）。原因是 #527 只把 `tools` 的**规位写点**（`config.input.tools`）
+> 改回扁平 `tools`：`config` 是容器，按规则 4 数到就停，所以那些写点本来就不在计数口径里；改回扁平后
+> 两处 `tools` 写点重新进表（`loop-config-namespace-497` +1、`loop-capabilities-namespace-498` −1，
+> 两文件此消彼长，总数不变）。复跑：`node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md`
+> **exit=0**，逐行零误差。
+>
 > 生成方式（可复跑，不许凭感觉）：AST 走 `test/**`（排除 `test/contract/**`，那是 #498 S8 独占），
 > 数**属性写法**的命中次数（`PropertyAssignment` / `ShorthandPropertyAssignment` 的名字），规则五条：
 >
@@ -153,7 +160,7 @@
 | `test/loop-option-gate-496.test.js` | 15 | 选项闸：接受面 = 白名单（`unknown runToolLoop option`）、语义相取值校验、`onFoldSummary` / `finalGuard` / `deliverables` 的形状报错 |
 | `test/loop-guard-slice-498s3e.test.js` | 1 | #498 S3 `guard` 片的**选项面钉**：三个数据键的旧名反向拒绝（逐字文案 + 新家路径）、混装壳只点一站、**`finalGuard` / `finalGuardVerdict` 没被本刀动过**（P5）、三向闭合与 schema 自检、禁手抄键数（A2 扫全 `test/`） |
 | `test/loop-tuning-keys-slice-498s3a5.test.js` | 0（容器/白名单面） | #498 S3 `tuning` A5 片的**选项面钉**：三个采样/预算键的旧名反向拒绝（逐字文案 + 新家路径）、混装壳只点一站、**`maxTokenContinuations` 与槽位面同名字段没被本刀动过**（P5，另加装配口 `policy.maxTokens` 与 provider 请求字段两个旁证面）、三向闭合与 schema 自检、禁手抄键数（A2 扫全 `test/`）。**能力面 0 写点**（它不碰任何 `on*` 回调），所以本表这一行是 `0` 而不是数字 |
-| `test/loop-input-keys-slice-498s3a6.test.js` | 0（容器/白名单面） | #498 S3 `input` 组 A6 片的**选项面钉**：`system` 的旧名反向拒绝（逐字文案 + 新家路径 + 数据键里的函数值只点一站）、**`tools` 的闸口二 as-is 钉（G1–G4：函数成员扁平可达 / 规位不可达，两个协议投影都不带它）**、`wrapup` / `tools` 退回清单的机器派生（S 段）、三向闭合与 schema 自检、禁手抄键数（A2 扫全 `test/`）。**能力面 0 写点**（它不碰任何 `on*` 回调），所以本表这一行是 `0` 而不是数字 |
+| `test/loop-input-keys-slice-498s3a6.test.js` | 0（容器/白名单面） | #498 S3 `input` 组 A6 片的**选项面钉**：`system` 的旧名反向拒绝（逐字文案 + 新家路径 + 数据键里的函数值只点一站）、**`tools` 的闸口二 as-is 钉（G1–G4：函数成员扁平可达 / 规位不可达，两个协议投影都不带它）**、**#527 的闭门钉（G2/G5：`config.input.tools` 作为未知叶子当场拒，文案指向顶层第三站）**、`wrapup` 退回清单的机器派生（S 段）、四向闭合与 schema 自检、禁手抄键数（A2 扫全 `test/`）。**能力面 0 写点**（它不碰任何 `on*` 回调），所以本表这一行是 `0` 而不是数字 |
 | `test/loop-context-on-fold-summary-retired-499.test.js` | 8 | #499 的**范围钉**：`context.onFoldSummary` 退役、**顶层扁平 `onFoldSummary` 必须还在**（它 `import` 了 `RUN_TOOL_LOOP_OPTION_NAMES` 并断言 `includes("onFoldSummary")`）⇒ S9 之前这里必须保持扁平 |
 
 
@@ -563,13 +570,13 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/cli.test.js` | 74 | `session`×36, `prompt`×29, `reflection`×4, `tools`×3, `context`×2, `finalGuard`×2, `completion`×1 |
 | `test/loop-resume.test.js` | 71 | `completion`×33, `resume`×23, `tools`×8, `reflection`×3, `partialPersistence`×2, `wrapup`×2 |
 | `test/loop-option-gate-496.test.js` | 28 | `context`×31, `completion`×7, `onFoldSummary`×7, `finalGuard`×6, `reflection`×5, `retry`×5, `tools`×3, `deliverables`×2, `session`×2, `partialPersistence`×1, `sleepImpl`×1, `stallDetection`×1, `wrapup`×1 |
-| `test/loop-config-namespace-497.test.js` | 45 | `completion`×11, `wrapup`×11, `tools`×5, `modelMetadata`×3, `session`×3, `context`×2, `initialMessages`×2, `resume`×2, `retry`×2, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `stallDetection`×1 |
+| `test/loop-config-namespace-497.test.js` | 46 | `completion`×11, `wrapup`×11, `tools`×6, `modelMetadata`×3, `session`×3, `context`×2, `initialMessages`×2, `resume`×2, `retry`×2, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `stallDetection`×1 |
 | `test/loop-resume-anchor.test.js` | 38 | `completion`×8, `stallDetection`×8, `wrapup`×8, `resume`×7, `tools`×6, `partialPersistence`×1 |
 | `test/loop-v020-rc.test.js` | 24 | `completion`×19, `session`×3, `resume`×1, `stallDetection`×1 |
 | `test/loop-resume-notice.test.js` | 29 | `completion`×11, `tools`×9, `resume`×7, `context`×2, `reflection`×2 |
 | `test/loop.test.js` | 31 | `completion`×15, `stallDetection`×12, `reflection`×2, `onToolResult`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-core.test.js` | 24 | `finalGuard`×19, `tools`×14, `strategy`×4, `context`×3, `reflection`×3, `onEvent`×1, `onObserverError`×1 |
-| `test/loop-capabilities-namespace-498.test.js` | 24 | `completion`×5, `wrapup`×5, `retry`×3, `session`×2, `tools`×2, `context`×1, `modelMetadata`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `resume`×1, `stallDetection`×1 |
+| `test/loop-capabilities-namespace-498.test.js` | 23 | `completion`×5, `wrapup`×5, `retry`×3, `session`×2, `tools`×1, `context`×1, `modelMetadata`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `resume`×1, `stallDetection`×1 |
 | `test/loop-option-normalization.test.js` | 23 | `session`×8, `completion`×7, `tools`×5, `wrapup`×3 |
 | `test/reflection.test.js` | 23 | `completion`×12, `reflection`×10, `resume`×1 |
 | `test/judge-record.test.js` | 20 | `reflection`×13, `completion`×5, `context`×2, `session`×1 |
