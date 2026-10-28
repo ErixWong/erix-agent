@@ -235,15 +235,15 @@ function splitPointerClause(verdict, name) {
   };
 }
 
+/** 直连路线的扁平写法（`config.run.<…>` 才是它的住所）——名字只在这里出现一次。 */
+const FLAT_NAME = "cwd";
+
 /**
  * 直连路线那句**同一措辞**的指路：从它抛出的判词里取 `(` 之后到住所 `config.<…>` 之前那一段。
  * 措辞本身仍由引擎给——本文件里**一个判词字面量都没有**（字面量计数 0，见工单 #558 报告 §3）。
  *
  * @returns {Promise<string>}
  */
-/** 直连路线的扁平写法（`config.run.<…>` 才是它的住所）——名字只在这里出现一次。 */
-const FLAT_NAME = "cwd";
-
 async function directPointerMarker() {
   let message = null;
   try {
