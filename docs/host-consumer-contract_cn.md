@@ -278,7 +278,7 @@ executeTool({ id, name, input, context, signal })
 
 | 命名空间 | 成员 |
 | --- | --- |
-| `capabilities.hooks` | 16 个回调：`onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、`onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`、`finalGuard`、`onReflection`、`onBeforeFold`、`onAfterFold`、`stubFor`——外加两个形态多态旋钮的**函数形态**：`protectedMessage`、`recoveryHint` |
+| `capabilities.hooks` | 18 个成员 —— **16 个回调**（下方逐个列出）**加两个形态多态旋钮** `protectedMessage` / `recoveryHint`（函数形态在这里、数据形态留在 `config.folding.context`）：`onEvent`、`onObserverError`、`onPersistenceError`、`onRound`、`onJudge`、`onToolResult`、`onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage`、`onFoldSummary`、`finalGuard`、`onReflection`、`onBeforeFold`、`onAfterFold`、`stubFor`——外加两个形态多态旋钮的**函数形态**：`protectedMessage`、`recoveryHint` |
 | `capabilities.checks` | `deliverables`（每项 `{ name, check }`；`check` 是函数、`name` 是标签） |
 | `capabilities.ports` | `sleepImpl`、`judgeProvider`、`strategy`——见下面「`capabilities.ports`」那一节 |
 

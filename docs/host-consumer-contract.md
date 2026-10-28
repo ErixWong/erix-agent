@@ -344,7 +344,7 @@ one registered exception described below (nine leaves that never were top-level 
 
 | namespace | members |
 | --- | --- |
-| `capabilities.hooks` | 16 callbacks: `onEvent`, `onObserverError`, `onPersistenceError`, `onRound`, `onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary`, `finalGuard`, `onReflection`, `onBeforeFold`, `onAfterFold`, `stubFor` — plus the **function form** of the two polymorphic knobs, `protectedMessage` and `recoveryHint` |
+| `capabilities.hooks` | 18 members — **16 callbacks** (listed below) **plus the two polymorphic knobs** `protectedMessage` / `recoveryHint` (function form here, data form stays in `config.folding.context`):  `onEvent`, `onObserverError`, `onPersistenceError`, `onRound`, `onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary`, `finalGuard`, `onReflection`, `onBeforeFold`, `onAfterFold`, `stubFor` — plus the **function form** of the two polymorphic knobs, `protectedMessage` and `recoveryHint` |
 | `capabilities.checks` | `deliverables` (each entry `{ name, check }`; `check` is a function, `name` is a label) |
 | `capabilities.ports` | `sleepImpl`, `judgeProvider`, `strategy` — see “`capabilities.ports`” below |
 
