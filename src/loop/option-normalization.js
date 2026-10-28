@@ -83,7 +83,7 @@
 // 声明顺序依赖（`notifyCapabilitySkipped` 等 TDZ 陷阱）无关。
 // 零运行时依赖：只用相对路径。
 
-import { assemblyPortOptions } from "../assembly.js";
+import { assemblyPortOptions, assertMergedOptionNames, collectAssemblyDerivedConfigConflicts, withAssemblyDerivedConfigLeaves } from "../assembly.js";
 import { assertSemanticOptionValues } from "../assembly-validators.js";
 import {
   assertCapabilitiesNamespace,
@@ -495,6 +495,15 @@ export async function normalizeRunToolLoopOptions(options) {
     );
     mergedOptions.capabilities = explicitCapabilities;
   }
+  // #544: derived config leaves survive a `config` override (host wins
+  // per leaf) and still report one `config_override_conflict` vs
+  // `policy.config`; the name gate runs on this tree before expansion
+  // writes the retired names back.
+  if (assemblyPort !== undefined) {
+    mergedOptions.config = withAssemblyDerivedConfigLeaves(mergedOptions.config, assemblyPort);
+    configSourceConflicts.push(...collectAssemblyDerivedConfigConflicts(assemblyPort));
+  }
+  assertMergedOptionNames(mergedOptions);
   const configExpansion = expandConfigNamespace(mergedOptions, { via });
   // #498 S4a：容器展开按 config → capabilities 的顺序跑（两个容器的叶子集不相交，顺序只为确定性）。
   // #498 S4c: `slots` holds the nine leaves that have **no top-level flat alias** (`ports.*` and six

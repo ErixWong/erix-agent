@@ -325,20 +325,18 @@ test("正向钉：调用期新键仍然合法（端口没产出的 signal / stor
   assert.equal(options.session.id, `assembly-new-keys-${process.pid}`);
   // 这条不是「没抛」：上面三行都在断言**具体值**，而下面证明合法新键真的能被引擎用起来。
   // #498 S3 A18: `wrapup` is retired as a flat key; the switch lives at `config.input.wrapup`.
-  // #498 S3 A20：装配口**仍然产出** `runId`（`port.session.id`，构造期的事实，本片一字未改），
-  // 但它的顶层拼写已退役 ⇒ 宿主把端口产物直接铺进 `runToolLoop` 时必须并进 `config.run`。
-  // 这条正是「端口给值 / 顶层拼写」两张面分开之后的真实形状，所以这里按规位拼写喂进去。
-  const { runId: portRunId, ...portOptions } = options;
-  assert.equal(portRunId, `assembly-new-keys-${process.pid}`, "前提：端口确实产出了 runId");
+  // #544：端口的 run identity **不再**以扁平 `runId` 产出，它就在 `config.run.runId` 上（与宿主
+  // 能写的拼写同一套合法性）⇒ 端口产物现在可以原样铺进 `runToolLoop`，调用方不必再翻译一次。
+  assert.equal(
+    options.config.run.runId,
+    `assembly-new-keys-${process.pid}`,
+    "前提：端口把 session.id 产成了规位拼写 config.run.runId",
+  );
   const result = await runToolLoop({
-    ...portOptions,
+    ...options,
     modelConfig: port.modelConfig,
     completion: false,
-    config: {
-      ...portOptions.config,
-      input: { ...portOptions.config?.input, wrapup: false },
-      run: { ...portOptions.config?.run, runId: portRunId },
-    },
+    config: { ...options.config, input: { ...options.config.input, wrapup: false } },
   });
   assert.equal(result.termination.reason, "end_turn");
 });
@@ -350,11 +348,24 @@ test("键集自证：构造期产出的每一个键都在冲突闸口内（从�
   });
   const produced = Object.keys(await assemblyPortOptions(port));
   // 探针自证：这批键真的是构造期产出的（不是空循环恒绿）。
-  for (const expected of ["provider", "tools", "executeTool", "store", "runId", "session", "onEvent", "maxRounds", "maxTokens"]) {
+  // #544：`runId` / `initialMessages` 已不在产物里（它们成为 `config` 树的叶子），所以这里点名
+  // `config`——端口自己的拼写就是那个容器，容器里的叶子由 `config` 的名称闸口管。
+  for (const expected of ["provider", "tools", "executeTool", "store", "config", "session", "onEvent", "maxRounds", "maxTokens"]) {
     assert.ok(produced.includes(expected), `${expected} 必须出现在构造期产物里`);
   }
+  assert.equal(produced.includes("runId"), false, "#544：扁平 runId 不再出现在构造期产物里");
   for (const key of produced) {
     if (key === "modelConfig") continue; // 唯一既有例外：自带校验的覆盖通道
+    // #544：`config` 是容器（不是「给一个值」的键）⇒ 覆盖它撞的是容器闸口，不是冲突闸口。
+    if (key === "config") {
+      await assert.rejects(
+        assemblyPortOptions(port, { config: { run: { maxRounds: 1 } } }),
+        (error) => error instanceof TypeError
+          && error.message.startsWith('assembly port override must not replace the "config" container:'),
+        "config 是容器 ⇒ 覆盖它走容器闸口（派生：容器清单在 src/assembly.js）",
+      );
+      continue;
+    }
     // #498 S3（`tuning` A5）：**覆盖**的键名闭集派生自 `RUN_TOOL_LOOP_OPTION_NAMES`（`src/assembly.js`
     // 的规则 2），所以一个键离开顶层白名单之后，它连「调用期覆盖」这个名字都不再合法 —— 撞的是
     // 名称闸口（`unknown assembly port override option`）而不是冲突闸口。判据因此按**派生**跳过，
