@@ -2,6 +2,7 @@
 
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,6 +15,7 @@ import {
 import {
   buildCompactionContext,
   loadCliConfig,
+  splitCompactionContext,
 } from "../bin/config.js";
 import {
   DEFAULT_MAX_CALLS,
@@ -25,9 +27,12 @@ import {
   runFailFast,
   validateCostPlan,
 } from "./experiment-guardrails.mjs";
+// #532：这两个符号在 notes 瘦身（9fd2277）里被改名/删除，import 站不住 ⇒ 按**今天真实的导出面**改写调用点：
+//   · `buildArchiveSystemPrompt` → `buildArchiveNotice`（同一个角色：把归档目录拼进 system prompt）；
+//   · `buildArchiveRecoveryHint` → **已删除**，今天没有字符串形态的归档恢复提示（归档路径只经
+//     `buildArchiveNotice` 进 system prompt）⇒ 调用点去掉它，不改库去迁就脚本。
 import {
-  buildArchiveRecoveryHint,
-  buildArchiveSystemPrompt,
+  buildArchiveNotice,
   CLI_TOOLS_SYSTEM_PROMPT,
   createCliTools,
 } from "../bin/tools.js";
@@ -170,7 +175,7 @@ function systemForVariant({ variant, cwd, archiveDir }) {
     system = replaceNoteGuidance(system, `- 上下文会被折叠；你有一个外部笔记本。具体值不在上下文时，先 note_list，再 note_read，再回答。
 - 完整示范：要回答“原始值是多少？”时，先调用 note_list({scope:"run"}) 找到 key，再调用 note_read({key:"找到的 key",scope:"run"}) 取回 value，最后只用返回的 value 回答；不要重跑命令或凭记忆给值。`);
   }
-  if (variant !== "V4") system += buildArchiveSystemPrompt(archiveDir);
+  if (variant !== "V4") system += buildArchiveNotice(archiveDir);
   return system;
 }
 
@@ -449,11 +454,15 @@ async function runOne({ variant, model, index, configPath, root, timeoutMs }) {
     return result;
   };
 
-  const recoveryHint = archiveDir === undefined ? undefined : buildArchiveRecoveryHint(archiveDir);
+  // #532：`buildArchiveRecoveryHint` 今天不存在（9fd2277 删除）⇒ 折叠上下文只带数据。
+  // #498 S5：`buildCompactionContext` 的返回值里 `protectedMessage` 是**函数**，而 `config` 子树
+  // 必须过 JSON round-trip（`collectFunctionPaths` 会当场点名 `config.folding.context.protectedMessage`
+  // 并抛）⇒ 与 `bin/cli.js` 同一条规位：数据进 `config.folding.context`，函数进 `capabilities.hooks`。
   const context = {
-    ...buildCompactionContext({}, BUDGET_TOKENS, recoveryHint),
+    ...buildCompactionContext({}, BUDGET_TOKENS),
     keepRounds: KEEP_ROUNDS,
   };
+  const { data: foldingData, hooks: foldingHooks } = splitCompactionContext(context);
   const system = systemForVariant({ variant, cwd: runRoot, archiveDir });
   const finalGuard = variant === "V6"
     ? async () => (noteCalls.length > 0
@@ -492,9 +501,10 @@ async function runOne({ variant, model, index, configPath, root, timeoutMs }) {
         tuning: { maxTokens: config.maxOutputTokens },
         run: { runId, maxRounds: MAX_ROUNDS, reflection: false, completion: { signals: [], maxNoToolRounds: 1 } },
         timing: { retry: false },
-        folding: { context },
+        folding: foldingData === undefined ? {} : { context: foldingData },
         ...(finalGuard === undefined ? {} : { guard: { finalGuardMaxRetries: 2 } }),
       },
+      ...(foldingHooks === undefined ? {} : { capabilities: { hooks: foldingHooks } }),
       ...(finalGuard === undefined ? {} : { finalGuard }),
     });
   } catch (caught) {
