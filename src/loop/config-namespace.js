@@ -444,6 +444,55 @@ export function configOptionNameForLeaf(group, leaf) {
 export const CONFIG_LEAF_ALIAS_PATHS = CONFIG_LEAF_ALIASES;
 
 /**
+ * 值类型描述（只用于报错文案）：`null` / `array` / 其它走 `typeof`。
+ *
+ * `typeof null === "object"` 会把「宿主给了个空值」说成「宿主给了个对象」，所以先分出来；
+ * 数组同理——宿主写 `stream: []` 时该看见 `array`，而不是 `object`。
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function describeConfigValueType(value) {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+/**
+ * **叶子值规则**（issue #538）：`"<group>.<leaf>"` → 校值函数（返回判词，`undefined` = 通过）。
+ *
+ * 为什么需要这张表：名称/形状闸口只管「这个键存不存在」，不管「这个键的值是什么类型」。
+ * `config.run.stream` 的病根是**同一个值被两处用两种真值判断读**（`src/loop/provider-runner.js`
+ * 的 `=== true` 与 `truthy`），于是 `stream: 1` 让同一次运行里「通道名」与「走不走 chatStream」
+ * 各说各话。裁决不是「把两处都改成 truthy」（那会让 `stream: "yes"` 真的开始流式，只是把
+ * 分歧挪到别处），而是「值必须是布尔」+「两处共用一个派生值」：本表负责前半，后半见
+ * `provider-runner.js` 的 `streamsThisRun`。
+ *
+ * 判词必须点名**完整路径**（`config.run.stream`，不是扁平的 `stream`）与**实测收到的类型**：
+ * 宿主写错这一格时，能照着报错改，而不是去猜引擎的默认值。
+ *
+ * 这一层在**展开相**（`expandConfigNamespace` → `assertConfigNamespace`）就校，所以两条路线
+ * 都走同一处：直连 `runToolLoop({ config: { run: { stream: 1 } } })` 与装配口
+ * `policy: { stream: 1 }`（#545 起 policy 叶子翻译成 `config.run.stream`，构造期就过这道闸）。
+ *
+ * 表里只登记**需要值规则**的叶子（今天只有一个）；空集合意味着「该叶子没有额外值规则」，
+ * 不是「漏登记」——需要那条规则的键必须真在 schema 里，由 `configSchemaSelfCheck` 核死条目。
+ *
+ * @type {Readonly<Record<string, (value: unknown, path: string) => string | undefined>>}
+ */
+const CONFIG_LEAF_VALUE_RULES = Object.freeze({
+  // issue #538: `config.run.stream` 必须是布尔。非布尔**启动即抛**，判词点名完整路径与收到的类型。
+  // 不收 `1` / `0` / `"yes"` / `null` / `[]`：真值判断的两种写法（`=== true` 与 truthy）对它们
+  // 结论不同，而一次运行里只能有一个「在不在流式」的答案。
+  "run.stream": (value, path) => (typeof value === "boolean"
+    ? undefined
+    : `${path} must be a boolean (received: ${describeConfigValueType(value)})`),
+});
+
+/** 叶子值规则表（导出给自检与测试核对，只读）。 */
+export const CONFIG_LEAF_VALUE_RULE_PATHS = CONFIG_LEAF_VALUE_RULES;
+
+/**
  * 展开后的**别名表**：`"<group>.<leaf>"` → 顶层键名。
  *
  * 机械派生（叶子名逐字等于顶层键名，唯一例外见 `CONFIG_LEAF_ALIASES`），不是手写映射：
@@ -655,6 +704,14 @@ export function configSchemaSelfCheck(optionNames, { leafAliases = CONFIG_LEAF_A
       }
     }
   }
+  // issue #538：叶子值规则的**死条目**。规则表按 `"<group>.<leaf>"` 索引，所以一条规则只能由
+  // 「那个叶子真的在 schema 里」来兑现——登记了 `run.stream` 却把叶子改名 / 删除，规则会静默失效
+  // （非布尔又能走到运行期）。这一条把「改了叶子名、忘了改规则表」变成红。
+  for (const path of Object.keys(CONFIG_LEAF_VALUE_RULES)) {
+    if (!CONFIG_ALIAS_PATHS.has(path)) {
+      problems.push(`leaf value rule ${JSON.stringify(path)} does not name a leaf of the config schema`);
+    }
+  }
   const unclassified = new Set();
   for (const name of optionNames) {
     if (NAMESPACE_CONTAINER_OPTION_SET.has(name)) continue;
@@ -825,9 +882,17 @@ export function collectConfigNamespaceProblems(config) {
       // 未知叶子已经在上面报过，不再拿它们的内部形状叠一条噪声）。
       const leafValue = /** @type {Record<string, unknown>} */ (value)[leaf];
       if (leafValue === undefined) continue;
+      let functionValueReported = false;
       for (const functionPath of collectFunctionPaths(leafValue, `config.${group}.${leaf}`)) {
+        functionValueReported = true;
         problems.push(functionValueProblemMessage(functionPath));
       }
+      // issue #538：**叶子值规则**。放在函数值那条之后：一个函数值已经由上面点名了它的
+      // 能力面去处（那里说得更具体），不再叠一条「must be a boolean」。
+      const valueRule = CONFIG_LEAF_VALUE_RULES[`${group}.${leaf}`];
+      if (valueRule === undefined || functionValueReported) continue;
+      const valueProblem = valueRule(leafValue, `config.${group}.${leaf}`);
+      if (valueProblem !== undefined) problems.push(valueProblem);
     }
   }
   return problems;

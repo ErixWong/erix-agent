@@ -5,6 +5,11 @@
 // 函数在那个位置从来不是行为。所以本片**不**加布尔校验器（那是 #538 的活，且裁决明确否掉了
 // 「先加校验器再退役」这条路），也**不**动 `src/loop/provider-runner.js` 的两处读法（读侧一字不动）。
 //
+// ⚠ **#538 已落地**：`config.run.stream` 现在有值规则（必须是布尔，非布尔展开即抛），
+// `provider-runner.js` 的两处读法也合一成一条派生布尔（`streamsThisRun`）。本文件里原先写着
+// 「没有值校验器」「读侧一字不动」的那几格（G1 / G2 / N3）已按新事实改写——它们是**行为钉**，
+// 不是历史叙述；改写的判据与反向证在 `test/loop-run-stream-538.test.js`。
+//
 // 本文件钉六件事（账目全部派生，不手抄条数）：
 //   P. 反向拒绝钉：顶层再写 `stream` ⇒ 当场拒，文案**逐字**指向 `config.run.stream`，
 //      并且拒在任何宿主端口被调用之前（零请求）。
@@ -115,31 +120,55 @@ test(`P2 扁平写法在**任何 provider 调用之前**被拒（零请求）`, 
 
 // ================================================================ G. 闸口二（数据面）
 
-test(`G1 闸口二矩阵（${KEY}）：数据取值规位侧全 ACCEPT，扁平侧全被名称闸口拒`, async () => {
-  // ⚠ 这一格里**没有**「两侧取值差异」：数据取值在规位侧一个都不被拒（没有值校验器），
-  // 差异只在「拼写」这一维上。别把 as-is 时代那句「两侧都可达」照抄成「两侧都拒」。
-  const shapes = [true, false, { onChunk: "x" }, 1];
-  assert.ok(shapes.length >= 2, `${KEY} 至少要抽查 2 格数据取值`);
+test(`G1 闸口二矩阵（${KEY}）：布尔取值规位侧全 ACCEPT，非布尔由 #538 值规则拒，扁平侧一律名称闸口拒`, async () => {
+  // #498 S3 当时这一格是「规位侧一个都不被拒（没有值校验器）」；**issue #538 加了值规则**，
+  // 于是取值面分两半：布尔照旧可达，非布尔在规位侧也当场拒（判词点名完整路径与实测类型）。
+  // 扁平侧不受影响：名称闸口仍然先拒，文案逐字不变。
   const nameGate = `unknown runToolLoop option: "${KEY}" (its canonical home is ${homeOf(KEY)};`
     + " the flat spelling is rejected)";
-  for (const value of shapes) {
+  for (const value of [true, false]) {
     const label = `${KEY}=${JSON.stringify(value)}`;
     const nested = await exitCode(base({
       config: { input: { initialUserMessage: "go" }, run: { [KEY]: value } },
     }));
-    assert.equal(nested, 0, `${label}：规位必须可达（exit 0，取值面没被收紧）`);
+    assert.equal(nested, 0, `${label}：布尔在规位必须可达（值规则不许误伤合法取值）`);
+    const flat = await rawError(base({ [KEY]: value }));
+    assert.equal(flat instanceof TypeError, true, `${label}：扁平拼写已退役 ⇒ 必须当场拒`);
+    assert.equal(flat.message, nameGate, `${label}：扁平侧拒在名称闸口（逐字）`);
+  }
+  for (const value of [1, { onChunk: "x" }]) {
+    const label = `${KEY}=${JSON.stringify(value)}`;
+    const nested = await rawError(base({
+      config: { input: { initialUserMessage: "go" }, run: { [KEY]: value } },
+    }));
+    assert.equal(nested instanceof TypeError, true, `${label}：#538 值规则必须在规位侧拒`);
+    assert.equal(
+      nested.message,
+      `${homeOf(KEY)} must be a boolean (received: ${value === 1 ? "number" : "object"})`,
+      `${label}：判词必须点名完整路径与实测类型`,
+    );
     const flat = await rawError(base({ [KEY]: value }));
     assert.equal(flat instanceof TypeError, true, `${label}：扁平拼写已退役 ⇒ 必须当场拒`);
     assert.equal(flat.message, nameGate, `${label}：扁平侧拒在名称闸口（逐字）`);
   }
 });
 
-test(`G2 取值逐字到达 effectiveOptions（引擎既不校验也不改写）`, async () => {
-  for (const value of [true, false, 1, { onChunk: "x" }]) {
+test(`G2 取值逐字到达 effectiveOptions（布尔逐字写回；非布尔根本到不了）`, async () => {
+  // #538：引擎**不改写**合法取值（`true` / `false` 逐字到达），但非布尔在展开相就被值规则拦下——
+  // 「既不校验也不改写」从本刀起只对布尔成立，这正是宿主可见的收紧。
+  for (const value of [true, false]) {
     const { effectiveOptions } = await normalizeRunToolLoopOptions({
       config: { run: { [KEY]: value } },
     });
     assert.deepEqual(effectiveOptions[KEY], value, `${JSON.stringify(value)} 必须逐字写回`);
+  }
+  for (const value of [1, { onChunk: "x" }]) {
+    await assert.rejects(
+      normalizeRunToolLoopOptions({ config: { run: { [KEY]: value } } }),
+      (error) => error instanceof TypeError
+        && error.message.startsWith(`${homeOf(KEY)} must be a boolean (received: `),
+      `${JSON.stringify(value)} 不许再到达 effectiveOptions（#538）`,
+    );
   }
 });
 
@@ -275,14 +304,16 @@ test("N2 撞名面逐类钉住：只有 `runToolLoop` 的顶层选项被退役",
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("chatStream"), false, "`chatStream` 从来不是引擎选项");
 });
 
-test("N3 `#538` 是已知缺陷，本片未修（读侧两处读法一字未动）", () => {
-  // 本片**不**修 `stream` 的两处读法矛盾（`orchestrator.js` 的真值判断 vs `provider-runner.js` 的
-  // `ctx.stream === true` 严格比较）：裁决把「退役写侧」与「修读侧」拆成了两件事。
-  // 这里只钉住「退役没有顺手改读侧」：`effectiveOptions.stream` 逐字保留宿主给的值，
-  // 于是 `1` 这类非布尔真值**仍然**只在 orchestrator 那处算真、在 provider-runner 那处不算——
-  // 那是 #538 的形状，本片不掩盖也不修。
-  return normalizeRunToolLoopOptions({ config: { run: { [KEY]: 1 } } }).then(({ effectiveOptions }) => {
-    assert.equal(effectiveOptions[KEY], 1, "读侧照旧拿到宿主原值（本片不替它做布尔化）");
-    assert.notEqual(effectiveOptions[KEY], true, "1 仍是 1，没有被归一化成 true（#538 的形状保持原样）");
-  });
+test("N3 `#538` 已修：非布尔在展开相即抛（读侧两处读法合一成一条派生布尔）", async () => {
+  // 本片（#498 S3 A16）当时只退役写侧，把读侧那两处矛盾留给 #538；**#538 现在修了**：
+  // 值规则（`CONFIG_LEAF_VALUE_RULES["run.stream"]`，`src/loop/config-namespace.js`）让 `1` 这类
+  // 非布尔在展开相当场抛，于是「orchestrator 那处算真、provider-runner 那处不算」的自相矛盾
+  // 运行不可能再发生。这一格钉住「收紧真的发生在入口」：抛，且判词点名完整路径与实测类型。
+  await assert.rejects(
+    normalizeRunToolLoopOptions({ config: { run: { [KEY]: 1 } } }),
+    { name: "TypeError", message: `${homeOf(KEY)} must be a boolean (received: number)` },
+    "#538：非布尔不许再进到 effectiveOptions（旧形状：effectiveOptions.stream === 1）",
+  );
+  const { effectiveOptions } = await normalizeRunToolLoopOptions({ config: { run: { [KEY]: true } } });
+  assert.equal(effectiveOptions[KEY], true, "布尔照旧逐字到达（读侧不改写）");
 });

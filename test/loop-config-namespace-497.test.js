@@ -435,7 +435,10 @@ test("B1 42 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平�
   for (const key of CONFIG_SURFACE_OPTION_NAMES) {
     const path = configPathForOption(key);
     const [group, leaf] = path.split(".");
-    const value = `sweep:${key}`;
+    // issue #538：`config.run.stream` 有**值规则**（必须是布尔），所以那一个叶子的穷举样本
+    // 用它自己的合法值（`true`），其余叶子照旧用字符串样本。漏了这一步，本格会红在值规则上，
+    // 而不是红在它真正要证明的「展开等价」上。
+    const value = path === "run.stream" ? true : `sweep:${key}`;
     const flat = { [key]: value };
     const nested = { config: { [group]: { [leaf]: value } } };
     const flatExpanded = expandConfigNamespace(flat);

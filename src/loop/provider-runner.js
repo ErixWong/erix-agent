@@ -10,6 +10,34 @@ function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+/**
+ * The **one** derived "is this run streaming" value (issue #538).
+ *
+ * The bug this replaces: the run switch was read in two places with two different truthiness tests —
+ * the channel label said `ctx.stream === true` while the branch that picks the provider method said
+ * `ctx.stream &&` (truthy). A host writing `stream: 1` therefore got a **self-contradictory run**: the
+ * recorded channel claimed `chat` while the engine actually called `chatStream`. Both readings are
+ * now the same derived boolean, so they cannot disagree even in principle — and the value rule
+ * (`CONFIG_LEAF_VALUE_RULES["run.stream"]`, `src/loop/config-namespace.js`) refuses every
+ * non-boolean at intake, so a host never gets to observe which of the two readings would have won.
+ *
+ * Not "unify on truthiness": that would make `stream: "yes"` actually stream (the disagreement would
+ * just move). The rule is boolean-only, and this function is the single place that turns the boolean
+ * into a channel decision.
+ *
+ * The one shape that is not a choice: a provider implementing **only** `chatStream` has no batch
+ * channel to fall back to, so it streams whatever the switch says (the previous behaviour, kept).
+ *
+ * @param {{provider: {chat?: Function, chatStream?: Function}, stream?: boolean}} ctx
+ * @returns {boolean}
+ */
+function streamsThisRun(ctx) {
+  const hasChat = typeof ctx.provider.chat === "function";
+  const hasChatStream = typeof ctx.provider.chatStream === "function";
+  if (!hasChat) return hasChatStream;
+  return ctx.stream === true && hasChatStream;
+}
+
 function markSystemCacheBoundary(system) {
   if (system === undefined || system === null) return system;
   if (isRecord(system) && Object.hasOwn(system, "content")) {
@@ -41,6 +69,9 @@ export async function callProvider(ctx, {
 } = {}) {
   let retryIndex = 0;
   let recovered = false;
+  // issue #538: computed **once** per call and used by both sites below (the channel label and the
+  // provider-method branch). One value, one answer: the two cannot fork.
+  const streaming = streamsThisRun(ctx);
   while (true) {
     normalizeMessages(ctx.messages);
     validateMessages(ctx.messages, { allowPendingToolUse });
@@ -69,7 +100,7 @@ export async function callProvider(ctx, {
       ctx.recordUserTurnGuard?.({
         round,
         action: userTurnGuard.action,
-        channel: ctx.stream === true ? "chatStream" : "chat",
+        channel: streaming ? "chatStream" : "chat",
         tokensBefore: estimateMessageTokens(ctx.messages),
         tokensAfter: estimateMessageTokens(requestMessages),
       });
@@ -147,11 +178,7 @@ export async function callProvider(ctx, {
       if (ctx.maxTokens !== undefined) request.maxTokens = ctx.maxTokens;
       if (ctx.temperature !== undefined) request.temperature = ctx.temperature;
       if (ctx.topP !== undefined) request.topP = ctx.topP;
-      if (
-        typeof ctx.provider.chat === "function"
-          ? ctx.stream && typeof ctx.provider.chatStream === "function"
-          : typeof ctx.provider.chatStream === "function"
-      ) {
+      if (streaming) {
         const awaitWithAbort = ctx.awaitWithAbort;
         let response = await awaitWithAbort(ctx.provider.chatStream({
           ...request,
