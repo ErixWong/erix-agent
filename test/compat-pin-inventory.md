@@ -805,6 +805,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/assembly-policy-derivation-525.test.js` | 2 | `session`×1, `tools`×1 |
 | `test/loop-run-stream-538.test.js` | 2 | `session`×1, `tools`×1 |
 | `test/loop-547-provider-guard-channel.test.js` | 3 | `resume`×2, `tools`×1 |
+| `test/run-state-548-append-after-pending-tool-use.test.js` | 2 | `tools`×2 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 
