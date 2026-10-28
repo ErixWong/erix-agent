@@ -284,9 +284,13 @@ test("LLM normalization may only transcribe: findings whose value is not verbati
     maxRounds: 3,
     completion: false,
     reflection: { wrapupNormalize: true, roundJudge: false, judgeIntercept: false },
-    finalGuard: async ({ findings }) => {
-      seen.push(findings);
-      return { action: "accept" };
+    capabilities: {
+      hooks: {
+        finalGuard: async ({ findings }) => {
+          seen.push(findings);
+          return { action: "accept" };
+        },
+      },
     },
   });
   // 归一化的 findings 被丢弃 → guard 看到的是"没声明"
@@ -312,9 +316,13 @@ test("LLM normalization keeps findings copied verbatim from the agent text", asy
     maxRounds: 3,
     completion: false,
     reflection: { wrapupNormalize: true, roundJudge: false, judgeIntercept: false },
-    finalGuard: async ({ findings }) => {
-      seen.push(findings);
-      return { action: "accept" };
+    capabilities: {
+      hooks: {
+        finalGuard: async ({ findings }) => {
+          seen.push(findings);
+          return { action: "accept" };
+        },
+      },
     },
   });
   // 逐字子串的保留；凭空出现的值被剔除

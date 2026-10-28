@@ -398,7 +398,11 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
     store,
     runId: "resume-pending-tools",
     tools,
-    onEvent: (event) => resumedEvents.push(event),
+    capabilities: {
+      hooks: {
+        onEvent: (event) => resumedEvents.push(event),
+      },
+    },
     executeTool: async ({ id }) => {
       resumedExecutions.push(id);
       return `resumed-${id}`;
@@ -552,7 +556,11 @@ test("per-tool replay policy interrupts unsafe tools and exposes saved partial o
     }],
     store,
     runId,
-    onEvent: (event) => events.push(event),
+    capabilities: {
+      hooks: {
+        onEvent: (event) => events.push(event),
+      },
+    },
     executeTool: async () => {
       executions += 1;
       return "must not run";
@@ -907,7 +915,11 @@ test("restores judge interception count from executed checkpoint tools", async (
       judgeIntervalRound: 1,
       judge: { provider: judge },
     },
-    onJudge: (info) => audited.push(info.tool?.id),
+    capabilities: {
+      hooks: {
+        onJudge: (info) => audited.push(info.tool?.id),
+      },
+    },
   });
 
   assert.deepEqual(audited, ["b"]);
@@ -1383,7 +1395,11 @@ test("resume with a store lacking snapshot/run-state loaders degrades with one d
       return "worked";
     },
     completion: false,
-    onEvent: (event) => events.push(event),
+    capabilities: {
+      hooks: {
+        onEvent: (event) => events.push(event),
+      },
+    },
   });
 
   assert.equal(result.finalText, "resumed without loaders");
@@ -1445,7 +1461,11 @@ test("resume with a stale snapshot (loader present, round behind transcript) doe
     initialUserMessage: "ignored on resume",
     executeTool: async () => "unused",
     completion: false,
-    onEvent: (event) => events.push(event),
+    capabilities: {
+      hooks: {
+        onEvent: (event) => events.push(event),
+      },
+    },
   });
 
   assert.equal(result.finalText, "continued past stale snapshot");

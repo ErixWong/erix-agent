@@ -177,11 +177,15 @@ test("#326-B1 finalGuard revise 意见（纯文本 judge-control）：journal �
   const result = await runToolLoop({
     ...baseOptions, maxRounds: 6, store, runId: "326-revise",
     initialUserMessage: "local task", provider,
-    finalGuard: async () => {
-      guardCalls += 1;
-      return guardCalls === 1
-        ? { action: "revise", message: "MARKER_326_REVISE 请补充证据" }
-        : { action: "accept" };
+    capabilities: {
+      hooks: {
+        finalGuard: async () => {
+          guardCalls += 1;
+          return guardCalls === 1
+            ? { action: "revise", message: "MARKER_326_REVISE 请补充证据" }
+            : { action: "accept" };
+        },
+      },
     },
   });
 

@@ -45,8 +45,12 @@ test("F-1 早退路径：接管前的 fail() 读到默认桩（usage 全 0 / rou
       reflection: false,
       // 有 finalGuard：接管后的 verification 会是 {status:"unverified"...}；
       // 早退路径读到的是默认桩 ⇒ 字段必须**缺席**，而不是写一个假状态。
-      finalGuard: async () => ({ action: "accept" }),
-      capabilities: { hooks: { onEvent: (event) => events.push(event) } },
+      capabilities: {
+        hooks: {
+          finalGuard: async () => ({ action: "accept" }),
+          onEvent: (event) => events.push(event),
+        },
+      },
     }),
     (error) => {
       assert.match(error.message, /无可恢复记录/);

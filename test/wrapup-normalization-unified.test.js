@@ -55,9 +55,13 @@ async function runInlineNormalization({ text, reply, maxRounds = 3 }) {
       judgeIntercept: false,
       judge: { provider: normalizer },
     },
-    finalGuard: async ({ findings, selfReport }) => {
-      guards.push({ findings, selfReport });
-      return { action: "accept" };
+    capabilities: {
+      hooks: {
+        finalGuard: async ({ findings, selfReport }) => {
+          guards.push({ findings, selfReport });
+          return { action: "accept" };
+        },
+      },
     },
   });
   return { result, provider, normalizer, guards };

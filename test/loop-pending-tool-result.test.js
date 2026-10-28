@@ -89,11 +89,15 @@ test("#394 R5-1 兄弟洞：end_turn + 悬空 tool_use + guard 判 revise ⇒ �
     initialUserMessage: "做点事",
     maxRounds: 3,
     executeTool: async () => "ok",
-    finalGuard: async () => {
-      guardCalls += 1;
-      return guardCalls === 1
-        ? { action: "revise", message: "请补做缺失的一步" }
-        : { action: "accept" };
+    capabilities: {
+      hooks: {
+        finalGuard: async () => {
+          guardCalls += 1;
+          return guardCalls === 1
+            ? { action: "revise", message: "请补做缺失的一步" }
+            : { action: "accept" };
+        },
+      },
     },
   });
 
