@@ -321,9 +321,14 @@ test("run_outcome carries verification once a final guard ran", async () => {
     maxRounds: 2,
     completion: false,
     reflection: false,
-    finalGuard: async () => ({ action: "accept" }),
     runId: "run-guard",
-    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
+    // 两个叶子必须落在**同一个** `capabilities` 容器里（并列两个 `capabilities` 键 ⇒ 后者静默胜）。
+    capabilities: {
+      hooks: {
+        finalGuard: async () => ({ action: "accept" }),
+        onEvent: (event) => events.push(event),
+      },
+    },
   });
 
   const [outcome] = events.filter((event) => event.type === "run_outcome");

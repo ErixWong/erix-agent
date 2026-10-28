@@ -497,9 +497,13 @@ test("E2 finalGuard 载荷的 messages 是深拷贝，宿主回调改不动循�
     completion: false,
     tools: TOOL,
     context: { strategy: spy.strategy },
-    finalGuard: (payload) => {
-      payloads.push(payload);
-      return { action: "accept" };
+    capabilities: {
+      hooks: {
+        finalGuard: (payload) => {
+          payloads.push(payload);
+          return { action: "accept" };
+        },
+      },
     },
   });
 

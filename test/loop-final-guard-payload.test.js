@@ -79,9 +79,13 @@ test("#386 既有 7 键的名字/顺序/类型/取值逐字不变（同一 scrip
       writeFileSync(call.input.path, call.input.content);
       return "ok";
     },
-    finalGuard: async (value) => {
-      payload = value;
-      return { action: "accept" };
+    capabilities: {
+      hooks: {
+        finalGuard: async (value) => {
+          payload = value;
+          return { action: "accept" };
+        },
+      },
     },
   });
 
@@ -124,9 +128,13 @@ test("#386 每个加法键都在场且形状正确，toolStats 是 plain object 
     runId: "run-shape",
     maxRounds: 4,
     executeTool: async () => "ok",
-    finalGuard: async (value) => {
-      payload = value;
-      return { action: "accept" };
+    capabilities: {
+      hooks: {
+        finalGuard: async (value) => {
+          payload = value;
+          return { action: "accept" };
+        },
+      },
     },
   });
 
@@ -274,9 +282,13 @@ test("#386 cwd：传了就有（含空串），不传就没有该键，非字符
       initialUserMessage: "hi",
       maxRounds: 2,
       executeTool: async () => "ok",
-      finalGuard: async (value) => {
-        payload = value;
-        return { action: "accept" };
+      capabilities: {
+        hooks: {
+          finalGuard: async (value) => {
+            payload = value;
+            return { action: "accept" };
+          },
+        },
       },
       ...extra,
     });
@@ -321,9 +333,13 @@ test("#386 attempt 在连续 revise 中 1→2→3 单调递增，guardBudget 等
       completion: false,
       finalGuardMaxRetries,
       executeTool: async () => "ok",
-      finalGuard: async (payload) => {
-        seen.push({ attempt: payload.attempt, budget: payload.guardBudget });
-        return { action: "revise", message: "请核实" };
+      capabilities: {
+        hooks: {
+          finalGuard: async (payload) => {
+            seen.push({ attempt: payload.attempt, budget: payload.guardBudget });
+            return { action: "revise", message: "请核实" };
+          },
+        },
       },
     });
     return { seen, result };
@@ -351,9 +367,13 @@ test("#386 selfReport 与 findings 同源：有 findings 就两边都有，没�
       initialUserMessage: "hi",
       maxRounds: 4,
       executeTool: async () => "ok",
-      finalGuard: async (value) => {
-        payload = value;
-        return { action: "accept" };
+      capabilities: {
+        hooks: {
+          finalGuard: async (value) => {
+            payload = value;
+            return { action: "accept" };
+          },
+        },
       },
     });
     return payload;

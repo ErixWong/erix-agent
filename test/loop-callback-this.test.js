@@ -54,9 +54,9 @@ test("invokes loop callbacks with undefined this", async () => {
         onToolResult,
         onDelta,
         onObserverError: (error) => observerErrors.push(error),
+        finalGuard,
       },
     },
-    finalGuard,
     completion: false,
     stream: true,
   });

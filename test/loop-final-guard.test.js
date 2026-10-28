@@ -19,11 +19,15 @@ test("finalGuard accept preserves normal completion", async () => {
     ]),
     initialUserMessage: "hello",
     executeTool: async () => "unused",
-    finalGuard: async (value) => {
-      payload = value;
-      return { action: "accept" };
+    capabilities: {
+      hooks: {
+        finalGuard: async (value) => {
+          payload = value;
+          return { action: "accept" };
+        },
+        onEvent: (event) => events.push(event),
+      },
     },
-    onEvent: (event) => events.push(event),
   });
 
   assert.deepEqual(result.termination, { reason: "end_turn" });
@@ -62,11 +66,15 @@ test("finalGuard revision is injected as a paired-safe user text message", async
     initialUserMessage: "hello",
     executeTool: async () => "unused",
     completion: false,
-    finalGuard: async () => {
-      calls += 1;
-      return calls === 1
-        ? { action: "revise", message: "请先核实原始值" }
-        : { action: "accept" };
+    capabilities: {
+      hooks: {
+        finalGuard: async () => {
+          calls += 1;
+          return calls === 1
+            ? { action: "revise", message: "请先核实原始值" }
+            : { action: "accept" };
+        },
+      },
     },
   });
 
@@ -90,10 +98,14 @@ test("finalGuard can skip verification when no candidate is extractable", async 
     ]),
     initialUserMessage: "hello",
     executeTool: async () => "unused",
-    finalGuard: async () => ({
-      action: "skip",
-      reason: "no_extractable_candidates",
-    }),
+    capabilities: {
+      hooks: {
+        finalGuard: async () => ({
+          action: "skip",
+          reason: "no_extractable_candidates",
+        }),
+      },
+    },
   });
 
   assert.deepEqual(result.termination, { reason: "end_turn" });
@@ -115,13 +127,17 @@ test("finalGuard fail-closes after the retry limit without rewriting finalText",
     executeTool: async () => "unused",
     completion: false,
     finalGuardMaxRetries: 2,
-    finalGuard: async () => ({
-      action: "revise",
-      message: "请读取归档核实",
-    }),
+    capabilities: {
+      hooks: {
+        finalGuard: async () => ({
+          action: "revise",
+          message: "请读取归档核实",
+        }),
+        onEvent: (event) => events.push(event),
+      },
+    },
     store,
     runId: "guard-unverified-state",
-    onEvent: (event) => events.push(event),
   });
 
   assert.deepEqual(result.termination, { reason: "final_guard_unverified" });
@@ -150,12 +166,16 @@ test("finalGuard errors fail open and emit an error event", async () => {
     ]),
     initialUserMessage: "hello",
     executeTool: async () => "unused",
-    finalGuard: async () => {
-      throw new Error("guard unavailable");
+    capabilities: {
+      hooks: {
+        finalGuard: async () => {
+          throw new Error("guard unavailable");
+        },
+        onEvent: (event) => events.push(event),
+      },
     },
     store,
     runId: "guard-error-state",
-    onEvent: (event) => events.push(event),
   });
 
   assert.deepEqual(result.termination, { reason: "end_turn" });
@@ -180,10 +200,14 @@ test("finalGuard timeout is observable and returns an error verification", async
     initialUserMessage: "hello",
     executeTool: async () => "unused",
     finalGuardTimeoutMs: 5,
-    finalGuard: async () => new Promise(() => {}),
+    capabilities: {
+      hooks: {
+        finalGuard: async () => new Promise(() => {}),
+        onEvent: (event) => events.push(event),
+      },
+    },
     store,
     runId: "guard-timeout-state",
-    onEvent: (event) => events.push(event),
   });
 
   assert.equal(result.verification.status, "error");
@@ -267,9 +291,13 @@ test("finalGuard is called for non-continuable stop paths without another model 
       ...(testCase.options.reflection === undefined
         ? {}
         : { reflection: testCase.options.reflection }),
-      finalGuard: async () => {
-        guardCalls += 1;
-        return { action: "accept" };
+      capabilities: {
+        hooks: {
+          finalGuard: async () => {
+            guardCalls += 1;
+            return { action: "accept" };
+          },
+        },
       },
     });
 
@@ -315,9 +343,13 @@ test("finalGuard covers no-tool, completion, and judge_done stops", async () => 
       initialUserMessage: "hello",
       executeTool: async () => "ok",
       ...testCase.options,
-      finalGuard: async () => {
-        guardCalls += 1;
-        return { action: "accept" };
+      capabilities: {
+        hooks: {
+          finalGuard: async () => {
+            guardCalls += 1;
+            return { action: "accept" };
+          },
+        },
       },
     });
     assert.equal(guardCalls, 1, testCase.name);
@@ -338,9 +370,13 @@ test("abort during finalGuard propagates the abort", async () => {
     initialUserMessage: "hello",
     executeTool: async () => "unused",
     signal: controller.signal,
-    finalGuard: async () => {
-      called();
-      return new Promise(() => {});
+    capabilities: {
+      hooks: {
+        finalGuard: async () => {
+          called();
+          return new Promise(() => {});
+        },
+      },
     },
   });
 
@@ -384,11 +420,15 @@ test("#323 finalGuard revise 的 message 对主模型可见、但不进真实 ju
       judgeIntercept: false,
       judge: { provider: judge },
     },
-    finalGuard: async () => {
-      calls += 1;
-      return calls === 1
-        ? { action: "revise", message: "请先核实原始值 #323-marker-probe" }
-        : { action: "accept" };
+    capabilities: {
+      hooks: {
+        finalGuard: async () => {
+          calls += 1;
+          return calls === 1
+            ? { action: "revise", message: "请先核实原始值 #323-marker-probe" }
+            : { action: "accept" };
+        },
+      },
     },
   });
 

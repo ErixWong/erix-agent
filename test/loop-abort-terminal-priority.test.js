@@ -243,10 +243,14 @@ test("abort inside the post-loop max_rounds_cap finalization terminates as abort
     completion: false,
     stallDetection: false,
     signal: controller.signal,
-    finalGuard: async () => {
-      guardCalls += 1;
-      controller.abort(new Error("user stop during finalization"));
-      return { action: "accept" };
+    capabilities: {
+      hooks: {
+        finalGuard: async () => {
+          guardCalls += 1;
+          controller.abort(new Error("user stop during finalization"));
+          return { action: "accept" };
+        },
+      },
     },
   }));
 

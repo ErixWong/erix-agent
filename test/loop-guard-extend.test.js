@@ -42,7 +42,7 @@ const REFLECTION = { enabled: true, extensionStep: 2, maxExtensions: 2, maxRound
 const extendEvents = (events) => events.filter((event) => event.type === "final_guard_extend");
 
 /** 「预算类停机 + guard 判 revise」的最小场景：1 轮预算、用完就出圈，收尾后 guard 说还差一步。 */
-const capThenRevise = ({ optIn, guard, extra = {} }) => {
+const capThenRevise = ({ optIn, guard, sink }) => {
   const events = [];
   const executed = [];
   const provider = createFakeProvider([
@@ -62,9 +62,12 @@ const capThenRevise = ({ optIn, guard, extra = {} }) => {
       return "ok";
     },
     ...(optIn === undefined ? {} : { finalGuardExtend: optIn }),
-    finalGuard: guard,
-    onEvent: (event) => events.push(event),
-    ...extra,
+    capabilities: {
+      hooks: {
+        finalGuard: guard,
+        onEvent: sink ?? ((event) => events.push(event)),
+      },
+    },
   });
   return { run, events, executed, provider };
 };
@@ -155,11 +158,15 @@ test("#386-3 R4-3 stall + opt-in ⇒ 不补跑（stall 的定义就是连续无�
     reflection: { ...REFLECTION, maxRoundsCap: 40 },
     executeTool: async () => "ok",
     finalGuardExtend: true,
-    finalGuard: async () => {
-      guardCalls += 1;
-      return { action: "revise", message: "还差一步" };
+    capabilities: {
+      hooks: {
+        finalGuard: async () => {
+          guardCalls += 1;
+          return { action: "revise", message: "还差一步" };
+        },
+        onEvent: (event) => events.push(event),
+      },
     },
-    onEvent: (event) => events.push(event),
   });
 
   assert.equal(result.verification.detail, "stall", "本格的停机原因必须是 stall（否则测的不是这条判据）");
@@ -196,11 +203,15 @@ test("#386-3 R4-4 同一个 run 内第二次撞 cap ⇒ 不再补（每 run 最�
     reflection: REFLECTION,
     executeTool: async () => "ok",
     finalGuardExtend: true,
-    finalGuard: async () => {
-      guardCalls += 1;
-      return { action: "revise", message: "还差一步" };
+    capabilities: {
+      hooks: {
+        finalGuard: async () => {
+          guardCalls += 1;
+          return { action: "revise", message: "还差一步" };
+        },
+        onEvent: (event) => events.push(event),
+      },
     },
-    onEvent: (event) => events.push(event),
   });
 
   assert.equal(guardCalls, 2, `两次撞 cap ⇒ guard 被问 2 次，实测 ${guardCalls}`);
@@ -235,11 +246,15 @@ test("#386-3 R4-5 补跑过一次的 run 落账本 → resume → 再撞 cap ⇒
     store,
     runId,
     finalGuardExtend: true,
-    finalGuard: async () => {
-      firstCalls += 1;
-      return guardAlwaysRevise()();
+    capabilities: {
+      hooks: {
+        finalGuard: async () => {
+          firstCalls += 1;
+          return guardAlwaysRevise()();
+        },
+        onEvent: (event) => firstEvents.push(event),
+      },
     },
-    onEvent: (event) => firstEvents.push(event),
   });
 
   assert.equal(firstCalls, 2, "第一段：撞 cap（revise）→ 补跑 → 再撞 cap（revise，被配额拒）");
@@ -264,11 +279,15 @@ test("#386-3 R4-5 补跑过一次的 run 落账本 → resume → 再撞 cap ⇒
     runId,
     resume: true,
     finalGuardExtend: true,
-    finalGuard: async () => {
-      secondCalls += 1;
-      return guardAlwaysRevise()();
+    capabilities: {
+      hooks: {
+        finalGuard: async () => {
+          secondCalls += 1;
+          return guardAlwaysRevise()();
+        },
+        onEvent: (event) => secondEvents.push(event),
+      },
     },
-    onEvent: (event) => secondEvents.push(event),
   });
 
   assert.equal(secondCalls, 1, "resume 之后撞 cap，guard 只该被问 1 次（不许再补跑）");
@@ -303,11 +322,15 @@ test("#386-3 R4-6 聚合输出预算已撞线 + opt-in ⇒ 拒绝补跑，且没
     context: { budgetTokens: 50_000 },
     executeTool: async () => BIG,
     finalGuardExtend: true,
-    finalGuard: async () => {
-      guardCalls += 1;
-      return { action: "revise", message: "还差一步" };
+    capabilities: {
+      hooks: {
+        finalGuard: async () => {
+          guardCalls += 1;
+          return { action: "revise", message: "还差一步" };
+        },
+        onEvent: (event) => events.push(event),
+      },
     },
-    onEvent: (event) => events.push(event),
   });
 
   assert.ok(
@@ -337,8 +360,12 @@ test("#386-3 R4-6 聚合输出预算已撞线 + opt-in ⇒ 拒绝补跑，且没
     context: { budgetTokens: 50_000 },
     executeTool: async () => "small",
     finalGuardExtend: true,
-    finalGuard: async () => ({ action: "revise", message: "还差一步" }),
-    onEvent: (event) => controlEvents.push(event),
+    capabilities: {
+      hooks: {
+        finalGuard: async () => ({ action: "revise", message: "还差一步" }),
+        onEvent: (event) => controlEvents.push(event),
+      },
+    },
   });
   assert.equal(controlEvents.filter((event) => event.type === "tool_output_aggregate").length, 0,
     "对照组的前提是聚合层没撞线");
@@ -364,8 +391,12 @@ test("#386-3 R4-6b 最近一次真实 API 输入 token 已超 budgetTokens + opt
       context: { budgetTokens: 10_000 },
       executeTool: async () => "ok",
       finalGuardExtend: true,
-      finalGuard: async () => ({ action: "revise", message: "还差一步" }),
-      onEvent: (event) => events.push(event),
+      capabilities: {
+        hooks: {
+          finalGuard: async () => ({ action: "revise", message: "还差一步" }),
+          onEvent: (event) => events.push(event),
+        },
+      },
     });
     return { events, result, provider };
   };
@@ -406,7 +437,11 @@ test("#386-3 R4-7 accept / skip / guard 抛异常 + max_rounds_cap ⇒ 都不触
     const { run, executed } = capThenRevise({
       optIn: true,
       guard: cell.guard,
-      extra: { onEvent: (event) => events.push(event) },
+      extraHooks: {                     capabilities: {
+                      hooks: {
+                        onEvent: (event) => events.push(event),
+                      },
+                    }, },
     });
     const result = await run;
     assert.deepEqual(extendEvents(events), [], `${cell.label}：不该触发补跑桥`);
@@ -473,11 +508,15 @@ test("#386-3 补充 continuation_exhausted + opt-in ⇒ 同样可以补跑一次
     reflection: REFLECTION,
     executeTool: async () => "ok",
     finalGuardExtend: true,
-    finalGuard: async () => {
-      guardCalls += 1;
-      return guardCalls === 1 ? { action: "revise", message: "还差一步" } : { action: "accept" };
+    capabilities: {
+      hooks: {
+        finalGuard: async () => {
+          guardCalls += 1;
+          return guardCalls === 1 ? { action: "revise", message: "还差一步" } : { action: "accept" };
+        },
+        onEvent: (event) => events.push(event),
+      },
     },
-    onEvent: (event) => events.push(event),
   });
 
   const extensions = extendEvents(events);
@@ -523,11 +562,15 @@ test("#393 末轮带 tool_use + 默认关：同形状下逐字等于今天（标
     maxRounds: 1,
     reflection: REFLECTION,
     executeTool: async () => "ok",
-    finalGuard: async () => {
-      guardCalls += 1;
-      return { action: "revise", message: "还差一步" };
+    capabilities: {
+      hooks: {
+        finalGuard: async () => {
+          guardCalls += 1;
+          return { action: "revise", message: "还差一步" };
+        },
+        onEvent: (event) => events.push(event),
+      },
     },
-    onEvent: (event) => events.push(event),
   });
 
   assert.notEqual(result.termination.reason, "failed", "默认关时也不许出现 failed（回归锚）");
@@ -558,13 +601,17 @@ test("#393 末轮带 tool_use + opt-in：注入前先结清尾部，终局不是
       return "ok";
     },
     finalGuardExtend: true,
-    finalGuard: async () => {
-      guardCalls += 1;
-      return guardCalls === 1
-        ? { action: "revise", message: "还差一步：把 fix 做掉" }
-        : { action: "accept" };
+    capabilities: {
+      hooks: {
+        finalGuard: async () => {
+          guardCalls += 1;
+          return guardCalls === 1
+            ? { action: "revise", message: "还差一步：把 fix 做掉" }
+            : { action: "accept" };
+        },
+        onEvent: (event) => events.push(event),
+      },
     },
-    onEvent: (event) => events.push(event),
   });
 
   // ① 终局不得是 failed（工单明禁的那一格）
@@ -633,9 +680,13 @@ test("#393 末轮带多个 tool_use + opt-in：一条 user 消息补齐全部 id
     reflection: REFLECTION,
     executeTool: async () => "ok",
     finalGuardExtend: true,
-    finalGuard: async () => {
-      guardCalls += 1;
-      return guardCalls === 1 ? { action: "revise", message: "还差一步" } : { action: "accept" };
+    capabilities: {
+      hooks: {
+        finalGuard: async () => {
+          guardCalls += 1;
+          return guardCalls === 1 ? { action: "revise", message: "还差一步" } : { action: "accept" };
+        },
+      },
     },
   });
 
@@ -665,11 +716,15 @@ test("#393 畸形尾巴（tool_use 没有 id）：拒绝补跑，落回 unverifi
     reflection: REFLECTION,
     executeTool: async () => "ok",
     finalGuardExtend: true,
-    finalGuard: async () => {
-      guardCalls += 1;
-      return { action: "revise", message: "还差一步" };
+    capabilities: {
+      hooks: {
+        finalGuard: async () => {
+          guardCalls += 1;
+          return { action: "revise", message: "还差一步" };
+        },
+        onEvent: (event) => events.push(event),
+      },
     },
-    onEvent: (event) => events.push(event),
   });
 
   assert.notEqual(result.termination.reason, "failed", "补不出合法 tool_result 时也不许留给宿主 failed");

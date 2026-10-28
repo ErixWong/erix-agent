@@ -59,7 +59,7 @@ const BASE_SCRIPT = [
   { content: [{ type: "text", text: "final answer" }], stopReason: "end_turn" },
 ];
 
-async function runWithProvider(provider, context, extra = {}) {
+async function runWithProvider(provider, context, usageSink) {
   const events = [];
   const controller = new AbortController();
   const result = await runToolLoop({
@@ -72,8 +72,13 @@ async function runWithProvider(provider, context, extra = {}) {
     context: { budgetTokens: 400, keepRounds: 0, ...context },
     store: createMemoryTranscriptStore(),
     runId: "compaction-strategy-name",
-    onEvent: (event) => events.push(event),
-    ...extra,
+    capabilities: {
+      hooks: {
+        onEvent: (event) => events.push(event),
+        // `onUsage` 的规位是 `capabilities.hooks.onUsage`；只有「折叠摘要真的记账了」那一格才订阅。
+        ...(usageSink === undefined ? {} : { onUsage: usageSink }),
+      },
+    },
   });
   return { result, events };
 }
@@ -115,9 +120,7 @@ test("non-string, non-object strategy values also fail at startup", async () => 
 test("fold-llm by name summarizes folded rounds with the run provider and books the usage", async () => {
   const provider = createSummarizingProvider({ mainScript: BASE_SCRIPT });
   const usages = [];
-  const { result, events } = await runWithProvider(provider, { strategy: "fold-llm" }, {
-    onUsage: (usage) => usages.push(usage),
-  });
+  const { result, events } = await runWithProvider(provider, { strategy: "fold-llm" }, (usage) => usages.push(usage));
 
   // 1) the summary really happened, once, with no tools attached
   assert.equal(provider.summaryRequests.length, 1);

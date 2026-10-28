@@ -59,7 +59,7 @@ const GUARD_ERROR_REASON = "error";
  * 跑一格：`mode` 是判据的三种状态（`undefined` = 未声明 / `"pass"` / `"fail"`）。
  * 判据一律以「磁盘上有没有 answer.txt」为准，`mode === "pass"` 时真把文件写下去（不靠嘴）。
  */
-async function runCell({ mode, finalGuard }) {
+async function runCell({ mode, guard }) {
   const dir = await makeTmp("erix-outrank-");
   const target = join(dir, "answer.txt");
   const events = [];
@@ -72,11 +72,17 @@ async function runCell({ mode, finalGuard }) {
     cwd: dir,
     maxRounds: 4,
     executeTool: diskWriteTool,
-    ...(mode === undefined
-      ? {}
-      : { deliverables: [{ name: "answer-file", check: () => existsSync(target) }] }),
-    finalGuard,
-    onEvent: (event) => events.push(event),
+    capabilities: {
+      // 判据是宿主**行为**（`check` 是函数）⇒ 规位是 `capabilities.checks.deliverables`；两个组必须
+      // 落在**同一个** `capabilities` 容器里——并列写两个 `capabilities` 键会静默后者胜（S7b 实测）。
+      ...(mode === undefined
+        ? {}
+        : { checks: { deliverables: [{ name: "answer-file", check: () => existsSync(target) }] } }),
+      hooks: {
+        finalGuard: guard,
+        onEvent: (event) => events.push(event),
+      },
+    },
   });
   return {
     result,
@@ -93,7 +99,7 @@ test("#392 R2-1 七格真值表逐格：verification（含 metrics 的**键集�
     {
       label: "accept + 全通过",
       mode: "pass",
-      finalGuard: guardAccept,
+      guard: guardAccept,
       expected: {
         status: "verified",
         metrics: { ...FIVE_COUNTERS, verified: 1, deliverables_checked: 1, deliverables_failed: 0 },
@@ -102,7 +108,7 @@ test("#392 R2-1 七格真值表逐格：verification（含 metrics 的**键集�
     {
       label: "accept + 有失败",
       mode: "fail",
-      finalGuard: guardAccept,
+      guard: guardAccept,
       expected: {
         status: "unverified",
         reason: "deliverables_failed",
@@ -112,7 +118,7 @@ test("#392 R2-1 七格真值表逐格：verification（含 metrics 的**键集�
     {
       label: "skip + 有失败",
       mode: "fail",
-      finalGuard: guardSkip,
+      guard: guardSkip,
       expected: {
         status: "unverified",
         reason: "deliverables_failed",
@@ -128,7 +134,7 @@ test("#392 R2-1 七格真值表逐格：verification（含 metrics 的**键集�
     {
       label: "skip + 全通过",
       mode: "pass",
-      finalGuard: guardSkip,
+      guard: guardSkip,
       expected: {
         status: "verified",
         reason: "machine_only",
@@ -144,7 +150,7 @@ test("#392 R2-1 七格真值表逐格：verification（含 metrics 的**键集�
     {
       label: "error + 有失败",
       mode: "fail",
-      finalGuard: guardThrow,
+      guard: guardThrow,
       expected: {
         status: "unverified",
         reason: "deliverables_failed",
@@ -160,7 +166,7 @@ test("#392 R2-1 七格真值表逐格：verification（含 metrics 的**键集�
     {
       label: "error + 全通过（刻意保留 error）",
       mode: "pass",
-      finalGuard: guardThrow,
+      guard: guardThrow,
       expected: {
         status: "error",
         reason: GUARD_ERROR_REASON,
@@ -177,7 +183,7 @@ test("#392 R2-1 七格真值表逐格：verification（含 metrics 的**键集�
     {
       label: "未声明 + skip（回归锚：逐字等于今天）",
       mode: undefined,
-      finalGuard: guardSkip,
+      guard: guardSkip,
       expected: {
         status: "skipped",
         reason: "no_capture_evidence",
@@ -187,7 +193,7 @@ test("#392 R2-1 七格真值表逐格：verification（含 metrics 的**键集�
     {
       label: "未声明 + error（回归锚：逐字等于今天）",
       mode: undefined,
-      finalGuard: guardThrow,
+      guard: guardThrow,
       expected: {
         status: "error",
         reason: GUARD_ERROR_REASON,
@@ -198,7 +204,7 @@ test("#392 R2-1 七格真值表逐格：verification（含 metrics 的**键集�
   ];
 
   for (const cell of cells) {
-    const { result } = await runCell({ mode: cell.mode, finalGuard: cell.finalGuard });
+    const { result } = await runCell({ mode: cell.mode, guard: cell.guard });
     assert.deepEqual(result.verification, cell.expected, `「${cell.label}」这一格的 verification 与真值表不符`);
     // 每一格都**不新增** termination.reason：机器闸门只改 verification。
     assert.equal(result.termination.reason, "end_turn", `「${cell.label}」改写了 termination.reason`);
@@ -207,7 +213,7 @@ test("#392 R2-1 七格真值表逐格：verification（含 metrics 的**键集�
 
 // ── skip + 全通过：machine_only 是「引擎用宿主判据验收」，不是 guard 验收 ──────────────────
 test("#392 R2-2 skip + 全通过 ⇒ verified / reason:\"machine_only\" + metrics.deliverables_machine_only===1", async () => {
-  const { result, target, guardEvents } = await runCell({ mode: "pass", finalGuard: guardSkip });
+  const { result, target, guardEvents } = await runCell({ mode: "pass", guard: guardSkip });
 
   assert.equal(existsSync(target), true, "本用例的前提是交付物**真的在盘上**（判据必须是磁盘事实）");
   assert.equal(result.verification.status, "verified");
@@ -232,7 +238,7 @@ test("#392 R2-2 skip + 全通过 ⇒ verified / reason:\"machine_only\" + metric
 
 // ── skip + 有失败：**最容易写错的一格**（正面挡住 skip 串）────────────────────────────────
 test("#392 R2-3 skip + 有失败 ⇒ unverified/deliverables_failed，且 reason **不是** skip reason", async () => {
-  const { result, target, guardEvents } = await runCell({ mode: "fail", finalGuard: guardSkip });
+  const { result, target, guardEvents } = await runCell({ mode: "fail", guard: guardSkip });
 
   assert.equal(existsSync(target), false, "本用例的前提是交付物**不存在**（判据必须真失败）");
   assert.equal(result.verification.status, "unverified");
@@ -255,7 +261,7 @@ test("#392 R2-3 skip + 有失败 ⇒ unverified/deliverables_failed，且 reason
 
 // ── error + 全通过：刻意保留 error（那条取舍要被钉住，不是靠注释自觉）────────────────────
 test("#392 R2-4 error + 全通过 ⇒ 仍是 error（刻意不升级成 machine_only），且不带 machine_only 键", async () => {
-  const { result } = await runCell({ mode: "pass", finalGuard: guardThrow });
+  const { result } = await runCell({ mode: "pass", guard: guardThrow });
 
   assert.equal(result.verification.status, "error",
     "guard 崩了/超时是基础设施故障，不许用 machine_only 盖掉（这条取舍是契约里写明的）");
@@ -272,27 +278,27 @@ test("#392 R2-5 metrics 键集合：未声明 / accept / skip 三格各自恰好
   const BASE = ["guard_error", "revised", "skipped", "unverified", "verified"];
   const DECLARED = [...BASE, "deliverables_checked", "deliverables_failed"].sort();
 
-  const undeclared = await runCell({ mode: undefined, finalGuard: guardAccept });
+  const undeclared = await runCell({ mode: undefined, guard: guardAccept });
   assert.deepEqual(keysOf(undeclared.result.verification.metrics), BASE,
     "未声明 deliverables ⇒ metrics 必须与今天逐字一致（多一个键就是回归）");
 
-  const accepted = await runCell({ mode: "pass", finalGuard: guardAccept });
+  const accepted = await runCell({ mode: "pass", guard: guardAccept });
   assert.deepEqual(keysOf(accepted.result.verification.metrics), DECLARED,
     "accept 格只该多出 deliverables_checked / deliverables_failed");
 
-  const acceptedFail = await runCell({ mode: "fail", finalGuard: guardAccept });
+  const acceptedFail = await runCell({ mode: "fail", guard: guardAccept });
   assert.deepEqual(keysOf(acceptedFail.result.verification.metrics), DECLARED,
     "accept + 失败格同样不该出现 deliverables_machine_only");
 
-  const skipped = await runCell({ mode: "pass", finalGuard: guardSkip });
+  const skipped = await runCell({ mode: "pass", guard: guardSkip });
   assert.deepEqual(keysOf(skipped.result.verification.metrics), [...DECLARED, "deliverables_machine_only"].sort(),
     "machine_only 那一格必须**恰好**多出这一个键");
 
-  const skippedFail = await runCell({ mode: "fail", finalGuard: guardSkip });
+  const skippedFail = await runCell({ mode: "fail", guard: guardSkip });
   assert.deepEqual(keysOf(skippedFail.result.verification.metrics), DECLARED,
     "skip + 失败格不该出现 deliverables_machine_only（机器说没过，不是 machine-only 通过）");
 
-  const errored = await runCell({ mode: "pass", finalGuard: guardThrow });
+  const errored = await runCell({ mode: "pass", guard: guardThrow });
   assert.deepEqual(keysOf(errored.result.verification.metrics), DECLARED,
     "error 格不该出现 deliverables_machine_only");
 });
@@ -308,11 +314,15 @@ test("#392 R2-6 未声明 deliverables + skip：payload 无判据键、事件形
     cwd: dir,
     maxRounds: 2,
     executeTool: diskWriteTool,
-    finalGuard: async (value) => {
-      payload = value;
-      return { action: "skip", reason: "no_capture_evidence" };
+    capabilities: {
+      hooks: {
+        finalGuard: async (value) => {
+          payload = value;
+          return { action: "skip", reason: "no_capture_evidence" };
+        },
+        onEvent: (event) => events.push(event),
+      },
     },
-    onEvent: (event) => events.push(event),
   });
 
   assert.equal("deliverables" in payload, false, "未声明判据却往 payload 里塞了 deliverables 键");
@@ -329,8 +339,8 @@ test("#392 R2-6 未声明 deliverables + skip：payload 无判据键、事件形
 
 // ── 与 accept 格的分工：机器证据「通过」不再需要 guard 点头，但 guard 的 accept 仍是主路 ────
 test("#392 R2-7 同一份磁盘事实：guard accept ⇒ verified（无 reason）/ guard skip ⇒ verified:machine_only（有 reason）", async () => {
-  const accepted = await runCell({ mode: "pass", finalGuard: guardAccept });
-  const skipped = await runCell({ mode: "pass", finalGuard: guardSkip });
+  const accepted = await runCell({ mode: "pass", guard: guardAccept });
+  const skipped = await runCell({ mode: "pass", guard: guardSkip });
 
   assert.equal(accepted.result.verification.status, "verified");
   assert.equal("reason" in accepted.result.verification, false,
