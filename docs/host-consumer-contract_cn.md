@@ -20,8 +20,8 @@
 
 ```text
 assemblyPort, provider, system, wrapup, tools,
-writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
-temperature, topP, reflection, stallDetection,
+writeToolNames, writeToolPathKeys, executeTool, maxRounds,
+reflection, stallDetection,
 completion, finalGuard,
 maxTokenContinuations,
 todoStateProvider, semanticStateProvider, partialPersistence,
@@ -309,6 +309,41 @@ executeTool({ id, name, input, context, signal })
 所以在配置树里根本没有家——它住在 `capabilities.hooks.finalGuard`，顶层扁平写法一直合法到 **S9**
 退役它为止。`finalGuardVerdict` 是**引擎内部键**：宿主既不许写、也不会在配置树里找到它，所以写了照旧被拒，
 且文案**不夹**规位提示（没有家可指）。两个名字都不在 `CONFIG_NAMESPACE_SCHEMA.guard` 里。
+
+**`tuning` 组的扁平写法版本口径**（issue #498 S3，`tuning` 切片的 A5 段——第七片，也是**收口
+`config.tuning` 的那一片**：`cacheCapable` 在 A3 段退役，这三个是该组剩下的成员）：
+
+| 版本 | 写 `maxTokens` / `temperature` / `topP` |
+| --- | --- |
+| 0.26.0 及以前（最后一个**已发布**版本） | 顶层可写——那些版本只认这一种写法 |
+| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「这件事有影响」的树 |
+| 0.28.0 及以后（issue #498 S3 第七片） | **当场拒**——请写 `config.tuning.maxTokens` / `config.tuning.temperature` / `config.tuning.topP`。名称闸口抛 `unknown runToolLoop option: "maxTokens" (its canonical home is config.tuning.maxTokens; the flat spelling is rejected)` |
+
+两条性质都由机器核住：
+
+* 展开相仍把它们逐字写到 `effectiveOptions.maxTokens` / `.temperature` / `.topP`，所以**引擎读侧一字未改**
+  ——读者是 `src/loop/provider-runner.js` 与 `src/loop/termination.js` 的请求组装，两个都没动。叶子仍留在
+  `CONFIG_NAMESPACE_SCHEMA.tuning`（`src/loop/config-namespace.js`）里，尽管顶层键已经离开
+  `RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`）：**删顶层键 ≠ 删叶子**。与前面六片
+  一样，这是一次**写侧拼写**变更，不是行为变更；
+* 拒绝文案**只点一站**。三个值都是标量，`CAPABILITY_SLOT_DESTINATIONS`
+  （`src/loop/capabilities-namespace.js`）里没为它们登记任何东西 ⇒ 文案**故意不夹** `capabilities.*`
+  那一句。这是**派生**事实而不是承诺：哪天它们长出行为成员，第二站会自己出现。
+
+**这三个词还活在另外五张面上，本片一张都没动。** 这一组为什么值得单独一段：全仓 grep `maxTokens`
+捞出来的东西远多于「刚退役的那个选项」，把其中任何一个「顺手迁掉」都是回归。逐面如下：
+
+| 面 | 在哪 | 状态 |
+| --- | --- | --- |
+| `runToolLoop` 顶层选项 | `RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`） | **本片退役**（唯一动过的一张） |
+| `config.tuning.*` | `CONFIG_NAMESPACE_SCHEMA.tuning`（`src/loop/config-namespace.js`） | 规范之家——写这里 |
+| 模型槽位 / 配置文件字段 `slots.default.maxTokens` | 由 `createProviderForSlot`（`src/config/slot-provider.js`）读、`bin/cli.js` 转发；它摊平成请求体的 `max_tokens` | **一字未动**——配置文件不是 `runToolLoop` 选项，从不经过名称闸口 |
+| 配置文件的采样默认值 `temperature` / `topP` | `src/config/env.js`（`TEMPERATURE` / `TOP_P`） | **一字未动**——同上 |
+| 装配口 `policy.maxTokens` | `src/assembly.js`——它是端口成员，不是顶层选项 | **一字未动**；它照旧到达请求体 |
+| provider 请求字段 `maxTokens` / `temperature` / `topP` | `src/messages/anthropic.js`、`src/providers/openai.js` | **一字未动**——那是引擎的**读侧**，展开相就是喂它的 |
+
+一个差点被误伤的邻居：`maxTokenContinuations` 是**另一个键**（家在 `config.run.maxTokenContinuations`，
+扁平写法照旧合法）。整词 grep `maxTokens` 会把它一起捞出来；它不属于本片，扁平写法继续可用。
 
 `context` 这一条比另外两个多一句**必须读**的话：它是一个**混装壳**——同时容得下数据成员
 （`budgetTokens` / `keepRounds` / `strategy` 名字）与行为成员（`onBeforeFold` / `onAfterFold` /
@@ -1209,8 +1244,10 @@ server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那�
 | `timeoutMs`、`requestTimeoutMs`、`firstByteTimeoutMs`、`streamIdleTimeoutMs`、`streamTotalTimeoutMs`（snake_case 别名同样接受） | ms | 请求 / 流超时 | 否 | 引擎默认值 |
 | `endpoint`、`apiKey` / `apiKeyEnv` / `apiKeyFile`、`model` / `model_name`、`protocol` | — | 端点与凭据身份；`protocol` 选的是**宿主自己**要构造哪个工厂——引擎从不按它分发 | 否 | endpoint / key / model 解析后为空时，provider 构造抛 `provider_config`（`src/providers/errors.js:37-51`） |
 
-循环自身的 `maxTokens`、`temperature`、`topP` 选项会注入每一次请求，因此**覆盖**
-slot 里的同名字段（`src/loop/provider-runner.js:128-130`、`src/providers/openai.js:51-55`）。
+run 级旋钮 `config.tuning.maxTokens` / `config.tuning.temperature` / `config.tuning.topP` 会注入
+每一次请求，因此**覆盖** slot 里的同名字段（`src/loop/provider-runner.js:128-130`、
+`src/providers/openai.js:51-55`）。它们的**扁平**写法已在 0.28.0 退役（见上文 `tuning` 组版本口径）；
+被覆盖的 slot 字段是另一张面，一字未动。
 
 **slot 里的未知字段是惰性的，也是安全的。** 内置 provider 原样拷贝 slot
 （`src/config/json-file.js:22-39`、`src/config/static.js:26-38`），两个工厂又只读固定的

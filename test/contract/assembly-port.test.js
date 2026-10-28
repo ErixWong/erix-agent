@@ -4,6 +4,7 @@ import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { createStaticModelConfigProvider } from "../../src/config/static.js";
 import { assemblyPortOptions, createAssemblyPort } from "../../src/assembly.js";
 import { runToolLoop } from "../../src/loop/orchestrator.js";
+import { RUN_TOOL_LOOP_OPTION_SET } from "../../src/loop/option-normalization.js";
 import { createFoldStatisticalStrategy } from "../../src/compact/fold-statistical.js";
 import { assemblyPortContract } from "./assembly-port.js";
 
@@ -330,6 +331,19 @@ test("键集自证：构造期产出的每一个键都在冲突闸口内（从�
   }
   for (const key of produced) {
     if (key === "modelConfig") continue; // 唯一既有例外：自带校验的覆盖通道
+    // #498 S3（`tuning` A5）：**覆盖**的键名闭集派生自 `RUN_TOOL_LOOP_OPTION_NAMES`（`src/assembly.js`
+    // 的规则 2），所以一个键离开顶层白名单之后，它连「调用期覆盖」这个名字都不再合法 —— 撞的是
+    // 名称闸口（`unknown assembly port override option`）而不是冲突闸口。判据因此按**派生**跳过，
+    // 不手抄名单：`policy.maxTokens` 仍然被构造期产出（上面那格还在断言），只是覆盖写法没了。
+    if (!RUN_TOOL_LOOP_OPTION_SET.has(key)) {
+      await assert.rejects(
+        assemblyPortOptions(port, { [key]: null }),
+        (error) => error instanceof TypeError
+          && error.message.startsWith("unknown assembly port override option:"),
+        `${key} 已不在顶层白名单 ⇒ 覆盖名也不合法（派生：覆盖闭集 = 白名单）`,
+      );
+      continue;
+    }
     await assert.rejects(
       assemblyPortOptions(port, { [key]: null }),
       (error) => error instanceof TypeError

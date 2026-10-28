@@ -427,9 +427,8 @@ const VALUES = {
   writeToolPathKeys: ["path"],
   resume: false,
   stream: false,
-  maxTokens: 512,
-  temperature: 0.2,
-  topP: 0.9,
+  // #498 S3 (`tuning` slice, segment A5): `maxTokens` / `temperature` / `topP` are no longer flat
+  // top-level keys — they moved to `RETIRED_FLAT_VALUES` below (their home is `config.tuning.*`).
   // #498 S3 (`tuning` slice): `cacheCapable` is no longer a flat top-level key — it moved to
   // `RETIRED_FLAT_VALUES` below (its home is `config.tuning.cacheCapable`).
   reflection: false,
@@ -481,6 +480,12 @@ const RETIRED_FLAT_VALUES = {
   initialUserMessage: "go",
   // #498 S3（`tuning` 片）：`cacheCapable`——缓存友好端点的开关（引擎据此默认关掉工具结果 TTL 折叠）。
   cacheCapable: false,
+  // #498 S3（`tuning` 片 A5 段）：三个采样/输出预算旋钮。它们是**标量**，所以扁平写法一退役就只剩
+  // `config.tuning.*` 一个家；展开相仍逐字写回 `effectiveOptions.maxTokens` / `.temperature` / `.topP`
+  // （引擎请求组装读的就是它们，读侧一行未改）。
+  maxTokens: 512,
+  temperature: 0.2,
+  topP: 0.9,
   // #498 S3（`guard` 片）：强制收尾的三个数据旋钮（hook 本体 `finalGuard` 不在此——它属能力面）。
   finalGuardMaxRetries: 1,
   finalGuardTimeoutMs: 5000,
@@ -557,11 +562,14 @@ test("B3 config 形态真的被引擎读：maxRounds 经 config 生效（不是�
 test("C1 同名时 config 赢，并记一条冲突（规范化层）", async () => {
   const { effectiveOptions, configConflicts } = await normalizeRunToolLoopOptions({
     maxRounds: 9,
-    temperature: 0.1,
-    config: { run: { maxRounds: 5 }, tuning: { temperature: 0.1 } },
+    maxTokenContinuations: 2,
+    // #498 S3（`tuning` A5）：`temperature` 已退役扁平写法（家 = `config.tuning.temperature`），所以
+    // 「同一个值写两边 ⇒ 不记冲突」这条通道换成一个**仍可扁平写**的配置叶子 `maxTokenContinuations`
+    // （家 = `config.run.maxTokenContinuations`）。它不属于本刀，所以顺带证明本刀没动它。
+    config: { run: { maxRounds: 5, maxTokenContinuations: 2 } },
   });
   assert.equal(effectiveOptions.maxRounds, 5, "config.run.maxRounds 覆盖扁平 maxRounds");
-  assert.equal(effectiveOptions.temperature, 0.1, "值相同时照旧生效");
+  assert.equal(effectiveOptions.maxTokenContinuations, 2, "值相同时照旧生效");
   assert.deepEqual(configConflicts, [{ path: "run.maxRounds", key: "maxRounds" }], "只有值不同才算冲突");
 });
 

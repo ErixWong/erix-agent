@@ -25,8 +25,8 @@ must be placed in an explicit namespace such as `toolContext` or
 
 ```text
 assemblyPort, provider, system, wrapup, tools,
-writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
-temperature, topP, reflection, stallDetection,
+writeToolNames, writeToolPathKeys, executeTool, maxRounds,
+reflection, stallDetection,
 completion, finalGuard,
 maxTokenContinuations,
 todoStateProvider, semanticStateProvider, partialPersistence,
@@ -368,6 +368,47 @@ Two properties hold, both machine-checked:
 `finalGuardVerdict` is an **engine-internal** key: a host may neither write it nor find it in the config
 tree, so writing it is still rejected and the message carries **no** canonical-home hint (there is no
 home to name). Neither name appears in `CONFIG_NAMESPACE_SCHEMA.guard`.
+
+**Flat-spelling version policy for the `tuning` group** (issue #498 S3, the `tuning` slice's A5
+segment — the seventh slice, and the one that closes `config.tuning`: `cacheCapable` left in the A3
+segment, these three are the rest of the group):
+
+| release | writing `maxTokens` / `temperature` / `topP` |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
+| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, seventh slice) | **rejected on the spot** — write `config.tuning.maxTokens` / `config.tuning.temperature` / `config.tuning.topP`. The name gate throws `unknown runToolLoop option: "maxTokens" (its canonical home is config.tuning.maxTokens; the flat spelling is rejected)` |
+
+Two properties hold, both machine-checked:
+
+* the expansion phase still writes each of them onto `effectiveOptions.maxTokens` / `.temperature` /
+  `.topP`, so **the engine's read side is unchanged** — the readers are the request assembly in
+  `src/loop/provider-runner.js` and `src/loop/termination.js`, and neither was touched. The leaves stay
+  in `CONFIG_NAMESPACE_SCHEMA.tuning` (`src/loop/config-namespace.js`) even though the top-level keys
+  left `RUN_TOOL_LOOP_OPTION_NAMES` (`src/loop/option-normalization.js`): deleting the flat key is
+  **not** deleting the leaf. Retirement is a *write-spelling* change only, exactly like the six slices
+  before it;
+* the rejection message names **one station and only one**. All three values are scalars, so nothing is
+  registered for them in `CAPABILITY_SLOT_DESTINATIONS`
+  (`src/loop/capabilities-namespace.js`) and the message deliberately carries **no** `capabilities.*`
+  hint. Derived, not promised: a behaviour member would make the second station appear on its own.
+
+**These three words live on five other planes, and this slice moved none of them.** That is the whole
+reason this group needed its own paragraph: a repo-wide grep for `maxTokens` returns far more than the
+option that just retired, and migrating any of the rest would be a regression. Concretely:
+
+| plane | where it lives | status |
+| --- | --- | --- |
+| `runToolLoop` top-level option | `RUN_TOOL_LOOP_OPTION_NAMES` (`src/loop/option-normalization.js`) | **retired by this slice** (the only one that moved) |
+| `config.tuning.*` | `CONFIG_NAMESPACE_SCHEMA.tuning` (`src/loop/config-namespace.js`) | the canonical home — write here |
+| model-slot / config-file field `slots.default.maxTokens` | read by `createProviderForSlot` (`src/config/slot-provider.js`) and forwarded by `bin/cli.js`; it flattens to the request's `max_tokens` | **untouched** — a config file is not a `runToolLoop` option and never went through the name gate |
+| config-file sampling defaults `temperature` / `topP` | `src/config/env.js` (`TEMPERATURE` / `TOP_P`) | **untouched** — same reason |
+| assembly `policy.maxTokens` | `src/assembly.js` — a port member, not a top-level option | **untouched**; it still reaches the request body |
+| provider request fields `maxTokens` / `temperature` / `topP` | `src/messages/anthropic.js`, `src/providers/openai.js` | **untouched** — that is the engine's *read* side, and the expansion phase feeds it |
+
+One near-miss worth naming: `maxTokenContinuations` is a **different key** (its home is
+`config.run.maxTokenContinuations`, and it stays a legal flat option). A whole-word grep for
+`maxTokens` drags it in; it is not part of this slice and the flat spelling keeps working.
 
 The `context` row carries one sentence that **must** be read: it is a **mixed shell** — it holds
 data members (`budgetTokens` / `keepRounds` / a strategy *name*) **and** behaviour members (the five
@@ -1493,9 +1534,11 @@ run; the only signal is the `model_metadata_missing` event named below.
 | `timeoutMs`, `requestTimeoutMs`, `firstByteTimeoutMs`, `streamIdleTimeoutMs`, `streamTotalTimeoutMs` (snake_case aliases accepted) | ms | request / stream timeouts | no | engine defaults |
 | `endpoint`, `apiKey` / `apiKeyEnv` / `apiKeyFile`, `model` / `model_name`, `protocol` | — | endpoint and credential identity; `protocol` selects the factory **the host** builds — the engine never dispatches on it | no | provider construction throws `provider_config` once endpoint / key / model resolve empty (`src/providers/errors.js:37-51`) |
 
-The loop's own `maxTokens`, `temperature`, and `topP` options are injected into
-every request and therefore **override** the same slot fields
-(`src/loop/provider-runner.js:128-130`, `src/providers/openai.js:51-55`).
+The run-level knobs `config.tuning.maxTokens` / `config.tuning.temperature` /
+`config.tuning.topP` are injected into every request and therefore **override** the same slot fields
+(`src/loop/provider-runner.js:128-130`, `src/providers/openai.js:51-55`). Their **flat** spellings were
+retired in 0.28.0 (see the `tuning` version policy above); the slot fields they override are a
+different plane and are untouched.
 
 **Unknown slot fields are inert and safe.** The built-in providers copy the slot
 verbatim (`src/config/json-file.js:22-39`, `src/config/static.js:26-38`), and both
