@@ -135,11 +135,22 @@ import {
  * `tools`), and the `input` group keeps 5 leaves.
  * **#531 removes one more**: `session` left the `metadata` group, so the plane is **41 keys / 7
  * groups**. The reason is not the data/behaviour criterion (session is plain data) but the
- * **double entry**: the top-level option and the assembly port's member are the *same value*
- * (`assemblyPortOptions(port).session === port.session`), so a `config.metadata.session` home
- * would be a second home for one key — the one thing the ruling forbids. It is a permanent
- * top-level option (the third station) instead, and writing the old nested spelling is an
- * unknown leaf rejected on the spot.
+ * **double entry of the container**: the top-level option and the assembly port's member are the
+ * *same value* (`assemblyPortOptions(port).session === port.session`), so a `config.metadata.session`
+ * home for the container would be a second home for one key — the one thing the ruling forbids. It
+ * is a permanent top-level option (the third station) instead.
+ *
+ * **#551 settles which container carries the opaque per-run payload (ruling 甲).** #531's
+ * same-value argument speaks about the **container only**; since #550 the container and the payload
+ * are two different keys with two different jobs, so that argument says nothing about where the
+ * payload lives (it must not be re-used to refuse a payload leaf). The ruling: the payload's home is
+ * **`config.folding.context.session`** — the fold-context shell's *reserved key*, whose one reader
+ * (`toolContextFor`) has read `context?.session` all along. So the shell carries payload as well as
+ * fold knobs, and the story is told that way everywhere instead of "payload goes to `metadata`" plus
+ * an exception: `config.metadata.*` holds the host data the engine reads **by field name**
+ * (`expert` / `user` / `task` / `requestId` / `toolContext` / `model` / `modelMetadata`); the opaque
+ * per-run payload is not one of them. `config.metadata.session` is refused with a sentence that
+ * names the payload's home (`CONFIG_RELOCATED_LEAVES`), not with the generic unknown-leaf text.
  *
  * @type {Readonly<Record<string, readonly string[]>>}
  */
@@ -216,10 +227,15 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
   //   · `expert` / `user` / `task` / `requestId` / `toolContext`：拼进工具上下文与 judge 简报。
   // 这五个键里的后五个曾经只有「透传」一面，所以本组以前写成「引擎不解释其内部结构」；
   // 按现判据（文件头约束 3）它们同属配置面，描述按实测改。
-  // ⚠ `session` **不在这里**（#531）：它是纯数据，但它的顶层选项与装配口成员是**同一个值**
-  // （`assemblyPortOptions(port).session === port.session`，引用相等），给它一个嵌套家就是
-  // 「一个键两个家」——正是本仓裁决禁止的那件事。所以它属**第三站**（永久顶层面），
-  // 写 `config.metadata.session` 现在是未知叶子当场拒。
+  // ⚠ `session` **不在这里**——#531 说**容器**、#551 说**载荷**，两件事必须分开讲：
+  //   · **容器**（`id` / `modelSlot` / `initialMessages`）属**第三站**（永久顶层面）：它的顶层
+  //     选项与装配口成员是**同一个值**（`assemblyPortOptions(port).session === port.session`，
+  //     引用相等），给它一个嵌套家就是「一个键两个家」；
+  //   · **不透明 per-run 载荷**的家是 `config.folding.context.session`（折叠壳的**保留键**，#551
+  //     裁决甲）——不是本组。别把 #531 那条「同值 ⇒ 叶冗余」的论据搬来拒绝载荷叶：那条论据说
+  //     的是**容器**，而 #550 之后容器与载荷已经不是一回事。
+  // 写 `config.metadata.session` 当场拒，判词点名载荷的家（`CONFIG_RELOCATED_LEAVES`），
+  // 不走「未知叶子 + 接受名单」那句通用话术。
   metadata: Object.freeze([
     "expert",
     "user",
@@ -359,6 +375,14 @@ export const CAPABILITY_OPTION_NAMES = Object.freeze([
  * `config.metadata.session` leaf is removed, and putting that leaf back turns the same self-check
  * red — which is why the closed-door test can pin the rejection instead of trusting a list.
  *
+ * #551 (ruling 甲) adds the half this table cannot express: the **payload**
+ * `config.folding.context.session` is not a config *leaf* at all (the shell is one leaf whose value
+ * is a free-form object), so it never becomes a nested home for the `session` **key**. The claim
+ * above — "no nested home" — is about the container, and the payload rides inside a leaf that was
+ * free-form before #550 and after it. That is why the two do not collide in
+ * `configSchemaSelfCheck`: the closed door here is `config.metadata.session`, and its message points
+ * at the shell (`CONFIG_RELOCATED_LEAVES`), not merely at this list.
+ *
  * @type {readonly string[]}
  */
 export const TOP_LEVEL_SURFACE_OPTION_NAMES = Object.freeze([
@@ -372,9 +396,11 @@ export const TOP_LEVEL_SURFACE_OPTION_NAMES = Object.freeze([
   "semanticStateProvider",
   "diagnostics",
   "tools",
-  // #531: `session` — plain data, but the top-level option and the assembly port member
-  // (`createAssemblyPort({ session })` → `assemblyPortOptions(port).session`) are the same value,
-  // so its one home is here; `config.metadata.session` is now an unknown leaf.
+  // #531: `session` **the container** — plain data, but the top-level option and the assembly port
+  // member (`createAssemblyPort({ session })` → `assemblyPortOptions(port).session`) are the same
+  // value, so its one home is here. #551: the **payload** is a different key and lives in
+  // `config.folding.context.session` (the fold-context shell's reserved key) — the same-value
+  // argument above is about the container and says nothing about the payload.
   "session",
 ]);
 
@@ -428,6 +454,33 @@ const CONFIG_LEAF_ALIASES = Object.freeze({
  * @type {Readonly<Record<string, string>>}
  */
 const CONFIG_RENAMED_GROUPS = Object.freeze({ prompt: "input" });
+
+/**
+ * **Relocated leaves**: `"<group>.<leaf>"` → the sentence that sends the host to the real home
+ * (issue #551, ruling 甲).
+ *
+ * Same job as {@link CONFIG_RENAMED_GROUPS}, one level deeper, and the same reason: a name the
+ * engine *knows* must not be answered with "unknown option + here is the accepted list". A host that
+ * writes `config.metadata.session` is not guessing at random — S3's documented story ("the opaque
+ * payload goes into `config.metadata.*`") sends it there, so the answer has to say where that
+ * payload lives now (`config.folding.context.session`, the fold-context shell's reserved key) **and**
+ * that the top-level `session` option is the identity container, not a payload home. Advice matters
+ * here: "write it at the top level as session: …" would be the wrong advice for a payload, because a
+ * non-object top-level `session` is refused on both routes since #550.
+ *
+ * The door stays closed: this table only replaces the *message* for a leaf that is still not part of
+ * the group (the branch that consumes it runs instead of the unknown-leaf branch, so acceptance is
+ * unchanged and `config.metadata` keeps its seven leaves).
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+const CONFIG_RELOCATED_LEAVES = Object.freeze({
+  "metadata.session":
+    "config.metadata.session: the opaque per-run payload's home is config.folding.context.session"
+    + " (the fold-context shell's reserved key — the engine hands it to executeTool as"
+    + " context.session); the top-level `session` option is the run identity container"
+    + " (session.id / session.modelSlot / session.initialMessages), not a payload home",
+});
 
 /**
  * 某个配置叶子对应的顶层键名（`("input", "messages")` → `"initialMessages"`）。
@@ -884,7 +937,12 @@ export function collectConfigNamespaceProblems(config) {
         continue;
       }
       if (!CONFIG_NAMESPACE_SCHEMA[group].includes(leaf)) {
-        problems.push(`unknown config.${group} option: ${JSON.stringify(leaf)}${misplacedLeafHint(group, leaf)}`);
+        // #551: a leaf the engine knows but that lives elsewhere gets its own sentence (the same
+        // reason `CONFIG_RENAMED_GROUPS` exists one level up) — the generic "unknown option" text
+        // cannot name a payload home, and its "write it at the top level" advice is wrong for one.
+        const relocated = CONFIG_RELOCATED_LEAVES[`${group}.${leaf}`];
+        problems.push(relocated
+          ?? `unknown config.${group} option: ${JSON.stringify(leaf)}${misplacedLeafHint(group, leaf)}`);
         continue;
       }
       // #498 S4a 约束 4：**合法叶子的值里不许有函数**。只走结构上已被接受的叶子（未知分组 /

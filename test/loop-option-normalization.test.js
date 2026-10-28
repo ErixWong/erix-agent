@@ -927,8 +927,8 @@ test("#498 S4b session.resume 直连路线同样拒绝：不许收下键、又�
   assert.equal(directError.via, "direct", "直连侧抛的是语义相（via:\"direct\"）");
 
   // 同一道闸口也覆盖扁平 `session`（它就是顶层选项，不是第二个户口）。
-  // #531：`config.metadata.session` 那个叶子已被拆掉 ⇒ 规位现在是**未知叶子**当场拒，
-  // 文案指向顶层第三站（下面的断言就是那道闭门）。
+  // #531：`config.metadata.session` 那个叶子已被拆掉 ⇒ 规位当场拒；#551 把那句判词换成
+  // **点名载荷的家**（甲裁决：载荷住 `config.folding.context.session`，顶层 `session` 只做容器）。
   const viaConfig = await runToolLoop({
     ...runnable,
     config: { metadata: { session: { id: "run-direct-session-resume", resume: true } } },
@@ -936,9 +936,11 @@ test("#498 S4b session.resume 直连路线同样拒绝：不许收下键、又�
   assert.equal(viaConfig instanceof TypeError, true);
   assert.equal(
     viaConfig.message,
-    'unknown config.metadata option: "session" ("session" is a permanent top-level option —'
-      + " the third station — write it at the top level: session: …)",
-    "`config.metadata.session` 已闭门：未知叶子 + 指向第三站（#531）",
+    "config.metadata.session: the opaque per-run payload's home is config.folding.context.session"
+      + " (the fold-context shell's reserved key — the engine hands it to executeTool as"
+      + " context.session); the top-level `session` option is the run identity container"
+      + " (session.id / session.modelSlot / session.initialMessages), not a payload home",
+    "`config.metadata.session` 已闭门，且判词点名载荷的家（#551 甲）",
   );
 
   // 对照：同一个 `session` 不带 `resume` 照常过（这不是「一律拒绝 session」）。
