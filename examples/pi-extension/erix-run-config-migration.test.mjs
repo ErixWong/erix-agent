@@ -104,7 +104,6 @@ function legacyFlatOptions(input) {
   } = input;
   const options = {
     provider,
-    system: system ?? core.buildSystemPrompt({ lib: { binTools: {} }, cwd: params.cwd, tools: tools.tools }),
     task: params.task,
     cwd: params.cwd,
     tools: tools.tools,
@@ -121,8 +120,13 @@ function legacyFlatOptions(input) {
     // the mechanism this slice relies on.
     // #498 S3 A2b: `initialUserMessage` lost its flat spelling as well — same canonical home
     // (`config.input.initialUserMessage`), same mechanism. Merged into the one `config` tree.
+    // #498 S3 A6: `system` follows it — the golden keeps the same shape the shipped `buildLoopOptions`
+    // emits (`config.input.system`), because the flat spelling is now rejected at the name gate.
     config: {
-      input: { initialUserMessage: params.task },
+      input: {
+        system: system ?? core.buildSystemPrompt({ lib: { binTools: {} }, cwd: params.cwd, tools: tools.tools }),
+        initialUserMessage: params.task,
+      },
       timing: { timeoutMs: params.timeoutMs, retry: { attempts: 2 } },
     },
     completion: { signals: ["任务已完成", "已完成", "全部完成", "无需继续", "任务结束", "没有更多步骤"], maxNoToolRounds: 3 },

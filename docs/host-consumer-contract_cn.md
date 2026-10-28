@@ -345,6 +345,62 @@ executeTool({ id, name, input, context, signal })
 一个差点被误伤的邻居：`maxTokenContinuations` 是**另一个键**（家在 `config.run.maxTokenContinuations`，
 扁平写法照旧合法）。整词 grep `maxTokens` 会把它一起捞出来；它不属于本片，扁平写法继续可用。
 
+**扁平写法的版本口径（issue #498 S3，`input` 组 A6 段——第八片，也是本该把 `config.input` 收口的一片；
+它**没有**收口，原因见下）**：
+
+| 发布 | 写 `system` |
+| --- | --- |
+| 0.26.0 及以前（**最后已发布**的版本） | 顶层照旧接受——那些版本只认这一种写法 |
+| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主的树里这件事生效过 |
+| 0.28.0 及以后（issue #498 S3 第八片） | **当场拒**——请写 `config.input.system`。名称闸口抛 `unknown runToolLoop option: "system" (its canonical home is config.input.system; the flat spelling is rejected)` |
+
+两条性质成立，且都有机器判据：
+
+* 展开相仍把它逐字写到 `effectiveOptions.system`，所以**引擎的读侧一字未改**——读它的是
+  「把收尾协议拼进系统提示」那段装配（`src/loop/orchestrator.js`），本片没碰它。叶子仍留在
+  `CONFIG_NAMESPACE_SCHEMA.input`（`src/loop/config-namespace.js`）里，尽管顶层键已离开
+  `RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`）：**删扁平键 ≠ 删叶子**。
+  退役只是**写侧拼写**的变更，与前七片同一机制；
+* 文案**只点一站**。值是标量，`CAPABILITY_SLOT_DESTINATIONS`（`src/loop/capabilities-namespace.js`）
+  里没有为它登记任何东西，所以文案**不带** `capabilities.*` 那一站。同一个叶子上的**函数值**文案更进一步：
+  它直说「没有能力面之家」——`system` 是数据键，修法是「传纯数据」，不是「搬到能力面」。
+
+**`config.input` 没有收口：`wrapup` 与 `tools` 仍然是合法的扁平选项，这是有意的。** 本片工单点名要退役的
+另两个键**原样退回**，两次退回都不是排期失误——两件事都钉在
+`test/loop-input-keys-slice-498s3a6.test.js` 里：
+
+* **`tools` 卡在可达性闸口上，不是卡在时间上。** 宿主交进来的工具声明，其**条目里可以带函数成员**——
+  `handler`、`validate`、`execute`，或 `inputSchema` 里的函数。今天这几种形状经扁平 `tools` **都能交进去**，
+  而写进 `config.input.tools` **一律被拒**，因为 `config` 只装数据（子树必须过 JSON round-trip，函数值
+  intake 当场拒并点名完整路径：`config.input.tools[0].handler is not accepted: …`）。于是退役扁平写法
+  会**收窄宿主能交进来的东西**——这正是 issue #520 为它开单的那一类静默收窄（那一刀发现
+  `retry.sleepImpl` 宿主根本不可达）。所以 `tools` **仍是合法的扁平选项**，现状被逐字钉住（G1–G4）。
+  桌上有两条候选，裁决**不在本片**：（a）放宽那一个叶子，允许函数值；（b）把该成员移到能力面。
+  裁决时值得知道：两个协议适配器都把每条工具声明投影成 `{name, description, inputSchema}`
+  （OpenAI 侧在 `src/messages/canonical.js`，Anthropic 侧在 `src/messages/anthropic.js` 的 payload 构造里），
+  所以今天那个成员是**惰性**的——收下了、从不被调用、也从不发出去。因此这条收窄是「静默收下」变成
+  「大声拒绝」，不是「能用」变成「不能用」。
+* **`wrapup` 是退回待做。** 它的扁平写点摊在约 35 个测试文件 / 约 106 处（`wrapup: false` 是夹具里关掉
+  收尾协议的惯用写法）；删键会一次红 **189** 个测试格，而朴素改写会重演 #521 的问题（475 个写点，外加
+  「这个文件已经有 `config:` 键」——朴素替换会造出后者静默胜的重复键）。正确顺序是先落一条**夹具级翻译**
+  （`test/helpers/run-direct.js` 的 `withSeed` 就是先例），再删键。所以 `wrapup` 仍是合法的扁平选项；
+  它的规位 `config.input.wrapup` 早就存在，且被真的用到。
+
+这条账目是**派生**的、不是记出来的：`input` 组里仍带扁平孪生的成员**恰好两个**，测试断言这个集合等于
+退回清单——于是「本片少做了一个键」不会静默。
+
+**这三个词还活在另外六张面上，本片一张都没动。** 整词 grep `system` / `tools` / `wrapup` 捞出来的远不止
+那三个选项，迁任何一个都是回归：
+
+| 面 | 住在哪 | 状态 |
+| --- | --- | --- |
+| `runToolLoop` 顶层选项 | `RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`） | `system` **已被本片退役**；`wrapup` / `tools` 仍是合法扁平写法（见上） |
+| `config.input.*` | `CONFIG_NAMESPACE_SCHEMA.input`（`src/loop/config-namespace.js`） | 规位之家——请写这里 |
+| provider 请求字段 `system` / OpenAI 的 `role: "system"` | `src/messages/anthropic.js`、`src/messages/canonical.js` | **一字未动**——那是引擎的**读侧**，展开相就是喂它的 |
+| `systemPrompt` / `systemPromptMode` / `systemPromptFile` | issue #505 那两片——**独立选项**，从来不是本组的成员 | **一字未动**；两个都不是 `runToolLoop` 的顶层键，也没有配置面之家 |
+| 反思收尾的容器（`config.run.reflection.wrapupNormalize`） | `src/loop/orchestrator.js`、`src/reflection/wrapup.js` | **一字未动**——与顶层那个布尔 `wrapup` 是两个东西 |
+| `erix-agent/tools` 子路径导出与工具注册表（`src/tools/index.js`） | 能力面 | **一字未动**——它是模块导出，不是选项键 |
+
 `context` 这一条比另外两个多一句**必须读**的话：它是一个**混装壳**——同时容得下数据成员
 （`budgetTokens` / `keepRounds` / `strategy` 名字）与行为成员（`onBeforeFold` / `onAfterFold` /
 `stubFor` / `protectedMessage` / `recoveryHint` 五个函数，加上 `strategy` 的对象形态），而 `config`

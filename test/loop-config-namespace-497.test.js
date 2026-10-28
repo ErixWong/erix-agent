@@ -410,7 +410,7 @@ test("B1 43 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平�
 
 /** 跨 7 个分组的代表性配置：同一个 `VALUES` 同时生成扁平形态与 config 形态。 */
 const VALUES = {
-  system: "you are a test",
+  // #498 S3 A6：`system` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
   // #498 S3 A2b：`initialUserMessage` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
   wrapup: false,
   // #498 S4b：`tools` 归配置面（`config.input.tools`）——它是工具声明数组，按判据是数据。
@@ -478,6 +478,9 @@ const RETIRED_FLAT_VALUES = {
   initialMessages: [],
   // #498 S3（`input` 组 A2b 段）：`initialUserMessage`——种子首轮消息。
   initialUserMessage: "go",
+  // #498 S3（`input` 组 A6 段）：`system`——系统提示。标量 ⇒ 扁平写法一退役就只剩
+  // `config.input.system` 一个家；展开相仍逐字写回 `effectiveOptions.system`（读侧一行未改）。
+  system: "you are a test",
   // #498 S3（`tuning` 片）：`cacheCapable`——缓存友好端点的开关（引擎据此默认关掉工具结果 TTL 折叠）。
   cacheCapable: false,
   // #498 S3（`tuning` 片 A5 段）：三个采样/输出预算旋钮。它们是**标量**，所以扁平写法一退役就只剩

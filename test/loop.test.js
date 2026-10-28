@@ -36,12 +36,12 @@ test("marks the stable prefix by default and supports opting out", async () => {
     ]);
     await runDirect({
       provider,
-      system: "stable system",
       wrapup: false,
       initialUserMessage: "hello",
       executeTool: async () => "unused",
       // #498 S3（`input` 组 A 段）：扁平 `cacheStablePrefix` 已退役，家是 `config.input.*`。
-      ...(cacheStablePrefix === undefined ? {} : { config: { input: { cacheStablePrefix } } }),
+      // #498 S3 A6：扁平 `system` 同样退役（`config.input.system`），并进同一个 `config.input`。
+      config: { input: { system: "stable system", ...(cacheStablePrefix === undefined ? {} : { cacheStablePrefix }) } },
     });
     return provider.requests[0];
   };

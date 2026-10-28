@@ -304,7 +304,8 @@ test("R1 cacheStablePrefix 经新家生效：缓存边界标记真的消失（�
     provider: defaulted,
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    system: "SYS",
+    // #498 S3 A6：扁平 `system` 已退役，家是 `config.input.system`（本组同一个容器）。
+    config: { input: { system: "SYS" } },
     wrapup: false,
   }));
   assert.equal(defaulted.requests[0].system.cacheBoundary, true, "对照组：默认必须打标记");
@@ -315,9 +316,8 @@ test("R1 cacheStablePrefix 经新家生效：缓存边界标记真的消失（�
     provider: optedOut,
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    system: "SYS",
     wrapup: false,
-    config: { input: { cacheStablePrefix: false } },
+    config: { input: { system: "SYS", cacheStablePrefix: false } },
   }));
   assert.equal(optedOut.requests[0].system, "SYS", "config.input.cacheStablePrefix:false 必须真的生效");
   assert.equal("cacheBoundary" in optedOut.requests[0].messages[0], false);

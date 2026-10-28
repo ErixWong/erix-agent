@@ -1454,7 +1454,6 @@ async function main() {
     ...(upstream.modelMetadata && Object.keys(upstream.modelMetadata).length > 0
       ? { modelMetadata: upstream.modelMetadata }
       : {}),
-    system: "soak：长跑一致性观察（工具循环、压缩、落盘）",
     tools: [SOAK_TOOL],
     executeTool: makeExecuteTool({ tokensPerRound: 40 }),
     // 注：文档写的 governor 选项**不在** src/loop/option-normalization.js:36-97 的白名单里
@@ -1462,19 +1461,24 @@ async function main() {
     stallDetection: false,
     store: createFileTranscriptStore({ dir: storeDir }),
     persistence: "required",
-    config: { folding: {
-      context: {
-        strategy: "fold-statistical",
-        budgetTokens,
-        keepRounds: 2,
-        task: "soak 观察",
+    config: {
+      // #498 S3 A6：顶层 `system` 已退役，家是 `config.input.system`（展开相写回
+      // `effectiveOptions.system`，引擎读侧不变）。
+      input: { system: "soak：长跑一致性观察（工具循环、压缩、落盘）" },
+      folding: {
+        context: {
+          strategy: "fold-statistical",
+          budgetTokens,
+          keepRounds: 2,
+          task: "soak 观察",
+        },
+        // 引擎要的是**数字**（src/loop/orchestrator.js:321 `toolResultTtl?: number`）。
+        // 传对象会被 src/loop/tool-result-ttl.js:231-234 的 `!Number.isFinite(ttl)` 当场返回原消息，
+        // 即 TTL 折叠一次都没跑（前一版就是这里空的）。ttl=1 ⇒ 下一条请求就能折上一条结果。
+        toolResultTtl: TOOL_RESULT_TTL,
+        toolResultFoldMinTokens: 1,
       },
-    // 引擎要的是**数字**（src/loop/orchestrator.js:321 `toolResultTtl?: number`）。
-    // 传对象会被 src/loop/tool-result-ttl.js:231-234 的 `!Number.isFinite(ttl)` 当场返回原消息，
-    // 即 TTL 折叠一次都没跑（前一版就是这里空的）。ttl=1 ⇒ 下一条请求就能折上一条结果。
-      toolResultTtl: TOOL_RESULT_TTL,
-      toolResultFoldMinTokens: 1,
-    } },
+    },
   };
 
   // ---------- 阶段 A：长轮回放（含强制压缩）

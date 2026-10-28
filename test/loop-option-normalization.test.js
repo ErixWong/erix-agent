@@ -191,7 +191,8 @@ const suggestionThreshold = (unknownName) => Math.max(2, Math.floor(unknownName.
 const OPTION_WHITELIST = [
   "assemblyPort",
   "provider",
-  "system",
+  // #498 S3 (`input` group, segment A6): `system` left the allowlist — its canonical home is
+  // `config.input.system`, and the copy tracks the source list verbatim (that is what A0 checks).
   "wrapup",
   // #498 S3 (`input` slice A2b): `initialUserMessage` left the allowlist — its canonical home is
   // `config.input.initialUserMessage`. The copy tracks the source list verbatim (that is what A0
@@ -396,10 +397,13 @@ const TIE_MATRIX = [
     note: "最接近真实打错的键名：距离 4，阈值恰为 4",
   },
   {
-    key: "strtem",
-    tied: ["system", "stream"],
-    expected: "system",
-    note: "白名单顺序 ≠ 字典序：stream 字典序更小但不是答案",
+    // #498 S3 A6：这一行原来用 `strtem` → {system, stream}，而 `system` 已随本片离开白名单
+    // （建议候选池 = 白名单，删了键就不再是候选）。换一对**仍在白名单里**的平局：
+    // `modls` 到 `tools` / `model` 的距离严格相等（都是 2），阈值恰为 2。
+    key: "modls",
+    tied: ["tools", "model"],
+    expected: "tools",
+    note: "白名单顺序 ≠ 字典序：model 字典序更小但不是答案",
   },
   {
     key: "onEvund",
@@ -691,7 +695,13 @@ test("默认值 maxRounds = 8", async () => {
 
 test("默认值 cacheStablePrefix = true 与 wrapup = true", async () => {
   const defaulted = createFakeProvider(DONE);
-  await runToolLoop(withSeed({ provider: defaulted, executeTool: async () => "ok", initialUserMessage: "go", system: "SYS" }));
+  // #498 S3 A6：扁平 `system` 已退役，家是 `config.input.system`（展开相写回 `effectiveOptions.system`）。
+  await runToolLoop(withSeed({
+    provider: defaulted,
+    executeTool: async () => "ok",
+    initialUserMessage: "go",
+    config: { input: { system: "SYS" } },
+  }));
   const system = defaulted.requests[0].system;
   assert.equal(typeof system, "object", "默认 cacheStablePrefix:true ⇒ system 带 cacheBoundary 包装");
   assert.equal(system.cacheBoundary, true);
@@ -706,8 +716,7 @@ test("默认值 cacheStablePrefix = true 与 wrapup = true", async () => {
     provider: optedOut,
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    system: "SYS",
-    config: { input: { cacheStablePrefix: false } },
+    config: { input: { system: "SYS", cacheStablePrefix: false } },
     wrapup: false,
   }));
   assert.equal(optedOut.requests[0].system, "SYS", "两个默认值都能被显式 false 关掉");
