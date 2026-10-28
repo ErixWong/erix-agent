@@ -249,6 +249,37 @@ rule; the canonical home for a retry timer is, and was, `capabilities.ports.slee
 | 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
 | 0.28.0 and later (issue #498 S3, second slice) | **rejected on the spot** — write `config.folding.context` / `config.folding.toolResultTtl` / `config.folding.toolResultFoldMinTokens`. The name gate throws `unknown runToolLoop option: "toolResultTtl" (its canonical home is config.folding.toolResultTtl; the flat spelling is rejected)` |
 
+**Flat-spelling version policy** (issue #498 S3, the `input` group's A segment — the third slice,
+and the first one whose keys live in `config.input`):
+
+| release | writing `cacheStablePrefix` / `initialMessages` |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
+| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, third slice) | **rejected on the spot** — write `config.input.cacheStablePrefix` / `config.input.messages`. The name gate throws `unknown runToolLoop option: "cacheStablePrefix" (its canonical home is config.input.cacheStablePrefix; the flat spelling is rejected)` |
+
+`initialMessages` is the interesting one, and the message is the reason to read this paragraph:
+**the home it names is `config.input.messages`, not `config.input.initialMessages`**. The leaf is
+`messages` and the top-level key it used to be spelled as is `initialMessages` — that single rename
+is the *only* entry in `CONFIG_LEAF_ALIAS_PATHS` (`src/loop/config-namespace.js`), and it is explicit
+rather than derived precisely so it can be counted (one record) and checked (the leaf must exist).
+Writing the old *top-level* name as a leaf (`config.input.initialMessages`) is the most common slip
+and gets its own message (`unknown config.input option: "initialMessages" (… belongs to
+config.input.messages)`), so the two sentences point at each other and both end at the same place.
+
+Since this slice `config.input.messages` is a leaf **without** a top-level twin, which is the shape
+issue #517 made legal on purpose (`configSchemaSelfCheck` requires "every top-level option has
+exactly one home", not "every leaf has a top-level key"). Two consequences, both machine-checked:
+
+* the expansion phase still writes the leaf onto `effectiveOptions.initialMessages`, so the engine's
+  read side is unchanged — the retirement is a *write-spelling* change only (same mechanism as
+  `timing` / `folding`);
+* the **assembly port** is unaffected: `policy.session.initialMessages` still seeds a run (that is a
+  port member, not a top-level option, and it never went through the name gate). It also means the
+  flat key can still *appear* in the merged representation, so a host that writes both
+  `policy.session.initialMessages` and `config.input.messages` gets one `config_override_conflict`
+  event with `path: "input.messages"` — `config` wins, and it is not silent.
+
 The `context` row carries one sentence that **must** be read: it is a **mixed shell** — it holds
 data members (`budgetTokens` / `keepRounds` / a strategy *name*) **and** behaviour members (the five
 functions `onBeforeFold` / `onAfterFold` / `stubFor` / `protectedMessage` / `recoveryHint`, plus the

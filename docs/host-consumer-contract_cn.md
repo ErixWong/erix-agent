@@ -206,6 +206,33 @@ executeTool({ id, name, input, context, signal })
 | 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「这件事有影响」的树 |
 | 0.28.0 及以后（issue #498 S3 第二片） | **当场拒**——请写 `config.folding.context` / `config.folding.toolResultTtl` / `config.folding.toolResultFoldMinTokens`。名称闸口抛 `unknown runToolLoop option: "toolResultTtl" (its canonical home is config.folding.toolResultTtl; the flat spelling is rejected)` |
 
+**扁平写法的版本口径**（issue #498 S3，`input` 组 A 段——第三片，也是第一个落在 `config.input` 里的切片）：
+
+| 版本 | 写 `cacheStablePrefix` / `initialMessages` |
+| --- | --- |
+| 0.26.0 及以前（最后一个**已发布**版本） | 顶层可写——那些版本只认这一种写法 |
+| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「这件事有影响」的树 |
+| 0.28.0 及以后（issue #498 S3 第三片） | **当场拒**——请写 `config.input.cacheStablePrefix` / `config.input.messages`。名称闸口抛 `unknown runToolLoop option: "cacheStablePrefix" (its canonical home is config.input.cacheStablePrefix; the flat spelling is rejected)` |
+
+`initialMessages` 是这一段里真正要读的一个，理由就在文案本身：**它点名的家是
+`config.input.messages`，不是 `config.input.initialMessages`**。叶子叫 `messages`，它过去被写成
+的那个顶层键叫 `initialMessages`——这条改名是 `CONFIG_LEAF_ALIAS_PATHS`（`src/loop/config-namespace.js`）
+里**唯一**一条记录，之所以显式登记而不派生，就是为了能数（一条）也能核（叶子必须存在）。
+把老的**顶层**名字当叶子写（`config.input.initialMessages`）是最常见的误写，它有自己的文案
+（`unknown config.input option: "initialMessages" (… belongs to config.input.messages)`），于是两句
+互相指认、都落到同一个地方。
+
+本片之后 `config.input.messages` 是一个**没有顶层孪生**的叶子，这正是 issue #517 有意放行的形状
+（`configSchemaSelfCheck` 要求的是「每个顶层选项恰好一个家」，**不是**「每个叶子都有一个顶层键」）。
+两个后果都由机器核住：
+
+* 展开相仍把这个叶子逐字写到 `effectiveOptions.initialMessages` 上，所以**引擎读侧一字未改**——
+  退场只是**写侧写法**的变化（与 `timing` / `folding` 同一套机制）；
+* **装配口**不受影响：`policy.session.initialMessages` 照旧给 run 播种（它是端口成员，不是顶层选项，
+  从来不过名称闸口）。也因此那个扁平键仍可能出现在合并后的表示里：宿主同时写
+  `policy.session.initialMessages` 与 `config.input.messages` 时会收到一条
+  `config_override_conflict` 事件（`path: "input.messages"`）——`config` 赢，且不静默。
+
 `context` 这一条比另外两个多一句**必须读**的话：它是一个**混装壳**——同时容得下数据成员
 （`budgetTokens` / `keepRounds` / `strategy` 名字）与行为成员（`onBeforeFold` / `onAfterFold` /
 `stubFor` / `protectedMessage` / `recoveryHint` 五个函数，加上 `strategy` 的对象形态），而 `config`
