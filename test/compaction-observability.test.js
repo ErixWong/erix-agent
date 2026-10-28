@@ -35,13 +35,18 @@ test("compactionStats exposes selected layer details through result, state, arch
     executeTool: async ({ id }) => `result for ${id} ${"x".repeat(200)}`,
     maxRounds: 3,
     completion: false,
+    // #498 S3: `context` split by value shape — data at `config.folding.context`, the strategy
+    // **object** at `capabilities.ports.strategy` (the config namespace holds data only).
     config: { folding: { context: {
-            budgetTokens: 30,
+      budgetTokens: 30,
       keepRounds: 0,
     } } },
+    capabilities: {
+      ports: { strategy: createFoldStatisticalStrategy() },
+      hooks: { onEvent: (event) => events.push(event) },
+    },
     store,
     runId: "compaction-observability",
-    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
 
   const stat = result.compactionStats.find((entry) => (

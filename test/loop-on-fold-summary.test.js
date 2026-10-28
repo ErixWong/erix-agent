@@ -274,7 +274,7 @@ test("⑤旋钮 context.maxFoldedFactsBytes：夹断生效，且钩子与账本�
   const payloads = [];
   const { factRecords } = await runFolding({
     onFoldSummary: (payload) => { payloads.push(payload); },
-    config: { folding: { context: { maxFoldedFactsBytes: 120 } } },
+    context: { maxFoldedFactsBytes: 120 },
   });
   assert.ok(factRecords.length > 0, "前提：这条路径确实落账了替代物");
   for (const record of factRecords) {

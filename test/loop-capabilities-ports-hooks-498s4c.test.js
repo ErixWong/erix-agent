@@ -85,6 +85,23 @@ function makePort(policy = {}) {
   });
 }
 
+/**
+ * 一条**必然折叠**的装配口路线（#498 S3 的 C12 用）：6 发工具调用 + 极小预算 ⇒ 机械折叠必发生。
+ * 壳内老槽位（`context.onBeforeFold` …）现在只能经 `policy.context` 写，所以冲突那一格必须走这条路。
+ *
+ * @param {Record<string, any>} policy
+ * @returns {import("../src/assembly.js").AssemblyPort}
+ */
+function foldingPort(policy = {}) {
+  return createAssemblyPort({
+    modelConfig: { resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1024 }) },
+    provider: createFakeProvider(toolScript(6)),
+    tools: { definitions: [], executeTool: async () => "tool output" },
+    session: { id: `ports-498s4c-fold-${process.pid}` },
+    policy,
+  });
+}
+
 /** 一次可重试失败的 provider（第一次抛 retryable，之后成功）。 */
 function retryingProvider(counter) {
   return {
@@ -330,16 +347,22 @@ test("C3 端口位不进扁平表示（走 slots），与壳里老槽位不等�
     }).conflicts,
     [{ path: "ports.judgeProvider", key: "judgeProvider" }],
   );
+  // ⚠ #498 S3 的真实后果（如实披露，不是测试技巧）：`context.strategy`（**对象**）在宿主面上
+  // 只剩**一条**可达写法——装配口 `policy.context`。顶层扁平 `context` 被名称闸口拒，
+  // `config.folding.context.strategy` 被「config 只装数据」当场拒（对象里有函数）。
+  // 所以这一格拆两半：展开层仍按老口径钉（纯函数，输入不受白名单约束），宿主面用 policy 真跑。
   const strategy = { shouldCompact: async () => false, compact: async (messages) => ({ messages }) };
+  // 两个**不同**的对象（同一个引用是"等价"分支，见下一句）。
+  const otherStrategy = { shouldCompact: async () => false, compact: async (messages) => ({ messages }) };
   assert.deepEqual(
     expandCapabilitiesNamespace({
-      config: { folding: { context: { } } },
+      context: { strategy: otherStrategy },
       capabilities: { ports: { strategy } },
     }).conflicts,
     [{ path: "ports.strategy", key: "strategy" }],
   );
   assert.deepEqual(
-    expandCapabilitiesNamespace({ config: { folding: { context: { } } }, capabilities: { ports: { strategy } } }).conflicts,
+    expandCapabilitiesNamespace({ context: { strategy }, capabilities: { ports: { strategy } } }).conflicts,
     [],
     "同一个策略对象 ⇒ 不算冲突",
   );
@@ -362,6 +385,25 @@ test("C3 端口位不进扁平表示（走 slots），与壳里老槽位不等�
   });
   assert.match(nestedShell.message, /config\.timing\.retry\.sleepImpl is not accepted/u);
   assert.match(nestedShell.message, /its canonical home is capabilities\.ports\.sleepImpl/u);
+
+  // strategy 的宿主面冲突：`policy.context.strategy`（壳内老槽位，装配口路线未收窄）
+  // 与 `policy.capabilities.ports.strategy` 不等价 ⇒ 恰一条 `config_override_conflict`。
+  const shellStrategy = { name: "shell", async shouldCompact() { return false; }, async compact(messages) { return { messages }; } };
+  const portStrategy = { name: "port", async shouldCompact() { return false; }, async compact(messages) { return { messages }; } };
+  const conflictEvents = [];
+  await runToolLoop({
+    assemblyPort: makePort({
+      context: { strategy: shellStrategy },
+      capabilities: { ports: { strategy: portStrategy } },
+    }),
+    initialUserMessage: "go",
+    completion: false,
+    wrapup: false,
+    onEvent: (event) => conflictEvents.push(event),
+  });
+  const strategyConflicts = conflictEvents.filter((event) => event.type === "config_override_conflict");
+  assert.equal(strategyConflicts.length, 1, "壳内 strategy 与端口位不等价 ⇒ 恰一条冲突事件（真 run）");
+  assert.deepEqual(strategyConflicts[0].conflicts, [{ path: "ports.strategy", key: "strategy" }]);
 });
 
 // ================================================================ C4. sleepImpl 行为证据
@@ -602,10 +644,16 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   ]);
 
   // ④ 等价（同一个函数对象）⇒ **零**事件（反向证 ③ 的那一格：把等价分支短路就会红）。
+  // #498 S3: a function cannot live in `config` at all, so the "same reference in both places" cell
+  // uses the **assembly port** (`policy.context`), which is the one remaining way to write the old
+  // in-shell slot. The equivalence rule itself (`isDeepStrictEqual` / identity) is unchanged.
   const sameHook = () => false;
   const same = [];
-  await runDirect({
-    config: { folding: { context: { protectedMessage: sameHook } } },
+  await runToolLoop({
+    assemblyPort: makePort({ context: { protectedMessage: sameHook } }),
+    initialUserMessage: "go",
+    completion: false,
+    wrapup: false,
     capabilities: { hooks: { protectedMessage: sameHook } },
     onEvent: (event) => { same.push(event); },
   });
@@ -629,7 +677,13 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
     config: { folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-statistical" } } },
     ...extra,
   }).then((result) => JSON.stringify(result.messages));
-  assert.equal((await hinted({ context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-statistical", recoveryHint: "DATA-HINT" } })).includes("DATA-HINT"), true, "数据形态进折叠摘要");
+  assert.equal(
+    (await hinted({
+      config: { folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-statistical", recoveryHint: "DATA-HINT" } } },
+    })).includes("DATA-HINT"),
+    true,
+    "数据形态进折叠摘要",
+  );
   assert.equal((await hinted({ capabilities: { hooks: { recoveryHint: () => "FUNC-HINT" } } })).includes("FUNC-HINT"), true, "函数形态进折叠摘要");
 });
 
@@ -651,11 +705,13 @@ test("C9 壳内老槽位零回归：config.timing.retry / context.onBeforeFold /
   assert.equal(counter.calls, 2, "config.timing.retry.attempts 真的生效（一次重试 ⇒ 两次调用）");
 
   // ② `context: { onBeforeFold }` / `onAfterFold` / `stubFor`
+  // #498 S3: `context.onBeforeFold` 是**函数** ⇒ 规范之家 `capabilities.hooks.onBeforeFold`。
+  // 壳内老槽位的可达写法只剩装配口 `policy.context`（见 C12），这里钉的是宿主升级后的写法。
   const flatBefore = [];
   const flatFolded = await foldingRun({
-    context: { budgetTokens: 1, keepRounds: 0, onBeforeFold: (payload) => { flatBefore.push(payload); } },
+    capabilities: { hooks: { onBeforeFold: (payload) => { flatBefore.push(payload); } } },
   });
-  assert.equal(flatBefore.length > 0, true, "扁平 context.onBeforeFold 照旧收到投递");
+  assert.equal(flatBefore.length > 0, true, "capabilities.hooks.onBeforeFold 收到投递（旧槽位的规范之家）");
   assert.equal(flatFolded.termination.reason === "end_turn" || flatFolded.termination.reason === "max_rounds_cap", true);
 
   // ③ `reflection: { judge: { provider } }`（嵌套老写法）
@@ -680,15 +736,12 @@ test("C9 壳内老槽位零回归：config.timing.retry / context.onBeforeFold /
     async shouldCompact() { return true; },
     async compact(messages) { compacted += 1; return { messages }; },
   };
-  await runToolLoop({ capabilities: { ports: { strategy: flatStrategy } },
-    provider: createFakeProvider(DONE),
-    executeTool: async () => "ok",
+  await runToolLoop({ assemblyPort: makePort({ context: { strategy: flatStrategy, budgetTokens: 1 } }),
     initialUserMessage: "go",
     completion: false,
     wrapup: false,
-    config: { folding: { context: { budgetTokens: 1, } } },
   });
-  assert.equal(compacted, 1, "扁平 context.strategy 对象照旧被调");
+  assert.equal(compacted, 1, "壳内老槽位 context.strategy（经装配口 policy）照旧被调");
 });
 
 // ================================================================ C10. 装配口路线端到端
@@ -798,9 +851,17 @@ test("C12 逐叶冲突（真 run，3 个折叠 hooks）：onBeforeFold / onAfter
       portCalls.push(payload);
       return leaf === "stubFor" ? "PORT-STUB" : undefined;
     };
-    const result = await foldingRun({
-      config: { folding: { context: { budgetTokens: 1, keepRounds: 0, [leaf]: shellFn } } },
-      capabilities: { hooks: { [leaf]: portFn } },
+    // #498 S3: a function cannot live in `config`, so "the old in-shell slot is still callable"
+    // is proven through the assembly port's `policy.context` (the one route that was not narrowed).
+    const result = await runToolLoop({
+      assemblyPort: foldingPort({
+        context: { budgetTokens: 1, keepRounds: 0, [leaf]: shellFn },
+        capabilities: { hooks: { [leaf]: portFn } },
+      }),
+      initialUserMessage: "go",
+      completion: false,
+      wrapup: false,
+      maxRounds: 4,
       onEvent: (event) => events.push(event),
     });
     assert.equal(
@@ -836,9 +897,13 @@ test("C14 逐叶等价（真 run，4 个 hooks）：同一函数引用同时写�
   for (const leaf of HOOK_SLOT_LEAVES) {
     const same = () => {};
     const events = [];
-    await runDirect({
-      ...shellHomeOptions(leaf, same),
-      capabilities: { hooks: { [leaf]: same } },
+    // #498 S3: the old in-shell slot is only reachable through the assembly port now, so "same
+    // reference in both places ⇒ zero conflicts" is proven on that route (真 run).
+    await runToolLoop({
+      assemblyPort: makePort({ ...shellHomeOptions(leaf, same), capabilities: { hooks: { [leaf]: same } } }),
+      initialUserMessage: "go",
+      completion: false,
+      wrapup: false,
       onEvent: (event) => events.push(event),
     });
     assert.deepEqual(

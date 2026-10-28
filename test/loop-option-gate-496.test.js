@@ -133,22 +133,25 @@ const assemblyError = (policy = {}, explicit = {}) => {
  * 只给反例会让「闸口把整个字段都拒了」这种过严也算绿。
  */
 const GATE_RULES = [
+  // #498 S3: the flat `context` option is retired, so every `context` cell below writes the nested
+  // spelling (`config.folding.context`). The expansion phase writes it back to
+  // `effectiveOptions.context`, which is why the semantic-phase rules and their wording are unchanged.
   {
     id: "context-shape",
-    bad: { context: "not-an-object" },
-    good: { context: { budgetTokens: 1000 } },
+    bad: { config: { folding: { context: "not-an-object" } } },
+    good: { config: { folding: { context: { budgetTokens: 1000 } } } },
     message: "context must be an object",
   },
   {
     id: "context-knob-name",
-    bad: { context: { budgetTokens: 1000, summarizeBudgetMs: 5 } },
-    good: { context: { budgetTokens: 1000, summarizerBudgetMs: 5 } },
+    bad: { config: { folding: { context: { budgetTokens: 1000, summarizeBudgetMs: 5 } } } },
+    good: { config: { folding: { context: { budgetTokens: 1000, summarizerBudgetMs: 5 } } } },
     message: 'unknown assembly policy context option: "summarizeBudgetMs"',
   },
   {
     id: "context-knob-value",
-    bad: { context: { maxSummaryTokens: 0 } },
-    good: { context: { maxSummaryTokens: 900 } },
+    bad: { config: { folding: { context: { maxSummaryTokens: 0 } } } },
+    good: { config: { folding: { context: { maxSummaryTokens: 900 } } } },
     message: "maxSummaryTokens must be a positive integer",
   },
   {
@@ -159,14 +162,17 @@ const GATE_RULES = [
   },
   {
     id: "context.onBeforeFold-shape",
-    bad: { context: { onBeforeFold: "hooks" } },
-    good: { context: { onBeforeFold: () => {} } },
+    bad: { config: { folding: { context: { onBeforeFold: "hooks" } } } },
+    // The positive case stays **data-only** for the same reason as the `retry.sleepImpl` cell above: a
+    // function inside `config` is rejected by the namespace gate (#498 S4a constraint 4). The function
+    // carrier's canonical home is `capabilities.hooks.onBeforeFold` (covered in D① below).
+    good: { config: { folding: { context: { budgetTokens: 1000 } } } },
     message: "context.onBeforeFold must be a function (or omitted)",
   },
   {
     id: "context.onAfterFold-shape",
-    bad: { context: { onAfterFold: {} } },
-    good: { context: { onAfterFold: () => {} } },
+    bad: { config: { folding: { context: { onAfterFold: {} } } } },
+    good: { config: { folding: { context: { budgetTokens: 1000 } } } },
     message: "context.onAfterFold must be a function (or omitted)",
   },
   {
@@ -304,7 +310,7 @@ test("B 每条闸口规则：反例两条路线都抛同一句（只差 via）�
 
 test("B 多问题合并：同一次调用里的多个问题按规则顺序用「; 」连成一条 TypeError", async () => {
   const error = await directError({
-    context: { summarizeBudgetMs: 5, maxSummaryTokens: 0, onBeforeFold: "hooks" },
+    config: { folding: { context: { summarizeBudgetMs: 5, maxSummaryTokens: 0, onBeforeFold: "hooks" } } },
   });
   assert.equal(
     error.message,
@@ -322,7 +328,7 @@ test("C① 每个旋钮名的拼错都在两条路线抛：派生自 FOLD_SUMMAR
     const typo = `${name}s`;
     assert.equal(isSummarizerKnobKey(typo), true, `${typo} 必须被认成旋钮手滑`);
     assert.equal(CONTEXT_OPTION_NAMES.includes(typo), false, `${typo} 不得在白名单里`);
-    const direct = await directError({ context: { [typo]: 1024 } });
+    const direct = await directError({ config: { folding: { context: { [typo]: 1024 } } } });
     assert.equal(direct?.message, `unknown assembly policy context option: ${JSON.stringify(typo)}`, `直连 ${typo}`);
     const assembly = await assemblyError({ context: { [typo]: 1024 } });
     assert.equal(assembly?.message, direct?.message, `两条路线 ${typo} 必须同一句`);
@@ -331,11 +337,11 @@ test("C① 每个旋钮名的拼错都在两条路线抛：派生自 FOLD_SUMMAR
 
 test("C② 每个旋钮的合法值都在两条路线放行；非法值（0 / 负数 / 小数 / 字符串 / null）都抛", async () => {
   for (const name of FOLD_SUMMARIZER_CAP_NAMES) {
-    const ok = await directError({ context: { [name]: 1024 } });
+    const ok = await directError({ config: { folding: { context: { [name]: 1024 } } } });
     assert.equal(ok, null, `${name}=1024 必须放行（实测 ${ok?.message}）`);
     for (const value of [0, -1, 1.5, "1024", null]) {
       const expected = `${name} must be a positive integer`;
-      const direct = await directError({ context: { [name]: value } });
+      const direct = await directError({ config: { folding: { context: { [name]: value } } } });
       assert.equal(direct?.message, expected, `${name}=${String(value)} 直连`);
       const assembly = await assemblyError({ context: { [name]: value } });
       assert.equal(assembly?.message, expected, `${name}=${String(value)} 装配口`);
@@ -347,7 +353,9 @@ test("B(null) `context: null` 逐字等于省略：两条路线都不抛，且�
   // 契约明写「省略或 `null` = 没配」。这条放行口以前**零断言**（把它改成抛错，全量测试 0 红），
   // 而它是本单唯一一处「非函数 / 非对象值仍放行」的例外，最容易被下一轮「收紧 context 形状」静默破掉。
   const omitted = await runDirect();
-  const nulled = await runDirect({ context: null });
+  // #498 S3: the flat `context` is retired; the nested spelling carries the same "null = omitted"
+  // meaning (expansion writes `effectiveOptions.context = null`, the semantic phase skips it).
+  const nulled = await runDirect({ config: { folding: { context: null } } });
   assert.equal(nulled.termination.reason, omitted.termination.reason, "`context: null` 必须与省略同一终局");
   assert.equal(nulled.termination.reason, "end_turn");
   assert.equal(nulled.rounds, omitted.rounds, "`context: null` 必须与省略同轮数");
@@ -371,7 +379,7 @@ test("B(null) `context: null` 逐字等于省略：两条路线都不抛，且�
 test("C③ 宿主业务键照旧放行（#469 回归）：两条路线都不抛；事件只有装配口路线发（直连从不发）", async () => {
   // 直连侧：业务键不是旋钮家族 ⇒ 语义相不拦；引擎也不发事件（没有 emit 端口），但绝不抛。
   const directOk = await directError({
-    context: { budgetTokens: 1000, workspaceName: "fde-station", summaryStyle: "brief" },
+    config: { folding: { context: { budgetTokens: 1000, workspaceName: "fde-station", summaryStyle: "brief" } } },
   });
   assert.equal(directOk, null, "直连：业务键不得被当成拼错的旋钮");
 
@@ -415,8 +423,21 @@ test("D① 承载宿主回调的字段：省略 = 不订阅，给对就**真的�
     config: { folding: { context: {
       budgetTokens: 300,
       keepRounds: 1,
-                      } }, timing: { retry: { attempts: 2 } } },
-    capabilities: { ports: { sleepImpl: async (ms) => { calls.sleepImpl += 1; sleeps.push(ms); } } },
+    } }, timing: { retry: { attempts: 2 } } },
+    // #498 S3: `context.strategy` (an **object**) and `context.onBeforeFold` / `.onAfterFold`
+    // (functions) are behaviour carriers — their canonical homes are `capabilities.ports.strategy`
+    // and `capabilities.hooks.*`. The config namespace rejects them by name, so the split here is by
+    // value shape, and the counters below still prove the old in-shell slots are really delivered.
+    capabilities: {
+      ports: {
+        sleepImpl: async (ms) => { calls.sleepImpl += 1; sleeps.push(ms); },
+        strategy: createSlidingWindowStrategy({ keepRounds: 1 }),
+      },
+      hooks: {
+        onBeforeFold: () => { calls.onBeforeFold += 1; },
+        onAfterFold: () => { calls.onAfterFold += 1; },
+      },
+    },
     reflection: { enabled: false, onReflection: () => {} },
     diagnostics: { error: (event) => { calls.error += 1; persistenceEvents.push(event); } },
     // 钩子**先计数再抛**：投递真的发生了（计数 >= 1），失败走持久化账本（`diagnostics.error` 真的被调）。
@@ -473,8 +494,8 @@ test("D② 承载回调的字段给错就启动即抛：反例清单逐条（含
     [{ reflection: { enabled: false, onReflection: 1 } }, "reflection.onReflection must be a function (or omitted)"],
     [{ reflection: { enabled: false, onReflection: null } }, "reflection.onReflection must be a function (or omitted)"],
     [{ diagnostics: { error: [] } }, "diagnostics.error must be a function (or omitted)"],
-    [{ context: { onBeforeFold: null } }, "context.onBeforeFold must be a function (or omitted)"],
-    [{ context: { onAfterFold: 0 } }, "context.onAfterFold must be a function (or omitted)"],
+    [{ config: { folding: { context: { onBeforeFold: null } } } }, "context.onBeforeFold must be a function (or omitted)"],
+    [{ config: { folding: { context: { onAfterFold: 0 } } } }, "context.onAfterFold must be a function (or omitted)"],
   ];
   for (const [bad, message] of cases) {
     const label = Object.keys(bad)[0];

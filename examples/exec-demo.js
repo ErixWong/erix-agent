@@ -224,8 +224,17 @@ export async function runExecDemo(task = "查看当前目录有哪些文件，�
     maxRounds: 8,
     store,
     runId,
+    // #498 S3: the top-level `context` shell is retired. The bag mixes data with a **behaviour**
+    // carrier (the strategy object), so it splits by value shape: numbers/strings go to
+    // `config.folding.context`, the strategy object to `capabilities.ports.strategy`.
     ...(opts.compactBudgetTokens
-      ? { context: { strategy: createFoldStatisticalStrategy(), budgetTokens: opts.compactBudgetTokens, keepRounds: opts.keepRounds ?? 1 } }
+      ? {
+        config: { folding: { context: {
+          budgetTokens: opts.compactBudgetTokens,
+          keepRounds: opts.keepRounds ?? 1,
+        } } },
+        capabilities: { ports: { strategy: createFoldStatisticalStrategy() } },
+      }
       : {}),
     onRound: (info) => console.log(`[round ${info.round}] +${info.messages.length} 条消息${info.folded ? "（含折叠）" : ""}`),
   });
