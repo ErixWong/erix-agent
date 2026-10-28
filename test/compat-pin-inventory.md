@@ -61,9 +61,10 @@
 
 早先本表在附表与顶部两处写「迁数据面是可选的整洁 / 不在 0.28 路径上 / S9 不需要等它」。**那句作废。**
 
-* **S3（删顶层扁平配置键）在做，并入 0.28 破坏包**；判据已更正为「顶层 **顶层 67 → **24**（S3 之后）→ **13**（S9 之后）——**机器口径，不传 prose 数字**：今天实测 `RUN_TOOL_LOOP_OPTION_NAMES.length === 67` = 配置面有规位 **43** + 能力面有规位 **13** + 无规位 **11**（`assemblyPort` / `provider` / `executeTool` / `todoStateProvider` / `semanticStateProvider` / `modelConfig` / `store` / `diagnostics` / `signal` / `config` / `capabilities`）；S3 只删「配置面有规位」那 43 个 ⇒ 67 − 43 = **24**；S9 再退 11 个扁平 `on*` 回调 ⇒ **13**。⚠ 母单 #495 里那句「65 → 33」是**当时的分类算术**（提交人自己在 2026-10-27 的更正里就是这么定性那句「45 是我的分类算术，仓库里没有可复现依据」），今天按上式重算，**不要再往工单里抄 33****」。
+* **S3（删顶层扁平配置键）在做，并入 0.28 破坏包**；判据已更正为「顶层 **顶层 67 → **24**（S3 之后）→ **13**（S9 之后）——**机器口径，不传 prose 数字**：S3 之前实测 `RUN_TOOL_LOOP_OPTION_NAMES.length === 67`（**S3 的 `timing` + `folding` 两片之后是 61** = 67 − 3 − 3，现场 `node -e` 直读，别抄）= 配置面有规位 **43** + 能力面有规位 **13** + 无规位 **11**（`assemblyPort` / `provider` / `executeTool` / `todoStateProvider` / `semanticStateProvider` / `modelConfig` / `store` / `diagnostics` / `signal` / `config` / `capabilities`）；S3 只删「配置面有规位」那 43 个 ⇒ 67 − 43 = **24**；S9 再退 11 个扁平 `on*` 回调 ⇒ **13**。⚠ 母单 #495 里那句「65 → 33」是**当时的分类算术**（提交人自己在 2026-10-27 的更正里就是这么定性那句「45 是我的分类算术，仓库里没有可复现依据」），今天按上式重算，**不要再往工单里抄 33****」。
   ⚠ **口径修正（#498 S7c）**：本表早先两处写「顶层 65」，那是**没实测**的旧数。实测
   `RUN_TOOL_LOOP_OPTION_NAMES.length === 67`（`node -e` 直读，见「复跑方法」第 6 条）；65 是 #517 之前的快照。
+  **S3 两片之后是 61**（`timing` 三键 + `folding` 三键离开白名单），同样现场派生、不抄数。
 * 今天实测：`RUN_TOOL_LOOP_OPTION_NAMES` **67** 个顶层键，其中 **56 个已有规位**
   （`config.*` / `capabilities.*`），剩 11 个是纯装配/身份键（`provider` / `executeTool` / `store` /
   `signal` / `assemblyPort` / `modelConfig` / `todoStateProvider` / `semanticStateProvider` /
