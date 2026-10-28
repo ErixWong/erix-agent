@@ -35,6 +35,9 @@
 //      `test/` 里有 121 处写点、摊在 41 个文件里（多数文件**已经有** `config: {`）——朴素替换会造
 //      重复键、后者静默胜，正是约束 1 那个雷区。夹具把它们并进同一个容器并摘键，与种子同一条
 //      纪律：这是**夹具入参**，不是引擎拼写。
+//   5. **`input` 组的 `wrapup`（#528）走同一条路**（`withInputFamily`）：家是 `config.input.wrapup`，
+//      与种子同一个容器，所以翻译点也在本文件（不另造第二套夹具）。**规位赢扁平**——两者同时
+//      在场时保留 `config.input.wrapup`、只摘扁平键，与引擎的展开优先级同向。
 //
 // 零真实 LLM、不写盘、不碰 `~/.erix`：夹具只做对象合并，run 的隔离仍由调用方负责。
 
@@ -90,6 +93,19 @@ const RUN_FAMILY_FIXTURE_KEYS = Object.freeze([
 ]);
 
 /**
+ * `input` 组里靠本夹具翻译的扁平拼写（#528）。
+ *
+ * `wrapup` 的家是 `config.input.wrapup`（`CONFIG_NAMESPACE_SCHEMA.input`），展开相写回
+ * `effectiveOptions.wrapup`，引擎读侧（`src/loop/orchestrator.js` 里 `wrapup !== false` 那处真值
+ * 判断）一字不动。这些名字是**夹具入参约定**，不是引擎拼写；翻译完就摘键。
+ *
+ * @type {readonly string[]}
+ */
+const INPUT_FAMILY_FIXTURE_KEYS = Object.freeze([
+  "wrapup",
+]);
+
+/**
  * 把 `run` 组四件的扁平夹具拼写搬进 `config.run.*`（约束 1：不许造第二个 `config` 键）。
  * 非对象 `config` / `config.run` 是「形状拒绝」格，原样透传（约束 3）。
  *
@@ -117,8 +133,44 @@ function withRunFamily(options) {
   return { ...rest, config: { ...base, run: { ...(run ?? {}), ...moved } } };
 }
 
+/**
+ * `input` 组的夹具级拼写 → 规位 `config.input.*`（#528）。
+ *
+ * 目前只有一件：`wrapup`（家 `config.input.wrapup`）。它和种子同组、同一条纪律——
+ * 调用方照旧写扁平 `wrapup: false`，夹具在**调 `runToolLoop` 之前**把它并进唯一的
+ * `config.input` 容器并摘掉扁平键；`runToolLoop` 永远看不到旧拼写。
+ *
+ * 与种子的两处差别（都是照引擎的实际语义，不是夹具自己发明的）：
+ *   · **规位赢扁平**：`config.input.wrapup` 与扁平 `wrapup` 同时在场时保留规位那份
+ *     （展开相写回 `effectiveOptions.wrapup`，所以引擎读到的就是规位那份），只摘扁平键；
+ *   · 形状拒绝格（非对象 `config` / `config.input`）**原样透传**（与 `withRunFamily` 同一条约束 3）。
+ *
+ * @param {Record<string, any>} options
+ * @returns {Record<string, any>}
+ */
+function withInputFamily(options) {
+  const rest = { ...options };
+  const moved = {};
+  for (const key of INPUT_FAMILY_FIXTURE_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(rest, key)) continue;
+    if (rest[key] !== undefined) moved[key] = rest[key];
+    delete rest[key];
+  }
+  if (Object.keys(moved).length === 0) return rest;
+  const config = rest.config;
+  if (config !== undefined && (config === null || typeof config !== "object" || Array.isArray(config))) {
+    return options;
+  }
+  const base = config === undefined ? {} : config;
+  const input = base.input;
+  if (input !== undefined && (input === null || typeof input !== "object" || Array.isArray(input))) {
+    return options;
+  }
+  return { ...rest, config: { ...base, input: { ...moved, ...(input ?? {}) } } };
+}
+
 export function withSeed(options = {}) {
-  const { seed, initialUserMessage, ...flat } = withRunFamily(options);
+  const { seed, initialUserMessage, ...flat } = withInputFamily(withRunFamily(options));
   const message = seed === undefined ? initialUserMessage : seed;
   const rest = flat;
   const config = rest.config;
