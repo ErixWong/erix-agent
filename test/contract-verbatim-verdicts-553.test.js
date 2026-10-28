@@ -450,30 +450,38 @@ export function auditAssemblyPortVerdicts(text) {
 
 // ---------------------------------------------------------------- G2. 指路子句单钉（#556 留的一笔）
 //
-// `; its canonical home is …` 这条**指路子句**今天只有一处报警面：#556 自己套件的 B2（那里是**手抄**
-// 的整句）。对齐套件里它只是 G 组那两格**整句**的一部分——整句变了当然红，但「指路指错了地方」与
-// 「可接受集合变了」在报警文本上分不开；更要紧的是**引擎哪天不再指路**时，G 组只会说「整句不等」。
-// 所以单独给一格，只钉指路子句：
+// 那条**指路子句**（`… ; its canonical home is <住所>: …`）今天只有一处报警面：#556 自己套件的
+// B2——那里是**手抄**的整句。对齐套件里它只是 G 组那两格**整句**的一部分：整句变了当然红，
+// 但「指路指错了地方」与「可接受集合变了」在报警文本上分不开；更要紧的是**引擎哪天不再指路**时，
+// G 组只会说「整句不等」。所以单独给一格，只钉指路子句：
 //   · 目标住所由**规则**算出（端口的两个容器都住在 `policy` 下一层 ⇒ `policy.<name>`），不手抄；
-//   · 子句的字面值仍**取自运行时**（`splitPointerClause()` 的切点来自引擎那句原文）。
+//   · 子句的切点也**不写判词**：用上面那个规则算出的住所定位，再回溯到上一个子句分隔 `; `。
 // 于是这一格的三种红各不相同：引擎不再指路 / 指错了住所 / 文档没有逐字复述。
 
-const POINTER_MARKER = "; its canonical home is ";
 const POINTER_CONTAINERS = ["config", "capabilities"];
 
 /**
- * 把一句判词切成「主体 + 指路子句」；没有指路子句 ⇒ `null`（引擎不再指路时 G2 必须红）。
+ * 把一句判词切成「主体 + 指路子句 + 指路住所」；没有指路子句 ⇒ `null`（引擎不再指路时 G2 必须红）。
  *
- * `POINTER_MARKER` 只是**定位器**（与 A 组的 `FLAT_NAME_QUOTE`、C 组的 `TYPE_ERROR_PREFIX` 同一性质），
- * 不是判词副本：它只用来找切点，两边切出来的子句再**逐字相等**地比。
+ * 切点**不写判词字面量**：先用规则算出的住所 `policy.<name>` 定位，找不到就退回**最后一个**子句分隔
+ * `; `（那时指路要么指错了地方、要么整段不见了——两种都由 G2 的**不同断言**点名）。
+ * `policy.` 之后到第一个 `:` 之前就是住所本身。
  *
  * @param {string} verdict
- * @returns {{ head: string, pointer: string } | null}
+ * @param {string} name 容器名（`config` / `capabilities`）——它同时是 G 组要断言的成员名
+ * @returns {{ head: string, pointer: string, home: string | null } | null}
  */
-export function splitPointerClause(verdict) {
-  const at = verdict.indexOf(POINTER_MARKER);
-  if (at === -1) return null;
-  return { head: verdict.slice(0, at), pointer: verdict.slice(at) };
+export function splitPointerClause(verdict, name) {
+  const at = verdict.indexOf(`policy.${name}`);
+  const start = verdict.lastIndexOf("; ", at === -1 ? verdict.length : at);
+  if (start === -1) return null;
+  const pointer = verdict.slice(start);
+  const homeAt = pointer.indexOf("policy.");
+  return {
+    head: verdict.slice(0, start),
+    pointer,
+    home: homeAt === -1 ? null : pointer.slice(homeAt).split(":")[0].trim(),
+  };
 }
 
 /** 整份文档的审计（五条判据一起跑），给反向证与正式断言共用同一条代码路径。 */
@@ -610,21 +618,20 @@ for (const which of ["en", "cn"]) {
     const spans = inlineSpans(read(which));
     for (const name of POINTER_CONTAINERS) {
       const truth = truthForPortInput(portInputWith(name, {}));
-      const runtime = splitPointerClause(truth);
+      const runtime = splitPointerClause(truth, name);
       assert.notEqual(
         runtime,
         null,
         `引擎对顶层 ${name} 的判词不再带指路子句——契约里那句指路就成了没有出处的引用`,
       );
       // 住所是**算出来的**：端口的两个容器都住在 `policy` 下一层，所以指路目标恒为 `policy.<name>`。
-      const home = runtime.pointer.slice(POINTER_MARKER.length).split(":")[0].trim();
       assert.equal(
-        home,
+        runtime.home,
         `policy.${name}`,
-        `指路子句把 ${name} 指向了 ${home}——端口的两个容器只能住在 policy 下一层`,
+        `指路子句把 ${name} 指向了 ${runtime.home}——端口的两个容器只能住在 policy 下一层`,
       );
       const matching = spans.filter((span) => {
-        const doc = splitPointerClause(span);
+        const doc = splitPointerClause(span, name);
         return doc !== null && doc.pointer === runtime.pointer;
       });
       assert.equal(
