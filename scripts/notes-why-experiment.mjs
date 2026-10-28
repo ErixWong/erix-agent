@@ -475,24 +475,27 @@ async function runOne({ variant, model, index, configPath, root, timeoutMs }) {
   try {
     result = await runToolLoop({
       provider,
-      system,
-      config: { input: { initialUserMessage: promptForVariant(variant) } },
-      task: promptForVariant(variant),
       tools,
       executeTool,
-      maxRounds: MAX_ROUNDS,
-      maxTokens: config.maxOutputTokens,
-      context,
       store,
-      runId,
-      reflection: false,
-      retry: false,
-      completion: { signals: [], maxNoToolRounds: 1 },
       signal: controller.signal,
-      ...(finalGuard === undefined ? {} : {
-        finalGuard,
-        finalGuardMaxRetries: 2,
-      }),
+      // #546：选项拼写迁移（只改落点，观察逻辑/打印/判据一字未动）。退役的扁平拼写 → 规位家：
+      //   `system` → `config.input.system`（#498 S3 A6）、`task` → `config.metadata.task`（A9）、
+      //   `maxTokens` → `config.tuning.maxTokens`（A5）、`maxRounds` → `config.run.maxRounds`（A21）、
+      //   `runId` → `config.run.runId`（A20）、`reflection` → `config.run.reflection`（#530）、
+      //   `retry` → `config.timing.retry`（S3 timing）、`completion` → `config.run.completion`（A23b）、
+      //   `context` → `config.folding.context`（folding 组）、
+      //   `finalGuardMaxRetries` → `config.guard.finalGuardMaxRetries`（guard 组）。
+      config: {
+        input: { initialUserMessage: promptForVariant(variant), system },
+        metadata: { task: promptForVariant(variant) },
+        tuning: { maxTokens: config.maxOutputTokens },
+        run: { runId, maxRounds: MAX_ROUNDS, reflection: false, completion: { signals: [], maxNoToolRounds: 1 } },
+        timing: { retry: false },
+        folding: { context },
+        ...(finalGuard === undefined ? {} : { guard: { finalGuardMaxRetries: 2 } }),
+      },
+      ...(finalGuard === undefined ? {} : { finalGuard }),
     });
   } catch (caught) {
     error = caught;
@@ -704,9 +707,22 @@ export function parseArgs(args) {
   return options;
 }
 
+/**
+ * 真模型实验的**闸口**（#546）：照 `scripts/cli-real-smoke.mjs` / `scripts/release-real-check.mjs`
+ * 的先例，`ERIX_E2E_REAL=1` 才跑，否则**退出码 0 + 分类说明**。
+ * 退出码：`0` = 闸口未开（一步都没跑）/ 跑完；`1` = 真失败（与既有行为一致）。
+ */
+function skipUnlessRealE2E() {
+  if (process.env.ERIX_E2E_REAL === "1") return false;
+  console.log("[skip] ERIX_E2E_REAL 未设为 1：真模型变体实验一步都没跑（本脚本会打真上游/真模型）。"
+    + " 要跑：ERIX_E2E_REAL=1 node scripts/notes-why-experiment.mjs --yes [--runs N] [--max-calls N]");
+  return true;
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options === null) return;
+  if (skipUnlessRealE2E()) return;
   const xdg = process.env.XDG_CONFIG_HOME?.trim();
   const sourceConfigPath = options.configPath
     ?? (xdg
