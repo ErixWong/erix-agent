@@ -1,11 +1,18 @@
 
 import { assertCapabilitiesNamespace } from "./loop/capabilities-namespace.js";
-import { assertConfigNamespace } from "./loop/config-namespace.js";
+import { assertConfigNamespace, collectConfigSourceConflicts } from "./loop/config-namespace.js";
 // issue #498 第 1 条：调用期覆盖的**键名闭集**不另抄一份——`overrides` 的值最终就是喂给
 // `runToolLoop` 的选项，而「runToolLoop 接受哪些选项」的唯一来源是 `RUN_TOOL_LOOP_OPTION_NAMES`
 // （#496 / #502 立的规矩：接受面 = 白名单，不许有第二张表）。两个符号都只在函数体里用，
 // 所以 `assembly.js ↔ loop/option-normalization.js` 这条环在 ESM 下没有 TDZ 问题。
-import { RUN_TOOL_LOOP_OPTION_SET, optionSuggestion } from "./loop/option-normalization.js";
+// #544 adds the **merged-representation** name gate here: it is the same allowlist, applied one
+// phase later, so it belongs next to the phase-① gate it mirrors (and this module is where the
+// names the gate has to judge are actually produced).
+import {
+  RUN_TOOL_LOOP_OPTION_SET,
+  assertRunToolLoopOptionNames,
+  optionSuggestion,
+} from "./loop/option-normalization.js";
 import {
   MODEL_CONFIG_RESOLVER_HINT,
   assertSemanticOptionValues,
@@ -19,6 +26,10 @@ import {
 // from this module); the canonical definition lives in assembly-validators.js.
 export { MODEL_CONFIG_RESOLVER_HINT };
 
+/**
+ * The `policy` plane's own name allowlist. Kept module-local: it is read by the merged-representation
+ * name gate below, and nowhere else.
+ */
 const ASSEMBLY_POLICY_OPTION_NAMES = new Set([
   "system",
   "wrapup",
@@ -104,11 +115,114 @@ const ASSEMBLY_DERIVED_ORIGINS = Object.freeze({
   tools: "port.tools.definitions",
   executeTool: "port.tools.executeTool",
   store: "port.store",
-  runId: "port.session.id",
+  // #544: `runId` / `initialMessages` used to be listed here. They are no longer top-level keys
+  // at all (see `assemblyPortDerivedConfigLeaves`), so an entry would be dead weight.
   session: "port.session",
-  initialMessages: "port.session.initialMessages",
   onEvent: "port.emit",
 });
+
+/**
+ * The config leaves the assembly port contributes itself (issue #544).
+ *
+ * `session.id` / `session.initialMessages` are the port's spelling of two knobs whose canonical
+ * home is the config tree (`config.run.runId` / `config.input.messages`). They used to be emitted
+ * as **flat options** (`runId` / `initialMessages`), i.e. the engine produced exactly the spelling
+ * the name gate refuses a host for writing: `runToolLoop({ runId })` threw while
+ * `runToolLoop({ assemblyPort })` sailed through with the same key in the merged tree. One option
+ * tree cannot have two legalities, so the port now speaks the canonical spelling too.
+ *
+ * The values are unchanged (`session.id` is still the run id, `session.initialMessages` still the
+ * seed history): the expansion phase writes both leaves back onto `effectiveOptions.runId` /
+ * `.initialMessages`, so no engine read side moves.
+ *
+ * @param {AssemblyPort} port
+ * @returns {Record<string, Record<string, any>>} group → leaf → value
+ */
+function assemblyPortDerivedConfigLeaves(port) {
+  const leaves = { run: { runId: port.session.id } };
+  if (port.session.initialMessages !== undefined) {
+    leaves.input = { messages: port.session.initialMessages };
+  }
+  return leaves;
+}
+
+/**
+ * Fold the port's own config leaves under a config tree, per leaf, only where that tree has no value
+ * (issue #544).
+ *
+ * Not a new merge rule: the derived values used to be flat options, and `expandConfigNamespace` lets
+ * `config.*` win over the flat spelling of the same knob — so "the tree wins, the derived value fills
+ * the hole" is the behaviour that was already in force. It is applied twice, on purpose: to the
+ * port's `policy.config` when the base options are built, and to a call-level `config` after the
+ * wholesale container override (a host that passes `config: { input: { wrapup: false } }` must not
+ * lose the port's run identity — the flat spelling never could be erased that way, and this slice
+ * moves the spelling, not the durability).
+ *
+ * A collision between the two sources is still reported (see
+ * `collectAssemblyDerivedConfigConflicts`): one knob, two sources, no silence.
+ *
+ * @param {Record<string, any>|undefined} configTree
+ * @param {AssemblyPort} port
+ * @returns {Record<string, any>}
+ */
+export function withAssemblyDerivedConfigLeaves(configTree, port) {
+  const merged = { ...(configTree ?? {}) };
+  for (const [group, leaves] of Object.entries(assemblyPortDerivedConfigLeaves(port))) {
+    merged[group] = { ...leaves, ...(merged[group] ?? {}) };
+  }
+  return merged;
+}
+
+/**
+ * The `config_override_conflict` rows a port-derived config leaf owes against the port's own
+ * `policy.config` (issue #544).
+ *
+ * Before this slice the derived leaves were **flat** options, so a host that wrote the same knob
+ * into `policy.config` hit the flat-vs-config rule and got one event (path `run.runId` /
+ * `input.messages`). The flat spelling is gone; the two sources are not — so the observation is
+ * made here explicitly, with the same path and the same key, and it stays one event (the caller
+ * dedupes by path). A factory-shaped `policy` is not resolved at this phase, so its tree is not
+ * visible and nothing is compared against it.
+ *
+ * @param {AssemblyPort} port
+ * @returns {Array<{path: string, key: string}>}
+ */
+export function collectAssemblyDerivedConfigConflicts(port) {
+  return collectConfigSourceConflicts(
+    assemblyPortDerivedConfigLeaves(port),
+    port.policy?.config,
+  );
+}
+
+/**
+ * The name gate on the **merged** representation (issue #544).
+ *
+ * `assertRunToolLoopOptionNames` runs on the caller's explicit options before any host port is read
+ * (that phase stays: a bad name must not cost a host callback). This second pass runs after
+ * `assemblyPortOptions` has contributed its own keys, because the seam it closes is the opposite
+ * direction: a name the **engine** derives for itself was never checked, so the engine could emit a
+ * spelling the host is refused for. `runId` / `initialMessages` survived the A20 / `input`-slice
+ * retirements exactly that way — `runToolLoop({ runId })` threw while
+ * `runToolLoop({ assemblyPort })` put the very same key in the merged tree and ran.
+ *
+ * The `policy` plane is exempt on purpose: `policy.<key>` is a separate spelling surface with its
+ * own allowlist (checked at construction), and by ruling it keeps carrying retired flat names
+ * (`policy.maxTokens` …). Its keys are judged there, not here. Everything else — explicit options
+ * (already gated early) and port-derived keys (gated only here) — must be a legal loop option
+ * name, so the two halves of one option tree finally agree.
+ *
+ * @param {Record<string, any>} mergedOptions
+ * @returns {void}
+ */
+export function assertMergedOptionNames(mergedOptions) {
+  for (const optionName of Object.keys(mergedOptions)) {
+    if (RUN_TOOL_LOOP_OPTION_SET.has(optionName)) continue;
+    if (ASSEMBLY_POLICY_OPTION_NAMES.has(optionName)) continue;
+    // Canonical rejection (same wording, same `config.<home>` pointer): an offender here is an
+    // unknown name in the same tree, whoever wrote it.
+    assertRunToolLoopOptionNames({ [optionName]: mergedOptions[optionName] });
+  }
+}
 
 /**
  * 构造期（`createAssemblyPort` 的产物）能给哪些选项**定值**——单一来源。
@@ -129,14 +243,16 @@ function assemblyPortBaseOptions(port) {
     tools: port.tools.definitions,
     executeTool: port.tools.executeTool,
     ...(port.store === undefined ? {} : { store: port.store }),
-    runId: port.session.id,
+    // #544: the run identity and the seed history are config leaves, not flat options — see
+    // `assemblyPortDerivedConfigLeaves`. `policy.config` still wins per leaf (its value is spread
+    // last), which is exactly the priority the flat spelling had via the expansion phase.
+    config: withAssemblyDerivedConfigLeaves(port.policy?.config, port),
     session: port.session,
     // #498 S4b：这里曾有 `session.resume` → `resume` 的转换（幻影组）。`session` 是纯数据，
     // `resume` 的规范之家是顶层 `resume` / `config.run.resume`；两条路线都已拒绝 `session.resume`
     // （装配期在上面那段校验，直连侧在语义相），所以这里不再需要任何转换。
-    ...(port.session.initialMessages === undefined
-      ? {}
-      : { initialMessages: port.session.initialMessages }),
+    // #544: `session.initialMessages` used to be flattened to `initialMessages` right here; it now
+    // travels as `config.input.messages` in the `config` tree above.
     // `emit` → `onEvent` 的适配。以前这里是「显式 onEvent 存在就不装」，现在那条分支由
     // 下面的冲突闸口接手：端口给了 `emit` 就等于构造期给了 `onEvent`，调用期再给一个就抛。
     ...(port.emit === undefined ? {} : { onEvent: (event) => port.emit(event.type, event) }),
