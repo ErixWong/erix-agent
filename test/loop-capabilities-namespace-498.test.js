@@ -792,33 +792,35 @@ test("S9 端到端语义等价：整棵 config 与扁平形态规范化后逐键
       flat[configOptionNameForLeaf(group, leaf)] = config[group][leaf];
     }
   }
-  // #498 S3：`config.timing.*` 的三个叶子已经没有扁平写法，所以对照分两步（与 497 的 B2 同形）：
+  // #498 S3：一批配置叶子已经没有扁平写法，所以对照分两步（与 497 的 B2 同形）：
   //   ① 剩下的键：扁平形态 vs config 形态逐键深度相等；
-  //   ② 三个 S3 键：展开相必须逐字写回 `effectiveOptions.<扁平名>`（引擎读侧读的就是它们）。
-  // #498 S3 的两片（`timing` + `folding`）一共六个叶子已经没有扁平写法。
-  const S3_GROUPS = ["timing", "folding"];
+  //   ② 已退役的键：展开相必须逐字写回 `effectiveOptions.<扁平名>`（引擎读侧读的就是它们）。
+  // **哪些键已退役是派生集合**（`RETIRED_FLAT_KEYS` = 配置面叶子映射到的键里已不在白名单的那些），
+  // 不是手抄的组名：`timing` 片、`folding` 片、本片（`input` 组的 `cacheStablePrefix` +
+  // `initialMessages`）跑的是同一条判据，下一片也不需要改这里。
+  const RETIRED_FLAT_KEYS = CONFIG_SURFACE_OPTION_NAMES
+    .filter((name) => !RUN_TOOL_LOOP_OPTION_NAMES.includes(name));
   const flatWithoutS3 = { ...flat };
-  for (const group of S3_GROUPS) {
-    for (const leaf of CONFIG_NAMESPACE_SCHEMA[group]) delete flatWithoutS3[configOptionNameForLeaf(group, leaf)];
-  }
+  for (const key of RETIRED_FLAT_KEYS) delete flatWithoutS3[key];
   const nestedResult = await normalizeRunToolLoopOptions({ config });
   const flatResult = await normalizeRunToolLoopOptions({ ...flatWithoutS3 });
-  const { timeoutMs, deadlineMs, retry, context, toolResultTtl, toolResultFoldMinTokens, ...nestedRest } = nestedResult.effectiveOptions;
-  assert.deepEqual(nestedRest, flatResult.effectiveOptions, "除 S3 两片的六个键以外，两种形态必须逐键深度相等");
-  assert.deepEqual(
-    { timeoutMs, deadlineMs, retry },
-    { timeoutMs: flat.timeoutMs, deadlineMs: flat.deadlineMs, retry: flat.retry },
-    "config.timing.* 必须逐字写回 effectiveOptions 的扁平名",
-  );
-  assert.deepEqual(
-    { context, toolResultTtl, toolResultFoldMinTokens },
-    {
-      context: flat.context,
-      toolResultTtl: flat.toolResultTtl,
-      toolResultFoldMinTokens: flat.toolResultFoldMinTokens,
-    },
-    "config.folding.* 必须逐字写回 effectiveOptions 的扁平名",
-  );
+  const nestedRest = { ...nestedResult.effectiveOptions };
+  for (const key of RETIRED_FLAT_KEYS) {
+    // ② 展开相逐字写回扁平名——「删了顶层键、引擎读侧一行都不用改」的机制证据。
+    assert.deepEqual(
+      nestedResult.effectiveOptions[key],
+      flat[key],
+      `${key}：config 形态展开后必须逐字写回 effectiveOptions.${key}（引擎读侧读的就是它）`,
+    );
+    assert.equal(
+      Object.hasOwn(flatResult.effectiveOptions, key),
+      false,
+      `${key} 的扁平写法已退役，扁平形态不该再产生它`,
+    );
+    delete nestedRest[key];
+  }
+  // ① 其余键逐键深度相等。
+  assert.deepEqual(nestedRest, flatResult.effectiveOptions, "除已退役的键以外，两种形态必须逐键深度相等");
   for (const [key, value] of Object.entries(flatResult.effectiveOptions)) {
     assert.deepEqual(nestedResult.effectiveOptions[key], value, `${key} 两种形态必须逐键相等`);
   }

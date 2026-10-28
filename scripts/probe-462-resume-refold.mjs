@@ -28,8 +28,8 @@ const loopOptions = (runId, store, provider, extra = {}) => ({
   initialUserMessage: `start ${big(2000)}`,
   executeTool: async ({ input }) => `out-${input.step}: ${big(TOOL_BYTES)}`,
   completion: false,
-  cacheStablePrefix: false,
-  config: { folding: { context: { strategy: "fold-statistical", budgetTokens: BUDGET, keepRounds: 4 } } },
+  // #498 S3 (`input` slice A): `cacheStablePrefix` retired; the home is config.input.*.
+  config: { input: { cacheStablePrefix: false }, folding: { context: { strategy: "fold-statistical", budgetTokens: BUDGET, keepRounds: 4 } } },
   store,
   runId,
   ...extra,

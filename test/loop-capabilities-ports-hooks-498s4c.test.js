@@ -558,14 +558,13 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   const dataRun = await runToolLoop({
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output",
-    initialMessages: [
-      { role: "user", content: "PROTECTED-TASK" },
-      { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
-    ],
     completion: false,
     wrapup: false,
     maxRounds: 4,
-    config: { folding: { context: { budgetTokens: 300, keepRounds: 1, protectedMessage: "user" } } },
+    config: { input: { messages: [
+      { role: "user", content: "PROTECTED-TASK" },
+      { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
+    ] }, folding: { context: { budgetTokens: 300, keepRounds: 1, protectedMessage: "user" } } },
   });
   assert.equal(
     dataRun.messages.some((message) => JSON.stringify(message.content).includes("PROTECTED-TASK")),
@@ -576,15 +575,14 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   const functionRun = await runToolLoop({
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output",
-    initialMessages: [
-      { role: "user", content: "PROTECTED-TASK" },
-      { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
-    ],
     completion: false,
     wrapup: false,
     maxRounds: 4,
     capabilities: { hooks: { protectedMessage: (message) => message?.role === "user" } },
-    config: { folding: { context: { budgetTokens: 300, keepRounds: 1 } } },
+    config: { input: { messages: [
+      { role: "user", content: "PROTECTED-TASK" },
+      { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
+    ] }, folding: { context: { budgetTokens: 300, keepRounds: 1 } } },
   });
   assert.equal(
     functionRun.messages.some((message) => JSON.stringify(message.content).includes("PROTECTED-TASK")),
@@ -597,14 +595,13 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   const conflictRun = await runToolLoop({
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output",
-    initialMessages: [
-      { role: "user", content: "PROTECTED-TASK" },
-      { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
-    ],
     completion: false,
     wrapup: false,
     maxRounds: 4,
-    config: { folding: { context: { budgetTokens: 300, keepRounds: 1, protectedMessage: "system" } } },
+    config: { input: { messages: [
+      { role: "user", content: "PROTECTED-TASK" },
+      { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
+    ] }, folding: { context: { budgetTokens: 300, keepRounds: 1, protectedMessage: "system" } } },
     capabilities: { hooks: { protectedMessage: () => false } },
     onEvent: (event) => { events.push(event); },
   });
@@ -623,14 +620,13 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   const winnerRun = await runToolLoop({
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output ".repeat(20),
-    initialMessages: [
-      { role: "user", content: "task" },
-      { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
-    ],
     completion: false,
     wrapup: false,
     maxRounds: 4,
-    config: { folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-statistical", recoveryHint: "DATA-HINT" } } },
+    config: { input: { messages: [
+      { role: "user", content: "task" },
+      { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
+    ] }, folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-statistical", recoveryHint: "DATA-HINT" } } },
     capabilities: { hooks: { recoveryHint: () => "FUNC-HINT" } },
     onEvent: (event) => { winnerEvents.push(event); },
   });
@@ -664,23 +660,31 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   );
 
   // ⑤ `recoveryHint` 的两条腿都真的到策略里（名字形态策略经 `resolveCompactionStrategy` 的 options）。
-  const hinted = (extra) => runToolLoop({
+  // The two legs differ only in where `recoveryHint` is written, so the fixture composes the
+  // `config` tree instead of letting the caller replace it wholesale (a replaced `config` would drop
+  // `config.input.messages` and the run would start without a seed history).
+  const hinted = (extra = {}) => runToolLoop({
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output ".repeat(20),
-    initialMessages: [
-      { role: "user", content: "task" },
-      { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
-    ],
     completion: false,
     wrapup: false,
     maxRounds: 4,
-    config: { folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-statistical" } } },
-    ...extra,
+    config: {
+      input: { messages: [
+        { role: "user", content: "task" },
+        { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
+      ] },
+      folding: { context: {
+        budgetTokens: 300,
+        keepRounds: 1,
+        strategy: "fold-statistical",
+        ...(extra.context ?? {}),
+      } },
+    },
+    ...(extra.capabilities === undefined ? {} : { capabilities: extra.capabilities }),
   }).then((result) => JSON.stringify(result.messages));
   assert.equal(
-    (await hinted({
-      config: { folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-statistical", recoveryHint: "DATA-HINT" } } },
-    })).includes("DATA-HINT"),
+    (await hinted({ context: { recoveryHint: "DATA-HINT" } })).includes("DATA-HINT"),
     true,
     "数据形态进折叠摘要",
   );

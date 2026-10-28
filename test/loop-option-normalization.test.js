@@ -191,10 +191,8 @@ const OPTION_WHITELIST = [
   "assemblyPort",
   "provider",
   "system",
-  "cacheStablePrefix",
   "wrapup",
   "initialUserMessage",
-  "initialMessages",
   "tools",
   "outputHygiene",
   "writeToolNames",
@@ -204,6 +202,9 @@ const OPTION_WHITELIST = [
   "partialPersistence",
   "maxRounds",
   "cacheCapable",
+  // #498 S3 (`input` slice A): `cacheStablePrefix` / `initialMessages` left the allowlist — their
+  // canonical home is `config.input.cacheStablePrefix` / `config.input.messages`. The copy tracks the
+  // source list verbatim (that is exactly what A0 checks), so they are gone here too.
   // #498 S3 (`folding` slice): `context` / `toolResultTtl` / `toolResultFoldMinTokens` left the
   // allowlist — their canonical home is `config.folding.*`. The copy tracks the source list verbatim
   // (that is exactly what A0 checks), so they are gone here too.
@@ -672,12 +673,14 @@ test("默认值 cacheStablePrefix = true 与 wrapup = true", async () => {
   assert.equal(defaulted.requests[0].messages[0].cacheBoundary, true);
 
   const optedOut = createFakeProvider(DONE);
+  // #498 S3（`input` 组 A 段）：`cacheStablePrefix` 的扁平写法已退役，家是
+  // `config.input.cacheStablePrefix`（展开相写回 `effectiveOptions.cacheStablePrefix`）。
   await runToolLoop({
     provider: optedOut,
     executeTool: async () => "ok",
     initialUserMessage: "go",
     system: "SYS",
-    cacheStablePrefix: false,
+    config: { input: { cacheStablePrefix: false } },
     wrapup: false,
   });
   assert.equal(optedOut.requests[0].system, "SYS", "两个默认值都能被显式 false 关掉");

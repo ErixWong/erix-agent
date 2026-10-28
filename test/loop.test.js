@@ -39,7 +39,8 @@ test("marks the stable prefix by default and supports opting out", async () => {
       wrapup: false,
       initialUserMessage: "hello",
       executeTool: async () => "unused",
-      ...(cacheStablePrefix === undefined ? {} : { cacheStablePrefix }),
+      // #498 S3（`input` 组 A 段）：扁平 `cacheStablePrefix` 已退役，家是 `config.input.*`。
+      ...(cacheStablePrefix === undefined ? {} : { config: { input: { cacheStablePrefix } } }),
     });
     return provider.requests[0];
   };

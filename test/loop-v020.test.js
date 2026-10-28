@@ -16,10 +16,12 @@ test("rejects invalid initial message pairs before the first provider call", asy
   await assert.rejects(
     runToolLoop({
       provider,
-      initialMessages: [{
+      // #498 S3 (`input` slice A): the flat `initialMessages` retired; `config.input.messages` is
+      // the one registered leaf alias and expands back to `effectiveOptions.initialMessages`.
+      config: { input: { messages: [{
         role: "user",
         content: [{ type: "tool_result", tool_use_id: "orphan", content: "bad" }],
-      }],
+      }] } },
       executeTool: async () => "unused",
     }),
     (error) => error instanceof KitError && error.code === "invalid_messages",
@@ -52,7 +54,8 @@ test("revalidates messages before each later provider round", async () => {
       initialUserMessage: "start",
       executeTool: async () => "done",
       completion: false,
-      cacheStablePrefix: false,
+      // #498 S3 (`input` slice A): the flat spelling retired; the home is config.input.*.
+      config: { input: { cacheStablePrefix: false } },
     }),
     (error) => error instanceof KitError && error.code === "invalid_messages",
   );

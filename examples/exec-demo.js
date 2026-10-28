@@ -214,27 +214,34 @@ export async function runExecDemo(task = "查看当前目录有哪些文件，�
   const store = createMemoryTranscriptStore();
   const runId = `exec-demo-${Date.now()}`;
 
+  // #498 S3 (`input` slice A): the flat `initialMessages` retired — its home is
+  // `config.input.messages` (the one registered leaf alias, which expands back to
+  // `effectiveOptions.initialMessages`). Built as one object so both optional blocks below
+  // (seed history, small compaction budget) share a single `config` key instead of racing.
+  const config = {};
+  if (opts.initialMessages) config.input = { messages: opts.initialMessages };
+  // #498 S3: the top-level `context` shell is retired. The bag mixes data with a **behaviour**
+  // carrier (the strategy object), so it splits by value shape: numbers/strings go to
+  // `config.folding.context`, the strategy object to `capabilities.ports.strategy`.
+  if (opts.compactBudgetTokens) {
+    config.folding = { context: {
+      budgetTokens: opts.compactBudgetTokens,
+      keepRounds: opts.keepRounds ?? 1,
+    } };
+  }
+
   const result = await runToolLoop({
     provider,
     system: "你是一个命令行助手。用 exec 工具完成用户的查看类任务，然后用中文简要总结。命令必须在白名单内。",
     initialUserMessage: opts.initialMessages ? undefined : task,
-    initialMessages: opts.initialMessages,
     tools,
     executeTool,
     maxRounds: 8,
     store,
     runId,
-    // #498 S3: the top-level `context` shell is retired. The bag mixes data with a **behaviour**
-    // carrier (the strategy object), so it splits by value shape: numbers/strings go to
-    // `config.folding.context`, the strategy object to `capabilities.ports.strategy`.
+    ...(Object.keys(config).length === 0 ? {} : { config }),
     ...(opts.compactBudgetTokens
-      ? {
-        config: { folding: { context: {
-          budgetTokens: opts.compactBudgetTokens,
-          keepRounds: opts.keepRounds ?? 1,
-        } } },
-        capabilities: { ports: { strategy: createFoldStatisticalStrategy() } },
-      }
+      ? { capabilities: { ports: { strategy: createFoldStatisticalStrategy() } } }
       : {}),
     onRound: (info) => console.log(`[round ${info.round}] +${info.messages.length} 条消息${info.folded ? "（含折叠）" : ""}`),
   });

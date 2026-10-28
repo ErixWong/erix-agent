@@ -80,7 +80,6 @@ function toolLoopOptions({ budgetTokens, stream, provider, initialMessages }) {
   return {
     provider,
     system: "每轮都必须调用 pad 工具，最后一次直接回答。",
-    initialMessages,
     tools: [{
       name: "pad",
       description: "返回一段固定填充文本，用来把每轮 token 量做成确定值",
@@ -93,7 +92,9 @@ function toolLoopOptions({ budgetTokens, stream, provider, initialMessages }) {
     completion: false,
     stallDetection: false,
     stream,
-    config: { folding: { toolResultTtl: 1, toolResultFoldMinTokens: 1, context: {
+    // #498 S3 (`input` slice A): the flat `initialMessages` retired; `config.input.messages` is its
+    // one registered leaf alias (expansion writes it back to `effectiveOptions.initialMessages`).
+    config: { input: { messages: initialMessages }, folding: { toolResultTtl: 1, toolResultFoldMinTokens: 1, context: {
       strategy: "fold-statistical",
       budgetTokens,
       keepRounds: 2,

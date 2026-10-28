@@ -686,13 +686,13 @@ test("round judge fallback uses the latest non-empty user task from a multi-turn
 
   await runToolLoop({
     provider,
-    initialMessages: [
+    config: { input: { messages: [
       { role: "user", content: "请用一句话介绍你自己" },
       { role: "assistant", content: "我是助手" },
       { role: "user", content: "哈罗" },
       { role: "assistant", content: "你好" },
       { role: "user", content: "新任务：在当前任务目录创建一个俄罗斯方块网页游戏，网页版的。" },
-    ],
+    ] } },
     executeTool: async () => "unused",
     maxRounds: 1,
     completion: false,
@@ -718,13 +718,13 @@ test("explicit task overrides the multi-turn entry messages for the round judge"
 
   await runToolLoop({
     provider,
-    initialMessages: [
+    config: { input: { messages: [
       { role: "user", content: "请用一句话介绍你自己" },
       { role: "assistant", content: "我是助手" },
       { role: "user", content: "哈罗" },
       { role: "assistant", content: "你好" },
       { role: "user", content: "新任务：在当前任务目录创建一个俄罗斯方块网页游戏，网页版的。" },
-    ],
+    ] } },
     task: "全新任务：写一个俄罗斯方块网页游戏",
     executeTool: async () => "unused",
     maxRounds: 1,
@@ -749,12 +749,11 @@ test("context.task takes precedence over the multi-turn entry messages for the r
 
   await runToolLoop({
     provider,
-    initialMessages: [
+    config: { input: { messages: [
       { role: "user", content: "请用一句话介绍你自己" },
       { role: "assistant", content: "我是助手" },
       { role: "user", content: "新任务：在当前任务目录创建一个俄罗斯方块网页游戏，网页版的。" },
-    ],
-    config: { folding: { context: { task: "CTX任务摘要" } } },
+    ] }, folding: { context: { task: "CTX任务摘要" } } },
     executeTool: async () => "unused",
     maxRounds: 1,
     completion: false,
@@ -776,11 +775,11 @@ test("whitespace task falls back to the latest non-empty entry user text", async
 
   await runToolLoop({
     provider,
-    initialMessages: [
+    config: { input: { messages: [
       { role: "user", content: "请用一句话介绍你自己" },
       { role: "assistant", content: "我是助手" },
       { role: "user", content: "新任务：在当前任务目录创建一个俄罗斯方块网页游戏，网页版的。" },
-    ],
+    ] } },
     task: "   ",
     executeTool: async () => "unused",
     maxRounds: 1,
@@ -854,7 +853,7 @@ test("resumed judge briefs scan only the original round-zero seed messages", asy
 
   await runToolLoop({
     provider: firstProvider,
-    initialMessages: [{ role: "user", content: "任务A：修登录bug" }],
+    config: { input: { messages: [{ role: "user", content: "任务A：修登录bug" }] } },
     executeTool: async () => "ok",
     maxRounds: 2,
     completion: false,

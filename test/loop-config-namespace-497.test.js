@@ -74,6 +74,7 @@ import {
 } from "../src/loop/config-namespace.js";
 import {
   RUN_TOOL_LOOP_OPTION_NAMES,
+  assertRunToolLoopOptionNames,
   normalizeRunToolLoopOptions,
 } from "../src/loop/option-normalization.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
@@ -148,13 +149,27 @@ test("A1 schema 自检：白名单被三个面恰好切一遍（配置面 / 能�
     CONFIG_SURFACE_OPTION_NAMES.length - orphanLeaves.length,
     "configPlaneOptionNames 就是「叶子映射到的键里白名单仍有的那些」，差集是失去顶层键的叶子",
   );
-  // #498 S3 的两片：`timing`（第一片）+ `folding`（第二片）。组名从 schema 取，条数不手抄，
-  // 所以下一片再切一个组时这里会红——那是**该**红的（它问的是「失去顶层键的叶子是谁」）。
-  assert.deepEqual(
-    [...orphanLeaves].sort(),
-    [...CONFIG_NAMESPACE_SCHEMA.timing, ...CONFIG_NAMESPACE_SCHEMA.folding].sort(),
-    "失去顶层键的叶子必须恰好是已切片的两个组（timing + folding）的叶子——它们的新家就是这两个组",
-  );
+  // #498 S3：失去顶层键的叶子**逐个**核「它还有家、而且拒绝文案点名那个家」。
+  // 这一格从「手抄已切片的组名」改成**派生的行为判据**（遍历 `orphanLeaves`，不抄组名、不抄条数）：
+  // 切片的验收标准本来就是「旧写法被拒 + 文案指向新家」，而组名/条数只是某一刀的临时记账。
+  // 于是下一片（`input` 组的其余键、`system` / `tools` / `wrapup` …）**一行都不用改这里**；
+  // 真正会红的是「删了顶层键却没给宿主指路」——那才是宿主升级时唯一的救命索。
+  for (const key of orphanLeaves) {
+    const home = configPathForOption(key);
+    assert.equal(typeof home, "string", `${key} 失去顶层键之后必须仍有 config 家（否则删键 = 丢旋钮）`);
+    let rejected;
+    try {
+      assertRunToolLoopOptionNames({ [key]: null });
+    } catch (error) {
+      rejected = error;
+    }
+    assert.equal(rejected instanceof TypeError, true, `${key} 的扁平写法必须被名称闸口当场拒`);
+    assert.match(
+      rejected.message,
+      new RegExp(`its canonical home is config\\.${home.replace(".", "\\.")};`, "u"),
+      `${key} 的拒绝文案必须点名 config.${home}（宿主从 0.26 升级时靠它找到新家）`,
+    );
+  }
   assert.deepEqual(configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES), []);
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(CONFIG_NAMESPACE_OPTION_NAME), true);
 });
@@ -395,9 +410,7 @@ test("B1 43 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平�
 /** 跨 7 个分组的代表性配置：同一个 `VALUES` 同时生成扁平形态与 config 形态。 */
 const VALUES = {
   system: "you are a test",
-  cacheStablePrefix: false,
   initialUserMessage: "go",
-  initialMessages: [],
   wrapup: false,
   // #498 S4b：`tools` 归配置面（`config.input.tools`）——它是工具声明数组，按判据是数据。
   tools: [{ name: "echo", description: "回显", inputSchema: { type: "object", properties: {} } }],
@@ -439,25 +452,34 @@ const VALUES = {
 };
 
 /**
- * #498 S3：`timing` 组的三个值。它们**故意不在 `VALUES` 里**——本刀之后这三个键已经没有扁平写法，
- * 所以 B2 的「扁平形态」对照只能盖住剩下的那些键；这三个由「展开写回」那一条断言单独核
- * （展开相把 `config.timing.*` 写回 `effectiveOptions.<扁平名>`，引擎读侧不变）。
+ * #498 S3：扁平写法已退役的配置键的**代表性取值**（按顶层键名索引）。
+ *
+ * 与 `VALUES` 的分工：`VALUES` 只装「仍能扁平写」的键，这张表装「只能写在新家里」的键。
+ * **哪一批属于后者不由这张表声明**——它从来源符号派生：
+ * `CONFIG_SURFACE_OPTION_NAMES` 里已经不在 `RUN_TOOL_LOOP_OPTION_NAMES` 里的那些键
+ * （见 `RETIRED_FLAT_KEYS`）。B2 开头断言两边**键集逐字相等**，于是：
+ *   · 「删了顶层键却忘了给它一个代表性取值」⇒ 红（不会静默漏测）；
+ *   · 下一片垂直切片（`input` / `system` / `tools` …）**不需要改这一段的判断逻辑**，
+ *     新退役的键自动进入派生集合，只要补一条取值即可。
+ * 这也正是「账目格派生化」的落点：判据比的是符号，不是手抄的组名或条数。
  */
-const S3_TIMING_VALUES = {
+const RETIRED_FLAT_VALUES = {
+  // #498 S3（`timing` 片）
   timeoutMs: 1000,
   deadlineMs: 2000,
   retry: false,
-};
-
-/**
- * #498 S3 第二片（`folding` 组）：同样**故意不在 `VALUES` 里**——这三个键的扁平写法也撤了。
- * 形状与 `S3_TIMING_VALUES` 同构：B2 的对照只盖住仍可扁平写的键，这三个由「展开写回」单独核。
- */
-const S3_FOLDING_VALUES = {
+  // #498 S3（`folding` 片）
   context: { budgetTokens: 1000, keepRounds: 2 },
   toolResultTtl: 1,
   toolResultFoldMinTokens: 10,
+  // #498 S3（`input` 组 A 段）：`cacheStablePrefix` + 唯一那条登记别名 `input.messages`
+  cacheStablePrefix: false,
+  initialMessages: [],
 };
+
+/** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */
+const RETIRED_FLAT_KEYS = CONFIG_SURFACE_OPTION_NAMES
+  .filter((name) => !RUN_TOOL_LOOP_OPTION_NAMES.includes(name));
 
 /** 把 `VALUES` 摊成 `config: { … }` 形态（分组/叶子从 schema 派生，不手写）。 */
 function nestedConfigShape(values) {
@@ -472,32 +494,40 @@ function nestedConfigShape(values) {
 }
 
 test("B2 端到端结构等价：扁平形态与 config 形态规范化后的 effectiveOptions 逐键深度相等", async () => {
-  // #498 S3：`timing` 组的三个键不再有扁平写法，所以对照分两步：
+  // #498 S3：一批配置键不再有扁平写法，所以对照分两步：
   //   ① 仍可扁平写的那些键：扁平形态 vs config 形态逐键深度相等；
-  //   ② 三个 S3 键：config 形态展开后必须**逐字写回** `effectiveOptions.<扁平名>`（这就是
+  //   ② 已退役的键：config 形态展开后必须**逐字写回** `effectiveOptions.<扁平名>`（这就是
   //     「删了顶层键、引擎读侧不用改」的机制本身，也是本刀可行性的证据）。
-  const nestedConfig = nestedConfigShape({ ...VALUES, ...S3_TIMING_VALUES, ...S3_FOLDING_VALUES });
+  // 「哪些键已退役」是派生集合（`RETIRED_FLAT_KEYS`），不是手抄的组名：这一片删的是 `input` 组
+  // 的两个键，上一片删的是 `timing` / `folding`，判据一字未改。
+  assert.deepEqual(
+    Object.keys(RETIRED_FLAT_VALUES).sort(),
+    [...RETIRED_FLAT_KEYS].sort(),
+    "退役键的取值表必须与派生集合逐字相等（删了顶层键却没给取值 ⇒ 这里红，不静默漏测）",
+  );
+  const nestedConfig = nestedConfigShape({ ...VALUES, ...RETIRED_FLAT_VALUES });
   assert.deepEqual(Object.keys(nestedConfig).sort(), [...CONFIG_NAMESPACE_GROUPS].sort(), "全部分组都被这份样本覆盖");
 
   const flat = await normalizeRunToolLoopOptions({ ...VALUES });
   const nested = await normalizeRunToolLoopOptions({ config: nestedConfig });
 
-  const {
-    timeoutMs, deadlineMs, retry,
-    context, toolResultTtl, toolResultFoldMinTokens,
-    ...nestedRest
-  } = nested.effectiveOptions;
-  assert.deepEqual(nestedRest, flat.effectiveOptions, "除六个 S3 键以外，两种形态必须逐键深度相等");
-  assert.deepEqual(
-    { timeoutMs, deadlineMs, retry },
-    S3_TIMING_VALUES,
-    "config.timing.* 必须逐字写回 effectiveOptions 的扁平名（引擎读侧读的就是这三个）",
-  );
-  assert.deepEqual(
-    { context, toolResultTtl, toolResultFoldMinTokens },
-    S3_FOLDING_VALUES,
-    "config.folding.* 必须逐字写回 effectiveOptions 的扁平名（引擎读侧读的就是这三个）",
-  );
+  // ② 退役键：展开相逐字写回扁平名；扁平形态里**没有**它们（写法确实撤了）。
+  for (const key of RETIRED_FLAT_KEYS) {
+    assert.deepEqual(
+      nested.effectiveOptions[key],
+      RETIRED_FLAT_VALUES[key],
+      `${key}：config 形态展开后必须逐字写回 effectiveOptions.${key}（引擎读侧读的就是它）`,
+    );
+    assert.equal(
+      Object.hasOwn(flat.effectiveOptions, key),
+      false,
+      `${key} 的扁平写法已退役，扁平形态不该再产生它`,
+    );
+  }
+  // ① 其余键：两种形态逐键深度相等。
+  const nestedRest = { ...nested.effectiveOptions };
+  for (const key of RETIRED_FLAT_KEYS) delete nestedRest[key];
+  assert.deepEqual(nestedRest, flat.effectiveOptions, "除已退役的键以外，两种形态必须逐键深度相等");
   // 逐键再说一遍（deepEqual 之外的可读断言：哪一科不对，报错就点名哪一科）。
   for (const [key, value] of Object.entries(flat.effectiveOptions)) {
     assert.deepEqual(nested.effectiveOptions[key], value, `${key} 两种形态必须逐键相等`);

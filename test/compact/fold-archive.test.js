@@ -141,8 +141,8 @@ test("#460 宿主拒超限记录：剥掉归档重试，run 不终局为 persist
     initialUserMessage: "start",
     executeTool: async () => "worked",
     completion: false,
-    config: { folding: { context: { budgetTokens: 99, keepRounds: 4, maxFoldedPayloadBytes: 1_000_000 } } },
-    cacheStablePrefix: false,
+    // #498 S3 (`input` slice A): `cacheStablePrefix` moved into the config tree (same key, new home).
+    config: { input: { cacheStablePrefix: false }, folding: { context: { budgetTokens: 99, keepRounds: 4, maxFoldedPayloadBytes: 1_000_000 } } },
     store,
     runId: "issue-460",
     diagnostics: { error: (event) => diagnostics.push(event) },
@@ -263,8 +263,7 @@ test("#460 默认上限：折叠记录不带无界归档（判据 A，默认配�
     initialUserMessage: "start",
     executeTool: async () => "worked",
     completion: false,
-    config: { folding: { context: { budgetTokens: 99, keepRounds: 4 } } },
-    cacheStablePrefix: false,
+    config: { input: { cacheStablePrefix: false }, folding: { context: { budgetTokens: 99, keepRounds: 4 } } },
     store,
     runId: "issue-460-cap",
   });

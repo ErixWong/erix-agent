@@ -252,14 +252,13 @@ test("downgrades the oldest protected message when the protected set exceeds the
 
   const result = await runToolLoop({ capabilities: { hooks: { protectedMessage: (message) => message?.role === "user" } },
     provider,
-    initialMessages: [
+    executeTool: async () => "unused",
+    completion: false,
+    config: { input: { messages: [
       first,
       { role: "assistant", content: [{ type: "text", text: "middle" }] },
       second,
-    ],
-    executeTool: async () => "unused",
-    completion: false,
-    config: { folding: { context: {
+    ] }, folding: { context: {
       budgetTokens,
           } } },
   });
@@ -280,10 +279,9 @@ test("rejects a single protected message that cannot fit the budget", async () =
   await assert.rejects(
     runToolLoop({ capabilities: { hooks: { protectedMessage: () => true } },
       provider: createFakeProvider([]),
-      initialMessages: [protectedMessage],
       executeTool: async () => "unused",
       completion: false,
-      config: { folding: { context: {
+      config: { input: { messages: [protectedMessage] }, folding: { context: {
         budgetTokens: 20,
               } } },
     }),

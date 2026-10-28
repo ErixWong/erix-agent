@@ -237,13 +237,19 @@ test("merges adjacent assistant messages before every provider call", async () =
 
   await runToolLoop({
     provider,
-    initialMessages: [
-      { role: "user", content: [{ type: "text", text: "hello" }] },
-      { role: "assistant", content: [{ type: "text", text: "first" }] },
-      { role: "assistant", content: [{ type: "text", text: "second" }] },
-    ],
+    // #498 S3 (`input` slice A): both keys now live under `config.input` — `messages` is the one
+    // registered leaf alias (it expands back to `effectiveOptions.initialMessages`).
+    config: {
+      input: {
+        messages: [
+          { role: "user", content: [{ type: "text", text: "hello" }] },
+          { role: "assistant", content: [{ type: "text", text: "first" }] },
+          { role: "assistant", content: [{ type: "text", text: "second" }] },
+        ],
+        cacheStablePrefix: false,
+      },
+    },
     executeTool: async () => "unused",
-    cacheStablePrefix: false,
   });
 
   assert.deepEqual(provider.requests[0].messages, [
@@ -297,8 +303,7 @@ test("compacts context before the second round and records its payload and stats
     initialUserMessage: "start",
     executeTool: async () => "worked",
     completion: false,
-    config: { folding: { context: { budgetTokens: 99, keepRounds: 4 } } },
-    cacheStablePrefix: false,
+    config: { input: { cacheStablePrefix: false }, folding: { context: { budgetTokens: 99, keepRounds: 4 } } },
     store: (() => {
       const store = createMemoryTranscriptStore();
       const appendRound = store.appendRound.bind(store);
