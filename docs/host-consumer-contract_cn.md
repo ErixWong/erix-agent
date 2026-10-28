@@ -99,6 +99,46 @@ executeTool({ id, name, input, context, signal })
 宿主吃它，现在**所有** `runToolLoop` 宿主都吃。实测边界——`summarizerBudget` / `summarizerTimeout` /
 `maxSummaryToken` 会被判成手滑而抛；`summaryStyle` / `summarizerNote` / `maxSummaryChars` 照旧放行。
 
+### 调用期覆盖通道（`assemblyPortOptions(input, overrides)`，issue #498）
+
+`assemblyPortOptions` 的第二个参数是「端口转成细粒度选项**之后**再打的那几个补丁」。到 0.26.0
+（最后一个已发布版本——**0.27.0 从未发布**，所以宿主真正能装到这套新行为的第一个版本是 0.28.0）
+为止，这条通道对三件事都是静默的；**自 0.28.0 起三件事全部启动期抛**：
+
+- **端口已经产出的键**：`policy.maxRounds` 有值时再给 `overrides.maxRounds`、端口有 provider 时再给
+  `overrides.provider`、端口有 store 时再给 `overrides.store`、端口有 `emit` 时再给
+  `overrides.onEvent`……一律抛
+  `assembly port option override conflicts with the port: "<key>" comes from <构造期来源>
+  (construction) and overrides.<key> (call); pass it in one place only`。构造期那一半逐字点名：
+  `port.policy.maxRounds`、`port.provider`、`port.tools.definitions`、`port.tools.executeTool`、
+  `port.store`、`port.session.id`、`port.session`、`port.session.initialMessages`、`port.emit`。
+  依据是母单 #495 的裁决：能力集在**构造期**定，运行期换一个就是「一个旋钮两个家」——正是
+  config / capability 分立要消灭的那类问题。
+- **白名单外的名字**：`overrides` 的键必须是合法的 `runToolLoop` 选项，集合**从代码里读**
+  （`RUN_TOOL_LOOP_OPTION_NAMES`，`src/loop/option-normalization.js`），不另抄第二份，所以
+  「接受面只有一个来源」（#496 / #502）这条规矩在覆盖通道上照样成立。拼错抛
+  `unknown assembly port override option: "maxRound" (did you mean "maxRounds"?)`——同一份白名单、
+  同一套编辑距离规则。
+- **容器**：`overrides.config` / `overrides.capabilities` 抛
+  `assembly port override must not replace the "config" container: pass the specific sub-keys
+  instead (e.g. config.run.maxRounds)`——整块替换一棵子树会把 #498 刚分立的两面重新搅混。
+
+有两件事**刻意不抛**，而且都有测试钉住：
+
+- **端口没产出的键**：每轮都换的那些（`signal`），以及端口没给时的 `store`。这是这条通道的合法用法，
+  照旧生效。
+- **`modelConfig`**：唯一既有的覆盖通道，自带 `validateModelConfigResolver` 校验（裸配置对象照旧
+  抛并给迁移提示）。它不受冲突规则约束，因为端口永远会产出一个 resolver：显式值取代 resolver，
+  端口自己的 resolver 一次都不会被调。
+
+`undefined` 仍然等于「没给」（合并条件仍是 `value !== undefined`），所以把可能为 `undefined` 的字段
+整片摊开递进来不会被惩罚。这道闸口在 `modelConfig.resolve` **之前**、也在任何其他宿主回调之前跑——
+注定要抛的调用不会先碰一次宿主。
+
+**收窄的作用域**：只作用于 `overrides` 参数。直连路线的合并——`runToolLoop({ assemblyPort, provider })`
+里显式细粒度选项盖过端口提供的同名成员（`src/loop/option-normalization.js`，issue #177）——一字未动；
+`test/contract/assembly-port.js` 对直连路线照旧断言那条，对覆盖通道断言抛。
+
 0.27.0 里需要知道的行为变化（**0.27.0 从未发布**——最后一个已发布版本是 0.26.0，所以本段说的一切第一次到达宿主是随 **0.28.0**）：`context` 下拼错的摘要旋钮名、以及上面任一回调字段里的非函数值，以前在
 细粒度路线上是**静默忽略**（run 直接用默认值跑）。现在两者都启动即抛。把回调接出配置树的能力面
 **已在 0.28.0 落地**（issue #498 S4a）：`capabilities.hooks` 就是它们的规范之家，而上面列的那些扁平
@@ -200,9 +240,12 @@ executeTool({ id, name, input, context, signal })
   `config.folding.onBeforeFold`）回的是 `unknown config.<group> option: … (… belongs to
   capabilities.<group>.<leaf>)`；写在它真正的嵌套老住处（`config.timing.retry.sleepImpl`）撞的是
   上面那条函数值拒绝。
-  **这条收窄只作用于新命名空间**：既有优先级规则——显式细粒度选项覆盖装配口提供的同名成员
-  （`resolveAssemblyMember`（`src/assembly.js`），例如显式 `provider` 仍能盖端口 provider）——
-  一字未动，`test/contract/assembly-port.js` 照旧断言它（「显式细粒度 provider 覆盖端口 provider」）。
+  **这条收窄只作用于新命名空间**：直连路线的优先级规则——显式细粒度选项覆盖装配口提供的同名成员
+  （`src/loop/option-normalization.js`），例如 `runToolLoop({ assemblyPort, provider })` 里显式
+  `provider` 仍能盖端口 provider——一字未动，`test/contract/assembly-port.js` 照旧断言它
+  （「直连路线的显式 provider 仍覆盖端口 provider」）。**装配口 helper 的 `overrides` 参数自 0.28.0 起
+  是另一回事**（issue #498）：`assemblyPortOptions(port, { provider })` 现在启动期抛，不再静默取胜者
+  ——见上面「调用期覆盖通道」一节。
 
   **这条线画在哪里（issue #497 复审 R1，判据是行为面）：** 能力面 = 宿主递进来的**行为载体**——
   引擎**调用或解引用**的函数与端口对象（端口方法被调、信号被监听、回调被投递）。配置面 = 引擎
@@ -3737,7 +3780,7 @@ table-driven 各跑一遍。它们共用**同一份**端口语义实现（`src/s
 | `transcript-store.js`（22 条） | 记录往返保真（块结构、元数据、未知字段、`meta.source`）、同轮追加顺序、未知键 → `[]`、多 run 隔离、run snapshot 的 latest-only 覆盖写、不带 `state` 的 run-state 快照、写失败向上抛、`round: 0` 种子、折叠载荷往返、成对的探针层，以及同 key 的幂等/冲突层（issue #326：同 payload 重放（含顶层 `ts`/`round` 漂了、字段换了顺序）是 no-op，异 payload 以 `dedup_payload_conflict` 报冲突，数组顺序与宿主自有字段算 payload，`roundKey` 与 `<runId>:round:<n>` 回落键同受约束） | 全部这些：它就是 `TranscriptStore` 契约本身，而随包的保真/保序断言恰恰是「从字段白名单重建」型适配器会挂掉的那几条 | `:input:`/`:engine:round:` 键形状、`(record.dedupKey ?? record.roundKey)` 谓词及其 `??`-而非-`OR` 分叉（issue #171）、探针结果 `null`/`undefined` 的容忍、`dedup_payload_conflict` 错误码 |
 | `notes-store.js`（9 条） | 端口校验（`assertNotesStore`）、落盘前拒绝畸形记录、完整记录往返、作用域隔离与显式未命中、不安全作用域经规范存储与生命周期往返、`limit` 阈值（存量超过 200：给了 limit 就钳到恰好 200，非法 limit 抛错）、带 `expectedState`/`expectedUpdatedAt` guard 的 revoke 可观察消失，以及 issue #265 新增：空 `filters.state` 数组与非法 `filters.source` 必须拒、revoke 墓碑上 `revoked_at`/`revoke_reason` 可见、`purge` 的 `scanned` 是 scope 数且 `before` 只能缩小窗口 | 端口面与记录/guard 语义。issue #183 之后上游硬义务与宿主策略的分界已写死：端口只承诺「可观察消失」（墓碑**或**物理删除皆可）且不管记录过期，而一写者 last-write-wins 是文件适配器自己的事，已不在这里断言。#265 新增只断言 typedef 早已承诺的行为，但它们是发布面上的新断言：宿主适配器曾静默忽略其中任何一条，升级后就会冒新红 | 文件存储形状的错误文案（`/valid NoteRecord/`、`/parseable date/`、`/positive safe integer/`、`/filters\.state/`、`/filters\.source/`）、保留期/purge 时机 |
 | `notes-store.js` → `notesStoreCasContract`（1 条，可选；issue #183） | 并发同键写：至多一方失败，失败必须是抛错而不是静默丢弃，胜者必须是那条以完整形状可读的记录 | 只给比较-交换宿主跑，且是在 `notesStoreContract` 之外的**额外**一层 —— 这个子套件刻意比被移除的 last-write-wins 断言更弱，跑绿它对串行化写者一无所证 | 它顺便踩到的两个载荷内容（`left`/`right`），而不是任何冲突错误文案 |
-| `assembly-port.js`（4 条） | 端口能启动一个真实 loop 并跑完，`emit(type, payload)` 收到带 payload 的事件类型，显式的细粒度 `provider` 选项覆盖端口自带的 provider，缺少 `chat`/`chatStream` 的 provider 在启动时被 `createAssemblyPort` 与 `runToolLoop` 双双拒绝 | 你的端口所必需的适配器与它的 `emit` 接收端 | 优先级规则（显式选项胜过端口）、启动校验的错误文案 |
+| `assembly-port.js`（5 条） | 端口能启动一个真实 loop 并跑完，`emit(type, payload)` 收到带 payload 的事件类型，显式的细粒度 `provider` 选项在**直连路线**上覆盖端口自带的 provider，`assemblyPortOptions(port, { provider })` 在**覆盖通道**上被启动期拒绝（issue #498），缺少 `chat`/`chatStream` 的 provider 在启动时被 `createAssemblyPort` 与 `runToolLoop` 双双拒绝 | 你的端口所必需的适配器与它的 `emit` 接收端 | 优先级规则（直连路线上显式选项胜过端口）、覆盖通道的冲突文案、启动校验的错误文案 |
 | `execute-tool.js`（7 条）+ `executeToolMigrationContract`（2 条） | 你的执行器恰好收到一个结构化执行对象，且每种规范返回形态（`string`、`{content, metadata, success}`、遗留的 `{data}`、返回的 `Error`、抛出的 `Error`）都变成文档规定的 `tool_result` | 调用形状与返回形状。迁移套件还额外证明：裸的位置参数 `(name, input)` 执行器是被**拒绝**的，不是被静默支持 | 这些断言是通过 `runToolLoop` 的 provider 请求观测到的，而不是通过某个公开结果字段 |
 | `model-config-provider.js`（4 条） | `resolve()` → default 槽，`resolve(slot)` → 具名槽，未知槽 → 回落 default，以及 `apiKey` 间接引用物化（ADR-001） | 你的 provider 的槽位解析与 key 物化 | 没有任何引擎侧内容：它从不加载引擎 |
 | `engine-api.js`（2 条） | 包入口把 `appendUserTurn` 与 `projectTranscriptForDisplay` 导出为函数，且 `appendUserTurn` 在一个最小 store stub 上完成一次预写（含 `dedupKey`/`roundKey` 形状，以及这次预写能喂给展示投影） | 无 —— 这是入口面的哨兵；上游某次 bump 重命名或删掉引擎 API 时它会变红 | 预写记录的确切形状（`round: 0`、`dedupKey`、`roundKey`、`ts`） |

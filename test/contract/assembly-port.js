@@ -4,7 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createAssemblyPort } from "../../src/assembly.js";
+import { assemblyPortOptions, createAssemblyPort } from "../../src/assembly.js";
 import { runToolLoop } from "../../src/loop/orchestrator.js";
 
 async function resolvePort(createPort) {
@@ -43,7 +43,10 @@ export function assemblyPortContract(label, createPort) {
     )));
   });
 
-  test(`${label}: 显式细粒度 provider 覆盖端口 provider`, async () => {
+  // issue #498 第 1 条：覆盖通道收窄**只**作用于 `assemblyPortOptions` 的 `overrides` 参数。
+  // 直连路线（`runToolLoop({ assemblyPort, provider })`）的合并规则一字未动——那一条是 #177
+  // 搬出来的「后写者胜」，它的收窄是另一刀（见契约里 0.28.0 的版本口径）。
+  test(`${label}: 直连路线的显式 provider 仍覆盖端口 provider（覆盖通道收窄只作用于 overrides）`, async () => {
     const port = await resolvePort(createPort);
     const result = await runToolLoop({
       assemblyPort: port,
@@ -60,6 +63,25 @@ export function assemblyPortContract(label, createPort) {
       maxRounds: 1,
     });
     assert.equal(result.finalText, "explicit");
+  });
+
+  // issue #498 第 1 条：`assemblyPortOptions` 的 `overrides` 里再给一个端口已经产出的键
+  // ⇒ 启动期抛（点名键名 + 两个来源），不再静默取胜者。
+  test(`${label}: 调用期覆盖端口已有的键在启动期被拒绝（issue #498）`, async () => {
+    const port = await resolvePort(createPort);
+    await assert.rejects(
+      assemblyPortOptions(port, {
+        provider: {
+          async chat() {
+            return { content: [{ type: "text", text: "override" }], stopReason: "end_turn" };
+          },
+        },
+      }),
+      (error) => error instanceof TypeError
+        && error.message === 'assembly port option override conflicts with the port: "provider"'
+          + " comes from port.provider (construction) and overrides.provider (call);"
+          + " pass it in one place only",
+    );
   });
 
   test(`${label}: 缺少 provider 方法在启动时被拒绝`, async () => {

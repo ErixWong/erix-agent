@@ -120,6 +120,52 @@ now applies to every `runToolLoop` host. Measured boundary — `summarizerBudget
 `summarizerTimeout` and `maxSummaryToken` are read as slips and throw; `summaryStyle`,
 `summarizerNote` and `maxSummaryChars` still pass.
 
+### The call-level override channel (`assemblyPortOptions(input, overrides)`, issue #498)
+
+`assemblyPortOptions` takes a second parameter: fine-grained options a host wants to apply **after**
+the port has been converted. Up to and including 0.26.0 (the last published release — 0.27.0 was
+**never published**, so 0.28.0 is the first release a host can actually install with the new
+behaviour) that channel was silent about three things; **since 0.28.0 all three throw at startup**:
+
+- **A key the port already supplied.** `overrides.maxRounds` when `policy.maxRounds` is set,
+  `overrides.provider` when the port has a provider, `overrides.store` when the port has a store,
+  `overrides.onEvent` when the port has `emit`, … throw
+  `assembly port option override conflicts with the port: "<key>" comes from <construction source>
+  (construction) and overrides.<key> (call); pass it in one place only`. The construction-time
+  source is named verbatim: `port.policy.maxRounds`, `port.provider`, `port.tools.definitions`,
+  `port.tools.executeTool`, `port.store`, `port.session.id`, `port.session`,
+  `port.session.initialMessages`, `port.emit`. The ruling behind it is the mother ticket's (#495):
+  the capability set is fixed at **construction** time, and a run-time swap is exactly the "one
+  knob, two homes" problem the config/capability split exists to remove.
+- **A name outside the option allowlist.** `overrides` keys must be legal `runToolLoop` options; the
+  set is read out of `RUN_TOOL_LOOP_OPTION_NAMES` (`src/loop/option-normalization.js`), never from a
+  second copy, so the accept surface still has one source (issue #496 / #502). A typo throws
+  `unknown assembly port override option: "maxRound" (did you mean "maxRounds"?)` — same allowlist,
+  same edit-distance rule as the top-level name check.
+- **A container.** `overrides.config` / `overrides.capabilities` throw
+  `assembly port override must not replace the "config" container: pass the specific sub-keys
+  instead (e.g. config.run.maxRounds)`, because replacing a whole subtree would mix the two planes
+  (#498) back together.
+
+Two things deliberately **do not** throw, and both are pinned by tests:
+
+- **A key the port did not produce** — the per-round ones (`signal`), and `store` when the port
+  gives none. That is the legal use of the channel and it keeps working.
+- **`modelConfig`** — the one pre-existing override, validated by `validateModelConfigResolver` (a
+  plain config object still throws with the migration hint). It is exempt from the conflict rule
+  because the port always resolves one: the explicit value replaces the resolver, and the port's
+  own resolver is never called.
+
+`undefined` still means "not given" (the merge condition stays `value !== undefined`), so spreading
+a possibly-undefined field is not punished. The gate runs **before** `modelConfig.resolve` and before
+any other host callback, so a call that is going to throw does not touch the host first.
+
+**Scope of the narrowing**: it applies to the `overrides` parameter only. The direct route's merge —
+`runToolLoop({ assemblyPort, provider })`, where an explicit fine-grained option wins over the
+same-named member the port supplies (`src/loop/option-normalization.js`, issue #177) — is unchanged;
+`test/contract/assembly-port.js` asserts that behaviour for the direct route and asserts the throw
+for the override channel.
+
 Behaviour change to know about in 0.27.0 — a number that was **never published** (the last
 published release is 0.26.0, so everything in this paragraph reaches a host for the first time in
 **0.28.0**): a misspelled summarizer knob under `context`, and a
@@ -245,10 +291,13 @@ Five rules govern it:
   answers `unknown config.<group> option: … (… belongs to capabilities.<group>.<leaf>)`, and writing
   one in its real nested home (`config.timing.retry.sleepImpl`) hits the function-value refusal above.
   **This narrowing applies to the new namespace only**:
-  the pre-existing precedence rule — an explicit fine-grained option overrides the same-named
-  member the assembly port supplies (`resolveAssemblyMember` (`src/assembly.js`)), e.g. an explicit
-  `provider` still beats the port's provider — is unchanged, and `test/contract/assembly-port.js`
-  keeps asserting it ("显式细粒度 provider 覆盖端口 provider").
+  the direct-route precedence rule — an explicit fine-grained option overrides the same-named
+  member the assembly port supplies (`src/loop/option-normalization.js`), e.g.
+  `runToolLoop({ assemblyPort, provider })` still lets the explicit `provider` beat the port's —
+  is unchanged, and `test/contract/assembly-port.js` keeps asserting it for that route
+  ("直连路线的显式 provider 仍覆盖端口 provider"). **The helper's `overrides` parameter is a
+  different story since 0.28.0** (issue #498): `assemblyPortOptions(port, { provider })` now throws
+  at startup instead of silently winning — see "The call-level override channel" above.
 
   **Where the line runs (issue #497 review R1, the criterion is behavioural):** the capability
   surface is what the host hands in as **behaviour carriers** — functions and port objects the
@@ -4797,7 +4846,7 @@ packaged engine (upstream-side, i.e. a pure drift sentinel).
 | `transcript-store.js` (22 tests) | record round-trip fidelity (blocks, metadata, unknown fields, `meta.source`), same-round append order, unknown-key → `[]`, multi-run isolation, run-snapshot latest-only overwrite, run-state snapshot without `state`, throw-on-write-failure, `round: 0` seed, folded payload round-trip, the paired probe tier, and the same-key idempotency/conflict tier (issue #326: same payload replays — including drifted top-level `ts`/`round` and reordered fields — are no-ops, a differing payload rejects with `code` `dedup_payload_conflict`, array order and host-owned fields count as payload, and the fallback `roundKey`/`<runId>:round:<n>` keys are covered) | every one of them: it is the `TranscriptStore` contract, and the shipped fidelity/ordering assertions are exactly the ones a rebuild-from-whitelist adapter fails | the `:input:`/`:engine:round:` key shapes, the `(record.dedupKey ?? record.roundKey)` predicate and its `??`-not-`OR` fork (issue #171), `null`/`undefined` probe-result tolerance, the `dedup_payload_conflict` code |
 | `notes-store.js` (9 tests) | port validation (`assertNotesStore`), malformed-record rejection before persistence, full record round-trip, scope isolation and explicit misses, unsafe-scope round-trip through lifecycle, the `limit` threshold (more than 200 stored records: a given limit clamps to exactly 200, an illegal limit throws), `revoke`'s observable disappearance with the `expectedState`/`expectedUpdatedAt` guards, and — since issue #265 — rejection of an empty `filters.state` array and an unknown `filters.source`, `revoked_at`/`revoke_reason` visible on a revoke tombstone, and `purge` scanning scopes (not records) with `before` only shrinking the window | the port surface and the record/guard semantics. Since issue #183 the split between upstream mandate and host policy is explicit: the port mandates observable disappearance (tombstone **or** physical delete) and leaves record expiry to the host, while the one-writer last-write-wins behaviour is the file adapter's own business and is no longer asserted here. The #265 additions only assert typedef-promised behaviour, but they are new assertions on a published surface: a host adapter that ignored one of them goes red after the bump | the file-store-shaped error texts (`/valid NoteRecord/`, `/parseable date/`, `/positive safe integer/`, `/filters\.state/`, `/filters\.source/`), retention/purge timing |
 | `notes-store.js` → `notesStoreCasContract` (1 test, optional; issue #183) | concurrent same-key writers: at most one may fail, a failure must be a thrown error rather than a silent drop, and the winner is the record that stays readable in its full shape | compare-and-swap hosts only, and only in addition to `notesStoreContract` — this sub-suite is deliberately weaker than the retired last-write-wins assertion, so passing it says nothing about a store that serializes writers | the two payload contents it happens to exercise (`left`/`right`), not any conflict error text |
-| `assembly-port.js` (4 tests) | a port boots a real loop to completion, `emit(type, payload)` receives the event types with their payload, an explicit fine-grained `provider` option overrides the port's provider, and a provider missing `chat`/`chatStream` is rejected at startup by both `createAssemblyPort` and `runToolLoop` | your port's required adapters and its `emit` sink | the precedence rule (explicit option over port), the startup-validation error text |
+| `assembly-port.js` (5 tests) | a port boots a real loop to completion, `emit(type, payload)` receives the event types with their payload, an explicit fine-grained `provider` option overrides the port's provider on the **direct** route, `assemblyPortOptions(port, { provider })` is rejected at startup on the **override channel** (issue #498), and a provider missing `chat`/`chatStream` is rejected at startup by both `createAssemblyPort` and `runToolLoop` | your port's required adapters and its `emit` sink | the precedence rule (explicit option over port, direct route), the override-channel conflict text, the startup-validation error text |
 | `execute-tool.js` (7 tests) + `execute-tool-migration-contract` (2 tests) | your executor receives exactly one structured execution object, and each canonical return form (`string`, `{content, metadata, success}`, legacy `{data}`, returned `Error`, thrown `Error`) becomes the documented `tool_result` | the call shape and the return shapes. The migration suite additionally proves that a bare positional `(name, input)` executor is **rejected**, not silently supported | that the assertions are observed through `runToolLoop`'s provider request rather than through a public result field |
 | `model-config-provider.js` (4 tests) | `resolve()` → default slot, `resolve(slot)` → named slot, unknown slot → default fallback, and `apiKey` indirect-reference materialisation (ADR-001) | your provider's slot resolution and key materialisation | nothing engine-side: it never loads the engine |
 | `engine-api.js` (2 tests) | the package entry exports `appendUserTurn` and `projectTranscriptForDisplay` as functions, and `appendUserTurn` completes one pre-write against a minimal store stub (including the `dedupKey`/`roundKey` shape and that the pre-write feeds the display projection) | nothing — this is an entry-surface sentinel; it goes red when an upstream bump renames or drops engine API | the exact pre-write record shape (`round: 0`, `dedupKey`, `roundKey`, `ts`) |
