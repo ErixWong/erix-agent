@@ -63,7 +63,7 @@ test("F-2 judgeInterceptCount 经 runSnapshotContext：interval=1 时第三次�
       maxRounds: 5,
       completion: false,
       reflection: { enabled: true, roundJudge: false, judgeIntervalRound: 1, judge: { provider: judge } },
-      onJudge: (info) => records.push(info),
+      capabilities: { hooks: { onJudge: (info) => records.push(info) } },
     });
     // 工具1 只累计（+= 1）→ 工具2 计数到顶被审计并复位 → 工具3 计数不足 ⇒ 全程只审计一次
     assert.deepEqual(executed, [1, 2, 3]);
@@ -113,7 +113,7 @@ test("F-2 judgeInterceptCount 经 restoreResume ctx：resume 播种已执行工�
       maxRounds: 6,
       executeTool: async () => "done-b",
       reflection: { enabled: true, roundJudge: false, judgeIntervalRound: 1, judge: { provider: judge } },
-      onJudge: (info) => records.push(info),
+      capabilities: { hooks: { onJudge: (info) => records.push(info) } },
     });
     // 崩溃前已执行 1 个工具 ⇒ 计数播种为 1 ⇒ 续接的第一个工具（id b）就达到审计阈值
     assert.equal(judge.requests.length, 1, "播种写入没进格子（访问器只委托一半）就是 0 次审计");
@@ -167,7 +167,7 @@ async function runNearLimitIntercept({ maxExtensions = 1, withStore = false } = 
       maxRoundsCap: 20,
       judge: { provider: judge },
     },
-    onJudge: (info) => records.push(info),
+    capabilities: { hooks: { onJudge: (info) => records.push(info) } },
   });
   return { result, provider, judge, records, executed, store };
 }

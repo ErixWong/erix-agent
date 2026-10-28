@@ -43,8 +43,12 @@ async function runCase({ provider, judge, reflection, options = {} }) {
     ...(reflection === undefined
       ? {}
       : { reflection: { ...reflection, judge: { ...(reflection.judge ?? {}), provider: judge } } }),
-    onJudge: (info) => records.push(info),
-    onEvent: (event) => events.push(event),
+    capabilities: {
+      hooks: {
+        onJudge: (info) => records.push(info),
+        onEvent: (event) => events.push(event),
+      },
+    },
     ...options,
   });
   return { records, events, result };
@@ -319,7 +323,7 @@ test("run_outcome carries verification once a final guard ran", async () => {
     reflection: false,
     finalGuard: async () => ({ action: "accept" }),
     runId: "run-guard",
-    onEvent: (event) => events.push(event),
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
 
   const [outcome] = events.filter((event) => event.type === "run_outcome");
@@ -343,7 +347,7 @@ test("run_outcome is also emitted on the throwing terminal path (abort/failed)",
       completion: false,
       reflection: false,
       runId: "run-failed",
-      onEvent: (event) => events.push(event),
+      capabilities: { hooks: { onEvent: (event) => events.push(event) } },
     }),
   );
 
@@ -377,7 +381,7 @@ test("aborted runs get exactly one run_outcome with reason aborted", async () =>
       reflection: false,
       signal: controller.signal,
       runId: "run-abort",
-      onEvent: (event) => events.push(event),
+      capabilities: { hooks: { onEvent: (event) => events.push(event) } },
     }),
   );
 
@@ -398,8 +402,12 @@ test("a host callback throwing on run_outcome never changes the run outcome", as
     maxRounds: 2,
     completion: false,
     reflection: false,
-    onEvent: (event) => {
-      if (event.type === "run_outcome") throw new Error("host log blew up");
+    capabilities: {
+      hooks: {
+        onEvent: (event) => {
+          if (event.type === "run_outcome") throw new Error("host log blew up");
+        },
+      },
     },
   });
 

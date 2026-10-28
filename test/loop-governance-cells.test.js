@@ -46,7 +46,7 @@ test("F-1 早退路径：接管前的 fail() 读到默认桩（usage 全 0 / rou
       // 有 finalGuard：接管后的 verification 会是 {status:"unverified"...}；
       // 早退路径读到的是默认桩 ⇒ 字段必须**缺席**，而不是写一个假状态。
       finalGuard: async () => ({ action: "accept" }),
-      onEvent: (event) => events.push(event),
+      capabilities: { hooks: { onEvent: (event) => events.push(event) } },
     }),
     (error) => {
       assert.match(error.message, /无可恢复记录/);
@@ -88,7 +88,7 @@ test("F-1 接管路径：接管后的 fail() 读到累计量实值与真实 veri
       maxRounds: 3,
       completion: false,
       reflection: false,
-      onEvent: (event) => events.push(event),
+      capabilities: { hooks: { onEvent: (event) => events.push(event) } },
     }),
     (error) => {
       assert.match(error.message, /blew up after takeover/);
@@ -142,8 +142,12 @@ async function runJudgeCase({ withOnJudge }) {
     maxRounds: 4,
     completion: false,
     reflection: { enabled: true, roundJudge: true, judge: { provider: judge } },
-    ...(withOnJudge ? { onJudge: (info) => records.push(info) } : {}),
-    onEvent: (event) => events.push(event),
+    capabilities: {
+      hooks: {
+        ...(withOnJudge ? { onJudge: (info) => records.push(info) } : {}),
+        onEvent: (event) => events.push(event),
+      },
+    },
     runId: "governance-m2",
   });
   return { records, events, result, outcome: events.filter((e) => e.type === "run_outcome")[0] };

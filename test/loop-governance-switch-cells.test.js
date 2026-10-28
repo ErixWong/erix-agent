@@ -55,7 +55,7 @@ async function runEndTurnJudge({ reflectionBase, env, judgeScript }) {
       maxRounds: 4,
       completion: false,
       reflection: { ...reflectionBase, judgeIntercept: false, judge: { provider: judge } },
-      onJudge: (info) => records.push(info),
+      capabilities: { hooks: { onJudge: (info) => records.push(info) } },
     });
     return { result, judge, provider, records };
   } finally {
@@ -77,7 +77,7 @@ test("F-2 roundJudgeEnabled 初值：开着的格子让 end_turn 轮走 judge_do
     maxRounds: 4,
     completion: false,
     reflection: { enabled: true, roundJudge: true, judgeIntercept: false, judge: { provider: judge } },
-    onJudge: (info) => records.push(info),
+    capabilities: { hooks: { onJudge: (info) => records.push(info) } },
   });
   assert.equal(judge.requests.filter(isRoundJudgeRequest).length, 1, "初值为真 ⇒ end_turn 轮调用一次 round judge");
   assert.equal(result.termination.reason, "judge_done", "决策被采纳 ⇒ 读点读到的是真值而不是占位 false");
@@ -144,7 +144,9 @@ async function runFailureFixture({ judgeScript, maxRounds, judgeFailureLimit, wi
     maxRounds,
     completion: { signals: [], maxNoToolRounds: 9 },
     reflection: { enabled: true, judgeFailureLimit, judgeIntercept: false, judge: { provider: judge } },
-    ...(withOnJudge ? { onJudge: (info) => records.push(info) } : {}),
+    ...(withOnJudge
+      ? { capabilities: { hooks: { onJudge: (info) => records.push(info) } } }
+      : {}),
   });
   return { result, judge, provider, records };
 }
