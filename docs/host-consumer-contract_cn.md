@@ -947,6 +947,45 @@ issue #538（这里按真值判断、那里按严格比较）是**已知缺陷�
 `G` 上面那张数据取值矩阵；`F` 函数值两个拼写都被拒；`R` 真 run 仍分别走 `chatStream` / `chat`，以及
 `partialPersistence` 那条真值判断；`N` 四向账目与撞名归属表；`S` 夹具翻译点）。
 
+**`resume`：同一条先例，同一种量法（issue #498 S3，第十九片）。** 闸口二把五种取值形态跑过真入口——
+布尔 `true` / `false`、字符串、run 快照对象、数字 `1`——**规位侧全 ACCEPT**（`exit 0`，且账本先铺好
+一条记录，免得把「形状被接受」和「resume 没东西可恢复」混成一件事）、**扁平侧全在名称闸口被拒**。
+唯一的差异格是函数，与 `stream` 当初那一格同形：
+
+| `resume` 取值 | 扁平侧（A19 之前） | 规位侧（`config.run.resume`） |
+| --- | --- | --- |
+| `true` / `false` / 字符串 / 快照对象 / `1` | exit 0 | exit 0（对等） |
+| **函数** | **exit 0** | **被拒**——`config.run.resume is not accepted … holds data only` |
+
+引擎对 `resume` **只做真值判断**——`src/loop/resume-manager.js` 里 `if (!ctx.resume || ctx.runId ===
+undefined) return "absent";` 与 `if (ctx.resume && ctx.store && ctx.runId !== undefined) { … }`，
+没有 `typeof` 判定、也没有任何调用点（`resume(` / `resume.call` / `resume.apply` 的 `grep` 是空的）——
+所以函数在那个位置从来不是行为。于是本片退役扁平拼写并**接受这条收窄**（函数现在两个拼写都被拒），
+既没加布尔校验器，也没把 `resume` 搬去能力面（那是 `reflection` 的处置，只给引擎**真的会调用**的成员）。
+读侧一行未改。
+
+`resume` 的版本口径（issue #498 S3，第十九片）：
+
+| 版本 | 顶层写 `resume` |
+| --- | --- |
+| 0.26.0 及更早（最后一个**已发布**版本） | 顶层接受 |
+| 0.27.0 | **从未发布**，所以没有任何宿主装过「这件事有影响」的树 |
+| 0.28.0 及以后（issue #498 S3，第十九片） | **当场拒**——改写 `config.run.resume`。名称闸口抛 `unknown runToolLoop option: "resume" (its canonical home is config.run.resume; the flat spelling is rejected)` |
+
+**取值面没动，动的只有拼写。** `resume` 仍然没有值校验器：`true` / `false` / 字符串 / 快照对象都逐字到达
+`effectiveOptions.resume`，照旧只参与那两处真值判断——所以非布尔的真值仍然会续跑（`R2` 钉住）。
+夹具（`test/helpers/run-direct.js` 的 `withRunFamily`）同样一行新代码都没加——键加进
+`RUN_FAMILY_FIXTURE_KEYS` 即可，这正是本片没有变成 51 个文件改写的全部原因。实测红格：单删 **98**、
+夹具翻译拼写之后 **60**、迁完手写点 **0**（`test/loop-resume.test.js` 18 处、`test/loop-resume-notice.test.js`
+7 处，`run-state` / `loop-run-state-cells` / `loop-resume-fold-immunity` / `loop-resume-prior-seed-469` /
+`judge` / `tool-fact-success-parity` / `loop-v020-rc` / `loop-invalid-arguments` / 三个 cell 测试的 resume 现场，
+内联白名单镜像、两形态等价样本、`C1` 的冲突通道、`I4` 的别名钉、A11 / A14 / A15 的邻接清单、随包发布的
+契约套件那一格，以及两个观察脚本 `scripts/soak.mjs` / `scripts/message-journal-golden.mjs`）。
+钉子文件是 `test/loop-run-slice-498s3a19.test.js`（`P` 拒绝文案逐字且早于任何宿主端口被调用；
+`G` 上面那张数据取值矩阵；`F` 函数值两个拼写都被拒、两条理由分开钉；`R` 真 resume 仍真的续跑、真值读法未改；
+`N` 四向账目、原样保留的 `session.resume` 裁决与未动的 `journalResumeUnpersistedToolResults` /
+`resumeRunSnapshot` 注解；`S` 夹具翻译点）。
+
 ### capabilities 命名空间（issue #498）
 
 行为载体不是数据，所以 0.28.0 给它们一个自己的容器。它**有三组**（issue #498 S4b 加了第二组，
