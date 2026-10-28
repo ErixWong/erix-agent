@@ -411,7 +411,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *       model?: {contextWindowTokens?: number, maxOutputTokens?: number},
  *       modelMetadata?: {contextWindowTokens?: number, maxOutputTokens?: number}, session?: any},
  *   },
- *   capabilities?: { // issue #498（S4a / S4b / S4c）：能力面容器。三组：`hooks`（16 个宿主回调 + 2 个形态多态旋钮）、`checks`（交付物判据）、`ports`（基础设施与策略实现）。
+ *   capabilities?: { // issue #498 (S4a / S4b / S4c): the capability container. Three groups: `hooks` (16 host callbacks + 2 polymorphic knobs), `checks` (deliverables checks), `ports` (infrastructure / strategy implementations).
  *     hooks?: {onEvent?: (event: LoopEvent) => void, onObserverError?: (error: Error, context: {channel: string, runId?: string, type?: string, round?: number, toolName?: string, method?: string}) => void,
  *       onPersistenceError?: (error: Error) => void,
  *       onRound?: (record: object) => void, onJudge?: (info: JudgeEvent) => void,
@@ -518,30 +518,36 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   并点名该键。
  *   **`config` 里不许有函数值**（#498 S4a）：整棵树逐节点扫，函数一律启动即抛并点名完整路径
  *   （`config.folding.context.onBeforeFold`），报错说清规范之家（`capabilities.hooks.<name>` /
- *   `capabilities.checks.deliverables` / `capabilities.ports.<slot>`——#498 S4c 起第三档点名真实
- *   目的地，例如 `config.timing.retry.sleepImpl` ⇒ `capabilities.ports.sleepImpl`）。
+ *   `capabilities.checks.deliverables` / `capabilities.ports.<slot>` — since #498 S4c the third tier
+ *   names the real destination, e.g. `config.timing.retry.sleepImpl` ⇒
+ *   `capabilities.ports.sleepImpl`).
  *   `runId` / `cwd` / `tools` 是配置面（`config.run.runId` / `config.run.cwd` /
  *   `config.input.tools`）：它们是字符串标量 / 工具声明数组，而「`config` 子树过 JSON round-trip
  *   等值」要求能力面只剩函数/端口对象（见 `src/loop/config-namespace.js` 文件头约束 3 / 4）。
  *
  * `capabilities`:
- *   issue #498（S4a / S4b / S4c）：能力面容器，与 `config` **同等待遇**（同一道预检相位、同一套「容器赢扁平」
- *   优先级、同一条冲突事件）。三组：
- *   · `hooks` —— **16 个宿主回调**的规范之家（`onEvent` / `onObserverError` / `onPersistenceError` /
- *     `onRound` / `onJudge` / `onToolResult` / `onDelta` / `onReasoningDelta` / `onToolCall` /
- *     `onUsage` / `onFoldSummary` / `finalGuard` / `onReflection` / `onBeforeFold` / `onAfterFold` /
- *     `stubFor`，名单见 `CAPABILITY_HOOK_NAMES`（`src/loop/capabilities-namespace.js`））**加上**两个
- *     形态多态旋钮的函数形态（`protectedMessage` / `recoveryHint`，见 `CAPABILITY_POLYMORPHIC_HOOK_NAMES`）。
- *     `hooks` 的值一律必须是函数（不因为这两个旋钮放宽）；
- *   · `checks` —— 交付物判据（`deliverables`，每项 `{name, check}`，`check` 是函数）；
- *   · `ports` —— 被引擎**解引用或调用**的基础设施与策略实现（#498 S4c）：`sleepImpl` /
- *     `judgeProvider`（callable 或 `{chat}` 对象）/ `strategy`（策略对象）。与 `hooks` 的区别：
- *     端口位可以是对象，`hooks` 必须 callable。
- *   12 个观察者通道 / `finalGuard` / `deliverables` 的顶层扁平写法**照旧可用**（0.26 已发布面，本版不删）；
- *   本刀新增的 9 个叶子（`ports.*` 与 `hooks.{onReflection,onBeforeFold,onAfterFold,stubFor,protectedMessage,recoveryHint}`）
- *   **没有**顶层扁平别名（它们从来不是顶层选项）——顶层白名单因此仍是 67。未知子键
- *   （`capabilities.hoks` / `capabilities.check` / `capabilities.ports.sleeplmp`）与「值给错型」
- *   一律启动即抛并点名完整路径。`config.observers` 这组已整组删除（0.27 未发布 ⇒ 零成本）。
+ *   issue #498 (S4a / S4b / S4c): the capability container, treated **exactly like `config`** (same
+ *   pre-check phase, same "container beats flat" precedence, same conflict event). Three groups:
+ *   · `hooks` — the canonical home of the **16 host callbacks** (`onEvent` / `onObserverError` /
+ *     `onPersistenceError` / `onRound` / `onJudge` / `onToolResult` / `onDelta` / `onReasoningDelta` /
+ *     `onToolCall` / `onUsage` / `onFoldSummary` / `finalGuard` / `onReflection` / `onBeforeFold` /
+ *     `onAfterFold` / `stubFor`; see `CAPABILITY_HOOK_NAMES`
+ *     (`src/loop/capabilities-namespace.js`)) **plus** the function form of the two polymorphic knobs
+ *     (`protectedMessage` / `recoveryHint`, see `CAPABILITY_POLYMORPHIC_HOOK_NAMES`). Every `hooks`
+ *     value must be a function (that is not relaxed for those two);
+ *   · `checks` — deliverables checks (`deliverables`, each entry `{name, check}`, `check` a function);
+ *   · `ports` — infrastructure / strategy implementations the engine **dereferences or calls**
+ *     (#498 S4c): `sleepImpl` / `judgeProvider` (a callable or a `{chat}` object) / `strategy` (a
+ *     strategy object). The difference from `hooks`: a port slot may be an object, a hook must be
+ *     callable.
+ *   The flat top-level spellings of the 12 observer channels / `finalGuard` / `deliverables` **keep
+ *   working** (the published 0.26 surface; this release removes none of them); the nine leaves added
+ *   by this slice (`ports.*` and
+ *   `hooks.{onReflection,onBeforeFold,onAfterFold,stubFor,protectedMessage,recoveryHint}`) have **no**
+ *   top-level flat alias (they never were top-level options) — which is why the allowlist is still 67.
+ *   Unknown sub-keys (`capabilities.hoks` / `capabilities.check` / `capabilities.ports.sleeplmp`) and
+ *   "given but wrong shape" all throw at startup with the full path named. The `config.observers`
+ *   group is gone entirely (0.27 was never published ⇒ zero cost).
  *
  * `onToolResult`:
  *   改写钩子（非纯观察者）：返回值会替换工具结果。抛错/rejected Promise 被隔离，

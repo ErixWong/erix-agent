@@ -212,12 +212,15 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
 });
 
 /**
- * 能力面（**22 项**，指**顶层选项**那一层）：宿主**递进来**的行为载体。
+ * The capability surface (**22 items**, meaning the **top-level option** layer): the behaviour
+ * carriers the host **hands in**.
  *
- * #498 S4c 追加一条边界：能力面 schema 里还有 9 个**嵌套槽**叶子（`ports.*` 与 6 个 `hooks.*`），
- * 它们**不是**顶层选项（从来不是，本刀也没发明）——所以它们不在这份 22 项名单里，也不参与
- * 「配置面 + 能力面 + 容器 = 白名单」那条三向恒等式。它们的去向由
- * `CAPABILITY_SLOT_DESTINATIONS`（`src/loop/capabilities-namespace.js`）登记，`slots` 侧信道交付。
+ * #498 S4c adds one boundary: the capability schema also holds nine **nested-slot** leaves
+ * (`ports.*` and six `hooks.*`), which are **not** top-level options (they never were, and this slice
+ * invents none) — so they are not on this 22-item list and take no part in the three-way identity
+ * ("config surface + capability surface + containers = allowlist"). Their destinations are registered
+ * in `CAPABILITY_SLOT_DESTINATIONS` (`src/loop/capabilities-namespace.js`) and delivered on the
+ * `slots` side channel.
  *
  * 判据（#497 复审 R1 更正后的版本，与文件头约束 3 同一句话）：**能力面 = 宿主提供的行为载体
  * （函数 / 端口对象），引擎调用或解引用它；配置面 = 引擎按已知字段校值并解释的数据**。
@@ -281,9 +284,10 @@ export const CAPABILITY_OPTION_NAMES = Object.freeze([
   // `onReasoningDelta` / `onToolCall` / `onUsage` / `onFoldSummary`）从 `config.observers`
   // 整组移进能力面。它们本来就是回调——判据一直说它们在能力面，只是 0.27 把它们关在配置树里。
   // #498 S4b：`finalGuard` 也在这一支里（`CAPABILITY_HOOK_NAMES` 的第 12 项，见那边的注释）。
-  // #498 S4c：`CAPABILITY_HOOK_NAMES` 的后 4 项（`onReflection` / `onBeforeFold` / `onAfterFold` /
-  // `stubFor`）**没有**顶层扁平别名 ⇒ 它们不是顶层选项，也就不能进这份名单（否则三向闭合会红）。
-  // 它们与 `ports.*` 一起属于「嵌套槽叶子」，去向在 `CAPABILITY_SLOT_DESTINATIONS` 里。
+  // #498 S4c: the last four entries of `CAPABILITY_HOOK_NAMES` (`onReflection` / `onBeforeFold` /
+  // `onAfterFold` / `stubFor`) have **no** top-level flat alias ⇒ they are not top-level options and
+  // therefore cannot be on this list (the three-way identity would go red). Together with `ports.*`
+  // they are the "nested-slot leaves", whose destinations live in `CAPABILITY_SLOT_DESTINATIONS`.
   ...CAPABILITY_HOOK_NAMES.filter((name) => !CAPABILITY_PORT_OPTION_NAMES.includes(name)
     && !CAPABILITIES_SLOT_LEAF_NAMES.includes(name)),
   // #498 S4b：`capabilities.checks` 那一组（`deliverables`）。以前它挂在 `config.guard` 上，
@@ -436,9 +440,11 @@ export function configSchemaSelfCheck(optionNames, { leafAliases = CONFIG_LEAF_A
       problems.push(`${JSON.stringify(name)} is a namespace container and cannot also be a capability option`);
     }
   }
-  // `capabilities.hooks` 的每个**扁平**回调都必须在能力面名单里（否则「加了回调却忘了分类」会静默）。
-  // #498 S4c：后 4 个回调是**嵌套槽**叶子（没有顶层扁平别名），它们不在这份名单里是**设计**，
-  // 不是漏项——所以它们由 `capabilitiesSchemaSelfCheck` 的「有槽的叶子不得是顶层选项」反向核。
+  // Every **flat** `capabilities.hooks` callback must be on the capability list (otherwise "added a
+  // callback and forgot to classify it" would be silent). #498 S4c: the last four callbacks are
+  // **nested-slot** leaves (no top-level flat alias); not being on this list is by design, not an
+  // omission — the reverse check is `capabilitiesSchemaSelfCheck`'s "a slotted leaf must not be a
+  // top-level option".
   for (const hook of CAPABILITY_HOOK_NAMES) {
     if (CAPABILITIES_SLOT_LEAF_NAMES.includes(hook)) continue;
     if (!CAPABILITY_OPTION_SET.has(hook)) {
@@ -601,10 +607,12 @@ export function collectConfigNamespaceProblems(config) {
 }
 
 /**
- * 未知配置叶子的去处尾巴：它可能是别的配置组的叶子，也可能是能力面的成员（#498 S4c）。
+ * The destination tail for an unknown config leaf: it may be a leaf of another config group, or a
+ * capability member (#498 S4c).
  *
- * 写高一层（`config.folding.onBeforeFold` / `config.timing.sleepImpl`）是最常见的误写，
- * 所以有能力面之家的叶子不该只回一句「未知叶子 + 可接受名单」。
+ * Writing it one level too high (`config.folding.onBeforeFold` / `config.timing.sleepImpl`) is the
+ * most common slip, so a leaf that has a capability home should not just answer "unknown leaf +
+ * accepted list".
  *
  * @param {string} group
  * @param {string} leaf
@@ -639,20 +647,25 @@ function collectFunctionPaths(value, path) {
 }
 
 /**
- * 函数值的统一文案：点名**完整路径**，说清原因（round-trip）与**规范之家**。
+ * The one message for a function value: name the **full path**, the reason (round-trip) and the
+ * **canonical home**.
  *
- * 「规范之家」分三档，因为三类函数的目的地不同（#498 S4c 把第三档从「含糊指个方向」改成
- * **点名真实目的地**——旧文案里的 `the matching capability port slot` 指向一个当时**不存在**的地方，
- * 宿主照提示改、改完还是没地方放）：
- *   · 宿主回调 / 交付物判据 / 端口实现（名字就在能力面 schema 里，含 #498 S4c 的嵌套槽叶子）⇒
- *     `its canonical home is capabilities.<group>.<leaf>`（逐字点出来，例如 `capabilities.hooks.onRound` /
- *     `capabilities.checks.deliverables` / `capabilities.ports.sleepImpl`）；
- *   · 配置面自己的**数据键**（`tools` 之类）⇒ 它本来就该是纯数据，没有别处可搬，所以文案是
- *     `there is no capability home for it: …`（不要说「its canonical home is none」，那读不通）；
- *   · 其余（叶子名本身不在能力面 schema 里，例如 `judge.provider` 里的 `provider`）⇒ 拿**完整路径**
- *     去 `CAPABILITY_SLOT_DESTINATIONS` 里做最长前缀匹配（`timing.retry.sleepImpl` →
- *     `ports.sleepImpl`、`run.reflection.judge.provider` → `ports.judgeProvider`）⇒ 照样点名
- *     `capabilities.ports.<slot>`；实在匹配不上时枚举**真实存在**的三条端口槽位，不再编造槽位名。
+ * The home has three tiers, because three kinds of function have different destinations (#498 S4c
+ * rewrote the third tier from "point vaguely in a direction" to **naming the real destination** — the
+ * old wording, `the matching capability port slot`, pointed at a place that did not exist yet, so a
+ * host that followed the hint changed the value and still had nowhere to put it):
+ *   · host callbacks / deliverables checks / port implementations (the name is on the capability
+ *     schema, including the #498 S4c nested-slot leaves) ⇒ `its canonical home is
+ *     capabilities.<group>.<leaf>` (spelled out: `capabilities.hooks.onRound` /
+ *     `capabilities.checks.deliverables` / `capabilities.ports.sleepImpl`);
+ *   · a **data key** of the config surface (`tools` and friends) ⇒ it is supposed to be plain data and
+ *     has nowhere else to go, so the message is `there is no capability home for it: …` (never
+ *     "its canonical home is none", which does not read);
+ *   · everything else (the leaf name itself is not on the capability schema, e.g. `provider` inside
+ *     `judge.provider`) ⇒ the **full path** is matched against `CAPABILITY_SLOT_DESTINATIONS` by
+ *     longest prefix (`timing.retry.sleepImpl` → `ports.sleepImpl`, `run.reflection.judge.provider` →
+ *     `ports.judgeProvider`) ⇒ still names `capabilities.ports.<slot>`; when nothing matches it
+ *     enumerates the three port slots that really exist instead of inventing slot names.
  *
  * @param {string} path
  * @returns {string}
@@ -674,15 +687,16 @@ function functionValueProblemMessage(path) {
 }
 
 /**
- * 把一条 **config 侧**的函数路径映回它真正属于的能力面槽位（#498 S4c）。
+ * Map a **config-side** function path back to the capability slot it really belongs to (#498 S4c).
  *
- * 叶子名自己不在能力面 schema 里的时候（`config.run.reflection.judge.provider` 的叶子是
- * `provider`——它是个顶层能力键，但能力面 schema 里没有 `provider` 这个叶子），只能靠**完整路径**
- * 定位：把 `CAPABILITY_SLOT_DESTINATIONS` 里的目的地（`["reflection", "judge", "provider"]`）
- * 翻成 config 路径（`run.reflection.judge.provider`）再做最长前缀匹配，于是
- * `config.folding.context.strategy.compact` 这种再深一层的函数也归到 `ports.strategy`。
+ * When the leaf name itself is not on the capability schema (`config.run.reflection.judge.provider`
+ * has the leaf `provider` — a top-level capability key, but there is no `provider` *leaf* on the
+ * capability schema), only the **full path** can locate it: each destination in
+ * `CAPABILITY_SLOT_DESTINATIONS` (`["reflection", "judge", "provider"]`) is turned into a config path
+ * (`run.reflection.judge.provider`) and matched by longest prefix, so a function one level deeper such
+ * as `config.folding.context.strategy.compact` still lands on `ports.strategy`.
  *
- * @param {string} path 形如 `config.folding.context.onBeforeFold`
+ * @param {string} path shaped like `config.folding.context.onBeforeFold`
  * @returns {string|undefined}
  */
 function capabilityPathForConfigPath(path) {
@@ -699,7 +713,7 @@ function capabilityPathForConfigPath(path) {
   return best?.capabilityPath;
 }
 
-/** 报错文案里的端口槽位枚举（顺序 = schema 顺序，免得文案与 schema 各说各的）。 */
+/** The port-slot enumeration used in error text (schema order, so text and schema cannot disagree). */
 function capabilityPortSlotLabels() {
   return CAPABILITIES_NAMESPACE_SCHEMA.ports.join(", ");
 }

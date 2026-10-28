@@ -10,27 +10,33 @@
 //     交付物判据以前挂在 `config.guard.deliverables` 上，而它的每一条都带函数 ⇒ 配置面里能写的
 //     只有 `[]`（一个「只能写空数组」的过渡态）。本刀把它整键搬进能力面，过渡态随之消失；
 //     顶层扁平 `deliverables` 一字未动（它现在就 work）。
-// issue #498（S4c）—— 壳内行为载体获得**真实归宿**，能力面收成**三组**（`hooks` / `checks` / `ports`）：
-//   · 开 `capabilities.ports`：成员 = 被引擎**解引用或调用**的基础设施与策略实现，`sleepImpl`
-//     （定时器注入点，消费点 `retryOptions?.sleepImpl ?? defaultSleep`）、`judgeProvider`（judge
-//     专用评估器，接受 callable 或 `{ chat }` 对象）与 `strategy`（压缩策略对象，
-//     `resolveCompactionStrategy` 原样透传，`shouldCompact` / `compact` 被引擎调）。
-//     它们以前只能写在壳里（`retry.sleepImpl` / `reflection.judge.provider` / `context.strategy`），
-//     而壳本身要过 `config` 子树的 JSON round-trip ⇒ 想要 `retry.sleepImpl` 的宿主连**数据半**都
-//     没法用 `config.timing.retry`（扁平 `retry` 带函数会与 config 侧冲突）。开 ports 让那些壳
-//     **可迁移**，而不是留一条文档没披露的死路。
-//   · `hooks` 补 4 个真回调（12 → 16）：`onReflection`（扩轮决策通知）、`onBeforeFold` /
-//     `onAfterFold`（折叠前后通知，消费点 `runFoldHook`（`src/compact/helpers.js`））、`stubFor`
-//     （逐条消息的桩判定，消费点 `resolveFoldStubs`（同文件））。
-//   · 两个**形态多态**旋钮 `protectedMessage` / `recoveryHint`：数据形态（`string` / `string[]`）
-//     留在 `config.folding.context`，函数形态进 `capabilities.hooks`。两侧都给了**不等价**的值 ⇒
-//     恰一条 `config_override_conflict`（复用同一个容器冲突机制，不新开一条出口）。
-//   ⚠ 本刀的 9 个新叶子**一律不给新的顶层扁平别名**：`sleepImpl` / `judgeProvider` / `strategy` /
-//   `onReflection` / `onBeforeFold` / `onAfterFold` / `stubFor` / `protectedMessage` / `recoveryHint`
-//   从来不是顶层选项，发明的是**容器成员位**，不是搬家 ⇒ 顶层白名单**仍是 67**。它们的家是
-//   `CAPABILITY_SLOT_DESTINATIONS`（下表）里登记的**嵌套槽**（`context.onBeforeFold` 这种），
-//   而展开结果里它们不进 `effectiveOptions` 的扁平键，而是走 `slots` 侧信道（见
-//   `expandCapabilitiesNamespace`）。
+// issue #498 (S4c) — behaviour carriers that live *inside* a shell get a real destination, and the
+// capability surface therefore has **three groups** (`hooks` / `checks` / `ports`):
+//   · `capabilities.ports` opens. Its members are the infrastructure / strategy implementations the
+//     engine **dereferences or calls**: `sleepImpl` (the timer injection point, consumed as
+//     `retryOptions?.sleepImpl ?? defaultSleep`), `judgeProvider` (the judge-only evaluator; accepts
+//     a callable or a `{ chat }` object) and `strategy` (a compaction strategy object that
+//     `resolveCompactionStrategy` passes through verbatim; `shouldCompact` / `compact` are called).
+//     They used to be writable only inside a shell (`retry.sleepImpl` / `reflection.judge.provider` /
+//     `context.strategy`), and a shell has to survive the `config` subtree's JSON round-trip — so a
+//     host that wanted `retry.sleepImpl` could not even use the **data half** through
+//     `config.timing.retry` (a flat `retry` carrying a function collides with the config side).
+//     Opening `ports` makes those shells **migratable** instead of leaving an undisclosed dead end.
+//   · `hooks` gains 4 real callbacks (12 → 16): `onReflection` (extension-decision notification),
+//     `onBeforeFold` / `onAfterFold` (fold notifications, consumed by `runFoldHook`
+//     (`src/compact/helpers.js`)) and `stubFor` (the per-message stub decision, consumed by
+//     `resolveFoldStubs` in the same file).
+//   · Two **polymorphic** knobs, `protectedMessage` / `recoveryHint`: the data form (`string` /
+//     `string[]`) stays in `config.folding.context`, the function form moves to `capabilities.hooks`.
+//     Both sides set to **inequivalent** values ⇒ exactly one `config_override_conflict` (the same
+//     container-conflict machinery, no new outlet).
+//   ⚠ The nine new leaves of this slice get **no new top-level flat alias**: `sleepImpl` /
+//   `judgeProvider` / `strategy` / `onReflection` / `onBeforeFold` / `onAfterFold` / `stubFor` /
+//   `protectedMessage` / `recoveryHint` never were top-level options, so what is invented here is a
+//   **container member slot**, not a move ⇒ the top-level allowlist **stays at 67**. Their home is the
+//   **nested slot** registered in `CAPABILITY_SLOT_DESTINATIONS` (below; `context.onBeforeFold` and
+//   friends), and expansion does not write them into `effectiveOptions` as flat keys — it hands them
+//   over on the `slots` side channel (see `expandCapabilitiesNamespace`).
 //
 // 病根（母单 #495 / #497 复审的第二轮披露②）：0.27.0 把 8 个 `on*` 回调塞进 `config.observers`
 // 组里，于是 `config` 子树**过不了 JSON round-trip**——函数进去、`undefined` 出来。那条
@@ -44,10 +50,12 @@
 //
 // 设计约束（与 `config` 容器同构，刻意**对称**——两个容器待遇一致是 #498 S4a 的验收判据之一）：
 //   1. **别名 = schema 路径**：`capabilities.hooks.onEvent` 与顶层 `onEvent` 是同一个键的两种写法，
-//      叶子名逐字等于顶层键名，没有重命名表。**例外（#498 S4c，显式登记）**：9 个「嵌套槽叶子」
-//      没有顶层扁平别名（它们从来不是顶层选项），去向写在 `CAPABILITY_SLOT_DESTINATIONS` 里；
-//      自检双向核「有槽的叶子不许是顶层选项 / 顶层叶子必须真是选项」，所以这条例外不会退化成
-//      「谁都能发明新扁平键」。
+//      the leaf name is verbatim the top-level key, with no rename table. **One exception (issue
+//      #498 S4c, explicitly registered)**: the nine "nested slot" leaves have no top-level flat alias
+//      (they never were top-level options); their destinations live in
+//      `CAPABILITY_SLOT_DESTINATIONS`, and the self-check verifies both directions ("a slotted leaf
+//      must not be a top-level option / a flat leaf must really be one"), so the exception cannot
+//      degrade into "anyone may invent a new flat key".
 //   2. **只有一张表**：分组表 `CAPABILITIES_NAMESPACE_SCHEMA` 是唯一手写的部分，别名表
 //      (`CAPABILITIES_ALIAS_PATHS`) 从它机械派生；`configSchemaSelfCheck`（`config-namespace.js`）
 //      对着 `RUN_TOOL_LOOP_OPTION_NAMES` 核「能力面 / 配置面 / 容器三向闭合」。
@@ -63,11 +71,12 @@
 //      `config_override_conflict` 事件发出去（事件类型不新增：它说的就是「一个旋钮两个真相来源」，
 //      只是 path 前缀不同）。capabilities 侧赢（与 `config.*` 对扁平键的优先级同向）。
 //
-// 适配器端口对象（`provider` / `tools` / `store` / `signal` …）**不在** `capabilities.ports` 里：
-// `tools` 在 #498 S4b 归到配置面（`config.input.tools`，它是数据），其余留在顶层选项 / 装配口。
-// 写 `capabilities.provider` 仍会抛（并说明端口对象留在哪里）——绝不静默放行，也绝不提前把
-// 半成品形状发出去。`ports` 这一组收的是**壳内的**基础设施/策略实现（#498 S4c 的三条），
-// 不是「所有端口对象的搬家入口」。
+// Adapter port objects (`provider` / `tools` / `store` / `signal` …) are **not** members of
+// `capabilities.ports`: `tools` moved to the config surface in #498 S4b (`config.input.tools`, it is
+// data), the rest stay top-level options / assembly-port members. Writing `capabilities.provider`
+// still throws (and says where port objects live) — nothing is silently accepted, and no half-baked
+// shape is published early. The `ports` group holds the **in-shell** infrastructure / strategy
+// implementations (the three from #498 S4c), not "the migration entry point for every port object".
 //
 // 零运行时依赖：只用相对路径。
 
@@ -77,7 +86,7 @@ import { tagValidationRoute } from "../assembly-validators.js";
 import { normalizeDeliverables } from "./deliverables.js";
 
 /**
- * **16 个宿主回调**的规范名单（issue #498 S4a，S4b 起 12 项，S4c 起 16 项）。
+ * The canonical list of the **16 host callbacks** (issue #498 S4a; 12 since S4b, 16 since S4c).
  *
  * 顺序 = 报错文案里的枚举顺序，也 = 文档里那张表的行序。八条观察者通道来自 0.27.0 的
  * `config.observers`（本版整组删除），三条出口（`onEvent` / `onObserverError` /
@@ -105,12 +114,14 @@ export const CAPABILITY_HOOK_NAMES = Object.freeze([
   // #498 S4b：值必须是函数的那个叶子（`collectSemanticOptionProblems` 里那条
   // `finalGuard must be a function (or omitted)`）⇒ 按判据它是行为载体。顶层扁平键一字未动。
   "finalGuard",
-  // #498 S4c：四个**壳内**回调。它们的旧住处是嵌套槽（`reflection.onReflection` /
-  // `context.onBeforeFold` / `context.onAfterFold` / `context.stubFor`），**没有**顶层扁平别名——
-  // 所以它们的去向登记在 `CAPABILITY_SLOT_DESTINATIONS` 里，展开走 `slots` 侧信道（见文件头）。
-  // 消费点：`onReflection` 在 `src/loop/orchestrator.js` 的扩轮分支（`effectiveReflection.onReflection`），
-  // 另三个在 `src/compact/{sliding-window,fold-statistical,fold-llm}.js` 经
-  // `runFoldHook` / `resolveFoldStubs`（`src/compact/helpers.js`）。
+  // #498 S4c: four **in-shell** callbacks. Their legacy homes are nested slots
+  // (`reflection.onReflection` / `context.onBeforeFold` / `context.onAfterFold` / `context.stubFor`)
+  // and they have **no** top-level flat alias — so their destinations are registered in
+  // `CAPABILITY_SLOT_DESTINATIONS` and expansion delivers them on the `slots` side channel (see the
+  // file header). Consumers: `onReflection` in the extension branch of `src/loop/orchestrator.js`
+  // (`effectiveReflection.onReflection`); the other three in
+  // `src/compact/{sliding-window,fold-statistical,fold-llm}.js` through `runFoldHook` /
+  // `resolveFoldStubs` (`src/compact/helpers.js`).
   "onReflection",
   "onBeforeFold",
   "onAfterFold",
@@ -118,14 +129,15 @@ export const CAPABILITY_HOOK_NAMES = Object.freeze([
 ]);
 
 /**
- * **两个形态多态旋钮**（issue #498 S4c）：函数形态住在 `capabilities.hooks`，数据形态
- * （`string` / `string[]`）住在 `config.folding.context`（或扁平 `context`）。
+ * The **two polymorphic knobs** (issue #498 S4c): the function form lives in `capabilities.hooks`,
+ * the data form (`string` / `string[]`) in `config.folding.context` (or the flat `context`).
  *
- * 它们是本刀唯一「同一个旋钮两个户口」风险面：两侧都给了**不等价**的值 ⇒ 恰一条
- * `config_override_conflict`（`path` 点名该旋钮的**配置侧**路径，如 `folding.context.protectedMessage`），
- * 等价（`isDeepStrictEqual`，函数按同一性）⇒ 零事件。校验器与其余 `hooks` 叶子**同一条规则**：
- * 给了就必须是函数——不为迁就对象形态而放宽（放宽正是 C 路线（把它们塞进 `hooks` 当普通成员）
- * 要避免的退化）。
+ * They are the one "same knob, two homes" risk of this slice: both sides set to **inequivalent**
+ * values ⇒ exactly one `config_override_conflict` (`path` names the knob's **config-side** path, e.g.
+ * `folding.context.protectedMessage`); equivalent (`isDeepStrictEqual`, functions by identity) ⇒ zero
+ * events. The value validator keeps the **same rule** as every other `hooks` leaf: given ⇒ it must be
+ * a function — it is deliberately *not* relaxed to "function or object" (that relaxation is the
+ * degradation route C would have introduced by stuffing these into `hooks` as ordinary members).
  *
  * @type {readonly string[]}
  */
@@ -135,10 +147,12 @@ export const CAPABILITY_POLYMORPHIC_HOOK_NAMES = Object.freeze([
 ]);
 
 /**
- * 住在 `context` 壳里的五个 `hooks` 叶子（`onReflection` 不在其中：它住 `reflection` 壳）。
+ * The five `hooks` leaves whose shell is `context` (`onReflection` is not one of them: it lives in the
+ * `reflection` shell).
  *
- * 单列出来是为了让 orchestrator **只**把这五个并进折叠上下文（`compactionContext`）——
- * `onReflection` 不是 `context` 的子键，混进去只会多出一个没人读的键。
+ * They are listed separately so the orchestrator merges **exactly these five** into the folding
+ * context (`compactionContext`) — `onReflection` is not a `context` sub-key, and spreading it in
+ * would only add a key nobody reads.
  *
  * @type {readonly string[]}
  */
@@ -151,10 +165,12 @@ export const CAPABILITY_CONTEXT_HOOK_NAMES = Object.freeze([
 ]);
 
 /**
- * `capabilities.ports` 的成员（issue #498 S4c）：被引擎**解引用或调用**的基础设施与策略实现。
+ * The members of `capabilities.ports` (issue #498 S4c): the infrastructure / strategy
+ * implementations the engine **dereferences or calls**.
  *
- * 三条都对应一个**壳里的老槽位**（下表），于是「同一个旋钮两个住处」这件事从第一天起就被
- * 冲突机制盯住（给了不等价值 ⇒ 一条 `config_override_conflict`，path 形如 `ports.sleepImpl`）。
+ * Each of the three maps onto an **old slot inside a shell** (see the table below), so "the same knob
+ * has two homes" is watched by the conflict machinery from day one (inequivalent values ⇒ one
+ * `config_override_conflict`, path shaped like `ports.sleepImpl`).
  *
  * @type {readonly string[]}
  */
@@ -176,50 +192,60 @@ export const CAPABILITY_PORT_SLOT_NAMES = Object.freeze([
 export const CAPABILITY_CHECK_NAMES = Object.freeze(["deliverables"]);
 
 /**
- * 能力面的**唯一手写表**：分组 → 该组接受的叶子名。
+ * The capability surface's **single hand-written table**: group → the leaf names that group accepts.
  *
- * 叶子名要么逐字等于 `RUN_TOOL_LOOP_OPTION_NAMES` 里的顶层键名（扁平别名，与 `config` 容器同一条
- * 约束），要么在 `CAPABILITY_SLOT_DESTINATIONS` 里登记了一个**嵌套槽**（#498 S4c：`sleepImpl` /
- * `judgeProvider` / `strategy` / `onReflection` / `onBeforeFold` / `onAfterFold` / `stubFor` /
- * `protectedMessage` / `recoveryHint` 从来不是顶层选项，发明的是容器成员位、不是搬家）。
- * 三组各有各的**值形状**（`hooks` = 函数、`checks` = `{name, check}[]`、`ports` = 函数 / `{chat}`
- * 对象 / 策略对象），由 `CAPABILITIES_GROUP_VALIDATORS` 逐组承担——新加一组却忘了给校验器，
- * `configSchemaSelfCheck` 报红。
+ * A leaf name either is verbatim a top-level key in `RUN_TOOL_LOOP_OPTION_NAMES` (a flat alias, the
+ * same constraint the `config` container follows), or it registers a **nested slot** in
+ * `CAPABILITY_SLOT_DESTINATIONS` (issue #498 S4c: `sleepImpl` / `judgeProvider` / `strategy` /
+ * `onReflection` / `onBeforeFold` / `onAfterFold` / `stubFor` / `protectedMessage` / `recoveryHint`
+ * never were top-level options, so what is invented is a container member slot, not a move).
+ * Each group has its own **value shape** (`hooks` = functions, `checks` = `{name, check}[]`,
+ * `ports` = a function / a `{chat}` object / a strategy object), carried by
+ * `CAPABILITIES_GROUP_VALIDATORS` group by group — a new group without a validator is red in
+ * `configSchemaSelfCheck`.
  *
  * @type {Readonly<Record<string, readonly string[]>>}
  */
 export const CAPABILITIES_NAMESPACE_SCHEMA = Object.freeze({
   hooks: Object.freeze([...CAPABILITY_HOOK_NAMES, ...CAPABILITY_POLYMORPHIC_HOOK_NAMES]),
   checks: CAPABILITY_CHECK_NAMES,
-  // #498 S4c：基础设施与策略实现的规范之家。成员是**壳内**行为载体，不是适配器端口对象
-  // （`provider` / `store` / `signal` 留在顶层选项 / 装配口，写进 `capabilities` 仍抛）。
+  // #498 S4c: the canonical home of infrastructure / strategy implementations. Its members are
+  // **in-shell** behaviour carriers, not adapter port objects (`provider` / `store` / `signal` stay
+  // top-level options / assembly-port members; writing them under `capabilities` still throws).
   ports: CAPABILITY_PORT_SLOT_NAMES,
 });
 
 /**
- * **嵌套槽去向表**（#498 S4c）：没有顶层扁平别名的能力叶子 → 它在扁平表示里的真实位置。
+ * The **nested-slot destination table** (issue #498 S4c): a capability leaf with no top-level flat
+ * alias → its real position in the flat representation.
  *
- * 这是本刀唯一新增的「第二张表」，所以刻意做得很小、且被自检双向核：
- *   · 表里的每个键必须是 schema 里真实存在的叶子（组名 + 叶子）；
- *   · 表里的每个叶子**不得**是顶层选项（否则它就是搬家，会改动 67 的账）；
- *   · `path[0]` 必须是顶层选项（壳本身一定在名单里）；
- *   · `conflictPath` 是冲突事件的 `path`——**点名真实目的地**，不是一句含糊的「能力面」。
- *     ports / 普通 hooks 用能力面路径（`ports.sleepImpl` / `hooks.onBeforeFold`）；两个形态多态
- *     旋钮用**配置侧**路径（`folding.context.protectedMessage`）：它们的两侧是「config 里的数据」
- *     对「hooks 里的函数」，path 指到数据侧才能让宿主知道要改哪一边。
+ * This is the only "second table" this slice adds, so it is deliberately small and checked in both
+ * directions by the self-check:
+ *   · every key must be a leaf that really exists in the schema (group + leaf);
+ *   · every such leaf **must not** be a top-level option (otherwise it would be a move and would
+ *     change the 67 accounting);
+ *   · `path[0]` must be a top-level option (a shell always is on the allowlist);
+ *   · `conflictPath` is the `path` of the conflict event — it **names the real destination**, not a
+ *     vague "capability surface". Ports and ordinary hooks use the capability path
+ *     (`ports.sleepImpl` / `hooks.onBeforeFold`); the two polymorphic knobs use their **config-side**
+ *     path (`folding.context.protectedMessage`), because their two sides are "data in `config`"
+ *     versus "a function in `hooks`" and the host has to know which side to change.
  *
- * 为什么不把它们直接写回顶层：那会让白名单从 67 变成 76（发明 9 个从来没有过的顶层选项），
- * 而工单的硬要求是「本刀只加目的地，不发明扁平别名」。
+ * Why not write them back as top-level keys: that would take the allowlist from 67 to 76 (inventing
+ * nine top-level options that never existed), while the hard requirement of this slice is "only add
+ * destinations, do not invent flat aliases".
  *
  * @type {Readonly<Record<string, { path: readonly string[], conflictPath: string }>>}
  */
 export const CAPABILITY_SLOT_DESTINATIONS = Object.freeze({
-  // 扩轮决策通知：旧住处 `reflection.onReflection`（消费点 `effectiveReflection.onReflection`）。
+  // Extension-decision notification: legacy home `reflection.onReflection` (consumed as
+  // `effectiveReflection.onReflection`).
   "hooks.onReflection": Object.freeze({
     path: Object.freeze(["reflection", "onReflection"]),
     conflictPath: "hooks.onReflection",
   }),
-  // 折叠前后通知 / 桩判定 / 两个形态多态旋钮：旧住处都在 `context` 壳里。
+  // Fold notifications / stub decision / the two polymorphic knobs: all legacy homes are in the
+  // `context` shell.
   ...Object.freeze(Object.fromEntries(CAPABILITY_CONTEXT_HOOK_NAMES.map((name) => [
     `hooks.${name}`,
     Object.freeze({
@@ -229,17 +255,20 @@ export const CAPABILITY_SLOT_DESTINATIONS = Object.freeze({
         : `hooks.${name}`,
     }),
   ]))),
-  // 定时器注入点：旧住处 `retry.sleepImpl`（消费点 `retryOptions?.sleepImpl ?? defaultSleep`）。
+  // Timer injection point: legacy home `retry.sleepImpl` (consumed as
+  // `retryOptions?.sleepImpl ?? defaultSleep`).
   "ports.sleepImpl": Object.freeze({
     path: Object.freeze(["retry", "sleepImpl"]),
     conflictPath: "ports.sleepImpl",
   }),
-  // judge 专用评估器：旧住处 `reflection.judge.provider`（`judge.evaluator` 这个纯别名本刀退役）。
+  // Judge-only evaluator: legacy home `reflection.judge.provider` (the pure alias `judge.evaluator`
+  // is retired by this slice).
   "ports.judgeProvider": Object.freeze({
     path: Object.freeze(["reflection", "judge", "provider"]),
     conflictPath: "ports.judgeProvider",
   }),
-  // 压缩策略对象：旧住处 `context.strategy`（`resolveCompactionStrategy` 对象形态原样透传）。
+  // Compaction strategy object: legacy home `context.strategy` (`resolveCompactionStrategy` passes an
+  // object through verbatim).
   "ports.strategy": Object.freeze({
     path: Object.freeze(["context", "strategy"]),
     conflictPath: "ports.strategy",
@@ -257,10 +286,12 @@ export const CAPABILITIES_NAMESPACE_GROUPS = Object.freeze(
 export const CAPABILITIES_NAMESPACE_OPTION_NAME = "capabilities";
 
 /**
- * 展开后的**别名表**：`"<group>.<leaf>"` → 顶层键名（机械派生，不是手写映射）。
+ * The derived **alias table**: `"<group>.<leaf>"` → top-level key (mechanically derived, not a
+ * hand-written mapping).
  *
- * 只收**扁平**叶子（叶子名逐字等于顶层键名）。9 个嵌套槽叶子不在这里——它们的去向是
- * `CAPABILITY_SLOT_DESTINATIONS`，而不是一张「发明出来的扁平键」表。
+ * It only holds **flat** leaves (leaf name verbatim the top-level key). The nine nested-slot leaves
+ * are not here — their destination is `CAPABILITY_SLOT_DESTINATIONS`, not a table of "invented flat
+ * keys".
  *
  * @type {ReadonlyMap<string, string>}
  */
@@ -272,7 +303,7 @@ export const CAPABILITIES_ALIAS_PATHS = new Map(
   )),
 );
 
-/** 能力面里的**扁平**叶子全集（派生：schema 的扁平并集，顺序 = 分组顺序 + 组内顺序）。 */
+/** The full set of **flat** capability leaves (derived: flat union of the schema, group then leaf order). */
 export const CAPABILITIES_SURFACE_OPTION_NAMES = Object.freeze(
   CAPABILITIES_NAMESPACE_GROUPS.flatMap((group) => (
     CAPABILITIES_NAMESPACE_SCHEMA[group]
@@ -280,7 +311,7 @@ export const CAPABILITIES_SURFACE_OPTION_NAMES = Object.freeze(
   )),
 );
 
-/** 能力面里的**嵌套槽**叶子全集（派生：#498 S4c 的 9 个，顺序 = 分组顺序 + 组内顺序）。 */
+/** The full set of **nested-slot** capability leaves (derived: the nine from #498 S4c, group then leaf order). */
 export const CAPABILITIES_SLOT_LEAF_NAMES = Object.freeze(
   CAPABILITIES_NAMESPACE_GROUPS.flatMap((group) => (
     CAPABILITIES_NAMESPACE_SCHEMA[group]
@@ -291,8 +322,9 @@ export const CAPABILITIES_SLOT_LEAF_NAMES = Object.freeze(
 const CAPABILITIES_GROUP_SET = new Set(CAPABILITIES_NAMESPACE_GROUPS);
 
 /**
- * 每组的**值形状**校验器：返回问题清单（空 = 通过），`path` 是该叶子的完整路径，`leaf` 是叶子名
- * （#498 S4c：`ports` 的三条槽位各有各的形状，需要叶子名才能分流）。
+ * Per-group **value-shape** validators: they return a problem list (empty = pass), `path` is the
+ * leaf's full path and `leaf` is the leaf name (#498 S4c: the three `ports` slots each have their own
+ * shape, so the leaf name is needed to dispatch).
  *
  * 组名 → 校验器。`configSchemaSelfCheck` 会核「schema 里的每一组都有校验器」，所以新加一组
  * 却忘了给形状规则是红的，而不是「收下、不校、也不生效」。
@@ -300,12 +332,14 @@ const CAPABILITIES_GROUP_SET = new Set(CAPABILITIES_NAMESPACE_GROUPS);
  * @type {Readonly<Record<string, (value: unknown, path: string, leaf: string) => string[]>>}
  */
 const CAPABILITIES_GROUP_VALIDATORS = Object.freeze({
-  // 回调：`undefined` = 未订阅；其余必须是函数。**#498 S4c 不放宽**：两个形态多态旋钮的函数形态
-  // 也走这一条（“函数或对象”那种放宽正是 C 路线要避免的退化）。
+  // Callbacks: `undefined` = not subscribed; anything else must be a function. **Not relaxed by
+  // #498 S4c**: the function form of the two polymorphic knobs goes through this same rule (a
+  // "function or object" relaxation is exactly the degradation route C would have introduced).
   hooks: (value, path) => (value === undefined || typeof value === "function"
     ? []
     : [`${path} must be a function (or omitted)`]),
-  // 交付物判据：形状规则只有一份（`normalizeDeliverables`），这里只把它的判词挂到完整路径上。
+  // Deliverables checks: the shape rule has exactly one source (`normalizeDeliverables`); this only
+  // hangs its verdict on the full path.
   checks: (value, path) => {
     if (value === undefined) return [];
     try {
@@ -316,11 +350,14 @@ const CAPABILITIES_GROUP_VALIDATORS = Object.freeze({
       return [`${path} is not accepted: ${message}`];
     }
   },
-  // #498 S4c：三条端口槽位各有各的形状，逐条校（“给了就必须是引擎能调的那个形状”）。
+  // #498 S4c: the three port slots each have their own shape, checked one by one ("given ⇒ it must
+  // have the shape the engine can call").
   //
-  // 为什么 ports 允许对象而 hooks 不允许：端口位装的是**基础设施/策略实现**（`{ chat }` 评估器、
-  // 带 `shouldCompact` / `compact` 的策略对象），引擎对它们是“解引用成员再调”；而 `hooks` 装的是
-  // **回调本身**，引擎对它是“直接调”。两类形状不合并，否则 `hooks` 会变成口袋。
+  // Why `ports` accepts objects while `hooks` does not: a port slot holds an **infrastructure /
+  // strategy implementation** (a `{ chat }` evaluator, a strategy object with `shouldCompact` /
+  // `compact`) and the engine "dereferences a member and calls it"; a `hooks` leaf holds the
+  // **callback itself**, which the engine calls directly. The two shapes are not merged, otherwise
+  // `hooks` would turn into a pocket.
   ports: (value, path, leaf) => {
     if (value === undefined) return [];
     if (leaf === "sleepImpl") {
@@ -336,10 +373,11 @@ const CAPABILITIES_GROUP_VALIDATORS = Object.freeze({
         + " or an object with a chat(request) method (or omitted)",
       ];
     }
-    // `strategy`：对象形态原样透传给 `resolveCompactionStrategy`（`src/compact/strategy-resolution.js`），
-    // 随后引擎无条件调 `shouldCompact(messages, budgetTokens)` 与 `compact(messages, options)`。
-    // 名字形态（`"sliding-window"` 等）是**数据**，不在端口位——它的家是
-    // `config.folding.context.strategy` / 扁平 `context.strategy`。
+    // `strategy`: an object is passed through verbatim to `resolveCompactionStrategy`
+    // (`src/compact/strategy-resolution.js`), after which the engine unconditionally calls
+    // `shouldCompact(messages, budgetTokens)` and `compact(messages, options)`. A built-in **name**
+    // (`"sliding-window"`, …) is data and therefore not a port value — its home is
+    // `config.folding.context.strategy` / the flat `context.strategy`.
     if (typeof value === "string") {
       return [
         `${path} must be a compaction strategy object, not a built-in name`
@@ -357,16 +395,18 @@ const CAPABILITIES_GROUP_VALIDATORS = Object.freeze({
   },
 });
 
-/** “普通对象”（`null` / 数组 / 标量都不是）——端口位的对象形态判定。 */
+/** A "plain object" (`null` / arrays / scalars are not) — the object-form test for a port slot. */
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /**
- * 某个顶层键在能力面里的 schema 路径（`onEvent` → `"hooks.onEvent"`、`deliverables` →
- * `"checks.deliverables"`、`sleepImpl` → `"ports.sleepImpl"`），不在能力面时 undefined。
+ * The capability schema path of a leaf (`onEvent` → `"hooks.onEvent"`, `deliverables` →
+ * `"checks.deliverables"`, `sleepImpl` → `"ports.sleepImpl"`); undefined when the name is not on the
+ * capability surface.
  *
- * 嵌套槽叶子也走这一条（#498 S4c）：报错文案靠它点名**真实目的地**，而不是一句「能力面端口位」。
+ * Nested-slot leaves go through this same lookup (#498 S4c): the error text uses it to name the
+ * **real destination** instead of a vague "capability port slot".
  *
  * @param {string} optionName
  * @returns {string|undefined}
@@ -405,7 +445,8 @@ export function collectCapabilitiesNamespaceProblems(capabilities) {
   const problems = [];
   for (const [group, value] of Object.entries(/** @type {Record<string, unknown>} */ (capabilities))) {
     if (!CAPABILITIES_GROUP_SET.has(group)) {
-      // 把叶子写在容器顶层是最常见的误写：它看起来「也是 capabilities.<group> 的意思」。
+      // Writing a leaf at the container top level is the most common slip: it looks like it "also
+      // means capabilities.<group>".
       const homeGroup = capabilitiesGroupForLeaf(group);
       if (homeGroup !== undefined) {
         problems.push(
@@ -506,25 +547,33 @@ function isCapabilitiesObject(value) {
 }
 
 /**
- * 展开 `capabilities` 命名空间：把每个叶子写回它的顶层扁平键，并记下**冲突**。
+ * Expand the `capabilities` namespace: write every leaf back to its top-level flat key and record
+ * **conflicts**.
  *
- * 规则与 `expandConfigNamespace`（`config-namespace.js`）逐条同构：
- *   · `capabilities.<group>.<leaf>` 与顶层 `<leaf>` 是同一个键 ⇒ 展开后只剩顶层那个键；
- *   · 同名时 **capabilities 赢**（配置面 / 能力面对扁平键的同向优先级）；
- *   · 叶子的 `undefined` 逐字等于「没给」，既不覆盖扁平值、也不算冲突；
- *   · 两边都给了**不同的值** ⇒ 记一条 `{ path, key }`（调用方发事件，不许静默）；
- *   · `capabilities` 本身从展开结果里消失（下游看到的仍是一份扁平表示）。
+ * The rules are isomorphic to `expandConfigNamespace` (`config-namespace.js`), item by item:
+ *   · `capabilities.<group>.<leaf>` and the top-level `<leaf>` are the same key ⇒ only the top-level
+ *     key survives expansion;
+ *   · on a name clash **capabilities wins** (the same direction as the config surface / capability
+ *     surface precedence over flat keys);
+ *   · a leaf's `undefined` is verbatim "not given": it neither overrides a flat value nor counts as a
+ *     conflict;
+ *   · both sides set to **different** values ⇒ record one `{ path, key }` (the caller emits the event;
+ *     silence is not allowed);
+ *   · `capabilities` itself disappears from the expansion result (downstream still sees a flat
+ *     representation).
  *
- * #498 S4c：9 个**嵌套槽**叶子没有扁平键可写（它们从来不是顶层选项），所以它们不进 `options`，
- * 而是落在返回值的 `slots` 里（`{ hooks: { onBeforeFold: fn }, ports: { sleepImpl: fn } }`），
- * 由 orchestrator 在取值处与壳里的老槽位做 `??` 链（端口位赢）。**冲突比较仍然发生**：拿
- * `CAPABILITY_SLOT_DESTINATIONS` 里登记的路径去读当前值（例如 `context.protectedMessage`——
- * config 展开已经先跑过，所以配置侧的数据形态就在那里），不等价就记一条，`path` 是
- * `conflictPath`（真实目的地）。
+ * #498 S4c: the nine **nested-slot** leaves have no flat key to write to (they never were top-level
+ * options), so they do not enter `options`; they land in the returned `slots`
+ * (`{ hooks: { onBeforeFold: fn }, ports: { sleepImpl: fn } }`) and the orchestrator resolves them
+ * against the shell's old slot with a `??` chain (the port wins). **The conflict comparison still
+ * happens**: the path registered in `CAPABILITY_SLOT_DESTINATIONS` is used to read the current value
+ * (e.g. `context.protectedMessage` — config expansion already ran, so the config-side data form is
+ * right there); if it is not deeply equal, one conflict is recorded with `path` = `conflictPath`
+ * (the real destination).
  *
- * 返回新对象，不改入参。
+ * Returns a new object; the input is not mutated.
  *
- * @param {Record<string, any>} options 合并后的选项表示（可能带 `capabilities`）
+ * @param {Record<string, any>} options the merged option representation (may carry `capabilities`)
  * @param {{via?: "assembly"|"direct"}} [route]
  * @returns {{
  *   options: Record<string, any>,
@@ -566,8 +615,9 @@ export function expandCapabilitiesNamespace(options, route = {}) {
 }
 
 /**
- * 沿嵌套路径读一个已展开的值（`["reflection", "judge", "provider"]`）：中途任何一层不是
- * 普通对象就当作未提供（`retry: false` / `reflection: true` 这两个合法布尔形状不能当容器读）。
+ * Read an already-expanded value along a nested path (`["reflection", "judge", "provider"]`): if any
+ * intermediate layer is not a plain object it counts as "not given" (`retry: false` and
+ * `reflection: true` are legal boolean shapes and must not be read as containers).
  *
  * @param {Record<string, any>} options
  * @param {readonly string[]} path
@@ -583,14 +633,17 @@ function readSlotPath(options, path) {
 }
 
 /**
- * schema 自检的**能力面一半**（`configSchemaSelfCheck` 调用）：每组的叶子都必须是真选项、
- * 每组的形状校验器都存在、别名表与 schema 逐字对得上。
+ * The **capability half** of the schema self-check (called by `configSchemaSelfCheck`): every leaf
+ * must be a real option, every group must have a value-shape validator, and the alias table must
+ * match the schema verbatim.
  *
- * #498 S4c 把「叶子」分成两半，两半各有一条**反向**的硬约束：
- *   · **扁平**叶子必须在顶层白名单里（否则别名表指向一个不存在的键）；
- *   · **嵌套槽**叶子**不得**在顶层白名单里——它在白名单里就说明有人给它发明了扁平别名，
- *     而本刀的硬要求是「白名单仍是 67」。同时它的 `path[0]`（壳）必须真是顶层选项。
- * 这两条合起来就是「只加目的地、不发明新键」的机器证明。
+ * #498 S4c splits "leaves" into two halves, each with its own **opposite** hard constraint:
+ *   · a **flat** leaf must be on the top-level allowlist (otherwise the alias table points at a key
+ *     that does not exist);
+ *   · a **nested-slot** leaf **must not** be on the top-level allowlist — being there would mean
+ *     somebody invented a flat alias for it, while this slice's hard requirement is "the allowlist
+ *     stays at 67". Its `path[0]` (the shell) must really be a top-level option.
+ * Together they are the machine proof of "only add destinations, do not invent new keys".
  *
  * @param {readonly string[]} optionNames 顶层选项白名单
  * @returns {string[]} 问题列表（空 = 通过）
@@ -626,7 +679,8 @@ export function capabilitiesSchemaSelfCheck(optionNames) {
       }
     }
   }
-  // 去向表里不许出现 schema 里不存在的叶子（否则它就是个没人读的死条目）。
+  // The destination table must not name a leaf the schema does not have (that would be a dead entry
+  // nobody reads).
   for (const slotPath of Object.keys(CAPABILITY_SLOT_DESTINATIONS)) {
     const [group, leaf] = slotPath.split(".");
     if (!CAPABILITIES_NAMESPACE_SCHEMA[group]?.includes(leaf)) {

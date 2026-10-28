@@ -18,10 +18,12 @@
 //      `src/loop/capabilities-namespace.js`）——`capabilities.hooks.<name>` 写回顶层同名回调键，
 //      与扁平键冲突时同样记一条（path 形如 `hooks.onEvent`，走**同一条**事件）。两个容器
 //      **同等待遇**：同一道预检相位、同一套「容器赢扁平」优先级、同一条冲突出口。
-//   8. issue #498（S4c）：9 个**没有顶层扁平别名**的能力叶子（`ports.*` 与 6 个 `hooks.*`）
-//      不写回扁平键，而是作为 `capabilitySlots` 侧信道返回——它们是壳内行为载体的**目的地**，
-//      不是搬家（顶层白名单因此仍是 67）。冲突比较照旧发生，`path` 是真实目的地
-//      （`ports.sleepImpl` / `hooks.onBeforeFold` / `folding.context.protectedMessage`）。
+//   8. issue #498 (S4c): the nine capability leaves that have **no top-level flat alias** (`ports.*`
+//      and six `hooks.*`) are not written back as flat keys; they come back on the `capabilitySlots`
+//      side channel — they are the **destination** of in-shell behaviour carriers, not a move (which
+//      is why the top-level allowlist stays at 67). The conflict comparison still runs, and its
+//      `path` is the real destination (`ports.sleepImpl` / `hooks.onBeforeFold` /
+//      `folding.context.protectedMessage`).
 //
 // 顺序即语义，且被 test/loop-option-normalization.test.js 逐条钉住，所以本模块严格按
 //   形状检查 → 未知键检查 → config 名称/形状预检 → capabilities 名称/形状预检 →
@@ -257,9 +259,10 @@ export function assertRunToolLoopOptionNames(options) {
  *   「同一个键既写了扁平又写了 `config.<path>`，且值不同」，也含「`policy.config` 与调用级
  *   `config` 里同一个叶子值不同」（复审 R4），又含「`capabilities.hooks.<name>` 与扁平同名键值不同」
  *   （S4a，path 形如 `hooks.onEvent`）；按 path 去重、只带路径与键名——调用方负责发事件，
- *   本模块不发事件。`capabilitySlots` 是 #498 S4c 那 9 个「嵌套槽」叶子的值（`ports.*` 与
- *   `hooks.{onReflection,onBeforeFold,onAfterFold,stubFor,protectedMessage,recoveryHint}`），
- *   按组归类；没有它们时是 `{}`。
+ *   This module emits no events. `capabilitySlots` holds the values of the nine "nested slot" leaves
+ *   from #498 S4c (`ports.*` and
+ *   `hooks.{onReflection,onBeforeFold,onAfterFold,stubFor,protectedMessage,recoveryHint}`), grouped
+ *   by group; it is `{}` when none were given.
  */
 export async function normalizeRunToolLoopOptions(options) {
   assertRunToolLoopOptionNames(options);
@@ -310,9 +313,11 @@ export async function normalizeRunToolLoopOptions(options) {
   }
   const configExpansion = expandConfigNamespace(mergedOptions, { via });
   // #498 S4a：容器展开按 config → capabilities 的顺序跑（两个容器的叶子集不相交，顺序只为确定性）。
-  // #498 S4c：`slots` 是那 9 个**没有顶层扁平别名**的叶子（`ports.*` 与 6 个 `hooks.*`）。
-  // 它们不进 `effectiveOptions`（进了就等于给它们发明扁平键），而是走侧信道交给 orchestrator，
-  // 在取值处与壳里的老槽位做 `??` 链——于是「本刀只加目的地，不发明扁平别名」是机器可核的。
+  // #498 S4c: `slots` holds the nine leaves that have **no top-level flat alias** (`ports.*` and six
+  // `hooks.*`). They do not enter `effectiveOptions` (that would mean inventing flat keys for them);
+  // they go to the orchestrator on a side channel, which resolves them against the shell's old slot
+  // with a `??` chain — so "this slice only adds destinations, it invents no flat alias" is machine
+  // checkable.
   const {
     options: effectiveOptions,
     conflicts: capabilityConflicts,
