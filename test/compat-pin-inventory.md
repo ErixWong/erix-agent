@@ -6,13 +6,26 @@
 > 本文件随 `test/` 落盘、**不进 npm 包**（`package.json` 的 `files` 没有它）。
 >
 > 生成方式（可复跑，不许凭感觉）：AST 走 `test/**`（排除 `test/contract/**`，那是 #498 S8 独占），
-> 数**属性写法**的命中次数（`PropertyAssignment` / `ShorthandPropertyAssignment` 的名字），
-> 并**不进** `capabilities` / `config` 容器内部数（容器里的同名叶子是规位写法，不是扁平写点）。
+> 数**属性写法**的命中次数（`PropertyAssignment` / `ShorthandPropertyAssignment` 的名字），规则五条：
+>
+> 1. 只数属性名（注释、字符串、白名单数组里的字样都不算）；
+> 2. **数到被数的键就停**，不再往它的值里走（`retry: { sleepImpl }` 只算 `retry` 一个）；
+> 3. `capabilities` / `config` 容器同样数到就停（容器里的同名叶子是**规位写法**，不是扁平写点）；
+> 4. **进 `context` 同名壳也停**（`context: { onFoldSummary }` 与 `context: foldContext({ onFoldSummary })`
+>    都只算 `context` 一个——壳内写点不是扁平写点）；
+> 5. 不数「同名变量落进记录对象」的简写（`onObserverError: (error, context) => seen.push({ error, context })`
+>    里的 `context` 不算）——这条是规则 2 的推论。
+>
+> 按这五条：**迁移前 388 / 迁移后 351 / 附表 678 / COMPAT-PIN 66**。复跑命令在文末「复跑方法」，
+> 跑出来逐字就是这四个数；**漏掉规则 2/4 会得 390 / 353**（多出来的 2 个写点都藏在「被数的键的值」里，
+> 例如 `test/loop-context-on-fold-summary-retired-499.test.js` 的 `context: foldContext({ onFoldSummary })`）。
+>
 > 计数口径：`onEvent` / `onRound` / `onJudge` / `onToolResult` / `onDelta` / `onReasoningDelta` /
 > `onToolCall` / `onUsage` / `onObserverError` / `onPersistenceError` / `onFoldSummary` 这 **11 个是
-> S9 的退役面**；`finalGuard` / `deliverables` 同属能力面但 **S9 不退役**（它们的扁平键在 S9 之后
-> 仍然可用），把它们一起列出来是因为它们的规范之家（`capabilities.hooks.finalGuard` /
-> `capabilities.checks.deliverables`）已在 #498 S4b/S4c 开张，归位属 S7 的顺带活。
+> S9 的退役面**；`finalGuard` / `deliverables` 同属能力面，**且已有规位**（`capabilities.hooks.finalGuard` /
+> `capabilities.checks.deliverables`，见 `docs/host-consumer-contract.md`）⇒ 按母单裁决属 **S9 的移除项**：
+> 本表把它们计入 `MIGRATE`，**必须继续迁**，不是「可选清理」。真正可选的是附表那 **678** 个数据面壳内
+> 写点（S9 不退役数据键，另立单，**不在 0.28 路径**上）。
 >
 > 五类（机器可判，判据见下）。**三类是外部所有权**（S5 / S6 / S8），S7 一律不碰；
 > 只有 `MIGRATE` 是 S7 自己的活：
@@ -32,7 +45,8 @@
 * `config_override_conflict`（容器与扁平键冲突的事件名）；
 * 命名空间报错文案：`unknown capabilities` / `is not accepted` / `must be a function`；
 * 名单本身：`RUN_TOOL_LOOP_OPTION_NAMES` / `CAPABILITY_*` / `CONFIG_*`（导出名）；
-* 白名单计数（`RUN_TOOL_LOOP_OPTION_NAMES.length` 之类的字面值对账）。
+* 白名单计数（`RUN_TOOL_LOOP_OPTION_NAMES.length` 之类的字面值对账）；
+* 选项闸文案：`unknown runToolLoop option`（接受面 = 白名单的那句报错）。
 
 ⚠ 三个「记号命中但整文件不是 COMPAT-PIN」的坑（本表按**格**判，不按记号判）：
 
@@ -55,8 +69,8 @@
 | `test/loop-option-gate-496.test.js` | 15 | 选项闸：接受面 = 白名单（`unknown runToolLoop option`）、语义相取值校验、`onFoldSummary` / `finalGuard` / `deliverables` 的形状报错 |
 | `test/loop-context-on-fold-summary-retired-499.test.js` | 8 | #499 的**范围钉**：`context.onFoldSummary` 退役、**顶层扁平 `onFoldSummary` 必须还在**（它 `import` 了 `RUN_TOOL_LOOP_OPTION_NAMES` 并断言 `includes("onFoldSummary")`）⇒ S9 之前这里必须保持扁平 |
 
-合计 **66** 个写点。这 6 个文件在 S9 那一刀里是**唯一的**「扁平写点保留区」；退役时它们要逐个改写为
-「扁平写法现在抛错」的**反向钉**，而不是删掉。
+合计 **66** 个写点。这 6 个文件在 S9 那一刀里是 **11 个退役键**的唯一「扁平写点保留区」（附表那 678
+个数据面壳内写点不在退役面内）；退役时它们要逐个改写为「扁平写法现在抛错」的**反向钉**，而不是删掉。
 
 ## OWNED-BY-S5（本轮别碰，S5 提前做）
 
@@ -122,7 +136,7 @@
 | `test/providers/openai-stream.test.js` | 6 | `onDelta`×1, `onUsage`×1, `onEvent`×2, `onReasoningDelta`×2 | MIGRATE · S7b |
 | `test/loop-final-guard-payload.test.js` | 5 | `finalGuard`×5 | MIGRATE · S7c |
 | `test/loop-resume.test.js` | 5 | `onEvent`×4, `onJudge`×1 | MIGRATE · S7c |
-| `test/loop-callback-this.test.js` | 4 | `onToolResult`×1, `finalGuard`×1, `onDelta`×1, `onObserverError`×1 | MIGRATE · S7b |
+| `test/loop-callback-this.test.js` | 4 | `onToolResult`×1, `finalGuard`×1, `onDelta`×1, `onObserverError`×1 | MIGRATE · S7b（3）+ S7c（1） |
 | `test/loop-v020-rc.test.js` | 4 | `onPersistenceError`×4 | MIGRATE · S7b |
 | `test/tool-fact-success-parity.test.js` | 4 | `onEvent`×2, `onToolResult`×2 | MIGRATE · S7b |
 | `test/loop-resume-unpersisted-tool-results.test.js` | 3 | `onEvent`×3 | MIGRATE · S7b |
@@ -140,10 +154,10 @@
 | `test/compaction-observability.test.js` | 1 | `onEvent`×1 | MIGRATE · S7b |
 | `test/compaction-strategy-fallback.test.js` | 1 | `onEvent`×1 | MIGRATE · S7b |
 | `test/integration/todo-builtin.test.js` | 1 | `finalGuard`×1 | MIGRATE · S7c |
-| `test/judge-record.test.js` | 1 | `finalGuard`×1 | MIGRATE · S7a（已做） |
-| `test/loop-abort-terminal-priority.test.js` | 1 | `finalGuard`×1 | MIGRATE · S7a（已做） |
+| `test/judge-record.test.js` | 1 | `finalGuard`×1 | MIGRATE · S7c（S7a 遗留） |
+| `test/loop-abort-terminal-priority.test.js` | 1 | `finalGuard`×1 | MIGRATE · S7c（S7a 遗留） |
 | `test/loop-forced-final-by-state-475.test.js` | 1 | `onEvent`×1 | MIGRATE · S7b |
-| `test/loop-governance-cells.test.js` | 1 | `finalGuard`×1 | MIGRATE · S7a（已做） |
+| `test/loop-governance-cells.test.js` | 1 | `finalGuard`×1 | MIGRATE · S7c（S7a 遗留） |
 | `test/loop-invalid-arguments.test.js` | 1 | `onEvent`×1 | MIGRATE · S7b |
 | `test/loop-pending-tool-result.test.js` | 1 | `finalGuard`×1 | MIGRATE · S7c |
 | `test/loop-persist-engine-text.test.js` | 1 | `finalGuard`×1 | MIGRATE · S7c |
@@ -158,18 +172,37 @@
 
 ### 分派小结（按上表口径，迁移**后**实测）
 
-| 类 | 文件数 | 写点 |
+**「写点」这一列的口径是「迁移后仍在树上的写点数」**，所以列和必须 = 合计 351（逐点只算一次）。
+
+| 类 | 文件数 | 写点（迁移后仍在树上） |
 | --- | --- | --- |
-| `MIGRATE · S7a`（本刀已迁，剩余 3 个 `finalGuard` 写点按分派留给 S7c） | 7 | 37 已迁 + 3 遗留 |
-| `MIGRATE · S7b` | 24 | 124 |
-| `MIGRATE · S7c` | 13 | 86 |
+| `MIGRATE · S7a`（本刀已迁：**迁移前** 37 个写点，迁移后 **0**） | 7 | 0（迁移前 37，已不在树里） |
+| `MIGRATE · S7a 遗留`（3 个 `finalGuard`；**已补进下行 S7c 的 90**，本行不重复计） | 3（⊂ 上行的 7） | 0（已计入 S7c） |
+| `MIGRATE · S7b` | 24 | 123 |
+| `MIGRATE · S7c`（含 S7a 遗留 3 + S7b 让出的 `loop-callback-this` 1） | 17 | 90 |
 | `MIGRATE · 含 COMPAT-PIN 格`（迁搭台写点，**逐格**跳过选项面断言） | 3 | 38 |
 | `COMPAT-PIN` | 6 | 66 |
 | `OWNED-BY-S5` | 4 | 13 |
 | `OWNED-BY-S6` | 5 | 21 |
-| **合计** | **62** | **351** |
+| **合计（迁移后实测）** | **62** | **351** |
 
-## S7b 清单（24 个文件 / 124 个写点）
+脚注：
+
+* 写点列和 = `0 + 0 + 123 + 90 + 38 + 66 + 13 + 21 = 351`，与本列合计逐字相等。等价拆法（不含 S7a 两行）：
+  `123 + 90 + 38 + 66 + 13 + 21 = 351`。
+* S7a 那 **37** 是**迁移前**的数（迁移后已不在树里）⇒ 记 0、不进列和；把「37 已迁」和「迁移后剩余」混在
+  同一列里会让列和变成 385（= 351 + 37 − 3），那是**列语义坏了**，不是数错了。
+* S7a 遗留的 **3** 个 `finalGuard`（`judge-record` / `loop-abort-terminal-priority` / `loop-governance-cells`）
+  已补进 S7c 清单 ⇒ 只在 S7c 的 90 里数**一次**。
+* 文件数 **62** 是**去重后**的 `7 + 24 + 13 + 3 + 6 + 4 + 5`：S7c 的 17 里有 4 个是借来的（3 个来自 S7a 的 7、
+  1 个 `loop-callback-this` 来自 S7b 的 24），所以把各行文件数直接相加得 69 是**交叉引用**不是漏计。
+* 上表「分类」列是逐点归片的**唯一权威**：同一文件跨片时写 `MIGRATE · S7b（3）+ S7c（1）`，两片各数各的。
+  核对命令（文末「复跑方法」第 3 条）会把这张小结与本表逐行对账，退出码非 0 就是列语义又坏了。
+
+## S7b 清单（24 个文件 / **123** 个写点）
+
+（AST 对这 24 个文件的能力面写点是 **124**；其中 `test/loop-callback-this.test.js` 的 `finalGuard`×1
+让给 S7c ⇒ 本片 **123**。逐点只算一次，见上「分派小结」脚注。）
 
 主题：**观察者通道与流式回调**（`onEvent` / `onObserverError` / `onPersistenceError` / `onDelta` /
 `onReasoningDelta` / `onToolCall` / `onUsage` / `onToolResult` / `onRound`）。
@@ -188,7 +221,7 @@
 | `test/providers/openai-stream.test.js` | 6 | `onDelta`×1, `onUsage`×1, `onEvent`×2, `onReasoningDelta`×2 |
 | `test/loop-v020-rc.test.js` | 4 | `onPersistenceError`×4 |
 | `test/tool-fact-success-parity.test.js` | 4 | `onEvent`×2, `onToolResult`×2 |
-| `test/loop-callback-this.test.js` | 4 | `onToolResult`×1, `finalGuard`×1, `onDelta`×1, `onObserverError`×1 |
+| `test/loop-callback-this.test.js` | 3 | `onToolResult`×1, `onDelta`×1, `onObserverError`×1 |
 | `test/loop-resume-unpersisted-tool-results.test.js` | 3 | `onEvent`×3 |
 | `test/output-aggregate-budget.test.js` | 3 | `onEvent`×3 |
 | `test/loop-v020-beta.test.js` | 3 | `onDelta`×1, `onReasoningDelta`×1, `onEvent`×1 |
@@ -204,10 +237,14 @@
 | `test/run-snapshot-executor.test.js` | 1 | `onToolResult`×1 |
 | `test/loop-forced-final-by-state-475.test.js` | 1 | `onEvent`×1 |
 
-⚠ `test/loop-callback-this.test.js` 的 `finalGuard`×1 属能力面但**不属 S9 退役面**——S7b 只迁
-`this` 绑定的那三个回调，`finalGuard` 那一格留给 S7c（一个旋钮只写一侧，别两边各改一次）。
+⚠ `test/loop-callback-this.test.js` 的 `finalGuard`×1 属能力面**且已有规位**（`capabilities.hooks.finalGuard`）
+⇒ 按母单裁决属 S9 的移除项、**必须迁**，只是**不归 S7b**：S7b 只迁 `this` 绑定的那三个回调，
+`finalGuard` 那一格让给 S7c（一个旋钮只写一侧，别两边各改一次；本文件在 AST 上是 4 个写点 = 3 + 1）。
 
-## S7c 清单（13 个纯 MIGRATE 文件 / 86 个写点，+ 3 个含 COMPAT-PIN 格的文件 / 38 个写点）
+## S7c 清单（**17** 个纯 MIGRATE 文件 / **90** 个写点，+ 3 个含 COMPAT-PIN 格的文件 / 38 个写点）
+
+这 17 个 = 原 13 个 + 4 个 `finalGuard` 写点所在文件（S7a 遗留 3 + S7b 让出 1）；
+`finalGuard` 有规位（`capabilities.hooks.finalGuard`）⇒ 属 S9 的移除项，**必须继续迁**，不是可选清理。
 
 主题：**强制收尾 / 交付物判据 / 折叠摘要**（`finalGuard` / `deliverables` / `onFoldSummary`）。
 冲突面：**不碰 `bin/`、不碰 `src/`**；与 S5 的重叠面是 `finalGuard` 的**装配断言**（S5 已拿走
@@ -230,6 +267,10 @@
 | `test/integration/todo-builtin.test.js` | 1 | `finalGuard`×1 |
 | `test/wrapup-normalization-unified.test.js` | 1 | `finalGuard`×1 |
 | `test/loop-pending-tool-result.test.js` | 1 | `finalGuard`×1 |
+| `test/loop-callback-this.test.js` | 1 | `finalGuard`×1（S7b 只迁 `this` 那三个回调，本格让给 S7c） |
+| `test/judge-record.test.js` | 1 | `finalGuard`×1（S7a 遗留） |
+| `test/loop-abort-terminal-priority.test.js` | 1 | `finalGuard`×1（S7a 遗留） |
+| `test/loop-governance-cells.test.js` | 1 | `finalGuard`×1（S7a 遗留） |
 
 含 COMPAT-PIN 格（**逐格**跳过选项面断言，其余照迁）：
 
@@ -243,9 +284,13 @@
 
 这些键的规范之家是 `config.*`（数据 ⇒ `config.*`），但**它们不在 S9 的 11 个退役键里**——扁平数据键
 在 S9 之后仍然被接受（`config` 是加法，优先级是「容器赢扁平」）。所以迁它们是**可选的整洁**，不是
-退役前置；本表只做清点，不做分派，理由见报告「我不同意的点」。
+退役前置；本表只做清点，不做分派。理由（原先引「见报告『我不同意的点』」，那份报告不在仓库里，
+内容搬到这里）：**数据键没有退役窗口**——S9 只砍 11 个回调键，`config.*` 是加法且「容器赢扁平」，
+所以扁平数据键在 S9 之后仍然被接受；把它们也迁一遍是**整洁**，收益是少一条兼容路径，风险是要动
+678 个写点。**结论：不在 0.28 路径上**，S9 不需要等它，另立单做。
 
-计数口径与上表同（AST、不进容器、进了同名壳就停，于是 `context: { strategy }` 只算 `context` 一个）。
+计数口径与上表同（AST、数到被数的键就停、进了同名壳就停，于是 `context: { strategy }` 只算 `context` 一个）。
+合计 **678**（= `node /tmp/flat-count.cjs .` 的第二个数；附表 95 行逐行相加也是 678）。
 
 | 文件 | 写点 | 明细 |
 | --- | --- | --- |
@@ -348,16 +393,230 @@
 
 ## 复跑方法
 
-数字是**一次性 AST 走查**的产物（口径逐字写在顶部「生成方式」里，规则只有四条：走 `test/**`、
-跳过 `test/contract/**`、只数属性名、进了 `capabilities`/`config` 容器就停）。走查脚本本身**没有
-随仓库落盘**——#498 S7 的红线是「只改 `test/**`」，所以不往 `scripts/` 里加新工具；下面的 grep
-是最接近的**交叉核对**（比 AST 口径宽：它会数到注释与断言里的字样，所以数字只会 ≥ 本表）：
+数字是**一次性 AST 走查**的产物（口径逐字写在顶部「生成方式」里，规则五条）。走查脚本本身**没有随仓库
+落盘**——#498 S7 的红线是「只改 `test/**`」，所以不往 `scripts/` 里加新工具；下面是**可直接跑**的版本
+（粘到 `/tmp/flat-count.cjs`，在仓库根执行；`typescript` 在 `devDependencies` 里，`npm ci` 后就有）。
 
 ```bash
-# 1) COMPAT-PIN 记号命中（哪些文件「被测对象就是选项面」）
-grep -rln 'config_override_conflict\|unknown capabilities\|is not accepted\|must be a function\|RUN_TOOL_LOOP_OPTION_NAMES\|CAPABILITY_\|CONFIG_' test --include='*.js' | grep -v '^test/contract/'
-# 2) 11 个退役键的**剩余**扁平写点（S7 每落一片，这个数字必须往下走）
+cat > /tmp/flat-count.cjs <<'SCRIPT'
+#!/usr/bin/env node
+/**
+ * 扁平选项写点计数器 + 清点表核对器（#498 S7）。
+ *
+ * 用法（在仓库根跑；需要 `typescript`，仓库 devDependencies 里有）：
+ *   node /tmp/flat-count.cjs .                      # 三个总数
+ *   node /tmp/flat-count.cjs . --files              # 逐文件明细
+ *   node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md   # 与本表逐行对账
+ *   node /tmp/flat-count.cjs /tmp/base-498          # 迁移前基线（388 / 678）
+ *
+ * 口径（五条，缺一条数就对不上本表）：
+ *   1. 走 <root>/test/**，跳过 <root>/test/contract/**（#498 S8 独占）；
+ *   2. 只数属性写法（`PropertyAssignment` / `ShorthandPropertyAssignment`）的**名字**；
+ *   3. **数到被数的键就停**，不再往它的值里走 —— 于是 `retry: { sleepImpl }` 只算 `retry` 一个，
+ *      `onObserverError: (error, context) => seen.push({ error, context })` 里的 `context` 不算
+ *      （「同名变量落进记录对象」的简写不是扁平写点）；
+ *   4. `capabilities` / `config` 容器同样数到就停（容器里的同名叶子是规位写法，不是扁平写点）；
+ *   5. `context` 同名壳也停（`context: foldContext({ onFoldSummary })` 只算 `context` 一个）。
+ */
+const fs = require("node:fs");
+const path = require("node:path");
+const ts = require(path.join(process.cwd(), "node_modules", "typescript"));
+
+const RETIRED = [
+  "onEvent", "onRound", "onJudge", "onToolResult", "onDelta", "onReasoningDelta",
+  "onToolCall", "onUsage", "onObserverError", "onPersistenceError", "onFoldSummary",
+];
+const CAPABILITY_FACE = new Set([...RETIRED, "finalGuard", "deliverables"]);
+const DATA_KEYS = new Set([
+  "reflection", "tools", "context", "resume", "retry", "initialMessages", "prompt",
+  "strategy", "sleepImpl", "judgeProvider",
+]);
+const ALL = new Set([...CAPABILITY_FACE, ...DATA_KEYS]);
+const CONTAINERS = new Set(["capabilities", "config"]);
+
+function walk(dir, out) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === "node_modules" || entry.name === ".git") continue;
+      walk(full, out);
+    } else if (/\.(js|mjs|cjs)$/.test(entry.name)) out.push(full);
+  }
+  return out;
+}
+
+function count(root) {
+  const hits = [];
+  for (const file of walk(path.join(root, "test"), [])) {
+    const rel = path.relative(root, file).split(path.sep).join("/");
+    if (rel.startsWith("test/contract/")) continue;
+    const sf = ts.createSourceFile(file, fs.readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    const visit = (n) => {
+      if (!n) return;
+      if (ts.isPropertyAssignment(n)) {
+        const name = ts.isIdentifier(n.name) || ts.isStringLiteral(n.name) ? n.name.text : null;
+        if (name && ALL.has(name)) hits.push({ file: rel, key: name });
+        if (name && (CONTAINERS.has(name) || ALL.has(name))) return; // 规则 3 / 4 / 5
+      } else if (ts.isShorthandPropertyAssignment(n)) {
+        if (ALL.has(n.name.text)) hits.push({ file: rel, key: n.name.text });
+        return;
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+  }
+  const per = new Map();
+  for (const h of hits) {
+    const cur = per.get(h.file) || { total: 0, cap: 0, data: 0, byKey: new Map() };
+    cur.total += 1;
+    if (CAPABILITY_FACE.has(h.key)) cur.cap += 1; else cur.data += 1;
+    cur.byKey.set(h.key, (cur.byKey.get(h.key) || 0) + 1);
+    per.set(h.file, cur);
+  }
+  return { hits, per };
+}
+
+function verify(root, mdPath) {
+  const { per } = count(root);
+  const lines = fs.readFileSync(mdPath, "utf8").split("\n");
+  const bad = [];
+  const mainRows = [];
+  const appRows = [];
+  const summary = [];
+  let section = "";
+  let inSummary = false;
+  for (const line of lines) {
+    if (line.startsWith("## ")) { section = line; inSummary = false; }
+    if (line.startsWith("### 分派小结")) { inSummary = true; continue; }
+    if (inSummary) {
+      if (!line.startsWith("|")) continue;
+      const cells = line.split("|").map((c) => c.trim());
+      if (cells.length < 5) continue;
+      const files = (cells[2].match(/^\*?\*?(\d+)/) || [])[1];
+      const points = (cells[3].match(/^\*?\*?(\d+)/) || [])[1];
+      if (files === undefined || points === undefined) continue;
+      summary.push({ label: cells[1].replace(/`/g, "").replace(/\*\*/g, ""), files: Number(files), points: Number(points) });
+      continue;
+    }
+    const m = line.match(/^\| `(test\/[^`]+)` \| (\d+)（?[^|]*\| ?(.*)$/);
+    if (!m) continue;
+    const row = { file: m[1], claimed: Number(m[2]), tail: m[3] };
+    if (section.startsWith("## 附表")) appRows.push(row);
+    else if (section.startsWith("## MIGRATE（")) mainRows.push(row);
+  }
+  const astCap = (f) => (per.get(f)?.cap ?? 0);
+  const astData = (f) => (per.get(f)?.data ?? 0);
+
+  for (const row of mainRows) if (row.claimed !== astCap(row.file)) bad.push(`主表 ${row.file}：表 ${row.claimed} / AST ${astCap(row.file)}`);
+  for (const row of appRows) if (row.claimed !== astData(row.file)) bad.push(`附表 ${row.file}：表 ${row.claimed} / AST ${astData(row.file)}`);
+  const mainSum = mainRows.reduce((s, r) => s + r.claimed, 0);
+  const appSum = appRows.reduce((s, r) => s + r.claimed, 0);
+  const astMain = [...per.values()].reduce((s, v) => s + v.cap, 0);
+  const astApp = [...per.values()].reduce((s, v) => s + v.data, 0);
+
+  // 分组：主表「分类」列是唯一权威（同文件跨片时写 `S7b（3）+ S7c（1）` 逐点归片）
+  const groups = new Map();
+  const addTo = (g, n) => groups.set(g, (groups.get(g) || 0) + n);
+  for (const row of mainRows) {
+    const tail = row.tail;
+    const split = [...tail.matchAll(/S7([abc])（(\d+)）/g)];
+    if (split.length) { for (const s of split) addTo(`S7${s[1]}`, Number(s[2])); continue; }
+    const plain = tail.match(/MIGRATE · S7([abc])/);
+    if (plain) { addTo(`S7${plain[1]}`, row.claimed); continue; }
+    if (/COMPAT-PIN 格/.test(tail)) { addTo("含 COMPAT-PIN 格", row.claimed); continue; }
+    if (/COMPAT-PIN/.test(tail)) { addTo("COMPAT-PIN", row.claimed); continue; }
+    if (/OWNED-BY-S5/.test(tail)) { addTo("OWNED-BY-S5", row.claimed); continue; }
+    if (/OWNED-BY-S6/.test(tail)) { addTo("OWNED-BY-S6", row.claimed); continue; }
+    addTo(`?${tail}`, row.claimed);
+  }
+
+  console.log(`主表 ${mainRows.length} 行：表合计 ${mainSum} / AST 合计 ${astMain}`);
+  console.log(`附表 ${appRows.length} 行：表合计 ${appSum} / AST 合计 ${astApp}`);
+  const groupNames = ["S7a", "S7b", "S7c", "含 COMPAT-PIN 格", "COMPAT-PIN", "OWNED-BY-S5", "OWNED-BY-S6"];
+  for (const g of groupNames) console.log(`  ${g.padEnd(18)} 逐点归片合计 ${groups.get(g) ?? 0}`);
+  const groupSum = [...groups.entries()].filter(([g]) => g !== "S7a").reduce((s, [, v]) => s + v, 0);
+  console.log(`  非 S7a 合计 ${groupSum}（应 = 主表合计 ${mainSum}）`);
+  if (summary.length) {
+    console.log(`分派小结 ${summary.length} 行：`);
+    const groupOf = (label) => {
+      const m = label.match(/S7([abc])/);
+      if (m) return `S7${m[1]}`;
+      if (/含 COMPAT-PIN 格/.test(label)) return "含 COMPAT-PIN 格";
+      if (/COMPAT-PIN/.test(label)) return "COMPAT-PIN";
+      if (/OWNED-BY-S5/.test(label)) return "OWNED-BY-S5";
+      if (/OWNED-BY-S6/.test(label)) return "OWNED-BY-S6";
+      return null;
+    };
+    let sumPoints = 0;
+    let totalPoints = null;
+    for (const s of summary) {
+      const g = groupOf(s.label);
+      const isTotal = /合计/.test(s.label);
+      if (isTotal) totalPoints = s.points;
+      else sumPoints += s.points;
+      const actual = isTotal ? astMain : (groups.get(g) ?? 0);
+      const ok = s.points === actual;
+      if (!ok) bad.push(`分派小结 ${s.label}：表 ${s.points} / 逐点归片 ${actual}`);
+      console.log(`  表 ${s.label}：文件 ${s.files} / 写点 ${s.points}（逐点归片 ${actual}）${ok ? " ✅" : " ✗"}`);
+    }
+    if (totalPoints !== null && sumPoints !== totalPoints) {
+      bad.push(`分派小结列和 ${sumPoints} ≠ 合计 ${totalPoints}`);
+      console.log(`  列和 ${sumPoints} ≠ 合计 ${totalPoints} ✗`);
+    } else if (totalPoints !== null) {
+      console.log(`  列和 ${sumPoints} = 合计 ${totalPoints} ✅`);
+    }
+  }
+  if (bad.length) { console.log("不一致："); for (const b of bad) console.log("  ✗ " + b); }
+  else console.log("逐文件：0 处不一致");
+  return bad.length;
+}
+
+function main() {
+  const root = process.argv[2] || ".";
+  const mode = process.argv[3] || "";
+  const { hits, per } = count(root);
+  if (mode === "--files") {
+    const rows = [...per.entries()].sort((a, b) => b[1].total - a[1].total || a[0].localeCompare(b[0]));
+    for (const [f, v] of rows) {
+      const detail = [...v.byKey.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([k, c]) => `${k}×${c}`).join(", ");
+      console.log(`${String(v.total).padStart(3)}  ${f}  |  ${detail}`);
+    }
+    console.log(`--- 文件数 ${rows.length}  写点合计 ${rows.reduce((s, [, v]) => s + v.total, 0)}`);
+    return;
+  }
+  if (mode === "--verify") { process.exitCode = verify(root, process.argv[4]) === 0 ? 0 : 1; return; }
+  const cap = hits.filter((h) => CAPABILITY_FACE.has(h.key)).length;
+  const data = hits.filter((h) => DATA_KEYS.has(h.key)).length;
+  console.log(`能力面 13 键（主表口径）：${cap}`);
+  console.log(`数据面 10 键（附表口径）：${data}`);
+  console.log(`全部写点：${hits.length}`);
+}
+
+main();
+SCRIPT
+
+# 1) 迁移后的三个总数（本表主表 351 / 附表 678 / 全部 1029）
+node /tmp/flat-count.cjs .                       # ⇒ 能力面 13 键 351 / 数据面 10 键 678 / 全部 1029
+node /tmp/flat-count.cjs . --files               # ⇒ 逐文件明细（103 行，与本表逐行零误差）
+
+# 2) 迁移前基线（388 / 678 / 1066）：把 S7a 迁移前的树解到 /tmp/base-498
+rm -rf /tmp/base-498 && mkdir -p /tmp/base-498 && git archive 0b2d858 test | tar -x -C /tmp/base-498
+node /tmp/flat-count.cjs /tmp/base-498           # ⇒ 能力面 13 键 388 / 数据面 10 键 678 / 全部 1066
+                                                 #    388 − 37（S7a 已迁）= 351 ✅
+
+# 3) 与本表逐行对账（主表 53 行 + 附表 95 行 + 分派小结的加总式；不一致 ⇒ 退出码 1）
+node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md; echo "EXIT=$?"   # ⇒ EXIT=0
+
+# 4) 两个交叉核对的 grep（口径比 AST 宽：会数到注释与断言里的字样，所以数字只会 ≥ 本表）
+#    COMPAT-PIN 记号命中（哪些文件「被测对象就是选项面」）
+grep -rln 'config_override_conflict\|unknown capabilities\|is not accepted\|must be a function\|unknown runToolLoop option\|RUN_TOOL_LOOP_OPTION_NAMES\|CAPABILITY_\|CONFIG_' test --include='*.js' | grep -v '^test/contract/'
+#    11 个退役键的**剩余**扁平写点（S7 每落一片，这个数字必须往下走）
 grep -rc '^ *\(onEvent\|onRound\|onJudge\|onToolResult\|onDelta\|onReasoningDelta\|onToolCall\|onUsage\|onObserverError\|onPersistenceError\|onFoldSummary\) *:' test --include='*.js' | grep -v ':0$'
-# 3) 基线计数（迁移前后都必须一致：本刀前后都是 2381 格 / 107 个 test 文件）
-grep -c '^test(' test/*.test.js | awk -F: '{s+=$2} END {print s}'
+
+# 5) 基线计数（迁移前后都必须一致：本刀前后都是 2381 格 / 107 个 test 文件）
+node --test 2>&1 | grep -E '^# (tests|pass|fail|skipped) '     # ⇒ 2381 / 2372 / 0 / 9
 ```
+
+⚠ 第 5 条**不能**写成 `grep -c '^test(' test/*.test.js | awk …`：那条命令只数顶层文件里行首的 `test(`，
+实测 **1221**，既漏掉缩进的格、也漏掉子目录（`test/**/**.test.js`），跑不出 2381。
