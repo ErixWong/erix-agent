@@ -2857,8 +2857,15 @@ describe("静态守卫：scripts 里 runToolLoop 的顶层选项名必须来自�
 //      bullet 也不是缩进/惰性续行的游离正文行。
 //
 // 扫描面与口径（如实写清，别把「扫到」当「扫全」）：
-//   · 范围 = 顶部版本节 `## [Unreleased]`（发布时它被改名，本规则会红并点名「找不到版本节」——
-//     那是**该补一个新 Unreleased** 的信号，不是静默放过）；
+//   · 范围 = **最顶部的那一个版本节** `## [Unreleased]`。issue #558：发布开版那一刻顶部
+//     `## [Unreleased]` **必然为空**（内容整体下移成了刚开的版本节，见 0.27.0 的开版提交 4963293），
+//     所以「顶部节是 Unreleased 且一条 bullet 都没有」时，卫生目标**退到紧随其后的那一个版本节**
+//     ——那正是开版提交真正的内容；Unreleased 一有内容，扫描面自动回到它（`surface.fellBack`）。
+//     退让只改「扫哪一节」，五条判据一条没放宽（反向证 ⑦ 逐字复制刚开的版本节 ⇒ R1 照样红）；
+//   · 顶部节被改名（发布时把 `## [Unreleased]` 直接写成 `## [0.28.0] - …` 而没补新的 Unreleased）
+//     ⇒ 红并点名「找不到版本节」，那是**该补一个新 Unreleased** 的信号，不是静默放过；
+//   · 顶部 `## [Unreleased]` 为空、其后又没有任何版本节 ⇒ 红并点名「找不到可扫的版本节」
+//     （不许在空节上静默变绿：前置格要断言的是「真扫出了结构」，不是「允许为空」）；
 //   · **R1 / R4 是全节口径**（跨小节）：逐字复制和「同 issue + 同符号集」的重复跨小节也是错的；
 //   · **R2 是逐小节口径**：同一个片号合法地会出现在两个小节里（今天 `S3, sixteenth slice` 在 Breaking
 //     是 `runId` 退役、在 Fixed 是拒绝文案，两条是**同一个片的两个事实**）。整节一个键空间会把这种
@@ -2918,17 +2925,80 @@ function changelogSymbols(text) {
 
 const sameSet = (a, b) => a.size === b.size && [...a].every((x) => b.has(x));
 
+/** 一节里的 bullet 条数（`- ` 行数；与下面 bullet 解析的单位一致，这里只数不解析）。 */
+function countSectionBullets(lines, from, to) {
+  let count = 0;
+  for (let i = from; i < to; i += 1) if (lines[i].startsWith("- ")) count += 1;
+  return count;
+}
+
 /**
- * 解析 `## [Unreleased]` 这一节，并把五条规则的违规一次算清（**纯函数，文本可注入**——
+ * **扫描面选取**（issue #558，本单只改这一处）：取**最顶部**的 `## [x]` 节；若它是
+ * `## [Unreleased]` **且 bullet 数为 0**（= 发布开版那一刻的形态），退到**紧随其后的那一个
+ * 版本节**作为卫生目标。Unreleased 一旦有内容，扫描面自动回到它。
+ *
+ * 这里只决定「扫哪一节」，五条判据（R1–R5）的语义一个字都不在这里。
+ *
+ * ⚠ 本函数里的正则都**没有 `g`**（只走 `.test`，不走 `matchAll`），所以不存在共享 `lastIndex` 那个坑；
+ * 真需要 `matchAll` 的地方一律现造一份（文件里的 `freshRe`，见 `changelogIssueRefs`）。
+ *
+ * @param {string[]} lines 整份 CHANGELOG 的行（已去 `\r`）
+ * @param {string} [heading] 顶部版本节标题（默认 `## [Unreleased]`）
+ * @returns {{ok: true, surface: object} | {ok: false, reason: string}}
+ */
+function resolveChangelogScanSurface(lines, heading = CHANGELOG_VERSION_HEADING) {
+  const isVersionHeading = (line) => /^## \[/.test(line);
+  const sectionEnd = (start) => {
+    for (let i = start + 1; i < lines.length; i += 1) if (/^## /.test(lines[i])) return i;
+    return lines.length;
+  };
+  const top = lines.findIndex(isVersionHeading);
+  // 顶部不是 `## [Unreleased]`（发布时被改名却没补新的）⇒ 保持原口径：红并点名该补一个
+  if (top === -1 || !lines[top].startsWith(heading)) {
+    return { ok: false, reason: `找不到版本节标题 ${JSON.stringify(heading)}：本规则会对整份文件恒绿` };
+  }
+  const topTo = sectionEnd(top);
+  const unreleasedBullets = countSectionBullets(lines, top + 1, topTo);
+  if (unreleasedBullets > 0) {
+    return {
+      ok: true,
+      surface: { heading: lines[top], line: top + 1, from: top + 1, to: topTo, fellBack: false, unreleasedBullets },
+    };
+  }
+  // 开版态：Unreleased 是空的 ⇒ 卫生目标退到紧随其后的那一个版本节（那才是开版提交的内容）
+  if (topTo >= lines.length || !isVersionHeading(lines[topTo])) {
+    return {
+      ok: false,
+      reason: `顶部 ${JSON.stringify(heading)} 是空的（0 条 bullet），其后又找不到可扫的版本节：`
+        + "开版提交应紧随其后写出本次发布的版本节——本规则不许在空节上静默变绿",
+    };
+  }
+  return {
+    ok: true,
+    surface: {
+      heading: lines[topTo],
+      line: topTo + 1,
+      from: topTo + 1,
+      to: sectionEnd(topTo),
+      fellBack: true,
+      unreleasedBullets,
+    },
+  };
+}
+
+/**
+ * 解析**扫描面那一节**（默认 `## [Unreleased]`，开版态退到紧随其后的版本节——见
+ * `resolveChangelogScanSurface`），并把五条规则的违规一次算清（**纯函数，文本可注入**——
  * 反向证直接喂改过的真实文本，不碰磁盘）。
  *
  * @param {string} text 整份 CHANGELOG
- * @param {string} [heading] 版本节标题（默认 `## [Unreleased]`）
+ * @param {string} [heading] 顶部版本节标题（默认 `## [Unreleased]`）
  */
 function collectChangelogProblems(text, heading = CHANGELOG_VERSION_HEADING) {
   const lines = text.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
   const problems = {
     found: false,
+    surface: null,
     subsections: [],
     bullets: [],
     byteDuplicates: [],
@@ -2939,17 +3009,14 @@ function collectChangelogProblems(text, heading = CHANGELOG_VERSION_HEADING) {
     nearDuplicates: [],
     structureProblems: [],
   };
-  let from = -1;
-  let to = lines.length;
-  for (let i = 0; i < lines.length; i += 1) {
-    if (lines[i].startsWith(heading)) { from = i + 1; continue; }
-    if (from !== -1 && /^## /.test(lines[i])) { to = i; break; }
-  }
-  if (from === -1) {
-    problems.structureProblems.push(`找不到版本节标题 ${JSON.stringify(heading)}：本规则会对整份文件恒绿`);
+  const resolved = resolveChangelogScanSurface(lines, heading);
+  if (!resolved.ok) {
+    problems.structureProblems.push(resolved.reason);
     return problems;
   }
   problems.found = true;
+  problems.surface = resolved.surface;
+  const { from, to } = resolved.surface;
 
   // ── 小节切分（每个小节的终点 = 下一个小节标题；最后一个小节到版本节末尾） ──
   let current = null;
@@ -3077,6 +3144,35 @@ function collectChangelogProblems(text, heading = CHANGELOG_VERSION_HEADING) {
 /** 真实树上的 CHANGELOG（只读一次；反向证走内存文本，不写盘）。 */
 const changelogText = () => readFileSync(resolve(ROOT, CHANGELOG_REL), "utf8");
 
+/** 开版夹具里刚开的那个版本节标题（日期固定，不与真实版本号耦合）。 */
+const CHANGELOG_OPENING_HEADING = "## [0.28.0] - 2026-11-01";
+/**
+ * **开版态夹具**（issue #558，**纯内存合成，不写盘**）：顶部 `## [Unreleased]` 留空，扫描面那
+ * 一整节内容整体下移成 `CHANGELOG_OPENING_HEADING` —— 与 0.27.0 的开版提交 `4963293` 同一形状。
+ *
+ * 真实 `CHANGELOG.md` 只当**素材**（它归主 agent 维护，本单禁改），且**幂等**：无论真实树当前是
+ * 未开版（顶部 Unreleased 有内容）还是已经开过版（顶部 Unreleased 为空），本夹具合成的都是同一形状
+ * ——它不能因为「主 agent 此刻正在做 0.28 开版」而变成一个空节。
+ */
+function changelogOpeningStateText() {
+  const lines = changelogText().split("\n");
+  const top = lines.findIndex((line) => /^## \[/.test(line));
+  assert.notEqual(top, -1, `CHANGELOG 里没有任何 \`## [x]\` 版本节：夹具无素材`);
+  assert.equal(lines[top].startsWith(CHANGELOG_VERSION_HEADING), true,
+    `顶部版本节不是 ${CHANGELOG_VERSION_HEADING}（实测 ${JSON.stringify(lines[top])}）：夹具无法合成开版态`);
+  const resolved = resolveChangelogScanSurface(lines);
+  assert.equal(resolved.ok, true, `夹具取不到扫描面：${resolved.ok ? "" : resolved.reason}`);
+  const { from, to } = resolved.surface;
+  return [
+    ...lines.slice(0, top), // 文件头（`# Changelog` + 遵循说明）
+    CHANGELOG_VERSION_HEADING, // 开版后留空的 Unreleased
+    "",
+    CHANGELOG_OPENING_HEADING, // 本次发布的版本节（内容 = 原扫描面那一整段，逐字搬过来）
+    ...lines.slice(from, to),
+    ...lines.slice(to), // 其余历史版本节，原样保留
+  ].join("\n");
+}
+
 /** 变异：锚点必须**恰好出现一次**，否则抛——「变异没落上」按 #210 R2 也算失败。 */
 function replaceExactlyOnce(text, from, to, what = "变异锚点") {
   const hits = text.split(from).length - 1;
@@ -3084,13 +3180,21 @@ function replaceExactlyOnce(text, from, to, what = "变异锚点") {
   return text.replace(from, to);
 }
 
-/** 版本节在整份文件里的字符区间（`## [Unreleased]` 标题行之后 → 下一个 `## ` 之前）。 */
+/**
+ * **扫描面**在整份文件里的字符区间（行号口径 → 字符区间）。与 `collectChangelogProblems` 共用
+ * **同一套选取**（issue #558）：开版态下变异靶子也要落在退让后的那个版本节里，否则
+ * 「`### Changed` 在空 Unreleased 里 0 次」会把反向证 ⑤ 假红成「变异没落上」。
+ */
 function changelogVersionSectionSpan(text, heading = CHANGELOG_VERSION_HEADING) {
-  const marker = `${heading}\n`;
-  const at = text.indexOf(marker);
-  assert.notEqual(at, -1, `找不到版本节标题行 ${JSON.stringify(marker)}`);
-  const next = text.indexOf("\n## ", at + marker.length);
-  return { start: at + marker.length, end: next === -1 ? text.length : next + 1 };
+  const lines = text.split("\n");
+  const offsets = [];
+  let cursor = 0;
+  for (const line of lines) { offsets.push(cursor); cursor += line.length + 1; }
+  const resolved = resolveChangelogScanSurface(lines, heading);
+  assert.equal(resolved.ok, true,
+    `找不到扫描面：${resolved.ok ? "" : resolved.reason}`);
+  const { from, to } = resolved.surface;
+  return { start: offsets[from], end: to < lines.length ? offsets[to] : text.length };
 }
 
 /**
@@ -3105,11 +3209,17 @@ function replaceExactlyOnceInVersionSection(text, from, to, what = "变异锚点
 describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", () => {
   it("前置：解析面不退化成空转（小节 / bullet / 两套片号标签都真解析出来了）", (t) => {
     const problems = collectChangelogProblems(changelogText());
-    t.diagnostic(`规则 8：${CHANGELOG_REL} 版本节 = ${problems.subsections.map((s) => `${s.name}@${s.line}`).join(" / ")}；`
+    t.diagnostic(`规则 8：扫描面 = ${problems.surface?.heading}（第 ${problems.surface?.line} 行；`
+      + `${problems.surface?.fellBack ? `顶部 ${CHANGELOG_VERSION_HEADING} 为空 ⇒ 退让` : "顶部节本身"}，`
+      + `Unreleased bullet ${problems.surface?.unreleasedBullets} 条）= ${problems.subsections.map((s) => `${s.name}@${s.line}`).join(" / ")}；`
       + `${problems.bullets.length} 条 bullet；片号标签 EN ${problems.labelCounts.en} / CN ${problems.labelCounts.cn}`);
-    assert.equal(problems.found, true, `找不到 ${CHANGELOG_VERSION_HEADING}`);
-    assert.ok(problems.subsections.length >= 3, `版本节只有 ${problems.subsections.length} 个小节：解析面坏了`);
-    assert.ok(problems.bullets.length >= 40, `版本节只解析出 ${problems.bullets.length} 条 bullet：解析面坏了`);
+    assert.equal(problems.found, true, `找不到扫描面（顶部 ${CHANGELOG_VERSION_HEADING}）`);
+    // 扫描面必须**点得出名字**且区间不退化（开版态下这里是刚开的那个版本节，不是空转）
+    assert.ok(problems.surface && problems.surface.heading, "扫描面没记录下是哪一节：诊断看不见扫的是谁");
+    assert.ok(problems.surface.to > problems.surface.from,
+      `扫描面区间退化：${JSON.stringify({ from: problems.surface.from, to: problems.surface.to })}`);
+    assert.ok(problems.subsections.length >= 3, `扫描面（${problems.surface.heading}）只有 ${problems.subsections.length} 个小节：解析面坏了`);
+    assert.ok(problems.bullets.length >= 40, `扫描面（${problems.surface.heading}）只解析出 ${problems.bullets.length} 条 bullet：解析面坏了`);
     for (const name of CHANGELOG_REQUIRED_SUBSECTIONS) {
       assert.ok(problems.subsections.some((s) => s.name === name), `版本节里没有 ### ${name}`);
     }
@@ -3283,5 +3393,112 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
     const strayProblems = collectChangelogProblems(stray).structureProblems;
     assert.equal(strayProblems.some((p) => p.includes("游离正文")), true, `游离正文行没被判红：${JSON.stringify(strayProblems)}`);
     t.diagnostic("规则 8 反向证 ⑤：变异没落上 / 锚点不唯一 / 版本节改名 / 小节顺序被换 / 游离正文行 —— 五格逐条按预期");
+  });
+
+  it("反向证 ⑥（issue #558）：开版态（顶部空 Unreleased）⇒ 扫描面退到刚开的版本节，真实内容仍然全绿", (t) => {
+    const before = collectChangelogProblems(changelogText());
+    const opening = changelogOpeningStateText();
+    const problems = collectChangelogProblems(opening);
+    assert.equal(problems.found, true, "开版态说找不到扫描面：退让没生效（这正是 issue #558 的那一格红）");
+    assert.ok(problems.surface, "开版态没记录扫描面：诊断看不见扫的是哪一节");
+    assert.equal(problems.surface.fellBack, true, "开版态应标记为「退让」");
+    assert.equal(problems.surface.unreleasedBullets, 0, "开版夹具的顶部 Unreleased 必须是 0 条 bullet");
+    assert.equal(problems.surface.heading, CHANGELOG_OPENING_HEADING,
+      `扫描面应是刚开的版本节，实测 ${JSON.stringify(problems.surface.heading)}`);
+    // 卫生目标**确实是那个版本节**：bullet 数 / 小节名与真实树原扫描面逐项相等（不只是「通过了」）
+    assert.equal(problems.bullets.length, before.bullets.length,
+      `退让后的扫描面只解析出 ${problems.bullets.length} 条 bullet，原扫描面是 ${before.bullets.length} 条`);
+    assert.ok(problems.bullets.length >= 40,
+      `退让后的扫描面只解析出 ${problems.bullets.length} 条 bullet：这一格退化成空转了`);
+    assert.deepEqual(problems.subsections.map((s) => s.name), before.subsections.map((s) => s.name),
+      "退让后的小节序列与原 Unreleased 不一致：扫的不是同一节");
+    assert.deepEqual(problems.byteDuplicates, [], `开版态 R1 红：${JSON.stringify(problems.byteDuplicates)}`);
+    assert.deepEqual(problems.sliceDuplicates, [], `开版态 R2 红：${JSON.stringify(problems.sliceDuplicates)}`);
+    assert.deepEqual(problems.pairingProblems, [], `开版态 R3 红：${JSON.stringify(problems.pairingProblems)}`);
+    assert.deepEqual(problems.nearDuplicates, [], `开版态 R4 红：${JSON.stringify(problems.nearDuplicates)}`);
+    assert.deepEqual(problems.structureProblems, [], `开版态 R5 红：${JSON.stringify(problems.structureProblems)}`);
+    t.diagnostic(`规则 8 反向证 ⑥：扫描面 = ${problems.surface.heading}（退让，顶部 ${CHANGELOG_VERSION_HEADING} `
+      + `bullet 0 条）= ${problems.bullets.length} 条 bullet / ${problems.subsections.length} 个小节 / `
+      + `片号 EN ${problems.labelCounts.en} / CN ${problems.labelCounts.cn} ⇒ 五条全绿`);
+  });
+
+  it("反向证 ⑦：退让之后 R1 仍然咬人——把刚开的版本节里一条 bullet 逐字复制 ⇒ 红", (t) => {
+    const opening = changelogOpeningStateText();
+    const before = collectChangelogProblems(opening);
+    assert.equal(before.surface.fellBack, true, "夹具不是开版态：这一格证不了「退让之后仍咬人」");
+    const target = before.bullets
+      .find((bullet) => bullet.text.includes("`test/contract/` 的「发布面」从人工口径变成机器判据"));
+    assert.ok(target, "找不到复制靶子：那条 test/contract 发布面条目被改了，请同步靶子");
+    const mutated = replaceExactlyOnce(opening, target.raw, `${target.raw}\n\n${target.raw}`, "复制靶子");
+    const problems = collectChangelogProblems(mutated);
+    assert.equal(problems.surface.heading, CHANGELOG_OPENING_HEADING, "扫描面漂了：这一格就白做了");
+    assert.equal(problems.bullets.length, before.bullets.length + 1, "复制没被解析面看见：bullet 数应 +1");
+    assert.equal(problems.byteDuplicates.length, 1,
+      `退让之后逐字复制没被判红（规则被放宽了），实测 ${JSON.stringify(problems.byteDuplicates)}`);
+    assert.equal(problems.byteDuplicates[0].section, target.section, "红要落在同一个小节里");
+    t.diagnostic(`规则 8 反向证 ⑦：扫描面 = ${problems.surface.heading}（退让）→ ${before.bullets.length} 条变 `
+      + `${problems.bullets.length} 条 bullet ⇒ R1 红 ${JSON.stringify(problems.byteDuplicates[0])}；`
+      + `同一份夹具不改 ⇒ R1 0 对`);
+    assert.deepEqual(before.byteDuplicates, [], "未变异的开版夹具必须绿");
+  });
+
+  it("反向证 ⑧：Unreleased 一有内容，扫描面就回到它（下面版本节的重复不再归它管）", (t) => {
+    const opening = changelogOpeningStateText();
+    const newBullet = "- **开版后第一条（issue #558）**：Unreleased 一有内容，扫描面就回到它。";
+    // 开版后往 Unreleased 里补一条正常条目（三个必需小节都在，R5 也就不会替我们红）
+    const stub = `${CHANGELOG_VERSION_HEADING}\n\n### Breaking\n\n${newBullet}\n\n### Changed\n\n### Fixed\n`;
+    const withNew = replaceExactlyOnce(opening, `${CHANGELOG_VERSION_HEADING}\n`, stub, "Unreleased 新条目");
+    const live = collectChangelogProblems(withNew);
+    assert.equal(live.surface.heading, CHANGELOG_VERSION_HEADING,
+      `Unreleased 有内容时扫描面应回到它，实测 ${JSON.stringify(live.surface.heading)}`);
+    assert.equal(live.surface.fellBack, false, "Unreleased 有内容了还说「退让」：退让条件写宽了");
+    assert.equal(live.surface.unreleasedBullets, 1, `Unreleased 应有 1 条 bullet，实测 ${live.surface.unreleasedBullets}`);
+    assert.equal(live.bullets.length, 1, `扫描面应只含 Unreleased 那 1 条，实测 ${live.bullets.length}`);
+    assert.deepEqual(live.structureProblems, [], `干净的 Unreleased 应全绿：${JSON.stringify(live.structureProblems)}`);
+    assert.deepEqual(live.byteDuplicates, [], "干净的 Unreleased 不该有 R1 红");
+
+    // ① 下面那个版本节里**逐字重复**一条 ⇒ 不在扫描面内 ⇒ 不红（证明扫的真是 Unreleased）
+    const lower = collectChangelogProblems(changelogText()).bullets
+      .find((bullet) => bullet.text.includes("`test/contract/` 的「发布面」从人工口径变成机器判据"));
+    assert.ok(lower, "找不到下面版本节的复制靶子：请同步靶子");
+    const lowerDup = replaceExactlyOnce(withNew, lower.raw, `${lower.raw}\n\n${lower.raw}`, "下面版本节的重复");
+    assert.equal(lowerDup.split(lower.raw).length - 1, 2, "变异没落上：下面版本节里并没有两份逐字相同的 bullet");
+    const quiet = collectChangelogProblems(lowerDup);
+    assert.equal(quiet.surface.heading, CHANGELOG_VERSION_HEADING, "扫描面漂了：这一格就白做了");
+    assert.equal(quiet.bullets.length, 1, `扫描面应仍只有 Unreleased 那 1 条，实测 ${quiet.bullets.length}`);
+    assert.deepEqual(quiet.byteDuplicates, [],
+      `下面版本节的重复被算进扫描面了（扫的不是 Unreleased）：${JSON.stringify(quiet.byteDuplicates)}`);
+
+    // ② 同样的重复放进 Unreleased 里 ⇒ R1 红（扫描面之内，规则照样咬）
+    const dup = replaceExactlyOnce(withNew, `${newBullet}\n`, `${newBullet}\n\n${newBullet}\n`, "Unreleased 内重复");
+    const problems = collectChangelogProblems(dup);
+    assert.equal(problems.surface.heading, CHANGELOG_VERSION_HEADING, "扫描面漂了：这一格就白做了");
+    assert.equal(problems.bullets.length, 2, `扫描面应有 2 条 bullet，实测 ${problems.bullets.length}`);
+    assert.equal(problems.byteDuplicates.length, 1,
+      `Unreleased 内逐字重复没被判红，实测 ${JSON.stringify(problems.byteDuplicates)}`);
+    assert.equal(problems.byteDuplicates[0].section, "Breaking", "红要落在 Unreleased 的 Breaking 小节里");
+    t.diagnostic(`规则 8 反向证 ⑧：扫描面 = ${CHANGELOG_VERSION_HEADING}（Unreleased bullet 1 条）；`
+      + `下面版本节内造 1 对逐字重复 ⇒ R1 0 对（不在扫描面内）；`
+      + `Unreleased 内造 1 对 ⇒ R1 红 ${JSON.stringify(problems.byteDuplicates[0])}`);
+  });
+
+  it("反向证 ⑨：顶部空 Unreleased 且整份文件只有它 ⇒ 仍然红，点名「找不到可扫的版本节」", (t) => {
+    // 什么都没有：不许静默绿（前置格要的是「真扫出了结构」，不是「允许为空」）
+    const bare = `# Changelog\n\n本文件遵循 Keep a Changelog；版本号遵循语义化版本。\n${CHANGELOG_VERSION_HEADING}\n`;
+    const problems = collectChangelogProblems(bare);
+    assert.equal(problems.found, false, "空 Unreleased 独苗竟然说找到了扫描面：这是静默绿");
+    assert.equal(problems.bullets.length, 0, `扫描面应为空，实测 ${problems.bullets.length} 条`);
+    assert.equal(problems.structureProblems.length, 1, `应恰好 1 条红，实测 ${JSON.stringify(problems.structureProblems)}`);
+    assert.match(problems.structureProblems[0], /找不到可扫的版本节/, "红要点名「找不到可扫的版本节」");
+    // 对照：退过去的那一节同样是空的 ⇒ 仍然红（R5 判「无小节」），仍然不许静默绿
+    const twoEmpty = `${bare}\n${CHANGELOG_OPENING_HEADING}\n`;
+    const p2 = collectChangelogProblems(twoEmpty);
+    assert.equal(p2.found, true, "顶部空 + 下一个版本节存在时应能找到扫描面");
+    assert.equal(p2.bullets.length, 0, "扫描面里本应 0 条 bullet");
+    assert.equal(p2.structureProblems.some((p) => p.includes("小节顺序")), true,
+      `退到空节后没判红（静默绿）：${JSON.stringify(p2.structureProblems)}`);
+    t.diagnostic(`规则 8 反向证 ⑨：扫描面 = 无（顶部 ${CHANGELOG_VERSION_HEADING} bullet 0 条、`
+      + `其后 0 个版本节）⇒ found=${problems.found} + 红：${problems.structureProblems[0].slice(0, 48)}…；`
+      + `对照「退到空版本节」⇒ found=${p2.found} / bullet ${p2.bullets.length} / R5 红`);
   });
 });
