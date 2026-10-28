@@ -1488,7 +1488,9 @@ async function main() {
       ...common,
       runId: mainRunId,
       maxRounds: cli.rounds,
-      initialUserMessage: "soak：开始长轮回放",
+      // #498 S3 A2b: 种子的规位家。与 `common.config`（folding 预算）**并进同一棵树**——
+      // 写第二个 `config` 键会让后者静默覆盖前者，soak 的压缩预算就没了。
+      config: { ...common.config, input: { initialUserMessage: "soak：开始长轮回放" } },
       onEvent: onEventFor(counter),
       onRound: ({ round }) => {
         if (round % Math.max(1, Math.floor(cli.rounds / 10)) === 0) {
@@ -1832,7 +1834,8 @@ async function main() {
         ...common,
         runId: abortRunId,
         maxRounds: cli.rounds,
-        initialUserMessage: "soak：abort 与 resume 观察",
+        // 同上：并进 `common.config`，不造第二个 `config` 键。
+        config: { ...common.config, input: { initialUserMessage: "soak：abort 与 resume 观察" } },
         signal: controller.signal,
         // 事件计数触发：第 trigger.at 个 tool_result **落地后**立刻 abort（默认路径，真机跑不了）。
         onEvent: (event) => {

@@ -53,7 +53,7 @@ const store = createMemoryTranscriptStore();
 const p1 = createProvider(runId, script);
 const first = await runToolLoop({
   provider: p1,
-  initialUserMessage: `start ${"y".repeat(600)}`,
+  config: { input: { initialUserMessage: `start ${"y".repeat(600)}` } },
   executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
   maxRounds: 3,
   completion: false,
@@ -118,7 +118,7 @@ const ttlScript = [
 const p3 = createProvider(ttlRunId, ttlScript);
 const third = await runToolLoop({
   provider: p3,
-  initialUserMessage: "ttl task",
+  config: { input: { initialUserMessage: "ttl task" } },
   executeTool: async ({ id }) => (id === "big"
     ? Array.from({ length: 120 }, (_v, i) => `${i + 1}: function bigFn${i}(a) { return a + ${i}; }`).join("\n")
     : `small ${id}`),

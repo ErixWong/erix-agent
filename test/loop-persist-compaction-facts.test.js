@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
-import { runDirect } from "./helpers/run-direct.js";
+import { runDirect, withSeed } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { makeTmp } from "./helpers/tmp.js";
@@ -160,7 +160,7 @@ test("#326-C 复用不重算：折叠后中断，resume 不再调 summarizer，�
   assert.match(String(journaledSummary), /SUMMARY_V1/u, "摘要必须已入账");
 
   const resumed = createProvider({ mainScript: [endTurn("续接结论")] });
-  await runToolLoop({
+  await runToolLoop(withSeed({
     provider: resumed,
     task: "继续",
     resume: true,
@@ -177,7 +177,7 @@ test("#326-C 复用不重算：折叠后中断，resume 不再调 summarizer，�
     // 告示自己落进折叠区间那一格另有专门的锚（`test/loop-resume-notice.test.js` 的
     // 「告示在同一轮被折进摘要」条）。
     config: { folding: { context: { ...foldContext, keepRounds: 1 } } },
-  });
+  }));
 
   // issue #469 宿主裁决 A（实施条件 4）：续写基底**进复用键**。于是 resume 后第一次折叠的输入
   // 多了「续写基底」那一节 ⇒ 旧账本（键里没有基底）必然 miss 一次、重算一份摘要。这是宿主明确
@@ -256,7 +256,7 @@ const ttlRunOptions = (runId, store, provider, extra = {}) => ({
 test("#326-C TTL 降级：load() 里读得到「这条工具结果被降级成了什么」", async () => {
   const store = createMemoryTranscriptStore();
   const provider = createProvider({ mainScript: ttlScript });
-  await runToolLoop(ttlRunOptions("326c-ttl", store, provider));
+  await runToolLoop(withSeed(ttlRunOptions("326c-ttl", store, provider)));
 
   // 前置：TTL 折叠真的发生过，并且占位符进过真实请求。
   assert.ok(
@@ -283,7 +283,7 @@ test("#326-C TTL 降级：file store 里也读得到，且没有 TTL 折叠时�
   const dir = await makeTmp("erix-326c-ttl-file-");
   const store = createFileTranscriptStore({ dir });
   const provider = createProvider({ mainScript: ttlScript });
-  await runToolLoop(ttlRunOptions("326c-ttl-file", store, provider));
+  await runToolLoop(withSeed(ttlRunOptions("326c-ttl-file", store, provider)));
   const records = await store.load("326c-ttl-file");
   assert.ok(records.some((record) => (record.ttlDegradations?.length ?? 0) > 0),
     "真落盘的 transcript 必须含 TTL 降级事实");
@@ -291,9 +291,9 @@ test("#326-C TTL 降级：file store 里也读得到，且没有 TTL 折叠时�
   // 反例守卫：小体积结果不折叠 ⇒ 宿主读到的形状不变（不出现空字段）。
   const quietStore = createMemoryTranscriptStore();
   const quietProvider = createProvider({ mainScript: [toolTurn("s"), endTurn("结论")] });
-  await runToolLoop(ttlRunOptions("326c-ttl-quiet", quietStore, quietProvider, {
+  await runToolLoop(withSeed(ttlRunOptions("326c-ttl-quiet", quietStore, quietProvider, {
     executeTool: async () => "tiny",
-  }));
+  })));
   const quietRecords = await quietStore.load("326c-ttl-quiet");
   assert.ok(quietRecords.every((record) => record.ttlDegradations === undefined),
     "没发生降级时不得凭空多出字段（宿主读取形状不变）");

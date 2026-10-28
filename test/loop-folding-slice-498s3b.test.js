@@ -36,7 +36,7 @@ import {
   normalizeRunToolLoopOptions,
 } from "../src/loop/option-normalization.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
-import { runDirect as sharedRunDirect } from "./helpers/run-direct.js";
+import { runDirect as sharedRunDirect, withSeed } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const DONE = [{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" }];
@@ -215,7 +215,7 @@ test("R1 context 经新家生效：小预算真的驱动压缩（真 run）", as
     { content: [{ type: "tool_use", id: "two", name: "work", input: {} }], stopReason: "tool_use" },
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     provider,
     initialUserMessage: "go",
     executeTool: async () => `result ${"x".repeat(400)}`,
@@ -223,7 +223,7 @@ test("R1 context 经新家生效：小预算真的驱动压缩（真 run）", as
     completion: false,
     wrapup: false,
     config: { folding: { context: { budgetTokens: 200, keepRounds: 0, strategy: "sliding-window" } } },
-  });
+  }));
   assert.ok(
     (result.compactionStats ?? []).some((stat) => stat.compacted === true),
     `config.folding.context 的预算必须真的驱动压缩，实测 ${JSON.stringify(result.compactionStats ?? [])}`,
@@ -239,7 +239,7 @@ test("R2 toolResultTtl 经新家生效：第 2 轮的工具结果被折叠（真
   }));
   script.push({ content: [{ type: "text", text: "done" }], stopReason: "end_turn" });
   const provider = createFakeProvider(script);
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     provider,
     initialUserMessage: "go",
     executeTool: async () => `ORIGINAL-OUTPUT ${"y".repeat(300)}`,
@@ -247,7 +247,7 @@ test("R2 toolResultTtl 经新家生效：第 2 轮的工具结果被折叠（真
     completion: false,
     wrapup: false,
     config: { folding: { toolResultTtl: 1, toolResultFoldMinTokens: 1 } },
-  });
+  }));
   // 第 2 发请求里，第 1 轮的工具结果必须已经被 TTL 折叠（不再是原文）。
   const second = JSON.stringify(provider.requests[1]?.messages ?? []);
   assert.equal(

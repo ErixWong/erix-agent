@@ -18,13 +18,22 @@
 >    `onRound` 算一个，`test/loop-usage-accounting.test.js` 的 8 个就是这么来的）；只有落在**已被数过的键
 >    的值**里的不再下钻。
 >
-> 按这五条：**迁移前 388 / S7a 后 351 / S7b 后 256 / S7c 后 169 / 附表 1259 / COMPAT-PIN 66**。复跑命令在
+> 按这五条：**迁移前 388 / S7a 后 351 / S7b 后 256 / S7c 后 169 / 附表 1263 / COMPAT-PIN 66**。复跑命令在
+> ⚠ **附表口径刷新（#498 S3 第四片 `input` A2b 段收尾，本片）**：附表从 **1259 → 1263**（+4，行数 107 → 108）。
+> 这 4 点**不是本片新写出来的**：`test/loop-seed-fixture-521.test.js`（#521 的夹具钉子文件）在 A2 那一刀里
+> 就带了 `completion`×2 / `wrapup`×2 四个数据面写点，只是那一刀没给它加行，`--verify` 只核**已登记**的行，
+> 所以「逐行零误差」当时是绿的、总数却是低的。本片补上这一行并重新对账。
+> 本片（A2b）**删掉了 `initialUserMessage` 的扁平写法**，而它本来就不在计数口径里（顶部「生成方式」写明：
+> 标量键没有子键 ⇒ 不是壳），所以删键**不改变任何计数**；本片新增的 `config: { input: { … } }` 写点同样不计
+> （`config` 是容器，规则 4 数到就停）。复跑：`node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md`
+> **exit=0**，逐行零误差（主表 169 / 附表 1263 都是 AST 实测）。
+>
 > ⚠ **附表口径刷新（#498 S3 第三片 `input` A 段收尾）**：附表从 **1269 → 1259**（−10，文件数 106 → 107）。
 > 同样是**实测**：本片把顶层扁平 `cacheStablePrefix` / `initialMessages` 摘掉（`initialMessages` 是附表
 > 数据面键表里的一员，它的 12 个扁平写点随写侧迁移一起消失，其中 10 个落在 10 个既有文件里），
 > 新增的切片钉子文件 `test/loop-input-slice-498s3c.test.js` 自己带 12 个搭台写点。
 > `node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
-> （主表 169 / 附表 1259 都是 AST 实测）。
+> （主表 169 / 附表 1263 都是 AST 实测）。
 >
 > ⚠ **附表口径刷新（#498 S3 第二片 `folding` 收尾）**：附表从 **1354 → 1269**（−85，文件数 104 → 106）。
 > 这是**实测**，不是手改：S3 的 `timing` / `folding` 两片把 `retry` / `context` / `toolResultTtl` /
@@ -112,6 +121,20 @@
 | `test/loop-capabilities-ports-hooks-498s4c.test.js` | 7 | `ports.*` / 4 个 in-shell 回调 / 两个形态多态旋钮的**目的地表**与冲突路径、`sleepImpl` 被真的调到（行为证据） |
 | `test/loop-option-gate-496.test.js` | 15 | 选项闸：接受面 = 白名单（`unknown runToolLoop option`）、语义相取值校验、`onFoldSummary` / `finalGuard` / `deliverables` 的形状报错 |
 | `test/loop-context-on-fold-summary-retired-499.test.js` | 8 | #499 的**范围钉**：`context.onFoldSummary` 退役、**顶层扁平 `onFoldSummary` 必须还在**（它 `import` 了 `RUN_TOOL_LOOP_OPTION_NAMES` 并断言 `includes("onFoldSummary")`）⇒ S9 之前这里必须保持扁平 |
+
+
+### COMPAT-PIN 逐文件判定（#498 S3 第四片 A2b：`initialUserMessage` 删键）
+
+判据：**数据面就地翻成反向拒绝钉；行为面 `on*` 一个字不动**。逐文件给证据（不是「我看过了」）：
+
+| 文件 | 面 | A2b 的处置 | 证据 |
+| --- | --- | --- | --- |
+| `test/loop-option-normalization.test.js` | **数据面** | 翻成反向钉 | 内联白名单副本（`OPTION_WHITELIST`）删掉 `initialUserMessage` 一项；「白名单逐项都被接受」那格因此**不再**证明它被接受（A0 的双向差集 + 位置对账保证副本 ≡ 源名单）。反向钉本体在 `test/loop-input-slice-498s3c.test.js` 的 **P4**（逐字文案 + 叶子仍在 schema + 顶层键已不在白名单） |
+| `test/loop-config-namespace-497.test.js` | **数据面** | 翻成反向钉 | `RETIRED_FLAT_VALUES` 增一条 `initialUserMessage: "go"`（B2 开头断言这张表与派生集合 `RETIRED_FLAT_KEYS` **逐字相等** ⇒ 删键而漏给取值会红）；`VALUES`（仍可扁平写的那张）同步删掉它。B2 于是同时证明：扁平形态**不再产生** `effectiveOptions.initialUserMessage`、config 形态**逐字写回**它 |
+| `test/loop-option-gate-496.test.js` | 数据面（闸口相位） | 只改搭台，不改断言 | 本文件没有 `initialUserMessage` 的接受面断言；只把 `assemblyError()` 的种子搬进 **policy 的 config 树**（调用级 `config` 会整棵覆盖 `policy.config`，写成显式 config 会把本格要测的坏值顶掉 ⇒ 假绿）。12 格全绿 |
+| `test/loop-capabilities-namespace-498.test.js` | **行为面 `on*`** | **未动**（本片零改动） | `git diff --stat` 里没有它 |
+| `test/loop-capabilities-ports-hooks-498s4c.test.js` | **行为面 `on*`** | **未动**（本片零改动） | 同上 |
+| `test/loop-context-on-fold-summary-retired-499.test.js` | **行为面 `on*`** | 只改搭台，不改断言 | 两处裸 `runToolLoop` 的种子经 `withSeed` 翻译（`onFoldSummary` 的「顶层扁平必须还在」那格一字未改） |
 
 合计 **66** 个写点。这 6 个文件在 S9 那一刀里是 **11 个退役键**的唯一「扁平写点保留区」；退役时它们要逐个
 改写为「扁平写法现在抛错」的**反向钉**，而不是删掉。（附表那 1354 个数据面壳内写点不在 S9 的退役面内，
@@ -393,10 +416,10 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 而下面这些写点住的 `context` / `reflection` / `retry` / `wrapup` / `completion` / `session` 等**壳**
 正是 S3 要删的东西 ⇒ **它们是 S3 的硬前置**，不是可选清理：壳删了、写点还按壳写，就是当场红。
 切片方案见文末「数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）」。（那份方案是 S3 之前写的，
-分片数字保留为**历史规划口径**；今天的实测总数是 **1259**，见文末「复跑方法」。）
+分片数字保留为**历史规划口径**；今天的实测总数是 **1263**，见文末「复跑方法」。）
 
 计数口径与上表同（AST、数到被数的键就停、进了同名壳就停，于是 `context: { strategy }` 只算 `context` 一个）。
-**合计 1259**（= `node /tmp/flat-count.cjs .` 的第二个数；下面 **107** 行逐行相加也是 1259）。
+**合计 1263**（= `node /tmp/flat-count.cjs .` 的第二个数；下面 **108** 行逐行相加也是 1263）。
 （S3 之前是 1354 / 104 行，两片之后 1269 / 106 行；差额与原因见文件头的「附表口径刷新」注。）
 
 ### 数据面键表：从白名单枚举（#498 S7c 扩键，680 → 1354）
@@ -439,7 +462,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
   「数到被数的键就停」下不再计（`resume` 77→75、`initialMessages` 25→24）。这是**口径的正确行为**
   （壳内叶子不是扁平写点），也是 680 + 677（7 键裸计数）− 3 = 1354 的来源。
 
-### 逐文件明细（107 行 / 1259 点；S3 前 104 行 / 1354 点）
+### 逐文件明细（108 行 / 1263 点；S3 前 104 行 / 1354 点）
 
 | 文件 | 写点 | 明细 |
 | --- | --- | --- |
@@ -550,6 +573,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/provider-runner.test.js` | 1 | `context`×1 |
 | `test/providers/error-classification.test.js` | 0 | `retry`×1 |
 | `test/run-snapshot-executor.test.js` | 1 | `context`×1, `onToolResult`×1 |
+| `test/loop-seed-fixture-521.test.js` | 4 | `completion`×2, `wrapup`×2 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 
@@ -782,6 +806,21 @@ function verify(root, mdPath) {
   const astMain = [...per.values()].reduce((s, v) => s + v.cap, 0);
   const astApp = [...per.values()].reduce((s, v) => s + v.data, 0);
 
+  // 反证面（#498 S3 A2b 补）：上面的逐行对账只核**已登记的行**，于是「某个文件从 0 点长出写点、
+  // 而它本来就没有附表行」这种漂移是**看不见**的（实测：给 `test/loop-deliverables.test.js` 加 3 个
+  // 数据面写点，旧版只把总数印成 1263/1266 却照样 exit=0）。所以再钉三条与行无关的性质：
+  //   ① 两个合计必须各自等于 AST 合计；② 有任何数据面写点的文件必须有附表行；
+  //   ③ 有任何能力面写点的文件必须落在主表或某张分派清单里。
+  if (mainSum !== astMain) bad.push(`主表合计：表 ${mainSum} / AST ${astMain}`);
+  if (appSum !== astApp) bad.push(`附表合计：表 ${appSum} / AST ${astApp}`);
+  const allGroupRows = [...listRows.values()].flat();
+  for (const [f, v] of per) {
+    if (v.data > 0 && !appRows.some((r) => r.file === f)) bad.push(`附表漏行 ${f}：AST ${v.data} 点，表里没有这一行`);
+    if (v.cap > 0 && !mainRows.some((r) => r.file === f) && !allGroupRows.some((r) => r.file === f)) {
+      bad.push(`主表/分派清单漏行 ${f}：AST ${v.cap} 点，表里没有这一行`);
+    }
+  }
+
   // 分组：主表「分类」列是唯一权威（同文件跨片时写 `S7b（3）+ S7c（1）` 逐点归片）
   const groups = new Map();
   const addTo = (g, n) => groups.set(g, (groups.get(g) || 0) + n);
@@ -887,8 +926,8 @@ function main() {
 main();
 SCRIPT
 
-# 1) 现在的三个总数（本表主表 169 / 附表 1259 / 全部 1428）
-node /tmp/flat-count.cjs .                       # ⇒ 能力面 13 键 169 / 数据面 17 键 1259 / 全部 1428
+# 1) 现在的三个总数（本表主表 169 / 附表 1263 / 全部 1432）
+node /tmp/flat-count.cjs .                       # ⇒ 能力面 13 键 169 / 数据面 17 键 1263 / 全部 1432
 node /tmp/flat-count.cjs . --keys                # ⇒ 逐键明细（17 个数据面键 + 13 个能力面键，见「数据面键表」）
 node /tmp/flat-count.cjs . --files               # ⇒ 逐文件明细（附表 106 行，与本表逐行零误差）
 

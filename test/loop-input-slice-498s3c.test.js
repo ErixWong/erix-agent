@@ -47,7 +47,7 @@ import {
   normalizeRunToolLoopOptions,
 } from "../src/loop/option-normalization.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
-import { runDirect as sharedRunDirect } from "./helpers/run-direct.js";
+import { runDirect as sharedRunDirect, withSeed } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const DONE = [{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" }];
@@ -106,13 +106,26 @@ test("P2 顶层 initialMessages ⇒ 当场拒，文案逐字指向 config.input.
   const messages = [{ role: "user", content: "seed" }];
   const error = await directError({ initialMessages: messages });
   assert.equal(error instanceof TypeError, true);
-  // 逐字相等：这一格同时钉三件事——① 文案里必须有新家；② 新家是**叶子名** `messages`；
+  // 逐字相等：这一格同时钉四件事——① 文案里必须有新家；② 新家是**叶子名** `messages`；
   // ③ 不许写成 `config.input.initialMessages`（那正是「把顶层键名当叶子」的误写，I2 用例
-  // 专门教它写 `config.input.messages`，两处文案必须互相一致）。
+  // 专门教它写 `config.input.messages`，两处文案必须互相一致）；
+  // ④ **不许再带噪声候选** `did you mean "initialUserMessage"?`。
+  //
+  // #498 S3 A2b 如实改动（本格逐字文案随删键变化，不是为绿而放宽）：
+  // `initialUserMessage` 从 `RUN_TOOL_LOOP_OPTION_NAMES` 删掉之后，它不再是建议候选池里的成员，
+  // 于是 `optionSuggestion("initialMessages")` 不再指向它（距离 ≤ 阈值的候选已不存在），
+  // 那句 `(did you mean …)` 后缀整段消失。删之前它是**噪声**：宿主照着它去写
+  // `initialUserMessage`，0.28 之后那已经是被拒的旧拼写。现在文案只剩唯一一条出路（新家），
+  // 这是**更强**的断言：④ 把「噪声不许回来」也钉住。
   assert.equal(
     error.message,
-    'unknown runToolLoop option: "initialMessages" (did you mean "initialUserMessage"?)'
+    'unknown runToolLoop option: "initialMessages"'
       + " (its canonical home is config.input.messages; the flat spelling is rejected)",
+  );
+  assert.equal(
+    error.message.includes("did you mean"),
+    false,
+    "候选池里已经没有 `initialUserMessage`，不许再给一个写不出去的「did you mean」",
   );
   assert.equal(
     error.message.includes("config.input.initialMessages"),
@@ -130,9 +143,10 @@ test("P2 顶层 initialMessages ⇒ 当场拒，文案逐字指向 config.input.
   );
 });
 
-// 两个旧名**真的**不在白名单里了（不是「拒了但又留着」）。
-test("P3 两个旧名都不在白名单里，而 config.input 组原样保留六个叶子", () => {
-  for (const name of ["cacheStablePrefix", "initialMessages"]) {
+// 旧名**真的**不在白名单里了（不是「拒了但又留着」）。
+test("P3 三个旧名都不在白名单里，而 config.input 组原样保留六个叶子", () => {
+  // #498 S3 A2b：`initialUserMessage` 是第三个（`input` 组最后一个离开顶层白名单的成员）。
+  for (const name of ["cacheStablePrefix", "initialMessages", "initialUserMessage"]) {
     assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(name), false, `${name} 必须已经离开顶层白名单`);
   }
   // 新家还在（本刀删的是**写法**，不是叶子）：否则 P1/P2 的文案会指向一个不存在的组。
@@ -142,13 +156,54 @@ test("P3 两个旧名都不在白名单里，而 config.input 组原样保留六
     "config.input 组必须原样保留六个叶子（它就是新家）",
   );
   // 纯数据键不该被塞「第二站」（它们不是混装壳）：两条文案都是「一句话」形态。
-  for (const name of ["cacheStablePrefix", "initialMessages"]) {
+  for (const name of ["cacheStablePrefix", "initialMessages", "initialUserMessage"]) {
     assert.equal(
       gateMessage(name).includes("this shell holds both data and functions"),
       false,
       `${name} 是纯数据键，文案不该出现混装壳的第二站提示`,
     );
   }
+});
+
+// #498 S3 A2b 的反向拒绝钉：**扁平 `initialUserMessage` 当场拒，文案逐字指向新家**。
+//
+// 这一格是本刀「删键」那一半的机器判据：删键之前它是白名单成员（写扁平 = 合法），删之后它必须
+// 在**名称闸口**就抛（不是「收下再忽略」，也不是「收下再报别的错」）。文案里的新家路径逐字钉住，
+// 因为宿主 0.26 → 0.28 升级时唯一能自己找到出路的线索就是它。
+test("P4 顶层 initialUserMessage ⇒ 当场拒，文案逐字指向 config.input.initialUserMessage", async () => {
+  // ⚠ 这里**故意**走裸 `runToolLoop`（不是夹具）：本格测的就是「引擎拒收这个拼写」，
+  // 走夹具会被翻译成新家、永远不抛——那条断言就变成自说自话。
+  // @seed-fixture-exempt: 反向拒绝钉——这一格必须让扁平拼写真的抵达引擎
+  const error = await runToolLoop({ initialUserMessage: "go" }).then(() => null, (caught) => caught);
+  assert.equal(error instanceof TypeError, true, "扁平拼写必须当场抛 TypeError（不许收下）");
+  assert.equal(
+    error.message,
+    'unknown runToolLoop option: "initialUserMessage"'
+      + " (its canonical home is config.input.initialUserMessage; the flat spelling is rejected)",
+    "文案必须逐字点名新家（宿主靠这一句自己找到出路）",
+  );
+  assert.equal(error.via, undefined, "名称闸口抛的错不贴路线标签（它不是语义相）");
+
+  // 同一个值写在新家里 ⇒ 不抛，且展开相把它写回扁平名（引擎读侧不变）。
+  const { effectiveOptions } = await normalizeRunToolLoopOptions({
+    config: { input: { initialUserMessage: "go" } },
+  });
+  assert.equal(
+    effectiveOptions.initialUserMessage,
+    "go",
+    "config.input.initialUserMessage 必须写回 effectiveOptions.initialUserMessage（引擎读的就是它）",
+  );
+  // 反向：删掉的那条**只**是写法。叶子还在 schema 里，且它没有对应的顶层选项了（#517 的形状）。
+  assert.equal(
+    CONFIG_NAMESPACE_SCHEMA.input.includes("initialUserMessage"),
+    true,
+    "叶子必须保留——新家就是它，删叶子等于把家也拆了",
+  );
+  assert.equal(
+    RUN_TOOL_LOOP_OPTION_NAMES.includes("initialUserMessage"),
+    false,
+    "顶层扁平键必须已经不在白名单里",
+  );
 });
 
 // ================================================================ A. 别名表：活的、没有死条目
@@ -245,25 +300,25 @@ test("S1 configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES) === []", () => {
 test("R1 cacheStablePrefix 经新家生效：缓存边界标记真的消失（真 run）", async () => {
   // 默认 `true` ⇒ system 被包成 `{content, cacheBoundary:true}`、首条消息带 `cacheBoundary`。
   const defaulted = createFakeProvider(DONE);
-  await runToolLoop({
+  await runToolLoop(withSeed({
     provider: defaulted,
     executeTool: async () => "ok",
     initialUserMessage: "go",
     system: "SYS",
     wrapup: false,
-  });
+  }));
   assert.equal(defaulted.requests[0].system.cacheBoundary, true, "对照组：默认必须打标记");
 
   // 经新家关掉 ⇒ 两条标记都必须消失（这就是引擎真的读到了 `effectiveOptions.cacheStablePrefix`）。
   const optedOut = createFakeProvider(DONE);
-  await runToolLoop({
+  await runToolLoop(withSeed({
     provider: optedOut,
     executeTool: async () => "ok",
     initialUserMessage: "go",
     system: "SYS",
     wrapup: false,
     config: { input: { cacheStablePrefix: false } },
-  });
+  }));
   assert.equal(optedOut.requests[0].system, "SYS", "config.input.cacheStablePrefix:false 必须真的生效");
   assert.equal("cacheBoundary" in optedOut.requests[0].messages[0], false);
 });
@@ -274,7 +329,7 @@ test("R2 initialMessages 经新家生效：config.input.messages 真的成为种
     { role: "assistant", content: "第一答" },
   ];
   const provider = createFakeProvider(DONE);
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     provider,
     executeTool: async () => "ok",
     // 同时给 `initialUserMessage`：种子历史在场时它必须被忽略（既有语义，本刀不改读侧）。
@@ -282,7 +337,7 @@ test("R2 initialMessages 经新家生效：config.input.messages 真的成为种
     completion: false,
     wrapup: false,
     config: { input: { messages: seed } },
-  });
+  }));
   assert.equal(result.termination.reason, "end_turn");
   assert.deepEqual(
     provider.requests[0].messages.map((message) => [message.role, message.content]),

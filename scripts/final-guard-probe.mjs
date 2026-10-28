@@ -127,7 +127,7 @@ try {
           { input_tokens: 120, output_tokens: 30 },
         ),
       ]),
-      initialUserMessage: `把 42 写进 ${answerPath}`,
+      config: { input: { initialUserMessage: `把 42 写进 ${answerPath}` } },
       task: `把 42 写进 ${answerPath}`,
       cwd: sandbox,
       runId: "probe-run-1",
@@ -236,7 +236,7 @@ try {
     ]);
     const result = await runToolLoop({
       provider,
-      initialUserMessage: `把 42 写进 ${answerPath}`,
+      config: { input: { initialUserMessage: `把 42 写进 ${answerPath}` } },
       maxRounds: 6,
       executeTool: async (call) => {
         fs.writeFileSync(call.input.path, call.input.content);
@@ -299,7 +299,7 @@ try {
         wrapup({ done: true, summary: "完成", output: "已经写好了" }),
         { times: 6, ...wrapup({ done: true, summary: "完成", output: "确实写好了" }) },
       ]),
-      initialUserMessage: "写文件",
+      config: { input: { initialUserMessage: "写文件" } },
       maxRounds: 8,
       finalGuardMaxRetries: 2,
       executeTool: async () => "ok",
@@ -354,7 +354,7 @@ try {
     const payloads = [];
     const result = await runToolLoop({
       provider: createFakeProvider([wrapup({ done: true, summary: "s", output: "o" })]),
-      initialUserMessage: "x",
+      config: { input: { initialUserMessage: "x" } },
       maxRounds: 2,
       executeTool: async () => "ok",
       finalGuard: async (payload) => {
@@ -445,7 +445,7 @@ try {
           : []),
         wrapup({ done: true, summary: "完成", output: `已生成 ${answerPath}，内容为 42` }),
       ]),
-      initialUserMessage: "写文件",
+      config: { input: { initialUserMessage: "写文件" } },
       cwd: sandbox,
       maxRounds: 3,
       executeTool: async (call) => {
@@ -565,14 +565,13 @@ try {
     let payload;
     const result = await runToolLoop({
       provider: createFakeProvider(script),
-      initialUserMessage: `把 30 个 4KB 文件写进 ${sandbox}`,
       task: "把 30 个 4KB 文件写进工作目录",
       cwd: sandbox,
       runId: "probe-run-overhead",
       maxRounds: 30,
       // 关掉两件会改动 payload 体积的既有机制，让这个数只反映「新键 vs messages」：
       // 工具结果 TTL 折叠（0 = 关闭）与 reflection（maxRounds ≥ 16 会自动开启 judge）。
-      config: { folding: { toolResultTtl: 0 } },
+      config: { folding: { toolResultTtl: 0 }, input: { initialUserMessage: `把 30 个 4KB 文件写进 ${sandbox}` } },
       reflection: false,
       executeTool: async () => BIG,
       finalGuard: async (value) => {
@@ -675,7 +674,7 @@ try {
     ]);
     const result = await runToolLoop({
       provider,
-      initialUserMessage: `把 42 写进 ${answerPath}`,
+      config: { input: { initialUserMessage: `把 42 写进 ${answerPath}` } },
       maxRounds: 1,
       // 显式给全扩轮参数：默认 step 是 max(8, maxRounds/2)，不显式给的话「抬到多少」会漂。
       reflection: { enabled: true, extensionStep: 2, maxExtensions: 2, maxRoundsCap: 8 },

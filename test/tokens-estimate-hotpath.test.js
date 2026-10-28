@@ -20,6 +20,7 @@ import {
 } from "../src/tokens.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { withSeed } from "./helpers/run-direct.js";
 
 // ────────────────────────── 旧实现（HEAD 口径）逐字复刻 ──────────────────────────
 
@@ -429,7 +430,7 @@ const compactsOnce = async ({ replacement, budgetTokens, keepRounds = 2, runId }
       };
     },
   };
-  const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
+  const result = await runToolLoop(withSeed({ capabilities: { ports: { strategy: strategy } },
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done 完成" }], stopReason: "end_turn" },
     ]),
@@ -440,7 +441,7 @@ const compactsOnce = async ({ replacement, budgetTokens, keepRounds = 2, runId }
     config: { folding: { context: { budgetTokens, keepRounds } } },
     store: createMemoryTranscriptStore(),
     runId,
-  });
+  }));
   return { result, snapshotBefore, replacement };
 };
 

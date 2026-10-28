@@ -476,7 +476,7 @@ async function runOne({ variant, model, index, configPath, root, timeoutMs }) {
     result = await runToolLoop({
       provider,
       system,
-      initialUserMessage: promptForVariant(variant),
+      config: { input: { initialUserMessage: promptForVariant(variant) } },
       task: promptForVariant(variant),
       tools,
       executeTool,

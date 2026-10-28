@@ -16,6 +16,7 @@ import {
   planFoldedHistoryTrim,
 } from "../../src/compact/resume-fold-trim.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
+import { withSeed } from "./../helpers/run-direct.js";
 
 const big = (n) => "x".repeat(n);
 const toolStep = (n) => ({
@@ -191,9 +192,9 @@ test("#462 判据 1/2/4：续跑不从 round 1 重折，被折正文一次都不
   const crashSteps = [];
   for (let step = 1; step <= 6; step += 1) crashSteps.push(toolStep(step));
   crashSteps.push({ throw: new Error("boom: 崩溃在崩溃轮的模型调用") });
-  await assert.rejects(() => runToolLoop(loopOptions({
+  await assert.rejects(() => runToolLoop(withSeed(loopOptions({
     runId: "462-refold", store, strategy: first.strategy, steps: crashSteps,
-  })), /boom/u);
+  }))), /boom/u);
 
   const recordsAfterCrash = await store.load("462-refold");
   const facts = recordsAfterCrash.filter((record) => typeof record?.foldedSummary?.text === "string");
@@ -216,12 +217,12 @@ test("#462 判据 1/2/4：续跑不从 round 1 重折，被折正文一次都不
   // 判据 2 要量的是**续跑那一刻**的上下文 ⇒ 直接把 provider 拿到手，读续跑的第一个请求
   // （后面几轮还会继续折，拿最终 `result.messages` 问会问成别的形状）。
   const resumedProvider = createFakeProvider(resumeSteps);
-  const resumedResult = await runToolLoop({
+  const resumedResult = await runToolLoop(withSeed({
     ...loopOptions({
       runId: "462-refold", store, strategy: resumed.strategy, steps: resumeSteps, resume: true,
     }),
     provider: resumedProvider,
-  });
+  }));
   assert.equal(resumedResult.finalText, "done");
 
   // 判据 1：续跑不再从 round 1 重折 —— 新增折叠的区间必须**整段**在水位线之后
@@ -280,15 +281,15 @@ test("#462 回归：没折过的会话，resume 上下文与账本一致（裁�
   const store = createMemoryTranscriptStore();
   const runId = "462-nofold";
   const steps = [toolStep(1), endStep("phase one")];
-  await runToolLoop(loopOptions({
+  await runToolLoop(withSeed(loopOptions({
     runId, store, strategy: makeHostFoldLlm().strategy, steps, budgetTokens: 200_000,
-  }));
+  })));
   const records = await store.load(runId);
   const resumedSteps = [endStep("phase two")];
-  const resumed = await runToolLoop(loopOptions({
+  const resumed = await runToolLoop(withSeed(loopOptions({
     runId, store, strategy: makeHostFoldLlm().strategy, steps: resumedSteps,
     resume: true, budgetTokens: 200_000,
-  }));
+  })));
   assert.equal(resumed.finalText, "phase two");
   assert.equal(Math.max(0, ...records.map((r) => r.foldedRoundRange?.to ?? 0)), 0,
     "前置：这轮没有折叠 ⇒ 水位线为 0，切除必须完全不介入");

@@ -26,6 +26,7 @@ import {
   FOLDED_FACTS_MAX_BYTES,
   FOLDED_FACTS_RECORD_FIELD,
 } from "../../src/compact/fold-summary-journal.js";
+import { withSeed } from "./../helpers/run-direct.js";
 
 const SUMMARY_SYSTEM = "你是对话历史压缩器";
 
@@ -98,11 +99,11 @@ const foldRoundRecords = (records) => records.filter((record) => (
 test("#470-1 fold-statistical（零 LLM）：替代物落进轮记录，含范围句 + 工具足迹", async () => {
   const store = createMemoryTranscriptStore();
   const provider = createProvider({ mainScript: [toolTurn("a"), endTurn("收尾结论")] });
-  await runToolLoop(runOptions("470-statistical", store, provider, {
+  await runToolLoop(withSeed(runOptions("470-statistical", store, provider, {
     budgetTokens: 300,
     keepRounds: 0,
     strategy: "fold-statistical",
-  }));
+  })));
 
   // 前置：这条路真的没调过任何 LLM 摘要器（否则「零 LLM 也有替代物」是空断言）。
   assert.equal(provider.summaryCalls, 0, "本用例必须全程零 LLM 摘要调用");
@@ -129,11 +130,11 @@ test("#470-3 下界锁：summarizer 必然失败时，LLM 摘要缺席但机械�
   const store = createMemoryTranscriptStore();
   summaryCalls = 0;
   const provider = createProvider({ mainScript: [toolTurn("a"), endTurn("收尾结论")], failSummary: true });
-  await runToolLoop(runOptions("470-degrade", store, provider, {
+  await runToolLoop(withSeed(runOptions("470-degrade", store, provider, {
     budgetTokens: 300,
     keepRounds: 0,
     strategy: "fold-llm",
-  }));
+  })));
 
   assert.ok(summaryCalls >= 1, "前置：这真的试过 LLM 摘要（否则下界锁是空断言）");
   const records = await store.load("470-degrade");
@@ -149,11 +150,11 @@ test("#470-3 下界锁：summarizer 必然失败时，LLM 摘要缺席但机械�
 test("#470-4 尺寸上界：投影 ≤ 声明上限，且只挂在折叠轮（不随折叠次数累积）", async () => {
   const store = createMemoryTranscriptStore();
   const provider = createProvider({ mainScript: [toolTurn("a"), endTurn("收尾结论")] });
-  await runToolLoop(runOptions("470-bound", store, provider, {
+  await runToolLoop(withSeed(runOptions("470-bound", store, provider, {
     budgetTokens: 300,
     keepRounds: 0,
     strategy: "fold-statistical",
-  }));
+  })));
   const records = await store.load("470-bound");
   const factsRows = records.filter((record) => record[FOLDED_FACTS_RECORD_FIELD] !== undefined);
   assert.ok(factsRows.length >= 1);

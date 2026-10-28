@@ -12,6 +12,13 @@
 //     并**删掉**扁平键（引擎永远看不到旧拼写）；
 //   · 删键之后这里一行都不用改，测试也不必跟着改——这就是本刀的全部目的。
 //
+// **删键已经发生（#498 S3 A2b）**：`initialUserMessage` 不再是 `RUN_TOOL_LOOP_OPTION_NAMES` 的成员，
+// 引擎的名称闸口现在会拒收扁平拼写（文案点名新家 `config.input.initialUserMessage`）。
+// 于是本模块的 `initialUserMessage` 入参是一条**纯夹具级 API**：它是 88 个测试文件既有的调用方
+// 拼写，**不是**引擎拼写，也不在任何契约面 / 文档里出现。谁想写新格子，用 `seed:`。
+// `test/loop-seed-fixture-521.test.js` 的 F1 / E1 把这条钉住：夹具的产物里**没有**扁平键，
+// 漏摘就会被引擎当场拒。
+//
 // 三条硬约束（改动前先读，改错会静默降强度）：
 //   1. **不许造第二个 `config` 键**：`extra` 里已经有 `config: { … }` 时必须**并进同一个容器**
 //      （`{ ...config, input: { ...config.input, initialUserMessage } }`）。同一对象字面量里两个
@@ -31,9 +38,16 @@ import { runToolLoop } from "../../src/loop/orchestrator.js";
 /**
  * 把「种子首轮消息」并进唯一的 `config` 容器，返回**可以直接喂给 `runToolLoop`** 的选项对象。
  *
- * 接受两种调用方拼写（都只在夹具边界存在，绝不透传给引擎）：
- *   · `initialUserMessage: "…"` —— 旧扁平拼写，88 个既有文件用的就是它（本刀的迁移面）；
+ * 接受两种**夹具级**拼写（都只在本模块的边界存在，绝不透传给引擎）：
+ *   · `initialUserMessage: "…"` —— **旧扁平拼写**，88 个既有测试文件用的就是它。⚠ 它**不是引擎拼写**：
+ *     #498 S3 A2b 之后引擎会拒收它（`unknown runToolLoop option: "initialUserMessage" (its canonical
+ *     home is config.input.initialUserMessage; the flat spelling is rejected)`）。这里保留它只为让
+ *     那 88 个调用方不必跟着改拼写——翻译完就把这个键摘掉；
  *   · `seed: "…"` —— 夹具自己的规范拼写，新写的格子用它（`seed` 赢过 `initialUserMessage`）。
+ * 两条都是夹具的入参约定，宿主面 / 契约面**都没有**它们；引擎只认 `config.input.initialUserMessage`。
+ *
+ * 返回值里**一定没有** `initialUserMessage` 这个顶层键（F1 钉住）：夹具是「翻译 + 摘键」，不是
+ * 「多传一个别名」。漏摘的后果不是形状不洁，而是引擎当场拒（E1 反向格）。
  *
  * `undefined` 逐字等于「没给种子」（与 `runToolLoop` 的 `value !== undefined` 合并口径同源），
  * 于是 `runDirect({ initialUserMessage: undefined })` 不产生 `config.input.initialUserMessage`。

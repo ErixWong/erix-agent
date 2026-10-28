@@ -29,6 +29,7 @@ import {
   FINAL_DRAFT_SECTIONS,
   FINAL_GUARD_TIMEOUT_MS,
 } from "../../examples/pi-extension/erix-run-final-guard.js";
+import { withSeed } from "./../helpers/run-direct.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -1134,14 +1135,14 @@ test("#322 键名与引擎对账：引擎只认 reflection.judgeDoneAdvisory，�
   assert.equal(sent.judgeDoneAdvisory, true, "本层下发的键名");
   // 把同一份 reflection 里的值换成脏字符串交给**真** runToolLoop：报出来的错名必须就是本层用的那个
   await assert.rejects(
-    () => runToolLoop({
+    () => runToolLoop(withSeed({
       provider: createFakeProvider([]),
       initialUserMessage: "t",
       executeTool: async () => "ok",
       maxRounds: 2,
       store: createMemoryTranscriptStore(),
       reflection: { ...sent, judgeDoneAdvisory: "yes" },
-    }),
+    })),
     (error) => error instanceof TypeError
       && error.message === "reflection.judgeDoneAdvisory must be a boolean",
     "引擎侧文案变了就得重新核对 src/loop/orchestrator.js",

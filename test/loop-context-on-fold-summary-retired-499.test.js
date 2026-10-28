@@ -30,7 +30,7 @@ import {
 import { createSlidingWindowStrategy } from "../src/compact/sliding-window.js";
 import { RUN_TOOL_LOOP_OPTION_NAMES } from "../src/loop/option-normalization.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
-import { runDirect } from "./helpers/run-direct.js";
+import { runDirect, withSeed } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 // 一条**必然折叠**的 run（与 `test/loop-option-gate-496.test.js` D① 同形）：
@@ -94,7 +94,7 @@ function runDirectFolding(contextExtra = {}, { onFoldSummary, diagnostics } = {}
     ...(onFoldSummary === undefined ? {} : { onFoldSummary }),
     ...(diagnostics === undefined ? {} : { diagnostics }),
   };
-  return runToolLoop(options).then((result) => ({ result, events }));
+  return runToolLoop(withSeed(options)).then((result) => ({ result, events }));
 }
 
 /** 装配口路线的端口（`policy` 在构造期就过闸口；`emit` 收装配期事件）。 */
@@ -155,7 +155,7 @@ test("A 退役（正例）：`context.onFoldSummary` 不再在白名单里 ⇒ �
   );
   assert.deepEqual(unknownEvents(constructionEvents)[0].event.keys, ["onFoldSummary"], "事件必须点名这个键");
 
-  // 端到端：`runToolLoop({ assemblyPort })` 会经 `assemblyPortOptions` **再装配一次**
+  // 端到端：`runToolLoop(withSeed({ assemblyPort }))` 会经 `assemblyPortOptions` **再装配一次**
   // （`option-normalization.js` 的既有行为，不是本单引入），所以事件会出现两次；
   // 断言改成「至少一条、且每一条都点名 onFoldSummary」，不把「两次」当成契约。
   const { result, events } = await runAssemblyFolding({

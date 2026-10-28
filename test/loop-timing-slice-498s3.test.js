@@ -26,7 +26,7 @@ import {
   normalizeRunToolLoopOptions,
 } from "../src/loop/option-normalization.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
-import { runDirect as sharedRunDirect } from "./helpers/run-direct.js";
+import { runDirect as sharedRunDirect, withSeed } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const DONE = [{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" }];
@@ -121,7 +121,7 @@ test("R1 timeoutMs 经新家生效：外部时间预算进入 wrap-up 提示（�
     { content: [{ type: "tool_use", id: "two", name: "work", input: {} }], stopReason: "tool_use" },
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
-  await runToolLoop({
+  await runToolLoop(withSeed({
     provider,
     initialUserMessage: "finish it",
     executeTool: async () => {
@@ -132,7 +132,7 @@ test("R1 timeoutMs 经新家生效：外部时间预算进入 wrap-up 提示（�
     completion: false,
     stallDetection: false,
     config: { timing: { timeoutMs: 100 } },
-  });
+  }));
   const nudges = provider.requests.slice(0, 3).map((request) => request.messages.filter((message) => (
     message.content?.some((block) => /外部时间预算将尽/.test(block.text ?? ""))
   )).length);
@@ -150,7 +150,7 @@ test("R2 deadlineMs 经新家生效：wrap-up 提示词按剩余时间注入（�
     { content: [{ type: "tool_use", id: "two", name: "work", input: {} }], stopReason: "tool_use" },
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
-  await runToolLoop({
+  await runToolLoop(withSeed({
     provider,
     initialUserMessage: "finish it",
     executeTool: async () => {
@@ -161,7 +161,7 @@ test("R2 deadlineMs 经新家生效：wrap-up 提示词按剩余时间注入（�
     completion: false,
     stallDetection: false,
     config: { timing: { deadlineMs: Date.now() + 100 } },
-  });
+  }));
   const nudges = provider.requests.slice(0, 3).map((request) => request.messages.filter((message) => (
     message.content?.some((block) => /外部时间预算将尽/.test(block.text ?? ""))
   )).length);
@@ -176,13 +176,13 @@ test("R3 retry.attempts 经新家生效：可重试错误真的重发（真 run�
     { throw: retryable },
     { content: [{ type: "text", text: "recovered" }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     provider,
     initialUserMessage: "hello",
     executeTool: async () => "unused",
     config: { timing: { retry: { attempts: 1, backoffBaseMs: 0 } } },
     capabilities: { ports: { sleepImpl: async () => {} } },
-  });
+  }));
   assert.equal(result.finalText, "recovered");
   assert.equal(provider.requests.length, 2, "config.timing.retry.attempts 真的生效（一次重发）");
 });

@@ -78,7 +78,7 @@ import {
   normalizeRunToolLoopOptions,
 } from "../src/loop/option-normalization.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
-import { runDirect as sharedRunDirect } from "./helpers/run-direct.js";
+import { runDirect as sharedRunDirect, withSeed } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const DONE = [{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" }];
@@ -411,7 +411,7 @@ test("B1 43 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平�
 /** 跨 7 个分组的代表性配置：同一个 `VALUES` 同时生成扁平形态与 config 形态。 */
 const VALUES = {
   system: "you are a test",
-  initialUserMessage: "go",
+  // #498 S3 A2b：`initialUserMessage` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
   wrapup: false,
   // #498 S4b：`tools` 归配置面（`config.input.tools`）——它是工具声明数组，按判据是数据。
   tools: [{ name: "echo", description: "回显", inputSchema: { type: "object", properties: {} } }],
@@ -476,6 +476,8 @@ const RETIRED_FLAT_VALUES = {
   // #498 S3（`input` 组 A 段）：`cacheStablePrefix` + 唯一那条登记别名 `input.messages`
   cacheStablePrefix: false,
   initialMessages: [],
+  // #498 S3（`input` 组 A2b 段）：`initialUserMessage`——种子首轮消息。
+  initialUserMessage: "go",
 };
 
 /** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */
@@ -570,7 +572,7 @@ test("C2 优先级的行为证据：扁平 maxRounds=1 + config maxRounds=2 ⇒ 
     inputSchema: { type: "object", properties: { text: { type: "string" } } },
   }];
   // 先证样本本身有效：扁平 maxRounds=1 撑不到第二轮（这就是「config 赢」的可观测差异）。
-  const flatOnly = await runToolLoop({
+  const flatOnly = await runToolLoop(withSeed({
     provider: createFakeProvider(twoRounds),
     executeTool: async () => "ok",
     tools,
@@ -578,11 +580,11 @@ test("C2 优先级的行为证据：扁平 maxRounds=1 + config maxRounds=2 ⇒ 
     completion: false,
     wrapup: false,
     maxRounds: 1,
-  });
+  }));
   assert.equal(flatOnly.termination.reason, "max_rounds_cap", "样本自证：扁平 1 轮就到顶");
 
   const events = [];
-  const both = await runToolLoop({
+  const both = await runToolLoop(withSeed({
     provider: createFakeProvider(twoRounds),
     executeTool: async () => "ok",
     tools,
@@ -592,7 +594,7 @@ test("C2 优先级的行为证据：扁平 maxRounds=1 + config maxRounds=2 ⇒ 
     maxRounds: 1,
     config: { run: { maxRounds: 2 } },
     onEvent: (event) => events.push(event),
-  });
+  }));
   assert.equal(both.termination.reason, "end_turn", "config 的 2 轮必须真的生效");
   const conflicts = events.filter((event) => event.type === "config_override_conflict");
   assert.equal(conflicts.length, 1, "冲突事件恰好一条");
@@ -1054,14 +1056,14 @@ test("I3 `config.input.tools` 是顶层 `tools` 的嵌套别名，且真被引�
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ];
   let executed = 0;
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     provider: createFakeProvider(twoRounds),
     executeTool: async () => { executed += 1; return "ok"; },
     config: { input: { tools } },
     initialUserMessage: "go",
     completion: false,
     wrapup: false,
-  });
+  }));
   assert.equal(result.termination.reason, "end_turn");
   assert.equal(executed, 1, "config.input.tools 里的工具声明必须真的可用");
 });

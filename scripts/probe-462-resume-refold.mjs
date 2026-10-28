@@ -25,7 +25,7 @@ const big = (n) => "x".repeat(n);
 const bodyBytes = (request) => JSON.stringify(request?.messages ?? []).length;
 const loopOptions = (runId, store, provider, extra = {}) => ({
   provider,
-  initialUserMessage: `start ${big(2000)}`,
+  config: { input: { initialUserMessage: `start ${big(2000)}` } },
   executeTool: async ({ input }) => `out-${input.step}: ${big(TOOL_BYTES)}`,
   completion: false,
   // #498 S3 (`input` slice A): `cacheStablePrefix` retired; the home is config.input.*.

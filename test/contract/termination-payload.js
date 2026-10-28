@@ -47,7 +47,7 @@ export function terminationPayloadContract(label, getEntry) {
     await assert.rejects(
       runToolLoop({
         provider: stubProvider([{ throw: coded }]),
-        initialUserMessage: "fail",
+        config: { input: { initialUserMessage: "fail" } },
         executeTool: async () => "unused",
       }),
       (error) => {
@@ -62,7 +62,7 @@ export function terminationPayloadContract(label, getEntry) {
     await assert.rejects(
       runToolLoop({
         provider: stubProvider([{ throw: new Error("provider exploded") }]),
-        initialUserMessage: "fail",
+        config: { input: { initialUserMessage: "fail" } },
         executeTool: async () => "unused",
       }),
       (error) => {
@@ -82,7 +82,7 @@ export function terminationPayloadContract(label, getEntry) {
     await assert.rejects(
       runToolLoop({
         provider: stubProvider([toolRound("c1")]),
-        initialUserMessage: "never",
+        config: { input: { initialUserMessage: "never" } },
         executeTool: async () => "unused",
         signal: controller.signal,
       }),
@@ -122,7 +122,7 @@ export function terminationPayloadContract(label, getEntry) {
     await assert.rejects(
       runToolLoop({
         provider,
-        initialUserMessage: "work",
+        config: { input: { initialUserMessage: "work" } },
         executeTool: async () => "worked",
         signal: controller.signal,
         maxRounds: 10,
@@ -157,7 +157,7 @@ export function terminationPayloadContract(label, getEntry) {
         { ...toolRound("c1"), usage: { input_tokens: 42, output_tokens: 7 } },
         { content: [{ type: "text", text: "done" }], stopReason: "end_turn", usage: { input_tokens: 8, output_tokens: 2 } },
       ]),
-      initialUserMessage: "work",
+      config: { input: { initialUserMessage: "work" } },
       executeTool: async () => "worked",
       maxRounds: 10,
       completion: false,
