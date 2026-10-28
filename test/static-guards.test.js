@@ -2079,6 +2079,11 @@ const CONTRACT_CALL_CODE_ROOTS = Object.freeze(["bin", "scripts", "src", "test",
 /** 文档面：只扫 js 围栏（散文/表格里的签名行不是调用点）。 */
 const CONTRACT_CALL_MD_ROOTS = Object.freeze(["docs", "examples"]);
 
+/** 本机档案目录（`.gitignore` 里成对忽略、`IGNORED_DIR_CLASSES` 有分类）：
+ *  它们按定义只在本机存在，扫进来会让本规则在开发树上红、在干净 clone 上绿——
+ *  与 issue #280 的「门禁必须在两种树上同结论」相悖。 */
+const CONTRACT_CALL_MD_SKIP_PREFIXES = Object.freeze(["docs/tasks/", "docs/delivery/"]);
+
 /** 围栏语言标记：只认真正会被当成 js 跑的那几种。 */
 const JS_FENCE_LANGS = new Set(["js", "javascript", "mjs", "cjs"]);
 
@@ -2230,7 +2235,7 @@ function contractCallSurface() {
   const mdFiles = [
     ...readdirSync(ROOT).filter((n) => n.endsWith(".md")).map((n) => n),
     ...[...listScannable(new Set([".md"]), ...CONTRACT_CALL_MD_ROOTS)].map((f) => f.rel),
-  ];
+  ].filter((rel) => !CONTRACT_CALL_MD_SKIP_PREFIXES.some((p) => rel.startsWith(p)));
   for (const rel of [...new Set(mdFiles)].sort()) {
     const text = realReadText(rel);
     if (typeof text !== "string") continue;
