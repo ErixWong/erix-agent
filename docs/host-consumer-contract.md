@@ -933,6 +933,76 @@ verbatim (one station, and only one), and its R case asserts that a value writte
 home arrives at `effectiveOptions.partialPersistence` byte for byte and still drives the real
 `stream` + `partialPersistence` recovery path.
 
+**Flat-spelling version policy for the `run` group's A13 segment** (issue #498 S3, the thirteenth
+slice — the three keys A12 deliberately held back: `stallDetection` / `outputHygiene` /
+`persistence`):
+
+| release | writing `stallDetection` / `outputHygiene` / `persistence` at the top level |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
+| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, thirteenth slice) | **rejected on the spot** — write `config.run.stallDetection` / `config.run.outputHygiene` / `config.run.persistence`. The name gate throws `unknown runToolLoop option: "<key>" (its canonical home is config.run.<key>; the flat spelling is rejected)` |
+
+**Why they left together, and why only now.** A12 measured the four `run`-group data shells leaving
+*together* at **176 red cells** — far above the threshold at which a slice must stop hand-editing call
+sites. So A12 first landed the single translation point (`withRunFamily` in
+`test/helpers/run-direct.js`, the same discipline as #521's seed fixture), which compressed the same
+deletion to **31 cells**, and then shipped only `partialPersistence`. The fixture is on `main`, so this
+slice spends that dividend instead of re-paying it:
+
+| key | red cells without the fixture | with the fixture | after migrating the hand-written sites |
+| --- | --- | --- | --- |
+| `stallDetection` | 120 | 32 | 0 |
+| `outputHygiene` | 29 | 4 | 0 |
+| `persistence` | 38 | 10 | 0 |
+| all three together | — | **38** | 0 |
+
+The 38 that remain after the fixture are **hand-written sites**, and they are the whole job of this
+slice: direct `runToolLoop` callers, the inline allowlist mirror in `test/loop-option-normalization.test.js`,
+the two-shape equivalence sample in `test/loop-config-namespace-497.test.js`, the contract payload demos,
+`examples/provenance-repro.test.mjs`, the two observation scripts (`scripts/soak.mjs`,
+`scripts/message-journal-golden.mjs` — spelling only, observation logic untouched) and the executable
+fence in this document. Three of those test files now route their direct calls through the fixture
+(`runDirect`) instead of being hand-translated: extending the fixture's reach costs one word per call
+site and keeps the next slice from paying again.
+
+**The reachability check (gate 2) ran per key, two legal shapes each, flat versus nested, through the
+real `runToolLoop` entry** — the same step that stopped `tools` (#527) and `session` (#531):
+
+| key | legal shapes | flat | nested |
+| --- | --- | --- | --- |
+| `stallDetection` | `false` / `{ window: 4 }` | exit 0 / 0 | exit 0 / 0 |
+| `outputHygiene` | `false` / `{ limit: 4096 }` | exit 0 / 0 | exit 0 / 0 |
+| `persistence` | `"none"` / `"required"` | exit 0 / 0 | exit 0 / 0 |
+
+Both sides are also refused identically on the illegal shape (`persistence: true` → `persistence must
+be "none" or "required"` on either side), so the narrowing is a **name** move, not a shape move. All
+three are pure data shells: no callback, nothing to promote to `capabilities.hooks`.
+
+**What did not move is the meaning, and nothing on the read side was touched.** The expansion phase
+still writes each value onto `effectiveOptions.stallDetection` / `.outputHygiene` / `.persistence`; the
+readers are the resolved-stall branch at the top of `src/loop/orchestrator.js` (`false` wins over
+`ERIX_STALL_MODE`), the `outputHygieneEnabled` / `outputHygieneLimit` derivation plus the truncation
+branch in `src/loop/run-snapshot-executor.js`, and the `persistenceMode` derivation plus
+`validateTranscriptStore`'s `required` branch. The leaves stay in `CONFIG_NAMESPACE_SCHEMA.run` even
+though the top-level keys left `RUN_TOOL_LOOP_OPTION_NAMES`: deleting the flat key is **not** deleting
+the leaf.
+
+**Three neighbours that this slice deliberately did not touch:**
+
+| name | other plane | evidence | moved? |
+| --- | --- | --- | --- |
+| `store` | the third-station **port** (a `TranscriptStore` implementation), not a mode | `src/assembly-validators.js` (`TRANSCRIPT_STORE_METHODS`), `test/loop-run-slice-498s3a13.test.js` (N2) | **no** |
+| `partialPersistence` | the interval-throttled snapshot knob, retired by A12 — a *different* key with its own home `config.run.partialPersistence` | `src/loop/resume-manager.js`, `test/loop-run-slice-498s3a12.test.js` | **no** — not re-spelled back |
+| `writeToolNames` / `writeToolPathKeys` | the judge's write-tool set and path-key priority, retired by A11 — a different family that also starts with `write` | `src/reflection/judge.js` | **no** |
+| `maxRounds` / `deadlineMs` | the round budget (still a flat option) and the retired run deadline (`config.timing.deadlineMs`) — neither is stall detection | `CONFIG_NAMESPACE_SCHEMA.run` vs `.timing` | **no** |
+
+The pin file is `test/loop-run-slice-498s3a13.test.js`. Its P case asserts each rejection **text**
+verbatim (one station, and only one), its G case is the gate-2 matrix above (the `outputHygiene` and
+`persistence` rows get the *same* store on both sides, because without one both sides are refused for
+a different reason), its R case asserts that a value written at the canonical home arrives at
+`effectiveOptions.<key>` byte for byte, and its N cases hold the four neighbours above.
+
 ### The `capabilities` namespace (issue #498)
 
 Behaviour carriers are not data, so 0.28.0 gives them their own container. It has **three groups**
