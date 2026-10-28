@@ -219,8 +219,15 @@ executeTool({ id, name, input, context, signal })
   下一刀；**issue #498 S4b 作出了那个裁决**：`tools` 现在是配置键（`config.input.tools`，扁平
   `tools` 的嵌套别名），于是能力面**就是**纯粹的「行为载体」——那个反例不再存在。同一刀把交付物
   判据反向搬走（`config.guard.deliverables` → `capabilities.checks.deliverables`），所以两个条数
-  **一个都没变**，变的是成员。`capabilities.provider`（端口容器）仍然没被收；那是更后面那一刀的
-  裁决，这里不作承诺。
+  **一个都没变**，变的是成员。**`capabilities.provider` 仍然被拒**——适配器端口对象（`provider`、
+  `store`、`signal`、`modelConfig`、`executeTool`）留在顶层选项或装配口成员里，「它们要不要搬进
+  `capabilities`」这件事**还没有裁决**。但这已经不等于「没有端口容器」：自 issue #498 S4c 起容器
+  `capabilities.ports` **确实存在**——成员只是三个**壳内实现**槽位（`sleepImpl` / `judgeProvider` /
+  `strategy`），即引擎自己去解引用或调用的那些端口，不是宿主递进来的适配器。所以「端口容器存在」
+  与「`provider` / `store` 搬进了 `capabilities`」是两件事，今天只有前一件是真的。这里原来的写法
+  （「那是更后面那一刀的裁决，这里不作承诺」）说的是一个**将来的决定**，不是错话：**S4c 就是那一刀
+  的到来**，而它只裁了壳内那一半；`provider` / `store` 那一半仍然开着，本文仍然不对它作承诺。
+  已经存在的成员见下面的「`capabilities.ports`」一节。
   
   已经落地的是这条判据的另一半：自 0.28.0 起 `config` 子树**只装数据**，所以它**真的**过 JSON
   round-trip 等值——而且这条性质由默认套件机器断言（每个 schema 叶子一个代表性数据取值，然后

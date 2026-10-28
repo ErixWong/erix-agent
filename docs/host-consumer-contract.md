@@ -268,8 +268,18 @@ Five rules govern it:
   capability surface **is** purely behaviour carriers — the counter-example no longer exists. The same
   slice moved the deliverables checks the other way (`config.guard.deliverables` →
   `capabilities.checks.deliverables`), so the two counts did not change, only their membership.
-  `capabilities.provider` (the "ports" container) is still not collected; that is a later ruling, and
-  nothing here promises it.
+  **`capabilities.provider` is still rejected** — adapter port objects (`provider`, `store`,
+  `signal`, `modelConfig`, `executeTool`) stay top-level options or assembly-port members, and
+  whether they ever move under `capabilities` is a ruling that has **not** been made. That is no
+  longer the same claim as "there is no port container": as of issue #498 S4c the container
+  `capabilities.ports` **does exist** — it holds the three *in-shell implementation* slots
+  (`sleepImpl`, `judgeProvider`, `strategy`), i.e. the ports the engine dereferences or calls
+  itself, not the adapters a host hands in. So "the ports container exists" and "`provider` /
+  `store` moved into `capabilities`" are two different claims, and only the first one is true today.
+  The wording this paragraph used to carry ("a later ruling, and nothing here promises it") was a
+  statement about a **future** decision, not an error: **S4c is that ruling arriving**, and it
+  settled the in-shell half only. The `provider` / `store` half is still open, and this document
+  still promises nothing about it. See "`capabilities.ports`" below for the members that do exist.
 
   What *did* land is the other half of the criterion: as of 0.28.0 the `config` subtree holds **data
   only**, so it **does** survive a JSON round-trip unchanged, and that property is asserted mechanically
