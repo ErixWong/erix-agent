@@ -24,7 +24,7 @@ must be placed in an explicit namespace such as `toolContext` or `context`.
 ```text
 assemblyPort, provider, system, wrapup, initialUserMessage, initialMessages, tools,
 writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
-temperature, topP, timeoutMs, deadlineMs, reflection, stallDetection, retry,
+temperature, topP, reflection, stallDetection,
 completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
 maxTokenContinuations, toolResultTtl, toolResultFoldMinTokens, context,
 todoStateProvider, semanticStateProvider, partialPersistence,
@@ -85,8 +85,9 @@ The semantic phase owns exactly these rules: `context` must be an object when pr
 (omitted or `null` means "no context"); an unknown `context` key that is a **misspelled
 summarizer knob** throws; summarizer knob values must be positive safe integers; and every
 field that carries a host callback must be a function when provided — `finalGuard`,
-`retry.sleepImpl`, `reflection.onReflection`, `diagnostics.error`, `onFoldSummary` (top
-level), `context.onBeforeFold`, `context.onAfterFold`. Two families
+`config.timing.retry.sleepImpl` (issue #498 S3: `retry` is `config.timing.retry` now, so the flat
+spelling is refused one phase earlier by the name gate), `reflection.onReflection`,
+`diagnostics.error`, `onFoldSummary` (top level), `context.onBeforeFold`, `context.onAfterFold`. Two families
 stay where they are on purpose: `deliverables[].check` is validated by `normalizeDeliverables` (`src/loop/deliverables.js`), and the remaining value rules (`maxRounds`, `partialPersistence`,
 `persistence`, …) are `runToolLoop`'s own startup checks — both already run for every route
 because both routes converge there.
@@ -96,7 +97,7 @@ other non-function value mean "provided but wrong" and throw at startup. There i
 exception — `context: null` is verbatim identical to omitting `context`. The reason is that the
 engine already reads `undefined` and `null` identically there, so throwing would only break hosts
 that pass a nullable field straight through, and it would buy no property. Top-level callbacks
-deliberately get **no** such pass: `finalGuard: null`, `retry.sleepImpl: null` and
+deliberately get **no** such pass: `finalGuard: null`, `config.timing.retry.sleepImpl: null` and
 `onFoldSummary: null` all throw. Uniform doctrine beats one fewer half-break, and "a `null` hook
 silently means no hook" is exactly the class of quiet configuration this change makes loud.
 
@@ -152,11 +153,16 @@ container), and "every leaf must be reached by the round-trip coverage table" is
 `CONFIG_SURFACE_OPTION_NAMES` (`src/loop/config-namespace.js`) are derived from it, and
 `configSchemaSelfCheck` (`src/loop/config-namespace.js`) keeps the pair honest against the
 top-level allowlist in three directions: every top-level option must be classified as exactly one
-of *config surface* (43 keys), *capability* (22 keys) or *container* (2: `config` and
-`capabilities`), and the three buckets must add up to the allowlist (43 + 22 + 2 = 67). Since issue
-#517 the *config surface* bucket is the **intersection** of "the names the schema maps onto" with the
-allowlist, so a leaf that loses its top-level key merely drops out of that bucket instead of turning
-the identity red (in this release 43 and 43 are verbatim equal — no key was deleted).
+of *config surface*, *capability* (22 keys) or *container* (2: `config` and `capabilities`), and the
+three buckets must add up to the allowlist. Since issue #517 the *config surface* bucket is the
+**intersection** of "the names the schema maps onto" with the allowlist, so a leaf that loses its
+top-level key merely drops out of that bucket instead of turning the identity red. **Since issue
+#498 S3 (the `timing` slice) that difference is no longer empty**: `config.timing.timeoutMs` /
+`.deadlineMs` / `.retry` lost their flat top-level spelling, so the config-surface bucket is now
+smaller than the leaf count by exactly those three. The numbers are not restated here on purpose —
+derive them (`configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES).length`,
+`CAPABILITY_OPTION_NAMES.length`, `NAMESPACE_CONTAINER_OPTION_NAMES.length`) instead of copying a
+total that goes stale the next time a group moves.
 
 | namespace | knobs |
 | --- | --- |
@@ -167,6 +173,24 @@ the identity red (in this release 43 and 43 are verbatim equal — no key was de
 | `config.folding` | `context`, `toolResultTtl`, `toolResultFoldMinTokens` |
 | `config.guard` | `finalGuardMaxRetries`, `finalGuardTimeoutMs`, `finalGuardExtend` |
 | `config.metadata` | `expert`, `user`, `task`, `requestId`, `toolContext`, `model`, `modelMetadata`, `session` |
+
+**Version scope of the flat spelling** (issue #498 S3, the `timing` slice). This is the first slice
+that actually **retires** flat top-level keys, so the rule is stated as versions, not as "today":
+
+| release | writing `timeoutMs` / `deadlineMs` / `retry` |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
+| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3) | **rejected on the spot** — write `config.timing.timeoutMs` / `.deadlineMs` / `.retry`. The name gate throws `unknown runToolLoop option: "timeoutMs" (its canonical home is config.timing.timeoutMs; the flat spelling is rejected)`, and the message always names the new home, because that sentence is the only thing standing between an upgrading host and a guessing game |
+
+The three keys are the whole slice: the other config groups still accept their flat spelling, and
+that has not changed. What *did* change is the mechanism hosts should rely on when reading values
+back: the expansion phase still writes each of the three onto `effectiveOptions.timeoutMs` /
+`.deadlineMs` / `.retry`, so **the engine's read side is unchanged** — the retirement is a
+*write-spelling* change only. One consequence worth naming, because it is silent otherwise: the old
+shell slot `retry.sleepImpl` is no longer reachable from a host at all. Its flat spelling is refused
+by the name gate, and `config.timing.retry.sleepImpl` is refused by the "`config` holds data only"
+rule; the canonical home for a retry timer is, and was, `capabilities.ports.sleepImpl`.
 
 The `config.observers` group that 0.27.0 carried is **gone in 0.28.0** (issue #498 S4a): a callback
 is not data, and a `config` subtree that holds one cannot survive a JSON round-trip. Callbacks live
@@ -205,7 +229,8 @@ Five rules govern it:
   the assembly port has been folded in, before the semantic phase), so a `config` value goes
   through exactly the same validation as its flat twin: a misspelled summarizer knob under
   `config.folding.context` throws the same message as under the flat `context`, and
-  `config.timing.retry.sleepImpl` must be a function for the same reason `retry.sleepImpl` must be.
+  `config.timing.retry.sleepImpl` must be a function for the same reason its flat twin used to have to
+  be (issue #498 S3: that flat twin is gone — `retry` is now only writable as `config.timing.retry`).
 - **Function values are refused at intake** (issue #498 S4a). A JSON round-trip check is a
   post-mortem; refusal is the guarantee that "you thought you configured it, and it was never
   configured" cannot happen. The whole `config` subtree is walked node by node — arrays included —
@@ -451,7 +476,7 @@ object, a hook must be callable.**
 
 | slot | value shape | legacy nested home (still accepted) | what the engine does with it |
 | --- | --- | --- | --- |
-| `capabilities.ports.sleepImpl` | a function `(ms, signal) => Promise<void>` | `retry.sleepImpl` / `config.timing.retry.sleepImpl` | replaces the retry timer: every backoff delay goes through it, so a host can record the delays without paying wall-clock time |
+| `capabilities.ports.sleepImpl` | a function `(ms, signal) => Promise<void>` | `config.timing.retry.sleepImpl` (and, before issue #498 S3, the flat `retry.sleepImpl`) | replaces the retry timer: every backoff delay goes through it, so a host can record the delays without paying wall-clock time |
 | `capabilities.ports.judgeProvider` | a callable `(request) => Promise<response>` **or** an object with a `chat(request)` method | `reflection.judge.provider` / `config.run.reflection.judge.provider` | the judge's evaluator. It feeds the round judge, the wrap-up LLM normalizer and the reported `judgeModel` — the same three places the nested slot fed. Without it the run's main provider is used |
 | `capabilities.ports.strategy` | a compaction strategy **object** with `shouldCompact(messages, budgetTokens)` and `compact(messages, options)` | `context.strategy` (object form) / `config.folding.context.strategy` | passed through verbatim (`resolveCompactionStrategy` (`src/compact/strategy-resolution.js`) returns an object unchanged), so the methods called are the host's own. A built-in **name** is data, not a port: pass `"sliding-window"` / `"fold-statistical"` / `"fold-llm"` as `context.strategy` / `config.folding.context.strategy`, and the port rejects a string with a message that says so |
 
@@ -461,7 +486,10 @@ Three consequences worth knowing:
    (the allowlist is unchanged); the canonical spelling is `capabilities.ports.sleepImpl`.
 2. **Both spellings at once is a conflict, not a silent win.** Giving `capabilities.ports.sleepImpl`
    and `retry.sleepImpl` *different* functions emits one `config_override_conflict` with
-   `{ path: "ports.sleepImpl", key: "sleepImpl" }`; the port wins. The same holds for
+   `{ path: "ports.sleepImpl", key: "sleepImpl" }`; the port wins. **Since issue #498 S3 that shape
+   can no longer be built by a host** (`retry` moved to `config.timing.retry`, and a function value
+   cannot live in `config`), so the port is now the single entry point; the expansion-layer rule is
+   kept and still asserted directly, because it is what makes the port authoritative. The same holds for
    `judgeProvider` versus `reflection.judge.provider` and for `strategy` versus `context.strategy`
    (a deeply equal value is not a conflict).
 3. **`reflection.judge.evaluator` is retired** (issue #498 S4c). It was a pure alias of
@@ -691,6 +719,13 @@ separate from the classification: `error.status` keeps the raw number and is
 what a host should read when it wants the number rather than the class.
 
 ## Retry budget (issue #183)
+
+> **Spelling note (issue #498 S3).** Every `retry: …` below is the **value**, not the top-level
+> spelling. Since 0.28.0 the knob is written `config.timing.retry` — the flat `retry` is rejected on
+> the spot by the name gate (0.26.0 and earlier accepted it; 0.27.0 was never published). The rows
+> below are unchanged on purpose: the derived values, the clamping, the two independent loops and the
+> observation points are all exactly what the engine computes from `effectiveOptions.retry`, which is
+> where the expansion phase puts `config.timing.retry`.
 
 **Not configured means not retried.** `retry` defaults to `false`
 (`resolvedModelConfig` at `src/loop/orchestrator.js`), and in that state the engine issues exactly
