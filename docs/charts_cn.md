@@ -44,7 +44,7 @@ flowchart LR
 - **单向数据流**：任务进、事件出。`runToolLoop` 只拥有**一个**任务生命周期（start/run/stop/resume/event stream）；队列、仲裁、重试调度、收割都属于宿主（ADR-012）
 - **模型视图 ≠ 档案源**：compaction 只改写发给模型的上下文；`foldedPayload` 随 round 记录入档案。折叠改变"模型看到什么"，不改"档案存了什么"
 - **治理在环内、策略在环外**：judge/governor 是引擎内可选层（做“建议与纠偏”），但**执行什么策略**（哪个项目跑哪个 agent、什么操作要确认、网络与写权限）由宿主负责（ADR-009）
-- **请求形态对缓存友好**：`cacheStablePrefix`（默认开）把 system + 首条真实 user 消息标记为稳定前缀（`cacheBoundary` 提示）交给 provider 缓存适配器——OpenAI `cached_tokens` / Anthropic `cache_read_input_tokens`，归一化为 `usage.cacheRead`/`cacheWrite`；`cacheCapable` 端点下工具结果 TTL 默认取 0（显式 `toolResultTtl` 始终优先），保住 provider 前缀缓存命中率
+- **请求形态对缓存友好**：`config.input.cacheStablePrefix`（默认开）把 system + 首条真实 user 消息标记为稳定前缀（`cacheBoundary` 提示）交给 provider 缓存适配器——OpenAI `cached_tokens` / Anthropic `cache_read_input_tokens`，归一化为 `usage.cacheRead`/`cacheWrite`；`config.tuning.cacheCapable` 端点下工具结果 TTL 默认取 0（显式 `config.folding.toolResultTtl` 始终优先），保住 provider 前缀缓存命中率
 
 ---
 
@@ -195,11 +195,11 @@ sequenceDiagram
     Note over H,L: 阶段 0 —— 组装校验（一次，失败即抛 TypeError）
     H->>L: runToolLoop({provider, executeTool, store, modelConfig, ...})
     L->>L: 选项白名单校验（含近似名提示）+ AssemblyPort 方法断言
-    Note over L: outputHygiene 能力检查<br/>（显式 true 但能力缺失 = 抛错，不静默承诺）
+    Note over L: config.run.outputHygiene 能力检查<br/>（显式 true 但能力缺失 = 抛错，不静默承诺）
     end
 
     rect rgb(240, 255, 240)
-    Note over L,S: 阶段 1 —— 恢复（仅 resume=true）
+    Note over L,S: 阶段 1 —— 恢复（仅 config.run.resume=true）
     L->>S: load(runId) + loadLatestRunSnapshot + loadRunState
     S-->>L: 消息 / pending tool_use / 运行状态
     Note over L: 按原序重放 pending 工具调用<br/>（副作用幂等由宿主保证）
@@ -247,7 +247,7 @@ sequenceDiagram
 
 - **阶段 0 是 fail-fast 契约**：未知选项（含拼写近似提示）、缺*必需*方法（`appendRound`/`load`）、策略键非法全部在调 provider 之前抛错——宿主集成错误不可能拖到运行期才炸。缺*可选* capability（run snapshot / run-state）不抛错：引擎对每个缺失方法只发一条 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`），run 照常执行（issue #78）
 - **阶段 2 的工具路径带审计与检查点**：拦截 judge 只拦“写路径”（readFile/tree/rg/note_read/note_list 只读工具豁免）；pre-tool checkpoint 失败直接阻断执行，post-tool 失败标记 `executed_uncommitted` 但结果保留
-- **max_tokens 截断在同轮内续写**：reasoning 模型推理过长触发截断时最多续 3 次（`maxTokenContinuations`），续写前若已超预算先压缩——不会把预算耗死在截断循环（issue #11）
+- **max_tokens 截断在同轮内续写**：reasoning 模型推理过长触发截断时最多续 3 次（`config.run.maxTokenContinuations`），续写前若已超预算先压缩——不会把预算耗死在截断循环（issue #11）
 - **阶段 3 只有 `verified` 能当"已核验"用**：`skipped`/`unverified`/`error` 都要求宿主自行处理；guard 自身报错/超时也**不算** verified
 - **阶段 4 的 result.transcript 只是内存快照**：权威档案在 `TranscriptStore`；两者刻意分离，宿主可换 DB 后端（实现两个必需方法 + 需要的可选 capability 即可，见 ADR-002、issue #78）
 
@@ -267,7 +267,7 @@ flowchart TD
     end
     REG -. "orchestrator 按注册表顺序逐层调度" .-> A
     A["compactBeforeRound：<br/>策略主动触发或预算超限?"] --> B{"需要整轮链?"}
-    B -- 否 --> CC{"cacheCapable 且<br/>未显式指定 toolResultTtl?"}
+    B -- 否 --> CC{"config.tuning.cacheCapable 且<br/>未显式指定 config.folding.toolResultTtl?"}
     B -- 是 --> C["②/③/④ 选择一个整轮策略<br/>sliding-window / fold-statistical / fold-llm"]
     C --> D["⑤ 机械保真层<br/>anchors / fold-fidelity"]
     D --> F{"本地估算或 API 投影仍超预算?"}
@@ -281,7 +281,7 @@ flowchart TD
     CC -- 否 --> J["① TTL：单个 tool_result<br/>只构造请求视图"]
     T0 --> Z["发送请求副本"]
     J --> Z
-    Z --> SP{"cacheStablePrefix?<br/>（默认开）"}
+    Z --> SP{"config.input.cacheStablePrefix?<br/>（默认开）"}
     SP -- 是 --> SPM["markStablePrefix<br/>system + 首条 user → cacheBoundary 提示"]
     SPM --> ADAPT["provider 缓存适配器<br/>OpenAI cached_tokens / Anthropic cache_read_input_tokens<br/>→ usage.cacheRead / cacheWrite"]
     SP -- 否 --> ADAPT
@@ -294,11 +294,11 @@ flowchart TD
 选定策略之前或之后。`foldStatistical` 与 `foldLlm` 是互斥的选定整轮策略，
 不是连续执行的两次折叠。
 
-- **`cacheCapable` 只改 TTL 默认值**（`resolvedToolResultTtl`（`src/loop/orchestrator.js`））：`cacheCapable: true`
-  且未显式指定 `toolResultTtl` 时，该请求 TTL 解析为 0（单结果折叠关闭，保住
-  provider 前缀缓存）；显式 `toolResultTtl` 始终优先；整轮折叠策略完全不受影响——
+- **`config.tuning.cacheCapable` 只改 TTL 默认值**（`resolvedToolResultTtl`（`src/loop/orchestrator.js`））：`config.tuning.cacheCapable: true`
+  且未显式指定 `config.folding.toolResultTtl` 时，该请求 TTL 解析为 0（单结果折叠关闭，保住
+  provider 前缀缓存）；显式 `config.folding.toolResultTtl` 始终优先；整轮折叠策略完全不受影响——
   不是“删除 whole-round compaction”。
-- **`cacheStablePrefix` → provider 缓存适配器**（默认开）：每次请求前
+- **`config.input.cacheStablePrefix` → provider 缓存适配器**（默认开）：每次请求前
   `markStablePrefix`（`src/loop/provider-runner.js`）把 system + 首条真实 user 消息打上
   `cacheBoundary` 提示；两个协议适配器各自映射（OpenAI `cached_tokens` /
   Anthropic `cache_read_input_tokens`），归一化为 `usage.cacheRead`/`cacheWrite`。
@@ -307,15 +307,15 @@ flowchart TD
 |---|---|---|---|
 | `ttl` | 每次 provider attempt；配置允许且结果估算 token 达到 `minTokens`：`currentRound - erixRound >= ttl` 时折为句柄，`age === ttl - 1` 时只追加预警。错误结果、`note_`/`todo_`、缺少轮号的旧结果保守不折。其 `triggered` 只统计实际折叠的 `tool_result` 数量，不统计仅预警的请求 | 单个 `tool_result` | 仅请求视图中的 `【已折叠·TTL】`句柄，含工具/入参片段、估算 token、读取轮、取回提示；可附 `导航` digest 与 JSON `骨架`。临界前一轮只追加 TTL 预警。`ctx.messages`、run snapshot、round archive 保留全文 |
 | `slidingWindow` | 预算超限且没有选定整轮策略（包括已配置策略但其 `shouldCompact()` 返回 false），或选定策略完成后本地估算/API 输入投影仍超限；兜底使用 `keepRounds: 0` | 整轮（assistant + 配对 `tool_result`） | 保留 head/受保护轮与近期轮；被折轮原文进入 `foldedPayload`，可把 `stubFor` 结果追加到 head，并生成有界 `navigationRecord` |
-| `foldStatistical` | `context.strategy` 主动要求压缩且策略名为 `fold-statistical` | 整轮 | 带折叠轮范围、工具足迹、存根、恢复提示、导航记录的确定性摘要；`foldedPayload` 与摘要分离保存 |
-| `foldLlm` | `context.strategy` 主动要求压缩且策略名为 `fold-llm` | 整轮 | 注入的 summarizer 生成摘要；摘要先过 `enforceSize`，失败时降级统计摘要；随后可追加机械保真段；原文仍在 `foldedPayload` |
+| `foldStatistical` | `config.folding.context.strategy` 主动要求压缩且策略名为 `fold-statistical` | 整轮 | 带折叠轮范围、工具足迹、存根、恢复提示、导航记录的确定性摘要；`foldedPayload` 与摘要分离保存 |
+| `foldLlm` | `config.folding.context.strategy` 主动要求压缩且策略名为 `fold-llm` | 整轮 | 注入的 summarizer 生成摘要；摘要先过 `enforceSize`，失败时降级统计摘要；随后可追加机械保真段；原文仍在 `foldedPayload` |
 | `anchors` | 整轮折叠实际产生 anchors 或 fold-fidelity 段落；`anchors: false` 只关闭锚点索引，`fold-llm` 的用户引文/反向信号仍可能触发 | 被折整轮中的可识别原文片段 | `anchors.js` 从 tool-result 与真实 user 文本机械抽取路径、SHA、issue、URL、错误行（最多 20 条/1200 字符）；`fold-llm` 另外由 `fold-fidelity.js` 逐字引用最新未解决 user 输入（最多 800 字符）并标出撤销信号。零 LLM，不承担档案导航 |
 | `enforceSize` | fold-llm 的摘要尺寸强制，或所有策略/滑窗之后仍超预算的最终安全截断 | 字段/消息（最终兜底也会按完整轮移除） | 低优先级字段替换为 `[已修剪]`，移除图片、清空 tool input，必要时降级受保护消息；`protectedDowngraded` 记录降级，单条受保护消息仍放不下则抛 `invalid_budget` |
 
 ### 一轮请求的精确时序
 
 1. `compactBeforeRound` 先在**原始规范消息**上估算 token；只要配置了策略，
-   就会无条件调用 `context.strategy.shouldCompact(...)`，即使没有预算。策略钩子
+   就会无条件调用 `config.folding.context.strategy.shouldCompact(...)`，即使没有预算。策略钩子
    返回真，或存在预算且本地估算/API 最近一次输入超过预算时，才启动整轮链。
    没有选定整轮策略（包括已配置策略但其钩子返回假）时，超预算使用
    `sliding-window`。
@@ -384,7 +384,7 @@ flowchart TD
 > 目标：无头场景没人盯着，引擎要自己能发现"跑偏了/卡住了/该收尾了"——但治理只给**建议与纠偏**，越权决策不做。
 
 - **round judge（end_turn 评估）**：模型说"做完了"不等于做完。独立（或共享）provider 用客观时间线（工具调用、文件足迹、L0 事实）评估终稿，`done:true` 且 `confidence ≥ 0.7` 才判 `judge_done`；否则注入纠偏消息续跑。解析失败/评估器错误**降级**到普通 governor，连续失败 3 次后停用 judge——治理故障永远不把 run 卡死
-- **工具透明审计（intercept）**：每 `judgeIntervalRound` 次真实工具执行（默认 **10**；`reflection.judgeIntervalRound` 或 `ERIX_JUDGE_INTERVAL` 可覆盖，`orchestrator.js:799-813`），审计下一次调用：`done:false` 拦截原执行并把审计结果当 tool_result 还给模型（模型得到“为什么不该这么做”而不是静默失败）；`off_track` 不拦工具，只给下一轮上下文加方向提示。`env ERIX_NO_ROUND_JUDGE=1` 可独立关轮判
+- **工具透明审计（intercept）**：每 `judgeIntervalRound` 次真实工具执行（默认 **10**；`config.run.reflection.judgeIntervalRound` 或 `ERIX_JUDGE_INTERVAL` 可覆盖，`orchestrator.js:799-813`），审计下一次调用：`done:false` 拦截原执行并把审计结果当 tool_result 还给模型（模型得到“为什么不该这么做”而不是静默失败）；`off_track` 不拦工具，只给下一轮上下文加方向提示。`env ERIX_NO_ROUND_JUDGE=1` 可独立关轮判
 - **只读工具豁免**：readFile / tree / rg / note_read / note_list 被拦净收益为负（实测拦 readFile 反而漏缺陷）——审计对这类调用直接放行，写路径（exec/writeFile/mcp 等）维持拦截语义
 - **governor 是确定性的**：纯函数、无副作用，输入信号（停滞 streak、无工具 streak、错误重复数、剩余时间、扩预算次数）输出续/停/收尾动作。硬预算到期前以"引导收尾"软着陆（注入 wrap-up 提示），而非硬杀
 - **自适应预算**：越过 reflection 触发点（`nearLimit`，轮数 ≥ `effectiveMaxRounds` 的 80%）后 governor 进入扩轮考虑——真正扩轮需要 judge 裁决（`extend:true` + plan）：`effectiveMaxRounds += extensionStep`（默认 32，上限 `maxRoundsCap`），最多 `maxExtensions` 次——长任务不被初始轮数拍死，也不会无限膨胀
@@ -426,7 +426,7 @@ flowchart TB
 
 ### 要点
 
-- **大输出不爆上下文**：`outputHygiene`（默认 limit 4096）把超长 tool_result 原文存进 round 记录的 `toolOutputs`，模型只见 stub + 指针；单轮合计还有聚合闸门（`aggregate-budget`）兜底——档案在，上下文不炸
+- **大输出不爆上下文**：`config.run.outputHygiene`（默认 limit 4096）把超长 tool_result 原文存进 round 记录的 `toolOutputs`，模型只见 stub + 指针；单轮合计还有聚合闸门（`aggregate-budget`）兜底——档案在，上下文不炸
 - **取回走 note-first（ADR-016 退休补充，issue #36）**：要点趁在场 `note_take` 外置；之后 `note_list → note_read` 取回。recall / bounded-recall 协议已退役——笔记是模型策划的高信号内容，优于对归档原文的模糊检索；未记录且无法确定性重算的值，正确动作是省略而非猜测（bench 实测：四 run 中 recall 2/0/6/0 次，笔记闭环 31 写/21 读完全替代）
 - **档案仍可由宿主直接读**：round 记录 / toolOutputs / run snapshot 完整落盘，宿主（DB 后端）可对账与审计——只是不再向模型暴露 recall 取回通道
 - **file store 是参考实现**：JSONL 每行一条记录、修复缺尾换行、隔离残缺尾部片段；约定**单写者**（每 runId 每进程一份），跨进程锁在契约之外——DB 后端（touwaka 等宿主）实现同一套契约即可替换（必需 `appendRound`/`load` + 可选 run-snapshot/run-state capability）

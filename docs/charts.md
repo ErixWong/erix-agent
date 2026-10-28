@@ -44,7 +44,7 @@ flowchart LR
 - **One-directional data flow**: tasks in, events out. `runToolLoop` owns exactly **one** task lifecycle (start/run/stop/resume/event stream); queues, arbitration, retry scheduling, and reapers belong to the host (ADR-012).
 - **Model view ≠ archive source**: compaction only rewrites what is sent to the model; `foldedPayload` is persisted with the round record. Folding changes "what the model sees", never "what the archive stores".
 - **Governance in the loop, policy outside it**: judge/governor is an optional in-engine layer (suggestions and corrections), but **which policy to enforce** (which project runs which agent, which operations need confirmation, network and write access) is the host's responsibility (ADR-009).
-- **Cache-aware request shape**: `cacheStablePrefix` (default on) marks the system + first real user message as a stable prefix boundary (`cacheBoundary` hint) for the provider cache adapter — OpenAI `cached_tokens` / Anthropic `cache_read_input_tokens`, normalized into `usage.cacheRead`/`cacheWrite`. For `cacheCapable` endpoints the tool-result TTL defaults to 0 (explicit `toolResultTtl` always wins), keeping the provider prefix cache effective.
+- **Cache-aware request shape**: `config.input.cacheStablePrefix` (default on) marks the system + first real user message as a stable prefix boundary (`cacheBoundary` hint) for the provider cache adapter — OpenAI `cached_tokens` / Anthropic `cache_read_input_tokens`, normalized into `usage.cacheRead`/`cacheWrite`. For `config.tuning.cacheCapable` endpoints the tool-result TTL defaults to 0 (explicit `config.folding.toolResultTtl` always wins), keeping the provider prefix cache effective.
 
 ---
 
@@ -195,11 +195,11 @@ sequenceDiagram
     Note over H,L: Phase 0 — assembly validation (once; failure throws TypeError)
     H->>L: runToolLoop({provider, executeTool, store, modelConfig, ...})
     L->>L: option whitelist validation (with typo hints) + AssemblyPort method assertions
-    Note over L: outputHygiene capability checks<br/>(explicit true without capability = throw, no silent promises)
+    Note over L: config.run.outputHygiene capability checks<br/>(explicit true without capability = throw, no silent promises)
     end
 
     rect rgb(240, 255, 240)
-    Note over L,S: Phase 1 — restore (only when resume=true)
+    Note over L,S: Phase 1 — restore (only when config.run.resume=true)
     L->>S: load(runId) + loadLatestRunSnapshot + loadRunState
     S-->>L: messages / pending tool_use / run state
     Note over L: replay pending tool calls in original order<br/>(side-effect idempotency is the host's duty)
@@ -247,7 +247,7 @@ sequenceDiagram
 
 - **Phase 0 is a fail-fast contract**: unknown options (with near-name hints), missing *required* methods (`appendRound`/`load`), and illegal policy keys all throw before the provider is called — host integration errors can never detonate mid-run. Missing *optional* capabilities (run snapshot / run-state) never throw: the engine emits one `persistence_capability_degraded` event per missing method (`{type, runId, method, detail}`) and the run proceeds normally (issue #78).
 - **The tool path in Phase 2 carries audit and checkpoints**: the intercept judge only blocks "write paths" (read-only tools readFile/tree/rg/note_read/note_list are exempt); a pre-tool checkpoint failure blocks execution outright, a post-tool failure marks `executed_uncommitted` while keeping the result.
-- **`max_tokens` truncation continues within the same round**: when reasoning models over-think and truncate, up to 3 continuations (`maxTokenContinuations`) are issued, compacting first if already over budget — the budget is not burned in a truncation loop (issue #11).
+- **`max_tokens` truncation continues within the same round**: when reasoning models over-think and truncate, up to 3 continuations (`config.run.maxTokenContinuations`) are issued, compacting first if already over budget — the budget is not burned in a truncation loop (issue #11).
 - **Phase 3: only `verified` may be treated as verified**: `skipped`/`unverified`/`error` all demand host-specific handling; a guard error or timeout is **not** verified either.
 - **Phase 4: `result.transcript` is only an in-memory snapshot**: the authoritative archive lives in the `TranscriptStore`; the two are deliberately separated so the host can swap in a DB backend (implement the two required methods plus whichever optional capabilities it wants; see ADR-002, issue #78).
 
@@ -268,7 +268,7 @@ flowchart TD
     end
     REG -. "orchestrator schedules by registry order" .-> A
     A["compactBeforeRound:<br/>strategy or budget trigger?"] --> B{"whole-round chain?"}
-    B -- no --> CC{"cacheCapable &&<br/>no explicit toolResultTtl?"}
+    B -- no --> CC{"config.tuning.cacheCapable &&<br/>no explicit config.folding.toolResultTtl?"}
     B -- yes --> C["②/③/④ choose one whole-round strategy<br/>sliding-window / fold-statistical / fold-llm"]
     C --> D["⑤ mechanical fidelity<br/>anchors / fold-fidelity"]
     D --> F{"local estimate or API projection still over budget?"}
@@ -282,7 +282,7 @@ flowchart TD
     CC -- no --> J["① TTL: one tool_result<br/>request-only view"]
     T0 --> Z["send request copy"]
     J --> Z
-    Z --> SP{"cacheStablePrefix?<br/>(default on)"}
+    Z --> SP{"config.input.cacheStablePrefix?<br/>(default on)"}
     SP -- yes --> SPM["markStablePrefix<br/>system + first user → cacheBoundary hint"]
     SPM --> ADAPT["provider cache adapter<br/>OpenAI cached_tokens / Anthropic cache_read_input_tokens<br/>→ usage.cacheRead / cacheWrite"]
     SP -- no --> ADAPT
@@ -297,22 +297,22 @@ strategy still exceeds the budget—so it can appear before or after the selecte
 strategy in one request. `foldStatistical` and `foldLlm` are mutually exclusive
 selected strategies, not two consecutive folds.
 
-- **`cacheCapable` only changes the TTL default** (`resolvedToolResultTtl` (`src/loop/orchestrator.js`)): with `cacheCapable: true` and no explicit `toolResultTtl`, the request's TTL resolves to 0 (single-result folding off, keeping the provider prefix cache effective); an explicit `toolResultTtl` always wins; whole-round folding strategies are untouched — it does **not** "delete whole-round compaction".
-- **`cacheStablePrefix` → provider cache adapter** (default on): before each request `markStablePrefix` (`src/loop/provider-runner.js`) marks the system + first real user message with a `cacheBoundary` hint; each protocol adapter maps it its own way (OpenAI `cached_tokens` / Anthropic `cache_read_input_tokens`), normalized into `usage.cacheRead`/`cacheWrite`.
+- **`config.tuning.cacheCapable` only changes the TTL default** (`resolvedToolResultTtl` (`src/loop/orchestrator.js`)): with `config.tuning.cacheCapable: true` and no explicit `config.folding.toolResultTtl`, the request's TTL resolves to 0 (single-result folding off, keeping the provider prefix cache effective); an explicit `config.folding.toolResultTtl` always wins; whole-round folding strategies are untouched — it does **not** "delete whole-round compaction".
+- **`config.input.cacheStablePrefix` → provider cache adapter** (default on): before each request `markStablePrefix` (`src/loop/provider-runner.js`) marks the system + first real user message with a `cacheBoundary` hint; each protocol adapter maps it its own way (OpenAI `cached_tokens` / Anthropic `cache_read_input_tokens`), normalized into `usage.cacheRead`/`cacheWrite`.
 
 | Layer (registry order) | Trigger | Granularity | Model/archive product |
 |---|---|---|---|
 | `ttl` | Every provider attempt when enabled and the estimated result reaches `minTokens`: `currentRound - erixRound >= ttl` folds it to a handle, while `age === ttl - 1` only adds a warning. Error results, `note_`/`todo_`, and old results without a round marker are conservatively retained. Its `triggered` metric counts actual folded `tool_result` blocks, not warning-only views | One `tool_result` | A request-only `【已折叠·TTL】` handle with tool/input snippet, estimated tokens, read round, and retrieval hint; optional `导航` digest and JSON `骨架`. The prior round gets a warning. `ctx.messages`, the run snapshot, and the archive retain the full result |
 | `slidingWindow` | A budget overflow with no selected whole-round strategy (including a configured strategy whose `shouldCompact()` returns false), or a local/API projection that remains over budget after the selected strategy; the fallback uses `keepRounds: 0` | Whole rounds (assistant plus paired `tool_result`) | Keeps the head/protected and recent rounds; original folded rounds become `foldedPayload`, optional `stubFor` output is put in the head, and a bounded `navigationRecord` is produced |
-| `foldStatistical` | `context.strategy` requests compaction and its strategy name is `fold-statistical` | Whole rounds | A deterministic summary containing folded range, tool footprint, stubs, recovery hint, and navigation record; `foldedPayload` remains separate |
-| `foldLlm` | `context.strategy` requests compaction and its strategy name is `fold-llm` | Whole rounds | An injected summarizer produces the summary; the summary first passes `enforceSize`, failures degrade to a statistical summary, and a mechanical fidelity block may follow; the original remains in `foldedPayload` |
+| `foldStatistical` | `config.folding.context.strategy` requests compaction and its strategy name is `fold-statistical` | Whole rounds | A deterministic summary containing folded range, tool footprint, stubs, recovery hint, and navigation record; `foldedPayload` remains separate |
+| `foldLlm` | `config.folding.context.strategy` requests compaction and its strategy name is `fold-llm` | Whole rounds | An injected summarizer produces the summary; the summary first passes `enforceSize`, failures degrade to a statistical summary, and a mechanical fidelity block may follow; the original remains in `foldedPayload` |
 | `anchors` | A whole-round fold actually emits an anchors or fold-fidelity section; `anchors: false` only disables the anchor index, while `fold-llm` user quotes/reverse-signal warnings may still trigger | Recognizable source fragments in folded rounds | `anchors.js` mechanically extracts paths, SHAs, issues, URLs, and error lines from tool results and real user text (≤20 entries/1200 chars). `fold-llm` additionally uses `fold-fidelity.js` for a verbatim latest unresolved user input (≤800 chars) and reverse-signal warnings. Zero LLM; it is not the archive navigation index |
 | `enforceSize` | Summary-size enforcement inside fold-llm, or final safety truncation after all strategy/window steps still exceed the budget | Fields/messages (the final fallback also removes complete rounds) | Low-priority fields become `[已修剪]`; images are removed, tool inputs are cleared, and protected messages may be downgraded as a last resort. `protectedDowngraded` records that downgrade; one protected message that cannot fit raises `invalid_budget` |
 
 ### Exact per-request sequence
 
 1. `compactBeforeRound` estimates the **canonical messages** first and always invokes
-   a configured `context.strategy.shouldCompact(...)`, even when no budget is
+   a configured `config.folding.context.strategy.shouldCompact(...)`, even when no budget is
    configured. The whole-round chain starts when that hook returns true, or when a
    budget exists and the local estimate/recent API input exceeds the budget. With no
    selected strategy (including a configured strategy whose hook returns false), an
@@ -392,7 +392,7 @@ contracts:
 > Goal: in unattended scenarios nobody is watching — the engine must notice "off-track / stuck / should wrap up" by itself. But governance only **advises and corrects**; it never makes policy decisions.
 
 - **Round judge (end_turn evaluation)**: the model saying "done" is not done. A separate (or shared) provider evaluates the final response against an objective timeline (tool calls, file footprint, L0 facts); only `done:true` with `confidence ≥ 0.7` yields `judge_done`, otherwise a corrective message is injected and the run continues. Parse failures and evaluator errors **degrade** to the plain governor; after 3 consecutive failures the judge disables itself — a governance failure can never deadlock the run.
-- **Transparent tool audit (intercept)**: every `judgeIntervalRound` real tool executions (default **10**; `reflection.judgeIntervalRound` or `ERIX_JUDGE_INTERVAL` overrides, `orchestrator.js:799-813`), the next call is audited: `done:false` blocks the original execution and returns the audit result to the model as its tool_result (the model learns *why* it shouldn't, not a silent failure); `off_track` never blocks, it only adds a direction hint to the next round's context. `ERIX_NO_ROUND_JUDGE=1` disables the round judge independently.
+- **Transparent tool audit (intercept)**: every `judgeIntervalRound` real tool executions (default **10**; `config.run.reflection.judgeIntervalRound` or `ERIX_JUDGE_INTERVAL` overrides, `orchestrator.js:799-813`), the next call is audited: `done:false` blocks the original execution and returns the audit result to the model as its tool_result (the model learns *why* it shouldn't, not a silent failure); `off_track` never blocks, it only adds a direction hint to the next round's context. `ERIX_NO_ROUND_JUDGE=1` disables the round judge independently.
 - **Read-only tool exemption**: readFile / tree / rg / note_read / note_list are allowed through — blocking them is net-negative (measured: blocking readFile actually leaked defects). Write paths (exec/writeFile/mcp etc.) keep interception semantics.
 - **The governor is deterministic**: a pure, side-effect-free function mapping signals (stall streak, no-tool streak, error repeat count, remaining time, extension count) to continue/stop/wrap-up actions. Hard budget expiry lands softly — a wrap-up nudge is injected rather than a hard kill.
 - **Adaptive budget**: past the reflection trigger (`nearLimit`, rounds ≥ 80% of `effectiveMaxRounds`), the governor enters extension consideration — an actual extension requires a judge verdict (`extend:true` + plan): `effectiveMaxRounds += extensionStep` (default 32, capped at `maxRoundsCap`), at most `maxExtensions` times — long tasks are neither killed by the initial round count nor allowed to inflate forever.
@@ -434,7 +434,7 @@ flowchart TB
 
 ### Key points
 
-- **Large outputs don't blow up context**: `outputHygiene` (default limit 4096) stores oversized tool_result originals in the round record's `toolOutputs`; the model sees a stub + pointer. A per-round aggregate gate (`aggregate-budget`) backstops the total — archive intact, context unharmed.
+- **Large outputs don't blow up context**: `config.run.outputHygiene` (default limit 4096) stores oversized tool_result originals in the round record's `toolOutputs`; the model sees a stub + pointer. A per-round aggregate gate (`aggregate-budget`) backstops the total — archive intact, context unharmed.
 - **Retrieval is note-first (ADR-016 retirement supplement, issue #36)**: key facts are externalized via `note_take` while content is in context; later retrieved via `note_list → note_read`. The recall / bounded-recall protocol is retired — model-curated notes are high-signal content, superior to fuzzy search over raw archived output; values never noted and not deterministically re-derivable are omitted, not guessed (bench data: recall 2/0/6/0 across four runs; the notes loop 31 writes / 21 reads fully replaced it).
 - **The archive remains directly readable by the host**: round records / toolOutputs / run snapshot are fully persisted; hosts (DB backends) can reconcile and audit — the model simply no longer gets a recall retrieval channel.
 - **The file store is a reference implementation**: one JSON record per JSONL line, repairs a missing trailing newline, isolates corrupt tail fragments; the contract assumes **a single writer** (one per runId per process) — cross-process locking is out of contract. Hosts needing concurrency/shared storage implement the same contract over a database (required `appendRound`/`load`, plus optional run-snapshot/run-state capabilities).
