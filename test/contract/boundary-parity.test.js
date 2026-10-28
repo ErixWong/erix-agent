@@ -16,6 +16,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createAssemblyPort, assemblyPortOptions } from "../../src/assembly.js";
 import { FOLD_SUMMARIZER_CAP_NAMES } from "../../src/assembly-validators.js";
+import {
+  CONFIG_NAMESPACE_GROUPS,
+  CONFIG_NAMESPACE_SCHEMA,
+  NAMESPACE_CONTAINER_OPTION_NAMES,
+} from "../../src/loop/config-namespace.js";
 import { runToolLoop } from "../../src/loop/orchestrator.js";
 
 function createValidProvider() {
@@ -33,6 +38,10 @@ function createValidModelConfig() {
 function createValidTools() {
   return { definitions: [], async executeTool() { return "unused"; } };
 }
+
+/** `policy` 的可接受名字（#545）：`config` 的叶子 + 两个容器。派生，不手抄。 */
+const CONFIG_LEAF_SET = new Set(CONFIG_NAMESPACE_GROUPS.flatMap((group) => CONFIG_NAMESPACE_SCHEMA[group]));
+const CONTAINERS = new Set(NAMESPACE_CONTAINER_OPTION_NAMES);
 
 const ASSEMBLY_PREFIX = "assembly port is missing methods: ";
 const PERSISTENCE_PREFIX = "required persistence store is missing methods: ";
@@ -276,18 +285,37 @@ function directInput(bad) {
   };
 }
 
+/**
+ * `policy` 只收**数据 + 两个容器**（issue #545），所以装配口路线的拼写要按名字分派：
+ * 配置叶子 / `config` / `capabilities` 进 `policy`，其余名字（能力名、第三站选项）走**显式选项**
+ * ——那是它们本来就有的家。两条路线因此仍然吃「同一份配置」，只是装配口这一侧按新裁决拼写。
+ *
+ * @param {object|undefined} bad
+ * @returns {{policy: object, explicit: object}}
+ */
+function assemblySpelling(bad) {
+  const policy = {};
+  const explicit = {};
+  for (const [key, value] of Object.entries(bad ?? {})) {
+    if (CONFIG_LEAF_SET.has(key) || CONTAINERS.has(key)) policy[key] = value;
+    else explicit[key] = value;
+  }
+  return { policy, explicit };
+}
+
 /** 两条路线各自抛出的错误（不抛 ⇒ null）。 */
 async function errorsOnBothRoutes(bad) {
   const direct = await runToolLoop(directInput(bad)).then(() => null, (error) => error);
+  const { policy, explicit } = assemblySpelling(bad);
   let assembly = null;
   try {
-    const port = createAssemblyPort(assemblyInput(bad));
+    const port = createAssemblyPort(assemblyInput(policy));
     // #498 S3: the assembly route can also reject **after** construction — `config` /
     // `capabilities` expansion runs inside `normalizeRunToolLoopOptions`, so a nested spelling
     // (`config.timing.retry.sleepImpl`) is only judged when the loop actually starts. Running it
     // here keeps the parity claim ("same error, only `via` differs") honest for both shapes; the
     // cells that already throw at construction are unaffected (the catch below).
-    assembly = await runToolLoop({ assemblyPort: port }).then(() => null, (error) => error);
+    assembly = await runToolLoop({ assemblyPort: port, ...explicit }).then(() => null, (error) => error);
   } catch (error) {
     assembly = error;
   }
@@ -366,6 +394,8 @@ test("boundary parity: 承载宿主回调的字段形状错误在两条路线上
 
 test("boundary parity: 合法配置在两条路线上都不抛（防 parity 只在错误路径上成立）", async () => {
   const good = {
+    // #545: capability carriers travel in `capabilities` (they are no longer accepted at the top of
+    // `policy`); both routes expand them to the same flat options before the semantic phase.
     onFoldSummary: () => {},
     finalGuard: async () => ({ action: "accept" }),
     // #498 S3: data keys go to `config.timing.retry`, the function carrier to `capabilities.ports`.

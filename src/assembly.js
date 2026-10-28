@@ -1,6 +1,14 @@
 
-import { assertCapabilitiesNamespace } from "./loop/capabilities-namespace.js";
-import { assertConfigNamespace, collectConfigSourceConflicts } from "./loop/config-namespace.js";
+import { assertCapabilitiesNamespace, capabilitiesPathForOption } from "./loop/capabilities-namespace.js";
+import {
+  CONFIG_NAMESPACE_GROUPS,
+  CONFIG_NAMESPACE_SCHEMA,
+  NAMESPACE_CONTAINER_OPTION_NAMES,
+  TOP_LEVEL_SURFACE_OPTION_NAMES,
+  assertConfigNamespace,
+  collectConfigSourceConflicts,
+  configPathForOption,
+} from "./loop/config-namespace.js";
 // issue #498 第 1 条：调用期覆盖的**键名闭集**不另抄一份——`overrides` 的值最终就是喂给
 // `runToolLoop` 的选项，而「runToolLoop 接受哪些选项」的唯一来源是 `RUN_TOOL_LOOP_OPTION_NAMES`
 // （#496 / #502 立的规矩：接受面 = 白名单，不许有第二张表）。两个符号都只在函数体里用，
@@ -27,67 +35,62 @@ import {
 export { MODEL_CONFIG_RESOLVER_HINT };
 
 /**
- * The `policy` plane's own name allowlist. Kept module-local: it is read by the merged-representation
- * name gate below, and nowhere else.
+ * The `policy` plane's accepted names (issue #545): the `config` schema's leaves plus the two
+ * containers, and **nothing else**.
+ *
+ * Derived, never hand-written. The literal this replaces had 46 entries and they were **two surfaces
+ * glued into one list**: 29 retired flat config leaves (`maxRounds`, `retry`, `system` …), 15
+ * capability names (`onRound`, `finalGuard`, `signal` …) and the 2 containers. Zero junk in it — so
+ * it was not a stale list, it was a **second flat spelling surface**, and it was the last one still
+ * producing the retired spellings: as long as `policy` accepted them, a name like `runId` crossed the
+ * merged-representation gate (`assertMergedOptionNames`) on the `policy` exemption (issue #525).
+ *
+ * The plane now carries **data only**: every leaf name is translated into its canonical path
+ * (`policy.maxRounds` → `config.run.maxRounds`, see `translatedPolicyConfigLeaves`), the two
+ * containers keep their real semantics (`policy.config` / `policy.capabilities` are the same trees the
+ * call-level containers are), and everything else is refused at construction with a pointer to where
+ * it really lives (`policy.capabilities.<group>.<leaf>` for a capability, the port itself for a port
+ * member). Refusing port members is deliberate and self-consistent: the port already supplies them,
+ * so a second copy under `policy` would be one capability with two sources.
  */
-const ASSEMBLY_POLICY_OPTION_NAMES = new Set([
-  "system",
-  "wrapup",
-  "writeToolNames",
-  "writeToolPathKeys",
-  "replayPolicy",
-  "partialPersistence",
-  "maxRounds",
-  "maxTokens",
-  "temperature",
-  "topP",
-  "timeoutMs",
-  "deadlineMs",
-  "reflection",
-  "stallDetection",
-  "retry",
-  "completion",
-  "finalGuard",
-  "finalGuardMaxRetries",
-  "finalGuardTimeoutMs",
-  "maxTokenContinuations",
-  "context",
-  "todoStateProvider",
-  "semanticStateProvider",
-  "modelMetadata",
-  "model",
-  "expert",
-  "user",
-  "task",
-  "requestId",
-  "toolContext",
-  "persistence",
-  "onRound",
-  "onJudge",
-  "onToolResult",
-  "onPersistenceError",
-  // issue #470-D：折叠替代物 `record.foldedFacts` 的强制投递出口（形状校验见
-  // `validateFoldSummaryHook`：给了就必须是函数，给错名字/给错形状都不静默宽容）。
-  "onFoldSummary",
-  // issue #497（S2）：嵌套命名空间。**装配口也接受**，否则同一份配置换个入口就变成
-  // `unknown assembly policy option`，又回到「校验绑在入口路线上」的老病（#496 的病根）。
-  // 它的展开与校验都在 `normalizeRunToolLoopOptions`（合并之后、语义相之前）做：装配口这里
-  // 只保证名字被放行，于是 `policy.config` 与直连 `config` 走的是**同一棵树、同一套规则**。
-  "config",
-  // issue #498（S4a）：第二个容器。装配口也接受，理由与 `config` 逐字相同——否则同一份能力面
-  // 换个入口就变成 `unknown assembly policy option`，又回到「校验绑在入口路线上」的老病。
-  // 名称/形状/取值在构造期校（`assertCapabilitiesNamespace`），展开在
-  // `normalizeRunToolLoopOptions`（合并之后、语义相之前）。
-  "capabilities",
-  "diagnostics",
-  "onObserverError",
-  "signal",
-  "stream",
-  "onDelta",
-  "onReasoningDelta",
-  "onToolCall",
-  "onUsage",
-]);
+const ASSEMBLY_POLICY_CONFIG_LEAF_NAMES = new Set(
+  CONFIG_NAMESPACE_GROUPS.flatMap((group) => CONFIG_NAMESPACE_SCHEMA[group]),
+);
+
+/** The two containers `policy` accepts next to the leaves (`config` / `capabilities`). */
+const ASSEMBLY_POLICY_CONTAINER_NAMES = new Set(NAMESPACE_CONTAINER_OPTION_NAMES);
+
+/** The third station, as a Set: the names whose only home is the top level (`provider`, `tools` …). */
+const ASSEMBLY_TOP_LEVEL_SURFACE_OPTION_SET = new Set(TOP_LEVEL_SURFACE_OPTION_NAMES);
+
+/**
+ * The rejection message for a name `policy` does not take, or `undefined` when it takes the name
+ * (issue #545). The pointer is the point: a host that follows it changes the spelling once, not twice.
+ *
+ * Three destinations, all derived from the schema/allowlist tables — no name is hard-coded here:
+ *   · a **capability** name (it has a `capabilities.<group>.<leaf>` home) ⇒ `policy.capabilities.<path>`;
+ *   · a **port member** / permanent top-level option (`provider`, `tools`, `store`, `session`,
+ *     `signal`, `todoStateProvider` …) ⇒ the port itself: these are what the port supplies, and a
+ *     second copy under `policy` would be one capability with two sources;
+ *   · anything else ⇒ plain "unknown", the pre-existing wording (hosts and tests depend on it).
+ *
+ * @param {string} name
+ * @returns {string|undefined}
+ */
+function assemblyPolicyNameProblem(name) {
+  const capabilityPath = capabilitiesPathForOption(name);
+  if (capabilityPath !== undefined) {
+    return `unknown assembly policy option: ${JSON.stringify(name)}`
+      + ` (policy carries data only: ${JSON.stringify(name)} is a capability,`
+      + ` write it as policy.capabilities.${capabilityPath})`;
+  }
+  if (ASSEMBLY_TOP_LEVEL_SURFACE_OPTION_SET.has(name)) {
+    return `unknown assembly policy option: ${JSON.stringify(name)}`
+      + ` (policy carries data only: ${JSON.stringify(name)} is supplied by the port itself,`
+      + " so a second copy here would be the same capability with two sources)";
+  }
+  return `unknown assembly policy option: ${JSON.stringify(name)}`;
+}
 
 /**
  * 容器类覆盖一律拒绝（issue #498 第 1 条）：`config` / `capabilities` 整块替换会把 #498 刚
@@ -138,6 +141,95 @@ const ASSEMBLY_DERIVED_ORIGINS = Object.freeze({
  * @param {AssemblyPort} port
  * @returns {Record<string, Record<string, any>>} group → leaf → value
  */
+/**
+ * The config path a `policy` **leaf name** translates to (issue #545), or `undefined` when the name
+ * is not a config leaf.
+ *
+ * `configPathForOption` is the primary answer: it is derived from the one hand-written table
+ * (`CONFIG_NAMESPACE_SCHEMA`), so a leaf that keeps its spelling (`maxRounds` → `run.maxRounds`)
+ * needs no table here. The fallback covers the single leaf whose spelling differs from its top-level
+ * key (`input.messages`, whose flat name is `initialMessages`): `configPathForOption` answers
+ * "where does this *top-level key* live", which is a different question from "is this a *leaf*".
+ * No mapping table is written: both answers come from the schema.
+ *
+ * @param {string} name
+ * @returns {string|undefined} e.g. `run.maxRounds`
+ */
+function configPathForPolicyLeaf(name) {
+  const path = configPathForOption(name);
+  if (path !== undefined) return path;
+  for (const group of CONFIG_NAMESPACE_GROUPS) {
+    if (CONFIG_NAMESPACE_SCHEMA[group].includes(name)) return `${group}.${name}`;
+  }
+  return undefined;
+}
+
+/**
+ * The `policy` plane's config leaves, translated into a config tree (issue #545).
+ *
+ * Before this slice `policy` was a **second flat spelling surface**: `policy.maxRounds` entered the
+ * merged option tree as a flat `maxRounds`, i.e. exactly the spelling `runToolLoop({ maxRounds })`
+ * is refused for. One option tree cannot have two legalities, so every leaf name is now written
+ * where it lives (`config.run.maxRounds`), through the schema — never through a rename table.
+ *
+ * `undefined` still means "not given" (the same `value !== undefined` merge rule as everywhere
+ * else), so a host that spreads an options object does not erase a value by accident.
+ *
+ * @param {Record<string, any>|undefined} policy
+ * @returns {Record<string, Record<string, any>>} group → leaf → value
+ */
+function translatedPolicyConfigLeaves(policy) {
+  /** @type {Record<string, Record<string, any>>} */
+  const leaves = {};
+  for (const [name, value] of Object.entries(policy ?? {})) {
+    if (value === undefined) continue;
+    const path = configPathForPolicyLeaf(name);
+    if (path === undefined) continue;
+    const [group, leaf] = path.split(".");
+    (leaves[group] ??= {})[leaf] = value;
+  }
+  return leaves;
+}
+
+/**
+ * Fold translated `policy` leaves under the port's own `policy.config` tree, per leaf, explicit tree
+ * wins (issue #545).
+ *
+ * Not a new priority: it is the priority the flat spelling had (a flat key and `config.<path>` are
+ * the same knob, and the tree wins — `expandConfigNamespace`), moved one phase earlier because the
+ * flat spelling no longer exists. A collision is reported, not silenced (see
+ * `collectAssemblyPolicyConfigConflicts`).
+ *
+ * @param {Record<string, Record<string, any>>} translated
+ * @param {Record<string, any>|undefined} explicitTree `policy.config`
+ * @returns {Record<string, any>}
+ */
+function mergePolicyConfigTree(translated, explicitTree) {
+  const merged = {};
+  for (const [group, leaves] of Object.entries(translated)) merged[group] = { ...leaves };
+  for (const [group, bag] of Object.entries(explicitTree ?? {})) {
+    if (bag === undefined) continue;
+    merged[group] = { ...(merged[group] ?? {}), ...bag };
+  }
+  return merged;
+}
+
+/**
+ * The `config_override_conflict` rows the `policy` plane owes **against itself** (issue #545):
+ * `policy.maxRounds` and `policy.config.run.maxRounds` are the same knob from two sources, so when
+ * both carry a value and the values differ the caller gets one event (path `run.maxRounds`), exactly
+ * as the flat-vs-`config` rule used to report it. Same event, same `{ path, key }` shape, no silence.
+ *
+ * @param {AssemblyPort} port
+ * @returns {Array<{path: string, key: string}>}
+ */
+export function collectAssemblyPolicyConfigConflicts(port) {
+  return collectConfigSourceConflicts(
+    translatedPolicyConfigLeaves(port.policy),
+    port.policy?.config,
+  );
+}
+
 function assemblyPortDerivedConfigLeaves(port) {
   const leaves = { run: { runId: port.session.id } };
   if (port.session.initialMessages !== undefined) {
@@ -166,11 +258,58 @@ function assemblyPortDerivedConfigLeaves(port) {
  * @returns {Record<string, any>}
  */
 export function withAssemblyDerivedConfigLeaves(configTree, port) {
+  return fillConfigLeafHoles(configTree, assemblyPortDerivedConfigLeaves(port));
+}
+
+/**
+ * Per-leaf "fill the hole" fold: every leaf in `leaves` lands under `configTree` **only** where the
+ * tree has no value for it (`undefined` counts as "not given", the merge rule used everywhere else).
+ *
+ * @param {Record<string, any>|undefined} configTree
+ * @param {Record<string, Record<string, any>>} leaves group → leaf → value
+ * @returns {Record<string, any>}
+ */
+function fillConfigLeafHoles(configTree, leaves) {
   const merged = { ...(configTree ?? {}) };
-  for (const [group, leaves] of Object.entries(assemblyPortDerivedConfigLeaves(port))) {
-    merged[group] = { ...leaves, ...(merged[group] ?? {}) };
+  for (const [group, bag] of Object.entries(leaves)) {
+    const next = { ...bag };
+    for (const [leaf, value] of Object.entries(merged[group] ?? {})) {
+      // `undefined` is "not given", so it does not close the hole: spreading it over the fallback
+      // would erase the value while looking like it was set (`{ run: { maxRounds: undefined } }`).
+      if (value !== undefined) next[leaf] = value;
+    }
+    merged[group] = next;
   }
   return merged;
+}
+
+/**
+ * Fold the port's own config leaves — the translated `policy` leaves **and** the derived leaves — into
+ * a config tree, per leaf, only where the tree has no value (issue #545).
+ *
+ * The two rungs, in order, are the priority order, and it is not new:
+ *   1. an explicit `policy.config` / call-level `config` value wins (it is already in the tree);
+ *   2. a translated `policy.<leaf>` fills the hole — the priority the **flat** spelling had, since a
+ *      flat key and `config.<path>` were always the same knob with the tree winning;
+ *   3. a #544 derived leaf (`session.id` → `config.run.runId`) fills what is still empty, so a host
+ *      that writes `policy.runId` keeps its value (and owes a `config_override_conflict`, see
+ *      `collectAssemblyDerivedConfigConflicts`).
+ *
+ * Rung 2 has to be re-applied after a call-level `config` override for the same reason rung 3 is: the
+ * override is **wholesale**, so without this a host that passes `config: { run: { maxRounds: 1 } }`
+ * would silently lose every other `policy` leaf — and the flat spelling it replaces never could be
+ * erased that way. What the override does win is the leaves it actually names (and `undefined` is
+ * "not given", not "erase").
+ *
+ * @param {Record<string, any>|undefined} configTree
+ * @param {AssemblyPort} port
+ * @returns {Record<string, any>}
+ */
+export function withAssemblyPolicyConfigLeaves(configTree, port) {
+  return withAssemblyDerivedConfigLeaves(
+    fillConfigLeafHoles(configTree, translatedPolicyConfigLeaves(port.policy)),
+    port,
+  );
 }
 
 /**
@@ -190,7 +329,13 @@ export function withAssemblyDerivedConfigLeaves(configTree, port) {
 export function collectAssemblyDerivedConfigConflicts(port) {
   return collectConfigSourceConflicts(
     assemblyPortDerivedConfigLeaves(port),
-    port.policy?.config,
+    // #545: the tree the derived leaves are folded into is `policy.config` **plus** the translated
+    // `policy` leaves — a host that writes `policy.runId` instead of `session.id` collides with the
+    // same knob, so it owes the same event.
+    mergePolicyConfigTree(
+      translatedPolicyConfigLeaves(port.policy),
+      port.policy?.config,
+    ),
   );
 }
 
@@ -205,11 +350,14 @@ export function collectAssemblyDerivedConfigConflicts(port) {
  * retirements exactly that way — `runToolLoop({ runId })` threw while
  * `runToolLoop({ assemblyPort })` put the very same key in the merged tree and ran.
  *
- * The `policy` plane is exempt on purpose: `policy.<key>` is a separate spelling surface with its
- * own allowlist (checked at construction), and by ruling it keeps carrying retired flat names
- * (`policy.maxTokens` …). Its keys are judged there, not here. Everything else — explicit options
- * (already gated early) and port-derived keys (gated only here) — must be a legal loop option
- * name, so the two halves of one option tree finally agree.
+ * **No plane is exempt** (issue #545). The `policy` exemption that used to live here was the hole
+ * itself: `policy` accepted retired flat spellings, so `policy.runId` crossed this gate on it while
+ * `runToolLoop({ runId })` threw for the same key. `policy` now carries data only and translates every
+ * leaf into its canonical config path (`translatedPolicyConfigLeaves`), so the merged tree it produces
+ * holds only legal loop options — `config` / `capabilities` / the port-derived keys — and the gate can
+ * judge every key on its own merits. Removing the exemption is the proof the hole is closed, not a
+ * side effect: `test/assembly-policy-derivation-525.test.js` (C1) turns red if anything puts a retired
+ * flat name back in the merged tree.
  *
  * @param {Record<string, any>} mergedOptions
  * @returns {void}
@@ -217,7 +365,6 @@ export function collectAssemblyDerivedConfigConflicts(port) {
 export function assertMergedOptionNames(mergedOptions) {
   for (const optionName of Object.keys(mergedOptions)) {
     if (RUN_TOOL_LOOP_OPTION_SET.has(optionName)) continue;
-    if (ASSEMBLY_POLICY_OPTION_NAMES.has(optionName)) continue;
     // Canonical rejection (same wording, same `config.<home>` pointer): an offender here is an
     // unknown name in the same tree, whoever wrote it.
     assertRunToolLoopOptionNames({ [optionName]: mergedOptions[optionName] });
@@ -236,17 +383,27 @@ export function assertMergedOptionNames(mergedOptions) {
  * @returns {Record<string, any>}
  */
 function assemblyPortBaseOptions(port) {
+  const policy = port.policy ?? {};
   return {
-    ...port.policy,
+    // #545: nothing is spread flat any more. Every accepted `policy` name is either a config leaf
+    // (translated into the tree below) or one of the two containers, so the merged tree this
+    // function produces contains no retired spelling at all.
     modelConfig: port.modelConfig,
     provider: port.provider,
     tools: port.tools.definitions,
     executeTool: port.tools.executeTool,
     ...(port.store === undefined ? {} : { store: port.store }),
     // #544: the run identity and the seed history are config leaves, not flat options — see
-    // `assemblyPortDerivedConfigLeaves`. `policy.config` still wins per leaf (its value is spread
-    // last), which is exactly the priority the flat spelling had via the expansion phase.
-    config: withAssemblyDerivedConfigLeaves(port.policy?.config, port),
+    // `assemblyPortDerivedConfigLeaves`. `policy.config` still wins per leaf, which is exactly the
+    // priority the flat spelling had via the expansion phase; #545 adds the translated `policy`
+    // leaves to the same tree, one rung below the explicit tree.
+    config: withAssemblyDerivedConfigLeaves(
+      mergePolicyConfigTree(translatedPolicyConfigLeaves(policy), policy.config),
+      port,
+    ),
+    // #498 S4a: the second container. It used to arrive through the flat spread; it is not a leaf, so
+    // it is passed through by name — same tree, same rules as the call-level `capabilities`.
+    ...(policy.capabilities === undefined ? {} : { capabilities: policy.capabilities }),
     session: port.session,
     // #498 S4b：这里曾有 `session.resume` → `resume` 的转换（幻影组）。`session` 是纯数据，
     // `resume` 的规范之家是顶层 `resume` / `config.run.resume`；两条路线都已拒绝 `session.resume`
@@ -426,10 +583,12 @@ export function createAssemblyPort(input = {}) {
   if (port.session.initialMessages !== undefined && !Array.isArray(port.session.initialMessages)) {
     throw new TypeError("assembly port session.initialMessages must be an array");
   }
-  for (const key of Object.keys(port.policy ?? {})) {
-    if (!ASSEMBLY_POLICY_OPTION_NAMES.has(key)) {
-      throw new TypeError(`unknown assembly policy option: ${JSON.stringify(key)}`);
-    }
+  for (const [key, value] of Object.entries(port.policy ?? {})) {
+    // `undefined` means "not given" (the repo-wide `value !== undefined` merge rule), so a spread
+    // options object (`policy: { <name>: undefined }`) is not read as "a bad name was given".
+    if (value === undefined) continue;
+    if (ASSEMBLY_POLICY_CONFIG_LEAF_NAMES.has(key) || ASSEMBLY_POLICY_CONTAINER_NAMES.has(key)) continue;
+    throw new TypeError(assemblyPolicyNameProblem(key));
   }
   // issue #470-D：`policy.onFoldSummary` 是可选钩子，但**给了就必须是函数**。
   // 不校形状的话，宿主把字符串/对象当钩子递进来会在真正发生折叠那一轮才炸（或默默不投递
@@ -449,6 +608,11 @@ export function createAssemblyPort(input = {}) {
   // **取值**不在这里校：展开发生在 `normalizeRunToolLoopOptions`（合并之后、语义相之前），
   // 展开后的扁平键由同一道语义相覆盖（`config.folding.context` 的旋钮拼错照样抛）。
   assertConfigNamespace(port.policy?.config, { via: "assembly" });
+  // #545: the translated leaves are config leaves, so they answer to the same rule ("`config` holds
+  // data only") in the **same phase** — a `policy.context.strategy` / `policy.retry.sleepImpl` is a
+  // function in the config tree and is refused here, pointing at `capabilities.ports.*`, instead of
+  // surfacing one phase later during expansion.
+  assertConfigNamespace(translatedPolicyConfigLeaves(port.policy), { via: "assembly" });
   // issue #498（S4a）：`policy.capabilities` 与调用级 `capabilities` 是同一个容器，构造期同相校。
   assertCapabilitiesNamespace(port.policy?.capabilities, { via: "assembly" });
   assertSemanticOptionValues(port.policy ?? {}, { via: "assembly" });

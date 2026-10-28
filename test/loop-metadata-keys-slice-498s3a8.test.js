@@ -227,7 +227,7 @@ test("P4 四个 metadata 数据键没有行为成员 ⇒ 文案只点一站；�
 //
 // 三格：装配口 `policy.*`（#525 的面）、`expert` 的 fallback 链（`budget.js:87`）、同组大四件。
 
-test("P5-a 装配口 policy.* 仍收这四个名字（另一张面，#525 未动）：构造期产物 + 真 run 都到", async () => {
+test("P5-a 装配口 policy.* 仍收这四个名字（#545 后它们**翻译**进 config 树）：构造期产物 + 真 run 都到", async () => {
   const provider = createFakeProvider(DONE);
   const port = createAssemblyPort({
     modelConfig: { resolve: async () => ({}) },
@@ -249,7 +249,10 @@ test("P5-a 装配口 policy.* 仍收这四个名字（另一张面，#525 未动
   };
   const produced = await assemblyPortOptions(port);
   for (const { key } of RETIRED) {
-    assert.deepEqual(produced[key], policy[key], `policy.${key} 必须仍出现在构造期产物里（装配口白名单不在本刀）`);
+    // #545：`policy` 只收数据，叶子名一律翻译成规范路径（`policy.expert` → `config.metadata.expert`），
+    // 于是同一个值仍然到得了引擎，只是不再以扁平名出现（那正是「第二拼写面」被关掉的样子）。
+    assert.deepEqual(produced.config?.metadata?.[key], policy[key], `policy.${key} 必须翻译进 config.metadata.${key}`);
+    assert.equal(Object.hasOwn(produced, key), false, `policy.${key} 不许再以扁平名出现在构造期产物里`);
   }
   // 真 run：端口交给引擎，预算元数据照旧被 `modelMetadataFor` 读到（不发 model_metadata_missing）。
   const events = [];

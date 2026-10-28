@@ -417,24 +417,18 @@ test("C3 端口位不进扁平表示（走 slots），与壳里老槽位不等�
   assert.match(nestedShell.message, /config\.timing\.retry\.sleepImpl is not accepted/u);
   assert.match(nestedShell.message, /its canonical home is capabilities\.ports\.sleepImpl/u);
 
-  // strategy 的宿主面冲突：`policy.context.strategy`（壳内老槽位，装配口路线未收窄）
-  // 与 `policy.capabilities.ports.strategy` 不等价 ⇒ 恰一条 `config_override_conflict`。
+  // ⚠ #545 的真实后果（如实披露）：`strategy` 是**函数载体**，而 `policy` 只收数据 ⇒
+  // `policy.context.strategy` 在构造期就被拒并指对家，「壳内老槽位 vs 端口位」的冲突在**宿主面**
+  // 再也构造不出来（纯展开层仍可，见本格上半）。这里钉住宿主实际会撞上的那条链。
   const shellStrategy = { name: "shell", async shouldCompact() { return false; }, async compact(messages) { return { messages }; } };
-  const portStrategy = { name: "port", async shouldCompact() { return false; }, async compact(messages) { return { messages }; } };
-  const conflictEvents = [];
-  await sharedRunDirect({
-    assemblyPort: makePort({
-      context: { strategy: shellStrategy },
-      capabilities: { ports: { strategy: portStrategy } },
-    }),
-    initialUserMessage: "go",
-    config: { run: { completion: false } },
-    wrapup: false,
-    onEvent: (event) => conflictEvents.push(event),
-  });
-  const strategyConflicts = conflictEvents.filter((event) => event.type === "config_override_conflict");
-  assert.equal(strategyConflicts.length, 1, "壳内 strategy 与端口位不等价 ⇒ 恰一条冲突事件（真 run）");
-  assert.deepEqual(strategyConflicts[0].conflicts, [{ path: "ports.strategy", key: "strategy" }]);
+  assert.throws(
+    () => makePort({ context: { strategy: shellStrategy } }),
+    (error) => error instanceof TypeError
+      && /canonical home is capabilities\.ports\.strategy/u.test(error.message)
+      && error.via === "assembly",
+    "函数载体进不了 policy.context（那是 config 树）⇒ 构造期即抛并指对家",
+  );
+  // 端口位本身照旧生效（唯一入口）：C17 是它的行为证据。
 });
 
 // ================================================================ C4. sleepImpl 行为证据
@@ -669,24 +663,19 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
     { path: "folding.context.recoveryHint", key: "recoveryHint" },
   ]);
 
-  // ④ 等价（同一个函数对象）⇒ **零**事件（反向证 ③ 的那一格：把等价分支短路就会红）。
-  // #498 S3: a function cannot live in `config` at all, so the "same reference in both places" cell
-  // uses the **assembly port** (`policy.context`), which is the one remaining way to write the old
-  // in-shell slot. The equivalence rule itself (`isDeepStrictEqual` / identity) is unchanged.
+  // ④ 等价（同一个函数对象）⇒ **零**冲突（反向证 ③ 的那一格：把等价分支短路就会红）。
+  // #498 S3: a function cannot live in `config`; #545 adds the other half — `policy` carries data only,
+  // so the old in-shell slot has **no** host-surface spelling at all. The equivalence rule itself
+  // (`isDeepStrictEqual` / identity) is unchanged, and it is still machine-checked on the expansion
+  // layer (the same layer C11 uses per leaf).
   const sameHook = () => false;
-  const same = [];
-  await sharedRunDirect({
-    assemblyPort: makePort({ context: { protectedMessage: sameHook } }),
-    initialUserMessage: "go",
-    config: { run: { completion: false } },
-    wrapup: false,
-    capabilities: { hooks: { protectedMessage: sameHook } },
-    onEvent: (event) => { same.push(event); },
-  });
   assert.deepEqual(
-    same.filter((event) => event.type === "config_override_conflict"),
+    expandCapabilitiesNamespace({
+      context: { protectedMessage: sameHook },
+      capabilities: { hooks: { protectedMessage: sameHook } },
+    }).conflicts,
     [],
-    "同一个函数对象 ⇒ 零冲突事件（等价口径 = isDeepStrictEqual / 同一性）",
+    "同一个函数对象 ⇒ 零冲突（等价口径 = isDeepStrictEqual / 同一性）",
   );
 
   // ⑤ `recoveryHint` 的两条腿都真的到策略里（名字形态策略经 `resolveCompactionStrategy` 的 options）。
@@ -763,18 +752,20 @@ test("C9 壳内老槽位零回归：config.timing.retry / context.onBeforeFold /
   assert.equal(judge.requests.length, 1, "扁平/嵌套 reflection.judge.provider 照旧被调用");
 
   // ④ `context: { strategy: 对象 }`（对象形态老写法）
-  let compacted = 0;
+  // ⚠ #545：`strategy` 的两个成员都是函数 ⇒ 它是**函数载体**，`policy` 只收数据之后
+  // `policy.context.strategy` 当场拒（判词指 `capabilities.ports.strategy`）。规范之家是端口位，
+  // C17 是它的行为证据（真的被调用、壳里那份零调用）。
   const flatStrategy = {
     name: "flat-spy",
     async shouldCompact() { return true; },
-    async compact(messages) { compacted += 1; return { messages }; },
+    async compact(messages) { return { messages }; },
   };
-  await sharedRunDirect({ assemblyPort: makePort({ context: { strategy: flatStrategy, budgetTokens: 1 } }),
-    initialUserMessage: "go",
-    config: { run: { completion: false } },
-    wrapup: false,
-  });
-  assert.equal(compacted, 1, "壳内老槽位 context.strategy（经装配口 policy）照旧被调");
+  assert.throws(
+    () => makePort({ context: { strategy: flatStrategy, budgetTokens: 1 } }),
+    (error) => error instanceof TypeError
+      && /canonical home is capabilities\.ports\.strategy/u.test(error.message),
+    "对象形态的老写法同样进不了 policy.context（里面有函数）",
+  );
 });
 
 // ================================================================ C10. 装配口路线端到端
@@ -875,21 +866,26 @@ test("C11 逐叶冲突（表驱动，4 个 hooks）：壳内 + capabilities.hook
   }
 });
 
-test("C12 逐叶冲突（真 run，3 个折叠 hooks）：onBeforeFold / onAfterFold / stubFor 各恰一条事件，且壳里那份零调用", async () => {
+test("C12 逐叶（真 run，3 个折叠 hooks）：壳内老槽位在 policy 上已经写不进去（判词指对家），端口位照旧投递", async () => {
   for (const leaf of ["onBeforeFold", "onAfterFold", "stubFor"]) {
-    const shellCalls = [];
     const portCalls = [];
     const events = [];
-    const shellFn = (payload) => { shellCalls.push(payload); return "SHELL-STUB"; };
     const portFn = (payload) => {
       portCalls.push(payload);
       return leaf === "stubFor" ? "PORT-STUB" : undefined;
     };
-    // #498 S3: a function cannot live in `config`, so "the old in-shell slot is still callable"
-    // is proven through the assembly port's `policy.context` (the one route that was not narrowed).
+    // ⚠ #545：壳内老槽位（`context.<leaf>`）是**函数**，而 `policy` 只收数据 ⇒ 它在构造期就被拒，
+    // 「壳 vs 端口位」的冲突在宿主面已经构造不出来（纯展开层仍可，见 C11）。本格因此改钉两件事：
+    // ① 老槽位写不进去且判词指对家；② 端口位照旧**真的被调用**（这是「容器赢」在今天的可观察面）。
+    assert.throws(
+      () => foldingPort({ context: { budgetTokens: 1, keepRounds: 0, [leaf]: () => {} } }),
+      (error) => error instanceof TypeError
+        && new RegExp(`canonical home is capabilities\\.hooks\\.${leaf}`, "u").test(error.message),
+      `${leaf}：壳内老槽位必须当场拒并指 capabilities.hooks.${leaf}`,
+    );
     const result = await sharedRunDirect({
       assemblyPort: foldingPort({
-        context: { budgetTokens: 1, keepRounds: 0, [leaf]: shellFn },
+        context: { budgetTokens: 1, keepRounds: 0 },
         capabilities: { hooks: { [leaf]: portFn } },
       }),
       initialUserMessage: "go",
@@ -903,22 +899,28 @@ test("C12 逐叶冲突（真 run，3 个折叠 hooks）：onBeforeFold / onAfter
       true,
       `${leaf}：这条 run 必须跑完`,
     );
-    const conflicts = events.filter((event) => event.type === "config_override_conflict");
-    assert.equal(conflicts.length, 1, `${leaf}：不等价 ⇒ 恰一条 config_override_conflict，实测 ${conflicts.length}`);
-    assert.deepEqual(conflicts[0].conflicts, [{ path: `hooks.${leaf}`, key: leaf }], `${leaf}：path 点名真实目的地`);
-    assert.equal(portCalls.length > 0, true, `${leaf}：capabilities 侧那份必须真被调用（否则「容器赢」只是嘴上说的）`);
-    assert.deepEqual(shellCalls, [], `${leaf}：壳里那份必须**零调用**（容器赢）`);
+    assert.deepEqual(
+      events.filter((event) => event.type === "config_override_conflict"),
+      [],
+      `${leaf}：只有一个住处 ⇒ 零冲突事件`,
+    );
+    assert.equal(portCalls.length > 0, true, `${leaf}：capabilities 侧那份必须真被调用（否则这一格只是「没抛」）`);
   }
 });
 
-test("C13 逐叶冲突（真 run，onReflection）：扩轮通知恰一条事件、path = hooks.onReflection，壳里那份零调用", async () => {
+test("C13 逐叶（真 run，onReflection）：壳内老槽位写不进 policy（判词指对家），端口位收到唯一一次扩轮通知", async () => {
   const shellCalls = [];
   const portCalls = [];
   const events = [];
-  // #530: 壳里那份（`reflection.onReflection`）在扁平写法退役后**只剩装配口 `policy` 一条路**
-  // ——`policy` 按裁决继续承载退役的扁平名，而 `config` 只装数据（函数进去就被拒）。
-  // 所以本格把两侧都写进 policy，`reflection` 的扁平数据半边也一并搬过去（显式 `reflection`
-  // 会整棵覆盖 policy 的那份，壳槽位就没了）。
+  // ⚠ #545：`reflection.onReflection` 是**函数**，`policy` 只收数据 ⇒ 它在构造期就被拒（判词指
+  // `capabilities.hooks.onReflection`），于是「壳 vs 端口位」的冲突在宿主面构造不出来（纯展开层仍可，
+  // 见 C11）。本格改钉：① 老槽位写不进去；② 端口位收到**唯一一次**扩轮通知。
+  assert.throws(
+    () => makePort({ reflection: { enabled: true, onReflection: () => {} } }),
+    (error) => error instanceof TypeError
+      && /canonical home is capabilities\.hooks\.onReflection/u.test(error.message),
+    "壳内老槽位必须当场拒并指 capabilities.hooks.onReflection",
+  );
   const result = await extendingRun({
     assemblyPort: makePort({
       reflection: {
@@ -928,8 +930,11 @@ test("C13 逐叶冲突（真 run，onReflection）：扩轮通知恰一条事件
         extensionStep: 2,
         maxExtensions: 1,
         maxRoundsCap: 20,
-        onReflection: (info) => { shellCalls.push(info); },
-        judge: { provider: createFakeProvider([{ content: [{ type: "text", text: JSON.stringify({
+      },
+      // #545：judge provider 是**端口对象**（有 `chat` 方法），`policy.reflection.judge.provider`
+      // 已不可写（`config` 只装数据）⇒ 走规范端口位（C16 钉的也是这条）。
+      capabilities: {
+        ports: { judgeProvider: createFakeProvider([{ content: [{ type: "text", text: JSON.stringify({
           done: false,
           confidence: 0.8,
           reason: "仍需验证",
@@ -940,36 +945,46 @@ test("C13 逐叶冲突（真 run，onReflection）：扩轮通知恰一条事件
           extendReason: "当前上限不足",
           plan: "完成最后验证",
         }) }] }]) },
+        hooks: { onReflection: (info) => { portCalls.push(info); } },
       },
-      capabilities: { hooks: { onReflection: (info) => { portCalls.push(info); } } },
     }),
     onEvent: (event) => events.push(event),
   }, null);
   assert.equal(result.rounds > 5, true, "前提：扩轮真的发生了（否则这格只是在测空气）");
-  const conflicts = events.filter((event) => event.type === "config_override_conflict");
-  assert.equal(conflicts.length, 1, `不等价 ⇒ 恰一条事件，实测 ${conflicts.length}`);
-  assert.deepEqual(conflicts[0].conflicts, [{ path: "hooks.onReflection", key: "onReflection" }]);
+  assert.deepEqual(
+    events.filter((event) => event.type === "config_override_conflict"),
+    [],
+    "只有一个住处 ⇒ 零冲突事件",
+  );
   assert.equal(portCalls.length, 1, "capabilities 侧那份收到唯一一次扩轮通知");
-  assert.deepEqual(shellCalls, [], "壳里那份（reflection.onReflection）零调用");
+  assert.deepEqual(shellCalls, [], "壳里那份不存在（写不进去），自然零调用");
 });
 
-test("C14 逐叶等价（真 run，4 个 hooks）：同一函数引用同时写在两处 ⇒ 零冲突事件", async () => {
+test("C14 逐叶等价（4 个 hooks）：同一函数引用同时写在两处 ⇒ 零冲突事件", async () => {
   for (const leaf of HOOK_SLOT_LEAVES) {
     const same = () => {};
-    const events = [];
-    // #498 S3: the old in-shell slot is only reachable through the assembly port now, so "same
-    // reference in both places ⇒ zero conflicts" is proven on that route (真 run).
-    await sharedRunDirect({
-      assemblyPort: makePort({ ...shellHomeOptions(leaf, same), capabilities: { hooks: { [leaf]: same } } }),
-      initialUserMessage: "go",
-      config: { run: { completion: false } },
-      wrapup: false,
-      onEvent: (event) => events.push(event),
-    });
+    // #498 S3: a function cannot live in `config`; #545: it cannot live in `policy` either (data only),
+    // so the two-place spelling only exists on the expansion layer — which is where the equivalence
+    // rule lives. The rule is unchanged (`isDeepStrictEqual` / identity).
     assert.deepEqual(
-      events.filter((event) => event.type === "config_override_conflict"),
+      expandCapabilitiesNamespace({
+        ...shellHomeOptions(leaf, same),
+        capabilities: { hooks: { [leaf]: same } },
+      }).conflicts,
       [],
       `${leaf}：同一个函数引用 ⇒ 零冲突事件（等价口径 = 同一性）`,
+    );
+    // 宿主面的对照：两处都写不进去（`policy.context.<leaf>` 拒、`capabilities.hooks.<leaf>` 收），
+    // 于是「同一引用」在宿主面只剩**一处**可写——冲突的前提不存在，不是被静默吃掉。
+    assert.throws(
+      () => makePort({ ...shellHomeOptions(leaf, same) }),
+      (error) => error instanceof TypeError
+        && new RegExp(`canonical home is capabilities\\.hooks\\.${leaf}`, "u").test(error.message),
+      `${leaf}：壳内老槽位在 policy 上必须当场拒`,
+    );
+    assert.doesNotThrow(
+      () => makePort({ capabilities: { hooks: { [leaf]: same } } }),
+      `${leaf}：capabilities.hooks 是唯一可写处`,
     );
   }
 });
@@ -1019,11 +1034,18 @@ test("C16 优先级方向（judgeProvider）：reflection.judge.provider 与 cap
       return { content: [{ type: "text", text: JSON.stringify({ done: false, confidence: 0.8, reason: "端口", evidence: "端口" }) }] };
     },
   };
-  // #530: 壳槽位（`reflection.judge.provider`）在扁平写法退役后只剩装配口 `policy` 一条路；
-  // `reflection` 的数据半边也写进 policy（显式 `reflection` 会整棵覆盖 policy，壳槽位就没了）。
+  // ⚠ #545：壳槽位（`reflection.judge.provider`）是**端口对象**（有 `chat` 方法），`policy` 只收数据
+  // ⇒ 它在构造期就被拒并指 `capabilities.ports.judgeProvider`，「壳 vs 端口位」在宿主面构造不出来。
+  // 本格因此先钉「老槽位写不进去」，再钉端口位**真的拿到唯一一发 judge 请求**（优先级方向的可观察面）。
+  assert.throws(
+    () => makePort({ reflection: { enabled: true, judgeIntervalRound: 2, judge: { provider: shellJudge } } }),
+    (error) => error instanceof TypeError
+      && /canonical home is capabilities\.ports\.judgeProvider/u.test(error.message),
+    "壳内 judge.provider 必须当场拒并指 capabilities.ports.judgeProvider",
+  );
   const result = await runDirect({
     assemblyPort: makePort({
-      reflection: { enabled: true, judgeIntervalRound: 2, judge: { provider: shellJudge } },
+      reflection: { enabled: true, judgeIntervalRound: 2 },
       capabilities: { ports: { judgeProvider: portJudge } },
     }),
     provider: main,

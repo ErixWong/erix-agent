@@ -50,6 +50,11 @@ import {
   isSummarizerKnobKey,
 } from "../src/assembly-validators.js";
 import { createSlidingWindowStrategy } from "../src/compact/sliding-window.js";
+import {
+  CONFIG_NAMESPACE_GROUPS,
+  CONFIG_NAMESPACE_SCHEMA,
+  NAMESPACE_CONTAINER_OPTION_NAMES,
+} from "../src/loop/config-namespace.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { runDirect as sharedRunDirect, withSeed } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
@@ -122,8 +127,32 @@ function makePort(policy = {}, { emit } = {}) {
   });
 }
 
+/** `policy` 的可接受名字（#545）：`config` 的叶子 + 两个容器。派生，不手抄。 */
+const POLICY_LEAF_SET = new Set(CONFIG_NAMESPACE_GROUPS.flatMap((group) => CONFIG_NAMESPACE_SCHEMA[group]));
+const POLICY_CONTAINERS = new Set(NAMESPACE_CONTAINER_OPTION_NAMES);
+
+/**
+ * 把一份「宿主配置」按 #545 的裁决分派到装配口的两条拼写面上：配置叶子 / 容器进 `policy`，
+ * 其余名字（能力名、第三站选项）走**显式选项**——它们本来就住那儿，`policy` 只收数据。
+ *
+ * @param {Record<string, any>} input
+ * @returns {{policy: Record<string, any>, explicit: Record<string, any>}}
+ */
+function splitAssemblySpelling(input) {
+  const policy = {};
+  const explicit = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (POLICY_LEAF_SET.has(key) || POLICY_CONTAINERS.has(key)) policy[key] = value;
+    else explicit[key] = value;
+  }
+  return { policy, explicit };
+}
+
 /** 装配口路线的「抛了什么」：构造期（policy）或合并后（显式选项）任一处抛都算。 */
-const assemblyError = (policy = {}, explicit = {}) => {
+const assemblyError = (input = {}, explicit = {}) => {
+  const split = splitAssemblySpelling(input);
+  const policy = split.policy;
+  const callExplicit = { ...split.explicit, ...explicit };
   // #498 S3 A2b：种子的规位家是 `config.input.initialUserMessage`，而**调用级 `config` 会整棵覆盖
   // `policy.config`**（既有合并规则，不是新规矩）。所以种子必须放进 policy 自己的配置树——写成显式
   // `config` 会把本格要测的那个坏值一起顶掉，于是「装配口也必须抛」变成假绿。
@@ -151,11 +180,11 @@ const assemblyError = (policy = {}, explicit = {}) => {
   // 落点（与扁平样本无关）；A23a 那半「让位给调用方扁平样本」的让位语义已经删掉——默认值现在
   // 直接写在 `run` 组最前面，调用方给的 `config.run.completion` 照旧赢。
   const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
-  const explicitConfig = explicit.config;
+  const explicitConfig = callExplicit.config;
   const runIsMergeable = explicitConfig === undefined || (isPlainObject(explicitConfig)
     && (explicitConfig.run === undefined || isPlainObject(explicitConfig.run)));
   let port = makePort(seeded);
-  const callOptions = { ...explicit };
+  const callOptions = { ...callExplicit };
   if (!runIsMergeable) {
     // 形状拒绝格：原样透传（补任何东西都会把那一格的拒绝换成另一条红）。
   } else if (explicitConfig !== undefined) {

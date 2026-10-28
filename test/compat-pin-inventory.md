@@ -244,7 +244,7 @@
 | `test/loop-option-normalization.test.js` | 0（容器/白名单面） | `RUN_TOOL_LOOP_OPTION_NAMES` 的**顺序与 67 条**、未知键建议、预检相位（`Proxy` 钉「端口未被触碰」）、容器展开顺序 |
 | `test/loop-config-namespace-497.test.js` | 16 | `config` 名称/形状预检、`config_override_conflict`、函数值拒绝（`is not accepted`）、三向闭合自检 |
 | `test/loop-capabilities-namespace-498.test.js` | 20 | `capabilities` 名称/形状预检、`hooks` 叶子必须是函数（`must be a function`）、`config_override_conflict`（`path: "hooks.<leaf>"`）、容器赢扁平的优先级 |
-| `test/loop-capabilities-ports-hooks-498s4c.test.js` | 7 | `ports.*` / 4 个 in-shell 回调 / 两个形态多态旋钮的**目的地表**与冲突路径、`sleepImpl` 被真的调到（行为证据） |
+| `test/loop-capabilities-ports-hooks-498s4c.test.js` | 4 | `ports.*` / 4 个 in-shell 回调 / 两个形态多态旋钮的**目的地表**与冲突路径、`sleepImpl` 被真的调到（行为证据）。#545 之后 in-shell 那一侧的写点降到 4：壳内函数载体的冲突只能在**展开层**构造（`policy` 只收数据），`onEvent` 写点保留 |
 | `test/loop-option-gate-496.test.js` | 15 | 选项闸：接受面 = 白名单（`unknown runToolLoop option`）、语义相取值校验、`onFoldSummary` / `finalGuard` / `deliverables` 的形状报错 |
 | `test/loop-guard-slice-498s3e.test.js` | 1 | #498 S3 `guard` 片的**选项面钉**：三个数据键的旧名反向拒绝（逐字文案 + 新家路径）、混装壳只点一站、**`finalGuard` / `finalGuardVerdict` 没被本刀动过**（P5）、三向闭合与 schema 自检、禁手抄键数（A2 扫全 `test/`） |
 | `test/loop-tuning-keys-slice-498s3a5.test.js` | 0（容器/白名单面） | #498 S3 `tuning` A5 片的**选项面钉**：三个采样/预算键的旧名反向拒绝（逐字文案 + 新家路径）、混装壳只点一站、**`maxTokenContinuations` 与槽位面同名字段没被本刀动过**（P5，另加装配口 `policy.maxTokens` 与 provider 请求字段两个旁证面）、三向闭合与 schema 自检、禁手抄键数（A2 扫全 `test/`）。**能力面 0 写点**（它不碰任何 `on*` 回调），所以本表这一行是 `0` 而不是数字 |
@@ -432,7 +432,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/host-cwd-wiring.test.js` | 8 | `finalGuard`×5, `deliverables`×3 | OWNED-BY-S5 |
 | `test/loop-context-on-fold-summary-retired-499.test.js` | 8 | `onFoldSummary`×7, `onEvent`×1 | COMPAT-PIN |
 | `test/providers/v020-beta.test.js` | 8 | `onEvent`×2, `onReasoningDelta`×2, `onToolCall`×2, `onUsage`×2 | MIGRATE · NOT-OPTION-SURFACE（非 runToolLoop 选项面，无规位） |
-| `test/loop-capabilities-ports-hooks-498s4c.test.js` | 7 | `onEvent`×7 | COMPAT-PIN |
+| `test/loop-capabilities-ports-hooks-498s4c.test.js` | 4 | `onEvent`×4 | COMPAT-PIN |
 | `test/providers/openai-stream.test.js` | 6 | `onEvent`×2, `onReasoningDelta`×2, `onDelta`×1, `onUsage`×1 | MIGRATE · NOT-OPTION-SURFACE（非 runToolLoop 选项面，无规位） |
 | `test/cli.test.js` | 2 | `finalGuard`×2 | OWNED-BY-S5 |
 | `test/compact/provider-summarizer.test.js` | 2 | `onUsage`×2 | MIGRATE · NOT-OPTION-SURFACE（非 runToolLoop 选项面，无规位） |
@@ -448,7 +448,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 
 ### 分派小结（按上表口径，**S7c 迁完之后**实测）
 
-**「写点」这一列的口径是「现在仍在树上的写点数」**，所以列和必须 = 合计 **170**（逐点只算一次）。
+**「写点」这一列的口径是「现在仍在树上的写点数」**，所以列和必须 = 合计 **167**（逐点只算一次）。
 
 | 类 | 文件数 | 写点（现在仍在树上） |
 | --- | --- | --- |
@@ -458,14 +458,14 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `MIGRATE · S7c`（**本刀已迁完 90 点中的 87**；另 3 点重分类，见下条） | 17 | 0 |
 | `MIGRATE · 含 COMPAT-PIN 格`（迁搭台写点，**逐格**跳过选项面断言） | 3 | 38 |
 | `MIGRATE · NOT-OPTION-SURFACE`（重分类：不是 `runToolLoop` 选项面，**没有规位**） | 9 | 31 |
-| `COMPAT-PIN` | 10 | 67 |
+| `COMPAT-PIN` | 10 | 64 |
 | `OWNED-BY-S5` | 5 | 13 |
 | `OWNED-BY-S6` | 5 | 21 |
-| **合计（现在实测）** | **64** | **170** |
+| **合计（现在实测）** | **64** | **167** |
 
 脚注：
 
-* 写点列和 = `0 + 0 + 0 + 0 + 38 + 31 + 67 + 13 + 21 = 170`，与本列合计逐字相等（`--verify` 逐行核）。
+* 写点列和 = `0 + 0 + 0 + 0 + 38 + 31 + 64 + 13 + 21 = 167`，与本列合计逐字相等（`--verify` 逐行核）。
 * `NOT-OPTION-SURFACE` 这一类的 31 点**不是「没做完」**：它们是 provider `chatStream(...)` 的回调
   （24）、`createProviderSummarizer({ onUsage })`（2）、`run-snapshot-executor` 的 ctx 字段（1）、
   `tool-fact-success-parity` 里 `MIGRATION_TABLE` 的**数据行字段**（1），**加上 S7c 本刀重分类的 3 点**
@@ -675,7 +675,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | 文件 | 写点 | 明细 |
 | --- | --- | --- |
 | `test/judge.test.js` | 109 | `completion`×55, `reflection`×52, `stallDetection`×2 |
-| `test/loop-capabilities-ports-hooks-498s4c.test.js` | 54 | `wrapup`×18, `context`×7, `onEvent`×7, `reflection`×6, `retry`×6, `judgeProvider`×4, `session`×3, `sleepImpl`×3, `strategy`×3, `tools`×3, `completion`×1 |
+| `test/loop-capabilities-ports-hooks-498s4c.test.js` | 53 | `wrapup`×14, `context`×8, `reflection`×8, `retry`×6, `judgeProvider`×4, `onEvent`×4, `session`×3, `sleepImpl`×3, `strategy`×3, `tools`×3, `completion`×1 |
 | `test/cli.test.js` | 74 | `session`×36, `prompt`×29, `reflection`×4, `tools`×3, `finalGuard`×2, `completion`×1, `context`×1 |
 | `test/loop-resume.test.js` | 12 | `tools`×8, `resume`×4 |
 | `test/loop-option-gate-496.test.js` | 17 | `context`×7, `onFoldSummary`×7, `finalGuard`×6, `tools`×3, `deliverables`×2, `session`×2, `completion`×1, `partialPersistence`×1, `sleepImpl`×1, `stallDetection`×1, `wrapup`×1 |
@@ -698,7 +698,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/output-aggregate-budget.test.js` | 14 | `outputHygiene`×7, `completion`×4, `reflection`×2, `resume`×1 |
 | `test/output-hygiene.test.js` | 14 | `completion`×7, `outputHygiene`×6, `resume`×1 |
 | `test/wrapup.test.js` | 14 | `completion`×11, `reflection`×3 |
-| `test/loop-context-on-fold-summary-retired-499.test.js` | 16 | `onFoldSummary`×7, `context`×6, `completion`×2, `stallDetection`×2, `tools`×2, `wrapup`×2, `onEvent`×1, `session`×1, `strategy`×1 |
+| `test/loop-context-on-fold-summary-retired-499.test.js` | 16 | `context`×7, `onFoldSummary`×7, `completion`×2, `stallDetection`×2, `tools`×2, `wrapup`×2, `onEvent`×1, `session`×1 |
 | `test/sessions.test.js` | 16 | `session`×16 |
 | `test/loop-abort-terminal-priority.test.js` | 15 | `reflection`×5, `stallDetection`×5, `completion`×4, `judgeProvider`×1 |
 | `test/loop-metadata-keys-slice-498s3a8.test.js` | 16 | `tools`×6, `modelMetadata`×3, `completion`×2, `session`×2, `wrapup`×2, `context`×1 |

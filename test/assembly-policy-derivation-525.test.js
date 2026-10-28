@@ -1,40 +1,43 @@
-// issue #525 —— `ASSEMBLY_POLICY_OPTION_NAMES`（`src/assembly.js` 里的模块私有 Set）能不能改成
-// **派生式**？本文件是这件事的机器核对。结论：**今天不能**，而下面的断言把「为什么不能」钉成了活的
-// 反向证，而不是一段散文。
+// issue #525 的守卫，**判据已按 #545 收敛**（本文件在 #545 里改写，不是放宽）。
 //
-// 病（实测，不是估算）：字面量 46 条里有 29 条是已退役的扁平拼写（`system` / `retry` / `maxTokens` /
-// `reflection` …），它们逐条都能在今天的 `CONFIG_NAMESPACE_SCHEMA` 里查到规范之家。也就是说这张表
-// **本身就是一份手抄的第二拼写面**，而它正是 #545 的数据来源——这正是本单点名要派生的理由。
+// 历史（#525 落地时）：`ASSEMBLY_POLICY_OPTION_NAMES`（`src/assembly.js` 里的模块私有 Set）是一张
+// **手抄的 46 条字面量**，而它逐条都能在三个面里找到家 —— 也就是说「policy 接受哪些名字」这张表
+// 本身就是一份**第二拼写面**。当时本文件钉的是「派生化会改变行为」，其中 C1 是反向证：
+// `runId` 在派生并集里、不在被接受集合里，而 #544 的合并后闸口（`assertMergedOptionNames`）**带着
+// policy 豁免**，所以只要 policy 还收退役拼写，`policy.runId` 就借那道豁免穿过闸口。
 //
-// 但「派生化」不等于「换成并集」：并集（`RUN_TOOL_LOOP_OPTION_NAMES` ∪ config 叶子 ∪ 能力叶子）是
-// 字面量的**严格超集**（实测 76 ⊃ 46），差集 30 条里既有 12 个已退役的 config 叶子（`runId` /
-// `resume` / `cwd` / `invalidArguments` …），也有 9 个白名单本来就有、字面量却忘掉的合法选项
-// （`provider` / `tools` / `store` …）与 9 个从来没有扁平拼写的**能力槽位**（`onReflection` /
-// `sleepImpl` …）。放行退役叶子等于让 `policy.runId` 这种拼写活过来——而 #544 的合并后闸口
-// （`assertMergedOptionNames`）收上去的目的恰恰是让「引擎自己产的名字」与「宿主写的名字」受同一套
-// 合法性约束。并集会直接把它打开（T4 是这条的反向证）。
+// #545 把那条路封了（本片就是 #525 的前置）：
+//   ① 字面量删了 —— 可接受集合**派生**自 schema：`config` 的叶子 + 两个容器
+//      （`config` / `capabilities`）。集合里没有任何一条是手写的名字；
+//   ② 叶子名**一律翻译**成规范路径（`policy.maxRounds` → `config.run.maxRounds`，路径由
+//      schema / `configPathForOption` 派生，不写第二张映射表）；
+//   ③ 其余名字当场拒，判词指对家（能力名 → `policy.capabilities.<组>.<叶>`；端口成员 → 端口本体）；
+//   ④ `assertMergedOptionNames` 的 **policy 豁免摘掉了**，于是「引擎自己产的名字」与「宿主写的名字」
+//      真的受同一条约束（D 段是这件事的机器证明）。
 //
-// 所以本文件钉四件事，判据全部**派生**（不硬编码条数，也不往派生式里塞特例名单）：
-//   ① 每个被 policy 接受的名字都在某个面有家（白名单 / `configPathForOption` /
-//      `capabilitiesPathForOption`）——这条是防「第二拼写面」重新长出来的那道闸；
-//   ② 派生并集逐条包含今天的字面量（改名/删名会让它红），且差集里每个名字都可**分类**：
-//      要么是白名单的合法选项，要么是「有家但被严格闸口拒绝」的退役扁平拼写；三族都非空；
-//   ③ 反向证：`runId` 在派生并集里、**不在**被接受集合里，且合并后闸口必须仍然拒绝它——
-//      谁采纳并集，这一条必红并点名 `runId`（这是本单「行为零变化」那半边的机器证明）；
-//   ④ 行为级：真装配端口（`createAssemblyPort` / `assemblyPortOptions`）对集合内名字逐个放行、
-//      对集合外乱名逐个拒绝。名称闸口在读任何宿主端口之前，所以这条不需要真模型、很便宜。
+// 判据全部**派生**：不硬编码 41 / 46 / 76 之类的条数，也不往派生式里塞特例名单——数变了要么自动跟随，
+// 要么在这里红。
 //
-// 不导出 `ASSEMBLY_POLICY_OPTION_NAMES`：导出会进 `check:exports` 的消费面账目，而「读源码字面量 +
-// 行为级探针」已经够用。零真实 LLM、不写盘、不碰真实 `~/.erix`。
+// 不导出 policy 的可接受集合（`src/assembly.js` 里它是模块私有的派生 Set）：导出会进 `check:exports`
+// 的消费面账目，而「行为级探针 + schema 派生」已经够用。零真实 LLM、不写盘、不碰真实 `~/.erix`。
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 
-import { assemblyPortOptions, assertMergedOptionNames, createAssemblyPort } from "../src/assembly.js";
 import {
+  assemblyPortOptions,
+  assertMergedOptionNames,
+  collectAssemblyDerivedConfigConflicts,
+  collectAssemblyPolicyConfigConflicts,
+  createAssemblyPort,
+} from "../src/assembly.js";
+import {
+  CAPABILITY_OPTION_NAMES,
   CONFIG_NAMESPACE_GROUPS,
   CONFIG_NAMESPACE_SCHEMA,
+  CONFIG_SURFACE_OPTION_NAMES,
+  NAMESPACE_CONTAINER_OPTION_NAMES,
+  TOP_LEVEL_SURFACE_OPTION_NAMES,
   configPathForOption,
 } from "../src/loop/config-namespace.js";
 import {
@@ -45,63 +48,39 @@ import {
 import {
   RUN_TOOL_LOOP_OPTION_NAMES,
   RUN_TOOL_LOOP_OPTION_SET,
-  assertRunToolLoopOptionNames,
 } from "../src/loop/option-normalization.js";
 
-// ================================================================ 三个集合，全部派生
+// ================================================================ 集合，全部派生
+
+/** `config` 的叶子（顺序 = 分组顺序 + 组内顺序）。 */
+const CONFIG_LEAVES = CONFIG_NAMESPACE_GROUPS.flatMap((group) => CONFIG_NAMESPACE_SCHEMA[group]);
+const CONFIG_LEAF_SET = new Set(CONFIG_LEAVES);
+const CONTAINERS = [...NAMESPACE_CONTAINER_OPTION_NAMES];
+const CONTAINER_SET = new Set(CONTAINERS);
+
+/** 能力面的**叶子**名（`hooks.*` / `checks.*` / `ports.*`），派生的，不是手抄。 */
+const CAPABILITY_LEAVES = CAPABILITIES_NAMESPACE_GROUPS.flatMap((group) => CAPABILITIES_NAMESPACE_SCHEMA[group]);
 
 /**
- * `src/assembly.js` 里那份字面量的**原样**条目（含顺序与重复）。
- *
- * 为什么读源码而不是导出符号：那个 Set 是模块私有的，导出只为测试会把它推进 `check:exports` 的
- * 消费面账目；而这里要的是「今天这张手抄表到底写了什么」这个**历史快照**，读字面量正好。
+ * 一张「这个名字在别的面存在」的派生全集：顶层白名单 + 能力选项 + 能力叶子 + schema 会映射到的
+ * 扁平名（含 `initialMessages` 这条唯一的别名）+ 第三站。policy 的可接受集合必须与
+ * 「它减去叶子再减去容器」**零交集**——这一条就是「policy 只收数据」的机器表述。
  */
-function policyLiteralEntries() {
-  const source = readFileSync(new URL("../src/assembly.js", import.meta.url), "utf8");
-  const block = /const ASSEMBLY_POLICY_OPTION_NAMES = new Set\(\[([\s\S]*?)\]\);/u.exec(source);
-  assert.notEqual(block, null, "`src/assembly.js` 里必须还有 `ASSEMBLY_POLICY_OPTION_NAMES` 这个 Set 字面量");
-  return [...block[1].matchAll(/"([^"]+)"/gu)].map((match) => match[1]);
-}
-
-const LITERAL_ENTRIES = policyLiteralEntries();
-const ACCEPTED = new Set(LITERAL_ENTRIES);
-
-/** 派生式：一个名字能合法存在的三个地方（与工单给的口径逐字相同）。 */
-const DERIVED = new Set([
+const EVERY_OTHER_NAME = [...new Set([
   ...RUN_TOOL_LOOP_OPTION_NAMES,
-  ...CONFIG_NAMESPACE_GROUPS.flatMap((group) => CONFIG_NAMESPACE_SCHEMA[group]),
-  ...CAPABILITIES_NAMESPACE_GROUPS.flatMap((group) => CAPABILITIES_NAMESPACE_SCHEMA[group]),
-]);
-
-/** 差集：派生并集有、今天的字面量没有。 */
-const DELTA = [...DERIVED].filter((name) => !ACCEPTED.has(name));
+  ...CAPABILITY_OPTION_NAMES,
+  ...CAPABILITY_LEAVES,
+  ...CONFIG_SURFACE_OPTION_NAMES,
+  ...TOP_LEVEL_SURFACE_OPTION_NAMES,
+])].filter((name) => !CONFIG_LEAF_SET.has(name) && !CONTAINER_SET.has(name));
 
 /**
- * 某个名字的**配置面**路径（`"run.maxRounds"`）。两种拼写都算：叶子名逐字（`messages`）与叶子
- * 映射到的顶层键名（`initialMessages`，`CONFIG_LEAF_ALIASES` 的唯一一格）。
+ * 叶子的规范路径（`messages` → `input.messages`）：schema 里它住在哪一组，路径就是哪一组 + 它自己。
+ * 与实现的派生同源（都从 `CONFIG_NAMESPACE_SCHEMA` 来），但**不是**照抄实现里的分支。
  */
-function configLeafPath(name) {
-  for (const group of CONFIG_NAMESPACE_GROUPS) {
-    if (CONFIG_NAMESPACE_SCHEMA[group].includes(name)) return `${group}.${name}`;
-  }
-  return configPathForOption(name);
-}
-
-/** 某个名字的**能力面**路径（`"hooks.onRound"`），同样两种拼写都算。 */
-function capabilityLeafPath(name) {
-  for (const group of CAPABILITIES_NAMESPACE_GROUPS) {
-    if (CAPABILITIES_NAMESPACE_SCHEMA[group].includes(name)) return `${group}.${name}`;
-  }
-  return capabilitiesPathForOption(name);
-}
-
-/** 某个名字的「家」：`"top-level"` / `"config.<group>.<leaf>"` / `"capabilities.<group>.<leaf>"`。 */
-function homeOf(name) {
-  const configHome = configLeafPath(name);
-  if (configHome !== undefined) return `config.${configHome}`;
-  const capabilityHome = capabilityLeafPath(name);
-  if (capabilityHome !== undefined) return `capabilities.${capabilityHome}`;
-  return RUN_TOOL_LOOP_OPTION_SET.has(name) ? "top-level" : undefined;
+function leafPath(leaf) {
+  const group = CONFIG_NAMESPACE_GROUPS.find((candidate) => CONFIG_NAMESPACE_SCHEMA[candidate].includes(leaf));
+  return group === undefined ? undefined : `${group}.${leaf}`;
 }
 
 /** 最小合法装配端口输入（`modelConfig.resolve` 是唯一一个会被 await 的成员，这里给纯数据）。 */
@@ -115,113 +94,168 @@ function portInput(policy) {
   };
 }
 
-// ================================================================ ① 每个名字都有家
-
-test("A1 字面量本身：无重复条目（Set 字面量里重复 = 手抄表已经烂了的信号）", () => {
-  assert.ok(LITERAL_ENTRIES.length > 0, "字面量必须非空（否则本文件的核对对象消失了）");
-  assert.equal(new Set(LITERAL_ENTRIES).size, LITERAL_ENTRIES.length, "字面量里不许有重复条目");
-});
-
-test("A2 每个被 policy 接受的名字都在某个面有家（防第二拼写面重新长出来）", () => {
-  const homeless = [...ACCEPTED].filter((name) => homeOf(name) === undefined);
-  assert.deepEqual(
-    homeless,
-    [],
-    `这些名字被 policy 放行却在白名单 / config / capabilities 三面都没有家：${homeless.join(", ")}`,
-  );
-});
-
-// ================================================================ ② 派生 ⊇ 字面量，且差集可分类
-
-test("B1 派生并集逐条包含今天的字面量（改一个名字就红）", () => {
-  const dropped = [...ACCEPTED].filter((name) => !DERIVED.has(name));
-  assert.deepEqual(
-    dropped,
-    [],
-    `派生化会**丢掉**这些今天被接受的名字（那就是行为变化）：${dropped.join(", ")}`,
-  );
-});
-
-test("B2 差集里每个名字都可分类：合法选项 / 有家的退役扁平拼写；三族都非空", () => {
-  for (const name of DELTA) {
-    assert.notEqual(homeOf(name), undefined, `${name} 在派生并集里却没有家——派生式被污染了`);
-    if (RUN_TOOL_LOOP_OPTION_SET.has(name)) continue;
-    // 有家、却不是合法顶层选项 ⇒ 它是「退役扁平拼写」。严格闸口必须拒绝它，否则它就不是退役的。
-    assert.throws(
-      () => assertRunToolLoopOptionNames({ [name]: 1 }),
-      (error) => error instanceof TypeError && error.message.startsWith(`unknown runToolLoop option: ${JSON.stringify(name)}`),
-      `${name} 既不在白名单又有家，就只可能是退役扁平拼写；严格闸口必须拒绝它`,
-    );
+function portError(policy) {
+  try {
+    createAssemblyPort(portInput(policy));
+  } catch (error) {
+    return error;
   }
-  // 三族各自非空：差集不是「只多出某一类」，而是三类都缺（这条才是本单的发现本身）。
-  const forgotLegalOption = DELTA.filter((name) => RUN_TOOL_LOOP_OPTION_SET.has(name));
-  const retiredConfigLeaf = DELTA.filter((name) => !RUN_TOOL_LOOP_OPTION_SET.has(name)
-    && configLeafPath(name) !== undefined);
-  const capabilitySlot = DELTA.filter((name) => !RUN_TOOL_LOOP_OPTION_SET.has(name)
-    && configLeafPath(name) === undefined && capabilityLeafPath(name) !== undefined);
-  assert.ok(
-    forgotLegalOption.length > 0,
-    "差集里必须有「白名单本来就有、字面量却忘掉」的合法选项（policy.provider 今天会被拒 = 面本身不自洽）",
-  );
-  assert.ok(retiredConfigLeaf.length > 0, "差集里必须有「有 config 家、字面量没有」的退役扁平拼写");
-  assert.ok(capabilitySlot.length > 0, "差集里必须有「只有能力槽位、从来没有扁平拼写」的名字");
-});
+  return null;
+}
 
-// ================================================================ ③ 反向证：#544 的闸门挡住并集
+// ================================================================ A. 可接受集合 = 叶子 + 容器
 
-test("C1 反向证：`runId` 在派生并集里、不在被接受集合里，合并后闸口必须仍然拒绝它", () => {
-  // 派生化 = 放行差集里的退役 config 叶子。`runId` 就是那一族的样板：它有 config 家
-  // （`config.run.runId`），严格闸口拒它，而 #544 的合并后闸口收上去就是为了让引擎自己产的名字
-  // 也受同一条约束（`assemblyPortBaseOptions` 曾经把 `runId` / `initialMessages` 扁平产出去）。
-  assert.equal(DERIVED.has("runId"), true, "派生并集必然包含 runId（它今天仍在 config.run 里）");
-  assert.equal(ACCEPTED.has("runId"), false, "今天的 policy 面不放行 runId——采纳派生并集就会放行");
-  // ⚠ 这条是「行为零变化」的机器证明：谁把字面量换成并集，这里立刻红并点名 runId。
-  assert.throws(
-    () => assertMergedOptionNames({ provider: {}, runId: "flat-again" }),
-    (error) => error instanceof TypeError
-      && error.message === 'unknown runToolLoop option: "runId"'
-        + " (its canonical home is config.run.runId; the flat spelling is rejected)",
-    "采纳派生并集会让 #544 的合并后闸口放过 runId：那是行为变化，属于 #545 的翻译活，不属于本单",
-  );
-});
-
-// ================================================================ ④ 行为级：真装配端口
-
-test("D1 集合内每个名字都被装配口接受（真入口 `createAssemblyPort`，不读宿主端口）", () => {
-  for (const name of ACCEPTED) {
+test("A1 每个 schema 叶子都被接受（全部派生，不硬编码条数）", () => {
+  assert.ok(CONFIG_LEAVES.length > 0, "config schema 不能为空（否则本文件的核对对象消失了）");
+  assert.equal(CONFIG_LEAF_SET.size, CONFIG_LEAVES.length, "schema 里不许有重复叶子");
+  for (const leaf of CONFIG_LEAVES) {
     assert.doesNotThrow(
-      () => createAssemblyPort(portInput({ [name]: undefined })),
-      `${name} 是 policy 白名单里的名字，装配口必须放行`,
+      () => createAssemblyPort(portInput({ [leaf]: undefined })),
+      `${leaf} 是 config 叶子，policy 必须放行`,
     );
   }
 });
 
-test("D2 集合外乱名逐个被拒，文案逐字（`unknown assembly policy option: \"<name>\"`）", () => {
-  // 乱名从**派生并集之外**取，且不写死任何具体名字：拿三个结构性不同的假名。
+test("A2 两个容器被接受（`config` / `capabilities` 今天都是真语义）", () => {
+  assert.deepEqual(CONTAINERS, ["config", "capabilities"], "容器名单来自 `NAMESPACE_CONTAINER_OPTION_NAMES`");
+  for (const container of CONTAINERS) {
+    assert.doesNotThrow(
+      () => createAssemblyPort(portInput({ [container]: undefined })),
+      `${container} 是容器，policy 必须放行`,
+    );
+  }
+});
+
+test("A3 其余名字一律拒：白名单 / 能力名 / 能力叶子 / 退役扁平名（派生全集逐个扫）", () => {
+  assert.ok(EVERY_OTHER_NAME.length > 0, "派生全集不能为空（否则这条探针空转）");
+  for (const name of EVERY_OTHER_NAME) {
+    const error = portError({ [name]: 1 });
+    assert.notEqual(error, null, `${name} 不是 config 叶子也不是容器，policy 必须拒绝`);
+    assert.ok(error instanceof TypeError, `${name}: 拒绝必须是 TypeError`);
+    assert.ok(error.message.startsWith(`unknown assembly policy option: ${JSON.stringify(name)}`),
+      `${name}: 判词必须以「unknown assembly policy option: <name>」开头，实测 ${error.message}`);
+  }
+});
+
+// ================================================================ B. 判词指对家
+
+test("B1 能力名 ⇒ 判词点到 `policy.capabilities.<组>.<叶>`（不是含糊的「未知」）", () => {
+  const withCapabilityHome = EVERY_OTHER_NAME.filter((name) => capabilitiesPathForOption(name) !== undefined);
+  assert.ok(withCapabilityHome.length > 0, "必须有「有 capabilities 之家」的名字（否则这条判据空转）");
+  for (const name of withCapabilityHome) {
+    const path = capabilitiesPathForOption(name);
+    const error = portError({ [name]: 1 });
+    assert.match(error.message, new RegExp(`policy\\.capabilities\\.${path.replaceAll(".", "\\.")}`, "u"),
+      `${name} 的判词必须点名 policy.capabilities.${path}，实测 ${error.message}`);
+  }
+});
+
+test("B2 端口成员 ⇒ 判词点名「端口本体 / 同一能力两个来源」，且**不**指向 capabilities", () => {
+  const portMembers = ["provider", "tools", "executeTool", "store", "modelConfig", "assemblyPort", "session", "signal"];
+  for (const name of portMembers) {
+    // 自证：这八个名字确实都在第三站（永久顶层面），不是本测试凭空点名的。
+    assert.ok(TOP_LEVEL_SURFACE_OPTION_NAMES.includes(name), `${name} 必须是第三站成员`);
+    const error = portError({ [name]: 1 });
+    assert.match(error.message, /supplied by the port itself/u, `${name}: 判词必须说「端口给的」`);
+    assert.match(error.message, /same capability with two sources/u, `${name}: 判词必须说「同一能力两个来源」`);
+    assert.doesNotMatch(error.message, /policy\.capabilities/u, `${name}: 端口成员不该被指到 capabilities`);
+  }
+});
+
+test("B3 真·乱名逐字维持旧文案（没有去处就不编造去处）", () => {
   const junk = ["definitelyNotAPolicyOption", "maxTokensV2", "systemPrompt"];
   for (const name of junk) {
-    assert.equal(DERIVED.has(name), false, `${name} 必须真的在派生并集之外，否则这条探针无效`);
+    assert.equal(CONFIG_LEAF_SET.has(name), false, `${name} 必须真的不是叶子，否则这条探针无效`);
+    assert.equal(capabilitiesPathForOption(name), undefined, `${name} 必须真的没有 capabilities 之家`);
+    assert.equal(portError({ [name]: 1 }).message, `unknown assembly policy option: ${JSON.stringify(name)}`);
+  }
+});
+
+// ================================================================ C. 翻译（路径派生，不写映射表）
+
+test("C1 每个叶子都翻译到 `config.<路径>`（叶名 ≠ 顶层键名时也不落空）", async () => {
+  for (const leaf of CONFIG_LEAVES) {
+    const path = leafPath(leaf);
+    assert.equal(typeof path, "string", `${leaf} 必须住在某个 config 组里`);
+    // 派生式的两条腿：叶子名逐字等于顶层键名时由 `configPathForOption` 答，唯一的别名叶子
+    // （`input.messages`）由 schema 的叶子名答——两者都不写映射表。
+    const byTopLevelKey = configPathForOption(leaf);
+    if (byTopLevelKey !== undefined) {
+      assert.equal(byTopLevelKey, path, `${leaf}: configPathForOption 与 schema 必须给出同一条路径`);
+    }
+    const [group, name] = path.split(".");
+    // `context` 是唯一一个**值必须是对象**的叶子（语义相 `collectSemanticOptionProblems`），
+    // 其余叶子给字符串就够——本格量的是「翻译到哪」，不是「取值校验」（那由别的格子负责）。
+    const value = leaf === "context" ? {} : `translated:${leaf}`;
+    const options = await assemblyPortOptions(portInput({ [leaf]: value }), {});
+    assert.deepEqual(options.config?.[group]?.[name], value, `${leaf} 必须翻译成 config.${path}`);
+    assert.equal(Object.hasOwn(options, leaf), false, `${leaf} 不许同时以扁平名出现（那就是第二拼写面）`);
+  }
+});
+
+test("C2 `policy.config` 与翻译叶撞车：显式树赢，且逐叶报一条 `{ path, key }`", () => {
+  const port = createAssemblyPort(portInput({ maxRounds: 3, config: { run: { maxRounds: 5 } } }));
+  const conflicts = collectAssemblyPolicyConfigConflicts(port);
+  assert.deepEqual(conflicts, [{ path: "run.maxRounds", key: "maxRounds" }], "同一个旋钮两个来源不许静默");
+  // 值相同不记冲突（与 #497 的 `isDeepStrictEqual` 口径逐字相同）。
+  const same = createAssemblyPort(portInput({ maxRounds: 3, config: { run: { maxRounds: 3 } } }));
+  assert.deepEqual(collectAssemblyPolicyConfigConflicts(same), [], "等值不许被报成冲突");
+});
+
+test("C3 #544 的派生叶只补洞：`policy.runId` 赢 `session.id`，两者不同则报一条冲突", async () => {
+  const port = createAssemblyPort(portInput({ runId: "policy-runid" }));
+  assert.deepEqual(collectAssemblyPolicyConfigConflicts(port), [], "policy.runId 与 policy.config 之间没有冲突");
+  // 与派生叶（`session.id`）撞车：翻译叶是「树里的值」，派生叶只补洞 ⇒ 翻译叶赢，且不静默。
+  assert.deepEqual(collectAssemblyDerivedConfigConflicts(port), [{ path: "run.runId", key: "runId" }],
+    "policy.runId 与 session.id 是两个来源，值不同必须报一条");
+  const options = await assemblyPortOptions(portInput({ runId: "policy-runid" }), {});
+  assert.equal(options.config.run.runId, "policy-runid", "翻译叶赢：派生叶只补洞");
+  // 不给 `policy.runId` ⇒ 派生叶照旧补上（#544 的行为没被这一刀碰掉）。
+  const derived = await assemblyPortOptions(portInput({}), {});
+  assert.equal(derived.config.run.runId, `policy-derivation-525-${process.pid}`);
+});
+
+// ================================================================ D. 洞已关闭（豁免摘除）
+
+test("D1 合并后闸口不再给 policy 豁免：退役扁平名在合并树里必红", () => {
+  const retired = CONFIG_LEAVES.filter((name) => !RUN_TOOL_LOOP_OPTION_SET.has(name));
+  assert.ok(retired.length > 0, "必须有退役扁平名（否则这条反向证空转）");
+  for (const name of retired) {
     assert.throws(
-      () => createAssemblyPort(portInput({ [name]: 1 })),
+      () => assertMergedOptionNames({ provider: {}, [name]: "flat-again" }),
       (error) => error instanceof TypeError
-        && error.message === `unknown assembly policy option: ${JSON.stringify(name)}`,
-      `${name} 不是任何面的名字，必须逐字拒绝`,
+        && error.message.startsWith(`unknown runToolLoop option: ${JSON.stringify(name)}`),
+      `${name} 借 policy 豁免穿过合并后闸口 —— 豁免没摘干净`,
     );
   }
 });
 
-test("D3 真入口 `assemblyPortOptions(input, {})`：policy 名字进得了合并树，乱名在读端口前就抛", async () => {
-  const options = await assemblyPortOptions(portInput({ maxTokens: 1000 }), {});
-  assert.equal(options.maxTokens, 1000, "policy.maxTokens 是 policy 面自己的拼写，必须逐字进构造期产物");
-  // 乱名必须在**读任何宿主端口之前**抛（所以这里的 `modelConfig.resolve` 不会被调用）。
+test("D2 真端口产出的合并树里没有任何退役扁平名（policy 侧不再产旧拼写）", async () => {
+  const options = await assemblyPortOptions(portInput({ maxRounds: 3, system: "you are" }), {});
+  const retired = CONFIG_LEAVES.filter((name) => !RUN_TOOL_LOOP_OPTION_SET.has(name));
+  const leaked = Object.keys(options).filter((key) => retired.includes(key));
+  assert.deepEqual(leaked, [], `构造期产物里不该有扁平拼写：${leaked.join(", ")}`);
+  assert.equal(options.config.run.maxRounds, 3);
+  assert.equal(options.config.input.system, "you are");
+  // 闸口对**构造期产物**逐键放行（没有豁免也必须全绿）。
+  assert.doesNotThrow(() => assertMergedOptionNames(options), "合法产物不该被闸口拒");
+});
+
+// ================================================================ E. 相位：名称闸口在读端口之前
+
+test("E 乱名在**读任何宿主端口之前**抛（`modelConfig.resolve` 一次都不许被调）", async () => {
   let resolved = false;
   const input = portInput({ definitelyNotAPolicyOption: 1 });
-  input.modelConfig = { resolve: async () => { resolved = true; return { contextWindowTokens: 1000, maxOutputTokens: 16 }; } };
+  input.modelConfig = {
+    resolve: async () => {
+      resolved = true;
+      return { contextWindowTokens: 1000, maxOutputTokens: 16 };
+    },
+  };
   await assert.rejects(
     () => assemblyPortOptions(input, {}),
     (error) => error instanceof TypeError
       && error.message === 'unknown assembly policy option: "definitelyNotAPolicyOption"',
-    "乱名必须在装配期抛，而不是等到运行期",
   );
-  assert.equal(resolved, false, "名称闸口在读宿主端口之前：modelConfig.resolve 一次都不许被调");
+  assert.equal(resolved, false, "名称闸口在读宿主端口之前");
 });

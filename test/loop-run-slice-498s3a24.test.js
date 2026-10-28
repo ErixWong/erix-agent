@@ -358,7 +358,7 @@ test("N2 四向闭合与自检：账目是派生的，白名单仍被四个面�
  * 本身要**可执行地**钉住，否则下一个改冲突通道的人会把它当普通钉子删掉。所以这里不硬编码名字，
  * 而是从符号派生「谁还配当样本」，再去**读**那个文件里实际用的名字。
  */
-test("N3 冲突通道的活样本是派生的：必须仍在白名单、且 `policy` 能给（第三站永久顶层面）", async () => {
+test("N3 冲突通道的活样本是派生的：必须仍在白名单、且构造期真能产出（第三站永久顶层面）", async () => {
   const { readFileSync } = await import("node:fs");
   // 派生池①：`policy` 只能给「仍在白名单」的名字（覆盖名闭集 = 白名单，见 `assertAssemblyOverrideShape`）。
   // 派生池②：样本必须是**第三站**成员（无嵌套家 ⇒ 不会被本片这类「搬进 config」的动作带走）。
@@ -367,15 +367,30 @@ test("N3 冲突通道的活样本是派生的：必须仍在白名单、且 `pol
   const pool = thirdStation.filter((name) => RUN_TOOL_LOOP_OPTION_NAMES.includes(name));
   assert.deepEqual(pool, thirdStation, "第三站成员本来就都在白名单里");
 
-  // 读实际样本：`OVERRIDE_CONFLICT("<key>", "port.policy.<key>")` 那一格（origin 是 policy ⇒ 样本键）。
+  // 读实际样本：`OVERRIDE_CONFLICT("<key>", "<origin>")` 那一格（origin 点名构造期的来源）。
   const source = readFileSync(new URL("./contract/assembly-port.test.js", import.meta.url), "utf8");
-  const policySamples = [...source.matchAll(/OVERRIDE_CONFLICT\("([^"]+)", "port\.policy\.([^"]+)"\)/gu)]
-    .map((match) => match[1]);
-  assert.equal(policySamples.length > 0, true, "装配口那一格必须有一个 policy 侧样本（否则冲突通道无人守）");
-  for (const sample of policySamples) {
-    assert.equal(pool.includes(sample), true,
-      `冲突样本 ${JSON.stringify(sample)} 必须从派生池里挑（仍在白名单 + 第三站），不许是会被退役的扁平配置键`);
+  const samples = [...source.matchAll(/OVERRIDE_CONFLICT\("([^"]+)", "([^"]+)"\)/gu)]
+    .map((match) => ({ key: match[1], origin: match[2] }));
+  assert.equal(samples.length > 0, true, "装配口那一格必须有一个样本（否则冲突通道无人守）");
+  for (const { key: sample } of samples) {
+    // 硬约束：覆盖名闭集 = 白名单（`assertAssemblyOverrideShape`），所以样本必须在白名单里。
+    assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(sample), true,
+      `冲突样本 ${JSON.stringify(sample)} 必须仍在白名单里（覆盖名闭集 = 白名单）`);
+    // 派生约束：样本不许是会被「搬进 config」的动作带走的扁平配置键（`configPathForOption` 无家）。
+    assert.equal(configPathForOption(sample), undefined,
+      `冲突样本 ${JSON.stringify(sample)} 不许是配置叶子（叶子会被退役带走，样本必须换人）`);
   }
+  // 派生池非空 ⇒ 第三站确实提供了合法样本（这条池子仍在守「样本换人」的方向）。
+  assert.equal(samples.some(({ key: sample }) => pool.includes(sample)), true,
+    "至少有一个样本必须来自第三站（永久顶层面）");
+  // #545：`port.policy.<key>` 这条**来源**已经不存在了——`policy` 只收数据（叶子全翻译进 config，
+  // 容器走容器闸口），所以它一个「覆盖通道能点名」的键都产不出来。样本因此必须从**端口派生**键里挑，
+  // 这不是「通道被拆了」：上面那圈断言仍在守 `assertAssemblyOverrideConflicts`。
+  assert.deepEqual(
+    samples.filter(({ origin }) => origin.startsWith("port.policy.")),
+    [],
+    "policy 侧来源已关闭（#545）：样本不许再写成 port.policy.<key>",
+  );
   // 反向证：`reflection` 已经不在白名单里 ⇒ 它**不可能**再当样本（这正是「样本必须换人」的判据）。
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(KEY), false);
   assert.equal(pool.includes(KEY), false, "`reflection` 已不是合法样本：把它写回覆盖位撞的是名称闸口");
