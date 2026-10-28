@@ -113,7 +113,6 @@ function legacyFlatOptions(input) {
     signal,
     runId,
     store,
-    wrapup: false,
     // #498 S3 (`timing` slice): `timeoutMs` / `retry` no longer have a flat spelling — the golden
     // uses their canonical home `config.timing.*`. The equivalence claim is unaffected: the
     // expansion phase writes them back to `effectiveOptions.timeoutMs` / `.retry`, which is exactly
@@ -126,6 +125,9 @@ function legacyFlatOptions(input) {
       input: {
         system: system ?? core.buildSystemPrompt({ lib: { binTools: {} }, cwd: params.cwd, tools: tools.tools }),
         initialUserMessage: params.task,
+        // #528: `wrapup` lost its flat spelling; canonical home `config.input.wrapup` (same
+        // `config.input` group as the seed). The equivalence claim is unaffected.
+        wrapup: false,
       },
       timing: { timeoutMs: params.timeoutMs, retry: { attempts: 2 } },
       // #498 S3 A15: `cwd` is retired as a flat option too; its canonical home is `config.run.cwd`

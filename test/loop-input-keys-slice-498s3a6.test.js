@@ -65,7 +65,7 @@ function runDirect(extra = {}) {
     executeTool: async () => "ok",
     seed: "go",
     completion: false,
-    wrapup: false,
+    config: { input: { wrapup: false } },
     ...extra,
   });
 }
@@ -76,7 +76,7 @@ const directError = (extra = {}) => sharedDirectError({
   executeTool: async () => "ok",
   seed: "go",
   completion: false,
-  wrapup: false,
+  config: { input: { wrapup: false } },
   ...extra,
 });
 
@@ -385,7 +385,7 @@ test("R2 真 run：扁平 system 在**任何 provider 调用之前**就被拒（
     executeTool: async () => "ok",
     seed: "go",
     completion: false,
-    wrapup: false,
+    config: { input: { wrapup: false } },
     system: "SYS",
   });
   assert.equal(error instanceof TypeError, true);

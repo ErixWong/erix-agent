@@ -180,13 +180,13 @@ async function runProvenanceChain({
       maxRounds: 8,
       completion: false,
       reflection: false,
-      wrapup: false,
       // #498 S3 (`input` slice A): `initialMessages` retired; `config.input.messages` is its one
       // registered leaf alias (expansion writes it back to `effectiveOptions.initialMessages`).
       // #498 S3 A6: `system` retired as well — same group, same mechanism (`config.input.system`).
       // #498 S3 A13: `stallDetection` retired too (`config.run.stallDetection`); it joins the
       // **same** `config` container below — a second `config` key would silently win.
-      config: { input: { system: CLI_TOOLS_SYSTEM_PROMPT, messages: initialHistory(command) }, run: { stallDetection: false }, folding: { context: {
+      // #528: `wrapup` is retired as a flat option; its canonical home is `config.input.wrapup`.
+      config: { input: { system: CLI_TOOLS_SYSTEM_PROMPT, messages: initialHistory(command), wrapup: false }, run: { stallDetection: false }, folding: { context: {
                 budgetTokens: 2_000,
         keepRounds: 1,
       } } },

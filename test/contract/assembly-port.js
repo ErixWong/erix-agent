@@ -21,7 +21,7 @@ export function assemblyPortContract(label, createPort) {
     const result = await runToolLoop({
       assemblyPort: port,
       completion: false,
-      wrapup: false,
+      config: { input: { wrapup: false } },
       maxRounds: 1,
     });
     assert.equal(result.finalText, "assembled");
@@ -34,7 +34,7 @@ export function assemblyPortContract(label, createPort) {
     const result = await runToolLoop({
       assemblyPort: { ...port, emit: (type, payload) => events.push({ type, payload }) },
       completion: false,
-      wrapup: false,
+      config: { input: { wrapup: false } },
       maxRounds: 1,
     });
     assert.equal(result.termination.reason, "end_turn");
@@ -59,7 +59,7 @@ export function assemblyPortContract(label, createPort) {
         },
       },
       completion: false,
-      wrapup: false,
+      config: { input: { wrapup: false } },
       maxRounds: 1,
     });
     assert.equal(result.finalText, "explicit");
@@ -95,7 +95,7 @@ export function assemblyPortContract(label, createPort) {
       runToolLoop({
         assemblyPort: invalid,
         completion: false,
-        wrapup: false,
+        config: { input: { wrapup: false } },
         maxRounds: 1,
       }),
       (error) => error instanceof TypeError && /provider\.chat/u.test(error.message),

@@ -226,7 +226,7 @@ test("wrapup:false keeps completion signals working on plain text", async () => 
 
   const result = await runDirect({
     provider,
-    wrapup: false,
+    config: { input: { wrapup: false } },
     initialUserMessage: "工作",
     executeTool: async () => "ok",
     completion: { signals: ["任务已完成"], maxNoToolRounds: 3 },
@@ -250,7 +250,7 @@ test("ERIX_NO_WRAPUP_INSTRUCTION disables the complete wrapup protocol", async (
     }]);
     const result = await runDirect({
       provider,
-      wrapup: true,
+      config: { input: { wrapup: true } },
       initialUserMessage: "完成任务",
       executeTool: async () => "unused",
     });

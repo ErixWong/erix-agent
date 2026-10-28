@@ -78,7 +78,7 @@ function runDirect(extra = {}) {
     executeTool: async () => "ok",
     seed: "go",
     completion: false,
-    wrapup: false,
+    config: { input: { wrapup: false } },
     ...extra,
   });
 }
@@ -376,7 +376,7 @@ test("S2d2 两个 capabilities 源同时在场：调用级整棵覆盖（后写�
   const result = await runToolLoop({
     assemblyPort: port,
     completion: false,
-    wrapup: false,
+    config: { input: { wrapup: false } },
     capabilities: {
       hooks: {
         onEvent: (event) => {
@@ -399,7 +399,7 @@ test("S2d2 两个 capabilities 源同时在场：调用级整棵覆盖（后写�
   await runToolLoop({
     assemblyPort: makePort({ capabilities: { hooks: { onEvent: sameHook } } }),
     completion: false,
-    wrapup: false,
+    config: { input: { wrapup: false } },
     capabilities: { hooks: { onEvent: sameHook } },
     onEvent: (event) => quiet.push(event),
   });
