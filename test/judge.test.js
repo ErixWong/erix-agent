@@ -686,7 +686,10 @@ test("round judge fallback uses the latest non-empty user task from a multi-turn
     judgeResponse({ done: false, confidence: 0.8, reason: "继续", evidence: "还需工作" }),
   ]);
 
-  await runToolLoop({
+  // #498 S3 A21：`maxRounds` 退役扁平写法 ⇒ 这些格子改走 `runDirect`（同一个夹具出口
+  // `withSeed` → `withRunFamily`，它把扁平 `maxRounds` 并进唯一的 `config.run`），
+  // 于是本文件不必为同一件事再造一套翻译。
+  await runDirect({
     provider,
     config: { input: { messages: [
       { role: "user", content: "请用一句话介绍你自己" },
@@ -717,7 +720,7 @@ test("explicit task overrides the multi-turn entry messages for the round judge"
     judgeResponse({ done: false, confidence: 0.8, reason: "继续", evidence: "还需工作" }),
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider,
     // #498 S3 A9：`task` 的扁平写法已退役，写点并进**同一个** `config` 容器
     // （同一对象字面量里两个 `config` 键是后者静默胜）。
@@ -751,7 +754,7 @@ test("context.task takes precedence over the multi-turn entry messages for the r
     judgeResponse({ done: false, confidence: 0.8, reason: "继续", evidence: "还需工作" }),
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider,
     config: { input: { messages: [
       { role: "user", content: "请用一句话介绍你自己" },
@@ -776,7 +779,7 @@ test("whitespace task falls back to the latest non-empty entry user text", async
     judgeResponse({ done: false, confidence: 0.8, reason: "继续", evidence: "还需工作" }),
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider,
     // #498 S3 A9：同上，并进同一个 `config` 容器。
     config: {
@@ -855,7 +858,7 @@ test("resumed judge briefs scan only the original round-zero seed messages", asy
     }),
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider: firstProvider,
     config: { input: { messages: [{ role: "user", content: "任务A：修登录bug" }], wrapup: false }, run: { runId } },
     executeTool: async () => "ok",
@@ -884,7 +887,7 @@ test("resumed judge briefs scan only the original round-zero seed messages", asy
     judgeResponse({ done: true, confidence: 0.9, reason: "完成", evidence: "已完成" }),
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider: resumedProvider,
     // #498 S3 A19：`resume` 退役扁平写法，并进**同一个** `config` 容器（家 `config.run.resume`）。
     executeTool: async () => "unused",
@@ -926,7 +929,7 @@ test("resume without a round-zero seed keeps the judge brief empty", async () =>
     }),
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider: resumedProvider,
     // #498 S3 A19：`resume` 退役扁平写法，并进**同一个** `config` 容器（家 `config.run.resume`）。
     executeTool: async () => "unused",

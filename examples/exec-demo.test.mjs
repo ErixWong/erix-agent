@@ -205,10 +205,13 @@ test("exec-demo：maxOutputTokens 真的进了 provider 构造参数（不联网
     new URL("./exec-demo.js", import.meta.url),
     "utf8",
   );
+  // #498 S3 A21: `maxRounds` retired its flat spelling, so the explicit round budget now sits at its
+  // canonical home (`config.run.maxRounds`) — the claim is unchanged: it must still be written out,
+  // never left to the engine default.
   assert.match(
     src,
-    /maxRounds: 8,/,
-    "runToolLoop 侧的 maxRounds 上限必须仍显式写出",
+    /maxRounds: 8 \}/u,
+    "runToolLoop 侧的 maxRounds 上限必须仍显式写出（规位 config.run.maxRounds）",
   );
 });
 

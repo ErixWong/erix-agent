@@ -106,7 +106,9 @@ function legacyFlatOptions(input) {
     provider,
     tools: tools.tools,
     executeTool: tools.executeTool,
-    maxRounds: params.maxRounds,
+    // #498 S3 A21: `maxRounds` lost its flat spelling too; canonical home `config.run.maxRounds`
+    // (expansion writes it back to `effectiveOptions.maxRounds`, so the equivalence claim is
+    // unaffected). It joins the **same** `config.run` group as `cwd` / `stream` / `runId` below.
     // #498 S3 A16: `stream` lost its flat spelling too; canonical home `config.run.stream`
     // (expansion writes it back to `effectiveOptions.stream`, so the equivalence claim is unaffected).
     // It joins the **same** `config.run` group as `cwd` below.
@@ -136,7 +138,7 @@ function legacyFlatOptions(input) {
       // #498 S3 A15: `cwd` is retired as a flat option too; its canonical home is `config.run.cwd`
       // (the expansion phase writes it back to `effectiveOptions.cwd`, so the equivalence claim is
       // unaffected). Merged into the **same** `config` tree.
-      run: { cwd: params.cwd, stream: false, runId },
+      run: { cwd: params.cwd, stream: false, runId, maxRounds: params.maxRounds },
       // #498 S3 A9: `task` is retired as a flat option too; its canonical home is
       // `config.metadata.task`. Merged into the **same** `config` tree (a second `config:` key would
       // silently replace the `input` / `timing` groups above).
@@ -403,15 +405,17 @@ test("S6-C1 反向证①：同一个键既写扁平又写 config ⇒ 真 run 里
     system: "SYS",
     onEvent: (event) => events.push(event),
   });
-  // 反向证本体：把已经迁移的 `maxRounds` 再写一份扁平、且值不同。
-  options.maxRounds = 1;
+  // 反向证本体：把已经迁移的一个键再写一份扁平、且值不同。
+  // #498 S3 A21：`maxRounds` 自己退役了扁平写法（写它会撞**名称**闸口，不是冲突闸口），
+  // 所以样本换成 `completion`（家 `config.run.completion`，`buildLoopOptions` 总是下发它）。
+  options.completion = { signals: [], maxNoToolRounds: 1 };
   const result = await runToolLoop(options);
 
   const conflicts = events.filter((event) => event?.type === "config_override_conflict");
   assert.equal(conflicts.length, 1, `应恰好一条 config_override_conflict，实际 ${conflicts.length}`);
   assert.deepEqual(
     conflicts[0].conflicts,
-    [{ path: "run.maxRounds", key: "maxRounds" }],
+    [{ path: "run.completion", key: "completion" }],
     "冲突载荷必须点名 schema 路径与顶层键名",
   );
   assert.equal(result.termination.reason, "end_turn");

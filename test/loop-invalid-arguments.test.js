@@ -275,11 +275,11 @@ test("resume：崩溃现场是一条被拒的调用 ⇒ 不补跑，模型看到
         executed.push(input);
         return "不该跑";
       },
-      maxRounds: 4,
       completion: false,
       // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役，规位是 `config.run.replayPolicy`。
       // #498 S3 A19：`resume` 同样退役（家 `config.run.resume`），并进**同一个** `config` 容器。
-      config: { run: { replayPolicy, resume: true, runId: "resume-rejected" } },
+      // #498 S3 A21：`maxRounds` 同理（家 `config.run.maxRounds`），并进同一棵 `run` 子树。
+      config: { run: { replayPolicy, resume: true, runId: "resume-rejected", maxRounds: 4 } },
     });
 
     // ① 不补跑

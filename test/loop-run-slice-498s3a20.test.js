@@ -211,7 +211,10 @@ test("N2 删扁平键 ≠ 删叶子：`runId` 仍在 `config.run` 里", () => {
 });
 
 test("N3 邻接面没动：`run` 组剩下的大件一件没动，`runId` 也已退役（A20）", () => {
-  for (const key of ["completion", "maxRounds", "reflection"]) {
+  // #498 S3 A21：`maxRounds` 也退役了（家 `config.run.maxRounds`），同样从这条循环里移出、
+  // 翻成反向钉——与 A15/A16/A19 的改法逐字同形（改而不删）。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("maxRounds"), false, "A21 已退役 `maxRounds` 的扁平写法");
+  for (const key of ["completion", "reflection"]) {
     assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(key), true, `${key} 仍可扁平写（本片不许收它）`);
   }
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("store"), true, "`store` 是永久顶层面，不许动");
@@ -220,12 +223,12 @@ test("N3 邻接面没动：`run` 组剩下的大件一件没动，`runId` 也已
 
 test("N4 账目派生化：`run` 组还剩几个「配置家」的顶层键（不手抄 4 / 3）", () => {
   // 「config 家」= 仍是顶层选项、且 `configPathForOption` 落在 `run.` 下的键。删 `runId`
-  // 之前是 4（`maxRounds` / `reflection` / `completion` / `runId`），删完是 3——
-  // 两个数都由白名单派生，**不许**在本文件里写死任何一个。
+  // 之前是 4（`maxRounds` / `reflection` / `completion` / `runId`），删完是 3；#498 S3 A21 再删
+  // `maxRounds` ⇒ 2。每个数都由白名单派生，**不许**在本文件里写死任何一个。
   const runHomeKeys = RUN_TOOL_LOOP_OPTION_NAMES
     .filter((name) => (configPathForOption(name) ?? "").startsWith("run."));
-  assert.deepEqual(runHomeKeys, ["maxRounds", "reflection", "completion"],
-    "`run` 组还剩三个配置家键（顺序 = 白名单顺序 = 建议平局优先级，不是集合语义）");
+  assert.deepEqual(runHomeKeys, ["reflection", "completion"],
+    "`run` 组还剩两个配置家键（顺序 = 白名单顺序 = 建议平局优先级，不是集合语义）");
   assert.equal(runHomeKeys.includes(KEY), false, `${KEY} 已经不在其中（这就是本片删掉的那一格）`);
   // 反向证：把 `runId` 塞回白名单，本格当场红（`deepEqual` 多一项）。
   const reinserted = [...RUN_TOOL_LOOP_OPTION_NAMES, KEY];

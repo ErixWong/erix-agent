@@ -27,7 +27,7 @@ must be placed in an explicit namespace such as `toolContext` or
 
 ```text
 assemblyPort, provider, system, wrapup, tools,
-executeTool, maxRounds,
+executeTool,
 reflection, stallDetection,
 completion, finalGuard,
 maxTokenContinuations,
@@ -149,8 +149,10 @@ behaviour) that channel was silent about three things; **since 0.28.0 all three 
 - **A name outside the option allowlist.** `overrides` keys must be legal `runToolLoop` options; the
   set is read out of `RUN_TOOL_LOOP_OPTION_NAMES` (`src/loop/option-normalization.js`), never from a
   second copy, so the accept surface still has one source (issue #496 / #502). A typo throws
-  `unknown assembly port override option: "maxRound" (did you mean "maxRounds"?)` — same allowlist,
-  same edit-distance rule as the top-level name check.
+  `unknown assembly port override option: "providr" (did you mean "provider"?)` — same allowlist,
+  same edit-distance rule as the top-level name check. (The sample used to be `maxRound` →
+  `maxRounds`; `maxRounds` left the allowlist in 0.28.0, and the suggestion pool **is** the
+  allowlist, so the sample moved.)
 - **A container.** `overrides.config` / `overrides.capabilities` throw
   `assembly port override must not replace the "config" container: pass the specific sub-keys
   instead (e.g. config.run.maxRounds)`, because replacing a whole subtree would mix the two planes
@@ -187,8 +189,8 @@ unchanged (the move is additive — see “The `capabilities` namespace” below
 ### The `config` namespace (issue #497)
 
 A run's configuration has a second spelling. `config` is a **nested namespace** whose leaves are
-aliases of the flat top-level keys, and the alias **is** the schema path: `config.run.maxRounds`
-and the flat `maxRounds` are the same knob, and a leaf name is verbatim the flat option name —
+aliases of the flat top-level keys, and the alias **is** the schema path: `config.run.completion`
+and the flat `completion` are the same knob, and a leaf name is verbatim the flat option name —
 with exactly one registered exception, `config.input.messages`, the nested alias of the flat
 `initialMessages` (issue #498 S4b). That exception is a one-entry table (`CONFIG_LEAF_ALIAS_PATHS`
 (`src/loop/config-namespace.js`)) and the self-check holds it to two things: a registered alias must
@@ -1012,7 +1014,7 @@ the leaf.
 | `store` | the third-station **port** (a `TranscriptStore` implementation), not a mode | `src/assembly-validators.js` (`TRANSCRIPT_STORE_METHODS`), `test/loop-run-slice-498s3a13.test.js` (N2) | **no** |
 | `partialPersistence` | the interval-throttled snapshot knob, retired by A12 — a *different* key with its own home `config.run.partialPersistence` | `src/loop/resume-manager.js`, `test/loop-run-slice-498s3a12.test.js` | **no** — not re-spelled back |
 | `writeToolNames` / `writeToolPathKeys` | the judge's write-tool set and path-key priority, retired by A11 — a different family that also starts with `write` | `src/reflection/judge.js` | **no** |
-| `maxRounds` / `deadlineMs` | the round budget (still a flat option) and the retired run deadline (`config.timing.deadlineMs`) — neither is stall detection | `CONFIG_NAMESPACE_SCHEMA.run` vs `.timing` | **no** |
+| `maxRounds` / `deadlineMs` | the round budget (a flat option until A21, now `config.run.maxRounds` only) and the retired run deadline (`config.timing.deadlineMs`) — neither is stall detection | `CONFIG_NAMESPACE_SCHEMA.run` vs `.timing` | **no** |
 
 The pin file is `test/loop-run-slice-498s3a13.test.js`. Its P case asserts each rejection **text**
 verbatim (one station, and only one), its G case is the gate-2 matrix above (the `outputHygiene` and
@@ -1239,6 +1241,59 @@ canonical value; `N` the four-way account and the derived "`run` group still has
 keys" count; `S` the fixture translation point; `T` the reverse pin that no rejection message may
 recommend a retired top-level name — the falsehood this slice also fixed in `src/assembly.js` /
 `src/assembly-validators.js`).
+
+**`maxRounds`: the same precedent, measured the same way (issue #498 S3, twenty-first slice).** Gate 2
+ran six value shapes through the real entry — the integer `8`, the boolean `true`, the string `"8"`,
+`0`, the negative `-1` and the huge `1e300`:
+
+| `maxRounds` value | flat (before A21) | nested (`config.run.maxRounds`) |
+| --- | --- | --- |
+| integer `8` | exit 0 | exit 0 (parity) |
+| boolean / string / `0` / negative / huge | exit 1 — `maxRounds must be a finite positive integer` | exit 1 — **the same sentence** (the value check did not move) |
+| **function** | **exit 1** — the same value check | **rejected** — `config.run.maxRounds is not accepted … holds data only` |
+
+`maxRounds` is a **positive-integer scalar**: the engine destructures it with the default `8`, then
+does exactly three things with it — the `Number.isSafeInteger(maxRounds) && maxRounds > 0` check, the
+`maxRounds >= DEFAULT_REFLECTION_MIN_ROUNDS` judge gate, and `Math.max(8, Math.floor(maxRounds * 0.5))`
+as the default extension step. There is no call site (`grep -nE "maxRounds *\("` on
+`src/loop/orchestrator.js` is empty) — so a function was never behaviour at this position; the flat
+spelling already rejected it through the value check. The slice therefore retired the flat spelling
+and **accepted the narrowing** (a function is now rejected on both spellings, for two different
+reasons) instead of adding a validator. **No read-side line was touched**: the extension decision
+(`extensionAllowed` in `src/reflection/governor.js`), `applyGovernorExtension`
+(`src/loop/orchestrator.js`), the `max_rounds_cap` stop and `forceFinalIfNeeded` all keep reading
+`effectiveOptions.maxRounds`, which the expansion phase writes back verbatim.
+
+Version policy for `maxRounds` (issue #498 S3, twenty-first slice):
+
+| release | writing `maxRounds` at the top level |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level |
+| 0.27.0 | **never published**, so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, twenty-first slice) | **rejected on the spot** — write `config.run.maxRounds`. The name gate throws `unknown runToolLoop option: "maxRounds" (its canonical home is config.run.maxRounds; the flat spelling is rejected)` |
+
+**Only the *entry option* was retired.** The word `maxRounds` also names, and still names, four other
+things this slice did not touch: `reflection.maxRoundsCap` (the post-extension ceiling), the
+`maxRounds` **field** on the `~/.erix` run-state budget block (`src/run-state.js`), the
+`effectiveMaxRounds` governor signal, and the CLI / `examples/pi-extension` display strings. The
+discriminator is exactly one question: *is this the value read as a top-level `runToolLoop`
+parameter?* Only that one write side moved.
+
+Measured red cells: **438** on the single delete, **64** once the fixture translated the spelling,
+**0** after the hand-written sites were migrated (46 direct `runToolLoop` / `normalizeRunToolLoopOptions`
+call sites across 24 test files, the inline allowlist mirror, the suggestion matrix rows that used
+`maxRounds` as the live sample, the two-shape equivalence sample, the `C1` / `C2` / `C3` / `C4` / `C5`
+priority-and-conflict channels, the adjacency lists in A11 / A13 / A14 / A15 / A20, the shipped
+contract suites (`assembly-port`, `boundary-parity`, `termination-payload`, `tool-result-envelope`,
+`doc-examples`), and the three observation scripts `scripts/soak.mjs` /
+`scripts/message-journal-golden.mjs` / `scripts/final-guard-probe.mjs`). The pin file is
+`test/loop-run-slice-498s3a21.test.js` (`P` rejection text verbatim and before any host port is
+called; `G` the data-value matrix above; `F` the function value rejected on both spellings, with the
+two reasons kept apart; `R` a real run whose round budget still bites, the untouched destructure
+default, and as-is pins for the extension gate / `max_rounds_cap` / the `maxRounds >= 16` auto-judge
+gate; `N` the four-way account and the derived "`run` group still has two config-home keys" count;
+`S` the fixture translation point; `T` the reverse pin that no rejection message may recommend a
+retired top-level name).
 
 ### The `capabilities` namespace (issue #498)
 
@@ -2314,10 +2369,10 @@ const result = await runToolLoop({
     input: { initialUserMessage: run.prompt },
     // `persistence` retired its flat spelling in 0.28.0 (`config.run.persistence`; same version
     // policy as the seed message above). One `config` container — a second one would silently win.
-    run: { persistence: "none" },
+    // `maxRounds` retired its flat spelling in 0.28.0 too (`config.run.maxRounds`).
+    run: { persistence: "none", maxRounds: 8 },
   },
   executeTool,
-  maxRounds: 8,
   signal: controller.signal,
   onEvent: (event) => {
     events.push(event.type);

@@ -96,14 +96,15 @@ export async function scenarioSingleRun() {
   let guardCalls = 0;
   const result = await runToolLoop({
     ...BASE,
-    maxRounds: 8,
     store,
     // 并进**同一个** `config` 容器：写第二个 `config` 键会让 BASE 里的 `run.stallDetection` 静默消失。
     // #498 S3 A20: `runId` 也退役了扁平写法（家 `config.run.runId`），同样并进这棵树。
+    // #498 S3 A21: `maxRounds` 同样退役（家 `config.run.maxRounds`）——本脚本是**观察脚本**，
+    // 只改拼写，观察逻辑与金样字节都一字未改。
     config: {
       ...BASE.config,
       input: { ...BASE.config.input, initialUserMessage: "金样任务" },
-      run: { ...BASE.config.run, runId: "golden-single" },
+      run: { ...BASE.config.run, runId: "golden-single", maxRounds: 8 },
     },
     provider,
     finalGuard: async () => {
@@ -135,12 +136,13 @@ export async function scenarioCrashResume() {
   let thrown = "";
   try {
     await runToolLoop({
-      ...BASE, maxRounds: 8, store,
+      ...BASE, store,
       // #498 S3 A20: `runId` 的家是 `config.run.runId`（与下面的种子并进同一棵树）。
+      // #498 S3 A21: `maxRounds` 的家是 `config.run.maxRounds`（同上）。
       config: {
         ...BASE.config,
         input: { ...BASE.config.input, initialUserMessage: "金样任务" },
-        run: { ...BASE.config.run, runId },
+        run: { ...BASE.config.run, runId, maxRounds: 8 },
       },
       provider: first,
       reflection: {
@@ -156,8 +158,9 @@ export async function scenarioCrashResume() {
   const result = await runToolLoop({
     // #498 S3 A19: `resume` left the top-level allowlist; home `config.run.resume`. This script is an
     // **observation** producer (the golden fixture's generator): only the spelling moves.
-    ...BASE, maxRounds: 8, store,
-    config: { ...BASE.config, run: { ...BASE.config.run, resume: true, runId } },
+    // #498 S3 A21: `maxRounds` home is `config.run.maxRounds` — merged into the **same** `run` group.
+    ...BASE, store,
+    config: { ...BASE.config, run: { ...BASE.config.run, resume: true, runId, maxRounds: 8 } },
     provider: resumed,
     reflection: {
       enabled: true, roundJudge: true, judgeIntercept: false,

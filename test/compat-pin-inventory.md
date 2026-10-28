@@ -679,7 +679,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/cli.test.js` | 74 | `session`×36, `prompt`×29, `reflection`×4, `tools`×3, `finalGuard`×2, `completion`×1, `context`×1 |
 | `test/loop-resume.test.js` | 48 | `completion`×33, `tools`×8, `resume`×4, `reflection`×3 |
 | `test/loop-option-gate-496.test.js` | 28 | `completion`×7, `context`×7, `onFoldSummary`×7, `finalGuard`×6, `reflection`×5, `tools`×3, `deliverables`×2, `session`×2, `partialPersistence`×1, `sleepImpl`×1, `stallDetection`×1, `wrapup`×1 |
-| `test/loop-config-namespace-497.test.js` | 40 | `onEvent`×13, `completion`×12, `tools`×6, `wrapup`×5, `session`×4, `context`×2, `finalGuard`×2, `initialMessages`×2, `resume`×2, `retry`×2, `modelMetadata`×1, `onObserverError`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `stallDetection`×1 |
+| `test/loop-config-namespace-497.test.js` | 43 | `completion`×14, `onEvent`×13, `tools`×6, `reflection`×4, `session`×4, `wrapup`×3, `context`×2, `finalGuard`×2, `initialMessages`×2, `resume`×2, `retry`×2, `modelMetadata`×1, `onObserverError`×1, `outputHygiene`×1, `partialPersistence`×1, `stallDetection`×1 |
 | `test/loop-resume-anchor.test.js` | 38 | `completion`×8, `stallDetection`×8, `wrapup`×8, `resume`×7, `tools`×6, `partialPersistence`×1 |
 | `test/loop-v020-rc.test.js` | 23 | `completion`×19, `session`×3, `stallDetection`×1 |
 | `test/loop-resume-notice.test.js` | 22 | `completion`×11, `tools`×9, `reflection`×2 |
@@ -798,6 +798,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-run-slice-498s3a19.test.js` | 5 | `completion`×2, `session`×2, `tools`×1 |
 | `test/loop-run-slice-498s3a20.test.js` | 1 | `completion`×1 |
 | `test/loop-assembly-derived-names-544.test.js` | 11 | `completion`×7, `session`×2, `initialMessages`×1, `tools`×1 |
+| `test/loop-run-slice-498s3a21.test.js` | 5 | `tools`×4, `completion`×1 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 

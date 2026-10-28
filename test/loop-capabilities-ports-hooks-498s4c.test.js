@@ -561,9 +561,10 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output",
     completion: false,
-    maxRounds: 4,
+    // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`); it joins the
+    // **same** `config` tree — a second `config:` key would silently replace the one below.
     // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
-    config: { input: { wrapup: false, messages: [
+    config: { run: { maxRounds: 4 }, input: { wrapup: false, messages: [
       { role: "user", content: "PROTECTED-TASK" },
       { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
     ] }, folding: { context: { budgetTokens: 300, keepRounds: 1, protectedMessage: "user" } } },
@@ -578,10 +579,10 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output",
     completion: false,
-    maxRounds: 4,
     capabilities: { hooks: { protectedMessage: (message) => message?.role === "user" } },
-    // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
-    config: { input: { wrapup: false, messages: [
+    // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`); it joins the
+    // **same** `config` tree. #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
+    config: { run: { maxRounds: 4 }, input: { wrapup: false, messages: [
       { role: "user", content: "PROTECTED-TASK" },
       { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
     ] }, folding: { context: { budgetTokens: 300, keepRounds: 1 } } },
@@ -598,9 +599,10 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output",
     completion: false,
-    maxRounds: 4,
+    // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`); it joins the
+    // **same** `config` tree — a second `config:` key would silently replace the one below.
     // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
-    config: { input: { wrapup: false, messages: [
+    config: { run: { maxRounds: 4 }, input: { wrapup: false, messages: [
       { role: "user", content: "PROTECTED-TASK" },
       { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
     ] }, folding: { context: { budgetTokens: 300, keepRounds: 1, protectedMessage: "system" } } },
@@ -623,9 +625,10 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output ".repeat(20),
     completion: false,
-    maxRounds: 4,
+    // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`); it joins the
+    // **same** `config` tree — a second `config:` key would silently replace the one below.
     // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
-    config: { input: { wrapup: false, messages: [
+    config: { run: { maxRounds: 4 }, input: { wrapup: false, messages: [
       { role: "user", content: "task" },
       { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
     ] }, folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-statistical", recoveryHint: "DATA-HINT" } } },
@@ -669,9 +672,10 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output ".repeat(20),
     completion: false,
-    maxRounds: 4,
+    // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`).
     // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
     config: {
+      run: { maxRounds: 4 },
       input: { wrapup: false, messages: [
         { role: "user", content: "task" },
         { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },

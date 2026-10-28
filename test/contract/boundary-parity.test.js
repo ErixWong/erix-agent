@@ -388,12 +388,15 @@ test("boundary parity: 调用期未知选项名在两条路线上都启动期拒
       tools: createValidTools(),
       session: { id: sessionId },
     },
-    { maxRound: 1 },
+    // #498 S3 A21: `maxRound` → `maxRounds` no longer works as the suggestion sample (the candidate
+    // pool is the allowlist and `maxRounds` left it). `providr` → `provider` pins the same branch:
+    // one character off, so a suggestion is mandatory on **both** routes.
+    { providr: 1 },
   ).then(() => null, (error) => error);
   assert.ok(helperError instanceof TypeError, `装配口必须抛 TypeError，实测 ${String(helperError)}`);
   assert.equal(
     helperError.message,
-    'unknown assembly port override option: "maxRound" (did you mean "maxRounds"?)',
+    'unknown assembly port override option: "providr" (did you mean "provider"?)',
   );
 
   // ② 直连路线：同一条白名单，同一套「did you mean」。
@@ -402,15 +405,15 @@ test("boundary parity: 调用期未知选项名在两条路线上都启动期拒
     executeTool: async () => "unused",
     modelConfig: createValidModelConfig(),
     session: { id: sessionId },
-    maxRound: 1,
+    providr: 1,
   }).then(() => null, (error) => error);
   assert.ok(directError instanceof TypeError, `直连必须抛 TypeError，实测 ${String(directError)}`);
-  assert.equal(directError.message, 'unknown runToolLoop option: "maxRound" (did you mean "maxRounds"?)');
+  assert.equal(directError.message, 'unknown runToolLoop option: "providr" (did you mean "provider"?)');
 
   // ③ 等价：同错误类、同被点名的键、同建议；只差路线前缀（两条路线各自说自己的入口）。
   assert.equal(Object.getPrototypeOf(helperError), Object.getPrototypeOf(directError));
   const suggestion = /\(did you mean "([^"]+)"\?\)$/u;
-  assert.equal(helperError.message.match(suggestion)[1], "maxRounds");
-  assert.equal(directError.message.match(suggestion)[1], "maxRounds");
-  assert.ok(helperError.message.includes('"maxRound"') && directError.message.includes('"maxRound"'));
+  assert.equal(helperError.message.match(suggestion)[1], "provider");
+  assert.equal(directError.message.match(suggestion)[1], "provider");
+  assert.ok(helperError.message.includes('"providr"') && directError.message.includes('"providr"'));
 });

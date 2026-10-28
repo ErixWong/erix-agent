@@ -205,9 +205,9 @@ async function runTwoRoundsThenResume(runId, shape) {
     // #498 S3 A19：`resume` 退役扁平写法，并进**同一个** `config` 容器（家 `config.run.resume`）。
     executeTool: async () => "unused",
     tools: [WRITE_FILE_TOOL],
-    maxRounds: 2,
     completion: false,
-    config: { input: { wrapup: false }, run: { resume: true, runId } },
+    // #498 S3 A21：`maxRounds` 的扁平写法已退役，并进**同一个** `config` 容器（家 `config.run.maxRounds`）。
+    config: { input: { wrapup: false }, run: { resume: true, runId, maxRounds: 2 } },
     reflection: { enabled: true, judge: { provider: resumedJudge } },
     store,
   });

@@ -108,9 +108,9 @@ test("F-2 judgeInterceptCount 经 restoreResume ctx：resume 播种已执行工�
     await runToolLoop({
       provider,
       store,
-      config: { run: { resume: true, runId } },
+      // #498 S3 A21：`maxRounds` 退役扁平写法（家 `config.run.maxRounds`），并进同一棵 `run` 子树。
+      config: { run: { resume: true, runId, maxRounds: 6 } },
       completion: false,
-      maxRounds: 6,
       executeTool: async () => "done-b",
       reflection: { enabled: true, roundJudge: false, judgeIntervalRound: 1, judge: { provider: judge } },
       capabilities: { hooks: { onJudge: (info) => records.push(info) } },

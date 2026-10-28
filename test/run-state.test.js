@@ -487,10 +487,13 @@ test("resume keeps one persisted run-state block", async () => {
       { content: [{ type: "text", text: "resumed" }], stopReason: "end_turn" },
     ]),
     executeTool: async () => "unused",
-    maxRounds: 3,
     completion: false,
     // #498 S3 A19：`resume` 的扁平写法已退役，并进**同一个** `config` 容器（家 `config.run.resume`）。
-    config: { folding: { context: { budgetTokens: 100 } }, run: { resume: true, runId: "resume-state" } },
+    // #498 S3 A21：`maxRounds` 同理（家 `config.run.maxRounds`），并进同一棵 `run` 子树。
+    config: {
+      folding: { context: { budgetTokens: 100 } },
+      run: { resume: true, runId: "resume-state", maxRounds: 3 },
+    },
     store,
   });
   const text = resumed.messages

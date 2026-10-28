@@ -470,7 +470,11 @@ test("A2 `run` 组**没有**整组收口：四个退役叶子被派生认出，�
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("stream"), false, "A16 已退役 `stream` 的扁平写法");
   // #498 S3 A19：`resume` 也退役了（家 `config.run.resume`），同样从这条循环里移出、翻成反向钉。
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("resume"), false, "A19 已退役 `resume` 的扁平写法");
-  for (const leaf of ["maxRounds", "completion", "reflection"]) {
+  // #498 S3 A21：`maxRounds` 也退役了（家 `config.run.maxRounds`），同样从这条循环里移出、
+  // 翻成反向钉——与 A15 对 `cwd`、A16 对 `stream`、A19 对 `resume`、A20 对 `runId` 的改法逐字同形
+  // （改而不删）。
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes("maxRounds"), false, "A21 已退役 `maxRounds` 的扁平写法");
+  for (const leaf of ["completion", "reflection"]) {
     assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(leaf), true, `${leaf} 本片一个字没动`);
   }
   assert.equal(

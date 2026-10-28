@@ -104,6 +104,12 @@ const RUN_FAMILY_FIXTURE_KEYS = Object.freeze([
   // `~/.erix/transcripts/outputs/<runId>/` directory name are all downstream of the value, not
   // spellings of it.
   "runId",
+  // #498 S3 A21: `maxRounds` (home `config.run.maxRounds`, in `CONFIG_NAMESPACE_SCHEMA.run` since
+  // #497). Same reasoning again — an integer scalar, so the fixture only moves the spelling; the
+  // expansion phase writes it back onto `effectiveOptions.maxRounds`, and every engine reader (the
+  // `maxRounds` destructure in `src/loop/orchestrator.js`, the governor's round budget, the
+  // `forceFinalIfNeeded` cap) never changed.
+  "maxRounds",
 ]);
 
 /**

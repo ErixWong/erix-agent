@@ -139,9 +139,11 @@ try {
       // `config.run.cwd` (the expansion phase writes it back onto `effectiveOptions.cwd`).
       // #498 S3 A20: same for `runId` — canonical home `config.run.runId`, merged into the **same**
       // `run` group (a second `config:` key would silently replace it).
-        run: { cwd: sandbox, runId: "probe-run-1" },
+        // #498 S3 A21: `maxRounds` retired its flat spelling; home `config.run.maxRounds`, merged into
+        // the **same** `run` group (a second `config:` key would silently replace it). The probe is an
+        // **observation script**: only the spelling moves.
+        run: { cwd: sandbox, runId: "probe-run-1", maxRounds: 4 },
       },
-      maxRounds: 4,
       executeTool: async (call) => {
         fs.writeFileSync(call.input.path, call.input.content);
         return `wrote ${call.input.path}`;
@@ -245,8 +247,7 @@ try {
     ]);
     const result = await runToolLoop({
       provider,
-      config: { input: { initialUserMessage: `把 42 写进 ${answerPath}` } },
-      maxRounds: 6,
+      config: { input: { initialUserMessage: `把 42 写进 ${answerPath}` }, run: { maxRounds: 6 } },
       executeTool: async (call) => {
         fs.writeFileSync(call.input.path, call.input.content);
         return "ok";
@@ -308,8 +309,11 @@ try {
         wrapup({ done: true, summary: "完成", output: "已经写好了" }),
         { times: 6, ...wrapup({ done: true, summary: "完成", output: "确实写好了" }) },
       ]),
-      config: { input: { initialUserMessage: "写文件" }, guard: { finalGuardMaxRetries: 2 } },
-      maxRounds: 8,
+      config: {
+        input: { initialUserMessage: "写文件" },
+        guard: { finalGuardMaxRetries: 2 },
+        run: { maxRounds: 8 },
+      },
       executeTool: async () => "ok",
       finalGuard: async (payload) => {
         attempts.push(payload.attempt);
@@ -362,8 +366,11 @@ try {
     const payloads = [];
     const result = await runToolLoop({
       provider: createFakeProvider([wrapup({ done: true, summary: "s", output: "o" })]),
-      config: { input: { initialUserMessage: "x" }, guard: { finalGuardTimeoutMs: 100 } },
-      maxRounds: 2,
+      config: {
+        input: { initialUserMessage: "x" },
+        guard: { finalGuardTimeoutMs: 100 },
+        run: { maxRounds: 2 },
+      },
       executeTool: async () => "ok",
       finalGuard: async (payload) => {
         payloads.push({ attempt: payload.attempt, keys: Object.keys(payload).length });
@@ -453,8 +460,7 @@ try {
         wrapup({ done: true, summary: "完成", output: `已生成 ${answerPath}，内容为 42` }),
       ]),
       // #498 S3 A15: `cwd` 的规位家是 `config.run.cwd`（扁平拼写已在名称闸口退役）。
-      config: { input: { initialUserMessage: "写文件" }, run: { cwd: sandbox } },
-      maxRounds: 3,
+      config: { input: { initialUserMessage: "写文件" }, run: { cwd: sandbox, maxRounds: 3 } },
       executeTool: async (call) => {
         if (call.name === "writeFile") fs.writeFileSync(call.input.path, call.input.content ?? "");
         return "ok";
@@ -572,7 +578,6 @@ try {
     let payload;
     const result = await runToolLoop({
       provider: createFakeProvider(script),
-      maxRounds: 30,
       // 关掉两件会改动 payload 体积的既有机制，让这个数只反映「新键 vs messages」：
       // 工具结果 TTL 折叠（0 = 关闭）与 reflection（maxRounds ≥ 16 会自动开启 judge）。
       // #498 S3 (`metadata` A9): `task` 的规位家是 `config.metadata.task`（展开相写回 `effectiveOptions.task`）。
@@ -582,7 +587,8 @@ try {
         metadata: { task: "把 30 个 4KB 文件写进工作目录" },
         // #498 S3 A15: `cwd` 的规位家是 `config.run.cwd`（扁平拼写已在名称闸口退役）。
         // #498 S3 A20: `runId` 同理（家 `config.run.runId`），并进**同一个** `run` 组。
-        run: { cwd: sandbox, runId: "probe-run-overhead" },
+        // #498 S3 A21: `maxRounds` 同理（家 `config.run.maxRounds`）。
+        run: { cwd: sandbox, runId: "probe-run-overhead", maxRounds: 30 },
       },
       reflection: false,
       executeTool: async () => BIG,
@@ -686,8 +692,11 @@ try {
     ]);
     const result = await runToolLoop({
       provider,
-      config: { input: { initialUserMessage: `把 42 写进 ${answerPath}` }, guard: { finalGuardExtend: cell.optIn } },
-      maxRounds: 1,
+      config: {
+        input: { initialUserMessage: `把 42 写进 ${answerPath}` },
+        guard: { finalGuardExtend: cell.optIn },
+        run: { maxRounds: 1 },
+      },
       // 显式给全扩轮参数：默认 step 是 max(8, maxRounds/2)，不显式给的话「抬到多少」会漂。
       reflection: { enabled: true, extensionStep: 2, maxExtensions: 2, maxRoundsCap: 8 },
       executeTool: async (call) => {

@@ -125,10 +125,10 @@ export function terminationPayloadContract(label, getEntry) {
         // #498 S3 A13: `stallDetection` retired its flat spelling; `config.run.stallDetection` is
         // the only home now. It stays inside the **same** `config` container — a second `config`
         // key in one object literal would silently win.
-        config: { input: { initialUserMessage: "work" }, run: { stallDetection: false } },
+        // #498 S3 A21: `maxRounds` retired its flat spelling too (home `config.run.maxRounds`).
+        config: { input: { initialUserMessage: "work" }, run: { stallDetection: false, maxRounds: 10 } },
         executeTool: async () => "worked",
         signal: controller.signal,
-        maxRounds: 10,
         completion: false,
         onEvent: (event) => {
           if (event.type === "round_end" && event.round === 2) controller.abort(new Error("user stopped"));
@@ -160,9 +160,9 @@ export function terminationPayloadContract(label, getEntry) {
         { content: [{ type: "text", text: "done" }], stopReason: "end_turn", usage: { input_tokens: 8, output_tokens: 2 } },
       ]),
       // #498 S3 A13: same move as the abort case above — one `config` container.
-      config: { input: { initialUserMessage: "work" }, run: { stallDetection: false } },
+      // #498 S3 A21: `maxRounds` joins the same `run` group (home `config.run.maxRounds`).
+      config: { input: { initialUserMessage: "work" }, run: { stallDetection: false, maxRounds: 10 } },
       executeTool: async () => "worked",
-      maxRounds: 10,
       completion: false,
     });
 
