@@ -24,7 +24,7 @@ executeTool, maxRounds,
 reflection, stallDetection,
 completion, finalGuard,
 maxTokenContinuations,
-todoStateProvider, semanticStateProvider, partialPersistence,
+todoStateProvider, semanticStateProvider,
 modelConfig, modelMetadata, expert, session, requestId,
 toolContext, store, persistence, runId, cwd, deliverables, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
@@ -32,7 +32,10 @@ onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, config,
 capabilities
 ```
 
-`partialPersistence` 默认为 `false`，保持既有的流式零写入行为。设为
+`config.run.partialPersistence` 默认为 `false`，保持既有的流式零写入行为。（**扁平**拼写
+`partialPersistence` 已被 `run` 组的 A12 片退役，见下文「`run` 组 A12 段的扁平拼写版本口径」。版本口径：
+**0.26.0**（最后一个已发布版本）及更早可写、**0.27.0** 从未发布、**0.28.0** 起被名称闸口当场拒。
+选项的**语义**没有搬家：它仍然是持久性，不是重试。）设为
 `{ intervalMs, minBytes? }` 可启用按间隔节流的部分 assistant 文本快照。它复用既有的
 latest-only `saveRunSnapshot` capability，不引入新的 store 方法；缺该 capability 时
 不发生部分写入。恢复时，较新快照中形状完好的 `partialText`/`partialRound` 会被作为
@@ -751,6 +754,28 @@ unknown config.metadata option: "session" ("session" is a permanent top-level op
 | `replayPolicy` | `session.resume` 那条裁决（#531：`session` 是第三站成员，`config.metadata.session` 是闭门） | `src/loop/config-namespace.js`、`test/loop-metadata-keys-slice-498s3a9.test.js` | **没动**（N2） |
 | `invalidArguments` | 引数修复流水线与解析器判词文本 | `src/messages/tool-arguments.js`、`src/text/repair-json.js` | **没动**——读侧（R1） |
 | `maxTokenContinuations` | **不是**已退役的 `maxTokens`（`tuning` 组的键，A5 退役）；两个不同的旋钮 | `CONFIG_NAMESPACE_SCHEMA.run` 与 `.tuning` | **没动**（N4） |
+
+**`run` 组 A12 段的扁平拼写版本口径**（issue #498 S3，第十二片——`partialPersistence`，该组四件里的第一件）：
+
+| 版本 | 顶层写 `partialPersistence` |
+| --- | --- |
+| 0.26.0 及更早（最后一个**已发布**版本） | 顶层接受——那些版本只认这个拼写 |
+| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装过「这件事有影响」的树 |
+| 0.28.0 及以后（issue #498 S3，第十二片） | **当场拒**——改写 `config.run.partialPersistence`。名称闸口抛 `unknown runToolLoop option: "partialPersistence" (its canonical home is config.run.partialPersistence; the flat spelling is rejected)` |
+
+**没有搬走的是含义。** `partialPersistence` 是持久性而非重试：它提交一个将死尝试的部分文本，让续跑
+复用它而不是重新生成（见下文流式 / 续跑两节——那些句子一字未改，改的只是**地址**）。叶子仍然留在
+`CONFIG_NAMESPACE_SCHEMA.run` 里，读它的仍是启动校验 `partialPersistenceConfig`——那个函数住在 `src/loop/orchestrator.js` 里，
+删扁平键**不是**删叶子。
+
+**与 A11 不同，这一片需要一个翻译点。** 只把这一个键从白名单里拿掉，全量就红 **16 格**——高于「可以逐处
+改调用点」的阈值。所以 `withRunFamily`（每个续跑形状的用例都经过的那个夹具）长出了**唯一一个**翻译点：
+传进去的扁平 `partialPersistence` 会在调用前被重写成 `config.run.partialPersistence`。这个点是**承重的**，
+并且被当成承重钉住——把它改坏，整片红，不是一格红。
+
+钉子文件是 `test/loop-run-slice-498s3a12.test.js`。它的 P 格逐字断言拒绝**文案**（一个站，且只有一个），
+R 格断言写在规位里的值逐字到达 `effectiveOptions.partialPersistence`，并且仍然真的驱动
+`stream` + `partialPersistence` 的恢复路径。
 
 ### capabilities 命名空间（issue #498）
 

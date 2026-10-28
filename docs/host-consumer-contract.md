@@ -29,7 +29,7 @@ executeTool, maxRounds,
 reflection, stallDetection,
 completion, finalGuard,
 maxTokenContinuations,
-todoStateProvider, semanticStateProvider, partialPersistence,
+todoStateProvider, semanticStateProvider,
 modelConfig, modelMetadata, expert, session, requestId,
 toolContext, store, persistence, runId, cwd, deliverables, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
@@ -37,8 +37,12 @@ onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, config,
 capabilities
 ```
 
-`partialPersistence` defaults to `false`, preserving the existing no-write
-streaming behavior. Set it to `{ intervalMs, minBytes? }` to opt into
+`config.run.partialPersistence` defaults to `false`, preserving the existing no-write
+streaming behavior. (The **flat** spelling `partialPersistence` is retired by the `run` group's A12
+slice — see "Flat-spelling version policy for the `run` group's A12 segment" below. Version policy:
+writable up to **0.26.0** — the last published release —, **0.27.0** was never published, and from
+**0.28.0** the name gate rejects it. The option's *semantics* did not move: it is still durability,
+not retry.) Set it to `{ intervalMs, minBytes? }` to opt into
 interval-throttled partial assistant-text snapshots. This uses the existing
 latest-only `saveRunSnapshot` capability and introduces no store method;
 without that capability there is no partial write. Recovery consumes a
@@ -900,6 +904,34 @@ Two properties hold, both machine-checked (`test/loop-run-slice-498s3a11.test.js
 | `replayPolicy` | the `session.resume` ruling (#531: `session` is a third-station member, `config.metadata.session` is a closed door) | `src/loop/config-namespace.js`, `test/loop-metadata-keys-slice-498s3a9.test.js` | **no** — untouched (N2) |
 | `invalidArguments` | the arguments-repair pipeline and the parser verdict text | `src/messages/tool-arguments.js`, `src/text/repair-json.js` | **no** — read side (R1) |
 | `maxTokenContinuations` | **not** the retired `maxTokens` (a `tuning` group key, retired by A5); two different knobs | `CONFIG_NAMESPACE_SCHEMA.run` vs `.tuning` | **no** (N4) |
+
+**Flat-spelling version policy for the `run` group's A12 segment** (issue #498 S3, the twelfth
+slice — `partialPersistence`, the first of the group's four):
+
+| release | writing `partialPersistence` at the top level |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
+| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, twelfth slice) | **rejected on the spot** — write `config.run.partialPersistence`. The name gate throws `unknown runToolLoop option: "partialPersistence" (its canonical home is config.run.partialPersistence; the flat spelling is rejected)` |
+
+**What did *not* move is the meaning.** `partialPersistence` is durability, not retry: it commits the
+partial text of a dying attempt so that a resume reuses it instead of regenerating it (see the
+streaming / resume sections below — those sentences are unchanged, only the *address* changed). The
+leaf stays in `CONFIG_NAMESPACE_SCHEMA.run`, and the reader is still the startup validator
+`partialPersistenceConfig` at `src/loop/orchestrator.js` — deleting the flat key is **not** deleting
+the leaf.
+
+**This slice needed a translation point, unlike A11.** With only this one key removed from the
+allowlist the full suite went red in **16 cells** — above the threshold at which a slice has to keep
+the shared fixture honest instead of editing every call site. So `withRunFamily` (the fixture every
+resume-shaped test goes through) grew a **single** translation point: a flat `partialPersistence`
+passed to it is re-spelled into `config.run.partialPersistence` before the call. That point is
+load-bearing and is pinned as such — corrupt it and the whole family goes red, not one cell.
+
+The pin file is `test/loop-run-slice-498s3a12.test.js`. Its P case asserts the rejection **text**
+verbatim (one station, and only one), and its R case asserts that a value written at the canonical
+home arrives at `effectiveOptions.partialPersistence` byte for byte and still drives the real
+`stream` + `partialPersistence` recovery path.
 
 ### The `capabilities` namespace (issue #498)
 
