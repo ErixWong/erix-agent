@@ -183,11 +183,12 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   // names the new home.
   // #498 S3 (`metadata` slice, segment A9): `user` leaves this list too — the measured red-cell count
   // was 6, far below the fixture-level threshold, so no #521-style translation point was needed.
+  // `model` leaves it in the same segment (5 red cells): its canonical home is `config.metadata.model`,
+  // and `budget.js`'s `modelMetadataFor` still reads it from the expanded option — read side untouched.
   // `session` is deliberately **not** part of A9: the assembly port's `session` member and the
   // top-level `session` option are the *same value* (`assemblyPortOptions(port).session ===
   // port.session`), and the repo's ruling says `config.metadata.session` is not a second home for
   // the session port — so retiring the flat spelling would promote that leaf into one. Returned.
-  "model",
   "task",
   "session",
   "store",

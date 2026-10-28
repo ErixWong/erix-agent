@@ -239,9 +239,8 @@ const OPTION_WHITELIST = [
   // verbatim (that is exactly what A0 checks), so they are gone here too; the flat spellings are now
   // **rejection** cells, see `test/loop-metadata-keys-slice-498s3a8.test.js`.
   // #498 S3 (`metadata` slice, segment A9): `user` left the allowlist as well (home
-  // `config.metadata.user`); `session` stays on purpose (same value as the assembly port's
-  // `session`, see `test/loop-metadata-keys-slice-498s3a9.test.js`).
-  "model",
+  // `config.metadata.user`), then `model` (home `config.metadata.model`); `session` stays on purpose
+  // (same value as the assembly port's `session`, see `test/loop-metadata-keys-slice-498s3a9.test.js`).
   "task",
   "session",
   "store",
@@ -398,15 +397,10 @@ const TIE_MATRIX = [
     expected: "writeToolNames",
     note: "最接近真实打错的键名：距离 4，阈值恰为 4",
   },
-  {
-    // #498 S3 A6：这一行原来用 `strtem` → {system, stream}，而 `system` 已随本片离开白名单
-    // （建议候选池 = 白名单，删了键就不再是候选）。换一对**仍在白名单里**的平局：
-    // `modls` 到 `tools` / `model` 的距离严格相等（都是 2），阈值恰为 2。
-    key: "modls",
-    tied: ["tools", "model"],
-    expected: "tools",
-    note: "白名单顺序 ≠ 字典序：model 字典序更小但不是答案",
-  },
+  // #498 S3 A6 这一行原来用 `strtem` → {system, stream}，`system` 退役后换成 `modls` →
+  // {tools, model}。**#498 S3 A9**：`model` 也退役了，而现役池里已经没有能与 `tools` 平局的样本
+  // （穷举实测：没有任何一对现役键同时落在同一个未知键的建议阈值内）⇒ 这一行**删掉**，
+  // 而不是造一个假平局。平局性质仍由上面 `writeToolPath` 与下面 `onEvund` 两行钉住。
   {
     key: "onEvund",
     tied: ["onRound", "onEvent"],

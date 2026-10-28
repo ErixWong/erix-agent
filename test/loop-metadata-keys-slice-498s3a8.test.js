@@ -375,8 +375,11 @@ test("S1 写错 modelMetadata 不会被建议成 model：文案只点名规位�
         + " the flat spelling is rejected)",
     );
   }
-  // 兄弟键 `model` 仍在池里 ⇒ 建议机制本身还在工作（对照组，防「整条建议逻辑被删掉」也能绿）。
-  assert.equal(optionSuggestion("modle"), "model", "对照组：`model` 的近错仍被建议回 `model`");
+  // 对照组：建议机制本身仍在工作（防「整条建议逻辑被删掉」也能绿）。
+  // #498 S3 A9：`model` 已退役 ⇒ 不再能拿 `modle` 当对照（候选池 = 现役白名单）；改用一直在池里的
+  // `maxRound` → `maxRounds`。这不是放宽 S1 的主张（「精确拼写退役名 ⇒ 零建议」那半句一字未改），
+  // 只是对照组换了活着的样本。
+  assert.equal(optionSuggestion("maxRound"), "maxRounds", "对照组：`maxRound` 的近错仍被建议回 `maxRounds`");
 });
 
 test("S2 候选池变化的 as-is：modelMetadata 的拼写错误现在没有任何建议，也没有规位可指", async () => {
