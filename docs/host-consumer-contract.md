@@ -134,15 +134,27 @@ aliases of the flat top-level keys, and the alias **is** the schema path: `confi
 and the flat `maxRounds` are the same knob, and a leaf name is verbatim the flat option name —
 with exactly one registered exception, `config.input.messages`, the nested alias of the flat
 `initialMessages` (issue #498 S4b). That exception is a one-entry table (`CONFIG_LEAF_ALIAS_PATHS`
-(`src/loop/config-namespace.js`)) that the self-check verifies in both directions, not a rename
-table you can grow. One schema, `CONFIG_NAMESPACE_SCHEMA`
+(`src/loop/config-namespace.js`)) and the self-check holds it to two things: a registered alias must
+name a leaf that really exists (a dead entry is a failure), and it must not rename onto a leaf name
+that group already has. It is not a rename table you can grow. **Version scope** (issue #517): the
+`config` namespace entered the tree at 0.27.0 — a version that was **never published** (the last
+published release is 0.26.0, so the first release a host can actually install with this namespace is
+0.28.0) — and in every tree up to and including 0.27.0 every leaf name was
+verbatim a top-level option name; **since 0.28.0 (the issue #517 preparatory refactor) a leaf may
+have no top-level alias, while every top-level option must still have exactly one home** — the
+self-check is **one-directional** (top-level option → exactly one home: config surface / capability /
+container), and "every leaf must be reached by the round-trip coverage table" is held by a
+**per-leaf** assertion in the suite (independent of whether the leaf has a top-level key). One schema, `CONFIG_NAMESPACE_SCHEMA`
 (`src/loop/config-namespace.js`), is the only hand-written part; the alias map
 `CONFIG_ALIAS_PATHS` (`src/loop/config-namespace.js`) and the config-surface list
 `CONFIG_SURFACE_OPTION_NAMES` (`src/loop/config-namespace.js`) are derived from it, and
 `configSchemaSelfCheck` (`src/loop/config-namespace.js`) keeps the pair honest against the
 top-level allowlist in three directions: every top-level option must be classified as exactly one
 of *config surface* (43 keys), *capability* (22 keys) or *container* (2: `config` and
-`capabilities`), and the three buckets must add up to the allowlist (43 + 22 + 2 = 67).
+`capabilities`), and the three buckets must add up to the allowlist (43 + 22 + 2 = 67). Since issue
+#517 the *config surface* bucket is the **intersection** of "the names the schema maps onto" with the
+allowlist, so a leaf that loses its top-level key merely drops out of that bucket instead of turning
+the identity red (in this release 43 and 43 are verbatim equal — no key was deleted).
 
 | namespace | knobs |
 | --- | --- |

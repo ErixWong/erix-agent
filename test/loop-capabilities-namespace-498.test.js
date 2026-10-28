@@ -20,6 +20,9 @@
 //   S4（可枚举的 round-trip 机器断言）：按 `CONFIG_NAMESPACE_SCHEMA` **逐叶子**构造一份代表性纯数据
 //      取值，断言 `JSON.parse(JSON.stringify(cfg))` 与原值逐字等值，并断言展开后的有效选项与直接传
 //      扁平键语义等价（#497 的 B1/B2 结构）。**将来谁把函数键放进 config，它会立刻红并点名叶子**。
+//      #517：这条覆盖度断言是**逐叶子**的、与叶子有没有顶层键无关（S7 ④ 还钉了一句「覆盖表按叶子
+//      名索引」：`messages` 在、它的扁平孪生 `initialMessages` 不在）——因为自检单向化之后，
+//      「叶子失去了顶层键」不再红，round-trip 覆盖是另一条不许偷懒的锁。
 //
 // 零真实 LLM（fake provider），不写盘、不碰真实 `~/.erix`。
 import test from "node:test";
@@ -709,14 +712,41 @@ test("S7 逐叶子构造的 config 子树过 JSON round-trip 等值（函数叶�
       );
     }
   }
-  // ④ 覆盖度自证：代表性取值表与 schema 的叶子集**逐字相等**（多一个、少一个都红）。
-  const schemaLeaves = CONFIG_NAMESPACE_GROUPS.flatMap((group) => [...CONFIG_NAMESPACE_SCHEMA[group]]);
+  // ④ 覆盖度自证（#517 改成**逐叶子**核，与叶子有没有顶层键无关）：代表性取值表的键集必须与
+  //    schema 的**叶子**集逐字相等（多一个、少一个都红）。这里刻意**不看**
+  //    `RUN_TOOL_LOOP_OPTION_NAMES` / `CONFIG_SURFACE_OPTION_NAMES`：叶子需不需要被 round-trip
+  //    摸过，与它当下有没有顶层扁平键是两件事——S3 会删掉一批顶层键，叶子一个都不许因此漏测。
+  //    （函数哨兵 + ① 负责「当场红并点名」，这一段负责「没人给它纯数据取值」不许静默。）
+  const leafPaths = CONFIG_NAMESPACE_GROUPS.flatMap(
+    (group) => CONFIG_NAMESPACE_SCHEMA[group].map((leaf) => `${group}.${leaf}`),
+  );
+  const uncovered = leafPaths.filter((path) => !Object.hasOwn(REPRESENTATIVE_CONFIG_VALUES, path.split(".")[1]));
+  assert.deepEqual(
+    uncovered,
+    [],
+    `这些叶子没有代表性纯数据取值（round-trip 没人摸过）：${uncovered.join(", ")}`,
+  );
+  for (const path of leafPaths) {
+    assert.equal(
+      Object.hasOwn(REPRESENTATIVE_CONFIG_VALUES, path.split(".")[1]),
+      true,
+      `config.${path} 缺代表性取值（给 REPRESENTATIVE_CONFIG_VALUES 补一条纯数据）`,
+    );
+  }
   assert.deepEqual(
     Object.keys(REPRESENTATIVE_CONFIG_VALUES).sort(),
-    [...schemaLeaves].sort(),
+    leafPaths.map((path) => path.split(".")[1]).sort(),
     "每个配置叶子必须恰好一个代表性取值（schema 变了这张表必须跟着变）",
   );
-  assert.equal(schemaLeaves.length, 43);
+  // 覆盖表按**叶子**索引，不是按顶层键——唯一一条改名的叶子就是机器证据：
+  // `messages`（叶子）在表里，`initialMessages`（它的顶层扁平键）不在。
+  assert.equal(Object.hasOwn(REPRESENTATIVE_CONFIG_VALUES, "messages"), true, "覆盖度按叶子名索引");
+  assert.equal(
+    Object.hasOwn(REPRESENTATIVE_CONFIG_VALUES, "initialMessages"),
+    false,
+    "覆盖度不得改成按顶层键索引（那样 S3 删完顶层键就会漏测叶子）",
+  );
+  assert.equal(leafPaths.length, 43);
 });
 
 test("S8 逐叶子穷举：config.<group>.<leaf> 展开后与扁平形态逐键深度相等（43 条）", () => {

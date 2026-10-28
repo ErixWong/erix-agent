@@ -18,14 +18,21 @@
 //      加一条「`config.run.rounds` → `maxRounds`」的别名——那会立刻多出第二套名字。
 //      ⚠ 唯一的例外是 `CONFIG_LEAF_ALIASES`（#498 S4b）：`config.input.messages` 是顶层
 //      `initialMessages` 的嵌套别名。它是**主 agent 裁决**要求的那条（输入载荷族的三个成员
-//      收在同一组里），并且被钉成一张只有一条记录的显式表 + 自检里「别名目标必须真存在」——
-//      它没有把「去掉路径前缀」退化成一张随便写的重命名表，也不许再长第二条。
+//      收在同一组里），并且被钉成一张只有一条记录的显式表 + 自检里「登记了别名的叶子必须真
+//      存在」（死条目）——它没有把「去掉路径前缀」退化成一张随便写的重命名表，也不许再长第二条。
 //   2. **只有一张表**。分组表 `CONFIG_NAMESPACE_SCHEMA` 是唯一手写的部分；展开映射
 //      (`CONFIG_ALIAS_PATHS`)、配置面名单 (`CONFIG_SURFACE_OPTION_NAMES`) 都从它机械派生。
 //      完整性由 `configSchemaSelfCheck()` 对着 `RUN_TOOL_LOOP_OPTION_NAMES` 核：
 //      每个顶层选项必须**恰好**落在「配置面」或「能力面」之一（漏一个、重一个都算问题）。
 //      于是「往白名单加一个选项但忘了分类」不会静默——它会让自检报红（见
 //      `test/loop-config-namespace-497.test.js`）。
+//      **#517 把这条恒等式改成单向**：方向是「每个顶层选项 → 恰好一个家」，**不是**「每个
+//      配置叶子 ⇔ 一个顶层键」。一个 `config` 叶子**可以没有**对应的顶层选项——那正是 S3 删完
+//      顶层扁平配置键之后 `config.run.maxRounds` 这类叶子的形状。仍然红的是：未分类的顶层键、
+//      同一键落在两个面、容器漏登记、以及别名表里的死条目。被放行的那一半由另一条锁兜住：
+//      `config` 的**每个叶子**都必须被 round-trip 覆盖名单取到值（`test/loop-capabilities-
+//      namespace-498.test.js` 的 S7，逐叶子核，与叶子有没有顶层键无关）——于是「删了顶层键」
+//      不会顺手造出一个没人摸过的叶子。
 //   3. **能力面不接受配置覆盖**（母单裁决），而**这条面的判据是行为、不是「引擎不解释」**
 //      （#497 复审 R1 更正：旧判据「能力面 = 引擎不解释其值」是**假的**——`session` 的
 //      `id`/`modelSlot`/`resume`/`initialMessages` 都被读，`model`/`modelMetadata` 的
@@ -310,6 +317,8 @@ export const CONFIG_NAMESPACE_OPTION_NAME = "config";
  *
  * 容器 = 一棵树的入口键：它自己不是旋钮、不是能力键，展开后就消失。三向闭合的第三向就是它——
  * 「能力面 + 配置面 + 容器 = 顶层白名单」这条恒等式由 `configSchemaSelfCheck` 逐项核。
+ * #517 之后「配置面」这一项是 `configPlaneOptionNames(optionNames)`（叶子映射到、**且**白名单
+ * 里真的还有的顶层键），所以一个叶子失去顶层键时它只从这一项里掉出去，不会把恒等式弄红。
  */
 export const NAMESPACE_CONTAINER_OPTION_NAMES = Object.freeze([
   CONFIG_NAMESPACE_OPTION_NAME,
@@ -323,7 +332,9 @@ const NAMESPACE_CONTAINER_OPTION_SET = new Set(NAMESPACE_CONTAINER_OPTION_NAMES)
  *
  * 整个模块只有这一条重命名：`config.input.messages` 是顶层 `initialMessages` 的嵌套别名
  * （主 agent 裁决：输入载荷族收在同一组里，成员名沿用「消息」这个更短的叫法）。
- * 它是显式的、只有一条、且由 `configSchemaSelfCheck` 反向核（映射到的名字必须真是顶层选项）。
+ * 它是显式的、只有一条、且由 `configSchemaSelfCheck` 核两件事：**登记了别名的叶子必须真存在**
+ * （否则就是一条死条目）与**不许改名撞到本组已有的叶子名**。
+ * #517：自检**不再**要求「映射到的名字必须是顶层选项」——叶子可以没有顶层键（S3 的形状）。
  * 其余每个叶子名仍逐字等于顶层键名——不要往这张表里加第二条，那会让「别名 = schema 路径」
  * 退化成一张随便写的重命名表。
  *
@@ -371,12 +382,34 @@ export const CONFIG_ALIAS_PATHS = new Map(
   )),
 );
 
-/** 配置面的顶层键全集（派生：schema 的扁平并集过别名表，顺序 = 分组顺序 + 组内顺序）。 */
+/**
+ * 配置面叶子的**扁平名字全集**（派生：schema 的扁平并集过别名表，顺序 = 分组顺序 + 组内顺序）。
+ *
+ * ⚠ #517 起它的名字只是「schema 会映射到的顶层键名」，**不再**蕴含「这些键真的还在白名单里」：
+ * 一个 `config` 叶子可以没有对应的顶层选项（S3 删完顶层扁平配置键之后就是那个形状）。想知道
+ * 「哪些还是真选项」用 `configPlaneOptionNames(optionNames)`；两者在 #517 当时**逐字相等**
+ * （43 = 43，本刀不删任何键），差集只在 S3 之后非空。
+ */
 export const CONFIG_SURFACE_OPTION_NAMES = Object.freeze(
   CONFIG_NAMESPACE_GROUPS.flatMap((group) => (
     CONFIG_NAMESPACE_SCHEMA[group].map((leaf) => configOptionNameForLeaf(group, leaf))
   )),
 );
+
+/**
+ * #517：配置面里**真的还是顶层选项**的那些键（`CONFIG_SURFACE_OPTION_NAMES` ∩ `optionNames`）。
+ *
+ * 这是单向化之后「配置面」这一项的定义：一个叶子失去顶层键（S3）只会从这里掉出去，**不会**
+ * 让自检报「maps to …, which is not a top-level option」——那条红以前是对的，现在它是
+ * 「叶子可以没有顶层键」的反面。仍然成立的是恒等式的另一头：每个顶层选项恰好落在一个家里。
+ *
+ * @param {readonly string[]} optionNames 顶层选项白名单（`RUN_TOOL_LOOP_OPTION_NAMES`）
+ * @returns {string[]} 仍是顶层选项的配置键（schema 顺序）
+ */
+export function configPlaneOptionNames(optionNames) {
+  const allowed = new Set(optionNames);
+  return CONFIG_SURFACE_OPTION_NAMES.filter((name) => allowed.has(name));
+}
 
 const CONFIG_SURFACE_OPTION_SET = new Set(CONFIG_SURFACE_OPTION_NAMES);
 const CAPABILITY_OPTION_SET = new Set(CAPABILITY_OPTION_NAMES);
@@ -408,6 +441,18 @@ export function configPathForOption(optionName) {
  * 且 `capabilities.hooks` 里的每个回调都必须在能力面名单里、并且是顶层白名单里的真选项——
  * 于是「往 hooks 加一个回调却忘了分类」「hooks 里的名字根本不存在」两种漂移都红。
  *
+ * #517 把它改成**单向**（纯语义重构，零行为变更）：恒等式说的是「**每个顶层选项 → 恰好一个家**」，
+ * 不是「每个配置叶子 ⇔ 一个顶层键」。所以：
+ *   · **仍然红**：未分类的顶层键、同一个键落在两个面、容器漏登记、能力面叶子不是真选项、
+ *     别名表里的死条目（登记了但叶子不存在）、同一组里两个叶子映射到同一个键；
+ *   · **新变成绿**：一个 `config` 叶子映射到的顶层键不在 `optionNames` 里。这正是 S3 删完
+ *     顶层扁平配置键之后 `config.run.maxRounds` 这类叶子的形状——以前它会报
+ *     `config.run.maxRounds maps to "maxRounds", which is not a top-level option`，于是「改闸口」
+ *     与「删键」被迫塞进同一刀（#498 S4c 已为这个付过一次返工）。
+ * 放行的那一半由**另一条锁**兜住：`config` 的每个叶子都必须被 round-trip 覆盖名单取到值
+ * （`test/loop-capabilities-namespace-498.test.js` S7：逐叶子核，与叶子有没有顶层键无关）——
+ * 「删了顶层键」不会顺手造出一个没人摸过的叶子。
+ *
  * @param {readonly string[]} optionNames 顶层选项白名单（`RUN_TOOL_LOOP_OPTION_NAMES`）
  * @param {{leafAliases?: Readonly<Record<string, Readonly<Record<string, string>>>>}} [overrides]
  *   Self-check hook (#498 S4b review): lets a test inject a leaf-alias table so the "an alias must
@@ -417,6 +462,10 @@ export function configPathForOption(optionName) {
  */
 export function configSchemaSelfCheck(optionNames, { leafAliases = CONFIG_LEAF_ALIASES } = {}) {
   const problems = [];
+  // #517：配置面 = 「叶子映射到的键」∩「白名单里真有的键」。单向化就发生在这一行：失去顶层键的
+  // 叶子只是不在这里出现，不会变成一条问题。
+  const configPlaneNames = configPlaneOptionNames(optionNames);
+  const configPlaneSet = new Set(configPlaneNames);
   const seen = new Map();
   for (const name of CONFIG_SURFACE_OPTION_NAMES) {
     const previous = seen.get(name);
@@ -453,21 +502,19 @@ export function configSchemaSelfCheck(optionNames, { leafAliases = CONFIG_LEAF_A
   }
   // #498 S4b：能力面那一半的自检（每组的形状校验器存在、叶子是真选项、别名表与 schema 对得上）。
   problems.push(...capabilitiesSchemaSelfCheck(optionNames));
-  // 配置面那一半：每个叶子映射到的顶层键必须真在名单里，且两个叶子不得映射到同一个键。
-  for (const group of CONFIG_NAMESPACE_GROUPS) {
-    for (const leaf of CONFIG_NAMESPACE_SCHEMA[group]) {
-      const option = configOptionNameForLeaf(group, leaf);
-      if (!optionNames.includes(option)) {
-        problems.push(
-          `config.${group}.${leaf} maps to ${JSON.stringify(option)}, which is not a top-level option`,
-        );
-      }
-    }
-  }
-  if (CONFIG_ALIAS_PATHS.size !== CONFIG_SURFACE_OPTION_NAMES.length) {
+  // #517：这里**不再**逐叶子核「映射到的顶层键必须真在名单里」——一个配置叶子可以没有顶层键
+  // （S3 的形状），那不是漂移。反过来两个叶子不得映射到同一个键（否则展开时一个静默盖掉另一个），
+  // 这一条由上面 `seen` 那一轮对 `CONFIG_SURFACE_OPTION_NAMES` 的重复检测负责，与白名单无关。
+  // 别名表自己的完整性：一条路径一个叶子（同一组里把同一个叶子写两遍会让 `CONFIG_ALIAS_PATHS`
+  // 静默去重，别名表就不再是 schema 的逐字投影）。
+  const leafCount = CONFIG_NAMESPACE_GROUPS.reduce(
+    (total, group) => total + CONFIG_NAMESPACE_SCHEMA[group].length,
+    0,
+  );
+  if (CONFIG_ALIAS_PATHS.size !== leafCount) {
     problems.push(
       `config alias table has ${CONFIG_ALIAS_PATHS.size} paths`
-      + ` for ${CONFIG_SURFACE_OPTION_NAMES.length} surface keys (two leaves map to the same key)`,
+      + ` for ${leafCount} schema leaves (a leaf name appears twice in a group)`,
     );
   }
   for (const group of Object.keys(leafAliases)) {
@@ -475,6 +522,8 @@ export function configSchemaSelfCheck(optionNames, { leafAliases = CONFIG_LEAF_A
       problems.push(`leaf alias table names unknown group ${JSON.stringify(group)}`);
     }
     for (const [leaf, option] of Object.entries(leafAliases[group])) {
+      // #517：死条目 = 登记了别名、但那个**叶子**不存在。注意核的是叶子而不是「别名指向的顶层键」
+      // ——后者在 S3 之后会合法地消失（`input.messages` 的扁平孪生 `initialMessages` 就在删除名单里）。
       if (!CONFIG_NAMESPACE_SCHEMA[group]?.includes(leaf)) {
         problems.push(`leaf alias ${group}.${leaf} is not a leaf of that group`);
       }
@@ -485,7 +534,7 @@ export function configSchemaSelfCheck(optionNames, { leafAliases = CONFIG_LEAF_A
   }
   for (const name of optionNames) {
     if (NAMESPACE_CONTAINER_OPTION_SET.has(name)) continue;
-    if (!CONFIG_SURFACE_OPTION_SET.has(name) && !CAPABILITY_OPTION_SET.has(name)) {
+    if (!configPlaneSet.has(name) && !CAPABILITY_OPTION_SET.has(name)) {
       problems.push(`top-level option ${JSON.stringify(name)} is classified nowhere (config surface or capability list)`);
     }
   }
@@ -494,7 +543,10 @@ export function configSchemaSelfCheck(optionNames, { leafAliases = CONFIG_LEAF_A
       problems.push(`top-level options do not accept ${JSON.stringify(container)} (a namespace container)`);
     }
   }
-  for (const name of [...CONFIG_SURFACE_OPTION_NAMES, ...CAPABILITY_OPTION_NAMES]) {
+  // #517：这一轮只核**能力面**（能力面叶子必须是真选项）。配置面叶子不再在这里被核——
+  // 它可以没有顶层键；`configPlaneNames` 已经把它从「配置面」这一项里掉了出去，于是
+  // 上面「classified nowhere」也不会误报它。
+  for (const name of CAPABILITY_OPTION_NAMES) {
     if (!optionNames.includes(name)) {
       problems.push(`schema names ${JSON.stringify(name)}, which is not a top-level option`);
     }
