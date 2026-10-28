@@ -98,7 +98,7 @@ test("resume 把恢复出来的错误计数经 ctx set 带回下一次 run-state
   ]);
   const result = await runToolLoop({
     provider,
-    resume: true,
+    config: { run: { resume: true } },
     completion: false,
     store,
     runId,

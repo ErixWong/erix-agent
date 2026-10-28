@@ -90,6 +90,11 @@ const RUN_FAMILY_FIXTURE_KEYS = Object.freeze([
   // spellings. The engine's read side (the one truthiness test in `src/loop/orchestrator.js`) is
   // unchanged, so `true` / `false` / object values behave exactly as before.
   "stream",
+  // #498 S3 A19: `resume` (home `config.run.resume`). Same reasoning — the fixture only moves the
+  // spelling. The engine's read side only ever *tests* `resume` for truthiness
+  // (`if (!ctx.resume || …)` in `src/loop/resume-manager.js`), so `true` / `false` behave exactly as
+  // before; a function value was never behaviour at this position (see the slice test's gate-2 row).
+  "resume",
 ]);
 
 /**

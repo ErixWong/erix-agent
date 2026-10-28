@@ -691,7 +691,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
     await runToolLoop({
       // 模型把己执行过的调用又发了一遍（复放路径），下一轮自然收尾。
       provider: scriptedProvider([toolRound("done-1"), DONE]),
-      resume: true,
+      config: { run: { resume: true } },
       store,
       runId,
       completion: false,
@@ -749,7 +749,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
     const events = [];
     await runToolLoop({
       provider: scriptedProvider([toolRound("old-1"), DONE]),
-      resume: true,
+      config: { run: { resume: true } },
       store,
       runId,
       completion: false,
@@ -912,12 +912,13 @@ export function toolResultEnvelopeContract(label, getEntry) {
     const events = [];
     await runToolLoop({
       provider: scriptedProvider([DONE]),
-      resume: true,
       store,
       runId,
       completion: false,
       // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役，规位是 `config.run.replayPolicy`。
-      config: { run: { replayPolicy: "per-tool-declaration" } },
+      // #498 S3 A19：`resume` 同样退役（家 `config.run.resume`），并进**同一个** `config` 容器
+      // ——两个 `config` 键会后者静默胜，那正是本文件里另一格要防的形状。
+      config: { run: { resume: true, replayPolicy: "per-tool-declaration" } },
       executeTool: async () => "should not run",
       onEvent: (event) => events.push(event),
     });

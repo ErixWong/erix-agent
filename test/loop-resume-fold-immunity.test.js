@@ -202,12 +202,12 @@ async function runTwoRoundsThenResume(runId, shape) {
     provider: createFakeProvider([
       { content: [{ type: "text", text: "续接完成" }], stopReason: "end_turn", times: 3 },
     ]),
-    resume: true,
+    // #498 S3 A19：`resume` 退役扁平写法，并进**同一个** `config` 容器（家 `config.run.resume`）。
     executeTool: async () => "unused",
     tools: [WRITE_FILE_TOOL],
     maxRounds: 2,
     completion: false,
-    config: { input: { wrapup: false } },
+    config: { input: { wrapup: false }, run: { resume: true } },
     reflection: { enabled: true, judge: { provider: resumedJudge } },
     store,
     runId,

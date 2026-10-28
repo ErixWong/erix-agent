@@ -264,7 +264,10 @@ const OPTION_WHITELIST = [
   // `test/loop-run-slice-498s3a13.test.js`. `store` (the port) stays.
 
   "runId",
-  "resume",
+  // #498 S3 (`run` slice A19): `resume` left the allowlist — its canonical home is
+  // `config.run.resume`. The copy tracks the source list verbatim (that is exactly what A0 checks),
+  // so it is gone here too; the flat spelling is now a **rejection** cell, see
+  // `test/loop-run-slice-498s3a19.test.js`.
   "onRound",
   "onJudge",
   "onToolResult",

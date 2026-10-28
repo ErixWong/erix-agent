@@ -256,7 +256,7 @@ test("erix.success 迁移等价：复放已完成结果 ⇒ 沿用原记录的�
       { content: [{ type: "tool_use", id: "done-1", name: "work", input: {} }], stopReason: "tool_use" },
       DONE,
     ]),
-    resume: true,
+    config: { run: { resume: true } },
     store,
     runId,
     completion: false,

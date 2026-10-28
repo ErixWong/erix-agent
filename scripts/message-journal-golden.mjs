@@ -144,7 +144,11 @@ export async function scenarioCrashResume() {
   await appendUserTurn(store, { key: runId, text: "追问：还剩什么没做？", messageId: "host-followup-1" });
   const resumed = createFakeProvider([toolTurn("a3"), endTurn("恢复后的终稿")]);
   const result = await runToolLoop({
-    ...BASE, maxRounds: 8, store, runId, resume: true, provider: resumed,
+    // #498 S3 A19: `resume` left the top-level allowlist; home `config.run.resume`. This script is an
+    // **observation** producer (the golden fixture's generator): only the spelling moves.
+    ...BASE, maxRounds: 8, store, runId,
+    config: { ...BASE.config, run: { ...BASE.config.run, resume: true } },
+    provider: resumed,
     reflection: {
       enabled: true, roundJudge: true, judgeIntercept: false,
       judge: { provider: createFakeProvider([judgeDone()]) },

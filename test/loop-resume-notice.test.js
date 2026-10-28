@@ -92,7 +92,7 @@ test("#404 格1：恢复时逐条列出崩溃现场未结清的 tool_use（id + 
   const resumedProvider = createFakeProvider([textTurn("续上了")]);
   const result = await runToolLoop({
     provider: resumedProvider,
-    resume: true,
+    config: { run: { resume: true } },
     completion: false,
     store,
     runId,
@@ -137,7 +137,7 @@ test("#404 格2：尾部已结清的账本恢复时仍然注入，但「未结�
 
   const result = await runToolLoop({
     provider: createFakeProvider([textTurn("接着干")]),
-    resume: true,
+    config: { run: { resume: true } },
     completion: false,
     store,
     runId,
@@ -207,7 +207,7 @@ test("#404 格4：入账走 `:control:` 行，`load()` 折回来告示仍在 too
 
   await runToolLoop({
     provider: createFakeProvider([textTurn("续上了")]),
-    resume: true,
+    config: { run: { resume: true } },
     completion: false,
     store,
     runId,
@@ -266,7 +266,7 @@ test("#404 格5a：账本里已有同内容的告示 ⇒ 本次恢复不再注�
 
   const result = await runToolLoop({
     provider: createFakeProvider([textTurn("继续")]),
-    resume: true,
+    config: { run: { resume: true } },
     completion: false,
     store,
     runId,
@@ -299,7 +299,7 @@ test("#404 格5b：连续 resume 两次、事实变了 ⇒ 各一条，且不同
         throw new Error("boom: 第一次恢复的请求炸了");
       },
     },
-    resume: true,
+    config: { run: { resume: true } },
     completion: false,
     store,
     runId,
@@ -313,7 +313,7 @@ test("#404 格5b：连续 resume 两次、事实变了 ⇒ 各一条，且不同
   // 所以是**另一条**告示：内容不同、key 不同，`appendRound` 不会判成同 key 异 payload 冲突。
   const second = await runToolLoop({
     provider: createFakeProvider([textTurn("第二次续上了")]),
-    resume: true,
+    config: { run: { resume: true } },
     completion: false,
     store,
     runId,
@@ -409,10 +409,13 @@ test("#404 附2：已知边界——全折叠配置（keepRounds=0）下告示�
   };
   await runToolLoop({
     provider: resumedProvider,
-    resume: true,
+    // #498 S3 A19：`resume` 退役扁平写法，并进**同一个** `config` 容器（家 `config.run.resume`）。
     completion: false,
     reflection: false,
-    config: { folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm" } } },
+    config: {
+      folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm" } },
+      run: { resume: true },
+    },
     store,
     runId: "bb-fold-edge",
     executeTool: async () => "ok",
