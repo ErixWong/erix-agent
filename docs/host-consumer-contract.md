@@ -199,14 +199,23 @@ Five rules govern it:
   (`config.folding.context.onBeforeFold`, not `onBeforeFold`): the field shells that really are
   called as functions are `config.timing.retry.sleepImpl`, `config.run.reflection.onReflection`,
   `config.run.reflection.judge.provider` and `config.folding.context.onBeforeFold` /
-  `onAfterFold`. The message also names the canonical home: `capabilities.hooks.<name>` for a host
-  callback, `capabilities.checks.deliverables` for a deliverables check, or the matching capability
-  port slot for anything else. A config **data** key (such as `config.input.tools`) has no capability
-  home at all, and the message says exactly that — `there is no capability home for it: …` — instead
-  of inventing one. Nothing is "accepted and then dropped during expansion" — the throw
-  happens **before any host port is read**. Two leaves that used to be the awkward part of this
-  rule are simply not config keys any more: `config.guard.finalGuard` and `config.guard.deliverables`
-  (issue #498 S4b) — see the table above and the `capabilities` section below.
+  `onAfterFold`. The message also names the canonical home, **by real path**: `capabilities.hooks.<name>`
+  for a host callback (`config.folding.context.onBeforeFold` → `capabilities.hooks.onBeforeFold`),
+  `capabilities.checks.deliverables` for a deliverables check, and `capabilities.ports.<slot>` for a
+  port implementation — `config.timing.retry.sleepImpl` → `capabilities.ports.sleepImpl`,
+  `config.run.reflection.judge.provider` → `capabilities.ports.judgeProvider`,
+  `config.folding.context.strategy` (and anything below it) → `capabilities.ports.strategy`. The
+  mapping is not guessed from the leaf name alone: the full path is matched against the registered
+  destinations (`CAPABILITY_SLOT_DESTINATIONS` (`src/loop/capabilities-namespace.js`)), so a leaf
+  whose name says nothing (`provider`) still lands on its real slot. A config **data** key (such as
+  `config.input.tools`) has no capability home at all, and the message says exactly that — `there is
+  no capability home for it: …` — instead of inventing one. Nothing is "accepted and then dropped
+  during expansion" — the throw happens **before any host port is read**. Two leaves that used to be
+  the awkward part of this rule are simply not config keys any more: `config.guard.finalGuard` and
+  `config.guard.deliverables` (issue #498 S4b) — see the table above and the `capabilities` section
+  below. **History**: before issue #498 S4c this paragraph ended the sentence with "or the matching
+  capability port slot", which pointed at a slot that did not exist yet (there was no
+  `capabilities.ports`); that is why the paths above are spelled out now.
 - **Capability keys are refused** — the 22 capability options in
   `CAPABILITY_OPTION_NAMES` (`src/loop/config-namespace.js`) are not configuration: `provider`,
   `executeTool`, `store`, `modelConfig`, `assemblyPort`, `signal`, `todoStateProvider`,
@@ -215,7 +224,13 @@ Five rules govern it:
   `onToolCall`, `onUsage`, `onFoldSummary`), `finalGuard` and `deliverables`. Writing one inside
   `config` (at the top level or under a group) throws at startup and names the key; the message also
   names the new home when there is one (`capabilities.hooks.<name>` / `capabilities.checks.<leaf>`),
-  and the error carries the same `via` tag as every other gate error (`"direct"` / `"assembly"`). **This narrowing applies to the new namespace only**:
+  and the error carries the same `via` tag as every other gate error (`"direct"` / `"assembly"`).
+  The nine leaves that only exist as capability **slots** (issue #498 S4c) are not on that list
+  because they are not top-level options at all: writing `sleepImpl` / `onBeforeFold` / … at the top
+  of `config`, or one group too high (`config.timing.sleepImpl`, `config.folding.onBeforeFold`),
+  answers `unknown config.<group> option: … (… belongs to capabilities.<group>.<leaf>)`, and writing
+  one in its real nested home (`config.timing.retry.sleepImpl`) hits the function-value refusal above.
+  **This narrowing applies to the new namespace only**:
   the pre-existing precedence rule — an explicit fine-grained option overrides the same-named
   member the assembly port supplies (`resolveAssemblyMember` (`src/assembly.js`)), e.g. an explicit
   `provider` still beats the port's provider — is unchanged, and `test/contract/assembly-port.js`
@@ -253,8 +268,18 @@ Five rules govern it:
   capability surface **is** purely behaviour carriers — the counter-example no longer exists. The same
   slice moved the deliverables checks the other way (`config.guard.deliverables` →
   `capabilities.checks.deliverables`), so the two counts did not change, only their membership.
-  `capabilities.provider` (the "ports" container) is still not collected; that is a later ruling, and
-  nothing here promises it.
+  **`capabilities.provider` is still rejected** — adapter port objects (`provider`, `store`,
+  `signal`, `modelConfig`, `executeTool`) stay top-level options or assembly-port members, and
+  whether they ever move under `capabilities` is a ruling that has **not** been made. That is no
+  longer the same claim as "there is no port container": as of issue #498 S4c the container
+  `capabilities.ports` **does exist** — it holds the three *in-shell implementation* slots
+  (`sleepImpl`, `judgeProvider`, `strategy`), i.e. the ports the engine dereferences or calls
+  itself, not the adapters a host hands in. So "the ports container exists" and "`provider` /
+  `store` moved into `capabilities`" are two different claims, and only the first one is true today.
+  The wording this paragraph used to carry ("a later ruling, and nothing here promises it") was a
+  statement about a **future** decision, not an error: **S4c is that ruling arriving**, and it
+  settled the in-shell half only. The `provider` / `store` half is still open, and this document
+  still promises nothing about it. See "`capabilities.ports`" below for the members that do exist.
 
   What *did* land is the other half of the criterion: as of 0.28.0 the `config` subtree holds **data
   only**, so it **does** survive a JSON round-trip unchanged, and that property is asserted mechanically
@@ -302,75 +327,134 @@ Everything in this section and the next describes the tree on this branch (the 0
 
 ### The `capabilities` namespace (issue #498)
 
-Behaviour carriers are not data, so 0.28.0 gives them their own container. It has **two groups**
-(issue #498 S4b — the second one exists so that `hooks` does not turn into a pocket):
-`capabilities.hooks` for host callbacks and `capabilities.checks` for deliverables checks.
-The twelve host callbacks — `onEvent`, `onObserverError`, `onPersistenceError`, `onRound`, `onJudge`,
-`onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary`, `finalGuard` —
-are enumerated in `CAPABILITY_HOOK_NAMES` (`src/loop/capabilities-namespace.js`), and the group table
+Behaviour carriers are not data, so 0.28.0 gives them their own container. It has **three groups**
+(issue #498 S4b added the second one so that `hooks` does not turn into a pocket; issue #498 S4c
+added the third one so that a behaviour carrier that used to live in a nested shell slot has a real
+destination): `capabilities.hooks` for host callbacks, `capabilities.checks` for deliverables checks,
+and `capabilities.ports` for the infrastructure / strategy implementations the engine dereferences.
+The **sixteen** host callbacks — `onEvent`, `onObserverError`, `onPersistenceError`, `onRound`,
+`onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary`,
+`finalGuard`, `onReflection`, `onBeforeFold`, `onAfterFold`, `stubFor` — are enumerated in
+`CAPABILITY_HOOK_NAMES` (`src/loop/capabilities-namespace.js`), and the group table
 `CAPABILITIES_NAMESPACE_SCHEMA` (`src/loop/capabilities-namespace.js`) is its single hand-written
 source: the alias map `CAPABILITIES_ALIAS_PATHS` (`src/loop/capabilities-namespace.js`) is derived
 from it exactly the way the `config` alias map is, so `capabilities.hooks.onEvent` and the flat
-`onEvent` are the same key (alias = schema path, leaf name verbatim the flat option name).
+`onEvent` are the same key (alias = schema path, leaf name verbatim the flat option name) — with the
+one registered exception described below (nine leaves that never were top-level options).
 
 | namespace | members |
 | --- | --- |
-| `capabilities.hooks` | `onEvent`, `onObserverError`, `onPersistenceError`, `onRound`, `onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary`, `finalGuard` |
+| `capabilities.hooks` | 18 members — **16 callbacks** (listed below) **plus the two polymorphic knobs** `protectedMessage` / `recoveryHint` (function form here, data form stays in `config.folding.context`):  `onEvent`, `onObserverError`, `onPersistenceError`, `onRound`, `onJudge`, `onToolResult`, `onDelta`, `onReasoningDelta`, `onToolCall`, `onUsage`, `onFoldSummary`, `finalGuard`, `onReflection`, `onBeforeFold`, `onAfterFold`, `stubFor` — plus the **function form** of the two polymorphic knobs, `protectedMessage` and `recoveryHint` |
 | `capabilities.checks` | `deliverables` (each entry `{ name, check }`; `check` is a function, `name` is a label) |
+| `capabilities.ports` | `sleepImpl`, `judgeProvider`, `strategy` — see “`capabilities.ports`” below |
 
-Five rules, deliberately symmetric with `config` (two containers, one set of rules):
+Six rules, deliberately symmetric with `config` (two containers, one set of rules):
 
-- **Precedence** — when a callback is given both ways, `capabilities.hooks.*` wins over the flat key;
-  the flat key keeps being accepted and behaves exactly as before when it is the only spelling. A
-  leaf set to `undefined` is verbatim "not subscribed", so it neither overrides a flat hook nor
-  counts as a conflict.
+- **Precedence** — when a callback is given both ways, `capabilities.hooks.*` wins over the flat key
+  (and over the nested shell slot, for the leaves that have one); the older spelling keeps being
+  accepted and behaves exactly as before when it is the only one. A leaf set to `undefined` is
+  verbatim "not subscribed", so it neither overrides a flat hook nor counts as a conflict.
 - **Conflicts are not silent** — different values under both spellings emit one
   `config_override_conflict` event before the first round, with `conflicts: [{ path, key }]` where
-  `path` is `hooks.<name>` (`{ path: "hooks.onEvent", key: "onEvent" }`). Same event, same fields,
-  no new event type: the payload says "this knob has two sources of truth" and the path says which
-  container. An observer that throws on it is isolated like every other observer channel.
+  `path` names the **destination** of the leaf: `hooks.<name>` for a callback that also has a flat
+  key (`{ path: "hooks.onEvent", key: "onEvent" }`), `ports.<slot>` for a port slot
+  (`{ path: "ports.sleepImpl", key: "sleepImpl" }`), and — for the two polymorphic knobs — the
+  **config-side** path of the same knob (`{ path: "folding.context.protectedMessage", key:
+  "protectedMessage" }`), because there the two sides are "data in the config namespace" versus
+  "function in the capability namespace" and the host has to know which side to change. Same event,
+  same fields, no new event type: the payload says "this knob has two sources of truth" and the path
+  says where the destination is. An observer that throws on it is isolated like every other observer
+  channel.
   **The same event covers the second pair of sources**: the assembly port's `policy.capabilities`
   and the call-level `capabilities` are two sources of the *same* container, and the call-level one
-  wins as a **whole tree** (the same "last writer wins" rule `config` uses); every hook both sources
-  set to **different** functions is reported leaf by leaf, deduplicated by path. Equal hooks, or a
-  hook only one side sets, are not conflicts. **"Equal" is exactly `isDeepStrictEqual`**
+  wins as a **whole tree** (the same "last writer wins" rule `config` uses); every leaf both sources
+  set to **different** values is reported leaf by leaf, deduplicated by path. Equal values, or a
+  leaf only one side sets, are not conflicts. **"Equal" is exactly `isDeepStrictEqual`**
   (`src/loop/capabilities-namespace.js`) — that is the predicate the engine runs, stated here so
   hosts do not have to guess: under `hooks` a value compares **by reference** (the same function
   object is equal, two separately written arrow functions never are, even with identical bodies),
-  and under `checks` the `{ name, check }` array compares **element by element** (so passing the
-  same `check` reference under both spellings is *not* a conflict, while a freshly written `check`
-  function is). There is no looser "looks the same" rule.
+  under `checks` the `{ name, check }` array compares **element by element** (so passing the same
+  `check` reference under both spellings is *not* a conflict, while a freshly written `check`
+  function is), and a port slot compares deeply (the same strategy object is equal, an identically
+  shaped second object is not). There is no looser "looks the same" rule.
 - **Unknown sub-keys throw, with the full path** — `capabilities: { hoks: … }` answers
-  `unknown capabilities namespace: "hoks" (accepted: hooks, checks; ports are not collected under
-  capabilities — pass them as top-level options or through the assembly port)`, `capabilities: {
-  check: … }` (one `s` short) answers the same enumeration with `checks` in the accepted list, and
-  `capabilities.hooks.onEtent` answers `unknown capabilities.hooks option: "onEtent" (accepted: …)`.
-  A leaf written one level too high (`capabilities.onEvent`, `capabilities.deliverables`) is
-  answered with "<group> live under capabilities.<group>". Nothing is silently ignored — that is
-  the class of quiet configuration this container must not reintroduce.
+  `unknown capabilities namespace: "hoks" (accepted: hooks, checks, ports; port objects such as
+  provider / store / signal stay top-level options or assembly-port members, not capabilities
+  members)`, `capabilities: { check: … }` (one `s` short) answers the same enumeration with `checks`
+  in the accepted list, `capabilities.hooks.onEtent` answers `unknown capabilities.hooks option:
+  "onEtent" (accepted: …)`, and `capabilities.ports.sleeplmp` answers `unknown capabilities.ports
+  option: "sleeplmp" (accepted: sleepImpl, judgeProvider, strategy)`. A leaf written one level too
+  high (`capabilities.onEvent`, `capabilities.deliverables`, `capabilities.sleepImpl`) is answered
+  with "<group> live under capabilities.<group>". Nothing is silently ignored — that is the class of
+  quiet configuration this container must not reintroduce.
 - **Values must have the group's shape** — under `hooks`, `undefined` means "not subscribed" and any
   other non-function value (`null`, a string, an object) throws at startup, naming
   `capabilities.hooks.<name>`; the flat top-level `onRound: "x"` tolerance is the published 0.26
-  surface and is unchanged. Under `checks`, the value must be a `{ name, check }[]` and the shape
-  rules are **not restated here**: the validator calls `normalizeDeliverables`
-  (`src/loop/deliverables.js`), the same single source the flat option uses, so
-  `capabilities.checks.deliverables` and the flat `deliverables` cannot drift apart. An empty array
-  is verbatim "not declared".
-  **An empty group is verbatim "nothing configured"** — `capabilities: { hooks: {} }` and
-  `capabilities: { checks: {} }` validate, expand to no keys at all, emit no
-  `config_override_conflict`, and shadow nothing: same behaviour for both groups, because an empty
-  object is read as "absent", not as "present but empty". (`checks: { deliverables: [] }` is the
-  same story one level down: an empty array is "not declared".)
-- **Ports are not collected yet** — `capabilities.ports` does not exist in this release; port
-  objects (`provider`, `store`, `signal`, …) stay where they are (top-level options or the assembly
-  port) and writing one under `capabilities` throws with a message that says so. Whether they move
-  is a later ruling, not a promise made here. `tools` is **not** a port any more (issue #498 S4b):
-  it is data, so it lives at `config.input.tools` / the flat `tools`.
+  surface and is unchanged. That rule is **not relaxed** for the two polymorphic knobs: their
+  function form is a function or nothing, exactly like every other hook. Under `checks`, the value
+  must be a `{ name, check }[]` and the shape rules are **not restated here**: the validator calls
+  `normalizeDeliverables` (`src/loop/deliverables.js`), the same single source the flat option uses,
+  so `capabilities.checks.deliverables` and the flat `deliverables` cannot drift apart. An empty
+  array is verbatim "not declared".
+  **An empty group is verbatim "nothing configured"** — `capabilities: { hooks: {} }`,
+  `capabilities: { checks: {} }` and `capabilities: { ports: {} }` validate, expand to no keys at
+  all, emit no `config_override_conflict`, and shadow nothing: same behaviour for all three groups,
+  because an empty object is read as "absent", not as "present but empty". (`checks: { deliverables:
+  [] }` is the same story one level down: an empty array is "not declared".)
+- **Nine leaves have no flat alias** (issue #498 S4c) — `ports.sleepImpl`, `ports.judgeProvider`,
+  `ports.strategy`, `hooks.onReflection`, `hooks.onBeforeFold`, `hooks.onAfterFold`, `hooks.stubFor`,
+  `hooks.protectedMessage` and `hooks.recoveryHint` **never were top-level options**, so 0.28.0
+  invents a container member slot for them instead of a new flat key. Their destinations are
+  registered in `CAPABILITY_SLOT_DESTINATIONS` (`src/loop/capabilities-namespace.js`) and expansion
+  hands them to the engine on a side channel rather than writing new flat keys — which is why the
+  top-level allowlist is still **67** entries and the three-way identity (43 config + 22 capability
+  + 2 containers) is untouched. Their legacy homes are the nested shell slots listed under
+  “`capabilities.ports`” and in the `hooks` row above (`reflection.onReflection`,
+  `context.onBeforeFold`, …); those keep working.
+- **Port objects are still not collected** — `provider`, `store`, `signal`, `modelConfig`,
+  `executeTool` and the state providers stay where they are (top-level options or the assembly port);
+  writing one under `capabilities` (`capabilities.provider`) still throws with a message that says
+  so. `capabilities.ports` is **not** their new home: it holds the three slots above, which are
+  *implementations the engine dereferences*, not adapters. `tools` is **not** a port either (issue
+  #498 S4b): it is data, so it lives at `config.input.tools` / the flat `tools`.
+  **History**: before issue #498 S4c this section said "`capabilities.ports` does not exist in this
+  release" — that was true of S4a/S4b and is kept here as the record of how the ruling changed, not
+  as the current state.
 
 `capabilities` never reaches the engine either: expansion removes it, so `effectiveOptions` — and
 the `explicitOptions` returned by `normalizeRunToolLoopOptions` (`src/loop/option-normalization.js`)
-— carry flat keys only. The assembly port accepts `capabilities` in its `policy` as well, so both
+— carry flat keys only (the nine leaves above travel on the `capabilitySlots` side channel instead of
+becoming flat keys). The assembly port accepts `capabilities` in its `policy` as well, so both
 entry routes share this one expansion, and the `via` tag says which route threw.
+
+#### `capabilities.ports` (issue #498 S4c)
+
+A port slot holds an **implementation the engine dereferences or calls**, not data and not a host
+callback: the engine either invokes the value itself (`sleepImpl`, `judgeProvider` when it is a
+function) or dereferences a method on it and invokes that (`judgeProvider.chat`, `strategy.compact`).
+That is the difference from `hooks`, and it is the reason the value shapes differ: **a port may be an
+object, a hook must be callable.**
+
+| slot | value shape | legacy nested home (still accepted) | what the engine does with it |
+| --- | --- | --- | --- |
+| `capabilities.ports.sleepImpl` | a function `(ms, signal) => Promise<void>` | `retry.sleepImpl` / `config.timing.retry.sleepImpl` | replaces the retry timer: every backoff delay goes through it, so a host can record the delays without paying wall-clock time |
+| `capabilities.ports.judgeProvider` | a callable `(request) => Promise<response>` **or** an object with a `chat(request)` method | `reflection.judge.provider` / `config.run.reflection.judge.provider` | the judge's evaluator. It feeds the round judge, the wrap-up LLM normalizer and the reported `judgeModel` — the same three places the nested slot fed. Without it the run's main provider is used |
+| `capabilities.ports.strategy` | a compaction strategy **object** with `shouldCompact(messages, budgetTokens)` and `compact(messages, options)` | `context.strategy` (object form) / `config.folding.context.strategy` | passed through verbatim (`resolveCompactionStrategy` (`src/compact/strategy-resolution.js`) returns an object unchanged), so the methods called are the host's own. A built-in **name** is data, not a port: pass `"sliding-window"` / `"fold-statistical"` / `"fold-llm"` as `context.strategy` / `config.folding.context.strategy`, and the port rejects a string with a message that says so |
+
+Three consequences worth knowing:
+
+1. **They are not new top-level options.** `runToolLoop({ sleepImpl })` is still an unknown option
+   (the allowlist is unchanged); the canonical spelling is `capabilities.ports.sleepImpl`.
+2. **Both spellings at once is a conflict, not a silent win.** Giving `capabilities.ports.sleepImpl`
+   and `retry.sleepImpl` *different* functions emits one `config_override_conflict` with
+   `{ path: "ports.sleepImpl", key: "sleepImpl" }`; the port wins. The same holds for
+   `judgeProvider` versus `reflection.judge.provider` and for `strategy` versus `context.strategy`
+   (a deeply equal value is not a conflict).
+3. **`reflection.judge.evaluator` is retired** (issue #498 S4c). It was a pure alias of
+   `reflection.judge.provider` — the same `??` slot written twice — and 0.28.0 retires it rather
+   than moving it: writing it now throws on **both** entry routes (`reflection.judge.evaluator is not
+   accepted: it was an alias of reflection.judge.provider (pass reflection.judge.provider, or the
+   canonical capabilities.ports.judgeProvider)`). `reflection.judge.provider` keeps working.
 
 ### Tool arguments that cannot be parsed (issue #409)
 

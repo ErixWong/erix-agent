@@ -12,8 +12,12 @@ import { createFakeProvider } from "./helpers/fake-provider.js";
 // 本文件是那条优先级链的回归门：**`aborted` 永远优先于 judge / finalGuard**
 // （裁决表见 docs/termination-decision-table.md，契约见 docs/host-consumer-contract*.md）。
 //
-// 「模型请求次数」的可核对口径：主模型走 `provider.chat`，judge 走 `reflection.judge.evaluator`，
+// 「模型请求次数」的可核对口径：主模型走 `provider.chat`，judge 走 `capabilities.ports.judgeProvider`，
 // 两者各计一次——任何一次多出来的调用都是真金白银（宿主实测 judge 单轮可达数十秒）。
+//
+// #498 S4c：本文件原先用 `reflection.judge.evaluator` 注入 judge（它与 `judge.provider` 是同一行
+// `??` 的纯别名）。0.28 退役了那个别名（现在启动即抛，并指向 `capabilities.ports.judgeProvider`），
+// 所以脚手架改用**规范之家**的端口位——判据一字未改。
 
 const FINAL_TEXT = "交付完成：全部改动已落盘";
 const JUDGE_DONE_TEXT = JSON.stringify({
@@ -38,7 +42,7 @@ const finalTextResponse = {
 
 /**
  * 一个把「主模型调用」与「judge 模型调用」分开计数的 run 脚手架。
- * judge 用 `reflection.judge.evaluator` 注入，这样它的调用次数与主模型彻底解耦。
+ * judge 用 `capabilities.ports.judgeProvider` 注入，这样它的调用次数与主模型彻底解耦。
  */
 function makeHarness({ judgeEvaluator, onMainCall, store } = {}) {
   const mainCalls = [];
@@ -56,11 +60,10 @@ function makeHarness({ judgeEvaluator, onMainCall, store } = {}) {
       return this.chat(request);
     },
   };
-  const reflection = {
-    enabled: true,
-    roundJudge: true,
-    judge: {
-      evaluator: async (request) => {
+  const reflection = { enabled: true, roundJudge: true };
+  const capabilities = {
+    ports: {
+      judgeProvider: async (request) => {
         judgeCalls.push(request);
         return judgeEvaluator
           ? judgeEvaluator(request)
@@ -71,6 +74,7 @@ function makeHarness({ judgeEvaluator, onMainCall, store } = {}) {
   return {
     provider,
     reflection,
+    capabilities,
     mainCalls,
     judgeCalls,
     modelCallCount: () => mainCalls.length + judgeCalls.length,
@@ -91,6 +95,7 @@ test("abort in the window after the end-turn judge returns terminates as aborted
     initialUserMessage: "把活干完",
     executeTool: async () => "unused",
     reflection: harness.reflection,
+    capabilities: harness.capabilities,
     signal: controller.signal,
     // `onJudge` 是宿主回调，调用点正好落在「judge 已返回、终局尚未定」这一段——
     // 也就是宿主用户点停止的真实时刻。
@@ -124,6 +129,7 @@ test("abort during the judge call still terminates as aborted (issue #282 反向
     initialUserMessage: "把活干完",
     executeTool: async () => "unused",
     reflection: harness.reflection,
+    capabilities: harness.capabilities,
     signal: controller.signal,
   }));
 
@@ -145,6 +151,7 @@ test("once aborted, the end-turn judge must not issue another model call (issue 
     initialUserMessage: "把活干完",
     executeTool: async () => "unused",
     reflection: harness.reflection,
+    capabilities: harness.capabilities,
     signal: controller.signal,
   }));
 
@@ -184,6 +191,7 @@ test("abort in the judge nudge window terminates as aborted and issues no furthe
     initialUserMessage: "把活干完",
     executeTool: async () => "unused",
     reflection: harness.reflection,
+    capabilities: harness.capabilities,
     signal: controller.signal,
     maxRounds: 4,
     stallDetection: false,

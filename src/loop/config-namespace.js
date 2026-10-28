@@ -87,8 +87,10 @@ import { tagValidationRoute } from "../assembly-validators.js";
 import {
   CAPABILITIES_NAMESPACE_OPTION_NAME,
   CAPABILITIES_NAMESPACE_SCHEMA,
+  CAPABILITIES_SLOT_LEAF_NAMES,
   CAPABILITIES_SURFACE_OPTION_NAMES,
   CAPABILITY_HOOK_NAMES,
+  CAPABILITY_SLOT_DESTINATIONS,
   capabilitiesPathForOption,
   capabilitiesSchemaSelfCheck,
 } from "./capabilities-namespace.js";
@@ -210,7 +212,15 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
 });
 
 /**
- * 能力面（**22 项**）：宿主**递进来**的行为载体。
+ * The capability surface (**22 items**, meaning the **top-level option** layer): the behaviour
+ * carriers the host **hands in**.
+ *
+ * #498 S4c adds one boundary: the capability schema also holds nine **nested-slot** leaves
+ * (`ports.*` and six `hooks.*`), which are **not** top-level options (they never were, and this slice
+ * invents none) — so they are not on this 22-item list and take no part in the three-way identity
+ * ("config surface + capability surface + containers = allowlist"). Their destinations are registered
+ * in `CAPABILITY_SLOT_DESTINATIONS` (`src/loop/capabilities-namespace.js`) and delivered on the
+ * `slots` side channel.
  *
  * 判据（#497 复审 R1 更正后的版本，与文件头约束 3 同一句话）：**能力面 = 宿主提供的行为载体
  * （函数 / 端口对象），引擎调用或解引用它；配置面 = 引擎按已知字段校值并解释的数据**。
@@ -274,7 +284,12 @@ export const CAPABILITY_OPTION_NAMES = Object.freeze([
   // `onReasoningDelta` / `onToolCall` / `onUsage` / `onFoldSummary`）从 `config.observers`
   // 整组移进能力面。它们本来就是回调——判据一直说它们在能力面，只是 0.27 把它们关在配置树里。
   // #498 S4b：`finalGuard` 也在这一支里（`CAPABILITY_HOOK_NAMES` 的第 12 项，见那边的注释）。
-  ...CAPABILITY_HOOK_NAMES.filter((name) => !CAPABILITY_PORT_OPTION_NAMES.includes(name)),
+  // #498 S4c: the last four entries of `CAPABILITY_HOOK_NAMES` (`onReflection` / `onBeforeFold` /
+  // `onAfterFold` / `stubFor`) have **no** top-level flat alias ⇒ they are not top-level options and
+  // therefore cannot be on this list (the three-way identity would go red). Together with `ports.*`
+  // they are the "nested-slot leaves", whose destinations live in `CAPABILITY_SLOT_DESTINATIONS`.
+  ...CAPABILITY_HOOK_NAMES.filter((name) => !CAPABILITY_PORT_OPTION_NAMES.includes(name)
+    && !CAPABILITIES_SLOT_LEAF_NAMES.includes(name)),
   // #498 S4b：`capabilities.checks` 那一组（`deliverables`）。以前它挂在 `config.guard` 上，
   // 而配置面只装数据 ⇒ 能写的只有 `[]`；整键搬进能力面之后那个过渡态消失。
   ...CAPABILITIES_SURFACE_OPTION_NAMES.filter((name) => !CAPABILITY_PORT_OPTION_NAMES.includes(name)
@@ -425,8 +440,13 @@ export function configSchemaSelfCheck(optionNames, { leafAliases = CONFIG_LEAF_A
       problems.push(`${JSON.stringify(name)} is a namespace container and cannot also be a capability option`);
     }
   }
-  // `capabilities.hooks` 的每个回调都必须在能力面名单里（否则「加了回调却忘了分类」会静默）。
+  // Every **flat** `capabilities.hooks` callback must be on the capability list (otherwise "added a
+  // callback and forgot to classify it" would be silent). #498 S4c: the last four callbacks are
+  // **nested-slot** leaves (no top-level flat alias); not being on this list is by design, not an
+  // omission — the reverse check is `capabilitiesSchemaSelfCheck`'s "a slotted leaf must not be a
+  // top-level option".
   for (const hook of CAPABILITY_HOOK_NAMES) {
+    if (CAPABILITIES_SLOT_LEAF_NAMES.includes(hook)) continue;
     if (!CAPABILITY_OPTION_SET.has(hook)) {
       problems.push(`capabilities.hooks names ${JSON.stringify(hook)}, which is not on the capability list`);
     }
@@ -571,13 +591,7 @@ export function collectConfigNamespaceProblems(config) {
         continue;
       }
       if (!CONFIG_NAMESPACE_SCHEMA[group].includes(leaf)) {
-        const misplaced = configPathForOption(leaf);
-        problems.push(
-          `unknown config.${group} option: ${JSON.stringify(leaf)}`
-          + (misplaced === undefined
-            ? ` (accepted: ${CONFIG_NAMESPACE_SCHEMA[group].join(", ")})`
-            : ` (${JSON.stringify(leaf)} belongs to config.${misplaced})`),
-        );
+        problems.push(`unknown config.${group} option: ${JSON.stringify(leaf)}${misplacedLeafHint(group, leaf)}`);
         continue;
       }
       // #498 S4a 约束 4：**合法叶子的值里不许有函数**。只走结构上已被接受的叶子（未知分组 /
@@ -590,6 +604,26 @@ export function collectConfigNamespaceProblems(config) {
     }
   }
   return problems;
+}
+
+/**
+ * The destination tail for an unknown config leaf: it may be a leaf of another config group, or a
+ * capability member (#498 S4c).
+ *
+ * Writing it one level too high (`config.folding.onBeforeFold` / `config.timing.sleepImpl`) is the
+ * most common slip, so a leaf that has a capability home should not just answer "unknown leaf +
+ * accepted list".
+ *
+ * @param {string} group
+ * @param {string} leaf
+ * @returns {string}
+ */
+function misplacedLeafHint(group, leaf) {
+  const configHome = configPathForOption(leaf);
+  if (configHome !== undefined) return ` (${JSON.stringify(leaf)} belongs to config.${configHome})`;
+  const capabilityHome = capabilitiesPathForOption(leaf);
+  if (capabilityHome !== undefined) return ` (${JSON.stringify(leaf)} belongs to capabilities.${capabilityHome})`;
+  return ` (accepted: ${CONFIG_NAMESPACE_SCHEMA[group].join(", ")})`;
 }
 
 /**
@@ -613,32 +647,75 @@ function collectFunctionPaths(value, path) {
 }
 
 /**
- * 函数值的统一文案：点名**完整路径**，说清原因（round-trip）与**规范之家**。
+ * The one message for a function value: name the **full path**, the reason (round-trip) and the
+ * **canonical home**.
  *
- * 「规范之家」分三档，因为三类函数的目的地不同：
- *   · 宿主回调 / 交付物判据（名字就在能力面 schema 里）⇒ `its canonical home is capabilities.<group>.<leaf>`
- *     （可以逐字点出来，例如 `capabilities.hooks.onRound` / `capabilities.checks.deliverables`）；
- *   · 配置面自己的**数据键**（`tools` 之类）⇒ 它本来就该是纯数据，没有别处可搬，所以文案是
- *     `there is no capability home for it: …`（不要说「its canonical home is none」，那读不通）；
- *   · 其余（`sleepImpl` / `judge.provider` …）⇒ 能力面里的对应端口位，端口容器本刀未收
- *     （S4b 之后裁），所以只能说到「能力面」这一层，不编造 `capabilities.ports.x`。
+ * The home has three tiers, because three kinds of function have different destinations (#498 S4c
+ * rewrote the third tier from "point vaguely in a direction" to **naming the real destination** — the
+ * old wording, `the matching capability port slot`, pointed at a place that did not exist yet, so a
+ * host that followed the hint changed the value and still had nowhere to put it):
+ *   · host callbacks / deliverables checks / port implementations (the name is on the capability
+ *     schema, including the #498 S4c nested-slot leaves) ⇒ `its canonical home is
+ *     capabilities.<group>.<leaf>` (spelled out: `capabilities.hooks.onRound` /
+ *     `capabilities.checks.deliverables` / `capabilities.ports.sleepImpl`);
+ *   · a **data key** of the config surface (`tools` and friends) ⇒ it is supposed to be plain data and
+ *     has nowhere else to go, so the message is `there is no capability home for it: …` (never
+ *     "its canonical home is none", which does not read);
+ *   · everything else (the leaf name itself is not on the capability schema, e.g. `provider` inside
+ *     `judge.provider`) ⇒ the **full path** is matched against `CAPABILITY_SLOT_DESTINATIONS` by
+ *     longest prefix (`timing.retry.sleepImpl` → `ports.sleepImpl`, `run.reflection.judge.provider` →
+ *     `ports.judgeProvider`) ⇒ still names `capabilities.ports.<slot>`; when nothing matches it
+ *     enumerates the three port slots that really exist instead of inventing slot names.
  *
  * @param {string} path
  * @returns {string}
  */
 function functionValueProblemMessage(path) {
   const leaf = path.replace(/\[\d+\]$/u, "").split(".").at(-1) ?? "";
-  const capabilityPath = capabilitiesPathForOption(leaf);
+  const capabilityPath = capabilitiesPathForOption(leaf) ?? capabilityPathForConfigPath(path);
   const home = capabilityPath !== undefined
     ? `its canonical home is capabilities.${capabilityPath}`
     : CONFIG_SURFACE_OPTION_SET.has(leaf)
       ? `there is no capability home for it: ${JSON.stringify(leaf)} is a data key of the config namespace,`
         + " so pass plain data (host callbacks belong under capabilities.hooks.<name>)"
       : "its canonical home is capabilities (capabilities.hooks.<name> for a host callback,"
-        + " or the matching capability port slot)";
+        + " capabilities.ports.<slot> for a port implementation — the accepted slots are"
+        + ` ${capabilityPortSlotLabels()})`;
   return `${path} is not accepted: ${JSON.stringify(leaf)} is a function, and the config namespace`
     + " holds data only (the config subtree must survive a JSON round-trip unchanged)"
     + ` — ${home}`;
+}
+
+/**
+ * Map a **config-side** function path back to the capability slot it really belongs to (#498 S4c).
+ *
+ * When the leaf name itself is not on the capability schema (`config.run.reflection.judge.provider`
+ * has the leaf `provider` — a top-level capability key, but there is no `provider` *leaf* on the
+ * capability schema), only the **full path** can locate it: each destination in
+ * `CAPABILITY_SLOT_DESTINATIONS` (`["reflection", "judge", "provider"]`) is turned into a config path
+ * (`run.reflection.judge.provider`) and matched by longest prefix, so a function one level deeper such
+ * as `config.folding.context.strategy.compact` still lands on `ports.strategy`.
+ *
+ * @param {string} path shaped like `config.folding.context.onBeforeFold`
+ * @returns {string|undefined}
+ */
+function capabilityPathForConfigPath(path) {
+  const relative = path.startsWith("config.") ? path.slice("config.".length) : path;
+  let best;
+  for (const [capabilityPath, destination] of Object.entries(CAPABILITY_SLOT_DESTINATIONS)) {
+    const [shell, ...rest] = destination.path;
+    const configPath = configPathForOption(shell);
+    if (configPath === undefined) continue;
+    const prefix = `${configPath}.${rest.join(".")}`;
+    if (relative !== prefix && !relative.startsWith(`${prefix}.`)) continue;
+    if (best === undefined || prefix.length > best.prefix.length) best = { prefix, capabilityPath };
+  }
+  return best?.capabilityPath;
+}
+
+/** The port-slot enumeration used in error text (schema order, so text and schema cannot disagree). */
+function capabilityPortSlotLabels() {
+  return CAPABILITIES_NAMESPACE_SCHEMA.ports.join(", ");
 }
 
 /**

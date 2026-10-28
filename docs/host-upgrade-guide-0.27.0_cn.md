@@ -197,11 +197,24 @@ node -e 'import("erix-agent").then(m=>console.log(Object.keys(m).length))'   # �
 
 **同一个版本里还有两处搬动**（issue #498 S4b）：`deliverables` 也离开了配置面（它的每一条都带函数
 `check`），现在住在 `capabilities.checks.deliverables`——「`config` 里只能写 `deliverables: []`」
-那个过渡态因此消失。`finalGuard` 收进了 `capabilities.hooks`，所以那一组是 12 个成员。`tools`
+那个过渡态因此消失。`finalGuard` 收进了 `capabilities.hooks`（当时 12 个成员；下面那一刀之后是 16 个）。`tools`
 反向归位：它是数据，现在是 `config.input.tools`（扁平 `tools` 一字未动），于是能力面就是纯粹的
 「行为载体」。`session` 只装数据——草案里的 `session.resume` 别名已删，现在写它在**两条入口路线**上都会抛
 （装配口的 `createAssemblyPort` 与直连的 `runToolLoop` 选项，共用同一道语义相），并点名完整路径
 `session.resume`；要续跑请写 `resume`（或 `config.run.resume`）。两条路线都不静默忽略它。
+
+**同一个版本里的第三刀**（issue #498 S4c）：住在壳**里面**的行为载体拿到了真实归宿。
+`capabilities.ports` 现在存在，三个槽位——`sleepImpl`（重试定时器，原 `retry.sleepImpl`）、
+`judgeProvider`（judge 评估器，原 `reflection.judge.provider`；接受 callable 或 `{ chat }` 对象）、
+`strategy`（压缩策略对象，原 `context.strategy`）。`capabilities.hooks` 长到 **16** 个回调
+（`onReflection`、`onBeforeFold`、`onAfterFold`、`stubFor` 加入），外加两个形态多态旋钮的**函数形态**
+——`protectedMessage` 与 `recoveryHint`——它们的数据形态（字符串或数组）留在 `config.folding.context`。
+这 9 个叶子**没有一个是新的顶层选项**：白名单仍是 67 条，上面那些嵌套老槽位照旧可用。两条要知道的
+规则：端口位可以是对象，`hooks` 必须 callable；同一个旋钮两种写法给了**不同**的值 ⇒ 发那一条
+`config_override_conflict`（path 是 `ports.sleepImpl` / `hooks.onBeforeFold` /
+`folding.context.protectedMessage`）。**`reflection.judge.evaluator` 已退役**——它曾是
+`reflection.judge.provider` 的纯别名；现在写它在两条入口路线上都抛，并指向
+`capabilities.ports.judgeProvider`。
 
 你需要动手的：**没有**。今天在传的扁平键继续被接受，行为与以前逐字相同。若你打算采用它，有两点要知道：
 
@@ -227,5 +240,6 @@ node -e 'import("erix-agent").then(m=>console.log(Object.keys(m).length))'   # �
    覆盖装配口提供的同名成员（`resolveAssemblyMember`（`src/assembly.js`），例如显式 `provider`
    仍能盖端口 provider）——一字未动，`test/contract/assembly-port.js` 照旧断言它。
 
-新宿主：配置写 `config`，行为载体写 `capabilities`（回调进 `hooks`、交付物判据进 `checks`）。顶层扁平键是**原语 / 过渡面**——继续接受、
+新宿主：配置写 `config`，行为载体写 `capabilities`（回调进 `hooks`、交付物判据进 `checks`、
+基础设施与策略实现进 `ports`）。顶层扁平键是**原语 / 过渡面**——继续接受、
 继续校验、继续有文档——它们的删除窗口属母单（#495）的发布阶梯。本版一个都不删。

@@ -139,6 +139,7 @@ import {
   collectLoopCapabilitiesMissing,
   validateTranscriptStore,
 } from "../assembly-validators.js";
+import { CAPABILITY_CONTEXT_HOOK_NAMES } from "./capabilities-namespace.js";
 import { normalizeRunToolLoopOptions } from "./option-normalization.js";
 
 export { parseReflectionDecision };
@@ -377,8 +378,8 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *     judgeDoneAdvisory?:boolean, // #322: feed an intercepted "goal looks achieved" verdict back to the main model as a soft advisory (default false, never blocks or stops)
  *     extensionStep?:number,
  *     maxExtensions?:number, maxRoundsCap?:number,
- *     judge?:{provider?:object,evaluator?:object},
- *     onReflection?:(info:{round:number, decision:object, extendedTo:number}) => void}|false,
+ *     judge?:{provider?:object}, // issue #498 S4c: the pure alias `judge.evaluator` is retired — it now throws and points at capabilities.ports.judgeProvider (which accepts a callable or a `{chat}` object). `judge.provider` keeps working.
+ *     onReflection?:(info:{round:number, decision:object, extendedTo:number}) => void}|false, // legacy nested home of `capabilities.hooks.onReflection`.
  *   stallDetection?: {window?:number, mode?:"appear"|"consecutive"}|false, // Defaults to consecutive mode.
  *   retry?: {attempts?:number, backoffBaseMs?:number, backoffMaxMs?:number,
  *     sleepImpl?:(ms:number)=>Promise<void>}|false,
@@ -410,7 +411,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *       model?: {contextWindowTokens?: number, maxOutputTokens?: number},
  *       modelMetadata?: {contextWindowTokens?: number, maxOutputTokens?: number}, session?: any},
  *   },
- *   capabilities?: { // issue #498（S4a / S4b）：能力面容器。两组：`hooks`（12 个宿主回调）与 `checks`（交付物判据）。
+ *   capabilities?: { // issue #498 (S4a / S4b / S4c): the capability container. Three groups: `hooks` (16 host callbacks + 2 polymorphic knobs), `checks` (deliverables checks), `ports` (infrastructure / strategy implementations).
  *     hooks?: {onEvent?: (event: LoopEvent) => void, onObserverError?: (error: Error, context: {channel: string, runId?: string, type?: string, round?: number, toolName?: string, method?: string}) => void,
  *       onPersistenceError?: (error: Error) => void,
  *       onRound?: (record: object) => void, onJudge?: (info: JudgeEvent) => void,
@@ -418,8 +419,16 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *       onDelta?: (chunk: string) => void, onReasoningDelta?: (chunk: string) => void,
  *       onToolCall?: (fragment: object) => void, onUsage?: (usage: object) => void,
  *       onFoldSummary?: (payload: object) => void|Promise<void>,
- *       finalGuard?: (payload: object) => Promise<{action: "accept"}|{action: "skip", reason: string}|{action: "revise", message: string}>},
+ *       finalGuard?: (payload: object) => Promise<{action: "accept"}|{action: "skip", reason: string}|{action: "revise", message: string}>,
+ *       onReflection?: (info: {round: number, decision: object, extendedTo: number}) => void,
+ *       onBeforeFold?: (payload: object) => void|Promise<void>, onAfterFold?: (payload: object) => void|Promise<void>,
+ *       stubFor?: (message: object) => string|Promise<string|undefined>, // per-message fold stub text
+ *       protectedMessage?: (message: object) => boolean, // function form of the polymorphic knob (string / string[] is the config-side data form)
+ *       recoveryHint?: (context: object) => string|Promise<string>}, // function form of the polymorphic knob
  *     checks?: {deliverables?: {name: string, check: (facts: object) => any}[]},
+ *     ports?: {sleepImpl?: (ms: number, signal?: AbortSignal) => Promise<void>,
+ *       judgeProvider?: object|((request: object) => Promise<object>), // callable or `{chat}`
+ *       strategy?: {shouldCompact: Function, compact: Function}}, // a strategy object, not a built-in name (a name is data: use context.strategy / config.folding.context.strategy)
  *   },
  *   context?: {strategy?: object|"sliding-window"|"fold-statistical"|"fold-llm", budgetTokens?:number, keepRounds?:number, toolContext?:object, task?:string}, // strategy accepts a strategy object or a built-in name (#167); task is the judge/reflection/wrapup brief fallback after explicit task; see task param.
  *   todoStateProvider?:(payload:{runId?:string,rounds:number})=>object|Promise<object>,
@@ -509,22 +518,36 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *   并点名该键。
  *   **`config` 里不许有函数值**（#498 S4a）：整棵树逐节点扫，函数一律启动即抛并点名完整路径
  *   （`config.folding.context.onBeforeFold`），报错说清规范之家（`capabilities.hooks.<name>` /
- *   `capabilities.checks.deliverables`）。
+ *   `capabilities.checks.deliverables` / `capabilities.ports.<slot>` — since #498 S4c the third tier
+ *   names the real destination, e.g. `config.timing.retry.sleepImpl` ⇒
+ *   `capabilities.ports.sleepImpl`).
  *   `runId` / `cwd` / `tools` 是配置面（`config.run.runId` / `config.run.cwd` /
  *   `config.input.tools`）：它们是字符串标量 / 工具声明数组，而「`config` 子树过 JSON round-trip
  *   等值」要求能力面只剩函数/端口对象（见 `src/loop/config-namespace.js` 文件头约束 3 / 4）。
  *
  * `capabilities`:
- *   issue #498（S4a / S4b）：能力面容器，与 `config` **同等待遇**（同一道预检相位、同一套「容器赢扁平」
- *   优先级、同一条冲突事件）。两组：
- *   · `hooks` —— 12 个宿主回调的规范之家（`onEvent` / `onObserverError` / `onPersistenceError` /
- *     `onRound` / `onJudge` / `onToolResult` / `onDelta` / `onReasoningDelta` / `onToolCall` /
- *     `onUsage` / `onFoldSummary` / `finalGuard`，名单见 `CAPABILITY_HOOK_NAMES`
- *     （`src/loop/capabilities-namespace.js`））；
- *   · `checks` —— 交付物判据（`deliverables`，每项 `{name, check}`，`check` 是函数）。
- *   顶层扁平 `onRound` / `deliverables` 等**照旧可用**（0.26 已发布面，本版不删）。未知子键
- *   （`capabilities.hoks` / `capabilities.check` / `capabilities.hooks.onEtent`）与「值给错型」
- *   一律启动即抛并点名完整路径。`config.observers` 这组已整组删除（0.27 未发布 ⇒ 零成本）。
+ *   issue #498 (S4a / S4b / S4c): the capability container, treated **exactly like `config`** (same
+ *   pre-check phase, same "container beats flat" precedence, same conflict event). Three groups:
+ *   · `hooks` — the canonical home of the **16 host callbacks** (`onEvent` / `onObserverError` /
+ *     `onPersistenceError` / `onRound` / `onJudge` / `onToolResult` / `onDelta` / `onReasoningDelta` /
+ *     `onToolCall` / `onUsage` / `onFoldSummary` / `finalGuard` / `onReflection` / `onBeforeFold` /
+ *     `onAfterFold` / `stubFor`; see `CAPABILITY_HOOK_NAMES`
+ *     (`src/loop/capabilities-namespace.js`)) **plus** the function form of the two polymorphic knobs
+ *     (`protectedMessage` / `recoveryHint`, see `CAPABILITY_POLYMORPHIC_HOOK_NAMES`). Every `hooks`
+ *     value must be a function (that is not relaxed for those two);
+ *   · `checks` — deliverables checks (`deliverables`, each entry `{name, check}`, `check` a function);
+ *   · `ports` — infrastructure / strategy implementations the engine **dereferences or calls**
+ *     (#498 S4c): `sleepImpl` / `judgeProvider` (a callable or a `{chat}` object) / `strategy` (a
+ *     strategy object). The difference from `hooks`: a port slot may be an object, a hook must be
+ *     callable.
+ *   The flat top-level spellings of the 12 observer channels / `finalGuard` / `deliverables` **keep
+ *   working** (the published 0.26 surface; this release removes none of them); the nine leaves added
+ *   by this slice (`ports.*` and
+ *   `hooks.{onReflection,onBeforeFold,onAfterFold,stubFor,protectedMessage,recoveryHint}`) have **no**
+ *   top-level flat alias (they never were top-level options) — which is why the allowlist is still 67.
+ *   Unknown sub-keys (`capabilities.hoks` / `capabilities.check` / `capabilities.ports.sleeplmp`) and
+ *   "given but wrong shape" all throw at startup with the full path named. The `config.observers`
+ *   group is gone entirely (0.27 was never published ⇒ zero cost).
  *
  * `onToolResult`:
  *   改写钩子（非纯观察者）：返回值会替换工具结果。抛错/rejected Promise 被隔离，
@@ -580,7 +603,13 @@ export async function runToolLoop(options) {
   // 选项规范化（形状/未知键白名单 + 未知键建议 + assemblyPort 合并）已外提到
   // src/loop/option-normalization.js（issue #177 刀1）；检查次序不变：
   // 形状检查 → 未知键检查 → assemblyPortOptions → 显式值合并（`!== undefined` 才覆盖）。
-  const { assemblyPort, explicitOptions, effectiveOptions, configConflicts } = await normalizeRunToolLoopOptions(options);
+  const {
+    assemblyPort,
+    explicitOptions,
+    effectiveOptions,
+    configConflicts,
+    capabilitySlots,
+  } = await normalizeRunToolLoopOptions(options);
 
   const {
     provider,
@@ -653,6 +682,25 @@ export async function runToolLoop(options) {
     onUsage,
     onEvent,
   } = effectiveOptions;
+  // #498 S4c: the nine capability leaves that have **no flat alias** (see
+  // `CAPABILITY_SLOT_DESTINATIONS` in `src/loop/capabilities-namespace.js`). They are the canonical
+  // home of behaviour carriers that used to live in a nested shell slot (`retry.sleepImpl`,
+  // `reflection.judge.provider`, `context.strategy`, `reflection.onReflection`,
+  // `context.{onBeforeFold,onAfterFold,stubFor,protectedMessage,recoveryHint}`). Expansion hands them
+  // over on this side channel instead of inventing flat keys, so the top-level allowlist stays at 67;
+  // every consumption point below resolves `capabilityPorts.X ?? shell.X` (the container wins, the
+  // same direction `config.*` wins over the flat key).
+  const capabilityPorts = capabilitySlots?.ports ?? {};
+  const capabilityHooks = capabilitySlots?.hooks ?? {};
+  // The five capability hooks whose legacy home is a `context` sub-key (not `onReflection`, which
+  // lives in the `reflection` shell). Resolved once so the two consumers below cannot drift:
+  // `resolveCompactionStrategy` (name-form strategies read `recoveryHint` / `stubFor`) and
+  // `compactionContext` (which `compactOptions` copies the fold hooks out of).
+  const foldHookValue = (name) => capabilityHooks[name] ?? context?.[name];
+  const capabilityFoldHooks = {};
+  for (const name of CAPABILITY_CONTEXT_HOOK_NAMES) {
+    if (capabilityHooks[name] !== undefined) capabilityFoldHooks[name] = capabilityHooks[name];
+  }
   const resolvedToolResultTtl = toolResultTtl === undefined && cacheCapable === true
     ? 0
     : toolResultTtl ?? TOOL_RESULT_TTL_DEFAULT;
@@ -796,7 +844,10 @@ export async function runToolLoop(options) {
   const backoffMaxMs = Number.isFinite(retryOptions?.backoffMaxMs)
     ? Math.max(0, retryOptions.backoffMaxMs)
     : 10000;
-  const sleepImpl = retryOptions?.sleepImpl ?? defaultSleep;
+  // #498 S4c: `capabilities.ports.sleepImpl` is the canonical home of the timer injection point;
+  // `retry.sleepImpl` stays accepted as the legacy nested spelling. The `?? defaultSleep` fallback is
+  // load-bearing: without it a run that retries with no injected timer would call `undefined`.
+  const sleepImpl = capabilityPorts.sleepImpl ?? retryOptions?.sleepImpl ?? defaultSleep;
   // issue #177 刀5：runToolLoop 可变状态收口对象（闭包 `let` → 显式状态对象，分组迁入）。
   // 初值与语义与原 `let` 逐字一致（`foldedThrough` 原初值就是数字 `0`，不是 `false`）：
   // 【A 轮次记账 + 一次性去重标记】`rounds` / `foldedThrough`（原 :1235 / :1237，双计数器口径
@@ -1472,12 +1523,17 @@ export async function runToolLoop(options) {
   // 名字在启动期一次性解析成实例（未知名字/非法类型 → 启动期 TypeError）；对象形态原样
   // 透传（同一引用），下游 configuredStrategy 通道零改动。名字形态额外吃 context 级的
   // recoveryHint/stubFor（对象形态这两个字段依旧由宿主自己在策略对象上给，语义不变）。
-  const resolvedContextStrategy = context?.strategy === undefined
+  // #498 S4c: the strategy object may arrive on the port (`capabilities.ports.strategy`) or in the
+  // legacy `context.strategy` slot (which also still accepts a built-in name — a name is data, so it
+  // is *not* a port value). `resolveCompactionStrategy` returns an object verbatim, so an injected
+  // strategy keeps its identity and its `shouldCompact` / `compact` methods are the ones called.
+  const configuredStrategyInput = capabilityPorts.strategy ?? context?.strategy;
+  const resolvedContextStrategy = configuredStrategyInput === undefined
     ? undefined
-    : resolveCompactionStrategy(context.strategy, {
+    : resolveCompactionStrategy(configuredStrategyInput, {
       options: {
-        ...(context.recoveryHint === undefined ? {} : { recoveryHint: context.recoveryHint }),
-        ...(context.stubFor === undefined ? {} : { stubFor: context.stubFor }),
+        ...(foldHookValue("recoveryHint") === undefined ? {} : { recoveryHint: foldHookValue("recoveryHint") }),
+        ...(foldHookValue("stubFor") === undefined ? {} : { stubFor: foldHookValue("stubFor") }),
       },
       // issue #469（宿主要求 B1）：三个**策略层**上限经这里透传。落点必须是 `foldLlmOptions`
       // —— `resolveCompactionStrategy` 只对**内置名字形态**把 `foldLlmOptions` 展进工厂
@@ -1519,9 +1575,16 @@ export async function runToolLoop(options) {
       },
     });
   const compactionContext = context === undefined && budgetTokens === undefined
+      && Object.keys(capabilityFoldHooks).length === 0
     ? undefined
     : {
         ...(context ?? {}),
+        // #498 S4c: the capability hooks that live in the `context` shell win over the nested slot
+        // (container over legacy spelling, the same direction as everywhere else). They reach the
+        // strategies exactly where the old slot did: `compactOptions` below copies
+        // `onBeforeFold` / `onAfterFold` / `stubFor` / `protectedMessage` out of this object, and
+        // `resolveCompactionStrategy` reads `recoveryHint` / `stubFor` for the name-form strategies.
+        ...capabilityFoldHooks,
         ...(budgetTokens === undefined ? {} : { budgetTokens }),
         ...(resolvedContextStrategy === undefined ? {} : { strategy: resolvedContextStrategy }),
       };
@@ -1552,6 +1615,10 @@ export async function runToolLoop(options) {
       : undefined;
   const reflectionEnabled = resolvedReflectionOption === true
     || (effectiveReflection !== undefined && effectiveReflection.enabled !== false);
+  // #498 S4c: the extension notification is a capability hook (`capabilities.hooks.onReflection`)
+  // whose legacy home is the nested slot `reflection.onReflection`. Resolved once here so the
+  // delivery point inside the loop cannot drift from the documented precedence.
+  const onReflectionHook = capabilityHooks.onReflection ?? effectiveReflection?.onReflection;
   // `roundJudgeEnabled` 已迁入 `runLoopState`（issue #177 刀5 F-2）：初值**必须**留在本处原声明点
   // 现算——它读上面 `:1227` 的 `const reflectionEnabled` 与 `:1222` 的 `effectiveReflection`，两者都
   // 晚于状态对象字面量（`:673`–`:833`），提先进字面量就是 TDZ `ReferenceError`（工单 §3.1）。
@@ -1603,7 +1670,13 @@ export async function runToolLoop(options) {
     : system;
   // 归一化 evaluator：复用 judge/provider 配置（无 judge 时主 provider），供 wrapup LLM 归一化用
   const judgeConfig = effectiveReflection?.judge;
-  const wrapupEvaluator = judgeConfig?.provider ?? judgeConfig?.evaluator ?? provider;
+  // #498 S4c: `capabilities.ports.judgeProvider` is the canonical home of the judge evaluator; the
+  // legacy nested slot `reflection.judge.provider` still wins over the main provider, and the pure
+  // alias `judge.evaluator` is retired (it throws in the semantic phase). The port feeds the same
+  // three places the old slot fed: judge evaluation, the wrapup normalizer and the reported
+  // `judgeModel`.
+  const judgeProviderPort = capabilityPorts.judgeProvider;
+  const wrapupEvaluator = judgeProviderPort ?? judgeConfig?.provider ?? provider;
   // issue #165：接管 judge 记录的关联字段——每个 judge 决策（round / intercept / degraded，
   // 含 run-snapshot-executor 里的拦截决策）都经下方 `emitJudge` 这个唯一收口打上 runId 与
   // 模型标识。模型名一律从 run 选项/provider 配置探（`judge-record.js`），探不到就不写字段；
@@ -1617,7 +1690,7 @@ export async function runToolLoop(options) {
       provider,
       context,
     }),
-    judgeModel: resolveModelName(judgeConfig?.provider ?? judgeConfig?.evaluator),
+    judgeModel: resolveModelName(judgeProviderPort ?? judgeConfig?.provider),
   });
   // wrapup LLM 归一化（默认关闭：保持既有纯文本轮行为与旧测试兼容）。
   // 开启：ERIX_WRAPUP_NORMALIZE=1 或 reflection.wrapupNormalize===true。
@@ -2997,7 +3070,9 @@ export async function runToolLoop(options) {
       .filter((text, index, values) => values.indexOf(text) === index)
       .slice(-5);
     const judge = effectiveReflection?.judge;
-    const evaluator = judge?.provider ?? judge?.evaluator ?? provider;
+    // #498 S4c: port first, then the legacy nested slot, then the run's main provider. `evaluator`
+    // (the old alias of `judge.provider`) is retired — the semantic phase throws on it.
+    const evaluator = judgeProviderPort ?? judge?.provider ?? provider;
     const nearLimit = budgetRounds >= Math.floor(
       governorState.effectiveMaxRounds * 0.8,
     );
@@ -4567,8 +4642,8 @@ export async function runToolLoop(options) {
       action = decideRoundAction(actionSignals);
     }
     if ((action.kind === "extend" || action.kind === "extend+redirect")
-      && typeof effectiveReflection?.onReflection === "function") {
-      await effectiveReflection.onReflection({
+      && typeof onReflectionHook === "function") {
+      await onReflectionHook({
         round,
         decision: judgeDecision,
         extendedTo: Math.min(

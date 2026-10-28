@@ -31,9 +31,13 @@ import {
   CAPABILITIES_NAMESPACE_GROUPS,
   CAPABILITIES_NAMESPACE_OPTION_NAME,
   CAPABILITIES_NAMESPACE_SCHEMA,
+  CAPABILITIES_SLOT_LEAF_NAMES,
   CAPABILITIES_SURFACE_OPTION_NAMES,
   CAPABILITY_CHECK_NAMES,
   CAPABILITY_HOOK_NAMES,
+  CAPABILITY_POLYMORPHIC_HOOK_NAMES,
+  CAPABILITY_PORT_SLOT_NAMES,
+  CAPABILITY_SLOT_DESTINATIONS,
   capabilitiesPathForOption,
   collectCapabilitiesNamespaceProblems,
   expandCapabilitiesNamespace,
@@ -121,7 +125,9 @@ test("S1 三向闭合：配置面 43 + 能力面 22 + 容器 2 = 顶层白名单
   assert.deepEqual(NAMESPACE_CONTAINER_OPTION_NAMES, [CONFIG_NAMESPACE_OPTION_NAME, CAPABILITIES_NAMESPACE_OPTION_NAME]);
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(CAPABILITIES_NAMESPACE_OPTION_NAME), true);
   // 白名单**内容**本刀只加了一个容器：8 个扁平观察者键一个都没删（0.26 已发布面）。
+  // #498 S4c：后 4 个回调**从来不是**顶层选项，所以它们不在名单里（它们不是被删掉的扁平键）。
   for (const hook of CAPABILITY_HOOK_NAMES) {
+    if (CAPABILITIES_SLOT_LEAF_NAMES.includes(hook)) continue;
     assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(hook), true, `${hook} 的顶层扁平写法必须继续在名单里`);
   }
   assert.deepEqual(configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES), [], "自检必须仍 []");
@@ -177,14 +183,16 @@ test("S1c 容器与两面对称：两个容器都不在配置面/能力面里，
   );
   assert.match(
     collectCapabilitiesNamespaceProblems({ hoks: {} })[0],
-    /unknown capabilities namespace: "hoks" \(accepted: hooks, checks; ports are not collected under capabilities/u,
+    /unknown capabilities namespace: "hoks" \(accepted: hooks, checks, ports;/u,
   );
   // #498 S4b 的两面对称：`capabilities.check`（少一个 s）必须抛，且**列出可接受值**（含 checks）。
+  // #498 S4c：名单多了 `ports`，而旧文案里那句「ports are not collected under capabilities」是
+  // 现在的**假话**（`capabilities.ports` 就是本刀开的）⇒ 换成「端口对象留在哪里」的真话。
   const singular = collectCapabilitiesNamespaceProblems({ check: { deliverables: [] } });
   assert.deepEqual(singular, [
-    'unknown capabilities namespace: "check" (accepted: hooks, checks;'
-      + " ports are not collected under capabilities — pass them as top-level options"
-      + " or through the assembly port)",
+    'unknown capabilities namespace: "check" (accepted: hooks, checks, ports;'
+      + " port objects such as provider / store / signal stay top-level options"
+      + " or assembly-port members, not capabilities members)",
   ], "`capabilities.check` 必须抛并列出可接受值（#498 S4b 的闸口对称性）");
   assert.deepEqual(
     collectCapabilitiesNamespaceProblems({ checks: { check: [] } }),
@@ -212,7 +220,7 @@ test("S1c 容器与两面对称：两个容器都不在配置面/能力面里，
 });
 
 // ================================================================ S2. capabilities.hooks 是规范之家
-test("S2 12 个回调逐个点名：名单、别名表、schema 三者互相对得上", () => {
+test("S2 16 个回调逐个点名：名单、别名表、schema 三者互相对得上", () => {
   assert.deepEqual([...CAPABILITY_HOOK_NAMES], [
     "onEvent",
     "onObserverError",
@@ -228,13 +236,33 @@ test("S2 12 个回调逐个点名：名单、别名表、schema 三者互相对�
     // #498 S4b：第 12 个（值必须是函数，消费点是 `callFinalGuard` 里那行 `finalGuard(payload)`
     // （`src/loop/termination.js`）；`hasFinalDraft()` 是强制收尾的私有判定，与 `finalGuard` 无关）。
     "finalGuard",
-  ], "12 个回调的名单是本刀的判据面，逐字钉住");
-  assert.equal(CAPABILITY_HOOK_NAMES.length, 12);
-  assert.deepEqual([...CAPABILITIES_NAMESPACE_GROUPS], ["hooks", "checks"], "两组：hooks（12）+ checks（1）");
-  assert.deepEqual(Object.keys(CAPABILITIES_NAMESPACE_SCHEMA), ["hooks", "checks"]);
+    // #498 S4c：四个**壳内**回调（旧住处是嵌套槽，没有顶层扁平别名）。
+    "onReflection",
+    "onBeforeFold",
+    "onAfterFold",
+    "stubFor",
+  ], "16 个回调的名单是本刀的判据面，逐字钉住");
+  assert.equal(CAPABILITY_HOOK_NAMES.length, 16);
+  assert.deepEqual(
+    [...CAPABILITIES_NAMESPACE_GROUPS],
+    ["hooks", "checks", "ports"],
+    "三组：hooks（16 回调 + 2 形态多态旋钮）+ checks（1）+ ports（3，#498 S4c）",
+  );
+  assert.deepEqual(Object.keys(CAPABILITIES_NAMESPACE_SCHEMA), ["hooks", "checks", "ports"]);
   assert.deepEqual([...CAPABILITY_CHECK_NAMES], ["deliverables"], "checks 组只有交付物判据");
-  assert.equal(CAPABILITIES_ALIAS_PATHS.size, 13, "12 个回调 + 1 个 checks 叶子，一条别名路径不多不少");
-  assert.equal(CAPABILITIES_SURFACE_OPTION_NAMES.length, 13, "能力面 schema 的叶子全集 = 13");
+  // #498 S4c：`CAPABILITY_HOOK_NAMES` 是**回调**那张表（16），两个形态多态旋钮单列
+  // （`CAPABILITY_POLYMORPHIC_HOOK_NAMES`，它们不是回调而是「同一个旋钮的函数形态」）。
+  assert.deepEqual([...CAPABILITY_POLYMORPHIC_HOOK_NAMES], ["protectedMessage", "recoveryHint"]);
+  assert.deepEqual([...CAPABILITY_PORT_SLOT_NAMES], ["sleepImpl", "judgeProvider", "strategy"]);
+  assert.equal(CAPABILITIES_NAMESPACE_SCHEMA.hooks.length, 18, "hooks 接受 16 + 2 = 18 个叶子");
+  assert.equal(CAPABILITIES_ALIAS_PATHS.size, 13, "12 个扁平回调 + 1 个 checks 叶子，一条别名路径不多不少");
+  assert.equal(CAPABILITIES_SURFACE_OPTION_NAMES.length, 13, "能力面 schema 的**扁平**叶子全集 = 13");
+  assert.equal(CAPABILITIES_SLOT_LEAF_NAMES.length, 9, "#498 S4c：9 个嵌套槽叶子（3 ports + 6 hooks）");
+  assert.equal(
+    CAPABILITIES_SURFACE_OPTION_NAMES.length + CAPABILITIES_SLOT_LEAF_NAMES.length,
+    CAPABILITIES_NAMESPACE_GROUPS.reduce((sum, group) => sum + CAPABILITIES_NAMESPACE_SCHEMA[group].length, 0),
+    "schema 的叶子恰好分成「扁平 13 + 嵌套槽 9」两半，没有第三个去向",
+  );
   assert.equal(capabilitiesPathForOption("deliverables"), "checks.deliverables");
   assert.equal(CAPABILITIES_ALIAS_PATHS.get("checks.deliverables"), "deliverables");
   assert.equal(CAPABILITY_OPTION_NAMES.includes("deliverables"), true, "deliverables 必须在能力面名单里");
@@ -242,6 +270,16 @@ test("S2 12 个回调逐个点名：名单、别名表、schema 三者互相对�
   for (const hook of CAPABILITY_HOOK_NAMES) {
     const path = capabilitiesPathForOption(hook);
     assert.equal(path, `hooks.${hook}`, `${hook} 的路径叶子必须逐字等于键名（别名 = schema 路径）`);
+    if (CAPABILITIES_SLOT_LEAF_NAMES.includes(hook)) {
+      // #498 S4c：嵌套槽叶子**没有**顶层扁平别名 ⇒ 它不在能力面 22 项名单里，也不许出现在
+      // 顶层白名单（这条就是「只加目的地、不发明扁平键」的机器证明）。
+      assert.equal(CAPABILITIES_ALIAS_PATHS.has(path), false, `${hook} 是嵌套槽叶子，不该有扁平别名`);
+      assert.equal(CAPABILITY_OPTION_NAMES.includes(hook), false, `${hook} 不在顶层能力面名单里`);
+      assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(hook), false, `${hook} 不许是顶层选项（白名单 67 不变）`);
+      assert.equal(CONFIG_SURFACE_OPTION_NAMES.includes(hook), false, `${hook} 不得出现在配置面`);
+      assert.equal(typeof CAPABILITY_SLOT_DESTINATIONS[path]?.path?.[0], "string", `${hook} 必须登记嵌套槽去向`);
+      continue;
+    }
     assert.equal(CAPABILITIES_ALIAS_PATHS.get(path), hook);
     assert.equal(CAPABILITY_OPTION_NAMES.includes(hook), true, `${hook} 必须在能力面名单里（三向闭合）`);
     assert.equal(CONFIG_SURFACE_OPTION_NAMES.includes(hook), false, `${hook} 不得再出现在配置面`);
@@ -546,10 +584,10 @@ test("S6 collectConfigNamespaceProblems 纯函数：函数问题逐条可断言�
   assert.deepEqual(
     collectConfigNamespaceProblems({ timing: { retry: { sleepImpl: () => {} } } }),
     [
+      // #498 S4c：第三档不再含糊指「能力面端口位」，而是点名**真实目的地** `capabilities.ports.sleepImpl`。
       'config.timing.retry.sleepImpl is not accepted: "sleepImpl" is a function, and the config namespace'
         + " holds data only (the config subtree must survive a JSON round-trip unchanged)"
-        + " — its canonical home is capabilities (capabilities.hooks.<name> for a host callback,"
-        + " or the matching capability port slot)",
+        + " — its canonical home is capabilities.ports.sleepImpl",
     ],
   );
   // 回调 leaf 的报错逐字点到 capabilities.hooks.<name>。
@@ -608,7 +646,14 @@ const REPRESENTATIVE_CONFIG_VALUES = {
   deadlineMs: 2000,
   retry: false,
   // folding
-  context: { budgetTokens: 1000, keepRounds: 2 },
+  // #498 S4c：两个**形态多态**旋钮的**数据形态**住在这里（`string` / `string[]`），所以它们必须进
+  // round-trip 覆盖度名单并过逐字等值；它们的函数形态是 `capabilities.hooks.*`（行为载体，不进）。
+  context: {
+    budgetTokens: 1000,
+    keepRounds: 2,
+    protectedMessage: ["system", "user"],
+    recoveryHint: "需要原文请重读文件",
+  },
   toolResultTtl: 1,
   toolResultFoldMinTokens: 10,
   // guard
