@@ -22,13 +22,13 @@
 assemblyPort, provider, system, wrapup, tools,
 writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
 temperature, topP, reflection, stallDetection,
-completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
+completion, finalGuard,
 maxTokenContinuations,
 todoStateProvider, semanticStateProvider, partialPersistence,
 modelConfig, modelMetadata, model, expert, user, task, session, requestId,
 toolContext, store, persistence, runId, cwd, deliverables, invalidArguments, resume, onRound, onJudge,
 onToolResult, onPersistenceError, diagnostics, onObserverError, signal, stream,
-onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, finalGuardExtend, config,
+onDelta, onReasoningDelta, onToolCall, onUsage, onEvent, onFoldSummary, config,
 capabilities
 ```
 
@@ -283,6 +283,32 @@ executeTool({ id, name, input, context, signal })
 （`src/config/env.js` 从 `CACHE_CAPABLE` 读它、`bin/config.js` 透传它、`bin/cli.js` 在
 `resolveToolResultTtl` 里读它）——那个面从不经过名称闸口，本片一字未动，继续写它是对的。
 不要把配置文件「迁移」成 `config.tuning`。
+
+**`guard` 组的扁平写法版本口径**（issue #498 S3，`guard` 切片——第六片，也是第一个**一次退掉三个键**
+的切片，三个都是标量）：
+
+| 版本 | 写 `finalGuardMaxRetries` / `finalGuardTimeoutMs` / `finalGuardExtend` |
+| --- | --- |
+| 0.26.0 及以前（最后一个**已发布**版本） | 顶层可写——那些版本只认这一种写法 |
+| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「这件事有影响」的树 |
+| 0.28.0 及以后（issue #498 S3 第六片） | **当场拒**——请写 `config.guard.finalGuardMaxRetries` / `config.guard.finalGuardTimeoutMs` / `config.guard.finalGuardExtend`。名称闸口抛 `unknown runToolLoop option: "finalGuardTimeoutMs" (its canonical home is config.guard.finalGuardTimeoutMs; the flat spelling is rejected)` |
+
+两条性质都由机器核住：
+
+* 展开相仍把它们逐字写到 `effectiveOptions.finalGuardMaxRetries` / `.finalGuardTimeoutMs` /
+  `.finalGuardExtend`，所以**引擎读侧一字未改**——三个读者分别是重试上限、每次 guard 的等待上限、
+  预算类停机上的补跑桥，一个都没动。叶子仍留在 `CONFIG_NAMESPACE_SCHEMA.guard`
+  （`src/loop/config-namespace.js`）里，尽管顶层键已经离开 `RUN_TOOL_LOOP_OPTION_NAMES`
+  （`src/loop/option-normalization.js`）：**删顶层键 ≠ 删叶子**。与前面五片一样，这是一次
+  **写侧拼写**变更，不是行为变更；
+* 拒绝文案**只点一站**。三个值都是标量，`CAPABILITY_SLOT_DESTINATIONS`
+  （`src/loop/capabilities-namespace.js`）里没为它们登记任何东西 ⇒ 文案**故意不夹**
+  `capabilities.*` 那一句。这是**派生**事实而不是承诺：哪天它们长出行为成员，第二站会自己出现。
+
+**本片不碰的两个名字，以及一个不许混淆的。** `finalGuard` 是**回调**而不是数据：它的值必须是函数，
+所以在配置树里根本没有家——它住在 `capabilities.hooks.finalGuard`，顶层扁平写法一直合法到 **S9**
+退役它为止。`finalGuardVerdict` 是**引擎内部键**：宿主既不许写、也不会在配置树里找到它，所以写了照旧被拒，
+且文案**不夹**规位提示（没有家可指）。两个名字都不在 `CONFIG_NAMESPACE_SCHEMA.guard` 里。
 
 `context` 这一条比另外两个多一句**必须读**的话：它是一个**混装壳**——同时容得下数据成员
 （`budgetTokens` / `keepRounds` / `strategy` 名字）与行为成员（`onBeforeFold` / `onAfterFold` /
@@ -2275,7 +2301,8 @@ loop 在因 `end_turn`、`no_tool`、`judge_done`、`max_rounds_cap`、`stall`�
 
 #### 预算类停机上的补跑桥：`finalGuardExtend`（issue #386 切片 3）
 
-`finalGuardExtend: boolean`，**默认 `false`**。不传或传 `false` 时，每一类预算停机都与上面那段
+`finalGuardExtend: boolean`，**默认 `false`**——自 0.28.0 起写在 `config.guard.finalGuardExtend`
+（扁平写法当场被拒，见上文 `guard` 组的版本口径）。不传或传 `false` 时，每一类预算停机都与上面那段
 逐字一致。传 `true` 时，**预算类**停机（`max_rounds_cap`、`continuation_exhausted`）上的 `revise`
 裁决可以借引擎**既有**的中途扩轮机制——`extensionAllowed`（`src/reflection/governor.js`），落地动作
 `applyGovernorExtension`（`src/loop/orchestrator.js`）：同一份计数器、同一种

@@ -18,7 +18,15 @@
 >    `onRound` 算一个，`test/loop-usage-accounting.test.js` 的 8 个就是这么来的）；只有落在**已被数过的键
 >    的值**里的不再下钻。
 >
-> 按这五条：**迁移前 388 / S7a 后 351 / S7b 后 256 / S7c 后 169 / 附表 1270 / COMPAT-PIN 66**。复跑命令在
+> 按这五条：**迁移前 388 / S7a 后 351 / S7b 后 256 / S7c 后 170 / 附表 1276 / COMPAT-PIN 67**。复跑命令在
+> ⚠ **附表口径刷新（#498 S3 第六片 `guard` 段收尾，本片）**：附表 **1270 → 1276**（+6，行数 109 → 110）、
+> 主表 **169 → 170**（+1，行数 22 → 23）。这 7 点**全部来自本片新增的切片钉子文件**
+> `test/loop-guard-slice-498s3e.test.js`（附表 6：`completion`×2 / `wrapup`×2 / `context`×1 / `reflection`×1；
+> 主表 1：`finalGuard`×1 —— 都是搭台写点）。本片删的三个顶层扁平键
+> （`finalGuardMaxRetries` / `finalGuardTimeoutMs` / `finalGuardExtend`）**都是标量**（无子键 ⇒ 按顶部
+> 「生成方式」不是壳），它们本来就不在计数口径里，所以删键**不改变任何既有行**；只增了新文件那两行。
+> 复跑：`node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
+> （主表 170 / 附表 1276 都是 AST 实测）。
 > ⚠ **附表口径刷新（#498 S3 第五片 `tuning` 段收尾，本片）**：附表从 **1263 → 1270**（+7，行数 108 → 109）。
 > 这 7 点**全部来自本片新增的切片钉子文件** `test/loop-tuning-slice-498s3d.test.js`（`completion`×3 /
 > `wrapup`×2 / `context`×1 / `stallDetection`×1 —— 都是搭台写点）。本片删的顶层扁平键
@@ -127,8 +135,27 @@
 | `test/loop-capabilities-namespace-498.test.js` | 20 | `capabilities` 名称/形状预检、`hooks` 叶子必须是函数（`must be a function`）、`config_override_conflict`（`path: "hooks.<leaf>"`）、容器赢扁平的优先级 |
 | `test/loop-capabilities-ports-hooks-498s4c.test.js` | 7 | `ports.*` / 4 个 in-shell 回调 / 两个形态多态旋钮的**目的地表**与冲突路径、`sleepImpl` 被真的调到（行为证据） |
 | `test/loop-option-gate-496.test.js` | 15 | 选项闸：接受面 = 白名单（`unknown runToolLoop option`）、语义相取值校验、`onFoldSummary` / `finalGuard` / `deliverables` 的形状报错 |
+| `test/loop-guard-slice-498s3e.test.js` | 1 | #498 S3 `guard` 片的**选项面钉**：三个数据键的旧名反向拒绝（逐字文案 + 新家路径）、混装壳只点一站、**`finalGuard` / `finalGuardVerdict` 没被本刀动过**（P5）、三向闭合与 schema 自检、禁手抄键数（A2 扫全 `test/`） |
 | `test/loop-context-on-fold-summary-retired-499.test.js` | 8 | #499 的**范围钉**：`context.onFoldSummary` 退役、**顶层扁平 `onFoldSummary` 必须还在**（它 `import` 了 `RUN_TOOL_LOOP_OPTION_NAMES` 并断言 `includes("onFoldSummary")`）⇒ S9 之前这里必须保持扁平 |
 
+
+### COMPAT-PIN 逐文件判定（#498 S3 第六片 `guard`：三个数据键删键）
+
+判据同上：**数据面就地翻成反向拒绝钉；行为面 `on*` 一个字不动**。本片动到的只有**数据面**那两格；
+六个 COMPAT-PIN 文件逐个给证据（不是「我看过了」）：
+
+| 文件 | 面 | 本片（`guard`）的处置 | 证据 |
+| --- | --- | --- | --- |
+| `test/loop-option-normalization.test.js` | **数据面** | 翻成反向钉 | 内联白名单副本（`OPTION_WHITELIST`）删掉 `finalGuardMaxRetries` / `finalGuardTimeoutMs` / `finalGuardExtend` 三项（A0 的双向差集 + 位置对账保证副本 ≡ 源名单）；建议矩阵里 `finalGuardTimout → finalGuardTimeoutMs` 那一行**换了键**（候选池 = 白名单，退役键不再是候选），改钉 `onReasoningDxxtb → onReasoningDelta`（同为长度 16 / 阈值 5 / 距离 3 的分支）。反向钉本体在 `test/loop-guard-slice-498s3e.test.js` 的 **P/P2**（逐字文案 + 叶子仍在 schema + 顶层键已不在白名单） |
+| `test/loop-config-namespace-497.test.js` | **数据面** | 翻成反向钉 | `RETIRED_FLAT_VALUES` 增三条（`finalGuardMaxRetries: 1` / `finalGuardTimeoutMs: 5000` / `finalGuardExtend: false`）；`VALUES`（仍可扁平写的那张）同步删掉它们。B2 开头断言两张表键集**逐字相等**（派生自 `CONFIG_SURFACE_OPTION_NAMES ∖ RUN_TOOL_LOOP_OPTION_NAMES`）⇒ 删键而漏给取值会红；于是 B2 同时证明：扁平形态**不再产生**这三个 `effectiveOptions.*`、config 形态**逐字写回**它们 |
+| `test/loop-capabilities-namespace-498.test.js` | **行为面 `on*` + 数据面（叶子名索引）** | **未动**（本片零改动） | `git diff --stat` 里没有它。它那张 `VALUES` 是**按叶子名索引**的代表性取值表（`guard: finalGuardMaxRetries / finalGuardTimeoutMs / finalGuardExtend` 三行照旧），不是顶层扁平写点——叶子仍在 schema 里，所以这三行**必须**留着，删了反而漏测 round-trip |
+| `test/loop-capabilities-ports-hooks-498s4c.test.js` | **行为面 `on*`** | **未动**（本片零改动） | `git diff --stat` 里没有它 |
+| `test/loop-option-gate-496.test.js` | 数据面（闸口相位） | **未动**（本片零改动） | `git diff --stat` 里没有它；它的闸口断言测的是「接受面 = 白名单」这条机制，与具体哪三个键退役无关 |
+| `test/loop-context-on-fold-summary-retired-499.test.js` | **行为面 `on*`** | **未动**（本片零改动） | `git diff --stat` 里没有它 |
+
+合计 **67** 个写点（本片 +1：新钉子文件 `test/loop-guard-slice-498s3e.test.js` 的 `finalGuard`×1）。
+⚠ `guard` 组的三个键是**标量**，本来就不在附表口径里（顶部「生成方式」：标量无子键 ⇒ 不是壳），
+所以本片删键**不改变附表任何既有行**——只增了新钉子文件的 6 点。
 
 ### COMPAT-PIN 逐文件判定（#498 S3 第四片 A2b：`initialUserMessage` 删键）
 
@@ -218,7 +245,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 > 已全部迁完（各自的迁移前基线见对应清单），所以它们的文件在这里**不出现**——`--verify` 逐文件对账
 > 的仍然是「表列写点 == AST 写点」，行不在表里就意味着该文件 0 点。
 >
-> 表里剩下 4 类、22 个文件、**169** 点，全部**不是 S7 的活**（见各行「分类」列的理由）。
+> 表里剩下 4 类、23 个文件、**170** 点，全部**不是 S7 的活**（见各行「分类」列的理由）。
 
 | 文件 | 写点 | 明细 | 分类 |
 | --- | --- | --- | --- |
@@ -240,6 +267,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/notes-final-guard.test.js` | 2 | `finalGuard`×2 | OWNED-BY-S5 |
 | `test/providers/anthropic.test.js` | 2 | `onDelta`×2 | MIGRATE · NOT-OPTION-SURFACE（非 runToolLoop 选项面，无规位） |
 | `test/integration/todo-builtin.test.js` | 1 | `finalGuard`×1 | MIGRATE · NOT-OPTION-SURFACE（runChat 入参，非引擎选项面） |
+| `test/loop-guard-slice-498s3e.test.js` | 1 | `finalGuard`×1 | COMPAT-PIN |
 | `test/loop.test.js` | 1 | `onToolResult`×1 | MIGRATE · 含 COMPAT-PIN 格 |
 | `test/repl.test.js` | 1 | `finalGuard`×1 | OWNED-BY-S5 |
 | `test/run-snapshot-executor.test.js` | 1 | `onToolResult`×1 | MIGRATE · NOT-OPTION-SURFACE（非 runToolLoop 选项面，无规位） |
@@ -247,7 +275,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 
 ### 分派小结（按上表口径，**S7c 迁完之后**实测）
 
-**「写点」这一列的口径是「现在仍在树上的写点数」**，所以列和必须 = 合计 **169**（逐点只算一次）。
+**「写点」这一列的口径是「现在仍在树上的写点数」**，所以列和必须 = 合计 **170**（逐点只算一次）。
 
 | 类 | 文件数 | 写点（现在仍在树上） |
 | --- | --- | --- |
@@ -257,14 +285,14 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `MIGRATE · S7c`（**本刀已迁完 90 点中的 87**；另 3 点重分类，见下条） | 17 | 0 |
 | `MIGRATE · 含 COMPAT-PIN 格`（迁搭台写点，**逐格**跳过选项面断言） | 3 | 38 |
 | `MIGRATE · NOT-OPTION-SURFACE`（重分类：不是 `runToolLoop` 选项面，**没有规位**） | 9 | 31 |
-| `COMPAT-PIN` | 6 | 66 |
+| `COMPAT-PIN` | 7 | 67 |
 | `OWNED-BY-S5` | 5 | 13 |
 | `OWNED-BY-S6` | 5 | 21 |
-| **合计（现在实测）** | **62** | **169** |
+| **合计（现在实测）** | **63** | **170** |
 
 脚注：
 
-* 写点列和 = `0 + 0 + 0 + 0 + 38 + 31 + 66 + 13 + 21 = 169`，与本列合计逐字相等（`--verify` 逐行核）。
+* 写点列和 = `0 + 0 + 0 + 0 + 38 + 31 + 67 + 13 + 21 = 170`，与本列合计逐字相等（`--verify` 逐行核）。
 * `NOT-OPTION-SURFACE` 这一类的 31 点**不是「没做完」**：它们是 provider `chatStream(...)` 的回调
   （24）、`createProviderSummarizer({ onUsage })`（2）、`run-snapshot-executor` 的 ctx 字段（1）、
   `tool-fact-success-parity` 里 `MIGRATION_TABLE` 的**数据行字段**（1），**加上 S7c 本刀重分类的 3 点**
@@ -272,7 +300,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
   `runChat({ finalGuard: false })`——见下节「S7c 的重分类」）。这些对象的宿主是 provider / summarizer /
   executor / **`runChat` 的入参面**，不是 `runToolLoop` 的选项面，`capabilities.hooks` 不是它们的家
   （改了就是「配了等于没配」）。
-* 文件数 **62** 是**去重后**的；写点列和按「逐点只算一次」算，两者口径不同。
+* 文件数 **63** 是**去重后**的；写点列和按「逐点只算一次」算，两者口径不同。
 * 上表「分类」列是逐点归片的**唯一权威**：同一文件跨片时写 `MIGRATE · S7b（3）+ S7c（1）`，两片各数各的。
   核对命令（文末「复跑方法」第 3 条）会把这张小结与本表逐行对账，退出码非 0 就是列语义又坏了。
 * ⚠ 三刀的**实测**：能力面 **388 → 351（S7a −37）→ 256（S7b −95）→ 169（S7c −87）**；
@@ -469,7 +497,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
   「数到被数的键就停」下不再计（`resume` 77→75、`initialMessages` 25→24）。这是**口径的正确行为**
   （壳内叶子不是扁平写点），也是 680 + 677（7 键裸计数）− 3 = 1354 的来源。
 
-### 逐文件明细（109 行 / 1270 点；S3 前 104 行 / 1354 点）
+### 逐文件明细（110 行 / 1276 点；S3 前 104 行 / 1354 点）
 
 | 文件 | 写点 | 明细 |
 | --- | --- | --- |
@@ -525,6 +553,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/repl.test.js` | 9 | `session`×6, `completion`×1, `finalGuard`×1, `prompt`×1, `tools`×1 |
 | `test/governor.test.js` | 8 | `completion`×4, `stallDetection`×4 |
 | `test/loop-error-budget-cells.test.js` | 8 | `completion`×4, `stallDetection`×3, `resume`×1 |
+| `test/loop-guard-slice-498s3e.test.js` | 6 | `completion`×2, `wrapup`×2, `context`×1, `reflection`×1 |
 | `test/app-container-p0.test.js` | 6 | `completion`×3, `stallDetection`×3, `retry`×1 |
 | `test/compact/folded-facts.test.js` | 6 | `strategy`×4, `completion`×1, `context`×1, `reflection`×1 |
 | `test/loop-governance-cells.test.js` | 7 | `completion`×3, `reflection`×3, `resume`×1 |

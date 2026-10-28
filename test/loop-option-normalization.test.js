@@ -224,8 +224,10 @@ const OPTION_WHITELIST = [
   "stallDetection",
   "completion",
   "finalGuard",
-  "finalGuardMaxRetries",
-  "finalGuardTimeoutMs",
+  // #498 S3 (`guard` slice): `finalGuardMaxRetries` / `finalGuardTimeoutMs` left the allowlist —
+  // their canonical home is `config.guard.*`. The copy tracks the source list verbatim (that is
+  // exactly what A0 checks), so they are gone here too; the flat spellings are now **rejection**
+  // cells, see `test/loop-guard-slice-498s3e.test.js`.
   "maxTokenContinuations",
   "todoStateProvider",
   "semanticStateProvider",
@@ -259,9 +261,8 @@ const OPTION_WHITELIST = [
   // 所以上面那些未知键的建议结果逐字不变。
   "cwd",
   "deliverables",
-  // issue #386 切片 3：预算类停机上的补跑开关（默认 `false`）。同样追加在末尾 ⇒ 上面那些
-  // 未知键的建议结果逐字不变。
-  "finalGuardExtend",
+  // issue #386 切片 3：预算类停机上的补跑开关（默认 `false`）。
+  // #498 S3 (`guard` slice): it left the allowlist too — canonical home `config.guard.finalGuardExtend`.
   // issue #409 需求②：引数解析失败时的裁决（默认 `"reject"`）。同样追加在末尾。
   "invalidArguments",
   // issue #470-D：折叠替代物的强制投递出口。**这一项此前漏在这份内联副本里**（源名单 65 项、
@@ -345,7 +346,10 @@ const SUGGESTION_MATRIX = [
   // （建议候选池 = 白名单，删了键就不再是候选）。换一个**仍在白名单里**的 14 字键，钉的是同一条
   // 分支：长度 14 ⇒ 阈值 ⌊14/3⌋ = 4，距离 3 落在阈内 ⇒ 必须给建议。
   { key: "writeToolPathK", distance: 3, threshold: 4, suggested: "writeToolPathKeys", note: "长度 14：阈值 4，距离 3 在阈内" },
-  { key: "finalGuardTimout", distance: 3, threshold: 5, suggested: "finalGuardTimeoutMs", note: "长度 16：阈值 5" },
+  // #498 S3：这一行原来用 `finalGuardTimout` → `finalGuardTimeoutMs`，而后者已随 `guard` 切片离开
+  // 白名单（建议候选池 = 白名单，删了键就不再是候选）。换一个**仍在白名单里**的 16 字键，钉的是同
+  // 一条分支：长度 16 ⇒ 阈值 ⌊16/3⌋ = 5，距离 3 落在阈内 ⇒ 必须给建议。
+  { key: "onReasoningDxxtb", distance: 3, threshold: 5, suggested: "onReasoningDelta", note: "长度 16：阈值 5" },
   { key: "zzzzounds", distance: 4, threshold: 3, suggested: undefined, note: "长度 9：距离 4 超出阈值 3" },
   // ── 短到无可建议：`(did you mean …?)` 后缀整段缺席
   { key: "x", distance: 4, threshold: 2, suggested: undefined, note: "长度 1：最小距离 4 > 2" },

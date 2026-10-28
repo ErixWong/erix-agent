@@ -433,9 +433,9 @@ const VALUES = {
   // #498 S3 (`tuning` slice): `cacheCapable` is no longer a flat top-level key — it moved to
   // `RETIRED_FLAT_VALUES` below (its home is `config.tuning.cacheCapable`).
   reflection: false,
-  finalGuardMaxRetries: 1,
-  finalGuardTimeoutMs: 5000,
-  finalGuardExtend: false,
+  // #498 S3 (`guard` slice): `finalGuardMaxRetries` / `finalGuardTimeoutMs` / `finalGuardExtend` are no
+  // longer flat top-level keys — they moved to `RETIRED_FLAT_VALUES` below (their home is
+  // `config.guard.*`). `finalGuard` (the hook) stays: its home is `capabilities.hooks.finalGuard`.
   expert: "expert",
   user: "user",
   task: "task",
@@ -481,6 +481,10 @@ const RETIRED_FLAT_VALUES = {
   initialUserMessage: "go",
   // #498 S3（`tuning` 片）：`cacheCapable`——缓存友好端点的开关（引擎据此默认关掉工具结果 TTL 折叠）。
   cacheCapable: false,
+  // #498 S3（`guard` 片）：强制收尾的三个数据旋钮（hook 本体 `finalGuard` 不在此——它属能力面）。
+  finalGuardMaxRetries: 1,
+  finalGuardTimeoutMs: 5000,
+  finalGuardExtend: false,
 };
 
 /** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */

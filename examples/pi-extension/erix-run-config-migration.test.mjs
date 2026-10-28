@@ -132,7 +132,7 @@ function legacyFlatOptions(input) {
     ...(onPersistenceError === undefined ? {} : { onPersistenceError }),
     ...(onJudge === undefined ? {} : { onJudge }),
     ...(diagnostics === undefined ? {} : { diagnostics }),
-    ...(finalGuard === undefined ? {} : { finalGuard, finalGuardTimeoutMs: params.finalGuardTimeoutMs ?? 10_000 }),
+    ...(finalGuard === undefined ? {} : { finalGuard }),
     ...(deliverables === undefined ? {} : { deliverables }),
   };
   // #498 S3 (`folding` slice): `context` is retired as a flat option. `params.strategy` here is a
@@ -141,6 +141,13 @@ function legacyFlatOptions(input) {
   // expansion phase writes it back to `effectiveOptions.context.strategy`.
   // Merged into the **same** `config` tree (a second `config:` key would replace the timing one).
   if (params.strategy !== undefined) options.config.folding = { context: { strategy: params.strategy } };
+  // #498 S3 (`guard` slice): `finalGuardTimeoutMs` is retired as a flat option too — the golden writes
+  // it at its canonical home `config.guard.finalGuardTimeoutMs`. Same mechanism as the `timing` /
+  // `folding` keys above: the expansion phase writes it back to `effectiveOptions.finalGuardTimeoutMs`,
+  // so the equivalence claim is unaffected. Merged into the **same** `config` tree.
+  if (finalGuard !== undefined) {
+    options.config.guard = { finalGuardTimeoutMs: params.finalGuardTimeoutMs ?? 10_000 };
+  }
   if (Number.isSafeInteger(slot.contextWindowTokens) && Number.isSafeInteger(slot.maxOutputTokens)) {
     options.modelMetadata = {
       contextWindowTokens: slot.contextWindowTokens,

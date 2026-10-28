@@ -340,7 +340,10 @@ test("#386-2 R4-5 check 超时 ⇒ ok:false + detail:\"timeout\"（复用 finalG
     cwd: dir,
     maxRounds: 2,
     executeTool: diskWriteTool,
-    finalGuardTimeoutMs: 60,
+    // #498 S3 (`guard` slice): the canonical home is `config.guard.finalGuardTimeoutMs` (the flat
+    // spelling is rejected at the name gate; the expansion phase writes it back to
+    // `effectiveOptions.finalGuardTimeoutMs`, so `runDeliverables` reads it unchanged).
+    config: { guard: { finalGuardTimeoutMs: 60 } },
     deliverables: [{
       name: "hangs",
       check: async () => {
