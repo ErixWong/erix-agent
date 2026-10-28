@@ -135,8 +135,10 @@ try {
         input: { initialUserMessage: `把 42 写进 ${answerPath}` },
         guard: { finalGuardMaxRetries: 2 },
         metadata: { task: `把 42 写进 ${answerPath}` },
+      // #498 S3 A15: the flat `cwd` is retired at the name gate; its canonical home is
+      // `config.run.cwd` (the expansion phase writes it back onto `effectiveOptions.cwd`).
+        run: { cwd: sandbox },
       },
-      cwd: sandbox,
       runId: "probe-run-1",
       maxRounds: 4,
       executeTool: async (call) => {
@@ -449,8 +451,8 @@ try {
           : []),
         wrapup({ done: true, summary: "完成", output: `已生成 ${answerPath}，内容为 42` }),
       ]),
-      config: { input: { initialUserMessage: "写文件" } },
-      cwd: sandbox,
+      // #498 S3 A15: `cwd` 的规位家是 `config.run.cwd`（扁平拼写已在名称闸口退役）。
+      config: { input: { initialUserMessage: "写文件" }, run: { cwd: sandbox } },
       maxRounds: 3,
       executeTool: async (call) => {
         if (call.name === "writeFile") fs.writeFileSync(call.input.path, call.input.content ?? "");
@@ -569,7 +571,6 @@ try {
     let payload;
     const result = await runToolLoop({
       provider: createFakeProvider(script),
-      cwd: sandbox,
       runId: "probe-run-overhead",
       maxRounds: 30,
       // 关掉两件会改动 payload 体积的既有机制，让这个数只反映「新键 vs messages」：
@@ -579,6 +580,8 @@ try {
         folding: { toolResultTtl: 0 },
         input: { initialUserMessage: `把 30 个 4KB 文件写进 ${sandbox}` },
         metadata: { task: "把 30 个 4KB 文件写进工作目录" },
+        // #498 S3 A15: `cwd` 的规位家是 `config.run.cwd`（扁平拼写已在名称闸口退役）。
+        run: { cwd: sandbox },
       },
       reflection: false,
       executeTool: async () => BIG,
