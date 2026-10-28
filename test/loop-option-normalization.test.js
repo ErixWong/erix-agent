@@ -280,7 +280,7 @@ const OPTION_WHITELIST = [
   "onEvent",
   // issue #386 切片 1：`cwd` 只透传给 `finalGuard` payload（引擎不解释）。追加在末尾，
   // 所以上面那些未知键的建议结果逐字不变。
-  "cwd",
+  // #498 S3（`run` 片 A15）：`cwd` 已退役扁平写法（家 `config.run.cwd`），内联副本跟着源名单走。
   "deliverables",
   // issue #386 切片 3：预算类停机上的补跑开关（默认 `false`）。
   // #498 S3 (`guard` slice): it left the allowlist too — canonical home `config.guard.finalGuardExtend`.

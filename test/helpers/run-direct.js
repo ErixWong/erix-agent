@@ -80,6 +80,9 @@ const RUN_FAMILY_FIXTURE_KEYS = Object.freeze([
   // It is a **scalar** rather than a data shell, but the fixture only moves spellings, so the same
   // translation applies verbatim. `undefined` is treated as "not given" (same rule as the seed below).
   "maxTokenContinuations",
+  // #498 S3 A15: `cwd` (home `config.run.cwd`). Same reasoning; the value is a plain string, and the
+  // engine's own type check still runs after expansion (a non-string is still `cwd must be a string`).
+  "cwd",
 ]);
 
 /**

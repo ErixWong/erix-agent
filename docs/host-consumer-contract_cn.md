@@ -873,6 +873,46 @@ A12 落的翻译点（`test/helpers/run-direct.js` 的 `withRunFamily`）本来�
 得到「只装数据」那两句；R：值逐字到达 `effectiveOptions` **并且**上面两个终局原因成立；N：`maxTokens` 仍是
 另一个键、本组剩下的六个成员一件没动）。
 
+**`run` 组 A15 段的扁平写法版本口径**（issue #498 S3，第十五片——`cwd` 退役、`stream` **退回**）：
+
+| 版本 | 顶层写 `cwd` |
+| --- | --- |
+| 0.26.0 及更早（最后一个**已发布**版本） | 顶层接受——那些版本只认这个拼写 |
+| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装过「这件事有影响」的树 |
+| 0.28.0 及以后（issue #498 S3，第十五片） | **当场拒**——改写 `config.run.cwd`。名称闸口抛 `unknown runToolLoop option: "cwd" (its canonical home is config.run.cwd; the flat spelling is rejected)` |
+
+**`cwd` 是纯透传的字符串，类型校验跟着搬家但一句没改。** 引擎从不解释它（不 `chdir`、不校验存在性、
+不拼路径）：它只被转发到 `finalGuard` 载荷的 `cwd` 键，宿主没给时那个键根本不在。issue #386 的校验器跑在
+**展开之后**（`typeof cwd !== "string"` → `cwd must be a string`），所以任何非法形状在规位侧仍被同一句话拒
+——退役**没有**放宽接受面。闸口二：
+
+| 键 | 合法形状 | 扁平侧（改前） | 规位侧（改后） |
+| --- | --- | --- | --- |
+| `cwd` | 绝对路径 / `""` | exit 0 / 0 | exit 0 / 0（扁平侧现在 exit 1 / 1） |
+
+`""` 是**提供了**的值，不是「没提供」：载荷里带着 `cwd: ""`。夹具（`test/helpers/run-direct.js` 的
+`withRunFamily`）同样一行新代码都没加——键加进 `RUN_FAMILY_FIXTURE_KEYS` 即可。实测红格：无夹具 **29**、
+有夹具 **5**、迁完五个手写点 **0**（内联白名单镜像、两形态等价样本、A14 的 `N3` 邻接清单、pi 扩展的迁移
+golden）。
+
+**本片真正的风险是撞名。** 整词 grep `cwd` 在 `src`/`bin`/`test` 里有 1,200+ 处命中，而其中**只有一类**
+是 `runToolLoop` 的顶层选项。归属表（逐类命中数 + 是不是同一个东西）在切片报告里，并由
+`test/loop-run-slice-498s3a15.test.js` 的 `N1` 钉住：`process.cwd()` / CLI 的 `--cwd` / `options.cwd` /
+`createCliTools({ cwd })` / `assemblyPort.cwd` / `params.cwd`（pi 扩展的工具入参）全是**同词不同物**，一个
+字节都没动。退役一个入口不是「迁一个词」。
+
+**`stream` 是退回，不是退役**——闸口二量了四种取值，量出一只混装壳：
+
+| `stream` 取值 | 扁平侧 | 规位侧（`config.run.stream`） |
+| --- | --- | --- |
+| `true` / `false` / 对象 | exit 0 | exit 0（PARITY） |
+| **函数** | **exit 0** | **被拒**——`config.run.stream is not accepted … holds data only` |
+
+`stream` 没有值校验器（引擎只做一处真值判断），所以任何 truthy 值都会打开流式路径，函数取值于是
+**扁平可达**，而「只装数据」的 `config` 拒它。按本仓对「扁平可达」的操作性口径（今天不报错地接受），这是
+混装壳 ⇒ 该键留在白名单、行为一字未改，候选（按 as-is 退役 / 先加布尔校验器再退役 / 立第三站）交给裁决，
+不在本片自裁。四种取值的逐格证据在钉子文件的 `S1`–`S3`。
+
 ### capabilities 命名空间（issue #498）
 
 行为载体不是数据，所以 0.28.0 给它们一个自己的容器。它**有三组**（issue #498 S4b 加了第二组，

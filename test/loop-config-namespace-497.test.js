@@ -452,8 +452,8 @@ const VALUES = {
   // issue #497 复审 R1：按新判据从能力面移回配置面的四个键（端到端等价也要覆盖它们）；
   // 第二轮又从能力面移入两个字符串标量 `runId` / `cwd`（`config.run.*`）。
   // #498 S3（`run` 片 A13）：`persistence` 已退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
+  // #498 S3（`run` 片 A15）：`cwd` 同样退役扁平写法，样本搬到 `RETIRED_FLAT_VALUES`。
   runId: "config-497-run",
-  cwd: "/tmp/config-497",
   // #498 S4a：这里曾有 8 个 `on*: () => {}`——`config.observers` 整组删除后它们不再是配置叶子
   // （回调的规范之家是 `capabilities.hooks`，见 `test/loop-capabilities-namespace-498.test.js`）。
 };
@@ -543,6 +543,10 @@ const RETIRED_FLAT_VALUES = {
   // `effectiveOptions.maxTokenContinuations`（读侧一行未改：`orchestrator.js` 的解构默认值
   // `maxTokenContinuations = 3` 与同轮续写预算分支）。
   maxTokenContinuations: 2,
+  // #498 S3 A15（`run` 片）：`cwd` 退役。**字符串标量**（默认 `undefined`）；展开相仍逐字写回
+  // `effectiveOptions.cwd`（读侧一行未改：`orchestrator.js` 的 `typeof cwd !== "string"` 校验与
+  // `finalGuard` / deliverables 事实载荷里那个键）。
+  cwd: "/tmp/config-497",
 };
 
 /** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */

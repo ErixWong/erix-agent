@@ -1047,6 +1047,54 @@ matrix above; F: a function value at the canonical home gets the two data-only s
 reaches `effectiveOptions` byte for byte **and** the two termination reasons above; N: `maxTokens`
 stays a different key, and the group's six remaining members are untouched).
 
+**Flat-spelling version policy for the `run` group's A15 segment** (issue #498 S3, the fifteenth
+slice — `cwd` retired, `stream` **returned**):
+
+| release | writing `cwd` at the top level |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
+| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, fifteenth slice) | **rejected on the spot** — write `config.run.cwd`. The name gate throws `unknown runToolLoop option: "cwd" (its canonical home is config.run.cwd; the flat spelling is rejected)` |
+
+**`cwd` is a pass-through string, and the type check survives the move.** The engine never interprets
+it (no `chdir`, no existence check, no path joins): it is forwarded to the `finalGuard` payload's `cwd`
+key, and the key is absent when the host did not pass one. Issue #386's validator runs **after**
+expansion (`typeof cwd !== "string"` → `cwd must be a string`), so every illegal shape is still
+rejected at the canonical home with that exact sentence — the retirement does not widen the accepted
+set. Gate 2:
+
+| key | legal shapes | flat (before) | nested (after) |
+| --- | --- | --- | --- |
+| `cwd` | absolute path / `""` | exit 0 / 0 | exit 0 / 0 (flat now exit 1 / 1) |
+
+`""` is a **provided** value, not an absent one: the payload carries `cwd: ""`. The fixture
+(`withRunFamily` in `test/helpers/run-direct.js`) again needed no new code — the key joined
+`RUN_FAMILY_FIXTURE_KEYS`. Measured red cells: **29** without the fixture, **5** with it, **0** once
+the five hand-written sites were migrated (the inline allowlist mirror, the two-shape equivalence
+sample, A14's `N3` adjacency list, and the pi-extension migration golden).
+
+**The name collision is the whole risk of this slice.** A whole-word grep for `cwd` hits >1,200 places
+in `src`/`bin`/`test`, and exactly **one** class of them is the `runToolLoop` top-level option. The
+ownership table (which class is which, and whether it is the same thing) is in the slice report and is
+pinned by `N1` of `test/loop-run-slice-498s3a15.test.js`: `process.cwd()` / the CLI `--cwd` /
+`options.cwd` / `createCliTools({ cwd })` / `assemblyPort.cwd` / `params.cwd` (the pi extension's tool
+argument) are **different things** and were not touched. Retiring one entry is not migrating a word.
+
+**`stream` is returned, not retired** — gate 2 measured four value shapes and found a mixed shell:
+
+| `stream` value | flat | nested (`config.run.stream`) |
+| --- | --- | --- |
+| `true` / `false` / object | exit 0 | exit 0 (parity) |
+| **function** | **exit 0** | **rejected** — `config.run.stream is not accepted … holds data only` |
+
+`stream` has no value validator (the engine only does one truthiness test), so *any* truthy value turns
+the streaming path on and a function value is **flat-reachable** while `config` — which holds data
+only — rejects it. Under this repository's operational reading of "flat-reachable" (accepted today
+without an error) that is a mixed-shell shape, so the key stays on the allowlist with its behaviour
+unchanged, and the candidates (retire with an as-is pin / add a boolean validator first / promote it to
+the third station) are handed to the ruling rather than decided here. `S1`–`S3` of the pin file hold
+the four cells verbatim.
+
 ### The `capabilities` namespace (issue #498)
 
 Behaviour carriers are not data, so 0.28.0 gives them their own container. It has **three groups**
