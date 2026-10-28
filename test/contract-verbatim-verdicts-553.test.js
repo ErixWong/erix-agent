@@ -24,8 +24,14 @@
 //      `config.metadata.session` 点名载荷新家（#551 就是这一段错配过）。
 //   C. 五句**单句校验判词**（`cwd` / `maxRounds` / `persistence` / `partialPersistence` /
 //      `reflection.judgeDoneAdvisory`）：整句被行内代码引用，同样逐字相等。
+//   E. **能力面形状判词**（#554 新增）：`capabilities.hooks.onFoldSummary must be a function
+//      (or omitted)`。契约曾引 `TypeError: onFoldSummary must be a function`——**没有代码路径打印它**；
+//      真判词由 `CAPABILITIES_GROUP_VALIDATORS.hooks`（`src/loop/capabilities-namespace.js`）拼出。
+//      它与 C 的差别**不是排版而是机制**（契约 #554 之后自己就写着「两个形状都校，但机制是两套」）：
+//      C 是配置面启动期校值，E 是能力面容器的形状校验 ⇒ 真值来源也多走一个形状。
 //
-// 本文件导出的 `auditDocument()` / `auditFences()` / `truthForFlatName()` 给反向证用（工单 §4）：
+// 本文件导出的 `auditDocument()` / `auditFences()` / `auditCapabilityVerdicts()` /
+// `truthForFlatName()` 给反向证用（工单 §4）：
 // 反向证 ① 拿同一份代码在**改错一个词**的文档文本上跑（红）、② 拿**改了一个词**的运行时消息跑（红）、
 // ③ 原样跑（绿）。判据与反向证走**同一条代码路径**，所以"绿"不是常数。
 import test from "node:test";
@@ -210,7 +216,66 @@ export async function auditShortVerdicts(text) {
   return out;
 }
 
-/** 整份文档的审计（三条判据一起跑），给反向证与正式断言共用同一条代码路径。 */
+// ---------------------------------------------------------------- E. 能力面形状判词（#554）
+//
+// 病根（#554）：契约把能力面的形状规则引成 `TypeError: onFoldSummary must be a function`——
+// **没有任何代码路径打印那句话**。真判词由 `src/loop/capabilities-namespace.js` 的
+// `CAPABILITIES_GROUP_VALIDATORS.hooks` 拼出来：`${path} must be a function (or omitted)`，
+// 其中 `path` 是叶子的**完整路径**（`capabilities.hooks.onFoldSummary`）。
+//
+// 取真值照旧**现调引擎**：`runToolLoop({ capabilities: { hooks: { onFoldSummary: 1 } } })`。
+// `truthForDirect` 同时断言抛出者确实是 `TypeError`（契约用「抛 `<那句>`」的写法引用，
+// 而错误类别是引用成立的一半）。本文件依旧**零判词副本**：这里不写那句真值的任何一个字。
+//
+// ⚠ 定位器与 A / C 两组**不同**，这是实测逼出来的：`inlineSpans()` 用「单反引号两两配对」抽跨度，
+// 而 CN 契约里有一个 **4 反引号的代码跨度**（`docs/host-consumer-contract_cn.md:2715` 的
+// ```` ```json ````）—— 从那一行之后配对整体错位（实测：CN 抽出 3803 个跨度 / EN 6092；
+// 压平后反引号总数 CN 12355 为**奇数** / EN 12350 为偶数）。本组要钉的那句恰在错位区之后，
+// 用 `inlineSpans()` 会数出 0（假红）。所以这一组用**与全局配对无关的局部锚点**：
+// 在压平文本里找真值本身，并要求它**紧贴**在两个反引号之间。
+// 这不放松判据——`indexOf` 找的是**整串**，改一个词就找不到；只是不再依赖「第几个反引号」。
+
+/**
+ * `truth` 在文档里被**整句**行内代码引用的处数（局部锚点：真值前后各紧贴一个反引号）。
+ * 两种引用形态都认：`\`<真值>\`` 与 `\`TypeError: <真值>\``（后者是契约的错误类标注写法）。
+ *
+ * @param {string} text
+ * @param {string} truth 引擎当场抛出的 `error.message`
+ * @returns {number}
+ */
+export function quotedExactlyCount(text, truth) {
+  const flat = flatten(text);
+  let count = 0;
+  for (const needle of [truth, TYPE_ERROR_PREFIX + truth]) {
+    let from = 0;
+    let index;
+    while ((index = flat.indexOf(needle, from)) !== -1) {
+      if (flat[index - 1] === "`" && flat[index + needle.length] === "`") count += 1;
+      from = index + 1;
+    }
+  }
+  return count;
+}
+
+const CAPABILITY_SHAPE_VERDICTS = [
+  {
+    id: "capabilities.hooks.onFoldSummary",
+    extra: { capabilities: { hooks: { onFoldSummary: 1 } } },
+    expect: 1,
+  },
+];
+
+/** 返回 [{ id, truth, occurrences }]——`occurrences` 是**整段等于真值**的行内引用处数。 */
+export async function auditCapabilityVerdicts(text) {
+  const out = [];
+  for (const verdict of CAPABILITY_SHAPE_VERDICTS) {
+    const truth = await truthForDirect(verdict.extra);
+    out.push({ id: verdict.id, truth, occurrences: quotedExactlyCount(text, truth) });
+  }
+  return out;
+}
+
+/** 整份文档的审计（四条判据一起跑），给反向证与正式断言共用同一条代码路径。 */
 export async function auditDocument(text) {
   const flat = flatNameQuotes(text);
   const truths = new Map();
@@ -221,6 +286,7 @@ export async function auditDocument(text) {
     flat: flat.map((quote) => ({ ...quote, truth: truths.get(quote.key), ok: quote.span === truths.get(quote.key) })),
     fences: await auditFences(text),
     shorts: await auditShortVerdicts(text),
+    capabilities: await auditCapabilityVerdicts(text),
   };
 }
 
@@ -289,6 +355,24 @@ for (const which of ["en", "cn"]) {
   });
 }
 
+// ================================================================ E. 能力面形状判词（#554）
+
+for (const which of ["en", "cn"]) {
+  test(`E-${which}: 能力面形状判词逐字等于运行时真值（${which.toUpperCase()}）`, async () => {
+    const audit = await auditCapabilityVerdicts(read(which));
+    for (const verdict of audit) {
+      const expected = CAPABILITY_SHAPE_VERDICTS.find((item) => item.id === verdict.id).expect;
+      assert.equal(
+        verdict.occurrences,
+        expected,
+        `${verdict.id} 那句（真值：${JSON.stringify(verdict.truth)}）在 ${which.toUpperCase()} 契约里的整句引用处数`
+          + `从 ${expected} 变成 ${verdict.occurrences}`
+          + "（契约引用的句子必须**逐字**等于引擎当场抛出的那一句）",
+      );
+    }
+  });
+}
+
 // ================================================================ D. 判据自身不许是常数
 //
 // 反向证 ③（正向）：`auditDocument()` 在**今天的文档**上全绿——它证明上面那些格子不是永远红。
@@ -328,4 +412,22 @@ test("D-自证不是常数：围栏里整句换掉 ⇒ 审计翻红（#551 那�
   const red = await auditFences(mutated);
   const session = red.find((fence) => fence.id === "metadata-session");
   assert.notEqual(session.content, session.truth, "整句替换必须被逐字判据抓住（子串判据会漏掉这一格）");
+});
+
+test("D-自证不是常数：能力面那句改一个词 ⇒ 审计翻红（#554 新钉的那句）", async () => {
+  const original = read("en");
+  // 锚点**只**认「引擎真的会打印这句」这个前提：句子的字面值取自运行时（下面 `truth`），不手抄。
+  const truth = (await auditCapabilityVerdicts(original)).find(
+    (verdict) => verdict.id === "capabilities.hooks.onFoldSummary",
+  ).truth;
+  assert.equal(original.includes(truth), true, "变异锚点必须存在（否则这条自证是空的）");
+  // 改一个词：`omitted` → `undefined`（两词都说得通，正是"手抄一句看似合理的话"那种漂移）。
+  const mutated = original.replace(truth, truth.replace("or omitted", "or undefined"));
+  assert.notEqual(mutated, original, "变异必须真的落到文本上");
+  const red = await auditCapabilityVerdicts(mutated);
+  assert.equal(
+    red.find((verdict) => verdict.id === "capabilities.hooks.onFoldSummary").occurrences,
+    0,
+    "改一个词的能力面判词必须翻红——处数还是 1 说明判据在拿子串/常数比对",
+  );
 });
