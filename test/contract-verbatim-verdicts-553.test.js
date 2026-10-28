@@ -29,11 +29,16 @@
 //      真判词由 `CAPABILITIES_GROUP_VALIDATORS.hooks`（`src/loop/capabilities-namespace.js`）拼出。
 //      它与 C 的差别**不是排版而是机制**（契约 #554 之后自己就写着「两个形状都校，但机制是两套」）：
 //      C 是配置面启动期校值，E 是能力面容器的形状校验 ⇒ 真值来源也多走一个形状。
+//   F. **分词器自证**（#555 新增）：文档结构本身（围栏 vs 行内跨度）——多反引号等长配对、
+//      跳围栏、无错位残留。A / C / E 三组共用同一个 `inlineSpans()`，所以它的正确性是
+//      上面所有格子的**地基**：#555 之前它在 CN 契约 `:2715` 那个合法 4 反引号跨度上错位，
+//      CN 从那里之后的引用**全部静默漏检**（旧分词器数出 3803 个跨度 vs EN 6092，
+//      且同一句能力面真值在 CN 上命中 0 处——不是红，是看不见）。
 //
 // 本文件导出的 `auditDocument()` / `auditFences()` / `auditCapabilityVerdicts()` /
-// `truthForFlatName()` 给反向证用（工单 §4）：
-// 反向证 ① 拿同一份代码在**改错一个词**的文档文本上跑（红）、② 拿**改了一个词**的运行时消息跑（红）、
-// ③ 原样跑（绿）。判据与反向证走**同一条代码路径**，所以"绿"不是常数。
+// `truthForFlatName()` / `inlineSpans()` / `scanInlineSpans()` 给反向证用（工单 §4）：
+// 反向证 ① 内存夹具里的多反引号跨度配对正确（正向证据，F-1）、② 文档里**改错一个词**⇒红
+// （F-3 / D 组）、③ 原样跑 ⇒ 绿。判据与反向证走**同一条代码路径**，所以"绿"不是常数。
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -100,41 +105,119 @@ export async function truthForDirect(extra) {
   throw new Error(`引擎没有拒绝 ${JSON.stringify(extra)}`);
 }
 
-/** 文档里的围栏块（` ```lang ` 与 ` ``` ` 之间），内容压成单空格。 */
-export function fencedBlocks(text) {
-  const blocks = [];
+// ---------------------------------------------------------------- 文档结构：围栏 vs 行内
+//
+// #555 的病根：**单反引号朴素配对**（旧 `inlineSpans()` 用 `/`([^`]+)`/g`）。CN 契约
+// `docs/host-consumer-contract_cn.md:2715` 有一处**合法的 4 反引号行内跨度**——那行讲的正是
+// 「内联内容里带反引号就得用更多反引号包」这个写法**本身**（内容就是 ```json）。它不是错处，
+// 删不得；错的是分词器：单反引号配到那里就与后面的反引号整体错位，**CN 从 2715 之后的引用
+// 全部静默漏检**（实测跨度 3803 vs EN 6092）。
+//
+// 正解是 CommonMark 的两条规则，本文件照抄：
+//   ① **围栏**：开围栏 = 行首（≤3 空格）连续 ≥3 个反引号，且其后的信息串**不含反引号**；
+//      闭围栏 = 行首连续 ≥ 开围栏长度的反引号且其后只有空白。围栏内部不当行内处理。
+//      ⇒ `:2715` 那行开头虽是 4 个反引号，但后面紧跟 ```json（信息串里有反引号）⇒ **不是围栏**，
+//      正是行内跨度。
+//   ② **行内跨度**：开启串是 n 个反引号（n≥1），闭合串必须是**恰好 n 个**；找不到等长闭合串
+//      时该串按字面文字处理（继续往后扫），所以一处畸形写法不会污染整份文档。
+// 两条规则合起来的效果：跨度数从 3803 回到 6096（EN 6092），A/B/C/E 四组的**处数逐数不变**
+// （对照表见文件末尾 D 组的自证与 `/tmp/i555-report.md`）。
+
+const FENCE_OPEN = /^ {0,3}(`{3,})(.*)$/;
+
+/**
+ * 把文档切成「围栏块」与「正文行」。
+ * 返回 `{ blocks, prose }`：`blocks` 是围栏块（内容压成单空格），`prose` 是挖掉围栏后的正文原文。
+ */
+export function splitFences(text) {
   const lines = text.split("\n");
-  let inFence = false;
-  let start = 0;
-  let lang = "";
-  let buf = [];
+  const blocks = [];
+  const prose = [];
+  let open = null; // { len, lang, start, buf }
   lines.forEach((line, index) => {
-    if (/^\s*```/.test(line)) {
-      if (!inFence) {
-        inFence = true;
-        start = index + 1;
-        lang = line.trim().slice(3).trim();
-        buf = [];
+    const match = FENCE_OPEN.exec(line);
+    if (open === null) {
+      // 信息串里带反引号 ⇒ 这不是围栏（CommonMark 的限定），落回正文。
+      if (match && !match[2].includes("`")) {
+        open = { len: match[1].length, lang: match[2].trim(), start: index + 1, buf: [] };
       } else {
-        inFence = false;
-        blocks.push({ lang, start, end: index, content: flatten(buf.join("\n")) });
+        prose.push(line);
       }
       return;
     }
-    if (inFence) buf.push(line);
+    if (match && match[1].length >= open.len && match[2].trim() === "") {
+      blocks.push({ lang: open.lang, start: open.start, end: index, content: flatten(open.buf.join("\n")) });
+      open = null;
+      return;
+    }
+    open.buf.push(line);
   });
-  return blocks;
+  return { blocks, prose: prose.join("\n") };
 }
 
-/** 文档里的行内代码跨度（整份文档压平之后再抽，于是**折行的引用**也认得出来）。 */
+/** 文档里的围栏块（` ```lang ` … ` ``` `；也认 ` ```` ` 这类更长的围栏），内容压成单空格。 */
+export function fencedBlocks(text) {
+  return splitFences(text).blocks;
+}
+
+/** 文档里的行内代码跨度（整份正文压平之后再抽，于是**折行的引用**也认得出来）。 */
 export function inlineSpans(text) {
+  return scanInlineSpans(text).spans;
+}
+
+/**
+ * 行内跨度的**结构**扫描（给自证用）：除了跨度本身，还把「没配上对的 run」交出来。
+ *
+ * `unpaired` 是 #555 那个病的**指纹**：单反引号朴素配对撞上 4 反引号跨度时，错位会把一半的反引号
+ * 配成垃圾跨度、另一半成对地剩下，而 `unpaired` 恰好把「反引号总数是奇数」这个症状暴露出来。
+ * 健康文档（中英两份）的 `unpaired` 必须为空：正文里每一个反引号 run 要么是某跨度的定界串，
+ * 要么是某个多反引号跨度的**内容**（如 CN `:2715` 跨度内容里的 ```json）。
+ *
+ * @param {string} text
+ * @returns {{ spans: string[], unpaired: { len: number, near: string }[] }}
+ */
+export function scanInlineSpans(text) {
   // 先摘掉围栏块：围栏里的反引号会与正文的反引号错位配对，抽出来的跨度就是垃圾。
-  const flat = flatten(text.replace(/^\s*```[\s\S]*?^\s*```/gm, " "));
+  const flat = flatten(splitFences(text).prose);
+  // 反引号连续段（run）先全部切出来，再按「等长配对」贪心消费。
+  const runs = [];
+  for (let i = 0; i < flat.length; ) {
+    if (flat[i] !== "`") {
+      i += 1;
+      continue;
+    }
+    let j = i;
+    while (j < flat.length && flat[j] === "`") j += 1;
+    runs.push({ start: i, len: j - i });
+    i = j;
+  }
   const spans = [];
-  const re = /`([^`]+)`/g;
-  let match;
-  while ((match = re.exec(flat))) spans.push(match[1].trim());
-  return spans;
+  const consumed = new Set();
+  let k = 0;
+  while (k < runs.length) {
+    const opener = runs[k];
+    let close = -1;
+    for (let m = k + 1; m < runs.length; m += 1) {
+      if (runs[m].len === opener.len) {
+        close = m;
+        break;
+      }
+    }
+    // 没有等长闭合串 ⇒ 这个 run 是字面文字（畸形写法只吃掉自己，不影响后面的配对）。
+    if (close === -1) {
+      k += 1;
+      continue;
+    }
+    spans.push(flat.slice(opener.start + opener.len, runs[close].start).trim());
+    // 定界串与跨度的**内容**都算被消费：内容里的 run 不是畸形（` ```` ```json ```` ` 就是如此）。
+    for (let m = k; m <= close; m += 1) consumed.add(m);
+    k = close + 1;
+  }
+  const unpaired = runs
+    .map((run, index) => ({ run, index }))
+    .filter(({ index }) => !consumed.has(index))
+    .map(({ run }) => ({ len: run.len, near: flat.slice(Math.max(0, run.start - 40), run.start + 40) }));
+  return { spans, unpaired };
 }
 
 // ---------------------------------------------------------------- A. 扁平名闸口家族
@@ -227,35 +310,18 @@ export async function auditShortVerdicts(text) {
 // `truthForDirect` 同时断言抛出者确实是 `TypeError`（契约用「抛 `<那句>`」的写法引用，
 // 而错误类别是引用成立的一半）。本文件依旧**零判词副本**：这里不写那句真值的任何一个字。
 //
-// ⚠ 定位器与 A / C 两组**不同**，这是实测逼出来的：`inlineSpans()` 用「单反引号两两配对」抽跨度，
-// 而 CN 契约里有一个 **4 反引号的代码跨度**（`docs/host-consumer-contract_cn.md:2715` 的
-// ```` ```json ````）—— 从那一行之后配对整体错位（实测：CN 抽出 3803 个跨度 / EN 6092；
-// 压平后反引号总数 CN 12355 为**奇数** / EN 12350 为偶数）。本组要钉的那句恰在错位区之后，
-// 用 `inlineSpans()` 会数出 0（假红）。所以这一组用**与全局配对无关的局部锚点**：
-// 在压平文本里找真值本身，并要求它**紧贴**在两个反引号之间。
-// 这不放松判据——`indexOf` 找的是**整串**，改一个词就找不到；只是不再依赖「第几个反引号」。
-
-/**
- * `truth` 在文档里被**整句**行内代码引用的处数（局部锚点：真值前后各紧贴一个反引号）。
- * 两种引用形态都认：`\`<真值>\`` 与 `\`TypeError: <真值>\``（后者是契约的错误类标注写法）。
- *
- * @param {string} text
- * @param {string} truth 引擎当场抛出的 `error.message`
- * @returns {number}
- */
-export function quotedExactlyCount(text, truth) {
-  const flat = flatten(text);
-  let count = 0;
-  for (const needle of [truth, TYPE_ERROR_PREFIX + truth]) {
-    let from = 0;
-    let index;
-    while ((index = flat.indexOf(needle, from)) !== -1) {
-      if (flat[index - 1] === "`" && flat[index + needle.length] === "`") count += 1;
-      from = index + 1;
-    }
-  }
-  return count;
-}
+// 定位器：**与 A / C 两组同一个**——`inlineSpans()` 抽出的跨度，整段等于真值即计入。
+//
+// #554 落地时这里不是这样：那时 `inlineSpans()` 是单反引号朴素配对，CN 契约里
+// `docs/host-consumer-contract_cn.md:2715` 那个**合法的 4 反引号跨度**（内容就是 ```json）
+// 把配对整体顶错位，本组要钉的那句恰在错位区之后 ⇒ 用 `inlineSpans()` 数出 0（假红）。
+// 当时只好改用「整串紧贴反引号」的局部计数（`quotedExactlyCount()`）绕过。
+//
+// **#555 把这个绕过收回了**：分词器改成 CommonMark 的多反引号定界配对 + 跳围栏之后，
+// 错位区不存在了（跨度 CN 3803 → 6091，A / C / E 三组处数逐数不变），本组于是与 A / C
+// 走**同一条数法**。理由：两套数法并存、却只有一套被自测覆盖，等于给 CN 留一个制度化的盲区
+// ——局部锚点只认「真值前后各一个反引号」，`` ``n 真值 ``n ``（n≥2 的引用写法）它就看不见了。
+// 现在只有一条数法，正反两个方向都由 D 组自证盯住。
 
 const CAPABILITY_SHAPE_VERDICTS = [
   {
@@ -267,10 +333,15 @@ const CAPABILITY_SHAPE_VERDICTS = [
 
 /** 返回 [{ id, truth, occurrences }]——`occurrences` 是**整段等于真值**的行内引用处数。 */
 export async function auditCapabilityVerdicts(text) {
+  const spans = inlineSpans(text);
   const out = [];
   for (const verdict of CAPABILITY_SHAPE_VERDICTS) {
     const truth = await truthForDirect(verdict.extra);
-    out.push({ id: verdict.id, truth, occurrences: quotedExactlyCount(text, truth) });
+    out.push({
+      id: verdict.id,
+      truth,
+      occurrences: spans.filter((span) => span === truth || span === TYPE_ERROR_PREFIX + truth).length,
+    });
   }
   return out;
 }
@@ -376,7 +447,7 @@ for (const which of ["en", "cn"]) {
 // ================================================================ D. 判据自身不许是常数
 //
 // 反向证 ③（正向）：`auditDocument()` 在**今天的文档**上全绿——它证明上面那些格子不是永远红。
-// 反向证 ①② 不放在本文件（它们要改文档 / 改运行时），由工单报告里的探针给出退出码；
+// 改文档 / 改运行时那两条反向证由工单报告里的探针给出退出码（F 组的 F-1 / F-3 是它们在内存里的对应格）；
 // 但"改错一个词就红"这件事在这里再自证一次：**在内存里**把一处引用改一个词，审计必须翻红。
 
 test("D-自证不是常数：内存里改一个词 ⇒ 审计翻红（不改盘上文件）", async () => {
@@ -429,5 +500,122 @@ test("D-自证不是常数：能力面那句改一个词 ⇒ 审计翻红（#554
     red.find((verdict) => verdict.id === "capabilities.hooks.onFoldSummary").occurrences,
     0,
     "改一个词的能力面判词必须翻红——处数还是 1 说明判据在拿子串/常数比对",
+  );
+});
+
+// ================================================================ F. 分词器自证（#555）
+//
+// #555 的病根不在判词、在**分词器**：单反引号朴素配对遇到合法的 4 反引号行内跨度就整体错位，
+// CN 从 `:2715` 之后的引用**静默漏检**（不是红，是看不见）。下面三格把这个盲区钉死：
+//   F-1 内存夹具：多反引号定界配对 + 跳围栏（新规则的**正向**证据，且证明夹具真的踩到了旧病）。
+//   F-2 两份真文档的结构自检：没有残留的未配对反引号 run、CN 那个 4 反引号跨度被抽成**一个**跨度、
+//       跨度数不低于地板（旧分词器在 CN 上数出 3803，远低于地板 ⇒ 这一格本身就是回归闸）。
+//   F-3 CN 反向证：CN 契约里（原先的盲区之后）那句能力面判词改一个词 ⇒ 处数 0。
+//
+// 修复前后对照（#555 实测，逐数相等那几行就是"零新红"的凭据）：
+//
+//   | 项目                        | EN 前 → 后     | CN 前 → 后     |
+//   |-----------------------------|----------------|----------------|
+//   | 行内跨度数                  | 6092 → 6092    | 3803 → **6091**|
+//   | A 扁平名引用处数            | 21 → 21        | 21 → 21        |
+//   | A 引用到的键集合            | 21 键 → 同     | 21 键 → 同     |
+//   | B 三段围栏 found            | 1/1/1 → 同     | 1/1/1 → 同     |
+//   | C 五句处数                  | 1×5 → 1×5      | 1×5 → 1×5      |
+//   | E 能力面处数                | 1 → 1          | 1 → 1          |
+//
+// ⚠ **跨度数不是证据，跨度身份才是**。把两个病分开量（隔离实验，见报告 §3）：
+//   · 只修围栏识别、配对仍用单反引号 ⇒ CN 数出 **6092** 个跨度（与正确的 6091 只差 1！），但
+//     `:2715` 之后的跨度**边界全错**：能力面那句命中 **0** 处，而它吐出来的"跨度"是另一句
+//     看着完全合理的判词（`capabilities.hooks.onReflection must be a function (or omitted)`）。
+//     ⇒ 这就是 #555 说的"静默漏检"：数目对得上，内容是垃圾。
+//   · 只修配对、围栏仍用旧正则（`^\s*```…^\s*``` `）⇒ CN 仍数出 **3803**：旧正则把 `:2715`
+//     那行当成围栏开头，把 2715–2733 整段从正文里**挖掉**了。
+//   ⇒ 两个病都得治，且验收要靠"那个 4 反引号跨度被抽成一个跨度 + 真值命中"这类**身份**断言，
+//     不是靠跨度数。（工单记的 #554 原型数 6096 复现不出来：五种围栏/配对变体 EN 只有 6092
+//     与 #554 吻合；上面的 run 级算术 12183/12184 是可复核的那一份，报告里写明了这处差异。）
+//
+// CN 跨度 3803 → 6091 的 run 级算术：CN 正文 12183 个反引号 run，其中 ` ```json ` 这 1 个是那个
+// 4 反引号跨度的**内容**，剩下 12182 个两两成对 ⇒ 6091；EN 12184 个 run 全成对 ⇒ 6092。
+
+const SPAN_FLOOR = 6000; // 今天 EN 6092 / CN 6091；旧分词器在 CN 上数出 3803 ⇒ 地板本身就是回归闸。
+
+test("F-1 分词器：多反引号定界配对 + 跳围栏（内存夹具，正向证据）", () => {
+  const fixture = [
+    "正文 `a` 之后是 4 反引号跨度 ```` ```json ```` 后面还有 `b`。",
+    "```js",
+    "const x = `围栏里不是行内跨度`;",
+    "```",
+    "结尾 `c`。",
+  ].join("\n");
+  const spans = inlineSpans(fixture);
+  assert.deepEqual(
+    spans,
+    ["a", "```json", "b", "c"],
+    "跨度必须按**等长**定界配对（4 反引号跨度的内容就是 ```json），围栏里的反引号一个都不许抽出来",
+  );
+  // 夹具必须真的踩到旧病：单反引号朴素配对在这份文本上抽出来的东西与上面**不等**。
+  const naive = fixture.replace(/^\s*```[\s\S]*?^\s*```/gm, " ").replace(/\s+/g, " ").trim();
+  const naiveSpans = [...naive.matchAll(/`([^`]+)`/g)].map((match) => match[1].trim());
+  assert.notDeepEqual(naiveSpans, spans, "夹具必须能区分新旧两种分词器（否则这格是空的）");
+  // 旧分词器（单反引号朴素配对）在这份夹具上：`a` 之后整体错位——4 反引号跨度被拆成垃圾
+  // （`""` / `"json"`），后续的 `b` / `c` **完全抽不出来**（静默漏检，不是红）。
+  assert.equal(naiveSpans.includes("b"), false, "旧分词器在错位之后丢掉 `b`（正是 #555 的静默漏检）");
+  assert.equal(naiveSpans.includes("c"), false, "旧分词器在错位之后丢掉 `c`（正是 #555 的静默漏检）");
+  assert.equal(naiveSpans.includes("```json"), false, "旧分词器把 4 反引号跨度拆成垃圾，抽不出它的内容");
+});
+
+test("F-2 分词器：两份真文档都没有错位残留，CN 那个 4 反引号跨度被抽成一个跨度", () => {
+  for (const which of ["en", "cn"]) {
+    const { spans, unpaired } = scanInlineSpans(read(which));
+    assert.deepEqual(
+      unpaired,
+      [],
+      `${which.toUpperCase()} 契约正文里有没配上对的反引号 run（${JSON.stringify(unpaired)}）——`
+        + "要么是多反引号跨度没被等长配对，要么是文档里真有一个落单的反引号",
+    );
+    assert.ok(
+      spans.length >= SPAN_FLOOR,
+      `${which.toUpperCase()} 只抽出 ${spans.length} 个行内跨度（地板 ${SPAN_FLOOR}）——`
+        + "跨度数塌下来说明配对又错位了，后面的引用判词会静默漏检",
+    );
+  }
+  const cnSpans = inlineSpans(read("cn"));
+  assert.equal(
+    cnSpans.filter((span) => span === "```json").length,
+    1,
+    "CN `:2715` 那个合法的 4 反引号跨度必须被抽成**一个**跨度，内容是 ```json"
+      + "（它是合法 markdown：那行讲的正是「内联内容里带反引号就得用更多反引号包」这个写法本身）",
+  );
+  // 对照（**不是**第二套判词数法，只证明上面这条断言有牙）：旧的单反引号配对在同一条正文上
+  // 抽不出那个 4 反引号跨度——它把 `` ```` ```json ```` `` 拆成 `""` / `"json"` 之类的垃圾。
+  // 于是"跨度数"几乎不变（6092 vs 6091）而**内容全错**，正是 #555 的静默漏检。
+  const cnProse = flatten(splitFences(read("cn")).prose);
+  const naiveSpans = [...cnProse.matchAll(/`([^`]+)`/g)].map((match) => match[1].trim());
+  assert.equal(
+    naiveSpans.includes("```json"),
+    false,
+    "对照失效：旧配对居然也抽出了那个 4 反引号跨度（那这一格就没在盯东西）",
+  );
+  assert.ok(
+    Math.abs(naiveSpans.length - cnSpans.length) <= 2,
+    "对照失效：旧配对在 CN 上的跨度数与新配对差得太多（本仓实测只差 1：6092 vs 6091）",
+  );
+});
+
+test("F-3 自证不是常数：CN 能力面那句改一个词 ⇒ 审计翻红（原先的盲区现在盯得住）", async () => {
+  const original = read("cn");
+  const truth = (await auditCapabilityVerdicts(original)).find(
+    (verdict) => verdict.id === "capabilities.hooks.onFoldSummary",
+  ).truth;
+  assert.equal(original.includes(truth), true, "变异锚点必须存在（否则这条自证是空的）");
+  // 这句在 CN 契约里位于 `:2715` **之后**——旧分词器的错位区正是从那里开始，所以这格是
+  // 「收回主判据」这件事的正面证据：换成旧的 `inlineSpans()` 它数出 0，正向就已经假红了。
+  const mutated = original.replace(truth, truth.replace("or omitted", "or undefined"));
+  assert.notEqual(mutated, original, "变异必须真的落到文本上");
+  const red = await auditCapabilityVerdicts(mutated);
+  assert.equal(
+    red.find((verdict) => verdict.id === "capabilities.hooks.onFoldSummary").occurrences,
+    0,
+    "改一个词的 CN 能力面判词必须翻红——处数还是 1 说明判据在拿子串/常数比对",
   );
 });
