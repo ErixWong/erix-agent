@@ -5,8 +5,6 @@
 
 ### Breaking
 
-### Breaking
-
 - **`timeoutMs` / `deadlineMs` / `retry` must be written as `config.timing.*` (issue #498 S3).**
   The three top-level keys left the `runToolLoop` allowlist; writing them flat now throws
   `unknown runToolLoop option: "timeoutMs" (its canonical home is config.timing.timeoutMs; the flat
@@ -29,12 +27,43 @@
   `config.timing.retry.sleepImpl` 被「`config` 只装数据」拒）——重试定时器的规范之家一直是
   `capabilities.ports.sleepImpl`。
 
-- 并且额外钉一句反面：`error.message.includes("config.input.initialMessages") === false`——文案**不得**
-把顶层键名当叶子（那正是 I2 用例专门教它别写的形态，两处文案互相指认、落到同一处）。
+- **`folding` 组三个顶层键退役（#498 S3 第二片）**：`context`、`toolResultTtl`、`toolResultFoldMinTokens`
+  不再作为 `runToolLoop` 顶层选项接受。数据写法迁到 `config.folding.context` /
+  `config.folding.toolResultTtl` / `config.folding.toolResultFoldMinTokens`（展开相写回
+  `effectiveOptions.<扁平名>`，引擎读侧与行为不变）；`context` 里的**函数**成员（`onBeforeFold` /
+  `onAfterFold` / `stubFor` / `protectedMessage` / `recoveryHint`）与 `context.strategy` 的**对象**形态属
+  能力面，分别写 `capabilities.hooks.<name>` 与 `capabilities.ports.strategy` —— `config` 只装数据
+  （子树必须过 JSON round-trip 等值），函数叶子会被当场点名拒绝并指向规范之家。旧扁平写法现在报
+  `unknown runToolLoop option: "…" (its canonical home is config.folding.…; the flat spelling is rejected)`。
+  **升级救命索补强（本片修的缺陷）**：`context` / `retry` 这类**同时容得下数据与函数**的壳，被拒时
+  文案**一次点名两站**——「`this shell holds both data and functions: write data as
+  config.folding.context.<leaf>, and behaviour members as capabilities.hooks.<name> (…) or
+  capabilities.ports.strategy`」。以前只指 `config.folding.context`，宿主照做会撞第二次（那一家拒绝
+  函数叶子），第二次的文案才告诉他 `capabilities.hooks.onBeforeFold`；现在一步到位。装配口
+  `policy.context` 未收窄（函数叶子仍可经此送达），但**随包契约只承诺 `capabilities.*`**。
+  0.27.0 从未发布，最后一个已发布版本是 0.26.0，因此没有已发布宿主受影响。
 
-三件全部做到 ⇒ #517 的放行**没有缺口**（没有触发「停手报告」那条）。
-
----
+- **Three top-level keys of the `folding` group are retired (#498 S3, second slice)**: `context`,
+  `toolResultTtl` and `toolResultFoldMinTokens` are no longer accepted as `runToolLoop` options. Data
+  moves to `config.folding.context` / `config.folding.toolResultTtl` /
+  `config.folding.toolResultFoldMinTokens` (the expansion phase writes them back to
+  `effectiveOptions.<flat name>`, so the engine's read side and behaviour are unchanged); the
+  **function** members of `context` (`onBeforeFold` / `onAfterFold` / `stubFor` / `protectedMessage` /
+  `recoveryHint`) and the **object** form of `context.strategy` belong to the capability surface —
+  write `capabilities.hooks.<name>` and `capabilities.ports.strategy` respectively. `config` holds
+  data only (the subtree must survive a JSON round-trip unchanged); a function leaf is rejected by
+  name, with the canonical home spelled out. The old flat spelling now fails with
+  `unknown runToolLoop option: "…" (its canonical home is config.folding.…; the flat spelling is
+  rejected)`. **Upgrade signpost hardened (defect fixed in this slice)**: for a shell that holds
+  **both** data and functions (`context`, `retry`), the rejection now names **both stations in one
+  sentence** — "`this shell holds both data and functions: write data as
+  config.folding.context.<leaf>, and behaviour members as capabilities.hooks.<name> (…) or
+  capabilities.ports.strategy`". It used to name only `config.folding.context`, which refuses
+  function leaves, so a host that followed it hit a second wall and only *that* message mentioned
+  `capabilities.hooks.onBeforeFold`; now one step is enough. The assembly port's `policy.context` is
+  not narrowed (function leaves still get through that route), but the shipped contract only
+  promises `capabilities.*`. 0.27.0 was never published — the last published version is 0.26.0 — so
+  no released host is affected.
 
 - **`cacheStablePrefix` / `initialMessages` must be written as `config.input.*` (#498 S3, third
   slice — the `input` group's A segment).** Both top-level keys left the `runToolLoop` allowlist;
@@ -67,157 +96,6 @@
   `config.input.messages`。装配口不受影响：`policy.session.initialMessages` 照旧给 run 播种；宿主同时写它
   与 `config.input.messages` 时会收到一条 `config_override_conflict`（`path: "input.messages"`，`config` 赢）。
   0.26.0 及以前两种扁平写法都收；**0.27.0 从未发布**，因此没有任何已发布宿主受影响。
-
-## 3. COMPAT-PIN 翻转清单（数据面钉就地翻成反向拒绝钉，行为面 `on*` 一律未动）
-
-| 文件 | 翻的是什么 | 判定证据 |
-| --- | --- | --- |
-| `test/loop-option-normalization.test.js` | 「默认值 `cacheStablePrefix = true` 与 `wrapup = true`」这一格原来用**扁平** `cacheStablePrefix: false` 当反例，翻成 `config: { input: { cacheStablePrefix: false } }`；白名单内联副本删两个键 | 该格仍断言「两条 `cacheBoundary` 标记都消失」⇒ 值真的被引擎吃到（不是「换个位置就不生效」） |
-| `test/loop-config-namespace-497.test.js` | `VALUES` 里删掉两个退役键；`S3_TIMING_VALUES` + `S3_FOLDING_VALUES` 合成 `RETIRED_FLAT_VALUES`，**键集由 `CONFIG_SURFACE_OPTION_NAMES − RUN_TOOL_LOOP_OPTION_NAMES` 派生**；B2 逐键核「扁平形态不再产生它 / config 形态逐字写回」；A1 的「已切片组」手抄断言换成**逐键行为判据** | B2 开头 `deepEqual(keys(RETIRED_FLAT_VALUES), RETIRED_FLAT_KEYS)` ⇒ 「删了键却没给取值」当场红；A1 逐键断言「失去顶层键的叶子仍有 `config` 家 + 拒绝文案点名它」 |
-| `test/loop-capabilities-namespace-498.test.js` | S9 的 `S3_GROUPS = ["timing","folding"]`（手抄组名）换成派生集合 `RETIRED_FLAT_KEYS`；退役键的写回断言改成循环 | S9 现在对三个切片（timing / folding / input-A）跑**同一条**判据，下一片无需改它 |
-| `test/loop-capabilities-ports-hooks-498s4c.test.js` | C8 的 5 处 `initialMessages:` 搭台写点迁到 `config.input.messages`；`hinted()` 夹具改成**组合** `config`（原来 `...extra` 会把整棵 `config` 换掉，连带丢掉种子历史） | C8 五段（数据形态 / 函数形态 / 冲突 / 等价 / `recoveryHint` 两条腿）全绿 |
-| `test/loop-v020*.test.js` / `test/judge.test.js` / `test/wrapup.test.js` / `test/loop-fr2.test.js` / `test/loop-resume.test.js` / `test/loop-request-user-invariant.test.js` / `test/compact/{fold-archive,resume-fold-trim}.test.js` / `test/loop-fold-count-cells.test.js` / `test/loop.test.js` | 数据面搭台写点迁到规位（其中 `judge.test.js:752` 有一处与既有 `config.folding` 撞键，已合并成**一棵** `config`，不留重复键） | 逐文件全绿；`test/loop-resume.test.js:308` 那条「续跑忽略种子历史」的语义断言一字未改 |
-| `examples/exec-demo.js` / `examples/provenance-repro.test.mjs` / `scripts/probe-462-resume-refold.mjs` | 写侧迁到规位；`exec-demo.js` 把两个可选块拼成**一棵** `config`（避免重复键） | `examples/exec-demo.test.mjs`（含默认段假上游）全绿 |
-
-**未动**：11 个 `on*` 行为面回调的全部 COMPAT-PIN 格（`onFoldSummary` / `onRound` / … 的扁平仍在白名单里），
-`test/loop-option-gate-496.test.js`、`test/loop-context-on-fold-summary-retired-499.test.js` 一个字未改。
-
----
-
-## 4. 清点表机器刷新（`test/compat-pin-inventory.md`）
-
-- 从 md **抽内嵌计数器**（`cat > /tmp/flat-count.cjs <<'SCRIPT' …`）跑
-  `node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md` ⇒ **exit=0**
-  （`附表 107 行：表合计 1259 / AST 合计 1259`、`逐文件：0 处不一致`）。
-- 三个总数：`能力面 13 键 169 / 数据面 17 键 1259 / 全部 1428`（本片之前 169 / 1269 / 1438）。
-  算式：1269 − 22（10 个既有文件里 `initialMessages` 的扁平写点随迁移消失）+ 12（新钉子文件自带的搭台写点）
-  = 1259；文件数 106 → 107。
-- **反向证**：把附表里 `test/judge.test.js` 的 `122` 改成 `125` ⇒ `--verify` **exit=1** 并逐字点名
-  `✗ 附表 test/judge.test.js：表 125 / AST 122`；改回 ⇒ **exit=0**。
-
----
-
-## 5. 验收（只认退出码）
-
-| # | 门禁 | 退出码 | 备注 |
-| --- | --- | --- | --- |
-| 1 | `npm test`（全量） | **0** | 2434 / 2425 / 0 / 9 |
-| 2 | `npm run check:syntax` | **0** | |
-| 3 | `npm run check:docs` | **0** | 72 项对齐 |
-| 4 | `npm run check:docs:strict` | **0** | |
-| 5 | `npm run check:docs-examples` | **0** | |
-| 6 | `npm run check:pack-links` | **0** | |
-| 7 | `npm run check:tests` | **0** | |
-| 8 | `npm run check:types`（先 `find src -name '*.d.ts' -delete`） | **0** | 116 / 27 文件 = 基线 116 |
-| 9 | `npm run check:types-build` | **0** | 81 个 `.d.ts`，断言全过，已清理 |
-| 10 | `npm run check:release` | **0** | 五步全绿 14.1s；随包契约套件 138 pass / 0 fail |
-| 11 | `npm run check:cli-real` | **0** | 门禁关（`gate_missing`）⇒ 按设计 exit 0 |
-| 12 | `npm run check:exports` | **0** | 130 导出名 / 15 可删候选（清点，不判死） |
-| — | 自测 `docs-drift-check --self-test` | **0** | **109 例** |
-| — | 自测 `test-hygiene-check --self-test` | **0** | **13 例** |
-| — | 自测 `pack-link-check --self-test` | **0** | **16 例** |
-
-活体反向证（每条都先 `grep` 证锚点存在、并确认变异**落到盘上**）：
-
-| 变异 | 退出码 | 红格 |
-| --- | --- | --- |
-| M1 删别名表唯一一条记录 | **1** | 8 |
-| M2 删 `input.messages` 叶子（死条目） | **1** | 8 |
-| M3 文案模板去掉 `config.` 前缀 | **1** | 2 |
-| M4 把 `initialMessages` 加回白名单 | **1** | 3 |
-| M5 删 `input.cacheStablePrefix` 叶子 | **1** | 3 |
-| `--verify` 反向证（+3） | **1** | 点名 `test/judge.test.js` |
-
-离线冒烟：
-
-- `bin` 假上游（自写 `/tmp/binsmoke.mjs`，用仓库自带的 `fixtures/upstream.mjs` +
-  `fixtures/config-shape.mjs`，假 `HOME`，不联网）：
-  `node bin/cli.js --version` ⇒ **exit 0 / `0.27.0`**；
-  `node bin/cli.js chat "…"` ⇒ **exit 4**（= verification `skipped` 的既有承诺），
-  假上游真的收到请求（2 次），stdout 含假上游回的 marker，`guard=off`。
-- `examples/pi-extension`：`erix-run-config-migration.test.mjs` + `erix-run-final-guard.test.mjs`
-  ⇒ **31 pass / 0 fail / 0 skip**；`erix-run-e2e.test.mjs` ⇒ 5 pass / 0 fail / **2 skip**（真机门禁关，设计如此）。
-
----
-
-## 6. 本片交付 / 退回
-
-**交付（2 个键）**：
-
-| 键 | 新家 | 反向拒绝文案（逐字钉） |
-| --- | --- | --- |
-| `cacheStablePrefix` | `config.input.cacheStablePrefix` | `unknown runToolLoop option: "cacheStablePrefix" (its canonical home is config.input.cacheStablePrefix; the flat spelling is rejected)` |
-| `initialMessages` | `config.input.messages`（**唯一**登记别名） | `unknown runToolLoop option: "initialMessages" (did you mean "initialUserMessage"?) (its canonical home is config.input.messages; the flat spelling is rejected)` |
-
-两个都是**纯数据键**（不是混装壳），所以文案是「一站」形态；`shellBehaviourStationHint` 那条通用机制
-本片未触发、也未改（Q2 那格仍绿）。
-
-**退回工单（1 个键）**：`initialUserMessage` —— 见 §7。
-
----
-
-## 7. 退回 `initialUserMessage` 的理由（实测，不是估的）
-
-- **单删红 663 格**（全量 `npm test`：2419 tests / 1747 pass / **663 fail**），是另外两个键合计（40 格）的
-  16 倍；它不是「一个键」，而是**每一格 runToolLoop 用例的种子消息**。
-- 消费者面：`test/**` + `examples/**` + `bin/**` 共 **94 个文件 / 482 处 `initialUserMessage:` 属性写法**
-  （`src/` 只有读侧 4 处，不在迁移面）。
-- **不是机械改写**：94 个文件里 **58 个已经写了 `config: {`**，朴素 sed 会造出重复键（后者静默吃掉前者）；
-  **39 个文件**把它当 helper 的参数往下传（`function runLoop({ …, initialUserMessage })` +
-  `...(initialUserMessage === undefined ? {} : { initialUserMessage })`），覆写语义得先重构成「把种子并进
-  一棵 `config`」，否则 `runDirect({ initialUserMessage: "x" })` 这类覆写会当场撞名称闸口。
-- 结论：这一键的工作量与本片另外两个键不是一个量级（估算 30–45 分钟纯改写 + 多轮全量红绿），
-  在 60 分钟预算内做完它就会把「全量绿」这一步挤掉。按纪律「宁可小一片，也不要把红留给 main」，
-  **退回工单**，建议单独一片（可考虑先做一个 `runDirect`-级共享夹具把 94 个文件的种子写点收敛掉，
-  再删键）。
-
----
-
-## 8. 终局 CHANGELOG 成品（`
-
-- `，中英成对；本片未改 `CHANGELOG.md`，按禁令交给终局）
-
-### Breaking
-
-- **Three top-level keys of the `folding` group are retired (#498 S3, second slice)**: `context`,
-  `toolResultTtl` and `toolResultFoldMinTokens` are no longer accepted as `runToolLoop` options. Data
-  moves to `config.folding.context` / `config.folding.toolResultTtl` /
-  `config.folding.toolResultFoldMinTokens` (the expansion phase writes them back to
-  `effectiveOptions.<flat name>`, so the engine's read side and behaviour are unchanged); the
-  **function** members of `context` (`onBeforeFold` / `onAfterFold` / `stubFor` / `protectedMessage` /
-  `recoveryHint`) and the **object** form of `context.strategy` belong to the capability surface —
-  write `capabilities.hooks.<name>` and `capabilities.ports.strategy` respectively. `config` holds
-  data only (the subtree must survive a JSON round-trip unchanged); a function leaf is rejected by
-  name, with the canonical home spelled out. The old flat spelling now fails with
-  `unknown runToolLoop option: "…" (its canonical home is config.folding.…; the flat spelling is
-  rejected)`. **Upgrade signpost hardened (defect fixed in this slice)**: for a shell that holds
-  **both** data and functions (`context`, `retry`), the rejection now names **both stations in one
-  sentence** — "`this shell holds both data and functions: write data as
-  config.folding.context.<leaf>, and behaviour members as capabilities.hooks.<name> (…) or
-  capabilities.ports.strategy`". It used to name only `config.folding.context`, which refuses
-  function leaves, so a host that followed it hit a second wall and only *that* message mentioned
-  `capabilities.hooks.onBeforeFold`; now one step is enough. The assembly port's `policy.context` is
-  not narrowed (function leaves still get through that route), but the shipped contract only
-  promises `capabilities.*`. 0.27.0 was never published — the last published version is 0.26.0 — so
-  no released host is affected.
-
-### Breaking
-
-- **`folding` 组三个顶层键退役（#498 S3 第二片）**：`context`、`toolResultTtl`、`toolResultFoldMinTokens`
-  不再作为 `runToolLoop` 顶层选项接受。数据写法迁到 `config.folding.context` /
-  `config.folding.toolResultTtl` / `config.folding.toolResultFoldMinTokens`（展开相写回
-  `effectiveOptions.<扁平名>`，引擎读侧与行为不变）；`context` 里的**函数**成员（`onBeforeFold` /
-  `onAfterFold` / `stubFor` / `protectedMessage` / `recoveryHint`）与 `context.strategy` 的**对象**形态属
-  能力面，分别写 `capabilities.hooks.<name>` 与 `capabilities.ports.strategy` —— `config` 只装数据
-  （子树必须过 JSON round-trip 等值），函数叶子会被当场点名拒绝并指向规范之家。旧扁平写法现在报
-  `unknown runToolLoop option: "…" (its canonical home is config.folding.…; the flat spelling is rejected)`。
-  **升级救命索补强（本片修的缺陷）**：`context` / `retry` 这类**同时容得下数据与函数**的壳，被拒时
-  文案**一次点名两站**——「`this shell holds both data and functions: write data as
-  config.folding.context.<leaf>, and behaviour members as capabilities.hooks.<name> (…) or
-  capabilities.ports.strategy`」。以前只指 `config.folding.context`，宿主照做会撞第二次（那一家拒绝
-  函数叶子），第二次的文案才告诉他 `capabilities.hooks.onBeforeFold`；现在一步到位。装配口
-  `policy.context` 未收窄（函数叶子仍可经此送达），但**随包契约只承诺 `capabilities.*`**。
-  0.27.0 从未发布，最后一个已发布版本是 0.26.0，因此没有已发布宿主受影响。
 
 ### Added
 
