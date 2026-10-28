@@ -46,6 +46,7 @@ import {
   optionSuggestion,
 } from "../src/loop/option-normalization.js";
 import { assemblyPortOptions, createAssemblyPort } from "../src/assembly.js";
+import { capabilityDestinationsForShell } from "../src/loop/capabilities-namespace.js";
 import { runDirect, directError } from "./helpers/run-direct.js";
 
 // ================================================================ 夹具
@@ -162,6 +163,20 @@ test("F1 规位里给函数值：逐字两句话（只装数据 + 引擎从没�
       `${key}：文案必须说清「没丢能力」（A8 钉住的那句话，本片不许改）`,
     );
   }
+});
+
+test("P4 三个名字都不是混装壳：文案只点一站（对照 `context` 证明两站机制仍咬得住）", async () => {
+  for (const { key } of RETIRED) {
+    assert.deepEqual(capabilityDestinationsForShell(key), [], `${key} 没有行为成员 ⇒ 不许有第二站`);
+    const error = await directError({ [key]: 1 });
+    assert.equal(error.message.includes("capabilities."), false, `${key} 的文案里不许出现 capabilities.* 提示`);
+  }
+  // 对照组：`context` 是混装壳（数据 + 函数）⇒ 两站同时点名。证明「只点一站」是派生结果，
+  // 不是把提示整段删掉也能绿。
+  assert.notDeepEqual(capabilityDestinationsForShell("context"), []);
+  const control = await directError({ context: {} });
+  assert.match(control.message, /this shell holds both data and functions/u);
+  assert.match(control.message, /capabilities\.hooks\./u);
 });
 
 // ================================================================ R. 读侧不动（真 run）

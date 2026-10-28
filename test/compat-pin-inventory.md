@@ -5,6 +5,21 @@
 >
 > 本文件随 `test/` 落盘、**不进 npm 包**（`package.json` 的 `files` 没有它）。
 >
+> ⚠ **附表口径刷新（#498 S3 第十片 `metadata` A9：`user` / `model` / `task` 三键删键，本片）**：
+> 附表 **1304 → 1324**（净 +20，行数 113 → 114）、主表 **170 → 170**（不变，行数 23 → 23）。
+> 净 +20 是三笔的差：
+>   · **+19**：本片新增的切片钉子文件 `test/loop-metadata-keys-slice-498s3a9.test.js`
+>     （`completion`×4 / `session`×4 / `wrapup`×4 / `context`×3 / `reflection`×2 / `tools`×2 —— 都是搭台写点；
+>     它的能力面写点是 **0**，所以主表不受影响）；
+>   · **+1**：A8 那个钉子文件 `test/loop-metadata-keys-slice-498s3a8.test.js` 从 15 → **16**。原因是 F1 的
+>     函数差异 as-is 钉从 `user` 搬到 `session`（`user` 退役后扁平写法不再收函数），而 `session` 是附表
+>     数据面键表里的成员、`user` 明确被排除在计数口径之外 ⇒ 同一格钉子换名字，计数 +1；
+>   · **±0**：本片删的三个顶层键 `user` / `model` / `task` **本来就不在计数口径里**（顶部「生成方式」写明：
+>     它们是**不透明载荷**，引擎不按名字读子键 ⇒ 归 NOT-OPTION-SURFACE），所以删键**不改变任何既有行**的
+>     归属判断。`session` 经同值判定**退回**，它那 112 个写点与那 22 个文件一行未动。
+> 复跑：`node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
+> （主表 170 / 附表 1324 都是 AST 实测）。
+>
 > ⚠ **附表口径刷新（#498 S3 第九片 `metadata` A8：四个小键删键，本片）**：附表 **1299 → 1304**（净 +5，
 > 行数 112 → 113）、主表 **170 → 170**（不变，行数 23 → 23）。净 +5 是两笔的差：
 >   · **−10**：本片把四个扁平写点搬进规位 `config.metadata.*`，`config` 是容器（规则 4 数到就停）⇒
@@ -626,7 +641,8 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-context-on-fold-summary-retired-499.test.js` | 16 | `context`×7, `onFoldSummary`×7, `completion`×2, `stallDetection`×2, `tools`×2, `wrapup`×2, `onEvent`×1, `session`×1, `strategy`×1 |
 | `test/sessions.test.js` | 16 | `session`×16 |
 | `test/loop-abort-terminal-priority.test.js` | 15 | `reflection`×5, `stallDetection`×5, `completion`×4, `judgeProvider`×1 |
-| `test/loop-metadata-keys-slice-498s3a8.test.js` | 15 | `tools`×6, `modelMetadata`×3, `completion`×2, `wrapup`×2, `context`×1, `session`×1 |
+| `test/loop-metadata-keys-slice-498s3a8.test.js` | 16 | `tools`×6, `modelMetadata`×3, `completion`×2, `session`×2, `wrapup`×2, `context`×1 |
+| `test/loop-metadata-keys-slice-498s3a9.test.js` | 19 | `completion`×4, `session`×4, `wrapup`×4, `context`×3, `reflection`×2, `tools`×2 |
 | `test/loop-fold-context-knobs-469.test.js` | 14 | `strategy`×6, `context`×3, `session`×2, `tools`×2, `completion`×1, `wrapup`×1 |
 | `test/loop-on-fold-summary.test.js` | 12 | `onFoldSummary`×11, `context`×4, `tools`×3, `completion`×2, `onPersistenceError`×2, `stallDetection`×2, `wrapup`×2, `session`×1 |
 | `test/loop-folding-slice-498s3b.test.js` | 7 | `completion`×3, `wrapup`×3, `context`×1 |
