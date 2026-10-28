@@ -20,6 +20,9 @@
 //      「表」不可能与真实构造漂移。
 //   B. `config` / `capabilities` 放顶层 ⇒ 当场抛，且判词**点名正确住所**（`policy.config` /
 //      `policy.capabilities`）——本单的全部价值就在这里，只报 "unknown option" 不算做到。
+//      B2 只钉**指路子句的结构**：判词整句现取引擎（`createAssemblyPort` 的 `e.message`），切点按
+//      规则算（先算住所 `policy.<name>`，再回溯到上一个子句分隔 `; `），**本文件零判词副本**——
+//      #557 的 G/G2 已经证明「同一句真值抄两份，一份改了另一份会漂移着绿」这一族代价。
 //   C. 任意未知成员 ⇒ 抛，判词列出可接受集合（与派生集合同源），拼写相近给建议。
 //   D. 闸口在**读任何宿主端口之前**（工厂一次都不许被调）：与直连路线 `assertRunToolLoopOptionNames`
 //      同一条次序承诺。
@@ -201,21 +204,106 @@ test("#556 B：顶层 config / capabilities ⇒ 拒，且判词点名正确住�
   }
 });
 
-test("#556 B2：整句逐字钉死（改判词 / 删住所 / 改集合 ⇒ 红）", () => {
-  const accepted = ASSEMBLY_PORT_MEMBER_NAMES.join(", ");
+// B2 的切点：与 #557 G2 **同一条规则**，但这里自己写一遍（跨测试文件 import 会把那个文件的格子
+// 再注册一次）。规则里没有一个字来自判词：住所由「端口的两个容器都住在 `policy` 下一层」算出。
+const POINTER_CONTAINERS = [
+  { name: "config", value: { run: { completion: false } } },
+  { name: "capabilities", value: { hooks: {} } },
+];
+
+/**
+ * 把一句判词切成「主体 + 指路子句 + 指路住所」；没有指路子句 ⇒ `null`。
+ *
+ * 切点**不写判词字面量**：先用规则算出的住所 `policy.<name>` 定位，再回溯到上一个子句分隔 `; `。
+ *
+ * @param {string} verdict
+ * @param {string} name 容器名（`config` / `capabilities`）
+ * @returns {{ head: string, pointer: string, home: string | null } | null}
+ */
+function splitPointerClause(verdict, name) {
+  const at = verdict.indexOf(`policy.${name}`);
+  const start = verdict.lastIndexOf("; ", at === -1 ? verdict.length : at);
+  if (start === -1) return null;
+  const pointer = verdict.slice(start);
+  const homeAt = pointer.indexOf("policy.");
+  return {
+    head: verdict.slice(0, start),
+    pointer,
+    home: homeAt === -1 ? null : pointer.slice(homeAt).split(":")[0].trim(),
+  };
+}
+
+/**
+ * 直连路线那句**同一措辞**的指路：从它抛出的判词里取 `(` 之后到住所 `config.<…>` 之前那一段。
+ * 措辞本身仍由引擎给——本文件里**一个判词字面量都没有**（字面量计数 0，见工单 #558 报告 §3）。
+ *
+ * @returns {Promise<string>}
+ */
+async function directPointerMarker() {
+  let message = null;
+  try {
+    // 名称闸口在任何宿主端口被读之前跑 ⇒ 这里不会发出请求。
+    await runToolLoop({
+      provider: createFakeProvider(DONE),
+      executeTool: async () => "ok",
+      config: { run: { completion: false }, input: { initialUserMessage: "go" } },
+      cwd: 1,
+    });
+  } catch (error) {
+    message = error.message;
+  }
+  assert.notEqual(message, null, "直连路线的名称闸口没有拒绝扁平写法 cwd——取不到同一措辞的指路");
+  const homeAt = message.indexOf("config.");
+  assert.notEqual(homeAt, -1, `直连路线的判词里没有 config.<…> 住所：${message}`);
+  return message.slice(message.lastIndexOf("(", homeAt) + 1, homeAt);
+}
+
+// 判据是**结构**，不是句子：措辞归引擎（#557 的 G 组把文档里的逐字复述钉在运行时真值上），
+// 本文件钉的是「宿主靠这句话能找到住处」这件事的五条形状。改判词 / 删住所 / 改集合 / 只给住所
+// 不给写法 / 主体里夹带第二份指路 ⇒ 红；措辞本身换了但形状不变 ⇒ 不红（那不该由第二份真值管）。
+test("#556 B2：指路子句现取引擎——住所按规则算 policy.<name>，切点回溯 `; `（零判词副本）", async () => {
+  const marker = await directPointerMarker();
+  const markers = new Set();
+  for (const { name, value } of POINTER_CONTAINERS) {
+    const error = thrown(() => createAssemblyPort(portInput({ [name]: value })));
+    assert.ok(error instanceof TypeError, `顶层 ${name} 必须抛 TypeError，实际 ${error && error.message}`);
+    const clause = splitPointerClause(error.message, name);
+    assert.notEqual(
+      clause,
+      null,
+      `引擎对顶层 ${name} 不再给指路子句——宿主就不知道该把值写进哪了：${error.message}`,
+    );
+    // 住所是**算出来的**：端口的两个容器都住在 `policy` 下一层。
+    assert.equal(
+      clause.home,
+      `policy.${name}`,
+      `指路子句把 ${name} 指向了 ${clause.home}——端口的两个容器只能住在 policy 下一层：${error.message}`,
+    );
+    // 只报住处不够：得给出可照抄的写法（写法同样由住所规则算出）。
+    assert.ok(
+      clause.pointer.includes(`{ policy: { ${name}: `),
+      `指路子句必须给出可照抄的写法 { policy: { ${name}: … } }：${error.message}`,
+    );
+    // 指路是**末位子句**：主体里不许夹带第二份（宿主先读到的那段就是错的）。
+    assert.equal(
+      clause.head.includes("policy."),
+      false,
+      `指路只许出现在末位子句里，主体里夹带了第二份：${error.message}`,
+    );
+    const homeAt = clause.pointer.indexOf(`policy.${name}`);
+    markers.add(clause.pointer.slice(2, homeAt));
+  }
+  // 措辞归引擎，但**两条路线必须是同一句口令**（各写一份就是第二个真值源）。
   assert.equal(
-    thrown(() => createAssemblyPort(portInput({ config: { run: { completion: false } } }))).message,
-    `unknown assembly port option: "config" (accepted: ${accepted});`
-      + " its canonical home is policy.config: the port keeps the data plane inside policy"
-      + " (write { policy: { config: … } }), while the top-level config container is the direct"
-      + " route's spelling",
+    markers.size,
+    1,
+    `两个容器的指路措辞必须是同一句，实际 ${[...markers].map((item) => JSON.stringify(item)).join(" / ")}`,
   );
   assert.equal(
-    thrown(() => createAssemblyPort(portInput({ capabilities: { hooks: {} } }))).message,
-    `unknown assembly port option: "capabilities" (accepted: ${accepted});`
-      + " its canonical home is policy.capabilities: the port keeps the behaviour plane inside policy"
-      + " (write { policy: { capabilities: … } }), while the top-level capabilities container is the"
-      + " direct route's spelling",
+    [...markers][0],
+    marker,
+    `端口指路措辞（${JSON.stringify([...markers][0])}）与直连路线（${JSON.stringify(marker)}）不再是同一句`
+      + "——同一句口令两处各写一份，就会有一处先漂移",
   );
 });
 
