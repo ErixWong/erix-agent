@@ -18,7 +18,14 @@
 >    `onRound` 算一个，`test/loop-usage-accounting.test.js` 的 8 个就是这么来的）；只有落在**已被数过的键
 >    的值**里的不再下钻。
 >
-> 按这五条：**迁移前 388 / S7a 后 351 / S7b 后 256 / S7c 后 169 / 附表 1263 / COMPAT-PIN 66**。复跑命令在
+> 按这五条：**迁移前 388 / S7a 后 351 / S7b 后 256 / S7c 后 169 / 附表 1270 / COMPAT-PIN 66**。复跑命令在
+> ⚠ **附表口径刷新（#498 S3 第五片 `tuning` 段收尾，本片）**：附表从 **1263 → 1270**（+7，行数 108 → 109）。
+> 这 7 点**全部来自本片新增的切片钉子文件** `test/loop-tuning-slice-498s3d.test.js`（`completion`×3 /
+> `wrapup`×2 / `context`×1 / `stallDetection`×1 —— 都是搭台写点）。本片删的顶层扁平键
+> `cacheCapable` 是**布尔标量**（无子键 ⇒ 按顶部「生成方式」不是壳），它本来就不在计数口径里，
+> 所以删键**不改变任何既有行**；只增了新文件那一行。复跑：
+> `node /tmp/flat-count.cjs . --verify test/compat-pin-inventory.md` **exit=0**，逐行零误差
+> （主表 169 / 附表 1270 都是 AST 实测）。
 > ⚠ **附表口径刷新（#498 S3 第四片 `input` A2b 段收尾，本片）**：附表从 **1259 → 1263**（+4，行数 107 → 108）。
 > 这 4 点**不是本片新写出来的**：`test/loop-seed-fixture-521.test.js`（#521 的夹具钉子文件）在 A2 那一刀里
 > 就带了 `completion`×2 / `wrapup`×2 四个数据面写点，只是那一刀没给它加行，`--verify` 只核**已登记**的行，
@@ -416,10 +423,10 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 而下面这些写点住的 `context` / `reflection` / `retry` / `wrapup` / `completion` / `session` 等**壳**
 正是 S3 要删的东西 ⇒ **它们是 S3 的硬前置**，不是可选清理：壳删了、写点还按壳写，就是当场红。
 切片方案见文末「数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）」。（那份方案是 S3 之前写的，
-分片数字保留为**历史规划口径**；今天的实测总数是 **1263**，见文末「复跑方法」。）
+分片数字保留为**历史规划口径**；今天的实测总数是 **1270**，见文末「复跑方法」。）
 
 计数口径与上表同（AST、数到被数的键就停、进了同名壳就停，于是 `context: { strategy }` 只算 `context` 一个）。
-**合计 1263**（= `node /tmp/flat-count.cjs .` 的第二个数；下面 **108** 行逐行相加也是 1263）。
+**合计 1270**（= `node /tmp/flat-count.cjs .` 的第二个数；下面 **109** 行逐行相加也是 1270）。
 （S3 之前是 1354 / 104 行，两片之后 1269 / 106 行；差额与原因见文件头的「附表口径刷新」注。）
 
 ### 数据面键表：从白名单枚举（#498 S7c 扩键，680 → 1354）
@@ -462,7 +469,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
   「数到被数的键就停」下不再计（`resume` 77→75、`initialMessages` 25→24）。这是**口径的正确行为**
   （壳内叶子不是扁平写点），也是 680 + 677（7 键裸计数）− 3 = 1354 的来源。
 
-### 逐文件明细（108 行 / 1263 点；S3 前 104 行 / 1354 点）
+### 逐文件明细（109 行 / 1270 点；S3 前 104 行 / 1354 点）
 
 | 文件 | 写点 | 明细 |
 | --- | --- | --- |
@@ -574,6 +581,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/providers/error-classification.test.js` | 0 | `retry`×1 |
 | `test/run-snapshot-executor.test.js` | 1 | `context`×1, `onToolResult`×1 |
 | `test/loop-seed-fixture-521.test.js` | 4 | `completion`×2, `wrapup`×2 |
+| `test/loop-tuning-slice-498s3d.test.js` | 7 | `completion`×3, `wrapup`×2, `context`×1, `stallDetection`×1 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 

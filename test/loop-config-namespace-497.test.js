@@ -430,7 +430,8 @@ const VALUES = {
   maxTokens: 512,
   temperature: 0.2,
   topP: 0.9,
-  cacheCapable: false,
+  // #498 S3 (`tuning` slice): `cacheCapable` is no longer a flat top-level key — it moved to
+  // `RETIRED_FLAT_VALUES` below (its home is `config.tuning.cacheCapable`).
   reflection: false,
   finalGuardMaxRetries: 1,
   finalGuardTimeoutMs: 5000,
@@ -478,6 +479,8 @@ const RETIRED_FLAT_VALUES = {
   initialMessages: [],
   // #498 S3（`input` 组 A2b 段）：`initialUserMessage`——种子首轮消息。
   initialUserMessage: "go",
+  // #498 S3（`tuning` 片）：`cacheCapable`——缓存友好端点的开关（引擎据此默认关掉工具结果 TTL 折叠）。
+  cacheCapable: false,
 };
 
 /** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */

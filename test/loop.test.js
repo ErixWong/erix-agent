@@ -709,18 +709,25 @@ test("cacheCapable defaults TTL folding off while explicit TTL remains authorita
     .filter((block) => block?.type === "tool_result")
     .map((block) => block.content);
 
-  const cacheCapable = await runProbe({ cacheCapable: true });
+  // #498 S3（`tuning` 片）：`cacheCapable` 的**扁平写法已退役**（家在 `config.tuning.cacheCapable`），
+  // 所以这里逐格改写成规位形态。被测的行为（cache-capable 端点默认关掉 TTL 折叠、显式 `toolResultTtl`
+  // 仍然优先）一字未改——变的是写侧拼写。
+  const cacheCapable = await runProbe({ config: { tuning: { cacheCapable: true } } });
   assert.ok(resultContentsAt(cacheCapable, 2).every((content) => content.startsWith(big)));
 
-  const explicitThree = await runProbe({ cacheCapable: true, config: { folding: { toolResultTtl: 3 } } });
+  const explicitThree = await runProbe({
+    config: { tuning: { cacheCapable: true }, folding: { toolResultTtl: 3 } },
+  });
   assert.ok(resultContentsAt(explicitThree, 2).every((content) => content.startsWith(big)));
   assert.match(resultContentsAt(explicitThree, 3)[0], /【已折叠·TTL】/u);
 
-  const explicitZero = await runProbe({ cacheCapable: true, config: { folding: { toolResultTtl: 0 } } });
+  const explicitZero = await runProbe({
+    config: { tuning: { cacheCapable: true }, folding: { toolResultTtl: 0 } },
+  });
   assert.ok(resultContentsAt(explicitZero, 3).every((content) => content.startsWith(big)));
 
   const defaultTtl = await runProbe();
   assert.match(resultContentsAt(defaultTtl, 2)[0], /【已折叠·TTL】/u);
-  const explicitFalse = await runProbe({ cacheCapable: false });
+  const explicitFalse = await runProbe({ config: { tuning: { cacheCapable: false } } });
   assert.match(resultContentsAt(explicitFalse, 2)[0], /【已折叠·TTL】/u);
 });
