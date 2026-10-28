@@ -54,6 +54,7 @@ import {
   NAMESPACE_CONTAINER_OPTION_NAMES,
   collectConfigNamespaceProblems,
   configOptionNameForLeaf,
+  configPlaneOptionNames,
   configSchemaSelfCheck,
   configPathForOption,
   expandConfigNamespace,
@@ -113,21 +114,21 @@ function functionPathsIn(value, path) {
   return Object.entries(value).flatMap(([key, item]) => functionPathsIn(item, `${path}.${key}`));
 }
 
-// ================================================================ S1. 三向闭合（可枚举的四个数）
-test("S1 三向闭合：配置面 43 + 能力面 22 + 容器 2 = 顶层白名单 67，自检仍 []", () => {
-  // 四个数逐个钉住（漏一个就少一条等价证明；也免得「两边一起漏」算通过）。
-  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.length, 67, "顶层白名单 = 66 + capabilities 这个容器（#498 S4a）");
-  assert.equal(CONFIG_SURFACE_OPTION_NAMES.length, 43, "配置面 43 键（S4b 只是把 deliverables 换成了 tools，条数不变）");
-  assert.equal(CAPABILITY_OPTION_NAMES.length, 22, "能力面 22 项（12 端口/出口 + 9 回调 + deliverables）");
-  assert.equal(NAMESPACE_CONTAINER_OPTION_NAMES.length, 2, "容器两个：config 与 capabilities");
-  assert.equal(
-    CONFIG_SURFACE_OPTION_NAMES.length + CAPABILITY_OPTION_NAMES.length + NAMESPACE_CONTAINER_OPTION_NAMES.length,
-    RUN_TOOL_LOOP_OPTION_NAMES.length,
-    "三向之和必须逐字等于白名单条数（这就是「闭合」的可枚举形式）",
+// ================================================================ S1. 三向闭合（派生，不手抄总数）
+test("S1 三向闭合：白名单被配置面 / 能力面 / 容器恰好切一遍，自检仍 []", () => {
+  // #498 S3：这里原本手抄四个字面总数。删掉 `timing` 组的三个顶层键之后配置面那一项自动少三个，
+  // 于是四个数得手追——本刀把那四个数全部删掉，改成**集合等式**（比条数强，且与条数无关）。
+  const configPlane = configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES);
+  const partition = [...configPlane, ...CAPABILITY_OPTION_NAMES, ...NAMESPACE_CONTAINER_OPTION_NAMES];
+  assert.equal(new Set(partition).size, partition.length, "三个面两两不相交（一个键只许有一个家）");
+  assert.deepEqual(
+    [...partition].sort(),
+    [...RUN_TOOL_LOOP_OPTION_NAMES].sort(),
+    "三向之和必须逐键等于白名单（这就是「闭合」的可枚举形式，不靠条数自证）",
   );
   assert.deepEqual(NAMESPACE_CONTAINER_OPTION_NAMES, [CONFIG_NAMESPACE_OPTION_NAME, CAPABILITIES_NAMESPACE_OPTION_NAME]);
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(CAPABILITIES_NAMESPACE_OPTION_NAME), true);
-  // 白名单**内容**本刀只加了一个容器：8 个扁平观察者键一个都没删（0.26 已发布面）。
+  // 白名单**内容**：8 个扁平观察者键一个都没删（0.26 已发布面）。
   // #498 S4c：后 4 个回调**从来不是**顶层选项，所以它们不在名单里（它们不是被删掉的扁平键）。
   for (const hook of CAPABILITY_HOOK_NAMES) {
     if (CAPABILITIES_SLOT_LEAF_NAMES.includes(hook)) continue;
@@ -278,7 +279,7 @@ test("S2 16 个回调逐个点名：名单、别名表、schema 三者互相对�
       // 顶层白名单（这条就是「只加目的地、不发明扁平键」的机器证明）。
       assert.equal(CAPABILITIES_ALIAS_PATHS.has(path), false, `${hook} 是嵌套槽叶子，不该有扁平别名`);
       assert.equal(CAPABILITY_OPTION_NAMES.includes(hook), false, `${hook} 不在顶层能力面名单里`);
-      assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(hook), false, `${hook} 不许是顶层选项（白名单 67 不变）`);
+      assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(hook), false, `${hook} 不许是顶层选项（嵌套槽叶子不发明扁平键）`);
       assert.equal(CONFIG_SURFACE_OPTION_NAMES.includes(hook), false, `${hook} 不得出现在配置面`);
       assert.equal(typeof CAPABILITY_SLOT_DESTINATIONS[path]?.path?.[0], "string", `${hook} 必须登记嵌套槽去向`);
       continue;
@@ -574,12 +575,15 @@ test("S5c finalGuard 属能力面：config.guard.finalGuard 抛，顶层扁平�
   assert.equal(calls, 1, "顶层 finalGuard 一字未动");
 });
 
-test("S5d 语义相仍管 config 展开后的键：config 里的 sleepImpl 给错型与扁平形态同一句", async () => {
-  const flatError = await directError({ retry: { sleepImpl: "nope" } });
+test("S5d 语义相仍管 config 展开后的键：config 里的 sleepImpl 给错型 ⇒ 语义相点名；扁平写法被名称闸口先拒", async () => {
+  // #498 S3：`retry` 已无扁平写法（名称闸口先拒），所以「同一句」不再成立；这里改成两条各自钉住，
+  // 反而多了一条升级线索的证据：扁平写法的报错必须**指向新家**。
   const nestedError = await directError({ config: { timing: { retry: { sleepImpl: "nope" } } } });
-  assert.equal(nestedError.message, flatError.message, "两条形态必须抛同一句");
   assert.match(nestedError.message, /retry\.sleepImpl must be a function \(or omitted\)/u);
   assert.equal(nestedError.via, "direct");
+
+  const flatError = await directError({ retry: { sleepImpl: "nope" } });
+  assert.match(flatError.message, /its canonical home is config\.timing\.retry/u);
 });
 
 test("S6 collectConfigNamespaceProblems 纯函数：函数问题逐条可断言（含数组下标路径）", () => {
@@ -766,7 +770,7 @@ test("S8 逐叶子穷举：config.<group>.<leaf> 展开后与扁平形态逐键�
   assert.equal(covered, 43, "穷举必须覆盖全部 43 个配置键（漏一个就少一条等价证明）");
 });
 
-test("S9 端到端语义等价：整棵 config 与直接传扁平键规范化后逐键深度相等", async () => {
+test("S9 端到端语义等价：整棵 config 与扁平形态规范化后逐键深度相等（timing 三键走展开写回）", async () => {
   const config = buildRepresentativeConfig();
   const flat = {};
   for (const group of CONFIG_NAMESPACE_GROUPS) {
@@ -774,10 +778,20 @@ test("S9 端到端语义等价：整棵 config 与直接传扁平键规范化后
       flat[configOptionNameForLeaf(group, leaf)] = config[group][leaf];
     }
   }
+  // #498 S3：`config.timing.*` 的三个叶子已经没有扁平写法，所以对照分两步（与 497 的 B2 同形）：
+  //   ① 剩下的键：扁平形态 vs config 形态逐键深度相等；
+  //   ② 三个 S3 键：展开相必须逐字写回 `effectiveOptions.<扁平名>`（引擎读侧读的就是它们）。
+  const flatWithoutS3 = { ...flat };
+  for (const leaf of CONFIG_NAMESPACE_SCHEMA.timing) delete flatWithoutS3[configOptionNameForLeaf("timing", leaf)];
   const nestedResult = await normalizeRunToolLoopOptions({ config });
-  const flatResult = await normalizeRunToolLoopOptions({ ...flat });
-  assert.deepEqual(nestedResult.effectiveOptions, flatResult.effectiveOptions);
-  assert.deepEqual(Object.keys(nestedResult.effectiveOptions).sort(), Object.keys(flatResult.effectiveOptions).sort());
+  const flatResult = await normalizeRunToolLoopOptions({ ...flatWithoutS3 });
+  const { timeoutMs, deadlineMs, retry, ...nestedRest } = nestedResult.effectiveOptions;
+  assert.deepEqual(nestedRest, flatResult.effectiveOptions, "除 timing 三键以外，两种形态必须逐键深度相等");
+  assert.deepEqual(
+    { timeoutMs, deadlineMs, retry },
+    { timeoutMs: flat.timeoutMs, deadlineMs: flat.deadlineMs, retry: flat.retry },
+    "config.timing.* 必须逐字写回 effectiveOptions 的扁平名",
+  );
   for (const [key, value] of Object.entries(flatResult.effectiveOptions)) {
     assert.deepEqual(nestedResult.effectiveOptions[key], value, `${key} 两种形态必须逐键相等`);
   }

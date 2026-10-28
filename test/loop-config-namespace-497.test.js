@@ -8,7 +8,8 @@
 //      往白名单加一个键却忘了分类 ⇒ 这里红。
 //      **#517 单向化**：这条恒等式只说「每个顶层选项 → 恰好一个家」，不说「每个叶子 ⇔ 一个顶层
 //      键」。A3 的方向② 因此从「红」翻成「绿」——一个 `config` 叶子可以没有对应的顶层选项
-//      （S3 删完顶层扁平配置键之后的形状）。本刀不删任何键，四个数一个没动（67/43/22/2）。
+//      （S3 删完顶层扁平配置键之后的形状）。**#498 S3（`timing` 切片）之后本文件不再手抄任何
+//      顶层总数**：四个数全部从符号派生（见 A1）。
 //   B. **结构等价**（判据 1）：同一份配置写成扁平形态与 `config` 形态，`effectiveOptions` 逐键
 //      深度相等。两层：43 个配置键**逐个**扫一遍（`expandConfigNamespace`，机械穷举），
 //      再加一份跨 7 个分组的**端到端** `normalizeRunToolLoopOptions` 对比（走真闸口）。
@@ -119,20 +120,38 @@ const assemblyError = async (policy = {}) => {
 };
 
 // ================================================================ A. 只有一张表（派生，不是手抄）
-test("A1 schema 自检：67 个顶层选项恰好分成 43 配置面 + 22 能力面 + 2 容器", () => {
-  // 样本自证：总数先钉住，免得「两边一起漏」也算通过。
-  // #498 S4a：66 → 67（`capabilities` 容器入列）、配置面 52 → 43（`observers` 整组 8 个回调 +
-  // `finalGuard` 移走）、能力面 13 → 22（8 个观察者通道 + finalGuard 移入）。
-  // #498 S4b：三个数**一个都没变**，组成变了——`tools` 从能力面归配置面（`config.input.tools`）、
-  // `deliverables` 反向搬进能力面（`capabilities.checks.deliverables`）、`finalGuard` 收进 hooks。
-  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.length, 67, "顶层白名单 = 66 + capabilities 这个容器");
-  assert.equal(CONFIG_SURFACE_OPTION_NAMES.length, 43, "配置面 43 个键（S4b：deliverables 换成 tools，条数不变）");
-  assert.equal(CAPABILITY_OPTION_NAMES.length, 22, "能力面 22 项（12 端口/出口 + 9 回调 + deliverables）");
-  assert.equal(NAMESPACE_CONTAINER_OPTION_NAMES.length, 2, "容器两个：config 与 capabilities（#498 S4a）");
+test("A1 schema 自检：白名单被三个面恰好切一遍（配置面 / 能力面 / 容器），自检 []", () => {
+  // #498 S3：这里原本手抄四个字面总数（顶层 / 配置面 / 能力面 / 容器）。删掉 `timing` 组的三个
+  // 顶层键之后，配置面那一项自动少三个，于是四个数字必须手追——那正是本刀要杀的东西。
+  // 现在钉的是**更强的一句**，而且一个总数都不用抄：
+  //   ① 三个面的并集与白名单**逐键相等**（不是比条数，是比集合）；
+  //   ② 三个面两两不相交（一个键只许有一个家）。
+  // 这两条合起来就是「闭合」的全部内容，且与具体条数无关。
+  const configPlane = configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES);
+  const partition = [...configPlane, ...CAPABILITY_OPTION_NAMES, ...NAMESPACE_CONTAINER_OPTION_NAMES];
   assert.equal(
-    CONFIG_SURFACE_OPTION_NAMES.length + CAPABILITY_OPTION_NAMES.length + NAMESPACE_CONTAINER_OPTION_NAMES.length,
-    RUN_TOOL_LOOP_OPTION_NAMES.length,
-    "配置面 + 能力面 + 容器 = 白名单（三向闭合）",
+    new Set(partition).size,
+    partition.length,
+    "三个面之间不许重叠（同一个键落在两个家里，展开时就会有一个静默盖掉另一个）",
+  );
+  assert.deepEqual(
+    [...partition].sort(),
+    [...RUN_TOOL_LOOP_OPTION_NAMES].sort(),
+    "三面并集必须逐键等于白名单（漏一个、多一个都算红；不靠条数自证）",
+  );
+  // 配置面那一项 = 叶子总数 − 失去顶层键的叶子（派生；S3 之后这个差非空，这是设计）。
+  const orphanLeaves = CONFIG_SURFACE_OPTION_NAMES.filter(
+    (name) => !RUN_TOOL_LOOP_OPTION_NAMES.includes(name),
+  );
+  assert.equal(
+    configPlane.length,
+    CONFIG_SURFACE_OPTION_NAMES.length - orphanLeaves.length,
+    "configPlaneOptionNames 就是「叶子映射到的键里白名单仍有的那些」，差集是失去顶层键的叶子",
+  );
+  assert.deepEqual(
+    [...orphanLeaves].sort(),
+    [...CONFIG_NAMESPACE_SCHEMA.timing].sort(),
+    "#498 S3 本刀失去顶层键的叶子恰好是 config.timing 的三个（timing 组是它们的**新家**，不是被删的组）",
   );
   assert.deepEqual(configSchemaSelfCheck(RUN_TOOL_LOOP_OPTION_NAMES), []);
   assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(CONFIG_NAMESPACE_OPTION_NAME), true);
@@ -190,10 +209,17 @@ test("A3 自检会咬人：漏分类 / 漏容器必须红；叶子失去顶层�
     [],
     "叶子还在、顶层键没了 = S3 的形状，自检必须放行（恒等式只单向：每个顶层选项→恰好一个家）",
   );
-  // 放行的那一半由另一条锁兜住，不是「什么都没核」：配置面因此少了一格（43 → 42），
-  // 叶子仍在 schema 里（round-trip 覆盖度在 S7 逐叶子核，见 test/loop-capabilities-namespace-498.test.js）。
-  assert.equal(configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES).length, 43, "本刀一个键都没删：配置面仍是 43");
-  assert.equal(configPlaneOptionNames(droppedOptionNames).length, 42, "少掉的就是那一个失去顶层键的叶子");
+  // 放行的那一半由另一条锁兜住，不是「什么都没核」：配置面因此少一格（派生：叶子总数 − 失去
+  // 顶层键的叶子），叶子仍在 schema 里（round-trip 覆盖度在 S7 逐叶子核，见
+  // test/loop-capabilities-namespace-498.test.js）。
+  const configPlane = configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES);
+  assert.equal(
+    configPlane.length,
+    CONFIG_SURFACE_OPTION_NAMES.length
+      - CONFIG_SURFACE_OPTION_NAMES.filter((name) => !RUN_TOOL_LOOP_OPTION_NAMES.includes(name)).length,
+    "本刀的配置面 = 叶子总数 − 失去顶层键的叶子（派生，不手抄）",
+  );
+  assert.equal(configPlaneOptionNames(droppedOptionNames).length, configPlane.length - 1, "少掉的就是那一个失去顶层键的叶子");
   assert.equal(
     configPlaneOptionNames(droppedOptionNames).includes("maxRounds"),
     false,
@@ -361,7 +387,7 @@ test("B1 43 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平�
     assert.deepEqual(mixed.conflicts, [{ path, key }], `${path} 混合写法必须记一条冲突`);
     covered += 1;
   }
-  assert.equal(covered, 43, "穷举必须覆盖全部 43 个配置键（漏一个就少一条等价证明）");
+  assert.equal(covered, CONFIG_SURFACE_OPTION_NAMES.length, "穷举必须覆盖全部配置叶子（漏一个就少一条等价证明）");
 });
 
 /** 跨 7 个分组的代表性配置：同一个 `VALUES` 同时生成扁平形态与 config 形态。 */
@@ -389,13 +415,10 @@ const VALUES = {
   temperature: 0.2,
   topP: 0.9,
   cacheCapable: false,
-  timeoutMs: 1000,
-  deadlineMs: 2000,
   context: { budgetTokens: 1000, keepRounds: 2 },
   toolResultTtl: 1,
   toolResultFoldMinTokens: 10,
   reflection: false,
-  retry: false,
   finalGuardMaxRetries: 1,
   finalGuardTimeoutMs: 5000,
   finalGuardExtend: false,
@@ -416,6 +439,17 @@ const VALUES = {
   // （回调的规范之家是 `capabilities.hooks`，见 `test/loop-capabilities-namespace-498.test.js`）。
 };
 
+/**
+ * #498 S3：`timing` 组的三个值。它们**故意不在 `VALUES` 里**——本刀之后这三个键已经没有扁平写法，
+ * 所以 B2 的「扁平形态」对照只能盖住剩下的那些键；这三个由「展开写回」那一条断言单独核
+ * （展开相把 `config.timing.*` 写回 `effectiveOptions.<扁平名>`，引擎读侧不变）。
+ */
+const S3_TIMING_VALUES = {
+  timeoutMs: 1000,
+  deadlineMs: 2000,
+  retry: false,
+};
+
 /** 把 `VALUES` 摊成 `config: { … }` 形态（分组/叶子从 schema 派生，不手写）。 */
 function nestedConfigShape(values) {
   const config = {};
@@ -429,15 +463,24 @@ function nestedConfigShape(values) {
 }
 
 test("B2 端到端结构等价：扁平形态与 config 形态规范化后的 effectiveOptions 逐键深度相等", async () => {
-  const nestedConfig = nestedConfigShape(VALUES);
+  // #498 S3：`timing` 组的三个键不再有扁平写法，所以对照分两步：
+  //   ① 仍可扁平写的那些键：扁平形态 vs config 形态逐键深度相等；
+  //   ② 三个 S3 键：config 形态展开后必须**逐字写回** `effectiveOptions.<扁平名>`（这就是
+  //     「删了顶层键、引擎读侧不用改」的机制本身，也是本刀可行性的证据）。
+  const nestedConfig = nestedConfigShape({ ...VALUES, ...S3_TIMING_VALUES });
   assert.deepEqual(Object.keys(nestedConfig).sort(), [...CONFIG_NAMESPACE_GROUPS].sort(), "全部分组都被这份样本覆盖");
 
   const flat = await normalizeRunToolLoopOptions({ ...VALUES });
   const nested = await normalizeRunToolLoopOptions({ config: nestedConfig });
 
-  assert.deepEqual(nested.effectiveOptions, flat.effectiveOptions);
+  const { timeoutMs, deadlineMs, retry, ...nestedRest } = nested.effectiveOptions;
+  assert.deepEqual(nestedRest, flat.effectiveOptions, "除三个 S3 键以外，两种形态必须逐键深度相等");
+  assert.deepEqual(
+    { timeoutMs, deadlineMs, retry },
+    S3_TIMING_VALUES,
+    "config.timing.* 必须逐字写回 effectiveOptions 的扁平名（引擎读侧读的就是这三个）",
+  );
   // 逐键再说一遍（deepEqual 之外的可读断言：哪一科不对，报错就点名哪一科）。
-  assert.deepEqual(Object.keys(nested.effectiveOptions).sort(), Object.keys(flat.effectiveOptions).sort());
   for (const [key, value] of Object.entries(flat.effectiveOptions)) {
     assert.deepEqual(nested.effectiveOptions[key], value, `${key} 两种形态必须逐键相等`);
   }
@@ -715,13 +758,17 @@ test("E3 config 只装数据：context 照旧过，observers 组与 finalGuard �
 });
 
 // #498 S4a：`config.guard.finalGuard` 已是能力键（见 E3 / S5c），所以这条改用**仍在配置面**的
-// 回调字段 `retry.sleepImpl` 做同一件事：非函数值走语义相，两条形态抛同一句。
-test("E4 config 里的回调字段给错型 ⇒ 与扁平形态同一句（语义相管到 config 展开后的键）", async () => {
-  const flatError = await directError({ retry: { sleepImpl: "nope" } });
+// 回调字段 `retry.sleepImpl` 做同一件事：非函数值走语义相，同一句文案。
+// #498 S3：`retry` 已经没有扁平写法（写了会在**名称闸口**当场拒，比语义相更早），所以这里的
+// 「两种写法」变成「config 形态走语义相」+「扁平形态走名称闸口且文案指向新家」。
+test("E4 config 里的回调字段给错型 ⇒ 语义相点名叶子路径；扁平写法更早一步被名称闸口拒并指新家", async () => {
   const nestedError = await directError({ config: { timing: { retry: { sleepImpl: "nope" } } } });
-  assert.equal(nestedError.message, flatError.message);
   assert.match(nestedError.message, /retry\.sleepImpl must be a function \(or omitted\)/u);
   assert.equal(nestedError.via, "direct");
+
+  const flatError = await directError({ retry: { sleepImpl: "nope" } });
+  assert.match(flatError.message, /^unknown runToolLoop option: "retry"/u);
+  assert.match(flatError.message, /its canonical home is config\.timing\.retry/u);
 });
 
 // ================================================================ F. 名称/形状闸口（早于端口读取）

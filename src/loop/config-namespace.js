@@ -501,7 +501,13 @@ export function configSchemaSelfCheck(optionNames, { leafAliases = CONFIG_LEAF_A
     }
   }
   // #498 S4b：能力面那一半的自检（每组的形状校验器存在、叶子是真选项、别名表与 schema 对得上）。
-  problems.push(...capabilitiesSchemaSelfCheck(optionNames));
+  // #498 S3：嵌套槽叶子的「壳必须存在」不再等于「壳是顶层选项」——`ports.sleepImpl` 的壳是
+  // `retry`，它本刀搬去了 `config.timing.retry`（展开相仍写回 `effectiveOptions.retry`）。
+  // 所以把「这个名字还解析得到引擎会读的东西」的定义交给调用方：顶层选项 ∪ 仍在 schema 里的
+  // 配置叶子。判据的**意图**（去向不许指向一个不存在的键）一字未变。
+  problems.push(...capabilitiesSchemaSelfCheck(optionNames, {
+    shellIsKnown: (name) => optionNames.includes(name) || configPathForOption(name) !== undefined,
+  }));
   // #517：这里**不再**逐叶子核「映射到的顶层键必须真在名单里」——一个配置叶子可以没有顶层键
   // （S3 的形状），那不是漂移。反过来两个叶子不得映射到同一个键（否则展开时一个静默盖掉另一个），
   // 这一条由上面 `seen` 那一轮对 `CONFIG_SURFACE_OPTION_NAMES` 的重复检测负责，与白名单无关。

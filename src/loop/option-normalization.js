@@ -21,9 +21,16 @@
 //   8. issue #498 (S4c): the nine capability leaves that have **no top-level flat alias** (`ports.*`
 //      and six `hooks.*`) are not written back as flat keys; they come back on the `capabilitySlots`
 //      side channel — they are the **destination** of in-shell behaviour carriers, not a move (which
-//      is why the top-level allowlist stays at 67). The conflict comparison still runs, and its
+//      is why the top-level allowlist does not grow). The conflict comparison still runs, and its
 //      `path` is the real destination (`ports.sleepImpl` / `hooks.onBeforeFold` /
 //      `folding.context.protectedMessage`).
+//   9. issue #498 (S3, first vertical slice = the `timing` group): `timeoutMs` / `deadlineMs` /
+//      `retry` leave the top-level allowlist. They are **not** gone — they move to
+//      `config.timing.*`, and the expansion phase writes them back to `effectiveOptions.<flat name>`,
+//      which is exactly why the engine's read side (`effectiveOptions.timeoutMs` …) needs no change.
+//      Writing the old flat spelling is now rejected at the name gate, and the message names the new
+//      home (`configPathForOption`, `src/loop/config-namespace.js`) so a host upgrading from 0.26
+//      is told where to put the value instead of just "unknown option".
 //
 // 顺序即语义，且被 test/loop-option-normalization.test.js 逐条钉住，所以本模块严格按
 //   形状检查 → 未知键检查 → config 名称/形状预检 → capabilities 名称/形状预检 →
@@ -60,6 +67,7 @@ import {
 import {
   assertConfigNamespace,
   collectConfigSourceConflicts,
+  configPathForOption,
   expandConfigNamespace,
 } from "./config-namespace.js";
 
@@ -68,8 +76,10 @@ import {
  *
  * ⚠ 这份名单的**顺序**同时是未知键建议的平局优先级（`optionSuggestion` 用严格 `<`），
  * 所以它不是集合语义、不许排序、不许增删项而不同时确认建议行为。
- * 计数与顺序都由 `test/loop-option-normalization.test.js` 钉住（67 项：66 + `capabilities` 这个容器；
- * #498 S4b 的新键全是子键，所以条数不变）。
+ * 计数与顺序都由 `test/loop-option-normalization.test.js` 钉住；**条数不再手抄**——`test/` 里
+ * 任何「顶层总数」都由符号派生（`RUN_TOOL_LOOP_OPTION_NAMES.length` 与三个面的并集对账）。
+ * #498 S3（`timing` 组垂直切片）：`timeoutMs` / `deadlineMs` / `retry` 已从这里删掉，它们的家是
+ * `config.timing.*`（展开相写回 `effectiveOptions`，引擎读侧不变）。
  *
  * @type {string[]}
  */
@@ -95,11 +105,12 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   "maxTokens",
   "temperature",
   "topP",
-  "timeoutMs",
-  "deadlineMs",
+  // #498 S3 (`timing` slice): `timeoutMs` / `deadlineMs` / `retry` used to sit here. Their canonical
+  // home is now `config.timing.*` (`CONFIG_NAMESPACE_SCHEMA.timing` in `src/loop/config-namespace.js`).
+  // The expansion phase writes them back to `effectiveOptions.timeoutMs` / `.deadlineMs` / `.retry`,
+  // so every engine-side reader keeps working unchanged; only the *write* spelling moved.
   "reflection",
   "stallDetection",
-  "retry",
   "completion",
   "finalGuard",
   "finalGuardMaxRetries",
@@ -218,6 +229,11 @@ export function optionSuggestion(unknownName) {
  *
  * 抛错文案（`unknown runToolLoop option: "x" (did you mean "y"?)`）是宿主可见的，逐字保留。
  *
+ * #498 S3 在它上面加了一条**升级救命索**：一个键被移出白名单之后，只说「未知 + 接受名单」
+ * 等于让宿主自己猜它搬去了哪。所以当这个名字在配置树里有家时，报错**指向新家**
+ * （`config.timing.timeoutMs`）——这是 0.26 → 0.28 升级时唯一能自己找到出路的线索。
+ * 没有配置之家的未知键逐字维持旧文案（宿主与既有测试都依赖那句原文）。
+ *
  * @param {Record<string, any>|null|undefined} options
  * @returns {void}
  */
@@ -228,9 +244,13 @@ export function assertRunToolLoopOptionNames(options) {
   for (const optionName of Object.keys(options)) {
     if (!RUN_TOOL_LOOP_OPTION_SET.has(optionName)) {
       const suggestion = optionSuggestion(optionName);
+      const configHome = configPathForOption(optionName);
       throw new TypeError(
         `unknown runToolLoop option: ${JSON.stringify(optionName)}`
-        + (suggestion ? ` (did you mean ${JSON.stringify(suggestion)}?)` : ""),
+        + (suggestion ? ` (did you mean ${JSON.stringify(suggestion)}?)` : "")
+        + (configHome === undefined
+          ? ""
+          : ` (its canonical home is config.${configHome}; the flat spelling is rejected)`),
       );
     }
   }
