@@ -263,7 +263,8 @@ test("resumes after three rounds without replaying paid provider calls", async (
     executeTool: async ({ input }) => `completed-${input.step}`,
     maxRounds: 3,
     completion: false,
-    cacheStablePrefix: false,
+    // #498 S3 (`input` slice A): the flat spelling retired; the home is config.input.*.
+    config: { input: { cacheStablePrefix: false } },
     store,
     runId: "resume-run",
   });
@@ -301,11 +302,11 @@ test("resumes after three rounds without replaying paid provider calls", async (
   const resumedResult = await runToolLoop({
     provider: resumedProvider,
     initialUserMessage: "must be ignored",
-    initialMessages: [{ role: "user", content: "must also be ignored" }],
+    // #498 S3 (`input` slice A): `messages` is the leaf alias of the retired flat `initialMessages`.
+    config: { input: { messages: [{ role: "user", content: "must also be ignored" }], cacheStablePrefix: false } },
     executeTool: async () => "unused",
     maxRounds: 4,
     completion: false,
-    cacheStablePrefix: false,
     store,
     runId: "resume-run",
     resume: true,

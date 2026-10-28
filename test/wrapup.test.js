@@ -192,10 +192,12 @@ test("wrapup:false disables parsing, replacement, normalization, and injection",
     const result = await runToolLoop({
       provider,
       wrapup: false,
-      initialMessages: [
+      // #498 S3 (`input` slice A): `config.input.messages` is the one registered leaf alias of the
+      // retired flat `initialMessages` (expansion writes it back unchanged).
+      config: { input: { messages: [
         { role: "system", content: [{ type: "text", text: "宿主系统" }] },
         { role: "user", content: [{ type: "text", text: "完成任务" }] },
-      ],
+      ] } },
       executeTool: async () => "unused",
     });
 
