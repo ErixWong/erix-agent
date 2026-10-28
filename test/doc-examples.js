@@ -22,10 +22,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as vm from "node:vm";
 
-import { makeTmp } from "../helpers/tmp.js";
+import { makeTmp } from "./helpers/tmp.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-export const REPO_ROOT = resolve(HERE, "..", "..");
+export const REPO_ROOT = resolve(HERE, "..");
 export const EN_DOC = join(REPO_ROOT, "docs", "host-consumer-contract.md");
 export const CN_DOC = join(REPO_ROOT, "docs", "host-consumer-contract_cn.md");
 export const INDEX_URL = pathToFileURL(join(REPO_ROOT, "src", "index.js")).href;

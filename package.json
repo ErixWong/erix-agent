@@ -86,7 +86,7 @@
     "prepack": "node scripts/build-types.mjs",
     "check:docs": "node scripts/docs-drift-check.mjs && node scripts/docs-sync-check.mjs",
     "check:docs:strict": "node scripts/docs-drift-check.mjs --strict",
-    "check:docs-examples": "node --test test/contract/doc-examples.test.js",
+    "check:docs-examples": "node --test test/doc-examples.test.js",
     "check:pack-links": "node scripts/pack-link-check.mjs",
     "check:release": "node scripts/release-check.mjs",
     "check:release:real": "node scripts/release-real-check.mjs",

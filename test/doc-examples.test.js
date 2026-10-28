@@ -26,7 +26,7 @@ test(`EN 契约文档恰好扫到 ${EXPECTED_JS_FENCE_COUNT} 个 js 围栏（文
     enFences.length,
     EXPECTED_JS_FENCE_COUNT,
     `${EN_DOC} 扫到 ${enFences.length} 个 js 围栏（位于行 ${enFences.map((f) => f.line).join(", ")}），`
-      + `期望 ${EXPECTED_JS_FENCE_COUNT} 个：文档示例增删未同步 test/contract/doc-examples.js 的 preamble 配置`,
+      + `期望 ${EXPECTED_JS_FENCE_COUNT} 个：文档示例增删未同步 test/doc-examples.js 的 preamble 配置`,
   );
 });
 
