@@ -145,8 +145,10 @@ test("C4 拿不到注册面（无 createCliTools、无 buildCliToolsSystemPrompt
     signal: new AbortController().signal,
     runId: "312b-loopoptions",
   });
-  assert.match(options.system, /searchText\b/u, "system 缺省时也必须从实际注册面生成");
-  assert.match(options.system, /本工具面另注册：[^\n]*note_forget/u);
+  // #498 S6：`system` 的规位是 `config.input.system`（顶层不再有同名扁平键）。
+  assert.equal(options.system, undefined, "扁平键必须已经搬走（留一份就是两个真相来源）");
+  assert.match(options.config.input.system, /searchText\b/u, "system 缺省时也必须从实际注册面生成");
+  assert.match(options.config.input.system, /本工具面另注册：[^\n]*note_forget/u);
 });
 
 test("R4 兜底文案自身的快照 golden（以前没有：宿主文案全仓零 golden）", () => {
