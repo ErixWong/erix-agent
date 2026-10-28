@@ -252,6 +252,13 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   "diagnostics",
   "onObserverError",
   "signal",
+  // #498 S3 A15: `stream` **stays** (returned, not retired).
+  // Gate-2, four shapes: true / false / object are flat *and*
+  // nested reachable; a function is flat-reachable but nested-rejected
+  // (`config` holds data only, and `stream` has no value validator —
+  // any truthy value turns streaming on). Under the operational reading
+  // of "flat-reachable" used here (A6 G4: accepted today without an
+  // error) that is a mixed shell, so it goes back for a ruling.
   "stream",
   "onDelta",
   "onReasoningDelta",

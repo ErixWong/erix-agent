@@ -901,6 +901,18 @@ golden）。
 `createCliTools({ cwd })` / `assemblyPort.cwd` / `params.cwd`（pi 扩展的工具入参）全是**同词不同物**，一个
 字节都没动。退役一个入口不是「迁一个词」。
 
+**`stream` 是退回，不是退役**——闸口二量了四种取值，量出一只混装壳：
+
+| `stream` 取值 | 扁平侧 | 规位侧（`config.run.stream`） |
+| --- | --- | --- |
+| `true` / `false` / 对象 | exit 0 | exit 0（PARITY） |
+| **函数** | **exit 0** | **被拒**——`config.run.stream is not accepted … holds data only` |
+
+`stream` 没有值校验器（引擎只做一处真值判断），所以任何 truthy 值都会打开流式路径，函数取值于是
+**扁平可达**，而「只装数据」的 `config` 拒它。按本仓对「扁平可达」的操作性口径（今天不报错地接受），这是
+混装壳 ⇒ 该键留在白名单、行为一字未改，候选（按 as-is 退役 / 先加布尔校验器再退役 / 立第三站）交给裁决，
+不在本片自裁。四种取值的逐格证据在钉子文件的 `S1`–`S3`。
+
 ### capabilities 命名空间（issue #498）
 
 行为载体不是数据，所以 0.28.0 给它们一个自己的容器。它**有三组**（issue #498 S4b 加了第二组，

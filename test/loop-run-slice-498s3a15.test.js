@@ -186,6 +186,52 @@ test(`F1 规位里给函数值（${KEY}）：逐字两句话（只装数据 + �
   assert.match(nested.message, /the engine never calls it, it only forwards the value/u);
 });
 
+// ================================================================ S. `stream` 退回（as-is）
+
+test(`S1 ${RETURNED} 退回：仍在白名单，且它的 config 叶子仍在 schema 里（两向钉）`, () => {
+  assert.equal(RUN_TOOL_LOOP_OPTION_NAMES.includes(RETURNED), true,
+    `${RETURNED} 是**退回**的那一件，本片不许收它`);
+  assert.equal(configPathForOption(RETURNED), "run.stream", "它的规位家仍在（本片不删叶子）");
+  assert.equal(CONFIG_NAMESPACE_SCHEMA.run.includes(RETURNED), true, "叶子不许被顺手删掉");
+});
+
+test(`S2 ${RETURNED} 闸口二四格（as-is）：true / false / 对象两侧可达，函数扁平可达而规位被拒`, async () => {
+  // 这一格就是退回的**证据**（不是猜测）：函数 handler 是「扁平可达、规位被拒」的形态。
+  // 先钉三格 PARITY。
+  for (const value of [true, false, { onChunk: "x" }]) {
+    const label = `${RETURNED}=${JSON.stringify(value)}`;
+    const flat = await exitCode(base({ [RETURNED]: value }));
+    const nested = await exitCode(base({
+      config: { input: { initialUserMessage: "go" }, run: { [RETURNED]: value } },
+    }));
+    assert.equal(flat, 0, `${label}：扁平侧今天可达`);
+    assert.equal(nested, 0, `${label}：规位侧同样可达（PARITY）`);
+  }
+  // 第四格：函数 —— 两侧不同（这就是退回的理由，钉成 as-is，不许「为了让闸口过」放宽 schema）。
+  const flatFn = await exitCode(base({ [RETURNED]: () => 1 }));
+  const nestedFn = await rawError(base({
+    config: { input: { initialUserMessage: "go" }, run: { [RETURNED]: () => 1 } },
+  }));
+  assert.equal(flatFn, 0, "函数值今天扁平可达（`stream` 没有值校验器，任何 truthy 值都开流式路径）");
+  assert.equal(nestedFn instanceof TypeError, true, "函数值规位被拒（`config` 只装数据）");
+  assert.match(nestedFn.message, /^config\.run\.stream is not accepted/u);
+  assert.match(nestedFn.message, /the config namespace holds data only/u);
+});
+
+test(`S3 ${RETURNED} 没有值校验器：任何 truthy 值都走流式路径（退回判据的事实来源）`, async () => {
+  // 「函数 handler」之所以扁平可达，是因为引擎只做真值判断。这里用数字与函数各跑一次，
+  // 证明 `effectiveOptions.stream` 逐字就是宿主给的那个值（引擎既不校验也不改写）。
+  for (const value of [1, () => 1]) {
+    const { effectiveOptions } = await normalizeRunToolLoopOptions({ [RETURNED]: value });
+    assert.equal(effectiveOptions[RETURNED], value, "扁平值逐字到达 effectiveOptions（没有校验器）");
+  }
+  // 而规位侧连「值到了没有」都问不到：函数在 intake 就被拒（见 S2 第四格）。
+  const { effectiveOptions } = await normalizeRunToolLoopOptions({
+    config: { run: { [RETURNED]: true } },
+  });
+  assert.equal(effectiveOptions[RETURNED], true, "规位侧的纯数据取值照旧展开到 effectiveOptions");
+});
+
 // ================================================================ R. 读侧不动
 
 test(`R1 展开相逐字写回 effectiveOptions.${KEY}（读侧一行未改）`, async () => {

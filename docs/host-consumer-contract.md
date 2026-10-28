@@ -1080,6 +1080,21 @@ pinned by `N1` of `test/loop-run-slice-498s3a15.test.js`: `process.cwd()` / the 
 `options.cwd` / `createCliTools({ cwd })` / `assemblyPort.cwd` / `params.cwd` (the pi extension's tool
 argument) are **different things** and were not touched. Retiring one entry is not migrating a word.
 
+**`stream` is returned, not retired** — gate 2 measured four value shapes and found a mixed shell:
+
+| `stream` value | flat | nested (`config.run.stream`) |
+| --- | --- | --- |
+| `true` / `false` / object | exit 0 | exit 0 (parity) |
+| **function** | **exit 0** | **rejected** — `config.run.stream is not accepted … holds data only` |
+
+`stream` has no value validator (the engine only does one truthiness test), so *any* truthy value turns
+the streaming path on and a function value is **flat-reachable** while `config` — which holds data
+only — rejects it. Under this repository's operational reading of "flat-reachable" (accepted today
+without an error) that is a mixed-shell shape, so the key stays on the allowlist with its behaviour
+unchanged, and the candidates (retire with an as-is pin / add a boolean validator first / promote it to
+the third station) are handed to the ruling rather than decided here. `S1`–`S3` of the pin file hold
+the four cells verbatim.
+
 ### The `capabilities` namespace (issue #498)
 
 Behaviour carriers are not data, so 0.28.0 gives them their own container. It has **three groups**
