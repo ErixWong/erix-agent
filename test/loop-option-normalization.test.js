@@ -31,6 +31,7 @@ import { runToolLoop } from "../src/loop/orchestrator.js";
 import { RUN_TOOL_LOOP_OPTION_NAMES } from "../src/loop/option-normalization.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { makeTmp } from "./helpers/tmp.js";
+import { withSeed } from "./helpers/run-direct.js";
 
 // ---------------------------------------------------------------- 测试卫生
 // 本文件不写盘（全程用注入的临时 home/cwd，绝不碰真实 `~/.erix`），但依旧把 HOME 与 cwd
@@ -192,7 +193,10 @@ const OPTION_WHITELIST = [
   "provider",
   "system",
   "wrapup",
-  "initialUserMessage",
+  // #498 S3 (`input` slice A2b): `initialUserMessage` left the allowlist — its canonical home is
+  // `config.input.initialUserMessage`. The copy tracks the source list verbatim (that is what A0
+  // checks), so it is gone here too; the flat spelling is now a **rejection** cell, see
+  // `test/loop-input-slice-498s3c.test.js` P4.
   "tools",
   "outputHygiene",
   "writeToolNames",
@@ -457,7 +461,7 @@ test("assembled（assemblyPortOptions）值原样生效：作为合并语义的�
     policy: { maxTokens: 4096, temperature: 0.5, stream: true },
     script: DONE,
   });
-  const result = await runToolLoop({ assemblyPort: port, initialUserMessage: "go" });
+  const result = await runToolLoop(withSeed({ assemblyPort: port, initialUserMessage: "go" }));
   assert.equal(result.rounds, 1);
   assert.deepEqual(log, ["port.resolve:-"]);
   assert.deepEqual(provider.calls, { chat: 0, chatStream: 1 }, "assembled stream:true 应走 chatStream");
@@ -468,11 +472,11 @@ test("assembled（assemblyPortOptions）值原样生效：作为合并语义的�
 test("显式值仅当 !== undefined 才覆盖：undefined 保留 assembled 值（改成无条件覆盖必红）", async () => {
   // 通道①：数值 —— assembled maxTokens 必须留在 provider 请求里
   const tokens = assemblyPortFixture({ policy: { maxTokens: 4096 }, script: DONE });
-  await runToolLoop({
+  await runToolLoop(withSeed({
     assemblyPort: tokens.port,
     initialUserMessage: "go",
     maxTokens: undefined, // 显式存在但值为 undefined：不是「没传」的省略，是「传了 undefined」
-  });
+  }));
   assert.equal("maxTokens" in tokens.provider.requests[0], true, "undefined 不该把 assembled maxTokens 抹掉");
   assert.equal(tokens.provider.requests[0].maxTokens, 4096);
 
@@ -481,56 +485,56 @@ test("显式值仅当 !== undefined 才覆盖：undefined 保留 assembled 值�
     policy: { maxRounds: 3 },
     script: REPEATED_TOOL(6),
   });
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     assemblyPort: rounds.port,
     initialUserMessage: "go",
     maxRounds: undefined,
-  });
+  }));
   assert.equal(result.rounds, 3);
   assert.equal(result.truncated, true);
   assert.equal(result.termination.reason, "max_rounds_cap");
 
   // 通道③：布尔真值 —— assembled stream:true 仍走 chatStream
   const stream = assemblyPortFixture({ policy: { stream: true }, script: DONE });
-  await runToolLoop({ assemblyPort: stream.port, initialUserMessage: "go", stream: undefined });
+  await runToolLoop(withSeed({ assemblyPort: stream.port, initialUserMessage: "go", stream: undefined }));
   assert.deepEqual(stream.provider.calls, { chat: 0, chatStream: 1 });
 });
 
 test("显式 false 覆盖 assembled 真值（改成 truthy 判断必红）", async () => {
   const { port, provider } = assemblyPortFixture({ policy: { stream: true }, script: DONE });
-  await runToolLoop({ assemblyPort: port, initialUserMessage: "go", stream: false });
+  await runToolLoop(withSeed({ assemblyPort: port, initialUserMessage: "go", stream: false }));
   assert.deepEqual(provider.calls, { chat: 1, chatStream: 0 }, "false 必须覆盖 assembled 的 true");
 });
 
 test("显式 null 覆盖 assembled 值（改成 ?? / != null 必红）", async () => {
   // 通道①：null 原样透传到 provider 请求（`??` 会把它退回 assembled 的 4096）
   const tokens = assemblyPortFixture({ policy: { maxTokens: 4096 }, script: DONE });
-  await runToolLoop({ assemblyPort: tokens.port, initialUserMessage: "go", maxTokens: null });
+  await runToolLoop(withSeed({ assemblyPort: tokens.port, initialUserMessage: "go", maxTokens: null }));
   assert.equal("maxTokens" in tokens.provider.requests[0], true);
   assert.equal(tokens.provider.requests[0].maxTokens, null);
 
   // 通道②：null 触发下游校验 → 证明生效值确实是 null 而不是 assembled 的 3
   const rounds = assemblyPortFixture({ policy: { maxRounds: 3 }, script: DONE });
   await assert.rejects(
-    runToolLoop({ assemblyPort: rounds.port, initialUserMessage: "go", maxRounds: null }),
+    runToolLoop(withSeed({ assemblyPort: rounds.port, initialUserMessage: "go", maxRounds: null })),
     (error) => error instanceof TypeError
       && error.message === "maxRounds must be a finite positive integer",
   );
 
   // 通道③：布尔 —— null 是假值，assembled 的 true 被覆盖后走 chat
   const stream = assemblyPortFixture({ policy: { stream: true }, script: DONE });
-  await runToolLoop({ assemblyPort: stream.port, initialUserMessage: "go", stream: null });
+  await runToolLoop(withSeed({ assemblyPort: stream.port, initialUserMessage: "go", stream: null }));
   assert.deepEqual(stream.provider.calls, { chat: 1, chatStream: 0 });
 });
 
 test("显式非 undefined 值覆盖 assembled 值（含 modelConfig 覆盖的透传门）", async () => {
   const tokens = assemblyPortFixture({ policy: { maxTokens: 4096, maxRounds: 3 }, script: REPEATED_TOOL(6) });
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     assemblyPort: tokens.port,
     initialUserMessage: "go",
     maxTokens: 128,
     maxRounds: 2,
-  });
+  }));
   assert.equal(tokens.provider.requests[0].maxTokens, 128);
   assert.equal(result.rounds, 2);
 
@@ -538,20 +542,20 @@ test("显式非 undefined 值覆盖 assembled 值（含 modelConfig 覆盖的透
   // 此时端口自带的 resolver 一次都不该被调用；显式 undefined 时才回去调端口的。
   const override = resolverSpy("explicit");
   const withOverride = assemblyPortFixture({ script: DONE });
-  await runToolLoop({
+  await runToolLoop(withSeed({
     assemblyPort: withOverride.port,
     initialUserMessage: "go",
     modelConfig: override.modelConfig,
-  });
+  }));
   assert.deepEqual(withOverride.log, [], "显式 modelConfig 覆盖时端口 resolver 不应被调用");
   assert.deepEqual(override.calls, ["explicit:-"], "显式 modelConfig 应被 runToolLoop 自己 resolve 一次");
 
   const withUndefined = assemblyPortFixture({ script: DONE });
-  await runToolLoop({
+  await runToolLoop(withSeed({
     assemblyPort: withUndefined.port,
     initialUserMessage: "go",
     modelConfig: undefined,
-  });
+  }));
   assert.deepEqual(withUndefined.log, ["port.resolve:-"], "显式 undefined 时端口 resolver 应照常调用一次");
 });
 
@@ -572,13 +576,13 @@ test("次序①：未知键检查早于一切（端口未被触碰、resolver �
     },
   });
   const spy = resolverSpy("explicit");
-  const error = await runToolLoop({
+  const error = await runToolLoop(withSeed({
     assemblyPort: port,
     initialUserMessage: "go",
     modelConfig: spy.modelConfig,
     maxRounds: 0, // 非法值：若未知键检查不在最前，会先报 maxRounds
     bogusKey: 1,
-  }).then(() => null, (caught) => caught);
+  })).then(() => null, (caught) => caught);
   assert.equal(
     error.message,
     'unknown runToolLoop option: "bogusKey"',
@@ -591,7 +595,7 @@ test("次序①：未知键检查早于一切（端口未被触碰、resolver �
 test("次序②：assemblyPortOptions 早于 runToolLoop 的能力缺失检查", async () => {
   // 显式选项里没有 provider/executeTool（它们本应由端口提供）：若能力检查抢在
   // assemblyPortOptions 之前，报的会是「missing methods: provider…, executeTool」。
-  const error = await runToolLoop({
+  const error = await runToolLoop(withSeed({
     assemblyPort: {
       modelConfig: { resolve: async () => ({}) },
       provider: { chat: async () => ({ content: [], stopReason: "end_turn" }) },
@@ -602,11 +606,11 @@ test("次序②：assemblyPortOptions 早于 runToolLoop 的能力缺失检查",
       session: { id: "run-port-first", initialMessages: "nope" },
     },
     initialUserMessage: "go",
-  }).then(() => null, (caught) => caught);
+  })).then(() => null, (caught) => caught);
   assert.equal(error.message, "assembly port session.initialMessages must be an array");
 
   // 对照组：同样缺 provider/executeTool 的细粒度形态，能力检查的措辞完全不同。
-  const capabilityError = await runToolLoop({ initialUserMessage: "go" }).then(() => null, (caught) => caught);
+  const capabilityError = await runToolLoop(withSeed({ initialUserMessage: "go" })).then(() => null, (caught) => caught);
   assert.equal(
     capabilityError.message,
     "assembly port is missing methods: provider.chat or provider.chatStream, executeTool",
@@ -615,37 +619,37 @@ test("次序②：assemblyPortOptions 早于 runToolLoop 的能力缺失检查",
 
 test("次序③：能力缺失检查早于 modelConfig.resolve（换序必红）", async () => {
   const spy = resolverSpy("explicit");
-  const error = await runToolLoop({
+  const error = await runToolLoop(withSeed({
     provider: { chat: async () => ({ content: [], stopReason: "end_turn" }) },
     executeTool: async () => "ok",
     initialUserMessage: "go",
     session: { id: "" }, // 细粒度形态 + 非法 session.id ⇒ 能力缺失
     modelConfig: spy.modelConfig,
-  }).then(() => null, (caught) => caught);
+  })).then(() => null, (caught) => caught);
   assert.equal(error.message, "assembly port is missing methods: session.id");
   assert.deepEqual(spy.calls, [], "能力缺失必须先抛错，不能先 await 宿主的 resolver");
 
   // 同一夹具去掉缺陷：resolve 必须被调用**恰好一次**且吃到 session.modelSlot
   // ——证明上面的 0 次断言不是「resolver 根本不会被调」造成的恒绿。
   const okSpy = resolverSpy("ok");
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
     initialUserMessage: "go",
     session: { id: "run-resolve", modelSlot: "slotA" },
     modelConfig: okSpy.modelConfig,
-  });
+  }));
   assert.equal(result.rounds, 1);
   assert.deepEqual(okSpy.calls, ["ok:slotA"]);
 });
 
 test("次序④：显式 modelConfig 覆盖在 assemblyPortOptions 内部就被校验，端口 resolver 让位", async () => {
   const { port, log } = assemblyPortFixture({ script: DONE });
-  const error = await runToolLoop({
+  const error = await runToolLoop(withSeed({
     assemblyPort: port,
     initialUserMessage: "go",
     modelConfig: { temperature: 1 }, // 裸配置对象，没有 resolve
-  }).then(() => null, (caught) => caught);
+  })).then(() => null, (caught) => caught);
   assert.match(error.message, /^assembly port is missing methods: modelConfig\.resolve \(modelConfig must expose resolve\(slot\)/);
   assert.deepEqual(log, [], "覆盖值不合法时端口 resolver 不应被调用");
 });
@@ -655,7 +659,7 @@ test("次序④：显式 modelConfig 覆盖在 assemblyPortOptions 内部就被�
 // 「显式传 null / false 不会被默认值吃掉」（B 段已钉），而缺省时默认值本身必须是下表这些。
 test("默认值 maxRounds = 8", async () => {
   const provider = createFakeProvider(REPEATED_TOOL(12));
-  const result = await runToolLoop({ provider, executeTool: async () => "ok", initialUserMessage: "go" });
+  const result = await runToolLoop(withSeed({ provider, executeTool: async () => "ok", initialUserMessage: "go" }));
   assert.equal(result.rounds, 8);
   assert.equal(result.truncated, true);
   assert.equal(result.termination.reason, "max_rounds_cap");
@@ -664,7 +668,7 @@ test("默认值 maxRounds = 8", async () => {
 
 test("默认值 cacheStablePrefix = true 与 wrapup = true", async () => {
   const defaulted = createFakeProvider(DONE);
-  await runToolLoop({ provider: defaulted, executeTool: async () => "ok", initialUserMessage: "go", system: "SYS" });
+  await runToolLoop(withSeed({ provider: defaulted, executeTool: async () => "ok", initialUserMessage: "go", system: "SYS" }));
   const system = defaulted.requests[0].system;
   assert.equal(typeof system, "object", "默认 cacheStablePrefix:true ⇒ system 带 cacheBoundary 包装");
   assert.equal(system.cacheBoundary, true);
@@ -675,14 +679,14 @@ test("默认值 cacheStablePrefix = true 与 wrapup = true", async () => {
   const optedOut = createFakeProvider(DONE);
   // #498 S3（`input` 组 A 段）：`cacheStablePrefix` 的扁平写法已退役，家是
   // `config.input.cacheStablePrefix`（展开相写回 `effectiveOptions.cacheStablePrefix`）。
-  await runToolLoop({
+  await runToolLoop(withSeed({
     provider: optedOut,
     executeTool: async () => "ok",
     initialUserMessage: "go",
     system: "SYS",
     config: { input: { cacheStablePrefix: false } },
     wrapup: false,
-  });
+  }));
   assert.equal(optedOut.requests[0].system, "SYS", "两个默认值都能被显式 false 关掉");
   assert.equal("cacheBoundary" in optedOut.requests[0].messages[0], false);
 });
@@ -691,29 +695,29 @@ test("默认值 completion = { signals: [], maxNoToolRounds: 3 }", async () => {
   // 一轮工具之后连续只出文本：默认 signals:[] ⇒ 任何字符串都不算完成信号，
   // 连续 3 轮空转（maxNoToolRounds:3）后才以 no_tool 收尾。
   const provider = createFakeProvider([toolStep(), { times: 6, ...textStep("just talking") }]);
-  const result = await runToolLoop({ provider, executeTool: async () => "ok", initialUserMessage: "go" });
+  const result = await runToolLoop(withSeed({ provider, executeTool: async () => "ok", initialUserMessage: "go" }));
   assert.equal(result.termination.reason, "no_tool");
   assert.equal(result.rounds, 4); // 1 轮工具 + 3 轮无工具
   assert.equal(provider.requests.length, 4);
 
   // 对照组：completion:false ⇒ 第一轮无工具就收尾；signals:["DONE"] ⇒ 命中信号即收尾。
   const off = createFakeProvider([toolStep(), { times: 6, ...textStep("just talking") }]);
-  const offResult = await runToolLoop({
+  const offResult = await runToolLoop(withSeed({
     provider: off,
     executeTool: async () => "ok",
     initialUserMessage: "go",
     completion: false,
-  });
+  }));
   assert.equal(offResult.rounds, 2);
   assert.equal(offResult.termination.reason, "end_turn");
 
   const signaled = createFakeProvider([toolStep(), { times: 6, ...textStep("DONE") }]);
-  const signalResult = await runToolLoop({
+  const signalResult = await runToolLoop(withSeed({
     provider: signaled,
     executeTool: async () => "ok",
     initialUserMessage: "go",
     completion: { signals: ["DONE"] },
-  });
+  }));
   assert.equal(signalResult.rounds, 2);
   assert.equal(signalResult.termination.reason, "end_turn");
 });
@@ -727,22 +731,22 @@ test("默认值 stallDetection = { window: 4, mode: \"consecutive\" }", async ()
   // 恰好 4 次连续相同调用（= window）⇒ 还不算停滞；第 5 次（window+1）⇒ 触发 nudge。
   // 默认值改成 3 或 5 都会让这两条同时变红。
   const atWindow = createFakeProvider([{ times: 4, ...toolStep() }, { times: 4, ...textStep("tail") }]);
-  const atWindowResult = await runToolLoop({
+  const atWindowResult = await runToolLoop(withSeed({
     provider: atWindow,
     executeTool: async () => "ok",
     initialUserMessage: "go",
     completion: false,
-  });
+  }));
   assert.equal(atWindowResult.rounds, 5);
   assert.equal(nudged(atWindow), false, "4 次连续相同调用仍在窗口内，不应 nudge");
 
   const pastWindow = createFakeProvider([{ times: 5, ...toolStep() }, { times: 4, ...textStep("tail") }]);
-  const pastWindowResult = await runToolLoop({
+  const pastWindowResult = await runToolLoop(withSeed({
     provider: pastWindow,
     executeTool: async () => "ok",
     initialUserMessage: "go",
     completion: false,
-  });
+  }));
   assert.equal(pastWindowResult.rounds, 6);
   assert.equal(nudged(pastWindow), true, "第 5 次连续相同调用应触发停滞 nudge");
 
@@ -756,12 +760,12 @@ test("默认值 stallDetection = { window: 4, mode: \"consecutive\" }", async ()
     toolStep("readFile", "b3", { path: "b.txt" }),
     textStep("done"),
   ]);
-  const alternatingResult = await runToolLoop({
+  const alternatingResult = await runToolLoop(withSeed({
     provider: alternating,
     executeTool: async () => "ok",
     initialUserMessage: "go",
     completion: false,
-  });
+  }));
   assert.equal(alternatingResult.rounds, 7);
   assert.equal(alternatingResult.termination.reason, "end_turn");
   assert.equal(nudged(alternating), false, "consecutive 模式不把交替重读判为停滞");
@@ -770,7 +774,7 @@ test("默认值 stallDetection = { window: 4, mode: \"consecutive\" }", async ()
 // ================================================================ 测试卫生
 test("测试卫生：全程只用注入的临时 home/cwd，真实 ~/.erix 未被创建或改写", async () => {
   const provider = createFakeProvider(DONE);
-  await runToolLoop({ provider, executeTool: async () => "ok", initialUserMessage: "go" });
+  await runToolLoop(withSeed({ provider, executeTool: async () => "ok", initialUserMessage: "go" }));
   assert.equal(provider.requests.length, 1);
   assert.equal(process.env.HOME, sandboxHome);
   assert.equal(process.cwd(), sandboxCwd);
@@ -786,7 +790,7 @@ test("测试卫生：全程只用注入的临时 home/cwd，真实 ~/.erix 未�
 // 反向证：把校验段塞回 `src/assembly.js` ⇒ 下面第一格红（它不再抛）；删掉直连侧（语义相）那条拒绝
 // ⇒ 第二格红（直连曾经收下这个键、照常跑、`effectiveOptions.resume` 是 `undefined`，无事件无异常）。
 test("#498 S4b session.resume 别名已删：写它启动即抛并指出 config.run.resume", async () => {
-  const error = await runToolLoop({
+  const error = await runToolLoop(withSeed({
     assemblyPort: {
       modelConfig: { resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1024 }) },
       provider: createFakeProvider([{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" }]),
@@ -796,7 +800,7 @@ test("#498 S4b session.resume 别名已删：写它启动即抛并指出 config.
     initialUserMessage: "go",
     completion: false,
     wrapup: false,
-  }).then(() => null, (caught) => caught);
+  })).then(() => null, (caught) => caught);
   assert.equal(error instanceof TypeError, true, "`session.resume` 不许再被静默接受");
   assert.equal(
     error.message,
@@ -813,15 +817,17 @@ test("#498 S4b session.resume 别名已删：写它启动即抛并指出 config.
 test("#498 S4b session.resume 直连路线同样拒绝：不许收下键、又不续跑", async () => {
   // 这条用例的**选项是完整可跑的**（provider / tools / modelConfig 都给齐）：删掉直连侧那条拒绝，
   // 它会一路跑完 `end_turn` 而不是撞上别的错——于是红的是「它居然跑完了」，不是「它报错了」。
-  const runnable = {
+  const runnable = withSeed({
     provider: createFakeProvider([{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" }]),
     tools: [],
     executeTool: async () => "ok",
-    initialUserMessage: "go",
+    // #498 S3 A2b：种子的规位家是 `config.input.initialUserMessage`——这里经夹具翻译，下面两次调用
+    // 都直接 `...runnable` 展开（写法一字不改，引擎看到的是新家）。
+    seed: "go",
     modelConfig: { resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1024 }) },
     completion: false,
     wrapup: false,
-  };
+  });
   const directError = await runToolLoop({
     ...runnable,
     session: { id: "run-direct-session-resume", resume: true },

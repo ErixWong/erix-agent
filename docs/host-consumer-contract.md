@@ -24,7 +24,7 @@ must be placed in an explicit namespace such as `toolContext` or
 "Flat-spelling version policy" below).
 
 ```text
-assemblyPort, provider, system, wrapup, initialUserMessage, initialMessages, tools,
+assemblyPort, provider, system, wrapup, tools,
 writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
 temperature, topP, reflection, stallDetection,
 completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
@@ -279,6 +279,31 @@ exactly one home", not "every leaf has a top-level key"). Two consequences, both
   flat key can still *appear* in the merged representation, so a host that writes both
   `policy.session.initialMessages` and `config.input.messages` gets one `config_override_conflict`
   event with `path: "input.messages"` — `config` wins, and it is not silent.
+
+**Flat-spelling version policy** (issue #498 S3, the `input` group's A2b segment — the fourth slice,
+and the one that closes `config.input`: every member of that group is now nested-only):
+
+| release | writing `initialUserMessage` |
+| --- | --- |
+| 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
+| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.28.0 and later (issue #498 S3, fourth slice) | **rejected on the spot** — write `config.input.initialUserMessage`. The name gate throws `unknown runToolLoop option: "initialUserMessage" (its canonical home is config.input.initialUserMessage; the flat spelling is rejected)` |
+
+This is the seed message of a run — the one key almost every host writes, which is why it is worth
+spelling out. Two properties hold, both machine-checked:
+
+* the leaf stays in `CONFIG_NAMESPACE_SCHEMA.input` (`src/loop/config-namespace.js`) even though it
+  has no top-level twin any more — that is the #517 shape (`config.input.messages` had it first), and
+  the expansion phase still writes it onto `effectiveOptions.initialUserMessage`, so **the engine's
+  read side is unchanged**;
+* `initialMessages` still wins over it on the read side when both are present (that precedence is
+  untouched), so a resumed run with seed history ignores the seed message exactly as before.
+
+One consequence worth naming: an explicit call-level `config` **replaces** `policy.config` wholesale
+(the pre-existing merge rule, reported as one `config_override_conflict` event). Now that the seed
+lives in `config.input`, a host that puts its seed in `policy.config.input.initialUserMessage` and
+then passes a call-level `config` for something else loses the policy one — same rule as before, but
+it now reaches a key nearly every host uses.
 
 The `context` row carries one sentence that **must** be read: it is a **mixed shell** — it holds
 data members (`budgetTokens` / `keepRounds` / a strategy *name*) **and** behaviour members (the five
@@ -1545,7 +1570,9 @@ const result = await runToolLoop({
   provider: createOpenAIProvider(slot),  // request params: model / max_tokens / temperature come from the slot
   modelConfig,                           // budget metadata: re-resolved through session.modelSlot
   session: { id: run.id, modelSlot },
-  initialUserMessage: run.prompt,
+  // The seed message's canonical home (the flat `initialUserMessage` was retired in 0.28.0 — see
+  // "Flat-spelling version policy" below).
+  config: { input: { initialUserMessage: run.prompt } },
   executeTool,
   maxRounds: 8,
   persistence: "none",

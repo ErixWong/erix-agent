@@ -105,7 +105,6 @@ function legacyFlatOptions(input) {
   const options = {
     provider,
     system: system ?? core.buildSystemPrompt({ lib: { binTools: {} }, cwd: params.cwd, tools: tools.tools }),
-    initialUserMessage: params.task,
     task: params.task,
     cwd: params.cwd,
     tools: tools.tools,
@@ -120,7 +119,12 @@ function legacyFlatOptions(input) {
     // uses their canonical home `config.timing.*`. The equivalence claim is unaffected: the
     // expansion phase writes them back to `effectiveOptions.timeoutMs` / `.retry`, which is exactly
     // the mechanism this slice relies on.
-    config: { timing: { timeoutMs: params.timeoutMs, retry: { attempts: 2 } } },
+    // #498 S3 A2b: `initialUserMessage` lost its flat spelling as well — same canonical home
+    // (`config.input.initialUserMessage`), same mechanism. Merged into the one `config` tree.
+    config: {
+      input: { initialUserMessage: params.task },
+      timing: { timeoutMs: params.timeoutMs, retry: { attempts: 2 } },
+    },
     completion: { signals: ["任务已完成", "已完成", "全部完成", "无需继续", "任务结束", "没有更多步骤"], maxNoToolRounds: 3 },
     ...(reflection === undefined ? {} : { reflection }),
     ...(onEvent === undefined ? {} : { onEvent }),

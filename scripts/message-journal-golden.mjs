@@ -95,7 +95,7 @@ export async function scenarioSingleRun() {
     maxRounds: 8,
     store,
     runId: "golden-single",
-    initialUserMessage: "金样任务",
+    config: { input: { initialUserMessage: "金样任务" } },
     provider,
     finalGuard: async () => {
       guardCalls += 1;
@@ -126,7 +126,7 @@ export async function scenarioCrashResume() {
   let thrown = "";
   try {
     await runToolLoop({
-      ...BASE, maxRounds: 8, store, runId, initialUserMessage: "金样任务", provider: first,
+      ...BASE, maxRounds: 8, store, runId, config: { input: { initialUserMessage: "金样任务" } }, provider: first,
       reflection: {
         enabled: true, roundJudge: true, judgeIntercept: false,
         judge: { provider: createFakeProvider([judgeNotDone("还没完"), judgeNotDone("还没完"), judgeDone()]) },

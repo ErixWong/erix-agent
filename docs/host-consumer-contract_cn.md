@@ -19,7 +19,7 @@
 0.28.0 起被名称闸口当场拒，见下文「扁平写法的版本口径」）。
 
 ```text
-assemblyPort, provider, system, wrapup, initialUserMessage, initialMessages, tools,
+assemblyPort, provider, system, wrapup, tools,
 writeToolNames, writeToolPathKeys, executeTool, maxRounds, maxTokens,
 temperature, topP, reflection, stallDetection,
 completion, finalGuard, finalGuardMaxRetries, finalGuardTimeoutMs,
@@ -232,6 +232,27 @@ executeTool({ id, name, input, context, signal })
   从来不过名称闸口）。也因此那个扁平键仍可能出现在合并后的表示里：宿主同时写
   `policy.session.initialMessages` 与 `config.input.messages` 时会收到一条
   `config_override_conflict` 事件（`path: "input.messages"`）——`config` 赢，且不静默。
+
+**扁平写法的版本口径**（issue #498 S3，`input` 组 A2b 段——第四片，也是把 `config.input` 收口的一片：
+这一组的每个成员现在都只能写嵌套形态）：
+
+| 版本 | 写 `initialUserMessage` |
+| --- | --- |
+| 0.26.0 及以前（最后一个**已发布**版本） | 顶层可写——那些版本只认这一种写法 |
+| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「这件事有影响」的树 |
+| 0.28.0 及以后（issue #498 S3 第四片） | **当场拒**——请写 `config.input.initialUserMessage`。名称闸口抛 `unknown runToolLoop option: "initialUserMessage" (its canonical home is config.input.initialUserMessage; the flat spelling is rejected)` |
+
+这是「一次 run 的种子消息」——几乎每个宿主都会写的那一个键，所以值得单独写清楚。两条性质都由机器核住：
+
+* 叶子仍留在 `CONFIG_NAMESPACE_SCHEMA.input`（`src/loop/config-namespace.js`），尽管它已经没有顶层孪生——
+  这就是 #517 放行的形状（`config.input.messages` 先走了一遍）；展开相仍把它逐字写到
+  `effectiveOptions.initialUserMessage`，所以**引擎读侧一字未改**；
+* 两者都在时读侧仍是 `initialMessages` 优先（那条优先级没动），所以带种子历史的续跑照旧忽略种子消息。
+
+有一个后果必须点名：调用级 `config` 会**整棵覆盖** `policy.config`（既有合并规则，会发一条
+`config_override_conflict` 事件）。种子现在住在 `config.input` 里，于是「把种子放在
+`policy.config.input.initialUserMessage`、又为了别的事传了一个调用级 `config`」的宿主会丢掉 policy 那份——
+规则与以前一样，只是它现在落在几乎每个宿主都会用的键上。
 
 `context` 这一条比另外两个多一句**必须读**的话：它是一个**混装壳**——同时容得下数据成员
 （`budgetTokens` / `keepRounds` / `strategy` 名字）与行为成员（`onBeforeFold` / `onAfterFold` /
@@ -1254,7 +1275,8 @@ const result = await runToolLoop({
   provider: createOpenAIProvider(slot),  // 请求参数：model / max_tokens / temperature 均来自 slot
   modelConfig,                           // 预算元数据：经 session.modelSlot 重新解析
   session: { id: run.id, modelSlot },
-  initialUserMessage: run.prompt,
+  // 种子消息的规位家（扁平 `initialUserMessage` 自 0.28.0 起退役，见下文「扁平写法的版本口径」）。
+  config: { input: { initialUserMessage: run.prompt } },
   executeTool,
   maxRounds: 8,
   persistence: "none",

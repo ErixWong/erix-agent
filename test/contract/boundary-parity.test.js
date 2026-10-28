@@ -259,12 +259,17 @@ function assemblyInput(policy) {
 
 /** 直连路线的最小合法输入（只带要测的选项）。 */
 function directInput(bad) {
+  const { config, ...rest } = bad ?? {};
   return {
     provider: createValidProvider(),
     executeTool: async () => "unused",
-    initialUserMessage: "go",
+    // #498 S3 A2b: the seed's canonical home is `config.input.initialUserMessage`. It is **merged**
+    // into the cell's own `config` (not spread over it, and not spread before it) so the cell keeps
+    // testing exactly what it says it tests — a plain `...bad` after this key would replace the whole
+    // `config` tree and silently drop the seed.
+    config: { ...(config ?? {}), input: { initialUserMessage: "go" } },
     completion: false,
-    ...bad,
+    ...rest,
   };
 }
 

@@ -24,7 +24,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { before, describe, it } from "node:test";
 
 import {
@@ -872,6 +872,63 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
     );
     assert.ok(existsSync(resolve(ROOT, "fixtures/rounds-fixtures.mjs")), "rounds-fixtures 没搬到根 fixtures/");
     assert.ok(!existsSync(resolve(ROOT, "test/fixtures/rounds-fixtures.mjs")), "test/fixtures/rounds-fixtures.mjs 还在原地");
+  });
+
+  // ---- 发布面：test/contract/ 不许依赖 test/helpers/（issue #498 S3 A2b）----------------
+
+  it("test/contract/** 只许 import **已随包发布**的 helper（否则就是新增发布面）", () => {
+    // 为什么这条是**发布面**的判据，不是风格偏好：
+    //   · `package.json` 的 `files` 白名单**逐个列出** `test/contract/*.js`，宿主 `npm i` 之后
+    //     能 `import { … } from "erix-agent/contract-tests"` 并**独立跑**这套契约测试；
+    //   · 于是「契约套件能 import 什么」= 「包里必须发什么」。让 `test/contract/` 里的文件去 import
+    //     一个**没在 `files` 里**的 helper，就必须把那个 helper 也加进 `files` —— 那是**新增发布面**，
+    //     不是本仓内部重构（#498 S3 的裁决：`test/helpers/run-direct.js` 不进 `files`）；
+    //   · 所以契约套件必须**自足**：要写种子首轮消息就就地写规位家
+    //     `config: { input: { initialUserMessage } }`（#498 S3 A2b 的 8 处就是这么处理的）。
+    //
+    // 判据从符号派生，不手抄名单：① 解析相对 import 的真实路径；② 落在 `test/helpers/` 里的，
+    // 逐条核它在 `package.json` 的 `files` 里**已被登记**（既有的 `test/helpers/tmp.js` 就是那种）。
+    // 按**解析后的路径**判，不按拼写判：`../helpers/x.js` / `./helpers/x.js` / `../../test/helpers/x.js`
+    // 一律算命中，将来换个相对路径写法也逃不掉。
+    const HELPERS_DIR = resolve(ROOT, "test/helpers");
+    const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf8"));
+    const published = (rel) => pkg.files.some((entry) => entry === rel || (entry.endsWith("/") && rel.startsWith(entry)));
+    const specifierPattern = /(?:^|\n)\s*(?:import|export)[^;]*?from\s+["']([^"']+)["']|\bimport\(\s*["']([^"']+)["']\s*\)/gu;
+    const offenders = [];
+    let scanned = 0;
+    let helperImports = 0;
+    for (const { abs, rel } of listScannable(new Set([".js", ".mjs", ".cjs"]), "test/contract")) {
+      scanned += 1;
+      const src = readFileSync(abs, "utf8");
+      for (const match of src.matchAll(specifierPattern)) {
+        const specifier = match[1] ?? match[2];
+        if (!specifier.startsWith(".")) continue;
+        const target = resolve(dirname(abs), specifier);
+        if (target !== HELPERS_DIR && !target.startsWith(`${HELPERS_DIR}${sep}`)) continue;
+        helperImports += 1;
+        const targetRel = relative(ROOT, target).split("\\").join("/");
+        if (!published(targetRel)) offenders.push(`${rel} → ${specifier}（${targetRel} 不在 package.json 的 files 里）`);
+      }
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      "test/contract/ 是**随包发布**的契约套件（package.json 的 files 逐个列它），"
+      + "它一旦 import 未发布的 helper 就等于新增发布面：\n"
+      + offenders.join("\n")
+      + "\n——请就地写规位家（例如 `config: { input: { initialUserMessage } }`），不要 import 夹具",
+    );
+    // 扫描面不许退化：0 个文件 / 0 条 helper import = 扫描器自己坏了，不是「很干净」。
+    assert.ok(scanned >= 10, `test/contract/ 只扫到 ${scanned} 个文件——扫描面退化了，这条守卫不可信`);
+    assert.ok(helperImports >= 1, `一条 helper import 都没解析出来（实测 ${helperImports} 条）——解析器退化了`);
+
+    // 同一条发布面判据的另一半：`files` 里没有把种子夹具登记进去（裁决：发布面不扩）。
+    assert.equal(
+      published("test/helpers/run-direct.js"),
+      false,
+      "test/helpers/run-direct.js 不许进 package.json 的 files（#498 S3 裁决：发布面不扩）"
+      + "——契约套件要自足，不是把夹具塞进包里",
+    );
   });
 });
 

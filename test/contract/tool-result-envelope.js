@@ -193,7 +193,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
     const { onEvent, onToolCall, ...rest } = options;
     const result = await runToolLoop({
       provider,
-      initialUserMessage: "task",
+      config: { input: { initialUserMessage: "task" } },
       executeTool,
       store,
       runId,
@@ -482,7 +482,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
     await runToolLoop({
       provider,
       stream: true,
-      initialUserMessage: "task",
+      config: { input: { initialUserMessage: "task" } },
       executeTool: async () => "ok",
       store: createMemoryTranscriptStore(),
       runId: "contract-stream-key",

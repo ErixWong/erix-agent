@@ -31,6 +31,7 @@ import { runToolLoop } from "../src/loop/orchestrator.js";
 import { foldLedgerMessages } from "../src/store/message-rows.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { withSeed } from "./helpers/run-direct.js";
 
 const RUN_ID = "resume-unpersisted-results";
 const TOOLS = [{ name: "work", replay: "safe", inputSchema: { type: "object" } }];
@@ -71,7 +72,7 @@ const ledgerResults = (records) => blocksOf(records.flatMap((record) => record.m
 /** 跑一次 runToolLoop，把失败压成 `{ ok, error }`（崩溃注入与 `invalid_messages` 都是预期路径）。 */
 async function runLoop({ store, provider, executeTool, resume = true, initialUserMessage, capabilities }) {
   try {
-    const result = await runToolLoop({
+    const result = await runToolLoop(withSeed({
       provider,
       resume,
       store,
@@ -86,7 +87,7 @@ async function runLoop({ store, provider, executeTool, resume = true, initialUse
       ...(initialUserMessage === undefined ? {} : { initialUserMessage }),
       ...(capabilities === undefined ? {} : { capabilities }),
       executeTool,
-    });
+    }));
     return { ok: true, finalText: result.finalText };
   } catch (error) {
     return { ok: false, error: `${String(error?.code ?? error?.name)}: ${String(error?.message)}` };

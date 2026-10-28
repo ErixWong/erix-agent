@@ -85,6 +85,12 @@ import {
  * home is `config.input.cacheStablePrefix` / `config.input.messages` — the latter is the **only**
  * registered leaf alias (`CONFIG_LEAF_ALIASES`), and the expansion phase writes it back onto
  * `effectiveOptions.initialMessages`.
+ * #498 S3 (segment A2b): `initialUserMessage` left as well. Its home is
+ * `config.input.initialUserMessage`; the leaf stays in `CONFIG_NAMESPACE_SCHEMA.input` (a leaf may
+ * exist without a top-level option — that is the S3 shape), and the expansion phase writes it back
+ * onto `effectiveOptions.initialUserMessage`, so every engine-side reader is unchanged. Only the
+ * *write* spelling moved: the flat key is now rejected at the name gate, and the error names the new
+ * home. `test/helpers/run-direct.js` is the single translation point on the test side.
  *
  * @type {string[]}
  */
@@ -93,7 +99,6 @@ export const RUN_TOOL_LOOP_OPTION_NAMES = [
   "provider",
   "system",
   "wrapup",
-  "initialUserMessage",
   "tools",
   "outputHygiene",
   "writeToolNames",

@@ -19,7 +19,7 @@ import { dirname } from "node:path";
 import test from "node:test";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
-import { runDirect } from "./helpers/run-direct.js";
+import { runDirect, withSeed } from "./helpers/run-direct.js";
 import { buildFinalGuardPayload, FILE_LEDGER_LIMIT } from "../src/loop/termination.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { makeTmp } from "./helpers/tmp.js";
@@ -449,7 +449,7 @@ test("#386-2 R4-8 deliverables 的校验：超 20 条 / name 重复 / name 空 /
   ];
   for (const [label, value, message] of cases) {
     await assert.rejects(
-      () => runToolLoop({ ...base(), deliverables: value }),
+      () => runToolLoop(withSeed({ ...base(), deliverables: value })),
       (error) => {
         assert.equal(error.constructor, TypeError, `${label}：抛的不是 TypeError`);
         assert.equal(error.message, message, `${label}：文案与既有校验口径不一致`);
@@ -459,12 +459,12 @@ test("#386-2 R4-8 deliverables 的校验：超 20 条 / name 重复 / name 空 /
     );
   }
   // 放行面：恰好 20 条合法；空数组等价于未声明（= 今天的行为）。
-  const twenty = await runToolLoop({
+  const twenty = await runToolLoop(withSeed({
     ...base(),
     deliverables: Array.from({ length: 20 }, (_unused, index) => ({ name: `d${index}`, check })),
-  });
+  }));
   assert.equal(twenty.verification.status, "skipped", "20 条合法判据不该影响 run 本身");
-  const empty = await runToolLoop({ ...base(), deliverables: [] });
+  const empty = await runToolLoop(withSeed({ ...base(), deliverables: [] }));
   // 空数组 = 未声明 ⇒ metrics 里连 deliverables_* 都不该出现（与 R4-1 同一把尺子）。
   assert.deepEqual(empty.verification, {
     status: "skipped",

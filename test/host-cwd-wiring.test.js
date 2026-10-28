@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 import { runChat, parseChatArgs } from "../bin/cli.js";
 import { runRepl } from "../bin/repl.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
-import { runDirect } from "./helpers/run-direct.js";
+import { runDirect, withSeed } from "./helpers/run-direct.js";
 import * as core from "../examples/pi-extension/erix-run-core.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 // issue #391 R3：出厂判据本体（CLI 与扩展共用同一份，见 bin/final-guard.js）。
@@ -81,7 +81,7 @@ const RECIPE = guideRecipeSource();
  */
 function runGuideRecipe(baseOptions) {
   const factory = new Function("runToolLoop", "path", "fs", `return ${RECIPE}`);
-  return factory((options) => runToolLoop({ ...baseOptions, ...options }), path, fs);
+  return factory((options) => runToolLoop(withSeed({ ...baseOptions, ...options })), path, fs);
 }
 
 const toolUse = (id, name, input) => ({

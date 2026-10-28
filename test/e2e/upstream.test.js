@@ -26,6 +26,7 @@ import {
 import { createAnthropicProvider } from "../../src/providers/anthropic.js";
 import { createOpenAIProvider } from "../../src/providers/openai.js";
 import { runToolLoop } from "../../src/loop/orchestrator.js";
+import { withSeed } from "./../helpers/run-direct.js";
 
 const API_KEY = "scripted-key";
 const MODEL = "scripted-model";
@@ -850,7 +851,7 @@ test("真上游：runToolLoop 一轮——429 触发真重发，终局与 usage 
     ],
   });
 
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     provider: openAIProvider(baseUrl),
     initialUserMessage: "go",
     executeTool: async () => "ok",
@@ -859,7 +860,7 @@ test("真上游：runToolLoop 一轮——429 触发真重发，终局与 usage 
     completion: false,
     stream: true,
     config: { timing: { retry: { attempts: 1, backoffBaseMs: 0 } } },
-  });
+  }));
 
   assert.equal(result.termination.reason, "end_turn");
   assert.deepEqual(result.usage, { input_tokens: 3, output_tokens: 4 });

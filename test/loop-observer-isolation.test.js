@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
-import { runDirect } from "./helpers/run-direct.js";
+import { runDirect, withSeed } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 
@@ -105,7 +105,7 @@ test("pr-b #173: a throwing onEvent is isolated into onObserverError and the run
   const events = [];
   const observers = observerSink();
 
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     ...BASE_OPTIONS,
     provider,
     runId: "observer-on-event-isolated",
@@ -119,7 +119,7 @@ test("pr-b #173: a throwing onEvent is isolated into onObserverError and the run
         onObserverError: observers.callback,
       },
     },
-  });
+  }));
 
   assert.equal(result.finalText, "done");
   assert.deepEqual(result.termination, { reason: "end_turn" }, "onEvent 抛错不再杀 run");
@@ -164,7 +164,7 @@ test("pr-b #173: onEvent is isolated on every event type, not just the first one
     const seen = [];
     const observers = observerSink();
 
-    const result = await runToolLoop({
+    const result = await runToolLoop(withSeed({
       ...BASE_OPTIONS,
       provider,
       capabilities: {
@@ -176,7 +176,7 @@ test("pr-b #173: onEvent is isolated on every event type, not just the first one
           onObserverError: observers.callback,
         },
       },
-    });
+    }));
 
     assert.equal(result.finalText, "done", `${eventType} 抛错后 run 照常跑完`);
     assert.deepEqual(result.termination, { reason: "end_turn" });
@@ -203,7 +203,7 @@ test("pr-b #173: a throwing onRound is isolated after the round was persisted an
   const rounds = [];
   const observers = observerSink();
 
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     ...BASE_OPTIONS,
     persistence: undefined, // 本例要验证「轮已落库后抛错」，必须真的写库
     provider,
@@ -220,7 +220,7 @@ test("pr-b #173: a throwing onRound is isolated after the round was persisted an
         onObserverError: observers.callback,
       },
     },
-  });
+  }));
 
   assert.deepEqual(result.termination, { reason: "end_turn" }, "onRound 抛错不再改写终局");
   assert.equal(result.rounds, 3);
@@ -247,7 +247,7 @@ test("pr-b #173: a throwing onToolResult keeps the ORIGINAL engine result and re
   const events = [];
   const observers = observerSink();
 
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     ...BASE_OPTIONS, // executeTool 固定返回 "ok"
     provider,
     capabilities: {
@@ -260,7 +260,7 @@ test("pr-b #173: a throwing onToolResult keeps the ORIGINAL engine result and re
         onObserverError: observers.callback,
       },
     },
-  });
+  }));
 
   assert.equal(result.finalText, "done");
   assert.deepEqual(result.termination, { reason: "end_turn" });
@@ -282,7 +282,7 @@ test("pr-b #173: a rejected onToolResult promise also falls back to the original
   const provider = createFakeProvider([toolUseResponse(1), finalResponse()]);
   const observers = observerSink();
 
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     ...BASE_OPTIONS,
     provider,
     capabilities: {
@@ -291,7 +291,7 @@ test("pr-b #173: a rejected onToolResult promise also falls back to the original
         onObserverError: observers.callback,
       },
     },
-  });
+  }));
 
   assert.deepEqual(result.termination, { reason: "end_turn" });
   assert.equal(toolResultContentOf(provider.requests[1]), "ok");
@@ -308,7 +308,7 @@ test("pr-b #173: a successful onToolResult rewrite still replaces the result (fa
   const provider = createFakeProvider([toolUseResponse(1), finalResponse()]);
   const observers = observerSink();
 
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     ...BASE_OPTIONS,
     provider,
     capabilities: {
@@ -317,7 +317,7 @@ test("pr-b #173: a successful onToolResult rewrite still replaces the result (fa
         onObserverError: observers.callback,
       },
     },
-  });
+  }));
 
   assert.equal(toolResultContentOf(provider.requests[1]), "ok:work");
   assert.deepEqual(observers.seen, []);
@@ -337,7 +337,7 @@ test("pr-b #173: a throwing onDelta is isolated into onObserverError and the run
   });
   const observers = observerSink();
 
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     ...BASE_OPTIONS,
     provider,
     stream: true,
@@ -350,7 +350,7 @@ test("pr-b #173: a throwing onDelta is isolated into onObserverError and the run
         onObserverError: observers.callback,
       },
     },
-  });
+  }));
 
   assert.equal(result.finalText, "done");
   assert.deepEqual(result.termination, { reason: "end_turn" });
@@ -375,7 +375,7 @@ test("pr-b #173: a throwing onReasoningDelta is isolated and names its own chann
   });
   const observers = observerSink();
 
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     ...BASE_OPTIONS,
     provider,
     stream: true,
@@ -388,7 +388,7 @@ test("pr-b #173: a throwing onReasoningDelta is isolated and names its own chann
         onObserverError: observers.callback,
       },
     },
-  });
+  }));
 
   assert.equal(result.finalText, "done");
   assert.deepEqual(result.termination, { reason: "end_turn" });
@@ -409,7 +409,7 @@ test("pr-b #173: a throwing onToolCall is isolated and names its own channel", a
   });
   const observers = observerSink();
 
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     ...BASE_OPTIONS,
     provider,
     stream: true,
@@ -422,7 +422,7 @@ test("pr-b #173: a throwing onToolCall is isolated and names its own channel", a
         onObserverError: observers.callback,
       },
     },
-  });
+  }));
 
   assert.equal(result.finalText, "done");
   assert.deepEqual(result.termination, { reason: "end_turn" });
@@ -449,7 +449,7 @@ test("pr-b #173: a throwing onUsage is isolated and usage accounting is unaffect
   });
   const observers = observerSink();
 
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     ...BASE_OPTIONS,
     provider,
     stream: true,
@@ -464,7 +464,7 @@ test("pr-b #173: a throwing onUsage is isolated and usage accounting is unaffect
         onObserverError: observers.callback,
       },
     },
-  });
+  }));
 
   assert.equal(result.finalText, "done");
   assert.deepEqual(result.termination, { reason: "end_turn" });
@@ -493,7 +493,7 @@ test("pr-b #173: a throwing onJudge is reported to onObserverError (was swallowe
   ]);
   const observers = observerSink();
 
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     ...BASE_OPTIONS,
     provider: createFakeProvider([finalResponse("完成")]),
     maxRounds: 1,
@@ -507,7 +507,7 @@ test("pr-b #173: a throwing onJudge is reported to onObserverError (was swallowe
         onObserverError: observers.callback,
       },
     },
-  });
+  }));
 
   assert.deepEqual(result.termination, { reason: "judge_done" });
   assert.deepEqual(rounds, [1], "onJudge 抛错后 run 照常收尾");
@@ -526,7 +526,7 @@ test("pr-b #173: reportObserverError hands the host (error, {channel, ...}) and 
   const originalError = console.error;
   console.error = (...args) => logged.push(args);
   try {
-    const result = await runToolLoop({
+    const result = await runToolLoop(withSeed({
       ...BASE_OPTIONS,
       provider,
       capabilities: {
@@ -540,7 +540,7 @@ test("pr-b #173: reportObserverError hands the host (error, {channel, ...}) and 
           },
         },
       },
-    });
+    }));
 
     assert.deepEqual(result.termination, { reason: "end_turn" }, "reporter 炸了也不影响 run");
     // 本例跑 2 轮（工具轮 + 收尾轮），每轮 onRound 各抛一次 → 各记一笔
@@ -570,7 +570,7 @@ test("pr-b #173: without onObserverError the isolation still holds and console c
   const originalError = console.error;
   console.error = (...args) => logged.push(args);
   try {
-    const result = await runToolLoop({
+    const result = await runToolLoop(withSeed({
       ...BASE_OPTIONS,
       provider,
       capabilities: {
@@ -580,7 +580,7 @@ test("pr-b #173: without onObserverError the isolation still holds and console c
           },
         },
       },
-    });
+    }));
 
     assert.deepEqual(result.termination, { reason: "end_turn" });
     assert.equal(logged.length, 1);
@@ -599,7 +599,7 @@ test("pr-b #173: a throwing startup onEvent continues the run with exactly one m
   const seen = [];
   const observers = observerSink();
 
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     ...BASE_OPTIONS,
     provider,
     runId: "observer-startup-metadata",
@@ -613,7 +613,7 @@ test("pr-b #173: a throwing startup onEvent continues the run with exactly one m
         onObserverError: observers.callback,
       },
     },
-  });
+  }));
 
   assert.deepEqual(result.termination, { reason: "end_turn" }, "启动期抛错不再是 run 的终止机制");
   assert.equal(provider.requests.length, 1, "首次 provider 调用照常发生");
@@ -708,7 +708,7 @@ test("pr-b #173: the unified isolation matrix (every observer channel is isolate
       throw boom;
     };
 
-    const result = await runToolLoop(options);
+    const result = await runToolLoop(withSeed(options));
     assert.deepEqual(
       result.termination,
       { reason: termination },

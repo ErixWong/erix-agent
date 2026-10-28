@@ -51,7 +51,7 @@ import {
 } from "../src/assembly-validators.js";
 import { createSlidingWindowStrategy } from "../src/compact/sliding-window.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
-import { runDirect as sharedRunDirect } from "./helpers/run-direct.js";
+import { runDirect as sharedRunDirect, withSeed } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const DONE = [{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" }];
@@ -120,12 +120,23 @@ function makePort(policy = {}, { emit } = {}) {
 
 /** 装配口路线的「抛了什么」：构造期（policy）或合并后（显式选项）任一处抛都算。 */
 const assemblyError = (policy = {}, explicit = {}) => {
+  // #498 S3 A2b：种子的规位家是 `config.input.initialUserMessage`，而**调用级 `config` 会整棵覆盖
+  // `policy.config`**（既有合并规则，不是新规矩）。所以种子必须放进 policy 自己的配置树——写成显式
+  // `config` 会把本格要测的那个坏值一起顶掉，于是「装配口也必须抛」变成假绿。
+  const policyInput = policy.config?.input;
+  const seeded = {
+    ...policy,
+    config: {
+      ...(policy.config ?? {}),
+      input: { ...(policyInput ?? {}), initialUserMessage: "go" },
+    },
+  };
   try {
-    makePort(policy);
+    makePort(seeded);
   } catch (error) {
     return Promise.resolve(error);
   }
-  return runToolLoop({ assemblyPort: makePort(policy), initialUserMessage: "go", completion: false, ...explicit })
+  return runToolLoop({ assemblyPort: makePort(seeded), completion: false, ...explicit })
     .then(() => null, (error) => error);
 };
 
@@ -225,14 +236,14 @@ test("A① 预检相仍早于一切：顶层未知键压过语义相违规（网
     },
   });
   let resolved = 0;
-  const error = await runToolLoop({
+  const error = await runToolLoop(withSeed({
     assemblyPort: port,
     initialUserMessage: "go",
     // 语义相会拒的值（`context` 不是对象）与顶层未知键同时存在 ⇒ 必须先报未知键。
     config: { folding: { context: "not-an-object" } },
     modelConfig: { resolve: async () => { resolved += 1; return {}; } },
     bogusKey: 1,
-  }).then(() => null, (caught) => caught);
+  })).then(() => null, (caught) => caught);
   assert.equal(error.message, 'unknown runToolLoop option: "bogusKey"');
   assert.equal(error.via, undefined, "预检相的错不贴路线标签（它不是闸口抛的）");
   assert.deepEqual(reads, [], "预检相不得读取端口");
@@ -241,17 +252,17 @@ test("A① 预检相仍早于一切：顶层未知键压过语义相违规（网
 
 test("A② 语义相晚于 assemblyPortOptions、早于能力缺失检查（配置错不被「缺 provider」盖掉）", async () => {
   // 对照组：同样的缺 provider/executeTool，但配置合法 ⇒ 报的是能力缺失。
-  const capabilityError = await runToolLoop({ initialUserMessage: "go" }).then(() => null, (caught) => caught);
+  const capabilityError = await runToolLoop(withSeed({ initialUserMessage: "go" })).then(() => null, (caught) => caught);
   assert.equal(
     capabilityError.message,
     "assembly port is missing methods: provider.chat or provider.chatStream, executeTool",
   );
 
   // 语义相违规 + 缺能力 ⇒ 必须先报语义相（它在能力检查之前）。
-  const gateError = await runToolLoop({
+  const gateError = await runToolLoop(withSeed({
     initialUserMessage: "go",
     config: { folding: { context: { summarizeBudgetMs: 5 } } },
-  }).then(() => null, (caught) => caught);
+  })).then(() => null, (caught) => caught);
   assert.equal(gateError.message, 'unknown assembly policy context option: "summarizeBudgetMs"');
   assert.equal(gateError.via, "direct");
 });
@@ -259,21 +270,21 @@ test("A② 语义相晚于 assemblyPortOptions、早于能力缺失检查（配�
 test("A③ 语义相吃的是**合并后**的表示：装配口的合法值 + 显式 undefined 不覆盖", async () => {
   // 装配口给合法 `maxSummaryTokens`（正例，防过严）：显式 `context: undefined` 不得把它抹掉。
   const port = makePort({ context: { strategy: "fold-llm", maxSummaryTokens: 900 } });
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     assemblyPort: port,
     initialUserMessage: "go",
     completion: false,
     config: { folding: { context: undefined } },
-  });
+  }));
   assert.equal(result.termination.reason, "end_turn");
 
   // 显式值覆盖装配值时，语义相校的是**覆盖后**的那份（装配口合法、显式拼错 ⇒ 抛）。
-  const overridden = await runToolLoop({
+  const overridden = await runToolLoop(withSeed({
     assemblyPort: makePort({ context: { budgetTokens: 1000 } }),
     initialUserMessage: "go",
     completion: false,
     config: { folding: { context: { budgetTokens: 1000, summarizeBudgetMs: 5 } } },
-  }).then(() => null, (caught) => caught);
+  })).then(() => null, (caught) => caught);
   assert.equal(overridden.message, 'unknown assembly policy context option: "summarizeBudgetMs"');
   assert.equal(overridden.via, "assembly", "路线标签取入口形状（这次调的是装配口 API）");
 });
@@ -369,11 +380,11 @@ test("B(null) `context: null` 逐字等于省略：两条路线都不抛，且�
 
   // 装配口：`policy.context: null` 同样放行（构造期不抛）。
   assert.doesNotThrow(() => makePort({ context: null }), "`policy.context: null` 不得在构造期抛");
-  const viaPort = await runToolLoop({
+  const viaPort = await runToolLoop(withSeed({
     assemblyPort: makePort({ context: null }),
     initialUserMessage: "go",
     completion: false,
-  });
+  }));
   assert.equal(viaPort.termination.reason, "end_turn", "装配口 `context: null` 的 run 必须照旧跑完");
 });
 
@@ -523,22 +534,22 @@ test("E 取值校验仍由 orchestrator 承担，两条路线都汇到那里（�
 
     // 装配口路线：这些键走**显式选项**（`deliverables` 不在装配 policy 白名单里，
     // 那条边界本身由 `ASSEMBLY_POLICY_OPTION_NAMES` 负责，不在本单范围内）。
-    const assembly = await runToolLoop({
+    const assembly = await runToolLoop(withSeed({
       assemblyPort: makePort(),
       initialUserMessage: "go",
       completion: false,
       ...bad,
-    }).then(() => null, (caught) => caught);
+    })).then(() => null, (caught) => caught);
     assert.equal(assembly?.message, message, `${label}: 装配口也必须到同一个校验点`);
     assert.equal(assembly?.via, undefined, `${label}: 装配口也不该由闸口负责`);
   }
 
   // `policy` 侧同样汇到 orchestrator（`maxRounds` 是 policy 允许的键）。
-  const policyError = await runToolLoop({
+  const policyError = await runToolLoop(withSeed({
     assemblyPort: makePort({ maxRounds: 0 }),
     initialUserMessage: "go",
     completion: false,
-  }).then(() => null, (caught) => caught);
+  })).then(() => null, (caught) => caught);
   assert.equal(policyError.message, "maxRounds must be a finite positive integer");
   assert.equal(policyError.via, undefined);
 });

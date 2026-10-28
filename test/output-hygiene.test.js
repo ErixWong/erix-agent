@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runToolLoop } from "../src/loop/orchestrator.js";
-import { runDirect } from "./helpers/run-direct.js";
+import { runDirect, withSeed } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -115,15 +115,15 @@ test("outputHygiene validation: bad shapes are TypeErrors; store-less is loud wh
     executeTool: async () => "unused",
   };
   await assert.rejects(
-    runToolLoop({ ...base, outputHygiene: "on" }),
+    runToolLoop(withSeed({ ...base, outputHygiene: "on" })),
     /outputHygiene must be false or an object/,
   );
   await assert.rejects(
-    runToolLoop({ ...base, outputHygiene: { limit: -1 } }),
+    runToolLoop(withSeed({ ...base, outputHygiene: { limit: -1 } })),
     /outputHygiene\.limit must be a positive integer/,
   );
   await assert.rejects(
-    runToolLoop({ ...base, outputHygiene: { limit: 4096 } }),
+    runToolLoop(withSeed({ ...base, outputHygiene: { limit: 4096 } })),
     /outputHygiene requires a transcript store/,
   );
 });
@@ -279,14 +279,14 @@ test("crash mid-round: archived output survives via checkpoint", async () => {
   const resumedProvider = createFakeProvider([
     { content: [{ type: "text", text: "recovered" }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     provider: resumedProvider,
     resume: true,
     store,
     runId: "hygiene-crash",
     executeTool: async () => "unused",
     completion: false,
-  });
+  }));
   // resumed round record 也带全量（字节保真落盘）
   const records = await store.load("hygiene-crash");
   const archived = records.flatMap((record) => record.toolOutputs ?? []);

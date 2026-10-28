@@ -191,7 +191,8 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
     const fragments = [];
     const outA = await runToolLoop({
       provider: createOpenAIProvider(providerFields),
-      initialUserMessage: "先用 readFile 读 a.txt；再用 searchText 搜 needle；最后一句话回答命中几次。",
+      // #498 S3 A2b: the seed's canonical home is `config.input.initialUserMessage`.
+      config: { input: { initialUserMessage: "先用 readFile 读 a.txt；再用 searchText 搜 needle；最后一句话回答命中几次。" } },
       task: "读 a.txt 并搜索 needle",
       tools: TOOLS,
       executeTool: makeExecutor(dirA),
@@ -441,7 +442,7 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
       outC = await runToolLoop({
         provider: createOpenAIProvider(providerFields),
         resume: true,
-        initialUserMessage: resumePrompt(attempt),
+        config: { input: { initialUserMessage: resumePrompt(attempt) } },
         task: "继续旧会话（必须真的调一次工具）",
         tools: TOOLS,
         executeTool: makeExecutor(dirC),

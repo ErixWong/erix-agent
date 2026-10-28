@@ -31,7 +31,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
-import { runDirect } from "./helpers/run-direct.js";
+import { runDirect, withSeed } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const text = (value) => ({ type: "text", text: value });
@@ -65,7 +65,7 @@ test("#438 ① 续写轮（700+700+7）：`record.usage` 累计 1407，`record.r
   const provider = createFakeProvider(THREE_SHOT_700_700_7);
   const { rounds, capabilities } = collectRounds();
 
-  const result = await runToolLoop({ ...BASE, provider, capabilities });
+  const result = await runToolLoop(withSeed({ ...BASE, provider, capabilities }));
 
   assert.equal(result.rounds, 1, "三发续写合并成**一轮**（续写不是新轮）");
   assert.equal(provider.requests.length, 3, "三次 provider 调用 = 三次真花钱的响应");
@@ -106,7 +106,7 @@ test("#438 ② 无续写的轮：`record.usage` 与 `record.response.usage` 逐�
   const provider = createFakeProvider([single]);
   const { rounds, capabilities } = collectRounds();
 
-  const result = await runToolLoop({ ...BASE, provider, capabilities });
+  const result = await runToolLoop(withSeed({ ...BASE, provider, capabilities }));
 
   const record = rounds.at(-1);
   assert.equal(provider.requests.length, 1);
@@ -140,7 +140,7 @@ test("#438 ③a judge + 归一化的用量进 `engineUsage`，轮账仍是模型
   const provider = createFakeProvider(THREE_SHOT_700_700_7);
   const { rounds, capabilities } = collectRounds();
 
-  const result = await runToolLoop({
+  const result = await runToolLoop(withSeed({
     ...BASE,
     provider,
     capabilities,
@@ -150,7 +150,7 @@ test("#438 ③a judge + 归一化的用量进 `engineUsage`，轮账仍是模型
       wrapupNormalize: true,
       judge: { provider: judgeProvider },
     },
-  });
+  }));
 
   assert.equal(judgeProvider.requests.length, 2, "归一化一次 + round judge 一次 = 两次引擎自发起调用");
   const record = rounds.at(-1);
@@ -194,7 +194,7 @@ test("#438 ③b 强制收尾的用量只进 `result.engineUsage`，轮账与最�
   ]);
   const { rounds, capabilities } = collectRounds();
 
-  const result = await runToolLoop({ ...BASE, provider, capabilities, maxRounds: 1 });
+  const result = await runToolLoop(withSeed({ ...BASE, provider, capabilities, maxRounds: 1 }));
 
   assert.equal(result.termination.reason, "max_rounds_cap");
   assert.equal(result.termination.forcedFinal, true, "这一格必须真的走到强制收尾");
@@ -220,7 +220,7 @@ test("#438 ④ provider 不报 usage ⇒ `record.usage` 是零值对象（不是
   ]);
   const { rounds, capabilities } = collectRounds();
 
-  const result = await runToolLoop({ ...BASE, provider, capabilities });
+  const result = await runToolLoop(withSeed({ ...BASE, provider, capabilities }));
 
   const record = rounds.at(-1);
   assert.equal("usage" in record.response, false, "provider 没报 ⇒ 历史那份照旧缺键");
@@ -243,7 +243,7 @@ test("#438 ⑤ 两轮各自一发：`rounds[0].usage` 只有第一发，`rounds[
   ]);
   const { rounds, capabilities } = collectRounds();
 
-  const result = await runToolLoop({ ...BASE, provider, capabilities });
+  const result = await runToolLoop(withSeed({ ...BASE, provider, capabilities }));
 
   assert.equal(result.rounds, 2, "两轮（第一轮 tool_use，第二轮 end_turn）");
   assert.equal(rounds.length, 2);
