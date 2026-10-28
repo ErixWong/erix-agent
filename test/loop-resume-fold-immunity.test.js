@@ -186,8 +186,7 @@ async function runTwoRoundsThenResume(runId, shape) {
     executeTool: async ({ input }) => `wrote ${input?.path ?? ""}`,
     tools: [WRITE_FILE_TOOL],
     maxRounds: 4,
-    completion: false,
-    config: { input: { wrapup: false } },
+    config: { input: { wrapup: false }, run: { completion: false } },
     reflection: false,
     store,
     runId,
@@ -205,9 +204,8 @@ async function runTwoRoundsThenResume(runId, shape) {
     // #498 S3 A19：`resume` 退役扁平写法，并进**同一个** `config` 容器（家 `config.run.resume`）。
     executeTool: async () => "unused",
     tools: [WRITE_FILE_TOOL],
-    completion: false,
     // #498 S3 A21：`maxRounds` 的扁平写法已退役，并进**同一个** `config` 容器（家 `config.run.maxRounds`）。
-    config: { input: { wrapup: false }, run: { resume: true, runId, maxRounds: 2 } },
+    config: { input: { wrapup: false }, run: { resume: true, runId, maxRounds: 2, completion: false } },
     reflection: { enabled: true, judge: { provider: resumedJudge } },
     store,
   });

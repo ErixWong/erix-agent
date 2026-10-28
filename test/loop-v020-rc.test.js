@@ -44,9 +44,9 @@ test("structured executeTool receives context and returns tool metadata", async 
         user: { id: "user-1" },
         task: { id: "task-1" },
       },
+      run: { completion: false },
     },
     session: "session-1",
-    completion: false,
   });
 
   assert.equal(received.id, "structured-1");
@@ -96,7 +96,7 @@ test("structured executeTool supports destructured tool fields", async () => {
       calls.push([name, input]);
       return `${name}:${input.value}`;
     },
-    completion: false,
+    config: { run: { completion: false } },
   });
 
   assert.deepEqual(calls, [["sum", { value: 3 }]]);
@@ -116,7 +116,7 @@ test("structured executeTool observes loop abort", async () => {
       signal.addEventListener("abort", () => reject(signal.reason), { once: true });
     }),
     signal: controller.signal,
-    completion: false,
+    config: { run: { completion: false } },
   });
   setTimeout(() => controller.abort(new Error("cancelled")), 5);
 
@@ -187,7 +187,7 @@ test("rejects plain modelConfig at the fine-grained entry point", async () => {
       initialUserMessage: "plain config",
       executeTool: async () => "unused",
       modelConfig: { model: "plain" },
-      completion: false,
+      config: { run: { completion: false } },
     }),
     (error) => error instanceof TypeError
       && /modelConfig\.resolve/u.test(error.message)
@@ -234,8 +234,7 @@ test("enforces the budget after an oversized fold result", async () => {
     provider,
     initialUserMessage: "budget",
     executeTool: async () => "worked",
-    config: { folding: { context: { budgetTokens } } },
-    completion: false,
+    config: { folding: { context: { budgetTokens } }, run: { completion: false } },
   });
 
   assert.ok(result.compactionStats.length >= 1);
@@ -262,14 +261,15 @@ test("downgrades the oldest protected message when the protected set exceeds the
   const result = await runToolLoop({ capabilities: { hooks: { protectedMessage: (message) => message?.role === "user" } },
     provider,
     executeTool: async () => "unused",
-    completion: false,
     config: { input: { messages: [
       first,
       { role: "assistant", content: [{ type: "text", text: "middle" }] },
       second,
     ] }, folding: { context: {
       budgetTokens,
-          } } },
+          } },
+          run: { completion: false },
+    },
   });
 
   assert.equal(result.compactionStats[0].protectedDowngraded, 1);
@@ -289,10 +289,11 @@ test("rejects a single protected message that cannot fit the budget", async () =
     runToolLoop({ capabilities: { hooks: { protectedMessage: () => true } },
       provider: createFakeProvider([]),
       executeTool: async () => "unused",
-      completion: false,
       config: { input: { messages: [protectedMessage] }, folding: { context: {
         budgetTokens: 20,
-              } } },
+              } },
+              run: { completion: false },
+      },
     }),
     (error) => error instanceof KitError
       && error.code === "invalid_budget"
@@ -328,8 +329,7 @@ test("does not compact from cumulative API usage when local context fits", async
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",
-    completion: false,
-    config: { folding: { context: { budgetTokens: 100 } } },
+    config: { folding: { context: { budgetTokens: 100 } }, run: { completion: false } },
   });
 
   assert.equal(compactions, 0);
@@ -364,8 +364,7 @@ test("keeps the configured keepRounds when only API usage is over budget", async
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",
-    completion: false,
-    config: { folding: { context: { budgetTokens: 20, keepRounds: 6 } } },
+    config: { folding: { context: { budgetTokens: 20, keepRounds: 6 } }, run: { completion: false } },
   });
 
   assert.deepEqual(keepRounds, [6, 6]);
@@ -409,8 +408,7 @@ test("does not compact when per-request input fits budget and local context fits
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",
-    completion: false,
-    config: { folding: { context: { budgetTokens: 30 } } },
+    config: { folding: { context: { budgetTokens: 30 } }, run: { completion: false } },
   });
 
   assert.equal(provider.requests.length, 2);
@@ -428,8 +426,7 @@ test("compacts when the local context estimate exceeds the budget", async () => 
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",
-    completion: false,
-    config: { folding: { context: { budgetTokens: 10 } } },
+    config: { folding: { context: { budgetTokens: 10 } }, run: { completion: false } },
   });
 
   assert.ok(result.compactionStats.length >= 1);
@@ -454,7 +451,7 @@ test("injects a task reminder after a late welcome response", async () => {
     initialUserMessage: "complete the task",
     executeTool: async () => "worked",
     maxRounds: 8,
-    completion: false,
+    config: { run: { completion: false } },
     stallDetection: false,
   });
 
@@ -487,7 +484,7 @@ test("checkpoints before tools and resumes without replaying an executed tool", 
     },
     store,
     runId: "checkpoint-run",
-    completion: false,
+    config: { run: { completion: false } },
   });
 
   assert.deepEqual(events.slice(0, 2), [["checkpoint", "pending"], ["tool"]]);
@@ -545,8 +542,7 @@ test("checkpoints before tools and resumes without replaying an executed tool", 
       return "must not run";
     },
     store: resumeStore,
-    config: { run: { resume: true, runId: "resume-checkpoint" } },
-    completion: false,
+    config: { run: { resume: true, runId: "resume-checkpoint", completion: false } },
   });
 
   assert.equal(executions, 0);
@@ -580,7 +576,7 @@ test("fails closed when a checkpoint cannot be persisted before a tool", async (
       },
       store,
       runId: "checkpoint-failure-run",
-      completion: false,
+      config: { run: { completion: false } },
       capabilities: { hooks: { onPersistenceError: () => {} } },
     }),
     (error) => error instanceof KitError
@@ -615,7 +611,7 @@ test("fails closed after a tool when its executed checkpoint cannot be persisted
       },
       store,
       runId: "post-checkpoint-failure-run",
-      completion: false,
+      config: { run: { completion: false } },
       capabilities: { hooks: { onPersistenceError: () => {} } },
     }),
     (error) => error instanceof KitError
@@ -651,7 +647,7 @@ test("none persistence mode does not call a save-only checkpoint writer", async 
     },
     runId: "save-only-run",
     persistence: "none",
-    completion: false,
+    config: { run: { completion: false } },
     capabilities: { hooks: { onPersistenceError: () => {} } },
   });
 
@@ -674,7 +670,7 @@ test("executes tools normally without a checkpoint store", async () => {
       executions += 1;
       return "worked";
     },
-    completion: false,
+    config: { run: { completion: false } },
   });
 
   assert.equal(executions, 1);
@@ -730,8 +726,7 @@ test("keeps fold round numbers global across loop compactions", async () => {
     initialUserMessage: "global rounds",
     executeTool: async () => "worked",
     maxRounds: 3,
-    completion: false,
-    config: { folding: { context: { budgetTokens: 20 } } },
+    config: { folding: { context: { budgetTokens: 20 } }, run: { completion: false } },
     store,
     runId: "global-folds",
   });

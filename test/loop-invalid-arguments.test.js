@@ -76,8 +76,11 @@ async function runOnce({ rawArguments, options = {}, executeTool }) {
       return executeTool ? executeTool(call) : "文件内容";
     },
     maxRounds: 4,
-    completion: false,
     ...options,
+    // #498 S3 A23a：`completion` 并进**同一个** `config` 容器（家 `config.run.completion`）。
+    // 调用方可能经 `options.config` 带来自己的 config，所以合并必须写在 `...options` **之后**
+    // （并列两个 `config` 键是后者静默胜，A21 在随包契约里踩过这个坑）。
+    config: { ...(options.config ?? {}), run: { ...(options.config?.run ?? {}), completion: false } },
     capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });
   return { result, events, executed, fetchImpl };
@@ -221,7 +224,7 @@ async function rejectedCrashSnapshot(rawArguments) {
       return "不该跑";
     },
     maxRounds: 4,
-    completion: false,
+    config: { run: { completion: false } },
     store,
     runId: "resume-rejected",
   });
@@ -275,11 +278,10 @@ test("resume：崩溃现场是一条被拒的调用 ⇒ 不补跑，模型看到
         executed.push(input);
         return "不该跑";
       },
-      completion: false,
       // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役，规位是 `config.run.replayPolicy`。
       // #498 S3 A19：`resume` 同样退役（家 `config.run.resume`），并进**同一个** `config` 容器。
       // #498 S3 A21：`maxRounds` 同理（家 `config.run.maxRounds`），并进同一棵 `run` 子树。
-      config: { run: { replayPolicy, resume: true, runId: "resume-rejected", maxRounds: 4 } },
+      config: { run: { replayPolicy, resume: true, runId: "resume-rejected", maxRounds: 4, completion: false } },
     });
 
     // ① 不补跑

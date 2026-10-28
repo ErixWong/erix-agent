@@ -42,7 +42,7 @@ test("两个工具失败累计成 errors.tool=2（ctx 读-改-写与 run-state �
     },
     maxRounds: 5,
     stallDetection: false,
-    completion: false,
+    config: { run: { completion: false } },
   });
 
   assert.equal(provider.requests.length, 3, "两个工具轮 + 一次文本轮");
@@ -62,7 +62,7 @@ test("低预算把 budget.lowBudgetPrompted 写成真值（不是初值的假象
     executeTool: async () => "ok",
     maxRounds: 3,
     stallDetection: false,
-    completion: false,
+    config: { run: { completion: false } },
   });
 
   // 初值扰动（false → true）也会让这里为真，所以先证明它**不是**起点带来的：
@@ -98,8 +98,7 @@ test("resume 把恢复出来的错误计数经 ctx set 带回下一次 run-state
   ]);
   const result = await runToolLoop({
     provider,
-    config: { run: { resume: true, runId } },
-    completion: false,
+    config: { run: { resume: true, runId, completion: false } },
     store,
     executeTool: async () => "unused",
   });
@@ -141,7 +140,7 @@ test("run snapshot 落盘失败被计入 errors.checkpoint（旧键名 checkpoin
       executeTool: async () => "ok",
       maxRounds: 5,
       stallDetection: false,
-      completion: false,
+      config: { run: { completion: false } },
       store,
       runId,
     });

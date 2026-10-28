@@ -242,8 +242,7 @@ test("#315 旧档没有 compactionStatsWindow 仍可读（validate 与 resume �
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]),
-    config: { run: { resume: true, runId: "window-legacy" } },
-    completion: false,
+    config: { run: { resume: true, runId: "window-legacy", completion: false } },
     store,
     executeTool: async () => "unused",
   });
@@ -278,8 +277,7 @@ test("#315 真跑一个 >32 条 compactionStats 的 run：<runId>.state.json 文
     initialUserMessage: "start",
     // 每轮工具结果都不同，避免 stall 裁决提前收工（本用例要的是长 run，不是终止行为）
     executeTool: async (options) => `worked-${options?.id ?? "?"}`,
-    completion: false,
-    config: { folding: { context: { budgetTokens: 10 } } },
+    config: { folding: { context: { budgetTokens: 10 } }, run: { completion: false } },
     maxRounds: 60,
     store,
     runId,
@@ -323,7 +321,7 @@ test("resume exposes unknown persisted schema instead of silently resetting it",
     initialUserMessage: "ignored on resume",
     executeTool: async () => "unused",
     maxRounds: 1,
-    completion: false,
+    config: { run: { completion: false } },
     store,
     runId: "unknown-schema",
     resume: true,
@@ -434,7 +432,7 @@ test("run state records tool facts, files, budget prompts, todo status, and pers
     initialUserMessage: "write a file",
     executeTool: async () => ({ success: true, data: "written" }),
     maxRounds: 2,
-    completion: false,
+    config: { run: { completion: false } },
     store,
     runId: "facts",
     todoStateProvider: () => ({
@@ -476,8 +474,7 @@ test("resume keeps one persisted run-state block", async () => {
     initialUserMessage: "fold this",
     executeTool: async () => "result",
     maxRounds: 2,
-    completion: false,
-    config: { folding: { context: { budgetTokens: 100 } } },
+    config: { folding: { context: { budgetTokens: 100 } }, run: { completion: false } },
     store,
     runId: "resume-state",
   });
@@ -487,12 +484,11 @@ test("resume keeps one persisted run-state block", async () => {
       { content: [{ type: "text", text: "resumed" }], stopReason: "end_turn" },
     ]),
     executeTool: async () => "unused",
-    completion: false,
     // #498 S3 A19：`resume` 的扁平写法已退役，并进**同一个** `config` 容器（家 `config.run.resume`）。
     // #498 S3 A21：`maxRounds` 同理（家 `config.run.maxRounds`），并进同一棵 `run` 子树。
     config: {
       folding: { context: { budgetTokens: 100 } },
-      run: { resume: true, runId: "resume-state", maxRounds: 3 },
+      run: { resume: true, runId: "resume-state", maxRounds: 3, completion: false },
     },
     store,
   });
@@ -533,7 +529,7 @@ test("single-session runs keep both counters equal and drain remainingRounds mon
     initialUserMessage: "work",
     executeTool: async () => "worked",
     maxRounds: 3,
-    completion: false,
+    config: { run: { completion: false } },
     store,
     runId: "budget-monotonic",
     capabilities: { hooks: { onRound: (record) => budgets.push(record.runState.deterministic.budget) } },

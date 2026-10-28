@@ -67,7 +67,7 @@ function runDirect(extra = {}) {
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
     seed: "go",
-    completion: false,
+    config: { run: { completion: false } },
     wrapup: false,
     ...extra,
   });
@@ -137,10 +137,9 @@ function foldingRun(extra = {}) {
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output",
     initialUserMessage: "go",
-    completion: false,
     wrapup: false,
     maxRounds: 4,
-    config: { folding: { context: { budgetTokens: 1, keepRounds: 0 } } },
+    config: { folding: { context: { budgetTokens: 1, keepRounds: 0 } }, run: { completion: false } },
     ...extra,
   });
 }
@@ -162,7 +161,7 @@ function extendingRun(extra = {}, reflectionExtra = {}) {
     provider: createFakeProvider(toolScript(8)),
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    completion: false,
+    config: { run: { completion: false } },
     wrapup: false,
     maxRounds: 5,
     reflection: {
@@ -399,7 +398,7 @@ test("C3 端口位不进扁平表示（走 slots），与壳里老槽位不等�
       capabilities: { ports: { strategy: portStrategy } },
     }),
     initialUserMessage: "go",
-    completion: false,
+    config: { run: { completion: false } },
     wrapup: false,
     onEvent: (event) => conflictEvents.push(event),
   });
@@ -416,9 +415,8 @@ test("C4 行为证据：ports.sleepImpl 真被调用并记录延迟（默认兜�
     provider: retryingProvider(counter),
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    completion: false,
     wrapup: false,
-    config: { timing: { retry: { attempts: 2, backoffBaseMs: 10 } } },
+    config: { timing: { retry: { attempts: 2, backoffBaseMs: 10 } }, run: { completion: false } },
     capabilities: { ports: { sleepImpl: async (ms) => { sleeps.push(ms); } } },
   });
   assert.equal(result.termination.reason, "end_turn");
@@ -432,9 +430,8 @@ test("C4 行为证据：ports.sleepImpl 真被调用并记录延迟（默认兜�
     provider: retryingProvider(fallbackCounter),
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    completion: false,
     wrapup: false,
-    config: { timing: { retry: { attempts: 1, backoffBaseMs: 0 } } },
+    config: { timing: { retry: { attempts: 1, backoffBaseMs: 0 } }, run: { completion: false } },
   });
   assert.equal(fallback.termination.reason, "end_turn", "没有注入定时器时必须退回 defaultSleep");
   assert.equal(fallbackCounter.calls, 2);
@@ -459,7 +456,7 @@ test("C5 行为证据：ports.judgeProvider 让 judge 请求走它，主模型�
     provider: main,
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    completion: false,
+    config: { run: { completion: false } },
     wrapup: false,
     maxRounds: 6,
     reflection: { enabled: true, judgeIntervalRound: 2 },
@@ -506,9 +503,8 @@ test("C6 行为证据：ports.strategy 的 shouldCompact / compact 真被调（�
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    completion: false,
     wrapup: false,
-    config: { folding: { context: { budgetTokens: 1 } } },
+    config: { folding: { context: { budgetTokens: 1 } }, run: { completion: false } },
     capabilities: { ports: { strategy } },
   });
   assert.equal(result.termination.reason, "end_turn");
@@ -560,11 +556,10 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   const dataRun = await runToolLoop({
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output",
-    completion: false,
     // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`); it joins the
     // **same** `config` tree — a second `config:` key would silently replace the one below.
     // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
-    config: { run: { maxRounds: 4 }, input: { wrapup: false, messages: [
+    config: { run: { maxRounds: 4, completion: false }, input: { wrapup: false, messages: [
       { role: "user", content: "PROTECTED-TASK" },
       { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
     ] }, folding: { context: { budgetTokens: 300, keepRounds: 1, protectedMessage: "user" } } },
@@ -578,11 +573,10 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   const functionRun = await runToolLoop({
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output",
-    completion: false,
     capabilities: { hooks: { protectedMessage: (message) => message?.role === "user" } },
     // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`); it joins the
     // **same** `config` tree. #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
-    config: { run: { maxRounds: 4 }, input: { wrapup: false, messages: [
+    config: { run: { maxRounds: 4, completion: false }, input: { wrapup: false, messages: [
       { role: "user", content: "PROTECTED-TASK" },
       { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
     ] }, folding: { context: { budgetTokens: 300, keepRounds: 1 } } },
@@ -598,11 +592,10 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   const conflictRun = await runToolLoop({
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output",
-    completion: false,
     // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`); it joins the
     // **same** `config` tree — a second `config:` key would silently replace the one below.
     // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
-    config: { run: { maxRounds: 4 }, input: { wrapup: false, messages: [
+    config: { run: { maxRounds: 4, completion: false }, input: { wrapup: false, messages: [
       { role: "user", content: "PROTECTED-TASK" },
       { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
     ] }, folding: { context: { budgetTokens: 300, keepRounds: 1, protectedMessage: "system" } } },
@@ -624,11 +617,10 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   const winnerRun = await runToolLoop({
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output ".repeat(20),
-    completion: false,
     // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`); it joins the
     // **same** `config` tree — a second `config:` key would silently replace the one below.
     // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
-    config: { run: { maxRounds: 4 }, input: { wrapup: false, messages: [
+    config: { run: { maxRounds: 4, completion: false }, input: { wrapup: false, messages: [
       { role: "user", content: "task" },
       { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
     ] }, folding: { context: { budgetTokens: 300, keepRounds: 1, strategy: "fold-statistical", recoveryHint: "DATA-HINT" } } },
@@ -653,7 +645,7 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   await sharedRunDirect({
     assemblyPort: makePort({ context: { protectedMessage: sameHook } }),
     initialUserMessage: "go",
-    completion: false,
+    config: { run: { completion: false } },
     wrapup: false,
     capabilities: { hooks: { protectedMessage: sameHook } },
     onEvent: (event) => { same.push(event); },
@@ -671,11 +663,10 @@ test("C8 形态多态旋钮：数据形态留 config、函数形态进 hooks、�
   const hinted = (extra = {}) => runToolLoop({
     provider: createFakeProvider(toolScript(6)),
     executeTool: async () => "tool output ".repeat(20),
-    completion: false,
     // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`).
     // #498 S3 A18: `wrapup` 退役扁平写法，开关随 `messages` 一起写在 `config.input` 里。
     config: {
-      run: { maxRounds: 4 },
+      run: { maxRounds: 4, completion: false },
       input: { wrapup: false, messages: [
         { role: "user", content: "task" },
         { role: "assistant", content: [{ type: "text", text: "old ".repeat(400) }] },
@@ -707,9 +698,8 @@ test("C9 壳内老槽位零回归：config.timing.retry / context.onBeforeFold /
     provider: retryingProvider(counter),
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    completion: false,
     wrapup: false,
-    config: { timing: { retry: { attempts: 1, backoffBaseMs: 0 } } },
+    config: { timing: { retry: { attempts: 1, backoffBaseMs: 0 } }, run: { completion: false } },
   });
   assert.equal(retried.termination.reason, "end_turn");
   assert.equal(counter.calls, 2, "config.timing.retry.attempts 真的生效（一次重试 ⇒ 两次调用）");
@@ -732,7 +722,7 @@ test("C9 壳内老槽位零回归：config.timing.retry / context.onBeforeFold /
     provider: createFakeProvider(toolScript(8)),
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    completion: false,
+    config: { run: { completion: false } },
     wrapup: false,
     maxRounds: 6,
     reflection: { enabled: true, judgeIntervalRound: 2, judge: { provider: judge } },
@@ -748,7 +738,7 @@ test("C9 壳内老槽位零回归：config.timing.retry / context.onBeforeFold /
   };
   await sharedRunDirect({ assemblyPort: makePort({ context: { strategy: flatStrategy, budgetTokens: 1 } }),
     initialUserMessage: "go",
-    completion: false,
+    config: { run: { completion: false } },
     wrapup: false,
   });
   assert.equal(compacted, 1, "壳内老槽位 context.strategy（经装配口 policy）照旧被调");
@@ -769,9 +759,9 @@ test("C10 装配口路线：policy.capabilities.ports 与 hooks 同相生效（s
   // 端口位的展开是否生效——`normalizeRunToolLoopOptions` 会返回 slots）。
   const normalized = await normalizeRunToolLoopOptions({
     assemblyPort: port,
-    completion: false,
     // #498 S3 A18: `wrapup` 退役扁平写法，家在 `config.input.wrapup`。
-    config: { input: { wrapup: false } },
+    // #498 S3 A23a: `completion` 并进同一棵 `config.run` 子树。
+    config: { input: { wrapup: false }, run: { completion: false } },
   });
   assert.equal(typeof normalized.capabilitySlots.ports.sleepImpl, "function", "policy 侧的端口位进了 slots");
   assert.equal(typeof normalized.capabilitySlots.hooks.onBeforeFold, "function", "policy 侧的钩子进了 slots");
@@ -870,7 +860,7 @@ test("C12 逐叶冲突（真 run，3 个折叠 hooks）：onBeforeFold / onAfter
         capabilities: { hooks: { [leaf]: portFn } },
       }),
       initialUserMessage: "go",
-      completion: false,
+      config: { run: { completion: false } },
       wrapup: false,
       maxRounds: 4,
       onEvent: (event) => events.push(event),
@@ -913,7 +903,7 @@ test("C14 逐叶等价（真 run，4 个 hooks）：同一函数引用同时写�
     await sharedRunDirect({
       assemblyPort: makePort({ ...shellHomeOptions(leaf, same), capabilities: { hooks: { [leaf]: same } } }),
       initialUserMessage: "go",
-      completion: false,
+      config: { run: { completion: false } },
       wrapup: false,
       onEvent: (event) => events.push(event),
     });
@@ -949,9 +939,8 @@ test("C15 优先级方向（sleepImpl）：端口位是唯一入口（壳里那�
     provider: retryingProvider(counter),
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    completion: false,
     wrapup: false,
-    config: { timing: { retry: { attempts: 2, backoffBaseMs: 10 } } },
+    config: { timing: { retry: { attempts: 2, backoffBaseMs: 10 } }, run: { completion: false } },
     capabilities: { ports: { sleepImpl: async (ms) => { portSleeps.push(ms); } } },
   });
   assert.equal(result.termination.reason, "end_turn");
@@ -975,7 +964,7 @@ test("C16 优先级方向（judgeProvider）：reflection.judge.provider 与 cap
     provider: main,
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    completion: false,
+    config: { run: { completion: false } },
     wrapup: false,
     maxRounds: 6,
     reflection: { enabled: true, judgeIntervalRound: 2, judge: { provider: shellJudge } },
@@ -1010,9 +999,8 @@ test("C17 优先级方向（strategy）：context.strategy 与 capabilities.port
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
     initialUserMessage: "go",
-    completion: false,
     wrapup: false,
-    config: { folding: { context: { budgetTokens: 1, } } },
+    config: { folding: { context: { budgetTokens: 1, } }, run: { completion: false } },
     capabilities: { ports: { strategy: portStrategy } },
   });
   assert.equal(result.termination.reason, "end_turn");
@@ -1045,7 +1033,7 @@ test("C18 装配口路线的真 run：policy.capabilities.ports.sleepImpl 真的
   const result = await sharedRunDirect({
     assemblyPort: port,
     initialUserMessage: "go",
-    completion: false,
+    config: { run: { completion: false } },
     wrapup: false,
   });
   assert.equal(result.termination.reason, "end_turn");

@@ -62,7 +62,7 @@ test("F-2 judgeInterceptCount 经 runSnapshotContext：interval=1 时第三次�
         return "ok";
       },
       maxRounds: 5,
-      completion: false,
+      config: { run: { completion: false } },
       reflection: { enabled: true, roundJudge: false, judgeIntervalRound: 1, judge: { provider: judge } },
       capabilities: { hooks: { onJudge: (info) => records.push(info) } },
     });
@@ -109,8 +109,7 @@ test("F-2 judgeInterceptCount 经 restoreResume ctx：resume 播种已执行工�
       provider,
       store,
       // #498 S3 A21：`maxRounds` 退役扁平写法（家 `config.run.maxRounds`），并进同一棵 `run` 子树。
-      config: { run: { resume: true, runId, maxRounds: 6 } },
-      completion: false,
+      config: { run: { resume: true, runId, maxRounds: 6, completion: false } },
       executeTool: async () => "done-b",
       reflection: { enabled: true, roundJudge: false, judgeIntervalRound: 1, judge: { provider: judge } },
       capabilities: { hooks: { onJudge: (info) => records.push(info) } },
@@ -157,7 +156,7 @@ async function runNearLimitIntercept({ maxExtensions = 1, withStore = false } = 
       return "ok";
     },
     maxRounds: 5,
-    completion: false,
+    config: { run: { completion: false } },
     reflection: {
       enabled: true,
       roundJudge: false,

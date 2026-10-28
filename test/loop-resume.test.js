@@ -22,7 +22,7 @@ test("replay policy and tool declarations reject unsupported values", async () =
   const options = {
     provider: createFakeProvider([]),
     executeTool: async () => "unused",
-    completion: false,
+    config: { run: { completion: false } },
   };
   await assert.rejects(
     runToolLoop({
@@ -62,8 +62,7 @@ test("partial persistence requires streaming mode", async () => {
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]),
     executeTool: async () => "unused",
-    completion: false,
-    config: { run: { partialPersistence: { intervalMs: 10 } } },
+    config: { run: { partialPersistence: { intervalMs: 10 }, completion: false } },
   };
 
   // #498 S3 A16：`stream` 的扁平拼写退役（家 = `config.run.stream`），所以两格改成规位拼写。
@@ -109,8 +108,7 @@ test("resume prefers a valid independent run-state over the latest record state"
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]),
-    config: { run: { resume: true, runId: "independent-state" } },
-    completion: false,
+    config: { run: { resume: true, runId: "independent-state", completion: false } },
     store,
     executeTool: async () => "unused",
   });
@@ -144,8 +142,7 @@ test("resume falls back to the latest record run-state when the store has no loa
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]),
-    config: { run: { resume: true, runId } },
-    completion: false,
+    config: { run: { resume: true, runId, completion: false } },
     store,
     executeTool: async () => "unused",
   });
@@ -176,8 +173,7 @@ test("resume does not fall back when an independent run-state is present but inv
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]),
-    config: { run: { resume: true, runId: "invalid-independent-state" } },
-    completion: false,
+    config: { run: { resume: true, runId: "invalid-independent-state", completion: false } },
     store,
     executeTool: async () => "unused",
   });
@@ -211,8 +207,7 @@ test("run-state availability does not make the next resume invalid", async () =>
       { content: [{ type: "text", text: "first done" }], stopReason: "end_turn" },
     ]),
     // #498 S3 A21：`maxRounds` 的扁平写法已退役，并进同一棵 `config.run` 子树。
-    config: { run: { resume: true, runId, maxRounds: 2 } },
-    completion: false,
+    config: { run: { resume: true, runId, maxRounds: 2, completion: false } },
     store,
     executeTool: async () => "worked",
   });
@@ -230,8 +225,7 @@ test("run-state availability does not make the next resume invalid", async () =>
     provider: createFakeProvider([
       { content: [{ type: "text", text: "second done" }], stopReason: "end_turn" },
     ]),
-    config: { run: { resume: true, runId, maxRounds: 1 } },
-    completion: false,
+    config: { run: { resume: true, runId, maxRounds: 1, completion: false } },
     store,
     executeTool: async () => "unused",
   });
@@ -263,9 +257,8 @@ test("resumes after three rounds without replaying paid provider calls", async (
     initialUserMessage: "start",
     executeTool: async ({ input }) => `completed-${input.step}`,
     maxRounds: 3,
-    completion: false,
     // #498 S3 (`input` slice A): the flat spelling retired; the home is config.input.*.
-    config: { input: { cacheStablePrefix: false } },
+    config: { input: { cacheStablePrefix: false }, run: { completion: false } },
     store,
     runId: "resume-run",
   });
@@ -304,10 +297,9 @@ test("resumes after three rounds without replaying paid provider calls", async (
     provider: resumedProvider,
     initialUserMessage: "must be ignored",
     // #498 S3 (`input` slice A): `messages` is the leaf alias of the retired flat `initialMessages`.
-    config: { input: { messages: [{ role: "user", content: "must also be ignored" }], cacheStablePrefix: false } },
+    config: { input: { messages: [{ role: "user", content: "must also be ignored" }], cacheStablePrefix: false }, run: { completion: false } },
     executeTool: async () => "unused",
     maxRounds: 4,
-    completion: false,
     store,
     runId: "resume-run",
     resume: true,
@@ -364,7 +356,7 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
         return `done-${id}`;
       },
       maxRounds: 2,
-      completion: false,
+      config: { run: { completion: false } },
       store,
       runId: "resume-pending-tools",
       tools,
@@ -395,8 +387,7 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
   ]);
   const result = await runToolLoop({
     provider: resumedProvider,
-    config: { run: { resume: true, runId: "resume-pending-tools" } },
-    completion: false,
+    config: { run: { resume: true, runId: "resume-pending-tools", completion: false } },
     store,
     tools,
     capabilities: {
@@ -479,9 +470,8 @@ test("per-tool replay policy replays safe pending tools", async () => {
   ]);
   await runToolLoop({
     provider,
-    completion: false,
     // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役，规位是 `config.run.replayPolicy`。
-    config: { run: { resume: true, replayPolicy: "per-tool-declaration", runId } },
+    config: { run: { resume: true, replayPolicy: "per-tool-declaration", runId, completion: false } },
     tools: [{
       name: "safe_work",
       inputSchema: { type: "object" },
@@ -546,9 +536,8 @@ test("per-tool replay policy interrupts unsafe tools and exposes saved partial o
   ]);
   const result = await runToolLoop({
     provider,
-    completion: false,
     // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役，规位是 `config.run.replayPolicy`。
-    config: { run: { resume: true, replayPolicy: "per-tool-declaration", runId } },
+    config: { run: { resume: true, replayPolicy: "per-tool-declaration", runId, completion: false } },
     tools: [{
       name: "unsafe_work",
       inputSchema: { type: "object" },
@@ -627,9 +616,8 @@ test("升级前记录被中断重放时，不得把过期 attempt 的成败留�
   ]);
   const result = await runToolLoop({
     provider,
-    completion: false,
     // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役，规位是 `config.run.replayPolicy`。
-    config: { run: { resume: true, replayPolicy: "per-tool-declaration", runId } },
+    config: { run: { resume: true, replayPolicy: "per-tool-declaration", runId, completion: false } },
     tools: [{ name: "unsafe_work", inputSchema: { type: "object" }, replay: "unsafe" }],
     store,
     executeTool: async () => "must not run",
@@ -696,8 +684,7 @@ test("resumes a partial tool-result message without dropping text or breaking pa
   ]);
   await runToolLoop({
     provider,
-    config: { run: { resume: true, runId } },
-    completion: false,
+    config: { run: { resume: true, runId, completion: false } },
     store,
     executeTool: async ({ id }) => `done-${id}`,
   });
@@ -775,8 +762,7 @@ test("does not merge a tool result whose id belongs to another assistant call", 
       provider: createFakeProvider([
         { content: [{ type: "text", text: "unreachable" }], stopReason: "end_turn" },
       ]),
-      config: { run: { resume: true, runId } },
-      completion: false,
+      config: { run: { resume: true, runId, completion: false } },
       store,
       executeTool: async () => "done-b",
     }),
@@ -827,8 +813,7 @@ test("resumes tool results before a later direction hint without moving the hint
   ]);
   await runToolLoop({
     provider,
-    config: { run: { resume: true, runId } },
-    completion: false,
+    config: { run: { resume: true, runId, completion: false } },
     store,
     executeTool: async ({ id }) => `done-${id}`,
   });
@@ -899,8 +884,7 @@ test("restores judge interception count from executed checkpoint tools", async (
   ]);
   await runToolLoop({
     provider,
-    config: { run: { resume: true, runId } },
-    completion: false,
+    config: { run: { resume: true, runId, completion: false } },
     store,
     executeTool: async ({ id }) => `done-${id}`,
     reflection: {
@@ -978,8 +962,7 @@ test("resumes folded checkpoints from the persisted transcript anchor", async ()
           return `tool-out-${calls}`;
         },
         maxRounds: 6,
-        completion: false,
-        config: { folding: { context: { budgetTokens: 30 } } },
+        config: { folding: { context: { budgetTokens: 30 } }, run: { completion: false } },
         store,
         runId: `fold-${keepRounds}`,
         signal: controller.signal,
@@ -1010,8 +993,7 @@ test("resumes folded checkpoints from the persisted transcript anchor", async ()
     ]);
     await runToolLoop({
       provider: resumedProvider,
-      config: { run: { resume: true, runId: `fold-${keepRounds}` } },
-      completion: false,
+      config: { run: { resume: true, runId: `fold-${keepRounds}`, completion: false } },
       store,
       executeTool: async () => "resumed-tool",
     });
@@ -1080,8 +1062,7 @@ test("keeps the initial input when request-view injection meets a tiny budget", 
         return `tool-out-${calls}`;
       },
       maxRounds: 6,
-      completion: false,
-      config: { folding: { context: { budgetTokens: 30 } } },
+      config: { folding: { context: { budgetTokens: 30 } }, run: { completion: false } },
       store,
       runId: "small-budget-run-state-regression",
       signal: controller.signal,
@@ -1099,8 +1080,7 @@ test("keeps the initial input when request-view injection meets a tiny budget", 
   ]);
   await runToolLoop({
     provider: resumedProvider,
-    config: { run: { resume: true, runId: "small-budget-run-state-regression" } },
-    completion: false,
+    config: { run: { resume: true, runId: "small-budget-run-state-regression", completion: false } },
     store,
     executeTool: async () => "resumed-tool",
   });
@@ -1133,7 +1113,7 @@ test("archives replayed tool results without duplicating multiple resume tails",
         controller.abort();
         return signal.reason;
       },
-      completion: false,
+      config: { run: { completion: false } },
       store,
       runId: "multi-tail",
       signal: controller.signal,
@@ -1156,8 +1136,7 @@ test("archives replayed tool results without duplicating multiple resume tails",
   ]);
   await runToolLoop({
     provider: resumedProvider,
-    config: { run: { resume: true, runId: "multi-tail" } },
-    completion: false,
+    config: { run: { resume: true, runId: "multi-tail", completion: false } },
     store,
     executeTool: async () => "tool-output",
   });
@@ -1182,8 +1161,7 @@ test("archives replayed tool results without duplicating multiple resume tails",
   ]);
   await runToolLoop({
     provider: secondProvider,
-    config: { run: { resume: true, runId: "multi-tail" } },
-    completion: false,
+    config: { run: { resume: true, runId: "multi-tail", completion: false } },
     store,
     executeTool: async () => "unused",
   });
@@ -1211,7 +1189,7 @@ test("resumed session gets its own round budget and persists the continuation ro
     initialUserMessage: "session one task",
     executeTool: async ({ input }) => `done-${input.step}`,
     maxRounds: 2,
-    completion: false,
+    config: { run: { completion: false } },
     store,
     runId,
   });
@@ -1241,12 +1219,11 @@ test("resumed session gets its own round budget and persists the continuation ro
   const executed = [];
   const second = await runToolLoop({
     provider: secondProvider,
-    config: { run: { resume: true, runId, maxRounds: 2 } },
+    config: { run: { resume: true, runId, maxRounds: 2, completion: false } },
     executeTool: async ({ input }) => {
       executed.push(input.step);
       return `resumed-${input.step}`;
     },
-    completion: false,
     store,
   });
 
@@ -1321,7 +1298,7 @@ test("engine round records are not deduped away by a host row with the same roun
     initialUserMessage: "engine task",
     executeTool: async () => "tool-out",
     maxRounds: 2,
-    completion: false,
+    config: { run: { completion: false } },
     store,
     runId,
   });
@@ -1382,7 +1359,7 @@ test("resume with a store lacking snapshot/run-state loaders degrades with one d
       executions += 1;
       return "worked";
     },
-    completion: false,
+    config: { run: { completion: false } },
     capabilities: {
       hooks: {
         onEvent: (event) => events.push(event),
@@ -1448,7 +1425,7 @@ test("resume with a stale snapshot (loader present, round behind transcript) doe
     resume: true,
     initialUserMessage: "ignored on resume",
     executeTool: async () => "unused",
-    completion: false,
+    config: { run: { completion: false } },
     capabilities: {
       hooks: {
         onEvent: (event) => events.push(event),
@@ -1484,7 +1461,7 @@ test("#323 强制收尾指令对主模型可见、但不进 judge 输入（rende
     initialUserMessage: "cap this run",
     executeTool: async () => "ok",
     maxRounds: 2,
-    completion: false,
+    config: { run: { completion: false } },
   });
 
   assert.equal(result.termination.reason, "max_rounds_cap");
@@ -1568,8 +1545,7 @@ async function runTwoRoundsThenResume(runId, { withRunState }) {
     executeTool: async ({ input }) => `wrote ${input?.path ?? ""}`,
     tools: [WRITE_FILE_TOOL],
     maxRounds: 4,
-    completion: false,
-    config: { input: { wrapup: false } },
+    config: { input: { wrapup: false }, run: { completion: false } },
     reflection: false,
     store,
     runId,
@@ -1594,8 +1570,7 @@ async function runTwoRoundsThenResume(runId, { withRunState }) {
     provider: resumedProvider,
     executeTool: async () => "unused",
     tools: [WRITE_FILE_TOOL],
-    completion: false,
-    config: { input: { wrapup: false }, run: { resume: true, runId, maxRounds: 2 } },
+    config: { input: { wrapup: false }, run: { resume: true, runId, maxRounds: 2, completion: false } },
     reflection: { enabled: true, judge: { provider: resumedJudge } },
     store,
   });

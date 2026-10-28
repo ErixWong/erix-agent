@@ -177,7 +177,6 @@ async function runProvenanceChain({
       provider,
       tools: [execTool],
       executeTool,
-      completion: false,
       reflection: false,
       // #498 S3 (`input` slice A): `initialMessages` retired; `config.input.messages` is its one
       // registered leaf alias (expansion writes it back to `effectiveOptions.initialMessages`).
@@ -187,7 +186,7 @@ async function runProvenanceChain({
       // #528: `wrapup` is retired as a flat option; its canonical home is `config.input.wrapup`.
       // #498 S3 A21: `maxRounds` retired its flat spelling (home `config.run.maxRounds`) — it joins
       // the **same** `run` group below.
-      config: { input: { system: CLI_TOOLS_SYSTEM_PROMPT, messages: initialHistory(command), wrapup: false }, run: { stallDetection: false, maxRounds: 8 }, folding: { context: {
+      config: { input: { system: CLI_TOOLS_SYSTEM_PROMPT, messages: initialHistory(command), wrapup: false }, run: { stallDetection: false, maxRounds: 8, completion: false }, folding: { context: {
                 budgetTokens: 2_000,
         keepRounds: 1,
       } } },

@@ -62,10 +62,9 @@ test("策略折叠的轮数与导航记录累计进 run-state 的 fold 计数（
     executeTool: async () => "worked",
     maxRounds: 5,
     stallDetection: false,
-    completion: false,
     // budgetTokens 放大：让策略自己决定折叠，避免「仍超预算 → 安全截断 fallback」再加一次折叠，
     // 那样累计值就不是策略报的 3 了（实测 3 + 2 = 5，断言会变成在测 fallback 而不是测本格写侧）。
-    config: { input: { cacheStablePrefix: false }, folding: { context: { budgetTokens: 100_000, keepRounds: 4 } } },
+    config: { input: { cacheStablePrefix: false }, folding: { context: { budgetTokens: 100_000, keepRounds: 4 } }, run: { completion: false } },
   });
 
   // 前提：折叠确实发生了（否则下面的累计值是空断言）
@@ -102,8 +101,7 @@ test("resume 恢复的 fold 计数经 ctx 写入口活着进入下一次 run-sta
   ]);
   const result = await runToolLoop({
     provider,
-    config: { run: { resume: true, runId } },
-    completion: false,
+    config: { run: { resume: true, runId, completion: false } },
     store,
     executeTool: async () => "unused",
   });
