@@ -10,6 +10,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createOpenAIProvider } from "../src/providers/openai.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createMockFetch } from "./helpers/mock-fetch.js";
@@ -66,7 +67,7 @@ async function runOnce({ rawArguments, options = {}, executeTool }) {
   const { provider, fetchImpl } = providerFor(malformedArgumentsScript(rawArguments));
   const events = [];
   const executed = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "读一下 a.txt",
     tools: [READ_FILE_SCHEMA],
@@ -158,7 +159,7 @@ test("invalidArguments: \"execute\" ⇒ 行为逐字等于今天（假对象 + �
 test("invalidArguments 只认两个字面量：错型当场 TypeError，不静默折成默认值", async () => {
   for (const bad of ["execute-if-possible", true, null, 0]) {
     await assert.rejects(
-      () => runToolLoop({
+      () => runDirect({
         provider: { async chat() { throw new Error("must not be called"); } },
         initialUserMessage: "x",
         executeTool: async () => "ok",
@@ -207,7 +208,7 @@ async function rejectedCrashSnapshot(rawArguments) {
   };
   const { provider } = providerFor(malformedArgumentsScript(rawArguments));
   let executed = 0;
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "读一下 a.txt",
     tools: [READ_FILE_SCHEMA],

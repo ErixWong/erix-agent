@@ -19,6 +19,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { RESUME_NOTICE_TAG } from "../src/loop/resume-notice.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { foldMessageRows } from "../src/store/message-rows.js";
@@ -170,7 +171,7 @@ function createHostStore(shape) {
 async function runTwoRoundsThenResume(runId, shape) {
   const { store, rawRows } = createHostStore(shape);
 
-  await runToolLoop({
+  await runDirect({
     provider: createFakeProvider([
       {
         content: [

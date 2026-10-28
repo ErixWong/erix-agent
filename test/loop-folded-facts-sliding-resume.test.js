@@ -22,6 +22,7 @@ const buildFoldedHistoryContext = foldTrimApi.buildFoldedHistoryContext
   ?? foldTrimApi.planFoldedHistoryTrim;
 import { createSlidingWindowStrategy } from "../src/compact/sliding-window.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 
 const textOf = (message) => (Array.isArray(message?.content)
@@ -89,7 +90,7 @@ test("判据②+端到端：滑窗折叠 → foldedFacts 落账（用的是策�
   provider.chatStream = provider.chat;
 
   // runToolLoop 是**单参数 options**；工具是数组 + executeTool，不是 map。
-  const run = await runToolLoop({ capabilities: { ports: { strategy: createSlidingWindowStrategy({ keepRounds: 1 }) } },
+  const run = await runDirect({ capabilities: { ports: { strategy: createSlidingWindowStrategy({ keepRounds: 1 }) } },
     provider,
     runId,
     store,

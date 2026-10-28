@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { normalizeWrapupWithLlm, tryParseWrapupJson } from "../src/reflection/wrapup.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { createMockFetch } from "./helpers/mock-fetch.js";
@@ -78,7 +79,7 @@ test("done true end-turn stops the loop after one round and displays output", as
     stopReason: "end_turn",
   }]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "完成任务",
     executeTool: async () => "unused",
@@ -108,7 +109,7 @@ test("done false continues and a later done true response completes", async () =
   const toolCalls = [];
   const store = createMemoryTranscriptStore();
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "完成任务",
     executeTool: async (name) => {
@@ -146,7 +147,7 @@ test("tool-use rounds do not parse JSON and still execute normally", async () =>
   ]);
   let calls = 0;
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "工作",
     executeTool: async () => {
@@ -169,7 +170,7 @@ test("non-JSON end-turn text still completes through completion signals", async 
     { content: [{ type: "text", text: "任务已完成" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "工作",
     executeTool: async () => "ok",
@@ -223,7 +224,7 @@ test("wrapup:false keeps completion signals working on plain text", async () => 
     { content: [{ type: "text", text: "任务已完成" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     wrapup: false,
     initialUserMessage: "工作",
@@ -247,7 +248,7 @@ test("ERIX_NO_WRAPUP_INSTRUCTION disables the complete wrapup protocol", async (
       content: [{ type: "text", text: responseText }],
       stopReason: "end_turn",
     }]);
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider,
       wrapup: true,
       initialUserMessage: "完成任务",
@@ -279,7 +280,7 @@ test("LLM normalization may only transcribe: findings whose value is not verbati
     },
   ]);
   const seen = [];
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "报出 TARGET",
     executeTool: async () => "ok",
@@ -311,7 +312,7 @@ test("LLM normalization keeps findings copied verbatim from the agent text", asy
     },
   ]);
   const seen = [];
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "报出 TARGET",
     executeTool: async () => "ok",
@@ -437,7 +438,7 @@ test("legacy erix-summary marker is not parsed as wrapup (reviewer #10)", async 
       stopReason: "end_turn",
     },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "任务",
     executeTool: async () => "ok",
@@ -457,7 +458,7 @@ test("non-JSON end-turn without signals falls back to noToolStreak (reviewer #3)
     { content: [{ type: "text", text: "还在处理中" }], stopReason: "end_turn" },
     { content: [{ type: "text", text: "还在处理中" }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "工作",
     executeTool: async () => "ok",
@@ -477,7 +478,7 @@ test("wrapup summary is recorded into runningLog with source json (reviewer #3)"
     { content: [{ type: "text", text: '{"done":true,"output":"收尾"}' }], stopReason: "end_turn" },
   ]);
   const store = createMemoryTranscriptStore();
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "任务",
     executeTool: async () => "ok",
@@ -522,7 +523,7 @@ test("non-JSON end-turn triggers LLM normalization and done:true stops (loop wir
       { content: [{ type: "text", text: "做完了" }], stopReason: "end_turn" },
       { content: [{ type: "text", text: '{"done":true,"summary":"归一化完成","output":"好了"}' }], stopReason: "end_turn" },
     ]);
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider: sequence,
       initialUserMessage: "工作",
       executeTool: async () => "ok",
@@ -544,7 +545,7 @@ test("done:false with completion word in text keeps going (reviewer #6)", async 
     },
     { content: [{ type: "text", text: '{"done":true,"output":"完成"}' }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "工作",
     executeTool: async () => "ok",
@@ -577,7 +578,7 @@ test("empty-text end_turn 不再白烧归一化请求（候选为空 ⇒ 一次�
     const normalizer = createFakeProvider([
       { content: [{ type: "text", text: '{"done":true,"summary":"模型空输出","output":"无结论"}' }], times: 8 },
     ]);
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider: sequence,
       initialUserMessage: "做一件不可能的事",
       executeTool: async () => "ok",

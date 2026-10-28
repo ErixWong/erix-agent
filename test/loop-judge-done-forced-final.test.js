@@ -18,7 +18,7 @@
 // 修好的场景误报成空（这个坑本站自己踩过一次，票面也提醒过）⇒ 一律按 **run 终稿口径**断言。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const JUDGE_DONE = {
@@ -52,7 +52,7 @@ async function runCase({ lastRound, wrapupResponse, judgeDecision = JUDGE_DONE }
       ? []
       : [{ content: [{ type: "text", text: JSON.stringify(judgeDecision) }] }],
   );
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     runId: "judge-done-forced-final",
     initialUserMessage: "task",

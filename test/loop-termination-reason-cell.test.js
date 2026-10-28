@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 // issue #177 刀5 E 组 M4 的**行为锚定**测试（纯新增，不改任何既有断言语义）。
@@ -28,7 +28,7 @@ test("收尾原因经 runLoopState 回灌进 run-state：end_turn 路径（#177 
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "任务已完成" }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "go",
     executeTool: async () => "ok",
@@ -47,7 +47,7 @@ test("收尾原因经 runLoopState 回灌进 run-state：轮数上限路径（�
     toolStep(2),
     { content: [{ type: "text", text: "轮数到了，收尾" }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "go",
     executeTool: async () => "ok",

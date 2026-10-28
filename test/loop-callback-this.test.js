@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 
 test("invokes loop callbacks with undefined this", async () => {
   const deltas = [];
@@ -45,7 +45,7 @@ test("invokes loop callbacks with undefined this", async () => {
     deltas.push(chunk);
   }
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "find x",
     executeTool,

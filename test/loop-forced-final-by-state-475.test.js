@@ -19,7 +19,7 @@
 // `round_end.finalText` 量会把修好的场景误报成空 ⇒ 一律按 run 终稿口径断言。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const toolRound = {
@@ -39,7 +39,7 @@ async function run({ script, maxRounds = 8, completion = false, env = {} }) {
   const provider = createFakeProvider(script);
   for (const [key, value] of Object.entries(env)) process.env[key] = value;
   try {
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider,
       runId: "forced-final-by-state-475",
       initialUserMessage: "task",

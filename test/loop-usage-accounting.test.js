@@ -31,6 +31,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const text = (value) => ({ type: "text", text: value });
@@ -315,7 +316,7 @@ test("#438 ⑥ 折叠摘要那一发（900/50）落在**当轮** `record.engineU
   });
   const { rounds, capabilities } = collectRounds();
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     ...BASE,
     provider,
     capabilities,

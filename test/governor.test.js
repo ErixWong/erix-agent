@@ -12,7 +12,7 @@ import {
   extractL0Facts,
   parseL1Summary,
 } from "../src/reflection/l0.js";
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 
@@ -149,7 +149,7 @@ test("loop nudges after three rounds of the same error", async () => {
     })),
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "fix it",
     executeTool: async () => ({ data: "same failure", success: false }),
@@ -168,7 +168,7 @@ test("loop injects the wrap-up nudge once near a configured deadline", async () 
     { content: [{ type: "tool_use", id: "two", name: "work", input: {} }], stopReason: "tool_use" },
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "finish it",
     executeTool: async () => {
@@ -195,7 +195,7 @@ test("loop does not inject a wrap-up nudge without a configured deadline", async
     { content: [{ type: "tool_use", id: "one", name: "work", input: {} }], stopReason: "tool_use" },
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "finish it",
     executeTool: async () => ({ data: "worked", success: true }),
@@ -230,7 +230,7 @@ test("loop does not nudge a repeated error when the round also makes progress", 
     },
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "fix it",
     executeTool: async ({ name }) => (

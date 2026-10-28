@@ -6,7 +6,7 @@ import path from "node:path";
 import { buildCaptureRecoveryHint, buildCaptureStub } from "../../bin/final-guard.js";
 import { createCliTools, wrapExecuteTool } from "../../bin/tools.js";
 import { buildCompactionContext, splitCompactionContext } from "../../bin/config.js";
-import { runToolLoop } from "../../src/loop/orchestrator.js";
+import { runDirect } from "./../helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { estimateMessageTokens } from "../../src/tokens.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
@@ -64,7 +64,7 @@ test("S1 folds an early value into the provider request", async () => {
   context.keepRounds = 0;
 
   try {
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider,
       initialUserMessage: "执行非幂等命令，然后复述 nonce。",
       tools: cliTools.tools,
@@ -131,7 +131,7 @@ test("S2 folds a stub verbatim (no agent-side credential filter, #55) while reta
   context.keepRounds = 0;
 
   try {
-    await runToolLoop({
+    await runDirect({
       provider,
       initialUserMessage: "执行命令并保留安全值。",
       tools: cliTools.tools,
@@ -197,7 +197,7 @@ test("S3 executes a repeated command and returns fresh output (ADR-016)", async 
   const executeTool = (options) => wrappedExecuteTool(options);
 
   try {
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider,
       initialUserMessage: "执行命令两次并报告结果。",
       tools: cliTools.tools,
@@ -275,7 +275,7 @@ test("S4 replaces fold state while preserving unique stubs across two folds", as
   context.keepRounds = 0;
 
   try {
-    await runToolLoop({
+    await runDirect({
       provider,
       initialUserMessage: "执行并重复一次非幂等命令，然后写文件。",
       tools: cliTools.tools,

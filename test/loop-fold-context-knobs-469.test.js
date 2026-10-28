@@ -18,7 +18,7 @@ import {
   contextOptionNameSelfCheck,
   isSummarizerKnobKey,
 } from "../src/assembly-validators.js";
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 
 const SUMMARY_SYSTEM = "你是对话历史压缩器";
@@ -61,7 +61,7 @@ function createFakeProvider({ summaryText = LONG_SUMMARY, summaryChat } = {}) {
 
 /** 多轮折叠：每轮都产出一段足够长的历史，`keepRounds:0` ⇒ 每轮都折。 */
 function runFolding(provider, context, extra = {}) {
-  return runToolLoop({
+  return runDirect({
     provider,
     initialUserMessage: `start ${"y".repeat(600)}`,
     executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,

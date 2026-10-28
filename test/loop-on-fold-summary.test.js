@@ -30,6 +30,7 @@ import {
 } from "../src/compact/fold-summary-journal.js";
 import { createSlidingWindowStrategy } from "../src/compact/sliding-window.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 
 const TOOLS = [{
@@ -64,7 +65,7 @@ function makeProvider({ toolTurns = 6 } = {}) {
 async function runFolding({ onFoldSummary, context = {}, diagnostics, onPersistenceError } = {}) {
   const store = createMemoryTranscriptStore();
   const runId = "s-470d-fold";
-  const run = await runToolLoop({ capabilities: { ports: { strategy: createSlidingWindowStrategy({ keepRounds: 1 }) } },
+  const run = await runDirect({ capabilities: { ports: { strategy: createSlidingWindowStrategy({ keepRounds: 1 }) } },
     provider: makeProvider(),
     runId,
     store,
@@ -149,7 +150,7 @@ test("②无替代物不调用：不折叠 ⇒ 钩子 0 次、账本无该键、
   const diagnostics = collectDiagnostics();
   const store = createMemoryTranscriptStore();
   const runId = "s-470d-nofold";
-  const run = await runToolLoop({
+  const run = await runDirect({
     provider: makeProvider({ toolTurns: 1 }),
     runId,
     store,

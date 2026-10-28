@@ -30,6 +30,7 @@ import {
 import { createSlidingWindowStrategy } from "../src/compact/sliding-window.js";
 import { RUN_TOOL_LOOP_OPTION_NAMES } from "../src/loop/option-normalization.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 // 一条**必然折叠**的 run（与 `test/loop-option-gate-496.test.js` D① 同形）：
@@ -115,7 +116,7 @@ function makePort(policy, events) {
 function runAssemblyFolding(contextExtra = {}) {
   const events = [];
   const port = makePort({ context: foldContext(contextExtra) }, events);
-  return runToolLoop({
+  return runDirect({
     assemblyPort: port,
     initialUserMessage: "go",
     completion: false,

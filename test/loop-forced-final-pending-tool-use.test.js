@@ -22,6 +22,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { pendingTrailingToolUses } from "../src/messages/rounds.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -63,7 +64,7 @@ test("#394 R1-1 默认关（不传 finalGuard / finalGuardExtend）：continuati
     truncatedToolUse("t1"),
     text("收尾"),
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "做点事",
     maxRounds: 3,
@@ -82,7 +83,7 @@ test("#394 R1-2 截断轮带正文 + 悬空 tool_use ⇒ 同样结清后收尾�
     truncatedToolUse("t1", { text: "我先看一眼目录结构，然后" }),
     text("收尾"),
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "做点事",
     maxRounds: 3,
@@ -111,7 +112,7 @@ test("#394 R1-3 默认续写预算（3）全截断 ⇒ 同样结清后收尾（5
     truncatedToolUse("t4"),
     text("收尾"),
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "做点事",
     maxRounds: 3,
@@ -129,7 +130,7 @@ test("#394 R1-4 反证：同形状 + ERIX_NO_FORCED_FINAL=1 ⇒ 不注入 ⇒ �
   process.env.ERIX_NO_FORCED_FINAL = "1";
   let result;
   try {
-    result = await runToolLoop({
+    result = await runDirect({
       provider,
       initialUserMessage: "做点事",
       maxRounds: 3,
@@ -151,7 +152,7 @@ test("#394 R1-4 反证：同形状 + ERIX_NO_FORCED_FINAL=1 ⇒ 不注入 ⇒ �
 // 这两条反证合起来把「悬空尾部 + 注入」钉成充分条件，而不是把 `continuation_exhausted` 一棍子打死。
 test("#394 R1-5 反证：尾部已结清（工具真跑过）⇒ 收尾正常注入，终局 max_rounds_cap + forcedFinal", async () => {
   const provider = createFakeProvider([settleWith("t1"), text("收尾")]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "做点事",
     maxRounds: 1,

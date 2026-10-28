@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
 import path from "node:path";
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import {
   createDeterministicRunState,
@@ -179,7 +179,7 @@ test("engine calls semanticStateProvider only at fold points (0 calls without fo
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "hello",
     executeTool: async () => "unused",

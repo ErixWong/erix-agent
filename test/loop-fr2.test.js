@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
@@ -18,7 +19,7 @@ test("retries a retryable provider error with the original messages", async () =
   ]);
   const sleeps = [];
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "hello",
     executeTool: async () => "unused",
@@ -39,7 +40,7 @@ test("exhausts retry attempts and uses exponential capped backoff", async () => 
   const sleeps = [];
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider,
       initialUserMessage: "hello",
       executeTool: async () => "unused",
@@ -65,7 +66,7 @@ test("does not retry a non-retryable provider error", async () => {
   const provider = createFakeProvider([{ throw: failure }]);
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider,
       initialUserMessage: "hello",
       executeTool: async () => "unused",
@@ -100,7 +101,7 @@ test("ends completion when a signal appears in a no-tool response", async () => 
     { content: [{ type: "text", text: "结果已完成: DONE" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "查找结果",
     executeTool: async () => "found",
@@ -118,7 +119,7 @@ test("ends immediately when completion has no tool history", async () => {
     { content: [{ type: "text", text: "普通回复" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "你好",
     executeTool: async () => "unused",
@@ -140,7 +141,7 @@ test("continues after transition text when tools were used", async () => {
     { content: [{ type: "text", text: "完成 DONE" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "开始",
     executeTool: async () => "ok",
@@ -167,7 +168,7 @@ test("forces completion after maxNoToolRounds without a signal", async () => {
     { content: [{ type: "text", text: "不应调用" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "开始",
     executeTool: async () => "ok",
@@ -189,7 +190,7 @@ test("completion false preserves the v0.0 end-turn behavior", async () => {
     { content: [{ type: "text", text: "过渡文本" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "开始",
     executeTool: async () => "ok",
@@ -208,7 +209,7 @@ test("continues max_tokens responses in one assistant message", async () => {
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "write",
     executeTool: async () => "unused",
@@ -298,7 +299,7 @@ test("compacts context before the second round and records its payload and stats
     },
   };
 
-  const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
+  const result = await runDirect({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",
@@ -366,7 +367,7 @@ test("folding remains terminating with and without a transcript store", async ()
       },
     };
 
-    const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
+    const result = await runDirect({ capabilities: { ports: { strategy: strategy } },
       provider,
       initialUserMessage: "fold task",
       executeTool: async () => "tool result",

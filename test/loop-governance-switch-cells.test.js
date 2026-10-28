@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 // issue #177 刀5 **F-2** 的行为锚定测试（纯新增，不改任何既有断言语义）。
@@ -48,7 +48,7 @@ async function runEndTurnJudge({ reflectionBase, env, judgeScript }) {
   const judge = createFakeProvider(judgeScript);
   const records = [];
   try {
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider,
       initialUserMessage: "task",
       executeTool: async () => "ok",
@@ -70,7 +70,7 @@ test("F-2 roundJudgeEnabled 初值：开着的格子让 end_turn 轮走 judge_do
   const judge = createFakeProvider([judgeJson(ON_TRACK)]);
   const provider = createFakeProvider([textEndTurn("最终答案")]);
   const records = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "ok",
@@ -137,7 +137,7 @@ async function runFailureFixture({ judgeScript, maxRounds, judgeFailureLimit, wi
   const provider = createFakeProvider(JUDGE_PROVIDER_SCRIPT);
   const judge = createFakeProvider(judgeScript);
   const records = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "工作",
     executeTool: async () => "ok",
@@ -217,7 +217,7 @@ async function runNormalizeCase({ env, reflectionBase, wrapup, normalizeText, pr
     judge: { provider: normalizer },
   };
   try {
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider,
       initialUserMessage: "工作",
       executeTool: async () => "ok",

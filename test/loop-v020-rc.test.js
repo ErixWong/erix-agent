@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { KitError } from "../src/providers/errors.js";
 import { computeBudget } from "../src/compact/budget.js";
@@ -24,7 +25,7 @@ test("structured executeTool receives context and returns tool metadata", async 
   ]);
   let received;
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "look up x",
     executeTool: async (options) => {
@@ -80,7 +81,7 @@ test("structured executeTool supports destructured tool fields", async () => {
   ]);
   const calls = [];
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "sum",
     executeTool: async ({ name, input }) => {
@@ -99,7 +100,7 @@ test("structured executeTool observes loop abort", async () => {
   const provider = createFakeProvider([toolResponse("abort-1")]);
   let toolSignal;
 
-  const run = runToolLoop({
+  const run = runDirect({
     provider,
     initialUserMessage: "abort",
     executeTool: ({ signal }) => new Promise((resolve, reject) => {
@@ -121,7 +122,7 @@ test("completion is enabled by default after a tool round", async () => {
     { content: [{ type: "text", text: "still working" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "finish the work",
     executeTool: async () => "worked",
@@ -151,7 +152,7 @@ test("derives the compaction budget from model metadata", async () => {
     },
   };
 
-  await runToolLoop({ capabilities: { ports: { strategy: strategy } },
+  await runDirect({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "budget",
     executeTool: async () => "unused",
@@ -171,7 +172,7 @@ test("derives the compaction budget from model metadata", async () => {
 
 test("rejects plain modelConfig at the fine-grained entry point", async () => {
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider: createFakeProvider([
         { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
       ]),
@@ -188,7 +189,7 @@ test("rejects plain modelConfig at the fine-grained entry point", async () => {
 
 test("rejects invalid explicit compaction budgets", async () => {
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider: createFakeProvider([]),
       initialUserMessage: "invalid",
       executeTool: async () => "unused",
@@ -221,7 +222,7 @@ test("enforces the budget after an oversized fold result", async () => {
     },
   };
 
-  const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
+  const result = await runDirect({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "budget",
     executeTool: async () => "worked",
@@ -315,7 +316,7 @@ test("does not compact from cumulative API usage when local context fits", async
     },
   };
 
-  const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
+  const result = await runDirect({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",
@@ -351,7 +352,7 @@ test("keeps the configured keepRounds when only API usage is over budget", async
     },
   };
 
-  await runToolLoop({ capabilities: { ports: { strategy: strategy } },
+  await runDirect({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",
@@ -396,7 +397,7 @@ test("does not compact when per-request input fits budget and local context fits
     },
   };
 
-  const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
+  const result = await runDirect({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",
@@ -415,7 +416,7 @@ test("compacts when the local context estimate exceeds the budget", async () => 
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",
@@ -440,7 +441,7 @@ test("injects a task reminder after a late welcome response", async () => {
     { content: [{ type: "text", text: "continued work" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "complete the task",
     executeTool: async () => "worked",
@@ -469,7 +470,7 @@ test("checkpoints before tools and resumes without replaying an executed tool", 
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "checkpoint",
     executeTool: async () => {
@@ -563,7 +564,7 @@ test("fails closed when a checkpoint cannot be persisted before a tool", async (
   let executions = 0;
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider,
       initialUserMessage: "checkpoint failure",
       executeTool: async () => {
@@ -596,7 +597,7 @@ test("fails closed after a tool when its executed checkpoint cannot be persisted
   };
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider: createFakeProvider([
         toolResponse("post-checkpoint-failure", "work"),
       ]),
@@ -628,7 +629,7 @@ test("none persistence mode does not call a save-only checkpoint writer", async 
   let executions = 0;
   let saveAttempts = 0;
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "save only",
     executeTool: async () => {
@@ -659,7 +660,7 @@ test("executes tools normally without a checkpoint store", async () => {
   ]);
   let executions = 0;
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "no checkpoint",
     executeTool: async () => {
@@ -679,7 +680,7 @@ test("none persistence mode ignores an incomplete store without stopping the loo
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "persist",
     executeTool: async () => "unused",
@@ -717,7 +718,7 @@ test("keeps fold round numbers global across loop compactions", async () => {
     },
   };
 
-  const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
+  const result = await runDirect({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "global rounds",
     executeTool: async () => "worked",

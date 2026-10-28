@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createDeterministicRunState } from "../src/run-state.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
@@ -55,7 +56,7 @@ test("策略折叠的轮数与导航记录累计进 run-state 的 fold 计数（
     },
   };
 
-  const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
+  const result = await runDirect({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",

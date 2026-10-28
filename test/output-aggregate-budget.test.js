@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { estimateTokens } from "../src/tokens.js";
@@ -84,7 +84,7 @@ async function runRound({
   ]);
   let sequential = 0;
   const events = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "run tools",
     executeTool: async ({ id }) => {
@@ -395,7 +395,7 @@ test("intercepted control results are neither counted nor archived", async (t) =
     assert.ok(nearFullCost > AGGREGATE_BUDGET - 30);
     const store = createMemoryTranscriptStore();
     const events = [];
-    await runToolLoop({
+    await runDirect({
       provider: createFakeProvider([toolResponseCalls(["i1", "i2", "i3"]), DONE]),
       initialUserMessage: "task",
       executeTool: async ({ id }) => (id === "i1" ? nearFull : "SHORT"),
@@ -430,7 +430,7 @@ test("failed results: is_error and the key error snippet survive the stub", asyn
   const runId = "agg-failure";
   const events = [];
   const provider = createFakeProvider([toolResponseCalls(["f1", "f2"]), DONE]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "run",
     executeTool: async ({ id }) => (id === "f2" ? { content: boom, success: false } : "small-head"),
@@ -489,7 +489,7 @@ test("round judge sees the stub (it must not misjudge the replaced original)", a
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
   let call = 0;
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async ({ id }) => {

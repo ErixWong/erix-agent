@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { projectTranscriptForDisplay } from "../../src/display/projection.js";
 import { projectTranscriptForDisplay as exportedProjection } from "../../src/index.js";
-import { runToolLoop } from "../../src/loop/orchestrator.js";
+import { runDirect } from "./../helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { createFoldStatisticalStrategy } from "../../src/compact/fold-statistical.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
@@ -506,7 +506,7 @@ test("projects records produced by a real run (seed, tool rounds, real fold summ
     { content: [{ type: "text", text: "all done" }], stopReason: "end_turn" },
   ]);
   const store = createMemoryTranscriptStore();
-  await runToolLoop({ capabilities: { ports: { strategy: createFoldStatisticalStrategy() } },
+  await runDirect({ capabilities: { ports: { strategy: createFoldStatisticalStrategy() } },
     provider,
     initialUserMessage: "do the thing",
     executeTool: async ({ id }) => `result for ${id} ${"y".repeat(200)}`,

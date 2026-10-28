@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -29,7 +29,7 @@ test("compactionStats exposes selected layer details through result, state, arch
   ]);
   const store = createMemoryTranscriptStore();
   const events = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "start",
     executeTool: async ({ id }) => `result for ${id} ${"x".repeat(200)}`,

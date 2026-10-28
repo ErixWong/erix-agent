@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { makeStateView } from "../src/loop/state-view.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -62,7 +62,7 @@ function spyStrategy({ compactOnCall = null, compactImpl = null } = {}) {
 }
 
 async function runLoop({ script, strategy, context, options = {} }) {
-  return runToolLoop({
+  return runDirect({
     provider: createFakeProvider(script),
     initialUserMessage: "start",
     executeTool: async () => "worked",
@@ -493,7 +493,7 @@ test("E1 返回载荷的键集合与相邻字段形状（防止接线时顺手�
 test("E2 finalGuard 载荷的 messages 是深拷贝，宿主回调改不动循环内部状态", async () => {
   const payloads = [];
   const spy = spyStrategy();
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider(toolScript(1)),
     initialUserMessage: "start",
     executeTool: async () => "worked",

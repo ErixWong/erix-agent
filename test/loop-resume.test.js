@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { renderConversation } from "../src/reflection/judge.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createDeterministicRunState } from "../src/run-state.js";
@@ -257,7 +258,7 @@ test("resumes after three rounds without replaying paid provider calls", async (
     { content: [{ type: "text", text: "paused" }], stopReason: "end_turn" },
   ]);
 
-  const firstResult = await runToolLoop({
+  const firstResult = await runDirect({
     provider: firstProvider,
     initialUserMessage: "start",
     executeTool: async ({ input }) => `completed-${input.step}`,
@@ -299,7 +300,7 @@ test("resumes after three rounds without replaying paid provider calls", async (
   const resumedProvider = createFakeProvider([
     { content: [{ type: "text", text: "round four" }], stopReason: "end_turn" },
   ]);
-  const resumedResult = await runToolLoop({
+  const resumedResult = await runDirect({
     provider: resumedProvider,
     initialUserMessage: "must be ignored",
     // #498 S3 (`input` slice A): `messages` is the leaf alias of the retired flat `initialMessages`.
@@ -354,7 +355,7 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
   }]);
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider: firstProvider,
       initialUserMessage: "run three tools",
       executeTool: async ({ id }) => {
@@ -932,7 +933,7 @@ test("resume rejects an empty transcript", async () => {
   const provider = createFakeProvider([]);
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider,
       initialUserMessage: "ignored",
       executeTool: async () => "unused",
@@ -973,7 +974,7 @@ test("resumes folded checkpoints from the persisted transcript anchor", async ()
     };
 
     await assert.rejects(
-      runToolLoop({ capabilities: { ports: { strategy: strategy } },
+      runDirect({ capabilities: { ports: { strategy: strategy } },
         provider: firstProvider,
         initialUserMessage: "fold-base-input",
         executeTool: ({ signal }) => {
@@ -1076,7 +1077,7 @@ test("keeps the initial input when request-view injection meets a tiny budget", 
   };
 
   await assert.rejects(
-    runToolLoop({ capabilities: { ports: { strategy: strategy } },
+    runDirect({ capabilities: { ports: { strategy: strategy } },
       provider: firstProvider,
       initialUserMessage: "fold-base-input",
       executeTool: ({ signal }) => {
@@ -1135,7 +1136,7 @@ test("archives replayed tool results without duplicating multiple resume tails",
   }]);
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider: firstProvider,
       initialUserMessage: "user-one",
       executeTool: ({ signal }) => {
@@ -1217,7 +1218,7 @@ test("resumed session gets its own round budget and persists the continuation ro
     },
     { content: [{ type: "text", text: "session-one-final" }], stopReason: "end_turn" },
   ]);
-  const first = await runToolLoop({
+  const first = await runDirect({
     provider: firstProvider,
     initialUserMessage: "session one task",
     executeTool: async ({ input }) => `done-${input.step}`,
@@ -1329,7 +1330,7 @@ test("engine round records are not deduped away by a host row with the same roun
     },
     { content: [{ type: "text", text: "engine-answer" }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "engine task",
     executeTool: async () => "tool-out",
@@ -1385,7 +1386,7 @@ test("resume with a store lacking snapshot/run-state loaders degrades with one d
   ]);
   let executions = 0;
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     store,
     runId: "resume-no-loaders",
@@ -1454,7 +1455,7 @@ test("resume with a stale snapshot (loader present, round behind transcript) doe
     { content: [{ type: "text", text: "continued past stale snapshot" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     store,
     runId: "resume-stale-snapshot",
@@ -1492,7 +1493,7 @@ test("#323 强制收尾指令对主模型可见、但不进 judge 输入（rende
     { content: [{ type: "text", text: "forced-final-draft" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "cap this run",
     executeTool: async () => "ok",
@@ -1566,7 +1567,7 @@ async function runTwoRoundsThenResume(runId, { withRunState }) {
   };
   if (!withRunState) store.loadRunState = async () => undefined;
 
-  await runToolLoop({
+  await runDirect({
     provider: createFakeProvider([
       {
         content: [

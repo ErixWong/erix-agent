@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createDeterministicRunState } from "../src/run-state.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
@@ -32,7 +33,7 @@ test("两个工具失败累计成 errors.tool=2（ctx 读-改-写与 run-state �
     toolStep(2),
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "go",
     // 每次都抛 ⇒ `run-snapshot-executor.js` 里 `isError=true` ⇒ `ctx.toolErrorCount += 1` 走两次
@@ -55,7 +56,7 @@ test("低预算把 budget.lowBudgetPrompted 写成真值（不是初值的假象
     toolStep(1),
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "go",
     executeTool: async () => "ok",
@@ -135,7 +136,7 @@ test("run snapshot 落盘失败被计入 errors.checkpoint（旧键名 checkpoin
   ]);
   let thrown = null;
   try {
-    await runToolLoop({
+    await runDirect({
       provider,
       initialUserMessage: "go",
       executeTool: async () => "ok",

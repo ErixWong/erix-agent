@@ -18,6 +18,7 @@ import {
 import { createCliAssemblyRoot } from "../bin/assembly-root.js";
 import { runChat } from "../bin/cli.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createFileTranscriptStore, safeRunId } from "../src/store/file.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { makeTmp } from "./helpers/tmp.js";
@@ -641,7 +642,7 @@ test("runRepl preserves new input when resuming an aborted tool", async () => {
 
   try {
     await assert.rejects(
-      runToolLoop({
+      runDirect({
         provider: firstProvider,
         initialUserMessage: "user-one",
         executeTool: () => {

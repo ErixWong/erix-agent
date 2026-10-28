@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -45,7 +45,7 @@ test("required persistence validates required store methods before provider or t
     let executions = 0;
 
     await assert.rejects(
-      runToolLoop({
+      runDirect({
         provider,
         store,
         runId: `missing-${missing}`,
@@ -70,7 +70,7 @@ test("missing optional snapshot/run-state methods do not fail startup (issue #78
     delete store[missing];
     const provider = textProvider();
 
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider,
       store,
       runId: `missing-optional-${missing}`,
@@ -100,7 +100,7 @@ test("required persistence retries appendRound and terminates with a transcript 
   ]);
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider,
       store,
       runId: "append-failure",
@@ -143,7 +143,7 @@ test("snapshot failure before a tool reports not_started and skips execution", a
   let executions = 0;
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider: toolProvider("before"),
       store,
       runId: "checkpoint-before",
@@ -174,7 +174,7 @@ test("snapshot failure after a tool reports executed_uncommitted and terminates"
   let executions = 0;
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider: toolProvider("after"),
       store,
       runId: "checkpoint-after",
@@ -225,7 +225,7 @@ test("intercept pre-tool snapshot failure fails closed before judging or executi
   let executions = 0;
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider,
       store,
       runId: "intercept-before-failure",
@@ -281,7 +281,7 @@ test("intercept result snapshot failure terminates without running the blocked t
   let executions = 0;
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider,
       store,
       runId: "intercept-result-failure",
@@ -328,7 +328,7 @@ test("appendRound failure after a tool reports executed_uncommitted", async () =
   let executions = 0;
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider: toolProvider("append-after-tool"),
       store,
       runId: "append-after-tool",
@@ -357,7 +357,7 @@ test("appendRound failure preserves the independent failed run-state", async () 
   };
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider: textProvider("done"),
       store,
       runId: "append-failure-state",
@@ -378,7 +378,7 @@ test("appendRound failure preserves the independent failed run-state", async () 
 
 test("none persistence mode is a no-op even with an incomplete failing store", async () => {
   let calls = 0;
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: textProvider("no persistence needed"),
     store: {
       appendRound: async () => {
@@ -403,7 +403,7 @@ test("persistence_error events carry the port field", async () => {
   };
   const events = [];
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider: textProvider(),
       store,
       runId: "port-field",
@@ -422,7 +422,7 @@ test("diagnostics sink failure is recorded in result.unpersisted as a delivery f
   const store = fullStore();
   let sinkCalls = 0;
   const sinkErrors = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: textProvider("sink broken"),
     store,
     runId: "sink-failure",
@@ -456,7 +456,7 @@ test("diagnostics sink failure is recorded in result.unpersisted as a delivery f
     throw new Error("append down");
   };
   const events = [];
-  const result2 = await runToolLoop({
+  const result2 = await runDirect({
     provider: textProvider(),
     store: failingStore,
     runId: "sink-failure-real",
@@ -487,7 +487,7 @@ test("diagnostics sink failure is recorded in result.unpersisted as a delivery f
 });
 
 test("happy-path result always exposes unpersisted and completionErrors", async () => {
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: textProvider("clean run"),
     store: fullStore(),
     runId: "ledger-schema",
@@ -517,7 +517,7 @@ test("minimal store (required methods only) runs to completion with one-shot cap
     },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     store,
     runId: "minimal-store-run",

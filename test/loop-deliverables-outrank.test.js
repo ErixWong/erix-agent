@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { makeTmp } from "./helpers/tmp.js";
 
@@ -63,7 +63,7 @@ async function runCell({ mode, guard }) {
   const dir = await makeTmp("erix-outrank-");
   const target = join(dir, "answer.txt");
   const events = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       ...(mode === "pass" ? [toolUse("w1", "writeFile", { path: target, content: "42" })] : []),
       wrapup({ done: true, summary: "s", output: "o" }),
@@ -308,7 +308,7 @@ test("#392 R2-6 未声明 deliverables + skip：payload 无判据键、事件形
   const dir = await makeTmp("erix-outrank-additive-");
   let payload;
   const events = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([wrapup({ done: true, summary: "s", output: "o" })]),
     initialUserMessage: "x",
     cwd: dir,

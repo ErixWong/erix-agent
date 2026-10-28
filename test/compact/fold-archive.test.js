@@ -6,7 +6,7 @@
 //   C 宿主对超限记录回 400 时，run **不得**终局为 `persistence_failed`。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runToolLoop } from "../../src/loop/orchestrator.js";
+import { runDirect } from "./../helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
 import {
@@ -136,7 +136,7 @@ test("#460 宿主拒超限记录：剥掉归档重试，run 不终局为 persist
     return appendRound(runId, record);
   };
 
-  const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
+  const result = await runDirect({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",
@@ -258,7 +258,7 @@ test("#460 默认上限：折叠记录不带无界归档（判据 A，默认配�
     return appendRound(runId, record);
   };
 
-  await runToolLoop({ capabilities: { ports: { strategy: strategy } },
+  await runDirect({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "start",
     executeTool: async () => "worked",

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { parseReflectionDecision } from "../src/loop/reflection.js";
 import { parseModelJson } from "../src/text/parse-model-json.js";
 import { jsonCandidates } from "../src/text/json-candidates.js";
@@ -88,7 +88,7 @@ test("reflection extends the budget and injects the plan into the next task requ
     judgeResponse({ done: true, confidence: 0.9, reason: "完成", evidence: "已验证" }),
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "完成一个重要任务",
     executeTool: async () => "ok",
@@ -141,7 +141,7 @@ test("default extension step scales with maxRounds instead of a fixed +32 (issue
     judgeResponse({ done: true, confidence: 0.9, reason: "完成", evidence: "已验证" }),
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "完成一个重要任务",
     executeTool: async () => "ok",
@@ -171,7 +171,7 @@ test("judge can stop before the hard round limit without truncation", async () =
     judgeResponse({ done: true, confidence: 0.9, reason: "已完成", evidence: "已完成" }),
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "完成任务",
     executeTool: async () => "ok",
@@ -211,7 +211,7 @@ test("stalled judge extension injects a change-of-approach instruction", async (
     judgeResponse({ done: true, confidence: 0.9, reason: "完成", evidence: "已完成" }),
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "解决问题",
     executeTool: async () => "ok",
@@ -241,7 +241,7 @@ test("reflection remains disabled by default", async () => {
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "短任务",
     executeTool: async () => "ok",
@@ -262,7 +262,7 @@ test("stores and strips an inline L1 summary", async () => {
     }],
     stopReason: "end_turn",
   }]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "实现任务",
     executeTool: async () => "unused",
@@ -284,7 +284,7 @@ test("missing inline summaries downgrade to missing without retrying", async () 
     content: [{ type: "text", text: "没有标记" }],
     stopReason: "end_turn",
   }]);
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "任务",
     executeTool: async () => "unused",
@@ -304,7 +304,7 @@ test("memory loss is nudged in the same round and resets no-tool streak", async 
     { content: [{ type: "text", text: "你好，我是你的助手。" }], stopReason: "end_turn" },
     { content: [{ type: "text", text: "恢复任务" }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "继续做事",
     executeTool: async () => "ok",
@@ -319,7 +319,7 @@ test("memory loss is nudged in the same round and resets no-tool streak", async 
 
 test("resume judge sees the rebuilt L1 and L0 evidence", async () => {
   const store = createMemoryTranscriptStore();
-  await runToolLoop({
+  await runDirect({
     provider: createFakeProvider([
       {
         content: [{ type: "tool_use", id: "resume-tool", name: "work", input: {} }],
@@ -356,7 +356,7 @@ test("resume judge sees the rebuilt L1 and L0 evidence", async () => {
       plan: "收敛",
     }),
   ]);
-  await runToolLoop({
+  await runDirect({
     provider: resumedProvider,
     initialUserMessage: "ignored",
     executeTool: async () => "unused",
@@ -382,7 +382,7 @@ test("continuation exhaustion stops before reflection can extend", async () => {
     { content: [{ type: "text", text: "{\"continue\":true,\"plan\":\"more\"}" }] },
     { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "limited",
     executeTool: async () => "unused",
@@ -638,7 +638,7 @@ test("#323 extend 续跑文本对主模型可见、但不进真实 judge 请求�
     judgeResponse({ done: true, confidence: 0.9, reason: "完成", evidence: "已验证" }),
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "完成一个重要任务",
     executeTool: async () => "ok",
@@ -720,7 +720,7 @@ async function runAdvisoryCase({ advisory, judgeScript, providerScript, maxRound
     ? judgeScript()
     : judgeScript ?? [judgeDoneResponse(0.7)]);
   const executed = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "把工单做完",
     executeTool: async (input) => {
@@ -941,7 +941,7 @@ test("#322 开启时 uncertain 才出中性提示；关闭时该注入点一个�
 
 test("#322 非法值报错：reflection.judgeDoneAdvisory 非布尔 ⇒ 启动期 TypeError", async () => {
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider: createFakeProvider([{ content: [{ type: "text", text: "x" }] }]),
       initialUserMessage: "任务",
       executeTool: async () => "ok",

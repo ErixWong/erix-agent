@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 
@@ -630,7 +631,7 @@ test("pr-b #173: a throwing startup onEvent on the capability-degraded path is i
   const seen = [];
   const observers = observerSink();
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "go",
     executeTool: async () => "ok",

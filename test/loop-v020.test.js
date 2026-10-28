@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { KitError } from "../src/providers/errors.js";
 
 test("rejects invalid initial message pairs before the first provider call", async () => {
@@ -49,7 +50,7 @@ test("revalidates messages before each later provider round", async () => {
   };
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider,
       initialUserMessage: "start",
       executeTool: async () => "done",
@@ -80,7 +81,7 @@ test("allows a truncated tool response to request its continuation", async () =>
     },
   };
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "start",
     executeTool: async () => "unused",
@@ -116,7 +117,7 @@ test("compacts over-budget messages during max_tokens continuation", async () =>
     },
   };
 
-  const result = await runToolLoop({ capabilities: { ports: { strategy: strategy } },
+  const result = await runDirect({ capabilities: { ports: { strategy: strategy } },
     provider,
     initialUserMessage: "start",
     executeTool: async () => "unused",

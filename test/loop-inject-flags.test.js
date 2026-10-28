@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 // issue #177 刀5 E 组 M1 的**行为锚定**测试（纯新增，不改任何既有断言语义）。
@@ -35,7 +35,7 @@ const runFolded = async ({ shape, maxRounds }) => {
     ...steps,
     { content: [{ type: "text", text: "最终结论：完成" }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "scan it",
     executeTool: async ({ input }) => (input.big ? big : "small result"),

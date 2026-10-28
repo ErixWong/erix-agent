@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 
 test("restores a round snapshot and flushes only the successful attempt events", async () => {
   const text = [];
@@ -27,7 +27,7 @@ test("restores a round snapshot and flushes only the successful attempt events",
     },
   };
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "hello",
     executeTool: async () => "unused",
@@ -83,7 +83,7 @@ test("aborting during retry backoff stops without starting another provider atte
   const sleepImpl = (_delay, signal) => new Promise((resolve, reject) => {
     signal.addEventListener("abort", () => reject(signal.reason), { once: true });
   });
-  const run = runToolLoop({
+  const run = runDirect({
     provider,
     initialUserMessage: "hello",
     executeTool: async () => "unused",

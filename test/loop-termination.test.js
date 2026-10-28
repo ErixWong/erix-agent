@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { KitError } from "../src/providers/errors.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 test("returns end_turn for a normal model completion", async () => {
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]),
@@ -28,7 +28,7 @@ test("returns no_tool after the configured no-tool streak", async () => {
     { content: [{ type: "text", text: "still not yet" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "work",
     executeTool: async () => "worked",
@@ -52,7 +52,7 @@ test("adds the low-budget hint only when two rounds or fewer remain", async () =
     },
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "work",
     maxRounds: 4,
@@ -73,7 +73,7 @@ test("returns max_rounds_cap when the effective round limit is reached", async (
     },
     { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "continue",
     maxRounds: 2,
@@ -91,7 +91,7 @@ test("returns max_rounds_cap when the effective round limit is reached", async (
 });
 
 test("returns continuation_exhausted after max-token continuations run out", async () => {
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       { content: [{ type: "text", text: "part one" }], stopReason: "max_tokens" },
       { content: [{ type: "text", text: "part two" }], stopReason: "max_tokens" },
@@ -118,7 +118,7 @@ test("annotates aborted errors with an aborted termination", async () => {
       });
     },
   };
-  const run = runToolLoop({
+  const run = runDirect({
     provider,
     initialUserMessage: "wait",
     executeTool: async () => "unused",
@@ -163,7 +163,7 @@ test("carries accumulated usage and rounds on the thrown abort error (issue #180
   };
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider,
       initialUserMessage: "work",
       executeTool: async () => "worked",
@@ -208,7 +208,7 @@ test("annotates failed provider errors with a failed termination", async () => {
   const provider = createFakeProvider([{ throw: failure }]);
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider,
       initialUserMessage: "fail",
       executeTool: async () => "unused",
@@ -236,7 +236,7 @@ test("carries the error code on a failed termination (issue #176)", async () => 
   const provider = createFakeProvider([{ throw: failure }]);
 
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider,
       initialUserMessage: "fail",
       executeTool: async () => "unused",
@@ -257,7 +257,7 @@ test("carries the error code on a failed termination (issue #176)", async () => 
 });
 
 test("keeps errorCode off non-failed terminations (issue #176 additive shape)", async () => {
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]),
@@ -282,7 +282,7 @@ test("returns a truncated stall termination after the repeated-call limit", asyn
     },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "repeat",
     executeTool: async () => "ok",
@@ -304,7 +304,7 @@ test("can disable the forced final call with the environment switch", async () =
       content: [{ type: "tool_use", id: "work", name: "work", input: {} }],
       stopReason: "tool_use",
     }]);
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider,
       initialUserMessage: "work",
       maxRounds: 1,
@@ -321,7 +321,7 @@ test("can disable the forced final call with the environment switch", async () =
 });
 
 test("caps the run when the judge declines extension", async () => {
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       {
         content: [{ type: "tool_use", id: "work-1", name: "work", input: {} }],

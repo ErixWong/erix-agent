@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -13,7 +14,7 @@ test("returns a single-turn final response", async () => {
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "hello",
     executeTool: async () => "unused",
@@ -33,7 +34,7 @@ test("marks the stable prefix by default and supports opting out", async () => {
     const provider = createFakeProvider([
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]);
-    await runToolLoop({
+    await runDirect({
       provider,
       system: "stable system",
       wrapup: false,
@@ -66,7 +67,7 @@ test("feeds tool results back to the provider on the next round", async () => {
     { content: [{ type: "text", text: "found" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "find x",
     executeTool: async ({ name, input }) => `${name}:${input.key}`,
@@ -106,7 +107,7 @@ test("returns truncated after maxRounds", async () => {
     { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "continue",
     maxRounds: 2,
@@ -122,7 +123,7 @@ test("returns truncated after maxRounds", async () => {
 test("rejects non-positive, non-finite, and non-integer maxRounds", async () => {
   for (const maxRounds of [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5]) {
     await assert.rejects(
-      runToolLoop({
+      runDirect({
         provider: createFakeProvider([]),
         initialUserMessage: "invalid",
         maxRounds,
@@ -136,7 +137,7 @@ test("rejects non-positive, non-finite, and non-integer maxRounds", async () => 
 
 test("rejects unknown runToolLoop options with a close suggestion", async () => {
   await assert.rejects(
-    runToolLoop({
+    runDirect({
       provider: createFakeProvider([]),
       initialUserMessage: "invalid option",
       executeTool: async () => "unused",
@@ -157,7 +158,7 @@ test("nudges repeated calls before stopping after a consecutive stall streak", a
       { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "repeat",
     maxRounds: 8,
@@ -186,7 +187,7 @@ test("clears the stall streak after a normal tool call", async () => {
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "repeat",
     maxRounds: 6,
@@ -213,7 +214,7 @@ test("stall detection defaults to consecutive so interleaved re-reads are not st
   ];
   const run = async (options) => {
     const provider = createFakeProvider(readPattern());
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider,
       initialUserMessage: "重读已读文件",
       executeTool: async () => "ok",
@@ -253,7 +254,7 @@ test("feeds executeTool errors back as is_error and continues", async () => {
     { content: [{ type: "text", text: "recovered" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "run",
     executeTool: async () => {
@@ -289,7 +290,7 @@ test("onToolResult can rewrite a result before it is fed back", async () => {
     { content: [{ type: "text", text: "redacted" }], stopReason: "end_turn" },
   ]);
 
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "read",
     executeTool: async () => "top secret",
@@ -310,7 +311,7 @@ test("stores each round snapshot and can rebuild the transcript", async () => {
     { content: [{ type: "text", text: "complete" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     runId: "run-1",
     initialUserMessage: "start",
@@ -347,7 +348,7 @@ test("accumulates input and output usage", async () => {
     },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "start",
     executeTool: async () => "done",
@@ -372,7 +373,7 @@ test("stall detection can be disabled", async () => {
     { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "repeat",
     maxRounds: 3,
@@ -396,7 +397,7 @@ test("stallDetection:false overrides ERIX_STALL_MODE env", async () => {
       content: [{ type: "tool_use", id: "call", name: "same", input: { n: 1 } }],
       stopReason: "tool_use",
     }, { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" }]);
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider,
       initialUserMessage: "env-ignored",
       maxRounds: 6,
@@ -435,7 +436,7 @@ test("ERIX_STALL_MODE env overrides stall detection mode", async () => {
       { content: [{ type: "text", text: "cannot recover" }], stopReason: "end_turn" },
     ]);
 
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider,
       initialUserMessage: "env-override",
       maxRounds: 5,
@@ -461,7 +462,7 @@ test("final budget round omits tools and finishes with text (no max_rounds_cap t
     { content: [{ type: "text", text: "最终结论：任务完成" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async () => "ok",
@@ -493,7 +494,7 @@ test("final budget round skips intercept audit (no tools to judge)", async () =>
   ]);
   const executed = [];
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool: async ({ input }) => {
@@ -533,7 +534,7 @@ test("tool result TTL fold: placeholder replaces aged large results in later req
     { content: [{ type: "text", text: "最终结论：完成" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "scan it",
     executeTool: async () => big,
@@ -609,7 +610,7 @@ test("low-budget injection fires once without compaction events", async () => {
   ]);
   let semanticCalls = 0;
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "work",
     executeTool: async () => "small result",
@@ -657,7 +658,7 @@ test("tool result TTL fold: disabled via ttl=0 keeps originals in every request"
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
 
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "go",
     executeTool: async () => big,
@@ -692,7 +693,7 @@ test("cacheCapable defaults TTL folding off while explicit TTL remains authorita
       })),
       { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
     ]);
-    await runToolLoop({
+    await runDirect({
       provider,
       initialUserMessage: "go",
       executeTool: async () => big,

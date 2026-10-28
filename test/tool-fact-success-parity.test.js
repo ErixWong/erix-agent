@@ -17,6 +17,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -30,7 +31,7 @@ function toolRound(id, name = "work") {
 async function runOnce(executeTool, { script = [toolRound("call-1"), DONE], options = {} } = {}) {
   const provider = createFakeProvider(script);
   const events = [];
-  await runToolLoop({
+  await runDirect({
     provider,
     initialUserMessage: "task",
     executeTool,

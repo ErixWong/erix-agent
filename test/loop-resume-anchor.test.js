@@ -15,6 +15,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { countResumeAnchor } from "../src/loop/resume-manager.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { foldLedgerMessages } from "../src/store/message-rows.js";
@@ -131,7 +132,7 @@ test("#425 stream + partialPersistence：恢复后终稿正文只出现一次（
     waitForPartial: true,
   });
 
-  await runToolLoop({
+  await runDirect({
     provider: firstProvider,
     store: inner,
     runId: RUN_ID,

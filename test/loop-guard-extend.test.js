@@ -19,7 +19,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runToolLoop } from "../src/loop/orchestrator.js";
+import { runDirect } from "./helpers/run-direct.js";
 import { PENDING_TOOL_RESULT_TEXT } from "../src/loop/orchestrator.js";
 import { FINAL_GUARD_EXTENDABLE_REASONS, FINAL_GUARD_NON_CONTINUABLE_REASONS } from "../src/loop/termination.js";
 import { pendingTrailingToolUses, validateMessages } from "../src/messages/rounds.js";
@@ -52,7 +52,7 @@ const capThenRevise = ({ optIn, guard, sink }) => {
     wrapup({ done: true, summary: "已补做", output: "完成" }),
     { times: 12, ...text("idle") },
   ]);
-  const run = runToolLoop({
+  const run = runDirect({
     provider,
     initialUserMessage: "做点事",
     maxRounds: 1,
@@ -146,7 +146,7 @@ test("#386-3 R4-2 finalGuardExtend:true：事件抬了上限、模型补做、�
 test("#386-3 R4-3 stall + opt-in ⇒ 不补跑（stall 的定义就是连续无进展，给它轮次是纯烧钱）", async () => {
   const events = [];
   let guardCalls = 0;
-  const result = await runToolLoop({
+  const result = await runDirect({
     // stall 的判据是「同一签名连续 4 次」+ `STALL_STREAK_LIMIT = 3` ⇒ 第 12 轮才停，
     // 所以预算必须给到 20 轮（给 10 轮会先撞 max_rounds_cap，测到的就不是 stall 这条判据）。
     provider: createFakeProvider(
@@ -188,7 +188,7 @@ test("#386-3 R4-3 stall + opt-in ⇒ 不补跑（stall 的定义就是连续无�
 test("#386-3 R4-4 同一个 run 内第二次撞 cap ⇒ 不再补（每 run 最多 1 次，即使 governor 还有额度）", async () => {
   const events = [];
   let guardCalls = 0;
-  const result = await runToolLoop({
+  const result = await runDirect({
     // 1 轮预算 + step 2 ⇒ 补跑后上限 3；再跑满 2 轮又撞 cap ⇒ 第二次 guard 仍是 revise。
     provider: createFakeProvider([
       toolUse("w1"),
@@ -237,7 +237,7 @@ test("#386-3 R4-5 补跑过一次的 run 落账本 → resume → 再撞 cap ⇒
 
   const firstEvents = [];
   let firstCalls = 0;
-  const first = await runToolLoop({
+  const first = await runDirect({
     provider: createFakeProvider(script()),
     initialUserMessage: "做点事",
     maxRounds: 1,
@@ -269,7 +269,7 @@ test("#386-3 R4-5 补跑过一次的 run 落账本 → resume → 再撞 cap ⇒
 
   const secondEvents = [];
   let secondCalls = 0;
-  const second = await runToolLoop({
+  const second = await runDirect({
     provider: createFakeProvider(script()),
     initialUserMessage: "做点事",
     maxRounds: 1,
@@ -310,7 +310,7 @@ test("#386-3 R4-6 聚合输出预算已撞线 + opt-in ⇒ 拒绝补跑，且没
     text("强制收尾"),
     { times: 12, ...text("idle") },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "输出很多内容",
     maxRounds: 1,
@@ -349,7 +349,7 @@ test("#386-3 R4-6 聚合输出预算已撞线 + opt-in ⇒ 拒绝补跑，且没
   // 对照组（单变量）：同一套选项、同一个 guard，只把工具输出换小 ⇒ 聚合层不撞线 ⇒ 桥照常放行。
   // 没有这一格，上面那格证明不了「拒绝」是预算闸造成的（可能只是别处顺手拦住了）。
   const controlEvents = [];
-  const control = await runToolLoop({
+  const control = await runDirect({
     provider: createFakeProvider([toolUse("small", "bigTool"), text("强制收尾"), { times: 12, ...text("idle") }]),
     initialUserMessage: "输出一点内容",
     maxRounds: 1,
@@ -383,7 +383,7 @@ test("#386-3 R4-6b 最近一次真实 API 输入 token 已超 budgetTokens + opt
       { ...text("强制收尾"), usage: { input_tokens: inputTokens, output_tokens: 5 } },
       { times: 12, ...text("idle") },
     ]);
-    const result = await runToolLoop({
+    const result = await runDirect({
       provider,
       initialUserMessage: "做点事",
       maxRounds: 1,
@@ -460,7 +460,7 @@ test("#386-3 R4-7 accept / skip / guard 抛异常 + max_rounds_cap ⇒ 都不触
 test("#386-3 R4-8 finalGuardExtend 只接受布尔：null / 数字 / 字符串 ⇒ TypeError（不许当 truthy 静默打开）", async () => {
   for (const value of [null, 1, "true", "false", {}, []]) {
     await assert.rejects(
-      () => runToolLoop({
+      () => runDirect({
         provider: createFakeProvider([text("done")]),
         initialUserMessage: "x",
         executeTool: async () => "ok",
@@ -475,7 +475,7 @@ test("#386-3 R4-8 finalGuardExtend 只接受布尔：null / 数字 / 字符串 �
     );
   }
   // 放行面：显式 `false` 与不传等价（= 今天）。
-  const off = await runToolLoop({
+  const off = await runDirect({
     provider: createFakeProvider([text("done")]),
     initialUserMessage: "x",
     executeTool: async () => "ok",
@@ -500,7 +500,7 @@ test("#386-3 补充 continuation_exhausted + opt-in ⇒ 同样可以补跑一次
     wrapup({ done: true, summary: "已补做", output: "完成" }),
     { times: 12, ...text("idle") },
   ]);
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider,
     initialUserMessage: "做点事",
     maxRounds: 6,
@@ -556,7 +556,7 @@ const toolResultFor = (messages, toolUseId) => messages
 test("#393 末轮带 tool_use + 默认关：同形状下逐字等于今天（标签，不是补跑，更不是 failed）", async () => {
   let guardCalls = 0;
   const events = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider(pendingTailScript()),
     initialUserMessage: "做点事",
     maxRounds: 1,
@@ -591,7 +591,7 @@ test("#393 末轮带 tool_use + opt-in：注入前先结清尾部，终局不是
   let guardCalls = 0;
   const events = [];
   const executed = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider(pendingTailScript()),
     initialUserMessage: "做点事",
     maxRounds: 1,
@@ -659,7 +659,7 @@ test("#393 末轮带 tool_use + opt-in：注入前先结清尾部，终局不是
 
 test("#393 末轮带多个 tool_use + opt-in：一条 user 消息补齐全部 id（不许只补第一个）", async () => {
   let guardCalls = 0;
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       toolUse("w1"),
       // 强制收尾那一轮回了两个工具调用（一条 assistant 消息里两个 tool_use 块）
@@ -702,7 +702,7 @@ test("#393 末轮带多个 tool_use + opt-in：一条 user 消息补齐全部 id
 test("#393 畸形尾巴（tool_use 没有 id）：拒绝补跑，落回 unverified/non_continuable（退路 B，不许 failed）", async () => {
   let guardCalls = 0;
   const events = [];
-  const result = await runToolLoop({
+  const result = await runDirect({
     provider: createFakeProvider([
       toolUse("w1"),
       // 非标准响应：tool_use 块没有 id ⇒ 补不出一条合法的 tool_result
