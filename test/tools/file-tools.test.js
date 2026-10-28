@@ -732,7 +732,15 @@ const READ_LINE_CAPACITY_ROLES = [
   //   111,133 → **112,481** 字节 / 2,014 → **2,025** 行 / 均行字节 55.1802 → **55.5462** / 容量 4,750 → **4,719**
   //   （描述里「this tool's own source fits」同步 4,750 → 4,719，同位数 ⇒ 字节中性）。
   //   容量 4,719 仍低于样本中位 6,532，「CJK 按比例压低行数」那条断言仍成立。容差常量一个都没动。
-  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 112_481, lines: 2_025, bytesPerLine: 55.5462, capacity: 4_719, cjkShare: 0.277407 } },
+  // 2026-10-28 第十一刷（issue #543，**不是数字漂了，是把证据从承诺里摘出去**）：
+  //   描述里 `measured minimum 3,903` 这半句**删掉了**（它不是承诺，是证据；A20 之后全树真最小值已是 3,901，
+  //   而 #537 的 `|实测 − 承诺| ≤ 50` 照样绿 ⇒ 一个活在绿色门禁里的假数字）。保留的是换算式
+  //   （`rounded down to the nearest 50`）与档位下界（`fewest ≥ 3,900 … no file … fewer than 3,900 lines`）。
+  //   本文件自己的描述句改了（净 +1,518 字节 / +11 行）⇒ `self` 行同片复测：
+  //   112,481 → **113,999** 字节 / 2,025 → **2,036** 行 / 均行字节 55.5462 → **55.9917** / 容量 4,719 → **4,681**
+  //   （描述里「this tool's own source fits」同步 4,719 → 4,681，同位数 ⇒ 字节中性，所以上面这一行就是终值）。
+  //   容量 4,681 仍低于样本中位 6,532，「CJK 按比例压低行数」那条断言仍成立。容差常量一个都没动。
+  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 113_999, lines: 2_036, bytesPerLine: 55.9917, capacity: 4_681, cjkShare: 0.281002 } },
 ];
 
 const READ_LINE_CAPACITY_DIRS = ["src", "bin", "examples"];
@@ -1023,12 +1031,13 @@ test("readFile 描述里的 floor == 全树真最小值（#453：样本外新文
   const claimMatch = description.match(/fewest\s*(?:\u2265\s*)?([\d,]+) lines/u);
   assert.ok(claimMatch, "描述里不再有 `fewest <数字> lines` 这一档 → 本测试的解析面失效（同步本测试，不许让断言静默变成永真）");
   const claim = Number(claimMatch[1].replace(/,/g, ""));
-  // #537：描述必须**自报这档是怎么来的**（实测最小值 + 取整方式），否则承诺值又退回一个无出处的裸数字。
-  const roundedMatch = description.match(/measured minimum ([\d,]+), rounded down to the nearest (\d+)/u);
-  assert.ok(roundedMatch, "描述不再自报 `measured minimum N, rounded down to the nearest 50`：承诺值会退回「裸数字」口径（#537）");
-  const disclosedMin = Number(roundedMatch[1].replace(/,/g, ""));
-  const roundingStep = Number(roundedMatch[2]);
-  assert.equal(roundingStep, 50, `描述的取整粒度是 ${roundingStep}，与本测试的推导口径（50 行一档）不一致 → 两边一起改`);
+  // #543：描述**不再**自报精确的 `measured minimum N`（精确实测值是**证据**，不是承诺：写进对外文案就等于
+  // 让每次 floor 换人都欠一次文案同步），但「档位是怎么来的」这句换算式必须还在，否则承诺值又退回一个无出处的裸数字。
+  assert.match(description, /rounded down to the nearest 50/u,
+    "描述不再说明档位是「向下取整到 50 行」得来的：承诺值会退回一个无出处的裸数字（#543）");
+  assert.doesNotMatch(description, /measured minimum [\d,]+/u,
+    "描述又自报了精确的 `measured minimum N`：实测最小值是**证据**不是承诺，写进面向模型的文案就等于让每次 floor 换人都欠一次文案同步"
+    + "（#543；承诺只有档位，档位由 `assertTierTight` 钉住）");
   // 全称句的**下界**也要与承诺值一致（比实测更宽 ⇒ 依然为真且不夸大）。
   const universalMatch = description.match(/no file in those three trees reads fewer than ([\d,]+)/u);
   assert.ok(universalMatch,
