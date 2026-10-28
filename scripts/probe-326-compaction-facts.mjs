@@ -51,16 +51,20 @@ const script = [
 const runId = "probe-fold";
 const store = createMemoryTranscriptStore();
 const p1 = createProvider(runId, script);
+// #546: 选项拼写迁移（只改落点，观察逻辑/打印/判据一字未动）：`runId` / `maxRounds` /
+// `completion` / `reflection` / `resume` 的扁平拼写已退役，家分别是 `config.run.*`
+// （#498 S3 A20 / A21 / A23b / #530 / A19）；`initialUserMessage` / `task` 早就是
+// `config.input.*` / `config.metadata.*`。同一个对象字面量里原先写了**两个 `config` 键**
+// （后者静默覆盖前者），这里并进同一棵树。
 const first = await runToolLoop({
   provider: p1,
-  config: { input: { initialUserMessage: `start ${"y".repeat(600)}` } },
   executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
-  maxRounds: 3,
-  completion: false,
-  reflection: false,
-  config: { folding: { context: { budgetTokens: 400, keepRounds: 0, strategy: "fold-llm" } } },
   store,
-  runId,
+  config: {
+    input: { initialUserMessage: `start ${"y".repeat(600)}` },
+    run: { runId, maxRounds: 3, completion: false, reflection: false },
+    folding: { context: { budgetTokens: 400, keepRounds: 0, strategy: "fold-llm" } },
+  },
 });
 const records1 = await store.load(runId);
 const flat1 = records1.flatMap((r) => r.messages ?? []);
@@ -83,16 +87,16 @@ console.log("journal fold fact rows:", JSON.stringify(foldFacts1));
 const p2 = createProvider(runId, script);
 const second = await runToolLoop({
   provider: p2,
-  resume: true,
-  runId,
   store,
   executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
-  maxRounds: 3,
-  completion: false,
-  reflection: false,
-  // #498 S3 (`metadata` A9): the flat `task` is retired at the name gate; its canonical home is
-  // `config.metadata.task` (the expansion phase writes it back onto `effectiveOptions.task`).
-  config: { metadata: { task: "continue" }, folding: { context: { budgetTokens: 400, keepRounds: 0, strategy: "fold-llm" } } },
+  config: {
+    // #498 S3 (`metadata` A9): the flat `task` is retired at the name gate; its canonical home is
+    // `config.metadata.task` (the expansion phase writes it back onto `effectiveOptions.task`).
+    metadata: { task: "continue" },
+    // #546: `resume` / `runId` / `maxRounds` / `completion` / `reflection` → 同一棵 `run` 子树。
+    run: { resume: true, runId, maxRounds: 3, completion: false, reflection: false },
+    folding: { context: { budgetTokens: 400, keepRounds: 0, strategy: "fold-llm" } },
+  },
 });
 console.log("resume termination:", second.termination.reason);
 console.log("resume summarizer calls:", p2.summaryRequests.length);
@@ -119,16 +123,15 @@ const ttlScript = [
 const p3 = createProvider(ttlRunId, ttlScript);
 const third = await runToolLoop({
   provider: p3,
-  config: { input: { initialUserMessage: "ttl task" } },
   executeTool: async ({ id }) => (id === "big"
     ? Array.from({ length: 120 }, (_v, i) => `${i + 1}: function bigFn${i}(a) { return a + ${i}; }`).join("\n")
     : `small ${id}`),
-  maxRounds: 6,
-  completion: false,
-  reflection: false,
-  config: { folding: { toolResultTtl: 1, toolResultFoldMinTokens: 200 } },
   store: ttlStore,
-  runId: ttlRunId,
+  config: {
+    input: { initialUserMessage: "ttl task" },
+    run: { runId: ttlRunId, maxRounds: 6, completion: false, reflection: false },
+    folding: { toolResultTtl: 1, toolResultFoldMinTokens: 200 },
+  },
 });
 const records3 = await ttlStore.load(ttlRunId);
 const flat3 = records3.flatMap((r) => r.messages ?? []);

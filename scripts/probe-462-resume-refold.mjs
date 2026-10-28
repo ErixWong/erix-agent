@@ -23,17 +23,27 @@ const toolStep = (n) => ({
 const endStep = (text) => ({ content: [{ type: "text", text }], stopReason: "end_turn" });
 const big = (n) => "x".repeat(n);
 const bodyBytes = (request) => JSON.stringify(request?.messages ?? []).length;
-const loopOptions = (runId, store, provider, extra = {}) => ({
-  provider,
-  config: { input: { initialUserMessage: `start ${big(2000)}` } },
-  executeTool: async ({ input }) => `out-${input.step}: ${big(TOOL_BYTES)}`,
-  completion: false,
-  // #498 S3 (`input` slice A): `cacheStablePrefix` retired; the home is config.input.*.
-  config: { input: { cacheStablePrefix: false }, folding: { context: { strategy: "fold-statistical", budgetTokens: BUDGET, keepRounds: 4 } } },
-  store,
-  runId,
-  ...extra,
-});
+// #546: 本脚本原先在**同一个对象字面量里写了两个 `config` 键**（后者静默覆盖前者，于是
+// `initialUserMessage` 从来没生效），且 `runId` / `completion` / `maxRounds` / `resume` 都是
+// 已退役的扁平拼写（启动期就抛 ⇒ 本探针不可复现）。这里把四个旋钮并进**同一棵** `config` 树：
+// `run.runId` / `run.completion`（#498 S3 A20 / A23b）、`run.maxRounds` / `run.resume`（A21 / A19）、
+// `input.cacheStablePrefix`（A，早就是规位家）。观察逻辑、打印、判据一字未动。
+const loopOptions = (runId, store, provider, extra = {}) => {
+  const { run: runExtra = {}, folding: foldingExtra = {}, ...rest } = extra;
+  return {
+    provider,
+    executeTool: async ({ input }) => `out-${input.step}: ${big(TOOL_BYTES)}`,
+    store,
+    ...rest,
+    config: {
+      input: { initialUserMessage: `start ${big(2000)}`, cacheStablePrefix: false },
+      run: { runId, completion: false, ...runExtra },
+      folding: {
+        context: { strategy: "fold-statistical", budgetTokens: BUDGET, keepRounds: 4, ...foldingExtra.context },
+      },
+    },
+  };
+};
 const show = (label, result, provider) => {
   const stats = (result?.compactionStats ?? []).filter((s) => s.compacted);
   console.log(`\n== ${label} ==`);
@@ -49,7 +59,7 @@ const stepsA = [];
 for (let i = 1; i <= ROUNDS; i += 1) stepsA.push(toolStep(i));
 stepsA.push(endStep("done"));
 const provA = createFakeProvider(stepsA);
-const resA = await runToolLoop(loopOptions("p462-a", storeA, provA, { maxRounds: ROUNDS + 1 }));
+const resA = await runToolLoop(loopOptions("p462-a", storeA, provA, { run: { maxRounds: ROUNDS + 1 } }));
 show("A 连续跑（对照）", resA, provA);
 
 // B：同样 12 轮，跑 CRASH_AFTER 轮后崩，再 resume 续完
@@ -60,7 +70,7 @@ crashSteps.push({ throw: new Error("boom: 崩溃在崩溃轮的模型调用") })
 const provB1 = createFakeProvider(crashSteps);
 let resB1;
 try {
-  resB1 = await runToolLoop(loopOptions("p462-b", storeB, provB1, { maxRounds: ROUNDS + 1 }));
+  resB1 = await runToolLoop(loopOptions("p462-b", storeB, provB1, { run: { maxRounds: ROUNDS + 1 } }));
 } catch (error) {
   console.log("\n[第一次运行崩了]", error.message);
 }
@@ -75,8 +85,7 @@ for (let i = CRASH_AFTER + 1; i <= ROUNDS; i += 1) resumeSteps.push(toolStep(i))
 resumeSteps.push(endStep("done"));
 const provB2 = createFakeProvider(resumeSteps);
 const resB2 = await runToolLoop(loopOptions("p462-b", storeB, provB2, {
-  maxRounds: ROUNDS + 1,
-  resume: true,
+  run: { maxRounds: ROUNDS + 1, resume: true },
 }));
 show("B2 resume 后", resB2, provB2);
 console.log("\nresume 后第一个请求体 =", bodyBytes(provB2.requests[0]), "bytes; 连续跑同轮 =",
@@ -97,9 +106,7 @@ for (let cycle = 1; cycle <= CYCLES; cycle += 1) {
   let res;
   try {
     res = await runToolLoop(loopOptions("p462-c", storeC, prov, {
-      maxRounds: 4,
-      resume: cycle > 1,
-      ...(cycle === 1 ? {} : {}),
+      run: { maxRounds: 4, resume: cycle > 1 },
     }));
   } catch { /* 预期崩 */ }
   totalBytes += prov.requests.reduce((sum, r) => sum + bodyBytes(r), 0);
@@ -150,9 +157,8 @@ for (let cycle = 1; cycle <= 8; cycle += 1) {
   };
   try {
     const r = await runToolLoop(loopOptions("p462-d", storeD, createFakeProvider(steps), { capabilities: { ports: { strategy: wrapped } },
-      maxRounds: 6,
-      ...(cycle > 1 ? { resume: true } : {}),
-      config: { folding: { context: { budgetTokens: 4000, keepRounds: 1 } } },
+      run: { maxRounds: 6, ...(cycle > 1 ? { resume: true } : {}) },
+      folding: { context: { budgetTokens: 4000, keepRounds: 1 } },
     }));
     dRoundBase = r?.rounds ?? dRoundBase + 2;
   } catch { dRoundBase += 2; }

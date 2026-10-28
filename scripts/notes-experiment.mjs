@@ -997,6 +997,21 @@ async function runJob(job, context) {
   return run;
 }
 
+/**
+ * 真模型实验的**闸口**（#546）：照 `scripts/cli-real-smoke.mjs` / `scripts/release-real-check.mjs`
+ * 的先例，`ERIX_E2E_REAL=1` 才跑，否则**退出码 0 + 分类说明**——真上游不许变成任何默认门禁的硬依赖。
+ *
+ * 位置刻意在成本闸口**之前**：没开闸时连「计划调用数超上限」都不该抢答——那会把「没跑」
+ * 说成「跑不了」，而本脚本此前正是以退出码 1 收场（“看起来 skip” 的反面：它是真失败）。
+ * 退出码：`0` = 闸口未开（一步都没跑）/ 跑完；`1` = 真失败（与既有行为一致）。
+ */
+function skipUnlessRealE2E() {
+  if (process.env.ERIX_E2E_REAL === "1") return false;
+  console.log("[skip] ERIX_E2E_REAL 未设为 1：真模型矩阵实验一步都没跑（本脚本会打真上游/真模型）。"
+    + " 要跑：ERIX_E2E_REAL=1 node scripts/notes-experiment.mjs --yes [--runs N] [--max-calls N]");
+  return true;
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options === null) return;
@@ -1007,6 +1022,7 @@ async function main() {
     console.log(`报告已写入 ${path.relative(REPO_ROOT, REPORT_PATH)}`);
     return;
   }
+  if (skipUnlessRealE2E()) return;
 
   const sourceConfigPath = options.configPath ?? defaultConfigPath();
   const sourceConfig = await readJsonIfPresent(sourceConfigPath) ?? {};
