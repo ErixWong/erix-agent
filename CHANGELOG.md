@@ -77,6 +77,44 @@
   `npm run check:docs-examples` exit 0。反向证是**测试格**而不是报告里的一句自述：把某一格的 preamble
   按「少一步」「多一步」重建后跑一遍，必须红**且**红字里逐字出现「两种可能」那句（注入点是
   `runLevel3(fence, { preamble })`；变异没落上本身也算失败）。
+- **The doc-example harness no longer inherits the host's engine knobs, so "exactly N steps" cannot be reddened by a shell variable (issue #583).**
+  #582 pinned each README fence's step assumption to an exact count (`README_FENCE_STEPS = [7, 1, 1]`), but
+  `runLevel3` still spawned the example with `env: { ...process.env, ERIX_DOC_EXAMPLE_TMP: dir }`. Every knob
+  that moves round counts therefore walked into the "documentation example" subprocess: with
+  `ERIX_NO_REFLECTION=1` in the shell, README fence #1 measured **4** requests instead of 7 (the three missing
+  ones are the default per-round judge), the cell went red, and the red text was indistinguishable from real
+  engine-default drift — the exact misdiagnosis #582 was opened to kill. The child environment is now
+  **constructed by rule** (`buildLevel3Env`): inherited `ERIX_*` is stripped (`ERIX_NO_REFLECTION`,
+  `ERIX_NO_ROUND_JUDGE`, `ERIX_JUDGE_INTERVAL`, `ERIX_JUDGE_MODEL`, `ERIX_REFLECTION`,
+  `ERIX_NO_WRAPUP_INSTRUCTION`, `ERIX_WRAPUP_NORMALIZE`, `ERIX_STALL_MODE`, `ERIX_NO_FORCED_FINAL`,
+  `ERIX_NOTES_DIR`, …), while the harness's own `ERIX_DOC_EXAMPLE_*` namespace is kept — the fence preambles
+  read `ERIX_DOC_EXAMPLE_TMP` and write/read `ERIX_DOC_EXAMPLE_KEY` themselves, so stripping the whole
+  namespace would redden those cells a second way — and execution-necessary / non-engine variables
+  (`PATH` / `HOME` / `LANG` / `TZ` / `NODE_OPTIONS`, plus `LLM_*`: the quickstart hands
+  `process.env.LLM_API_KEY` to `createOpenAIProvider`) survive. The rule is a **prefix**, not a list, so a
+  future knob cannot silently re-open the hole. Measured: `ERIX_NO_REFLECTION=1 node --test
+  test/doc-examples.test.js` went from exit 1 (2 red) to **exit 0** (63/63); `ERIX_NO_REFLECTION=0` and
+  `ERIX_JUDGE_MODEL=whatever` also exit 0, and `HOME=/nonexistent` is unchanged. The reverse proof is a cell,
+  not prose: with the rule hollowed back to `{ ...inherited }` the new behavioural cell reddens with
+  "示例假设 7 次 provider 请求 … 实际已发起 4 次" (61 pass / 2 fail, exit 1).
+- **文档示例 harness 不再继承宿主的引擎旋钮：「恰好几步」不会被一个 shell 变量弄成假红（issue #583）。**
+  #582 把每格 README 围栏的步数假设钉成**恰好等于**（`README_FENCE_STEPS = [7, 1, 1]`），但 `runLevel3`
+  仍然用 `env: { ...process.env, ERIX_DOC_EXAMPLE_TMP: dir }` 起子进程。于是**每一个**会改轮数的旋钮都
+  溜进了「文档示例」的子进程：shell 里设了 `ERIX_NO_REFLECTION=1`，README 第 1 格实测只剩 **4** 次请求
+  而不是 7 次（少掉的 3 次正是默认开启的每轮 judge），该格变红，而红字与真正的「引擎默认值漂移」长得
+  一模一样——这正是 #582 立单要消灭的那类误诊。现在子进程的环境**按规则构造**（`buildLevel3Env`）：继承
+  来的 `ERIX_*` 一律剥掉（`ERIX_NO_REFLECTION`、`ERIX_NO_ROUND_JUDGE`、`ERIX_JUDGE_INTERVAL`、
+  `ERIX_JUDGE_MODEL`、`ERIX_REFLECTION`、`ERIX_NO_WRAPUP_INSTRUCTION`、`ERIX_WRAPUP_NORMALIZE`、
+  `ERIX_STALL_MODE`、`ERIX_NO_FORCED_FINAL`、`ERIX_NOTES_DIR`……），而 harness 自己的
+  `ERIX_DOC_EXAMPLE_*` 命名空间保留——围栏 preamble 自己在子进程里读 `ERIX_DOC_EXAMPLE_TMP`、写读
+  `ERIX_DOC_EXAMPLE_KEY`，把整个命名空间一起剥掉会让那些格以另一种方式假红；执行必需与非引擎变量
+  （`PATH` / `HOME` / `LANG` / `TZ` / `NODE_OPTIONS`，以及 `LLM_*`：快速开始那格把
+  `process.env.LLM_API_KEY` 递给 `createOpenAIProvider`）照旧留下。规则是**前缀**而不是逐条清单，所以
+  以后新增的旋钮无法悄悄把这个洞重新打开。实测：`ERIX_NO_REFLECTION=1 node --test
+  test/doc-examples.test.js` 从 exit 1（2 格红）变成 **exit 0**（63/63）；`ERIX_NO_REFLECTION=0` 与
+  `ERIX_JUDGE_MODEL=whatever` 也都是 exit 0，`HOME=/nonexistent` 无退化。反向证是**测试格**而不是报告里
+  的一句自述：把规则掏回 `{ ...inherited }`，新加的那格行为格当场红，红字是「示例假设 7 次 provider
+  请求 … 实际已发起 4 次」（61 pass / 2 fail，exit 1）。
 - **The two root READMEs' JavaScript fences are now executed, not just scanned for spellings (issue #576).**
   `npm run check:docs-examples` used to cover only `docs/host-consumer-contract{,_cn}.md`: the README
   quickstart — the first code a host or a model copies — had never been run once, which is how a retired
