@@ -658,6 +658,41 @@
   ⇒「发生了折叠、但当轮没触发注入」是**预期**形态，注落账进目录但不在同一轮重返模型可见上文——宿主可以
   把这个边界写进自己的文档，而不是靠实测猜。
 
+- **`createAgent({ config, capabilities, … })` gives "initialization" a place (issue #571, slice 1).**
+  A pure-addition wrapper over `runToolLoop`: the options fixed once are held by the agent object and
+  `agent.run(input)` accepts only this call's data, so a host can no longer lose its configuration by
+  sending a message. The cost it removes is measured (issue #524, closed by design): on the direct
+  route `config.input.messages` — a message — replaces the **whole** `policy.config` tree the assembly
+  port supplied, taking folding TTL, the context budget and the persistence switches with it. Nothing
+  about `runToolLoop` changed — no override-semantics change, no deep merge, no diagnostics field, no
+  retired spelling — so this is an addition, not a migration. Which key belongs where is a
+  machine-readable fact rather than a convention: `CONFIG_LEAF_BINDING`
+  (`src/loop/config-namespace.js`) marks every one of the 41 config leaves `"init"` or `"call"` and is
+  reconciled against `CONFIG_NAMESPACE_SCHEMA` by `configSchemaSelfCheck` — a leaf added without a
+  binding, a binding that names no leaf, and a second hand-copied list are all red. Both directions of
+  a mismatch are hard-rejected with the new home named (a `call` leaf in `createAgent` names
+  `agent.run({ <leaf> })`; an `init` leaf in `run(input)` names `config.<group>.<leaf>` inside
+  `createAgent`), and the initialization-phase gates (unknown keys, config name/shape, binding
+  conflicts) all run when the agent is built instead of at the first call. 11 new cells in
+  `test/loop-create-agent-571.test.js` pin the reconciliation, the #524 positive case on a real run
+  (`folding.toolResultTtl` still folds the first round's tool result after `agent.run({ messages })`),
+  both rejection directions verbatim, and "the wrapper is not a second engine" (the same options
+  through `runToolLoop` and through `createAgent` + `run` produce byte-identical provider requests).
+- **`createAgent({ config, capabilities, … })` 给「初始化」一个位置（issue #571 片1）**：`runToolLoop`
+  之上的**纯加法**包装——只定一次的选项由 agent 对象拿住，`agent.run(input)` 只接受这一次调用的数据，
+  于是宿主再也不会因为「发一条消息」而丢掉自己的配置。它消掉的代价是实测过的（issue #524，已 by-design
+  关闭）：直连路线上 `config.input.messages` —— 一条**消息** —— 会把装配口给的**整棵** `policy.config`
+  顶掉，折叠 TTL / 上下文预算 / 持久化开关一起消失。`runToolLoop` 一字未改（不动覆盖语义、不做深合并、
+  不加诊断字段、不退役任何写法），所以这是加法而不是迁移。哪个键该写在哪是**机器可读**的事实、不是约定：
+  `CONFIG_LEAF_BINDING`（`src/loop/config-namespace.js`）把 41 个配置叶子逐个标成 `"init"` 或 `"call"`，
+  并由 `configSchemaSelfCheck` 对着 `CONFIG_NAMESPACE_SCHEMA` 对账——加了叶子忘标绑定、绑定指向不存在的
+  叶子、以及第二份手抄名单都会红。两个方向的不匹配都硬拒并指名新家（`call` 叶写进 `createAgent` 会点名
+  `agent.run({ <叶> })`；`init` 叶写进 `run(input)` 会点名 `createAgent` 里的 `config.<组>.<叶>`），
+  初始化相的几道闸口（未知键、`config` 名称/形状、绑定冲突）都在**建 agent 时**跑完，而不是等第一次调用。
+  `test/loop-create-agent-571.test.js` 新增 11 格：绑定表与 41 叶的对账、#524 的正向断言（真 run 里
+  `agent.run({ messages })` 之后 `folding.toolResultTtl` 仍把第一轮的工具结果折掉）、两个拒绝方向逐字文案、
+  以及「包装不是第二套引擎」（同样选项走 `runToolLoop` 与走 `createAgent` + `run`，请求体逐字相同）。
+
 ### Changed
 
 

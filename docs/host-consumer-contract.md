@@ -1586,6 +1586,74 @@ Three consequences worth knowing:
    accepted: it was an alias of reflection.judge.provider (pass reflection.judge.provider, or the
    canonical capabilities.ports.judgeProvider)`). `reflection.judge.provider` keeps working.
 
+### `createAgent`: initialization vs per-call data (issue #571)
+
+`createAgent` (`src/loop/orchestrator.js`) is a **wrapper** over `runToolLoop`
+(`src/loop/orchestrator.js`), not a second engine: it holds the options you fix once and hands them to
+the same `runToolLoop` on every `run(input)`. Nothing about `runToolLoop` changes — the direct entry
+point still accepts the same options with the same override semantics. `createAgent` only gives
+"initialization" a place to live.
+
+Why it exists: after 0.28 there is no agent object, so "the configuration fixed at startup" and
+"this call's data" share one parameter object. The measured cost (issue #524, closed by design) is
+that `config.input.messages` — a message — **replaces the whole config tree** the assembly port
+supplied (`policy.config`), taking folding TTL, the context budget and the persistence switches with
+it; the action that triggered it was "send a message". The fix is a place, not a new merge rule: no
+deep merge, no diagnostics field, no second engine.
+
+**The binding fact is machine-readable.** Every config leaf is marked `"init"` or `"call"` in
+`CONFIG_LEAF_BINDING` (`src/loop/config-namespace.js`) — the one hand-written table next to
+`CONFIG_NAMESPACE_SCHEMA` (`src/loop/config-namespace.js`). It is exported from the package root, and
+`configSchemaSelfCheck` (`src/loop/config-namespace.js`) reconciles it against the schema: a leaf
+added to the schema without a binding is red, a binding that names no leaf is red, and there is no
+second hand-copied list to drift. The two values mean exactly:
+
+| binding | meaning | where it is written |
+| --- | --- | --- |
+| `init` | one answer for the agent's whole life: loop budget, persistence mode, fold and guard policy, sampling, time budget, identity and environment | `createAgent({ config: { <group>: { <leaf>: … } } })` |
+| `call` | this call's data: what to send, this request's identity and context, whether this call resumes or streams | `agent.run({ <leaf>: … })` |
+
+The per-call leaves are `messages` and `initialUserMessage` (`config.input.*`), `runId` / `resume` /
+`stream` (`config.run.*`) and all seven of `metadata.*`; every other leaf is `init`. The machine
+answer is `configLeafNamesForBinding` (`src/loop/config-namespace.js`) — read it instead of trusting
+this sentence. Three of them are grey and were ruled on deliberately: `run.stream` is per-call
+because it only answers "how is **this** request transported" (the engine keeps no state across
+calls); `run.cwd` is `init` because it is the agent's environment — the tool context and the
+`finalGuard` payload read it, and one agent is one working directory; `metadata.model` /
+`metadata.modelMetadata` are per-call because they describe **which model this request goes to** (the
+window numbers decide this request's compaction budget), the same nature as `metadata.requestId`.
+
+**Two directions, both hard-rejected, both naming the new home.** A `call` leaf written in
+`createAgent({ config })` throws at construction:
+`createAgent({ config: { input: { messages: … } } }): config.input.messages is per-call data — write
+it in agent.run({ messages: … }) instead (issue #571: …)`. An `init` leaf written in `agent.run(…)`
+throws on the call: `agent.run({ maxRounds: … }): maxRounds is an initialization knob
+(config.run.maxRounds) — write it in createAgent({ config: { run: { maxRounds: … } } }) instead
+(issue #571)`. Neither direction is silently ignored, and neither degrades into "we will just keep
+the initialization value".
+
+**"One config source" in the two shapes.**
+
+- `runToolLoop({ config: … })`: the call-level tree **replaces** whatever the assembly port supplied
+  (`policy.config`) — whole tree, with each differing leaf reported as `config_override_conflict`.
+  That rule is unchanged in this release, and it is why `config.input.messages` can still cost you
+  the rest of the tree on this route.
+- `createAgent({ config })` + `agent.run(input)`: there is exactly one tree. `run(input)` cannot even
+  carry a `config` key (it is rejected as an initialization option), and its leaves are merged into
+  the initialization tree leaf by leaf. So "sending a message" cannot drop the fold knobs — not
+  because the override rule changed, but because there is no second tree to override with.
+
+**What `run(input)` accepts.** The `call` leaves, by leaf name (`{ messages }`, `{ runId }`, …), plus
+`signal` for this call. Anything else is rejected: an `init` leaf names its config path and
+`createAgent`, a top-level behaviour option (`provider` / `onEvent` / …) says "pass it to
+`createAgent`", and an unknown name enumerates the accepted set derived from the binding table.
+The phases split the same way they do on the direct route: the top-level name gate
+(`assertRunToolLoopOptionNames` (`src/loop/option-normalization.js`)), the binding check and the
+config name/shape gate are **synchronous** (a bad key throws from `createAgent`, or from `run`
+itself), while the leaf value rules (`config.run.stream` must be a boolean, …) stay in the expansion
+phase — so through `run(input)` they arrive as a rejected promise, exactly as they do through
+`runToolLoop`.
+
 ### Tool arguments that cannot be parsed (issue #409)
 
 Every tool call carries an arguments payload the model wrote. The engine parses it in two

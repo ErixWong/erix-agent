@@ -1303,6 +1303,63 @@ capabilities.hooks.onReflection`），而写在 `capabilities.hooks.onReflection
    (pass reflection.judge.provider, or the canonical capabilities.ports.judgeProvider)`）。
    `reflection.judge.provider` 照旧可用。
 
+### `createAgent`：初始化与每次调用的分工（issue #571）
+
+`createAgent`（`src/loop/orchestrator.js`）是 `runToolLoop`（`src/loop/orchestrator.js`）的**包装**，
+不是第二套引擎：它拿住「只定一次」的那些选项，每次 `run(input)` 把它们交给**同一个**
+`runToolLoop`。`runToolLoop` 一个字都没变——直连入口照旧接受同一批选项、照旧是同一套覆盖语义；
+`createAgent` 只是给「初始化」一个位置。
+
+为什么要有它：0.28 之后没有 agent 对象，于是「初始化一次的配置」与「这一次的数据」挤在同一个参数对象里。
+实测代价（issue #524，已 by-design 关闭）是：`config.input.messages` —— 一条**消息** —— 会把装配口
+给的整棵 `config` 树（`policy.config`）**顶掉**，折叠 TTL / 上下文预算 / 持久化开关随之一起消失；
+触发它的动作只是「发一条消息」。修法是给初始化一个**位置**，不是新造一条合并规则：不做深合并、
+不加诊断字段、不搞第二套引擎。
+
+**绑定事实是机器可读的。** 每个配置叶子都在 `CONFIG_LEAF_BINDING`（`src/loop/config-namespace.js`）
+里标成 `"init"` 或 `"call"` —— 它是 `CONFIG_NAMESPACE_SCHEMA`（`src/loop/config-namespace.js`）旁边
+**唯一**手写的那张表。它从包根导出，并由 `configSchemaSelfCheck`
+（`src/loop/config-namespace.js`）对着 schema 对账：加了叶子忘标绑定 ⇒ 红，绑定指向一个不存在的
+叶子 ⇒ 红，而且**没有第二份手抄名单**可以跟它各改各的。两档的确切含义：
+
+| 绑定 | 含义 | 写在哪 |
+| --- | --- | --- |
+| `init` | agent 一生只有一个答案的东西：循环预算、持久化模式、折叠与收尾策略、采样参数、时间预算、身份与环境 | `createAgent({ config: { <组>: { <叶>: … } } })` |
+| `call` | 这一次调用的数据：这次发什么、这次的身份与上下文、这次要不要续跑 / 流式 | `agent.run({ <叶>: … })` |
+
+`call` 叶是 `messages` 与 `initialUserMessage`（`config.input.*`）、`runId` / `resume` / `stream`
+（`config.run.*`）以及 `metadata.*` 全部七个；其余每个叶子都是 `init`。机器答案在
+`configLeafNamesForBinding`（`src/loop/config-namespace.js`）——请读它，而不是信这句话。其中三处是
+灰色，逐个给过理由：`run.stream` 属 `call`，因为它只回答「**这一次**请求怎么走传输」（引擎不跨调用
+留状态）；`run.cwd` 属 `init`，因为它是 agent 的**环境**——工具上下文与 `finalGuard` 载荷都读它，
+而一个 agent 就是一个工作目录；`metadata.model` / `metadata.modelMetadata` 属 `call`，因为它们描述
+的是「**这一次**请求发给哪个模型」（窗口数字直接决定这一次的压缩预算），与 `metadata.requestId`
+同一个性质。
+
+**两个方向都硬拒，都指名新家。** `call` 叶写进 `createAgent({ config })` 会在构造时抛：
+`createAgent({ config: { input: { messages: … } } }): config.input.messages is per-call data — write
+it in agent.run({ messages: … }) instead (issue #571: …)`。`init` 叶写进 `agent.run(…)` 会在调用时抛：
+`agent.run({ maxRounds: … }): maxRounds is an initialization knob (config.run.maxRounds) — write it in
+createAgent({ config: { run: { maxRounds: … } } }) instead (issue #571)`。两个方向都不许静默忽略，
+也不许退化成「那就用初始化那个值吧」。
+
+**「配置只有一个来源」在两种形状下分别怎么说。**
+
+- `runToolLoop({ config: … })`：调用级那棵树**整棵覆盖**装配口给的那棵（`policy.config`），逐叶
+  差异照旧报 `config_override_conflict`。这条规则本版一字未改——也正因为如此，`config.input.messages`
+  在这条路线上仍然能把树里其余的东西一起顶掉。
+- `createAgent({ config })` + `agent.run(input)`：**只有一棵树**。`run(input)` 连 `config` 这个键都
+  递不进去（它被当成初始化选项拒掉），它的叶子是**逐叶**并进初始化那棵树的。所以「发一条消息」
+  不可能把折叠旋钮弄丢——不是因为覆盖规则改了，而是因为**没有第二棵树**可以拿来覆盖。
+
+**`run(input)` 接受什么。** `call` 叶，按**叶子名**写（`{ messages }`、`{ runId }` …），外加本次调用的
+`signal`。别的键一律拒：`init` 叶会点名它的配置路径与 `createAgent`，顶层行为面（`provider` /
+`onEvent` …）会说「交给 `createAgent`」，真陌生的名字则枚举从绑定表派生的接受名单。相位划分与直连
+路线同口径：顶层名称闸口（`assertRunToolLoopOptionNames`（`src/loop/option-normalization.js`））、
+绑定检查、`config` 名称/形状闸口都是**同步**的（坏键从 `createAgent` 或 `run` 本身抛），而逐叶值规则
+（`config.run.stream` 必须是布尔 之类）仍在展开相——所以经 `run(input)` 进来时它们是一个 rejected
+promise，与经 `runToolLoop` 进来时逐字相同。
+
 ### 工具引数解析不了的时候（issue #409）
 
 每一次工具调用都带着一段模型自己写的引数。引擎分两层解析它，且**从不发明值**。L0 是对原文的

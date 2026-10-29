@@ -139,8 +139,20 @@ import {
   collectLoopCapabilitiesMissing,
   validateTranscriptStore,
 } from "../assembly-validators.js";
-import { CAPABILITY_CONTEXT_HOOK_NAMES } from "./capabilities-namespace.js";
-import { normalizeRunToolLoopOptions } from "./option-normalization.js";
+import { CAPABILITY_CONTEXT_HOOK_NAMES, assertCapabilitiesNamespace } from "./capabilities-namespace.js";
+import {
+  assertRunToolLoopOptionNames,
+  normalizeRunToolLoopOptions,
+  RUN_TOOL_LOOP_OPTION_SET,
+} from "./option-normalization.js";
+import {
+  CONFIG_NAMESPACE_GROUPS,
+  assertConfigNamespace,
+  configBindingForLeaf,
+  configBindingForLeafName,
+  configLeafNamesForBinding,
+  configLeafPathForName,
+} from "./config-namespace.js";
 
 export { parseReflectionDecision };
 
@@ -4940,4 +4952,186 @@ export async function runToolLoop(options) {
     return await fail(error);
   }
     }
+}
+
+// ── issue #571（片1）：`createAgent` —— 给「初始化一次的配置」一个位置 ─────────────────────────
+//
+// 病根（issue #524，已 by-design 关闭）：0.28 之后 `runToolLoop` 是唯一入口、**没有 agent 对象**，
+// 于是「初始化一次的配置」与「这一次的数据」挤在同一个参数对象里；而 `config` 容器的合并规则是
+// **整棵覆盖**，所以「发一条消息」这个动作（`config.input.messages`）会把装配口的 `policy.config`
+// 整棵顶掉——折叠 TTL / 上下文预算 / 持久化开关一起消失。
+//
+// #571 的解**不是**改覆盖语义（不做深合并、不加诊断字段），而是给「初始化」一个位置：本函数拿住
+// 「初始化那一份」，`run(input)` 只接受 `call` 绑定的叶子（外加每次的 `signal`），逐叶并进**同一棵**
+// `config` 再交给 `runToolLoop`。于是「配置只有一个来源」在这个形状下是结构性的，而不是靠约定。
+//
+// 三件刻意不做的事（片1 的边界）：
+//   · **不动 `runToolLoop`**：覆盖语义、两条输入通道、既有拒绝文案一个字都没变（收敛是片2）；
+//   · **不退役任何写法**：`runToolLoop` 照旧可以直接调；本函数是纯增量包装，不是第二套引擎；
+//   · **不做深合并**：初始化那棵树按组浅拷贝、逐叶取值，叶子里的对象原样带过去（引擎的取值口径不变）。
+//
+// 绑定事实的唯一来源是 `CONFIG_LEAF_BINDING`（`src/loop/config-namespace.js`），本文件不抄第二份。
+
+/**
+ * `createAgent({ … })` —— 把「初始化一次的配置」与「每一次调用的数据」分成两个位置（issue #571 片1）。
+ *
+ * 接受今天 `runToolLoop` 的**全部行为面**与 `config` / `capabilities`（同一个白名单、同一道闸口），
+ * 并在**初始化时**把校验做完：
+ *   · 未知键 ⇒ `assertRunToolLoopOptionNames`（与 `runToolLoop` 同一个函数、同一句判词）；
+ *   · `config` 的名称/形状/函数值/逐叶值规则 ⇒ `assertConfigNamespace`（同上）；
+ *   · `capabilities` 的名称/形状 ⇒ `assertCapabilitiesNamespace`（同上）；
+ *   · **绑定冲突** ⇒ 只出现在 `agent.run({ … })` 的叶子（`CONFIG_LEAF_BINDING` 里的 `call`）写在
+ *     `config` 里就是初始化错误，判词点名它在 `agent.run` 里的写法（#571 要求两个方向都硬拒）。
+ *
+ * 返回的对象只有一个方法 `run(input)`：
+ *   · 只接受 `call` 绑定的**叶子名**（`messages` / `initialUserMessage` / `runId` / `resume` / `stream`
+ *     / `metadata.*`）外加每次调用的 `signal`；别的键一律硬拒并指名去处（`init` 叶 ⇒
+ *     `createAgent({ config })`，顶层行为面 ⇒ `createAgent({ … })`）；
+ *   · 内部把「初始化那份」与这次的叶子**逐叶**并进同一棵 `config`，所以本形状下不存在「整棵覆盖」
+ *     这件事（`run(input)` 连第二个 `config` 都递不进去）；
+ *   · 返回 `runToolLoop` 的 promise，一次调用一个 run，agent 对象本身无状态。
+ *
+ * @param {Record<string, any>} init `runToolLoop` 的选项面（`config` / `capabilities` + 顶层行为面）
+ * @returns {{run: (input?: Record<string, any>) => Promise<Record<string, any>>}}
+ */
+export function createAgent(init) {
+  if (init === null || typeof init !== "object" || Array.isArray(init)) {
+    throw new TypeError("createAgent options must be an object");
+  }
+  assertRunToolLoopOptionNames(init);
+  const { config: initConfig, capabilities, ...initOptions } = init;
+  const bindingProblems = collectInitBindingProblems(initConfig);
+  if (bindingProblems.length > 0) throw new TypeError(bindingProblems.join("; "));
+  assertConfigNamespace(initConfig);
+  assertCapabilitiesNamespace(capabilities);
+  return {
+    /**
+     * 跑一次。绑定冲突与未知键**同步**抛（编程错误，不必等一次 I/O）；正常路径返回
+     * `runToolLoop` 的 promise。
+     *
+     * @param {Record<string, any>} [input] 这一次的数据（`call` 绑定的叶子 + `signal`）
+     * @returns {Promise<Record<string, any>>}
+     */
+    run(input) {
+      const call = collectCallInput(initConfig, input);
+      // 这里必须显式声明为 any：`runToolLoop` 的 JSDoc 入参类型要求 `provider` / `executeTool` 这两个
+      // **必填**键，而初始化面是 `Record<string, any>`（宿主给什么就是什么，形状由引擎自己的闸口校）。
+      // 不加这一层，`--checkJs` 会多一条 TS2345（本片不允许抬 type 棘轮基线）。
+      return runToolLoop(/** @type {any} */ ({
+        ...initOptions,
+        ...call.options,
+        config: call.config,
+        capabilities,
+      }));
+    },
+  };
+}
+
+/**
+ * `createAgent({ config })` 里的 **`call` 叶**：硬拒并指名新家（issue #571，方向一）。
+ *
+ * 形状错误（`config` 不是对象、组不是对象）**不在这里报**——那是 `assertConfigNamespace` 的活，
+ * 在这里重复一遍只会让同一个形状拿到两句话（两套判词的经典来源）。
+ *
+ * @param {unknown} config
+ * @returns {string[]} 问题列表（空 = 通过）
+ */
+function collectInitBindingProblems(config) {
+  if (config === null || typeof config !== "object" || Array.isArray(config)) return [];
+  const problems = [];
+  for (const group of CONFIG_NAMESPACE_GROUPS) {
+    const bag = /** @type {Record<string, any>} */ (config)[group];
+    if (bag === null || typeof bag !== "object" || Array.isArray(bag)) continue;
+    for (const [leaf, value] of Object.entries(/** @type {Record<string, any>} */ (bag))) {
+      if (value === undefined) continue;
+      if (configBindingForLeaf(group, leaf) !== "call") continue;
+      problems.push(
+        `createAgent({ config: { ${group}: { ${leaf}: … } } }): config.${group}.${leaf} is per-call data —`
+        + ` write it in agent.run({ ${leaf}: … }) instead (issue #571: the config tree is fixed at`
+        + " initialization and is the agent's single config source)",
+      );
+    }
+  }
+  return problems;
+}
+
+/**
+ * `agent.run(input)` 的键 ⇒ `{ config, options }`（issue #571，方向二）。
+ *
+ * 三档判词分开说，因为修法不同：`init` 叶 ⇒ 去 `createAgent({ config })`；顶层行为面（`provider` /
+ * `capabilities` / `onEvent` …）⇒ 去 `createAgent({ … })`；真未知的名字 ⇒ 枚举接受名单（`call` 叶 +
+ * `signal`，名单从绑定表派生，不手抄）。
+ *
+ * @param {unknown} initConfig 初始化那份 `config`（原样，不被本函数改动）
+ * @param {Record<string, any>} [input]
+ * @returns {{config: Record<string, any>, options: Record<string, any>}}
+ */
+function collectCallInput(initConfig, input) {
+  const source = input === undefined ? {} : input;
+  if (source === null || typeof source !== "object" || Array.isArray(source)) {
+    throw new TypeError("agent.run input must be an object (or omitted)");
+  }
+  const problems = [];
+  /** @type {Map<string, Record<string, any>>} */
+  const callLeaves = new Map();
+  /** @type {Record<string, any>} */
+  const options = {};
+  for (const [key, value] of Object.entries(source)) {
+    // `signal` 是每次调用的东西（中止信号天然属于一次调用），不是配置叶子 ⇒ 原样进顶层。
+    if (key === "signal") {
+      options.signal = value;
+      continue;
+    }
+    const path = configLeafPathForName(key);
+    if (path === undefined) {
+      problems.push(RUN_TOOL_LOOP_OPTION_SET.has(key)
+        ? `agent.run({ ${key}: … }): ${key} is an initialization option — pass it to createAgent({ … })`
+          + " instead (issue #571)"
+        : `unknown agent.run option: ${JSON.stringify(key)} (accepted:`
+          + ` ${configLeafNamesForBinding("call").join(", ")}, signal)`);
+      continue;
+    }
+    const [group, leaf] = /** @type {[string, string]} */ (path.split("."));
+    if (configBindingForLeafName(key) !== "call") {
+      problems.push(
+        `agent.run({ ${key}: … }): ${key} is an initialization knob (config.${path}) —`
+        + ` write it in createAgent({ config: { ${group}: { ${leaf}: … } } }) instead (issue #571)`,
+      );
+      continue;
+    }
+    if (value === undefined) continue;
+    const bag = callLeaves.get(group) ?? {};
+    bag[leaf] = value;
+    callLeaves.set(group, bag);
+  }
+  if (problems.length > 0) throw new TypeError(problems.join("; "));
+  return { config: mergeConfigLeaves(initConfig, callLeaves), options };
+}
+
+/**
+ * 「初始化那份」+「这次的叶子」⇒ 交给 `runToolLoop` 的**唯一一棵** `config`（issue #571）。
+ *
+ * 只做**组级浅拷贝 + 逐叶覆盖**：叶子里的对象按引用带过去（`config.folding.context` 这类壳的取值
+ * 口径因此一字不变）。没有深合并——那不是本单要的东西，而且深合并会让「这次没给」与「这次给了
+ * `undefined`」变成两件事。
+ *
+ * @param {unknown} initConfig
+ * @param {Map<string, Record<string, any>>} callLeaves
+ * @returns {Record<string, any>}
+ */
+function mergeConfigLeaves(initConfig, callLeaves) {
+  /** @type {Record<string, any>} */
+  const merged = {};
+  if (initConfig !== null && typeof initConfig === "object" && !Array.isArray(initConfig)) {
+    for (const [group, bag] of Object.entries(/** @type {Record<string, any>} */ (initConfig))) {
+      merged[group] = bag !== null && typeof bag === "object" && !Array.isArray(bag) ? { ...bag } : bag;
+    }
+  }
+  for (const [group, bag] of callLeaves) {
+    const previous = merged[group];
+    merged[group] = previous !== null && typeof previous === "object" && !Array.isArray(previous)
+      ? { ...previous, ...bag }
+      : { ...bag };
+  }
+  return merged;
 }

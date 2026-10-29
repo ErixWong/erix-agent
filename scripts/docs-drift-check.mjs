@@ -2113,8 +2113,13 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  `configSchemaSelfCheck` / `CAPABILITY_OPTION_NAMES`（`src/loop/config-namespace.js`）与
  *  `normalizeRunToolLoopOptions`（`src/loop/option-normalization.js`）—— 在**本分支的树**上
  *  `--verbose` 实测 **145 组 / 423 处**（相对 #499 落地的 main `109a0a3` 是 +6 组 / +7 处；裸行号一处未增、仍 130 vs 130）。
+ *  issue #571（`createAgent`）在契约中英各加一节「初始化与每次调用的分工」，引用四个符号：
+ *  `createAgent` / `runToolLoop`（`src/loop/orchestrator.js`）、`CONFIG_LEAF_BINDING` /
+ *  `configLeafNamesForBinding` / `configSchemaSelfCheck` / `CONFIG_NAMESPACE_SCHEMA`
+ *  （`src/loop/config-namespace.js`）—— 新增 **4 组**唯一 (符号, 文件) 键，在本分支树上
+ *  `--verbose` 实测 **158 组 / 489 处**（此前 154 组 / 473 处；裸行号一处未增），下限随之抬到 158。
  *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 154;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 158;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
