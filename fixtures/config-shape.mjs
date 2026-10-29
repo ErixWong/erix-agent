@@ -77,6 +77,10 @@ export const ERIX_SLOT_CORE_KEYS = Object.freeze([
   "maxOutputTokens",
   "contextWindowTokens",
   "compaction",
+  // issue #598：`loadCliConfig` 现在也读 `continuity`（`bin/config.js#buildContinuityConfig`
+  // → `config.continuity.handoff`，续接块默认写者的开关）。名单口径照本文件头的纪律：
+  // **先改读取方，再改这里**——读取方是 `bin/config.js#loadCliConfig`，不是本文件。
+  "continuity",
 ]);
 
 /**
@@ -164,6 +168,7 @@ function pickAllowed(source, allowed, label) {
  *   model?: string,
  *   maxOutputTokens?: number, contextWindowTokens?: number,
  *   compaction?: string,
+ *   continuity?: {handoff?: string},  // issue #598：`config.continuity.handoff`（默认 `off`）
  *   [modelOptionKey?: string]: unknown,  // 仅 `ERIX_SLOT_MODEL_OPTION_KEYS` 里的键
  * }} [fields]
  * @returns {{slots: Record<string, object>}}

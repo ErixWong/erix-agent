@@ -27,6 +27,7 @@ import {
 } from "./idle.js";
 import {
   buildCompactionContext,
+  buildContinuityConfig,
   loadCliConfig,
   normalizeCompactionOption,
   splitCompactionContext,
@@ -805,6 +806,10 @@ async function runChatWithNotes({
   const config = compaction === undefined
     ? loadedConfig
     : { ...loadedConfig, compaction };
+  // issue #598 —— `config.continuity.handoff`（续接块默认写者的开关）。`loadCliConfig` 已经在
+  // load 期校过一遍（非法值直接抛），这里只是把它取成**规位**形状：`undefined` ⇒ 下面
+  // `loopOptions.config` 连这个键都不写（默认关 = 零行为变更）；否则 `{ handoff }` 原样交给引擎。
+  const continuityConfig = buildContinuityConfig(config);
   const maxTokens = config.maxOutputTokens;
   if (typeof prompt !== "string" || prompt.trim() === "") {
     throw new CliError("chat 需要提供 prompt，例如：erix chat \"你好\"");
@@ -1094,6 +1099,10 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         stream,
       },
       metadata: { task: prompt },
+      // issue #598：续接块默认写者的开关（`config.continuity.handoff`）。
+      // ⚠ 只写这一份：`config` 里**不能**再出现第二个 `continuity` 键（后写的会静默盖掉先写的，
+      // 仓库里已有前例——同一旋钮两个真相来源就是引擎的 `config_override_conflict`）。
+      ...(continuityConfig === undefined ? {} : { continuity: continuityConfig }),
       tuning: { maxTokens },
       timing: {
         ...(timeoutMs === undefined ? {} : { timeoutMs }),
