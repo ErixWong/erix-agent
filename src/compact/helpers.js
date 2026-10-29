@@ -112,13 +112,70 @@ function foldStubMessages(messages) {
   ));
 }
 
+/** 单条 stub 的字符上限（宿主 stubFor 与 TTL 句柄共用同一个上界，不各写一个魔数）。 */
+export const FOLD_STUB_CHAR_LIMIT = 200;
+
+/**
+ * 折叠 stub 行的**双形态**（issue #564）：
+ * - `[已折叠]…` —— 半角，宿主 / CLI（`bin/final-guard-support.js`）的 `stubFor` 产出；
+ * - `【已折叠·TTL】…` —— 全角，`src/loop/tool-result-ttl.js` 占位符的首行（工具名 + 关键入参）。
+ *
+ * 两种形态**整行捕获**，上限沿用调用方既有逻辑（单条 `FOLD_STUB_CHAR_LIMIT` / 摘要最多 10 条）。
+ * 既有半角形态的匹配结果逐字不变（只是多认了全角那一支）。
+ *
+ * ⚠ 这个正则带 `g`：只在 `matchAll` / `replace` 里用（两者都不共享 `lastIndex`），别拿去 `test()`。
+ */
+export const FOLD_STUB_LINE_PATTERN = /^(?:\[已折叠\]|【已折叠·TTL】)[^\n]*/gmu;
+
+const TTL_STUB_LINE_PATTERN = /^【已折叠·TTL】[^\n]*/gmu;
+
+function toolResultTexts(content, output) {
+  if (typeof content === "string") {
+    output.push(content);
+    return output;
+  }
+  if (!Array.isArray(content)) return output;
+  for (const block of content) {
+    if (typeof block === "string") output.push(block);
+    else if (block?.type === "text" && typeof block.text === "string") output.push(block.text);
+  }
+  return output;
+}
+
+/**
+ * 从被折负载里收集 **TTL 句柄**（issue #564 缺口 1）。
+ *
+ * 这些行本来就躺在 `tool_result` 的正文里（`foldToolResultsForRequest` 把大结果替换成了
+ * `【已折叠·TTL】<工具名 + 关键入参>…` 占位符），不需要宿主传 `stubFor` —— 所以**真机形态**
+ * （宿主一个钩子都不给）也能把它们收进折叠摘要，而旧实现只看 `stubFor` ⇒ 一条 stub 都没有。
+ *
+ * @param {object[]} messages 被折轮次的消息（`foldedPayload`）
+ * @returns {string[]} 去重后的句柄行（每条 ≤ `FOLD_STUB_CHAR_LIMIT`）
+ */
+export function collectTtlFoldStubs(messages) {
+  const stubs = [];
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (!Array.isArray(message?.content)) continue;
+    for (const block of message.content) {
+      if (block?.type !== "tool_result") continue;
+      for (const text of toolResultTexts(block.content, [])) {
+        for (const match of text.matchAll(TTL_STUB_LINE_PATTERN)) {
+          const bounded = Array.from(match[0]).slice(0, FOLD_STUB_CHAR_LIMIT).join("");
+          if (bounded !== "") stubs.push(bounded);
+        }
+      }
+    }
+  }
+  return [...new Set(stubs)];
+}
+
 export async function resolveFoldStubs(messages, stubFor) {
   if (typeof stubFor !== "function") return [];
   const stubs = [];
   for (const message of foldStubMessages(messages)) {
     const value = await stubFor(message);
     if (typeof value !== "string" || value.trim() === "") continue;
-    const bounded = Array.from(value).slice(0, 200).join("");
+    const bounded = Array.from(value).slice(0, FOLD_STUB_CHAR_LIMIT).join("");
     if (bounded !== "") stubs.push(bounded);
   }
   return [...new Set(stubs)];
@@ -133,6 +190,10 @@ export function appendFoldStubsToHead(head, stubs) {
   const content = typeof user.content === "string"
     ? [{ type: "text", text: user.content }]
     : Array.isArray(user.content) ? user.content : [];
+  // 这里**故意只认半角** `[已折叠]`（与 #564 之前逐字一致）：这个函数的职责是“把宿主 stub 从文本块
+  // 里收起来再统一重排”，而 TTL 句柄（`【已折叠·TTL】…`）从不以文本块形式出现在 head 里——它躺在
+  // `tool_result` 正文内（本函数对非 text 块原样返回），收进摘要是 `parseFoldSummaryMatch` 那条路。
+  // 两边共用双形态正则的话，一份已折叠摘要里的 TTL 行会被“搬出”摘要正文，下一次合并就看不到它们了。
   const stubPattern = /^\[已折叠\][^\n]*/gmu;
   const existing = content
     .filter((block) => block?.type === "text")
