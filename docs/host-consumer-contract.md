@@ -3326,6 +3326,8 @@ ignores all three behaves exactly as before.
 | `judgeModel` | `onJudge` records, only when the judge ran on a different evaluator model | Lets per-model calibration distinguish the evaluated model from the model evaluating it. Absent when the judge shares the run's model. |
 | `compaction` stat | `onEvent` (`type: "compaction"`) and the `<runId>.state.json` `deterministic.compactionStats` window | Existing keys are unchanged. **Additive (issue #464 A):** `strategyName` is present only when the engine could state it truthfully — it names the strategy that **actually performed** this fold, including the library fallback (`"sliding-window"`), not the host's config value. Hosts that ignore it see the previous shape verbatim. **Additive (issue #469 ④):** `foldSummary` carries the **result state** of this fold's summarizer call — `degradeKind` (`timeout` / `context_window_exceeded` / `error`), `degradeReason`, `inputTruncated`, `droppedMessages`, `finishReason`, `inputTokens`, `outputTokens`, `priorSummaryTruncated`, `priorSummaryBytes`, `droppedRounds`, `attempts`, `budgetExhausted`, `reused`. Same discipline as `strategyName`: **no fact, no key** — a fold that produced nothing diagnostic leaves the shape byte-for-byte unchanged. The summary text itself never lands here (it lives on `record.foldedFacts`). |
 | `compaction_strategy_fallback` event | `onEvent`, at most once per run | **Additive (issue #464 A).** `{ type: "compaction_strategy_fallback", round, detail }`, emitted exactly when `context.strategy` is **not** configured *and* the fold was budget-triggered, i.e. the engine's own `sliding-window` fallback ran (whole head rounds dropped with no summary and no anchors — issue #464 B). Shape follows `model_metadata_missing` (issue #182): the first sentence of `detail` is fixed text hosts can assert on, then `budgetTokens` / `estimatedTokens` are appended when a budget resolves. |
+| `compaction_deferred` event | `onEvent`, one per deferred compaction | **Additive (issue #588).** `{ type: "compaction_deferred", runId?, round, reason: "pending_tool_use", detail: string }` — emitted when the compaction inside a `max_tokens` continuation is skipped because the request tail is an assistant `tool_use` whose `tool_result` has not arrived (`pendingTailToolUses` (`src/loop/pending-tool-result.js`)). Nothing is settled and no pairing rule is loosened; the next round's compaction sees the completed round. No termination semantic changes. |
+| `continuity_injection_skipped` event | `onEvent`, one per round where the continuity block could not be placed | **Additive (issue #568).** `{ type: "continuity_injection_skipped", runId?, round, reason, detail: string }` — the block was not injected into that request (e.g. `reason: "pending_tool_use"`, where inserting it would break `tool_use`/`tool_result` pairing). A skip is reported instead of substituting machine text. |
 | `run_outcome` event | `onEvent`, exactly once per run — including runs where the judge never ran | `{ type: "run_outcome", runId?, model?, judgeModel?, rounds, judgeRecordCount, termination, verification }`. Emitted on the success path after persistence settles, and on the throwing path from `fail()`; a latch guarantees exactly one per run. `termination` / `verification` are copies of what `runToolLoop` returned (or what `fail()` built). |
 
 Why a separate terminal record instead of writing the outcome back into the
@@ -5183,6 +5185,17 @@ visible marker, and the shortfall is stated in the block itself rather than left
   (never a mechanical success text), and a block that could not be placed — e.g. the request tail is an
   assistant `tool_use` still missing its `tool_result` — is reported as `continuity_injection_skipped` through
   the existing `onEvent` observer channel.
+
+- The round that holds the block is **never a fold candidate**: `roundHoldsContinuityBlock`
+  (`src/compact/helpers.js`) joins the same protected-round test as `isProtectedMessage`
+  (`src/compact/helpers.js`) inside `selectFoldedRounds` (`src/compact/helpers.js`). So the block's text never
+  reaches `foldedPayload`, a fold summary, or `summarizeFoldedPayload`
+  (`src/compact/fold-statistical.js`) — including `keepRounds: 0`, where "keep nothing" used to sweep a
+  current-state snapshot away as history (issue #589). Moving the block out of `messages` was **not** the fix:
+  that would undo the counting rule above.
+- `ensureUserTurnView` (`src/loop/request-user-view.js`) does not copy the block into a user turn — a snapshot is
+  not a user query — and when only the block is left, the existing `abandoned_fold` path supplies the turn
+  (issue #589).
 
 ## Store fidelity requirements
 

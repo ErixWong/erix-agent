@@ -3982,8 +3982,17 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  * # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 11 条 / 英文 11 条 / 配对 11 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 9（校准面 \#\# [Unreleased]）
  * # 配对地板：实测 11 对 > 地板 9 对 ⇒ 可以抬地板到 11
  * ```
+ *
+ * 片A2（#578 同一切版前的补充，#588 / #589）：`## [Unreleased] ### Fixed` 再加两对——续写轮悬空 `tool_use` 撞压缩
+ * 改为推迟（#588，新增 `compaction_deferred` 事件）与续接块所在轮永不进被折轮次（#589）。面仍未挪，实测 13 对，
+ * 地板 11 → 13。守卫自己的 diagnostic 原文：
+ *
+ * ```
+ * # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 13 条 / 英文 13 条
+ * # 配对地板：实测 13 对 > 地板 11 对 ⇒ 可以抬地板到 13
+ * ```
  */
-const CHANGELOG_PAIR_FLOOR = 11;
+const CHANGELOG_PAIR_FLOOR = 13;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

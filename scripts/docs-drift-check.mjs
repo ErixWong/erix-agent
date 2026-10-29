@@ -2129,13 +2129,15 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  * 历史声称当基线——那句写的 489 自己就过期了 3 处）。
  * ⚠ **本条自己被数了两遍**：这句说明里的 `(path)` 锚点也在 `symbols` 覆盖面内（AGENTS.md 20 → 25 组、AGENTS_cn.md
  * 43 → 47 组），所以地板**必须在改完 AGENTS 之后**重测——先量后写会得到偏低的 163，而 `--self-test` 那两例的判据是
- * 「实测 == 地板」，偏低就红（实测踩过：地板 163 时一条报 163 ≠ 162、另一例升到 164 反而不红）。诊断原文：
+ * 「实测 == 地板」，偏低就红（实测踩过：地板 163 时一条报 163 ≠ 162、另一例升到 164 反而不红）。 * A2（同一次切版前补充，#588 / #589）又加了观察者事件表两行与续接块两条结构性规则 ⇒ 现值 **168 组 / 521 处**。
+ * 因为上面那句 AGENTS 声称句自带锚点，这次校准是**迭代到不动点**做的：写 → 量 → 改数 → 再量，连量两次数字不再变（前一次
+ * 一次量出来就写，拿到了偏低的 164）。诊断原文：
  *
  * ```
- * ✓ symbol-anchor: 实测 163 组 > 下限 158 组——符号锚点在变多（好方向），请把 SYMBOL_ANCHOR_MIN_UNIQUE 升到 163，否则下限就在空转
+ * ✓ symbol-anchor: 实测 168 组 > 下限 164 组——符号锚点在变多（好方向），请把 SYMBOL_ANCHOR_MIN_UNIQUE 升到 168，否则下限就在空转
  * ```
  */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 164;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 168;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {

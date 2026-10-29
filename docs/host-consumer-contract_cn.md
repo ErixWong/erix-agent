@@ -2652,6 +2652,8 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `judgeModel` | `onJudge` 记录，仅当 judge 走了与 run 不同的 evaluator 模型 | 让 per-model 校准能区分「被评的模型」与「评它的模型」。judge 与 run 同模型时缺省。 |
 | `compaction` 统计 | `onEvent`（`type: "compaction"`）与 `<runId>.state.json` 里的 `deterministic.compactionStats` 窗口 | 既有键-round-for-round 不动。**additive（issue #464 A）：** `strategyName` 只在引擎能如实说出时才出现——它写的是**真正执行了本次折叠**的那个策略（含库层兜底的 `"sliding-window"`），不是宿主配置项原文。忽略它的宿主看到的形状与从前逐字一致。 **additive（issue #469 ④）：** `foldSummary` 记的是这一发摘要调用的**结果状态**——`degradeKind`（`timeout` / `context_window_exceeded` / `error`）、`degradeReason`、`inputTruncated`、`droppedMessages`、`finishReason`、`inputTokens`、`outputTokens`、`priorSummaryTruncated`、`priorSummaryBytes`、`droppedRounds`、`attempts`、`budgetExhausted`、`reused`。与 `strategyName` 同口径：**无事实 ⇒ 无键**——这次折叠什么都没产出诊断信号时，形状逐字不变。摘要正文本身不进这里（它在 `record.foldedFacts` 上）。 |
 | `compaction_strategy_fallback` 事件 | `onEvent`，一个 run 最多一条 | **additive（issue #464 A）。** `{ type: "compaction_strategy_fallback", round, detail }`，仅在 `context.strategy` **未配置**且折叠是**预算兜底触发**的那一刻发出——也就是引擎库层的 `sliding-window` 真的跑了（整轮头部丢弃、无摘要、无锚点，即 issue #464 B）。形状对齐 `model_metadata_missing`（issue #182）：`detail` 首句是宿主可直接断言的固定原文，能解析出预算时再附上 `budgetTokens` / `estimatedTokens`。 |
+| `compaction_deferred` 事件 | `onEvent`，每推迟一发压缩一条 | **additive（issue #588）。** `{ type: "compaction_deferred", runId?, round, reason: "pending_tool_use", detail: string }`——续写（`max_tokens` continuation）循环里那一发压缩被跳过时发出，原因是请求尾部是一条 `tool_result` 还没回来的 assistant `tool_use`（`pendingTailToolUses` (`src/loop/pending-tool-result.js`)）。既不结清、也不放宽配对规则；下一轮开圈的压缩面对的就是跑完的轮。终止语义一个字没动。 |
+| `continuity_injection_skipped` 事件 | `onEvent`，续接块每有一轮没能落位发一条 | **additive（issue #568）。** `{ type: "continuity_injection_skipped", runId?, round, reason, detail: string }`——这一轮的请求里没有注入续接块（例如 `reason: "pending_tool_use"`：在那个位置插入会破坏 `tool_use`/`tool_result` 配对）。跳过是上报出来的，而不是拿机械文本顶上去。 |
 | `run_outcome` 事件 | `onEvent`，一次 run 恰好一条——judge 从未运行的 run 同样发 | `{ type: "run_outcome", runId?, model?, judgeModel?, rounds, judgeRecordCount, termination, verification }`。成功路径在持久化落地后发，抛错路径在 `fail()` 里发；去重门保证一个 run 恰好一条。`termination` / `verification` 是 `runToolLoop` 返回值（或 `fail()` 构造出的终局）的副本。 |
 
 为什么是一条独立的终局记录，而不是把 outcome 回写进决策记录：judge 记录是 run 还在跑时
@@ -4093,6 +4095,14 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
 - 没有静默失败：provider 缺失/给空/抛错都在段里写明确的 unknown（绝不拿机械文本冒充成功）；块没能落位——
   例如请求尾部是一条还缺 `tool_result` 的 assistant `tool_use`——则通过既有 `onEvent` 观察者通道上报
   `continuity_injection_skipped`。
+
+- **带块的轮永远不是折叠候选**：`roundHoldsContinuityBlock` (`src/compact/helpers.js`) 与
+  `isProtectedMessage` (`src/compact/helpers.js`) 走同一条受保护判据，接进 `selectFoldedRounds`
+  (`src/compact/helpers.js`)。于是块正文不会进 `foldedPayload`、折叠摘要或 `summarizeFoldedPayload`
+  (`src/compact/fold-statistical.js`)——`keepRounds: 0` 也一样：在「一条都不留」下，一份当前状态快照曾被当成历史扫走
+  （issue #589）。「把块挪出 `messages`」并**不是**修法：那会把上面那条计入规则废掉。
+- `ensureUserTurnView` (`src/loop/request-user-view.js`) 不会把块复制成一条用户查询——快照不是查询——
+  只剩块时由既有的 `abandoned_fold` 路径带回这一轮（issue #589）。
 
 ## Store 保真要求
 

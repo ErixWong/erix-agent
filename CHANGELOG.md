@@ -406,6 +406,49 @@
   （`run({ signal })` 只覆盖那一次）。`test/loop-create-agent-571.test.js` 新增 6 格（J1–J6）钉住全部；
   曾把老行为钉成事实的 I3 改写成了 J1（变异证：掏空种子 ⇒ J1 红、exit 1）。
 
+- **A `max_tokens` continuation whose tail is an unresolved `tool_use` no longer kills the run — the compaction is deferred instead (issue #588).**
+  Reproduced with a small `config.folding.context.budgetTokens` plus `keepRounds: 0`: the compaction inside the
+  continuation loop tried to fold a round that has not finished, `groupIntoRounds` → `validateMessages` rejected the
+  history (`invalid_messages`, "assistant `tool_use` has no immediately following user `tool_result`"), and the run
+  died **before the continuation request was ever sent**. Three tempting fixes are all wrong and all three stay
+  rejected: settling the pending call means writing a `tool_result` that nothing produced; loosening the strict
+  pairing breaks an invariant other code depends on; and the shape is not actually invalid — the engine sends that
+  request with `allowPendingToolUse: true`, it is merely **not foldable**, because folding a half-finished round
+  would describe a partial tool call as a completed one. So the engine skips this one compaction and the next
+  round's `compactBeforeRound` sees a completed round; the cost is at most one request slightly over the local
+  estimate (the real window is unaffected — budget derivation already subtracts `maxOutputTokens`). The deferral
+  is visible as an additive `compaction_deferred` event on the existing `onEvent` channel; no termination semantics
+  move.
+- **尾部是未结清 `tool_use` 的续写轮不再把整个 run 打死——这一发压缩改为推迟（issue #588）。**
+  复现条件是小的 `config.folding.context.budgetTokens` 加 `keepRounds: 0`：续写循环里那一发压缩试图折叠一个还没跑完的轮，
+  `groupIntoRounds` → `validateMessages` 判历史非法（`invalid_messages`，"assistant `tool_use` has no immediately
+  following user `tool_result`"），于是**续写请求还没发出去，run 就死了**。三个看着能修的解法都被否掉并且继续被否掉：
+  结清这一发等于写一份没有任何东西产生的 `tool_result`；放宽严格配对会破坏别人依赖的不变量；而形状其实**并不非法**——
+  引擎就是带着 `allowPendingToolUse: true` 发这条请求的，它只是**不可折叠**，折掉半截回合等于把一个没跑完的工具调用
+  描述成跑完了的。所以引擎跳过这一发压缩，下一轮开圈的 `compactBeforeRound` 面对的就是跑完的轮；代价最多是这一发请求
+  按本地估算略超预算（真实窗口不受影响——预算推导已经扣掉了 `maxOutputTokens`）。推迟这件事是可见的：既有 `onEvent`
+  通道上多一条纯加法的 `compaction_deferred` 事件；终止语义一个字没动。
+- **会话续接块所在的轮永不进被折轮次，`ensureUserTurnView` 的复制格也不再复制它（issue #589）。**
+  块是 `messages` 里的一条真 user 消息，所以 `keepRounds: 0` 时它会被扫进折叠：一份**当前状态快照**被当成历史摘要掉，
+  还可能被当成用户查询复制出去。修法是「这一轮不可折」——`roundHoldsContinuityBlock` (`src/compact/helpers.js`)
+  与 `isProtectedMessage` (`src/compact/helpers.js`) 走同一条受保护判据，接进 `selectFoldedRounds`
+  (`src/compact/helpers.js`)。宿主可以依赖的结果：块正文不会出现在 `foldedPayload`、折叠摘要或
+  `summarizeFoldedPayload` (`src/compact/fold-statistical.js`) 里，`keepRounds: 0` 也一样；
+  `ensureUserTurnView` (`src/loop/request-user-view.js`) 需要一条 user 轮时把块排除在外（块是状态快照，不是用户查询），
+  只剩块时由既有的 `abandoned_fold` 路径带回。**没有**采用「把块挪出 `messages`」那种修法：那会打掉 #568 的
+  「块计入本地估算」那条判据（禁令有牙，挪走就红）。
+- **The round holding the session continuity block is never folded, and the `ensureUserTurnView` copy slot no longer copies it (issue #589).**
+  The block is a real `user` message in `messages`, so with `keepRounds: 0` it used to be swept into folding: a
+  **current-state snapshot** got summarized as if it were history, and it could be copied out as if it were a user
+  query. The fix is "this round is not foldable" — `roundHoldsContinuityBlock` (`src/compact/helpers.js`) joins the
+  same protected-round test as `isProtectedMessage` (`src/compact/helpers.js`) inside `selectFoldedRounds`
+  (`src/compact/helpers.js`). What a host can now rely on: the block's text never reaches `foldedPayload`, a fold
+  summary, or `summarizeFoldedPayload` (`src/compact/fold-statistical.js`), including under `keepRounds: 0`; and
+  when `ensureUserTurnView` (`src/loop/request-user-view.js`) needs a user turn it excludes the block (a snapshot is
+  not a query), with the existing `abandoned_fold` path supplying the turn when only the block is left. The
+  alternative — moving the block out of `messages` — was **not** taken, because that would knock out #568's
+  "the block counts in the local estimate" criterion (that ban has teeth: move the block and it goes red).
+
 ## [0.28.0] - 2026-10-29
 
 ### Breaking
