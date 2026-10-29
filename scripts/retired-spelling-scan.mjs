@@ -267,8 +267,8 @@ const HISTORY_BODY_PINS = Object.freeze({
  * @type {Readonly<Record<string, number>>}
  */
 const CONTRACT_BODY_PINS = Object.freeze({
-  "docs/host-consumer-contract.md": 448,
-  "docs/host-consumer-contract_cn.md": 558,
+  "docs/host-consumer-contract.md": 452,
+  "docs/host-consumer-contract_cn.md": 562,
 });
 
 /** 分类 → 钉子表。现状类没有钉子（它必须为 0）。 */
