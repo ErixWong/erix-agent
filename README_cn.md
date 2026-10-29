@@ -52,8 +52,8 @@ const result = await runToolLoop({
   provider,
   config: {
     input: {
-      system: "你是编码助手。先用工具检查，再回答。",
-      initialUserMessage: "统计 ./src 下 JS 文件数量和总行数。",
+      system: "You are a coding assistant. Inspect with tools, then answer.",
+      initialUserMessage: "List the JavaScript files in ./src and count their total lines.",
     },
     run: {
       maxRounds: 16,
@@ -62,7 +62,7 @@ const result = await runToolLoop({
   },
   tools: [{
     name: "exec",
-    description: "执行只读 shell 命令，返回 stdout+stderr",
+    description: "Run a read-only shell command, returns stdout+stderr",
     inputSchema: {
       type: "object",
       properties: { command: { type: "string" } },
@@ -71,6 +71,7 @@ const result = await runToolLoop({
   }],
   executeTool: async ({ name, input }) => {
     // 你的执行逻辑 + 安全策略（库本身不执行任何东西）
+    return `${name}(${JSON.stringify(input)}) -> ok`;
   },
   store: createMemoryTranscriptStore(),
 });
@@ -237,10 +238,12 @@ const assemblyPort = createAssemblyPort({
   provider,    // { chat?, chatStream? }
   tools: { definitions, executeTool, getToolMetadata? },
   store?,      // 可选 TranscriptStore（必需：appendRound、load；可选：run-snapshot/run-state）
-  session: { id, resume?, initialMessages? },
+  session: { id, initialMessages? }, // 纯数据：resume 是顶层选项 / config.run.resume
   policy?,     // 显式 runToolLoop 选项；陌生键会被拒绝
   emit?,       // (eventType, payload) => void
 });
+
+await runToolLoop({ assemblyPort });
 ```
 
 `NotesStore` 是 CLI 侧引擎技能（面向 run 的事实/一次性值/artifact 引用速记本），其写契约见
@@ -380,7 +383,7 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
 核心入口是：
 
 ```js
-runToolLoop({ provider, executeTool, ...options })
+await runToolLoop({ provider, executeTool, ...options });
 ```
 
 它管理一个任务生命周期，并返回 `finalText`、当前 `messages` 和 `transcript`、`rounds`、`truncated`、`termination`、`verification`、可选的 `runState`、汇总 `usage` 以及 `compactionStats`。

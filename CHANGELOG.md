@@ -43,6 +43,50 @@
 
 ### Fixed
 
+- **The two root READMEs' JavaScript fences are now executed, not just scanned for spellings (issue #576).**
+  `npm run check:docs-examples` used to cover only `docs/host-consumer-contract{,_cn}.md`: the README
+  quickstart — the first code a host or a model copies — had never been run once, which is how a retired
+  `session.resume` member survived inside it (it would throw `session is data only` for anyone who set it;
+  the contract doc had already been corrected). The harness now takes a **target table** (`DOC_TARGETS`),
+  each entry carrying its **own** fence count and preamble set instead of one shared
+  `EXPECTED_JS_FENCE_COUNT` (contract 12 + README 3 per language), and the README fences get the same
+  three layers as the contract ones: syntax compile, real-symbol link, and real execution in a spawned
+  subprocess. Execution is **offline by construction** — the quickstart runs against a scripted
+  `globalThis.fetch` upstream (the provider's default `fetchImpl`, captured at construction), the other two
+  README fences against `createFakeProvider`, so nothing touches the network and nothing reads `~/.erix`.
+  Completion is asserted rather than assumed: the scripted upstream must be consumed (an emptied or
+  exhausted script throws and the cell goes red), the quickstart must show the documented wiring in the
+  request body (`model` / the `exec` tool declaration / the `Authorization` header derived from
+  `process.env.LLM_API_KEY`), the `executeTool` return value must be fed back into a later request (that
+  pins its destructured signature), and the example's own `console.log(result.finalText)` output is checked
+  on stdout. The target table is guarded in the reverse direction too: drop a target (or empty the table)
+  and the guard cell goes red instead of silently covering nothing. `splitImports` now understands
+  multi-line named imports (the README's prettier-style import used to fail L1 with `Cannot use import
+  statement outside a module`). EN/CN README fences are byte-identical code with localized comments —
+  the example strings moved to English in the Chinese README, following the contract docs' "code is not
+  translated" rule. Measured: `test/doc-examples.test.js` 36 → 52 cells, `npm run check:docs-examples`
+  exit 0. Deliberately **not** done: `createAgent` is still absent from both READMEs — npm
+  `dist-tags.latest` is 0.28.0 and its tarball's `src/index.js` has zero occurrences, so documenting it
+  there would be a lie about the published surface.
+- **两份根 README 的 js 围栏现在真的被执行，而不只是被扫拼写（issue #576）。**
+  `npm run check:docs-examples` 从前只覆盖 `docs/host-consumer-contract{,_cn}.md`：README 的快速开始——
+  宿主与模型照抄的第一段代码——一次都没跑过，于是里面留着一个已退役的 `session.resume` 成员（谁真的
+  给它赋值就会被 `session is data only` 拒掉；契约文档那边早已改对）。harness 现在改成**目标表**
+  （`DOC_TARGETS`），每条目标自带**自己的**围栏数与 preamble 表，不再共用一个
+  `EXPECTED_JS_FENCE_COUNT`（契约 12 + README 3，中英各一套），README 围栏拿到与契约围栏一样的三层
+  验证：语法编译、真实符号链接、独立子进程真实执行。执行**从构造上就是离线的**——快速开始那一格打的是
+  脚本化的 `globalThis.fetch` 上游（provider 构造时取的默认 `fetchImpl`），另外两格用
+  `createFakeProvider`，所以不碰网络、也不读 `~/.erix`。完成性是**断言**出来的、不是假定的：脚本化上游
+  必须被消耗（脚本被掏空或耗光就 throw、整格变红）、快速开始必须在请求体里露出文档承诺的接线
+  （`model` / `exec` 工具声明 / 由 `process.env.LLM_API_KEY` 得到的 `Authorization` 头）、`executeTool`
+  的返回值必须回喂进后续请求（这钉住它的解构签名）、示例自己那句 `console.log(result.finalText)` 的
+  输出也要在 stdout 上核。目标表还有反向看守：摘掉一条目标（或把表清空）守卫格就红，而不是悄悄
+  什么都不覆盖。`splitImports` 现在认多行具名 import（README 那种 prettier 风格以前会让 L1 直接报
+  `Cannot use import statement outside a module`）。中英 README 围栏是逐字相同的代码 + 本地化注释——
+  中文 README 里的示例字符串改成了英文，遵循契约文档「代码不翻译」的规矩。实测：
+  `test/doc-examples.test.js` 36 → 52 格、`npm run check:docs-examples` exit 0。**刻意没做**的：
+  `createAgent` 仍然不出现在两份 README 里——npm `dist-tags.latest` 是 0.28.0，其 tarball 的
+  `src/index.js` 里出现 0 次，写进去就是对发布面的假话。
 - **The machine-readable form of the retired-spelling gate no longer carries a second, one-tier copy of the pin fact (issue #577).**
   `node scripts/retired-spelling-scan.mjs --strict --json` used to emit `pins: HISTORY_BODY_PINS` — a field
   whose name reads as "all the pins" but which held only the history tier (72 files). After #575 added the
