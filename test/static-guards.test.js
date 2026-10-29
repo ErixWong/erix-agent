@@ -3565,8 +3565,11 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
 const CHANGELOG_PAIR_FLOOR_SURFACE = "## [0.28.0]";
 /** 两条 bullet 之间最多隔几行才算「紧邻」（0 = 直接相邻，1 = 中间隔一行）。 */
 const CHANGELOG_PAIR_ADJACENT_GAP = 1;
-/** 配对地板：补完 17 条英文对应后实测的配对数。**只能升不能降。** */
-const CHANGELOG_PAIR_FLOOR = 51;
+/** 配对地板：补完 17 条英文对应后实测的配对数。**只能升不能降。**
+ *  #571 把它从 51 抬到 **52**：本单在 `## [0.28.0]` 的 `### Added` 末尾加了**一对**中英条目
+ *  （`createAgent`），配对实测 51 → 52，两条反向证（删一条英文 / 改一个 issue 引用 ⇒ 配对数必须
+ *  掉到地板**以下**）要求地板恰等于实测值，否则它们会说「地板拦不住」。只许继续往上抬。 */
+const CHANGELOG_PAIR_FLOOR = 52;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

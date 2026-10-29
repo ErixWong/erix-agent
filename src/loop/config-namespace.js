@@ -554,6 +554,160 @@ const CONFIG_LEAF_VALUE_RULES = Object.freeze({
 export const CONFIG_LEAF_VALUE_RULE_PATHS = CONFIG_LEAF_VALUE_RULES;
 
 /**
+ * **Per-leaf binding: `"init"` or `"call"`** (issue #571, slice 1) — the one hand-written fact that
+ * answers "does this knob belong to `createAgent({ config })` or to `agent.run({ … })`?".
+ *
+ * Why the fact has to be machine-readable: after 0.28 `runToolLoop(one call's whole world)` is the
+ * only entry point and there is **no agent object**, so "the configuration fixed once at startup"
+ * and "this call's data" live in the same parameter object. The measured cost (issue #524, closed
+ * by design) is that `config.input.messages` — a *message* — **replaces the whole `policy.config`
+ * tree**, so folding TTL / context budget / persistence switches all vanish. #571 does not change
+ * the override semantics; it gives "initialization" a place (`createAgent`) and this table is what
+ * makes the split a fact instead of a prose convention.
+ *
+ * 判据（逐叶一句话，不许两个叶子共用一句）：
+ *   · `init` = 这个值在 agent 的一生里**只有一个答案**（循环预算、持久化模式、折叠与收尾策略、
+ *     采样参数、时间预算、身份与环境）——换一个值就是另一个 agent；
+ *   · `call` = 这个值是**这一次调用**的数据（这次发什么消息、这次的身份与上下文、这次要不要
+ *     续跑 / 流式）——同一个 agent 连着两次调用给出两个不同值是正常用法。
+ *
+ * 三处**灰色**的裁定（工单要求逐个给理由，也写在 `docs/host-consumer-contract{,_cn}.md` 那一节）：
+ *   · `run.stream` ⇒ `call`：它只回答「**这一次**请求怎么走传输」，引擎只做一次真值判断
+ *     （`partialPersistence !== false && !stream`），不留任何跨调用的状态；宿主完全可能「交互这次
+ *     要流、后台那次不要流」。
+ *   · `run.cwd` ⇒ `init`：它是 agent 的**环境**（工具上下文与 `finalGuard` 载荷都读它），
+ *     一个 agent 一个工作目录；把它做成逐调用会让「同一个身份」在两次调用里操作两个目录，
+ *     而引擎侧没有任何地方能把这件事说出来。
+ *   · `metadata.model` / `metadata.modelMetadata` ⇒ `call`：它们描述的是**这一次请求发给谁**
+ *     （窗口数字直接决定这一次的压缩预算），与同组的 `requestId` / `task` 同一个性质；
+ *     按「引擎按已知字段读、且每次都可以不同」的判据，整组同归 `call`。
+ *
+ * **只有这一张表**（与 `CONFIG_NAMESPACE_SCHEMA` 同处）：集合对账由 `configSchemaSelfCheck` 做
+ * （少一个叶子、多一条死条目、值不是这两档、两个组撞同一个叶子名都红），测试侧再对同一份 schema
+ * 做一次集合相等断言——于是「往 schema 加一个叶子却忘了标绑定」当场红，且**没有第二份手写清单**
+ * 可以跟它各改各的。
+ *
+ * @type {Readonly<Record<string, "init"|"call">>}
+ */
+export const CONFIG_LEAF_BINDING = Object.freeze({
+  // input —— 一次 run 开头就定下来的那几块（system 提示、种子消息）与它们的开关。
+  // `messages` / `initialUserMessage` 是 `call`：它们就是 #524 的那条通道（这次要发什么），
+  // 而 `system` / `cacheStablePrefix` / `wrapup` 是 agent 的装配方式，换一次就是另一个 agent。
+  "input.system": "init",
+  "input.cacheStablePrefix": "init",
+  "input.initialUserMessage": "call",
+  "input.messages": "call",
+  "input.wrapup": "init",
+  // run —— 循环与持久化**策略**属 init（跑多久、什么算卡住、什么时候续、什么时候落盘），
+  // 而「这次续跑吗 / 这次流式吗 / 这次的身份是什么」属 call。
+  "run.maxRounds": "init",
+  "run.maxTokenContinuations": "init",
+  "run.stallDetection": "init",
+  "run.completion": "init",
+  "run.replayPolicy": "init",
+  "run.invalidArguments": "init",
+  "run.partialPersistence": "init",
+  "run.persistence": "init",
+  "run.outputHygiene": "init",
+  "run.writeToolNames": "init",
+  "run.writeToolPathKeys": "init",
+  "run.resume": "call",
+  "run.stream": "call",
+  "run.reflection": "init",
+  "run.runId": "call",
+  "run.cwd": "init",
+  // tuning —— 采样参数是「这个 agent 怎么说话」，不是「这次说什么」。
+  "tuning.maxTokens": "init",
+  "tuning.temperature": "init",
+  "tuning.topP": "init",
+  "tuning.cacheCapable": "init",
+  // timing —— 时间预算与退避是 agent 的运行条件。
+  "timing.timeoutMs": "init",
+  "timing.deadlineMs": "init",
+  "timing.retry": "init",
+  // folding —— 压缩与折叠策略。
+  "folding.context": "init",
+  "folding.toolResultTtl": "init",
+  "folding.toolResultFoldMinTokens": "init",
+  // guard —— 强制收尾与它的预算。
+  "guard.finalGuardMaxRetries": "init",
+  "guard.finalGuardTimeoutMs": "init",
+  "guard.finalGuardExtend": "init",
+  // metadata —— 宿主带来的**每次请求**的身份与上下文（谁在问、问什么、这一次的模型窗口）。
+  "metadata.expert": "call",
+  "metadata.user": "call",
+  "metadata.task": "call",
+  "metadata.requestId": "call",
+  "metadata.toolContext": "call",
+  "metadata.model": "call",
+  "metadata.modelMetadata": "call",
+});
+
+/** 绑定只有这两档（`init` / `call`）；报错文案与自检共用这一份，不另写一份字符串。 */
+export const CONFIG_LEAF_BINDING_VALUES = Object.freeze(["init", "call"]);
+
+/**
+ * 叶子名 → `"<group>.<leaf>"`（`messages` → `"input.messages"`）。
+ *
+ * 为什么按**叶子名**索引：`agent.run({ … })` 的键就是叶子名（宿主写的是 `{ messages }`，不是
+ * `{ "input.messages": … }`），而配置树里的路径是 `config.<group>.<leaf>`。两张索引同源（都从
+ * `CONFIG_NAMESPACE_SCHEMA` 派生），所以叶子名在组之间必须唯一——重复会让 `agent.run` 的键有歧义，
+ * `configSchemaSelfCheck` 把这条钉成红。
+ *
+ * @type {ReadonlyMap<string, string>}
+ */
+const CONFIG_LEAF_PATH_BY_NAME = new Map(
+  CONFIG_NAMESPACE_GROUPS.flatMap((group) => (
+    CONFIG_NAMESPACE_SCHEMA[group].map((leaf) => [leaf, `${group}.${leaf}`])
+  )),
+);
+
+/**
+ * 某个叶子名住在哪个配置路径里（`messages` → `"input.messages"`）；不是任何叶子时 undefined。
+ *
+ * @param {string} leafName
+ * @returns {string|undefined}
+ */
+export function configLeafPathForName(leafName) {
+  return CONFIG_LEAF_PATH_BY_NAME.get(leafName);
+}
+
+/**
+ * 某个叶子的绑定（`configBindingForLeaf("input", "messages")` → `"call"`）；未登记时 undefined。
+ *
+ * @param {string} group
+ * @param {string} leaf
+ * @returns {"init"|"call"|undefined}
+ */
+export function configBindingForLeaf(group, leaf) {
+  return CONFIG_LEAF_BINDING[`${group}.${leaf}`];
+}
+
+/**
+ * 按**叶子名**取绑定（`configBindingForLeafName("messages")` → `"call"`）；不是叶子时 undefined。
+ *
+ * @param {string} leafName
+ * @returns {"init"|"call"|undefined}
+ */
+export function configBindingForLeafName(leafName) {
+  const path = CONFIG_LEAF_PATH_BY_NAME.get(leafName);
+  return path === undefined ? undefined : CONFIG_LEAF_BINDING[path];
+}
+
+/**
+ * 某一档绑定的**全部叶子名**（schema 顺序：分组顺序 + 组内顺序）。报错文案里的「接受名单」与测试
+ * 都从这里取，于是名单不会与表各改各的。
+ *
+ * @param {"init"|"call"} binding
+ * @returns {string[]}
+ */
+export function configLeafNamesForBinding(binding) {
+  return [...CONFIG_LEAF_PATH_BY_NAME]
+    .filter(([, path]) => CONFIG_LEAF_BINDING[path] === binding)
+    .map(([leafName]) => leafName);
+}
+
+/**
  * 展开后的**别名表**：`"<group>.<leaf>"` → 顶层键名。
  *
  * 机械派生（叶子名逐字等于顶层键名，唯一例外见 `CONFIG_LEAF_ALIASES`），不是手写映射：
@@ -773,6 +927,42 @@ export function configSchemaSelfCheck(optionNames, { leafAliases = CONFIG_LEAF_A
     if (!CONFIG_ALIAS_PATHS.has(path)) {
       problems.push(`leaf value rule ${JSON.stringify(path)} does not name a leaf of the config schema`);
     }
+  }
+  // issue #571: the **init/call binding** table must cover the schema **exactly**. This is what turns
+  // "added a leaf to the schema, forgot to mark its binding" into a red at the self-check level (the
+  // test side asserts the same set equality against the same schema, so neither can drift alone).
+  // A second hand-written list is deliberately *not* possible: the check derives the leaf set from
+  // `CONFIG_NAMESPACE_SCHEMA` and the table's key set from `CONFIG_LEAF_BINDING`.
+  for (const group of CONFIG_NAMESPACE_GROUPS) {
+    for (const leaf of CONFIG_NAMESPACE_SCHEMA[group]) {
+      const binding = CONFIG_LEAF_BINDING[`${group}.${leaf}`];
+      if (binding === undefined) {
+        problems.push(
+          `config leaf ${group}.${leaf} has no init/call binding`
+          + " (issue #571: every leaf must be marked in CONFIG_LEAF_BINDING — createAgent vs agent.run)",
+        );
+      } else if (!CONFIG_LEAF_BINDING_VALUES.includes(binding)) {
+        problems.push(
+          `config leaf ${group}.${leaf} is bound to ${JSON.stringify(binding)}`
+          + ` (expected one of ${CONFIG_LEAF_BINDING_VALUES.join(" / ")})`,
+        );
+      }
+    }
+  }
+  for (const path of Object.keys(CONFIG_LEAF_BINDING)) {
+    if (!CONFIG_ALIAS_PATHS.has(path)) {
+      problems.push(`leaf binding ${JSON.stringify(path)} does not name a leaf of the config schema`);
+    }
+  }
+  // `agent.run({ … })` addresses leaves **by name**, so two groups sharing one leaf name would make
+  // that key ambiguous. `CONFIG_SURFACE_OPTION_NAMES` already catches the same-name case for option
+  // names; this one is about the leaf-name index (a renamed leaf, `input.messages`, is exactly the
+  // shape that could hide a collision from the other check).
+  if (CONFIG_LEAF_PATH_BY_NAME.size !== leafCount) {
+    problems.push(
+      `config leaf names are not unique across groups (${CONFIG_LEAF_PATH_BY_NAME.size} names for`
+      + ` ${leafCount} leaves): agent.run() addresses leaves by name`,
+    );
   }
   const unclassified = new Set();
   for (const name of optionNames) {

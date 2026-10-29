@@ -96,7 +96,11 @@ export {
   resolveCompactionStrategy,
 } from "./compact/strategy-resolution.js";
 export { createProviderSummarizer, serializeFoldedMessages } from "./compact/provider-summarizer.js";
-export { runToolLoop } from "./loop/orchestrator.js";
+export { createAgent, runToolLoop } from "./loop/orchestrator.js";
+// issue #571：逐叶「初始化 / 每次调用」的绑定事实（`"init"` / `"call"`）。它是**机器可读**的
+// 公开事实，唯一来源在 `src/loop/config-namespace.js`（与 `CONFIG_NAMESPACE_SCHEMA` 同处、由自检
+// 对账）；导出来是因为宿主得能算「这个键该写在哪」，而不是去读散文。
+export { CONFIG_LEAF_BINDING } from "./loop/config-namespace.js";
 export { parseReflectionDecision } from "./loop/reflection.js";
 export { parseModelJson } from "./text/parse-model-json.js";
 // 模型输出归一化底座（issue #406 B2-a）：**异步**、L1 保字节修复 + 闸门 + L2 兜底。
