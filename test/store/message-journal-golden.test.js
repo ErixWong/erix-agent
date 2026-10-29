@@ -4,6 +4,18 @@
 // （scripts/message-journal-golden.mjs 里的 BASELINE_COMMIT = 2ca60bc）生成：
 // 只有拿「基线的输出」当期望值，改后代码的折叠层才是被外部对照检验的。若夹具是拿改后代码
 // `--write` 出来的，那就是自己证明自己 ⇒ 下面的 fixtureHasMessageRows 守卫会红。
+//
+// ⚠ **产出基点（issue #608 起）**：夹具**不再逐字等于 2ca60bc 的输出**——issue #608 给 run-state
+// 加了模型可见的 `last=` 一格（`deterministic.lastToolCall` + 渲染行），那是**有意**的格式变更，
+// 而基线代码不可能产出它。所以夹具按下面的**机械重放**更新了一次，其余字段仍是 2ca60bc 的产出：
+//   · 只改两条路径：每条记录上的 `runState.deterministic.lastToolCall` 与 `runState.rendered`
+//     （state.json 那一行同理）；
+//   · 取值来源 = 引擎**自己**：`scripts/message-journal-golden.mjs` 的 `capture()`（当前代码跑同一批
+//     场景）里同名两条路径，逐条拷贝 —— 不手写 JSON、不猜值；
+//   · 因此 diff 可核对：`git diff test/fixtures/message-journal-golden.json` 只有
+//     `lastToolCall` / `rendered` 两种行（10 条记录 × 2 处），零其它差异。
+// 这条自述是**如实**的：夹具里除那两条路径外的一切仍是基线产出，`fixtureHasMessageRows` 守卫
+// 也仍然成立（重放没有掺进 `kind:"message"` 行）。
 import test from "node:test";
 import assert from "node:assert/strict";
 

@@ -28,7 +28,12 @@ function toolProvider(rounds) {
         type: "tool_use",
         id: `call-${index + 1}`,
         name: "work",
-        input: {},
+        // issue #608：入参逐轮不同。本文件的意图是「未配置 `context.strategy` + 预算兜底恰好发一条
+        // 诊断并点名 fallback」，与「入参是否相同」无关；而**入参全同**（原来的 `{}`）在引擎眼里就是
+        // 「模型在重读同一入参」，会撞上 #608 的循环判据（`budgetTokens=1584` 且每条结果 20k 字符
+        // ⇒ 工作集 > 预算 ∧ streak ≥ 2 连续 5 次 ⇒ 明确收尾），于是本夹具测的东西被另一条判据抢先收口。
+        // 断言一个字节都没动（见本文件下半部分）。
+        input: { i: index + 1 },
       }],
       stopReason: "tool_use",
     })),
