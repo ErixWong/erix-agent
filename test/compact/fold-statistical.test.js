@@ -146,8 +146,12 @@ test("merges consecutive fold summaries into one block before the task", async (
   assert.equal(summaries.length, 1);
   assert.match(task.content[0].text, /【上下文折叠·v1·erix-9f6e2c】/); // 摘要在 content 最前
   assert.ok(task.content.some((block) => block.text === "keep this task")); // 任务原文仍保留
-  assert.match(summaries[0].text, /早期第 1–3 轮（共 3 轮）已折叠/);
-  assert.match(summaries[0].text, /exec×1, writeFile×1/);
+  // issue #601：两次折叠 = 两条折叠记录（区间不合并），头行只说「折了几次、覆盖到哪」。
+  assert.match(summaries[0].text, /共折叠 2 次，覆盖第 1–3 轮（共 3 轮）/);
+  assert.match(summaries[0].text, /^- 第 2–3 轮（2 轮） · writeFile path=\?$/mu);
+  assert.match(summaries[0].text, /^- 第 1–1 轮（1 轮） · exec$/mu);
+  assert.match(summaries[0].text, /工具足迹：exec×1。/);
+  assert.match(summaries[0].text, /工具足迹：writeFile×1。/);
   assert.equal(second.messages.length, 2);
 });
 
