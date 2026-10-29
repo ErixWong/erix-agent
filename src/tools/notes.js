@@ -12,6 +12,11 @@ import { createToolRegistry } from "./registry.js";
 
 export const MAX_CONTENT_LENGTH = 4000;
 export const NOTE_VALUE_MAX_CHARS = 256;
+// issue #570：目录行（renderNotesDirectory）一直读 current.summary，但工具面从来没有
+// 写入口——读侧有槽、写侧无门，经工具面写出的记录只能退化成「正文首行截 60 字符」。
+// summary 是「一行主题」，只服务目录/清单的展示；120 是写侧形状约束（比目录的 60
+// 字符窗口宽，比 content 的 4000 窄得多），不是目录窗口。
+export const MAX_SUMMARY_LENGTH = 120;
 const MAX_SUPERSEDED = 3;
 const MISSING_NEXT = "该 key 从未记录（never recorded）；未记录、不可恢复；不得重跑命令、不得凭记忆给值";
 let clock = () => Date.now();
@@ -149,6 +154,20 @@ function contentProvided(input) {
   return input?.content !== undefined && input?.content !== null;
 }
 
+// summary 显式给了（含给了非字符串，交给校验报 invalid）。
+function summarySupplied(input) {
+  return input?.summary !== undefined && input?.summary !== null;
+}
+
+// 真正要落盘的 summary：空白串按「未提供」处理——写进去会让目录行变成空白
+//（renderNotesDirectory 用 `??` 兜底，不吃空串），而「不传 summary 时不得写入
+// summary 键」这条老记录形状约束必须逐字成立。
+function summaryProvided(input) {
+  return summarySupplied(input)
+    && typeof input.summary === "string"
+    && input.summary.trim() !== "";
+}
+
 function artifactProvided(input) {
   return input?.artifactRef !== undefined
     && input?.artifactRef !== null
@@ -171,6 +190,9 @@ function payloadOf(entry) {
   return {
     ...(entry.content !== undefined ? { content: entry.content } : {}),
     ...(entry.artifactRef !== undefined ? { artifactRef: entry.artifactRef } : {}),
+    // issue #570：current 与每一条 superseded 都要带 summary（note_read 的
+    // current/superseded 投影都经这里，缺了就等于读侧又少一格）。
+    ...(entry.summary !== undefined ? { summary: entry.summary } : {}),
   };
 }
 
@@ -198,6 +220,14 @@ function validateInput(input) {
   }
   if (contentProvided(input) && input.content.length > MAX_CONTENT_LENGTH) {
     return { error: invalid(key, `content 不得超过 ${MAX_CONTENT_LENGTH} 个字符`) };
+  }
+  if (summarySupplied(input) && typeof input.summary !== "string") {
+    return { error: invalid(key, "summary 必须是字符串") };
+  }
+  // 越界按既有 invalid() 口径报错（不抛异常、不静默截断）：静默截断会让模型以为
+  // 主题写全了，而目录里看到的已经是被切过的另一句话。
+  if (summaryProvided(input) && input.summary.length > MAX_SUMMARY_LENGTH) {
+    return { error: invalid(key, `summary 不得超过 ${MAX_SUMMARY_LENGTH} 个字符`) };
   }
   if (!contentProvided(input) && !artifactProvided(input)) {
     return { error: invalid(key, "content 与 artifactRef 至少提供一个") };
@@ -230,6 +260,9 @@ async function writeNote(input = {}) {
     payload = {
       ...(contentProvided(input) ? { content: input.content } : {}),
       ...(artifactProvided(input) ? { artifactRef: input.artifactRef } : {}),
+      // 未提供时不写这个键（老记录形状逐字不变）；同 key 更新时旧 summary
+      // 随旧 current 一起进 superseded（见下方 superseded 链）。
+      ...(summaryProvided(input) ? { summary: input.summary } : {}),
     };
     canonical(payload);
   } catch {
@@ -363,6 +396,8 @@ function listEntry(record) {
     superseded: record.superseded.length,
     hasContent: typeof current.content === "string",
     hasArtifactRef: current.artifactRef !== undefined,
+    // issue #570：清单条目带 summary（缺失时不写这个键，形状与旧输出一致）。
+    ...(current?.summary !== undefined ? { summary: current.summary } : {}),
     updated_at: record.updated_at,
     relevance: Number.isFinite(record.relevance) ? record.relevance : 0.5,
     source: current?.provenance?.source === "auto" ? "auto" : "agent",
@@ -440,6 +475,8 @@ const TOOL_DEFINITIONS = [
       properties: {
         key: { type: "string" },
         content: { type: "string", maxLength: MAX_CONTENT_LENGTH },
+        // issue #570：目录读 current.summary，工具面必须有写入口（≤120）。
+        summary: { type: "string", maxLength: MAX_SUMMARY_LENGTH },
         artifactRef: {},
         scope: { type: "string", enum: ["run"], default: "run" },
         tags: { type: "array", items: { type: "string" } },

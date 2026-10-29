@@ -16,6 +16,7 @@ import {
   createFileNotesStore,
   isNoteRecord,
 } from "../../src/store/notes.js";
+import { createMemoryNotesStore } from "../../src/store/notes-memory.js";
 import { notesStoreCasContract, notesStoreContract } from "../contract/notes-store.js";
 import * as notes from "../../src/tools/notes.js";
 import { makeTmp } from "../helpers/tmp.js";
@@ -716,6 +717,60 @@ test("read/list normalize records missing updated_at and stay sortable", async (
       ["created-only", "invalid-time", "legacy"],
       "updated_at 回退后 created-only 最新，legacy（epoch 兜底）最后按 key 稳定",
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// issue #570：summary 必须在**存储层**活下来（写入 → 落盘 → read/list 逐字回读）。
+// 这一格是「字段白名单/归一化会不会把新字段丢掉」的哨兵：isNoteRecord 只校验
+// 结构、normalizeNoteRecord 只补时间字段，两者都不该成为新的白名单——一旦有人
+// 给 current 加白名单，这里立刻红。两个内置 adapter 都要过。
+test("summary inside current survives the storage layer in both built-in adapters (issue #570)", async () => {
+  const summaryRecord = (key, scopeRef) => makeRecord(key, scopeRef, {
+    current: {
+      content: "正文",
+      summary: "一行主题",
+      provenance: { source: "agent" },
+      ts: "2026-09-15T00:00:00.000Z",
+    },
+    superseded: [{
+      content: "旧正文",
+      summary: "旧一行主题",
+      invalid: true,
+      provenance: { source: "agent" },
+      ts: "2026-09-14T00:00:00.000Z",
+    }],
+  });
+
+  const root = await makeTempDirectory();
+  try {
+    const adapters = [
+      ["file", createFileNotesStore({ dir: root })],
+      ["memory", createMemoryNotesStore()],
+    ];
+    for (const [label, store] of adapters) {
+      const scopeRef = `summary-${label}`;
+      const record = summaryRecord("with-summary", scopeRef);
+      await store.write({ scope: "run", scopeRef, key: record.key, record });
+      const read = await store.read({ scope: "run", scopeRef, key: record.key });
+      assert.equal(read.current.summary, "一行主题", `${label}: read 不得丢掉 current.summary`);
+      assert.equal(read.superseded[0].summary, "旧一行主题", `${label}: superseded 里的 summary 同样保留`);
+      const listed = await store.list({ scope: "run", scopeRef });
+      assert.deepEqual(listed.map((entry) => entry.current.summary), ["一行主题"], `${label}: list 同样保留`);
+      // 老记录（无 summary）经一次读-改-写也不得凭空长出 summary 键。
+      const plain = makeRecord("without-summary", scopeRef);
+      await store.write({ scope: "run", scopeRef, key: plain.key, record: plain });
+      const plainRead = await store.read({ scope: "run", scopeRef, key: plain.key });
+      assert.equal("summary" in plainRead.current, false, `${label}: 无 summary 的记录形状不变`);
+    }
+    // 文件介质：summary 真的写进了 JSON 文件（不是只在内存里转了一圈）。
+    const persisted = JSON.parse(await readFile(
+      path.join(root, "run", "summary-file", "with-summary.json"),
+      "utf8",
+    ));
+    assert.equal(persisted.current.summary, "一行主题");
+    assert.equal(persisted.superseded[0].summary, "旧一行主题");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

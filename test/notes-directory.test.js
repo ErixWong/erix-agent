@@ -192,3 +192,159 @@ test("engine calls semanticStateProvider only at fold points (0 calls without fo
   });
   assert.equal(calls, 0);
 });
+
+// ---------------------------------------------------------------------------
+// issue #570：note_take 的 summary 在目录里的两面。
+//   ① 有 summary ⇒ 目录行就是 summary（不再被「正文首行截 60 字符」吃掉主题）；
+//   ② 没 summary ⇒ 目录输出**逐字等于今天**（下面那格把整段文本冻成字面量，
+//      就是「对拍」，不是重写期望值）。
+// 目录的 20 条上限、pinned → updated_at 排序、60 字符窗口、artifact 占位符都
+// 不动：本单只把 summary 这条写入路径接上。
+// ---------------------------------------------------------------------------
+
+// 真机形态：首行 107 字符，60 字符窗口被 uuid 与时刻占满，「主题=」在窗口之外。
+const FOLDING_CONTENT = "折走存档：第 12 次折叠（run 3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6a7b，"
+  + "2026-10-29T03:14:15.926Z）：主题=note_take 补 summary 写入口";
+const FOLDING_SUMMARY = "第 12 次折叠：note_take 补 summary 写入口";
+
+function lineOf(text, key) {
+  return text.split("\n").find((line) => line.startsWith(`- ${key} `));
+}
+
+test("directory shows summary instead of the content's truncated first line", async () => {
+  const directory = await makeTmp("erix-notes-summary-dir-");
+  try {
+    const builtin = createBuiltinNotesTools({ notesDir: directory, runId: "summary-dir-run" });
+    // 同一个正文写两条：一条带 summary，一条不带——差别只可能来自 summary。
+    await builtin.executeTool("note_take", {
+      key: "with_summary",
+      content: FOLDING_CONTENT,
+      summary: FOLDING_SUMMARY,
+    });
+    await builtin.executeTool("note_take", { key: "without_summary", content: FOLDING_CONTENT });
+    const provided = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
+    assert.equal(provided.status, "ok");
+
+    assert.equal(
+      lineOf(provided.text, "with_summary"),
+      `- with_summary (@agent): ${FOLDING_SUMMARY}`,
+      "有 summary ⇒ 目录行就是 summary",
+    );
+    const fallback = lineOf(provided.text, "without_summary");
+    assert.equal(
+      fallback,
+      "- without_summary (@agent): 折走存档：第 12 次折叠（run 3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6a7b，2026-…",
+      "无 summary ⇒ 仍是正文首行截 60 字符（既有兜底逐字不变）",
+    );
+    // 主题在 60 字符窗口之外：不带 summary 的那行看不到它，带的那行才看得到。
+    assert.equal(fallback.includes("主题="), false);
+    assert.equal(lineOf(provided.text, "with_summary").includes("主题="), false);
+    assert.equal(provided.text.includes("主题=note_take"), false, "正文全文不进目录");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("directory output without any summary is byte-identical to the pre-#570 render", async () => {
+  const directory = await makeTmp("erix-notes-summary-frozen-");
+  try {
+    const store = createFileNotesStore({ dir: directory });
+    const record = (key, current, updatedAt) => ({
+      key,
+      scope: "run",
+      scopeRef: "frozen-run",
+      current: { ...current, provenance: { source: "agent" }, ts: updatedAt },
+      superseded: [],
+      folded: 0,
+      pinned: false,
+      tags: [],
+      relevance: 0.5,
+      state: "active",
+      created_at: updatedAt,
+      updated_at: updatedAt,
+    });
+    // 三条都不带 summary：长正文（要截断）、短正文、artifact-only（占位符）。
+    await store.write({
+      scope: "run",
+      scopeRef: "frozen-run",
+      key: "long_body",
+      record: record("long_body", { content: FOLDING_CONTENT }, "2026-10-29T03:00:00.000Z"),
+    });
+    await store.write({
+      scope: "run",
+      scopeRef: "frozen-run",
+      key: "short_body",
+      record: record("short_body", { content: "短正文" }, "2026-10-29T02:00:00.000Z"),
+    });
+    await store.write({
+      scope: "run",
+      scopeRef: "frozen-run",
+      key: "artifact_only",
+      record: record("artifact_only", { artifactRef: { archivePath: "/tmp/out.json" } }, "2026-10-29T01:00:00.000Z"),
+    });
+    const builtin = createBuiltinNotesTools({ notesDir: directory, runId: "frozen-run" });
+    const provided = await builtin.semanticStateProvider({ state: { stateVersion: 4 } });
+    assert.equal(provided.version, 4);
+    assert.equal(provided.status, "ok");
+    // 冻结字面量 = #570 之前的渲染输出，一个字节都不许动。
+    assert.equal(
+      provided.text,
+      [
+        "[notes 小抄目录]（note_read key=... 取全文）",
+        "- long_body (@agent): 折走存档：第 12 次折叠（run 3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6a7b，2026-…",
+        "- short_body (@agent): 短正文",
+        "- artifact_only (@agent): artifact 引用",
+      ].join("\n"),
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("directory keeps summary-first even when the summary itself exceeds the 60-char window", async () => {
+  const directory = await makeTmp("erix-notes-summary-long-");
+  try {
+    const builtin = createBuiltinNotesTools({ notesDir: directory, runId: "summary-long-run" });
+    const longSummary = "折叠主题".repeat(20);
+    assert.ok(longSummary.length > 60 && longSummary.length <= 120);
+    await builtin.executeTool("note_take", {
+      key: "long_summary",
+      content: "正文首行不该出现",
+      summary: longSummary,
+    });
+    const provided = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
+    const line = lineOf(provided.text, "long_summary");
+    assert.equal(line, `- long_summary (@agent): ${longSummary.slice(0, 60)}…`);
+    assert.equal(line.includes("正文首行不该出现"), false, "summary 优先，正文不参与渲染");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("directory shows summary for an artifact-only note instead of the artifact placeholder", async () => {
+  const directory = await makeTmp("erix-notes-summary-artifact-");
+  try {
+    const builtin = createBuiltinNotesTools({ notesDir: directory, runId: "summary-artifact-run" });
+    await builtin.executeTool("note_take", {
+      key: "artifact_with_summary",
+      artifactRef: { archivePath: "/tmp/out/report.json", locator: "$.total" },
+      summary: "报告 JSON 的 total 字段",
+    });
+    await builtin.executeTool("note_take", {
+      key: "artifact_without_summary",
+      artifactRef: { archivePath: "/tmp/out/report.json", locator: "$.total" },
+    });
+    const provided = await builtin.semanticStateProvider({ state: { stateVersion: 1 } });
+    assert.equal(
+      lineOf(provided.text, "artifact_with_summary"),
+      "- artifact_with_summary (@agent): 报告 JSON 的 total 字段",
+    );
+    assert.equal(
+      lineOf(provided.text, "artifact_without_summary"),
+      "- artifact_without_summary (@agent): artifact 引用",
+      "无 summary 的 artifact-only 条目仍是既有占位符",
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
