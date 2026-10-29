@@ -438,10 +438,10 @@ test("B1 43 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平�
     // issue #538：`config.run.stream` 有**值规则**（必须是布尔），所以那一个叶子的穷举样本
     // 用它自己的合法值（`true`），其余叶子照旧用字符串样本。漏了这一步，本格会红在值规则上，
     // 而不是红在它真正要证明的「展开等价」上。
-    // issue #598：`config.continuity.write` 同一条纪律（三字面量枚举），样本用它的默认值 `"off"`。
+    // issue #598：`config.continuity.handoff` 同一条纪律（三字面量枚举），样本用它的默认值 `"off"`。
     const value = path === "run.stream"
       ? true
-      : path === "continuity.write" ? "off" : `sweep:${key}`;
+      : path === "continuity.handoff" ? "off" : `sweep:${key}`;
     const flat = { [key]: value };
     const nested = { config: { [group]: { [leaf]: value } } };
     const flatExpanded = expandConfigNamespace(flat);
@@ -632,10 +632,10 @@ const RETIRED_FLAT_VALUES = {
   // 展开相仍逐字写回 `effectiveOptions.reflection`（读侧一行未改：`orchestrator.js` 的
   // `resolvedReflectionOption` 与那一串 `effectiveReflection?.…`）。
   reflection: { enabled: true, maxExtensions: 1 },
-  // issue #598（`continuity` 组）：`write` 是**新增的配置叶子**，从来没有顶层扁平别名（S3 之后的
-  // 形状）。展开相仍逐字写回 `effectiveOptions.write`（`orchestrator.js` 的
-  // `normalizeContinuityWriteMode(effectiveOptions.write)` 读的就是它）。值取默认的 `"off"`。
-  write: "off",
+  // issue #598（`continuity` 组）：`handoff` 是**新增的配置叶子**，从来没有顶层扁平别名（S3 之后的
+  // 形状）。展开相仍逐字写回 `effectiveOptions.handoff`（`orchestrator.js` 的
+  // `normalizeContinuityWriteMode(effectiveOptions.handoff)` 读的就是它）。值取默认的 `"off"`。
+  handoff: "off",
 };
 
 /** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */

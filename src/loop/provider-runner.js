@@ -105,7 +105,7 @@ export async function callProvider(ctx, {
     // `tool_result` must not get another user message wedged in (it would break the pairing the
     // providers enforce). That is the same shape the continuity block refuses to inject into, and
     // the block's own `continuity_injection_skipped` event already accounts for that round.
-    // `undefined` (the default, `config.continuity.write = "off"`) ⇒ not one byte is added.
+    // `undefined` (the default, `config.continuity.handoff = "off"`) ⇒ not one byte is added.
     const requestTailInstruction = ctx.requestTailInstruction;
     if (typeof requestTailInstruction === "string"
       && requestTailInstruction !== ""

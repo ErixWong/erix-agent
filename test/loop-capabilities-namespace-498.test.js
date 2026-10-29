@@ -682,8 +682,9 @@ const REPRESENTATIVE_CONFIG_VALUES = {
   toolContext: { a: 1 },
   model: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
   modelMetadata: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
-  // #598: the continuity writer's switch (one leaf, three literals, default `"off"`).
-  write: "off",
+  // #598: the continuity writer's switch — leaf name `handoff` (a noun; `write` would pollute the
+  // retired-spelling scan), three literals, default `"off"`.
+  handoff: "off",
   // #531: `session` 不是配置叶子（第三站成员），所以这张**逐叶子**覆盖表里没有它。
 };
 

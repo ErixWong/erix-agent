@@ -478,7 +478,7 @@ export function positionContinuityBlock(messages) {
 //   3. **引擎只搬运、不背书。** 模型在 `<handoff>` 里写 `evidence: 已验证` 而根本没跑测试时，
 //      store 与块里就是「已验证」——它**不是**引擎的 `verification`（那套东西由 finalGuard /
 //      deliverables 产生，两套不许混）。
-//   4. **默认关 = 零行为变更。** `config.continuity.write` 默认 `"off"`：指令不注入、store 不读
+//   4. **默认关 = 零行为变更。** `config.continuity.handoff` 默认 `"off"`：指令不注入、store 不读
 //      不写、块一个字节都不变（判据 1 的对拍就是这条红线）。
 //
 // 依赖：`node:` 内置（crypto / fs / os / path）+ 本文件的段名常量。
@@ -507,13 +507,17 @@ export const HANDOFF_SECTION_NAMES = Object.freeze(["contract", "unfinished", "e
 export const HANDOFF_UNKNOWN = "unknown";
 
 /**
- * 开关的三个取值（`config.continuity.write`）。第一个是默认值。
+ * 开关的三个取值（`config.continuity.handoff`）。第一个是默认值。
+ *
+ * 名字里的 `WRITE` 说的是**写者**的三档模式（写不写交接、缺了要不要补一次），不是叶名：
+ * 叶名是名词 `handoff`（见 `src/loop/config-namespace.js` 的 schema 注释：动词 `write` 会污染
+ * `scripts/retired-spelling-scan.mjs` 的退役拼写判据）。
  *
  * @type {readonly string[]}
  */
 export const CONTINUITY_WRITE_MODES = Object.freeze(["off", "prompt", "prompt-and-fallback"]);
 
-/** 默认值（`config.continuity.write` 不传时的值，issue #598 §6：默认关）。 */
+/** 默认值（`config.continuity.handoff` 不传时的值，issue #598 §6：默认关）。 */
 export const CONTINUITY_WRITE_DEFAULT = "off";
 
 /**
@@ -564,7 +568,7 @@ const HANDOFF_SECTION_PATTERN = /^(contract|unfinished|evidence)\s*[:：]\s*(.*)
 /**
  * 归一化开关取值（读侧，**不抛**）。
  *
- * intake 的枚举校验由 `CONFIG_LEAF_VALUE_RULES["continuity.write"]`（`src/loop/config-namespace.js`）
+ * intake 的枚举校验由 `CONFIG_LEAF_VALUE_RULES["continuity.handoff"]`（`src/loop/config-namespace.js`）
  * 负责；这里只回答「读到的东西算不算开着」，于是「没写 / 写了个别的字符串」一律落到默认的 `off`，
  * 而不是把非法值当半个开关（那是「配了等于没配」的静默形状）。
  *

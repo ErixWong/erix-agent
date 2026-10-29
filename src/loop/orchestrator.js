@@ -421,7 +421,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *     metadata?: {expert?: any, user?: any, task?: any, requestId?: string, toolContext?: object,
  *       model?: {contextWindowTokens?: number, maxOutputTokens?: number},
  *       modelMetadata?: {contextWindowTokens?: number, maxOutputTokens?: number}},
- *     continuity?: {write?: "off"|"prompt"|"prompt-and-fallback"}, // issue #598: 续接块默认写者的开关（默认 "off" = 零行为变更；没有顶层扁平别名）
+ *     continuity?: {handoff?: "off"|"prompt"|"prompt-and-fallback"}, // issue #598: 续接块默认写者的开关（默认 "off" = 零行为变更；没有顶层扁平别名）
  *   },
  *   capabilities?: { // issue #498 (S4a / S4b / S4c): the capability container. Three groups: `hooks` (17 host callbacks + 2 polymorphic knobs), `checks` (deliverables checks), `ports` (infrastructure / strategy implementations).
  *     hooks?: {onEvent?: (event: LoopEvent) => void, onObserverError?: (error: Error, context: {channel: string, runId?: string, type?: string, round?: number, toolName?: string, method?: string}) => void,
@@ -706,12 +706,15 @@ export async function runToolLoop(options) {
   // with the `context` shell), so it arrives on the `slots` side channel — no top-level flat alias
   // was invented for it (0.28 的方向：回调收 `capabilities.hooks.*`).
   const continuityProvider = capabilityHooks.continuityProvider;
-  // issue #598 —— 续接块**默认写者**的开关（`config.continuity.write`，默认 `"off"`）。
-  // 它是 init 叶、没有顶层扁平别名（S3 之后的形状），展开相把它写回 `effectiveOptions.write`。
+  // issue #598 —— 续接块**默认写者**的开关（`config.continuity.handoff`，默认 `"off"`）。
+  // 它是 init 叶、没有顶层扁平别名（S3 之后的形状），展开相把它写回 `effectiveOptions.handoff`。
+  // ⚠ 叶名是名词 `handoff`（交接块），不是动词 `write`：后者会让退役拼写扫描器把文档里每一句
+  // "write" 都算成命中（见 `src/loop/config-namespace.js` 里 schema 那条注释）。
   // `off` 是**红线**：指令不注入、store 不读不写、请求逐字回到今天（判据 1 的对拍）。
-  // 非法值在 intake 就被 `CONFIG_LEAF_VALUE_RULES["continuity.write"]` 拒掉；读侧只回答
+  // 非法值在 intake 就被 `CONFIG_LEAF_VALUE_RULES["continuity.handoff"]` 拒掉；读侧只回答
   // 「算不算开着」，于是没写 / 写了个别的字符串一律落到默认的 `off`（不把非法值当半个开关）。
-  const continuityWriteMode = normalizeContinuityWriteMode(effectiveOptions.write);
+  // 变量名保留 `continuityWriteMode`：它描述的是**写者**的三档模式，不是叶名。
+  const continuityWriteMode = normalizeContinuityWriteMode(effectiveOptions.handoff);
   // issue #568: the block's **own** token budget (`config.folding.context.continuityMaxTokens`,
   // default `CONTINUITY_DEFAULT_MAX_TOKENS` = 1200, an **experimental** value). It is deliberately
   // separate from `context.budgetTokens`: the fold budget answers "when to fold", this one answers

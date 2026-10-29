@@ -14,6 +14,10 @@
 //   · `unknown` 降级成空串/省略 ⇒ U2 与判据 3 红；
 //   · `off` 仍然注入指令 ⇒ 判据 1 红。
 //
+// 开关的**叶名**是 `config.continuity.handoff`（名词：交接块），不是 `write`：动词做叶子名会让
+// `scripts/retired-spelling-scan.mjs` 把文档里每一句 "write" 都算成退役拼写命中，从而不得不放行/抬钉子
+// ——那会把「历史正文不许被改写」那把尺子磨钝（评审意见，本文件随之改用 `handoff`）。
+//
 // 零真实 LLM、零真实 `~/.erix`：fake provider + 内存 transcript store + 注入
 // `ERIX_CONTINUITY_DIR`（`createFileContinuityStore` 的 `home`/`cwd`/`dir` 三个注入点的环境形式，
 // 与 `src/tools/notes.js` 的 `ERIX_NOTES_DIR` 同一条纪律）。
@@ -272,8 +276,8 @@ test("U5 store：注入 home/cwd ⇒ 只保留最近一份；坏 JSON / 别人�
   assert.equal(await otherStore.read(), undefined, "记录里的 projectKey 与本次 cwd 不符 ⇒ 不认");
 });
 
-test("U6 开关取值与配置叶登记：`continuity.write` 是 init 叶，非法字面量在 intake 当场拒", async () => {
-  assert.equal(CONFIG_LEAF_BINDING["continuity.write"], "init", "开关属 init 叶（createAgent 面）");
+test("U6 开关取值与配置叶登记：`continuity.handoff` 是 init 叶，非法字面量在 intake 当场拒", async () => {
+  assert.equal(CONFIG_LEAF_BINDING["continuity.handoff"], "init", "开关属 init 叶（createAgent 面）");
   assert.equal(normalizeContinuityWriteMode(undefined), "off", "默认 off");
   assert.equal(normalizeContinuityWriteMode("off"), "off");
   assert.equal(normalizeContinuityWriteMode("prompt"), "prompt");
@@ -282,9 +286,9 @@ test("U6 开关取值与配置叶登记：`continuity.write` 是 init 叶，非�
 
   const provider = createFakeProvider([{ content: [{ type: "text", text: "x" }], stopReason: "end_turn" }]);
   await assert.rejects(
-    () => runWith({ runId: "s598-badmode", provider, cwd: process.cwd(), continuity: { write: "yes" } }),
+    () => runWith({ runId: "s598-badmode", provider, cwd: process.cwd(), continuity: { handoff: "yes" } }),
     (error) => error instanceof TypeError
-      && error.message.includes("config.continuity.write")
+      && error.message.includes("config.continuity.handoff")
       && error.message.includes('"off" / "prompt" / "prompt-and-fallback"'),
     "非法字面量必须在 intake 被点名拒掉（配了等于没配是静默形状）",
   );
@@ -304,7 +308,7 @@ test("判据 1：默认关 = 零变更（不写这个叶与显式 `off` 逐字�
     const explicitOff = createFakeProvider(script());
     // 同一个 runId ⇒ run-state 块逐字相同，对拍只差「本单有没有动请求」。
     const a = await runWith({ runId: "s598-c1", provider: baseline, cwd });
-    const b = await runWith({ runId: "s598-c1", provider: explicitOff, cwd, continuity: { write: "off" } });
+    const b = await runWith({ runId: "s598-c1", provider: explicitOff, cwd, continuity: { handoff: "off" } });
 
     assert.equal(a.termination.reason, "end_turn");
     assert.equal(b.termination.reason, "end_turn");
@@ -332,7 +336,7 @@ test("判据 1b：`off` 时**块内容**与今天逐字一致（同一个宿主 
     const baseline = createFakeProvider([{ content: [{ type: "text", text: "收尾" }], stopReason: "end_turn" }]);
     const explicitOff = createFakeProvider([{ content: [{ type: "text", text: "收尾" }], stopReason: "end_turn" }]);
     await runWith({ runId: "s598-c1b", provider: baseline, cwd, continuityProvider });
-    await runWith({ runId: "s598-c1b", provider: explicitOff, cwd, continuityProvider, continuity: { write: "off" } });
+    await runWith({ runId: "s598-c1b", provider: explicitOff, cwd, continuityProvider, continuity: { handoff: "off" } });
 
     assert.deepEqual(
       normalizeForParity(explicitOff.requests),
@@ -355,7 +359,7 @@ test("判据 2：跨 run 召回——run A 的输出含 <handoff> ⇒ 落盘；r
       stopReason: "end_turn",
     }]);
     const runA = await runWith({
-      runId: "s598-c2-a", provider: providerA, cwd, continuity: { write: "prompt" },
+      runId: "s598-c2-a", provider: providerA, cwd, continuity: { handoff: "prompt" },
     });
     assert.equal(runA.termination.reason, "end_turn");
 
@@ -368,7 +372,7 @@ test("判据 2：跨 run 召回——run A 的输出含 <handoff> ⇒ 落盘；r
 
     const providerB = createFakeProvider([{ content: [{ type: "text", text: "继续干" }], stopReason: "end_turn" }]);
     const runB = await runWith({
-      runId: "s598-c2-b", provider: providerB, cwd, continuity: { write: "prompt" },
+      runId: "s598-c2-b", provider: providerB, cwd, continuity: { handoff: "prompt" },
     });
     assert.equal(runB.termination.reason, "end_turn");
     const first = providerB.requests[0];
@@ -400,7 +404,7 @@ test("判据 3：模型没写 ⇒ 块里明写 unknown，run 正常结束（不�
       stopReason: "end_turn",
     }]);
     const runA = await runWith({
-      runId: "s598-c3-a", provider: providerA, cwd, continuity: { write: "prompt" },
+      runId: "s598-c3-a", provider: providerA, cwd, continuity: { handoff: "prompt" },
     });
     assert.equal(runA.termination.reason, "end_turn", "run 必须正常结束（不失败）");
     assert.equal(providerA.requests.length, 1, "`prompt` 下不许补调用（不重试）");
@@ -413,7 +417,7 @@ test("判据 3：模型没写 ⇒ 块里明写 unknown，run 正常结束（不�
     }
 
     const providerB = createFakeProvider([{ content: [{ type: "text", text: "收到" }], stopReason: "end_turn" }]);
-    await runWith({ runId: "s598-c3-b", provider: providerB, cwd, continuity: { write: "prompt" } });
+    await runWith({ runId: "s598-c3-b", provider: providerB, cwd, continuity: { handoff: "prompt" } });
     const block = blockTextOfRequest(providerB.requests[0]);
     assert.ok(block !== undefined);
     for (const name of CONTINUITY_SECTION_NAMES) {
@@ -429,14 +433,14 @@ test("判据 3：模型没写 ⇒ 块里明写 unknown，run 正常结束（不�
       content: [{ type: "text", text: `${HANDOFF_MARKER_START}\ncontract: 只写了契约\nunfinished:\n</handoff>` }],
       stopReason: "end_turn",
     }]);
-    await runWith({ runId: "s598-c3-c", provider: providerC, cwd, continuity: { write: "prompt" } });
+    await runWith({ runId: "s598-c3-c", provider: providerC, cwd, continuity: { handoff: "prompt" } });
     const partial = await readRecordFor(dir, cwd);
     assert.equal(partial?.sections.contract, "只写了契约");
     assert.equal(partial?.sections.unfinished, HANDOFF_UNKNOWN, "空段必须落成 unknown 字面量");
     assert.equal(partial?.sections.evidence, HANDOFF_UNKNOWN, "缺段必须落成 unknown 字面量");
 
     const providerD = createFakeProvider([{ content: [{ type: "text", text: "收到" }], stopReason: "end_turn" }]);
-    await runWith({ runId: "s598-c3-d", provider: providerD, cwd, continuity: { write: "prompt" } });
+    await runWith({ runId: "s598-c3-d", provider: providerD, cwd, continuity: { handoff: "prompt" } });
     const partialBlock = blockTextOfRequest(providerD.requests[0]);
     assert.ok(partialBlock.includes("## unfinished\n- unknown"), `缺失必须可见，实测：\n${partialBlock}`);
     assert.ok(partialBlock.includes("## evidence\n- unknown"), `缺失必须可见，实测：\n${partialBlock}`);
@@ -454,7 +458,7 @@ test("判据 3b（变异 1 的 run 级夹具）：散文里写 contract: 但没 
       }],
       stopReason: "end_turn",
     }]);
-    await runWith({ runId: "s598-c3b", provider, cwd, continuity: { write: "prompt" } });
+    await runWith({ runId: "s598-c3b", provider, cwd, continuity: { handoff: "prompt" } });
     const record = await readRecordFor(dir, cwd);
     assert.ok(record !== undefined);
     for (const name of CONTINUITY_SECTION_NAMES) {
@@ -482,7 +486,7 @@ test("判据 4：引擎只搬运不背书——`evidence: 已验证` 原样进 s
       stopReason: "end_turn",
     }]);
     const runA = await runWith({
-      runId: "s598-c4-a", provider: providerA, cwd, continuity: { write: "prompt" },
+      runId: "s598-c4-a", provider: providerA, cwd, continuity: { handoff: "prompt" },
     });
     assert.equal(runA.termination.reason, "end_turn");
 
@@ -491,7 +495,7 @@ test("判据 4：引擎只搬运不背书——`evidence: 已验证` 原样进 s
 
     const providerB = createFakeProvider([{ content: [{ type: "text", text: "收到" }], stopReason: "end_turn" }]);
     const runB = await runWith({
-      runId: "s598-c4-b", provider: providerB, cwd, continuity: { write: "prompt" },
+      runId: "s598-c4-b", provider: providerB, cwd, continuity: { handoff: "prompt" },
     });
     const block = blockTextOfRequest(providerB.requests[0]);
     assert.ok(block.includes("- 已验证：全量 npm test 0 fail"), "块里必须原样是「已验证」（引擎不改写）");
@@ -515,7 +519,7 @@ test("判据 5：兜底次数——`prompt-and-fallback` 恰好 1 次补调用�
   await withContinuityDir(dir, async () => {
     // prompt：模型不写 ⇒ 只有主循环那一发，零补调用。
     const promptProvider = createFakeProvider([{ content: [{ type: "text", text: "没有交接" }], stopReason: "end_turn" }]);
-    await runWith({ runId: "s598-c5-prompt", provider: promptProvider, cwd, continuity: { write: "prompt" } });
+    await runWith({ runId: "s598-c5-prompt", provider: promptProvider, cwd, continuity: { handoff: "prompt" } });
     assert.equal(promptProvider.requests.length, 1, "`prompt` 下模型不写 ⇒ 0 次补调用");
 
     // prompt-and-fallback：模型不写 ⇒ 主循环一发 + 补调用一发。
@@ -524,7 +528,7 @@ test("判据 5：兜底次数——`prompt-and-fallback` 恰好 1 次补调用�
       { content: [{ type: "text", text: handoffAnswer({ contract: "兜底拿到的契约", unfinished: "unknown", evidence: "unknown" }) }], stopReason: "end_turn" },
     ]);
     const run = await runWith({
-      runId: "s598-c5-fallback", provider: fallbackProvider, cwd, continuity: { write: "prompt-and-fallback" },
+      runId: "s598-c5-fallback", provider: fallbackProvider, cwd, continuity: { handoff: "prompt-and-fallback" },
     });
     assert.equal(run.termination.reason, "end_turn", "兜底成功也要正常收尾");
     assert.equal(fallbackProvider.requests.length, 2, "`prompt-and-fallback` 下模型不写 ⇒ **恰好 1 次**补调用");
@@ -547,7 +551,7 @@ test("判据 5：兜底次数——`prompt-and-fallback` 恰好 1 次补调用�
       stopReason: "end_turn",
     }]);
     await runWith({
-      runId: "s598-c5-self", provider: selfWritten, cwd, continuity: { write: "prompt-and-fallback" },
+      runId: "s598-c5-self", provider: selfWritten, cwd, continuity: { handoff: "prompt-and-fallback" },
     });
     assert.equal(selfWritten.requests.length, 1, "模型写了就不补调用");
   });
@@ -563,7 +567,7 @@ test("判据 5b：兜底失败 / 抛错 ⇒ 落 unknown，run 不失败", async 
     ]);
     const events = [];
     const run = await runWith({
-      runId: "s598-c5b", provider, cwd, continuity: { write: "prompt-and-fallback" }, events,
+      runId: "s598-c5b", provider, cwd, continuity: { handoff: "prompt-and-fallback" }, events,
     });
     assert.equal(run.termination.reason, "end_turn", "兜底失败不许让 run 失败");
     const record = await readRecordFor(dir, cwd);
@@ -587,7 +591,7 @@ test("判据 2b：宿主显式给 `continuityProvider` ⇒ override 生效（默
       content: [{ type: "text", text: handoffAnswer({ contract: "默认写者写的契约" }) }],
       stopReason: "end_turn",
     }]);
-    await runWith({ runId: "s598-c2b-a", provider: providerA, cwd, continuity: { write: "prompt" } });
+    await runWith({ runId: "s598-c2b-a", provider: providerA, cwd, continuity: { handoff: "prompt" } });
 
     // run B 同时有 override：块里必须是 override 的内容（默认写者的召回让位）。
     const providerB = createFakeProvider([{ content: [{ type: "text", text: "收到" }], stopReason: "end_turn" }]);
@@ -595,7 +599,7 @@ test("判据 2b：宿主显式给 `continuityProvider` ⇒ override 生效（默
       runId: "s598-c2b-b",
       provider: providerB,
       cwd,
-      continuity: { write: "prompt" },
+      continuity: { handoff: "prompt" },
       continuityProvider: async () => ({ version: 9, text: "[contract]\n宿主 override 的契约" }),
     });
     const block = blockTextOfRequest(providerB.requests[0]);
@@ -616,7 +620,7 @@ test("判据 6-c（`off` 的夹具）：`off` 下 store 有记录也**不召回*
     await store.write({ source: "model", sections: { contract: "上一份契约", unfinished: "u", evidence: "e" } });
 
     const provider = createFakeProvider([{ content: [{ type: "text", text: "收尾" }], stopReason: "end_turn" }]);
-    await runWith({ runId: "s598-off", provider, cwd, continuity: { write: "off" } });
+    await runWith({ runId: "s598-off", provider, cwd, continuity: { handoff: "off" } });
     assert.equal(blockTextOfRequest(provider.requests[0]), undefined, "`off` 时不许召回（store 里有记录也不读）");
     assert.equal(JSON.stringify(provider.requests).includes("<handoff>"), false, "`off` 时不许注入指令");
     assert.deepEqual(
@@ -640,7 +644,7 @@ test("判据 6-a（`prompt` 的读回）：注入指令只在请求视图里，�
       content: [{ type: "text", text: handoffAnswer() }],
       stopReason: "end_turn",
     }]);
-    const run = await runWith({ runId: "s598-inst", provider, cwd, continuity: { write: "prompt" } });
+    const run = await runWith({ runId: "s598-inst", provider, cwd, continuity: { handoff: "prompt" } });
     assert.equal(run.termination.reason, "end_turn");
     assert.equal(provider.requests.length, 2, "前提：两轮");
     for (const request of provider.requests) {
