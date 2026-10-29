@@ -78,20 +78,29 @@ function collectStrings(value, output) {
   }
 }
 
-// 抽取范围收窄（A2）：只看 user 消息——真实 user 消息的文本 + 任何 user 消息里的
-// tool_result 内容；assistant 散文（含 tool_use 参数）一律不扫。
+// 抽取范围（A2 降误报 + issue #564 扩面）：只扫 user 消息的文本 + 任何 user 消息里的
+// tool_result 内容 + **tool_use 的入参字符串**（任何消息里的 tool_use，包括 assistant 的）。
+// assistant 散文仍然一律不扫——散文里的"大致路径/某个提交"复述是误报重灾区。
+//
+// 为什么加 tool_use 入参（#564 缺口 3）：`exec git commit -m "…closes #123"` 里的 issue 号、
+// 命令里的 path/sha，恰好是"承诺与交付证据"最常见的载体，而它们只存在于入参里；
+// 白名单（URL/SHA/issue/path 四条正则）、`MAX_ANCHORS`（20 条）与 1200 字符夹断**一字未改**。
 function anchorSegments(messages) {
   const segments = [];
   for (const message of Array.isArray(messages) ? messages : []) {
-    if (message?.role !== "user") continue;
+    if (message === null || typeof message !== "object") continue;
+    const isUserMessage = message.role === "user";
     if (typeof message.content === "string") {
-      if (message.content !== "") segments.push(message.content);
+      if (isUserMessage && message.content !== "") segments.push(message.content);
       continue;
     }
     if (!Array.isArray(message.content)) continue;
-    const realUser = isRealUser(message);
+    const realUser = isUserMessage && isRealUser(message);
     for (const block of message.content) {
-      if (block?.type === "tool_result") {
+      if (block?.type === "tool_use") {
+        // 入参里的字符串（命令/参数）——id 类字段由 `collectStrings` 的 ID_FIELD 跳过。
+        collectStrings(block.input, segments);
+      } else if (isUserMessage && block?.type === "tool_result") {
         collectStrings(block.content, segments);
       } else if (realUser && block?.type === "text" && typeof block.text === "string") {
         if (block.text !== "") segments.push(block.text);

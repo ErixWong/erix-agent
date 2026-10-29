@@ -35,7 +35,10 @@ function compactSnippet(value, limit = SNIPPET_LIMIT) {
 
 // 工具名 + 关键入参摘要：readFile 类显示 path+offset+limit；exec 类显示 command 前 80 字符；
 // 其余 JSON 压缩单行显示。全部限长，占位符整体控制在 ~200 字符量级。
-function summarizeToolCall(name, input) {
+//
+// issue #564：折叠摘要的「工具调用清单」**复用本函数**（导出，不再复制一份实现），
+// 于是 TTL 占位符与摘要清单对「一次调用长什么样」永远同一个口径。
+export function summarizeToolCall(name, input) {
   const toolName = String(name ?? "tool");
   const params = input && typeof input === "object" && !Array.isArray(input) ? input : {};
   const keys = Object.keys(params);

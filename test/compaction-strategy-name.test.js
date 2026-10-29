@@ -59,7 +59,7 @@ const BASE_SCRIPT = [
   { content: [{ type: "text", text: "final answer" }], stopReason: "end_turn" },
 ];
 
-async function runWithProvider(provider, context, usageSink) {
+async function runWithProvider(provider, context, usageSink, { toolOutputChars = 400 } = {}) {
   const events = [];
   const controller = new AbortController();
   const strategy = context?.strategy;
@@ -70,7 +70,7 @@ async function runWithProvider(provider, context, usageSink) {
     signal: controller.signal,
     provider,
     initialUserMessage: `start ${"y".repeat(600)}`,
-    executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
+    executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(toolOutputChars)}`,
     maxRounds: 3,
     completion: false,
     // #498 S3: split by **value shape**, not by key name. A strategy **object** is a behaviour
@@ -186,7 +186,17 @@ test("a failing summarizer degrades to the statistical summary instead of killin
 
 test("an empty summarizer answer also degrades rather than folding into nothing", async () => {
   const provider = createSummarizingProvider({ mainScript: BASE_SCRIPT, summaryText: "   " });
-  const { result } = await runWithProvider(provider, { strategy: "fold-llm" });
+  // issue #564：折叠摘要多了「工具调用清单」与 tool_use 入参抽来的锚点节（≈70 tokens）。
+  // 这个夹具原先卡在「折叠前 409 > 预算 400 ≥ 折叠后 333」的窗口上，加法一进来就顶破窗口，
+  // safety 层于是把整份摘要连同 head 一起裁掉——断言变成测不到降级。
+  // 修夹具不修断言：预算 700 + 被折工具输出加长到 4000 字符（折叠前 1592 > 700 ≥ 折叠后 402），
+  // 两侧都留出余量，断言逐字不动。
+  const { result } = await runWithProvider(
+    provider,
+    { strategy: "fold-llm", budgetTokens: 700 },
+    undefined,
+    { toolOutputChars: 4000 },
+  );
 
   assert.equal(result.termination.reason, "end_turn");
   assert.match(JSON.stringify(provider.mainRequests.at(-1)), /摘要失败，已降级为统计摘要/u);

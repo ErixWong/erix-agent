@@ -1,4 +1,5 @@
 import { groupIntoRounds } from "../messages/rounds.js";
+import { summarizeToolCall } from "../loop/tool-result-ttl.js";
 import { estimateMessageTokens } from "../tokens.js";
 import {
   ANCHOR_SECTION_HEADING,
@@ -8,7 +9,9 @@ import {
 } from "./anchors.js";
 import {
   cloneFoldPayload,
+  collectTtlFoldStubs,
   DEFAULT_RECOVERY_HINT,
+  FOLD_STUB_LINE_PATTERN,
   foldOptions,
   optionValue,
   roundRangeForIndexes,
@@ -21,6 +24,20 @@ import {
 } from "./helpers.js";
 
 export const FOLD_SUMMARY_MARKER = "【上下文折叠·v1·erix-9f6e2c】";
+
+/**
+ * 工具调用清单的上界（issue #564 缺口 2）：**最多 8 条 × 每条 ≤80 字符**。
+ *
+ * 这是清单自己的形状上界，不是**新的字节预算** —— 清单落在既有 `FOLDED_FACTS_MAX_BYTES`
+ * （默认 2048，`buildFoldedFacts` 做前缀夹断）之内：它排在区间行之后、锚点节之前，
+ * 所以字节夹断削掉的是后面的锚点/提示，而不是清单（见 `formatFoldSummary` 的行序）。
+ */
+export const MAX_TOOL_INVENTORY_ENTRIES = 8;
+export const MAX_TOOL_INVENTORY_CHARS = 80;
+
+// 清单节的标题行：**机械清单 ≠ 执行成功**，措辞不得暗示“已交付/已完成”（#392 的订正结论）。
+const TOOL_INVENTORY_HEADING = "工具调用清单（机械摘要，不代表执行成功）：";
+
 const MAX_NAVIGATION_ARTIFACTS = 10;
 const MAX_NAVIGATION_CHARS = 400;
 const NAVIGATION_STATUSES = new Set(["archived", "truncated", "external", "expired"]);
@@ -57,6 +74,57 @@ function toolFootprint(rounds) {
     .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
     .map(([name, count]) => `${name}×${count}`)
     .join(", ");
+}
+
+// 清单条目夹取：先压成单行（防换行拆节），再按**字符**夹到 `MAX_TOOL_INVENTORY_CHARS`
+// （超出时末位换成 `…`，于是“≤80 字符”是硬成立而不是“80+省略号”）。
+function clampInventoryEntry(value) {
+  const text = String(value ?? "").replace(/\s+/gu, " ").trim();
+  if (text === "") return "";
+  const characters = Array.from(text);
+  if (characters.length <= MAX_TOOL_INVENTORY_CHARS) return text;
+  return `${characters.slice(0, MAX_TOOL_INVENTORY_CHARS - 1).join("")}…`;
+}
+
+/**
+ * 从被折轮次里抽出**工具调用清单**（issue #564 缺口 2）：逐条 `name + 关键入参`。
+ *
+ * 复用 `summarizeToolCall`（`src/loop/tool-result-ttl.js`）—— 与 TTL 占位符同一个“一次调用长什么样”
+ * 口径，不另写一套。数据源是 `tool_use` 块（不是 `tool_result` 正文：正文可再取回，入参才是“跑了什么”）。
+ * 同一条重复调用只占一个格（去重后仍受 `MAX_TOOL_INVENTORY_ENTRIES` 夹取）。
+ *
+ * @param {object[]} messages 被折轮次的消息
+ * @returns {string[]} 已夹取的条目（≤8 条 × ≤80 字符）
+ */
+export function toolCallInventory(messages) {
+  const entries = [];
+  const seen = new Set();
+  for (const message of Array.isArray(messages) ? messages : []) {
+    for (const block of blocksFor(message)) {
+      if (block?.type !== "tool_use") continue;
+      const entry = clampInventoryEntry(summarizeToolCall(block.name, block.input));
+      if (entry === "" || seen.has(entry)) continue;
+      seen.add(entry);
+      entries.push(entry);
+      if (entries.length >= MAX_TOOL_INVENTORY_ENTRIES) return entries;
+    }
+  }
+  return entries;
+}
+
+// 清单节解析（合并多份摘要时用）：标题行之后连续的 `- ` 行就是条目，遇到第一行非条目即止
+// （恢复提示 / 锚点节 / stub 行都在它后面，所以不会被误吃）。
+function parseInventorySection(value) {
+  const lines = String(value).split("\n");
+  const headingIndex = lines.findIndex((line) => line.trim() === TOOL_INVENTORY_HEADING);
+  if (headingIndex < 0) return [];
+  const entries = [];
+  for (const line of lines.slice(headingIndex + 1)) {
+    if (!line.startsWith("- ")) break;
+    const entry = line.slice(2).trim();
+    if (entry !== "") entries.push(entry);
+  }
+  return entries;
 }
 
 function parseToolFootprint(value) {
@@ -242,8 +310,11 @@ function parseFoldSummaryMatch(value, match, legacy) {
     to: Number.parseInt(match[2], 10),
     count: Number.parseInt(match[3], 10),
     tools: parseToolFootprint(match[4]),
-    stubs: [...String(value).matchAll(/^\[已折叠\][^\n]*/gmu)]
+    // issue #564 缺口 1：双形态 stub（`[已折叠]…` 与 `【已折叠·TTL】…`）都收，
+    // 半角形态的匹配结果逐字不变（只是多认了全角那一支）。
+    stubs: [...String(value).matchAll(FOLD_STUB_LINE_PATTERN)]
       .map((stub) => stub[0]),
+    inventory: parseInventorySection(value),
     navigationRecord,
     anchors: parseAnchorSection(value),
     legacy,
@@ -286,6 +357,7 @@ export function formatFoldSummary({
   to,
   count,
   tools,
+  inventory = [],
   stubs = [],
   navigationRecord,
   recoveryHint = DEFAULT_RECOVERY_HINT,
@@ -297,10 +369,17 @@ export function formatFoldSummary({
       .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([name, count]) => `${name}×${count}`)
       .join(", ");
+  const boundedInventory = inventory.slice(0, MAX_TOOL_INVENTORY_ENTRIES);
   const lines = [
     `${FOLD_SUMMARY_MARKER}早期第 ${from}–${to} 轮（共 ${count} 轮）已折叠。`,
     `工具足迹：${footprint}。`,
   ];
+  // 行序是硬的（issue #564 判据 5）：区间行 → 工具调用清单 → 导航记录 / stub / 恢复提示 → 锚点节。
+  // 字节夹断（`buildFoldedFacts` 的前缀夹断，默认 2048）削掉的是**尾部**，所以清单永远在前面活着。
+  if (boundedInventory.length > 0) {
+    lines.push(TOOL_INVENTORY_HEADING);
+    for (const entry of boundedInventory) lines.push(`- ${entry}`);
+  }
   if (navigationRecord) {
     lines.push(`导航记录：${JSON.stringify(navigationRecord)}`);
   }
@@ -308,7 +387,7 @@ export function formatFoldSummary({
   lines.push(recoveryHint);
   const prefix = lines.slice(0, 2).join("");
   const suffix = lines.slice(2).join("\n");
-  const summary = stubs.length > 0 || navigationRecord
+  const summary = stubs.length > 0 || navigationRecord || boundedInventory.length > 0
     ? `${prefix}\n${suffix}`
     : `${prefix}${suffix}`;
   // 锚点节（A2）固定追加在摘要最末：recoveryHint 之后，整节为机械抽取文本。
@@ -328,6 +407,14 @@ function mergedFoldSummaryContent(
   const current = parseFoldSummary(summary);
   const merged = [...summaries, current].filter((parsed) => parsed !== undefined);
   const mergedStubs = [...new Set(merged.flatMap((parsed) => parsed.stubs ?? []))].slice(0, 10);
+  // 清单并集（issue #564）：**最新在前**（旧摘要按内容顺序在前、新折叠在后 ⇒ 反向遍历），
+  // 去重后重取 8 条上限。理由：模型最需要的是“刚刚跑过什么”，而更早的轮次已经在区间句里说明。
+  const mergedInventory = [];
+  for (const parsed of [...merged].reverse()) {
+    for (const entry of parsed.inventory ?? []) {
+      if (entry !== "" && !mergedInventory.includes(entry)) mergedInventory.push(entry);
+    }
+  }
   // 锚点并集（A2 关键回归）：旧摘要锚点在前、新折叠锚点按 kind 追加在后，去重后重新夹取上限
   // （MAX_ANCHORS=20 / 1200 字符）——连续折叠锚点不丢、不重复、不超限。
   const unionByKind = {};
@@ -366,6 +453,7 @@ function mergedFoldSummaryContent(
         return counts;
       }, new Map()),
       stubs: mergedStubs,
+      inventory: mergedInventory.slice(0, MAX_TOOL_INVENTORY_ENTRIES),
       navigationRecord: mergedNavigation,
       recoveryHint: resolveRecoveryHint(recoveryHint),
       anchors: mergedAnchors,
@@ -450,12 +538,20 @@ function prependSummary(
 export function summarizeFoldedPayload(foldedPayload, options = {}) {
   const from = Number.isSafeInteger(options.from) && options.from > 0 ? options.from : 1;
   const to = Number.isSafeInteger(options.to) && options.to >= from ? options.to : from;
+  const payload = Array.isArray(foldedPayload) ? foldedPayload : [];
+  // issue #564：TTL 句柄直接从被折负载里收（真机形态不传 `stubFor` 也能拿到），
+  // 宿主显式给的 stub 接在后面，保持两者同一上限。
+  const stubs = [...new Set([
+    ...collectTtlFoldStubs(payload),
+    ...(Array.isArray(options.stubs) ? options.stubs : []),
+  ])];
   return formatFoldSummary({
     from,
     to,
     count: Number.isSafeInteger(options.count) && options.count > 0 ? options.count : to - from + 1,
-    tools: countToolUses(Array.isArray(foldedPayload) ? foldedPayload : []),
-    stubs: Array.isArray(options.stubs) ? options.stubs : [],
+    tools: countToolUses(payload),
+    inventory: toolCallInventory(payload),
+    stubs,
     ...(options.navigationRecord === undefined ? {} : { navigationRecord: options.navigationRecord }),
     recoveryHint: resolveRecoveryHint(options.recoveryHint),
     ...(options.anchors === undefined ? {} : { anchors: options.anchors }),
@@ -506,7 +602,13 @@ export function createFoldStatisticalStrategy(options = {}) {
         retained,
         roundRange,
       });
-      const foldedStubs = await resolveFoldStubs(foldedPayload, settings.stubFor);
+      // issue #564 缺口 1：TTL 句柄（`【已折叠·TTL】…` 首行）从被折负载里自己收，
+      // 不依赖宿主传 `stubFor`（真机形态一个钩子都不给）。宿主显式 stub 接在后面。
+      const hostStubs = await resolveFoldStubs(foldedPayload, settings.stubFor);
+      const foldedStubs = [...new Set([
+        ...collectTtlFoldStubs(foldedPayload),
+        ...hostStubs,
+      ])];
       const navigationRecord = buildFoldNavigationRecord(
         foldedPayload,
         roundRange ?? (folded.length > 0 ? { from: 1, to: folded.length } : undefined),
@@ -536,11 +638,14 @@ export function createFoldStatisticalStrategy(options = {}) {
       let foldSummary = undefined;
       if (folded.length > 0) {
         const range = roundRange ?? { from: 1, to: folded.length };
+        const foldedMessages = folded.flatMap((round) => round.messages);
         const summary = formatFoldSummary({
           from: range.from,
           to: range.to,
           count: folded.length,
-          tools: countToolUses(folded.flatMap((round) => round.messages)),
+          tools: countToolUses(foldedMessages),
+          // issue #564 缺口 2：摘要不再只有计数——逐条 `name + 关键入参`（≤8 条 × ≤80 字符）。
+          inventory: toolCallInventory(foldedMessages),
           stubs: foldedStubs,
           navigationRecord,
           recoveryHint,

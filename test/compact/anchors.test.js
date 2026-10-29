@@ -49,7 +49,7 @@ test("extracts the five anchor kinds from raw payload text", () => {
   assert.deepEqual(extractAnchors(input), extractAnchors(input));
 });
 
-test("never scans assistant prose, tool_use params or engine metadata", () => {
+test("never scans assistant prose or engine metadata; tool_use inputs are scanned (issue #564)", () => {
   const result = extractAnchors([
     {
       role: "assistant",
@@ -70,10 +70,14 @@ test("never scans assistant prose, tool_use params or engine metadata", () => {
     { role: "system", content: "config path src/sys/config.js" },
   ]);
 
-  assert.deepEqual(result.byKind, {
-    paths: [], shas: [], issues: [], urls: [], errors: [],
-  });
-  assert.equal(result.text, "");
+  // assistant 散文 / system 消息 / 引擎元数据（tool_use 的 id 字段）都不参与。
+  assert.deepEqual(result.byKind.shas, []);
+  assert.deepEqual(result.byKind.urls, []);
+  assert.deepEqual(result.byKind.errors, []);
+  assert.deepEqual(result.byKind.issues, []);
+  // issue #564 缺口 3：tool_use 的**入参**参与抽取（而散文里的路径仍不参与）。
+  assert.deepEqual(result.byKind.paths, ["src/secret/config.js"]);
+  assert.doesNotMatch(result.text, /anchors\.js|sys\/config\.js|toolu_01/u);
 });
 
 test("does not report prose, line numbers, colors, dates, ids or url paths as anchors", () => {

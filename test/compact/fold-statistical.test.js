@@ -31,8 +31,14 @@ test("prepends a deterministic tool-footprint summary before the head user task"
   ];
   const strategy = createFoldStatisticalStrategy();
   const result = await strategy.compact(messages, { keepRounds: 1, budgetTokens: 0 });
+  // issue #564：区间行后面多了「工具调用清单」（逐条 name + 关键入参，机械文本）。
+  // 清单在区间行之后、恢复提示之前——字节夹断削尾部，所以它永远活在最前面。
   const summary =
-    "【上下文折叠·v1·erix-9f6e2c】早期第 1–2 轮（共 2 轮）已折叠。工具足迹：exec×1, writeFile×1。需要原文请重读文件或查看持久笔记；关键值应当已落盘";
+    "【上下文折叠·v1·erix-9f6e2c】早期第 1–2 轮（共 2 轮）已折叠。工具足迹：exec×1, writeFile×1。\n"
+    + "工具调用清单（机械摘要，不代表执行成功）：\n"
+    + "- writeFile path=?\n"
+    + "- exec\n"
+    + "需要原文请重读文件或查看持久笔记；关键值应当已落盘";
 
   assert.equal(strategy.name, "fold-statistical");
   assert.deepEqual(result.messages, [
