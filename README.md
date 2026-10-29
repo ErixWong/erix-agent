@@ -181,8 +181,9 @@ src/
     config-namespace.js            `config` namespace schema: alias = schema path, capability keys rejected,
                                    function values refused at intake
     capabilities-namespace.js      `capabilities` schema (hooks + checks + ports): the canonical home of the
-                                   16 host callbacks, the two polymorphic knobs' function form, the
+                                   17 host callbacks, the two polymorphic knobs' function form, the
                                    deliverables checks and the three port slots (issue #498 S4c)
+    continuity-block.js            Session continuity block: budgeted, request-tail, marker-in-place upsert (issue #568)
     provider-runner.js             Provider call, retry, and snapshot rollback
     run-snapshot-executor.js       Pre/post tool checkpoints and aggregate gate
     budget.js                      Budget validation and state cloning helpers

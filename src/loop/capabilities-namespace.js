@@ -88,7 +88,8 @@ import { tagValidationRoute } from "../assembly-validators.js";
 import { normalizeDeliverables } from "./deliverables.js";
 
 /**
- * The canonical list of the **16 host callbacks** (issue #498 S4a; 12 since S4b, 16 since S4c).
+ * The canonical list of the **17 host callbacks** (issue #498 S4a; 12 since S4b, 16 since S4c,
+ * 17 since issue #568 added `continuityProvider`).
  *
  * 顺序 = 报错文案里的枚举顺序，也 = 文档里那张表的行序。八条观察者通道来自 0.27.0 的
  * `config.observers`（本版整组删除），三条出口（`onEvent` / `onObserverError` /
@@ -128,6 +129,13 @@ export const CAPABILITY_HOOK_NAMES = Object.freeze([
   "onBeforeFold",
   "onAfterFold",
   "stubFor",
+  // issue #568: the session continuity block's content provider. A **nested-slot** leaf like the
+  // four above (no top-level flat alias — the 0.28 direction is "callbacks live in
+  // `capabilities.hooks.*`, configuration in `config.*`", so no scattered top-level key is added).
+  // Its destination is the `context` shell (`CAPABILITY_SLOT_DESTINATIONS`), next to the budget knob
+  // `config.folding.context.continuityMaxTokens` it belongs to. Consumer: `refreshContinuity` in
+  // `src/loop/orchestrator.js`.
+  "continuityProvider",
 ]);
 
 /**
@@ -237,7 +245,11 @@ export const CAPABILITIES_NAMESPACE_SCHEMA = Object.freeze({
  * nine top-level options that never existed), while the hard requirement of this slice is "only add
  * destinations, do not invent flat aliases".
  *
- * @type {Readonly<Record<string, { path: readonly string[], conflictPath: string }>>}
+ * @type {Readonly<Record<string, {
+ *   path: readonly string[],
+ *   conflictPath: string,
+ *   legacyShell?: boolean,
+ * }>>}
  */
 export const CAPABILITY_SLOT_DESTINATIONS = Object.freeze({
   // Extension-decision notification: legacy home `reflection.onReflection` (consumed as
@@ -275,6 +287,17 @@ export const CAPABILITY_SLOT_DESTINATIONS = Object.freeze({
     path: Object.freeze(["context", "strategy"]),
     conflictPath: "ports.strategy",
   }),
+  // issue #568: the session continuity block's provider. It has **no legacy home** (the block did not
+  // exist before this slice), so what is invented here is a container member slot, not a move — the
+  // top-level allowlist does not grow. Its shell is `context`, next to the budget knob it belongs to
+  // (`config.folding.context.continuityMaxTokens`), but it is marked `legacyShell: false`: see the
+  // flag's doc on `CAPABILITY_SLOT_DESTINATIONS` (the mixed-shell hint must not claim a spelling that
+  // never existed, and that sentence is verbatim-pinned by the contract).
+  "hooks.continuityProvider": Object.freeze({
+    path: Object.freeze(["context", "continuityProvider"]),
+    conflictPath: "hooks.continuityProvider",
+    legacyShell: false,
+  }),
 });
 
 /** 能力面的分组名（顺序即报错文案里的枚举顺序）。 */
@@ -291,7 +314,7 @@ export const CAPABILITIES_NAMESPACE_OPTION_NAME = "capabilities";
  * The derived **alias table**: `"<group>.<leaf>"` → top-level key (mechanically derived, not a
  * hand-written mapping).
  *
- * It only holds **flat** leaves (leaf name verbatim the top-level key). The nine nested-slot leaves
+ * It only holds **flat** leaves (leaf name verbatim the top-level key). The ten nested-slot leaves
  * are not here — their destination is `CAPABILITY_SLOT_DESTINATIONS`, not a table of "invented flat
  * keys".
  *
@@ -313,7 +336,7 @@ export const CAPABILITIES_SURFACE_OPTION_NAMES = Object.freeze(
   )),
 );
 
-/** The full set of **nested-slot** capability leaves (derived: the nine from #498 S4c, group then leaf order). */
+/** The full set of **nested-slot** capability leaves (derived: the nine from #498 S4c plus #568's, group then leaf order). */
 export const CAPABILITIES_SLOT_LEAF_NAMES = Object.freeze(
   CAPABILITIES_NAMESPACE_GROUPS.flatMap((group) => (
     CAPABILITIES_NAMESPACE_SCHEMA[group]
@@ -439,6 +462,12 @@ export function capabilityDestinationsForShell(shellName) {
   const found = [];
   for (const [capabilityPath, destination] of Object.entries(CAPABILITY_SLOT_DESTINATIONS)) {
     if (destination.path[0] !== shellName) continue;
+    // issue #568: a leaf marked `legacyShell: false` never had a slot in this shell (it is a new
+    // destination, not a move). The hint's job is to tell a host who wrote the **old** spelling where
+    // the behaviour member went — naming a spelling that never existed would send it looking for a
+    // key the engine rejects. So such a leaf stays out of the hint (its own rejection text is the
+    // `capabilities.hooks.<name>` one, emitted by the capability namespace itself).
+    if (destination.legacyShell === false) continue;
     const [group, ...rest] = capabilityPath.split(".");
     found.push({ capabilityPath, group, leaf: rest.join(".") });
   }
