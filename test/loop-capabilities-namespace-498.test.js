@@ -185,7 +185,7 @@ test("S1c 容器与两面对称：两个容器都不在配置面/能力面里，
   // 未知子键闸口：两个容器各抛一条（同一道相位、同一套文案口径）。
   assert.match(
     collectConfigNamespaceProblems({ rund: { maxRounds: 1 } })[0],
-    /unknown config namespace: "rund" \(accepted: input, run, tuning, timing, folding, guard, metadata\)/u,
+    /unknown config namespace: "rund" \(accepted: input, run, tuning, timing, folding, guard, metadata, continuity\)/u,
   );
   assert.match(
     collectCapabilitiesNamespaceProblems({ hoks: {} })[0],
@@ -682,6 +682,8 @@ const REPRESENTATIVE_CONFIG_VALUES = {
   toolContext: { a: 1 },
   model: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
   modelMetadata: { contextWindowTokens: 100000, maxOutputTokens: 1024 },
+  // #598: the continuity writer's switch (one leaf, three literals, default `"off"`).
+  write: "off",
   // #531: `session` 不是配置叶子（第三站成员），所以这张**逐叶子**覆盖表里没有它。
 };
 
@@ -771,7 +773,7 @@ test("S7 逐叶子构造的 config 子树过 JSON round-trip 等值（函数叶�
   assert.equal(leafPaths.length, configLeafCount(), "leafPaths 必须覆盖 schema 的全部叶子");
 });
 
-test("S8 逐叶子穷举：config.<group>.<leaf> 展开后与扁平形态逐键深度相等（42 条）", () => {
+test("S8 逐叶子穷举：config.<group>.<leaf> 展开后与扁平形态逐键深度相等（43 条）", () => {
   let covered = 0;
   for (const group of CONFIG_NAMESPACE_GROUPS) {
     for (const leaf of CONFIG_NAMESPACE_SCHEMA[group]) {

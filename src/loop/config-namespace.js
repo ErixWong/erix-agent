@@ -152,6 +152,14 @@ import {
  * per-run payload is not one of them. `config.metadata.session` is refused with a sentence that
  * names the payload's home (`CONFIG_RELOCATED_LEAVES`), not with the generic unknown-leaf text.
  *
+ * **#598 adds one leaf and one group**: `config.continuity.write` (`"off"` | `"prompt"` |
+ * `"prompt-and-fallback"`, default `"off"`) — the switch of the continuity block's **default
+ * writer**. Leaf count **41 → 42**, groups **7 → 8**. It has **no flat top-level twin** (the S3 shape:
+ * a `config` leaf may exist without a top-level option — every leaf is in that shape today), so
+ * `CONFIG_SURFACE_OPTION_NAMES` (derived from the leaf set) goes 41 → 42 while
+ * `configPlaneOptionNames(RUN_TOOL_LOOP_OPTION_NAMES)` (the leaves that *still* have a top-level key)
+ * stays **0** — the leaf set and the plane set are two different questions (see constraint 2 above).
+ *
  * @type {Readonly<Record<string, readonly string[]>>}
  */
 export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
@@ -244,6 +252,17 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
     "toolContext",
     "model",
     "modelMetadata",
+  ]),
+  // 续接块（issue #598）：**默认写者**的开关。一个叶子，默认 `"off"`。
+  //   · `off` ⇒ 请求里逐字不含 `<handoff>` 指令、store 不读不写、块一个字节都不变（零行为变更）；
+  //   · `prompt` ⇒ 请求尾部注入指令，模型在**同一次响应**里顺手写；收尾时解析并落盘；
+  //   · `prompt-and-fallback` ⇒ 上一档 + 收尾若没拿到，**补一次**有界调用（失败/仍缺失 ⇒ `unknown`）。
+  // 它属**配置面**（引擎按枚举字面量校值并解释它，不是行为载体），值规则见
+  // `CONFIG_LEAF_VALUE_RULES["continuity.write"]`；本叶子**没有**顶层扁平别名（S3 之后的形状）。
+  // 谁消费：`src/loop/orchestrator.js`（指令注入 + 收尾解析 + 召回）与 `src/loop/continuity-writer.js`
+  // （解析 / store / 派生的 project-key）。
+  continuity: Object.freeze([
+    "write",
   ]),
   // ⚠ 这里曾有第八组 `observers`（8 个 `on*` 回调）——**#498 S4a 整组删除**。
   // 回调不是数据：它们让 `config` 子树过不了 JSON round-trip，而「`config` 子树必须 round-trip
@@ -548,6 +567,14 @@ const CONFIG_LEAF_VALUE_RULES = Object.freeze({
   "run.stream": (value, path) => (typeof value === "boolean"
     ? undefined
     : `${path} must be a boolean (received: ${describeConfigValueType(value)})`),
+  // issue #598: `config.continuity.write` is a **three-literal enum**. The switch decides whether the
+  // request carries the `<handoff>` instruction at all, so a typo silently landing on the default
+  // (`"off"`) would be the "configured but did nothing" shape this repo refuses. Unknown literals are
+  // therefore refused at intake and the verdict names the three accepted values.
+  "continuity.write": (value, path) => (value === "off" || value === "prompt" || value === "prompt-and-fallback"
+    ? undefined
+    : `${path} must be one of "off" / "prompt" / "prompt-and-fallback"`
+      + ` (received: ${describeConfigValueType(value)})`),
 });
 
 /** The leaf value-rule table (exported for the self-check and tests to read; read-only). */
@@ -641,6 +668,10 @@ export const CONFIG_LEAF_BINDING = Object.freeze({
   "metadata.toolContext": "call",
   "metadata.model": "call",
   "metadata.modelMetadata": "call",
+  // continuity（issue #598）—— 续接块的默认写者是**这个 agent 怎么收尾**，不是「这一次说什么」：
+  // 同一个 agent 连着两次调用给出两个不同值是误用（半开半关会让「上一份交接」的来源变得不可解释），
+  // 所以它是 `init` 叶（`createAgent({ config })`），不是 `agent.run({ … })` 的 `call` 叶。
+  "continuity.write": "init",
 });
 
 /** 绑定只有这两档（`init` / `call`）；报错文案与自检共用这一份，不另写一份字符串。 */

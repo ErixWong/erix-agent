@@ -430,7 +430,7 @@ test("A5 移到配置面的 runId / cwd 真被引擎读：run_outcome 的 runId 
 });
 
 // ================================================================ B. 结构等价（判据 1）
-test("B1 42 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平形态逐键深度相等", () => {
+test("B1 43 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平形态逐键深度相等", () => {
   let covered = 0;
   for (const key of CONFIG_SURFACE_OPTION_NAMES) {
     const path = configPathForOption(key);
@@ -438,7 +438,10 @@ test("B1 42 个配置键逐个穷举：config.<group>.<leaf> 展开后与扁平�
     // issue #538：`config.run.stream` 有**值规则**（必须是布尔），所以那一个叶子的穷举样本
     // 用它自己的合法值（`true`），其余叶子照旧用字符串样本。漏了这一步，本格会红在值规则上，
     // 而不是红在它真正要证明的「展开等价」上。
-    const value = path === "run.stream" ? true : `sweep:${key}`;
+    // issue #598：`config.continuity.write` 同一条纪律（三字面量枚举），样本用它的默认值 `"off"`。
+    const value = path === "run.stream"
+      ? true
+      : path === "continuity.write" ? "off" : `sweep:${key}`;
     const flat = { [key]: value };
     const nested = { config: { [group]: { [leaf]: value } } };
     const flatExpanded = expandConfigNamespace(flat);
@@ -629,6 +632,10 @@ const RETIRED_FLAT_VALUES = {
   // 展开相仍逐字写回 `effectiveOptions.reflection`（读侧一行未改：`orchestrator.js` 的
   // `resolvedReflectionOption` 与那一串 `effectiveReflection?.…`）。
   reflection: { enabled: true, maxExtensions: 1 },
+  // issue #598（`continuity` 组）：`write` 是**新增的配置叶子**，从来没有顶层扁平别名（S3 之后的
+  // 形状）。展开相仍逐字写回 `effectiveOptions.write`（`orchestrator.js` 的
+  // `normalizeContinuityWriteMode(effectiveOptions.write)` 读的就是它）。值取默认的 `"off"`。
+  write: "off",
 };
 
 /** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */
@@ -1169,7 +1176,11 @@ test("H1 JSDoc 的 config 组名集合恰等于 schema 组名（类型面锁进�
   const schemaGroups = Object.keys(CONFIG_NAMESPACE_SCHEMA); // 派生，不手抄
   // 派生自证：这份期望值确实来自模块导出（与分组名单逐字同一份）。
   assert.deepEqual(schemaGroups, [...CONFIG_NAMESPACE_GROUPS], "期望值必须来自 CONFIG_NAMESPACE_SCHEMA 的键集");
-  assert.equal(schemaGroups.length, 7, "七组（schema 侧的自证；#498 S4a 删 observers、S4b 把 prompt 改名 input）");
+  assert.equal(
+    schemaGroups.length,
+    8,
+    "八组（schema 侧的自证；#498 S4a 删 observers、S4b 把 prompt 改名 input、#598 新增 continuity）",
+  );
 
   const duplicated = jsDocGroups.filter((group, index) => jsDocGroups.indexOf(group) !== index);
   const extra = jsDocGroups.filter((group) => !schemaGroups.includes(group));

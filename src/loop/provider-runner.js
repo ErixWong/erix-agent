@@ -4,6 +4,7 @@ import { throwIfAborted } from "./abort.js";
 import { validateMessages } from "../messages/rounds.js";
 import { foldToolResultsForRequest } from "./tool-result-ttl.js";
 import { ensureUserTurnView } from "./request-user-view.js";
+import { pendingTailToolUses } from "./pending-tool-result.js";
 import { appendRunStateToRequestView } from "../run-state.js";
 
 function isRecord(value) {
@@ -96,6 +97,24 @@ export async function callProvider(ctx, {
     // 回补来源是未折叠的 ctx.messages。放在折叠策略内部只能管住那一层，管不住这里。
     const userTurnGuard = {};
     requestMessages = ensureUserTurnView(requestMessages, ctx.messages, userTurnGuard);
+    // issue #598: the handoff instruction rides the **request tail only** (never `ctx.messages`).
+    // Why the tail: the same discipline as the continuity block (#568) — the block and this
+    // instruction are "per-request small blocks", while touching `mainSystem` would invalidate the
+    // prefix reuse of the 100k–200k history that sits after it.
+    // Why the `pendingTailToolUses` gate: a request whose tail is an assistant `tool_use` without its
+    // `tool_result` must not get another user message wedged in (it would break the pairing the
+    // providers enforce). That is the same shape the continuity block refuses to inject into, and
+    // the block's own `continuity_injection_skipped` event already accounts for that round.
+    // `undefined` (the default, `config.continuity.write = "off"`) ⇒ not one byte is added.
+    const requestTailInstruction = ctx.requestTailInstruction;
+    if (typeof requestTailInstruction === "string"
+      && requestTailInstruction !== ""
+      && pendingTailToolUses(requestMessages).length === 0) {
+      requestMessages = [
+        ...requestMessages,
+        { role: "user", content: [{ type: "text", text: requestTailInstruction }] },
+      ];
+    }
     // issue #547 asked "who still reaches this recording branch" and #548 answered it: the one
     // shape that did (a `max_tokens` continuation — `allowPendingToolUse: true`, the only such call
     // site — with a low-budget run-state block appended behind a trailing `assistant[tool_use]`) was

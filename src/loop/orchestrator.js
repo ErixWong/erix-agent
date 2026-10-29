@@ -27,10 +27,20 @@ import {
 } from "./pending-tool-result.js";
 import { MESSAGE_ROW_KIND } from "../store/message-rows.js";
 // issue #568：会话续接块（受预算约束 / 请求尾部 / 计入本地估算 / 骨架三段不降采样）。
+// issue #598：同一个模块的末尾一段是**默认写者**（指令 / 解析 / store / 派生的 project-key）。
+// 渲染与预算只属上面那四个导出，本单一个字节的渲染逻辑都没动。
 import {
+  HANDOFF_FALLBACK_INSTRUCTION,
+  HANDOFF_FALLBACK_TAIL_CHARS,
+  HANDOFF_INSTRUCTION,
+  HANDOFF_UNKNOWN,
+  createFileContinuityStore,
+  handoffSectionsText,
+  normalizeContinuityWriteMode,
+  normalizeContinuityProvided,
+  parseHandoff,
   positionContinuityBlock,
   renderContinuityBlock,
-  normalizeContinuityProvided,
   upsertContinuityInMessages,
 } from "./continuity-block.js";
 import {
@@ -390,7 +400,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *     => Promise<string|{content:any, metadata?:object, success?:boolean}|Error>,
  *   finalGuard?:(payload:{finalText:string,messages:object[],round:number,rounds:number,signal:AbortSignal,termination:object}) => Promise<{action:"accept"}|{action:"skip",reason:string}|{action:"revise",message:string}>,
  *   deliverables?: {name: string, check: (facts: object) => any}[], // issue #386 slice 2: host-declared delivery checks, verified before every guard call (the canonical home is `capabilities.checks.deliverables`; the flat spelling is a live option).
- *   config?: { // issue #497（S2）：嵌套配置命名空间，七组见下（叶子名逐字等于同名顶层选项，类型也一致；唯一例外是 `input.messages` → `initialMessages`，见 `CONFIG_LEAF_ALIASES`）。
+ *   config?: { // issue #497（S2）：嵌套配置命名空间，八组见下（叶子名逐字等于同名顶层选项，类型也一致；唯一例外是 `input.messages` → `initialMessages`，见 `CONFIG_LEAF_ALIASES`）。
  *     input?: {system?: string, cacheStablePrefix?: boolean, initialUserMessage?: string, messages?: object[], wrapup?: boolean, tools?: object[]},
  *     run?: {maxRounds?: number, maxTokenContinuations?: number,
  *       stallDetection?: {window?: number, mode?: "appear"|"consecutive"}|false,
@@ -411,6 +421,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *     metadata?: {expert?: any, user?: any, task?: any, requestId?: string, toolContext?: object,
  *       model?: {contextWindowTokens?: number, maxOutputTokens?: number},
  *       modelMetadata?: {contextWindowTokens?: number, maxOutputTokens?: number}},
+ *     continuity?: {write?: "off"|"prompt"|"prompt-and-fallback"}, // issue #598: 续接块默认写者的开关（默认 "off" = 零行为变更；没有顶层扁平别名）
  *   },
  *   capabilities?: { // issue #498 (S4a / S4b / S4c): the capability container. Three groups: `hooks` (17 host callbacks + 2 polymorphic knobs), `checks` (deliverables checks), `ports` (infrastructure / strategy implementations).
  *     hooks?: {onEvent?: (event: LoopEvent) => void, onObserverError?: (error: Error, context: {channel: string, runId?: string, type?: string, round?: number, toolName?: string, method?: string}) => void,
@@ -695,6 +706,12 @@ export async function runToolLoop(options) {
   // with the `context` shell), so it arrives on the `slots` side channel — no top-level flat alias
   // was invented for it (0.28 的方向：回调收 `capabilities.hooks.*`).
   const continuityProvider = capabilityHooks.continuityProvider;
+  // issue #598 —— 续接块**默认写者**的开关（`config.continuity.write`，默认 `"off"`）。
+  // 它是 init 叶、没有顶层扁平别名（S3 之后的形状），展开相把它写回 `effectiveOptions.write`。
+  // `off` 是**红线**：指令不注入、store 不读不写、请求逐字回到今天（判据 1 的对拍）。
+  // 非法值在 intake 就被 `CONFIG_LEAF_VALUE_RULES["continuity.write"]` 拒掉；读侧只回答
+  // 「算不算开着」，于是没写 / 写了个别的字符串一律落到默认的 `off`（不把非法值当半个开关）。
+  const continuityWriteMode = normalizeContinuityWriteMode(effectiveOptions.write);
   // issue #568: the block's **own** token budget (`config.folding.context.continuityMaxTokens`,
   // default `CONTINUITY_DEFAULT_MAX_TOKENS` = 1200, an **experimental** value). It is deliberately
   // separate from `context.budgetTokens`: the fold budget answers "when to fold", this one answers
@@ -2401,6 +2418,12 @@ export async function runToolLoop(options) {
     cacheStablePrefix,
     tools: providerTools,
     signal,
+    // issue #598：请求尾部的**交接指令**（`off` ⇒ `undefined`，请求逐字回到今天）。
+    // 它只活在**请求视图**里（`src/loop/provider-runner.js` 追加到尾部），**不进 `messages`**：
+    // 进历史会让它每轮长一条，还会污染 transcript / 折叠账。
+    get requestTailInstruction() {
+      return continuityWriteMode === "off" ? undefined : HANDOFF_INSTRUCTION;
+    },
     maxTokens,
     temperature,
     topP,
@@ -2954,6 +2977,177 @@ export async function runToolLoop(options) {
     rendered: /** @type {string|undefined} */ (undefined),
   };
 
+  // ── issue #598 —— 续接块的**默认写者**（引擎侧）─────────────────────────────────────────────
+  //
+  // 三条分工（与 #568 的渲染面严格分开，本单不改渲染 / 预算 / 骨架）：
+  //   1. **写**：请求尾部注入一小段指令（`HANDOFF_INSTRUCTION`），模型在**同一次响应**里顺手写
+  //      `<handoff>`——零额外请求。`off` 时指令逐字不出现（红线）。
+  //   2. **解析 + 存**：收尾时只从 marker 里取三段（`parseHandoff`），原文照抄落盘；缺段 / 缺整块
+  //      ⇒ 该段 `unknown`（**绝不**代写、绝不用机械文本冒充语义）。
+  //   3. **召回**：默认 provider = 读 store → 格式化成 `[contract]/[unfinished]/[evidence]` 段文本
+  //      → 交给 #568 的 `renderContinuityBlock`。宿主显式给了 `capabilities.hooks.continuityProvider`
+  //      ⇒ **override 生效**（默认写者让位；写不写仍由开关决定，默认仍写）。
+  //
+  // `ERIX_CONTINUITY_DIR` 与 `src/tools/notes.js` 的 `ERIX_NOTES_DIR` 同一条纪律：库层默认目录
+  // 必须可注入，否则测试会写真实 `~/.erix`（仓库测试隔离规则）。
+  /** 默认写者读回来的那一份记录（`undefined` = 开关关着 / 没有记录 / 读失败）。 */
+  let storedHandoff = /** @type {any} */ (undefined);
+  /** 引擎自带的默认 provider（只在「开关开着 + 宿主没给 override + 真读到了记录」时才存在）。 */
+  let engineContinuityProvider = /** @type {(() => {text: string, version?: number})|undefined} */ (undefined);
+  /** 本 run 的续接 store（`off` 时为 `undefined`：连路径都不算）。 */
+  let continuityStore = /** @type {ReturnType<typeof createFileContinuityStore>|undefined} */ (undefined);
+  /** 兜底那一次补调用是否已经跑过（`prompt-and-fallback` 下**恰好一次**，判据 5）。 */
+  let handoffFallbackUsed = false;
+
+  /** 本次 run 的 store（懒建：`off` 时一个对象都不创建）。 */
+  const continuityStoreForRun = () => {
+    if (continuityStore === undefined) continuityStore = createFileContinuityStore({ cwd });
+    return continuityStore;
+  };
+
+  /**
+   * run 启动时读一次 store，并把默认 provider 装好。
+   *
+   * 读失败 / 没有记录 ⇒ 什么都不装（首条请求里就没有块）——「没拿到」与「拿到了 `unknown`」
+   * 是两件事：前者是本 run 无召回，后者是上一份交接确实什么都没写（那种记录会渲染成 `unknown`）。
+   */
+  const loadStoredHandoff = async () => {
+    if (continuityWriteMode === "off") return undefined;
+    try {
+      storedHandoff = await continuityStoreForRun().read();
+    } catch (error) {
+      storedHandoff = undefined;
+      emitEvent({
+        type: "continuity_write_failed",
+        ...(runId === undefined ? {} : { runId }),
+        phase: "read",
+        detail: String(/** @type {any} */ (error)?.message ?? error).slice(0, 120),
+      });
+    }
+    if (storedHandoff !== undefined) {
+      const record = storedHandoff;
+      engineContinuityProvider = () => ({ text: handoffSectionsText(record.sections), version: record.version });
+    }
+    return storedHandoff;
+  };
+
+  /**
+   * 实际生效的 provider：宿主 override 赢，否则引擎默认（没记录时就是 `undefined` ⇒ 不注入）。
+   *
+   * @returns {((payload: any) => any)|undefined}
+   */
+  const effectiveContinuityProvider = () => (
+    typeof continuityProvider === "function" ? continuityProvider : engineContinuityProvider
+  );
+
+  /**
+   * 收尾时解析模型输出（只认 marker）——候选文本按「先终稿、后原始末轮正文」的顺序试。
+   *
+   * 为什么两个候选：`wrapup` 开着时终稿是 JSON 里的 `output`（模型可能把块写在 `output` 里），
+   * 而原始末轮正文包含 JSON 之前的全部字节（模型也可能把块写在 JSON 外面）。两处都看，取第一个
+   * **真带 marker** 的；都没有 ⇒ `found: false`（三段 `unknown`）。
+   *
+   * @returns {{found: boolean, sections: {contract: string, unfinished: string, evidence: string}}}
+   */
+  const parseHandoffFromRun = () => {
+    const candidates = [finalText, textFromBlocks(blocksFor(lastAssistantContent))];
+    let parsed = parseHandoff("");
+    for (const candidate of candidates) {
+      const attempt = parseHandoff(candidate);
+      if (attempt.found) return attempt;
+      parsed = attempt;
+    }
+    return parsed;
+  };
+
+  /**
+   * 兜底（`prompt-and-fallback`）：补**一次**有界调用，要求只输出 `<handoff>`。
+   *
+   * 输入有界：终稿尾部 `HANDOFF_FALLBACK_TAIL_CHARS` 个字符 + 上一份交接（同样夹断）。失败 / 超时 /
+   * 仍缺失 ⇒ `undefined`（调用方写 `unknown`）——**run 不失败、不重试**（判据 5 与判据 3）。
+   *
+   * @returns {Promise<{found: boolean, sections: {contract: string, unfinished: string, evidence: string}}|undefined>}
+   */
+  const requestHandoffFallback = async () => {
+    if (handoffFallbackUsed) return undefined;
+    handoffFallbackUsed = true;
+    const tail = String(finalText ?? "").slice(-HANDOFF_FALLBACK_TAIL_CHARS);
+    const previous = storedHandoff === undefined
+      ? ""
+      : handoffSectionsText(storedHandoff.sections).slice(0, HANDOFF_FALLBACK_TAIL_CHARS);
+    const prompt = [
+      HANDOFF_FALLBACK_INSTRUCTION,
+      "",
+      "## 上一份交接（只作参考，不要照抄）",
+      previous === "" ? HANDOFF_UNKNOWN : previous,
+      "",
+      "## 本次收尾正文（尾部）",
+      tail === "" ? HANDOFF_UNKNOWN : tail,
+    ].join("\n");
+    try {
+      const response = await awaitWithAbort(provider.chat({
+        messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
+        tools: [],
+        signal,
+      }));
+      addUsage(response, undefined, { account: "engine" });
+      return parseHandoff(textFromBlocks(blocksFor(response?.content)));
+    } catch (error) {
+      // 中止 / 网络 / provider 抛错：兜底本身不成立 ⇒ 落 `unknown`，run 照常收尾。
+      emitEvent({
+        type: "continuity_write_failed",
+        ...(runId === undefined ? {} : { runId }),
+        phase: "fallback",
+        detail: String(/** @type {any} */ (error)?.message ?? error).slice(0, 120),
+      });
+      return undefined;
+    }
+  };
+
+  /**
+   * 收尾写者：解析 →（可选）兜底 → 落盘。**只在 `finish()` 那一条终路上跑**（失败 / 中止不跑）。
+   *
+   * 三条纪律：
+   *   · `off` ⇒ 立刻返回（零行为变更，判据 1）；
+   *   · **引擎只搬运不背书**：段内容原样进 store，`verification` 一个字节都不碰（判据 4）；
+   *   · 落盘失败 / 兜底失败 ⇒ 记一条 `continuity_write_failed` 事件，**run 不失败**（判据 3）。
+   *
+   * @returns {Promise<{status: string, source: string, sections?: object}|undefined>}
+   */
+  const persistHandoff = async () => {
+    if (continuityWriteMode === "off") return undefined;
+    let parsed = parseHandoffFromRun();
+    let source = parsed.found ? "model" : HANDOFF_UNKNOWN;
+    if (!parsed.found && continuityWriteMode === "prompt-and-fallback") {
+      const fallback = await requestHandoffFallback();
+      if (fallback !== undefined) {
+        parsed = fallback;
+        source = fallback.found ? "fallback" : HANDOFF_UNKNOWN;
+      }
+    }
+    try {
+      const record = await continuityStoreForRun().write({ source, sections: parsed.sections });
+      // 事件只报**事实**（写了没有、来源是谁），不搬正文：段内容可能很长，而它已经在 store 里了。
+      emitEvent({
+        type: "continuity_written",
+        ...(runId === undefined ? {} : { runId }),
+        round: runLoopState.rounds,
+        mode: continuityWriteMode,
+        source,
+        path: continuityStoreForRun().path,
+      });
+      return { status: "written", source, sections: record?.sections };
+    } catch (error) {
+      emitEvent({
+        type: "continuity_write_failed",
+        ...(runId === undefined ? {} : { runId }),
+        phase: "write",
+        detail: String(/** @type {any} */ (error)?.message ?? error).slice(0, 120),
+      });
+      return { status: "write_failed", source, sections: parsed.sections };
+    }
+  };
+
   /**
    * 「本轮为什么没注入」的唯一记账口（硬约束：不许静默跳过）。
    *
@@ -2975,20 +3169,24 @@ export async function runToolLoop(options) {
   };
 
   /**
-   * 刷新续接块（调用宿主 provider + 渲染 + 就地替换/挪到尾部）。
+   * 刷新续接块（调用 provider + 渲染 + 就地替换/挪到尾部）。
    *
    * **provider 没配 ⇒ 一个字节都不发生**（`undefined` 是「关掉」，不是「缺失」）：不调用、不注入、
    * 不改消息流——这就是判据 4「关掉 provider ⇒ 行为逐字回到今天」的那条腿。
    * provider 配了但返回空 / 抛错 ⇒ 渲染 `unknown`（缺失即 unknown，不拿机械文本冒充语义）。
    *
+   * issue #598：`provider` 在这里取的是**实际生效**的那一个——宿主 override 赢，否则是默认写者的
+   * 召回实现（读 store → 格式化）。两者都没有（开关 `off` / 没有记录）⇒ 仍然是「一个字节都不发生」。
+   *
    * @param {{round?: number}} [options]
    */
   const refreshContinuity = async ({ round } = {}) => {
-    if (typeof continuityProvider !== "function") return undefined;
+    const providerForContinuity = effectiveContinuityProvider();
+    if (typeof providerForContinuity !== "function") return undefined;
     let provided;
     let failure;
     try {
-      provided = await continuityProvider({
+      provided = await providerForContinuity({
         runId,
         state: runLoopState.currentRunState,
         previous: continuityState.provided,
@@ -3046,6 +3244,9 @@ export async function runToolLoop(options) {
   const terminationContext = {
     finalGuard,
     finalGuardTimeout,
+    // issue #598：终路写者（解析 `<handoff>` →（可选）兜底一次 → 落盘）。
+    // `finish()` 在 `makeResult` 之前调它；`off` 时它立刻返回，所以默认路径一个字节都不变。
+    finalizeHandoff: persistHandoff,
     // issue #386 切片 2：已规范化的判据清单（`undefined` = 未声明 ⇒ 引擎侧一条分支都不走）。
     deliverables: resolvedDeliverables,
     toolSignal,
@@ -4096,6 +4297,9 @@ export async function runToolLoop(options) {
 
   try {
     await refreshRunState();
+    // issue #598：**召回**——run 启动读一次 store（读失败 / 没有记录 ⇒ 不装默认 provider，首条请求无块）。
+    // 放在 `refreshContinuity` 之前：默认 provider 必须在本 run 第一次刷新时就已经存在。
+    await loadStoredHandoff();
     // issue #568：**run 启动一次**刷新续接块——新 run 的**首条请求**即见最新状态，不依赖「发生过折叠」
     // 这个前提（今天的 semantic 槽位就是死在那个前提上：无折叠 ⇒ provider 0 次调用）。
     // 放在 `refreshRunState()` 之后：provider 的 `state` 入参拿到的就是本次 run 的第一份确定性状态。

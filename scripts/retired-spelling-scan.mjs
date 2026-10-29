@@ -138,6 +138,11 @@ const AMBIGUOUS_KEYS = new Map([
   ["completion", "「完成」这个概念（`completion check`）"],
   ["reflection", "反思子系统这个概念（`reflection/` 目录）"],
   ["wrapup", "回合结束（wrap-up）这个概念与模块名 `src/reflection/wrapup.js`"],
+  // issue #598：`config.continuity.write` 的叶子名就是一个**动词**，而且它同时是 fs / 工具的
+  // 方法名（`writeFile`、`fs.write`、笔记端口的 `write`）与散文里的「写」。它**从来没有**扁平
+  // 拼写（#598 新增的叶子直接只有嵌套家），所以文档里的 `write` 命中与「退役扁平拼写」无关——
+  // 不标 ambiguous 就会把 `docs/` 里每一句 `write` 都算成违规，那是假阳性工厂。
+  ["write", "动词「写」/ `writeFile` / `fs.write` / 笔记端口的 `write`（本叶子从未有过扁平拼写）"],
 ]);
 
 /** 退役措辞：同一行出现它 ⇒ 这条命中是 `mention`（在讲退役，不是在用）。 */
@@ -222,6 +227,13 @@ export function classify(rel) {
  * 而**有命中却没登记** = 新入历史类却忘了钉（`UNPINNED`，同样红）。
  * 改这份表只有一个合法理由：**历史文档真的被替换成另一份历史**（那要连横幅一起重写）。
  *
+ * **#598 的抬升（10 份，各 +1～+2）不是历史被改写**：新增的配置叶子 `config.continuity.write`
+ * 把 `write` 带进了退役键表（退役 = 叶子还在 schema、顶层白名单没有它），而 `write` 在文档的代码语境里
+ * 是一个**动词 / 方法名**（`write it at the top level`、笔记端口的 `write, read, list, …`、回调形参
+ * `(write) => write.path`）。这些命中全部标 `ambiguous`（不进 `--strict` 的违规判据），但钉子比的是
+ * **全部命中数**，所以表得跟着实测抬——「表 = 实测」是这份表唯一的意义（手抄的数会在下一次无关联的
+ * 改写里静默偏一格）。抬的值由扫描器自己的 `uses=` 报出来后再登记，不是手算的。
+ *
  * 零命中的历史文件故意不登记：它们本来就没东西可丢，而一旦被补进扁平拼写就会命中 > 0 ⇒ `UNPINNED`。
  *
  * @type {Readonly<Record<string, number>>}
@@ -252,19 +264,19 @@ const HISTORY_BODY_PINS = Object.freeze({
   "docs/design/2026-09-15-release-0.5.0-review.md": 1,
   "docs/design/2026-09-17-context-memory-improvement-plan.md": 4,
   "docs/design/2026-10-08-architecture-review.md": 9,
-  "docs/harness-comparison/01-pi-agent.md": 3,
+  "docs/harness-comparison/01-pi-agent.md": 5,
   "docs/harness-comparison/02-touwaka.md": 2,
   "docs/harness-comparison/03-codex.md": 2,
   "docs/harness-comparison/04-hermes-agent.md": 2,
   "docs/harness-comparison/05-erix-llm-kit.md": 5,
   "docs/harness-comparison/06-cross-comparison.md": 3,
   "docs/harness-comparison/07-takeaways-and-open-questions.md": 2,
-  "docs/host-upgrade-guide-0.12.0.md": 1,
+  "docs/host-upgrade-guide-0.12.0.md": 2,
   "docs/host-upgrade-guide-0.14.0.md": 19,
   "docs/host-upgrade-guide-0.15.0.md": 9,
-  "docs/host-upgrade-guide-0.17.0.md": 4,
-  "docs/host-upgrade-guide-0.18.0.md": 8,
-  "docs/host-upgrade-guide-0.18.0_cn.md": 8,
+  "docs/host-upgrade-guide-0.17.0.md": 6,
+  "docs/host-upgrade-guide-0.18.0.md": 9,
+  "docs/host-upgrade-guide-0.18.0_cn.md": 9,
   "docs/host-upgrade-guide-0.20.0.md": 5,
   "docs/host-upgrade-guide-0.20.0_cn.md": 5,
   "docs/host-upgrade-guide-0.21.0.md": 5,
@@ -273,8 +285,8 @@ const HISTORY_BODY_PINS = Object.freeze({
   "docs/host-upgrade-guide-0.22.0_cn.md": 2,
   "docs/host-upgrade-guide-0.23.0.md": 1,
   "docs/host-upgrade-guide-0.23.0_cn.md": 1,
-  "docs/host-upgrade-guide-0.24.0.md": 37,
-  "docs/host-upgrade-guide-0.24.0_cn.md": 34,
+  "docs/host-upgrade-guide-0.24.0.md": 39,
+  "docs/host-upgrade-guide-0.24.0_cn.md": 36,
   "docs/host-upgrade-guide-0.26.0.md": 3,
   "docs/host-upgrade-guide-0.26.0_cn.md": 3,
   "docs/host-upgrade-guide-0.27.0.md": 37,
@@ -297,7 +309,7 @@ const HISTORY_BODY_PINS = Object.freeze({
   "docs/v0.0-contracts_cn.md": 23,
   "docs/v0.1-contracts.md": 29,
   "docs/v0.1-contracts_cn.md": 26,
-  "docs/v0.2-contracts.md": 18,
+  "docs/v0.2-contracts.md": 19,
   "docs/v0.2-contracts_cn.md": 15,
 });
 
@@ -317,12 +329,12 @@ const HISTORY_BODY_PINS = Object.freeze({
  * @type {Readonly<Record<string, number>>}
  */
 const CONTRACT_BODY_PINS = Object.freeze({
-  "docs/host-consumer-contract.md": 456,
+  "docs/host-consumer-contract.md": 460,
   // 565（片A，切版前补 #569/#568 文档）：CN 契约新增「折叠触发比例与会话续接块」一节，其中 provider 回调的
   // 真实键名 `runId`（`({runId, state, previous}) → {text, version}`）是一次同名异义命中——契约必须写出这个键名，
   // 所以**不为了躲钉子而改写成模糊说法**，按判据把钉子登记成扫描器报的值。EN 侧同一句已把 `context` 写成全路径
   // （`config.folding.context` 的 `.` 前缀被排除），因此 EN 钉子 456 不动。
-  "docs/host-consumer-contract_cn.md": 565,
+  "docs/host-consumer-contract_cn.md": 569,
 });
 
 /**

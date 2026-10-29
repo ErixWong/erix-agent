@@ -7,8 +7,12 @@
 //   · semantic 槽位（`src/run-state.js#normalizeSemantic`）只在折叠/低预算点刷新（无折叠 ⇒ 0 次调用），
 //     resume 时恢复的是上一份快照，`status=stale` 仍照渲染 ⇒ 静默陈旧；
 //   · run-state 整块（`MAX_RENDERED_CHARS` = 1600）装的是计数器（`fold=7/0`、`ttl=…`），不是内容。
-// 本模块只做**三件引擎该做的事**：注入、记账、降采样纪律。**内容一行都不生产**——那是宿主的
-// `capabilities.hooks.continuityProvider`（`src/loop/capabilities-namespace.js`）的活。
+// 本模块的**上半部分**（issue #568）只做**三件引擎该做的事**：注入、记账、降采样纪律。
+// 内容生产者有两条路，且只有两条：宿主的 `capabilities.hooks.continuityProvider`
+// （`src/loop/capabilities-namespace.js`，**override**）与**引擎默认写者**（issue #598，文件末尾那一段：
+// 模型在同一个响应里顺手写 `<handoff>` → 引擎解析 / 落盘 / 下次 run 召回，默认关）。
+// ⚠ 两条路都**不产生语义**：一条把宿主给的段文本原样渲染，另一条把模型写的段文本原样搬运；
+// 缺东西就写 `unknown`，不用机械文本冒充。
 //
 // 四条纪律（改它之前先读）：
 //
@@ -45,7 +49,13 @@
 // 哪一段（猜错就是把「未验证」写成「已验证」）。也可以直接给结构化形态
 // `{sections: {contract, unfinished, evidence, notes}, version}`——两种形态同时给时结构化逐键胜。
 //
-// 零运行时依赖：只用相对路径。
+// 零运行时依赖：只用 `node:` 内置（写者那一段要用 crypto / fs / os / path）+ 相对路径。
+
+// issue #598 的写者那一段（本文件末尾）用到的 `node:` 内置：文件介质、project-key 派生、默认目录。
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
 
 import { estimateTokens } from "../tokens.js";
 import { pendingTailToolUses } from "./pending-tool-result.js";
@@ -438,5 +448,341 @@ export function positionContinuityBlock(messages) {
     messages: [...rest, last],
     moved: true,
     reason: "moved_to_tail",
+  };
+}
+
+// ============================================================================================
+// issue #598 —— 续接块的**默认写者**（引擎侧）：模型在**同一次响应**里顺手写 `<handoff>`，
+// 引擎负责「注入指令 → 解析 → 落盘 → 下次 run 启动召回」。
+//
+// 为什么这一半在引擎里（#598 正文的病根）：`#568` 只给了插座（`capabilities.hooks.continuityProvider`），
+// 没有默认实现 ⇒ 钩子空着等于什么都不注入，于是「续接块里写什么」被推给了宿主。可压缩、折叠、
+// TTL、预算、渲染、注入引擎早就在做，持久化抽象 `src/store/` 也自带，「让模型停下来时顺手写一段
+// 交接」和 judge nudge / 扩轮续跑提示 / 强制收尾是**同一类动作**。`continuityProvider` 因此保留为
+// **override**（宿主确实知道模型不知道的事，如「CI 红了」），默认写者补在下面这一段里。
+//
+// ⚠ **为什么与渲染面同处一个文件**（#598 落地时的实际约束，不是疏忽）：`npm run check:docs` 的
+// modulemap 规则要求 `src/` 下每个 `.js` 都出现在两份 README 的模块地图里，而 #598 的改动面
+// 明确不含 README。把写者放进已经登记过的本模块是唯一「不新增文件又不改文档」的落法。
+// 将来谁有权动 README，可以把它整段切到 `src/loop/continuity-writer.js`：下面这段**只依赖**
+// `node:` 内置与本文件的 `CONTINUITY_SECTION_NAMES`，没有一处反向依赖渲染逻辑。
+//
+// 四条纪律（改它之前先读）：
+//
+//   1. **只认 marker，不解析散文。** 交接段只从 `<handoff>` … `</handoff>` 之间取；散文里出现
+//      `contract` 三个字**不是**交接段（判据 6 的第一条变异就打在这一点上：把解析键退化成「全文搜
+//      contract」⇒ 夹具必须红）。段名 `contract` / `unfinished` / `evidence`，大小写不敏感，容忍
+//      全角 `：` 与半角 `:`。
+//   2. **原文照抄，绝不代写。** 段内容逐字进 store（引擎不润色、不总结、不改写），缺段 / 缺整块
+//      ⇒ 该段 `unknown`。**绝不用机械文本冒充语义**：`unknown` 是「我不知道」，不是「没有未完成项」。
+//   3. **引擎只搬运、不背书。** 模型在 `<handoff>` 里写 `evidence: 已验证` 而根本没跑测试时，
+//      store 与块里就是「已验证」——它**不是**引擎的 `verification`（那套东西由 finalGuard /
+//      deliverables 产生，两套不许混）。
+//   4. **默认关 = 零行为变更。** `config.continuity.write` 默认 `"off"`：指令不注入、store 不读
+//      不写、块一个字节都不变（判据 1 的对拍就是这条红线）。
+//
+// 依赖：`node:` 内置（crypto / fs / os / path）+ 本文件的段名常量。
+
+/** 交接块的起始 marker（模型写的那个，逐字来自注入的指令）。 */
+export const HANDOFF_MARKER_START = "<handoff>";
+
+/** 交接块的闭合 marker。 */
+export const HANDOFF_MARKER_END = "</handoff>";
+
+/**
+ * 骨架三段（顺序即注入指令里的顺序，也即 store / 块里的顺序）。
+ *
+ * 段名逐字等于 `#568` 续接块的三段（`src/loop/continuity-block.js#CONTINUITY_SECTION_NAMES`）——
+ * 两份必须同名，否则召回时 `parseContinuityText` 认不出这些段标题。
+ *
+ * @type {readonly string[]}
+ */
+export const HANDOFF_SECTION_NAMES = Object.freeze(["contract", "unfinished", "evidence"]);
+
+/**
+ * 「这一段我不知道」的唯一字面量。
+ *
+ * 它**必须可见**（判据 3 / 判据 6 的第二条变异）：缺失降级成空串或整段省略都让夹具红。
+ */
+export const HANDOFF_UNKNOWN = "unknown";
+
+/**
+ * 开关的三个取值（`config.continuity.write`）。第一个是默认值。
+ *
+ * @type {readonly string[]}
+ */
+export const CONTINUITY_WRITE_MODES = Object.freeze(["off", "prompt", "prompt-and-fallback"]);
+
+/** 默认值（`config.continuity.write` 不传时的值，issue #598 §6：默认关）。 */
+export const CONTINUITY_WRITE_DEFAULT = "off";
+
+/**
+ * 请求尾部注入的指令（**措辞只在这里定义一次**，issue #598 §1）。
+ *
+ * 两条性质：
+ *   · 短（≤80 token 量级）：它是「每请求付一次」的小块，不是第二个 system；
+ *   · **只在开关打开时出现**：`off` 时请求里逐字不含它（判据 1 的红线）。
+ */
+export const HANDOFF_INSTRUCTION = [
+  "停下来之前，在正文末尾附一段（缺哪段就写 unknown，不要编）：",
+  HANDOFF_MARKER_START,
+  "contract: <目标与不可违反的约束>",
+  "unfinished: <还欠什么>",
+  "evidence: <哪些已验证、哪些只是声称>",
+  HANDOFF_MARKER_END,
+].join("\n");
+
+/**
+ * 兜底那一次调用（`prompt-and-fallback`）要模型只输出交接块时的指令。
+ *
+ * 与 `HANDOFF_INSTRUCTION` 分开写：前者的语境是「正常收尾」，后者是「你已经收尾了，只补这一段」。
+ */
+export const HANDOFF_FALLBACK_INSTRUCTION = [
+  "只输出下面这一段，不要任何其它文字（缺哪段就写 unknown，不要编）：",
+  HANDOFF_MARKER_START,
+  "contract: <目标与不可违反的约束>",
+  "unfinished: <还欠什么>",
+  "evidence: <哪些已验证、哪些只是声称>",
+  HANDOFF_MARKER_END,
+].join("\n");
+
+/** 交接块本体（取**最后**一个：模型可能先把指令抄了一遍）。`i` + `u`：大小写不敏感。 */
+const HANDOFF_BLOCK_PATTERN = /<handoff>([\s\S]*?)<\/handoff>/giu;
+
+/**
+ * 兜底那一次调用的**输入上限**（字符）：终稿尾部与上一份交接各自夹断到这个长度。
+ *
+ * 为什么是字符而不是 token：这里只需要「有界」这一个性质（issue #598 §3 原话「输入有界」），
+ * 不参与预算算术（那是 `renderContinuityBlock` 的活）；1200 与 `#568` 的默认块预算同量级，
+ * 读起来只有一份数字要记。
+ */
+export const HANDOFF_FALLBACK_TAIL_CHARS = 1200;
+
+/** 段标题行：`contract: …` / `unfinished：…`（全角冒号也收，大小写不敏感）。 */
+const HANDOFF_SECTION_PATTERN = /^(contract|unfinished|evidence)\s*[:：]\s*(.*)$/iu;
+
+/**
+ * 归一化开关取值（读侧，**不抛**）。
+ *
+ * intake 的枚举校验由 `CONFIG_LEAF_VALUE_RULES["continuity.write"]`（`src/loop/config-namespace.js`）
+ * 负责；这里只回答「读到的东西算不算开着」，于是「没写 / 写了个别的字符串」一律落到默认的 `off`，
+ * 而不是把非法值当半个开关（那是「配了等于没配」的静默形状）。
+ *
+ * @param {unknown} value
+ * @returns {"off"|"prompt"|"prompt-and-fallback"}
+ */
+export function normalizeContinuityWriteMode(value) {
+  return value === "prompt" || value === "prompt-and-fallback"
+    ? /** @type {"prompt"|"prompt-and-fallback"} */ (value)
+    : "off";
+}
+
+/** 一段的取值（非空字符串 ⇒ 原文；否则 `unknown`）。 */
+function sectionValue(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text === "" ? HANDOFF_UNKNOWN : text;
+}
+
+/**
+ * 解析一段模型输出里的交接块（**纯函数**，不读时钟、不读配置）。
+ *
+ * 三种输入分开说，因为修法不同：
+ *   · 没有 marker（散文里出现 `contract` 也算这一类）⇒ `found: false` + 三段 `unknown`；
+ *   · 有 marker 但缺段 / 段空 ⇒ 该段 `unknown`（其余段照抄）；
+ *   · 段内容里的多行原样保留（引擎不猜哪一行属于哪一段，只认段标题）。
+ *
+ * @param {unknown} text
+ * @returns {{found: boolean, sections: {contract: string, unfinished: string, evidence: string}}}
+ */
+export function parseHandoff(text) {
+  /** @type {{contract: string, unfinished: string, evidence: string}} */
+  const sections = {
+    contract: HANDOFF_UNKNOWN,
+    unfinished: HANDOFF_UNKNOWN,
+    evidence: HANDOFF_UNKNOWN,
+  };
+  const source = typeof text === "string" ? text : "";
+  const blocks = [...source.matchAll(HANDOFF_BLOCK_PATTERN)];
+  if (blocks.length === 0) return { found: false, sections };
+  const body = blocks.at(-1)?.[1] ?? "";
+  /** @type {Record<string, string[]>} */
+  const buffers = { contract: [], unfinished: [], evidence: [] };
+  let current = "";
+  for (const rawLine of body.replaceAll("\r\n", "\n").replaceAll("\r", "\n").split("\n")) {
+    const line = rawLine.trim();
+    if (line === "") continue;
+    const header = HANDOFF_SECTION_PATTERN.exec(line);
+    if (header !== null) {
+      current = header[1].toLowerCase();
+      const rest = header[2].trim();
+      if (rest !== "") buffers[current].push(rest);
+      continue;
+    }
+    // 段标题之前的散文（模型在块里写了句废话）不属于任何一段：引擎**不猜**它属于哪一段。
+    if (current === "") continue;
+    buffers[current].push(line);
+  }
+  for (const name of HANDOFF_SECTION_NAMES) {
+    sections[/** @type {"contract"|"unfinished"|"evidence"} */ (name)] = sectionValue(buffers[name].join("\n"));
+  }
+  return { found: true, sections };
+}
+
+/**
+ * 一份 store 记录 → `#568` 续接块认得的段文本（`[contract]` / `[unfinished]` / `[evidence]`）。
+ *
+ * 这是「默认写者」与「#568 渲染面」之间**唯一**的接口：本模块只生产这段文本，
+ * 渲染 / 预算 / 骨架一律由 `renderContinuityBlock` 负责（本单不改渲染逻辑）。
+ *
+ * @param {{contract?: string, unfinished?: string, evidence?: string}|undefined} sections
+ * @returns {string}
+ */
+export function handoffSectionsText(sections) {
+  return HANDOFF_SECTION_NAMES
+    .map((name) => `[${name}]\n${sectionValue(sections?.[name])}`)
+    .join("\n");
+}
+
+/**
+ * store 记录的版本号（形状变更时 +1，读到不认识的版本按「没有记录」处理）。
+ *
+ * `source` 回答「这一段是谁写的」：`model`（同一次响应里顺手写）/ `fallback`（兜底那一次补调用）/
+ * `unknown`（模型没写，两段路都没拿到）。⚠ 它**不是** `#565` 的 `origin`（`mechanical|semantic|host`
+ * 是折叠事实的来源口径），两套不许混。
+ */
+export const CONTINUITY_RECORD_VERSION = 1;
+
+/**
+ * `project-key`：**与 session id 同一套 cwd 派生规则**（issue #598 §4：不另造一套）。
+ *
+ * 规则本身是行为契约，唯一实现住在 `bin/session-scan.js#sessionScanPrefix`（`bin/repl.js` 反过来
+ * import 它，`src/tools/notes.js#currentScopeRef` 是同式的第二份——库层不能反向 import `bin/`）。
+ * 本模块是库层的第三份，**逐字同式**：`<basename || "root">-<sha256(path.resolve(cwd)) 前 8 位>`，
+ * 由 `test/loop-continuity-writer-598.test.js` 的哈希契约用例与 `sessionScanPrefix` 对拍钉住
+ * （与 `test/session-scan.test.js` 钉 notes 那份是同一条纪律）。
+ *
+ * @param {unknown} cwd
+ * @returns {string}
+ */
+export function continuityProjectKey(cwd) {
+  const normalizedCwd = path.resolve(String(cwd));
+  const baseName = path.basename(normalizedCwd) || "root";
+  const hash8 = createHash("sha256").update(normalizedCwd).digest("hex").slice(0, 8);
+  return `${baseName}-${hash8}`;
+}
+
+/**
+ * store 目录：显式 `dir` 赢，其次 `ERIX_CONTINUITY_DIR`（与 `src/tools/notes.js` 的
+ * `ERIX_NOTES_DIR` 同一条纪律：库层的默认目录必须能被调用方/测试注入，否则测试会写真实 `~/.erix`），
+ * 最后才是 `~/.erix/continuity`。
+ *
+ * @param {{home?: string, dir?: string}} [options]
+ * @returns {string}
+ */
+export function resolveContinuityDir({ home, dir } = {}) {
+  if (typeof dir === "string" && dir.trim() !== "") return dir;
+  const fromEnv = process.env.ERIX_CONTINUITY_DIR;
+  if (typeof fromEnv === "string" && fromEnv.trim() !== "") return fromEnv;
+  return path.join(home ?? homedir(), ".erix", "continuity");
+}
+
+/**
+ * 校验一份读回来的记录（形状不对就当没有——**不许**把半份记录渲染成「已验证」）。
+ *
+ * @param {unknown} value
+ * @param {string} projectKey
+ * @returns {{version: number, projectKey: string, cwd: string|undefined, writtenAt: string|undefined, source: string, sections: {contract: string, unfinished: string, evidence: string}}|undefined}
+ */
+function normalizeContinuityRecord(value, projectKey) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = /** @type {Record<string, any>} */ (value);
+  if (record.version !== CONTINUITY_RECORD_VERSION) return undefined;
+  if (record.projectKey !== projectKey) return undefined;
+  const sections = record.sections;
+  if (sections === null || typeof sections !== "object" || Array.isArray(sections)) return undefined;
+  /** @type {{contract: string, unfinished: string, evidence: string}} */
+  const normalized = {
+    contract: HANDOFF_UNKNOWN,
+    unfinished: HANDOFF_UNKNOWN,
+    evidence: HANDOFF_UNKNOWN,
+  };
+  for (const name of HANDOFF_SECTION_NAMES) {
+    const section = /** @type {Record<string, any>} */ (sections)[name];
+    if (typeof section !== "string") return undefined;
+    normalized[/** @type {"contract"|"unfinished"|"evidence"} */ (name)] = sectionValue(section);
+  }
+  return {
+    version: CONTINUITY_RECORD_VERSION,
+    projectKey,
+    cwd: typeof record.cwd === "string" ? record.cwd : undefined,
+    writtenAt: typeof record.writtenAt === "string" ? record.writtenAt : undefined,
+    source: typeof record.source === "string" ? record.source : HANDOFF_UNKNOWN,
+    sections: normalized,
+  };
+}
+
+/**
+ * 文件介质的续接 store：`<dir>/<project-key>.json`，**只保留最近一份**（append 历史不是本单目标）。
+ *
+ * 三个注入点（仓库纪律：测试不许碰真实 `~/.erix`）：`home` / `cwd` / `dir`。`clock` 只为测试可断言。
+ *
+ * 读写口径：
+ *   · `read()` —— 文件缺失 / 坏 JSON / 形状不对 / 版本不认识 ⇒ `undefined`（**不抛**：召回失败不许
+ *     杀掉一次 run）；其它 I/O 错误照抛，由调用方记账后吞掉。
+ *   · `write(record)` —— `mkdir -p`（`0o700`）+ 临时文件 + `rename`（半份文件不许被读到）。
+ *
+ * @param {{home?: string, cwd?: unknown, dir?: string, clock?: () => Date}} [options]
+ * @returns {{
+ *   projectKey: string,
+ *   dir: string,
+ *   path: string,
+ *   read: () => Promise<ReturnType<typeof normalizeContinuityRecord>>,
+ *   write: (record: {source?: string, sections?: {contract?: string, unfinished?: string, evidence?: string}}) => Promise<ReturnType<typeof normalizeContinuityRecord>>,
+ * }}
+ */
+export function createFileContinuityStore({ home, cwd, dir, clock } = {}) {
+  const projectKey = continuityProjectKey(cwd ?? process.cwd());
+  const root = resolveContinuityDir({ home, dir });
+  const filePath = path.join(root, `${projectKey}.json`);
+  return {
+    projectKey,
+    dir: root,
+    path: filePath,
+    async read() {
+      let raw;
+      try {
+        raw = await readFile(filePath, "utf8");
+      } catch (error) {
+        if (/** @type {any} */ (error)?.code === "ENOENT") return undefined;
+        throw error;
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        // 坏 JSON = 「没有记录」：召回面不许因为一个半截文件把整次 run 弄红。
+        return undefined;
+      }
+      return normalizeContinuityRecord(parsed, projectKey);
+    },
+    async write(record) {
+      const normalized = {
+        version: CONTINUITY_RECORD_VERSION,
+        projectKey,
+        ...(cwd === undefined ? {} : { cwd: String(cwd) }),
+        writtenAt: (clock?.() ?? new Date()).toISOString(),
+        source: typeof record?.source === "string" ? record.source : HANDOFF_UNKNOWN,
+        sections: {
+          contract: sectionValue(record?.sections?.contract),
+          unfinished: sectionValue(record?.sections?.unfinished),
+          evidence: sectionValue(record?.sections?.evidence),
+        },
+      };
+      await mkdir(root, { recursive: true, mode: 0o700 });
+      const temporary = `${filePath}.tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
+      await writeFile(temporary, `${JSON.stringify(normalized, null, 2)}\n`, { mode: 0o600 });
+      await rename(temporary, filePath);
+      return normalizeContinuityRecord(normalized, projectKey);
+    },
   };
 }
