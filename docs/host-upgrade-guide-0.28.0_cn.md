@@ -68,6 +68,7 @@
 | `user`、`model`、`task` | `config.metadata.user` / `.model` / `.task` | #498、#531 |
 | `invalidArguments`、`replayPolicy`、`writeToolPathKeys`、`writeToolNames` | `config.run.*` | #498 |
 | `partialPersistence`、`maxTokenContinuations`、`stream`、`resume`、`runId`、`maxRounds`、`completion` | `config.run.*` | #498、#538 |
+| `stallDetection`、`persistence`、`outputHygiene`、`cwd` | `config.run.stallDetection` / `.persistence` / `.outputHygiene` / `.cwd` | #498、#562 |
 | `reflection` | 11 个数据成员进 `config.run.reflection.*`；两个被调用的成员进 `capabilities` | #530 |
 | 当数据叶子用的 `session` | 顶层 `session`（端口不是数据） | #531 |
 
@@ -137,7 +138,7 @@
 你写了一个运行时同样会拒的名字。契约里「不该编译通过」的坏样本用 `tsc --strict` 检查，未知选项键会以
 `TS2353` 失败，而不是编译通过、到启动期才炸。
 
-## 9. 两个从来不存在过的写法
+## 9. 三个从来不存在过的写法
 
 别把这些当迁移写——它们从来没有生效过，本版故意这么写清：
 
@@ -145,6 +146,9 @@
   仍是顶层选项。
 * 当数据叶子用的 `config.metadata.session`（#531、#551）：`session` 是端口；载荷之家是
   `config.folding.context.session`。
+* 顶层的 `messages`，以及把它当**迁移目的地**写出来的 `config.input.messages`（#562）：这个扁平名从来没
+  在白名单里占过位置，所以引擎用那句普通的未知选项判词拒掉它，且**不带**指路子句——因为没有旧家可指。
+  叶子本身是活的，而且也一直是这个地址：`config.input.messages`。
 
 ## 10. 没有变的东西
 

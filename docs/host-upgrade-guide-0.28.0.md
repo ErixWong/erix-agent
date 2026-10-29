@@ -80,6 +80,7 @@ canonical home, in the shape
 | `user`, `model`, `task` | `config.metadata.user` / `.model` / `.task` | #498, #531 |
 | `invalidArguments`, `replayPolicy`, `writeToolPathKeys`, `writeToolNames` | `config.run.*` | #498 |
 | `partialPersistence`, `maxTokenContinuations`, `stream`, `resume`, `runId`, `maxRounds`, `completion` | `config.run.*` | #498, #538 |
+| `stallDetection`, `persistence`, `outputHygiene`, `cwd` | `config.run.stallDetection` / `.persistence` / `.outputHygiene` / `.cwd` | #498, #562 |
 | `reflection` | `config.run.reflection.*` for its 11 data members; its two invoked members moved to `capabilities` | #530 |
 | `session` as a metadata leaf | top-level `session` (a port is not data) | #531 |
 
@@ -164,7 +165,7 @@ new TypeScript error after upgrading is usually you writing a name the runtime a
 samples that must not compile are checked with `tsc --strict`, and an unknown option key fails with
 `TS2353` rather than compiling and failing later at startup.
 
-## 9. Two spellings that never existed
+## 9. Three spellings that never existed
 
 Do not write these as migrations — they were never live, and the release notes say so on purpose:
 
@@ -172,6 +173,10 @@ Do not write these as migrations — they were never live, and the release notes
   removed and `tools` remains a top-level option.
 * `config.metadata.session` as a data leaf (#531, #551): `session` is a port; the payload home is
   `config.folding.context.session`.
+* `messages` as a top-level option — and `config.input.messages` written as its *migration target*
+  (#562): the flat name never held a position in the allowlist, so the engine rejects it with the
+  plain unknown-option verdict and **no** canonical-home pointer, because there is no old home to
+  point back to. The leaf itself is live and always was: `config.input.messages`.
 
 ## 10. What did not change
 
