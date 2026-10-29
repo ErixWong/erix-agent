@@ -187,13 +187,463 @@
 
 ### Added
 
+- **Behaviour carriers inside the shells get a real home: open `capabilities.ports`, add 4 callbacks
+  to `hooks`, retire `judge.evaluator` (issue #498 S4c, parent issue #495).** S4a/S4b landed the
+  rule "the capability plane = behaviour carriers that are called or dereferenced" on the
+  **top-level option** layer, but a batch of behaviour carriers still lived **inside** the shells —
+  they could only be written in nested slots such as `retry.sleepImpl` / `reflection.judge.provider`
+  / `context.strategy` / `context.onBeforeFold`, and the shell has to survive the `config` subtree's
+  JSON round-trip ⇒ a host that wanted `retry.sleepImpl` could not even use the **data half**
+  through `config.timing.retry` (a flat `retry` carrying a function conflicts with the config side),
+  and the third tier of S4a's rejection text pointed at a destination that **did not exist** at the
+  time ("the matching capability port slot"). This slice opens `capabilities.ports` so those shells
+  become **migratable**. **① New group `capabilities.ports`**
+  (`src/loop/capabilities-namespace.js`): `sleepImpl` (the function `(ms, signal) => Promise<void>`,
+  consumed at `retryOptions?.sleepImpl ?? defaultSleep`), `judgeProvider` (the judge-only evaluator,
+  **accepting a callable or a `{ chat }` object**), `strategy` (the compaction strategy object;
+  `resolveCompactionStrategy` (`src/compact/strategy-resolution.js`) passes the object form through
+  unchanged, and `shouldCompact` / `compact` are called by the engine). **② `hooks` 12 → 16**:
+  `onReflection` (the extension-round decision notification), `onBeforeFold` / `onAfterFold`
+  (before/after fold notifications, consumed at `runFoldHook` (`src/compact/helpers.js`)), `stubFor`
+  (the per-message stub decision, consumed at `resolveFoldStubs` (same file)); the `hooks` value
+  validator **keeps** "given ⇒ must be a function" and is not relaxed to accommodate object shapes.
+  **③ Two shape-polymorphic knobs**: the data shape of `protectedMessage` (`string` / `string[]`)
+  and of `recoveryHint` (`string`) stays in `config.folding.context`, the function shape goes to
+  `capabilities.hooks`; giving **non-equivalent** values on both sides ⇒ exactly one
+  `config_override_conflict` (reusing **the same** container-conflict mechanism, no new exit; `path`
+  names the knob's config-side path `folding.context.protectedMessage`), equivalent
+  (`isDeepStrictEqual`, functions by identity) ⇒ zero events. **④ The third tier of the error now
+  lands on a real destination**: `config-namespace.js`'s `functionValueProblemMessage` no longer
+  says "the matching capability port slot" but names `capabilities.ports.sleepImpl` /
+  `capabilities.ports.judgeProvider` / `capabilities.ports.strategy` /
+  `capabilities.hooks.onBeforeFold` and so on — the ones a leaf name cannot disambiguate
+  (`provider`) are matched by **full path** against the long prefixes of
+  `CAPABILITY_SLOT_DESTINATIONS`. **⑤ `reflection.judge.evaluator` is retired** (0.28 is a breaking
+  release, under #499's "retirement is not a move" wording): it is a pure alias of `provider` on the
+  same `??` line, so writing it now throws on both entry routes and points at
+  `capabilities.ports.judgeProvider` instead of being silently accepted. **The books are unchanged
+  to the byte**: the 9 new leaves **all lack** a top-level flat alias (they are container member
+  slots, not moves) ⇒ the top-level allowlist is still **67**, the capability plane still **22**,
+  the three-way closure (43 + 22 + 2 = 67) unchanged, `configSchemaSelfCheck` still `[]`; the
+  self-check also verifies the reverse direction ("a leaf with a slot must not also be a top-level
+  option"), so "inventing flat aliases for them" turns red. **Behaviour evidence (not "it did not
+  throw")**: inject `capabilities.ports.sleepImpl` ⇒ the fake timer really is called and the delay
+  recorded; inject `judgeProvider` ⇒ judge requests go through it and not a single one through the
+  main model; inject a `strategy` object ⇒ `shouldCompact` / `compact` really are called and object
+  identity is preserved; the 4 new hooks each assert a real delivery (before/after fold / stub
+  resolution / extension round); the `?? defaultSleep` fallback is pinned by its own cell. **Zero
+  regression on the old flat spellings**: one assertion each for `retry.sleepImpl`,
+  `context.onBeforeFold`, `reflection.judge.provider` and `context.strategy` (object form).
+  **Tests**: `test/loop-capabilities-ports-hooks-498s4c.test.js` added with 13 cells (the
+  independent review added another 8 cells, bringing it to **21**, see the "review rejection" entry
+  below); the S1c/S2/S6 cells of `test/loop-capabilities-namespace-498.test.js` and the judge
+  injection point of `test/loop-abort-terminal-priority.test.js` were synced to the new surface (the
+  latter used `judge.evaluator` before and now goes through the canonical home
+  `capabilities.ports.judgeProvider`, with not a single criterion changed). Shipped text synced: the
+  contract gains a paired `#### capabilities.ports` section in both languages (member table + value
+  shapes + the difference "a port slot may be an object, `hooks` must be callable" + two historical
+  statements), the 0.27.0 guide gains the three consequences of the same slice in both languages,
+  and the `judge: { provider, evaluator }` sketch and the module map of the two READMEs are synced.
+  - **Independent review rejection (3 must-fix, each red-then-green)**: ① **the anchor count was
+    written too small** — three shipped claim sentences (`AGENTS.md` / `AGENTS_cn.md` / the header
+    of `scripts/docs-drift-check.mjs`) said "450 spans / +6 spans", while `--verbose` measures **452
+    spans / 153 groups** on this tree and **444 spans / 151 groups** on the clean tree at base
+    `cdf0f6d` (measured by actually running after a `git archive` unpack) ⇒ the delta is **+2 groups
+    / +8 spans** (+6 spans from the contract in both languages, +2 spans from the two groups the
+    `AGENTS_cn` claim sentence itself newly quotes). All three were changed verbatim to the measured
+    values, and the delta sentence became a historical measurement carrying the base sha; the floor
+    constant `SYMBOL_ANCHOR_MIN_UNIQUE = 153` counts **groups** only and was already right, so it
+    was left alone. ② **one present-tense falsehood in the contract** — the sentence in
+    `docs/host-consumer-contract.md` / `_cn.md` saying "`capabilities.provider` (the port container)
+    is still not collected; that is a later slice's ruling" contradicted the
+    `#### capabilities.ports` section this slice opens (the section body is already historical, this
+    sentence was missed). It became a historical statement that **separates two things**: "the
+    container `capabilities.ports` exists (members = `sleepImpl` / `judgeProvider` / `strategy`,
+    implemented inside the shell)" ≠ "adapter port objects such as `provider` / `store` move into
+    `capabilities` (still undecided, this document promises nothing)"; the original sentence is
+    honestly handled as "a statement about a **future** decision, not a falsehood — S4c is that
+    slice arriving, and it ruled only the in-shell half". A whole-tree
+    `grep 'not collected|还没被收|更后面那一刀|later ruling'` judged every hit historical/present tense; the
+    remaining hits are historical quotations or the sentence "adapter port objects are still not
+    collected", which is **still true today** (carrying a `**History**` paragraph). ③ **add machine
+    assertions (this slice's real hole, proven by mutation in the review)**:
+    `test/loop-capabilities-ports-hooks-498s4c.test.js` 13 → **21 cells** (`grep -c '^test('` and
+    `node --test` both measure 21): **C11** (table-driven, the 4 hooks leaves `onReflection` /
+    `onBeforeFold` / `onAfterFold` / `stubFor`: in-shell + `capabilities.hooks.*` non-equivalent ⇒
+    **exactly one** conflict and `path` verbatim = `hooks.<leaf>`; equivalent = same function
+    reference ⇒ zero; only the in-shell one ⇒ zero), **C12/C13** (real run: the three fold hooks get
+    exactly one event each and the in-shell copy is **never called**; `onReflection` likewise in a
+    run that really extends), **C14** (4 equivalent leaves ⇒ zero events on a real run),
+    **C15/C16/C17** (behaviour evidence for the priority direction: `retry.sleepImpl` vs
+    `ports.sleepImpl`, `reflection.judge.provider` vs `ports.judgeProvider`, `context.strategy` vs
+    `ports.strategy` all present at once ⇒ the one actually called is **`capabilities.ports.*`** and
+    the in-shell one has zero calls / zero requests), **C18** (a **real run** on the assembly-port
+    route: `policy.capabilities.ports.sleepImpl` really is called — before this only the return
+    value of `normalizeRunToolLoopOptions` was checked). **Reverse proofs (exit codes only)**: mut-a
+    silences the per-leaf conflict comparison for the 4 hooks (probe: `conflicts` 1 → 0) ⇒ the
+    target file **EXIT=1**, `not ok 14/15/16`, and the **full `npm test` goes from 0 fail to EXIT=1
+    / fail 3**; mut-d flips the `??` for `sleepImpl` ⇒ EXIT=1 / `not ok 18`; mut-e flips the judge
+    one ⇒ EXIT=1 / `not ok 19`; mut-h flips the `strategy` one ⇒ EXIT=1 / `not ok 20`; mut-b makes
+    the assembly-port route drop `slots.ports` ⇒ **full `npm test` EXIT=1 / fail 1** (`not ok 841`).
+    **Gate re-check**: `npm test` **2381 / 2372 / 0 / 9** (13 cells from this slice + 8 from the
+    review), the nine gates and three self-tests (109 / 13 / 16) all green, `package.json` still
+    `0.27.0`, no new 0.28 guide.
 - **壳内行为载体获得真实归宿：开 `capabilities.ports`、`hooks` 补 4 个回调、`judge.evaluator` 退役（issue #498 S4c，母单 #495）**：S4a/S4b 把「能力面 = 被调用/被解引用的行为载体」这条判据落到了**顶层选项**那一层，但壳**里面**还住着一批行为载体——它们只能写在 `retry.sleepImpl` / `reflection.judge.provider` / `context.strategy` / `context.onBeforeFold` 这些嵌套槽里，而壳要过 `config` 子树的 JSON round-trip ⇒ 想要 `retry.sleepImpl` 的宿主连**数据半**都没法用 `config.timing.retry`（扁平 `retry` 带函数会与 config 侧冲突），S4a 的拒绝文案第三档又指向一个当时**不存在**的目的地（"the matching capability port slot"）。本刀开 `capabilities.ports` 让那些壳**可迁移**。**① 新组 `capabilities.ports`**（`src/loop/capabilities-namespace.js`）：`sleepImpl`（函数 `(ms, signal) => Promise<void>`，消费点 `retryOptions?.sleepImpl ?? defaultSleep`）、`judgeProvider`（judge 专用评估器，**接受 callable 或 `{ chat }` 对象**）、`strategy`（压缩策略对象，`resolveCompactionStrategy`（`src/compact/strategy-resolution.js`）对象形态原样透传，`shouldCompact` / `compact` 被引擎调）。**② `hooks` 12 → 16**：`onReflection`（扩轮决策通知）、`onBeforeFold` / `onAfterFold`（折叠前后通知，消费点 `runFoldHook`（`src/compact/helpers.js`））、`stubFor`（逐条消息的桩判定，消费点 `resolveFoldStubs`（同文件））；`hooks` 的值校验器**保持**「给了就必须是函数」，不为迁就对象形态放宽。**③ 两个形态多态旋钮**：`protectedMessage`（`string` / `string[]`）与 `recoveryHint`（`string`）的数据形态留在 `config.folding.context`，函数形态进 `capabilities.hooks`；两侧都给了**不等价**的值 ⇒ 恰一条 `config_override_conflict`（复用**同一个**容器冲突机制，不新开出口；path 点名该旋钮的配置侧路径 `folding.context.protectedMessage`），等价（`isDeepStrictEqual`，函数按同一性）⇒ 零事件。**④ 报错第三档落到真实目的地**：`config-namespace.js` 的 `functionValueProblemMessage` 不再说「对应的能力面端口位」，而是点名 `capabilities.ports.sleepImpl` / `capabilities.ports.judgeProvider` / `capabilities.ports.strategy` / `capabilities.hooks.onBeforeFold` 等——叶子名说不清的那种（`provider`）靠**完整路径**去对 `CAPABILITY_SLOT_DESTINATIONS` 的长前缀。**⑤ `reflection.judge.evaluator` 退役**（0.28 是破坏版本，按 #499 的「退役不是搬家」口径）：它与 `provider` 是同一行 `??` 的纯别名，现在写它在两条入口路线上都抛并指向 `capabilities.ports.judgeProvider`，不静默接受。**账目一字未变**：9 个新叶子**一律没有**顶层扁平别名（它们是容器成员位、不是搬家）⇒ 顶层白名单仍是 **67**、能力面仍是 **22**、三向闭合（43 + 22 + 2 = 67）不变，`configSchemaSelfCheck` 仍 `[]`；自检反向核「有槽的叶子不得同时是顶层选项」，所以「给它们发明扁平别名」会红。**行为证据（不是「没抛」）**：注入 `capabilities.ports.sleepImpl` ⇒ 假定时器真的被调用且记到延迟；注入 `judgeProvider` ⇒ judge 请求走它、主模型一条都不走；注入 `strategy` 对象 ⇒ `shouldCompact` / `compact` 真被调且对象同一性保留；4 个新 hooks 各断言真收到投递（折叠前后 / 桩解析 / 扩轮）；`?? defaultSleep` 兜底也被一格钉住。**扁平老写法零回归**：`retry.sleepImpl`、`context.onBeforeFold`、`reflection.judge.provider`、`context.strategy`（对象形态）各一条断言。**测试**：新增 `test/loop-capabilities-ports-hooks-498s4c.test.js` 13 格（独立复审后又补 8 格到 **21 格**，见下条「复审退回」）；`test/loop-capabilities-namespace-498.test.js` 的 S1c/S2/S6 与 `test/loop-abort-terminal-priority.test.js` 的 judge 注入点按新面同步（后者原来用 `judge.evaluator`，改走规范之家 `capabilities.ports.judgeProvider`，判据一字未改）。随包文字同步：契约中英新增成对一节 `#### capabilities.ports`（成员表 + 值形状 + 「端口位可以是对象，`hooks` 必须 callable」这条区别 + 两条历史口径），0.27.0 指南中英补同一刀的三条后果，README 中英的 `judge: { provider, evaluator }` 草图与模块地图同步。
   - **独立复审退回（3 必修，逐条先红后绿）**：① **锚点处数写小了** —— 三处随包声称句（`AGENTS.md` / `AGENTS_cn.md` / `scripts/docs-drift-check.mjs` 头部）原写「450 处 / +6 处」，`--verbose` 实测本树 **452 处 / 153 组**、基点 `cdf0f6d` 干净树（`git archive` 展开后实跑）**444 处 / 151 组** ⇒ 增量是 **+2 组 / +8 处**（契约中英 +6 处，`AGENTS_cn` 声称句自身新引的两组锚点 +2 处）。三处逐字改成实测值，增量句改成带基点 sha 的历史测量值；地板常量 `SYMBOL_ANCHOR_MIN_UNIQUE = 153` 只数**组**、本来就是对的不动。② **契约里一句现在时假话** —— `docs/host-consumer-contract.md` / `_cn.md` 的「`capabilities.provider`（端口容器）仍然没被收；那是更后面那一刀的裁决」与本刀新开的 `#### capabilities.ports` 节自相矛盾（该节本体已是历史口径，这句漏了）。改成历史口径并**分清两件事**：「容器 `capabilities.ports` 存在（成员 = `sleepImpl` / `judgeProvider` / `strategy`，壳内实现）」≠「`provider` / `store` 这类适配器端口对象搬进 `capabilities`（仍未裁决、本文不作承诺）」；原句被诚实处理成「那是对**将来**决定的陈述，不是错话——S4c 就是那一刀的到来，只裁了壳内那一半」。全树 `grep 'not collected|还没被收|更后面那一刀|later ruling'` 逐条判历史/现在时，余下命中都是历史引述或「适配器端口对象仍不收」这句**今天仍为真**的话（带 `**History**` 段）。③ **补机器断言（本刀真正的洞，复审用变异证明）**：`test/loop-capabilities-ports-hooks-498s4c.test.js` 13 → **21 格**（`grep -c '^test('` 与 `node --test` 实测都是 21）：**C11**（表驱动，4 个 hooks 叶子 `onReflection` / `onBeforeFold` / `onAfterFold` / `stubFor`：壳内 + `capabilities.hooks.*` 不等价 ⇒ **恰一条**冲突且 `path` 逐字 = `hooks.<leaf>`；等价 = 同一函数引用 ⇒ 零；只有壳内那份 ⇒ 零）、**C12/C13**（真 run：三个折叠 hooks 各恰一条事件且壳里那份**零调用**；`onReflection` 在真扩轮的 run 里同款）、**C14**（4 个叶子等价 ⇒ 真 run 零事件）、**C15/C16/C17**（优先级方向的行为证据：`retry.sleepImpl` vs `ports.sleepImpl`、`reflection.judge.provider` vs `ports.judgeProvider`、`context.strategy` vs `ports.strategy` 同时在场 ⇒ 实际被调用的是 **`capabilities.ports.*`** 那份、壳里那份零调用/零请求）、**C18**（装配口路线的**真 run**：`policy.capabilities.ports.sleepImpl` 真的被调用——此前只验 `normalizeRunToolLoopOptions` 的返回值）。**反向证（只认退出码）**：mut-a 把 4 个 hooks 的逐叶冲突比较静默掉（探针：`conflicts` 1 条 → 0 条）⇒ 目标文件 **EXIT=1**、`not ok 14/15/16`，**全量 `npm test` 从 0 fail 变 EXIT=1 / fail 3**；mut-d 翻转 `sleepImpl` 的 `??` ⇒ EXIT=1 / `not ok 18`；mut-e 翻转 judge 那处 ⇒ EXIT=1 / `not ok 19`；mut-h 翻转 `strategy` 那处 ⇒ EXIT=1 / `not ok 20`；mut-b 让装配口路线丢掉 `slots.ports` ⇒ **全量 `npm test` EXIT=1 / fail 1**（`not ok 841`）。**门禁复核**：`npm test` **2381 / 2372 / 0 / 9**（本刀 13 格 + 复审 8 格），九门禁与三自测（109 / 13 / 16）全绿，`package.json` 仍 `0.27.0`，不新增 0.28 指南。
+- **Capability / config plane classification finished: `config.input` takes the input-payload
+  family, `capabilities.checks` takes the deliverable criteria, `finalGuard` moves into `hooks`,
+  `resume` finds its home (issue #498 S4b, parent issue #495).** S4a separated the two planes but
+  left three positions that "do not fit the criterion"; this slice puts each of them where it
+  belongs, and **neither plane changed its count** (config plane **43** + capability plane **22** +
+  containers **2** = top-level allowlist **67**, `configSchemaSelfCheck` still `[]`) — what changed
+  is the composition and the number of groups. **① `config.prompt` is renamed `input`**, members =
+  `system` / `cacheStablePrefix` / `initialUserMessage` / `messages` (the nested alias of the
+  top-level `initialMessages`) / `wrapup` / `tools` (the nested alias of the top-level `tools`); the
+  flat `prompt` (which never existed) and the flat `tools` / `initialMessages` **are all
+  untouched**, and priority and the conflict event follow the S4a set. This also removes the only
+  criterion violation left on the capability plane: `tools` is data (the engine only validates
+  `replay`, reads `name`/`inputSchema`, and passes it into the request body as-is), so the
+  capability plane **is** purely "functions / port objects" — the three disclosures in S4a about
+  "`tools` does not fit the criterion" (the `config-namespace.js` header comment, the contract in
+  both languages, this file) were **rewritten as historical statements** rather than deleted.
+  `input.messages` is the **only** rename in the whole module, it lands in the single-record
+  `CONFIG_LEAF_ALIAS_PATHS`, and the self-check verifies it in both directions ("the alias target
+  must really be a top-level option", "it must not map onto an existing leaf name"); a wrong
+  `config.input.initialMessages` is told "belongs to `config.input.messages`". **② The whole
+  `deliverables` key moves to the capability plane**: a new group `capabilities.checks` with the
+  member `deliverables` (each item `{ name, check }`, `check` is a function and `name` is a label),
+  and the shape rules are **not hand-copied a second time** — the validator calls
+  `normalizeDeliverables` (`src/loop/deliverables.js`) directly, so the two spellings cannot drift
+  apart. `config.guard.deliverables` is **deleted as a whole key** ⇒ the "you may only pass `[]`"
+  transitional state disappears (the matching contract sentence changed with it); the top-level flat
+  `deliverables` is untouched to the byte. **③ `finalGuard` becomes the 12th invoked item of
+  `capabilities.hooks`** (consumed at the `finalGuard(payload)` line in `callFinalGuard`
+  (`src/loop/termination.js`), assembled at `ctx.finalGuard` in `src/loop/orchestrator.js`;
+  `hasFinalDraft()` in the same file is the private forced-final decision and **has nothing to do
+  with `finalGuard`**); the top-level flat `finalGuard` and `finalGuardMaxRetries` /
+  `finalGuardTimeoutMs` / `finalGuardExtend` (data, staying in `config.guard`) are untouched. **④
+  `resume` finds its home in `config.run.resume`**, and the phantom group `session`'s alias is
+  deleted (both the validation block and the conversion block in `src/assembly.js`): `session` is
+  pure data, so writing `session.resume` now throws on **both entry routes** — the assembly port
+  throws from `createAssemblyPort` (`assembly port session.resume is not accepted`) and the direct
+  route throws from the semantic phase `collectSemanticOptionProblems`
+  (`src/assembly-validators.js`) (`session.resume is not accepted`) — both naming the full path
+  `session.resume` and pointing at the destination (the top-level flat `resume` /
+  `config.run.resume`) (**not silently ignored**). `config.metadata.session` expands to the
+  top-level `session`, so that spelling goes through the same gate. **⑤ The capability plane is
+  split into two groups** (`hooks` 12 + `checks` 1) so `hooks` does not become a catch-all; the
+  unknown-subkey gate of `capabilities` covers the new group — `capabilities.check` (one `s` short)
+  throws and lists `accepted: hooks, checks`, and a leaf written one level too high
+  (`capabilities.deliverables`) is told "checks live under capabilities.checks". **The same slice
+  closes the two dead keys of #510**: `reflection.format` (appearing only in the option JSDoc of
+  `src/loop/orchestrator.js` and in the reflection option list of both READMEs, with no consumer at
+  all) and `context.channel` (only in the `CONTEXT_OPTION_NAMES` (`src/assembly-validators.js`)
+  allowlist; the engine never reads it from `context` — the `context?.channel` in `orchestrator.js`
+  is the second argument of the **observer error account**) ⇒ **the keys are deleted outright**
+  (together with their validation and documentation mentions), not moved; not a single sibling key
+  was deleted (the other siblings of `toolResultTtl` are really read by `toolContextFor`). **The
+  books were recounted and synced everywhere** (verbatim identical): allowlist still **67** (all new
+  keys are sub-keys), config plane **43** / capability plane **22** / containers **2**, schema
+  groups **7** (`input` replaces `prompt`), capability-plane groups **2**, round-trip coverage
+  **43** (`config.input.tools` / `config.input.messages` are pure data ⇒ they join the coverage list
+  and pass verbatim equality; `capabilities.checks[].check` is a function ⇒ it **must not** join the
+  round-trip, the capability plane does not promise a round-trip). **A new key enters the allowlist
+  before it enters the schema** (#496/#502's rule): the `capabilities` container was already on the
+  list, `checks` is its sub-key and `deliverables` is an existing top-level option, so the allowlist
+  count does not change. **Tests**: `test/loop-config-namespace-497.test.js` gains I1–I4 (the old
+  `config.prompt` spelling must throw and point at `config.input.system`, the expansion and conflict
+  of `input.messages` `{ path: "input.messages", key: "initialMessages" }`, `input.tools` really
+  being used by the engine (a tool is declared and the model calls it on the first round ⇒ it really
+  executes once), `resume` finding its home and `session` no longer producing `resume`), A2 becomes
+  "the leaf name equals the key name verbatim, the single exception must be on record", B1/B2 were
+  rewritten per the leaf→top-level-key mapping; `test/loop-capabilities-namespace-498.test.js` gains
+  S10/S10b/S10c (the expansion, the shape, the conflict with the flat key, and really being checked
+  once ⇒ `verified` for `capabilities.checks.deliverables`) and S11 (`finalGuard` is hooks item 12:
+  `config.guard.finalGuard` throws and points at the new home, `capabilities.hooks.finalGuard` is
+  really called once ⇒ `verified`), and S1c gains "`capabilities.check` must throw and list the
+  accepted values" and "a leaf written one level too high must point at the group"; the "order ②"
+  probe of `test/loop-option-normalization.test.js` changed from the deleted `session.resume` to
+  `session.initialMessages`, plus **two new cells** pinning the retirement error of `session.resume`
+  (one for the assembly port and one for the direct `normalizeRunToolLoopOptions` — pinning only the
+  assembly port would have let the "direct route silently drops the key" half through). Shipped text
+  synced: the `config` table in the contract in both languages (the `input` group, one key fewer in
+  `guard`), the `capabilities` section (two groups + table + shape rules + the `check` typo), the
+  function-value section (the example changed to a shell field still on the config plane, and the
+  sentence "you may only write `deliverables: []`" was deleted), the `tools` disclosure paragraph
+  became historical; the 0.27.0 upgrade guide §10 was synced in both languages (seven groups,
+  `input`, `checks`, the retirement of `session.resume`); the `capabilities-namespace.js`
+  description in the two README module maps became "hooks + checks". **Mutation self-proof (seven
+  reverse proofs, exit codes only)**: ① put a function into `config.input.tools` ⇒ intake throws and
+  names `config.input.tools`; ② write `checks` as `capabilities.check` ⇒ it throws and lists
+  `accepted: hooks, checks`; ③ delete `finalGuard` from `CAPABILITY_HOOK_NAMES` ⇒ the self-check and
+  the hooks cases turn red and report the full path; ④ put the **validation block** of
+  `session.resume` back into `src/assembly.js` ⇒ the retirement case turns red (it no longer
+  throws); ⑤ delete the representative value of any `config.input` leaf ⇒ the round-trip coverage
+  self-proof turns red (not circular: the expected values come from the schema and the actual values
+  come from that table); ⑥ delete the newly added direct-route rejection of `session.resume` (the
+  four lines of the semantic phase) ⇒ the direct case turns red (it neither throws nor emits an
+  event, and `effectiveOptions.resume` is `undefined`); ⑦ put back only the **conversion block** of
+  the assembly port (without the validation block) ⇒ everything stays green, and that is
+  **expected**: `assemblyPortOptions` unconditionally re-runs `createAssemblyPort` on its first
+  line, the validation block throws first and the conversion block is structurally unreachable ⇒ it
+  has no observable behaviour to pin; what is pinned is the validation block (④) and the direct
+  route (⑥).
+  — **`capabilities.hooks` becomes the canonical home of the 11 host callbacks, and the `config`
+    subtree holds data only from now on (issue #498 S4a, parent issue #495).** The `config`
+    namespace entry of #497 S2 in `[Unreleased]` (the 0.27.0 draft, never published) kept 8 `on*`
+    callbacks inside `config.observers`, so the 0.28 criterion "a `config` subtree must survive JSON
+    round-trip equality" and the existence of that group are **mutually exclusive** — a function
+    goes in, `undefined` comes out, and a criterion that keeps one exception is no longer a
+    criterion. This slice separates the **planes**: **capability plane = behaviour carriers that are
+    called or dereferenced; config plane = data whose fields are read and whose values are
+    validated**. Four things: **① add `capabilities.hooks`** (`src/loop/capabilities-namespace.js`)
+    — `onEvent` / `onObserverError` / `onPersistenceError` / `onRound` / `onJudge` / `onToolResult`
+    / `onDelta` / `onReasoningDelta` / `onToolCall` / `onUsage` / `onFoldSummary`, 11 in total,
+    written as `runToolLoop({ capabilities: { hooks: { onEvent, … } }, config: {…} })`; the
+    container gets **the same treatment as `config`** (the same pre-check phase, the same "container
+    wins over flat" priority, the same `config_override_conflict` event — the capabilities-side
+    path looks like `hooks.onEvent` and no new event type is added; the assembly port's
+    `policy.capabilities` is accepted too, and it is item-for-item isomorphic to the review R4 of
+    `config`: the call-level copy overrides `policy.capabilities` as a whole tree, and the same hook
+    given different functions in the two sources is reported per leaf). **An unknown sub-key throws
+    on the spot and names the full path**: `capabilities: { hoks: … }` ⇒
+    `unknown capabilities namespace: "hoks"`, `capabilities.hooks.onEtent` ⇒
+    `unknown capabilities.hooks option: "onEtent"`, a callback written one level too high
+    (`capabilities.onEvent`) ⇒ "hooks live under capabilities.hooks"; a non-function leaf
+    (`onRound: "x"`) ⇒ `must be a function (or omitted)` — the new container is not silent from day
+    one. **② delete the whole `config.observers` group** (removed from the schema as a group): this
+    is a breaking surface but a **free** one — 0.27.0 was never published to npm (the registry still
+    serves 0.26.0) ⇒ no external host ever used `config.*`; the top-level flat `onRound` and friends
+    **all stay available** (the 0.26 published surface; moving the consumers is S5/S6/S7's job, not
+    this slice's). **③ intake rejects any function value appearing in `config` on the spot and names
+    the full path** — the whole tree (array elements included) is walked node by node, and every
+    shell field that is really used as a function is covered one by one:
+    `config.timing.retry.sleepImpl`, `config.run.reflection.onReflection`,
+    `config.run.reflection.judge.provider`, `config.folding.context.onBeforeFold` / `onAfterFold`,
+    `config.guard.deliverables[0].check`; the error states the reason (round-trip) and the
+    **canonical home** (`capabilities.hooks.<name>` or the matching capability port slot), and it
+    throws **before any host port is read** (pinned by a `Proxy` case) — **there is no "accept it
+    and drop the function during expansion"**. **④ an enumerable round-trip machine assertion enters
+    the default suite**: for **every leaf** of `CONFIG_NAMESPACE_SCHEMA` a representative pure-data
+    value is supplied, the whole `config` is assembled, `JSON.parse(JSON.stringify(cfg))` is
+    asserted to equal the original verbatim (then repeated leaf by leaf, with the error naming the
+    leaf), and the expanded effective options are asserted **semantically equivalent** to passing
+    the flat keys directly (reusing #497's B1 exhaustion + B2 end-to-end structure); a leaf in the
+    schema that nobody supplies a pure-data value for ⇒ a **function sentinel** stands in for it ⇒
+    that case turns red on the spot and names it — that is the mechanism behind "whoever puts a
+    function key into config later, it turns red immediately". **The books close**:
+    `configSchemaSelfCheck` is still `[]`, and the three-way closure is enumerable — config plane
+    **43** + capability plane **22** + containers **2** = top-level allowlist **67**. **Two
+    connected decisions (both written into the contract)**: **(a) top-level allowlist 66 → 67** —
+    `capabilities` must enter `RUN_TOOL_LOOP_OPTION_NAMES` to be acceptable at all, and "the
+    accepted options have exactly one source" is the rule #496 / #502 established; no separate
+    exemption path is opened for containers (that is exactly the "acceptance surface ≠ allowlist"
+    that #502 had just killed). The ticket sentence "this slice does not change the top-level list's
+    contents / the count stays 66" **contradicts requirement 1**, and the main agent ruled that this
+    item wins (the criterion error is the main agent's to own, not the executor's to explain away).
+    **(b) `finalGuard` moves from the config plane back to the capability plane** — its value
+    **must** be a function, and leaving it in the config tree would falsify criterion 3 and the
+    round-trip assertion of criterion 4 at the same time; the top-level flat `finalGuard` is
+    untouched to the byte and `config.guard.finalGuard` now throws (a zero-cost unpublished surface,
+    like `config.observers`). The same honesty applies here: every entry of
+    `config.guard.deliverables` carries a function `check`, so the only thing writable on the config
+    plane is `deliverables: []`. **(Historical note: #498 S4b deleted that key outright and moved it
+    into `capabilities.checks.deliverables`, so this "you may only write `[]`" transitional state no
+    longer exists.)** **The capability plane is still not pure functions/port objects** (`tools` is
+    data yet stays on the capability plane): whether port objects should move into
+    `capabilities.ports` and how the input-payload family should be classified are the ruling of the
+    slice after S4b; this slice neither pre-judges nor reserves an empty group (`capabilities.ports`
+    throws if written today). **(Historical note: #498 S4b has already flipped this sentence —
+    `tools` belongs to `config.input.tools`, so the capability plane is pure functions/port objects;
+    the same slice moved `deliverables` the other way into `capabilities.checks`. This paragraph is
+    kept as a record of "what was true at that moment", not as the current state.)** **Tests**:
+    `test/loop-capabilities-namespace-498.test.js` was added with 20 cells (the four numbers of the
+    three-way closure, the 11 callbacks named one by one, the expansion layer and the behaviour
+    layer proven twice (`capabilities.hooks.onEvent` / `onRound` really delivered),
+    container-wins-over-flat with exactly one conflict, the `via` label on the assembly-port route,
+    8 classes of unknown/wrong-typed sub-keys throwing one by one, the two error shapes after
+    `config.observers` disappeared, the 6 shell fields each naming the full path, intake before port
+    reads, the `finalGuard` ownership, the pure-function contract, the round-trip, the 43-key
+    leaf-by-leaf exhaustion, whole-`config` end-to-end equivalence + one real `end_turn` run);
+    `test/loop-config-namespace-497.test.js` was rewritten per the new books (A1's four numbers,
+    A3's container text, B1's 43 keys, B2 without the 8 callback values, D1's 22 items, **E3 flipped
+    from "`config.observers` is accepted" to "the whole group does not exist + `finalGuard` is
+    rejected"**, E4 switched to the `retry.sleepImpl` that is still on the config plane for "both
+    shapes throw the same sentence", F1's seven groups, H1's seven groups); the three literal `66`s
+    in `test/loop-option-normalization.test.js` were synced to 67 (A0's "copy ≡ source list" logic
+    is unchanged to the byte, only the count and the append position followed). Shipped text synced:
+    the "config namespace" section of the contract in both languages became the 0.28 current-state
+    wording (the callbacks' canonical home, `observers` removed, functions inside config rejected on
+    the spot, the round-trip machine-asserted) plus a new paired "capabilities namespace" section;
+    the "eight groups" in §10 of the 0.27.0 upgrade guide became seven in both languages and gained
+    the callbacks' new home; the module map in both READMEs gained `capabilities-namespace.js`.
+    **Mutation self-proof** (three, all editing **code lines**): put the `observers` group back into
+    the schema ⇒ red; downgrade "reject functions inside config" to silent acceptance ⇒ red (and one
+    of them reports the full path); add a fake leaf with a function value to
+    `CONFIG_NAMESPACE_SCHEMA` ⇒ the round-trip case turns red and names that leaf.
 - **能力面 / 配置面分类完成：`config.input` 收下输入载荷族、`capabilities.checks` 收下交付物判据、`finalGuard` 进 `hooks`、`resume` 归位（issue #498 S4b，母单 #495）**：S4a 把两面分开了，但留下了三处「按判据不合身」的位置；本刀把它们各归各位，**两面的条数一个都没变**（配置面 **43** + 能力面 **22** + 容器 **2** = 顶层白名单 **67**，`configSchemaSelfCheck` 仍 `[]`），变的是组成与组数。**① `config.prompt` 改名 `input`**，成员 = `system` / `cacheStablePrefix` / `initialUserMessage` / `messages`（顶层 `initialMessages` 的嵌套别名）/ `wrapup` / `tools`（顶层 `tools` 的嵌套别名）；扁平 `prompt`（从未存在过）、扁平 `tools` / `initialMessages` **全部不动**，优先级与冲突事件沿用 S4a 那一套。这条同时消掉能力面里唯一的判据违规：`tools` 是数据（引擎只校 `replay`、读 `name`/`inputSchema`、原样送进请求体），于是能力面**就是**纯粹的「函数 / 端口对象」——S4a 里那段「`tools` 不合判据」的三处披露（`config-namespace.js` 头注释、契约中英、本文件）**改写成历史口径**而不是删段。`input.messages` 是全模块**唯一**一条重命名，落在只有一条记录的 `CONFIG_LEAF_ALIAS_PATHS` 里，自检双向核它（「别名目标必须真是顶层选项」「不许映射到已存在的叶子名」），`config.input.initialMessages` 写错会被告知「belongs to `config.input.messages`」。**② `deliverables` 整键进能力面**：新组 `capabilities.checks`，成员 = `deliverables`（每项 `{ name, check }`，`check` 是函数、`name` 是标签），形状规则**不手抄第二份**——校验器直接调 `normalizeDeliverables`（`src/loop/deliverables.js`），所以两处写法不可能漂开。`config.guard.deliverables` **整键删除** ⇒ 「只能传 `[]`」那个过渡态消失（契约里那句同步改）；顶层扁平 `deliverables` 一字未动。**③ `finalGuard` 收作 `capabilities.hooks` 的第 12 个被调项**（消费点是 `callFinalGuard`（`src/loop/termination.js`）里那行 `finalGuard(payload)`，装配点是 `src/loop/orchestrator.js` 的 `ctx.finalGuard`；同文件的 `hasFinalDraft()` 是强制收尾的私有判定，**与 `finalGuard` 无关**）；顶层扁平 `finalGuard` 与 `finalGuardMaxRetries` / `finalGuardTimeoutMs` / `finalGuardExtend`（数据，留在 `config.guard`）都不动。**④ `resume` 归位 `config.run.resume`**，并删掉幻影组 `session` 的那条别名（`src/assembly.js` 的校验段与转换段）：`session` 是纯数据，现在写 `session.resume` 在**两条入口路线**上都会抛——装配口由 `createAssemblyPort` 抛（`assembly port session.resume is not accepted`）、直连由语义相 `collectSemanticOptionProblems`（`src/assembly-validators.js`）抛（`session.resume is not accepted`）——都点名完整路径 `session.resume` 并指出去处（顶层扁平 `resume` / `config.run.resume`）（**不是静默忽略**）。`config.metadata.session` 展开后就是顶层 `session`，所以那个写法也走同一道闸口。**⑤ 能力面分两组**（`hooks` 12 + `checks` 1），避免 `hooks` 变成口袋；`capabilities` 的未知子键闸口覆盖新组——`capabilities.check`（少一个 `s`）抛并列出 `accepted: hooks, checks`，叶子写高一层（`capabilities.deliverables`）被告知「checks live under capabilities.checks」。**同刀关掉 #510 的两个死键**：`reflection.format`（只在 `src/loop/orchestrator.js` 的选项 JSDoc 与 README 中英的 reflection 选项清单里出现，无任何消费者）与 `context.channel`（只在 `CONTEXT_OPTION_NAMES`（`src/assembly-validators.js`）白名单里，引擎从不从 `context` 读它——`orchestrator.js` 里那个 `context?.channel` 是**观察者错账户**的第二参）⇒ **直接删键**（连同校验与文档提及），不是搬家；兄弟键一个没删（`toolResultTtl` 的其余兄弟键被 `toolContextFor` 真读）。**账目重数并全处同步**（逐字一致）：白名单仍 **67**（新键全是子键）、配置面 **43** / 能力面 **22** / 容器 **2**、schema 组数 **7**（`input` 替 `prompt`）、能力面组数 **2**、round-trip 覆盖度 **43**（`config.input.tools` / `config.input.messages` 是纯数据 ⇒ 进覆盖度名单并过逐字等值；`capabilities.checks[].check` 是函数 ⇒ **不得**进 round-trip，能力面不承诺 round-trip）。**新键先进白名单再进 schema**（#496/#502 的规矩）：`capabilities` 容器本来就在名单里，`checks` 是它的子键、`deliverables` 是既有顶层选项，所以白名单条数不变。**测试**：`test/loop-config-namespace-497.test.js` 新增 I1–I4（`config.prompt` 老写法必须抛并指出去处 `config.input.system`、`input.messages` 的展开与冲突 `{ path: "input.messages", key: "initialMessages" }`、`input.tools` 真被引擎用起来（声明了工具、模型第一轮就调它 ⇒ 真执行一次）、`resume` 归位与 `session` 不再产出 `resume`），A2 改成「叶子名逐字等于键名，唯一例外必须登记在案」，B1/B2 按叶子→顶层键映射改写；`test/loop-capabilities-namespace-498.test.js` 新增 S10/S10b/S10c（`capabilities.checks.deliverables` 的展开、形状、与扁平键冲突、以及真被核一次 ⇒ `verified`）与 S11（`finalGuard` 是 hooks 第 12 项：`config.guard.finalGuard` 抛且指向新家、`capabilities.hooks.finalGuard` 真被调一次 ⇒ `verified`），S1c 补「`capabilities.check` 必须抛并列出可接受值」与「叶子写高一层要指到组」；`test/loop-option-normalization.test.js` 的「次序②」探针从已删的 `session.resume` 换成 `session.initialMessages`，并新增**两格**钉住 `session.resume` 的退役报错（装配口一格、直连 `normalizeRunToolLoopOptions` 一格——只钉装配口就等于放过了「直连静默丢键」那一半）。随包文字同步：契约中英的 `config` 表（`input` 组、`guard` 少一键）、`capabilities` 一节（两组 + 表 + 形状规则 + `check` 拼错）、函数值那一节（例子换成仍在配置面的壳字段，删掉「只能写 `deliverables: []`」那句）、`tools` 披露段改历史口径；0.27.0 升级指南中英 §10 同步（七组、`input`、`checks`、`session.resume` 退役）；README 中英模块地图的 `capabilities-namespace.js` 说明改成「hooks + checks」。**变异自证（七条反向证，只认退出码）**：① 往 `config.input.tools` 塞一个函数 ⇒ intake 抛并点名 `config.input.tools`；② 把 `checks` 写成 `capabilities.check` ⇒ 抛并列出 `accepted: hooks, checks`；③ 把 `finalGuard` 从 `CAPABILITY_HOOK_NAMES` 删掉 ⇒ 自检与 hooks 用例红并报完整路径；④ 把 `session.resume` 的**校验段**塞回 `src/assembly.js` ⇒ 退役用例红（它不再抛）；⑤ 删掉 `config.input` 任一叶子的代表性取值 ⇒ round-trip 覆盖度自证红（不循环：期望值来自 schema、实际值来自那张表）；⑥ 删掉直连侧新增的 `session.resume` 拒绝（语义相那四行）⇒ 直连用例红（它既不抛也无事件，`effectiveOptions.resume` 是 `undefined`）；⑦ 只把装配口的**转换段**塞回（不塞校验段）⇒ 全绿，且这是**预期**：`assemblyPortOptions` 第一行无条件重跑 `createAssemblyPort`，校验段先抛，转换段在结构上不可达 ⇒ 它没有可观测行为可钉，钉住的是校验段（④）与直连侧（⑥）。
 ：`capabilities.hooks` 成为 11 个宿主回调的规范之家，`config` 子树从此只装数据（issue #498 S4a，母单 #495）**：`[Unreleased]` 里那条 #497 S2 的 `config` 命名空间（0.27.0 草案，从未发布）把 8 个 `on*` 回调关在 `config.observers` 里，于是「`config` 子树必须过 JSON round-trip 等值」这条 0.28 判据与那组的存在**互斥**——函数进去、`undefined` 出来，判据只要还留一个例外就不再是判据。本刀把**面**分开：**能力面 = 被调用/被解引用的行为载体；配置面 = 被读字段并被校值的数据**。四件事：**① 新增 `capabilities.hooks`**（`src/loop/capabilities-namespace.js`）——`onEvent` / `onObserverError` / `onPersistenceError` / `onRound` / `onJudge` / `onToolResult` / `onDelta` / `onReasoningDelta` / `onToolCall` / `onUsage` / `onFoldSummary` 共 11 个，写法 `runToolLoop({ capabilities: { hooks: { onEvent, … } }, config: {…} })`；容器与 `config` **同等待遇**（同一道预检相位、同一套「容器赢扁平」优先级、同一条 `config_override_conflict` 事件——capabilities 侧的 path 形如 `hooks.onEvent`，不新增事件类型；装配口 `policy.capabilities` 同样接受，且与 `config` 的复审 R4 逐条同构：调用级那份整棵覆盖 `policy.capabilities`，两个源里同一个钩子给了不同函数的逐叶上报）。**未知子键当场抛并点名完整路径**：`capabilities: { hoks: … }` ⇒ `unknown capabilities namespace: "hoks"`，`capabilities.hooks.onEtent` ⇒ `unknown capabilities.hooks option: "onEtent"`，回调写高一层（`capabilities.onEvent`）⇒ 「hooks live under capabilities.hooks」；叶子非函数（`onRound: "x"`）⇒ `must be a function (or omitted)`——新容器从第一天起就不静默。**② 删除 `config.observers` 整组**（schema 里整组去掉）：这是破坏面但**免费**——0.27.0 未发布到 npm（registry 仍是 0.26.0）⇒ 没有任何外部宿主用过 `config.*`；顶层扁平 `onRound` 等**一律保持可用**（0.26 已发布面，搬家由 S5/S6/S7 迁消费者，不在本刀）。**③ intake 当场拒绝 `config` 里出现的任何函数值并点名完整路径**——整棵树（含数组元素）逐节点走，实测真被当函数用的那些壳字段逐个覆盖：`config.timing.retry.sleepImpl`、`config.run.reflection.onReflection`、`config.run.reflection.judge.provider`、`config.folding.context.onBeforeFold` / `onAfterFold`、`config.guard.deliverables[0].check`；报错说清原因（round-trip）与**规范之家**（`capabilities.hooks.<name>` 或对应能力面端口位），且抛在**任何宿主端口被读取之前**（`Proxy` 用例钉住）——**不存在「收下再在展开时丢函数」**。**④ 一条可枚举的 round-trip 机器断言进默认套件**：按 `CONFIG_NAMESPACE_SCHEMA` **逐叶子**给一个代表性纯数据取值、组装整棵 `config`，断言 `JSON.parse(JSON.stringify(cfg))` 与原值逐字等值（再逐叶复述一遍，报错点名到叶子），并断言展开后的有效选项与直接传扁平键**语义等价**（沿用 #497 的 B1 穷举 + B2 端到端结构）；schema 里多出一个没人给它纯数据取值的叶子 ⇒ 用**函数哨兵**顶上 ⇒ 该用例当场红并点名——这就是「将来谁把函数键放进 config，它会立刻红」的机制。**账目闭合**：`configSchemaSelfCheck` 仍 `[]`，且三向可枚举闭合——配置面 **43** + 能力面 **22** + 容器 **2** = 顶层白名单 **67**。**两处连带决定（都写在契约里）**：**(a) 顶层白名单 66 → 67**——`capabilities` 必须进 `RUN_TOOL_LOOP_OPTION_NAMES` 才可能被接受，而「被接受的选项只有一个来源」是 #496 / #502 立的规矩；不给容器另开豁免路径（那正是 #502 刚杀掉的「接受面 ≠ 白名单」）。工单原文那句「顶层名单本刀不改内容 / 条数不变 66」**与第 1 条要求自相矛盾**，由主 agent 裁决按本条执行（判据错由主 agent 认领，非执行方圆说）。**(b) `finalGuard` 从配置面移回能力面**——它的值**必须**是函数，留在配置树里会让第 3 条判据与第 4 条 round-trip 断言同时失真；顶层扁平 `finalGuard` 一字未动，`config.guard.finalGuard` 现在抛（与 `config.observers` 同为零成本的未发布面）。同理如实写清：`config.guard.deliverables` 的每一条都带函数 `check`，所以配置面里能写的只有 `deliverables: []`。**（历史口径：#498 S4b 把这个键整键删掉、搬进 `capabilities.checks.deliverables`，所以这个「只能写 `[]`」的过渡态已不存在。）****能力面仍非纯函数/端口对象**（`tools` 是数据却留在能力面）：端口对象要不要搬进 `capabilities.ports`、输入载荷族怎么归，是 S4b 之后那一刀的裁决，本刀不预判、不预留空组（`capabilities.ports` 现在写就抛）。**（历史口径：#498 S4b 已翻转这一句——`tools` 归 `config.input.tools`，能力面因此是纯函数/端口对象；同一刀把 `deliverables` 反向搬进 `capabilities.checks`。本段保留为「那一刻为真」的记录，不是现状。）****测试**：新增 `test/loop-capabilities-namespace-498.test.js` 20 格（三向闭合四个数、11 个回调逐个点名、展开层与行为层双证（`capabilities.hooks.onEvent` / `onRound` 真被投递）、容器赢扁平且冲突恰一条、装配口路线 `via` 标签、8 类未知/错型子键逐条抛、`config.observers` 消失后的两种报错形状、6 个壳字段逐个点名完整路径、intake 早于端口读取、`finalGuard` 归属、纯函数契约、round-trip、43 键逐叶穷举、整棵 config 端到端等价 + 真跑一次 `end_turn`）；`test/loop-config-namespace-497.test.js` 按新账目改写（A1 四个数、A3 容器文案、B1 43 键、B2 去掉 8 个回调值、D1 22 项、**E3 从「`config.observers` 被接受」翻成「整组不存在 + `finalGuard` 被拒」**、E4 换用仍在配置面的 `retry.sleepImpl` 做「两条形态抛同一句」、F1 七组、H1 七组）；`test/loop-option-normalization.test.js` 的三处字面 `66` 同步成 67（A0 的「副本 ≡ 源名单」逻辑一字未改，只跟进条数与追加位置）。随包文字同步：契约中英「config 命名空间」一节改成 0.28 现状口径（回调的规范之家、`observers` 已移除、config 内函数当场拒、round-trip 已机器断言）+ 新增成对一节「capabilities 命名空间」；0.27.0 升级指南中英 §10 的「八组」改七组并补回调新家；README 中英模块地图补 `capabilities-namespace.js`。**变异自证**（三条，都改**代码行**）：把 `observers` 组塞回 schema ⇒ 红；把「拒绝 config 内函数」降级成静默接受 ⇒ 红（且有一条报的是完整路径）；往 `CONFIG_NAMESPACE_SCHEMA` 加一个函数取值的假叶子 ⇒ round-trip 那条红并点名该叶子。
+- **The "publish surface" of `test/contract/` turns from a manual convention into a machine
+  criterion (issue #505, the gate in front of #498 S8).** `package.json`'s `files` lists
+  `test/contract/` **entry by entry** (`"test/contract/assembly-port.js"` and so on, one line each)
+  and **does not take the directory**, so "a new `.js` added to the directory but not synced into
+  `files`" is **silently left out of the package** — the host runs one contract proof fewer after
+  install, while step 4 of `check:release` stays green (it only asserts the reverse direction,
+  "every `test/contract/*` in `files` is in the tarball") and no gate turns red.
+  `npm run check:pack-links` now judges three more things on top of the existing link closure and
+  `.d.ts` claim reconciliation: **① (red)** a `.js` under `test/contract/` that is not `*.test.js`
+  and is missing from the same `npm pack --dry-run --json` listing ⇒ red, naming the file; **②
+  (red)** a `test/contract/...` listed in `files` that does not exist on disk ⇒ red, naming it (a
+  dead entry); **③ (print only, never red)** every `test/contract/*.test.js` listed together with
+  "who runs it" (`npm test` or `npm run check:docs-examples`, read from `package.json`'s `scripts`)
+  and with "intentionally not shipped" — measured: `*.test.js` in the `npm pack` listing is always
+  **0**, and that line is the whole reason "so the next person does not take it for a missing
+  package again". **The measured difference set** (disk vs `files` vs tarball): all 11 entries of
+  `files` exist on disk (0 dead entries), and of the 12 non-test `.js` files on disk exactly 1 is
+  not in the package — `test/contract/doc-examples.js`, whose own header comment says "deliberately
+  not in the files allowlist" (it is the three-layer documentation-example verification harness, its
+  only user is `doc-examples.test.js`, and the publish entry `test/contract/index.js` does not
+  reference it). **It was not added to `files` on a whim**: a new `CONTRACT_PUBLISH_EXEMPTIONS`
+  register records it as "intentionally unpublished", and the register **is itself guarded in both
+  directions** — file gone / file actually shipped / empty `why` / `path` not a concrete file under
+  `test/contract/` / count deviating from `CONTRACT_PUBLISH_EXEMPTION_MAX` (**1**, red whether it
+  grows or shrinks, so the exemption table cannot become a back door) ⇒ all red. The criterion is
+  still **offline** and still runs `npm pack` only once;
+  `node scripts/pack-link-check.mjs --self-test` gains **16 reverse-proof examples** (in-memory
+  fixtures + this repository's real tree, without running `npm pack`, without network, without
+  writing to disk; a mutation that does not land also counts as a failure, following #210 R2), and
+  it enters CI as a blocking step. **Left over (for #498 S8)**: `doc-examples.js` is a harness in
+  the wrong directory (`test/contract/` is the host contract suite directory); the correct fix is to
+  move it to a non-published directory, but that would move `check:docs-examples` and S8's migration
+  surface, so this ticket only registers it and does not move it.
 - **`test/contract/` 的「发布面」从人工口径变成机器判据（issue #505，是 #498 S8 的前置闸口）**：`package.json` 的 `files` 对 `test/contract/` 是**逐个列举**（`"test/contract/assembly-port.js"` 这样一条条写）、**不收目录**，于是「目录里新增一个 `.js` 却忘了同步进 `files`」会**静默不打包**——宿主装完少跑一条契约证明，而 `check:release` 第 4 步照绿（它只反方向断言「`files` 里的 `test/contract/*` 都在包里」），没有任何门禁会红。现在 `npm run check:pack-links` 在既有的链接闭合 + `.d.ts` 声称对账之外，再判三条：**①（红）** `test/contract/` 下存在的、非 `*.test.js` 的 `.js` 不在同一次 `npm pack --dry-run --json` 清单里 ⇒ 红并点名文件；**②（红）** `files` 里列的 `test/contract/...` 在磁盘上不存在 ⇒ 红并点名（死条目）；**③（只打印、永不红）** 每个 `test/contract/*.test.js` 连同「谁跑它」（`npm test` 或 `npm run check:docs-examples`，从 `package.json` 的 `scripts` 里读出来）与「有意不随包」逐条列出——实测 `npm pack` 清单里 `*.test.js` 恒为 **0**，这一行就是「免得后来人又当成漏包」的全部理由。**实测差集**（磁盘 vs `files` vs tarball）：`files` 的 11 条在磁盘上全在（死条目 0），磁盘 12 个非测试 `.js` 里有 1 个不在包里——`test/contract/doc-examples.js`，而它自己的头注释写着「故意不进 files 白名单」（它是文档示例三层验证 harness，唯一使用者是 `doc-examples.test.js`，发布入口 `test/contract/index.js` 不引用它）。**没有擅自加进 `files`**：新增 `CONTRACT_PUBLISH_EXEMPTIONS` 登记表把它登记为「有意不发布」，登记表**自己被双向看守**——文件没了 / 文件其实随包了 / `why` 为空 / `path` 不是 `test/contract/` 下的具体文件 / 条数偏离 `CONTRACT_PUBLISH_EXEMPTION_MAX`（**1**，多了少了都红，防止豁免表变成后门）⇒ 全红。判据仍**离线**、仍只跑一次 `npm pack`；`node scripts/pack-link-check.mjs --self-test` 新增 **16 例**反向证（内存夹具 + 本仓真树，不跑 `npm pack`、不联网、不写盘；变异没落上也算失败，沿用 #210 R2 口径），并作为阻塞步骤进 CI。**遗留（留给 #498 S8）**：`doc-examples.js` 是 harness 放错目录（`test/contract/` 是宿主契约套件目录），正解是搬到非发布面目录，但那会牵动 `check:docs-examples` 与 S8 的迁移面，本单只登记不搬家。
+- **The `config` nested namespace: one run's configuration gets "a plane", and the alias equals the
+  schema path (issue #497 S2, parent issue #495).** A new top-level option `config` is added, whose
+  leaves are aliases of the existing flat config keys — `config.run.maxRounds` and `maxRounds` are
+  the same knob, and the leaf name is **verbatim equal** to the flat option name, so expansion is
+  just "strip the path prefix" and there is no rename table. The only hand-written part is
+  `CONFIG_NAMESPACE_SCHEMA` (`src/loop/config-namespace.js`, 8 groups / 52 keys: `prompt` / `run` /
+  `tuning` / `timing` / `folding` / `guard` / `metadata` / `observers` — **these numbers were later
+  changed by #498 S4a**: the `observers` group deleted and `finalGuard` moved back to the capability
+  plane ⇒ the table is now 43 keys / 7 groups, see the S4a entry above), and the alias table
+  `CONFIG_ALIAS_PATHS` and the config-plane list `CONFIG_SURFACE_OPTION_NAMES` are mechanically
+  derived from it; `configSchemaSelfCheck` then reconciles against `RUN_TOOL_LOOP_OPTION_NAMES`:
+  every top-level option must fall **exactly** on the config plane (52) or the capability plane (13)
+  (`config` itself is a container), and a missing classification is red — so "added an option and
+  forgot to classify it" cannot be silent. **Priority**: `config.*` overrides the top-level flat key
+  when both are present; the flat keys keep being accepted with behaviour unchanged to the byte (a
+  pure addition). **Conflicts are not silent**: when both spellings give **different values**, the
+  engine emits one `config_override_conflict` event before the first round
+  (`{ type, runId?, conflicts: [{ path, key }], detail }`, carrying only paths and key names — the
+  values may be functions or large objects), and an observer that throws is isolated under the same
+  wording as the other channels (accounted through `onObserverError`, the run continues). **The same
+  event also covers the second pair of sources** (review R4): the assembly port's `policy.config`
+  and the call-level `config` are two sources of the same tree; the call-level copy overrides **as a
+  whole tree** (the existing "last writer wins" merge rule, unchanged to the byte), but per-leaf
+  conflicts go through the same event with the same fields — leaves that both sources give different
+  values for are de-duplicated by path and listed in schema order; equal values or only one side
+  given are not a conflict (leaves written only in the overridden tree are dropped, and the contract
+  states clearly "do not use this as a per-leaf merge"). Measured before the fix: policy
+  `run.maxRounds: 4` + call level `1` ⇒ the run really did 1 round and zero events were emitted.
+  **The capability plane takes no config overrides** (parent-issue ruling): the 13 capability keys
+  (`provider` / `tools` / `executeTool` / `store` / `modelConfig` / `assemblyPort` / `signal` /
+  `todoStateProvider` / `semanticStateProvider` / `onEvent` / `onObserverError` /
+  `onPersistenceError` / `diagnostics`) written into `config` (top level or inside a group) ⇒ throw
+  at startup naming that key, with a `via` label on the error (`direct` / `assembly`); **the
+  existing "an explicit fine-grained option overrides the assembly port's member of the same name"
+  is unchanged to the byte** — the real mechanism is `resolveAssemblyMember` (`src/assembly.js`),
+  and `test/contract/assembly-port.js`'s "an explicit fine-grained provider overrides the port
+  provider" still asserts it. **The capability plane's criterion is the behaviour surface** (review
+  R1 correction): the capability plane = the **behaviour carriers** the host supplies (functions /
+  port objects), which the engine calls or dereferences; the config plane = data the engine
+  **validates field by field against known names and interprets**. `runId` / `cwd` are **string
+  scalars** and, by the second-round ruling, belong to the config plane (`config.run.runId` /
+  `config.run.cwd`, the top-level flat keys unchanged to the byte); the "identity/environment
+  injection" leg added to the criterion in the previous round is **withdrawn** — for two reasons:
+  the criterion must be mechanically checkable (opening an exception for two keys would degrade it
+  into "classify first, then write a justification"), and the checkable target of 0.28 is "a
+  `config` subtree must survive JSON round-trip equality" (string scalars are inherently JSON-safe,
+  and the capability plane should end up holding nothing but functions/port objects, otherwise that
+  criterion would have to open exceptions the other way round). The old criterion "the capability
+  plane = the engine does not interpret its value" **measures as false** — `session`'s `id` /
+  `modelSlot` / `resume` / `initialMessages` are read, `model` / `modelMetadata`'s
+  `contextWindowTokens` / `maxOutputTokens` numbers are read by `modelMetadataFor`
+  (`src/loop/budget.js`) to derive budgets, and `persistence`'s literals are validated and select
+  the persistence path — so these four keys move back to the config plane under the new criterion:
+  `persistence` → `config.run.persistence` (same group as its siblings `partialPersistence` /
+  `replayPolicy`), `model` / `modelMetadata` / `session` → `config.metadata.*`. The assembly port's
+  `policy` accepts `config` too, and both routes share the same expansion. **The semantic-phase gate
+  of #496 eats the expanded representation**: a misspelled summariser knob inside
+  `config.folding.context` throws **the same sentence** as the flat `context`, and a wrong-typed
+  `config.guard.finalGuard` also throws at startup; the name/shape pre-check of `config` happens
+  before **any host port is read** (pinned by a `Proxy` case). Expansion happens **after** the merge
+  (after the assembly port is folded in, before the semantic phase), so both conflicts and priority
+  are properties of "one key written two ways", not properties of the entry route.
+  `test/loop-config-namespace-497.test.js` is added with 30 cells: structural equivalence of the 52
+  keys **enumerated one by one** (`deepStrictEqual`, not sampled) + end-to-end equivalence across
+  the 8 groups, behaviour evidence for priority (flat `maxRounds: 1` + `config` 2 ⇒ `end_turn`,
+  whereas a flat win would give `max_rounds_cap`), the conflict event not emitted for "same value /
+  only one side given", the 13 capability keys throwing one by one on both routes, **behaviour
+  evidence for the four keys reclassified under the new criterion** (`config.run.persistence`
+  deciding whether the required store-method validation runs, `config.metadata.model` /
+  `modelMetadata` stopping `model_metadata_missing` from being emitted, `config.metadata.session`'s
+  `id` being validated), **per-leaf conflicts when two `config` sources are present at once**
+  (policy `run.maxRounds: 4` + call level `1` ⇒ the run really does 1 round + exactly one event
+  whose path set is verbatim equal; same value / only one side ⇒ zero events), semantic-phase reuse,
+  the four shapes of the name gate, shape gates such as `config: null`, the pure-function contract
+  (input not mutated), **behaviour evidence for `runId` / `cwd` moved to the config plane**
+  (`config.run.runId` appears in `run_outcome` and in the `finalGuard` payload, `config.run.cwd`
+  enters the payload, and omitting them leaves both fields at their default — not dead aliases). On
+  the way the inline allowlist copy of `test/loop-option-normalization.test.js` was completed (it
+  had been missing `onFoldSummary`: the source list had 65 items and the copy 64, and both sides
+  were "self-consistent" so nobody turned red), reaching 66 items after `config` was added. The
+  contract gains a "config namespace" section in both languages and the 0.27.0 upgrade guide gains
+  §10 in both languages; the top-level flat keys are marked in the contract as the **primitive /
+  transitional surface** (new hosts are advised to use only `config`; the deletion window belongs to
+  the parent issue's release ladder and is planned for 0.28, and not a single key is deleted in this
+  version). **The type surface is locked into the default suite** (review round two): R3 wrote the
+  `config` JSDoc type surface as eight real group names, but that lock lived only in step 4 of
+  `check:release` (a real TS host), and in CI `check:release` runs on node 22 only — measured:
+  writing `tuning?:` as a fake group name turns neither `npm test` nor `check:types-build` red. Now
+  H1 of `test/loop-config-namespace-497.test.js` scans the `config?:` JSDoc text of
+  `src/loop/orchestrator.js` directly (taking `<name>?:` at brace depth 1) and asserts the
+  group-name set is **exactly** `Object.keys(CONFIG_NAMESPACE_SCHEMA)` (expected values derived from
+  the module export, no second hand-copied list): a missing group, an extra group, a fake group name
+  and a duplicate group name are all red, naming which name it is. Mutation self-proof: `tuning?:` →
+  `reflection?:` ⇒ `node --test` on **the tree of that moment** (`ba27024`; the total drifts with
+  new tests, this is the measurement of that moment) gives exactly 1 red out of the whole 2324 cells
+  (H1, the error naming `reflection`), and reverting turns it green. Review R6 also fixed one
+  falsehood on the **shipped surface**: the header comment of
+  `test/contract/boundary-parity.test.js` said "this file is shipped (`files` takes
+  `test/contract/`)", while measurement shows `files` **enumerates** `test/contract/*.js` (it does
+  not take the directory) and the `.test.js` file count in `npm pack --dry-run --json` is **0**; the
+  `files` description in the "contract test suite" section of the contract in both languages and in
+  both AGENTS files was synced to the measured wording.
 - **`config` 嵌套命名空间：一次 run 的配置有了「一面」，且别名 = schema 路径（issue #497 S2，母单 #495）**：新增顶层选项 `config`，它的叶子是既有扁平配置键的别名——`config.run.maxRounds` 与 `maxRounds` 是同一个旋钮，叶子名**逐字等于**扁平选项名，所以展开只是「去掉路径前缀」，没有重命名表。唯一手写的部分是 `CONFIG_NAMESPACE_SCHEMA`（`src/loop/config-namespace.js`，8 组 / 52 键：`prompt` / `run` / `tuning` / `timing` / `folding` / `guard` / `metadata` / `observers`——**这组数随后被 #498 S4a 改掉**：`observers` 整组删除、`finalGuard` 移回能力面 ⇒ 现表 43 键 / 7 组，见上面那条 S4a 条目），别名表 `CONFIG_ALIAS_PATHS`、配置面名单 `CONFIG_SURFACE_OPTION_NAMES` 都从它机械派生，`configSchemaSelfCheck` 再对着 `RUN_TOOL_LOOP_OPTION_NAMES` 核账：每个顶层选项必须**恰好**落在配置面（52）或能力面（13）之一（`config` 自己是容器），漏分类即红——于是「加了个选项忘了分类」不会静默。**优先级**：同名时 `config.*` 覆盖顶层扁平键；扁平键继续接受、行为一字不变（纯新增）。**冲突不静默**：两种写法都给了**不同的值**时，引擎在第一轮之前发一条 `config_override_conflict` 事件（`{ type, runId?, conflicts: [{ path, key }], detail }`，只带路径与键名——值可能是函数/大对象），观察者抛错与其他通道同口径隔离（经 `onObserverError` 记账、run 继续）。**同一条事件也管第二对来源**（复审 R4）：装配口 `policy.config` 与调用级 `config` 是同一棵树的两种来源，调用级那份按**整棵**覆盖（既有「后写者胜」的合并规则，一字未改），但逐叶冲突走同一条事件、同一套字段——两个源里同一个叶子都给了不同值的，按 path 去重、按 schema 顺序列出；值相同或只有一边给了不算冲突（只写在被覆盖那棵树里的叶子会被丢掉，契约里写清了「别当逐叶合并用」）。修之前实测：policy `run.maxRounds: 4` + 调用级 `1` ⇒ 真跑 1 轮、零事件。**能力面不收配置覆盖**（母单裁决）：13 项能力键（`provider` / `tools` / `executeTool` / `store` / `modelConfig` / `assemblyPort` / `signal` / `todoStateProvider` / `semanticStateProvider` / `onEvent` / `onObserverError` / `onPersistenceError` / `diagnostics`）写进 `config`（顶层或组内）⇒ 启动即抛并点名该键，错误带 `via` 标签（`direct` / `assembly`）；**既有「显式细粒度选项覆盖装配口同名成员」一字未动**——真实机制是 `resolveAssemblyMember`（`src/assembly.js`），`test/contract/assembly-port.js` 的「显式细粒度 provider 覆盖端口 provider」照旧断言。**能力面的判据是行为面**（复审 R1 更正）：能力面 = 宿主提供的**行为载体**（函数 / 端口对象），引擎调用或解引用它；配置面 = 引擎**按已知字段校值并解释**的数据。`runId` / `cwd` 是**字符串标量**，按第二轮裁决归配置面（`config.run.runId` / `config.run.cwd`，顶层扁平键一字未动），上一轮给判据加的「身份/环境注入」那条腿**取消**——理由两条：判据要机械可检验（为两个键开例外会让它退化成「先分类再补理由」），以及 0.28 的可检验目标是「`config` 子树必须过 JSON round-trip 等值」（字符串标量天然 JSON 安全，能力面应当只剩函数/端口对象，否则那条判据得反过来开例外）。旧判据「能力面 = 引擎不解释其值」**实测为假**——`session` 的 `id` / `modelSlot` / `resume` / `initialMessages` 被读、`model` / `modelMetadata` 的 `contextWindowTokens` / `maxOutputTokens` 数字被 `modelMetadataFor`（`src/loop/budget.js`）读去推预算、`persistence` 的字面量被校验并选持久化路径——于是这四个键按新判据移回配置面：`persistence` → `config.run.persistence`（与同族 `partialPersistence` / `replayPolicy` 同组），`model` / `modelMetadata` / `session` → `config.metadata.*`。装配口的 `policy` 同样接受 `config`，两条路线共用同一次展开。**#496 的语义相闸口吃的是展开后的表示**：`config.folding.context` 里拼错的摘要旋钮名与扁平 `context` 抛**同一句**，`config.guard.finalGuard` 给错型同样启动即抛；`config` 的名称/形状预检早于**任何宿主端口被读取**（`Proxy` 用例钉住端口未被触碰）。展开发生在合并**之后**（装配口折进来之后、语义相之前），因此冲突与优先级都是「同一个键两种写法」的性质，不是入口路线的性质。新增 `test/loop-config-namespace-497.test.js` 30 格：52 键**逐个穷举**结构等价（`deepStrictEqual`，非抽样）+ 跨 8 组端到端等价、优先级的行为证据（扁平 `maxRounds: 1` + `config` 2 ⇒ `end_turn`，扁平赢的话会是 `max_rounds_cap`）、冲突事件「值相同 / 只给一边」不发、13 个能力键两条路线逐条抛、**按新判据改归的四个键的行为证据**（`config.run.persistence` 决定要不要走 required 的 store 方法校验、`config.metadata.model` / `modelMetadata` 让 `model_metadata_missing` 不再发、`config.metadata.session` 的 `id` 被校验）、**两个 `config` 源同时在场时的逐叶冲突**（policy `run.maxRounds: 4` + 调用级 `1` ⇒ 真跑 1 轮 + 事件恰一条且 path 集合逐字相等；同值 / 只给一边 ⇒ 零事件）、语义相复用、名称闸口四型、`config: null` 等形状闸口、纯函数契约（不改入参）、**移到配置面的 `runId` / `cwd` 的行为证据**（`config.run.runId` 出现在 `run_outcome` 与 `finalGuard` 载荷、`config.run.cwd` 进载荷，不给则两字段都缺省——不是死别名）。顺手补齐 `test/loop-option-normalization.test.js` 的内联白名单副本（此前漏 `onFoldSummary`：源名单 65 项、副本 64 项，两边都「自洽」所以没人红），加入 `config` 后为 66 项。契约中英新增一节「config 命名空间」，0.27.0 升级指南中英新增 §10；顶层扁平键在契约里标注为**原语 / 过渡面**（新宿主推荐只用 `config`，删除窗口属母单发布阶梯、计划 0.28，本版一个都不删）。**类型面锁进默认套件**（复审第二轮）：R3 把 `config` 的 JSDoc 类型面写成八组真名，但那条锁只活在 `check:release` 第 4 步（真实 TS 宿主），而 CI 里 `check:release` 只在 node 22 一档跑——实测把 `tuning?:` 写成假组名，`npm test` 与 `check:types-build` 都不红。现在 `test/loop-config-namespace-497.test.js` 的 H1 直接扫 `src/loop/orchestrator.js` 的 `config?:` JSDoc 文本（按花括号深度取深度 1 上的 `<name>?:`），断言组名集合**恰等于** `Object.keys(CONFIG_NAMESPACE_SCHEMA)`（期望值从模块导出派生，不手抄第二份名单）：缺组、多组、假组名、重复组名都红并点名是哪个名字。变异自证：`tuning?:` → `reflection?:` ⇒ `node --test` 在**当时那棵树**（`ba27024`；该总数随新增测试漂移，此系当时的测量值）的全量 2324 格中恰 1 红（H1，报错点名 `reflection`），改回即绿。复审 R6 顺手改掉一处**随包面**的假话：`test/contract/boundary-parity.test.js` 头注释原写「本文件随包发布（`files` 收 `test/contract/`）」，实测 `files` 是**逐个列举** `test/contract/*.js`（不收目录）、`npm pack --dry-run --json` 里 `.test.js` 文件数 = **0**；契约「契约测试套件」一节中英与 AGENTS 中英的 `files` 描述同步改成实测口径。
 
+- **The `context.onFoldSummary` payload gains the three fold-range keys (issue #479, a pure
+  addition).** After the host (erix-station) wired this exit into "one fold, one session note", the
+  only thing it could not write was the **fold range** — the payload carried only `round` (the
+  current round number), so a note could only say "the originals up to round 57 have left the
+  context", while the genuinely useful shape is "**rounds 12–57 were folded away**": the host
+  **cannot infer** "which round the fold started at" (the hook is called synchronously when the fold
+  happens, and the round record has not been persisted yet). The fix hands over the three facts the
+  engine has already computed: `foldedRoundRange {from, to}` (the folded interval, the same shape as
+  the round record), `foldedThrough` (the run-scoped watermark **after** the fold) and
+  `foldedRoundCount` (the cumulative number of folded rounds in the run) — all taken from **the
+  same** fact set, so the host does not have to derive anything a second time (otherwise the host
+  could only regex-parse its own Chinese summary line, the most brittle coupling there is). All
+  three keys are pure additions: the existing keys are unchanged to the byte, and a host that
+  ignores them sees the same shape as before. `test/loop-on-fold-summary.test.js` gains two cells at
+  the same time (the first cell's "every field except `round` is equal" narrows to "except the four
+  new keys", and a new cell pins the multi-fold wording: the cumulative count never decreases and
+  its last value == the sum of the individual folds, the watermark == the largest folded round
+  number after the fold, and the interval equals the round record field by field). The contract in
+  both languages gains another boundary at the same time (issue #479, second half):
+  `refreshRunState` is called as `{ semantic: persistInject || requestInject }` ⇒ "a fold happened
+  but this round did not trigger injection" is the **expected** shape, the note is persisted into
+  the directory but does not re-enter the model-visible context in the same round — a host can write
+  this boundary into its own documentation instead of guessing from measurement.
 - **`context.onFoldSummary` 的载荷补上折叠范围三键（issue #479，纯加法）**：宿主（erix-station）把这条
   出口接成「折一次记一条会话笔记」之后，唯一写不出来的是**折叠范围**——payload 只有 `round`（当前轮号），
   于是注里只能写「round 57 及之前的原文已退出上下文」，而真正有用的形态是「**折走第 12–57 轮**」：这个
@@ -211,9 +661,127 @@
 ### Changed
 
 
+- **`context.onFoldSummary` is retired (issue #499, disposition 2).** This key used to sit in the
+  legal key set of `context` (`CONTEXT_OPTION_NAMES` (`src/assembly-validators.js`)) while the
+  engine **never reads it from `context`** (the real delivery points are the top-level
+  `onFoldSummary` / the assembly port's `policy.onFoldSummary`) ⇒ a host writing
+  `context.onFoldSummary = fn` got a **triple silence**: the assembly port did not throw (it counted
+  as a "legal key"), **zero** `context_unknown_option` events were emitted (events are only emitted
+  for keys outside the allowlist), and the hook was never called once. That is worse than an unknown
+  key — an unknown key at least leaves one event. It is now **retired** under disposition 2 of the
+  main agent's ruling: removed from the allowlist ⇒ it is treated as **host metadata** like any
+  other unknown key, the assembly port reports one `context_unknown_option` (naming this key), the
+  direct route lets it through silently, and **neither route throws** (its edit distance to the
+  known knob names is > 2, so it does not enter the knob-family criterion of #493, which makes the
+  retirement **non-breaking**; throwing would be breaking, because `context` keys are the shape of
+  host metadata). **The red line is not crossed**: only the `context.` side is touched, the
+  top-level `onFoldSummary` is still a live option (still in `RUN_TOOL_LOOP_OPTION_NAMES`
+  (`src/loop/option-normalization.js`); the delivery path, the `persistence_error{port:"notes"}`
+  failure wording and "a non-function throws at startup" are unchanged to the byte). **Why
+  disposition 1 ("actually read it") was not chosen**: #495 of 0.28 is about to collect callbacks
+  into the capability plane, and opening one more accepted landing spot before the flat plane is
+  deleted would freeze the double-namespace disease in place. Tests:
+  `test/loop-context-on-fold-summary-retired-499.test.js` is added with 5 cells — A the positive
+  case (one event at assembly time + no throw + the hook still never called + the precondition "a
+  fold really happened"), A② the boundary (a non-function value for the retired key does not throw,
+  against `context.onBeforeFold` which still validates its shape), B the direct-route positive case
+  (no throw, zero events), C the same-shape control (the retired key behaves cell for cell like
+  `onFoldSummaryx`; a misspelled knob-family name still throws), D the negative case (the top-level
+  `onFoldSummary` is still really delivered, the call-count assertion is `>= 1`, a thrown error
+  still lands as `persistence_error`, and `null`/`{}`/a string still throw at startup). **Green
+  first, then red** (not the usual red-then-green, and the reason is spelled out): the root-cause
+  reproduction cell ran **green** before the retirement — it describes the disease itself
+  (configured but ineffective + zero events), not the fix target; after the retirement it was
+  rewritten to the new expectation instead of deleted, so the same cell must turn red on a tree
+  where the retirement is reverted (measured: A/A②/C, three reds). Mutation self-proof: put
+  `onFoldSummary` back into the allowlist (= revert the retirement) ⇒ A/A②/C, three reds; delete the
+  top-level item from `RUN_TOOL_LOOP_OPTION_NAMES` (= retire out of bounds) ⇒ D red. The contract
+  was synced in both languages (the key's description no longer says "will be ignored" but "retired:
+  treated as host metadata, the assembly-port route reports `context_unknown_option`"), and the
+  delivery-hook section of both READMEs was changed to the real position.
 - **`context.onFoldSummary` 退役（issue #499，处置 2）**：这个键以前留在 `context` 合法键集合（`CONTEXT_OPTION_NAMES`（`src/assembly-validators.js`））里，而引擎**从不从 `context` 读它**（真实投递点是顶层 `onFoldSummary` / 装配口 `policy.onFoldSummary`）⇒ 宿主写 `context.onFoldSummary = fn` 得到的是**三重静默**：装配口不抛（它算「合法键」）、**零** `context_unknown_option` 事件（事件只对白名单外的键发）、钩子一次都不被调。这比未知键更糟——未知键至少留一条事件。现在按主 agent 裁决的处置 2 **退役**：从白名单移除 ⇒ 它像其它未知键一样按**宿主元数据**对待，装配口报一条 `context_unknown_option`（点名这个键）、直连静默放行、**两条路线都不抛**（它与已知旋钮名的编辑距离 > 2，不进 #493 的旋钮家族判据，所以退役**非破坏**；抛会是破坏，因为 `context` 键是宿主元数据的形状）。**红线未越**：只动 `context.` 侧，顶层 `onFoldSummary` 仍是活选项（仍在 `RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`）里，投递路径、`persistence_error{port:"notes"}` 失败口径与「非函数启动即抛」一字未动）。**不选处置 1「真去读它」**的理由：0.28 的 #495 正要把回调收进能力面，在删扁平面之前再开一个被接受的落点，等于把双命名空间病固化。测试：新增 `test/loop-context-on-fold-summary-retired-499.test.js` 5 格——A 正例（装配期一条事件 + 不抛 + 钩子仍零调用 + 前提「真折叠了」）、A② 边界（退役键给非函数值不抛，对照 `context.onBeforeFold` 照旧校形状）、B 直连正例（不抛、零事件）、C 同形对照（退役后的键与 `onFoldSummaryx` 逐格同形；旋钮家族拼错照旧抛）、D 反例（顶层 `onFoldSummary` 仍被真投递、次数断言 `>= 1`、抱错仍落 `persistence_error`、`null`/`{}`/字符串仍启动即抛）。**先绿后红**（不是常见的先红后绿，理由写清）：病根复现格在退役前跑**绿**——它描述的是病本身（配了不生效 + 零事件），不是修复目标；退役后把它按新预期改写而不删，于是同一格在「撤销退役」的树上必须红（实测 A/A②/C 三红）。变异自证：把 `onFoldSummary` 加回白名单（= 撤销退役）⇒ A/A②/C 三格红；把顶层项从 `RUN_TOOL_LOOP_OPTION_NAMES` 删掉（= 越界退役）⇒ D 红。契约中英同步（该键的描述不再写「会被忽略」，改成「已退役：当宿主元数据对待，装配口路线报 `context_unknown_option`」），README 中英的投递钩子一节改成真实位置。
+- **The "5-section contract" of the fold summary holds under the default configuration (issue #469,
+  host audit C, second half of criterion 3).** The investigation found three things stacked on top
+  of each other. ① **The default budget was too small**: `maxSummaryTokens` defaulted to `800`,
+  while five sections × 150 Chinese characters each measures about **1,335 token** ⇒ a model that
+  fills the contract in full still gets cut down to two sections (the host's measurement "80 chars
+  per section 5/5, 150 chars 2/5" is exactly this boundary); the default is raised to `1400`, so the
+  contract holds **under the default configuration**. ② **Trimming wiped out the skeleton too**: the
+  old `enforceSize` shape replaced a whole section (including its `## 标题` heading) with a single
+  `[已修剪]` line ⇒ neither a human reader nor the next fold's summariser could tell "there used to be
+  this section"; now only the body is trimmed and the heading is kept (`## 标题\n[已修剪]`). ③ **The
+  topic-word section was ranked in the wrong tier**: `## 主题词面包屑` used to sit in tier 3 (after `已验证项`
+  1 / `已改文件` 2), so it was the first thing trimmed whenever the budget tightened, and it is
+  precisely the only clue for "what to search by next time" ⇒ it moves to tier 1 (the same tier as
+  `## 下一步`), and the tier order becomes next-step/recovery-hint > topic words > verified items >
+  changed files. In addition the **value domain** of `foldSummary.finishReason` is written into the
+  contract (passed through as-is after provider normalisation; `max_tokens` = the summary was cut by
+  the output budget and is not a complete summary; an unknown value is treated as "unknown" and must
+  not be treated as "normal") — this is the "three-state criterion missing its value domain" cell
+  the audit called out. `test/compact/fold-llm-summary-budget-469.test.js` is added with 3 cells
+  (zero real LLM): under the default budget all 5×150 characters are present and there is no `[已修剪]`
+  (it first asserts that this input would necessarily be trimmed under the old default of 800, to
+  prevent a tautology), a trimmed section must be `## 标题\n[已修剪]`, and under a tight budget "next
+  step" and "topic words" are not trimmed while "changed files" is trimmed first and keeps its
+  skeleton.
 - **折叠摘要的「5 节合同」在默认配置下自洽（issue #469，宿主审计 C 片判据 3 后半）**：查出来是三件事叠在一起。① **默认预算太小**：`maxSummaryTokens` 默认 `800`，而五节 × 每节 150 个中文字实测约 **1,335 token** ⇒ 模型按合同写满也会被剪成两节（宿主实测「每节 80 字 5/5、150 字 2/5」正是这个边界）；默认上调到 `1400`，合同在**默认配置**下就成立。② **裁剪把骨架一起抹掉**：`enforceSize` 旧形状把整节（含 `## 标题`）换成一行 `[已修剪]` ⇒ 读的人与下一次折叠的摘要器都看不出「曾经有这一节」；现在只剪正文、保留标题（`## 标题\n[已修剪]`）。③ **主题词排错档**：`## 主题词面包屑` 原在第 3 档（`已验证项` 1 / `已改文件` 2 之后），预算一紧就先被剪，而它恰恰是「下次按什么搜回来」的唯一线索 ⇒ 提到第 1 档（与 `## 下一步` 同级），档位顺序改为 下一步/恢复提示 > 主题词 > 已验证项 > 已改文件。另把 `foldSummary.finishReason` 的**值域**写进契约（provider 归一后原样透出；`max_tokens` = 摘要被输出预算截断、不是完整摘要；未知值按「未知」处理，不得当「正常」）——这是审计里点名的「三态判据缺值域」那一格。新增 `test/compact/fold-llm-summary-budget-469.test.js` 3 格（零真实 LLM）：默认预算下 5×150 字全在且无 `[已修剪]`（先断言这份输入在旧默认 800 下必然被剪，防恒真）、被剪的节必须是 `## 标题\n[已修剪]`、紧预算下「下一步」与「主题词」不剪而「已改文件」先剪且留骨架。
+- **The four fold-summary caps become `context` knobs, and unknown `context` sub-keys now throw at
+  assembly time (issue #469, host audit B1).** `summarizerTimeoutMs` / `summarizerBudgetMs` /
+  `maxSummarizerInputBytes` / `maxPriorSummaryBytes` used to take effect **only as factory
+  options**, so writing them into `context` was **silently ineffective** (`strategy-resolution.js`
+  passed through only `recoveryHint` / `stubFor`) — measured:
+  `context:{strategy:"fold-llm", maxSummarizerInputBytes:2000, …}` leaves the summariser input
+  unchanged to the byte, exactly the "nobody reads this knob" of `#331`. All four keys now really
+  pass through `resolveCompactionStrategy`'s `foldLlmOptions` / `createProviderSummarizer`, with
+  **the defaults unchanged to the byte** (30000 / 30000 / 49152 / 24576). The names carry two layers
+  of meaning and are deliberately not merged into one: `summarizerTimeoutMs` is the provider-layer
+  **single-request** timeout, while `summarizerBudgetMs` is the strategy-layer **whole-step
+  deadline** (shared by the first request and the over-window self-heal); the issue body mentioned
+  only the former, and opening only one of them would leave the ruling "the whole step gets 30 s"
+  without a knob. When passed explicitly, `summarizerTimeoutMs` means an **upper bound** (the
+  smaller of it and the caller's remaining budget) — without that, `fold-llm` would always pass the
+  remaining budget down as `timeoutMs` and override it outright, which is one more idling knob. Two
+  validations are added at assembly time (`createAssemblyPort`): an **unknown sub-key** of `context`
+  reports `unknown assembly policy context option: "…"`, and a non-safe-positive-integer value for
+  the four keys reports `<key> must be a positive integer` (`0` / negatives / decimals / strings /
+  `null` are all refused; only omission falls back to the default); the `CONTEXT_OPTION_NAMES`
+  allowlist now holds every key the engine really reads (including the existing
+  `maxFoldedFactsBytes` / `maxFoldedPayloadBytes` / `summaryRole` / `onBeforeFold` / `onAfterFold`
+  and so on), preferring to over-include rather than under-list.
+  `test/loop-fold-context-knobs-469.test.js` is added with 6 cells (zero real LLM): an unknown key
+  and an illegal value throw at assembly time, **omitting ⇔ explicitly passing the default produces
+  a byte-identical request body**, a tiny `maxPriorSummaryBytes` ⇒ `priorSummaryTruncated`, a tiny
+  `summarizerTimeoutMs` ⇒ `degradeKind:"timeout"`, a tiny `maxSummarizerInputBytes` ⇒ the whole
+  round is dropped with a trace, and every one of them comes with a "does not happen under the
+  default" reverse assertion (to prevent a tautology). **Known boundary (written into the
+  contract)**: these four keys take effect only for the **built-in name-form** strategies; when a
+  host passes an object-form strategy of its own, the caps belong to that object.
 - **四个折叠摘要上限开成 `context` 旋钮 + `context` 未知子键装配期报错（issue #469，宿主审计 B1）**：`summarizerTimeoutMs` / `summarizerBudgetMs` / `maxSummarizerInputBytes` / `maxPriorSummaryBytes` 以前**只在工厂选项上生效**，宿主写进 `context` 里是**静默无效**（`strategy-resolution.js` 只透传 `recoveryHint` / `stubFor`）——实测 `context:{strategy:"fold-llm", maxSummarizerInputBytes:2000, …}` 摘要输入一字不变，正是 `#331` 那根「没人读的旋钮」。现在四键都经 `resolveCompactionStrategy` 的 `foldLlmOptions` / `createProviderSummarizer` 真正透传，**默认值逐字不变**（30000 / 30000 / 49152 / 24576）。名字有两层语义、刻意不合并成一条：`summarizerTimeoutMs` 是 provider 层**单发**超时，`summarizerBudgetMs` 是策略层**整条步骤死线**（首发 + 超窗自愈共用），issue 正文只提了前者，只开一个就会让「整步骤 30 s」这条裁决失去旋钮。`summarizerTimeoutMs` 显式传入时语义是**上限**（与调用方剩余预算取小）——不这么定，`fold-llm` 恒把剩余预算当 `timeoutMs` 传下来会直接盖掉它，等于又一根空转旋钮。装配期新增两条校验（`createAssemblyPort`）：`context` 的**未知子键**报 `unknown assembly policy context option: "…"`、四个键的非安全正整数报 `<key> must be a positive integer`（`0` / 负数 / 小数 / 字符串 / `null` 一律拦下，只有省略才退回默认）；白名单 `CONTEXT_OPTION_NAMES` 收全引擎真的读过的键（含既有 `maxFoldedFactsBytes` / `maxFoldedPayloadBytes` / `summaryRole` / `onBeforeFold` / `onAfterFold` 等），宁多放不少列。新增 `test/loop-fold-context-knobs-469.test.js` 6 格（零真实 LLM）：未知键与非法值装配期抛、**不传 ⇔ 显式传默认值请求体逐字节相同**、极小 `maxPriorSummaryBytes` ⇒ `priorSummaryTruncated`、极小 `summarizerTimeoutMs` ⇒ `degradeKind:"timeout"`、极小 `maxSummarizerInputBytes` ⇒ 整轮丢弃痕迹，且每条都配了「默认下不出现」的反向断言（防恒真）。**已知边界（写进契约）**：这四个键只对**内置名字形态**策略生效；宿主传对象形态自带策略时上限归它自己。
+- **The fold-summary call converges on the host's ruling (issue #469 ①②③, the erix-station
+  2026-10-26 ruling).** This one `fold-llm` provider call now has **three explicit boundaries**. ①
+  **Thinking is disabled explicitly**: the request carries `reasoning_effort:"none"` +
+  `enable_thinking:false` + `chat_template_kwargs:{"thinking":false}` at the same time — on the real
+  machine those three requests carried only the first and still produced 584 `reasoning_token`, so
+  relying on the model's default is handing this ruling to somebody else's configuration table; an
+  upstream that does not accept unknown fields can pass `thinkingMode:"inherit"` to fall back to the
+  old shape. ② **The 30 s is the deadline of the whole summary step, not of each attempt**: the
+  remaining budget is handed down to each call as `timeoutMs`, and the over-window self-heal retry
+  shares the same 30 s with the first request; with less than 2 s left it stops retrying and records
+  `budgetExhausted` instead; **a timeout is never retried** (a retry only turns one stall into two).
+  ③ **The input is fed only the rounds that were folded away + the previous fold summary**: the 48
+  KB window is cut **round by round** from old to new (never truncating the middle of a round), the
+  continuation base is counted separately at 24 KB and truncated from the head with
+  `priorSummaryTruncated` left behind if it overflows; the live unfolded context does not enter the
+  request (paying twice + inviting the model to restate what it can still see). The diagnostics
+  surface gains keys at the same time: `compactionStats[].foldSummary` gains `priorSummaryTruncated`
+  / `priorSummaryBytes` / `droppedRounds` / `attempts` / `budgetExhausted` (the same wording as
+  `strategyName`: **nothing happened ⇒ no key**). Two **existing assertions** were rewritten with
+  it: the reverse pin of `#419 ②` ("`enable_thinking` / `chat_template_kwargs` must not appear") was
+  overturned by the ruling (it became "they must appear"); and the line-capacity median anchor of
+  `#271` landed on `src/compact/fold-llm.js` because of this slice's change, its role moved from
+  `src/tools/notes.js` to pin that file, and the description moved `median 6,952 (37.7)` →
+  `median 6,756 (38.8)` (a same-digit replacement, byte-neutral for this file; not a single
+  tolerance constant was touched).
 - **折叠摘要调用按宿主裁决收敛（issue #469 ①②③，erix-station 2026-10-26 裁决）**：`fold-llm` 这一次
   provider 调用现在有**显式的三条边界**。①**关思考是显式的**：请求同时带 `reasoning_effort:"none"` +
   `enable_thinking:false` + `chat_template_kwargs:{"thinking":false}`——真机那三发只带前者仍产出 584 个
@@ -229,6 +797,27 @@
   钉被裁决推翻（改成「必须出现」）；`#271` 的行数容量中位锚点因本轮改动落到 `src/compact/fold-llm.js`
   上，角色从 `src/tools/notes.js` 改钉它，描述 `median 6,952 (37.7)` → `median 6,756 (38.8)`
   （同位数替换，对本文件字节中性；容差常量一个没动）。
+- **Shipped documentation (the release wrap-up of 0.27.0): `docs/host-upgrade-guide-0.27.0.md` /
+  `docs/host-upgrade-guide-0.27.0_cn.md` are added (paired English/Chinese).** What they describe is
+  not a change list but **the four cells the host side really has to act on**: the five summariser
+  knobs and their defaults (passing none of the five is the recommended configuration), the
+  `min(run maxTokens, maxSummaryTokens)` alignment of the summary request's `maxTokens` (a must-read
+  for hosts that assert on request bodies), the two classes of criteria for unknown `context` keys
+  (a slipped knob throws / host metadata is let through and leaves `context_unknown_option`), and
+  two operational expectations (**after the upgrade every existing ledger is expected to recompute
+  one summary**, **when a single round already exceeds 48 KB, `droppedRounds` is always 0**). One
+  boundary this site cannot reach is written down as well: that `context` validation hangs only on
+  `createAssemblyPort`, so a host calling `runToolLoop` directly gets no validation at all for
+  `context`. `package.json`'s `files` gains the two documents; the coverage floor
+  `REF_SCAN_DOCS_MINIMUM` is raised from **39 to 41** (13 named documents + the 28 guides actually
+  scanned today), and the four claim sites (README in both languages / AGENTS in both languages)
+  plus `GUIDE_DOCS_PINNED` and the `assert.equal(minimum, …)` in `test/docs-anchor-ratchet.test.js`
+  are raised with it; the release line of both READMEs goes to **v0.27.0**, and the comparison
+  version and the §4 current line of `docs/requirements{,_cn}.md` go to 0.27.0. Pre-release gates:
+  `check:docs` (71 items) + `docs-sync` (92 sections) + `check:docs:strict` + `check:syntax` +
+  `check:tests` + `check:types` (116 == baseline) + the five steps of `check:release` (tarball
+  `erix-agent-0.27.0.tgz` / the shipped contract suite 137 all green / `tsc --strict` /
+  `erix --version=0.27.0`) all green.
 - **随包发布文档（0.27.0 的发布收尾）：新增 `docs/host-upgrade-guide-0.27.0.md` / `docs/host-upgrade-guide-0.27.0_cn.md`（中英成对）**，写的不是变更清单而是**宿主侧真正要动的四格**：五个摘要旋钮与它们的默认值（五个都不传就是推荐配置）、摘要请求 `maxTokens` 的 `min(run maxTokens, maxSummaryTokens)` 取小对齐（断言过请求体的宿主必看）、`context` 未知键的两类判据（旋钮手滑抛 / 宿主元数据放行并留 `context_unknown_option`），以及两条运维预期（**升级后每份既有账本预期重算一次摘要**、**单轮即超 48 KB 时 `droppedRounds` 恒 0**）。另写明一条本站够不到的边界：那套 `context` 校验只挂在 `createAssemblyPort` 上，直连 `runToolLoop` 的宿主对 `context` 拿不到任何校验。`package.json` 的 `files` 同步加这两份；覆盖面下限 `REF_SCAN_DOCS_MINIMUM` 由 **39 抬到 41**（13 份点名文档 + 当前实扫到的 28 份指南），四处声称（README 中英 / AGENTS 中英）与 `test/docs-anchor-ratchet.test.js` 的 `GUIDE_DOCS_PINNED`、那条 `assert.equal(minimum, …)` 同步抬；README 中英发布行升到 **v0.27.0**、`docs/requirements{,_cn}.md` 的对照版本与 §4 current 行升到 0.27.0。发版前门禁：`check:docs`（71 项）+ `docs-sync`（92 节）+ `check:docs:strict` + `check:syntax` + `check:tests` + `check:types`（116 == 基线）+ `check:release` 五步（tarball `erix-agent-0.27.0.tgz` / 随包契约套件 137 全绿 / `tsc --strict` / `erix --version=0.27.0`）全绿。
 - **`readFile`'s line-capacity promise is now a rounded-down floor (#537).** The description used to state the measured whole-tree minimum **exactly** (`fewest 3,903 lines`), which made a model-facing promise flip on **cosmetics**: one and the same change measured as 3,908 / 3,902 / 3,890 depending on how comment lines happened to wrap, while `test/tools/file-tools.test.js` held a zero-tolerance `assert.equal` against it — that coupling had already forced eight separate "re-measure and re-sync the description" rounds. The claim is now derived from measurement and rounded **down** to the nearest 50 lines (`fewest ≥ 3,900 lines (… measured minimum 3,903, rounded down to the nearest 50)`), so it stays true and can only err conservative. Zero tolerance is kept (the anchor moved from byte-level noise to the 50-line tier) and a second assertion pins the other direction (`|measured − claim| ≤ 50`), so the promise can neither overstate nor quietly rot into an over-conservative small number. `this tool's own source fits` moved 4,784 → 4,750 in the same slice, because editing the description changes that file's own byte count. A follow-up (#540) removed the rest of that coupling: the claim no longer names the densest file or calls it CJK-heavy, and the CJK warning now hangs off the stable `densest` role (`src/loop/state-view.js`, 37%, unchanged since #271) — so when the floor moves to another file (it is 2 lines from doing so) **only the test's role record needs updating; the model-facing text does not**, which is what the three-phase reverse proof in that slice demonstrates.
 - **`readFile` 的行数容量承诺改成「向下取整的下界」（#537）。** 描述过去把**全树实测最小值一字不差**写出来（`fewest 3,903 lines`），于是一个**面向模型的承诺会被排版细节翻掉**：同一次改动因注释折行宽度不同实测得到 3,908 / 3,902 / 3,890，而 `test/tools/file-tools.test.js` 对它持 **`assert.equal` 零容差**——这条耦合已经逼出过**八次**「重新复测并刷描述」。现在承诺**由实测推导并向下取整到 50 行一档**（`fewest ≥ 3,900 lines (… measured minimum 3,903, rounded down to the nearest 50)`），因此它始终为真、且只会朝保守方向偏。零容差**保留**（锚点从字节级噪声换成 50 行档），另有第二条断言管住反方向（`|实测 − 承诺| ≤ 50`），让承诺**既不能夸大，也不能悄悄漂成一个过度保守的假小数字**。`this tool's own source fits` 同片从 4,784 改成 4,750——因为改描述句就会改那个文件自己的字节数。 后续那一刀（#540）把这条耦合剩下的部分也拆了：那句承诺不再点名最密的文件、也不再称它是 CJK 重文件，CJK 警告改挂在**稳定的 `densest` 角色**上（`src/loop/state-view.js`，37%，自 #271 起一字未动）——于是 floor 换到别的文件时（它离换人只差 2 行）**只需要改测试里的角色表，面向模型的文案不用动**，那一刀的三阶段反向证证的就是这件事。
@@ -239,13 +828,266 @@
 ### Fixed
 
 
+- **Input validation was bound to the entry route, so the direct side silently swallowed a
+  misspelled knob (issue #496 S1).** `normalizeRunToolLoopOptions` ran the top-level name check on
+  the raw input only **before** deriving, and after merging into `effectiveOptions` there was zero
+  validation; `context` sub-keys were only closed-set-validated by `createAssemblyPort`. So the same
+  configuration threw `unknown assembly policy context option: "summarizeBudgetMs"` through the
+  assembly port and **silently ran on the defaults** through the direct route (measured: the run
+  ended normally with `end_turn`) — validation was a property of the **entry route**, not of the
+  **normalised representation**. It is now split into two phases that share one rule source
+  (`collectSemanticOptionProblems` (`src/assembly-validators.js`)): a **pre-check phase** (top-level
+  names/object shapes, still throwing before any host port is read — the `Proxy` ordering assertion
+  passes unchanged) + a **semantic phase** (the merged values and callback shapes, with
+  `assertSemanticOptionValues` called from both `normalizeRunToolLoopOptions` and
+  `createAssemblyPort`, the same function). Both routes throw **the same `TypeError` with the same
+  sentence**, differing only in the `via` on the error object (`assembly` | `direct`); there is
+  **no** `did you mean` (that suffix belongs only to the top-level name allowlist). The semantic
+  phase covers these: `context`, if given, must be an object (omitted / `null` = not configured), a
+  misspelled knob-family name, knob values (positive safe integers), and fields that carry host
+  callbacks must be functions when given (`finalGuard` / `retry.sleepImpl` /
+  `reflection.onReflection` / `diagnostics.error` / the top-level `onFoldSummary` /
+  `context.onBeforeFold` / `context.onAfterFold`) — a `null` callback is always thrown as "given but
+  wrong" (**the single exception** is `context: null`, which is verbatim equal to omitting; a `null`
+  top-level callback is **not** let through, uniform wording wins). `deliverables[].check` is still
+  validated by `normalizeDeliverables`, and the existing semantics of the object form of
+  `context.strategy` (passed through by identity) are unchanged to the byte. **Side effects (the
+  host needs to know)**: the **misspelled knobs** and **wrong-typed callbacks** that used to be
+  swallowed silently now **throw at startup**; host business keys are still let through (**the
+  assembly port** still leaves one `context_unknown_option` event, while **the direct route never
+  emits that event and therefore lets them through silently** — not because the direct route has no
+  observer channel, `onEvent` is delivered on that route as usual, #469 behaviour unchanged).
+  Value-type rules (`maxRounds` / `partialPersistence` / `persistence` …) **are still owned by the
+  orchestrator** — both routes converge there anyway, and a new reachability case (a machine
+  criterion: `error.via === undefined`) prevents "assuming the semantic phase owns everything, so
+  neither side checks". The callbacks' **new capability-plane positions are not in this version**
+  (0.28 / #498); the existing positions keep working. `test/loop-option-gate-496.test.js` is added
+  with 12 cells (a positive and a negative case per rule, the ordering of the two phases, the
+  knob-family derivation, the #469 business-key regression, `context: null` being verbatim identical
+  to omitting, and the old callback positions **really delivering** (after a fold really happens
+  (the fixture measures 6 folds, the assertion is `>= 1`) the six cells `context.onBeforeFold` /
+  `context.onAfterFold` / the top-level `onFoldSummary` / `retry.sleepImpl` / `finalGuard` /
+  `deliverables[].check` each assert a call count once, `diagnostics.error` is asserted after being
+  triggered by the real condition "a delivery hook throws ⇒ `persistence_error{port:"notes"}`", and
+  `reflection.onReflection` serves only as a shape positive case and is not claimed to be asserted),
+  reachability) + `test/contract/boundary-parity.test.js` with 4 cells (parity first asserts
+  separately that both routes **must** throw the expected error, then compares the class / the
+  message / the only difference being `via`; it does not replace the correctness assertions); the
+  "non-function value on the direct entry = not delivered" cell of
+  `test/loop-on-fold-summary.test.js` becomes "throws at startup" under this version's contract. The
+  contract gains a "where option validation happens" section in both languages.
 - **输入校验绑在入口路线上，直连侧把旋钮拼错静默吞掉（issue #496 S1）**：`normalizeRunToolLoopOptions` 只在派生**之前**对原始输入跑顶层名称检查，合并出 `effectiveOptions` 之后零校验；`context` 子键只有 `createAssemblyPort` 有闭集校验。于是同一份配置走装配口抛 `unknown assembly policy context option: "summarizeBudgetMs"`、走直连**静默按默认跑**（实测 run 正常 `end_turn`）——校验是**入口路线**的性质，不是**规范化表示**的性质。现在拆两相、共用同一份规则来源（`collectSemanticOptionProblems`（`src/assembly-validators.js`））：**预检相**（顶层名称/对象形状，仍在任何宿主端口被读取之前抛——`Proxy` 次序断言原样通过）+ **语义相**（合并后的取值与回调形状，`assertSemanticOptionValues` 在 `normalizeRunToolLoopOptions` 与 `createAssemblyPort` 两处调用，同一个函数）。两条路线抛**同一个 `TypeError`、同一句文案**，只差错误对象上的 `via`（`assembly` | `direct`）；**没有** `did you mean`（那个后缀只属于顶层名称白名单）。语义相管这几条：`context` 给了就必须是对象（省略 / `null` = 没配）、旋钮家族拼错、旋钮取值（正安全整数）、以及承载宿主回调的字段给了就必须是函数（`finalGuard` / `retry.sleepImpl` / `reflection.onReflection` / `diagnostics.error` / 顶层 `onFoldSummary` / `context.onBeforeFold` / `context.onAfterFold`）——回调的 `null` 一律按「给了但给错」抛（**唯一例外**是 `context: null`，逐字等于省略；顶层回调的 `null` **不**放行，口径统一优先）。`deliverables[].check` 仍由 `normalizeDeliverables` 校、`context.strategy` 对象形态的既有语义（按标识透传）一字未动。**副作用（宿主需要知道）**：过去被静默吞掉的**旋钮拼错**与**回调错型**现在**启动即抛**；宿主业务键照旧放行（**装配口**仍留一条 `context_unknown_option` 事件、**直连从不发这条事件所以静默放行**——不是直连没有观察者通道，`onEvent` 在那条路线上照常投递，#469 行为不变）。取值类规则（`maxRounds` / `partialPersistence` / `persistence` …）**仍由 orchestrator 承担**——两条路线本来就汇到那里，新增一条可达性用例（`error.via === undefined` 即机器判据）防「以为语义相全权负责、于是两边都不管」。回调的**能力面新位置不在本版**（0.28 / #498），现有位置照旧工作。新增 `test/loop-option-gate-496.test.js` 12 格（逐规则正例 + 反例、两相次序、旋钮家族派生、#469 业务键回归、`context: null` 与省略逐字同形、回调旧位置**真跑投递**（真发生折叠后（夹具实测折叠 6 次，断言是 `>= 1`） `context.onBeforeFold` / `context.onAfterFold` / 顶层 `onFoldSummary` / `retry.sleepImpl` / `finalGuard` / `deliverables[].check` 六格各断言一次调用次数，`diagnostics.error` 由「投递钩子抱错 ⇒ `persistence_error{port:"notes"}`」这个真条件触发后断言，`reflection.onReflection` 只作形状正例、不声称被断言）、可达性）+ `test/contract/boundary-parity.test.js` 4 格（parity 先各自断言两条路线**必须**抛预期错误、再比同类/同消息/只差 `via`，不代替正确性断言）；`test/loop-on-fold-summary.test.js` 的「直接入口非函数值 = 不投递」按本版契约改为「启动即抛」。契约中英新增一节「选项校验发生在哪里」。
+- **`context` unknown-key validation: the allowlist was missing `maxSummaryTokens` and the family
+  criterion was too broad (issue #493 review).** ① `maxSummaryTokens` had entered
+  `FOLD_SUMMARIZER_CAP_NAMES` but not `CONTEXT_OPTION_NAMES` ⇒ a host giving the **right** value was
+  still judged an unknown key and got a `TypeError` (turning "silently ineffective" into "the
+  assembly port throws", the split unchanged); both lists now hold it, and a new
+  `contextOptionNameSelfCheck()` cross-checks **`FOLD_SUMMARIZER_CAP_NAMES ⊆ CONTEXT_OPTION_NAMES`**
+  (one line standing in for five; the next knob to be missed is pinned by it too, and the test
+  asserts the two lists agree directly). ② The family criterion changed from
+  `/summar|PriorSummary/i` to **edit distance ≤ 2 to a known knob name**: the old criterion also
+  judged `summaryStyle` / `summarizerNote` as knobs ⇒ it had quietly established "no business key
+  containing `summar` may live in `context`", which contradicts the opening of the contract
+  ("private metadata may live in `context`"). ③ The median tier in the `readFile` description
+  becomes `median 6,600 (40.0)`: the same sentence is squeezed by two ±2% assertions (against the
+  sample median 6,699 and against the anchor itself 6,532), so the claimed value must fall in the
+  intersection [6565, 6662] and the middle value was taken — **not a single tolerance constant was
+  touched** (relaxing 0.02 would void the reverse proof of `#275`).
 - **`context` 未知键校验：白名单漏了 `maxSummaryTokens`、家族判据又太宽（issue #493 复核）**：① `maxSummaryTokens` 只进了 `FOLD_SUMMARIZER_CAP_NAMES`、没进 `CONTEXT_OPTION_NAMES` ⇒ 宿主给**对的**值仍被判未知键抛 `TypeError`（把「静默无效」翻成「装配口报错」，分裂没变）；现在两条名单都收，并新增 `contextOptionNameSelfCheck()`做 **`FOLD_SUMMARIZER_CAP_NAMES ⊆ CONTEXT_OPTION_NAMES`** 的交叉核对（单条顶五条，下一个旋钮再漏也会被这条钉住，测试直接断言两名单一致）。② 家族判据从 `/summar|PriorSummary/i` 改成**与已知旋钮名的编辑距离 ≤ 2**：旧判据把 `summaryStyle` / `summarizerNote` 也判成旋钮 ⇒ 等于悄悄立了「`context` 里不许有含 `summar` 的业务键」，与契约开头「私有元数据可放 `context`」冲突。③ `readFile` 描述里的中位档改 `median 6,600 (40.0)`：同一句文案被两条 ±2% 断言夹住（对样本中位 6,699、对锚点自身 6,532），声称值必须落在交集 [6565, 6662] 里，取中间值 —— **容差常量一个没动**（放宽 0.02 会废掉 `#275` 的反向证）。
+- **`context` unknown-key validation turned our own allowlist omission into a host-side
+  assembly-time TypeError (issue #493, measured downstream in fde-station).** The previous version
+  threw on any unknown `context` sub-key across the board, but the allowlist was missing the five
+  keys the engine **reads itself in `src/loop/budget.js`** (`toolContext` / `expert` / `user` /
+  `session` / `requestId`), while the opening of the contract says explicitly "host private metadata
+  goes in `toolContext` or `context`" ⇒ a host putting business fields into `context` blew up at
+  assembly time. Now: ① those five keys are added; ② the strict validation applies **only to the
+  knob family** (misspellings such as `maxPriorSummaryByte` / `summarizeBudgetMs` still throw), and
+  other unknown keys are **let through as host metadata** and honestly reported on the
+  **assembly-port route** through a `context_unknown_option` event (not silent, not blocking; the
+  direct route never emits this event); ③ `maxSummaryTokens` is opened as a `context` knob on the
+  way — it happened to be the only one not opened (silently ineffective on the direct path, and the
+  assembly port reported an error instead), and the summary request's `maxTokens` is now **aligned
+  to the smaller** of it and the summary budget (`min(run maxTokens, maxSummaryTokens)`): before
+  this it inherited the run's 32768 as-is, so the model filled 32k and got cut back to 1400, pure
+  waste. Tests added/rewritten: the unknown-key cell of `test/loop-fold-context-knobs-469.test.js`
+  becomes "a family misspelling throws, a business key is let through and leaves an event", plus a
+  new cell pinning that an illegal value for `maxSummaryTokens` throws + the `maxTokens` alignment
+  of the summary request (measured 200 when passing 200, 1400 when not passing it, both below the
+  run's `maxTokens: 32768`). The contract in both languages gains: the fifth knob, the family-based
+  validation wording, and two operational notes (the fingerprint includes the base ⇒ every existing
+  ledger necessarily misses once on the first run after the upgrade; when a single round already
+  exceeds 48 KB there is no whole round to drop and `droppedRounds` stays 0, with the token guard
+  trimming item by item).
 - **`context` 未知键校验把我方白名单的漏列变成了宿主的装配期 TypeError（issue #493，下游 fde-station 实测）**：上一版对 `context` 的未知子键一刀切抛错，但白名单漏了引擎**自己在 `src/loop/budget.js` 里读**的五个键（`toolContext` / `expert` / `user` / `session` / `requestId`），而契约开头明说「宿主私有元数据放 `toolContext` 或 `context`」⇒ 往 `context` 放业务字段的宿主装配期直接炸。现在：① 补齐这五个键；② 强校验**只对旋钮家族**生效（`maxPriorSummaryByte` / `summarizeBudgetMs` 这类拼错照旧抛），其余未知键**当宿主元数据放行**并在**装配口路线**上通过一条 `context_unknown_option` 事件如实报出（不静默、也不阻断；直连路线从不发这条事件）；③ 顺手把 `maxSummaryTokens` 开成 `context` 旋钮——它偏偏是唯一没开的那个（直连路径静默无效、装配口反倒报错），并且摘要那一发的 `maxTokens` 现在与摘要预算**取小对齐**（`min(run maxTokens, maxSummaryTokens)`）：此前原样继承 run 的 32768，模型按 32k 写满再被 1400 剪回，纯白烧。新增/改写测试：`test/loop-fold-context-knobs-469.test.js` 的未知键那格改为「家族拼错抛、业务键放行并留事件」，另加一格钉 `maxSummaryTokens` 的非法值抛错 + 摘要请求 `maxTokens` 对齐（传 200 时实测 200、不传时 1400，两者都在 run `maxTokens: 32768` 之下）。契约中英补：第五个旋钮、按家族校验的口径、以及两条运维注记（指纹含基底 ⇒ 既有账本升级后首次必 miss 一次；单轮即超 48 KB 时无整轮可丢、`droppedRounds` 仍为 0，由 token 守卫逐条裁）。
+- **The continuation base is seeded from the ledger across resume (issue #469, host ruling A).** The
+  "previous" fold summary used to be only a closure inside the strategy instance
+  (`fold-llm.js#lastFoldSummaryText`) ⇒ the 2nd and every later fold within the same run got a base,
+  while **the first fold of a resumed run got none** (the strategy instance is new, the closure is
+  empty). Yet on the model's side, after a resume the previous summary **is visible** (`#462`
+  backfills the substitute that covers the watermark into the context), so only the party that
+  **needed to know the thread** was kept in the dark, and what it wrote could only be a restatement.
+  It is now seeded per the host's ruling at **ledger/session scope**: the source reuses `#462`'s
+  `pickCoveringFoldAlternative` (first the `foldedSummary` fact row, then the `foldedFacts` strategy
+  substitute; both the nested and the flat interval shapes are accepted), and the assembly point
+  injects it through `foldLlmOptions.ledgerPreviousSummary` (the getter: the watermark is only known
+  after recovery, so when the run's own watermark is 0 it falls back to "the largest folded round
+  number the ledger itself declares"; otherwise this cell would make the seeding silently
+  ineffective). The priority is written down per the ruling: **explicit call argument > strategy
+  constructor argument > in-run closure > ledger seeding** ⇒ for a non-resume run, or when no
+  covering fact can be picked, the behaviour falls back to today's verbatim.
+  `compactionStats[].foldSummary` gains `priorSummaryOrigin: "ledger" | "in-run"` (no key when there
+  is no base). **The reuse key includes the base** (`foldSummaryFingerprint` gains `priorSummary`):
+  this is the hard requirement of the host's implementation condition 4 — without it, a resume first
+  fold that hits the ledger seeded by `#326` would silently ignore the base that was seeded in, and
+  A would go to zero on the one fold that needs it most; the price is that an existing ledger (old
+  key) necessarily misses once on the first run after the upgrade, so the two `#326-C` assertions of
+  `test/loop-persist-compaction-facts.js` were rewritten with the behaviour ("resume no longer calls
+  the summariser" → "it recomputes exactly once"; "only one fact row" → "several facts over the same
+  interval, the read side still picks exactly one"), with a comment stating that this is the
+  trade-off the host chose. `test/loop-resume-prior-seed-469.test.js` is added with 4 cells (zero
+  real LLM): ledger seeding carries the base with `origin="ledger"`, the priority chain and "no key
+  when there is no base", the fingerprint includes the base (different base ⇒ different key), and
+  the resume end-to-end (the first fold's base comes from the ledger, and the summariser's input
+  really carries the "continuation base" section). The contract was synced in both languages.
+  As an aside: `src/compact/fold-llm.js` grew by about 2.05 KB (the source chain + comments), so the
+    `median` role record of `readFile`'s line capacity was re-measured and refreshed under the
+    `#271` wording (`28,360 B / 731 行 / 6,756` → `30,410 B / 765 行 / 6,594`), the `median` tier in
+    the description moved to the same digit (byte-neutral), and not a single tolerance constant was
+    touched.
 - **续写基底跨 resume 按账本播种（issue #469，宿主裁决 A）**：折叠摘要的「上一份」以前只是策略实例里的闭包（`fold-llm.js#lastFoldSummaryText`）⇒ 同一个 run 内第 2 次及以后的折叠拿得到基底，**resume 出来的 run 第一次折叠拿不到**（策略实例是新造的，闭包是空的）。而模型那边 resume 后是**看得见**上一份摘要的（`#462` 把覆盖水位线的替代物回填进上下文），于是只有「该知道脉络的那一方」被蒙住，写出来的必然只是重述。现在按宿主裁决按**账本/会话作用域**播种：取源复用 `#462` 的`pickCoveringFoldAlternative`（先 `foldedSummary` 事实行，再 `foldedFacts` 策略替代物；嵌套与平铺两种区间形状都收），装配处经 `foldLlmOptions.ledgerPreviousSummary` 注入（取值器：水位线要到恢复之后才定，run 自己的水位线为 0 时退回「账本自己声明的最大已折轮号」，否则这一格会让播种静默失效）。优先级按裁决写死：**显式调用参数 > 策略构造参数 >in-run 闭包 > 账本播种** ⇒ 非 resume / 挑不出覆盖事实时行为逐字退回今天。`compactionStats[].foldSummary` 增`priorSummaryOrigin: "ledger" | "in-run"`（无基底不写键）。**复用键纳入基底**（`foldSummaryFingerprint` 增 `priorSummary`）：这是宿主实施条件 4 的硬要求——不纳入的话 resume 首折若命中 `#326` 播进来的账本，播进去的基底会被无声忽略，A 在最需要它的那一次折叠上归零；代价是既有账本（旧键）升级后首次跑 miss 一次，`test/loop-persist-compaction-facts.js` 的 `#326-C` 两处断言因此随行为改写（「resume 不再调 summarizer」→「恰好重算一次」；「只有一条事实行」→「多条同区间事实、读侧仍只挑一份」），并在注释里写明这是宿主选择的取舍。新增 `test/loop-resume-prior-seed-469.test.js` 4 格（零真实 LLM）：账本播种带基底且 `origin="ledger"`、优先级链与「无基底不写键」、指纹含基底（不同基底 ⇒ 不同键）、以及 resume 端到端（首折基底来自账本、摘要器入参真的带「续写基底」那一节）。契约中英同步。
    顺带：`src/compact/fold-llm.js` 长了约 2.05 KB（取源链 + 注释），`readFile` 行数容量的 `median` 角色记录值随之按 `#271` 口径复测刷新（`28,360 B / 731 行 / 6,756` → `30,410 B / 765 行 / 6,594`），描述里的 `median` 档同位数同步（字节中性），容差常量一个没动。
+- **Two places in the contract that "told a lie" are straightened out (the documentation debt of
+  issue #470 / #479 / #485, zero behaviour change).** ① `docs/host-consumer-contract.md` **went to
+  main with unresolved conflict markers** in the `#485` merge (`<<<<<<< HEAD` / `=======` /
+  `>>>>>>> origin/main`, 7 lines in total, the same `onFoldSummary` hook section written twice,
+  lines 3978–3984 of the English contract) — resolved, keeping the side that carries the `#469`
+  paragraph. ② Both contracts said "`context.onFoldSummary`" while the engine **never reads** that
+  key from `context`: the assembly port's is the policy item `policy.onFoldSummary` and the direct
+  entry is the top-level option `runToolLoop({ onFoldSummary })` (the destructuring site in
+  `orchestrator.js`) ⇒ a host following the documentation and writing `context.onFoldSummary` got a
+  **silently ineffective** hook. Both languages were changed to the real position at the same time,
+  and "`context.onFoldSummary` will be ignored" is now stated explicitly. ③ The three fold-range
+  keys of `#479` had only their shape written down, not their scope: `foldedRoundRange {from,to}` =
+  the interval of this fold, `foldedThrough` = the watermark **after** the fold, and
+  `foldedRoundCount` = the cumulative number of folded rounds at **run scope** (after a resume it
+  counts only the folds of this run, so a host that wants a session-level number has to add them up
+  itself). `check:docs` (71 items) + `docs-sync` (92 sections) + `check:docs:strict` + `--self-test`
+  all green.
 - **契约里两处「说了假话」的地方改齐（issue #470 / #479 / #485 的文档债，零行为变更）**：① `docs/host-consumer-contract.md` 在 `#485` 的合并里**带着未解冲突标记上了主干**（`<<<<<<< HEAD` / `=======` / `>>>>>>> origin/main` 共 7 行，同一段 `onFoldSummary` 钩子写了两遍、英文契约第 3978–3984 行）——已解掉，保留含 `#469` 段的那一侧。② 中英契约都写着「`context.onFoldSummary`」，而引擎**从不从 `context` 读**这个键：装配端口是策略项 `policy.onFoldSummary`、直接入口是顶层选项 `runToolLoop({ onFoldSummary })`（`orchestrator.js` 解构处）⇒ 按文档写 `context.onFoldSummary` 的宿主会得到一个**静默无效**的钩子。中英同时改成真实位置，并明确写出「`context.onFoldSummary` 会被忽略」。③ `#479` 的折叠范围三键只写了形状、没写作用域：补上 `foldedRoundRange {from,to}` = 本次折叠区间、`foldedThrough` = 折叠**之后**的水位线、`foldedRoundCount` = **run 作用域**累计已折轮数（resume 后只数本 run 折的，宿主若要会话级数字得自己相加）。`check:docs`（71 项）+ `docs-sync`（92 节）+ `check:docs:strict` + `--self-test` 全绿。
+- **A fold-summary timeout can be attributed to `timeout`, and a host aborting the run really does
+  abort that request (issue #486 P1-A / P1-B).** The two symptoms share one root cause —
+  **attribution was decided by "whoever rejects first", and the wiring passed no signal at all**.
+  **(P1-A)** When the deadline fires, `provider-summarizer.js` first calls `controller.abort()` (to
+  make the request finish) and then a second, equally long `setTimeout` throws
+  `code="summarizer_timeout"`; but a **real provider that respects the signal** rejects
+  **synchronously** on abort (`AbortError` / `KitError(code="aborted")`) ⇒ `Promise.race` settles
+  right there, the leg carrying `summarizer_timeout` lands one tick later and nobody claims it ⇒
+  `classifyFoldDegradeKind` only recognises `summarizer_timeout|ETIMEDOUT|TIMEOUT` ⇒ every timeout
+  was recorded as `error`. The three states the contract promises (`timeout` /
+  `context_window_exceeded` / `error`) degenerated into two on the real machine, and every host
+  alarm and every "switch back to `fold-statistical`" criterion built on `timeout` stopped working.
+  The fix is to **decide attribution by "has the deadline fired"**: a `deadlineFired` flag is set by
+  the deadline itself, and only in `catch` does "the deadline has fired **and** this is not a host
+  abort" rewrite it to `summarizer_timeout` (both legs share the newly extracted `timeoutError()`,
+  so the shapes no longer fork). **A host-initiated abort is not rewritten** — that is `error`, not
+  a timeout. **(P1-B)** `orchestrator.js` **did not pass a `signal`** when assembling
+  `createProviderSummarizer`, while the timeout is on by default (30 s) ⇒ `request.signal` was
+  always the child controller, and `request.signal ?? signal` in the chat wrapper **permanently
+  short-circuited** the run's signal, so the parent-forwarding code became a dead path under the
+  engine's own wiring ⇒ after the user pressed stop the summary request kept holding the inference
+  service for up to 30 s and the tokens were still charged, while `awaitWithAbort` had already
+  thrown ⇒ `addUsage` never ran ⇒ that cost **never entered `engineUsage`** (the opposite direction
+  from ④ "cost is no longer invisible"). Forwarding the `signal` is enough (`0.26.0` passed it
+  straight through to begin with). **The test shape was corrected at the same time** (#486
+  specifically called out "unit tests green, real chain red"): the old timeout case used
+  `chat: () => new Promise(() => {})` — a fake shape that **completely ignores `signal`**, leaving
+  the race with a single leg, so the real fault could never be measured.
+  `test/compact/fold-llm-degrade-469.test.js` gains two cells using a **fake provider that respects
+  the signal** (rejecting `AbortError` on abort): ① when the deadline fires it must still be
+  `summarizer_timeout` / `timeout`; ② a host abort must not be rewritten to `summarizer_timeout`.
+  `test/compaction-strategy-name.test.js` gains one **assembly-surface** regression (`runToolLoop` +
+  a fake provider that hangs until the signal aborts): after the host aborts,
+  `summaryRequests[0].signal.aborted === true` — before the patch it would hang until the 30 s
+  default deadline (a 5 s cap turns that into a readable assertion failure), which is the only
+  measurable surface of "the wiring forgot the signal". Zero real LLM.
 - **折叠摘要的超时能归因为 `timeout`，宿主 abort run 也真的会中止这一发（issue #486 P1-A / P1-B）**：两条症状同一个根因——**归因按「谁先 reject」判，装配按「谁都不传 signal」接**。**(P1-A)** 死线到点时 `provider-summarizer.js` 先 `controller.abort()`（让请求收工）再由另一条等长的 `setTimeout` 抛 `code="summarizer_timeout"`；而**会尊重 signal 的真 provider** 在 abort 时**同步** reject（`AbortError` / `KitError(code="aborted")`）⇒ `Promise.race` 当场定型，带 `summarizer_timeout` 的那条腿晚一拍落地、无人认领 ⇒ `classifyFoldDegradeKind` 只认 `summarizer_timeout|ETIMEDOUT|TIMEOUT` ⇒ 超时一律被记成 `error`。契约承诺的三态（`timeout` / `context_window_exceeded` / `error`）在真机上退化成两态，宿主按 `timeout` 做的告警与「切回 `fold-statistical`」判据全部失效。修法是**归因改按「死线是否已到」判**：`deadlineFired` 旗标由死线自己置位，`catch` 里「死线已到 **且** 不是宿主 abort」才改写成 `summarizer_timeout`（两条腿共用新抽的 `timeoutError()`，形状不再分叉）。**宿主主动 abort 不被改写**——那是 `error`，不是超时。**(P1-B)** `orchestrator.js` 装配 `createProviderSummarizer` 时**没有传 `signal`**，而超时默认恒开（30 s）⇒ `request.signal` 恒是子 controller，chat 包装里的 `request.signal ?? signal` 把 run 的 signal **永久短路**，父转发那段代码在引擎自己的装配下成了死路径 ⇒ 用户点停止后摘要那一发继续占住推理服务最多 30 s、token 照扣，而 `awaitWithAbort` 已抛出 ⇒ `addUsage` 永不执行 ⇒ 这笔开销**不进 `engineUsage`**（与 ④「成本不再隐身」方向相反）。补上 `signal` 转发即可（`0.26.0` 本来就是直通）。**测试形状同时修正**（#486 特别点出「单测绿、真链路红」）：原超时用例用 `chat: () => new Promise(() => {})`——一个**完全不理 `signal`** 的假形状，race 只剩一条腿，永远测不到真故障。`test/compact/fold-llm-degrade-469.test.js` 新增两格用**会尊重 signal 的假 provider**（abort 时 reject `AbortError`）：① 死线到点仍必须是 `summarizer_timeout` / `timeout`；② 宿主 abort 不得被改写成 `summarizer_timeout`。`test/compaction-strategy-name.test.js` 新增一格**装配面**回归（`runToolLoop` + 假 provider 挂住直到 signal abort）：宿主 abort 后 `summaryRequests[0].signal.aborted === true`——补丁前会挂到 30 s 默认死线（用 5 s 上限把它变成可读的断言失败），这正是「装配漏传 signal」的唯一可测面。零真实 LLM。
+- **The forced-final criterion moves down from "the termination reason enum" to "the state" (#475,
+  the leftover B1 registered when #467 shipped): the same dumb round on `end_turn` / `no_tool` is
+  fixed.** The disease is not two bugs but one shape bug showing up twice: the gate of
+  `forceFinalIfNeeded()` (`src/loop/termination.js`) used to be a list of reason strings
+  `["max_rounds_cap","stall","continuation_exhausted","judge_done"]`, while the question it has to
+  answer is a **state** question (is there any deliverable final text in hand) — answering a state
+  question with an enum necessarily misses. Enumerating the full termination-reason set (ticket §1,
+  a closed set): the ones not covered are exactly `end_turn` (the fallback at the end of
+  `decideTermination`) and `no_tool` (the governor's `noTool`), `aborted` structurally does not pass
+  this finalisation point, and **there is no third cell**; on those two cells "the last round only
+  emits `content:[reasoning]` + `stopReason:"end_turn"` ⇒ zero final text and `judge:"missing"` on
+  the judge side" is completely isomorphic to #467. New shape: the ones cut off by budget/truncation
+  (a new module-private set `FORCED_FINAL_TRUNCATED_REASONS` = `max_rounds_cap` / `stall` /
+  `continuation_exhausted`) keep going through `hasFinalDraft()`, with **the truncation semantics
+  unchanged to the byte**; every other reason (`end_turn` / `no_tool` / `judge_done` / any added in
+  the future) only looks at "is the final draft text empty" ⇒ immune to reasons added later, and no
+  longer needs "remember to come back and paste a line whenever a reason is added". That set is
+  **not exported** (it does not enter the public API, so it does not raise the claimed values of the
+  `.d.ts` and the contract; `TRUNCATED_TERMINATION_REASONS` was not reused because it also contains
+  `final_guard_unverified`, a cell that never reaches the forced finalisation today, so reusing it
+  would quietly put an unrequested cell onto the cost surface). **The `judge_done` wording did not
+  actually change**: the judge card is a post-call of the end_turn round, and on that path the last
+  two conditions of `hasFinalDraft()` are the same expression as `isEndTurn` and always true ⇒
+  equivalent to "is the text non-empty" (#467 already wrote this in the code). **Cost wording**:
+  `end_turn` / `no_tool` spend one extra request only on a **dumb round** (empty final text); a last
+  round with text still costs nothing extra; the finalisation request is still `tools: []`,
+  `ctx.forcedFinal` fires once without retry, and both `rounds` and the reason are unchanged (the
+  same boundary as #467); the escape valve `ERIX_NO_FORCED_FINAL=1` works for these two cells as
+  well (the ticket's cost can be returned). `test/loop-forced-final-by-state-475.test.js` is added
+  with 5 cells (zero real LLM): ① a dumb `end_turn` ⇒ final text non-empty + `forcedFinal` +
+  **exactly one extra request** (2 requests = not fixed, 4 = not contained) + `tools: []` + `rounds`
+  unchanged; ② `end_turn` with text in the last round ⇒ not a single extra request (a normal finish
+  must not ask for nothing); ③ the same dumb round on `no_tool` fixed isomorphically with the reason
+  not rewritten; ④ the regression boundary: `max_rounds_cap`'s `hasFinalDraft()` semantics are not
+  eaten by the new criterion; ⑤ the escape-valve shape. Every assertion is made at **run final-text
+  scope** (the forced finalisation's text lands after the last `round_end`, and measuring
+  `round_end.finalText` would report a fixed scenario as empty — the pit #467 fell into). **One
+  existing assertion was rewritten with the behaviour change**: `test/wrapup.test.js`'s #406 B2-b
+  "empty-text end_turn" — that case was originally pinning **the normalisation request** (empty
+  original ⇒ empty candidates ⇒ the normaliser runs 0 times), and that part is **untouched**; what
+  changed is that "empty text + `end_turn`" is now itself a dumb round, so the main provider goes
+  from 1 request to 2, the outcome carries `forcedFinal`, and the final text is supplied by the
+  finalisation request (the assertion no longer depends on whether the wrapup envelope parses). Gate
+  side note (**found by CI, not reported locally at the time**): this change originally inserted 19
+  lines at the module top level of `src/loop/termination.js`, pushing two declaration lines away
+  (`terminationReasonForAction` 111→130, the `max_rounds_cap` literal 116→135), so two symbol
+  anchors in the contract that **carry their own line ranges** (four sites across the two languages)
+  reported `symbol-anchor-span` drift. The first version applied the preferred fix of `#286`,
+  deleted the ranges and kept only the symbols, and `check:docs` plus the full suite were green
+  locally, but **three cases of CI's `docs-drift-check --self-test` turned red**: those three
+  mutants pin their targets at the `termination.js:111` / `:116` anchors, and with the ranges
+  deleted the mutation "did not land", which under `#210` R2 ("a mutation that does not land is also
+  a failure") ⇒ fixing a documentation anchor cannot be judged by the forward gates alone. **Final
+  shape**: that private set was moved **into the `createTerminationManager` function scope**
+  (instead of the module top level), the two declaration lines 111 / 116 stay untouched ⇒ the
+  contract's symbol anchors (ranges included) and the self-test mutants hold at the same time, with
+  **zero changes on the code surface (contract anchors and self-test targets)**. The self-review
+  before merging (this ticket's `reviews` / `comments` were empty — no review had ever been done)
+  caught three more **stale wordings** and straightened them: point 7 of the contract EN/CN "four
+  closable reasons" → **six** (the three truncation ones + `judge_done` + `end_turn` / `no_tool`,
+  noting that the latter two are only reached with zero text), README in both languages "#475 / #476
+  are still leftovers" → #475 has landed, only #476 remains; while the v0.26.0 release entry of
+  `README*` and "this entry does not cover `end_turn` / `no_tool`" in
+  `docs/host-upgrade-guide-0.26.0*` are **version-scoped historical statements** and do not rewrite
+  history. Lesson registered: when changing a file such as `src/loop/termination.js` that "the
+  contract references with range-carrying anchors", local verification must run
+  `node scripts/docs-drift-check.mjs --self-test`, not just `npm run check:docs`. One more
+  second-order risk for hosts (ticket §2, **not changed by this ticket**):
+  `FINAL_GUARD_TERMINATION_REASONS` **contains** `end_turn` / `no_tool` ⇒ although these two cells
+  did not emit a forced finalisation before, the guard still runs when a host wires up finalGuard;
+  "the guard covers these two cells" ≠ "these two cells are safe", and a rubber-stamp guard
+  (`finalText.trim() !== ""`) washes a dumb round into `verified` along with everything else. **Not
+  done here**: whether an outcome that is still empty after the finalisation request should get one
+  more request or a fixed final text (⇒ #476; a fixed text would be engine-authored prose and must
+  be marked per #323); a review that admits its own gap still judging `done:true` (⇒ #473, a matter
+  of done criterion semantics); `accept` must never be built on `finalText` being non-empty
+  (`S6a`).
 - **强制收口的判据从「停机 reason 枚举」下沉到「状态」（#475，即 #467 交付时登记的残留项 B1）：`end_turn` / `no_tool` 上的同一个哑局补上。** 病灶不是两个 bug 而是一个形状 bug 的两次现形：`forceFinalIfNeeded()`（`src/loop/termination.js`）的闸门原先是一串 reason 字符串 `["max_rounds_cap","stall","continuation_exhausted","judge_done"]`，而它要回答的是一个**状态**问题（手里有没有可交付的终局正文）——用枚举回答状态问题就天然会漏。把停机 reason 全集穷举一遍（票面 §1，闭集）：未覆盖的是且仅是 `end_turn`（`decideTermination` 末尾兜底）与 `no_tool`（governor `noTool`），`aborted` 结构上不经过本收口点，**不存在第三格**；而这两格上「末轮只出 `content:[reasoning]` + `stopReason:"end_turn"` ⇒ 终局零正文、judge 侧 `judge:"missing"`」与 #467 完全同构。新形状：被预算/截断掐断的（新增模块内私有集合 `FORCED_FINAL_TRUNCATED_REASONS` = `max_rounds_cap` / `stall` / `continuation_exhausted`）继续走 `hasFinalDraft()`，**截断语义逐字不变**；其余 reason（`end_turn` / `no_tool` / `judge_done` / 未来新增的）只看「终稿正文是否为空」⇒ 对未来新增的 reason 免疫，不再需要「新增一个 reason 就记得回来贴一条」。该集合**不导出**（不进公共 API，也就不抬 `.d.ts` 与契约的声称值；不复用 `TRUNCATED_TERMINATION_REASONS` 是因为它还含 `final_guard_unverified`，那一格今天从不走到强制收尾，复用等于把一个未被要求的格顺手放进成本面）。**`judge_done` 的口径实际没变**：评审卡是 end_turn 轮的后置调用，那条路上 `hasFinalDraft()` 的后两个条件与 `isEndTurn` 同式、恒真 ⇒ 与「正文非空吗」等价（#467 已在代码里写过这件事）。**成本口径**：`end_turn` / `no_tool` 只在**哑局**（终稿正文为空）多一发请求，末轮有正文照旧一发不发；收尾那一发仍是 `tools: []`、`ctx.forcedFinal` 一次性不重试、`rounds` 与 reason 都不变（与 #467 同一道界）；逃生阀 `ERIX_NO_FORCED_FINAL=1` 对这两格同样有效（票面成本可退回）。新增 `test/loop-forced-final-by-state-475.test.js` 5 格（零真实 LLM）：① `end_turn` 哑局 ⇒ 终稿非空 + `forcedFinal` + **恰好多发一发**（2 发=没修、4 发=没收住）+ `tools: []` + `rounds` 不变；② `end_turn` 末轮有正文 ⇒ 一发都不多花（正常收尾不得白问）；③ `no_tool` 哑局同构修好且 reason 不被改写；④ 回归界 `max_rounds_cap` 的 `hasFinalDraft()` 语义不被新判据吃掉；⑤ 逃生阀形状。断言一律按 **run 终稿口径**（强制收尾的正文落在最后一条 `round_end` 之后，拿 `round_end.finalText` 量会把修好的场景误报成空——#467 踩过的坑）。**一条既有断言随行为变更改写**：`test/wrapup.test.js` 的 #406 B2-b「empty-text end_turn」——该用例原意钉的是**归一化那一发**（空原文 ⇒ 候选为空 ⇒ 归一化器 0 次），这条**未动**；变的是「空正文 + `end_turn`」本身现在正是哑局，于是主 provider 从 1 发变 2 发、终局带 `forcedFinal`、终稿由收尾那一发充当（改后断言不依赖 wrapup 信封是否解析）。门禁附带（**CI 拓到的，本地当时没报**）：本改动原先在 `src/loop/termination.js` 模块顶层插 19 行，把两个声明行推走了（`terminationReasonForAction` 111→130、`max_rounds_cap` 字面量 116→135），契约里两处**自带行号区间**的符号锚点（中英共四处）因此报 `symbol-anchor-span` 漂移。第一版按 `#286` 的首选修法删了区间只留符号，本地 `check:docs` 与全量绿，但 **CI 的 `docs-drift-check --self-test` 三例红**：那三个变异体把靶子钉在 `termination.js:111` / `:116` 的锚点上，区间被删后变异「没落上」，按 `#210` R2「变异没落上也算失败」⇒ 修文档锺点不能只看正向门禁。**最终形状**：那个私有集合改开到 `createTerminationManager` **函数作用域内**（而不是模块顶层），111 / 116 两个声明行一字不动 ⇒ 契约的符号锚点（含区间）与自测变异体同时成立，**代码面（契约锺点与自测靶子）零改动**。合入前的自评审（本单原先 `reviews` / `comments` 为空 —— 根本没做过评审）另外抓到三处**过期口径**并改齐：契约 EN/CN 第 7 点的「四个可收尾 reason」→ **六个**（三条截断 + `judge_done` + `end_turn` / `no_tool`，并注明后两者只在零正文时才会走到）、README 中英「#475 / #476 仍是残留」→ #475 已落、只剩 #476；而 `README*` 的 v0.26.0 发版条目与 `docs/host-upgrade-guide-0.26.0*` 里「本条不覆盖 `end_turn` / `no_tool`」是**版本限定的历史陈述**，不改写历史。教训登记：改 `src/loop/termination.js` 这类「被契约用带区间锺点引用」的文件，本地验证必须跑 `node scripts/docs-drift-check.mjs --self-test`，不能只跑 `npm run check:docs`。另提醒宿主的二阶风险（票面 §2，本单**不改**）：`FINAL_GUARD_TERMINATION_REASONS` **含** `end_turn` / `no_tool` ⇒ 这两格虽原先不发强制收尾，宿主接了 finalGuard 时 guard 仍会跑；「guard 覆盖了这两格」≠「这两格是安全的」，橡皮章式 guard（`finalText.trim() !== ""`）会把哑局一并洗成 `verified`。**本次没做**：收尾问过之后终局仍空正文要不要补一发或落一条固定终稿文案（⇒ #476，固定文案属引擎自写正文、须按 #323 打 marker）；评审自承缺项仍判 `done:true`（⇒ #473，属 done 判据语义）；`accept` 永远不得建立在 `finalText` 非空之上（`S6a`）。
 - **Rejection text no longer recommends spellings the engine itself has retired (#498 S3, sixteenth slice).** Two assembly-side messages still said `pass resume as the top-level option or as config.run.resume` after `resume` had been retired, i.e. the advice pointed a host back onto a route that now throws; both strings name only the canonical home now, and a derived pin (from the allowlist, not a hard-coded key list) keeps any retired top-level name from being recommended as viable again anywhere in the messages.
 - **拒绝文案不再推荐引擎自己已经退役的写法（issue #498 S3 第十六片）。** 装配侧两条消息在 `resume` 退役之后还写着 `pass resume as the top-level option or as config.run.resume`——那句建议把宿主往一条现在会抛错的路径上指。两个字符串现在只点规范之家，并有一条**从白名单派生**的钉子（不是硬编码键名清单）保证任何已退役的顶层名都不会在任何文案里被重新当成可行写法推荐。

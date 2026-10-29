@@ -2893,6 +2893,29 @@ const CHANGELOG_SYMBOL_RE = /`([^`\n]+)`/g;
 /** 每次现造一份（`matchAll` 要 `g`，而共享的 `lastIndex` 是这类守卫最经典的坑）。 */
 const freshRe = (re) => new RegExp(re.source, re.flags);
 const CHANGELOG_CJK = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
+/**
+ * 语言判定阈值：**整条 bullet** 的 CJK 占比 `CJK / (CJK + 连续拉丁词长度)` `> 0.12` ⇒ 中文。
+ *
+ * issue #563：R4 与配对地板**共用这一个判定**。原先 R4 用的是 `CHANGELOG_CJK.test(bullet.text)`
+ * （「整条里出现任意一个汉字就算中文」），一旦中英成对（英文条目里逐字引用中文判词，如 `[已修剪]` /
+ * `## 主题词面包屑`），英文译本就会被判成中文，R4 于是拿**一对译本**去比「同 issue + 同符号集」——
+ * 而译本天然同集合 ⇒ 每一对都判红。按占比判才是「同一语言内比」的原意；实测本节余量很大：
+ * 全部英文条目占比 0.000，中文条目最低 0.27。
+ */
+const CHANGELOG_CJK_RATIO_MAX = 0.12;
+
+/**
+ * 语言判定：**整条 bullet** 的 CJK 占比。分母只放 CJK 字数与连续拉丁词（`[A-Za-z]+` 的最长连续段）
+ * 长度——数字、标点、反引号不携带语种信息。
+ * **不许**按标题前若干字判：英文条目里引用中文判词、中文条目首行整段反引号标识符，两个方向都会误判。
+ */
+function changelogBulletLanguage(text) {
+  const cjk = [...text.matchAll(new RegExp(CHANGELOG_CJK.source, "g"))].length;
+  const latin = [...text.matchAll(/[A-Za-z]+/g)].reduce((sum, m) => sum + m[0].length, 0);
+  const total = cjk + latin;
+  const ratio = total === 0 ? 0 : cjk / total;
+  return { lang: ratio > CHANGELOG_CJK_RATIO_MAX ? "cn" : "en", ratio, cjk, latin };
+}
 
 /** 片号标签 → `[{ space, key, raw }]`（同一 bullet 内同键出现两次只算一个键）。 */
 function changelogSliceLabels(text) {
@@ -3116,7 +3139,7 @@ function collectChangelogProblems(text, heading = CHANGELOG_VERSION_HEADING) {
 
   // ── R4 语义近重复（全节口径，**同一语言内**比） ──
   for (const group of ["cn", "en"]) {
-    const bullets = problems.bullets.filter((bullet) => (CHANGELOG_CJK.test(bullet.text) ? "cn" : "en") === group);
+    const bullets = problems.bullets.filter((bullet) => changelogBulletLanguage(bullet.text).lang === group);
     for (let i = 0; i < bullets.length; i += 1) {
       for (let j = i + 1; j < bullets.length; j += 1) {
         const a = bullets[i];
@@ -3233,7 +3256,7 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
     // R4 不是恒绿：同语言、issue 集合完全相同的对子有几十对，R4 仍能只挑出「符号集也相同」的
     let sameIssuePairs = 0;
     for (const group of ["cn", "en"]) {
-      const groupBullets = problems.bullets.filter((bullet) => (CHANGELOG_CJK.test(bullet.text) ? "cn" : "en") === group);
+      const groupBullets = problems.bullets.filter((bullet) => changelogBulletLanguage(bullet.text).lang === group);
       for (let i = 0; i < groupBullets.length; i += 1) {
         for (let j = i + 1; j < groupBullets.length; j += 1) {
           const a = changelogIssueRefs(groupBullets[i].text);
@@ -3500,5 +3523,235 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
     t.diagnostic(`规则 8 反向证 ⑨：扫描面 = 无（顶部 ${CHANGELOG_VERSION_HEADING} bullet 0 条、`
       + `其后 0 个版本节）⇒ found=${problems.found} + 红：${problems.structureProblems[0].slice(0, 48)}…；`
       + `对照「退到空版本节」⇒ found=${p2.found} / bullet ${p2.bullets.length} / R5 红`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ── 规则 8 的同族补丁（issue #563）：CHANGELOG **未发布节**的跨语言配对地板 ──
+// ---------------------------------------------------------------------------
+//
+// 为什么需要它（规则 8 的五条判据一条都抓不到这个洞）：
+//   · R1 逐字唯一 / R2 片号唯一 / R4 语义近重复，**三条都只在同一语言内比**（R4 的理由就写在上面：
+//     中英是同一件事的两份译本，跨语言比会把**每一对译本**都判成重复）⇒ 它们从不回答「这一条有没有
+//     译文」这个问题；
+//   · 于是 `CHANGELOG.md`（在 `package.json` 的 `files` 里，**随包发出去**）可以整节只写中文、一条英文
+//     都不写，而全量门禁仍然全绿。0.28 是宿主唯一要读的破坏性版本，实测 `Added` / `Changed` / `Fixed`
+//     三节曾同时有 17 条只有中文没有英文（Added 5 / Changed 5 / Fixed 7）——这就是本判据堵的洞。
+//
+// 判据三条（**只能升不能降**，学符号锚点地板的做法）：
+//   1. 语言判定按**整条 bullet 的 CJK 占比**（`CJK / (CJK + 连续拉丁词长度) > 0.12` ⇒ 中文）。
+//      **不许**按标题前若干字判：英文条目里会逐字引用中文判词（`[已修剪]` / `## 主题词面包屑`），
+//      中文条目首行也可能整段是反引号标识符——两个方向都会误判（审计当场就分别错过一次）。
+//      实测余量很大：本节全部英文条目占比 0.000，中文条目最低 0.27。
+//   2. 配对判据 = **issue 引用集合完全相同**；无 issue 引用的条目只允许与「同样无引用且紧邻」的对方
+//      语言条目配对。**紧邻**用**行号区间**判（两条 bullet 之间最多隔 `CHANGELOG_PAIR_ADJACENT_GAP`
+//      行），不拿首行距离判——本仓的英文条目普遍折行成十几行，首行距离对它们没有意义。
+//      **禁止**按邻接位置直接配对：`Changed` 里连着三条都引 `#469`，按位置会假配。
+//   3. 判据面**只扫未发布内容** = `## [0.28.0]` 这一节。**不扫** 0.27.0 / 0.26.0 / 0.25.0——那三节是
+//      已发布历史，重写等于造假（同 #278 的口径），而且它们本来就纯中文发布。
+//
+// 地板常量 = 补完 17 条英文对应之后**实测**的配对数。断言 `配对数 >= 地板`；超过时只打印
+// 「可以抬地板到 N」。**不**把地板做成「两语言条数必须相等」的硬闸——0.25 / 0.26 那两节永远不满足，
+// 那种闸会把门常年压红，而那正是本判据要避免的假红。
+
+/** 未发布节标题（本判据的判据面；发布改名后这里要跟着改，找不到就红）。 */
+const CHANGELOG_UNPUBLISHED_HEADING = "## [0.28.0]";
+/** 两条 bullet 之间最多隔几行才算「紧邻」（0 = 直接相邻，1 = 中间隔一行）。 */
+const CHANGELOG_PAIR_ADJACENT_GAP = 1;
+/** 配对地板：补完 17 条英文对应后实测的配对数。**只能升不能降。** */
+const CHANGELOG_PAIR_FLOOR = 51;
+
+/** 取**未发布那一节**（标题以 `heading` 开头的那一个 `## [x]` 节）。找不到就 `ok: false`，不静默变绿。 */
+function resolveUnpublishedChangelogSection(lines, heading = CHANGELOG_UNPUBLISHED_HEADING) {
+  const start = lines.findIndex((line) => line.startsWith(heading));
+  if (start === -1) {
+    return { ok: false, reason: `找不到未发布节标题 ${JSON.stringify(heading)}：本判据会对整份文件恒绿` };
+  }
+  let to = lines.length;
+  for (let i = start + 1; i < lines.length; i += 1) if (/^## /.test(lines[i])) { to = i; break; }
+  return { ok: true, section: { heading: lines[start], line: start + 1, from: start + 1, to } };
+}
+
+/**
+ * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
+ * 这里自带一份而不复用规则 8 的解析器：那条函数把五条判据算在一起，本判据不该为了拿 bullet
+ * 去动它（规则 8 的 51 格一格都不许因为本单而变）。
+ *
+ * @returns {Array<{line: number, endLine: number, raw: string, lang: string, ratio: number, issues: Set<string>}>}
+ *   `line` / `endLine` 都是 1-based 行号，`endLine` = 这条 bullet 的**最后一行**。
+ */
+function parseChangelogSectionBullets(lines, from, to) {
+  const bullets = [];
+  for (let i = from; i < to; i += 1) {
+    if (!lines[i].startsWith("- ")) continue;
+    const body = [lines[i]];
+    let j = i + 1;
+    while (j < to) {
+      const line = lines[j];
+      if (line.startsWith("- ") || /^#{1,6} /.test(line) || line.trim() === "") break;
+      body.push(line);
+      j += 1;
+    }
+    const raw = body.join("\n");
+    const { lang, ratio } = changelogBulletLanguage(raw);
+    bullets.push({ line: i + 1, endLine: j, raw, lang, ratio, issues: changelogIssueRefs(raw) });
+    i = j - 1;
+  }
+  return bullets;
+}
+
+/** 两条 bullet 之间隔了几行（0 = 直接相邻；多行 bullet 按行号**区间**算，不按首行距离）。 */
+function changelogBulletGap(a, b) {
+  const [first, second] = a.line <= b.line ? [a, b] : [b, a];
+  return second.line - first.endLine - 1;
+}
+
+/**
+ * 未发布节的中英配对（**纯函数，文本可注入**——反向证直接喂改过的真实文本，不碰磁盘）。
+ *
+ * @param {string} text 整份 CHANGELOG
+ * @param {string} [heading] 判据面标题（默认 `## [0.28.0]`）
+ */
+function collectChangelogPairingProblems(text, heading = CHANGELOG_UNPUBLISHED_HEADING) {
+  const lines = text.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+  const problems = {
+    found: false,
+    reason: "",
+    section: null,
+    cn: [],
+    en: [],
+    pairs: [],
+    unpairedCn: [],
+    unpairedEn: [],
+    adjacencyPairs: 0,
+  };
+  const resolved = resolveUnpublishedChangelogSection(lines, heading);
+  if (!resolved.ok) { problems.reason = resolved.reason; return problems; }
+  problems.found = true;
+  problems.section = resolved.section;
+  const bullets = parseChangelogSectionBullets(lines, resolved.section.from, resolved.section.to);
+  problems.cn = bullets.filter((bullet) => bullet.lang === "cn");
+  problems.en = bullets.filter((bullet) => bullet.lang === "en");
+  const usedEn = new Set();
+  for (const cnBullet of problems.cn) {
+    const candidates = cnBullet.issues.size === 0
+      // 无 issue 引用 ⇒ 只允许与「同样无引用且紧邻」的对方语言条目配对（位置在此处**不是**判据本身，
+      // 而是「没有 issue 引用可用」时唯一剩下的那条证据）
+      ? problems.en.filter((enBullet) => enBullet.issues.size === 0
+        && changelogBulletGap(cnBullet, enBullet) <= CHANGELOG_PAIR_ADJACENT_GAP)
+      // 有 issue 引用 ⇒ 配对判据是**集合完全相同**（不是「有交集」，也不是「按位置」）
+      : problems.en.filter((enBullet) => sameSet(cnBullet.issues, enBullet.issues));
+    const partner = candidates.find((enBullet) => !usedEn.has(enBullet.line));
+    if (!partner) { problems.unpairedCn.push(cnBullet); continue; }
+    usedEn.add(partner.line);
+    problems.pairs.push({ cn: cnBullet.line, en: partner.line, issues: [...cnBullet.issues].sort(), byIssueSet: cnBullet.issues.size > 0 });
+    if (cnBullet.issues.size === 0) problems.adjacencyPairs += 1;
+  }
+  problems.unpairedEn = problems.en.filter((enBullet) => !usedEn.has(enBullet.line));
+  return problems;
+}
+
+describe("静态守卫：CHANGELOG 未发布节的中英配对地板（issue #563，规则 8 的同族补丁）", () => {
+  it("每一条中文条目都要有英文对应：配对数 >= 地板（只能升不能降）且无对应条数 = 0", (t) => {
+    const text = changelogText();
+    const problems = collectChangelogPairingProblems(text);
+    t.diagnostic(`配对地板：判据面 = ${problems.section?.heading}（第 ${problems.section?.line} 行）；`
+      + `中文 ${problems.cn.length} 条 / 英文 ${problems.en.length} 条 / 配对 ${problems.pairs.length} 对`
+      + `（其中按「无 issue 引用 + 紧邻」配的 ${problems.adjacencyPairs} 对）/ `
+      + `无对应 ${problems.unpairedCn.length + problems.unpairedEn.length} 条；地板 ${CHANGELOG_PAIR_FLOOR}`);
+
+    // ── 前置：判据面必须真扫到东西，否则这一格退化成恒绿 ──
+    assert.equal(problems.found, true,
+      `找不到未发布节 ${JSON.stringify(CHANGELOG_UNPUBLISHED_HEADING)}：${problems.reason}`);
+    assert.ok(problems.section && problems.section.to > problems.section.from,
+      `未发布节区间退化：${JSON.stringify(problems.section)}`);
+    assert.ok(problems.cn.length >= 40 && problems.en.length >= 40,
+      `未发布节只解析出中文 ${problems.cn.length} / 英文 ${problems.en.length} 条：解析面坏了`);
+    // 语言判定不是恒真：两个方向都要有真样本（只判一种语言会让「配对」退化成「数条数」）
+    assert.ok(problems.cn.some((bullet) => bullet.ratio > 0.5),
+      "没有一条 CJK 占比 > 0.5 的中文条目：语言判定可能恒判英文");
+    assert.ok(problems.en.some((bullet) => bullet.ratio === 0),
+      "没有一条零 CJK 的英文条目：语言判定可能恒判中文");
+    // 「无 issue 引用 + 紧邻」这条分支不许是死代码（今天恰有一条：0.27.0 的发布收尾条目）
+    assert.ok(problems.cn.some((bullet) => bullet.issues.size === 0),
+      "未发布节里没有无 issue 引用的条目：紧邻配对那条分支退化成死代码");
+    assert.ok(problems.cn.some((bullet) => bullet.issues.size > 1),
+      "没有一条引用多个 issue 的中文条目：集合比较退化成单值比较");
+
+    // ── 地板：只能升不能降 ──
+    assert.ok(problems.pairs.length >= CHANGELOG_PAIR_FLOOR,
+      `配对地板被踩穿：实测 ${problems.pairs.length} 对 < 地板 ${CHANGELOG_PAIR_FLOOR} 对`
+      + `（中文 ${problems.cn.length} / 英文 ${problems.en.length} / 无对应 `
+      + `${problems.unpairedCn.length + problems.unpairedEn.length} 条）——少了一条英文对应，`
+      + "或者它的 issue 引用被改了（配对判据靠 issue 引用逐字相等）。地板只许抬、不许降");
+    if (problems.pairs.length > CHANGELOG_PAIR_FLOOR) {
+      t.diagnostic(`配对地板：实测 ${problems.pairs.length} 对 > 地板 ${CHANGELOG_PAIR_FLOOR} 对`
+        + ` ⇒ 可以抬地板到 ${problems.pairs.length}`);
+    }
+
+    // ── 主判据：无对应条数 = 0（两侧都要为零，不是「两边条数相等」） ──
+    assert.deepEqual(problems.unpairedCn.map((bullet) => bullet.line), [],
+      "有中文条目没有英文对应（行号）——随包发出去的 CHANGELOG 缺了译本："
+      + `${problems.unpairedCn.map((bullet) => `${bullet.line}: ${JSON.stringify(bullet.raw.slice(3, 60))}`).join(" / ")}`);
+    assert.deepEqual(problems.unpairedEn.map((bullet) => bullet.line), [],
+      "有英文条目没有中文对应（行号）："
+      + `${problems.unpairedEn.map((bullet) => `${bullet.line}: ${JSON.stringify(bullet.raw.slice(3, 60))}`).join(" / ")}`);
+
+    // ── 三条反向证（纯内存，不写盘；变异没落上由 replaceExactlyOnce 直接抛，沿用 #210 R2 口径） ──
+    // 靶子必须**双侧唯一**（该 issue 集合在中文侧与英文侧各只出现一次）：否则删掉一条英文之后，
+    // 贪心配对会把那条中文改配给另一条同集合的英文，反向证就证不到「它自己少了对应」。
+    const setCount = (list, key) => list.filter((bullet) => [...bullet.issues].sort().join(",") === key).length;
+    const target = problems.pairs.find((pair) => pair.byIssueSet
+      && setCount(problems.cn, pair.issues.join(",")) === 1
+      && setCount(problems.en, pair.issues.join(",")) === 1);
+    assert.ok(target, "找不到「issue 集合双侧唯一」的配对靶子：反向证会退化成恒绿或落到会改配的集合上");
+    const targetEn = problems.en.find((bullet) => bullet.line === target.en);
+    assert.ok(targetEn, `配对记录里的英文条目 ${target.en} 行找不到：配对表与解析面不一致`);
+    const targetCn = problems.cn.find((bullet) => bullet.line === target.cn);
+    assert.ok(targetCn, `配对记录里的中文条目 ${target.cn} 行找不到：配对表与解析面不一致`);
+    assert.ok(target.issues.length > 0, "靶子的 issue 集合为空：这一格会退化成恒真");
+
+    // 反向证 ①：删掉一条英文条目 ⇒ 配对下降、它的中文对手变成「无对应」
+    const deleted = replaceExactlyOnce(text, `${targetEn.raw}\n`, "", "英文条目靶子");
+    const afterDelete = collectChangelogPairingProblems(deleted);
+    assert.equal(afterDelete.pairs.length, problems.pairs.length - 1,
+      `删掉一条英文条目后配对数应减 1，实测 ${afterDelete.pairs.length}（原 ${problems.pairs.length}）`);
+    assert.equal(afterDelete.unpairedCn.length, 1,
+      `删掉一条英文条目后应恰好 1 条中文无对应，实测 ${JSON.stringify(afterDelete.unpairedCn.map((b) => b.line))}`);
+    // 行号在删掉多行英文条目后会整体前移，所以按**原文**认人，不按行号
+    assert.equal(afterDelete.unpairedCn[0].raw, targetCn.raw, "无对应的那条中文应是靶子的对手（按原文比）");
+    assert.ok(afterDelete.pairs.length < CHANGELOG_PAIR_FLOOR,
+      `删掉一条英文条目后配对数 ${afterDelete.pairs.length} 仍 >= 地板 ${CHANGELOG_PAIR_FLOOR}：地板拦不住`);
+
+    // 反向证 ②：把英文条目里的一个 issue 引用改掉（**数量不变、值不同**）⇒ 集合不再相等 ⇒ 配对下降
+    const firstIssue = target.issues[0];
+    assert.equal(changelogIssueRefs(text).has("999"), false,
+      "真实 CHANGELOG 里已经出现 #999：反向证 ② 的替换值不唯一，请换一个值");
+    assert.ok(targetEn.raw.includes(`#${firstIssue}`), `靶子里找不到 #${firstIssue}：反向证 ② 会打空`);
+    const rewritten = targetEn.raw.replace(`#${firstIssue}`, "#999");
+    assert.notEqual(rewritten, targetEn.raw, "变异没落上：issue 引用没被改掉");
+    assert.equal(changelogIssueRefs(rewritten).size, targetEn.issues.size,
+      "反向证 ② 要求「数量不变、值不同」：改完之后 issue 个数变了，这一格证的东西就不是集合比较了");
+    const swapped = collectChangelogPairingProblems(replaceExactlyOnce(text, `${targetEn.raw}\n`, `${rewritten}\n`, "issue 引用靶子"));
+    assert.equal(swapped.pairs.length, problems.pairs.length - 1,
+      `改掉一个 issue 引用后配对数应减 1，实测 ${swapped.pairs.length}（原 ${problems.pairs.length}）`);
+    assert.equal(swapped.unpairedCn.length, 1, "改掉一个 issue 引用后应恰好 1 条中文无对应");
+    assert.equal(swapped.unpairedCn[0].raw, targetCn.raw, "无对应的那条中文应是靶子的对手（按原文比）");
+    assert.equal(swapped.unpairedEn.length, 1, "改掉一个 issue 引用后应恰好 1 条英文无对应（它就是被改的那条）");
+    assert.equal(swapped.unpairedEn[0].raw, rewritten, "无对应的那条英文应是被改的那条");
+    assert.ok(swapped.pairs.length < CHANGELOG_PAIR_FLOOR,
+      `改掉一个 issue 引用后配对数 ${swapped.pairs.length} 仍 >= 地板 ${CHANGELOG_PAIR_FLOOR}：地板拦不住`);
+
+    // 反向证 ③：还原 ⇒ 全绿
+    const restored = collectChangelogPairingProblems(text);
+    assert.equal(restored.pairs.length, problems.pairs.length, "还原原文后配对数应回到原值");
+    assert.deepEqual(restored.unpairedCn, [], "还原原文后不该有中文无对应");
+    assert.deepEqual(restored.unpairedEn, [], "还原原文后不该有英文无对应");
+    assert.ok(restored.pairs.length >= CHANGELOG_PAIR_FLOOR, "还原原文后地板必须仍成立");
+
+    t.diagnostic(`配对地板反向证：删掉第 ${targetEn.line} 行英文条目 ⇒ ${afterDelete.pairs.length} 对`
+      + `（< 地板 ${CHANGELOG_PAIR_FLOOR}）+ 中文第 ${target.cn} 行无对应；`
+      + `把该条的 #${firstIssue} 改成 #999（数量不变）⇒ ${swapped.pairs.length} 对（< 地板）；还原 ⇒ `
+      + `${restored.pairs.length} 对全绿`);
   });
 });
