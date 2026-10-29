@@ -160,6 +160,54 @@
   启发式，判据是「总数变了就红」。反向证从 18 例增到 21 例：往 `README.md` 里塞一句扁平拼写 ⇒
   `--strict` 与 `--strict --json` 都红（还原 ⇒ 两路都绿）、根文档的钉子对不上 ⇒ `SUSPECT(dropped)`、
   根文档的钉子指向清单外 ⇒ `DEAD-PIN`；把扩面回退掉会红 6 格。`CHANGELOG_PAIR_FLOOR` 3 → 4。
+- **"Sending one message" no longer costs the port its configuration: the wrapper seeds the call's tree from a copy of the port's `policy.config` (issue #571 slice 2 — the flip side of the cost measured in #524).**
+  Measured before this slice, on the assembly route: `createAgent({ assemblyPort })` +
+  `agent.run({ messages })` lost the port's `folding.toolResultTtl`, its context budget and its
+  `run.maxRounds` on **every** call, silently. `messages` is a `call` leaf, so a `config` tree was
+  handed to `runToolLoop`, and the pre-existing whole-tree rule replaced `policy.config` with it; the
+  two fill steps that survive an override restore only the translated `policy.<leaf>` spellings and
+  the `session`-derived leaves — never the leaves the host wrote on `policy.config` — and because the
+  two trees set no leaf in common, not even one `config_override_conflict` was emitted. The fix is in
+  the wrapper, not in the engine: when initialization carries no `config`, the tree handed over is
+  seeded with a **copy** of the port's `policy.config` (`assemblyPortPolicyConfigSeed` in
+  `src/assembly.js`; group-level copy, leaf values by reference), so the whole-tree override is a
+  no-op in content terms. `runToolLoop`'s override semantics, the per-leaf conflict events and both
+  accepted option surfaces are byte-identical. Measured after: the TTL still folds the first round's
+  tool result, the port's `run.maxRounds` still stops the run, the message really reaches the
+  provider, and **zero** `config_override_conflict` events are emitted — that rule reports leaves
+  whose values **differ**, and the seed carries the port's own values (a leaf the call really changes
+  still gets its one event). The seed is a copy on purpose: a frozen `policy` works, and nothing the
+  call carries leaks back into the host's tree. Two host shapes stay as they were, and the contract
+  now names them instead of leaving them implied: `createAgent({ config })` (the initialization tree
+  is the host's single config source, so it still overrides `policy.config` wholesale) and
+  `runToolLoop({ config })` (the direct route). Also settled in this slice: `config.input.messages` is
+  the one leaf for the seed data and `session.initialMessages` is a port-level feeder (the leaf wins,
+  and two different values produce exactly one event); a retired flat `call` leaf (`initialMessages`,
+  `runId`, …) is now refused in **one** hop that names `agent.run({ <leaf> })` instead of the two
+  errors it used to take; and `createAgent`'s `signal` is adjudicated as agent-level (`run({ signal })`
+  overrides it for that call only). 6 new cells in `test/loop-create-agent-571.test.js` (J1–J6) pin all
+  of it, and I3 — which had pinned the old behaviour as fact — was rewritten into J1
+  (mutation-checked: emptying the seed turns J1 red, exit 1).
+- **「发一条消息」不再顺带把端口那份配置顶掉：包装层用端口 `policy.config` 的一份拷贝给这次调用的树打底（issue #571 片2——把 #524 实测的那份代价翻面）。**
+  本片之前，在装配路线上实测：`createAgent({ assemblyPort })` + `agent.run({ messages })` **每一次**
+  调用都静默丢掉端口的 `folding.toolResultTtl`、上下文预算与 `run.maxRounds`。因为 `messages` 是
+  `call` 叶 ⇒ 递给 `runToolLoop` 的树在场 ⇒ 既有的整棵覆盖规则拿它把 `policy.config` 顶掉；而覆盖
+  之后那两道填充只补「平移自扁平 `policy.<叶>` 的写法」与「`session` 派生叶」，**补不回宿主写在
+  `policy.config` 里的叶**；又因为两棵树没有任何共同叶子，连一条 `config_override_conflict` 都不发。
+  修法在**包装层**、不在引擎：初始化没写 `config` 时，递出去的那棵树以端口 `policy.config` 的**拷贝**
+  打底（`assemblyPortPolicyConfigSeed`，在 `src/assembly.js`；组级浅拷、叶子值按引用），于是「整棵
+  覆盖」在内容上等于没覆盖。`runToolLoop` 的覆盖语义、逐叶冲突事件、两条入口的接受面都一字未动。
+  本片之后实测：TTL 仍把第一轮的工具结果折掉、端口的 `run.maxRounds` 仍能让 run 停下、消息真的到达
+  provider，而且**零**条 `config_override_conflict`——那条规则只报**值不同**的叶子，而种子带的仍是
+  端口自己的值（本次调用真改了某个叶子时照旧恰报一条）。种子是拷贝是有意的：冻结的 `policy` 照常
+  可用，本次调用带的东西也绝不会漏回宿主那棵树。两种宿主形状保持原样，且契约现在**点名**它们而不是
+  留着让人猜：`createAgent({ config })`（初始化那棵树是宿主的唯一配置来源，所以它照旧整棵覆盖
+  `policy.config`）与 `runToolLoop({ config })`（直连路线）。本片同时裁定的三件事：
+  `config.input.messages` 是那份种子数据的**唯一叶**、`session.initialMessages` 是**端口级 feeder**
+  （叶赢；两者值不同时恰一条事件）；退役扁平名里的 `call` 叶（`initialMessages`、`runId` …）现在
+  **一次**就指名 `agent.run({ <叶> })`，不再让宿主吃两次错；`createAgent` 的 `signal` 定为 **agent 级**
+  （`run({ signal })` 只覆盖那一次）。`test/loop-create-agent-571.test.js` 新增 6 格（J1–J6）钉住全部；
+  曾把老行为钉成事实的 I3 改写成了 J1（变异证：掏空种子 ⇒ J1 红、exit 1）。
 
 ## [0.28.0] - 2026-10-29
 

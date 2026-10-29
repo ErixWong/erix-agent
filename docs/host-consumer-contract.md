@@ -312,6 +312,24 @@ exactly one home", not "every leaf has a top-level key"). Two consequences, both
   `policy.session.initialMessages` and `config.input.messages` gets one `config_override_conflict`
   event with `path: "input.messages"` — `config` wins, and it is not silent.
 
+**Ruling (issue #571 slice 2): `config.input.messages` is the one leaf; `session.initialMessages` is a
+port-level feeder.** The two channels are not peers. `config.input.messages` is where the data
+lives — that is what `agent.run({ messages })` writes, what the expansion phase reads, and the only
+one of the two the binding table calls a leaf. `session.initialMessages` is a **feeder**: the
+`session` container's member is derived into `config.input.messages` and then fills that leaf **only
+where nothing else set it**. The consequences, all three pinned by
+`test/loop-create-agent-571.test.js` J4:
+
+* the feeder alone works (`session: { initialMessages: … }` seeds the run — it is not a dead spelling);
+* when both are given with **different** values the leaf wins, the feeder's value does not leak into
+  the request, and exactly **one** `config_override_conflict` (`path: "input.messages"`, key
+  `initialMessages`) is emitted — two sources, different values, no silence;
+* the container's other member, `session.id`, derives the same way onto `config.run.runId`.
+
+The feeder is **not** retired: it is the port's spelling of the seed (issue #513 / #544 / #550 made
+it a container member), so retiring it would break hosts. What the ruling removes is the ambiguity:
+there is one leaf, and the other spelling is a one-way feeder into it.
+
 **Flat-spelling version policy** (issue #498 S3, the `input` group's A2b segment — the fourth slice,
 and the one that closes `config.input`: every member of that group is now nested-only):
 
@@ -346,7 +364,11 @@ case — a call-level `config` written **for something else** (say only `config.
 no leaf, and that whole-tree override is reported by **nothing at all**: zero events, no field in
 the terminal payload. Making that silent case observable without an observer is deferred to a later
 minor release; the semantics themselves are unchanged (issue #406 R6: one source per value, no deep
-merge), and the seed is deliberately not moved a second time (issue #524 ruling).
+merge), and the seed is deliberately not moved a second time (issue #524 ruling). This paragraph
+describes `runToolLoop` itself (the direct route, and the shape a host builds by passing `config`
+alongside `assemblyPort`). On the **wrapper** route that silent case no longer exists: since issue
+#571 slice 2 the tree `createAgent` hands over is seeded from a copy of `policy.config`, so nothing
+is lost and there is nothing to report.
 
 **Flat-spelling version policy** (issue #498 S3, the `tuning` slice — the fifth slice, and the first
 one that retires a **scalar** knob instead of a shell):
@@ -1595,11 +1617,13 @@ point still accepts the same options with the same override semantics. `createAg
 "initialization" a place to live.
 
 Why it exists: after 0.28 there is no agent object, so "the configuration fixed at startup" and
-"this call's data" share one parameter object. The measured cost (issue #524, closed by design) is
+"this call's data" share one parameter object. The measured cost (issue #524, closed by design) was
 that `config.input.messages` — a message — **replaces the whole config tree** the assembly port
 supplied (`policy.config`), taking folding TTL, the context budget and the persistence switches with
-it; the action that triggered it was "send a message". The fix is a place, not a new merge rule: no
-deep merge, no diagnostics field, no second engine.
+it; the action that triggered it was "send a message". **Issue #571 slice 2 removed that cost on the
+wrapper route** (see the shapes below): `runToolLoop`'s override semantics are unchanged, so the
+direct route still behaves exactly as measured, but a wrapped agent no longer pays it. The fix is a
+place, not a new merge rule: no deep merge, no diagnostics field, no second engine.
 
 **The binding fact is machine-readable.** Every config leaf is marked `"init"` or `"call"` in
 `CONFIG_LEAF_BINDING` (`src/loop/config-namespace.js`) — the one hand-written table next to
@@ -1632,12 +1656,12 @@ throws on the call: `agent.run({ maxRounds: … }): maxRounds is an initializati
 (issue #571)`. Neither direction is silently ignored, and neither degrades into "we will just keep
 the initialization value".
 
-**"One config source" in the three shapes (issue #574).**
+**"One config source" in the four shapes (issue #574, updated by issue #571 slice 2).**
 
 - `runToolLoop({ config: … })`: the call-level tree **replaces** whatever the assembly port supplied
   (`policy.config`) — whole tree, with each differing leaf reported as `config_override_conflict`.
   That rule is unchanged in this release, and it is why `config.input.messages` can still cost you
-  the rest of the tree on this route.
+  the rest of the tree **on this route**. `createAgent` is the way out; the engine keeps this rule.
 - `createAgent({ config })` + `agent.run(input)`: there is exactly one tree. `run(input)` cannot even
   carry a `config` key (it is rejected as an initialization option), and its leaves are merged into
   the initialization tree leaf by leaf. **That tree is handed to `runToolLoop` on every call**, so on
@@ -1645,18 +1669,44 @@ the initialization value".
   sides set to different values is reported as `config_override_conflict`). Writing `config` is
   therefore a statement about the **whole** tree, not about one leaf: `createAgent({ config: { run: {
   maxRounds: 8 } } })` wins on that leaf, keeps the port's identity and session-derived leaves, and
-  drops the port's other config leaves back to the engine defaults.
+  drops the port's other config leaves back to the engine defaults. This is deliberate: the
+  initialization tree is the host's **single** config source, so the wrapper does not mix it with
+  the port's tree (that would be the deep merge the ruling forbids).
 - `createAgent({ assemblyPort })` with **no** `config` and **no** config leaf in this call's input:
   **no `config` key is handed over at all**, so the port's `policy.config` is the only tree and every
   knob on it stays effective — folding TTL, the context budget, the round cap, the persistence
-  switches. This is the shape the wrapper exists for on the port route.
-- The boundary between those last two, named rather than glossed over: a config leaf in this call's
-  input makes a tree present again — `agent.run({ messages })` writes `config.input.messages`, and
-  `messages` is a `call` leaf — so the pre-existing whole-tree override applies again, and because
-  the port's tree and that call's tree set no leaf in common, **no** `config_override_conflict` is
-  emitted. "Sending a message" on the port route therefore still costs the port's knobs: that is
-  issue #524's cost, unchanged here. What the presence rule buys is the shape where the host sends
-  nothing (or only `signal`) — the port is then the single source, not merely the conventional one.
+  switches.
+- `createAgent({ assemblyPort })` + a config leaf in this call's input — **the shape "send one
+  message" produces, and the one issue #571 slice 2 flipped.** The wrapper hands over a tree seeded
+  with a **copy of the port's `policy.config`**, so the pre-existing whole-tree override is a no-op
+  in content terms: `agent.run({ messages })` keeps every port knob (folding TTL, the context budget,
+  `run.maxRounds`, the persistence switches), the message really reaches the provider, and **no**
+  `config_override_conflict` is emitted — the conflict rule reports leaves whose **values differ**,
+  and every seeded leaf still carries the port's own value. A leaf this call really changes is still
+  reported once, exactly as before: seed `input.messages` through the port's `session.initialMessages`
+  and send `messages` on the call, and you get one event with
+  `conflicts: [{path: "input.messages", key: "initialMessages"}]` (the call wins — one knob with two
+  sources is never silent). The seed is a **copy** (group-level; leaf values by reference): the
+  wrapper never writes into the host's `policy`, so a frozen port object is fine, and nothing the
+  call carries leaks back into it. Only the port's `policy.config` is seeded — the translated
+  `policy.<leaf>` spellings and the `session`-derived leaves are restored by the engine's own fill
+  steps after the override, so duplicating them in the seed would only blur which source owns them.
+
+**`signal` is agent-level; `run({ signal })` is per-call (issue #571 slice 2, adjudicated).** A
+`signal` given to `createAgent` belongs to the agent, not to one call: every `run()` shares it, so
+once it aborts, that agent's later calls are cancelled too (they reject with
+`termination.reason: "aborted"` and never reach the provider). That is the reading of "the options
+fixed once", not an oversight. A call that needs its own cancellation passes `run({ signal })`, which
+overrides the initialization signal **for that call only** — the next call without one is back on the
+agent's signal.
+
+**A retired flat name that is a `call` leaf is refused in one hop.** `createAgent({ initialMessages })`
+throws `createAgent({ initialMessages: … }): initialMessages is per-call data — write it in
+agent.run({ messages: … }) instead (issue #571: …)`, and the same holds for `initialUserMessage`,
+`runId`, `resume`, `stream` and the seven `metadata.*` leaves. Before issue #571 slice 2 the host ate
+**two** errors for the same mistake: the name gate sent it to `config.input.messages`, and writing
+that hit the binding gate, which then sent it to `agent.run({ messages })`. The direct route keeps
+its own single station (`config.input.messages`) because `runToolLoop` has no `agent.run` to point at.
 
 **What `run(input)` accepts.** The `call` leaves, by leaf name (`{ messages }`, `{ runId }`, …), plus
 `signal` for this call. Anything else is rejected: an `init` leaf names its config path and

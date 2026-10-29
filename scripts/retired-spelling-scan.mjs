@@ -300,11 +300,19 @@ const HISTORY_BODY_PINS = Object.freeze({
  * `toolResultTtl` → `config.folding.toolResultTtl`」，并把 `config.run` 一行的叶子名列表原样列出来。
  * 这些命中不是漂移，所以既不报错也不许被「改干净」；钉子只负责让“改写正文”这件事必须过门。
  *
+ * issue #571 片2：契约中英的 `createAgent` 一节按新行为重写（四种形状 + `signal` 裁定 + 一次到位的
+ * 扁平名判词 + feeder 裁定），正文因此多引了几处扁平名 ⇒ 钉子由扫描器自己的 `uses=` 报出来后再抬：
+ *
+ *     ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=452  uses=456
+ *     ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=562  uses=564
+ *
+ * 452 → 456 / 562 → 564（只增不减的方向：契约正文只会在讲退役拼写时多提它们，不会“改干净”）。
+ *
  * @type {Readonly<Record<string, number>>}
  */
 const CONTRACT_BODY_PINS = Object.freeze({
-  "docs/host-consumer-contract.md": 452,
-  "docs/host-consumer-contract_cn.md": 562,
+  "docs/host-consumer-contract.md": 456,
+  "docs/host-consumer-contract_cn.md": 564,
 });
 
 /**
