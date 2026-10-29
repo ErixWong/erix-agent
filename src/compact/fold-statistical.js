@@ -114,7 +114,14 @@ export function toolCallInventory(messages) {
 
 // 清单节解析（合并多份摘要时用）：标题行之后连续的 `- ` 行就是条目，遇到第一行非条目即止
 // （恢复提示 / 锚点节 / stub 行都在它后面，所以不会被误吃）。
-function parseInventorySection(value) {
+//
+// issue #565：**导出**给 `buildFoldedFacts`（`fold-summary-journal.js`）复用 —— 结构化 `toolCalls`
+// 必须与 `text` 里的这一节逐条相等，所以只许有一个解析器；在那里另写一份正则就是两份实现各自腐烂。
+/**
+ * @param {string} value
+ * @returns {string[]}
+ */
+export function parseInventorySection(value) {
   const lines = String(value).split("\n");
   const headingIndex = lines.findIndex((line) => line.trim() === TOOL_INVENTORY_HEADING);
   if (headingIndex < 0) return [];
