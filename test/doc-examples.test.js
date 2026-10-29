@@ -18,6 +18,9 @@ import {
   EN_DOC,
   README_CN_DOC,
   README_DOC,
+  README_DRIFT_HINT,
+  README_FENCE_PREAMBLES,
+  README_FENCE_STEPS,
   codeSkeleton,
   compileLevel1,
   describeFailure,
@@ -124,3 +127,105 @@ for (const target of targets) {
     });
   }
 }
+
+// ---------------------------------------------------------------------------
+// issue #582 的反向证：README 三格的「假设几步」是**显式常量**（`README_FENCE_STEPS`），
+// 而且失败文案里那句「两种可能」（`README_DRIFT_HINT`）必须真的在**失败路径**上——
+// 不是报告里的一句自述、也不是源码里没人走的死字符串。
+//
+// 做法：把同一格 preamble 里烘焙的 `const __STEPS__ = N;` 改掉再跑一遍（`runLevel3` 的
+// `preamble` 注入点就是为这件事开的）。两个方向都必须红，且红字里必须逐字出现那句话：
+//   · 改小 ⇒ 脚本先耗尽（原来只会吐 `Fake provider script exhausted`，正是本单的病根）；
+//   · 改大 ⇒ epilogue 的 `requests.length !== __STEPS__` 断言。
+// 「变异没落上也算失败」（#210 R2）：`withSteps` 自己断言替换真的落上了。
+// ---------------------------------------------------------------------------
+const README_TARGET = targets.find((target) => target.name === "README");
+
+/** 把一格 README preamble 里烘焙的 `const __STEPS__ = N;` 换成 `steps`（模拟「显式常量改错」）。 */
+function withSteps(preamble, steps) {
+  const stubs = preamble.stubs.replace(/const __STEPS__ = \d+;/, `const __STEPS__ = ${steps};`);
+  assert.notEqual(
+    stubs,
+    preamble.stubs,
+    "变异没落上：stubs 里没有 `const __STEPS__ = N;` 这一行（步数不再是显式常量，反向证就变成空转）",
+  );
+  return { ...preamble, stubs };
+}
+
+test("README 的步数假设是显式常量，且逐格烘进 preamble（issue #582）", () => {
+  assert.ok(README_TARGET, "DOC_TARGETS 里没有 README 目标：下面两格反向证会跑在 undefined 上");
+  assert.equal(
+    README_FENCE_STEPS.length,
+    README_FENCE_PREAMBLES.length,
+    `README_FENCE_STEPS 有 ${README_FENCE_STEPS.length} 条，README_FENCE_PREAMBLES 有 ${README_FENCE_PREAMBLES.length} 条`
+      + "：每格都得有一条「假设几步」，多一条少一条都是第二份真相",
+  );
+  for (const [index, steps] of README_FENCE_STEPS.entries()) {
+    assert.ok(
+      Number.isInteger(steps) && steps >= 1,
+      `README_FENCE_STEPS[${index}] = ${String(steps)}：必须是正整数（0 步的脚本只会立刻耗尽）`,
+    );
+    assert.ok(
+      README_FENCE_PREAMBLES[index].stubs.includes(`const __STEPS__ = ${steps};`),
+      `README 第 ${index + 1} 格的 stubs 没有按 README_FENCE_STEPS[${index}] = ${steps} 备步`
+        + "：常量与 preamble 脱钩了，改常量不会再改变这一格的行为",
+    );
+  }
+});
+
+for (const fence of README_TARGET.enFences) {
+  const steps = README_FENCE_STEPS[fence.index];
+  const fenceLabel = `README #${fence.index + 1} @ ${fence.line}`;
+
+  test(`反向证 [${fenceLabel}]：步数常量改小一格（${steps} → ${steps - 1}）⇒ 该格必须红，且红字点名两种可能`, async () => {
+    const result = await runLevel3(fence, {
+      preamble: withSteps(README_TARGET.preambles[fence.index], steps - 1),
+    });
+    assert.equal(
+      result.ok,
+      false,
+      `脚本只备 ${steps - 1} 步、而这一格实际要 ${steps} 步，却仍然绿：README_FENCE_STEPS 是装饰品`,
+    );
+    assert.ok(
+      result.stderr.includes(README_DRIFT_HINT),
+      `红字里没有「两种可能」那句（issue #582 的判据），实际 stderr：\n${result.stderr}`,
+    );
+    assert.ok(
+      result.stderr.includes(`实际已发起 ${steps} 次`),
+      `红字没点名实际请求次数（该是 ${steps} 次），排查时还是得自己数：\n${result.stderr}`,
+    );
+  });
+
+  test(`反向证 [${fenceLabel}]：步数常量改大一步（${steps} → ${steps + 1}）⇒ 该格也必须红`, async () => {
+    const result = await runLevel3(fence, {
+      preamble: withSteps(README_TARGET.preambles[fence.index], steps + 1),
+    });
+    assert.equal(
+      result.ok,
+      false,
+      `脚本多备一步（${steps + 1}）而这一格实际只要 ${steps} 步，却仍然绿：`
+        + "epilogue 的步数断言没落在真实失败路径上，常量只在一个方向上有意义",
+    );
+    assert.ok(
+      result.stderr.includes(README_DRIFT_HINT),
+      `红字里没有「两种可能」那句（issue #582 的判据），实际 stderr：\n${result.stderr}`,
+    );
+  });
+}
+
+// 第 1 格的「脚本先耗尽」是**另一条**失败路径（#582 的两个文案点各有一条）：
+// 把脚本砍到只剩工具轮（1 步），第 2 次请求就在主循环里耗尽 ⇒ 进程非 0、stderr 里是 stubs 的
+// 那句重抛，而不是 epilogue 的计数断言。这条独立钉住，免得只证到其中一条就说两条都活着。
+test("反向证 [README #1 @ 66]：脚本砍到只剩工具轮（1 步）⇒ 主循环耗尽路径也必须红且带两种可能", async () => {
+  const fence = README_TARGET.enFences[0];
+  const result = await runLevel3(fence, { preamble: withSteps(README_TARGET.preambles[0], 1) });
+  assert.equal(result.ok, false, "脚本只剩 1 步（工具轮）却仍然绿：第 2 次请求没被拦住");
+  assert.ok(
+    result.stderr.includes("假上游脚本耗尽"),
+    `没走到 stubs 的耗尽重抛（红字里应该有「假上游脚本耗尽」）：\n${result.stderr}`,
+  );
+  assert.ok(
+    result.stderr.includes(README_DRIFT_HINT),
+    `耗尽路径的红字里没有「两种可能」那句（issue #582 的判据），实际 stderr：\n${result.stderr}`,
+  );
+});
