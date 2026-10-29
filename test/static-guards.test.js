@@ -3547,30 +3547,26 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
 //      语言条目配对。**紧邻**用**行号区间**判（两条 bullet 之间最多隔 `CHANGELOG_PAIR_ADJACENT_GAP`
 //      行），不拿首行距离判——本仓的英文条目普遍折行成十几行，首行距离对它们没有意义。
 //      **禁止**按邻接位置直接配对：`Changed` 里连着三条都引 `#469`，按位置会假配。
-//   3. 判据面**只扫未发布内容** = `## [0.28.0]` 这一节。**不扫** 0.27.0 / 0.26.0 / 0.25.0——那三节是
-//      已发布历史，重写等于造假（同 #278 的口径），而且它们本来就纯中文发布。
+//   3. 判据面**跟着开版走**（issue #563）：**复用规则 8 的 `resolveChangelogScanSurface()`**——顶部
+//      `## [Unreleased]` 为空（= 开版那一刻）⇒ 退到紧随其后的那个版本节（今天解析成 `## [0.28.0]`），
+//      Unreleased 一有内容就自动回到它。**不许另写一份选取逻辑**：两条判据管的是同一节内容，
+//      各选各的面迟早漂成两个真相（0.29 开版后新内容的重复/配对问题会一个看得见、一个看不见）。
+//      也**不扫** 0.27.0 / 0.26.0 / 0.25.0——那三节是已发布历史，重写等于造假（同 #278 的口径），
+//      而且它们本来就纯中文发布。
+//      ⚠ 面一旦挪走，地板 51 就**失去校准依据**（它是在 `CHANGELOG_PAIR_FLOOR_SURFACE` 上实测的）：
+//      配对数不足 ⇒ **红并点名「面已挪到 <节名>，请重测地板」**。这是有意信号，不许下调地板、
+//      也不许把面硬钉回 `## [0.28.0]` 来换绿。
 //
 // 地板常量 = 补完 17 条英文对应之后**实测**的配对数。断言 `配对数 >= 地板`；超过时只打印
 // 「可以抬地板到 N」。**不**把地板做成「两语言条数必须相等」的硬闸——0.25 / 0.26 那两节永远不满足，
 // 那种闸会把门常年压红，而那正是本判据要避免的假红。
 
-/** 未发布节标题（本判据的判据面；发布改名后这里要跟着改，找不到就红）。 */
-const CHANGELOG_UNPUBLISHED_HEADING = "## [0.28.0]";
+/** 地板校准所在的节标题（`CHANGELOG_PAIR_FLOOR` 是在**这一节**上实测的；面挪走且配对数不足 ⇒ 点名重测）。 */
+const CHANGELOG_PAIR_FLOOR_SURFACE = "## [0.28.0]";
 /** 两条 bullet 之间最多隔几行才算「紧邻」（0 = 直接相邻，1 = 中间隔一行）。 */
 const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 /** 配对地板：补完 17 条英文对应后实测的配对数。**只能升不能降。** */
 const CHANGELOG_PAIR_FLOOR = 51;
-
-/** 取**未发布那一节**（标题以 `heading` 开头的那一个 `## [x]` 节）。找不到就 `ok: false`，不静默变绿。 */
-function resolveUnpublishedChangelogSection(lines, heading = CHANGELOG_UNPUBLISHED_HEADING) {
-  const start = lines.findIndex((line) => line.startsWith(heading));
-  if (start === -1) {
-    return { ok: false, reason: `找不到未发布节标题 ${JSON.stringify(heading)}：本判据会对整份文件恒绿` };
-  }
-  let to = lines.length;
-  for (let i = start + 1; i < lines.length; i += 1) if (/^## /.test(lines[i])) { to = i; break; }
-  return { ok: true, section: { heading: lines[start], line: start + 1, from: start + 1, to } };
-}
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
@@ -3609,15 +3605,18 @@ function changelogBulletGap(a, b) {
 /**
  * 未发布节的中英配对（**纯函数，文本可注入**——反向证直接喂改过的真实文本，不碰磁盘）。
  *
+ * 判据面**不自己选**：走规则 8 的 `resolveChangelogScanSurface()`（issue #563）——顶部 `## [Unreleased]`
+ * 为空就退到刚开的版本节，一有内容就回到它。两条判据管同一节，必须同源。
+ *
  * @param {string} text 整份 CHANGELOG
- * @param {string} [heading] 判据面标题（默认 `## [0.28.0]`）
+ * @param {string} [heading] 顶部版本节标题（默认 `## [Unreleased]`，由 `resolveChangelogScanSurface` 解析）
  */
-function collectChangelogPairingProblems(text, heading = CHANGELOG_UNPUBLISHED_HEADING) {
+function collectChangelogPairingProblems(text, heading = CHANGELOG_VERSION_HEADING) {
   const lines = text.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
   const problems = {
     found: false,
     reason: "",
-    section: null,
+    surface: null,
     cn: [],
     en: [],
     pairs: [],
@@ -3625,11 +3624,11 @@ function collectChangelogPairingProblems(text, heading = CHANGELOG_UNPUBLISHED_H
     unpairedEn: [],
     adjacencyPairs: 0,
   };
-  const resolved = resolveUnpublishedChangelogSection(lines, heading);
+  const resolved = resolveChangelogScanSurface(lines, heading);
   if (!resolved.ok) { problems.reason = resolved.reason; return problems; }
   problems.found = true;
-  problems.section = resolved.section;
-  const bullets = parseChangelogSectionBullets(lines, resolved.section.from, resolved.section.to);
+  problems.surface = resolved.surface;
+  const bullets = parseChangelogSectionBullets(lines, resolved.surface.from, resolved.surface.to);
   problems.cn = bullets.filter((bullet) => bullet.lang === "cn");
   problems.en = bullets.filter((bullet) => bullet.lang === "en");
   const usedEn = new Set();
@@ -3655,18 +3654,55 @@ describe("静态守卫：CHANGELOG 未发布节的中英配对地板（issue #56
   it("每一条中文条目都要有英文对应：配对数 >= 地板（只能升不能降）且无对应条数 = 0", (t) => {
     const text = changelogText();
     const problems = collectChangelogPairingProblems(text);
-    t.diagnostic(`配对地板：判据面 = ${problems.section?.heading}（第 ${problems.section?.line} 行）；`
+    // 地板 51 是在 `CHANGELOG_PAIR_FLOOR_SURFACE` 那一节上实测的。面被 `resolveChangelogScanSurface`
+    // 挪到别的节（今天只可能是「Unreleased 一有内容」）时，这个数就没有校准依据了。
+    const onFloorSurface = Boolean(problems.surface)
+      && problems.surface.heading.startsWith(CHANGELOG_PAIR_FLOOR_SURFACE);
+    t.diagnostic(`配对地板：判据面 = ${problems.surface?.heading}（第 ${problems.surface?.line} 行，`
+      + `由 resolveChangelogScanSurface 选出${problems.surface?.fellBack
+        ? "：顶部 Unreleased 为空 ⇒ 退到刚开的版本节"
+        : "：顶部 Unreleased 有内容"}）；`
       + `中文 ${problems.cn.length} 条 / 英文 ${problems.en.length} 条 / 配对 ${problems.pairs.length} 对`
       + `（其中按「无 issue 引用 + 紧邻」配的 ${problems.adjacencyPairs} 对）/ `
-      + `无对应 ${problems.unpairedCn.length + problems.unpairedEn.length} 条；地板 ${CHANGELOG_PAIR_FLOOR}`);
+      + `无对应 ${problems.unpairedCn.length + problems.unpairedEn.length} 条；地板 ${CHANGELOG_PAIR_FLOOR}`
+      + `（校准面 ${CHANGELOG_PAIR_FLOOR_SURFACE}）`);
 
     // ── 前置：判据面必须真扫到东西，否则这一格退化成恒绿 ──
     assert.equal(problems.found, true,
-      `找不到未发布节 ${JSON.stringify(CHANGELOG_UNPUBLISHED_HEADING)}：${problems.reason}`);
-    assert.ok(problems.section && problems.section.to > problems.section.from,
-      `未发布节区间退化：${JSON.stringify(problems.section)}`);
-    assert.ok(problems.cn.length >= 40 && problems.en.length >= 40,
-      `未发布节只解析出中文 ${problems.cn.length} / 英文 ${problems.en.length} 条：解析面坏了`);
+      `找不到扫描面（顶部 ${JSON.stringify(CHANGELOG_VERSION_HEADING)}）：${problems.reason}`);
+    assert.ok(problems.surface && problems.surface.to > problems.surface.from,
+      `判据面区间退化：${JSON.stringify(problems.surface)}`);
+
+    // ── 主判据先于地板判：无对应条数 = 0（两侧都要为零，不是「两边条数相等」）──
+    // 顺序有意：面挪到别的节、而那一节里确实有中文条目缺译本时，红因必须落在「无对应 N 条」这个
+    // 具体原因上，不被地板那句盖住。
+    assert.deepEqual(problems.unpairedCn.map((bullet) => bullet.line), [],
+      "有中文条目没有英文对应（行号）——随包发出去的 CHANGELOG 缺了译本："
+      + `${problems.unpairedCn.map((bullet) => `${bullet.line}: ${JSON.stringify(bullet.raw.slice(3, 60))}`).join(" / ")}`);
+    assert.deepEqual(problems.unpairedEn.map((bullet) => bullet.line), [],
+      "有英文条目没有中文对应（行号）："
+      + `${problems.unpairedEn.map((bullet) => `${bullet.line}: ${JSON.stringify(bullet.raw.slice(3, 60))}`).join(" / ")}`);
+
+    // ── 地板：只能升不能降（前提是「同一节」；面挪走了就必须点名重测，不许静默按旧数判）──
+    const counts = `（中文 ${problems.cn.length} / 英文 ${problems.en.length} / 无对应 `
+      + `${problems.unpairedCn.length + problems.unpairedEn.length} 条）`;
+    const floorMessage = onFloorSurface
+      ? `配对地板被踩穿：实测 ${problems.pairs.length} 对 < 地板 ${CHANGELOG_PAIR_FLOOR} 对${counts}——`
+        + "少了一条英文对应，或者它的 issue 引用被改了（配对判据靠 issue 引用逐字相等）。地板只许抬、不许降"
+      : `配对地板被踩穿：实测 ${problems.pairs.length} 对 < 地板 ${CHANGELOG_PAIR_FLOOR} 对${counts}；`
+        + `面已挪到 ${problems.surface.heading}，请重测地板`
+        + `（地板 ${CHANGELOG_PAIR_FLOOR} 是在 ${CHANGELOG_PAIR_FLOOR_SURFACE} 上实测的，`
+        + "扫描面已由 resolveChangelogScanSurface 换到另一节）——这是有意信号："
+        + "不许下调地板、也不许把面硬钉回旧标题来换绿";
+    assert.ok(problems.pairs.length >= CHANGELOG_PAIR_FLOOR, floorMessage);
+    if (problems.pairs.length > CHANGELOG_PAIR_FLOOR) {
+      t.diagnostic(`配对地板：实测 ${problems.pairs.length} 对 > 地板 ${CHANGELOG_PAIR_FLOOR} 对`
+        + ` ⇒ 可以抬地板到 ${problems.pairs.length}`);
+    }
+
+    // ── 语言判定/分支不许恒真或退化成死代码（放在地板之后：地板已保证两侧各 >= 51 条）──
+    // （原先这里还有一条 `cn.length >= 40 && en.length >= 40`：`pairs <= min(cn, en)` 加地板 >= 51
+    //   已严格蕴含它，留着只会是永不触发的死断言——两侧条数仍由地板失败信息逐次打印。）
     // 语言判定不是恒真：两个方向都要有真样本（只判一种语言会让「配对」退化成「数条数」）
     assert.ok(problems.cn.some((bullet) => bullet.ratio > 0.5),
       "没有一条 CJK 占比 > 0.5 的中文条目：语言判定可能恒判英文");
@@ -3677,25 +3713,6 @@ describe("静态守卫：CHANGELOG 未发布节的中英配对地板（issue #56
       "未发布节里没有无 issue 引用的条目：紧邻配对那条分支退化成死代码");
     assert.ok(problems.cn.some((bullet) => bullet.issues.size > 1),
       "没有一条引用多个 issue 的中文条目：集合比较退化成单值比较");
-
-    // ── 地板：只能升不能降 ──
-    assert.ok(problems.pairs.length >= CHANGELOG_PAIR_FLOOR,
-      `配对地板被踩穿：实测 ${problems.pairs.length} 对 < 地板 ${CHANGELOG_PAIR_FLOOR} 对`
-      + `（中文 ${problems.cn.length} / 英文 ${problems.en.length} / 无对应 `
-      + `${problems.unpairedCn.length + problems.unpairedEn.length} 条）——少了一条英文对应，`
-      + "或者它的 issue 引用被改了（配对判据靠 issue 引用逐字相等）。地板只许抬、不许降");
-    if (problems.pairs.length > CHANGELOG_PAIR_FLOOR) {
-      t.diagnostic(`配对地板：实测 ${problems.pairs.length} 对 > 地板 ${CHANGELOG_PAIR_FLOOR} 对`
-        + ` ⇒ 可以抬地板到 ${problems.pairs.length}`);
-    }
-
-    // ── 主判据：无对应条数 = 0（两侧都要为零，不是「两边条数相等」） ──
-    assert.deepEqual(problems.unpairedCn.map((bullet) => bullet.line), [],
-      "有中文条目没有英文对应（行号）——随包发出去的 CHANGELOG 缺了译本："
-      + `${problems.unpairedCn.map((bullet) => `${bullet.line}: ${JSON.stringify(bullet.raw.slice(3, 60))}`).join(" / ")}`);
-    assert.deepEqual(problems.unpairedEn.map((bullet) => bullet.line), [],
-      "有英文条目没有中文对应（行号）："
-      + `${problems.unpairedEn.map((bullet) => `${bullet.line}: ${JSON.stringify(bullet.raw.slice(3, 60))}`).join(" / ")}`);
 
     // ── 三条反向证（纯内存，不写盘；变异没落上由 replaceExactlyOnce 直接抛，沿用 #210 R2 口径） ──
     // 靶子必须**双侧唯一**（该 issue 集合在中文侧与英文侧各只出现一次）：否则删掉一条英文之后，
