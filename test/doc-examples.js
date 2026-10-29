@@ -892,6 +892,65 @@ export async function runLevel2(fence) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// L3 子进程的**环境构造**（issue #583）：量到的必须是「默认引擎」。
+//
+// 病根：#582 把每格假设的请求次数钉成**恰好等于**（`README_FENCE_STEPS = [7, 1, 1]`），
+// 而 L3 的执行环境是 `{ ...process.env }` 整包继承的。于是宿主 shell 里任何影响轮数的引擎
+// 旋钮都会溜进「文档示例」的子进程：`ERIX_NO_REFLECTION=1` 一设，第 1 格只剩 4 次请求
+// （少掉的 3 次正是默认开启的每轮 judge），守卫当场变红，而红字长得和「引擎默认值漂移」
+// 一模一样——那正是 #582 想消灭的那类误诊（拿一张假红去改 README）。
+//
+// 规则（不是「剥掉所有 ERIX_*」）：
+//   · **剥**继承来的 `ERIX_*` —— 引擎旋钮全在这个命名空间里（`src/loop/orchestrator.js`
+//     的 `ERIX_NO_REFLECTION` / `ERIX_NO_ROUND_JUDGE` / `ERIX_JUDGE_INTERVAL` /
+//     `ERIX_NO_WRAPUP_INSTRUCTION` / `ERIX_WRAPUP_NORMALIZE` / `ERIX_STALL_MODE`，
+//     `src/loop/termination.js` 的 `ERIX_NO_FORCED_FINAL`，`src/tools/notes.js` 的
+//     `ERIX_NOTES_DIR`，`src/tools/file-tools.js` 的 `ERIX_FILE_READ_MAX_BYTES`，
+//     `src/compact/fold-archive.js` 的 `ERIX_FOLD_ARCHIVE_MAX_BYTES`）。前缀而不是逐条清单：
+//     逐条清单漏一个新旋钮就悄悄退化成本单的病根。
+//   · **留** harness 自己的 `ERIX_DOC_EXAMPLE_*` 命名空间 —— 围栏 preamble 自己在子进程里
+//     读 `process.env.ERIX_DOC_EXAMPLE_TMP`（:288 / :418 / :469 / :535）并写读
+//     `ERIX_DOC_EXAMPLE_KEY`（:314）。把它一起剥掉，这些格会以另一种方式假红。
+//   · **留**执行必需与非引擎的变量（`PATH` / `HOME` / `LANG` / `TZ` / `NODE_OPTIONS` / …，
+//     以及 `LLM_*`：`:604` 那格的示例体把 `process.env.LLM_API_KEY` 递给
+//     `createOpenAIProvider`，而它的 stub 会在示例体之前把它覆盖成 `doc-example-key`）。
+/** 引擎旋钮所在的命名空间前缀（继承面要剥掉的）。 */
+export const L3_ENV_ENGINE_PREFIX = "ERIX_";
+/** harness 自己的命名空间前缀（继承面要保留的，issue #583 的「别剥错」那一半）。 */
+export const L3_ENV_HARNESS_PREFIX = "ERIX_DOC_EXAMPLE_";
+
+/**
+ * 这个键是不是「宿主继承来的引擎旋钮」（⇒ L3 子进程不该看到它）。
+ * 大小写不敏感：Windows 上 `process.env` 的键名大小写不固定，而引擎读的是大写形态。
+ *
+ * @param {string} key
+ * @returns {boolean}
+ */
+export function isInheritedEngineKnob(key) {
+  const upper = String(key).toUpperCase();
+  return upper.startsWith(L3_ENV_ENGINE_PREFIX) && !upper.startsWith(L3_ENV_HARNESS_PREFIX);
+}
+
+/**
+ * 构造 L3 子进程的环境：继承面**按规则**过滤，而不是 `{ ...process.env }` 直接摊平。
+ *
+ * @param {{inherited?: Record<string, string|undefined>, tmpDir: string}} options
+ *   `inherited` 默认是 `process.env`（生产路径）；自测传一份合成的环境进来，不必动全局。
+ * @returns {Record<string, string|undefined>} 新对象（不改入参，也不改 `process.env`）。
+ */
+export function buildLevel3Env({ inherited = process.env, tmpDir } = {}) {
+  const env = {};
+  for (const [key, value] of Object.entries(inherited)) {
+    if (isInheritedEngineKnob(key)) continue;
+    env[key] = value;
+  }
+  // 围栏 preamble 的临时目录一律由 harness 用 makeTmp 建（尊重 TMPDIR + 可写探针），
+  // 子进程只拿到路径，自己不再 mkdtemp（issue #209）。宿主的同名变量在这里被**覆盖**。
+  env.ERIX_DOC_EXAMPLE_TMP = tmpDir;
+  return env;
+}
+
 /** L3：子进程执行临时 .mjs（spawnSync，timeout 15s）。返回 { ok, stdout, stderr }。 */
 export async function runLevel3(fence, { preamble } = {}) {
   const effectivePreamble = preamble ?? preambleFor(fence);
@@ -904,9 +963,9 @@ export async function runLevel3(fence, { preamble } = {}) {
       encoding: "utf8",
       timeout: L3_TIMEOUT_MS,
       cwd: REPO_ROOT,
-      // 围栏 preamble 的临时目录一律由 harness 用 makeTmp 建（尊重 TMPDIR + 可写探针），
-      // 子进程只拿到路径，自己不再 mkdtemp（issue #209）。
-      env: { ...process.env, ERIX_DOC_EXAMPLE_TMP: dir },
+      // 环境由 buildLevel3Env 按规则构造（issue #583）：宿主的引擎旋钮（`ERIX_*`）不进子进程，
+      // harness 自己的 `ERIX_DOC_EXAMPLE_*` 与执行必需变量留下。量到的永远是「默认引擎」。
+      env: buildLevel3Env({ tmpDir: dir }),
     });
     const stdout = result.stdout ?? "";
     const stderr = result.stderr ?? "";

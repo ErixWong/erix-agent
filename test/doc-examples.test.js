@@ -21,10 +21,12 @@ import {
   README_DRIFT_HINT,
   README_FENCE_PREAMBLES,
   README_FENCE_STEPS,
+  buildLevel3Env,
   codeSkeleton,
   compileLevel1,
   describeFailure,
   extractJsFences,
+  isInheritedEngineKnob,
   runLevel2,
   runLevel3,
 } from "./doc-examples.js";
@@ -240,4 +242,113 @@ test("反向证 [README #1 @ 66]：脚本砍到只剩工具轮（1 步）⇒ 主
     result.stderr.includes(README_DRIFT_HINT),
     `耗尽路径的红字里没有「两种可能」那句（issue #582 的判据），实际 stderr：\n${result.stderr}`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// issue #583：L3 子进程的环境是**按规则构造**的，不是 `{ ...process.env }` 摊平。
+//
+// 病根是 #582 的另一半：次数被钉成「恰好等于」之后，任何会改轮数的宿主旋钮都能把守卫变红，
+// 而红字长得和「引擎默认值漂移」一模一样。下面两格分工：
+//   · 第 1 格是**纯函数**格：剥除规则本身（剥什么 / 留什么 / 不改入参 / 不是逐条清单）；
+//   · 第 2 格是**行为**格：把宿主的引擎旋钮真的塞进 `process.env` 再跑 README 第 1 格，
+//     必须仍然量到默认引擎的 `README_FENCE_STEPS[0]` 次请求（= 绿）。
+// 第 2 格就是「变不出来即失败」（#210 R2）的反向证靶子：把 `buildLevel3Env` 掏成
+// `{ ...inherited, ERIX_DOC_EXAMPLE_TMP: tmpDir }`（= 恢复成 `{ ...process.env }` 的语义），
+// 或把 `runLevel3` 的 env 改回 `{ ...process.env }`，这一格当场红（实测 7 → 4 次请求）。
+// ---------------------------------------------------------------------------
+test("L3 环境构造：剥继承来的引擎旋钮、留 harness 的 ERIX_DOC_EXAMPLE_* 与执行必需变量（issue #583）", () => {
+  const inherited = {
+    // 执行必需 / 非引擎变量：一律保留
+    PATH: "/usr/bin:/bin",
+    HOME: "/nonexistent",
+    LANG: "C.UTF-8",
+    TZ: "UTC",
+    NODE_OPTIONS: "--no-warnings",
+    // `:604` 那格的示例体把 process.env.LLM_API_KEY 递给 createOpenAIProvider ⇒ 不许剥
+    LLM_API_KEY: "host-llm-key",
+    // 宿主的引擎旋钮：一律剥掉
+    ERIX_NO_REFLECTION: "1",
+    ERIX_JUDGE_MODEL: "whatever",
+    ERIX_JUDGE_INTERVAL: "1",
+    ERIX_REFLECTION: "off",
+    ERIX_NO_ROUND_JUDGE: "1",
+    ERIX_NOTES_DIR: "/host/notes",
+    ERIX_SOME_FUTURE_KNOB_NOT_IN_ANY_LIST: "1",
+    // harness 自己的命名空间：保留（TMP 由 harness 覆盖）
+    ERIX_DOC_EXAMPLE_TMP: "/host/should-be-overridden",
+    ERIX_DOC_EXAMPLE_KEY: "host-doc-example-key",
+  };
+  const env = buildLevel3Env({ inherited, tmpDir: "/harness/tmp" });
+
+  const leaked = Object.keys(env).filter(isInheritedEngineKnob);
+  assert.deepEqual(
+    leaked,
+    [],
+    `继承面里的引擎旋钮没剥掉：${JSON.stringify(leaked)} —— L3 量到的就不是「默认引擎」了，`
+      + "宿主 shell 里的旋钮会把 #582 的「恰好几步」变成假红（issue #583 的病根）",
+  );
+  for (const key of ["ERIX_NO_REFLECTION", "ERIX_JUDGE_MODEL", "ERIX_REFLECTION", "ERIX_NOTES_DIR"]) {
+    assert.ok(!(key in env), `${key} 还在 L3 子进程的环境里：它会影响轮数 / 落盘位置，必须剥掉`);
+  }
+  // 剥错的另一半：把 harness 自己的命名空间也剥掉，围栏读不到临时目录会以另一种方式假红。
+  assert.equal(env.ERIX_DOC_EXAMPLE_KEY, "host-doc-example-key", "ERIX_DOC_EXAMPLE_* 是 harness 自己的命名空间，不许剥");
+  assert.equal(env.ERIX_DOC_EXAMPLE_TMP, "/harness/tmp", "ERIX_DOC_EXAMPLE_TMP 必须被 harness 的 makeTmp 目录覆盖");
+  for (const key of ["PATH", "HOME", "LANG", "TZ", "NODE_OPTIONS", "LLM_API_KEY"]) {
+    assert.equal(env[key], inherited[key], `执行必需 / 非引擎变量 ${key} 被剥掉了：子进程会以别的方式失败`);
+  }
+  assert.equal(inherited.ERIX_NO_REFLECTION, "1", "buildLevel3Env 改了传入的环境对象：它必须造新对象");
+  // 规则本身是**前缀**而不是逐条清单：清单漏一个新旋钮就悄悄退化成本单的病根。
+  assert.equal(isInheritedEngineKnob("ERIX_SOME_FUTURE_KNOB_NOT_IN_ANY_LIST"), true,
+    "剥除规则退化成逐条清单了：以后新增的引擎旋钮会重新溜进 L3 子进程（issue #583）");
+  assert.equal(isInheritedEngineKnob("ERIX_DOC_EXAMPLE_FUTURE"), false, "harness 自己的命名空间不许被当成引擎旋钮");
+  assert.equal(isInheritedEngineKnob("PATH"), false, "非 ERIX_ 命名空间的变量不归这条规则管");
+  // 生产路径（默认 process.env）同样必须满足「一个引擎旋钮都不留」。
+  const ambient = buildLevel3Env({ tmpDir: "/harness/tmp" });
+  assert.deepEqual(
+    Object.keys(ambient).filter(isInheritedEngineKnob),
+    [],
+    "默认（process.env）路径上仍有引擎旋钮漏进 L3 子进程",
+  );
+});
+
+// 宿主的引擎旋钮清单：每一条都是 `src/` 真的会读的（或按前缀规则必须一并剥的）名字。
+// 用 `ERIX_NO_REFLECTION=1` 打头是有原因的：它是主 agent 实测能把这套守卫变红的那个（7 → 4 次请求）。
+const HOSTILE_ENGINE_ENV = {
+  ERIX_NO_REFLECTION: "1",
+  ERIX_NO_ROUND_JUDGE: "1",
+  ERIX_JUDGE_INTERVAL: "1",
+  ERIX_JUDGE_MODEL: "whatever",
+  ERIX_REFLECTION: "off",
+  ERIX_NO_WRAPUP_INSTRUCTION: "1",
+  ERIX_WRAPUP_NORMALIZE: "1",
+  ERIX_STALL_MODE: "off",
+  ERIX_NO_FORCED_FINAL: "1",
+  ERIX_NOTES_DIR: "/nonexistent-doc-example-notes",
+};
+
+test(`L3 子进程不继承宿主的引擎旋钮：${Object.keys(HOSTILE_ENGINE_ENV).length} 个旋钮全塞进 process.env，README #1 仍量到默认引擎的 ${README_FENCE_STEPS[0]} 次请求（issue #583）`, async () => {
+  const fence = README_TARGET.enFences[0];
+  // 逐键快照 → 恢复：只动本格自己塞进去的那几个键，宿主原本的值（如果有）原样还回去。
+  const saved = new Map(Object.keys(HOSTILE_ENGINE_ENV).map((key) => [key, process.env[key]]));
+  for (const [key, value] of Object.entries(HOSTILE_ENGINE_ENV)) process.env[key] = value;
+  try {
+    const result = await runLevel3(fence);
+    assert.ok(
+      result.ok,
+      describeFailure(fence, "L3", [
+        "宿主的引擎旋钮溜进了 L3 子进程：这一格在宿主环境 "
+          + `${JSON.stringify(HOSTILE_ENGINE_ENV)} 下必须仍量到「默认引擎」`
+          + `（README_FENCE_STEPS[0] = ${README_FENCE_STEPS[0]} 次请求）。`,
+        "红成这样说明**剥除规则失效了**（buildLevel3Env 被掏成 `{ ...process.env }`）——",
+        "既不是引擎默认值漂移，也不是 README 坏了（issue #583）。",
+        `--- 子进程 stdout ---\n${result.stdout}`,
+        `--- 子进程 stderr ---\n${result.stderr}`,
+      ].join("\n")),
+    );
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
