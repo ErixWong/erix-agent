@@ -5,7 +5,9 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import {
+  MAX_SUMMARY_LENGTH,
   createBuiltinNotesTools,
+  note_list,
   note_read,
   note_take,
   resolveNotesDir,
@@ -694,5 +696,205 @@ test("assembler semanticStateProvider list failure returns undefined and never s
     const recovered = await builtin.semanticStateProvider({ state: { stateVersion: 3 } });
     assert.match(recovered.text, /k2 \(@agent\): v2/);
     assert.match(recovered.text, /k-mutation \(@agent\): v/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// issue #570：note_take 补 summary 写入口。
+// 目录（renderNotesDirectory）一直读 current.summary，但工具面没有这个入参——
+// 读侧有槽、写侧无门。下面每一格钉住贯穿链上的一环：schema → 落盘 → 读回 →
+// 清单 → 目录；另有一格钉住「不传 summary 时老记录形状逐字不变」。
+// ---------------------------------------------------------------------------
+
+// 真机形态的正文：首行 107 字符，60 字符窗口被 uuid 与时刻占满，主题在窗口之外。
+const FOLDING_CONTENT = "折走存档：第 12 次折叠（run 3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6a7b，"
+  + "2026-10-29T03:14:15.926Z）：主题=note_take 补 summary 写入口";
+const FOLDING_SUMMARY = "第 12 次折叠：note_take 补 summary 写入口";
+
+test("note_take declares summary (≤120) and writes it into current.summary", async () => {
+  const definition = createBuiltinNotesTools({ runId: "summary-schema-run" })
+    .definitions.find((tool) => tool.name === "note_take");
+  assert.deepEqual(definition.inputSchema.properties.summary, {
+    type: "string",
+    maxLength: MAX_SUMMARY_LENGTH,
+  });
+  assert.equal(MAX_SUMMARY_LENGTH, 120);
+  assert.equal(definition.inputSchema.required.includes("summary"), false, "summary 可选");
+
+  await withDirectory(async (directory) => {
+    const scope = { runId: "summary-schema-run", notesDir: directory };
+    const saved = JSON.parse(await note_take({
+      key: "fold_12",
+      content: FOLDING_CONTENT,
+      summary: FOLDING_SUMMARY,
+      __erix: scope,
+    }));
+    assert.equal(saved.status, "found");
+    assert.equal(saved.action, "saved");
+    const onDisk = JSON.parse(await readFile(
+      path.join(directory, "run", "summary-schema-run", "fold_12.json"),
+      "utf8",
+    ));
+    // 目录读的是 current.summary：落在别处（例如 artifactRef.summary）等于没写。
+    assert.equal(onDisk.current.summary, FOLDING_SUMMARY);
+    assert.equal(onDisk.current.content, FOLDING_CONTENT);
+  });
+});
+
+test("note_read and note_list both carry summary (issue #570 读回投影)", async () => {
+  await withDirectory(async (directory) => {
+    const scope = { runId: "summary-read-run", notesDir: directory };
+    await note_take({
+      key: "fold_12",
+      content: FOLDING_CONTENT,
+      summary: FOLDING_SUMMARY,
+      tags: ["decision"],
+      __erix: scope,
+    });
+    const read = JSON.parse(await note_read({ key: "fold_12", __erix: scope }));
+    assert.equal(read.current.summary, FOLDING_SUMMARY, "note_read 的 current 投影带 summary");
+    assert.equal(read.value, FOLDING_CONTENT);
+
+    const listed = JSON.parse(await note_list({ __erix: scope }));
+    assert.equal(listed.count, 1);
+    assert.equal(listed.notes[0].summary, FOLDING_SUMMARY, "note_list 的 listEntry 带 summary");
+    // 清单仍不泄露正文（既有边界不变）。
+    assert.equal(listed.notes[0].hasContent, true);
+    assert.equal("content" in listed.notes[0], false);
+  });
+});
+
+test("same-key rewrite moves the old summary into the superseded chain", async () => {
+  await withDirectory(async (directory) => {
+    const scope = { runId: "summary-supersede-run", notesDir: directory };
+    await note_take({
+      key: "fold",
+      content: "第一次折叠的正文",
+      summary: "第一次折叠：旧主题",
+      __erix: scope,
+    });
+    const updated = JSON.parse(await note_take({
+      key: "fold",
+      content: "第二次折叠的正文",
+      summary: "第二次折叠：新主题",
+      __erix: scope,
+    }));
+    assert.equal(updated.action, "updated");
+    assert.equal(updated.superseded, 1);
+
+    const read = JSON.parse(await note_read({ key: "fold", __erix: scope }));
+    assert.equal(read.current.summary, "第二次折叠：新主题");
+    assert.equal(read.superseded.length, 1);
+    assert.equal(read.superseded[0].summary, "第一次折叠：旧主题", "旧 summary 随旧 current 进 superseded");
+    assert.equal(read.superseded[0].content, "第一次折叠的正文");
+    assert.equal(read.superseded[0].invalid, true);
+
+    // MAX_SUPERSEDED 语义不变：第 4 次写入后仍是 3 条、folded 不涨；第 5 次写入
+    // 把最老的一条折进 folded（旧 summary 跟着被折走的那条一起走）。
+    await note_take({ key: "fold", content: "第三次", summary: "第三次", __erix: scope });
+    await note_take({ key: "fold", content: "第四次", summary: "第四次", __erix: scope });
+    const capped = JSON.parse(await note_read({ key: "fold", __erix: scope }));
+    assert.equal(capped.superseded.length, 3);
+    assert.equal(capped.folded, 0);
+    assert.deepEqual(
+      capped.superseded.map((entry) => entry.summary),
+      ["第一次折叠：旧主题", "第二次折叠：新主题", "第三次"],
+    );
+
+    // 更新时不传 summary：新 current 不得凭空长出 summary 键（老形状逐字不变），
+    // 而旧 summary 已经在 superseded 里留档。
+    await note_take({ key: "fold", content: "第五次", __erix: scope });
+    const withoutSummary = JSON.parse(await note_read({ key: "fold", __erix: scope }));
+    assert.deepEqual(Object.keys(withoutSummary.current).sort(), ["content", "provenance", "ts"]);
+    assert.equal(withoutSummary.folded, 1, "MAX_SUPERSEDED 语义不变");
+    assert.deepEqual(
+      withoutSummary.superseded.map((entry) => entry.summary),
+      ["第二次折叠：新主题", "第三次", "第四次"],
+    );
+  });
+});
+
+test("note_take without summary keeps the record shape byte-identical", async () => {
+  await withDirectory(async (directory) => {
+    const scope = { runId: "no-summary-run", notesDir: directory };
+    await note_take({ key: "plain", content: "纯正文", __erix: scope });
+    const onDisk = JSON.parse(await readFile(
+      path.join(directory, "run", "no-summary-run", "plain.json"),
+      "utf8",
+    ));
+    assert.deepEqual(Object.keys(onDisk.current).sort(), ["content", "provenance", "ts"]);
+    assert.equal("summary" in onDisk.current, false);
+    const read = JSON.parse(await note_read({ key: "plain", __erix: scope }));
+    assert.deepEqual(Object.keys(read.current).sort(), ["content", "provenance", "ts"]);
+    const listed = JSON.parse(await note_list({ __erix: scope }));
+    assert.equal("summary" in listed.notes[0], false);
+    assert.equal(JSON.stringify(listed).includes("summary"), false);
+    // 空白串按「未提供」处理：不写这个键，目录行不会被空摘要清空。
+    await note_take({ key: "blank-summary", content: "正文首行", summary: "   ", __erix: scope });
+    const blank = JSON.parse(await readFile(
+      path.join(directory, "run", "no-summary-run", "blank-summary.json"),
+      "utf8",
+    ));
+    assert.equal("summary" in blank.current, false);
+  });
+});
+
+test("summary over 120 chars returns the existing invalid shape (never throws, never truncates)", async () => {
+  await withDirectory(async (directory) => {
+    const scope = { runId: "summary-invalid-run", notesDir: directory };
+    const tooLong = JSON.parse(await note_take({
+      key: "too-long",
+      content: "正文",
+      summary: "x".repeat(MAX_SUMMARY_LENGTH + 1),
+      __erix: scope,
+    }));
+    assert.equal(tooLong.status, "invalid");
+    assert.equal(tooLong.key, "too-long");
+    assert.match(tooLong.reason, /summary 不得超过 120 个字符/u);
+    assert.equal(typeof tooLong.next, "string");
+    // 不是静默截断：什么都没落盘。
+    assert.equal(
+      JSON.parse(await note_read({ key: "too-long", __erix: scope })).status,
+      "missing",
+    );
+    // 非字符串同样是既有 invalid 形状。
+    const notString = JSON.parse(await note_take({
+      key: "not-string",
+      content: "正文",
+      summary: 42,
+      __erix: scope,
+    }));
+    assert.equal(notString.status, "invalid");
+    assert.match(notString.reason, /summary 必须是字符串/u);
+    // 边界：正好 120 字符合法。
+    const boundary = JSON.parse(await note_take({
+      key: "boundary",
+      content: "正文",
+      summary: "y".repeat(MAX_SUMMARY_LENGTH),
+      __erix: scope,
+    }));
+    assert.equal(boundary.status, "found");
+    assert.equal(
+      JSON.parse(await note_read({ key: "boundary", __erix: scope })).current.summary.length,
+      MAX_SUMMARY_LENGTH,
+    );
+  });
+});
+
+test("summary over 120 chars through the tool registry is a schema violation, not a throw", async () => {
+  await withDirectory(async (directory) => {
+    const builtin = createBuiltinNotesTools({ notesDir: directory, runId: "summary-registry-run" });
+    const rejected = await builtin.executeTool("note_take", {
+      key: "too-long",
+      content: "正文",
+      summary: "x".repeat(MAX_SUMMARY_LENGTH + 1),
+    });
+    // 与 content 越界同一条既有口径（registry 的 schema 校验，不是异常）。
+    assert.equal(typeof rejected, "string");
+    assert.match(rejected, /field "summary" exceeds maxLength 120/u);
+    assert.equal(
+      JSON.parse(await builtin.executeTool("note_read", { key: "too-long" })).status,
+      "missing",
+    );
   });
 });
