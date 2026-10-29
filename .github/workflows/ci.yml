@@ -57,6 +57,19 @@ jobs:
       - name: Documentation drift check (strict)
         run: npm run check:docs:strict
 
+      # 阻塞（issue #560）：退役扁平拼写的硬门（#523 的扫描器）。
+      # 现状类（architecture* / charts* / requirements* / testing* / maintenance-policy* / soak.md）
+      # 出现退役扁平写点 ⇒ 红；历史类与契约类的命中数必须等于钉子（SUSPECT / UNPINNED 同样红）；
+      # 未登记的 `docs/**.md` 按现状类照扫（「这张单没管到」不是豁免理由）。
+      - name: Retired flat-spelling gate
+        run: npm run check:docs-spelling
+
+      # 阻塞：上面那道门的反向证（内存夹具，不写盘）——同一套判据里改一处必须红、不改必须绿，
+      # 分类清单必须按路径覆盖 EN/CN，未登记路径必须归现状类，钉子空转/抬升/掉落都必须红（#210 R2）。
+      # 为什么不并进上面那条：那条证的是「今天的文档干净」，这条证的是「判据还拦得住」。
+      - name: Retired flat-spelling gate self-test
+        run: node scripts/retired-spelling-scan.mjs --self-test
+
       - name: Doc example fences
         run: npm run check:docs-examples
 

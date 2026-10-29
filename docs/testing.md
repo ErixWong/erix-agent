@@ -148,7 +148,7 @@ The original MVP coverage is still represented by these tests:
 | Providers and errors | `test/providers/openai.test.js`, `test/app-container-p0.test.js` | OpenAI request/response mapping, tool calls, endpoint normalization, configuration validation, error classification, abort behavior, and the basic Anthropic/loop path |
 | Canonical messages | `test/messages/canonical.test.js` | Canonical conversion, tool-result ordering, tool schemas, legacy function calls, invalid response diagnostics, and raw protocol fields |
 | Token estimates | `test/tokens.test.js` | CJK and non-CJK estimates, safety margins, configurable coefficients, message/block costs, and tool identifiers |
-| Tool loop | `test/loop.test.js` | Text completion, tool-result feedback, `maxRounds`, stall nudges and termination, tool errors, `onToolResult`, round snapshots, and usage accumulation |
+| Tool loop | `test/loop.test.js` | Text completion, tool-result feedback, `config.run.maxRounds`, stall nudges and termination, tool errors, `onToolResult`, round snapshots, and usage accumulation |
 | Memory transcript store | `test/store/memory.test.js` | Memory-store behavior plus the reusable transcript-store contract |
 
 The example E2E coverage is no longer a single `node examples/exec-demo.test.mjs` invocation. The current optional set is the `examples/*.test.mjs` command in the layer table above. `examples/exec-demo.test.mjs` still checks a real multi-round tool task and compaction behavior; the other two example files cover memory benchmarking and provenance reproducibility. The demo's `exec` tool remains allowlisted and time-limited to demonstrate the caller's security responsibility.
