@@ -41,6 +41,59 @@
   `agent.run({ messages })` 之后 `folding.toolResultTtl` 仍把第一轮的工具结果折掉）、两个拒绝方向逐字文案、
   以及「包装不是第二套引擎」（同样选项走 `runToolLoop` 与走 `createAgent` + `run`，请求体逐字相同）。
 
+- **Folding can be pulled forward to a fraction of the budget: `config.folding.context.foldAtRatio` (issue #569).**
+  A number in `(0, 1]`, default `1.0`, and `1.0` is byte-for-byte the trigger of today — the local-estimate
+  side of the fold test reads `estimatedTokens > budgetTokens * foldAtRatio`, so multiplying by 1.0 changes
+  nothing (it is an identity, not a rounding coincidence). It moves **only** the local estimate: the API-usage
+  side (`isApiInputOverBudget` (`src/loop/budget.js`)) keeps comparing against the full `budgetTokens`, so a
+  host that lowers the ratio folds earlier without ever mis-reading what the provider reported. Validation is
+  the `#493` discipline — **only omission falls back**: `null`, `0`, `-1`, `1.5`, `NaN` and `Infinity` were
+  supplied, so assembly throws a `TypeError` naming the key (`validateContextFoldAtRatio`
+  (`src/assembly-validators.js`)), and the leaf is listed in `CONTEXT_OPTION_NAMES`
+  (`src/assembly-validators.js`) so a correct value is not punished as an unknown sub-key. Changing the default
+  `1.0` itself would be breaking, so the default is the compatibility boundary, not a tunable.
+- **折叠可以提前到预算的一个比例：`config.folding.context.foldAtRatio`（issue #569）。**
+  取值 `(0, 1]`，默认 `1.0`，而 `1.0` 与今天的触发点**逐字等价**——本地估算那一侧读的是
+  `estimatedTokens > budgetTokens * foldAtRatio`，乘 1.0 什么都不变（是恒等，不是四舍五入的巧合）。
+  它**只**挪本地估算这一侧：API usage 那一侧（`isApiInputOverBudget` (`src/loop/budget.js`)）仍拿完整的
+  `budgetTokens` 比较，所以宿主调小比例只会更早折叠，不会误读上游报回来的量。校验走 `#493` 口径——
+  **只有省略才退回默认**：`null`、`0`、`-1`、`1.5`、`NaN`、`Infinity` 都是「给了但给错」⇒ 装配期抛
+  `TypeError` 并点名键（`validateContextFoldAtRatio` (`src/assembly-validators.js`)）；同时它已收进
+  `CONTEXT_OPTION_NAMES` (`src/assembly-validators.js`)，免得宿主给对了值反而被打成未知子键。
+  默认 `1.0` 本身一改就是 breaking，所以默认值是兼容边界，不是可调参数。
+- **A budgeted, host-fed session continuity block: `capabilities.hooks.continuityProvider` + `config.folding.context.continuityMaxTokens` (issue #568).**
+  The block answers "what is this session actually doing" without occupying a slot the model has to share with
+  counters. Content comes from the host — `continuityProvider({runId, state, previous}) → {text, version}` (may
+  be async) — and if the host supplies no provider the engine injects **nothing**, which is byte-identical to
+  before this issue. It is **one** marker-delimited message (`CONTINUITY_BLOCK_START`
+  (`src/loop/continuity-block.js`)), refreshed in place by `upsertContinuityInMessages`
+  (`src/loop/continuity-block.js`) and moved to the **request tail** by `positionContinuityBlock`
+  (`src/loop/continuity-block.js`): rounds never add a message, and the tail is deliberate —
+  `markStablePrefix` (`src/loop/provider-runner.js`) puts the system prompt before history, so editing
+  `mainSystem` per round would bust a 100k–200k token prefix every request. The block is a real entry in
+  `messages`, so `estimateMessageTokens` (`src/tokens.js`) counts it in the fold trigger: it cannot inflate the
+  request without the compactor noticing. Its own budget is `continuityMaxTokens`, default
+  `CONTINUITY_DEFAULT_MAX_TOKENS` = 1200 (`src/loop/continuity-block.js`), measured in `estimateTokens`, and —
+  **a deliberate difference from `#493`** — an illegal value is normalized to the default **without throwing**
+  (the `#554` discipline for this free-form shell). Downscaling is never silent: the four section headers stay,
+  entries are cut at `CONTINUITY_MAX_ENTRY_CHARS` = 400 with a visible marker, a missing or throwing provider
+  writes an explicit unknown, and a block that could not be placed is reported as
+  `continuity_injection_skipped` on the existing observer channel.
+- **一块受预算约束、由宿主喂内容的会话续接块：`capabilities.hooks.continuityProvider` + `config.folding.context.continuityMaxTokens`（issue #568）。**
+  它回答「这个会话到底在干什么」，而不占一个模型得跟计数器抢的槽。内容来自宿主——
+  `continuityProvider({runId, state, previous}) → {text, version}`（可以是 async）；宿主不给 provider 时引擎
+  **整块都不注入**，与开工前**逐字等价**。它是**一条**带 marker 的消息（`CONTINUITY_BLOCK_START`
+  (`src/loop/continuity-block.js`)），由 `upsertContinuityInMessages` (`src/loop/continuity-block.js`)
+  **就地刷新**、由 `positionContinuityBlock` (`src/loop/continuity-block.js`) **挪到请求尾部**：轮次不新增消息，
+  放尾部是有意为之——`markStablePrefix` (`src/loop/provider-runner.js`) 把 system 放在历史之前，每轮改
+  `mainSystem` 会让 100k–200k token 的前缀每次请求都失效。块是 `messages` 里真实的一条，所以
+  `estimateMessageTokens` (`src/tokens.js`) 会把它算进折叠触发估算：它没法偷偷把请求撑大而让压缩器看不见。
+  它自己的预算是 `continuityMaxTokens`，默认 `CONTINUITY_DEFAULT_MAX_TOKENS` = 1200
+  (`src/loop/continuity-block.js`)，量的是 `estimateTokens`；而且**与 `#493` 故意不同**——非法值退回默认、
+  **不抛**（这条自由文本壳走 `#554` 口径）。降采样绝不静默：四个段标题保留、条目在
+  `CONTINUITY_MAX_ENTRY_CHARS` = 400 处夹断并留可见标记，provider 缺失或抛错就写明确的 unknown，
+  块没能落位则在既有观察者通道上报 `continuity_injection_skipped`。
+
 ### Fixed
 
 - **The doc-example harness now says "engine default drift" out loud instead of looking like a broken README (issue #582).**

@@ -5134,6 +5134,56 @@ with `summaryRole: "system"`). Its fixed sections, in order:
    characters. In `fold-llm` the section is appended after the LLM summary
    (and after size enforcement), so `maxSummaryTokens` cannot truncate it.
 
+## Fold trigger ratio and the session continuity block (issue #569 / issue #568)
+
+Both knobs live under `config.folding.context` and both are **data** (config plane); the continuity block's
+content source is a **capability** (`capabilities.hooks`), and that split is the whole point — see
+`CONFIG_LEAF_BINDING` (`src/loop/config-namespace.js`) for which leaves belong to initialization.
+
+**`config.folding.context.foldAtRatio` (issue #569)** — when folding starts. Type `number`, legal range
+`(0, 1]`, default `1.0`. The fold test's local-estimate side reads
+`estimatedTokens > budgetTokens * foldAtRatio`, so the default is an identity: `1.0` reproduces today's
+trigger byte for byte, and a value below `1.0` starts folding earlier in the same run. Only the local estimate
+is scaled — the API-usage side, `isApiInputOverBudget` (`src/loop/budget.js`), still compares provider-reported
+input tokens against the full `budgetTokens`, so the ratio can never make the engine mis-read upstream usage.
+Validation follows the `#493` discipline: **only omission restores the default**. A present value that is not a
+finite number in `(0, 1]` — `null`, `0`, `-1`, `1.5`, `NaN`, `Infinity`, `"0.5"` — is rejected at assembly with
+a `TypeError` that names the key, from `validateContextFoldAtRatio` (`src/assembly-validators.js`). The leaf is
+also listed in `CONTEXT_OPTION_NAMES` (`src/assembly-validators.js`), because a whitelisted-but-unvalidated (or
+validated-but-unwhitelisted) sub-key is exactly the `#493` failure shape.
+
+**`config.folding.context.continuityMaxTokens` + `capabilities.hooks.continuityProvider` (issue #568)** — how
+large the session continuity block may be, and what it says. The block is one marker-delimited message
+(`CONTINUITY_BLOCK_START` (`src/loop/continuity-block.js`)) carrying four labelled sections
+(`[contract]`, `[unfinished]`, `[evidence]`, `[notes]`) whose headers are **never** downsampled: when the budget
+is tight, entries are dropped and each remaining entry is cut at `CONTINUITY_MAX_ENTRY_CHARS` = 400 with a
+visible marker, and the shortfall is stated in the block itself rather than left implicit.
+
+- The content source is the host: `capabilities.hooks.continuityProvider` is called as
+  `({runId, state, previous}) → {text, version}` and may be async; `previous` is what the host supplied last
+  round so a host can diff instead of re-rendering. **No provider ⇒ the engine injects nothing** — behaviour is
+  byte-identical to before #568, so this is opt-in, not a new mandatory block on every request.
+- Placement is the **request tail**, refreshed in place: `upsertContinuityInMessages`
+  (`src/loop/continuity-block.js`) replaces the existing block by marker rather than appending, and
+  `positionContinuityBlock` (`src/loop/continuity-block.js`) moves it to the end of `messages`. Rounds
+  therefore never grow the history by one message. It is deliberately *not* folded into `mainSystem`:
+  `markStablePrefix` (`src/loop/provider-runner.js`) marks the prompt's opening block as prefix-head, and history
+  follows it, so a per-round `mainSystem` edit would invalidate a 100k–200k token prefix on every request.
+- It is **counted**: the block is a real entry in `messages`, so `estimateMessageTokens` (`src/tokens.js`)
+  includes it in the same estimate the fold trigger reads — a host cannot inflate the request with a continuity
+  block the compactor cannot see.
+- Its budget is separate from `config.folding.context.budgetTokens` (which answers "when to fold"): the default is
+  `CONTINUITY_DEFAULT_MAX_TOKENS` = 1200 (`src/loop/continuity-block.js`), measured with `estimateTokens`
+  (not characters), and it is an explicitly experimental starting value — changing it is a product decision.
+  **Unlike `foldAtRatio`, an illegal value does not throw**: `renderContinuityBlock`
+  (`src/loop/continuity-block.js`) normalizes it back to the default, following the `#554` discipline for this
+  free-form shell. Two adjacent leaves under `config.folding.context` therefore intentionally disagree on validation
+  strictness; do not "harmonize" one to the other without a version boundary.
+- Nothing fails silently: a missing, empty, or throwing provider writes an explicit unknown into the sections
+  (never a mechanical success text), and a block that could not be placed — e.g. the request tail is an
+  assistant `tool_use` still missing its `tool_result` — is reported as `continuity_injection_skipped` through
+  the existing `onEvent` observer channel.
+
 ## Store fidelity requirements
 
 A host `TranscriptStore` must preserve the complete `RoundRecord` and complete

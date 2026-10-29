@@ -2118,8 +2118,24 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  `configLeafNamesForBinding` / `configSchemaSelfCheck` / `CONFIG_NAMESPACE_SCHEMA`
  *  （`src/loop/config-namespace.js`）—— 新增 **4 组**唯一 (符号, 文件) 键，在本分支树上
  *  `--verbose` 实测 **158 组 / 489 处**（此前 154 组 / 473 处；裸行号一处未增），下限随之抬到 158。
- *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 158;
+ *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 * 片A（切版前的 #569 / #568 文档补齐，issue #578）：契约中英成对新增
+ * `## Fold trigger ratio and the session continuity block`（`## 折叠触发比例与会话续接块`）一节，
+ * 引 `validateContextFoldAtRatio` / `CONTEXT_OPTION_NAMES`（`src/assembly-validators.js`）、
+ * `CONTINUITY_BLOCK_START` / `upsertContinuityInMessages` / `positionContinuityBlock` /
+ * `CONTINUITY_DEFAULT_MAX_TOKENS` / `CONTINUITY_MAX_ENTRY_CHARS` / `renderContinuityBlock`
+ * （`src/loop/continuity-block.js`）、`isApiInputOverBudget`（`src/loop/budget.js`）、
+ * `markStablePrefix`（`src/loop/provider-runner.js`）、`estimateMessageTokens`（`src/tokens.js`）
+ * ⇒ **+6 组 / +24 处**（同一棵树实测：改前 158 组 / 492 处，是把两份契约退回备份跑出来的，不是拿 AGENTS 里的
+ * 历史声称当基线——那句写的 489 自己就过期了 3 处）。
+ * ⚠ **本条自己被数了两遍**：这句说明里的 `(path)` 锚点也在 `symbols` 覆盖面内（AGENTS.md 20 → 25 组、AGENTS_cn.md
+ * 43 → 47 组），所以地板**必须在改完 AGENTS 之后**重测——先量后写会得到偏低的 163，而 `--self-test` 那两例的判据是
+ * 「实测 == 地板」，偏低就红（实测踩过：地板 163 时一条报 163 ≠ 162、另一例升到 164 反而不红）。诊断原文：
+ *
+ * ```
+ * ✓ symbol-anchor: 实测 163 组 > 下限 158 组——符号锚点在变多（好方向），请把 SYMBOL_ANCHOR_MIN_UNIQUE 升到 163，否则下限就在空转
+ * ```
+ */
+const SYMBOL_ANCHOR_MIN_UNIQUE = 164;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {

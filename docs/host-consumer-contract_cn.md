@@ -4053,6 +4053,47 @@ JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错�
    在 `fold-llm` 中，该分节在 LLM 摘要之后（且在尺寸钳制之后）追加，因此
    `maxSummaryTokens` 截不到它。
 
+## 折叠触发比例与会话续接块（issue #569 / issue #568）
+
+两个旋钮都住在 `config.folding.context` 下，而且都是**数据**（config 面）；续接块的**内容来源**是**能力**
+（`capabilities.hooks`）——这个分工正是本节的重点：哪些叶子属于初始化，看
+`CONFIG_LEAF_BINDING` (`src/loop/config-namespace.js`)。
+
+**`config.folding.context.foldAtRatio`（issue #569）**——什么时候开始折叠。类型 `number`，合法区间 `(0, 1]`，
+默认 `1.0`。折叠判据的本地估算那一侧读 `estimatedTokens > budgetTokens * foldAtRatio`，所以默认值是恒等：
+`1.0` 逐字复现今天的触发点，小于 `1.0` 则同一次 run 里更早开始折叠。**只**缩放本地估算——API usage 那一侧
+`isApiInputOverBudget` (`src/loop/budget.js`) 仍拿上游报回的 input tokens 与完整的 `budgetTokens` 比较，
+所以这个比例永远不可能让引擎误读上游用量。校验走 `#493` 口径：**只有省略才恢复默认**。给了、但不是
+`(0, 1]` 内的有限数——`null`、`0`、`-1`、`1.5`、`NaN`、`Infinity`、`"0.5"`——都在装配期被
+`validateContextFoldAtRatio` (`src/assembly-validators.js`) 拒掉并抛点名键的 `TypeError`。该叶同时收在
+`CONTEXT_OPTION_NAMES` (`src/assembly-validators.js`) 里：进白名单却不校验（或校验了却没进白名单）正是 #493
+的故障形状。
+
+**`config.folding.context.continuityMaxTokens` + `capabilities.hooks.continuityProvider`（issue #568）**——
+会话续接块最多能有多大、以及它说什么。块是**一条**带 marker 的消息（`CONTINUITY_BLOCK_START`
+(`src/loop/continuity-block.js`)），内含四个带标题的段（`[contract]`、`[unfinished]`、`[evidence]`、`[notes]`），
+段标题**永不**降采样：预算紧时丢条目，留下的条目在 `CONTINUITY_MAX_ENTRY_CHARS` = 400 处夹断并留可见标记，
+且「不完整」这件事写在块自己里面，不靠隐含。
+
+- 内容来源是宿主：`capabilities.hooks.continuityProvider` 以 `({runId, state, previous}) → {text, version}`
+  调用，可以是 async；`previous` 是宿主上一轮给过的内容，便于宿主做差量而不是整块重渲染。
+  **不给 provider ⇒ 引擎什么都不注入**——行为与 #568 之前逐字相同，所以它是 opt-in，不是每次请求强加的新块。
+- 落点是**请求尾部**、就地刷新：`upsertContinuityInMessages` (`src/loop/continuity-block.js`) 按 marker 替换
+  既有块而不是追加，`positionContinuityBlock` (`src/loop/continuity-block.js`) 把它挪到 `messages` 末尾。
+  于是轮次**不会**让历史每条多一条消息。刻意**不**并进 `mainSystem`：`markStablePrefix`
+  (`src/loop/provider-runner.js`) 把提示词开头的块标成前缀头、其后紧跟历史，每轮改 `mainSystem` 会让 100k–200k
+  token 的前缀每次请求都失效。
+- 它**被计入估算**：块是 `messages` 里真实的一条，所以 `estimateMessageTokens` (`src/tokens.js`) 会把它算进
+  折叠判据读的那份估算——宿主没法用一个压缩器看不见的续接块偷偷把请求撑大。
+- 它的预算与 `config.folding.context.budgetTokens`（回答「何时折叠」）**是两件事**：默认 `CONTINUITY_DEFAULT_MAX_TOKENS`
+  = 1200 (`src/loop/continuity-block.js`)，用 `estimateTokens` 量（不是字符数），且明写是试验性起步值——调它是
+  产品决策。**与 `foldAtRatio` 不同，非法值不抛**：`renderContinuityBlock`
+  (`src/loop/continuity-block.js`) 把它归回默认，走这条自由文本壳的 `#554` 口径。因此**同在这条 `config.folding.context`
+  壳下的相邻两个叶子，校验严格度是故意不一致的**；没有版本边界就别去把其中一个"统一"成另一个。
+- 没有静默失败：provider 缺失/给空/抛错都在段里写明确的 unknown（绝不拿机械文本冒充成功）；块没能落位——
+  例如请求尾部是一条还缺 `tool_result` 的 assistant `tool_use`——则通过既有 `onEvent` 观察者通道上报
+  `continuity_injection_skipped`。
+
 ## Store 保真要求
 
 宿主 `TranscriptStore` **必须保留完整的 `RoundRecord` 与完整 message 对象**，包括宿主不认识

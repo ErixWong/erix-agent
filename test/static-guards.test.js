@@ -3973,8 +3973,17 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *     # 配对地板：实测 9 对 > 地板 8 对 ⇒ 可以抬地板到 9
  *     校准面（## [Unreleased]）上实测 9 对 ≠ 地板 8 对：地板必须恰等于校准面上的实测值
  *     （否则「掉一条就穿底」证不出来）。配对变多了 ⇒ 请抬地板到实测值
+ *
+ * 片A（#569 / #568 的文档补齐，切版前）：`## [Unreleased] ### Added` 新增两对条目——`config.folding.context.foldAtRatio`
+ * （#569）与 `capabilities.hooks.continuityProvider` + `config.folding.context.continuityMaxTokens`（#568）。
+ * 面没挪（仍是 `## [Unreleased]`），只是配对变多 ⇒ 实测 11 对，地板 9 → 11。守卫自己的 diagnostic 原文：
+ *
+ * ``` 
+ * # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 11 条 / 英文 11 条 / 配对 11 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 9（校准面 \#\# [Unreleased]）
+ * # 配对地板：实测 11 对 > 地板 9 对 ⇒ 可以抬地板到 11
+ * ```
  */
-const CHANGELOG_PAIR_FLOOR = 9;
+const CHANGELOG_PAIR_FLOOR = 11;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
