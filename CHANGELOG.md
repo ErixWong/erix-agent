@@ -43,6 +43,40 @@
 
 ### Fixed
 
+- **The doc-example harness now says "engine default drift" out loud instead of looking like a broken README (issue #582).**
+  The README fences that run against `createFakeProvider` carried a script of exactly **one** step, and the
+  quickstart's scripted `fetch` upstream carried its own literal `12`, so the step assumption lived in three
+  separate places and its failure read `Fake provider script exhausted`. Move an engine default (per-round
+  judging switching on, the no-tool completion rules changing, the judge cadence) and `runToolLoop` asks for
+  one more round: the cell goes red and the signal reads as "the documentation broke", so the next person
+  edits the README while the real question is the engine default. The assumption is now one explicit
+  constant, `README_FENCE_STEPS = [7, 1, 1]` (index = README fence number; `7` = 1 tool round + 3 no-tool
+  rounds + 3 judge calls), the fake scripts are built from it **without headroom** (the old `12` hid a 7 → 8
+  drift), and both failure paths carry the same sentence: "two possibilities: (1) the example's wiring really
+  broke, (2) engine default drift added a round — check `provider.requests.length` first". Script exhaustion
+  is re-thrown with that sentence instead of the bare `script exhausted`, and the completion assertion pins
+  the count (`requests.length !== README_FENCE_STEPS[i]`), so asking for **fewer** rounds reddens too. The
+  quickstart cell needs both paths: a short script there can be swallowed by the judge's degradation branch
+  (its provider error degrades to "parse failed, keep going"), so only the count assertion catches it.
+  Measured: `test/doc-examples.test.js` 52 → 60 cells, `npm run check:docs-examples` exit 0. The reverse
+  proofs are cells, not prose: rebuilding one cell's preamble with a step fewer — and with a step more — must
+  redden that cell **and** put the "two possibilities" sentence in the red text (`runLevel3(fence, {
+  preamble })` is the injection point; a mutation that does not land is itself a failure).
+- **文档示例 harness 现在会自己说出「引擎默认值漂移」，而不是长得像「README 坏了」（issue #582）。**
+  跑 `createFakeProvider` 的那两格 README 围栏，假脚本恰好**一步**；快速开始的脚本化 `fetch` 上游又在
+  自己肚子里写死了 `12`。于是「假设几步」散在三处，而失败文案只有一句 `Fake provider script exhausted`。
+  只要引擎默认值一动（每轮 judge 打开、无工具轮的收尾规则变化、judge 节奏变化），`runToolLoop` 就多要
+  一轮：该格变红，而信号读起来像「文档坏了」——下一个排查的人去改 README，真正该问的是引擎默认值。
+  现在这个假设是**一个显式常量** `README_FENCE_STEPS = [7, 1, 1]`（下标 = README 围栏序号；`7` = 1 工具轮
+  + 3 无工具轮 + 3 次 judge），假脚本按它备步且**不留余量**（从前的 `12` 会把 7 → 8 的漂移藏起来），
+  两条失败路径带同一句话：「两种可能：① 示例接线真的断了；② 引擎默认值漂移导致请求轮数增加——先看
+  `provider.requests.length` 实际是几次」。脚本先耗尽时不再抛那句光秃秃的 `script exhausted`，而是带着
+  这句话重抛；完成性断言把次数钉死（`requests.length !== README_FENCE_STEPS[i]`），所以引擎**少**要
+  几轮也会红。快速开始那一格两条路径都要：脚本短了可能被 judge 的降级分支吞掉（judge 的 provider 报错
+  被降级成「解析失败，继续」），只有次数断言拦得住。实测：`test/doc-examples.test.js` 52 → 60 格、
+  `npm run check:docs-examples` exit 0。反向证是**测试格**而不是报告里的一句自述：把某一格的 preamble
+  按「少一步」「多一步」重建后跑一遍，必须红**且**红字里逐字出现「两种可能」那句（注入点是
+  `runLevel3(fence, { preamble })`；变异没落上本身也算失败）。
 - **The two root READMEs' JavaScript fences are now executed, not just scanned for spellings (issue #576).**
   `npm run check:docs-examples` used to cover only `docs/host-consumer-contract{,_cn}.md`: the README
   quickstart — the first code a host or a model copies — had never been run once, which is how a retired

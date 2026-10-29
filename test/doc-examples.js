@@ -547,34 +547,58 @@ process.on("beforeExit", () => {
 ];
 
 // ---------------------------------------------------------------------------
-// 根 README 的围栏 preamble（issue #576，按 README.md 的围栏序号定位）。
-// 与契约文档那批的差别只有一处：两份 README 的 js 围栏都是**入门示例**，所以
-//   · 第 1 格（快速开始的最小工具循环）自带 `createOpenAIProvider`，桩只能接在
-//     `globalThis.fetch` 上——provider 构造时取的就是它，于是「脚本化上游」等价于
-//     `createFakeProvider` 的 script：脚本被掏空/耗光 ⇒ 下一次请求直接 throw ⇒ 整格红；
-//   · 第 2、3 格不构造 provider，直接用 `createFakeProvider`（沿用契约 fence #2 的现成机制），
-//     完成性断言就是那句 `provider.requests.length < 1 ⇒ throw`。
-// 两格都**不碰网络**（fetch 全被桩接住）、**不读 `~/.erix`**（没有 config 文件、没有 HOME 依赖）。
+// 每格 README 围栏**假设的 provider 请求次数**（issue #582 的显式常量）。
+// 索引 = README.md 的 js 围栏序号；假脚本按这个数**逐条备步、不多备**：
+//   #1 快速开始（示例自己写 `maxRounds: 16` ⇒ 每轮 judge 也走 provider）实测 **7** 次
+//      = 1 工具轮 + 3 无工具轮（`maxNoToolRounds`）+ 3 次 judge；
+//   #2 AssemblyPort 组合根 / #3 `runToolLoop` 一行式：单轮收尾，各 **1** 次。
+// 为什么钉实测值而不是留余量（#576 那版第 1 格给到 12 步）：余量会把「7 → 8」这种默认值
+// 漂移**藏起来**，而本单的病根恰恰是「漂移长得像文档坏了」。钉死之后漂移在**两条路**上都响，
+// 而且响的都是带「两种可能」那句的文案（`README_DRIFT_HINT`）：
+//   · 引擎要的比假设多 ⇒ 脚本先耗尽 ⇒ stubs 把 `script exhausted` 换成点名两种可能的那句；
+//   · 引擎要的比假设少 ⇒ epilogue 里 `requests.length !== 步数` 那条断言。
+// 改这个常量之前先量实际 `provider.requests.length`（#582 的排查顺序：先量次数，再决定
+// 改 README、改 preamble，还是认下引擎默认值真的变了并同步这里）。
 // ---------------------------------------------------------------------------
-export const README_FENCE_PREAMBLES = [
-  // README 第 1 格（EN :66，快速开始「最小工具循环」）
-  {
+export const README_FENCE_STEPS = [7, 1, 1];
+
+/**
+ * L3 完成性断言失败文案里那句「两种可能」（issue #582）。
+ *
+ * 它必须出现在**真实失败路径**上：`script exhausted` 的重抛（stubs 里）与 epilogue 的步数
+ * 断言都逐字带上它。这不是死字符串——把 `README_FENCE_STEPS` 改小一格，红字里就有它，
+ * `test/doc-examples.test.js` 的反向证格钉着这件事（改小 ⇒ 红且带这句；改大 ⇒ 也红）。
+ */
+export const README_DRIFT_HINT = "两种可能：① 示例接线真的断了（示例体 / preamble 与文档不再匹配）；"
+  + "② 引擎默认值漂移导致请求轮数增加 —— 先看 provider.requests.length 实际是几次，"
+  + "再决定改 README、改 preamble，还是认下默认值变了并同步 README_FENCE_STEPS。";
+
+/**
+ * README 第 1 格（快速开始「最小工具循环」）的 preamble：
+ * `createOpenAIProvider` 的 `fetchImpl` 默认就是 `globalThis.fetch`（构造时求值），
+ * 所以「脚本化上游」等价于 `createFakeProvider` 的 script —— 按 `steps` 备步，不碰网络。
+ *
+ * @param {number} steps 本格假设的 provider 请求次数（`README_FENCE_STEPS[0]`）。
+ */
+export function readmeQuickstartPreamble(steps) {
+  return {
     linkImports: [],
     stubs: `
+const __STEPS__ = ${steps};
+// 「两种可能」那句（issue #582）逐字进真实失败路径：脚本先耗尽时下面那个 throw 用它。
+const __DRIFT_HINT__ = ${JSON.stringify(README_DRIFT_HINT)};
 const __requests__ = [];
 // 脚本化上游：第 1 步要求调一次 exec 工具，其后都是收尾文本。与 createFakeProvider 的
 // script 同义——脚本被掏空（或示例多要一轮）时下面那条 throw 让整格变红，而不是静默空跑。
-// 为什么不止两步：maxRounds: 16 让每轮 judge 也走 provider（DEFAULT_REFLECTION_MIN_ROUNDS
-// = 16），而 judge 回复不可解析时引擎只会「继续」；再加上 completion 的 maxNoToolRounds = 3，
-// 一次默认跑完是「1 工具轮 + 3 无工具轮 + 3 次 judge」。脚本给足 12 步，**仍是有界**的：
-// 示例要得多于 12 次请求就是漂移，会在这里 throw。
+// 步数来自 README_FENCE_STEPS[0]（issue #582，实测 7 = 1 工具轮 + 3 无工具轮 + 3 次 judge）：
+// 假设变了就必须在这里显式改常量，而不是靠「多备几步」把它盖住。
 const __upstream__ = [
   {
     content: "I will inspect the files first.",
     toolCalls: [{ id: "doc-call-1", name: "exec", arguments: JSON.stringify({ command: "ls src" }) }],
     stopReason: "tool_use",
   },
-  ...Array.from({ length: 11 }, () => ({ content: "doc-example done", stopReason: "end_turn" })),
+  ...Array.from({ length: Math.max(__STEPS__ - 1, 0) }, () => ({ content: "doc-example done", stopReason: "end_turn" })),
 ];
 let __upstreamIndex__ = 0;
 // 示例体把 process.env.LLM_API_KEY 递给 createOpenAIProvider；apiKey 在构造时求值。
@@ -584,7 +608,13 @@ process.env.LLM_API_KEY = "doc-example-key";
 globalThis.fetch = async (url, options) => {
   __requests__.push({ url, options });
   if (__upstreamIndex__ >= __upstream__.length) {
-    throw new Error("fake upstream script exhausted");
+    // 「脚本先耗尽」= 引擎要的轮数比本格假设多。不换文案的话，下一个排查的人只会看到
+    // 'script exhausted' 就去改 README —— 那正是 issue #582 的病根。
+    throw new Error(
+      \`假上游脚本耗尽：本格假设 \${__STEPS__} 次 provider 请求（README_FENCE_STEPS[0]），\`
+      + \`实际已发起 \${__requests__.length} 次。\`
+      + __DRIFT_HINT__,
+    );
   }
   const step = __upstream__[__upstreamIndex__];
   __upstreamIndex__ += 1;
@@ -612,10 +642,13 @@ globalThis.fetch = async (url, options) => {
 `,
     epilogue: `
 // 示例体跑在函数里，局部量（provider / result）不外泄 → 只验「出门的请求」这条盘外事实。
-// 请求数不钉死：maxRounds 16 下每轮 judge 也走 provider（见 stubs 里那段说明），
-// 钉的是**下界**（工具轮 + 至少一轮回喂）与**有界**（脚本耗尽会 throw，进程非 0）。
-if (__requests__.length < 2) {
-  throw new Error(\`示例应至少发起 2 次 provider 请求（工具轮 + 回喂轮），实际 \${__requests__.length} 次\`);
+// 请求次数钉在 README_FENCE_STEPS[0] 上（issue #582）：这是本格对**引擎轮数**的假设，
+// 少了/多了都只有两种可能——示例接线断了，或引擎默认值漂移了。
+if (__requests__.length !== __STEPS__) {
+  throw new Error(
+    \`示例假设 \${__STEPS__} 次 provider 请求（README_FENCE_STEPS[0]），实际已发起 \${__requests__.length} 次。\`
+    + __DRIFT_HINT__,
+  );
 }
 const __first__ = JSON.parse(__requests__[0]?.options?.body ?? "{}");
 if (__first__.model !== "your-model") {
@@ -647,16 +680,87 @@ if (!__texts__.some((entry) => entry.includes('exec({"command":"ls src"}) -> ok'
 `,
     // 示例自己 `console.log(result.finalText)`：最后一句来自脚本化上游，证明整条链真的收尾了。
     expectStdout: ["doc-example done"],
+  };
+}
+
+/**
+ * README 第 2、3 格的 preamble（`createFakeProvider` 脚本，沿用契约 fence #2 的现成机制）。
+ *
+ * 两格共用这一份「按 `steps` 备步 + 耗尽重抛」的接线，只在 `linkImports` 与示例自己的
+ * 上下文常量（`extraStubs`）上不同 —— 漂移文案只有一处真相（`README_DRIFT_HINT`）。
+ *
+ * @param {{steps:number,index:number,linkImports:string[],extraStubs?:string}} options
+ *   `steps` = 本格假设的请求次数（`README_FENCE_STEPS[index]`），`index` = README 围栏序号。
+ */
+export function readmeFakeProviderPreamble({ steps, index, linkImports, extraStubs = "" }) {
+  const label = `README_FENCE_STEPS[${index}]`;
+  return {
+    linkImports,
+    stubs: `
+const __STEPS__ = ${steps};
+const __DRIFT_HINT__ = ${JSON.stringify(README_DRIFT_HINT)};
+const __fake__ = createFakeProvider(
+  Array.from({ length: __STEPS__ }, () => ({ content: [{ type: "text", text: "doc-example done" }], stopReason: "end_turn" })),
+);
+// 「脚本先耗尽」= 引擎要的轮数比本格假设多。createFakeProvider 自己的报错只有
+// 'Fake provider script exhausted'，看不出该查哪里 ⇒ 这里换成点名两种可能的那句（issue #582）。
+const __rethrowDrift__ = (error) => {
+  if (!/script exhausted/i.test(String(error?.message ?? error))) return error;
+  return new Error(
+    \`Fake provider 脚本耗尽：本格假设 \${__STEPS__} 次 provider 请求（${label}），\`
+    + \`实际已发起 \${__fake__.requests.length} 次。\`
+    + __DRIFT_HINT__,
+  );
+};
+// 只包一层改文案：requests 仍是同一个数组（epilogue 要读 provider.requests.length）。
+const provider = {
+  ...__fake__,
+  async chat(request) {
+    try {
+      return await __fake__.chat(request);
+    } catch (error) {
+      throw __rethrowDrift__(error);
+    }
   },
+  async chatStream(request) {
+    try {
+      return await __fake__.chatStream(request);
+    } catch (error) {
+      throw __rethrowDrift__(error);
+    }
+  },
+};
+${extraStubs}`,
+    epilogue: `
+if (provider.requests.length < 1) throw new Error("runToolLoop 未发起任何 provider 调用（示例体没跑到底）");
+// 请求次数钉在 ${label} 上（issue #582）：假设是「引擎轮数」，多了少了都只有两种可能。
+if (provider.requests.length !== __STEPS__) {
+  throw new Error(
+    \`示例假设 \${__STEPS__} 次 provider 请求（${label}），实际已发起 \${provider.requests.length} 次。\`
+    + __DRIFT_HINT__,
+  );
+}
+`,
+  };
+}
+
+// 两份 README 的 js 围栏都是**入门示例**：第 1 格自带 `createOpenAIProvider`，桩只能接在
+// `globalThis.fetch` 上；第 2、3 格不构造 provider，直接用 `createFakeProvider`。
+// 三格都**不碰网络**（fetch 全被桩接住）、**不读 `~/.erix`**（没有 config 文件、没有 HOME 依赖），
+// 完成性断言都是「实际请求次数 === README_FENCE_STEPS 里那一步的假设」（issue #582）。
+export const README_FENCE_PREAMBLES = [
+  // README 第 1 格（EN :66，快速开始「最小工具循环」）
+  readmeQuickstartPreamble(README_FENCE_STEPS[0]),
   // README 第 2 格（EN :291，AssemblyPort 组合根）
-  {
+  readmeFakeProviderPreamble({
+    steps: README_FENCE_STEPS[1],
+    index: 1,
     linkImports: [
       `import { createAssemblyPort, runToolLoop, createMemoryTranscriptStore } from ${JSON.stringify(INDEX_URL)};`,
       `import { createFakeProvider } from ${JSON.stringify(FAKE_PROVIDER_URL)};`,
     ],
-    stubs: `
+    extraStubs: `
 const modelConfig = { async resolve() { return { model: "doc-example-model", contextWindowTokens: 200000, maxOutputTokens: 1024 }; } };
-const provider = createFakeProvider([{ content: [{ type: "text", text: "doc-example done" }], stopReason: "end_turn" }]);
 const definitions = [];
 const executeTool = async () => "unused";
 const getToolMetadata = undefined;
@@ -666,18 +770,16 @@ const initialMessages = undefined;
 const policy = {};
 const emit = () => {};
 `,
-    epilogue: `
-if (provider.requests.length < 1) throw new Error("runToolLoop 未发起任何 provider 调用（示例体没跑到底）");
-`,
-  },
-  // README 第 3 格（EN :480，「`runToolLoop` API」节的核心入口一行式）
-  {
+  }),
+  // README 第 3 格（EN :480，「\`runToolLoop\` API」节的核心入口一行式）
+  readmeFakeProviderPreamble({
+    steps: README_FENCE_STEPS[2],
+    index: 2,
     linkImports: [
       `import { runToolLoop } from ${JSON.stringify(INDEX_URL)};`,
       `import { createFakeProvider } from ${JSON.stringify(FAKE_PROVIDER_URL)};`,
     ],
-    stubs: `
-const provider = createFakeProvider([{ content: [{ type: "text", text: "doc-example done" }], stopReason: "end_turn" }]);
+    extraStubs: `
 const executeTool = async () => "doc-example-tool-result";
 const options = {
   config: {
@@ -686,10 +788,7 @@ const options = {
   },
 };
 `,
-    epilogue: `
-if (provider.requests.length < 1) throw new Error("runToolLoop 未发起任何 provider 调用（示例体没跑到底）");
-`,
-  },
+  }),
 ];
 
 // ---------------------------------------------------------------------------
@@ -752,9 +851,15 @@ export function buildLinkProgram(fence) {
   ].join("\n");
 }
 
-/** 组装 L3（真实执行）程序源码。 */
-export function buildExecProgram(fence) {
-  const { linkImports, stubs, epilogue } = preambleFor(fence);
+/**
+ * 组装 L3（真实执行）程序源码。
+ *
+ * `preamble` 是**测试用的注入点**（issue #582 的反向证）：自测把同一格的 preamble 按
+ * 「步数少一步 / 多一步」重建后跑一遍，必须变红且红字里带「两种可能」那句——否则那句只是
+ * 报告里的自述。生产路径（`runLevel3` 不带第二参）仍走 `preambleFor(fence)`。
+ */
+export function buildExecProgram(fence, { preamble = preambleFor(fence) } = {}) {
+  const { linkImports, stubs, epilogue } = preamble;
   const normalized = stripDocConvention(fence.code);
   const { imports, body } = splitImports(normalized);
   return [
@@ -788,8 +893,9 @@ export async function runLevel2(fence) {
 }
 
 /** L3：子进程执行临时 .mjs（spawnSync，timeout 15s）。返回 { ok, stdout, stderr }。 */
-export async function runLevel3(fence) {
-  const source = buildExecProgram(fence);
+export async function runLevel3(fence, { preamble } = {}) {
+  const effectivePreamble = preamble ?? preambleFor(fence);
+  const source = buildExecProgram(fence, { preamble: effectivePreamble });
   const dir = await makeTmp("doc-examples-");
   const file = join(dir, `exec-${fence.line}-${fence.index}.mjs`);
   try {
@@ -811,7 +917,7 @@ export async function runLevel3(fence) {
     // 可选的 stdout 声称（issue #576）：README 的快速开始自己 `console.log(result.finalText)`，
     // 那一行是示例唯一「真的跑到底并拿到结果」的对外证据——示例体跑在函数里，局部量不外泄，
     // 所以只能从子进程 stdout 上看。缺一句就红，而不是「没打印也算过」。
-    const missingStdout = (preambleFor(fence).expectStdout ?? []).filter((needle) => !stdout.includes(needle));
+    const missingStdout = (effectivePreamble.expectStdout ?? []).filter((needle) => !stdout.includes(needle));
     if (missingStdout.length > 0) {
       ok = false;
       finalStderr = `子进程 stdout 缺少期望输出 ${JSON.stringify(missingStdout)}\n${finalStderr}`;
