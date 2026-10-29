@@ -1521,6 +1521,19 @@ export async function runToolLoop(options) {
    */
   let resumedLedgerRecords;
   /**
+   * issue #601：**折叠记录账本**（一折一条，`foldedFacts` 形状），按入账序（旧 → 新）。
+   *
+   * 为什么要有它：折叠摘要被塞进第一条真实 user 消息的 `content[0]`，下一次折叠必须先解析旧块再合并
+   * ——那是位置约束带来的历史包袱。账本本来就是逐折一条（`roundRecord[FOLDED_FACTS_RECORD_FIELD]`），
+   * 把它线到渲染处，摘要就能「从列表生成」而不是「解析块再合并」。
+   *
+   * 两个入口：① 本轮每折一次 push（落轮记录处，与落盘同一条件）；② resume 时从 store 的
+   * 记录列表重建（`seedFoldSummaries` 拿到的是 `store.load()` 的全量 ⇒ 恢复后列表是完整的）。
+   * 拿不到 / 覆盖不到块时，策略侧自己退回解析块（`ledgerCoversBlock` 闸门），不静默丢折。
+   * @type {object[]}
+   */
+  let foldRecordLedger = [];
+  /**
    * issue #469（裁决 A）：账本自己声明的最大已折轮号（三种落盘形状都收）。
    * 只在 run 的水位线还没推出来时兜底——播种要的是「账本折到哪了」，不是「这一轮 run 记到哪了」。
    *
@@ -1954,6 +1967,14 @@ export async function runToolLoop(options) {
     // 写成「属性 + 箭头函数」（`test/loop-callback-this.test.js` 钉住的口径），不是方法简写。
     seedFoldSummaries: (records) => {
       foldSummaryLedger.seedFromRecords(records);
+      // issue #601：resume 的账本列表 = store 里全部轮记录的 `foldedFacts`（一折一条，旧 → 新）。
+      // 拿不到记录列表时保持空数组 ⇒ 策略侧闸门判「账本覆盖不到块」⇒ 退回解析块（不静默丢折）。
+      foldRecordLedger = Array.isArray(records)
+        ? records
+          .map((record) => record?.[FOLDED_FACTS_RECORD_FIELD])
+          .filter((facts) => facts !== null && typeof facts === "object")
+          .map((facts) => cloneState(facts))
+        : [];
       // issue #469（裁决 A）：把账本留给「续写基底播种」用——resume 出来的 run 第一次折叠
       // 拿不到 in-run 闭包（策略实例是新造的），只能靠这份账本。非 resume ⇒ 永不赋值。
       resumedLedgerRecords = records;
@@ -3720,6 +3741,12 @@ export async function runToolLoop(options) {
         value: roundNumbersForMessages(messages),
         enumerable: false,
       });
+      // issue #601：折叠记录账本（一折一条）线到渲染处 ⇒ 摘要「从列表生成」，不再依赖解析上一块。
+      // 非枚举：选项键面逐字不变（与上面的 `roundNumbers` 同一口径）。
+      Object.defineProperty(compactOptions, "foldRecords", {
+        value: foldRecordLedger.slice(),
+        enumerable: false,
+      });
       if (runLoopState.foldedThrough > 0) compactOptions.roundOffset = runLoopState.foldedThrough;
       Object.defineProperty(compactOptions, "onLayer", {
         enumerable: false,
@@ -5143,6 +5170,8 @@ export async function runToolLoop(options) {
       // `record.summary`（本轮自身摘要）一字不动 ⇒ 既有的横幅语义、`#326` 守卫、归档都不受影响。
       if (compaction.foldedFacts !== undefined) {
         roundRecord[FOLDED_FACTS_RECORD_FIELD] = cloneState(compaction.foldedFacts);
+        // issue #601：同一份事实进 run 作用域的折叠记录账本（与落盘同一条件 ⇒ 列表与账本同源）。
+        foldRecordLedger.push(cloneState(compaction.foldedFacts));
       }
     }
     // issue #460：宿主有权对**单条记录**定界（本站 1 MB）。归档是咨询性字段 —— 正文早已按轮

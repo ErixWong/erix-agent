@@ -20,6 +20,7 @@ import assert from "node:assert/strict";
 import {
   FOLD_SUMMARY_RECENT_FOLDS,
   createFoldStatisticalStrategy,
+  summarizeFoldedPayload,
 } from "../../src/compact/fold-statistical.js";
 import {
   FOLDED_FACTS_MAX_BYTES,
@@ -84,6 +85,83 @@ async function foldSeries(count, round = (index) => [
   }
   return last;
 }
+
+/**
+ * 造一条**与引擎落账同形**的折叠记录（`foldedFacts`）：`orchestrator.js` 就是用
+ * `buildFoldedFacts({ text: strategyFoldSummary.text, incrementText: 同一份, roundRange, rounds })`
+ * 造它、再 `roundRecord[FOLDED_FACTS_RECORD_FIELD] = cloneState(...)` 落盘的。
+ */
+const foldRecordOf = (result) => buildFoldedFacts({
+  text: result.foldSummary.text,
+  incrementText: result.foldSummary.text,
+  source: result.foldSummary.source,
+  roundRange: result.foldedRoundRange,
+  rounds: result.foldedRounds,
+});
+
+test("#601-7 账本驱动：渲染从折叠记录列表生成（块解析只作兜底）", async () => {
+  // ① 连折 2 次（块里 2 条记录），顺手按引擎口径造出这 2 条账本记录。
+  const strategy = createFoldStatisticalStrategy();
+  const round = (index, command) => [
+    toolUse(`use-${index}`, "exec", { command }),
+    toolResult(`use-${index}`, ttlStub(`fold-${index}`)),
+  ];
+  const first = await strategy.compact([
+    { role: "user", content: "task" },
+    ...round(1, "echo case-1"),
+    ...round(2, "echo case-2"),
+  ], { keepRounds: 1, roundNumbers: [1, 2] });
+  const second = await strategy.compact([
+    ...first.messages,
+    ...round(3, "echo case-3"),
+  ], { keepRounds: 1, roundNumbers: [2, 3] });
+  const ledger = [foldRecordOf(first), foldRecordOf(second)];
+  assert.equal(ledger.length, 2);
+  assert.deepEqual(
+    ledger.map((record) => [record.from, record.to, record.rounds]),
+    [[1, 1, 1], [2, 2, 1]],
+    "账本一折一条，`from/to/rounds` 是结构化键",
+  );
+
+  // ② 账本里的第 2 折换成另一份明细 ⇒ 块里必须出现**账本**那份（证明渲染读的是列表，不是块）。
+  const forgedSecond = buildFoldedFacts({
+    text: summarizeFoldedPayload([
+      toolUse("use-ledger", "exec", { command: "echo LEDGER-WINS" }),
+    ], { from: 2, to: 2, count: 1 }),
+    source: "statistical",
+      roundRange: { from: 2, to: 2 },
+    rounds: 1,
+  });
+  const third = await strategy.compact([
+    ...second.messages,
+    ...round(4, "echo case-4"),
+  ], {
+    keepRounds: 1,
+    roundNumbers: [3, 4],
+    foldRecords: [ledger[0], forgedSecond],
+  });
+  const fromLedger = summaryTextOf(third);
+  assert.equal(segmentsOf(fromLedger).length, 3, `账本 2 条 + 本次 1 条：\n${fromLedger}`);
+  assert.ok(fromLedger.includes("LEDGER-WINS"),
+    `块里第 2 折的明细必须来自账本：\n${fromLedger}`);
+  assert.ok(!fromLedger.includes("echo case-2"),
+    `块里那份旧的明细必须被账本顶掉：\n${fromLedger}`);
+
+  // ③ 账本覆盖不到块（只给 1 条、块里已有 2 条）⇒ 退回解析块，一条折都不许丢。
+  const fallback = await strategy.compact([
+    ...second.messages,
+    ...round(5, "echo case-5"),
+  ], {
+    keepRounds: 1,
+    roundNumbers: [3, 4],
+    foldRecords: [ledger[0]],
+  });
+  const fromBlock = summaryTextOf(fallback);
+  assert.equal(segmentsOf(fromBlock).length, 3, `兜底路径同样 3 条：\n${fromBlock}`);
+  assert.ok(fromBlock.includes("echo case-2"),
+    `账本不全时退回解析块（不静默丢折）：\n${fromBlock}`);
+  assert.ok(!fromBlock.includes("LEDGER-WINS"), fromBlock);
+});
 
 test("#601-1 逐折可见：折叠 3 次 ⇒ 块里 3 条折叠记录，区间不重叠、不合并", async () => {
   const text = summaryTextOf(await foldSeries(3));

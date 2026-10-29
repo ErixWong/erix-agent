@@ -447,6 +447,78 @@ function parseFoldSummary(text) {
   return parseFoldSummaries(text)[0];
 }
 
+/**
+ * **账本记录 → 逐折分段**（issue #601 主路径）。
+ *
+ * 为什么不从块里解析：摘要是被塞进**第一条真实 user 消息的 `content[0]`** 的（`prependSummary`），
+ * 下一次折叠往同一条消息里再插一段，就不得不先把旧块解析出来再合并——这是**位置约束带来的历史包袱**，
+ * 不是设计需要。而账本（轮记录上的 `foldedFacts`，`orchestrator.js` 落盘的那一份）本来就是**一折一条**：
+ * `from`/`to`/`rounds` 是结构化键，`increment.text` 是**这一折自己那份**（#566），`toolCalls` 是结构化清单。
+ * 于是渲染只需要这份列表，不需要理解上一块被渲染成了什么形状。
+ *
+ * 形状不认识（缺 `from`/`to`）⇒ 返回 `undefined`，调用方**整条路放弃**、退回解析块（不猜）。
+ *
+ * @param {unknown} foldRecords 轮记录上的 `foldedFacts` 列表（顺序不限，这里统一成最新在前）
+ * @returns {object[]|undefined}
+ */
+function foldRecordSegments(foldRecords) {
+  if (!Array.isArray(foldRecords) || foldRecords.length === 0) return undefined;
+  const segments = [];
+  for (const record of foldRecords) {
+    if (record === null || typeof record !== "object") return undefined;
+    const increment = record.increment !== null && typeof record.increment === "object"
+      ? record.increment
+      : undefined;
+    const from = Number.isSafeInteger(record.from) ? record.from : increment?.from;
+    const to = Number.isSafeInteger(record.to) ? record.to : increment?.to;
+    if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to)) return undefined;
+    const rounds = Number.isSafeInteger(record.rounds) && record.rounds > 0
+      ? record.rounds
+      : Number.isSafeInteger(increment?.rounds) && increment.rounds > 0
+        ? increment.rounds
+        : to - from + 1;
+    // 明细取自**这一折自己那份**（`increment`）；没有就用父键 `text`（同为单折文本，不是累计体）。
+    const detailText = typeof increment?.text === "string" && increment.text !== ""
+      ? increment.text
+      : typeof record.text === "string" ? record.text : "";
+    const detail = parseFoldSummaries(detailText)[0];
+    segments.push({
+      from,
+      to,
+      count: rounds,
+      // title 不落账（`record.title` 是整条首行，含区间句）⇒ 交给 `foldSegmentTitle` 从清单/足迹派生，
+      // 与「从块解析回来的 title」逐字一致（块里的 title 本来就是这么派生的）。
+      title: undefined,
+      tools: detail?.tools ?? new Map(),
+      inventory: detail?.inventory ?? [],
+      stubs: detail?.stubs ?? [],
+      navigationRecord: undefined,
+      anchors: undefined,
+      legacy: false,
+    });
+  }
+  // 最新在前（渲染顺序就是这个）：账本按入账序给，这里统一成「`to` 降序」，调用方不必关心顺序。
+  segments.sort((left, right) => right.to - left.to);
+  return segments;
+}
+
+/**
+ * 账本是否**覆盖**块里已有的那些折叠（issue #601 的兜底闸门）。
+ *
+ * 为什么要这道闸门：宿主可以自己恢复消息（不走 `resume-manager`），此时引擎侧的折叠账本是空的，
+ * 而块里已经有折过好几轮的记录 ⇒ 直接用账本渲染会**静默丢掉**那些折（信息只减不增）。
+ * 判据是「账本条数 ≥ 块里条数」且「账本最新那一折不比块里最新那一折旧」——两条都成立才认账本。
+ */
+function ledgerCoversBlock(ledgerSegments, blockSegments) {
+  if (blockSegments.length === 0) return true;
+  if (ledgerSegments.length < blockSegments.length) return false;
+  const newestTo = (segments) => segments.reduce(
+    (max, segment) => (segment.to > max ? segment.to : max),
+    Number.NEGATIVE_INFINITY,
+  );
+  return newestTo(ledgerSegments) >= newestTo(blockSegments);
+}
+
 function stripMarkedFoldSummaries(block) {
   if (block?.type !== "text") return [block];
   const text = String(block.text ?? "");
@@ -608,14 +680,26 @@ function mergedFoldSummaryContent(
   recoveryHint,
   anchorClamp = {},
   anchorsEnabled = true,
+  foldRecords = undefined,
 ) {
   const summaries = originalContent
     .filter((block) => block?.type === "text")
     .flatMap((block) => parseFoldSummaries(block.text));
   const current = parseFoldSummary(summary);
+  // issue #601：**账本优先**。列表来自轮记录上的 `foldedFacts`（一折一条），渲染不再依赖「上一块长什么样」；
+  // 块解析降为兜底（① 历史 transcript 里的旧格式块；② 拿不到账本 / 账本覆盖不到块时）。
+  const ledgerSegments = foldRecordSegments(foldRecords);
+  const useLedger = ledgerSegments !== undefined && ledgerCoversBlock(ledgerSegments, summaries);
+  const previous = useLedger ? ledgerSegments : summaries;
+  if (useLedger && summaries.length > 0) {
+    // 块级节（锚点索引 / 导航记录）是**累计**的、只存在于块里（账本不存它们）⇒ 挂到最新那一折上，
+    // 并集合并不在乎挂在哪一折；不这么做的话账本路径会把锚点节丢掉。
+    previous[0].anchors = summaries[0].anchors;
+    previous[0].navigationRecord = summaries[0].navigationRecord;
+  }
   // issue #601：**最新在最前**。旧块按自己的渲染顺序已经是「新 → 旧」（分段块）或只有一条（旧格式），
   // 本次折叠排在最前。下面所有“最新优先”的处理都靠这一个不变量。
-  const merged = [current, ...summaries].filter((parsed) => parsed !== undefined);
+  const merged = [current, ...previous].filter((parsed) => parsed !== undefined);
   // issue #601 回归修复：stub 与清单**同向**（最新在前）。
   //
   // 旧写法是 `[...new Set(merged.flatMap((p) => p.stubs ?? []))].slice(0, 10)`，而旧 `merged` 是
@@ -704,6 +788,7 @@ function prependSummary(
   recoveryHint = DEFAULT_RECOVERY_HINT,
   anchorClamp = {},
   anchorsEnabled = true,
+  foldRecords = undefined,
 ) {
   if (summaryRole === "system") {
     const systemIndex = head.findLastIndex((message) => message?.role === "system");
@@ -723,6 +808,7 @@ function prependSummary(
         recoveryHint,
         anchorClamp,
         anchorsEnabled,
+        foldRecords,
       ),
     };
     return updatedHead;
@@ -747,6 +833,7 @@ function prependSummary(
       recoveryHint,
       anchorClamp,
       anchorsEnabled,
+      foldRecords,
     ),
   };
   return updatedHead;
@@ -805,6 +892,9 @@ export function createFoldStatisticalStrategy(options = {}) {
       const tokensBefore = estimateMessageTokens(messages);
       const { head, rounds } = groupIntoRounds(messages);
       const settings = foldOptions(options, callOptions);
+      // issue #601：引擎把**折叠记录账本**（轮记录 `foldedFacts`，一折一条）线到这里。
+      // 非枚举属性（`Object.defineProperty`，与 `roundNumbers` 同口径）⇒ 不进选项键面。
+      const foldRecords = Array.isArray(callOptions.foldRecords) ? callOptions.foldRecords : undefined;
       const keep = normalizedKeepRounds(
         optionValue(callOptions, options, "keepRounds", undefined),
       );
@@ -884,6 +974,7 @@ export function createFoldStatisticalStrategy(options = {}) {
           recoveryHint,
           anchorClamp,
           anchorsEnabled,
+          foldRecords,
         );
         // 机械摘要本来就在手里，顺手带一份给轮记录（#470-A1）。
         foldSummary = { source: "statistical", text: summary };
