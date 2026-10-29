@@ -188,7 +188,10 @@ test("C1 每个叶子都翻译到 `config.<路径>`（叶名 ≠ 顶层键名时
     // 其余叶子给字符串就够——本格量的是「翻译到哪」，不是「取值校验」（那由别的格子负责）。
     // issue #538：`stream` 有值规则（必须是布尔），所以它取自己的合法值 `true`；给字符串会让
     // 本格红在值规则上，而不是红在它要证明的「翻译到哪」上。
-    const value = leaf === "context" ? {} : leaf === "stream" ? true : `translated:${leaf}`;
+    // issue #598：`handoff` 同一条纪律（三字面量枚举），取默认值 `"off"`。
+    const value = leaf === "context"
+      ? {}
+      : leaf === "stream" ? true : leaf === "handoff" ? "off" : `translated:${leaf}`;
     const options = await assemblyPortOptions(portInput({ [leaf]: value }), {});
     assert.deepEqual(options.config?.[group]?.[name], value, `${leaf} 必须翻译成 config.${path}`);
     assert.equal(Object.hasOwn(options, leaf), false, `${leaf} 不许同时以扁平名出现（那就是第二拼写面）`);

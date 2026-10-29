@@ -90,12 +90,12 @@ function init(extra = {}) {
 // 键集合来自 `CONFIG_LEAF_BINDING`），所以**没有第二份手写清单**可以跟它各改各的。
 // 加一个叶子却忘了标绑定 ⇒ 这里少一条（集合不等）；删一个叶子却留着绑定 ⇒ 这里多一条。
 
-test("A1 绑定表覆盖的叶子集合 == schema 的 41 叶集合（不多、不少、拼写逐字一致）", () => {
+test("A1 绑定表覆盖的叶子集合 == schema 的 42 叶集合（不多、不少、拼写逐字一致）", () => {
   const bound = Object.keys(CONFIG_LEAF_BINDING).sort();
   const schema = [...SCHEMA_LEAF_PATHS].sort();
   assert.deepEqual(bound, schema,
     "绑定表与 schema 的叶子集合必须逐字相等：少的 = 加了叶子忘标绑定，多的 = 绑定表里有一条死条目");
-  assert.equal(bound.length, 41, `配置面是 41 叶（现测 ${bound.length}）——数字变了就要连这条一起改，别让它空转`);
+  assert.equal(bound.length, 42, `配置面是 42 叶（现测 ${bound.length}）——数字变了就要连这条一起改，别让它空转`);
   assert.equal(new Set(bound).size, bound.length, "绑定表的键不许重复（重复 = 一张表被写成了两张）");
 });
 

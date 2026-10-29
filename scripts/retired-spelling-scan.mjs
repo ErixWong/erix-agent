@@ -252,7 +252,13 @@ const HISTORY_BODY_PINS = Object.freeze({
   "docs/design/2026-09-15-release-0.5.0-review.md": 1,
   "docs/design/2026-09-17-context-memory-improvement-plan.md": 4,
   "docs/design/2026-10-08-architecture-review.md": 9,
-  "docs/harness-comparison/01-pi-agent.md": 3,
+  // issue #598: 3 → 4。新增的配置叶子 `config.continuity.handoff` 把 `handoff` 带进了退役键表（退役 =
+  // 叶子还在 schema、顶层白名单没有它），而这份**对比文档**里的 `handoff` 说的是 **pi 自己的**
+  // `examples/extensions/handoff.ts` 扩展（「生成交接 prompt 开新 session」），与 runToolLoop 的选项面
+  // 毫无关系。钉子比的是**全部**命中数（`ambiguous` 只影响 `--strict` 的违规判据，不影响钉子），所以表
+  // 得跟着实测抬这一格——值取自扫描器自己报的 `uses=4`，不是手算。只抬这一份：`handoff` 在跟踪文档里
+  // 就出现在这一份。
+  "docs/harness-comparison/01-pi-agent.md": 4,
   "docs/harness-comparison/02-touwaka.md": 2,
   "docs/harness-comparison/03-codex.md": 2,
   "docs/harness-comparison/04-hermes-agent.md": 2,

@@ -683,6 +683,22 @@ export function createTerminationManager(ctx) {
 
   const finish = async (reason, detail, error) => {
     ctx.currentTerminationReason = reason;
+    // issue #598: the continuity writer's **last word**. It runs before `makeResult` because the
+    // record must exist by the time the host sees the result (a host that immediately starts the
+    // next run wants the handoff to be recallable). Two deliberate properties:
+    //   · `off` (the default) ⇒ `finalizeHandoff` returns immediately ⇒ this line is a no-op and the
+    //     default path is byte-identical to today;
+    //   · a throwing writer never fails the run (judged in `finish`'s own `catch` would turn a write
+    //     error into `ctx.fail()` — that is exactly the "run must not fail" red line), so it is
+    //     wrapped here. The writer itself already reports its failure through `onEvent`.
+    const finalizeHandoff = ctx.finalizeHandoff;
+    if (typeof finalizeHandoff === "function") {
+      try {
+        await finalizeHandoff();
+      } catch {
+        // swallowed on purpose: see above (the writer reports through its own channel).
+      }
+    }
     const refreshRunState = ctx.refreshRunState;
     try {
       await refreshRunState();
