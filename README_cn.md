@@ -50,8 +50,16 @@ const provider = createOpenAIProvider({
 
 const result = await runToolLoop({
   provider,
-  system: "你是编码助手。先用工具检查，再回答。",
-  initialUserMessage: "统计 ./src 下 JS 文件数量和总行数。",
+  config: {
+    input: {
+      system: "你是编码助手。先用工具检查，再回答。",
+      initialUserMessage: "统计 ./src 下 JS 文件数量和总行数。",
+    },
+    run: {
+      maxRounds: 16,
+      runId: "demo-001",
+    },
+  },
   tools: [{
     name: "exec",
     description: "执行只读 shell 命令，返回 stdout+stderr",
@@ -64,9 +72,7 @@ const result = await runToolLoop({
   executeTool: async ({ name, input }) => {
     // 你的执行逻辑 + 安全策略（库本身不执行任何东西）
   },
-  maxRounds: 16,
   store: createMemoryTranscriptStore(),
-  runId: "demo-001",
 });
 
 console.log(result.finalText);            // 最终回答

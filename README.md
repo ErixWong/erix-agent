@@ -78,8 +78,16 @@ const provider = createOpenAIProvider({
 
 const result = await runToolLoop({
   provider,
-  system: "You are a coding assistant. Inspect with tools, then answer.",
-  initialUserMessage: "List the JavaScript files in ./src and count their total lines.",
+  config: {
+    input: {
+      system: "You are a coding assistant. Inspect with tools, then answer.",
+      initialUserMessage: "List the JavaScript files in ./src and count their total lines.",
+    },
+    run: {
+      maxRounds: 16,
+      runId: "demo-001",
+    },
+  },
   tools: [{
     name: "exec",
     description: "Run a read-only shell command, returns stdout+stderr",
@@ -92,9 +100,7 @@ const result = await runToolLoop({
   executeTool: async ({ name, input }) => {
     // your execution + safety policy (the library never executes anything)
   },
-  maxRounds: 16,
   store: createMemoryTranscriptStore(),
-  runId: "demo-001",
 });
 
 console.log(result.finalText);            // final answer

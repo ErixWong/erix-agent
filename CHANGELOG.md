@@ -120,6 +120,47 @@
   记录）、以及想扩面该动哪个函数、为什么动面之前必须重测 `CHANGELOG_PAIR_FLOOR`。判据函数本体一条
   未动。
 
+- **The retired-spelling gate now also scans the two root READMEs, and the README quick start is written in the shape the engine actually accepts (issue #572).**
+  `README.md:95` / `README_cn.md:67` shipped a `runToolLoop` quick start with **four** retired flat
+  names in it — `system`, `initialUserMessage`, `maxRounds`, `runId` — so a host that copied the first
+  file it read got a throw, not a run (measured on the pre-change text: `unknown runToolLoop option:
+  "system" (its canonical home is config.input.system; the flat spelling is rejected)`, and each of
+  the four rejects on its own). They are now `config.input.system` /
+  `config.input.initialUserMessage` / `config.run.maxRounds` / `config.run.runId`, EN and CN in the
+  same shape, and the extracted snippet was **executed** end to end (only the module specifier
+  pointed at a local shim supplying a scripted provider): `exitCode=0`,
+  `termination.reason="end_turn"`, `rounds=1`. The prose was not touched — the default-value
+  sentences are `check:docs` verbatim anchors. Why the gate never saw any of it: the scan surface was
+  `docs/**` only, so the first file a host reads was outside it. The surface is now `docs/` **plus**
+  the two root READMEs, still from `git ls-files` (`gitTrackedDocs()` was renamed
+  `gitTrackedScanSurface()` because it no longer holds only `docs/`, and the pathspec list is
+  explicit — `SCAN_PATHSPECS`, never `.`, so the surface cannot silently become the whole
+  repository). The root docs are their own class (`rootdoc`) with their own hit-count pins
+  (`ROOT_DOC_BODY_PINS`: 77 / 62, **reported by the scanner itself** and only then registered), the
+  same treatment as the contract: their body is not rewritten, it is pinned — no "this line is an
+  example" exemption and no shape heuristic for object keys, the criterion is "the total moved, so
+  it is red". The reverse proof grew from 18 to 21 cases: a flat spelling dropped into `README.md`
+  reddens both `--strict` and `--strict --json` (and restoring it greens both), a root-doc pin that
+  no longer matches is `SUSPECT(dropped)`, and a root-doc pin naming a file outside the manifest is
+  a `DEAD-PIN`; reverting the widening reddens six cells. `CHANGELOG_PAIR_FLOOR` 3 → 4.
+- **退役拼写门禁现在也扫两份根 README；README 的快速开始写成了引擎真正接受的形状（issue #572）。**
+  `README.md:95` / `README_cn.md:67` 那份 `runToolLoop` 快速开始里有**四个**退役扁平名 ——
+  `system`、`initialUserMessage`、`maxRounds`、`runId` —— 于是照抄「读到的第一个文件」的宿主拿到的
+  是抛错、不是一次 run（在**改前原文**上实测：`unknown runToolLoop option: "system" (its canonical
+  home is config.input.system; the flat spelling is rejected)`，四个名字各自单独写也都当场拒）。现在
+  是 `config.input.system` / `config.input.initialUserMessage` / `config.run.maxRounds` /
+  `config.run.runId`，中英同形状，并且把那段代码抠出来**真跑过**（只把模块说明符指向一个本地 shim，
+  由它提供脚本化 provider）：`exitCode=0`、`termination.reason="end_turn"`、`rounds=1`。散文一个字
+  没动 —— 那几句讲默认值的是 `check:docs` 的逐字锚点。这道门从前一次都没看见过它：扫描面只有
+  `docs/**`，而宿主读到的第一个文件恰在面外。现在面是 `docs/` **加**两份根 README，清单仍只取
+  `git ls-files`（`gitTrackedDocs()` 改名 `gitTrackedScanSurface()`，因为它不再只装 `docs/`；pathspec
+  是**显式**清单 `SCAN_PATHSPECS`，绝不是 `.`，所以面不会偷偷变成整个仓库）。根文档自成一类
+  （`rootdoc`）并带自己的命中数钉子（`ROOT_DOC_BODY_PINS`：77 / 62，**由扫描器自己报出来**之后才登记），
+  待遇与契约同档：正文不要求改干净，只钉住 —— 不写「这行是示例所以跳过」这类豁免，也不为对象键加形状
+  启发式，判据是「总数变了就红」。反向证从 18 例增到 21 例：往 `README.md` 里塞一句扁平拼写 ⇒
+  `--strict` 与 `--strict --json` 都红（还原 ⇒ 两路都绿）、根文档的钉子对不上 ⇒ `SUSPECT(dropped)`、
+  根文档的钉子指向清单外 ⇒ `DEAD-PIN`；把扩面回退掉会红 6 格。`CHANGELOG_PAIR_FLOOR` 3 → 4。
+
 ## [0.28.0] - 2026-10-29
 
 ### Breaking
