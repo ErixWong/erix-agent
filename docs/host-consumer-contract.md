@@ -1632,7 +1632,7 @@ throws on the call: `agent.run({ maxRounds: … }): maxRounds is an initializati
 (issue #571)`. Neither direction is silently ignored, and neither degrades into "we will just keep
 the initialization value".
 
-**"One config source" in the two shapes.**
+**"One config source" in the three shapes (issue #574).**
 
 - `runToolLoop({ config: … })`: the call-level tree **replaces** whatever the assembly port supplied
   (`policy.config`) — whole tree, with each differing leaf reported as `config_override_conflict`.
@@ -1640,8 +1640,23 @@ the initialization value".
   the rest of the tree on this route.
 - `createAgent({ config })` + `agent.run(input)`: there is exactly one tree. `run(input)` cannot even
   carry a `config` key (it is rejected as an initialization option), and its leaves are merged into
-  the initialization tree leaf by leaf. So "sending a message" cannot drop the fold knobs — not
-  because the override rule changed, but because there is no second tree to override with.
+  the initialization tree leaf by leaf. **That tree is handed to `runToolLoop` on every call**, so on
+  the assembly route it overrides the port's `policy.config` wholesale (whole tree; every leaf both
+  sides set to different values is reported as `config_override_conflict`). Writing `config` is
+  therefore a statement about the **whole** tree, not about one leaf: `createAgent({ config: { run: {
+  maxRounds: 8 } } })` wins on that leaf, keeps the port's identity and session-derived leaves, and
+  drops the port's other config leaves back to the engine defaults.
+- `createAgent({ assemblyPort })` with **no** `config` and **no** config leaf in this call's input:
+  **no `config` key is handed over at all**, so the port's `policy.config` is the only tree and every
+  knob on it stays effective — folding TTL, the context budget, the round cap, the persistence
+  switches. This is the shape the wrapper exists for on the port route.
+- The boundary between those last two, named rather than glossed over: a config leaf in this call's
+  input makes a tree present again — `agent.run({ messages })` writes `config.input.messages`, and
+  `messages` is a `call` leaf — so the pre-existing whole-tree override applies again, and because
+  the port's tree and that call's tree set no leaf in common, **no** `config_override_conflict` is
+  emitted. "Sending a message" on the port route therefore still costs the port's knobs: that is
+  issue #524's cost, unchanged here. What the presence rule buys is the shape where the host sends
+  nothing (or only `signal`) — the port is then the single source, not merely the conventional one.
 
 **What `run(input)` accepts.** The `call` leaves, by leaf name (`{ messages }`, `{ runId }`, …), plus
 `signal` for this call. Anything else is rejected: an `init` leaf names its config path and

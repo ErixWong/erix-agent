@@ -4963,7 +4963,11 @@ export async function runToolLoop(options) {
 //
 // #571 的解**不是**改覆盖语义（不做深合并、不加诊断字段），而是给「初始化」一个位置：本函数拿住
 // 「初始化那一份」，`run(input)` 只接受 `call` 绑定的叶子（外加每次的 `signal`），逐叶并进**同一棵**
-// `config` 再交给 `runToolLoop`。于是「配置只有一个来源」在这个形状下是结构性的，而不是靠约定。
+// `config` 再交给 `runToolLoop`。于是「宿主自己那棵树」只有一棵，而不是靠约定。
+//
+// #574 的补充：那棵树**只在宿主真给了东西时**才递给 `runToolLoop`。以前是无条件递（初始化没写就是
+// 一棵 `{}`），于是「旋钮全写在端口 `policy.config` 上」的宿主每调一次就把自己的旋钮整棵顶掉、
+// 且因为 `{}` 一个叶都不设而零诊断。判据是**在场性**（见 `run(input)` 里的注释），不是内容非空。
 //
 // 三件刻意不做的事（片1 的边界）：
 //   · **不动 `runToolLoop`**：覆盖语义、两条输入通道、既有拒绝文案一个字都没变（收敛是片2）；
@@ -4987,8 +4991,10 @@ export async function runToolLoop(options) {
  *   · 只接受 `call` 绑定的**叶子名**（`messages` / `initialUserMessage` / `runId` / `resume` / `stream`
  *     / `metadata.*`）外加每次调用的 `signal`；别的键一律硬拒并指名去处（`init` 叶 ⇒
  *     `createAgent({ config })`，顶层行为面 ⇒ `createAgent({ … })`）；
- *   · 内部把「初始化那份」与这次的叶子**逐叶**并进同一棵 `config`，所以本形状下不存在「整棵覆盖」
- *     这件事（`run(input)` 连第二个 `config` 都递不进去）；
+ *   · 内部把「初始化那份」与这次的叶子**逐叶**并进同一棵 `config`；`run(input)` 连第二个 `config`
+ *     都递不进去。那棵树只在**初始化时写了 `config`、或本次调用带了 `call` 叶**时才递给
+ *     `runToolLoop`（issue #574）；两侧都没给时**不带 `config` 这个键**，端口 `policy.config` 生效。
+ *     递了树时「整棵覆盖 `policy.config`」仍是既有语义、逐叶事件照发（本包装不改它）。
  *   · 返回 `runToolLoop` 的 promise，一次调用一个 run，agent 对象本身无状态。
  *
  * @param {Record<string, any>} init `runToolLoop` 的选项面（`config` / `capabilities` + 顶层行为面）
@@ -5017,12 +5023,26 @@ export function createAgent(init) {
       // 这里必须显式声明为 any：`runToolLoop` 的 JSDoc 入参类型要求 `provider` / `executeTool` 这两个
       // **必填**键，而初始化面是 `Record<string, any>`（宿主给什么就是什么，形状由引擎自己的闸口校）。
       // 不加这一层，`--checkJs` 会多一条 TS2345（本片不允许抬 type 棘轮基线）。
-      return runToolLoop(/** @type {any} */ ({
+      /** @type {Record<string, any>} */
+      const options = {
         ...initOptions,
         ...call.options,
-        config: call.config,
         capabilities,
-      }));
+      };
+      // issue #574：**没有东西要传就不要带 `config` 这个键**。
+      //
+      // `runToolLoop` 的合并规则是「调用级 `config` 在场 ⇒ 整棵顶掉端口 `policy.config`」
+      // （`src/loop/option-normalization.js`，既有语义、有逐叶事件、本单一个字都不改）。而这里以前是
+      // **无条件**递 `config: call.config`，于是「宿主只把旋钮写在端口 `policy.config` 上」这个形状
+      // （0.28 之后推荐的位置）每次调用都被递进一棵（可能为空的）树：`:491` 整棵顶掉，`:506`
+      // 只填「平移自扁平 `policy.*` 的洞 + session 派生叶」，**填不回宿主写在 `policy.config` 里的值**。
+      // `{}` 一个叶都不设，所以逐叶冲突事件也不发 ⇒ 旋钮全丢且零诊断（#574 实测表）。
+      //
+      // 判据是**在场性**，不是「内容非空」：初始化时写了 `config`（哪怕写的是 `{}`），或本次调用带了
+      // 任一 `call` 叶，都算「宿主真给了」，照旧递合并后的树（此时整棵覆盖 + 逐叶事件是对的语义）。
+      // 只有「两侧都没给」这一种形状不带这个键——此时端口 `policy.config` 就是唯一的那棵树。
+      if (initConfig !== undefined || call.hasLeaves) options.config = call.config;
+      return runToolLoop(/** @type {any} */ (options));
     },
   };
 }
@@ -5056,15 +5076,20 @@ function collectInitBindingProblems(config) {
 }
 
 /**
- * `agent.run(input)` 的键 ⇒ `{ config, options }`（issue #571，方向二）。
+ * `agent.run(input)` 的键 ⇒ `{ config, options, hasLeaves }`（issue #571，方向二；#574 加了 `hasLeaves`）。
  *
  * 三档判词分开说，因为修法不同：`init` 叶 ⇒ 去 `createAgent({ config })`；顶层行为面（`provider` /
  * `capabilities` / `onEvent` …）⇒ 去 `createAgent({ … })`；真未知的名字 ⇒ 枚举接受名单（`call` 叶 +
  * `signal`，名单从绑定表派生，不手抄）。
  *
+ * `hasLeaves`（issue #574）回答的是「这一次调用有没有真的带来一个 `config` 叶」——它是「要不要把
+ * `config` 这个键递给 `runToolLoop`」的判据之一（另一半是初始化时 `config` 是否在场）。注意它只数
+ * **实际写进树的叶**：`run({ messages: undefined })` 与 `run({})` 一样是「没给」（值与「没写」
+ * 不区分，与引擎既有取值口径同一句），而 `signal` 不算 config 叶（它进顶层选项）。
+ *
  * @param {unknown} initConfig 初始化那份 `config`（原样，不被本函数改动）
  * @param {Record<string, any>} [input]
- * @returns {{config: Record<string, any>, options: Record<string, any>}}
+ * @returns {{config: Record<string, any>, options: Record<string, any>, hasLeaves: boolean}}
  */
 function collectCallInput(initConfig, input) {
   const source = input === undefined ? {} : input;
@@ -5105,7 +5130,11 @@ function collectCallInput(initConfig, input) {
     callLeaves.set(group, bag);
   }
   if (problems.length > 0) throw new TypeError(problems.join("; "));
-  return { config: mergeConfigLeaves(initConfig, callLeaves), options };
+  return {
+    config: mergeConfigLeaves(initConfig, callLeaves),
+    options,
+    hasLeaves: callLeaves.size > 0,
+  };
 }
 
 /**

@@ -3840,8 +3840,12 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  * 历史：#563 在 `## [0.28.0]` 上实测 51；#571 片1 在那一节末尾加了一对 `createAgent` 条目 ⇒ 52；
  * 随后 #571（本单）把那条目搬进了 `## [Unreleased]`（0.28.0 已发布），面跟着挪到 `## [Unreleased]`
  * ⇒ **在新面上重测 = 1 对**。反向证（删一条英文 / 改一个 issue 引用 ⇒ 配对数必须掉到地板**以下**）
- * 要求地板恰等于实测值，否则它们会说「地板拦不住」——所以这个数不是拍出来的，是量出来的。只许继续往上抬。 */
-const CHANGELOG_PAIR_FLOOR = 1;
+ * 要求地板恰等于实测值，否则它们会说「地板拦不住」——所以这个数不是拍出来的，是量出来的。只许继续往上抬。
+ *
+ * issue #574：`## [Unreleased] ### Fixed` 新增一对 `createAgent` 条目（同一个 issue 引用集合 #574 + #524）
+ * ⇒ 在**同一个面**上实测 **2 对**（中文 2 / 英文 2 / 无对应 0，`node --test test/static-guards.test.js`
+ * 的 diagnostic 原文），地板随之 1 → 2。同一面内只升不降，这次是**升**。 */
+const CHANGELOG_PAIR_FLOOR = 2;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
