@@ -23,7 +23,7 @@ const HASHED_RUN_ID_PREFIX = "run-h-";
  *   textPreview?:string,
  *   toolUses?:number,
  *   summary?:{action:string,note:string}|"missing",
- *   foldedFacts?:{text:string,title:string,origin:"mechanical"|"semantic"|"host",summary?:string,toolCalls?:{name:string,argsSummary:string}[],source:string,strategy:string,bytes:number,from?:number,to?:number,rounds?:number,truncated?:boolean,bytesBefore?:number,degradeReason?:string,fingerprint?:string},
+ *   foldedFacts?:{text:string,title:string,origin:"mechanical"|"semantic"|"host",increment?:{text:string,title:string,origin:"mechanical"|"semantic"|"host",from?:number,to?:number,rounds?:number,bytes:number,truncated?:boolean,bytesBefore?:number},summary?:string,toolCalls?:{name:string,argsSummary:string}[],source:string,strategy:string,bytes:number,from?:number,to?:number,rounds?:number,truncated?:boolean,bytesBefore?:number,degradeReason?:string,fingerprint?:string},
  *   l0facts?:object
  * }} RoundRecord
  */
