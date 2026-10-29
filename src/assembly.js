@@ -239,6 +239,53 @@ function assemblyPortDerivedConfigLeaves(port) {
 }
 
 /**
+ * A **copy** of the port's own `policy.config` tree — the seed `createAgent` merges this call's
+ * config leaves onto (issue #571 slice 2).
+ *
+ * Why a copy and not the host's object: `policy` belongs to the host (a frozen `policy`, or a frozen
+ * `policy.config` bag, is a normal shape), and the wrapper has to merge a call leaf in without
+ * writing to it. The copy is **group-level**, exactly the discipline `mergeConfigLeaves`
+ * (`src/loop/orchestrator.js`) and `fillConfigLeafHoles` already use: leaf values travel by
+ * reference (that is how both routes read `config.folding.context` and friends today), the bags are
+ * new objects.
+ *
+ * Why the wrapper needs it at all: `runToolLoop`'s merge rule is "a call-level `config` in play
+ * replaces `policy.config` wholesale" (unchanged — see `normalizeRunToolLoopOptions`
+ * (`src/loop/option-normalization.js`)), and the two fill rungs that survive an override restore only
+ * the translated `policy.<leaf>` spellings (`withAssemblyPolicyConfigLeaves`) and the `session`-derived
+ * leaves (`withSessionDerivedConfigLeaves`) — **not** the leaves the host wrote under `policy.config`.
+ * A wrapper that hands over a tree built from this call alone therefore deletes those leaves
+ * silently. Seeding the tree with a copy makes the override a no-op **in content terms**: every
+ * seeded leaf keeps its value, and `collectConfigSourceConflicts` stays silent because it reports
+ * only leaves whose values **differ** (measured: 0 events for the shape pinned by
+ * `test/loop-create-agent-571.test.js` J1 — see that cell for the number and the reasoning).
+ *
+ * `undefined` when there is no port, no `policy`, or no `policy.config` tree: the caller must not
+ * manufacture a tree out of nothing (that is #574's presence rule, and it still is the rule).
+ *
+ * Factory-shaped `policy` is resolved through the same `resolveAssemblyMember` the port itself uses,
+ * so the seed cannot disagree with what `createAssemblyPort` will read. Consequence worth knowing: a
+ * **factory-shaped** `policy` is called once here and once more by `createAssemblyPort` on each run
+ * (the wrapper cannot see the resolved port). The value must therefore be a pure function of its
+ * inputs — which is what "synchronous factory" already meant for the other members.
+ *
+ * @param {unknown} portInput the raw host input handed to `createAgent({ assemblyPort })`
+ * @returns {Record<string, any>|undefined}
+ */
+export function assemblyPortPolicyConfigSeed(portInput) {
+  if (portInput === null || typeof portInput !== "object" || Array.isArray(portInput)) return undefined;
+  const policy = resolveAssemblyMember(/** @type {any} */ (portInput).policy, "policy");
+  const tree = policy?.config;
+  if (tree === null || typeof tree !== "object" || Array.isArray(tree)) return undefined;
+  /** @type {Record<string, any>} */
+  const seed = {};
+  for (const [group, bag] of Object.entries(tree)) {
+    seed[group] = bag !== null && typeof bag === "object" && !Array.isArray(bag) ? { ...bag } : bag;
+  }
+  return seed;
+}
+
+/**
  * The `session` container's contribution to the option tree, **as a function of the session value**
  * (issue #550).
  *

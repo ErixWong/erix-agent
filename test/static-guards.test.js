@@ -3917,8 +3917,18 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *     #   （其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 3（校准面 ## [Unreleased]）
  *     校准面（## [Unreleased]）上实测 4 对 ≠ 地板 3 对：地板必须恰等于校准面上的实测值
  *     （否则「掉一条就穿底」证不出来）。配对变多了 ⇒ 请抬地板到实测值
+ *
+ * issue #571 片2：`## [Unreleased] ### Fixed` 再新增一对（`createAgent` 用端口 `policy.config` 的拷贝
+ * 给本次调用的树打底，issue 引用集合 #571 + #524）⇒ 面没挪，仍是 `## [Unreleased]`，实测变成 **5 对**，
+ * 地板 4 → 5。照旧先贴守卫自己的实测 diagnostic、再动常量：
+ *
+ *     # 配对地板：判据面 = ## [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：
+ *     #   顶部 Unreleased 有内容）；中文 5 条 / 英文 5 条 / 配对 5 对
+ *     #   （其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 4（校准面 ## [Unreleased]）
+ *     校准面（## [Unreleased]）上实测 5 对 ≠ 地板 4 对：地板必须恰等于校准面上的实测值
+ *     （否则「掉一条就穿底」证不出来）。配对变多了 ⇒ 请抬地板到实测值
  */
-const CHANGELOG_PAIR_FLOOR = 4;
+const CHANGELOG_PAIR_FLOOR = 5;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
@@ -4007,7 +4017,8 @@ describe("静态守卫：CHANGELOG 未发布节的中英配对地板（issue #56
     const text = changelogText();
     const problems = collectChangelogPairingProblems(text);
     // 地板是在 `CHANGELOG_PAIR_FLOOR_SURFACE` 那一节上实测的（#571 面随 #571 片1 的条目挪到
-    // `## [Unreleased]`，所以地板 = 在 Unreleased 上重测的值：#571 起 1 对、#574 ⇒ 2 对、#575 ⇒ 3 对）。
+    // `## [Unreleased]`，所以地板 = 在 Unreleased 上重测的值：#571 起 1 对、#574 ⇒ 2 对、#575 ⇒ 3 对、
+    // #572 ⇒ 4 对、#571 片2 ⇒ 5 对）。
     // 面被 `resolveChangelogScanSurface` 挪到别的节（例如 0.29 开版后顶部 Unreleased 又空了 ⇒ 退到刚开的
     // 版本节）时，这个数就没有校准依据了。
     const onFloorSurface = Boolean(problems.surface)

@@ -254,6 +254,20 @@ issue #531 的「两个入口、一个家」讲的是这个**容器**，与载�
   `policy.session.initialMessages` 与 `config.input.messages` 时会收到一条
   `config_override_conflict` 事件（`path: "input.messages"`）——`config` 赢，且不静默。
 
+**裁定（issue #571 片2）：`config.input.messages` 是唯一叶，`session.initialMessages` 是端口级 feeder。**
+两条通道不是平级的。数据住在 `config.input.messages` —— `agent.run({ messages })` 写的就是它、展开相读的
+也是它，而绑定表里被叫作叶子的只有它。`session.initialMessages` 是**feeder**：容器的成员被派生成
+`config.input.messages`，然后**只在没人设过那个叶子时**填进去。三个后果，全由
+`test/loop-create-agent-571.test.js` J4 钉住：
+
+* feeder 单独给就真的生效（`session: { initialMessages: … }` 能给 run 播种——它不是死写法）；
+* 两者同时给且值**不同**时叶赢，feeder 的值不会漏进请求，而且恰发**一条** `config_override_conflict`
+  （`path: "input.messages"`、key `initialMessages`）——两个来源、值不同，不静默；
+* 容器的另一个成员 `session.id` 同一条路派生到 `config.run.runId`。
+
+feeder **不退役**：它是端口对种子的写法（issue #513 / #544 / #550 把它定为容器成员），退役它等于
+破宿主。这条裁定消掉的是歧义：叶只有一个，另一种写法是单向喂进它的 feeder。
+
 **扁平写法的版本口径**（issue #498 S3，`input` 组 A2b 段——第四片，也是把 `config.input` 收口的一片：
 这一组的每个成员现在都只能写嵌套形态）：
 
@@ -274,7 +288,7 @@ issue #531 的「两个入口、一个家」讲的是这个**容器**，与载�
 `policy.config.input.initialUserMessage`、又为了别的事传了一个调用级 `config`」的宿主会丢掉 policy 那份——
 规则与以前一样，只是它现在落在几乎每个宿主都会用的键上。
 
-**诊断报什么、不报什么（issue #524，装配口那一路实测）。** `config_override_conflict` 事件列的是**两边都写了、且值不同的叶子**，所以它只在两棵树**重叠**时发：`policy.config.input.initialUserMessage = "A"` 加上调用级 `config.input.initialUserMessage = "B"` 会发一条，载荷是 `conflicts: [{path: "input.initialUserMessage", key: "initialUserMessage"}]`。而上面那段自己讲的情形——调用级 `config` 是**为了别的事**写的（比如只写 `config.run.*`）——一个叶子都不重叠，那次整棵覆盖**什么都不报**：零事件，终局载荷里也没有对应字段。把这种静默情形做成「不挂 observer 也看得见」留到后续 minor 版本；语义本身不变（#406 复审 R6：每个值只有一个来源、不做深合并），种子也**刻意不再搬第二次**（#524 裁决）。
+**诊断报什么、不报什么（issue #524，装配口那一路实测）。** `config_override_conflict` 事件列的是**两边都写了、且值不同的叶子**，所以它只在两棵树**重叠**时发：`policy.config.input.initialUserMessage = "A"` 加上调用级 `config.input.initialUserMessage = "B"` 会发一条，载荷是 `conflicts: [{path: "input.initialUserMessage", key: "initialUserMessage"}]`。而上面那段自己讲的情形——调用级 `config` 是**为了别的事**写的（比如只写 `config.run.*`）——一个叶子都不重叠，那次整棵覆盖**什么都不报**：零事件，终局载荷里也没有对应字段。把这种静默情形做成「不挂 observer 也看得见」留到后续 minor 版本；语义本身不变（#406 复审 R6：每个值只有一个来源、不做深合并），种子也**刻意不再搬第二次**（#524 裁决）。这段讲的是 `runToolLoop` 本身（直连路线，以及宿主把 `config` 与 `assemblyPort` 一起递进去的那个形状）。**包装**路线上那个静默情形已经不存在了：自 issue #571 片2 起 `createAgent` 递出去的那棵树以 `policy.config` 的拷贝打底，所以什么都没丢，也就没有什么可报。
 
 **扁平写法的版本口径**（issue #498 S3，`tuning` 切片——第五片，也是第一个退掉**标量**旋钮、
 而不是壳的切片）：
@@ -1313,8 +1327,9 @@ capabilities.hooks.onReflection`），而写在 `capabilities.hooks.onReflection
 为什么要有它：0.28 之后没有 agent 对象，于是「初始化一次的配置」与「这一次的数据」挤在同一个参数对象里。
 实测代价（issue #524，已 by-design 关闭）是：`config.input.messages` —— 一条**消息** —— 会把装配口
 给的整棵 `config` 树（`policy.config`）**顶掉**，折叠 TTL / 上下文预算 / 持久化开关随之一起消失；
-触发它的动作只是「发一条消息」。修法是给初始化一个**位置**，不是新造一条合并规则：不做深合并、
-不加诊断字段、不搞第二套引擎。
+触发它的动作只是「发一条消息」。**issue #571 片2 已经把包装路线上的这份代价消掉了**（见下面的形状）：
+`runToolLoop` 的覆盖语义一字未改，所以直连路线仍旧是上面实测的那个行为，而包装过的 agent 不再付它。
+修法是给初始化一个**位置**，不是新造一条合并规则：不做深合并、不加诊断字段、不搞第二套引擎。
 
 **绑定事实是机器可读的。** 每个配置叶子都在 `CONFIG_LEAF_BINDING`（`src/loop/config-namespace.js`）
 里标成 `"init"` 或 `"call"` —— 它是 `CONFIG_NAMESPACE_SCHEMA`（`src/loop/config-namespace.js`）旁边
@@ -1343,27 +1358,45 @@ it in agent.run({ messages: … }) instead (issue #571: …)`。`init` 叶写进
 createAgent({ config: { run: { maxRounds: … } } }) instead (issue #571)`。两个方向都不许静默忽略，
 也不许退化成「那就用初始化那个值吧」。
 
-**「配置只有一个来源」在三种形状下分别怎么说（issue #574）。**
+**「配置只有一个来源」在四种形状下分别怎么说（issue #574，由 issue #571 片2 更新）。**
 
 - `runToolLoop({ config: … })`：调用级那棵树**整棵覆盖**装配口给的那棵（`policy.config`），逐叶
   差异照旧报 `config_override_conflict`。这条规则本版一字未改——也正因为如此，`config.input.messages`
-  在这条路线上仍然能把树里其余的东西一起顶掉。
+  在这条路线上仍然能把树里其余的东西一起顶掉。出口是 `createAgent`，引擎这条规则不动。
 - `createAgent({ config })` + `agent.run(input)`：**只有一棵树**。`run(input)` 连 `config` 这个键都
   递不进去（它被当成初始化选项拒掉），它的叶子是**逐叶**并进初始化那棵树的。**而那棵树每次调用
   都会递给 `runToolLoop`**，所以走装配路线时它**整棵覆盖**端口的 `policy.config`（整棵；两侧都给了
   不同值的叶子逐条报 `config_override_conflict`）。于是写 `config` 是对**整棵**树的声明、不是对某个
   叶子的声明：`createAgent({ config: { run: { maxRounds: 8 } } })` 在那个叶子上赢、端口的身份与 session
-  派生叶照旧活着，而端口其余配置叶子退回引擎缺省值。
+  派生叶照旧活着，而端口其余配置叶子退回引擎缺省值。这是**有意**的：初始化那棵树是宿主的**唯一**
+  配置来源，包装层不把它与端口那棵混起来（混就是裁决明确禁止的深合并）。
 - `createAgent({ assemblyPort })`，初始化**没写** `config`、本次调用也**没带**任何配置叶子：递给
   `runToolLoop` 的对象里**根本没有 `config` 这个键**，于是端口的 `policy.config` 就是唯一那棵树，
-  上面的每个旋钮都照样生效——折叠 TTL、上下文预算、轮数上限、持久化开关。这才是包装在端口路线上
-  要解的形状。
-- 上两种形状之间的边界，要**点名**而不是含糊过去：本次调用的输入里出现一个配置叶子，树就又**在场**了
-  ——`agent.run({ messages })` 写的是 `config.input.messages`，而 `messages` 是 `call` 叶——于是既有的
-  整棵覆盖规则重新生效；又因为端口那棵树与这次调用那棵树**没有任何共同叶子**，**一条**
-  `config_override_conflict` 也不会发。所以「发一条消息」在端口路线上仍然会把端口的旋钮弄丢：那是
-  issue #524 的代价，本版没有改它。在场性规则买到的是「宿主什么都没发（或只发 `signal`）」那个形状
-  ——那时端口是**唯一**的来源，而不只是「约定上的」来源。
+  上面的每个旋钮都照样生效——折叠 TTL、上下文预算、轮数上限、持久化开关。
+- `createAgent({ assemblyPort })` + 本次调用带了一个配置叶子 —— **「发一条消息」造出来的就是这种形状，
+  也是 issue #571 片2 翻面的那一种。** 包装层递出去的树以**端口 `policy.config` 的拷贝**为底，于是
+  既有的「整棵覆盖」在**内容上**等于没覆盖：`agent.run({ messages })` 之后端口的每个旋钮（折叠 TTL、
+  上下文预算、`run.maxRounds`、持久化开关）都还在，消息真的到达 provider，而且**一条**
+  `config_override_conflict` 也不发——那条冲突规则只报**值不同**的叶子，而种子里的每个叶子带的仍是
+  端口自己的值。本次调用真的改了某个叶子时照旧恰报一条：把 `input.messages` 用端口的
+  `session.initialMessages` 种上、本次再发 `messages`，你会拿到一条
+  `conflicts: [{path: "input.messages", key: "initialMessages"}]`（本次调用赢——一个旋钮两个来源从不静默）。
+  种子是**拷贝**（组级浅拷、叶子值按引用）：包装层从不写宿主的 `policy`，所以冻结的端口对象照常可用，
+  本次调用带的东西也绝不会漏回端口那棵树。种子**只取**端口的 `policy.config`——平移自扁平 `policy.<叶>`
+  的那些叶与 `session` 派生叶由引擎自己在覆盖之后逐叶补回，种子重复它们只会让「谁是来源」变模糊。
+
+**`signal` 是 agent 级的，`run({ signal })` 是每次调用的（issue #571 片2 裁定）。** 写给 `createAgent`
+的 `signal` 属于 agent、不属于某一次调用：每一次 `run()` 都共用它，所以它一 abort，这个 agent 之后的
+调用也一起被取消（以 `termination.reason: "aborted"` reject，一次都不碰 provider）。这是「只定一次的
+那些选项」的自然读法，不是遗漏。某一次调用想用自己的取消信号，就传 `run({ signal })`：它**只覆盖那一次**
+的初始化信号——下一次不传就回到 agent 那个。
+
+**退役扁平名里的 `call` 叶只吃一次错。** `createAgent({ initialMessages })` 抛的是
+`createAgent({ initialMessages: … }): initialMessages is per-call data — write it in
+agent.run({ messages: … }) instead (issue #571: …)`；`initialUserMessage` / `runId` / `resume` /
+`stream` 与 `metadata.*` 那七个叶子同理。issue #571 片2 之前，同一个错误要吃**两次**：名称闸口先把它
+送去 `config.input.messages`，宿主照着写又被绑定闸口送去 `agent.run({ messages })`。直连路线保留它
+自己那一站（`config.input.messages`）——`runToolLoop` 上没有 `agent.run` 可指。
 
 **`run(input)` 接受什么。** `call` 叶，按**叶子名**写（`{ messages }`、`{ runId }` …），外加本次调用的
 `signal`。别的键一律拒：`init` 叶会点名它的配置路径与 `createAgent`，顶层行为面（`provider` /

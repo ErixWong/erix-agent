@@ -152,7 +152,12 @@ import {
   configBindingForLeafName,
   configLeafNamesForBinding,
   configLeafPathForName,
+  configPathForOption,
 } from "./config-namespace.js";
+// #571 片2：包装层要从端口 `policy.config` 取一份**拷贝**当种子（见
+// `assemblyPortPolicyConfigSeed`）。这条 import 与 `option-normalization.js` 那条同源，环在 ESM 下
+// 只在**调用时**求值，模块顶层只用到它导出的函数。
+import { assemblyPortPolicyConfigSeed } from "../assembly.js";
 
 export { parseReflectionDecision };
 
@@ -4974,13 +4979,36 @@ export async function runToolLoop(options) {
 //   · **不退役任何写法**：`runToolLoop` 照旧可以直接调；本函数是纯增量包装，不是第二套引擎；
 //   · **不做深合并**：初始化那棵树按组浅拷贝、逐叶取值，叶子里的对象原样带过去（引擎的取值口径不变）。
 //
+// #571 **片2**（本段）：把「发一条消息顺带顶掉部署级配置」这个行为**翻面**。
+//
+// 片1 + #574 之后仍然漏着的那个形状是：`createAgent({ assemblyPort })` + `agent.run({ messages })`。
+// `messages` 是 `call` 叶 ⇒ 递给 `runToolLoop` 的树「在场」⇒ `:491` 整棵顶掉 `policy.config`；
+// 而覆盖之后那两道填充只补「平移自扁平 `policy.*` 的叶」与「`session` 派生叶」，**补不回宿主写在
+// `policy.config` 里的叶**。于是最常见的动作（发一条消息）静默丢掉折叠 TTL / 上下文预算 / 轮数上限，
+// 而且因为两侧没有共同叶子，连一条 `config_override_conflict` 都不发。
+//
+// 修法仍是**包装层**的（引擎那两条语义一个字都没动）：没有初始化 `config` 时，把端口的
+// `policy.config` **拷一份**当种子，再逐叶并进本次的 `call` 叶（`assemblyPortPolicyConfigSeed`）。
+// 递出去的树于是与端口那棵**内容等价**——「整棵覆盖」照旧发生，只是顶掉等于没顶掉。三个刻意的选择：
+//   · **只取 `policy.config`**，不把 `policy.<leaf>`（平移叶）与 `session` 派生叶也写进种子：那两层
+//     本来就由引擎在覆盖之后逐叶补回（`withAssemblyPolicyConfigLeaves`），种子重复它们只会让
+//     「谁是来源」变模糊；
+//   · **冲突事件不增加**：`collectConfigSourceConflicts` 只报「两侧都给了且**值不同**」的叶子，种子与
+//     端口那棵逐叶等值 ⇒ 本形状下事件条数 = 0（J1 把它钉住）；本次调用真把某个端口叶子改成别的值
+//     时照旧恰一条（那是「一个旋钮两个来源」的既有语义，不是噪声）；
+//   · **种子是拷贝**：端口对象属于宿主（`Object.freeze` 过的也不少见），包装层只新建组级浅拷贝的
+//     对象、从不写宿主的树（J2 对 `assemblyPort.policy` 做 run 前后深比较）。
+//
 // 绑定事实的唯一来源是 `CONFIG_LEAF_BINDING`（`src/loop/config-namespace.js`），本文件不抄第二份。
 
 /**
- * `createAgent({ … })` —— 把「初始化一次的配置」与「每一次调用的数据」分成两个位置（issue #571 片1）。
+ * `createAgent({ … })` —— 把「初始化一次的配置」与「每一次调用的数据」分成两个位置（issue #571 片1；
+ * 片2 把「发一条消息顺带顶掉端口配置」翻面，见上面那段注释）。
  *
  * 接受今天 `runToolLoop` 的**全部行为面**与 `config` / `capabilities`（同一个白名单、同一道闸口），
  * 并在**初始化时**把校验做完：
+ *   · **退役扁平名里的 `call` 叶**（`initialMessages` / `runId` / `resume` / `stream` / `metadata.*`）⇒
+ *     一次就指名最终家 `agent.run({ <leaf> })`（片2，`collectRetiredFlatCallLeaves`）；
  *   · 未知键 ⇒ `assertRunToolLoopOptionNames`（与 `runToolLoop` 同一个函数、同一句判词）；
  *   · `config` 的名称/形状/函数值/逐叶值规则 ⇒ `assertConfigNamespace`（同上）；
  *   · `capabilities` 的名称/形状 ⇒ `assertCapabilitiesNamespace`（同上）；
@@ -4991,10 +5019,11 @@ export async function runToolLoop(options) {
  *   · 只接受 `call` 绑定的**叶子名**（`messages` / `initialUserMessage` / `runId` / `resume` / `stream`
  *     / `metadata.*`）外加每次调用的 `signal`；别的键一律硬拒并指名去处（`init` 叶 ⇒
  *     `createAgent({ config })`，顶层行为面 ⇒ `createAgent({ … })`）；
- *   · 内部把「初始化那份」与这次的叶子**逐叶**并进同一棵 `config`；`run(input)` 连第二个 `config`
- *     都递不进去。那棵树只在**初始化时写了 `config`、或本次调用带了 `call` 叶**时才递给
- *     `runToolLoop`（issue #574）；两侧都没给时**不带 `config` 这个键**，端口 `policy.config` 生效。
- *     递了树时「整棵覆盖 `policy.config`」仍是既有语义、逐叶事件照发（本包装不改它）。
+ *   · 内部把「初始化那份」（没有就用端口 `policy.config` 的拷贝当种子）与这次的叶子**逐叶**并进同一棵
+ *     `config`；`run(input)` 连第二个 `config` 都递不进去。那棵树只在**初始化时写了 `config`、或本次
+ *     调用带了 `call` 叶**时才递给 `runToolLoop`（issue #574）；两侧都没给时**不带 `config` 这个键**，
+ *     端口 `policy.config` 生效。递了树时「整棵覆盖 `policy.config`」仍是既有语义、逐叶事件照发
+ *     （本包装不改它——片2 只是让那棵树与端口那棵**内容等价**）；
  *   · 返回 `runToolLoop` 的 promise，一次调用一个 run，agent 对象本身无状态。
  *
  * @param {Record<string, any>} init `runToolLoop` 的选项面（`config` / `capabilities` + 顶层行为面）
@@ -5004,6 +5033,8 @@ export function createAgent(init) {
   if (init === null || typeof init !== "object" || Array.isArray(init)) {
     throw new TypeError("createAgent options must be an object");
   }
+  const retiredFlatProblems = collectRetiredFlatCallLeaves(init);
+  if (retiredFlatProblems.length > 0) throw new TypeError(retiredFlatProblems.join("; "));
   assertRunToolLoopOptionNames(init);
   const { config: initConfig, capabilities, ...initOptions } = init;
   const bindingProblems = collectInitBindingProblems(initConfig);
@@ -5019,7 +5050,7 @@ export function createAgent(init) {
      * @returns {Promise<Record<string, any>>}
      */
     run(input) {
-      const call = collectCallInput(initConfig, input);
+      const call = collectCallInput(input);
       // 这里必须显式声明为 any：`runToolLoop` 的 JSDoc 入参类型要求 `provider` / `executeTool` 这两个
       // **必填**键，而初始化面是 `Record<string, any>`（宿主给什么就是什么，形状由引擎自己的闸口校）。
       // 不加这一层，`--checkJs` 会多一条 TS2345（本片不允许抬 type 棘轮基线）。
@@ -5041,10 +5072,61 @@ export function createAgent(init) {
       // 判据是**在场性**，不是「内容非空」：初始化时写了 `config`（哪怕写的是 `{}`），或本次调用带了
       // 任一 `call` 叶，都算「宿主真给了」，照旧递合并后的树（此时整棵覆盖 + 逐叶事件是对的语义）。
       // 只有「两侧都没给」这一种形状不带这个键——此时端口 `policy.config` 就是唯一的那棵树。
-      if (initConfig !== undefined || call.hasLeaves) options.config = call.config;
+      if (initConfig !== undefined || call.hasLeaves) {
+        // issue #571 片2：**递出去的那棵树以「端口那棵」为底**。
+        //
+        // 初始化没写 `config` 时，底子就是端口 `policy.config` 的一份**拷贝**
+        // （`assemblyPortPolicyConfigSeed`（`src/assembly.js`）），本次的 `call` 叶逐叶压在它上面。
+        // 于是「整棵覆盖」照旧发生（引擎语义一字未改），但那棵树与端口那棵**内容等价**：
+        // 没被本次调用点名的叶子值不变 ⇒ 宿主的折叠 TTL / 上下文预算 / 轮数上限都还在，
+        // 且 `collectConfigSourceConflicts` 只报「值不同」的叶子 ⇒ 本形状下事件条数 = 0。
+        //
+        // 初始化**写了** `config` 时底子仍是初始化那棵（#571 片1 的裁决：`createAgent({ config })`
+        // 是对**整棵**树的声明）——种子只补「初始化没写」那一半，不把两份宿主树混起来。
+        const base = initConfig !== undefined
+          ? initConfig
+          : assemblyPortPolicyConfigSeed(initOptions.assemblyPort);
+        options.config = mergeConfigLeaves(base, call.leaves);
+      }
       return runToolLoop(/** @type {any} */ (options));
     },
   };
+}
+
+/**
+ * 顶层**扁平退役名**里那些 `call` 叶：一次调用就指名最终家（issue #571 片2，J3）。
+ *
+ * 两跳的样子（本片修掉）：`createAgent({ initialMessages })` 先被名称闸口送去 `config.input.messages`，
+ * 宿主照着写 `createAgent({ config: { input: { messages } } })`，又被绑定闸口送去
+ * `agent.run({ messages })`——同一个错误吃两次才找对位置。扁平名本身就是**退役拼写**，不需要中间站：
+ * 这里在名称闸口之前把「扁平名 ⇒ `call` 叶」这一档直接指到 `agent.run({ <leaf> })`。
+ *
+ * 只收**不在白名单里**的名字（`RUN_TOOL_LOOP_OPTION_SET`）：还在接受面里的键（`signal` / `session` /
+ * 端口成员）由名称闸口按原样判，本闸口不动它们——否则就是在收窄接受面（#571 §1.3）。
+ * `init` 绑定的扁平名（`maxRounds` / `system` …）也不在这里：它们的下一站 `config.<group>.<leaf>`
+ * 就是终点，名称闸口那一句已经一次说清。
+ *
+ * 名字集合与去处都**派生**：扁平名 → 配置路径走 `configPathForOption`，绑定走
+ * `configBindingForLeaf`，`agent.run` 的键就是路径的第二段（叶子名）。本函数不手抄任何一张名单。
+ *
+ * @param {Record<string, any>} init
+ * @returns {string[]} 问题列表（空 = 通过）
+ */
+function collectRetiredFlatCallLeaves(init) {
+  const problems = [];
+  for (const key of Object.keys(init)) {
+    if (RUN_TOOL_LOOP_OPTION_SET.has(key)) continue;
+    const path = configPathForOption(key);
+    if (path === undefined) continue;
+    const [group, leaf] = /** @type {[string, string]} */ (path.split("."));
+    if (configBindingForLeaf(group, leaf) !== "call") continue;
+    problems.push(
+      `createAgent({ ${key}: … }): ${key} is per-call data —`
+      + ` write it in agent.run({ ${leaf}: … }) instead (issue #571: the config tree is fixed at`
+      + " initialization and is the agent's single config source)",
+    );
+  }
+  return problems;
 }
 
 /**
@@ -5076,22 +5158,25 @@ function collectInitBindingProblems(config) {
 }
 
 /**
- * `agent.run(input)` 的键 ⇒ `{ config, options, hasLeaves }`（issue #571，方向二；#574 加了 `hasLeaves`）。
+ * `agent.run(input)` 的键 ⇒ `{ leaves, options, hasLeaves }`（issue #571，方向二；#574 加了 `hasLeaves`）。
  *
  * 三档判词分开说，因为修法不同：`init` 叶 ⇒ 去 `createAgent({ config })`；顶层行为面（`provider` /
  * `capabilities` / `onEvent` …）⇒ 去 `createAgent({ … })`；真未知的名字 ⇒ 枚举接受名单（`call` 叶 +
  * `signal`，名单从绑定表派生，不手抄）。
+ *
+ * `leaves` 是这一次调用真正带来的 `call` 叶（组 → 叶 → 值）。合并成树由调用方做（`run(input)`）：
+ * 底子既可能是初始化那棵，也可能是端口 `policy.config` 的拷贝（#571 片2），而「用哪一棵当底」
+ * 是包装层的决定，不是本函数的事——本函数只管**这次调用给了什么**与**键名对不对**。
  *
  * `hasLeaves`（issue #574）回答的是「这一次调用有没有真的带来一个 `config` 叶」——它是「要不要把
  * `config` 这个键递给 `runToolLoop`」的判据之一（另一半是初始化时 `config` 是否在场）。注意它只数
  * **实际写进树的叶**：`run({ messages: undefined })` 与 `run({})` 一样是「没给」（值与「没写」
  * 不区分，与引擎既有取值口径同一句），而 `signal` 不算 config 叶（它进顶层选项）。
  *
- * @param {unknown} initConfig 初始化那份 `config`（原样，不被本函数改动）
  * @param {Record<string, any>} [input]
- * @returns {{config: Record<string, any>, options: Record<string, any>, hasLeaves: boolean}}
+ * @returns {{leaves: Map<string, Record<string, any>>, options: Record<string, any>, hasLeaves: boolean}}
  */
-function collectCallInput(initConfig, input) {
+function collectCallInput(input) {
   const source = input === undefined ? {} : input;
   if (source === null || typeof source !== "object" || Array.isArray(source)) {
     throw new TypeError("agent.run input must be an object (or omitted)");
@@ -5131,28 +5216,31 @@ function collectCallInput(initConfig, input) {
   }
   if (problems.length > 0) throw new TypeError(problems.join("; "));
   return {
-    config: mergeConfigLeaves(initConfig, callLeaves),
+    leaves: callLeaves,
     options,
     hasLeaves: callLeaves.size > 0,
   };
 }
 
 /**
- * 「初始化那份」+「这次的叶子」⇒ 交给 `runToolLoop` 的**唯一一棵** `config`（issue #571）。
+ * 「底子那棵树」+「这次的叶子」⇒ 交给 `runToolLoop` 的**唯一一棵** `config`（issue #571）。
+ *
+ * 底子有两种：初始化写的 `config`（片1），或端口 `policy.config` 的拷贝（片2，见 `run(input)`）。
+ * 两者形状相同（组 → 叶），所以合并在同一处——**不**因为底子是谁而换一套规则。
  *
  * 只做**组级浅拷贝 + 逐叶覆盖**：叶子里的对象按引用带过去（`config.folding.context` 这类壳的取值
  * 口径因此一字不变）。没有深合并——那不是本单要的东西，而且深合并会让「这次没给」与「这次给了
  * `undefined`」变成两件事。
  *
- * @param {unknown} initConfig
+ * @param {unknown} baseConfig
  * @param {Map<string, Record<string, any>>} callLeaves
  * @returns {Record<string, any>}
  */
-function mergeConfigLeaves(initConfig, callLeaves) {
+function mergeConfigLeaves(baseConfig, callLeaves) {
   /** @type {Record<string, any>} */
   const merged = {};
-  if (initConfig !== null && typeof initConfig === "object" && !Array.isArray(initConfig)) {
-    for (const [group, bag] of Object.entries(/** @type {Record<string, any>} */ (initConfig))) {
+  if (baseConfig !== null && typeof baseConfig === "object" && !Array.isArray(baseConfig)) {
+    for (const [group, bag] of Object.entries(/** @type {Record<string, any>} */ (baseConfig))) {
       merged[group] = bag !== null && typeof bag === "object" && !Array.isArray(bag) ? { ...bag } : bag;
     }
   }
