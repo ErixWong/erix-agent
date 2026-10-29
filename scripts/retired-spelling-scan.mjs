@@ -18,6 +18,13 @@
 // `check:docs:strict`；`node scripts/retired-spelling-scan.mjs --self-test` 是同一道门的反向证，单独一步
 // 阻塞。默认模式（不带 flag）仍然只打报告、exit 0 —— 那是给人读的视图，门禁跑的是 `--strict`。
 //
+// **`--json` 的退出码与文本分支同源同判**（#575 A）：从前 `--json` 打完判词就 `process.exitCode = 0`，
+// 于是 `--strict --json` 在红面上恒假绿（`--strict` 只对文本分支生效）——任何人拿 `--json` 做机器判定
+// 都会把红当绿。现在「哪些判词算红」只有一份（`gateVerdicts()`），「红数 → 退出码」也只有一份
+// （`gateExitCode()`），两条输出分支都只读它们；`--json` 的输出里带
+// `gate.{strict,gating,mode,red,counts,exitCode,wouldExitCode}`，所以机器读的那份**不可能**与进程
+// 真实退出码不一致（自测里有反向证）。
+//
 // 三条判据（每条都能被反向证打红，见报告）：
 //   1. **分类**（`classify()`，纯路径，第一等公民）：
 //        · **现状描述**（current，该迁移）：`docs/architecture*` / `docs/charts*` / `docs/requirements*` /
@@ -56,21 +63,22 @@
 //
 // 用法：
 //   node scripts/retired-spelling-scan.mjs            # 全量报告，exit 0（人读视图）
-//   node scripts/retired-spelling-scan.mjs --json     # 同一份事实的机器读法
+//   node scripts/retired-spelling-scan.mjs --json     # 同一份事实的机器读法（含 `gate` 段：红数 + 退出码）
 //   node scripts/retired-spelling-scan.mjs --strict   # 门禁：现状类有 use / 历史契约类钉子不符 ⇒ exit 1；
 //                                                     # 清单拿不到（git 不可用 / 不在仓库内 / 空清单）⇒ exit 2
+//   node scripts/retired-spelling-scan.mjs --strict --json  # 同一道门，机器读法：红数 > 0 ⇒ 非 0（#575 A）
 //   node scripts/retired-spelling-scan.mjs --self-test # 反向证：内存夹具里改一处 ⇒ 报；不改 ⇒ 不报
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SELF_PATH = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(SELF_PATH), "..");
-const STRICT = process.argv.includes("--strict");
-const JSON_OUT = process.argv.includes("--json");
-const SELF_TEST = process.argv.includes("--self-test");
+// 旗标**不在模块顶层解析**（#575 A）：`runCli({ argv })` 每次运行自己解析，自测才能在同一进程里
+// 分别跑「带 `--strict`」与「不带 `--strict`」两条路（顶层常量会让自测只能证其中一条）。
 
 // ── 1. 退役键表（派生，不抄） ────────────────────────────────────────────────
 /**
@@ -519,8 +527,78 @@ export function scanDocs({ root = ROOT, retired, files = gitTrackedDocs(root) })
   return report;
 }
 
-// ── 6. 输出 ──────────────────────────────────────────────────────────────────
-function printReport(report, retired, { manifest, deadPins } = { manifest: [], deadPins: [] }) {
+// ── 6. 门禁判据（「哪些判词算红」的**唯一**一份定义，#575 A） ───────────────
+/**
+ * 把一次扫描折成「红数」与逐类明细。**文本分支与 `--json` 分支都只读这里**。
+ *
+ * 病根（#575 A）：`--json` 分支从前自己 `process.exitCode = 0` —— 判词打完了，红数却从未参与任何判定，
+ * 于是 `--strict --json` 在有红的面子上恒 exit 0。假绿不是「少了一个 if」，而是「同一套判据写了两遍、
+ * 其中一遍没写全」。所以红集合只在这里定义一次，两条输出分支（含 JSON 里的 `gate.red`）都只能读它。
+ *
+ * 红集合（四条，少一条就是假绿）：
+ *   · `currentUses`：现状类的 `use` 命中（`REGRESSION`）；`AMBIGUOUS_KEYS` 里的同名异义**不算**
+ *     （文本级扫描分不清形参名与输入面拼写，`review(ambiguous-only)` 因此不红）；
+ *   · `suspect`：`SUSPECT(dropped)` / `SUSPECT(raised)`（历史/契约正文钉子不符）；
+ *   · `unpinned`：历史/契约类有命中却没登记钉子（新入历史类却忘了钉）；
+ *   · `deadPins`：钉子指向不在 `git ls-files` 清单里的文件（空转条目）。
+ * `ok` / `review(ambiguous-only)` 不在集合里。
+ *
+ * @param {{report: Array<{kind: string, verdict: string, uses: Array<{key: string}>}>, deadPins?: Array<{file: string, why: string}>}} input
+ * @returns {{currentUses: Array<object>, suspect: Array<object>, unpinned: Array<object>,
+ *   deadPins: Array<{file: string, why: string}>, red: number,
+ *   counts: {regression: number, suspect: number, unpinned: number, deadPins: number}}}
+ */
+export function gateVerdicts({ report, deadPins = [] }) {
+  const currentUses = report
+    .filter((r) => r.kind === "current")
+    .flatMap((r) => r.uses.filter((h) => !AMBIGUOUS_KEYS.has(h.key)));
+  const suspect = report.filter((r) => r.verdict.startsWith("SUSPECT"));
+  const unpinned = report.filter((r) => r.verdict === "UNPINNED");
+  const counts = {
+    regression: currentUses.length,
+    suspect: suspect.length,
+    unpinned: unpinned.length,
+    deadPins: deadPins.length,
+  };
+  return {
+    currentUses,
+    suspect,
+    unpinned,
+    deadPins,
+    counts,
+    red: counts.regression + counts.suspect + counts.unpinned + counts.deadPins,
+  };
+}
+
+/**
+ * 红数 → 退出码。**唯一**一处把 `--strict` 应用上去的地方（文本分支与 `--json` 分支共用）。
+ *
+ * · `--strict`（= 门禁，`npm run check:docs-spelling`）：红数 0 ⇒ 0，否则 1。`SUSPECT` 因此是**只在
+ *   门禁下**才算红的判词 —— 这条规则（`#563` 起的既有语义）只在这里兑现，别处不许再判一次。
+ * · 不带 `--strict`（报告模式）：**恒 0**。那是既有语义：默认视图是给人读的报告，门禁跑的是
+ *   `--strict`。所以 `--json` 把红数（**事实**）与 `gating: false`（**不判**）**都**打出来 ——
+ *   不判 ≠ 没红，机器读的那份不许把前者写成后者。
+ * · 清单拿不到（git 不可用 / 不在仓库内 / 空清单）不走这里：那条路 exit 2，在 `runCli` 里。
+ *
+ * @param {ReturnType<typeof gateVerdicts>} gate
+ * @param {{strict: boolean}} options
+ * @returns {0|1}
+ */
+export function gateExitCode(gate, { strict }) {
+  if (!strict) return 0;
+  return gate.red === 0 ? 0 : 1;
+}
+
+// ── 7. 输出（两条分支都只读 `gate`，不自己算红） ─────────────────────────
+/**
+ * 人读视图。返回值 = 退出码（由 `gateExitCode` 给；本函数不自己拼红数）。
+ *
+ * @param {Array<object>} report `scanDocs()` 的返回
+ * @param {Map<string, string>} retired 退役键 → 规位路径
+ * @param {{manifest: string[], gate: ReturnType<typeof gateVerdicts>, strict: boolean}} context
+ * @returns {0|1}
+ */
+function printReport(report, retired, { manifest, gate, strict }) {
   const ambiguous = (key) => AMBIGUOUS_KEYS.has(key);
   const actionable = report.filter((r) => r.uses.length > 0);
   const cleanCurrent = report.filter((r) => r.kind === "current"
@@ -570,11 +648,11 @@ function printReport(report, retired, { manifest, deadPins } = { manifest: [], d
   }
 
   const mentions = report.reduce((n, r) => n + r.hits.filter((h) => h.verdict === "mention").length, 0);
-  const strictHits = actionable
-    .filter((r) => r.kind === "current")
-    .flatMap((r) => r.uses.filter((h) => !ambiguous(h.key)));
-  const pinProblems = report.filter((r) => r.verdict.startsWith("SUSPECT"));
-  const unpinned = report.filter((r) => r.verdict === "UNPINNED");
+  // 红集合**不在这里算**（#575 A）：它来自 `gateVerdicts()`，与 `--json` 分支是同一份。
+  const strictHits = gate.currentUses;
+  const pinProblems = gate.suspect;
+  const unpinned = gate.unpinned;
+  const deadPins = gate.deadPins;
 
   // 钉子不符的文件必须**点名**：掉到 0 命中的文件不会出现在上面的命中清单里，
   // 所以「见上」必须真的指得到东西（门禁的红要能一眼看出是哪份文档）。
@@ -601,26 +679,21 @@ function printReport(report, retired, { manifest, deadPins } = { manifest: [], d
   console.log(`  ⑤ 钉子与扫描面同源（每条钉子都得是一份入库文件）：${deadPins.length === 0 ? "全部在 `git ls-files` 清单里" : `${deadPins.length} 条死条目 ⇒ ${deadPins.map((p) => p.file).join(", ")}`}`);
   console.log(`  ⑥ 退役措辞行（mention，在讲退役这件事）：${mentions} 处，不计入上面五条`);
 
-  if (STRICT) {
-    const bad = strictHits.length + pinProblems.length + unpinned.length + deadPins.length;
-    console.log(`\n--strict: ${bad === 0 ? "OK — 0 处红" : `${bad} 处红`}`);
-    return bad === 0 ? 0 : 1;
+  if (strict) {
+    console.log(`\n--strict: ${gate.red === 0 ? "OK — 0 处红" : `${gate.red} 处红`}`);
+    return gateExitCode(gate, { strict });
   }
   console.log("\n结论：报告模式（exit 0）。门禁跑的是 `--strict`（`npm run check:docs-spelling`）。");
-  return 0;
+  return gateExitCode(gate, { strict });
 }
 
-// ── 7. 自测（内存夹具，不写盘、不碰真文档） ──────────────────────────────────
-function selfTest(retired, manifest) {
-  const cases = [];
-  const t = (name, fn) => {
-    try {
-      fn();
-      cases.push([true, name]);
-    } catch (error) {
-      cases.push([false, `${name} — ${error.message}`]);
-    }
-  };
+// ── 8. 自测（内存夹具 / 临时树，不写盘到真文档） ───────────────────────────────
+//
+// 用例**先登记、后执行**（`t()` 只入队），执行阶段逐个 `await`：`#575 A` 的反向证要调 `runCli()` 自己
+// 跑一遍真实路径（含 `--json` 分支的退出码），而那是异步的。同步用例照旧——`await` 一个同步返回值无害。
+async function selfTest(retired, manifest) {
+  const pending = [];
+  const t = (name, fn) => pending.push([name, fn]);
   const eq = (actual, expected, what) => {
     if (actual !== expected) throw new Error(`${what}: 期望 ${expected}，实测 ${actual}`);
   };
@@ -767,43 +840,254 @@ function selfTest(retired, manifest) {
     eq(verdictFor({ kind: "current", uses: 2, strictUses: 0 }), "review(ambiguous-only)", "只剩同名异义");
   });
 
+  // ── #575 A 的反向证：造一棵**有红的面**，让真实 CLI 路径（含 `--json` 分支）自己说退出码 ──
+  //
+  // 树是从**真实入库面**复制出来的（125 份 docs，钉子逐条对得上），所以「干净面」不是靠放宽判据
+  // 造出来的；git 用注入的假执行器（真 git 已被上面两例证过），盘上的文件是真的（`readFileSync`
+  // 走真路径、`scanDocs` 走真判据）。**不碰真文档**：所有变异都落在临时树的副本上。
+  const makeTree = () => {
+    const dir = realpathSync(mkdtempSync(path.join(tmpdir(), "erix-spelling-fixture-")));
+    for (const rel of manifest) {
+      const abs = path.join(dir, rel);
+      mkdirSync(path.dirname(abs), { recursive: true });
+      copyFileSync(path.join(ROOT, rel), abs);
+    }
+    const exec = (args) => {
+      if (args[0] === "rev-parse") return `${dir}\n`;
+      if (args[0] === "ls-files") return manifest.map((rel) => `${rel}\0`).join("");
+      throw new Error(`夹具 git 不认识这个子命令：${args.join(" ")}`);
+    };
+    return { dir, io: { exec } };
+  };
+  /** 跑一次真实 `runCli()`，把两条输出流收进内存（自测自己的报告不许被 JSON 淹没）。 */
+  const runCaptured = async (argv, tree) => {
+    const saved = { log: console.log, error: console.error };
+    const out = [];
+    const err = [];
+    console.log = (...args) => out.push(args.map((a) => String(a)).join(" "));
+    console.error = (...args) => err.push(args.map((a) => String(a)).join(" "));
+    try {
+      const code = await runCli({ argv, root: tree.dir, io: tree.io });
+      return { code, stdout: out.join("\n"), stderr: err.join("\n") };
+    } finally {
+      console.log = saved.log;
+      console.error = saved.error;
+    }
+  };
+  const withTree = async (fn) => {
+    const tree = makeTree();
+    try {
+      return await fn(tree);
+    } finally {
+      rmSync(tree.dir, { recursive: true, force: true });
+    }
+  };
+
+  t("退出码与文本分支同源（#575 A）：`--strict --json` 在有红的面子上非 0，`--json` 单独跑仍是报告语义",
+    () => withTree(async (tree) => {
+      // 放行证先跑：干净面上两路必须都绿，否则下面的「非 0」可能只是恒非 0
+      const clean = await runCaptured(["--strict", "--json"], tree);
+      eq(clean.code, 0, "干净面 `--strict --json` 的退出码");
+      const cleanPayload = JSON.parse(clean.stdout);
+      eq(cleanPayload.gate.red, 0, "干净面的红数");
+      eq(cleanPayload.gate.exitCode, 0, "干净面 JSON 自报的退出码");
+      eq(cleanPayload.gate.wouldExitCode, 0, "干净面下「门禁会怎么答」也是 0（否则就是恒非 0）");
+
+      // 造红：现状类文档末尾塞一句旧写法（就是工单 #575 复现的那一处）
+      const soak = path.join(tree.dir, "docs/soak.md");
+      writeFileSync(soak, `${readFileSync(soak, "utf8")}\n\`\`\`js\nrunToolLoop({ toolResultTtl = 2 })\n\`\`\`\n`);
+
+      const strictJson = await runCaptured(["--strict", "--json"], tree);
+      const payload = JSON.parse(strictJson.stdout);
+      // 变异必须真的落上（#210 R2）：面不红 ⇒ 下面「非 0」证不到任何东西
+      if (payload.gate.red === 0) throw new Error("夹具没变红：反向证失去靶子（变异没落上）");
+      eq(payload.gate.counts.regression, 1, "红数里 REGRESSION 的条数");
+      eq(strictJson.code, 1, "`--strict --json` 在有红的面子上的退出码");
+      eq(payload.gate.exitCode, strictJson.code, "JSON 自报的退出码必须等于真实退出码（否则机器读到的是假话）");
+      eq(payload.gate.gating, true, "门禁模式必须自报 gating=true");
+      // 正题：红数 > 0 ⇒ 非 0 —— 这就是 #575 A 从前恒假绿的那一格。
+      // `exitCode`（这一次运行）与 `wouldExitCode`（同一份红数在门禁下）都必须非 0。
+      if (!(payload.gate.red > 0 && strictJson.code !== 0)) throw new Error("红数 > 0 而退出码是 0：假绿还在");
+      eq(payload.gate.wouldExitCode, 1, "红面下「门禁会怎么答」的退出码");
+      if (!/处红/.test(strictJson.stderr)) throw new Error(`红面下 stderr 没点名红数：${JSON.stringify(strictJson.stderr)}`);
+
+      // 旗标顺序不许改变判定（工单复现里两种顺序都假绿过）
+      eq((await runCaptured(["--json", "--strict"], tree)).code, 1, "`--json --strict` 的退出码");
+
+      // 不带 `--strict`：既有语义不变（报告模式 exit 0），但红数照样报出来——不判 ≠ 没红
+      const jsonOnly = await runCaptured(["--json"], tree);
+      const jsonOnlyPayload = JSON.parse(jsonOnly.stdout);
+      eq(jsonOnly.code, 0, "`--json` 单独跑的退出码（报告模式，既有语义）");
+      eq(jsonOnlyPayload.gate.red, payload.gate.red, "报告模式与门禁模式的红数必须是同一份事实");
+      eq(jsonOnlyPayload.gate.gating, false, "报告模式必须自报 gating=false（不许把不判写成没红）");
+      eq(jsonOnlyPayload.gate.exitCode, jsonOnly.code, "报告模式 JSON 自报的退出码");
+      // 「红数 > 0 ⇒ 非 0」在报告模式下也成立——只是落在 `wouldExitCode` 上（`exitCode` 是既有语义的 0）：
+      // 两个字段同源于 `gateExitCode()`，所以没有第三种可能。
+      eq(jsonOnlyPayload.gate.wouldExitCode, 1, "报告模式下的「门禁会怎么答」");
+      eq(jsonOnlyPayload.gate.wouldExitCode, payload.gate.wouldExitCode,
+        "同一棵树、同一份红数：两种模式给出的门禁判词必须相同");
+
+      // 文本分支与 JSON 分支**同源同判**：同一棵树 ⇒ 同一个红数、同一个退出码
+      const textStrict = await runCaptured(["--strict"], tree);
+      eq(textStrict.code, strictJson.code, "文本分支与 `--json` 分支的退出码必须相同");
+      if (!textStrict.stdout.includes(`${payload.gate.red} 处红`)) {
+        throw new Error(`文本分支没报出同一个红数（期望 ${payload.gate.red} 处红）：`
+          + JSON.stringify(textStrict.stdout.slice(-120)));
+      }
+    }));
+
+  t("`--strict` 把 SUSPECT 抬成红（既有规则不变）：只掉历史钉子时门禁非 0、报告模式仍 0",
+    () => withTree(async (tree) => {
+      // 靶子：一份**有钉子**的历史文档被清空（= 有人把历史改写没了）⇒ SUSPECT(dropped)，与现状类无关
+      const target = Object.keys(HISTORY_BODY_PINS)[0];
+      writeFileSync(path.join(tree.dir, target), "# 空\n");
+      const gate = await runCaptured(["--strict", "--json"], tree);
+      const payload = JSON.parse(gate.stdout);
+      eq(payload.gate.counts.suspect, 1, "SUSPECT 的条数");
+      eq(payload.gate.counts.regression, 0, "这一格不该有现状类回归（否则证的不是「SUSPECT 抬红」）");
+      eq(gate.code, 1, "`--strict` 下 SUSPECT 必须算红");
+      const report = await runCaptured(["--json"], tree);
+      eq(report.code, 0, "不带 `--strict` 时 SUSPECT 不算红（既有语义）");
+      eq(JSON.parse(report.stdout).gate.counts.suspect, 1, "报告模式仍要把 SUSPECT 报出来（不判 ≠ 没红）");
+    }));
+
+  t("DEAD-PIN 也在同一份红集合里：钉子指向清单外文件 ⇒ `--strict --json` 非 0（两路同判）",
+    () => withTree(async (tree) => {
+      // 钉子表指向的某份文件**不在**清单里：这是 #560 定的「空转条目」，它本身就该红
+      const victim = Object.keys(HISTORY_BODY_PINS)[0];
+      const trimmed = manifest.filter((rel) => rel !== victim);
+      const exec = (args) => {
+        if (args[0] === "rev-parse") return `${tree.dir}\n`;
+        if (args[0] === "ls-files") return trimmed.map((rel) => `${rel}\0`).join("");
+        throw new Error(`夹具 git 不认识这个子命令：${args.join(" ")}`);
+      };
+      const gate = await runCaptured(["--strict", "--json"], { dir: tree.dir, io: { exec } });
+      const payload = JSON.parse(gate.stdout);
+      eq(payload.gate.counts.deadPins, 1, "死条目数");
+      eq(payload.deadPins.length, 1, "JSON 的 deadPins 段");
+      eq(gate.code, 1, "死条目在门禁下必须算红（`--json` 也不许把它吃掉）");
+      const report = await runCaptured(["--json"], { dir: tree.dir, io: { exec } });
+      eq(report.code, 0, "不带 `--strict` 时死条目不算红（既有语义）");
+      eq(JSON.parse(report.stdout).gate.counts.deadPins, 1, "报告模式仍要把死条目报出来");
+    }));
+
+  t("红集合是纯函数，且「红数 → 退出码」只有一份（门禁/报告两种模式逐格对账）", () => {
+    const report = [
+      { file: "docs/soak.md", kind: "current", verdict: "REGRESSION", uses: [{ key: "toolResultTtl" }] },
+      { file: "docs/architecture.md", kind: "current", verdict: "review(ambiguous-only)", uses: [{ key: "timeoutMs" }] },
+      { file: "docs/decisions/x.md", kind: "history", verdict: "SUSPECT(dropped)", uses: [] },
+      { file: "docs/design/y.md", kind: "history", verdict: "UNPINNED", uses: [{ key: "maxTokens" }] },
+      { file: "docs/charts.md", kind: "current", verdict: "ok", uses: [] },
+    ];
+    const deadPins = [{ file: "docs/zzz.md", why: "夹具" }];
+    const gate = gateVerdicts({ report, deadPins });
+    eq(gate.counts.regression, 1, "REGRESSION 条数");
+    eq(gate.counts.suspect, 1, "SUSPECT 条数");
+    eq(gate.counts.unpinned, 1, "UNPINNED 条数");
+    eq(gate.counts.deadPins, 1, "DEAD-PIN 条数");
+    eq(gate.red, 4, "红数（ambiguous-only 与 ok 都不进集合）");
+    eq(gateExitCode(gate, { strict: true }), 1, "门禁模式：红数 > 0 ⇒ 1");
+    eq(gateExitCode(gate, { strict: false }), 0, "报告模式：恒 0（既有语义）");
+    const clean = gateVerdicts({ report: [{ file: "docs/charts.md", kind: "current", verdict: "ok", uses: [] }] });
+    eq(clean.red, 0, "干净面的红数");
+    eq(gateExitCode(clean, { strict: true }), 0, "门禁模式：红数 0 ⇒ 0");
+    eq(gateExitCode(clean, { strict: false }), 0, "报告模式：恒 0");
+  });
+
+  const cases = [];
+  for (const [name, fn] of pending) {
+    try {
+      await fn();
+      cases.push([true, name]);
+    } catch (error) {
+      cases.push([false, `${name} — ${error.message}`]);
+    }
+  }
+
   const failed = cases.filter(([ok]) => !ok);
   for (const [ok, name] of cases) console.log(`  ${ok ? "✓" : "✗"} ${name}`);
   console.log(`\nretired-spelling-scan --self-test: ${failed.length === 0 ? `OK — ${cases.length} 例反向证/放行证全部按预期` : `${failed.length} 例失败`}`);
   return failed.length === 0 ? 0 : 1;
 }
 
-// ── 8. main ──────────────────────────────────────────────────────────────────
-// 清单先算：拿不到就**显式**报错并 exit 2（不是 1 —— 1 是“文档红了”，2 是“门自己坏了”；两者都阻塞）。
-// 这里**没有** catch 后回退到文件系统遍历的分支，那条路已经被 #560 拆掉了。
-let manifest;
-try {
-  manifest = gitTrackedDocs(ROOT);
-} catch (error) {
-  console.error(`retired-spelling-scan: ${error.message}`);
-  console.error(`  仓库根：${ROOT}`);
-  process.exit(2);
+// ── 9. main ──────────────────────────────────────────────────────────────────
+/**
+ * 一次 CLI 运行。`root` / `io` 可注入 ⇒ 自测能在**临时树**上把真实路径（清单 → 扫描 → 判据 → 退出码）
+ * 整条跑一遍，不碰真文档、也不假造判词。
+ *
+ * 退出码三档，语义不许混（#560 + #575 A）：
+ *   · `0` = 绿（红数为 0；或报告模式——那是给人读的视图，不是门）；
+ *   · `1` = **文档红了**（红数 > 0 且 `--strict`）；
+ *   · `2` = **门自己坏了**（清单拿不到：git 不可用 / 不在仓库内 / 仓库顶层不是本脚本所在目录 / 空清单）。
+ *
+ * @param {{argv?: string[], root?: string, io?: {exec?: (args: string[], root: string) => string}}} [options]
+ * @returns {Promise<number>} 进程退出码
+ */
+export async function runCli({ argv = process.argv.slice(2), root = ROOT, io } = {}) {
+  const strict = argv.includes("--strict");
+  const jsonOut = argv.includes("--json");
+  const selfTestMode = argv.includes("--self-test");
+
+  // 清单先算：拿不到就**显式**报错并 exit 2（不是 1 —— 1 是“文档红了”，2 是“门自己坏了”；两者都阻塞）。
+  // 这里**没有** catch 后回退到文件系统遍历的分支，那条路已经被 #560 拆掉了。
+  let manifest;
+  try {
+    manifest = gitTrackedDocs(root, io);
+  } catch (error) {
+    console.error(`retired-spelling-scan: ${error.message}`);
+    console.error(`  仓库根：${root}`);
+    return 2;
+  }
+
+  const retired = await retiredFlatKeys();
+  if (selfTestMode) return selfTest(retired, manifest);
+
+  const deadPins = deadPinEntries(manifest);
+  const report = scanDocs({ root, retired, files: manifest });
+  // 判据与退出码**只在这里算一次**（#575 A）：两条输出分支读同一份，谁都不许自己再拼一个 0。
+  const gate = gateVerdicts({ report, deadPins });
+  const exitCode = gateExitCode(gate, { strict });
+
+  if (jsonOut) {
+    const slim = report.map((r) => ({
+      file: r.file, kind: r.kind, verdict: r.verdict, pin: r.pin ?? null,
+      uses: r.uses.map((h) => ({ line: h.line, key: h.key, canonical: h.canonical, ambiguous: AMBIGUOUS_KEYS.has(h.key) })),
+      mentions: r.hits.filter((h) => h.verdict === "mention").length,
+    }));
+    console.log(JSON.stringify({
+      surface: { source: "git ls-files", files: manifest.length },
+      // 门禁判词（#575 A）：`red` / `exitCode` 与文本分支同源（`gateVerdicts` / `gateExitCode`），
+      // 所以机器读的那份不可能与进程真实退出码不一致。`gating: false`（报告模式）明说「这一跑不判」，
+      // 免得 `red > 0` 被读成「门过了」。
+      gate: {
+        strict,
+        gating: strict,
+        mode: strict ? "gate" : "report",
+        red: gate.red,
+        counts: gate.counts,
+        exitCode,
+        // 「红数 > 0 ⇒ 非 0」这条不变式在**两种模式下都成立**：`exitCode` 是**这一次运行**的退出码
+        // （报告模式恒 0，既有语义），`wouldExitCode` 是**同一份红数在门禁下**的退出码（与 `--strict`
+        // 那一跑逐字相同）。两个字段都只从 `gateExitCode()` 来，所以谁也不能自己编一个 0。
+        wouldExitCode: gateExitCode(gate, { strict: true }),
+        exitCodes: { clean: 0, red: 1, manifestUnavailable: 2 },
+      },
+      retiredKeys: Object.fromEntries(retired),
+      pins: HISTORY_BODY_PINS,
+      deadPins,
+      files: slim,
+    }, null, 2));
+    // 机器读法失败时也留一句人话在 stderr（stdout 必须保持是纯 JSON，不能被解释成脏数据）。
+    if (exitCode !== 0) {
+      console.error(`retired-spelling-scan --strict --json: ${gate.red} 处红`
+        + `（REGRESSION ${gate.counts.regression} / SUSPECT ${gate.counts.suspect}`
+        + ` / UNPINNED ${gate.counts.unpinned} / DEAD-PIN ${gate.counts.deadPins}）`);
+    }
+    return exitCode;
+  }
+  return printReport(report, retired, { manifest, gate, strict });
 }
 
-const retired = await retiredFlatKeys();
-if (SELF_TEST) process.exit(selfTest(retired, manifest));
-
-const deadPins = deadPinEntries(manifest);
-const report = scanDocs({ retired, files: manifest });
-if (JSON_OUT) {
-  const slim = report.map((r) => ({
-    file: r.file, kind: r.kind, verdict: r.verdict, pin: r.pin ?? null,
-    uses: r.uses.map((h) => ({ line: h.line, key: h.key, canonical: h.canonical, ambiguous: AMBIGUOUS_KEYS.has(h.key) })),
-    mentions: r.hits.filter((h) => h.verdict === "mention").length,
-  }));
-  console.log(JSON.stringify({
-    surface: { source: "git ls-files", files: manifest.length },
-    retiredKeys: Object.fromEntries(retired),
-    pins: HISTORY_BODY_PINS,
-    deadPins,
-    files: slim,
-  }, null, 2));
-  process.exitCode = 0;
-} else {
-  process.exitCode = printReport(report, retired, { manifest, deadPins });
-}
+// 入口：本文件是 CLI（被 `import` 时也照旧跑一遍，与 #560 之前一致）。退出码走 `process.exitCode`，
+// 不用 `process.exit()` —— 后者会跳过 stdout 的冲刷，`--json` 的大段输出可能被截断。
+process.exitCode = await runCli();

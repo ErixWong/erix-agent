@@ -77,6 +77,48 @@
   停下）、覆盖语义没被顺手改掉的护栏（宿主值赢、只写在端口里的叶子消失、恰好一条
   `config_override_conflict`）、本次调用带 `messages` 时必须点名的那个差别，以及在场性判据本身
   （`config: {}` 仍算「给了」，因此仍会覆盖）。
+- **The `--json` branch of the retired-spelling gate no longer answers exit 0 on a red surface, and the CHANGELOG scan surface now says in place what it does not protect (issue #575).**
+  `node scripts/retired-spelling-scan.mjs --strict --json` used to print every verdict and then set
+  `process.exitCode = 0` unconditionally — `--strict` only reached the text branch, so anything reading
+  `--json` as a machine verdict saw red as green (measured: one flat spelling appended to `docs/soak.md`
+  gives `--strict` exit 1 while `--strict --json` and `--json --strict` both exit 0). "Which verdicts
+  count as red" is now defined once (`gateVerdicts()`: REGRESSION, `SUSPECT(dropped|raised)`, UNPINNED,
+  DEAD-PIN — `AMBIGUOUS_KEYS` and `review(ambiguous-only)` stay out) and "red count to exit code" once
+  (`gateExitCode()`, the only place `--strict` is applied, so promoting SUSPECT to red is unchanged);
+  both output branches only read them, and the JSON now carries
+  `gate.{strict,gating,mode,red,counts,exitCode,wouldExitCode}`, so the machine-readable view cannot
+  disagree with the process exit code. Report mode (`--json` without `--strict`) keeps its existing
+  semantics (exit 0) while reporting the same red count with `gating: false`: not gating is not the
+  same thing as not red. The reverse proof grew from 14 to
+  18 cases — a copy of the tracked `docs/` surface is scanned for real (only `git` is injected) and then
+  mutated, and the flag combinations are reconciled cell by cell: red surface gives `--strict --json`
+  exit 1 in both flag orders, a clean surface gives 0, a dropped history pin gives 1 under `--strict`
+  and 0 without it, and a pin naming a file outside the manifest gives 1. Second half: the CHANGELOG
+  rules scan exactly one section, so `resolveChangelogScanSurface()` now states what that leaves
+  unprotected — nothing in a published section is scanned (measured: duplicating the first, second or
+  third bullet of `## [0.28.0]` keeps all 52 cells green), why the surface tracks the newest section
+  (published bytes are history, and rewriting them is rewriting the record), and which function to
+  touch plus why `CHANGELOG_PAIR_FLOOR` has to be re-measured before widening it. No criterion
+  function was touched.
+- **退役拼写门禁的 `--json` 分支不再在有红的面子上答 exit 0；CHANGELOG 扫描面的保护范围也就地写清（issue #575）。**
+  `node scripts/retired-spelling-scan.mjs --strict --json` 从前打完所有判词就无条件
+  `process.exitCode = 0` —— `--strict` 只到了文本分支，于是任何拿 `--json` 当机器判定的人都会把红
+  看成绿（实测：往 `docs/soak.md` 末尾塞一句扁平拼写，`--strict` exit 1，而 `--strict --json` 与
+  `--json --strict` 都 exit 0）。现在「哪些判词算红」只有一份定义（`gateVerdicts()`：REGRESSION、
+  `SUSPECT(dropped|raised)`、UNPINNED、DEAD-PIN —— `AMBIGUOUS_KEYS` 与 `review(ambiguous-only)` 不在
+  集合里），「红数 → 退出码」也只有一份（`gateExitCode()`，`--strict` **只**在这一处生效，所以「把
+  SUSPECT 抬成红」这条既有规则一字未改）；两条输出分支都只读它们，且 JSON 里带
+  `gate.{strict,gating,mode,red,counts,exitCode,wouldExitCode}`，机器读的那份因此不可能与进程真实
+  退出码不一致。
+  报告模式（`--json` 不带 `--strict`）保持既有语义（exit 0），但照样报出同一个红数并标
+  `gating: false`：**不判**不等于**没红**。反向证从 14 例增到 18 例 —— 拿**入库面的副本**当真扫描
+  对象（只把 `git` 换成注入的假执行器）、在副本上造红，再把旗标组合逐格对账：红面下 `--strict
+  --json` 两种旗标顺序都 exit 1、干净面 0、历史钉子被清空时 `--strict` 下 1 而报告模式 0、钉子指向
+  清单外文件时 1。后半段：CHANGELOG 那套判据只扫**一节**，所以 `resolveChangelogScanSurface()` 现在
+  就地写明这一节之外**放弃了什么** —— 已发布节一条都不扫（实测：把 `## [0.28.0]` 里第 1、第 2 或第 3
+  条 bullet 逐字复制一份，52 格仍全绿）、为什么面跟着最新一节走（已发布的字节属于历史，改它等于改写
+  记录）、以及想扩面该动哪个函数、为什么动面之前必须重测 `CHANGELOG_PAIR_FLOOR`。判据函数本体一条
+  未动。
 
 ## [0.28.0] - 2026-10-29
 
