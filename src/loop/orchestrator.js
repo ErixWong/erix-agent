@@ -22,6 +22,7 @@ import { groupIntoRounds } from "../messages/rounds.js";
 // 本文件只负责给它注入入账口径（`:control:` 行的槽位名），不再自己拼 `tool_result`。
 import {
   answerPendingTailToolUses as settlePendingTailToolUses,
+  pendingTailToolUses,
   pendingTailToolUsesAreAnswerable,
 } from "./pending-tool-result.js";
 import { MESSAGE_ROW_KIND } from "../store/message-rows.js";
@@ -319,7 +320,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
 
 /**
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"run_outcome"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"run_outcome"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -4388,8 +4389,41 @@ export async function runToolLoop(options) {
           estimateMessageTokens(messages) > budgetTokens
           || isApiInputOverBudget(latestApiInputTokens, budgetTokens)
         )) {
-        const continuationCompaction = await compactBeforeRound(round);
-        requestStateBlock = continuationCompaction.requestStateBlock;
+        // issue #588：**尾部是未完成的续写回合时，这一发不压**。此前这一格以 `invalid_messages`
+        // 打死整个 run，而且抛点在**本地**（那一发续写请求根本没发出去）：`compactBeforeRound` 里
+        // `roundNumbersForMessages` → `groupIntoRounds` → `validateMessages`，以及三个内置策略各自的
+        // `groupIntoRounds`，都按严格配对校验，而续写轮的尾部正是「`assistant[tool_use]` 还没有
+        // `tool_result`」——续写**正在进行**，那条结果这一轮还没到。
+        //
+        // 为什么不走 #393/#394 的「先结清」：那条 `tool_use` 不是「永远不会执行」——续写完成后它
+        // 照常执行（下面的 `stopReason:"tool_use"` 分支），补一条「This tool call was never
+        // executed」是**假事实**；而且结清会把「截断的 assistant」与「续写内容」隔开（续写只能落进
+        // 一条新的 assistant 消息），同一轮还会出现两个指向同一 id 的 `tool_result`。同一个判断见
+        // #548 对 run-state 追加的处置（同一条路线、同一个形状、同样选「跳过而不是说谎」）。
+        //
+        // 也不放宽校验（`groupIntoRounds` 的严格配对是别人依赖的不变量）：形状**合法**（引擎自己以
+        // `allowPendingToolUse: true` 发这条请求），只是**不可折叠**——折掉一个没跑完的回合会把半截
+        // 工具调用写成摘要，那是另一种谎。
+        //
+        // 所以处置是**推迟**：本轮不压、续写继续；续写若以 `tool_use` 收尾，工具结果落盘后主循环
+        // 开圈那次 `compactBeforeRound` 面对的就是合法历史。代价最多是
+        // 这一发请求按本地估算略超预算——真实窗口不受影响（预算推导已扣掉 `maxOutputTokens`）。
+        // 推迟动作必须**可见**：走既有观察者通道，事件类型 `compaction_deferred`（纯加法）。
+        if (pendingTailToolUses(messages).length > 0) {
+          emitEvent({
+            type: "compaction_deferred",
+            ...(runId === undefined ? {} : { runId }),
+            round,
+            reason: "pending_tool_use",
+            detail: "compaction was deferred: the request tail is an assistant tool_use without its"
+              + " tool_result (a max_tokens continuation still in flight). Folding an unfinished"
+              + " round would either summarize a partial tool call or break the tool_use/tool_result"
+              + " pairing; the next round's compaction sees the completed round.",
+          });
+        } else {
+          const continuationCompaction = await compactBeforeRound(round);
+          requestStateBlock = continuationCompaction.requestStateBlock;
+        }
       }
       tokenContinuationCount += 1;
       providerResult = await callProvider({
