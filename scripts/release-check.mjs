@@ -1,7 +1,7 @@
 // @ts-check
 // release-check.mjs — 发版前那条手工验证：「打包 → 装起发布包 → 再用它」（issue #257 T5）
 //
-// 干什么：按顺序跑五步，每一步都只吃**上一步真实产出的产物**，任一步失败立刻退出非 0 并打清是
+// 干什么：按顺序跑六步，每一步都只吃**上一步真实产出的产物**，任一步失败立刻退出非 0 并打清是
 // 第几步（失败还带已完成步骤的耗时表，便于定位）。它是 `npm run check:release` 的实现。
 //
 //   1. 打包   `npm pack --pack-destination <临时目录>`（触发仓内 `prepack` 生成 `src/**/*.d.ts`），
@@ -21,6 +21,15 @@
 //             打**本地假上游**（`fixtures/upstream.mjs`，绑 `127.0.0.1:0`）；再加一条
 //             `--session <不存在的 id>`。退出码按 `bin/cli.js` 的帮助承诺断言：**当前默认不开
 //             `--final-guard` 的一次成功 chat 退 4（核验 skipped）**，会话不存在退 1。
+//   6. 续接   用**装好的 erix** 跑 issue #598 的**零 token 跨 run 续接** e2e（实现在
+//             `scripts/cli-continuity-smoke.mjs`，本步只是把它接进这条发版链）：同一 cwd、同一假 HOME
+//             连跑两次 `erix chat`，假上游脚本化回复——run 1 的正文里写 `<handoff>`（三段独特字面量）
+//             ⇒ 断言 store 落盘且三段逐字（A）；run 2 的**首个请求体**逐字含那三段 + `<handoff>` 指令
+//             （B）；不写 `config.continuity.handoff` 这个叶再跑一次 ⇒ 请求体不含指令、store 目录不存在
+//             （C）；`handoff: "on"` ⇒ load 期报错并列出三个合法值、零请求（D）。
+//             为什么它是**发版**判据而不只是单测：`bin/cli.js` 的 `loopOptions.config` 是手工装配的，
+//             没接的键**不报错、只被静默忽略**（#598 报的就是这个形状）——只有「装好的包 + 真子进程 +
+//             真 socket 假上游」才能证明用户写在 `~/.erix/config.json` 里的那个开关真的生效。
 //
 // 离线纪律：模型端点是本地假上游；`npm` 一律带 `--offline` + 一次性 `--cache`/`--userconfig`，
 // 子进程 `HOME` 指到临时假 HOME（`fixtures/config-shape.mjs` 写真配置，端点键名是 `endpoint`）；
@@ -51,6 +60,9 @@ import { gunzipSync } from "node:zlib";
 
 import { createScriptedUpstream, jsonResponse } from "../fixtures/upstream.mjs";
 import { fakeHomeEnv, upstreamFields, writeConfigHome } from "../fixtures/config-shape.mjs";
+// issue #598：第 6 步的实现在它自己那个脚本里（同一套离线/自清理纪律，可单跑：
+// `node scripts/cli-continuity-smoke.mjs`）。本文件只负责「用**装好的包**跑它」。
+import { runCliContinuitySmoke } from "./cli-continuity-smoke.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
@@ -147,7 +159,7 @@ function tail(text, limit = 900) {
 }
 
 /**
- * **异步**跑子进程：第 5 步的假上游 HTTP 服务就跑在本进程里，`spawnSync` 会把事件循环
+ * **异步**跑子进程：第 5 步与第 6 步的假上游 HTTP 服务就跑在本进程里，`spawnSync` 会把事件循环
  * 堵死——CLI 的请求永远没人应答，60s 后被超时杀掉。所以跟假上游打交道的子进程一律走这条。
  *
  * @param {string} command
@@ -933,6 +945,31 @@ async function stepCliSmoke({ hostDir, projectDir }) {
 }
 
 // ---------------------------------------------------------------------------
+// 第 6 步：CLI 跨 run 续接（issue #598，零 token）
+// ---------------------------------------------------------------------------
+
+/**
+ * 用**装好的 erix**（不是 `node bin/cli.js`）跑 #598 的跨 run e2e。
+ *
+ * 为什么必须用装好的包：这一条验的正是「用户视角」——`npm i erix-agent` 之后写进
+ * `~/.erix/config.json` 的 `continuity: { handoff: "prompt" }` 会不会真的改变请求。
+ * `bin/cli.js` 能被 `node` 直接跑通不代表它随包发布的那份能跑通（`files` 白名单是另一道门）。
+ *
+ * @param {{hostDir: string}} ctx
+ */
+async function stepCliContinuity({ hostDir }) {
+  const binPath = join(hostDir, "node_modules", ".bin", process.platform === "win32" ? "erix.cmd" : "erix");
+  const result = await runCliContinuitySmoke({
+    cli: { command: binPath, args: [] },
+    // 临时根挂在本次 release-check 的 tmpRoot 下：清理归本进程的 cleanup()，不另造一套生命周期。
+    workRoot: join(tmpRoot, "cli-continuity"),
+    log: (line) => console.log(`release-check:   ${line.trimStart()}`),
+  });
+  for (const note of result.notes) notes.push(`跨 run 续接：${note}`);
+  notes.push(`跨 run 续接：${result.assertions.length} 条断言全绿（A 存 / B 召回 / C 默认关 / D 非法值），CLI=${binPath}`);
+}
+
+// ---------------------------------------------------------------------------
 // 编排
 // ---------------------------------------------------------------------------
 
@@ -963,6 +1000,10 @@ const STEPS = [
   {
     title: "CLI 冒烟（装好的 erix + 本地假上游）",
     run: (ctx) => stepCliSmoke(ctx),
+  },
+  {
+    title: "CLI 跨 run 续接（#598：config.continuity.handoff + 零 token 两轮 e2e）",
+    run: (ctx) => stepCliContinuity(ctx),
   },
 ];
 
@@ -1032,7 +1073,7 @@ async function main() {
   console.log("release-check: 实测明细");
   for (const note of notes) console.log(`  - ${note}`);
   const total = Math.round(stepTimings.reduce((sum, timing) => sum + timing.seconds, 0) * 10) / 10;
-  console.log(`release-check: OK — 五步全绿，累计 ${total}s（墙钟 ${elapsedSeconds(STARTED_AT)}s）`);
+  console.log(`release-check: OK — 六步全绿，累计 ${total}s（墙钟 ${elapsedSeconds(STARTED_AT)}s）`);
 }
 
 function elapsedSeconds(startedAt) {

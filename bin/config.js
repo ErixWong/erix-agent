@@ -9,6 +9,10 @@ import {
   isBuiltinCompactionStrategyName,
 } from "../src/index.js";
 import { isRealUser } from "../src/compact/helpers.js";
+import {
+  CONTINUITY_WRITE_DEFAULT,
+  CONTINUITY_WRITE_MODES,
+} from "../src/loop/continuity-block.js";
 import { PROVIDER_PHASE_TIMEOUT_FIELDS, assertPhaseTimeoutValue } from "./provider-timeouts.js";
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 16384;
@@ -45,6 +49,49 @@ export function resolveCompactionStrategyName(value) {
     );
   }
   return name;
+}
+
+/**
+ * issue #598 —— `config.continuity.handoff` 的 CLI 接线（续接块**默认写者**的开关）。
+ *
+ * 为什么 CLI 必须自己读它（这是本单补的那一格）：引擎早就认 `config.continuity.handoff`
+ * （`src/loop/config-namespace.js` 的 schema + 值规则），但 `bin/cli.js` 的 `loopOptions.config`
+ * 是**手工装配**的——没接的键不会报错，只会被静默忽略。于是用户在 `~/.erix/config.json` 里写
+ * `continuity: { handoff: "prompt" }` 等于什么都没写（「配了等于没配」的静默形状）。
+ *
+ * 形态照抄 `resolveCompactionStrategyName`（#167 的同一把尺子）：
+ *   · 未配置（`continuity` 整组缺席 / `handoff` 缺席）⇒ `undefined`，`bin/cli.js` 因此**不写**
+ *     `config.continuity` 这个键（请求逐字回到今天 = 零行为变更）；
+ *   · 合法字面量 ⇒ `{ handoff }`，原样交给引擎（引擎再按 schema 校一次，两处同源不冲突）；
+ *   · 非法字面量 ⇒ **load 期就抛**，报错里点名收到的值与**全部合法值**。合法值列表从
+ *     `src/loop/continuity-block.js#CONTINUITY_WRITE_MODES` 取，**不在本文件抄字面量**
+ *     （抄一份就多一个真相来源，改一处漏一处就是「配了没生效」的下一次事故）。
+ *
+ * 为什么不允许「非法值悄悄退回默认 `off`」：`off` 是「不注入指令、不读写 store」那一档，
+ * 一个拼错的字面量落到它上面，用户看到的是「功能没了但没报错」——这正是本仓反复拒绝的形状。
+ *
+ * @param {{continuity?: {handoff?: unknown}}|undefined} config 已加载的 CLI 配置（`loadCliConfig` 的产物）
+ * @returns {{handoff: string}|undefined} 未配置时 `undefined`
+ */
+export function buildContinuityConfig(config) {
+  const group = config?.continuity;
+  if (group === undefined || group === null) return undefined;
+  if (typeof group !== "object" || Array.isArray(group)) {
+    throw new Error(
+      `config.continuity 必须是对象（例如 { "handoff": "prompt" }），实际收到 ${JSON.stringify(group)}。`
+      + `可选值：${CONTINUITY_WRITE_MODES.join(" | ")}（默认：${CONTINUITY_WRITE_DEFAULT}）`,
+    );
+  }
+  const raw = /** @type {{handoff?: unknown}} */ (group).handoff;
+  if (raw === undefined || raw === null) return undefined;
+  const mode = typeof raw === "string" ? raw.trim() : "";
+  if (!CONTINUITY_WRITE_MODES.includes(mode)) {
+    throw new Error(
+      `未知的续接交接模式（config.continuity.handoff）：${JSON.stringify(raw)}。`
+      + `可选值：${CONTINUITY_WRITE_MODES.join(" | ")}（默认：${CONTINUITY_WRITE_DEFAULT}）`,
+    );
+  }
+  return { handoff: mode };
 }
 
 export function defaultConfigPath() {
@@ -102,6 +149,8 @@ export async function loadCliConfig({ configPath, model: modelOverride } = {}) {
   const compaction = fileConfig.compaction === undefined
     ? undefined
     : resolveCompactionStrategyName(fileConfig.compaction);
+  // issue #598：config 字段 continuity（同上：非法值在 load 期就报错，带合法值列表）
+  const continuity = buildContinuityConfig({ continuity: fileConfig.continuity });
   const missing = [];
 
   if (!endpoint) missing.push("LLM_KIT_ENDPOINT");
@@ -149,6 +198,7 @@ export async function loadCliConfig({ configPath, model: modelOverride } = {}) {
     maxOutputTokens,
     contextWindowTokens,
     ...(compaction === undefined ? {} : { compaction }),
+    ...(continuity === undefined ? {} : { continuity }),
   };
 }
 
