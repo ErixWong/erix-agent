@@ -570,7 +570,7 @@ export const README_FENCE_STEPS = [7, 1, 1];
  * `test/doc-examples.test.js` 的反向证格钉着这件事（改小 ⇒ 红且带这句；改大 ⇒ 也红）。
  */
 export const README_DRIFT_HINT = "两种可能：① 示例接线真的断了（示例体 / preamble 与文档不再匹配）；"
-  + "② 引擎默认值漂移导致请求轮数增加 —— 先看 provider.requests.length 实际是几次，"
+  + "② 引擎默认值漂移导致请求轮数与本行假设不一致（多了或少了都算） —— 先看 provider.requests.length 实际是几次，"
   + "再决定改 README、改 preamble，还是认下默认值变了并同步 README_FENCE_STEPS。";
 
 /**

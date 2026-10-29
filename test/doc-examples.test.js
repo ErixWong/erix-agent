@@ -35,6 +35,18 @@ const targets = DOC_TARGETS.map((target) => ({
   cnFences: extractJsFences(target.cn).map((fence, index) => ({ ...fence, index })),
 }));
 
+// #582 收尾（主 agent）：那 6 格断的是 `stderr.includes(README_DRIFT_HINT)` —— 拿常量自己比自己。
+// 把常量掏成空串时 `includes("")` 恒真 ⇒ 60/60 全绿（主 agent 实测），诊断价值可以被人一句话改掉而无人报警。
+// 所以这里钉住**文案自身的字面要件**：两种可能都在、方向词齐、给出该看哪个数。
+test("README_DRIFT_HINT 自身必须点名两种可能与该看的计数（不许被掏空或改成无意义短语）", () => {
+  assert.ok(README_DRIFT_HINT.length > 40, `提示语过短（${README_DRIFT_HINT.length} 字符），已不像一条可执行的排查指引`);
+  for (const needle of ["两种可能", "示例接线", "引擎默认值漂移", "provider.requests.length", "README_FENCE_STEPS"]) {
+    assert.ok(README_DRIFT_HINT.includes(needle), `提示语缺少要件 ${JSON.stringify(needle)}：${README_DRIFT_HINT}`);
+  }
+  // 方向必须说「不一致」而不是「增加」：epilogue 那条断言两个方向都会触发（主 agent 实测少一步也红）
+  assert.ok(!/轮数增加/.test(README_DRIFT_HINT), "措辞只说「增加」会在『少要几轮』那条路径上误导人");
+});
+
 test("目标表必须覆盖两份契约文档与两份根 README（摘掉目标 ⇒ 本格必须红）", () => {
   assert.deepEqual(
     DOC_TARGETS.map((target) => target.name).sort(),
