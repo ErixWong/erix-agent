@@ -148,7 +148,7 @@ test/
 | Provider 与错误 | `test/providers/openai.test.js`、`test/app-container-p0.test.js` | OpenAI 请求/响应映射、工具调用、endpoint 规范化、配置校验、错误分类、abort 行为，以及基础 Anthropic/loop 路径 |
 | Canonical 消息 | `test/messages/canonical.test.js` | Canonical 转换、tool-result 顺序、工具 schema、旧版 function calls、无效响应诊断和原始协议字段 |
 | Token 估算 | `test/tokens.test.js` | CJK 与非 CJK 估算、安全余量、可配置系数、消息/块成本和工具标识符 |
-| 工具循环 | `test/loop.test.js` | 文本完成、工具结果反馈、`maxRounds`、stall 提示与终止、工具错误、`onToolResult`、轮次快照和 usage 累计 |
+| 工具循环 | `test/loop.test.js` | 文本完成、工具结果反馈、`config.run.maxRounds`、stall 提示与终止、工具错误、`onToolResult`、轮次快照和 usage 累计 |
 | Memory transcript store | `test/store/memory.test.js` | Memory-store 行为以及可复用的 transcript-store 契约 |
 
 示例 E2E 覆盖已不再是单独执行 `node examples/exec-demo.test.mjs`。当前的可选集合是上方分层表中的 `examples/*.test.mjs` 命令。`examples/exec-demo.test.mjs` 仍会检查真实的多轮工具任务和压缩行为；另外两个示例文件覆盖 memory benchmark 和 provenance reproducibility。demo 的 `exec` 工具仍采用 allowlist 并受时间限制，用于示范调用方的安全责任。

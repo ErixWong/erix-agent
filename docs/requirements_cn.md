@@ -24,7 +24,7 @@
 ### 目标
 
 1. 提供 OpenAI 兼容（`chat/completions`）和 Anthropic（`messages`）适配器，支持流式与非流式调用、统一的规范内部块格式，以及通用错误分类。
-2. 提供 `runToolLoop` 单任务生命周期：注入工具与执行器、`maxRounds`、可选的轮内 provider 重试、停滞检测、完成与无工具策略、`max_tokens` 续写、检查点/恢复、可选的反思/裁决治理，以及可观测事件。
+2. 提供 `runToolLoop` 单任务生命周期：注入工具与执行器、`config.run.maxRounds`、可选的轮内 provider 重试、停滞检测、完成与无工具策略、`max_tokens` 续写、检查点/恢复、可选的反思/裁决治理，以及可观测事件。
 3. 提供可插拔的上下文预算压缩：`sliding-window`、`fold-statistical` 和 `fold-llm`；checkpoint 保留完整折叠载荷，而请求视图可以使用 TTL 折叠。
 4. 让配置与持久化处于适配器契约之后。包内包含 static、environment、JSON-file、memory 和 JSONL-file 实现；数据库适配器仍保留在消费方项目中。
 5. 保持零运行时依赖、纯 ESM、兼容 Node 22+，并可使用 `node --test` 测试。
@@ -51,7 +51,7 @@
 | FR-1.2 | 将两种协议归一为一种内部块格式（`text` / `tool_use` / `tool_result`） | **已交付。** `src/messages/canonical.js` 和 `src/messages/anthropic.js` 还会在需要时保留 `raw`、图片和 reasoning 块。 |
 | FR-1.3 | 通用错误类别：`timeout` / `rate_limited` / `auth` / `network` / `server`，并带有可重试标记 | **已交付。** `src/providers/errors.js` 提供 `KitError`、HTTP 分类、fetch 异常分类和 `retryable`；它还暴露显式的 `aborted`、`provider_config`、`invalid_messages` 及相关不可重试错误。 |
 | FR-1.4 | 对于包含错误正文的 HTTP 2xx 响应，保留真实上游消息，而不是报告误导性的 missing-choice 错误 | **已交付。** 两个 provider 都会检查成功响应正文中的 provider 错误并保留上游消息；缺少 `choices` 的 OpenAI 响应会包含有界的响应预览。 |
-| FR-1.5 | 将模型元数据（`contextWindowTokens` / `maxOutputTokens`）传入循环，使其能够推导压缩预算 | **已交付，并带有明确的输入契约。** Provider 工厂会返回这些元数据字段，`runToolLoop` 可从 `modelConfig`、`modelMetadata`、`model`、`provider` 或 `context` 接收它们，并在两个值都可用时调用 `computeBudget`。任一值缺失时都不会推断预算。 |
+| FR-1.5 | 将模型元数据（`contextWindowTokens` / `maxOutputTokens`）传入循环，使其能够推导压缩预算 | **已交付，并带有明确的输入契约。** Provider 工厂会返回这些元数据字段，`runToolLoop` 可从 `modelConfig`、`config.metadata.modelMetadata`、`config.metadata.model`、`provider` 或 `config.folding.context` 接收它们，并在两个值都可用时调用 `computeBudget`。任一值缺失时都不会推断预算。 |
 
 ### FR-2 工具循环（`runToolLoop`）
 
@@ -59,9 +59,9 @@
 |---|---|---|
 | FR-2.1 | 宿主注入带标准 JSON Schema 定义的 `tools`，以及结构化的 `executeTool({ id, name, input, context, signal })` 回调；库不拥有执行策略 | **已交付。** `runToolLoop` 将 schema 传给 provider，并严格以一个结构化对象调用回调。 |
 | FR-2.2 | 从轮内快照重试可重试的 provider 失败或存在但为空的 assistant 响应，默认重试两次，并以 1.5s 起步、上限 10s 的指数退避；重试耗尽后抛出 | **已交付。** 使用 `retry: {}` 时，`runToolLoop` 默认重试两次、基础延迟为 1.5s、上限为 10s，恢复轮内快照，并仅重试可重试失败。存在但为空的 assistant 响应会标记为可重试；CLI 默认值可由 `ERIX_RETRY_ATTEMPTS` 覆盖。工具执行本身不会自动重试。 |
-| FR-2.3 | 通过滑动窗口比较工具签名检测停滞，先 nudge，只有在重复超限后才以 `termination.reason="stall"` 正常停止 | **已交付。** `stallDetection` 默认为四签名窗口且使用 `consecutive` 模式（`{ window: 4, mode: "consecutive" }`），也支持 `appear`，早期命中时发送 nudge，并在停滞连续命中达到三次上限后停止。 |
+| FR-2.3 | 通过滑动窗口比较工具签名检测停滞，先 nudge，只有在重复超限后才以 `termination.reason="stall"` 正常停止 | **已交付。** `config.run.stallDetection` 默认为四签名窗口且使用 `consecutive` 模式（`{ window: 4, mode: "consecutive" }`），也支持 `appear`，早期命中时发送 nudge，并在停滞连续命中达到三次上限后停止。 |
 | FR-2.4 | 应用完成信号与无工具轮策略：有工具历史后，将没有完成信号的响应视为过渡文本并继续；默认连续三轮无工具后强制终止；合并相邻 assistant 消息以避免 400 | **已交付，并提供显式开关。** `completion` 默认为 `{ signals: [], maxNoToolRounds: 3 }`；收尾 JSON 协议支持 `done: false` 继续和 `done: true` 完成，`normalizeMessages` 会合并相邻 assistant 消息。`completion: false` 会为对话式宿主禁用无工具策略。 |
-| FR-2.5 | 继续被 `max_tokens` 截断的响应 | **已交付，并带有上限。** 循环最多继续 `maxTokenContinuations` 次（默认 `3`），达到上限后报告 `termination.reason="continuation_exhausted"`。 |
+| FR-2.5 | 继续被 `max_tokens` 截断的响应 | **已交付，并带有上限。** 循环最多继续 `config.run.maxTokenContinuations` 次（默认 `3`），达到上限后报告 `termination.reason="continuation_exhausted"`。 |
 | FR-2.6 | 每次 LLM 调用前执行压缩检查，并将压缩事件纳入返回的统计信息 | **在配置预算或策略时已交付。** 循环会在每轮请求前检查，并在请求超出预算时于续写前再次检查；返回的 `compactionStats` 包含压缩结果和 token 数量。 |
 
 ### FR-3 上下文压缩
@@ -96,13 +96,13 @@
 
 | 版本 | 范围 | 验收/状态 |
 |---|---|---|
-| **v0.0 — 已交付** | MVP 垂直切片：OpenAI 非流式 provider、规范消息、token 估算、最小 `runToolLoop`（`maxRounds`、`executeTool`、停滞检测）、memory store，以及由 demo 负责执行的 `examples/exec-demo.js` | 仓库包含 mock-fetch 测试套件和 exec demo。针对本地 relay 的真实 LLM 运行属于外部检查，不由本文档断言。 |
+| **v0.0 — 已交付** | MVP 垂直切片：OpenAI 非流式 provider、规范消息、token 估算、最小 `runToolLoop`（`maxRounds`——0.28 之前的扁平拼写，之后是 `config.run.maxRounds`；`executeTool`、停滞检测）、memory store，以及由 demo 负责执行的 `examples/exec-demo.js` | 仓库包含 mock-fetch 测试套件和 exec demo。针对本地 relay 的真实 LLM 运行属于外部检查，不由本文档断言。 |
 | **v0.1 — 已交付** | 完整 provider 层（Anthropic 加流式）、`src/messages/`、tokens、FR-1/2 所代表的循环能力、`sliding-window`、`fold-statistical`、memory store，以及 static/environment 配置 | 库的表面能力已存在，并由仓库测试覆盖。完整的 `app_container` 迁移和 24 轮行为对比属于消费方验收标准，并非此处已验证的交付事实。 |
 | **v0.2 — 已交付** | JSONL file store、JSON-file 配置、注入 summarizer 的 `fold-llm`，以及可选的 `erix-agent/tools` 导出：registry 和 tool providers | store 和循环已实现崩溃修复/恢复与折叠载荷持久化。宿主仍自行决定是否使用参考工具。 |
 | **v0.3.x–v0.4.x — 已交付** | 检查点/恢复强化，以及 `src/reflection/` 中的可选反思层：governor 决策、L0 facts、收尾解析/归一化、轮次 judge、透明工具拦截、方向提示和 `finalGuard`/验证钩子 | 循环通过 `reflection`、`onJudge`、`finalGuard` 以及返回的终止/验证数据暴露这些行为。当 `maxRounds >= 16` 时，反思会自动启用，除非显式禁用。 |
 | **v0.5.0–v0.7.x — 已被取代** | 早期档案/取回实验、确定性运行状态、折叠导航记录和可安全恢复的状态持久化 | 发布历史记录了这些变化；当前公共表面是 0.8.0 引入的 note-first 工作流与请求视图 TTL 折叠。 |
 | **v0.8.0 — 已交付** | Note-first 取回（`note_list` → `note_read`）、请求视图工具结果 TTL 折叠、可重试的空 assistant 响应、CLI `--tools` 能力白名单、纯 Node `grep` 工具、按语言的 system-prompt 指令以及更高效的 judge/最终轮次行为 | `ERIX_TOOL_RESULT_TTL` 默认 `2`（`0` 关闭折叠），`ERIX_TOOL_RESULT_FOLD_MIN_TOKENS` 默认 `4000`，`ERIX_RETRY_ATTEMPTS` 覆盖 CLI 重试次数。拦截预算为 6,000 token，round judge 输出上限为 1,024 且不启用 reasoning，保留原始 judge 输出，最终预算轮次不发送工具。 |
-| **v0.9.0–v0.28.0 — 当前** | 扩轮决策归 judge、notes 迁到宿主侧 `NotesStore` 并收敛为单一保留期旋钮、run snapshot 更名与 `TranscriptStore` capability 分级、run-state 终态通道（`markRunState`/`loadRunStateStatus`）、工具 `replay` 声明与 `replayPolicy`、可选 partial 落盘、「transcript 即真相」的宿主侧接口（`projectTranscriptForDisplay`、`appendUserTurn`）、契约文档可执行示例、随包发布的 `.d.ts` 类型面（包根与 `erix-agent/tools`）与文档/打包检查 | 公共表面由 `README.md` 与 `docs/host-consumer-contract.md` 描述，由 `node --test` 与 `erix-agent/contract-tests` 锁定，并逐版本记录在 `CHANGELOG.md`。`npm run check:docs` 持续校验文档中的版本、默认值与清单与源码对齐。消费方迁移仍为宿主侧验收工作。 |
+| **v0.9.0–v0.28.0 — 当前** | 扩轮决策归 judge、notes 迁到宿主侧 `NotesStore` 并收敛为单一保留期旋钮、run snapshot 更名与 `TranscriptStore` capability 分级、run-state 终态通道（`markRunState`/`loadRunStateStatus`）、工具 `replay` 声明与 `config.run.replayPolicy`、可选 partial 落盘、「transcript 即真相」的宿主侧接口（`projectTranscriptForDisplay`、`appendUserTurn`）、契约文档可执行示例、随包发布的 `.d.ts` 类型面（包根与 `erix-agent/tools`）与文档/打包检查 | 公共表面由 `README.md` 与 `docs/host-consumer-contract.md` 描述，由 `node --test` 与 `erix-agent/contract-tests` 锁定，并逐版本记录在 `CHANGELOG.md`。`npm run check:docs` 持续校验文档中的版本、默认值与清单与源码对齐。消费方迁移仍为宿主侧验收工作。 |
 | **v1.0 候选 — 未交付** | touwaka 迁移，初步仅限 token 工具和 history compactor，完整 `AgentLoop` 迁移留作单独决策 | 本仓库在当前发布版本不包含 touwaka 迁移。消费方回归和行为检查必须由宿主项目运行。 |
 | **v2 候选 — 延后** | 面向上下文塑形理念的冷循环蒸馏加 L3 fact 注入，以及未来 provider 层重新评估认为合理时的原生 Gemini 支持 | 当前发布版本的 `src/` 中没有 `psyche` 或 Gemini-native provider。这仍是单独划定范围的工作。 |
 

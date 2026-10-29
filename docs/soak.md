@@ -35,7 +35,7 @@ ERIX_E2E_CONFIG=~/.erix/config.json node scripts/soak.mjs --provider real --roun
   轮数够逼出压缩」；`max_rounds_cap` 带 `truncated:true` 是引擎的正确标记。`no_tool` **不算**干净收口
   （它是 prose 停滞被治理层撑住后的停局，见 `src/reflection/governor.js:112-113`）。
   **强制压缩**靠把 `context.budgetTokens` 调到几个轮次的量级逼出来（不指望自然触发）。
-- **TTL 折叠真的发生**（`ttl-fold-actually-applied`）：`toolResultTtl` 传给引擎的是**数字**
+- **TTL 折叠真的发生**（`ttl-fold-actually-applied`）：`config.folding.toolResultTtl` 传给引擎的是**数字**
   （`src/loop/orchestrator.js:323`；传对象会被 `src/loop/tool-result-ttl.js` 的 `!Number.isFinite(ttl)`
   原样退回消息，等于没开）。证据两路互证：引擎 TTL 层记账（折叠条数、省下的 token、发生在第几轮）+
   实际请求视图里看到的折叠占位符（被折块的 `erix.round` 与当时 `currentRound`、折叠前后 token）。
@@ -48,7 +48,7 @@ ERIX_E2E_CONFIG=~/.erix/config.json node scripts/soak.mjs --provider real --roun
      **独立复刻**一遍读侧口径（按轮分组、组内按 `seq` 升序、`partOf` 接回它指认的那条消息、只有存在
      载体行的轮才吸），折出来的正文序列与 `store.load()` 摊平的**逐条相等**（少一条 = 折叠吞正文，
      多一条 = 同一份正文存两遍，错位 = 顺序变了）。另钉 `messageRows > 0`，否则两条闭合会退化成空跑。
-  那条 seed 行不是「`initialUserMessage` 自己占一行」：`initialUserMessage` 只进内存消息，而轮行从
+  那条 seed 行不是「`config.input.initialUserMessage` 自己占一行」：`config.input.initialUserMessage` 只进内存消息，而轮行从
   261021 起**只留元数据**（正文逐条写进 `<runId>:msg:<round>:<seq>`）；seed 是**非 resume 分支专门归档的
   `round=0` 记录**（`src/loop/resume-manager.js`，`dedupKey=<runId>:engine:round:0:seed`，无 `response`），
   为的是 ADR-002 的档案完整性。`round_end` 只等于引擎轮行数（seed 不是轮，消息行也不是轮）。
