@@ -7,8 +7,9 @@
 
 - **`createAgent({ config, capabilities, … })` gives "initialization" a place (issue #571, slice 1).**
   A pure-addition wrapper over `runToolLoop`: the options fixed once are held by the agent object and
-  `agent.run(input)` accepts only this call's data, so a host can no longer lose its configuration by
-  sending a message. The cost it removes is measured (issue #524, closed by design): on the direct
+  `agent.run(input)` accepts only this call's data, so a host can no longer lose the configuration it
+  handed to `createAgent` by sending a message. The cost it removes is measured (issue #524, closed by
+  design): on the direct
   route `config.input.messages` — a message — replaces the **whole** `policy.config` tree the assembly
   port supplied, taking folding TTL, the context budget and the persistence switches with it. Nothing
   about `runToolLoop` changed — no override-semantics change, no deep merge, no diagnostics field, no
@@ -27,7 +28,7 @@
   through `runToolLoop` and through `createAgent` + `run` produce byte-identical provider requests).
 - **`createAgent({ config, capabilities, … })` 给「初始化」一个位置（issue #571 片1）**：`runToolLoop`
   之上的**纯加法**包装——只定一次的选项由 agent 对象拿住，`agent.run(input)` 只接受这一次调用的数据，
-  于是宿主再也不会因为「发一条消息」而丢掉自己的配置。它消掉的代价是实测过的（issue #524，已 by-design
+  于是宿主再也不会因为「发一条消息」而丢掉**自己交给 `createAgent` 的**那份配置。它消掉的代价是实测过的（issue #524，已 by-design
   关闭）：直连路线上 `config.input.messages` —— 一条**消息** —— 会把装配口给的**整棵** `policy.config`
   顶掉，折叠 TTL / 上下文预算 / 持久化开关一起消失。`runToolLoop` 一字未改（不动覆盖语义、不做深合并、
   不加诊断字段、不退役任何写法），所以这是加法而不是迁移。哪个键该写在哪是**机器可读**的事实、不是约定：
@@ -39,6 +40,43 @@
   `test/loop-create-agent-571.test.js` 新增 11 格：绑定表与 41 叶的对账、#524 的正向断言（真 run 里
   `agent.run({ messages })` 之后 `folding.toolResultTtl` 仍把第一轮的工具结果折掉）、两个拒绝方向逐字文案、
   以及「包装不是第二套引擎」（同样选项走 `runToolLoop` 与走 `createAgent` + `run`，请求体逐字相同）。
+
+### Fixed
+
+- **`createAgent` no longer hands over an empty `config` tree, so a port-only config survives (issue #574, follow-up to #524).**
+  On the assembly route, a host that writes its knobs **only** on the port's `policy.config` — the
+  placement 0.28 recommends — lost every one of them on every call, with zero diagnostics: the
+  wrapper always passed `config: call.config`, so a `config` key was present even when nobody had
+  given one, and the pre-existing whole-tree rule replaced `policy.config` with it. The derived-leaf
+  fill cannot restore leaves the port itself wrote, and an empty tree sets no leaf, so no
+  `config_override_conflict` was emitted either — silent loss, not a reported override. Measured on
+  one port, differing only in that key: without it the round cap, the tool-result TTL and the fold
+  threshold all survive; with `config: {}` all three vanish and the conflict list stays empty. The
+  fix is a presence rule, not a merge rule: when initialization carried no `config` **and** this call
+  carries no config leaf, the object handed to `runToolLoop` has **no `config` key at all**, so the
+  port's `policy.config` is the only tree. As soon as either side really gives one — initialization
+  wrote `config` (even `{}`), or the call carries a leaf such as `messages` — the merged tree is
+  handed over exactly as before: whole-tree override and per-leaf events unchanged. No deep merge, no
+  diagnostics field, no special-cased wording for `{}`. 4 new cells in
+  `test/loop-create-agent-571.test.js` pin the port route end to end (the TTL really folds, the round
+  cap really stops the run at 3 rounds), the guard that the override semantics did not move (the
+  host value wins, port-only leaves disappear, exactly one `config_override_conflict`), the
+  difference that must be named when the call carries `messages`, and the presence criterion itself
+  (`config: {}` still counts as given, so it still overrides).
+- **`createAgent` 不再递一棵空的 `config` 树，只写在端口上的配置因此活下来（issue #574，接 issue #524）。**
+  装配路线上，把旋钮**只**写在端口 `policy.config` 上的宿主（0.28 推荐的位置）每调一次就全丢一次，
+  而且零诊断：包装以前**无条件**递 `config: call.config`，于是「没人给过」也照样有一个 `config` 键在场，
+  既有的整棵覆盖规则就拿它把 `policy.config` 顶掉。派生叶的填充补不回端口自己写的叶子，而空树一个叶
+  都不设 ⇒ 逐叶 `config_override_conflict` 也不会发：是**静默丢失**，不是「报了警的覆盖」。同一个端口、
+  只差这一个键的实测：不带它时轮数上限 / 工具结果 TTL / 折叠阈值三者全在；带 `config: {}` 时三者全丢、
+  冲突清单为空。修法是**在场性**规则、不是合并规则：初始化没写 `config`、且本次调用没有任何配置叶子时，
+  递给 `runToolLoop` 的对象里**根本没有 `config` 这个键**，端口的 `policy.config` 就是唯一那棵树；
+  只要有一侧真给了——初始化写了 `config`（哪怕写的是 `{}`），或本次调用带了 `messages` 这样的叶子——
+  合并后的树照旧递过去：整棵覆盖与逐叶事件一个字都没改。不做深合并、不加诊断字段、不给 `{}` 特判文案。
+  `test/loop-create-agent-571.test.js` 新增 4 格：端口路线端到端（TTL 真的折叠、轮数上限真的在第 3 轮
+  停下）、覆盖语义没被顺手改掉的护栏（宿主值赢、只写在端口里的叶子消失、恰好一条
+  `config_override_conflict`）、本次调用带 `messages` 时必须点名的那个差别，以及在场性判据本身
+  （`config: {}` 仍算「给了」，因此仍会覆盖）。
 
 ## [0.28.0] - 2026-10-29
 

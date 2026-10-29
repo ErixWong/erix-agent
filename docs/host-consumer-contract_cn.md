@@ -1343,14 +1343,27 @@ it in agent.run({ messages: … }) instead (issue #571: …)`。`init` 叶写进
 createAgent({ config: { run: { maxRounds: … } } }) instead (issue #571)`。两个方向都不许静默忽略，
 也不许退化成「那就用初始化那个值吧」。
 
-**「配置只有一个来源」在两种形状下分别怎么说。**
+**「配置只有一个来源」在三种形状下分别怎么说（issue #574）。**
 
 - `runToolLoop({ config: … })`：调用级那棵树**整棵覆盖**装配口给的那棵（`policy.config`），逐叶
   差异照旧报 `config_override_conflict`。这条规则本版一字未改——也正因为如此，`config.input.messages`
   在这条路线上仍然能把树里其余的东西一起顶掉。
 - `createAgent({ config })` + `agent.run(input)`：**只有一棵树**。`run(input)` 连 `config` 这个键都
-  递不进去（它被当成初始化选项拒掉），它的叶子是**逐叶**并进初始化那棵树的。所以「发一条消息」
-  不可能把折叠旋钮弄丢——不是因为覆盖规则改了，而是因为**没有第二棵树**可以拿来覆盖。
+  递不进去（它被当成初始化选项拒掉），它的叶子是**逐叶**并进初始化那棵树的。**而那棵树每次调用
+  都会递给 `runToolLoop`**，所以走装配路线时它**整棵覆盖**端口的 `policy.config`（整棵；两侧都给了
+  不同值的叶子逐条报 `config_override_conflict`）。于是写 `config` 是对**整棵**树的声明、不是对某个
+  叶子的声明：`createAgent({ config: { run: { maxRounds: 8 } } })` 在那个叶子上赢、端口的身份与 session
+  派生叶照旧活着，而端口其余配置叶子退回引擎缺省值。
+- `createAgent({ assemblyPort })`，初始化**没写** `config`、本次调用也**没带**任何配置叶子：递给
+  `runToolLoop` 的对象里**根本没有 `config` 这个键**，于是端口的 `policy.config` 就是唯一那棵树，
+  上面的每个旋钮都照样生效——折叠 TTL、上下文预算、轮数上限、持久化开关。这才是包装在端口路线上
+  要解的形状。
+- 上两种形状之间的边界，要**点名**而不是含糊过去：本次调用的输入里出现一个配置叶子，树就又**在场**了
+  ——`agent.run({ messages })` 写的是 `config.input.messages`，而 `messages` 是 `call` 叶——于是既有的
+  整棵覆盖规则重新生效；又因为端口那棵树与这次调用那棵树**没有任何共同叶子**，**一条**
+  `config_override_conflict` 也不会发。所以「发一条消息」在端口路线上仍然会把端口的旋钮弄丢：那是
+  issue #524 的代价，本版没有改它。在场性规则买到的是「宿主什么都没发（或只发 `signal`）」那个形状
+  ——那时端口是**唯一**的来源，而不只是「约定上的」来源。
 
 **`run(input)` 接受什么。** `call` 叶，按**叶子名**写（`{ messages }`、`{ runId }` …），外加本次调用的
 `signal`。别的键一律拒：`init` 叶会点名它的配置路径与 `createAgent`，顶层行为面（`provider` /
