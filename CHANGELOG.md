@@ -43,6 +43,34 @@
 
 ### Fixed
 
+- **The machine-readable form of the retired-spelling gate no longer carries a second, one-tier copy of the pin fact (issue #577).**
+  `node scripts/retired-spelling-scan.mjs --strict --json` used to emit `pins: HISTORY_BODY_PINS` — a field
+  whose name reads as "all the pins" but which held only the history tier (72 files). After #575 added the
+  contract tier (2 files) and #572 the root-doc tier (2 files), those other four pinned files lived **only**
+  in `files[].pin`, so any consumer reading `pins` as the complete set was silently short by two tiers — and
+  that gap can only grow as the surface widens. The field is **removed** rather than completed: `files[].pin`
+  is already the complete fact (one entry per scanned file, `null` where the file carries no pin), and a
+  second copy of one fact is a drift surface, not a convenience. Nothing else about the output moved —
+  `surface`, `gate.{…}`, `retiredKeys`, `deadPins` and `files[]` are byte-for-byte what they were, and no
+  in-repo consumer read `pins` (`grep -rn '"--json"' scripts .github docs test` returns no reader of it).
+  The reverse proof grew from 21 to 22 cases: the real `--json` payload must satisfy "all three tiers present
+  in `files[].pin`, no aggregate `pins`", and four mutations must each redden that cell — the pre-#577 field
+  put back verbatim, the contract/root-doc tiers emptied out of `files[].pin`, one pin value shifted by one,
+  and a pinned file dropped from `files[]` — while report mode (`--json` without `--strict`) answers the same
+  fact. Measured: both mutations that change the shipped payload redden the self-test (exit 1) and restoring
+  greens it (exit 0).
+- **退役拼写门禁的机器读法不再带一份只装一档的钉子副本（issue #577）。**
+  `node scripts/retired-spelling-scan.mjs --strict --json` 从前会打 `pins: HISTORY_BODY_PINS` —— 这个字段
+  名字看上去是「全部钉子」，实际只装历史那一档（72 份）。#575 加了契约档（2 份）、#572 加了根文档档
+  （2 份）之后，另外那 4 份钉子**只**住在 `files[].pin` 里，于是任何把 `pins` 当全集来读的消费者都静默
+  少两档，而这个差只会随扫描面扩宽变大。修法是**删掉**重复、不是补全它：`files[].pin` 已经是完整事实
+  （每份被扫文件一格，没有钉子的那份是 `null`），同一份事实的第二份副本只是漂移面、不是便利。输出里别的
+  一处都没动——`surface`、`gate.{…}`、`retiredKeys`、`deadPins`、`files[]` 逐字与从前相同，且仓内没有
+  任何消费者读 `pins`（`grep -rn '"--json"' scripts .github docs test` 里一个读它的都没有）。反向证从
+  21 例增到 22 例：真实 `--json` 输出必须满足「三档都在 `files[].pin` 里、且没有聚合的 `pins`」，四种
+  变异必须各自把那一格打红——把 #577 之前的字段原样塞回去、把契约/根文档两档从 `files[].pin` 里掏空、
+  把一格钉子值改一格、把一份带钉子的文件从 `files[]` 里删掉——而报告模式（`--json` 不带 `--strict`）
+  答的是同一份事实。实测：两种改动真实输出的变异都把自测打红（exit 1），还原即绿（exit 0）。
 - **`createAgent` no longer hands over an empty `config` tree, so a port-only config survives (issue #574, follow-up to #524).**
   On the assembly route, a host that writes its knobs **only** on the port's `policy.config` — the
   placement 0.28 recommends — lost every one of them on every call, with zero diagnostics: the
