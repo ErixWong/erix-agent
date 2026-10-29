@@ -223,6 +223,34 @@ export function validateFoldSummarizerCaps(context) {
 }
 
 /**
+ * issue #569：`context.foldAtRatio` —— 折叠可以**提前**到预算的一个比例。
+ *
+ * 它和 `FOLD_SUMMARIZER_CAP_NAMES` 那一族**不是**同类：那五个是摘要器自己的上限（正整数），
+ * 这一个是**折叠触发判据**的系数（`0 < r <= 1` 的小数，默认 `1.0`）。所以它不并进那张表
+ * （`contextOptionNameSelfCheck()` 只管摘要旋钮家族），但**必须在 `CONTEXT_OPTION_NAMES`
+ * 白名单里**——#493 的现场就是「装配期校值认这个键、白名单不认 ⇒ 宿主给对了值反被
+ * `context_unknown_option` 抛掉」。
+ *
+ * 校值口径（#493 / #469 同一条）：**只有省略才退回默认**。`null` / `"0.5"` / `NaN` /
+ * `0` / `-1` / `1.5` 都是「给了但给错」⇒ 装配期 `TypeError` 并点名键名，不静默回落。
+ *
+ * @param {unknown} context
+ * @returns {string[]} 问题列表（空 = 通过）
+ */
+export function validateContextFoldAtRatio(context) {
+  if (context === undefined || context === null || typeof context !== "object") return [];
+  const raw = /** @type {Record<string, unknown>} */ (context).foldAtRatio;
+  if (raw === undefined) return [];
+  // 先窄化成 number 再比大小：`unknown <= 0` 在 `--checkJs` 下是 TS2365（棘轮只减不增）。
+  const value = typeof raw === "number" ? raw : Number.NaN;
+  // `NaN` 落到 `Number.isFinite` 的假分支；`Infinity` / `-Infinity` 同理（后者也 `<= 0`）。
+  if (!Number.isFinite(value) || value <= 0 || value > 1) {
+    return ["context.foldAtRatio must be a number in (0, 1]"];
+  }
+  return [];
+}
+
+/**
  * `context` 上被引擎**真的读过**的子键全集（装配期未知键检查用）。
  *
  * 口径：宁可多放（多列一个不存在的键只少报一次错），不可少列——少列一个就是把
@@ -275,6 +303,10 @@ export const CONTEXT_OPTION_NAMES = [
   "summarizerBudgetMs",
   "maxSummarizerInputBytes",
   "maxPriorSummaryBytes",
+  // issue #569：折叠提前到预算比例的系数（默认 1.0）。它不在 `FOLD_SUMMARIZER_CAP_NAMES` 里
+  // （那是摘要器的五个上限），校值在 `validateContextFoldAtRatio`；但白名单**必须**收它，
+  // 否则宿主给 `0.5` 会被判成未知子键——正是 #493 的形状。
+  "foldAtRatio",
   // issue #493 复核：`maxSummaryTokens` 只加进了 `FOLD_SUMMARIZER_CAP_NAMES`、漏在白名单里
   // ⇒ 宿主给对了值仍然被判「未知 context 子键」抛 TypeError，等于把「静默无效」翻成「装配口报错」，
   // 分裂没变。现在两条名单都收，并有 `contextOptionNameSelfCheck()` 交叉核对兜住下一个漏项。
@@ -590,6 +622,9 @@ export function collectSemanticOptionProblems(options) {
     } else {
       problems.push(...validateContextOptionNames(context));
       problems.push(...validateFoldSummarizerCaps(context));
+      // issue #569：折叠触发比例（`0 < r <= 1`，默认 1.0）。与上面两条同一相、同一条抛错路径
+      // ⇒ 装配口与直连路线给出同一句话（#496 的判据）。
+      problems.push(...validateContextFoldAtRatio(context));
       problems.push(...validateContextCallbackShapes(context));
     }
   }
