@@ -336,7 +336,7 @@ export function createFoldLlmStrategy({
 
       let compactedHead = head;
       // issue #470（A1）：本次折叠的**机械替代物**与**LLM 摘要在场标记**（进账本用，不进消息流）。
-      /** @type {{ source: string, text?: string, increment?: string, degradeReason?: string }|undefined} */
+      /** @type {{ source: string, text?: string, increment?: string, incrementOrigin?: string, degradeReason?: string }|undefined} */
       let foldSummary = undefined;
       if (folded.length > 0) {
         const range = roundRange ?? { from: 1, to: folded.length };
@@ -394,27 +394,29 @@ export function createFoldLlmStrategy({
         degradeReason = summarizerOutcome.degradeReason;
         degradeKind = summarizerOutcome.degradeKind;
         droppedInputMessages = summarizerOutcome.droppedMessages;
-        const fallbackAnchors = summary === undefined && settings.anchors !== false
-          ? extractAnchors(
+        // issue #566：本折的机械替代物总是算（零 LLM）。
+        // `compactedSummary` 是续写累计体（prior 会被续写进输出），
+        // 不是本折增量。
+        const fallbackAnchors = settings.anchors === false
+          ? undefined
+          : extractAnchors(
             foldedPayload,
             settings.anchors && typeof settings.anchors === "object" ? settings.anchors : {},
-          )
-          : undefined;
+          );
         if (summary === undefined && fallbackAnchors?.text !== "") {
           settings.onLayer?.({ layerId: "anchors" });
         }
+        const mechanicalSummaryText = summarizeFoldedPayload(foldedPayload, {
+          from: range.from,
+          to: range.to,
+          count: folded.length,
+          recoveryHint,
+          stubs: foldedStubs,
+          ...(navigationRecord === undefined ? {} : { navigationRecord }),
+          ...(fallbackAnchors === undefined ? {} : { anchors: fallbackAnchors }),
+        });
         const statisticalFallbackText = summary === undefined
-          ? summarizeFoldedPayload(foldedPayload, {
-            from: range.from,
-            to: range.to,
-            count: folded.length,
-            recoveryHint,
-            stubs: foldedStubs,
-            ...(navigationRecord === undefined ? {} : { navigationRecord }),
-            ...(settings.anchors === false
-              ? {}
-              : { anchors: fallbackAnchors }),
-          })
+          ? mechanicalSummaryText
           : undefined;
         const compactedSummary = summary === undefined
           ? `[fold-llm 摘要失败，已降级为统计摘要（原因: ${degradeReason}）]\n`
@@ -436,8 +438,9 @@ export function createFoldLlmStrategy({
         lastFoldSummaryText = compactedSummary;
         foldSummary = {
           source: summary === undefined ? "statistical" : "llm",
-          // issue #566：本折自己那份（本次摘要器产物，未合并前的原文）。`text` 是累计体，不从它反推。
-          increment: compactedSummary,
+          // issue #566：本折那份 = 机械替代物 ⇒ 自报 mechanical。
+          increment: mechanicalSummaryText,
+          incrementOrigin: "mechanical",
           ...(statisticalFallbackText === undefined ? {} : { text: statisticalFallbackText }),
           ...(degradeReason === undefined ? {} : { degradeReason }),
           ...(degradeKind === undefined ? {} : { degradeKind }),

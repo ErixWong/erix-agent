@@ -3344,7 +3344,7 @@ export async function runToolLoop(options) {
     // `fold-llm` 降级分支的那份）。没配内置策略、或宿主自带策略不产它 ⇒ `undefined`，语义照旧。
     // issue #566：`increment` = **本折自己那份**（合并前的增量）。只在「策略的 `text` 不是增量」时
     // 才需要策略显式给出（今天只有 `fold-llm`：它的 `text` 是历次摘要叠起来的累计体）。
-    /** @type {{ source: string, text?: string, increment?: string, degradeReason?: string }|undefined} */
+    /** @type {{ source: string, text?: string, increment?: string, incrementOrigin?: string, degradeReason?: string }|undefined} */
     let strategyFoldSummary = undefined;
     /** @type {ReturnType<typeof buildFoldedFacts>} 投影到本轮轮记录的 `foldedFacts`（#470-B 已夹字节） */
     let pendingFoldedFacts = undefined;
@@ -3673,6 +3673,11 @@ export async function runToolLoop(options) {
         // issue #566：同一份投影里另开一个键 `increment`，**不改 `text` 的语义**（它仍是累计替代物，
         // 宿主横幅/契约与 resume 的 `pickCoveringFoldSummary` 都还读它）。
         incrementText,
+        // issue #566 修复：策略可以如实交代「这份增量是谁写的」（`fold-llm` 现在交的是机械替代物 ⇒
+        // `mechanical`）。不传 ⇒ 沿用父键的 `origin`（既有口径，逐字不变）。
+        ...(typeof strategyFoldSummary?.incrementOrigin === "string"
+          ? { incrementOrigin: strategyFoldSummary.incrementOrigin }
+          : {}),
         source: strategyFoldSummary?.source
           ?? (lastFoldSummaryOutcome === undefined ? "strategy" : "llm"),
         strategy: typeof strategy?.name === "string" ? strategy.name : "unknown",

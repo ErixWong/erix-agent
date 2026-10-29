@@ -394,6 +394,11 @@ function foldedFactsToolCalls(text) {
  *     于是「第 k 折的增量」不需要 diff 两份累计快照就能独立读出来。
  *   · 空增量（没给 / 全是空白）⇒ **不写该键**（与 A2「不写占位字面量」同口径）。
  *
+ * issue #566 修复（`incrementOrigin`）：增量的正文不一定是**同一个写者**写的——`fold-llm` 的
+ * `text` 是摘要器写的（`semantic`），而它的增量现在是**本折的机械替代物**（`mechanical`）。
+ * `origin` 的语义就是「这段文本是谁写的」（#565），所以增量允许自带 `incrementOrigin`；
+ * 不给 ⇒ 沿用父键的 `origin`（既有口径，逐字不变）。机械文本**不得**冒充语义。
+ *
  * @param {{
  *   text?: unknown,
  *   source?: unknown,
@@ -405,6 +410,7 @@ function foldedFactsToolCalls(text) {
  *   degradeReason?: unknown,
  *   fingerprint?: unknown,
  *   incrementText?: unknown,
+ *   incrementOrigin?: unknown,
  *   maxBytes?: number,
  * }} [input]
  * @returns {{
@@ -463,13 +469,20 @@ export function buildFoldedFacts(input = {}) {
   // 被父键的累计体撑爆时它必须仍然完整可读 —— 这正是本单要买的东西。
   const incrementRaw = typeof input.incrementText === "string" ? input.incrementText.trim() : "";
   const incrementClamped = incrementRaw === "" ? undefined : clampFactsText(incrementRaw, maxBytes);
+  // 增量可以来自**另一个写者**（`fold-llm`：父键是摘要器写的，增量是机械替代物）⇒ 允许自带 origin；
+  // 不给就沿用父键的（既有口径，逐字不变）。
+  const incrementOrigin = resolveFactsOrigin(
+    typeof input.incrementOrigin === "string"
+      ? { origin: input.incrementOrigin, source: input.source }
+      : input,
+  );
   const increment = incrementClamped === undefined
     ? undefined
     : {
       text: incrementClamped.text,
       // 与 #565 同口径：title 从**原始正文**取（夹断只削尾部 ⇒ 首行按构造仍在），剥掉引擎 marker。
       title: foldedFactsTitle(incrementRaw),
-      origin,
+      origin: incrementOrigin,
       ...(from !== undefined ? { from } : {}),
       ...(to !== undefined ? { to } : {}),
       ...(rounds !== undefined ? { rounds } : {}),

@@ -104,10 +104,12 @@ async function runFoldLlmChain({
   toolBytes = 600,
   summaryBytes = 400,
   store = createMemoryTranscriptStore(),
+  // 判据 1b/1c 要换一个**对抗性**摘要器（把 `priorSummary` 原文续写进输出），其余一切不变。
+  provider,
 } = {}) {
-  const provider = makeFoldLlmProvider({ toolTurns, summaryBytes });
+  const activeProvider = provider ?? makeFoldLlmProvider({ toolTurns, summaryBytes });
   await runToolLoop(withSeed({
-    provider,
+    provider: activeProvider,
     executeTool: async ({ id }) => `tool output ${id} ${"z".repeat(toolBytes)}`,
     maxRounds: 20,
     completion: false,
@@ -121,7 +123,7 @@ async function runFoldLlmChain({
   const folds = records
     .filter((record) => record?.[FOLDED_FACTS_RECORD_FIELD] !== undefined)
     .map((record) => ({ round: record.round, facts: record[FOLDED_FACTS_RECORD_FIELD] }));
-  return { records, folds, provider, store };
+  return { records, folds, provider: activeProvider, store };
 }
 
 const incrementOf = (facts) => facts?.[FOLDED_FACTS_INCREMENT_KEY];
@@ -191,17 +193,144 @@ test("#566-1 连续两折之后，第 1 折的增量与第 1 折当时逐字相�
 
   // 判据 1 的另一半（这一条才是「读累计文本」的钉子）：第 2 折的增量只讲第 2 折，
   // **不包含**第 1 折的正文；且它不等于这一折的累计体。
-  const second = incrementOf(twoFolds.folds[1].facts);
+  //
+  // 取源（修复后）：增量 = **本折的确定性机械替代物**（零 LLM，只描述本次被折轮次）。
+  // 所以它里面既不该出现摘要器的产物（`LLM_SUMMARY_*`），也不该出现第 1 折的增量正文。
+  // 曾经的做法（`increment = compactedSummary`）在这里是绿的，因为本夹具的 fake 摘要器
+  // 返回**固定**摘要、不续写 prior；真模型的续写形状由 `#566-1b` 那个对抗性夹具钉住。
+  const secondFold = twoFolds.folds[1];
+  const second = incrementOf(secondFold.facts);
   assert.ok(second !== undefined, "前置：第 2 折也必须落了增量");
-  assert.match(second.text, /LLM_SUMMARY_2/u, "第 2 折的增量必须是本次摘要器产物");
-  assert.equal(second.text.includes("LLM_SUMMARY_1"), false,
-    "第 2 折的增量不得把第 1 折的内容累计进来（那正是「读累计文本」的错）");
+  assert.equal(second.text.includes("LLM_SUMMARY_"), false,
+    "第 2 折的增量是本折的机械替代物：摘要器产物一个字符都不该混进来（那正是续写累计体的形状）");
   assert.equal(second.text.includes(firstAtFoldTime.text), false,
     "第 2 折的增量不得包含第 1 折的增量（否则它就不是「本折那份」）");
-  assert.notEqual(second.text, twoFolds.folds[1].facts.text,
+  assert.match(second.text, new RegExp(`第 ${secondFold.facts.from}–${secondFold.facts.to} 轮`, "u"),
+    "增量的正文只描述本折自己的轮区间（不是 1..N）");
+  assert.notEqual(second.text, secondFold.facts.text,
     "增量 ≠ 累计体：`foldedFacts.text` 是截至本折的累计替代物，增量是本折自己那份");
-  assert.notEqual(second.bytes, twoFolds.folds[1].facts.bytes,
+  assert.notEqual(second.bytes, secondFold.facts.bytes,
     "两者的字节数也不该相等（累计体里还压着原任务正文与历次摘要）");
+  // `origin` 说的是「这段文本是谁写的」（#565）：父键是摘要器写的，增量是引擎机械算的 ——
+  // 两者各说各的，机械文本不许冒充语义（否则宿主会拿它当语义索引用）。
+  assert.equal(second.origin, "mechanical", "本折增量是零 LLM 的机械替代物 ⇒ 自报 mechanical");
+  assert.equal(secondFold.facts.origin, "semantic", "父键仍是摘要器写的 ⇒ semantic（语义一字未改）");
+});
+
+// ---- 判据 1b / 1c：对抗性夹具 —— 「续写累计体」不是本折增量 -------------------------
+//
+// 为什么要这一格（这是本单真正的洞）：`fold-llm` 会把上一份摘要当**续写基底**交给下一次摘要
+//（`resolveContinuationBase` → `callSummarizerWithBound({priorSummary})`），`provider-summarizer.js`
+// 把它摆在窗口正文之前，提示词要求「续写」。于是**真模型会把 prior 的内容写进输出**——
+// 第 n 折的 `compactedSummary` 里必然混着第 n-1 折的历史，它的语义是「截至本折的历史摘要」
+//（rolling cumulative），**不是**「本折删掉的那一段」。拿它当 `increment` 就是「从累计文本反推」，
+// 正是 issue #566 明令禁止的取源方式。
+//
+// `makeFoldLlmProvider` 返回**固定**摘要（不续写 prior），所以 `#566-1` 那格当时也能绿：
+// 第 2 折的 `increment` 看起来「只含本折内容」。本夹具把 prior **原文回显**进输出，
+// 正是真续写摘要的形状——旧实现（`increment = compactedSummary`）在这里必红。
+
+/** `provider-summarizer.js` 摆 prior 用的分节头（原文字面量，只在这里读它）。 */
+const PRIOR_SECTION_HEADER = "【上一份折叠摘要（续写基底，只作脉络，不要重述）】\n";
+
+/** 从摘要请求里取出调用方摆进去的 `priorSummary` 原文（没有就空串）。 */
+function priorSectionOf(request) {
+  const content = String(request?.messages?.[0]?.content ?? "");
+  const at = content.indexOf(PRIOR_SECTION_HEADER);
+  if (at < 0) return "";
+  const rest = content.slice(at + PRIOR_SECTION_HEADER.length);
+  // 下一节是窗口正文（`serializeFoldedMessagesWithMeta` 的固定首行）。
+  const end = rest.indexOf("\n\n【被折叠的轮次】");
+  return end < 0 ? rest : rest.slice(0, end);
+}
+
+/**
+ * 对抗性 fake provider：摘要器把收到的 `priorSummary` **原文续写**进输出，再另起一行写自己的特征串
+ * `PRIOR_ECHO_MARK_<n>` ⇒ 第 n 折的 `compactedSummary` 里必然混着第 n-1 折的历史。
+ */
+function makePriorEchoProvider({ toolTurns = 8 } = {}) {
+  let turns = 0;
+  let summaries = 0;
+  const requests = [];
+  const provider = {
+    protocol: "fake",
+    model: "fake-model",
+    requests,
+    async chat(request) {
+      if (typeof request?.system === "string" && request.system.includes(SUMMARY_SYSTEM)) {
+        summaries += 1;
+        const own = `## 阶段\nPRIOR_ECHO_MARK_${summaries}`;
+        const prior = priorSectionOf(request);
+        return {
+          content: [{ type: "text", text: prior === "" ? own : `${prior}\n${own}` }],
+          stopReason: "end_turn",
+          usage: { input_tokens: 900, output_tokens: 50 },
+        };
+      }
+      requests.push(request);
+      if (turns < toolTurns) {
+        turns += 1;
+        return {
+          content: [{ type: "tool_use", id: `tu_${turns}`, name: "exec", input: { command: `npm test -- --grep case-${turns}` } }],
+          stopReason: "tool_use",
+          usage: { input_tokens: 100, output_tokens: 20 },
+        };
+      }
+      return { content: [{ type: "text", text: "收尾结论" }], stopReason: "end_turn", usage: { input_tokens: 100, output_tokens: 20 } };
+    },
+  };
+  provider.chatStream = provider.chat;
+  provider.summaryCalls = () => summaries;
+  return provider;
+}
+
+/** 对抗性夹具下跑两折，返回账本里的折叠记录（按轮号升序）。 */
+async function runPriorEchoChain(runId) {
+  const provider = makePriorEchoProvider({ toolTurns: 8 });
+  const result = await runFoldLlmChain({ runId, toolTurns: 8, provider });
+  return { ...result, provider };
+}
+
+test("#566-1b 对抗性续写夹具下，第 2 折的增量不含第 1 折摘要的特征串（续写累计体不算增量）", async () => {
+  const { folds, provider } = await runPriorEchoChain("566-prior-echo-marker");
+  assert.ok(folds.length >= 2, `前置：至少两折（实测 ${folds.length}）`);
+  assert.ok(provider.summaryCalls() >= 2, "前置：走的是真摘要器那条路（否则没有续写基底）");
+  const [first, second] = folds;
+  // 前置（这条是「下面那条断言不是空断言」的保证）：夹具确实把第 1 折的摘要续写进了第 2 折的**累计体**。
+  assert.equal(first.facts.text.includes("PRIOR_ECHO_MARK_1"), true,
+    "前置：第 1 折的累计体里必须有它自己的特征串");
+  assert.equal(second.facts.text.includes("PRIOR_ECHO_MARK_1"), true,
+    "前置：真续写形状 —— 第 2 折的累计体里确实压着第 1 折的摘要（否则本格是空断言）");
+
+  const increment = incrementOf(second.facts);
+  assert.ok(increment !== undefined, "前置：第 2 折必须落了增量");
+  // 判据（这一条有牙：`increment = compactedSummary` 在这里必红——那份里含 PRIOR_ECHO_MARK_1）。
+  assert.equal(increment.text.includes("PRIOR_ECHO_MARK_1"), false,
+    `第 2 折的增量不得含第 1 折摘要的特征串（实测正文：${JSON.stringify(increment.text.slice(0, 160))}）`);
+  // 更宽的那一条：增量是本折的机械替代物，摘要器的任何产物都不该混进来（含它自己的特征串）。
+  assert.equal(increment.text.includes("PRIOR_ECHO_MARK_"), false,
+    "第 2 折的增量里不得出现摘要器的任何产物（机械替代物 ≠ 续写体）");
+  // 而父键（累计体）照旧含它——`text` 的语义一字未改。
+  assert.equal(second.facts.text.includes("PRIOR_ECHO_MARK_2"), true,
+    "父键仍是累计体：它含本次摘要器产物（语义一字未改）");
+});
+
+test("#566-1c 对抗性夹具下，第 2 折的 increment.from/to 是本折自己的轮区间（不是 1..N）", async () => {
+  const { folds } = await runPriorEchoChain("566-prior-echo-range");
+  assert.ok(folds.length >= 2, `前置：至少两折（实测 ${folds.length}）`);
+  const [first, second] = folds;
+  const increment = incrementOf(second.facts);
+  assert.ok(increment !== undefined, "前置：第 2 折必须落了增量");
+  assert.equal(increment.from, second.facts.from,
+    "增量的 from 必须与本折父键的 from 相同（同一次折叠的两个投影）");
+  assert.equal(increment.to, second.facts.to,
+    "增量的 to 必须与本折父键的 to 相同");
+  assert.ok(increment.from > first.facts.to,
+    `前置：第 2 折的起点必须晚于第 1 折的终点（实测 ${increment.from} vs ${first.facts.to}）`);
+  assert.match(increment.text, new RegExp(`第 ${increment.from}–${increment.to} 轮（共 ${increment.rounds} 轮）`, "u"),
+    "增量的正文必须写的是本折自己的区间");
+  assert.equal(increment.text.includes(`第 1–${second.facts.to} 轮`), false,
+    "增量不得退化成 1..N（那是「把全部历史都算进来」的形状）");
 });
 
 // ---- 判据 2：可独立读取 --------------------------------------------------------
@@ -227,14 +356,19 @@ test("#566-2 不需要 diff 两份累计快照，就能拿到第 k 折的 from/t
     assert.equal(typeof increment.title, "string");
     assert.ok(increment.title !== "", "title 必填且非空（宿主渲染一行索引要用）");
     assert.equal(increment.bytes, bytesOf(increment.text));
-    assert.equal(increment.origin, "semantic", "摘要器写的正文自报 semantic（#565 的同一把尺子）");
-    // 「可独立读取」的可测面：每条增量都能**单独**回答「我折的是哪一段」——相邻两折的区间不重叠，
-    // 且这条增量里不含别的折的产物（否则它就不是独立记录，而是累计体的另一个副本）。
+    assert.equal(increment.origin, "mechanical", "本折增量是机械替代物 ⇒ 自报 mechanical（#565 的同一把尺子）");
+    // 「可独立读取」的可测面：每条增量都能**单独**回答「我折的是哪一段」——它自带的
+    // `from`/`to`/`rounds` 与正文里的区间行、以及父键的区间三者必须说同一件事。
+    assert.equal(increment.from, facts.from, `第 ${index + 1} 折的增量区间必须与父键同一段（from）`);
+    assert.equal(increment.to, facts.to, `第 ${index + 1} 折的增量区间必须与父键同一段（to）`);
+    assert.equal(increment.rounds, facts.rounds, `第 ${index + 1} 折的增量轮数必须与父键同一段`);
+    assert.match(increment.text, new RegExp(`第 ${increment.from}–${increment.to} 轮（共 ${increment.rounds} 轮）`, "u"),
+      `第 ${index + 1} 折的增量正文必须自己写出它折的是哪一段`);
+    assert.equal(increment.text.includes("LLM_SUMMARY_"), false,
+      `第 ${index + 1} 折的增量是机械替代物：不得混进摘要器产物（那是续写累计体的形状）`);
     const key = `${increment.from}-${increment.to}`;
     assert.equal(ranges.has(key), false, `区间 ${key} 重复出现 ⇒ 增量与累计快照混了`);
     ranges.add(key);
-    assert.match(increment.text, new RegExp(`LLM_SUMMARY_${index + 1}`, "u"),
-      `第 ${index + 1} 折的增量必须带本次摘要器产物`);
   }
   // 互不包含：任何一条增量都不是另一条的「超集」（累计体才会那样）。
   const texts = folds.map(({ facts }) => incrementOf(facts).text);
@@ -268,18 +402,28 @@ test("#566-3 累计体被 2048 前缀夹断时，本折增量仍完整可读", a
       `第 ${round} 轮：本折增量不该被累计体的夹断牵连（实测 truncated=${JSON.stringify(increment.truncated)}）`);
     assert.ok(increment.bytes <= FOLDED_FACTS_MAX_BYTES,
       `第 ${round} 轮：增量自己的上界也守住（实测 ${increment.bytes}）`);
-    // 「完整可读」的硬证据：摘要器那 400 字节的载荷一个字节都不许少。
-    assert.equal(increment.text.includes(summaryFiller(400)), true,
-      `第 ${round} 轮：增量的正文必须完整（400 字节载荷原样在里面）`);
+    // 「完整可读」的硬证据：本折机械替代物的**全部**内容一个字符都不许少 ——
+    // 区间行 + 本折每一轮的清单条目（夹具每轮一条 `exec … case-N`）+ 恢复提示。
+    assert.match(increment.text, new RegExp(`第 ${increment.from}–${increment.to} 轮（共 ${increment.rounds} 轮）`, "u"),
+      `第 ${round} 轮：增量的区间行必须完整`);
+    for (let n = increment.from; n < increment.from + increment.rounds; n += 1) {
+      assert.equal(increment.text.includes(`- exec npm test -- --grep case-${n}`), true,
+        `第 ${round} 轮：增量必须完整列出本折第 ${n} 轮的清单条目（缺一条就是被夹断了）`);
+    }
+    assert.equal(increment.text.includes("需要原文请重读文件或查看持久笔记"), true,
+      `第 ${round} 轮：增量的恢复提示必须完整`);
     assert.equal(increment.text.includes("[替代物已按字节上限夹断]"), false,
       `第 ${round} 轮：增量不是被夹断的那一份`);
   }
 
-  // 对照：同一份账本里，**未**被夹断的那一折的累计体 = 原任务正文 + 本折增量（说明夹断只发生在累计侧）。
+  // 对照：同一份账本里，**未**被夹断的那一折的累计体仍然完整（夹断只发生在累计侧，
+  // 且两者现在是**两个写者**：父键是摘要器写的累计体，增量是引擎机械算的本折替代物）。
   const first = folds[0];
   assert.equal(first.facts.truncated, undefined, "前置：第 1 折的累计体还没被夹断");
-  assert.ok(first.facts.text.includes(incrementOf(first.facts).text),
-    "第 1 折的累计体里包含本折增量（累计体 = 历次增量 + 原任务正文）");
+  assert.equal(first.facts.text.includes("LLM_SUMMARY_1"), true,
+    "第 1 折的累计体是摘要器写的（父键语义一字未改）");
+  assert.equal(incrementOf(first.facts).text.includes("LLM_SUMMARY_1"), false,
+    "第 1 折的增量是机械替代物（两个写者各说各的，互不冒充）");
 });
 
 // ---- 判据 5：模型可见面零变化 ----------------------------------------------------
