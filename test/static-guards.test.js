@@ -3229,9 +3229,179 @@ function replaceExactlyOnceInVersionSection(text, from, to, what = "变异锚点
   return text.slice(0, start) + replaceExactlyOnce(text.slice(start, end), from, to, what) + text.slice(end);
 }
 
+/**
+ * **合成形状夹具**（issue #571：反向证的靶子必须与「当前面恰好是什么形状」无关）。
+ *
+ * 纯内存字符串，不读真树、不写盘：它与 `CHANGELOG.md` 今天扫的是哪一节、那一节里有几条条目**完全无关**，
+ * 所以「主 agent 把条目从 `## [0.28.0]` 搬进 `## [Unreleased]`」这件事不会再让反向证变红
+ * （#571 之前那 12 格红就是这一族：靶子按内容指名了 0.28.0 那一节里的具体 bullet）。
+ *
+ * 形状是**成熟节**（`### Breaking → ### Changed → ### Fixed` 各一次）：R5 的「相对顺序」判据因此有一个
+ * 零红的正样本。新生节（只有 `### Added`）不满足它——那是**成熟度**，不是解析器健康度，
+ * 见 `changelogSurfaceParseProblems()` 的注释。
+ *
+ * 里面刻意放了真仓出现过的形态，每一种都对应下面某一条判据：
+ *   · 中英成对、issue 集合逐对相同 —— R3 的配对数相等（EN 3 / CN 3）；
+ *   · `S3 第三片` 与 `S3 第三片 b 段` **同一小节共存** —— 粗正则会把它们报成「三 重复」，真键是两个；
+ *   · 无 issue 引用且紧邻的一对（丁 / Delta）—— 配对判据的「紧邻」分支不是死代码；
+ *   · 同 issue 集合、不同符号集的两条 CN 条目（丙 / 戊）—— R4 的判别面非空且不恒红；
+ *   · 折行的续行条目（甲 / Alpha）—— 解析单位是整条 bullet，不是首行。
+ */
+const CHANGELOG_SYNTHETIC_SECTION = [
+  "# Changelog",
+  "",
+  "本文件遵循 Keep a Changelog；版本号遵循语义化版本。",
+  "## [Unreleased]",
+  "",
+  "### Breaking",
+  "",
+  "- **甲：旧写法被拆掉了（issue #901，S3 第四片）。**",
+  "  续行说明为什么拆：这一段故意折行，用来证明解析单位是整条 bullet 而不是首行。",
+  "- **Alpha: the old spelling is gone (issue #901, S3, fourth slice).**",
+  "  A wrapped continuation line: the parse unit is the whole bullet, not its first line.",
+  "",
+  "### Changed",
+  "",
+  "- **乙：默认值改了（issue #902）。**",
+  "- **Beta: the default changed (issue #902).**",
+  "",
+  "### Fixed",
+  "",
+  "- **丙：拒绝文案修好了（issue #903、#904，S3 第三片）。**",
+  "- **Gamma: the rejection text is fixed (issue #903, #904, S3, third slice).**",
+  "- **丁：第三片 b 段的收尾（S3 第三片 b 段）。**",
+  "- **Delta: the wrap-up of the third slice b (S3, third slice b).**",
+  "- **戊：同一个 issue 集合、不同的符号集合（issue #903、#904，`alpha`）。**",
+  "- **Epsilon: same issue set, different symbols (issue #903, #904, `beta`).**",
+  "",
+].join("\n");
+
+/** 合成夹具的文本（每次现造一份；调用方只读，变异一律走 `replaceExactlyOnce*` 造新串）。 */
+const changelogSyntheticSectionText = () => CHANGELOG_SYNTHETIC_SECTION;
+
+/**
+ * **「解析面没空转」的判据**（issue #571：**不许依赖成熟度**）。
+ *
+ * 原先这一格数的是「至少 3 个小节 / 至少 40 条 bullet / 至少 10 个片号标签 / 至少 50 对同 issue 对子」——
+ * 那是 `## [0.28.0]` 那一节的**成熟度**，不是解析器健康度：顶部 `## [Unreleased]` 一有内容（哪怕只有
+ * 1 小节 1 对条目），扫描面就合法地缩成新生节，这一格于是假红。换成与成熟度无关的三件事：
+ *   ① 面上写的**每一行**都要有归宿：`### ` 级标题数 == 解析出的小节数，Markdown 列表项行数
+ *      （`- ` / `* ` / `+ `）== 解析出的 bullet 数——静默丢行必红；
+ *   ② 面上有内容（有非空行）却一个小节 / 一条 bullet 都没解析出来 ⇒ 红（空转必红）；
+ *   ③ 每条 bullet 的原文非空、行号落在面里（解析单位不是空壳）。
+ * 于是「新生节 1 小节 1 条目」放行，「面上有内容却解析出 0」仍红（两向反向证见调用处）。
+ *
+ * @returns {string[]} 违规描述（空数组 = 解析面健康）
+ */
+function changelogSurfaceParseProblems(text, heading = CHANGELOG_VERSION_HEADING) {
+  const lines = text.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+  const problems = collectChangelogProblems(text, heading);
+  if (!problems.found) return [`找不到扫描面（顶部 ${JSON.stringify(heading)}）`];
+  const { from, to } = problems.surface;
+  const out = [];
+  if (!(to > from)) out.push(`扫描面区间退化：${JSON.stringify({ from, to })}`);
+  const region = lines.slice(from, to);
+  // 独立数一遍（不复用解析器）：`### ` 级标题行、Markdown 列表项行
+  const subheadingLines = region.filter((line) => /^#{3,6} /.test(line)).length;
+  const listLines = region.filter((line) => /^[-*+] /.test(line)).length;
+  if (subheadingLines !== problems.subsections.length) {
+    out.push(`面上有 ${subheadingLines} 个 \`###\` 级标题，只解析出 ${problems.subsections.length} 个小节：`
+      + "解析器静默丢行（判据只认 `### `，`#### ` 之类会被整段跳过）");
+  }
+  if (listLines !== problems.bullets.length) {
+    out.push(`面上有 ${listLines} 行 Markdown 列表项（\`- \` / \`* \` / \`+ \`），只解析出 ${problems.bullets.length} 条 bullet：`
+      + "解析器静默丢行（不在小节里的 bullet 会被整条丢掉）");
+  }
+  const contentLines = region.filter((line) => line.trim() !== "").length;
+  if (contentLines > 0 && problems.subsections.length === 0 && problems.bullets.length === 0) {
+    out.push(`面上有 ${contentLines} 行内容，却一个小节 / 一条 bullet 都没解析出来：解析面空转`);
+  }
+  for (const bullet of problems.bullets) {
+    if (bullet.raw.trim() === "") out.push(`第 ${bullet.line} 行的 bullet 原文是空的：解析单位退化成空壳`);
+    if (bullet.line < from + 1 || bullet.line > to) {
+      out.push(`第 ${bullet.line} 行的 bullet 落在扫描面 ${from + 1}–${to} 之外`);
+    }
+  }
+  return out;
+}
+
+/**
+ * 扫描面上的**第一条** bullet（issue #571：靶子从当前面**自己派生**，不再按内容指名某一条）。
+ * 派生不出来 ⇒ 显式判失败（`assert` 直接抛），**不许静默跳过**——跳过会让反向证变成永远绿。
+ */
+function firstChangelogSurfaceBullet(text, heading = CHANGELOG_VERSION_HEADING) {
+  const problems = collectChangelogProblems(text, heading);
+  assert.equal(problems.found, true, `派生靶子失败：找不到扫描面（顶部 ${JSON.stringify(heading)}）`);
+  const [first] = problems.bullets;
+  assert.ok(first, `派生靶子失败：扫描面（${problems.surface.heading}）里一条 bullet 都没有——`
+    + "这一格没有靶子就会静默恒绿，所以直接判失败");
+  return first;
+}
+
+/**
+ * 扫描面**下面**那一节里的第一条 bullet（反向证 ⑧ 要证「面外的重复不归它管」）。
+ * 同样派生：取 `surface.to` 之后的第一条 `- ` 行，连同续行读成一整条；派生不出来 ⇒ 显式判失败。
+ */
+function firstChangelogBulletBelowSurface(text, heading = CHANGELOG_VERSION_HEADING) {
+  const lines = text.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
+  const resolved = resolveChangelogScanSurface(lines, heading);
+  assert.equal(resolved.ok, true, `派生靶子失败：找不到扫描面（${resolved.ok ? "" : resolved.reason}）`);
+  const start = lines.findIndex((line, i) => i >= resolved.surface.to && line.startsWith("- "));
+  assert.notEqual(start, -1,
+    "派生靶子失败：扫描面下面没有任何 bullet——这一格没有靶子就会静默恒绿，所以直接判失败");
+  const body = [lines[start]];
+  let j = start + 1;
+  while (j < lines.length) {
+    const line = lines[j];
+    if (line.startsWith("- ") || /^#{1,6} /.test(line) || line.trim() === "") break;
+    body.push(line);
+    j += 1;
+  }
+  return { line: start + 1, raw: body.join("\n") };
+}
+
+/**
+ * 合成一条与靶子**同 issue 集合 + 同反引号符号集合**的中文 bullet（反向证 ② 用）。
+ * 语言判定按**整条 bullet 的 CJK 占比**（R4 只在同一语言内比），而靶子常常是一堆长标识符 + 少量中文，
+ * 所以合成样本可能被判成英文而绕过比较——这里逐次补中文散文直到判定为 `cn`，并**显式断言**
+ * 三件事：被判成中文、issue 集合相同、符号集合相同（任一条不成立就红，不许静默恒绿）。
+ */
+function changelogNearDuplicateOf(bullet) {
+  const issues = [...changelogIssueRefs(bullet.text)].sort();
+  const symbols = [...changelogSymbols(bullet.text)].sort();
+  const head = `- 近重复样本（${issues.map((id) => `#${id}`).join("、")}）：`
+    + `${symbols.map((s) => `\`${s}\``).join("、")}。正文一字不同，但 issue 集合与反引号符号集合完全相同。`;
+  let text = head;
+  for (let i = 0; i < 20 && changelogBulletLanguage(text).lang !== "cn"; i += 1) {
+    text += "这一条刻意补足中文散文，好让整条 bullet 的 CJK 占比过判定阈值，与靶子同属中文条目。";
+  }
+  assert.equal(changelogBulletLanguage(text).lang, "cn",
+    "合成的近重复样本没被判成中文条目：R4 只在同一语言内比，这一格会退化成恒绿");
+  assert.deepEqual([...changelogIssueRefs(text)].sort(), issues, "合成样本的 issue 集合与靶子不同：这一格证不到集合比较");
+  assert.deepEqual([...changelogSymbols(text)].sort(), symbols, "合成样本的符号集合与靶子不同：这一格证不到符号比较");
+  assert.notEqual(text, bullet.text, "变异没落上：合成的近重复条目与靶子逐字相同");
+  return text;
+}
+
+/**
+ * R5「小节顺序」判词在**当前面**上应得的结论（issue #571：真实面的形状随成熟度变，判词也跟着变）。
+ *
+ * 这里**独立**再推一遍（不复用 `collectChangelogProblems` 里那段代码）：面上实际有哪些必需小节、
+ * 顺序对不对，只由小节名决定。返回空数组 = 面的形状合法；否则是**唯一**该出现的那条判词。
+ * 判据本体一个字没动（仍在 `collectChangelogProblems` 里），这里只把「今天该红哪一条」算出来，
+ * 好让「该红的没红 / 不该红的红了」两头都能被抓住——判据被放宽时，这份独立推导**不会**跟着放宽。
+ */
+function changelogExpectedShapeComplaints(problems) {
+  const names = problems.subsections.map((section) => section.name);
+  const present = names.filter((name) => CHANGELOG_REQUIRED_SUBSECTIONS.includes(name));
+  if (present.join(" → ") === CHANGELOG_REQUIRED_SUBSECTIONS.join(" → ")) return [];
+  return [`小节顺序应为 ${CHANGELOG_REQUIRED_SUBSECTIONS.join(" → ")}（各出现一次），实测 ${names.join(" → ") || "（无小节）"}`];
+}
+
 describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", () => {
-  it("前置：解析面不退化成空转（小节 / bullet / 两套片号标签都真解析出来了）", (t) => {
-    const problems = collectChangelogProblems(changelogText());
+  it("前置：解析面不退化成空转（面上写的小节 / bullet 一条都没被静默丢掉；成熟度不算判据）", (t) => {
+    const text = changelogText();
+    const problems = collectChangelogProblems(text);
     t.diagnostic(`规则 8：扫描面 = ${problems.surface?.heading}（第 ${problems.surface?.line} 行；`
       + `${problems.surface?.fellBack ? `顶部 ${CHANGELOG_VERSION_HEADING} 为空 ⇒ 退让` : "顶部节本身"}，`
       + `Unreleased bullet ${problems.surface?.unreleasedBullets} 条）= ${problems.subsections.map((s) => `${s.name}@${s.line}`).join(" / ")}；`
@@ -3241,22 +3411,46 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
     assert.ok(problems.surface && problems.surface.heading, "扫描面没记录下是哪一节：诊断看不见扫的是谁");
     assert.ok(problems.surface.to > problems.surface.from,
       `扫描面区间退化：${JSON.stringify({ from: problems.surface.from, to: problems.surface.to })}`);
-    assert.ok(problems.subsections.length >= 3, `扫描面（${problems.surface.heading}）只有 ${problems.subsections.length} 个小节：解析面坏了`);
-    assert.ok(problems.bullets.length >= 40, `扫描面（${problems.surface.heading}）只解析出 ${problems.bullets.length} 条 bullet：解析面坏了`);
-    for (const name of CHANGELOG_REQUIRED_SUBSECTIONS) {
-      assert.ok(problems.subsections.some((s) => s.name === name), `版本节里没有 ### ${name}`);
-    }
-    assert.ok(problems.labelCounts.en >= 10 && problems.labelCounts.cn >= 10,
-      `片号标签只解析出 EN ${problems.labelCounts.en} / CN ${problems.labelCounts.cn} 条：R2/R3 会退化成恒绿`);
-    // 多行 bullet 必须真的被当成一整条（只扫首行就看不见折行的标签）
-    const multiLine = problems.bullets.filter((bullet) => bullet.text.includes("\n"));
-    assert.ok(multiLine.length >= 10, `多行 bullet 只认出 ${multiLine.length} 条：解析单位退化成首行了`);
-    const wrapped = problems.bullets.find((bullet) => bullet.labels.length > 0 && /S3,\s*[a-z]+\s*\n/.test(bullet.text));
-    assert.ok(wrapped, "没找到「片号标签被折行切开」的 bullet：多行解析没被真实样本覆盖");
-    // R4 不是恒绿：同语言、issue 集合完全相同的对子有几十对，R4 仍能只挑出「符号集也相同」的
+    // ── 「解析器没坏」= 面上写的东西**没被静默丢掉**，不是「面足够成熟」──
+    // issue #571：扫描面会随开版 / 收条目挪动（#558），新生节合法地只有 1 小节 1 对条目。
+    // 所以这一格不数「至少几小节 / 至少几条 bullet / 至少几个片号标签 / 至少几对同 issue 对子」——
+    // 那是成熟度，数它必然把新生节判成假红（旧版就是这 4 条一起红）。
+    assert.deepEqual(changelogSurfaceParseProblems(text), [],
+      `扫描面（${problems.surface.heading}）的解析面空转了：${JSON.stringify(changelogSurfaceParseProblems(text))}`);
+    assert.ok(problems.subsections.length >= 1, `扫描面（${problems.surface.heading}）一个小节都没解析出来`);
+    assert.ok(problems.bullets.length >= 1, `扫描面（${problems.surface.heading}）一条 bullet 都没解析出来`);
+    // 放行证（issue #571 要求逐字兑现的那一格）：**新生节 1 小节 1 条目必须放行**
+    const newborn = `# Changelog\n\n本文件遵循 Keep a Changelog。\n## [Unreleased]\n\n### Added\n\n- 一条新条目（issue #999）。\n`;
+    assert.deepEqual(changelogSurfaceParseProblems(newborn), [],
+      "新生节（1 小节 1 条目）被这一格判红了：解析面健康度的判据又依赖成熟度了");
+    // 反向证（两向，全部在**当前面**上就地造，不依赖面是哪一节）：
+    const { start, end } = changelogVersionSectionSpan(text);
+    const region = text.slice(start, end);
+    // ① 面内小节标题整体降级（`### ` → `#### `）：面上还有内容，却一个小节 / 一条 bullet 都解析不出来 ⇒ 红
+    const allLevel4 = text.slice(0, start) + region.replace(/^### /gm, "#### ") + text.slice(end);
+    const allLevel4Problems = changelogSurfaceParseProblems(allLevel4);
+    assert.equal(allLevel4Problems.some((p) => p.includes("解析面空转")), true,
+      `面上有内容却解析出 0 小节 0 bullet 时没点名「解析面空转」：${JSON.stringify(allLevel4Problems)}`);
+    // ② 只把**第一条**列表项换成 `* `（其余留着 ⇒ 扫描面不会因此退让）：那一行被静默丢掉 ⇒ 红
+    const oneStarList = text.slice(0, start) + region.replace(/^- /m, "* ") + text.slice(end);
+    const oneStarProblems = changelogSurfaceParseProblems(oneStarList);
+    assert.equal(oneStarProblems.some((p) => /只解析出 \d+ 条 bullet/.test(p)), true,
+      `面内一条列表项换成 \`* \` 之后这一格没红（那一行被静默丢掉）：${JSON.stringify(oneStarProblems)}`);
+    assert.equal(collectChangelogProblems(oneStarList).bullets.length, problems.bullets.length - 1,
+      "丢掉一行列表项之后解析出的 bullet 数应减 1：解析器把 `* ` 当成了正文");
+    t.diagnostic(`规则 8 前置反向证：小节标题整体降级 ⇒ ${allLevel4Problems.length} 处红（含「解析面空转」）；`
+      + `一条 \`- \`→\`* \` ⇒ ${oneStarProblems.length} 处红（点名丢行）；真实面 ⇒ 0 处`);
+    // 片号标签的解析能力**与面无关**：真实面今天可能一个片号都没有（新生节），所以拿合成形状夹具证
+    // 「两套键空间都认得出、且折行的标签也算进整条 bullet」。不拿「真实面恰好有 N 个标签」当解析器健康度。
+    const shape = collectChangelogProblems(changelogSyntheticSectionText());
+    assert.equal(shape.labelCounts.en, 3, `合成夹具的 EN 片号应有 3 条，实测 ${shape.labelCounts.en}：片号解析坏了`);
+    assert.equal(shape.labelCounts.cn, 3, `合成夹具的 CN 片号应有 3 条，实测 ${shape.labelCounts.cn}：片号解析坏了`);
+    assert.ok(shape.bullets.some((bullet) => bullet.text.includes("\n") && bullet.labels.length > 0),
+      "合成夹具里没有「折行的多行 bullet + 片号标签」样本：多行解析没被覆盖");
+    // R4 的判别面同样与面无关：在夹具上数「同语言 + issue 集合相同」的对子，并要求 R4 不把它们全判红
     let sameIssuePairs = 0;
     for (const group of ["cn", "en"]) {
-      const groupBullets = problems.bullets.filter((bullet) => changelogBulletLanguage(bullet.text).lang === group);
+      const groupBullets = shape.bullets.filter((bullet) => changelogBulletLanguage(bullet.text).lang === group);
       for (let i = 0; i < groupBullets.length; i += 1) {
         for (let j = i + 1; j < groupBullets.length; j += 1) {
           const a = changelogIssueRefs(groupBullets[i].text);
@@ -3265,9 +3459,12 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
         }
       }
     }
-    t.diagnostic(`规则 8：R4 的判别面 = ${sameIssuePairs} 对「同语言 + issue 集合相同」的 bullet，`
-      + `其中符号集合也相同的 = ${problems.nearDuplicates.length} 对`);
-    assert.ok(sameIssuePairs >= 50, `同 issue 集合的对子只有 ${sameIssuePairs} 对：R4 的判别面塌了`);
+    t.diagnostic(`规则 8：R4 的判别面（合成夹具）= ${sameIssuePairs} 对「同语言 + issue 集合相同」的 bullet，`
+      + `其中符号集合也相同的 = ${shape.nearDuplicates.length} 对；真实面 ${problems.bullets.length} 条 bullet / `
+      + `${problems.subsections.length} 个小节，解析面 0 处丢行`);
+    assert.ok(sameIssuePairs >= 2, `合成夹具上「同 issue 集合」的对子只有 ${sameIssuePairs} 对：R4 的判别面塌了`);
+    assert.deepEqual(shape.nearDuplicates, [],
+      `合成夹具上 R4 把「同 issue 集合但符号集不同」的条目也判红了：${JSON.stringify(shape.nearDuplicates)}`);
   });
 
   it("R1 字节唯一 / R2 片号唯一（两套键空间不折算）/ R3 中英配对数相等（真实树 = 回归基线）", (t) => {
@@ -3294,16 +3491,43 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
         + `${d.symbols} 个符号）`).join("\n")}`);
   });
 
-  it("R5 结构：Breaking → Changed → Fixed 的相对顺序 + 无游离正文行（真实树 = 回归基线）", (t) => {
+  it("R5 结构：Breaking → Changed → Fixed 的相对顺序 + 无游离正文行（判据本体按形状夹具验，真实面只证「没有游离正文」）", (t) => {
     const problems = collectChangelogProblems(changelogText());
-    t.diagnostic(`规则 8 R5：小节顺序 ${problems.subsections.map((s) => s.name).join(" → ")}；`
-      + `游离正文 ${problems.structureProblems.length} 处`);
-    assert.deepEqual(problems.structureProblems, [],
-      `版本节结构漂了：\n${problems.structureProblems.join("\n")}`);
+    t.diagnostic(`规则 8 R5：小节顺序 ${problems.subsections.map((s) => s.name).join(" → ") || "（无小节）"}；`
+      + `游离正文 ${problems.structureProblems.filter((p) => p.includes("游离正文")).length} 处；`
+      + `判词 ${JSON.stringify(problems.structureProblems)}`);
+    // ① 真实面上与**成熟度无关**的那一半：节内没有游离正文行（写歪了就红，不管面是新是旧）
+    assert.deepEqual(problems.structureProblems.filter((p) => p.includes("游离正文")), [],
+      `版本节里有游离正文行：\n${problems.structureProblems.filter((p) => p.includes("游离正文")).join("\n")}`);
+    // ② 「小节顺序」那一半在真实面上是**成熟度信号**（新生节只有 `### Added`，缺 Breaking/Changed/Fixed）：
+    //    判据本体一个字没动，这里只断言「今天该红的就红那一条、不该红的没红」——期望值由
+    //    `changelogExpectedShapeComplaints()` **独立**再推一遍（面形状变了它跟着变，判据被放宽它**不**跟着变）。
+    assert.deepEqual(problems.structureProblems.filter((p) => p.includes("小节顺序")),
+      changelogExpectedShapeComplaints(problems),
+      `R5 的小节顺序判词与面上实际的小节名对不上：实测 ${JSON.stringify(problems.subsections.map((s) => s.name))}`);
+    // ③ 判据本体（形状夹具）：成熟形状 ⇒ 零红（证明「相对顺序」判据仍在，而且放行合法形状）
+    const fixture = changelogSyntheticSectionText();
+    assert.deepEqual(collectChangelogProblems(fixture).structureProblems, [],
+      "成熟形状（Breaking → Changed → Fixed 各一次）被判红了：R5 的判据本体被改坏了");
+    // ④ 反向：换序 / 缺一个必需小节 ⇒ 红（靶子在夹具上，与真实面是哪一节无关）
+    const swapped = replaceExactlyOnceInVersionSection(fixture, "### Changed", "### Fixed", "小节标题");
+    assert.equal(collectChangelogProblems(swapped).structureProblems.some((p) => p.includes("小节顺序")), true,
+      "夹具上把 Changed 换成 Fixed 之后 R5 没红：判据被放宽了");
+    const dropped = replaceExactlyOnceInVersionSection(fixture, "### Changed\n", "", "必需小节");
+    assert.equal(collectChangelogProblems(dropped).structureProblems.some((p) => p.includes("小节顺序")), true,
+      "夹具上删掉 ### Changed 之后 R5 没红：判据被放宽了");
+    // ⑤ 游离正文的判据本体（同样在夹具上）：段首散文 ⇒ 红
+    const stray = replaceExactlyOnceInVersionSection(fixture, "### Breaking\n",
+      "### Breaking\n\n这一行是段首散文，不是 bullet。\n", "小节标题");
+    assert.equal(collectChangelogProblems(stray).structureProblems.some((p) => p.includes("游离正文")), true,
+      "夹具上插入段首散文之后 R5 没红：判据被放宽了");
+    t.diagnostic("规则 8 R5：真实面 游离正文 0 处 + 形状判词与面形状逐字对应；成熟形状夹具 0 红；"
+      + "换序 / 缺小节 / 游离正文 三种变异各自点名");
   });
 
-  it("R2 的「三」是正则产物、不是重复：`第三片` 与 `第三片 b 段` 是两个键（真实树证据）", (t) => {
-    const problems = collectChangelogProblems(changelogText());
+  it("R2 的「三」是正则产物、不是重复：`第三片` 与 `第三片 b 段` 是两个键（形状夹具证据，不依赖真实面）", (t) => {
+    const fixture = changelogSyntheticSectionText();
+    const problems = collectChangelogProblems(fixture);
     const cnKeys = new Map();
     for (const bullet of problems.bullets) {
       for (const label of bullet.labels) {
@@ -3312,84 +3536,109 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
         cnKeys.get(label.key).push({ line: bullet.line, raw: label.raw });
       }
     }
-    t.diagnostic(`规则 8 R2 的 CN 键空间：${[...cnKeys.keys()].join(" / ")}`);
+    t.diagnostic(`规则 8 R2 的 CN 键空间（形状夹具）：${[...cnKeys.keys()].join(" / ")}`);
     const third = cnKeys.get("第三片") ?? [];
     const thirdB = cnKeys.get("第三片 b 段") ?? [];
     assert.equal(third.length, 1, `CN 键「第三片」应有且只有 1 条，实测 ${JSON.stringify(third)}`);
     assert.equal(thirdB.length, 1, `CN 键「第三片 b 段」应有且只有 1 条，实测 ${JSON.stringify(thirdB)}`);
     assert.notEqual(third[0].line, thirdB[0].line, "「第三片」与「第三片 b 段」指到了同一条 bullet：后缀没进键");
     // 对照：只用 `第N片` 的粗正则会把这两条报成「三 重复」——那正是没人核过的那条报法
-    const naive = [...changelogText().replace(/\s+/g, " ").matchAll(/S3\s*第([一二三四五六七八九十]+)片/g)]
+    const naive = [...fixture.replace(/\s+/g, " ").matchAll(/S3\s*第([一二三四五六七八九十]+)片/g)]
       .filter((m) => m[1] === "三").length;
     t.diagnostic(`规则 8：粗正则 \`S3\\s*第([一二三四五六七八九十]+)片\` 在「三」上命中 ${naive} 次`
       + `（= 假重复的来源）；本规则把它们解析成两个键：${JSON.stringify([third[0].raw, thirdB[0].raw])}`);
-    assert.equal(naive, 2, "粗正则的假重复样本没了：这一格的对照失去意义，请同步靶子");
-    assert.deepEqual(problems.sliceDuplicates, [], "真实树上 R2 有真重复（不是正则产物）：这要人工处理，不能改规则");
+    assert.equal(naive, 2, "粗正则的假重复样本没了：这一格的对照失去意义");
+    assert.deepEqual(problems.sliceDuplicates, [], "夹具上 R2 有真重复：这一格的对照失去意义");
+    // 真实面：片号键空间今天可能是空的（新生节里没有片号），但**有真重复就要红**——这一条与成熟度无关
+    const live = collectChangelogProblems(changelogText());
+    assert.deepEqual(live.sliceDuplicates, [], "真实树上 R2 有真重复（不是正则产物）：这要人工处理，不能改规则");
+    t.diagnostic(`规则 8：真实面（${live.surface.heading}）片号标签 EN ${live.labelCounts.en} / `
+      + `CN ${live.labelCounts.cn}，R2 真重复 0 处`);
   });
 
-  it("反向证 ①：把一条现有 bullet 原文复制进同节 ⇒ R1 红（变异没落上也算失败）", (t) => {
+  it("反向证 ①：把面上第一条 bullet 原文复制进同节 ⇒ R1 红（靶子从当前面派生，不按内容指名；变异没落上也算失败）", (t) => {
     const text = changelogText();
-    const target = collectChangelogProblems(text).bullets
-      .find((bullet) => bullet.text.includes("`test/contract/` 的「发布面」从人工口径变成机器判据"));
-    assert.ok(target, "找不到复制靶子：CHANGELOG 里那条 test/contract 发布面条目被改了，请同步靶子");
-    const mutated = replaceExactlyOnce(text, target.raw, `${target.raw}\n\n${target.raw}`, "复制靶子");
+    const target = firstChangelogSurfaceBullet(text);
+    const mutated = replaceExactlyOnceInVersionSection(text, target.raw, `${target.raw}\n\n${target.raw}`, "复制靶子");
     const problems = collectChangelogProblems(mutated);
     assert.equal(problems.byteDuplicates.length, 1,
       `逐字复制一条 bullet 后 R1 应恰好 1 对红，实测 ${JSON.stringify(problems.byteDuplicates)}`);
     assert.equal(problems.byteDuplicates[0].section, target.section, "红要落在同一个小节里");
-    t.diagnostic(`规则 8 反向证 ①：复制第 ${target.line} 行 ⇒ R1 红 ${JSON.stringify(problems.byteDuplicates[0])}；原文 ⇒ 绿`);
+    t.diagnostic(`规则 8 反向证 ①：复制第 ${target.line} 行（面 = ${problems.surface.heading}）⇒ `
+      + `R1 红 ${JSON.stringify(problems.byteDuplicates[0])}；原文 ⇒ 绿`);
     assert.deepEqual(collectChangelogProblems(text).byteDuplicates, [], "原文必须绿");
+    // 面无关证：同一插法打在**合成夹具**上也红（夹具与真树内容无关 ⇒ 这一格不靠真树恰好有什么条目）
+    const fixture = changelogSyntheticSectionText();
+    const fixtureTarget = firstChangelogSurfaceBullet(fixture);
+    const fixtureMutated = replaceExactlyOnceInVersionSection(fixture, fixtureTarget.raw,
+      `${fixtureTarget.raw}\n\n${fixtureTarget.raw}`, "夹具复制靶子");
+    assert.equal(collectChangelogProblems(fixtureMutated).byteDuplicates.length, 1,
+      "合成夹具上逐字复制没被判红：这一格仍然只对真树当时的内容有效");
   });
 
-  it("反向证 ②：字节不同但同 issue 引用 + 同符号集 ⇒ R4 红（字节查重看不见它）", (t) => {
+  it("反向证 ②：字节不同但同 issue 引用 + 同符号集 ⇒ R4 红（靶子从面上派生；字节查重看不见它）", (t) => {
     const text = changelogText();
-    const target = collectChangelogProblems(text).bullets
-      .find((bullet) => bullet.text.includes("`cacheStablePrefix` / `initialMessages` 必须写成"));
-    assert.ok(target, "找不到近重复靶子：那条 cacheStablePrefix/initialMessages 条目被改了，请同步靶子");
+    const problems = collectChangelogProblems(text);
+    const target = problems.bullets.find((bullet) => changelogBulletLanguage(bullet.text).lang === "cn"
+      && changelogIssueRefs(bullet.text).size > 0
+      && changelogSymbols(bullet.text).size > 0);
+    assert.ok(target, `派生靶子失败：扫描面（${problems.surface.heading}）里没有「中文 + 有 issue 引用 + "
+      + "有反引号符号」的 bullet——这一格没有靶子就会静默恒绿，所以直接判失败`);
     const issues = [...changelogIssueRefs(target.text)].sort();
     const symbols = [...changelogSymbols(target.text)];
     assert.ok(issues.length > 0 && symbols.length > 0, "靶子的 issue / 符号集合为空：这一格会退化成恒真");
-    const fake = `- 近重复样本（${issues.map((id) => `#${id}`).join("、")}）：`
-      + `${symbols.map((s) => `\`${s}\``).join("、")}。正文一字不同，但 issue 集合与反引号符号集合完全相同。`;
-    assert.notEqual(fake, target.raw, "变异没落上：合成的近重复条目与靶子逐字相同");
-    const mutated = replaceExactlyOnce(text, target.raw, `${target.raw}\n${fake}`, "近重复靶子");
-    const problems = collectChangelogProblems(mutated);
-    assert.equal(problems.byteDuplicates.length, 0, "这一格要证的是「字节查重看不见」：不许让 R1 替 R4 抓住");
-    assert.equal(problems.nearDuplicates.length, 1,
-      `合成一条「同 issue + 同符号集」的 bullet 后 R4 应恰好 1 对红，实测 ${JSON.stringify(problems.nearDuplicates)}`);
-    assert.deepEqual(problems.nearDuplicates[0].issues, issues, "红要按 issue 集合点名");
+    const fake = changelogNearDuplicateOf(target);
+    const mutated = replaceExactlyOnceInVersionSection(text, target.raw, `${target.raw}\n${fake}`, "近重复靶子");
+    const after = collectChangelogProblems(mutated);
+    assert.equal(after.byteDuplicates.length, 0, "这一格要证的是「字节查重看不见」：不许让 R1 替 R4 抓住");
+    assert.equal(after.nearDuplicates.length, 1,
+      `合成一条「同 issue + 同符号集」的 bullet 后 R4 应恰好 1 对红，实测 ${JSON.stringify(after.nearDuplicates)}`);
+    assert.deepEqual(after.nearDuplicates[0].issues, issues, "红要按 issue 集合点名");
     t.diagnostic(`规则 8 反向证 ②：字节不同、issue 集合 ${JSON.stringify(issues)}、符号集合 ${symbols.length} 个 ⇒ R4 红；`
       + "R1 不响（正是「按字节查重看不见语义重复」）");
+    // 面无关证：同样的合成近重复打进形状夹具也红（靶子仍从夹具自己派生）
+    const fixture = changelogSyntheticSectionText();
+    const fixtureTarget = collectChangelogProblems(fixture).bullets.find((bullet) =>
+      changelogBulletLanguage(bullet.text).lang === "cn"
+      && changelogIssueRefs(bullet.text).size > 0
+      && changelogSymbols(bullet.text).size > 0);
+    assert.ok(fixtureTarget, "派生靶子失败：形状夹具里没有「中文 + issue + 符号」的 bullet");
+    const fixtureAfter = collectChangelogProblems(replaceExactlyOnceInVersionSection(fixture, fixtureTarget.raw,
+      `${fixtureTarget.raw}\n${changelogNearDuplicateOf(fixtureTarget)}`, "夹具近重复靶子"));
+    assert.equal(fixtureAfter.byteDuplicates.length, 0, "夹具上 R1 不该响：这一格证的是 R4");
+    assert.equal(fixtureAfter.nearDuplicates.length, 1,
+      `夹具上合成近重复后 R4 应恰好 1 对红，实测 ${JSON.stringify(fixtureAfter.nearDuplicates)}`);
   });
 
-  it("反向证 ③：把一个 CN 片号改成与另一条同值 ⇒ R2 红，改回 ⇒ 绿", (t) => {
-    const text = changelogText();
-    const mutated = replaceExactlyOnce(text, "S3 第四片", "S3 第三片", "CN 片号靶子");
+  it("反向证 ③：把一个 CN 片号改成与另一条同值 ⇒ R2 红，改回 ⇒ 绿（靶子在形状夹具上）", (t) => {
+    const fixture = changelogSyntheticSectionText();
+    assert.deepEqual(collectChangelogProblems(fixture).sliceDuplicates, [], "夹具原文必须绿");
+    const mutated = replaceExactlyOnceInVersionSection(fixture, "S3 第三片 b 段", "S3 第三片", "CN 片号靶子");
     const problems = collectChangelogProblems(mutated);
     assert.equal(problems.sliceDuplicates.length, 1,
       `CN 片号改成同值后 R2 应恰好 1 处红，实测 ${JSON.stringify(problems.sliceDuplicates)}`);
     assert.equal(problems.sliceDuplicates[0].space, "cn", "红要落在 CN 键空间里");
     assert.equal(problems.sliceDuplicates[0].key, "第三片", `红的键应是「第三片」，实测 ${problems.sliceDuplicates[0].key}`);
     assert.equal(problems.sliceDuplicates[0].lines.length, 2, "红要点名两条 bullet 的行号");
-    t.diagnostic(`规则 8 反向证 ③：CN 第四片 → 第三片 ⇒ R2 红 ${JSON.stringify(problems.sliceDuplicates[0])}；`
+    t.diagnostic(`规则 8 反向证 ③：CN 第四片→第三片 ⇒ R2 红 ${JSON.stringify(problems.sliceDuplicates[0])}；`
       + "改回 ⇒ 绿（注意「第三片 b 段」不受牵连：后缀是键的一部分）");
-    assert.deepEqual(collectChangelogProblems(text).sliceDuplicates, [], "改回原文必须绿");
   });
 
-  it("反向证 ④：删掉一侧带片号 bullet ⇒ R3 红（配对数不等），补回 ⇒ 绿", (t) => {
-    const text = changelogText();
-    const target = collectChangelogProblems(text).bullets.find((bullet) => bullet.text.includes("S3 第十五片"));
-    assert.ok(target, "找不到配对靶子：那条 CN「S3 第十五片」条目被改了，请同步靶子");
-    const before = collectChangelogProblems(text);
-    assert.equal(before.pairingProblems.length, 0, "原文的配对数必须先是相等的");
-    const mutated = replaceExactlyOnce(text, `${target.raw}\n`, "", "配对靶子");
+  it("反向证 ④：删掉一侧带片号 bullet ⇒ R3 红（配对数不等），补回 ⇒ 绿（靶子在形状夹具上）", (t) => {
+    const fixture = changelogSyntheticSectionText();
+    const before = collectChangelogProblems(fixture);
+    assert.equal(before.pairingProblems.length, 0, "夹具原文的配对数必须先是相等的");
+    assert.equal(before.labelCounts.en, before.labelCounts.cn, "夹具的 EN / CN 片号条数应先相等");
+    const target = before.bullets.find((bullet) => bullet.labels.some((label) => label.space === "cn"));
+    assert.ok(target, "派生靶子失败：夹具里没有带 CN 片号的 bullet");
+    const mutated = replaceExactlyOnceInVersionSection(fixture, `${target.raw}\n`, "", "配对靶子");
     const problems = collectChangelogProblems(mutated);
     assert.equal(problems.pairingProblems.length, 1,
       `删掉一侧带片号的 bullet 后 R3 应红，实测 ${JSON.stringify(problems.pairingProblems)}`);
     assert.equal(problems.labelCounts.cn, before.labelCounts.cn - 1, "CN 条数应减一");
     assert.equal(problems.labelCounts.en, before.labelCounts.en, "EN 条数不该动（这一格证的是「一侧被删」）");
     t.diagnostic(`规则 8 反向证 ④：删掉第 ${target.line} 行（CN 片号）⇒ R3 红：${problems.pairingProblems[0]}；补回 ⇒ 绿`);
-    assert.deepEqual(collectChangelogProblems(text).pairingProblems, [], "补回原文必须绿");
+    assert.deepEqual(collectChangelogProblems(fixture).pairingProblems, [], "补回原文必须绿");
   });
 
   it("反向证 ⑤：变异没落上 / 找不到版本节 / 结构漂移都要判失败（#210 R2 惯例）", (t) => {
@@ -3407,12 +3656,14 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
     assert.equal(noSection.found, false, "版本节改名后仍说找到了：规则会静默缩面");
     assert.equal(noSection.structureProblems.length, 1, "版本节改名后没有判红");
     assert.match(noSection.structureProblems[0], /找不到版本节标题/, "红要点名找不到标题");
-    // ④ 小节顺序被换 ⇒ R5 红（锚点只在版本节里找：别的版本节也有 `### Changed`）
-    const swapped = replaceExactlyOnceInVersionSection(text, "### Changed", "### Fixed", "小节标题");
+    // ④ 小节顺序被换 ⇒ R5 红（锚点在**形状夹具**上：真实面今天可能没有 `### Changed`，那是成熟度不是变异失败）
+    const fixture = changelogSyntheticSectionText();
+    const swapped = replaceExactlyOnceInVersionSection(fixture, "### Changed", "### Fixed", "小节标题");
     assert.equal(collectChangelogProblems(swapped).structureProblems.some((p) => p.includes("小节顺序")), true,
       "小节顺序被换后 R5 没红");
     // ⑤ 游离正文行（缩进续行与惰性续行都不算，只有段首散文才算）⇒ R5 红
-    const stray = replaceExactlyOnceInVersionSection(text, "### Added\n", "### Added\n\n这一行是段首散文，不是 bullet。\n", "小节标题");
+    const stray = replaceExactlyOnceInVersionSection(fixture, "### Breaking\n",
+      "### Breaking\n\n这一行是段首散文，不是 bullet。\n", "小节标题");
     const strayProblems = collectChangelogProblems(stray).structureProblems;
     assert.equal(strayProblems.some((p) => p.includes("游离正文")), true, `游离正文行没被判红：${JSON.stringify(strayProblems)}`);
     t.diagnostic("规则 8 反向证 ⑤：变异没落上 / 锚点不唯一 / 版本节改名 / 小节顺序被换 / 游离正文行 —— 五格逐条按预期");
@@ -3431,28 +3682,46 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
     // 卫生目标**确实是那个版本节**：bullet 数 / 小节名与真实树原扫描面逐项相等（不只是「通过了」）
     assert.equal(problems.bullets.length, before.bullets.length,
       `退让后的扫描面只解析出 ${problems.bullets.length} 条 bullet，原扫描面是 ${before.bullets.length} 条`);
-    assert.ok(problems.bullets.length >= 40,
-      `退让后的扫描面只解析出 ${problems.bullets.length} 条 bullet：这一格退化成空转了`);
+    // issue #571：这里不再要求「≥ 40 条」（那是 0.28.0 那一节的成熟度）。要求的是**一条都没丢**：
+    // 内容逐项与退让前相等，且解析面 0 处丢行。
+    assert.ok(problems.bullets.length >= 1,
+      `退让后的扫描面一条 bullet 都没解析出来：这一格退化成空转了`);
     assert.deepEqual(problems.subsections.map((s) => s.name), before.subsections.map((s) => s.name),
       "退让后的小节序列与原 Unreleased 不一致：扫的不是同一节");
+    assert.deepEqual(changelogSurfaceParseProblems(opening), [],
+      `开版态解析面空转了：${JSON.stringify(changelogSurfaceParseProblems(opening))}`);
     assert.deepEqual(problems.byteDuplicates, [], `开版态 R1 红：${JSON.stringify(problems.byteDuplicates)}`);
     assert.deepEqual(problems.sliceDuplicates, [], `开版态 R2 红：${JSON.stringify(problems.sliceDuplicates)}`);
     assert.deepEqual(problems.pairingProblems, [], `开版态 R3 红：${JSON.stringify(problems.pairingProblems)}`);
     assert.deepEqual(problems.nearDuplicates, [], `开版态 R4 红：${JSON.stringify(problems.nearDuplicates)}`);
-    assert.deepEqual(problems.structureProblems, [], `开版态 R5 红：${JSON.stringify(problems.structureProblems)}`);
+    // R5：游离正文 0 处（与成熟度无关）+ 形状判词与（新生节的）实际形状逐字对应——不拿成熟度当退让失败
+    assert.deepEqual(problems.structureProblems.filter((p) => p.includes("游离正文")), [],
+      `开版态 R5 游离正文红：${JSON.stringify(problems.structureProblems)}`);
+    assert.deepEqual(problems.structureProblems.filter((p) => p.includes("小节顺序")),
+      changelogExpectedShapeComplaints(problems),
+      `开版态 R5 的形状判词与面上实际的小节名对不上：${JSON.stringify(problems.structureProblems)}`);
+    // 成熟形状上的开版态：R5 也零红——「退让」只改扫哪一节，判据一格没放宽
+    const matureOpening = replaceExactlyOnce(changelogSyntheticSectionText(), `${CHANGELOG_VERSION_HEADING}\n`,
+      `${CHANGELOG_VERSION_HEADING}\n\n## [9.9.9] - 2026-01-01\n`, "成熟形状开版态");
+    const mature = collectChangelogProblems(matureOpening);
+    assert.equal(mature.surface.fellBack, true, "成熟形状开版态没退让：夹具造错了");
+    assert.deepEqual(mature.structureProblems, [], `成熟形状的开版态 R5 红：${JSON.stringify(mature.structureProblems)}`);
+    assert.deepEqual(mature.byteDuplicates, [], `成熟形状的开版态 R1 红：${JSON.stringify(mature.byteDuplicates)}`);
+    assert.deepEqual(mature.sliceDuplicates, [], `成熟形状的开版态 R2 红：${JSON.stringify(mature.sliceDuplicates)}`);
+    assert.deepEqual(mature.pairingProblems, [], `成熟形状的开版态 R3 红：${JSON.stringify(mature.pairingProblems)}`);
+    assert.deepEqual(mature.nearDuplicates, [], `成熟形状的开版态 R4 红：${JSON.stringify(mature.nearDuplicates)}`);
     t.diagnostic(`规则 8 反向证 ⑥：扫描面 = ${problems.surface.heading}（退让，顶部 ${CHANGELOG_VERSION_HEADING} `
       + `bullet 0 条）= ${problems.bullets.length} 条 bullet / ${problems.subsections.length} 个小节 / `
-      + `片号 EN ${problems.labelCounts.en} / CN ${problems.labelCounts.cn} ⇒ 五条全绿`);
+      + `片号 EN ${problems.labelCounts.en} / CN ${problems.labelCounts.cn} ⇒ R1–R4 全绿、R5 游离正文 0 处；`
+      + `成熟形状开版态 ⇒ R5 也 0 红`);
   });
 
   it("反向证 ⑦：退让之后 R1 仍然咬人——把刚开的版本节里一条 bullet 逐字复制 ⇒ 红", (t) => {
     const opening = changelogOpeningStateText();
     const before = collectChangelogProblems(opening);
     assert.equal(before.surface.fellBack, true, "夹具不是开版态：这一格证不了「退让之后仍咬人」");
-    const target = before.bullets
-      .find((bullet) => bullet.text.includes("`test/contract/` 的「发布面」从人工口径变成机器判据"));
-    assert.ok(target, "找不到复制靶子：那条 test/contract 发布面条目被改了，请同步靶子");
-    const mutated = replaceExactlyOnce(opening, target.raw, `${target.raw}\n\n${target.raw}`, "复制靶子");
+    const target = firstChangelogSurfaceBullet(opening);
+    const mutated = replaceExactlyOnceInVersionSection(opening, target.raw, `${target.raw}\n\n${target.raw}`, "复制靶子");
     const problems = collectChangelogProblems(mutated);
     assert.equal(problems.surface.heading, CHANGELOG_OPENING_HEADING, "扫描面漂了：这一格就白做了");
     assert.equal(problems.bullets.length, before.bullets.length + 1, "复制没被解析面看见：bullet 数应 +1");
@@ -3481,9 +3750,7 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
     assert.deepEqual(live.byteDuplicates, [], "干净的 Unreleased 不该有 R1 红");
 
     // ① 下面那个版本节里**逐字重复**一条 ⇒ 不在扫描面内 ⇒ 不红（证明扫的真是 Unreleased）
-    const lower = collectChangelogProblems(changelogText()).bullets
-      .find((bullet) => bullet.text.includes("`test/contract/` 的「发布面」从人工口径变成机器判据"));
-    assert.ok(lower, "找不到下面版本节的复制靶子：请同步靶子");
+    const lower = firstChangelogBulletBelowSurface(withNew);
     const lowerDup = replaceExactlyOnce(withNew, lower.raw, `${lower.raw}\n\n${lower.raw}`, "下面版本节的重复");
     assert.equal(lowerDup.split(lower.raw).length - 1, 2, "变异没落上：下面版本节里并没有两份逐字相同的 bullet");
     const quiet = collectChangelogProblems(lowerDup);
@@ -3548,33 +3815,38 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
 //      行），不拿首行距离判——本仓的英文条目普遍折行成十几行，首行距离对它们没有意义。
 //      **禁止**按邻接位置直接配对：`Changed` 里连着三条都引 `#469`，按位置会假配。
 //   3. 判据面**跟着开版走**（issue #563）：**复用规则 8 的 `resolveChangelogScanSurface()`**——顶部
-//      `## [Unreleased]` 为空（= 开版那一刻）⇒ 退到紧随其后的那个版本节（今天解析成 `## [0.28.0]`），
-//      Unreleased 一有内容就自动回到它。**不许另写一份选取逻辑**：两条判据管的是同一节内容，
+//      `## [Unreleased]` 为空（= 开版那一刻）⇒ 退到紧随其后的那个版本节（0.28 开版那一刻解析成
+//      `## [0.28.0]`），Unreleased 一有内容就自动回到它（#571 之后面就停在 `## [Unreleased]` 上）。**不许另写一份选取逻辑**：两条判据管的是同一节内容，
 //      各选各的面迟早漂成两个真相（0.29 开版后新内容的重复/配对问题会一个看得见、一个看不见）。
 //      也**不扫** 0.27.0 / 0.26.0 / 0.25.0——那三节是已发布历史，重写等于造假（同 #278 的口径），
 //      而且它们本来就纯中文发布。
-//      ⚠ 面一旦挪走，地板 51 就**失去校准依据**（它是在 `CHANGELOG_PAIR_FLOOR_SURFACE` 上实测的）：
+//      ⚠ 面一旦挪走，地板就**失去校准依据**（它是在 `CHANGELOG_PAIR_FLOOR_SURFACE` 上实测的）：
 //      配对数不足 ⇒ **红并点名「面已挪到 <节名>，请重测地板」**。这是有意信号，不许下调地板、
-//      也不许把面硬钉回 `## [0.28.0]` 来换绿。
+//      也不许把面硬钉回旧标题来换绿。
 //
-// 地板常量 = 补完 17 条英文对应之后**实测**的配对数。断言 `配对数 >= 地板`；超过时只打印
+// 地板常量 = 在 `CHANGELOG_PAIR_FLOOR_SURFACE` 那一节上**实测**的配对数。断言 `配对数 >= 地板`；超过时只打印
 // 「可以抬地板到 N」。**不**把地板做成「两语言条数必须相等」的硬闸——0.25 / 0.26 那两节永远不满足，
 // 那种闸会把门常年压红，而那正是本判据要避免的假红。
-
+//
+// issue #571（本单）：面已随 #571 片1 的条目（`createAgent`）**挪到 `## [Unreleased]`**（#558 的选取逻辑：
+// 顶部 Unreleased 非空 ⇒ 面就是它）。地板**必须跟着面一起重测**——「只升不降」是**同一面内**的规则，
+// 跨面重测是 #563 设计好的动作，不是放宽。
 /** 地板校准所在的节标题（`CHANGELOG_PAIR_FLOOR` 是在**这一节**上实测的；面挪走且配对数不足 ⇒ 点名重测）。 */
-const CHANGELOG_PAIR_FLOOR_SURFACE = "## [0.28.0]";
+const CHANGELOG_PAIR_FLOOR_SURFACE = "## [Unreleased]";
 /** 两条 bullet 之间最多隔几行才算「紧邻」（0 = 直接相邻，1 = 中间隔一行）。 */
 const CHANGELOG_PAIR_ADJACENT_GAP = 1;
-/** 配对地板：补完 17 条英文对应后实测的配对数。**只能升不能降。**
- *  #571 把它从 51 抬到 **52**：本单在 `## [0.28.0]` 的 `### Added` 末尾加了**一对**中英条目
- *  （`createAgent`），配对实测 51 → 52，两条反向证（删一条英文 / 改一个 issue 引用 ⇒ 配对数必须
- *  掉到地板**以下**）要求地板恰等于实测值，否则它们会说「地板拦不住」。只许继续往上抬。 */
-const CHANGELOG_PAIR_FLOOR = 52;
+/** 配对地板：在 `CHANGELOG_PAIR_FLOOR_SURFACE` 那一节上实测的配对数。**同一面内只能升不能降。**
+ *
+ * 历史：#563 在 `## [0.28.0]` 上实测 51；#571 片1 在那一节末尾加了一对 `createAgent` 条目 ⇒ 52；
+ * 随后 #571（本单）把那条目搬进了 `## [Unreleased]`（0.28.0 已发布），面跟着挪到 `## [Unreleased]`
+ * ⇒ **在新面上重测 = 1 对**。反向证（删一条英文 / 改一个 issue 引用 ⇒ 配对数必须掉到地板**以下**）
+ * 要求地板恰等于实测值，否则它们会说「地板拦不住」——所以这个数不是拍出来的，是量出来的。只许继续往上抬。 */
+const CHANGELOG_PAIR_FLOOR = 1;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
  * 这里自带一份而不复用规则 8 的解析器：那条函数把五条判据算在一起，本判据不该为了拿 bullet
- * 去动它（规则 8 的 51 格一格都不许因为本单而变）。
+ * 去动它（规则 8 的 14 格一格都不许因为本单而变）。
  *
  * @returns {Array<{line: number, endLine: number, raw: string, lang: string, ratio: number, issues: Set<string>}>}
  *   `line` / `endLine` 都是 1-based 行号，`endLine` = 这条 bullet 的**最后一行**。
@@ -3657,8 +3929,9 @@ describe("静态守卫：CHANGELOG 未发布节的中英配对地板（issue #56
   it("每一条中文条目都要有英文对应：配对数 >= 地板（只能升不能降）且无对应条数 = 0", (t) => {
     const text = changelogText();
     const problems = collectChangelogPairingProblems(text);
-    // 地板 51 是在 `CHANGELOG_PAIR_FLOOR_SURFACE` 那一节上实测的。面被 `resolveChangelogScanSurface`
-    // 挪到别的节（今天只可能是「Unreleased 一有内容」）时，这个数就没有校准依据了。
+    // 地板是在 `CHANGELOG_PAIR_FLOOR_SURFACE` 那一节上实测的（#571：面已随 #571 片1 的条目挪到
+    // `## [Unreleased]`，所以地板 = 在 Unreleased 上重测的 1 对）。面被 `resolveChangelogScanSurface`
+    // 挪到别的节（例如 0.29 开版后顶部 Unreleased 又空了 ⇒ 退到刚开的版本节）时，这个数就没有校准依据了。
     const onFloorSurface = Boolean(problems.surface)
       && problems.surface.heading.startsWith(CHANGELOG_PAIR_FLOOR_SURFACE);
     t.diagnostic(`配对地板：判据面 = ${problems.surface?.heading}（第 ${problems.surface?.line} 行，`
@@ -3703,19 +3976,30 @@ describe("静态守卫：CHANGELOG 未发布节的中英配对地板（issue #56
         + ` ⇒ 可以抬地板到 ${problems.pairs.length}`);
     }
 
-    // ── 语言判定/分支不许恒真或退化成死代码（放在地板之后：地板已保证两侧各 >= 51 条）──
-    // （原先这里还有一条 `cn.length >= 40 && en.length >= 40`：`pairs <= min(cn, en)` 加地板 >= 51
-    //   已严格蕴含它，留着只会是永不触发的死断言——两侧条数仍由地板失败信息逐次打印。）
-    // 语言判定不是恒真：两个方向都要有真样本（只判一种语言会让「配对」退化成「数条数」）
-    assert.ok(problems.cn.some((bullet) => bullet.ratio > 0.5),
-      "没有一条 CJK 占比 > 0.5 的中文条目：语言判定可能恒判英文");
+    // ── 语言判定 / 分支不许恒真或退化成死代码 ──
+    // issue #571：真实面上的条数**跟着面走**（新生节可能只有 1 对），所以「恒真 / 死代码」的证据
+    // 不能挂在「真实面恰好有 N 条」上——那是成熟度。真实面只证「两侧都有真样本」，
+    // 两个方向、两条分支的真样本放在**合成形状夹具**上（同一份判定函数、同一份配对逻辑）。
+    assert.ok(problems.cn.length >= 1 && problems.en.length >= 1,
+      `判据面上没有两侧样本（中文 ${problems.cn.length} / 英文 ${problems.en.length}）：配对会退化成数条数`);
     assert.ok(problems.en.some((bullet) => bullet.ratio === 0),
       "没有一条零 CJK 的英文条目：语言判定可能恒判中文");
-    // 「无 issue 引用 + 紧邻」这条分支不许是死代码（今天恰有一条：0.27.0 的发布收尾条目）
-    assert.ok(problems.cn.some((bullet) => bullet.issues.size === 0),
-      "未发布节里没有无 issue 引用的条目：紧邻配对那条分支退化成死代码");
-    assert.ok(problems.cn.some((bullet) => bullet.issues.size > 1),
-      "没有一条引用多个 issue 的中文条目：集合比较退化成单值比较");
+    const shape = collectChangelogPairingProblems(changelogSyntheticSectionText());
+    assert.equal(shape.found, true, "形状夹具上找不到判据面：这一格失去对照组");
+    assert.ok(shape.cn.some((bullet) => bullet.ratio > 0.5),
+      "形状夹具上没有一条 CJK 占比 > 0.5 的中文条目：语言判定可能恒判英文");
+    assert.ok(shape.en.some((bullet) => bullet.ratio === 0),
+      "形状夹具上没有零 CJK 的英文条目：语言判定可能恒判中文");
+    // 「无 issue 引用 + 紧邻」这条分支不许是死代码（夹具里丁 / Delta 就是这一对）
+    assert.ok(shape.cn.some((bullet) => bullet.issues.size === 0),
+      "形状夹具里没有无 issue 引用的条目：紧邻配对那条分支退化成死代码");
+    assert.ok(shape.adjacencyPairs >= 1,
+      `形状夹具里「无 issue 引用 + 紧邻」一对都没配上（实测 ${shape.adjacencyPairs} 对）：那条分支是死的`);
+    assert.ok(shape.cn.some((bullet) => bullet.issues.size > 1),
+      "形状夹具里没有引用多个 issue 的中文条目：集合比较退化成单值比较");
+    assert.deepEqual(shape.unpairedCn.map((bullet) => bullet.line), [], "形状夹具的中文条目有缺译本的");
+    assert.deepEqual(shape.unpairedEn.map((bullet) => bullet.line), [], "形状夹具的英文条目有缺译本的");
+    assert.equal(shape.pairs.length, shape.cn.length, "形状夹具里每条中文条目都应有英文对应");
 
     // ── 三条反向证（纯内存，不写盘；变异没落上由 replaceExactlyOnce 直接抛，沿用 #210 R2 口径） ──
     // 靶子必须**双侧唯一**（该 issue 集合在中文侧与英文侧各只出现一次）：否则删掉一条英文之后，
@@ -3740,15 +4024,28 @@ describe("静态守卫：CHANGELOG 未发布节的中英配对地板（issue #56
       `删掉一条英文条目后应恰好 1 条中文无对应，实测 ${JSON.stringify(afterDelete.unpairedCn.map((b) => b.line))}`);
     // 行号在删掉多行英文条目后会整体前移，所以按**原文**认人，不按行号
     assert.equal(afterDelete.unpairedCn[0].raw, targetCn.raw, "无对应的那条中文应是靶子的对手（按原文比）");
-    assert.ok(afterDelete.pairs.length < CHANGELOG_PAIR_FLOOR,
-      `删掉一条英文条目后配对数 ${afterDelete.pairs.length} 仍 >= 地板 ${CHANGELOG_PAIR_FLOOR}：地板拦不住`);
+    // 「地板拦不住」只在**校准面**上有意义：地板恰等于那一节实测的配对数 ⇒ 掉一条就穿底。
+    // 面挪走后地板本来就没有校准依据（#563 的「请重测地板」信号正是为此而设），拿旧地板去判新面
+    // 只会造出一条与面无关的假红——所以那一半只在校准面上判，挪面时由上面的地板判词点名重测。
+    if (onFloorSurface) {
+      assert.equal(problems.pairs.length, CHANGELOG_PAIR_FLOOR,
+        `校准面（${CHANGELOG_PAIR_FLOOR_SURFACE}）上实测 ${problems.pairs.length} 对 ≠ 地板 ${CHANGELOG_PAIR_FLOOR} 对：`
+        + "地板必须恰等于校准面上的实测值（否则「掉一条就穿底」证不出来）。配对变多了 ⇒ 请抬地板到实测值");
+      assert.ok(afterDelete.pairs.length < CHANGELOG_PAIR_FLOOR,
+        `删掉一条英文条目后配对数 ${afterDelete.pairs.length} 仍 >= 地板 ${CHANGELOG_PAIR_FLOOR}：地板拦不住`);
+    } else {
+      t.diagnostic(`地板拦截力：本面 ${problems.pairs.length} 对 / 地板 ${CHANGELOG_PAIR_FLOOR} 对`
+        + `（校准面 ${CHANGELOG_PAIR_FLOOR_SURFACE}）——不在校准面上，这一栏不判`);
+    }
 
     // 反向证 ②：把英文条目里的一个 issue 引用改掉（**数量不变、值不同**）⇒ 集合不再相等 ⇒ 配对下降
     const firstIssue = target.issues[0];
     assert.equal(changelogIssueRefs(text).has("999"), false,
       "真实 CHANGELOG 里已经出现 #999：反向证 ② 的替换值不唯一，请换一个值");
     assert.ok(targetEn.raw.includes(`#${firstIssue}`), `靶子里找不到 #${firstIssue}：反向证 ② 会打空`);
-    const rewritten = targetEn.raw.replace(`#${firstIssue}`, "#999");
+    // 靶子里同一个引用可能出现多次（同一条目里既在正文又在续行里提它）：**全部**换成同一个新值，
+    // 这样「个数不变、值不同」才成立；只换一处会让集合多出一个元素，证的东西就不是集合比较了。
+    const rewritten = targetEn.raw.split(`#${firstIssue}`).join("#999");
     assert.notEqual(rewritten, targetEn.raw, "变异没落上：issue 引用没被改掉");
     assert.equal(changelogIssueRefs(rewritten).size, targetEn.issues.size,
       "反向证 ② 要求「数量不变、值不同」：改完之后 issue 个数变了，这一格证的东西就不是集合比较了");
@@ -3759,8 +4056,10 @@ describe("静态守卫：CHANGELOG 未发布节的中英配对地板（issue #56
     assert.equal(swapped.unpairedCn[0].raw, targetCn.raw, "无对应的那条中文应是靶子的对手（按原文比）");
     assert.equal(swapped.unpairedEn.length, 1, "改掉一个 issue 引用后应恰好 1 条英文无对应（它就是被改的那条）");
     assert.equal(swapped.unpairedEn[0].raw, rewritten, "无对应的那条英文应是被改的那条");
-    assert.ok(swapped.pairs.length < CHANGELOG_PAIR_FLOOR,
-      `改掉一个 issue 引用后配对数 ${swapped.pairs.length} 仍 >= 地板 ${CHANGELOG_PAIR_FLOOR}：地板拦不住`);
+    if (onFloorSurface) {
+      assert.ok(swapped.pairs.length < CHANGELOG_PAIR_FLOOR,
+        `改掉一个 issue 引用后配对数 ${swapped.pairs.length} 仍 >= 地板 ${CHANGELOG_PAIR_FLOOR}：地板拦不住`);
+    }
 
     // 反向证 ③：还原 ⇒ 全绿
     const restored = collectChangelogPairingProblems(text);
@@ -3770,8 +4069,8 @@ describe("静态守卫：CHANGELOG 未发布节的中英配对地板（issue #56
     assert.ok(restored.pairs.length >= CHANGELOG_PAIR_FLOOR, "还原原文后地板必须仍成立");
 
     t.diagnostic(`配对地板反向证：删掉第 ${targetEn.line} 行英文条目 ⇒ ${afterDelete.pairs.length} 对`
-      + `（< 地板 ${CHANGELOG_PAIR_FLOOR}）+ 中文第 ${target.cn} 行无对应；`
-      + `把该条的 #${firstIssue} 改成 #999（数量不变）⇒ ${swapped.pairs.length} 对（< 地板）；还原 ⇒ `
+      + `（地板 ${CHANGELOG_PAIR_FLOOR}${onFloorSurface ? "，已穿底" : "，不在校准面上不判"}）+ 中文第 ${target.cn} 行无对应；`
+      + `把该条的 #${firstIssue} 改成 #999（数量不变）⇒ ${swapped.pairs.length} 对；还原 ⇒ `
       + `${restored.pairs.length} 对全绿`);
   });
 });
