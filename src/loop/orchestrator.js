@@ -397,7 +397,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *       retry?: {attempts?: number, backoffBaseMs?: number, backoffMaxMs?: number,
  *         sleepImpl?: (ms: number) => Promise<void>}|false},
  *     folding?: {context?: {strategy?: object|"sliding-window"|"fold-statistical"|"fold-llm", budgetTokens?: number,
- *       keepRounds?: number, toolContext?: object, task?: string, session?: any},
+ *       keepRounds?: number, foldAtRatio?: number, toolContext?: object, task?: string, session?: any},
  *       toolResultTtl?: number, toolResultFoldMinTokens?: number},
  *     guard?: {finalGuardMaxRetries?: number, finalGuardTimeoutMs?: number, finalGuardExtend?: boolean},
  *     metadata?: {expert?: any, user?: any, task?: any, requestId?: string, toolContext?: object,
@@ -3326,8 +3326,14 @@ export async function runToolLoop(options) {
     // and can otherwise trigger compaction too early.
     const apiInputTokens = latestApiInputTokens;
     const estimatedTokens = estimateMessageTokens(messages);
+    // issue #569：折叠可以**提前**到预算的一个比例（`context.foldAtRatio`，`0 < r <= 1`，默认 `1.0`）。
+    // `r = 1.0` 时这条判据与今天**逐字等价**：`budgetTokens * 1.0 === budgetTokens`（IEEE-754 里乘 1
+    // 是恒等），两个操作数、`||` 的两侧、以及「`budgetTokens` 未定义就整条不进」的那个守卫都不变——
+    // 乘上的只是阈值本身。默认值 `1.0` 是兼容边界，改它属 breaking。
+    // 它**只**作用于本地估算这一侧；API usage 那一侧（`isApiInputOverBudget`）的口径不归本单。
+    const foldAtRatio = compactionContext?.foldAtRatio ?? 1;
     const overBudget = budgetTokens !== undefined
-      && (estimatedTokens > budgetTokens || isApiInputOverBudget(apiInputTokens, budgetTokens));
+      && (estimatedTokens > budgetTokens * foldAtRatio || isApiInputOverBudget(apiInputTokens, budgetTokens));
     const strategyRequestsCompaction = configuredStrategy
       ? await configuredStrategy.shouldCompact(messages, budgetTokens)
       : false;
