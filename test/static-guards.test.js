@@ -2965,6 +2965,54 @@ function countSectionBullets(lines, from, to) {
  * ⚠ 本函数里的正则都**没有 `g`**（只走 `.test`，不走 `matchAll`），所以不存在共享 `lastIndex` 那个坑；
  * 真需要 `matchAll` 的地方一律现造一份（文件里的 `freshRe`，见 `changelogIssueRefs`）。
  *
+ * ─────────────────────────────────────────────────────────────────────────
+ * **扫描面的保护范围**（issue #575 B）
+ *
+ * 下面这段是写给「想改这个函数的人」的：**面只有一节**，面外的东西**没有任何人看着**。
+ * 写清范围不是为了免责，是为了让扩面变成一个**知情决定**，而不是「顺手把 `to` 改成 `lines.length`」。
+ *
+ * **面内**（规则 8 的 R1–R5 与规则 9 的中英配对地板都只跑这一节）：
+ *   · 顶部 `## [Unreleased]`（它有 bullet 时，`fellBack: false`）；
+ *   · 开版态（顶部 `## [Unreleased]` 为空）⇒ 紧随其后的**那一个**版本节（`fellBack: true`）。
+ *   这一节里**每一条** bullet 都在面上：逐字重复（R1）、片号重复（R2，逐小节口径）、语义近重复（R4）、
+ *   小节顺序与游离正文（R5），以及「每一条中文条目有没有英文对应」（规则 9 的配对判据 + 配对地板）。
+ *
+ * **面外**（明确**放弃**的保护，不是「顺带没管」）：
+ *   · **已发布的版本节一条都不扫**（今天的 `## [0.28.0]` 及其后的每一节）。后果要说明白：#575 实测
+ *     ——把 `## [0.28.0]` 里**第 1 条**或**第 2 条**（乃至第 3 条）bullet 逐字复制一份，
+ *     `node --test test/static-guards.test.js` 仍然 52 格全绿（对照组：把同样的事做在 `## [Unreleased]`
+ *     上，规则 8 与规则 9 同时变红）。也就是说已发布节里的逐字重复、片号重复、以及**中英配对缺失**
+ *     （删掉一条英文译本）都没有判据覆盖。这是设计后果、不是缺陷，本单只把范围写清，**不扩面**。
+ *   · **退让期间的空 `## [Unreleased]`** 同样不在面上：它 0 条 bullet，没有内容可判；此时判据全部
+ *     落在刚开的那一节上。
+ *   · 面外的内容只有**人工评审**与 `check:docs` / `check:docs:strict` 里那些**与重复无关**的判据兜
+ *     （后者看的是引用与棘轮，不看 bullet 重复，也不看译本配对）。
+ *
+ * **为什么按「扫最新一节」定标（发布即冻结）**：
+ *   · 判据要回答的是「**还没发出去**的这批条目干净吗」——那是唯一还能改的字节面。发布一发生，那一节
+ *     的字节就属于历史：改它等于改写历史（同 #278 的口径），把它判红只会逼人重写发布记录。
+ *   · 于是「面」跟着开版走（#563）：Unreleased 一有内容就是它；开版那一刻（顶部 Unreleased 必然为
+ *     空）退到刚开的版本节。判据因此**永远**看着「下一次发布将要带出去的东西」。
+ *   · 全文件扫**不是**一个可选项：0.25 / 0.26 / 0.27 那几节本来就纯中文发布（没有英文译本），把
+ *     它们拉进配对判据 = 一道常年红的门，而常年红的门等于没有门（这正是规则 9 要避的假红）。
+ *
+ * **想扩面的人该动哪里**（按这个顺序，别只改一处）：
+ *   1. 扩面**只改本函数**（`resolveChangelogScanSurface`）：两条判据（规则 8 的
+ *      `collectChangelogProblems` 与规则 9 的 `collectChangelogPairingProblems`）都只从它的返回值取
+ *      `{from, to}`，**没有第二份选取逻辑** —— 这就是为什么扩面不需要动任何一条判据函数本体。
+ *   2. 面的**个数**一旦从 1 变多（例如「Unreleased + 最近 N 个版本节」），返回值形状就得从
+ *      `{from, to}` 改成区间数组，两个消费端要跟着改（`problems.surface` 是给 diagnostic 与地板判词
+ *      用的单节描述）。这是本函数与两条判据之间**唯一**的契约，扩面时别偷偷绕过它。
+ *   3. **地板必须重测**（`CHANGELOG_PAIR_FLOOR` / `CHANGELOG_PAIR_FLOOR_SURFACE`）：地板是**在某一节上
+ *      实测**的配对数，不是全局常数。面换了（或从一节变成多节）⇒ 实测值必然变 ⇒ 先跑
+ *      `node --test test/static-guards.test.js`，从 diagnostic 里抄下「配对 N 对」，再改常量与校准面
+ *      标题，并把新数写进注释（中英 `AGENTS*.md` 里若有带这两个数的声称句，也要一起改）。
+ *      **不重测就改面**等于拿一个没有校准依据的数当闸门：判词会说「地板被踩穿」，而实际只是面挪了
+ *      ——假红和假绿一样坏。
+ *   4. 已发布节进面**必然**要同时放弃「发布即冻结」这条口径（那些节是历史），所以扩面不是纯技术改动：
+ *      得先在工单里说明「为什么这次要判历史」，否则下一个读这段注释的人会以为面本来就该是全文件。
+ * ─────────────────────────────────────────────────────────────────────────
+ *
  * @param {string[]} lines 整份 CHANGELOG 的行（已去 `\r`）
  * @param {string} [heading] 顶部版本节标题（默认 `## [Unreleased]`）
  * @returns {{ok: true, surface: object} | {ok: false, reason: string}}
@@ -3844,8 +3892,23 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *
  * issue #574：`## [Unreleased] ### Fixed` 新增一对 `createAgent` 条目（同一个 issue 引用集合 #574 + #524）
  * ⇒ 在**同一个面**上实测 **2 对**（中文 2 / 英文 2 / 无对应 0，`node --test test/static-guards.test.js`
- * 的 diagnostic 原文），地板随之 1 → 2。同一面内只升不降，这次是**升**。 */
-const CHANGELOG_PAIR_FLOOR = 2;
+ * 的 diagnostic 原文），地板随之 1 → 2。同一面内只升不降，这次是**升**。
+ *
+ * issue #575：`## [Unreleased] ### Fixed` 再新增一对（`--json` 退出码 + CHANGELOG 扫描面注释，同一个
+ * issue 引用集合 #575）⇒ 面没挪，仍是 `## [Unreleased]`，实测变成 **3 对**，地板 2 → 3。
+ * 先贴守卫自己的实测 diagnostic（面未挪、只是配对变多时它会直接这么说）：
+ *
+ *     # 配对地板：判据面 = ## [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：
+ *     #   顶部 Unreleased 有内容）；中文 3 条 / 英文 3 条 / 配对 3 对
+ *     #   （其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 2（校准面 ## [Unreleased]）
+ *     # 配对地板：实测 3 对 > 地板 2 对 ⇒ 可以抬地板到 3
+ *
+ * 同一格里的另一句（校准面上地板必须**恰等于**实测值，所以不改常量就会红）：
+ *
+ *     校准面（## [Unreleased]）上实测 3 对 ≠ 地板 2 对：地板必须恰等于校准面上的实测值
+ *     （否则「掉一条就穿底」证不出来）。配对变多了 ⇒ 请抬地板到实测值
+ */
+const CHANGELOG_PAIR_FLOOR = 3;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
@@ -3933,9 +3996,10 @@ describe("静态守卫：CHANGELOG 未发布节的中英配对地板（issue #56
   it("每一条中文条目都要有英文对应：配对数 >= 地板（只能升不能降）且无对应条数 = 0", (t) => {
     const text = changelogText();
     const problems = collectChangelogPairingProblems(text);
-    // 地板是在 `CHANGELOG_PAIR_FLOOR_SURFACE` 那一节上实测的（#571：面已随 #571 片1 的条目挪到
-    // `## [Unreleased]`，所以地板 = 在 Unreleased 上重测的 1 对）。面被 `resolveChangelogScanSurface`
-    // 挪到别的节（例如 0.29 开版后顶部 Unreleased 又空了 ⇒ 退到刚开的版本节）时，这个数就没有校准依据了。
+    // 地板是在 `CHANGELOG_PAIR_FLOOR_SURFACE` 那一节上实测的（#571 面随 #571 片1 的条目挪到
+    // `## [Unreleased]`，所以地板 = 在 Unreleased 上重测的值：#571 起 1 对、#574 ⇒ 2 对、#575 ⇒ 3 对）。
+    // 面被 `resolveChangelogScanSurface` 挪到别的节（例如 0.29 开版后顶部 Unreleased 又空了 ⇒ 退到刚开的
+    // 版本节）时，这个数就没有校准依据了。
     const onFloorSurface = Boolean(problems.surface)
       && problems.surface.heading.startsWith(CHANGELOG_PAIR_FLOOR_SURFACE);
     t.diagnostic(`配对地板：判据面 = ${problems.surface?.heading}（第 ${problems.surface?.line} 行，`
