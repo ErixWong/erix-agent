@@ -136,7 +136,9 @@ test("#592 A：存量真夹具上跑出三个数（① 累加 / ② 分子分母
   // 单侧报告：结论 not-applicable，且 ④ 的标记逐字出现。
   const report = formatReport(side, null, null);
   assert.match(report, /① 每任务总输入 = 12355 token/u);
-  assert.match(report, /② 重复读取率 = 0\/2 = 0\.0%/u);
+  // issue #596：标签加了「（同 path）」（并列 ②' 那一行），**数值口径一字未动**。
+  assert.match(report, /② 重复读取率（同 path）\s+= 0\/2 = 0\.0%/u);
+  assert.match(report, /②' 真浪费（同 path 同 range） = 0\/2 = 0\.0%/u);
   assert.match(report, /③ 重复执行率 = n\/a（0\/0）/u);
   assert.match(report, /host-side \/ not-applicable/u);
   assert.match(report, /【结论】not-applicable/u);
@@ -385,7 +387,8 @@ test("#592 F：CLI 跑通（退出码 0 + 定义/结论/④ 标记 + --json 同�
   assert.match(textRun.stdout, /【结论】worsened/u);
   assert.match(textRun.stdout, /host-side \/ not-applicable/u);
   assert.match(textRun.stdout, /不参与判定/u);
-  assert.match(textRun.stdout, /② 重复读取率 = 0\/2 = 0\.0%/u);
+  assert.match(textRun.stdout, /② 重复读取率（同 path）\s+= 0\/2 = 0\.0%/u);
+  assert.match(textRun.stdout, /②' 真浪费（同 path 同 range） = 0\/2 = 0\.0%/u);
 
   const jsonRun = run(["--json", baselinePath, candidatePath]);
   assert.equal(jsonRun.status, 0, jsonRun.stderr);
