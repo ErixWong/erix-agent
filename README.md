@@ -99,6 +99,7 @@ const result = await runToolLoop({
   }],
   executeTool: async ({ name, input }) => {
     // your execution + safety policy (the library never executes anything)
+    return `${name}(${JSON.stringify(input)}) -> ok`;
   },
   store: createMemoryTranscriptStore(),
 });
@@ -293,10 +294,12 @@ const assemblyPort = createAssemblyPort({
   provider,    // { chat?, chatStream? }
   tools: { definitions, executeTool, getToolMetadata? },
   store?,      // optional TranscriptStore (required: appendRound, load; optional: run-snapshot/run-state)
-  session: { id, resume?, initialMessages? },
+  session: { id, initialMessages? }, // data only: resume is a top-level option / config.run.resume
   policy?,     // explicit runToolLoop options; unknown keys are rejected
   emit?,       // (eventType, payload) => void
 });
+
+await runToolLoop({ assemblyPort });
 ```
 
 `NotesStore` is a CLI-side engine skill (run-scoped scratchpad for facts,
@@ -475,7 +478,7 @@ configuration is an error, not a skip. It and the documentation audit
 The core entry point is:
 
 ```js
-runToolLoop({ provider, executeTool, ...options })
+await runToolLoop({ provider, executeTool, ...options });
 ```
 
 It owns one task lifecycle and returns `finalText`, the current `messages`

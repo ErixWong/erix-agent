@@ -3938,8 +3938,19 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *     # 配对地板：实测 6 对 > 地板 5 对 ⇒ 可以抬地板到 6
  *     校准面（## [Unreleased]）上实测 6 对 ≠ 地板 5 对：地板必须恰等于校准面上的实测值
  *     （否则「掉一条就穿底」证不出来）。配对变多了 ⇒ 请抬地板到实测值
+ *
+ * issue #576：`## [Unreleased] ### Fixed` 再新增一对（两份根 README 的 js 围栏进 `check:docs-examples`
+ * 的三层验证 + 目标表，issue 引用集合 #576）⇒ 面没挪，仍是 `## [Unreleased]`，实测变成 **7 对**，
+ * 地板 6 → 7。照旧**先贴守卫自己打的 diagnostic、再动常量**（顺序反了就等于拿常量去凑实测）：
+ *
+ *     # 配对地板：判据面 = ## [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：
+ *     #   顶部 Unreleased 有内容）；中文 7 条 / 英文 7 条 / 配对 7 对
+ *     #   （其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 6（校准面 ## [Unreleased]）
+ *     # 配对地板：实测 7 对 > 地板 6 对 ⇒ 可以抬地板到 7
+ *     校准面（## [Unreleased]）上实测 7 对 ≠ 地板 6 对：地板必须恰等于校准面上的实测值
+ *     （否则「掉一条就穿底」证不出来）。配对变多了 ⇒ 请抬地板到实测值
  */
-const CHANGELOG_PAIR_FLOOR = 6;
+const CHANGELOG_PAIR_FLOOR = 7;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
