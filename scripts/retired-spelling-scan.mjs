@@ -5,6 +5,15 @@
 // 病根：引擎 0.28 起**当场拒**顶层扁平配置键（`timeoutMs` / `toolResultTtl` / `initialMessages` …），
 // 而文档里仍有一批按扁平拼写叙述输入形态。宿主从架构文档或 ADR 抄写法，会抄到一个已被拒的形态。
 //
+// **扫描面 = 入库的 `docs/**/*.md`，清单只取 `git ls-files`**（#560 的缺陷修复）：`docs/tasks/` 与
+// `docs/delivery/` 是**故意不入库**的本地档案（`.gitignore` 两条目录规则；AGENTS 明写持久交付证据放
+// PR/issue 评论、不放仓库树）。从前这里用 `readdirSync` **走文件系统**，于是同一份仓库内容在开发树
+// （有本地档案 ⇒ 那批文件按「未登记路径 ⇒ 照扫」被算红 ⇒ `--strict` exit 1）与干净克隆（exit 0）里
+// 给出两个答案，而 CI 跑的是克隆 ⇒ 那批红永远见不到，门对开发者只剩噪音。「未登记照扫」这条规则本身
+// 是对的（未知分类不是免检），**错在把不入库的文件喂给它**。
+// 于是清单必须与 git 同源：`git` 不可用 / 不在仓库内 / 仓库顶层不是本脚本所在目录 / 清单为空 ⇒
+// **显式报错 exit 2**，**绝不**静默退回文件系统遍历（静默退回等于把「两个答案」留在原地，只是更难发现）。
+//
 // **它是门**：`npm run check:docs-spelling`（= `--strict`）在 `.github/workflows/ci.yml` 里阻塞，紧跟
 // `check:docs:strict`；`node scripts/retired-spelling-scan.mjs --self-test` 是同一道门的反向证，单独一步
 // 阻塞。默认模式（不带 flag）仍然只打报告、exit 0 —— 那是给人读的视图，门禁跑的是 `--strict`。
@@ -30,7 +39,8 @@
 //      文档的命中数。把某份 ADR 的正文改写成规位形态 ⇒ 命中数**掉** ⇒ `SUSPECT(dropped)`；往历史里
 //      补一句扁平拼写 ⇒ 命中数**涨** ⇒ `SUSPECT(raised)`；新入历史/契约类却忘了钉 ⇒ `UNPINNED`。
 //      没有这条，分类判据是空的：「这份历史文档本来就没有命中」与「有人把它改成规位形态了」在文本上
-//      长得一模一样。
+//      长得一模一样。钉子只许登记**入库**文件：指向一份不在 `git ls-files` 清单里的文件 = **死条目**
+//      （`DEAD-PIN`，同样红），因为那份文件在干净克隆里根本不在面上，钉子在那里是空转的。
 //
 // 口径（缺一条数就对不上）：
 //   · 退役键表**派生**自源码（`src/loop/config-namespace.js` 的 schema 叶子 − `RUN_TOOL_LOOP_OPTION_NAMES`），
@@ -47,10 +57,12 @@
 // 用法：
 //   node scripts/retired-spelling-scan.mjs            # 全量报告，exit 0（人读视图）
 //   node scripts/retired-spelling-scan.mjs --json     # 同一份事实的机器读法
-//   node scripts/retired-spelling-scan.mjs --strict   # 门禁：现状类有 use / 历史契约类钉子不符 ⇒ exit 1
+//   node scripts/retired-spelling-scan.mjs --strict   # 门禁：现状类有 use / 历史契约类钉子不符 ⇒ exit 1；
+//                                                     # 清单拿不到（git 不可用 / 不在仓库内 / 空清单）⇒ exit 2
 //   node scripts/retired-spelling-scan.mjs --self-test # 反向证：内存夹具里改一处 ⇒ 报；不改 ⇒ 不报
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -262,6 +274,42 @@ const CONTRACT_BODY_PINS = Object.freeze({
 /** 分类 → 钉子表。现状类没有钉子（它必须为 0）。 */
 const PIN_TABLES = Object.freeze({ history: HISTORY_BODY_PINS, contract: CONTRACT_BODY_PINS });
 
+/**
+ * 钉子与**扫描面同源**的判据（#560）。
+ *
+ * 钉子从“依赖巧合被跟踪”改成“与清单同源”：登记一份不在 `git ls-files` 清单里的文件就是**死条目**
+ * —— 它在开发树上也许读得到，但在干净克隆里根本不在面上，钉子在那里永远空转；而一旦这份文件被跟踪，
+ * 它又会在两个树里给出不同的数。两种情况都不许静默，所以这里把它们逐条点名（`--strict` 计入红数）。
+ *
+ * 另一个方向：钉子挂错表（历史类的钉子写进契约表，或反过来）也点名 —— 那样 `verdictFor()` 会用错的
+ * 规则去判，同样是“没在看它该看的东西”。
+ *
+ * @param {"history"|"contract"} kind 钉子表对应的分类
+ * @param {Readonly<Record<string, number>>} table 钉子表
+ * @param {readonly string[]} manifest 入库文件清单（`gitTrackedDocs()` 的返回值）
+ * @returns {Array<{file: string, why: string}>} 空数组 = 每条钉子都指向一份入库的非现状类文档
+ */
+export function pinEntryProblems(kind, table, manifest) {
+  const tracked = new Set(manifest);
+  const problems = [];
+  for (const rel of Object.keys(table)) {
+    const actual = classify(rel).kind;
+    if (actual !== kind) {
+      problems.push({ file: rel, why: `登记在 ${kind} 的钉子里，实测分类是 ${actual}（钉子挂错了表）` });
+      continue;
+    }
+    if (!tracked.has(rel)) {
+      problems.push({ file: rel, why: "不在 `git ls-files` 清单里（不入库的文件不许登记命中数钉子 ⇒ 死条目）" });
+    }
+  }
+  return problems;
+}
+
+/** 全部钉子表里的死条目（钉子与扫描面不同源 ⇒ 红）。 */
+export function deadPinEntries(manifest) {
+  return Object.entries(PIN_TABLES).flatMap(([kind, table]) => pinEntryProblems(kind, table, manifest));
+}
+
 // ── 4. 文本级扫描 ────────────────────────────────────────────────────────────
 const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -337,19 +385,88 @@ export function scanText(text, retired) {
   return hits;
 }
 
-// ── 5. 覆盖面 ────────────────────────────────────────────────────────────────
-/** `docs/**` 下全部 `.md`（实扫，新文档落地即自动纳面；不硬编码清单）。 */
-function docsFiles(root) {
-  const out = [];
-  const walk = (dir) => {
-    for (const entry of readdirSync(dir).sort()) {
-      const full = path.join(dir, entry);
-      if (statSync(full).isDirectory()) walk(full);
-      else if (entry.endsWith(".md")) out.push(path.relative(root, full).split(path.sep).join("/"));
-    }
-  };
-  walk(path.join(root, "docs"));
-  return out;
+// ── 5. 覆盖面（只取**入库**文件，清单 = `git ls-files`） ──────────────────
+/**
+ * 默认执行器：跑一次 git，返回 stdout。`root` 必须是仓库顶层（调用方先验过）。
+ * @param {string[]} args
+ * @param {string} root
+ * @returns {string}
+ */
+function defaultGit(args, root) {
+  return execFileSync("git", args, {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 32 * 1024 * 1024,
+  });
+}
+
+const MANIFEST_REFUSAL = "拒绝退回文件系统遍历：那会把不入库的文件喂给判据，让门在开发树与干净克隆里给出两个答案（#560）";
+
+/** 把任意异常折成一行可读的原因（`execFileSync` 的 stderr 可能是 Buffer）。 */
+function errorLine(error) {
+  if (error?.code === "ENOENT") return "找不到 git 可执行文件";
+  const raw = error?.stderr === undefined || error?.stderr === null ? error?.message : error.stderr;
+  return String(raw ?? error).trim().split("\n").filter(Boolean)[0] ?? String(error);
+}
+
+/**
+ * `docs/**` 下**入库**的 `.md` 清单（#560：只取 `git ls-files`，不再走文件系统）。
+ *
+ * 缺陷现场：这里是 `readdirSync` 递归遍历。`docs/tasks/` 与 `docs/delivery/` 是故意不入库的本地档案
+ * （`.gitignore` 两条目录规则），于是**同一份仓库内容**在开发树与干净克隆里扫出两个答案 —— 主树
+ * `--strict` exit 1（那批未入库文件按「未登记路径 ⇒ 照扫」被算红），克隆 exit 0，而 CI 跑的是克隆。
+ * 「未登记照扫」本身是对的（未知分类不是免检），错在把不入库的文件喂给它。
+ *
+ * 所以：`git` 不可用 / 不在仓库内 / 仓库顶层不是本脚本所在目录 / 清单为空 ⇒ **抛错**，由 `main` 显式
+ * 报错并 exit 2。**没有**文件系统回退分支：静默回退等于把「两个答案」留在原地，只是更难发现。
+ *
+ * `docs/tasks/*.md` 里**被跟踪**的那几份（`261026-*`）照扫不变；它们与其它历史类文档的命中数钉子
+ * 也因此与清单同源（`deadPinEntries()`）。
+ *
+ * @param {string} [root] 仓库顶层（默认 = 本脚本所在仓库）
+ * @param {{exec?: (args: string[], root: string) => string}} [io] 执行器（自测注入；生产走 git）
+ * @returns {string[]} 仓库相对路径，已去重排序
+ */
+export function gitTrackedDocs(root = ROOT, { exec = defaultGit } = {}) {
+  const refuse = (detail) => new Error(`扫描清单只取 \`git ls-files\`，但${detail}。${MANIFEST_REFUSAL}`);
+
+  let top;
+  try {
+    top = exec(["rev-parse", "--show-toplevel"], root).trim();
+  } catch (error) {
+    throw refuse(`${root} 不在 git 仓库内或 git 不可用（${errorLine(error)}）`);
+  }
+  let rootReal;
+  try {
+    rootReal = realpathSync(root);
+  } catch (error) {
+    throw refuse(`${root} 读不到（${errorLine(error)}）`);
+  }
+  let topReal = null;
+  try {
+    topReal = top === "" ? null : realpathSync(top);
+  } catch {
+    topReal = null; // 顶层目录不在盘上 ⇒ 同样不可信（下面统一点名）
+  }
+  if (topReal === null || topReal !== rootReal) {
+    throw refuse(`git 认的仓库顶层是 ${top === "" ? "（空）" : top}，不是本脚本所在的 ${root}`
+      + "（不在仓库内 ⇒ 清单不可信）");
+  }
+
+  let raw;
+  try {
+    raw = exec(["ls-files", "-z", "--cached", "--full-name", "--", "docs"], root);
+  } catch (error) {
+    throw refuse(`\`git ls-files\` 失败（${errorLine(error)}）`);
+  }
+  const files = [...new Set(raw.split("\0")
+    .filter((rel) => rel.endsWith(".md"))
+    .map((rel) => rel.split(path.sep).join("/")))].sort();
+  if (files.length === 0) {
+    throw refuse("清单是空的（0 份入库 docs/**/*.md ⇒ 这道门会假绿）");
+  }
+  return files;
 }
 
 /**
@@ -373,12 +490,23 @@ export function verdictFor({ kind, uses, strictUses, pin }) {
 
 /**
  * 跑一次全量扫描（纯函数：`root` 可注入，自测用内存夹具）。
+ *
+ * `files` 默认 = `gitTrackedDocs(root)`：**默认面就是入库文件面**，没有“顺手扫一下盘上还有啥”的路。
+ * 清单点名的文件读不到 ⇒ 直接抛错点名该文件（`git ls-files --cached` 会把「已 staged 删除」的文件
+ * 也列出来；那种情况必须显式报，不能让它变成一道安静的 skip）。
+ *
  * @param {{root?: string, retired: Map<string,string>, files?: string[]}} params
  */
-export function scanDocs({ root = ROOT, retired, files = docsFiles(root) }) {
+export function scanDocs({ root = ROOT, retired, files = gitTrackedDocs(root) }) {
   const report = [];
   for (const rel of files) {
-    const text = readFileSync(path.join(root, rel), "utf8");
+    let text;
+    try {
+      text = readFileSync(path.join(root, rel), "utf8");
+    } catch (error) {
+      throw new Error(`清单里的 ${rel} 读不到（${errorLine(error)}）：`
+        + "`git ls-files` 列出的入库文件必须在盘上，否则扫描面与实际内容不符");
+    }
     const { kind, why } = classify(rel);
     const hits = scanText(text, retired);
     const uses = hits.filter((h) => h.verdict === "use");
@@ -392,16 +520,22 @@ export function scanDocs({ root = ROOT, retired, files = docsFiles(root) }) {
 }
 
 // ── 6. 输出 ──────────────────────────────────────────────────────────────────
-function printReport(report, retired) {
+function printReport(report, retired, { manifest, deadPins } = { manifest: [], deadPins: [] }) {
   const ambiguous = (key) => AMBIGUOUS_KEYS.has(key);
   const actionable = report.filter((r) => r.uses.length > 0);
   const cleanCurrent = report.filter((r) => r.kind === "current"
     && r.uses.every((h) => AMBIGUOUS_KEYS.has(h.key)));
 
-  console.log(`retired-spelling-scan: ${report.length} 份 docs/**/*.md，退役扁平键 ${retired.size} 个`
-    + `（派生自 src/loop/config-namespace.js − RUN_TOOL_LOOP_OPTION_NAMES）`);
+  console.log(`retired-spelling-scan: ${report.length} 份**入库** docs/**/*.md（清单 = \`git ls-files\`），`
+    + `退役扁平键 ${retired.size} 个（派生自 src/loop/config-namespace.js − RUN_TOOL_LOOP_OPTION_NAMES）`);
   console.log("门禁：`npm run check:docs-spelling`（= --strict）在 CI 里阻塞，紧跟 `check:docs:strict`"
     + "（#560）；默认模式只打报告\n");
+
+  console.log("── 扫描面（#560：只取入库文件，与开发树里未入库的本地档案无关） ──────");
+  console.log(`  清单来源：\`git ls-files --cached --full-name -- docs\`（${manifest.length} 份 .md）`);
+  console.log("  `docs/tasks/` 与 `docs/delivery/` 是故意不入库的本地档案（.gitignore）⇒ 不进面；"
+    + "盘上有也不扫，所以主树与干净克隆给同一个答案");
+  console.log("  git 不可用 / 不在仓库内 / 清单为空 ⇒ 显式报错 exit 2（不回退文件系统遍历）\n");
 
   console.log("── 分类（第一等公民，纯路径） ──────────────────────────────────");
   for (const kind of ["current", "history", "contract"]) {
@@ -444,12 +578,13 @@ function printReport(report, retired) {
 
   // 钉子不符的文件必须**点名**：掉到 0 命中的文件不会出现在上面的命中清单里，
   // 所以「见上」必须真的指得到东西（门禁的红要能一眼看出是哪份文档）。
-  if (pinProblems.length > 0 || unpinned.length > 0) {
-    console.log("\n── 钉子不符（正文被改写 / 新入历史类却没钉） ────────────────────");
+  if (pinProblems.length > 0 || unpinned.length > 0 || deadPins.length > 0) {
+    console.log("\n── 钉子不符（正文被改写 / 新入历史类却没钉 / 钉子不在扫描面上） ────");
     for (const r of [...pinProblems, ...unpinned]) {
       console.log(`  ✗ ${r.file}  [${r.kind}]  verdict=${r.verdict}`
         + `  pin=${r.pin === undefined ? "（未登记）" : r.pin}  uses=${r.uses.length}`);
     }
+    for (const p of deadPins) console.log(`  ✗ ${p.file}  DEAD-PIN  ${p.why}`);
   }
 
   console.log("\n── 判据 ───────────────────────────────────────────────────────");
@@ -463,10 +598,11 @@ function printReport(report, retired) {
     + `${pinProblems.length === 0 ? "全部等于实测（没有人在改写历史/契约）" : `${pinProblems.length} 份不符 ⇒ 见上`}`);
   console.log(`  ④ 有命中却没钉（新入历史/契约类忘了钉）：${unpinned.length} 份`
     + `${unpinned.length === 0 ? "" : ` ⇒ ${unpinned.map((r) => r.file).join(", ")}`}`);
-  console.log(`  ⑤ 退役措辞行（mention，在讲退役这件事）：${mentions} 处，不计入上面四条`);
+  console.log(`  ⑤ 钉子与扫描面同源（每条钉子都得是一份入库文件）：${deadPins.length === 0 ? "全部在 `git ls-files` 清单里" : `${deadPins.length} 条死条目 ⇒ ${deadPins.map((p) => p.file).join(", ")}`}`);
+  console.log(`  ⑥ 退役措辞行（mention，在讲退役这件事）：${mentions} 处，不计入上面五条`);
 
   if (STRICT) {
-    const bad = strictHits.length + pinProblems.length + unpinned.length;
+    const bad = strictHits.length + pinProblems.length + unpinned.length + deadPins.length;
     console.log(`\n--strict: ${bad === 0 ? "OK — 0 处红" : `${bad} 处红`}`);
     return bad === 0 ? 0 : 1;
   }
@@ -475,7 +611,7 @@ function printReport(report, retired) {
 }
 
 // ── 7. 自测（内存夹具，不写盘、不碰真文档） ──────────────────────────────────
-function selfTest(retired) {
+function selfTest(retired, manifest) {
   const cases = [];
   const t = (name, fn) => {
     try {
@@ -519,11 +655,11 @@ function selfTest(retired) {
     // 钉子机制本身：钉 1、实测 0 ⇒ 报 SUSPECT(dropped)（与真实扫描同一段判据）
     eq(verdictFor({ kind: "history", uses: 0, strictUses: 0, pin: 1 }), "SUSPECT(dropped)", "钉子没咬住");
   });
-  t("每一条 pin 都指向一份真在盘上的非现状类文档（空转条目 = 后门）", () => {
-    for (const [kind, table] of Object.entries(PIN_TABLES)) {
+  t("每一条 pin 都与扫描面同源：既在盘上、又在 `git ls-files` 清单里（空转条目 = 后门）", () => {
+    eq(deadPinEntries(manifest).length, 0,
+      `真实树上的死条目（${deadPinEntries(manifest).map((p) => `${p.file}: ${p.why}`).join(" / ")}）`);
+    for (const table of Object.values(PIN_TABLES)) {
       for (const rel of Object.keys(table)) {
-        const actual = classify(rel).kind;
-        if (actual !== kind) throw new Error(`${rel} 登记在 ${kind} 的钉子里，实测分类是 ${actual}`);
         try {
           readFileSync(path.join(ROOT, rel), "utf8");
         } catch {
@@ -531,6 +667,70 @@ function selfTest(retired) {
         }
       }
     }
+  });
+  t("死条目必须报错：钉子登记到一份不在清单里的文件 ⇒ 点名它（不入库的文件不许登记命中数）", () => {
+    const pinned = Object.keys(HISTORY_BODY_PINS)[0];
+    const mutated = manifest.filter((rel) => rel !== pinned);
+    if (mutated.length === manifest.length) throw new Error(`变异没落上：${pinned} 不在清单里`);
+    const dead = deadPinEntries(mutated);
+    eq(dead.length, 1, "去掉一份钉住的文档后的死条目数");
+    eq(dead[0].file, pinned, "死条目必须点名文件");
+    if (!/git ls-files/.test(dead[0].why)) throw new Error(`死条目的理由没说清是清单问题：${dead[0].why}`);
+    // 反向：钉子登记到一份本就不入库的路径 ⇒ 同样点名（这就是本单的病根形态）
+    const untrackedPin = pinEntryProblems("history", { "docs/tasks/zzz-never-committed.md": 3 }, manifest);
+    eq(untrackedPin.length, 1, "未入库路径的钉子数");
+    eq(untrackedPin[0].file, "docs/tasks/zzz-never-committed.md", "未入库钉子的点名");
+    // 另一个方向：钉子挂错表也要点名（否则用错规则去判）
+    const wrongTable = pinEntryProblems("contract", { "docs/architecture.md": 2 }, manifest);
+    eq(wrongTable.length, 1, "挂错表的钉子数");
+    if (!/history|current/.test(wrongTable[0].why)) throw new Error(`挂错表没说清实测分类：${wrongTable[0].why}`);
+    // 改回去（真实钉子表 + 真实清单）⇒ 绿
+    eq(deadPinEntries(manifest).length, 0, "改回来之后必须绿");
+  });
+  t("清单只取 `git ls-files`：盘上有、但没入库的 docs/**.md 不进扫描面", () => {
+    // 独立推导一次（不调本文件的函数）：同一棵树里 git 说了算，文件系统说了不算。
+    const raw = execFileSync("git", ["ls-files", "--", "docs"], { cwd: ROOT, encoding: "utf8" });
+    const independent = raw.split("\n").filter((rel) => rel.endsWith(".md")).sort();
+    eq(manifest.join("|"), independent.join("|"), "gitTrackedDocs() 与 `git ls-files` 的入库 .md 清单");
+    if (manifest.length === 0) throw new Error("清单是空的：这道门会假绿");
+    // 盘上有、但 git 没跟踪的（含被 gitignore 的本地档案）一个都不许在面上。
+    // 干净克隆里这个集合是空的（那时本条只剩上面的同源断言）；开发树里它非空 —— 那正是缺陷现场。
+    const ignored = execFileSync("git", ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", "docs"],
+      { cwd: ROOT, encoding: "utf8" }).split("\0").filter((rel) => rel.endsWith(".md"));
+    const onSurface = ignored.filter((rel) => manifest.includes(rel));
+    eq(onSurface.length, 0, `未入库文件进了扫描面：${onSurface.join(", ")}`);
+    // 默认扫描面 === 清单（不是“盘上还有啥”）：
+    const surface = scanDocs({ retired }).map((r) => r.file);
+    eq(surface.join("|"), manifest.join("|"), "默认扫描面与 `git ls-files` 清单");
+  });
+  t("清单拿不到就报错退出：git 不可用 / 不在仓库内 / 空清单，都不许退回文件系统遍历", () => {
+    const boom = () => {
+      const error = new Error("spawnSync git ENOENT");
+      error.code = "ENOENT";
+      throw error;
+    };
+    const cases = [
+      ["git 不在 PATH", { exec: boom }, /不在 git 仓库内|找不到 git/],
+      ["仓库顶层不是本脚本所在目录", { exec: (args) => (args[0] === "rev-parse" ? "/somewhere/else\n" : "") }, /不是本脚本所在的/],
+      ["`git ls-files` 失败", { exec: (args) => {
+        if (args[0] === "rev-parse") return `${ROOT}\n`;
+        throw new Error("fatal: bad pathspec");
+      } }, /git ls-files/],
+      ["空清单", { exec: (args) => (args[0] === "rev-parse" ? `${ROOT}\n` : "") }, /清单是空的/],
+    ];
+    for (const [what, io, expected] of cases) {
+      let thrown = null;
+      try {
+        gitTrackedDocs(ROOT, io);
+      } catch (error) {
+        thrown = error;
+      }
+      if (thrown === null) throw new Error(`${what}：没报错（静默退回文件系统遍历了）`);
+      if (!expected.test(thrown.message)) throw new Error(`${what}：报错没说清原因（${thrown.message}）`);
+      if (!/拒绝退回文件系统遍历/.test(thrown.message)) throw new Error(`${what}：报错没声明“不回退”（${thrown.message}）`);
+    }
+    // 放行证：真 git 在真仓库里跑得通（否则上面四条只是“永远有话说”）
+    if (gitTrackedDocs(ROOT).length === 0) throw new Error("真仓库里清单是空的：判据失效");
   });
   t("未登记路径按现状描述扫（未知分类不是免检）", () => {
     for (const rel of ["docs/zzz-unknown.md", "docs/nested/zzz-unknown_cn.md", "docs/design-not.md"]) {
@@ -574,18 +774,36 @@ function selfTest(retired) {
 }
 
 // ── 8. main ──────────────────────────────────────────────────────────────────
-const retired = await retiredFlatKeys();
-if (SELF_TEST) process.exit(selfTest(retired));
+// 清单先算：拿不到就**显式**报错并 exit 2（不是 1 —— 1 是“文档红了”，2 是“门自己坏了”；两者都阻塞）。
+// 这里**没有** catch 后回退到文件系统遍历的分支，那条路已经被 #560 拆掉了。
+let manifest;
+try {
+  manifest = gitTrackedDocs(ROOT);
+} catch (error) {
+  console.error(`retired-spelling-scan: ${error.message}`);
+  console.error(`  仓库根：${ROOT}`);
+  process.exit(2);
+}
 
-const report = scanDocs({ retired });
+const retired = await retiredFlatKeys();
+if (SELF_TEST) process.exit(selfTest(retired, manifest));
+
+const deadPins = deadPinEntries(manifest);
+const report = scanDocs({ retired, files: manifest });
 if (JSON_OUT) {
   const slim = report.map((r) => ({
     file: r.file, kind: r.kind, verdict: r.verdict, pin: r.pin ?? null,
     uses: r.uses.map((h) => ({ line: h.line, key: h.key, canonical: h.canonical, ambiguous: AMBIGUOUS_KEYS.has(h.key) })),
     mentions: r.hits.filter((h) => h.verdict === "mention").length,
   }));
-  console.log(JSON.stringify({ retiredKeys: Object.fromEntries(retired), pins: HISTORY_BODY_PINS, files: slim }, null, 2));
+  console.log(JSON.stringify({
+    surface: { source: "git ls-files", files: manifest.length },
+    retiredKeys: Object.fromEntries(retired),
+    pins: HISTORY_BODY_PINS,
+    deadPins,
+    files: slim,
+  }, null, 2));
   process.exitCode = 0;
 } else {
-  process.exitCode = printReport(report, retired);
+  process.exitCode = printReport(report, retired, { manifest, deadPins });
 }
