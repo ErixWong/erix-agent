@@ -50,6 +50,23 @@ export const TTL_DEGRADATION_RECORD_FIELD = "ttlDegradations";
 export const FOLDED_FACTS_RECORD_FIELD = "foldedFacts";
 
 /**
+ * `foldedFacts` 里承载**本折自己那一份**的子键名（issue #566）。
+ *
+ * 与父键的分工（这是本单的全部要点）：
+ *   · `foldedFacts.text` —— **截至本折的累计替代物**（今天宿主横幅/契约读的就是它），语义**一字未改**；
+ *   · `foldedFacts.increment` —— **本折自己删掉的那一段**的替代物（合并前那一份），append-only。
+ *
+ * 为什么必须另开键而不是改 `text`：连续 N 折之后 `text` 是 N 份累计快照，第 k 折的增量只能靠
+ * diff 相邻两份快照还原；其中任意一份被 `FOLDED_FACTS_MAX_BYTES` 前缀夹断，那个增量就**永久不可还原**。
+ * 增量单独成键之后，每一折都有一条不可变、可独立读取的记录（`from`/`to`/`rounds`/`text`/`title`）。
+ *
+ * 三条边界：① 只进账本，不进模型上下文（不参与请求组装、不占上下文预算）；
+ * ② resume 的取源不变（`pickCoveringFoldSummary` 仍读 `foldedSummary` 事实行 / `foldedFacts.text`，
+ * 见 `resume-fold-trim.js`）；③ 每折增量自己的字节上界 = `FOLDED_FACTS_MAX_BYTES`。
+ */
+export const FOLDED_FACTS_INCREMENT_KEY = "increment";
+
+/**
  * 替代物投影的字节上界（issue #470-B）。
  * 机械文本本身有界（锚点索引带 `maxPerKind`/`maxChars`），这里再夹一刀，
  * 防 #460 那条 O(n) 在摘要面复发（与 #335 重复存储同族）。
@@ -195,6 +212,42 @@ const FOLDED_FACTS_TRUNCATION_MARKER = "\n[替代物已按字节上限夹断]";
 const MIN_FACTS_TEXT_BYTES = foldedFactsEncoder.encode(FOLDED_FACTS_TRUNCATION_MARKER).length + 1;
 
 /**
+ * 按字节预算**前缀夹断**一段正文（口径与 `buildFoldedFacts` 原来那段内联实现逐字相同，issue #566 抽出来
+ * 只为让「累计体」与「本折增量」共用同一把尺子：两处各写一份的话，夹断行为迟早各自腐烂）。
+ *
+ * 返回的 `text` 已经是**最终形态**（被夹断时尾部带 `FOLDED_FACTS_TRUNCATION_MARKER`）；
+ * `bytesBefore` 只在真的夹断时给出（= 原始字节数），调用方据此写 `truncated`/`bytesBefore` 两个键。
+ *
+ * @param {string} raw
+ * @param {number} budget 字节预算
+ * @returns {{ text: string, truncated: boolean, bytesBefore: number }}
+ */
+function clampFactsText(raw, budget) {
+  const bytesBefore = foldedFactsEncoder.encode(raw).length;
+  if (bytesBefore <= budget) return { text: raw, truncated: false, bytesBefore };
+  // 二分找「前缀 + 夹断标记」还能装下的最长前缀（口径同 fold-llm 的整体截断）。
+  const characters = Array.from(raw);
+  let low = 0;
+  let high = characters.length;
+  let best = "";
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = `${characters.slice(0, middle).join("")}${FOLDED_FACTS_TRUNCATION_MARKER}`;
+    if (foldedFactsEncoder.encode(candidate).length <= budget) {
+      best = candidate;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return {
+    text: best === "" ? FOLDED_FACTS_TRUNCATION_MARKER.trim() : best,
+    truncated: true,
+    bytesBefore,
+  };
+}
+
+/**
  * `title` 的字符上界（issue #565）。
  *
  * 为什么是**字符**而不是字节：它是给宿主渲染一行索引用的展示字段，字符数才是「一行放得下」的口径。
@@ -333,6 +386,14 @@ function foldedFactsToolCalls(text) {
  *   ③ `toolCalls` 是对 `text` 里**清单节**的结构化投影：解析器与形状上界都复用 #564 的实现，
  *      喂进去的是同一份 `text` ⇒ 「与清单节逐条一致」按构造成立，不靠两处逻辑同步。
  *
+ * issue #566（`incrementText`）的第四条决定：**增量另开键，不改 `text`**。
+ *   · `text` 仍是「截至本折的累计替代物」（宿主横幅/契约依赖它）——本函数一个字都没改它的含义；
+ *   · `incrementText` 是**本折自己那份**（合并前的那一份，由调用方从策略的真实产物取，不从累计文本反推）；
+ *   · 它用自己的 `maxBytes` 预算（**不**从父键的预算里扣），因为它的价值恰恰是「父键被夹断时它仍然完整」；
+ *   · 它同样带 `title`/`origin`/`from`/`to`/`rounds`/`bytes`（口径与 #565 逐条相同，用同一个 `title` 派生器），
+ *     于是「第 k 折的增量」不需要 diff 两份累计快照就能独立读出来。
+ *   · 空增量（没给 / 全是空白）⇒ **不写该键**（与 A2「不写占位字面量」同口径）。
+ *
  * @param {{
  *   text?: unknown,
  *   source?: unknown,
@@ -343,10 +404,16 @@ function foldedFactsToolCalls(text) {
  *   rounds?: unknown,
  *   degradeReason?: unknown,
  *   fingerprint?: unknown,
+ *   incrementText?: unknown,
  *   maxBytes?: number,
  * }} [input]
  * @returns {{
  *   text: string, title: string, origin: "mechanical"|"semantic"|"host",
+ *   increment?: {
+ *     text: string, title: string, origin: "mechanical"|"semantic"|"host",
+ *     from?: number, to?: number, rounds?: number, bytes: number,
+ *     truncated?: boolean, bytesBefore?: number,
+ *   },
  *   summary?: string, toolCalls?: { name: string, argsSummary: string }[],
  *   source: string, strategy: string, bytes: number,
  *   from?: number, to?: number, rounds?: number,
@@ -374,28 +441,11 @@ export function buildFoldedFacts(input = {}) {
     ? summaryCandidate
     : "";
   const textBudget = maxBytes - bytesOf(summary);
-  const marker = FOLDED_FACTS_TRUNCATION_MARKER;
-  let text = raw;
-  let truncated = false;
-  if (bytesOf(text) > textBudget) {
-    // 二分找「前缀 + 夹断标记」还能装下的最长前缀（口径同 fold-llm 的整体截断）。
-    const characters = Array.from(text);
-    let low = 0;
-    let high = characters.length;
-    let best = "";
-    while (low <= high) {
-      const middle = Math.floor((low + high) / 2);
-      const candidate = `${characters.slice(0, middle).join("")}${marker}`;
-      if (bytesOf(candidate) <= textBudget) {
-        best = candidate;
-        low = middle + 1;
-      } else {
-        high = middle - 1;
-      }
-    }
-    text = best === "" ? marker.trim() : best;
-    truncated = true;
-  }
+  // issue #566：夹断逻辑抽成 `clampFactsText`，与下面「本折增量」共用同一把尺子；
+  // 行为逐字不变（原来的内联二分搜索搬进去，一个参数都没改）。
+  const clamped = clampFactsText(raw, textBudget);
+  const text = clamped.text;
+  const truncated = clamped.truncated;
   const range = input.roundRange ?? undefined;
   // `Number.isSafeInteger` 不是类型谓词，tsc 不会因此收窄；这里显式收口成 `number` 局部。
   // 不这么做的话下面三个可选键会带着 `unknown` 去撞 `FoldedFact` 的声明（types:build 直接红，
@@ -408,12 +458,33 @@ export function buildFoldedFacts(input = {}) {
   const fingerprint = typeof input.fingerprint === "string" ? input.fingerprint : "";
   const degradeReason = typeof input.degradeReason === "string" ? input.degradeReason : "";
   const toolCalls = foldedFactsToolCalls(text);
+  // issue #566：**本折自己那份**替代物（合并前那一份，不是累计体）。
+  // 独立预算（与父键同一个 `maxBytes`，但**不**从父键的预算里扣）：它是一条独立记录，
+  // 被父键的累计体撑爆时它必须仍然完整可读 —— 这正是本单要买的东西。
+  const incrementRaw = typeof input.incrementText === "string" ? input.incrementText.trim() : "";
+  const incrementClamped = incrementRaw === "" ? undefined : clampFactsText(incrementRaw, maxBytes);
+  const increment = incrementClamped === undefined
+    ? undefined
+    : {
+      text: incrementClamped.text,
+      // 与 #565 同口径：title 从**原始正文**取（夹断只削尾部 ⇒ 首行按构造仍在），剥掉引擎 marker。
+      title: foldedFactsTitle(incrementRaw),
+      origin,
+      ...(from !== undefined ? { from } : {}),
+      ...(to !== undefined ? { to } : {}),
+      ...(rounds !== undefined ? { rounds } : {}),
+      bytes: bytesOf(incrementClamped.text),
+      ...(incrementClamped.truncated
+        ? { truncated: true, bytesBefore: incrementClamped.bytesBefore }
+        : {}),
+    };
   return {
     text,
     // issue #565：给宿主的三键（纯加法）。`title` 取自 `text` 的首行（剥掉引擎 marker）⇒ 夹断削尾也削不掉它；
     // `origin` 必填（判据不是注释）；`toolCalls` 与 `text` 的清单节同源（同一份 `text` + 同一个解析器）。
     title,
     origin,
+    ...(increment === undefined ? {} : { [FOLDED_FACTS_INCREMENT_KEY]: increment }),
     ...(summary !== "" ? { summary } : {}),
     ...(toolCalls.length > 0 ? { toolCalls } : {}),
     source: typeof input.source === "string" && input.source !== ""
@@ -428,7 +499,7 @@ export function buildFoldedFacts(input = {}) {
     // `bytes` 是**投影正文**的字节数：`summary` 缺席时逐字节等于旧口径（既有用例原样绿）；
     // 在场时是 `text + summary` 的总量（两者共用同一个预算，谁都不在预算外）。
     bytes: bytesOf(text) + bytesOf(summary),
-    ...(truncated ? { truncated: true, bytesBefore: bytesOf(raw) } : {}),
+    ...(truncated ? { truncated: true, bytesBefore: clamped.bytesBefore } : {}),
     ...(degradeReason !== "" ? { degradeReason: degradeReason.slice(0, 120) } : {}),
     ...(fingerprint !== "" ? { fingerprint } : {}),
   };

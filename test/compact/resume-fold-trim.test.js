@@ -15,6 +15,7 @@ import {
   pickCoveringFoldSummary,
   planFoldedHistoryTrim,
 } from "../../src/compact/resume-fold-trim.js";
+import { foldLedgerMessages } from "../../src/store/message-rows.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
 import { withSeed } from "./../helpers/run-direct.js";
 
@@ -275,6 +276,59 @@ test("#462 判据 1/2/4：续跑不从 round 1 重折，被折正文一次都不
   // （新增折叠的 `from` 与新增摘要的 `from` 都必须 > 水位线）。
   assert.ok(countTextIn(contextMessages, "SUMMARY_HOST_") >= 1,
     "模型见过的那份摘要必须在续跑上下文里（不是只躺在档案里）");
+
+  // ---- #566-4（同一套夹具，扩一格）：增量记录不改 resume 的裁剪结果 ----------------
+  // 硬约束②：「resume 行为逐字不变」。本单只往轮记录的 `foldedFacts` 里加了一个 `increment` 键
+  //（`text`/`from`/`to` 一个字都没动），所以「同一账本 + 同一 `foldedThrough`」下，
+  // `planFoldedHistoryTrim` 的产物必须与**改造前**（= 把 `increment` 剥掉的账本，那就是升级前的形状）逐字相同。
+  // 这条同时是反向证的落点：让 `pickCoveringFoldSummary` / `pickCoveringFoldAlternative` 改读增量
+  // ⇒ 两边立刻不等（增量只讲自己那一折，覆盖不到水位线）⇒ 红。
+  const ledgerEntries = foldLedgerMessages(recordsAfterCrash);
+  const stripIncrement = (record) => {
+    const copy = structuredClone(record);
+    const field = copy?.foldedFacts;
+    if (Array.isArray(field)) {
+      for (const entry of field) delete entry?.increment;
+    } else if (field && typeof field === "object") {
+      delete field.increment;
+    }
+    return copy;
+  };
+  // 两个取源各对一次拍：
+  //   ① `journal` —— 真账本（有 `foldedSummary` 事实行，模型当时见过的那份）；
+  //   ② `strategy` —— 同一份账本把 `foldedSummary` 剥掉（强制走 `foldedFacts` 那条回退路）。
+  // 只对 ① 不够：① 在读到 `foldedFacts` 之前就返回了，于是「让 pick 改读增量」这个变异**看不见**。
+  const compareTrim = (records, label) => {
+    const withIncrement = planFoldedHistoryTrim({ ledgerEntries, records, foldedThrough: watermark });
+    const beforeChange = planFoldedHistoryTrim({
+      ledgerEntries, records: records.map(stripIncrement), foldedThrough: watermark,
+    });
+    assert.equal(withIncrement.applied, true, `${label}：前置 —— 这份账本必须真的裁得动`);
+    assert.equal(withIncrement.summaryText, beforeChange.summaryText,
+      `${label}：增量不得改变回填的正文（逐字相同）`);
+    assert.deepEqual(withIncrement.messages, beforeChange.messages,
+      `${label}：增量不得改变裁出来的正文集合`);
+    assert.equal(withIncrement.droppedRounds, beforeChange.droppedRounds,
+      `${label}：增量不得改变裁掉的轮数`);
+    assert.equal(withIncrement.summarySource, beforeChange.summarySource,
+      `${label}：增量不得改变替代物的取源（覆盖语义没被偷换）`);
+    return withIncrement;
+  };
+  // 前提：这份真账本确实带增量（否则「两边相同」是空断言）。
+  assert.equal(
+    recordsAfterCrash.some((record) => record?.foldedFacts?.increment !== undefined),
+    true,
+    "前置：崩溃前的真账本必须带增量记录（否则对拍是空断言）",
+  );
+  assert.equal(compareTrim(recordsAfterCrash, "#566-4/journal").summarySource, "journal",
+    "前置：本格走的是模型见过的那份摘要");
+  const withoutJournal = recordsAfterCrash.map((record) => {
+    const copy = structuredClone(record);
+    delete copy.foldedSummary;
+    return copy;
+  });
+  assert.equal(compareTrim(withoutJournal, "#566-4/strategy").summarySource, "strategy",
+    "前置：剥掉事实行之后，回填必须走 `foldedFacts` 那条回退路");
 });
 
 test("#462 回归：没折过的会话，resume 上下文与账本一致（裁切除外）", async () => {

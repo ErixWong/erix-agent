@@ -336,7 +336,7 @@ export function createFoldLlmStrategy({
 
       let compactedHead = head;
       // issue #470（A1）：本次折叠的**机械替代物**与**LLM 摘要在场标记**（进账本用，不进消息流）。
-      /** @type {{ source: string, text?: string, degradeReason?: string }|undefined} */
+      /** @type {{ source: string, text?: string, increment?: string, degradeReason?: string }|undefined} */
       let foldSummary = undefined;
       if (folded.length > 0) {
         const range = roundRange ?? { from: 1, to: folded.length };
@@ -436,6 +436,8 @@ export function createFoldLlmStrategy({
         lastFoldSummaryText = compactedSummary;
         foldSummary = {
           source: summary === undefined ? "statistical" : "llm",
+          // issue #566：本折自己那份（本次摘要器产物，未合并前的原文）。`text` 是累计体，不从它反推。
+          increment: compactedSummary,
           ...(statisticalFallbackText === undefined ? {} : { text: statisticalFallbackText }),
           ...(degradeReason === undefined ? {} : { degradeReason }),
           ...(degradeKind === undefined ? {} : { degradeKind }),

@@ -3342,7 +3342,9 @@ export async function runToolLoop(options) {
     let foldedSummaryFact = undefined;
     // issue #470（A1）：策略顺手带出的**机械替代物**（`fold-statistical` 的统计摘要 /
     // `fold-llm` 降级分支的那份）。没配内置策略、或宿主自带策略不产它 ⇒ `undefined`，语义照旧。
-    /** @type {{ source: string, text?: string, degradeReason?: string }|undefined} */
+    // issue #566：`increment` = **本折自己那份**（合并前的增量）。只在「策略的 `text` 不是增量」时
+    // 才需要策略显式给出（今天只有 `fold-llm`：它的 `text` 是历次摘要叠起来的累计体）。
+    /** @type {{ source: string, text?: string, increment?: string, degradeReason?: string }|undefined} */
     let strategyFoldSummary = undefined;
     /** @type {ReturnType<typeof buildFoldedFacts>} 投影到本轮轮记录的 `foldedFacts`（#470-B 已夹字节） */
     let pendingFoldedFacts = undefined;
@@ -3639,18 +3641,38 @@ export async function runToolLoop(options) {
       //   **定稿处**就地现算。用同一份现成零件 `summarizeFoldedPayload`，如实标 `source:"strategy"`：
       //   它是机械替代物，不是模型写的摘要。
       const factsTextFromSummary = strategyFoldSummary?.text ?? fedSummaryText;
+      // 就地现算的机械替代物（定稿处）：**这一份天然就是「本折自己那份」**——它只描述本次
+      // `foldedPayload` 的那些轮，不包含任何历史折叠文本。抽成闭包是为了让下面 #566 的增量
+      // 与 `factsText` 的第三优先级**共用同一次计算**（不重跑、也不改变 `factsText` 的求值时机）。
+      const computeFactsFallbackText = () => (compacted && foldedRounds > 0 && foldedPayload.length > 0
+        ? summarizeFoldedPayload(foldedPayload, {
+          from: foldedRoundRange?.from ?? 1,
+          to: foldedRoundRange?.to ?? foldedRounds,
+          count: foldedRounds,
+          recoveryHint: compactionContext.recoveryHint,
+        })
+        : "");
       const factsText = factsTextFromSummary !== undefined && factsTextFromSummary !== ""
         ? factsTextFromSummary
-        : (compacted && foldedRounds > 0 && foldedPayload.length > 0
-          ? summarizeFoldedPayload(foldedPayload, {
-            from: foldedRoundRange?.from ?? 1,
-            to: foldedRoundRange?.to ?? foldedRounds,
-            count: foldedRounds,
-            recoveryHint: compactionContext.recoveryHint,
-          })
-          : "");
+        : computeFactsFallbackText();
+      // issue #566：**本折增量**（append-only 记录，只进账本，不进模型上下文）。
+      // 取源优先级（全部是「本折那份」，**没有**一条是「累计体」）：
+      //   ① `strategyFoldSummary.increment` —— 策略自己报的本次产物（`fold-llm` 的摘要器输出）；
+      //   ② `strategyFoldSummary.text` —— 策略带出的机械替代物 / 宿主注入正文（它们本来就只讲本折）；
+      //   ③ 就地现算的机械替代物（同上）。
+      // ⚠ 故意**不**用 `fedSummaryText`：那是「折叠后那条 user 消息的全文」= 累计体 + 原任务正文，
+      // 拿它当增量就等于把「本折删掉了什么」重新变成「截至本折的历史长什么样」——本单要消灭的正是这个。
+      const incrementText = typeof strategyFoldSummary?.increment === "string"
+        && strategyFoldSummary.increment !== ""
+        ? strategyFoldSummary.increment
+        : (typeof strategyFoldSummary?.text === "string" && strategyFoldSummary.text !== ""
+          ? strategyFoldSummary.text
+          : computeFactsFallbackText());
       pendingFoldedFacts = buildFoldedFacts({
         text: factsText,
+        // issue #566：同一份投影里另开一个键 `increment`，**不改 `text` 的语义**（它仍是累计替代物，
+        // 宿主横幅/契约与 resume 的 `pickCoveringFoldSummary` 都还读它）。
+        incrementText,
         source: strategyFoldSummary?.source
           ?? (lastFoldSummaryOutcome === undefined ? "strategy" : "llm"),
         strategy: typeof strategy?.name === "string" ? strategy.name : "unknown",
