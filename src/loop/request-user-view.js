@@ -17,6 +17,8 @@
 //   1) 视图本来就合规 → 原样返回（健康预算下零行为变化，不许「预算小就不压缩」）；
 //   2) 不合规 → 从**未折叠 / 未压缩的源视图**里保底保留**最新**一条 user 轮
 //      （连同它必需的 assistant 配对），拼在原视图尾部；拼不上就单独保留这一轮；
+//      ⚠ 「user 轮」不包含引擎注入的续接块（`src/loop/continuity-block.js`，issue #589）：
+//      块是状态快照，不是用户查询，复制它会把「上一版状态」当成新消息贴进持久列表。
 //   3) 源里也没有可留的 user 轮 → 放弃本次折叠/压缩，改用未折叠视图；
 //   4) 连未折叠视图都留不出合法视图 → 原样返回，并把 `unrecoverable` 记进统计。
 // 每一步都用 `validateMessages(..., { allowPendingToolUse: false })` 验一遍，
@@ -27,6 +29,7 @@
  */
 
 import { validateMessages } from "../messages/rounds.js";
+import { isContinuityMessage } from "./continuity-block.js";
 
 function blocksFor(message) {
   return Array.isArray(message?.content) ? message.content : [];
@@ -77,12 +80,29 @@ function copyMessage(message) {
 /**
  * 源视图里**最新**的一条 user 轮（连同它必需的 assistant 配对）。
  *
+ * **复制格不复制续接块**（issue #589 第二部分，根因）。
+ *
+ * 这个函数存在的理由只有一个：上游（OpenAI 兼容 relay）对「没有 user 轮的 messages」回
+ * `400 No user query found in messages`（#292）—— 所以要回补的是一条**用户查询**。续接块
+ * （`src/loop/continuity-block.js`）虽然 `role: "user"`，却是**引擎注入的状态快照**，不是用户
+ * 说过的任何话：
+ *   · 把它复制回来，等于把「上一版状态」当成新消息贴进持久列表 —— 读者分不清它是历史事实
+ *     还是当前状态的旧快照（#564/#589 的病），而且下一轮 `upsertContinuityInMessages` 还得
+ *     把它收口（#568 的「至多一条」就是这么来的：**收口在治症状，根因在这里**）；
+ *   · 真正的用户查询在源视图里就在它前面（块固定在尾部），选那条既满足不变量、又是**真内容**。
+ *
+ * 不变量不会因此变弱：若源视图里除了块再没有别的 user 轮，下面的 `latestUserRound` 返回
+ * `undefined`，`ensureUserTurnView` 退到既有的第 3 步 `abandoned_fold`（原样返回源视图，块跟着
+ * 一起回来）—— 那一步本来就在，判据是 `isPassableview`（块作为 user 消息在那里是合法的）。
+ *
  * @param {CanonicalMessage[]} messages
  * @returns {CanonicalMessage[]|undefined}
  */
 export function latestUserRound(messages) {
   const source = Array.isArray(messages) ? messages : [];
-  const index = source.findLastIndex((message) => isRealUserTurn(message));
+  const index = source.findLastIndex((message) => (
+    isRealUserTurn(message) && !isContinuityMessage(message)
+  ));
   if (index < 0) return undefined;
   const user = source[index];
   const previous = source[index - 1];

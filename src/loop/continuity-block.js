@@ -377,9 +377,11 @@ export function upsertContinuityInMessages(messages, rendered) {
   }
   // **所有**块消息都收掉、只留最后一条（identity 保留最后那条：`messageRounds` 以对象为键）。
   // 为什么不是只处理 `findLastIndex` 那一条：`ensureUserTurnView`（`src/loop/request-user-view.js`）
-  // 在「压缩后的视图一条 user 轮都不剩」那格会从压缩前的源里**复制**最新一条 user 轮贴回来——
-  // 若那条恰好是续接块，消息流里就会出现两条块。这里按「至多一条」收口，于是
-  // 「每轮不新增」不只是刷新路径的性质，而是这条不变量的唯一实现。
+  // 在「压缩后的视图一条 user 轮都不剩」那格会从压缩前的源里**复制**最新一条 user 轮贴回来。
+  // #589 已经修了那个复制格的**根因**（`latestUserRound` 不再把块当 user 轮复制），这里仍然是
+  // 「至多一条」的**结构性最后一道**：不变量由本函数实现，而不是靠调用方记得每轮只刷一次。
+  // 两道并存的理由：根因那一侧只修了一个调用点（复制格），而消息流可能从 resume / 宿主注入 /
+  // 旧 transcript 里带来第二条块——那一路没有复制格，只有这里能收。
   const indices = [];
   for (const [index, message] of messages.entries()) {
     if (isContinuityMessage(message)) indices.push(index);
