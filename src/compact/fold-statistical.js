@@ -48,6 +48,32 @@ export const FOLD_SUMMARY_RECENT_FOLDS = 3;
 /** 单次「近期」折叠的渲染上界（字符，issue #601 预算）：超了就削清单尾部、再削摘要尾部。 */
 const MAX_RECENT_FOLD_CHARS = 600;
 
+/** 语义摘要占「摘要」那一格时的字符上界（issue #605）：与单折路径的 stub 预算同量级，不另开字节预算。 */
+const MAX_RECENT_SUMMARY_CHARS = 400;
+
+/** 头行里逐条列出的「未经折叠」区间上界（issue #605 残留 C）：再多就只报轮数。 */
+const MAX_UNCOVERED_RANGES = 3;
+
+/**
+ * 远期「更早」逐条 title 行的条数上界（issue #603 判据 2）。
+ *
+ * 为什么需要它（而不是「全都列」）：`另有 N 次更早的已合并` 这句只有在**真的有剩下的那批**时
+ * 才成立，而「剩下的那批」必须是一个**渲染侧算得出来的数**。修前那句写的是 `older.length`
+ * ——正是刚刚逐条列完的那一批，读者据此会把 3+7+7 加出 17 次（真机实测就是 10 次）。
+ * 有了这个上界，`N = older.length - 逐条列出的条数`，N 的含义（被截掉的那批）与句子的意思一致。
+ * 硬上界仍然是 `FOLDED_FACTS_MAX_BYTES` 的前缀夹断（它削的是尾部），这里只是让账目对得上。
+ */
+export const MAX_OLDER_FOLD_TITLES = 24;
+
+/**
+ * 明细行（`工具足迹` / 清单节）在 title 行之下缩进的宽度（issue #603 判据 4）。
+ *
+ * 只缩进**明细**：stub 行保持行首（`FOLD_STUB_LINE_PATTERN` 是行首锚定的，缩进会让它认不出来）。
+ * 解析侧（`parseInventorySection` / `parseToolFootprint`）一律 `trimStart()` 后再认，所以缩进宽度
+ * 变化不会把渲染与解析拆成两套口径。
+ */
+const FOLD_DETAIL_INDENT = "  ";
+
 /** 远期 title 行的字符上界（issue #601 预算：每条 ≤80 字符）。 */
 const MAX_FOLD_TITLE_LINE_CHARS = 80;
 
@@ -146,6 +172,36 @@ export function toolCallInventory(messages) {
   return entries;
 }
 
+/**
+ * 账本里的**结构化清单** → 渲染用的条目（issue #605 回归 A）。
+ *
+ * 为什么清单不再只认 `increment.text`：账本记录里的 `toolCalls`（#565）是清单节的**结构化投影**，
+ * 一折一条、字段就是 `{ name, argsSummary }`；而 `increment.text` 只是「那一折自己那份正文」，
+ * 它**没有义务**带清单节（真机现场就是没有 ⇒ `parseInventorySection` 返回空 ⇒ 近期折叠退化成
+ * 只剩一行 title，「近期给全」被吃掉）。结构化键在账本里恒在，所以它必须优先。
+ *
+ * 映射是 `foldedFactsToolCalls` 的**逆运算**（`fold-summary-journal.js`）：那里把
+ * `summarizeToolCall` 造的 `"<工具名> <关键入参>"` 拆成两键，这里拼回去；无入参时只有工具名。
+ * 形状上界沿用 #564 的常量（≤8 条 × ≤80 字符），与文本路径同一把尺子。
+ *
+ * @param {unknown} calls `foldedFacts.toolCalls`
+ * @returns {string[]} 已夹取、去重的条目（空数组 ⇒ 调用方退回解析文本）
+ */
+function inventoryFromToolCalls(calls) {
+  const entries = [];
+  for (const call of Array.isArray(calls) ? calls : []) {
+    if (call === null || typeof call !== "object") continue;
+    const name = typeof call.name === "string" ? call.name.trim() : "";
+    if (name === "") continue;
+    const args = typeof call.argsSummary === "string" ? call.argsSummary.trim() : "";
+    const entry = clampInventoryEntry(args === "" ? name : `${name} ${args}`);
+    if (entry === "" || entries.includes(entry)) continue;
+    entries.push(entry);
+    if (entries.length >= MAX_TOOL_INVENTORY_ENTRIES) break;
+  }
+  return entries;
+}
+
 // 清单节解析（合并多份摘要时用）：标题行之后连续的 `- ` 行就是条目，遇到第一行非条目即止
 // （恢复提示 / 锚点节 / stub 行都在它后面，所以不会被误吃）。
 //
@@ -164,15 +220,34 @@ export function parseInventorySection(value) {
   for (let index = 0; index < lines.length; index += 1) {
     if (lines[index].trim() !== TOOL_INVENTORY_HEADING) continue;
     for (const line of lines.slice(index + 1)) {
-      if (!line.startsWith("- ")) break;
+      // issue #603 判据 4：分段块的清单节缩进在 title 行之下 ⇒ 一律 `trimStart()` 后再认。
+      // 单折路径不缩进，`trimStart()` 对它是恒等变换（既有形状逐字不变）。
+      const trimmed = line.trimStart();
+      if (!trimmed.startsWith("- ")) break;
       // issue #601：分段块的折叠记录行也是 `- ` 开头（`- 第 120–132 轮（13 轮）· …`），
       // 它**不是**清单条目；见到它就收手（下一折的清单节在它后面，由外层循环再找）。
-      if (FOLD_SEGMENT_LINE_PATTERN.test(line)) break;
-      const entry = line.slice(2).trim();
+      if (FOLD_SEGMENT_LINE_PATTERN.test(trimmed)) break;
+      const entry = trimmed.slice(2).trim();
       if (entry !== "" && !entries.includes(entry)) entries.push(entry);
     }
   }
   return entries;
+}
+
+/**
+ * 分段行 title 里带的工具足迹（issue #603）。
+ *
+ * 为什么解析侧要认它：账本 title 的机械形态就是 `工具足迹：getParagraph×5。`，渲染侧看到
+ * 「title 已经把足迹说完」就不再重复一行（见 `recentFoldLines`）——若这里不把它读回来，
+ * 往返一次就会丢掉 `tools`，再渲染就印出 `工具足迹：无。`（把「跑过 5 次」静默改写成「没跑」）。
+ * 只认**行首**形态（`^工具足迹：`）：语义 title 里偶然提到工具不算。
+ *
+ * @param {string} title
+ * @returns {string} 足迹串；认不出时返回 `无`（与无足迹行的旧行为一致）
+ */
+function footprintFromTitle(title) {
+  const matched = String(title ?? "").match(/^工具足迹：(.*)$/u);
+  return matched === null ? "无" : matched[1];
 }
 
 function parseToolFootprint(value) {
@@ -360,6 +435,10 @@ function parseFoldSummaryMatch(value, match, legacy) {
     to: Number.parseInt(match[2], 10),
     count: Number.parseInt(match[3], 10),
     tools: parseToolFootprint(match[4]),
+    // issue #603 判据 3：单折区间行**没有** title 这个信息（区间句里只有区间与计数），
+    // 所以把**本折正文**挂到 `summaryText` 上：`foldSegmentTitle` 取它的首句（机械路径 = 工具足迹，
+    // 语义路径 = 摘要器写的第一句），清单首条降为第三级。
+    summaryText: String(value),
     // issue #564 缺口 1：双形态 stub（`[已折叠]…` 与 `【已折叠·TTL】…`）都收，
     // 半角形态的匹配结果逐字不变（只是多认了全角那一支）。
     stubs: [...String(value).matchAll(FOLD_STUB_LINE_PATTERN)]
@@ -399,14 +478,16 @@ function parseSegmentedFoldSummary(value) {
     const from = Number.parseInt(match[1], 10);
     const to = Number.parseInt(match[2], 10);
     const body = chunk.slice(1).join("\n");
-    const footprint = body.match(/^工具足迹：(.*?)。$/mu);
+    const footprint = body.match(/^\s*工具足迹：(.*?)。$/mu);
+    const title = match[4].trim();
     return {
       from,
       to,
-      // 远期那行在 `count === to - from + 1` 时省略计数（见 `FOLD_SEGMENT_LINE_PATTERN`）
+      // 远期那行省略计数（见 `FOLD_SEGMENT_LINE_PATTERN`）；近期那行从 #603 起也省略
+      // （只印区间）⇒ 这里按 `to - from + 1` 还原，往返自洽。
       count: match[3] === undefined ? to - from + 1 : Number.parseInt(match[3], 10),
-      title: match[4].trim(),
-      tools: parseToolFootprint(footprint === null ? "无" : footprint[1]),
+      title,
+      tools: parseToolFootprint(footprint === null ? footprintFromTitle(title) : footprint[1]),
       stubs: [...body.matchAll(FOLD_STUB_LINE_PATTERN)].map((stub) => stub[0]),
       inventory: parseInventorySection(body),
       navigationRecord: undefined,
@@ -448,6 +529,24 @@ function parseFoldSummary(text) {
 }
 
 /**
+ * 账本里的 title（issue #603 判据 3 的第二候选）：父键 `title` 优先，其次本折增量的同名键。
+ *
+ * 两者都是 #565 那条「正文首行剥 marker」派生器的产物（`foldedFactsTitle`）；父键描述的是
+ * 本折正文（`text`），增量描述的是本折自己那份（`increment.text`）——一折一条账本记录时两者
+ * 通常逐字相同，但父键缺失（旧记录 / 宿主自写）时增量那份仍然是有效的退路。
+ *
+ * @param {object} record
+ * @param {object|undefined} increment
+ * @returns {string|undefined}
+ */
+function ledgerTitleOf(record, increment) {
+  const parent = typeof record?.title === "string" ? record.title : "";
+  if (parent.trim() !== "") return parent;
+  const own = typeof increment?.title === "string" ? increment.title : "";
+  return own.trim() === "" ? undefined : own;
+}
+
+/**
  * **账本记录 → 逐折分段**（issue #601 主路径）。
  *
  * 为什么不从块里解析：摘要是被塞进**第一条真实 user 消息的 `content[0]`** 的（`prependSummary`），
@@ -482,16 +581,36 @@ function foldRecordSegments(foldRecords) {
       ? increment.text
       : typeof record.text === "string" ? record.text : "";
     const detail = parseFoldSummaries(detailText)[0];
+    // issue #605 回归 A：**清单优先取账本的结构化 `toolCalls`**（#565），解析文本只做兜底。
+    // 修前这里只有 `detail?.inventory` ⇒ `increment.text` 不带清单节时近期折叠只剩一行 title。
+    const ledgerInventory = inventoryFromToolCalls(
+      Array.isArray(record.toolCalls) ? record.toolCalls : increment?.toolCalls,
+    );
+    const inventory = ledgerInventory.length > 0 ? ledgerInventory : (detail?.inventory ?? []);
+    // 摘要（issue #605 回归 A）：stub 段仍以 `increment.text` 为准；它没有时退到账本里的**语义摘要**
+    // （`record.summary`，`buildFoldedFacts` 只为 `origin === "semantic"` 写它；增量自带的同名键优先）。
+    const ledgerSummary = typeof increment?.summary === "string" && increment.summary.trim() !== ""
+      ? increment.summary.trim()
+      : typeof record.summary === "string" ? record.summary.trim() : "";
+    const stubs = detail?.stubs ?? [];
     segments.push({
       from,
       to,
       count: rounds,
-      // title 不落账（`record.title` 是整条首行，含区间句）⇒ 交给 `foldSegmentTitle` 从清单/足迹派生，
-      // 与「从块解析回来的 title」逐字一致（块里的 title 本来就是这么派生的）。
+      // issue #603 判据 3：`title` 仍是 `undefined`（它只装**从块解析回来的**那一份），但把
+      // **账本自己的** title 与**本折增量正文**一并交给 `foldSegmentTitle`，于是它不再落到
+      // 「清单首条」那一级。
+      //   修前这里只有 `title: undefined`，而 `record.title`（= `foldedFacts.title`，#565 的
+      //   「正文首行剥 marker」）压根没人读 ⇒ 每条标题都是 `getParagraph {"index":"11"}`。
       title: undefined,
+      ledgerTitle: ledgerTitleOf(record, increment),
+      // 语义摘要比机械正文首句有信息量 ⇒ 有它就先用它当 title 的来源（#605 回归 A 的「摘要同理」）。
+      summaryText: ledgerSummary !== "" ? ledgerSummary : detailText,
+      // 「摘要」小节：有 stub 就用 stub（原文入口），没有就用语义摘要（纯文本，渲染时另加标题）。
+      summary: stubs.length > 0 ? "" : ledgerSummary,
       tools: detail?.tools ?? new Map(),
-      inventory: detail?.inventory ?? [],
-      stubs: detail?.stubs ?? [],
+      inventory,
+      stubs,
       navigationRecord: undefined,
       anchors: undefined,
       legacy: false,
@@ -547,13 +666,122 @@ function clampChars(value, limit) {
 }
 
 /**
- * 一折的 title（issue #601）：机械路径没有语义标题，用**这一折自己那条最具体的可执行信息**顶。
+ * 账本 title / 单折正文首行里**已经被那一行自己说完的**区间句（issue #603）。
  *
- * 优先取清单首条（`exec npm test --shard 2`——「这折到底跑了什么」），没清单就用工具足迹，
- * 连调用都没有就是 `无工具调用`。解析回来的分段行自带 `title`，所以重渲染逐字稳定（往返不变形）。
+ * 两种形态：① 单折正文首行 `早期第 a–b 轮（共 N 轮）已折叠。`；② 分段块头行
+ * `共折叠 N 次，覆盖第 a–b 轮（共 M 轮）。`。两者都是**区间 + 轮数**——而区间在本折那一行
+ * 里已经印过（`- 第 a–b 轮 · …`），轮数更是不能信（见下），所以 title 里一律剥掉。
  */
-function foldSegmentTitle(segment) {
-  if (typeof segment?.title === "string" && segment.title !== "") return segment.title;
+const FOLD_TITLE_INTERVAL_SENTENCES = [
+  // 旧格式（0.6.x 的单折块）的前缀：与 v1 marker 不是同一个东西，但同样是「引擎自己的标识」。
+  /^【上下文折叠】/u,
+  /^早期第 \d+–\d+ 轮(?:（共 \d+ 轮）)?已折叠。/u,
+  /^共折叠 \d+ 次，覆盖第 \d+–\d+ 轮(?:（共 \d+ 轮）)?。(?:其中 \d+ 轮未经折叠(?:（第 [\d–、]+ 轮）)?。)?/u,
+];
+
+/**
+ * 恢复提示在一段候选 title 里出现的**起点**（issue #605 残留 B）；找不到返回 -1。
+ *
+ * 为什么要在 title 这一层剥它：恢复提示是**块级句尾**（`formatSegmentedFoldSummary` 把它接在整块
+ * 最末），而账本 `title` / 本折正文首句是**整段正文**的首句——当一折只有一行（`工具足迹：无。` +
+ * 提示）时，首句切分的下一个句号就在提示末尾 ⇒ 提示整段被当成标题（真机现场：
+ * `- 第 8–8 轮 · 工具足迹：无。需要原文请重读文件或查看持久笔记；关键值应当已落盘`）。
+ *
+ * 两把尺子都量：调用方给的 `recoveryHint`（`resolveRecoveryHint` 可能换成宿主自定义句）与
+ * `DEFAULT_RECOVERY_HINT`（块可能是在默认提示下渲染的，而本次合并用的是自定义句）。
+ */
+function recoveryHintIndex(text, recoveryHint) {
+  const value = String(text ?? "");
+  let best = -1;
+  for (const hint of [recoveryHint, DEFAULT_RECOVERY_HINT]) {
+    if (typeof hint !== "string") continue;
+    const needle = hint.trim();
+    // 退化提示（一两个字符）会把 title 削得莫名其妙 ⇒ 不认它。
+    if (Array.from(needle).length < 4) continue;
+    const index = value.indexOf(needle);
+    if (index >= 0 && (best < 0 || index < best)) best = index;
+  }
+  return best;
+}
+
+/** 候选 title 里是否含着恢复提示（用于首句校验）。 */
+function containsRecoveryHint(text, recoveryHint) {
+  return recoveryHintIndex(text, recoveryHint) >= 0;
+}
+
+/**
+ * 把一份候选 title 归一成**可以直接接在 `- 第 a–b 轮 · ` 后面**的一段文本（issue #603 / #605）。
+ *
+ * 剥四样东西：引擎 marker（块解析回来的候选可能带）、已经印过的区间句、**恢复提示**（#605 残留 B：
+ * 它属于块尾，不属于本折）、首尾空白。剥完为空 ⇒ 返回空串，交给下一个候选（空 title 会让那一行
+ * 退化成 `- 第 a–b 轮 · `，比没有更糟）。
+ *
+ * @param {unknown} value
+ * @param {string} [recoveryHint] 本次渲染的恢复提示（含默认值那一句一起剥）
+ * @returns {string}
+ */
+function normalizeSegmentTitle(value, recoveryHint) {
+  if (typeof value !== "string") return "";
+  let text = value.trim();
+  if (text.startsWith(FOLD_SUMMARY_MARKER)) text = text.slice(FOLD_SUMMARY_MARKER.length).trim();
+  for (const pattern of FOLD_TITLE_INTERVAL_SENTENCES) text = text.replace(pattern, "").trim();
+  // issue #605 残留 B：提示及其后面的一切都不是标题 ⇒ 就地截掉（与剥 marker / 区间句同一处）。
+  const hintIndex = recoveryHintIndex(text, recoveryHint);
+  if (hintIndex >= 0) text = text.slice(0, hintIndex).trim();
+  // title 是**标题**，不是句子 ⇒ 去掉句末句号：否则「账本 title」那条路给出 `工具足迹：x×5。`，
+  // 「摘要首句」那条路给出 `工具足迹：x×5`，同一个块里看起来像两套口径。
+  text = text.replace(/。$/u, "").trim();
+  // `工具足迹：无` 不是标题（读者要的是结论）⇒ 交给最后一级的 `无工具调用`（它本来就是那句话）。
+  return text === "工具足迹：无" ? "" : text;
+}
+
+/**
+ * 一份文本的**首句**（句号或换行都算断句，issue #603 判据 3 的第二候选）。
+ *
+ * issue #605 残留 B：首句切分后**逐个校验**——空句 / `工具足迹：无` / 含恢复提示的句子都跳过，
+ * 继续往下取。修前只取第一句、不校验，于是 `工具足迹：无。需要原文请重读…` 这种「首句没信息」
+ * 的形态要么把提示当标题，要么把 `工具足迹：无` 当标题。
+ *
+ * @param {unknown} value
+ * @param {string} [recoveryHint]
+ * @returns {string}
+ */
+function firstSentenceOf(value, recoveryHint) {
+  const text = normalizeSegmentTitle(value, recoveryHint);
+  if (text === "") return "";
+  for (const raw of text.split(/[。\n]/u)) {
+    const sentence = raw.trim();
+    if (sentence === "" || sentence === "工具足迹：无") continue;
+    if (containsRecoveryHint(sentence, recoveryHint)) continue;
+    return sentence;
+  }
+  return "";
+}
+
+/**
+ * 一折的 title（issue #601，issue #603 定优先级）。
+ *
+ * 机械路径没有语义标题，但**有三级**可用的具体信息，按「信息量从高到低」取：
+ *   ① `segment.title` —— 块解析回来的（它本来就是上一轮渲染的产物，往返逐字稳定）；
+ *   ② `segment.ledgerTitle` —— **账本自己的** `foldedFacts.title`（#565：正文首行剥 marker）。
+ *      修前账本路径把 `title` 显式设成 `undefined`、又不用这个键，于是直接退到 ④：
+ *      每条标题都是 `getParagraph {"index":"11"}` —— 工具名在翻译/总结这类任务里恒定，等于没信息（#603 缺陷 3）；
+ *   ③ `segment.summaryText` 的首句 —— 本折增量正文（`increment.text`）的首句：
+ *      `fold-llm` 的语义摘要首句就在这里，机械路径里它就是工具足迹；
+ *   ④ 清单首条（`exec npm test --shard 2`——「这折到底跑了什么」）；
+ *   ⑤ 工具足迹 / `无工具调用`（连调用都没有时的最终兼底）。
+ *
+ * @param {object} segment
+ * @param {string} [recoveryHint] 本次渲染的恢复提示（#605 残留 B：派生 title 时一律剥掉）
+ * @returns {string}
+ */
+function foldSegmentTitle(segment, recoveryHint) {
+  const explicit = normalizeSegmentTitle(segment?.title, recoveryHint);
+  if (explicit !== "") return explicit;
+  const ledger = normalizeSegmentTitle(segment?.ledgerTitle, recoveryHint);
+  if (ledger !== "") return ledger;
+  const ownSentence = firstSentenceOf(segment?.summaryText, recoveryHint);
+  if (ownSentence !== "") return ownSentence;
   const inventory = Array.isArray(segment?.inventory) ? segment.inventory : [];
   if (inventory.length > 0 && inventory[0] !== "") return inventory[0];
   const footprint = footprintText(segment?.tools);
@@ -561,21 +789,62 @@ function foldSegmentTitle(segment) {
 }
 
 /**
+ * 一折占多少轮：**只认区间**（issue #603 判据 1）。
+ *
+ * `segment.count` 不能当「这个区间有多少轮」用：它来自压缩层返回的 `foldedRounds`
+ * （`orchestrator.js` 把 `rounds: foldedRounds` 写进账本，那里的注释已写明它**包含预算兜底 /
+ * safety 兜底那两发**），与 `to - from + 1` 不是一回事——真机现场就是 `第 36–46 轮（17 轮）`
+ * （区间 11 轮、计数 17 轮）、`覆盖第 2–46 轮（共 61 轮）`（区间 45 轮）。
+ *
+ * @param {{ from: number, to: number }} segment
+ * @returns {number}
+ */
+function roundsOf(segment) {
+  return segment.to - segment.from + 1;
+}
+
+/**
  * 单次「近期」折叠的渲染行：title 行 + 工具足迹 + 清单 + 摘要，超 `MAX_RECENT_FOLD_CHARS` 时
  * 先削清单尾部、再削摘要尾部（**保留最新那条 stub**：它在本折里的位置最前）。
  */
-function recentFoldLines(segment) {
-  const titleLine = `- 第 ${segment.from}–${segment.to} 轮（${segment.count} 轮） · ${foldSegmentTitle(segment)}`;
-  const footprintLine = `工具足迹：${footprintText(segment.tools)}。`;
+function recentFoldLines(segment, recoveryHint) {
+  // issue #603 判据 1：title 行**只印区间、不印轮数**。
+  //
+  // 为什么不选「把轮数改成 `to - from + 1`」：那样这一行会变成 `- 第 36–46 轮（11 轮） · …`——
+  // 括号里的数**永远等于区间长度**，是纯粹的冗余，而它带来的风险是真实的（读者/解析器会以为
+  // 它是另一个独立事实，将来任何一处口径漂移都会重新造出自相矛盾的块）。区间本身已经是
+  // 自描述、不可能矛盾的形状，而 `parseSegmentedFoldSummary` 在没有计数时按 `to - from + 1`
+  // 还原 ⇒ 往返自洽不靠这一格（远期那一行本来就是这么做的）。
+  const title = foldSegmentTitle(segment, recoveryHint);
+  const titleLine = `- 第 ${segment.from}–${segment.to} 轮 · ${title}`;
+  const footprint = footprintText(segment.tools);
+  const footprintLine = `工具足迹：${footprint}。`;
   const inventory = (segment.inventory ?? []).slice(0, MAX_TOOL_INVENTORY_ENTRIES);
+  // issue #603 判据 4：明细行缩进在 title 之下（多折块才扫得动）。stub 行不缩进（见 FOLD_DETAIL_INDENT）。
   const inventoryLines = inventory.length === 0
     ? []
-    : [TOOL_INVENTORY_HEADING, ...inventory.map((entry) => `- ${entry}`)];
+    : [
+      `${FOLD_DETAIL_INDENT}${TOOL_INVENTORY_HEADING}`,
+      ...inventory.map((entry) => `${FOLD_DETAIL_INDENT}- ${entry}`),
+    ];
   // 「摘要」= 这一折自己的 stub（TTL 句柄 / 宿主 stub）：模型要「刚刚跑过什么」的原文入口。
   // 单独成行标题、stub 各自占一行：`FOLD_STUB_LINE_PATTERN` 是行首锚定的，挤成一行就只认第一条。
-  let stubLines = (segment.stubs ?? []).length === 0 ? [] : ["摘要：", ...segment.stubs];
+  // issue #605 回归 A：没有 stub 但有语义摘要（`foldedFacts.summary`）时，它占「摘要」这一格——
+  // 修前那一格直接消失，近期折叠就只剩 title。
+  const ownSummary = typeof segment.summary === "string" ? segment.summary.trim() : "";
+  const stubs = segment.stubs ?? [];
+  let stubLines = stubs.length > 0
+    ? ["摘要：", ...stubs]
+    : (ownSummary === "" ? [] : ["摘要：", clampChars(ownSummary, MAX_RECENT_SUMMARY_CHARS)]);
+  // title 已经把这一折的工具足迹说完了（账本 title 的机械形态就是 `工具足迹：x×5。`；
+  // 摘要首句那条路取到的是去句号的同一条）⇒ 不再重复一行。
+  const titleCarriesFootprint = footprint !== "无"
+    && title.replace(/。$/u, "").endsWith(`工具足迹：${footprint}`);
+  const headLines = titleCarriesFootprint
+    ? [titleLine]
+    : [titleLine, `${FOLD_DETAIL_INDENT}${footprintLine}`];
   let keptInventory = inventoryLines;
-  const rendered = () => [titleLine, footprintLine, ...keptInventory, ...stubLines].join("\n");
+  const rendered = () => [...headLines, ...keptInventory, ...stubLines].join("\n");
   while (Array.from(rendered()).length > MAX_RECENT_FOLD_CHARS) {
     // 清单条目先削（它的首条已经在 title 行里），再削摘要尾部（最新的 stub 在最前，不受影响）。
     if (keptInventory.length > 2) {
@@ -588,19 +857,61 @@ function recentFoldLines(segment) {
     }
     break;
   }
-  return [titleLine, footprintLine, ...keptInventory, ...stubLines];
+  return [...headLines, ...keptInventory, ...stubLines];
 }
 
 /** 远期折叠只留一行 title（每条 ≤ `MAX_FOLD_TITLE_LINE_CHARS` 字符）。 */
-function olderFoldLine(segment) {
-  // 计数与区间对不上时必须写出来（否则解析回来是另一条折叠记录，往返不自治）；
-  // 对得上时按 issue 正文的目标形状省略（`第 40–59 轮 · title`）。
-  const countPart = segment.count === segment.to - segment.from + 1
-    ? ""
-    : `（${segment.count} 轮）`;
-  const prefix = `- 第 ${segment.from}–${segment.to} 轮${countPart} · `;
+function olderFoldLine(segment, recoveryHint) {
+  // issue #603 判据 1：与近期那一行同一口径——只印区间。修前这里会「计数与区间对不上就写出来」
+  // （`第 10–10 轮（3 轮）`），而那恰恰是把压缩层的 `foldedRounds` 当区间轮数印出来的现场。
+  const prefix = `- 第 ${segment.from}–${segment.to} 轮 · `;
   const budget = Math.max(4, MAX_FOLD_TITLE_LINE_CHARS - Array.from(prefix).length);
-  return `${prefix}${clampChars(foldSegmentTitle(segment), budget)}`;
+  return `${prefix}${clampChars(foldSegmentTitle(segment, recoveryHint), budget)}`;
+}
+
+/**
+ * 覆盖区间里**没有任何折叠记录**的轮号，合并成区间（issue #605 残留 C）。
+ *
+ * 真机现场（#605 正文）：9 条记录的区间是
+ * `1–5, 6–6, 8–8, 9–14, 15–21, 22–28, 29–32, 39–39, 40–44` ⇒ **第 7 轮与第 33–38 轮一轮未折**（共 7 轮），
+ * 而头行写的是 `覆盖第 1–44 轮`（`min(from)…max(to)`）——那个区间里有两个没折过的口子，
+ * 头行却没有任何保留。
+ *
+ * @param {{ from: number, to: number }[]} segments
+ * @returns {[number, number][]} 未覆盖区间（升序，含两端）
+ */
+function uncoveredRanges(segments) {
+  const sorted = [...segments].sort((left, right) => left.from - right.from);
+  const ranges = [];
+  let cursor = sorted[0]?.from ?? 0;
+  for (const segment of sorted) {
+    if (segment.from > cursor) ranges.push([cursor, segment.from - 1]);
+    cursor = Math.max(cursor, segment.to + 1);
+  }
+  return ranges;
+}
+
+/**
+ * 头行末尾的「未经折叠」补充句（issue #605 残留 C）。
+ *
+ * 为什么选这个口径（issue 正文给了二选一）：
+ *   ① 「折叠记录覆盖第 a–b 轮」——只**收回了**「连续覆盖」这个声称，读者仍然不知道缺多少；
+ *   ② 「检测空洞并显式写出」——不仅不声称连续，还告诉你**缺几轮、缺在哪**。
+ * ② 是 ① 的严格超集（信息更多、仍不误称连续），且保留头行原有形状
+ * （`共折叠 N 次，覆盖第 a–b 轮（共 L 轮）。`）⇒ 既有的“区间长度 = 共 N 轮”判据逐字不变。
+ * 无空洞时**不加任何尾巴**（大多数折叠是连续的，不该为它付字数）。
+ *
+ * @param {[number, number][]} uncovered
+ * @param {number} uncoveredRounds
+ * @returns {string}
+ */
+function uncoveredNote(uncovered, uncoveredRounds) {
+  if (uncoveredRounds <= 0) return "";
+  const shown = uncovered.slice(0, MAX_UNCOVERED_RANGES)
+    .map(([start, end]) => (start === end ? `${start}` : `${start}–${end}`))
+    .join("、");
+  const tail = uncovered.length > MAX_UNCOVERED_RANGES ? " 等" : "";
+  return `其中 ${uncoveredRounds} 轮未经折叠（第 ${shown} 轮${tail}）。`;
 }
 
 /**
@@ -612,18 +923,36 @@ function olderFoldLine(segment) {
 function formatSegmentedFoldSummary({ segments, navigationRecord, recoveryHint, anchors }) {
   const recent = segments.slice(0, FOLD_SUMMARY_RECENT_FOLDS);
   const older = segments.slice(FOLD_SUMMARY_RECENT_FOLDS);
+  // issue #603 判据 2：逐条列出的远期 title 有上界，`另有 N 次` 的 N = **没列出来的那批**。
+  // 修前这里列完全部 `older` 之后又 `push(另有 ${older.length} 次)` —— 同一批数了两次，
+  // 读者会把「近期 3 + 更早 7 + 另有 7」加成 17 次（真机现场：共折叠 10 次）。
+  const shownOlder = older.slice(0, MAX_OLDER_FOLD_TITLES);
+  const remainingOlder = older.length - shownOlder.length;
   const from = Math.min(...segments.map((segment) => segment.from));
   const to = Math.max(...segments.map((segment) => segment.to));
-  const total = segments.reduce((sum, segment) => sum + segment.count, 0);
+  // issue #603 判据 1：头行的「共 N 轮」= **覆盖区间的长度**（`to - from + 1`），与本行的
+  // `覆盖第 a–b 轮` 按构造自洽（issue 正文的期望值就是这个：`覆盖第 2–46 轮` ⇒ 45 轮）。
+  // 修前是 `reduce(sum + segment.count)` ⇒ 真机现场把 45 轮的区间印成「共 61 轮」：`segment.count`
+  // 是压缩层的 `foldedRounds`（含预算兜底 / safety 兜底那两发），不是区间轮数。
+  const total = to - from + 1;
+  // issue #605 残留 C：`min…max` 不等于「这些轮都被折过」⇒ 有空洞时在头行后面**显式写出来**
+  //（口径与取舍见 `uncoveredNote`）。
+  const uncovered = uncoveredRanges(segments);
+  const uncoveredRounds = uncovered.reduce(
+    (sum, [start, end]) => sum + (end - start + 1),
+    0,
+  );
   const lines = [
-    `${FOLD_SUMMARY_MARKER}共折叠 ${segments.length} 次，覆盖第 ${from}–${to} 轮（共 ${total} 轮）。`,
+    `${FOLD_SUMMARY_MARKER}共折叠 ${segments.length} 次，覆盖第 ${from}–${to} 轮（共 ${total} 轮）。`
+      + uncoveredNote(uncovered, uncoveredRounds),
     `${RECENT_FOLDS_HEADING}${recent.length} 次，完整）：`,
   ];
-  for (const segment of recent) lines.push(...recentFoldLines(segment));
+  for (const segment of recent) lines.push(...recentFoldLines(segment, recoveryHint));
   if (older.length > 0) {
     lines.push(OLDER_FOLDS_HEADING);
-    for (const segment of older) lines.push(olderFoldLine(segment));
-    lines.push(`另有 ${older.length} 次更早的已合并（只留标题）。`);
+    for (const segment of shownOlder) lines.push(olderFoldLine(segment, recoveryHint));
+    // 只在**真的有剩下的那批**时才写：`N` 是被截掉的那些，不是刚列完的那些。
+    if (remainingOlder > 0) lines.push(`另有 ${remainingOlder} 次更早的已合并（只留标题，未逐条列出）。`);
   }
   if (navigationRecord) lines.push(`导航记录：${JSON.stringify(navigationRecord)}`);
   lines.push(recoveryHint);
@@ -686,6 +1015,14 @@ function mergedFoldSummaryContent(
     .filter((block) => block?.type === "text")
     .flatMap((block) => parseFoldSummaries(block.text));
   const current = parseFoldSummary(summary);
+  if (current !== undefined) {
+    // issue #603 判据 3：**本次折叠自己那份正文**就是它的摘要首句来源。
+    // 单折区间行的解析器（`parseFoldSummaryMatch`）不产出 `title`（区间句里没有 title 这个信息），
+    // 修前于是直接退到清单首条 ⇒ 最新那一折的标题也是 `getParagraph {"index":"11"}`。
+    // 把本折正文挂到 `summaryText` 上，`foldSegmentTitle` 就能取它的首句（机械路径 = 工具足迹，
+    // 语义路径 = 摘要器写的第一句），清单首条降为第三级。
+    current.summaryText = summary;
+  }
   // issue #601：**账本优先**。列表来自轮记录上的 `foldedFacts`（一折一条），渲染不再依赖「上一块长什么样」；
   // 块解析降为兜底（① 历史 transcript 里的旧格式块；② 拿不到账本 / 账本覆盖不到块时）。
   const ledgerSegments = foldRecordSegments(foldRecords);
@@ -752,7 +1089,7 @@ function mergedFoldSummaryContent(
     : formatFoldSummary({
       from: mergedRange.from,
       to: mergedRange.to,
-      count: merged.reduce((total, parsed) => total + parsed.count, 0),
+      count: merged.reduce((total, parsed) => total + roundsOf(parsed), 0),
       tools: merged.reduce((counts, parsed) => {
         for (const [name, count] of parsed.tools) {
           counts.set(name, (counts.get(name) ?? 0) + count);
