@@ -208,7 +208,13 @@ export function classify(rel) {
 
 // ── 3. 非现状类正文的命中数钉子 ──────────────────────────────────────────
 /**
- * 历史/契约文档的 `use` 命中数（本树上实测；`--json` 的 `pins` 段是同一份事实）。
+ * 历史/契约文档的 `use` 命中数（本树上实测）。
+ *
+ * 这份事实在 `--json` 输出里**只有一处**：逐文件的 `files[].pin`（每份文件自己那一格）。
+ * 从前还有一个聚合的 `pins` 段，但它只装了本表这一档（`pins: HISTORY_BODY_PINS`），于是 #575 加了
+ * contract 档、#572 加了 rootdoc 档之后，机器读者很容易把那个字段读成「全部钉子」——实际另两档
+ * 一份都不在里面。**重复一份只带来漂移面**，所以 #577 A 把它删了：`files[].pin` 已经是完整事实。
+ * 别再加回来（自测里有反向证：`pins` 段一旦重新出现就红）。
  *
  * 为什么需要它：本脚本的分类判据要说得出「这份 ADR 的正文被改写成规位形态了」。文本级扫描做不到
  * ——改写之后命中数变成 0，而「本来就没有命中」也是 0，两者长得一模一样。所以把实测的数钉在这里：
@@ -374,6 +380,56 @@ export function pinEntryProblems(kind, table, manifest) {
 /** 全部钉子表里的死条目（钉子与扫描面不同源 ⇒ 红）。 */
 export function deadPinEntries(manifest) {
   return Object.entries(PIN_TABLES).flatMap(([kind, table]) => pinEntryProblems(kind, table, manifest));
+}
+
+/**
+ * `--json` 输出里**钉子事实只有一份**（#577 A）：逐文件的 `files[].pin`。
+ *
+ * 病根：从前 `runCli()` 里还写死了一个聚合段 `pins: HISTORY_BODY_PINS`。它只装**一档**（72 份历史文档），
+ * 而 #575 之后有 contract 档（2 份）、#572 之后有 rootdoc 档（2 份）——那些钉子只住在 `files[].pin` 里。
+ * 于是一个叫 `pins` 的字段**看起来**是全部钉子、实际只装三档里的一档：扩面越多，这个误读越贵。
+ * 修法是删掉重复（不是补全它）：`files[].pin` 已经是完整事实，两份副本只会漂。
+ *
+ * 本函数是那条判据：它**只看** `files[].pin`（三档逐条对账 + 非空 pin 数 = 三档合计），并把任何
+ * 重新出现的 `pins` 段判成红——包括 #577 之前那个只装 history 档的形状。自测拿真实 `--json` 输出跑
+ * 它（必须 0 条），再拿四种变异跑（必须非 0），所以「变不出来」也算失败（#210 R2）。
+ *
+ * @param {{files?: Array<{file: string, kind: string, pin?: number|null}>}} payload `--json` 的输出
+ * @returns {string[]} 空数组 = 钉子事实齐全且只有一份
+ */
+function pinFactProblems(payload) {
+  const problems = [];
+  if (payload !== null && typeof payload === "object"
+    && Object.prototype.hasOwnProperty.call(payload, "pins")) {
+    problems.push("`pins` 段又回来了：那是钉子事实的第二份副本（#577 A 删的就是它，扩面后它只装一档）");
+  }
+  const files = Array.isArray(payload?.files) ? payload.files : [];
+  if (files.length === 0) {
+    problems.push("`files` 是空的：钉子事实没有地方装");
+    return problems;
+  }
+  const byFile = new Map(files.map((entry) => [entry.file, entry]));
+  for (const [kind, table] of Object.entries(PIN_TABLES)) {
+    for (const [rel, count] of Object.entries(table)) {
+      const entry = byFile.get(rel);
+      if (entry === undefined) {
+        problems.push(`${rel} 不在 files[] 里（${kind} 档的钉子没被报出来）`);
+        continue;
+      }
+      if (entry.kind !== kind) problems.push(`${rel} 的分类报成 ${entry.kind}，钉子在 ${kind} 档`);
+      if (entry.pin !== count) {
+        problems.push(`${rel} 的 files[].pin=${entry.pin === null || entry.pin === undefined ? "（未登记）" : entry.pin}`
+          + ` ≠ 钉子表的 ${count}`);
+      }
+    }
+  }
+  const pinned = files.filter((entry) => entry.pin !== null && entry.pin !== undefined).length;
+  const expected = Object.values(PIN_TABLES).reduce((n, table) => n + Object.keys(table).length, 0);
+  if (pinned !== expected) {
+    problems.push(`files[].pin 非空的条目 ${pinned} 份 ≠ 三档钉子合计 ${expected} 份`
+      + "（少的那几份就是被漏掉的一档）");
+  }
+  return problems;
 }
 
 // ── 4. 文本级扫描 ────────────────────────────────────────────────────────────
@@ -1152,6 +1208,68 @@ async function selfTest(retired, manifest) {
       eq((await runCaptured(["--json"], { dir: tree.dir, io: { exec } })).code, 0, "报告模式仍 0（既有语义）");
     }));
 
+  // ── #577 A 的反向证：`--json` 里的钉子事实**只有一份** ────────────────────────
+  //
+  // 病根：从前 `runCli()` 里写死 `pins: HISTORY_BODY_PINS` —— 那个字段只装三档里的历史一档，而名字
+  // 看上去像“全部钉子”。本格四件事：① 干净面上真实 `--json` 输出必须让 `pinFactProblems()` 返回 0 条；
+  // ② 三档**各自**都得真有带 pin 的条目（否则“三档都齐”是空话）；③ 把 #577 之前那个只装一档的 `pins`
+  // 段塞回去 ⇒ 必须红；④ 把 contract/rootdoc 两档从 `files[].pin` 里掏空、或改一格值、或删一份带钉
+  // 子的文件 ⇒ 必须红。“变不出来”也算失败（#210 R2）。
+  t("`--json` 只带一份钉子事实（#577 A）：三档都在 `files[].pin` 里，只装一档的 `pins` 段回来了就红",
+    () => withTree(async (tree) => {
+      const clean = await runCaptured(["--strict", "--json"], tree);
+      eq(clean.code, 0, "干净面 `--strict --json` 的退出码");
+      const payload = JSON.parse(clean.stdout);
+      const problems = pinFactProblems(payload);
+      eq(problems.length, 0, `干净面的钉子事实（${problems.join(" / ")}）`);
+
+      // 放行证：三档**各自**都有条目落在 `files[].pin` 上（空表也算“齐”的话本格就证不到东西）
+      for (const [kind, table] of Object.entries(PIN_TABLES)) {
+        const expected = Object.keys(table).length;
+        if (expected === 0) throw new Error(`${kind} 档的钉子表是空的：这一格证不到“三档都齐”`);
+        eq(payload.files.filter((f) => f.kind === kind && f.pin !== null && f.pin !== undefined).length,
+          expected, `${kind} 档在 files[] 里带 pin 的条目数`);
+      }
+      // 且**不是**只装一档：三档合计远大于任何单独一档（否则“三档”退化成同一份事实）
+      const total = Object.values(PIN_TABLES).reduce((n, table) => n + Object.keys(table).length, 0);
+      if (!(total > Object.keys(HISTORY_BODY_PINS).length)) {
+        throw new Error("三档合计不大于 history 一档：这一格已经退化成 #577 之前的形状");
+      }
+
+      // 反向证①：把 #577 之前那个字段原样塞回去（只装 history 档）⇒ 必须红
+      const legacy = { ...payload, pins: HISTORY_BODY_PINS };
+      if (pinFactProblems(legacy).length === 0) {
+        throw new Error("`pins: HISTORY_BODY_PINS` 塞回去了却没红：反向证是空的");
+      }
+      // 反向证②：把 contract / rootdoc 两档从 `files[].pin` 里掏空（只留 history 档）⇒ 必须红
+      const onlyHistory = {
+        ...payload,
+        files: payload.files.map((f) => (f.kind === "history" ? f : { ...f, pin: null })),
+      };
+      const emptied = pinFactProblems(onlyHistory);
+      if (emptied.length === 0) throw new Error("contract/rootdoc 两档被掏空却没红：扩面后仍会被读成全部钉子");
+      if (!emptied.some((p) => /≠ 三档钉子合计/.test(p))) {
+        throw new Error(`掏空两档没报出“条目数对不上”：${emptied.join(" / ")}`);
+      }
+      // 反向证③：只改一格钉子值 ⇒ 必须点名那份文件（不是“总数对了就算”）
+      const skewed = {
+        ...payload,
+        files: payload.files.map((f) => (f.file === "README.md" ? { ...f, pin: (f.pin ?? 0) + 1 } : f)),
+      };
+      const skewProblems = pinFactProblems(skewed);
+      if (!skewProblems.some((p) => p.includes("README.md"))) {
+        throw new Error(`改了一格钉子值却没点名 README.md：${skewProblems.join(" / ")}`);
+      }
+      // 反向证④：把一份带钉子的文件从 files[] 里删掉 ⇒ 必须红（总数会少一份，且那份文件点不到）
+      const dropped = { ...payload, files: payload.files.filter((f) => f.file !== "README_cn.md") };
+      if (pinFactProblems(dropped).length === 0) throw new Error("删掉一份带钉子的文件却没红");
+
+      // 报告模式（不带 `--strict`）是同一份事实：钉子只跟扫描结果有关，与门禁开关无关
+      const report = JSON.parse((await runCaptured(["--json"], tree)).stdout);
+      eq(pinFactProblems(report).length, 0, "报告模式的钉子事实");
+      eq(Object.prototype.hasOwnProperty.call(report, "pins"), false, "报告模式也不许带 `pins` 段");
+    }));
+
   t("红集合是纯函数，且「红数 → 退出码」只有一份（门禁/报告两种模式逐格对账）", () => {
     const report = [
       { file: "docs/soak.md", kind: "current", verdict: "REGRESSION", uses: [{ key: "toolResultTtl" }] },
@@ -1254,7 +1372,10 @@ export async function runCli({ argv = process.argv.slice(2), root = ROOT, io } =
         exitCodes: { clean: 0, red: 1, manifestUnavailable: 2 },
       },
       retiredKeys: Object.fromEntries(retired),
-      pins: HISTORY_BODY_PINS,
+      // 这里**故意没有**聚合的 `pins` 段（#577 A）：从前它是 `pins: HISTORY_BODY_PINS`，只装三档里的
+      // 历史那一档（contract 2 份 / rootdoc 2 份都不在），而名字看上去像“全部钉子”。
+      // 钉子事实只从 `files[].pin` 读——那份逐文件的事实本身就是完整的（`null` = 该文件无钉子），
+      // 再聚一份只会漂：每多一档，重复那份就多一处会被读错的地方。
       deadPins,
       files: slim,
     }, null, 2));
