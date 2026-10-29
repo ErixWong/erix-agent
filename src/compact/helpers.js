@@ -1,3 +1,12 @@
+// issue #589 —— 「被折轮次的选择」必须认得**引擎注入的续接块**（`src/loop/continuity-block.js`）。
+//
+// 为什么 compact 这里会 import loop 的一个叶子模块：判据要的是「**所有**折叠策略都不折块」
+// （sliding-window / fold-statistical / fold-llm 三个调用点各写一遍 = 下一个策略一定会漏），
+// 而块的身份（marker 前缀）只有 `continuity-block.js` 一个权威。这个 import **不成环**：
+// `continuity-block.js` 只依赖 `../tokens.js` 与 `./pending-tool-result.js`，两者都不碰 `compact/`。
+// 方向也不是「compact 依赖 loop 的编排面」——它是一个**叶子谓词**，与 `isProtectedMessage` 同族。
+import { isContinuityMessage } from "../loop/continuity-block.js";
+
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -51,6 +60,28 @@ export function isRealUser(message) {
     || blocks.some((block) => block?.type !== "tool_result");
 }
 
+/**
+ * 这一轮里有没有**引擎注入的续接块**（issue #589）。
+ *
+ * 块是 `messages` 里的一条真 user 消息（#568 的实现前提：这样它才天然计入本地估算），
+ * 于是它和普通消息一样会落进「被折轮次」的候选范围。`keepRounds >= 1` 时它在尾部、折不到；
+ * **`keepRounds: 0` 时 `target = rounds.length - keepRounds` 会把包括尾部在内的全部轮次选中**
+ * ⇒ 块正文进 `foldedPayload` 归档与 `summarizeFoldedPayload` 摘要。两层后果：
+ *   ① **取证面污染** —— 归档/摘要里出现「上一版续接块」的正文，读者分不清那是历史事实还是
+ *      当前状态的旧快照（#564/#565/#566 那一轮修的就是这个病）；
+ *   ② 体积放大 —— 块按预算可到 1200 token。
+ *
+ * 修法是「这一轮不可折」，与既有的 `isProtectedMessage` 同一条纪律（不是把块挪出 `messages`：
+ * 那会打掉 #568 判据 3 的「块计入本地估算」）。
+ *
+ * @param {{messages: any[]}} round
+ * @returns {boolean}
+ */
+function roundHoldsContinuityBlock(round) {
+  const messages = Array.isArray(round?.messages) ? round.messages : [];
+  return messages.some(isContinuityMessage);
+}
+
 export function selectFoldedRounds(rounds, keepRounds, protectedMessage) {
   const target = Math.max(0, rounds.length - keepRounds);
   const folded = [];
@@ -58,9 +89,10 @@ export function selectFoldedRounds(rounds, keepRounds, protectedMessage) {
   const foldedIndexes = [];
 
   rounds.forEach((round, index) => {
-    const protectedRound = round.messages.some((message) => (
-      isProtectedMessage(message, protectedMessage)
-    ));
+    const protectedRound = roundHoldsContinuityBlock(round)
+      || round.messages.some((message) => (
+        isProtectedMessage(message, protectedMessage)
+      ));
     if (folded.length < target && !protectedRound) {
       folded.push(round);
       foldedIndexes.push(index);
