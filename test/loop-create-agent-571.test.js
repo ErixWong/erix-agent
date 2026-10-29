@@ -50,6 +50,7 @@ import {
 } from "../src/loop/config-namespace.js";
 import { RUN_TOOL_LOOP_OPTION_NAMES, RUN_TOOL_LOOP_OPTION_SET } from "../src/loop/option-normalization.js";
 import { createAgent, runToolLoop } from "../src/loop/orchestrator.js";
+import { assemblyPortPolicyConfigSeed } from "../src/assembly.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 // #574：I 组要一个**真的装配端口**（旋钮写在 `policy.config` 上，不是写在调用级 `config` 里），
 // 以及引擎侧规范化入口——反向证要证「修的是包装递不递树，不是引擎的合并规则」。
@@ -526,6 +527,13 @@ test("J2 种子是拷贝：run() 前后 assemblyPort.policy 逐字相同（含�
   Object.freeze(policy.config);
   Object.freeze(policy);
   const port = makePort({ policy, script: toolLoopScript(40) });
+  // 标题说「种子是拷贝」，就得让这句真被测试：种子函数的返回值必须是**新建的组对象**，不是宿主那一个。
+  // （主 agent 复验时发现：只断言「端到端宿主树没被改」抓不到它——把种子改成共享宿主组对象后，
+  //   `mergeConfigLeaves` 自己会拷，20 格仍全绿 ⇒ 判别力必须落在下面这三句。）
+  const seed = assemblyPortPolicyConfigSeed(port);
+  assert.notEqual(seed.folding, policy.config.folding, "种子的 folding 组必须是新对象，不是宿主那个");
+  assert.notEqual(seed.run, policy.config.run, "种子的 run 组必须是新对象，不是宿主那个");
+  assert.deepEqual(seed, policy.config, "但值必须逐字等于宿主的 policy.config（种子只拷，不改值）");
   const before = JSON.parse(JSON.stringify(port.policy));
   const result = await createAgent({ assemblyPort: port })
     .run({ messages: [{ role: "user", content: [{ type: "text", text: "go" }] }] });
