@@ -212,25 +212,33 @@ test("#601-2 双层生效：折叠 7 次 ⇒ 最近 3 次给全，更早的每�
   for (const index of recent) {
     const next = indexes.find((candidate) => candidate > index) ?? lines.length;
     const body = lines.slice(index + 1, next);
-    assert.ok(body.some((line) => line.startsWith("工具足迹：")),
+    // issue #603 判据 4：明细行缩进在 title 之下 ⇒ 认「行首空白后的形状」，不认绝对列位置。
+    // issue #603 判据 3：机械路径的 title 本身就是工具足迹（`工具足迹：exec×1`），此时明细行不再
+    // 重复一行 ⇒ 足迹只看「title 行 + 明细行」两处都算。
+    const footprintShown = lines[index].includes("工具足迹：")
+      || body.some((line) => line.trimStart().startsWith("工具足迹："));
+    assert.ok(footprintShown,
       `近期那折必须带工具足迹（第 ${index} 行）：\n${body.join("\n")}`);
-    assert.ok(body.some((line) => line.startsWith("工具调用清单")),
+    assert.ok(body.some((line) => line.trimStart().startsWith("工具调用清单")),
       `近期那折必须带清单（第 ${index} 行）：\n${body.join("\n")}`);
     assert.ok(body.includes("摘要："),
       `近期那折必须带摘要（第 ${index} 行）：\n${body.join("\n")}`);
   }
   for (const index of older) {
     const next = lines[index + 1];
-    assert.ok(
-      next === undefined || SEGMENT_LINE.test(next) || next.startsWith("另有"),
+    // 远期那条后面不得有**本折的明细**（工具足迹 / 清单 / 摘要）；块级尾部（恢复提示 / 导航记录）不算。
+    const detailOfFold = next !== undefined && /^(?:工具足迹：|工具调用清单|摘要：)/u.test(next.trimStart());
+    assert.ok(!detailOfFold,
       `远期那条后面不得有细节，实测下一行 ${JSON.stringify(next)}`,
     );
     // 预算：远期 title 行 ≤80 字符。
     assert.ok(Array.from(lines[index]).length <= 80,
       `远期 title 行 ≤80 字符，实测 ${Array.from(lines[index]).length}：${lines[index]}`);
   }
-  assert.match(text, /^另有 4 次更早的已合并（只留标题）。$/mu,
-    `更早那批要有收尾句：\n${text}`);
+  // issue #603 判据 2：7 条更早的**全部逐条列了** ⇒ 没有「剩下的那批」⇒ 不得再补一句「另有 N 次」
+  // （修前这里写 `另有 ${older.length}`，同一批数了两遍）。
+  assert.doesNotMatch(text, /另有 \d+ 次/u,
+    `全部逐条列完时不得再重复计数：\n${text}`);
 });
 
 test("#601-3 最新 stub 必须还在：旧折 10 条 + 新折 1 条独特 ⇒ 新那条在块里", async () => {
@@ -290,9 +298,11 @@ test("#601-4 往返自洽：3 次折叠的解析结果与渲染一致；旧格�
   ], { keepRounds: 1, roundNumbers: [5, 6] }));
 
   assert.match(merged, /共折叠 2 次，覆盖第 1–5 轮（共 5 轮）/u, merged);
-  assert.match(merged, /^- 第 1–4 轮（4 轮） · exec echo legacy$/mu,
+  // issue #603 判据 1：分段行**只印区间**（计数与区间一致时也不再印 `（4 轮）`：它恒等于区间长度）。
+  // issue #603 判据 3：旧格式单区间行没有 title ⇒ 取「本折摘要首句」（= 工具足迹），清单降为第三级。
+  assert.match(merged, /^- 第 1–4 轮 · 工具足迹：exec×2$/mu,
     `旧格式（单区间行）必须解析成一条记录：\n${merged}`);
-  assert.match(merged, /^- 第 5–5 轮（1 轮） · /mu, merged);
+  assert.match(merged, /^- 第 5–5 轮 · /mu, merged);
 });
 
 test("#601-5 text 语义不变：第 1 折的独特字面量在第 3 折后仍在 text 里", async () => {
@@ -325,7 +335,7 @@ test("#601-6 预算：20 次折叠 ⇒ 块 ≤2048 字节，且最新那次仍�
   assert.ok(new TextEncoder().encode(facts.text).length <= FOLDED_FACTS_MAX_BYTES,
     `夹断后 ≤ ${FOLDED_FACTS_MAX_BYTES}`);
   assert.match(facts.text, /共折叠 20 次，覆盖第 1–20 轮（共 20 轮）/u, "头行在夹断后仍在");
-  assert.match(facts.text, /^- 第 20–20 轮（1 轮） · /mu,
+  assert.match(facts.text, /^- 第 20–20 轮 · /mu,
     `最新那次必须在（顺序：最新在最前，夹断削尾部）：\n${facts.text}`);
-  assert.match(facts.text, /^- 第 19–19 轮（1 轮） · /mu, facts.text);
+  assert.match(facts.text, /^- 第 19–19 轮 · /mu, facts.text);
 });

@@ -148,10 +148,16 @@ test("merges consecutive fold summaries into one block before the task", async (
   assert.ok(task.content.some((block) => block.text === "keep this task")); // 任务原文仍保留
   // issue #601：两次折叠 = 两条折叠记录（区间不合并），头行只说「折了几次、覆盖到哪」。
   assert.match(summaries[0].text, /共折叠 2 次，覆盖第 1–3 轮（共 3 轮）/);
-  assert.match(summaries[0].text, /^- 第 2–3 轮（2 轮） · writeFile path=\?$/mu);
-  assert.match(summaries[0].text, /^- 第 1–1 轮（1 轮） · exec$/mu);
-  assert.match(summaries[0].text, /工具足迹：exec×1。/);
-  assert.match(summaries[0].text, /工具足迹：writeFile×1。/);
+  // issue #603 判据 1：分段行只印区间（计数与区间一致时也不再印 `（2 轮）`）。
+  // issue #603 判据 3：title 走「账本 title → 本折摘要首句 → 清单」这条链 ⇒ 机械路径的 title
+  // 是本折的工具足迹（不再是清单首条 `writeFile path=?`）；title 已说完足迹时明细行不再重复。
+  assert.match(summaries[0].text, /^- 第 2–3 轮 · 工具足迹：writeFile×1$/mu);
+  assert.match(summaries[0].text, /^- 第 1–1 轮 · 工具足迹：exec×1$/mu);
+  assert.match(summaries[0].text, /工具足迹：exec×1/u);
+  assert.match(summaries[0].text, /工具足迹：writeFile×1/u);
+  // 清单仍在（缩进在 title 之下）：title 只说「跑了什么工具几次」，入参还得靠清单。
+  assert.match(summaries[0].text, /^ {2}- writeFile path=\?$/mu);
+  assert.match(summaries[0].text, /^ {2}- exec$/mu);
   assert.equal(second.messages.length, 2);
 });
 

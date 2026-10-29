@@ -820,6 +820,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-continuation-compaction-588.test.js` | 1 | `context`×1 |
 | `test/compact/fold-continuity-block-589.test.js` | 2 | `strategy`×1, `tools`×1 |
 | `test/loop-continuity-writer-598.test.js` | 1 | `tools`×1 |
+| `test/compact/fold-summary-segments-603.test.js` | 9 | `tools`×9 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 
