@@ -25,6 +25,13 @@ import {
   pendingTailToolUsesAreAnswerable,
 } from "./pending-tool-result.js";
 import { MESSAGE_ROW_KIND } from "../store/message-rows.js";
+// issue #568：会话续接块（受预算约束 / 请求尾部 / 计入本地估算 / 骨架三段不降采样）。
+import {
+  positionContinuityBlock,
+  renderContinuityBlock,
+  normalizeContinuityProvided,
+  upsertContinuityInMessages,
+} from "./continuity-block.js";
 import {
   decideRoundAction,
   decideWithEvaluation,
@@ -404,7 +411,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *       model?: {contextWindowTokens?: number, maxOutputTokens?: number},
  *       modelMetadata?: {contextWindowTokens?: number, maxOutputTokens?: number}},
  *   },
- *   capabilities?: { // issue #498 (S4a / S4b / S4c): the capability container. Three groups: `hooks` (16 host callbacks + 2 polymorphic knobs), `checks` (deliverables checks), `ports` (infrastructure / strategy implementations).
+ *   capabilities?: { // issue #498 (S4a / S4b / S4c): the capability container. Three groups: `hooks` (17 host callbacks + 2 polymorphic knobs), `checks` (deliverables checks), `ports` (infrastructure / strategy implementations).
  *     hooks?: {onEvent?: (event: LoopEvent) => void, onObserverError?: (error: Error, context: {channel: string, runId?: string, type?: string, round?: number, toolName?: string, method?: string}) => void,
  *       onPersistenceError?: (error: Error) => void,
  *       onRound?: (record: object) => void, onJudge?: (info: JudgeEvent) => void,
@@ -417,6 +424,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *       onBeforeFold?: (payload: object) => void|Promise<void>, onAfterFold?: (payload: object) => void|Promise<void>,
  *       stubFor?: (message: object) => string|Promise<string|undefined>, // per-message fold stub text
  *       protectedMessage?: (message: object) => boolean, // function form of the polymorphic knob (string / string[] is the config-side data form)
+ *       continuityProvider?: (payload: {runId?: string, state: object, previous?: object}) => {text: string, version?: number}|Promise<{text: string, version?: number}>, // issue #568: session continuity block content source (sectioned by [contract] / [unfinished] / [evidence]; nested-slot leaf, no flat alias)
  *       recoveryHint?: (context: object) => string|Promise<string>}, // function form of the polymorphic knob
  *     checks?: {deliverables?: {name: string, check: (facts: object) => any}[]},
  *     ports?: {sleepImpl?: (ms: number, signal?: AbortSignal) => Promise<void>,
@@ -681,6 +689,17 @@ export async function runToolLoop(options) {
   // same direction `config.*` wins over the flat key).
   const capabilityPorts = capabilitySlots?.ports ?? {};
   const capabilityHooks = capabilitySlots?.hooks ?? {};
+  // issue #568: the session continuity block's content source. It is a **nested-slot** capability
+  // leaf (`capabilities.hooks.continuityProvider`, registered in `CAPABILITY_SLOT_DESTINATIONS`
+  // with the `context` shell), so it arrives on the `slots` side channel — no top-level flat alias
+  // was invented for it (0.28 的方向：回调收 `capabilities.hooks.*`).
+  const continuityProvider = capabilityHooks.continuityProvider;
+  // issue #568: the block's **own** token budget (`config.folding.context.continuityMaxTokens`,
+  // default `CONTINUITY_DEFAULT_MAX_TOKENS` = 1200, an **experimental** value). It is deliberately
+  // separate from `context.budgetTokens`: the fold budget answers "when to fold", this one answers
+  // "how big may the continuity block be". `renderContinuityBlock` normalizes an illegal value back
+  // to the default instead of throwing (the #554 discipline for this free-form shell).
+  const continuityMaxTokens = context?.continuityMaxTokens;
   // The five capability hooks whose legacy home is a `context` sub-key (not `onReflection`, which
   // lives in the `reflection` shell). Resolved once so the two consumers below cannot drift:
   // `resolveCompactionStrategy` (name-form strategies read `recoveryHint` / `stubFor`) and
@@ -2918,6 +2937,99 @@ export async function runToolLoop(options) {
     return runLoopState.currentRunState;
   };
 
+  // issue #568 —— 会话续接块的 run 作用域状态与两个入口（`refreshContinuity` = 内容刷新；
+  // `placeContinuity` = 只定位、不刷新）。
+  //
+  // 刷新时机（判据 1 与「无折叠 ⇒ provider 0 次调用」的洞）：
+  //   · **run 启动一次**（主循环之前，与 `refreshRunState()` 同相）——新 run 的**首条请求**即见最新状态，
+  //     不依赖「发生过折叠」这个前提；
+  //   · **每次折叠后一次**（`compactBeforeRound` 的折叠分支末尾）。
+  // 其余轮次只把已有块挪回尾部（`placeContinuity`），不调用宿主 provider——续接块是「内容面」，
+  // 不是每轮重算的计数器。
+  const continuityState = {
+    /** provider 上一次返回的原始对象（下一轮作为 `previous` 递回去） */
+    provided: /** @type {any} */ (undefined),
+    /** 最近一次渲染出来的块正文（`undefined` = 还没渲染过 / provider 没配） */
+    rendered: /** @type {string|undefined} */ (undefined),
+  };
+
+  /**
+   * 「本轮为什么没注入」的唯一记账口（硬约束：不许静默跳过）。
+   *
+   * 出口是既有的观察者通道 `onEvent`（新事件类型 `continuity_injection_skipped`，纯加法）：
+   * 宿主能断言到 `{round, reason}`，而不是自己从消息流里猜。
+   */
+  const recordContinuitySkip = ({ round, reason }) => {
+    emitEvent({
+      type: "continuity_injection_skipped",
+      ...(runId === undefined ? {} : { runId }),
+      round,
+      reason,
+      detail: reason === "pending_tool_use"
+        ? "the request tail is an assistant tool_use without its tool_result; the continuity block"
+          + " was not injected this round (inserting it there would break the tool_use/tool_result"
+          + " pairing and invalidate the whole history)"
+        : `continuity block was not injected: ${reason}`,
+    });
+  };
+
+  /**
+   * 刷新续接块（调用宿主 provider + 渲染 + 就地替换/挪到尾部）。
+   *
+   * **provider 没配 ⇒ 一个字节都不发生**（`undefined` 是「关掉」，不是「缺失」）：不调用、不注入、
+   * 不改消息流——这就是判据 4「关掉 provider ⇒ 行为逐字回到今天」的那条腿。
+   * provider 配了但返回空 / 抛错 ⇒ 渲染 `unknown`（缺失即 unknown，不拿机械文本冒充语义）。
+   *
+   * @param {{round?: number}} [options]
+   */
+  const refreshContinuity = async ({ round } = {}) => {
+    if (typeof continuityProvider !== "function") return undefined;
+    let provided;
+    let failure;
+    try {
+      provided = await continuityProvider({
+        runId,
+        state: runLoopState.currentRunState,
+        previous: continuityState.provided,
+      });
+    } catch (error) {
+      failure = error;
+    }
+    if (failure === undefined) continuityState.provided = provided;
+    const normalized = normalizeContinuityProvided(provided, {
+      status: failure === undefined ? undefined : "error",
+    });
+    const rendered = renderContinuityBlock({
+      sections: normalized.sections,
+      version: normalized.version,
+      status: normalized.status,
+      maxTokens: continuityMaxTokens,
+    });
+    continuityState.rendered = rendered.text;
+    const applied = upsertContinuityInMessages(messages, rendered.text);
+    messages = applied.messages;
+    if (!applied.injected) recordContinuitySkip({ round, reason: applied.reason });
+    return { ...applied, rendered, status: normalized.status };
+  };
+
+  /**
+   * 只定位：把已有的块挪回请求尾部（内容不重算、provider 不再调用）。
+   *
+   * 为什么每轮都要挪：块必须停在尾部。留在原地（run 启动时它是第 2 条）等于「改一次就让其后
+   * 整段历史的前缀复用作废」；停在尾部时只失效「上一次请求之后新长出来的那几条」。
+   *
+   * @param {{round?: number}} [options]
+   */
+  const placeContinuity = ({ round } = {}) => {
+    if (continuityState.rendered === undefined) return undefined;
+    const placed = positionContinuityBlock(messages);
+    messages = placed.messages;
+    if (!placed.moved && placed.reason === "pending_tool_use") {
+      recordContinuitySkip({ round, reason: placed.reason });
+    }
+    return placed;
+  };
+
   // issue #394：强制收尾那一路的**入账口**（`forceFinalIfNeeded` 结清尾部悬空 `tool_use` 时用）。
   // 为什么是回调而不是在 `src/loop/termination.js` 里写一份：那个模块不持有 store、不碰 persist
   // （journal 写入一直是 orchestrator 的职责面），结清动作的**入账口径**必须与这里同一份。
@@ -3753,6 +3865,17 @@ export async function runToolLoop(options) {
         },
       }, round);
     }
+    // issue #568：**每次折叠后刷新**续接块（这是「无折叠 ⇒ provider 0 次调用」那个洞的另一半）。
+    // 位置在折叠写回 `messages` 之后、`foldedStateChanged` 之前：provider 看到的 `state` 是折叠后的
+    // 那一份，渲染出来的块也直接落在折叠后的消息流尾部。
+    // `estimatedTokens`（本函数开头那次 `estimateMessageTokens(messages)`）**已经看得见这块**：
+    // 块是 `messages` 里的一条真消息，不是 `mainSystem` 的附加文本——所以本地估算不会漏账
+    // （判据 3 就是给「把块塞进 `mainSystem`」那种写法设的闸门）。
+    if (strategyRequestsCompaction || overBudget) {
+      await refreshContinuity({ round });
+    }
+    // 其余轮次只把已有块挪回尾部（内容不重算、provider 不再调用），保证它停在**请求尾部**。
+    placeContinuity({ round });
     const foldedStateChanged = foldedRounds > 0
       || foldedRoundRange !== undefined
       || navigationRecord !== undefined;
@@ -3972,6 +4095,10 @@ export async function runToolLoop(options) {
 
   try {
     await refreshRunState();
+    // issue #568：**run 启动一次**刷新续接块——新 run 的**首条请求**即见最新状态，不依赖「发生过折叠」
+    // 这个前提（今天的 semantic 槽位就是死在那个前提上：无折叠 ⇒ provider 0 次调用）。
+    // 放在 `refreshRunState()` 之后：provider 的 `state` 入参拿到的就是本次 run 的第一份确定性状态。
+    await refreshContinuity({ round: 0 });
     // resume 后注入旗标按本次 run 重置；后续 TTL 折叠/低预算会重新注入请求视图，
     // 无需把 run-state 写入 run snapshot 或持久 transcript。
     runLoopState.ttlInjectArmed = false;

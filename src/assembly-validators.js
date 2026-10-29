@@ -311,6 +311,12 @@ export const CONTEXT_OPTION_NAMES = [
   // ⇒ 宿主给对了值仍然被判「未知 context 子键」抛 TypeError，等于把「静默无效」翻成「装配口报错」，
   // 分裂没变。现在两条名单都收，并有 `contextOptionNameSelfCheck()` 交叉核对兜住下一个漏项。
   "maxSummaryTokens",
+  // issue #568：会话续接块的**独立** token 预算（默认 1200，试验值）。它落在 `context` 这个
+  // **对象叶**内部（`maxSummaryTokens` / `maxFoldedFactsBytes` 的邻居），所以不新增叶子、
+  // 不动 `CONFIG_LEAF_BINDING`；但**必须**收进本白名单——否则宿主给对了值会被判成未知子键
+  // （`context_unknown_option`），正是 #493 的形状。消费点：`renderContinuityBlock`
+  // （`src/loop/continuity-block.js`；非法值退回默认、不抛，见 #554 的口径）。
+  "continuityMaxTokens",
 ];
 
 const CONTEXT_OPTION_NAME_SET = new Set(CONTEXT_OPTION_NAMES);

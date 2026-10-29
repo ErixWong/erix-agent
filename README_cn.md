@@ -136,8 +136,9 @@ src/
     option-normalization.js        runToolLoop 选项白名单、未知键建议与选项合并
     config-namespace.js            `config` 命名空间 schema：别名 = schema 路径，能力键一律拒绝、
                                    函数值 intake 即拒
-    capabilities-namespace.js      `capabilities` schema（hooks + checks + ports）：16 个宿主回调、两个形态多态
+    capabilities-namespace.js      `capabilities` schema（hooks + checks + ports）：17 个宿主回调、两个形态多态
                                    旋钮的函数形态、交付物判据与三个端口槽位的规范之家（issue #498 S4c）
+    continuity-block.js            会话续接块：受预算约束、落请求尾部、marker 就地替换（issue #568）
     provider-runner.js             provider 调用、重试与快照回滚
     run-snapshot-executor.js       工具前后检查点与聚合闸门
     budget.js                      预算校验与状态克隆辅助函数

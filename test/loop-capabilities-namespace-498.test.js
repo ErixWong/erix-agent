@@ -226,7 +226,7 @@ test("S1c 容器与两面对称：两个容器都不在配置面/能力面里，
 });
 
 // ================================================================ S2. capabilities.hooks 是规范之家
-test("S2 16 个回调逐个点名：名单、别名表、schema 三者互相对得上", () => {
+test("S2 17 个回调逐个点名：名单、别名表、schema 三者互相对得上", () => {
   assert.deepEqual([...CAPABILITY_HOOK_NAMES], [
     "onEvent",
     "onObserverError",
@@ -247,12 +247,15 @@ test("S2 16 个回调逐个点名：名单、别名表、schema 三者互相对�
     "onBeforeFold",
     "onAfterFold",
     "stubFor",
-  ], "16 个回调的名单是本刀的判据面，逐字钉住");
-  assert.equal(CAPABILITY_HOOK_NAMES.length, 16);
+    // #568：会话续接块的唯一内容源。与上面四个同属**嵌套槽**叶子（无顶层扁平别名）：
+    // 0.28 的方向是「回调收 capabilities.hooks.*、配置收 config.*」，不再加散装顶层键。
+    "continuityProvider",
+  ], "17 个回调的名单是本刀的判据面，逐字钉住");
+  assert.equal(CAPABILITY_HOOK_NAMES.length, 17);
   assert.deepEqual(
     [...CAPABILITIES_NAMESPACE_GROUPS],
     ["hooks", "checks", "ports"],
-    "三组：hooks（16 回调 + 2 形态多态旋钮）+ checks（1）+ ports（3，#498 S4c）",
+    "三组：hooks（17 回调 + 2 形态多态旋钮）+ checks（1）+ ports（3，#498 S4c）",
   );
   assert.deepEqual(Object.keys(CAPABILITIES_NAMESPACE_SCHEMA), ["hooks", "checks", "ports"]);
   assert.deepEqual([...CAPABILITY_CHECK_NAMES], ["deliverables"], "checks 组只有交付物判据");
@@ -260,14 +263,14 @@ test("S2 16 个回调逐个点名：名单、别名表、schema 三者互相对�
   // （`CAPABILITY_POLYMORPHIC_HOOK_NAMES`，它们不是回调而是「同一个旋钮的函数形态」）。
   assert.deepEqual([...CAPABILITY_POLYMORPHIC_HOOK_NAMES], ["protectedMessage", "recoveryHint"]);
   assert.deepEqual([...CAPABILITY_PORT_SLOT_NAMES], ["sleepImpl", "judgeProvider", "strategy"]);
-  assert.equal(CAPABILITIES_NAMESPACE_SCHEMA.hooks.length, 18, "hooks 接受 16 + 2 = 18 个叶子");
+  assert.equal(CAPABILITIES_NAMESPACE_SCHEMA.hooks.length, 19, "hooks 接受 17 + 2 = 19 个叶子");
   assert.equal(CAPABILITIES_ALIAS_PATHS.size, 13, "12 个扁平回调 + 1 个 checks 叶子，一条别名路径不多不少");
   assert.equal(CAPABILITIES_SURFACE_OPTION_NAMES.length, 13, "能力面 schema 的**扁平**叶子全集 = 13");
-  assert.equal(CAPABILITIES_SLOT_LEAF_NAMES.length, 9, "#498 S4c：9 个嵌套槽叶子（3 ports + 6 hooks）");
+  assert.equal(CAPABILITIES_SLOT_LEAF_NAMES.length, 10, "#498 S4c：9 个嵌套槽叶子（3 ports + 6 hooks）+ #568 的 continuityProvider");
   assert.equal(
     CAPABILITIES_SURFACE_OPTION_NAMES.length + CAPABILITIES_SLOT_LEAF_NAMES.length,
     CAPABILITIES_NAMESPACE_GROUPS.reduce((sum, group) => sum + CAPABILITIES_NAMESPACE_SCHEMA[group].length, 0),
-    "schema 的叶子恰好分成「扁平 13 + 嵌套槽 9」两半，没有第三个去向",
+    "schema 的叶子恰好分成「扁平 13 + 嵌套槽 10」两半，没有第三个去向",
   );
   assert.equal(capabilitiesPathForOption("deliverables"), "checks.deliverables");
   assert.equal(CAPABILITIES_ALIAS_PATHS.get("checks.deliverables"), "deliverables");
