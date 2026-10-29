@@ -21,7 +21,10 @@ import { createHash } from "node:crypto";
 
 // issue #565：`toolCalls` 与 `text` 里的清单节**同源**——解析器与形状上界都从 #564 的实现里复用，
 // 不在这里另写一份（另写一份 = 两处逻辑各自腐烂，判据「逐条一致」就只能靠运气）。
+// `FOLD_SUMMARY_MARKER` 同样从那边取：`title` 要剥掉的正是**引擎自己写进去的**那个 marker，
+// 用常量而不是字面量 ⇒ marker 换代时这里跟着换代，不会留下一份过时的拷贝。
 import {
+  FOLD_SUMMARY_MARKER,
   MAX_TOOL_INVENTORY_CHARS,
   MAX_TOOL_INVENTORY_ENTRIES,
   parseInventorySection,
@@ -195,7 +198,7 @@ const MIN_FACTS_TEXT_BYTES = foldedFactsEncoder.encode(FOLDED_FACTS_TRUNCATION_M
  * `title` 的字符上界（issue #565）。
  *
  * 为什么是**字符**而不是字节：它是给宿主渲染一行索引用的展示字段，字符数才是「一行放得下」的口径。
- * 它没有自己的字节预算 —— 见 `buildFoldedFacts` 里「title 是 text 的首行」那段：
+ * 它没有自己的字节预算 —— 见 `buildFoldedFacts` 里「title 取自 text 的首行（剥掉引擎 marker 后）」那段：
  * title 的字节**本来就花在 text 的预算里**，所以这里不需要第二个旋钮。
  */
 export const FOLDED_FACTS_TITLE_MAX_CHARS = 60;
@@ -245,19 +248,37 @@ function resolveFactsOrigin(input) {
 }
 
 /**
- * `title` = 正文的**首行**（夹到 `FOLDED_FACTS_TITLE_MAX_CHARS` 字符，不加省略号）。
+ * `title` = 正文的**首行**，**先剥掉引擎自己的 marker 前缀**，再夹到
+ * `FOLDED_FACTS_TITLE_MAX_CHARS` 字符（不加省略号）。
  *
- * 刻意不加 `…`：`title` 必须是 `text` 的**严格前缀**，省略号会把第 60 个字符换掉、
- * 于是「title 在夹断后仍存活」就退化成「看起来像」，而判据要的是结构性成立。
+ * 为什么必须剥（issue #565 修补）：`title` 的**唯一用途**是宿主渲染一行索引 —— 本方案的整个动机就是
+ * 「宿主不要正则解析中文」。`FOLD_SUMMARY_MARKER` 是**版本化内部标识**（带版本号与哈希），
+ * 而且机械摘要的首行是「marker + 区间行 + 足迹行」（`formatFoldSummary` 里 `lines.slice(0, 2).join("")`，
+ * 两行之间没有换行），于是它一口占掉 60 字符预算的三分之一、还把内部标识漏进宿主 UI。
+ * 让宿主自己去剥 marker，等于把「解析引擎内部字面量」这件事又塞回宿主 —— 那正是本方案要消灭的东西。
+ * 剥的时候**只用常量**（`FOLD_SUMMARY_MARKER`），不写字面量：marker 换代时这里跟着换代。
+ *
+ * 为什么仍然**不加省略号**：剥掉 marker 之后 `title` 不再是 `text` 的**字面前缀**，但它仍是 `raw`
+ * 头部的一个**连续子串**，而 `text` 保留的是 `raw` 的前缀 ⇒ 「夹断后 title 仍存活」依旧**按构造成立**
+ * （判据断言因此是 `text.includes(title)`，不是 `startsWith`）。加省略号会把末尾字符换掉，
+ * 那条结构性就退化成「看起来像」。
+ *
+ * 剥完为空时**退回未剥版本**（例如宿主文本的首行只有 marker）：空 `title` 会让宿主那行索引变成空白，
+ * 而「非空」是这条契约的底线 —— 宁可漏一个内部标识，也不给宿主一个空字符串。
  *
  * @param {string} text
  * @returns {string}
  */
 function foldedFactsTitle(text) {
   const firstLine = String(text ?? "").split("\n", 1)[0].trim();
-  const characters = Array.from(firstLine);
+  const stripped = firstLine.startsWith(FOLD_SUMMARY_MARKER)
+    ? firstLine.slice(FOLD_SUMMARY_MARKER.length).trim()
+    : firstLine;
+  // 剥完为空（首行只有 marker）⇒ 退回未剥版本：不许产出空串（空 title = 宿主那行索引变空白）。
+  const chosen = stripped === "" ? firstLine : stripped;
+  const characters = Array.from(chosen);
   return characters.length <= FOLDED_FACTS_TITLE_MAX_CHARS
-    ? firstLine
+    ? chosen
     : characters.slice(0, FOLDED_FACTS_TITLE_MAX_CHARS).join("");
 }
 
@@ -296,11 +317,13 @@ function foldedFactsToolCalls(text) {
  * 给宿主补可判断的结构化键（`title` / `origin` / 可选 `summary` / 可选 `toolCalls`）。
  *
  * #565 的三条形状决定（PR 描述里同样写明）：
- *   ① **`title` 走「作为 `text` 首行」这条路**（工单给的合法做法 a），不是「独立成键 + 预算预留」（b）。
+ *   ① **`title` 走「取自 `text` 的首行」这条路**（工单给的合法做法 a），不是「独立成键 + 预算预留」（b）。
  *      于是 `title` 的字节本来就花在 `text` 的 `maxBytes` 里：**不新开预算**，也就不存在「独立成键却
- *      不受预算约束」那种隐形预算。前缀夹断削的是尾部 ⇒ `title` 在夹断后按构造仍在（`text` 以它开头）。
+ *      不受预算约束」那种隐形预算。前缀夹断削的是尾部 ⇒ `title` 在夹断后按构造仍在（它是 `raw` 头部的
+ *      一个连续子串，而 `text` 保留的是 `raw` 的前缀 ⇒ `text.includes(title)`；首行里那段引擎 marker 被
+ *      剥掉后它不再是**字面前缀**，但「仍在」这条件是结构性的，不是「看起来像」）。
  *      前提是预算装得下这一行：默认 2048 恒成立（`title` ≤ 60 字符）；`maxBytes` 小到装不下一行时属
- *      退化预算，此时 `title` 仍如实给出原文首行，但「`text` 以它开头」这一条在那里不成立——判据 3
+ *      退化预算，此时 `title` 仍如实给出原文首行，但「`text` 里仍有它」这一条在那里不成立——判据 3
  *      的断言（>2048 字节夹断后 title 仍在）正是钉在默认预算上的。
  *      （不选 b 的第二个理由：b 会让 `bytes` 从「正文字节数」变成「正文 + title 总量」，那是既有键的
  *      语义变更；本单要求既有键逐字不变，既有用例也钉着 `bytes === bytesOf(text)`。）
@@ -340,7 +363,7 @@ export function buildFoldedFacts(input = {}) {
   const bytesOf = (value) => foldedFactsEncoder.encode(value).length;
   const origin = resolveFactsOrigin(input);
   // `title` 从**原始正文**取（不是从夹断后的结果取）：这样「首行」是**输入的性质**，不是夹断的副产物。
-  // 夹断只削尾部 ⇒ 首行按构造还在 ⇒ `title` 结构性存活，不靠运气、也不需要第二份预算。
+  // 夹断只削尾部 ⇒ 首行（剥掉引擎 marker 后）按构造还在 ⇒ `title` 结构性存活，不靠运气、也不需要第二份预算。
   const title = foldedFactsTitle(raw);
   // `summary` 与 `text` 共用一个预算：语义摘要先占，剩下的留给正文；整份放不下就不写这个可选键
   //（不截断、不越界、不另立预算——机械路径给的 `summary` 在这里就被丢掉，它不许冒充语义）。
@@ -387,7 +410,7 @@ export function buildFoldedFacts(input = {}) {
   const toolCalls = foldedFactsToolCalls(text);
   return {
     text,
-    // issue #565：给宿主的三键（纯加法）。`title` 是 `text` 的首行 ⇒ 夹断削尾也削不掉它；
+    // issue #565：给宿主的三键（纯加法）。`title` 取自 `text` 的首行（剥掉引擎 marker）⇒ 夹断削尾也削不掉它；
     // `origin` 必填（判据不是注释）；`toolCalls` 与 `text` 的清单节同源（同一份 `text` + 同一个解析器）。
     title,
     origin,

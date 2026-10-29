@@ -8,7 +8,7 @@
 // 判据（工单「判据（绿）」逐条，每格一个用例）：
 //   1. `fold-statistical` 路径 ⇒ `origin === "mechanical"` 且 `summary` **缺失**（不伪造语义）；
 //   2. 宿主注入路径（宿主自带策略经 `foldSummary` 注入正文）⇒ `origin === "host"`；
-//   3. 构造 >2048 字节摘要 ⇒ **`title` 仍在**（本单唯一硬断言：`text` 以它开头，结构性存活）；
+//   3. 构造 >2048 字节摘要 ⇒ **`title` 仍在**（本单唯一硬断言：`text` 里仍含它，结构性存活）；
 //   4. `toolCalls` 与 `text` 清单节逐条一致（同源，不是两份实现）；
 //   5. 既有键 `source` / `strategy` / `from` / `to` / `rounds` / `bytes` / `truncated` / `degradeReason`
 //      语义逐字不变（`bytes` 在 `summary` 缺席时**逐字节等于**旧口径 = 正文字节数）。
@@ -18,14 +18,22 @@
 //   · **不新增 `coverage`**（`from`/`to`/`rounds` 就是覆盖范围，再加一个只是同值复制）。
 //
 // 零真实 LLM：fake provider + 内存 store（AGENTS.md 测试隔离规则：不写真实 `~/.erix`）。
+//
+// #565 修补（title 剥掉引擎内部 marker）—— 判据见文件末尾的 `#565-6` 两格：
+// 机械摘要的首行是「marker + 区间行 + 足迹行」（`formatFoldSummary` 里 `lines.slice(0, 2).join("")`，
+// 两行之间没有换行），所以 `title` 开口就是 `FOLD_SUMMARY_MARKER`（带版本号与哈希的**内部标识**）。
+// `title` 的唯一用途是宿主渲染一行索引 ⇒ marker 既占预算（60 字符里占 23）又会漏进宿主 UI；
+// 让宿主自己去剥 marker，就把「解析引擎内部字面量」又塞回宿主 —— 那正是本方案要消灭的东西。
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  FOLD_SUMMARY_MARKER,
   MAX_TOOL_INVENTORY_CHARS,
   MAX_TOOL_INVENTORY_ENTRIES,
   createFoldStatisticalStrategy,
+  summarizeFoldedPayload,
 } from "../../src/compact/fold-statistical.js";
 import {
   FOLDED_FACTS_MAX_BYTES,
@@ -65,6 +73,17 @@ function makeProvider({ toolTurns = 4 } = {}) {
   provider.chatStream = provider.chat;
   return provider;
 }
+
+// #565 修补那两格用的"被折负载"：N 发 exec 调用（`summarizeFoldedPayload` 从中数出足迹与清单节）。
+const execPayload = (count) => Array.from({ length: count }, (_, index) => ({
+  role: "assistant",
+  content: [{
+    type: "tool_use",
+    id: `use-${index + 1}`,
+    name: "exec",
+    input: { command: `npm test -- --grep case-${index + 1}` },
+  }],
+}));
 
 const factsOf = async (store, runId) => {
   const records = await store.load(runId);
@@ -129,6 +148,13 @@ test("#565-1 fold-statistical（零 LLM）：origin === mechanical，summary 缺
     assert.ok(facts.bytes <= FOLDED_FACTS_MAX_BYTES);
     assert.equal(typeof facts.title, "string");
     assert.ok(facts.title !== "", "title 必填且非空");
+    // #565 修补（真机路径的端到端证人）：机械摘要的首行**以引擎 marker 开头**，
+    // 而 `title` 是给宿主渲染一行索引用的 ⇒ 它不许把那个**版本化内部标识**带出去。
+    // 这条不在单元构造上验，而是钉在「真折了一次、真落了轮记录」的那份投影上。
+    assert.equal(facts.text.startsWith(FOLD_SUMMARY_MARKER), true,
+      "前置：真机那条机械摘要的首行确实以引擎 marker 开头（否则这条断言是空断言）");
+    assert.equal(facts.title.includes(FOLD_SUMMARY_MARKER), false,
+      `title 不得带引擎内部 marker（版本化标识不许漏进宿主 UI），实测 ${JSON.stringify(facts.title)}`);
   }
 });
 
@@ -226,7 +252,7 @@ test("#565-2b 宿主侧派生：llm ⇒ semantic，host/未知 ⇒ host（未知
 
 // ---- 判据 3：>2048 字节夹断后 title 仍在（本单唯一硬断言）------------------------
 
-test("#565-3 >2048 字节摘要：夹断后 title 仍在（text 以它开头，结构性存活）", async () => {
+test("#565-3 >2048 字节摘要：夹断后 title 仍在（text 里仍含它，结构性存活）", async () => {
   const messages = [{ role: "user", content: "task" }];
   for (let index = 1; index <= 12; index += 1) {
     messages.push(
@@ -266,21 +292,27 @@ test("#565-3 >2048 字节摘要：夹断后 title 仍在（text 以它开头，�
   assert.equal(facts.truncated, true, "前置：这一份必须真的被夹断");
   assert.ok(facts.bytes <= FOLDED_FACTS_MAX_BYTES, `夹断后 ≤ ${FOLDED_FACTS_MAX_BYTES}，实测 ${facts.bytes}`);
 
-  // ★ 硬断言：title 在夹断后**结构性**存活 —— 它就是被保留前缀的开头，不是「恰好没被截到」。
+  // ★ 硬断言：title 在夹断后**结构性**存活。
+  //
+  // 为什么是 `includes` 而不是 `startsWith`（#565 修补）：`title` 现在会先剥掉首行里那段引擎 marker
+  // （`【上下文折叠·v1·…】`），于是它**不再是 `text` 的字面前缀**。但「结构性」没有变弱：
+  // `title` 仍是 `raw` 头部的一个**连续子串**（剥的是它前面的 marker、末尾夹的是字符数），
+  // 而 `text` 保留的是 `raw` 的**前缀** ⇒ 只要那个前缀跨过 `title` 的末尾，`title` 就整段在里面。
+  // 这不是「看起来像」：它由「夹断只削尾」+「title 取自 raw 头部」两条构造成立，与文本内容无关。
   assert.ok(facts.title !== "", "title 不得为空");
   assert.ok(Array.from(facts.title).length <= FOLDED_FACTS_TITLE_MAX_CHARS,
     `title ≤ ${FOLDED_FACTS_TITLE_MAX_CHARS} 字符，实测 ${Array.from(facts.title).length}`);
-  assert.ok(facts.text.startsWith(facts.title),
-    `夹断后 text 必须以 title 开头（否则 title 只是"看起来还在"）：title=${JSON.stringify(facts.title)}`
+  assert.ok(facts.text.includes(facts.title),
+    `夹断后 text 必须仍含 title（否则 title 只是"看起来还在"）：title=${JSON.stringify(facts.title)}`
     + ` text=${JSON.stringify(facts.text.slice(0, 80))}`);
   assert.match(facts.title, /早期第 1–12 轮（共 12 轮）已折叠/u,
     "title 就是那条区间句（宿主渲染一行索引要的「区间」不必再正则解析中文）");
 
-  // 更小的预算（512）也一样：夹断削的是尾部，首行按构造还在。
+  // 更小的预算（512）也一样：夹断削的是尾部，首行（剥掉 marker 后）按构造还在。
   const tight = buildFoldedFacts({ text: summary, source: "statistical", maxBytes: 512 });
   assert.equal(tight.truncated, true);
   assert.ok(tight.bytes <= 512);
-  assert.ok(tight.text.startsWith(tight.title),
+  assert.ok(tight.text.includes(tight.title),
     `小预算下 title 同样必须存活：${JSON.stringify(tight.text.slice(0, 60))}`);
 });
 
@@ -385,4 +417,62 @@ test("#565-5 既有键逐字不变：source/strategy/from/to/rounds/bytes/trunca
 
   // 空文本仍然 ⇒ undefined（调用方据此不写键）。
   assert.equal(buildFoldedFacts({ text: "   " }), undefined);
+});
+
+// ---- #565 修补：title 剥掉引擎内部 marker（宿主索引行不该带版本化内部标识）---------
+//
+// 真机现场（主 agent 实测，不是构造）：
+//   title = "【上下文折叠·v1·erix-9f6e2c】早期第 12–57 轮（共 46 轮）已折叠。工具足迹：exec×12。"
+// 两个事实：① 首行带 `FOLD_SUMMARY_MARKER`（含版本号与哈希）；② `formatFoldSummary` 里
+// `prefix = lines.slice(0, 2).join("")` —— 区间行与足迹行**之间没有换行**，所以「首行」= marker + 区间 + 足迹。
+// `title` 的唯一用途是宿主渲染一行索引 ⇒ marker 占掉 60 字符预算的三分之一，而且它是版本化内部标识，
+// 会漏进宿主 UI；宿主若自己去剥 marker，就又把「解析引擎内部字面量」这件事塞回宿主。
+
+test("#565-6 机械摘要 ⇒ title 逐字等于剥掉 marker 的首行（判据 1 / 判据 2）", () => {
+  // 判据 1：真机那条字面（12–57 轮 / 共 46 轮 / exec×12）。文本由**引擎自己的**那个函数产出
+  // （`summarizeFoldedPayload` —— `orchestrator` 在定稿处就地现算机械替代物用的就是它），
+  // 不是手写常量 ⇒ 这条测的是「引擎写什么，title 就剥什么」，不是「两个字符串能不能相等」。
+  // 负载是 12 发 exec 调用 ⇒ 足迹 exec×12、清单节在场（清单节在场时首行才正好止于足迹行：
+  // `formatFoldSummary` 里 `prefix = lines.slice(0, 2).join("")` 之后才 `\n` 接后续节）。
+  const text = summarizeFoldedPayload(execPayload(12), { from: 12, to: 57, count: 46 });
+  assert.equal(text.startsWith(FOLD_SUMMARY_MARKER), true,
+    "前置：机械摘要的首行确实以引擎 marker 开头（否则这一格是空断言）");
+
+  const facts = buildFoldedFacts({ text, source: "statistical" });
+  assert.equal(facts.title, "早期第 12–57 轮（共 46 轮）已折叠。工具足迹：exec×12。",
+    `title 必须逐字等于剥掉 marker 后的首行，实测 ${JSON.stringify(facts.title)}`);
+  assert.equal(facts.title.includes(FOLD_SUMMARY_MARKER), false,
+    `title 不得带引擎内部 marker（版本化标识不许漏进宿主 UI），实测 ${JSON.stringify(facts.title)}`);
+
+  // 判据 2：字符上界不变（60），且 title 仍是 text 里的**连续子串**。
+  // 为什么 `includes` 就够：剥掉 marker 之后 title 不再是字面前缀，但它仍是 `raw` 头部的一个连续子串，
+  // 而 `text` 保留的是 `raw` 的前缀 ⇒ 「夹断后仍在」依旧按构造成立（见 `#565-3` 的注释）。
+  assert.ok(facts.title.length <= FOLDED_FACTS_TITLE_MAX_CHARS,
+    `title ≤ ${FOLDED_FACTS_TITLE_MAX_CHARS} 字符，实测 ${facts.title.length}`);
+  assert.ok(facts.text.includes(facts.title),
+    `title 必须是 text 里的连续子串：title=${JSON.stringify(facts.title)}`);
+  // 剥 marker 不改 `text` 一个字节（`title` 是投影，不是对正文的改写）。
+  assert.equal(facts.text, text, "text 逐字未动（剥 marker 只作用于 title）");
+});
+
+test("#565-6b 首行只有 marker ⇒ title 退回未剥版本（非空），夹断后仍是 text 的子串（判据 4）", () => {
+  // 判据 4：剥完为空时不许产出空串 —— 空 title 会让宿主那行索引变成**空白**。
+  const bare = buildFoldedFacts({ text: FOLD_SUMMARY_MARKER });
+  assert.ok(bare !== undefined, "前置：只有 marker 也是可投影的正文");
+  assert.equal(bare.title, FOLD_SUMMARY_MARKER, "剥完为空 ⇒ 退回未剥版本的首行（宁可漏标识，不给空串）");
+  assert.ok(bare.title !== "", "title 永不为空");
+
+  // 首行只有 marker、正文还有后续行：同样退回未剥版本（不是空串、也不是第二行）。
+  const firstLineOnlyMarker = buildFoldedFacts({ text: `${FOLD_SUMMARY_MARKER}\n工具足迹：无。` });
+  assert.equal(firstLineOnlyMarker.title, FOLD_SUMMARY_MARKER);
+  assert.ok(firstLineOnlyMarker.title !== "", "title 永不为空");
+
+  // 剥了 marker 之后「夹断后 title 仍在」仍然是**结构性**的（不是运气）：
+  // title 是 raw 头部的连续子串，text 保留的是 raw 的前缀 ⇒ 前缀跨过 title 末尾就整段在里面。
+  const longText = summarizeFoldedPayload(execPayload(12), { from: 12, to: 57, count: 46 });
+  const huge = buildFoldedFacts({ text: `${longText}\n${"锚点行".repeat(600)}`, source: "statistical" });
+  assert.equal(huge.truncated, true, "前置：这一份必须真的被夹断");
+  assert.equal(huge.title.startsWith(FOLD_SUMMARY_MARKER), false, "夹断后 title 同样不带 marker");
+  assert.ok(huge.text.includes(huge.title),
+    `夹断后 text 必须仍含 title：title=${JSON.stringify(huge.title)} text=${JSON.stringify(huge.text.slice(0, 80))}`);
 });
