@@ -13,6 +13,13 @@
  *      （引擎自发的折叠摘要 / judge / 归一化）时一并累加。
  *   ② 重复读取率：**同一 run 内**同一 `path` 被 `readFile` ≥2 次的比例。
  *      分子 = 重复读的 path 数（出现 ≥2 次的 path 个数），分母 = 被读过的 path 数（去重后的 path 个数）。
+ *      ② 把**分页读**（同 path 不同 range）也算成重复 ⇒ 它是「重复读」的上界，**不等于浪费**。
+ *   ②' 真浪费（issue #596）：同一 run 内同一 `path@offset:limit` 被 `readFile` ≥2 次的比例。
+ *      键 = `${path}@${offset}:${limit}`（`offset` 缺省 `0`、`limit` 缺省 `null`，两者按原值参与键，
+ *      不做归一化）；分子/分母同 ②（重复键数 / 去重键数）。**分页读不计入浪费**：
+ *      同 path 不同 range 只出现在 ② 里，不出现在 ②' 里。②' **不参与判定**（`decide()` 仍只看 ②）。
+ *      ②/②' 都带 `repeatedCalls`（= calls − missingKeyCalls − denominator，即「重读调用」数）：
+ *      两者之差就是**分页读**次数，于是「164 里只有 59 是真浪费」在报告里直接读得出来。
  *   ③ 重复执行率：**同一 run 内**同一 `command` 串被 `exec` ≥2 次的比例，分子分母同 ②。
  *   ④ 用户重述次数：**host-side / not-applicable**——跨 run 的语义，一条用户消息 = 一个 run，
  *      引擎侧没有数据源。本脚本**不用任何代理指标冒充它**（不拿 run 数、不拿追问条数、不拿终止原因）。
@@ -51,6 +58,9 @@ export const SIGNIFICANT_REPEAT_PP = 5;
 /** ② 认的工具名与入参键（写死，别留解释空间）。 */
 export const READ_TOOL = "readFile";
 export const READ_KEY = "path";
+/** ②' 的键（issue #596）：`path@offset:limit`；缺省值写在这里，只有一处。 */
+export const READ_RANGE_OFFSET_DEFAULT = 0;
+export const READ_RANGE_LIMIT_DEFAULT = null;
 /** ③ 认的工具名与入参键。 */
 export const EXEC_TOOL = "exec";
 export const EXEC_KEY = "command";
@@ -160,19 +170,35 @@ export function sumInputTokens(records) {
 }
 
 /**
+ * ②' 的键构造（issue #596）：`${path}@${offset}:${limit}`。
+ * `offset` 缺省 `0`、`limit` 缺省 `null`（缺省 = 入参里没有这个键）；**两者按原值参与键，不做归一化**
+ * ——显式传 `offset: null` 的键是 `path@null:null`，不折算成 `0`。拿不到非空 `path` 时返回 `null`
+ * （调用不进分母，单独计入 `missingKeyCalls`，与 ② 的缺参口径一致）。
+ */
+export function readRangeKey(input) {
+  const path = input?.[READ_KEY];
+  if (typeof path !== "string" || path === "") return null;
+  const offset = input?.offset === undefined ? READ_RANGE_OFFSET_DEFAULT : input.offset;
+  const limit = input?.limit === undefined ? READ_RANGE_LIMIT_DEFAULT : input.limit;
+  return `${path}@${offset}:${limit}`;
+}
+
+/**
  * ②/③ 的重复率：同一 run 内同一键被同一工具调用 ≥2 次的比例。
  * 分子 = 重复的键数（出现 ≥2 次），分母 = 被用过的键数（去重）；rate = 分子/分母。
- * 缺参调用（`path` / `command` 不是非空字符串）不进分母，单独计数 `missingKeyCalls`。
+ * `calls` = 该工具的**全部**调用数（含首次、含缺参），缺参调用不进分母，单独计数 `missingKeyCalls`。
+ * `repeatedCalls` = 多出来的那几次 = `calls − missingKeyCalls − denominator`（首次不算重复劳动）
+ * ——issue #596 裁决：这个量必须显式给字段，不让调用方自己去算。
  */
-export function repeatRate(uses, toolName, keyName) {
+function repeatRateBy(uses, toolName, keyOf) {
   const counts = new Map();
   let missingKeyCalls = 0;
   let calls = 0;
   for (const use of uses) {
     if (use.name !== toolName) continue;
     calls += 1;
-    const key = use.input?.[keyName];
-    if (typeof key !== "string" || key === "") {
+    const key = keyOf(use.input);
+    if (key === null) {
       missingKeyCalls += 1;
       continue;
     }
@@ -187,10 +213,24 @@ export function repeatRate(uses, toolName, keyName) {
     rate: denominator === 0 ? null : numerator / denominator,
     calls,
     missingKeyCalls,
+    repeatedCalls: calls - missingKeyCalls - denominator,
     repeatedKeys: [...counts.entries()]
       .filter(([, count]) => count >= 2)
       .map(([key, count]) => ({ key, count })),
   };
+}
+
+/** ②：同 `path` 的重读率（口径与本单之前逐字相同，别动）。 */
+export function repeatRate(uses, toolName, keyName) {
+  return repeatRateBy(uses, toolName, (input) => {
+    const key = input?.[keyName];
+    return typeof key === "string" && key !== "" ? key : null;
+  });
+}
+
+/** ②'：同 `path@offset:limit` 的重读率（**分页读不计入浪费**）。 */
+export function rangeRepeatRate(uses, toolName = READ_TOOL) {
+  return repeatRateBy(uses, toolName, readRangeKey);
 }
 
 /**
@@ -234,6 +274,9 @@ export function analyzeTranscript(text, { path = "", label = "" } = {}) {
   const { records, unparsableLines } = parseTranscript(text);
   const uses = collectToolUses(records);
   const input = sumInputTokens(records);
+  const read = repeatRate(uses, READ_TOOL, READ_KEY);
+  // ②' 挂在 read 下（`read.sameRange`）：形状与 ② 对齐，但**不参与判定**。
+  read.sameRange = rangeRepeatRate(uses);
   return {
     label,
     path,
@@ -241,16 +284,21 @@ export function analyzeTranscript(text, { path = "", label = "" } = {}) {
     records: records.length,
     unparsableLines,
     ...input,
-    read: repeatRate(uses, READ_TOOL, READ_KEY),
+    read,
     exec: repeatRate(uses, EXEC_TOOL, EXEC_KEY),
     compaction: compactionFacts(records),
   };
 }
 
-/** 单侧（可含多个 run：session 口径）→ 累加后的 ①②③。重复率按 run 先算、再累加分子/分母。 */
+/** 单侧（可含多个 run：session 口径）→ 累加后的 ①②③ + ②'。重复率按 run 先算、再累加分子/分母。 */
 export function aggregateSide(runs, label) {
-  const read = { numerator: 0, denominator: 0, calls: 0, missingKeyCalls: 0, repeatedKeys: [] };
-  const exec = { numerator: 0, denominator: 0, calls: 0, missingKeyCalls: 0, repeatedKeys: [] };
+  const emptyRate = () => ({
+    numerator: 0, denominator: 0, calls: 0, missingKeyCalls: 0, repeatedCalls: 0, repeatedKeys: [],
+  });
+  const read = emptyRate();
+  // ②'：与 ② 并列的一维（`read.sameRange`），累加方式与 ② 逐字相同（先逐 run 算、再累加）。
+  read.sameRange = emptyRate();
+  const exec = emptyRate();
   const compaction = {
     entries: 0, compactedTrue: 0, triggeredLayers: 0,
     tokensBefore: 0, tokensAfter: 0, savedTokens: 0, savingsRatio: null,
@@ -269,6 +317,11 @@ export function aggregateSide(runs, label) {
     read.calls += run.read.calls;
     read.missingKeyCalls += run.read.missingKeyCalls;
     read.repeatedKeys.push(...run.read.repeatedKeys);
+    read.sameRange.numerator += run.read.sameRange.numerator;
+    read.sameRange.denominator += run.read.sameRange.denominator;
+    read.sameRange.calls += run.read.sameRange.calls;
+    read.sameRange.missingKeyCalls += run.read.sameRange.missingKeyCalls;
+    read.sameRange.repeatedKeys.push(...run.read.sameRange.repeatedKeys);
     exec.numerator += run.exec.numerator;
     exec.denominator += run.exec.denominator;
     exec.calls += run.exec.calls;
@@ -281,7 +334,15 @@ export function aggregateSide(runs, label) {
     compaction.tokensAfter += run.compaction.tokensAfter;
   }
   read.rate = read.denominator === 0 ? null : read.numerator / read.denominator;
+  // `repeatedCalls` 是派生量：按**累加后**的 calls/denominator 重算（与逐 run 相加等价）。
+  read.repeatedCalls = read.calls - read.missingKeyCalls - read.denominator;
+  read.sameRange.rate = read.sameRange.denominator === 0
+    ? null
+    : read.sameRange.numerator / read.sameRange.denominator;
+  read.sameRange.repeatedCalls = read.sameRange.calls
+    - read.sameRange.missingKeyCalls - read.sameRange.denominator;
   exec.rate = exec.denominator === 0 ? null : exec.numerator / exec.denominator;
+  exec.repeatedCalls = exec.calls - exec.missingKeyCalls - exec.denominator;
   compaction.savedTokens = compaction.tokensBefore - compaction.tokensAfter;
   compaction.savingsRatio = compaction.tokensBefore > 0
     ? compaction.savedTokens / compaction.tokensBefore
@@ -390,6 +451,25 @@ function formatRate(rate) {
   return `${rate.numerator}/${rate.denominator} = ${pct(rate.rate)}`;
 }
 
+/**
+ * ② / ②' 的**并列两行**（issue #596）。口径写死在括号里：
+ * ② 含分页读 ⇒ 它是上界，**不等于浪费**；②' 才是真浪费，**分页读不计入浪费**。
+ * 「重读调用」读的是字段 `repeatedCalls`（= calls − missingKeyCalls − denominator），
+ * 两者之差 = **分页读**次数（同 path 不同 range）：它出现在 ②、不出现在 ②'。
+ */
+function formatReadLines(read, indent) {
+  const sameRange = read.sameRange;
+  const paging = read.repeatedCalls - sameRange.repeatedCalls;
+  return [
+    `${indent}② 重复读取率（同 path）       = ${formatRate(read)}（含分页读，不等于浪费）`,
+    `${indent}   └ ${READ_TOOL} 调用 ${read.calls} 次；分母 = 去重 path ${read.denominator} 个；`
+    + `分子 = 重复 path ${read.numerator} 个；重读调用 ${read.repeatedCalls} 次`,
+    `${indent}②' 真浪费（同 path 同 range） = ${formatRate(sameRange)}（**分页读不计入浪费**）`,
+    `${indent}   └ 分母 = 去重 range ${sameRange.denominator} 个；分子 = 重复 range ${sameRange.numerator} 个；`
+    + `重读调用 ${sameRange.repeatedCalls} 次；分页读（同 path 不同 range）= ${paging} 次`,
+  ];
+}
+
 function formatBreakdown(perRound) {
   if (perRound.length === 0) return "（没有任何带 usage 的轮次）";
   const shown = perRound.slice(0, 12).map((entry) => String(entry.model + entry.engine));
@@ -405,15 +485,14 @@ function formatSide(side, runs) {
       + `${run.unparsableLines > 0 ? `（坏行 ${run.unparsableLines} 行已跳过）` : ""}`);
     lines.push(`    ① 每任务总输入 = ${run.totalInputTokens} token（${formatBreakdown(run.perRound)}；`
       + `主循环 ${run.modelInputTokens} + 引擎自发 ${run.engineInputTokens}；${run.usageRounds} 个带 usage 的轮次）`);
-    lines.push(`    ② 重复读取率 = ${formatRate(run.read)}（${READ_TOOL} 调用 ${run.read.calls} 次；`
-      + `分母 = 去重 path ${run.read.denominator} 个；分子 = 重复 path ${run.read.numerator} 个）`);
+    lines.push(...formatReadLines(run.read, "    "));
     lines.push(`    ③ 重复执行率 = ${formatRate(run.exec)}（${EXEC_TOOL} 调用 ${run.exec.calls} 次；`
       + `分母 = 去重 command ${run.exec.denominator} 个；分子 = 重复 command ${run.exec.numerator} 个）`);
   }
   if (side.runCount > 1) {
     lines.push(`  合计（session 口径：先逐 run 算再累加分子/分母）`);
     lines.push(`    ① 每任务总输入 = ${side.totalInputTokens} token`);
-    lines.push(`    ② 重复读取率 = ${formatRate(side.read)}`);
+    lines.push(...formatReadLines(side.read, "    "));
     lines.push(`    ③ 重复执行率 = ${formatRate(side.exec)}`);
   }
   return lines;
@@ -437,6 +516,14 @@ export const DEFINITIONS = [
   `② 重复读取率 = **同一 run 内**同一 \`${READ_KEY}\` 被 \`${READ_TOOL}\` ≥2 次的比例：`
   + `分子 = 重复读的 path 数（出现 ≥2 次的 path 个数），分母 = 被读过的 path 数（去重后的 path 个数）。`
   + `path 原样比较，不做路径归一化。`,
+  `②' 真浪费（同 path 同 range）= **同一 run 内**同一 \`path@offset:limit\` 被 \`${READ_TOOL}\` ≥2 次的比例：`
+  + `分子 = 重复读的 range 数（出现 ≥2 次的键数），分母 = 被读过的 range 数（去重后的键数）。`
+  + `键 = \`\${path}@\${offset}:\${limit}\`（offset 缺省 ${READ_RANGE_OFFSET_DEFAULT}、`
+  + `limit 缺省 ${READ_RANGE_LIMIT_DEFAULT}，两者按原值参与键，不做归一化）。`
+  + `**分页读（同 path 不同 range）不计入浪费**：它出现在 ②、不出现在 ②'；`
+  + `②' 是 ② 的下界，且 **不参与判定**（decide() 只看 ②/③）。`
+  + `②/②' 的 \`repeatedCalls\` = 重读调用数 = \`calls − missingKeyCalls − denominator\`；`
+  + `两者之差 = 分页读次数。`,
   `③ 重复执行率 = **同一 run 内**同一 \`${EXEC_KEY}\` 串被 \`${EXEC_TOOL}\` ≥2 次的比例：分子/分母同 ②。`,
   `④ 用户重述次数 = host-side / not-applicable（跨 run 语义：一条用户消息 = 一个 run；引擎侧没有数据源，`
   + `本分析器不用代理指标冒充）。`,
