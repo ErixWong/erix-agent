@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { estimateTokens } from "../src/tokens.js";
 import {
+  TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT,
+  TOOL_RESULT_TTL_DEFAULT,
   extractContentDigest,
   foldToolResultsForRequest,
 } from "../src/loop/tool-result-ttl.js";
@@ -118,6 +120,53 @@ test("exec 类工具显示 command 前 80 字符", () => {
   const snippet = folded.content.slice(commandIndex, commandIndex + 80);
   assert.ok(folded.content.includes(snippet));
   assert.ok(!folded.content.includes(command.slice(90)));
+});
+
+// —— 默认值守护（issue #618 表 1 的「零守护」补口）——
+// 双层：名字级（常量逐字相等 ⇒ 改这个数就红）+ 行为级（它控制的行为确实随它变）。
+// 落点选本文件：这里就是 TTL 折叠的全部夹具（conversation/resultBlock）。
+
+test("默认值守护：TOOL_RESULT_TTL_DEFAULT 逐字 2，且同一份历史的折/不折由它决定", () => {
+  assert.equal(TOOL_RESULT_TTL_DEFAULT, 2, "默认 TTL 轮数（改这个数就该有题红）");
+  const messages = conversation(); // erixRound: 1 ⇒ 本轮 currentRound 下的 age = currentRound - 1
+  // 不传 ttl ⇒ 走默认值：age=2 >= 2 ⇒ 折叠
+  const byDefault = foldToolResultsForRequest(messages, { currentRound: 3 });
+  assert.notEqual(byDefault, messages);
+  assert.match(resultBlock(byDefault).content, /【已折叠·TTL】/, "默认 TTL 下 age=2 必须折");
+  // 预警轮也按默认值走：age=1 === ttl-1
+  assert.match(
+    resultBlock(foldToolResultsForRequest(messages, { currentRound: 2 })).content,
+    /【TTL 预警】/,
+    "默认 TTL 下 age=1 是预警轮",
+  );
+  // 显式传更大的 ttl ⇒ 同一份历史、同一轮不折（证明折/不折确实由这个值决定）
+  const widerTtl = foldToolResultsForRequest(messages, {
+    currentRound: 3,
+    ttl: TOOL_RESULT_TTL_DEFAULT + 3,
+  });
+  assert.equal(widerTtl, messages, "ttl 更大 ⇒ age=2 不到 ttl-1，视图逐字不变（连预警都没有）");
+});
+
+test("默认值守护：TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT 逐字 4000，且门槛上下分界就是它", () => {
+  assert.equal(TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT, 4000, "默认折叠门槛（估算 tokens，改这个数就该有题红）");
+  // 门槛两侧的样本（体积由估算器给出，不靠手写魔数）。
+  const below = "y".repeat(2_000); // ~658 tokens
+  const above = BIG; // ~6,572 tokens
+  assert.ok(estimateTokens(below) < TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT, "前提：below 必须低于默认门槛");
+  assert.ok(estimateTokens(above) > TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT, "前提：above 必须高于默认门槛");
+  // 不传 minTokens ⇒ 走默认门槛。
+  const small = conversation({ resultContent: below });
+  assert.equal(
+    foldToolResultsForRequest(small, { currentRound: 10 }),
+    small,
+    "低于默认门槛的结果永不折叠（哪怕 age 远超 TTL）",
+  );
+  const big = conversation({ resultContent: above });
+  assert.match(
+    resultBlock(foldToolResultsForRequest(big, { currentRound: 10 })).content,
+    /【已折叠·TTL】/,
+    "高于默认门槛的结果按 TTL 折叠",
+  );
 });
 
 test("JSON {success,data} 结果的占位符额外保留骨架行", () => {

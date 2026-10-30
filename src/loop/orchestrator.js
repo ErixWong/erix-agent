@@ -359,6 +359,32 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
 }
 
 /**
+ * 缺陷 ③：把**策略那一折**与**预算兜底那一折**的轮次区间合并成一个。
+ *
+ * 区间形状是 `roundRangeForIndexes()` 的 `{from, to}`（与 `foldedRoundRange` / `buildFoldedFacts.roundRange`
+ * 同一份形状，不是数组、也没有别的变体）；两边都可能缺 `from` / `to`（宿主策略可能只给一头）。
+ * 语义与 `mergeFoldNavigationRecords` 一致：**并集**——`from` 取更小、`to` 取更大。
+ *
+ * 为什么不能「先来算谁的」：水位线（`runLoopState.foldedThrough`）只从这一个区间取，
+ * 丢掉兜底那一折的 `to` 会让水位线**低估** ⇒ resume 后重放已折轮次。
+ *
+ * @param {{from?:number, to?:number}|undefined} first
+ * @param {{from?:number, to?:number}|undefined} second
+ * @returns {{from?:number, to?:number}|undefined}
+ */
+function mergeFoldedRoundRanges(first, second) {
+  if (first === undefined) return second;
+  if (second === undefined) return first;
+  const froms = [first?.from, second?.from].filter((value) => Number.isSafeInteger(value));
+  const tos = [first?.to, second?.to].filter((value) => Number.isSafeInteger(value));
+  if (froms.length === 0 && tos.length === 0) return first;
+  return {
+    ...(froms.length === 0 ? {} : { from: Math.min(...froms) }),
+    ...(tos.length === 0 ? {} : { to: Math.max(...tos) }),
+  };
+}
+
+/**
  * @typedef {object} LoopEvent
  * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"budget_below_working_set"|"run_outcome"} type
  * @property {number} [round]
@@ -3967,7 +3993,10 @@ export async function runToolLoop(options) {
         foldedPayload = [...foldedPayload, ...(fallback.foldedPayload ?? [])];
         foldedRounds += fallback.foldedRounds ?? 0;
         compacted = compacted || fallback.compacted === true;
-        if (foldedRoundRange === undefined) foldedRoundRange = fallback.foldedRoundRange;
+        // 缺陷 ③：**合并**两个区间，不是「策略折过就丢掉兜底那份」。
+        // 水位线（`foldedThrough`）只从这一个区间取 ⇒ 丢掉兜底那一折的 `to` 会让水位线低估，
+        // resume 后重放已折轮次。语义与 `mergeFoldNavigationRecords` 一致（并集：`from` 更小 / `to` 更大）。
+        foldedRoundRange = mergeFoldedRoundRanges(foldedRoundRange, fallback.foldedRoundRange);
         if (fallback.navigationRecord !== undefined) {
           navigationRecord = mergeFoldNavigationRecords(
             [navigationRecord, fallback.navigationRecord],

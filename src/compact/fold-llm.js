@@ -313,6 +313,9 @@ export function createFoldLlmStrategy({
         rounds,
         keep,
         settings.protectedMessage,
+        // issue #608：工作集地板（`0` = 关闭，引擎显式开成 `WORKING_SET_RECENT_ROUNDS`）。
+        // #614 之后本策略是 CLI 默认 ⇒ 漏传就等于宿主显式开的地板在默认路径上被静默忽略。
+        settings.workingSetRecentRounds,
       );
       const foldedPayload = cloneFoldPayload(
         folded.flatMap((round) => round.messages),
@@ -504,12 +507,17 @@ export function createFoldLlmStrategy({
  *
  * @param {*} error 可以是 Error / 带 `code` 的自定义错 / 
  * 字符串（降级路径上什么都会抛上来）
- * @returns {"timeout"|"context_window_exceeded"|"error"}
+ * @returns {"timeout"|"context_window_exceeded"|"empty_summary"|"error"}
  */
 export function classifyFoldDegradeKind(error) {
   const code = typeof error?.code === "string" ? error.code : "";
   if (code === "summarizer_timeout" || code === "ETIMEDOUT" || code === "TIMEOUT") {
     return "timeout";
+  }
+  // 缺陷 ②：空串 / 只有空白的摘要是**摘要器没产出**，不是「成功的空摘要」。
+  // 单独一类，好让宿主从记录上把它与「摘要器挂了」（`error`）分开。
+  if (code === "summarizer_empty_summary") {
+    return "empty_summary";
   }
   const message = String(error?.message ?? error ?? "");
   if (/maximum context length|context_length_exceeded|context window|ContextWindowExceeded|is longer than configured context length|input length|too many tokens/i.test(message)) {
@@ -675,6 +683,31 @@ function normalizePriorSummary(value, maxBytes) {
 }
 
 /**
+ * 缺陷 ②：摘要器的返回值必须**真的是一份摘要**。
+ *
+ * `typeof "" === "string"` 曾把「模型什么都没写」当成成功 ⇒ 折叠块里只有恢复提示 +
+ * 锚点，既无语义内容、也无降级标记（看上去正常，实际是空的）。空串 / 只有空白的串
+ * 一律当**失败**：抛错 ⇒ 走既有的 #33 D 降级路径（降级标记 + 统计摘要），原因分类为
+ * `empty_summary`（`summarizer_empty_summary`），文案「摘要器返回空内容」。
+ *
+ * 非字符串的旧口径（`TypeError` + `error` 类）逐字不动。
+ *
+ * @param {*} summary
+ * @returns {string} 可用的摘要文本
+ */
+function assertUsableSummary(summary) {
+  if (typeof summary !== "string") {
+    throw new TypeError("fold-llm summarizer must return a string");
+  }
+  if (summary.trim() === "") {
+    const error = new TypeError("摘要器返回空内容");
+    Object.assign(error, { code: "summarizer_empty_summary" });
+    throw error;
+  }
+  return summary;
+}
+
+/**
  * issue #469-①②③：一次折叠的摘要步骤。
  *   · 首发与（仅超窗时允许的）自愈重试共享一条 `budgetMs` 死线；
  *   · **超时绝不重试**（宿主裁决 ②：重试只是把一次卡顿变成两次）；
@@ -718,10 +751,7 @@ async function callSummarizerWithBound({
   });
   const limitPart = first.droppedRounds > 0 ? { droppedRounds: first.droppedRounds } : {};
   try {
-    const summary = await invoke(first.messages);
-    if (typeof summary !== "string") {
-      throw new TypeError("fold-llm summarizer must return a string");
-    }
+    const summary = assertUsableSummary(await invoke(first.messages));
     return { summary, droppedMessages: first.dropped, attempts: 1, ...limitPart };
   } catch (error) {
     if (classifyFoldDegradeKind(error) !== "context_window_exceeded") {
@@ -737,10 +767,7 @@ async function callSummarizerWithBound({
     const retry = trimBeforeRetry(first.messages, retryBound);
     if (retry.dropped === 0 && retry.collapsed === 0) return fail(error, first.dropped, limitPart);
     try {
-      const retrySummary = await invoke(retry.messages);
-      if (typeof retrySummary !== "string") {
-        throw new TypeError("fold-llm summarizer must return a string");
-      }
+      const retrySummary = assertUsableSummary(await invoke(retry.messages));
       return {
         summary: retrySummary,
         droppedMessages: first.dropped + retry.dropped + retry.collapsed,

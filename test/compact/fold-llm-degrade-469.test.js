@@ -12,6 +12,8 @@ import {
   serializeFoldedMessages,
 } from "../../src/compact/provider-summarizer.js";
 import { createCompactionStat } from "../../src/compact/pipeline.js";
+import { createMemoryTranscriptStore } from "../../src/store/memory.js";
+import { runDirect } from "../helpers/run-direct.js";
 
 // 足够长的早期消息：让折叠输入进到「还能再裁一半」的量级（重试下限 256 token）。
 const BULK = "alpha ".repeat(2000);
@@ -214,5 +216,125 @@ test("#486 P1-A 宿主 abort 不是超时：不许被改写成 summarizer_timeou
     assert.notEqual(error.code, "summarizer_timeout", "宿主主动 abort 属于 error，不是超时");
   } finally {
     release();
+  }
+});
+
+// ── 缺陷 ②：空串摘要不是「成功的空摘要」──────────────────────────────────────────────
+//
+// `typeof "" === "string"` 曾让「模型什么都没写」算成功 ⇒ 折叠块里只有恢复提示 + 锚点，
+// 既无语义内容、也无降级标记（看上去正常，实际是空的）。
+// 口径：空串 / 只有空白的串 = **失败** ⇒ 走既有的 #33 D 降级路径（降级标记 + 统计摘要），
+// 原因分类 `empty_summary`、文案「摘要器返回空内容」。
+//
+// 变异实验：把 `assertUsableSummary` 的 `trim() === ""` 分支删掉（退回旧的
+// `typeof !== "string"` 判断）⇒ 本格两条全红（`source` 变 `llm`、无降级标记、`degradeKind` 变 `undefined`）。
+
+const degradedHeadText = (result) => result.messages
+  .flatMap((message) => (Array.isArray(message?.content) ? message.content : []))
+  .map((block) => (block?.type === "text" ? String(block.text ?? "") : ""))
+  .join("\n");
+
+test("#469-② 空串摘要 ⇒ 降级（标记 + 统计摘要 + degradeKind=empty_summary），折叠本身不失败", async () => {
+  const strategy = createFoldLlmStrategy({ summarizer: async () => "" });
+  const result = await strategy.compact(conversation(), { keepRounds: 1 });
+
+  assert.equal(result.compacted, true, "空摘要不得让折叠本身失败（run 不该因为它在半路死掉）");
+  assert.equal(result.foldSummary.source, "statistical",
+    `空摘要必须如实记成降级（实测 source=${String(result.foldSummary.source)}）`);
+  assert.equal(result.foldSummary.degradeKind, "empty_summary",
+    `降级原因必须可分辨（实测 ${String(result.foldSummary.degradeKind)}）`);
+  assert.equal(result.foldSummary.degradeReason, "摘要器返回空内容");
+
+  const head = degradedHeadText(result);
+  assert.match(head, /\[fold-llm 摘要失败，已降级为统计摘要（原因: 摘要器返回空内容）\]/u,
+    `折叠块首行必须是降级标记（实测：${head.slice(0, 120)}）`);
+  // 不只是标记：标记后面必须**真有**统计摘要（否则「降级」也是空的）。
+  assert.match(head, /已折叠/u, `降级后必须带上统计摘要正文（实测：${head.slice(0, 200)}）`);
+  assert.ok(head.length > "\\[fold-llm 摘要失败，已降级为统计摘要（原因: 摘要器返回空内容）\\]".length + 20,
+    `折叠块不许退化成「只有标记」（实测 ${head.length} 字符）`);
+  // 机械替代物照旧入账（source/increment 口径不变）。
+  assert.equal(result.foldSummary.incrementOrigin, "mechanical");
+  assert.ok(typeof result.foldSummary.increment === "string" && result.foldSummary.increment !== "");
+});
+
+test("#469-② 只有空白的摘要同样算失败（`trim()` 口径，不是只判空串）", async () => {
+  const strategy = createFoldLlmStrategy({ summarizer: async () => "  \n\t \n " });
+  const result = await strategy.compact(conversation(), { keepRounds: 1 });
+
+  assert.equal(result.compacted, true);
+  assert.equal(result.foldSummary.source, "statistical", "只有空白的摘要不是内容");
+  assert.equal(result.foldSummary.degradeKind, "empty_summary");
+  assert.match(degradedHeadText(result), /降级为统计摘要（原因: 摘要器返回空内容）/u);
+});
+
+test("#469-② 真引擎（fold-llm + 空串摘要器）：run 正常收尾，折叠块是降级形状（不是「看起来正常」的空摘要）", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "s-469-empty-summary";
+  let turns = 0;
+  const provider = {
+    // fake 协议的判别键：缺了它 runToolLoop 不会把这份 provider 当 fake 驱动。
+    protocol: "fake",
+    model: "fake-model",
+    async chat() {
+      if (turns < 6) {
+        turns += 1;
+        return {
+          content: [{
+            type: "tool_use",
+            id: `tu_${turns}`,
+            name: "echo",
+            input: { text: `R${turns}` },
+          }],
+          stopReason: "tool_use",
+        };
+      }
+      return { content: [{ type: "text", text: "收尾结论" }], stopReason: "end_turn" };
+    },
+  };
+  provider.chatStream = provider.chat;
+
+  const run = await runDirect({
+    capabilities: { ports: { strategy: createFoldLlmStrategy({ summarizer: async () => "" }) } },
+    provider,
+    runId,
+    store,
+    initialUserMessage: "开始任务",
+    tools: [{
+      name: "echo",
+      description: "回显输入",
+      inputSchema: { type: "object", properties: { text: { type: "string" } } },
+    }],
+    // 正文放在 **tool_result** 里（不在 `tool_use.input` 里）：这样「工作集」才有量级，
+    // 折叠决策才会在有多轮可折时发生。
+    executeTool: async ({ input }) => `ECHO:${String(input?.text ?? "")}_${"填充".repeat(300)}`,
+    maxRounds: 20,
+    completion: false,
+    wrapup: false,
+    stallDetection: false,
+    config: { folding: { context: { budgetTokens: 300, keepRounds: 0 } } },
+  });
+
+  assert.ok(String(run?.finalText ?? "").includes("收尾结论"),
+    `空摘要不许把 run 拖死：${JSON.stringify(run?.termination ?? {})} rounds=${run?.rounds}`);
+  assert.equal(run.termination.reason, "end_turn",
+    `终局必须是正常收尾（实测 ${String(run.termination.reason)}）`);
+  const messagesJson = JSON.stringify(run.messages ?? []);
+  assert.ok(messagesJson.includes("已降级为统计摘要（原因: 摘要器返回空内容）"),
+    "真引擎的折叠块里必须留下降级标记（否则「空摘要」在默认路径上仍然静默）");
+
+  // 落账面同样如实：`compactionStats.foldSummary` 与轮记录 `foldedFacts` 都得说「降级 + 空内容」。
+  const stats = (run.compactionStats ?? []).filter((stat) => stat.foldSummary !== undefined);
+  assert.ok(stats.length > 0, "前提：这条 run 必须真的折叠过");
+  for (const stat of stats) {
+    assert.equal(stat.foldSummary.degradeKind, "empty_summary",
+      `降级分类必须可分辨（实测 ${String(stat.foldSummary.degradeKind)}）`);
+    assert.equal(stat.foldSummary.degradeReason, "摘要器返回空内容");
+  }
+  const records = await store.load(runId);
+  const facts = records.map((record) => record.foldedFacts).filter((fact) => fact !== undefined);
+  assert.ok(facts.length > 0, "前提：折叠必须落进轮记录");
+  for (const fact of facts) {
+    assert.equal(fact.source, "statistical", "空摘要不得被记成模型摘要");
+    assert.equal(fact.degradeReason, "摘要器返回空内容");
   }
 });

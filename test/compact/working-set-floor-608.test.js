@@ -32,6 +32,7 @@ import {
   workingSetRoundIndexes,
   workingSetTokens,
 } from "../../src/compact/helpers.js";
+import { createFoldLlmStrategy } from "../../src/compact/fold-llm.js";
 import { renderContinuityBlock } from "../../src/loop/continuity-block.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { estimateMessageTokens, estimateTokens } from "../../src/tokens.js";
@@ -496,4 +497,58 @@ test("#608-3c 没调过工具的 run ⇒ 整格缺席（旧档 / 纯文本 run �
   const result = await runEngine({ runId: "s608-cursor-none", provider, maxRounds: 4 });
   assert.equal(result.runState.deterministic.lastToolCall, undefined);
   assert.equal(String(result.runState.rendered).includes("last="), false);
+});
+
+// ── 判据 1（缺陷 ①）：`fold-llm` 也必须吃这块地板 ────────────────────────────────────
+//
+// #614 之后 `fold-llm` 是 CLI 默认策略；它当时**只传了 3 个参**给 `selectFoldedRounds`
+// （`settings.workingSetRecentRounds` 漏传）⇒ 宿主显式打开的地板在默认路径上被静默忽略。
+// 这一格钉的就是第 4 个参：地板开着时最近 2 个带 `tool_result` 的轮次不得进 `foldedPayload`。
+//
+// 变异实验：把 `fold-llm.js` 里 `selectFoldedRounds` 的第 4 参删掉 ⇒ 本格红（`foldedRounds` 变 4、
+// `foldedPayload` 里出现 RESULT-3/4）。
+
+/** 4 轮工具往返（每轮 `assistant tool_use` + `user tool_result`，结果文本带唯一标记）。 */
+const floorConversation = () => [
+  { role: "user", content: "开始任务" },
+  ...toolRound(1, "RESULT-1"),
+  ...toolRound(2, "RESULT-2"),
+  ...toolRound(3, "RESULT-3"),
+  ...toolRound(4, "RESULT-4"),
+];
+
+const FLOOR_SUMMARY = [
+  "## 阶段", "早期轮次已折叠。",
+  "## 下一步", "继续收尾。",
+].join("\n");
+
+test("#608-1e fold-llm（#614 起的默认策略）：显式开地板 ⇒ 最近 2 轮的 tool_result 不进被折集合", async () => {
+  const withFloor = await createFoldLlmStrategy({ summarizer: async () => FLOOR_SUMMARY })
+    .compact(floorConversation(), { keepRounds: 0, workingSetRecentRounds: 2 });
+
+  assert.equal(withFloor.compacted, true, "前提：这条调用必须真的折了东西");
+  assert.equal(withFloor.foldedRounds, 2,
+    `地板开着时只折更老的两轮（实测 foldedRounds=${withFloor.foldedRounds}）`);
+  const foldedJson = JSON.stringify(withFloor.foldedPayload);
+  assert.equal(foldedJson.includes("RESULT-4"), false,
+    "工作集（最近 2 轮）里的 tool_result 被折走了 ⇒ 模型必须重读");
+  assert.equal(foldedJson.includes("RESULT-3"), false, "工作集第 2 轮同样不许折");
+  assert.equal(foldedJson.includes("RESULT-1"), true, "更老的轮次必须真的被折（否则上面两条是空断言）");
+  assert.equal(foldedJson.includes("RESULT-2"), true, "更老的轮次必须真的被折");
+  const retainedJson = JSON.stringify(withFloor.messages);
+  assert.equal(retainedJson.includes("RESULT-4"), true, "工作集必须留在消息流里（不是删掉）");
+  assert.equal(retainedJson.includes("RESULT-3"), true);
+});
+
+test("#608-1f fold-llm 反向格：地板关（`0` / 不传）⇒ 照旧全折（= #608 之前的行为）", async () => {
+  for (const options of [{ keepRounds: 0, workingSetRecentRounds: 0 }, { keepRounds: 0 }]) {
+    const result = await createFoldLlmStrategy({ summarizer: async () => FLOOR_SUMMARY })
+      .compact(floorConversation(), options);
+    assert.equal(result.foldedRounds, 4,
+      `地板关时四轮全折（options=${JSON.stringify(options)}，实测 foldedRounds=${result.foldedRounds}）`);
+    const foldedJson = JSON.stringify(result.foldedPayload);
+    assert.equal(foldedJson.includes("RESULT-4"), true,
+      `地板关时工作集照旧被折（options=${JSON.stringify(options)}）`);
+    assert.equal(foldedJson.includes("RESULT-1"), true);
+  }
 });

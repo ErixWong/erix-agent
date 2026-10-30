@@ -18,6 +18,7 @@ import { runDirect, withSeed } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { makeTmp } from "./helpers/tmp.js";
+import { pickCoveringFoldSummary } from "../src/compact/resume-fold-trim.js";
 
 const SUMMARY_SYSTEM = "你是对话历史压缩器";
 
@@ -194,17 +195,61 @@ test("#326-C 复用不重算：折叠后中断，resume 不再调 summarizer，�
     "不得出现重算出来的第二份摘要",
   );
 
-  // issue #469-A：基底进复用键之后，这一格从「复用」变成「重算一次」⇒ 账本里会多一条**同区间**的
-  // 事实行（宿主明确选择的代价：宁可少命中一格，也不无声丢脉络）。本格守的是**读侧不歧义**：
-  // 所有事实行覆盖同一水位线 ⇒ `pickCoveringFoldSummary` 仍只挑到一份，不会出现两个区间。
+  // issue #469-A：基底进复用键之后，这一格从「复用」变成「重算一次」⇒ 账本里会多一条事实行
+  // （宿主明确选择的代价：宁可少命中一格，也不无声丢脉络）。本格守的是**读侧不歧义**：
+  // `pickCoveringFoldSummary` 只挑到**一份**、且挑的是覆盖水位线的那一份。
+  //
+  // ⚠ 缺陷 ③ 修正了这条断言原先的写法（`new Set(...to).size === 1`）：它把「两次折叠的区间
+  // **必须相同**」当成了不歧义的代理。可两次折叠实际折走的轮次本来就可能不同（第二次是
+  // 「策略那一折 + 预算兜底那一折」），而区间此前只记策略那一份 ⇒ `to` **低估**。缺陷 ③ 把两个
+  // 区间合并之后，两行如实给出 `{from:1,to:1}` 与 `{from:1,to:2}`。这不是歧义，是两次折叠
+  // 各自覆盖的真实范围；歧义与否由读侧（挑一份）定义，故改为钉读侧。
   const recordsAfter = await store.load("326c-fold-resume");
   const factsAfter = recordsAfter.filter((record) => typeof record?.foldedSummary?.text === "string");
   assert.ok(factsAfter.length >= 1, "折叠事实必须仍在账本里");
-  assert.equal(
-    new Set(factsAfter.map((record) => record.foldedSummary.foldedRoundRange?.to)).size,
-    1,
-    `同一次折叠的事实行必须覆盖同一水位线（实测 ${JSON.stringify(factsAfter.map((r) => r.foldedSummary.foldedRoundRange))}）`,
-  );
+  const rangesAfter = factsAfter.map((record) => record.foldedSummary.foldedRoundRange);
+  for (const range of rangesAfter) {
+    assert.ok(Number.isSafeInteger(range?.from) && Number.isSafeInteger(range?.to),
+      `事实行的区间必须是完整的 {from,to}（实测 ${JSON.stringify(range)}）`);
+    assert.ok(range.to >= range.from, `区间不许倒挂（实测 ${JSON.stringify(range)}）`);
+  }
+  // 缺陷 ③ 的可咬判据：同一轮里「折叠区间」与「真折了几轮」必须自洽 ——
+  // `foldedSummary.foldedRoundRange` 的跨度不得小于该轮的 `foldedFacts.rounds`
+  //（区间是**并集**，至少要盖住真的折走的那些轮）。策略那一折 + 预算兜底那一折时
+  // `rounds` 是两者之和，而区间若只记策略那一份就会**低估** ⇒ 这里当场红。
+  // ⚠ 两个事实字段落在**同一轮的两条不同记录**上（`foldedSummary` 一条、`foldedFacts` 一条）
+  // ⇒ 必须按 `round` 归并再比；逐条记录比会静默变成空断言（实测踩过）。
+  const perRound = new Map();
+  for (const record of recordsAfter) {
+    const round = Number(record?.round ?? 0);
+    const entry = perRound.get(round) ?? {};
+    if (record?.foldedSummary?.foldedRoundRange !== undefined) {
+      entry.summaryRange = record.foldedSummary.foldedRoundRange;
+    }
+    if (record?.foldedFacts !== undefined) entry.factsRounds = record.foldedFacts.rounds;
+    perRound.set(round, entry);
+  }
+  const paired = [...perRound.entries()].filter(([, entry]) => (
+    entry.summaryRange !== undefined && entry.factsRounds !== undefined
+  ));
+  assert.ok(paired.length > 0,
+    "前提：至少要有一轮同时落了 foldedSummary 与 foldedFacts（否则下面那条是空断言）");
+  for (const [round, entry] of paired) {
+    assert.ok(Number.isSafeInteger(entry.factsRounds) && entry.factsRounds > 0,
+      `前提：第 ${round} 轮的 foldedFacts.rounds 必须是正整数（实测 ${JSON.stringify(entry.factsRounds)}）`);
+    const span = entry.summaryRange.to - entry.summaryRange.from + 1;
+    assert.ok(span >= entry.factsRounds,
+      `第 ${round} 轮：折叠区间跨度 ${span}（${JSON.stringify(entry.summaryRange)}）`
+        + `小于真折走的轮数 ${entry.factsRounds} ⇒ 区间被低估`
+        + "（策略那一折 + 预算兜底那一折的区间没合并），水位线会跟着低估");
+  }
+  const maxToAfter = Math.max(...rangesAfter.map((range) => range.to));
+  const pickedAfter = pickCoveringFoldSummary(recordsAfter, maxToAfter);
+  assert.ok(pickedAfter !== undefined, `读侧必须能挑到覆盖水位线 ${maxToAfter} 的那份摘要`);
+  assert.equal(pickedAfter.foldedRoundRange.to, maxToAfter,
+    `挑的必须是 \`to\` 最大的那一份（覆盖水位线；实测挑到 ${JSON.stringify(pickedAfter.foldedRoundRange)}）`);
+  assert.match(String(pickedAfter.text), /SUMMARY_V1/u,
+    "挑到的那份就是崩溃前已入账的摘要（不是重算出来的第二份）");
 });
 
 test("#326-C 复用不重算：同一 run 内重复折叠不重复调 summarizer", async () => {
