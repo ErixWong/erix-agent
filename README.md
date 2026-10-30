@@ -797,8 +797,8 @@ headless runtime's product interface.
 ```text
 erix --version, -v
 erix --help, -h
-erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--no-notes] [--no-todo] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>]
-erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]]
+erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--no-notes] [--no-todo] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>]
+erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>]
 erix skills [--skills-dir <path>]
 erix mcp [--config <path>]
 ```
@@ -858,6 +858,16 @@ The shared CLI flags are:
 - `--no-todo` (or `ERIX_NO_TODO=1`) disables `todo` entirely: the four built-in
   `todo_*` tools are not registered, the system prompt has no todo section, and
   the user-level todo skill is excluded.
+- `--delegate` (default **off**, issue #617) registers the `delegate` tool: a child
+  run that is a **nested `runToolLoop` in the same process** (v1 forks no child
+  process and starts no daemon). `--delegate-max-children <n>` (default 2) caps how
+  many child runs may be live at once — hitting the cap is a structured failure that
+  names the holder, never a queue — and `--delegate-timeout-ms <n>` (default 600000)
+  is one child run's time budget. The child's tool face **excludes `delegate`** (v1
+  forbids recursive delegation), its transcript lives under the roster directory
+  (`~/.erix/delegation/`, override with `ERIX_DELEGATION_DIR`) and is **never**
+  appended to the parent session file. It is a runnable sample and verifier for the
+  host-side delegation contract, not a new default capability.
 - `--error-log <path>` appends persistence-error events to a JSONL file (same as
   `ERIX_ERROR_LOG`; default: stderr only).
 - `--timeout <ms>` supplies a soft task deadline to `chat`; it nudges the

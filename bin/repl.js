@@ -56,6 +56,12 @@ import {
 } from "./session-scan.js";
 import { buildSkillTools, warnBuiltinToolConflicts } from "./skills.js";
 import {
+  createCliDelegation,
+  DEFAULT_DELEGATE_MAX_CHILDREN,
+  DEFAULT_DELEGATE_TIMEOUT_MS,
+  resolveDelegationDir,
+} from "./delegation.js";
+import {
   buildArchiveNotice,
   buildCliToolsSystemPrompt,
   createCliTools,
@@ -74,7 +80,7 @@ const NON_TTY_MESSAGE =
   'repl 需要交互式终端，单次对话请用：erix chat "<prompt>"';
 
 const REPL_HELP_TEXT = `REPL 用法：
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--tools <逗号分隔工具名>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--tools <逗号分隔工具名>]
   --session <id>        会话 ID（默认按工作目录自动派生）。repl 里它是**命名**：新名字直接开新会话；
                       注意 chat 的 --session 是续跑入口，id 不存在会报错（issue #168）
   --dir <path>          Transcript 存档目录（默认：~/.erix/transcripts）
@@ -93,6 +99,11 @@ const REPL_HELP_TEXT = `REPL 用法：
                       判据没过 ⇒ 终局 unverified:deliverables_failed。条数合计 ≤ 20，路径不许重复。
                       没有 guard 就没有闸门 ⇒ 单独给报用法错误（issue #391 R2）
   --tools <名1,名2>     工具白名单：只保留列表内的工具（内置+skill+MCP）；未知名字警告并忽略，过滤后为空则报错
+  --delegate            注册 delegate 工具（派生一个同进程子 run；**默认关闭**，issue #617）。
+                      子 run 的工具集**不含 delegate**（v1 不递归派生），transcript 落在名册目录下
+                      （不追加进父会话文件）；名册目录缺省 ~/.erix/delegation/
+  --delegate-max-children <n>  并发子 run 配额（默认：2）
+  --delegate-timeout-ms <n>  单个子 run 的时间预算毫秒（默认：600000）
 
 命令：
   /help                 显示此帮助
@@ -113,6 +124,7 @@ const REPL_HELP_TEXT = `REPL 用法：
   ERIX_FINAL_GUARD=1   开启终稿 provenance 核验
   ERIX_NO_NOTES=1       不装配 notes 工厂（note_* 工具不再可用）
   ERIX_NO_TODO=1        彻底关闭 todo（内置 todo_* 四工具不注册、系统提示不含 todo、用户级 todo skill 一并排除）
+  ERIX_DELEGATION_DIR   派生名册目录（默认：~/.erix/delegation/）；子 run 的 transcript 也在它下面
 
 配置文件：
   默认读取 $XDG_CONFIG_HOME/erix/config.json 或 ~/.erix/config.json，可用 --config <path> 指定；环境变量优先于配置文件。
@@ -188,6 +200,8 @@ export function parseReplArgs(argv, cwd = process.cwd(), home = homedir()) {
       || argument === "--max-rounds"
       || argument === "--idle-timeout"
       || argument === "--tools"
+      || argument === "--delegate-max-children"
+      || argument === "--delegate-timeout-ms"
     ) {
       if (seenOptions.has(argument)) {
         usageError(`参数重复：${argument}`);
@@ -222,6 +236,10 @@ export function parseReplArgs(argv, cwd = process.cwd(), home = homedir()) {
       } else if (argument === "--tools") {
         if (rawValue.trim() === "") usageError("--tools 不能为空");
         options.tools = rawValue;
+      } else if (argument === "--delegate-max-children") {
+        options.delegateMaxChildren = parseIntegerOption(argument, rawValue, 1);
+      } else if (argument === "--delegate-timeout-ms") {
+        options.delegateTimeoutMs = parseIntegerOption(argument, rawValue, 1);
       } else {
         options.idleTimeout = parseIntegerOption(argument, rawValue, 0);
       }
@@ -233,6 +251,15 @@ export function parseReplArgs(argv, cwd = process.cwd(), home = homedir()) {
       }
       seenOptions.add(argument);
       options.finalGuard = argument === "--final-guard";
+      continue;
+    }
+    // issue #617 P2：与 chat 同一个旗标、同一个缺省（**默认关**）。
+    if (argument === "--delegate") {
+      if (seenOptions.has(argument)) {
+        usageError(`参数重复：${argument}`);
+      }
+      seenOptions.add(argument);
+      options.delegate = true;
       continue;
     }
     // issue #391 R2/R3：与 chat **逐字同口径**的交付物判据——裸用 = `createDeliverableChecks()`
@@ -504,7 +531,41 @@ export async function runRepl(argv, io = {}) {
     config,
     warn: (line) => writeLine(errorOutput, line),
   });
-  const cliTools = createCliTools({ cwd, todo: !todoDisabled, execCeilingMs });
+  // issue #617 P2：`delegate` **默认关**（`--delegate` 显式开启），装配点与 chat 同构。
+  // `buildProvider` 是闭包：repl 的 provider 是**每轮重建**的（`/model` 改的是闭包里的 `model`），
+  // 子 run 取的是「派生那一刻生效的那个」。模型名仍只来自配置/当前会话模型，不硬编码。
+  let model = config.model;
+  const delegateEnabled = options.delegate === true;
+  const delegateAssembly = delegateEnabled
+    ? createCliDelegation({
+      buildProvider: (modelOverride) => providerFactory({
+        ...config,
+        endpoint: config.endpoint,
+        apiKey: config.apiKey,
+        model: modelOverride ?? model,
+        ...providerPhaseTimeouts,
+        timeoutMs: config.timeout ?? 300_000,
+        maxTokens: config.maxOutputTokens,
+      }),
+      config,
+      cwd,
+      todo: !todoDisabled,
+      notesDir,
+      rosterDir: resolveDelegationDir(io.delegationDir),
+      maxChildren: options.delegateMaxChildren ?? DEFAULT_DELEGATE_MAX_CHILDREN,
+      defaultDeadlineMs: options.delegateTimeoutMs ?? DEFAULT_DELEGATE_TIMEOUT_MS,
+      maxRounds: options.maxRounds ?? DEFAULT_MAX_ROUNDS,
+      notify: (line) => writeLine(errorOutput, line),
+      childToolOutput: (line) => writeLine(errorOutput, line),
+    })
+    : undefined;
+  const cliTools = createCliTools({
+    cwd,
+    todo: !todoDisabled,
+    delegate: delegateEnabled,
+    ...(delegateAssembly === undefined ? {} : { delegateTool: delegateAssembly }),
+    execCeilingMs,
+  });
   // 用户级 notes skill 仍经 excludeSkillIds 排除：notes 装配统一走工厂（ERIX_NO_NOTES=1 时不装配工厂）。
   // todo 关闭时用户级 todo skill 同样经 excludeSkillIds 排除。
   const skillTools = await buildSkillTools({
@@ -558,7 +619,6 @@ export async function runRepl(argv, io = {}) {
   let messages = messagesOfRecords(restoreRecords);
   const bodyMessageCount = conversationMessages(restoreRecords).length;
   const hiddenEngineNotes = messages.length - bodyMessageCount;
-  let model = config.model;
   let usage = { input_tokens: 0, output_tokens: 0 };
 
   if (storedRecords.length > 0 || existsSync(archivePath)) {
@@ -569,7 +629,10 @@ export async function runRepl(argv, io = {}) {
     );
   }
 
-  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt({ todo: !todoDisabled })}`;
+  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt({
+    todo: !todoDisabled,
+    delegate: delegateEnabled,
+  })}`;
   systemPrompt += buildArchiveNotice(archiveDir);
   if (mcpProxy?.enabled) {
     systemPrompt += `

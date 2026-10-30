@@ -65,6 +65,12 @@ import {
   wrapExecuteTool,
 } from "./tools.js";
 import { resolveChatSessionSelection } from "./sessions.js";
+import {
+  createCliDelegation,
+  DEFAULT_DELEGATE_MAX_CHILDREN,
+  DEFAULT_DELEGATE_TIMEOUT_MS,
+  resolveDelegationDir,
+} from "./delegation.js";
 import { formatGuardMetrics } from "./guard-metrics.js";
 
 const DEFAULT_MAX_ROUNDS = 64;
@@ -72,8 +78,8 @@ const DEFAULT_MAX_ROUNDS = 64;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--no-notes] [--no-todo] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--tools <逗号分隔工具名>]  （交互式模式）
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--no-notes] [--no-todo] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--tools <逗号分隔工具名>]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
   （无参数直接进入交互式模式，等同 erix repl）
@@ -111,6 +117,13 @@ const HELP_TEXT = `用法：
                       不静默空转（issue #391 R2）
   --no-notes            不装配 notes 工厂（note_* 工具不再可用），保留其他 skill
   --no-todo             彻底关闭 todo：内置 todo_* 四工具不注册、系统提示不含 todo、用户级 todo skill 一并排除
+  --delegate            注册 delegate 工具（派生一个同进程子 run；**默认关闭**，issue #617）。
+                      它是一个可运行的示例与验证器，不是 CLI 的新默认能力：子 run 是嵌套的真
+                      runToolLoop（v1 不做子进程/守护进程），工具集**不含 delegate**（不递归派生），
+                      transcript 落在名册目录下（不追加进父会话文件）。
+  --delegate-max-children <n>  并发子 run 配额（默认：2）。到顶时 run 返回结构化失败并点名持有者，
+                      不排队、不自旋
+  --delegate-timeout-ms <n>  单个子 run 的时间预算毫秒（默认：600000），透传成子 run 的死线
   --timeout <毫秒>     任务时间预算（软预算：临近时引导收尾，非硬杀；默认不启用）
   --idle-timeout <秒>   无进展自动中止（chat 默认：300，repl 默认：0=不启用）
   --idle-retry-budget <秒>  idle 判死之后从 transcript 续跑的总预算（默认：900；0 = 不重试，
@@ -140,6 +153,7 @@ const HELP_TEXT = `用法：
   ERIX_FINAL_GUARD=1   开启终稿 provenance 核验
   ERIX_NO_NOTES=1       不装配 notes 工厂（note_* 工具不再可用），保留其他 skill
   ERIX_NO_TODO=1        彻底关闭 todo（同 --no-todo），chat/repl 均生效
+  ERIX_DELEGATION_DIR   派生名册目录（默认：~/.erix/delegation/）；子 run 的 transcript 也在它下面
   ERIX_JUDGE_LOG      judge 决策 JSONL 路径（默认已写入 run 归档目录，无需设置）
 
 配置文件：
@@ -443,6 +457,16 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       options.noTodo = true;
       continue;
     }
+    // issue #617 P2：派生工具**默认关**，`--delegate` 显式开启（照 `--no-todo` 的先例：单个
+    // 布尔旗标 + 同一张 seenOptions 去重）。
+    if (argument === "--delegate") {
+      if (seenOptions.has(argument)) {
+        usageError(`参数重复：${argument}`);
+      }
+      seenOptions.add(argument);
+      options.delegate = true;
+      continue;
+    }
     if (
       argument === "--config"
       || argument === "--skills-dir"
@@ -459,6 +483,8 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       || argument === "--judge-log"
       || argument === "--error-log"
       || argument === "--tools"
+      || argument === "--delegate-max-children"
+      || argument === "--delegate-timeout-ms"
     ) {
       if (seenOptions.has(argument)) {
         usageError(`参数重复：${argument}`);
@@ -476,7 +502,9 @@ export function parseChatArgs(args, cwd = process.cwd()) {
           || argument === "--compaction"
           || argument === "--judge-log"
           || argument === "--error-log"
-          || argument === "--tools")
+          || argument === "--tools"
+          || argument === "--delegate-max-children"
+          || argument === "--delegate-timeout-ms")
         && rawValue.startsWith("--")
       )) {
         usageError(`${argument} 缺少数值`);
@@ -518,6 +546,10 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       } else if (argument === "--tools") {
         if (rawValue.trim() === "") usageError("--tools 不能为空");
         options.tools = rawValue;
+      } else if (argument === "--delegate-max-children") {
+        options.delegateMaxChildren = parseIntegerOption(argument, rawValue, 1);
+      } else if (argument === "--delegate-timeout-ms") {
+        options.delegateTimeoutMs = parseIntegerOption(argument, rawValue, 1);
       } else {
         options.idleTimeout = parseIntegerOption(argument, rawValue, 0);
       }
@@ -791,6 +823,13 @@ async function runChatWithNotes({
   tools: toolsAllowlist,
   noNotes = false,
   noTodo = false,
+  // issue #617 P2：派生工具（**默认关**）与它的三个旋钮。
+  // `delegationDir` / `delegateNotify` 是给测试与嵌入方留的口（不是新旗标）。
+  delegate = false,
+  delegateMaxChildren,
+  delegateTimeoutMs,
+  delegationDir,
+  delegateNotify,
   provider: providerOverride,
   config: configOverride,
   toolOutput = console.log,
@@ -883,7 +922,43 @@ async function runChatWithNotes({
   // loud 日志——不启动即报错（bench 两臂就是 exec==idle，硬报错会把现成调用打断），判据是
   // 「终局不得是 idle_timeout」。日志走 `idleLog`（测试可注入，缺省 stderr）。
   const execCeilingMs = resolveExecCeiling(idleTimeout, { warn: (line) => idleLog(line) });
-  const cliTools = createCliTools({ cwd, todo: !todoDisabled, execCeilingMs });
+  const resolvedMaxRounds = resolveMaxRounds(maxRounds);
+  // issue #617 P2：`delegate` **默认关**，只有显式 `--delegate` 才装配。
+  // 装配点在这里（不是 `createCliTools` 里）：子 run 怎么跑是宿主的事，`bin/tools.js` 只负责
+  // 「装不装 + 把注入的 execute 接进统一的 executeTool 面」。
+  // 名册目录缺省 `~/.erix/delegation/`（`ERIX_DELEGATION_DIR` 或编程式 `delegationDir` 可覆盖）。
+  // `notify` 是父侧唤醒通道：后台子 run 完成时库调它，CLI 打到 stderr（不污染 stdout 终稿）。
+  const delegateEnabled = delegate === true;
+  const delegateAssembly = delegateEnabled
+    ? createCliDelegation({
+      // 模型名只能来自配置（AGENTS §8）：未指定时用父 run 这个 provider，指定时按同一槽位另造一个。
+      buildProvider: (modelOverride) => (modelOverride === undefined || modelOverride === config.model
+        ? provider
+        : createOpenAIProvider({
+          ...config,
+          model: modelOverride,
+          ...providerPhaseTimeouts,
+          timeoutMs: config.timeout ?? 300_000,
+          maxTokens,
+        })),
+      config,
+      cwd,
+      todo: !todoDisabled,
+      notesDir,
+      rosterDir: resolveDelegationDir(delegationDir),
+      maxChildren: delegateMaxChildren ?? DEFAULT_DELEGATE_MAX_CHILDREN,
+      defaultDeadlineMs: delegateTimeoutMs ?? DEFAULT_DELEGATE_TIMEOUT_MS,
+      maxRounds: resolvedMaxRounds,
+      notify: delegateNotify ?? ((line) => console.error(line)),
+    })
+    : undefined;
+  const cliTools = createCliTools({
+    cwd,
+    todo: !todoDisabled,
+    delegate: delegateEnabled,
+    ...(delegateAssembly === undefined ? {} : { delegateTool: delegateAssembly }),
+    execCeilingMs,
+  });
   const notesDisabled = noNotes === true || process.env.ERIX_NO_NOTES?.trim() === "1";
   // 用户级 notes skill 经 excludeSkillIds 排除：notes 装配统一走工厂，否则会出现两套同名 note_* 工具
   // （bundled notes skill 已于 v0.11.0 退役，见 issue #61）。
@@ -946,7 +1021,6 @@ async function runChatWithNotes({
     getToolMetadata: cliTools.getLastToolMetadata,
     returnMetadata: true,
   });
-  const resolvedMaxRounds = resolveMaxRounds(maxRounds);
   const resolvedFinalGuard = resolveFinalGuard(
     finalGuard,
     runId,
@@ -992,7 +1066,10 @@ async function runChatWithNotes({
     if (event?.type === "run_outcome") appendJudgeLogRecord?.(event);
   };
 
-  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt({ todo: !todoDisabled })}`;
+  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt({
+    todo: !todoDisabled,
+    delegate: delegateEnabled,
+  })}`;
   systemPrompt += buildArchiveNotice(archiveDir);
   if (mcpProxy?.enabled) {
     systemPrompt += `
