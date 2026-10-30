@@ -14,7 +14,7 @@
 
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { existsSync, readdirSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
@@ -24,8 +24,11 @@ import { parseReplArgs, runRepl } from "../bin/repl.js";
 import {
   DEFAULT_DELEGATE_MAX_CHILDREN,
   DEFAULT_DELEGATE_TIMEOUT_MS,
+  createCliDelegation,
   resolveDelegationDir,
 } from "../bin/delegation.js";
+import { transcriptPath } from "../src/store/file.js";
+import { readRecord } from "../src/tools/delegation/roster.js";
 import {
   buildCliToolsSystemPrompt,
   createCliTools,
@@ -348,4 +351,95 @@ test("repl：--delegate 注册 delegate，且真的能派生子 run（与 chat �
     input.destroy();
     output.destroy();
   }
+});
+
+// issue #626（C1）：`tail` 的读侧早就实现了，但**真装配**从没走过——库在派生时建记录，它不知道宿主
+// 把子 run 的 transcript 写在哪，CLI 算出了 `<rosterDir>/transcripts` 却从没把它登记进名册，于是父
+// run 的 `tail` 永远报 `no_transcript`（真机现场：名册 `transcriptPath: null`，盘上文件却在）。
+// 这条测试就是那个缺口的钉子：走 `createCliDelegation`（真装配）派一个子 run，断言
+// ① 名册登记了非空且真存在的 transcriptPath；② `tail` 读得到，rows 里含子的工具名；
+// ③ 尾读**没有**把子 transcript 改小（防日后有人把它换回 `store.load()`——那会 repairTranscriptTail
+// 截断正在被追加写的那一行）。
+test("真装配（#626 C1）：createCliDelegation 派生的子 run 在名册里登记 transcriptPath，父 tail 真读得到", async () => {
+  const root = await makeTmp("erix-cli-delegate-tail-626-");
+  const delegationDir = join(root, "delegation");
+  const childTranscriptDir = join(delegationDir, "transcripts");
+  const childOnlyFile = join(root, "child-tail-626.txt");
+
+  // 父 run 不参与（这里直接调装配出来的 execute），子 run 两轮：写一个文件 + 收尾。
+  const provider = createRoutingFakeProvider({
+    parentScript: [],
+    childScript: [
+      {
+        content: [{
+          type: "tool_use",
+          id: "child-tail-626-1",
+          name: "writeFile",
+          input: { path: childOnlyFile, content: "child-tail-626" },
+        }],
+        stopReason: "tool_use",
+      },
+      { content: [{ type: "text", text: "任务已完成：子 run 收尾" }], stopReason: "end_turn" },
+    ],
+  });
+
+  const delegation = createCliDelegation({
+    buildProvider: () => provider,
+    config: { model: "fake-model", maxOutputTokens: 1000 },
+    cwd: root,
+    todo: false,
+    notesDir: join(root, "notes"),
+    rosterDir: delegationDir,
+    maxRounds: 4,
+    notify: () => {},
+    childToolOutput: () => {},
+  });
+
+  const ran = await delegation.execute({ action: "run", task: "写一个文件然后收尾" }, { runId: "parent-626" });
+  assert.equal(ran.ok, true, `前台派生应该成功：${JSON.stringify(ran)}`);
+  assert.equal(ran.state, "completed");
+  assert.equal(await readFile(childOnlyFile, "utf8"), "child-tail-626", "子 run 的工具真的执行了");
+
+  // —— 判据 ①：名册记录里的 transcriptPath 非空且真在盘上 ——
+  const record = readRecord(delegationDir, ran.runId);
+  assert.ok(record !== null, "子 run 必须有名册记录");
+  assert.equal(record.parentRunId, "parent-626", "父身份来自执行上下文");
+  assert.equal(typeof record.transcriptPath, "string", "名册必须登记 transcriptPath（#626 C1 的根因）");
+  assert.notEqual(record.transcriptPath, "", "空串等于没登记");
+  assert.equal(existsSync(record.transcriptPath), true, `登记的路径必须真在盘上：${record.transcriptPath}`);
+  // 路径必须复用 store 自己的命名口径，不是手拼 `${runId}.jsonl`——两者对不安全的 id **不恒等**：
+  assert.notEqual(transcriptPath("/d", "a/b"), join("/d", "a/b.jsonl"), "safeRunId 会哈希不安全 id，手拼恒错");
+  assert.equal(
+    record.transcriptPath,
+    transcriptPath(childTranscriptDir, ran.runId),
+    "CLI 登记的路径必须逐字等于 store 的 transcriptPath(dir, runId)",
+  );
+
+  // —— 判据 ②：tail 返回 ok:true，rows 里含子 run 的工具名 ——
+  // 先往子 transcript 尾部追加一行「写盘进行中的半截」：尾读若哪天被换回 load()，
+  // repairTranscriptTail 会把它截掉 ⇒ 判据 ③ 红（这一行就是那个探针）。
+  appendFileSync(
+    record.transcriptPath,
+    '{"round":99,"kind":"message","seq":0,"messages":[{"role":"assist',
+    "utf8",
+  );
+  const sizeBefore = statSync(record.transcriptPath).size;
+
+  const tail = await delegation.execute({ action: "tail", runId: ran.runId }, { runId: "parent-626" });
+  assert.equal(tail.ok, true, `tail 必须读得到（不是 no_transcript_path / no_transcript）：${JSON.stringify(tail)}`);
+  assert.equal(tail.transcriptPath, record.transcriptPath);
+  assert.equal(tail.state, "completed");
+  const toolRow = tail.rows.find((row) => row.kind === "tool_use");
+  assert.ok(toolRow, `rows 里必须有子的 tool_use 行：${JSON.stringify(tail.rows)}`);
+  assert.equal(toolRow.tool, "writeFile", "tail 必须点名子 run 在跑哪个工具");
+  assert.match(String(toolRow.argsDigest), /child-tail-626\.txt/u, "参数摘要里要有子的入参");
+  assert.equal(tail.partial, true, "尾部那行半截 JSON 是写盘进行中的正常现象（不抛、不丢好行）");
+
+  // —— 判据 ③：尾读没有动刀（字节数不减）——
+  const sizeAfter = statSync(record.transcriptPath).size;
+  assert.equal(
+    sizeAfter,
+    sizeBefore,
+    "tail 把子 transcript 改小了 ⇒ 尾读走了 load()/repairTranscriptTail（父读一次就截子一刀）",
+  );
 });

@@ -234,14 +234,14 @@ test("delegate: cancel 非本进程持有的 runId ⇒ not_owned，不谎称成�
 
 // ================================================================ 6. schema 无 parentRunId 键 + 杂项形状
 
-test("delegate: schema 不存在 parentRunId 键；动作封闭五值", async () => {
+test("delegate: schema 不存在 parentRunId 键；动作封闭六值（#626 C1 加 tail）", async () => {
   const dir = await makeTmp("delegate-617-");
   const delegate = createDelegateTool({ runChild: runChildNestedLoop, rosterDir: dir });
   const properties = delegate.definition.inputSchema.properties;
   assert.ok(!("parentRunId" in properties), "schema 里没有 parentRunId（父身份不可由模型填）");
   assert.ok(!JSON.stringify(delegate.definition).includes("parentRunId"), "description 里也不出现该键名");
   assert.deepEqual(delegate.definition.inputSchema.properties.action.enum,
-    ["run", "status", "result", "list", "cancel"]);
+    ["run", "status", "result", "list", "cancel", "tail"]);
   const unknown = await delegate.execute({ action: "pause" });
   assert.deepEqual(unknown, { ok: false, reason: "unknown_action", action: "pause" });
 });

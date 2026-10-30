@@ -223,13 +223,16 @@ src/
     notes.js                        宿主侧 notes 工具
     providers.js                    tool-provider adapter
     registry.js                     工具 schema 与 executor registry
-    delegation/                    派生（子 run）纯簿记（issue #617 P1a）：不 fork/spawn，opaque 字段
-                                   原样过，进程存活由宿主注入谓词
+    delegation/                    派生（子 run）纯簿记（issue #617 P1a），外加有界的 transcript 尾读
+                                   （issue #626 C1）：不 fork/spawn，opaque 字段原样过，进程存活由宿主注入谓词
       roster.js                     名册：18 项记录、原子落盘、updatedAt 单调、陈旧重算
       capacity.js                   并发配额租约：wx 独占创建、幂等归还、sweep 回收
       notify.js                     完成通知去重：按 (runId, endedAt) 二元组，固定前缀
       tool.js                      派生工具工厂（P1b）：runChild 由宿主注入，终止→终态映射归库，
                                    父身份取自执行上下文（不是模型入参）
+      tail.js                       `action="tail"`（C1）：子 run **现在**在干什么——有界的 transcript
+                                   尾读（缺省 8 行 / 上限 20 行 / 每行 300 字符），带工具名与参数摘要；
+                                   不做事件转发
 ```
 
 `src/index.js` 导出 provider、规范消息转换、token 与压缩辅助函数、transcript store、run-state 辅助函数、宿主展示投影（`projectTranscriptForDisplay`）、多轮预写辅助函数（`appendUserTurn`）、配置 provider、`runToolLoop` 以及 reflection 辅助函数，另有模型输出归一化底座（`normalizeModelJson`，issue #406——带确定性修复与可选 LLM 兜底的**异步**入口，**不**取代同步 L0 的 `parseModelJson`）与槽位 → provider 构造件（`loadModelSlot` / `createProviderForSlot`）。可选的 `erix-agent/tools` 子路径导出工具 registry 和 provider 辅助函数、文件与 notes 的规范工厂，
@@ -559,7 +562,7 @@ erix mcp [--config <path>]
 - `--cwd <dir>` 设置本次 run 报给 guard 与模型的工作目录（默认：进程工作目录；必须是已存在的目录）。它正是 `finalGuard` / `deliverables` 载荷里的 `cwd`，所以用 `path.join(cwd, …)` 的判据开箱即用。
 - `--no-notes`（或 `ERIX_NO_NOTES=1`）不装配 notes 工厂（`note_*` 工具不再可用），保留其他已加载的 skill。
 - `--no-todo`（或 `ERIX_NO_TODO=1`）彻底关闭 todo：内置 `todo_*` 四工具不注册、系统提示不含 todo、用户级 todo skill 一并排除。
-- `--delegate`（默认**关闭**，issue #617）注册 `delegate` 工具：子 run 是**同进程嵌套的 `runToolLoop`**（v1 不起子进程、不起守护进程）。`--delegate-max-children <n>`（默认 2）是同时在活的子 run 上限——到顶是结构化失败并点名持有者，**不排队**；`--delegate-timeout-ms <n>`（默认 600000）是单个子 run 的时间预算。子 run 的工具面**不含 `delegate`**（v1 禁止递归派生），它的 transcript 落在名册目录下（`~/.erix/delegation/`，可用 `ERIX_DELEGATION_DIR` 覆盖）且**绝不**追加进父会话文件。它是宿主侧派生契约的**可运行示例与验证器**，不是新的默认能力。
+- `--delegate`（默认**关闭**，issue #617）注册 `delegate` 工具：子 run 是**同进程嵌套的 `runToolLoop`**（v1 不起子进程、不起守护进程）。`--delegate-max-children <n>`（默认 2）是同时在活的子 run 上限——到顶是结构化失败并点名持有者，**不排队**；`--delegate-timeout-ms <n>`（默认 600000）是单个子 run 的时间预算。子 run 的工具面**不含 `delegate`**（v1 禁止递归派生），它的 transcript 落在名册目录下（`~/.erix/delegation/`，可用 `ERIX_DELEGATION_DIR` 覆盖）且**绝不**追加进父会话文件。它是宿主侧派生契约的**可运行示例与验证器**，不是新的默认能力。工具的动作面是 `run | status | result | list | cancel | tail`：`tail` 是**子 run transcript 的有界尾读**（缺省最近 8 行、上限 20 行、每行 300 字符），回答「子现在在跑哪个工具、参数摘要是什么」——它读的是**盘上的任何子 run**，不限于本进程养的那些，所以宿主能看住不是自己起的子；C2/C3 的 resume 与 steer **不在**本切片里。
 - `--error-log <path>` 把持久化错误事件追加写入 JSONL 文件（等价 `ERIX_ERROR_LOG`；默认只进 stderr）。
 - `--timeout <ms>` 为 `chat` 提供软任务截止时间；它会推动循环进入 wrap-up，而不是强制杀死进程。
 - `--idle-timeout <seconds>` 在没有进展后中止；`chat` 默认为 300，`repl` 默认为 0（禁用）。**工具执行时间不再计入静默窗口**（issue #433）：工具跑着的时候看门狗持续被喂表，所以一条长的安装/编译命令不会再打死整个 run——而且每次被喂过表的工具执行都会在 stderr 留一行 `[idle-heartbeat] <工具名>：执行期喂过 idle 计时器 N 次`（只在 `N > 0` 时打），这就是这件事的可观测证据。这份喂表是有上限的——`exec` 的天花板被钳到 `idle − 60s`（下限 30s），所以真正挂住的命令仍然以「命令超时」收场（默认 240s，即 `300 − 60`），而不是被看门狗悄悄吃掉。显式设置的 `ERIX_EXEC_TIMEOUT_MS` 若**等于或高于**该天花板，会被**收敛**成 `min(exec, idle − 60s)` 并打一条 loud 日志（issue #433 fix 4）；CLI **不**启动即报错——`exec == idle` 是 bench 两臂的真实配置，判据是「终局不得是 `idle_timeout`」。**这份让步有界，但不是没有代价**：`idle ≤ 30s` 时下限 30s 压过 `idle − 60s`，`exec < idle` 根本不可能成立，工具执行期最坏 = `30s + idle`——实测 `idle=1` → 30.8s、`30` → 52.5s、`120` → 150s，默认 `300` 的上界 540s（= `240 + 300`）。这一种情形也会打日志。

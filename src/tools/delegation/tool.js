@@ -3,9 +3,25 @@
  * issue #617（P1b）——派生工具本体：`createDelegateTool`（**库不 fork / 不 spawn / 不 import
  * child_process**；子 run 怎么跑起来由宿主注入的 `runChild` 决定）。
  *
- * 一个工具、五个动作：`delegate` 的 `action ∈ run | status | result | list | cancel`
- * （不做 pause / resume / retry）。模型能填的只有 `action / task / cwd / background /
- * model / deadlineMs`（外加 status / result / cancel 要的子 `runId`）；**父身份不是模型入参**——
+ * 一个工具、六个动作：`delegate` 的 `action ∈ run | status | result | list | cancel | tail`
+ * （不做 pause / resume / retry；`resume` / `steer` 是 #626 的 C2/C3，不在本切片里）。
+ *
+ * `tail`（issue #626 C1）回答名册答不了的那半个问题：「子 run **现在**在干什么」。它读的是子 run
+ * transcript 的**尾部**（有界：缺省 8 行、上限 20 行、每行 300 字符），投影交给
+ * `delegation/tail.js`，本模块只负责「先读名册、再把记录里的 `transcriptPath` 交出去」。
+ * **它与 `cancel` 的关键差别**：`cancel` 只认本进程 `owned` 表里登记过的 AbortController，`tail`
+ * **完全不看 `owned`**——只要名册记录在、transcript 在盘上，**别的进程养的子 run 一样读得到**
+ * （这正是「无人值守宿主看另一个进程的子」的场景；`owned` 只回答「我能掐死它吗」）。
+ *
+ * **`transcriptPath` 的登记归宿主**（#626 C1 真机实测的根因）：记录是库在派生时建的，库不知道宿主
+ * 把子 run 的 transcript 写在哪，所以名册里那个字段**只能由宿主提供**——这就是工厂旋钮
+ * `transcriptPathFor`。给了它，库在**创建记录的那一次写**里就把 `transcriptPath` 填上（不是
+ * 「先建记录再补写第二遍」：补写会让父立刻 `tail` 时读到空字段，也多一个竞态窗口）；不给，
+ * 字段照旧缺省（向后兼容，旧宿主不会因为没这个旋钮而破），代价是它的 `tail` 只能报
+ * `no_transcript_path`。
+ *
+ * 模型能填的只有 `action / task / cwd / background /
+ * model / deadlineMs`（外加 status / result / cancel / tail 要的子 `runId`，以及 tail 的 `limit`）；**父身份不是模型入参**——
  * `parentRunId` 由库从执行上下文的 `runId` 自取（P0 把 `config.run.runId` 递进
  * `baseToolContext.runId`，这里消费它），schema 里根本不存在这个键。这条照 pi-web 的判据：
  * 身份 / 归属类旋钮不做成模型可猜的入参。
@@ -35,6 +51,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 import { acquire, list as listLeases, release } from "./capacity.js";
+import { TAIL_LIMIT_DEFAULT, TAIL_LIMIT_MAX, TAIL_TEXT_LIMIT_DEFAULT, tailChildTranscript } from "./tail.js";
 import { markCollected, notificationText, shouldNotify } from "./notify.js";
 import { ROSTER_LIVE_STATES, listRecords, readRecord, reconcile, writeRecord } from "./roster.js";
 
@@ -56,8 +73,8 @@ export const TERMINATION_TO_STATE = Object.freeze({
 /** 未列出的 termination 的兜底终态（映射表的门卫，导出给宿主审）。 */
 export const DEFAULT_TERMINATION_STATE = "failed";
 
-/** 工具的五个动作（封闭清单；不做 pause / resume / retry）。 */
-export const DELEGATE_ACTIONS = Object.freeze(["run", "status", "result", "list", "cancel"]);
+/** 工具的六个动作（封闭清单；不做 pause / resume / retry）。 */
+export const DELEGATE_ACTIONS = Object.freeze(["run", "status", "result", "list", "cancel", "tail"]);
 
 /** @param {*} termination @returns {string} 名册终态 */
 function stateForTermination(termination) {
@@ -71,7 +88,14 @@ function stateForTermination(termination) {
 export const DELEGATE_DEFINITION = {
   name: "delegate",
   description: "Delegate a task to a child run: run (optionally in background), status / list (roster), "
-    + "result (terminal outcome, marks it consumed), cancel (only child runs owned by this process). "
+    + "result (terminal outcome, marks it consumed), cancel (only child runs owned by this process), "
+    + "tail (what the child is doing right now: a bounded read of its transcript tail — the last "
+    + `${TAIL_LIMIT_DEFAULT} rows by default, at most ${TAIL_LIMIT_MAX} rows, ${TAIL_TEXT_LIMIT_DEFAULT} characters per row`
+    + " — with the tool name and an args digest for tool calls; it reads any child on disk, not just this process's). "
+    + "tail distinguishes two failures: reason=no_transcript_path means the roster record carries no transcriptPath "
+    + "(the host never registered where the child writes — a configuration defect, not a missing child), while "
+    + "reason=no_transcript means the path is recorded but the file is absent or unreadable (the child has not "
+    + "written its first row yet, or the file was cleaned up). "
     + "Parent identity is taken from the execution context, not from model input.",
   inputSchema: {
     type: "object",
@@ -90,7 +114,11 @@ export const DELEGATE_DEFINITION = {
       },
       model: { type: "string", description: "action=run: child model (optional, opaque)." },
       deadlineMs: { type: "number", description: "action=run: child time budget in ms (optional)." },
-      runId: { type: "string", description: "action=status/result/cancel: the child run identity." },
+      runId: { type: "string", description: "action=status/result/cancel/tail: the child run identity." },
+      limit: {
+        type: "number",
+        description: `action=tail: how many rows to return (default ${TAIL_LIMIT_DEFAULT}, capped at ${TAIL_LIMIT_MAX}).`,
+      },
     },
     required: ["action"],
   },
@@ -119,6 +147,12 @@ function requireChildRunId(input) {
  * @param {number} [options.maxConcurrent] 并发配额（缺省 2）：目录内活租约数到顶后 run 直接失败。
  * @param {(text: string) => void} [options.notifyParent] 后台子 run 完成时的父唤醒（收到
  *   `notificationText` 一行式文本）；`(runId, endedAt)` 已被父 result 自取过则不再唤醒。
+ * @param {(runId: string) => string} [options.transcriptPathFor] 宿主旋钮（issue #626 C1）：
+ *   「子 run 的 transcript 落在哪个文件」。与 `runChild` 同一类边界——**布局归宿主，库不猜路径**。
+ *   给了它，库在**创建名册记录的那一次原子写**里就把 `transcriptPath` 填上（父立刻 `tail` 也读得到，
+ *   不存在「先建记录再补写」的窗口）；不给，字段照旧缺省（旧宿主不受影响，它的 `tail` 报
+ *   `no_transcript_path`）。返回值必须是**非空字符串**：库不把「宿主给了一个空路径」静默吃掉——
+ *   那是配置缺陷，当场抛（在任何租约 / 记录落盘之前）。
  * @param {() => number} [options.clock] 宿主时钟（缺省 `Date.now`）；库内所有时间戳都走它。
  * @returns {{ definition: object, execute: (input: object, context: object) => Promise<object> }}
  */
@@ -126,9 +160,12 @@ export function createDelegateTool(options) {
   if (options === null || typeof options !== "object" || Array.isArray(options)) {
     throw new TypeError("delegate: options 必须是对象");
   }
-  const { runChild, rosterDir, leaseDir, maxConcurrent, notifyParent, clock } = options;
+  const { runChild, rosterDir, leaseDir, maxConcurrent, notifyParent, transcriptPathFor, clock } = options;
   if (typeof runChild !== "function") {
     throw new TypeError("delegate: runChild 必须由宿主注入（库不 fork / 不 spawn / 不 import child_process）");
+  }
+  if (transcriptPathFor !== undefined && typeof transcriptPathFor !== "function") {
+    throw new TypeError("delegate: transcriptPathFor 必须是函数（宿主决定 transcript 布局，库不猜路径）");
   }
   if (typeof rosterDir !== "string" || rosterDir === "") {
     throw new TypeError("delegate: rosterDir 必须是非空字符串");
@@ -206,6 +243,23 @@ export function createDelegateTool(options) {
     /** 库生成子 runId（仓库既有 ID 约定：randomUUID，与 src/store 同一套）。 */
     const runId = `sub-${randomUUID()}`;
 
+    /**
+     * 宿主登记的 transcript 位置（issue #626 C1）。**在拿租约之前算**：宿主给的路径不合法时当场抛，
+     * 不会留下一条「租约已拿、记录没建」的孤儿租约。
+     * 它进的是**下面那次 `writeRecord`**（创建记录的唯一一次原子写）——不是事后补写第二遍。
+     */
+    let transcriptPath;
+    if (typeof transcriptPathFor === "function") {
+      const resolved = transcriptPathFor(runId);
+      if (typeof resolved !== "string" || resolved === "") {
+        throw new TypeError(
+          `delegate: transcriptPathFor(${JSON.stringify(runId)}) 必须返回非空字符串，`
+          + `收到 ${JSON.stringify(resolved)}（宿主没登记路径时应该根本不传这个旋钮）`,
+        );
+      }
+      transcriptPath = resolved;
+    }
+
     // 配额：活租约到顶 ⇒ 结构化失败、点名持有者，不排队、不自旋。
     const { leases } = listLeases(resolvedLeaseDir);
     if (leases.length >= resolvedMax) {
@@ -234,6 +288,7 @@ export function createDelegateTool(options) {
       ...(parentRunId === undefined ? {} : { parentRunId }),
       ...(cwd === undefined ? {} : { cwd }),
       ...(model === undefined ? {} : { model }),
+      ...(transcriptPath === undefined ? {} : { transcriptPath }),
       createdAt: now,
       updatedAt: now,
       ...(deadlineMs === undefined ? {} : { deadlineAt: now + deadlineMs }),
@@ -314,6 +369,33 @@ export function createDelegateTool(options) {
     return { ok: true, records, corrupt, interrupted: stale.interrupted };
   };
 
+  /**
+   * `tail`（issue #626 C1）：**先读名册**，再把记录里的 `transcriptPath` 交给 `tailChildTranscript`。
+   * 三个失败理由必须分得开（见 `tail.js` 的头注释）：`not_found`（没这条记录）/ `no_transcript_path`
+   * （记录里没有 `transcriptPath`——宿主没接 `transcriptPathFor`，配置缺陷）/ `no_transcript`
+   * （路径在、文件不在或打不开——子还没落盘或档案已清理，正常时序）。
+   *
+   * 三条与别的动作不同的裁决：
+   *   · **不 reconcile**：status / list 前会重算陈旧记录，`tail` 不重算——它是一次**读**，不该顺手
+   *     改写别人的名册（尤其 `tail` 是设计来读**别的进程**的子的，替它判 `interrupted` 就是越权）；
+   *   · **不看 `owned`**：跨进程可读是它存在的理由（见文件头）；
+   *   · **恒带 `state` / `updatedAt`**：父要靠这两个字段判断这条尾还新不新（`updatedAt` 是名册的单调
+   *     水位，`readAt` 是这次尾读的时刻——两个都在，父才能算出「我读到的东西落后了多久」）。
+   * @param {Object} input
+   */
+  const tailAction = async (input) => {
+    const { runId, error } = requireChildRunId(input);
+    if (error) return error;
+    const record = readRecord(rosterDir, runId);
+    if (record === null) return { ok: false, reason: "not_found", runId };
+    const tail = await tailChildTranscript({
+      transcriptPath: record.transcriptPath,
+      limit: input?.limit,
+      clock: resolvedClock,
+    });
+    return { ...tail, runId, state: record.state, updatedAt: record.updatedAt };
+  };
+
   const cancelAction = (input) => {
     const { runId, error } = requireChildRunId(input);
     if (error) return error;
@@ -337,6 +419,7 @@ export function createDelegateTool(options) {
     if (action === "result") return resultAction(input);
     if (action === "list") return listAction();
     if (action === "cancel") return cancelAction(input);
+    if (action === "tail") return tailAction(input);
     return { ok: false, reason: "unknown_action", action: action ?? null };
   };
 

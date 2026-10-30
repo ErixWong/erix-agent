@@ -4,7 +4,9 @@
  *
  * 边界（写在文件头上，免得下一个人以为这里可以长成产品面）：
  *   - 库只承担三件事：`config.run.parentRunId`（P0）、簿记三件套（P1a：名册 / 配额租约 / 完成通知
- *     去重）、`createDelegateTool`（P1b：一个工具五个动作）。**子 run 怎么跑起来、跑在哪、
+ *     去重）、`createDelegateTool`（P1b：一个工具五个动作；#626 C1 又加了一个**读面** `tail`——
+ *     有界地读子 run 的 transcript 尾部，让父看得见「子在干什么」，与 `cancel` 不同：它不看本进程的
+ *     `owned` 表，别的进程养的子一样读得到）。**子 run 怎么跑起来、跑在哪、
  *     怎么唤醒父 run，全部归宿主**——本文件就是那个宿主，且只服务 `erix` 这个调试/验证前端。
  *   - 所以这里**不新增任何 `src/` 导出**、不改 `package.json`、不 import `child_process`：
  *     子 run 是**同进程嵌套的 `runToolLoop`**（v1 明确不做子进程 / 守护进程）。理由不是省事：
@@ -19,7 +21,11 @@
  *   2. **子 run 落自己的 transcript**：`<rosterDir>/transcripts/`，不是父的 `--dir`。
  *      CLI 的会话 id 由 cwd 派生，父子同 cwd ⇒ **同一个会话文件名**；子 run 若追加进父的会话文件，
  *      父的 `-c` / `-r` 与 resume 账本会被子 run 的轮次污染（`test/cli-delegate-617.test.js` 钉着
- *      「派生一次后父会话文件里不出现子 run 的行」）。
+ *      「派生一次后父会话文件里不出现子 run 的行」）。**并且这个位置必须登记进名册**（#626 C1 的
+ *      真机缺陷）：路径由 `transcriptPath(childTranscriptDir, runId)` 算（store 自己的命名口径，
+ *      含 `safeRunId` 哈希，不手拼 `runId + ".jsonl"`），经 `transcriptPathFor` 交给库，由库在
+ *      **创建记录的那一次写**里落进 `transcriptPath`。不登记的话父 run 的 `action="tail"` 永远
+ *      报 `no_transcript_path`——库不知道宿主把子写在哪，而它不可能猜对。
  *   3. **唤醒 = 宿主回调**（`notify`）：v1 没有「往运行中的父 run 里塞一条 user 消息」的邮箱，
  *      引擎也没有那个能力。后台子 run 完成时库调 `notifyParent(一行式文本)`，CLI 把它打到 stderr；
  *      模型侧靠 `delegate action=result` 自取终局（自取过就不再唤醒，去重归库）。
@@ -40,6 +46,7 @@ import {
   runToolLoop,
 } from "../src/index.js";
 import { createDelegateTool } from "../src/tools/index.js";
+import { transcriptPath } from "../src/store/file.js";
 import { createCliAssemblyRoot } from "./assembly-root.js";
 import { buildCompactionContext, splitCompactionContext } from "./config.js";
 import { buildCaptureRecoveryHint, buildCaptureStub } from "./final-guard.js";
@@ -264,6 +271,10 @@ export function createCliDelegation({
     rosterDir: resolvedRosterDir,
     maxConcurrent: maxChildren,
     notifyParent: notify,
+    // issue #626 C1：把子 run 的落盘位置**登记**进名册（库在创建记录时填 `transcriptPath`），
+    // 否则父 run 的 `tail` 恒报 `no_transcript_path`（真机缺陷现场）。路径必须走 store 自己的命名
+    // 口径（`safeRunId` 会把不安全 id 哈希成 `run-h-<sha256>`，手拼 `${runId}.jsonl` 对那类 id 恒错）。
+    transcriptPathFor: (runId) => transcriptPath(childTranscriptDir, runId),
     ...(clock === undefined ? {} : { clock }),
   });
 

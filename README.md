@@ -268,13 +268,17 @@ src/
     notes.js                       Host-side notes tools
     providers.js                   Tool-provider adapters
     registry.js                    Tool schemas and executor registry
-    delegation/                    Child-run bookkeeping only (issue #617 P1a): no fork/spawn, opaque fields
-                                   pass through, liveness is a host-injected predicate
+    delegation/                    Child-run bookkeeping (issue #617 P1a) plus the bounded transcript-tail
+                                   read (issue #626 C1): no fork/spawn, opaque fields pass through,
+                                   liveness is a host-injected predicate
       roster.js                    Roster: 18-field record, atomic write, updatedAt monotonic, stale reconcile
       capacity.js                  Concurrency quota leases: wx-exclusive create, idempotent release, sweep
       notify.js                    Completion-notify dedup keyed on the (runId, endedAt) pair, fixed prefix
       tool.js                      Delegate tool factory (P1b): runChild host-injected, termination→state
                                    mapping owned by the library; parent identity never a tool argument
+      tail.js                      `action="tail"` (C1): what the child is doing right now — bounded read of
+                                   its transcript tail (default 8 rows / max 20 / 300 chars per row) with
+                                   the tool name and an args digest; no event forwarding
 ```
 
 `src/index.js` exports the providers, canonical message conversions, token
@@ -866,7 +870,13 @@ The shared CLI flags are:
   is one child run's time budget. The child's tool face **excludes `delegate`** (v1
   forbids recursive delegation), its transcript lives under the roster directory
   (`~/.erix/delegation/`, override with `ERIX_DELEGATION_DIR`) and is **never**
-  appended to the parent session file. It is a runnable sample and verifier for the
+  appended to the parent session file. The tool's action face is
+  `run | status | result | list | cancel | tail`: `tail` is a **bounded read of the
+  child's transcript tail** (the last 8 rows by default, at most 20, 300 characters
+  per row) that reports which tool the child is running plus an args digest — it
+  reads any child on disk, not only the ones this process owns, so a host can watch
+  a child it did not spawn. The C2/C3 actions (resume, steer) are **not** part of it. It is a
+  runnable sample and verifier for the
   host-side delegation contract, not a new default capability.
 - `--error-log <path>` appends persistence-error events to a JSONL file (same as
   `ERIX_ERROR_LOG`; default: stderr only).
