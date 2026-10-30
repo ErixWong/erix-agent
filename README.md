@@ -274,7 +274,8 @@ src/
       roster.js                    Roster: 21-field record (issue #630 S1 adds resultText /
                                    resultTruncated / errorMessage), atomic write, updatedAt
                                    monotonic, stale reconcile
-      capacity.js                  Concurrency quota leases: wx-exclusive create, idempotent release, sweep
+      capacity.js                  Concurrency quota leases: a fixed slot pool taken with one exclusive
+                                   create (cross-process atomic), crash-slot reclaim, idempotent release
       notify.js                    Completion-notify dedup keyed on the (runId, endedAt) pair, fixed prefix
       tool.js                      Delegate tool factory (P1b): runChild host-injected, termination→state
                                    mapping owned by the library; parent identity never a tool argument
@@ -912,6 +913,19 @@ The shared CLI flags are:
   reporting someone else's live child as dead is the worse failure. An explicit
   `--compact-budget <tokens>` is **inherited by child runs** too (with none, the child
   keeps deriving its budget from the configured context window, exactly as before).
+  **The concurrency cap is cross-process atomic** (issue #630 S3): the quota is a fixed
+  pool of slot files in the lease directory and taking one is a single exclusive
+  create, so the decision and the claim are the same system call — two processes
+  racing for the last slot can no longer both win (the old "count the leases, then
+  create one" pair did exactly that, and the pool over-issued). A slot whose holder
+  can be proven gone is reclaimed on the spot, with the host's `isProcessAlive`
+  predicate as the authority whenever the lease carries a pid, and a 30-minute age
+  threshold as a **fallback** only when no predicate was supplied (so a child's own
+  time budget should stay well below it). Reclaiming re-reads the slot and unlinks
+  only the exact holder it judged dead, releasing removes a slot only when it records
+  the caller's own identity, and lease files written by older versions neither count
+  against the quota nor get deleted. There is no daemon and no timer: a slot is
+  reclaimed only when some process fails to take one.
   The C2/C3 actions (resume,
   steer) are **not** part of it. It is a
   runnable sample and verifier for the

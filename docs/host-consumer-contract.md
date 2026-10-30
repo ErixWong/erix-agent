@@ -5936,9 +5936,25 @@ valid state on a later resume.
 `createDelegateTool` (`src/tools/delegation/tool.js`) is the library's child-run surface: the host
 injects `runChild` (the library never forks, spawns or imports `child_process`), and the library owns
 only the bookkeeping — one roster record per child (`src/tools/delegation/roster.js`), a concurrency
-lease, and completion-notification dedupe. Five properties of that surface are contract rather than
+lease, and completion-notification dedupe. Six properties of that surface are contract rather than
 sample detail, because a host that reads them differently will build a wrong orchestrator.
 
+* **The concurrency quota is cross-process atomic, and a crashed holder's slot is reclaimed.** The
+  quota is a fixed pool of slot files in the lease directory, and taking one is a **single exclusive
+  create** — "count the leases, then create one" is gone, so two processes racing for the last slot
+  can no longer both win (before issue #630 S3 they could, and the pool silently over-issued). When
+  the slot a process wants is already taken, the library reads that holder and reclaims the slot
+  only if it can prove the holder is gone: your `isProcessAlive` predicate decides whenever the
+  lease carries a pid (a pid the predicate calls alive is never taken, however old the lease), and
+  only when no predicate was supplied (or the lease carries no pid) does an age threshold apply —
+  30 minutes by default, a **fallback** rather than an authority, which is why a child's own time
+  budget should stay well below it. Reclaiming re-reads the slot and unlinks only the exact holder
+  it judged dead, so a slot that changed hands in between is left untouched; `release` is just as
+  strict and removes a slot only when the identity recorded inside it is the caller's. Lock files
+  written by older versions (one file per child, named after the child) no longer count against the
+  quota and are never deleted — they were short-lived by nature, so leaving them is harmless. There
+  is **no daemon and no timer**: a slot is reclaimed only on the path where some process fails to
+  take one.
 * **A live child is never written off by a process that cannot prove it is dead.** The roster record
   of a child moves `queued` → `running` → a terminal state, and `running` is written **before** the
   library calls your run function, so "still queued" and "actually working" are distinguishable. The

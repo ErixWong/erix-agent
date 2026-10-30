@@ -27,8 +27,10 @@
  * 身份 / 归属类旋钮不做成模型可猜的入参。
  *
  * 组装关系（全部复用 P1a 簿记三件套，不另起一套）：
- *   - 配额：`capacity.acquire`（`<leaseDir>/<runId>.lock` 独占创建）+ 目录内租约计数实现
- *     `maxConcurrent`；抢不到 ⇒ 结构化失败并点名持有者，**不排队、不自旋**；
+ *   - 配额：**只调一次** `capacity.acquire`——它既判额又占位（固定槽位池 `slot-<i>.lock` +
+ *     `open(..., "wx")` 的原子判据，issue #630 S3）；抢不到 ⇒ 结构化失败并点名持有者，
+ *     **不排队、不自旋**。这里**不许**再写「先数后建」的预检：数一遍再建锁会让两个进程同时
+ *     读到 `max-1` 然后各自建锁，配额就超发了（那正是 S3 修的缺陷）；
  *   - 名册：`roster.writeRecord` 写 `queued` 起、`running`（**在调 `runChild` 之前**，issue #630 S2 / D：
  *     七状态里 `running` 以前从未被写入，`status` 一直显示 `queued`）、终态；`roster.reconcile` 在
  *     status / result / list 前先重算陈旧记录（本实例持有的 runId 报 ownedRunIds，不自我误伤；
@@ -52,7 +54,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
-import { acquire, list as listLeases, release } from "./capacity.js";
+import { acquire, release } from "./capacity.js";
 import { TAIL_LIMIT_DEFAULT, TAIL_LIMIT_MAX, TAIL_TEXT_LIMIT_DEFAULT, tailChildTranscript } from "./tail.js";
 import { markCollected, notificationText, shouldNotify } from "./notify.js";
 import { ROSTER_LIVE_STATES, listRecords, readRecord, reconcile, writeRecord } from "./roster.js";
@@ -159,7 +161,13 @@ function requireChildRunId(input) {
  *   `termination` 的词汇以上面导出的映射表为准；宿主实现不许自行发明终止词。
  * @param {string} options.rosterDir 名册目录（每条记录一个 `<runId>.json`）。
  * @param {string} [options.leaseDir] 租约目录；缺省 `<rosterDir>/leases`。
- * @param {number} [options.maxConcurrent] 并发配额（缺省 2）：目录内活租约数到顶后 run 直接失败。
+ * @param {number} [options.maxConcurrent] 并发配额（缺省 2）：槽位池大小。池子占满后 run 直接失败。
+ *   **这是跨进程的**（issue #630 S3）：判定与占位是同一次 `wx` 创建，两个进程同时抢也只会有一个
+ *   成功，不会「各自数到 max-1 然后都建锁」。
+ * @param {number} [options.leaseMaxAgeMs] 崩溃槽的**兜底**回收阈值（缺省
+ *   `capacity.DEFAULT_LEASE_MAX_AGE_MS` = 30 分钟）：只在宿主**没有**给 `isProcessAlive`（或租约里
+ *   没有 pid）时生效。给了谓词就以谓词为准，这个值不参与判定。它必须明显长于子 run 的正常寿命
+ *   （CLI 的 `--delegate-timeout-ms` 缺省 10 分钟），否则会误收还在干活的租约。
  * @param {(text: string) => void} [options.notifyParent] 后台子 run 完成时的父唤醒（收到
  *   `notificationText` 一行式文本）；`(runId, endedAt)` 已被父 result 自取过则不再唤醒。
  * @param {(runId: string) => string} [options.transcriptPathFor] 宿主旋钮（issue #626 C1）：
@@ -190,7 +198,10 @@ export function createDelegateTool(options) {
   if (options === null || typeof options !== "object" || Array.isArray(options)) {
     throw new TypeError("delegate: options 必须是对象");
   }
-  const { runChild, rosterDir, leaseDir, maxConcurrent, notifyParent, transcriptPathFor, cwdFor, clock, isProcessAlive } = options;
+  const {
+    runChild, rosterDir, leaseDir, maxConcurrent, notifyParent, transcriptPathFor, cwdFor, clock,
+    isProcessAlive, leaseMaxAgeMs,
+  } = options;
   if (typeof runChild !== "function") {
     throw new TypeError("delegate: runChild 必须由宿主注入（库不 fork / 不 spawn / 不 import child_process）");
   }
@@ -213,6 +224,9 @@ export function createDelegateTool(options) {
   const resolvedMax = maxConcurrent === undefined ? 2 : maxConcurrent;
   if (!Number.isInteger(resolvedMax) || resolvedMax < 1) {
     throw new TypeError(`delegate: maxConcurrent 必须是 ≥1 的整数，收到 ${JSON.stringify(maxConcurrent)}`);
+  }
+  if (leaseMaxAgeMs !== undefined && (typeof leaseMaxAgeMs !== "number" || !Number.isFinite(leaseMaxAgeMs) || leaseMaxAgeMs <= 0)) {
+    throw new TypeError(`delegate: leaseMaxAgeMs 必须是正的有限数字，收到 ${JSON.stringify(leaseMaxAgeMs)}`);
   }
   const resolvedClock = typeof clock === "function" ? clock : () => Date.now();
   const notify = typeof notifyParent === "function" ? notifyParent : undefined;
@@ -283,7 +297,8 @@ export function createDelegateTool(options) {
       if (message !== "") next.errorMessage = message.slice(0, ERROR_MESSAGE_LIMIT);
     }
     const record = writeRecord(rosterDir, /** @type {import("./roster.js").RosterRecord} */ (next));
-    release(resolvedLeaseDir, runId);
+    // 只还自己的槽（槽内 runId 不一致就不动，issue #630 S3）。
+    release(resolvedLeaseDir, { runId, maxConcurrent: resolvedMax });
     if (background && notify !== undefined && shouldNotify(record, { collected })) {
       notify(notificationText(record));
     }
@@ -348,25 +363,26 @@ export function createDelegateTool(options) {
       effectiveCwd = resolvedCwd;
     }
 
-    // 配额：活租约到顶 ⇒ 结构化失败、点名持有者，不排队、不自旋。
-    const { leases } = listLeases(resolvedLeaseDir);
-    if (leases.length >= resolvedMax) {
+    // 配额：**一次**调用既判额又占位（issue #630 S3）。这里以前是「先 list 数一遍、够了再 acquire」，
+    // 两个进程可以同时读到 max-1 然后各自建锁 ⇒ 超发；现在没有那个窗口，也没有那一次多余的系统调用。
+    const acquired = acquire(resolvedLeaseDir, {
+      runId,
+      pid: process.pid,
+      now: resolvedClock(),
+      maxConcurrent: resolvedMax,
+      ...(isProcessAlive === undefined ? {} : { isProcessAlive }),
+      ...(leaseMaxAgeMs === undefined ? {} : { maxAgeMs: leaseMaxAgeMs }),
+    });
+    // 注意：`acquired.ok` 是布尔字面量判别式，tsc 对 `!acquired.ok` 不做联合收窄（实测），
+    // 必须写成显式不等比较才能拿到失败那一支。
+    if (acquired.ok !== true) {
       return {
         ok: false,
         reason: "capacity_full",
         maxConcurrent: resolvedMax,
-        holders: leases.map((lease) => ({
-          runId: lease.runId,
-          ...(typeof lease.pid === "number" ? { pid: lease.pid } : {}),
-          acquiredAt: lease.acquiredAt,
-        })),
+        holders: acquired.holders,
+        ...(acquired.corrupt === undefined ? {} : { corrupt: acquired.corrupt }),
       };
-    }
-    const acquired = acquire(resolvedLeaseDir, { runId, pid: process.pid, now: resolvedClock() });
-    // 注意：`acquired.ok` 是布尔字面量判别式，tsc 对 `!acquired.ok` 不做联合收窄（实测），
-    // 必须写成显式不等比较才能拿到 holder 那一支。
-    if (acquired.ok !== true) {
-      return { ok: false, reason: "capacity_full", maxConcurrent: resolvedMax, holder: acquired.holder };
     }
 
     const now = resolvedClock();
