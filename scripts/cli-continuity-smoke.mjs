@@ -41,7 +41,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createScriptedUpstream, jsonResponse } from "../fixtures/upstream.mjs";
+import { createCompactionAwareScript, createScriptedUpstream, jsonResponse, semanticSummaryText } from "../fixtures/upstream.mjs";
 import { fakeHomeEnv, upstreamFields, writeConfigHome } from "../fixtures/config-shape.mjs";
 import { CONTINUITY_BLOCK_START, HANDOFF_INSTRUCTION, HANDOFF_MARKER_START } from "../src/loop/continuity-block.js";
 
@@ -258,11 +258,23 @@ export async function runCliContinuitySmoke(options = {}) {
   // 假上游的回复由这个可变槽决定（`script` 里的函数每次请求现取）：run 1 = 带 handoff，
   // 之后 = 纯文本。用**可变槽**而不是按下标排 script，是因为「每个 run 恰好一发请求」是
   // 引擎的现状而不是本脚本的契约——真多一发也不会把后面几条断言错位。
+  //
+  // issue #614：CLI 默认压缩策略改成 `fold-llm` ⇒ 真折叠时假上游会多收到一发**摘要器请求**。
+  // 本脚本的场景不折（每 run 只回一句话），但**多出来的那一发绝不能吃主循环的台词**：一旦吃进去，
+  // 折叠块里就会落进「任务已完成」这种 garbage，而 A/B/C/D 仍可能全绿。所以这里用
+  // `createCompactionAwareScript` 把两类请求正面分开（依据：摘要器提示词指南首行 vs 非空
+  // `tools` / 多轮历史），摘要器那一发给一份合法分节的摘要；认不出的请求回 500，不装成正常应答。
   let reply = HANDOFF_REPLY;
   const upstream = createScriptedUpstream({
-    script: [() => jsonResponse({
-      choices: [{ message: { role: "assistant", content: reply }, finish_reason: "stop" }],
-      usage: { prompt_tokens: 11, completion_tokens: 5 },
+    script: [createCompactionAwareScript({
+      main: () => jsonResponse({
+        choices: [{ message: { role: "assistant", content: reply }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 11, completion_tokens: 5 },
+      }),
+      summarizer: () => jsonResponse({
+        choices: [{ message: { role: "assistant", content: semanticSummaryText() }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 300, completion_tokens: 60 },
+      }),
     })],
   });
 

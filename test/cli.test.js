@@ -1419,7 +1419,7 @@ test("parseChatArgs rejects unknown or missing --compaction values (#167)", () =
   );
 });
 
-test("runChat keeps the default compaction strategy and forwards an explicit name (#167)", async () => {
+test("runChat keeps the default compaction strategy and forwards an explicit name (#167/#614)", async () => {
   const dir = await makeTmp("erix-cli-compaction-test-");
   try {
     const configPath = await writeEmptyMcpConfig(dir);
@@ -1448,7 +1448,8 @@ test("runChat keeps the default compaction strategy and forwards an explicit nam
     };
 
     const defaulted = await runChat({ ...shared, session: "compaction-default" });
-    assert.equal(defaulted._context.strategy, "fold-statistical");
+    // issue #614：CLI 默认策略改成 fold-llm（语义折叠）；统计摘要降为降级兜底。
+    assert.equal(defaulted._context.strategy, "fold-llm");
 
     const named = await runChat({
       ...shared,

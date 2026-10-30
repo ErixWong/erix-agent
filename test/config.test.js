@@ -297,7 +297,8 @@ test("buildCompactionContext prioritizes an explicit budget", () => {
   }, 8000);
 
   assert.equal(context.budgetTokens, 8000);
-  assert.equal(context.strategy, "fold-statistical");
+  // issue #614：CLI 默认策略是 fold-llm（统计摘要降为降级兜底）。
+  assert.equal(context.strategy, "fold-llm");
   assert.equal(context.protectedMessage({ role: "user", content: "task" }), true);
   assert.equal(context.protectedMessage({
     role: "user",
@@ -312,7 +313,7 @@ test("buildCompactionContext computes a budget from the context window", () => {
   });
 
   assert.equal(context.budgetTokens, 16000);
-  assert.equal(context.strategy, "fold-statistical");
+  assert.equal(context.strategy, "fold-llm");
 });
 
 test("buildCompactionContext is disabled without a context window", () => {
@@ -329,7 +330,7 @@ test("buildCompactionContext keeps recovery hints optional", () => {
   }, 8000, "archive hint");
 
   assert.equal(context.recoveryHint, "archive hint");
-  assert.equal(context.strategy, "fold-statistical");
+  assert.equal(context.strategy, "fold-llm");
   assert.equal(
     buildCompactionContext({ maxOutputTokens: 2000 }, undefined),
     undefined,
@@ -349,10 +350,11 @@ test("loadCliConfig preserves the existing missing endpoint and API key error", 
   });
 });
 
-test("buildCompactionContext honours the configured strategy name and defaults to fold-statistical (#167)", () => {
+test("buildCompactionContext honours the configured strategy name and defaults to fold-llm (#167/#614)", () => {
   const base = { contextWindowTokens: 20000, maxOutputTokens: 2000 };
-  assert.equal(buildCompactionContext(base).strategy, "fold-statistical");
-  assert.equal(buildCompactionContext(base, 8000).strategy, "fold-statistical");
+  // issue #614：默认值是 fold-llm；显式名字（含统计摘要）仍然逐字生效。
+  assert.equal(buildCompactionContext(base).strategy, "fold-llm");
+  assert.equal(buildCompactionContext(base, 8000).strategy, "fold-llm");
   for (const name of ["sliding-window", "fold-statistical", "fold-llm"]) {
     const withName = { ...base, compaction: name };
     assert.equal(buildCompactionContext(withName).strategy, name);

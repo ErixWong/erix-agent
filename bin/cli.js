@@ -119,9 +119,10 @@ const HELP_TEXT = `用法：
   --judge-log <path>   将 round/intercept judge 决策追加写入 JSONL（默认：<归档目录>/judge.log）
   --error-log <path>   将持久化错误事件追加写入 JSONL（默认仅 stderr；也可用 ERIX_ERROR_LOG）
   --tools <名1,名2>    工具白名单：只保留列表内的工具（内置+skill+MCP）；未知名字警告并忽略，过滤后为空则报错
-  --compaction <名>   上下文压缩策略：${BUILTIN_COMPACTION_STRATEGY_NAMES.join(" | ")}（默认：fold-statistical）。
-                      ⚠ fold-llm 每次压缩会多一次主力模型调用（输入为被折叠的老轮次），其 usage
-                      已计入本次 run 总账；也可用 config 字段 compaction 固定（旗标优先）。
+  --compaction <名>   上下文压缩策略：${BUILTIN_COMPACTION_STRATEGY_NAMES.join(" | ")}（默认：fold-llm）。
+                      fold-llm 每次压缩会多一次主力模型调用（输入为被折叠的老轮次），其 usage
+                      已计入本次 run 总账；摘要器失败/超时会自动降级为统计摘要（fold-statistical，
+                      零 LLM），run 不失败。也可用 config 字段 compaction 固定（旗标优先）。
 
 环境变量：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
@@ -146,7 +147,8 @@ const HELP_TEXT = `用法：
   MCP 配置默认读取当前目录 .mcp.json 或 ~/.erix/mcp.json。
   slots.default.maxOutputTokens 可设置输出 token 上限（默认：16384）。
   slots.default.contextWindowTokens 可启用自动压缩（超预算自动折叠早期轮次）；--compact-budget <值> 可覆盖自动预算。
-  slots.default.compaction 可固定压缩策略（sliding-window / fold-statistical / fold-llm，默认 fold-statistical）；--compaction 可覆盖。
+  slots.default.compaction 可固定压缩策略（sliding-window / fold-statistical / fold-llm，默认 fold-llm；
+                      统计摘要是 fold-llm 失败/超时后的降级兜底）；--compaction 可覆盖。
 
 退出码：
   0  成功（开了 --final-guard 时为 verified）

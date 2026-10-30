@@ -16,8 +16,22 @@ import {
 import { PROVIDER_PHASE_TIMEOUT_FIELDS, assertPhaseTimeoutValue } from "./provider-timeouts.js";
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 16384;
-// issue #167：默认仍为 fold-statistical（零额外模型调用），fold-llm 需用户显式选择
-export const DEFAULT_COMPACTION_STRATEGY = "fold-statistical";
+// issue #614：CLI 默认走 **语义折叠**（fold-llm）。
+//
+// 为什么改（#614 / #607 的实测）：CLI 必然有可用 provider（它就是用来跑模型的），却曾默认
+// 放弃语义那半 ⇒ 折叠块里只有**索引**（区间 / 工具足迹 / 清单 / 锚点），没有**概括**与**经验**
+// （阶段 / 下一步 / 教训与坑）。64k 预算 / 300 段逐段翻译的实测里 80.3% 的重读有相当一部分
+// 是「不知道做到哪 / 不知道结论」——正是语义折叠该给的那两节。
+//
+// 统计摘要（fold-statistical）的正确位置是**降级兜底**，不是默认：fold-llm 的摘要器失败 /
+// 超时（默认 30s 上限）时引擎自动退回它——零 LLM、确定性、永不失败（`src/compact/fold-llm.js`
+// 的 `[fold-llm 摘要失败，已降级为统计摘要（原因: …）]` 那条路径，本单不改）。
+//
+// 显式选择**仍然生效**：`--compaction fold-statistical` / `config.compaction` 优先于本默认值
+// （见 `resolveCompactionStrategyName`：`--compaction` > config.compaction > 这里）。
+// 库层边界不动：引擎 `resolveCompactionStrategy(undefined) → undefined`（不折），
+// 「默认用哪个策略」始终是**宿主/CLI 的选择**。
+export const DEFAULT_COMPACTION_STRATEGY = "fold-llm";
 
 /**
  * CLI 旗标形态的校验：不合法名字直接报错（带合法值列表），而非默默回到默认值。
