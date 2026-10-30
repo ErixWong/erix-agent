@@ -705,7 +705,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-run-slice-498s3a11.test.js` | 13 | `completion`×5, `wrapup`×4, `reflection`×2, `context`×1, `tools`×1 |
 | `test/loop-metadata-keys-slice-498s3a9.test.js` | 19 | `completion`×4, `session`×4, `wrapup`×4, `context`×3, `reflection`×2, `tools`×2 |
 | `test/loop-fold-context-knobs-469.test.js` | 14 | `strategy`×6, `context`×2, `session`×2, `tools`×2, `completion`×1, `wrapup`×1 |
-| `test/loop-on-fold-summary.test.js` | 12 | `onFoldSummary`×11, `tools`×3, `completion`×2, `context`×2, `onPersistenceError`×2, `stallDetection`×2, `wrapup`×2, `session`×1 |
+| `test/loop-on-fold-summary.test.js` | 16 | `onFoldSummary`×11, `tools`×4, `completion`×3, `stallDetection`×3, `wrapup`×3, `context`×2, `onPersistenceError`×2, `session`×1 |
 | `test/loop-folding-slice-498s3b.test.js` | 7 | `completion`×3, `wrapup`×3, `context`×1 |
 | `test/loop-timing-slice-498s3.test.js` | 7 | `completion`×3, `stallDetection`×2, `retry`×1, `wrapup`×1 |
 | `test/loop-input-slice-498s3c.test.js` | 12 | `wrapup`×4, `completion`×2, `initialMessages`×2, `session`×2, `tools`×2 |
@@ -828,6 +828,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/tools-delegate-617.test.js` | 6 | `completion`×3, `tools`×3 |
 | `test/cli-delegate-617.test.js` | 8 | `context`×3, `prompt`×2, `session`×2, `tools`×1 |
 | `test/tools-delegate-tail-617.test.js` | 4 | `completion`×2, `tools`×2 |
+| `test/compact/fold-llm-degrade-469.test.js` | 4 | `completion`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 
