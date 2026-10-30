@@ -810,15 +810,48 @@ function summarizeToolInput(name, input) {
   return truncateDisplayText(serialized ?? input, TOOL_INPUT_LIMIT);
 }
 
-function summarizeToolResult(name, result) {
-  // issue #195：`searchText` 按引擎支持的 `{content, metadata}` 形状返回（跳过账/截断走结构化
-  // 字段）。回显取 content，否则终端会打出 `[object Object]`——模型侧不受影响（引擎自己会归一），
-  // 但 CLI 是调试器，看不见搜索结果就等于没有。
-  const payload = result && typeof result === "object" && !Array.isArray(result)
-    && typeof result.content === "string"
-    ? result.content
-    : result;
-  const text = String(payload ?? "");
+/**
+ * 工具结果 → 可显示文本（`← name: …` 那一行的正文）。
+ *
+ * 优先 `{content: string}`：issue #195 里 `searchText` 按引擎支持的 `{content, metadata}` 形状返回
+ * （跳过账/截断走结构化字段），回显取 content，否则终端会打出 `[object Object]`。
+ *
+ * 其余**对象/数组一律 JSON 紧凑序列化**（issue #617）。为什么是通用修法而不是再加一个键名：
+ * #195 那条窄补丁只认 `content`，留下的类是「**每个返回对象的新工具都会重新踩一次**」——
+ * `delegate`（#617）返回 `{ok, runId, state, termination, text}`（没有 `content`），于是落到
+ * `String(payload)` 又打出 `[object Object]`：父 run 的界面上完全看不见子 run 回了什么。模型侧不受
+ * 影响（引擎自己归一化 tool_result），坏掉的只有 CLI 这个调试器。所以判据从「键名白名单」换成
+ * 「拿不到可展示的字符串就序列化」，下一个返回对象形状的工具不必再回来补第三刀。
+ *
+ * 序列化失败（循环引用、BigInt、`toJSON` 返回 undefined 等）**回落**到 `String(result ?? "")`
+ * ——与改动前逐字一致；回显是调试设施，不许抛错把 CLI 打挂。
+ *
+ * @param {unknown} result
+ * @returns {string}
+ */
+function toolResultDisplayText(result) {
+  if (result !== null && typeof result === "object") {
+    if (!Array.isArray(result) && typeof result.content === "string") return result.content;
+    try {
+      // 紧凑单行（默认无缩进）；结果里的换行由 JSON 自己转义成 \n，不破坏「一行一条回显」。
+      const serialized = JSON.stringify(result);
+      if (typeof serialized === "string") return serialized;
+    } catch {
+      // 循环引用 / BigInt：落到下面的 String(...)（改动前的行为）
+    }
+  }
+  return String(result ?? "");
+}
+
+/**
+ * `wrapExecuteTool` 的 `← name: …` 回显摘要（导出是给 CLI 回显边界测试用的，不是库面 API）。
+ *
+ * @param {string} name
+ * @param {unknown} result
+ * @returns {string}
+ */
+export function summarizeToolResult(name, result) {
+  const text = toolResultDisplayText(result);
   // exec 输出可能是验证/回归脚本的多行结果，必须完整可见（对齐 exec 内部 4096 截断）
   const limit = name === "exec" ? TOOL_EXEC_RESULT_LIMIT : TOOL_RESULT_LIMIT;
   // exec 日志同用 head+tail：尾部报错/exit 比中段 filler 有价值（issue #32 #2）
