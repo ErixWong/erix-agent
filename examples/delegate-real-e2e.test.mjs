@@ -60,6 +60,13 @@ const PARENT_PROMPT = [
   "最后一行只写：任务已完成",
 ].join("\n");
 
+/**
+ * 父首轮用户消息的取证锚点：**从 `PARENT_PROMPT` 本身切出来**，不在断言里另抄一份。
+ * （实测漂移过一次：断言手写成「派生（delegate）工具的验证任务」，漏了提示词里的 `）」`，
+ * 于是真上游跑永远红——虽然功能全对。锚点必须是派生值，不能是第二份手抄。）
+ */
+const FIRST_TURN_MARK = PARENT_PROMPT.slice(0, 18);
+
 /** 空 MCP 配置：`runChat` 默认会去读 `~/.erix/mcp.json` / 当前目录 `.mcp.json`（真机不许碰真家目录）。 */
 async function writeEmptyMcpConfig(dir) {
   const path = join(dir, "mcp.json");
@@ -160,11 +167,33 @@ test("真上游 e2e：父 run 派生子 run → 名册归属/终态 → 唤醒�
     assert.equal(existsSync(childTranscript), true, `子 run 的 transcript 应落在 ${childTranscript}`);
     const parentText = await readFile(join(parentDir, `${PARENT_RUN_ID}.jsonl`), "utf8");
     // 反向证：父会话文件里必须有父 run 自己的首轮用户消息（否则「不含子 run 系统提示」是空转的）。
-    assert.ok(parentText.includes("派生（delegate）工具的验证任务"), "父会话文件里应有父 run 的首轮用户消息（反向证）");
-    // 子 run 的系统提示只在子会话文件里出现（父会话文件里若有它，说明子 run 追加进了父文件）。
-    const childText = await readFile(childTranscript, "utf8");
-    assert.match(childText, /你是 erix 的子 run/u, "子会话文件里应有子 run 自己的系统提示");
-    assert.doesNotMatch(parentText, /你是 erix 的子 run/u, "父会话文件里出现了子 run 的系统提示 ⇒ 父子会话文件互踩");
+    assert.ok(parentText.includes(FIRST_TURN_MARK), `父会话文件里应有父 run 的首轮用户消息（反向证，锚点 ${JSON.stringify(FIRST_TURN_MARK)}）`);
+    // —— 互踩的判据用**行身份**，不用措辞 ——
+    // 本仓 transcript 每行都带 `<runId>:…` 前缀的身份键（`dedupKey` 与 `roundKey` 都是：
+    //   `src/store/message-rows.js` 的 `dedupKey = <runId>:msg:<round>:<seq>`、
+    //   `src/loop/orchestrator.js` 的 `roundKey = <runId>:round:<n>`）。
+    // ⇒ 「子 run 追加进了父的会话文件」是可判定的结构事实，不必挑一个字符串去猜。
+    // ⚠ 原先这里断言的是「子会话文件里应有子 run 自己的系统提示」——**那条断言本身不成立**：
+    //   transcript 不落系统提示（`src/store/` 里没有任何 system 行），于是真上游跑永远红（#617 P2 实测）。
+    const rowsOf = (text) => text.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    const parentRows = rowsOf(parentText);
+    const childRows = rowsOf(await readFile(childTranscript, "utf8"));
+    assert.ok(parentRows.length > 0, "父会话文件应至少有一行");
+    const foreignKeys = parentRows
+      .flatMap((row) => [row.dedupKey, row.roundKey])
+      .filter((key) => typeof key === "string" && key !== "" && !key.startsWith(`${PARENT_RUN_ID}:`));
+    assert.deepEqual(foreignKeys, [], `父会话文件里混进了别的 run 的行 ⇒ 父子会话互踩：${JSON.stringify(foreignKeys)}`);
+    assert.ok(
+      childRows.some((row) => typeof row.dedupKey === "string" && row.dedupKey.startsWith(`${record.runId}:`)),
+      "子 transcript 里应有身份键属于子 run 自己的行",
+    );
+    // 反向证（防上一条空转）：子文件里得真的写着子 run 的任务文本——**从提示词里抠出来**，不另抄一份。
+    const childTaskMark = PARENT_PROMPT.match(/task="([^"]+)"/u)?.[1] ?? "";
+    assert.ok(childTaskMark !== "", "剧本里应能从 PARENT_PROMPT 抠出子任务文本");
+    assert.ok(
+      childRows.some((row) => JSON.stringify(row).includes(childTaskMark)),
+      `子 transcript 里应有子 run 的首轮用户消息（锚点 ${JSON.stringify(childTaskMark)}）`,
+    );
   } finally {
     await rm(root, { recursive: true, force: true }).catch(() => {});
   }
