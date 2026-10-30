@@ -221,11 +221,12 @@ export function createDelegateTool(options) {
    * issue #630 S1：子 run 的**终稿**与**失败原因**必须在这一**次**终态写里落盘（不是事后补写）：
    * 后台分支以前把 `text` 丢掉了，父调 `result` 只能拿到 `state` / `termination`，答案是“看 tail 猜”。
    * 两个上限（`RESULT_TEXT_LIMIT` / `ERROR_MESSAGE_LIMIT`）在这里兑现：截了就带
-   * `resultTruncated: true`，没截就不写那个键（“不给的字段不写”）。
+   * `resultTruncated: true`，没截就不写那个键（「不给的字段不写」）。
+   *
+   * `outcome` 有两种形状：成功 `{ ok: true, text, termination?, verification? }`；失败
+   * `{ ok: false, error }`。这里刻意写成「一个对象 + 可选成员」而不是可判别联合：`--checkJs` 下
+   * 联合的否定收窄在 JSDoc 字面量类型上不生效（tsc 只认 `.text` 那一侧），写成可选成员既过闸又不用 cast。
    * @param {string} runId
-   *   两种形状：成功 `{ ok: true, text, termination?, verification? }`；失败 `{ ok: false, error }`。
-   *   这里刻意用「一个对象 + 可选成员」而不是可判别联合：`--checkJs` 下联合的否定收窄在
-   *   JSDoc 字面量类型上不生效（tsc 只认 `.text` 那一侧），写成可选成员既过闸又不用 cast。
    * @param {{ ok: boolean, text?: *, termination?: *, verification?: *, error?: * }} outcome
    * @param {boolean} background
    */

@@ -247,6 +247,20 @@ export function createCliDelegation({
     );
     const { data: compactionData, hooks: compactionHooks } = splitCompactionContext(compaction);
 
+    /**
+     * 子 run 的系统提示（issue #630 S1）：提示词与工具面必须同一侧。白名单收窄了工具集时，
+     * 清单行也只列收窄后的名字（`toolNames`），todo 那一句跟着「todo 工具还在不在」走；
+     * allowlist 缺省时**不传** `toolNames` ⇒ 旧提示词逐字不变。
+     */
+    const childPromptOptions = toolAllowlist === undefined || toolAllowlist === null
+      ? { cwd: root, todo: todoEnabled, archiveDir: assembly.archiveDir }
+      : {
+        cwd: root,
+        todo: todoEnabled && childToolNames.some((name) => name.startsWith("todo_")),
+        archiveDir: assembly.archiveDir,
+        toolNames: childToolNames,
+      };
+
     // `deadlineMs` 是**时长**（库的 `runChild` 契约，名册里 `deadlineAt = now + deadlineMs`），
     // 引擎读的 `config.timing.deadlineMs` 是**绝对时刻**——这里换一次，不在别处再换。
     const budgetMs = Number.isFinite(deadlineMs) && deadlineMs > 0 ? deadlineMs : deadlineDefault;
@@ -261,15 +275,7 @@ export function createCliDelegation({
         tools: childTools,
         config: {
           input: {
-            system: buildChildSystemPrompt({
-              cwd: root,
-              // 提示词与工具面同一侧：白名单收窄了工具集，清单行也只列收窄后的名字。
-              // allowlist 缺省时 `toolNames` 也不传 ⇒ 旧提示词逐字不变。
-              ...(toolAllowlist === undefined || toolAllowlist === null
-                ? { todo: todoEnabled }
-                : { todo: todoEnabled && childToolNames.some((name) => name.startsWith("todo_")), toolNames: childToolNames }),
-              archiveDir: assembly.archiveDir,
-            }),
+            system: buildChildSystemPrompt(childPromptOptions),
             initialUserMessage: task,
           },
           run: {
