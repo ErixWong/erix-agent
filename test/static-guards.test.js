@@ -3991,8 +3991,20 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  * # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 13 条 / 英文 13 条
  * # 配对地板：实测 13 对 > 地板 11 对 ⇒ 可以抬地板到 13
  * ```
+ *
+ * 工单 docs-261031-01（0.29.0 发版准备）：`## [Unreleased]` 补上派生子 run 那三块——`### Added` 四对
+ * （`createDelegateTool` 六动作 / `config.run.parentRunId` / 五个宿主端口 / `tail`）、新增的
+ * `### Changed` 五对（名册 18 → 21、`result` 带回终稿、槽位池、`reconcile` 的 `unverified`、
+ * 完成标记键分隔符）、`### Fixed` 四对（A 终稿丢失 / B 缺省 cwd / C 子工具面越权 / D 活子被误判
+ * interrupted，issue #617 / #626 / #630，PR #622 / #632 / #633 / #634）。面没挪（仍是
+ * `## [Unreleased]`），只是配对变多 ⇒ 实测 26 对，地板 13 → 26。守卫自己的 diagnostic 原文：
+ *
+ * ```
+ * # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 26 条 / 英文 26 条 / 配对 26 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 13（校准面 \#\# [Unreleased]）
+ * # 配对地板：实测 26 对 > 地板 13 对 ⇒ 可以抬地板到 26
+ * ```
  */
-const CHANGELOG_PAIR_FLOOR = 13;
+const CHANGELOG_PAIR_FLOOR = 26;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

@@ -1571,8 +1571,10 @@ const SYMBOL_DOCS_STATIC = [README_EN, README_CN, AGENTS_EN, AGENTS_CN, CONTRACT
  *  （`docs/host-upgrade-guide-0.23.0.md` / `_cn.md`）落地，实扫指南 18 → **20** ⇒ 13 份点名 + 20 份实扫 = 33。
  *  抬下限的理由（工单 261022-17 发版准备，**33 → 35**）：0.24.0 的中英成对宿主升级指南
  *  （`docs/host-upgrade-guide-0.24.0.md` / `_cn.md`）落地，实扫指南 20 → **22** ⇒ 13 份点名 + 22 份实扫 = 35。
+ *  抬下限的理由（工单 docs-261031-01 发版准备，**43 → 45**）：0.29.0 的中英成对宿主升级指南
+ *  （`docs/host-upgrade-guide-0.29.0.md` / `_cn.md`）落地，实扫指南 30 → **32** ⇒ 13 份点名 + 32 份实扫 = 45。
  *  写法必须保持这一行不变形（自测要改这个数）。 */
-const REF_SCAN_DOCS_MINIMUM = 43;
+const REF_SCAN_DOCS_MINIMUM = 45;
 
 /** #280 同款的「树形口子」，只给 `--self-test` 用（**不是豁免开关**）：模拟「某份指南改名到不匹配模式」。 */
 let SIM_RENAMED_GUIDE = null;
@@ -2150,7 +2152,7 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  * 四组新锚点 ⇒ 168 → **172 组**（中英各一处，组数 +2 是因为同一 (符号, 文件) 在两种语言里只算一组；
  * AGENTS 中英的声称句自己也引这四组，所以 170 → 172 是**改完 AGENTS 之后**重测的不动点），在本分支树上 `--verbose` 实测。
  */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 172;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 175;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
