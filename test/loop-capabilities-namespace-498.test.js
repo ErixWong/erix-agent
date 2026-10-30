@@ -649,6 +649,10 @@ const REPRESENTATIVE_CONFIG_VALUES = {
   reflection: false,
   runId: "config-498-run",
   cwd: "/tmp/config-498",
+  // issue #617（P0）：子 run 发起者关联——opaque 字符串标量，注册方式同构 `runId`
+  // （#498 S3 A20 之后的形状：nested-only，无扁平孪生）。展开相仍逐字写回
+  // `effectiveOptions.parentRunId`（orchestrator 的解构读侧不变）。
+  parentRunId: "config-498-parent",
   // tuning
   maxTokens: 512,
   temperature: 0.2,

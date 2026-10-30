@@ -636,6 +636,11 @@ const RETIRED_FLAT_VALUES = {
   // 形状）。展开相仍逐字写回 `effectiveOptions.handoff`（`orchestrator.js` 的
   // `normalizeContinuityWriteMode(effectiveOptions.handoff)` 读的就是它）。值取默认的 `"off"`。
   handoff: "off",
+  // issue #617（P0）：`parentRunId` 同 `handoff` 的形状——**新增**叶子、从来没有过扁平拼写
+  // （不是退役，是出生即 nested-only），所以它也进这张「退役键」取值表：派生集合
+  // `RETIRED_FLAT_KEYS` = 「配置面叶子映射到的键里已不在白名单的那些」，与键是「退役」还是
+  // 「从来没有」无关。展开相仍逐字写回 `effectiveOptions.parentRunId`（orchestrator 的解构读它）。
+  parentRunId: "config-497-parent",
 };
 
 /** 扁平写法已退役的配置键（**派生**：配置面叶子映射到的顶层键里，已不在白名单的那些）。 */

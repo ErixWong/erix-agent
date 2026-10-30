@@ -198,6 +198,10 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
     // 必须过 JSON round-trip 等值」也要求它们是数据（见文件头约束 3 的两条理由）。
     "runId",
     "cwd",
+    // issue #617（P0）：子 run 的发起者关联——opaque 字符串标量，注册方式逐字同构 `runId`
+    // （#498 S3 A20 之后 nested-only：无扁平孪生、扁平写法当场被名称闸拒）。引擎不生成、
+    // 不校验、不解析；宿主没给就整字段省略。Leaf count 42 → 43。
+    "parentRunId",
   ]),
   // 请求侧的取值：每一发模型调用都带上的采样参数与端点能力。
   tuning: Object.freeze([
@@ -646,6 +650,8 @@ export const CONFIG_LEAF_BINDING = Object.freeze({
   "run.reflection": "init",
   "run.runId": "call",
   "run.cwd": "init",
+  // issue #617（P0）：与 `run.runId` 同构——「这一次的身份是什么」属 call（逐调用可不同）。
+  "run.parentRunId": "call",
   // tuning —— 采样参数是「这个 agent 怎么说话」，不是「这次说什么」。
   "tuning.maxTokens": "init",
   "tuning.temperature": "init",
