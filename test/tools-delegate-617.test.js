@@ -132,8 +132,10 @@ test("delegate: 后台完成唤醒恰好一次；父 result 自取后不再被�
     { action: "run", task: "bg", background: true },
     { runId: "parent-wake-1" },
   );
-  assert.deepEqual(started, { ok: true, runId: started.runId, state: "queued", background: true });
-  assert.equal(readRecord(dir, started.runId).state, "queued");
+  // issue #630 S2（D）：`runChild` 之前就写了 `running`，所以后台返回与盘上记录都是 `running`
+  //（以前两个都是 `queued`，而 `running` 从未被写入过）。
+  assert.deepEqual(started, { ok: true, runId: started.runId, state: "running", background: true });
+  assert.equal(readRecord(dir, started.runId).state, "running");
 
   resolveChild({ text: "bg done", termination: "end_turn" });
   await waitFor(() => notifications.length === 1);
@@ -156,7 +158,7 @@ test("delegate: result 对活态 run 报 still_running，不消费", async () =>
   const delegate = createDelegateTool({ runChild: neverSettles, rosterDir: dir });
   const started = await delegate.execute({ action: "run", task: "slow", background: true });
   const early = await delegate.execute({ action: "result", runId: started.runId });
-  assert.deepEqual(early, { ok: false, reason: "still_running", runId: started.runId, state: "queued" });
+  assert.deepEqual(early, { ok: false, reason: "still_running", runId: started.runId, state: "running" });
   const missing = await delegate.execute({ action: "result", runId: "sub-never-existed" });
   assert.deepEqual(missing, { ok: false, reason: "not_found", runId: "sub-never-existed" });
 });
@@ -185,8 +187,10 @@ test("delegate: 子中途取消 ⇒ 名册 aborted（termination 原样）；新
   // 3b：另一条后台 run 永不收尾（模拟父进程重启前的活态遗留）——新实例读同名册目录，
   //     list 先 reconcile：无人认领 ⇒ interrupted，endedAt 取原 updatedAt。
   const lingering = await delegate.execute({ action: "run", task: "orphan", background: true });
-  assert.equal(readRecord(dir, lingering.runId).state, "queued");
-  const revived = createDelegateTool({ runChild: neverSettles, rosterDir: dir });
+  assert.equal(readRecord(dir, lingering.runId).state, "running");
+  // issue #630 S2（D）：谓词必须给——模拟「旧父进程真的没了」。不给谓词时库拒绝判死（见
+  // `tools-delegation-foreign-630.test.js` 的 D-3）。
+  const revived = createDelegateTool({ runChild: neverSettles, rosterDir: dir, isProcessAlive: () => false });
   const listed = await revived.execute({ action: "list" });
   const orphan = listed.records.find((record) => record.runId === lingering.runId);
   assert.equal(orphan.state, "interrupted", "新实例 reconcile：活态且无人认领 ⇒ interrupted");

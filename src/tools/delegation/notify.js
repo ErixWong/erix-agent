@@ -43,6 +43,11 @@ export const NOTIFICATION_PREFIX = "【子run完成】";
  * 完成标记的二元组键：`runId` + `endedAt` 拼成一个不可分字符串。宿主用它当 Set 元素 / 账本键
  * 持久化；**不要用 runId 当唯一键**（resume 会复用 runId，见文件头第 1 条）。
  *
+ * issue #630 S2 / I：两个字段之间**必须有分隔符**（`:`）。无分隔符的 `${runId}${endedAt}` 靠
+ * 「时间戳定长 13 位」才不碰撞——一个零风险硬化：`("a1", 23)` 与 `("a", 123)` 现在不同。
+ * `:` 不会出现在 `runId` 里（`roster.assertSafeRunId` 只放行安全文件名，CLI 的 runId 是
+ * `sub-<uuid>`），所以这个键可以反向切开。
+ *
  * @param {NotifyRecord} record
  * @returns {string}
  */
@@ -50,7 +55,7 @@ export function completionMarkerKey(record) {
   if (record === null || typeof record !== "object" || typeof record.runId !== "string" || record.runId.length === 0) {
     throw new TypeError(`notify: completionMarkerKey 需要带 runId 的记录，收到 ${JSON.stringify(record)}`);
   }
-  return `${record.runId}${String(record.endedAt)}`;
+  return `${record.runId}:${String(record.endedAt)}`;
 }
 
 /**
