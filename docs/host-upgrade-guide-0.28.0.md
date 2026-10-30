@@ -238,6 +238,24 @@ boundaries are deliberate, not oversights: child runs are **nested `runToolLoop`
 process** (no child process, no daemon), the child's tool face **excludes `delegate`** (no recursive
 delegation), and the child's transcript is its own file.
 
+**Register where the child writes, or the parent's `tail` cannot see it (issue #626 C1).** Because the
+record is created by the library and the library does not know your layout, the roster's
+`transcriptPath` field stays empty unless **you** fill it — and a host that starts a child but never
+registers the path gets a `tail` that always answers `no_transcript_path`. The knob is
+`transcriptPathFor`: a function `(runId) => string` you hand to the delegate tool factory alongside
+`runChild`. When you provide it, the library writes the path **in the same atomic write that creates
+the record**, so a parent that calls `tail` immediately after `run` already sees it (there is no
+"create, then patch a second time" window); when you do not, the field stays absent exactly as before,
+so existing hosts keep working. Derive the path with the store's own naming helper rather than
+concatenating `<runId>.jsonl` yourself — the store hashes ids it considers unsafe, so a hand-built
+path is wrong for that class of ids and fails as "file never exists".
+
+`tail` separates two failures, and the split is the contract: `no_transcript_path` means the record
+carries no path (**a configuration defect on your side**), `no_transcript` means the path is recorded
+but the file is absent or unreadable (the child has not written its first row yet, or the file was
+cleaned up — **normal timing**). Collapsing them would make "you never wired it" read as "the child did
+nothing".
+
 The gate for the whole path is `examples/delegate-real-e2e.test.mjs`, step 2 of
 `npm run check:release:real`: a real-upstream parent run delegates a child run, and the test asserts the
 child's roster record carries the parent's `config.run.runId`, the child ends `end_turn`, the roster ends

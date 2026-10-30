@@ -203,6 +203,18 @@ CLI 是这套分工的**可运行示例与验证器**，而且默认关闭：`de
 **刻意的**，不是遗漏：子 run 是**同进程嵌套的 `runToolLoop`**（不起子进程、不起守护进程）、子 run 的
 工具面**不含 `delegate`**（不递归派生）、子 run 的 transcript 是它自己的文件。
 
+**把子 run 写在哪登记上去，否则父的 `tail` 看不见（issue #626 C1）。** 记录是库建的，而库不知道你的
+目录布局，所以名册里的 `transcriptPath` 字段只有**你**填了才有——起了子却没登记路径的宿主，拿到的
+`tail` 永远答 `no_transcript_path`。旋钮叫 `transcriptPathFor`：一个 `(runId) => string` 的函数，与
+`runChild` 一起交给派生工具工厂。给了它，库在**创建记录的那一次原子写**里就把路径写进去，所以
+派生后立刻 `tail` 的父 run 已经看得见（不存在「先建记录、再补写第二遍」的窗口）；不给，字段照旧
+缺省，现有宿主一字不改也不会破。路径请用 store 自己的命名助手推导，不要自己拼 `<runId>.jsonl`
+——store 会把它认为不安全的 id 哈希掉，手拼的路径对那一类 id 恒错，而错法是「文件永远不存在」。
+
+`tail` 把两种失败分开，这个区分本身就是契约：`no_transcript_path` 是记录里没有路径（**你这侧的
+配置缺陷**），`no_transcript` 是路径在、文件不在或打不开（子还没落第一行 / 档案已清理，**正常时序**）。
+把两者合成一个，就会把「你没接」读成「子没干活」。
+
 整条链路的闸门是 `examples/delegate-real-e2e.test.mjs`，即 `npm run check:release:real` 的第 2 步：
 真上游下父 run 派生一个子 run，断言子名册记录带的是父的 `config.run.runId`、子 run 以 `end_turn` 收尾、
 名册终态 `completed`、父侧被唤醒**恰好一次**。

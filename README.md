@@ -875,7 +875,15 @@ The shared CLI flags are:
   child's transcript tail** (the last 8 rows by default, at most 20, 300 characters
   per row) that reports which tool the child is running plus an args digest — it
   reads any child on disk, not only the ones this process owns, so a host can watch
-  a child it did not spawn. The C2/C3 actions (resume, steer) are **not** part of it. It is a
+  a child it did not spawn. `tail` reports **two separate failures**, and the split is
+  the point: `no_transcript_path` means the roster record carries no transcript path
+  (the host never registered where the child writes — a configuration defect), while
+  `no_transcript` means the path is recorded but the file is absent or unreadable (the
+  child has not written its first row yet, or the file was cleaned up). The CLI
+  registers that path through the factory's `transcriptPathFor` knob and derives it
+  with the store's own naming helper, so the parent's `tail` works on the first child
+  run instead of always answering `no_transcript_path`. The C2/C3 actions (resume,
+  steer) are **not** part of it. It is a
   runnable sample and verifier for the
   host-side delegation contract, not a new default capability.
 - `--error-log <path>` appends persistence-error events to a JSONL file (same as
