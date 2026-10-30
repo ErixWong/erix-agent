@@ -41,3 +41,29 @@ export {
   MAX_CONTENT_LENGTH,
   NOTE_VALUE_MAX_CHARS,
 } from "./notes.js";
+// 派生（子 run）簿记件（issue #617 P1a）：名册 / 并发配额租约 / 完成通知去重。
+// 纯簿记——不 fork / 不 spawn / 不等子进程，不解释 opaque 字段，进程存活这类外部事实
+// 一律由宿主注入谓词。派生工具本身与 CLI 装配是后续刀（P1b / P2），这里只有库面。
+export {
+  ROSTER_STATES,
+  ROSTER_LIVE_STATES,
+  writeRecord,
+  readRecord,
+  listRecords,
+  removeRecord,
+  reconcile,
+} from "./delegation/roster.js";
+export {
+  acquire,
+  release,
+  sweep,
+  list,
+} from "./delegation/capacity.js";
+export {
+  NOTIFICATION_PREFIX,
+  completionMarkerKey,
+  markCollected,
+  isCollected,
+  shouldNotify,
+  notificationText,
+} from "./delegation/notify.js";

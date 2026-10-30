@@ -2782,7 +2782,6 @@ const EXTERNAL_REPO_PATHS = new Map([
   ["x.d.ts", "AGENTS 讲 `.d.ts` 伴生声明时举的**示意文件名**（与 `./x.js` 同处），不是仓库路径"],
   // —— 以下是 #278 把「无斜杠裸名」纳进裁决面后暴露的上游/宿主裸名引用（逐条写归属）——
   ["parent-wake.js", "上游 pi-subagents 的 `src/shared/parent-wake.js`（CHANGELOG:105 与 docs/research/2026-10-13:121 都用裸名指它）；本层同名物是 `erix-run-parent-wake.js`"],
-  ["notify.js", "上游 pi-subagents 的唤醒侧文件（CHANGELOG:144、docs/research/2026-10-13:82 引它的常量行号 `notify.js:19`）"],
   ["async-execution.js", "上游 pi-subagents 的 `src/runs/background/async-execution.js`（docs/research/2026-10-13:119 用裸名引它的 `spawn` 行）"],
   ["debug.routes.js", "宿主 touwaka 仓的 Express 路由文件（docs/research/2026-09-26:118 的人工对质源码结论）"],
   ["expert.routes.js", "宿主 touwaka 仓的 Express 路由文件（同上，同一行第二条结论）"],

@@ -268,6 +268,11 @@ src/
     notes.js                       Host-side notes tools
     providers.js                   Tool-provider adapters
     registry.js                    Tool schemas and executor registry
+    delegation/                    Child-run bookkeeping only (issue #617 P1a): no fork/spawn, opaque fields
+                                   pass through, liveness is a host-injected predicate
+      roster.js                    Roster: 18-field record, atomic write, updatedAt monotonic, stale reconcile
+      capacity.js                  Concurrency quota leases: wx-exclusive create, idempotent release, sweep
+      notify.js                    Completion-notify dedup keyed on the (runId, endedAt) pair, fixed prefix
 ```
 
 `src/index.js` exports the providers, canonical message conversions, token

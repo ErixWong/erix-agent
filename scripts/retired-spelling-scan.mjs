@@ -350,8 +350,8 @@ const CONTRACT_BODY_PINS = Object.freeze({
  * @type {Readonly<Record<string, number>>}
  */
 const ROOT_DOC_BODY_PINS = Object.freeze({
-  "README.md": 77,
-  "README_cn.md": 62,
+  "README.md": 78,
+  "README_cn.md": 63,
 });
 
 /** 分类 → 钉子表。现状类没有钉子（它必须为 0）。 */
