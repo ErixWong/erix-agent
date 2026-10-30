@@ -6,6 +6,15 @@ import { resolveCompactionStrategy } from "../compact/strategy-resolution.js";
 // issue #469（裁决 A）：resume 后的续写基底从账本播种，取源就复用 #462 的「按水位线挑覆盖事实」。
 import { pickCoveringFoldAlternative } from "../compact/resume-fold-trim.js";
 import { createSlidingWindowStrategy } from "../compact/sliding-window.js";
+// issue #608：工作集地板 + 预算不足显式劣化。三个符号同源（`compact/helpers.js`）：
+// 常量是「最近几轮算工作集」，`workingSetTokens` 是同一把估算尺子，`suggestedBudgetTokens` 是
+// 诊断里那个「宿主该配多少」的数。引擎只读它们，不新增 `config.*` 叶子。
+import {
+  WORKING_SET_LOOP_ATTEMPTS,
+  WORKING_SET_RECENT_ROUNDS,
+  suggestedBudgetTokens,
+  workingSetTokens,
+} from "../compact/helpers.js";
 import { mergeFoldNavigationRecords } from "../compact/fold-statistical.js";
 import {
   buildFoldedRecordArchive,
@@ -65,6 +74,8 @@ import {
   renderConversation,
 } from "../reflection/judge.js";
 import {
+  advanceLastToolCall,
+  resetLastToolCallStreak,
   createDeterministicRunState,
   renderRunState,
   upsertRunStateInMessages,
@@ -137,6 +148,9 @@ import {
 import {
   TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT,
   TOOL_RESULT_TTL_DEFAULT,
+  // issue #608：run-state 的 `last=` 游标与 TTL 占位符 / 折叠清单共用同一个「一次调用长什么样」
+  // 摘要器（`summarizeToolCall`），不另写一套。
+  summarizeToolCall,
 } from "./tool-result-ttl.js";
 import {
   buildFoldedFacts,
@@ -183,6 +197,20 @@ export { parseReflectionDecision };
  * Governor 历史的估算上限（与 #172 A4 之前的内联 4000 同口径）。
  */
 export const GOVERNOR_HISTORY_TOKEN_LIMIT = 4000;
+
+/**
+ * issue #608：预算装不下工作集时的终局原因。
+ *
+ * 为什么不复用既有枚举（`src/loop/termination.js` 里查全过）：`max_rounds_cap` 是「轮数用完」
+ * （issue 正文明确禁止把它当成本格的出口——那正是「静默打转」的形状）；`continuation_exhausted`
+ * 是「续写预算用完」；`stall` 是「连续无进展」；`failed` 是「抛错」；`final_guard_unverified` 是
+ * 「guard 没验过」。这一格是**请求预算小于工作集**这一件独立的事实（引擎当场算得出来，且给出
+ * 建议预算），任何既有 reason 都会让宿主读错根因 ⇒ 新增一个。
+ *
+ * ⚠ 它**不**进 `TRUNCATED_TERMINATION_REASONS`（`termination.js` 不在本单的可改范围）：于是
+ * `result.truncated` 保持 `false`——本格不是「答案被截断」，是「预算装不下，明确停」。
+ */
+export const BUDGET_BELOW_WORKING_SET_REASON = "budget_below_working_set";
 
 /**
  * issue #393 / #394：那条引擎自写的 `tool_result` 正文，**定义**已搬到共享实现
@@ -330,7 +358,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
 
 /**
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"run_outcome"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"budget_below_working_set"|"run_outcome"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -913,7 +941,7 @@ export async function runToolLoop(options) {
   //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
   // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值）——原 :1264 那行
   //   `@type {Record<string, any>|undefined}` 注解随字段逐字搬走（它存不存在的理由见下面格子上的注解）。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], persistedTranscriptLength: number, resumeToolResultRowKey: string|undefined, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, aggregateBudgetHit: boolean, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number> }} */
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], persistedTranscriptLength: number, resumeToolResultRowKey: string|undefined, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, aggregateBudgetHit: boolean, lastToolCall: { summary: string, streak?: number }|undefined, budgetBelowWorkingSetStreak: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number> }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -1009,6 +1037,14 @@ export async function runToolLoop(options) {
     // 初值 `false` 逐字照「未发生过」；不入 run-state（它只影响本次进程的补跑决定，
     // 而配额本身已经由 `governorState.guardExtensionUsed` 落盘，不需要第二个跨 resume 判据）。
     aggregateBudgetHit: false,
+    // issue #608：run-state 的 `last=` 游标（最近一次工具调用的摘要 + 同入参连击次数）。
+    // 写者只有工具循环（每个 `tool_use` 块一次，`advanceLastToolCall`），读者只有 `refreshRunState`
+    // → `createDeterministicRunState`。初值 `undefined` 逐字是「本 run 还没调过工具」：
+    // 那一格整格缺席，旧档 / 未调工具的 run 渲染逐字不变。不跨 resume 恢复（游标是本次 run 的现场）。
+    lastToolCall: undefined,
+    // issue #608：**预算不足的循环计数**——连续多少次折叠尝试都是「工作集 > 预算 且模型在重读同一入参」。
+    // 只在 `compactBeforeRound` 里读写；达 `WORKING_SET_LOOP_ATTEMPTS` 才走显式劣化（见那里的注释）。
+    budgetBelowWorkingSetStreak: 0,
     // 【E 轮内量（四）】`currentTerminationReason`（原 :1213）——**有初值**的格子，初值 `"running"` 逐字
     //   原样搬（它是 run-state `termination.reason` 的起点，也是「本次 run 还没结束」这个语义的唯一表示）。
     //   ⚠ 两处写在 `fail()` 里，位置**早于**原声明点（原 :941 / :965，声明在原 :1213）：迁移前它们读的就是
@@ -2932,6 +2968,8 @@ export async function runToolLoop(options) {
       maxRounds: governorState.effectiveMaxRounds,
       lowBudgetPrompted: runLoopState.lowBudgetPrompted,
       toolStats,
+      // issue #608：`last=` 一格（最近一次不同入参的调用；同入参重调长成 `×N`）。
+      lastToolCall: runLoopState.lastToolCall,
       filesWritten: governorState.filesWritten,
       todo: runLoopState.todoState,
       foldedRounds: runLoopState.foldedRoundCount,
@@ -3693,6 +3731,12 @@ export async function runToolLoop(options) {
     /** @type {ReturnType<typeof buildFoldedFacts>} 投影到本轮轮记录的 `foldedFacts`（#470-B 已夹字节） */
     let pendingFoldedFacts = undefined;
     let protectedDowngraded = 0;
+    // issue #608：**预算不足显式劣化**的现场（三个数 + `repeatStreak` + `foldLayersOverBudget`）。
+    // 只在循环判据（工作集 > 预算 ∧ 模型在重读同一入参，连续 `WORKING_SET_LOOP_ATTEMPTS` 次）成立时
+    // 赋值——那一格再折就是把模型马上要用的东西拿走，引擎停手并交主循环明确收尾
+    //（而不是静默跑到 `max_rounds_cap`）。
+    /** @type {{ budgetTokens: number, workingSetTokens: number, suggestedBudgetTokens: number, repeatStreak: number, foldLayersOverBudget: boolean }|undefined} */
+    let budgetBelowWorkingSet;
     // issue #326 wo-C：折叠前的消息**引用集合**——用来认出折叠新造出来、实际喂给模型的那份摘要消息
     // （折叠策略把摘要 prepend 进 head，而轮记录只写 `messages.slice(roundStart)`⇒它永远不入账）。
     const preCompactionMessages = new Set();
@@ -3724,6 +3768,17 @@ export async function runToolLoop(options) {
               : `; budgetTokens=${budgetTokens}, estimatedTokens=${estimatedTokens}`),
         });
       }
+      // issue #608：**工作集**（最近 `WORKING_SET_RECENT_ROUNDS` 个带 `tool_result` 的轮次里的
+      // tool_result 总量）。现算、不留新状态：折叠决策要的就是「模型当下手里有多少原文」。
+      // 口径与 `estimatedTokens` 同一把尺子（`estimateMessageTokens`）。
+      //
+      // 地板是**排序偏好**（不是「永不折工作集」）：引擎始终把 `WORKING_SET_RECENT_ROUNDS` 线给
+      // 策略，由 `selectFoldedRounds` 优先保留最近那几轮；它自带**进度保证**（无可折时照旧折最老的
+      // 一轮），所以不会把折叠锁死。要不要因此**停机**是另一件事，由下面的循环计数决定。
+      const workingSetTokensBeforeFold = workingSetTokens(groupIntoRounds(messages).rounds);
+      const workingSetOverBudget = budgetTokens !== undefined
+        && workingSetTokensBeforeFold > budgetTokens;
+      const workingSetRecentRounds = WORKING_SET_RECENT_ROUNDS;
       // messages 自 estimatedTokens 起只被读取（shouldCompact 为纯判定），直接复用（#172 A2）
       const tokensBefore = estimatedTokens;
       const layers = createEmptyCompactionLayers();
@@ -3746,6 +3801,13 @@ export async function runToolLoop(options) {
       Object.defineProperty(compactOptions, "foldRecords", {
         value: foldRecordLedger.slice(),
         enumerable: false,
+      });
+      // issue #608：工作集地板（最近 N 个带 `tool_result` 的轮次不折）。非枚举：与
+      // `roundNumbers` / `foldRecords` 同一口径——宿主策略看到的选项键面逐字不变，内置策略经
+      // `foldOptions` 仍读得到（`Object.hasOwnProperty` 不区分枚举性）。
+      Object.defineProperty(compactOptions, "workingSetRecentRounds", {
+        enumerable: false,
+        value: workingSetRecentRounds,
       });
       if (runLoopState.foldedThrough > 0) compactOptions.roundOffset = runLoopState.foldedThrough;
       Object.defineProperty(compactOptions, "onLayer", {
@@ -3824,6 +3886,14 @@ export async function runToolLoop(options) {
           tokensAfter,
         });
       }
+      // issue #608：**策略这一折之后**的估算（预算兜底 / 安全层动手之前）。它是循环判据的第 ② 条：
+      // 「配置的那个折叠策略折完仍超预算」⇒ 引擎不得不继续动预算兜底 / 安全层。
+      //
+      // ⚠ 为什么不在**全部**折叠层之后再量：安全层会把内容裁到刚好装进预算（`safeTruncateMessages`
+      // 的契约），于是「折完仍超预算」在任何一次成功的尝试之后都会变成假——实测交替出现
+      // （round 3 true / round 4 false / round 5 true …），连续计数永远到不了 K。量在策略那一折之后
+      // 才是稳定的「这一折没解决问题」信号。
+      const strategyTokensAfter = tokensAfter;
       const apiEstimateBefore = latestApiEstimatedTokens ?? tokensBefore;
       let apiTokensAfter = projectedApiInputTokens(
         apiInputTokens,
@@ -3840,6 +3910,9 @@ export async function runToolLoop(options) {
         const fallback = await createSlidingWindowStrategy().compact(compactedMessages, {
           keepRounds: 0,
           budgetTokens,
+          // issue #608：预算兜底这一发是 `keepRounds: 0`（全折）——正是「把工作集本身折掉」的那一格，
+          // 所以地板在这里最要紧。与策略那一发同一个判据、同一个常量。
+          workingSetRecentRounds,
           protectedMessage: compactionContext.protectedMessage,
           stripHistoricalImages: compactionContext.stripHistoricalImages,
           stubFor: compactionContext.stubFor,
@@ -3870,9 +3943,66 @@ export async function runToolLoop(options) {
           tokensAfter,
         );
       }
+      // ── issue #608：**显式劣化**（折不动就说出来，别打转）────────────────────────────────
+      // 判据是**循环**，不是单次：连续 `WORKING_SET_LOOP_ATTEMPTS` 次折叠尝试都满足
+      //   ① 工作集（最近 N 轮 tool_result）本身就超过预算；**且**
+      //   ② 折叠层（策略 + 预算兜底）折完 `estimate` 仍超预算；**且**
+      //   ③ **本折叠窗口内**游标连击 `streak >= 2`（模型刚把同一个入参又调了一次）
+      // 才判定「预算装不下模型手里的东西、而且模型在重读」⇒ 停手并明确收尾。
+      //
+      // 为什么三条缺一不可（每一条都是实测买来的）：
+      //   · 只要①②（#608 第一版）：单次成立在小预算短跑里很常见（budget 10/248 那类夹具），
+      //     第一次就停会把 27 个既有夹具变红；只加「连续 K 次」也救不了——#568 的 22 轮夹具
+      //     每轮都满足①②、合法地折 21 次并正常收尾（实测：K=5 ⇒ 第 6 次被掐，报错
+      //     「只折叠了 6 次（本格要 ≥ 21 次）」）。**折叠次数分不开「打转」和「合法紧预算长跑」。**
+      //   · 加③才分开：#607 的病是**重读**（1214 次调用去重只有 242 个 index、重复读取率 80.3%），
+      //     而合法长跑每轮都是新入参（`streak` 恒 1）。
+      // 窗口边界见 `resetLastToolCallStreak`（一次成功折叠之后重新计数，防旧 streak 污染）。
+      // 判据放在**安全层之前**：安全层的逐轮删除正是「把工作集拿走」，已经判定要停手时不该再折。
+      // ② 只作为**诊断事实**记录，不参与闸门（理由见上面那段：安全层会把内容裁到刚好装进预算，
+      // 「折完仍超预算」在任何一次成功的尝试之后都变成假 ⇒ 它无法连续成立 K 次；实测探针数据见报告）。
+      const foldLayersOverBudget = budgetTokens !== undefined
+        && strategyTokensAfter > budgetTokens;
+      const repeatStreak = Number.isSafeInteger(runLoopState.lastToolCall?.streak)
+        ? runLoopState.lastToolCall.streak
+        : 1;
+      const loopEvidence = workingSetOverBudget && repeatStreak >= 2;
+      runLoopState.budgetBelowWorkingSetStreak = loopEvidence
+        ? runLoopState.budgetBelowWorkingSetStreak + 1
+        : 0;
+      if (runLoopState.budgetBelowWorkingSetStreak >= WORKING_SET_LOOP_ATTEMPTS) {
+        budgetBelowWorkingSet = {
+          budgetTokens,
+          workingSetTokens: workingSetTokensBeforeFold,
+          suggestedBudgetTokens: suggestedBudgetTokens(workingSetTokensBeforeFold),
+          repeatStreak,
+          foldLayersOverBudget,
+        };
+        // 观察者通道（纯加法）：宿主能在事件流里当场看到「预算配小了 + 该配多少」，
+        // 不必等终局去解析 detail 字符串。
+        emitEvent({
+          type: "budget_below_working_set",
+          ...(runId === undefined ? {} : { runId }),
+          round,
+          ...budgetBelowWorkingSet,
+          attempts: runLoopState.budgetBelowWorkingSetStreak,
+          repeatStreak,
+          foldLayersOverBudget,
+          detail: "compaction stopped: for "
+            + `${WORKING_SET_LOOP_ATTEMPTS} consecutive compaction attempts the working set (tool`
+            + " results of the last " + `${WORKING_SET_RECENT_ROUNDS} rounds) alone exceeded`
+            + " budgetTokens and folding still left the request over budget while the model kept"
+            + " re-calling the same input (repeatStreak=" + `${repeatStreak}), so the budget cannot`
+            + " hold what the model is working with; the run ends explicitly instead of re-reading"
+            + " until max_rounds_cap",
+        });
+      }
       if (
-        (budgetTokens !== undefined && tokensAfter > budgetTokens)
-        || isApiInputOverBudget(apiTokensAfter, budgetTokens)
+        budgetBelowWorkingSet === undefined
+        && (
+          (budgetTokens !== undefined && tokensAfter > budgetTokens)
+          || isApiInputOverBudget(apiTokensAfter, budgetTokens)
+        )
       ) {
         // 同一 compactedMessages，与下方 safety 层的 tokensBefore 等价（#172 A2）
         const safetyTokensBefore = tokensAfter;
@@ -4141,6 +4271,11 @@ export async function runToolLoop(options) {
           inject: persistInject,
         })
       : undefined;
+    // issue #608：一次成功折叠 = 一个**折叠窗口**的边界 ⇒ 游标的「同入参连击」重新计数
+    // （判据在上面已经用过本窗口的值；这里只负责不让它污染下一次判定）。
+    if (compacted) {
+      runLoopState.lastToolCall = resetLastToolCallStreak(runLoopState.lastToolCall);
+    }
     normalizeMessages(messages);
     return {
       folded: compacted,
@@ -4154,6 +4289,9 @@ export async function runToolLoop(options) {
       foldedFacts: pendingFoldedFacts,
       runState,
       requestStateBlock: requestInject ? runState?.rendered : undefined,
+      // issue #608：预算装不下工作集的现场（三个数）。`undefined` = 本发没有发生，调用方不做任何事
+      // ⇒ 既有形状逐字不变。
+      ...(budgetBelowWorkingSet === undefined ? {} : { budgetBelowWorkingSet }),
     };
   };
 
@@ -4582,6 +4720,30 @@ export async function runToolLoop(options) {
     const compactionStatsStart = compactionStats.length;
     const compaction = await compactBeforeRound(round);
     let requestStateBlock = compaction.requestStateBlock;
+    // ── issue #608：**显式劣化**的落地 ──────────────────────────────────────────────────────────
+    // 折到这一步，工作集本身已经超过预算（`compactBeforeRound` 现算并已发过
+    // `budget_below_working_set` 事件）⇒ 不再请求下一轮、不再折，**明确收尾**：
+    //   ① 先跑一发强制收尾，让模型把手里的结论落成终稿（与 `max_rounds_cap` 同一条收尾路径）；
+    //   ② 终局 reason 是本格自己的原因，`detail` 里带三个数（宿主不解析事件流也能读到）。
+    // 不跑 finalGuard：本格没有可验收的「完成」，guard 一旦 accept 就会把 `verification` 盖成
+    // `verified`（issue 正文硬禁），所以这条路径连 guard 都不进。
+    if (compaction.budgetBelowWorkingSet !== undefined) {
+      const {
+        budgetTokens: belowBudgetTokens,
+        workingSetTokens: belowWorkingSetTokens,
+        suggestedBudgetTokens: belowSuggestedBudgetTokens,
+        repeatStreak: belowRepeatStreak,
+      } = compaction.budgetBelowWorkingSet;
+      throwIfAborted(signal);
+      await forceFinalAndJournal(BUDGET_BELOW_WORKING_SET_REASON);
+      return finish(
+        BUDGET_BELOW_WORKING_SET_REASON,
+        `budgetTokens=${belowBudgetTokens}`
+          + ` workingSetTokens=${belowWorkingSetTokens}`
+          + ` suggestedBudgetTokens=${belowSuggestedBudgetTokens}`
+          + ` repeatStreak=${belowRepeatStreak}`,
+      );
+    }
     const roundStart = messages.length;
     // 工单 261021 写侧：轮末才入账的引擎控制文本（方向提示 / 达成 advisory）在此暂存，
     // 在本轮轮记录落盘**之后**写成 `…:control:` 行（不带 `seq`，折叠层原样透传）：
@@ -4749,6 +4911,14 @@ export async function runToolLoop(options) {
         // 是「复放升级前的旧记录」：两端一致地缺失，所以下面既不认领也不删块上已有的值。
         if (acceptedKey !== null) ensureToolCallKeyOnBlock(block, acceptedKey);
         emitEvent({ type: "tool_use", round, toolUse: cloneState(block) });
+        // issue #608：run-state 的 `last=` 游标。**每个 `tool_use` 块都记**（含下面命中复放缓存那一支）：
+        // 模型看到的是「我刚调了什么」，与这次调用是否命中复放缓存无关。摘要器与 TTL 占位符 / 折叠
+        // 清单同源（`summarizeToolCall`）；同一入参重调 ⇒ `streak` 长上去（`last=… ×3`），不静默覆盖。
+        const nextLastToolCall = advanceLastToolCall(
+          runLoopState.lastToolCall,
+          summarizeToolCall(block.name, block.input),
+        );
+        if (nextLastToolCall !== undefined) runLoopState.lastToolCall = nextLastToolCall;
 
         const signature = `${block.name}${JSON.stringify(block.input)}`;
         const stalled = stallMode === "consecutive"

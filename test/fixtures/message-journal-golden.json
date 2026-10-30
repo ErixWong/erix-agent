@@ -157,6 +157,9 @@
                   "count": 0,
                   "items": []
                 }
+              },
+              "lastToolCall": {
+                "summary": "work {\"step\":\"a2\"}"
               }
             },
             "bounds": {
@@ -169,7 +172,7 @@
             "semantic": {
               "status": "absent"
             },
-            "rendered": "[run state deterministic v1]\nrun=golden-single v=0 r=1/8 left=7 low=0\ntools=work=2/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
+            "rendered": "[run state deterministic v1]\nrun=golden-single v=0 r=1/8 left=7 low=0\ntools=work=2/0 files=- last=work {\"step\":\"a2\"}\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
           }
         },
         {
@@ -239,6 +242,9 @@
                   "count": 0,
                   "items": []
                 }
+              },
+              "lastToolCall": {
+                "summary": "work {\"step\":\"a2\"}"
               }
             },
             "bounds": {
@@ -251,7 +257,7 @@
             "semantic": {
               "status": "absent"
             },
-            "rendered": "[run state deterministic v1]\nrun=golden-single v=0 r=2/8 left=6 low=0\ntools=work=2/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
+            "rendered": "[run state deterministic v1]\nrun=golden-single v=0 r=2/8 left=6 low=0\ntools=work=2/0 files=- last=work {\"step\":\"a2\"}\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
           },
           "judge": {
             "done": false,
@@ -372,6 +378,9 @@
                   "count": 0,
                   "items": []
                 }
+              },
+              "lastToolCall": {
+                "summary": "work {\"step\":\"a3\"}"
               }
             },
             "bounds": {
@@ -384,7 +393,7 @@
             "semantic": {
               "status": "absent"
             },
-            "rendered": "[run state deterministic v1]\nrun=golden-single v=0 r=3/8 left=5 low=0\ntools=work=3/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
+            "rendered": "[run state deterministic v1]\nrun=golden-single v=0 r=3/8 left=5 low=0\ntools=work=3/0 files=- last=work {\"step\":\"a3\"}\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
           }
         },
         {
@@ -454,6 +463,9 @@
                   "count": 0,
                   "items": []
                 }
+              },
+              "lastToolCall": {
+                "summary": "work {\"step\":\"a3\"}"
               }
             },
             "bounds": {
@@ -466,7 +478,7 @@
             "semantic": {
               "status": "absent"
             },
-            "rendered": "[run state deterministic v1]\nrun=golden-single v=0 r=4/8 left=4 low=0\ntools=work=3/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
+            "rendered": "[run state deterministic v1]\nrun=golden-single v=0 r=4/8 left=4 low=0\ntools=work=3/0 files=- last=work {\"step\":\"a3\"}\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
           },
           "judge": {
             "done": true,
@@ -563,6 +575,9 @@
                   "count": 0,
                   "items": []
                 }
+              },
+              "lastToolCall": {
+                "summary": "work {\"step\":\"a3\"}"
               }
             },
             "bounds": {
@@ -575,7 +590,7 @@
             "semantic": {
               "status": "absent"
             },
-            "rendered": "[run state deterministic v1]\nrun=golden-single v=0 r=5/8 left=3 low=0\ntools=work=3/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
+            "rendered": "[run state deterministic v1]\nrun=golden-single v=0 r=5/8 left=3 low=0\ntools=work=3/0 files=- last=work {\"step\":\"a3\"}\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
           },
           "judge": {
             "done": true,
@@ -968,6 +983,9 @@
                   "count": 0,
                   "items": []
                 }
+              },
+              "lastToolCall": {
+                "summary": "work {\"step\":\"a1\"}"
               }
             },
             "bounds": {
@@ -980,7 +998,7 @@
             "semantic": {
               "status": "absent"
             },
-            "rendered": "[run state deterministic v1]\nrun=golden-resume v=0 r=1/8 left=7 low=0\ntools=work=1/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
+            "rendered": "[run state deterministic v1]\nrun=golden-resume v=0 r=1/8 left=7 low=0\ntools=work=1/0 files=- last=work {\"step\":\"a1\"}\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
           }
         },
         {
@@ -1050,6 +1068,9 @@
                   "count": 0,
                   "items": []
                 }
+              },
+              "lastToolCall": {
+                "summary": "work {\"step\":\"a1\"}"
               }
             },
             "bounds": {
@@ -1062,7 +1083,7 @@
             "semantic": {
               "status": "absent"
             },
-            "rendered": "[run state deterministic v1]\nrun=golden-resume v=0 r=2/8 left=6 low=0\ntools=work=1/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
+            "rendered": "[run state deterministic v1]\nrun=golden-resume v=0 r=2/8 left=6 low=0\ntools=work=1/0 files=- last=work {\"step\":\"a1\"}\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
           },
           "judge": {
             "done": false,
@@ -1183,6 +1204,9 @@
                   "count": 0,
                   "items": []
                 }
+              },
+              "lastToolCall": {
+                "summary": "work {\"step\":\"a2\"}"
               }
             },
             "bounds": {
@@ -1195,7 +1219,7 @@
             "semantic": {
               "status": "absent"
             },
-            "rendered": "[run state deterministic v1]\nrun=golden-resume v=0 r=3/8 left=5 low=0\ntools=work=2/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
+            "rendered": "[run state deterministic v1]\nrun=golden-resume v=0 r=3/8 left=5 low=0\ntools=work=2/0 files=- last=work {\"step\":\"a2\"}\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=absent version=-\n[/run state]"
           }
         },
         {
@@ -1305,6 +1329,9 @@
                   "count": 0,
                   "items": []
                 }
+              },
+              "lastToolCall": {
+                "summary": "work {\"step\":\"a3\"}"
               }
             },
             "bounds": {
@@ -1319,7 +1346,7 @@
               "text": "",
               "semanticStateVersion": null
             },
-            "rendered": "[run state deterministic v1]\nrun=golden-resume v=0 r=1/8 left=7 low=0 session=4\ntools=work=3/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=stale version=-\n[/run state]"
+            "rendered": "[run state deterministic v1]\nrun=golden-resume v=0 r=1/8 left=7 low=0 session=4\ntools=work=3/0 files=- last=work {\"step\":\"a3\"}\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=stale version=-\n[/run state]"
           }
         },
         {
@@ -1389,6 +1416,9 @@
                   "count": 0,
                   "items": []
                 }
+              },
+              "lastToolCall": {
+                "summary": "work {\"step\":\"a3\"}"
               }
             },
             "bounds": {
@@ -1403,7 +1433,7 @@
               "text": "",
               "semanticStateVersion": null
             },
-            "rendered": "[run state deterministic v1]\nrun=golden-resume v=0 r=2/8 left=6 low=0 session=5\ntools=work=3/0 files=-\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=stale version=-\n[/run state]"
+            "rendered": "[run state deterministic v1]\nrun=golden-resume v=0 r=2/8 left=6 low=0 session=5\ntools=work=3/0 files=- last=work {\"step\":\"a3\"}\ntodo=- fold=0/0\ncompact=ttl=0/0,slidingWindow=0/0,foldStatistical=0/0,foldLlm=0/0,anchors=0/0,enforceSize=0/0\ntermination=running errors=0/0/0\n[run state semantic derived]\nstatus=stale version=-\n[/run state]"
           },
           "judge": {
             "done": true,

@@ -16,6 +16,8 @@ export const RUN_STATE_MAX_TOOL_ENTRIES = 128;
 export const RUN_STATE_MAX_FILE_ENTRIES = 128;
 export const RUN_STATE_MAX_TODO_ENTRIES = 64;
 export const RUN_STATE_MAX_FIELD_CHARS = 120;
+/** `last=` 一格的字符上界（issue #608）：与 `tools=` 一格同量级，~10 token 的成本承诺。 */
+export const RUN_STATE_MAX_LAST_TOOL_CHARS = 60;
 const DETERMINISTIC_MARKER = "[run state deterministic v1]";
 const SEMANTIC_MARKER = "[run state semantic derived]";
 const END_MARKER = "[/run state]";
@@ -110,6 +112,68 @@ function normalizeTodo(todo) {
       ? { truncated: true, omitted: items.length - RUN_STATE_MAX_TODO_ENTRIES }
       : {}),
   };
+}
+
+/**
+ * issue #608：run-state 的 `last=` 格子 —— **最近一次不同入参**的工具调用，以及「同一个入参又被
+ * 调了几次」。
+ *
+ * 为什么要这一格：真机 64k 现场（#607）里 1214 次工具调用去重只有 242 个 index，300 段里 58 段从未
+ * 取过 —— 模型不是「需要原文所以重读」，而是**丢了游标**、反复重扫。旧的 `tools=getParagraph=1214/0`
+ * 只告诉它「调了多少次」，对「我做到哪了」毫无帮助；这一格给的是**进度游标**本身。
+ *
+ * 去重语义（判据 3 要钉的那一条）：`summary` 存**最近一次**的调用摘要（与 TTL 占位符 / 折叠清单
+ * 同一个 `summarizeToolCall`），`streak` 数「它已经被连续调了几次」。于是：
+ *   · 换了入参 ⇒ `last=` 跟着换，`streak` 回到 1（不印 `×1`，省 token）；
+ *   · **同一入参又调一次 ⇒ 不是把 `last=` 刷成同一个值假装只有一次**，而是 `×2` / `×3` 地长上去
+ *     ——「我原地重读了三次」对读者是可见事实，不是静默吞掉。
+ *
+ * @param {{summary?: string, streak?: number}|string|undefined} previous
+ * @param {unknown} summary 本次调用的摘要（`summarizeToolCall` 的产物）
+ * @returns {{summary: string, streak: number}|undefined} 摘要为空 ⇒ `undefined`（不写假值）
+ */
+export function advanceLastToolCall(previous, summary) {
+  const next = boundedText(summary, RUN_STATE_MAX_LAST_TOOL_CHARS);
+  if (next === "") return undefined;
+  const previousSummary = typeof previous === "string" ? previous : previous?.summary;
+  const previousStreak = safeInteger(
+    typeof previous === "object" && previous !== null ? previous.streak : 0,
+    0,
+  );
+  const streak = previousSummary === next ? Math.max(1, previousStreak) + 1 : 1;
+  return { summary: next, streak };
+}
+
+/**
+ * issue #608：**折叠窗口**的边界——一次成功折叠之后，游标的「同入参连击」重新计数。
+ *
+ * 为什么必须重置：`streak` 是「同一个入参被连续调了几次」，它同时被显式劣化的循环判据当证据用。
+ * 不设窗口的话，一次很早的 `×3` 会一直挂在那里，之后任何一次「工作集 > 预算」的尝试都会被它
+ * 污染成「模型在打转」——那是**假证据**。窗口 = 两次成功折叠之间，正好是「这一折之后模型又重读了
+ * 几遍」这个可审计的问题。
+ *
+ * 只重置连击数、不丢摘要：`last=` 那格在折叠后仍然要能回答「我刚做到哪了」（#608 的第三件交付）。
+ *
+ * @param {{summary?: string, streak?: number}|string|undefined} previous
+ * @returns {{summary: string, streak: number}|string|undefined} 无游标时原样返回（不造空壳）
+ */
+export function resetLastToolCallStreak(previous) {
+  if (previous === undefined || previous === null) return previous;
+  if (typeof previous === "string") return previous;
+  const summary = boundedText(previous.summary, RUN_STATE_MAX_LAST_TOOL_CHARS);
+  if (summary === "") return undefined;
+  return { summary, streak: 1 };
+}
+
+function normalizeLastToolCall(value) {
+  if (value === undefined || value === null) return undefined;
+  const summary = boundedText(
+    typeof value === "string" ? value : value.summary,
+    RUN_STATE_MAX_LAST_TOOL_CHARS,
+  );
+  if (summary === "") return undefined;
+  const streak = safeInteger(value.streak, 1);
+  return { summary, ...(streak > 1 ? { streak } : {}) };
 }
 
 const SEMANTIC_TEXT_MAX_CHARS = 1200;
@@ -228,6 +292,10 @@ export function boundRunState(state) {
       budget: deterministic.budget ?? {},
       tools: [],
       filesWritten: [],
+      // issue #608：体积兜底也不许把游标丢掉——它是模型「做到哪了」的唯一读面，只有一个短串。
+      ...(deterministic.lastToolCall === undefined
+        ? {}
+        : { lastToolCall: deterministic.lastToolCall }),
       fold: deterministic.fold ?? {},
       compactionStats: deterministic.compactionStats ?? [],
       ...(deterministic.compactionStatsWindow === undefined
@@ -350,6 +418,28 @@ function normalizeUnpersisted(value) {
   return { count: value.length, items };
 }
 
+/**
+ * @param {{
+ *   runId?: string,
+ *   stateVersion?: number,
+ *   rounds?: number,
+ *   runRounds?: number,
+ *   maxRounds?: number,
+ *   lowBudgetPrompted?: boolean,
+ *   toolStats?: any,
+ *   filesWritten?: any,
+ *   todo?: any,
+ *   foldedRounds?: number,
+ *   navigationRecords?: number,
+ *   lastToolCall?: { summary?: string, streak?: number }|string,
+ *   terminationReason?: string,
+ *   toolErrorCount?: number,
+ *   checkpointFailureCount?: number,
+ *   unpersisted?: any,
+ *   compactionStats?: any,
+ *   guardExtensionUsed?: boolean,
+ * }} [options]
+ */
 export function createDeterministicRunState({
   runId,
   stateVersion = 0,
@@ -362,6 +452,9 @@ export function createDeterministicRunState({
   todo,
   foldedRounds = 0,
   navigationRecords = 0,
+  // issue #608：最近一次工具调用（`{ summary, streak }`，见 `advanceLastToolCall`）。
+  // 缺席 ⇒ 不写该键、也不渲染 `last=` 一格（旧档 / 未调过工具的 run 形状逐字不变）。
+  lastToolCall,
   terminationReason = "running",
   toolErrorCount = 0,
   // 保留旧名（issue #83）：该参数名即导出 API 的选项键，其值又以 `errors.checkpoint` 落盘
@@ -383,6 +476,7 @@ export function createDeterministicRunState({
   const safeMaxRounds = safeInteger(maxRounds);
   const tools = normalizeCountMap(toolStats);
   const files = normalizeFiles(filesWritten);
+  const normalizedLastToolCall = normalizeLastToolCall(lastToolCall);
   const normalizedTodo = normalizeTodo(todo);
   // issue #315：state.json 里只留最后 `COMPACTION_STATS_STATE_LIMIT` 条（体积约束），
   // 但窗口账必须与数组同时落盘：读者不读源码就知道「这份是尾巴、丢了几条、原本几条」。
@@ -404,6 +498,7 @@ export function createDeterministicRunState({
       },
       tools: tools.items,
       filesWritten: files.items,
+      ...(normalizedLastToolCall === undefined ? {} : { lastToolCall: normalizedLastToolCall }),
       ...(normalizedTodo === undefined ? {} : { todo: normalizedTodo }),
       fold: {
         foldedRounds: safeInteger(foldedRounds),
@@ -464,6 +559,11 @@ export function renderRunState(state) {
     .slice(-8)
     .map((file) => safeText(file, 50))
     .join(",");
+  const lastToolCall = deterministic.lastToolCall;
+  const lastToolCallCell = lastToolCall === undefined
+    ? ""
+    : ` last=${safeText(lastToolCall.summary, RUN_STATE_MAX_LAST_TOOL_CHARS)}`
+      + (safeInteger(lastToolCall.streak, 1) > 1 ? `×${safeInteger(lastToolCall.streak, 1)}` : "");
   const todo = deterministic.todo?.items
     ?.slice(0, 6)
     .map((item) => `${safeText(item.id, 18)}:${safeText(item.status, 12)}`)
@@ -489,7 +589,9 @@ export function renderRunState(state) {
     `run=${safeText(state.runId, 48)} v=${safeInteger(state.stateVersion)} r=${renderedRunRounds}/${safeInteger(budget.maxRounds)} left=${safeInteger(budget.remainingRounds)} low=${budget.lowBudgetPrompted === true ? 1 : 0}${
       renderedRunRounds === renderedSessionRounds ? "" : ` session=${renderedSessionRounds}`
     }`,
-    `tools=${tools || "-"} files=${files || "-"}`,
+    // issue #608：`last=` = 游标（最近一次不同入参的调用；同入参重调就长成 `×N`）。
+    // 只加这一格，其余行一字不动；无调用时整格缺席（旧档 / 未调工具的 run 渲染逐字不变）。
+    `tools=${tools || "-"} files=${files || "-"}${lastToolCallCell}`,
     `todo=${todo || safeText(deterministic.todo?.status, 16) || "-"} fold=${safeInteger(fold.foldedRounds)}/${safeInteger(fold.navigationRecords)}`,
     `compact=${compactionLayers || "-"}`,
     // `errors=tool/checkpoint/unpersisted` 中的 `checkpoint` 是模型可见文本（issue #83 保留旧名）。

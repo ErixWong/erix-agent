@@ -46,6 +46,8 @@ export function createSlidingWindowStrategy(options = {}) {
         rounds,
         keepRounds,
         settings.protectedMessage,
+        // issue #608：工作集地板（`0` = 关闭，引擎显式开成 `WORKING_SET_RECENT_ROUNDS`）。
+        settings.workingSetRecentRounds,
       );
       const foldedPayload = cloneFoldPayload(
         folded.flatMap((round) => round.messages),

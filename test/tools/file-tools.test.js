@@ -651,7 +651,7 @@ const READ_LINE_CAPACITY_ROLES = [
   // 2026-10-29 第十二刷（issue #550）：`option-normalization.js` 加了一行 session 派生折叠 +
   // 一个 import 符号（+238 B / +1 行），bytes 越过 ±2% ⇒ 按 #543 机制复测这一行（描述只改 67.2→68.0
   // 那个平均行字节数，档位 3,850 不变：实测容量 3,853 仍在 [3850, 3899) 里）。
-  { role: "fewest", file: "src/loop/option-normalization.js", recorded: { bytes: 37_079, lines: 545, bytesPerLine: 68.0349, capacity: 3_853, cjkShare: 0.19 } },
+  { role: "fewest", file: "src/loop/option-normalization.js", recorded: { bytes: 37_079, lines: 545, bytesPerLine: 68.0349, capacity: 3_853, cjkShare: 0.1702 } },
   // CJK 字节占比最高的那一个（2026-10-13 到今一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
   { role: "densest", file: "src/loop/state-view.js", recorded: { bytes: 2_629, lines: 44, bytesPerLine: 59.75, capacity: 4_387, cjkShare: 0.3731 } },
   // median 这一行 2026-10-22 换了**文件**（不是只刷数字）：issue #386 切片 1 给
@@ -695,7 +695,7 @@ const READ_LINE_CAPACITY_ROLES = [
   // （显式关思考 + 每次调用的剩余预算）。fold-llm 的容量 6,952 量级 → 6756（38.796 B/line），恰好落在样本中位上
   // ⇒ 角色从 `src/tools/notes.js` 改钉它（与当场样本中位完全相等）。描述里 `median 6,952 (37.7)` →
   // `median 6,756 (38.8)` 是**同位数替换**（对本文件字节中性）。容差常量一个都没动。
-  { role: "median", file: "src/compact/fold-llm.js", recorded: { bytes: 31_062, lines: 774, bytesPerLine: 40.1318, capacity: 6_532, cjkShare: 0.1888 } },
+  { role: "median", file: "src/compact/fold-llm.js", recorded: { bytes: 31_462, lines: 779, bytesPerLine: 40.3877, capacity: 6_490, cjkShare: 0.1707 } },
   // 2026-10-23 #391：`most` 也**换了文件**——`bin/guard-metrics.js` 从 456 B / 17 行长到 1,063 B / 23 行
   // （均行 26.8 → 46.2），容量 9,772 → 5,671，已经不是「一次装得最多」那一个。样本里现在最大的是
   // `src/messages/openai-normalization.js`（5,496 B / 201 行 ⇒ 27.34 B/line ⇒ 9,587 行），描述里那一档随之
