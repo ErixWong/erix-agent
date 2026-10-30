@@ -271,7 +271,9 @@ src/
     delegation/                    Child-run bookkeeping (issue #617 P1a) plus the bounded transcript-tail
                                    read (issue #626 C1): no fork/spawn, opaque fields pass through,
                                    liveness is a host-injected predicate
-      roster.js                    Roster: 18-field record, atomic write, updatedAt monotonic, stale reconcile
+      roster.js                    Roster: 21-field record (issue #630 S1 adds resultText /
+                                   resultTruncated / errorMessage), atomic write, updatedAt
+                                   monotonic, stale reconcile
       capacity.js                  Concurrency quota leases: wx-exclusive create, idempotent release, sweep
       notify.js                    Completion-notify dedup keyed on the (runId, endedAt) pair, fixed prefix
       tool.js                      Delegate tool factory (P1b): runChild host-injected, termination→state
@@ -882,7 +884,18 @@ The shared CLI flags are:
   child has not written its first row yet, or the file was cleaned up). The CLI
   registers that path through the factory's `transcriptPathFor` knob and derives it
   with the store's own naming helper, so the parent's `tail` works on the first child
-  run instead of always answering `no_transcript_path`. The C2/C3 actions (resume,
+  run instead of always answering `no_transcript_path`. **`result` returns the child's
+  final text itself** (issue #630 S1): the terminal roster write stores `resultText`
+  — capped at **4000** characters, with `truncated: true` when it was cut — plus
+  `errorMessage` (capped at 1000) when the child threw, so a parent that delegated in
+  the background reads the answer instead of inferring it from `tail`. The roster's
+  cwd field is the directory the child **actually ran in**: the CLI resolves it once
+  through the factory's `cwdFor` port and hands that same value to both the record and
+  the child run (a host that supplies no `cwdFor` keeps the old behaviour, but then the
+  record does not describe the child's real working directory). And the child's tool
+  face is a **subset of the parent's** — `--tools <names>` is applied to the child tool
+  set with the same filter, so narrowing the parent's permissions never widens the
+  child's, and `delegate` itself is never handed down. The C2/C3 actions (resume,
   steer) are **not** part of it. It is a
   runnable sample and verifier for the
   host-side delegation contract, not a new default capability.

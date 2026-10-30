@@ -14,7 +14,9 @@
  * 设计判据（照两个真实实现的面，不带它们的宿主语义进来）：
  *   - 记录面参考 pi-subagents 的 `AsyncStatus`（字段名沿用同一套词汇：runId / parentRunId /
  *     state / cwd / model / createdAt / updatedAt / endedAt / deadlineAt / timedOut / pid …），
- *     但收敛到工单钉死的 **18 项**；除 `state` 外全部 opaque。
+ *     但收敛到工单钉死的 **21 项**（#630 S1 由 18 项 +3：`resultText` / `resultTruncated` /
+ *     `errorMessage`——后台子 run 的终稿与失败原因必须能从名册里取回，见 `tool.js` 的
+ *     `finishRun`）；除 `state` 外全部 opaque。
  *   - 落盘一条记录一个文件 `<rosterDir>/<runId>.json`，写必须**原子**（同目录临时文件 +
  *     `rename`）——半写出的 JSON 比没有更糟（重算会把它当损坏或更糟，当活态）。
  *   - **文件名不是身份来源**：记录内的 `runId` 必须等于文件名；不等 ⇒ 视为损坏，点名报出
@@ -53,6 +55,11 @@ import { dirname, join } from "node:path";
  * @property {string} [statusPath]          opaque
  * @property {string} [transcriptPath]      opaque
  * @property {number} [pid]                 宿主记下的进程号；库只把它递给宿主谓词
+ * @property {string} [resultText]          子 run 的终稿（issue #630 S1；写侧由 `tool.js` 截到
+ *                                          `RESULT_TEXT_LIMIT` = 4000 字符，名册只存不算）
+ * @property {boolean} [resultTruncated]    `resultText` 被截断过 ⇒ 恰好写 `true`（没截断就不写这个键）
+ * @property {string} [errorMessage]        子 run 抛错时的错误文本（issue #630 S1；写侧截到
+ *                                          `ERROR_MESSAGE_LIMIT` = 1000 字符），正常结束不写
  */
 
 /** 名册 `state` 的封闭取值（工单钉死 7 个；其余一律不得写进名册）。 */
@@ -96,6 +103,11 @@ const OPTIONAL_KEYS = [
   "statusPath",
   "transcriptPath",
   "pid",
+  // issue #630 S1：后台子 run 的终稿 / 截断标记 / 失败原因（`result` 动作要带回它们，
+  // 所以它们必须和终态**同一次写**落盘——不是事后补写第二遍）。
+  "resultText",
+  "resultTruncated",
+  "errorMessage",
 ];
 
 let tmpCounter = 0;
@@ -111,7 +123,7 @@ function assertSafeRunId(runId) {
 }
 
 /**
- * 把调用方给的记录收敛成落盘形态：只带 18 项里的已给字段，undefined / 空串一律不写。
+ * 把调用方给的记录收敛成落盘形态：只带 21 项里的已给字段，undefined / 空串一律不写。
  * @param {RosterRecord} record
  * @returns {RosterRecord}
  */
@@ -162,7 +174,7 @@ function parseRosterFile(dir, file) {
  * 不许让记录的水位倒退），其余字段按本次调用收敛后的形态落盘。
  *
  * @param {string} rosterDir 名册目录
- * @param {RosterRecord} record 记录（18 项面；未给的可选字段不落盘）
+ * @param {RosterRecord} record 记录（21 项面；未给的可选字段不落盘）
  * @returns {RosterRecord} 实际落盘的记录（`updatedAt` 可能因单调规则高于入参）
  */
 export function writeRecord(rosterDir, record) {

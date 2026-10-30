@@ -215,6 +215,22 @@ CLI 是这套分工的**可运行示例与验证器**，而且默认关闭：`de
 配置缺陷**），`no_transcript` 是路径在、文件不在或打不开（子还没落第一行 / 档案已清理，**正常时序**）。
 把两者合成一个，就会把「你没接」读成「子没干活」。
 
+**这套示例面的三处修正（issue #630 S1）。** 三条都是「记录与结果必须说真话」，都不新增默认能力。
+
+* **`action=result` 带回子 run 的终稿。** 终态那一次名册写现在会存 `resultText`（子的终稿，
+  上限 **4000 字符**，被截断时带 `truncated: true`）与 `errorMessage`（子的错误，上限 1000，
+  只在子抛错时写）——写进**存终态 `state` 的同一次原子写**，不是事后补写第二遍。`result` 返回名册的终态字段再加 `text`（有截断 / 错误时还有 `truncated` /
+  `error`）。在此之前，后台子 run 的终稿被直接丢掉：父只拿到 `state` 与 `termination`，答案是「看 `tail` 猜」。
+* **名册里的 cwd 字段是子 run 实际跑在的目录——前提是你告诉它。** 模型给的 cwd 是请求、不是事实：
+  库不解析相对路径，也不知道你的缺省目录是谁。端口是 cwdFor：`(requested, runId) => string`。
+  提供了它，库就**只解析一次**，并且**同一个值**既写记录、又交给 `runChild`（不存在「记录一个、
+  执行另一个」）；返回值必须是非空字符串，否则工厂当场抛。不提供就保持旧行为——但那时名册的
+  cwd 字段 **不代表**子实际跑在哪，所以想要记录为真的宿主应当总是提供它。CLI 就是这么做的：
+  `cwdFor: (requested) => path.resolve(requested ?? parentCwd)`。
+* **子 run 的工具面是父的子集。** 派生绝不扩权：子工具集在进引擎之前就用父的 `--tools` 白名单
+  （同一个 `filterToolsByAllowlist`）过滤过，而 `delegate` 本身永不下传（v1 不递归）。
+  没有白名单时子照旧拿全量，与以前逐字一致。
+
 整条链路的闸门是 `examples/delegate-real-e2e.test.mjs`，即 `npm run check:release:real` 的第 2 步：
 真上游下父 run 派生一个子 run，断言子名册记录带的是父的 `config.run.runId`、子 run 以 `end_turn` 收尾、
 名册终态 `completed`、父侧被唤醒**恰好一次**。

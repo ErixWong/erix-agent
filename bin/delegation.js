@@ -18,6 +18,9 @@
  *      `createCliTools({ delegate: false })`，并且子 run 的系统提示也走
  *      `buildCliToolsSystemPrompt({ delegate: false })`：工具面与提示词同一侧，不留「提示词说有、
  *      工具面没有」的缝（那会让模型反复调一个不存在的工具）。
+ *      **并且子的权限只能等于或小于父**（issue #630 S1）：父的 `--tools` 白名单经 `toolAllowlist`
+ *      下传，子工具集套同一个 `filterToolsByAllowlist`；以前子无条件拿全量（含 `exec`），
+ *      父收窄权限时子反而扩权。
  *   2. **子 run 落自己的 transcript**：`<rosterDir>/transcripts/`，不是父的 `--dir`。
  *      CLI 的会话 id 由 cwd 派生，父子同 cwd ⇒ **同一个会话文件名**；子 run 若追加进父的会话文件，
  *      父的 `-c` / `-r` 与 resume 账本会被子 run 的轮次污染（`test/cli-delegate-617.test.js` 钉着
@@ -50,7 +53,14 @@ import { transcriptPath } from "../src/store/file.js";
 import { createCliAssemblyRoot } from "./assembly-root.js";
 import { buildCompactionContext, splitCompactionContext } from "./config.js";
 import { buildCaptureRecoveryHint, buildCaptureStub } from "./final-guard.js";
-import { buildArchiveNotice, buildCliToolsSystemPrompt, createCliTools, wrapExecuteTool } from "./tools.js";
+import {
+  buildArchiveNotice,
+  buildCliToolsSystemPrompt,
+  CLI_TOOL_NAMES_FULL,
+  createCliTools,
+  filterToolsByAllowlist,
+  wrapExecuteTool,
+} from "./tools.js";
 
 /** 并发配额默认值（与 `createDelegateTool` 的 `maxConcurrent` 缺省一致，两处都是 2）。 */
 export const DEFAULT_DELEGATE_MAX_CHILDREN = 2;
@@ -81,12 +91,22 @@ export function resolveDelegationDir(explicit) {
 /**
  * 子 run 的 system prompt：与父同一套装配，但 `delegate: false`（v1 不递归派生）。
  *
- * @param {{ cwd: string, todo?: boolean, archiveDir?: string }} options
+ * @param {{ cwd: string, todo?: boolean, archiveDir?: string, toolNames?: string[] }} options
+ * @param {string[]} [options.toolNames] 子 run **实际**拿到的工具名（issue #630 S1）。给了它，
+ *   清单行只列这些名字（父的 `--tools` 白名单已把子工具面收窄时，提示词必须同一侧——
+ *   否则就是「提示词说有、工具面没有」的缝，模型会反复调一个不存在的工具）。
+ *   不给（缺省）= 旧行为：列 todo+delegate:false 的完整注册面，逐字节不变。
  * @returns {string}
  */
-export function buildChildSystemPrompt({ cwd, todo = true, archiveDir } = {}) {
+export function buildChildSystemPrompt({ cwd, todo = true, archiveDir, toolNames } = {}) {
   return `你是 erix 的子 run（父 run 派生的一次性任务执行者），工作目录 ${cwd}。`
-    + buildCliToolsSystemPrompt({ todo, delegate: false })
+    + buildCliToolsSystemPrompt({
+      todo,
+      delegate: false,
+      // `names` 收窄清单行时 `fullNames` 必须显式给全量注册面：短语表是静态表，
+      // 拿收窄后的名单当「陈旧」基准会把没被选中的工具短语误报成手抄残留。
+      ...(toolNames === undefined ? {} : { names: toolNames, fullNames: CLI_TOOL_NAMES_FULL }),
+    })
     + buildArchiveNotice(archiveDir)
     + "\n\n每轮开始先用一句话（≤30字）说明当前计划，再调用工具。";
 }
@@ -109,6 +129,13 @@ export function buildChildSystemPrompt({ cwd, todo = true, archiveDir } = {}) {
  * @param {number} [options.maxRounds] 子 run 的轮数上限（缺省沿用父的）。
  * @param {(line: string) => void} [options.notify] 后台子 run 完成时的父侧唤醒（缺省 stderr）。
  * @param {(line: string) => void} [options.childToolOutput] 子 run 的工具回显（缺省 stderr）。
+ * @param {string} [options.toolAllowlist] 父会话的 `--tools` 白名单（**与 `bin/cli.js` 解析出来的那个
+ *   字符串同源**，issue #630 S1）。给了它，子 run 的工具面就套同一个 `filterToolsByAllowlist`
+ *   （复用现成函数，不另写过滤），于是一条原则在结构上成立：**子的权限只能等于或小于父**。
+ *   不给（缺省）= 旧行为：父子都全量。未知工具名走 `filterToolsByAllowlist` 既有的
+ *   `onUnknown` 语义（见 `onUnknownTool`），不另造警告。
+ * @param {(line: string) => void} [options.onUnknownTool] `toolAllowlist` 里出现未知工具名时的
+ *   告警通道（缺省 stderr；与 `bin/cli.js` 父侧过滤用的是同一条文案）。
  * @param {() => number} [options.clock] 宿主时钟（测试注入；名册时间戳全走它）。
  * @returns {{
  *   definition: object,
@@ -129,6 +156,8 @@ export function createCliDelegation({
   maxRounds,
   notify = (line) => console.error(line),
   childToolOutput = (line) => console.error(line),
+  toolAllowlist,
+  onUnknownTool = (line) => console.error(line),
   clock,
 } = {}) {
   if (typeof buildProvider !== "function") {
@@ -158,6 +187,8 @@ export function createCliDelegation({
    * @returns {Promise<{text: string, termination?: *, verification?: *}>}
    */
   const runChild = async ({ task, cwd: childCwd, parentRunId, runId, model, deadlineMs, signal }) => {
+    // `cwdFor`（宿主端口，issue #630 S1）已经把绝对路径算好、并且**同一个值**写进了名册；
+    // 对已经是绝对路径的值 `path.resolve` 是恒等变换，所以「记录的那个」与「执行的那个」逐字相同。
     const root = path.resolve(childCwd ?? parentCwd);
     // 子 run 的端口：transcript / archive / notes store 全部落在自己的 runId 下。
     const assembly = createCliAssemblyRoot({
@@ -167,14 +198,27 @@ export function createCliDelegation({
       notesDir,
     });
     // 工具集：文件工具 + exec + todo（跟随父开关），**不含 delegate**（v1 禁止递归派生）。
-    // 已知且刻意的不对称（写在这里，不静默）：父的 `--tools` 白名单**不**下传给子 run——
-    // 那是父会话的工具面裁剪，子 run 是另一个 run；v1 没有「子 run 的 allowlist」这个旋钮。
     const childCliTools = createCliTools({ cwd: root, todo: todoEnabled, delegate: false });
     const childNotes = createBuiltinNotesTools({
       runId,
       notesDir: assembly.notesDir,
       notesStore: assembly.notesStore,
     });
+    /**
+     * 子工具面（issue #630 S1，C）：**子的权限只能等于或小于父**。
+     * 父的 `--tools` 白名单以前只裁父自己的面，子 run 无条件拿全量（含 `exec`）——
+     * 父收窄权限时子反而扩权。修法不是另写一套过滤，而是把同一个 `filterToolsByAllowlist`
+     * （`bin/tools.js` 的现成函数，`onUnknown` 语义也照旧）套在子工具集上。
+     * `delegate` 先从未集里剔掉再过滤：v1 不递归，它**永远**不下传（即使 allowlist 点名它）。
+     * 注意 allowlist 为 undefined 时 `filterToolsByAllowlist` 原样返回 ⇒ 父子都全量（旧行为）。
+     * 边界：若 allowlist 把子工具集滤到空（如父只开 `delegate`），`filterToolsByAllowlist`
+     * 会按它既有的语义抛错 ⇒ 子 run 落 `failed` 并在 `errorMessage` 里点名原因；
+     * 这是诚实的：子拿不到任何工具时不该装作能干活。
+     */
+    const childToolUniverse = [...childCliTools.tools, ...childNotes.definitions]
+      .filter((tool) => tool.name !== "delegate");
+    const childTools = filterToolsByAllowlist(childToolUniverse, toolAllowlist, { onUnknown: onUnknownTool });
+    const childToolNames = childTools.map((tool) => tool.name);
     const notesToolNames = new Set(childNotes.definitions.map((tool) => tool.name));
     const bridge = async (name, input, context) => (
       notesToolNames.has(name)
@@ -203,6 +247,20 @@ export function createCliDelegation({
     );
     const { data: compactionData, hooks: compactionHooks } = splitCompactionContext(compaction);
 
+    /**
+     * 子 run 的系统提示（issue #630 S1）：提示词与工具面必须同一侧。白名单收窄了工具集时，
+     * 清单行也只列收窄后的名字（`toolNames`），todo 那一句跟着「todo 工具还在不在」走；
+     * allowlist 缺省时**不传** `toolNames` ⇒ 旧提示词逐字不变。
+     */
+    const childPromptOptions = toolAllowlist === undefined || toolAllowlist === null
+      ? { cwd: root, todo: todoEnabled, archiveDir: assembly.archiveDir }
+      : {
+        cwd: root,
+        todo: todoEnabled && childToolNames.some((name) => name.startsWith("todo_")),
+        archiveDir: assembly.archiveDir,
+        toolNames: childToolNames,
+      };
+
     // `deadlineMs` 是**时长**（库的 `runChild` 契约，名册里 `deadlineAt = now + deadlineMs`），
     // 引擎读的 `config.timing.deadlineMs` 是**绝对时刻**——这里换一次，不在别处再换。
     const budgetMs = Number.isFinite(deadlineMs) && deadlineMs > 0 ? deadlineMs : deadlineDefault;
@@ -214,10 +272,10 @@ export function createCliDelegation({
         diagnostics: assembly.diagnostics,
         executeTool: echoTool,
         signal,
-        tools: [...childCliTools.tools, ...childNotes.definitions],
+        tools: childTools,
         config: {
           input: {
-            system: buildChildSystemPrompt({ cwd: root, todo: todoEnabled, archiveDir: assembly.archiveDir }),
+            system: buildChildSystemPrompt(childPromptOptions),
             initialUserMessage: task,
           },
           run: {
@@ -275,6 +333,11 @@ export function createCliDelegation({
     // 否则父 run 的 `tail` 恒报 `no_transcript_path`（真机缺陷现场）。路径必须走 store 自己的命名
     // 口径（`safeRunId` 会把不安全 id 哈希成 `run-h-<sha256>`，手拼 `${runId}.jsonl` 对那类 id 恒错）。
     transcriptPathFor: (runId) => transcriptPath(childTranscriptDir, runId),
+    // issue #630 S1（B）：名册里的 `cwd` 必须是**实际生效**的那个路径。库不知道宿主把相对路径
+    // 解析到哪、也不猜缺省目录是谁，所以策略由宿主给：这里解析成绝对路径（不给 cwd 就用父 cwd），
+    // 库用同一个值**既写名册、又交给 `runChild`**。以前名册里 `cwd` 缺省（`null`），而子实际在父树
+    // 里跑——真机复现过：不传 cwd 时子把文件写进了父工作树，名册却什么都没说。
+    cwdFor: (requested) => path.resolve(requested ?? parentCwd),
     ...(clock === undefined ? {} : { clock }),
   });
 

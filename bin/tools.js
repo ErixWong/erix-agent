@@ -520,8 +520,14 @@ export const CLI_TOOL_PROMPT_PHRASES = {
   todo_clear: { group: "todo", phrase: "todo_clear 清空" },
   delegate: {
     group: "delegate",
-    phrase: "delegate 派生一个子 run（action 五选一：run 起一个子 run、status/list 查名册、"
-      + "result 取终局并标记已取、cancel 取消本进程持有的子 run）",
+    // issue #630 S1（H）：这句话必须覆盖 `DELEGATE_ACTIONS` 里的**每一个**动作——schema 早已是六动作，
+    // 而这里还写着「五选一」且漏了 `tail`，模型根本发现不了那个读面（`tail` 是 #626 C1 加的）。
+    // 防漂移测试钉着「短语 ⇄ DELEGATE_ACTIONS」双向：`test/tools-delegate-prompt-630.test.js`。
+    // 句式约定（测试靠它解析，不是给人看的修辞）：`action <N>选一：` 后面是 `、` 分隔的动作项，
+    // 每项以动作名（可用 `/` 并列）开头，整体用 `）` 收尾。
+    phrase: "delegate 派生一个子 run（action 六选一：run 起一个子 run、status/list 查名册、"
+      + "result 取终局并标记已取（带回子的终稿，上限 4000 字符，超了带 truncated:true）、"
+      + "cancel 取消本进程持有的子 run、tail 有界读子 run 的 transcript 尾部，看它现在在跑什么）",
   },
 };
 
@@ -629,7 +635,7 @@ const CLI_TOOL_NAMES_NO_TODO_DELEGATE = cliToolDefinitions({ todo: false, delega
  * 短语表是静态表，开关关掉只是本轮少拼一段，不能拿「本轮的面」当陈旧依据；否则 `delegate`
  * 一关就会被误报成手抄残留（与 todo 段同一个坑，见 `assertPromptPhraseTableMatches`）。
  */
-const CLI_TOOL_NAMES_FULL = cliToolDefinitions({ todo: true, delegate: true }).map((schema) => schema.name);
+export const CLI_TOOL_NAMES_FULL = cliToolDefinitions({ todo: true, delegate: true }).map((schema) => schema.name);
 
 export const CLI_TOOLS_SYSTEM_PROMPT = buildCliToolsSystemPrompt();
 
