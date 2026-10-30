@@ -108,6 +108,9 @@ test("publishes note-first recovery guidance requirements", () => {
   assert.match(SUMMARIZER_PROMPT_GUIDE, /## 下一步/);
   assert.match(SUMMARIZER_PROMPT_GUIDE, /已完成项禁止重做/);
   assert.match(SUMMARIZER_PROMPT_GUIDE, /## 主题词面包屑/);
+  // issue #611：五节之后、「恢复提示」之前多一节「教训与坑」（位置判据见
+  // test/compact/fold-summary-lessons-611.test.js，这里只把钉子补齐）。
+  assert.match(SUMMARIZER_PROMPT_GUIDE, /## 教训与坑（不要重犯的）/);
   assert.match(SUMMARIZER_PROMPT_GUIDE, /需要原文请重读文件或查看持久笔记；关键值应当已落盘/);
 });
 
