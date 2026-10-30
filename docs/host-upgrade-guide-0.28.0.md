@@ -208,3 +208,37 @@ Do not write these as migrations — they were never live, and the release notes
 
 4. **Type-check your host with the published declarations** (`tsc --strict`). A new `TS2353` on an option
    key means the runtime would have rejected it too (§8).
+
+## 12. The CLI's `delegate` is a sample, not a contract (issue #617)
+
+`erix chat` and `erix repl` gained an opt-in `--delegate` flag. **No library contract moved with it**:
+the surface you can rely on is three pieces — `config.run.parentRunId` (opaque, mirrored, never
+interpreted), the bookkeeping trio (roster / concurrency lease / completion-notification dedupe), and
+`createDelegateTool` (`src/tools/delegation/tool.js`), whose `runChild` is **injected by the host**.
+
+What stays on your side of that line:
+
+* **Starting the child run.** The library never forks, spawns or imports `child_process`. You hand
+  `createDelegateTool` a `runChild` and decide what a child run *is* (same process, subprocess, remote).
+* **Persistence.** The roster is bookkeeping, not a transcript: `writeRecord`
+  (`src/tools/delegation/roster.js`) writes one record per child, and where that child's transcript
+  lives is your choice. The CLI derives it from the roster directory (`<rosterDir>/transcripts/`) so a
+  child run never appends to the parent's session file — the parent's session id is derived from the
+  working directory, so parent and child in the same directory would otherwise collide on one filename.
+* **Orchestration and waking the parent.** `notifyParent` is a callback you supply. There is **no
+  mailbox** into a running `runToolLoop`: a background child's completion reaches the parent through
+  that callback (the CLI prints the line on stderr), and the parent retrieves the outcome with
+  `action=result`. Pretending otherwise would be the worse contract.
+
+The CLI is the **runnable example and verifier** for that split, and it is off by default: `delegate` is
+not in the default tool face and not in the default system prompt. Enable it with `--delegate`, cap it
+with `--delegate-max-children <n>` (default 2) and `--delegate-timeout-ms <n>` (default 600000); the
+roster directory defaults to `~/.erix/delegation/` and moves with `ERIX_DELEGATION_DIR`. Three v1
+boundaries are deliberate, not oversights: child runs are **nested `runToolLoop` calls in the same
+process** (no child process, no daemon), the child's tool face **excludes `delegate`** (no recursive
+delegation), and the child's transcript is its own file.
+
+The gate for the whole path is `examples/delegate-real-e2e.test.mjs`, step 2 of
+`npm run check:release:real`: a real-upstream parent run delegates a child run, and the test asserts the
+child's roster record carries the parent's `config.run.runId`, the child ends `end_turn`, the roster ends
+`completed`, and the parent is woken **exactly once**.
