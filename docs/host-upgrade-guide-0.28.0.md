@@ -279,6 +279,32 @@ result telling the truth; none of them adds a new default capability.
   the engine sees it, and `delegate` itself is never handed down (v1 does not recurse). With no
   allowlist the child keeps the full face, exactly as before.
 
+**Three more corrections to that sample surface (issue #630 S2).** Again: no new default capability,
+and each one is about the record telling the truth.
+
+* **A live child is never written off by a process that cannot prove it is dead.** The roster record
+  moves `queued` → `running` → a terminal state, and `running` is written **before** the library calls
+  your run function (before this, the seven-value state machine never wrote `running` at all, so a
+  child that was working and a child that was stuck in the queue looked identical). The
+  stale-recompute step now takes the port `isProcessAlive(pid) => boolean`: a live record this process
+  does not own whose pid the predicate calls alive is listed in `foreignOwned` and left untouched,
+  while a record the predicate calls dead becomes `interrupted` with its `endedAt` set to that
+  record's own `updatedAt` rather than to the probe time. **Supply the predicate, or you get no stale
+  cleanup**: without it the library refuses to judge — live records carrying a pid go into a separate
+  `unverified` bucket and stay on disk exactly as they were. The trade is deliberate; inventing a
+  death for another process's live child is the worse failure. This is not a daemon-only path: the
+  roster directory defaults to `~/.erix/delegation/` and is therefore shared, so two concurrent CLI
+  sessions meet it. The CLI passes the real predicate (`process.kill(pid, 0)`: success means alive,
+  `EPERM` means alive without permission, `ESRCH` means dead).
+* **`action=result` re-reads the roster through the same recompute step as `action=status`.** A record
+  stuck in a live state because its owner died used to answer `still_running` forever; now the
+  terminal outcome is returned. A child that really is running still answers `still_running` — the
+  recompute is not a licence to declare everything dead.
+* **An explicit `--compact-budget` is inherited by child runs.** The child used to build its
+  compaction context with no explicit budget at all, so a budget the parent passed on the command
+  line silently disappeared on the child side and only the value derived from the configured context
+  window survived. With no explicit budget the old derivation stands, unchanged.
+
 The gate for the whole path is `examples/delegate-real-e2e.test.mjs`, step 2 of
 `npm run check:release:real`: a real-upstream parent run delegates a child run, and the test asserts the
 child's roster record carries the parent's `config.run.runId`, the child ends `end_turn`, the roster ends

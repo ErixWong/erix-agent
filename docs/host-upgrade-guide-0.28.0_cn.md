@@ -231,6 +231,25 @@ CLI 是这套分工的**可运行示例与验证器**，而且默认关闭：`de
   （同一个 `filterToolsByAllowlist`）过滤过，而 `delegate` 本身永不下传（v1 不递归）。
   没有白名单时子照旧拿全量，与以前逐字一致。
 
+**这套示例面的另外三处修正（issue #630 S2）。** 同样：不新增默认能力，三条都是「记录必须说真话」。
+
+* **一个进程不能把一个自己证明不了「已死」的活子写成死的。** 名册记录走 `queued` → `running` →
+  终态，而 `running` 是在库调你那个子 run 函数**之前**写的（在此之前，那个七值状态机从来没写过
+  `running`，于是「在干活」与「卡在队列里」在名册上长得一模一样）。陈旧重算那一步现在收下端口
+  `isProcessAlive(pid) => boolean`：不属于本进程、且谓词说 pid 还活着的活态记录进 `foreignOwned`
+  且原样不动；谓词说死的才变 `interrupted`，且 `endedAt` 取那条记录自己的 `updatedAt`（不是探测时刻）。
+  **接上谓词，否则就拿不到陈旧清理**：不给它，库拒绝做任何判定——带 pid 的活态记录进单独的
+  `unverified` 桶，盘上原样不动。这个取舍是刻意的：替别的进程的活子发明一个死亡是更糟的失败。
+  这条路不是只有长驻守护进程才会遇到：名册目录缺省是 `~/.erix/delegation/`，也就是**共享**的，
+  两个并发 CLI 会话就会踩上。CLI 传的是真谓词（`process.kill(pid, 0)`：成功 ⇒ 活，`EPERM` ⇒ 活但
+  没权限，`ESRCH` ⇒ 死）。
+* **`action=result` 与 `action=status` 走同一步重算。** 因为所有者死了而卡在活态的记录，以前会永远
+  答 `still_running`；现在返回终态。真正在跑的子 run 照旧答 `still_running`——重算不是「一律判死」的
+  许可证。
+* **显式 `--compact-budget` 会被子 run 继承。** 子 run 以前建压缩上下文时**完全没有**显式预算，于是父在
+  命令行给的预算在子那一侧静默消失，只剩从配置的上下文窗口推出来的那个值。没给显式预算时旧推导照旧，
+  一字不变。
+
 整条链路的闸门是 `examples/delegate-real-e2e.test.mjs`，即 `npm run check:release:real` 的第 2 步：
 真上游下父 run 派生一个子 run，断言子名册记录带的是父的 `config.run.runId`、子 run 以 `end_turn` 收尾、
 名册终态 `completed`、父侧被唤醒**恰好一次**。

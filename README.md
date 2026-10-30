@@ -895,7 +895,24 @@ The shared CLI flags are:
   record does not describe the child's real working directory). And the child's tool
   face is a **subset of the parent's** — `--tools <names>` is applied to the child tool
   set with the same filter, so narrowing the parent's permissions never widens the
-  child's, and `delegate` itself is never handed down. The C2/C3 actions (resume,
+  child's, and `delegate` itself is never handed down. A child's roster record moves
+  `queued` → `running` → a terminal state, and `running` is written **before** the
+  library calls the host's run function, so a child that is actually working is never
+  reported as still queued. **Two processes sharing one roster directory never write
+  each other's live children off** (issue #630 S2): the default roster directory
+  (`~/.erix/delegation/`) is shared, so two concurrent CLI sessions share it, and the
+  reconcile step now asks the host's `isProcessAlive` predicate instead of assuming
+  "live record I do not own" means "dead". A child whose pid is alive is listed as
+  foreign-owned and its record is left byte-for-byte untouched; the CLI supplies the
+  real predicate (`process.kill(pid, 0)`: success means alive, `EPERM` means alive but
+  not ours to signal, `ESRCH` means dead). Without that predicate the library refuses
+  to call anything dead: a live record that carries a pid goes into a separate
+  `unverified` bucket and stays on disk exactly as it was — the deliberate trade is
+  that a host which never wires the predicate gets **no stale cleanup at all**, because
+  reporting someone else's live child as dead is the worse failure. An explicit
+  `--compact-budget <tokens>` is **inherited by child runs** too (with none, the child
+  keeps deriving its budget from the configured context window, exactly as before).
+  The C2/C3 actions (resume,
   steer) are **not** part of it. It is a
   runnable sample and verifier for the
   host-side delegation contract, not a new default capability.

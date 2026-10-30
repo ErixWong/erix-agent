@@ -75,6 +75,31 @@ export const DEFAULT_DELEGATE_TIMEOUT_MS = 600_000;
 export const DELEGATION_DIR_ENV = "ERIX_DELEGATION_DIR";
 
 /**
+ * 宿主侧的**存活谓词**（issue #630 S2 / D）：`createDelegateTool` 的 `isProcessAlive` 端口。
+ *
+ * 判据（三档，写在明面上）：
+ *   · `process.kill(pid, 0)` 成功 ⇒ 活（signal 0 不送信号，只做权限/存在性检查）；
+ *   · 抛 `EPERM` ⇒ **活**（进程存在，只是本用户没权限向它发信号）；
+ *   · 抛 `ESRCH` ⇒ 死（没有这个进程）；
+ *   · 其余错误码（以及非正整数的 pid）⇒ **算活**。最后一条是刻意的 fail-safe：库拿这个谓词判死
+ *     并写 `interrupted`，所以只有「确知没有这个进程」（`ESRCH`）才允许说死；一个不认识的错误
+ *     码不许变成「别人家的活子被写成死的」的理由（宁可留脏记录）。
+ *
+ * @param {number} pid
+ * @returns {boolean}
+ */
+export function isProcessAlive(pid) {
+  if (typeof pid !== "number" || !Number.isFinite(pid) || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    return true;
+  }
+}
+
+/**
  * 名册目录解析：显式参数 > `ERIX_DELEGATION_DIR` > `~/.erix/delegation`。
  * 测试必须走显式参数（临时目录），不许污染真实 `~/.erix`。
  *
@@ -136,6 +161,12 @@ export function buildChildSystemPrompt({ cwd, todo = true, archiveDir, toolNames
  *   `onUnknown` 语义（见 `onUnknownTool`），不另造警告。
  * @param {(line: string) => void} [options.onUnknownTool] `toolAllowlist` 里出现未知工具名时的
  *   告警通道（缺省 stderr；与 `bin/cli.js` 父侧过滤用的是同一条文案）。
+ * @param {number} [options.compactBudget] 父侧的**显式**压缩预算（`--compact-budget <tokens>`，issue
+ *   #630 S2 / F）：给了它就下传给子 run 的 `buildCompactionContext`（子以前拿的是 `undefined`，
+ *   于是父显式给的预算在子那一侧完全丢失，只剩 `config.contextWindowTokens` 推出来的自动值）。
+ *   缺省 `undefined` ⇒ 子侧行为与接线前逐字一致。`config` 里 `contextWindowTokens` 等继承关系不动。
+ * @param {(pid: number) => boolean} [options.isProcessAlive] 存活谓词（issue #630 S2 / D）：缺省就是
+ *   本文件导出的 {@link isProcessAlive}（真 `process.kill(pid, 0)`）。测试可注入假谓词。
  * @param {() => number} [options.clock] 宿主时钟（测试注入；名册时间戳全走它）。
  * @returns {{
  *   definition: object,
@@ -158,6 +189,8 @@ export function createCliDelegation({
   childToolOutput = (line) => console.error(line),
   toolAllowlist,
   onUnknownTool = (line) => console.error(line),
+  compactBudget,
+  isProcessAlive: isProcessAliveOption = isProcessAlive,
   clock,
 } = {}) {
   if (typeof buildProvider !== "function") {
@@ -165,6 +198,9 @@ export function createCliDelegation({
   }
   if (typeof cwd !== "string" || cwd === "") {
     throw new TypeError("createCliDelegation: cwd 必须是非空字符串");
+  }
+  if (isProcessAliveOption !== undefined && typeof isProcessAliveOption !== "function") {
+    throw new TypeError("createCliDelegation: isProcessAlive 必须是函数（宿主提供存活谓词）");
   }
   const resolvedRosterDir = resolveDelegationDir(rosterDir);
   const parentCwd = path.resolve(cwd);
@@ -232,10 +268,14 @@ export function createCliDelegation({
     });
 
     // 压缩口径与父同一份配置（子 run 也可能跑长任务）；恢复提示落在子 run 自己的归档里。
+    // issue #630 S2 / F：父的**显式**预算（`--compact-budget`）必须下传——以前这一位写死 `undefined`，
+    // 于是父显式给的预算在子侧静默丢失（子的 `buildCompactionContext` 只能看 `config.contextWindowTokens`
+    // 推出来的自动值）。`undefined` 时与接线前逐字一致。恢复提示的开关条件也跟父侧同构（父侧是
+    // `compactBudget !== undefined || config.contextWindowTokens`）。
     const compaction = buildCompactionContext(
       config,
-      undefined,
-      config.contextWindowTokens
+      compactBudget,
+      compactBudget !== undefined || config.contextWindowTokens
         ? ({ foldedPayload }) => buildCaptureRecoveryHint({
           archiveDir: assembly.archiveDir,
           foldedPayload,
@@ -338,6 +378,10 @@ export function createCliDelegation({
     // 库用同一个值**既写名册、又交给 `runChild`**。以前名册里 `cwd` 缺省（`null`），而子实际在父树
     // 里跑——真机复现过：不传 cwd 时子把文件写进了父工作树，名册却什么都没说。
     cwdFor: (requested) => path.resolve(requested ?? parentCwd),
+    // issue #630 S2 / D：把存活谓词接到库的 `reconcile` 上。不接它，任何「活态 + 不在本进程 owned」
+    // 的记录都会被判 `interrupted`——两个并发 CLI 会话共用同一个名册目录（缺省 `~/.erix/delegation/`）
+    // 时，B 只要调一次 `status`，A 养着的活子就会被改写成死的（真机复现过）。
+    isProcessAlive: isProcessAliveOption,
     ...(clock === undefined ? {} : { clock }),
   });
 

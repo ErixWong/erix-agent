@@ -115,7 +115,22 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 //   现在最集中的文件：`src/store/notes.js` 27、`src/loop/orchestrator.js` 17、`src/run-state.js` 10、
 //   `src/display/projection.js` 9、`src/providers/anthropic.js` 9。**上面那段 218/190/28 的分布是 218 时代的
 //   历史记录**；**142 时代（2026-10-11 实测）**的口径是：公共面 114 个 / 20 个文件、实现侧 28 个 / 9 个文件（当前口径见下面那条 2026-10-23 的下调记录）。
-// 下调记录（最新一笔）：**117 → 116** 与 **153 → 152**（issue #413，2026-10-23 实测于当前树；**两档同刀各降 1**）。
+// 下调记录（最新一笔）：**116 → 110** 与 **152 → 146**（issue #630 S2 / J，2026-10-31 实测于当前树；**两档同刀各降 6**，
+//   两档减的 6 个**完全相同**，且都不是本单写出来的——本单（S2 的 D / F / G / I 四刀）在 `dfa4146` 与改后树上
+//   两档实测都是 110 / 146，一个错都没动，所以这是一笔纯「还债到账」的下调）。逐文件对账（改前对照树
+//   `git archive 56c16ca` 取到空目录、同一对 tsc/@types 跑同两条命令 = **116 个 / 28 文件** 与 **152 个 / 30 文件**，
+//   与旧常量逐字相同）：
+//   · `src/run-state.js` **10 → 4**（减 6）
+//   · `src/loop/orchestrator.js` **17 → 14**（减 3）
+//   · `src/reflection/wrapup.js` **3 → 0**（减 3，该文件退出错误集合 ⇒ 带错文件数 28 → 27 / 30 → 29）
+//   · `src/compact/pipeline.js` **3 → 6**（增 3）
+//   · `src/compact/fold-llm.js` **2 → 5**（增 3）
+//   · 其余 **22 个带错文件一字未动**（`src/tools/file-tools.js` 仍 20、`src/skills/loader.js` 仍 16，所以
+//     `146 = 110 + 20 + 16` 照旧成立），也没有别的文件进出错误集合；净额 −6 = −6 −3 −3 +3 +3。
+//   来源：这 6 个单位是 56c16ca 之后那一串压缩/续跑单（#611 / #612 / #614 / #601 / #598 等）**重构顺带**掉的，
+//   不是专门修类型；两个 +3 是同一批改动把折叠相关的几处形状写复杂了的代价（净额仍是 −6）。
+//   **两档在同一笔提交里一起下调**（#214 的教训：退役的 261 曾悄悄背着 #177 已还掉的那 1 个）。
+// 下调记录：**117 → 116** 与 **153 → 152**（issue #413，2026-10-23 实测于当前树；**两档同刀各降 1**）。
 //   减掉的这 1 个**不在**基线时代的任何一个带错文件的账上——它是 issue #409（PR #410）**两笔**提交的净效果：
 //   · `6b604e7` 把 `parseOpenAIToolArguments` 里那句 `JSON.parse(value)`（`value` 是 `unknown`）换成共享入口
 //     `parseToolArguments(rawArguments).input` ⇒ `src/messages/openai-normalization.js` 的 `(60,23)` 那条
@@ -170,7 +185,7 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 //   现在最集中的文件：`src/loop/orchestrator.js` 17、`src/run-state.js` 10、`src/providers/anthropic.js` 9、
 //   `src/loop/run-snapshot-executor.js` 8、`src/display/projection.js` 7、`src/providers/openai.js` 7、`src/tools/notes.js` 7
 //   （`--with-tools` 一档再加 `src/tools/file-tools.js` 20、`src/skills/loader.js` 16）。
-const BASELINE_ROOT = 116;
+const BASELINE_ROOT = 110;
 
 // `--with-tools` 的基线：把第二个公共入口 `src/tools/index.js` 也喂给 tsc 后的并集。
 // 复现命令（逐字）：
@@ -185,7 +200,7 @@ const BASELINE_ROOT = 116;
 //   于是 261 → 185 的 76 个 = #249 的 75 个 + #177 欠下的那 1 个（教训：下调基线要**两档一起复测**）。为什么默认不带它：#214 正文给的口径就是 `src/index.js`，
 //   默认值必须与规格逐字一致；但它**是**真实盲区，所以这里留一条可随时收紧的通道（收紧=把默认入口加上并
 //   把基线换成当前实测值，属 #214 之后的收紧动作，不要拿它当「反正卡不住」的理由）。
-const BASELINE_WITH_TOOLS = 152;
+const BASELINE_WITH_TOOLS = 146;
 
 const argv = process.argv.slice(2);
 const WITH_TOOLS = argv.includes("--with-tools");

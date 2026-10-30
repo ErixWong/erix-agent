@@ -29,8 +29,10 @@
  * 组装关系（全部复用 P1a 簿记三件套，不另起一套）：
  *   - 配额：`capacity.acquire`（`<leaseDir>/<runId>.lock` 独占创建）+ 目录内租约计数实现
  *     `maxConcurrent`；抢不到 ⇒ 结构化失败并点名持有者，**不排队、不自旋**；
- *   - 名册：`roster.writeRecord` 写 `queued` 起、`running`、终态；`roster.reconcile` 在
- *     status / list 前先重算陈旧记录（本实例持有的 runId 报 ownedRunIds，不自我误伤）；
+ *   - 名册：`roster.writeRecord` 写 `queued` 起、`running`（**在调 `runChild` 之前**，issue #630 S2 / D：
+ *     七状态里 `running` 以前从未被写入，`status` 一直显示 `queued`）、终态；`roster.reconcile` 在
+ *     status / result / list 前先重算陈旧记录（本实例持有的 runId 报 ownedRunIds，不自我误伤；
+ *     跨进程的活态记录靠宿主注入的 `isProcessAlive` 谓词兑清）；
  *   - 通知：`notify.shouldNotify`（`(runId, endedAt)` 二元组去重，父 `result` 自取后不再唤醒）
  *     + `notify.notificationText`（固定前缀在代码里）。
  *
@@ -174,13 +176,21 @@ function requireChildRunId(input) {
  *   **不给时保持旧行为**（名册只记模型给的原值，缺省时该字段缺省）——但这时名册的 `cwd`
  *   **不代表子 run 的实际工作目录**（子可能落在宿主自己的缺省树里），宿主应当提供 `cwdFor`。
  * @param {() => number} [options.clock] 宿主时钟（缺省 `Date.now`）；库内所有时间戳都走它。
+ * @param {(pid: number) => boolean} [options.isProcessAlive] 宿主注入的**存活谓词**（issue #630 S2 / D）：
+ *   `reconcile` 用它区分「另一宿主在同一目录里养着的活子」（→ `foreignOwned`，记录不动）与「真的没人
+ *   认领」（→ `interrupted`）。CLI 的实现是 `process.kill(pid, 0)`：成功 ⇒ 活；`EPERM` ⇒ 活（进程存在
+ *   但没权限）；`ESRCH` ⇒ 死。
+ *   **不提供 ⇒ 带 `pid` 的活态记录一律进 `unverified`、记录一个字节都不动**：库证明不了那个 pid 是死
+ *   的，就不许把它写成 `interrupted`（真机缺陷：进程 A 派发后台子，进程 B 只调一次 `status` 就把 A 的
+ *   记录改写成了 `interrupted`）。代价写在明面上：**不接这个谓词就拿不到陈旧清理**——这是刻意的取舍，
+ *   宁可留脏记录，也不许谎报别人家的活子是死的。
  * @returns {{ definition: object, execute: (input: object, context: object) => Promise<object> }}
  */
 export function createDelegateTool(options) {
   if (options === null || typeof options !== "object" || Array.isArray(options)) {
     throw new TypeError("delegate: options 必须是对象");
   }
-  const { runChild, rosterDir, leaseDir, maxConcurrent, notifyParent, transcriptPathFor, cwdFor, clock } = options;
+  const { runChild, rosterDir, leaseDir, maxConcurrent, notifyParent, transcriptPathFor, cwdFor, clock, isProcessAlive } = options;
   if (typeof runChild !== "function") {
     throw new TypeError("delegate: runChild 必须由宿主注入（库不 fork / 不 spawn / 不 import child_process）");
   }
@@ -189,6 +199,9 @@ export function createDelegateTool(options) {
   }
   if (cwdFor !== undefined && typeof cwdFor !== "function") {
     throw new TypeError("delegate: cwdFor 必须是函数（宿主决定子 run 的实际工作目录，库不猜）");
+  }
+  if (isProcessAlive !== undefined && typeof isProcessAlive !== "function") {
+    throw new TypeError("delegate: isProcessAlive 必须是函数（宿主提供存活谓词；库不自己探 pid）");
   }
   if (typeof rosterDir !== "string" || rosterDir === "") {
     throw new TypeError("delegate: rosterDir 必须是非空字符串");
@@ -212,8 +225,18 @@ export function createDelegateTool(options) {
 
   const ownedRunIds = () => [...owned.keys()];
 
-  /** status / list 前先重算陈旧记录：本实例持有的 runId 报进 ownedRunIds，不自我误伤。 */
-  const reconcileFirst = () => reconcile(rosterDir, { ownedRunIds: ownedRunIds(), now: resolvedClock() });
+  /**
+   * status / result / list 前先重算陈旧记录：本实例持有的 runId 报进 ownedRunIds，不自我误伤。
+   * **`isProcessAlive` 必须传下去**（issue #630 S2 / D 的根因一）：只传 `ownedRunIds` 时，任何
+   * 「活态 + 不在本进程 owned」的记录都会落到「无人认领 ⇒ interrupted」那一支——别的进程养着的
+   * 活子被本进程一次 `status` 就改写成了死的。宿主没给谓词时 `reconcile` 自己 fail-safe 到
+   * `unverified`（见 `roster.js` 文件头）。
+   */
+  const reconcileFirst = () => reconcile(rosterDir, {
+    ownedRunIds: ownedRunIds(),
+    ...(isProcessAlive === undefined ? {} : { isProcessAlive }),
+    now: resolvedClock(),
+  });
 
   /**
    * run 动作收尾（同步与后台共用）：写名册终态、还租约、（后台且未自取过）唤醒父。
@@ -347,7 +370,7 @@ export function createDelegateTool(options) {
     }
 
     const now = resolvedClock();
-    writeRecord(rosterDir, {
+    const queuedRecord = writeRecord(rosterDir, {
       runId,
       state: "queued",
       ...(parentRunId === undefined ? {} : { parentRunId }),
@@ -361,6 +384,17 @@ export function createDelegateTool(options) {
       ...(deadlineMs === undefined ? {} : { deadlineAt: now + deadlineMs }),
       pid: process.pid,
     });
+
+    /**
+     * `queued → running`（issue #630 S2 / D）：**在调 `runChild` 之前**写，走同一条 `writeRecord`
+     * 路径（不是第二套写口），`updatedAt` 必须前移。
+     * 为什么：七状态里 `running` 以前从未被写入过——子 run 已经在跑了，名册却一直说 `queued`，
+     * 于是「卡在 queued」与「正在跑」在名册上不可区分（而这两件事对宿主是完全不同的结论）。
+     * `Math.max(clock(), queued + 1)`：`updatedAt` 是单调水位，同一个毫秒里写两次也不许不动
+     * （否则「`running` 真的被写」这件事在假时钟下不可观测）。
+     */
+    const runningAt = Math.max(resolvedClock(), queuedRecord.updatedAt + 1);
+    writeRecord(rosterDir, { ...queuedRecord, state: "running", updatedAt: runningAt });
 
     const controller = new AbortController();
     /** 宿主注入的 runChild：库不知道也不关心子 run 怎么跑。 */
@@ -399,7 +433,8 @@ export function createDelegateTool(options) {
     );
     owned.set(runId, { controller, pending });
     pending.finally(() => { owned.delete(runId); }).catch(() => {});
-    return { ok: true, runId, state: "queued", background: true };
+    // 返回的 `state` 与盘上记录一致：`running`（以前回 `queued`，而记录也是 `queued`——两个都是谎）。
+    return { ok: true, runId, state: "running", background: true };
   };
 
   const statusAction = (input) => {
@@ -414,6 +449,10 @@ export function createDelegateTool(options) {
   const resultAction = (input) => {
     const { runId, error } = requireChildRunId(input);
     if (error) return error;
+    // issue #630 S2 / D：`result` 与 `status` 一样**先重算**——不重算的话，一条卡在活态的死记录
+    // （宿主崩了、子跟着没了）会永远答 `still_running`，父永远拿不到终局。对真正活着的子语义不变：
+    // 本进程持有的进 ownedRunIds ⇒ 不动；别的进程养着的由 `isProcessAlive` 判活 ⇒ 也不动。
+    reconcileFirst();
     const record = readRecord(rosterDir, runId);
     if (record === null) return { ok: false, reason: "not_found", runId };
     if (ROSTER_LIVE_STATES.includes(record.state)) {
@@ -441,7 +480,16 @@ export function createDelegateTool(options) {
   const listAction = () => {
     const stale = reconcileFirst();
     const { records, corrupt } = listRecords(rosterDir);
-    return { ok: true, records, corrupt, interrupted: stale.interrupted };
+    // `foreignOwned` / `unverified` 一并交给宿主：前者是「别的进程养着的活子」（点名不裁决），
+    // 后者是「没有谓词、库证明不了死」的那些（issue #630 S2 / D）。两个桶都**没有改过记录**。
+    return {
+      ok: true,
+      records,
+      corrupt,
+      interrupted: stale.interrupted,
+      foreignOwned: stale.foreignOwned,
+      unverified: stale.unverified,
+    };
   };
 
   /**

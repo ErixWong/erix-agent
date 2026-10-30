@@ -5936,9 +5936,24 @@ valid state on a later resume.
 `createDelegateTool` (`src/tools/delegation/tool.js`) is the library's child-run surface: the host
 injects `runChild` (the library never forks, spawns or imports `child_process`), and the library owns
 only the bookkeeping — one roster record per child (`src/tools/delegation/roster.js`), a concurrency
-lease, and completion-notification dedupe. Three properties of that surface are contract rather than
+lease, and completion-notification dedupe. Five properties of that surface are contract rather than
 sample detail, because a host that reads them differently will build a wrong orchestrator.
 
+* **A live child is never written off by a process that cannot prove it is dead.** The roster record
+  of a child moves `queued` → `running` → a terminal state, and `running` is written **before** the
+  library calls your run function, so "still queued" and "actually working" are distinguishable. The
+  stale-recompute step (`reconcile`) has exactly one source of truth for "is that process still
+  alive": the port `isProcessAlive(pid) => boolean` you hand the factory. A live record that this
+  process does not own and whose pid the predicate calls alive is listed in `foreignOwned` with the
+  record left **byte-for-byte untouched**; a record the predicate calls dead becomes `interrupted`
+  with its `endedAt` set to that record's own `updatedAt` (the last moment anything was known), never
+  to the moment the probe ran. **If you do not supply the predicate, the library refuses to judge at
+  all**: live records that carry a pid land in a separate `unverified` bucket (each entry names the
+  child, its pid and its `updatedAt`) and stay on disk exactly as they were. That is a deliberate
+  trade, not an oversight — without the port a host gets **no stale cleanup**, because inventing a
+  death for another process's live child is the worse failure. The roster directory is shared by
+  default (the CLI uses `~/.erix/delegation/`), so two concurrent sessions of the same host hit this
+  path routinely, not only under a long-running daemon.
 * **`action: "result"` carries the child's final text.** The terminal roster write stores `resultText`
   (the child's final answer), `resultTruncated` (present and `true` only when that text was cut) and
   `errorMessage` (the child's error, written only when the child threw) in the **same atomic write**
@@ -5957,6 +5972,14 @@ sample detail, because a host that reads them differently will build a wrong orc
   the port the old behaviour stands — the record stores the model's raw request and the field is
   absent when the model asked for nothing — but then the roster's cwd field **does not describe where
   the child ran**, so a host that wants a true record should always supply it.
+* **A roster file that does not have the shape of a record is named as corrupt, never repaired.**
+  Reading validates three things: the file parses into a JSON object, the identity inside it equals
+  the file name, and the record's own shape holds — `state` is one of the seven closed values and
+  `updatedAt` is a finite number. Anything else is reported through the existing `corrupt` channel
+  (the file and the reason, plus the identity the file name implies) and is **not** treated as a
+  record, not guessed at, and not fixed in place. The write path always had those two shape checks;
+  before issue #630 S2 the read path did not, so a hand-edited or half-written file could be read as
+  a live child with a string watermark.
 * **A child's tool face is a subset of the parent's.** Delegation never widens permissions: the child
   tool set is filtered with the parent's allowlist (`filterToolsByAllowlist`, `bin/tools.js`) before
   the engine sees it, and `delegate` itself is never handed down (v1 does not recurse). With no

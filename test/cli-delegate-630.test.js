@@ -120,7 +120,9 @@ test("真装配（#630 A）：后台子 run 完成后 result 带回子的终稿�
   const ran = await delegation.execute({ action: "run", task: "回答 pong", background: true }, { runId: "parent-630a" });
   assert.equal(ran.ok, true, `后台派生应立刻返回：${JSON.stringify(ran)}`);
   assert.equal(ran.background, true);
-  assert.equal(ran.state, "queued", "后台分支立刻返回 queued，终态由名册异步写");
+  // issue #630 S2（D）：`running` 在调 `runChild` 之前就写进名册了，所以立刻返回的是 `running`
+  //（以前是 `queued`，而 `running` 七状态里从未被写入）。
+  assert.equal(ran.state, "running", "后台分支立刻返回 running（`queued → running` 已经落盘），终态由名册异步写");
 
   const result = await waitFor(async () => {
     const r = await delegation.execute({ action: "result", runId: ran.runId }, { runId: "parent-630a" });
