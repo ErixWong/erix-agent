@@ -1,5 +1,22 @@
 // issue #605 真机复跑（**一次性脚本，不是门禁**）：分段折叠块的「近期给全 / title / 头行」三处修复。
 //
+// ⚠ **本脚本是「统计臂」（`strategy: "fold-statistical"`）的回归，不是默认路径的覆盖。**
+// #614 之后 CLI 的默认策略是 `fold-llm`，所以这里钉死 `fold-statistical` 意味着**它验的不再是默认
+// 那条路**。默认臂（`fold-llm`）的覆盖在 `examples/fold-default-real-e2e.mjs`（= `check:release:real`
+// 第 ⑥ 步，issue #619），那边断言的是「语义分节在场 / 摘要器请求 ≥1 / 被折轮次 TOK 标记逐字保留 /
+// 摘要器超时降级」——比这里更贴近默认路径。
+//
+// 为什么**不**把这里也改成双臂（两个策略各跑一遍 30 段）：
+//   · 本脚本的三条断言全是**统计渲染器**的形状（`- 第 a–b 轮 · title` 分段行、`工具足迹`、头行
+//     「覆盖第 a–b 轮 / 其中 N 轮未经折叠」）。`fold-llm` 的块是「LLM 摘要 + 机械保真层」，
+//     **没有** `FOLD_SUMMARY_MARKER`、也没有分段行 ⇒ 默认臂在这份判据里**无话可说**，加它只会
+//     多烧 30 轮真金；
+//   · 默认路径的覆盖已经由第 ⑥ 步做得更全（多了摘要器计数与降级路），重复覆盖不产生新信息；
+//   · 代价：本脚本本身已是 30 段长跑（实测 40 轮那一档要 800 s），双臂 = 翻倍。
+// 于是这里改成**显式标注统计臂**：日志前缀一律带 `[统计臂]`，而「块按 `FOLD_SUMMARY_MARKER`
+// 定位」这件事本身就是机械判据——谁把 `strategy` 换成默认的 `fold-llm`，块里就没有那个统计标记，
+// 脚本会在 `折叠块根本没出现` 上当场红，而不是「静默变成另一个东西」。
+//
 // 复现 issue 正文的现场：30 段逐段翻译（每段一次 `getParagraph(i)`）+ `config.folding.context`
 // `{ budgetTokens: 4000, strategy: "fold-statistical" }` + `maxRounds: 60` + `ERIX_NO_REFLECTION=1`。
 //
@@ -126,7 +143,7 @@ function judgeBlock(block) {
 
 const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
 if (!gate.ok) {
-  console.log(`[605-real] skip：${formatSkip(gate)}`);
+  console.log(`[605-real][统计臂] skip：${formatSkip(gate)}`);
   process.exit(0);
 }
 
@@ -137,7 +154,8 @@ const providerFields = {
   contextWindowTokens: gate.slot.contextWindowTokens,
   maxOutputTokens: gate.slot.maxOutputTokens,
 };
-console.log(`[605-real] model=${gate.slot.model} endpoint=${printableEndpoint(gate.endpoint)}`);
+console.log(`[605-real][统计臂] model=${gate.slot.model} endpoint=${printableEndpoint(gate.endpoint)}`
+  + `｜strategy=fold-statistical（默认臂 fold-llm 见 examples/fold-default-real-e2e.mjs / #619）`);
 
 const result = await runToolLoop({
   provider: createOpenAIProvider(providerFields),
@@ -167,7 +185,7 @@ const block = result.messages
   .find((text) => text.includes(FOLD_SUMMARY_MARKER));
 
 if (block === undefined) {
-  console.log("[605-real] FAIL 折叠块根本没出现（预算没触发折叠？）");
+  console.log("[605-real][统计臂] FAIL 折叠块根本没出现（预算没触发折叠？）");
   process.exit(1);
 }
 
@@ -176,11 +194,11 @@ console.log("=== 块原文 ===");
 console.log(blockText);
 console.log("=== 判据 ===");
 const { problems, summary } = judgeBlock(blockText);
-console.log(`[605-real] 折叠 ${summary.segments} 次 / 近期 ${summary.recent} 条 / `
+console.log(`[605-real][统计臂] 折叠 ${summary.segments} 次 / 近期 ${summary.recent} 条 / `
   + `空洞 ${summary.uncovered} 轮（${summary.uncoveredRounds}）`);
 if (problems.length === 0) {
-  console.log("PASS [605-real] ① 近期每条都有清单 ② title 无恢复提示 ③ 头行措辞诚实");
+  console.log("PASS [605-real][统计臂] ① 近期每条都有清单 ② title 无恢复提示 ③ 头行措辞诚实");
   process.exit(0);
 }
-for (const problem of problems) console.log(`FAIL [605-real] ${problem}`);
+for (const problem of problems) console.log(`FAIL [605-real][统计臂] ${problem}`);
 process.exit(1);
