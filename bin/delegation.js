@@ -160,6 +160,8 @@ export function createCliDelegation({
       notesDir,
     });
     // 工具集：文件工具 + exec + todo（跟随父开关），**不含 delegate**（v1 禁止递归派生）。
+    // 已知且刻意的不对称（写在这里，不静默）：父的 `--tools` 白名单**不**下传给子 run——
+    // 那是父会话的工具面裁剪，子 run 是另一个 run；v1 没有「子 run 的 allowlist」这个旋钮。
     const childCliTools = createCliTools({ cwd: root, todo: todoEnabled, delegate: false });
     const childNotes = createBuiltinNotesTools({
       runId,

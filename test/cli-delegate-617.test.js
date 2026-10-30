@@ -16,10 +16,11 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import { parseChatArgs, runChat } from "../bin/cli.js";
-import { parseReplArgs } from "../bin/repl.js";
+import { parseReplArgs, runRepl } from "../bin/repl.js";
 import {
   DEFAULT_DELEGATE_MAX_CHILDREN,
   DEFAULT_DELEGATE_TIMEOUT_MS,
@@ -283,4 +284,68 @@ test("默认关的整条链路：不开 --delegate 时 runChat 不派生、不�
   // 默认值与常量同源（不在测试里手抄 2 / 600000）。
   assert.equal(DEFAULT_DELEGATE_MAX_CHILDREN, 2);
   assert.equal(DEFAULT_DELEGATE_TIMEOUT_MS, 600_000);
+});
+
+test("repl：--delegate 注册 delegate，且真的能派生子 run（与 chat 同一套装配）", async () => {
+  const home = await makeTmp("erix-repl-delegate-");
+  const delegationDir = join(home, "delegation");
+  const input = new PassThrough();
+  input.isTTY = true;
+  const output = new PassThrough();
+  const configPath = await writeEmptyMcpConfig(join(home, "mcp"));
+  const seen = { tools: [], delegate: undefined };
+  // 子 run 走真 runToolLoop + 这个假 provider（父循环被 io.loop 换成下面的桩）。
+  const provider = createRoutingFakeProvider({
+    parentScript: [],
+    childScript: [{ content: [{ type: "text", text: "任务已完成：pong" }], stopReason: "end_turn" }],
+  });
+  try {
+    const run = runRepl(
+      ["--session", "repl-delegate", "--delegate", "--config", configPath, "--dir", join(home, "transcripts")],
+      {
+        input,
+        output,
+        home,
+        notesDir: join(home, "notes"),
+        // 名册目录注入临时目录（不许污染真实 ~/.erix）。
+        delegationDir,
+        config: { model: "fake-model", maxOutputTokens: 1000 },
+        providerFactory: () => provider,
+        loop: async (loopOptions) => {
+          seen.tools = loopOptions.tools.map((tool) => tool.name);
+          // 走真执行端口（含 wrapExecuteTool 的结构化解包），父身份从 context.runId 自取。
+          seen.delegate = await loopOptions.executeTool({
+            name: "delegate",
+            input: { action: "run", task: "只回答一个词：pong" },
+            context: { runId: "repl-delegate" },
+          });
+          return {
+            finalText: "done",
+            messages: [],
+            rounds: 1,
+            usage: { input_tokens: 0, output_tokens: 0 },
+            compactionStats: [],
+          };
+        },
+      },
+    );
+    input.end("派生一次\n/exit\n");
+    await run;
+
+    assert.ok(seen.tools.includes("delegate"), `repl 的注册面应含 delegate，实际 ${seen.tools.join(",")}`);
+    // `wrapExecuteTool({ returnMetadata: true })` 把结果包成 `{ data }`（引擎侧由
+    // `normalizeExecutionResult` 解包；这里直接读端口，所以读 `.data`）。
+    assert.equal(seen.delegate?.data?.ok, true);
+    assert.equal(seen.delegate?.data?.state, "completed");
+    assert.equal(seen.delegate?.data?.text, "任务已完成：pong", "前台派生应把子 run 的 text 交回");
+
+    const rosterFiles = readdirSync(delegationDir).filter((name) => name.endsWith(".json"));
+    assert.equal(rosterFiles.length, 1, "repl 侧派生也应写一条名册记录");
+    const record = JSON.parse(await readFile(join(delegationDir, rosterFiles[0]), "utf8"));
+    assert.equal(record.parentRunId, "repl-delegate", "父身份来自 repl 的执行上下文");
+    assert.equal(record.state, "completed");
+  } finally {
+    input.destroy();
+    output.destroy();
+  }
 });

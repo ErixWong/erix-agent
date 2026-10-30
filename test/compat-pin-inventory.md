@@ -826,7 +826,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/compact/working-set-floor-608.test.js` | 2 | `strategy`×2 |
 | `test/loop-parent-run-id-617.test.js` | 8 | `completion`×5, `tools`×2, `reflection`×1 |
 | `test/tools-delegate-617.test.js` | 6 | `completion`×3, `tools`×3 |
-| `test/cli-delegate-617.test.js` | 6 | `context`×2, `prompt`×2, `session`×2 |
+| `test/cli-delegate-617.test.js` | 8 | `context`×3, `prompt`×2, `session`×2, `tools`×1 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 
