@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// 发版前真机清单：把五条真上游 e2e + 装后 CLI 真机冒烟串成**一条**命令（工单 261021-13；
-// issue #617 P2 补了第 ② 条「派生：父 run 派生子 run」）。
+// 发版前真机清单：把六条真上游 e2e + 装后 CLI 真机冒烟串成**一条**命令（共 7 步；工单 261021-13 / #619，
+// issue #617 P2 补的是第 ② 条「派生：父 run 派生子 run 并取回结果」）。
 //
 //   ERIX_E2E_REAL=1 npm run check:release:real
 //
@@ -12,7 +12,8 @@
 // - `npm run check:release`：离线、不打模型，管 tarball 形状 / 装后导入 / TS 宿主 / CLI 假上游；
 // - `npm run check:cli-real`：真上游，但只管装后 CLI 那一条（= 本清单第 ⑥ 条）；
 // - `npm run check:docs`：文档事实（版本声明、命令存在性、中英成对……）；
-// - 本条：真上游全景（库层工具事实 / 派生 / 崩溃续跑 / 跨版本读窗口 / pi extension / 装后 CLI）。
+// - 本条：真上游全景（库层工具事实 / 派生 / 崩溃续跑 / 跨版本读窗口 / pi extension / 装后 CLI /
+//   默认压缩策略 `fold-llm`）。
 //
 // 闸门（与 `examples/e2e-real-gate.mjs` 同一口径，绝不另造一套）：
 // - `ERIX_E2E_REAL` 不是 `1` ⇒ **一步都不跑**、exit 0、打分类原因。真上游不许变成任何默认门禁
@@ -87,6 +88,16 @@ const STEPS = [
     id: "cli-real",
     label: "装后 CLI 真机冒烟（scripts/cli-real-smoke.mjs）",
     argv: ["scripts/cli-real-smoke.mjs"],
+  },
+  {
+    // issue #619：前面五条没有一条碰**压缩**，而 #611（摘要器提示词加「## 教训与坑」）与 #614
+    // （CLI 默认策略从 `fold-statistical` 换成 `fold-llm`）改的正是这条路径——#614 之后默认路径在
+    // 真机上零覆盖。这一条补的就是那格空白：历史由测试预置（折叠必然发生）、真模型只跑 1 轮，
+    // 断言全落在引擎不变量上（块在不在 / 语义分节 / 摘要器被调了几次 / 机械锚点保没保住 TOK 标记 /
+    // 摘要器超时降不降级），不测模型行为 ⇒ 一条 ~20 s，与前面五条同形（闸门关着 ⇒ skip + exit 0）。
+    id: "fold-default",
+    label: "默认压缩策略 fold-llm 真机（#619）（examples/fold-default-real-e2e.mjs）",
+    argv: ["--test", "examples/fold-default-real-e2e.mjs"],
   },
 ];
 
@@ -320,7 +331,7 @@ async function main() {
 }
 
 // 直接跑才进 main：导出的解析器（`parseTapSummary` / `skipReasons` / `gateGapSkips`）要能被单独
-// 引用而不触发「预检 + 跑六条真上游」——脚本被 import 一次就烧一遍真金是不可接受的副作用。
+// 引用而不触发「预检 + 跑七条真上游」——脚本被 import 一次就烧一遍真金是不可接受的副作用。
 const invokedDirectly = process.argv[1] !== undefined
   && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
