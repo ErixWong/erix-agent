@@ -188,7 +188,7 @@ executeTool({ id, name, input, context, signal })
 | 命名空间 | 旋钮 |
 | --- | --- |
 | `config.input` | `system`、`cacheStablePrefix`、`initialUserMessage`、`messages`（扁平 `initialMessages`）、`wrapup`——**没有一个是还能扁平写的**（本组自 A18 起收口）；**没有** `tools`（issue #527：它是永久顶层面，第三站） |
-| `config.run` | `maxRounds`、`maxTokenContinuations`、`stallDetection`、`completion`、`replayPolicy`、`invalidArguments`、`partialPersistence`、`persistence`、`outputHygiene`、`writeToolNames`、`writeToolPathKeys`、`resume`、`stream`、`reflection`、`runId`、`cwd` |
+| `config.run` | `maxRounds`、`maxTokenContinuations`、`stallDetection`、`completion`、`replayPolicy`、`invalidArguments`、`partialPersistence`、`persistence`、`outputHygiene`、`writeToolNames`、`writeToolPathKeys`、`resume`、`stream`、`reflection`、`runId`、`cwd`、`parentRunId`（issue #617：自出生即 nested-only——从来没有过扁平孪生，扁平拼写当场被拒；引擎只把该值镜像到已带 `runId` 的 judge 记录 / `run_outcome` / 事件上，宿主没给就整字段省略） |
 | `config.tuning` | `maxTokens`、`temperature`、`topP`、`cacheCapable` |
 | `config.timing` | `timeoutMs`、`deadlineMs`、`retry` |
 | `config.folding` | `context`、`toolResultTtl`、`toolResultFoldMinTokens` |

@@ -2136,8 +2136,14 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  * ```
  * ✓ symbol-anchor: 实测 168 组 > 下限 164 组——符号锚点在变多（好方向），请把 SYMBOL_ANCHOR_MIN_UNIQUE 升到 168，否则下限就在空转
  * ```
+ *
+ * issue #617 P2 的 0.28.0 升级指南成对小节（「CLI 的 `delegate` 是示例，不是契约」）引了
+ * `createDelegateTool` / `TERMINATION_TO_STATE`（`src/tools/delegation/tool.js`）、
+ * `writeRecord`（`src/tools/delegation/roster.js`）、`createCliDelegation`（`bin/delegation.js`）
+ * 四组新锚点 ⇒ 168 → **172 组**（中英各一处，组数 +2 是因为同一 (符号, 文件) 在两种语言里只算一组；
+ * AGENTS 中英的声称句自己也引这四组，所以 170 → 172 是**改完 AGENTS 之后**重测的不动点），在本分支树上 `--verbose` 实测。
  */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 168;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 172;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
@@ -2782,7 +2788,6 @@ const EXTERNAL_REPO_PATHS = new Map([
   ["x.d.ts", "AGENTS 讲 `.d.ts` 伴生声明时举的**示意文件名**（与 `./x.js` 同处），不是仓库路径"],
   // —— 以下是 #278 把「无斜杠裸名」纳进裁决面后暴露的上游/宿主裸名引用（逐条写归属）——
   ["parent-wake.js", "上游 pi-subagents 的 `src/shared/parent-wake.js`（CHANGELOG:105 与 docs/research/2026-10-13:121 都用裸名指它）；本层同名物是 `erix-run-parent-wake.js`"],
-  ["notify.js", "上游 pi-subagents 的唤醒侧文件（CHANGELOG:144、docs/research/2026-10-13:82 引它的常量行号 `notify.js:19`）"],
   ["async-execution.js", "上游 pi-subagents 的 `src/runs/background/async-execution.js`（docs/research/2026-10-13:119 用裸名引它的 `spawn` 行）"],
   ["debug.routes.js", "宿主 touwaka 仓的 Express 路由文件（docs/research/2026-09-26:118 的人工对质源码结论）"],
   ["expert.routes.js", "宿主 touwaka 仓的 Express 路由文件（同上，同一行第二条结论）"],
@@ -4413,8 +4418,9 @@ const SELF_TEST_CASES = [
   },
   {
     label: "#391 R4：README_cn 的 repl usage 行凭空多写一个旗标 ⇒ 红（双向：多也红）",
-    // 靶点取 repl 行**末尾**（`[--require-deliverable [<path>]]` 在 chat 行里也出现一次，裸 replace 会打到 chat 上）
-    overlay: { [README_CN]: (t) => t.replace("[--require-deliverable [<path>]]\nerix skills", "[--require-deliverable [<path>]] [--zzz-flag]\nerix skills", 1) },
+    // 靶点取 repl 行**末尾**（`[--require-deliverable [<path>]]` 在 chat 行里也出现一次，裸 replace 会打到 chat 上；
+    // issue #617 P2 给 repl 行末尾补了 delegate 三件套，靶点随之移到新的行尾）
+    overlay: { [README_CN]: (t) => t.replace("[--delegate-timeout-ms <n>]\nerix skills", "[--delegate-timeout-ms <n>] [--zzz-flag]\nerix skills", 1) },
     expect: [/cli-flags: README_cn\.md 的 `erix repl` usage 行多出 旗标 --zzz-flag/],
     expectFiles: [README_CN],
   },

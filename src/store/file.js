@@ -42,7 +42,19 @@ export function safeRunId(runId) {
   return `${HASHED_RUN_ID_PREFIX}${digest}`;
 }
 
-function transcriptPath(dir, runId) {
+/**
+ * transcript 的落盘路径——**命名口径的唯一实现**（`<dir>/<safeRunId(runId)>.jsonl`）。
+ *
+ * issue #626 C1：从私有 helper 提成导出，是因为宿主需要**登记**子 run 的 transcript 路径
+ * （`createDelegateTool` 的 `transcriptPathFor`）给父 run 的 `tail` 读。宿主**不许**自己拼
+ * `${runId}.jsonl`：`safeRunId` 会把不安全的 id 哈希成 `run-h-<sha256>`，手拼的路径对那类 id
+ * 恒错，而错法是「文件永远不存在」这种静默形状。
+ *
+ * @param {string} dir
+ * @param {string} runId
+ * @returns {string}
+ */
+export function transcriptPath(dir, runId) {
   return join(dir, `${safeRunId(runId)}.jsonl`);
 }
 
@@ -108,6 +120,93 @@ async function* readRecords(path) {
   } catch (error) {
     if (error?.code === "ENOENT") return;
     throw error;
+  }
+}
+
+/**
+ * issue #626 C1 —— **非破坏性**的「文件尾原始行」读取：只读、不修复尾部、不截断、不写盘。
+ *
+ * 为什么要它（而不是直接 `createFileTranscriptStore().load()`）：父 run 要看**子 run 现在在干什么**，
+ * 而 `load()` 会先跑 `repairTranscriptTail`（`open(path, "r+")` + 半行残段隔离成 `.corrupt.*` + 截断）。
+ * 对一个**正在被别的进程追加写**的 transcript，那不是读，那是动刀：父读一次就可能把子还没写完的那一行
+ * 截掉。所以尾读必须有自己的口子，而且只能是只读的。
+ *
+ * 口径（与 `readRecords` 同一个解析单位——一行一个 JSON 对象，**没有第二个 JSONL 解析器**）：
+ *   · 从文件尾**反向分块**读，凑够 `lines + 1` 个换行就停（多要一个是为了丢掉可能被切开的半截首行），
+ *     或者读到文件头，或者撞上 `maxBytes` 硬上限（病态文件不许把父 run 的内存吃掉）；
+ *   · 首行是「窗口切出来的半截」⇒ 丢掉（它不是文件里的半截，是我们读法的边界）；
+ *   · 尾行没有换行收尾且 `JSON.parse` 不了 ⇒ `partial: true`（写盘进行中的正常现象），**不抛**；
+ *     尾行没有换行但能解析 ⇒ 完整 JSON 缺 LF（崩溃形状），照收，不算 partial——与
+ *     `repairTrailingFragment` 的判据同源（那种尾部它会补 `\n` 而不是隔离）；
+ *   · 窗口内**非尾部**的坏行按「读不动的行」跳过，不改 `partial`（单写者追加写只可能坏在尾部；
+ *     真坏了也不该让父 run 拿不到后面那些好行）。
+ *
+ * 返回 `{ rows, partial, hasMore, missing }`：`rows` 是解析成功的对象行（落盘顺序），
+ * `hasMore` 表示窗口之外**还有更早的行没给**（= 只回了文件尾），`missing` 表示文件不存在/打不开。
+ *
+ * @param {string} path transcript 文件路径
+ * @param {{lines?: number, chunkBytes?: number, maxBytes?: number}} [options]
+ *   `lines` 至少要凑够的行数（不含可能被丢掉的那半截），缺省 9；`chunkBytes` 单次读的字节数，缺省 64 KiB；
+ *   `maxBytes` 反向读的总字节硬上限，缺省 4 MiB。
+ * @returns {Promise<{rows: any[], partial: boolean, hasMore: boolean, missing: boolean}>}
+ */
+export async function readTranscriptTailLines(path, { lines = 9, chunkBytes = 64 * 1024, maxBytes = 4 * 1024 * 1024 } = {}) {
+  const empty = { rows: [], partial: false, hasMore: false, missing: false };
+  const want = Number.isInteger(lines) && lines > 0 ? lines + 1 : 9;
+  let handle;
+  try {
+    handle = await open(path, "r");
+  } catch (error) {
+    if (/** @type {NodeJS.ErrnoException} */ (error)?.code === "ENOENT") return { ...empty, missing: true };
+    throw error;
+  }
+  try {
+    const { size } = await handle.stat();
+    if (size === 0) return empty;
+    /** @type {Buffer[]} */
+    const chunks = [];
+    let position = size;
+    let newlines = 0;
+    let read = 0;
+    while (position > 0 && newlines < want && read < maxBytes) {
+      const take = Math.min(chunkBytes, position, maxBytes - read);
+      if (take <= 0) break;
+      const buffer = Buffer.alloc(take);
+      const { bytesRead } = await handle.read(buffer, 0, take, position - take);
+      if (bytesRead <= 0) break;
+      const slice = bytesRead === take ? buffer : buffer.subarray(0, bytesRead);
+      position -= bytesRead;
+      read += bytesRead;
+      for (const byte of slice) if (byte === 0x0a) newlines += 1;
+      chunks.unshift(slice);
+    }
+    const reachedStart = position === 0;
+    let text = Buffer.concat(chunks).toString("utf8");
+    if (!reachedStart) {
+      // 窗口的起点落在某一行的中间：丢掉这半截（它前面还有更早的行，`hasMore` 会说明）。
+      const firstNewline = text.indexOf("\n");
+      text = firstNewline === -1 ? "" : text.slice(firstNewline + 1);
+    }
+    const segments = text.split("\n");
+    const endsWithNewline = segments.length > 0 && segments[segments.length - 1] === "";
+    if (endsWithNewline) segments.pop();
+    /** @type {any[]} */
+    const rows = [];
+    let partial = false;
+    for (let index = 0; index < segments.length; index += 1) {
+      const segment = segments[index];
+      if (segment.trim() === "") continue;
+      const isTail = index === segments.length - 1 && !endsWithNewline;
+      try {
+        rows.push(JSON.parse(segment.endsWith("\r") ? segment.slice(0, -1) : segment));
+      } catch {
+        // 尾行解析不了 ⇒ 写盘进行中（partial）；窗口内的其它坏行 ⇒ 跳过，不牵连后面的好行。
+        if (isTail) partial = true;
+      }
+    }
+    return { rows, partial, hasMore: !reachedStart, missing: false };
+  } finally {
+    await handle.close();
   }
 }
 

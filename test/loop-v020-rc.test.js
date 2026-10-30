@@ -45,7 +45,8 @@ test("structured executeTool receives context and returns tool metadata", async 
         user: { id: "user-1" },
         task: { id: "task-1" },
       },
-      run: { completion: false },
+      // issue #617（P0）：当前 run 的身份递进工具上下文（派生工具据此自填父身份）。
+      run: { completion: false, runId: "structured-context-run" },
       // #550（甲裁决）：顶层 `session` **只是容器**，不透明载荷改名——它的家是折叠上下文的
       // `session` 叶（`toolContextFor` 的 fallback 链今天就在读它，`config.folding.context.session`
       // 在 0.27 已经生效，所以这条迁移可以**先写新家再升级**）。旧拼写 `session: "session-1"`
@@ -60,6 +61,9 @@ test("structured executeTool receives context and returns tool metadata", async 
   assert.deepEqual(
     { ...received.context, reportPersistenceFailure: undefined },
     {
+      // issue #617（P0）：baseToolContext 递进当前 run 的 `runId`（不给时该键为 undefined，
+      // 不编造身份）；只加这一个键，parentRunId 不进工具上下文。
+      runId: "structured-context-run",
       tenant: "tenant-1",
       expert: "expert-1",
       user: { id: "user-1" },

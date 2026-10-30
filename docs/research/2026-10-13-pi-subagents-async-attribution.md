@@ -80,9 +80,9 @@ WeakMap 才扛得住 reload）都是从上面那段代码反推的，不是听�
 
 | 机制 | 上游 | 本层 |
 | --- | --- | --- |
-| 唤醒策略 `!(quiet && completed)` | `src/runs/background/notify.js:226-227` `export function scheduledCompletionTriggersTurn(origin, outcome) { return !(origin?.quiet === true && outcome === "completed"); }` | `erix-run-jobs.js:60` `completionTriggersTurn(input)` |
-| 投递去重注册表 | `src/runs/background/notify.js:371` `createCompletionSendRegistry(ttlMs = COMPLETION_SEND_TTL_MS, cap = COMPLETION_SEND_REGISTRY_CAP)`（`:372` `const entries = new Map()`，prune 只淘汰**已投递**条目） | `erix-run-jobs.js:83` `createCompletionSendRegistry(ttlMs, cap)`、`:126` `globalCompletionSendRegistry()` |
-| 常量对 | `notify.js:19` `COMPLETION_SEND_TTL_MS = 10 * 60 * 1000`、`:20` `COMPLETION_SEND_REGISTRY_CAP = 4_096` | `erix-run-jobs.js:38-39` **同两个表达式**，逐字符相同 |
+| 唤醒策略 `!(quiet && completed)` | `pi-subagents:src/runs/background/notify.js:226-227` `export function scheduledCompletionTriggersTurn(origin, outcome) { return !(origin?.quiet === true && outcome === "completed"); }` | `erix-run-jobs.js:60` `completionTriggersTurn(input)` |
+| 投递去重注册表 | `pi-subagents:src/runs/background/notify.js:371` `createCompletionSendRegistry(ttlMs = COMPLETION_SEND_TTL_MS, cap = COMPLETION_SEND_REGISTRY_CAP)`（`:372` `const entries = new Map()`，prune 只淘汰**已投递**条目） | `erix-run-jobs.js:83` `createCompletionSendRegistry(ttlMs, cap)`、`:126` `globalCompletionSendRegistry()` |
+| 常量对 | `pi-subagents:src/runs/background/notify.js:19` `COMPLETION_SEND_TTL_MS = 10 * 60 * 1000`、`pi-subagents:src/runs/background/notify.js:20` `COMPLETION_SEND_REGISTRY_CAP = 4_096` | `erix-run-jobs.js:38-39` **同两个表达式**，逐字符相同 |
 
 **逐字同值（可自证）**：`10 * 60 * 1000` 与 `4_096` 两个表达式在本仓与上游完全一致，README 里「两个常量与 `pi-subagents` 逐字同值」这句是**可核对的**，不是修辞。
 本层比上游多的是 `Symbol.for` 挂 globalThis（上游 `state` 本身活在一个进程里，不需要这层），以及 `settle(false)` 让位重试。

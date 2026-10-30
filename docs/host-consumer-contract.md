@@ -237,7 +237,7 @@ total that goes stale the next time a group moves.
 | namespace | knobs |
 | --- | --- |
 | `config.input` | `system`, `cacheStablePrefix`, `initialUserMessage`, `messages` (the flat `initialMessages`), `wrapup` — **none** of them is still writable flat (the group is closed since A18); **not** `tools` (issue #527: it is a permanent top-level option, the third station) |
-| `config.run` | `maxRounds`, `maxTokenContinuations`, `stallDetection`, `completion`, `replayPolicy`, `invalidArguments`, `partialPersistence`, `persistence`, `outputHygiene`, `writeToolNames`, `writeToolPathKeys`, `resume`, `stream`, `reflection`, `runId`, `cwd` |
+| `config.run` | `maxRounds`, `maxTokenContinuations`, `stallDetection`, `completion`, `replayPolicy`, `invalidArguments`, `partialPersistence`, `persistence`, `outputHygiene`, `writeToolNames`, `writeToolPathKeys`, `resume`, `stream`, `reflection`, `runId`, `cwd`, `parentRunId` (issue #617: nested-only from birth — it never had a flat twin, so the flat spelling is rejected on the spot; the engine only mirrors the value onto judge records / `run_outcome` / events that already carry `runId`, and omits the field entirely when the host does not set it) |
 | `config.tuning` | `maxTokens`, `temperature`, `topP`, `cacheCapable` |
 | `config.timing` | `timeoutMs`, `deadlineMs`, `retry` |
 | `config.folding` | `context`, `toolResultTtl`, `toolResultFoldMinTokens` |

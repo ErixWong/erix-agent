@@ -323,12 +323,17 @@ const HISTORY_BODY_PINS = Object.freeze({
  * @type {Readonly<Record<string, number>>}
  */
 const CONTRACT_BODY_PINS = Object.freeze({
-  "docs/host-consumer-contract.md": 456,
+  // 456 → 440（issue #617 P0，2026-10-30）：`config.run` 叶子表那一行补了 `parentRunId` 并写明
+  // 「flat spelling is rejected」——整行命中**退役措辞行**判据（mention），行内 16 个叶子 span 从
+  // uses 转入 mentions。数取自扫描器自己报的 `uses=440`。
+  "docs/host-consumer-contract.md": 440,
   // 565（片A，切版前补 #569/#568 文档）：CN 契约新增「折叠触发比例与会话续接块」一节，其中 provider 回调的
   // 真实键名 `runId`（`({runId, state, previous}) → {text, version}`）是一次同名异义命中——契约必须写出这个键名，
   // 所以**不为了躲钉子而改写成模糊说法**，按判据把钉子登记成扫描器报的值。EN 侧同一句已把 `context` 写成全路径
   // （`config.folding.context` 的 `.` 前缀被排除），因此 EN 钉子 456 不动。
-  "docs/host-consumer-contract_cn.md": 565,
+  // 565 → 549（issue #617 P0，2026-10-30）：同一片的 CN 行（措辞换成「扁平拼写当场被拒」，同样落
+  // mention 判据），行内 16 个叶子 span 从 uses 转入 mentions。数取自扫描器自己报的 `uses=549`。
+  "docs/host-consumer-contract_cn.md": 549,
 });
 
 /**
@@ -345,8 +350,8 @@ const CONTRACT_BODY_PINS = Object.freeze({
  * @type {Readonly<Record<string, number>>}
  */
 const ROOT_DOC_BODY_PINS = Object.freeze({
-  "README.md": 77,
-  "README_cn.md": 62,
+  "README.md": 78,
+  "README_cn.md": 63,
 });
 
 /** 分类 → 钉子表。现状类没有钉子（它必须为 0）。 */

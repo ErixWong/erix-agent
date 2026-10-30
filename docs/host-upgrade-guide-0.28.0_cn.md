@@ -178,3 +178,43 @@
 
 4. **用发布出去的声明文件给你的宿主做类型检查**（`tsc --strict`）。选项键上新出现的 `TS2353`，意味着运行时
    也会拒它（§8）。
+
+## 12. CLI 的 `delegate` 是示例，不是契约（issue #617）
+
+`erix chat` 与 `erix repl` 多了一个显式开启的 `--delegate` 旗标。**库的契约面没有跟着动**：你能依赖的
+仍然是三件东西——`config.run.parentRunId`（opaque，只镜像、不解释）、簿记三件套（名册 / 并发租约 /
+完成通知去重），以及 `createDelegateTool`（`src/tools/delegation/tool.js`），而它的 `runChild` 是
+**由宿主注入**的。
+
+留在你这一侧的是：
+
+* **子 run 怎么跑起来。** 库从不 fork、不 spawn、也不 import `child_process`。你给 `createDelegateTool`
+  一个 `runChild`，由你决定子 run **是什么**（同进程、子进程、远端）。
+* **落盘位置。** 名册是簿记不是 transcript：`writeRecord`（`src/tools/delegation/roster.js`）一个子 run
+  一条记录，而那个子 run 的 transcript 放哪由你定。CLI 从名册目录派生（`<rosterDir>/transcripts/`），
+  于是子 run **绝不**追加进父的会话文件——CLI 的会话 id 由工作目录派生，父子同目录本来会撞同一个文件名。
+* **编排与唤醒父 run。** `notifyParent` 是你提供的回调。**没有**通往运行中 `runToolLoop` 的邮箱：
+  后台子 run 的完成经那个回调到达父侧（CLI 把那一行打到 stderr），父 run 再用 `action=result` 取回终局。
+  假装有邮箱，是更糟的契约。
+
+CLI 是这套分工的**可运行示例与验证器**，而且默认关闭：`delegate` 不在默认工具面上，也不在默认系统提示里。
+开启用 `--delegate`，配额用 `--delegate-max-children <n>`（默认 2）、预算用 `--delegate-timeout-ms <n>`
+（默认 600000）；名册目录默认 `~/.erix/delegation/`，可用 `ERIX_DELEGATION_DIR` 搬走。三条 v1 边界是
+**刻意的**，不是遗漏：子 run 是**同进程嵌套的 `runToolLoop`**（不起子进程、不起守护进程）、子 run 的
+工具面**不含 `delegate`**（不递归派生）、子 run 的 transcript 是它自己的文件。
+
+**把子 run 写在哪登记上去，否则父的 `tail` 看不见（issue #626 C1）。** 记录是库建的，而库不知道你的
+目录布局，所以名册里的 `transcriptPath` 字段只有**你**填了才有——起了子却没登记路径的宿主，拿到的
+`tail` 永远答 `no_transcript_path`。旋钮叫 `transcriptPathFor`：一个 `(runId) => string` 的函数，与
+`runChild` 一起交给派生工具工厂。给了它，库在**创建记录的那一次原子写**里就把路径写进去，所以
+派生后立刻 `tail` 的父 run 已经看得见（不存在「先建记录、再补写第二遍」的窗口）；不给，字段照旧
+缺省，现有宿主一字不改也不会破。路径请用 store 自己的命名助手推导，不要自己拼 `<runId>.jsonl`
+——store 会把它认为不安全的 id 哈希掉，手拼的路径对那一类 id 恒错，而错法是「文件永远不存在」。
+
+`tail` 把两种失败分开，这个区分本身就是契约：`no_transcript_path` 是记录里没有路径（**你这侧的
+配置缺陷**），`no_transcript` 是路径在、文件不在或打不开（子还没落第一行 / 档案已清理，**正常时序**）。
+把两者合成一个，就会把「你没接」读成「子没干活」。
+
+整条链路的闸门是 `examples/delegate-real-e2e.test.mjs`，即 `npm run check:release:real` 的第 2 步：
+真上游下父 run 派生一个子 run，断言子名册记录带的是父的 `config.run.runId`、子 run 以 `end_turn` 收尾、
+名册终态 `completed`、父侧被唤醒**恰好一次**。

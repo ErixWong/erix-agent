@@ -23,11 +23,19 @@ import {
 // 文件工具（readFile/rg/grep/tree/writeFile）的规范实现在 src/tools/file-tools.js，CLI 反过来 import 它
 // （issue #184：ADR-005 第二层，先例 src/tools/notes.js）。bin/ 只做装配与呈现。
 import { createFileTools, FILE_TOOL_DEFINITIONS, truncateDisplayText } from "../src/tools/file-tools.js";
+// 派生工具的 definition 归库（issue #617 P1b）：CLI 不手抄 schema，只做「装不装」的开关与执行器注入。
+import { DELEGATE_DEFINITION } from "../src/tools/delegation/tool.js";
 
 // todo 四件套的名字（issue #69：--no-todo / ERIX_NO_TODO=1 时整体不注册）。
 // 住在 `schemas` 之前：注册面单一来源 `cliToolDefinitions` 与提示词装配都要用它，而后者在
 // 模块初始化期就要算出 `CLI_TOOLS_SYSTEM_PROMPT`（const 的 TDZ 不允许往后放）。
 export const TODO_TOOL_NAMES = new Set(["todo_add", "todo_list", "todo_done", "todo_clear"]);
+
+// 派生工具的名字（issue #617 P2：**默认关闭**，只有 `--delegate` / `ERIX_DELEGATE=1` 才注册）。
+// 与 todo 同一条装配路径：注册面单一来源 `cliToolDefinitions` + 提示词短语表，一处改两处同变。
+// 为什么默认关：它是 issue #617 的「可运行的示例 + 验证器」，不是 CLI 的新默认能力；关着时
+// 提示词、工具面、会话文件位置与 0.28.0 发布时**逐字一致**（`test/fixtures/cli-golden.json` 钉着）。
+export const DELEGATE_TOOL_NAMES = new Set(["delegate"]);
 
 // ---------------------------------------------------------------------------
 // notes 会话时钟维护（ADR-018 D7）：CLI/REPL 作为宿主在收尾时清理过期笔记
@@ -458,7 +466,7 @@ const schemas = [
 // 「新增 searchText / 标弃用 rg·grep」仍然要求清单行点名，文案一个字没动）。
 // ---------------------------------------------------------------------------
 
-/** 工具清单行的分段样式：base 段用「，」分隔；todo 段另起一段（「、」分隔 + 组级注释）。 */
+/** 工具清单行的分段样式：base 段用「，」分隔；todo / delegate 段各自另起一段（「、」分隔 + 组级注释）。 */
 const CLI_TOOL_PROMPT_GROUPS = {
   base: { lead: "可用工具：", join: "，" },
   todo: {
@@ -466,6 +474,13 @@ const CLI_TOOL_PROMPT_GROUPS = {
     join: "、",
     // 组级注释（不是某个工具自己的话术），接在 todo 段末尾；todo_* 四件套同一条数据通路，故合并说。
     note: "（均返回可读文本，数据存 ~/.erix/todos/ 按工作目录隔离）",
+  },
+  delegate: {
+    lead: "，",
+    join: "、",
+    // issue #617 P2：组级注释把 v1 的两条硬边界写在模型看得见的地方（不是静默）：
+    // 父身份不是模型入参；子 run 的工具集不带 delegate（不递归派生）。
+    note: "（父 run 身份由宿主从执行上下文给出、不是模型入参；子 run 的工具集不含 delegate，v1 不递归派生）",
   },
 };
 
@@ -503,6 +518,11 @@ export const CLI_TOOL_PROMPT_PHRASES = {
   todo_list: { group: "todo", phrase: "todo_list 列出待办" },
   todo_done: { group: "todo", phrase: "todo_done 标记完成" },
   todo_clear: { group: "todo", phrase: "todo_clear 清空" },
+  delegate: {
+    group: "delegate",
+    phrase: "delegate 派生一个子 run（action 五选一：run 起一个子 run、status/list 查名册、"
+      + "result 取终局并标记已取、cancel 取消本进程持有的子 run）",
+  },
 };
 
 /**
@@ -510,10 +530,14 @@ export const CLI_TOOL_PROMPT_PHRASES = {
  * 于是一处改、两处同变。文件工具的 definitions 与 `src/tools/file-tools.js` 的 `FILE_TOOL_DEFINITIONS`
  * 同一数组（`createFileTools` 只是 structuredClone 它），这里直接取原数组：清单行为此不需要 cwd。
  */
-export function cliToolDefinitions({ todo = true } = {}) {
+export function cliToolDefinitions({ todo = true, delegate = false } = {}) {
   const todoEnabled = todo !== false;
-  return [...FILE_TOOL_DEFINITIONS, ...schemas]
-    .filter((schema) => todoEnabled || !TODO_TOOL_NAMES.has(schema.name));
+  // issue #617 P2：`delegate` 默认**关**（显式开启才注册）。两个开关各自独立过滤，互不牵连——
+  // `--no-todo --delegate` 是合法组合。
+  const delegateEnabled = delegate === true;
+  return [...FILE_TOOL_DEFINITIONS, ...schemas, DELEGATE_DEFINITION]
+    .filter((schema) => todoEnabled || !TODO_TOOL_NAMES.has(schema.name))
+    .filter((schema) => delegateEnabled || !DELEGATE_TOOL_NAMES.has(schema.name));
 }
 
 /**
@@ -594,9 +618,18 @@ const CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL =
 - 不要主动读取密钥、凭据或 .env 文件；只用本次工具返回明确给出的来源
 - 任务完成后直接汇报结果，默认使用中文`;
 
-/** 默认（含 todo）注册面上的工具名顺序 = 清单行顺序（issue #312(b)：单一来源）。 */
+/** 默认（含 todo、不含 delegate）注册面上的工具名顺序 = 清单行顺序（issue #312(b)：单一来源）。 */
 const CLI_TOOL_NAMES = cliToolDefinitions().map((schema) => schema.name);
 const CLI_TOOL_NAMES_NO_TODO = cliToolDefinitions({ todo: false }).map((schema) => schema.name);
+const CLI_TOOL_NAMES_DELEGATE = cliToolDefinitions({ delegate: true }).map((schema) => schema.name);
+const CLI_TOOL_NAMES_NO_TODO_DELEGATE = cliToolDefinitions({ todo: false, delegate: true })
+  .map((schema) => schema.name);
+/**
+ * **全量注册面**（todo + delegate 都开）——短语表「陈旧」核对的基准集（issue #617 P2）。
+ * 短语表是静态表，开关关掉只是本轮少拼一段，不能拿「本轮的面」当陈旧依据；否则 `delegate`
+ * 一关就会被误报成手抄残留（与 todo 段同一个坑，见 `assertPromptPhraseTableMatches`）。
+ */
+const CLI_TOOL_NAMES_FULL = cliToolDefinitions({ todo: true, delegate: true }).map((schema) => schema.name);
 
 export const CLI_TOOLS_SYSTEM_PROMPT = buildCliToolsSystemPrompt();
 
@@ -625,22 +658,28 @@ export function filterToolsByAllowlist(tools, allowlist, { onUnknown } = {}) {
 /**
  * 拼 CLI 系统提示（工具清单行由注册面生成，其余段落是固定文案）。
  *
+ * @param {boolean} [input.delegate] 是否把 `delegate` 拼进清单行（缺省 false：默认关）。
  * @param {string[]} [input.names] 注册面上的工具名（缺省用真注册面）；测试拿它做变异反证而不动源码。
  * @param {object} [input.phrases] 短语表（缺省 `CLI_TOOL_PROMPT_PHRASES`）。
- * @param {string[]} [input.fullNames] 「陈旧」核对的基准集（缺省 = todo=true 的全量注册面）。
+ * @param {string[]} [input.fullNames] 「陈旧」核对的基准集（缺省 = todo+delegate 全开的全量注册面）。
  */
 export function buildCliToolsSystemPrompt({
   todo = true,
+  delegate = false,
   names,
   phrases = CLI_TOOL_PROMPT_PHRASES,
   fullNames,
 } = {}) {
   // ADR-015：ResourceStore 退出模型视野——所有宿主形态同一份提示词，不提 opaque 工件/路径。
   // issue #69：todo=false 时拼接无 todo 段的基础提示（--no-todo / ERIX_NO_TODO）。
+  // issue #617 P2：delegate 默认关 ⇒ 缺省清单行与 0.28.0 发布时**逐字节一致**（golden 钉着）。
   // issue #312(b) R2：清单行由注册面生成（不再手抄），其余段落照旧拼接，输出逐字节不变。
   const todoEnabled = todo !== false;
-  const effectiveNames = names ?? (todoEnabled ? CLI_TOOL_NAMES : CLI_TOOL_NAMES_NO_TODO);
-  const effectiveFull = fullNames ?? (names ?? CLI_TOOL_NAMES);
+  const delegateEnabled = delegate === true;
+  const effectiveNames = names ?? (todoEnabled
+    ? (delegateEnabled ? CLI_TOOL_NAMES_DELEGATE : CLI_TOOL_NAMES)
+    : (delegateEnabled ? CLI_TOOL_NAMES_NO_TODO_DELEGATE : CLI_TOOL_NAMES_NO_TODO));
+  const effectiveFull = fullNames ?? (names ?? CLI_TOOL_NAMES_FULL);
   assertPromptPhraseTableMatches(effectiveNames, { phrases, fullNames: effectiveFull });
   const list = buildCliToolsToolListLine(effectiveNames, { phrases, fullNames: effectiveFull });
   return list
@@ -771,15 +810,48 @@ function summarizeToolInput(name, input) {
   return truncateDisplayText(serialized ?? input, TOOL_INPUT_LIMIT);
 }
 
-function summarizeToolResult(name, result) {
-  // issue #195：`searchText` 按引擎支持的 `{content, metadata}` 形状返回（跳过账/截断走结构化
-  // 字段）。回显取 content，否则终端会打出 `[object Object]`——模型侧不受影响（引擎自己会归一），
-  // 但 CLI 是调试器，看不见搜索结果就等于没有。
-  const payload = result && typeof result === "object" && !Array.isArray(result)
-    && typeof result.content === "string"
-    ? result.content
-    : result;
-  const text = String(payload ?? "");
+/**
+ * 工具结果 → 可显示文本（`← name: …` 那一行的正文）。
+ *
+ * 优先 `{content: string}`：issue #195 里 `searchText` 按引擎支持的 `{content, metadata}` 形状返回
+ * （跳过账/截断走结构化字段），回显取 content，否则终端会打出 `[object Object]`。
+ *
+ * 其余**对象/数组一律 JSON 紧凑序列化**（issue #617）。为什么是通用修法而不是再加一个键名：
+ * #195 那条窄补丁只认 `content`，留下的类是「**每个返回对象的新工具都会重新踩一次**」——
+ * `delegate`（#617）返回 `{ok, runId, state, termination, text}`（没有 `content`），于是落到
+ * `String(payload)` 又打出 `[object Object]`：父 run 的界面上完全看不见子 run 回了什么。模型侧不受
+ * 影响（引擎自己归一化 tool_result），坏掉的只有 CLI 这个调试器。所以判据从「键名白名单」换成
+ * 「拿不到可展示的字符串就序列化」，下一个返回对象形状的工具不必再回来补第三刀。
+ *
+ * 序列化失败（循环引用、BigInt、`toJSON` 返回 undefined 等）**回落**到 `String(result ?? "")`
+ * ——与改动前逐字一致；回显是调试设施，不许抛错把 CLI 打挂。
+ *
+ * @param {unknown} result
+ * @returns {string}
+ */
+function toolResultDisplayText(result) {
+  if (result !== null && typeof result === "object") {
+    if (!Array.isArray(result) && typeof result.content === "string") return result.content;
+    try {
+      // 紧凑单行（默认无缩进）；结果里的换行由 JSON 自己转义成 \n，不破坏「一行一条回显」。
+      const serialized = JSON.stringify(result);
+      if (typeof serialized === "string") return serialized;
+    } catch {
+      // 循环引用 / BigInt：落到下面的 String(...)（改动前的行为）
+    }
+  }
+  return String(result ?? "");
+}
+
+/**
+ * `wrapExecuteTool` 的 `← name: …` 回显摘要（导出是给 CLI 回显边界测试用的，不是库面 API）。
+ *
+ * @param {string} name
+ * @param {unknown} result
+ * @returns {string}
+ */
+export function summarizeToolResult(name, result) {
+  const text = toolResultDisplayText(result);
   // exec 输出可能是验证/回归脚本的多行结果，必须完整可见（对齐 exec 内部 4096 截断）
   const limit = name === "exec" ? TOOL_EXEC_RESULT_LIMIT : TOOL_RESULT_LIMIT;
   // exec 日志同用 head+tail：尾部报错/exit 比中段 filler 有价值（issue #32 #2）
@@ -853,16 +925,36 @@ function normalizeCommand(command) {
  * @param {object} [options]
  * @param {string} [options.cwd]
  * @param {boolean} [options.todo]
+ * @param {boolean} [options.delegate] issue #617 P2：是否注册 `delegate`（**默认 false**）。
+ *   `true` 时必须同时注入 `delegateTool`——宿主（CLI）用库的 `createDelegateTool` 装配好
+ *   `runChild` 再交进来；`bin/` 不自己拼 runChild，也不 import `child_process`。
+ * @param {{execute: (input: object, context?: object) => Promise<object>}} [options.delegateTool]
+ *   `createDelegateTool(...)` 返回的 `{ definition, execute }`（只取 `execute`：definition 归库，
+ *   名字与 schema 从 `cliToolDefinitions` 来，不在两个地方各存一份）。
  * @param {number | null} [options.execCeilingMs] exec 天花板（issue #433 T0）：装配处按 idle 算出的
  *   `execCeilingMsForIdle(...)`；`null`/未传 = 不钳（`getCommandTimeoutMs` 的默认行为）。
  */
 export function createCliTools({
   cwd = process.cwd(),
   todo = true,
+  delegate = false,
+  delegateTool,
   execCeilingMs = null,
 } = {}) {
   const root = path.resolve(cwd);
   const todoEnabled = todo !== false;
+  const delegateEnabled = delegate === true;
+  // 开关与实现必须同侧：一面有工具名、一面没执行器（或反过来）都是「提示词跟注册面各说各话」，
+  // 那是装配期错误，宁可当场抛也不要在模型视野里静默少一个工具（issue #312(b) 的同一口径）。
+  if (delegateEnabled && (delegateTool === null || typeof delegateTool !== "object"
+    || typeof delegateTool.execute !== "function")) {
+    throw new TypeError(
+      "createCliTools({ delegate: true }) 必须注入 delegateTool（宿主先用 createDelegateTool 装配 runChild）",
+    );
+  }
+  if (!delegateEnabled && delegateTool !== undefined) {
+    throw new TypeError("createCliTools 收到 delegateTool 但 delegate !== true：开关与实现必须同侧");
+  }
   // ADR-016：replayable 分类、重跑检测、auto-capture 全部退役；
   // lastToolMetadata 仅存工具名（元数据通道收窄）。
   let lastToolMetadata;
@@ -962,6 +1054,12 @@ export function createCliTools({
     executors.todo_done = todoDone;
     executors.todo_clear = todoClear;
   }
+  // issue #617 P2：派生工具的执行器由宿主注入（库不 fork / 不 spawn）；本文件只负责把它接进
+  // 统一的 `executeTool(name, input, context)` 面，于是 chat 的 combineTools 与 repl 的
+  // buildExecuteTool 都不需要为它加分支。
+  if (delegateEnabled) {
+    executors.delegate = (input, context) => delegateTool.execute(input, context);
+  }
 
   async function executeTool(name, input, context) {
     const executor = executors[name];
@@ -978,7 +1076,8 @@ export function createCliTools({
   return {
     // issue #312(b) R2：名字清单走单一来源 `cliToolDefinitions`（与提示词同源）；实现与
     // executor 仍来自 `createFileTools`，这里的 structuredClone 保留（对外形状不得共享引用）。
-    tools: cliToolDefinitions({ todo: todoEnabled }).map((schema) => structuredClone(schema)),
+    tools: cliToolDefinitions({ todo: todoEnabled, delegate: delegateEnabled })
+      .map((schema) => structuredClone(schema)),
     executeTool,
     getLastToolMetadata: () => lastToolMetadata,
     truncateResult,

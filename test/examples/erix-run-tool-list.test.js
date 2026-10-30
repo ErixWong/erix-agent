@@ -32,11 +32,20 @@ function realTools({ todo = false, notes = true } = {}) {
 }
 
 test("R2 清单行由注册面生成：注册面与短语表两侧逐名对齐（不是文本扫描）", () => {
-  const registered = binTools.cliToolDefinitions().map((schema) => schema.name);
+  // issue #617 P2：`delegate` **默认关**（`--delegate` 才注册）⇒ 短语表（静态全量面）与
+  // 「本轮注册面」不再是同一个集合。逐名对齐的基准因此是**全量注册面**（todo+delegate 全开），
+  // 而不是默认面——否则「开关关着」会被误报成「短语表有陈旧条目」。
+  const registered = binTools.cliToolDefinitions({ delegate: true }).map((schema) => schema.name);
   assert.deepEqual(
     Object.keys(binTools.CLI_TOOL_PROMPT_PHRASES),
     registered,
-    "短语表的 key 必须与注册面的 name 同序同集合：任何一侧多动一个名字都该在这里红",
+    "短语表的 key 必须与全量注册面的 name 同序同集合：任何一侧多动一个名字都该在这里红",
+  );
+  // 默认面 = 全量面 − delegate（开关默认关，一个名字都不许漏到默认提示词里）。
+  assert.deepEqual(
+    binTools.cliToolDefinitions().map((schema) => schema.name),
+    registered.filter((name) => !binTools.DELEGATE_TOOL_NAMES.has(name)),
+    "delegate 默认必须不在注册面上（默认关是这条开关的判据本身）",
   );
   // 清单行里每个工具名都真在注册面上（反向亦然），且 todo=false 只是少拼一段，不是名单变了样。
   for (const todo of [true, false]) {
@@ -53,34 +62,38 @@ test("R2 清单行由注册面生成：注册面与短语表两侧逐名对齐�
     for (const name of unexpectedTodoNames) {
       assert.doesNotMatch(listLine, new RegExp(name, "u"), `todo=false 不得带出 ${name}`);
     }
+    // 默认（不带 delegate）提示词里不得出现 delegate 段（默认关的可观测判据）。
+    assert.doesNotMatch(listLine, /delegate/u, `todo=${todo}：默认关闭时清单行不得提 delegate`);
   }
 });
 
 test("C2② 短语表留着 searchText 而注册面删掉 ⇒ build 期抛错（提示词 ⊄ 注册面）", () => {
-  const names = binTools.cliToolDefinitions().map((s) => s.name).filter((n) => n !== "searchText");
+  const names = binTools.cliToolDefinitions({ delegate: true })
+    .map((s) => s.name).filter((n) => n !== "searchText");
   assert.throws(
-    () => binTools.buildCliToolsSystemPrompt({ names }),
+    () => binTools.buildCliToolsSystemPrompt({ names, fullNames: names }),
     /短语表里有注册面没有的名字[\s\S]*searchText/u,
     "删了工具却留着文案，正是旧世界静默的那一侧",
   );
 });
 
 test("C2① 注册面摘掉 edit（短语表同步删掉才不报陈旧）⇒ 清单里没有 edit；短语表不删就红", () => {
-  const names = binTools.cliToolDefinitions().map((s) => s.name).filter((n) => n !== "edit");
+  const names = binTools.cliToolDefinitions({ delegate: true })
+    .map((s) => s.name).filter((n) => n !== "edit");
   const phrases = { ...binTools.CLI_TOOL_PROMPT_PHRASES };
   delete phrases.edit;
   const prompt = binTools.buildCliToolsSystemPrompt({ names, phrases, fullNames: names });
   const listLine = prompt.match(/可用工具：[^\n]*。/u)?.[0] ?? "";
   assert.doesNotMatch(listLine, /\bedit\b/u, "注册面没有 edit，清单行就不许凭空写它");
   assert.throws(
-    () => binTools.buildCliToolsSystemPrompt({ names }),
+    () => binTools.buildCliToolsSystemPrompt({ names, fullNames: names }),
     /短语表里有注册面没有的名字[\s\S]*edit/u,
     "只删注册面、不删文案 ⇒ 必须红（这就是旧「删掉 edit 不会有测试变红」的补票）",
   );
 });
 
 test("注册面新增工具而短语表没有文案 ⇒ build 期抛错（注册面 ⊄ 提示词，拒绝静默漏列）", () => {
-  const names = [...binTools.cliToolDefinitions().map((s) => s.name), "brandNewTool"];
+  const names = [...binTools.cliToolDefinitions({ delegate: true }).map((s) => s.name), "brandNewTool"];
   assert.throws(
     () => binTools.buildCliToolsSystemPrompt({ names, fullNames: names }),
     /注册面上的工具没有清单文案[\s\S]*brandNewTool/u,

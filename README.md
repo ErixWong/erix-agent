@@ -268,6 +268,17 @@ src/
     notes.js                       Host-side notes tools
     providers.js                   Tool-provider adapters
     registry.js                    Tool schemas and executor registry
+    delegation/                    Child-run bookkeeping (issue #617 P1a) plus the bounded transcript-tail
+                                   read (issue #626 C1): no fork/spawn, opaque fields pass through,
+                                   liveness is a host-injected predicate
+      roster.js                    Roster: 18-field record, atomic write, updatedAt monotonic, stale reconcile
+      capacity.js                  Concurrency quota leases: wx-exclusive create, idempotent release, sweep
+      notify.js                    Completion-notify dedup keyed on the (runId, endedAt) pair, fixed prefix
+      tool.js                      Delegate tool factory (P1b): runChild host-injected, termination→state
+                                   mapping owned by the library; parent identity never a tool argument
+      tail.js                      `action="tail"` (C1): what the child is doing right now — bounded read of
+                                   its transcript tail (default 8 rows / max 20 / 300 chars per row) with
+                                   the tool name and an args digest; no event forwarding
 ```
 
 `src/index.js` exports the providers, canonical message conversions, token
@@ -790,8 +801,8 @@ headless runtime's product interface.
 ```text
 erix --version, -v
 erix --help, -h
-erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--no-notes] [--no-todo] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>]
-erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]]
+erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--no-notes] [--no-todo] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>]
+erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>]
 erix skills [--skills-dir <path>]
 erix mcp [--config <path>]
 ```
@@ -851,6 +862,30 @@ The shared CLI flags are:
 - `--no-todo` (or `ERIX_NO_TODO=1`) disables `todo` entirely: the four built-in
   `todo_*` tools are not registered, the system prompt has no todo section, and
   the user-level todo skill is excluded.
+- `--delegate` (default **off**, issue #617) registers the `delegate` tool: a child
+  run that is a **nested `runToolLoop` in the same process** (v1 forks no child
+  process and starts no daemon). `--delegate-max-children <n>` (default 2) caps how
+  many child runs may be live at once — hitting the cap is a structured failure that
+  names the holder, never a queue — and `--delegate-timeout-ms <n>` (default 600000)
+  is one child run's time budget. The child's tool face **excludes `delegate`** (v1
+  forbids recursive delegation), its transcript lives under the roster directory
+  (`~/.erix/delegation/`, override with `ERIX_DELEGATION_DIR`) and is **never**
+  appended to the parent session file. The tool's action face is
+  `run | status | result | list | cancel | tail`: `tail` is a **bounded read of the
+  child's transcript tail** (the last 8 rows by default, at most 20, 300 characters
+  per row) that reports which tool the child is running plus an args digest — it
+  reads any child on disk, not only the ones this process owns, so a host can watch
+  a child it did not spawn. `tail` reports **two separate failures**, and the split is
+  the point: `no_transcript_path` means the roster record carries no transcript path
+  (the host never registered where the child writes — a configuration defect), while
+  `no_transcript` means the path is recorded but the file is absent or unreadable (the
+  child has not written its first row yet, or the file was cleaned up). The CLI
+  registers that path through the factory's `transcriptPathFor` knob and derives it
+  with the store's own naming helper, so the parent's `tail` works on the first child
+  run instead of always answering `no_transcript_path`. The C2/C3 actions (resume,
+  steer) are **not** part of it. It is a
+  runnable sample and verifier for the
+  host-side delegation contract, not a new default capability.
 - `--error-log <path>` appends persistence-error events to a JSONL file (same as
   `ERIX_ERROR_LOG`; default: stderr only).
 - `--timeout <ms>` supplies a soft task deadline to `chat`; it nudges the

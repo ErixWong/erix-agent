@@ -76,17 +76,20 @@ function identityField(key, value) {
 /**
  * 每条 judge 记录上的关联字段（additive）：
  * - `runId`：把流式决策与 run 级 outcome 汇总记录 join 起来的键（宿主没给 runId 就不写）；
+ * - `parentRunId`：issue #617（P0，additive）——子 run 的发起者关联，同 `runId` 的「探不到
+ *   就不写」语义；宿主没给就整字段省略；
  * - `model`：被评决策发生时 run 实际使用的模型标识（探不到就不写）；
  * - `judgeModel`：仅当 judge 走了**另一个** evaluator 模型时出现——per-model 校准要能区分
  *   「被评的模型」与「评它的那个模型」；与 run 模型同名时缺省，避免冗余字段。
- * @param {{runId?:unknown, model?:unknown, judgeModel?:unknown}} input
+ * @param {{runId?:unknown, parentRunId?:unknown, model?:unknown, judgeModel?:unknown}} input
  * @returns {Record<string, string>}
  */
-export function judgeRecordFields({ runId, model, judgeModel } = {}) {
+export function judgeRecordFields({ runId, parentRunId, model, judgeModel } = {}) {
   const runModel = usableName(model);
   const evaluatorModel = usableName(judgeModel);
   return {
     ...identityField("runId", runId),
+    ...identityField("parentRunId", parentRunId),
     ...identityField("model", runModel),
     ...(evaluatorModel === undefined || evaluatorModel === runModel
       ? {}
@@ -101,7 +104,7 @@ export function judgeRecordFields({ runId, model, judgeModel } = {}) {
  *
  * 载荷刻意克制：只交付「这个 run 的终局裁决」，run 级 usage/成本仍走 `result.usage`
  * 与宿主自己的账务通道，不在日志里制造第二套口径。
- * @param {{runId?:unknown, model?:unknown, judgeModel?:unknown, rounds?:unknown,
+ * @param {{runId?:unknown, parentRunId?:unknown, model?:unknown, judgeModel?:unknown, rounds?:unknown,
  *   judgeRecordCount?:unknown, termination?:object, verification?:object}} input
  */
 export function runOutcomeRecord(input = {}) {

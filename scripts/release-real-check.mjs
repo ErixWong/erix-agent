@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// 发版前真机清单：把五条真上游 e2e + 装后 CLI 真机冒烟串成**一条**命令（工单 261021-13 / #619）。
+// 发版前真机清单：把六条真上游 e2e + 装后 CLI 真机冒烟串成**一条**命令（共 7 步；工单 261021-13 / #619，
+// issue #617 P2 补的是第 ② 条「派生：父 run 派生子 run 并取回结果」）。
 //
 //   ERIX_E2E_REAL=1 npm run check:release:real
 //
@@ -9,9 +10,9 @@
 //
 // 与既有命令的关系（**不是**替代，是叠加）：
 // - `npm run check:release`：离线、不打模型，管 tarball 形状 / 装后导入 / TS 宿主 / CLI 假上游；
-// - `npm run check:cli-real`：真上游，但只管装后 CLI 那一条（= 本清单第 ⑤ 条）；
+// - `npm run check:cli-real`：真上游，但只管装后 CLI 那一条（= 本清单第 ⑥ 条）；
 // - `npm run check:docs`：文档事实（版本声明、命令存在性、中英成对……）；
-// - 本条：真上游全景（库层工具事实 / 崩溃续跑 / 跨版本读窗口 / pi extension / 装后 CLI /
+// - 本条：真上游全景（库层工具事实 / 派生 / 崩溃续跑 / 跨版本读窗口 / pi extension / 装后 CLI /
 //   默认压缩策略 `fold-llm`）。
 //
 // 闸门（与 `examples/e2e-real-gate.mjs` 同一口径，绝不另造一套）：
@@ -64,6 +65,11 @@ const STEPS = [
     argv: ["--test", "examples/tool-fact-e2e.test.mjs"],
   },
   {
+    id: "delegate-real",
+    label: "派生：父 run 派生子 run 并取回结果（examples/delegate-real-e2e.test.mjs）",
+    argv: ["--test", "examples/delegate-real-e2e.test.mjs"],
+  },
+  {
     id: "resume-real",
     label: "真上游崩溃/续跑（examples/resume-real-e2e.test.mjs）",
     argv: ["--test", "examples/resume-real-e2e.test.mjs"],
@@ -111,7 +117,7 @@ function childEnv() {
 /**
  * 从 TAP 输出里取 `# tests / # pass / # fail / # skipped`。
  *
- * 不是每条都产 TAP（第 ⑤ 条 `cli-real-smoke.mjs` 打的是自己的日志行），所以取不到的字段一律
+ * 不是每条都产 TAP（第 ⑥ 条 `cli-real-smoke.mjs` 打的是自己的日志行），所以取不到的字段一律
  * `undefined`——**不许**用 0 冒充，否则「没摘要」会被读成「零失败」。
  *
  * @param {string} text
@@ -325,7 +331,7 @@ async function main() {
 }
 
 // 直接跑才进 main：导出的解析器（`parseTapSummary` / `skipReasons` / `gateGapSkips`）要能被单独
-// 引用而不触发「预检 + 跑六条真上游」——脚本被 import 一次就烧一遍真金是不可接受的副作用。
+// 引用而不触发「预检 + 跑七条真上游」——脚本被 import 一次就烧一遍真金是不可接受的副作用。
 const invokedDirectly = process.argv[1] !== undefined
   && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 

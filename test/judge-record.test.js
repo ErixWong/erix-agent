@@ -114,6 +114,26 @@ test("judge record correlation fields are additive and omit what cannot be resol
   assert.deepEqual(judgeRecordFields({ judgeModel: "gpt-5" }), { judgeModel: "gpt-5" });
 });
 
+test("issue #617: parentRunId 有则写、无则不写（与 runId 同一 identityField 语义）", () => {
+  // 给了就逐字写（opaque：不解析、不校验、不修剪内部空白以外的任何东西）。
+  assert.deepEqual(judgeRecordFields({ runId: "run-1", parentRunId: "parent-run-9" }), {
+    runId: "run-1",
+    parentRunId: "parent-run-9",
+  });
+  assert.deepEqual(judgeRecordFields({ parentRunId: "run:sub:42" }), { parentRunId: "run:sub:42" });
+  // 没给 / 空串 / 纯空白 ⇒ 整字段省略（不是 undefined、不是 ""）。
+  assert.deepEqual(judgeRecordFields({ runId: "run-1" }), { runId: "run-1" });
+  assert.deepEqual(judgeRecordFields({ parentRunId: "" }), {});
+  assert.deepEqual(judgeRecordFields({ parentRunId: "  " }), {});
+  // run 级 outcome 汇总同样走这一格。
+  assert.deepEqual(runOutcomeRecord({ runId: "run-1", parentRunId: "parent-run-9", rounds: 1 }), {
+    type: "run_outcome",
+    runId: "run-1",
+    parentRunId: "parent-run-9",
+    rounds: 1,
+  });
+});
+
 test("run outcome record shape", () => {
   assert.deepEqual(runOutcomeRecord({
     runId: "run-1",

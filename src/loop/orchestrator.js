@@ -309,13 +309,15 @@ function persistenceInfoFor(error) {
   return undefined;
 }
 
-function persistenceErrorEvent({ port = "transcript", operation, phase, runId, sideEffect, error, fatal = true }) {
+function persistenceErrorEvent({ port = "transcript", operation, phase, runId, parentRunId, sideEffect, error, fatal = true }) {
   return {
     type: "persistence_error",
     port,
     phase,
     operation,
     runId,
+    // issue #617（P0）：子 run 发起者关联镜像 runId 的面；宿主没给就整字段省略（不写 undefined）。
+    ...(parentRunId === undefined ? {} : { parentRunId }),
     fatal,
     sideEffect,
     error: {
@@ -366,6 +368,8 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  * @property {object} [toolUse] Completed canonical tool_use block.
  * @property {object} [toolResult] Canonical tool_result block.
  * @property {string} [runId] Run identity on host-facing diagnostics.
+ * @property {string} [parentRunId] issue #617（P0，additive）：子 run 的发起者关联，只镜像不解释；
+ *   宿主没给 `parentRunId` 时该字段缺省（不写假值）。
  * @property {string} [detail] One-shot capability diagnostic text (persistence_capability_degraded, model_metadata_missing, compaction_strategy_fallback).
  * @property {string} [toolUseId] Tool invocation requiring host replay decision.
  * @property {string} [toolName] Tool name requiring host replay decision.
@@ -394,6 +398,8 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  * @property {"timeout"|"error"|"parse"} [error]
  * @property {string} [runId] issue #165（additive）：宿主传入的 run 标识，用于与本 run 的
  *   `run_outcome` 事件 join；宿主没给 `runId` 时该字段缺省（不写假值）。
+ * @property {string} [parentRunId] issue #617（P0，additive）：子 run 的发起者关联（宿主传入，
+ *   opaque）；宿主没给 `parentRunId` 时该字段缺省（不写假值）。
  * @property {string} [model] issue #165（additive）：被评决策发生时 run 实际使用的模型标识，
  *   由 run 选项 / provider 配置解析而来（`src/loop/judge-record.js`）；探不到则缺省。
  * @property {string} [judgeModel] issue #165（additive）：仅当 judge 走了与 run 不同的
@@ -437,7 +443,7 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
  *       partialPersistence?: false|{intervalMs: number, minBytes?: number}, persistence?: "none"|"required",
  *       outputHygiene?: false|{limit?: number}, writeToolNames?: string[], writeToolPathKeys?: string[],
  *       resume?: boolean, stream?: boolean, reflection?: object|false,
- *       runId?: string, cwd?: string},
+ *       runId?: string, cwd?: string, parentRunId?: string},
  *     tuning?: {maxTokens?: number, temperature?: number, topP?: number, cacheCapable?: boolean},
  *     timing?: {timeoutMs?: number, deadlineMs?: number,
  *       retry?: {attempts?: number, backoffBaseMs?: number, backoffMaxMs?: number,
@@ -702,6 +708,7 @@ export async function runToolLoop(options) {
     store,
     persistence,
     runId,
+    parentRunId,
     cwd,
     resume = false,
     onRound,
@@ -1093,7 +1100,7 @@ export async function runToolLoop(options) {
     //   （宿主没挂 `onJudge` 就不计数——这条计数口径是 run_outcome 的公开字段）。
     //   TDZ：原声明点（`:982` / `:983`）就是这两个符号的全文件首次出现（逐符号
     //   `grep -nE "(^|[^.a-zA-Z0-9_])<符号>\b"` 数过：3 / 3 行，全部落在声明之后），提先初始化不可观察。
-    judgeRecordCorrelation: judgeRecordFields({ runId }),
+    judgeRecordCorrelation: judgeRecordFields({ runId, parentRunId }),
     judgeRecordCount: 0,
     // 【F-2 治理开关】`roundJudgeEnabled`（原 :1202）、`roundJudgeFailures`（原 :1209）、
     //   `wrapupNormalizationEnabled`（原 :1256）——三格都是**运行期可关断**的治理开关与其失败计数：
@@ -1161,6 +1168,7 @@ export async function runToolLoop(options) {
         : "unknown",
       phase: typeof info.phase === "string" && info.phase !== "" ? info.phase : "write",
       runId,
+      parentRunId,
       sideEffect: info.sideEffect,
       error: info.error,
       fatal: false,
@@ -1180,6 +1188,8 @@ export async function runToolLoop(options) {
     // 拿不到 runId 的观察者错误无法归因。没传 runId 时不编造字段。
     const detail = {
       ...(runId === undefined ? {} : { runId }),
+      // issue #617（P0）：子 run 发起者关联与 runId 同口径统一注入（没传就不编字段）。
+      ...(parentRunId === undefined ? {} : { parentRunId }),
       ...context,
       channel,
     };
@@ -1207,6 +1217,7 @@ export async function runToolLoop(options) {
       onEvent?.({
         type: "persistence_capability_degraded",
         runId,
+        ...(parentRunId === undefined ? {} : { parentRunId }),
         method,
         detail: `store does not implement ${method}; the corresponding persistence is skipped for this run`,
       });
@@ -1234,6 +1245,7 @@ export async function runToolLoop(options) {
       onEvent?.({
         type: "config_override_conflict",
         runId,
+        ...(parentRunId === undefined ? {} : { parentRunId }),
         conflicts: configConflicts,
         detail: "config.* / capabilities.hooks.* win over the same-named flat option (the flat key is"
           + " still accepted), and a call-level config or capabilities tree overrides the assembly port's"
@@ -1266,6 +1278,7 @@ export async function runToolLoop(options) {
       onEvent?.({
         type: "model_metadata_missing",
         runId,
+        ...(parentRunId === undefined ? {} : { parentRunId }),
         detail: "contextWindowTokens/maxOutputTokens unavailable; compaction and aggregate output"
           + " budget are disabled for this run;"
           + (outputHygieneLimit === 4096
@@ -1319,6 +1332,7 @@ export async function runToolLoop(options) {
       operation: method,
       phase,
       runId,
+      parentRunId,
       sideEffect,
       error: lastError,
     });
@@ -1678,6 +1692,9 @@ export async function runToolLoop(options) {
         ...(resolvedContextStrategy === undefined ? {} : { strategy: resolvedContextStrategy }),
       };
   const baseToolContext = {
+    // issue #617（P0）：把当前 run 的身份递进工具上下文——派生工具（子 agent）据此自填父身份
+    // （`parentRunId`），不靠模型或宿主传。只加 `runId` 这一个键。
+    runId,
     // #550: `session` is not a term here any more — the container must not leak into the tool
     // context, and the opaque payload's one reader is the fold-context shell (`context.session`).
     ...toolContextFor({
@@ -1773,6 +1790,7 @@ export async function runToolLoop(options) {
   // judge 走独立 evaluator 时额外写 `judgeModel`，与 run 同名时不写（无冗余字段）。
   runLoopState.judgeRecordCorrelation = judgeRecordFields({
     runId,
+    parentRunId,
     model: resolveRunModelName({
       modelConfig: resolvedModelConfig,
       modelMetadata,
@@ -2801,6 +2819,7 @@ export async function runToolLoop(options) {
       emitEvent({
         type: "resume_journal_skipped",
         runId,
+        ...(parentRunId === undefined ? {} : { parentRunId }),
         round: crashRound,
         reason: "crash_round_assistant_not_in_ledger",
         count: unpersisted.length,
@@ -3082,6 +3101,7 @@ export async function runToolLoop(options) {
       emitEvent({
         type: "continuity_write_failed",
         ...(runId === undefined ? {} : { runId }),
+        ...(parentRunId === undefined ? {} : { parentRunId }),
         phase: "read",
         detail: String(/** @type {any} */ (error)?.message ?? error).slice(0, 120),
       });
@@ -3159,6 +3179,7 @@ export async function runToolLoop(options) {
       emitEvent({
         type: "continuity_write_failed",
         ...(runId === undefined ? {} : { runId }),
+        ...(parentRunId === undefined ? {} : { parentRunId }),
         phase: "fallback",
         detail: String(/** @type {any} */ (error)?.message ?? error).slice(0, 120),
       });
@@ -3193,6 +3214,7 @@ export async function runToolLoop(options) {
       emitEvent({
         type: "continuity_written",
         ...(runId === undefined ? {} : { runId }),
+        ...(parentRunId === undefined ? {} : { parentRunId }),
         round: runLoopState.rounds,
         mode: continuityWriteMode,
         source,
@@ -3203,6 +3225,7 @@ export async function runToolLoop(options) {
       emitEvent({
         type: "continuity_write_failed",
         ...(runId === undefined ? {} : { runId }),
+        ...(parentRunId === undefined ? {} : { parentRunId }),
         phase: "write",
         detail: String(/** @type {any} */ (error)?.message ?? error).slice(0, 120),
       });
@@ -3220,6 +3243,7 @@ export async function runToolLoop(options) {
     emitEvent({
       type: "continuity_injection_skipped",
       ...(runId === undefined ? {} : { runId }),
+      ...(parentRunId === undefined ? {} : { parentRunId }),
       round,
       reason,
       detail: reason === "pending_tool_use"
@@ -3759,6 +3783,7 @@ export async function runToolLoop(options) {
           type: "compaction_strategy_fallback",
           // runId 只在宿主传了时才写键（与 #182 `model_metadata_missing` 同口径：引擎不自编标识）。
           ...(runId === undefined ? {} : { runId }),
+          ...(parentRunId === undefined ? {} : { parentRunId }),
           round,
           detail: 'engine compaction fallback in effect: context.strategy is not configured, '
             + 'the library default "sliding-window" strategy drops whole head rounds without '
@@ -4002,6 +4027,7 @@ export async function runToolLoop(options) {
         emitEvent({
           type: "budget_below_working_set",
           ...(runId === undefined ? {} : { runId }),
+          ...(parentRunId === undefined ? {} : { parentRunId }),
           round,
           ...budgetBelowWorkingSet,
           attempts: runLoopState.budgetBelowWorkingSetStreak,
@@ -4609,6 +4635,7 @@ export async function runToolLoop(options) {
           emitEvent({
             type: "tool_replay_decision_required",
             runId,
+            ...(parentRunId === undefined ? {} : { parentRunId }),
             round: runLoopState.rounds,
             toolUseId: resumePendingTool.id,
             toolName: resumePendingTool.name,
@@ -4828,6 +4855,7 @@ export async function runToolLoop(options) {
           emitEvent({
             type: "compaction_deferred",
             ...(runId === undefined ? {} : { runId }),
+            ...(parentRunId === undefined ? {} : { parentRunId }),
             round,
             reason: "pending_tool_use",
             detail: "compaction was deferred: the request tail is an assistant tool_use without its"
@@ -5388,6 +5416,7 @@ export async function runToolLoop(options) {
         operation: "appendRound",
         phase: "transcript",
         runId,
+        parentRunId,
         sideEffect: runLoopState.toolExecutedThisRound
           ? "executed_uncommitted"
           : "not_started",
