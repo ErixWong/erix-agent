@@ -905,7 +905,7 @@ The shared CLI flags are:
   `erix repl` has no retry.
 - `--compact-budget <tokens>` overrides the automatic compaction budget.
 - `--compaction <name>` selects the compaction strategy
-  (`sliding-window | fold-statistical | fold-llm`, default `fold-statistical`, or the
+  (`sliding-window | fold-statistical | fold-llm`, default `fold-llm`, or the
   `slots.default.compaction` config field). `fold-llm` costs one extra main-model call
   per compaction.
 - `--tools <comma-separated names>` is a hard capability whitelist for both
