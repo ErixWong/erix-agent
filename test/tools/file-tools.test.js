@@ -695,7 +695,7 @@ const READ_LINE_CAPACITY_ROLES = [
   // （显式关思考 + 每次调用的剩余预算）。fold-llm 的容量 6,952 量级 → 6756（38.796 B/line），恰好落在样本中位上
   // ⇒ 角色从 `src/tools/notes.js` 改钉它（与当场样本中位完全相等）。描述里 `median 6,952 (37.7)` →
   // `median 6,756 (38.8)` 是**同位数替换**（对本文件字节中性）。容差常量一个都没动。
-  { role: "median", file: "src/compact/fold-llm.js", recorded: { bytes: 31_462, lines: 779, bytesPerLine: 40.3877, capacity: 6_490, cjkShare: 0.1707 } },
+  { role: "median", file: "src/compact/fold-llm.js", recorded: { bytes: 33_137, lines: 809, bytesPerLine: 40.9604, capacity: 6_399, cjkShare: 0.1898 } },
   // 2026-10-23 #391：`most` 也**换了文件**——`bin/guard-metrics.js` 从 456 B / 17 行长到 1,063 B / 23 行
   // （均行 26.8 → 46.2），容量 9,772 → 5,671，已经不是「一次装得最多」那一个。样本里现在最大的是
   // `src/messages/openai-normalization.js`（5,496 B / 201 行 ⇒ 27.34 B/line ⇒ 9,587 行），描述里那一档随之

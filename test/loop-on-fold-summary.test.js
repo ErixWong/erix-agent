@@ -350,3 +350,107 @@ test("④#479：区间/水位线/累计三键在多轮折叠上的口径（水�
   assert.ok(typeof legacy.text === "string" && legacy.text !== "", "既有键 text 仍在");
   assert.ok(typeof legacy.source === "string" && legacy.source !== "", "既有键 source 仍在");
 });
+
+// ── 缺陷 ③：策略那一折 + 预算兜底那一折的轮次区间必须**合并** ─────────────────────────
+//
+// 病根：`orchestrator.js` 里 `if (foldedRoundRange === undefined) foldedRoundRange = fallback.foldedRoundRange;`
+// —— 策略已经折过 ⇒ 兜底那次的区间被整个丢掉。而水位线（`foldedThrough`）只从这一个区间取
+// （`Math.max(foldedThrough, foldedRoundRange.to)`）⇒ 水位线**低估** ⇒ resume 后重放已折轮次。
+//
+// 夹具形状（与 #608-1d 同族）：前 4 轮的结果**很小**（预算装得下，先不折），后 2 轮**很大**
+// （折完剩下的两轮仍超预算）⇒ 第一次折叠是「策略折掉更老的几轮」+「预算兜底再折掉剩下两轮」。
+//
+// 变异实验：把那行改回 `if (foldedRoundRange === undefined)` ⇒ 本格红（`foldedRoundRange.to`
+// 与 `foldedThrough` 都停在策略那一折的 `to`）。
+
+test("⑥缺陷③：策略折 {from:1,to:3} + 兜底折后续 ⇒ 区间合并、水位线取两者最大 `to`（不是 3）", async () => {
+  const store = createMemoryTranscriptStore();
+  const runId = "s-defect3-merge-range";
+  let turns = 0;
+  const provider = {
+    protocol: "fake",
+    model: "fake-model",
+    async chat() {
+      if (turns < 6) {
+        turns += 1;
+        return {
+          content: [{ type: "tool_use", id: `tu_${turns}`, name: "echo", input: { text: `R${turns}` } }],
+          stopReason: "tool_use",
+        };
+      }
+      return { content: [{ type: "text", text: "收尾结论" }], stopReason: "end_turn" };
+    },
+  };
+  provider.chatStream = provider.chat;
+
+  // 包一层：只为**看见**策略自己返回的那份区间/轮数（不是改它的行为）。
+  const base = createSlidingWindowStrategy({ keepRounds: 2 });
+  /** @type {{foldedRounds:number, foldedRoundRange?:{from?:number,to?:number}}[]} */
+  const strategyResults = [];
+  const strategy = {
+    name: base.name,
+    shouldCompact: (...args) => base.shouldCompact(...args),
+    async compact(messages, options) {
+      const result = await base.compact(messages, options);
+      strategyResults.push({ foldedRounds: result.foldedRounds, foldedRoundRange: result.foldedRoundRange });
+      return result;
+    },
+  };
+
+  const payloads = [];
+  const run = await runDirect({
+    // 观察面走**规位**（`capabilities.hooks.*`），不用已退役的顶层扁平拼写：
+    // 本格要测的是区间合并，不该顺手给 `compat-pin-inventory` 添一个扁平写点。
+    capabilities: {
+      ports: { strategy },
+      hooks: { onFoldSummary: (payload) => {
+        payloads.push({
+          foldedRoundRange: payload.foldedRoundRange,
+          foldedThrough: payload.foldedThrough,
+          rounds: payload.rounds,
+        });
+      } },
+    },
+    provider,
+    runId,
+    store,
+    initialUserMessage: "开始任务",
+    tools: [{ name: "echo", description: "回显输入", inputSchema: { type: "object", properties: { text: { type: "string" } } } }],
+    // 前 4 轮小、后 2 轮大：折叠必然「策略折更老的几轮 → 仍超预算 → 兜底再折剩下的」。
+    executeTool: async ({ input }) => (Number(String(input?.text ?? "").replace(/^R/u, "")) <= 4
+      ? `tiny-${String(input?.text ?? "")}`
+      : `BIG-${String(input?.text ?? "")}_${"填充".repeat(600)}`),
+    maxRounds: 20,
+    completion: false,
+    wrapup: false,
+    stallDetection: false,
+    config: { folding: { context: { budgetTokens: 1000, keepRounds: 2 } } },
+  });
+
+  assert.ok(String(run?.finalText ?? "").includes("收尾结论"),
+    `run 必须正常收尾：${JSON.stringify(run?.termination ?? {})}`);
+
+  const strategyFold = strategyResults.find((result) => result.foldedRounds > 0);
+  assert.ok(strategyFold, `前提：策略这一折必须真的折走了一些轮（实测 ${JSON.stringify(strategyResults)}）`);
+  assert.ok(Number.isSafeInteger(strategyFold.foldedRoundRange?.to),
+    `前提：策略必须带出区间（实测 ${JSON.stringify(strategyFold.foldedRoundRange)}）`);
+
+  const payload = payloads[0];
+  assert.ok(payload !== undefined, "前提：这条 run 必须落账过折叠事实");
+  // 前提②：兜底那一次**真的又折了东西**（否则本格测不到「合并」）。
+  assert.ok(payload.rounds > strategyFold.foldedRounds,
+    `前提：预算兜底必须又折了一些轮（策略 ${strategyFold.foldedRounds} vs 合计 ${payload.rounds}）`);
+
+  // 判据：区间是**并集**（from 更小 / to 更大），不是「谁先来算谁的」。
+  assert.equal(payload.foldedRoundRange.from, strategyFold.foldedRoundRange.from,
+    "from 取两者更小者（兜底折的是更晚的轮，故等于策略那一份的 from）");
+  assert.ok(payload.foldedRoundRange.to > strategyFold.foldedRoundRange.to,
+    `to 必须取两者更大者（策略 ${strategyFold.foldedRoundRange.to}，`
+      + `合并后 ${payload.foldedRoundRange.to}）—— 停在策略那一份 ⇒ 兜底的区间被丢了`);
+  // 水位线只从这一个区间取 ⇒ 它必须等于合并后的 `to`，且高于策略那一折的 `to`。
+  assert.equal(payload.foldedThrough, payload.foldedRoundRange.to,
+    "水位线 == 合并后区间的 to（同一份，不二次推导）");
+  assert.ok(payload.foldedThrough > strategyFold.foldedRoundRange.to,
+    `水位线不许低估到策略那一折的 to（实测 ${payload.foldedThrough} vs ${strategyFold.foldedRoundRange.to}）`
+      + "——低估 ⇒ resume 后重放已折轮次");
+});
