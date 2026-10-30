@@ -354,3 +354,20 @@ test("库面（#630 S2 I）：两组曾经会碰撞的 (runId, endedAt) 现在�
     completionMarkerKey({ runId: "a", state: "completed", endedAt: 2 }),
   );
 });
+
+// ── D 的接线面：两个 CLI 装配点都必须真的把谓词与预算交下去 ─────────────────────────────
+test("接线（#630 S2 D/F）：bin/cli.js 与 bin/repl.js 的 createCliDelegation 都下传 isProcessAlive 与 compactBudget", async () => {
+  // 这条是**接线面**的守卫，不是行为守卫（行为由上面 D-1..D-5 真装配覆盖）：库侧修好了、
+  // 装配点忘了传，真机上仍然是「B 一次 status 就把 A 的活子写成死的」——那正是本单的原始缺陷。
+  for (const file of ["bin/cli.js", "bin/repl.js"]) {
+    const source = readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
+    const call = source.slice(source.indexOf("createCliDelegation({"));
+    assert.ok(call.length > 0, `${file} 里找不到 createCliDelegation 装配点`);
+    const body = call.slice(0, call.indexOf("\n    })"));
+    assert.match(body, /isProcessAlive/u, `${file} 必须把存活谓词下传给 createCliDelegation（D 的接线面）`);
+    assert.match(body, /compactBudget/u, `${file} 必须把父的显式压缩预算下传给子（F 的接线面）`);
+  }
+  // 默认实现就是真谓词：本进程自己的 pid 必须判活（不是恒 true / 恒 false 的桩）。
+  assert.equal(isProcessAlive(process.pid), true, "isProcessAlive(自己) 必须是活");
+  assert.equal(isProcessAlive(-1), false, "非法 pid 不当作活进程");
+});
