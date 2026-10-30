@@ -69,6 +69,7 @@ import {
   createCliDelegation,
   DEFAULT_DELEGATE_MAX_CHILDREN,
   DEFAULT_DELEGATE_TIMEOUT_MS,
+  isProcessAlive,
   resolveDelegationDir,
 } from "./delegation.js";
 import { formatGuardMetrics } from "./guard-metrics.js";
@@ -950,6 +951,15 @@ async function runChatWithNotes({
       defaultDeadlineMs: delegateTimeoutMs ?? DEFAULT_DELEGATE_TIMEOUT_MS,
       maxRounds: resolvedMaxRounds,
       notify: delegateNotify ?? ((line) => console.error(line)),
+      // issue #630 S1（C）：父的 `--tools` 白名单下传给子 run（子的权限只能等于或小于父）。
+      // 与下面父侧 `filterToolsByAllowlist` 同源：同一个字符串，同一套 onUnknown 文案。
+      toolAllowlist: toolsAllowlist,
+      // issue #630 S2（D）：存活谓词（真 `process.kill(pid, 0)`）。没有它，两个并发 CLI 会话共用
+      // 同一个名册目录（缺省 `~/.erix/delegation/`）时，本进程一次 `status` 就会把另一个会话养着的
+      // 活子改写成 `interrupted`。
+      isProcessAlive,
+      // issue #630 S2（F）：父的显式 `--compact-budget` 必须下传给子 run。
+      ...(compactBudget === undefined ? {} : { compactBudget }),
     })
     : undefined;
   const cliTools = createCliTools({

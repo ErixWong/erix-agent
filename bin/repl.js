@@ -59,6 +59,7 @@ import {
   createCliDelegation,
   DEFAULT_DELEGATE_MAX_CHILDREN,
   DEFAULT_DELEGATE_TIMEOUT_MS,
+  isProcessAlive,
   resolveDelegationDir,
 } from "./delegation.js";
 import {
@@ -557,6 +558,15 @@ export async function runRepl(argv, io = {}) {
       maxRounds: options.maxRounds ?? DEFAULT_MAX_ROUNDS,
       notify: (line) => writeLine(errorOutput, line),
       childToolOutput: (line) => writeLine(errorOutput, line),
+      // issue #630 S1（C）：父的 `--tools` 白名单下传给子 run（子的权限只能等于或小于父）；
+      // 与下面 repl 侧的 `filterToolsByAllowlist` 同源，未知名字走同一条 onUnknown 文案。
+      toolAllowlist: options.tools,
+      onUnknownTool: (line) => writeLine(errorOutput, line),
+      // issue #630 S2（D）：存活谓词（真 `process.kill(pid, 0)`）；缺了它，另一个 CLI 会话养着的
+      // 活子会被本进程一次 `status` 改写成 `interrupted`。
+      isProcessAlive,
+      // issue #630 S2（F）：父的显式 `--compact-budget` 下传给子 run。
+      ...(options.compactBudget === undefined ? {} : { compactBudget: options.compactBudget }),
     })
     : undefined;
   const cliTools = createCliTools({

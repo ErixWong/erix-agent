@@ -256,6 +256,68 @@ but the file is absent or unreadable (the child has not written its first row ye
 cleaned up — **normal timing**). Collapsing them would make "you never wired it" read as "the child did
 nothing".
 
+**Three corrections to that sample surface (issue #630 S1).** All three are about the record and the
+result telling the truth; none of them adds a new default capability.
+
+* **`action=result` carries the child's final text.** The terminal roster write now stores
+  `resultText` (the child's final answer, capped at **4000** characters with `truncated: true` when it
+  was cut) and `errorMessage` (the child's error, capped at 1000, written only when the child threw) —
+  in the **same atomic write** that stores the terminal `state`, not as a follow-up patch. `result`
+  returns the record's terminal fields plus `text` (and `truncated` / `error` when they exist).
+  Before this, a background child's text was dropped on the floor: the parent got `state` and
+  `termination` and had to guess the answer from `tail`.
+* **The roster's cwd field is the directory the child actually ran in — when you say so.** A model's
+  cwd is a request, not a fact: the library does not resolve relative paths and does not know your
+  default directory. The port is `cwdFor`: `(requested, runId) => string`. Provide it and the library
+  resolves the value **once** and uses that same value for both the record and `runChild` (never
+  "record one, execute another"); its return value must be a non-empty string or the factory throws.
+  Without the port the old behaviour stands — but then the roster's cwd field does **not** describe
+  where the child ran, so a host that wants a true record should always supply it. The CLI does:
+  `cwdFor: (requested) => path.resolve(requested ?? parentCwd)`.
+* **A child's tool face is a subset of the parent's.** Delegation never widens permissions: the child
+  tool set is filtered with the parent's `--tools` allowlist (the same `filterToolsByAllowlist`) before
+  the engine sees it, and `delegate` itself is never handed down (v1 does not recurse). With no
+  allowlist the child keeps the full face, exactly as before.
+
+**Three more corrections to that sample surface (issue #630 S2).** Again: no new default capability,
+and each one is about the record telling the truth.
+
+* **A live child is never written off by a process that cannot prove it is dead.** The roster record
+  moves `queued` → `running` → a terminal state, and `running` is written **before** the library calls
+  your run function (before this, the seven-value state machine never wrote `running` at all, so a
+  child that was working and a child that was stuck in the queue looked identical). The
+  stale-recompute step now takes the port `isProcessAlive(pid) => boolean`: a live record this process
+  does not own whose pid the predicate calls alive is listed in `foreignOwned` and left untouched,
+  while a record the predicate calls dead becomes `interrupted` with its `endedAt` set to that
+  record's own `updatedAt` rather than to the probe time. **Supply the predicate, or you get no stale
+  cleanup**: without it the library refuses to judge — live records carrying a pid go into a separate
+  `unverified` bucket and stay on disk exactly as they were. The trade is deliberate; inventing a
+  death for another process's live child is the worse failure. This is not a daemon-only path: the
+  roster directory defaults to `~/.erix/delegation/` and is therefore shared, so two concurrent CLI
+  sessions meet it. The CLI passes the real predicate (`process.kill(pid, 0)`: success means alive,
+  `EPERM` means alive without permission, `ESRCH` means dead).
+* **`action=result` re-reads the roster through the same recompute step as `action=status`.** A record
+  stuck in a live state because its owner died used to answer `still_running` forever; now the
+  terminal outcome is returned. A child that really is running still answers `still_running` — the
+  recompute is not a licence to declare everything dead.
+* **An explicit `--compact-budget` is inherited by child runs.** The child used to build its
+  compaction context with no explicit budget at all, so a budget the parent passed on the command
+  line silently disappeared on the child side and only the value derived from the configured context
+  window survived. With no explicit budget the old derivation stands, unchanged.
+
+**And one more, about the quota itself (issue #630 S3).** The concurrency cap used to be counted and
+then claimed: the tool listed the lease directory, and if it was not full yet, created a lease. Two
+processes could both read "one slot left" and both create one, so the cap over-issued; and a process
+that died while holding a lease left it behind for ever, because nothing ever swept the directory.
+Taking a slot is now a **single exclusive create** in a fixed pool, so the decision and the claim are
+the same system call, and a slot whose holder can be proven gone is reclaimed on the spot: your
+liveness predicate decides whenever the lease carries a pid, and only without a predicate does a
+30-minute age threshold apply — a fallback, not an authority, which is why a child's own time budget
+should stay well below it. Reclaiming re-reads the slot and unlinks only the exact holder it judged
+dead, and releasing only ever removes a slot that records the caller's own identity. Lease files
+written by older versions no longer count against the quota and are never deleted (they were
+short-lived by nature, so leaving them is harmless).
+
 The gate for the whole path is `examples/delegate-real-e2e.test.mjs`, step 2 of
 `npm run check:release:real`: a real-upstream parent run delegates a child run, and the test asserts the
 child's roster record carries the parent's `config.run.runId`, the child ends `end_turn`, the roster ends

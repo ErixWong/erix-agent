@@ -14,17 +14,29 @@
  * 设计判据（照两个真实实现的面，不带它们的宿主语义进来）：
  *   - 记录面参考 pi-subagents 的 `AsyncStatus`（字段名沿用同一套词汇：runId / parentRunId /
  *     state / cwd / model / createdAt / updatedAt / endedAt / deadlineAt / timedOut / pid …），
- *     但收敛到工单钉死的 **18 项**；除 `state` 外全部 opaque。
+ *     但收敛到工单钉死的 **21 项**（#630 S1 由 18 项 +3：`resultText` / `resultTruncated` /
+ *     `errorMessage`——后台子 run 的终稿与失败原因必须能从名册里取回，见 `tool.js` 的
+ *     `finishRun`）；除 `state` 外全部 opaque。
  *   - 落盘一条记录一个文件 `<rosterDir>/<runId>.json`，写必须**原子**（同目录临时文件 +
  *     `rename`）——半写出的 JSON 比没有更糟（重算会把它当损坏或更糟，当活态）。
  *   - **文件名不是身份来源**：记录内的 `runId` 必须等于文件名；不等 ⇒ 视为损坏，点名报出
  *     （`listRecords` 的 `corrupt` / `reconcile` 的 `corrupt`），**不猜、不就地改名修复**。
+ *   - **读记录要校形状**（issue #630 S2 / G）：除了「能解析成 JSON 对象 + 文件名身份一致」，还要求
+ *     `state` ∈ 封闭 7 值、`updatedAt` 是**有限数字**。形状不对 ⇒ 与身份不符同一条路：进 `corrupt`
+ *     点名，**不猜、不就地修**（把 `state:"weird"` 当活态、把 `updatedAt:"123"` 当水位参与比较，
+ *     都是「损坏件被当成正常记录」的同一个形状——写侧本来就有这两条校验，读侧以前没有）。
  *   - **`updatedAt` 单调**（时钟回拨不许让它倒退）：写路径只在新值 ≥ 磁盘旧值时前移，
  *     等价于保留更高者。
  *   - 陈旧重算的「无人认领 ⇒ `interrupted`」依据 pi-web 的判据：**状态文件说活态，但没有任何
  *     活着的所有者** ⇒ 判 interrupted（子凭空消失，父最需要知道）。本进程是不是所有者由宿主
  *     显式给 `ownedRunIds`；跨宿主同目录的存活子 run 由宿主谓词 `isProcessAlive(pid)` 兜底，
  *     命中则列 `foreignOwned`、不动记录。
+ *   - **没有谓词就没有陈旧清理**（issue #630 S2 / D，刻意的取舍）：`isProcessAlive` 缺省时，
+ *     带 `pid` 的活态记录**不许**被改写成 `interrupted`——库无法证明那个 pid 是死的，而「别人家的
+ *     活子被写成死的」是本模块能犯的最严重错误（真机复现过：进程 A 派发后台子、进程 B 只调一次
+ *     `status` 就把 A 的记录改写成了 `interrupted`）。这类记录进 `unverified` 桶（带 runId / pid /
+ *     updatedAt），**记录一个字节都不动**，由宿主自己处置。代价写在明面上：宿主不接这个谓词，就
+ *     拿不到陈旧清理——宁可留脏记录，也不许谎报别人家的活子是死的。
  *   - 重算**幂等**：活态才会被改；`interrupted` 之后再跑一万次也不会再动它。
  *
  * 「不给的字段不写」沿用 P0（#617）的纪律：undefined / 空串占位一律不落盘。
@@ -53,6 +65,11 @@ import { dirname, join } from "node:path";
  * @property {string} [statusPath]          opaque
  * @property {string} [transcriptPath]      opaque
  * @property {number} [pid]                 宿主记下的进程号；库只把它递给宿主谓词
+ * @property {string} [resultText]          子 run 的终稿（issue #630 S1；写侧由 `tool.js` 截到
+ *                                          `RESULT_TEXT_LIMIT` = 4000 字符，名册只存不算）
+ * @property {boolean} [resultTruncated]    `resultText` 被截断过 ⇒ 恰好写 `true`（没截断就不写这个键）
+ * @property {string} [errorMessage]        子 run 抛错时的错误文本（issue #630 S1；写侧截到
+ *                                          `ERROR_MESSAGE_LIMIT` = 1000 字符），正常结束不写
  */
 
 /** 名册 `state` 的封闭取值（工单钉死 7 个；其余一律不得写进名册）。 */
@@ -96,6 +113,11 @@ const OPTIONAL_KEYS = [
   "statusPath",
   "transcriptPath",
   "pid",
+  // issue #630 S1：后台子 run 的终稿 / 截断标记 / 失败原因（`result` 动作要带回它们，
+  // 所以它们必须和终态**同一次写**落盘——不是事后补写第二遍）。
+  "resultText",
+  "resultTruncated",
+  "errorMessage",
 ];
 
 let tmpCounter = 0;
@@ -111,7 +133,7 @@ function assertSafeRunId(runId) {
 }
 
 /**
- * 把调用方给的记录收敛成落盘形态：只带 18 项里的已给字段，undefined / 空串一律不写。
+ * 把调用方给的记录收敛成落盘形态：只带 21 项里的已给字段，undefined / 空串一律不写。
  * @param {RosterRecord} record
  * @returns {RosterRecord}
  */
@@ -142,7 +164,20 @@ function atomicWriteJson(file, value) {
   renameSync(tmp, file);
 }
 
-/** 读一个名册文件并做「文件名 == 记录 runId」的损坏校核；不合法返回 null（由调用方点名）。 */
+/**
+ * 读一个名册文件并校形状；合法返回 `{ record }`，不合法返回 `{ reason }`（由调用方点名，不猜、不就地修）。
+ *
+ * 三条校验（issue #630 S2 / G 补齐前两条，第三条既有）：
+ *   1. `state` ∈ 封闭 7 值（`ROSTER_STATES`）——`state:"weird"` 不是「某个未知状态」，是损坏件；
+ *   2. `updatedAt` 是有限数字——字符串 `"123"` 会让单调水位比较退化成字典序比较；
+ *   3. `runId` 与文件名一致（文件名不是身份来源）。
+ * 写侧（`cleanRecord`）本来就有 1 / 2 两条校验，读侧以前没有：一份手改 / 半坏的 JSON 因此能被当成
+ * 正常记录参与重算与展示，这正是「损坏件比没有更糟」的形状。
+ *
+ * @param {string} dir
+ * @param {string} file
+ * @returns {{ record: RosterRecord } | { reason: string }}
+ */
 function parseRosterFile(dir, file) {
   const runIdFromName = file.replace(/\.json$/u, "");
   /** @type {*} */
@@ -150,11 +185,25 @@ function parseRosterFile(dir, file) {
   try {
     parsed = JSON.parse(readFileSync(join(dir, file), "utf8"));
   } catch {
-    return null;
+    return { reason: "JSON 解析失败或非对象" };
   }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  if (parsed.runId !== runIdFromName) return null;
-  return /** @type {RosterRecord} */ (parsed);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { reason: "JSON 解析失败或非对象" };
+  }
+  if (parsed.runId !== runIdFromName) {
+    return {
+      reason: `文件名身份 ${JSON.stringify(runIdFromName)} 与记录 runId ${JSON.stringify(parsed.runId)} 不符`,
+    };
+  }
+  if (!STATE_SET.has(parsed.state)) {
+    return {
+      reason: `state 不在封闭 7 值内（${ROSTER_STATES.join("|")}），收到 ${JSON.stringify(parsed.state)}`,
+    };
+  }
+  if (typeof parsed.updatedAt !== "number" || !Number.isFinite(parsed.updatedAt)) {
+    return { reason: `updatedAt 必须是有限数字（单调水位的比较对象），收到 ${JSON.stringify(parsed.updatedAt)}` };
+  }
+  return { record: /** @type {RosterRecord} */ (parsed) };
 }
 
 /**
@@ -162,14 +211,15 @@ function parseRosterFile(dir, file) {
  * 不许让记录的水位倒退），其余字段按本次调用收敛后的形态落盘。
  *
  * @param {string} rosterDir 名册目录
- * @param {RosterRecord} record 记录（18 项面；未给的可选字段不落盘）
+ * @param {RosterRecord} record 记录（21 项面；未给的可选字段不落盘）
  * @returns {RosterRecord} 实际落盘的记录（`updatedAt` 可能因单调规则高于入参）
  */
 export function writeRecord(rosterDir, record) {
   const next = cleanRecord(record);
   const file = join(rosterDir, `${next.runId}.json`);
-  const existing = existsSync(file) ? parseRosterFile(rosterDir, `${next.runId}.json`) : null;
-  if (existing && existing.updatedAt > next.updatedAt) {
+  const read = existsSync(file) ? parseRosterFile(rosterDir, `${next.runId}.json`) : null;
+  const existing = read !== null && "record" in read ? read.record : null;
+  if (existing !== null && existing.updatedAt > next.updatedAt) {
     next.updatedAt = existing.updatedAt;
   }
   atomicWriteJson(file, next);
@@ -188,11 +238,11 @@ export function readRecord(rosterDir, runId) {
   assertSafeRunId(runId);
   const file = `${runId}.json`;
   if (!existsSync(join(rosterDir, file))) return null;
-  const parsed = parseRosterFile(rosterDir, file);
-  if (parsed === null) {
-    throw new Error(`roster: 记录文件损坏（解析失败或文件名与记录 runId 不符）: ${join(rosterDir, file)}`);
+  const read = parseRosterFile(rosterDir, file);
+  if (!("record" in read)) {
+    throw new Error(`roster: 记录文件损坏（${read.reason}）: ${join(rosterDir, file)}`);
   }
-  return parsed;
+  return read.record;
 }
 
 /**
@@ -209,21 +259,12 @@ export function listRecords(rosterDir) {
   if (!existsSync(rosterDir)) return { records, corrupt };
   for (const file of readdirSync(rosterDir)) {
     if (!file.endsWith(".json")) continue;
-    const parsed = parseRosterFile(rosterDir, file);
-    if (parsed === null) {
-      let reason = "JSON 解析失败或非对象";
-      try {
-        const raw = JSON.parse(readFileSync(join(rosterDir, file), "utf8"));
-        if (raw !== null && typeof raw === "object" && !Array.isArray(raw) && typeof raw.runId === "string") {
-          reason = `文件名身份 ${JSON.stringify(file.replace(/\.json$/u, ""))} 与记录 runId ${JSON.stringify(raw.runId)} 不符`;
-        }
-      } catch {
-        // 解析失败已是 reason 的默认值，无需补充。
-      }
-      corrupt.push({ file, runId: file.replace(/\.json$/u, ""), reason });
+    const read = parseRosterFile(rosterDir, file);
+    if (!("record" in read)) {
+      corrupt.push({ file, runId: file.replace(/\.json$/u, ""), reason: read.reason });
       continue;
     }
-    records.push(parsed);
+    records.push(read.record);
   }
   return { records, corrupt };
 }
@@ -249,21 +290,27 @@ export function removeRecord(rosterDir, runId) {
  *   1. `runId ∈ ownedRunIds`（本进程确实是它的所有者）⇒ 不动；
  *   2. 给了 `isProcessAlive` 且记录带 `pid` 且谓词说活着 ⇒ **不动**，但列进 `foreignOwned`
  *      （可能是另一宿主在同一目录里的子 run——点名让宿主看见，不替宿主裁决）；
- *   3. 否则 ⇒ 写成 `interrupted`。 **`endedAt` = 该记录原来的 `updatedAt`，不是 `now`**——
+ *   3. 没给 `isProcessAlive` 但记录带 `pid` ⇒ **不动记录**，列进 `unverified`（issue #630 S2 / D：
+ *      库证明不了那个 pid 是死的，就不许把别人家的活子写成 `interrupted`；代价是宿主不接谓词就
+ *      没有陈旧清理，见文件头）；
+ *   4. 否则 ⇒ 写成 `interrupted`。 **`endedAt` = 该记录原来的 `updatedAt`，不是 `now`**——
  *      依据：没有任何东西把它做完，所以最后一次已知时间才是事实；探到「它没了」的这个
  *      时刻不是结束时刻（pi-web 的完成标记同样只认记录自己声明的时间）。`updatedAt` 照常
  *      前移到 `now`（单调规则保证不回退）。
  *
- * 幂等：终态记录永不进入上面三条，第二次跑不会再改、不会再产生新的 `interrupted`。
+ * 幂等：终态记录永不进入上面四条，第二次跑不会再改、不会再产生新的 `interrupted`。
  * 损坏文件原样进 `corrupt` 点名，不参与重算也不计入 `unchanged`。
  *
  * @param {string} rosterDir
  * @param {Object} options
  * @param {string[]} [options.ownedRunIds] 本进程拥有的子 run 集合（宿主注入的事实）
- * @param {(pid: number) => boolean} [options.isProcessAlive] 宿主注入的存活谓词；库不自己探 pid
+ * @param {(pid: number) => boolean} [options.isProcessAlive] 宿主注入的存活谓词；库不自己探 pid。
+ *   **缺省 ⇒ 带 `pid` 的活态记录一律进 `unverified`、记录不动**（不提供谓词就拿不到陈旧清理，
+ *   这是刻意的取舍：宁可留脏记录，也不许谎报别人家的活子是死的）。谓词抛错同样按「无法证明」处理。
  * @param {number} options.now 宿主时钟当前值（required；库不内部硬取时间，便于测试与时钟 discipline）
  * @returns {{ interrupted: Array<{runId: string, endedAt: number, previousUpdatedAt: number, reason: string}>,
  *             foreignOwned: Array<{runId: string, pid: number, reason: string}>,
+ *             unverified: Array<{runId: string, pid: number, updatedAt: number, reason: string}>,
  *             corrupt: CorruptEntry[],
  *             unchanged: number }}
  */
@@ -277,6 +324,8 @@ export function reconcile(rosterDir, { ownedRunIds = [], isProcessAlive, now }) 
   const interrupted = [];
   /** @type {Array<{runId: string, pid: number, reason: string}>} */
   const foreignOwned = [];
+  /** @type {Array<{runId: string, pid: number, updatedAt: number, reason: string}>} */
+  const unverified = [];
   let unchanged = 0;
   for (const record of records) {
     if (!ROSTER_LIVE_STATES.includes(record.state)) {
@@ -287,11 +336,44 @@ export function reconcile(rosterDir, { ownedRunIds = [], isProcessAlive, now }) 
       unchanged += 1;
       continue;
     }
-    if (typeof isProcessAlive === "function" && typeof record.pid === "number" && isProcessAlive(record.pid)) {
-      foreignOwned.push({
+    const pid = typeof record.pid === "number" && Number.isFinite(record.pid) ? record.pid : undefined;
+    if (typeof isProcessAlive === "function") {
+      if (pid !== undefined) {
+        /** 谓词抛错 ⇒ 按「无法证明活着」处理（fail-safe：不许据此判死）。 */
+        let alive = false;
+        let predicateError;
+        try {
+          alive = isProcessAlive(pid) === true;
+        } catch (error) {
+          predicateError = error;
+        }
+        if (predicateError !== undefined) {
+          unverified.push({
+            runId: record.runId,
+            pid,
+            updatedAt: record.updatedAt,
+            reason: `isProcessAlive(pid) 抛错（${predicateError?.message ?? String(predicateError)}）：无法证明那个进程是死的，不动记录`,
+          });
+          unchanged += 1;
+          continue;
+        }
+        if (alive) {
+          foreignOwned.push({
+            runId: record.runId,
+            pid,
+            reason: "isProcessAlive(pid) 为真：可能是另一宿主在同一目录里的子 run，不动记录",
+          });
+          unchanged += 1;
+          continue;
+        }
+      }
+    } else if (pid !== undefined) {
+      // 没有谓词 ⇒ 证明不了那个 pid 是死的 ⇒ **不许**改写成 interrupted（issue #630 S2 / D）。
+      unverified.push({
         runId: record.runId,
-        pid: record.pid,
-        reason: "isProcessAlive(pid) 为真：可能是另一宿主在同一目录里的子 run，不动记录",
+        pid,
+        updatedAt: record.updatedAt,
+        reason: "宿主没有提供 isProcessAlive 谓词：无法证明该 pid 已死，不动记录（不提供谓词就没有陈旧清理）",
       });
       unchanged += 1;
       continue;
@@ -303,8 +385,8 @@ export function reconcile(rosterDir, { ownedRunIds = [], isProcessAlive, now }) 
       runId: record.runId,
       endedAt,
       previousUpdatedAt: record.updatedAt,
-      reason: "活态记录既不在 ownedRunIds 内、也无存活谓词兜底：没有任何东西把它做完",
+      reason: "活态记录既不在 ownedRunIds 内、也没有任何东西证明它活着（谓词说死 / 记录无 pid）：没有任何东西把它做完",
     });
   }
-  return { interrupted, foreignOwned, corrupt, unchanged };
+  return { interrupted, foreignOwned, unverified, corrupt, unchanged };
 }

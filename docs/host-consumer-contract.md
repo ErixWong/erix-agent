@@ -5931,6 +5931,76 @@ state is normal and is not the same as a present but invalid state.
 it is retained in persisted state but does not by itself reject a structurally
 valid state on a later resume.
 
+## Delegation bookkeeping (issue #617 / #626 / #630)
+
+`createDelegateTool` (`src/tools/delegation/tool.js`) is the library's child-run surface: the host
+injects `runChild` (the library never forks, spawns or imports `child_process`), and the library owns
+only the bookkeeping — one roster record per child (`src/tools/delegation/roster.js`), a concurrency
+lease, and completion-notification dedupe. Six properties of that surface are contract rather than
+sample detail, because a host that reads them differently will build a wrong orchestrator.
+
+* **The concurrency quota is cross-process atomic, and a crashed holder's slot is reclaimed.** The
+  quota is a fixed pool of slot files in the lease directory, and taking one is a **single exclusive
+  create** — "count the leases, then create one" is gone, so two processes racing for the last slot
+  can no longer both win (before issue #630 S3 they could, and the pool silently over-issued). When
+  the slot a process wants is already taken, the library reads that holder and reclaims the slot
+  only if it can prove the holder is gone: your `isProcessAlive` predicate decides whenever the
+  lease carries a pid (a pid the predicate calls alive is never taken, however old the lease), and
+  only when no predicate was supplied (or the lease carries no pid) does an age threshold apply —
+  30 minutes by default, a **fallback** rather than an authority, which is why a child's own time
+  budget should stay well below it. Reclaiming re-reads the slot and unlinks only the exact holder
+  it judged dead, so a slot that changed hands in between is left untouched; `release` is just as
+  strict and removes a slot only when the identity recorded inside it is the caller's. Lock files
+  written by older versions (one file per child, named after the child) no longer count against the
+  quota and are never deleted — they were short-lived by nature, so leaving them is harmless. There
+  is **no daemon and no timer**: a slot is reclaimed only on the path where some process fails to
+  take one.
+* **A live child is never written off by a process that cannot prove it is dead.** The roster record
+  of a child moves `queued` → `running` → a terminal state, and `running` is written **before** the
+  library calls your run function, so "still queued" and "actually working" are distinguishable. The
+  stale-recompute step (`reconcile`) has exactly one source of truth for "is that process still
+  alive": the port `isProcessAlive(pid) => boolean` you hand the factory. A live record that this
+  process does not own and whose pid the predicate calls alive is listed in `foreignOwned` with the
+  record left **byte-for-byte untouched**; a record the predicate calls dead becomes `interrupted`
+  with its `endedAt` set to that record's own `updatedAt` (the last moment anything was known), never
+  to the moment the probe ran. **If you do not supply the predicate, the library refuses to judge at
+  all**: live records that carry a pid land in a separate `unverified` bucket (each entry names the
+  child, its pid and its `updatedAt`) and stay on disk exactly as they were. That is a deliberate
+  trade, not an oversight — without the port a host gets **no stale cleanup**, because inventing a
+  death for another process's live child is the worse failure. The roster directory is shared by
+  default (the CLI uses `~/.erix/delegation/`), so two concurrent sessions of the same host hit this
+  path routinely, not only under a long-running daemon.
+* **`action: "result"` carries the child's final text.** The terminal roster write stores `resultText`
+  (the child's final answer), `resultTruncated` (present and `true` only when that text was cut) and
+  `errorMessage` (the child's error, written only when the child threw) in the **same atomic write**
+  that stores the terminal `state`; there is no second patch pass, so a parent that reads the record
+  immediately after the state turns terminal never sees a half-filled answer. `result` returns the
+  record's terminal fields (ok / runId / state / endedAt / termination / verification) plus `text`,
+  and `text` is capped at **4000** characters (`truncated: true` when it was cut) while `error` is
+  capped at **1000**. A host that started a child in the background therefore reads the answer itself
+  instead of inferring it from `tail`.
+* **The roster's cwd field is the directory the child actually ran in — when the host says so.** The
+  cwd a model asks for is a request, not a fact: the library does not resolve relative paths and does
+  not know your default directory. The port is `cwdFor(requested, runId) => string`; when it is
+  supplied, the library resolves the value **once** and uses that same value both for the record and
+  for `runChild`, so "record one path, execute in another" cannot happen, and a return value that is
+  not a non-empty string is a `TypeError` at run time (before any lease or record is written). Without
+  the port the old behaviour stands — the record stores the model's raw request and the field is
+  absent when the model asked for nothing — but then the roster's cwd field **does not describe where
+  the child ran**, so a host that wants a true record should always supply it.
+* **A roster file that does not have the shape of a record is named as corrupt, never repaired.**
+  Reading validates three things: the file parses into a JSON object, the identity inside it equals
+  the file name, and the record's own shape holds — `state` is one of the seven closed values and
+  `updatedAt` is a finite number. Anything else is reported through the existing `corrupt` channel
+  (the file and the reason, plus the identity the file name implies) and is **not** treated as a
+  record, not guessed at, and not fixed in place. The write path always had those two shape checks;
+  before issue #630 S2 the read path did not, so a hand-edited or half-written file could be read as
+  a live child with a string watermark.
+* **A child's tool face is a subset of the parent's.** Delegation never widens permissions: the child
+  tool set is filtered with the parent's allowlist (`filterToolsByAllowlist`, `bin/tools.js`) before
+  the engine sees it, and `delegate` itself is never handed down (v1 does not recurse). With no
+  allowlist the child keeps the full face, exactly as before.
+
 ## erix_run final face: per-layer compaction and notes counters (issue #313)
 
 The engine has reported per-layer compaction for every round all along: each `compactionStats`

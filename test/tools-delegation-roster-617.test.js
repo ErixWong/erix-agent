@@ -147,10 +147,10 @@ test("roster: 重算——没给谓词、没给 pid 的无人认领记录同样�
 test("roster: 重算幂等——第二次跑不再改、不再产生新的 interrupted", async () => {
   const dir = await makeTmp("delegation-roster-617-");
   writeRecord(dir, liveRecord("orphan", 3_333));
-  const first = reconcile(dir, { ownedRunIds: [], now: NOW });
+  const first = reconcile(dir, { ownedRunIds: [], isProcessAlive: () => false, now: NOW });
   assert.equal(first.interrupted.length, 1);
   const snapshot = readRecord(dir, "orphan");
-  const second = reconcile(dir, { ownedRunIds: [], now: NOW + 1000 });
+  const second = reconcile(dir, { ownedRunIds: [], isProcessAlive: () => false, now: NOW + 1000 });
   assert.equal(second.interrupted.length, 0, "终态记录不再被重算");
   assert.equal(second.unchanged, 1);
   assert.deepEqual(readRecord(dir, "orphan"), snapshot, "第二次跑逐字节不动");

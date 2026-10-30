@@ -271,8 +271,11 @@ src/
     delegation/                    Child-run bookkeeping (issue #617 P1a) plus the bounded transcript-tail
                                    read (issue #626 C1): no fork/spawn, opaque fields pass through,
                                    liveness is a host-injected predicate
-      roster.js                    Roster: 18-field record, atomic write, updatedAt monotonic, stale reconcile
-      capacity.js                  Concurrency quota leases: wx-exclusive create, idempotent release, sweep
+      roster.js                    Roster: 21-field record (issue #630 S1 adds resultText /
+                                   resultTruncated / errorMessage), atomic write, updatedAt
+                                   monotonic, stale reconcile
+      capacity.js                  Concurrency quota leases: a fixed slot pool taken with one exclusive
+                                   create (cross-process atomic), crash-slot reclaim, idempotent release
       notify.js                    Completion-notify dedup keyed on the (runId, endedAt) pair, fixed prefix
       tool.js                      Delegate tool factory (P1b): runChild host-injected, termination→state
                                    mapping owned by the library; parent identity never a tool argument
@@ -882,7 +885,48 @@ The shared CLI flags are:
   child has not written its first row yet, or the file was cleaned up). The CLI
   registers that path through the factory's `transcriptPathFor` knob and derives it
   with the store's own naming helper, so the parent's `tail` works on the first child
-  run instead of always answering `no_transcript_path`. The C2/C3 actions (resume,
+  run instead of always answering `no_transcript_path`. **`result` returns the child's
+  final text itself** (issue #630 S1): the terminal roster write stores `resultText`
+  — capped at **4000** characters, with `truncated: true` when it was cut — plus
+  `errorMessage` (capped at 1000) when the child threw, so a parent that delegated in
+  the background reads the answer instead of inferring it from `tail`. The roster's
+  cwd field is the directory the child **actually ran in**: the CLI resolves it once
+  through the factory's `cwdFor` port and hands that same value to both the record and
+  the child run (a host that supplies no `cwdFor` keeps the old behaviour, but then the
+  record does not describe the child's real working directory). And the child's tool
+  face is a **subset of the parent's** — `--tools <names>` is applied to the child tool
+  set with the same filter, so narrowing the parent's permissions never widens the
+  child's, and `delegate` itself is never handed down. A child's roster record moves
+  `queued` → `running` → a terminal state, and `running` is written **before** the
+  library calls the host's run function, so a child that is actually working is never
+  reported as still queued. **Two processes sharing one roster directory never write
+  each other's live children off** (issue #630 S2): the default roster directory
+  (`~/.erix/delegation/`) is shared, so two concurrent CLI sessions share it, and the
+  reconcile step now asks the host's `isProcessAlive` predicate instead of assuming
+  "live record I do not own" means "dead". A child whose pid is alive is listed as
+  foreign-owned and its record is left byte-for-byte untouched; the CLI supplies the
+  real predicate (`process.kill(pid, 0)`: success means alive, `EPERM` means alive but
+  not ours to signal, `ESRCH` means dead). Without that predicate the library refuses
+  to call anything dead: a live record that carries a pid goes into a separate
+  `unverified` bucket and stays on disk exactly as it was — the deliberate trade is
+  that a host which never wires the predicate gets **no stale cleanup at all**, because
+  reporting someone else's live child as dead is the worse failure. An explicit
+  `--compact-budget <tokens>` is **inherited by child runs** too (with none, the child
+  keeps deriving its budget from the configured context window, exactly as before).
+  **The concurrency cap is cross-process atomic** (issue #630 S3): the quota is a fixed
+  pool of slot files in the lease directory and taking one is a single exclusive
+  create, so the decision and the claim are the same system call — two processes
+  racing for the last slot can no longer both win (the old "count the leases, then
+  create one" pair did exactly that, and the pool over-issued). A slot whose holder
+  can be proven gone is reclaimed on the spot, with the host's `isProcessAlive`
+  predicate as the authority whenever the lease carries a pid, and a 30-minute age
+  threshold as a **fallback** only when no predicate was supplied (so a child's own
+  time budget should stay well below it). Reclaiming re-reads the slot and unlinks
+  only the exact holder it judged dead, releasing removes a slot only when it records
+  the caller's own identity, and lease files written by older versions neither count
+  against the quota nor get deleted. There is no daemon and no timer: a slot is
+  reclaimed only when some process fails to take one.
+  The C2/C3 actions (resume,
   steer) are **not** part of it. It is a
   runnable sample and verifier for the
   host-side delegation contract, not a new default capability.
