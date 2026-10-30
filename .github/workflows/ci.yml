@@ -31,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [24]
+        node: [22]
     steps:
       - uses: actions/checkout@v4
 
@@ -135,7 +135,7 @@ jobs:
 
       # 离线、自清洁、约 15 s，但矩阵里跑两遍纯浪费 ⇒ 只在 node 22 跑一次
       - name: Release check (offline pack → install → contract suites → tsc --strict → CLI smoke)
-        if: matrix.node == 24
+        if: matrix.node == 22
         run: npm run check:release
 
       # 阻塞（issue #302）：--self-test 的期望集合与「本机有没有 docs/tasks/」彻底解耦——那两条 `#280`
