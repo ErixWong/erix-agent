@@ -256,6 +256,29 @@ but the file is absent or unreadable (the child has not written its first row ye
 cleaned up — **normal timing**). Collapsing them would make "you never wired it" read as "the child did
 nothing".
 
+**Three corrections to that sample surface (issue #630 S1).** All three are about the record and the
+result telling the truth; none of them adds a new default capability.
+
+* **`action=result` carries the child's final text.** The terminal roster write now stores
+  `resultText` (the child's final answer, capped at **4000** characters with `truncated: true` when it
+  was cut) and `errorMessage` (the child's error, capped at 1000, written only when the child threw) —
+  in the **same atomic write** that stores the terminal `state`, not as a follow-up patch. `result`
+  returns the record's terminal fields plus `text` (and `truncated` / `error` when they exist).
+  Before this, a background child's text was dropped on the floor: the parent got `state` and
+  `termination` and had to guess the answer from `tail`.
+* **The roster's cwd field is the directory the child actually ran in — when you say so.** A model's
+  cwd is a request, not a fact: the library does not resolve relative paths and does not know your
+  default directory. The port is `cwdFor`: `(requested, runId) => string`. Provide it and the library
+  resolves the value **once** and uses that same value for both the record and `runChild` (never
+  "record one, execute another"); its return value must be a non-empty string or the factory throws.
+  Without the port the old behaviour stands — but then the roster's cwd field does **not** describe
+  where the child ran, so a host that wants a true record should always supply it. The CLI does:
+  `cwdFor: (requested) => path.resolve(requested ?? parentCwd)`.
+* **A child's tool face is a subset of the parent's.** Delegation never widens permissions: the child
+  tool set is filtered with the parent's `--tools` allowlist (the same `filterToolsByAllowlist`) before
+  the engine sees it, and `delegate` itself is never handed down (v1 does not recurse). With no
+  allowlist the child keeps the full face, exactly as before.
+
 The gate for the whole path is `examples/delegate-real-e2e.test.mjs`, step 2 of
 `npm run check:release:real`: a real-upstream parent run delegates a child run, and the test asserts the
 child's roster record carries the parent's `config.run.runId`, the child ends `end_turn`, the roster ends

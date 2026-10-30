@@ -223,8 +223,10 @@ export function createDelegateTool(options) {
    * 两个上限（`RESULT_TEXT_LIMIT` / `ERROR_MESSAGE_LIMIT`）在这里兑现：截了就带
    * `resultTruncated: true`，没截就不写那个键（“不给的字段不写”）。
    * @param {string} runId
-   * @param {{ ok: true, text: string, termination?: *, verification?: * }
-   *        | { ok: false, error: * }} outcome
+   *   两种形状：成功 `{ ok: true, text, termination?, verification? }`；失败 `{ ok: false, error }`。
+   *   这里刻意用「一个对象 + 可选成员」而不是可判别联合：`--checkJs` 下联合的否定收窄在
+   *   JSDoc 字面量类型上不生效（tsc 只认 `.text` 那一侧），写成可选成员既过闸又不用 cast。
+   * @param {{ ok: boolean, text?: *, termination?: *, verification?: *, error?: * }} outcome
    * @param {boolean} background
    */
   const finishRun = (runId, outcome, background) => {

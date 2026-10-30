@@ -4661,6 +4661,29 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
 `stateAvailability` 是本次 resume 的诊断观测结果，会随 state 保留用于诊断，但不会仅因该标记
 而拒绝下一次 resume 时结构仍然有效的 state。
 
+## 派生（子 run）簿记（issue #617 / #626 / #630）
+
+`createDelegateTool`（`src/tools/delegation/tool.js`）是库的派生子 run 面：`runChild` 由宿主注入
+（库绝不 fork / spawn / import `child_process`），库只承担簿记——一个子 run 一条名册记录
+（`src/tools/delegation/roster.js`）、并发租约、完成通知去重。这个面上有三条是**契约**而不是示例细节，
+读错任何一条都会装配出错的编排器。
+
+* **`action: "result"` 带回子 run 的终稿。** 终态那一次名册写会存 `resultText`（子的终稿）、
+  `resultTruncated`（只有真被截断时才存在且为 `true`）与 `errorMessage`（子的错误，只在子抛错时写），
+  并且与终态 `state` 是**同一次原子写**——没有事后补写第二遍，所以父在状态刚转终态时读记录，
+  绝不会读到半截答案。`result` 返回名册的终态字段（`ok` / 子 run 身份 / `state` / `endedAt` /
+  `termination` / `verification`）再加 `text`，其中 `text` 上限 **4000 字符**（被截断时带
+  `truncated: true`）、`error` 上限 **1000**。后台起子的宿主因此读到的是答案本身，而不是拿 `tail` 去猜。
+* **名册里记录工作目录的那个字段，写的是子 run 实际跑在的目录——前提是宿主说了。** 模型请求里的
+  工作目录是请求、不是事实：库不解析相对路径，也不知道你的缺省目录是谁。端口是 `cwdFor`
+  （收到模型请求的目录与子 run 身份，返回非空字符串）；提供了它，库就**只解析一次**，并且**同一个值**
+  既写记录、又交给 `runChild`，所以「记录一个路径、在另一个目录执行」不可能发生；返回值不是非空字符串
+  就是运行期 `TypeError`（在任何租约或记录落盘之前）。不提供就保持旧行为——记录里存模型的原值，
+  模型没给时该字段缺省——但那时名册不代表子实际跑在哪，所以想要记录为真的宿主应当总是提供它。
+* **子 run 的工具面是父的子集。** 派生绝不扩权：子工具集在进引擎之前就用父的白名单
+  （`filterToolsByAllowlist`，`bin/tools.js`）过滤过，而 `delegate` 本身永不下传（v1 不递归）。
+  没有白名单时子照旧拿全量，与以前逐字一致。
+
 ## erix_run 终局面：分层削减与 notes 计数（issue #313）
 
 引擎早就是逐轮报分层压缩的：每条 `compactionStats` 条目都带一个 `layers` 映射，键是

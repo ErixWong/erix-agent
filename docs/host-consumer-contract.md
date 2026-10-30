@@ -5931,6 +5931,37 @@ state is normal and is not the same as a present but invalid state.
 it is retained in persisted state but does not by itself reject a structurally
 valid state on a later resume.
 
+## Delegation bookkeeping (issue #617 / #626 / #630)
+
+`createDelegateTool` (`src/tools/delegation/tool.js`) is the library's child-run surface: the host
+injects `runChild` (the library never forks, spawns or imports `child_process`), and the library owns
+only the bookkeeping — one roster record per child (`src/tools/delegation/roster.js`), a concurrency
+lease, and completion-notification dedupe. Three properties of that surface are contract rather than
+sample detail, because a host that reads them differently will build a wrong orchestrator.
+
+* **`action: "result"` carries the child's final text.** The terminal roster write stores `resultText`
+  (the child's final answer), `resultTruncated` (present and `true` only when that text was cut) and
+  `errorMessage` (the child's error, written only when the child threw) in the **same atomic write**
+  that stores the terminal `state`; there is no second patch pass, so a parent that reads the record
+  immediately after the state turns terminal never sees a half-filled answer. `result` returns the
+  record's terminal fields (ok / runId / state / endedAt / termination / verification) plus `text`,
+  and `text` is capped at **4000** characters (`truncated: true` when it was cut) while `error` is
+  capped at **1000**. A host that started a child in the background therefore reads the answer itself
+  instead of inferring it from `tail`.
+* **The roster's cwd field is the directory the child actually ran in — when the host says so.** The
+  cwd a model asks for is a request, not a fact: the library does not resolve relative paths and does
+  not know your default directory. The port is `cwdFor(requested, runId) => string`; when it is
+  supplied, the library resolves the value **once** and uses that same value both for the record and
+  for `runChild`, so "record one path, execute in another" cannot happen, and a return value that is
+  not a non-empty string is a `TypeError` at run time (before any lease or record is written). Without
+  the port the old behaviour stands — the record stores the model's raw request and the field is
+  absent when the model asked for nothing — but then the roster's cwd field **does not describe where
+  the child ran**, so a host that wants a true record should always supply it.
+* **A child's tool face is a subset of the parent's.** Delegation never widens permissions: the child
+  tool set is filtered with the parent's allowlist (`filterToolsByAllowlist`, `bin/tools.js`) before
+  the engine sees it, and `delegate` itself is never handed down (v1 does not recurse). With no
+  allowlist the child keeps the full face, exactly as before.
+
 ## erix_run final face: per-layer compaction and notes counters (issue #313)
 
 The engine has reported per-layer compaction for every round all along: each `compactionStats`

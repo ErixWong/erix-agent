@@ -12,10 +12,11 @@
 //
 // 全离线：脚本化假 provider（按系统提示分流父/子），临时目录走 `makeTmp`，不碰真实 `~/.erix`。
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
 
+import { runChat } from "../bin/cli.js";
 import { createCliDelegation } from "../bin/delegation.js";
 import {
   ERROR_MESSAGE_LIMIT,
@@ -63,6 +64,14 @@ function createRoutingFakeProvider({ parentScript = [], childScript = [] }) {
     },
   };
   return provider;
+}
+
+/** 空 MCP 配置：`runChat` 默认会去读 `~/.erix/mcp.json` / 当前目录 `.mcp.json`（测试不许碰真家目录）。 */
+async function writeEmptyMcpConfig(dir) {
+  const configPath = join(dir, "mcp.json");
+  await mkdir(dir, { recursive: true });
+  await writeFile(configPath, JSON.stringify({ mcpServers: {} }), "utf8");
+  return configPath;
 }
 
 /** 轮询到谓词为真（后台收尾是异步的）；超时按失败处理。 */
@@ -394,4 +403,59 @@ test("真装配（#630 C）：allowlist 缺省 ⇒ 父子都全量（子仍有 e
   const childRequest = provider.requests.find((r) => r.role === "child");
   assert.ok(childRequest.toolNames.includes("exec"), "allowlist 缺省时子工具面照旧是全量");
   assert.equal(childRequest.toolNames.includes("delegate"), false, "v1 不递归：delegate 永不下传");
+});
+
+test("真装配（#630 C，CLI 接线）：--tools readFile,delegate ⇒ 子的工具面只剩 readFile", async () => {
+  const root = await makeTmp("erix-delegate-630-c-cli-");
+  const delegationDir = join(root, "delegation");
+  const configPath = await writeEmptyMcpConfig(join(root, "mcp"));
+  const provider = createRoutingFakeProvider({
+    parentScript: [
+      {
+        content: [{
+          type: "tool_use",
+          id: "parent-630c-1",
+          name: "delegate",
+          input: { action: "run", task: "只读任务" },
+        }],
+        stopReason: "tool_use",
+      },
+      { content: [{ type: "text", text: "任务已完成：父 run 收尾" }], stopReason: "end_turn" },
+    ],
+    childScript: [{ content: [{ type: "text", text: "任务已完成：子 run 收尾" }], stopReason: "end_turn" }],
+  });
+
+  const result = await runChat({
+    prompt: "派生一个只读子任务",
+    session: "delegate-630c-parent",
+    cwd: root,
+    dir: join(root, "transcripts"),
+    notesDir: join(root, "notes"),
+    skillsDir: join(root, "skills"),
+    configPath,
+    provider,
+    config: { model: "fake-model", maxOutputTokens: 1000 },
+    maxRounds: 4,
+    idleTimeout: 0,
+    delegate: true,
+    delegationDir,
+    // 父会话的白名单：delegate 自己要留（否则父调不到派生），readFile 是父允许的全部权限。
+    tools: "readFile,delegate",
+    toolOutput: () => {},
+    idleLog: () => {},
+  });
+  assert.equal(result.termination?.reason, "end_turn", `父 run 应正常收尾：${JSON.stringify(result.termination)}`);
+
+  const childRequest = provider.requests.find((r) => r.role === "child");
+  assert.ok(childRequest, "子 run 必须真的被跑起来（父的 delegate 调用真的下传了）");
+  assert.deepEqual(
+    [...childRequest.toolNames].sort(),
+    ["readFile"],
+    `cli.js 必须把 --tools 下传成 toolAllowlist（缺陷 C 的接线面）：${JSON.stringify(childRequest.toolNames)}`,
+  );
+  assert.equal(childRequest.toolNames.includes("exec"), false, "父只开 readFile ⇒ 子不许有 exec");
+  assert.equal(childRequest.toolNames.includes("delegate"), false, "v1 不递归：delegate 永不下传");
+  const listLine = toolListLine(childRequest.system);
+  assert.ok(listLine !== null);
+  assert.equal(listLine.includes("exec"), false, `子提示词的工具清单行不许提 exec：${listLine}`);
 });
