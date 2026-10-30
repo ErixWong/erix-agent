@@ -31,6 +31,8 @@ import { sessionScanPrefix } from "../bin/session-scan.js";
 import {
   CONTINUITY_BLOCK_START,
   CONTINUITY_SECTION_NAMES,
+  CONTINUITY_WRITE_DEFAULT,
+  CONTINUITY_WRITE_MODES,
   HANDOFF_FALLBACK_INSTRUCTION,
   HANDOFF_INSTRUCTION,
   HANDOFF_MARKER_START,
@@ -663,5 +665,32 @@ test("判据 6-a（`prompt` 的读回）：注入指令只在请求视图里，�
     assert.equal(raw.projectKey, continuityProjectKey(cwd));
     assert.equal(raw.cwd, cwd);
     assert.equal(raw.sections.evidence, "已验证：判据 1–5");
+  });
+});
+
+// ================================================================ 默认值守护（issue #618）
+
+// 双层：名字级（常量逐字相等 ⇒ 改这个字面量就红）+ 行为级（默认档位确实「不注入、不读不写」）。
+// 落点选本文件：默认档位 = 零行为变更的夹具（runWith / withContinuityDir / 判据 1 的对拍形状）都在这里。
+test("默认值守护：CONTINUITY_WRITE_DEFAULT 逐字 \"off\"，且默认档位下请求尾部不注入 handoff 指令", async () => {
+  assert.equal(CONTINUITY_WRITE_DEFAULT, "off", "续接块默认写者档位（改这个字面量就该有题红）");
+  assert.equal(CONTINUITY_WRITE_MODES[0], CONTINUITY_WRITE_DEFAULT, "三档里的第一个就是默认值（同一份真相）");
+  // 读侧默认必须逐字等于这个常量：常量与运行时默认不许漂（否则「文档说 off、跑起来是 prompt」）。
+  assert.equal(normalizeContinuityWriteMode(undefined), CONTINUITY_WRITE_DEFAULT);
+
+  const cwd = await makeTmp("erix598-default-cwd");
+  const dir = path.join(await makeTmp("erix598-default-store"), "continuity");
+  await withContinuityDir(dir, async () => {
+    // 一个字节都不写 `config.continuity` ⇒ 走默认档位。
+    const byDefault = createFakeProvider([{ content: [{ type: "text", text: "收尾" }], stopReason: "end_turn" }]);
+    await runWith({ runId: "s598-default", provider: byDefault, cwd });
+    assert.equal(JSON.stringify(byDefault.requests).includes(HANDOFF_INSTRUCTION), false, "默认档位 ⇒ 不注入指令");
+    assert.equal(JSON.stringify(byDefault.requests).includes(HANDOFF_MARKER_START), false, "默认档位 ⇒ 请求里连 marker 都没有");
+    await assert.rejects(() => stat(dir), (error) => error?.code === "ENOENT", "默认档位 ⇒ 连 store 目录都不该被创建");
+
+    // 对照：同一份夹具，只把这个开关拨到 `prompt` ⇒ 指令逐字出现在请求尾部。
+    const turnedOn = createFakeProvider([{ content: [{ type: "text", text: "收尾" }], stopReason: "end_turn" }]);
+    await runWith({ runId: "s598-default", provider: turnedOn, cwd, continuity: { handoff: "prompt" } });
+    assert.equal(textOf(turnedOn.requests[0].messages.at(-1)), HANDOFF_INSTRUCTION, "拨到 prompt ⇒ 注入");
   });
 });

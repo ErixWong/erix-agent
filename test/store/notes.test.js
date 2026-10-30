@@ -13,9 +13,11 @@ import {
 import path from "node:path";
 
 import {
+  DEFAULT_RETENTION_MS,
   createFileNotesStore,
   isNoteRecord,
 } from "../../src/store/notes.js";
+import { retentionMs } from "../../src/store/notes-port.js";
 import { createMemoryNotesStore } from "../../src/store/notes-memory.js";
 import { notesStoreCasContract, notesStoreContract } from "../contract/notes-store.js";
 import * as notes from "../../src/tools/notes.js";
@@ -772,6 +774,46 @@ test("summary inside current survives the storage layer in both built-in adapter
     assert.equal(persisted.current.summary, "一行主题");
     assert.equal(persisted.superseded[0].summary, "旧一行主题");
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// —— 默认值守护（issue #618 表 1 的「零守护」补口）——
+// 双层：名字级（常量逐字相等 ⇒ 改这个数就红）+ 行为级（默认保留期决定 purge 删/留）。
+// 落点选本文件：purge 的 scope 时钟夹具（ageScopeFiles / makeRecord）与「保留期 env」那一格都在这里。
+test("默认值守护：DEFAULT_RETENTION_MS 逐字 30 天，且无 env 时默认保留期就是 purge 的分界线", async () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  assert.equal(DEFAULT_RETENTION_MS, 30 * DAY, "笔记保留期默认值（改这个数就该有题红）");
+
+  const root = await makeTempDirectory();
+  // 清掉两个保留期变量（ERIX_NOTES_RETENTION_MS 权威 / ERIX_NOTES_GRACE_MS 兼容名），
+  // 跑完原样恢复——本格测的正是「一个 env 都不给」时的默认值。
+  const saved = {
+    ERIX_NOTES_RETENTION_MS: process.env.ERIX_NOTES_RETENTION_MS,
+    ERIX_NOTES_GRACE_MS: process.env.ERIX_NOTES_GRACE_MS,
+  };
+  delete process.env.ERIX_NOTES_RETENTION_MS;
+  delete process.env.ERIX_NOTES_GRACE_MS;
+  try {
+    // 行为级第 0 层：读侧不传 env ⇒ 保留期逐字就是这个常量（常量与运行时不许漂）。
+    assert.equal(retentionMs(), DEFAULT_RETENTION_MS, "无 env 时 retentionMs() 必须等于默认常量");
+
+    const store = createFileNotesStore({ dir: root });
+    await store.write({
+      scope: "run", scopeRef: "default-run", key: "kept",
+      record: makeRecord("kept", "default-run"),
+    });
+    // 未过期（默认 30 天 - 1 天）：purge 不删。
+    await ageScopeFiles(root, "default-run", 29 * DAY);
+    assert.deepEqual(await store.purge({}), { status: "found", scanned: 1, purged: 0 }, "29 天 ⇒ 保留");
+    // 过期（默认 30 天 + 1 天）：purge 整本物理删除。
+    await ageScopeFiles(root, "default-run", 31 * DAY);
+    assert.deepEqual(await store.purge({}), { status: "found", scanned: 1, purged: 1 }, "31 天 ⇒ 清理");
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
     await rm(root, { recursive: true, force: true });
   }
 });
