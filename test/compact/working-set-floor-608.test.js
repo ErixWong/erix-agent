@@ -1,7 +1,11 @@
 // issue #608 —— 工作集地板 + 预算不足显式劣化 + run-state 游标（`last=`）。
+// issue #612 —— 地板改为 **opt-in（默认关）**：机制不动，只把**引擎默认值**从
+// `WORKING_SET_RECENT_ROUNDS` 收成 `0`（成本已证 11k → 46k、收益未证 ⇒ 见 `orchestrator.js` 那段）。
+// 所以本文件里凡是要看「地板生效」的格子，都必须**显式开**（`workingSetRecentRounds: N`）；
+// 不显式开就是默认关，行为逐字回到 #608 之前（`#612-1a/1b/1c` 钉住这件事）。
 //
 // 三条判据（全部离线：fake provider + 内存 store，零真实 LLM、零网络、零 `~/.erix`）：
-//   1. **地板生效**：待折轮次里若含最近 `WORKING_SET_RECENT_ROUNDS` 轮的 `tool_result`，
+//   1. **地板生效（显式开时）**：待折轮次里若含最近 `WORKING_SET_RECENT_ROUNDS` 轮的 `tool_result`，
 //      **有更老的轮次可折时**这些轮次不进 `foldedPayload`（= 不被换成摘要/占位符）；
 //      把地板去掉（`workingSetRecentRounds: 0`）⇒ 该格必须红。
 //   2. **显式劣化**：连续 `WORKING_SET_LOOP_ATTEMPTS` 次「工作集 > 预算 且折完仍超预算 且模型在
@@ -13,7 +17,9 @@
 // 变异实验（见报告，不落盘）：
 //   · 把 `selectFoldedRounds` 的 `index < floorIndex` 去掉 ⇒ 判据 1 红；
 //   · 把 `compactBeforeRound` 里的劣化分支去掉 ⇒ 判据 2 红（跑到 `max_rounds_cap`）；
-//   · 把 `advanceLastToolCall` 的 `streak` 恒置 1 ⇒ 判据 3 的 `×3` 那半句红。
+//   · 把 `advanceLastToolCall` 的 `streak` 恒置 1 ⇒ 判据 3 的 `×3` 那半句红；
+//   · issue #612：把引擎默认值改回 `WORKING_SET_RECENT_ROUNDS` ⇒ `#612-1a`（默认下发的值必须是
+//     `0`）与 `#612-1c`（默认关时工作集照旧被折）两格红。
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -64,7 +70,12 @@ const paragraphToolStep = (index, { repeat = 1 } = {}) => ({
 
 const endTurn = (text = "收尾") => ({ content: [{ type: "text", text }], stopReason: "end_turn" });
 
-/** 引擎级 run 的公共装配：工具只回显「第几段」，正文由 `paragraph` 造。 */
+/**
+ * 引擎级 run 的公共装配：工具只回显「第几段」，正文由 `paragraph` 造。
+ *
+ * `workingSetRecentRounds` 是 issue #612 的**显式开**通道（宿主经 `config.folding.context` 给值，
+ * 引擎非枚举地转成 `compactOptions.workingSetRecentRounds`）。不给 = 默认关（`0`）。
+ */
 const runEngine = ({
   runId,
   provider,
@@ -73,6 +84,8 @@ const runEngine = ({
   keepRounds = 0,
   maxRounds,
   capabilities,
+  workingSetRecentRounds,
+  strategy,
   executeTool = async ({ input }) => paragraph(input?.index ?? 0),
 }) => runDirect({
   runId,
@@ -81,10 +94,44 @@ const runEngine = ({
   store: createMemoryTranscriptStore(),
   executeTool,
   maxRounds,
-  ...(capabilities === undefined ? {} : { capabilities }),
+  ...(capabilities === undefined && strategy === undefined
+    ? {}
+    : {
+      capabilities: {
+        ...(capabilities ?? {}),
+        // 策略对象是**端口**不是数据（`config` 子树必须能过 JSON 往返）⇒ 它的家是
+        // `capabilities.ports.strategy`（#612 的观察面就挂在这里）。
+        ...(strategy === undefined ? {} : { ports: { ...(capabilities?.ports ?? {}), strategy } }),
+      },
+    }),
   config: {
-    folding: { context: { budgetTokens, keepRounds } },
+    folding: {
+      context: {
+        budgetTokens,
+        keepRounds,
+        ...(workingSetRecentRounds === undefined ? {} : { workingSetRecentRounds }),
+      },
+    },
     run: { completion: false },
+  },
+});
+
+/**
+ * 只记录「引擎下发给策略的选项」的策略（issue #612 判据 1/2 的观察面）。
+ *
+ * 不折任何东西（原样返回 `messages`）：本格要看的只是**下发的值**，不是折叠效果；
+ * 超预算那一发由引擎自己的安全层处理，与地板无关。
+ */
+const recordingStrategy = (sink) => ({
+  name: "recording",
+  shouldCompact: () => true,
+  async compact(messages, options = {}) {
+    sink.push({
+      hasOwn: Object.prototype.hasOwnProperty.call(options, "workingSetRecentRounds"),
+      value: options.workingSetRecentRounds,
+      enumerable: Object.keys(options).includes("workingSetRecentRounds"),
+    });
+    return { messages, foldedPayload: [] };
   },
 });
 
@@ -142,7 +189,7 @@ test("#608-1c 工作集度量与建议预算：同一把估算尺子，1.5 倍�
   assert.equal(suggestedBudgetTokens(0), 0);
 });
 
-test("#608-1d 真引擎：批量取数 + 工作集 > 预算 ⇒ 有更老轮次可折时最近 2 轮的 tool_result 不被折走", async () => {
+test("#608-1d 真引擎（**显式开**地板）：批量取数 + 工作集 > 预算 ⇒ 有更老轮次可折时最近 2 轮的 tool_result 不被折走", async () => {
   // 形状：前两轮是**很小**的结果（让历史能攒到 4 轮），后两轮是**很大**的结果（工作集 > 预算）。
   // 这样折叠决策时才**真的有更老的轮次可折**——那是地板唯一的可观测面（否则进度保证会照旧折一轮）。
   const provider = createFakeProvider([
@@ -157,6 +204,8 @@ test("#608-1d 真引擎：批量取数 + 工作集 > 预算 ⇒ 有更老轮次�
     budgetTokens: 1000,
     keepRounds: 0,
     maxRounds: 9,
+    // issue #612：地板已是 opt-in ⇒ 这一格必须**显式开**（只调开关写法，判据一个字没删）。
+    workingSetRecentRounds: WORKING_SET_RECENT_ROUNDS,
     executeTool: async ({ input }) => (
       input.index <= 2 ? `tiny-${input.index}` : paragraph(input.index)
     ),
@@ -192,6 +241,143 @@ test("#608-1d 真引擎：批量取数 + 工作集 > 预算 ⇒ 有更老轮次�
     }
     // 反向半句：更老的轮次**必须**被折（否则「没折」也能让上面那半句变绿 = 空断言）。
     assert.equal(foldedJson.includes(entry.results[0]), true, "更老的轮次必须真的被折走");
+  }
+});
+
+// ── 判据 1/2（issue #612）：默认关 / 可显式开 ─────────────────────────────────────────
+
+test("#612-1a 默认（不传任何相关选项）⇒ 引擎下发给策略的地板值是 0，且通道键仍是不可枚举的", async () => {
+  const seen = [];
+  const provider = createFakeProvider([
+    paragraphToolStep(1),
+    paragraphToolStep(2),
+    endTurn(),
+    { ...endTurn("强制收尾"), times: 3 },
+  ]);
+  await runEngine({
+    runId: "s612-default",
+    provider,
+    budgetTokens: 400,
+    maxRounds: 6,
+    strategy: recordingStrategy(seen),
+  });
+
+  assert.ok(seen.length >= 1, "前提：这条 run 必须真的走过折叠决策（否则本格是空断言）");
+  for (const entry of seen) {
+    assert.equal(entry.hasOwn, true,
+      "通道仍在：`workingSetRecentRounds` 必须照样下发（宿主策略读得到，不是删键）");
+    assert.equal(entry.value, 0, `默认关：引擎必须下发 0（实测 ${entry.value}）`);
+    assert.equal(entry.enumerable, false,
+      "非枚举：选项键面逐字不变（与 roundNumbers / foldRecords 同一口径）");
+  }
+});
+
+test("#612-1b 默认关 ⇒ selectFoldedRounds 与 #608 之前的 3 参调用逐字一致（folded / retained / foldedIndexes 全对拍）", () => {
+  const blockText = renderContinuityBlock({
+    sections: { contract: ["goal: #612"], unfinished: ["u1: 未完成"], evidence: ["verified: none"] },
+    version: 1,
+  }).text;
+  const shapes = [
+    // 四轮工具结果（#608-1a 的夹具）
+    [{ messages: toolRound(1) }, { messages: toolRound(2) },
+      { messages: toolRound(3) }, { messages: toolRound(4) }],
+    // 两轮工具结果（#608-1b 的夹具）
+    [{ messages: toolRound(1) }, { messages: toolRound(2) }],
+    // 混入无 tool_result 的纯正文轮 + 引擎续接块轮
+    [{ messages: toolRound(1) }, { messages: [{ role: "assistant", content: [{ type: "text", text: "想" }] }] },
+      { messages: [{ role: "user", content: [{ type: "text", text: blockText }] }] },
+      { messages: toolRound(2) }],
+  ];
+  for (const rounds of shapes) {
+    for (const keepRounds of [0, 1, 2, 6]) {
+      // #608 之前的调用形状：只有三个参（第 4 参不存在）。
+      const legacy = selectFoldedRounds(rounds, keepRounds, undefined);
+      // 引擎今天的默认值：`0`（地板关）。
+      const withDefault = selectFoldedRounds(rounds, keepRounds, undefined, 0);
+      assert.deepEqual(withDefault.foldedIndexes, legacy.foldedIndexes,
+        `foldedIndexes 必须逐字一致（keepRounds=${keepRounds}）`);
+      assert.equal(withDefault.folded.length, legacy.folded.length);
+      assert.equal(withDefault.retained.length, legacy.retained.length);
+      // 不只是数量相等：必须是同一批轮次对象、同一个顺序。
+      assert.equal(withDefault.folded.every((round, index) => round === legacy.folded[index]), true,
+        `folded 必须是同一批轮次（keepRounds=${keepRounds}）`);
+      assert.equal(withDefault.retained.every((round, index) => round === legacy.retained[index]), true,
+        `retained 必须是同一批轮次（keepRounds=${keepRounds}）`);
+    }
+  }
+});
+
+test("#612-1c 默认关的真引擎：工作集里的 tool_result 照旧被折走（= #608 之前的行为，地板真的不在）", async () => {
+  // 夹具与 #608-1d 逐字相同，**只差开关**：不传 `workingSetRecentRounds` ⇒ 地板关。
+  const provider = createFakeProvider([
+    ...Array.from({ length: 6 }, (_unused, index) => paragraphToolStep(index + 1)),
+    endTurn(),
+  ]);
+  /** @type {{foldedPayload: object[], messages: object[]}[]} */
+  const folds = [];
+  await runEngine({
+    runId: "s612-default-engine",
+    provider,
+    budgetTokens: 1000,
+    keepRounds: 0,
+    maxRounds: 9,
+    executeTool: async ({ input }) => (
+      input.index <= 2 ? `tiny-${input.index}` : paragraph(input.index)
+    ),
+    capabilities: {
+      hooks: {
+        onBeforeFold: (payload) => {
+          folds.push({ foldedPayload: payload.foldedPayload ?? [], messages: payload.messages ?? [] });
+        },
+      },
+    },
+  });
+
+  const attempts = folds.map((entry) => ({
+    foldedPayload: entry.foldedPayload,
+    results: entry.messages
+      .flatMap((message) => (Array.isArray(message?.content) ? message.content : []))
+      .filter((block) => block?.type === "tool_result")
+      .map((block) => String(block.content)),
+  }));
+  const withOlderRounds = attempts.filter(
+    (entry) => entry.foldedPayload.length > 0 && entry.results.length > WORKING_SET_RECENT_ROUNDS,
+  );
+  assert.ok(withOlderRounds.length >= 1,
+    `前提不成立：没有任何一次「有更老轮次可折」的折叠尝试（实测 ${JSON.stringify(
+      attempts.map((entry) => ({ results: entry.results.length, folded: entry.foldedPayload.length })),
+    )}）`);
+  for (const entry of withOlderRounds) {
+    const foldedJson = JSON.stringify(entry.foldedPayload);
+    // 反向断言（与 #608-1d 镜像）：地板关时，**最近那一轮**的 tool_result 也在被折之列。
+    const newest = entry.results[entry.results.length - 1];
+    assert.equal(foldedJson.includes(newest), true,
+      `默认关时工作集必须照旧被折（= #608 之前）：${newest.slice(0, 40)}…`);
+    assert.equal(foldedJson.includes(entry.results[0]), true, "更老的轮次当然也在被折之列");
+  }
+});
+
+test("#612-2a 宿主显式给 workingSetRecentRounds: 2 ⇒ 引擎照旧下发 2（通道保留，行为与 #608 一致）", async () => {
+  const seen = [];
+  const provider = createFakeProvider([
+    paragraphToolStep(1),
+    paragraphToolStep(2),
+    endTurn(),
+    { ...endTurn("强制收尾"), times: 3 },
+  ]);
+  await runEngine({
+    runId: "s612-explicit",
+    provider,
+    budgetTokens: 400,
+    maxRounds: 6,
+    workingSetRecentRounds: 2,
+    strategy: recordingStrategy(seen),
+  });
+
+  assert.ok(seen.length >= 1, "前提：这条 run 必须真的走过折叠决策");
+  for (const entry of seen) {
+    assert.equal(entry.value, 2, `显式开时引擎必须沿用宿主的值（实测 ${entry.value}）`);
+    assert.equal(entry.enumerable, false, "通道形状不变（非枚举）");
   }
 });
 
