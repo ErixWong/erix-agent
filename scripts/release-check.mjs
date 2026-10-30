@@ -1089,7 +1089,8 @@ async function main() {
   console.log("release-check: 实测明细");
   for (const note of notes) console.log(`  - ${note}`);
   const total = Math.round(stepTimings.reduce((sum, timing) => sum + timing.seconds, 0) * 10) / 10;
-  console.log(`release-check: OK — 六步全绿，累计 ${total}s（墙钟 ${elapsedSeconds(STARTED_AT)}s）`);
+  // 步数从 `STEPS.length` 派生：这里写死「六步」的话，加第 7 步时这句就会撒谎。
+  console.log(`release-check: OK — ${STEPS.length} 步全绿，累计 ${total}s（墙钟 ${elapsedSeconds(STARTED_AT)}s）`);
 }
 
 function elapsedSeconds(startedAt) {

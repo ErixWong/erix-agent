@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DEFAULT_WRITE_TOOL_NAMES,
   buildJudgePrompt,
   buildTimeline,
   parseJudgeDecision,
+  rawWritePaths,
   renderConversation,
 } from "../src/reflection/judge.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
@@ -73,6 +75,36 @@ test("buildTimeline 的默认写工具集认 edit（参数摘要取 path，issue
   assert.deepEqual(buildTimeline(messages, 1).toolCalls, [
     { name: "edit", arg: "gates.txt", status: "ok" },
   ], "不传 writeToolNames 时 edit 也必须被当成写工具，摘要取它的 path 而不是整包 edits");
+});
+
+// —— 默认值守护（issue #618 表 1 的「零守护」补口）——
+// 双层：名字级（常量逐字相等 ⇒ 改这个清单就红）+ 行为级（judge 认哪些工具是写操作确实由它决定）。
+// 落点选本文件：judge 的 timeline / rawWritePaths 夹具都在这里（上面那一格就是 edit 的口径）。
+test("默认值守护：DEFAULT_WRITE_TOOL_NAMES 逐字 [writeFile, edit]，且默认清单把 writeFile/edit 判为写、readFile 判为非写", () => {
+  assert.deepEqual(DEFAULT_WRITE_TOOL_NAMES, ["writeFile", "edit"], "judge 的默认写工具集（改这个清单就该有题红）");
+  const messages = [
+    { role: "user", content: [{ type: "text", text: "task" }] },
+    {
+      role: "assistant",
+      content: [
+        { type: "tool_use", id: "w1", name: "writeFile", input: { path: "a.txt", content: "x" } },
+        { type: "tool_use", id: "e1", name: "edit", input: { path: "b.txt", edits: [{ oldText: "a", newText: "b" }] } },
+        { type: "tool_use", id: "r1", name: "readFile", input: { path: "c.txt" } },
+      ],
+    },
+  ];
+  // 不传 writeToolNames ⇒ 走默认清单：writeFile / edit 各认出一条原始路径，readFile 不算写。
+  assert.deepEqual(
+    rawWritePaths(messages),
+    [{ name: "writeFile", path: "a.txt" }, { name: "edit", path: "b.txt" }],
+    "默认清单下 readFile 不是写操作（filesWritten 不许被读操作灌水）",
+  );
+  // 行为级对照：同一份消息，显式换一份清单 ⇒ 结果随它变（证明这条断言咬的是这个常量）。
+  assert.deepEqual(
+    rawWritePaths(messages, 0, { writeToolNames: ["readFile"] }),
+    [{ name: "readFile", path: "c.txt" }],
+    "显式清单仍然以宿主为准（默认常量只做缺省）",
+  );
 });
 
 test("buildJudgePrompt includes the recent timeline, files, and errors", () => {

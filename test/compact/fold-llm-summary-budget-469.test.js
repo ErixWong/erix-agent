@@ -12,7 +12,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { enforceSize } from "../../src/compact/enforce-size.js";
-import { createFoldLlmStrategy } from "../../src/compact/fold-llm.js";
+import { DEFAULT_SUMMARY_MAX_TOKENS, createFoldLlmStrategy } from "../../src/compact/fold-llm.js";
 import { estimateTokens } from "../../src/tokens.js";
 
 const SECTIONS = ["阶段", "已改文件", "已验证项", "下一步", "主题词面包屑"];
@@ -76,4 +76,33 @@ test("#469-C ③ 紧预算下先保「下一步」与「主题词」，「已改
   assert.equal(body("主题词面包屑").includes("[已修剪]"), false, "「主题词面包屑」必须与「下一步」同档");
   assert.equal(body("已改文件").includes("[已修剪]"), true, "「已改文件」应当先被剪");
   assert.match(body("已改文件"), /^## 已改文件\n\[已修剪\]/u, "剪掉也必须留标题（骨架不消失）");
+});
+
+// —— 默认值守护（issue #618 表 1 的「零守护」补口）——
+// 双层：名字级（常量逐字相等 ⇒ 改这个数就红）+ 行为级（摘要预算确实由它决定）。
+// 落点选本文件：折叠摘要的预算/裁剪夹具全在这里（summaryOf / foldWith 直接复用）。
+
+/** 找到「估算 tokens 刚好 >= target」的最小每节字数，返回那份摘要。 */
+function summaryOfAtLeast(targetTokens) {
+  let chars = 5;
+  while (estimateTokens(summaryOf(chars)) < targetTokens) chars += 5;
+  return summaryOf(chars);
+}
+
+test("#469-C ④ 默认值守护：DEFAULT_SUMMARY_MAX_TOKENS 逐字 1_400，且超出/未超默认预算的摘要一个被剪一个不被剪", async () => {
+  assert.equal(DEFAULT_SUMMARY_MAX_TOKENS, 1_400, "折叠摘要的输出预算默认值（改这个数就该有题红）");
+
+  // 不传 maxSummaryTokens ⇒ 走默认预算。两份样本跨在默认预算两侧。
+  const over = summaryOfAtLeast(DEFAULT_SUMMARY_MAX_TOKENS + 300);
+  const under = summaryOfAtLeast(DEFAULT_SUMMARY_MAX_TOKENS - 300);
+  assert.ok(estimateTokens(over) > DEFAULT_SUMMARY_MAX_TOKENS, "前提：over 必须超出默认预算");
+  assert.ok(estimateTokens(under) < DEFAULT_SUMMARY_MAX_TOKENS, "前提：under 必须落在默认预算内");
+
+  const overText = (await foldWith(over)).text;
+  assert.equal(overText.includes("[已修剪]"), true, "超出默认预算 ⇒ 必须有节被剪（预算就是这个常量）");
+  assert.ok(estimateTokens(overText) <= DEFAULT_SUMMARY_MAX_TOKENS * 1.2, "裁剪后必须落在预算量级");
+
+  const underText = (await foldWith(under)).text;
+  assert.equal(underText.includes("[已修剪]"), false, "未超默认预算 ⇒ 一节都不该被剪");
+  for (const title of SECTIONS) assert.ok(underText.includes(`## ${title}`), `「${title}」必须还在`);
 });
