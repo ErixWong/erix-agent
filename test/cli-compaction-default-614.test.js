@@ -18,11 +18,33 @@
 //      每条跑模型的用例都断言上游真的收到了请求。
 //   3. **代理防御**：进出都清代理类变量（`NODE_USE_ENV_PROXY` 会把 `127.0.0.1` 也送给代理）。
 //
-// 折叠是怎么被**逼**出来的（不是靠运气）：`--compact-budget` 给一个「比工作集地板大、比 9 轮
-// 工具历史小」的预算（#608 的地板：最近 2 轮；太小会走 `budget_below_working_set` 那条劣化路，
-// 根本不到摘要器），再用 9 轮 `readFile` 把历史堆过预算 ⇒ `keepRounds`（默认 6）之外的老轮次
-// 被折叠 ⇒ 摘要器那一发真的发出去。夹具文件刻意约 6KB（≈1500 token/轮）：既让预算必然被撞破，
-// 又低于 `ERIX_TOOL_RESULT_FOLD_MIN_TOKENS`（4000）不被 TTL 折叠抢走。
+// 折叠是怎么被**逼**出来的（不是靠运气）：靠的是**`keepRounds`（默认 6）这条边界**，**不是**
+// 工作集地板（issue #612 之后地板默认 `0` = 关，本测试不得依赖它；显式开成 2 也必须同样绿）。
+//
+// 机制（`src/compact/helpers.js#selectFoldedRounds` + `src/loop/orchestrator.js`）：
+//   ① 折叠只在「这一发请求**已超预算**」时才尝试；
+//   ② 策略只能折**`keepRounds` 之外**的轮次（`target = rounds.length - keepRounds`）；
+//   ③ 折完仍超预算 ⇒ 引擎再走**预算兜底**（`keepRounds: 0` 的滑动窗口），那一发会把历史整体
+//      丢掉（只留头部的任务描述）。
+// ⇒ 所以「预算」必须落在这样一格里：**历史长到 `rounds > keepRounds` 时预算才被撞破**。
+//    撞破得太早（预算太小）就落到 ③：`rounds <= keepRounds` ⇒ 策略折 0 轮 ⇒ 兜底清空 ⇒
+//    历史**永远长不到** `keepRounds` 以上 ⇒ `folded=0` 全程、摘要器一发都不发。
+//    （这正是 #614 的测试在 #612 合入后转红的根因：旧值 `5000` 在 4 轮就撞破预算，那时
+//     `rounds=4 < keepRounds=6` ⇒ 策略折 0 轮 ⇒ 兜底把历史清到 2 轮 ⇒ 永远到不了 7 轮。
+//     合入 #612 之前它之所以绿，只是**靠地板**（`WORKING_SET_RECENT_ROUNDS=2`）让兜底留下 2 轮
+//     原文、历史得以继续长到 7 轮——那是间接依赖地板，测试脆，不是引擎行为。）
+//
+// 预算为什么是 `10_000`（实测，非估算）：夹具文件约 6KB（200 行）⇒ 每轮 `readFile` 结果 ≈1400–1580
+// token（干净累积实测：4 轮 = 6325、8 轮 = 11143）。于是：
+//   · 5/6/7 轮都 **< 10000**（7 轮 ≈ 9.6k）⇒ 不会提前撞破，历史能安稳长过 `keepRounds`；
+//   · **8 轮 = 11143 > 10000 且 8 > 6** ⇒ 策略在 `keepRounds` 边界上折 2 轮（`folded=2`），
+//     `tokensAfter≈8332` 仍 < 10000 ⇒ **预算兜底根本不动手**（实测全程零兜底）。
+// ⇒ 折叠 + 摘要器那一发已经发生，兜底此后动不动手都不影响本测试要验的东西。
+// 地板 0 / 2 两值实测同一结果（`folded=2`、零兜底）：地板只是排序偏好（`index < floorIndex`），
+// `target=2` 时折的仍是最老的两轮。
+//
+// 另一个不能太小/太大的约束：单条工具结果必须低于 `ERIX_TOOL_RESULT_FOLD_MIN_TOKENS`（4000），
+// 否则会被 TTL 折叠抢走（那就不是策略折叠了）。
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -56,8 +78,8 @@ const EXIT_NOT_VERIFIED = 4;
 /** 单条子进程硬超时：卡住的用例必须被杀掉并留下证据，不许拖死整个套件。 */
 const CHILD_TIMEOUT_MS = 60_000;
 
-/** 折叠场景的三个数字（理由见文件头注释）。 */
-const FOLD_BUDGET_TOKENS = 5000;
+/** 折叠场景的三个数字（理由见文件头注释：靠 `keepRounds` 边界，不靠工作集地板）。 */
+const FOLD_BUDGET_TOKENS = 10_000;
 const TOOL_ROUNDS = 9;
 const MAX_ROUNDS = 14;
 const FIXTURE_FILE_LINES = 200;
