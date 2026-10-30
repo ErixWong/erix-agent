@@ -2,7 +2,8 @@
 //
 // 覆盖（工单清单）：
 //   5. 租约：独占创建抢不到时返回持有者；`release` 幂等；`sweep` 两种分支
-//      （谓词说死 / 无谓词但超龄且非本进程）都收到，未超龄的不动。
+//      （谓词说死 / 超龄且非本进程，P1b 起为 **OR 语义**：谓词是额外的早收信号，
+//      谓词说活但超龄无主仍作为 stale 收）都收到，未超龄的不动。
 //   7. 不给的字段（pid）在落盘 JSON 里**不存在该键**。
 //
 // 卫生：临时目录一律走 `test/helpers/tmp.js` 的 `makeTmp(...)`；全同步实现，零真实进程
@@ -90,12 +91,40 @@ test("capacity: sweep 分支 2——无谓词，超龄且非本进程 ⇒ 收（
   assert.equal(result.kept, 2, "未超龄的不动；本进程拥有的不动");
 });
 
-test("capacity: sweep 给了谓词但租约没 pid——两条分支都不收（保守）", async () => {
+test("capacity: sweep OR 语义 ①——谓词说活但超龄且非本进程 ⇒ 仍作为 stale 收", async () => {
   const dir = await makeTmp("delegation-capacity-617-");
-  acquire(dir, { runId: "old-nopid", now: NOW - 10 * 60_000 });
+  // pid 在谓词里是「活的」，但租约超龄又不属于本进程：pid 复用的活进程挂着死租约，照样收。
+  acquire(dir, { runId: "stale-but-alive-pid", pid: 100, now: NOW - 10 * 60_000 });
+  const result = sweep(dir, { isProcessAlive: () => true, maxAgeMs: 60_000, ownedRunIds: [], now: NOW });
+  assert.deepEqual(result.swept.map((s) => [s.runId, s.reason]), [["stale-but-alive-pid", "stale-unowned"]]);
+  assert.equal(result.kept, 0);
+});
+
+test("capacity: sweep OR 语义 ②——谓词说死但年龄未到 ⇒ 收（pid-dead）", async () => {
+  const dir = await makeTmp("delegation-capacity-617-");
+  // 刚拿到的租约，但谓词说 pid 已经死了：早收信号立即命中，不等超龄。
+  acquire(dir, { runId: "fresh-but-dead-pid", pid: 100, now: NOW - 1_000 });
   const result = sweep(dir, { isProcessAlive: () => false, maxAgeMs: 60_000, ownedRunIds: [], now: NOW });
+  assert.deepEqual(result.swept.map((s) => [s.runId, s.reason]), [["fresh-but-dead-pid", "pid-dead"]]);
+  assert.equal(result.kept, 0);
+});
+
+test("capacity: sweep 谓词说活、年龄未到、非本进程——两条都不命中，保留", async () => {
+  const dir = await makeTmp("delegation-capacity-617-");
+  acquire(dir, { runId: "healthy-foreign", pid: 100, now: NOW - 1_000 });
+  const result = sweep(dir, { isProcessAlive: () => true, maxAgeMs: 60_000, ownedRunIds: [], now: NOW });
   assert.equal(result.swept.length, 0);
   assert.equal(result.kept, 1);
+});
+
+test("capacity: sweep 给了谓词但租约没 pid——分支 1 不命中，超龄无主的仍被分支 2 收", async () => {
+  const dir = await makeTmp("delegation-capacity-617-");
+  acquire(dir, { runId: "old-nopid", now: NOW - 10 * 60_000 });
+  acquire(dir, { runId: "fresh-nopid", now: NOW - 1_000 });
+  const result = sweep(dir, { isProcessAlive: () => false, maxAgeMs: 60_000, ownedRunIds: [], now: NOW });
+  // 没 pid ⇒ pid-dead 无从谈起；但 old-nopid 超龄且非本进程，OR 语义下分支 2 照收。
+  assert.deepEqual(result.swept.map((s) => [s.runId, s.reason]), [["old-nopid", "stale-unowned"]]);
+  assert.equal(result.kept, 1, "未超龄的保留（保守：宁留孤儿，不误杀）");
 });
 
 test("capacity: sweep 点名损坏租约且不收", async () => {

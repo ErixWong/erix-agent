@@ -11,11 +11,17 @@
  * 只三本账：`{ runId, pid, acquiredAt }`；`acquiredAt` 取**调用方传入的 `now`**，库不内部
  * 硬取时间（测试才能钉住时钟，宿主才能贯彻自己的时钟 discipline）。
  *
- * 回收（`sweep`）的两条分支都照工单字面，不做第三种「聪明」：
+ * 回收（`sweep`）的两条分支是 **OR 语义**（#617 P1b 对 P1a 字面读法的行为修正：谓词是
+ * **额外的早收信号**，不是替换——P1a 那版「给了谓词就只按 pid 死活收、年龄分支失效」自己在
+ * 风险里点名最容易用错的一格，裁决改掉）：
+ *   收 = (给了谓词 且 租约带 `pid` 且 谓词说死)  **或**  (超过 `maxAgeMs` 且 `runId ∉ ownedRunIds`)。
+ * 两条各自独立命中即收，逐条给理由：
  *   1. 租约带 `pid` 且宿主给了谓词且谓词说死了 ⇒ 收（理由 `pid-dead`）；
- *   2. 谓词**没给**时，只在「超过 `maxAgeMs` 且 `runId ∉ ownedRunIds`」时收（理由
- *      `stale-unowned`）——没有谓词就没有「死没死」的外部事实，只能按年龄 + 所有权保守收。
- * 谓词给了但租约不带 `pid` 的，两条都不命中，**不收**（保守：宁留孤儿，不误杀活租约）。
+ *   2. 超过 `maxAgeMs` 且 `runId ∉ ownedRunIds` ⇒ 收（理由 `stale-unowned`）——超龄又无主，
+ *      不管谓词说活说死都收（谓词说活却超龄无主，恰恰更像「pid 复用的活进程挂着死租约」）；
+ *      没给 `maxAgeMs` 则这条不命中。
+ * 谓词给了但租约不带 `pid` 的，分支 1 不命中，只能靠分支 2（带了 `maxAgeMs` 时）收——
+ * 保守：宁留孤儿，不误杀活租约。
  *
  * 「不给的字段不写」沿用 P0（#617）的纪律：`pid` 没给就不落这个键。
  */
@@ -179,7 +185,8 @@ export function list(leaseDir) {
 }
 
 /**
- * 回收孤儿租约。两条分支（见文件头），逐条给理由；两条都不命中的保留并计数。
+ * 回收孤儿租约。**OR 语义**（两条各自独立命中即收，见文件头）：谓词说死（分支 1）**或**
+ * 超龄且非本进程（分支 2，不再要求「没给谓词」）。逐条给理由；两条都不命中的保留并计数。
  * 损坏文件进 `corrupt` 点名，不收。
  *
  * @param {string} leaseDir
@@ -211,8 +218,9 @@ export function sweep(leaseDir, { maxAgeMs, ownedRunIds = [], isProcessAlive, no
       swept.push({ runId: lease.runId, file: lease.file, reason: "pid-dead" });
       continue;
     }
+    // 分支 2（OR 语义，#617 P1b）：超龄且非本进程即收——谓词给没给都不影响这条；谓词说活
+    // 但租约超龄又无主，更像 pid 复用的活进程挂着死租约，照样按 stale 收。
     if (
-      typeof isProcessAlive !== "function" &&
       typeof maxAgeMs === "number" &&
       now - lease.acquiredAt > maxAgeMs &&
       !owned.has(lease.runId)
