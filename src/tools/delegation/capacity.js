@@ -388,12 +388,13 @@ export function acquire(leaseDir, {
  * 高号槽里的租约仍然是我们的，必须还得掉。
  *
  * @param {string} leaseDir
- * @param {Object} options
+ * @param {Object} [options]
  * @param {string} options.runId
  * @param {number} [options.maxConcurrent] 配额池大小（缺省 2；只用于把池子范围并进候选集合）
  * @returns {{ ok: true, released: boolean, slot?: number }}
  */
-export function release(leaseDir, { runId, maxConcurrent = DEFAULT_MAX_CONCURRENT } = {}) {
+export function release(leaseDir, options) {
+  const { runId, maxConcurrent = DEFAULT_MAX_CONCURRENT } = options ?? {};
   const safeRunId = assertSafeRunId(runId);
   const max = assertMaxConcurrent(maxConcurrent);
   /** @type {number | undefined} */
@@ -453,7 +454,7 @@ export function list(leaseDir, { maxConcurrent = DEFAULT_MAX_CONCURRENT } = {}) 
  * 旧的 `<runId>.lock` 不参与（既不收也不点名）：它们不再属于配额。
  *
  * @param {string} leaseDir
- * @param {Object} options
+ * @param {Object} [options]
  * @param {number} options.now               宿主时钟当前值（required）
  * @param {number} [options.maxConcurrent]   配额池大小（缺省 2）
  * @param {number} [options.maxAgeMs]        没有谓词时的兜底阈值（缺省 30 分钟）
@@ -463,13 +464,14 @@ export function list(leaseDir, { maxConcurrent = DEFAULT_MAX_CONCURRENT } = {}) 
  *             corrupt: LeaseCorruptEntry[],
  *             kept: number }}
  */
-export function sweep(leaseDir, {
-  maxConcurrent = DEFAULT_MAX_CONCURRENT,
-  maxAgeMs = DEFAULT_LEASE_MAX_AGE_MS,
-  ownedRunIds = [],
-  isProcessAlive,
-  now,
-} = {}) {
+export function sweep(leaseDir, options) {
+  const {
+    maxConcurrent = DEFAULT_MAX_CONCURRENT,
+    maxAgeMs = DEFAULT_LEASE_MAX_AGE_MS,
+    ownedRunIds = [],
+    isProcessAlive,
+    now,
+  } = options ?? {};
   const clock = assertNow(now);
   const max = assertMaxConcurrent(maxConcurrent);
   const maxAge = assertMaxAgeMs(maxAgeMs);

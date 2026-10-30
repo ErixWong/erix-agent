@@ -305,6 +305,19 @@ and each one is about the record telling the truth.
   line silently disappeared on the child side and only the value derived from the configured context
   window survived. With no explicit budget the old derivation stands, unchanged.
 
+**And one more, about the quota itself (issue #630 S3).** The concurrency cap used to be counted and
+then claimed: the tool listed the lease directory, and if it was not full yet, created a lease. Two
+processes could both read "one slot left" and both create one, so the cap over-issued; and a process
+that died while holding a lease left it behind for ever, because nothing ever swept the directory.
+Taking a slot is now a **single exclusive create** in a fixed pool, so the decision and the claim are
+the same system call, and a slot whose holder can be proven gone is reclaimed on the spot: your
+liveness predicate decides whenever the lease carries a pid, and only without a predicate does a
+30-minute age threshold apply — a fallback, not an authority, which is why a child's own time budget
+should stay well below it. Reclaiming re-reads the slot and unlinks only the exact holder it judged
+dead, and releasing only ever removes a slot that records the caller's own identity. Lease files
+written by older versions no longer count against the quota and are never deleted (they were
+short-lived by nature, so leaving them is harmless).
+
 The gate for the whole path is `examples/delegate-real-e2e.test.mjs`, step 2 of
 `npm run check:release:real`: a real-upstream parent run delegates a child run, and the test asserts the
 child's roster record carries the parent's `config.run.runId`, the child ends `end_turn`, the roster ends
