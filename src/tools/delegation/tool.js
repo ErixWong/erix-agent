@@ -76,6 +76,16 @@ export const DEFAULT_TERMINATION_STATE = "failed";
 /** 工具的六个动作（封闭清单；不做 pause / resume / retry）。 */
 export const DELEGATE_ACTIONS = Object.freeze(["run", "status", "result", "list", "cancel", "tail"]);
 
+/**
+ * `result` 带回的子 run 终稿上限（字符，issue #630 S1）：超了截断到本值并带 `truncated: true`。
+ * 为什么要上限：子 run 的终稿可能是一次完整的长报告，原样塞回父 run 的上下文等于把子那一轮的
+ * token 账再付一遍；父要细节可以 `tail`（有界尾读）。
+ */
+export const RESULT_TEXT_LIMIT = 4000;
+
+/** `result` 带回的子 run 错误文本上限（字符，issue #630 S1）：只留够看懂「为什么失败」。 */
+export const ERROR_MESSAGE_LIMIT = 1000;
+
 /** @param {*} termination @returns {string} 名册终态 */
 function stateForTermination(termination) {
   const key = typeof termination === "string" ? termination : "";
@@ -88,7 +98,10 @@ function stateForTermination(termination) {
 export const DELEGATE_DEFINITION = {
   name: "delegate",
   description: "Delegate a task to a child run: run (optionally in background), status / list (roster), "
-    + "result (terminal outcome, marks it consumed), cancel (only child runs owned by this process), "
+    + "result (terminal outcome, marks it consumed; carries the child's final text — capped at "
+    + `${RESULT_TEXT_LIMIT} characters, with truncated:true when it was cut — and, when the child threw, `
+    + `its error message capped at ${ERROR_MESSAGE_LIMIT} characters), `
+    + "cancel (only child runs owned by this process), "
     + "tail (what the child is doing right now: a bounded read of its transcript tail — the last "
     + `${TAIL_LIMIT_DEFAULT} rows by default, at most ${TAIL_LIMIT_MAX} rows, ${TAIL_TEXT_LIMIT_DEFAULT} characters per row`
     + " — with the tool name and an args digest for tool calls; it reads any child on disk, not just this process's). "
@@ -153,6 +166,13 @@ function requireChildRunId(input) {
  *   不存在「先建记录再补写」的窗口）；不给，字段照旧缺省（旧宿主不受影响，它的 `tail` 报
  *   `no_transcript_path`）。返回值必须是**非空字符串**：库不把「宿主给了一个空路径」静默吃掉——
  *   那是配置缺陷，当场抛（在任何租约 / 记录落盘之前）。
+ * @param {(requested: string|undefined, runId: string) => string} [options.cwdFor] 宿主旋钮
+ *   （issue #630 S1）：**子 run 实际跑在哪个目录**。模型请求里的 `cwd` 是「想要」，不是「生效」——
+ *   库不猜宿主把相对路径解析到哪、也不猜缺省目录是谁，所以策略归宿主：给了它，库就用它的返回值
+ *   **既写名册、又交给 `runChild`**（同一个值，不许记录一个执行另一个）；返回值必须是**非空字符串**，
+ *   否则抛 `TypeError`（在任何租约 / 记录落盘之前）。
+ *   **不给时保持旧行为**（名册只记模型给的原值，缺省时该字段缺省）——但这时名册的 `cwd`
+ *   **不代表子 run 的实际工作目录**（子可能落在宿主自己的缺省树里），宿主应当提供 `cwdFor`。
  * @param {() => number} [options.clock] 宿主时钟（缺省 `Date.now`）；库内所有时间戳都走它。
  * @returns {{ definition: object, execute: (input: object, context: object) => Promise<object> }}
  */
@@ -160,12 +180,15 @@ export function createDelegateTool(options) {
   if (options === null || typeof options !== "object" || Array.isArray(options)) {
     throw new TypeError("delegate: options 必须是对象");
   }
-  const { runChild, rosterDir, leaseDir, maxConcurrent, notifyParent, transcriptPathFor, clock } = options;
+  const { runChild, rosterDir, leaseDir, maxConcurrent, notifyParent, transcriptPathFor, cwdFor, clock } = options;
   if (typeof runChild !== "function") {
     throw new TypeError("delegate: runChild 必须由宿主注入（库不 fork / 不 spawn / 不 import child_process）");
   }
   if (transcriptPathFor !== undefined && typeof transcriptPathFor !== "function") {
     throw new TypeError("delegate: transcriptPathFor 必须是函数（宿主决定 transcript 布局，库不猜路径）");
+  }
+  if (cwdFor !== undefined && typeof cwdFor !== "function") {
+    throw new TypeError("delegate: cwdFor 必须是函数（宿主决定子 run 的实际工作目录，库不猜）");
   }
   if (typeof rosterDir !== "string" || rosterDir === "") {
     throw new TypeError("delegate: rosterDir 必须是非空字符串");
@@ -194,6 +217,11 @@ export function createDelegateTool(options) {
 
   /**
    * run 动作收尾（同步与后台共用）：写名册终态、还租约、（后台且未自取过）唤醒父。
+   *
+   * issue #630 S1：子 run 的**终稿**与**失败原因**必须在这一**次**终态写里落盘（不是事后补写）：
+   * 后台分支以前把 `text` 丢掉了，父调 `result` 只能拿到 `state` / `termination`，答案是“看 tail 猜”。
+   * 两个上限（`RESULT_TEXT_LIMIT` / `ERROR_MESSAGE_LIMIT`）在这里兑现：截了就带
+   * `resultTruncated: true`，没截就不写那个键（“不给的字段不写”）。
    * @param {string} runId
    * @param {{ ok: true, text: string, termination?: *, verification?: * }
    *        | { ok: false, error: * }} outcome
@@ -213,6 +241,21 @@ export function createDelegateTool(options) {
     };
     if (outcome.ok && outcome.termination !== undefined) next.termination = outcome.termination;
     if (outcome.ok && outcome.verification !== undefined) next.verification = outcome.verification;
+    if (outcome.ok) {
+      // 宿主没给 text（不是字符串）就不写这个字段——绝不允许写成 "undefined"。
+      const text = outcome.text;
+      if (typeof text === "string" && text !== "") {
+        if (text.length > RESULT_TEXT_LIMIT) {
+          next.resultText = text.slice(0, RESULT_TEXT_LIMIT);
+          next.resultTruncated = true;
+        } else {
+          next.resultText = text;
+        }
+      }
+    } else {
+      const message = String(outcome.error?.message ?? outcome.error ?? "");
+      if (message !== "") next.errorMessage = message.slice(0, ERROR_MESSAGE_LIMIT);
+    }
     const record = writeRecord(rosterDir, /** @type {import("./roster.js").RosterRecord} */ (next));
     release(resolvedLeaseDir, runId);
     if (background && notify !== undefined && shouldNotify(record, { collected })) {
@@ -260,6 +303,25 @@ export function createDelegateTool(options) {
       transcriptPath = resolved;
     }
 
+    /**
+     * 宿主解析的**实际**工作目录（issue #630 S1）。与 `transcriptPathFor` 同一个位置、同一个理由：
+     * 在拿租约之前算（宿主给了非法值就当场抛，不留「租约已拿、记录没建」的孤儿租约）。
+     * 解析出的值**既写名册、又交给 `runChild`**——同一个变量，不存在「记录一个、执行另一个」。
+     * 不传 `cwdFor` 时保持旧行为：名册只记模型给的原值（缺省时该字段缺省），但那时名册的 `cwd`
+     * **不代表实际工作目录**（见工厂参数的 `@param`）。
+     */
+    let effectiveCwd = cwd;
+    if (typeof cwdFor === "function") {
+      const resolvedCwd = cwdFor(cwd, runId);
+      if (typeof resolvedCwd !== "string" || resolvedCwd === "") {
+        throw new TypeError(
+          `delegate: cwdFor(${JSON.stringify(cwd ?? null)}, ${JSON.stringify(runId)}) 必须返回非空字符串，`
+          + `收到 ${JSON.stringify(resolvedCwd)}（宿主算不出实际工作目录时应该根本不传这个旋钮）`,
+        );
+      }
+      effectiveCwd = resolvedCwd;
+    }
+
     // 配额：活租约到顶 ⇒ 结构化失败、点名持有者，不排队、不自旋。
     const { leases } = listLeases(resolvedLeaseDir);
     if (leases.length >= resolvedMax) {
@@ -286,7 +348,9 @@ export function createDelegateTool(options) {
       runId,
       state: "queued",
       ...(parentRunId === undefined ? {} : { parentRunId }),
-      ...(cwd === undefined ? {} : { cwd }),
+      // 名册里的 `cwd` 必须是**实际生效**的那个值（issue #630 S1 的真机缺陷：不传 cwd 时名册
+      // `cwd: null`，而子实际在父树里跑——记录与事实不符）。
+      ...(effectiveCwd === undefined ? {} : { cwd: effectiveCwd }),
       ...(model === undefined ? {} : { model }),
       ...(transcriptPath === undefined ? {} : { transcriptPath }),
       createdAt: now,
@@ -299,7 +363,8 @@ export function createDelegateTool(options) {
     /** 宿主注入的 runChild：库不知道也不关心子 run 怎么跑。 */
     const child = runChild({
       task,
-      ...(cwd === undefined ? {} : { cwd }),
+      // 与上面写进名册的是**同一个值**（`effectiveCwd`），不是模型原值。
+      ...(effectiveCwd === undefined ? {} : { cwd: effectiveCwd }),
       ...(parentRunId === undefined ? {} : { parentRunId }),
       runId,
       ...(model === undefined ? {} : { model }),
@@ -353,7 +418,8 @@ export function createDelegateTool(options) {
     }
     // 父自取终局：登记 (runId, endedAt) 二元组，之后完成通知不再唤醒父（notify.js 去重）。
     markCollected(collected, record);
-    return {
+    /** @type {Record<string, *>} */
+    const result = {
       ok: true,
       runId,
       state: record.state,
@@ -361,6 +427,12 @@ export function createDelegateTool(options) {
       termination: record.termination,
       verification: record.verification,
     };
+    // issue #630 S1：后台子 run 的终稿 / 截断标记 / 失败原因随 `result` 一起回去
+    //（以前只回 state/termination，父拿不到答案只能猜）。没写进名册的字段照样不出现在结果里。
+    if (typeof record.resultText === "string") result.text = record.resultText;
+    if (record.resultTruncated === true) result.truncated = true;
+    if (typeof record.errorMessage === "string") result.error = record.errorMessage;
+    return result;
   };
 
   const listAction = () => {

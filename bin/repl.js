@@ -557,6 +557,10 @@ export async function runRepl(argv, io = {}) {
       maxRounds: options.maxRounds ?? DEFAULT_MAX_ROUNDS,
       notify: (line) => writeLine(errorOutput, line),
       childToolOutput: (line) => writeLine(errorOutput, line),
+      // issue #630 S1（C）：父的 `--tools` 白名单下传给子 run（子的权限只能等于或小于父）；
+      // 与下面 repl 侧的 `filterToolsByAllowlist` 同源，未知名字走同一条 onUnknown 文案。
+      toolAllowlist: options.tools,
+      onUnknownTool: (line) => writeLine(errorOutput, line),
     })
     : undefined;
   const cliTools = createCliTools({

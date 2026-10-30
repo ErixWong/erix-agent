@@ -950,6 +950,9 @@ async function runChatWithNotes({
       defaultDeadlineMs: delegateTimeoutMs ?? DEFAULT_DELEGATE_TIMEOUT_MS,
       maxRounds: resolvedMaxRounds,
       notify: delegateNotify ?? ((line) => console.error(line)),
+      // issue #630 S1（C）：父的 `--tools` 白名单下传给子 run（子的权限只能等于或小于父）。
+      // 与下面父侧 `filterToolsByAllowlist` 同源：同一个字符串，同一套 onUnknown 文案。
+      toolAllowlist: toolsAllowlist,
     })
     : undefined;
   const cliTools = createCliTools({

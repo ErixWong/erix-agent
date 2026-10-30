@@ -2,7 +2,7 @@
 /**
  * issue #626（C1）—— 父 run 读「子 run 现在在干什么」：**有界的文件尾读**。
  *
- * 病根（对标实测）：名册（`roster.js`，18 项）只回答「子死没死」——`state` / `endedAt` /
+ * 病根（对标实测）：名册（`roster.js`，21 项）只回答「子死没死」——`state` / `endedAt` /
  * `termination` 全是终态词汇。无人在环的宿主对长任务只能盲等：子 run 在跑哪个工具、参数是什么、
  * 最后几行正文写了什么，父 run 一个都问不出来。pi 的对照面（`pi-subagents` 的状态面）有
  * `currentTool` / `currentToolArgs` / `recentTools` / `recentOutput`。
@@ -158,7 +158,7 @@ function projectMessage(message, round, textLimit) {
  *
  * @param {Object} options
  * @param {string} options.transcriptPath 子 run 的 transcript 路径。**取自名册记录的
- *   `transcriptPath` 字段**（`roster.js` 的 18 项之一，宿主落盘），不是调用方随手给的路径。
+ *   `transcriptPath` 字段**（`roster.js` 的 21 项之一，宿主落盘），不是调用方随手给的路径。
  * @param {number} [options.limit] 返回多少行（缺省 8，上限 20；超限夹住）
  * @param {number} [options.textLimit] 每行正文上限（缺省 300，硬上限 1000；超限夹住）
  * @param {() => number} [options.clock] 宿主时钟（缺省 `Date.now`），只用于 `readAt`
