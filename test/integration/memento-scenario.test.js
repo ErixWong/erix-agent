@@ -55,8 +55,11 @@ test("S1 folds an early value into the provider request", async () => {
     getToolMetadata: cliTools.getLastToolMetadata,
     returnMetadata: true,
   });
+  // issue #614：`buildCompactionContext` 的**默认策略**现在是 `fold-llm`（语义折叠）。本场景验的是
+  // 统计折叠那条零 LLM 路径（`[已折叠]` 存根 / 归档指针 / 逐字 stub），所以显式点名策略——
+  // 否则每次折叠会多一发摘要器请求，`createFakeProvider` 的脚本就多消费一项。
   const context = buildCompactionContext(
-    {},
+    { compaction: "fold-statistical" },
     360,
     ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload }),
     (message) => buildCaptureStub(message),
@@ -122,8 +125,9 @@ test("S2 folds a stub verbatim (no agent-side credential filter, #55) while reta
     returnMetadata: true,
   });
   const executeTool = (options) => wrappedExecuteTool(options);
+  // issue #614：同上——显式点名统计策略（本场景验的是零 LLM 折叠的存根/归档指针语义）。
   const context = buildCompactionContext(
-    {},
+    { compaction: "fold-statistical" },
     360,
     ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload }),
     (message) => buildCaptureStub(message),
@@ -266,8 +270,9 @@ test("S4 replaces fold state while preserving unique stubs across two folds", as
     returnMetadata: true,
   });
   const executeTool = (options) => wrappedExecuteTool(options);
+  // issue #614：同上——显式点名统计策略（本场景验的是两次统计折叠之间的存根去重）。
   const context = buildCompactionContext(
-    {},
+    { compaction: "fold-statistical" },
     1200,
     ({ foldedPayload }) => buildCaptureRecoveryHint({ archiveDir, foldedPayload }),
     (message) => buildCaptureStub(message),

@@ -40,12 +40,22 @@
 // 分包是怎么保证的：`res.write()` 在未背压时会同步把字节交给 socket（Node 对 accepted
 // socket 默认 TCP_NODELAY），帧内切片之间再让出一个宏任务，客户端就有机会在两读之间
 // 拿到上一片——「跨包」因此是可观察事实，而不是应用层看起来分片、实际一次发完。
+//
+// issue #614（CLI 默认压缩策略 = `fold-llm`）：每次折叠都会多一发**摘要器请求**。它和主循环
+// 请求长得很像（同一个端点、同一个协议），但 `classifyChatRequest` 能把两类**正面**分开
+// （摘要器提示词指南首行 vs 非空 `tools` / 多轮历史）。要用「一个脚本同时应答两类」，请用
+// `createCompactionAwareScript({ main, summarizer })`——认不出的请求一律 500，不给 garbage。
 // 注意：**不要拿 `res.write()` 的写回调当「已发出」**——`ServerResponse` 的 `close`
 // 会抢在它前面触发，把半截写误判成 socket 已死，服务端就会提前退出写循环且永不
 // `end()`，客户端一直等 → 整个套件挂死。断言服务端侧记录前请先 `await settled()`。
 // ---------------------------------------------------------------------------
 
 import http from "node:http";
+
+// issue #614：摘要器提示词指南的**首行**是「这个请求是不是折叠摘要器发的」的判别锚点。
+// 从 `src/compact/fold-llm.js` 拿，不在本文件里抄一份字面量——抄一份就多一个真相来源，
+// 指南改一个字，夹具就默默不再认得摘要器请求（那会让「随机 garbage 摘要却仍判绿」复活）。
+import { SUMMARIZER_PROMPT_GUIDE } from "../src/compact/fold-llm.js";
 
 const DEFAULT_SLICE_CYCLE = [1, 2, 1, 5, 1, 13];
 
@@ -365,6 +375,126 @@ function resolveSpec(source, ctx) {
   return source;
 }
 
+// ---------------------------------------------------------------------------
+// 压缩感知的脚本化应答（issue #614：CLI 默认策略改成 fold-llm）
+//
+// 默认开启 fold-llm 之后，**每次折叠都会多一发模型请求**（摘要器提示词 + 被折轮次的序列化
+// 正文）。脚本化上游此前只认识「主循环请求」这一类，多出来的那一发会被当成主循环请求来应答
+// ⇒ 折叠块里落进一句主循环的台词，而判据只要「请求数 > 0 / run 没崩」就照旧绿。这就是本文件
+// 新增下面这几个导出的理由：**分流必须是显式的事实，不能靠请求序号撞运气**。
+//
+// 分流依据（两条都是**正面识别**，谁也不靠「剩下的就是另一类」）：
+//   · 摘要器请求：messages 里出现 `SUMMARIZER_PROMPT_GUIDE` 的首行（`SUMMARIZER_PROMPT_MARKER`）。
+//     这一行只由 `src/compact/provider-summarizer.js` 拼进请求正文，主循环的系统提示 / 用户
+//     任务里不会有它；指南本身从 `src/` 导入，单一真相来源。
+//   · 主循环请求（含引擎内部的收尾调用）：请求体里有**非空** `tools` 数组，或历史不止一发
+//     （`messages.length >= 3`）。引擎自己也有不发 tools 的调用（收尾/终稿整理），它们的
+//     `messages` 是整段历史，所以第二个条件把它们收进来。
+//   · 两条都不成立（无 tools、历史只有 system+user、又没有指南首行）⇒ `"unknown"`：
+//     **这正是「指南首行改了、夹具不再认得摘要器」的形状**（摘要器请求就是 system+user 两条）。
+//     此时 `createCompactionAwareScript` 一律回 500 并点名「分类失败」，绝不给一个看起来正常
+//     的回复——宁可红在分类上，也不要绿在 garbage 上。
+// ---------------------------------------------------------------------------
+
+/** 摘要器请求的判别锚点：摘要器提示词指南的首行（来自 `src/compact/fold-llm.js`）。 */
+export const SUMMARIZER_PROMPT_MARKER = SUMMARIZER_PROMPT_GUIDE.split("\n")[0];
+
+/**
+ * 请求体里所有消息的可读文本（字符串 content + text 块）。
+ * @param {any} body 解析后的请求体
+ * @returns {string}
+ */
+function requestMessageText(body) {
+  const messages = body?.messages;
+  if (!Array.isArray(messages)) return "";
+  const parts = [];
+  for (const message of messages) {
+    if (typeof message?.content === "string") {
+      parts.push(message.content);
+      continue;
+    }
+    if (!Array.isArray(message?.content)) continue;
+    for (const block of message.content) {
+      if (typeof block?.text === "string") parts.push(block.text);
+    }
+  }
+  return parts.join("\n");
+}
+
+/**
+ * 把一发请求分成「折叠摘要器」/「主循环」/「认不出来」。
+ *
+ * @param {{json?: any, bodyText?: string}|undefined} entry `upstream.requests[i]` 那种登记项
+ * @returns {"summarizer"|"main"|"unknown"}
+ */
+export function classifyChatRequest(entry) {
+  const body = entry?.json;
+  if (body === undefined || body === null) return "unknown";
+  if (requestMessageText(body).includes(SUMMARIZER_PROMPT_MARKER)) return "summarizer";
+  if (Array.isArray(body.tools) && body.tools.length > 0) return "main";
+  if (Array.isArray(body.messages) && body.messages.length >= 3) return "main";
+  return "unknown";
+}
+
+/**
+ * 合法分节的摘要夹具（判据 1 的那一半：折叠块里必须出现 `## 阶段` / `## 教训与坑`）。
+ *
+ * 正文刻意短（远低于 `maxSummaryTokens` 的 1400 默认预算），这样断言打的是**分节语义**，
+ * 不是「夹具写得多长」。`SEMANTIC_SUMMARY_MARKER` 是夹具自己的指纹：折叠块里出现它 ⇒
+ * 那一段确实来自这一发摘要器应答，而不是统计摘要恰好长得像。
+ */
+export const SEMANTIC_SUMMARY_MARKER = "#614 语义摘要夹具";
+
+/** @returns {string} 一份带 `## 阶段` / `## 教训与坑` 的合法摘要正文 */
+export function semanticSummaryText() {
+  return [
+    `## 阶段`,
+    `${SEMANTIC_SUMMARY_MARKER}：第 1 阶段读了三个文件，第 2 阶段写了结论。`,
+    `## 已改文件`,
+    `- src/a.js（新增一行注释）`,
+    `## 已验证项`,
+    `- 无（夹具场景不跑测试）`,
+    `## 下一步（含"已完成项禁止重做"）`,
+    `- 只差最后一句总结；已完成项禁止重做。`,
+    `## 主题词面包屑`,
+    `- src/a.js / read / 夹具`,
+    `## 教训与坑（不要重犯的）`,
+    `- 别把「读到了」当「做完了」；夹具里读文件不产生副作用。`,
+  ].join("\n");
+}
+
+/**
+ * 一个能应答**两类请求**的 script 条目（直接放进 `createScriptedUpstream({script: [...]})`）。
+ *
+ * `main` / `summarizer` 都可以是 spec 对象或 `(ctx) => spec`；`ctx` 里多了 `entry` / `body`
+ * （解析后的请求体）与 `kind`（分类结果），所以调用方也能按序号自己编脚本。
+ *
+ * @param {{
+ *   main: object | ((ctx: any) => object),
+ *   summarizer: object | ((ctx: any) => object),
+ * }} options
+ * @returns {(ctx: {seq:number, req:any, path:string, entry:any, body:any, kind:string}) => object}
+ */
+export function createCompactionAwareScript({ main, summarizer }) {
+  if (main === undefined || summarizer === undefined) {
+    throw new TypeError("createCompactionAwareScript 需要 main 与 summarizer 两个应答");
+  }
+  return (ctx) => {
+    const kind = classifyChatRequest(ctx.entry);
+    const withKind = { ...ctx, kind };
+    if (kind === "summarizer") return resolveSpec(summarizer, withKind);
+    if (kind === "main") return resolveSpec(main, withKind);
+    // 认不出来的请求**不许**给一个像样的回复：那会让「折叠块里落了 garbage 却判绿」复活。
+    // 回 500 + 点名原因，调用方的断言会看到一次失败（而不是一次可疑的成功）。
+    return textResponse(
+      `scripted upstream: 认不出的 chat 请求（既没有摘要器提示词指南首行，也不是带 tools / 带历史的`
+      + `主循环请求）——issue #614 的夹具分流在这里断了，请检查 classifyChatRequest。`
+      + `seq=${ctx.seq} path=${ctx.path} bodyBytes=${String(ctx.entry?.bodyText ?? "").length}`,
+      { status: 500 },
+    );
+  };
+}
+
 /**
  * 建一个脚本化真 HTTP 上游。**绑 127.0.0.1:0**（写死端口会撞车）。
  *
@@ -432,7 +562,7 @@ export function createScriptedUpstream(options = {}) {
         ? options.script[Math.min(seq, options.script.length - 1)]
         : undefined;
 
-    const spec = resolveSpec(source, { seq, req, path });
+    const spec = resolveSpec(source, { seq, req, path, entry, body: entry.json });
     if (spec === undefined) {
       responses.push({
         seq,

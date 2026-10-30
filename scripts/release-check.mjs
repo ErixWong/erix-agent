@@ -21,6 +21,11 @@
 //             打**本地假上游**（`fixtures/upstream.mjs`，绑 `127.0.0.1:0`）；再加一条
 //             `--session <不存在的 id>`。退出码按 `bin/cli.js` 的帮助承诺断言：**当前默认不开
 //             `--final-guard` 的一次成功 chat 退 4（核验 skipped）**，会话不存在退 1。
+//             issue #614：CLI 默认压缩策略是 `fold-llm` ⇒ 这次 chat 一旦真的折叠，假上游会多收到一发
+//             **摘要器请求**。假上游因此用 `createCompactionAwareScript` 把两类请求**正面**分开
+//             （摘要器提示词指南首行 vs 非空 `tools` / 多轮历史），认不出的回 500。两条路
+//             （合法分节应答 ⇒ 语义块；应答失败 ⇒ 降级块且 run 不失败）的强断言在
+//             `test/cli-compaction-default-614.test.js`（用 `--compact-budget` 把折叠逼出来）。
 //   6. 续接   用**装好的 erix** 跑 issue #598 的**零 token 跨 run 续接** e2e（实现在
 //             `scripts/cli-continuity-smoke.mjs`，本步只是把它接进这条发版链）：同一 cwd、同一假 HOME
 //             连跑两次 `erix chat`，假上游脚本化回复——run 1 的正文里写 `<handoff>`（三段独特字面量）
@@ -58,7 +63,7 @@ import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 
-import { createScriptedUpstream, jsonResponse } from "../fixtures/upstream.mjs";
+import { createCompactionAwareScript, createScriptedUpstream, jsonResponse, semanticSummaryText } from "../fixtures/upstream.mjs";
 import { fakeHomeEnv, upstreamFields, writeConfigHome } from "../fixtures/config-shape.mjs";
 // issue #598：第 6 步的实现在它自己那个脚本里（同一套离线/自清理纪律，可单跑：
 // `node scripts/cli-continuity-smoke.mjs`）。本文件只负责「用**装好的包**跑它」。
@@ -878,16 +883,27 @@ await runToolLoop({
 const CHAT_MARKER = "T5-RELEASE-CHECK-HELLO";
 
 async function stepCliSmoke({ hostDir, projectDir }) {
+  // issue #614：CLI 默认压缩策略是 `fold-llm` ⇒ 一旦这次 chat 真的折叠，假上游会多收到一发
+  // **摘要器请求**（摘要器提示词 + 被折轮次的序列化正文）。这里用 `createCompactionAwareScript`
+  // 把它与主循环请求**正面**分开（分流依据见 `fixtures/upstream.mjs#classifyChatRequest`）：
+  // 摘要器那一发给一份合法分节的摘要，主循环那一发给探针回复。认不出的请求一律 500，
+  // 不给一个看起来正常的回复（否则「折叠块里落了 garbage 却仍判绿」）。
+  // 两条路的**强断言**在 `test/cli-compaction-default-614.test.js`（那里用 `--compact-budget`
+  // 把折叠逼出来）；本步只负责「发版链路上默认值不会把 chat 弄挂」这一格。
   const upstream = createScriptedUpstream({
-    script: [
-      jsonResponse({
+    script: [createCompactionAwareScript({
+      main: () => jsonResponse({
         choices: [{
           message: { role: "assistant", content: `探针回复 ${CHAT_MARKER} 任务已完成` },
           finish_reason: "stop",
         }],
         usage: { prompt_tokens: 7, completion_tokens: 3 },
       }),
-    ],
+      summarizer: () => jsonResponse({
+        choices: [{ message: { role: "assistant", content: semanticSummaryText() }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 300, completion_tokens: 60 },
+      }),
+    })],
   });
   try {
     const baseUrl = await upstream.listen();
