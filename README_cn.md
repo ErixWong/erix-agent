@@ -228,6 +228,8 @@ src/
       roster.js                     名册：18 项记录、原子落盘、updatedAt 单调、陈旧重算
       capacity.js                   并发配额租约：wx 独占创建、幂等归还、sweep 回收
       notify.js                     完成通知去重：按 (runId, endedAt) 二元组，固定前缀
+      tool.js                      派生工具工厂（P1b）：runChild 由宿主注入，终止→终态映射归库，
+                                   父身份取自执行上下文（不是模型入参）
 ```
 
 `src/index.js` 导出 provider、规范消息转换、token 与压缩辅助函数、transcript store、run-state 辅助函数、宿主展示投影（`projectTranscriptForDisplay`）、多轮预写辅助函数（`appendUserTurn`）、配置 provider、`runToolLoop` 以及 reflection 辅助函数，另有模型输出归一化底座（`normalizeModelJson`，issue #406——带确定性修复与可选 LLM 兜底的**异步**入口，**不**取代同步 L0 的 `parseModelJson`）与槽位 → provider 构造件（`loadModelSlot` / `createProviderForSlot`）。可选的 `erix-agent/tools` 子路径导出工具 registry 和 provider 辅助函数、文件与 notes 的规范工厂，

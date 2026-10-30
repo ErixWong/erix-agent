@@ -67,3 +67,12 @@ export {
   shouldNotify,
   notificationText,
 } from "./delegation/notify.js";
+// 派生工具本体（issue #617 P1b）：`delegate` 工具的工厂。仍然零子进程——`runChild` 由宿主注入；
+// 终止词汇（TERMINATION_TO_STATE）归库并导出给宿主审；父身份从执行上下文自取，schema 无 parentRunId。
+export {
+  createDelegateTool,
+  TERMINATION_TO_STATE,
+  DEFAULT_TERMINATION_STATE,
+  DELEGATE_ACTIONS,
+  DELEGATE_DEFINITION,
+} from "./delegation/tool.js";

@@ -273,6 +273,8 @@ src/
       roster.js                    Roster: 18-field record, atomic write, updatedAt monotonic, stale reconcile
       capacity.js                  Concurrency quota leases: wx-exclusive create, idempotent release, sweep
       notify.js                    Completion-notify dedup keyed on the (runId, endedAt) pair, fixed prefix
+      tool.js                      Delegate tool factory (P1b): runChild host-injected, termination→state
+                                   mapping owned by the library; parent identity never a tool argument
 ```
 
 `src/index.js` exports the providers, canonical message conversions, token
