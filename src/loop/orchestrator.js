@@ -3772,13 +3772,32 @@ export async function runToolLoop(options) {
       // tool_result 总量）。现算、不留新状态：折叠决策要的就是「模型当下手里有多少原文」。
       // 口径与 `estimatedTokens` 同一把尺子（`estimateMessageTokens`）。
       //
-      // 地板是**排序偏好**（不是「永不折工作集」）：引擎始终把 `WORKING_SET_RECENT_ROUNDS` 线给
-      // 策略，由 `selectFoldedRounds` 优先保留最近那几轮；它自带**进度保证**（无可折时照旧折最老的
+      // 地板是**排序偏好**（不是「永不折工作集」）：引擎给策略一条「最近 N 轮优先不折」的线，由
+      // `selectFoldedRounds` 优先保留最近那几轮；它自带**进度保证**（无可折时照旧折最老的
       // 一轮），所以不会把折叠锁死。要不要因此**停机**是另一件事，由下面的循环计数决定。
       const workingSetTokensBeforeFold = workingSetTokens(groupIntoRounds(messages).rounds);
       const workingSetOverBudget = budgetTokens !== undefined
         && workingSetTokensBeforeFold > budgetTokens;
-      const workingSetRecentRounds = WORKING_SET_RECENT_ROUNDS;
+      // issue #612：地板改为 **opt-in（默认关）**——机制保留，默认值从 `WORKING_SET_RECENT_ROUNDS`
+      // 收成 `0`。**为什么默认关**（#608 / PR #610 交付后的实测，本单只改默认值、不改机制）：
+      // 成本已证、收益未证。同一 `bigdoc` 场景（单结果 119k token / 64k 预算）对照 main：每任务
+      // 总输入 **11,467 → 46,476**、重读次数 **3 → 9**，而事实命中两臂都是 **0/5** —— 地板阻止
+      // 折叠 ⇒ 模型拿不到摘要、只能反复重试 ⇒ 更贵且没变好。收益侧两个形状也测不出：串行翻译
+      // 200 段两臂重复读取率都是 0%（地板无对象可修），64k / 300 段的对照被模型行为漂移污染
+      // （main 每段 2 轮、分支每段 1 轮），不能归因给地板。方向上地板是「保留细节」，而实测模型缺
+      // 的是**经验**（哪些做完了 / 做到第几段 / 什么不能重做）⇒ 与「经验 > 细节」相反，真正该投的
+      // 是语义折叠（#611）。
+      //
+      // 通道保留：宿主显式给 `context.workingSetRecentRounds`（与 `budgetTokens` / `keepRounds`
+      // 同一个折叠上下文壳，下面非枚举地转成 `compactOptions.workingSetRecentRounds`）就沿用宿主的
+      // 值；不给 = `0` = 关，`selectFoldedRounds` 的第 4 参默认值本来就是 `0` ⇒ 行为逐字回到 #608
+      // 之前。⚠ 显式劣化闸门（`budgetBelowWorkingSetStreak` / `WORKING_SET_LOOP_ATTEMPTS`）与
+      // `last=` 游标都不看这个数，本单一个字都没动它们。
+      const requestedWorkingSetRounds = compactionContext?.workingSetRecentRounds;
+      const workingSetRecentRounds = Number.isSafeInteger(requestedWorkingSetRounds)
+        && requestedWorkingSetRounds > 0
+        ? requestedWorkingSetRounds
+        : 0;
       // messages 自 estimatedTokens 起只被读取（shouldCompact 为纯判定），直接复用（#172 A2）
       const tokensBefore = estimatedTokens;
       const layers = createEmptyCompactionLayers();
