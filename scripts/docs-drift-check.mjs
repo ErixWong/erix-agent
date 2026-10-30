@@ -544,7 +544,7 @@ for (const rule of DEFAULT_RULES) {
 //     与 `check:docs:strict` 都还是 exit 0，只有 #267 加的**源码↔文档**测试会红——而文档是宿主
 //     唯一读得到的面，那个测试又不进任何门禁。
 //   · baseline（#274）：AGENTS 里那两个基线数是 `scripts/type-check-ratchet.mjs` 里两个常量的**复述**，
-//     复述句式可枚举（`BASELINE_ROOT = N`、「基线常量 **N**」、「基线 **N** / 30 个文件」、「= 116 + 20 + 16」），
+//     复述句式可枚举（`BASELINE_ROOT = N`、「基线常量 **N**」、「基线 **N** / 29 个文件」、「= 110 + 20 + 16」），
 //     分解式还能自证算术。实证代价：#265 的 CHANGELOG 条目把棘轮写成开发中途的 `142→138 / 185→181`
 //     （落树终局是 121 / 164），当时随提交留下了；#270 手工改了中英共 11 处当前值，全靠人逐字读。
 //   · paths（#273）：覆盖面本身就是检查面。同一条不存在的仓内路径写进根 README 会 exit 1，写进
@@ -1370,7 +1370,7 @@ function collectMarkerLiteralErrors() {
 // ── 2.7 `--checkJs` 棘轮**当前值** ↔ 棘轮常量（issue #274，只做最省的那一档）──────
 // 真值 = scripts/type-check-ratchet.mjs 里的两个常量；文档侧 = AGENTS 中英里**复述这两个数**的句式。
 // 本单**没做**的那两档（代价不对等，写在这里不为完成率造活）：
-//   · 真跑 tsc 核 `--listFiles` 的文件数（30 files 那一句）：要 spawn tsc，而 check:docs 是文档门禁里
+//   · 真跑 tsc 核 `--listFiles` 的文件数（29 files 那一句）：要 spawn tsc，而 check:docs 是文档门禁里
 //     跑得最勤的一条（每次文档改动），为此把 check:docs 变成十秒级不值得；棘轮自己会校文件数。
 //   · 生成声明文件数（63）：那要跑 types:build，同样的理由。
 // 「历史值不误伤」是这规则的命门：AGENTS 里同时存在 142/185/218/226/261 这些**已退役的**基线值
@@ -1432,12 +1432,15 @@ const BASELINE_CLAIM_RULES = [
     ],
   },
   {
-    id: "「基线 **N** / 30 个文件」声明",
+    // ⚠ 句式里的 `29` 是**当前真值**的带错文件数（with-tools 一档）。`BASELINE_WITH_TOOLS` 降到别的文件数时，
+    // 下面两个正则里的字面量与上面这个 id **必须同步**：不同步时本规则会以「一处都抽不到——该声明被整句删了
+    // 或改了形」的形式变红，而不是以「声称 N，但常量是 M」的形式变红（后者好懂得多，别把自己绊在这里）。
+    id: "「基线 **N** / 29 个文件」声明",
     tier: "withTools",
     required: true,
     claims: [
-      { rel: AGENTS_EN, re: /baseline\s+\*\*(\d+)\*\*\s*\/\s*30\s*files/g },
-      { rel: AGENTS_CN, re: /基线\s*\*\*(\d+)\*\*\s*\/\s*30\s*个文件/g },
+      { rel: AGENTS_EN, re: /baseline\s+\*\*(\d+)\*\*\s*\/\s*29\s*files/g },
+      { rel: AGENTS_CN, re: /基线\s*\*\*(\d+)\*\*\s*\/\s*29\s*个文件/g },
     ],
   },
   {
@@ -4178,9 +4181,9 @@ const SELF_TEST_CASES = [
     expectFiles: [AGENTS_CN],
   },
   {
-    label: `EN 少写一处「基线 **${B_WT}** / 30 files」→ 中英句式处数不齐`,
-    overlay: { [AGENTS_EN]: (t) => t.replace(`baseline **${B_WT}** / 30 files = ${B_ROOT} + ${B_SPLIT.b} + ${B_SPLIT.c}`, `the ${B_WT}-error baseline spread over 30 files (= ${B_ROOT} + ${B_SPLIT.b} + ${B_SPLIT.c})`) },
-    expect: [/baseline\/「基线 \*\*N\*\* \/ 30 个文件」声明: 声明点处数中英不齐：AGENTS\.md 1 处 vs AGENTS_cn\.md 2 处/],
+    label: `EN 少写一处「基线 **${B_WT}** / 29 files」→ 中英句式处数不齐`,
+    overlay: { [AGENTS_EN]: (t) => t.replace(`baseline **${B_WT}** / 29 files = ${B_ROOT} + ${B_SPLIT.b} + ${B_SPLIT.c}`, `the ${B_WT}-error baseline spread over 29 files (= ${B_ROOT} + ${B_SPLIT.b} + ${B_SPLIT.c})`) },
+    expect: [/baseline\/「基线 \*\*N\*\* \/ 29 个文件」声明: 声明点处数中英不齐：AGENTS\.md 1 处 vs AGENTS_cn\.md 2 处/],
   },
   {
     label: "历史值不被误伤（对照）：CN 叙述里的 142 改成 143 必须仍然绿",
