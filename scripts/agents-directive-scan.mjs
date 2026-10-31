@@ -12,6 +12,9 @@
 //   ② **会过期的实测数**：`实测 1234 组` / `measured 87 declarations` 这类**抄件**。数字的正本各在代码里
 //      （`BASELINE_ROOT`、`SYMBOL_ANCHOR_MIN_UNIQUE`、`npm pack --dry-run --json`），抄件没有闸、正本有。
 //      正确写法是复现命令（`node scripts/docs-drift-check.mjs --verbose` 现读）。
+//      ⚠ 票面 ② 写的是「**带日期**的实测句」，而同一张票的验收又要求无日期的「实测 1234 组」也红 ——
+//      两处冲突，按更严的一边落地：日期只是这一类的**一种**形状，无日期反而更危险（它读起来就是现值），
+//      所以判据不要求日期。这条取舍写在 `--strict` 的报告里，也写在交付报告的「取证边界」里。
 //   ③ **裸源码行号坐标**：`src/loop/orchestrator.js:4372`。行号随上游重构整体位移，指到别的函数也照样「存在」。
 //      正确写法是符号锚点（`symbol` 与它的文件），行号一律丢掉（#286 的既有规矩）。
 //
@@ -19,7 +22,7 @@
 // **会被执行**。所以本门的判定面只有 AGENTS 这一对，`docs/` 与 `CHANGELOG.md` 照扫照报、**不判定**
 // （票面 边界：不改历史文档；它们在 `git ls-files` 清单里，所以「分类」不是空话，也证明历史一侧确实不被判死）。
 //
-// 三条判据（每条都能被反向证打红，见 `--self-test`）：
+// 四条判据（每条都能被反向证打红，见 `--self-test`）：
 //   1. **分类**（`classify()`，纯路径，第一等公民）：`directive` = `AGENTS.md` / `AGENTS_cn.md`（判定）；
 //      `history` = 面上其余一切（`CHANGELOG.md` + `docs/**`，只计数、只报告）。未登记路径 ⇒ **directive**
 //      （未知分类不是免检：宁可多红一句，与 #560 的方向一致）。
@@ -532,12 +535,12 @@ export function scanDirectives({ root = ROOT, io, exemptions = EXEMPTIONS, ceili
     report.push({ file: rel, kind, why, hits, counts });
   }
   const gate = gateVerdicts({ report, exemptions, ceilings, staleConstants });
-  return { manifest, report, gate, constants, externalPrefixes, staleConstants };
+  return { manifest, report, gate, constants, externalPrefixes, staleConstants, exemptions, ceilings };
 }
 
 // ── 8. 输出（两条分支都只读 `gate`，不自己算红） ─────────────────────────────
 /** 人读视图。返回值 = 退出码（由 `gateExitCode` 给；本函数不自己拼红数）。 */
-function printReport({ manifest, report, gate, constants, externalPrefixes, staleConstants }, { strict }) {
+function printReport({ report, gate, constants, externalPrefixes, staleConstants, exemptions, ceilings }, { strict }) {
   const directive = report.filter((r) => r.kind === "directive");
   const history = report.filter((r) => r.kind === "history");
   console.log(`agents-directive-scan: ${report.length} 份**入库**文件（清单 = \`git ls-files\`；`
@@ -561,7 +564,7 @@ function printReport({ manifest, report, gate, constants, externalPrefixes, stal
 
   const exemptHits = directive.flatMap((entry) => entry.hits.filter((h) => h.exempt).map((h) => ({ ...h, file: entry.file })));
   console.log("── 例外登记表（每条都必须在指令面上真的命中；空转即红） ──────────");
-  for (const entry of EXEMPTIONS) {
+  for (const entry of exemptions) {
     const used = exemptHits.filter((h) => h.exemption === entry.id);
     console.log(`  ${used.length === 0 ? "✗" : "✓"} ${entry.id}（${entry.categories.join("/")}）—— `
       + `${used.length} 处：${used.slice(0, 4).map((h) => `${h.file}:${h.line}`).join(", ")}${used.length > 4 ? " …" : ""}`);
@@ -576,7 +579,7 @@ function printReport({ manifest, report, gate, constants, externalPrefixes, stal
 
   console.log("\n── 存量欠账（本票只建闸、不清账：棘轮方向） ────────────────────");
   for (const entry of directive) {
-    const row = DEBT_CEILINGS[entry.file] ?? {};
+    const row = ceilings[entry.file] ?? {};
     const cells = Object.keys(CATEGORIES).map((c) => `${c}: ${entry.counts[c]} / 上限 ${row[c] ?? "（未登记）"}`).join("；");
     console.log(`  ${entry.file}  ${cells}`);
   }
@@ -606,8 +609,8 @@ function printReport({ manifest, report, gate, constants, externalPrefixes, stal
   console.log(`  ① 指令面（AGENTS 中英）三类命中：${directive.reduce((n, r) => n + r.hits.length, 0)} 处，`
     + `其中例外放行 ${exemptHits.length} 处、非例外 ${directive.reduce((n, r) => n + Object.values(r.counts).reduce((a, b) => a + b, 0), 0)} 处`);
   console.log(`  ② 历史一侧（CHANGELOG + docs/）：${history.reduce((n, r) => n + r.hits.length, 0)} 处命中——**不判定**（票面 边界）`);
-  console.log(`  ③ 例外登记：${EXEMPTIONS.length} 条，空转 ${gate.counts.idleExemptions} 条`);
-  console.log(`  ④ 存量欠账：${Object.keys(DEBT_CEILINGS).length} 份文件登记，超上限 ${gate.counts.overCeiling} 格、空转 ${gate.counts.idleCeilings} 格`);
+  console.log(`  ③ 例外登记：${exemptions.length} 条，空转 ${gate.counts.idleExemptions} 条`);
+  console.log(`  ④ 存量欠账：${Object.keys(ceilings).length} 份文件登记，超上限 ${gate.counts.overCeiling} 格、空转 ${gate.counts.idleCeilings} 格`);
   console.log(`  ⑤ 常量抄件对账：${staleConstants.length === 0 ? "全部等于源码现值" : `${staleConstants.length} 处过期`}`);
 
   if (strict) {
@@ -695,9 +698,11 @@ async function selfTest() {
       const text = await runCaptured(["--strict"], tree);
       const json = await runCaptured(["--strict", "--json"], tree);
       const payload = JSON.parse(json.stdout);
-      // 变异必须真的落上（#210 R2）：A 类命中没涨 ⇒ 下面的「非 0」证不到任何东西
+      // 变异必须真的落上（#210 R2）：**塞进去的那一句**必须自己被抽到，而不是「这一格本来就有红」
       const agents = payload.files.find((f) => f.file === "AGENTS.md");
-      if (agents.counts.A === 0) throw new Error("变异没落上：A 类命中仍是 0（判据抽不到这个句式）");
+      const inserted = agents.hits.find((h) => h.category === "A" && h.text.includes("#999"));
+      if (inserted === undefined) throw new Error("变异没落上：塞进去的 `#999` 没被抽成 A 类命中（判据抽不到这个句式）");
+      if (!(inserted.line > 400)) throw new Error(`塞进去的那一句的行号不对：${inserted.line}`);
       eq(json.code, 1, "`--strict --json` 的退出码");
       eq(text.code, json.code, "两条输出分支的退出码必须相同");
       if (!/AGENTS\.md\s+A 类/.test(text.stdout)) throw new Error(`文本分支没点名 AGENTS.md 的 A 类红：${text.stdout.slice(-200)}`);
@@ -719,16 +724,20 @@ async function selfTest() {
       if (!/B 类/.test(red.stdout)) throw new Error("文本分支没说是 B 类红");
       restore(tree, "AGENTS.md", before);
 
-      // 换成**登记过的例外**：常量名 + 值与门禁脚本现值一致 ⇒ 放行（同一句话，只多一个活的对账）
+      // 换成**登记过的例外**：同一句话里带上「实测 + 数字」（所以它确实是一处 B 类命中），但数字是门禁
+      // 自己持有的常量且**与现值一致** ⇒ 放行。这一格证的正是票面第 ④ 条：「塞一条登记过的例外 ⇒ 绿」。
       const withConstant = append(tree, "AGENTS.md",
-        "`BASELINE_ROOT = 108` 是门禁自己持有的常量（这句话是反向证塞进去的登记例外）");
+        "实测 108 个类型错误（`BASELINE_ROOT = 108`，真值在 `scripts/type-check-ratchet.mjs`，门禁自己会对账）");
       const green = await runCaptured(["--strict"], tree);
       eq(green.code, 0, "塞了登记例外后 `--strict` 的退出码");
       const payload = JSON.parse((await runCaptured(["--strict", "--json"], tree)).stdout);
-      const exempt = payload.files.find((f) => f.file === "AGENTS.md").hits.filter((h) => h.exempt);
-      if (!exempt.some((h) => h.exemption === "gate-owned-constant")) {
-        throw new Error("登记例外没被用上：`gate-owned-constant` 一处也没放行");
-      }
+      const hits = payload.files.find((f) => f.file === "AGENTS.md").hits;
+      // 变异必须真的落上（#210 R2）：塞进去的那一句必须**先是**一处 B 类命中，**再**被例外放行。
+      // 只断言「有 `gate-owned-constant` 放行」是假证——文件里本来就有两处。
+      const inserted = hits.find((h) => h.category === "B" && h.text.includes("108 个类型错误"));
+      if (inserted === undefined) throw new Error("变异没落上：塞进去的实测句没被抽成 B 类命中");
+      eq(inserted.exempt, true, "塞进去的那一句必须被例外放行（否则它只是没命中）");
+      eq(inserted.exemption, "gate-owned-constant", "放行它的是哪一条例外");
       restore(tree, "AGENTS.md", withConstant);
     }));
 
