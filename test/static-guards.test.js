@@ -4003,8 +4003,17 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  * # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 26 条 / 英文 26 条 / 配对 26 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 13（校准面 \#\# [Unreleased]）
  * # 配对地板：实测 26 对 > 地板 13 对 ⇒ 可以抬地板到 26
  * ```
+ *
+ * 同一切版（docs-261031-01，review 追加）：`### Added` 再补两对——`config.continuity.handoff`（引擎成为
+ * 续接块的默认写者，issue #598）与 `context.workingSetRecentRounds`（工作集地板 opt-in、默认关，含
+ * `bigdoc` 实测成本，issue #608 / #612）。面没挪，实测 28 对，地板 26 → 28。守卫自己的 diagnostic：
+ *
+ * ```
+ * # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 28 条 / 英文 28 条 / 配对 28 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 26（校准面 \#\# [Unreleased]）
+ * # 配对地板：实测 28 对 > 地板 26 对 ⇒ 可以抬地板到 28
+ * ```
  */
-const CHANGELOG_PAIR_FLOOR = 26;
+const CHANGELOG_PAIR_FLOOR = 28;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

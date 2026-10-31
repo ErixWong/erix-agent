@@ -287,6 +287,12 @@ const HISTORY_BODY_PINS = Object.freeze({
   "docs/host-upgrade-guide-0.27.0_cn.md": 35,
   "docs/host-upgrade-guide-0.28.0.md": 74,
   "docs/host-upgrade-guide-0.28.0_cn.md": 73,
+  // 工单 docs-261031-01（0.29.0 发版准备）：新的 0.29.0 中英指南对落地，两份各 15 处「退役写法只作为
+  // 历史/代价被提到」的命中（`cwd` / `deadlineMs` / `runId` / `termination` 这类 0.28.0 已退役的扁平名，
+  // 以及 `parentRunId` 的新家说明）。值取自扫描器自己报的 `uses=15`，不是手算；正文一个字不改（历史类
+  // 钉子只钉命中数，钉住「没人改写这一段历史」）。
+  "docs/host-upgrade-guide-0.29.0.md": 15,
+  "docs/host-upgrade-guide-0.29.0_cn.md": 15,
   "docs/host-upgrade-guide-0.6.0.md": 12,
   "docs/host-upgrade-guide-v030.md": 49,
   "docs/host-upgrade-guide-v030_cn.md": 49,
@@ -996,6 +1002,8 @@ async function selfTest(retired, manifest) {
       ["docs/tasks/261026-c469.md", "history"],
       ["docs/host-upgrade-guide-0.28.0.md", "history"],
       ["docs/host-upgrade-guide-0.28.0_cn.md", "history"],
+      ["docs/host-upgrade-guide-0.29.0.md", "history"],
+      ["docs/host-upgrade-guide-0.29.0_cn.md", "history"],
       ["docs/host-consumer-contract.md", "contract"],
       ["docs/host-consumer-contract_cn.md", "contract"],
     ];

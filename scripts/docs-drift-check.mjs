@@ -2151,8 +2151,17 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  * `writeRecord`（`src/tools/delegation/roster.js`）、`createCliDelegation`（`bin/delegation.js`）
  * 四组新锚点 ⇒ 168 → **172 组**（中英各一处，组数 +2 是因为同一 (符号, 文件) 在两种语言里只算一组；
  * AGENTS 中英的声称句自己也引这四组，所以 170 → 172 是**改完 AGENTS 之后**重测的不动点），在本分支树上 `--verbose` 实测。
+ *  抬下限的理由（工单 docs-261031-01 发版准备，**172 → 180**，两刀合一）：① 0.28.0 指南里那段 delegate
+ *  示例面迁到新的 0.29.0 中英指南对，§2–§5 按同一红线用符号锚点引用 `createDelegateTool` /
+ *  `TERMINATION_TO_STATE`（`src/tools/delegation/tool.js`）、`judgeRecordFields`
+ *  （`src/loop/judge-record.js`）与 `completionMarkerKey`（`src/tools/delegation/notify.js`）⇒ +3 组 / +5 处；
+ *  ② review 追加的 §7「压缩与续接面」再引 `DEFAULT_COMPACTION_STRATEGY`（`bin/config.js`）、
+ *  `HANDOFF_INSTRUCTION` / `resolveContinuityDir`（`src/loop/continuity-block.js`）、`SUMMARIZER_PROMPT_GUIDE`
+ *  （`src/compact/fold-llm.js`）与 `parseFoldSummaries`（`src/compact/fold-statistical.js`），AGENTS 中英的
+ *  声称句自己也引这几组 ⇒ +5 组 / +14 处。合计 `--verbose` 实测 **180 组 / 549 处**（连量两次相同，
+ *  不动点；不升就是下限在空转）。
  */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 175;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 180;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {

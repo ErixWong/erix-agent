@@ -170,6 +170,51 @@
   侧的配置缺陷）与 `no_transcript`（路径在、文件不在或打不开——正常时序）。它**不**做重算，也不看本进程的
   `owned` 表：读别的进程养的子正是它存在的场景，而一边读一边改写那个进程的名册就是越界。
 
+- **`config.continuity.handoff`: the engine becomes the continuity block's default writer (issue #598).**
+  The continuity block has always needed a host provider; it no longer does. The new leaf
+  `config.continuity.handoff` (`"off"` | `"prompt"` | `"prompt-and-fallback"`, default `"off"`) turns the
+  engine itself into the writer: it injects a short instruction at the request tail, the model writes a
+  `<handoff>` block inside the **same** response (zero extra requests), the engine parses the three
+  sections verbatim (a missing one is recorded as `unknown`, never invented) and stores them at
+  `~/.erix/continuity/<project-key>.json` — the key derived from the working directory the same way the
+  session id is, with `ERIX_CONTINUITY_DIR` overriding the directory — then recalls that record at the
+  start of the next run. `"prompt-and-fallback"` adds **exactly one** extra call that asks only for the
+  block, for a run that ended without one. `capabilities.hooks.continuityProvider` is now an **override**
+  rather than a requirement: supply it and your text wins, with the default writer standing down. The
+  default is `off`, and that is the compatibility promise — no instruction in the request, no file
+  written, no directory created, byte-for-byte the old behaviour. The cost of turning it on is one short
+  instruction per request (a few dozen tokens) plus a file write per run; the win is that a zero-config
+  host finally gets cross-run continuity without writing a provider.
+- **`config.continuity.handoff`：引擎成为续接块的默认写者（issue #598）。**
+  续接块过去一直需要宿主提供 provider，现在不必了。新叶子 `config.continuity.handoff`
+  （`"off"` | `"prompt"` | `"prompt-and-fallback"`，默认 `"off"`）把引擎自己变成写者：它在请求尾部注入
+  一小段指令，模型在**同一次**响应里写出 `<handoff>` 块（零额外请求），引擎原样解析三段（缺段记
+  `unknown`，绝不代写），存到 `~/.erix/continuity/<project-key>.json`——key 与 session id 用同一套工作
+  目录派生规则，目录可用 `ERIX_CONTINUITY_DIR` 覆盖——并在下一次 run 启动时召回。`"prompt-and-fallback"`
+  多**恰好一次**补调用，只向模型要那一段块，用于「这次收尾没写」的情况。
+  `capabilities.hooks.continuityProvider` 从「必需」变成 **override**：给了它，你的文本赢，默认写者让位。
+  默认是 `off`，这就是兼容承诺——请求里没有那条指令、不写文件、不创建目录，与旧行为逐字一致。打开它的
+  代价是每请求多一小段指令（几十 token）加每 run 一次文件写；换来的是零配置宿主终于有了跨 run 续接，
+  不用自己写 provider。
+- **`context.workingSetRecentRounds`: a working-set floor that ships off by default (issues #608, #612).**
+  Setting `config.folding.context.workingSetRecentRounds` to N > 0 keeps the last N rounds that carry a
+  `tool_result` out of the fold. It is a **sorting preference**, not a ban — with nothing else foldable the
+  engine still folds the oldest round, so folding cannot deadlock — and the default is **0 = off** because
+  the mechanism was measured before it was defaulted and the measurement went the wrong way: on the same
+  `bigdoc` scenario (one 119k-token result, 64k budget) total input went **11,467 → 46,476** tokens and
+  re-reads went **3 → 9**, while fact recall stayed **0/5 in both arms**. The floor stops the fold, the model
+  never gets a summary, retries, and pays more for the same answer — and what it was missing is *experience*
+  (what is done, how far it got, what must not be redone), not *detail*. So the mechanism stays, the default
+  is off, and the effort went into the semantic fold instead. `budgetBelowWorkingSetStreak` and the `last=`
+  cursor do not read this number: turning the floor on changes sorting, not the degradation gates.
+- **`context.workingSetRecentRounds`：一个默认关着的工作集地板（issue #608、#612）。**
+  把 `config.folding.context.workingSetRecentRounds` 设成 N > 0，就把最近 N 个带 `tool_result` 的轮次留在
+  折叠之外。它是**排序偏好**而不是禁令——没有别的可折时引擎照旧折最老的一轮，所以折叠不会死锁——而默认是
+  **0 = 关**，因为机制是先量后定默认的，而量的结果走了反方向：同一个 `bigdoc` 场景（单结果 119k token、
+  64k 预算）下，每任务总输入 **11,467 → 46,476** token、重读次数 **3 → 9**，而事实命中两臂都是 **0/5**。
+  地板挡住了折叠，模型拿不到摘要，反复重试，为同一个答案付更多钱——而它缺的是**经验**（哪些做完了、做到
+  第几段、什么不能重做），不是**细节**。所以机制留着、默认关着，力气花在语义折叠上。
+  `budgetBelowWorkingSetStreak` 与 `last=` 游标都不读这个数：打开地板只改排序，不改降级闸门。
 ### Changed
 
 - **The roster record carries 21 fields instead of 18, and the terminal write carries the child's answer (issue #630 S1, PR #632).**

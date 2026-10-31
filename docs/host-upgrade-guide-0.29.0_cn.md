@@ -9,8 +9,9 @@
 仅此而已。如果你确实要派生，请先读 §3 再读 §2：宿主出错的地方都在端口上，而四个可选端口**全都是静默失败**
 ——失败的样子长得像「子 run 不听话」。
 
-**本指南只覆盖 0.29.0 的派生那一片。** 这一版还带了别的纯加法工作，各有自己的 `CHANGELOG.md` 条目；§6 把
-它们点名列出来，好让你知道还动了什么，§7 是「没有变的东西」。
+所以是两片。**§2–§5 是派生那一片**：一条新增的显式开启面，加上让它的记录说真话的那批修正。**§7 是压缩与
+续接那一片**：一处默认值变了、一处文本形状变了、三处新事实要看——如果你解析折叠块文本、按事件名过滤告警，
+或自己跑摘要器，请读它。§6 点名列出版本里其余的东西，§8 是「没有变的东西」。
 
 ## 1. 变更总览
 
@@ -20,7 +21,8 @@
 | 子 run 传 `config.run.parentRunId` | 一个不透明身份，镜像到四处，库从不解释它 | §2 |
 | 接 `runChild`（必需）与 `notifyParent` / `transcriptPathFor` / `cwdFor` / `isProcessAlive`（可选，每个都有点名的代价） | 库不 fork、不猜你的目录布局、不替别人发明死亡 | §3 |
 | 预期名册 21 个字段、`result.text`、`tail` 的两种失败理由 | 答不出「它到底说了什么」的记录不算记录 | §4 |
-| 不派生的话：什么都不用改 | 没有选项搬家，读侧一行未动 | §7 |
+| 不派生的话：什么都不用改 | 没有选项搬家，读侧一行未动 | §8 |
+| 如果你解析折叠块文本、按事件名过滤告警、或自己跑摘要器，请读 §7 | 一处默认值变了、一处文本形状变了、三处新事实要看 | §7 |
 
 ### 本版动到的宿主可见表面
 
@@ -114,7 +116,7 @@ store 自己的命名助手推导，不要自己拼 `<runId>.jsonl`：store 会�
 
 ## 4. 名册与结果现在会说什么
 
-六处修正，方向是同一个：记录与工具结果不许让父 run 去猜。
+七处修正，方向是同一个：记录与工具结果不许让父 run 去猜。
 
 * **名册是 21 个字段，不是 18 个。** 新增三个——`resultText`（子的终稿）、`resultTruncated`（恰好是
   `true`，且只在文本被截断时出现）、`errorMessage`（只在子抛错时写）。三者都落进**存终态 `state` 的同一次
@@ -141,6 +143,9 @@ store 自己的命名助手推导，不要自己拼 `<runId>.jsonl`：store 会�
   于是「在干活」与「卡在队列里」在名册上长得一模一样。`status`、`result`、`list` 都先跑重算；因为所有者死
   了而卡在活态的记录，以前会永远答 `still_running`，现在返回终态。真正在跑的子 run 照旧答 `still_running`
   ——重算不是「一律判死」的许可证。
+* **显式 `--compact-budget` 会被子 run 继承。** 子 run 以前建压缩上下文时**完全没有**显式预算，于是父在
+  命令行给的预算在子那一侧静默消失，只剩从配置的上下文窗口推出来的那个值。没给显式预算时旧推导照旧，
+  一字不变。这一条是 CLI 接线而不是库的默认值：引擎从不为子 run 发明一个预算。
 * **完成标记键多了分隔符。** `completionMarkerKey`（`src/tools/delegation/notify.js`）以前把 `runId` 与
   `endedAt` 直接拼在一起，中间什么都没有，只靠「时间戳恰好 13 位」才不碰撞。现在键是 `runId:endedAt`，于是
   `("a1", 23)` 与 `("a", 123)` 是两次不同的完成。如果你把 `collected` 标记持久化到重启之后，0.28.0 写下的
@@ -170,9 +175,75 @@ store 自己的命名助手推导，不要自己拼 `<runId>.jsonl`：store 会�
 * `config.folding.context.foldAtRatio`（issue #569）——折叠可以提前到预算的一个比例；默认 `1.0` 与今天的
   触发点逐字等价。
 * `capabilities.hooks.continuityProvider` + `config.folding.context.continuityMaxTokens`（issue #568）——一块
-  受预算约束、由宿主喂内容的会话续接块；不给 provider 时引擎整块都不注入。
+  受预算约束的会话续接块。自 issue #598 起引擎就是它的**默认写者**（`config.continuity.handoff`，默认
+  `off`）：开关一开，引擎自己注入交接指令，**不需要宿主提供 provider**；`continuityProvider` 是
+  **override**。细节见 §7.2，这一版压缩与续接面的其余部分见 §7。
 
-## 7. 没有变的东西
+## 7. 压缩与续接面
+
+这一侧有六处变化，按「宿主得动多少」排序。没有一处退役选项；两处改了**默认值**，一处改了宿主可能正在
+解析的**文本形状**。
+
+### 7.1 CLI 的默认压缩策略变成 `fold-llm`（issue #614）
+
+`erix chat` 与 `erix repl` 以前默认用统计摘要器。现在默认是 LLM 驱动的折叠（`DEFAULT_COMPACTION_STRATEGY`
+（`bin/config.js`）），统计摘要器降为**降级兜底**——它实际上一直是这个位置。代价是它排在第一位的理由：
+**现在每次压缩都多一次主力模型调用。** 不想付这个代价的宿主传 `--compaction fold-statistical`，或把
+`config.folding.context.strategy` 设成 `"fold-statistical"`；策略本身没有被删，名字集合一字未变
+（`"sliding-window" | "fold-statistical" | "fold-llm"`）。
+
+### 7.2 `config.continuity.handoff`：引擎就是默认写者（issue #598）
+
+续接块——那条注入在请求尾部的会话快照——多了一个开关。`config.continuity.handoff` 取
+`"off"`（默认）| `"prompt"` | `"prompt-and-fallback"`。打开它，**你不需要提供 provider**：引擎在请求尾部
+注入一小段指令（`HANDOFF_INSTRUCTION`（`src/loop/continuity-block.js`），~80 token），模型在**同一次**响应里
+顺手写出 `<handoff>` 块（零额外请求），引擎解析出三段、存到 `~/.erix/continuity/<project-key>.json`
+——project-key 与 session id 用同一套工作目录派生规则，而 `resolveContinuityDir`
+（`src/loop/continuity-block.js`）优先认 `ERIX_CONTINUITY_DIR`——并在下一次 run 启动时召回那份记录。缺段
+记成 `unknown`：引擎绝不用机械文本冒充语义交接。`"prompt-and-fallback"` 允许多**恰好一次**补调用，只向模型
+要那一段交接块，用于「这次 run 收尾时没写」的情况。`capabilities.hooks.continuityProvider` 现在是
+**override**：你给了它，你的文本赢，默认写者让位。默认是 `off`，所以什么都不改的宿主看到零行为变更——
+请求里没有那条指令、不写文件、不创建目录。
+
+### 7.3 `context.workingSetRecentRounds` 是 opt-in，默认关（issue #608、#612）
+
+把 `config.folding.context.workingSetRecentRounds` 设成 N > 0，就会把最近 N 个带 `tool_result` 的轮次留在
+折叠之外。它是**排序偏好**而不是禁令：没有别的可折时引擎照旧折最老的一轮，所以折叠不会死锁。默认是
+**0 = 关**，而这个默认值是重要的一半——机制是先量后定默认的，而量的结果走了反方向。同一个 `bigdoc` 场景
+（单结果 119k token、64k 预算）下，每任务总输入 **11,467 → 46,476** token、重读次数 **3 → 9**，而事实命中
+两臂都是 **0/5**：地板挡住了折叠，模型拿不到摘要，于是反复重试，为同一个答案付更多钱。那里模型缺的是
+**经验**（哪些做完了、做到第几段、什么不能重做），不是**细节**——所以地板默认关，力气花在语义折叠上。
+
+### 7.4 折叠块改成账本驱动渲染，所以它的文本形状变了（issue #601、#603、#605、#565）
+
+替代被折历史的那个块，现在由**每次折叠的账本条目**渲染——一折一条 append-only 的 `foldedFacts`，各自带
+自己的文本与自己那一段增量——而不是从一个累积字符串里反解出来。两处后果会到达宿主。块变成**分段**的：
+最近几次折叠给全（标题、工具足迹、清单、摘要），更早的只留一行 title，因为完整那份还在账本里。清单取自
+结构化的 `toolCalls` 投影，不是把渲染出来的文本再解析回去。如果你解析过那个块的文本，**形状变了**——去读
+账本。`parseFoldSummaries`（`src/compact/fold-statistical.js`）仍然在，但它现在是旧 transcript 的兼容路径，
+以及账本条目没有结构化键时的兜底。
+
+### 7.5 摘要器提示词多了第六节，而空摘要现在算失败（issue #611）
+
+折叠摘要器的提示词（`SUMMARIZER_PROMPT_GUIDE`（`src/compact/fold-llm.js`））多了第六节
+`## 教训与坑（不要重犯的）`：试过但失败的做法与原因、不可违反的约束、已确认的坑——只从被折原文里抄，
+没有就写「无」。如果你通过策略端口跑自己的摘要器，返回约定多了一条硬边：**空串或纯空白的摘要算失败，不算
+成功。** 它会以新的 `empty_summary` 降级类型失败（错误码是 `summarizer_empty_summary`），而不是静默把你的
+历史换成空。
+
+### 7.6 三处新的可观测面（issue #588、#608、#594）
+
+* `compaction_deferred` 事件：当一次折叠因为还有悬空的 `tool_use` 没结清而被推迟时发出。它是既有观察者通道上
+  一条 `fatal: false` 的事实，不是新回调。
+* `budget_below_working_set` 诊断：当工作集单独就装不进预算、折叠只能停下时发出。载荷：`budgetTokens`、
+  `workingSetTokens`、`suggestedBudgetTokens`、`repeatStreak`、`foldLayersOverBudget`（另有 `attempts` 与
+  一句 `detail`）。
+* run state 里的 `last=` 格：一个 ~10 token 的游标，记最近一次**入参不同**的工具调用，同一入参再调就长成
+  `×N`——于是宿主（或续跑的模型）不必读 transcript 就知道跑到哪了。
+
+如果你的告警按事件名过滤、或仪表盘按诊断字段白名单取值，把这三样加上。
+
+## 8. 没有变的东西
 
 * `runToolLoop` 的输入面：没有选项被退役、改名或搬家；被接受的顶层名集合、`config` 的 schema 与
   `capabilities` 的形状，就是 0.28.0 发出去的那一套。
@@ -183,7 +254,7 @@ store 自己的命名助手推导，不要自己拼 `<runId>.jsonl`：store 会�
   600000、名册目录 `~/.erix/delegation/`（用 `ERIX_DELEGATION_DIR` 搬走）。
 * 运行时零依赖红线：派生那几个模块只 import `node:` 内置与相对路径。
 
-## 8. 在你自己这边验一遍
+## 9. 在你自己这边验一遍
 
 1. **不派生就到此为止。** §2–§5 与你无关；唯一可见的变化是 §4 的名册字段数，而且只在你亲自读名册文件时才
    看得见。
