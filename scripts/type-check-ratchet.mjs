@@ -205,7 +205,14 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 //   `src/providers/anthropic.js` 9、`src/loop/run-snapshot-executor.js` 8、`src/tools/notes.js` 7、`src/providers/openai.js` 7、
 //   `src/display/projection.js` 7、`src/tools/registry.js` 6、`src/store/notes.js` 6、`src/compact/pipeline.js` 6
 //   （`--with-tools` 一档再加 `src/tools/file-tools.js` 20、`src/skills/loader.js` 16；历史值：2026-10-31 上一笔 17 / 10 / 9 / 8 / 7 / 7 / 7）。
-const BASELINE_ROOT = 108;
+// 下调记录：**108 → 107**（issue #177 刀4，2026-11-01）——减的那 1 个是
+//   `error.code = "judge_intercept_timeout"` 的 TS2339（`Property 'code' does not exist on type 'Error'`）。
+//   它原本在 `src/loop/orchestrator.js`，而那个文件没有 `// @ts-check`；`build-types` / `prepack` 的 tsc
+//   **不带** `--checkJs`（`@ts-check` 是唯一开关），所以这条债在发布门禁上一直看不见。刀4 把 judge 调用单元
+//   搬进首行带 `// @ts-check` 的新模块 `src/loop/judge-runner.js` 之后，它第一次进入 build-types 的检查面
+//   （tsc exit 2）⇒ 补一行 `/** @type {Error & {code?: string}} */` 修掉（零行为变化）。
+//   带错文件数仍是 **27 个**（`src/loop/judge-runner.js` 自身 0 个错），可及 78 / 宿主不可及 29 = 107。
+const BASELINE_ROOT = 107;
 
 // `--with-tools` 的基线：把第二个公共入口 `src/tools/index.js` 也喂给 tsc 后的并集。
 // 复现命令（逐字）：
@@ -213,15 +220,17 @@ const BASELINE_ROOT = 108;
 //     --module nodenext --moduleResolution nodenext --skipLibCheck src/index.js src/tools/index.js
 // 实测（2026-10-11，`59f3a72`）：**185 个错 / 31 个文件** = 单入口的 142 个，加上只有 `./tools` 才拉进来的
 //   `src/tools/file-tools.js` 27 个与 `src/skills/loader.js` 16 个（两个都是宿主直接可见的导出实现，
-//   `createFileTools` / `discoverSkills` 那一族）**当前值（2026-10-31 于 `c92c8fa` 复测）= 144 个 / 29 个文件 = 108 + 20 + 16**；
-//   历史值：146 个 = 110 + 20 + 16（2026-10-31 上一笔）、152 个 / 30 个文件 = 116 + 20 + 16（2026-10-23 复测）；
+//   `createFileTools` / `discoverSkills` 那一族）**当前值（2026-11-01 于 #177 刀4 的树上复测）= 142 个 / 29 个文件 = 107 + 19 + 16**；
+//   历史值：143 个 = 108 + 19 + 16（2026-10-31 于 `c92c8fa`；旧注释把这一格写成「144 个 = 108 + 20 + 16」，
+//   与当时的常量 143、与实测的 `src/tools/file-tools.js` 19 个都不符，本笔一并改正）、
+//   146 个 = 110 + 20 + 16（2026-10-31 上一笔）、152 个 / 30 个文件 = 116 + 20 + 16（2026-10-23 复测）；
 //   2026-10-22 那轮的 153 个 = 117 + 20 + 16、再上一轮的 156 个 = 117 + 23 + 16、2026-10-21 那轮的 160 个 = 117 + 27 + 16、2026-10-15 那轮的 162 个 = 119 + 27 + 16、2026-10-13 在同一棵 `39e96f1` 上复测的 164 个 = 121 + 27 + 16 都是**历史值**（与旧常量的差额逐个落在 `src/store/notes.js`、`src/display/projection.js`、`src/tools/file-tools.js` 与 `src/messages/openai-normalization.js`，同上面那些下调记录；
 //   `loader.js` 16 这个计数自 #214 起一字未动，本次也逐个复核过）。#214 时代入库的是 **261**，
 //   而它**从来没跟着 #177 刀 1 复测过**：同一对 tsc/@types 在改前树 `8f83375` 实测这一档是 **260**，
 //   于是 261 → 185 的 76 个 = #249 的 75 个 + #177 欠下的那 1 个（教训：下调基线要**两档一起复测**）。为什么默认不带它：#214 正文给的口径就是 `src/index.js`，
 //   默认值必须与规格逐字一致；但它**是**真实盲区，所以这里留一条可随时收紧的通道（收紧=把默认入口加上并
 //   把基线换成当前实测值，属 #214 之后的收紧动作，不要拿它当「反正卡不住」的理由）。
-const BASELINE_WITH_TOOLS = 143;
+const BASELINE_WITH_TOOLS = 142;
 
 // ── strict 档基线（issue #417：把 #416 的「只观测」升级成棘轮）──────────────────────
 // 这两个常量是 strict 那一档的**唯一真值**。同一条 tsc 命令（入口 / target / module / `--skipLibCheck` 与非
@@ -242,9 +251,11 @@ const BASELINE_WITH_TOOLS = 143;
 // 提交信息里写清是哪个文件减了多少错；**两档要么一起降、要么都不动**，只降一档 = 把差额推给另一档。
 // ⚠ 本票（#417）**只加闸、不修债**：下面的数就是本票落地那一刻的实测，不是 0。清债是按文件切片的后续动作，
 //   每片 PR 降这个常量；在此之前「strict 有几千个错」是绿的，红的是**新增**。
-const BASELINE_STRICT_ROOT = 1894;
+// 2026-11-01（#177 刀4）两档同笔各降 1：包根 1894 → 1893、并集 2124 → 2123——同一条
+// `error.code` TS2339（理由见上面 `BASELINE_ROOT` 那条下调记录），两档在**同一次测量里**产出。
+const BASELINE_STRICT_ROOT = 1893;
 // 2026-11-01 重测下调 2128 → 2124（−4 = `f55eb8f` 一行 `@returns` 补 `facts`；包根档同笔复测未动）
-const BASELINE_STRICT_WITH_TOOLS = 2124;
+const BASELINE_STRICT_WITH_TOOLS = 2123;
 
 const argv = process.argv.slice(2);
 const WITH_TOOLS = argv.includes("--with-tools");

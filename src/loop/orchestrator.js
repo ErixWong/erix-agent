@@ -166,6 +166,7 @@ import {
 import { FOLD_SUMMARY_MARKER, summarizeFoldedPayload } from "../compact/fold-statistical.js";
 import { foldWithinBudget, prependFoldSummary } from "../compact/budget-fit.js";
 import { createRunSnapshotExecutor } from "./run-snapshot-executor.js";
+import { callRoundJudge as callRoundJudgeImpl } from "./judge-runner.js";
 import { makeStateView } from "./state-view.js";
 import {
   buildToolResultFact,
@@ -3590,131 +3591,21 @@ export async function runToolLoop(options) {
     );
   };
 
-  /**
-   * @param {number} round
-   * @param {object} currentL0
-   * @param {{timeoutMs?: number, conversationBudgetTokens?: number,
-   *   roundFacts?: {roundDeliverable?: object, roundStopReason?: string}}} [options]
-   */
-  const callRoundJudge = async (round, currentL0, {
-    timeoutMs,
-    conversationBudgetTokens,
-    roundFacts,
-  } = {}) => {
-    const l0Facts = [...governorState.l0Facts, { round, ...currentL0 }];
-    const recentErrors = l0Facts
-      .flatMap((fact) => fact.errorTexts ?? (fact.errorText ? [fact.errorText] : []))
-      .filter((text, index, values) => values.indexOf(text) === index)
-      .slice(-5);
-    const judge = effectiveReflection?.judge;
-    // #498 S4c: port first, then the legacy nested slot, then the run's main provider. `evaluator`
-    // (the old alias of `judge.provider`) is retired — the semantic phase throws on it.
-    const evaluator = judgeProviderPort ?? judge?.provider ?? provider;
-    const nearLimit = budgetRounds >= Math.floor(
-      governorState.effectiveMaxRounds * 0.8,
-    );
-    const request = {
-      system: "你是交付评审者，独立判断任务是否完成。只输出 JSON。",
-      messages: [{
-        role: "user",
-        content: [{
-          type: "text",
-          text: buildJudgePrompt(
-            taskBrief,
-            budgetRounds,
-            governorState.timeline,
-            governorState.filesWritten,
-            recentErrors,
-            renderConversation(messages, {
-              maxTokens: Number.isFinite(conversationBudgetTokens)
-                ? conversationBudgetTokens
-                : undefined,
-            }),
-            {
-              budgetRounds,
-              effectiveMaxRounds: governorState.effectiveMaxRounds,
-              extensionCount: governorState.extensionCount,
-              maxExtensions: reflectionMaxExtensions,
-              nearLimit,
-            },
-            // issue #473：把「本轮这段文本是不是被声明为交付物」作为判据的**输入**交给评审。
-            // 口径来自 `roundDeliverableFacts`（与渲染器同一个 `deliverableKindOfBlock`），
-            // 本文件不重算、也不造第三套分类。
-            roundFacts,
-          ),
-        }],
-      }],
-      // 2026-09-20 基准实测：judge 只输出一段 JSON，8000 上限纯浪费（输出越长漂移越大）；
-      // 但 512 实测会被 glm 冗长 JSON 截断致 parse 失败 → 1024。
-      maxTokens: 1024,
-      temperature: 0,
-      // judge 继续发送 reasoning_effort:"none"（统一语义=不思考）；OpenAI provider
-      // 的 payload 层会将 GLM 系模型自动转译为 "low"（见
-      // src/providers/payload.js 的 OpenAI 载荷组装出口），因为该 relay 把 GLM 的
-      // "none" 处理成思考漏进 content。deepseek/qwen 在同一 relay 上语义正确，不受影响。
-      reasoning_effort: "none",
-    };
-    let timeoutController;
-    let timeoutId;
-    let removeParentAbort;
-    if (timeoutMs !== undefined) {
-      timeoutController = new AbortController();
-      request.signal = timeoutController.signal;
-      if (signal !== undefined) {
-        const onParentAbort = () => timeoutController.abort(signal.reason);
-        if (signal.aborted) onParentAbort();
-        else signal.addEventListener("abort", onParentAbort, { once: true });
-        removeParentAbort = () => signal.removeEventListener("abort", onParentAbort);
-      }
-    } else if (signal !== undefined) {
-      request.signal = signal;
-    }
-    const responsePromise = Promise.resolve().then(() => (
-      typeof evaluator === "function"
-        ? evaluator(request)
-        : evaluator.chat(request)
-    ));
-    let response;
-    try {
-      if (timeoutMs === undefined) {
-        response = await awaitWithAbort(responsePromise);
-      } else {
-        response = await Promise.race([
-          awaitWithAbort(responsePromise),
-          new Promise((_, reject) => {
-            timeoutId = setTimeout(() => {
-              timeoutController.abort(new Error("Judge interception timed out"));
-              const error = new Error("Judge interception timed out");
-              error.code = "judge_intercept_timeout";
-              reject(error);
-            }, timeoutMs);
-          }),
-        ]);
-      }
-    } finally {
-      clearTimeout(timeoutId);
-      removeParentAbort?.();
-    }
-    // issue #438：judge 是引擎自发起的调用 ⇒ 只进 engine 桶（不进模型轮账）。
-    addUsage(response, undefined, { trackLatest: false, account: "engine" });
-    // 带出当次 judge 调用的用量（issue #33 B）：judge.log / 逐轮 transcript 可对账；
-    // 超时/出错路径 response 为 undefined，usage 缺省（调用方不设置该字段）。
-    const inputTokens = response?.usage?.input_tokens;
-    const outputTokens = response?.usage?.output_tokens;
-    const judgeUsage = Number.isFinite(inputTokens) || Number.isFinite(outputTokens)
-      ? {
-        ...(Number.isFinite(inputTokens) ? { input_tokens: inputTokens } : {}),
-        ...(Number.isFinite(outputTokens) ? { output_tokens: outputTokens } : {}),
-      }
-      : undefined;
-    // 原始输出未截断带出（可审计性）：intercept 落 judge.log 时截断由调用方负责。
-    const rawText = textFromBlocks(blocksFor(response?.content));
-    return {
-      decision: parseJudgeDecision(rawText),
-      usage: judgeUsage,
-      raw: rawText,
-    };
-  };
+  // issue #177 刀4：实现已搬到 `src/loop/judge-runner.js`；名字留在本文件，是为了让旧契约锚点/外部引用不失效。
+  // `messages` / `budgetRounds` 是闭包 `let` ⇒ `deps` 每次调用现建（创建时快照会读到旧值）。
+  const callRoundJudge = (round, currentL0, options) => callRoundJudgeImpl({
+    governorState,
+    effectiveReflection,
+    judgeProviderPort,
+    provider,
+    taskBrief,
+    reflectionMaxExtensions,
+    messages,
+    budgetRounds,
+    signal,
+    addUsage,
+    awaitWithAbort,
+  }, round, currentL0, options);
 
   // issue #409：判词里的「正确形状示例」用工具自己的 `inputSchema` 渲染（有就用，没有就泛化示例）。
   // 只读、只在这里建一次；`tools` 是宿主给的 ToolSchema 数组（`{name, description, inputSchema}`）。

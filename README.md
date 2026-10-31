@@ -186,6 +186,7 @@ src/
     continuity-block.js            Session continuity block: budgeted, request-tail, marker-in-place upsert (issue #568)
     provider-runner.js             Provider call, retry, and snapshot rollback
     run-snapshot-executor.js       Pre/post tool checkpoints and aggregate gate
+    judge-runner.js                Round-judge call unit: request assembly, timeout/abort wiring, usage export (issue #177 slice 4)
     budget.js                      Budget validation and state cloning helpers
     aggregate-budget.js            Per-round aggregate output gate
     tool-result-ttl.js             Request-view TTL folding for old tool results
