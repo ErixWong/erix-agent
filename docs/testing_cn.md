@@ -47,6 +47,12 @@ modelConfigProviderContract("mariadb", async () => ({ provider, slot, expect }),
 
    只写标记不写理由**本身即违规**，豁免不会退化成静音开关；守卫会把每一条生效的豁免连同理由打印出来。
 
+7. **套件汇总对账**（`scripts/suite-summary-reconcile.mjs`，issue #301）—— `node --test` 每次跑完都会打一段 TAP 汇总（`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`），而这段汇总以前只活在日志正文里：没有任何东西读它，于是「CI 全绿」是一个没有数字支撑的形容词，CI 与本地 skip 差几条只能靠人肉数。现在 `Test suite` 那一步把 `npm test` 的输出 tee 成文件（`set -o pipefail` 是那一步的一部分：没有它，tee 会吃掉 `node --test` 的非 0 退出码，红就变绿），紧随其后的阻塞步骤 `npm run check:test-summary -- --log <文件>` 把落盘的汇总与 `test/test-suite-baseline.json` 对账。它打印一行可 grep 的 `TEST-SUMMARY tests=… pass=… fail=… skipped=… todo=… cancelled=… source=<文件>:<行>`，外加 `TEST-SUMMARY-EXPECTED` 与 `TEST-SUMMARY-VERDICT ok|red`，并追加进 `$GITHUB_STEP_SUMMARY` —— 运行页上直接看得到数字，不必再去下日志包。三条红线：`tests` 必须逐字等于登记值、`fail` 必须等于登记值（恒为 0）、`skipped` 不得高于登记上限；跳得**更少**是绿（棘轮方向）。日志里没有完整汇总块（被截断、或者根本不是 `node --test` 的输出）⇒ exit 2，绝不按「没问题」处理；汇总行自身不自洽（`pass + fail + cancelled + skipped + todo === tests` 不成立）⇒ 红，不静默接受。
+
+   **登记文件是期望值，不是实测抄件。** 真值是当次命令自己打印的汇总行，而且它随环境变：真上游门禁开没开、pi 装载器装没装，都会改 `skipped` —— 所以上限取的是「已量到的最大环境」，而跳得更少的机器照样绿。这个文件刻意**没有** `--sync`：脚本只读它。数字动了只有两条合法处置：要么套件真的增删了用例（同片改 `expect.tests`，并补一条 `observations`，写清 commit、环境、为什么差），要么是漂了（修回去）。**绝不许为了对上数字去改测试** —— 加 `skip`、删用例、把断言弱化成恒真，都是拿覆盖面换绿灯。`observations` 是历史事实：`--print` 会把它们打印出来，但没有任何判据去判它们。
+
+   **这道门有自己的反向证。** `npm run check:test-summary -- --self-test` 把同一套判据跑在合成的 TAP 夹具与合成登记表上（不落盘、不跑测试）：登记值改错必须红并双向点名差值、`skipped` 超上限必须红、`fail` 非 0 必须红、汇总行自相矛盾必须红、截断的日志必须 exit 2、两段汇总必须按 `--pick` 取对（tee 出来的文件用 `--pick last`，整份 job 日志用 `--pick largest`）、变异没落上算失败（#210 R2 的口径）；它还查 CI 自己的接线 —— `Test suite` 那一步 tee 到 `$RUNNER_TEMP` 且带 `pipefail`、两个新步骤都在、`check:test-summary` 指向本脚本、登记表形状对 —— 删掉接线的那一刀就是在这里红。它刻意与对账步骤分成两步：那条证的是「今天的数字与登记值对得上」，这条证的是「判据还拦得住」。要从一个跑完的 CI run 里读数字，用 Actions API 下 job 日志（`GET /repos/{owner}/{repo}/actions/runs/{run_id}/logs`，或 `/actions/jobs/{job_id}/logs` 拿纯文本）再配 `--pick largest`，因为整份 job 日志里有不止一段 `node --test` 汇总。
+
 完整的、已跟踪的 `test/` tree 如下：
 
 ```text
