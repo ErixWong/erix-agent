@@ -94,6 +94,8 @@ test("#386-3 R4-1 不传 finalGuardExtend：max_rounds_cap + revise ⇒ unverifi
   assert.deepEqual(result.verification, {
     status: "unverified",
     reason: "non_continuable",
+    // issue #648：降级 reason 之外，guard 自己那次 revise 的判定/原因类别/文本必须留得下来。
+    guardVerdict: { action: "revise", reason: "unverified", attempt: 1, message: "还差一步" },
     detail: "max_rounds_cap",
     metrics: { verified: 0, skipped: 0, revised: 1, unverified: 1, guard_error: 0 },
   }, "默认关时 verification/metrics 必须与今天逐字一致（`guard_extensions` 不许出现）");
@@ -579,6 +581,7 @@ test("#393 末轮带 tool_use + 默认关：同形状下逐字等于今天（标
   assert.deepEqual(result.verification, {
     status: "unverified",
     reason: "non_continuable",
+    guardVerdict: { action: "revise", reason: "unverified", attempt: 1, message: "还差一步" },
     detail: "max_rounds_cap",
     metrics: { verified: 0, skipped: 0, revised: 1, unverified: 1, guard_error: 0 },
   }, "默认关时 verification/metrics 必须与今天逐字一致（不许出现 guard_extensions）");

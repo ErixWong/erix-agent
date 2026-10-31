@@ -122,6 +122,13 @@ test("#392 R2-1 七格真值表逐格：verification（含 metrics 的**键集�
       expected: {
         status: "unverified",
         reason: "deliverables_failed",
+        // issue #648：非 accept 裁决留下机器可读结论（判定 + 原因类别 + 点名到判据的失败清单）。
+        guardVerdict: {
+          action: "skip",
+          reason: "no_capture_evidence",
+          attempt: 1,
+          failures: [{ name: "answer-file" }],
+        },
         metrics: {
           ...FIVE_COUNTERS,
           skipped: 1,
@@ -138,6 +145,8 @@ test("#392 R2-1 七格真值表逐格：verification（含 metrics 的**键集�
       expected: {
         status: "verified",
         reason: "machine_only",
+        // issue #648：guard 的 skip 本身仍是一条非 accept 裁决（判据全通过只改变终局 status）。
+        guardVerdict: { action: "skip", reason: "no_capture_evidence", attempt: 1 },
         metrics: {
           ...FIVE_COUNTERS,
           skipped: 1,
@@ -154,6 +163,13 @@ test("#392 R2-1 七格真值表逐格：verification（含 metrics 的**键集�
       expected: {
         status: "unverified",
         reason: "deliverables_failed",
+        guardVerdict: {
+          action: "error",
+          reason: "error",
+          attempt: 1,
+          message: "guard crashed",
+          failures: [{ name: "answer-file" }],
+        },
         metrics: {
           ...FIVE_COUNTERS,
           unverified: 1,
@@ -171,6 +187,12 @@ test("#392 R2-1 七格真值表逐格：verification（含 metrics 的**键集�
         status: "error",
         reason: GUARD_ERROR_REASON,
         detail: "guard crashed",
+        guardVerdict: {
+          action: "error",
+          reason: GUARD_ERROR_REASON,
+          attempt: 1,
+          message: "guard crashed",
+        },
         metrics: {
           ...FIVE_COUNTERS,
           unverified: 1,
@@ -187,6 +209,7 @@ test("#392 R2-1 七格真值表逐格：verification（含 metrics 的**键集�
       expected: {
         status: "skipped",
         reason: "no_capture_evidence",
+        guardVerdict: { action: "skip", reason: "no_capture_evidence", attempt: 1 },
         metrics: { ...FIVE_COUNTERS, skipped: 1 },
       },
     },
@@ -198,6 +221,12 @@ test("#392 R2-1 七格真值表逐格：verification（含 metrics 的**键集�
         status: "error",
         reason: GUARD_ERROR_REASON,
         detail: "guard crashed",
+        guardVerdict: {
+          action: "error",
+          reason: GUARD_ERROR_REASON,
+          attempt: 1,
+          message: "guard crashed",
+        },
         metrics: { ...FIVE_COUNTERS, unverified: 1, guard_error: 1 },
       },
     },
@@ -333,6 +362,7 @@ test("#392 R2-6 未声明 deliverables + skip：payload 无判据键、事件形
   assert.deepEqual(result.verification, {
     status: "skipped",
     reason: "no_capture_evidence",
+    guardVerdict: { action: "skip", reason: "no_capture_evidence", attempt: 1 },
     metrics: { ...FIVE_COUNTERS, skipped: 1 },
   });
 });

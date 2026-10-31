@@ -4250,6 +4250,25 @@ host is most likely to get wrong:
   re-parsing the transcript (a small run's `messages` is 611 bytes; a real one is tens of
   KB to MB).
 
+**The terminal `verification` also carries the guard's non-accept verdict (issue #648).**
+`revise` used to leave nothing behind but `metrics.revised`, so a host could not tell "the guard
+revised, but the retry or round budget ran out" from "the guard never ran". Every non-`accept`
+verdict now writes one `guardVerdict` block onto the final `verification` object. It is additive:
+an `accept`, or a run with no guard configured, does not gain the key.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `action` | `"revise"` \| `"skip"` \| `"error"` | the verdict, spelled exactly as the `final_guard` event spells it |
+| `reason` | string | the reason category: `revise` is always `unverified`; `skip` carries the guard's own `reason`; `error` carries `timeout` or `error` |
+| `attempt` | number | which guard call produced it (1-based, the same counter as the payload's `attempt`) |
+| `message` | string | the guard's own revision text (`revise`) or the thrown error's message (`error`); absent for `skip`. Capped at 2000 code points; `messageTruncated: true` when cut |
+| `failures` | `[{ name, detail? }]` | present only when the host declared `deliverables` and at least one failed: the same `{ name, detail? }` shape the payload's `deliverables` uses |
+
+It records the **last** non-accept verdict, so `revise` → `accept` still leaves the revision evidence
+in place. Read `verification.status` for the final outcome, never this block: `max_retries` /
+`non_continuable` keep their existing meaning, and `guardVerdict` says what the guard said while the
+status says what the engine did with it.
+
 **Authority precondition: `verified` is only as strong as the guard's evidence.** An `accept`
 must rest on an **independent fact** — a file on disk, a command's exit code, a store row —
 never on `finalText` being non-empty. The probe pins the counter-example as a scenario
@@ -4327,7 +4346,7 @@ was not delivered", so the machine verdict outranks it in both directions.
 | **all passed** | `skip` | **`verified`, `reason: "machine_only"`** — the machine criterion *is* the acceptance, and it is labelled as such |
 | **any failed** | guard error / timeout | **`unverified`, `reason: "deliverables_failed"`** — a decided "no" beats an unknown |
 | all passed | guard error / timeout | **`error` — deliberately not upgraded** (see the boundaries below) |
-| any failed | `revise` | unchanged from today (retries exhaust into `unverified`, `non_continuable` on budget stops) |
+| any failed | `revise` | `verification.status` unchanged from today (retries exhaust into `unverified`, `non_continuable` on budget stops); `verification.guardVerdict.failures` names the failed criteria (issue #648) |
 | not declared | any | **byte-for-byte unchanged**: no payload key, no metric key, no event field |
 
 #### The `judge_done` gap round (issue #435)

@@ -3373,6 +3373,23 @@ payload 由 `callFinalGuard`（`src/loop/termination.js`）组装。上面列的
   而不用怕体积，guard 也可以读事实而不是重解析 transcript（小 run 的 `messages` 是 611 字节，真实 run
   几十 KB 到 MB）。
 
+**终局 `verification` 还会带上 guard 的非 accept 判定（issue #648）。** 从前 `revise` 只留下
+`metrics.revised`，宿主分不清「guard 判过 revise，但重试或轮预算先用完了」与「guard 从来没跑过」。
+现在每一种非 `accept` 裁决都会在终局 `verification` 上写一个 `guardVerdict` 块。它是纯加法：
+`accept`、或压根没配 guard 的 run，不会多出这个键。
+
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `action` | `"revise"` \| `"skip"` \| `"error"` | 判定，拼写与 `final_guard` 事件逐字一致 |
+| `reason` | string | 原因类别：`revise` 恒为 `unverified`；`skip` 用 guard 自己给的 `reason`；`error` 是 `timeout` 或 `error` |
+| `attempt` | number | 这是第几次 guard 调用（1 起，与 payload 的 `attempt` 同一个计数器） |
+| `message` | string | guard 自己写的修订文本（`revise`）或抛错的 message（`error`）；`skip` 不带。按 2000 码点截断，截断时置 `messageTruncated: true` |
+| `failures` | `[{ name, detail? }]` | 只在宿主声明了 `deliverables` 且至少一条没过时出现：与 payload 的 `deliverables` 同一个 `{ name, detail? }` 形状 |
+
+它记的是**最后一次**非 accept 判定，所以 `revise` → `accept` 之后修订证据仍然在。判终局只读
+`verification.status`，不要读这个块：`max_retries` / `non_continuable` 的语义一字未动，
+`guardVerdict` 说的是 guard 说了什么，status 说的是引擎拿它做了什么。
+
 **权威地位的前提：`verified` 只和 guard 手里的证据一样硬。** `accept` 必须建立在**独立事实**上——磁盘上
 的文件、命令的退出码、store 里的一行——绝不是「`finalText` 非空」。探针把这个反例钉成了一个场景（`S6a`）：
 只看 `finalText.trim() !== ""` 的 guard，会为一个交付物**根本不存在**的 run 返回 `verified`；而同一份撒谎
@@ -3444,7 +3461,7 @@ deliverables?: [
 | **全部通过** | `skip` | **`verified`，`reason: "machine_only"`**——机器判据**本身**构成验收，而且要标明这一点 |
 | **有失败** | guard 报错 / 超时 | **`unverified`，`reason: "deliverables_failed"`**——机器说了「没过」，这比「不知道」更强 |
 | 全部通过 | guard 报错 / 超时 | **`error`——刻意不升级**（理由见下面的边界） |
-| 有失败 | `revise` | 与今天一致（修订次数触顶 ⇒ `unverified`；预算类停机 ⇒ `non_continuable`） |
+| 有失败 | `revise` | `verification.status` 与今天一致（修订次数触顶 ⇒ `unverified`；预算类停机 ⇒ `non_continuable`）；`verification.guardVerdict.failures` 点名没过的那几条判据（issue #648） |
 | 未声明判据 | 任意 | **逐字不变**：payload 无键、metrics 无键、事件无字段 |
 
 `reason: "machine_only"` 是宿主**必须逐字读**的那一格：它的意思是「引擎用**宿主自己的判据**

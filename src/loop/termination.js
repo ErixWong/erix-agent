@@ -346,7 +346,7 @@ export function createTerminationManager(ctx) {
     // `deliverableGapAfterStop`，#435 的 `judge_done` 与 #436 的预算类停机共用那一个闭包）
     // 要把它写进引擎控制消息，模型才知道该补什么。
     // 形状与 payload 里那份 `deliverables` 同源（同一次 `runDeliverables` 的结果），不重算。
-    let deliverablesFailures = [];
+    let deliverablesFailures = [], failedChecks = /** @type {{name:string, detail?:any}[]} */ ([]);
     if (deliverables !== undefined) {
       const outcome = await runDeliverables(deliverables, payload, {
         timeoutMs: ctx.finalGuardTimeout,
@@ -357,7 +357,7 @@ export function createTerminationManager(ctx) {
       ctx.guardMetrics.deliverables_failed += outcome.failed;
       deliverablesAllPassed = outcome.allPassed;
       deliverablesFailed = outcome.failed;
-      deliverablesFailures = outcome.results.filter((result) => result.ok !== true);
+      const failedResults = outcome.results.filter((result) => result.ok !== true); deliverablesFailures = failedResults; failedChecks = /** @type {{name:string, detail?:any}[]} */ (failedResults);
     }
     let timeoutId;
     try {
@@ -416,7 +416,7 @@ export function createTerminationManager(ctx) {
         && typeof decision.reason === "string"
         && decision.reason.length > 0
       ) {
-        ctx.guardMetrics.skipped += 1;
+        ctx.guardMetrics.skipped += 1; recordGuardVerdict("skip", decision.reason, { failures: failedChecks });
         const emitEvent = ctx.emitEvent;
         // ── issue #392：**机器判据在任何 guard 裁决下都算数** ─────────────────────────────
         // `skip` 的意思是「guard 这次没验」（没有捕获证据 / 没有可抽取候选 / 宿主自己放弃），
@@ -472,7 +472,7 @@ export function createTerminationManager(ctx) {
         && typeof decision.message === "string"
         && decision.message.length > 0
       ) {
-        ctx.guardMetrics.revised += 1;
+        ctx.guardMetrics.revised += 1; recordGuardVerdict("revise", "unverified", { message: decision.message, failures: failedChecks });
         const emitEvent = ctx.emitEvent;
         emitEvent({
           type: "final_guard",
@@ -492,7 +492,7 @@ export function createTerminationManager(ctx) {
         || error?.name === "TimeoutError"
         ? "timeout"
         : "error";
-      ctx.guardMetrics.unverified += 1;
+      ctx.guardMetrics.unverified += 1; recordGuardVerdict("error", errorReason, { message: terminationDetailForError(error), failures: failedChecks });
       ctx.guardMetrics.guard_error += 1;
       const emitEvent = ctx.emitEvent;
       // ── issue #392：guard 崩了 / 超时，机器判据仍然算数（**只有一个方向**）────────────────
@@ -678,7 +678,11 @@ export function createTerminationManager(ctx) {
       rounds: ctx.rounds,
       truncated: TRUNCATED_TERMINATION_REASONS.has(termination.reason),
       termination,
-      verification: { ...ctx.verification, metrics: { ...ctx.guardMetrics } },
+      verification: {
+        ...ctx.verification,
+        ...(lastGuardVerdict === undefined ? {} : { guardVerdict: lastGuardVerdict }),
+        metrics: { ...ctx.guardMetrics },
+      },
       ...(ctx.currentRunState === undefined
         ? {}
         : { runState: cloneState(ctx.currentRunState) }),
@@ -695,6 +699,53 @@ export function createTerminationManager(ctx) {
       unpersisted: ctx.errorLedger.toUnpersisted(),
       completionErrors: [],
     };
+  };
+
+  // ── issue #648：guard 的非 accept 判定必须留下**机器可读**的结论 ─────────────────────────────
+  // 病灶：`revise` 从前只涨 `metrics.revised` 并发一条 `final_guard` 事件，终局 `verification`
+  // 里一个字都没有。宿主因此只看得见「有没有被重写过」这个计数，分不清
+  // 「guard 判过 revise、但预算/重试先耗尽」与「guard 从来没跑过」——两者的 `verification`
+  // 在 revise 那条路上都停在 `unverified/pending` 或只带一个降级 reason。
+  //
+  // 口径（纯加法，不动任何裁决语义与 exit code）：
+  //   · 只在 guard **真的裁决过且不是 accept** 时写（accept / 从未调用 ⇒ 一个字节都不加）；
+  //   · `action` / `reason` 沿用 guard 决策与 `final_guard` 事件的字段名；`failures` 沿用
+  //     `deliverablesFailures` 的 `{name, detail?}` 形状（不新造第三套命名）；
+  //   · 记录的是**最后一次**非 accept 判定；`attempt` 是那次调用的序号（1 起），
+  //     重试预算的消耗因此可复算，不必从 `messages` 里反推。
+  // 为什么不写进 `guardMetrics`：那一组是**计数**（一个 run 内累计），塞进对象会让
+  // `Object.keys(metrics)` 的形状随裁决漂移，正是 #392 用 deepEqual 钉死的那一格。
+  /** @type {{action:string, reason:string, attempt:number, message?:string, messageTruncated?:boolean, failures?:{name:string, detail?:string}[]}|undefined} */
+  let lastGuardVerdict;
+  /** 上限只保护控制消息（guard 自己写的散文），与 payload 的 `selfReport` 同口径按码点截断。 */
+  const GUARD_VERDICT_MESSAGE_LIMIT = 2000;
+  /**
+   * @param {string} action guard 的裁决（`revise` / `skip` / `error`）
+   * @param {string} reason 原因类别（revise 固定 `unverified`；skip 用 guard 自己给的 reason；
+   *   error 用 `timeout` / `error`）
+   * @param {{message?:string, failures?:{name?:string, detail?:string}[]}} [facts]
+   */
+  const recordGuardVerdict = (action, reason, { message, failures } = {}) => {
+    /** @type {{action:string, reason:string, attempt:number, message?:string, messageTruncated?:boolean, failures?:{name:string, detail?:string}[]}} */
+    const verdict = { action, reason, attempt: guardAttempt };
+    if (typeof message === "string" && message !== "") {
+      const capped = capCodePoints(message, GUARD_VERDICT_MESSAGE_LIMIT);
+      verdict.message = capped.text;
+      if (capped.truncated) verdict.messageTruncated = true;
+    }
+    if (Array.isArray(failures) && failures.length > 0) {
+      verdict.failures = failures.map((failure) => ({
+        name: typeof failure?.name === "string" && failure.name !== "" ? failure.name : "<unnamed>",
+        ...(typeof failure?.detail === "string" && failure.detail !== ""
+          ? { detail: failure.detail }
+          : {}),
+      }));
+    }
+    lastGuardVerdict = verdict;
+    // 抛错路径（fail / abort）读的是 `ctx.verification`，不经过 `makeResult`；同步挂一份，
+    // 让「guard 判过 revise 之后 run 被中止」也带得出原因。后续分支若整包替换 verification，
+    // `makeResult` 会再从 `lastGuardVerdict` 补回来。
+    ctx.verification = { ...ctx.verification, guardVerdict: verdict };
   };
 
   const finish = async (reason, detail, error) => {
