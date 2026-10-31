@@ -756,6 +756,17 @@ const READ_LINE_CAPACITY_ROLES = [
 const READ_LINE_CAPACITY_DIRS = ["src", "bin", "examples"];
 const CJK_CHAR = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 
+// issue #506：CJK 密度的**被测性质**是「存在一个密度 ≥ 阈值的样本 + 它在 readFile 截断路径上的行为正确」，
+// **不是**「谁最密」。后者是**相对量**：谁最密取决于**别人**的注释有多长，于是任何人在 `src/**` 里新增或改写
+// 中文注释都可能换人 ⇒ 一条与改动毫无关系的测试红（#497 修单实测：给 `src/loop/option-normalization.js`
+// 写中文注释 → 本文件 2 条红，报错只说「最密样本不是 state-view.js」，不提示「你刚写的注释导致的」，
+// 排查者会往 readFile 的截断/CJK 逻辑上找，而代码其实没问题）。
+//
+// 测试隔离（与 AGENTS §3 测试隔离规则同源）：单元测试**不应对生产代码的注释语言分布敏感**——这一次它依赖的
+// 不是真实用户配置/环境，而是**源码文本本身**，同样属于「测试耦合了与它无关的东西」。所以这一族断言钉的是
+// 「密度下界 + 截断路径行为」，不再钉排名；当场排名只作**信息性输出**（见下面 `#506 CJK density ranking`）。
+const CJK_DENSE_SAMPLE_FLOOR = 0.35;
+
 // 角色按**名字**取，不按 `ROLES[0]` 取：2026-10-21 之后 floor 与 CJK 最密落在两个不同文件上，
 // 靠下标把两件事当成一个文件就是本次红的根因（`ROLES[0]` 同时被当作了 floor 与 densest 的锚点）。
 function roleFile(role) {
@@ -842,32 +853,51 @@ test("readFile 行数容量的五个角色锚点未漂移，样本清单仍盘�
   assert.deepEqual(missing, [],
     `写死的样本文件在盘上找不到了：${missing.join(", ")} → 按 measureReadLineCapacity 的口径复测后，`
     + "把 readFile 描述、本清单、CHANGELOG 的 #271 条目一起改（新增文件不会走到这条：盘上多出东西不算失效）");
-  for (const { file, recorded } of READ_LINE_CAPACITY_ROLES) {
+  for (const { role, file, recorded } of READ_LINE_CAPACITY_ROLES) {
     const got = measureReadLineCapacity(file);
     assertClose(got.bytes, recorded.bytes, 0.02, `${file} 字节数（#271 记录值）`);
     assertClose(got.lines, recorded.lines, 0.02, `${file} 行数（#271 记录值）`);
     assertClose(got.capacity, recorded.capacity, 0.02, `${file} 一次能装的行数（#271 记录值）`);
+    // 这个文件的 CJK 占比只有 `densest` 角色会出现在描述里；其余角色的占比只是「记录值不许静默过期」的漂移探针。
+    // #506：失败文案必须说清是**哪个角色**、以及描述到底有没有引用它——否则下一位会去描述里找一个不存在的数。
     assert.ok(Math.abs(got.cjkShare - recorded.cjkShare) <= 0.02,
-      `${file} 的 CJK 字节占比从 ${(recorded.cjkShare * 100).toFixed(1)}% 变成 ${(got.cjkShare * 100).toFixed(1)}%`
-      + " → 描述里 CJK 那半句（含 37% 这个数）要重测");
+      `${file}（${role} 角色）的 CJK 字节占比从 ${(recorded.cjkShare * 100).toFixed(1)}% 变成 ${(got.cjkShare * 100).toFixed(1)}%`
+      + (role === "densest"
+        ? " → 描述里 CJK 那半句（含 37% 这个数）要重测"
+        : " → 描述没有引用这个占比，按本测试口径复测并刷新角色表的记录值即可（不是描述要改）"));
   }
-  // 描述里「floor 那个文件」与「CJK 最密那个文件」这两句话的前提（2026-10-21 起它们是**两个**文件，所以各自钉角色）。
+  // 描述里「floor 那个文件」与「CJK 锚点那个文件」这两句话的前提（2026-10-21 起它们是**两个**文件，所以各自钉角色）。
   // 2026-10-25（issue #453）：两个角色现在钉的是**不同口径**——`fewest` 是全树（`src`/`bin`/`examples`）真最小值，
   // `densest` 仍是写死样本里 CJK 最密的那一个。理由写在上面那段 ⚠ #453 里：floor 是全称命题，只能枚举全树证明；
   // 中位/最密是「典型 / 样本」事实，全树枚举会随新增文件漂移（那正是 #275 要拆掉的税）。
   const rows = READ_LINE_CAPACITY_SAMPLE.map(measureReadLineCapacity);
   const scannedRows = listShippedSourceFiles().map(measureReadLineCapacity);
-  const densest = rows.reduce((a, b) => (b.cjkShare > a.cjkShare ? b : a));
   const fewest = scannedRows.reduce((a, b) => (b.capacity < a.capacity ? b : a));
-  assert.equal(densest.rel, roleFile("densest"),
-    `CJK 最密的样本文件已不是 ${roleFile("densest")}（现在是 ${densest.rel}，占比 ${(densest.cjkShare * 100).toFixed(1)}%）`);
   assert.equal(fewest.rel, roleFile("fewest"),
     `全树「一次装得最少」的文件已不是 ${roleFile("fewest")}（现在是 ${fewest.rel}，${fewest.capacity} 行）→ floor 数字要重测`);
-  // 反向证：两个名字如果重新落到同一个文件上，描述里「floor 是 X，而 CJK 最密的是 Y」就成了谎话 —— 这里再钉一句。
-  // （#453 之后 floor 在 `bin/`、CJK 最密锚点在样本里的 `src/`，不同源；若有人把 floor 文件加进样本并让它同时成为最密，这里会红。）
-  assert.notEqual(densest.rel, roleFile("fewest"),
-    "CJK 最密（样本）与 floor（全树）落到了同一个文件：描述里的「floor 文件 / 最密文件」两个名字要重新审视，"
-    + "并把两个角色与句子一起改回一句话（本条故意不许静默默过）");
+  // issue #506：`densest` 这一格**不再问「谁最密」**（见 `CJK_DENSE_SAMPLE_FLOOR` 那段：相对量 ⇒ 任何一次中文
+  // 注释都可能换人 ⇒ 与 readFile 毫无关系的红）。改成钉**被测性质**：
+  //   ① 描述点名的 CJK 锚点自己必须真的 CJK 密（≥ 下界）——「CJK 会按比例压低行数」那句的样本前提；
+  //   ② 它在 readFile 截断路径上的行为必须正确——下一格 `#506 CJK 密样本…` 是行为判据（字节预算 / 不劈坏
+  //      多字节字符 / 分片续读零丢失）。
+  const cjkAnchor = measureReadLineCapacity(roleFile("densest"));
+  assert.ok(cjkAnchor.cjkShare >= CJK_DENSE_SAMPLE_FLOOR,
+    `${roleFile("densest")} 的 CJK 字节占比只剩 ${(cjkAnchor.cjkShare * 100).toFixed(1)}%（下界 ${(CJK_DENSE_SAMPLE_FLOOR * 100).toFixed(0)}%）：`
+    + "描述里「the most CJK-dense file in that fixed sample（… % of its bytes are CJK）」这句的样本前提不再成立 ⇒ "
+    + "换一个真的 CJK 密的固定样本当锚点（并同步角色表与描述），不要靠放宽下界让它变绿");
+  // 描述里「floor 文件 / CJK 锚点文件」是两个名字：这是**角色表的事实**，不再靠当场排名。
+  assert.notEqual(roleFile("densest"), roleFile("fewest"),
+    "CJK 锚点与 floor 落到了同一个文件：描述里的「floor 文件 / CJK 锚点文件」两个名字要重新审视（本条不许静默默过）");
+  // 信息性（**不断言**）：当场排名如实报告。它不参与判据（#506），但「有没有换人」必须看得见——换人不等于红，
+  // 只说明描述里 "the most CJK-dense" 这句**相对话**需要一次人工复读（相对量不适合当断言，见上面那段）。
+  const liveDensest = rows.reduce((a, b) => (b.cjkShare > a.cjkShare ? b : a));
+  console.log("#506 CJK density ranking (informational, not asserted):", JSON.stringify({
+    pinnedAnchor: roleFile("densest"),
+    pinnedShare: Number((cjkAnchor.cjkShare * 100).toFixed(2)),
+    floorPercent: Number((CJK_DENSE_SAMPLE_FLOOR * 100).toFixed(0)),
+    liveDensest: { file: liveDensest.rel, cjkShare: Number((liveDensest.cjkShare * 100).toFixed(2)) },
+    anchorIsLiveDensest: liveDensest.rel === roleFile("densest"),
+  }));
 });
 
 test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,000-6,000 lines` 上限低估 1.6×）", () => {
@@ -1002,11 +1032,17 @@ test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,00
     "全树扫描的极值不自洽（重算逻辑被改坏）");
 
   // 4) CJK：本仓实测支持「CJK 让行数按比例下降」这句话；但描述不许给没测过的 CJK 区间。
-  //    2026-10-21 起这一节钉**两个**锚点：CJK 最密那个文件（身份 + 占比 + 它的容量）与 floor 那个文件自己的占比。
-  const densest = rows.reduce((a, b) => (b.cjkShare > a.cjkShare ? b : a));
-  assert.equal(densestFileClaim, densest.rel, "描述点名的「CJK 最密那个文件」已不是样本里当场实测最密的那一个");
+  //    2026-10-21 起这一节钉**两个**锚点：CJK 锚点那个文件（身份 + 占比 + 它的容量）与 floor 那个文件自己的占比。
+  // issue #506：这里**不再**断言「它就是样本里当场实测最密的那一个」——「最密」是**相对量**（见
+  // `CJK_DENSE_SAMPLE_FLOOR` 那段）：谁最密取决于别人的注释有多长，于是任何一次中文注释都能让这条红，
+  // 而它与被测性质（CJK 密文件经截断路径的行为）毫无关系。保留的是**被测性质**：描述点名的锚点必须真的
+  // CJK 密（≥ 下界），且它自己的占比与容量都按当场实测钉住（这两条是描述里那句数字的唯一出处）。
   assert.equal(densestFileClaim, roleFile("densest"), "描述点名的 CJK 锚点文件与 `densest` 角色清单不齐");
-  assertClose(cjkPercentClaim, densest.cjkShare * 100, 0.05, "描述声称的 CJK 字节占比");
+  assert.ok(byRole.densest.cjkShare >= CJK_DENSE_SAMPLE_FLOOR,
+    `描述点名的 CJK 锚点 ${densestFileClaim} 实测只有 ${(byRole.densest.cjkShare * 100).toFixed(1)}%`
+    + `（下界 ${(CJK_DENSE_SAMPLE_FLOOR * 100).toFixed(0)}%）⇒ 「CJK 让行数按比例下降」这句的样本前提不再成立：`
+    + "换一个真的 CJK 密的固定样本当锚点（并同步角色表与描述），不要靠放宽下界让它变绿");
+  assertClose(cjkPercentClaim, byRole.densest.cjkShare * 100, 0.05, "描述声称的 CJK 字节占比");
   assertClose(densestCapacityClaim, byRole.densest.capacity, 0.01, "描述声称的「CJK 最密那个文件一次能装多少行」");
   // #540：`floorCjkPercentClaim` 那条（`assertClose(floorCjkPercentClaim, byRole.fewest.cjkShare * 100, 0.05)`）
   // 已按工单要求**不是简单删掉**，而是换成语义相反的断言（见上面 ①②③：描述里不许再把 CJK 属性绑在 floor 身份上，
@@ -1019,6 +1055,142 @@ test("readFile 描述给换算式 + 本仓复测行数容量（#271：旧 `~3,00
     `描述说 CJK 会按比例压低行数，但 ${byRole.self.rel}（CJK ${(byRole.self.cjkShare * 100).toFixed(1)}%）实测 ${byRole.self.capacity} 行，不低于中位 ${measuredMedian}`);
   assert.doesNotMatch(description, /~[\d,]+ lines[^.]*CJK|CJK[^.]*~[\d,]+ lines/u,
     "描述给 CJK 编了一个行数区间——本仓只测过上面那一个 CJK 锚点，没测过的东西写「按公式自行折算」（#267 的 `~4,000` 教训）");
+});
+
+// ---------------------------------------------------------------------------
+// issue #506：CJK 密样本在 readFile **截断路径**上的行为判据。
+//
+// 为什么必须是行为判据：描述里那句「CJK 按 3 字节/字计，所以行数按字节折」是 readFile 的**行为承诺**，
+// 而在此之前它旁边只有一条「谁最密」的相对量断言（换人即红，与被测行为无关）。这一格钉性质本身：
+//   ① 每次返回都不超 `max_bytes`（CJK 按 3 字节计入，不是按字符数）；
+//   ② 截断不劈坏多字节字符（结果里不许出现 U+FFFD）；
+//   ③ 按 marker 给的 `offset` 续读能拼回原文（行号不重不漏、正文逐字节相等）—— 截断不丢内容；
+//   ④ 超宽行走「单行超过 max_bytes」那条显式路径（marker 带行号与重读 offset），而不是静默丢行。
+// 判据本体提成 `assertChunkedReadFaithful`，下面那条反向证把**坏的分片**喂给它，证明它真的会红。
+// ---------------------------------------------------------------------------
+
+/** 按 marker 给的 offset 分片读完一个文件（续读只认 `readFile 传 offset=N 继续`，与模型的用法同源）。 */
+async function readFileInChunks(executeTool, path, maxBytes, { limit = 1_000, maxRounds = 200 } = {}) {
+  const chunks = [];
+  let offset = 0;
+  for (let round = 0; round < maxRounds; round += 1) {
+    const text = await executeTool("readFile", { path, offset, limit, max_bytes: maxBytes });
+    chunks.push({ offset, text });
+    const next = text.match(/readFile 传 offset=(\d+) 继续/u);
+    if (next === null) return chunks;
+    const nextOffset = Number(next[1]);
+    assert.ok(nextOffset > offset,
+      `续读 offset 没有前进（${offset} → ${nextOffset}）：marker 与行窗口口径对不上，模型照抄就会死循环`);
+    offset = nextOffset;
+  }
+  assert.fail(`分片读了 ${maxRounds} 轮还没读完：续读口径坏了（本测试的分片循环上限就是判据）`);
+}
+
+/**
+ * 分片续读的**判据本体**（提出来是为了能反向证：坏分片喂进来必须红）。
+ * @param {{ original: string, chunks: Array<{ offset: number, text: string }>, maxBytes: number, label: string }} input
+ */
+function assertChunkedReadFaithful({ original, chunks, maxBytes, label }) {
+  assert.ok(chunks.length > 0, `${label}：一次都没读到`);
+  /** @type {Map<number, string>} */
+  const got = new Map();
+  /** @type {Set<number>} 走「单行超过」显式路径的行号（它们的正文按设计就是前缀） */
+  const overWide = new Set();
+  for (const chunk of chunks) {
+    const bytes = Buffer.byteLength(chunk.text, "utf8");
+    assert.ok(bytes <= maxBytes,
+      `${label}：offset=${chunk.offset} 这一次返回 ${bytes} 字节 > max_bytes=${maxBytes}`
+      + "（预算按 UTF-8 字节计，CJK 一字 3 字节 —— 按字符数算就会在这里越界）");
+    assert.ok(!chunk.text.includes("\uFFFD"),
+      `${label}：offset=${chunk.offset} 的结果里出现 U+FFFD ⇒ 截断劈坏了一个多字节字符（CJK 三字节被切成两半）`);
+    for (const line of chunk.text.split("\n")) {
+      const numbered = line.match(/^(\d+): (.*)$/u);
+      if (numbered === null) {
+        if (line === "") continue;
+        assert.match(line, /^\[.*\]$/u,
+          `${label}：结果里有一行既不是「行号: 正文」也不是 marker：${JSON.stringify(line)}`);
+        if (/单行超过 max_bytes/u.test(line)) {
+          const lineNo = Number(line.match(/首条第 (\d+) 行/u)?.[1] ?? 0);
+          assert.ok(lineNo > 0,
+            `${label}：超宽行的 marker 没带被截断的行号 ⇒ 模型没有可执行的取回出口：${line}`);
+          assert.match(line, /readFile 传 offset=\d+, limit=1/u,
+            `${label}：超宽行 marker 没给「重读这一行」的 offset/limit：${line}`);
+          overWide.add(lineNo);
+        }
+        continue;
+      }
+      const lineNo = Number(numbered[1]);
+      assert.ok(!got.has(lineNo), `${label}：第 ${lineNo} 行被返回了两次（续读 offset 口径漂了）`);
+      got.set(lineNo, numbered[2]);
+    }
+  }
+  const originalLines = original.endsWith("\n") ? original.slice(0, -1).split("\n") : original.split("\n");
+  const missing = originalLines
+    .map((_, index) => index + 1)
+    .filter((lineNo) => !got.has(lineNo) && !overWide.has(lineNo));
+  assert.deepEqual(missing, [],
+    `${label}：分片续读漏了这些行（截断静默丢内容）：${missing.slice(0, 10).join(", ")}`);
+  const mismatched = [...got.keys()]
+    .filter((lineNo) => !overWide.has(lineNo) && got.get(lineNo) !== originalLines[lineNo - 1])
+    .sort((a, b) => a - b)
+    .slice(0, 3);
+  assert.deepEqual(mismatched, [],
+    `${label}：这些行的正文与原文逐字节不等（截断改写了正文，而不是原样返回）：${mismatched.join(", ")}`);
+}
+
+test("#506 CJK 密样本在 readFile 截断路径上行为正确（分片续读零丢失 / 预算按 UTF-8 字节计 / 不劈坏多字节字符）", async () => {
+  const anchor = roleFile("densest");
+  const measured = measureReadLineCapacity(anchor);
+  // ① 前提：这个样本必须真的 CJK 密 —— 否则下面测的是一个普通文件。
+  assert.ok(measured.cjkShare >= CJK_DENSE_SAMPLE_FLOOR,
+    `${anchor} 不再 CJK 密（${(measured.cjkShare * 100).toFixed(1)}%）⇒ 换锚点，不要靠放宽下界让它变绿`);
+  // ② 描述里那句「3 UTF-8 bytes per character」是**行为**：样本里真的有多字节字符，且它们确实是 3 字节。
+  const source = readFileSync(join(REPO_ROOT, anchor), "utf8");
+  const cjkChars = [...source].filter((char) => CJK_CHAR.test(char));
+  assert.ok(cjkChars.length > 0, `${anchor} 里没有 CJK 字符：本判据测不到多字节截断`);
+  assert.ok(cjkChars.every((char) => Buffer.byteLength(char, "utf8") === 3),
+    "样本里出现了非 3 字节的 CJK 字符：描述里「3 UTF-8 bytes per character」要么改，要么换样本");
+  // ③ 行为：小预算分片续读（1024 是 readFile 允许的下限），四件事一起判。
+  const maxBytes = 1_024;
+  const { executeTool } = createFileTools({ cwd: REPO_ROOT });
+  const chunks = await readFileInChunks(executeTool, anchor, maxBytes);
+  assert.ok(chunks.length > 1,
+    `${anchor} 一次就读完了（${chunks.length} 片）：预算没有真的截断，这条判据没测到截断路径`);
+  assertChunkedReadFaithful({ original: source, chunks, maxBytes, label: `${anchor} 分片续读` });
+});
+
+// ---------------------------------------------------------------------------
+// issue #506 反向证：上面那条判据**真的会红**。三类坏分片喂给同一个谓词，每类都必须点名自己的病。
+// （不做「改坏 src 再跑一遍」那种一次性手工变异：本仓的规矩是判据要能自我证伪，先例见 `assertTierTight`
+//  那条「比 #537 的 ±50 形态更严」的测试。手工变异另跑一次，结论写进交付/CHANGELOG。）
+// ---------------------------------------------------------------------------
+test("#506 反向证：坏分片喂给同一谓词必须红（超预算 / 劈坏多字节字符 / 静默漏行）", () => {
+  const original = "第一行中文注释\n第二行也是中文\n";
+  const label = "反向证样本";
+  const good = [
+    { offset: 0, text: "1: 第一行中文注释\n[本次返回已达 max_bytes=1KB 上限，共 2 行；下一步：readFile 传 offset=1 继续]" },
+    { offset: 1, text: "2: 第二行也是中文" },
+  ];
+  // 正向对照：先把「合法分片必须绿」钉住，否则下面三条反向证会因为「谓词恒抛」而假绿。
+  assert.doesNotThrow(() => assertChunkedReadFaithful({ original, chunks: good, maxBytes: 1_024, label }),
+    "正向对照不通过：谓词把一份合法分片判红了（先修谓词，否则下面三条反向证没有意义）");
+  // ① 超预算：CJK 按字节算，按字符数算的实现会放过这份 1,203 字节的返回。
+  const overBudget = [{ offset: 0, text: `1: ${"中".repeat(400)}` }];
+  assert.throws(() => assertChunkedReadFaithful({ original, chunks: overBudget, maxBytes: 1_024, label }), /字节 > max_bytes/u,
+    "超预算的分片没被判红：max_bytes 若按字符数算，CJK 密文件会一次吐出 3 倍字节");
+  // ② 劈坏多字节字符：截断落在 CJK 三字节中间 ⇒ 解码成 U+FFFD。
+  const mangled = [
+    { offset: 0, text: "1: 第一行中\uFFFD\n" },
+    { offset: 1, text: "2: 第二行也是中文" },
+  ];
+  assert.throws(() => assertChunkedReadFaithful({ original, chunks: mangled, maxBytes: 1_024, label }), /劈坏/u,
+    "劈坏多字节字符的分片没被判红：这正是「CJK 按 3 字节截断」最容易出的错");
+  // ③ 静默漏行：marker 说 offset=2（越过末尾）而第 2 行从没返回过 ⇒ 续读口径漂了，内容静默丢失。
+  const dropped = [
+    { offset: 0, text: "1: 第一行中文注释\n[本次返回已达 max_bytes=1KB 上限，共 2 行；下一步：readFile 传 offset=2 继续]" },
+  ];
+  assert.throws(() => assertChunkedReadFaithful({ original, chunks: dropped, maxBytes: 1_024, label }), /漏了这些行/u,
+    "静默漏行的分片没被判红：这正是「截断静默丢内容」那条谎");
 });
 
 // ---------------------------------------------------------------------------
