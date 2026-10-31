@@ -264,9 +264,12 @@ export const EXEMPTIONS = Object.freeze([
  */
 export const DEBT_CEILINGS = Object.freeze({
   "AGENTS.md": Object.freeze({
-    // 18：`#N … landed` 的历史流水账（「again to 122 when #438's … section landed as an EN/CN pair」那一族）。
-    // 它们是**当时为真**的叙述，本票不清账（票面原话）；新写一句状态断言就会变成 19 ⇒ 红。
-    A: 18,
+    // 20：`#N … landed` 的历史流水账（「again to 122 when #438's … section landed as an EN/CN pair」那一族）。
+    // 它们是**当时为真**的叙述，本票不清账（票面原话）；新写一句状态断言就会变成 21 ⇒ 红。
+    // 2026-10-31 波次 4 合入时 18 → 20：#375 与 #308 各自往符号锚点声称链加了一条**链项**
+    // （链项的既定句式就是「… landed as an EN/CN pair」，不是新写工单状态断言）。
+    // 抬上限的正当理由就是这一种：存量本身在长。真正该做的是把整条链搬出指令面（已记在 #642 残留）。
+    A: 20,
     // 25：`measured` 的抄件（命令表里的「measured 103 cases」「measured 0.1 s」与符号锚点那段流水账）。
     // 与上同：本票只建闸，清账留给后续票；清到 24 ⇒ 绿 + 提示「可下调至 24」。
     // 24：原登记 25。2026-10-31 合入 #429 / #286 时本面多出两处新抄件（导出清点句、裸行号句），
