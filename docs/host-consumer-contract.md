@@ -3716,9 +3716,9 @@ engine (see "Provider request injection (issue #181)").
 **A 200 does not mean the endpoint constrained anything.** Whether the field is honoured as a
 grammar / JSON-schema constraint is a property of the endpoint — the model, the serving stack,
 and whether reasoning is on. Measured upstream behaviour differs per model: one endpoint answers
-a `json_schema` request with HTTP 400, another answers 200 and returns prose that ignores the
-schema entirely. A green run is therefore evidence that the model produced something, never
-evidence that decoding was constrained.
+a `json_schema` request with HTTP 400, another answers 200 — and the 200 alone does not tell you
+which of those two things the endpoint actually did with the schema. A green run is therefore
+evidence that the model produced something, never evidence that decoding was constrained.
 
 **There is no signal in this package that separates the two cases — said plainly: none.** No
 event, no round-record field, no usage counter and no termination field reports whether the
