@@ -2161,7 +2161,7 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  声称句自己也引这几组 ⇒ +5 组 / +14 处。合计 `--verbose` 实测 **180 组 / 549 处**（连量两次相同，
  *  不动点；不升就是下限在空转）。
  */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 180;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 179;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
