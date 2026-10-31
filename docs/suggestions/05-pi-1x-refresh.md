@@ -18,6 +18,7 @@
 1. **Automatic prompt-cache breakpoint placement.**
    - Pi puts Anthropic `cache_control` on three places: the system block, the last tool definition, and the last block of the last user/system message (`packages/ai/src/api/anthropic-messages.ts`). It uses the 1h TTL only when requested and supported.
    - erix passes through block-level `cache_control` only (`src/messages/anthropic.js:28-31`), so every host has to place breakpoints itself.
+     **Correction (issue #192, 2026-10-31): this sentence is wrong** — the same file already turns `cacheBoundary` markers into `cache_control`, and the loop marks the system block and the first user message by default (`config.input.cacheStablePrefix`, on by default). Issue #192 added the rolling tail breakpoint; the last-tool-definition breakpoint and the 1h TTL are still not done. See `docs/architecture.md` → "Prompt-cache breakpoints (issue #192)" and `docs/harness-comparison/01-pi-agent.md` §7.5.
    - This complements the existing cache-economics research (`docs/research/2026-09-26-strategy-variance-and-cache-economics.md`) and proposal B3 (`summaryPlacement:"boundary"`, still 🔶). An opt-in `cacheBreakpoints: "auto"` would let hosts get the benefit without hand-placing markers.
 2. **Context edits as append-only entries.**
    - Pi 0.87 added `ContextEditEntry`, which drops or replaces a message in the model-visible projection without mutating history. Compaction is also an entry that stores `{summary, firstKeptEntryId, tokensBefore, usage}`.

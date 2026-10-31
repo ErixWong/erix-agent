@@ -478,6 +478,64 @@ cap output at 1,024 tokens and set `reasoning_effort: "none"`. Raw judge output
 is retained in `judge.log`. The final budget round always sends a no-tools
 request.
 
+#### Prompt-cache breakpoints (issue #192)
+
+The loop places the Anthropic `cache_control` markers itself; a host does not
+have to place them. `config.input.cacheStablePrefix` (default `true`) is the one
+switch. When it is on, every provider request carries three breakpoints:
+
+- the last block of the system prompt;
+- the last block of the **first user message**;
+- the last block of the **rolling tail** — the end of the persistent history,
+  i.e. the last message that will still sit at the same offset in the next
+  round's request.
+
+`src/messages/anthropic.js` keeps at most four breakpoints per request (the
+protocol cap) and keeps the last four in wire order, so three generated markers
+leave one slot for host-supplied ones. The OpenAI adapter strips the markers, so
+this switch only has an effect on the Anthropic protocol.
+
+Two placement rules are part of the contract, not implementation detail:
+
+- **The tail marker never lands on a per-request block.** The run-state block
+  and the issue #598 handoff instruction are appended after the tail is chosen,
+  and the issue #568 continuity block is re-positioned to the tail every round.
+  A breakpoint caches the prefix up to its own block, so a block that is new
+  every round (or that moves) can never be read back: marking it would pay the
+  cache-write premium on a prefix no later request can hit. Skipping it is also
+  what makes #568's "only the messages grown after the last request are
+  invalidated" true at the cache layer instead of only in prose.
+- **The forced wrap-up request keeps only the two static markers.** It is
+  one-shot, so a tail breakpoint there would write the whole history at the
+  cache-write premium with no later request to read it.
+
+Consequence for tool-result TTL folding (`config.folding.toolResultTtl`, see
+"Tool-result TTL folding" below): a round that folds a result rewrites bytes
+*inside* the prefix the previous round's tail breakpoint cached, so that
+breakpoint misses for exactly that round and the request falls back to the two
+static breakpoints. Steady-state rounds — the append-only ones — hit the
+previous tail. This is a deliberate trade, not an omission: folding is still
+net positive on cache-capable endpoints (measured in
+`docs/research/2026-09-26-strategy-variance-and-cache-economics.md`), and it is
+why the rolling tail is the only breakpoint issue #192 adds.
+
+**Deliberately not done in issue #192** (decision recorded on the issue): a
+breakpoint on the last tool definition, and a configurable 1h cache TTL. Both
+wait for measurements on real traffic. The TTL is today always the protocol
+default (`{"type":"ephemeral"}`, 5 minutes) and there is **no config leaf for
+it** — `config.input.cacheStablePrefix` only turns the markers on or off.
+
+**Measurement.** `usage.cacheRead` / `usage.cacheWrite` are the upstream's
+`cache_read_input_tokens` / `cache_creation_input_tokens` (issue #40), reported
+per round and accumulated on the run. Breakpoint placement is verifiable
+offline because it is visible in the request payload; **hit rates are not** —
+they need a real Anthropic upstream. `test/provider-cache-tail-192.test.js`
+asserts the payload shape, the append-only prefix property between rounds, and —
+through a local upstream that implements the documented prefix-matching
+semantics — that the `cacheRead` / `cacheWrite` accounting path is wired end to
+end. The numbers that local upstream produces are a model of the upstream, not
+measurements of it.
+
 ### 3.3 Compaction
 
 ```js
