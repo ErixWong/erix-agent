@@ -289,23 +289,21 @@ function growingHistory() {
 }
 
 test("#192 T5（模拟上游）：尾部断点让第 2 轮起读到整段历史前缀；改前只读到首条 user 前缀", async () => {
+  // 这条请求链的 usage 由模拟上游按 payload 现算（`createWire` 那份回固定 usage）。
   const upstream = simulateAnthropicCache();
-  const { provider, bodies } = createWire();
-  // fetchImpl 在 createWire 里回固定 usage；这里换成「按 payload 算」的那一份。
-  provider.chat = createAnthropicProvider({
+  const provider = createAnthropicProvider({
     endpoint: "http://127.0.0.1:1",
     apiKey: "scripted-key",
     model: MODEL,
     fetchImpl: async (_url, options) => {
       const payload = JSON.parse(options.body);
-      bodies.push(payload);
       return new Response(JSON.stringify({
         content: [{ type: "text", text: "ok" }],
         stop_reason: "end_turn",
         usage: upstream(payload),
       }), { status: 200, headers: { "content-type": "application/json" } });
     },
-  }).chat;
+  });
 
   const ROUNDS = 4;
   const history = growingHistory();
