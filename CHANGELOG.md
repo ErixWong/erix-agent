@@ -3,6 +3,8 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+## [0.29.0] - 2026-10-31
+
 ### Added
 
 - **`createAgent({ config, capabilities, … })` gives "initialization" a place (issue #571, slice 1).**
