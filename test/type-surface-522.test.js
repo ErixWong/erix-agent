@@ -210,3 +210,25 @@ test("T4 #213 R4 的两种静默退化形态都不许回来（独立 `//` 行 / 
     "JSDoc 文档块必须紧贴 `runToolLoop` 的声明正上方，否则 tsc 不认这块注释、参数退化成 any",
   );
 });
+
+// issue #519（0.30.0 破坏包）把直连路线的「两边各给一次」变成启动期抛，于是装配口路线
+// （`runToolLoop({ assemblyPort, … })`）**只能**在端口那一侧给 `provider` / `executeTool`。
+// 类型面若把它们声明成必填，这个唯一合法的调用在 `tsc --strict` 下就编译不过（实测 TS2739），
+// 发布出去的声明文件会把合法宿主挡在门外——`check:release` 第 4 步的真 TS 宿主就是撞在这上面。
+// T1 只比名字集合、看不见可选性，所以这条单列一格。
+test("T5 `provider` / `executeTool` 声明为可选（装配口路线不许在调用点重复给，issue #519）", () => {
+  for (const name of ["provider", "executeTool"]) {
+    // 反向证：`name:`（必填）不命中，`name?:`（可选）才命中——正则读的就是类型字面本身。
+    const optional = new RegExp(`^\\s*${name}\\?:`, "mu");
+    assert.match(
+      OPTIONS_LITERAL,
+      optional,
+      `顶层 \`${name}\` 必须是可选属性：装配口路线由 assemblyPort 提供它，而 issue #519 起`
+        + "调用点再给一次就是启动期抛；声明成必填会让 tsc --strict 拒绝唯一合法的装配口调用",
+    );
+  }
+  // 防「把两个键整个删掉」也算通过：名字仍在 T1 的集合里，这里再钉一次它们在字面里。
+  for (const name of ["provider", "executeTool"]) {
+    assert.ok(JSDOC_TOP_LEVEL.includes(name), `\`${name}\` 必须仍声明在类型面上`);
+  }
+});
