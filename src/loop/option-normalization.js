@@ -6,7 +6,7 @@
 //   2. 未知键白名单检查（`RUN_TOOL_LOOP_OPTION_NAMES`）；
 //   3. 未知键的「did you mean」建议（编辑距离 + 阈值 `Math.max(2, ⌊len/3⌋)`）；
 //   4. 把 `assemblyPortOptions(assemblyPort)` 的结果与显式选项合并成 `effectiveOptions`；
-//   4b. #519（破坏性）：同一个键两边都给 ⇒ 抛（`assertDirectRouteConflicts`）。
+//   4b. #519（破坏性）：两边都给 ⇒ 抛（`assertDirectRouteConflicts`）。
 //   5. issue #496（S1）：合并之后的**语义相**校验（`assertSemanticOptionValues`，规则与文案
 //      的唯一来源在 `src/assembly-validators.js`，装配口调的是同一个函数）；
 //   6. issue #497（S2）：`config` 嵌套命名空间的展开（`expandConfigNamespace`，schema 与
@@ -480,7 +480,7 @@ export async function normalizeRunToolLoopOptions(options) {
         : { modelConfig: explicitOptions.modelConfig },
     );
   const mergedOptions = { ...assembledOptions };
-  // #519（破坏性）：同一个键两边都给 ⇒ 抛。
+  // #519（破坏性）：两边都给 ⇒ 抛。
   assertDirectRouteConflicts(assembledOptions, explicitOptions);
   for (const [key, value] of Object.entries(explicitOptions)) {
     if (value !== undefined) mergedOptions[key] = value;
