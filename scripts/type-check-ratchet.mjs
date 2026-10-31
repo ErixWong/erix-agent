@@ -115,7 +115,17 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 //   现在最集中的文件：`src/store/notes.js` 27、`src/loop/orchestrator.js` 17、`src/run-state.js` 10、
 //   `src/display/projection.js` 9、`src/providers/anthropic.js` 9。**上面那段 218/190/28 的分布是 218 时代的
 //   历史记录**；**142 时代（2026-10-11 实测）**的口径是：公共面 114 个 / 20 个文件、实现侧 28 个 / 9 个文件（当前口径见下面那条 2026-10-23 的下调记录）。
-// 下调记录（最新一笔）：**116 → 110** 与 **152 → 146**（issue #630 S2 / J，2026-10-31 实测于当前树；**两档同刀各降 6**，
+// 下调记录（最新一笔）：**110 → 108** 与 **146 → 144**（2026-10-31 同日第二笔，实测于 main `c92c8fa`；**两档同刀各降 2**，
+//   两档减的 2 个**完全相同**，全部落在 `src/loop/orchestrator.js` **14 → 12**。来源是 #473 + #435 那次合并
+//   （`src/loop/orchestrator.js` 重写 `deliverablesAllPassed` / `deliverablesFailures` 那一段时把两个内联表达式
+//   提成了带类型的局部量，重构顺带消掉的，不是专门去修类型债）。改前对照树用 `git archive` 取到空目录、
+//   同一对 `typescript@5.9.3` + `@types/node@22.20.5` 跑同两条命令：`3ee458d`（合 #257 后）、`af2d54e`（合 #586 后）、
+//   `81541c5`（波次 1 后）**三棵都实测 110 个 / 27 文件、`orchestrator.js` 14**，与旧常量逐字相同；
+//   改后逐文件对账：除 `src/loop/orchestrator.js` 外那 26 个带错文件计数一字未动，`src/tools/file-tools.js` 仍 20、
+//   `src/skills/loader.js` 仍 16（⇒ 144 = 108 + 20 + 16 自洽），也没有文件进出错误集合（27 / 29 两个文件数未变）。
+//   **两半分布同步重测**（不是减法推出来的）：宿主可及公共面 **81 → 79 个**（`orchestrator.js` 在公共面那半边），
+//   宿主点不到名的纯实现内部文件 **29 个 / 9 个文件未动**（79 + 29 = 108）。
+//   上一笔：**116 → 110** 与 **152 → 146**（issue #630 S2 / J，2026-10-31 实测于当时树；**两档同刀各降 6**，
 //   两档减的 6 个**完全相同**，且都不是本单写出来的——本单（S2 的 D / F / G / I 四刀）在 `dfa4146` 与改后树上
 //   两档实测都是 110 / 146，一个错都没动，所以这是一笔纯「还债到账」的下调）。逐文件对账（改前对照树
 //   `git archive 56c16ca` 取到空目录、同一对 tsc/@types 跑同两条命令 = **116 个 / 28 文件** 与 **152 个 / 30 文件**，
@@ -182,10 +192,11 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 //   **那一轮的口径（2026-10-21 重算）**：宿主可达的公共面 **91 个 / 20 个文件**，宿主点不到名的纯实现内部文件
 //   **26 个 / 9 个文件**（2026-10-15 那轮是 93 + 26 = 119：减掉的 2 个全在 `src/compact/pipeline.js`，而它在不可及那一半 ⇒ 可及份额仍是 93；本轮减掉的 2 个全在 `src/display/projection.js`，**它在公共面那半边** ⇒ 可及份额自己从 93 掉到 91，不可及那一半 26 个一个没动）。两半分布是**重测**而不是减法推出来的：tsc 输出
 //   按文件聚合 + 从两个入口的分类闭包（见 `AGENTS.md` 里同一条），而那 21 个全落在公共面那半边（`notes.js` 本来就在闭包里）。
-//   现在最集中的文件：`src/loop/orchestrator.js` 17、`src/run-state.js` 10、`src/providers/anthropic.js` 9、
-//   `src/loop/run-snapshot-executor.js` 8、`src/display/projection.js` 7、`src/providers/openai.js` 7、`src/tools/notes.js` 7
-//   （`--with-tools` 一档再加 `src/tools/file-tools.js` 20、`src/skills/loader.js` 16）。
-const BASELINE_ROOT = 110;
+//   现在最集中的文件（2026-10-31 于 `c92c8fa` 重测，档一 108 个 / 27 文件）：`src/loop/orchestrator.js` 12、
+//   `src/providers/anthropic.js` 9、`src/loop/run-snapshot-executor.js` 8、`src/tools/notes.js` 7、`src/providers/openai.js` 7、
+//   `src/display/projection.js` 7、`src/tools/registry.js` 6、`src/store/notes.js` 6、`src/compact/pipeline.js` 6
+//   （`--with-tools` 一档再加 `src/tools/file-tools.js` 20、`src/skills/loader.js` 16；历史值：2026-10-31 上一笔 17 / 10 / 9 / 8 / 7 / 7 / 7）。
+const BASELINE_ROOT = 108;
 
 // `--with-tools` 的基线：把第二个公共入口 `src/tools/index.js` 也喂给 tsc 后的并集。
 // 复现命令（逐字）：
@@ -193,14 +204,15 @@ const BASELINE_ROOT = 110;
 //     --module nodenext --moduleResolution nodenext --skipLibCheck src/index.js src/tools/index.js
 // 实测（2026-10-11，`59f3a72`）：**185 个错 / 31 个文件** = 单入口的 142 个，加上只有 `./tools` 才拉进来的
 //   `src/tools/file-tools.js` 27 个与 `src/skills/loader.js` 16 个（两个都是宿主直接可见的导出实现，
-//   `createFileTools` / `discoverSkills` 那一族）**当前值（2026-10-23 复测）= 152 个 / 30 个文件 = 116 + 20 + 16**；
+//   `createFileTools` / `discoverSkills` 那一族）**当前值（2026-10-31 于 `c92c8fa` 复测）= 144 个 / 29 个文件 = 108 + 20 + 16**；
+//   历史值：146 个 = 110 + 20 + 16（2026-10-31 上一笔）、152 个 / 30 个文件 = 116 + 20 + 16（2026-10-23 复测）；
 //   2026-10-22 那轮的 153 个 = 117 + 20 + 16、再上一轮的 156 个 = 117 + 23 + 16、2026-10-21 那轮的 160 个 = 117 + 27 + 16、2026-10-15 那轮的 162 个 = 119 + 27 + 16、2026-10-13 在同一棵 `39e96f1` 上复测的 164 个 = 121 + 27 + 16 都是**历史值**（与旧常量的差额逐个落在 `src/store/notes.js`、`src/display/projection.js`、`src/tools/file-tools.js` 与 `src/messages/openai-normalization.js`，同上面那些下调记录；
 //   `loader.js` 16 这个计数自 #214 起一字未动，本次也逐个复核过）。#214 时代入库的是 **261**，
 //   而它**从来没跟着 #177 刀 1 复测过**：同一对 tsc/@types 在改前树 `8f83375` 实测这一档是 **260**，
 //   于是 261 → 185 的 76 个 = #249 的 75 个 + #177 欠下的那 1 个（教训：下调基线要**两档一起复测**）。为什么默认不带它：#214 正文给的口径就是 `src/index.js`，
 //   默认值必须与规格逐字一致；但它**是**真实盲区，所以这里留一条可随时收紧的通道（收紧=把默认入口加上并
 //   把基线换成当前实测值，属 #214 之后的收紧动作，不要拿它当「反正卡不住」的理由）。
-const BASELINE_WITH_TOOLS = 146;
+const BASELINE_WITH_TOOLS = 144;
 
 const argv = process.argv.slice(2);
 const WITH_TOOLS = argv.includes("--with-tools");
