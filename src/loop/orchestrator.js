@@ -402,8 +402,17 @@ function mergeFoldedRoundRanges(first, second) {
 }
 
 /**
+ * The complete host-visible observer event surface (`runToolLoop({ onEvent })` and the assembly
+ * port's `emit` sink). The `type` union is reconciled against the **emission sites** by
+ * `test/loop-event-type-emissions-641.test.js` (`emitEvent(...)`, the direct `onEvent`
+ * diagnostics, `port.emit(...)`, and the `runOutcomeRecord` assembly helper) — a name the engine
+ * really emits but the union omits makes the host's `switch (event.type)` branch unreachable.
+ * That is a **different** reconciliation from `test/loop-event-type-surface-595.test.js`, which
+ * guards the contract's additive event table against this union; the two run side by side because
+ * "the additive table is a subset of the union" does not imply "the emitters are a subset".
+ *
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"continuity_injection_skipped"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"run_outcome"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"run_outcome"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.

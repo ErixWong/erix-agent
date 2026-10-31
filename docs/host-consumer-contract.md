@@ -3340,6 +3340,24 @@ ignores all three behaves exactly as before.
 | `user_turn_guard_unrecoverable` event | `onEvent`, one per request view that reaches the guard's last resort (i.e. per provider attempt) | **Additive (issue #296).** `{ type: "user_turn_guard_unrecoverable", runId?, parentRunId?, round, channel: "chat" \| "chatStream", reason: "empty_view" \| "no_user_turn" \| "invalid_view", detail: string }` — the request-view user-turn invariant ran out of fallbacks: `ensureUserTurnView` (`src/loop/request-user-view.js`) found no usable user turn in the request view **and** no donatable user turn in the unfolded source, so the request is sent **unchanged** — the engine neither fabricates a user turn nor throws. An upstream that requires a user query answers `400`; this event is emitted **before** that request goes out, so it is the join key between the failure and its cause (until #296 the case was filtered out and left no trace anywhere). `reason` names the sub-case: `empty_view` (nothing left in the view), `no_user_turn` (non-empty, no real user turn — a pure `tool_result` carrier does not count), `invalid_view` (a user turn exists but the `tool_use`/`tool_result` pairing is illegal). The first sentence of `detail` is fixed text hosts can assert on. The two other guard actions (`preserved_latest_user_turn` / `abandoned_fold`) keep landing in `compactionStats.userTurnGuard` and never emit this event; this one is deliberately **not** written into `compactionStats`, because it can fire in a round that compacted nothing and would make "did this round compact" unreadable. |
 | `run_outcome` event | `onEvent`, exactly once per run — including runs where the judge never ran | `{ type: "run_outcome", runId?, model?, judgeModel?, rounds, judgeRecordCount, termination, verification }`. Emitted on the success path after persistence settles, and on the throwing path from `fail()`; a latch guarantees exactly one per run. `termination` / `verification` are copies of what `runToolLoop` returned (or what `fail()` built). |
 
+**Where an event lives in this document (issue #641).** The table above is the **additive** event
+table: it lists events introduced after this contract already existed, and
+`test/loop-event-type-surface-595.test.js` reconciles *these rows* against the `LoopEvent.type`
+union. It is not the complete event list, and a name absent from it is not absent from the event
+surface. The complete union is the `LoopEvent` typedef (`src/loop/orchestrator.js`), and every
+run-time emission site is reconciled against it by
+`test/loop-event-type-emissions-641.test.js` (the loop's `emitEvent(...)`, the direct `onEvent`
+startup diagnostics, the assembly port's `port.emit(...)`, and the `runOutcomeRecord` assembly
+helper). Events that are union members but documented outside this table: `tool_use` /
+`tool_result` / `tool_replay_decision_required` / `tool_output_aggregate` in “onEvent tool event
+field list”; `forced_final` in the stopping/verification section; `final_guard_extend` in the
+guard-extension sections; `context_unknown_option` in the assembly-port unknown-key section; and
+the handoff writer's `continuity_written` (`{ type, runId?, parentRunId?, round, mode, source,
+path }`) and `continuity_write_failed` (`{ type, runId?, parentRunId?, phase, detail }`) — both
+observational: a failed handoff write never fails the run. The two gates stay side by side on
+purpose: “the additive table is a subset of the union” and “the emitters are a subset of the
+union” are different truths, and a green on one has never implied a green on the other.
+
 Why a separate terminal record instead of writing the outcome back into the
 decision records: judge records stream out while the run is still executing and
 the outcome is only known at the end, so rewriting a run's already-emitted
