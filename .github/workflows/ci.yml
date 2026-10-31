@@ -57,6 +57,22 @@ jobs:
       - name: Documentation drift check (strict)
         run: npm run check:docs:strict
 
+      # 阻塞（issue #642）：**AGENTS 指令面**的硬门——`AGENTS.md` / `AGENTS_cn.md` 是每次会话自动注入、
+      # 模型不查证就照着执行的那一页，所以上面三类「住在别处、会过期」的可变量不许写进去：工单状态句
+      # （工单号 + 状态词）、会过期的实测抄件（实测动词 + 数字）、裸源码坐标（带行号的 src 路径）。
+      # 例外是显式登记表 + 理由（空转条目即红），常量那一类当场与 scripts/*.mjs 的现值对账；
+      # 存量命中按「文件 × 类别」钉上限（棘轮：清账不红、超上限红）。
+      # 位置紧跟 `Documentation drift check` 一族：它和 check:docs:strict 一样是「文档面」的门。
+      - name: AGENTS instruction-face gate (status claims / expiring numbers / bare source lines)
+        run: npm run check:agents-directives
+
+      # 阻塞：上一条自己的反向证（临时树副本，不碰真文档）——往 AGENTS.md 塞一句状态断言 / 一个实测数 /
+      # 一条裸坐标都必须红并点名文件:行，塞一条登记过的例外必须绿，登记表里留一条用不上的必须红（#210 R2），
+      # 同一句塞进 CHANGELOG 或 docs/ 必须绿（历史一侧只计数不判定），变异没落上也算失败。
+      # 为什么不并进上一条：那条证的是「今天的指令面干净」，这条证的是「判据还拦得住」。
+      - name: AGENTS instruction-face gate self-test
+        run: node scripts/agents-directive-scan.mjs --self-test
+
       # 阻塞（issue #560）：退役扁平拼写的硬门（#523 的扫描器）。
       # 现状类（architecture* / charts* / requirements* / testing* / maintenance-policy* / soak.md）
       # 出现退役扁平写点 ⇒ 红；历史类与契约类的命中数必须等于钉子（SUSPECT / UNPINNED 同样红）；
