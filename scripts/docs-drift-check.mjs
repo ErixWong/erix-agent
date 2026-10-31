@@ -65,7 +65,8 @@
 //                 只有这条下限会红（#286 T-a 返工 R1）。生效值同样从脚本自身文本读，自测靠调它证锁。
 //  12. bare-lines 裸行号棘轮（issue #286 T-a）：`src/**.js:N` / `:N-M` 形态的引用按唯一
 //                 (文档, 目标文件, 行区间) 计数，**只减不增**：基线 `BARE_LINE_REF_BASELINE = 6`（现值；
-//                 142 / 232 / 244 是 #326 B1 删区间之前、#286 T-b1a 与 T-a 落地时的旧值，别把历史数当现值），超了红
+//                 80 / 130 / 142 / 232 / 244 是 #286 T-b2、PR #451、#326 B1 删区间、#286 T-b1a 与 T-a 落地时的
+//                 旧值，别把历史数当现值），超了红
 //                 （并提示「可以把基线降到 N」），低于基线算过但会催你降。**越界行号是 error**，不是观察项。
 //                 覆盖面 = 宿主会读的 22 份文档：README{,_cn} / AGENTS{,_cn} / host-consumer-contract{,_cn}
 //                 + `docs/host-upgrade-guide*.md` 全部（按目录实扫，新指南落地即自动纳面）。
@@ -2445,11 +2446,18 @@ const BARE_LINE_RE = /src\/([A-Za-z0-9_./-]+\.js):(\d+)(?:-(\d+))?/g;
  *  `aggregate-budget` / `budget` / `api-key` / `json-file` / `static` / `compact/budget` /
  *  `sliding-window` / `reflection` / `notes-port` / `tools/notes`）。
  *  保留的 6 个键**全是 `--self-test` 的靶子**，不是区间事实（删掉区间等于把反向证拆了）：
- *  `terminationReasonForAction` :111（EN；自测把它改窄成 :112-116）、`max_rounds_cap` :116（EN 改窄到
- *  :300-301、CN 删区间证放行）、`defaultSleep` :16（中英各一：CN 的「整段挪到 :30」变异体，加上中英
- *  「一起退化成裸行号」那一例是**逐字替换**这两处的文本 ⇒ 两处都得留）。**T-b2 的注释把保留面写成 4 个键
- *  （只算 termination 的两组），漏了 `defaultSleep` 那两处**——那两处同样被自测逐字依赖。
- *  `--verbose` 可复核：出现 13 次 / 唯一 10 处 / 豁免 4 处 ⇒ **6**。 */
+ *  - `terminationReasonForAction` :111 中英各一：EN 是「改窄成 :112-116 ⇒ 与声明处不相交」那一例；
+ *    CN 是越界（`99999-111`）、下界（`0-111`）、目标文件不存在（`__no_such_probe__.js:111`）三例的
+ *    **逐字替换**靶子。
+ *  - `max_rounds_cap` :116 中英各一：EN 改窄到 `:300-301`（弱档真值位）、CN 删区间证放行（本判据对
+ *    不带区间的锚点不适用）。
+ *  - `defaultSleep` :16 中英各一：CN 的「整段挪到 :30」变异体；中英「一起退化成裸行号」那一例**逐字替换**
+ *    这两处的文本（(符号, 文件) 按全局去重 ⇒ 只退一侧掉不了组，必须两侧一起退）。
+ *  **T-b2 的注释把保留面写成 4 个键（只算 termination 的两组），漏了 `defaultSleep` 那两处**——那两处同样
+ *  被自测逐字依赖。这 6 处也不是空转的摆设：区间必须与声明处相交，所以这三个符号哪天换了行，
+ *  `symbol-anchor-span` 会红（它们同时也是本判据在覆盖面里仅剩的活样本）。
+ *  `--verbose` 可复核：出现 13 次 / 唯一 10 处 / 豁免 4 处 ⇒ **6**（另 3 处是 `pi-subagents:` 外仓前缀，
+ *  见 `EXTERNAL_REPO_PREFIXES`，既不进棘轮也不查存在性）。 */
 const BARE_LINE_REF_BASELINE = 6;
 
 /** 棘轮生效值：从**本脚本自己的文本**里读 `BARE_LINE_REF_BASELINE`（走 `textOf`，所以 `--self-test`
