@@ -98,6 +98,8 @@
     "check:cli-real": "node scripts/cli-real-smoke.mjs",
     "check:tests": "node scripts/test-hygiene-check.mjs",
     "check:inventory": "node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md",
+    "check:mutation": "node scripts/mutation-sample-check.mjs --verify test/mutation-samples.md",
+    "check:mutation:run": "node scripts/mutation-sample-check.mjs --run test/mutation-samples.md",
     "check:exports": "node scripts/export-consumer-check.mjs",
     "check:final-guard-probe": "node scripts/final-guard-probe.mjs"
   },
