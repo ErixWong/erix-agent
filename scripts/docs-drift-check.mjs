@@ -2296,13 +2296,14 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *
  *  * issue #375（参数错误的统一出口）的契约中英成对小节引 `paramError` / `paramErrorFacts`
  * （`src/tools/file-tools.js`）⇒ **+2 组 / +4 处**（契约中英各一处，AGENTS 中英的声称句不带锚点、不计），
- * `--verbose` 在**合并后的树**上重算实测 **190 组 / 637 处**（与 #286 T-b2 的 +8 组叠加，两支不取最大值）⇒ 下限 188 → **190**。
+ * `--verbose` 在**合并后的树**上重算实测 **191 组 / 637 处**（与 #286 T-b2 的 +8 组叠加，两支不取最大值）⇒ 下限 188 → **191**。
  
  
  *
- *  * issue #308（`response_format` 是透传、不是语法约束保证）的契约中英成对新增一节，引
+ * issue #308（`response_format` 是透传、不是语法约束保证）的契约中英成对新增一节，引
  * `applyProviderPayloadOptions`（`src/providers/payload.js`）⇒ **+1 组 / +8 处**（契约中英各四处、
- * 脚本头这一处），`--verbose` 实测 **181 组 / 554 处**（连量两次相同，不动点）⇒ 下限 180 → **181**。
+ * 脚本头这一处）。它在**自己分支**上量到 181 组 / 554 处，但那棵树没有 #286 T-b2（+8）与 #375（+2）；
+ * 在**合并后的树**上重算实测 **191 组 / 637 处**（连量三轮相同，不动点）⇒ 下限 190 → **191**。
  
  */
 const SYMBOL_ANCHOR_MIN_UNIQUE = 191;
