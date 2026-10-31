@@ -2296,7 +2296,7 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *
  *  * issue #375（参数错误的统一出口）的契约中英成对小节引 `paramError` / `paramErrorFacts`
  * （`src/tools/file-tools.js`）⇒ **+2 组 / +4 处**（契约中英各一处，AGENTS 中英的声称句不带锚点、不计），
- * `--verbose` 在**合并后的树**上重算实测 **190 组 / 605 处**（与 #286 T-b2 的 +8 组叠加，两支不取最大值）⇒ 下限 188 → **190**。
+ * `--verbose` 在**合并后的树**上重算实测 **190 组 / 637 处**（与 #286 T-b2 的 +8 组叠加，两支不取最大值）⇒ 下限 188 → **190**。
  
  */
 const SYMBOL_ANCHOR_MIN_UNIQUE = 190;
