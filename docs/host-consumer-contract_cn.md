@@ -2741,6 +2741,16 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `failed` | run 生命周期内抛出的任意错误，经 `fail`（`src/loop/orchestrator.js`），循环 catch 在 `3576-3580`，并透传 `termination.errorCode`（由 `withErrorCode`（`src/loop/termination.js`）挂上）；宿主观察者抛错不再是它的来源之一（issue #173） | 兜底：轮根本没跑完，因此压过任何尚未完成的治理决策 | `retry:{attempts, backoffBaseMs, backoffMaxMs}` 决定到这步前重试多少（`src/loop/orchestrator.js`）；reason 本身不可关 | **按 `termination.errorCode` 分流**（issue #176）：可重试（`timeout`、`rate_limited`、`server`）→ 退避重试；`auth` → 告警并停；`invalid_request` / `not_found` / `conflict`（issue #179）→ 去修请求体、模型名或冲突的资源，重发同一份 payload 帮不上忙；`unknown` → 转去查 `termination.detail` |
 | `persistence_failed` | 同一个 `fail`（`src/loop/orchestrator.js`）路径，在错误携带持久化信息时被选中，并额外挂上 `operation` / `phase` / `sideEffect`（`src/loop/orchestrator.js`） | 替换 `failed`，不会反向发生；不带 `errorCode`（该字段为 `failed` 专属） | `persistence:"none"` 直接移除 transcript 写入路径；可选 store 能力是降级而非失败（见能力分级） | **告警**：副作用被跟踪过，所以这是完整性信号（ADR-013），不是重试候选 |
 
+**空的 `content` 数组在轮的两侧不是同一个事实。** **user** 侧 `content: []` 是**块数组**里唯一一种
+没有文字、却仍算真 user 轮的形状——字符串一律算（空字符串、全空白也算）——而纯
+`tool_result` 载体不算；判据在 `isRealUserTurn`（`src/loop/request-user-view.js`）。
+**assistant** 侧的空 `content` 则是一条无进展轮，不是 user 轮：
+引擎把这条空 assistant 消息留在模型上下文里并落盘，治理层把它记在无进展（`no_tool`）
+连击上——先有过真工具轮 ⇒ `no_tool`，一轮工具都没有 ⇒ 跑满 `max_rounds_cap`。
+它**到不了**上表里的 `stall`：那条由重复的相同工具调用签名驱动，空数组产生不了签名。
+这里也**不承诺上游**接受空 `content` 数组——这个形状没在真 relay 上量过，宿主把它发出去
+就自己承担这个风险。
+
 ### 核验状态与 CLI 退出码
 
 核验结论与终局 reason 是两个独立的轴：`end_turn` 可以 `unverified`；而
