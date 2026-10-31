@@ -386,7 +386,7 @@ function mergeFoldedRoundRanges(first, second) {
 
 /**
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"budget_below_working_set"|"run_outcome"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"continuity_injection_skipped"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"budget_below_working_set"|"run_outcome"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -404,7 +404,14 @@ function mergeFoldedRoundRanges(first, second) {
  * @property {string} [finalText] Text accumulated at round end.
  * @property {string} [stopReason] Canonical provider stop reason.
  * @property {"accept"|"skip"|"revise"|"degraded"|"error"} [action]
- * @property {string} [reason]
+ * @property {string} [reason] `continuity_injection_skipped`（issue #595）与 `compaction_deferred`
+ *   共用这个字段；前者的取值只有两个（逐字取自发射处 `recordContinuitySkip`）：
+ *   `"pending_tool_use"`（请求尾部挂着未结清的 `tool_use`，此刻插入会破坏
+ *   `tool_use`/`tool_result` 配对）与 `"empty"`（`upsertContinuityInMessages` 的防御分支：
+ *   渲染正文为空串或 messages 不是数组，今天的渲染器不产出空正文，所以结构上可达、实际不触发）。
+ *   载荷与 `compaction_deferred` 同形：`{ type, runId?, parentRunId?, round, reason, detail }`
+ *   （`parentRunId` 是 issue #617 的加法字段）。**不注入 ≠ 错误**：事件只记账，
+ *   run 的终局、轮数与消息流都不因它改变。
  * @property {number} [count] issue #424（additive）：被跳过/涉及的消息条数（`resume_journal_skipped` 用它报 A 集合大小）
  * @property {Array<{path: string, key: string}>} [conflicts] issue #497（S2，additive）：`config_override_conflict`
  *   的载荷——冲突叶子的 schema 路径（`"run.maxRounds"`）与顶层键名，**只带路径与键名**（值可能是
