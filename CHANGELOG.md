@@ -94,6 +94,199 @@
   `CONTINUITY_MAX_ENTRY_CHARS` = 400 处夹断并留可见标记，provider 缺失或抛错就写明确的 unknown，
   块没能落位则在既有观察者通道上报 `continuity_injection_skipped`。
 
+- **`createDelegateTool`: one tool, six actions, and no child process anywhere (issue #617 P1b, PR #622).**
+  `erix-agent/tools` now exports `createDelegateTool({ runChild, rosterDir, … })`, returning
+  `{ definition, execute }` like every other tool on that subpath. The action set is closed
+  (`DELEGATE_ACTIONS`): `run`, `status`, `result`, `list`, `cancel`, `tail` — no `pause` / `resume` /
+  `retry`, because a v1 that cannot restart a child must not advertise restarting it. What the library
+  refuses to do is the point: it never forks, spawns or imports `child_process`, never resolves your
+  paths and never reads `/proc`; `runChild` is injected, the roster is bookkeeping rather than a
+  transcript, and a background child's completion reaches the parent through your `notifyParent`
+  callback — there is no mailbox into a running `runToolLoop`, and pretending otherwise would be the
+  worse contract. Termination words belong to the library (`TERMINATION_TO_STATE`; unlisted words fall
+  to `failed`), the child `runId` is `sub-<uuid>` from `node:crypto`, and the parent identity is taken
+  from the execution context instead of from model input.
+- **`createDelegateTool`：一个工具、六个动作，全程没有子进程（issue #617 P1b，PR #622）。**
+  `erix-agent/tools` 现在导出 `createDelegateTool({ runChild, rosterDir, … })`，返回
+  `{ definition, execute }`，与那个子路径上的其他工具同一个形状。动作集是封闭的（`DELEGATE_ACTIONS`）：
+  `run`、`status`、`result`、`list`、`cancel`、`tail`——没有 `pause` / `resume` / `retry`，因为一个重启不了
+  子 run 的 v1 不许在描述里声称自己能重启。库**拒绝**做的事才是重点：它从不 fork、不 spawn、不 import
+  `child_process`，不解析你的路径，也不读 `/proc`；`runChild` 由宿主注入，名册是簿记而不是 transcript，
+  后台子 run 的完成经你给的 `notifyParent` 回调到达父侧——**没有**通往运行中 `runToolLoop` 的邮箱，假装有
+  是更糟的契约。终止词汇归库（`TERMINATION_TO_STATE`；没列出来的词一律落 `failed`），子 `runId` 是
+  `node:crypto` 的 `sub-<uuid>`，而父身份从执行上下文自取、不由模型填。
+- **`config.run.parentRunId`: one opaque string, mirrored into four places, never interpreted (issue #617 P0, PR #622).**
+  The child's link to whoever dispatched it is a config leaf, not a tool argument: the engine projects it
+  from one source into the judge record correlation, the `run_outcome` event, every `onEvent` payload and
+  the diagnostics / observer-error detail, and interprets it nowhere. That is deliberate — a host that
+  sets it can join a child's records to the parent's without parsing anything, while the engine stays
+  unable to draw a conclusion from an identity it did not mint. When it is not supplied the field is
+  absent everywhere (no placeholder), and the tool's input schema has no such key: an identity a model
+  can fill in is an identity that can be spoofed.
+- **`config.run.parentRunId`：一个不透明字符串，镜像到四处，从不解释（issue #617 P0，PR #622）。**
+  子 run 与「谁派发了它」的关联是一个配置叶子，不是工具入参：引擎从同一个来源把它投影进 judge 记录的
+  关联字段、`run_outcome` 事件、每一条 `onEvent` 载荷，以及诊断 / 观察者错误的 detail，并且**一处都不解释**
+  它。这是刻意的——设了它的宿主能把子的记录 join 到父的上面而不用解析任何东西，而引擎始终无法从一个不是
+  自己签发的身份里推出结论。不给时这个字段在四处一律缺省（不写占位值），工具 schema 里也没有这个键：
+  模型能填的身份就是能被伪造的身份。
+- **Five host ports, each with the cost of omitting it named (issues #617, #626 C1, PR #622).**
+  `runChild` (required) decides what a child run *is*; `notifyParent` is the only wake-up path;
+  `transcriptPathFor` registers where the child's transcript lives, so `tail` can read it;
+  `cwdFor` decides the directory the child actually runs in; `isProcessAlive` is the liveness predicate
+  the stale recompute needs before it may call anything dead. Four of the five are optional, and every
+  one of them fails **quietly**: no `transcriptPathFor` ⇒ `tail` answers `no_transcript_path` for ever;
+  no `cwdFor` ⇒ the roster's `cwd` is the model's request, not the directory the child used; no
+  `isProcessAlive` ⇒ no stale cleanup at all (live records carrying a `pid` go to `unverified` and stay
+  on disk untouched). The CLI is the runnable example and stays off by default: `--delegate` registers
+  the tool, `--delegate-max-children <n>` (default 2) caps it, `--delegate-timeout-ms <n>` (default
+  600000) is one child's time budget, and the roster directory is `~/.erix/delegation/`, moved by
+  `ERIX_DELEGATION_DIR`.
+- **五个宿主端口，每一个漏接的代价都点名（issue #617、#626 C1，PR #622）。**
+  `runChild`（必需）决定子 run **是什么**；`notifyParent` 是唯一的唤醒通道；`transcriptPathFor` 登记子
+  run 的 transcript 落在哪，`tail` 才读得到；`cwdFor` 决定子实际跑在哪个目录；`isProcessAlive` 是陈旧
+  重算在敢判定「已死」之前必须拿到的存活谓词。五个里有四个可选，而它们**全都是静默失败**：不接
+  `transcriptPathFor` ⇒ `tail` 永远答 `no_transcript_path`；不接 `cwdFor` ⇒ 名册的 `cwd` 只是模型给的
+  请求，不代表子跑在哪个目录；不接 `isProcessAlive` ⇒ 拿不到任何陈旧清理（带 `pid` 的活态记录进
+  `unverified`，盘上原样不动）。CLI 是可运行示例，且默认关闭：`--delegate` 注册工具，
+  `--delegate-max-children <n>`（默认 2）限配额，`--delegate-timeout-ms <n>`（默认 600000）是单个子的
+  时间预算，名册目录是 `~/.erix/delegation/`，可用 `ERIX_DELEGATION_DIR` 搬走。
+- **`tail`: what the child is doing right now, as a bounded file-tail read (issue #626 C1, PR #622).**
+  A roster answers "is it dead"; it cannot answer "what is it doing". `tail` reads the child transcript's
+  tail through the store's **read-only** reader (never the loader that repairs a transcript tail — that
+  would truncate a file another process is appending to), projects it with the same `foldLedgerMessages`
+   projection the resume path uses, and returns at most 8 rows by default / 20 at most, 300 characters
+   per row
+  (hard cap 1000), with the tool name and an args digest for tool calls. Two failures stay separate
+  because the split is the contract: `no_transcript_path` (the record carries no path — a configuration
+  defect on the host side) versus `no_transcript` (the path is recorded but the file is absent or
+  unreadable — normal timing). It does **not** reconcile, and it does not look at the process's own
+  `owned` table: reading another process's child is the scenario it exists for, and rewriting that
+  process's roster while reading it would be overreach.
+- **`tail`：子 run 现在在干什么，有界文件尾读（issue #626 C1，PR #622）。**
+  名册回答「它死没死」，答不了「它在干什么」。`tail` 用 store 的**只读**读取器读子 transcript 的尾部
+  （绝不走那条会 `repairTranscriptTail` 的加载器——对一个别的进程正在追加写的文件动刀等于截断它），用
+  恢复路径同一套折叠口径投影，返回缺省 8 行 / 最多 20 行、每行 300 字符（硬上限 1000），对工具调用给出
+  工具名与参数摘要。两种失败必须分开，因为区分本身就是契约：`no_transcript_path`（记录里没有路径——宿主
+  侧的配置缺陷）与 `no_transcript`（路径在、文件不在或打不开——正常时序）。它**不**做重算，也不看本进程的
+  `owned` 表：读别的进程养的子正是它存在的场景，而一边读一边改写那个进程的名册就是越界。
+
+- **`config.continuity.handoff`: the engine becomes the continuity block's default writer (issue #598).**
+  The continuity block has always needed a host provider; it no longer does. The new leaf
+  `config.continuity.handoff` (`"off"` | `"prompt"` | `"prompt-and-fallback"`, default `"off"`) turns the
+  engine itself into the writer: it injects a short instruction at the request tail, the model writes a
+  `<handoff>` block inside the **same** response (zero extra requests), the engine parses the three
+  sections verbatim (a missing one is recorded as `unknown`, never invented) and stores them at
+  `~/.erix/continuity/<project-key>.json` — the key derived from the working directory the same way the
+  session id is, with `ERIX_CONTINUITY_DIR` overriding the directory — then recalls that record at the
+  start of the next run. `"prompt-and-fallback"` adds **exactly one** extra call that asks only for the
+  block, for a run that ended without one. `capabilities.hooks.continuityProvider` is now an **override**
+  rather than a requirement: supply it and your text wins, with the default writer standing down. The
+  default is `off`, and that is the compatibility promise — no instruction in the request, no file
+  written, no directory created, byte-for-byte the old behaviour. The cost of turning it on is one short
+  instruction per request (a few dozen tokens) plus a file write per run; the win is that a zero-config
+  host finally gets cross-run continuity without writing a provider.
+- **`config.continuity.handoff`：引擎成为续接块的默认写者（issue #598）。**
+  续接块过去一直需要宿主提供 provider，现在不必了。新叶子 `config.continuity.handoff`
+  （`"off"` | `"prompt"` | `"prompt-and-fallback"`，默认 `"off"`）把引擎自己变成写者：它在请求尾部注入
+  一小段指令，模型在**同一次**响应里写出 `<handoff>` 块（零额外请求），引擎原样解析三段（缺段记
+  `unknown`，绝不代写），存到 `~/.erix/continuity/<project-key>.json`——key 与 session id 用同一套工作
+  目录派生规则，目录可用 `ERIX_CONTINUITY_DIR` 覆盖——并在下一次 run 启动时召回。`"prompt-and-fallback"`
+  多**恰好一次**补调用，只向模型要那一段块，用于「这次收尾没写」的情况。
+  `capabilities.hooks.continuityProvider` 从「必需」变成 **override**：给了它，你的文本赢，默认写者让位。
+  默认是 `off`，这就是兼容承诺——请求里没有那条指令、不写文件、不创建目录，与旧行为逐字一致。打开它的
+  代价是每请求多一小段指令（几十 token）加每 run 一次文件写；换来的是零配置宿主终于有了跨 run 续接，
+  不用自己写 provider。
+- **`context.workingSetRecentRounds`: a working-set floor that ships off by default (issues #608, #612).**
+  Setting `config.folding.context.workingSetRecentRounds` to N > 0 keeps the last N rounds that carry a
+  `tool_result` out of the fold. It is a **sorting preference**, not a ban — with nothing else foldable the
+  engine still folds the oldest round, so folding cannot deadlock — and the default is **0 = off** because
+  the mechanism was measured before it was defaulted and the measurement went the wrong way: on the same
+  `bigdoc` scenario (one 119k-token result, 64k budget) total input went **11,467 → 46,476** tokens and
+  re-reads went **3 → 9**, while fact recall stayed **0/5 in both arms**. The floor stops the fold, the model
+  never gets a summary, retries, and pays more for the same answer — and what it was missing is *experience*
+  (what is done, how far it got, what must not be redone), not *detail*. So the mechanism stays, the default
+  is off, and the effort went into the semantic fold instead. `budgetBelowWorkingSetStreak` and the `last=`
+  cursor do not read this number: turning the floor on changes sorting, not the degradation gates.
+- **`context.workingSetRecentRounds`：一个默认关着的工作集地板（issue #608、#612）。**
+  把 `config.folding.context.workingSetRecentRounds` 设成 N > 0，就把最近 N 个带 `tool_result` 的轮次留在
+  折叠之外。它是**排序偏好**而不是禁令——没有别的可折时引擎照旧折最老的一轮，所以折叠不会死锁——而默认是
+  **0 = 关**，因为机制是先量后定默认的，而量的结果走了反方向：同一个 `bigdoc` 场景（单结果 119k token、
+  64k 预算）下，每任务总输入 **11,467 → 46,476** token、重读次数 **3 → 9**，而事实命中两臂都是 **0/5**。
+  地板挡住了折叠，模型拿不到摘要，反复重试，为同一个答案付更多钱——而它缺的是**经验**（哪些做完了、做到
+  第几段、什么不能重做），不是**细节**。所以机制留着、默认关着，力气花在语义折叠上。
+  `budgetBelowWorkingSetStreak` 与 `last=` 游标都不读这个数：打开地板只改排序，不改降级闸门。
+### Changed
+
+- **The roster record carries 21 fields instead of 18, and the terminal write carries the child's answer (issue #630 S1, PR #632).**
+  Three fields joined the record — `resultText`, `resultTruncated` and `errorMessage` — and they are
+  written in the **same atomic write** that stores the terminal `state`, not in a follow-up patch. That
+  is the whole point: a `result` that sees a terminal state must also see the text that belongs to it,
+  otherwise the reader has to correlate two writes that can disagree. The cost is stated rather than
+  hidden: the text is capped at 4000 characters (`resultTruncated: true` exactly when it was cut) and
+  the error at 1000, because a child's final answer can be a whole report and pasting it back into the
+  parent's context bills the child's round a second time; a parent that wants detail calls `tail`.
+  Absent fields stay absent — no placeholders, no `"undefined"` strings.
+- **名册记录是 21 个字段而不是 18 个，且终态那一次写就带上了子的终稿（issue #630 S1，PR #632）。**
+  记录新增三个字段——`resultText`、`resultTruncated`、`errorMessage`——它们落进**存终态 `state` 的同一次
+  原子写**，不是事后补写第二遍。这正是全部意义：看到终态的 `result` 必须同时看到与之配套的文本，否则读的人
+  得去关联两次可能互相矛盾的写。代价写在明面上：文本上限 4000 字符（被截断时恰好 `resultTruncated: true`）、
+  错误上限 1000，因为子的终稿可能是一整份长报告，原样塞回父 run 的上下文等于把子那一轮的 token 账再付一遍；
+  要细节的父 run 用 `tail`。没给的字段照样不出现——不写占位值，不写 `"undefined"` 字符串。
+- **`action=result` returns the child's final text and its error (issue #630 S1, PR #632).**
+  `result` now returns the terminal record's fields plus `text` (capped at 4000), `truncated` when it was
+  cut, and `error` (capped at 1000) when the child threw. Before this a background child's answer was
+  dropped on the floor: the parent got `state` and `termination` and had to guess the answer from `tail`.
+  The caps are the difference between "the parent can read the answer" and "the parent pays for the
+  child's tokens twice".
+- **`action=result` 带回子 run 的终稿与错误（issue #630 S1，PR #632）。**
+  `result` 现在返回终态记录的字段，再加 `text`（上限 4000）、被截断时的 `truncated`、以及子抛错时的
+  `error`（上限 1000）。在此之前，后台子 run 的终稿被直接丢掉：父只拿到 `state` 与 `termination`，答案是
+  「看 `tail` 猜」。这两个上限就是「父能读到答案」与「父为子的 token 付两遍钱」之间的差别。
+- **The concurrency cap is a fixed slot pool: the decision and the claim are one system call (issue #630 S3, PR #634).**
+  The cap used to be counted and then claimed: the tool listed the lease directory, and if it was not full
+  yet, created a lease. Two processes could both read "one slot left" and both create one, so the cap
+  over-issued; and a process that died holding a lease left it behind for ever, because nothing swept the
+  directory. Taking a slot is now a single exclusive create (`open(..., "wx")` on `slot-<i>.lock`) in a
+  fixed pool, so the decision and the claim are the same system call; a full pool fails structurally
+  (`capacity_full`, naming the holders) and never queues or spins. A slot whose holder can be **proven**
+  gone is reclaimed on the spot — the liveness predicate decides whenever the lease carries a pid, and
+  only without a predicate does a 30-minute age threshold apply (a fallback, not an authority, which is
+  why a child's own time budget should stay well below it). Reclaiming re-reads the slot and unlinks only
+  the exact holder it judged dead; releasing removes only a slot recording the caller's own identity; and
+  `<runId>.lock` files written by older versions no longer count against the quota and are never deleted.
+- **并发上限改成固定槽位池：判定与占位是同一次系统调用（issue #630 S3，PR #634）。**
+  上限以前是「先数后建」：工具先列一遍租约目录，没满就再建一份租约。两个进程可以同时读到「还剩一格」然后
+  各自建一份 ⇒ 上限超发；而且持有租约的进程死掉之后那份租约永远留在那里，因为没有任何人去扫那个目录。现在
+  抢一格是固定池子里的**一次独占创建**（对 `slot-<i>.lock` 用 `open(..., "wx")`），判定与占位是同一次系统
+  调用；池子满了是结构化失败（`capacity_full`，点名持有者），不排队、不自旋。持有者能被**证明**已经不在了
+  的格子当场回收——租约里带 pid 时由存活谓词裁定，只有没给谓词时才退回 30 分钟的年龄阈值（是兜底而不是权威
+  判据，所以子 run 自己的时间预算应当明显低于它）。回收会再读一次那一格，只 unlink 它判定已死的那个确切
+  持有者；归还只删记着调用方自己身份的那一格；旧版本写下的 `<runId>.lock` 不再计入配额，也永不被删。
+- **`reconcile` grew an `unverified` bucket, and `running` is now a state that actually gets written (issue #630 S2, PR #633).**
+  The record moves `queued` → `running` → a terminal state, and `running` is written **before** the
+  library calls the host's run function; before this the seven-value state machine never wrote `running`,
+  so "working" and "stuck in the queue" looked identical on the roster. `status`, `result` and `list` all
+  recompute first, and a record stuck in a live state because its owner died now returns its terminal
+  outcome instead of answering `still_running` for ever. What the recompute may **not** do is invent a
+  death: live records whose pid it cannot prove dead go to `unverified` and are left on disk untouched
+  (see the D entry below).
+- **`reconcile` 多了 `unverified` 桶，而 `running` 现在是真的会被写入的状态（issue #630 S2，PR #633）。**
+  记录走 `queued` → `running` → 终态，而 `running` 是在库调宿主那个子 run 函数**之前**写的；在此之前，那个
+  七值状态机从来没写过 `running`，于是「在干活」与「卡在队列里」在名册上长得一模一样。`status`、`result`、
+  `list` 都先跑重算，因为所有者死了而卡在活态的记录现在返回终态，不再永远答 `still_running`。重算**不许**
+  做的事是发明死亡：pid 证明不了已死的活态记录进 `unverified`，盘上原样不动（见下面 D 那条）。
+- **The completion marker key gained a separator (issue #630 S2, PR #633).**
+  `completionMarkerKey` used to concatenate `runId` and `endedAt` with nothing between them, which stayed
+  unambiguous only because timestamps happen to be 13 digits. The key is now `runId:endedAt`, so
+  `("a1", 23)` and `("a", 123)` are two different completions. If you persist `collected` markers across
+  restarts, keys written by 0.28.0 no longer match: the worst case is one extra wake-up for a completion
+  you had already collected, and the marker is re-recorded in the new form on the next `result`.
+- **完成标记键加了分隔符（issue #630 S2，PR #633）。**
+  `completionMarkerKey` 以前把 `runId` 与 `endedAt` 直接拼在一起，中间什么都没有，只靠「时间戳恰好 13 位」
+  才不碰撞。现在键是 `runId:endedAt`，于是 `("a1", 23)` 与 `("a", 123)` 是两次不同的完成。如果你把
+  `collected` 标记持久化到重启之后，0.28.0 写下的旧键对不上：最坏情况是你已经自取过的那一次完成又唤醒你
+  一次，而标记会在下一次 `result` 时以新形态重新记上。
+
 ### Fixed
 
 - **The doc-example harness now says "engine default drift" out loud instead of looking like a broken README (issue #582).**
@@ -448,6 +641,57 @@
   not a query), with the existing `abandoned_fold` path supplying the turn when only the block is left. The
   alternative — moving the block out of `messages` — was **not** taken, because that would knock out #568's
   "the block counts in the local estimate" criterion (that ban has teeth: move the block and it goes red).
+
+- **A: a background child's answer never reached the parent (issue #630 S1, PR #632).**
+  `action=run` with `background: true` wrote the terminal state and threw the child's `text` away, so
+  `action=result` could only report `state` and `termination` — the parent had to read `tail` and guess
+  what the child had concluded. The terminal write now stores `resultText` / `resultTruncated` /
+  `errorMessage` in the same atomic write (see Changed), and `result` returns them. Nothing about
+  collection changes: `result` still marks the completion consumed.
+- **A：后台子 run 的终稿从来没到过父侧（issue #630 S1，PR #632）。**
+  `action=run` 带 `background: true` 时，终态写下来了，子的 `text` 被丢掉，于是 `action=result` 只能报
+  `state` 与 `termination`——父只能去读 `tail` 猜子得出了什么结论。现在终态那一次原子写就存
+  `resultText` / `resultTruncated` / `errorMessage`（见 Changed），`result` 把它们带回来。自取语义一字未改：
+  `result` 仍然把这次完成标记为已消费。
+- **B: with no `cwd` the roster recorded `null` while the child actually ran in the parent's tree (issue #630 S1, PR #632).**
+  A model's `cwd` is a request, not a fact, and the record has to say which one it is. With `cwdFor`
+  wired, the library resolves the directory **once** and uses that same value for both the record and
+  `runChild`; without it the old behaviour stands, and the guide says the honest version out loud — the
+  roster's `cwd` field does not describe where the child ran.
+- **B：不传 `cwd` 时名册记 `null`，而子实际跑在父的目录树里（issue #630 S1，PR #632）。**
+  模型给的 `cwd` 是请求、不是事实，而记录必须说清自己是哪一个。接了 `cwdFor`，库**只解析一次**，并且同一个值
+  既写记录、又交给 `runChild`；不接就保持旧行为，而指南把老实话写在明面上——名册的 `cwd` 字段不代表子实际
+  跑在哪。
+- **C: a child run could be handed a tool face wider than its parent's (issue #630 S1, PR #632).**
+  Delegation must never widen permissions. The child tool set is now filtered with the parent's own
+  allowlist before the engine sees it, and `delegate` itself is never handed down (v1 does not recurse).
+  With no allowlist the child keeps the full face, exactly as before — the fix only removes the case
+  where a parent's restriction silently stopped applying one level down.
+- **C：子 run 可能拿到比父更宽的工具面（issue #630 S1，PR #632）。**
+  派生绝不扩权。子工具集现在在进引擎之前就用父自己的白名单过滤过，而 `delegate` 本身永不下传（v1 不递归）。
+  没有白名单时子照旧拿全量，与以前逐字一致——这条修掉的只是「父的限制下移一层后静默失效」那种情况。
+- **D: a live child was rewritten as `interrupted` by a process that had only looked (issue #630 S2, PR #633).**
+  The worst of the four, and it needed two concurrent sessions to fire. **Trigger:** two CLI sessions
+  share the default roster directory `~/.erix/delegation/` (it is a shared path by design); session A
+  dispatches a background child; session B answers one `status` call. The stale recompute saw a live
+  record it did not own, could not prove the pid dead, and still wrote `interrupted` — so A's working
+  child was declared dead by a process that had merely read the directory, and A's own `result` then
+  returned that invented terminal state. The recompute now takes the host's `isProcessAlive(pid)`
+  predicate: a live record whose pid the predicate calls alive goes to `foreignOwned` and is left
+  untouched; only a record it can prove dead becomes `interrupted`, with `endedAt` taken from that
+  record's own `updatedAt` rather than the probe time. **Without the predicate the library refuses to
+  judge**: live records carrying a pid go to `unverified` and stay on disk byte for byte. The cost is
+  deliberate and named — no predicate, no stale cleanup; leaving a dirty record is a smaller failure
+  than inventing a death for another process's live child.
+- **D：活着的子 run 被一个只是「看了一眼」的进程改写成 `interrupted`（issue #630 S2，PR #633）。**
+  四条里最严重的一条，而且需要两个并发会话才触发。**触发条件**：两个 CLI 会话共享默认名册目录
+  `~/.erix/delegation/`（这个路径本来就是共享的）；会话 A 派发一个后台子 run；会话 B 调一次 `status`。
+  陈旧重算看到一条不属于自己的活态记录，证明不了那个 pid 已死，却照样写下了 `interrupted`——于是 A 那个
+  正在干活的子被一个只读过目录的进程宣布死亡，A 自己的 `result` 随后返回的就是那个人造的终态。现在重算收下
+  宿主的 `isProcessAlive(pid)` 谓词：谓词说 pid 还活着的活态记录进 `foreignOwned`，原样不动；只有能证明
+  已死的才变 `interrupted`，且 `endedAt` 取那条记录自己的 `updatedAt`，不是探测时刻。**不给谓词，库就拒绝
+  做任何判定**：带 pid 的活态记录进 `unverified`，盘上原样不动。代价是刻意且点名的——不接谓词就没有陈旧
+  清理；留一条脏记录，比替别的进程的活子发明一个死亡要轻。
 
 ## [0.28.0] - 2026-10-29
 
