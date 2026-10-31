@@ -474,7 +474,11 @@ test("resume keeps one persisted run-state block", async () => {
     initialUserMessage: "fold this",
     executeTool: async () => "result",
     maxRounds: 2,
-    config: { folding: { context: { budgetTokens: 100 } }, run: { completion: false } },
+    // issue #643：预算从 100 抬到 300。100 是「连一份机械摘要都装不下」的退化预算——#643 之后
+    // resume 回填的是**真摘要**（旧行为回填的是 `[已修剪]fold this` 这种噪声），126 tok 的摘要
+    // 在 100 tok 预算里会被安全层剪掉，run-state 块跟着被剪 ⇒ 本格测的「不重复」变成测「有没有」。
+    // 本格钉的是**去重**（恰一条），不是退化预算下的裁剪路径，所以把预算抬到装得下摘要的那一档。
+    config: { folding: { context: { budgetTokens: 300 } }, run: { completion: false } },
     store,
     runId: "resume-state",
   });
@@ -487,7 +491,8 @@ test("resume keeps one persisted run-state block", async () => {
     // #498 S3 A19：`resume` 的扁平写法已退役，并进**同一个** `config` 容器（家 `config.run.resume`）。
     // #498 S3 A21：`maxRounds` 同理（家 `config.run.maxRounds`），并进同一棵 `run` 子树。
     config: {
-      folding: { context: { budgetTokens: 100 } },
+      // 同上的预算理由（#643）：装得下机械摘要才测得到「run-state 块恰一条」。
+      folding: { context: { budgetTokens: 300 } },
       run: { resume: true, runId: "resume-state", maxRounds: 3, completion: false },
     },
     store,

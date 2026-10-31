@@ -220,6 +220,7 @@ src/
     rounds.js                      Message validation and round grouping
   compact/
     budget.js                      Context-budget calculation
+    budget-fit.js                  Budget fallback: fold only the oldest rounds needed to fit the budget and prepend the mechanical summary (issue #643)
     pipeline.js                    Canonical compaction pipeline declaration
     enforce-size.js                Field-size enforcement
     fold-llm.js                    LLM-assisted folding strategy

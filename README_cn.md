@@ -173,6 +173,7 @@ src/
     rounds.js                       消息校验与轮次分组
   compact/
     budget.js                       上下文预算计算
+    budget-fit.js                  预算兜底：只折「够用」的最老轮次，并把机械摘要 prepend 进 head（issue #643）
     pipeline.js                     压缩流水线声明
     enforce-size.js                 字段大小限制
     fold-llm.js                     LLM 辅助的折叠策略

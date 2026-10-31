@@ -16,9 +16,11 @@ import { createFakeProvider } from "./helpers/fake-provider.js";
 
 const EVENT_TYPE = "compaction_strategy_fallback";
 // detail 首句是 issue #464 A 约定的固定原文（宿主可直接断言），预算之后才追加真值。
+// issue #643：兜底的行为变了（折到够用就停 + 把机械摘要 prepend 进 head），首句跟着改——
+// 旧句「drops whole head rounds without summary or anchors」已经不是事实（那正是本单修的病）。
 const DETAIL_PREFIX = 'engine compaction fallback in effect: context.strategy is not configured, '
-  + 'the library default "sliding-window" strategy drops whole head rounds without '
-  + 'summary or anchors';
+  + 'the library default "sliding-window" strategy folds only the oldest rounds needed '
+  + 'to fit the budget and prepends a mechanical summary';
 
 /** rounds 轮工具调用 + 一轮收尾文本；工具输出足够肥，稳定越过 budgetTokens。 */
 function toolProvider(rounds) {
