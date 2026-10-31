@@ -754,7 +754,12 @@ const READ_LINE_CAPACITY_ROLES = [
   //   112,481 → **113,999** 字节 / 2,025 → **2,036** 行 / 均行字节 55.5462 → **55.9917** / 容量 4,719 → **4,681**
   //   （描述里「this tool's own source fits」同步 4,719 → 4,681，同位数 ⇒ 字节中性，所以上面这一行就是终值）。
   //   容量 4,681 仍低于样本中位 6,532，「CJK 按比例压低行数」那条断言仍成立。容差常量一个都没动。
-  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 113_999, lines: 2_036, bytesPerLine: 55.9917, capacity: 4_681, cjkShare: 0.281002 } },
+  // 2026-11-01 第十三刷（issue #375：参数错误统一出口 `paramError` + `paramErrorMode`）：本文件新增
+  // 事实集 / 统一出口 / 四条通道的接线与注释（净 +13,816 字节 / +245 行，均行字节 55.9917 → **56.0346**），
+  // 自指锚点照旧当场红，按本测试自己的口径复测：113,999 → **127,815** 字节 / 2,036 → **2,281** 行 /
+  // 容量 4,681 → **4,678**（描述里「this tool's own source fits」同步 4,681 → 4,678，同位数 ⇒ 字节中性）。
+  // CJK 占比 28.10% → **28.61%**（仅记录值漂移探针，描述没有引用它）。容差常量一个都没动。
+  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 127_815, lines: 2_281, bytesPerLine: 56.0346, capacity: 4_678, cjkShare: 0.28614 } },
 ];
 
 const READ_LINE_CAPACITY_DIRS = ["src", "bin", "examples"];

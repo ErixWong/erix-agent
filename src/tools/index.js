@@ -17,6 +17,10 @@ export {
   GREP_MAX_RESULTS_HARD_CAP,
   // issue #220：成功返回形态的判别式（宿主 switch 的 default 靠它在编译期钉死未知形态）
   classifyFileToolResult,
+  // issue #375：参数错误的统一出口（`[参数错误：…]`）与它的事实集。四条旧通道在 0.29 上保留，
+  // 宿主给自己的工具补参数校验时用这一条，不要自己拼方括号文案。
+  paramError,
+  paramErrorFacts,
 } from "./file-tools.js";
 // 技能包 loader（issue #197）：机制进库，公开导出并入本子路径（**不新增 `./skills` 子路径**，
 // 打包面不扩）。内置技能目录由调用方显式传 `bundledDir`，库内不猜路径；CLI 的

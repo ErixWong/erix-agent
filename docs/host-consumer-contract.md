@@ -4650,7 +4650,7 @@ copy; portable integrations should use the npm package entry point.
 ### File tool registration
 
 The canonical file tool implementation is `src/tools/file-tools.js`. A headless
-host can call `createFileTools({ cwd, allowRead, allowWrite })` **only** from the
+host can call `createFileTools({ cwd, allowRead, allowWrite, paramErrorMode })` **only** from the
 `erix-agent/tools` subpath: it is **not** exported from the package root (ADR-005
 Layer Two — "it is not part of the main export"; `package.json` `exports` maps
 only `.` / `./tools` / `./contract-tests`, no deep path), which is the Tier 2
@@ -4851,6 +4851,69 @@ The CLI keeps only assembly and presentation: `bin/tools.js` imports this module
 adds `exec` and `todo_*`, and passes no predicates, so CLI behaviour stays
 "no boundary" exactly as before. `bin/` no longer owns a second copy of the file
 tools (issue #184).
+
+### Parameter error channel: `paramError` (issue #375)
+
+"Your parameter is the wrong type" is answered today in **four different shapes**,
+and telling them apart means reading the wording:
+
+| channel | example call | what the caller gets |
+|---|---|---|
+| silent coercion / normalization | `rg {pattern: 1}` / `readFile {max_bytes: "abc"}` | the call runs anyway (`1` is searched as `"1"`); `readFile` appends `[参数校正：…]` |
+| text + shape hint | `edit {edits: "x"}` / `readFile {path: <directory>}` | `错误：…（收到 字符串 "x"）` / `错误：路径是目录：…` |
+| text without a hint | `searchText {pattern: 1}` | `错误：searchText 的 pattern 必须是非空字符串` — no "what did I receive" |
+| raw `TypeError` | `grep {pattern: 1}` / `writeFile {content: 1}` | `TypeError: grep pattern must be a non-empty string` |
+
+0.29.0 **adds** one normalized exit and leaves those four channels in place. The
+default behaviour does not move one byte; the old channels are **deprecated as of
+0.29.0** and go away in the next major release (see "Retirement" below).
+
+**The exit.** `paramError` (`src/tools/file-tools.js`) is exported from
+`erix-agent/tools` and renders
+`[参数错误：<tool> 的 <field> 期望 <expected>，收到 <type>（<preview>）；<detail>；下一步：<next>]`;
+`paramErrorFacts` (`src/tools/file-tools.js`) returns the same facts as data
+(`tool` / `field` / `expected` / `receivedType` / `receivedPreview` / `detail` /
+`next`) for a host that renders its own UI. `detail` and `next` are optional. The
+exit is pure: same spec in, same text out, no I/O.
+
+**Opt-in wiring.** `createFileTools({ paramErrorMode })` accepts `"legacy"`
+(the default) or `"unified"`:
+
+- `"legacy"` — byte-for-byte what 0.29.0 already shipped. The packaged contract
+  suite pins the old wording, so a host that asserts on it keeps working.
+- `"unified"` — the same four errors are rendered by `paramError`. **Only the
+  wording changes**: a normalized parameter is still normalized (not rejected),
+  and the two channels that throw still throw `TypeError`, so
+  `toolStats.failures` / `toolErrorCount` do not move. Turning a throw into a text
+  result is a behaviour change and belongs to the retirement release, not here.
+
+Any other `paramErrorMode` value throws at construction time: a silent fallback
+would be one more "your parameter is wrong and nobody told you" channel, which is
+exactly the defect this ticket is about.
+
+**Information parity.** For the same bad call, every fact the old channel carried
+is carried by the new exit with the same value, and the facts the old channel
+dropped (usually *what was received*) are present. The `paramError` suite
+(`test/tools/param-error-375.test.js`, reproduce with `node --test test/tools/param-error-375.test.js`)
+asserts this cell by cell against two real calls, not by eyeballing:
+
+| call | old channel | new exit |
+|---|---|---|
+| `rg {pattern: 1}` | coerces and searches; carries no parameter fact at all | `tool=rg field=pattern received=number(1) next` |
+| `grep {pattern: 1}` | `TypeError`, English wording, no received value | same throw; `tool` / `field` / `expected` / `received` / `next` |
+| `readFile {max_bytes: "abc"}` | `[参数校正：max_bytes="abc" …已按 262144 处理；下一步：…]` | field / original value / detail / next each equal to the old marker |
+| `readFile {path: <directory>}` | `错误：路径是目录：sub（readFile 只读文件；…）` | same directory name, same detail, plus `next` pointing at `tree` |
+| `writeFile {content: 1}` | `TypeError`, no received value | same throw; `content` / `number(1)` / the no-coercion reason / `next` |
+| `edit {edits: "x"}` | `错误：…不是合法 JSON："x"；…` | same original value, plus `field` / `next` |
+
+**No coercion.** `writeFile {content: 1}` is rejected, not `String()`-ed:
+`String({})` would put `"[object Object]"` on disk, and a silently corrupted file
+costs more than a failed call.
+
+**Retirement.** The four channels are deprecated as of 0.29.0: new host code
+should call `paramError` (or switch `paramErrorMode` to `"unified"`), and the
+next major release removes the legacy wording and folds the throwing channels
+into the unified result. Until then both are live and both are tested.
 
 ### Success result shapes (issue #220)
 

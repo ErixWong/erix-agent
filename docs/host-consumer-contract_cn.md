@@ -3697,7 +3697,7 @@ shim 自身的 `getSkillDefinition` 导出（`erix-agent/tools` 子路径的
 ### 文件工具注册
 
 文件工具的规范实现是 `src/tools/file-tools.js`。无头宿主**只能**从 `erix-agent/tools`
-子路径调用 `createFileTools({ cwd, allowRead, allowWrite })`——它**不**从包根导出
+子路径调用 `createFileTools({ cwd, allowRead, allowWrite, paramErrorMode })`——它**不**从包根导出
 （ADR-005 第二层：「不属于主导出，只能经显式 `import … from "erix-agent/tools"`」；
 `package.json` 的 `exports` 只有 `.` / `./tools` / `./contract-tests`，无深路径），
 这就是 Tier 2 host integration。库不带牢笼：两个谓词就是边界的全部，默认都是
@@ -3837,6 +3837,58 @@ BRE，都不是这里用的 JavaScript flavor），**完全不读 `.gitignore`**
 CLI 只保留装配与呈现：`bin/tools.js` import 本模块，自己只加 `exec` 与 `todo_*`，
 且不传任何谓词，所以 CLI 行为与以前一致，仍是「无边界」。`bin/` 不再持有第二套
 文件工具实现（issue #184）。
+
+### 参数错误通道：`paramError`（issue #375）
+
+「你的参数类型不对」今天有**四种形状**，要分清它们只能靠读措辞：
+
+| 通道 | 示例调用 | 调用方今天拿到什么 |
+|---|---|---|
+| 静默强转 / 归一 | `rg {pattern: 1}` / `readFile {max_bytes: "abc"}` | 照跑（`1` 被当 `"1"` 搜）；`readFile` 尾部挂 `[参数校正：…]` |
+| 文本 + 形状提示 | `edit {edits: "x"}` / `readFile {path: <目录>}` | `错误：…（收到 字符串 "x"）` / `错误：路径是目录：…` |
+| 文本无提示 | `searchText {pattern: 1}` | `错误：searchText 的 pattern 必须是非空字符串` —— 不说「收到了什么」 |
+| 裸 `TypeError` | `grep {pattern: 1}` / `writeFile {content: 1}` | `TypeError: grep pattern must be a non-empty string` |
+
+0.29.0 **新增**一个统一出口，那四条通道**原样保留**：默认行为一个字节都不变；旧通道自
+**0.29.0 起标 deprecated**，在下一个 major 版本退役（见下文「退役」）。
+
+**出口。** `paramError`（`src/tools/file-tools.js`）从 `erix-agent/tools` 导出，产出
+`[参数错误：<tool> 的 <field> 期望 <expected>，收到 <type>（<preview>）；<detail>；下一步：<next>]`；
+`paramErrorFacts`（`src/tools/file-tools.js`）把同一份事实交成数据
+（`tool` / `field` / `expected` / `receivedType` / `receivedPreview` / `detail` / `next`），
+给要自己渲染 UI 的宿主。`detail` 与 `next` 可缺省。出口是纯函数：同一份入参出同一段文本，不做 IO。
+
+**选择性接线。** `createFileTools({ paramErrorMode })` 收 `"legacy"`（默认）或 `"unified"`：
+
+- `"legacy"` —— 与 0.29.0 已发布的**逐字节**相同。随包的契约套件钉的就是旧文案，
+  断言它的宿主不受影响。
+- `"unified"` —— 同样这四种错误改由 `paramError` 出词。**只换文案**：被归一的仍然归一
+  （不是拒绝），两个会抛的仍然抛 `TypeError`，所以 `toolStats.failures` /
+  `toolErrorCount` 不会动。把「抛」改成文本结果属于行为变更，归退役那一版，不在这里。
+
+其它任何 `paramErrorMode` 值在构造期就抛：静默回落等于又开一条「参数不对却没人告诉你」的
+通道，而那正是本单要修的缺陷。
+
+**信息对等。** 同一次坏调用，旧通道**带了的**事实新出口必须逐字同值，旧通道**丢了的**事实
+（通常是「收到了什么」）新出口必须有。`paramError` 套件
+（`test/tools/param-error-375.test.js`，复跑 `node --test test/tools/param-error-375.test.js`）
+拿**两次真调用**逐格对账，不靠肉眼：
+
+| 调用 | 旧通道 | 新出口 |
+|---|---|---|
+| `rg {pattern: 1}` | 强转后真搜；一条参数事实都不带 | `tool=rg field=pattern received=number(1) next` |
+| `grep {pattern: 1}` | `TypeError`，英文措辞，没有收到的值 | 同样抛；`tool` / `field` / `expected` / `received` / `next` |
+| `readFile {max_bytes: "abc"}` | `[参数校正：max_bytes="abc" …已按 262144 处理；下一步：…]` | field / 原值 / detail / next 逐条等于旧 marker |
+| `readFile {path: <目录>}` | `错误：路径是目录：sub（readFile 只读文件；…）` | 同一个目录名、同一句 detail，外加指向 `tree` 的 `next` |
+| `writeFile {content: 1}` | `TypeError`，没有收到的值 | 同样抛；`content` / `number(1)` / 不强转的理由 / `next` |
+| `edit {edits: "x"}` | `错误：…不是合法 JSON："x"；…` | 同一个原值，外加 `field` / `next` |
+
+**不强转。** `writeFile {content: 1}` 是**拒绝**，不是 `String()` 一下：`String({})` 会把
+`"[object Object]"` 落到盘上，静默写坏一个文件比一次失败贵得多。
+
+**退役。** 上面四条通道自 0.29.0 起标 deprecated：新的宿主代码应改用 `paramError`
+（或把 `paramErrorMode` 切到 `"unified"`），下一个 major 版本删掉旧文案并把会抛的两条
+并入统一结果。在那之前两套都在、两套都被测。
 
 ### 成功返回的四种顶层形态（issue #220）
 

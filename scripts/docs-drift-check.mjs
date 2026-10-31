@@ -2292,8 +2292,14 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  * `forceFinalIfNeeded` / `terminationReasonForAction`（termination）、`decideRoundAction` /
  * `decideWithEvaluation` / `STALL_STREAK_LIMIT` 与治理层 stop 值（governor）——新增 **8 组**唯一
  * (符号, 文件) 键，`--verbose` 实测 **188 组 / 601 处**（连量两次相同，不动点）⇒ 下限 180 → **188**。
+ 
+ *
+ *  * issue #375（参数错误的统一出口）的契约中英成对小节引 `paramError` / `paramErrorFacts`
+ * （`src/tools/file-tools.js`）⇒ **+2 组 / +4 处**（契约中英各一处，AGENTS 中英的声称句不带锚点、不计），
+ * `--verbose` 在**合并后的树**上重算实测 **190 组 / 605 处**（与 #286 T-b2 的 +8 组叠加，两支不取最大值）⇒ 下限 188 → **190**。
+ 
  */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 188;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 190;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {

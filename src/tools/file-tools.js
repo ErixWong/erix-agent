@@ -570,45 +570,176 @@ function describeInputShape(value) {
   return typeof value;
 }
 
+// ---------------------------------------------------------------------------
+// 参数错误的**唯一出口**（issue #375；本轮只做加法）
+// ---------------------------------------------------------------------------
+//
+// 病根（#375 现场，六格真调用）：同一个工具族里「参数类型不对」有**四条**通道——
+//   ① 静默归一/强转：`rg {pattern: 1}` 把 `1` 当 `"1"` 搜（一个字都不报），
+//      `readFile {max_bytes: "abc"}` 回默认值（#358 起挂 `[参数校正：…]` 报一句）；
+//   ② 文本 + 形状提示：`edit {edits: "x"}` 的 `错误：…（收到 字符串 "x"）`、
+//      `readFile {path: <目录>}` 的 `错误：路径是目录：…`；
+//   ③ 文本无提示：`searchText {pattern: 1}` 的 `错误：…必须是非空字符串`（不说是谁给的什么）；
+//   ④ 裸 `TypeError`：`grep {pattern: 1}` / `writeFile {content: 1}`（落进引擎 catch，模型读不到类型）。
+// 模型只能靠措辞猜「该重试还是该换写法」，而 ④ 连「收到的是什么」都不在结果文本里。
+//
+// 本刀**只做加法**（0.29 线上不改任何分支语义）：
+//   * `paramErrorFacts(spec)` 是**关键事实**的唯一产生处（tool / field / expected / received / detail / next）；
+//   * `paramError(spec)` 是统一出口，产出 `[参数错误：…]` 文本；
+//   * 四条旧通道默认**一个字都不改**（`paramErrorMode: "legacy"`），只有显式
+//     `paramErrorMode: "unified"` 才改由新出口出词；
+//   * **两种模式的控制流完全一致**：归一的仍然归一（不是拒绝）、抛的仍然抛（`toolStats.failures`
+//     / `toolErrorCount` 计数因此不变）。把「抛」改成「文本」属于下一个破坏包，不在本票。
+//   * 旧通道的退役口径写在宿主契约（标 deprecated + 指向本出口），删除同样留给下一个 major。
+
+/** 参数值的 JS 类型名。数组单列一档：`typeof [] === "object"` 会让「传了数组」与「传了对象」分不开。 */
+function paramValueType(value) {
+  if (value === undefined) return "undefined";
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+/** 参数值的形状回显（只回显够认出来的部分，不回显大块内容）。 */
+function paramValuePreview(value) {
+  if (value === undefined) return "未提供";
+  if (value === null) return "null";
+  if (typeof value === "string") return JSON.stringify(truncateDisplayText(value, 40));
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
+  if (Array.isArray(value)) return `数组（${value.length} 项）`;
+  if (typeof value === "object") return "对象";
+  return typeof value;
+}
+
+/**
+ * 参数错误的入参形状（`paramError` / `paramErrorFacts` 共用）。
+ *
+ * `received` / `preview` 是给「不是 JS 类型」的事实留的覆盖口：`readFile {path: <目录>}` 收到的是
+ * **目录**（值本身是字符串），`value` 只能说出 `string`，所以那一条显式给 `received: "目录"`。
+ *
+ * @typedef {object} ParamErrorSpec
+ * @property {string} tool 工具名（`readFile` / `grep` / …）
+ * @property {string} field 参数名（`pattern` / `max_bytes` / `edits[2].oldText` …）
+ * @property {string} expected 期望（人类可读：`非空字符串` / `整数` …）
+ * @property {unknown} [value] 收到的原值（`received`/`preview` 没覆盖时由它派生类型与回显）
+ * @property {string} [received] 覆盖类型标签（非 JS 类型的事实，如 `目录`）
+ * @property {string} [preview] 覆盖回显
+ * @property {string} [detail] 为什么会错 / 已怎么处理
+ * @property {string} [next] 下一步（出口自己拼 `下一步：` 前缀）
+ */
+
+/**
+ * 参数错误的**事实集**：一次参数错误的关键信息只在这里产生一次（issue #375）。
+ *
+ * 旧通道与新出口都从同一份事实取词，所以「同一条错误两边说的是同一件事」是**构造**出来的，
+ * 不是靠两处代码写得像。反向证：把某个调用点的 `value:` / `field:` / `next:` 接线断掉，
+ * 对应的对账格立刻红（见 `test/tools/param-error-375.test.js` 与变异样本 M10）。
+ *
+ * @param {ParamErrorSpec} spec
+ * @returns {{tool:string, field:string, expected:string, receivedType:string, receivedPreview:string, detail:string|null, next:string|null}}
+ */
+export function paramErrorFacts({ tool, field, expected, value, received, preview, detail, next }) {
+  return {
+    tool,
+    field,
+    expected,
+    receivedType: received ?? paramValueType(value),
+    receivedPreview: preview ?? paramValuePreview(value),
+    detail: detail ?? null,
+    next: next ?? null,
+  };
+}
+
+/** 事实集 → 统一文本（模块内部用；对外只暴露 `paramError`，免得宿主拼出第三种形状）。 */
+function renderParamError(facts) {
+  return `[参数错误：${facts.tool} 的 ${facts.field} 期望 ${facts.expected}，收到 ${facts.receivedType}（${facts.receivedPreview}）`
+    + `${facts.detail === null ? "" : `；${facts.detail}`}`
+    + `${facts.next === null ? "" : `；${NEXT_STEP_CLAUSE}${facts.next}`}]`;
+}
+
+/**
+ * 参数错误的**唯一出口**（issue #375）：`[参数错误：<tool> 的 <field> 期望 <expected>，收到 <type>（<preview>）；<detail>；下一步：<next>]`。
+ *
+ * 宿主给自己的工具补参数校验时用它，不要自己拼方括号文案：同一个事实在四条旧通道里有四种写法，
+ * 再添第五种就是把 #375 要收的口子重新撕开。
+ *
+ * @param {ParamErrorSpec} spec
+ * @returns {string}
+ */
+export function paramError(spec) {
+  return renderParamError(paramErrorFacts(spec));
+}
+
+/**
+ * 「旧通道 / 新出口」二选一：`unified` 为假时**逐字**返回旧文案（0.29 的字节不变）。
+ *
+ * @param {boolean} unified
+ * @param {ParamErrorSpec} spec
+ * @param {string} legacyText
+ * @returns {string}
+ */
+function paramFailure(unified, spec, legacyText) {
+  return unified ? paramError(spec) : legacyText;
+}
+
 /**
  * `edits` 入参归一（issue #191）：数组 / 单个对象 / 它们的 JSON 字符串三种形状都收。
  *
  * 这不是「猜意图」而是「收形状」：三种形状能无歧义地解出同一张操作列表；解不出来
  * （非法 JSON、非字符串字段）就返回错误结果文案，**不抛**。
  *
+ * @param {unknown} raw
+ * @param {{unified?: boolean}} [options] `unified` = 由 #375 统一出口出词（默认 false ⇒ 旧文案逐字不变）
  * @returns {Array<{oldText: string, newText: string}> | string} 数组或错误文本
  */
-function parseEditOperations(raw) {
+function parseEditOperations(raw, { unified = false } = {}) {
+  const expected = "数组（或单条对象 / 它们的 JSON 字符串）";
+  const next = "edit 传 edits=[{\"oldText\":\"…\",\"newText\":\"…\"}]（数组本身，不要多包一层引号）";
   let value = raw;
   if (typeof value === "string") {
     const text = value.trim();
     if (text === "") {
-      return "错误：edit 的 edits 传的是空字符串：要 [{oldText, newText}]（也可传单条对象或它们的 JSON 字符串）";
+      return paramFailure(unified, {
+        tool: "edit", field: "edits", expected, value: raw, detail: "传的是空字符串", next,
+      }, "错误：edit 的 edits 传的是空字符串：要 [{oldText, newText}]（也可传单条对象或它们的 JSON 字符串）");
     }
     try {
       value = JSON.parse(text);
     } catch {
-      return `错误：edit 的 edits 是字符串但不是合法 JSON：${JSON.stringify(truncateDisplayText(text, 60))}；`
-        + "传数组本身（不要多包一层引号），或确保它是合法 JSON：[{\"oldText\":\"…\",\"newText\":\"…\"}]";
+      return paramFailure(unified, {
+        tool: "edit", field: "edits", expected, value: raw, detail: "是字符串但不是合法 JSON", next,
+      }, `错误：edit 的 edits 是字符串但不是合法 JSON：${JSON.stringify(truncateDisplayText(text, 60))}；`
+        + "传数组本身（不要多包一层引号），或确保它是合法 JSON：[{\"oldText\":\"…\",\"newText\":\"…\"}]");
     }
   }
   if (value !== null && typeof value === "object" && !Array.isArray(value)) value = [value];
   if (!Array.isArray(value)) {
-    return `错误：edit 的 edits 形状不认识（收到 ${describeInputShape(raw)}）：要 [{oldText, newText}]、`
-      + "单个 {oldText, newText} 对象，或它们的 JSON 字符串";
+    return paramFailure(unified, {
+      tool: "edit", field: "edits", expected, value: raw, detail: "形状不认识", next,
+    }, `错误：edit 的 edits 形状不认识（收到 ${describeInputShape(raw)}）：要 [{oldText, newText}]、`
+      + "单个 {oldText, newText} 对象，或它们的 JSON 字符串");
   }
   const operations = [];
   for (const [position, entry] of value.entries()) {
     const ordinal = position + 1;
     if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-      return `错误：edit 第 ${ordinal} 条不是对象（收到 ${describeInputShape(entry)}）：每条要 {oldText, newText} 两个字符串字段`;
+      return paramFailure(unified, {
+        tool: "edit", field: `edits[${ordinal}]`, expected: "{oldText, newText} 对象", value: entry,
+        detail: `第 ${ordinal} 条不是对象`, next,
+      }, `错误：edit 第 ${ordinal} 条不是对象（收到 ${describeInputShape(entry)}）：每条要 {oldText, newText} 两个字符串字段`);
     }
     const { oldText, newText } = entry;
     if (typeof oldText !== "string") {
-      return `错误：edit 第 ${ordinal} 条的 oldText 不是字符串（收到 ${describeInputShape(oldText)}）：它是要逐字匹配的原文片段`;
+      return paramFailure(unified, {
+        tool: "edit", field: `edits[${ordinal}].oldText`, expected: "字符串", value: oldText,
+        detail: `第 ${ordinal} 条的 oldText 是要逐字匹配的原文片段`, next,
+      }, `错误：edit 第 ${ordinal} 条的 oldText 不是字符串（收到 ${describeInputShape(oldText)}）：它是要逐字匹配的原文片段`);
     }
     if (typeof newText !== "string") {
-      return `错误：edit 第 ${ordinal} 条的 newText 不是字符串（收到 ${describeInputShape(newText)}）：删除文本就显式传空串 ""`;
+      return paramFailure(unified, {
+        tool: "edit", field: `edits[${ordinal}].newText`, expected: "字符串", value: newText,
+        detail: `第 ${ordinal} 条的 newText 删除文本请显式传空串 ""`, next,
+      }, `错误：edit 第 ${ordinal} 条的 newText 不是字符串（收到 ${describeInputShape(newText)}）：删除文本就显式传空串 ""`);
     }
     operations.push({ oldText, newText });
   }
@@ -841,22 +972,34 @@ function readLineWindow(absolutePath, { start, count, maxBytes }) {
  */
 function normalizeIntegerWithReport(value, fallback, name) {
   const value2 = normalizeNonNegativeInteger(value, fallback);
-  if (value === undefined || value === value2) return { value: value2, note: null };
-  if (!Number.isFinite(value)) {
-    return { value: value2, note: `${name}=${JSON.stringify(value)} 不是数字，已按 ${fallback} 处理` };
-  }
-  if (Number(value) < 0) {
-    return { value: value2, note: `${name}=${JSON.stringify(value)} 是负数，已按 0 处理` };
-  }
-  return { value: value2, note: `${name}=${JSON.stringify(value)} 不是整数，已向下取整为 ${value2}` };
+  if (value === undefined || value === value2) return { value: value2, note: null, facts: null };
+  const note = !Number.isFinite(value)
+    ? `${name}=${JSON.stringify(value)} 不是数字，已按 ${fallback} 处理`
+    : Number(value) < 0
+      ? `${name}=${JSON.stringify(value)} 是负数，已按 0 处理`
+      : `${name}=${JSON.stringify(value)} 不是整数，已向下取整为 ${value2}`;
+  // issue #375：事实集与新出口的接线就在 `value` 这一个口（`note` 仍旧自算，所以旧文案字节不变；
+  // 断掉 `value` ⇒ 只有新出口的 received 格变，对账格当场红）。
+  const facts = paramErrorFacts({
+    tool: "readFile", field: name, expected: "整数", value, detail: note,
+    next: `重传 readFile 并传整数 ${name}`,
+  });
+  return { value: value2, note, facts };
 }
 
-function fileReadMarkers(window, { start, count, maxBytes, displayPath, parameterNotes = [] }) {
+function fileReadMarkers(window, {
+  start, count, maxBytes, displayPath, parameterNotes = [], parameterFacts = [], unifiedParamErrors = false,
+}) {
   const markers = [];
   // 参数被改写时报一句（issue #358 同族）：只说本次真值与重传方式，不改任何语义。
   if (parameterNotes.length > 0) {
-    const names = [...new Set(parameterNotes.map((note) => String(note).split("=")[0]))].join(", ");
-    markers.push(toolMarker("readParamAdjusted", { notes: parameterNotes, names }));
+    if (unifiedParamErrors) {
+      // issue #375：同一条事实改由统一出口出词；**归一行为本身没变**（仍返回正文）。
+      markers.push(...parameterFacts.map((facts) => renderParamError(facts)));
+    } else {
+      const names = [...new Set(parameterNotes.map((note) => String(note).split("=")[0]))].join(", ");
+      markers.push(toolMarker("readParamAdjusted", { notes: parameterNotes, names }));
+    }
   }
   const nextOffset = start + window.selected.length;
   if (window.contentCapped) {
@@ -983,7 +1126,7 @@ export const FILE_TOOL_DEFINITIONS = [
       + "The floor is a whole-tree minimum rounded down to a multiple of 50 (a promise, not a per-file estimate); median and most come from a fixed sample of those sources and describe that sample, not every file here. "
       + "Wide lines cut this proportionally and CJK cuts hardest (3 UTF-8 bytes per character): "
       + "the most CJK-dense file in that fixed sample (`src/loop/state-view.js`, 37% of its bytes are CJK) fits 4,387 and "
-      + "this tool's own source fits 4,681. "
+      + "this tool's own source fits 4,678. "
       + "Nothing outside this repo "
       + "was measured, so for CJK-heavy code elsewhere fold the formula rather than reusing these numbers. Either way the cap is "
       + "far more than a single `limit` will ask for, so it is rarely what stops you. "
@@ -1278,14 +1421,23 @@ function assertPredicate(predicate, label) {
  * @param {string} [options.cwd] 相对路径的解析根（默认进程 cwd；测试与宿主必须显式注入）
  * @param {(absolutePath: string) => boolean} [options.allowRead]  读边界谓词，默认恒 true；库以**绝对路径**逐条调用
  * @param {(absolutePath: string) => boolean} [options.allowWrite] 写边界谓词，默认恒 true
+ * @param {"legacy" | "unified"} [options.paramErrorMode] 参数错误通道（issue #375）：
+ *   `"legacy"`（默认）= 四条旧通道逐字不变；`"unified"` = 改由 `paramError` 统一出口出词。
+ *   两种模式**只换文案、不换控制流**（归一的仍归一、抛的仍抛），旧通道将在下一个 major 退役。
  * @returns {{ definitions: FileToolDefinition[], executeTool: FileToolExecuteTool, executors: FileToolExecutors }}
  */
 export function createFileTools({
   cwd = process.cwd(),
   allowRead = () => true,
   allowWrite = () => true,
+  paramErrorMode = "legacy",
 } = {}) {
   const root = path.resolve(cwd);
+  // 静默回落 = 又一种「参数不对却不报」的通道（#375 的病根），所以构造期 fail-loud。
+  if (paramErrorMode !== "legacy" && paramErrorMode !== "unified") {
+    throw new TypeError(`createFileTools 的 paramErrorMode 只接受 "legacy"（默认）或 "unified"（issue #375），收到 ${JSON.stringify(paramErrorMode)}`);
+  }
+  const unifiedParamErrors = paramErrorMode === "unified";
   const canRead = assertPredicate(allowRead, "allowRead");
   const canWrite = assertPredicate(allowWrite, "allowWrite");
 
@@ -1438,13 +1590,31 @@ export function createFileTools({
       }
       return null;
     })();
+    // issue #375：这条归一事实的接线口（`value:` 断掉 ⇒ 新出口的 received 格与旧通道对不上）。
+    const maxBytesFacts = maxBytesNote === null ? null : paramErrorFacts({
+      tool: "readFile",
+      field: "max_bytes",
+      expected: "整数",
+      value: maxBytesRequested,
+      detail: maxBytesNote,
+      next: "重传 readFile 并传整数 max_bytes",
+    });
     const target = resolveToolPath(root, filePath);
     if (!canRead(target)) return readDenied(target);
 
     const targetStat = normalizedReadStat(target);
     if (targetStat.isDirectory()) {
       // 目录不是文件：调用方给错了东西，与 `edit` 同类输入同口径 ⇒ 返回文本（不抛）。
-      return `错误：路径是目录：${truncateDisplayText(displayName(target), 200)}（readFile 只读文件；要看目录用 tree）`;
+      return paramFailure(unifiedParamErrors, {
+        tool: "readFile",
+        field: "path",
+        expected: "文件路径（要看目录用 tree）",
+        value: filePath,
+        received: "目录",
+        preview: truncateDisplayText(displayName(target), 200),
+        detail: "readFile 只读文件",
+        next: `tree 传 path="${displayName(target)}"`,
+      }, `错误：路径是目录：${truncateDisplayText(displayName(target), 200)}（readFile 只读文件；要看目录用 tree）`);
     }
 
     const window = readLineWindow(target, { start, count, maxBytes });
@@ -1455,6 +1625,8 @@ export function createFileTools({
       maxBytes,
       displayPath: displayName(target),
       parameterNotes: [startReport.note, countReport.note, maxBytesNote].filter(Boolean),
+      parameterFacts: [startReport.facts, countReport.facts, maxBytesFacts].filter(Boolean),
+      unifiedParamErrors,
     }));
     return parts.join("\n");
   };
@@ -1617,10 +1789,13 @@ export function createFileTools({
    * @param {"rg"|"grep"} name
    * @param {{mode:"literal"|"regex", nameFilter?:boolean}} values
    */
-  const withDeprecation = (result, name, values) => (
+  const withDeprecation = (result, name, values) => appendResultLine(result, toolMarker("deprecated", { name, ...values }));
+
+  /** 结果尾部挂一行（字符串与 `{content, metadata}` 两种形态共用；issue #375 新出口也走它）。 */
+  const appendResultLine = (result, line) => (
     typeof result === "string"
-      ? `${result}\n${toolMarker("deprecated", { name, ...values })}`
-      : { ...result, content: `${result.content}\n${toolMarker("deprecated", { name, ...values })}` }
+      ? `${result}\n${line}`
+      : { ...result, content: `${result.content}\n${line}` }
   );
 
   /**
@@ -1636,7 +1811,14 @@ export function createFileTools({
     }
     if (!SEARCH_MODES.has(mode)) return searchModeError(mode);
     if (typeof pattern !== "string" || pattern === "") {
-      return "错误：searchText 的 pattern 必须是非空字符串";
+      return paramFailure(unifiedParamErrors, {
+        tool: "searchText",
+        field: "pattern",
+        expected: "非空字符串",
+        value: pattern,
+        detail: "空正则会匹配每一行，所以空串不当模式",
+        next: "searchText 传 pattern=\"…\" 与 mode=\"literal\" 或 \"regex\"",
+      }, "错误：searchText 的 pattern 必须是非空字符串");
     }
     const compiled = compileSearchPattern(pattern, { literal: mode === "literal" });
     if (compiled.error !== undefined) return compiled.error;
@@ -1660,6 +1842,18 @@ export function createFileTools({
     // 本库的 grep 默认同样是正则——两个搜索工具默认相反才是反常（issue #184 追加轮 A）。
     // 同一个映射既决定**编译口径**也决定**迁移提示里的 mode**（issue #221：提示照抄就能等价迁移）。
     const mode = aliasSearchMode(input);
+    // issue #375 通道①（静默强转）：旧通道把 `pattern: 1` 当 `"1"` 搜、一个字都不报。
+    // 本票不改语义（仍然强转），只在 `unified` 模式下把这条事实交给统一出口。
+    const patternFacts = typeof pattern === "string" && pattern !== ""
+      ? null
+      : paramErrorFacts({
+        tool: "rg",
+        field: "pattern",
+        expected: "非空字符串",
+        value: pattern,
+        detail: `已按 ${JSON.stringify(truncateDisplayText(String(pattern), 40))} 处理`,
+        next: "rg 传 pattern=\"…\"",
+      });
     const compiled = compileSearchPattern(pattern, { literal: mode === "literal" });
     if (compiled.error !== undefined) return compiled.error;
     const result = await runSearch({
@@ -1671,7 +1865,10 @@ export function createFileTools({
       format: "flat",
       alias: true,
     }, context);
-    return withDeprecation(result, "rg", { mode });
+    const reported = unifiedParamErrors && patternFacts !== null
+      ? appendResultLine(result, renderParamError(patternFacts))
+      : result;
+    return withDeprecation(reported, "rg", { mode });
   };
 
   /** `grep` 薄别名（issue #195 R3）：继续吃 `glob`（语义 = name_pattern），分组形状逐字不变。 */
@@ -1683,7 +1880,14 @@ export function createFileTools({
       is_regex = true,
     } = input ?? {};
     if (typeof pattern !== "string" || pattern === "") {
-      throw new TypeError("grep pattern must be a non-empty string");
+      // issue #375 通道④（裸 TypeError）：抛的**仍然抛**（失败计数不变），只有 `unified` 换文案。
+      throw new TypeError(paramFailure(unifiedParamErrors, {
+        tool: "grep",
+        field: "pattern",
+        expected: "非空字符串",
+        value: pattern,
+        next: "grep 传 pattern=\"…\"（空串不当模式）",
+      }, "grep pattern must be a non-empty string"));
     }
     const compiled = compileSearchPattern(pattern, { literal: is_regex === false });
     if (compiled.error !== undefined) return compiled.error;
@@ -1828,14 +2032,20 @@ export function createFileTools({
   const edit = async (input) => {
     const filePath = input?.path;
     if (typeof filePath !== "string" || filePath.trim() === "") {
-      return `错误：edit 的 path 必须是非空字符串（收到 ${describeInputShape(filePath)}）：给一个已存在的文件路径（相对路径按工具根目录解析）`;
+      return paramFailure(unifiedParamErrors, {
+        tool: "edit",
+        field: "path",
+        expected: "非空字符串（已存在的文件路径，相对路径按工具根目录解析）",
+        value: filePath,
+        next: "edit 传 path=\"…\"",
+      }, `错误：edit 的 path 必须是非空字符串（收到 ${describeInputShape(filePath)}）：给一个已存在的文件路径（相对路径按工具根目录解析）`);
     }
     const target = resolveToolPath(root, filePath);
     // 写边界：与 `writeFile` 逐字一致的谓词与错误结果（越界不报异常，不落盘）。
     if (!canWrite(target)) return writeDenied(target);
     const label = displayName(target);
 
-    const parsed = parseEditOperations(input?.edits);
+    const parsed = parseEditOperations(input?.edits, { unified: unifiedParamErrors });
     if (typeof parsed === "string") return parsed;
     if (parsed.length === 0) {
       return "错误：edit 的 edits 是空数组（全部无变化）：至少给一条 {oldText, newText}；先 readFile 确认要改的那段原文"
@@ -1989,7 +2199,16 @@ export function createFileTools({
   const writeFile = async (input) => {
     const { path: filePath, content } = input ?? {};
     if (typeof content !== "string") {
-      throw new TypeError("writeFile content must be a string");
+      // issue #375 通道④：**不顺手强转**（`String({})` 会把 `"[object Object]"` 静默落盘），
+      // 也**仍然抛**（失败计数不变）；`unified` 只换文案。
+      throw new TypeError(paramFailure(unifiedParamErrors, {
+        tool: "writeFile",
+        field: "content",
+        expected: "字符串",
+        value: content,
+        detail: "不做 String() 强转（对象会被静默写成 \"[object Object]\"）",
+        next: "writeFile 传 content=\"…\"",
+      }, "writeFile content must be a string"));
     }
     const target = resolveToolPath(root, filePath);
     if (!canWrite(target)) return writeDenied(target);
