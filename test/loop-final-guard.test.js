@@ -87,6 +87,8 @@ test("finalGuard revision is injected as a paired-safe user text message", async
     role: "user",
     meta: { source: "judge-control" },
     content: [{ type: "text", text: "请先核实原始值" }],
+    // issue #192：这条控制消息就是本轮请求的最后一条 ⇒ 尾部滚动断点落在它上面。
+    cacheBoundary: true,
   });
   validateMessages(result.messages);
 });

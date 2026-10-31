@@ -261,8 +261,8 @@
 | `config.tuning.topP` | `null` | A | requests[0].topP | requests[0].topP: (absent) → null |
 | `config.tuning.topP` | `[]` | A | requests[0].topP | requests[0].topP: (absent) → [] |
 | `config.tuning.topP` | `{}` | A | requests[0].topP | requests[0].topP: (absent) → {} |
-| `config.timing.timeoutMs` | `0.5` | A | requests[1].messages[3] | requests[1].messages[3]: (absent) → {"role":"user","meta":{"source":"judge-control"},"content":[{"type":"text","t... |
-| `config.timing.deadlineMs` | `0.5` | A | requests[1].messages[3] | requests[1].messages[3]: (absent) → {"role":"user","meta":{"source":"judge-control"},"content":[{"type":"text","t... |
+| `config.timing.timeoutMs` | `0.5` | A | requests[1].messages[2].cacheBoundary | requests[1].messages[2].cacheBoundary: true → (absent) |
+| `config.timing.deadlineMs` | `0.5` | A | requests[1].messages[2].cacheBoundary | requests[1].messages[2].cacheBoundary: true → (absent) |
 | `config.timing.retry` | `[]` | A | events[2].maxAttempts | events[2].maxAttempts: 1 → 3 |
 | `config.timing.retry` | `{}` | A | events[2].maxAttempts | events[2].maxAttempts: 1 → 3 |
 | `config.folding.context` | `"8"` | V | assembly-validators.js assertSemanticOptionValues | TypeError: context must be an object |

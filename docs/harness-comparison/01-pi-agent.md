@@ -247,3 +247,12 @@ pi 的「折叠」有两条机制：**compaction**（上下文超限或 `/compac
 - **产物路径抽查（仅此一条，别读成「行号也可信」）**：`src/core/agent-session.ts`、`src/core/tools/index.ts`、`src/utils/tool-result-images.ts`、`src/core/system-prompt.ts` 在 tag `v1.1.0` 源码里都还在；本机 1.0.0 npm 包里 `dist/core/agent-session.js`、`dist/core/tools/index.js`、`dist/utils/tool-result-images.js` 也还在。漂移主要在**行号**，但正文的 `dist/...:行号` 未经逐条重核，引用时按「0.84.2 坐标」对待。
 - **没有改的正文结论**（理由逐条）：§1 的 system prompt 拼装顺序 / `SYSTEM.md` 替换 / AGENTS.md 发现与合并、§2 的 2000 行 / 50KB 双上限、§3 的 compaction 全套、§5 的长期记忆与 session 隔离维度——#190 **没有复核**这些维度，所以既不改也不宣布「已核实仍成立」；§4「工具定义 token 预算未找到」是否定命题，需要独立复核，#190 未判定过期；§6「上下文增强全靠扩展」里 git / 时间 / TODO / 审批那部分仍按 0.84.2 口径（本注只判定 MCP 一项过期）。
 - **不新建英文版**：`docs/harness-comparison/` 历史上就没有中英对（目录内 `_cn.md` 计数为 0），`scripts/docs-sync-check.mjs` 只校验 `docs/host-consumer-contract.md` ↔ `_cn.md` 那一对；在这里造一份英文版只会得到一份无人校验的孤儿文档。
+
+### 7.5 erix 侧的缓存断点：自动打标，不是「透传」（#192 订正，2026-10-31）
+
+- **订正对象**：`docs/suggestions/05-pi-1x-refresh.md` 里「erix 只透传块级 `cache_control`，断点得宿主自己打」这句**不成立**（它当时依据的是 `src/messages/anthropic.js` 里「透传宿主给的 `cache_control`」那一小段，漏看了同一文件按标记生成断点的另一半）。真实形态：#40 起，`src/messages/anthropic.js` 就把 canonical 消息上的 `cacheBoundary` 标记转成 Anthropic 的 `cache_control`，而循环默认（`config.input.cacheStablePrefix: true`）就在 system 与**首条 user 消息**上打标；断点上限 4、从后往前保留。
+- **#192 追加的第三条**：**尾部滚动断点**——落在**持久历史**的末尾（下一轮请求里仍在同一位置的那条消息）。三种「每请求一块」的块被**排除**：run-state、#598 的交接指令（都在尾部选定之后才追加）、#568 的续接块（每轮被挪到尾部）。理由写在 `docs/architecture.md` 的「Prompt-cache breakpoints」小节：断点缓存的是它之前的整个前缀，标在「每轮新建或每轮移位」的块上等于按写入溢价付一段没人读得回的前缀。
+- **仍未做（裁决：等实测）**：最后一个工具定义上的断点；可配置的 1h 缓存 TTL（今天只有协议默认的 5 分钟 `ephemeral`，且**没有配置叶**）。
+- **与 pi 的对照口径**（别再把两侧说成同一件事）：pi 是 system + **最后一个 tool 定义** + 最后一条 user/system 消息的尾块；erix 是 system + **首条 user** + 持久历史尾部。差异有两处——「首条 user vs 最后一个 tool」，以及「消息尾块」的定义（erix 排除每请求块与每轮移位的续接块）。
+- **与折叠的关系**：TTL 折叠改写的是中段字节 ⇒ 发生折叠的那一轮，上一轮的尾部断点前缀失配，请求退回两个静态断点；只追加的稳态轮次照常命中。这是**有意取舍**（折叠在支持缓存的端点上仍净赚，见 `docs/research/2026-09-26-strategy-variance-and-cache-economics.md`），不是「漏做」。
+- **测量边界**：断点落点离线可核（就在请求载荷里）；**命中率必须真上游**（`usage.cacheRead` / `cacheWrite` 来自上游的 `cache_read_input_tokens` / `cache_creation_input_tokens`）。本仓没有 Anthropic 凭据，所以 #192 的本地证据只到「载荷形状 + 轮间只追加前缀性质 + 记账链打通」，不冒充命中率。

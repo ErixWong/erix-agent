@@ -154,6 +154,8 @@ test("continues after transition text when tools were used", async () => {
     role: "user",
     content: [{ type: "text", text: "（请继续完成任务）" }],
     meta: { source: "judge-control" },
+    // issue #192：续跑控制消息是本轮请求的最后一条 ⇒ 尾部滚动断点落在它上面。
+    cacheBoundary: true,
   });
 });
 
@@ -220,13 +222,17 @@ test("continues max_tokens responses in one assistant message", async () => {
     role: "assistant",
     content: [{ type: "text", text: "part-1part-2done" }],
   });
+  // issue #192：续写请求的最后一条同样是本轮请求尾部 ⇒ 滚动断点落在它上面（`result.messages`
+  // 里那份不带标记，标记只在请求视图的副本上）。
   assert.deepEqual(provider.requests[1].messages.at(-1), {
     role: "assistant",
     content: [{ type: "text", text: "part-1" }],
+    cacheBoundary: true,
   });
   assert.deepEqual(provider.requests[2].messages.at(-1), {
     role: "assistant",
     content: [{ type: "text", text: "part-1part-2" }],
+    cacheBoundary: true,
   });
   assert.equal(result.rounds, 1);
 });

@@ -618,6 +618,8 @@ export function createTerminationManager(ctx) {
     ctx.messages.push(instruction);
     ctx.messageRounds.set(instruction, ctx.rounds);
     validateMessages(ctx.messages, { allowPendingToolUse: true });
+    // issue #192：这里**有意不加**尾部滚动断点——强制收尾是一次性请求，加了只会把整段历史按
+    // 写入溢价写一遍，而后面没有任何请求会来读；两个静态断点已经把写入面收在首条 user 边界上。
     const stablePrefix = ctx.cacheStablePrefix !== false
       ? markStablePrefix(ctx.mainSystem, ctx.messages)
       : { system: ctx.mainSystem, messages: ctx.messages };
