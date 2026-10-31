@@ -1010,7 +1010,7 @@ export async function runToolLoop(options) {
   //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
   // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值）——原 :1264 那行
   //   `@type {Record<string, any>|undefined}` 注解随字段逐字搬走（它存不存在的理由见下面格子上的注解）。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], persistedTranscriptLength: number, resumeToolResultRowKey: string|undefined, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, aggregateBudgetHit: boolean, lastToolCall: { summary: string, streak?: number }|undefined, budgetBelowWorkingSetStreak: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number> }} */
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], persistedTranscriptLength: number, resumeToolResultRowKey: string|undefined, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, aggregateBudgetHit: boolean, lastToolCall: { summary: string, streak?: number }|undefined, budgetBelowWorkingSetStreak: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number>, usage: { input_tokens: number, output_tokens: number, cacheRead?: number, cacheWrite?: number }, latestApiInputTokens: number|undefined, latestApiEstimatedTokens: number|undefined, finalText: string, declaredFindings: any, roundStopReason: string|undefined, roundEventDeltas: any[] }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -1191,6 +1191,26 @@ export async function runToolLoop(options) {
     //   `ReferenceError`（静默断链，不是红测试）。
     judgeInterceptCount: 0,
     interceptJudgeDecision: undefined,
+    // 【G provider 面（issue #246 第 1 步）】`usage` / `latestApiInputTokens` / `latestApiEstimatedTokens`
+    //   / `finalText` / `declaredFindings` / `roundStopReason` / `roundEventDeltas` 七格原本是
+    //   `runToolLoop` 里的闭包 `const`/`let`，由 `providerContext` 上七对手写 get/set（`usage` 是
+    //   一枚只读 getter）转发给 `src/loop/provider-runner.js`。本刀把**存储**搬进本状态对象，
+    //   转发面改由 `makeStateView()` 按显式字段清单生成（接线点见 `providerContext` 字面量之后）。
+    //   初值逐字原搬：`usage` 是 `{ input_tokens: 0, output_tokens: 0 }`，**对象身份**是契约——
+    //   provider-runner 用 `ctx.usage.input_tokens = …` 原地累加它，每次新建对象就是行为变化；
+    //   `finalText` 是 `""`；其余五格原 `let X;` / `let X = []` 的初值就是 `undefined` / `[]`，
+    //   显式写出来（不拿 `null` 假冒「未发生」）。
+    //   TDZ：七个符号的原声明点就是它们在文件里的**首次出现**（逐符号 `grep` 数过：之前的命中
+    //   只有 JSDoc 与 `fail()` 的默认桩字面量，都不是对该符号的读取），故提先初始化不改变任何
+    //   可观察时点读到的值；`fail()` 早退路径读的是 `readLoopPayload` 的可变槽位（默认桩仍是
+    //   `{ usage: 0, rounds: 0, finalText: "" }`），与这七格无关。
+    usage: { input_tokens: 0, output_tokens: 0 },
+    latestApiInputTokens: undefined,
+    latestApiEstimatedTokens: undefined,
+    finalText: "",
+    declaredFindings: undefined,
+    roundStopReason: undefined,
+    roundEventDeltas: [],
   };
   const errorLedger = createErrorLedger();
 
@@ -2295,7 +2315,8 @@ export async function runToolLoop(options) {
       ? resolvedStallDetection.window
       : 4;
   const stallMode = resolvedStallDetection?.mode === "consecutive" ? "consecutive" : "appear";
-  const usage = { input_tokens: 0, output_tokens: 0 };
+  // `usage`（累计用量）已迁入上方 `runLoopState.usage`（issue #246 第 1 步）：**对象身份不变**
+  //（那个格子里的对象就是原来这里新建的那个，初值逐字相同），读写点改走那一格。
   // ── issue #438：用量分账（**纯加法**：`usage` 的口径与形状一字不动）────────────────────────
   // 病根：主循环里 `response` 在续写循环（`stopReason:"max_tokens"`）里被**逐发覆盖**，而轮记录
   // `record.response.usage` 读的就是这同一个变量 ⇒ 一轮真花 700+700+7 = 1407 个 `output_tokens`，
@@ -2310,8 +2331,8 @@ export async function runToolLoop(options) {
   let roundUsage = { input_tokens: 0, output_tokens: 0 };
   let roundEngineUsage = { input_tokens: 0, output_tokens: 0 };
   let roundEngineCallCount = 0;
-  let latestApiInputTokens;
-  let latestApiEstimatedTokens;
+  // `latestApiInputTokens` / `latestApiEstimatedTokens` 已迁入上方 `runLoopState`（issue #246 第 1 步，
+  // 初值都是 `undefined`）；它们唯一的跨模块读侧是 `providerContext`（本刀改由视图转发）。
   const completionEnabled = completion !== false;
   const completionSignals = Array.isArray(completion?.signals) ? completion.signals : [];
   const maxNoToolRounds = Number.isInteger(completion?.maxNoToolRounds)
@@ -2320,11 +2341,14 @@ export async function runToolLoop(options) {
   const continuationLimit = Number.isInteger(maxTokenContinuations)
     ? Math.max(0, maxTokenContinuations)
     : 3;
-  let finalText = "";
+  // `finalText` / `declaredFindings` 已迁入上方 `runLoopState`（issue #246 第 1 步，初值 `""` / `undefined`）。
   // issue #180：累计量就绪，接管 fail() 的载荷读取器（闭包在调用时读实值，含逐轮累加的
   // cacheRead/cacheWrite；usage 与 makeResult 交出的是同一个对象）。
-  runLoopState.readLoopPayload = () => ({ usage, rounds: runLoopState.rounds, finalText });
-  let declaredFindings;
+  runLoopState.readLoopPayload = () => ({
+    usage: runLoopState.usage,
+    rounds: runLoopState.rounds,
+    finalText: runLoopState.finalText,
+  });
   // issue #386 切片 1：模型最后一次 wrap-up 对象（**已归一化**的那一份，不重新解析）。
   // 与 `declaredFindings` 永远在同一处赋值（`wrapupJson` / `normalizedWrapup` / 强制收尾三处），
   // 所以 `finalGuard` payload 的 `selfReport` 与 `findings` 是同源的。
@@ -2367,8 +2391,8 @@ export async function runToolLoop(options) {
   // `hadToolUse` 已迁入 `runLoopState`（刀5-B）：初值仍在本行原来声明处现算（求值点/副作用不变），
   // 之前没有任何语句读它，所以只是把存储位置换成状态对象的一格。
   runLoopState.hadToolUse = hasToolUseInMessages(messages);
-  let roundStopReason;
-  let roundEventDeltas = [];
+  // `roundStopReason` / `roundEventDeltas` 已迁入上方 `runLoopState`（issue #246 第 1 步，
+  // 初值 `undefined` / `[]`）；两者的唯一跳文件读侧是 `providerContext`（本刀改由视图转发）。
 
   const emitEvent = (event) => {
     // issue #173 PR-B：onEvent 抛错从「杀 run」改为「记一笔、继续跑」，与流式观察者同构。
@@ -2449,7 +2473,7 @@ export async function runToolLoop(options) {
    */
   const addUsage = (response, estimatedTokens, { trackLatest = true, account = "model" } = {}) => {
     const source = response?.usage;
-    accumulateUsage(usage, source);
+    accumulateUsage(runLoopState.usage, source);
     if (account === "engine") {
       accumulateUsage(engineUsage, source);
       accumulateUsage(roundEngineUsage, source);
@@ -2460,8 +2484,8 @@ export async function runToolLoop(options) {
     }
     const inputTokens = source?.input_tokens;
     if (Number.isFinite(inputTokens) && trackLatest) {
-      latestApiInputTokens = inputTokens > 0 ? inputTokens : undefined;
-      latestApiEstimatedTokens = Number.isFinite(estimatedTokens)
+      runLoopState.latestApiInputTokens = inputTokens > 0 ? inputTokens : undefined;
+      runLoopState.latestApiEstimatedTokens = Number.isFinite(estimatedTokens)
         ? estimatedTokens
         : undefined;
     }
@@ -2679,46 +2703,33 @@ export async function runToolLoop(options) {
     set messages(value) {
       messages = value;
     },
-    get roundEventDeltas() {
-      return roundEventDeltas;
-    },
-    set roundEventDeltas(value) {
-      roundEventDeltas = value;
-    },
-    get finalText() {
-      return finalText;
-    },
-    set finalText(value) {
-      finalText = value;
-    },
-    get declaredFindings() {
-      return declaredFindings;
-    },
-    set declaredFindings(value) {
-      declaredFindings = value;
-    },
-    get usage() {
-      return usage;
-    },
-    get latestApiInputTokens() {
-      return latestApiInputTokens;
-    },
-    set latestApiInputTokens(value) {
-      latestApiInputTokens = value;
-    },
-    get latestApiEstimatedTokens() {
-      return latestApiEstimatedTokens;
-    },
-    set latestApiEstimatedTokens(value) {
-      latestApiEstimatedTokens = value;
-    },
-    get roundStopReason() {
-      return roundStopReason;
-    },
-    set roundStopReason(value) {
-      roundStopReason = value;
-    },
   };
+  // issue #246 第 1 步（正文 §4 step 1 点名的那一条）：`providerContext` 的**状态转发面**改由
+  // `makeStateView()` 按这份**显式字段清单**生成——清单 = 本 ctx 能碰的 provider 面状态白名单。
+  // 原来这里是六对手写 get/set（`roundEventDeltas` / `finalText` / `declaredFindings` /
+  // `latestApiInputTokens` / `latestApiEstimatedTokens` / `roundStopReason`）加一枚只读 getter
+  // （`usage`）；语义逐字相同：活引用、可写（`usage` 仍只读：ESM 严格模式下对它整体赋值抛
+  // `TypeError`，而它的**内容**必须可改——provider-runner 用 `ctx.usage.input_tokens = …` 原地
+  // 累加与回滚）。
+  // 三枚**不是**状态格子的访问器留在字面量里，不在清单里：`messages`（正文 §4 第 5 步整组迁）、
+  // `toolResultFold`（§3 的计算型 getter，实现必须留在本文件）与 `requestTailInstruction`
+  // （`continuityWriteMode` 的派生值，没有存储）。
+  //
+  // ⚠ 挂回 ctx 一律走 `getOwnPropertyDescriptors`（搬**描述符**：get/set 闭包原样搬过去 ⇒ 仍是活引用）；
+  // `Object.assign` / `{ ...view }` 会**调用** getter 把值快照下来。本 ctx 上两种姿势**无可观察差别**
+  // （探针实测：值快照挂法下五场景 JSON 逐字节不变——provider-runner 对这七格只做「写回原值」），
+  // 但姿势仍与第一刀保持一致：后面的消费者（`terminationContext` / `restoreResume`）里读-改-写承重。
+  Object.defineProperties(providerContext, Object.getOwnPropertyDescriptors(
+    makeStateView(runLoopState, [
+      "roundEventDeltas",
+      "finalText",
+      "declaredFindings",
+      { key: "usage", getOnly: true },
+      "latestApiInputTokens",
+      "latestApiEstimatedTokens",
+      "roundStopReason",
+    ]),
+  ));
   const callProvider = (options) => runProvider(providerContext, options);
 
   const executedToolIds = new Set(resumeExecutedToolIds);
@@ -3220,7 +3231,7 @@ export async function runToolLoop(options) {
    * @returns {{found: boolean, sections: {contract: string, unfinished: string, evidence: string}}}
    */
   const parseHandoffFromRun = () => {
-    const candidates = [finalText, textFromBlocks(blocksFor(lastAssistantContent))];
+    const candidates = [runLoopState.finalText, textFromBlocks(blocksFor(lastAssistantContent))];
     let parsed = parseHandoff("");
     for (const candidate of candidates) {
       const attempt = parseHandoff(candidate);
@@ -3241,7 +3252,7 @@ export async function runToolLoop(options) {
   const requestHandoffFallback = async () => {
     if (handoffFallbackUsed) return undefined;
     handoffFallbackUsed = true;
-    const tail = String(finalText ?? "").slice(-HANDOFF_FALLBACK_TAIL_CHARS);
+    const tail = String(runLoopState.finalText ?? "").slice(-HANDOFF_FALLBACK_TAIL_CHARS);
     const previous = storedHandoff === undefined
       ? ""
       : handoffSectionsText(storedHandoff.sections).slice(0, HANDOFF_FALLBACK_TAIL_CHARS);
@@ -3439,7 +3450,7 @@ export async function runToolLoop(options) {
     wrapupEnabled,
     throwIfAborted,
     messageRounds,
-    usage,
+    usage: runLoopState.usage,
     // issue #438：run 级分账两桶（`usage` 仍是两者之和，逐字不动）。
     modelUsage,
     engineUsage,
@@ -3455,17 +3466,19 @@ export async function runToolLoop(options) {
     },
     // issue #394：结清尾部悬空 `tool_use` 的入账回调（强制收尾那一路；见上面那个 WeakSet）。
     journalPendingTailToolResult,
+    // 下面三对手写访问器读的是 `runLoopState` 的格子（issue #246 第 1 步把存储搬过去了）；
+    // 本 ctx 自己的迁移是正文 §4 的 step 3，届时这三对也换成同一套视图（不要提前删）。
     get finalText() {
-      return finalText;
+      return runLoopState.finalText;
     },
     set finalText(value) {
-      finalText = value;
+      runLoopState.finalText = value;
     },
     get declaredFindings() {
-      return declaredFindings;
+      return runLoopState.declaredFindings;
     },
     set declaredFindings(value) {
-      declaredFindings = value;
+      runLoopState.declaredFindings = value;
     },
     // issue #386 切片 1：`finalGuard` payload 的加法键读取口（全部读引擎**既有**状态，零新采集）。
     cwd,
@@ -3497,10 +3510,10 @@ export async function runToolLoop(options) {
       lastAssistantContent = value;
     },
     get roundStopReason() {
-      return roundStopReason;
+      return runLoopState.roundStopReason;
     },
     set roundStopReason(value) {
-      roundStopReason = value;
+      runLoopState.roundStopReason = value;
     },
     get forcedFinal() {
       return forcedFinal;
@@ -3810,7 +3823,7 @@ export async function runToolLoop(options) {
     // 压缩判断：主用本地估算（真实上下文大小），API usage 辅助取单轮完整输入
     // Some APIs report full historical input; cumulative usage is billable input
     // and can otherwise trigger compaction too early.
-    const apiInputTokens = latestApiInputTokens;
+    const apiInputTokens = runLoopState.latestApiInputTokens;
     const estimatedTokens = estimateMessageTokens(messages);
     // issue #569：折叠可以**提前**到预算的一个比例（`context.foldAtRatio`，`0 < r <= 1`，默认 `1.0`）。
     // `r = 1.0` 时这条判据与今天**逐字等价**：`budgetTokens * 1.0 === budgetTokens`（IEEE-754 里乘 1
@@ -4024,7 +4037,7 @@ export async function runToolLoop(options) {
       // （round 3 true / round 4 false / round 5 true …），连续计数永远到不了 K。量在策略那一折之后
       // 才是稳定的「这一折没解决问题」信号。
       const strategyTokensAfter = tokensAfter;
-      const apiEstimateBefore = latestApiEstimatedTokens ?? tokensBefore;
+      const apiEstimateBefore = runLoopState.latestApiEstimatedTokens ?? tokensBefore;
       let apiTokensAfter = projectedApiInputTokens(
         apiInputTokens,
         apiEstimateBefore,
@@ -4174,8 +4187,8 @@ export async function runToolLoop(options) {
         userTurnGuardChannel = "persisted";
       }
       messages = compactedMessages;
-      latestApiInputTokens = undefined;
-      latestApiEstimatedTokens = undefined;
+      runLoopState.latestApiInputTokens = undefined;
+      runLoopState.latestApiEstimatedTokens = undefined;
       runLoopState.hadToolUse = runLoopState.hadToolUse || hasToolUseInMessages(messages);
       // issue #460：落进轮记录的归档 ≠ 内存里的全量原文。内容源仍是策略给的 `foldedPayload`
       //（「被折轮原文」的权威口径），但落盘前过两道：
@@ -4524,7 +4537,7 @@ export async function runToolLoop(options) {
       // ① 上下文预算：`budgetTokens` 是压缩与单轮聚合输出预算的共同基准（`src/loop/budget.js`）。
       //    最近一次**真实 API 输入 token** 已经越过它 ⇒ 上下文已经装不下，再补一轮只会在超预算的
       //    上下文里再要一次请求。判据本身是既有导出 `isApiInputOverBudget`，这里不另写一份。
-      if (isApiInputOverBudget(latestApiInputTokens, budgetTokens)) return false;
+      if (isApiInputOverBudget(runLoopState.latestApiInputTokens, budgetTokens)) return false;
       // ② 单轮聚合输出预算（`src/loop/aggregate-budget.js`）：本 run 已经有工具输出被聚合层
       //    归档/stub 化（`runLoopState.aggregateBudgetHit`，写者是 run-snapshot-executor）⇒
       //    输出预算已经撞线，再补一轮只会继续 stub 化。
@@ -4924,8 +4937,8 @@ export async function runToolLoop(options) {
     const round = runLoopState.rounds + 1;
     runLoopState.toolExecutedThisRound = false;
     runLoopState.interceptJudgeDecision = undefined;
-    roundEventDeltas = [];
-    roundStopReason = undefined;
+    runLoopState.roundEventDeltas = [];
+    runLoopState.roundStopReason = undefined;
     let stallSuspicion = false;
     let stallSignature = null;
     let lastSignatureThisRound = null;
@@ -4990,7 +5003,7 @@ export async function runToolLoop(options) {
     if (!providerResult.usageEmitted && response?.usage !== undefined) {
       emitEvent({ type: "usage", round, usage: response.usage });
     }
-    roundStopReason = response?.stopReason;
+    runLoopState.roundStopReason = response?.stopReason;
 
     let tokenContinuationCount = 0;
     while (response?.stopReason === "max_tokens"
@@ -5000,7 +5013,7 @@ export async function runToolLoop(options) {
       if (budgetTokens !== undefined
         && (
           estimateMessageTokens(messages) > budgetTokens
-          || isApiInputOverBudget(latestApiInputTokens, budgetTokens)
+          || isApiInputOverBudget(runLoopState.latestApiInputTokens, budgetTokens)
         )) {
         // issue #588：**尾部是未完成的续写回合时，这一发不压**。此前这一格以 `invalid_messages`
         // 打死整个 run，而且抛点在**本地**（那一发续写请求根本没发出去）：`compactBeforeRound` 里
@@ -5062,7 +5075,7 @@ export async function runToolLoop(options) {
       if (!providerResult.usageEmitted && response?.usage !== undefined) {
         emitEvent({ type: "usage", round, usage: response.usage });
       }
-      roundStopReason = response?.stopReason;
+      runLoopState.roundStopReason = response?.stopReason;
     }
     const continuationExhausted = response?.stopReason === "max_tokens"
       && tokenContinuationCount >= continuationLimit;
@@ -5071,12 +5084,12 @@ export async function runToolLoop(options) {
     // OpenAI 规范：finish_reason=stop 是模型自然停止的唯一标识。
     // 但社区实测存在 stop 但 content 带 tool_calls 的边界（非标准）——双保险：stop && 无 tool_use
     // 才算真正说完（tool_calls 轮即使报 stop 也是要调工具，不该 judge/wrapup）
-    const isEndTurn = roundStopReason === "end_turn" && !hasToolUse(content);
+    const isEndTurn = runLoopState.roundStopReason === "end_turn" && !hasToolUse(content);
     const wrapupJson = wrapupEnabled && isEndTurn
       ? tryParseWrapupJson(responseText)
       : null;
     const parsedSummary = parseL1Summary(responseText);
-    declaredFindings = wrapupJson?.findings;
+    runLoopState.declaredFindings = wrapupJson?.findings;
     // issue #386：自报对象与 `declaredFindings` 同源同刻（`null` 就是不写该键）。
     selfReport = wrapupJson ?? undefined;
     let roundSummary = wrapupJson === null
@@ -5102,9 +5115,9 @@ export async function runToolLoop(options) {
       assistant?.role === "assistant" ? assistant : { role: "assistant", content },
       round,
     );
-    finalText = textFromBlocks(content);
+    runLoopState.finalText = textFromBlocks(content);
     if (wrapupJson !== null) {
-      finalText = wrapupJson.output || wrapupJson.summary;
+      runLoopState.finalText = wrapupJson.output || wrapupJson.summary;
     }
 
     if (hasToolUse(content)) {
@@ -5232,7 +5245,7 @@ export async function runToolLoop(options) {
     let completionSignalDetected = wrapupJson?.done === true
       || (wrapupJson === null && completionSignals.some(
       (completionSignal) => typeof completionSignal === "string"
-        && finalText.includes(completionSignal),
+        && runLoopState.finalText.includes(completionSignal),
       ));
     // LLM 归一化兑底：end_turn + 无工具 + 没解析出 JSON（含空文本/自然语言/杂讯）→
     // 调 judge 归一化为 {done,summary,output}，统一交给下游判定。
@@ -5274,7 +5287,7 @@ export async function runToolLoop(options) {
             shouldContinue = false;
             completionSignalDetected = true;
             if (candidate.output !== "" || candidate.summary !== "") {
-              finalText = candidate.output || candidate.summary || finalText;
+              runLoopState.finalText = candidate.output || candidate.summary || runLoopState.finalText;
             }
           } else {
             shouldContinue = true;
@@ -5290,7 +5303,7 @@ export async function runToolLoop(options) {
     // LLM 归一化路径也要把 findings 透给 guard——否则模型没用 JSON 信封时，
     // 归一化出来的声明会静默消失，guard 只能看到“没声明”
     if (normalizedWrapup?.findings !== undefined) {
-      declaredFindings = normalizedWrapup.findings;
+      runLoopState.declaredFindings = normalizedWrapup.findings;
     }
     // issue #386：归一化产出的那一份才是「模型自报」的可读版本（LLM 归一化只许搬运，不改写），
     // 所以自报对象换成它；`findings` 仍以 `declaredFindings` 为准（上面那条 `if` 的语义没动）。
@@ -5300,7 +5313,7 @@ export async function runToolLoop(options) {
     const memoryLossDetected = budgetRounds > 5
       && wrapupJson === null
       && !hasToolUse(content)
-      && isLikelyWelcomeResponse(finalText);
+      && isLikelyWelcomeResponse(runLoopState.finalText);
     const noToolRound = !hasToolUse(content)
       && completionEnabled
       && !completionSignalDetected
@@ -5320,7 +5333,7 @@ export async function runToolLoop(options) {
     // 「评审被告知这轮没有交付物、停门却当它有」这种自相矛盾。
     const roundFacts = {
       roundDeliverable: roundDeliverableFacts(currentRoundMessages, 0),
-      roundStopReason: roundStopReason ?? "unknown",
+      roundStopReason: runLoopState.roundStopReason ?? "unknown",
     };
     const currentL0 = extractL0Facts(currentRoundMessages, {
       seenErrors: governorState.errorSeen,
@@ -5661,9 +5674,9 @@ export async function runToolLoop(options) {
     emitEvent({
       type: "round_end",
       round,
-      finalText,
-      stopReason: roundStopReason,
-      usage: { ...usage },
+      finalText: runLoopState.finalText,
+      stopReason: runLoopState.roundStopReason,
+      usage: { ...runLoopState.usage },
     });
     if (action.kind === "nudge") {
       const continuationMessage = {

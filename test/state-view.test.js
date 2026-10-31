@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { makeStateView } from "../src/loop/state-view.js";
@@ -101,4 +102,30 @@ test("state-view 接线姿势：视图描述符搬到既有 ctx 上仍是活引�
 
   assert.equal(ctx.other, "x", "既有成员被视图搬家挤掉了");
   assert.deepEqual(Object.keys(ctx), ["other", "count"]);
+});
+
+// 第 1 步（`providerContext`）新增：**接线侧的字段清单本身就是白名单**，所以它自己要有一条判据。
+// 为什么必须是静态读源码：`providerContext` 是 `runToolLoop` 的闭包局部变量，行为测试够不到它。
+// 而本刀那七格里只有 `roundEventDeltas`（`[...ctx.roundEventDeltas]`）与 `usage`
+//（`ctx.usage.input_tokens`）的缺失会当场崩；另外五格（`finalText` / `declaredFindings` /
+// `roundStopReason` / `latestApi*`）在 `provider-runner` 里只被「写回原值」，漏一项**静默无声**
+// ——探针实测：把这五格任一条从清单里拿掉，run 的 JSON 逐字节不变。所以「漏一项」的确定性靠这一格。
+test("state-view 接线侧的字段清单：providerContext 的七格是显式白名单（漏一项 / 多一项都红）", () => {
+  const source = readFileSync(new URL("../src/loop/orchestrator.js", import.meta.url), "utf8");
+  const block = /Object\.defineProperties\(providerContext, Object\.getOwnPropertyDescriptors\(\n {4}makeStateView\(runLoopState, \[\n([\s\S]*?)\n {4}\]\),\n {2}\)\);/u
+    .exec(source);
+  assert.ok(
+    block,
+    "orchestrator.js 里找不到 providerContext 的 makeStateView 接线点（接线点改名 / 搬家时这条判据要同步）",
+  );
+  const keys = [...block[1].matchAll(/"([A-Za-z]+)"/gu)].map((match) => match[1]);
+  assert.deepEqual(keys, [
+    "roundEventDeltas",
+    "finalText",
+    "declaredFindings",
+    "usage",
+    "latestApiInputTokens",
+    "latestApiEstimatedTokens",
+    "roundStopReason",
+  ], "providerContext 的白名单变了：要么是漏了一项（该字段在 ctx 上变 undefined），要么是新加的格子没写进判据");
 });
