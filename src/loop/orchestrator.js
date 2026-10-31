@@ -2338,7 +2338,7 @@ export async function runToolLoop(options) {
   // 不往字面量里加任何键（加了就等于给未补跑的 run 多一个 `guard_extensions: 0`）。
   // issue #392：`deliverables_machine_only` 同理——只在 guard `skip` + 判据全通过（机器证据单独构成
   // 验收）那一格由 `callFinalGuard` 现写，其余任何一格都不出现这个键。
-  /** @type {{ verified: number, skipped: number, revised: number, unverified: number, guard_error: number, deliverables_checked?: number, deliverables_failed?: number, deliverables_machine_only?: number, guard_extensions?: number }} */
+  /** @type {{ verified: number, skipped: number, revised: number, unverified: number, guard_error: number, deliverables_checked?: number, deliverables_failed?: number, deliverables_machine_only?: number, guard_extensions?: number, deliverable_gap_rounds?: number }} */
   const guardMetrics = {
     verified: 0,
     skipped: 0,
@@ -3516,6 +3516,12 @@ export async function runToolLoop(options) {
     );
   };
 
+  /**
+   * @param {number} round
+   * @param {object} currentL0
+   * @param {{timeoutMs?: number, conversationBudgetTokens?: number,
+   *   roundFacts?: {roundDeliverable?: object, roundStopReason?: string}}} [options]
+   */
   const callRoundJudge = async (round, currentL0, {
     timeoutMs,
     conversationBudgetTokens,
@@ -4565,6 +4571,88 @@ export async function runToolLoop(options) {
           port: "transcript",
           operation: "saveRunState",
           phase: "guard_extension",
+          fatal: false,
+        });
+      }
+      return true;
+    };
+
+    /** issue #435：`judge_done` 上的**交付物补齐轮**（唯一实现，与上面的 guard 补跑桥共用落地动作）。
+     *
+     * 病灶：`judge_done` 是**最省钱**的停机路径，而机器判据在那一格只做到「不许盖 `verified` 章」
+     * （`termination.js` 的 accept 分支把 `verification` 压成 `unverified / deliverables_failed`），
+     * 却**不影响控制流**——`deliverablesAllPassed` 从前在 orchestrator 里一个读者都没有。于是宿主
+     * 声明的「什么算交付完成」在「评审说做完了」这条路上只能记账，不能要东西。
+     *
+     * 为什么这是**行为变更**（对声明了 `deliverables` 的宿主是 breaking）：从前那一格必然终局，
+     * 现在可能多跑一轮。闸门由三个条件共同把住，缺一个就逐字回到今天：
+     *   1. 停机原因是 `judge_done`（预算类停机有自己的桥 `extendAfterGuard`，两单不互相顶）；
+     *   2. guard 本轮裁决是 `accept`（`skip` / `error` 那两格的语义是「没人验收」，不该向模型要东西）；
+     *   3. 判据**有失败**（`deliverablesAllPassed === false`）——未声明判据时这一位恒为 `true`。
+     * 再加三道既有的成本闸，一个都不新造：一次性配额（与补跑桥**共用** `guardExtensionUsed`，
+     * 所以一个 run 最多领一次「额外一轮」）、`extensionAllowed`（governor 的扩轮判据与计数器）、
+     * `guardExtensionBudgetAllows`（上下文/聚合输出两份预算事实）。
+     *
+     * @param {string} reason 停机原因
+     * @param {{action?:string, deliverablesAllPassed?:boolean, deliverablesFailed?:number,
+     *   deliverablesFailures?:{name:string, detail?:any}[]}} guardDecision `callFinalGuard` 的返回
+     * @returns {Promise<boolean>} true = 已注入补齐指令并回到主循环
+     */
+    const deliverableGapAfterJudgeDone = async (reason, guardDecision) => {
+      if (reason !== "judge_done") return false;
+      if (guardDecision?.action !== "accept") return false;
+      if (guardDecision.deliverablesAllPassed !== false) return false;
+      if (governorState.guardExtensionUsed === true) return false;
+      if (!pendingTailToolUsesAreAnswerable(messages)) return false;
+      if (!extensionAllowed({
+        extensionCount: governorState.extensionCount,
+        maxExtensions: reflectionMaxExtensions,
+        effectiveMaxRounds: governorState.effectiveMaxRounds,
+        maxRoundsCap: reflectionMaxRoundsCap,
+      })) return false;
+      if (!guardExtensionBudgetAllows()) return false;
+      const failures = Array.isArray(guardDecision.deliverablesFailures)
+        ? guardDecision.deliverablesFailures
+        : [];
+      // 控制消息只说**机器判据说的话**（判据名 + 它自己给的 detail）：引擎不解释判据语义，
+      // 也不替模型猜该补什么。没有明细时退化成一句可读的事实，而不是静默什么都不说。
+      const listed = failures
+        .map((failure) => {
+          const name = typeof failure?.name === "string" && failure.name !== "" ? failure.name : "<未命名判据>";
+          return typeof failure?.detail === "string" && failure.detail !== ""
+            ? `- ${name}：${failure.detail}`
+            : `- ${name}：未通过`;
+        })
+        .join("\n");
+      const text = `【交付物补齐】评审判「已完成」，但宿主声明的交付物判据没有通过`
+        + `（失败 ${Number.isSafeInteger(guardDecision.deliverablesFailed) ? guardDecision.deliverablesFailed : failures.length} 条）。`
+        + "请先真正补齐下面这些交付物，再收尾；不要只在正文里声称已经做完。"
+        + (listed === "" ? "" : `\n${listed}`);
+      const fromMaxRounds = governorState.effectiveMaxRounds;
+      // 配额先记账再落地（与补跑桥同一条纪律：落地里有 await，抛错也不该抹掉「已领过」）。
+      governorState.guardExtensionUsed = true;
+      await applyGovernorExtension(text, runLoopState.rounds, "deliverables-gap");
+      // 计数键**只在真的发生过时才出现**（与 `deliverables_machine_only` 同一条加法纪律：
+      // 没走这条路的 run，`verification.metrics` 的键集合与今天逐字一致）。
+      guardMetrics.deliverable_gap_rounds = (guardMetrics.deliverable_gap_rounds ?? 0) + 1;
+      emitEvent({
+        type: "final_guard_extend",
+        round: runLoopState.rounds,
+        from_max_rounds: fromMaxRounds,
+        to_max_rounds: governorState.effectiveMaxRounds,
+        // 复用同一个事件名（它就是「引擎又给了一轮」这件事），但把触发面标清楚：
+        // 不是 guard 判 revise，而是机器判据说交付物没交付。
+        guard_extension: false,
+        reason: "deliverables_failed",
+        deliverables_failed: failures.length,
+      });
+      try {
+        await refreshRunState();
+      } catch (persistenceError) {
+        await reportPersistenceError(persistenceError, {
+          port: "transcript",
+          operation: "saveRunState",
+          phase: "deliverable_gap",
           fatal: false,
         });
       }
@@ -5656,6 +5744,12 @@ export async function runToolLoop(options) {
           await appendEngineMessagesToTranscript(continuationMessage, round, "guard-revise");
           continue;
         }
+        // ── issue #435：机器判据说「交付物没交付」时，**最省钱的停机路径不许一停了之** ────────
+        // 位置说明：它在 `revise` 那一段**之后**（`revise` 是 guard 自己的意见，走它自己的重试预算），
+        // 在 `error` / `skip` / `non_continuable` 三条 return 之后 ⇒ 走到这里的 `judge_done` 只可能是
+        // `accept`。未声明 `deliverables` 时 `deliverablesAllPassed` 恒为 `true` ⇒ 本闸门不触发，
+        // 行为与今天逐字一致。
+        if (await deliverableGapAfterJudgeDone(reason, guardDecision)) continue;
       }
       // finalGuard 同样是「终局前的增值调用」：中止若落在它自己那一次调用里，也必须以 aborted 收口，
       // 不得把用户的中止改写成 final_guard 给出的终态（issue #282 期望 3）。

@@ -538,8 +538,8 @@ onEvent
 ```text
 erix --version, -v
 erix --help, -h
-erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--no-notes] [--no-todo] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>]
-erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>]
+erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes] [--no-todo] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>]
+erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>]
 erix skills [--skills-dir <path>]
 erix mcp [--config <path>]
 ```
@@ -563,6 +563,7 @@ erix mcp [--config <path>]
   - **带值** —— 「**这次任务必须交付的这些文件**在盘上」，每条一个判据（相对路径按 `--cwd` 解析）。模型一次工具都没调也照样判不过——「必须交付 `report.md`」只能用这一种。
   两种写法都收：`--require-deliverable report.md` 与 `--require-deliverable=report.md`。值是可选的，所以裸用时后面别紧跟非旗标 token（prompt 写最前，或裸旗标放末尾）。判据合计最多 20 条（`DELIVERABLES_LIMIT`），路径不许重复。
   它**必须与 `--final-guard` 同用**（或 `ERIX_FINAL_GUARD=1`）：判据是拦 guard `accept` 的闸门，没有 guard 就没有闸门——单独给是 usage error（exit 1），不是静默空转。判据没过 ⇒ 终局 `unverified:deliverables_failed`（exit 2）。
+- `--require-deliverable-content`（默认**关闭**，issue #435）追加一条**内容**判据：本 run 用写工具声明过的每个路径收尾时都必须非空、且**整份不等于**占位符（`TBD` / `TODO` / `FIXME` / `<placeholder>`，大小写不敏感，忽略 markdown 装饰与句末标点）。它存在的原因是「文件在盘上」一直被当成「交付物已交付」——在判完成却 0 分的实测 run 里，8 个有 7 个是**文件都在、内容错**，另有两个第 1 轮写了 `TBD` 骨架再没回去覆盖。它**不**声称内容**对**（机器判不了语义）；**含但不等于**占位符必须通过（`TBD: 明天补数据` 是正常正文）。读的是 `fileWrites`，所以与裸旗标同一条「没撒谎」语义——任务要求某个具体文件时请与 `--require-deliverable report.md` 一起用。同样**必须与 `--final-guard` 同用**，并计入 20 条判据上限。
 - `--cwd <dir>` 设置本次 run 报给 guard 与模型的工作目录（默认：进程工作目录；必须是已存在的目录）。它正是 `finalGuard` / `deliverables` 载荷里的 `cwd`，所以用 `path.join(cwd, …)` 的判据开箱即用。
 - `--no-notes`（或 `ERIX_NO_NOTES=1`）不装配 notes 工厂（`note_*` 工具不再可用），保留其他已加载的 skill。
 - `--no-todo`（或 `ERIX_NO_TODO=1`）彻底关闭 todo：内置 `todo_*` 四工具不注册、系统提示不含 todo、用户级 todo skill 一并排除。

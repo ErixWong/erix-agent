@@ -39,6 +39,7 @@ import { resolveProviderPhaseTimeouts } from "./provider-timeouts.js";
 import {
   buildCaptureRecoveryHint,
   buildCaptureStub,
+  createContentDeliverableChecks,
   createDeliverableChecks,
   createFinalGuard,
   createNamedDeliverableChecks,
@@ -81,7 +82,7 @@ const NON_TTY_MESSAGE =
   'repl 需要交互式终端，单次对话请用：erix chat "<prompt>"';
 
 const REPL_HELP_TEXT = `REPL 用法：
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--tools <逗号分隔工具名>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--tools <逗号分隔工具名>]
   --session <id>        会话 ID（默认按工作目录自动派生）。repl 里它是**命名**：新名字直接开新会话；
                       注意 chat 的 --session 是续跑入口，id 不存在会报错（issue #168）
   --dir <path>          Transcript 存档目录（默认：~/.erix/transcripts）
@@ -99,6 +100,10 @@ const REPL_HELP_TEXT = `REPL 用法：
                       --require-deliverable=report.md；值可选，裸用时别让后面紧跟非旗标 token。
                       判据没过 ⇒ 终局 unverified:deliverables_failed。条数合计 ≤ 20，路径不许重复。
                       没有 guard 就没有闸门 ⇒ 单独给报用法错误（issue #391 R2）
+  --require-deliverable-content  **内容判据**（默认关闭，issue #435）：声明过的每个写路径收尾时必须
+                      非空、且整份不等于占位符（TBD / TODO / FIXME / <placeholder>，忽略 markdown
+                      装饰与句末标点）。它不声称「内容对不对」；含但不等于占位符必须通过。
+                      同样必须与 --final-guard 同用，判据合计 ≤ 20 条
   --tools <名1,名2>     工具白名单：只保留列表内的工具（内置+skill+MCP）；未知名字警告并忽略，过滤后为空则报错
   --delegate            注册 delegate 工具（派生一个同进程子 run；**默认关闭**，issue #617）。
                       子 run 的工具集**不含 delegate**（v1 不递归派生），transcript 落在名册目录下
@@ -266,6 +271,16 @@ export function parseReplArgs(argv, cwd = process.cwd(), home = homedir()) {
     // issue #391 R2/R3：与 chat **逐字同口径**的交付物判据——裸用 = `createDeliverableChecks()`
     // （「你说过要写的东西还在盘上吗」），带值（可重复）= `createNamedDeliverableChecks(paths)`
     // （「这次必须交付的这些文件在盘上吗」）。两种写法都收（空格 / `=`），与 chat 同一份校验器。
+    // issue #435：内容判据（布尔）。⚠ 必须排在 `--require-deliverable` 那一支**之前**：
+    // `--require-deliverable-content` 也满足 `startsWith("--require-deliverable")`。
+    if (argument === "--require-deliverable-content") {
+      if (seenOptions.has(argument)) {
+        usageError(`参数重复：${argument}`);
+      }
+      seenOptions.add(argument);
+      options.requireDeliverableContent = true;
+      continue;
+    }
     if (argument === "--require-deliverable" || argument.startsWith("--require-deliverable=")) {
       let rawValue;
       if (argument.startsWith("--require-deliverable=")) {
@@ -303,7 +318,9 @@ export function parseReplArgs(argv, cwd = process.cwd(), home = homedir()) {
   // 单独给 `--require-deliverable` 是静默空转，所以显式失败（不是自动装一个天真 guard：
   // 那会把「不带 --final-guard 的 repl 会话」的既有承诺面改掉）。
   if (
-    (options.requireDeliverable === true || (options.deliverablePaths?.length ?? 0) > 0)
+    (options.requireDeliverable === true
+      || options.requireDeliverableContent === true
+      || (options.deliverablePaths?.length ?? 0) > 0)
     && options.finalGuard !== true
     && process.env.ERIX_FINAL_GUARD?.trim() !== "1"
   ) {
@@ -313,10 +330,15 @@ export function parseReplArgs(argv, cwd = process.cwd(), home = homedir()) {
     );
   }
   // issue #391 R2：条数上限是**合计**的（布尔那条也占一个 `deliverables` 槽位），与 chat 同口径。
-  if ((options.requireDeliverable === true ? 1 : 0) + (options.deliverablePaths?.length ?? 0) > DELIVERABLES_LIMIT) {
+  const declaredCriteria = (options.requireDeliverable === true ? 1 : 0)
+    + (options.requireDeliverableContent === true ? 1 : 0)
+    + (options.deliverablePaths?.length ?? 0);
+  if (declaredCriteria > DELIVERABLES_LIMIT) {
     usageError(
       `--require-deliverable 的判据合计最多 ${DELIVERABLES_LIMIT} 条（引擎 DELIVERABLES_LIMIT）：`
-      + `裸用 1 条 + 命名路径 ${options.deliverablePaths?.length ?? 0} 条`,
+      + `裸用 ${options.requireDeliverable === true ? 1 : 0} 条`
+      + ` + 内容 ${options.requireDeliverableContent === true ? 1 : 0} 条`
+      + ` + 命名路径 ${options.deliverablePaths?.length ?? 0} 条`,
     );
   }
 
@@ -861,6 +883,10 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
       // 未声明 ⇒ 连这个键都没有（引擎的「未声明 deliverables ⇒ 逐字不变」回归锚就靠这个形状）。
       const deliverableCriteria = [];
       if (options.requireDeliverable === true) deliverableCriteria.push(...createDeliverableChecks());
+      // issue #435：内容判据（默认关）——「非空且整份不等于占位符」。
+      if (options.requireDeliverableContent === true) {
+        deliverableCriteria.push(...createContentDeliverableChecks());
+      }
       const namedDeliverables = options.deliverablePaths;
       if (Array.isArray(namedDeliverables) && namedDeliverables.length > 0) {
         deliverableCriteria.push(...createNamedDeliverableChecks(namedDeliverables));

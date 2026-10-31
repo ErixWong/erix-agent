@@ -3364,7 +3364,8 @@ payload 无键、metrics 无键、事件无字段。引擎自己的发布冒烟�
 四条边界是刻意的：
 
 - **`termination.reason` 不被改写。** 闸门只改 `verification`，不引入新的停机原因；
-  既有的 `final_guard_unverified` 路径（修订次数触顶、不可续跑降级）一字未动。
+  既有的 `final_guard_unverified` 路径（修订次数触顶、不可续跑降级）一字未动。判据唯一
+  影响到的控制流是下面那一节「`judge_done` 的交付物补齐轮」——它**多给一轮**，不改写停机原因。
 - **guard 报错 + 判据全通过仍然是 `error`。** guard 抛异常/超时是**基础设施故障**
   （宿主回调写错、依赖挂了），把它升级成 `verified: machine_only` 等于用一条机器判据
   盖掉一次真实故障——宿主会读到「至少机器验过了」，而它该去修的那次故障被藏起来了。
@@ -3396,6 +3397,61 @@ payload 无键、metrics 无键、事件无字段。引擎自己的发布冒烟�
 |---|---|---|---|
 | `requireDeliverable: true`（裸 `--require-deliverable`） | 「**你说过要写的东西**还在盘上吗」 | `createDeliverableChecks()` 读 `fileWrites` | **通过**（空集合 ⇒ `every()` 恒真） |
 | `deliverablePaths: [...]`（`--require-deliverable <path>`） | 「**这次任务要求的这些文件**在盘上吗」 | `createNamedDeliverableChecks(paths)` 读宿主清单 | **不通过**（判据与模型的嘴无关） |
+
+#### `judge_done` 的交付物补齐轮（issue #435）
+
+`judge_done` 是最省钱的出圈方式，而它从前是**唯一一处「机器结论只换来一个标签」**的地方：
+判据一直有核（`judge_done` 本来就在 guard 的停机原因集合里），失败也会把 `verification` 压成
+`unverified` / `deliverables_failed`——但 `deliverablesAllPassed` 在控制流里**一个读者都没有**，
+于是 run 照样收尾。按 run 口径实测：`judge_done` 的 precision 只有 **77%**，confidence 中位
+**1.00**（很自信地错）。
+
+**这是行为变更，对声明了 `deliverables` 的宿主是 breaking。** 下面三条**同时**成立时，run 会多跑
+**一轮**而不是停机：
+
+1. 停机原因是 `judge_done`；
+2. 本轮 guard 裁决是 `accept`；
+3. 至少一条声明的判据没过（`deliverablesAllPassed === false`）。
+
+引擎随后注入**一条** `judge-control` 用户消息，点名失败的判据（判据的 `name` 与你 `check` 返回的
+`detail`——引擎从不解释判据语义），循环继续。模型真把交付物补上，下一次 attempt 重算判据就能拿到
+`verified`；补不上则与从前逐字一致（`judge_done` + `unverified` / `deliverables_failed`）。
+
+四条上界，全部复用既有机制、不新造：
+
+- **每 run 一次。** 补齐轮与预算类停机的补跑桥（#386 切片 3）**共用** `guardExtensionUsed` 配额，
+  所以一个 run 无论谁先开口，总共只能领一次「额外一轮」；配额随 run-state 落盘，崩溃后重新续跑
+  不会再领一份。不设限的实测形状是「评审恒 done + 判据恒失败 ⇒ 剩余轮次全被烧掉」（4 轮烧成
+  8 次 provider 调用，终局反而变 `final_guard_unverified` / `non_continuable`）。
+- **governor 自己的扩轮闸**（`extensionAllowed`）与**预算闸**（`guardExtensionBudgetAllows`：
+  上下文预算 + 聚合输出预算）逐字照用。
+- **`skip` / `error` 永不触发。** 「没人验收」不等于「交付物没交付」，那两格保持既有的
+  `unverified` / `error` 结论。
+- **未声明判据 ⇒ 逐字不变**：不多跑一轮、不多发一次请求、不多一个 metrics 键。
+
+宿主能观测到什么：一条 `type: "final_guard_extend"` 事件，带 `guard_extension: false`、
+`reason: "deliverables_failed"` 与 `deliverables_failed: <n>`（与 guard 补跑桥同一个事件名——
+它就是「引擎又给了一轮」这件事，两个触发面仍然可区分），以及
+`verification.metrics.deliverable_gap_rounds`（**只在**真的发生过补齐轮时出现）。
+
+#### 内容判据：`files_written_content_not_placeholder`（issue #435）
+
+引擎**不内置**任何判据、也不读盘（就是上面那条分工纪律）。按 run 口径暴露出来的缺口在**出厂**
+这一侧：`bin/final-guard.js` 的两个工厂都只问 `exists()`，于是「文件在盘上」被当成「交付物已交付」。
+在判完成却 0 分的实测 run 里，**8 个有 7 个是文件都在、内容错**；一次提示词实验还把失败模式推得更
+具体——系统提示词加上「开局先建交付物骨架」之后，两个 run 第 1 轮写了 `TBD` 骨架、再没回去填。
+
+`createContentDeliverableChecks()` 追加一条**可选**命名判据，CLI 面是
+`--require-deliverable-content`（默认关闭，计入 20 条判据上限，且与其他判据一样**必须与
+`--final-guard` 同用**）：
+
+- `fileWrites` 里的每个路径都必须存在、读得出来、**非空**，且**整份不等于** `TBD` / `TODO` /
+  `FIXME` / `<placeholder>`（大小写不敏感；忽略 markdown 装饰与句末标点，所以 `## TODO` 与
+  被反引号包住的 FIXME 都会被抓住）；
+- **含但不等于**占位符的正文**刻意放行**（`TBD: 明天补数据` 是正常正文）。这条反向锚不是客套：
+  一条会误杀正常内容的判据会被宿主直接关掉，而关掉的闸门比没有闸门更弱；
+- 它**不**声称内容**对**。机器判不了语义，一个错答案只要不是占位符照样过。要判正确性，请用你自己
+  的 `check` 或外部评分器。
 
 布尔那条是「没撒谎」判据，不是「做了事」判据：**一次工具都没调**的 run 不会声明任何写路径，
 于是判据通过、`verification` 变成 `verified`（issue #391 回帖里的实测）。「这次必须交付

@@ -246,6 +246,7 @@
 | `test/loop-capabilities-namespace-498.test.js` | 20 | `capabilities` 名称/形状预检、`hooks` 叶子必须是函数（`must be a function`）、`config_override_conflict`（`path: "hooks.<leaf>"`）、容器赢扁平的优先级 |
 | `test/loop-capabilities-ports-hooks-498s4c.test.js` | 4 | `ports.*` / 4 个 in-shell 回调 / 两个形态多态旋钮的**目的地表**与冲突路径、`sleepImpl` 被真的调到（行为证据）。#545 之后 in-shell 那一侧的写点降到 4：壳内函数载体的冲突只能在**展开层**构造（`policy` 只收数据），`onEvent` 写点保留 |
 | `test/loop-option-gate-496.test.js` | 15 | 选项闸：接受面 = 白名单（`unknown runToolLoop option`）、语义相取值校验、`onFoldSummary` / `finalGuard` / `deliverables` 的形状报错 |
+| `test/loop-deliverables-gap-435.test.js` | 5 | **#435 的补齐轮钉子**：`judge_done` + guard `accept` + 判据失败 ⇒ 多跑一轮（控制流吃机器结论）、一次性配额、未声明判据逐字不变。写点全部落在**规位** `capabilities.checks.deliverables`（`deliverables` 是**活**选项，不是退役扁平键）⇒ 与 `loop-capabilities-namespace-498` 同一类：登记备查、不许迁 |
 | `test/loop-guard-slice-498s3e.test.js` | 1 | #498 S3 `guard` 片的**选项面钉**：三个数据键的旧名反向拒绝（逐字文案 + 新家路径）、混装壳只点一站、**`finalGuard` / `finalGuardVerdict` 没被本刀动过**（P5）、三向闭合与 schema 自检、禁手抄键数（A2 扫全 `test/`） |
 | `test/loop-tuning-keys-slice-498s3a5.test.js` | 0（容器/白名单面） | #498 S3 `tuning` A5 片的**选项面钉**：三个采样/预算键的旧名反向拒绝（逐字文案 + 新家路径）、混装壳只点一站、**`maxTokenContinuations` 与槽位面同名字段没被本刀动过**（P5，另加装配口 `policy.maxTokens` 与 provider 请求字段两个旁证面）、三向闭合与 schema 自检、禁手抄键数（A2 扫全 `test/`）。**能力面 0 写点**（它不碰任何 `on*` 回调），所以本表这一行是 `0` 而不是数字 |
 | `test/loop-input-keys-slice-498s3a6.test.js` | 0（容器/白名单面） | #498 S3 `input` 组 A6 片的**选项面钉**：`system` 的旧名反向拒绝（逐字文案 + 新家路径 + 数据键里的函数值只点一站）、**`tools` 的闸口二 as-is 钉（G1–G4：函数成员扁平可达 / 规位不可达，两个协议投影都不带它）**、**#527 的闭门钉（G2/G5：`config.input.tools` 作为未知叶子当场拒，文案指向顶层第三站）**、`wrapup` 退回清单的机器派生（S 段）、四向闭合与 schema 自检、禁手抄键数（A2 扫全 `test/`）。**能力面 0 写点**（它不碰任何 `on*` 回调），所以本表这一行是 `0` 而不是数字 |
@@ -418,7 +419,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 > 已全部迁完（各自的迁移前基线见对应清单），所以它们的文件在这里**不出现**——`--verify` 逐文件对账
 > 的仍然是「表列写点 == AST 写点」，行不在表里就意味着该文件 0 点。
 >
-> 表里剩下 4 类、23 个文件、**170** 点，全部**不是 S7 的活**（见各行「分类」列的理由）。
+> 表里剩下 4 类、24 个文件、**172** 点，全部**不是 S7 的活**（见各行「分类」列的理由）。
 
 | 文件 | 写点 | 明细 | 分类 |
 | --- | --- | --- | --- |
@@ -433,6 +434,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-context-on-fold-summary-retired-499.test.js` | 8 | `onFoldSummary`×7, `onEvent`×1 | COMPAT-PIN |
 | `test/providers/v020-beta.test.js` | 8 | `onEvent`×2, `onReasoningDelta`×2, `onToolCall`×2, `onUsage`×2 | MIGRATE · NOT-OPTION-SURFACE（非 runToolLoop 选项面，无规位） |
 | `test/loop-capabilities-ports-hooks-498s4c.test.js` | 4 | `onEvent`×4 | COMPAT-PIN |
+| `test/loop-deliverables-gap-435.test.js` | 5 | `deliverables`×5 | COMPAT-PIN |
 | `test/providers/openai-stream.test.js` | 6 | `onEvent`×2, `onReasoningDelta`×2, `onDelta`×1, `onUsage`×1 | MIGRATE · NOT-OPTION-SURFACE（非 runToolLoop 选项面，无规位） |
 | `test/cli.test.js` | 2 | `finalGuard`×2 | OWNED-BY-S5 |
 | `test/compact/provider-summarizer.test.js` | 2 | `onUsage`×2 | MIGRATE · NOT-OPTION-SURFACE（非 runToolLoop 选项面，无规位） |
@@ -448,7 +450,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 
 ### 分派小结（按上表口径，**S7c 迁完之后**实测）
 
-**「写点」这一列的口径是「现在仍在树上的写点数」**，所以列和必须 = 合计 **167**（逐点只算一次）。
+**「写点」这一列的口径是「现在仍在树上的写点数」**，所以列和必须 = 合计 **172**（逐点只算一次）。
 
 | 类 | 文件数 | 写点（现在仍在树上） |
 | --- | --- | --- |
@@ -458,14 +460,14 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `MIGRATE · S7c`（**本刀已迁完 90 点中的 87**；另 3 点重分类，见下条） | 17 | 0 |
 | `MIGRATE · 含 COMPAT-PIN 格`（迁搭台写点，**逐格**跳过选项面断言） | 3 | 38 |
 | `MIGRATE · NOT-OPTION-SURFACE`（重分类：不是 `runToolLoop` 选项面，**没有规位**） | 9 | 31 |
-| `COMPAT-PIN` | 10 | 64 |
+| `COMPAT-PIN` | 11 | 69 |
 | `OWNED-BY-S5` | 5 | 13 |
 | `OWNED-BY-S6` | 5 | 21 |
-| **合计（现在实测）** | **64** | **167** |
+| **合计（现在实测）** | **65** | **172** |
 
 脚注：
 
-* 写点列和 = `0 + 0 + 0 + 0 + 38 + 31 + 64 + 13 + 21 = 167`，与本列合计逐字相等（`--verify` 逐行核）。
+* 写点列和 = `0 + 0 + 0 + 0 + 38 + 31 + 69 + 13 + 21 = 172`，与本列合计逐字相等（`--verify` 逐行核）。
 * `NOT-OPTION-SURFACE` 这一类的 31 点**不是「没做完」**：它们是 provider `chatStream(...)` 的回调
   （24）、`createProviderSummarizer({ onUsage })`（2）、`run-snapshot-executor` 的 ctx 字段（1）、
   `tool-fact-success-parity` 里 `MIGRATION_TABLE` 的**数据行字段**（1），**加上 S7c 本刀重分类的 3 点**

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
@@ -292,4 +293,81 @@ export async function inspectRun({ archiveDir, store, runId }) {
     warnings,
     readableArtifacts,
   };
+}
+
+/**
+ * issue #435：**内容判据**（可选、默认关闭）——「非空且不等于占位符」。
+ *
+ * 为什么需要它（真机口径）：判完成但 0 分的 run 里 **8 个有 7 个是「文件都在但内容错」**，只有 1 个是
+ * 文件缺失；而上面那两条出厂判据都只查 `exists` ⇒「文件已存在」被当成「已交付」。提示词实验更直接：
+ * 加上「开局先建交付物骨架」之后，两个 0 分 run 是**第 1 轮写了 `TBD` 占位符、再没回去覆盖**。
+ *
+ * 判据刻意保守（每格都是刻意的）：只判**空**与**整份等于占位符**（`TBD`/`TODO`/`FIXME`/
+ * `<placeholder>`，大小写不敏感，忽略 markdown 装饰与句末标点）；**含但不等于必须通过**
+ * （`TBD: 明天补数据` 是正常正文）——这条反向锚挡的是「正则一宽就误杀正常内容」，而被误杀的判据会被
+ * 宿主直接关掉，关掉的闸门比没有闸门更弱。它**不**声称内容**对**：机器判不了语义。
+ *
+ * 读 `facts.fileWrites[].path`（原始值，issue #388），不读 40 码点摘要——理由同上一条判据。
+ * 模型一次写工具都没调时集合为空 ⇒ 恒真（与布尔那条同一个「没撒谎」语义）。
+ *
+ * @param {{exists?: (path: string) => boolean, readFile?: (path: string, encoding: string) => string}} [options]
+ * @returns {{name: string, check: (facts: object) => true|{ok:false, detail:string}}[]}
+ */
+export function createContentDeliverableChecks({ exists = existsSync, readFile = readFileSync } = {}) {
+  return [{
+    name: "files_written_content_not_placeholder",
+    check: (facts) => {
+      const writes = Array.isArray(facts?.fileWrites) ? facts.fileWrites : [];
+      const problems = [];
+      for (const write of writes) {
+        const target = typeof write?.path === "string" ? write.path : "";
+        if (target === "") {
+          problems.push("<无路径>");
+          continue;
+        }
+        if (!exists(target)) {
+          problems.push(`${target}（不在盘上）`);
+          continue;
+        }
+        let body;
+        try {
+          body = String(readFile(target, "utf8"));
+        } catch {
+          // fail-closed：读不出来不等于「内容没问题」（可能是目录、权限、编码）⇒ 不许当通过。
+          problems.push(`${target}（读不出来）`);
+          continue;
+        }
+        if (body.trim() === "") {
+          problems.push(`${target}（空文件）`);
+          continue;
+        }
+        if (placeholderOnly(body)) {
+          problems.push(`${target}（内容只有占位符）`);
+        }
+      }
+      if (problems.length === 0) return true;
+      return {
+        ok: false,
+        detail: `这些声明写入的文件没有实际内容：${problems.join(", ")}`,
+      };
+    },
+  }];
+}
+
+/** 占位符集合（**唯一**一份；`<placeholder>` 是显式占位符的通用写法）。 */
+export const PLACEHOLDER_MARKERS = Object.freeze(["tbd", "todo", "fixme", "<placeholder>"]);
+
+/** 把一份正文归一成「可以拿来跟占位符逐字比」的形状：去空白、去 markdown 装饰、去句末标点、小写。
+ *  **只**用于「整份等于占位符」这一问——不参与「包含占位符」那种宽匹配（见函数头）。 */
+function placeholderOnly(body) {
+  const normalized = String(body)
+    .trim()
+    .replace(/^#{1,6}\s*/u, "")
+    .replace(/^[>*\-+]\s*/u, "")
+    .replace(/^[*_`~]+/u, "")
+    .replace(/[*_`~]+$/u, "")
+    .replace(/[。.!！?？:：;；,，]+$/u, "")
+    .trim()
+    .toLowerCase();
+  return PLACEHOLDER_MARKERS.includes(normalized);
 }

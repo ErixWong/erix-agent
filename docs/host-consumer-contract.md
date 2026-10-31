@@ -4190,6 +4190,74 @@ was not delivered", so the machine verdict outranks it in both directions.
 | any failed | `revise` | unchanged from today (retries exhaust into `unverified`, `non_continuable` on budget stops) |
 | not declared | any | **byte-for-byte unchanged**: no payload key, no metric key, no event field |
 
+#### The `judge_done` gap round (issue #435)
+
+`judge_done` is the cheapest way out of the loop, and it used to be the one place where a
+machine verdict changed nothing but a label: the criteria were checked (they always were —
+`judge_done` is in the guard's reason set) and a failure downgraded `verification` to
+`unverified` / `deliverables_failed`, but `deliverablesAllPassed` had **no reader in the
+control flow**, so the run finished anyway. Measured on the run axis, `judge_done`'s
+precision was **77%** with a median confidence of **1.00** — confidently wrong.
+
+**Behaviour change, and it is breaking for hosts that declare `deliverables`.** When all of
+the following hold, the run gets **one more round** instead of stopping:
+
+1. the stop reason is `judge_done`;
+2. the guard's verdict for this attempt is `accept`;
+3. at least one declared criterion failed (`deliverablesAllPassed === false`).
+
+The engine then injects one `judge-control` user message naming the failed criteria (their
+`name` and the `detail` your `check` returned — the engine never interprets a criterion), and
+the loop continues. If the model actually fixes the deliverable, the next attempt recomputes
+the criteria and can reach `verified`; if it does not, the run ends exactly as before
+(`judge_done` with `unverified` / `deliverables_failed`).
+
+Four bounds, all reused rather than invented:
+
+- **One per run.** The gap round shares the `guardExtensionUsed` quota with the
+  budget-stop bridge (issue #386 slice 3), so a run can claim at most one extra round in
+  total, whichever mechanism asks first. The quota is persisted in run state, so a crash +
+  resume does not mint a second one. Without a bound the measured shape was "judge says done
+  forever + criteria fail forever ⇒ every remaining round is spent" (4 rounds → 8 provider
+  calls, ending `final_guard_unverified` / `non_continuable`).
+- **The governor's own extension gate** (`extensionAllowed`) and the **budget gate**
+  (`guardExtensionBudgetAllows`: context budget + aggregate output budget) apply verbatim.
+- **`skip` and `error` never trigger it.** "Nobody checked" is not "the deliverable is
+  missing"; those two cells keep their existing `unverified` / `error` outcomes.
+- **Undeclared criteria ⇒ byte-for-byte unchanged**: no extra round, no extra request, no new
+  metric key.
+
+What a host observes: a `type: "final_guard_extend"` event with `guard_extension: false`,
+`reason: "deliverables_failed"` and `deliverables_failed: <n>` (the same event name as the
+guard bridge — it is the same "the engine granted another round" fact, and the two triggers
+stay distinguishable), and `verification.metrics.deliverable_gap_rounds` (**present only**
+when a gap round actually happened).
+
+#### Content criterion: `files_written_content_not_placeholder` (issue #435)
+
+The engine owns **no** built-in criterion and never reads the disk (the division of labour
+above). The gap that showed up on the run axis was on the **shipped** side: both factories in
+`bin/final-guard.js` only asked `exists()`, so "the file is on disk" was read as "the
+deliverable was delivered". In the measured 0-score runs that reached `judge_done`, **7 of 8
+had the files present and the content wrong**; a prompt experiment made it worse in a
+specific way — with "create the deliverable skeleton first" in the system prompt, two runs
+wrote a `TBD` skeleton in round 1 and never came back to fill it in.
+
+`createContentDeliverableChecks()` adds one optional named criterion, exposed by the CLI as
+`--require-deliverable-content` (off by default, counts toward the 20-criteria limit, and
+requires `--final-guard` for the same reason every other criterion does):
+
+- every path in `fileWrites` must exist, be readable, be **non-empty**, and not **consist
+  solely of** `TBD` / `TODO` / `FIXME` / `<placeholder>` (case-insensitive; markdown
+  decoration and trailing punctuation are ignored, so `## TODO` and a backtick-wrapped FIXME are caught);
+- a body that **contains** but does not **equal** a placeholder **passes on purpose**
+  (`TBD: fill in tomorrow` is ordinary prose). That reverse anchor is not politeness: a
+  criterion that misfires on real content gets switched off by its host, and a switched-off
+  gate is weaker than no gate;
+- it does **not** claim the content is *correct*. A machine cannot judge semantics, and an
+  answer that is wrong but not a placeholder still passes. Judging correctness needs your own
+  `check` or an external scorer.
+
 `reason: "machine_only"` is the one thing a host must read literally: it means **the engine
 accepted the run on the host's own criteria**, *not* that the guard judged it. If your policy
 requires the guard itself to have passed, treat `machine_only` as "my guard skipped — tighten
@@ -4218,7 +4286,9 @@ Four boundaries are deliberate:
 
 - **`termination.reason` is not rewritten.** The gate changes `verification` only; it
   introduces no new stop reason, and the existing `final_guard_unverified` path (retry
-  limit, non-continuable degradation) is untouched.
+  limit, non-continuable degradation) is untouched. The one control-flow consequence the
+  criteria do have is the `judge_done` gap round described below — it adds a round, it does
+  not rename the stop.
 - **A guard error plus passing criteria stays `error`.** A guard that throws or times out is
   an **infrastructure failure** (a broken callback, a dead dependency), and upgrading it to
   `verified: machine_only` would let one machine criterion paper over a run whose guard face

@@ -43,6 +43,7 @@ import { defaultSessionId, runRepl } from "./repl.js";
 import {
   buildCaptureRecoveryHint,
   buildCaptureStub,
+  createContentDeliverableChecks,
   createDeliverableChecks,
   createFinalGuard,
   createNamedDeliverableChecks,
@@ -79,8 +80,8 @@ const DEFAULT_MAX_ROUNDS = 64;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--no-notes] [--no-todo] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--tools <逗号分隔工具名>]  （交互式模式）
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes] [--no-todo] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--tools <逗号分隔工具名>]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
   （无参数直接进入交互式模式，等同 erix repl）
@@ -116,6 +117,14 @@ const HELP_TEXT = `用法：
                       ⚠ **必须与 --final-guard 同用**（或 ERIX_FINAL_GUARD=1）：判据是拦 guard accept
                       的闸门，没有 guard 就没有闸门——单独给会直接报 usage error（exit 1），
                       不静默空转（issue #391 R2）
+  --require-deliverable-content  **内容判据**（默认关闭，可与其他交付物判据同时用，issue #435）：
+                      本 run 用写工具声明过的每个路径，收尾时都必须**非空、且整份不等于占位符**
+                      （TBD / TODO / FIXME / <placeholder>，大小写不敏感、忽略 markdown 装饰与句末标点）。
+                      ⚠ 它**不**声称「内容对不对」：机器判不了语义，TBD 之外的错答案照样过。
+                      **含但不等于**占位符必须通过（"TBD: 明天补数据" 是正常内容，不是占位符）。
+                      读 fileWrites 原始路径，所以与裸 --require-deliverable 同一条「没撒谎」语义；
+                      要「这次必须交付 report.md」请同时给 --require-deliverable report.md。
+                      同样**必须与 --final-guard 同用**，且与其他交付物判据合计 ≤ 20 条
   --no-notes            不装配 notes 工厂（note_* 工具不再可用），保留其他 skill
   --no-todo             彻底关闭 todo：内置 todo_* 四工具不注册、系统提示不含 todo、用户级 todo skill 一并排除
   --delegate            注册 delegate 工具（派生一个同进程子 run；**默认关闭**，issue #617）。
@@ -393,6 +402,17 @@ export function parseChatArgs(args, cwd = process.cwd()) {
     // issue #391 R2：`--require-deliverable` **可重复**，且值是可选的（裸用 = 布尔判据，现语义）。
     // 两种写法都收：`--require-deliverable <path>`（照本文件既有惯例：空格分隔）与
     // `--require-deliverable=<path>`（可重复的带值旗标用 `=` 更清楚，空值当场报错）。
+    // issue #435：`--require-deliverable-content`（布尔，可与其他交付物判据同用）。
+    // ⚠ 必须排在 `--require-deliverable` 那一支**之前**：`--require-deliverable-content` 也满足
+    // `startsWith("--require-deliverable")`，先到那里会被当成「带值写法」而把 `-content` 当路径。
+    if (argument === "--require-deliverable-content") {
+      if (seenOptions.has(argument)) {
+        usageError(`参数重复：${argument}`);
+      }
+      seenOptions.add(argument);
+      options.requireDeliverableContent = true;
+      continue;
+    }
     if (argument === "--require-deliverable" || argument.startsWith("--require-deliverable=")) {
       let rawValue;
       if (argument.startsWith("--require-deliverable=")) {
@@ -591,22 +611,29 @@ export function parseChatArgs(args, cwd = process.cwd()) {
   // 所以选**显式失败**（exit 1 + 点名两个旗标必须同用），而不是自动替用户装一个天真 guard——
   // 那会把「不带 --final-guard 的一次成功 chat ⇒ exit 4」这个既有承诺面改掉。
   if (
-    (options.requireDeliverable === true || (options.deliverablePaths?.length ?? 0) > 0)
+    (options.requireDeliverable === true
+      || options.requireDeliverableContent === true
+      || (options.deliverablePaths?.length ?? 0) > 0)
     && options.finalGuard !== true
     && process.env.ERIX_FINAL_GUARD?.trim() !== "1"
   ) {
     usageError(
       "--require-deliverable 必须与 --final-guard 同用（或设 ERIX_FINAL_GUARD=1）："
       + "交付物判据是拦 guard accept 的**闸门**，引擎只在 guard 存在时才核它；"
-      + "单独用等于什么都不核（静默空转）",
+      + "单独用等于什么都不核（静默空转）。--require-deliverable-content 同理",
     );
   }
   // issue #391 R2：条数上限是**合计**的（布尔那条也占一个 `deliverables` 槽位，引擎看的是数组长度）。
   // 单条路径在解析时已挡过重复/空串，这里只补「合计超限」这一格。
-  if ((options.requireDeliverable === true ? 1 : 0) + (options.deliverablePaths?.length ?? 0) > DELIVERABLES_LIMIT) {
+  const declaredCriteria = (options.requireDeliverable === true ? 1 : 0)
+    + (options.requireDeliverableContent === true ? 1 : 0)
+    + (options.deliverablePaths?.length ?? 0);
+  if (declaredCriteria > DELIVERABLES_LIMIT) {
     usageError(
       `--require-deliverable 的判据合计最多 ${DELIVERABLES_LIMIT} 条（引擎 DELIVERABLES_LIMIT）：`
-      + `裸用 1 条 + 命名路径 ${options.deliverablePaths?.length ?? 0} 条`,
+      + `裸用 ${options.requireDeliverable === true ? 1 : 0} 条`
+      + ` + 内容 ${options.requireDeliverableContent === true ? 1 : 0} 条`
+      + ` + 命名路径 ${options.deliverablePaths?.length ?? 0} 条`,
     );
   }
 
@@ -808,6 +835,7 @@ async function runChatWithNotes({
   finalGuard,
   finalGuardMaxRetries = 2,
   requireDeliverable,
+  requireDeliverableContent,
   deliverablePaths,
   timeoutMs,
   stream,
@@ -1118,6 +1146,10 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
   // 两个工厂都在 `bin/final-guard.js`，与 pi 扩展复用同一份判据本体。
   const deliverableCriteria = [];
   if (requireDeliverable === true) deliverableCriteria.push(...createDeliverableChecks());
+  // issue #435：内容判据（可选、默认关）——「非空且整份不等于占位符」。
+  if (requireDeliverableContent === true) {
+    deliverableCriteria.push(...createContentDeliverableChecks());
+  }
   if (deliverablePaths !== undefined && deliverablePaths.length > 0) {
     deliverableCriteria.push(...createNamedDeliverableChecks(deliverablePaths));
   }
