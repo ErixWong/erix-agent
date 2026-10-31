@@ -33,7 +33,7 @@ ERIX_E2E_CONFIG=~/.erix/config.json node scripts/soak.mjs --provider real --roun
 
 - **长轮回放**：真上游**允许提前 `end_turn` / `judge_done` 收尾**（那不是缺陷），判据是「干净收口 +
   轮数够逼出压缩」；`max_rounds_cap` 带 `truncated:true` 是引擎的正确标记。`no_tool` **不算**干净收口
-  （它是 prose 停滞被治理层撑住后的停局，见 `src/reflection/governor.js:112-113`）。
+  （它是 prose 停滞被治理层撑住后的停局，见 `noTool`（`src/reflection/governor.js`）的 stop 分支）。
   **强制压缩**靠把 `context.budgetTokens` 调到几个轮次的量级逼出来（不指望自然触发）。
 - **TTL 折叠真的发生**（`ttl-fold-actually-applied`）：`config.folding.toolResultTtl` 传给引擎的是**数字**
   （`src/loop/orchestrator.js:323`；传对象会被 `src/loop/tool-result-ttl.js` 的 `!Number.isFinite(ttl)`
@@ -60,7 +60,7 @@ ERIX_E2E_CONFIG=~/.erix/config.json node scripts/soak.mjs --provider real --roun
   （两个特殊状态按契约都不写 `success`，所以两者互斥；只查白名单会允许普通成功块带上 `interrupted`）。
 - **压缩/TTL 折叠后的配对合法性**：喂进断言的是**实际发给上游的消息视图**（脚本给注入的 provider
   包了一层，把每次 `chat`/`chatStream` 收到的 `request.messages` 抓下来；真实折叠只作用于请求副本，
-  `src/loop/provider-runner.js:51-57`，`runToolLoop` 返回的 `messages` 是未折叠的）。通过条件是
+  发生在 `callProvider`（`src/loop/provider-runner.js`）里，`runToolLoop` 返回的 `messages` 是未折叠的）。通过条件是
   `validateMessages(view, {allowPendingToolUse:false})`（`src/messages/rounds.js:43`）零报错
   **且** `orphanResults === 0 && danglingUses === 0`；协议转换照跑，但它不再充当配对判据——
   两个转换器本身不校验配对，「转换没抛错」是空断言。
