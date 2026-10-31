@@ -47,8 +47,31 @@ jobs:
       - name: Syntax check (all tracked .js/.mjs/.cjs)
         run: npm run check:syntax
 
+      # issue #301：`npm test` 的 TAP 汇总（`# tests` / `# pass` / `# fail` / `# skipped`）此前只活在日志
+      # 正文里，没有任何机器面读它——于是「CI 全绿」是个没有数字的形容词，本地与 CI 的 skip 差几条只能
+      # 人肉数。现在这一步把输出**落成文件**，下一步拿它与入库的期望值对账。
+      # ⚠ `set -o pipefail` 不能删：没有它，`| tee` 会吃掉 `node --test` 的非 0 退出码（红变绿）。
       - name: Test suite
-        run: npm test
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee "$RUNNER_TEMP/test-suite.log"
+
+      # 阻塞（issue #301）：把上一步落盘的 TAP 汇总与 `test/test-suite-baseline.json` 逐项对账，
+      # 打印固定前缀 `TEST-SUMMARY`（可 grep / 可 diff）并写进 `$GITHUB_STEP_SUMMARY`（运行页直接看得到数字，
+      # 不必再下日志包）。三条红线：`tests` 必须逐字等于登记值、`fail` 必须为 0、`skipped` **不得高于**登记上限；
+      # 读不到完整汇总（截断 / 不是 `npm test` 的输出）按 exit 2 红，不按「没问题」处理。
+      # 数字漂了的合法处置只有两条：有意增删用例 ⇒ 同片改登记表 + 补一条 observations；意外漂了 ⇒ 修回去。
+      # **不许为了对上数字去改测试**（加 skip / 删用例），也不许手改 CI 里的数字——登记表是唯一期望值来源。
+      - name: Test suite summary reconcile (CI numbers vs registered expectations)
+        run: npm run check:test-summary -- --log "$RUNNER_TEMP/test-suite.log"
+
+      # 阻塞：上一条自己的反向证（合成 TAP 夹具 + 合成登记表，不落盘、不跑测试）——
+      # 登记值改错必须红并点名差值、`skipped` 超上限必须红、`fail` 非 0 必须红、汇总行自相矛盾必须红、
+      # 读不到汇总必须 exit 2（不许假绿）、两段汇总按 `--pick` 取对，外加 ci.yml 自己的接线
+      # （Test suite 落文件 + 本步骤存在 + 登记表形状）——删掉接线的那一刀在这里红。
+      # 为什么不并进上一条：那条证的是「今天的数字与登记值对得上」，这条证的是「判据还拦得住」。
+      - name: Test suite summary reconcile self-test
+        run: npm run check:test-summary -- --self-test
 
       - name: Documentation drift check
         run: npm run check:docs

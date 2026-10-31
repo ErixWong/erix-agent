@@ -94,6 +94,7 @@
     "check:agents-directives": "node scripts/agents-directive-scan.mjs --strict && node scripts/agents-directive-scan.mjs --verify scripts/agents-directive-scan.mjs",
     "check:docs-examples": "node --test test/doc-examples.test.js",
     "check:pack-links": "node scripts/pack-link-check.mjs",
+    "check:test-summary": "node scripts/suite-summary-reconcile.mjs",
     "check:release": "node scripts/release-check.mjs",
     "check:release:real": "node scripts/release-real-check.mjs",
     "check:cli-real": "node scripts/cli-real-smoke.mjs",

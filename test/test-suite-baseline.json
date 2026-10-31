@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
+  "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 上限**，不是实测抄件：`expect.tests` 必须逐字相等、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
+  "expect": {
+    "tests": 3265,
+    "fail": 0,
+    "maxSkipped": 14
+  },
+  "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
+  "observations": [
+    {
+      "env": "ci",
+      "node": "22.23.4",
+      "commit": "ec8a4047c45dfba5786e393f26ebb53cfbc58e78",
+      "run": 41193009985,
+      "workflow": "ci / job `node 22` / step `Test suite`",
+      "tests": 3265,
+      "pass": 3251,
+      "fail": 0,
+      "skipped": 14,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "CI 干净检出：没有 @earendil-works/pi-coding-agent ⇒ 两条装载器用例按环境跳过（本地装了 ⇒ 少两条 skip），所以 pass 比本地少 2、skipped 多 2；tests 与本地相同。"
+    },
+    {
+      "env": "local",
+      "node": "22.23.2",
+      "commit": "ec8a4047c45dfba5786e393f26ebb53cfbc58e78",
+      "tests": 3265,
+      "pass": 3253,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "开发机装了 pi-coding-agent（PI_CODING_AGENT_ROOT 可解析）⇒ 那两条不跳过；其余 12 条 skip 全是真上游/真 relay 门禁未开（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE）。"
+    }
+  ]
+}
