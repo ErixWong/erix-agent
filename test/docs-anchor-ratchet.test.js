@@ -177,9 +177,10 @@ test("#286 覆盖面里没有任何一处裸行号越界（工单点名的 notes
   for (const doc of [CONTRACT_EN, CONTRACT_CN]) {
     const text = read(doc);
     assert.ok(!text.includes("src/store/notes.js:398"), `${doc} 还留着 src/store/notes.js:398-405（该文件只有 383 行）`);
-    const hit = text.match(/src\/store\/notes-port\.js:(\d+)-(\d+)/);
-    assert.ok(hit, `${doc} 缺少改写后的 limit 校验锚点（真身在 src/store/notes-port.js 的 normalizeListRequest）`);
-    assert.ok(Number(hit[2]) <= linesOf("src/store/notes-port.js"), `${doc} 改写后的行号区间仍然越界`);
+    // #286 T-c：这一处从「裸行号区间」换成了不带区间的符号锚点（首选修法），所以这里钉的是锚点形状，
+    // 不是行号区间——区间越界那条由上面那次全量扫描负责。
+    assert.ok(/`normalizeListRequest`\s*[（(]\s*`src\/store\/notes-port\.js`\s*[)）]/.test(text),
+      `${doc} 缺少改写后的 limit 校验锚点（真身在 src/store/notes-port.js 的 normalizeListRequest）`);
   }
 });
 

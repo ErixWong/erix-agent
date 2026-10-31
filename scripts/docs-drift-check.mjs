@@ -52,7 +52,7 @@
 //                 注释里写一句 `// "judge_done"` 也不再给弱档供值。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
-//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 188`（现测 **188 组 / 601 处**：issue #545 把 `policy` 收成只装数据，「构造期 + 调用期同键」的活样本从 `policy.todoStateProvider` 换成端口派生键（origin `port.session`），契约中英两处叙述因此各多引一个函数锚点 `assertAssemblyOverrideConflicts`（`src/assembly.js`）⇒ +1 组 / +1 处，在合入 main `66a362f` 之后的树上 `--verbose` 实测；此前 **153 组 / 452 处**：issue #498 S4c 相对基点 `cdf0f6d` 的 **151 组 / 444 处**是 **+2 组 / +8 处**——契约中英成对改动新增的 `#### capabilities.ports (issue #498 S4c)` 小节把「9 个没有扁平别名的叶子」的去向表 `CAPABILITY_SLOT_DESTINATIONS`（`src/loop/capabilities-namespace.js`）在两种语言里各引两处，并把策略对象原样透传的那个函数 `resolveCompactionStrategy`（`src/compact/strategy-resolution.js`）各引一处（+2 组 / +6 处），AGENTS 中英声称句自己也把这两组各引一处（+2 处），在本分支树上 `--verbose` 实测；此前 **151 组 / 444 处**：issue #498 S4b 的契约中英成对改动 +1 组 / +6 处——`config` 一节新增 `CONFIG_LEAF_ALIAS_PATHS`（`src/loop/config-namespace.js`）这条「唯一登记在案的叶子别名」锚点，另加 `normalizeDeliverables`（`src/loop/deliverables.js`）与同一别名符号的若干处重引，在本分支树上 `--verbose` 实测；此前 **150 组 / 438 处**：issue #498 S4a 让契约中英各新增成对一节「capabilities 命名空间」，引用新模块 `capabilities-namespace.js` 的三组符号（schema 表 / 回调名单 / 派生别名表）⇒ +3 组 / +8 处，在 main `b3ee7f1` 的树上 `--verbose` 实测；此前 **147 组 / 430 处**：#497 复审第二轮把 AGENTS 声称句里被串行吞掉的 `again to 121` / `again to 122` 两条链项放回降序位置、删掉重复段 ⇒ 组数不变、处数 432 → 430；那 147 组 / 432 处本身是 #497 复审的六条必改让契约中英各多引 `resolveAssemblyMember`（`src/assembly.js`）与 `modelMetadataFor`（`src/loop/budget.js`）后在**最终树**上实测的 +2 组 / +9 处，裸行号一处未增、仍 130 vs 130）；此前 145 组 / 423 处（issue #497 的 `config` 命名空间让契约中英各多一节、引用六个新符号，在合入 main `109a0a3`（#499 之后）的树上重测）；此前 **139 组 / 416 处**（issue #499 退役 `context.onFoldSummary`，契约中英与 README 中英声称句各多引一处 `CONTEXT_OPTION_NAMES`（`src/assembly-validators.js`）⇒ +1 组 / +4 处，在 main `109a0a3` 上实测）；此前 138 组 / 412 处（issue #496 的契约中英各一节新增四组闸口符号，在本分支树上重测）；此前 134 组 / 398 处（issue #467 在契约「终局」小节中英新增的正文多带了两组锚点 `hasFinalDraft`（`src/loop/termination.js`）与 `appendEngineMessagesToTranscript`（`src/loop/orchestrator.js`），EN +2 处 / CN +1 处，在合入 `main` `f489398e` 之后的树上重测）；此前 130 组 / 387 处（issue #433 fix 1 的「CLI 判死后从账本续跑」契约中英成对小节 +1 组（`IDLE_RETRY_BASE_DELAY_MS`（`bin/idle.js`），另把既有的 `restoreResume`（`src/loop/resume-manager.js`）锚点各多引一处 ⇒ +4 处），在 `main` `cf280d7` 之上重测）；此前 129 组 / 380 处：issue #440 的「CLI idle 判死保留载荷」契约中英成对小节 +3 组（`idleTimeoutFailure` / `IDLE_TIMEOUT_CODE`（`bin/idle.js`）、`annotateTermination`（`src/loop/termination.js`）），在合流 `main` 之后重测；此前 126 组 / 389 处：PR #451（issue #406 B2-b）合并前的评审必修项把契约中英里指向 end-turn 收尾块的两处裸行号换成符号锚点 `normalizeWrapupText`（`src/reflection/wrapup.js`），中英各一处 ⇒ +1 组，下限随之抬到 126（在合并 `main` `7d0e9dd` 之后的树上重测，不取两支最大值）；
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 218`（现测 **218 组 / 723 处**：issue #286 **T-c** 把 `src/loop/orchestrator.js` / `src/providers/*` / `src/skills/loader.js` / `src/loop/run-snapshot-executor.js` 等族剩下的裸行号在中英契约与 `docs/host-upgrade-guide-0.17.0.md` 里逐处换成符号锚点 ⇒ **+27 组 / +86 处**（637 → 723），在合并后的树上 `--verbose` 实测（连量两次相同，不动点）⇒ 下限 191 → **218**；此前 **191 组 / 637 处**（#286 T-b2 + #375 + #308 三条链项在合并树上重算）；再此前 **188 组 / 601 处**：issue #545 把 `policy` 收成只装数据，「构造期 + 调用期同键」的活样本从 `policy.todoStateProvider` 换成端口派生键（origin `port.session`），契约中英两处叙述因此各多引一个函数锚点 `assertAssemblyOverrideConflicts`（`src/assembly.js`）⇒ +1 组 / +1 处，在合入 main `66a362f` 之后的树上 `--verbose` 实测；此前 **153 组 / 452 处**：issue #498 S4c 相对基点 `cdf0f6d` 的 **151 组 / 444 处**是 **+2 组 / +8 处**——契约中英成对改动新增的 `#### capabilities.ports (issue #498 S4c)` 小节把「9 个没有扁平别名的叶子」的去向表 `CAPABILITY_SLOT_DESTINATIONS`（`src/loop/capabilities-namespace.js`）在两种语言里各引两处，并把策略对象原样透传的那个函数 `resolveCompactionStrategy`（`src/compact/strategy-resolution.js`）各引一处（+2 组 / +6 处），AGENTS 中英声称句自己也把这两组各引一处（+2 处），在本分支树上 `--verbose` 实测；此前 **151 组 / 444 处**：issue #498 S4b 的契约中英成对改动 +1 组 / +6 处——`config` 一节新增 `CONFIG_LEAF_ALIAS_PATHS`（`src/loop/config-namespace.js`）这条「唯一登记在案的叶子别名」锚点，另加 `normalizeDeliverables`（`src/loop/deliverables.js`）与同一别名符号的若干处重引，在本分支树上 `--verbose` 实测；此前 **150 组 / 438 处**：issue #498 S4a 让契约中英各新增成对一节「capabilities 命名空间」，引用新模块 `capabilities-namespace.js` 的三组符号（schema 表 / 回调名单 / 派生别名表）⇒ +3 组 / +8 处，在 main `b3ee7f1` 的树上 `--verbose` 实测；此前 **147 组 / 430 处**：#497 复审第二轮把 AGENTS 声称句里被串行吞掉的 `again to 121` / `again to 122` 两条链项放回降序位置、删掉重复段 ⇒ 组数不变、处数 432 → 430；那 147 组 / 432 处本身是 #497 复审的六条必改让契约中英各多引 `resolveAssemblyMember`（`src/assembly.js`）与 `modelMetadataFor`（`src/loop/budget.js`）后在**最终树**上实测的 +2 组 / +9 处，裸行号一处未增、仍 130 vs 130）；此前 145 组 / 423 处（issue #497 的 `config` 命名空间让契约中英各多一节、引用六个新符号，在合入 main `109a0a3`（#499 之后）的树上重测）；此前 **139 组 / 416 处**（issue #499 退役 `context.onFoldSummary`，契约中英与 README 中英声称句各多引一处 `CONTEXT_OPTION_NAMES`（`src/assembly-validators.js`）⇒ +1 组 / +4 处，在 main `109a0a3` 上实测）；此前 138 组 / 412 处（issue #496 的契约中英各一节新增四组闸口符号，在本分支树上重测）；此前 134 组 / 398 处（issue #467 在契约「终局」小节中英新增的正文多带了两组锚点 `hasFinalDraft`（`src/loop/termination.js`）与 `appendEngineMessagesToTranscript`（`src/loop/orchestrator.js`），EN +2 处 / CN +1 处，在合入 `main` `f489398e` 之后的树上重测）；此前 130 组 / 387 处（issue #433 fix 1 的「CLI 判死后从账本续跑」契约中英成对小节 +1 组（`IDLE_RETRY_BASE_DELAY_MS`（`bin/idle.js`），另把既有的 `restoreResume`（`src/loop/resume-manager.js`）锚点各多引一处 ⇒ +4 处），在 `main` `cf280d7` 之上重测）；此前 129 组 / 380 处：issue #440 的「CLI idle 判死保留载荷」契约中英成对小节 +3 组（`idleTimeoutFailure` / `IDLE_TIMEOUT_CODE`（`bin/idle.js`）、`annotateTermination`（`src/loop/termination.js`）），在合流 `main` 之后重测；此前 126 组 / 389 处：PR #451（issue #406 B2-b）合并前的评审必修项把契约中英里指向 end-turn 收尾块的两处裸行号换成符号锚点 `normalizeWrapupText`（`src/reflection/wrapup.js`），中英各一处 ⇒ +1 组，下限随之抬到 126（在合并 `main` `7d0e9dd` 之后的树上重测，不取两支最大值）；
 //                 此前 125 组 / 385 处：#443 的归一化底座与 main 上的 #438 逐轮分账、#434 install 档合流之后在**合并后的树**上重测（下限不许取两支的最大值：合并树上同时挂着两支的锚点），下限随之抬到 125；此前 123 组 / 355 处：PR #443 合并前评审的必修项让契约中英「可选调用的成本」一节 +1 组 / +5 处（`DEFAULT_PROVIDER_TIMEOUT_MS`（`src/config/slot-provider.js`）在契约中英各一处 + AGENTS_cn 声称句一处，另有既有锚点 `jsonCandidates`（`src/text/json-candidates.js`）随候选一段的改写在中英契约各多一处），下限随之抬到 123；
 //                 此前 122 组 / 346 处：issue #438 的逐轮用量分账小节让契约中英各多一处 `addUsage`（`src/loop/orchestrator.js`）锚点（+1 组 / +4 处），下限随之抬到 122；此前 issue #406 B2-a 的 `normalizeModelJson` 契约中英成对一节让锚点面 +2 组 / +9 处（`normalizeModelJson`（`src/normalization/parse-model-json.js`）与 `createProviderForSlot`（`src/config/slot-provider.js`）），下限随之抬到 122；此前 issue #424 的升级路径守卫让契约中英各多两处既有锚点（+0 组 / +4 处），下限不变；
 //                 此前 issue #430 的「分片锚点钉在首片」让契约中英各多一处锚点（+1 组 / +2 处）：`threeToolCrashScene`（`test/loop-resume-unpersisted-tool-results.test.js`，指向新的钉住用例），下限随之抬到 121（两支合流后实测 122 组 / 346 处：AGENTS.md 的声称句自己也因合并多了一处 `threeToolCrashScene` 锚点）；此前 issue #420 的 A 集合入账
@@ -64,7 +64,7 @@
 //                 裸行号棘轮的唯一键不含文档自己的行号 ⇒ 「把符号锚点退化成裸行号」在棘轮那一侧一字不变，
 //                 只有这条下限会红（#286 T-a 返工 R1）。生效值同样从脚本自身文本读，自测靠调它证锁。
 //  12. bare-lines 裸行号棘轮（issue #286 T-a）：`src/**.js:N` / `:N-M` 形态的引用按唯一
-//                 (文档, 目标文件, 行区间) 计数，**只减不增**：基线 `BARE_LINE_REF_BASELINE = 80`（现值；
+//                 (文档, 目标文件, 行区间) 计数，**只减不增**：基线 `BARE_LINE_REF_BASELINE = 6`（现值；
 //                 142 / 232 / 244 是 #326 B1 删区间之前、#286 T-b1a 与 T-a 落地时的旧值，别把历史数当现值），超了红
 //                 （并提示「可以把基线降到 N」），低于基线算过但会催你降。**越界行号是 error**，不是观察项。
 //                 覆盖面 = 宿主会读的 22 份文档：README{,_cn} / AGENTS{,_cn} / host-consumer-contract{,_cn}
@@ -2305,8 +2305,22 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  * 脚本头这一处）。它在**自己分支**上量到 181 组 / 554 处，但那棵树没有 #286 T-b2（+8）与 #375（+2）；
  * 在**合并后的树**上重算实测 **191 组 / 637 处**（连量三轮相同，不动点）⇒ 下限 190 → **191**。
  
+ * issue #286 **T-c**（最后一刀）：中英契约与 `docs/host-upgrade-guide-0.17.0.md` 里剩下的 76 个裸行号键逐处换成
+ * 「符号 + 文件」锚点（首选修法：删区间只留符号），族别与增量：`src/loop/orchestrator.js` 24 键
+ * （`persist` / `replayForToolUse` / `fail` / `noToolRound` / `stallWindow` / `stallStreak` / `isEndTurn` /
+ * `finalGuardRetryLimit` / `appendEngineMessagesToTranscript` / `callRoundJudge` / `no_final_guard`）、
+ * `src/providers/errors.js` 6（`classifyHttpError` / `RETRYABLE_CODES` / `validateProviderConfig`）、
+ * `src/providers/openai.js` 6（`createOpenAIProvider` / `buildPayload`）、`src/providers/anthropic.js` 4
+ * （`createAnthropicProvider`）、`src/skills/loader.js` 4（`buildSkillTools` / `validateTools`）、
+ * `src/loop/run-snapshot-executor.js` 4（`executeToolBlock` / `normalizeExecutionResult` /
+ * `createRunSnapshotExecutor`，含 0.17.0 指南两处）、`src/loop/termination.js` 的
+ * `FINAL_GUARD_NON_CONTINUABLE_REASONS`，其余单点族 `src/index.js` / `src/loop/abort.js` 之外的
+ * `canonical` / `projection` / `aggregate-budget` / `budget` / `api-key` / `json-file` / `static` /
+ * `compact/budget` / `sliding-window` / `reflection` / `notes-port` / `tools/notes` 各 2 键。
+ * ⇒ 新增 **+27 组**唯一 (符号, 文件) 键、处数 637 → **723**，`--verbose` 在**合并后的树**上实测
+ * **218 组 / 723 处**（连量两次相同，不动点）⇒ 下限 191 → **218**。
  */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 191;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 218;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
@@ -2420,8 +2434,23 @@ const BARE_LINE_RE = /src\/([A-Za-z0-9_./-]+\.js):(\d+)(?:-(\d+))?/g;
  *  在中英契约里逐处换成「符号 + 文件」锚点（首选修法：删区间，只留符号）。保留的 4 个键全是**符号锚点
  *  自带区间**（`terminationReasonForAction` :111 与 `max_rounds_cap` :116，中英各一）：那两条是 `--self-test`
  *  四条区间变异体的靶子，删掉区间就等于把反向证拆了。`--verbose` 可复核：出现 99 次 / 唯一 84 处 /
- *  豁免 4 处 ⇒ 80。 */
-const BARE_LINE_REF_BASELINE = 80;
+ *  豁免 4 处 ⇒ 80。
+ *  降基线的理由（#286 **T-c**，80 → **6**，降 74）：中英契约与 `docs/host-upgrade-guide-0.17.0.md` 里剩下的
+ *  **76 个裸行号键**逐处换成「符号 + 文件」锚点（首选修法：删区间只留符号），族别：`src/loop/orchestrator.js`
+ *  24 键（`persist` / `replayForToolUse` / `fail` / `noToolRound` / `stallWindow` / `stallStreak` /
+ *  `isEndTurn` / `finalGuardRetryLimit` / `appendEngineMessagesToTranscript` / `callRoundJudge` /
+ *  `no_final_guard`）、`src/providers/errors.js` 6、`src/providers/openai.js` 6、
+ *  `src/providers/anthropic.js` 4、`src/skills/loader.js` 4、`src/loop/run-snapshot-executor.js` 4
+ *  （含 0.17.0 指南两处）、其余 12 个单点文件各 2 键（`index` / `canonical` / `projection` /
+ *  `aggregate-budget` / `budget` / `api-key` / `json-file` / `static` / `compact/budget` /
+ *  `sliding-window` / `reflection` / `notes-port` / `tools/notes`）。
+ *  保留的 6 个键**全是 `--self-test` 的靶子**，不是区间事实（删掉区间等于把反向证拆了）：
+ *  `terminationReasonForAction` :111（EN；自测把它改窄成 :112-116）、`max_rounds_cap` :116（EN 改窄到
+ *  :300-301、CN 删区间证放行）、`defaultSleep` :16（中英各一：CN 的「整段挪到 :30」变异体，加上中英
+ *  「一起退化成裸行号」那一例是**逐字替换**这两处的文本 ⇒ 两处都得留）。**T-b2 的注释把保留面写成 4 个键
+ *  （只算 termination 的两组），漏了 `defaultSleep` 那两处**——那两处同样被自测逐字依赖。
+ *  `--verbose` 可复核：出现 13 次 / 唯一 10 处 / 豁免 4 处 ⇒ **6**。 */
+const BARE_LINE_REF_BASELINE = 6;
 
 /** 棘轮生效值：从**本脚本自己的文本**里读 `BARE_LINE_REF_BASELINE`（走 `textOf`，所以 `--self-test`
  *  能把这个常量临时改小来证「它真的是锁」：调低到低于实测值必须红，改回来必须绿）。
@@ -5158,9 +5187,9 @@ const SELF_TEST_CASES = [
     expectGreen: true,
   },
   {
-    label: "#286 越界必红：CN 契约的 orchestrator.js:3230-3233 改成 99999-3233（唯一区间数不变 → 只有越界这条红）",
-    overlay: { [CONTRACT_CN]: (t) => t.split("src/loop/orchestrator.js:3230-3233").join("src/loop/orchestrator.js:99999-3233") },
-    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/orchestrator\.js:99999-3233，但该文件只有 \d+ 行/],
+    label: "#286 越界必红：CN 契约的 terminationReasonForAction 区间 :111 改成 99999-111（唯一区间数不变、区间仍与声明处相交 → 只有越界这条红）",
+    overlay: { [CONTRACT_CN]: (t) => t.split("src/loop/termination.js:111").join("src/loop/termination.js:99999-111") },
+    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/termination\.js:99999-111，但该文件只有 \d+ 行/],
     expectFiles: [CONTRACT_CN],
   },
   {
@@ -5281,15 +5310,15 @@ const SELF_TEST_CASES = [
   // 前者从前是漏洞：`:0-1` 的结尾 1 永远不超过文件行数 ⇒ 零条红（主 agent 注入实测过）。
   // 后者从前是 `continue`：目标文件不存在就跳过，于是「文件改名/被删 + 还留着行号」静默放行。
   {
-    label: "#286 返工 R3 下界：把 CN 契约的 notes-port.js:246-253 写成 :0-1 ⇒ 必须红（从前零条红，`:0` 在越界判据里永远不越界）",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("src/store/notes-port.js:246-253", "src/store/notes-port.js:0-1") },
-    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/store\/notes-port\.js:0-1 的行号不合法——行号必须 \*\*≥ 1\*\*/],
+    label: "#286 返工 R3 下界：把 CN 契约的 terminationReasonForAction 区间写成 :0-111 ⇒ 必须红（从前零条红，`:0` 在越界判据里永远不越界；结尾仍与声明处相交，所以只有下界这条红）",
+    overlay: { [CONTRACT_CN]: (t) => t.replace("src/loop/termination.js:111", "src/loop/termination.js:0-111") },
+    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/termination\.js:0-111 的行号不合法——行号必须 \*\*≥ 1\*\*/],
     expectFiles: [CONTRACT_CN],
   },
   {
-    label: "#286 返工 R3 不存在：把 CN 契约的一处目标改成 src/loop/__no_such_probe__.js ⇒ 必须红（从前是 continue 静默跳过）",
-    overlay: { [CONTRACT_CN]: (t) => t.replace("src/loop/orchestrator.js:3230-3233", "src/loop/__no_such_probe__.js:3230-3233") },
-    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/__no_such_probe__\.js:3230-3233，但 .*在本仓不存在——裸行号没有可核对的真值/],
+    label: "#286 返工 R3 不存在：把 CN 契约的一处目标改成 src/loop/__no_such_probe__.js ⇒ 必须红（从前是 continue 静默跳过；同一坐标的符号锚点也会点名「文件不存在」，属同一处坏坐标）",
+    overlay: { [CONTRACT_CN]: (t) => t.replace("src/loop/termination.js:111", "src/loop/__no_such_probe__.js:111") },
+    expect: [/bare-lines: docs\/host-consumer-contract_cn\.md:\d+ 引用 src\/loop\/__no_such_probe__\.js:111，但 .*在本仓不存在——裸行号没有可核对的真值/],
     expectFiles: [CONTRACT_CN],
   },
 

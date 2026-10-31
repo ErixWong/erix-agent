@@ -113,9 +113,9 @@ storage.
 Worked example — tool duration, the claim that misled touwaka:
 
 - The engine stamps `duration` (milliseconds) into `execution.metadata` for
-  every executed tool (`src/loop/run-snapshot-executor.js:99` and
-  `:116`) and flattens that metadata onto the `tool_result` block
-  (`src/loop/run-snapshot-executor.js:325-330`). It has done so since well
+  every executed tool (`createRunSnapshotExecutor` (`src/loop/run-snapshot-executor.js`), via
+  `normalizeExecutionResult` (`src/loop/run-snapshot-executor.js`)) and flattens that metadata onto the `tool_result` block
+  (`normalizeExecutionResult` (`src/loop/run-snapshot-executor.js`)). It has done so since well
   before 0.14 (`git log -S "metadata.duration" -- src/`), so this is **not** a
   0.17 addition either.
 - That value lives **inside the stored messages**. There is no top-level
