@@ -198,7 +198,10 @@ scripts/          # experiment scripts and results
   function, or past the end of the file, stayed green (the contract pointed at line 398 of `src/store/notes.js`, a file that is 383 lines long). Three anchors now hold that line, all wired into `--self-test`:
   *`symbol-anchor`* is *per-occurrence*: every `` `symbol` (`path`) `` or `[symbol](path)` reference must find a real
   declaration of that symbol **in that file** (`function` / `class` / `const|let|var` binding / destructuring /
-  re-export / method / object key / `process.env.X`). A missing symbol is red and the message names the nearest
+  re-export / method / object key / `process.env.X`). Extraction reads the **code** face only: comments and
+  string literals are masked out first, so a name that appears only inside a comment or a quoted string is *not*
+  a declaration (issue #299 — before that fix, `const X = 1;` written inside a block comment "proved" X was
+  declared, and a quoted name in a comment fed the weak literal tier). A missing symbol is red and the message names the nearest
   symbols actually declared there; a file from which no declaration can be extracted at all is red too (#164:
   no silent pass when ground truth cannot be read). Named string *values* — termination reasons, provider error
   codes — are the one weaker tier and are accepted only in the four files listed with a reason in
