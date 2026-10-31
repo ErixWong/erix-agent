@@ -187,11 +187,39 @@ Two things deliberately **do not** throw, and both are pinned by tests:
 a possibly-undefined field is not punished. The gate runs **before** `modelConfig.resolve` and before
 any other host callback, so a call that is going to throw does not touch the host first.
 
-**Scope of the narrowing**: it applies to the `overrides` parameter only. The direct route's merge —
-`runToolLoop({ assemblyPort, provider })`, where an explicit fine-grained option wins over the
-same-named member the port supplies (`src/loop/option-normalization.js`, issue #177) — is unchanged;
-`test/contract/assembly-port.js` asserts that behaviour for the direct route and asserts the throw
-for the override channel.
+**Scope of the narrowing, and the direct route since 0.30.0 (issue #519)**: the `overrides` parameter
+was the first half. The direct route — `runToolLoop({ assemblyPort, provider })` — was the second, and up
+to and including 0.29.0 it still let an explicit fine-grained option **silently** beat the same-named
+member the port supplies (`src/loop/option-normalization.js`, issue #177). **Since 0.30.0 that call
+throws at startup** instead, under the same rule and with the same three boundaries — only the wording
+follows the entry point:
+
+- **A key the port already supplies** ⇒
+  `runToolLoop option conflicts with the assembly port: "<key>" comes from assemblyPort.<source>
+  (construction) and runToolLoop.<key> (call); pass it in one place only`. The construction-time half is
+  named verbatim: `assemblyPort.provider`, `assemblyPort.tools.definitions`,
+  `assemblyPort.tools.executeTool`, `assemblyPort.store`, `assemblyPort.session`, and
+  `assemblyPort.emit` (for `onEvent`).
+- **The conflict is unconditional**: giving the *same* value twice throws too. Source uniqueness is the
+  thing being protected — two spellings of one knob drift apart sooner or later. There is no deep-equal
+  exemption, and relaxing that is a product decision, not an implementation detail.
+- **`undefined` still means "not given"**, so `{ provider: undefined }` next to a port is not a conflict,
+  and a key the port does **not** produce (`signal`; `store` when the port gives none; `onEvent` when it
+  has no `emit`) is still the legal way to fill the hole.
+
+Three keys deliberately stay outside this gate, each with its own exit: **`modelConfig`** (the
+pre-existing override channel, validated by `validateModelConfigResolver` —
+`assemblyPortOptions(port, { modelConfig })` allows it, so throwing here would make the two routes
+disagree), and the two containers **`config`** / **`capabilities`** (a call-level container still wins
+**wholesale** and reports per-leaf `config_override_conflict` events, as the two sections above
+describe; turning that into a startup throw is a different ruling and is not part of 0.30.0).
+
+**Migration (this is the breaking half of 0.30.0): pick one home per knob.** The port is the
+construction-time home, so a host that used to write `runToolLoop({ assemblyPort, provider })` deletes
+the call-site copy and puts that provider into `createAssemblyPort({ provider, … })` — or, if the value
+really must vary per call, stops passing `assemblyPort` for that run. `test/contract/assembly-port.js`
+asserts the throw for the direct route (the cell that used to assert the silent win) and keeps asserting
+it for the override channel.
 
 Behaviour change to know about in 0.27.0 — a number that was **never published** (the last
 published release is 0.26.0, so everything in this paragraph reaches a host for the first time in
@@ -688,13 +716,13 @@ Five rules govern it:
   answers `unknown config.<group> option: … (… belongs to capabilities.<group>.<leaf>)`, and writing
   one in its real nested home (`config.timing.retry.sleepImpl`) hits the function-value refusal above.
   **This narrowing applies to the new namespace only**:
-  the direct-route precedence rule — an explicit fine-grained option overrides the same-named
-  member the assembly port supplies (`src/loop/option-normalization.js`), e.g.
-  `runToolLoop({ assemblyPort, provider })` still lets the explicit `provider` beat the port's —
-  is unchanged, and `test/contract/assembly-port.js` keeps asserting it for that route
-  ("直连路线的显式 provider 仍覆盖端口 provider"). **The helper's `overrides` parameter is a
-  different story since 0.28.0** (issue #498): `assemblyPortOptions(port, { provider })` now throws
-  at startup instead of silently winning — see "The call-level override channel" above.
+  the direct-route precedence rule (an explicit fine-grained option beating the same-named member the
+  assembly port supplies, `src/loop/option-normalization.js`) is a **different story since 0.30.0**
+  (issue #519): `runToolLoop({ assemblyPort, provider })` now throws at startup instead of letting the
+  explicit `provider` win, and `test/contract/assembly-port.js` asserts that throw for that route.
+  **The helper's `overrides` parameter took the same rule in 0.28.0** (issue #498):
+  `assemblyPortOptions(port, { provider })` also throws at startup instead of silently winning — see
+  "The call-level override channel" above. Two entry points, one rule.
 
   **Where the line runs (issue #497 review R1, the criterion is behavioural):** the capability
   surface is what the host hands in as **behaviour carriers** — functions and port objects the

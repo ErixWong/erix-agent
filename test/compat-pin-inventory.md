@@ -251,6 +251,7 @@
 | `test/loop-tuning-keys-slice-498s3a5.test.js` | 0（容器/白名单面） | #498 S3 `tuning` A5 片的**选项面钉**：三个采样/预算键的旧名反向拒绝（逐字文案 + 新家路径）、混装壳只点一站、**`maxTokenContinuations` 与槽位面同名字段没被本刀动过**（P5，另加装配口 `policy.maxTokens` 与 provider 请求字段两个旁证面）、三向闭合与 schema 自检、禁手抄键数（A2 扫全 `test/`）。**能力面 0 写点**（它不碰任何 `on*` 回调），所以本表这一行是 `0` 而不是数字 |
 | `test/loop-input-keys-slice-498s3a6.test.js` | 0（容器/白名单面） | #498 S3 `input` 组 A6 片的**选项面钉**：`system` 的旧名反向拒绝（逐字文案 + 新家路径 + 数据键里的函数值只点一站）、**`tools` 的闸口二 as-is 钉（G1–G4：函数成员扁平可达 / 规位不可达，两个协议投影都不带它）**、**#527 的闭门钉（G2/G5：`config.input.tools` 作为未知叶子当场拒，文案指向顶层第三站）**、`wrapup` 退回清单的机器派生（S 段）、四向闭合与 schema 自检、禁手抄键数（A2 扫全 `test/`）。**能力面 0 写点**（它不碰任何 `on*` 回调），所以本表这一行是 `0` 而不是数字 |
 | `test/loop-run-slice-498s3a11.test.js` | 0（容器/白名单面） | #498 S3 `run` 组 A11 片的**选项面钉**：小四件的旧名反向拒绝（逐字文案 + 新家路径）、**闸口二八格矩阵（合法形状扁平/规位两侧 exit 0，数组夹函数那一格 as-is）**、数据键里的函数值只点一站、**读侧不动**（引数裁决 / resume 重放 / judge 的写工具集与路径键优先级）、`session` #531 裁决与 `maxTokenContinuations` 撞名归属、四向闭合与 schema 自检、禁手抄键数（A3 扫全 `test/`）。**能力面 0 写点**（它不碰任何 `on*` 回调），所以本表这一行是 `0` 而不是数字 |
+| `test/loop-direct-route-conflict-519.test.js` | 4 | #519 的**直连路线冲突闸口钉**：三格（两边不同值抛并点名两个来源 / 一边 `undefined` 不抛 / 两边同值也抛）+ 例外清单恰三项 + 覆盖面自洽（端口产出的每个键要么被闸口拦住、要么在例外清单里）。写点全部落在**活**选项上（`onEvent` 在调用点那一侧是合法的补洞写法），不是退役扁平键 ⇒ 登记备查、不许迁 |
 | `test/loop-context-on-fold-summary-retired-499.test.js` | 8 | #499 的**范围钉**：`context.onFoldSummary` 退役、**顶层扁平 `onFoldSummary` 必须还在**（它 `import` 了 `RUN_TOOL_LOOP_OPTION_NAMES` 并断言 `includes("onFoldSummary")`）⇒ S9 之前这里必须保持扁平 |
 
 
@@ -419,7 +420,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 > 已全部迁完（各自的迁移前基线见对应清单），所以它们的文件在这里**不出现**——`--verify` 逐文件对账
 > 的仍然是「表列写点 == AST 写点」，行不在表里就意味着该文件 0 点。
 >
-> 表里剩下 4 类、24 个文件、**172** 点，全部**不是 S7 的活**（见各行「分类」列的理由）。
+> 表里剩下 4 类、25 个文件、**176** 点，全部**不是 S7 的活**（见各行「分类」列的理由）。
 
 | 文件 | 写点 | 明细 | 分类 |
 | --- | --- | --- | --- |
@@ -434,6 +435,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-context-on-fold-summary-retired-499.test.js` | 8 | `onFoldSummary`×7, `onEvent`×1 | COMPAT-PIN |
 | `test/providers/v020-beta.test.js` | 8 | `onEvent`×2, `onReasoningDelta`×2, `onToolCall`×2, `onUsage`×2 | MIGRATE · NOT-OPTION-SURFACE（非 runToolLoop 选项面，无规位） |
 | `test/loop-capabilities-ports-hooks-498s4c.test.js` | 4 | `onEvent`×4 | COMPAT-PIN |
+| `test/loop-direct-route-conflict-519.test.js` | 4 | `onEvent`×4 | COMPAT-PIN |
 | `test/loop-deliverables-gap-435.test.js` | 5 | `deliverables`×5 | COMPAT-PIN |
 | `test/providers/openai-stream.test.js` | 6 | `onEvent`×2, `onReasoningDelta`×2, `onDelta`×1, `onUsage`×1 | MIGRATE · NOT-OPTION-SURFACE（非 runToolLoop 选项面，无规位） |
 | `test/cli.test.js` | 2 | `finalGuard`×2 | OWNED-BY-S5 |
@@ -460,14 +462,14 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `MIGRATE · S7c`（**本刀已迁完 90 点中的 87**；另 3 点重分类，见下条） | 17 | 0 |
 | `MIGRATE · 含 COMPAT-PIN 格`（迁搭台写点，**逐格**跳过选项面断言） | 3 | 38 |
 | `MIGRATE · NOT-OPTION-SURFACE`（重分类：不是 `runToolLoop` 选项面，**没有规位**） | 9 | 31 |
-| `COMPAT-PIN` | 11 | 69 |
+| `COMPAT-PIN` | 12 | 73 |
 | `OWNED-BY-S5` | 5 | 13 |
 | `OWNED-BY-S6` | 5 | 21 |
-| **合计（现在实测）** | **65** | **172** |
+| **合计（现在实测）** | **66** | **176** |
 
 脚注：
 
-* 写点列和 = `0 + 0 + 0 + 0 + 38 + 31 + 69 + 13 + 21 = 172`，与本列合计逐字相等（`--verify` 逐行核）。
+* 写点列和 = `0 + 0 + 0 + 0 + 38 + 31 + 73 + 13 + 21 = 176`，与本列合计逐字相等（`--verify` 逐行核）。
 * `NOT-OPTION-SURFACE` 这一类的 31 点**不是「没做完」**：它们是 provider `chatStream(...)` 的回调
   （24）、`createProviderSummarizer({ onUsage })`（2）、`run-snapshot-executor` 的 ctx 字段（1）、
   `tool-fact-success-parity` 里 `MIGRATION_TABLE` 的**数据行字段**（1），**加上 S7c 本刀重分类的 3 点**
@@ -834,6 +836,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/cli-delegate-630.test.js` | 3 | `prompt`×1, `session`×1, `tools`×1 |
 | `test/loop-296-user-turn-unrecoverable.test.js` | 1 | `tools`×1 |
 | `test/compact/budget-fallback-643.test.js` | 2 | `strategy`×2 |
+| `test/loop-direct-route-conflict-519.test.js` | 7 | `onEvent`×4, `session`×4, `completion`×1, `tools`×1, `wrapup`×1 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 
