@@ -69,9 +69,11 @@ import {
   buildTimeline,
   DEFAULT_WRITE_TOOL_NAMES,
   INTERCEPT_CONVERSATION_TOKENS,
+  judgeDoneBlocker,
   parseJudgeDecision,
   rawWritePaths,
   renderConversation,
+  roundDeliverableFacts,
 } from "../reflection/judge.js";
 import {
   advanceLastToolCall,
@@ -197,6 +199,21 @@ export { parseReflectionDecision };
  * Governor 历史的估算上限（与 #172 A4 之前的内联 4000 同口径）。
  */
 export const GOVERNOR_HISTORY_TOKEN_LIMIT = 4000;
+
+/**
+ * issue #473：`judge` 判 `done:true` 但**该轮没有交付物正文**时，允许「把它降级成一次 nudge」的次数。
+ *
+ * 为什么必须是一次性配额：不设限的实测形状是「评审恒 done + 该轮恒无正文 ⇒ 剩余轮次全被烧掉」
+ * （#435 评论里记着同一条教训：4 轮烧成 8 次 provider 调用）。一次 nudge 的代价是**一轮**主模型
+ * 请求，而它的收益是让模型真的写出交付正文；给一次就够证明这条路径可行，给两次以上只是把钱花在
+ * 同一个判据上。
+ *
+ * 为什么是**内存态**（不像 `guardExtensionUsed` 那样落盘）：它不新增轮次预算、只把「本来要停」
+ * 改成「再跑一轮」，而轮次本身由 `maxRounds` 兜住 ⇒ 「跑 → 崩 → resume」最多按段重来一次，
+ * 上界仍是 `maxRounds`。落盘要多动 `run-state.js` / `resume-manager.js` 两个模块的字段面，
+ * 与本单的行为变化不成比例。
+ */
+export const JUDGE_DONE_GAP_NUDGE_LIMIT = 1;
 
 /**
  * issue #608：预算装不下工作集时的终局原因。
@@ -1867,6 +1884,8 @@ export async function runToolLoop(options) {
     // 「跑 → 崩 → resume」每次都领一份新配额 = 无界成本，所以它随 run-state 落盘、由
     // `resume-manager.js` 恢复（见 `deterministic.guardExtension`）。
     guardExtensionUsed: false,
+    // issue #473：`judge_done` 的「无交付物正文」降级配额（见 `JUDGE_DONE_GAP_NUDGE_LIMIT`）。
+    judgeDoneGapNudges: 0,
     noToolStreak: 0,
     wrapUpNudged: false,
     errorSeen: new Map(),
@@ -3497,7 +3516,11 @@ export async function runToolLoop(options) {
     );
   };
 
-  const callRoundJudge = async (round, currentL0, { timeoutMs, conversationBudgetTokens } = {}) => {
+  const callRoundJudge = async (round, currentL0, {
+    timeoutMs,
+    conversationBudgetTokens,
+    roundFacts,
+  } = {}) => {
     const l0Facts = [...governorState.l0Facts, { round, ...currentL0 }];
     const recentErrors = l0Facts
       .flatMap((fact) => fact.errorTexts ?? (fact.errorText ? [fact.errorText] : []))
@@ -3534,6 +3557,10 @@ export async function runToolLoop(options) {
               maxExtensions: reflectionMaxExtensions,
               nearLimit,
             },
+            // issue #473：把「本轮这段文本是不是被声明为交付物」作为判据的**输入**交给评审。
+            // 口径来自 `roundDeliverableFacts`（与渲染器同一个 `deliverableKindOfBlock`），
+            // 本文件不重算、也不造第三套分类。
+            roundFacts,
           ),
         }],
       }],
@@ -5179,6 +5206,14 @@ export async function runToolLoop(options) {
     // 身份轮号自增（非 resume 单段调用 budgetRounds 与 rounds 恒等；resume 后 rounds 领先）
     runLoopState.rounds = round;
     const currentRoundMessages = messages.slice(roundStart);
+    // ── issue #473：「这段文本到底是不是被声明为交付物」的唯一口径 ─────────────────────────────
+    // 一次算好、两处读：① 交给评审当**判据输入**（`buildJudgePrompt` 的 `facts`）；
+    // ② 停门自己判 `judge_done`（`judgeDoneBlocker`）。两处读同一个对象，所以不可能出现
+    // 「评审被告知这轮没有交付物、停门却当它有」这种自相矛盾。
+    const roundFacts = {
+      roundDeliverable: roundDeliverableFacts(currentRoundMessages, 0),
+      roundStopReason: roundStopReason ?? "unknown",
+    };
     const currentL0 = extractL0Facts(currentRoundMessages, {
       seenErrors: governorState.errorSeen,
     });
@@ -5226,13 +5261,23 @@ export async function runToolLoop(options) {
     };
     let judgeDecision = runLoopState.interceptJudgeDecision;
     let judgeUsage;
+    // ── issue #473：`judge_done` 的**前置判据**（工单 §2 那条判据链的落点）────────────────────
+    // 它在评审**返回之后**才可能非空（见下面 `else` 分支里的赋值），这里只声明。
+    //   · `judgeDoneBlocker` 拿的就是上面 `roundFacts.roundDeliverable`——与交给评审的那一份
+    //     **同一个对象**（渲染器同一个 `deliverableKindOfBlock`），所以「评审看到的分类」与
+    //     「停门用的分类」不可能分叉；
+    //   · 命中时**不改写 judge 的评分模型/阈值**（工单明禁）：`done`/`confidence` 一字不动，
+    //     只是不拿它当停机许可 ⇒ 降级成一次 nudge，让模型真的把交付正文写出来；
+    //   · 配额见 `JUDGE_DONE_GAP_NUDGE_LIMIT`：用完就回到今天的行为（含 #467 的强制收尾，
+    //     所以「终局正文不再为空」那条保证不被本单吃掉）。
+    let judgeDoneGap = null;
     // end_turn 轮完整评估；工具中途审计的 nearLimit 扩轮决策已由拦截器回传。
     // issue #282（期望 2）：**中止已置位就跳过整次 judge 调用**——judge 是「终局前的增值调用」，用户已按下
     // 停止后再烧一次模型费用毫无收益（停止体感延迟从「一次 LLM 往返」降到「立即」）。跳过之后
     // 终局仍由下方 stop 分支的 aborted 收口（裁决表：docs/termination-decision-table.md）。
     if (runLoopState.roundJudgeEnabled && isEndTurn && !signal?.aborted) {
       try {
-        const judged = await callRoundJudge(round, currentL0);
+        const judged = await callRoundJudge(round, currentL0, { roundFacts });
         judgeDecision = judged.decision;
         judgeUsage = judged.usage;
         const judgeRaw = judged.raw;
@@ -5253,6 +5298,16 @@ export async function runToolLoop(options) {
           });
         } else {
           runLoopState.roundJudgeFailures = 0;
+          // issue #473：`done:true` 只在这一刻才成立，所以前置判据也只能在这一刻算。
+          if (judgeDecision.done === true
+            && judgeDecision.confidence >= JUDGE_DONE_CONFIDENCE_THRESHOLD
+            && isEndTurn
+            && governorState.judgeDoneGapNudges < JUDGE_DONE_GAP_NUDGE_LIMIT) {
+            judgeDoneGap = judgeDoneBlocker({
+              facts: roundFacts.roundDeliverable,
+              selfReport,
+            });
+          }
           const extensionAction = judgeDecision.extend === true
             ? (judgeDecision.direction === "off_track" ? "extend+redirect" : "extend")
             : judgeDecision.extend === false
@@ -5274,10 +5329,15 @@ export async function runToolLoop(options) {
                 : { extendReason: judgeDecision.extendReason }),
               ...(judgeDecision.plan === undefined ? {} : { plan: judgeDecision.plan }),
             },
-            action: judgeDecision.done === true
-              && judgeDecision.confidence >= JUDGE_DONE_CONFIDENCE_THRESHOLD
-              ? "judge_done"
-              : (extensionAction ?? (judgeDecision.done === false ? "nudge" : "continue")),
+            // issue #473：**停门与这条事件读同一个结论**。以前这条事件无条件写
+            // `judge_done`，而真正的停机判据是下面那段；一旦停门开始看交付物分类，事件就会
+            // 在「其实没停」的那一轮里说「停了」——可观测面说谎比没有观测更糟。
+            action: judgeDoneGap !== null
+              ? "nudge"
+              : judgeDecision.done === true
+                && judgeDecision.confidence >= JUDGE_DONE_CONFIDENCE_THRESHOLD
+                ? "judge_done"
+                : (extensionAction ?? (judgeDecision.done === false ? "nudge" : "continue")),
             ...(judgeUsage ? { usage: judgeUsage } : {}),
             ...(typeof judgeRaw === "string" && judgeRaw !== "" ? { raw: judgeRaw } : {}),
           });
@@ -5297,7 +5357,19 @@ export async function runToolLoop(options) {
     }
 
     let action;
-    if (judgeDecision?.done === true
+    if (judgeDoneGap !== null) {
+      // 配额在**落地那一刻**记账（与 guard 补跑桥同一条纪律）：万一下面抛错，「已经领过」这个
+      // 事实不该被抹掉，否则重跑会再领一份。
+      governorState.judgeDoneGapNudges += 1;
+      action = {
+        kind: "nudge",
+        reason: "judge",
+        text: `【Judge 评审意见】评审判「已完成」，但${judgeDoneGap.detail}。`
+          + "请给出真正完成该任务的交付正文（不要只写进度自述或下一步计划）；"
+          + "若确实无法完成，请明确声明不可恢复。",
+        continue: true,
+      };
+    } else if (judgeDecision?.done === true
       && judgeDecision.confidence >= JUDGE_DONE_CONFIDENCE_THRESHOLD
       && isEndTurn) {
       action = {

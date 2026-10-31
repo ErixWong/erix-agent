@@ -316,6 +316,125 @@ function resultContentText(content) {
   return jsonish(content);
 }
 
+// ── issue #473：「这段文本到底是不是被声明为交付物」只有一套口径 ─────────────────────────────
+//
+// 病根（工单 §2 的判据链）：`renderConversation` 自己声明了两种块的**地位不同**——
+//   · `text` 块：`### assistant`，并被 `latestAssistantText` 收进 mandatory 集（「始终保留最新一条
+//     assistant 文本作为交付物」）；
+//   · `reasoning` 块：`### assistant（内部自述，不可作为事实依据）`。
+// 而 `judge_done` 的**停门**两条都不看：同一段字，标成 `text` 就是该轮交付物、标成 `reasoning` 就
+// 「不可作为事实依据」，停门却给它们同一个结论。于是「模型自承缺项」的那段自述可以撑起
+// `done:true / 0.85 > 0.7`，越过 judge 提示词自己写的「必须有工具结果或文本能直接证明目标已完成」。
+//
+// 修法不是再造第三套分类：下面两个常量 + `deliverableKindOfBlock` 就是渲染器那两个分支的**同一份**
+// 判据（渲染器改标签、停门改理由，都读这里），停门只把它当成判据的**输入**。
+
+/** `reasoning` 块在 judge 输入里的标签（渲染器与停门共用同一份字面量）。 */
+export const REASONING_NOT_EVIDENCE_LABEL = "内部自述，不可作为事实依据";
+
+/** 一个内容块在「交付物 / 自述 / 其它」这条轴上的分类。
+ *
+ *  `deliverable_text` = 该轮**交付物**（渲染器把它标成 `### assistant` 并强制保留最新一条）；
+ *  `reasoning` = 内部自述（渲染器把它标成「不可作为事实依据」）；
+ *  `other` = 工具调用/结果、图片、原始块——它们既不是交付物也不是自述。
+ *
+ *  @param {any} block
+ *  @returns {"deliverable_text"|"reasoning"|"other"}
+ */
+export function deliverableKindOfBlock(block) {
+  if (block?.type === "text") return "deliverable_text";
+  if (block?.type === "reasoning") return "reasoning";
+  return "other";
+}
+
+/**
+ * 一轮（或若干条）消息里「交付物正文」与「内部自述」的机器事实（issue #473）。
+ *
+ * 口径与 `renderConversation` **逐条同源**（同一个 `deliverableKindOfBlock`、同样跳过空白块）：
+ *   · `deliverableBlocks` / `deliverableChars` 只数 **assistant** 的 `text` 块（user 的正文是任务
+ *     与引擎控制文本，不是该轮的交付物）；
+ *   · `latestDeliverable` 就是渲染器「始终保留最新一条 assistant 文本」的那一条（去空白后的原值）；
+ *   · `reasoningBlocks` / `reasoningChars` 数 `reasoning` 块——它们是**输入**，不是证据。
+ *
+ *  @param {object[]} messages
+ *  @param {number} [roundStart] 本轮起点（`messages` 的下标）
+ *  @returns {{
+ *   deliverableBlocks:number, deliverableChars:number, latestDeliverable:string,
+ *   reasoningBlocks:number, reasoningChars:number, hasDeliverable:boolean,
+ * }}
+ */
+export function roundDeliverableFacts(messages, roundStart = 0) {
+  const selected = Array.isArray(messages)
+    ? messages.slice(Math.max(0, Number.isSafeInteger(roundStart) ? roundStart : 0))
+    : [];
+  let deliverableBlocks = 0;
+  let deliverableChars = 0;
+  let reasoningBlocks = 0;
+  let reasoningChars = 0;
+  let latestDeliverable = "";
+  for (const message of selected) {
+    const role = String(message?.role ?? "");
+    for (const block of blocksOf(message)) {
+      const kind = deliverableKindOfBlock(block);
+      const body = String(block?.text ?? block?.content ?? "").trim();
+      if (body === "") continue;
+      if (kind === "deliverable_text") {
+        if (role !== "assistant") continue;
+        deliverableBlocks += 1;
+        deliverableChars += Array.from(body).length;
+        latestDeliverable = body;
+      } else if (kind === "reasoning") {
+        reasoningBlocks += 1;
+        reasoningChars += Array.from(body).length;
+      }
+    }
+  }
+  return {
+    deliverableBlocks,
+    deliverableChars,
+    latestDeliverable,
+    reasoningBlocks,
+    reasoningChars,
+    hasDeliverable: deliverableBlocks > 0,
+  };
+}
+
+/**
+ * issue #473：`judge` 说 `done:true` 时，停门要问的那一问——**这段文本到底是不是被声明为交付物**。
+ *
+ * 三类的落点（工单要求「自述 / 自承缺项 / 还需要再跑一步」都必须能落到 `done=false`）：
+ *   1. **自述**（`no_deliverable_text`）：本轮 assistant 的 `text` 块为 0 ⇒ 评审能读到的只有
+ *      `reasoning`，而渲染器对它的口径是「不可作为事实依据」⇒ 本轮没有交付物 ⇒ 不是完成证据。
+ *   2. **自承缺项**（`self_reported_incomplete`）：模型自己的收尾信封 `done:false`（wrapup 协议
+ *      开着时才存在）。它只能**否决**、不能**授予**——「模型自报不算证据」单向成立，所以这里只读
+ *      `=== false` 那一格（`done:true` 不许顶替评审）。
+ *   3. **还需要再跑一步**：**结构性已排除**，不需要第三套判据——`isEndTurn`（`roundStopReason ===
+ *      "end_turn" && !hasToolUse(content)`）本来就是这条停门的前置条件，末轮带 `tool_use` 的轮次
+ *      根本走不到 `judge_done`。这一格写在这里是为了让下一个人不必再猜。
+ *
+ * 返回 `null` = 不拦（评审的 `done:true` 照旧生效）。
+ *
+ * @param {{facts?: {hasDeliverable:boolean, deliverableBlocks:number, reasoningBlocks:number}|null,
+ *   selfReport?: {done?:boolean}|null}} input
+ * @returns {{code:string, detail:string}|null}
+ */
+export function judgeDoneBlocker({ facts, selfReport } = {}) {
+  if (facts !== null && facts !== undefined && facts.hasDeliverable !== true) {
+    return {
+      code: "no_deliverable_text",
+      detail: `本轮没有交付物正文（assistant 正文块 0 个；内部自述 ${facts.reasoningBlocks ?? 0} 块按`
+        + `「${REASONING_NOT_EVIDENCE_LABEL}」口径不能作为完成证据）`,
+    };
+  }
+  if (selfReport !== null && selfReport !== undefined && selfReport.done === false) {
+    return {
+      code: "self_reported_incomplete",
+      detail: "模型自己的收尾信封声明 done:false（自承缺项）——自报只能否决、不能授予完成",
+    };
+  }
+  return null;
+}
+
 /**
  * Render the conversation as plain text for the judge, without the 60/200-char
  * projection used for the timeline. Notes:
@@ -345,17 +464,21 @@ export function renderConversation(messages, { maxTokens = JUDGE_CONVERSATION_TO
     const role = String(message?.role ?? "?");
     for (const block of blocksOf(message)) {
       const type = block?.type;
+      // issue #473：`text` / `reasoning` 这两条分支走**共享分类**（`deliverableKindOfBlock`），
+      // 停门读的是同一个函数 ⇒ 「渲染器说它是交付物」与「停门把它当交付物」不可能分叉。
+      const kind = deliverableKindOfBlock(block);
       let text = "";
-      if (type === "text") {
+      if (kind === "deliverable_text") {
         const body = String(block?.text ?? "").trim();
         if (body === "") continue;
         text = `### ${role}\n${body}`;
         if (role === "user" && firstUserText < 0) firstUserText = sections.length;
         else if (role === "assistant") latestAssistantText = sections.length;
-      } else if (type === "reasoning") {
+      } else if (kind === "reasoning") {
         const body = String(block?.text ?? block?.content ?? "").trim();
         if (body === "") continue;
-        text = `### ${role}（内部自述，不可作为事实依据）\n${body}`;
+        // issue #473：标签与停门读同一个常量，两处不可能说成两句话。
+        text = `### ${role}（${REASONING_NOT_EVIDENCE_LABEL}）\n${body}`;
       } else if (type === "tool_use") {
         const pending = block?.id !== undefined && !resolvedToolUseIds.has(block.id);
         const status = pending ? "（本轮尚未执行，等待结果）" : "";
@@ -414,6 +537,11 @@ export function renderConversation(messages, { maxTokens = JUDGE_CONVERSATION_TO
 /**
  * Build the independent judge's prompt from objective round footprints plus the
  * full conversation when the caller supplies it.
+ *
+ * `facts`（issue #473，纯加法、可缺）：引擎侧本轮的机器事实，目前只有两项——
+ * `roundDeliverable`（`roundDeliverableFacts` 的产物）与 `roundStopReason`。给了它，
+ * 提示词里就多一条「本轮交付物分类」与一条绑定规则（正文块 0 个 ⇒ done 必须为 false）；
+ * 不给（`undefined`）则提示词与今天**逐字相同**——所以既有调用方与既有断言都不受影响。
  */
 export function buildJudgePrompt(
   taskBrief,
@@ -423,6 +551,7 @@ export function buildJudgePrompt(
   recentErrors = [],
   conversationText = "",
   budget = {},
+  facts = undefined,
 ) {
   const entries = Array.isArray(timeline)
     ? timeline
@@ -447,12 +576,26 @@ export function buildJudgePrompt(
   const decisionSchema = nearLimit
     ? '{"done":true|false,"confidence":0-1,"reason":"一句话","evidence":"支撑事实","direction":"on_track|uncertain|off_track","directionReason":"路线判断一句话（可选）","extend":true|false,"extendReason":"扩轮判断依据","plan":"下一步具体动作"}'
     : '{"done":true|false,"confidence":0-1,"reason":"一句话","evidence":"支撑事实","direction":"on_track|uncertain|off_track","directionReason":"路线判断一句话（可选）"}';
+  // ── issue #473：把「这段文本到底是不是被声明为交付物」作为**判据的输入**──────────────────────
+  // 之前评审只看到一段文字，分不出它是交付物还是内部自述（渲染器标了标签，但**规则**没把标签
+  // 变成判据）。现在把机器分类直接摆在前面：`text` 块数 / `reasoning` 块数，并给出绑定规则。
+  // 口径只可能来自 `roundDeliverableFacts`（与渲染器同一个 `deliverableKindOfBlock`），这里不重算。
+  const deliverableFacts = facts?.roundDeliverable;
+  const deliverableLine = deliverableFacts === null || deliverableFacts === undefined
+    ? ""
+    : `本轮交付物分类（引擎机器事实，与渲染器同一套分类）：assistant 正文块 ${Number(deliverableFacts.deliverableBlocks ?? 0)} 个 / ${Number(deliverableFacts.deliverableChars ?? 0)} 字符；内部自述（reasoning）${Number(deliverableFacts.reasoningBlocks ?? 0)} 个 / ${Number(deliverableFacts.reasoningChars ?? 0)} 字符；本轮 stop_reason：${String(facts?.roundStopReason ?? "未知")}。\n`;
+  const deliverableRule = deliverableLine === ""
+    ? ""
+    : `交付物硬规则（与上面的机器分类绑定）：
+- assistant 正文块为 0 ⇒ 本轮**没有交付物**：内部自述按渲染器口径「${REASONING_NOT_EVIDENCE_LABEL}」，done 必须为 false。
+- 本轮正文若只是自述进度、自承缺项（承认还有东西没写/没做）、或声明还需要再跑一步，done 必须为 false。
+`;
   return `【每轮 Judge】你是交付评审者，独立判断任务是否完成。不要执行工具，不要相信模型自报。
 
 任务目标：${Array.from(String(taskBrief ?? "")).slice(0, 2000).join("") || "（未提供）"}
 已运行轮数：${Number.isFinite(rounds) ? rounds : 0}
 ${budgetLine}
-时间线（最新在前）：
+${deliverableLine}时间线（最新在前）：
 ${formatTimeline(recent)}
 写过的文件：${formatFiles(filesWritten)}
 最近验证输出：
@@ -470,7 +613,7 @@ ${conversationText}
       : "判断是否已经满足原始任务目标。若方向错误、关键产物缺失或验证输出不符合目标，done 必须为 false。\n"
   }
 额外判断方向（direction）：看时间线模型是否在合理推进（尝试新方法、接近验证、产物渐进），还是深陷单一实现细节反复调试。direction 只是提示，不影响 done。
-${extensionInstruction}
+${deliverableRule}${extensionInstruction}
 只输出 JSON，不要输出其他文字：
 ${decisionSchema}`;
 }

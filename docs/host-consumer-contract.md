@@ -3385,7 +3385,7 @@ is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 | `termination.reason` | Triggering mechanism (file:line) | Position in the precedence chain | Host switch | Recommended host action |
 |---|---|---|---|---|
 | `end_turn` | governance stop `completion` (`src/reflection/governor.js:118`) or the fall-through stop `complete` (`src/reflection/governor.js:134`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:111`). Inputs: `shouldContinue` (`src/loop/orchestrator.js`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (the end-turn wrap-up block in `src/loop/orchestrator.js`, which calls `normalizeWrapupText` (`src/reflection/wrapup.js`)) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
-| `judge_done` | round judge `done:true` with `confidence >= 0.7` on an end-turn round (`src/loop/orchestrator.js:3357-3365`, `isEndTurn` at `3053`), mapped at `src/loop/termination.js:94` | highest stop in the round: evaluated before the governor, so it outranks stall and completion | `reflection:false`, `reflection:{roundJudge:false}`, `ERIX_NO_ROUND_JUDGE=1`, `ERIX_NO_REFLECTION=1` (`src/loop/orchestrator.js`). Note reflection auto-enables at `maxRounds >= 16` (`src/loop/orchestrator.js`, `src/loop/reflection.js:8`) | **accept then verify**: this is a model-side claim, not a check. Route it through `finalGuard` / CI before downstream use |
+| `judge_done` | round judge `done:true` with `confidence >= 0.7` on an end-turn round (`src/loop/orchestrator.js:3357-3365`, `isEndTurn` at `3053`), mapped at `src/loop/termination.js:94`. **Since issue #473** it also requires that the judged round produced a **deliverable** (`text`) block, or that the model's own envelope did not say `done:false` — see step 6 of the round chain above | highest stop in the round: evaluated before the governor, so it outranks stall and completion | `reflection:false`, `reflection:{roundJudge:false}`, `ERIX_NO_ROUND_JUDGE=1`, `ERIX_NO_REFLECTION=1` (`src/loop/orchestrator.js`). Note reflection auto-enables at `maxRounds >= 16` (`src/loop/orchestrator.js`, `src/loop/reflection.js:8`) | **accept then verify**: this is a model-side claim, not a check. Route it through `finalGuard` / CI before downstream use |
 | `no_tool` | governance stop `noTool` (`src/reflection/governor.js:122`), gated by `noToolRound` (`src/loop/orchestrator.js`) and a streak `>= maxNoToolRounds`, default 3 (`maxNoToolRounds` at `src/loop/orchestrator.js`) | below the completion stop, above the `complete` fall-through | `completion:false` makes `noToolRound` permanently false, so the reason becomes **unreachable** and the run ends `end_turn` instead; `completion:{maxNoToolRounds:n}` moves the threshold (`0` stops on the first occurrence) | **retry / re-prompt**: the run stopped with no completion claim and `truncated:false`, so nothing was truncated — it stalled in prose. Alert if it repeats |
 | `stall` | identical tool-call signature inside the detection window (`src/loop/orchestrator.js:2712-2726`), streak accumulation (`src/loop/orchestrator.js:2763-2770`), stop at `src/reflection/governor.js:67-70` with `STALL_STREAK_LIMIT = 3` (`src/reflection/governor.js:3`), mapped at `src/loop/termination.js:97` | second-highest stop — only `continuation_exhausted` outranks it; deliberately ordered above the wrap-up and repeated-error nudges so it cannot be starved (`src/reflection/governor.js:65`) | `stallDetection:false` makes it **unreachable** (`errorHashes` at `src/loop/orchestrator.js`); `stallDetection:{window,mode}` re-tunes it; `ERIX_STALL_MODE` overrides the mode unless the option is `false` | **alert + retry differently**: `truncated:true`, so never accept the text as an answer. The host's own repeat-guard should trip here |
 | `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`continuationExhausted` at `src/loop/orchestrator.js`, loop at `2635`); governance stop `cap` (`src/reflection/governor.js:62-64` / `133-135`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:116`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`messageRounds` at `src/loop/orchestrator.js`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
@@ -3453,6 +3453,39 @@ Within one round, exactly one mechanism gets to decide, in this order
    `judge_done`, and a `max_tokens` round can never produce both `judge_done`
    and `continuation_exhausted` (the mapping prefers `judge_done` anyway,
    `src/loop/termination.js:94`).
+   **Since issue #473 the stop has a precondition: `done:true` is not by itself
+   a stop permit** — the engine also asks whether *this round's text is a
+   declared deliverable*. The classification is the renderer's own and has one
+   implementation (`deliverableKindOfBlock` / `roundDeliverableFacts` in
+   `src/reflection/judge.js` — the same function `renderConversation` uses to
+   label a block `### assistant` versus "internal self-talk, not factual
+   evidence"), so the judge input and the stop gate cannot disagree about what
+   counts as a deliverable. Two classes block the stop: **(a) no deliverable
+   text** — zero non-empty `assistant` `text` blocks in the judged round, i.e.
+   the only thing the judge could have read is `reasoning`, which the renderer
+   itself declares inadmissible as evidence; **(b) self-reported incomplete** —
+   the model's own wrap-up envelope says `done:false` (only when the wrap-up
+   protocol is on). Self-report can **veto** a stop, never grant one, which is
+   the same one-way rule the prompt states ("do not trust the model's own
+   report"). The third class the prompt names — "still needs one more step" —
+   needs no separate criterion: `isEndTurn` already excludes every round that
+   carries a `tool_use`, so such a round never reaches this gate.
+   A blocked verdict is **downgraded to one nudge, never rewritten**: `done`
+   and `confidence` are left untouched (issue #473 explicitly forbids touching
+   the judge's scoring model or threshold), the loop continues with a control
+   message naming the reason, and the run can still reach `judge_done` on the
+   next round if that round really delivers. The downgrade is rationed to **one
+   per run** (`JUDGE_DONE_GAP_NUDGE_LIMIT` in `src/loop/orchestrator.js`); once
+   the quota is spent the pre-#473 behaviour returns, including the issue #467
+   forced wrap-up, so "a `judge_done` run never ends with an empty body" is
+   preserved rather than traded away. The same classification is fed **into**
+   the judge prompt (the `facts` argument of `buildJudgePrompt`: block counts,
+   character counts, `stop_reason`, plus a rule that binds "zero deliverable
+   blocks" to `done:false`), so the model-side verdict and the machine-side gate
+   read one set of facts; a caller that omits `facts` gets a byte-identical
+   prompt to the one it had before. Observability follows the real decision: in
+   a downgraded round the `onJudge` record reports `action: "nudge"` instead of
+   `judge_done` (it used to claim the run stopped while the run continued).
 7. **post-stop verification** — after a stop reason exists, forced wrap-up may
    add one more provider call for the six wrap-up-eligible reasons — the three
    non-continuable ones plus `judge_done` (issue #467) plus `end_turn` and

@@ -2694,7 +2694,7 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `termination.reason` | 触发机制（file:line） | 在优先级链中的位置 | 宿主开关 | 推荐宿主动作 |
 |---|---|---|---|---|
 | `end_turn` | 治理层 stop `completion`（`src/reflection/governor.js:118`）或兜底 stop `complete`（`src/reflection/governor.js:134`），均由 `terminationReasonForAction` 映射（`src/loop/termination.js:111`）。输入：`shouldContinue`（`src/loop/orchestrator.js`）、`completionSignalDetected`（来自 wrapup 信封 `done:true`、`completion.signals` 关键词命中，或 LLM 归一化器（`src/loop/orchestrator.js` 的 end-turn 收尾块，内部调 `normalizeWrapupText`（`src/reflection/wrapup.js`））） | 轮内优先级**最低**的 stop——其余 stop 与 nudge 都先被试过，且本轮 judge 可以用 `judge_done` 抢走它（`src/loop/orchestrator.js:3357-3365`） | 不可关（它是正常成功出口）。`wrapup:false` 拆掉 JSON 信封通路（`src/loop/orchestrator.js`）；`completion:{signals:[…]}` 拓宽关键词探测（`src/loop/orchestrator.js`） | **接受**，但必须先看 `verification.status`——`end_turn` 本身不是交付证明 |
-| `judge_done` | 本轮 judge `done:true` 且 `confidence >= 0.7` 且发生在 end-turn 轮（`src/loop/orchestrator.js:3357-3365`，`isEndTurn` 在 3053），映射在 `src/loop/termination.js:94` | 轮内**最高**的 stop：先于治理层评估，因此压过 stall 与 completion | `reflection:false`、`reflection:{roundJudge:false}`、`ERIX_NO_ROUND_JUDGE=1`、`ERIX_NO_REFLECTION=1`（`src/loop/orchestrator.js`）。注意 `maxRounds >= 16` 时 reflection 默认自动开启（`src/loop/orchestrator.js`、`src/loop/reflection.js:8`） | **先接受再核验**：这是模型侧的主张而不是检查。交给下游前先过 `finalGuard` / CI |
+| `judge_done` | 本轮 judge `done:true` 且 `confidence >= 0.7` 且发生在 end-turn 轮（`src/loop/orchestrator.js:3357-3365`，`isEndTurn` 在 3053），映射在 `src/loop/termination.js:94`。**issue #473 起**还要求被判的那一轮产出了**交付物**（`text`）块，或模型自己的信封没有写 `done:false`——见上文轮内链条第 6 步 | 轮内**最高**的 stop：先于治理层评估，因此压过 stall 与 completion | `reflection:false`、`reflection:{roundJudge:false}`、`ERIX_NO_ROUND_JUDGE=1`、`ERIX_NO_REFLECTION=1`（`src/loop/orchestrator.js`）。注意 `maxRounds >= 16` 时 reflection 默认自动开启（`src/loop/orchestrator.js`、`src/loop/reflection.js:8`） | **先接受再核验**：这是模型侧的主张而不是检查。交给下游前先过 `finalGuard` / CI |
 | `no_tool` | 治理层 stop `noTool`（`src/reflection/governor.js:122`），门在 `noToolRound`（`src/loop/orchestrator.js`）且连续数 `>= maxNoToolRounds`（默认 3，`maxNoToolRounds`，`src/loop/orchestrator.js`） | 在 completion stop 之下、`complete` 兜底之上 | `completion:false` 使 `noToolRound` 恒为 `false`，此 reason 因此**不可达**，run 会改以 `end_turn` 结束；`completion:{maxNoToolRounds:n}` 可调阈值（`0` 为首次即停） | **重试 / 重新提问**：既没声明完成、`truncated` 又为 `false`（什么都没被截断）——它只是在散文里空转。反复出现则告警 |
 | `stall` | 同一工具调用签名在处理窗口内重复（`src/loop/orchestrator.js:2712-2726`）叠加 streak 累加（`src/loop/orchestrator.js:2763-2770`），stop 在 `src/reflection/governor.js:67-70`，`STALL_STREAK_LIMIT = 3`（`src/reflection/governor.js:3`），映射在 `src/loop/termination.js:97` | 仅次于 `continuation_exhausted` 的 stop；设计上就高于收尾/错误重复 nudge，不能被饿死（`src/reflection/governor.js:65`） | `stallDetection:false` 使其**不可达**（`errorHashes`，`src/loop/orchestrator.js`）；`stallDetection:{window,mode}` 可调；`ERIX_STALL_MODE` 覆盖 mode（选项为 `false` 时不覆盖） | **告警 + 换思路重试**：`truncated:true`，不要把文本当答案接受。宿主自己的重复检测应当在这一点上触发 |
 | `continuation_exhausted` | provider 连续返 `max_tokens` 且补全预算耗尽（`continuationExhausted`，`src/loop/orchestrator.js`，循环在 2635）；治理层 stop `cap`（`src/reflection/governor.js:62-64` / `133-135`）被映射成本 reason，**优先于** `max_rounds_cap`（`src/loop/termination.js:116`） | 两个治理入口的**首要**检查——链顶 | `maxTokenContinuations`（`messageRounds`，`src/loop/orchestrator.js`，默认 3；`0` 使首次 `max_tokens` 就终局） | **用更多输出空间重试**（抬高 `maxTokens`/`maxOutputTokens`），或接受部分文本并告警；`truncated:true` |
@@ -2752,6 +2752,25 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
    （`src/loop/orchestrator.js`）。工具轮因此永远不可能产生 `judge_done`；
    `max_tokens` 轮也不可能同时产生 `judge_done` 与 `continuation_exhausted`
    （映射先优 `judge_done`，`src/loop/termination.js:94`）。
+   **issue #473 起这条停门多了一道前置判据：`done:true` 本身不是停机许可**——引擎还要问
+   「本轮这段文本到底是不是被声明为交付物」。这套分类是**渲染器自己的那一份**、只有一处实现
+   （`src/reflection/judge.js` 的 `deliverableKindOfBlock` / `roundDeliverableFacts`，与
+   `renderConversation` 把块标成 `### assistant` 还是「内部自述，不可作为事实依据」用的是同一个
+   函数），所以评审输入与停门不可能对「什么算交付物」给出两种答案。两类会拦住停门：
+   **（a）没有交付物正文**——被判的那一轮里 assistant 的非空 `text` 块为 0，评审能读到的只有
+   `reasoning`，而渲染器自己声明它不可作为事实依据；**（b）自承缺项**——模型自己的收尾信封写着
+   `done:false`（只在收尾协议开着时存在）。自报只能**否决**、不能**授予**，与提示词里那句
+   「不要相信模型自报」是同一条单向规则。提示词点名的第三类「还需要再跑一步」**不需要**单独判据：
+   `isEndTurn` 已经把任何带 `tool_use` 的轮次排除在外，那种轮次根本到不了这道门。
+   被拦下的裁决**降级成一次 nudge，而不是被改写**：`done` 与 `confidence` 一字不动（issue #473
+   明确禁止动评审的评分模型与阈值），循环带着一条点名原因的引擎控制消息继续，下一轮真交付了照样
+   可以走到 `judge_done`。降级**每 run 只给一次**（`src/loop/orchestrator.js` 的
+   `JUDGE_DONE_GAP_NUDGE_LIMIT`）；配额用完之后回到 #473 之前的行为，包含 issue #467 的强制收尾
+   ——所以「`judge_done` 的 run 终局正文不再为空」这条保证是被**保住**的，不是被换掉的。同一份
+   分类也**喂进**评审提示词（`buildJudgePrompt` 的 `facts` 入参：块数、字符数、`stop_reason`，外加
+   一条把「正文块为 0」绑到 `done:false` 的规则），于是模型侧结论与机器侧闸门读的是同一组事实；
+   不传 `facts` 的调用方拿到的提示词与今天**逐字相同**。可观测面跟着真实决策走：被降级的那一轮
+   `onJudge` 记录报的是 `action: "nudge"`，不再是「run 明明没停、记录却说停了」的 `judge_done`。
 7. **停止后验证**——stop reason 定下来后，六个可收尾 reason（三条不可续跑的 +
    `judge_done`（issue #467）+ `end_turn` / `no_tool`（issue #475，只在整个 run 一个
    字都没写过时才会走到））可能多一次强制收尾的 provider 调用，且只在
