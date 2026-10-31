@@ -57,8 +57,9 @@
 | M7 | abort 分类（`aborted` 永不重试） | `src/providers/errors.js` | 173 | `67dc3cfd6103` | 1 | `  if (isAbortException(err, opts.signal)) {` | `  if (false && isAbortException(err, opts.signal)) {` | `test/app-container-p0.test.js` | `classifies AbortError and aborted signals as non-retryable aborted errors` |
 | M8 | sessionScanPrefix 哈希式（`-c` 靠它筛会话） | `bin/session-scan.js` | 41 | `df9e0af01aee` | 1 | `  const hash8 = createHash("sha256").update(normalizedCwd).digest("hex").slice(0, 8);` | `  const hash8 = createHash("sha256").update(normalizedCwd).digest("hex").slice(0, 7);` | `test/session-scan.test.js` | `sessionScanPrefix 就是` |
 | M9 | state-view 接线侧的字段清单（漏一项 ⇒ 该字段在 ctx 上变成 `undefined`） | `src/loop/orchestrator.js` | 3754 | `ed509a147bf5` | 1 | `      "toolErrorCount",` | `      "toolErrorCountTypo",` | `test/loop-error-budget-cells.test.js` | `errors.tool=2` |
+| M10 | #375 参数错误新出口的事实接线（`max_bytes` 的 received 格断掉 ⇒ 与旧通道对不上） | `src/tools/file-tools.js` | 1594 | `4314da641058` | 1 | `      value: maxBytesRequested,` | `      value: undefined,` | `test/tools/param-error-375.test.js` | `对账 ③ readFile {max_bytes` |
 
-**合计 9 条样本 / 5 个目标文件 / 6 个捕获者**
+**合计 10 条样本 / 6 个目标文件 / 7 个捕获者**
 
 > 单元格里的 `\|` 是**转义的竖线**：markdown 表格里写不出裸 `|`（会把整行拆成多列），所以 M6 锚点里的
 > `||` 存成 `\|\|`，脚本读的时候还原成 `||`。这条转义回环由 `--self-test` 的第 ㉒ 例钉住（不转义 ⇒

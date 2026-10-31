@@ -1122,7 +1122,7 @@ export const FILE_TOOL_DEFINITIONS = [
       + "The floor is a whole-tree minimum rounded down to a multiple of 50 (a promise, not a per-file estimate); median and most come from a fixed sample of those sources and describe that sample, not every file here. "
       + "Wide lines cut this proportionally and CJK cuts hardest (3 UTF-8 bytes per character): "
       + "the most CJK-dense file in that fixed sample (`src/loop/state-view.js`, 37% of its bytes are CJK) fits 4,387 and "
-      + "this tool's own source fits 4,681. "
+      + "this tool's own source fits 4,678. "
       + "Nothing outside this repo "
       + "was measured, so for CJK-heavy code elsewhere fold the formula rather than reusing these numbers. Either way the cap is "
       + "far more than a single `limit` will ask for, so it is rarely what stops you. "

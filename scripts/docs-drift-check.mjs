@@ -2284,8 +2284,12 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  * issue #637（归一化兜底的截断判别）的契约中英成对段落引 `stopReasonOf`（`src/normalization/parse-model-json.js`）
  * ⇒ **+1 组 / +5 处**（契约中英各一处、AGENTS 中英的声称句各一处、脚本头这一处），`--verbose` 实测
  * **180 组 / 546 处**（连量两次相同，不动点）⇒ 下限 179 → **180**。
+ *
+ * issue #375（参数错误的统一出口）的契约中英成对小节引 `paramError` / `paramErrorFacts`
+ * （`src/tools/file-tools.js`）⇒ **+2 组 / +4 处**（契约中英各一处，AGENTS 中英的声称句不带锚点、不计），
+ * `--verbose` 实测 **182 组 / 550 处** ⇒ 下限 180 → **182**。
  */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 180;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 182;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
