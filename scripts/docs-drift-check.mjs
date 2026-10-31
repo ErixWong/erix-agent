@@ -2298,8 +2298,14 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  * （`src/tools/file-tools.js`）⇒ **+2 组 / +4 处**（契约中英各一处，AGENTS 中英的声称句不带锚点、不计），
  * `--verbose` 在**合并后的树**上重算实测 **190 组 / 637 处**（与 #286 T-b2 的 +8 组叠加，两支不取最大值）⇒ 下限 188 → **190**。
  
+ 
+ *
+ *  * issue #308（`response_format` 是透传、不是语法约束保证）的契约中英成对新增一节，引
+ * `applyProviderPayloadOptions`（`src/providers/payload.js`）⇒ **+1 组 / +8 处**（契约中英各四处、
+ * 脚本头这一处），`--verbose` 实测 **181 组 / 554 处**（连量两次相同，不动点）⇒ 下限 180 → **181**。
+ 
  */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 190;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 191;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {

@@ -298,6 +298,17 @@ canonical file and notes factories, and the skill-package loader
 root is passed in as `bundledDir`; the library never infers it from its own file
 location); model-facing retrieval is note-first (`note_list` → `note_read`).
 
+The engine does not implement constrained decoding: `response_format` is forwarded to the
+provider verbatim, and whether the endpoint actually applies it as a grammar / JSON-schema
+constraint is that endpoint's capability — a 200 response is not evidence either way, and
+nothing in this package (no event, no round-record field, no usage counter) reports it. A host
+that needs to rely on the constraint has to check it itself, per model and endpoint, with a
+negative probe (the schema plus a prompt that invites prose) and judge the answer with
+`parseModelJson` / `normalizeModelJson`; the reasoning/thinking shape has to be probed
+separately. The full posture is in
+[docs/host-consumer-contract.md](docs/host-consumer-contract.md), section
+"`response_format` is a passthrough, not a grammar guarantee (issue #308)".
+
 ## Host ports and the error ledger
 
 Four adapter ports are validated once at the composition boundary; the rest of

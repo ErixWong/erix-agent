@@ -241,6 +241,14 @@ src/
 以及技能包 loader（`discoverSkills` / `loadSkill` / `buildSkillTools`，issue #197——内置技能
 目录由调用方以 `bundledDir` 传入，库内不按自身文件层级猜路径）；模型侧取回采用 note-first（`note_list` → `note_read`）。
 
+引擎**不实现约束解码**：`response_format` 只被原样转发给 provider，端点是否真把它当语法 /
+JSON-schema 约束执行，是端点自己的能力——200 既不能证有也不能证无，而本包没有任何东西
+（没有事件、没有轮记录字段、没有用量计数器）会报告它。需要依赖这条约束的宿主必须自己按
+「模型 × 端点」自查：用负例探针（schema 加一段诱导写散文的提示词）发一次，再用
+`parseModelJson` / `normalizeModelJson` 判回文本；带推理/思考的形状要单独再测一遍。
+完整姿势见 [docs/host-consumer-contract_cn.md](docs/host-consumer-contract_cn.md) 的
+「`response_format` 是透传：引擎不做约束解码（issue #308）」一节。
+
 ## 宿主端口与错误账本
 
 组合边界上一次性校验四个适配器端口，其余宿主边界作为显式 `runToolLoop` 选项传入：
