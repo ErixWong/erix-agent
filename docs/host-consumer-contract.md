@@ -4849,7 +4849,11 @@ What a host can code against:
   `toolMarker()` function (Experimental wording, issue #188). Hosts that need a
   stable signal branch on `metadata`, never on a marker substring, and must not
   require keys beyond the list above. `offset` continues a truncated search: pass
-  `metadata.searchNextOffset` back in.
+  `metadata.searchNextOffset` back in. The marker's numbers and these fields are **one value, not
+  two** (issue #208): `max_results=N` in the marker *is* `metadata.searchLimit`, and the
+  continuation `offset=N` *is* `metadata.searchNextOffset` — both are read from a single truncation
+  record in the implementation, and the contract suite asserts the equality field by field, so a
+  marker that disagrees with the ledger is a test failure rather than a wording choice.
 - alias deprecation is a **warning only** in this round (issue #188: tool names
   and input shapes are Stable, so removal needs a major bump). `rg` and `grep`
   append one line at the end of the result,

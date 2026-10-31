@@ -64,6 +64,45 @@ const contentOf = (result) => (result && typeof result === "object" && !Array.is
 /** 取结果里的 metadata（别名/纯字符串结果没有 → undefined）。 */
 const metadataOf = (result) => (result && typeof result === "object" && !Array.isArray(result) ? result.metadata : undefined);
 
+/**
+ * issue #208（收缩后的内核）：把截断 marker 文本里**声称的数字**取回来，与 `metadata` 的同名字段逐项对账。
+ *
+ * 病根：这两个数从前在实现里各算一遍（`offset + hits.length` 在 `metadata.searchNextOffset` 与 marker 的
+ * `offset=N` 各写一份），改一处忘另一处就是「文案说 3、账目说 4」——模型与宿主各拿一个数。
+ * 判据只认**本模块的截断 marker**（`[命中过多，已按 max_results=N 截断；下一步：… offset=M 继续]`）：
+ * 未截断的结果本来就没有 marker，返回空数组（不把「没 marker」当成不一致）。
+ *
+ * @returns {{field: string, marker: number|string|null, metadata: number|string|undefined}[]} 对不上的字段
+ */
+function truncationMarkerMismatches(content, metadata) {
+  const text = String(content ?? "");
+  const marker = text.split("\n").find((line) => line.includes("命中过多") && line.includes("截断")) ?? null;
+  if (metadata?.searchTruncated !== true) {
+    return marker === null ? [] : [{ field: "searchTruncated", marker, metadata: metadata?.searchTruncated }];
+  }
+  if (marker === null) return [{ field: "marker", marker: null, metadata: "searchTruncated=true" }];
+  const mismatches = [];
+  const limit = marker.match(/max_results=(\d+)/u)?.[1];
+  if (limit === undefined || Number(limit) !== metadata.searchLimit) {
+    mismatches.push({ field: "searchLimit", marker: limit === undefined ? null : Number(limit), metadata: metadata.searchLimit });
+  }
+  const next = marker.match(/offset=(\d+) 继续/u)?.[1];
+  if (next === undefined || Number(next) !== metadata.searchNextOffset) {
+    mismatches.push({ field: "searchNextOffset", marker: next === undefined ? null : Number(next), metadata: metadata.searchNextOffset });
+  }
+  // 命中条数 / 命中文件数：flat 形状每行是 `路径:行号:正文`（#195 的排版，行号后**不带空格**），
+  // marker 与排除账都不长这个样子（它们的数字前面没有 `:`）。
+  const hitLines = text.split("\n").filter((line) => /^.+:\d+:/u.test(line));
+  if (hitLines.length !== metadata.searchHits) {
+    mismatches.push({ field: "searchHits", marker: hitLines.length, metadata: metadata.searchHits });
+  }
+  const files = new Set(hitLines.map((line) => line.slice(0, line.search(/:\d+:/u))));
+  if (files.size !== metadata.searchFiles) {
+    mismatches.push({ field: "searchFiles", marker: files.size, metadata: metadata.searchFiles });
+  }
+  return mismatches;
+}
+
 async function withDirectory(callback) {
   const directory = await makeTmp("erix-file-tools-contract-");
   try {
@@ -1189,6 +1228,62 @@ export function fileToolsContract(label, { createFileTools }) {
       assert.match(all.content, /needle vendor/u);
       assert.match(all.content, /needle git/u);
       assert.equal(all.metadata.searchSkipped.vendorDirectories, 0);
+    });
+  });
+
+  // issue #208（收缩后的内核）：marker 文本里的数字与 `metadata` 里的同名字段必须**逐一相等**。
+  // 它们从前是两处表达式各算一遍（`offset + hits.length` 在 `searchNextOffset` 与 marker 各写一份），
+  // 改一处忘另一处就是「文案说 3、账目说 4」。本切片只钉这一条不变量：R1（结构化结果模型）与
+  // R3（给 `readFile` 补 metadata）已明确暂缓，**不改任何返回类型**（`readFile` 仍是字符串）。
+  test(`${label}: 截断 marker 的数字与 metadata 同名字段逐一相等（#208）`, async () => {
+    await withDirectory(async (cwd) => {
+      await writeFile(path.join(cwd, "alpha.txt"), `${Array.from({ length: 40 }, (_, i) => `needle ${i}`).join("\n")}\n`, "utf8");
+      await mkdir(path.join(cwd, "sub"), { recursive: true });
+      await writeFile(path.join(cwd, "sub", "beta-longer-name.txt"),
+        `${Array.from({ length: 25 }, (_, i) => `needle ${i}`).join("\n")}\n`, "utf8");
+      const tools = createFileTools({ cwd });
+
+      // 两份 fixture 的 path / max_results / offset 都不同：模板占位在这里必然过不了。
+      const cells = [
+        { path: "alpha.txt", max_results: 3, offset: 0 },
+        { path: "sub/beta-longer-name.txt", max_results: 5, offset: 2 },
+      ];
+      for (const cell of cells) {
+        const result = await tools.executeTool("searchText", { pattern: "needle", mode: "literal", ...cell });
+        const mismatches = truncationMarkerMismatches(result.content, result.metadata);
+        assert.deepEqual(mismatches, [],
+          `${JSON.stringify(cell)} 的 marker 与 metadata 对不上：${JSON.stringify(mismatches)}\n${result.content}`);
+        // 独立再钉一次「这一格真的走了截断分支」，否则上面的空数组可能是空跑。
+        assert.equal(result.metadata.searchTruncated, true, `${JSON.stringify(cell)} 应当被截断`);
+        assert.equal(result.metadata.searchHits, cell.max_results);
+        assert.equal(result.metadata.searchNextOffset, cell.offset + cell.max_results);
+        assert.match(result.content, new RegExp(`max_results=${cell.max_results} 截断`, "u"));
+        assert.match(result.content, new RegExp(`offset=${cell.offset + cell.max_results} 继续`, "u"));
+      }
+
+      // 反向证（纯内存，不碰 src）：把**一侧**改歪，检测器必须点名是哪个字段。
+      const sample = await tools.executeTool("searchText", {
+        pattern: "needle", mode: "literal", path: "alpha.txt", max_results: 3,
+      });
+      const doctoredOffset = truncationMarkerMismatches(sample.content,
+        { ...sample.metadata, searchNextOffset: sample.metadata.searchNextOffset + 1 });
+      assert.deepEqual(doctoredOffset.map((m) => m.field), ["searchNextOffset"],
+        `改歪 metadata.searchNextOffset 必须被点名：${JSON.stringify(doctoredOffset)}`);
+      const doctoredLimit = truncationMarkerMismatches(sample.content,
+        { ...sample.metadata, searchLimit: sample.metadata.searchLimit + 1 });
+      assert.deepEqual(doctoredLimit.map((m) => m.field), ["searchLimit"],
+        `改歪 metadata.searchLimit 必须被点名：${JSON.stringify(doctoredLimit)}`);
+      const doctoredContent = truncationMarkerMismatches(sample.content.replace(/max_results=\d+/u, "max_results=9"),
+        sample.metadata);
+      assert.deepEqual(doctoredContent.map((m) => m.field), ["searchLimit"],
+        `改歪 marker 一侧的 max_results 必须被点名：${JSON.stringify(doctoredContent)}`);
+      // 未截断的结果本来就没有 marker：检测器不许凭空报错（也不许把「没 marker」当成没检查）。
+      const notCapped = await tools.executeTool("searchText", {
+        pattern: "needle", mode: "literal", path: "alpha.txt", max_results: 100,
+      });
+      assert.equal(notCapped.metadata.searchTruncated, false);
+      assert.equal(notCapped.metadata.searchNextOffset, undefined);
+      assert.deepEqual(truncationMarkerMismatches(notCapped.content, notCapped.metadata), []);
     });
   });
 
