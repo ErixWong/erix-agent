@@ -3856,7 +3856,10 @@ issue #184/#195 一路在收的那类静默撒谎。具体算账：一个看着�
   仍由单一 `toolMarker()` 函数产出（文案属
   Experimental，issue #188）。需要稳定信号的宿主按 `metadata` 分支，**不要按 marker 子串
   匹配**，也不要要求上面没列出的键。`offset` 用来续读被截断的结果：把
-  `metadata.searchNextOffset` 原样传回来即可。
+  `metadata.searchNextOffset` 原样传回来即可。marker 里的数字与这些字段是**同一个值，不是两个**
+  （issue #208）：marker 的 `max_results=N` 就是 `metadata.searchLimit`，续读的 `offset=N` 就是
+  `metadata.searchNextOffset`——实现里两者读的是同一份截断记录，契约套件逐字段断言相等，所以
+  marker 与账目对不上是**测试失败**，不是文案选择。
 - 本轮弃用只是**告警**（issue #188：工具名与入参形状属 Stable，移除要等 major）。
   `rg` 与 `grep` 会在结果尾部挂一行 `[已弃用 rg：它是 searchText 的薄别名，…]`。拿工具
   输出做逐字相等比较的宿主会看到这一行——它是模型可见变更；CLI 系统提示的工具清单行与

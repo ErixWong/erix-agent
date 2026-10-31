@@ -1526,16 +1526,28 @@ export function createFileTools({
     const note = skipAccountMarker(account, { includeVendor, includeHidden });
     // 截断判据与历史逐字同口径：命中数 == 上限即报截断（#184 之后 rg 用 `results.length >= limit`、
     // grep 用 `truncated || total >= limit`，两者等价，本轮不改语义）。
-    const reachedCap = hits.length >= resultLimit;
+    //
+    // issue #208（收缩后的内核）：截断相关的**真值只算一次**。marker 文本（模型侧唯一通道）与
+    // `metadata`（进 transcript、不上 wire）从前各写了一遍 `offset + hits.length`——两处表达式
+    // 各自演化就会静默漂开（文案说 offset=3、账目说 4，模型与宿主各拿一个数）。现在两边都只读这
+    // 一份 `truncation`，`test/contract/file-tools.js` 另有一条断言逐字段对账。
+    // ⚠ 本切片**不**引入结构化结果模型，也**不**给 `readFile` 补 metadata：`readFile` 仍返回
+    // 字符串（改返回类型是 breaking，见 `return parts.join("\n")`）。
+    const truncation = {
+      truncated: hits.length >= resultLimit,
+      hits: hits.length,
+      limit: resultLimit,
+      nextOffset: offset + hits.length,
+    };
     const metadata = {
       // 结构化账目：**进 transcript、不上 wire**（模型侧唯一的通道仍是 marker 文本）。
-      searchHits: hits.length,
+      searchHits: truncation.hits,
       searchMatchedLines: matched,
       searchFiles: grouped.size,
-      searchLimit: resultLimit,
+      searchLimit: truncation.limit,
       searchOffset: offset,
-      searchTruncated: reachedCap,
-      ...(reachedCap ? { searchNextOffset: offset + hits.length } : {}),
+      searchTruncated: truncation.truncated,
+      ...(truncation.truncated ? { searchNextOffset: truncation.nextOffset } : {}),
       searchSkipped: {
         vendorDirectories: account.vendorDirectories,
         hiddenDirectories: account.hiddenDirectories,
@@ -1546,15 +1558,15 @@ export function createFileTools({
     };
     const wrap = (content) => (emitMetadata ? { content, metadata } : content);
     const truncationMarker = toolMarker("searchTruncated", {
-      limit: resultLimit,
+      limit: truncation.limit,
       // issue #195（主 agent 验收补漏）：CLI 提示词向模型承诺「截断时给出续读 offset」，那这条承诺
       // 必须落在**模型可见**的 marker 上——`metadata` 进 transcript 但不上 wire，首查被截时模型
       // 看不见 offset 只能猜个数。
-      // 追加轮 R5：这个数**三个入口都给**，且与上面的 `searchNextOffset` 是同一个表达式（别名固定
-      // offset=0，所以它就是把「本次返回的命中条数」原样报出来）。区别只在措辞：规范入口说「传
-      // offset=N 继续」（它吃这个参数），别名说「改用 searchText 传 offset=N 继续（本别名不接受
-      // offset）」（#188 的别名口径是不改**入参形状**与命中行正文，不是把真值藏掉）。
-      nextOffset: offset + hits.length,
+      // 追加轮 R5：这个数**三个入口都给**。区别只在措辞：规范入口说「传 offset=N 继续」（它吃这个
+      // 参数），别名说「改用 searchText 传 offset=N 继续（本别名不接受 offset）」（#188 的别名口径是
+      // 不改**入参形状**与命中行正文，不是把真值藏掉）。
+      // issue #208：与 `metadata.searchNextOffset` 同源（都读上面那份 `truncation.nextOffset`）。
+      nextOffset: truncation.nextOffset,
       alias,
     });
 
@@ -1567,12 +1579,12 @@ export function createFileTools({
       for (const [filePath, fileHits] of grouped) {
         sections.push([displayName(filePath), ...fileHits.map((hit) => `${hit.line}: ${hit.text}`)].join("\n"));
       }
-      if (reachedCap) sections.push(truncationMarker);
+      if (truncation.truncated) sections.push(truncationMarker);
       if (note !== undefined) sections.push(note);
       return wrap(sections.join("\n\n"));
     }
     const lines = hits.map((hit) => `${displayName(hit.file)}:${hit.line}:${hit.text}`);
-    if (reachedCap) lines.push(truncationMarker);
+    if (truncation.truncated) lines.push(truncationMarker);
     if (note !== undefined) lines.push(note);
     return wrap(lines.join("\n"));
   };

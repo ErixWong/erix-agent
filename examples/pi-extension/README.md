@@ -183,7 +183,7 @@ pi --extension ./examples/pi-extension/erix-run.ts
   "statusPath": "/tmp/234-e2e/outputs/<runId>/status.json", "quiet": false }
 ```
 
-可机读数据在 `AgentToolResult.details`（照 `pi-subagents` 的 `result.details.progress` 口径——上游 `extension/index.js:137-141`
+可机读数据在 `AgentToolResult.details`（照 `pi-subagents` 的 `result.details.progress` 口径——上游 `pi-subagents:extension/index.js:137-141`
 就是读 `result.details?.progress?.some(e => e.status === "running")` 判「还在跑」的），
 **且 `details` 必须是可 JSON 序列化的纯数据**——宿主（pi）会把它序列化进会话记录 / 转发给订阅者，
 一旦里面混了活对象，序列化一抛就白烧一轮 auto-retry（见「返回结构」节里的
