@@ -110,23 +110,38 @@ const ASSEMBLY_OVERRIDE_CONTAINERS = new Map([
 
 /**
  * 端口派生键的**来源**（只用于错误文案：冲突要点名「两个来源」）。
- * `policy.<key>` 那些不在这里登记，缺省按 `port.policy.<key>` 说。
+ *
+ * 值是**相对来源**，前缀由路线决定：`overrides` 通道说 `port.<suffix>`（issue #498 第 1 条），
+ * 直连路线说 `assemblyPort.<suffix>`（issue #519）——同一个事实、两种入口拼写，所以表只有一份。
+ * `policy.<key>` 那些不在这里登记，缺省按 `<prefix>.policy.<key>` 说。
  * 这份表只影响措辞，**不是**判定依据——判定用的是实际构造出来的选项对象（见
  * `assemblyPortBaseOptions`），所以表里漏一个键只会让文案变粗，不会放过一次冲突。
  *
  * @type {Readonly<Record<string, string>>}
  */
-const ASSEMBLY_DERIVED_ORIGINS = Object.freeze({
-  modelConfig: "port.modelConfig",
-  provider: "port.provider",
-  tools: "port.tools.definitions",
-  executeTool: "port.tools.executeTool",
-  store: "port.store",
+const ASSEMBLY_DERIVED_ORIGIN_SUFFIXES = Object.freeze({
+  modelConfig: "modelConfig",
+  provider: "provider",
+  tools: "tools.definitions",
+  executeTool: "tools.executeTool",
+  store: "store",
   // #544: `runId` / `initialMessages` used to be listed here. They are no longer top-level keys
   // at all (see `assemblyPortDerivedConfigLeaves`), so an entry would be dead weight.
-  session: "port.session",
-  onEvent: "port.emit",
+  session: "session",
+  onEvent: "emit",
 });
+
+/**
+ * 一个端口派生键的来源拼写（issue #498 第 1 条 / #519 共用）。
+ *
+ * @param {string} key
+ * @param {"port"|"assemblyPort"} prefix 路线的入口拼写
+ * @returns {string}
+ */
+function assemblyDerivedOrigin(key, prefix) {
+  const suffix = ASSEMBLY_DERIVED_ORIGIN_SUFFIXES[key];
+  return suffix === undefined ? `${prefix}.policy.${key}` : `${prefix}.${suffix}`;
+}
 
 /**
  * The config leaves the assembly port contributes itself (issue #544).
@@ -567,11 +582,66 @@ function assertAssemblyOverrideConflicts(overrides, base) {
     if (value === undefined) continue;
     if (key === "modelConfig") continue;
     if (base[key] === undefined) continue;
-    const origin = ASSEMBLY_DERIVED_ORIGINS[key] ?? `port.policy.${key}`;
+    const origin = assemblyDerivedOrigin(key, "port");
     throw new TypeError(
       `assembly port option override conflicts with the port: ${JSON.stringify(key)}`
       + ` comes from ${origin} (construction) and overrides.${key} (call);`
       + " pass it in one place only",
+    );
+  }
+}
+
+/**
+ * 直连路线上**不**走冲突闸口的键（issue #519 的射程边界，逐条带理由）。
+ *
+ * 三者都是**既有通道**，各有自己的出口；把它们并进「冲突一律抛」不是本单的裁决：
+ *   · `modelConfig` —— `assemblyPortOptions` 的 `overrides` 里唯一被保留的例外（自带
+ *     `validateModelConfigResolver` 校验）。直连路线把它原样当 `overrides.modelConfig` 传下去，
+ *     所以在这里抛会让 `runToolLoop({ assemblyPort, modelConfig })` 与
+ *     `assemblyPortOptions(port, { modelConfig })` 两条路线**不一致**——而 #519 要的正是同一条规则。
+ *   · `config` / `capabilities` —— 两个容器的冲突出口是**逐叶事件**
+ *     （`config_override_conflict`，#497 / #498 R4 / #545），不是启动期抛：整棵树由调用级赢、
+ *     值不同的叶子各记一条。改这条 = 扩大射程，本单不改（登记在 #519 的报告里）。
+ *     它们在被 `normalizeRunToolLoopOptions` 解构出去之后**根本到不了**本闸口，所以这两项是
+ *     「合并语义」的声明，不是闸口的输入。
+ *
+ * @type {ReadonlySet<string>}
+ */
+export const DIRECT_ROUTE_CONFLICT_EXEMPTIONS = new Set(["modelConfig", "config", "capabilities"]);
+
+/**
+ * 直连路线的同一个键两边各给一次 ⇒ 启动期硬失败（issue #519，与 #518b 的 `overrides` 通道同一条
+ * 规则：来源唯一性本身就是要保的东西）。
+ *
+ * `runToolLoop({ assemblyPort, provider })`：`provider` 既在端口里（构造期）、又在调用点
+ * （`runToolLoop.<x>`）给了一次 —— 以前**静默覆盖**（后写者胜），现在抛，并点名两个来源。
+ *
+ * 三条边界，逐条对应一格判据：
+ *   1. **两边不同值 ⇒ 抛**，点名 `assemblyPort.<x>` 与 `runToolLoop.<x>`；
+ *   2. **一边是 `undefined` ⇒ 不抛**（`undefined` = 「没给」，与既有的 `value !== undefined`
+ *      合并口径同源；代价：拼错且值恰好 `undefined` 抓不到，记录在案）；
+ *   3. **两边同值 ⇒ 也抛**（#518b 的裁决，不引入 deep-equal 豁免）：值相同也意味着两处各写了一次，
+ *      其中一处早晚会漂。放宽只需改一行 + 一格断言，但那是**产品决定**，实现者不顺手加。
+ *
+ * 判定用的是 `assemblyPortOptions` 的**实际产物**（`assembledOptions`），不是一份手抄清单：
+ * 端口给了哪些键是构造出来的事实，漏掉一个是不可能的。代价：本闸口跑在 `modelConfig.resolve`
+ * **之后**（那份产物要等 resolve 完才有），所以一次注定要抛的调用会先跑一次宿主 resolver——
+ * 与 #518b 的「先抛后调」不同，要消掉它得把端口构造拆出来（两处各读一次宿主 getter），不值得。
+ *
+ * @param {Record<string, any>} assembledOptions `assemblyPortOptions` 的产物
+ * @param {Record<string, any>} explicitOptions 调用点给的选项（`assemblyPort` / `config` /
+ *   `capabilities` 已被调用方解构出去）
+ * @returns {void}
+ */
+export function assertDirectRouteConflicts(assembledOptions, explicitOptions) {
+  for (const [key, value] of Object.entries(explicitOptions)) {
+    if (value === undefined) continue;
+    if (DIRECT_ROUTE_CONFLICT_EXEMPTIONS.has(key)) continue;
+    if (assembledOptions[key] === undefined) continue;
+    throw new TypeError(
+      `runToolLoop option conflicts with the assembly port: ${JSON.stringify(key)}`
+      + ` comes from ${assemblyDerivedOrigin(key, "assemblyPort")} (construction)`
+      + ` and runToolLoop.${key} (call); pass it in one place only`,
     );
   }
 }

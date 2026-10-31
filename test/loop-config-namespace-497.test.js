@@ -111,27 +111,35 @@ function runDirect(extra = {}) {
       ...(runIsObject ? { run: { completion: false, ...config?.run } } : {}),
     }
     : config;
-  return sharedRunDirect({
+  const options = {
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
     seed: "go",
     ...rest,
     config: mergedConfig,
-  });
+  };
+  // #519：装配口在场时，调用点的 `provider` / `executeTool` 不再静默压过端口 ⇒ 基座那两份只属于
+  // **直连**路线，端口在场时摘掉（摘的是重复，不是能力）。
+  if (rest.assemblyPort !== undefined) {
+    delete options.provider;
+    delete options.executeTool;
+  }
+  return sharedRunDirect(options);
 }
 
 /** 直连路线的「抛了什么」（不抛返回 null）。 */
 const directError = (extra = {}) => runDirect(extra).then(() => null, (error) => error);
 
 /** 装配口路线：`policy` 在构造期过闸口，`config` 在合并后过同一道展开。 */
-function makePort(policy = {}, { emit } = {}) {
+function makePort(policy = {}, members = {}) {
   return createAssemblyPort({
     modelConfig: { resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1024 }) },
     provider: createFakeProvider(DONE),
     tools: { definitions: [], executeTool: async () => "ok" },
     session: { id: `config-497-${process.pid}` },
-    ...(emit === undefined ? {} : { emit }),
     policy,
+    // #519：需要特定主模型 / 工具集的格子把那份模型放进端口（调用点再写一份现在会抛）。
+    ...members,
   });
 }
 
@@ -859,13 +867,14 @@ test("C6 两个 config 源同时在场：后写者胜（4 轮变 1 轮）+ 逐�
     description: "回显",
     inputSchema: { type: "object", properties: { text: { type: "string" } } },
   }];
-  const port = makePort({ config: { run: { maxRounds: 4 }, tuning: { temperature: 0.1 } } });
+  // #519：主模型 / 工具集由端口供给（调用点再给一份现在会抛）。
+  const port = makePort(
+    { config: { run: { maxRounds: 4 }, tuning: { temperature: 0.1 } } },
+    { provider: createFakeProvider(twoRounds), tools: { definitions: tools, executeTool: async () => "ok" } },
+  );
   const events = [];
   const result = await runToolLoop({
     assemblyPort: port,
-    provider: createFakeProvider(twoRounds),
-    executeTool: async () => "ok",
-    tools,
     // 调用级 config：`run.maxRounds` 与 policy 不同（1 vs 4）、`tuning.temperature` 与 policy 相同。
     // #498 S3 A18：`wrapup` 的扁平写法退役，开关随其他叶子一起写在 `config.input.wrapup`
     // （policy 侧没有 `input` 组 ⇒ 它不参与下面那条冲突清单）。
@@ -958,17 +967,29 @@ test("D3 装配口路线的 policy.config 走同一棵树：能力键 via=assemb
   assert.equal(result.termination.reason, "end_turn");
 });
 
-test("D4 既有 overrides 语义一字未动：显式 provider 仍能盖端口 provider（契约承诺）", async () => {
+// issue #519（**破坏性**）：这条曾经是「直连路线的显式 provider 仍能盖端口 provider（契约承诺）」。
+// 现在两条路线同一条规则：同一个键两边各给一次 ⇒ 启动期抛，点名 `assemblyPort.<x>` 与 `runToolLoop.<x>`。
+test("D4 直连路线与 overrides 通道同一条规则：显式 provider 与端口 provider 冲突 ⇒ 启动期抛（#519）", async () => {
   const port = makePort({});
-  const result = await runToolLoop({
+  const error = await runToolLoop({
     assemblyPort: port,
     provider: createFakeProvider([{ content: [{ type: "text", text: "explicit" }], stopReason: "end_turn" }]),
     // #498 S3 A18: `wrapup` 退役扁平写法，家在 `config.input.wrapup`。
     // #498 S3 A21: `maxRounds` 同样退役扁平写法，家在 `config.run.maxRounds`（并进同一棵树）。
     // #498 S3 A23a: `completion` 也并进这棵 `run` 子树。
     config: { input: { wrapup: false }, run: { maxRounds: 1, completion: false } },
+  }).then(() => null, (caught) => caught);
+  assert.equal(
+    error.message,
+    'runToolLoop option conflicts with the assembly port: "provider" comes from assemblyPort.provider'
+      + " (construction) and runToolLoop.provider (call); pass it in one place only",
+  );
+  // 反向：同一个 run 去掉调用点那份 ⇒ 跑得起来（证明上一格不是「这个 run 本来就不成立」）。
+  const ok = await runToolLoop({
+    assemblyPort: port,
+    config: { input: { wrapup: false }, run: { maxRounds: 1, completion: false } },
   });
-  assert.equal(result.finalText, "explicit");
+  assert.equal(ok.termination.reason, "end_turn");
 });
 
 // ================================================================ E. #496 的闸口吃展开后的表示（判据 5）

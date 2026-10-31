@@ -324,7 +324,8 @@ test("#513 C4：装配路线——`session.initialMessages` 真的被播（可�
     provider,
     session: { id: "s-513-seed", initialMessages: seed },
   }));
-  const result = await runToolLoop({ assemblyPort: port, executeTool: async () => "ok" });
+  // #519：`executeTool` 由端口给，调用点再给一份会抛（以前是静默覆盖）⇒ 只给 `assemblyPort`。
+  const result = await runToolLoop({ assemblyPort: port });
   assert.equal(result.termination.reason, "end_turn");
   const sent = JSON.stringify(provider.requests[0]?.messages ?? []);
   assert.ok(sent.includes("seed-from-session"), "session.initialMessages 必须真的进入请求");

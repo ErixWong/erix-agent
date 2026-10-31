@@ -151,9 +151,31 @@ executeTool({ id, name, input, context, signal })
 整片摊开递进来不会被惩罚。这道闸口在 `modelConfig.resolve` **之前**、也在任何其他宿主回调之前跑——
 注定要抛的调用不会先碰一次宿主。
 
-**收窄的作用域**：只作用于 `overrides` 参数。直连路线的合并——`runToolLoop({ assemblyPort, provider })`
-里显式细粒度选项盖过端口提供的同名成员（`src/loop/option-normalization.js`，issue #177）——一字未动；
-`test/contract/assembly-port.js` 对直连路线照旧断言那条，对覆盖通道断言抛。
+**收窄的作用域，以及 0.30.0 起的直连路线（issue #519）**：`overrides` 参数只是前半刀。后半刀是直连
+路线——`runToolLoop({ assemblyPort, provider })`——到 0.29.0 为止它仍然让显式细粒度选项**静默**盖过端口
+提供的同名成员（`src/loop/option-normalization.js`，issue #177）。**自 0.30.0 起这次调用启动期抛**，
+规则与三条边界完全相同，只有措辞跟着入口走：
+
+- **端口已经产出的键** ⇒
+  `runToolLoop option conflicts with the assembly port: "<key>" comes from assemblyPort.<source>
+  (construction) and runToolLoop.<key> (call); pass it in one place only`。构造期那一半逐字点名：
+  `assemblyPort.provider`、`assemblyPort.tools.definitions`、`assemblyPort.tools.executeTool`、
+  `assemblyPort.store`、`assemblyPort.session`，以及 `onEvent` 的 `assemblyPort.emit`。
+- **冲突无条件抛**：两边给的是**同一个值**也抛。要保的就是来源唯一性——同一个旋钮的两种写法早晚会漂。
+  这里没有 deep-equal 豁免，放宽它是产品决定，不是实现细节。
+- **`undefined` 仍然等于「没给」**：端口旁边写 `{ provider: undefined }` 不算冲突；端口**没有产出**的键
+  （`signal`；端口没给时的 `store`；端口没有 `emit` 时的 `onEvent`）照旧是合法的补洞方式。
+
+三个键刻意留在这道闸口之外，各有各的出口：**`modelConfig`**（既有的覆盖通道，自带
+`validateModelConfigResolver` 校验——`assemblyPortOptions(port, { modelConfig })` 允许它，在这里抛就会让
+两条路线不一致），以及两个容器 **`config`** / **`capabilities`**（调用级容器照旧**整棵**赢，并逐叶发
+`config_override_conflict` 事件，见上面两节；把那条改成启动期抛是另一个裁决，不属于 0.30.0）。
+
+**迁移（这是 0.30.0 的破坏那一半）：一个旋钮只留一个家。** 端口是构造期的家，所以以前写
+`runToolLoop({ assemblyPort, provider })` 的宿主删掉调用点那一份、把该 provider 放进
+`createAssemblyPort({ provider, … })`——如果这个值真的必须每次调用都变，那这一次 run 就别再传
+`assemblyPort`。`test/contract/assembly-port.js` 对直连路线断言抛（那一格以前断言的是「静默赢」），
+对覆盖通道照旧断言抛。
 
 0.27.0 里需要知道的行为变化（**0.27.0 从未发布**——最后一个已发布版本是 0.26.0，所以本段说的一切第一次到达宿主是随 **0.28.0**）：`context` 下拼错的摘要旋钮名、以及上面任一回调字段里的非函数值，以前在
 细粒度路线上是**静默忽略**（run 直接用默认值跑）。现在两者都启动即抛。把回调接出配置树的能力面
@@ -555,12 +577,12 @@ unknown runToolLoop option: "context" (its canonical home is config.folding.cont
   `config.folding.onBeforeFold`）回的是 `unknown config.<group> option: … (… belongs to
   capabilities.<group>.<leaf>)`；写在它真正的嵌套老住处（`config.timing.retry.sleepImpl`）撞的是
   上面那条函数值拒绝。
-  **这条收窄只作用于新命名空间**：直连路线的优先级规则——显式细粒度选项覆盖装配口提供的同名成员
-  （`src/loop/option-normalization.js`），例如 `runToolLoop({ assemblyPort, provider })` 里显式
-  `provider` 仍能盖端口 provider——一字未动，`test/contract/assembly-port.js` 照旧断言它
-  （「直连路线的显式 provider 仍覆盖端口 provider」）。**装配口 helper 的 `overrides` 参数自 0.28.0 起
-  是另一回事**（issue #498）：`assemblyPortOptions(port, { provider })` 现在启动期抛，不再静默取胜者
-  ——见上面「调用期覆盖通道」一节。
+  **这条收窄只作用于新命名空间**：直连路线的优先级规则（显式细粒度选项盖过装配口提供的同名成员，
+  `src/loop/option-normalization.js`）**自 0.30.0 起是另一回事**（issue #519）：
+  `runToolLoop({ assemblyPort, provider })` 现在启动期抛，不再让显式 `provider` 赢，
+  `test/contract/assembly-port.js` 对那条路线断言抛。**装配口 helper 的 `overrides` 参数自 0.28.0 起
+  就已经是这条规则**（issue #498）：`assemblyPortOptions(port, { provider })` 同样启动期抛，不再静默
+  取胜者——见上面「调用期覆盖通道」一节。两个入口，一条规则。
 
   **这条线画在哪里（issue #497 复审 R1，判据是行为面）：** 能力面 = 宿主递进来的**行为载体**——
   引擎**调用或解引用**的函数与端口对象（端口方法被调、信号被监听、回调被投递）。配置面 = 引擎

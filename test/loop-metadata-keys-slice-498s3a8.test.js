@@ -256,8 +256,11 @@ test("P5-a 装配口 policy.* 仍收这四个名字（#545 后它们**翻译**�
   }
   // 真 run：端口交给引擎，预算元数据照旧被 `modelMetadataFor` 读到（不发 model_metadata_missing）。
   const events = [];
+  // #519：装配口在场时调用点再给 `provider` / `executeTool` 会抛；`undefined` 逐字等于「没给」，
+  // 所以两份都显式写成 `undefined`（这正是合并口径 `value !== undefined` 的可观察面）。
   await runDirect({
     provider: undefined,
+    executeTool: undefined,
     assemblyPort: port,
     capabilities: { hooks: { onEvent: (event) => events.push(event) } },
   });

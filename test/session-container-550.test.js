@@ -170,7 +170,8 @@ test("#550 C：session.initialMessages 在直连与装配两条路线都真的�
     provider: portProvider,
     session: { id: "s-550-seed-port", initialMessages: seed },
   }));
-  const portResult = await runToolLoop({ assemblyPort: port, executeTool: async () => "ok" });
+  // #519：`executeTool` 由端口给，调用点再给一份会抛（以前是静默覆盖）⇒ 只给 `assemblyPort`。
+  const portResult = await runToolLoop({ assemblyPort: port });
   assert.equal(portResult.termination.reason, "end_turn");
   assert.ok(sent(portProvider).includes(SEED_TEXT), "装配路线必须播 session.initialMessages");
 
