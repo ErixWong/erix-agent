@@ -678,7 +678,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-capabilities-ports-hooks-498s4c.test.js` | 53 | `wrapup`×14, `context`×8, `reflection`×8, `retry`×6, `judgeProvider`×4, `onEvent`×4, `session`×3, `sleepImpl`×3, `strategy`×3, `tools`×3, `completion`×1 |
 | `test/cli.test.js` | 74 | `session`×36, `prompt`×29, `reflection`×4, `tools`×3, `finalGuard`×2, `completion`×1, `context`×1 |
 | `test/loop-resume.test.js` | 12 | `tools`×8, `resume`×4 |
-| `test/loop-option-gate-496.test.js` | 17 | `context`×7, `onFoldSummary`×7, `finalGuard`×6, `tools`×3, `deliverables`×2, `session`×2, `completion`×1, `partialPersistence`×1, `sleepImpl`×1, `stallDetection`×1, `wrapup`×1 |
+| `test/loop-option-gate-496.test.js` | 18 | `context`×8, `onFoldSummary`×7, `finalGuard`×6, `tools`×3, `deliverables`×2, `session`×2, `completion`×1, `partialPersistence`×1, `sleepImpl`×1, `stallDetection`×1, `wrapup`×1 |
 | `test/loop-config-namespace-497.test.js` | 36 | `onEvent`×13, `reflection`×8, `tools`×6, `session`×4, `completion`×3, `wrapup`×3, `context`×2, `finalGuard`×2, `initialMessages`×2, `resume`×2, `retry`×2, `modelMetadata`×1, `onObserverError`×1, `outputHygiene`×1, `partialPersistence`×1, `stallDetection`×1 |
 | `test/loop-resume-anchor.test.js` | 38 | `completion`×8, `stallDetection`×8, `wrapup`×8, `resume`×7, `tools`×6, `partialPersistence`×1 |
 | `test/loop-v020-rc.test.js` | 3 | `session`×2, `stallDetection`×1 |

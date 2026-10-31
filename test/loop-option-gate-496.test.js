@@ -480,6 +480,56 @@ test("C③ 宿主业务键照旧放行（#469 回归）：两条路线都不抛�
   assert.deepEqual(warning.event.keys, ["workspaceName"], "只报真正未知的那个");
 });
 
+// ================================================================ C④（issue #503）
+//
+// 「装配期已闸、调用期未闸」这一格在**端到端**上的真实形状（本格第一件事就是把条数实测出来，
+// 不预设）：同一个未知键会发**两条** `context_unknown_option` —— 一条来自宿主自己的
+// `createAssemblyPort`，另一条来自 `runToolLoop` 内部的**再装配**：
+// `assemblyPortOptions` 第一行无条件 `const port = createAssemblyPort(input)`（输入就是宿主递进来的
+// 那个端口），所以引擎会把 policy 再校一遍，那条事件也就再发一次。
+//
+// 实测（本格断言的就是这个数）：端到端 **2 条**，两条载荷**逐字相同**（`keys` 都是同一个键）。
+// 以前端到端只断过「≥ 1 且每条点名该键」（#499 的 A 格断的则是**只构造一次端口**的 1 条），
+// 于是「到底几条」在测试里从来没被钉住。
+//
+// 为什么钉 2 而不是去重成 1（两条路都合契约，本单选后者并说明理由）：再装配是**真的**——
+// 引擎对宿主递进来的端口重跑一遍 policy 校验（#545/#498 的防御性再校），事件记的是
+// 「这一次装配看见了什么」，不是「这个键坏了几次」。去重要么弱化那道再校验、要么在端口上藏一个
+// 标记，两者都是行为改动，不在本单（可观测面诚实性）的范围内。本单要做的是把「2 条」从
+// **没测过的传闻**变成**被钉住的事实**，并让契约说同一句话。
+test("C④ 端到端（装配口路线）同一个未知键发**恰好 2 条** `context_unknown_option`：宿主装配 1 条 + 引擎再装配 1 条", async () => {
+  const events = [];
+  const port = makePort(
+    { context: { budgetTokens: 1000, toolContext: { repo: "demo" }, workspaceName: "fde-station" } },
+    { emit: (type, event) => events.push({ type, event }) },
+  );
+  assert.equal(
+    events.filter((entry) => entry.type === "context_unknown_option").length,
+    1,
+    "前提：宿主自己构造端口时发 1 条（#499 的 A 格钉的就是这一格）",
+  );
+
+  const result = await runToolLoop(withSeed({
+    assemblyPort: port,
+    config: { run: { completion: false } },
+  }));
+  assert.equal(result.termination.reason, "end_turn", "前提：这条 run 必须跑完，否则下面的条数没意义");
+
+  const unknown = events.filter((entry) => entry.type === "context_unknown_option");
+  assert.equal(
+    unknown.length,
+    2,
+    `端到端必须**恰好 2 条**（实测 ${unknown.length} 条）：1 条说明引擎再装配不再发事件（那契约要跟着改），`
+      + "3 条说明又多了一次装配",
+  );
+  assert.deepEqual(
+    unknown[0].event,
+    unknown[1].event,
+    "两条载荷逐字相同 ⇒ 宿主没法从载荷区分是哪一次装配发的（这是现状，不是承诺）",
+  );
+  assert.deepEqual(unknown[1].event.keys, ["workspaceName"], "两条都必须点名同一个未知键");
+});
+
 // ================================================================ D. 回调形状（旧位置投递 + 新规则）
 test("D① 承载宿主回调的字段：省略 = 不订阅，给对就**真的被投递**（折叠 / 重试 / 终局 / 交付物四处各断言一次，外加投递失败落 `diagnostics.error`）", async () => {
   // 这一格以前只断言 `finalGuard` 与 `deliverables[].check`，其余 5 个计数器**写了不断言** ⇒
