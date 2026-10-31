@@ -3447,6 +3447,19 @@ is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 | `failed` | any error thrown inside the run lifecycle, via `fail` (`src/loop/orchestrator.js`), loop catch at `3576-3580`, with `termination.errorCode` passed through by `withErrorCode` (`src/loop/termination.js`). A host observer throw is no longer one of those sources (issue #173) | catch-all: it outranks every pending governance decision because the round never completed | `retry:{attempts, backoffBaseMs, backoffMaxMs}` decides how much is retried before this reason appears (`src/loop/orchestrator.js`); the reason itself is not disableable | **branch on `termination.errorCode`** (issue #176): retryable (`timeout`, `rate_limited`, `server`) → backoff retry; `auth` → alert and stop; `invalid_request` / `not_found` / `conflict` (issue #179) → fix the request, the model name, or the colliding resource — re-sending the same payload cannot help; `unknown` → inspect `termination.detail` |
 | `persistence_failed` | same `fail` (`src/loop/orchestrator.js`) path, selected when the error carries persistence info, which also adds `operation` / `phase` / `sideEffect` (`src/loop/orchestrator.js`) | replaces `failed`, never the reverse; carries no `errorCode` (that field is `failed`-only) | `persistence:"none"` removes the transcript write path entirely; optional store capabilities degrade instead of failing (see capability tiers) | **alert**: side effects were tracked, so this is an integrity signal (ADR-013), not a retry candidate |
 
+**An empty `content` array is not the same fact on the two sides of a turn.** On the **user**
+side `content: []` is the only **block-array** shape with no text that still counts as a real
+user turn — any string counts, an empty or all-whitespace one included — while a pure
+`tool_result` carrier does not count; the test is `isRealUserTurn`
+(`src/loop/request-user-view.js`). On the **assistant** side an
+empty `content` is a no-progress round, not a user turn: the engine keeps the empty assistant
+message in the model context and journals it, and the governor books it on the no-progress
+(`no_tool`) streak — `no_tool` once a round really used a tool, `max_rounds_cap` when no
+round ever did. It cannot reach the `stall` row above: that reason is driven by repeated
+identical tool-call signatures, which an empty array cannot produce. Nothing here promises
+that an **upstream** accepts an empty `content` array — the engine was not measured against a
+real relay on that shape, so a host that forwards one owns that risk.
+
 ### Verification status and CLI exit codes
 
 `verification` is a separate axis from the termination reason: an `end_turn` can
