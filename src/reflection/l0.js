@@ -82,7 +82,17 @@ export function extractL0Facts(messages, state = { seenErrors: new Map() }) {
   return fact;
 }
 
+/**
+ * @deprecated issue #429: removed in 0.30 — migrate to `extractL0Facts`
+ *   (this is the same function under an older name).
+ * @type {typeof extractL0Facts}
+ */
 export const extractL0Fact = extractL0Facts;
+/**
+ * @deprecated issue #429: removed in 0.30 — migrate to `extractL0Facts`
+ *   (this is the same function under an older name).
+ * @type {typeof extractL0Facts}
+ */
 export const extractL0 = extractL0Facts;
 
 /**
@@ -115,5 +125,15 @@ export function parseL1Summary(text) {
   };
 }
 
+/**
+ * @deprecated issue #429: removed in 0.30 — migrate to `parseL1Summary`
+ *   (this is the same function under an older name).
+ * @type {typeof parseL1Summary}
+ */
 export const parseSummary = parseL1Summary;
+/**
+ * @deprecated issue #429: removed in 0.30 — migrate to `parseL1Summary`
+ *   (this is the same function under an older name).
+ * @type {typeof parseL1Summary}
+ */
 export const parseReflectionSummary = parseL1Summary;

@@ -274,6 +274,8 @@ export function listRecords(rosterDir) {
  * @param {string} rosterDir
  * @param {string} runId
  * @returns {boolean} 是否真删了文件
+ * @deprecated issue #429: removed in 0.30 — no in-tree replacement; `reconcile`
+ *   只改状态、不删文件，宿主自建归档逻辑前不要依赖本原语。
  */
 export function removeRecord(rosterDir, runId) {
   assertSafeRunId(runId);

@@ -334,6 +334,10 @@ function createRequestContext(timeoutMs, externalSignal) {
  *   extraBody?:Record<string,unknown>,
  * }} options provider construction options
  * @returns {{protocol:"anthropic", model:string, chat:Function, chatStream:Function}}
+ * @deprecated issue #429: removed in 0.30 — no in-tree replacement; the host
+ *   builds the provider object itself (the duck-typed `{protocol, model, chat,
+ *   chatStream}` shape). Deletion also needs a host-side audit first: this is
+ *   the only Anthropic-protocol factory on the public surface.
  */
 export function createAnthropicProvider({
   endpoint,

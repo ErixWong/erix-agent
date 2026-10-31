@@ -24,6 +24,10 @@ const CJK_RANGES = [
 
 export const IMAGE_TOKEN_COST = 1000;
 export const MESSAGE_OVERHEAD = 4;
+/**
+ * @deprecated issue #429: removed in 0.30 — migrate to `MESSAGE_OVERHEAD`
+ *   (this name is a spelling alias of the same constant, not a separate knob).
+ */
 export const MESSAGE_OVERHEAD_TOKENS = MESSAGE_OVERHEAD;
 
 /**
@@ -231,6 +235,8 @@ export function estimateMessageTokens(messages, opts = {}) {
  * @param {Array<{content:string|Array<object>}>} messages
  * @param {EstimateTokenOptions} [opts]
  * @returns {number}
+ * @deprecated issue #429: removed in 0.30 — migrate to `estimateMessageTokens`
+ *   (identical behaviour; this name only exists for the touwaka call site).
  */
 export function estimateMessagesTokens(messages, opts = {}) {
   return estimateMessageTokens(messages, opts);
