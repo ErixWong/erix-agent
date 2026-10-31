@@ -55,7 +55,8 @@
 //   node scripts/agents-directive-scan.mjs --json           # 同一份事实的机器读法（含 `gate` 段）
 //   node scripts/agents-directive-scan.mjs --strict         # 门禁：红数 > 0 ⇒ exit 1；清单拿不到 ⇒ exit 2
 //   node scripts/agents-directive-scan.mjs --strict --json  # 同一道门，机器读法（红集合与退出码同源）
-//   node scripts/agents-directive-scan.mjs --self-test      # 反向证：临时树副本上改一处 ⇒ 红、还原 ⇒ 绿
+//   node scripts/agents-directive-scan.mjs --self-test      # 反向证：**合成树夹具**上注入 `上限 − 实测 + 1` 条 ⇒ 红、还原 ⇒ 绿；
+//                                                          #   同一套用例在三种欠账形态（贴上限 / 余量 +1 / 余量 +5）下裁决必须相同
 
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -628,37 +629,127 @@ function printReport({ report, gate, constants, externalPrefixes, staleConstants
   return gateExitCode(gate, { strict });
 }
 
-// ── 9. 自测（临时树副本 / 纯函数夹具，不碰真文档） ───────────────────────────
+// ── 9. 自测（合成树夹具 / 纯函数夹具，不碰真文档） ───────────────────────────
+/**
+ * 合成树夹具的**内容**（issue #644 ①）。
+ *
+ * 为什么不再拿真 `AGENTS.md` 当注入目标：真面上「实测命中」与 `DEBT_CEILINGS` 之差（= 余量）是**这台机器
+ * 此刻的欠账状态**。旧用例「塞一条 ⇒ 红」隐含「干净面恰好贴在上限上」——B 类从 25 清到 24 之后，注入的
+ * 那一条落进余量 ⇒ 门是绿的，用例却期望红 ⇒ **扫完账，反向证自己变红**（#644 ① 的原话）。
+ *
+ * 合成树把三件事都写进用例：内容在这张表里、上限 = 实测 + `margin`、注入数 = `上限 − 实测 + 1` ⇒
+ * 裁决只依赖夹具，不依赖真树欠了多少（与 `docs-drift-check --self-test` 的树形用例同一个理由，#302）。
+ *
+ * 夹具面必须**三类都有非例外命中**：某一格实测为 0 时给它加余量会撞上「上限 > 0 而实测 0 ⇒ 红」那条
+ * 规矩（空转上限），夹具自己就红了，与注入无关。同理三条例外**各自命中**（否则空转例外红）。
+ */
+const FIXTURE_FILES = Object.freeze({
+  "AGENTS.md": [
+    "# AGENTS（合成树夹具，issue #644 ①；不是真文档）",
+    "",
+    "- 见 issue #642（出处引用，不带状态）——这一句**不算** A 类命中",
+    "- 工单 #900 已落地（夹具里的存量 A 类命中）",
+    "- measured 87 declarations（夹具里的存量 B 类命中）",
+    "- 看 `src/loop/orchestrator.js:4372`（夹具里的存量 C 类命中）",
+    "- `BASELINE_ROOT = 108` 与「实测 108 个类型错误」同句（夹具里的 gate-owned-constant 例外）",
+    "- 历史值：此前实测 122 组 / 346 处（夹具里的 historical-value-label 例外）",
+    "- 看 `pi-subagents:src/runs/background/async-execution.js:9`（夹具里的 external-repo-coordinate 例外）",
+    "",
+  ].join("\n"),
+  "AGENTS_cn.md": [
+    "# AGENTS_cn（合成树夹具，issue #644 ①；不是真文档）",
+    "",
+    "- 工单 #901 已落地（夹具里的存量 A 类命中）",
+    "- 实测 122 组 / 346 处（夹具里的存量 B 类命中）",
+    "- 看 `src/loop/orchestrator.js:4372`（夹具里的存量 C 类命中）",
+    "",
+  ].join("\n"),
+  "CHANGELOG.md": [
+    "# CHANGELOG（夹具：历史一侧只计数、不判定）",
+    "",
+    "- issue #998 已落地；实测 1234 组（同一句式在指令面上是红，在历史一侧是绿）",
+    "",
+  ].join("\n"),
+  "docs/decisions/001-config-adapters.md": [
+    "# ADR-001（夹具：历史一侧只计数、不判定）",
+    "",
+    "- issue #998 已落地；实测 1234 组",
+    "",
+  ].join("\n"),
+  // 门禁常量表的真值来源：`gate-owned-constant` 例外**当场**与这里对账（名字清单从源码推，不抄）
+  "scripts/type-check-ratchet.mjs": "// 夹具：`gateConstantsFrom()` 的真值来源\nconst BASELINE_ROOT = 108;\n",
+  // 外部仓前缀名单的真值来源：`external-repo-coordinate` 例外从这里现读
+  "scripts/docs-drift-check.mjs": [
+    "// 夹具：`externalPrefixesFrom()` 的真值来源",
+    "const EXTERNAL_REPO_PREFIXES = new Map([",
+    '  ["pi-subagents", "夹具里唯一登记在案的外部仓"],',
+    "]);",
+    "",
+  ].join("\n"),
+});
+
+/**
+ * 三种欠账形态（issue #644 ① 的判据：同一份夹具在这三种形态下**裁决必须相同**）。
+ * `margin` = 上限与实测之差；贴上限那一种是 #642 落地时的形态，另两种是「清过账」之后的形态。
+ */
+const DEBT_SHAPES = Object.freeze([
+  { id: "at-ceiling", margin: 0, label: "贴上限（上限 = 实测）" },
+  { id: "with-margin", margin: 1, label: "有余量（上限 = 实测 + 1）" },
+  { id: "ample-margin", margin: 5, label: "余量充足（上限 = 实测 + 5）" },
+]);
+
 async function selfTest() {
-  const pending = [];
-  const t = (name, fn) => pending.push([name, fn]);
   const eq = (actual, expected, what) => {
     if (actual !== expected) throw new Error(`${what}: 期望 ${expected}，实测 ${actual}`);
   };
+  const realTruthFiles = gitTrackedFiles({ root: ROOT, pathspecs: TRUTH_PATHSPECS, suffix: ".mjs", what: "真值清单" });
 
-  // 夹具：把**真实**指令面 + CHANGELOG + 一份 docs 历史文档 + 全部 `scripts/*.mjs` 复制到临时树，
-  // git 用注入的假执行器（真 git 已由「清单拿不到就报错」那例证过）。所有变异都落在副本上。
-  const truthFiles = gitTrackedFiles({ root: ROOT, pathspecs: TRUTH_PATHSPECS, suffix: ".mjs", what: "真值清单" });
-  const surface = gitTrackedFiles({ root: ROOT });
-  const copyList = [...new Set([...surface, ...truthFiles])];
-  const makeTree = () => {
+  /** 建一棵合成树夹具（内容全在 `FIXTURE_FILES` 里；git 用注入的假执行器，真 git 由第 ⑨ 例证过）。 */
+  const makeFixture = () => {
     const dir = realpathSync(mkdtempSync(path.join(tmpdir(), "erix-directive-fixture-")));
-    for (const rel of copyList) {
+    for (const [rel, text] of Object.entries(FIXTURE_FILES)) {
       const abs = path.join(dir, rel);
       mkdirSync(path.dirname(abs), { recursive: true });
-      copyFileSync(path.join(ROOT, rel), abs);
+      writeFileSync(abs, text);
     }
-    const exec = (args) => {
-      if (args[0] === "rev-parse") return `${dir}\n`;
-      if (args[0] === "ls-files") {
-        const pathspecs = args.slice(args.indexOf("--") + 1);
-        const list = pathspecs.includes("scripts") ? truthFiles : surface;
-        return list.map((rel) => `${rel}\0`).join("");
-      }
-      throw new Error(`夹具 git 不认识这个子命令：${args.join(" ")}`);
+    const surface = Object.keys(FIXTURE_FILES).filter((rel) => rel.endsWith(".md")).sort();
+    const truth = Object.keys(FIXTURE_FILES).filter((rel) => rel.startsWith("scripts/")).sort();
+    const io = {
+      exec: (args) => {
+        if (args[0] === "rev-parse") return `${dir}\n`;
+        if (args[0] === "ls-files") {
+          const pathspecs = args.slice(args.indexOf("--") + 1);
+          return (pathspecs.includes("scripts") ? truth : surface).map((rel) => `${rel}\0`).join("");
+        }
+        throw new Error(`夹具 git 不认识这个子命令：${args.join(" ")}`);
+      },
     };
-    return { dir, io: { exec } };
+    // 实测：用全零上限探一次（只读 `counts`；全零不会触发空转红——空转要 `上限 > 0`）
+    const probe = scanDirectives({
+      root: dir,
+      io,
+      ceilings: Object.fromEntries(DIRECTIVE_FILES.map((rel) => [rel, { A: 0, B: 0, C: 0 }])),
+    });
+    const measured = Object.fromEntries(probe.report
+      .filter((entry) => entry.kind === "directive")
+      .map((entry) => [entry.file, { ...entry.counts }]));
+    const ceilingsFor = (margin) => Object.fromEntries(Object.entries(measured).map(([file, counts]) => [
+      file,
+      Object.fromEntries(Object.keys(CATEGORIES).map((category) => [category, counts[category] + margin])),
+    ]));
+    return { dir, io, surface, measured, ceilingsFor };
   };
+
+  /** 在夹具上跑一段（跑完删树；`margin` 决定这一轮的欠账形态）。 */
+  const withFixture = async (margin, fn) => {
+    const tree = makeFixture();
+    try {
+      return await fn({ ...tree, margin, ceilings: tree.ceilingsFor(margin) });
+    } finally {
+      rmSync(tree.dir, { recursive: true, force: true });
+    }
+  };
+
   /** 跑一次真实 `runCli()`，把两条输出流收进内存（自测自己的报告不许被人读视图淹没）。 */
   const runCaptured = async (argv, tree) => {
     const saved = { log: console.log, error: console.error };
@@ -667,169 +758,202 @@ async function selfTest() {
     console.log = (...args) => out.push(args.map((a) => String(a)).join(" "));
     console.error = (...args) => err.push(args.map((a) => String(a)).join(" "));
     try {
-      const code = await runCli({ argv, root: tree.dir, io: tree.io });
+      const code = await runCli({ argv, root: tree.dir, io: tree.io, ceilings: tree.ceilings });
       return { code, stdout: out.join("\n"), stderr: err.join("\n") };
     } finally {
       console.log = saved.log;
       console.error = saved.error;
     }
   };
-  const withTree = async (fn) => {
-    const tree = makeTree();
-    try {
-      return await fn(tree);
-    } finally {
-      rmSync(tree.dir, { recursive: true, force: true });
-    }
-  };
-  /** 往临时树里的一份文件追加一段（返回追加前的内容，供还原）。 */
-  const append = (tree, rel, extra) => {
-    const abs = path.join(tree.dir, rel);
-    const before = readFileSync(abs, "utf8");
-    writeFileSync(abs, `${before}\n${extra}\n`);
-    return before;
+
+  /** 往夹具里的一份文件追加若干行（返回追加前的原文与原文行数，供还原与「变异真的落上」核对）。 */
+  const injectLines = (tree, rel, lines) => {
+    const before = readFileSync(path.join(tree.dir, rel), "utf8");
+    writeFileSync(path.join(tree.dir, rel), `${before}\n${lines.join("\n")}\n`);
+    return { before, baseLines: before.split("\n").length - 1 };
   };
   const restore = (tree, rel, text) => writeFileSync(path.join(tree.dir, rel), text);
 
-  t("放行证：真实指令面上 `--strict` 与 `--strict --json` 都绿，红数 0", () => withTree(async (tree) => {
-    const text = await runCaptured(["--strict"], tree);
-    eq(text.code, 0, "干净面 `--strict` 的退出码");
-    const json = await runCaptured(["--strict", "--json"], tree);
-    eq(json.code, 0, "干净面 `--strict --json` 的退出码");
-    eq(JSON.parse(json.stdout).gate.red, 0, "干净面的红数");
-  }));
+  /** 每一类命中各一种句式；`i` 只用来让每一行各自成句、行号互不相同。 */
+  const probeLine = (category, i) => (category === "A"
+    ? `issue #99${i} 已落地（反向证塞进去的第 ${i} 条）`
+    : category === "B"
+      ? `实测 1234 组（反向证塞进去的第 ${i} 条）`
+      : `看 \`src/loop/probe.js:${100 + i}\`（反向证塞进去的第 ${i} 条）`);
 
-  t("反向证 ①：往 AGENTS.md 塞一句「#999 已落地」⇒ 红并点名文件:行；`--strict --json` 同判；删掉 ⇒ 绿",
-    () => withTree(async (tree) => {
-      const before = append(tree, "AGENTS.md", "issue #999 已落地（这句话是反向证塞进去的）");
-      const text = await runCaptured(["--strict"], tree);
-      const json = await runCaptured(["--strict", "--json"], tree);
-      const payload = JSON.parse(json.stdout);
-      // 变异必须真的落上（#210 R2）：**塞进去的那一句**必须自己被抽到，而不是「这一格本来就有红」
-      const agents = payload.files.find((f) => f.file === "AGENTS.md");
-      const inserted = agents.hits.find((h) => h.category === "A" && h.text.includes("#999"));
-      if (inserted === undefined) throw new Error("变异没落上：塞进去的 `#999` 没被抽成 A 类命中（判据抽不到这个句式）");
-      if (!(inserted.line > 400)) throw new Error(`塞进去的那一句的行号不对：${inserted.line}`);
-      eq(json.code, 1, "`--strict --json` 的退出码");
-      eq(text.code, json.code, "两条输出分支的退出码必须相同");
-      if (!/AGENTS\.md\s+A 类/.test(text.stdout)) throw new Error(`文本分支没点名 AGENTS.md 的 A 类红：${text.stdout.slice(-200)}`);
-      if (!payload.gate.overCeiling.some((v) => v.file === "AGENTS.md" && v.category === "A")) {
-        throw new Error("JSON 的红集合里没有 AGENTS.md 的 A 类");
-      }
-      const hit = payload.files.find((f) => f.file === "AGENTS.md").hits.find((h) => h.category === "A" && !h.exempt);
-      if (!(hit.line > 0)) throw new Error("A 类命中没带行号");
-      restore(tree, "AGENTS.md", before);
-      eq((await runCaptured(["--strict"], tree)).code, 0, "还原后 `--strict` 的退出码");
-      eq((await runCaptured(["--strict", "--json"], tree)).code, 0, "还原后 `--strict --json` 的退出码");
-    }));
+  /**
+   * 注入**恰好把某一格顶出上限**的命中数：`上限 − 实测 + 1`。
+   *
+   * 固定塞一条就是 #644 ① 的病根：余量 ≥ 1 时那一条落进余量 ⇒ 门是绿的，用例却期望红。
+   * 注入数从夹具自己的两个数推出来，所以三种欠账形态下都恰好顶出 1 格。
+   */
+  const injectOver = (tree, rel, category) => {
+    const n = tree.ceilings[rel][category] - tree.measured[rel][category] + 1;
+    const { before, baseLines } = injectLines(tree, rel, Array.from({ length: n }, (_, k) => probeLine(category, k + 1)));
+    return { n, before, baseLines };
+  };
 
-  t("反向证 ②：往 AGENTS.md 塞一个实测计数（「实测 1234 组」）⇒ 红；换成一模一样的登记例外 ⇒ 绿",
-    () => withTree(async (tree) => {
-      const before = append(tree, "AGENTS.md", "实测 1234 组（这句话是反向证塞进去的）");
-      const red = await runCaptured(["--strict"], tree);
-      eq(red.code, 1, "塞了裸实测数时 `--strict` 的退出码");
-      if (!/B 类/.test(red.stdout)) throw new Error("文本分支没说是 B 类红");
-      restore(tree, "AGENTS.md", before);
+  const hitsOf = (payload, rel) => payload.files.find((f) => f.file === rel)?.hits ?? [];
 
-      // 换成**登记过的例外**：同一句话里带上「实测 + 数字」（所以它确实是一处 B 类命中），但数字是门禁
-      // 自己持有的常量且**与现值一致** ⇒ 放行。这一格证的正是票面第 ④ 条：「塞一条登记过的例外 ⇒ 绿」。
-      const withConstant = append(tree, "AGENTS.md",
-        "实测 108 个类型错误（`BASELINE_ROOT = 108`，真值在 `scripts/type-check-ratchet.mjs`，门禁自己会对账）");
-      const green = await runCaptured(["--strict"], tree);
-      eq(green.code, 0, "塞了登记例外后 `--strict` 的退出码");
-      const payload = JSON.parse((await runCaptured(["--strict", "--json"], tree)).stdout);
-      const hits = payload.files.find((f) => f.file === "AGENTS.md").hits;
-      // 变异必须真的落上（#210 R2）：塞进去的那一句必须**先是**一处 B 类命中，**再**被例外放行。
-      // 只断言「有 `gate-owned-constant` 放行」是假证——文件里本来就有两处。
-      const inserted = hits.find((h) => h.category === "B" && h.text.includes("108 个类型错误"));
-      if (inserted === undefined) throw new Error("变异没落上：塞进去的实测句没被抽成 B 类命中");
-      eq(inserted.exempt, true, "塞进去的那一句必须被例外放行（否则它只是没命中）");
-      eq(inserted.exemption, "gate-owned-constant", "放行它的是哪一条例外");
-      restore(tree, "AGENTS.md", withConstant);
-    }));
+  // ── 用例表：每个用例的签名是 `(shape) => Promise`；三种欠账形态各跑一遍，判词向量必须逐例相同 ──
+  const caseList = (shape) => {
+    const pending = [];
+    const t = (name, fn) => pending.push([name, fn]);
 
-  t("反向证 ③：常量抄件与源码现值不一致 ⇒ 例外**不放行** ⇒ 红（这不是免检通道，是活的对账）",
-    () => withTree(async (tree) => {
-      const before = append(tree, "AGENTS.md", "`BASELINE_ROOT = 999` 是门禁自己持有的常量（反向证：值写错）");
-      const run = await runCaptured(["--strict", "--json"], tree);
-      const payload = JSON.parse(run.stdout);
-      if (payload.staleConstants.length === 0) throw new Error("变异没落上：抄件过期没被报出来");
-      eq(payload.staleConstants[0].name, "BASELINE_ROOT", "过期抄件的常量名");
-      eq(payload.staleConstants[0].value, 999, "过期抄件的值");
-      eq(run.code, 1, "抄件过期时 `--strict --json` 的退出码");
-      restore(tree, "AGENTS.md", before);
-      eq((await runCaptured(["--strict"], tree)).code, 0, "还原后的退出码");
-    }));
+    t("放行证：真指令面与合成树夹具上 `--strict` / `--strict --json` 都绿，红数 0", async () => {
+      const real = await runCaptured(["--strict"], { dir: ROOT });
+      eq(real.code, 0, "真指令面 `--strict` 的退出码");
+      eq(JSON.parse((await runCaptured(["--strict", "--json"], { dir: ROOT })).stdout).gate.red, 0, "真指令面的红数");
+      await withFixture(shape.margin, async (tree) => {
+        const text = await runCaptured(["--strict"], tree);
+        eq(text.code, 0, `夹具（${shape.label}）\`--strict\` 的退出码`);
+        const json = await runCaptured(["--strict", "--json"], tree);
+        eq(json.code, 0, "夹具 `--strict --json` 的退出码");
+        const payload = JSON.parse(json.stdout);
+        eq(payload.gate.red, 0, "夹具的红数");
+        // 「形态真的落上了」（#210 R2）：贴上限那一种一格余量都没有，另两种六个格子全是余量
+        eq(payload.gate.downgradable.length, shape.margin === 0 ? 0 : 6, `夹具（${shape.label}）的余量格数`);
+      });
+    });
 
-  t("反向证 ④：登记表里留一条用不上的例外 ⇒ 红（空转条目，#210 R2）",
-    () => withTree(async (tree) => {
-      const ghost = { id: "zzz-never-matches", categories: ["B"], why: "反向证用的空转条目", matches: () => false };
-      const saved = EXEMPTIONS;
-      // 直接问判据（纯函数）：扫描面不变，只多一条谁也不命中的登记
-      const { report } = scanDirectives({ root: tree.dir, io: tree.io, exemptions: [...saved, ghost] });
-      const gate = gateVerdicts({ report, exemptions: [...saved, ghost], ceilings: DEBT_CEILINGS });
-      if (!gate.idleExemptions.some((e) => e.id === "zzz-never-matches")) {
-        throw new Error("空转的例外没被判红：登记表里的死条目会一直是假的绿");
-      }
-      eq(gate.counts.idleExemptions, 1, "空转例外的条数");
-      eq(gateExitCode(gate, { strict: true }), 1, "空转例外在门禁下的退出码");
-      // 反向：把它删掉 ⇒ 绿（证明上面那条红是它带来的，不是恒红）
-      const clean = gateVerdicts({ report, exemptions: saved, ceilings: DEBT_CEILINGS });
-      eq(clean.counts.idleExemptions, 0, "删掉空转条目后的空转数");
-      eq(gateExitCode(clean, { strict: true }), 0, "删掉空转条目后的退出码");
-    }));
+    t("反向证 ①：注入 `上限 − 实测 + 1` 条 A 类命中 ⇒ 红并点名文件:行；`--strict --json` 同判；还原 ⇒ 绿",
+      () => withFixture(shape.margin, async (tree) => {
+        const { n, before, baseLines } = injectOver(tree, "AGENTS.md", "A");
+        const text = await runCaptured(["--strict"], tree);
+        const json = await runCaptured(["--strict", "--json"], tree);
+        eq(text.code, 1, "注入 A 类命中后 `--strict` 的退出码");
+        eq(json.code, text.code, "两条输出分支的退出码必须相同");
+        if (!/AGENTS\.md\s+A 类/.test(text.stdout)) {
+          throw new Error(`文本分支没点名 AGENTS.md 的 A 类红：${text.stdout.slice(-300)}`);
+        }
+        const payload = JSON.parse(json.stdout);
+        if (!payload.gate.overCeiling.some((v) => v.file === "AGENTS.md" && v.category === "A")) {
+          throw new Error("JSON 的红集合里没有 AGENTS.md 的 A 类");
+        }
+        // 变异必须真的落上（#210 R2）：注入的 n 条各自被抽成 A 类命中，行号在夹具原文之后，且没被例外放行
+        const injected = hitsOf(payload, "AGENTS.md").filter((h) => h.category === "A" && h.line > baseLines);
+        eq(injected.length, n, "注入的 A 类命中条数");
+        if (injected.some((h) => h.exempt)) throw new Error("注入的 A 类命中被例外放行了——这条反证是空的");
+        if (!injected.every((h) => h.line > 0)) throw new Error("A 类命中没带行号");
+        restore(tree, "AGENTS.md", before);
+        eq((await runCaptured(["--strict"], tree)).code, 0, "还原后 `--strict` 的退出码");
+        eq((await runCaptured(["--strict", "--json"], tree)).code, 0, "还原后 `--strict --json` 的退出码");
+      }));
 
-  t("反向证 ⑤：往 AGENTS_cn.md 塞裸坐标 `src/loop/orchestrator.js:4372` ⇒ 红；塞带登记前缀的外仓坐标 ⇒ 绿",
-    () => withTree(async (tree) => {
-      const before = append(tree, "AGENTS_cn.md", "看 `src/loop/orchestrator.js:4372` 那一行（反向证塞进去的）");
-      const red = await runCaptured(["--strict", "--json"], tree);
-      const payload = JSON.parse(red.stdout);
-      const hits = payload.files.find((f) => f.file === "AGENTS_cn.md").hits.filter((h) => h.category === "C");
-      if (!hits.some((h) => !h.exempt && h.text.includes("orchestrator.js:4372"))) {
-        throw new Error("变异没落上：裸坐标没被报出来");
-      }
-      eq(red.code, 1, "裸坐标下 `--strict --json` 的退出码");
-      restore(tree, "AGENTS_cn.md", before);
+    t("反向证 ②：注入 `上限 − 实测 + 1` 条 B 类命中 ⇒ 红；换成一模一样的登记例外 ⇒ 绿",
+      () => withFixture(shape.margin, async (tree) => {
+        const { n, before, baseLines } = injectOver(tree, "AGENTS.md", "B");
+        const red = await runCaptured(["--strict"], tree);
+        eq(red.code, 1, "注入裸实测数时 `--strict` 的退出码");
+        if (!/B 类/.test(red.stdout)) throw new Error("文本分支没说是 B 类红");
+        const payload = JSON.parse((await runCaptured(["--strict", "--json"], tree)).stdout);
+        eq(hitsOf(payload, "AGENTS.md").filter((h) => h.category === "B" && h.line > baseLines).length, n,
+          "注入的 B 类命中条数");
+        restore(tree, "AGENTS.md", before);
 
-      const withPrefix = append(tree, "AGENTS_cn.md", "看 `pi-subagents:src/runs/background/async-execution.js:9`（反向证）");
-      eq((await runCaptured(["--strict"], tree)).code, 0, "带登记前缀的外仓坐标必须绿");
-      // 未登记的前缀不是免检票：同一个形状换个仓名 ⇒ 红
-      restore(tree, "AGENTS_cn.md", withPrefix);
-      const bogus = append(tree, "AGENTS_cn.md", "看 `zzz-repo:src/loop/orchestrator.js:9`（反向证：未登记前缀）");
-      eq((await runCaptured(["--strict"], tree)).code, 1, "未登记外部仓前缀必须红");
-      restore(tree, "AGENTS_cn.md", bogus);
-      eq((await runCaptured(["--strict"], tree)).code, 0, "还原后必须绿");
-    }));
+        // 换成**登记过的例外**：同一句话里带「实测 + 数字」（所以它确实是一处 B 类命中），但数字是门禁
+        // 自己持有的常量且**与现值一致** ⇒ 放行。这一格证的正是票面第 ④ 条：「塞一条登记过的例外 ⇒ 绿」。
+        const withConstant = injectLines(tree, "AGENTS.md", [
+          "实测 108 个类型错误（`BASELINE_ROOT = 108`，真值在 `scripts/type-check-ratchet.mjs`，门禁自己会对账）",
+        ]).before;
+        eq((await runCaptured(["--strict"], tree)).code, 0, "塞了登记例外后 `--strict` 的退出码");
+        const green = JSON.parse((await runCaptured(["--strict", "--json"], tree)).stdout);
+        // 变异必须真的落上（#210 R2）：塞进去的那一句必须**先是**一处 B 类命中，**再**被例外放行。
+        // 只断言「有 `gate-owned-constant` 放行」是假证——夹具里本来就有两处。
+        const inserted = hitsOf(green, "AGENTS.md").find((h) => h.category === "B" && h.text.includes("108 个类型错误"));
+        if (inserted === undefined) throw new Error("变异没落上：塞进去的实测句没被抽成 B 类命中");
+        eq(inserted.exempt, true, "塞进去的那一句必须被例外放行（否则它只是没命中）");
+        eq(inserted.exemption, "gate-owned-constant", "放行它的是哪一条例外");
+        restore(tree, "AGENTS.md", withConstant);
+      }));
 
-  t("分类不是空话：同一句塞进 CHANGELOG.md / docs 历史文档 ⇒ 绿（历史一侧只计数、不判定）",
-    () => withTree(async (tree) => {
-      const changelog = append(tree, "CHANGELOG.md", "issue #999 已落地；实测 1234 组");
-      eq((await runCaptured(["--strict"], tree)).code, 0, "CHANGELOG 里的同一句式必须绿");
-      const payload = JSON.parse((await runCaptured(["--strict", "--json"], tree)).stdout);
-      const entry = payload.files.find((f) => f.file === "CHANGELOG.md");
-      eq(entry.kind, "history", "CHANGELOG.md 的分类");
-      if (entry.hits.length === 0) throw new Error("变异没落上：CHANGELOG 里一处命中都没抽到");
-      restore(tree, "CHANGELOG.md", changelog);
+    t("反向证 ③：常量抄件与源码现值不一致 ⇒ 例外**不放行** ⇒ 红（这不是免检通道，是活的对账）",
+      () => withFixture(shape.margin, async (tree) => {
+        const before = injectLines(tree, "AGENTS.md", [
+          "`BASELINE_ROOT = 999` 是门禁自己持有的常量（反向证：值写错）",
+        ]).before;
+        const run = await runCaptured(["--strict", "--json"], tree);
+        const payload = JSON.parse(run.stdout);
+        if (payload.staleConstants.length === 0) throw new Error("变异没落上：抄件过期没被报出来");
+        eq(payload.staleConstants[0].name, "BASELINE_ROOT", "过期抄件的常量名");
+        eq(payload.staleConstants[0].value, 999, "过期抄件的值");
+        eq(run.code, 1, "抄件过期时 `--strict --json` 的退出码");
+        restore(tree, "AGENTS.md", before);
+        eq((await runCaptured(["--strict"], tree)).code, 0, "还原后的退出码");
+      }));
 
-      const doc = append(tree, "docs/decisions/001-config-adapters.md", "issue #999 已落地；实测 1234 组");
-      eq((await runCaptured(["--strict"], tree)).code, 0, "docs 历史文档里的同一句式必须绿");
-      restore(tree, "docs/decisions/001-config-adapters.md", doc);
-    }));
+    t("反向证 ④：登记表里留一条用不上的例外 ⇒ 红（空转条目，#210 R2）",
+      () => withFixture(shape.margin, async (tree) => {
+        const ghost = { id: "fixture-never-matches", categories: ["B"], why: "反向证用的空转条目", matches: () => false };
+        const saved = EXEMPTIONS;
+        // 直接问判据（纯函数）：扫描面不变，只多一条谁也不命中的登记
+        const { report } = scanDirectives({ root: tree.dir, io: tree.io, exemptions: [...saved, ghost], ceilings: tree.ceilings });
+        const gate = gateVerdicts({ report, exemptions: [...saved, ghost], ceilings: tree.ceilings });
+        if (!gate.idleExemptions.some((e) => e.id === "fixture-never-matches")) {
+          throw new Error("空转的例外没被判红：登记表里的死条目会一直是假的绿");
+        }
+        eq(gate.counts.idleExemptions, 1, "空转例外的条数");
+        eq(gateExitCode(gate, { strict: true }), 1, "空转例外在门禁下的退出码");
+        // 反向：把它删掉 ⇒ 绿（证明上面那条红是它带来的，不是恒红）
+        const clean = gateVerdicts({ report, exemptions: saved, ceilings: tree.ceilings });
+        eq(clean.counts.idleExemptions, 0, "删掉空转条目后的空转数");
+        eq(gateExitCode(clean, { strict: true }), 0, "删掉空转条目后的退出码");
+      }));
 
-  t("存量欠账是棘轮：实测 < 上限 ⇒ 绿（清账永不红）+ 提示可下调；上限 > 0 而实测 0 ⇒ 红",
-    () => {
+    t("反向证 ⑤：注入 `上限 − 实测 + 1` 条裸坐标 ⇒ 红；带登记前缀的外仓坐标 ⇒ 绿；未登记前缀 ⇒ 红",
+      () => withFixture(shape.margin, async (tree) => {
+        const { n, before, baseLines } = injectOver(tree, "AGENTS_cn.md", "C");
+        const red = await runCaptured(["--strict", "--json"], tree);
+        const payload = JSON.parse(red.stdout);
+        const injected = hitsOf(payload, "AGENTS_cn.md").filter((h) => h.category === "C" && h.line > baseLines);
+        eq(injected.length, n, "注入的裸坐标条数");
+        if (injected.some((h) => h.exempt)) throw new Error("注入的裸坐标被例外放行了——这条反证是空的");
+        eq(red.code, 1, "裸坐标下 `--strict --json` 的退出码");
+        restore(tree, "AGENTS_cn.md", before);
+
+        // 带**登记过**前缀的外仓坐标不是本仓坐标（例外）⇒ 一处也不进计数 ⇒ 绿
+        const withPrefix = injectLines(tree, "AGENTS_cn.md", [
+          "看 `pi-subagents:src/runs/background/async-execution.js:9`（反向证）",
+        ]).before;
+        eq((await runCaptured(["--strict"], tree)).code, 0, "带登记前缀的外仓坐标必须绿");
+        restore(tree, "AGENTS_cn.md", withPrefix);
+        // 未登记的前缀不是免检票：同一个形状换个仓名 ⇒ 照样是一处 C 类命中，所以注入数同样是自适应的
+        const { before: bogusBefore } = injectLines(tree, "AGENTS_cn.md",
+          Array.from({ length: n }, (_, k) => `看 \`zzz-repo:src/loop/probe.js:${200 + k}\`（反向证：未登记前缀）`));
+        eq((await runCaptured(["--strict"], tree)).code, 1, "未登记外部仓前缀必须红");
+        restore(tree, "AGENTS_cn.md", bogusBefore);
+        eq((await runCaptured(["--strict"], tree)).code, 0, "还原后必须绿");
+      }));
+
+    t("分类不是空话：同一句塞进 CHANGELOG.md / docs 历史文档 ⇒ 绿（历史一侧只计数、不判定）",
+      () => withFixture(shape.margin, async (tree) => {
+        const changelog = injectLines(tree, "CHANGELOG.md", ["issue #999 已落地；实测 1234 组"]).before;
+        eq((await runCaptured(["--strict"], tree)).code, 0, "CHANGELOG 里的同一句式必须绿");
+        const payload = JSON.parse((await runCaptured(["--strict", "--json"], tree)).stdout);
+        const entry = payload.files.find((f) => f.file === "CHANGELOG.md");
+        eq(entry.kind, "history", "CHANGELOG.md 的分类");
+        if (entry.hits.length === 0) throw new Error("变异没落上：CHANGELOG 里一处命中都没抽到");
+        restore(tree, "CHANGELOG.md", changelog);
+
+        const doc = injectLines(tree, "docs/decisions/001-config-adapters.md", ["issue #999 已落地；实测 1234 组"]).before;
+        eq((await runCaptured(["--strict"], tree)).code, 0, "docs 历史文档里的同一句式必须绿");
+        restore(tree, "docs/decisions/001-config-adapters.md", doc);
+      }));
+
+    t("存量欠账是棘轮：实测 < 上限 ⇒ 绿（清账永不红）+ 提示可下调；上限 > 0 而实测 0 ⇒ 红", () => {
+      const ceiling = 3 + shape.margin;
       const report = [{ file: "AGENTS.md", kind: "directive", counts: { A: 0, B: 0, C: 0 }, hits: [] }];
-      const ceilings = { "AGENTS.md": { A: 3, B: 0, C: 0 } };
+      const ceilings = { "AGENTS.md": { A: ceiling, B: 0, C: 0 } };
       const gate = gateVerdicts({ report, exemptions: EXEMPTIONS, ceilings });
-      eq(gate.counts.overCeiling, 0, "实测 0 < 上限 3 时的超上限数");
+      eq(gate.counts.overCeiling, 0, "实测 0 < 上限时的超上限数");
       eq(gate.downgradable.length, 1, "可下调的格数");
-      eq(gate.counts.idleCeilings, 1, "上限 3 而实测 0 ⇒ 空转 1 格");
+      eq(gate.counts.idleCeilings, 1, "上限 > 0 而实测 0 ⇒ 空转 1 格");
       if (gate.red === 0) throw new Error("空转的上限必须算红（否则登记表可以永远挂着没人用的数）");
       const raised = gateVerdicts({
-        report: [{ file: "AGENTS.md", kind: "directive", counts: { A: 4, B: 0, C: 0 }, hits: [] }],
+        report: [{ file: "AGENTS.md", kind: "directive", counts: { A: ceiling + 1, B: 0, C: 0 }, hits: [] }],
         exemptions: EXEMPTIONS, ceilings,
       });
-      eq(raised.counts.overCeiling, 1, "实测 4 > 上限 3 时的超上限数");
+      eq(raised.counts.overCeiling, 1, "实测 上限 + 1 > 上限 时的超上限数");
       // 未登记上限的指令面文件（新入指令面却忘了钉）⇒ 红
       const unpinned = gateVerdicts({
         report: [{ file: "AGENTS_xx.md", kind: "directive", counts: { A: 1, B: 0, C: 0 }, hits: [] }],
@@ -838,100 +962,156 @@ async function selfTest() {
       eq(unpinned.counts.unregistered, 1, "未登记上限的条数");
     });
 
-  t("清单拿不到就报错退出：git 不可用 / 不在仓库内 / 空清单，都不许退回文件系统遍历", () => {
-    const boom = () => {
-      const error = new Error("spawnSync git ENOENT");
-      error.code = "ENOENT";
-      throw error;
-    };
-    const cases = [
-      ["git 不在 PATH", { exec: boom }, /不在 git 仓库内|找不到 git/],
-      ["仓库顶层不是本脚本所在目录", { exec: (args) => (args[0] === "rev-parse" ? "/somewhere/else\n" : "") }, /不是本脚本所在的/],
-      ["`git ls-files` 失败", { exec: (args) => {
-        if (args[0] === "rev-parse") return `${ROOT}\n`;
-        throw new Error("fatal: bad pathspec");
-      } }, /git ls-files/],
-      ["空清单", { exec: (args) => (args[0] === "rev-parse" ? `${ROOT}\n` : "") }, /清单是空的/],
-    ];
-    for (const [what, io, expected] of cases) {
+    t("清单拿不到就报错退出：git 不可用 / 不在仓库内 / 空清单，都不许退回文件系统遍历", () => {
+      const boom = () => {
+        const error = new Error("spawnSync git ENOENT");
+        error.code = "ENOENT";
+        throw error;
+      };
+      const cases = [
+        ["git 不在 PATH", { exec: boom }, /不在 git 仓库内|找不到 git/],
+        ["仓库顶层不是本脚本所在目录", { exec: (args) => (args[0] === "rev-parse" ? "/somewhere/else\n" : "") }, /不是本脚本所在的/],
+        ["`git ls-files` 失败", { exec: (args) => {
+          if (args[0] === "rev-parse") return `${ROOT}\n`;
+          throw new Error("fatal: bad pathspec");
+        } }, /git ls-files/],
+        ["空清单", { exec: (args) => (args[0] === "rev-parse" ? `${ROOT}\n` : "") }, /清单是空的/],
+      ];
+      for (const [what, io, expected] of cases) {
+        let thrown = null;
+        try {
+          gitTrackedFiles({ root: ROOT, io });
+        } catch (error) {
+          thrown = error;
+        }
+        if (thrown === null) throw new Error(`${what}：没报错（静默退回文件系统遍历了）`);
+        if (!expected.test(thrown.message)) throw new Error(`${what}：报错没说清原因（${thrown.message}）`);
+        if (!/拒绝退回文件系统遍历/.test(thrown.message)) throw new Error(`${what}：报错没声明「不回退」（${thrown.message}）`);
+      }
+      // 放行证：真 git 在真仓库里跑得通（否则上面四条只是「永远有话说」）
+      if (gitTrackedFiles({ root: ROOT }).length === 0) throw new Error("真仓库里清单是空的：判据失效");
+    });
+
+    t("分类按路径：AGENTS* 与未登记路径 ⇒ directive（未知分类不是免检），CHANGELOG 与 docs/ ⇒ history", () => {
+      for (const rel of ["AGENTS.md", "AGENTS_cn.md", "AGENTS_xx.md", "NOTES.md"]) {
+        eq(classify(rel).kind, "directive", rel);
+      }
+      for (const rel of ["CHANGELOG.md", "docs/zzz-unknown.md", "docs/decisions/001-config-adapters.md",
+        "docs/host-consumer-contract.md"]) {
+        eq(classify(rel).kind, "history", rel);
+      }
+      // 未登记路径不是免检：它进的是**判定面**，而判定面上没登记上限的文件由 `unregistered` 判红
+      eq(classify("NOTES.md").why.includes("未登记"), true, "未登记路径的分类理由要点明它为什么进判定面");
+    });
+
+    t("断句与 token 边界：`pendingToolUse` 不是状态词，`foo/src/x.js:1` 不是本仓坐标", () => {
+      eq(scanText("issue #1 landed as a pair").length, 1, "英文状态句");
+      eq(scanText("`pendingToolUse` 是符号名").length, 0, "符号名里的 pending 不算");
+      eq(scanText("见 issue #642（出处引用，不带状态）").filter((h) => h.category === "A").length, 0, "纯出处引用不算");
+      eq(scanText("看 `test/src/x.js:12`").filter((h) => h.category === "C").length, 0, "长路径里的 src 不算");
+      eq(scanText("看 `src/x.js:12`").filter((h) => h.category === "C").length, 1, "裸坐标算一处");
+      // 一行两句：一句是状态断言、一句是复现命令 ⇒ 只红前一句（按句子判，不按行判）
+      const mixed = scanText("issue #7 已落地。跑 `node scripts/x.mjs` 现读").filter((h) => h.category === "A");
+      eq(mixed.length, 1, "一行里的状态句只算一处");
+    });
+
+    t("真值从源码推：门禁常量表非空且含 `BASELINE_ROOT`，外部仓前缀名单非空（否则例外在空转）", () => {
+      const sources = realTruthFiles.map((file) => ({ file, text: readFileSync(path.join(ROOT, file), "utf8") }));
+      const constants = gateConstantsFrom(sources);
+      if (constants.size === 0) throw new Error("门禁常量表是空的");
+      if (!constants.has("BASELINE_ROOT")) throw new Error("门禁常量表里没有 `BASELINE_ROOT`：真值没推到");
+      const prefixes = externalPrefixesFrom(sources.find((s) => s.file === "scripts/docs-drift-check.mjs").text);
+      if (prefixes.size === 0) throw new Error("外部仓前缀名单是空的");
+      // 抽不到就抛错（不许静默降级成「没有例外」）
       let thrown = null;
       try {
-        gitTrackedFiles({ root: ROOT, io });
+        externalPrefixesFrom("const NOT_IT = 1;");
       } catch (error) {
         thrown = error;
       }
-      if (thrown === null) throw new Error(`${what}：没报错（静默退回文件系统遍历了）`);
-      if (!expected.test(thrown.message)) throw new Error(`${what}：报错没说清原因（${thrown.message}）`);
-      if (!/拒绝退回文件系统遍历/.test(thrown.message)) throw new Error(`${what}：报错没声明「不回退」（${thrown.message}）`);
-    }
-    // 放行证：真 git 在真仓库里跑得通（否则上面四条只是「永远有话说」）
-    if (gitTrackedFiles({ root: ROOT }).length === 0) throw new Error("真仓库里清单是空的：判据失效");
-  });
+      if (thrown === null) throw new Error("抽不到 `EXTERNAL_REPO_PREFIXES` 时没有抛错");
+    });
 
-  t("分类按路径：AGENTS* 与未登记路径 ⇒ directive（未知分类不是免检），CHANGELOG 与 docs/ ⇒ history", () => {
-    for (const rel of ["AGENTS.md", "AGENTS_cn.md", "AGENTS_xx.md", "NOTES.md"]) {
-      eq(classify(rel).kind, "directive", rel);
-    }
-    for (const rel of ["CHANGELOG.md", "docs/zzz-unknown.md", "docs/decisions/001-config-adapters.md",
-      "docs/host-consumer-contract.md"]) {
-      eq(classify(rel).kind, "history", rel);
-    }
-    // 未登记路径不是免检：它进的是**判定面**，而判定面上没登记上限的文件由 `unregistered` 判红
-    eq(classify("NOTES.md").why.includes("未登记"), true, "未登记路径的分类理由要点明它为什么进判定面");
-  });
+    t("反向证 ⑥：注入数自适应 —— 固定塞一条在有余量的形态下是**假绿**（#644 ① 的原病根），"
+      + "塞 `上限 − 实测 + 1` 条则三种欠账形态同判红", async () => {
+      const verdicts = [];
+      for (const probe of DEBT_SHAPES) {
+        await withFixture(probe.margin, async (tree) => {
+          const one = injectLines(tree, "AGENTS.md", ["实测 1234 组（固定只塞一条）"]).before;
+          const green = await runCaptured(["--strict"], tree);
+          restore(tree, "AGENTS.md", one);
+          const { before } = injectOver(tree, "AGENTS.md", "B");
+          const red = await runCaptured(["--strict"], tree);
+          restore(tree, "AGENTS.md", before);
+          verdicts.push({ probe, one: green.code, adaptive: red.code });
+        });
+      }
+      // 判据一：自适应那一列在三种形态下**必须相同**（都红）
+      eq(verdicts.map((v) => v.adaptive).join(","), "1,1,1", "自适应注入在三种欠账形态下的退出码");
+      // 判据二：固定塞一条只在贴上限那一形态下红 —— 这就是「反向证自己变红」的机制，写进用例免得复发
+      eq(verdicts.map((v) => v.one).join(","), "1,0,0", "固定塞一条在三种欠账形态下的退出码（后两种是假绿）");
+    });
 
-  t("断句与 token 边界：`pendingToolUse` 不是状态词，`foo/src/x.js:1` 不是本仓坐标", () => {
-    eq(scanText("issue #1 landed as a pair").length, 1, "英文状态句");
-    eq(scanText("`pendingToolUse` 是符号名").length, 0, "符号名里的 pending 不算");
-    eq(scanText("见 issue #642（出处引用，不带状态）").filter((h) => h.category === "A").length, 0, "纯出处引用不算");
-    eq(scanText("看 `test/src/x.js:12`").filter((h) => h.category === "C").length, 0, "长路径里的 src 不算");
-    eq(scanText("看 `src/x.js:12`").filter((h) => h.category === "C").length, 1, "裸坐标算一处");
-    // 一行两句：一句是状态断言、一句是复现命令 ⇒ 只红前一句（按句子判，不按行判）
-    const mixed = scanText("issue #7 已落地。跑 `node scripts/x.mjs` 现读").filter((h) => h.category === "A");
-    eq(mixed.length, 1, "一行里的状态句只算一处");
-  });
+    return pending;
+  };
 
-  t("真值从源码推：门禁常量表非空且含 `BASELINE_ROOT`，外部仓前缀名单非空（否则例外在空转）", () => {
-    const sources = truthFiles.map((file) => ({ file, text: readFileSync(path.join(ROOT, file), "utf8") }));
-    const constants = gateConstantsFrom(sources);
-    if (constants.size === 0) throw new Error("门禁常量表是空的");
-    if (!constants.has("BASELINE_ROOT")) throw new Error("门禁常量表里没有 `BASELINE_ROOT`：真值没推到");
-    const prefixes = externalPrefixesFrom(sources.find((s) => s.file === "scripts/docs-drift-check.mjs").text);
-    if (prefixes.size === 0) throw new Error("外部仓前缀名单是空的");
-    // 抽不到就抛错（不许静默降级成「没有例外」）
-    let thrown = null;
-    try {
-      externalPrefixesFrom("const NOT_IT = 1;");
-    } catch (error) {
-      thrown = error;
+  // ── 三种欠账形态各跑一遍全部用例，再比判词向量（#644 ① 的判据：裁决与欠账形态无关） ──
+  const runs = [];
+  for (const shape of DEBT_SHAPES) {
+    const rows = [];
+    for (const [name, fn] of caseList(shape)) {
+      try {
+        await fn(shape);
+        rows.push({ name, ok: true, detail: "" });
+      } catch (error) {
+        rows.push({ name, ok: false, detail: error.message });
+      }
     }
-    if (thrown === null) throw new Error("抽不到 `EXTERNAL_REPO_PREFIXES` 时没有抛错");
-  });
-
-  const cases = [];
-  for (const [name, fn] of pending) {
-    try {
-      await fn();
-      cases.push([true, name]);
-    } catch (error) {
-      cases.push([false, `${name} — ${error.message}`]);
-    }
+    runs.push({ shape, rows });
   }
-  const failed = cases.filter(([ok]) => !ok);
-  for (const [ok, name] of cases) console.log(`  ${ok ? "✓" : "✗"} ${name}`);
-  console.log(`\nagents-directive-scan --self-test: ${failed.length === 0 ? `OK — ${cases.length} 例反向证/放行证全部按预期` : `${failed.length} 例失败`}`);
-  return failed.length === 0 ? 0 : 1;
+  const base = runs[0];
+  const divergent = [];
+  for (const run of runs.slice(1)) {
+    run.rows.forEach((row, index) => {
+      const ref = base.rows[index];
+      if (row.name !== ref.name) {
+        divergent.push(`用例顺序在「${run.shape.label}」下与「${base.shape.label}」不一致（${row.name} ≠ ${ref.name}）`);
+      } else if (row.ok !== ref.ok) {
+        divergent.push(`「${ref.name}」在「${base.shape.label}」是${ref.ok ? "绿" : "红"}、`
+          + `在「${run.shape.label}」是${row.ok ? "绿" : "红"}——裁决必须与欠账形态无关（#644 ①）`);
+      }
+    });
+  }
+  const merged = base.rows.map((row, index) => {
+    const bad = runs.map((run) => ({ shape: run.shape, row: run.rows[index] })).filter((x) => !x.row.ok);
+    return {
+      name: row.name,
+      ok: bad.length === 0,
+      detail: bad.length === 0 ? "" : `[${bad[0].shape.label}] ${bad[0].row.detail}`,
+    };
+  });
+  for (const row of merged) console.log(`  ${row.ok ? "✓" : "✗"} ${row.name}${row.ok ? "" : ` — ${row.detail}`}`);
+  for (const line of divergent) console.log(`  ✗ ${line}`);
+  console.log(`  欠账形态 × 用例：${DEBT_SHAPES.length} 种形态 × ${merged.length} 例，逐例裁决`
+    + `${divergent.length === 0 ? "完全相同" : `有 ${divergent.length} 处不同`}（${DEBT_SHAPES.map((s) => s.label).join(" / ")}，#644 ①）`);
+  const failed = merged.filter((row) => !row.ok).length + divergent.length;
+  console.log(`\nagents-directive-scan --self-test: ${failed === 0
+    ? `OK — ${merged.length} 例反向证/放行证 × ${DEBT_SHAPES.length} 种欠账形态全部按预期`
+    : `${failed} 例失败`}`);
+  return failed === 0 ? 0 : 1;
 }
 
 // ── 10. main ─────────────────────────────────────────────────────────────────
 /**
- * 一次 CLI 运行。`root` / `io` 可注入 ⇒ 自测能在**临时树**上把真实路径（清单 → 分类 → 命中 → 例外 →
- * 上限 → 判词 → 退出码）整条跑一遍，不碰真文档、也不假造判词。
+ * 一次 CLI 运行。`root` / `io` / `ceilings` 可注入 ⇒ 自测能在**临时树**上把真实路径（清单 → 分类 → 命中 →
+ * 例外 → 上限 → 判词 → 退出码）整条跑一遍，不碰真文档、也不假造判词；`ceilings` 那一格是「欠账形态」
+ * 的注入点（#644 ①：上限与实测的余量必须能由用例摆布，否则裁决会依赖这台机器此刻的欠账数）。
  *
- * @param {{argv?: string[], root?: string, io?: {exec?: (args: string[], root: string) => string}}} [options]
+ * @param {{argv?: string[], root?: string, io?: {exec?: (args: string[], root: string) => string},
+ *   ceilings?: Readonly<Record<string, Readonly<Record<"A"|"B"|"C", number>>>>}} [options]
  * @returns {Promise<number>} 进程退出码
  */
-export async function runCli({ argv = process.argv.slice(2), root = ROOT, io } = {}) {
+export async function runCli({ argv = process.argv.slice(2), root = ROOT, io, ceilings = DEBT_CEILINGS } = {}) {
   const strict = argv.includes("--strict");
   const jsonOut = argv.includes("--json");
   const selfTestMode = argv.includes("--self-test");
@@ -940,13 +1120,14 @@ export async function runCli({ argv = process.argv.slice(2), root = ROOT, io } =
 
   let scan;
   try {
-    scan = scanDirectives({ root, io });
+    scan = scanDirectives({ root, io, ceilings });
   } catch (error) {
     console.error(`agents-directive-scan: ${error.message}`);
     console.error(`  仓库根：${root}`);
     return 2;
   }
   const { gate, manifest, report, constants, externalPrefixes, staleConstants } = scan;
+  const usedCeilings = scan.ceilings;
   const exitCode = gateExitCode(gate, { strict });
 
   if (jsonOut) {
@@ -976,7 +1157,7 @@ export async function runCli({ argv = process.argv.slice(2), root = ROOT, io } =
         downgradable: gate.downgradable,
       },
       exemptions: EXEMPTIONS.map((e) => ({ id: e.id, categories: e.categories, why: e.why })),
-      ceilings: DEBT_CEILINGS,
+      ceilings: usedCeilings,
       constants: Object.fromEntries([...constants].map(([name, v]) => [name, v.value])),
       externalPrefixes: [...externalPrefixes],
       staleConstants,
