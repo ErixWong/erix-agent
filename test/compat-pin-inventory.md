@@ -420,7 +420,9 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 > 已全部迁完（各自的迁移前基线见对应清单），所以它们的文件在这里**不出现**——`--verify` 逐文件对账
 > 的仍然是「表列写点 == AST 写点」，行不在表里就意味着该文件 0 点。
 >
-> 表里剩下 4 类、24 个文件、**172** 点，全部**不是 S7 的活**（见各行「分类」列的理由）。
+> 表里剩下的每一行都**不是 S7 的活**（见各行「分类」列的理由）。**类数、文件数、写点数一律由
+> `node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md` 现算并打印，
+> 本文不抄数字**（抄件没有闸，合并一次就漂——本节早先那一版手抄的类数 / 文件数 / 写点数就是这么变成假话的）。
 
 | 文件 | 写点 | 明细 | 分类 |
 | --- | --- | --- | --- |
@@ -453,7 +455,14 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 
 ### 分派小结（按上表口径，**S7c 迁完之后**实测）
 
-**「写点」这一列的口径是「现在仍在树上的写点数」**，所以列和必须 = 合计 **172**（逐点只算一次）。
+**「写点」这一列的口径是「现在仍在树上的写点数」**（逐点只算一次），所以列和必须等于合计行——
+两个数都由 `--verify` 现算并打印「列和 N = 合计 N ✅」，**正文不抄数字**。
+
+**「文件数」这一列的口径**：有对应分派清单的行 = **该清单的行数**（不是去重文件数）；没有清单可数的行
+（`S7a` / `S7a 遗留` / `NOT-OPTION-SURFACE`）是历史计数，**人工维护**；**合计行 = 主表行 ∪ 分派清单行的
+去重文件数**。哪些格子归生成器只有一份定义（`scripts/flat-count-inventory.mjs` 的 `CELL_OWNERSHIP`）：
+`--sync` 写生成格、`--verify` 逐格核，并把人工维护格连同「依据本命令打印的 AST 真值」一起打印出来。
+**改表的唯一合法方式是 `--sync`**（主表/附表漏行与这张小结都由它刷）。
 
 | 类 | 文件数 | 写点（现在仍在树上） |
 | --- | --- | --- |
@@ -470,7 +479,8 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 
 脚注：
 
-* 写点列和 = `0 + 0 + 0 + 0 + 38 + 31 + 69 + 13 + 21 = 172`，与本列合计逐字相等（`--verify` 逐行核）。
+* 写点列和与合计由 `--verify` 的「列和 N = 合计 N ✅」一行现算（逐点只算一次）；本文不抄这条算式，
+  因为它每合并一次就会漂，而 `--verify` 只核表、不核散文。
 * `NOT-OPTION-SURFACE` 这一类的 31 点**不是「没做完」**：它们是 provider `chatStream(...)` 的回调
   （24）、`createProviderSummarizer({ onUsage })`（2）、`run-snapshot-executor` 的 ctx 字段（1）、
   `tool-fact-success-parity` 里 `MIGRATION_TABLE` 的**数据行字段**（1），**加上 S7c 本刀重分类的 3 点**
@@ -478,7 +488,8 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
   `runChat({ finalGuard: false })`——见下节「S7c 的重分类」）。这些对象的宿主是 provider / summarizer /
   executor / **`runChat` 的入参面**，不是 `runToolLoop` 的选项面，`capabilities.hooks` 不是它们的家
   （改了就是「配了等于没配」）。
-* 文件数 **63** 是**去重后**的；写点列和按「逐点只算一次」算，两者口径不同。
+* 「文件数」的合计行是**去重后**的（主表行 ∪ 分派清单行）；具体数字由 `--verify` 现算并打印。
+  写点列和按「逐点只算一次」算，两者口径不同。
 * 上表「分类」列是逐点归片的**唯一权威**：同一文件跨片时写 `MIGRATE · S7b（3）+ S7c（1）`，两片各数各的。
   核对命令（文末「复跑方法」第 3 条）会把这张小结与本表逐行对账，退出码非 0 就是列语义又坏了。
 * ⚠ 三刀的**实测**：能力面 **388 → 351（S7a −37）→ 256（S7b −95）→ 169（S7c −87）**；
@@ -934,8 +945,8 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 `typescript` 在 `devDependencies` 里，`npm ci` 后就有；脚本按**自身位置**解析它，所以在哪个 cwd 跑都行。
 
 ```bash
-# 1) 现在的三个总数（本表主表 170 / 附表 1343 / 全部 1513）
-node scripts/flat-count-inventory.mjs .                       # ⇒ 能力面 13 键 170 / 数据面 17 键 1343 / 全部 1513
+# 1) 现在的三个总数（数字由命令现算，与主表/附表的合计行一致）
+node scripts/flat-count-inventory.mjs .                       # ⇒ 能力面 13 键 / 数据面 17 键 / 全部
 node scripts/flat-count-inventory.mjs . --keys                # ⇒ 逐键明细（17 个数据面键 + 13 个能力面键，见「数据面键表」）
 node scripts/flat-count-inventory.mjs . --files               # ⇒ 逐文件明细（117 文件 / 1513 点，与本表逐行零误差）
 
@@ -947,11 +958,11 @@ node scripts/flat-count-inventory.mjs /tmp/base-498           # ⇒ 能力面 13
                                                  #    注意：数据面这里是**扩键后**的口径（1351），
                                                  #    旧 10 键口径下才是本表早先写的 678。
 
-# 3) 与本表逐行对账（主表 23 行 + 附表 116 行 + 分派小结的加总式；不一致 ⇒ 退出码 1）
+# 3) 与本表逐行对账（主表 + 附表 + 分派小结的加总式；不一致 ⇒ 退出码 1）
 node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md; echo "EXIT=$?"   # ⇒ EXIT=0
 
-# 3b) 表漂移了怎么办：**机器刷**，不许手改数字
-node scripts/flat-count-inventory.mjs . --sync test/compat-pin-inventory.md     # 数字与明细列都由 AST 重写，漏行按实测补
+# 3b) 表漂移了怎么办：**机器刷**，不许手改数字（主表/附表漏行、小结的写点与文件数都一起刷）
+node scripts/flat-count-inventory.mjs . --sync test/compat-pin-inventory.md     # 数字/明细由 AST 重写，漏行按实测补（主表补行的分类列写 TODO，由人裁决）
 node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md; echo "EXIT=$?"   # ⇒ 必须 EXIT=0
 ```
 
