@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 上限**，不是实测抄件：`expect.tests` 必须逐字相等、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3265,
+    "tests": 3277,
     "fail": 0,
     "maxSkipped": 14
   },
@@ -34,6 +34,32 @@
       "todo": 0,
       "cancelled": 0,
       "why": "开发机装了 pi-coding-agent（PI_CODING_AGENT_ROOT 可解析）⇒ 那两条不跳过；其余 12 条 skip 全是真上游/真 relay 门禁未开（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE）。"
+    },
+    {
+      "env": "local",
+      "node": "22.23.2",
+      "commit": "1591a9d4a89e39b0f2040e25d3ea15c964b40b10",
+      "tests": 3277,
+      "pass": 3265,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests +12 是有意的增删：#648 新增 test/loop-guard-verdict-648.test.js（6 例）与 #518/#297 新增 test/loop-empty-content-fragment.test.js（6 例）。skip 仍是 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE）。"
+    },
+    {
+      "env": "ci",
+      "node": "22.23.4",
+      "commit": "1591a9d4a89e39b0f2040e25d3ea15c964b40b10",
+      "run": 41211616439,
+      "workflow": "ci / job `node 22` / step `Test suite`",
+      "tests": 3277,
+      "pass": 3262,
+      "fail": 1,
+      "skipped": 14,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "同提交在 CI 上 tests 与本地相同（+12），但 `fail = 1`：`not ok - capacity（#630 S3 核心证据）：5 个真 node 子进程同时抢 2 个槽 ⇒ 恰好 2 个成功`（本地连跑 3 次全绿）。机制与修法见 issue #651 —— 登记的 `expect.fail = 0` 因此**故意不放行**，这条红要留着直到 #651 修掉。"
     }
   ]
 }
