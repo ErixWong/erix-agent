@@ -1,3 +1,4 @@
+<!-- doc-version: 0.18.0 -->
 # Host upgrade guide: 0.18.0
 
 0.18.0 removes nothing: no signature changed, no tool disappeared, no store format

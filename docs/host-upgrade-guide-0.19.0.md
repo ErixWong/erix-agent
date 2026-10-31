@@ -1,3 +1,4 @@
+<!-- doc-version: 0.19.0 -->
 # Host upgrade guide: 0.19.0
 
 0.19.0 removes nothing: no symbol disappeared, no signature changed, no stored format

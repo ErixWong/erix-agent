@@ -1,3 +1,4 @@
+<!-- doc-version: 0.15.0 -->
 # Host upgrade guide: 0.15.0
 
 Additive release: the two host-side transcript contract capabilities requested by

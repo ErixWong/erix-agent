@@ -1,3 +1,4 @@
+<!-- doc-version: 0.21.0 -->
 # Host upgrade guide: 0.21.0
 
 This guide covers the changes a host can **see** in 0.21.0, named one by one: the

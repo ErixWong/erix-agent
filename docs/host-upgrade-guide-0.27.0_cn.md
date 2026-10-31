@@ -1,3 +1,4 @@
+<!-- doc-version: 0.27.0 -->
 # 宿主升级指南：0.27.0
 
 **这是「折叠摘要器终于有了死线、预算和体积上限」那一版。** 0.26.0 让折叠说出自己删掉了什么；0.27.0 让说出这句话
@@ -239,7 +240,7 @@ node -e 'import("erix-agent").then(m=>console.log(Object.keys(m).length))'   # �
    逐叶比），不再只是一句承诺。这条收窄**只作用于新命名空间**：直连路线的优先级规则——显式细粒度
    选项覆盖装配口提供的同名成员（`src/loop/option-normalization.js`），例如
    `runToolLoop({ assemblyPort, provider })` 里显式 `provider` 仍能盖端口 provider——一字未动，
-   `test/contract/assembly-port.js` 照旧断言它。**唯一变的是**（issue #498，自 0.28.0 起）
+   `test/contract/assembly-port.js` 照旧断言它。**唯一变的是**（issue #498，自 0.28.0 起，见 0.28.0 升级指南）
    `assemblyPortOptions` 的第二个参数：端口已经产出的键再出现在 `overrides` 里，现在启动期抛，
    不再静默取胜者（见契约里的「调用期覆盖通道」一节）。
 

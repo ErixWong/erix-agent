@@ -64,7 +64,7 @@ scripts/          # 实验脚本和结果
 | `npm test` | 全量测试（`node --test`） |
 | `node --check <file>` | 语法安全检查 |
 | `npm run check:syntax` | **全量**语法检查（issue #187）：`scripts/syntax-check.mjs` 把 `git ls-files` 里每一个跟踪的 `.js`/`.mjs`/`.cjs`（`src/`、`bin/`、`scripts/`、`test/`、`examples/`、`fixtures/`）都过一遍 `node --check`，红就点名文件并非零退出。`npm run check` 故意**保留**成单文件的 `node --check src/index.js`：`check:docs` 会校文档引用的命令真的存在，把它换掉反而制造文档漂移 |
-| `npm run check:docs` | 文档漂移检查（`scripts/docs-drift-check.mjs`：版本声明、README 引用的 `files`/`exports` 清单、模块地图、文中路径与命令、从 `src/` 直抽的 14 条关键默认值、`bin/cli.js` 帮助文本与两份 README 的 usage 行双向对账的 CLI 旗标清单、中英 README 标题骸架）+ 中英契约标题结构对齐 |
+| `npm run check:docs` | 文档漂移检查（`scripts/docs-drift-check.mjs`：版本声明、README 引用的 `files`/`exports` 清单、模块地图、文中路径与命令、从 `src/` 直抽的 14 条关键默认值、`bin/cli.js` 帮助文本与两份 README 的 usage 行双向对账的 CLI 旗标清单、中英 README 标题骸架，**以及自 issue #511 起的「这句话属于哪个版本」**：每份升级指南第一行必须自述版本；把事实归给**后面**那个版本的句子必须带指向那份指南的前向指针；「没有 `config.X`」对 `CONFIG_NAMESPACE_SCHEMA` 核、「V 加的」对该版 CHANGELOG 段核；每个带日期的 CHANGELOG 段必须写明发布了没有；`AGENTS*.md` 那两句「当前版本」当场对账——本仓版本对 `package.json`、发布行对 npm 的 `dist-tags.latest`——且两句都不许带测量日期）+ 中英契约标题结构对齐 |
 | `npm run check:docs:strict` | 同上，但把告警升级为失败 |
 | `node scripts/docs-drift-check.mjs --self-test` | 清单/枚举/单位类锚点的反向证自测（issue #210）：改文档一处声明 → 红、改源码真值 → 红、都不改 → 绿；变异没落上去也算失败（#210 R2） **自 issue #302 起，在哪棵树里跑都不影响结论**：`#280` 那两条树形用例跑在**合成树夹具**上，判定与本机是否存在那个不入库的 `docs/tasks/` 目录无关——在 `git archive HEAD | tar -x` 造出的「无 / 空 / 有 `docs/tasks/`」三种检出里实测：**103 例、三种树形全部 0 红**。#302 之前是另一回事：没有 `docs/tasks/` 的检出里 3 例是**已知假红**（树里有个空的则 5 例），由 issue #281 记录在案——那批红已经不存在，所以「必须在开发树里跑」是历史，不是现在的要求。 |
 | `npm run check:docs-examples` | 真实执行**两份契约文档与两份根 README**（自 issue #576 起 `README.md` / `README_cn.md` 也在面内）里的 js 围栏，每格三层——语法编译、真实符号链接、独立子进程真实执行——且 README 目标表本身被看守（摘掉一条目标，守卫格就红）。执行**离线**：脚本化假 provider / `fetchImpl` 桩，不碰网络、不读 `~/.erix`（issue #158、#576） |
@@ -211,7 +211,7 @@ scripts/          # 实验脚本和结果
   以下都是**历史值**，按当时为真保留：67（#307 之后，2026-10-16 实测）、66（#305 新增 `src/text/json-candidates.js` 之后）、
   65（#292 之后，2026-10-15 实测）、64（0.20.0 的 tarball）、63（0.19.0 时代）；体积 +约 44 kB（打包）/ +约 139 kB（解包）是 0.18.0 上实测的。
   `npm run check:types-build` 是「还能不能生成」的门禁。
-- 当前版本：`package.json` 写 `0.27.0`，**从未发布**——npm registry 实测仍是 `0.26.0`（`npm view erix-agent version`，2026-10-28）；版本变更使用 `npm version <x.y.z> --no-git-tag-version`（功能完整的首发版本不要使用 0.0.0）。`0.24.0` **从未发布**到 registry（已发布序列是 0.23.0 -> 0.25.0），且刻意**不补发**：`0.25.0` 已取代它，`CHANGELOG.md` 里 0.24.0 那段保留为「那一刻为真」的历史。
+- 当前版本：`package.json` 写 `0.29.0`（本仓版本），发布行——npm 的 `dist-tags.latest`——是 `0.29.0`；这两句由 `check:docs` 每次运行**当场对账**（它读 `package.json` 与 registry，句子过期就红），所以两句都不带测量日期：日期自己不会过期，而当场对账不需要第二份真值（issue #511）。版本变更使用 `npm version <x.y.z> --no-git-tag-version`（功能完整的首发版本不要使用 0.0.0）。`0.24.0` **从未发布**到 registry（已发布序列是 0.23.0 -> 0.25.0），且刻意**不补发**：`0.25.0` 已取代它，`CHANGELOG.md` 里 0.24.0 那段保留为「那一刻为真」的历史。
 
 ### npm 2026 政策变化（TOTP 停止 + bypass token 限制）
 - ❌ 不再支持新的 TOTP 注册（`enable-2fa` 返回 404）。

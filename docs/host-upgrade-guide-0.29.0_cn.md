@@ -1,3 +1,4 @@
+<!-- doc-version: 0.29.0 -->
 # 宿主升级指南：0.29.0
 
 **版本：0.29.0（2026-10-31）。** 这一版让库学会**给子 run 记账**，而它自己从不启动任何东西。`runToolLoop`
@@ -245,8 +246,10 @@ store 自己的命名助手推导，不要自己拼 `<runId>.jsonl`：store 会�
 
 ## 8. 没有变的东西
 
-* `runToolLoop` 的输入面：没有选项被退役、改名或搬家；被接受的顶层名集合、`config` 的 schema 与
-  `capabilities` 的形状，就是 0.28.0 发出去的那一套。
+* `runToolLoop` 的输入面：没有选项被退役、改名或搬家，`capabilities` 的形状就是 0.28.0 发出去的那一套。
+  `config` 的 schema 是 **8 个分组 / 43 个叶子**。基线是 0.28.0 的七个分组、41 个叶子；这一版正好新增
+  两个叶子——§2 的 `config.run.parentRunId` 与 §7.2 的 `config.continuity.handoff`——其余叶子一处没动。
+  这两个数不是「写给人信的散文」：`check:docs` 每次运行都拿 `CONFIG_NAMESPACE_SCHEMA` 对一遍。
 * 终止、核验与退出码语义；无 guard 时 `skipped` 的退出码仍是 `4`。
 * transcript 与 run-state 的落盘格式；能从 0.28.0 写下的账本续跑。
 * `delegate` 工具**默认关闭**：它不在默认工具面上、也不在默认系统提示里，`erix chat` / `erix repl` 只有

@@ -1,3 +1,4 @@
+<!-- doc-version: 0.20.0 -->
 # Host upgrade guide: 0.20.0
 
 This guide covers the changes a host has to **act on** in 0.20.0. Two families: the storage

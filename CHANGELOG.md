@@ -2259,6 +2259,8 @@
 - **`#394` 的复现钉进仓**：`test/loop-forced-final-pending-tool-use.test.js` 5 格钉住今天的行为——  被截断的工具调用轮（`stopReason: "max_tokens"` 且 content 带 `tool_use`）在续写预算用尽时撞上  `forceFinalIfNeeded` 自己的 `validateMessages` ⇒ `runToolLoop` reject `invalid_messages`（**默认关也复现**，  终稿丢失）。两条反证分别钉住「抛的是注入而不是悬空尾部本身」（`ERIX_NO_FORCED_FINAL=1` ⇒ 正常返回  且尾部 `pendingTrailingToolUses === 1`）与「尾部已结清 ⇒ 收尾正常注入」；修法落地时前三格会自动变红。- **repl 第一次拿到进程级证据**（`#398-3`）：`runRepl` 在非 TTY 下按产品承诺直接 `exit 1`，所以只能起  真 PTY（系统 `script`，util-linux / BSD 两种形状，探不到就 `t.skip` 并点名原因）。3 格钉「相对交付物按  会话（= 子进程）目录判定」的正反两面；变异证：拿掉 `bin/repl.js` 的 `loopOptions.cwd` ⇒ 该 describe 变红。- **`--require-deliverable` 的两种语义各留进程级格**（`#398-4`）：命名路径形状（不成立 ⇒ 退 **2**、成立 ⇒  退 **0**）与布尔形状那格原样保留（钉 `fileWrites` 语义）。顺带实测「布尔旗标真空通过」：一次工具都没调  的 run 在裸旗标下拿 `verified` 退 0，换命名路径后同一脚本退 2。
 ## [0.24.0] - 2026-10-22
 
+> **（未发布 / unpublished）**：这个版本号不在 npm registry 的 `versions` 列表里——本节按本仓惯例保留为「那一刻为真」的历史，不回填发布（0.24.0 是先例，见 `AGENTS.md` §4）。
+
 ### Changed
 
 - **`--checkJs` 棘轮的 `--with-tools` 一档基线下调到实测值：`BASELINE_WITH_TOOLS` **156 → 153**（issue #376；纯门禁 + 文档单，`src/` 一字未动、**不修任何类型错误本身**；`BASELINE_ROOT` 重测相等，**未动**）。**
@@ -2580,6 +2582,8 @@
   - 对账：第 4 步的 CHANGELOG 条目把 TTL 事实字段写成 `ttlFacts` 与 `fingerprint / placeholderHasTtlMark`，与代码不符（真名：`ttlDegradations` 条目里的 `contentFingerprint` / `placeholder`），已就地修正那一行；工单表格里沿用的 `ttlFacts` 同样不准。契约本体未动（本刀只改 CLI 展示，无宿主可见 API 变化）。
 
 ## [0.21.0] - 2026-10-16
+
+> **（未发布 / unpublished）**：这个版本号不在 npm registry 的 `versions` 列表里——本节按本仓惯例保留为「那一刻为真」的历史，不回填发布（0.24.0 是先例，见 `AGENTS.md` §4）。
 
 ### Added
 
@@ -3322,6 +3326,8 @@ chat 会话接续与会话索引（PR #79）+ issue #81 测试全量隔离真实
 
 ## [0.12.0] - 2026-09-27
 
+> **（未发布 / unpublished）**：这个版本号不在 npm registry 的 `versions` 列表里——本节按本仓惯例保留为「那一刻为真」的历史，不回填发布（0.24.0 是先例，见 `AGENTS.md` §4）。
+
 来源：issue #67 notes host 迁移（PR 1 #71 生命周期拆分、PR 2 #72 list 契约与
 semantic 缓存、PR 3 #73 schema run-only；决策记录 ADR-018，含维护者复盘的
 D3 决策反转——revision/分页协议判定为 YAGNI，出厂前削减）+ 出厂前外部审计
@@ -3427,6 +3433,8 @@ D3 决策反转——revision/分页协议判定为 YAGNI，出厂前削减）+ 
 
 ## [0.11.0] - 2026-09-26
 
+> **（未发布 / unpublished）**：这个版本号不在 npm registry 的 `versions` 列表里——本节按本仓惯例保留为「那一刻为真」的历史，不回填发布（0.24.0 是先例，见 `AGENTS.md` §4）。
+
 来源：issue #61 重构（notes assembler API 收敛，`refactor-260926-01`）。
 
 ### Changed（BREAKING）
@@ -3466,6 +3474,8 @@ D3 决策反转——revision/分页协议判定为 YAGNI，出厂前削减）+ 
 - docs/architecture 双语对齐：移除 `triggerRound`/固定 `extensionStep=32`/`judgeIntervalRound=5` 过时默认值，补 nearLimit extend 决策口径。
 
 ## [0.8.0] - 2026-09-21
+
+> **（未发布 / unpublished）**：这个版本号不在 npm registry 的 `versions` 列表里——本节按本仓惯例保留为「那一刻为真」的历史，不回填发布（0.24.0 是先例，见 `AGENTS.md` §4）。
 
 来源：issue #33 修复批次（PR #134）+ 260920 基准驱动两批（PR #34 judge/预算/工具层效率、PR #37 TTL 折叠与 recall 退役）+ 文档同步（PR #38）。
 

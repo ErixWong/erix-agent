@@ -269,7 +269,7 @@ that actually **retires** flat top-level keys, so the rule is stated as versions
 | release | writing `timeoutMs` / `deadlineMs` / `retry` |
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
-| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered |
 | 0.28.0 and later (issue #498 S3) | **rejected on the spot** — write `config.timing.timeoutMs` / `.deadlineMs` / `.retry`. The name gate throws `unknown runToolLoop option: "timeoutMs" (its canonical home is config.timing.timeoutMs; the flat spelling is rejected)`, and the message always names the new home, because that sentence is the only thing standing between an upgrading host and a guessing game |
 
 The three keys are the whole slice: the other config groups still accept their flat spelling, and
@@ -287,7 +287,7 @@ rule; the canonical home for a retry timer is, and was, `capabilities.ports.slee
 | release | writing `context` / `toolResultTtl` / `toolResultFoldMinTokens` |
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
-| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered |
 | 0.28.0 and later (issue #498 S3, second slice) | **rejected on the spot** — write `config.folding.context` / `config.folding.toolResultTtl` / `config.folding.toolResultFoldMinTokens`. The name gate throws `unknown runToolLoop option: "toolResultTtl" (its canonical home is config.folding.toolResultTtl; the flat spelling is rejected)` |
 
 **Flat-spelling version policy** (issue #498 S3, the `input` group's A segment — the third slice,
@@ -296,7 +296,7 @@ and the first one whose keys live in `config.input`):
 | release | writing `cacheStablePrefix` / `initialMessages` |
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
-| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered |
 | 0.28.0 and later (issue #498 S3, third slice) | **rejected on the spot** — write `config.input.cacheStablePrefix` / `config.input.messages`. The name gate throws `unknown runToolLoop option: "cacheStablePrefix" (its canonical home is config.input.cacheStablePrefix; the flat spelling is rejected)` |
 
 `initialMessages` is the interesting one, and the message is the reason to read this paragraph:
@@ -345,7 +345,7 @@ and the one that closes `config.input`: every member of that group is now nested
 | release | writing `initialUserMessage` |
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
-| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered |
 | 0.28.0 and later (issue #498 S3, fourth slice) | **rejected on the spot** — write `config.input.initialUserMessage`. The name gate throws `unknown runToolLoop option: "initialUserMessage" (its canonical home is config.input.initialUserMessage; the flat spelling is rejected)` |
 
 This is the seed message of a run — the one key almost every host writes, which is why it is worth
@@ -385,7 +385,7 @@ one that retires a **scalar** knob instead of a shell):
 | release | writing `cacheCapable` |
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
-| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered |
 | 0.28.0 and later (issue #498 S3, fifth slice) | **rejected on the spot** — write `config.tuning.cacheCapable`. The name gate throws `unknown runToolLoop option: "cacheCapable" (its canonical home is config.tuning.cacheCapable; the flat spelling is rejected)` |
 
 Two properties hold, both machine-checked:
@@ -416,7 +416,7 @@ slice, and the first one that retires **three** keys at once, all of them scalar
 | release | writing `finalGuardMaxRetries` / `finalGuardTimeoutMs` / `finalGuardExtend` |
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
-| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered |
 | 0.28.0 and later (issue #498 S3, sixth slice) | **rejected on the spot** — write `config.guard.finalGuardMaxRetries` / `config.guard.finalGuardTimeoutMs` / `config.guard.finalGuardExtend`. The name gate throws `unknown runToolLoop option: "finalGuardTimeoutMs" (its canonical home is config.guard.finalGuardTimeoutMs; the flat spelling is rejected)` |
 
 Two properties hold, both machine-checked:
@@ -447,7 +447,7 @@ segment, these three are the rest of the group):
 | release | writing `maxTokens` / `temperature` / `topP` |
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
-| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered |
 | 0.28.0 and later (issue #498 S3, seventh slice) | **rejected on the spot** — write `config.tuning.maxTokens` / `config.tuning.temperature` / `config.tuning.topP`. The name gate throws `unknown runToolLoop option: "maxTokens" (its canonical home is config.tuning.maxTokens; the flat spelling is rejected)` |
 
 Two properties hold, both machine-checked:
@@ -487,7 +487,7 @@ slice — the one that was supposed to close `config.input`; it does **not**, se
 | release | writing `system` |
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
-| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered |
 | 0.28.0 and later (issue #498 S3, eighth slice) | **rejected on the spot** — write `config.input.system`. The name gate throws `unknown runToolLoop option: "system" (its canonical home is config.input.system; the flat spelling is rejected)` |
 
 Two properties hold, both machine-checked:
@@ -536,7 +536,7 @@ rulings have landed. The keys are pinned in `test/loop-input-keys-slice-498s3a6.
   | release | writing `config.input.tools` |
   | --- | --- |
   | 0.26.0 and earlier (the last **published** release) | the `config` namespace did not exist yet, so no host ever wrote this path — there is no migration cost |
-  | 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+  | 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered |
   | 0.28.0 and later (issue #527) | **rejected on the spot** — write the top-level `tools`; the leaf is not on the schema and the message names the third station |
 
 * **`wrapup` is retired (issue #498 S3 A18) — the last flat twin of the group.** The order the A6
@@ -554,7 +554,7 @@ rulings have landed. The keys are pinned in `test/loop-input-keys-slice-498s3a6.
   | release | writing the flat `wrapup` | writing `config.input.wrapup` |
   | --- | --- | --- |
   | 0.26.0 and earlier (the last **published** release) | legal — and it was the only spelling (the `config` namespace did not exist yet) | n/a (no `config` namespace) |
-  | 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered | **never published** either |
+  | 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered | **never published** either |
   | 0.28.0 and later (issue #498 S3 A18) | **rejected on the spot** — the message names the new home: `unknown runToolLoop option: "wrapup" (its canonical home is config.input.wrapup; the flat spelling is rejected)` | the one legal spelling; the leaf is still on the schema and the expansion phase writes it back onto `effectiveOptions.wrapup`, so every engine-side reader is unchanged |
 
 The accounting is machine-derived rather than remembered: the `input` group now has **zero** members
@@ -796,7 +796,7 @@ slice — four small keys of `config.metadata`: `modelMetadata`, `requestId`, `t
 | release | writing `modelMetadata` / `requestId` / `toolContext` / `expert` |
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
-| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered |
 | 0.28.0 and later (issue #498 S3, ninth slice) | **rejected on the spot** — write `config.metadata.modelMetadata` / `.requestId` / `.toolContext` / `.expert`. The name gate throws `unknown runToolLoop option: "modelMetadata" (its canonical home is config.metadata.modelMetadata; the flat spelling is rejected)` |
 
 Two properties hold, both machine-checked:
@@ -842,7 +842,7 @@ slice — the group's *big three*: `user`, `model`, `task`):
 | release | writing `user` / `model` / `task` |
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
-| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered |
 | 0.28.0 and later (issue #498 S3, tenth slice) | **rejected on the spot** — write `config.metadata.user` / `.model` / `.task`. The name gate throws `unknown runToolLoop option: "task" (its canonical home is config.metadata.task; the flat spelling is rejected)` |
 
 The slice was sized **before** it was written, and that measurement is why it needed no fixture: with
@@ -890,7 +890,7 @@ config.metadata.session: the opaque per-run payload's home is config.folding.con
 | release | writing `config.metadata.session` |
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | there is no `config` namespace at all, so the question does not arise — `session` is a top-level option, and that is the only spelling those versions know |
-| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which the leaf existed |
+| 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which the leaf existed |
 | 0.28.0 and later (issue #531, message wording issue #551) | **rejected on the spot** — the run identity belongs at the top level `session`, and an opaque payload belongs in `config.folding.context.session`. The message above is the closed door; the engine read side is untouched (`effectiveOptions.session` still resolves the same value) |
 
 Three halves are machine-pinned (`test/loop-metadata-keys-slice-498s3a9.test.js` S1–S3): the same
@@ -939,7 +939,7 @@ slice — the group's *small four*: `invalidArguments`, `replayPolicy`, `writeTo
 | release | writing `invalidArguments` / `replayPolicy` / `writeToolNames` / `writeToolPathKeys` |
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
-| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered |
 | 0.28.0 and later (issue #498 S3, eleventh slice) | **rejected on the spot** — write `config.run.invalidArguments` / `.replayPolicy` / `.writeToolNames` / `.writeToolPathKeys`. The name gate throws `unknown runToolLoop option: "invalidArguments" (its canonical home is config.run.invalidArguments; the flat spelling is rejected)` |
 
 The slice was sized **before** it was written, and that measurement is why it needed no fixture: with
@@ -998,7 +998,7 @@ slice — `partialPersistence`, the first of the group's four):
 | release | writing `partialPersistence` at the top level |
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
-| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered |
 | 0.28.0 and later (issue #498 S3, twelfth slice) | **rejected on the spot** — write `config.run.partialPersistence`. The name gate throws `unknown runToolLoop option: "partialPersistence" (its canonical home is config.run.partialPersistence; the flat spelling is rejected)` |
 
 **What did *not* move is the meaning.** `partialPersistence` is durability, not retry: it commits the
@@ -1027,7 +1027,7 @@ slice — the three keys A12 deliberately held back: `stallDetection` / `outputH
 | release | writing `stallDetection` / `outputHygiene` / `persistence` at the top level |
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
-| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered |
 | 0.28.0 and later (issue #498 S3, thirteenth slice) | **rejected on the spot** — write `config.run.stallDetection` / `config.run.outputHygiene` / `config.run.persistence`. The name gate throws `unknown runToolLoop option: "<key>" (its canonical home is config.run.<key>; the flat spelling is rejected)` |
 
 **Why they left together, and why only now.** A12 measured the four `run`-group data shells leaving
@@ -1096,7 +1096,7 @@ slice — `maxTokenContinuations`, the group's only **scalar** member to leave s
 | release | writing `maxTokenContinuations` at the top level |
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
-| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered |
 | 0.28.0 and later (issue #498 S3, fourteenth slice) | **rejected on the spot** — write `config.run.maxTokenContinuations`. The name gate throws `unknown runToolLoop option: "maxTokenContinuations" (its canonical home is config.run.maxTokenContinuations; the flat spelling is rejected)` |
 
 **A scalar, not a data shell — and the fixture needed no new code.** The value is a number (default
@@ -1140,7 +1140,7 @@ slice — `cwd` retired; `stream` was **returned** by that slice and retired by 
 | release | writing `cwd` at the top level |
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | accepted at the top level — that is the only spelling those versions know |
-| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered |
 | 0.28.0 and later (issue #498 S3, fifteenth slice) | **rejected on the spot** — write `config.run.cwd`. The name gate throws `unknown runToolLoop option: "cwd" (its canonical home is config.run.cwd; the flat spelling is rejected)` |
 
 **`cwd` is a pass-through string, and the type check survives the move.** The engine never interprets
@@ -1439,7 +1439,7 @@ Version policy for `reflection` (issue #530):
 | release | writing the flat `reflection` |
 | --- | --- |
 | 0.26.0 and earlier (the last **published** release) | legal — and it was the only spelling (the `config` namespace did not exist yet) |
-| 0.27.0 | **never published** (`npm view erix-agent dist-tags.latest` → `0.26.0`; `versions` has no `0.27.0`), so no host ever installed a tree in which this mattered |
+| 0.27.0 | **never published** (`versions` has no `0.27.0` — the published line skips it, and the gate reconciles that list live), so no host ever installed a tree in which this mattered |
 | 0.28.0 and later (issue #530) | **rejected on the spot**, and because this shell is **mixed** the message names **both** stations in one sentence: `unknown runToolLoop option: "reflection" (its canonical home is config.run.reflection; the flat spelling is rejected) — this shell holds both data and functions: write data as config.run.reflection.<leaf>, and behaviour members as capabilities.hooks.onReflection or capabilities.ports.judgeProvider` |
 
 **Two-sided rejection, with the two reasons kept apart** (the A18 / A23b shape). The **flat** side is

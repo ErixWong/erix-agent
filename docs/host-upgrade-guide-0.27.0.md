@@ -1,3 +1,4 @@
+<!-- doc-version: 0.27.0 -->
 # Host upgrade guide: 0.27.0
 
 **This is the "the fold summarizer finally gets a deadline, a budget and a size limit" release.** 0.26.0 made a
@@ -278,7 +279,7 @@ exactly as before. Two things to know if you adopt it:
    fine-grained option overrides the same-named member the assembly port supplies
    (`src/loop/option-normalization.js`), e.g. `runToolLoop({ assemblyPort, provider })` still lets
    the explicit `provider` beat the port's provider — is untouched, and `test/contract/assembly-port.js`
-   keeps asserting it for that route. The one place that **does** change (issue #498, from 0.28.0) is
+   keeps asserting it for that route. The one place that **does** change (issue #498, from 0.28.0 — see the 0.28.0 upgrade guide) is
    `assemblyPortOptions`'s second parameter: an `overrides` key the port already supplies now throws
    at startup instead of silently winning (see "The call-level override channel" in the contract).
 

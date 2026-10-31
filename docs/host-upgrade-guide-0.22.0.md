@@ -1,3 +1,4 @@
+<!-- doc-version: 0.22.0 -->
 # Host upgrade guide: 0.22.0
 
 **Read this first: 0.21.0 was never published.** The registry's newest release is `0.20.0`, so
