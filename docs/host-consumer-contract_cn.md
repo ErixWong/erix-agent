@@ -2664,6 +2664,18 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `user_turn_guard_unrecoverable` 事件 | `onEvent`，每个退到守卫最后一格的请求视图一条（也就是每次 provider attempt 一条） | **additive（issue #296）。** `{ type: "user_turn_guard_unrecoverable", runId?, parentRunId?, round, channel: "chat" \| "chatStream", reason: "empty_view" \| "no_user_turn" \| "invalid_view", detail: string }`——请求视图的 user 轮不变量退完了所有退让格：`ensureUserTurnView` (`src/loop/request-user-view.js`) 在请求视图里找不到可用的 user 轮，**并且**未折叠的源视图里也没有可回补的 user 轮，于是这个请求**原样发出**——引擎既不伪造一条 user 轮，也不抛错。要求 user query 的上游会回 `400`；本事件在**那个请求发出之前**就到，因此它是「失败」与「原因」之间的 join 键（#296 之前这一格被滤掉，对外完全无痕）。`reason` 是子原因：`empty_view`（视图空了）、`no_user_turn`（非空但没有真 user 轮——纯 `tool_result` 载体不算）、`invalid_view`（有 user 轮但 `tool_use`/`tool_result` 配对非法）。`detail` 首句是宿主可直接断言的固定原文。另外两个守卫动作（`preserved_latest_user_turn` / `abandoned_fold`）照旧落进 `compactionStats.userTurnGuard`、永不发本事件；本事件**刻意不写进** `compactionStats`——它可能在一轮**完全没有压缩**时触发，写进去会让「这一轮到底有没有折叠」不可判读。 |
 | `run_outcome` 事件 | `onEvent`，一次 run 恰好一条——judge 从未运行的 run 同样发 | `{ type: "run_outcome", runId?, model?, judgeModel?, rounds, judgeRecordCount, termination, verification }`。成功路径在持久化落地后发，抛错路径在 `fail()` 里发；去重门保证一个 run 恰好一条。`termination` / `verification` 是 `runToolLoop` 返回值（或 `fail()` 构造出的终局）的副本。 |
 
+**事件在本文档里住哪张表（issue #641）。** 上面那张表是**加法**事件表：只列本契约已经存在之后新增的事件，
+`test/loop-event-type-surface-595.test.js` 对账的是**这些行** ↔ `LoopEvent.type` 联合。它不是完整的事件清单，
+一个名字不在这张表里，不等于它不在事件面上。完整的联合在 `LoopEvent` 的 typedef（`src/loop/orchestrator.js`），
+运行期每一个发射点由 `test/loop-event-type-emissions-641.test.js` 对账（循环的 `emitEvent(...)`、启动期直调的
+`onEvent` 诊断、装配端口的 `port.emit(...)`，以及 `runOutcomeRecord` 事件装配 helper）。属于联合、但文档写在
+本表之外的事件：`tool_use` / `tool_result` / `tool_replay_decision_required` / `tool_output_aggregate` 在
+「onEvent 工具事件字段表」；`forced_final` 在「停止与验证」一节；`final_guard_extend` 在终稿核验扩轮各节；
+`context_unknown_option` 在装配端口的未知键一节；以及续接写者的 `continuity_written`
+（`{ type, runId?, parentRunId?, round, mode, source, path }`）与 `continuity_write_failed`
+（`{ type, runId?, parentRunId?, phase, detail }`）——两条都只做观察：续接落盘失败**不会**让 run 失败。
+两道闸刻意并排：「加法表 ⊆ 联合」与「发射处 ⊆ 联合」是两个不同的真命题，一边绿从不意味着另一边也绿。
+
 为什么是一条独立的终局记录，而不是把 outcome 回写进决策记录：judge 记录是 run 还在跑时
 就流出、outcome 到终局才知道，回头改写已发出的记录会破掉 JSONL 的 append-only 语义（宿主
 可能已在消费）。因此关联方式是 **join**：每条决策记录带 `runId`，终局记录带 outcome。
