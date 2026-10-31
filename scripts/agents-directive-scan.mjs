@@ -57,6 +57,9 @@
 //   node scripts/agents-directive-scan.mjs --strict --json  # 同一道门，机器读法（红集合与退出码同源）
 //   node scripts/agents-directive-scan.mjs --self-test      # 反向证：**合成树夹具**上注入 `上限 − 实测 + 1` 条 ⇒ 红、还原 ⇒ 绿；
 //                                                          #   同一套用例在三种欠账形态（贴上限 / 余量 +1 / 余量 +5）下裁决必须相同
+//   node scripts/agents-directive-scan.mjs --sync   <文件>  # 刷上限表（**唯一合法**的改上限方式；手改数字即红，issue #644 ②）
+//   node scripts/agents-directive-scan.mjs --verify <文件>  # 验上限表：逐格与实测比，不改文件；不一致 ⇒ exit 1 并点名
+//                                                          #   用法（门禁跑的是 `--strict` + 这一条）见 `npm run check:agents-directives`
 
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -546,15 +549,248 @@ export function scanDirectives({ root = ROOT, io, exemptions = EXEMPTIONS, ceili
   return { manifest, report, gate, constants, externalPrefixes, staleConstants, exemptions, ceilings };
 }
 
-// ── 8. 输出（两条分支都只读 `gate`，不自己算红） ─────────────────────────────
+// ── 8. 上限表的刷写与验表（`--sync` / `--verify`，家族口径） ────────────────
+/**
+ * 为什么要有 `--sync`（issue #644 ②）：上限是**派生态**（实测值的钉子），但 #642 落地时它只能手改——
+ * 两次调上限（25/30 → 24/29、18 → 20）都是人把扫描器输出手抄进 `DEBT_CEILINGS`，流程上没有任何东西能
+ * 证明抄对了。而且抄**高**一位（24 → 42）在 `--strict` 下是**绿的**（棘轮方向只咬「实测 > 上限」），
+ * 所以「手抄错」是这道门里唯一没有闸的东西。
+ *
+ * 家族标准（`scripts/flat-count-inventory.mjs` / `scripts/mutation-sample-check.mjs`）：
+ *   · `--sync <文件>`：**刷表**。数字由实测重写 —— 这是**唯一合法**的改上限方式；
+ *   · `--verify <文件>`：**验表**。逐格与实测比，**不改任何文件**；任一处不一致 ⇒ exit 1 并点名。
+ * 两者都比 `--strict` 更紧：`--strict` 是棘轮（实测 ≤ 上限即绿，允许余量），`--sync` / `--verify`
+ * 要求**相等**（表是量出来的，不是写出来的）⇒ 手抄高一位也红。棘轮方向本身不变：清账仍然是「跑
+ * `--sync` 把上限降下来」，而不是「手改一个更小的数」。
+ *
+ * 与 `flat-count-inventory` 那条已知坑的区别：**少传路径不是崩溃，是明确的用法错误**（exit 2 + 用法）。
+ * 那一族的 `--sync` 少传路径会 `readFileSync(undefined)` 崩在 TypeError 上，读起来像门自己坏了；
+ * 这里先校验参数、再碰文件系统。
+ *
+ * 刷不了的两种红（都不是「数值抄错」，所以 `--sync` 不许静默吞掉）：
+ *   · 指令面上有这份文件、表里没有它的行 ⇒ 缺一条**理由注释**，那是人写的，`--sync` 不代笔；
+ *   · 表里有这一行、指令面上没有这份文件 ⇒ 死条目（改名 / 删文件留下的），人决定删还是改回。
+ */
+
+const DEBT_TABLE_USAGE = [
+  "用法：",
+  "  node scripts/agents-directive-scan.mjs                    # 全量报告（人读视图，exit 0）",
+  "  node scripts/agents-directive-scan.mjs --strict           # 门禁：红数 > 0 ⇒ exit 1；清单拿不到 ⇒ exit 2",
+  "  node scripts/agents-directive-scan.mjs --json             # 同一份事实的机器读法",
+  "  node scripts/agents-directive-scan.mjs --sync   <文件>    # 刷上限表（唯一合法的改法；文件里必须有 `DEBT_CEILINGS`）",
+  "  node scripts/agents-directive-scan.mjs --verify <文件>    # 验上限表（逐格与实测比；不改文件）",
+  "  node scripts/agents-directive-scan.mjs --self-test        # 反向证（合成树夹具 × 三种欠账形态）",
+].join("\n");
+
+/** `DEBT_CEILINGS` 那一块在源码里的位置（抽不到就抛错：#164 口径，不许静默降级）。 */
+function debtBlockOf(text) {
+  const m = /(export const DEBT_CEILINGS = Object\.freeze\(\{)([\s\S]*?)(\n\}\);)/.exec(text);
+  if (m === null) {
+    throw new Error("这份文件里抽不到 `export const DEBT_CEILINGS = Object.freeze({ … });`——"
+      + "上限表不是这个形状，`--sync` / `--verify` 没有可对账的真值（拒绝静默成功）");
+  }
+  return { head: m[1], body: m[2], tail: m[3], start: m.index, end: m.index + m[0].length };
+}
+
+/** 表里的一行：`  "AGENTS.md": Object.freeze({ … }),`。 */
+const DEBT_ROW_RE = /\n  "([^"]+)": Object\.freeze\(\{([\s\S]*?)\n  \}\),/g;
+/** 行里的一格：`    A: 20,`。 */
+const DEBT_CELL_RE = /\n([ \t]+)([A-Z])(: )(\d+)(,)/g;
+
+/**
+ * 把源码文本里的上限表读成 `Map<文件, {A,B,C}>`（**只读文本**，不读模块常量 ⇒ 自测能对一份副本对账）。
+ *
+ * @param {string} text
+ * @returns {Map<string, Record<string, number>>}
+ */
+export function ceilingsFromSource(text) {
+  const { body } = debtBlockOf(text);
+  const rows = new Map();
+  for (const m of body.matchAll(DEBT_ROW_RE)) {
+    const cells = {};
+    for (const c of m[2].matchAll(DEBT_CELL_RE)) cells[c[2]] = Number(c[4]);
+    rows.set(m[1], cells);
+  }
+  if (rows.size === 0) {
+    throw new Error("`DEBT_CEILINGS` 块里一行都抽不到——表被改坏了（拒绝静默成功）");
+  }
+  return rows;
+}
+
+/**
+ * 验表：逐格与实测比。**不改任何文件**，返回问题清单（空 = 绿）。
+ *
+ * @param {{text: string, measured: Map<string, Record<string, number>>}} input
+ * @returns {string[]}
+ */
+export function verifyCeilings({ text, measured }) {
+  const table = ceilingsFromSource(text);
+  const problems = [];
+  for (const [file, counts] of measured) {
+    const row = table.get(file);
+    if (row === undefined) {
+      problems.push(`${file}：指令面上有这份文件，上限表里却没有它的行（新入指令面却忘了钉上限；`
+        + "`--sync` 不替你编理由注释，人手加一条再跑 --sync）");
+      continue;
+    }
+    for (const category of Object.keys(CATEGORIES)) {
+      const claim = row[category];
+      if (claim === undefined) {
+        problems.push(`${file} ${category} 类：上限表里没有这一格（--sync 只重写已有的格，缺格要人手补）`);
+        continue;
+      }
+      if (claim !== counts[category]) {
+        problems.push(`${file} ${category} 类：表 ${claim} / 实测 ${counts[category]}`
+          + "（手改派生数 = 伪造；跑 --sync）");
+      }
+    }
+  }
+  for (const file of table.keys()) {
+    if (!measured.has(file)) {
+      problems.push(`${file}：上限表里有这一行，指令面上却没有这份文件（死条目：文件名改了或文件删了，`
+        + "人手决定删掉还是改回来）");
+    }
+  }
+  return problems;
+}
+
+/**
+ * 刷表：把每一格的数字重写成实测值（**只碰数字**，行尾的理由注释一个字不动）。
+ *
+ * @param {{text: string, measured: Map<string, Record<string, number>>}} input
+ * @returns {{text: string, changes: Array<{file: string, category: string, from: number, to: number}>,
+ *   missing: string[], dead: string[]}}
+ */
+export function syncCeilings({ text, measured }) {
+  const { head, body, tail, start, end } = debtBlockOf(text);
+  const table = ceilingsFromSource(text);
+  const missing = [...measured.keys()].filter((file) => !table.has(file));
+  const dead = [...table.keys()].filter((file) => !measured.has(file));
+  const changes = [];
+  const rebuilt = body.replace(DEBT_ROW_RE, (row, file, inner) => {
+    const counts = measured.get(file);
+    if (counts === undefined) return row;
+    const cells = inner.replace(DEBT_CELL_RE, (cell, indent, category, sep, digits, comma) => {
+      const next = counts[category];
+      if (next === undefined) return cell;
+      if (Number(digits) !== next) changes.push({ file, category, from: Number(digits), to: next });
+      return `\n${indent}${category}${sep}${next}${comma}`;
+    });
+    return inner === "" ? row : row.replace(inner, () => cells);
+  });
+  return { text: `${text.slice(0, start)}${head}${rebuilt}${tail}${text.slice(end)}`, changes, missing, dead };
+}
+
+/** 实测（只读 `counts`；上限传空表即可——`unregistered` 的红在这里无关，我们只要数）。 */
+function measuredForTable({ root, io }) {
+  const { report } = scanDirectives({ root, io, ceilings: {} });
+  return new Map(report.filter((entry) => entry.kind === "directive").map((entry) => [entry.file, { ...entry.counts }]));
+}
+
+/** 目标文件必须是**本仓内**的路径（刷仓库外的文件等于给「手抄」开一条后门）。 */
+function resolveTableTarget(target, root) {
+  const abs = path.resolve(root, target);
+  const rel = path.relative(root, abs);
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+    throw new Error(`目标文件 ${target} 不在仓库内（${root}）——上限表只许刷本仓里的源文件`);
+  }
+  return { abs, rel: rel.split(path.sep).join("/") };
+}
+
+/** `--verify <文件>`：验表，不改文件。退出码 0 = 逐格等于实测，1 = 有格不一致，2 = 门自己坏了。 */
+function mainVerifyTable({ target, root, io }) {
+  let rel;
+  let text;
+  let measured;
+  try {
+    const resolved = resolveTableTarget(target, root);
+    rel = resolved.rel;
+    text = readFileSync(resolved.abs, "utf8");
+    measured = measuredForTable({ root, io });
+  } catch (error) {
+    console.error(`agents-directive-scan --verify: ${error.message}`);
+    return 2;
+  }
+  let problems;
+  try {
+    problems = verifyCeilings({ text, measured });
+  } catch (error) {
+    console.error(`agents-directive-scan --verify: ${error.message}`);
+    return 2;
+  }
+  console.log(`agents-directive-scan --verify：${rel}`);
+  if (problems.length > 0) {
+    for (const problem of problems) console.log(`  ✗ ${problem}`);
+    console.log(`agents-directive-scan: 失败 — ${problems.length} 处不一致`
+      + "（上限是量出来的：跑 `--sync`，不许手改）");
+    return 1;
+  }
+  console.log(`  ${measured.size} 份指令面文件 × ${Object.keys(CATEGORIES).length} 类，逐格等于实测`);
+  console.log(`复跑：node scripts/agents-directive-scan.mjs --verify ${rel}`);
+  return 0;
+}
+
+/** `--sync <文件>`：刷表（唯一合法的改法），刷完当场复验。退出码 0 = 刷完绿，1 = 有刷不动的红，2 = 门坏了。 */
+function mainSyncTable({ target, root, io }) {
+  let rel;
+  let abs;
+  let text;
+  let measured;
+  try {
+    const resolved = resolveTableTarget(target, root);
+    ({ rel, abs } = resolved);
+    text = readFileSync(abs, "utf8");
+    measured = measuredForTable({ root, io });
+  } catch (error) {
+    console.error(`agents-directive-scan --sync: ${error.message}`);
+    return 2;
+  }
+  let result;
+  try {
+    result = syncCeilings({ text, measured });
+  } catch (error) {
+    console.error(`agents-directive-scan --sync: ${error.message}`);
+    return 2;
+  }
+  console.log(`agents-directive-scan --sync：${rel}`);
+  const unfixable = [];
+  for (const file of result.missing) {
+    unfixable.push(`${file}：指令面上有这份文件，上限表里没有它的行——人手加一条（连理由注释），再跑 --sync`);
+  }
+  for (const file of result.dead) {
+    unfixable.push(`${file}：上限表里有这一行，指令面上没有这份文件——人手决定删掉它还是把文件名改回来`);
+  }
+  if (unfixable.length > 0) {
+    for (const line of unfixable) console.log(`  ✗ ${line}`);
+    console.log("agents-directive-scan: 刷不动 —— 上面这些不是上限数值能修的（不写文件）");
+    return 1;
+  }
+  if (result.text !== text) writeFileSync(abs, result.text);
+  for (const change of result.changes) {
+    console.log(`  ${change.to > change.from ? "↑" : "↓"} ${change.file} ${change.category} 类：`
+      + `${change.from} → ${change.to}${change.to > change.from
+        ? "（**抬高**：新写进去的可变量要么改成复现命令，要么在报告里写明为什么是存量）" : ""}`);
+  }
+  console.log(`  改动 ${result.changes.length} 格（数字由实测重写；行尾的理由注释一个字都没碰）`);
+  const problems = verifyCeilings({ text: result.text, measured });
+  if (problems.length > 0) {
+    for (const problem of problems) console.log(`  ✗ ${problem}`);
+    console.log("agents-directive-scan: 刷完仍有不一致 —— 上面这些不是上限数值能修的");
+    return 1;
+  }
+  console.log("刷完复验：逐格等于实测");
+  return 0;
+}
+
+// ── 9. 输出（两条分支都只读 `gate`，不自己算红） ─────────────────────────────
 /** 人读视图。返回值 = 退出码（由 `gateExitCode` 给；本函数不自己拼红数）。 */
 function printReport({ report, gate, constants, externalPrefixes, staleConstants, exemptions, ceilings }, { strict }) {
   const directive = report.filter((r) => r.kind === "directive");
   const history = report.filter((r) => r.kind === "history");
   console.log(`agents-directive-scan: ${report.length} 份**入库**文件（清单 = \`git ls-files\`；`
     + `面 = AGENTS 那一对 + \`CHANGELOG.md\` + \`docs/\`，issue #642）`);
-  console.log("门禁：`npm run check:agents-directives`（= --strict）在 CI 里阻塞，紧跟 `Documentation drift check` 一族；"
-    + "默认模式只打报告\n");
+  console.log("门禁：`npm run check:agents-directives`（= `--strict` + `--verify`）在 CI 里阻塞，紧跟 `Documentation drift check` 一族；"
+    + "上限表只能由 `--sync <文件>` 刷（手改数字 = 伪造），默认模式只打报告\n");
 
   console.log("── 分类（第一等公民，纯路径） ──────────────────────────────────");
   console.log(`  directive    ${String(directive.length).padStart(3)} 份  ${directive.map((r) => r.file).join(", ")}`);
@@ -629,7 +865,7 @@ function printReport({ report, gate, constants, externalPrefixes, staleConstants
   return gateExitCode(gate, { strict });
 }
 
-// ── 9. 自测（合成树夹具 / 纯函数夹具，不碰真文档） ───────────────────────────
+// ── 10. 自测（合成树夹具 / 纯函数夹具，不碰真文档） ───────────────────────────
 /**
  * 合成树夹具的**内容**（issue #644 ①）。
  *
@@ -686,6 +922,28 @@ const FIXTURE_FILES = Object.freeze({
     "]);",
     "",
   ].join("\n"),
+  // `--sync` / `--verify` 的刷写目标（#644 ②）：一份带 `DEBT_CEILINGS` 表的最小源文件，
+  // 数字先摆成夹具的实测值（1 / 1 / 1），所以干净的夹具上 `--verify` 是绿的。
+  "scripts/debt-table-fixture.mjs": [
+    "// 夹具：`--sync` / `--verify` 的刷写目标（数字 = 夹具实测值 1/1/1）",
+    "export const DEBT_CEILINGS = Object.freeze({",
+    '  "AGENTS.md": Object.freeze({',
+    "    // 1：夹具里的存量 A 类命中",
+    "    A: 1,",
+    "    // 1：夹具里的存量 B 类命中",
+    "    B: 1,",
+    "    // 1：夹具里的存量 C 类命中",
+    "    C: 1,",
+    "  }),",
+    '  "AGENTS_cn.md": Object.freeze({',
+    "    // 1 / 1 / 1：同上（中文侧）",
+    "    A: 1,",
+    "    B: 1,",
+    "    C: 1,",
+    "  }),",
+    "});",
+    "",
+  ].join("\n"),
 });
 
 /**
@@ -714,12 +972,14 @@ async function selfTest() {
     }
     const surface = Object.keys(FIXTURE_FILES).filter((rel) => rel.endsWith(".md")).sort();
     const truth = Object.keys(FIXTURE_FILES).filter((rel) => rel.startsWith("scripts/")).sort();
+    // `tracked` = 夹具声明的「入库」清单（可增可删：`--sync` 那两例要模拟「新入指令面」与「文件改名」）
+    const tracked = [...surface];
     const io = {
       exec: (args) => {
         if (args[0] === "rev-parse") return `${dir}\n`;
         if (args[0] === "ls-files") {
           const pathspecs = args.slice(args.indexOf("--") + 1);
-          return (pathspecs.includes("scripts") ? truth : surface).map((rel) => `${rel}\0`).join("");
+          return (pathspecs.includes("scripts") ? truth : tracked).map((rel) => `${rel}\0`).join("");
         }
         throw new Error(`夹具 git 不认识这个子命令：${args.join(" ")}`);
       },
@@ -737,7 +997,26 @@ async function selfTest() {
       file,
       Object.fromEntries(Object.keys(CATEGORIES).map((category) => [category, counts[category] + margin])),
     ]));
-    return { dir, io, surface, measured, ceilingsFor };
+    return {
+      dir,
+      io,
+      surface,
+      measured,
+      ceilingsFor,
+      /** 新增一份「入库」文件（模拟「新入指令面却忘了钉上限」）。 */
+      addTracked: (rel, text) => {
+        const abs = path.join(dir, rel);
+        mkdirSync(path.dirname(abs), { recursive: true });
+        writeFileSync(abs, text);
+        tracked.push(rel);
+      },
+      /** 把一份文件从「入库」清单里拿掉（模拟改名 / 删文件后表里留下的死行）。 */
+      removeTracked: (rel) => {
+        rmSync(path.join(dir, rel), { force: true });
+        const at = tracked.indexOf(rel);
+        if (at >= 0) tracked.splice(at, 1);
+      },
+    };
   };
 
   /** 在夹具上跑一段（跑完删树；`margin` 决定这一轮的欠账形态）。 */
@@ -1052,6 +1331,75 @@ async function selfTest() {
       eq(verdicts.map((v) => v.one).join(","), "1,0,0", "固定塞一条在三种欠账形态下的退出码（后两种是假绿）");
     });
 
+    t("反向证 ⑦：手改一格上限 ⇒ `--verify` 红并点名（抄高也是红）；`--sync` 刷回 ⇒ 逐字回到原样；再刷一遍 0 格改动",
+      () => withFixture(shape.margin, async (tree) => {
+        const rel = "scripts/debt-table-fixture.mjs";
+        const abs = path.join(tree.dir, rel);
+        const pristine = readFileSync(abs, "utf8");
+        eq((await runCaptured(["--verify", rel], tree)).code, 0, "干净表 `--verify` 的退出码");
+        const cell = "    A: 1,\n    // 1：夹具里的存量 B 类命中";
+        // 两个方向都试。抄高那一方向是 #644 ② 的洞：它在 `--strict` 下是**绿的**（棘轮只咬「实测 > 上限」）
+        for (const wrong of [9, 0]) {
+          const tampered = pristine.replace(cell, `    A: ${wrong},\n    // 1：夹具里的存量 B 类命中`);
+          if (tampered === pristine) throw new Error("变异没落上：手改那一格没改到");
+          writeFileSync(abs, tampered);
+          const run = await runCaptured(["--verify", rel], tree);
+          eq(run.code, 1, `手改成 ${wrong} 后 \`--verify\` 的退出码`);
+          if (!/AGENTS\.md A 类/.test(run.stdout)) throw new Error(`--verify 没点名是哪一格：${run.stdout}`);
+          if (!/实测 1/.test(run.stdout)) throw new Error(`--verify 没报实测值：${run.stdout}`);
+          eq((await runCaptured(["--sync", rel], tree)).code, 0, "`--sync` 的退出码");
+          eq(readFileSync(abs, "utf8"), pristine, "`--sync` 刷完必须逐字回到原样（只重写数字，注释不动）");
+          eq((await runCaptured(["--verify", rel], tree)).code, 0, "刷回后 `--verify` 的退出码");
+        }
+        const again = await runCaptured(["--sync", rel], tree);
+        eq(again.code, 0, "再刷一遍的退出码");
+        if (!/改动 0 格/.test(again.stdout)) throw new Error(`--sync 不幂等（干净表上又改了几格）：${again.stdout}`);
+      }));
+
+    t("反向证 ⑧：`--sync` / `--verify` 少传路径 ⇒ exit 2 且说清缺什么（不是 `readFileSync(undefined)` 崩）；"
+      + "目标里没有表 / 路径越界 ⇒ 同样 exit 2 且一个字节都不写", async () => {
+      for (const mode of ["--sync", "--verify"]) {
+        const run = await runCaptured([mode], { dir: ROOT });
+        eq(run.code, 2, `${mode} 少传路径时的退出码`);
+        if (!/缺少目标文件路径/.test(run.stderr)) throw new Error(`${mode} 少传路径时没说清缺什么：${run.stderr}`);
+        if (!/用法/.test(run.stderr)) throw new Error(`${mode} 少传路径时没打用法：${run.stderr}`);
+      }
+      // 目标文件里没有 `DEBT_CEILINGS` ⇒ 明确报错，而且**不写文件**（刷表不许变成「猜着写」）
+      const before = readFileSync(path.join(ROOT, "README.md"), "utf8");
+      const noTable = await runCaptured(["--sync", "README.md"], { dir: ROOT });
+      eq(noTable.code, 2, "目标里没有表时 `--sync` 的退出码");
+      if (!/抽不到/.test(noTable.stderr)) throw new Error(`报错没说清抽不到表：${noTable.stderr}`);
+      eq(readFileSync(path.join(ROOT, "README.md"), "utf8"), before, "报错路径上一个字节都不许写");
+      // 仓库外的路径不许刷（否则「刷表」就是给「手抄」开的另一道后门）
+      const outside = await runCaptured(["--sync", path.join(tmpdir(), "not-ours.md")], { dir: ROOT });
+      eq(outside.code, 2, "仓库外路径的退出码");
+      if (!/不在仓库内/.test(outside.stderr)) throw new Error(`报错没说清路径越界：${outside.stderr}`);
+    });
+
+    t("反向证 ⑨：`--sync` 修不了的两类红（指令面上没登记的文件 / 表里死了的行）⇒ 明确报错并点名，不写文件",
+      () => withFixture(shape.margin, async (tree) => {
+        const rel = "scripts/debt-table-fixture.mjs";
+        const abs = path.join(tree.dir, rel);
+        const pristine = readFileSync(abs, "utf8");
+        // ① 指令面上多了一份没登记的文件（新入指令面却忘了钉上限）
+        tree.addTracked("AGENTS_xx.md", "# AGENTS_xx（夹具）\n\n- 工单 #902 已落地\n");
+        const missing = await runCaptured(["--sync", rel], tree);
+        eq(missing.code, 1, "有未登记文件时 `--sync` 的退出码");
+        if (!/AGENTS_xx\.md/.test(missing.stdout)) throw new Error(`没点名未登记的文件：${missing.stdout}`);
+        eq(readFileSync(abs, "utf8"), pristine, "刷不动时不许写文件");
+        tree.removeTracked("AGENTS_xx.md");
+        // ② 表里有一行，指令面上没有这份文件（死条目）
+        const withDeadRow = pristine.replace('  "AGENTS_cn.md": Object.freeze({',
+          '  "AGENTS_zz.md": Object.freeze({\n    A: 0,\n    B: 0,\n    C: 0,\n  }),\n  "AGENTS_cn.md": Object.freeze({');
+        if (withDeadRow === pristine) throw new Error("变异没落上：死条目没插进去");
+        writeFileSync(abs, withDeadRow);
+        const dead = await runCaptured(["--sync", rel], tree);
+        eq(dead.code, 1, "有死条目时 `--sync` 的退出码");
+        if (!/AGENTS_zz\.md/.test(dead.stdout)) throw new Error(`没点名死条目：${dead.stdout}`);
+        // `--verify` 同样点名这两类（它不该只在 `--sync` 里被看见）
+        eq((await runCaptured(["--verify", rel], tree)).code, 1, "死条目下 `--verify` 的退出码");
+      }));
+
     return pending;
   };
 
@@ -1101,11 +1449,14 @@ async function selfTest() {
   return failed === 0 ? 0 : 1;
 }
 
-// ── 10. main ─────────────────────────────────────────────────────────────────
+// ── 11. main ─────────────────────────────────────────────────────────────────
 /**
  * 一次 CLI 运行。`root` / `io` / `ceilings` 可注入 ⇒ 自测能在**临时树**上把真实路径（清单 → 分类 → 命中 →
  * 例外 → 上限 → 判词 → 退出码）整条跑一遍，不碰真文档、也不假造判词；`ceilings` 那一格是「欠账形态」
  * 的注入点（#644 ①：上限与实测的余量必须能由用例摆布，否则裁决会依赖这台机器此刻的欠账数）。
+ *
+ * 模式（互斥，别混）：`--strict` 门禁 / 报告 / `--json` / `--sync <文件>` 刷上限表 / `--verify <文件>`
+ * 验上限表 / `--self-test` 反向证。
  *
  * @param {{argv?: string[], root?: string, io?: {exec?: (args: string[], root: string) => string},
  *   ceilings?: Readonly<Record<string, Readonly<Record<"A"|"B"|"C", number>>>>}} [options]
@@ -1115,8 +1466,28 @@ export async function runCli({ argv = process.argv.slice(2), root = ROOT, io, ce
   const strict = argv.includes("--strict");
   const jsonOut = argv.includes("--json");
   const selfTestMode = argv.includes("--self-test");
+  const syncMode = argv.includes("--sync");
+  const verifyTableMode = argv.includes("--verify");
 
   if (selfTestMode) return selfTest();
+
+  // 上限表的刷写 / 验表（#644 ②）。**先校验参数再碰文件系统**：少传路径是明确的用法错误（exit 2），
+  // 不是 `readFileSync(undefined)` 那类崩溃（`flat-count-inventory` 的已知坑，别照抄）。
+  if (syncMode || verifyTableMode) {
+    const mode = syncMode ? "--sync" : "--verify";
+    if (syncMode && verifyTableMode) {
+      console.error("agents-directive-scan: `--sync` 与 `--verify` 是两种模式（刷表 / 验表），不许同时给");
+      console.error(DEBT_TABLE_USAGE);
+      return 2;
+    }
+    const target = argv.find((arg) => !arg.startsWith("--"));
+    if (target === undefined) {
+      console.error(`agents-directive-scan ${mode}: 缺少目标文件路径（${mode} 后面要跟一份含 \`DEBT_CEILINGS\` 的源文件）`);
+      console.error(DEBT_TABLE_USAGE);
+      return 2;
+    }
+    return syncMode ? mainSyncTable({ target, root, io }) : mainVerifyTable({ target, root, io });
+  }
 
   let scan;
   try {
