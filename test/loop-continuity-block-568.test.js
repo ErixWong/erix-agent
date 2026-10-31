@@ -717,3 +717,112 @@ function fixedContinuityBlock(options) {
     version: normalized.version,
   }).text;
 }
+
+// ================================================================ 判据 8（issue #640）
+//
+// 补的是**证据**，不是措辞：`upsertContinuityInMessages` 的五个 `reason` 里，`moved_to_tail` 与
+// `empty` 此前在 `test/**/*.test.js` 里**零 `.reason` 断言**，而 `moved_to_tail` 恰恰是 #547/#568
+// 「块被新消息压在后面要挪回尾部」那条修复的正主。只断言 `reason` 等于某个字符串不够——那正是今天
+// 缺的证据——所以 8a 同时钉三件：**消息条数不变 + 块停在尾部（同一条消息对象）+ 正文已换**。
+// 8b/8c 把另外三个此前没被断言的出口（`empty`、`absent`、`already_tail`）也各钉一格。
+
+test("判据 8a（#640）：`moved_to_tail` —— 条数不变 + 停在尾部 + 正文已换，三件同时成立", () => {
+  const seeded = upsertContinuityInMessages(
+    [
+      { role: "user", content: [{ type: "text", text: "开始" }] },
+      { role: "assistant", content: [{ type: "text", text: "收到" }] },
+    ],
+    fixedContinuityBlock({ version: 1 }),
+  );
+  assert.equal(seeded.reason, "inserted", "夹具自检：先落一条 v1 的块（`inserted` 不是本格要钉的出口）");
+  const block = seeded.messages.at(-1);
+  const drifted = [
+    seeded.messages[0],
+    seeded.messages[1],
+    block,
+    { role: "assistant", content: [{ type: "text", text: "块之后的新消息 A" }] },
+    { role: "user", content: [{ type: "text", text: "块之后的新消息 B" }] },
+  ];
+  assert.notEqual(drifted.at(-1), block, "夹具自检：调用前块**不在**尾部（否则会走到 `in_place` 那支）");
+  assert.equal(drifted.indexOf(block), 2, "夹具自检：块在中间");
+
+  const moved = upsertContinuityInMessages(drifted, fixedContinuityBlock({ version: 2 }));
+  assert.equal(moved.reason, "moved_to_tail");
+  assert.equal(moved.injected, true, "`moved_to_tail` 是「注入了」那一组");
+  // ① 消息条数不变：挪不是复制、也不是删。
+  assert.equal(
+    moved.messages.length,
+    drifted.length,
+    `挪回尾部不许改变消息条数（${moved.messages.length} ≠ ${drifted.length}）`,
+  );
+  assert.equal(continuityMessageCount(moved.messages), 1, "挪动不许留下第二条块");
+  // ② 块停在尾部，且**是同一条消息对象**（`messageRounds` 以对象为键，换对象 = 轮号丢掉）。
+  assert.equal(moved.messages.at(-1), block, "块必须回到尾部，且必须是同一条消息对象（换对象 = 轮号映射丢掉）");
+  assert.ok(isContinuityMessage(moved.messages.at(-1)), "尾部那条必须是块消息");
+  // ③ 正文已换：版本号是新的，旧正文不残留（不是把旧块挪了个位置）。
+  const tailText = blockTextOf(moved.messages.at(-1)) ?? "";
+  assert.ok(tailText.includes("version=2"), "正文必须是新的那一份（v2）");
+  assert.ok(!tailText.includes("version=1"), "旧正文不许残留");
+  // 反向自检：挪动之后，原本压在块后面的两条消息必须仍在块**之前**且相对顺序不变。
+  assert.deepEqual(
+    moved.messages.map((message) => (isContinuityMessage(message) ? "块" : "非块")),
+    ["非块", "非块", "非块", "非块", "块"],
+    "挪动只许把块搬到尾部：其余消息的相对顺序不变，块是最后一条",
+  );
+});
+
+test("判据 8b（#640）：`empty` —— 防御分支（messages 不是数组 / 正文不是非空字符串）不注入且逐字返回", () => {
+  const text = fixedContinuityBlock();
+  const notArray = upsertContinuityInMessages(undefined, text);
+  assert.equal(notArray.injected, false, "非数组入参不许注入");
+  assert.equal(notArray.reason, "empty");
+  assert.equal(notArray.messages, undefined, "非数组入参必须逐字返回（不许造一个空数组出来）");
+
+  const messages = [{ role: "user", content: [{ type: "text", text: "开始" }] }];
+  for (const rendered of ["", "   \n\t "]) {
+    const blocked = upsertContinuityInMessages(messages, rendered);
+    assert.equal(blocked.injected, false, "空正文不许注入");
+    assert.equal(blocked.reason, "empty");
+    assert.equal(blocked.messages, messages, "空正文必须逐字返回同一份 messages（不插空块、不重建数组）");
+  }
+  assert.equal(upsertContinuityInMessages(messages, 42).reason, "empty", "非字符串正文同样走防御分支");
+});
+
+test("判据 8c（#640）：`positionContinuityBlock` 的 `absent`（没块 / 不是数组）与 `already_tail`（已在尾部且单条）", () => {
+  const notArray = positionContinuityBlock("不是数组");
+  assert.equal(notArray.moved, false);
+  assert.equal(notArray.reason, "absent");
+  assert.equal(notArray.messages, "不是数组", "非数组入参必须逐字返回");
+
+  const noBlockMessages = [{ role: "user", content: [{ type: "text", text: "没有块" }] }];
+  const noBlock = positionContinuityBlock(noBlockMessages);
+  assert.equal(noBlock.moved, false);
+  assert.equal(noBlock.reason, "absent");
+  assert.equal(noBlock.messages, noBlockMessages, "`absent` 必须逐字返回同一份 messages（不删消息、不重建数组）");
+
+  const atTail = [
+    { role: "user", content: [{ type: "text", text: "开始" }] },
+    { role: "user", content: [{ type: "text", text: fixedContinuityBlock({ version: 4 }) }] },
+  ];
+  const keep = positionContinuityBlock(atTail);
+  assert.equal(keep.moved, false, "已在尾部 ⇒ 不挪");
+  assert.equal(keep.reason, "already_tail");
+  assert.equal(keep.messages, atTail, "`already_tail` 必须逐字返回同一份 messages（不重建数组）");
+  assert.ok(isContinuityMessage(keep.messages.at(-1)), "前提：块本来就在尾部");
+  assert.ok((blockTextOf(keep.messages.at(-1)) ?? "").includes("version=4"), "前提：正文是 v4（本函数不换正文）");
+
+  // 分界：`already_tail` 的口径是「**恰好一条**块 + 它就是最后一条消息」。两条块时（哪怕末尾
+  // 那条本来就在尾部）走的是 `moved_to_tail`——本函数只挪最后那条、**不**收口重复块（收口是
+  // `upsertContinuityInMessages` 的职责，判据 6a 已钉）。这里把这条分界也钉住，免得两个名字的
+  // 边界只能靠读实现猜。
+  const doubled = [
+    atTail[0],
+    { role: "user", content: [{ type: "text", text: fixedContinuityBlock({ version: 3 }) }] },
+    atTail[1],
+  ];
+  const repositioned = positionContinuityBlock(doubled);
+  assert.equal(repositioned.reason, "moved_to_tail", "两条块时即便末尾那条已在尾部也不算 `already_tail`（`already_tail` 只认恰好一条块）");
+  assert.equal(repositioned.moved, true);
+  assert.equal(repositioned.messages.at(-1), doubled.at(-1), "挪的是最后那条块");
+  assert.equal(continuityMessageCount(repositioned.messages), 2, "本函数不负责收口重复块（那是 upsert 的职责）");
+});

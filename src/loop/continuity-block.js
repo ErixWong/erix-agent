@@ -368,11 +368,21 @@ function tailGate(messages) {
 /**
  * 刷新（或首次插入）续接块：marker + **就地替换** + 挪到尾部。**每轮不新增一条消息**。
  *
- * 三种结果（`reason` 是给诊断/账本用的可断言字面量）：
- *   · `in_place` —— 已有块且本来就在尾部，只换正文；
- *   · `moved_to_tail` —— 已有块但被新消息压在后面：换正文并挪到尾部（消息条数不变）；
- *   · `inserted` —— 首次注入（run 启动那一次）；
- *   · `pending_tool_use` / `empty` —— **没注入**，`messages` 逐字返回（调用方必须记账）。
+ * 五个结果（`reason` 是给诊断/账本用的可断言字面量）。按 `injected` 分两组——**不是「三种」**：
+ * 「注入了」有三种形态，另两个是「没注入」：
+ *
+ * **注入了**（`injected: true`，`messages` 是刷新后的那一份）：
+ *   · `inserted` —— 首次注入（run 启动那一次）：尾部**新增**一条块消息；
+ *   · `in_place` —— 已有块且本来就在尾部：只换正文，条数不变；
+ *   · `moved_to_tail` —— 已有块但被新消息压在后面（或有重复块被收口）：换正文并挪到尾部，条数不变。
+ *
+ * **没注入**（`injected: false`，`messages` 逐字返回；调用方**必须**记账，不许静默跳过）：
+ *   · `pending_tool_use` —— `tailGate` 的闸：请求尾部挂着未结清的 `tool_use`，此刻插入会破坏配对；
+ *   · `empty` —— 防御分支：`messages` 不是数组，或渲染正文不是非空字符串。
+ *
+ * ⚠ 上面点名的五个名字与下面代码里 `reason` 的**字面量集合逐字对账**
+ * （`test/loop-continuity-reason-vocabulary-640.test.js` 的 C1/C4）：多一个、少一个、只改名一边，
+ * 门禁都红并点名差集；每个名字还必须在测试里有一条 `.reason` 断言。
  *
  * ⚠ 就地替换用的是**同一条消息对象**（改 `content`、不换对象）：`messageRounds`（轮号映射）
  * 以消息对象为键，换对象等于把轮号丢掉。
@@ -425,6 +435,14 @@ export function upsertContinuityInMessages(messages, rendered) {
 /**
  * 只**定位**（不刷新内容）：把已有的块挪回尾部。内容没变时也调用它——块必须停在请求尾部，
  * 否则它留在历史中间，改一次就让整段历史的前缀复用作废（见文件头纪律 2）。
+ *
+ * 四个结果（`reason` 是给诊断/账本用的可断言字面量）。**每个名字要么有对外可观察出口，要么在
+ * 下面显式声明「有意静默」并写明为什么**——「注释里没写、事件里也不发」的名字不许滑过去
+ * （`test/loop-continuity-reason-vocabulary-640.test.js` 的 C2/C3 逐字对账）：
+ *   · `moved_to_tail` —— 挪了（`moved: true`）：**有意静默**。理由：稳态下几乎每轮都会有新消息长在块后面，这是正常路径而不是异常；为它发事件等于把「正常」记成「跳过」，宿主会被每轮一条的噪声淹掉，而块停在尾部这件事本身在请求里就看得见。
+ *   · `pending_tool_use` —— 尾部挂着未结清的 `tool_use`，**没挪**：**有出口**。caller `placeContinuity`（`src/loop/orchestrator.js`）比较 `placed.reason === "pending_tool_use"` 后交给 `recordContinuitySkip` ⇒ 宿主收到 `continuity_injection_skipped` 事件，能断言到 `{round, reason}`。
+ *   · `already_tail` —— 已有且只有一条块、本来就在尾部，**没挪**：**有意静默**。理由：这是每轮的正常终态（不需要挪就是对的），没有要宿主处理的事；发事件会把「正常」记成「跳过」，与 `pending_tool_use` 那种真跳过混在同一个通道里。
+ *   · `absent` —— 消息流里没有块（`messages` 不是数组，或一条块都没有），**没挪**：**有意静默**。理由：caller 在 `continuityState.rendered === undefined` 时根本不调用本函数，所以「没有块」等价于注入面整个没启用（`continuityProvider` 未装配），宿主自己知道这件事；每轮一条「你没有块」的事件是纯噪声。
  *
  * @param {any[]} messages
  * @returns {{messages: any[], moved: boolean, reason: string}}
