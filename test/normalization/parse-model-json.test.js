@@ -45,7 +45,12 @@ function verbatimGate(keys) {
   };
 }
 
-/** 记录请求、按序回放的 L2 provider 桩（canonical 响应形状）。 */
+/** 记录请求、按序回放的 L2 provider 桩（canonical 响应形状）。
+ *
+ * issue #637：回放项可以是纯字符串（不带 stop reason，等于「宿主没给」），也可以是
+ * `{text, stopReason}` / `{text, stop_reason}` / `{text, finish_reason}`——后三种钉的是
+ * 「三个拼写都认」，缺省仍然只有 `content`（既有用例一字未改）。
+ */
 function stubProvider(replies) {
   const requests = [];
   return {
@@ -55,7 +60,13 @@ function stubProvider(replies) {
         requests.push(request);
         const reply = replies.shift();
         if (reply === undefined) throw new Error("L2 被调用的次数超过预期");
-        return { content: [{ type: "text", text: reply }] };
+        const shape = typeof reply === "string" ? { text: reply } : reply;
+        return {
+          content: [{ type: "text", text: shape.text }],
+          ...(shape.stopReason === undefined ? {} : { stopReason: shape.stopReason }),
+          ...(shape.stop_reason === undefined ? {} : { stop_reason: shape.stop_reason }),
+          ...(shape.finish_reason === undefined ? {} : { finish_reason: shape.finish_reason }),
+        };
       },
     },
   };
@@ -487,6 +498,116 @@ test("L2 提示词带上 L1 的解析器判词（原文 + 判词一起交给模�
   assert.match(requests[0].messages[0].content[0].text, /上一版解析失败的原因：/);
 });
 
+// ── issue #637：L2 的「被 token 上限截断」≠「模型输出垃圾」─────────────────────────
+//
+// 病根：`textFromResponse` 只取 `content` 的 text 块，`stopReason` 被就地丢弃 ⇒ 上游明确回了
+// `stopReason:"length"`，宿主也只能拿到 `unparsable` / `no_candidate`，分不清「加预算」还是
+// 「换写法」。下面每一格都用**同一段正文**只改 stop reason：断言值不同就是判别的全部意义。
+
+/** #419 的真机形状：正文停在半个键上（`Unterminated string`），`maxTokens:120` 下结构上必然截断。 */
+const CUT_BODY = '{"strategy';
+/** 纯散文：模型在说人话，没有任何 JSON 片段。 */
+const PROSE_BODY = "这个任务我做不到，因为输入里没有可回显的内容。";
+
+test("issue #637：同一段正文，stopReason 决定「截断」还是「垃圾」（两种正文各一格）", async () => {
+  for (const body of [CUT_BODY, PROSE_BODY]) {
+    const cut = stubProvider([{ text: body, stopReason: "max_tokens" }]);
+    const truncated = await normalizeModelJson("散文", { provider: cut.provider, llm: true });
+    const prose = stubProvider([{ text: body, stopReason: "end_turn" }]);
+    const garbage = await normalizeModelJson("散文", { provider: prose.provider, llm: true });
+
+    assert.equal(truncated.ok, false);
+    assert.equal(truncated.error, "truncated", `截断必须自成一档：${JSON.stringify(truncated)}`);
+    assert.equal(truncated.stopReason, "max_tokens", "原始 stop reason 必须带给宿主（加预算还是换契约要看它）");
+    assert.equal(truncated.llmUsed, true);
+    assert.equal("value" in truncated, false, "失败结果不许带 value 键");
+
+    assert.equal(garbage.ok, false);
+    assert.notEqual(garbage.error, "truncated", "end_turn 的散文是「垃圾」那档，不许冒充截断");
+    assert.equal("stopReason" in garbage, false, "不是截断就不许带 stopReason 键");
+    assert.notEqual(garbage.error, truncated.error, "同样一段正文，两种病因必须给出不同的判别值");
+  }
+});
+
+test("issue #637：三个 stop reason 拼写都认（canonical / Anthropic 原始 / OpenAI 原始）", async () => {
+  const shapes = [
+    ["canonical max_tokens", { stopReason: "max_tokens" }, "max_tokens"],
+    ["Anthropic 原始", { stop_reason: "max_tokens" }, "max_tokens"],
+    ["OpenAI 原始", { finish_reason: "length" }, "length"],
+  ];
+  for (const [label, extra, expected] of shapes) {
+    const { provider } = stubProvider([{ text: CUT_BODY, ...extra }]);
+    const result = await normalizeModelJson("散文", { provider, llm: true });
+    assert.equal(result.error, "truncated", `${label}：${JSON.stringify(result)}`);
+    assert.equal(result.stopReason, expected, `${label}：原始值必须逐字带给宿主`);
+  }
+});
+
+test("issue #637：不是截断的 stop reason 一个都不许升级（不知道也不许）", async () => {
+  for (const stopReason of ["end_turn", "tool_use", "stop_sequence", "refusal", "", 42, null]) {
+    const { provider } = stubProvider([{ text: CUT_BODY, stopReason }]);
+    const result = await normalizeModelJson("散文", { provider, llm: true });
+    assert.equal(result.error, "no_candidate", `stopReason=${JSON.stringify(stopReason)}：${JSON.stringify(result)}`);
+    assert.equal("stopReason" in result, false);
+  }
+  // 宿主没给 stop reason（纯字符串响应 / 老桩）：与 #637 之前逐字同口径。
+  const plain = stubProvider([CUT_BODY]);
+  const result = await normalizeModelJson("散文", { provider: plain.provider, llm: true });
+  assert.equal(result.error, "no_candidate", "取不到 stop reason 就不许声称截断");
+});
+
+test("issue #637：命中优先——截断的 stop reason 不改变一个已经拿到的值", async () => {
+  const { provider } = stubProvider([{ text: '{"done":true}', stopReason: "max_tokens" }]);
+  const result = await normalizeModelJson("散文", { provider, llm: true });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.value, { done: true });
+  assert.equal("error" in result, false);
+  assert.equal("stopReason" in result, false, "成功面不带 stopReason（它只属于 truncated 那一档）");
+});
+
+test("issue #637：shape_mismatch 优先——解析成功却过不了闸门，不是「预算不够」", async () => {
+  const { provider } = stubProvider([{ text: '{"done":"yes"}', stopReason: "max_tokens" }]);
+  const result = await normalizeModelJson("散文", {
+    provider,
+    llm: true,
+    validate: (value) => ({ ok: typeof value?.done === "boolean" }),
+  });
+  assert.equal(result.error, "shape_mismatch", `形状不对加预算解释不了它：${JSON.stringify(result)}`);
+  assert.equal("stopReason" in result, false);
+});
+
+test("issue #637：截断时不再发第二次请求去猜缺失的字节（成本口径不变）", async () => {
+  const { provider, requests } = stubProvider([{ text: CUT_BODY, stopReason: "max_tokens" }]);
+  const result = await normalizeModelJson("散文", { provider, llm: true });
+  assert.equal(result.error, "truncated");
+  assert.equal(requests.length, 1, "一次调用最多 1 个请求：截断也不重试、不让模型猜");
+});
+
+test("issue #637：slot 路线（真 provider 归一化）把 OpenAI 的 finish_reason:\"length\" 落成 truncated", async () => {
+  // 这一格走的是**真**装配（`createProviderForSlot` → OpenAI provider → `normalizeOpenAIStopReason`），
+  // 不是上面那个桩：它钉的是「宿主用 `slot` 时也能判别截断」——原始响应只有 `finish_reason`，
+  // canonical 面才是 `stopReason:"max_tokens"`（真机臂的期望值就是从这里来的）。
+  const slot = {
+    endpoint: "https://slot.example.invalid/v1",
+    apiKey: "slot-secret",
+    model: "slot-model",
+    maxOutputTokens: 2048,
+    fetchImpl: async () => ({
+      status: 200,
+      async text() {
+        return JSON.stringify({
+          choices: [{ message: { content: CUT_BODY }, finish_reason: "length" }],
+          usage: { prompt_tokens: 3, completion_tokens: 1 },
+        });
+      },
+    }),
+  };
+  const result = await normalizeModelJson("散文", { slot, llm: true, maxTokens: 120 });
+  assert.equal(result.error, "truncated", `slot 路线也必须判别截断：${JSON.stringify(result)}`);
+  assert.equal(result.stopReason, "max_tokens", "原始 `length` 经 canonical 归一化成 `max_tokens`，逐字带给宿主");
+  assert.equal(result.llmUsed, true);
+});
+
 // ── 硬要求 6：repaired.trusted 分引擎自带 / 宿主注入 ───────────────────────────
 
 test("repaired.trusted：引擎自带规则 ⇒ true；宿主注入的修复器 ⇒ false", async () => {
@@ -508,9 +629,9 @@ test("没改文本就没有 repaired 键（可解析就是可解析）", async (
   assert.equal("repaired" in result, false);
 });
 
-// ── 硬要求 7：三态名沿用，不新造 ───────────────────────────────────────────────
+// ── 硬要求 7：三态名沿用，不新造（#637 另加的 `truncated` 只属于 L2，不在这一档）───────
 
-test("三态只有 no_candidate / unparsable / shape_mismatch，且没有 failureMode", async () => {
+test("三态只有 no_candidate / unparsable / shape_mismatch（无 L2 时），且没有 failureMode", async () => {
   const kinds = new Set(["no_candidate", "unparsable", "shape_mismatch"]);
   const cases = [
     ["", {}],
