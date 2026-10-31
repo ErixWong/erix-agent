@@ -47,7 +47,9 @@
 //                 `function` / `class` / `const|let|var` 绑定 / 解构绑定 / 再导出 / 方法 / 对象键与类字段 /
 //                 `process.env.X` 环境变量读取处。逐处校（每一处单独比），找不到就红并点名该文件里**实际存在的
 //                 相近符号名**（前缀 / 子串 / 编辑距离 ≤2）；一个文件里连一条声明都抽不到同样算红
-//                 （#164「抽不到真值就报错」）。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
+//                 （#164「抽不到真值就报错」）。**只认代码面**（issue #299）：抽取前先做一遍词法分类，注释与字符串
+//                 字面量涂成空格（保换行 ⇒ 行号与原文对齐），所以只活在注释里或引号里的名字**不算**声明，
+//                 注释里写一句 `// "judge_done"` 也不再给弱档供值。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
 //                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 154`（现测 **154 组 / 473 处**：issue #545 把 `policy` 收成只装数据，「构造期 + 调用期同键」的活样本从 `policy.todoStateProvider` 换成端口派生键（origin `port.session`），契约中英两处叙述因此各多引一个函数锚点 `assertAssemblyOverrideConflicts`（`src/assembly.js`）⇒ +1 组 / +1 处，在合入 main `66a362f` 之后的树上 `--verbose` 实测；此前 **153 组 / 452 处**：issue #498 S4c 相对基点 `cdf0f6d` 的 **151 组 / 444 处**是 **+2 组 / +8 处**——契约中英成对改动新增的 `#### capabilities.ports (issue #498 S4c)` 小节把「9 个没有扁平别名的叶子」的去向表 `CAPABILITY_SLOT_DESTINATIONS`（`src/loop/capabilities-namespace.js`）在两种语言里各引两处，并把策略对象原样透传的那个函数 `resolveCompactionStrategy`（`src/compact/strategy-resolution.js`）各引一处（+2 组 / +6 处），AGENTS 中英声称句自己也把这两组各引一处（+2 处），在本分支树上 `--verbose` 实测；此前 **151 组 / 444 处**：issue #498 S4b 的契约中英成对改动 +1 组 / +6 处——`config` 一节新增 `CONFIG_LEAF_ALIAS_PATHS`（`src/loop/config-namespace.js`）这条「唯一登记在案的叶子别名」锚点，另加 `normalizeDeliverables`（`src/loop/deliverables.js`）与同一别名符号的若干处重引，在本分支树上 `--verbose` 实测；此前 **150 组 / 438 处**：issue #498 S4a 让契约中英各新增成对一节「capabilities 命名空间」，引用新模块 `capabilities-namespace.js` 的三组符号（schema 表 / 回调名单 / 派生别名表）⇒ +3 组 / +8 处，在 main `b3ee7f1` 的树上 `--verbose` 实测；此前 **147 组 / 430 处**：#497 复审第二轮把 AGENTS 声称句里被串行吞掉的 `again to 121` / `again to 122` 两条链项放回降序位置、删掉重复段 ⇒ 组数不变、处数 432 → 430；那 147 组 / 432 处本身是 #497 复审的六条必改让契约中英各多引 `resolveAssemblyMember`（`src/assembly.js`）与 `modelMetadataFor`（`src/loop/budget.js`）后在**最终树**上实测的 +2 组 / +9 处，裸行号一处未增、仍 130 vs 130）；此前 145 组 / 423 处（issue #497 的 `config` 命名空间让契约中英各多一节、引用六个新符号，在合入 main `109a0a3`（#499 之后）的树上重测）；此前 **139 组 / 416 处**（issue #499 退役 `context.onFoldSummary`，契约中英与 README 中英声称句各多引一处 `CONTEXT_OPTION_NAMES`（`src/assembly-validators.js`）⇒ +1 组 / +4 处，在 main `109a0a3` 上实测）；此前 138 组 / 412 处（issue #496 的契约中英各一节新增四组闸口符号，在本分支树上重测）；此前 134 组 / 398 处（issue #467 在契约「终局」小节中英新增的正文多带了两组锚点 `hasFinalDraft`（`src/loop/termination.js`）与 `appendEngineMessagesToTranscript`（`src/loop/orchestrator.js`），EN +2 处 / CN +1 处，在合入 `main` `f489398e` 之后的树上重测）；此前 130 组 / 387 处（issue #433 fix 1 的「CLI 判死后从账本续跑」契约中英成对小节 +1 组（`IDLE_RETRY_BASE_DELAY_MS`（`bin/idle.js`），另把既有的 `restoreResume`（`src/loop/resume-manager.js`）锚点各多引一处 ⇒ +4 处），在 `main` `cf280d7` 之上重测）；此前 129 组 / 380 处：issue #440 的「CLI idle 判死保留载荷」契约中英成对小节 +3 组（`idleTimeoutFailure` / `IDLE_TIMEOUT_CODE`（`bin/idle.js`）、`annotateTermination`（`src/loop/termination.js`）），在合流 `main` 之后重测；此前 126 组 / 389 处：PR #451（issue #406 B2-b）合并前的评审必修项把契约中英里指向 end-turn 收尾块的两处裸行号换成符号锚点 `normalizeWrapupText`（`src/reflection/wrapup.js`），中英各一处 ⇒ +1 组，下限随之抬到 126（在合并 `main` `7d0e9dd` 之后的树上重测，不取两支最大值）；
@@ -1643,8 +1645,91 @@ const SYMBOL_VALUE_MEMBERSHIP = new Map([
   ["src/providers/errors.js", "provider 错误码（`provider_config` 一类）以字符串成员定义"],
 ]);
 
+/* ── #299：注释与字符串里的同名**不是**声明 ────────────────────────────────────
+ * 病根（issue #299）：`symbolDeclarations` 逐行拿正则去匹配**原始文本**，于是
+ *     /*
+ *     const LEGACY_MODE = "x";     ← 注释里的一行，被当成真的绑定
+ *     *\/
+ * 这种形状会「证明」一个只活在注释里的名字是已声明；`valueLiterals` 同理，注释里写一句
+ * `// "judge_done"` 就能给「具名字面量成员」那一档供一个假值。弱档最容易蒙混，因为它的真值
+ * 本来就只是一串字符。
+ * 修法：先做一遍**词法级**分类（代码 / 字符串字面量 / 注释），再让两条抽取各取所需——
+ *   · `symbolDeclarations` 只看**代码**（注释与字符串都涂成空格）；
+ *   · `valueLiterals` 看**代码 + 字符串**（注释涂成空格，字符串原样留着）。
+ * 涂改只换非换行字符为空格 ⇒ 行号与原文逐行对齐，`fileLineCount` / 区间相交判据一字不用改。
+ * 不做完整 AST（本仓零依赖，不引解析器）；正则字面量用「前一个有意义记号」判定，判不准时
+ * 退回「当除号」——宁可少涂一格，也不要把后面整份文件吞进字符串里（那会让真声明集体消失，
+ * 是比假绿更响的假红）。 */
+const MASK_CODE = 0;
+const MASK_STRING = 1;
+const MASK_COMMENT = 2;
+/** 正则字面量只可能出现在这些记号之后（`= /re/`、`( /re/`、`return /re/`…）；其余位置的 `/` 是除号。 */
+const REGEX_ALLOWED_AFTER = new Set(["", "(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";", "+", "-", "*", "%", "~", "^", "<", ">",
+  "return", "typeof", "instanceof", "in", "of", "new", "delete", "void", "case", "do", "else", "yield", "await"]);
+
+/** 把 JS 文本按字符分类（代码 / 字符串 / 注释），返回与原文等长的 `Uint8Array`（换行位置不受影响）。 */
+function jsMaskKinds(text) {
+  const n = text.length;
+  const kind = new Uint8Array(n);
+  const mark = (from, to, k) => { for (let j = from; j < to; j += 1) if (text[j] !== "\n") kind[j] = k; };
+  let i = 0;
+  let prev = "";     // 上一个有意义的记号（标识符或单字符标点），用来分辨正则字面量与除号
+  while (i < n) {
+    const c = text[i];
+    const d = text[i + 1];
+    if (c === "/" && d === "/") { const s = i; i += 2; while (i < n && text[i] !== "\n") i += 1; mark(s, i, MASK_COMMENT); continue; }
+    if (c === "/" && d === "*") {
+      const s = i; i += 2;
+      while (i < n && !(text[i] === "*" && text[i + 1] === "/")) i += 1;
+      i = Math.min(n, i + 2); mark(s, i, MASK_COMMENT); continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      const s = i; const q = c; i += 1;
+      while (i < n) {
+        if (text[i] === "\\") { i += 2; continue; }
+        if (text[i] === q) { i += 1; break; }
+        if (q !== "`" && text[i] === "\n") break;   // 未闭合的单行串：到此为止，别把后面整份文件当字符串
+        i += 1;
+      }
+      mark(s, Math.min(i, n), MASK_STRING); prev = "string"; continue;
+    }
+    if (c === "/" && REGEX_ALLOWED_AFTER.has(prev)) {
+      const s = i; i += 1; let inClass = false; let closed = false;
+      while (i < n) {
+        const ch = text[i];
+        if (ch === "\\") { i += 2; continue; }
+        if (ch === "\n") break;
+        if (ch === "[") inClass = true;
+        else if (ch === "]") inClass = false;
+        else if (ch === "/" && !inClass) { i += 1; closed = true; break; }
+        i += 1;
+      }
+      if (closed) { while (i < n && /[a-z]/.test(text[i])) i += 1; mark(s, Math.min(i, n), MASK_STRING); prev = "regex"; continue; }
+      i = s + 1; prev = "/"; continue;              // 不是正则：按除号处理，一格都不涂
+    }
+    if (/[A-Za-z_$]/.test(c)) { let j = i; while (j < n && /[\w$]/.test(text[j])) j += 1; prev = text.slice(i, j); i = j; continue; }
+    if (!/\s/.test(c)) prev = c;
+    i += 1;
+  }
+  return kind;
+}
+
+/** 涂改后的文本（行号与原文逐行对齐）。`keepStrings: false` ⇒ 只剩代码；`true` ⇒ 代码 + 字符串字面量。 */
+function maskJs(text, { keepStrings }) {
+  const kind = jsMaskKinds(text);
+  let out = "";
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "\n") { out += ch; continue; }
+    const k = kind[i];
+    out += (k === MASK_COMMENT || (k === MASK_STRING && !keepStrings)) ? " " : ch;
+  }
+  return out;
+}
+
 /** 抽符号声明：逐行按「行首形态」匹配，返回 Map 名字 → 首次声明处。支持的形态就列在这里，
- *  报告与 AGENTS 的锚点分级段用同一份口径（够用即可，不做完整 AST——本仓零依赖，不引解析器）。 */
+ *  报告与 AGENTS 的锚点分级段用同一份口径（够用即可，不做完整 AST——本仓零依赖，不引解析器）。
+ *  #299：匹配的是**涂掉注释与字符串之后**的那份文本，注释里写一行 `const X = 1;` 不再算声明。 */
 const SYMBOL_DECL_PATTERNS = [
   [/^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/, "function"],
   [/^\s*(?:export\s+)?class\s+([A-Za-z_$][\w$]*)/, "class"],
@@ -1655,6 +1740,14 @@ const SYMBOL_DECL_PATTERNS = [
   [/^\s*(?:static\s+|get\s+|set\s+|async\s+|\*)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{\s*$/, "方法"],
   [/^\s*(?:public\s+|private\s+|protected\s+|readonly\s+)*([A-Za-z_$][\w$]*)\s*:\s*(?![=:])/, "对象键/类字段"],
 ];
+
+/** 控制流关键字：涂掉字符串之后 `case "x":` 会退化成 `case     :`，正好撞上「对象键/类字段」那条
+ *  正则，凭空多出一个叫 `case` 的「符号」（#299 实测：只此两处，104 个文件里 decls 6223 → 6225）。
+ *  这不是声明，逐个排掉；名单只收控制流词，别把 `get` / `set` / `async` 这类可能是真名字的收进来。 */
+const JS_CONTROL_KEYWORDS = new Set(["if", "else", "case", "default", "return", "switch", "for", "while", "do",
+  "try", "catch", "finally", "throw", "break", "continue", "new", "delete", "typeof", "instanceof", "in", "of",
+  "void", "this", "super", "await", "yield", "function", "class", "const", "let", "var", "import", "export",
+  "extends", "static"]);
 
 /* 文件文本的进程内缓存（#286 T-a）。`--self-test` 要跑 85 轮全量检查，每轮都重新读一遍
  * orchestrator.js（350KB）× 两百多处引用，会把一条文档门禁拖到分钟级——那是「太慢所以会被跳过」的形状。
@@ -1694,13 +1787,15 @@ function symbolDeclarations(rel) {
   const out = new Map();
   const all = new Map();        // #286 T-b1a R1：同一个名字在多处的全部声明位（区间相交判据要用全部）
   rec.declsAll = all;
+  // #299：只看代码面。行号仍按原文计（涂改保换行），所以 `line` 与 `fileLineCount` / 区间判据同源。
+  const codeLines = maskJs(rec.text, { keepStrings: false }).split("\n");
   const push = (n, i, kind) => {
-    if (!n) return;
+    if (!n || JS_CONTROL_KEYWORDS.has(n)) return;
     if (!out.has(n)) out.set(n, { line: i + 1, kind });
     if (!all.has(n)) all.set(n, []);
     all.get(n).push({ line: i + 1, kind });
   };
-  lines.forEach((line, i) => {
+  codeLines.forEach((line, i) => {
     for (const [re, kind] of SYMBOL_DECL_PATTERNS) {
       const m = line.match(re);
       if (!m) continue;
@@ -1730,7 +1825,8 @@ function valueLiterals(rel) {
   if (rec.literals) return rec.literals;
   const out = new Set();
   const byName = new Map();       // #286 T-b1a R1：具名字面量的出现行（区间相交判据在弱档上用的真值位）
-  lines.forEach((line, i) => {
+  // #299：注释涂成空格、字符串原样留着——`// "judge_done"` 这种注释不再给弱档供值。
+  maskJs(rec.text, { keepStrings: true }).split("\n").forEach((line, i) => {
     for (const m of line.matchAll(/(["'])([A-Za-z_$][\w$]*)\1/g)) {
       out.add(m[2]);
       if (!byName.has(m[2])) byName.set(m[2], []);
@@ -4321,6 +4417,39 @@ const SELF_TEST_CASES = [
     overlay: { [CONTRACT_EN]: mutateSymbolAnchorSpan("max_rounds_cap", "src/loop/termination.js", ":300-301") },
     expect: [/symbol-anchor-span: .*引用 `max_rounds_cap`（`src\/loop\/termination\.js:300-301`）/,
       /真值形态 具名字面量成员/],
+    expectFiles: [CONTRACT_EN],
+  },
+
+  // —— #299：注释与字符串里的同名**不算**声明（符号抽取只看代码面）——
+  // 两例反向证（注释里的「声明」/注释里的「具名字面量」）加一例放行证（同一个名字挪成真声明 ⇒ 绿）。
+  // 修前三条全是**绿**：抽取拿原始文本逐行正则，注释里写一行 `const X = 1;` 就能「证明」X 已声明。
+  {
+    label: "#299 注释里的「声明」不算声明：termination.js 末尾追加一段块注释、里面写 `const zzzPhantomBinding = 1;`，"
+      + "EN 契约引 `zzzPhantomBinding`（`src/loop/termination.js`）⇒ 必须红（修前绿）",
+    overlay: {
+      "src/loop/termination.js": (t) => `${t}\n/*\nconst zzzPhantomBinding = 1;\n*/\n`,
+      [CONTRACT_EN]: mentionInProse("Self-test probe (#299): `zzzPhantomBinding` (`src/loop/termination.js`) lives in a comment only."),
+    },
+    expect: [/symbol-anchor: .*引用 `zzzPhantomBinding`（`src\/loop\/termination\.js`/,
+      /该文件里没有 `zzzPhantomBinding` 的声明/],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "#299 同一个名字挪成**真实**声明 ⇒ 必须 0 错（放行证：证明上一例不是恒红）",
+    overlay: {
+      "src/loop/termination.js": (t) => `${t}\nexport const zzzPhantomBinding = 1;\n`,
+      [CONTRACT_EN]: mentionInProse("Self-test probe (#299): `zzzPhantomBinding` (`src/loop/termination.js`) is a real binding here."),
+    },
+    expectGreen: true,
+  },
+  {
+    label: "#299 注释里的字符串不算「具名字面量成员」：termination.js 注释里写 `\"zzz_phantom_code\"`，EN 契约引它 ⇒ 必须红（修前绿）",
+    overlay: {
+      "src/loop/termination.js": (t) => `${t}\n// 自测探针（#299）：这个值只活在注释里，不是任何字面量：\"zzz_phantom_code\"\n`,
+      [CONTRACT_EN]: mentionInProse("Self-test probe (#299): `zzz_phantom_code` (`src/loop/termination.js`) is quoted inside a comment."),
+    },
+    expect: [/symbol-anchor: .*引用 `zzz_phantom_code`（`src\/loop\/termination\.js`/,
+      /该文件里没有 `zzz_phantom_code` 的声明/],
     expectFiles: [CONTRACT_EN],
   },
 
