@@ -968,7 +968,8 @@ function readLineWindow(absolutePath, { start, count, maxBytes }) {
  * 归一化一字不改，多的只是「我改了什么」：`offset="120"` 这类数字串会被归 0，而 0 恰是默认值
  * ⇒ 「被我改了」与「本来就要 0」在结果里逐字不可分。只**报告**不改语义（改语义要动 Stable 面）。
  *
- * @returns {{ value: number, note: string | null }} `note` 为空表示未改写
+ * @returns {{ value: number, note: string | null, facts: ReturnType<typeof paramErrorFacts> | null }}
+ *   `note` 为空表示未改写；`facts` 是同一件事的事实集（issue #375），未改写时为 `null`
  */
 function normalizeIntegerWithReport(value, fallback, name) {
   const value2 = normalizeNonNegativeInteger(value, fallback);
