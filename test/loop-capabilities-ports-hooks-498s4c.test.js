@@ -63,27 +63,37 @@ const DONE = [{ content: [{ type: "text", text: "ok" }], stopReason: "end_turn" 
 
 /** 直连路线的最小合法 run（一次 end_turn 就结束）。 */
 function runDirect(extra = {}) {
-  return sharedRunDirect({
+  const options = {
     provider: createFakeProvider(DONE),
     executeTool: async () => "ok",
     seed: "go",
     config: { run: { completion: false } },
     wrapup: false,
     ...extra,
-  });
+  };
+  // #519：装配口路线下 `provider` / `executeTool` 由端口给，调用点再给一个就抛 ⇒ 基座那两份只属于
+  // **直连**路线，端口在场时摘掉（摘的是重复，不是能力：端口自己带着同等的两份）。
+  if (extra.assemblyPort !== undefined) {
+    delete options.provider;
+    delete options.executeTool;
+  }
+  return sharedRunDirect(options);
 }
 
 /** 直连路线的「抛了什么」（不抛返回 null）。 */
 const directError = (extra = {}) => runDirect(extra).then(() => null, (error) => error);
 
 /** 装配口路线：`policy` 在构造期过闸口，`capabilities` 在合并后过同一道展开。 */
-function makePort(policy = {}) {
+function makePort(policy = {}, members = {}) {
   return createAssemblyPort({
     modelConfig: { resolve: async () => ({ contextWindowTokens: 100000, maxOutputTokens: 1024 }) },
     provider: createFakeProvider(DONE),
     tools: { definitions: [], executeTool: async () => "ok" },
     session: { id: `ports-498s4c-${process.pid}` },
     policy,
+    // #519：装配口在场时，调用点的 `provider` / `executeTool` 不再静默压过端口 ⇒ 需要**特定**主模型的
+    // 格子把那份模型放进端口（`members`），而不是再在调用点写一份。
+    ...members,
   });
 }
 
@@ -948,7 +958,7 @@ test("C13 逐叶（真 run，onReflection）：壳内老槽位写不进 policy�
         }) }] }]) },
         hooks: { onReflection: (info) => { portCalls.push(info); } },
       },
-    }),
+    }, { provider: createFakeProvider(toolScript(8)) }),
     onEvent: (event) => events.push(event),
   }, null);
   assert.equal(result.rounds > 5, true, "前提：扩轮真的发生了（否则这格只是在测空气）");
@@ -1048,9 +1058,7 @@ test("C16 优先级方向（judgeProvider）：reflection.judge.provider 与 cap
     assemblyPort: makePort({
       reflection: { enabled: true, judgeIntervalRound: 2 },
       capabilities: { ports: { judgeProvider: portJudge } },
-    }),
-    provider: main,
-    executeTool: async () => "ok",
+    }, { provider: main }),
     initialUserMessage: "go",
     wrapup: false,
     maxRounds: 6,

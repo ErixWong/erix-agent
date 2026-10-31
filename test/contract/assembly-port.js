@@ -41,25 +41,30 @@ export function assemblyPortContract(label, createPort) {
     )));
   });
 
-  // issue #498 第 1 条：覆盖通道收窄**只**作用于 `assemblyPortOptions` 的 `overrides` 参数。
-  // 直连路线（`runToolLoop({ assemblyPort, provider })`）的合并规则一字未动——那一条是 #177
-  // 搬出来的「后写者胜」，它的收窄是另一刀（见契约里 0.28.0 的版本口径）。
-  test(`${label}: 直连路线的显式 provider 仍覆盖端口 provider（覆盖通道收窄只作用于 overrides）`, async () => {
+  // issue #519（破坏性，0.30 包）：直连路线的合并规则也收窄了——以前显式值**静默压过**端口同名的
+  // 成员（#177 的「后写者胜」），现在启动期抛。它与 `assemblyPortOptions` 的 `overrides` 通道是同一条
+  // 规则（来源唯一性），只是措辞按入口拼写：`assemblyPort.<x>` vs `runToolLoop.<x>`。
+  test(`${label}: 直连路线的显式 provider 与端口 provider 冲突 ⇒ 启动期抛（issue #519）`, async () => {
     const port = await resolvePort(createPort);
-    const result = await runToolLoop({
-      assemblyPort: port,
-      provider: {
-        async chat() {
-          return {
-            content: [{ type: "text", text: "explicit" }],
-            stopReason: "end_turn",
-          };
+    await assert.rejects(
+      runToolLoop({
+        assemblyPort: port,
+        provider: {
+          async chat() {
+            return {
+              content: [{ type: "text", text: "explicit" }],
+              stopReason: "end_turn",
+            };
+          },
         },
-      },
-      // #498 S3 A21: `maxRounds` retired its flat spelling; its home is `config.run.maxRounds`.
-      config: { input: { wrapup: false }, run: { maxRounds: 1, completion: false } },
-    });
-    assert.equal(result.finalText, "explicit");
+        // #498 S3 A21: `maxRounds` retired its flat spelling; its home is `config.run.maxRounds`.
+        config: { input: { wrapup: false }, run: { maxRounds: 1, completion: false } },
+      }),
+      (error) => error instanceof TypeError
+        && error.message === 'runToolLoop option conflicts with the assembly port: "provider"'
+          + " comes from assemblyPort.provider (construction) and runToolLoop.provider (call);"
+          + " pass it in one place only",
+    );
   });
 
   // issue #498 第 1 条：`assemblyPortOptions` 的 `overrides` 里再给一个端口已经产出的键

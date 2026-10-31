@@ -6,6 +6,7 @@
 //   2. 未知键白名单检查（`RUN_TOOL_LOOP_OPTION_NAMES`）；
 //   3. 未知键的「did you mean」建议（编辑距离 + 阈值 `Math.max(2, ⌊len/3⌋)`）；
 //   4. 把 `assemblyPortOptions(assemblyPort)` 的结果与显式选项合并成 `effectiveOptions`；
+//   4b. #519（破坏性）：同一个键两边都给 ⇒ 抛（`assertDirectRouteConflicts`）。
 //   5. issue #496（S1）：合并之后的**语义相**校验（`assertSemanticOptionValues`，规则与文案
 //      的唯一来源在 `src/assembly-validators.js`，装配口调的是同一个函数）；
 //   6. issue #497（S2）：`config` 嵌套命名空间的展开（`expandConfigNamespace`，schema 与
@@ -60,7 +61,8 @@
 //
 // 顺序即语义，且被 test/loop-option-normalization.test.js 逐条钉住，所以本模块严格按
 //   形状检查 → 未知键检查 → config 名称/形状预检 → capabilities 名称/形状预检 →
-//   assemblyPortOptions → 显式值合并 → config 展开 → capabilities 展开 → 语义相校验
+//   assemblyPortOptions → #519 闸口 → 显式值合并 → config 展开 →
+//   capabilities 展开 → 语义相校验
 // 的次序执行；调用方（orchestrator）在此之后才做「解构默认值 → 能力缺失检查 →
 // modelConfig.resolve」，能力缺失检查早于 resolve 的那条次序不受本模块影响。
 //
@@ -83,7 +85,7 @@
 // 声明顺序依赖（`notifyCapabilitySkipped` 等 TDZ 陷阱）无关。
 // 零运行时依赖：只用相对路径。
 
-import { assemblyPortOptions, assertMergedOptionNames, collectAssemblyDerivedConfigConflicts, collectAssemblyPolicyConfigConflicts, withAssemblyPolicyConfigLeaves, withSessionDerivedConfigLeaves } from "../assembly.js";
+import { assertDirectRouteConflicts, assemblyPortOptions, assertMergedOptionNames, collectAssemblyDerivedConfigConflicts, collectAssemblyPolicyConfigConflicts, withAssemblyPolicyConfigLeaves, withSessionDerivedConfigLeaves } from "../assembly.js";
 import { assertSemanticOptionValues } from "../assembly-validators.js";
 import {
   assertCapabilitiesNamespace,
@@ -478,6 +480,8 @@ export async function normalizeRunToolLoopOptions(options) {
         : { modelConfig: explicitOptions.modelConfig },
     );
   const mergedOptions = { ...assembledOptions };
+  // #519（破坏性）：同一个键两边都给 ⇒ 抛。
+  assertDirectRouteConflicts(assembledOptions, explicitOptions);
   for (const [key, value] of Object.entries(explicitOptions)) {
     if (value !== undefined) mergedOptions[key] = value;
   }

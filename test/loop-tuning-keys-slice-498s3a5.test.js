@@ -260,7 +260,8 @@ test("P5-c 旁证：装配口 policy.maxTokens 翻译进 config 树后照旧生�
   // ⚠ 走**宿主真实路径**：把端口交给引擎（`assemblyPort: port`），由引擎自己展开 policy ——
   // 把 `options` 摊回调用期反而会撞名称闸口（那是另一张面：调用期覆盖的键名闭集 = 白名单）。
   // `provider: undefined` 逐字等于「没给」（合并口径 `value !== undefined`），于是端口那份生效。
-  await runDirect({ provider: undefined, assemblyPort: port });
+  // #519：`provider` / `executeTool` 都由端口给，调用点再给一份会抛；`undefined` 逐字等于「没给」。
+  await runDirect({ provider: undefined, executeTool: undefined, assemblyPort: port });
   assert.equal(
     provider.requests[0].maxTokens,
     1000,
