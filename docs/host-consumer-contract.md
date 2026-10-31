@@ -2533,6 +2533,11 @@ run; the only signal is the `model_metadata_missing` event named below.
 | `timeoutMs`, `requestTimeoutMs`, `firstByteTimeoutMs`, `streamIdleTimeoutMs`, `streamTotalTimeoutMs` (snake_case aliases accepted) | ms | request / stream timeouts | no | engine defaults |
 | `endpoint`, `apiKey` / `apiKeyEnv` / `apiKeyFile`, `model` / `model_name`, `protocol` | — | endpoint and credential identity; `protocol` selects the factory **the host** builds — the engine never dispatches on it | no | provider construction throws `provider_config` once endpoint / key / model resolve empty (`src/providers/errors.js:37-51`) |
 
+`response_format` is the one row above that the engine cannot answer for: it is copied into the
+request body verbatim, and whether the endpoint applies it as a decoding constraint is that
+endpoint's capability rather than this package's promise — see
+"`response_format` is a passthrough, not a grammar guarantee (issue #308)" below.
+
 The run-level knobs `config.tuning.maxTokens` / `config.tuning.temperature` /
 `config.tuning.topP` are injected into every request and therefore **override** the same slot fields
 (`src/loop/provider-runner.js:128-130`, `src/providers/openai.js:51-55`). Their **flat** spellings were
@@ -3697,6 +3702,64 @@ Where the four sites went, and why:
 | `parseJudgeDecision`（`src/reflection/judge.js`） | scanner replaced by the entry point with `topOnly: false`; **its own candidate loop stays** | judge must skip a parseable-but-invalid candidate (`done` not a literal boolean, `confidence` outside [0,1]) and try the next one; the entry point returns a single `value`, so using it as the verdict would turn "skip this candidate" into "the whole parse failed" |
 | `tryParseWrapupJson`（`src/reflection/wrapup.js`） | **not migrated**, still calls `jsonCandidates` directly | its guard is stricter than key presence (`done` must be a literal boolean; `action`/`note` sends the object back to the inline-L1 path) and it must also skip-and-continue. Skipping is load-bearing: `{"done":"true"}{"done":true}` has to return the second object. The inner `{"done":…}` must not bypass that mandatory-done guard（issue #30 follow-up）, which is why the scan stays top-level-only here |
 | `extractL0Facts`（`src/reflection/l0.js`）、`parseFoldSummaryMatch`（`src/compact/fold-statistical.js`） | **out of scope** | neither is "find JSON in model prose": L0 lifts a `<erix-summary>` tag out of model prose — note that the engine does **not** ask the model to emit it (issue #465: `parseL1Summary` is read-side only, there is no prompt-injection site anywhere in `src/`, so a host that neither injects nor instructs always lands on `summary: "missing"`), and the fold summary reads a `导航记录：{…}` line the **engine itself** wrote, failing closed to `undefined`. Dropping the tag / the line anchor would widen what they accept — a behavior change, not a deduplication |
+
+## `response_format` is a passthrough, not a grammar guarantee (issue #308)
+
+The engine **forwards** `response_format`; it does not implement constrained decoding. The value
+comes from the request, then the slot defaults, then `providerOptions`, and
+`applyProviderPayloadOptions`（`src/providers/payload.js`）writes it into the JSON body verbatim.
+Nothing downstream inspects the schema: the schema itself is not validated, no second request
+carries a corrected one, and no answer is retried because it did not conform. `response_format`
+is also one of the `extraBody` reserved keys, so a host cannot smuggle a second one past the
+engine (see "Provider request injection (issue #181)").
+
+**A 200 does not mean the endpoint constrained anything.** Whether the field is honoured as a
+grammar / JSON-schema constraint is a property of the endpoint — the model, the serving stack,
+and whether reasoning is on. Measured upstream behaviour differs per model: one endpoint answers
+a `json_schema` request with HTTP 400, another answers 200 and returns prose that ignores the
+schema entirely. A green run is therefore evidence that the model produced something, never
+evidence that decoding was constrained.
+
+**There is no signal in this package that separates the two cases — said plainly: none.** No
+event, no round-record field, no usage counter and no termination field reports whether the
+constraint was applied. What a host can observe, and why none of it answers the question:
+
+| observable | where a host reads it | why it cannot answer "was decoding constrained?" |
+|---|---|---|
+| the assistant text | the `onRound` round record (`record.messages` / `record.response`), `result.rounds`, `result.finalText` | constrained and unconstrained decoding both produce text; only checking the text against the schema tells you whether it conforms, and a conforming text is also what an unconstrained model can emit |
+| `stopReason` | `record.response.stopReason` (canonical `end_turn` / `tool_use` / `max_tokens`; OpenAI `finish_reason` is mapped by `normalizeOpenAIStopReason`) | an honoured schema and an ignored one both end as `end_turn`; `max_tokens` reports a cut answer, not the presence of a grammar |
+| `termination.errorCode` | `result.termination` on a failed run | a 4xx rejection is classified by `classifyHttpError`（`src/providers/errors.js`）, which says the endpoint refused the *request*; a 200 that ignored the schema stays indistinguishable from a 200 that obeyed it |
+| token usage | `onUsage` / `record.usage` / `result.usage` | upstreams report no "grammar constraint" counter; the numbers look the same either way |
+| `onEvent` | every event type this engine emits | the vocabulary has no member about output format — do not wait for one, and do not add one to make this section look better |
+
+**How a host checks one endpoint: a negative probe, run outside the engine.** "It returned 200"
+is not the check. Send the schema you intend to rely on **together with** a prompt that invites
+prose, then read the observables above:
+
+1. **the request is rejected with 4xx** — that endpoint does not support this `response_format`
+   at all; the run fails and `termination.errorCode` carries the classification;
+2. **the request succeeds and the text does not satisfy the schema** — the endpoint accepted the
+   field and did not constrain decoding: treat it as unconstrained, whatever the status code;
+3. **the request succeeds and the text satisfies the schema** — consistent with a constraint,
+   still not proof of one. Repeat the probe **with the reasoning / thinking shape this package's
+   judge and reflection calls use** (`thinking` / `reasoning` / `enable_thinking` /
+   `chat_template_kwargs`): serving stacks with a reasoning parser have been observed to drop the
+   grammar constraint once reasoning is on (vllm/vllm #43388, #44012), and that is exactly the
+   shape a run whose verdicts matter uses.
+
+Judging the text is a host-side call, and the package ships both verdicts a host needs:
+`parseModelJson`（`src/text/parse-model-json.js`）with `requireKeys` returns the synchronous
+three-state answer (`no_candidate` / `unparsable` / `shape_mismatch`), and
+`normalizeModelJson`（`src/normalization/parse-model-json.js`）returns the repairing asynchronous
+one. Keep the result per model × endpoint × date in the host's own record: this repository
+**hardcodes no model name** (model names come from the host's configuration or an explicit
+instruction), so it cannot and does not ship a capability table.
+
+**What this section does not do.** Per-model capability detection — probing each model once,
+storing the verdict, and choosing a route from it (constrained ⇒ fewer fallbacks; unconstrained
+⇒ the strict `parseModelJson` path) — is a separate ticket. This one only makes the promise
+honest: the engine forwards the field, the endpoint decides, and no part of this package claims
+otherwise. No event, no provider behaviour and no passthrough semantic changed here.
 
 ## Model-output normalization with an optional fallback: `normalizeModelJson` (issue #406)
 

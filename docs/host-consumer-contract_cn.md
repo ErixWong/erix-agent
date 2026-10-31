@@ -2052,6 +2052,10 @@ server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那�
 | `timeoutMs`、`requestTimeoutMs`、`firstByteTimeoutMs`、`streamIdleTimeoutMs`、`streamTotalTimeoutMs`（snake_case 别名同样接受） | ms | 请求 / 流超时 | 否 | 引擎默认值 |
 | `endpoint`、`apiKey` / `apiKeyEnv` / `apiKeyFile`、`model` / `model_name`、`protocol` | — | 端点与凭据身份；`protocol` 选的是**宿主自己**要构造哪个工厂——引擎从不按它分发 | 否 | endpoint / key / model 解析后为空时，provider 构造抛 `provider_config`（`src/providers/errors.js:37-51`） |
 
+`response_format` 是上表里唯一一行引擎无法替上游作答的字段：它只被原样写进请求体，
+端点是否真把它当解码约束执行，是端点自己的能力、不是本包的承诺——见下文
+「`response_format` 是透传：引擎不做约束解码（issue #308）」。
+
 run 级旋钮 `config.tuning.maxTokens` / `config.tuning.temperature` / `config.tuning.topP` 会注入
 每一次请求，因此**覆盖** slot 里的同名字段（`src/loop/provider-runner.js:128-130`、
 `src/providers/openai.js:51-55`）。它们的**扁平**写法已在 0.28.0 退役（见上文 `tuning` 组版本口径）；
@@ -2940,6 +2944,52 @@ if ("value" in unparsable || "value" in shapeMismatch || "value" in noCandidate)
 | `parseJudgeDecision`（`src/reflection/judge.js`） | 扫描器换成公共入口的 `topOnly: false`，**它自己的逐候选循环留着** | judge 必须跳过「能解析但不合格」的候选（`done` 不是字面布尔、`confidence` 不在 [0,1]）再试下一个；公共入口只返回单个 `value`，直接拿它当结论会把「跳过这个候选」变成「整次解析失败」 |
 | `tryParseWrapupJson`（`src/reflection/wrapup.js`） | **未迁**，仍直接调 `jsonCandidates` | 它的门槛比键存在性严（`done` 必须字面布尔；出现 `action`/`note` 就把对象退回内联 L1 路径），而且同样必须「跳过并续试」。跳过是承重的：`{"done":"true"}{"done":true}` 必须返回第二个。内层的 `{"done":…}` 不得绕过那条 mandatory-done 守卫（issue #30 follow-up），所以这里的扫描继续保持只认顶层 |
 | `extractL0Facts`（`src/reflection/l0.js`）、`parseFoldSummaryMatch`（`src/compact/fold-statistical.js`） | **不在本单** | 两者都不是「在模型散文里找 JSON」：L0 取的是模型散文里的 `<erix-summary>` 标签——注意**引擎并不要求模型写它**（issue #465：`parseL1Summary` 只做读侧解析，`src/` 内没有任何提示词注入点，宿主既不注入也不提示时恒落 `summary: "missing"`），折叠摘要读的是**引擎自己**写下的 `导航记录：{…}` 行并且 fail-closed 到 `undefined`。去掉标签 / 行锚定会放宽它们接受的形状 —— 那是行为变更，不是去重 |
+
+## `response_format` 是透传：引擎不做约束解码（issue #308）
+
+引擎**只转发** `response_format`，不实现约束解码。这个值依次取自请求、slot 缺省值、
+`providerOptions`，最后由 `applyProviderPayloadOptions`（`src/providers/payload.js`）原样写进 JSON
+请求体。下游没有任何一处再看这份 schema：schema 自身不做校验、不会补发一个改正过的请求、
+也不会因为答案不合规就重试。`response_format` 同时是 `extraBody` 的保留键，所以宿主也绕不过
+引擎再塞一个（见「Provider 请求注入口（issue #181）」）。
+
+**200 不等于上游约束了任何东西。** 这个字段是否真被当成语法 / JSON-schema 约束执行，是**端点**
+自己的属性——取决于模型、serving 栈，以及推理是否打开。实测上游行为按模型不同：某端点对
+`json_schema` 直接回 HTTP 400，另一端点回 200、但返回的是一段无视 schema 的散文。所以一次跑绿
+只能证明模型产出了东西，永远不能证明解码被约束过。
+
+**本包里没有任何信号能区分这两种情况——明说：没有。** 事件、轮记录字段、用量计数、终局字段，
+一个都不报「约束是否生效」。宿主能看的东西，以及为什么它们都答不了这个问题：
+
+| 可观测量 | 宿主从哪里读 | 为什么它答不了「解码被约束了吗」 |
+|---|---|---|
+| 助手正文 | `onRound` 的轮记录（`record.messages` / `record.response`）、`result.rounds`、`result.finalText` | 约束解码与不约束解码都会产出文本；只有拿文本对 schema 做校验才能知道它合不合规，而合规则文本也是不约束的模型能写出来的 |
+| `stopReason` | `record.response.stopReason`（规位值 `end_turn` / `tool_use` / `max_tokens`；OpenAI 的 `finish_reason` 由 `normalizeOpenAIStopReason` 映射） | 被遵守的 schema 与被忽略的 schema 都以 `end_turn` 结束；`max_tokens` 报的是答案被截断，不是有没有语法在生效 |
+| `termination.errorCode` | 失败时的 `result.termination` | 4xx 拒绝由 `classifyHttpError`（`src/providers/errors.js`）分类，说的是端点拒了**这个请求**；而一个无视 schema 的 200 与一个遵守 schema 的 200 完全分不开 |
+| token 用量 | `onUsage` / `record.usage` / `result.usage` | 上游没有「语法约束」这个计数器；两种情况数字长得一样 |
+| `onEvent` | 本引擎发出的每一种事件 | 事件词表里没有任何成员关于输出格式——不要等一个，也不要为了让这节好看去新增一个 |
+
+**宿主怎么自查一个端点：负例探针，在引擎外面跑。** 「它回了 200」不是判据。把你打算依赖的
+schema **与**一段诱导模型写散文的提示词一起发出去，然后读上面那些可观测量：
+
+1. **请求被 4xx 拒**——该端点根本不支持这个 `response_format`；run 失败，`termination.errorCode`
+   带着分类；
+2. **请求成功、但返回文本不满足 schema**——端点收下了字段、没做约束解码：按「无约束」处理，
+   与状态码无关；
+3. **请求成功、且返回文本满足 schema**——与「有约束」一致，但仍不是证明。请**在本包 judge /
+   反思调用用的那种推理 / 思考形状下重测**（`thinking` / `reasoning` / `enable_thinking` /
+   `chat_template_kwargs`）：带 reasoning parser 的 serving 栈被记录过「推理打开时丢掉语法约束」
+   （vllm/vllm #43388、#44012），而那正是判词要紧的那类 run 的形状。
+
+判文本是宿主侧的事，而本包已经给了宿主需要的两种判词：`parseModelJson`（`src/text/parse-model-json.js`）
+带 `requireKeys` 给出同步三态（`no_candidate` / `unparsable` /
+`shape_mismatch`），`normalizeModelJson`（`src/normalization/parse-model-json.js`）给出带修复的
+异步那种。结果按「模型 × 端点 × 日期」记在宿主自己的记录里：本仓**不硬编码任何模型名**
+（模型名只来自宿主配置或用户显式指定），因此它不可能、也没有随包带一张能力表。
+
+**本节不做什么。** 逐模型能力探测——把每个模型试一次、把结论存下来、再按结论选路（有约束 ⇒
+少兜底；无约束 ⇒ 走 `parseModelJson` 的严格路径）——是另一张单。本单只把承诺诚实化：引擎转发
+这个字段，端点说了算，本包没有任何一处声称相反。事件面、provider 行为、透传语义都没变。
 
 ## 带可选兜底的模型输出归一化：`normalizeModelJson`（issue #406）
 
