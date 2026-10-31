@@ -386,7 +386,7 @@ function mergeFoldedRoundRanges(first, second) {
 
 /**
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"continuity_injection_skipped"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"budget_below_working_set"|"run_outcome"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"continuity_injection_skipped"|"final_guard"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"run_outcome"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -404,8 +404,10 @@ function mergeFoldedRoundRanges(first, second) {
  * @property {string} [finalText] Text accumulated at round end.
  * @property {string} [stopReason] Canonical provider stop reason.
  * @property {"accept"|"skip"|"revise"|"degraded"|"error"} [action]
- * @property {string} [reason] `continuity_injection_skipped`（issue #595）与 `compaction_deferred`
- *   共用这个字段；前者的取值只有两个（逐字取自发射处 `recordContinuitySkip`）：
+ * @property {string} [reason] `continuity_injection_skipped`（issue #595）、`compaction_deferred`
+ *   与 `user_turn_guard_unrecoverable`（issue #296，取值 `"empty_view"` / `"no_user_turn"` /
+ *   `"invalid_view"`，逐字取自 `unrecoverableReason`，`src/loop/request-user-view.js`）共用这个字段；
+ *   `continuity_injection_skipped` 的取值只有两个（逐字取自发射处 `recordContinuitySkip`）：
  *   `"pending_tool_use"`（请求尾部挂着未结清的 `tool_use`，此刻插入会破坏
  *   `tool_use`/`tool_result` 配对）与 `"empty"`（`upsertContinuityInMessages` 的防御分支：
  *   渲染正文为空串或 messages 不是数组，今天的渲染器不产出空正文，所以结构上可达、实际不触发）。
@@ -2569,6 +2571,30 @@ export async function runToolLoop(options) {
         userTurnGuard: action,
         userTurnGuardChannel: channel,
       }, round);
+    },
+    // issue #296（additive 宿主可见信号）：请求视图守卫退到最后一格（`unrecoverable`）——
+    // 视图违反 I1 且源里没有可回补的 user 轮，**这一请求照原样发**。之前这一格对外零信号
+    // （`recordUserTurnGuard` 被 `unrecoverable` 滤掉、终局里也看不出），宿主只能看到一个
+    // 「No user query found in messages」的 400，无法归因。
+    //
+    // 为什么是**事件**而不是终局字段：终局形状是公开面，加键要么是 breaking（宿主照旧写死
+    // 字段的会错），要么得造一个「成功 run 也带一个永远为空的字段」；而事件是纯加法——不认识的
+    // 类型宿主本来就忽略。事件在**请求发出之前**就到，宿主能把随后的 400 归到它身上。
+    // 形状对齐 `continuity_injection_skipped`（#568）：`{ type, runId?, parentRunId?, round,
+    // channel, reason, detail }`，`detail` 首句是固定原文，宿主可直接断言。
+    recordUserTurnUnrecoverable: ({ round, channel, reason }) => {
+      emitEvent({
+        type: "user_turn_guard_unrecoverable",
+        ...(runId === undefined ? {} : { runId }),
+        ...(parentRunId === undefined ? {} : { parentRunId }),
+        round,
+        channel,
+        reason,
+        detail: "the request view still violates the user-turn invariant after every fallback"
+          + " (the view and the unfolded source both fail it); the request is sent unchanged and"
+          + " an upstream that requires a user query will reject it"
+          + ` (reason: ${String(reason)}, channel: ${channel})`,
+      });
     },
     recordCompactionLayer: async ({
       layerId,

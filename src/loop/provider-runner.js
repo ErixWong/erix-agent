@@ -131,11 +131,33 @@ export async function callProvider(ctx, {
     // structurally by `test/loop-547-provider-guard-channel.test.js` T3. What that file's T2/T3 now
     // assert is the current fact: this shape records **nothing** and keeps the full view (T1's four
     // natural shapes + this fifth one are the whole enumeration — no shape reaches this branch).
-    if (userTurnGuard.action !== undefined && userTurnGuard.action !== "unrecoverable") {
-      ctx.recordUserTurnGuard?.({
+    // issue #296：`unrecoverable` 这一格以前被**滤掉**（`action !== "unrecoverable"`）——理由是
+    // 「守卫什么都没改，就不算一次动作」。代价是**真失败对外零信号**：`unrecoverable` 恰恰不是
+    // 「什么都没发生」，而是「视图违反 I1 且源里没有可回补的 user 轮」，接下来发出去的就是一个
+    // 没有 user 轮的请求（真上游回 `400 No user query found in messages`），而宿主既拿不到事件、
+    // 也看不出终局与守卫有关。
+    //
+    // 现在的分工：两个**真的改了视图**的动作继续走 `recordUserTurnGuard`（记账形状逐字不变）；
+    // `unrecoverable` 走**自己的通道**（`user_turn_guard_unrecoverable` 事件，additive）。
+    // 为什么不把它塞进 `compactionStats`：这一格可以在**完全没发生压缩**的一轮触发（宿主给的
+    // 初始消息本身就没有 user 轮），往压缩账里写一条 `foldedRounds: 0` 的条目会让「这一轮到底
+    // 有没有折叠」变得不可判读，而那是宿主已经在用的口径。
+    const userTurnGuardAction = userTurnGuard.action;
+    // issue #538 的结构判据（`test/loop-run-stream-538.test.js` U2）：通道名全文件只有**一处**
+    // 表达式，由唯一的派生值 `streaming` 决定。两个上报口（真改了视图的两个动作 / #296 的
+    // `unrecoverable`）共用这一处——多写一份就是把「通道名怎么来的」又分叉一次。
+    const guardChannel = { channel: streaming ? "chatStream" : "chat" };
+    if (userTurnGuardAction === "unrecoverable") {
+      ctx.recordUserTurnUnrecoverable?.({
+        ...guardChannel,
         round,
-        action: userTurnGuard.action,
-        channel: streaming ? "chatStream" : "chat",
+        reason: userTurnGuard.reason,
+      });
+    } else if (userTurnGuardAction !== undefined) {
+      ctx.recordUserTurnGuard?.({
+        ...guardChannel,
+        round,
+        action: userTurnGuardAction,
         tokensBefore: estimateMessageTokens(ctx.messages),
         tokensAfter: estimateMessageTokens(requestMessages),
       });
