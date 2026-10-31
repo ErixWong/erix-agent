@@ -116,7 +116,7 @@ scripts/          # experiment scripts and results
   152 → 146, six units each; the 2026-10-23 round before it read 117 → 116 and 153 → 152, one unit each; the 2026-10-21 round read 117 / 153 and 2026-10-15 read 119 / 162, all now
   **historical values**; the 226 in the issue body
   reproduces on the pre-#213 tree `bc3ad02`, which is why the number committed at #214 was 218 and not 226).
-  **Which half to pay down first**: 79 of the 108 (in 18 files) sit in files a host can actually reach — re-measured
+  **Which half to pay down first**: 79 of the 108 sit in files a host can actually reach — re-measured
   2026-10-31 after the #473/#435 merge (79 reachable + 29 implementation-only = 108: the −2 landed entirely in
   `src/loop/orchestrator.js` 14 → 12, **which sits in the public half**, so the reachable share went 81 → 79 while the
   29 implementation-only units and the 9 files carrying them did not move), re-measured
