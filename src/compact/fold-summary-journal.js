@@ -123,6 +123,79 @@ export function foldSummaryFingerprint(input = {}) {
 }
 
 /**
+ * 折叠的**契约身份**（issue #567）：`foldId` 与 run 内单调的 `seq`。
+ *
+ * 为什么 `foldId` 就是 `foldSummaryFingerprint` 的返回值（同一个字符串），不是再哈希一层：
+ *   · 宿主去重的键与引擎复用账本的键**必须是同一个身份**。两个名字、两次哈希 = 两处口径，
+ *     迟早会漂（`#469` 往指纹输入里加续写基底时就会漂一次，而宿主那边不会有任何门禁报警）；
+ *   · 语义也刚好对上：指纹回答的正是「这是**哪一次**折叠（同一次折叠的输入）」——
+ *     重放同一次折叠得到同一个字符串，宿主据此幂等去重，不再靠时刻 / 自己从 0 数的局部计数器。
+ *   · 它**不是**幂等存储（工单风险节）：宿主仍要自己保证「同 `foldId` 只落一条」；
+ *     且它的稳定性边界是**同一个引擎版本**——指纹的规范化口径换代（如 #469）时旧值不再可复现。
+ *
+ * `seq` 由引擎给（不让宿主从 0 数）：run 作用域、严格递增、**同一个 `foldId` 重投保持首次那个号**
+ * （「同一折叠投递两次 ⇒ foldId / seq 都相同」是工单判据）。于是宿主可以「`foldId` 去重 + `seq` 排序」。
+ *
+ * @returns {{
+ *   allocate: (foldId: unknown) => number|undefined,
+ *   seed: (facts: unknown[]) => number,
+ *   seqOf: (foldId: string) => number|undefined,
+ *   lastSeq: () => number,
+ *   size: () => number,
+ * }}
+ */
+export function createFoldIdentityAllocator() {
+  /** @type {Map<string, number>} */
+  const seqByFoldId = new Map();
+  let lastSeq = 0;
+  /**
+   * 给一次折叠分配（或取回）它的 `seq`。非字符串 / 空串 ⇒ `undefined`（不占号、不改状态）——
+   * 这个模块的既有纪律是「没事实就不写键」，而 `undefined` 正是调用方「不写该键」的信号。
+   * @param {unknown} foldId
+   * @returns {number|undefined}
+   */
+  const allocate = (foldId) => {
+    if (typeof foldId !== "string" || foldId === "") return undefined;
+    const known = seqByFoldId.get(foldId);
+    if (known !== undefined) return known;
+    lastSeq += 1;
+    seqByFoldId.set(foldId, lastSeq);
+    return lastSeq;
+  };
+  /**
+   * resume 时按**账本顺序**（旧 → 新）把已入账的 `seq` 灌回来：
+   *   · 账本里有 `seq` ⇒ 原样恢复（重放同一次折叠拿回同一个号，宿主去重不会被 resume 打穿）；
+   *   · 账本里没有 `seq`（#567 之前写的记录）⇒ 按账本顺序补号（它本来就只可能是「更早的折」）；
+   * 两种都让 `lastSeq` 抬到已见最大值 ⇒ 本次 run 的新折叠严格接在后面。
+   * @param {unknown[]} facts
+   * @returns {number} 灌入的条数
+   */
+  const seed = (facts) => {
+    const list = Array.isArray(facts) ? facts : [];
+    let seeded = 0;
+    for (const fact of list) {
+      if (fact === null || typeof fact !== "object") continue;
+      const foldId = /** @type {any} */ (fact).foldId;
+      if (typeof foldId !== "string" || foldId === "") continue;
+      if (seqByFoldId.has(foldId)) continue;
+      const recorded = /** @type {any} */ (fact).seq;
+      const seq = Number.isSafeInteger(recorded) && recorded > 0 ? recorded : lastSeq + 1;
+      lastSeq = Math.max(lastSeq, seq);
+      seqByFoldId.set(foldId, seq);
+      seeded += 1;
+    }
+    return seeded;
+  };
+  return {
+    allocate,
+    seed,
+    seqOf: (foldId) => seqByFoldId.get(foldId),
+    lastSeq: () => lastSeq,
+    size: () => seqByFoldId.size,
+  };
+}
+
+/**
  * 从一条 transcript 记录里读出已入账的折叠摘要事实（无则 undefined）。
  * @param {any} record
  * @returns {{ text: string, fingerprint: string, strategy?: string }|undefined}
@@ -411,10 +484,13 @@ function foldedFactsToolCalls(text) {
  *   fingerprint?: unknown,
  *   incrementText?: unknown,
  *   incrementOrigin?: unknown,
+ *   foldId?: unknown,
+ *   seq?: unknown,
  *   maxBytes?: number,
  * }} [input]
  * @returns {{
  *   text: string, title: string, origin: "mechanical"|"semantic"|"host",
+ *   foldId?: string, seq?: number,
  *   increment?: {
  *     text: string, title: string, origin: "mechanical"|"semantic"|"host",
  *     from?: number, to?: number, rounds?: number, bytes: number,
@@ -462,6 +538,13 @@ export function buildFoldedFacts(input = {}) {
     ? /** @type {number} */ (input.rounds)
     : undefined;
   const fingerprint = typeof input.fingerprint === "string" ? input.fingerprint : "";
+  // issue #567：**折叠的契约身份**（两个纯加法键，见 `createFoldIdentityAllocator()` 的注释）。
+  // `foldId` 由调用方给（引擎侧就是 `foldSummaryFingerprint` 的值，一个身份不是两个）；
+  // `seq` 也由调用方给（run 作用域分配器）——这里只负责**不造假**：拿不到就不写键。
+  const foldId = typeof input.foldId === "string" && input.foldId !== "" ? input.foldId : "";
+  const seq = Number.isSafeInteger(input.seq) && /** @type {number} */ (input.seq) > 0
+    ? /** @type {number} */ (input.seq)
+    : undefined;
   const degradeReason = typeof input.degradeReason === "string" ? input.degradeReason : "";
   const toolCalls = foldedFactsToolCalls(text);
   // issue #566：**本折自己那份**替代物（合并前那一份，不是累计体）。
@@ -515,5 +598,7 @@ export function buildFoldedFacts(input = {}) {
     ...(truncated ? { truncated: true, bytesBefore: clamped.bytesBefore } : {}),
     ...(degradeReason !== "" ? { degradeReason: degradeReason.slice(0, 120) } : {}),
     ...(fingerprint !== "" ? { fingerprint } : {}),
+    ...(foldId !== "" ? { foldId } : {}),
+    ...(seq === undefined ? {} : { seq }),
   };
 }

@@ -157,6 +157,7 @@ import {
 } from "./tool-result-ttl.js";
 import {
   buildFoldedFacts,
+  createFoldIdentityAllocator,
   createFoldSummaryLedger,
   FOLDED_FACTS_RECORD_FIELD,
   foldSummaryFingerprint,
@@ -1648,6 +1649,14 @@ export async function runToolLoop(options) {
   // summarizer** 上才有确定性钩子；宿主自带的策略对象（自带 summarizer）由宿主自己负责重算，
   // 引擎照旧把喂出去的摘要入账（可解释性不受影响）。见 docs/host-consumer-contract.md「折叠摘要与 TTL 降级事实」。
   const foldSummaryLedger = createFoldSummaryLedger();
+  // issue #567：**折叠身份分配器**（`foldId` → run 内单调 `seq`）。
+  // 为什么要引擎给、不让宿主自己数：宿主侧那套（erix-station `runner/lib/fold-notes.js`）的 `seq`
+  // 是**每 worker 从 0 起**的局部计数器，key = `fold-<时刻>-r<round>-s<seq>` ⇒ 重放 / 重启会造
+  // 重复条目，同秒同轮同 seq 又会撞同一个 key（`note_take` 同 key 是更新 current，不是追加冲突）。
+  // 这里给的两个键各自回答一个不同的问题：`foldId` 回答「是不是同一次折叠」（幂等去重），
+  // `seq` 回答「在这个 run 里它排第几」（排序）。`foldId` 就是 `foldSummaryFingerprint` 的值
+  // （见 `createFoldIdentityAllocator()` 的注释：一个身份，不是两个）。
+  const foldIdentity = createFoldIdentityAllocator();
   /**
    * issue #469（裁决 A）：resume 灌回来的账本（`seedFoldSummaries` 里赋值）。
    * 续写基底播种只能取这份——策略实例是新造的，in-run 闭包在 resume 后第一次折叠时是空的。
@@ -2115,6 +2124,11 @@ export async function runToolLoop(options) {
           .filter((facts) => facts !== null && typeof facts === "object")
           .map((facts) => cloneState(facts))
         : [];
+      // issue #567：把已入账的折叠身份（`foldId`/`seq`）灌回分配器 ⇒ resume 之后
+      // ① 重放同一次折叠拿回**同一个** `seq`（宿主去重不会被 resume 打穿）；
+      // ② 新折叠的 `seq` 接在账本最大值之后（严格递增不断档）。#567 之前写的记录没有 `seq`，
+      // 按账本顺序（旧 → 新）补号——它本来就只可能是「更早的折」。
+      foldIdentity.seed(foldRecordLedger);
       // issue #469（裁决 A）：把账本留给「续写基底播种」用——resume 出来的 run 第一次折叠
       // 拿不到 in-run 闭包（策略实例是新造的），只能靠这份账本。非 resume ⇒ 永不赋值。
       resumedLedgerRecords = records;
@@ -4301,10 +4315,18 @@ export async function runToolLoop(options) {
         .map((message) => textFromBlocks(blocksFor(message?.content)))
         .filter((summaryText) => summaryText !== "")
         .join("\n\n");
+      // issue #567：这个指纹现在有**两个名字、一个值**——引擎侧的复用键（`foldSummaryLedger`）
+      // 与宿主侧的契约身份 `foldId`（进 `foldedFacts` 与 `onFoldSummary` 载荷）。刻意不另算一层：
+      // 「同一次折叠」只应该有一个身份，两个哈希迟早会漂（#469 加续写基底时就漂了一次）。
+      // 两条分支都是「本次折叠的输入」：
+      //   · 摘要器真跑过 ⇒ 用它的指纹（已被 #326 的复用账本用作键，含轮区间 / 恢复提示 / 续写基底）；
+      //   · 零 LLM 的机械策略（`sliding-window` / `fold-statistical`）⇒ 就地按**同一口径**算：
+      //     被折负载 + 轮区间 + 恢复提示（后两个是 #567 反向证的靶子：去掉区间 ⇒ 不同折叠会撞同一个 id）。
       const foldedFingerprint = lastFoldSummaryOutcome?.fingerprint
         ?? foldSummaryFingerprint({
           messages: foldedPayload,
           roundRange: foldedRoundRange ?? null,
+          recoveryHint: compactionContext?.recoveryHint ?? null,
         });
       // 「这条新消息是摘要」的判据。为什么不能只看「文本非空」：安全层 / user-turn 守卫也会
       // 造新消息对象（实测把 `[已修剪]开始任务` 当成摘要入账，resume 会把这段垃圾回填进上下文）。
@@ -4376,8 +4398,18 @@ export async function runToolLoop(options) {
         : (typeof strategyFoldSummary?.text === "string" && strategyFoldSummary.text !== ""
           ? strategyFoldSummary.text
           : computeFactsFallbackText());
+      // issue #567：**给这次折叠一个 run 内单调的 `seq`**（`foldId` 就是上面那个指纹）。
+      // 只有**真的会产出替代物**时才占号：没有正文 ⇒ `buildFoldedFacts()` 返回 `undefined`、
+      // 既不投递也不落账，让它占号只会在 seq 上留一个「查无此折」的空洞（判据「严格递增」仍绿，
+      // 但宿主看到的号段会莫名跳）。同一 `foldId` 重投 ⇒ 分配器拿回首次那个号（工单判据②）。
+      const foldSeq = typeof factsText === "string" && factsText.trim() !== ""
+        ? foldIdentity.allocate(foldedFingerprint)
+        : undefined;
       pendingFoldedFacts = buildFoldedFacts({
         text: factsText,
+        // issue #567：折叠的契约身份（两个纯加法键，与轮记录那份同源：同一个对象、同一个值）。
+        foldId: foldedFingerprint,
+        ...(foldSeq === undefined ? {} : { seq: foldSeq }),
         // issue #566：同一份投影里另开一个键 `increment`，**不改 `text` 的语义**（它仍是累计替代物，
         // 宿主横幅/契约与 resume 的 `pickCoveringFoldSummary` 都还读它）。
         incrementText,
@@ -4410,12 +4442,26 @@ export async function runToolLoop(options) {
       //      而不是诊断噪声，必须进持久化账本（口径由 #109 的 notes 端口同构而来）。
       if (pendingFoldedFacts !== undefined && typeof onFoldSummary === "function") {
         try {
+          // issue #567：**投递时序写死**（契约里逐字同一句）：投递发生在**轮记录 append 之前**。
+          // 现场：本块在 `compactBeforeRound` 内（折叠定稿处），而承载 `foldedFacts` 的那条轮记录
+          // 要到本轮结束才 `persist("appendRound", …)`（调用方 `roundRecord[FOLDED_FACTS_RECORD_FIELD] = …`）。
+          // 为什么选「之前」而不是「之后」（两害取轻，不是含糊）：
+          //   · 「之前」留下的半截状态是「**注写了、轮记录没有**」——`foldId` 让它是**可发现、可修复**的：
+          //     宿主去账本里找不到这个 `foldId` 就知道这一折没落账；下一轮 run 重折同一输入会拿到
+          //     **同一个 `foldId` / `seq`**（分配器按 `foldId` 去重）⇒ 补写是 update，不是追加重复条目；
+          //   · 「之后」会把半截状态翻成「**账本有了、注没写**」——对「折叠笔记是唯一折叠索引」的宿主
+          //     而言是**静默丢失**（没有任何信号告诉它少了一条），而 #470 的投递点就是「替代物定稿处」，
+          //     改到轮末还会让宿主等到一轮跑完（可能几分钟）才收到折叠事实；
+          //   · 钩子失败仍然**不重试、不改写终局**（下面 ②③ 两条口径一字未动）。
           // issue #479：宿主写「折走第 a–b 轮」需要的三个数，全部取自本轮的**同一份**事实，
           // 不让宿主侧二次推导（`runLoopState` 的水位线与累计已在上面 :3293-3301 更新过）：
           //   · `foldedRoundRange{from,to}` —— 本次折叠的区间（与轮记录同源，同形）；
           //   · `foldedThrough` —— 折叠后的水位线（run 作用域，最大已折轮号）；
           //   · `foldedRoundCount` —— run 内累计折过的轮数。
           // 三个键都是纯加法：既有键逐字不动，老宿主忽略它们时看到的形状与从前一致。
+          // issue #567：`foldId` / `seq` **随 `...pendingFoldedFacts` 一起到**（不在这里二次计算）——
+          // 「递的就是落进轮记录的那一份」是 #470 的不变量，身份也一样：宿主拿 `foldId` 去账本里
+          // 找那条轮记录的 `foldedFacts.foldId`，命中唯一一条就是「被折的那批轮」。
           await onFoldSummary(cloneState({
             ...pendingFoldedFacts,
             round,

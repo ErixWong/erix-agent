@@ -834,6 +834,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/cli-delegate-630.test.js` | 3 | `prompt`×1, `session`×1, `tools`×1 |
 | `test/loop-296-user-turn-unrecoverable.test.js` | 1 | `tools`×1 |
 | `test/compact/budget-fallback-643.test.js` | 2 | `strategy`×2 |
+| `test/loop-fold-identity-567.test.js` | 4 | `tools`×4 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 
