@@ -11,11 +11,13 @@
  *     不一致 ⇒ exit 1 并点名。**不改任何文件**。CI 的阻塞门禁 `npm run check:mutation` 跑的就是它。
  *   · `--sync <表>`：**刷表**。第 4/5/6 列（行 / 锚点 sha256 / 命中）与合计行由真树重算重写 ——
  *     这是**唯一合法**的改表方式；手改这三个数字 = 伪造，`--verify` 会当场红。
+ *     表里已有**重复样本**（同一锚点文件 + 同一被变异行）时**拒绝写入**：只刷派生列修不了这个病。
  *   · `--run <表>`：**真跑**。逐条把变异写进真文件、跑该条的捕获者、要求它**红且红在该报的那条断言上**，
  *     再还原、再跑一遍要求**绿**。这一条是「闸咬得住」的**唯一**机器证据：`--verify` 只证明表与树
  *     对得上，证明不了「改了真值真会红」。`npm run check:mutation:run` 跑的就是它。
  *   · `--self-test`：上面三种模式的**反向证**，全部跑在**内存夹具**上（不落盘、不碰真树）：
- *     改坏一处必须红、不改必须绿、`--sync` 能且只能改派生列、变异没落上也必须判红（#210 R2 惯例）。
+ *     改坏一处必须红、不改必须绿、`--sync` 能且只能改派生列、重复样本红并点名两条编号、
+ *     `--sync` 拒绝写入重复表、删掉重复⇒绿、变异没落上也必须判红（#210 R2 惯例）。
  *
  * 为什么要有 `--sync` / `--verify` 双模（照 `scripts/flat-count-inventory.mjs` 的先例）：一张「手写数字」
  * 的表在第一次真值漂移之后就没人敢信了 —— 分不清「表漂了」还是「数算错了」。派生列交给机器重算，
@@ -36,6 +38,10 @@
  *   6. **变异没落地 = 失败**（#210 R2）：锚点找不到时 `String.replace` 会**原样返回**，那时捕获者当然
  *      还是绿的 —— 若把它读成「变异被抓住」，整条判据就是恒真的。本脚本把它单独判成
  *      「变异没落地」，与「变异没被抓住」分开点名，因为两者的修法完全不同。
+ *   7. **（锚点文件, 被变异行）不许重复**（#646 ④）：并行分支各自重排编号，并集里会造出同锚点、
+ *      同一行的两条样本（只差编号与措辞）—— 删掉一条，闸的覆盖面一点不减，而「一条变异咬一条
+ *      断言」的账面数量虚高。判据取**树里的行号**（唯一命中那一行）；`--verify` 红并点名两条编号，
+ *      `--sync` 拒绝写入。
  *
  * 纪律：改动被样本锚定的 `src/` / `bin/` 真值 ⇒ `--verify` 红 ⇒ 跑 `--sync` 刷表（diff 里能看见
  * 行号与摘要变了），**不要手改**。新做过的变异值得常驻时，往表里加一行（id 重排、面写清），
@@ -187,6 +193,38 @@ function summarize(rows) {
   };
 }
 
+/**
+ * 重复样本：**同一锚点文件 + 同一被变异行**（#646 ④）。
+ *
+ * 合并两支持平行分支时最容易长出这种东西：两边各自重排编号，并集里就出现 `M4 ≡ M14` ——
+ * 同锚点、同一行，只差编号与措辞。它让「一条变异咬一条断言」的账面数量虚高，而两条样本
+ * 咬的是同一条断言（删掉一条，闸的覆盖面一点不减）。
+ *
+ * 判据用**树里的行号**（`lineHits` 唯一命中那一行），不用表里的派生列：表漂了是另一条判据的事，
+ * 这里问的是「这两条变异到底会不会打在同一行上」。锚点已死 / 不唯一的行不参与（已由别的判据点名），
+ * 免得一条死样本顺手制造一条假重复。
+ */
+function duplicatePairs(rows, files) {
+  const byLine = new Map();
+  for (const row of rows) {
+    const text = files.read(row.file);
+    if (text === null) continue;
+    const hits = lineHits(text, row.anchor);
+    if (hits.length !== 1) continue;
+    const key = `${row.file}\u0000${hits[0]}`;
+    if (!byLine.has(key)) byLine.set(key, []);
+    byLine.get(key).push({ id: row.id, file: row.file, line: hits[0] });
+  }
+  return [...byLine.values()].filter((list) => list.length > 1);
+}
+
+/** 重复样本 → 一条红（点名每一条编号；超过两条时全部列出）。 */
+function duplicateProblem(list) {
+  const ids = list.map((r) => r.id).join(" 与 ");
+  return `${ids}：重复样本——同一锚点文件 ${list[0].file} 的同一被变异行 ${list[0].line}`
+    + "（重复样本让「一条变异咬一条断言」的账面数量虚高；删掉多余的并重排编号）";
+}
+
 // ─────────────────────────────── --verify ───────────────────────────────
 
 /**
@@ -253,6 +291,7 @@ function verify({ files, tableText, minSamples = MIN_SAMPLES }) {
   });
 
   const derived = summarize(rows);
+  for (const list of duplicatePairs(rows, files)) problems.push(duplicateProblem(list));
   if (!summary) {
     problems.push("合计行缺失或形状变了（应为 `**合计 N 条样本 / N 个目标文件 / N 个捕获者**`）——"
       + "没有合计行，删掉整张表也不会红");
@@ -273,7 +312,9 @@ function verify({ files, tableText, minSamples = MIN_SAMPLES }) {
  * 返回新文本，不改文件（写盘由调用方做，内存夹具才测得了）。
  */
 function sync({ files, tableText }) {
-  const derived = summarize(parseTable(tableText).rows);
+  const rows = parseTable(tableText).rows;
+  const derived = summarize(rows);
+  const duplicates = duplicatePairs(rows, files);
   const out = [];
   let touched = 0;
   for (const line of tableText.split("\n")) {
@@ -292,7 +333,7 @@ function sync({ files, tableText }) {
     }
     out.push(line);
   }
-  return { text: out.join("\n"), touched };
+  return { text: out.join("\n"), touched, duplicates };
 }
 
 // ─────────────────────────────── --run ───────────────────────────────
@@ -437,16 +478,23 @@ function mainVerify(tablePath) {
     process.exitCode = 1;
     return;
   }
-  console.log("逐条：0 处不一致（行号 / 锚点 sha256 / 命中数 / 捕获者 / 合计行）");
+  console.log("逐条：0 处不一致（行号 / 锚点 sha256 / 命中数 / 捕获者 / 合计行 / 重复样本）");
   console.log("复跑：node scripts/mutation-sample-check.mjs --verify " + tablePath);
 }
 
 function mainSync(tablePath) {
   const tableText = readTableOrDie(tablePath);
   const files = realFiles(ROOT);
-  const { text, touched } = sync({ files, tableText });
-  if (text !== tableText) fs.writeFileSync(path.join(ROOT, tablePath), text);
+  const { text, touched, duplicates } = sync({ files, tableText });
   console.log(`mutation-sample-check --sync：${tablePath}`);
+  if (duplicates.length) {
+    for (const list of duplicates) console.log(`  ✗ ${duplicateProblem(list)}`);
+    console.log("mutation-sample-check: 拒绝写入——先把重复样本删掉并重排编号（重复样本会让一条变异咬一条断言的账面数量虚高；"
+      + "只刷派生列修不了这个病）");
+    process.exitCode = 1;
+    return;
+  }
+  if (text !== tableText) fs.writeFileSync(path.join(ROOT, tablePath), text);
   console.log(`  改动 ${touched} 行（派生列由真树重算；手写列一个字都没碰）`);
   const problems = verify({ files, tableText: text });
   if (problems.length) {
@@ -710,6 +758,24 @@ const SELF_TEST_CASES = [
     minSamples: 1,
     expectClean: true,
   },
+  {
+    label: "㉓ 重复样本（同一锚点文件 + 同一被变异行，只差编号）⇒ 红并点名两条编号（#646 ④）",
+    duplicateRow: { fromId: "M1", newId: "M9" },
+    syncFirst: true,
+    expect: [/^M1 与 M9：重复样本——同一锚点文件 src\/zz-selftest-target\.js 的同一被变异行 1/u],
+  },
+  {
+    label: "㉔ --sync 拒绝留下重复样本：报出两条编号、不写表（只刷派生列修不了这个病）",
+    duplicateRow: { fromId: "M2", newId: "M9" },
+    expectSyncRejectsDuplicate: [/^M2 与 M9：重复样本/u],
+  },
+  {
+    label: "㉕ 删掉重复样本 ⇒ 绿（反向证的还原半边：重复是红的原因，不是树的底色）",
+    duplicateRow: { fromId: "M3", newId: "M9" },
+    dropRow: "M9",
+    syncFirst: true,
+    expectClean: true,
+  },
 ];
 
 function dropRowFromTable(tableText, id) {
@@ -734,6 +800,7 @@ function runSelfTest() {
     }
     const hasExpectation = c.expectClean
       || c.expectSyncRepairs
+      || c.expectSyncRejectsDuplicate
       || c.expectMutationMissed
       || c.expectMutationApplied
       || c.expectRunClean
@@ -754,6 +821,20 @@ function runSelfTest() {
       }
       tableText = m.text;
     }
+    if (c.duplicateRow) {
+      // 复制一条现有样本、换一个连续的新编号：同锚点、同被变异行 ⇒ 只差编号与措辞。
+      // 必须跑在 `dropRow` 之前：㉕「删掉重复 ⇒ 绿」先造出重复，再按编号删掉它。
+      const rows = parseTable(tableText).rows;
+      const src = rows.find((row) => row.id === c.duplicateRow.fromId);
+      if (!src) {
+        failures.push(`${who}：变异没落上——假表里没有 ${c.duplicateRow.fromId} 这一行（反向证自身失效）`);
+        continue;
+      }
+      const lines = tableText.split("\n");
+      const lastRow = lines.map((line, i) => (ROW_RE.test(line) ? i : -1)).filter((i) => i >= 0).pop();
+      lines.splice(lastRow + 1, 0, renderRow({ ...src, id: c.duplicateRow.newId }));
+      tableText = lines.join("\n");
+    }
     if (c.dropRow) {
       const d = dropRowFromTable(tableText, c.dropRow);
       if (d.missed) {
@@ -770,7 +851,6 @@ function runSelfTest() {
       }
       tree = m.tree;
     }
-
     if (c.pipeAnchor) {
       tree = new Map([
         [FAKE_TARGET, "if (a === 1 || b === 2) {\n"],
@@ -831,6 +911,17 @@ function runSelfTest() {
       } else {
         passed.push(`${who} → 手改坏 ⇒ 红；--sync ⇒ 绿；手写列逐字未动（${handWritten.length} 列 × ${after.length} 行）`);
       }
+      continue;
+    }
+
+    if (c.expectSyncRejectsDuplicate) {
+      // 先确认「表里确实有重复」，再确认 --sync 把它报出来、不静默修（刷表只该动派生列）。
+      const { duplicates } = sync({ files, tableText });
+      const all = duplicates.map(duplicateProblem);
+      const missed = (c.expectSyncRejectsDuplicate ?? []).filter((re) => !all.some((p) => re.test(p)));
+      if (!duplicates.length) failures.push(`${who}：--sync 没报重复（重复样本会被刷成一张漂亮的绿表）`);
+      else if (missed.length) failures.push(`${who}：报了重复，但不是该报的形状（未命中 ${missed.map(String).join(" ; ")}）\n      实测：${all.join("\n      ")}`);
+      else passed.push(`${who} → --sync 报出 ${duplicates.length} 组重复并拒绝写入`);
       continue;
     }
 
