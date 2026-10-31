@@ -9,7 +9,7 @@
 
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -19,6 +19,8 @@ import { createMemoryTranscriptStore, createFileTranscriptStore, createJsonFileM
 // 单测用它钉住「终局面不许自创层名」。
 import { COMPACTION_LAYER_IDS, createEmptyCompactionLayers, observeCompactionLayer } from "../../src/compact/pipeline.js";
 import { safeRunId } from "../../src/store/file.js";
+// #194：库侧 `~` 展开的真值——本层（`expandUserPath`）必须与它**逐一相等**，不是「两份抄得像」。
+import { expandHomePath } from "../../src/tools/file-tools.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
 import * as core from "../../examples/pi-extension/erix-run-core.js";
 import { makeTmp } from "../helpers/tmp.js";
@@ -156,6 +158,37 @@ test("parseRunParams：默认值、~ 展开、逐项校验", async () => {
       return true;
     }, `expected ${code} for ${JSON.stringify(raw)}`);
   }
+});
+
+test("#194：`~` 展开口径与库内文件工具同一条（只认 `~/`；`~\\x` / `~x` 原样不动）", () => {
+  const home = homedir();
+  // ① 两条通道逐一相等：库侧取的是**真函数**（`src/tools/file-tools.js` 的 `expandHomePath`），
+  //    本文件不重写第二份口径（重写 = 两边错在一起的自证）。
+  for (const raw of ["~", "~/x", "~/x/y", "~\\x", "~x", "~foo/bar", "/abs/x", "rel/x", ""]) {
+    assert.equal(
+      core.expandUserPath(raw, { home }),
+      expandHomePath(raw),
+      `两条通道的展开结果分叉：${JSON.stringify(raw)}`,
+    );
+  }
+
+  // ② 具体真值：`~/x` 与 `<home>/x` 落同一处；`~` 就是 home。
+  assert.equal(core.expandUserPath("~", { home }), home);
+  assert.equal(core.expandUserPath("~/x", { home }), path.join(home, "x"));
+  assert.equal(expandHomePath("~/x"), path.join(home, "x"));
+
+  // ③ 未知前缀 / 反斜杠形态**不被误展开**（改前本层把 `~\\x` 展开成 `<home>/x`，与库分叉）。
+  assert.equal(core.expandUserPath("~\\x", { home }), "~\\x");
+  assert.equal(core.expandUserPath("~foo", { home }), "~foo");
+  assert.equal(expandHomePath("~\\x"), "~\\x");
+  assert.equal(expandHomePath("~foo"), "~foo");
+
+  // ④ 对齐之后的宿主可见后果：`~\\x` 不再被猜成绝对路径，`parseRunParams` 当场明确拒绝
+  //    （此前它静默落进 `<home>/x`——「悄悄做错」而不是「明确拒绝」正是本单要消掉的那条路）。
+  assert.throws(
+    () => core.parseRunParams({ task: "t", cwd: "~\\x" }, { home }),
+    (error) => error.name === "ErixRunError" && error.code === "bad_params",
+  );
 });
 
 test("resolveLibCandidates/loadErixAgent：ERIX_AGENT_LIB 优先，其次裸包名，都失败则 lib_missing", async () => {
