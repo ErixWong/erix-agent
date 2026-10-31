@@ -118,6 +118,21 @@ jobs:
       - name: Mutation sample check self-test
         run: node scripts/mutation-sample-check.mjs --self-test
 
+      # 阻塞（issue #429）：零消费者导出 × `@deprecated` 登记的对账门。
+      # 候选清单由 `check:exports` 的 `computeInventory()` **现算**（import 进来，不抄第二份）；
+      # 登记取自源码里**紧贴声明**的那个 JSDoc 块（贴错位置 tsc 会静默丢掉，所以位置本身是判据）。
+      # 红：候选没登记（R1）/ 有消费者的名字被标删除（R2）/ 版本不是 0.30（R3）/ 没写迁移目标（R4）/
+      # 标记块没贴声明（R5）/ 认不出贴给谁（R6），逐条点名 `符号 @ 文件:行`。
+      # 它**只证仓内**零消费者：宿主仓不在扫描面里 ⇒ 删前另核宿主，本步不代表「可以删了」。
+      - name: Deprecated-export registry reconciliation
+        run: npm run check:exports:deprecated
+
+      # 阻塞：上一条自己的反向证（真树内存副本，不写盘）——基线绿、删一条登记 ⇒ 红并点名、
+      # 还原 ⇒ 绿、**给有消费者的符号也标上 ⇒ 红并点名**、版本写错 / 迁移目标指到空气里 /
+      # 块与声明之间夹空行 / internal-only 被标删除 都要红，变异没落上一律算失败（#210 R2）。
+      - name: Deprecated-export registry self-test
+        run: node scripts/deprecated-export-check.mjs --self-test
+
       - name: Test hygiene guard
         run: npm run check:tests
 
