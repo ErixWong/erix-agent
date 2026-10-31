@@ -126,6 +126,15 @@ first-class option there and receives `round_start` / `attempt` / `usage` / `rou
 and a host waiting for it on the fine-grained route will wait forever; that is a property of the
 route, not of the validation.
 
+**How many of them to expect (issue #503):** on the assembly-port route this event fires **once per
+assembly pass**, and that route has exactly **two** passes — the `createAssemblyPort` you call
+yourself, and the engine's own re-validation of the port you handed in (`assemblyPortOptions` calls
+`createAssemblyPort` on it again, deliberately: the policy is re-checked rather than trusted).
+Measured end to end with one unknown key: **two** events, payloads byte-identical — a host cannot
+tell from the payload which pass emitted which. Counting hosts should therefore assert **2** (or
+dedupe by `keys`); this is the current contract, not a defect, and `test/loop-option-gate-496.test.js`
+pins it (a dedupe to one event would be a behaviour change and must land with a contract update).
+
 The message `unknown assembly policy context option: …` is **historical wording**: hosts match
 that string verbatim, so it is preserved character for character. On the fine-grained route there
 is no `policy` — the phrase survives only because renaming it would break existing string matching.
