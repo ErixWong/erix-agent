@@ -3711,6 +3711,10 @@ a host must branch on the right one:
 | `unparsable` | candidates exist but every one threw — **prose lands here**, because the whole text is itself a candidate | candidates exist but every `JSON.parse` threw |
 | `shape_mismatch` | something parsed, but no candidate passed `validate` | something parsed, but no candidate satisfied `requireKeys` |
 
+A **fourth** verdict, `truncated`, exists only on the asynchronous entry: it is the optional model
+call's answer being cut off by the token limit (issue #637), and the deterministic path can never
+produce it — see the L2 paragraph in the normalization section below.
+
 Two divergences are disclosed here rather than papered over, because a host that reads either
 of them as "the same answer as `parseModelJson`" will mis-branch.
 
@@ -3804,7 +3808,7 @@ import { normalizeModelJson } from "erix-agent";
 
 // normalizeModelJson(rawText, { validate?, provider?, slot?, llm?, thinking?, maxTokens?, signal?, repair?, schema? })
 //   -> Promise<{ ok: true, value, repaired?: {rule, trusted}, llmUsed?: true, dropped? }
-//             | { ok: false, error: "no_candidate" | "unparsable" | "shape_mismatch", llmUsed?: true }>
+//             | { ok: false, error: "no_candidate" | "unparsable" | "shape_mismatch" | "truncated", stopReason?: string, llmUsed?: true }>
 const clean = await normalizeModelJson('{"done":true}');
 if (clean.ok !== true || clean.repaired !== undefined) throw new Error("a parseable input is not repaired");
 
@@ -3829,6 +3833,11 @@ const truncated = await normalizeModelJson('{"outer":{"done":true}');
 if (truncated.error !== "no_candidate") throw new Error("truncation is not repaired by default");
 const completed = await normalizeModelJson('{"outer":{"done":true}', { repair: { truncateCompletion: true } });
 if (completed.repaired.rule !== "truncation") throw new Error("opting in must be visible in provenance");
+
+// issue #637: a token-limit cut is its own verdict, not "garbage" — branch on it, do not give up on the fallback.
+const cutting = { async chat() { return { content: [{ type: "text", text: '{"strategy' }], stopReason: "max_tokens" }; } };
+const cut = await normalizeModelJson("raw text", { provider: cutting, llm: true });
+if (cut.error !== "truncated" || cut.stopReason !== "max_tokens") throw new Error("a truncated answer must be its own verdict");
 ```
 
 The optional model call (L2) is the **only** thing here that ever spends money, and
@@ -3838,6 +3847,26 @@ requests — there is no original text to hand the model). The
 request always carries `reasoning_effort` pinned to a non-thinking value (normalizing text
 is not a reasoning task), and its answer still has to pass the same `validate` gate — L2
 output that fails the gate is `shape_mismatch`, never a silent accept.
+
+**A truncated L2 answer is its own verdict, not "garbage" (issue #637).** The normalizer
+reads the provider's stop reason off the L2 response — `stopReasonOf`
+（`src/normalization/parse-model-json.js`）takes the canonical `stopReason` first and falls back to the
+raw `stop_reason` / `finish_reason` spellings — and when it is `max_tokens` or `length` **and**
+the answer produced no JSON value, the miss is `error: "truncated"` with the raw value on
+`stopReason`, instead of `unparsable` / `no_candidate`. That distinction is the whole point:
+"the budget was too small" (raise `maxTokens`, or decouple the output contract from the
+input length — the #419 shape, where the normalizer is asked to echo the original text, so
+the answer is about as long as the input and a tight budget truncates it structurally) is a
+different fix from "the model is babbling" (stop relying on the fallback). Two precedences
+are load-bearing and pinned by tests: a **hit** still wins (`ok: true` — a value that parses
+and passes the gate is a value, truncating stop reason or not), and so does
+`shape_mismatch` (the answer parsed but failed `validate`; a bigger budget does not explain
+a wrong shape, so truncation only upgrades the two verdicts that produced no JSON value at
+all). No second request is issued to guess the missing bytes — the one-request, no-retry
+rule in the next subsection is unchanged, and what to do about it is the host's call. When
+no stop reason is available (a plain string answer, or a host stub that omits the field) the
+normalizer does **not** claim truncation: an unknown stop reason is unknown, and the three
+original verdicts apply unchanged.
 
 `loadModelSlot` / `createProviderForSlot`（`src/config/slot-provider.js`）exist so a host can
 obtain the provider L2 needs without writing its own config reader: the first reads
@@ -3856,8 +3885,8 @@ wall-clock time per request. The `slot` route also means **reading the disk**: i
 with `loadModelSlot`, which reads and validates the config file before any request is built
 — so a host that takes that route in a hot path pays for file I/O on every call. Finally, a
 provider that throws **propagates the exception** out of `normalizeModelJson`; it is not
-folded into the three failure states. Wrap the call if the host needs a cost or failure
-ceiling of its own.
+folded into the three failure states (nor into `truncated`). Wrap the call if the host needs
+a cost or failure ceiling of its own.
 
 #### The engine's wrap-up normalization uses this entry (issue #406 B2-b)
 

@@ -332,14 +332,18 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 456 → 440（issue #617 P0，2026-10-30）：`config.run` 叶子表那一行补了 `parentRunId` 并写明
   // 「flat spelling is rejected」——整行命中**退役措辞行**判据（mention），行内 16 个叶子 span 从
   // uses 转入 mentions。数取自扫描器自己报的 `uses=440`。
-  "docs/host-consumer-contract.md": 440,
+  // 440 → 441（issue #637）：L2 兜底新增「截断自成一档」一段，其中「加预算」那句必须写出旋钮真名
+  // `maxTokens`（它是 normalizeModelJson 的选项面，契约明写这一处不受退役影响）——按判据登记扫描器
+  // 自己报的 `uses=441`，不为了躲钉子改写成模糊说法。
+  "docs/host-consumer-contract.md": 441,
   // 565（片A，切版前补 #569/#568 文档）：CN 契约新增「折叠触发比例与会话续接块」一节，其中 provider 回调的
   // 真实键名 `runId`（`({runId, state, previous}) → {text, version}`）是一次同名异义命中——契约必须写出这个键名，
   // 所以**不为了躲钉子而改写成模糊说法**，按判据把钉子登记成扫描器报的值。EN 侧同一句已把 `context` 写成全路径
   // （`config.folding.context` 的 `.` 前缀被排除），因此 EN 钉子 456 不动。
   // 565 → 549（issue #617 P0，2026-10-30）：同一片的 CN 行（措辞换成「扁平拼写当场被拒」，同样落
   // mention 判据），行内 16 个叶子 span 从 uses 转入 mentions。数取自扫描器自己报的 `uses=549`。
-  "docs/host-consumer-contract_cn.md": 549,
+  // 549 → 550（issue #637）：同上一句的中文侧（`maxTokens` 一次），数取自扫描器自己报的 `uses=550`。
+  "docs/host-consumer-contract_cn.md": 550,
 });
 
 /**

@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// 发版前真机清单：把六条真上游 e2e + 装后 CLI 真机冒烟串成**一条**命令（共 7 步；工单 261021-13 / #619，
-// issue #617 P2 补的是第 ② 条「派生：父 run 派生子 run 并取回结果」）。
+// 发版前真机清单：把七条真上游 e2e + 装后 CLI 真机冒烟串成**一条**命令（共 8 步；工单 261021-13 / #619，
+// issue #617 P2 补的是第 ② 条「派生：父 run 派生子 run 并取回结果」，issue #637 补的是第 ③ 条
+// 「归一化兜底的截断判别」）。
 //
 //   ERIX_E2E_REAL=1 npm run check:release:real
 //
 // 为什么要有：0.23.0 是在「文档审计没跑 + 四条真上游 e2e 没跑」的状态下发出去的。每一条单独看
-// 都是「记得手动跑就绿、忘了就红」的东西，而**记性不是机制**。这条命令把那六条按固定顺序串起来、
+// 都是「记得手动跑就绿、忘了就红」的东西，而**记性不是机制**。这条命令把那七条按固定顺序串起来、
 // 逐条点名、红就汇总 ⇒ 「忘了跑」从一件没有痕迹的事变成一个能看见的缺口：发布前跑一条命令。
 //
 // 与既有命令的关系（**不是**替代，是叠加）：
@@ -68,6 +69,14 @@ const STEPS = [
     id: "delegate-real",
     label: "派生：父 run 派生子 run 并取回结果（examples/delegate-real-e2e.test.mjs）",
     argv: ["--test", "examples/delegate-real-e2e.test.mjs"],
+  },
+  {
+    // issue #637：归一化兜底（L2）把「被 token 上限截断」与「模型输出垃圾」判成两档。这一条的判据
+    // 是**构造**出来的（`maxTokens: 1` ⇒ 结构性截断，不赌模型写多长），所以它跑得快、也不会假红；
+    // 它必须真跑的理由是 `stopReason` 只有真 provider 会给——离线臂只能钉假桩的形状。
+    id: "normalize-truncation",
+    label: "归一化兜底的截断判别（examples/normalize-truncation-real-e2e.test.mjs）",
+    argv: ["--test", "examples/normalize-truncation-real-e2e.test.mjs"],
   },
   {
     id: "resume-real",

@@ -2256,8 +2256,12 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  （`src/compact/fold-llm.js`）与 `parseFoldSummaries`（`src/compact/fold-statistical.js`），AGENTS 中英的
  *  声称句自己也引这几组 ⇒ +5 组 / +14 处。合计 `--verbose` 实测 **180 组 / 549 处**（连量两次相同，
  *  不动点；不升就是下限在空转）。
+ *
+ * issue #637（归一化兜底的截断判别）的契约中英成对段落引 `stopReasonOf`（`src/normalization/parse-model-json.js`）
+ * ⇒ **+1 组 / +5 处**（契约中英各一处、AGENTS 中英的声称句各一处、脚本头这一处），`--verbose` 实测
+ * **180 组 / 546 处**（连量两次相同，不动点）⇒ 下限 179 → **180**。
  */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 179;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 180;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {

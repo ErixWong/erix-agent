@@ -32,6 +32,9 @@
  * - `unparsable`：有候选、每个都解析不出来。
  * - `shape_mismatch`：有候选解析成功，但一个都没过 `validate` 闸门。
  *
+ * 这三档只回答「有没有可用的 JSON」。第四档 `truncated`（issue #637）只在 L2 出现，回答的是「为什么
+ * 没有」——详见下方「第四档」一节。
+ *
  * ## 候选（M6 的正解；D1：**复用 L0 的扫描，不复制**）
  *
  * 候选集 = **整段原文** + 按出现顺序的**每个 ``` 围栏块**（去围栏符，**含未闭合围栏剩下的那段块体**）
@@ -79,6 +82,24 @@
  * `src/reflection/wrapup.js` 的常量而**不是**字面量。L2 的产物**仍过同一道 `validate` 闸门**：
  * 不过就是 `shape_mismatch`，不许静默接受。
  *
+ * ## 第四档：`truncated`（issue #637）
+ *
+ * 前三档只回答「这段文本里有没有可用的 JSON」，**回答不了「为什么没有」**。而「预算给小了」与
+ * 「模型在胡说」是两种病因、两种处置：前者该加 `maxTokens` 或把输出契约与输入解耦（#419 的真机形状
+ * 就是这个：输出要求回显原文 ⇒ 输出长度 ≈ 输入长度 ⇒ `maxTokens:120` 下结构上必然截断），后者才该
+ * 放弃兜底。所以 L2 的 `stopReason` **不许就地丢弃**：上游明说被 token 上限截断
+ * （`max_tokens` / `length`）而回答又没产出可用的值时，结局是 `{ok:false, error:"truncated",
+ * stopReason, llmUsed:true}`，不是 `unparsable` / `no_candidate`。
+ *
+ * 两条优先级是**语义**、不是实现细节：
+ *   ① **命中优先**——解析成功且过闸门就是值，`ok:true` 永远先返回（`stopReason` 截断不改变一个已经
+ *      拿到的值）；
+ *   ② **`shape_mismatch` 优先**——解析成功却过不了 `validate`，那是「形状不对」，加预算解释不了它，
+ *      所以截断只升级「一个 JSON 值都没产出」的那两档（`no_candidate` / `unparsable`）。
+ * 截断时**不重发请求去猜缺失的字节**（成本一节：每次调用最多 1 个请求、绝不重试），宿主自己决定加
+ * 预算还是换契约。取不到 `stopReason`（纯字符串响应 / 宿主没给）⇒ **不声称**截断：不知道就是不知道，
+ * 前三档照旧。
+ *
  * 零依赖：只用 `node:` 内建与相对路径。
  */
 
@@ -109,6 +130,14 @@ const THINKING_NONE = "none";
 const THINKING_INHERIT = "inherit";
 
 /**
+ * 「被 token 上限截断」的两个拼写（issue #637）：canonical 的 `max_tokens`（OpenAI 的
+ * `finish_reason:"length"` 经 `normalizeOpenAIStopReason` 映射后的形态）与**原始** OpenAI 响应里的
+ * `length`。只认这两个：别的取值（`end_turn` / `tool_use` / `stop_sequence` / `refusal`…）都表示
+ * 模型**说完了**，回答里的毛病属于「垃圾」那一档，不许冒充截断。
+ */
+const TRUNCATING_STOP_REASONS = Object.freeze(["max_tokens", "length"]);
+
+/**
  * 闸门：`(value, source) => {ok, dropped?}`。
  *
  * `source` 是**该候选的原始字节**（原文切片，绝不是修后文本）——宿主拿它做
@@ -130,7 +159,8 @@ const THINKING_INHERIT = "inherit";
  * @property {{rule: string, trusted: boolean}} [repaired]
  * @property {true} [llmUsed]
  * @property {string[]} [dropped]
- * @property {"no_candidate"|"unparsable"|"shape_mismatch"} [error]
+ * @property {"no_candidate"|"unparsable"|"shape_mismatch"|"truncated"} [error]
+ * @property {string} [stopReason] L2 响应里的原始 stop reason，**只在 `error:"truncated"` 时出现**（issue #637）
  */
 
 /**
@@ -537,6 +567,34 @@ function textFromResponse(response) {
 }
 
 /**
+ * 从响应里取 stop reason（issue #637：以前这条信息在 `textFromResponse` 里被就地丢弃）。
+ *
+ * 三个拼写都认，canonical 优先：`stopReason`（`ChatResponse` 的字段，`src/messages/canonical.js`）、
+ * Anthropic 原始的 `stop_reason`、OpenAI 原始的 `finish_reason`。后两个是**宽容**而不是契约：宿主直接
+ * 把原始响应交给 `provider.chat` 时照样能判别截断（`src/compact/provider-summarizer.js` 有同样的先例）。
+ * 取不到（字符串响应、字段缺失、非字符串、空串）⇒ `undefined`＝「不知道」，而「不知道」不许被读成
+ * 「没截断」以外的任何结论：本函数的返回值只用来决定**要不要声称**截断。
+ *
+ * @param {any} response
+ * @returns {string|undefined}
+ */
+function stopReasonOf(response) {
+  if (response === null || typeof response !== "object") return undefined;
+  const raw = response.stopReason ?? response.stop_reason ?? response.finish_reason;
+  return typeof raw === "string" && raw !== "" ? raw : undefined;
+}
+
+/**
+ * 这个 stop reason 是不是「被 token 上限截断」。
+ *
+ * @param {unknown} reason
+ * @returns {reason is string}
+ */
+function isTruncatingStopReason(reason) {
+  return typeof reason === "string" && TRUNCATING_STOP_REASONS.includes(reason);
+}
+
+/**
  * 模型输出归一化入口（issue #406；包根导出名 `normalizeModelJson`）。
  *
  * @param {string} rawText 模型输出的原始文本（`null` / `undefined` 当空串处理）
@@ -604,9 +662,15 @@ export async function normalizeModelJson(rawText, options = {}) {
       ...(first.failure === undefined ? {} : { failure: first.failure }),
     });
     const response = await chat(request);
+    const stopReason = stopReasonOf(response);
     const l2Candidates = candidatesFor(textFromResponse(response), repairOptions);
     const second = runCandidates(l2Candidates, context);
     if (second.hit !== undefined) return hitResult(second.hit, true);
+    // issue #637：命中优先于截断判别（拿到值就是值）；`shape_mismatch` 也优先——解析成功却过不了闸门
+    // 是「形状不对」，加预算解释不了它。截断只升级「一个 JSON 值都没产出」的那两档。
+    if (isTruncatingStopReason(stopReason) && !second.sawRejected) {
+      return { ok: false, error: "truncated", stopReason, llmUsed: true };
+    }
     return missResult(second, l2Candidates, repairOptions, true);
   }
 

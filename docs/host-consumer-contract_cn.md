@@ -2956,6 +2956,9 @@ if ("value" in unparsable || "value" in shapeMismatch || "value" in noCandidate)
 | `unparsable` | 有候选但每个都解析不了——**纯散文落这一档**，因为整段原文本身就是候选 | 有候选但每个 `JSON.parse` 都抛 |
 | `shape_mismatch` | 有候选解析成功，但一个都没过 `validate` | 有候选解析成功，但一个都不满足 `requireKeys` |
 
+**第四档** `truncated` 只存在于异步入口：它是可选的模型调用被 token 上限截断的结局（issue #637），
+确定性路径永远产不出它——详见下方归一化那一节的 L2 段。
+
 这里**如实公开两处**差异（不粉饰）：宿主只要把其中任一处读成「和 `parseModelJson` 同一个答案」，分流就会错。
 
 **① `parseModelJson` 只可能返回对象。** 它的扫描只找**顶层平衡对象**，拿到值之后还会把数组 /
@@ -3026,7 +3029,7 @@ import { normalizeModelJson } from "erix-agent";
 
 // normalizeModelJson(rawText, { validate?, provider?, slot?, llm?, thinking?, maxTokens?, signal?, repair?, schema? })
 //   -> Promise<{ ok: true, value, repaired?: {rule, trusted}, llmUsed?: true, dropped? }
-//             | { ok: false, error: "no_candidate" | "unparsable" | "shape_mismatch", llmUsed?: true }>
+//             | { ok: false, error: "no_candidate" | "unparsable" | "shape_mismatch" | "truncated", stopReason?: string, llmUsed?: true }>
 const clean = await normalizeModelJson('{"done":true}');
 if (clean.ok !== true || clean.repaired !== undefined) throw new Error("a parseable input is not repaired");
 
@@ -3051,12 +3054,30 @@ const truncated = await normalizeModelJson('{"outer":{"done":true}');
 if (truncated.error !== "no_candidate") throw new Error("truncation is not repaired by default");
 const completed = await normalizeModelJson('{"outer":{"done":true}', { repair: { truncateCompletion: true } });
 if (completed.repaired.rule !== "truncation") throw new Error("opting in must be visible in provenance");
+
+// issue #637：被 token 上限截断是自成一档的判词，不是「垃圾」——照它分流，别放弃兜底。
+const cutting = { async chat() { return { content: [{ type: "text", text: '{"strategy' }], stopReason: "max_tokens" }; } };
+const cut = await normalizeModelJson("raw text", { provider: cutting, llm: true });
+if (cut.error !== "truncated" || cut.stopReason !== "max_tokens") throw new Error("a truncated answer must be its own verdict");
 ```
 
 可选的模型调用（L2）是这里**唯一**会花钱的东西，`llm: true` 是它唯一的开关：只有每个确定性候选
 都失败之后才发，而且候选集为空时**一次都不发**（空输入 / 纯空白 ⇒ 零请求，没有原文可交给模型）。
 请求恒定带 `reasoning_effort` 且钉在不思考的取值上（归一化文本不是推理任务），
 它的产物仍要过同一道 `validate` 闸门——L2 的产物过不了闸门就是 `shape_mismatch`，绝不静默接受。
+
+**L2 的回答被截断时，那是一档独立判词，不是「垃圾」（issue #637）。** 归一化器从 L2 响应里读
+provider 给的 stop reason——`stopReasonOf`（`src/normalization/parse-model-json.js`）先取 canonical 的
+`stopReason`，取不到再退到原始的 `stop_reason` / `finish_reason` 两种拼写——当它是 `max_tokens` 或
+`length`、**且**这一发没产出任何 JSON 值时，失败面是 `error: "truncated"`、原值挂在 `stopReason`
+上，而不是 `unparsable` / `no_candidate`。这个区分就是全部意义：「预算给小了」（该加 `maxTokens`，
+或把输出契约与输入长度解耦——#419 的真机形状正是如此：归一化器被要求回显原文，于是回答与输入
+一样长，紧预算下结构上必然截断）与「模型在胡说」（该放弃兜底）是两种处置。两条优先级是承重的、
+且由测试钉住：**命中优先**（`ok: true`——解析成功且过闸门就是值，截断与否不改变一个已经拿到的
+值），**`shape_mismatch` 同样优先**（解析成功却过不了 `validate`；形状不对加预算解释不了，所以
+截断只升级「一个 JSON 值都没产出」的那两档）。截断时**不重发请求去猜缺失的字节**——下一小节那条
+「最多 1 个请求、从不重试」一字未改，怎么处置由宿主决定。取不到 stop reason 时（纯字符串回答、
+宿主桩没给该字段）归一化器**不**声称截断：不知道就是不知道，原来那三档照旧。
 
 `loadModelSlot` / `createProviderForSlot`（`src/config/slot-provider.js`）的存在，是让宿主不必自己
 写一份配置读取就能拿到 L2 需要的 provider：前者读 `slots.default` 并校验必填字段
@@ -3070,7 +3091,7 @@ if (completed.repaired.rule !== "truncation") throw new Error("opting in must be
 路径钉死的那个，`DEFAULT_PROVIDER_TIMEOUT_MS`（`src/config/slot-provider.js`）= 300 s 硬挂钟
 上限（每请求）。`slot` 这条路还意味着**读盘**：它的起点是 `loadModelSlot`，在拼请求之前先读并
 校验配置文件，所以把这条路径放进热循环的宿主每次调用都要付一次文件 I/O。最后：provider 抛错时是
-**抛异常**出 `normalizeModelJson`，**不会**折进那三个失败态。宿主需要自己的成本 / 失败上限，就在
+**抛异常**出 `normalizeModelJson`，**不会**折进那三个失败态（也不会折成 `truncated`）。宿主需要自己的成本 / 失败上限，就在
 调用点包一层。
 
 #### 引擎的收尾归一化走的就是这个入口（issue #406 B2-b）
