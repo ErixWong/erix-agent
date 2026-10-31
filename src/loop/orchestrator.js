@@ -4691,18 +4691,24 @@ export async function runToolLoop(options) {
       return true;
     };
 
-    /** issue #435：`judge_done` 上的**交付物补齐轮**（唯一实现，与上面的 guard 补跑桥共用落地动作）。
+    /** issue #435 + #436：**交付物补齐轮**（唯一实现，与上面的 guard 补跑桥共用落地动作）。
      *
-     * 病灶：`judge_done` 是**最省钱**的停机路径，而机器判据在那一格只做到「不许盖 `verified` 章」
-     * （`termination.js` 的 accept 分支把 `verification` 压成 `unverified / deliverables_failed`），
-     * 却**不影响控制流**——`deliverablesAllPassed` 从前在 orchestrator 里一个读者都没有。于是宿主
-     * 声明的「什么算交付完成」在「评审说做完了」这条路上只能记账，不能要东西。
+     * 病灶：机器判据在停机格只做到「不许盖 `verified` 章」（`termination.js` 的 accept 分支把
+     * `verification` 压成 `unverified / deliverables_failed`），却**不影响控制流**——
+     * `deliverablesAllPassed` 从前在 orchestrator 里一个读者都没有。于是宿主声明的「什么算交付
+     * 完成」只能记账，不能要东西：#435 先接上了 `judge_done` 那条**最省钱**的停机路径，本闭包
+     * （#436）再把**预算类停机**接上——那两类停机恰恰是「算出来了但没时间写」最常撞上的两格。
      *
-     * 为什么这是**行为变更**（对声明了 `deliverables` 的宿主是 breaking）：从前那一格必然终局，
+     * 为什么这是**行为变更**（对声明了 `deliverables` 的宿主是 breaking）：从前这些格子必然终局，
      * 现在可能多跑一轮。闸门由三个条件共同把住，缺一个就逐字回到今天：
-     *   1. 停机原因是 `judge_done`（预算类停机有自己的桥 `extendAfterGuard`，两单不互相顶）；
-     *   2. guard 本轮裁决是 `accept`（`skip` / `error` 那两格的语义是「没人验收」，不该向模型要东西）；
-     *   3. 判据**有失败**（`deliverablesAllPassed === false`）——未声明判据时这一位恒为 `true`。
+     *   1. 停机原因 ∈ `{judge_done}` ∪ `FINAL_GUARD_EXTENDABLE_REASONS`（= `max_rounds_cap` /
+     *      `continuation_exhausted`）。`stall` **不在**这个并集里 ⇒ 如实收尾、不硬扩（stall 的
+     *      定义就是连续无进展，给它轮次是纯烧钱；那条由 `test/loop-guard-extend.test.js` 钉着）。
+     *      这两个面共用**同一个闭包**，不存在第二套 nudge；
+     *   2. guard 本轮裁决是 `accept`（`skip` / `error` 那两格的语义是「没人验收」，不该向模型要东西；
+     *      而且机器证据只在这一格被带出来——见 `callFinalGuard` 的 accept 分支）；
+     *   3. 判据**有失败**（`deliverablesAllPassed === false`）——未声明判据时这一位恒为 `true`
+     *      ⇒ 健康的 run 一个字都不会多说。
      * 再加三道既有的成本闸，一个都不新造：一次性配额（与补跑桥**共用** `guardExtensionUsed`，
      * 所以一个 run 最多领一次「额外一轮」）、`extensionAllowed`（governor 的扩轮判据与计数器）、
      * `guardExtensionBudgetAllows`（上下文/聚合输出两份预算事实）。
@@ -4712,10 +4718,18 @@ export async function runToolLoop(options) {
      *   deliverablesFailures?:{name:string, detail?:any}[]}} guardDecision `callFinalGuard` 的返回
      * @returns {Promise<boolean>} true = 已注入补齐指令并回到主循环
      */
-    const deliverableGapAfterJudgeDone = async (reason, guardDecision) => {
-      if (reason !== "judge_done") return false;
+    const deliverableGapAfterStop = async (reason, guardDecision) => {
+      // ① 停机面：`judge_done`（#435）与预算类停机（#436）共用同一段落地动作。写成**两个判据**
+      //    而不是往 `FINAL_GUARD_EXTENDABLE_REASONS` 里塞 `judge_done`：那个集合的语义是「预算类
+      //    停机里哪些可以借中途扩轮再跑一次」，`judge_done` 不是预算类停机，混进去会让
+      //    `extendAfterGuard` 也开始对 `judge_done` 生效（那是另一张单的事）。
+      if (reason !== "judge_done" && !FINAL_GUARD_EXTENDABLE_REASONS.has(reason)) return false;
+      // ② `skip` / `error` 两格的语义是「没人验收」，不该向模型要东西（#435 的既有边界）。
       if (guardDecision?.action !== "accept") return false;
+      // ③ **机器证据**：本轮核验真的有失败才补。这一位是「判据全过」与「判据没过」的唯一分界，
+      //    未声明判据时它恒为 `true` ⇒ 健康的 run 一个字都不会多说（#436 的第一格）。
       if (guardDecision.deliverablesAllPassed !== false) return false;
+      // ④ 一次性配额：与补跑桥共用同一份**落盘**的旗标（`guardExtensionUsed`），不是第二个计数器。
       if (governorState.guardExtensionUsed === true) return false;
       if (!pendingTailToolUsesAreAnswerable(messages)) return false;
       if (!extensionAllowed({
@@ -4738,9 +4752,19 @@ export async function runToolLoop(options) {
             : `- ${name}：未通过`;
         })
         .join("\n");
-      const text = `【交付物补齐】评审判「已完成」，但宿主声明的交付物判据没有通过`
-        + `（失败 ${Number.isSafeInteger(guardDecision.deliverablesFailed) ? guardDecision.deliverablesFailed : failures.length} 条）。`
-        + "请先真正补齐下面这些交付物，再收尾；不要只在正文里声称已经做完。"
+      // 触发面不同、指令面**同一句**：无论哪一类停机把模型叫回来，第一件事都是「落盘优先」。
+      // 为什么是引擎说而不是提示词说（#436 正文的口径）：提示词管不到「根本没得到收尾那一轮」的
+      // run——它们连「把答案说一遍」都没做——所以「先写文件」必须由引擎写进控制文本，而不是靠
+      // 系统提示词里一句泛泛的「确保产物可判定」。
+      const failedCount = Number.isSafeInteger(guardDecision.deliverablesFailed)
+        ? guardDecision.deliverablesFailed
+        : failures.length;
+      const lead = reason === "judge_done"
+        ? "评审判「已完成」，但宿主声明的交付物判据没有通过"
+        : `停机原因是 ${reason}（预算/续写已到顶），但宿主声明的交付物判据没有通过`;
+      const text = `【交付物补齐】${lead}（失败 ${failedCount} 条）。`
+        + "落盘优先：先用写工具把已经算出来的结论写进交付物路径，再做一次只读核对；"
+        + "不要开启新的计算，也不要只在正文里声称已经做完。"
         + (listed === "" ? "" : `\n${listed}`);
       const fromMaxRounds = governorState.effectiveMaxRounds;
       // 配额先记账再落地（与补跑桥同一条纪律：落地里有 await，抛错也不该抹掉「已领过」）。
@@ -4759,6 +4783,9 @@ export async function runToolLoop(options) {
         guard_extension: false,
         reason: "deliverables_failed",
         deliverables_failed: failures.length,
+        // #436：同一段落地动作现在服务两类停机面，宿主必须能区分「这一轮是为哪个停机给的」
+        // （两者的终局 reason 不同）。只在真的发生过补齐轮时才发这个事件 ⇒ 纯加法。
+        stop_reason: reason,
       });
       try {
         await refreshRunState();
@@ -5806,6 +5833,12 @@ export async function runToolLoop(options) {
           // 任一条件不成立 ⇒ 下面这段与今天**逐字一致**（`unverified / non_continuable` +
           // `final_guard_unverified`）。`stall` 在 `extendAfterGuard` 里被显式拒绝。
           if (await extendAfterGuard(reason, guardDecision)) continue;
+          // issue #436：预算类停机（`max_rounds_cap` / `continuation_exhausted`）上，机器判据说
+          // 「交付物没交付」时也补一轮——与 #435 的 `judge_done` **同一个闭包、同一份配额**。
+          // 触发面是机器证据（不是 guard 的 `revise`），所以它与上面那条 opt-in 桥互不顶替：
+          // 桥管「guard 知道还差什么」，本闸门管「宿主声明的判据说没交付」。`stall` 在闭包里
+          // 被 reason 闸挡掉（如实收尾，不硬扩）。
+          if (await deliverableGapAfterStop(reason, guardDecision)) continue;
           guardMetrics.unverified += 1;
           verification = {
             status: "unverified",
@@ -5863,7 +5896,7 @@ export async function runToolLoop(options) {
         // 在 `error` / `skip` / `non_continuable` 三条 return 之后 ⇒ 走到这里的 `judge_done` 只可能是
         // `accept`。未声明 `deliverables` 时 `deliverablesAllPassed` 恒为 `true` ⇒ 本闸门不触发，
         // 行为与今天逐字一致。
-        if (await deliverableGapAfterJudgeDone(reason, guardDecision)) continue;
+        if (await deliverableGapAfterStop(reason, guardDecision)) continue;
       }
       // finalGuard 同样是「终局前的增值调用」：中止若落在它自己那一次调用里，也必须以 aborted 收口，
       // 不得把用户的中止改写成 final_guard 给出的终态（issue #282 期望 3）。
@@ -5903,6 +5936,9 @@ export async function runToolLoop(options) {
     // issue #386 切片 3：**E4 那一格**——轮预算被掐停、模型还在正常调工具、guard 明确知道差什么
     // （`revise`）时，opt-in 的宿主可以让它补跑一轮再收尾。条件不成立 ⇒ 下面与今天逐字一致。
     if (await extendAfterGuard("max_rounds_cap", guardDecision)) continue mainLoop;
+    // issue #436：轮预算自然跑完（撞墙）这条出口与上面 stop 分支那条是**同一个停机面**，
+    // 所以接同一个补齐轮。少接这一处，最常见的「算完了但没时间写」就正好漏在门外。
+    if (await deliverableGapAfterStop("max_rounds_cap", guardDecision)) continue mainLoop;
     guardMetrics.unverified += 1;
     verification = {
       ...verification,

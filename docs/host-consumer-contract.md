@@ -4345,6 +4345,50 @@ guard bridge — it is the same "the engine granted another round" fact, and the
 stay distinguishable), and `verification.metrics.deliverable_gap_rounds` (**present only**
 when a gap round actually happened).
 
+#### The budget-stop gap round (issue #436)
+
+`judge_done` was not the only stop where the machine verdict had no reader. The **budget stops**
+are the other half, and they are the ones a run hits when it worked the answer out and then ran out
+of room to write it down: the loop is cut by `max_rounds_cap` (or by `continuation_exhausted`), the
+criteria are checked, they fail, and the run ends with a label and nothing on disk. #435 wired one
+stop; this change wires the **same** landing action to `FINAL_GUARD_EXTENDABLE_REASONS` on **both**
+exits — the governor's stop branch in `src/loop/orchestrator.js` and the out-of-loop forced final.
+There is no second nudge: all three call sites run one closure, which reuses the same
+`extensionAllowed` gate, the same budget gate and the same one-shot
+`guardExtensionUsed` quota as the #386 bridge. So a run still claims at most one extra round,
+whichever mechanism asks first, and a crash + resume cannot mint another one (the flag lives in run
+state).
+
+The three cells are the whole contract:
+
+| machine evidence | stop reason | outcome |
+| --- | --- | --- |
+| `deliverablesAllPassed !== false` (no criteria declared, or all of them passed) | any | **byte-for-byte unchanged** — no extra round, no extra request, no `deliverable_gap_rounds` key. A healthy run is not lectured |
+| any criterion failed | `max_rounds_cap` / `continuation_exhausted` | **one** gap round: the engine injects one `judge-control` user message and the loop continues; if the model actually writes the deliverable, the next attempt recomputes the criteria and can reach `verified` |
+| any criterion failed | anything outside that set (`stall` included) | **no gap round** — the run ends exactly as before (`final_guard_unverified` / `non_continuable`). A stall *is* "no progress", so handing it rounds only burns budget |
+
+Three boundaries worth reading literally:
+
+- **The trigger is the machine evidence, not the guard's opinion.** The gap round reads the same
+  per-attempt `deliverablesAllPassed === false` fact #435 reads, so the `skip` / `error` cells still
+  never trigger it ("nobody checked" is not "the deliverable is missing"), and a `revise` verdict
+  keeps its own opt-in bridge — the two triggers do not replace each other.
+- **`termination.reason` is still not rewritten.** The gap round adds a round; it does not rename
+  the stop. A run that gets its deliverable written leaves through whatever exit it would have taken
+  anyway (in the measured shape: `end_turn` with `verified`); one that does not ends exactly as
+  before.
+- **The instruction is the same sentence on every face.** The injected control text names the failed
+  criteria (`name` + the `detail` your `check` returned) and starts with the one instruction the
+  ticket names as missing: **write the conclusion into the deliverable path first** (`落盘优先` — write tools and read-only checks only, no new computation, and "I already
+  did it" in prose does not count). The governor's wrap-up nudge says the same thing, because that
+  nudge is the last tool-capable round before the wall: the failure shape in the ticket is a run
+  that never got to write anything down, not a run that could not compute.
+
+What a host observes: the same `type: "final_guard_extend"` event as #435, now with a `stop_reason`
+field (`"judge_done"` / `"max_rounds_cap"` / `"continuation_exhausted"`) so the two faces stay
+distinguishable, plus `verification.metrics.deliverable_gap_rounds` (**present only** when a gap
+round actually happened).
+
 #### Content criterion: `files_written_content_not_placeholder` (issue #435)
 
 The engine owns **no** built-in criterion and never reads the disk (the division of labour
@@ -4408,10 +4452,12 @@ Four boundaries are deliberate:
   should fix stays hidden. The asymmetry is intentional: a failing criterion still wins
   (`unverified`), because "the machine says no" is a decided answer, while "the guard is
   broken" is not.
-- **Non-continuable stops still check once, and still degrade.** For `max_rounds_cap`,
-  `stall`, and `continuation_exhausted` the criteria run once and the result is recorded,
-  but a `revise` stop keeps its existing `non_continuable` verdict. The gate adds a label, it
-  does not invent a stop.
+- **Non-continuable stops still check once.** For `max_rounds_cap`, `stall`, and
+  `continuation_exhausted` the criteria run once and the result is recorded, and a `revise` stop
+  keeps its existing `non_continuable` verdict. The gate adds a label, it does not invent a stop.
+  The one control-flow consequence on this face is the **budget-stop gap round** (issue #436,
+  below): when a criterion failed and the stop is one the engine is allowed to extend, the run gets
+  one round to write the answer down before it degrades.
 - **The event gains one field.** A `type: "final_guard"` event carries
   `deliverables_failed: <n>` (present only when criteria were declared) and, in the
   machine-only cell, `machine_only: true` — its `action` stays `"skip"` and its `reason` stays

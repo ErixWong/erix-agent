@@ -91,7 +91,9 @@ export function decideRoundAction(signals = {}) {
     return {
       kind: "nudge",
       reason: "wrapUp",
-      text: `外部时间预算将尽（剩余约 ${remainingSeconds} 秒）。请尽快收尾：确保当前产物可判定、运行验证命令并给出最终结论。不要开启新的长任务。`,
+      // #436（顺带做，纯文案零行为）：这条 nudge 是「撞墙之前唯一一次带工具的真实轮」，
+      // 所以它必须点名**先落盘**——工单里的失败形状是「算完了但没写」，不是「没算出来」。
+      text: `外部时间预算将尽（剩余约 ${remainingSeconds} 秒）。请尽快收尾，落盘优先：先把结论写进交付物路径（文件里必须是真答案，不是 TBD），再运行验证命令并给出最终结论。不要开启新的长任务。`,
       wrapUpNudged: true,
       continue: true,
     };

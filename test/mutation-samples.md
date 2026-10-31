@@ -51,7 +51,7 @@
 | M1 | state-view 活引用（getter 不构造时快照） | `src/loop/state-view.js` | 39 | `200476485ce6` | 1 | `      get: get ?? (() => state[key]),` | `      get: get ?? ((s) => () => s[key])({ ...state }),` | `test/state-view.test.js` | `state-view 活引用` |
 | M2 | state-view getOnly（不定义 setter、不冻结） | `src/loop/state-view.js` | 40 | `51aa6cc49f6f` | 1 | `      set: getOnly ? undefined : (set ?? ((value) => { state[key] = value; })),` | `      set: set ?? ((value) => { state[key] = value; }),` | `test/state-view.test.js` | `state-view getOnly` |
 | M3 | state-view 字段面（不把 state 泄进视图） | `src/loop/state-view.js` | 43 | `db80dcdb8979` | 1 | `  return Object.defineProperties({}, descriptors);` | `  return Object.defineProperties({ ...state }, descriptors);` | `test/state-view.test.js` | `state-view 字段面` |
-| M4 | result.messages 与内部数组同一引用 | `src/loop/termination.js` | 673 | `5f067454ae77` | 1 | `      messages: ctx.messages,` | `      messages: [...ctx.messages],` | `test/messages-identity.test.js` | `A1 返回载荷的 messages 与内部状态数组是同一个对象` |
+| M4 | result.messages 与内部数组同一引用 | `src/loop/termination.js` | 674 | `5f067454ae77` | 1 | `      messages: ctx.messages,` | `      messages: [...ctx.messages],` | `test/messages-identity.test.js` | `A1 返回载荷的 messages 与内部状态数组是同一个对象` |
 | M5 | retryable 映射（哪些 code 会重试） | `src/providers/errors.js` | 1 | `eeddca598c5b` | 1 | `const RETRYABLE_CODES = new Set(["timeout", "rate_limited", "server", "disconnect"]);` | `const RETRYABLE_CODES = new Set(["timeout", "server", "disconnect"]);` | `test/providers/error-classification.test.js` | `classifyHttpError：429 → rate_limited` |
 | M6 | 4xx → code 分类（422 也是 invalid_request） | `src/providers/errors.js` | 115 | `3538a130cd2a` | 1 | `  } else if (status === 400 \|\| status === 422) {` | `  } else if (status === 400) {` | `test/providers/error-classification.test.js` | `classifyHttpError：422 → invalid_request` |
 | M7 | abort 分类（`aborted` 永不重试） | `src/providers/errors.js` | 173 | `67dc3cfd6103` | 1 | `  if (isAbortException(err, opts.signal)) {` | `  if (false && isAbortException(err, opts.signal)) {` | `test/app-container-p0.test.js` | `classifies AbortError and aborted signals as non-retryable aborted errors` |
@@ -59,8 +59,9 @@
 | M9 | state-view 接线侧的字段清单（漏一项 ⇒ 该字段在 ctx 上变成 `undefined`） | `src/loop/orchestrator.js` | 3769 | `ed509a147bf5` | 1 | `      "toolErrorCount",` | `      "toolErrorCountTypo",` | `test/loop-error-budget-cells.test.js` | `errors.tool=2` |
 | M10 | #375 参数错误新出口的事实接线（`max_bytes` 的 received 格断掉 ⇒ 与旧通道对不上） | `src/tools/file-tools.js` | 1598 | `4314da641058` | 1 | `      value: maxBytesRequested,` | `      value: undefined,` | `test/tools/param-error-375.test.js` | `对账 ③ readFile {max_bytes` |
 | M11 | state-view 接线侧的字段清单（`providerContext` 面漏一项 ⇒ 该字段在 ctx 上变 `undefined`） | `src/loop/orchestrator.js` | 2726 | `ebeefb88aa8f` | 1 | `      "roundEventDeltas",` | `      "roundEventDeltasTypo",` | `test/loop-fr2.test.js` | `retries a retryable provider error with the original messages` |
+| M12 | #436 预算类停机的交付物补齐轮（机器证据的极性写反：健康 run 被啰嗦 / 失败的 run 不补） | `src/loop/orchestrator.js` | 4731 | `03c17bbf0f31` | 1 | `      if (guardDecision.deliverablesAllPassed !== false) return false;` | `      if (guardDecision.deliverablesAllPassed === false) return false;` | `test/loop-deliverables-gap-436.test.js` | `#436 ① deliverables_failed = 0 ⇒ 不 nudge` |
 
-**合计 11 条样本 / 6 个目标文件 / 8 个捕获者**
+**合计 12 条样本 / 6 个目标文件 / 9 个捕获者**
 
 > 单元格里的 `\|` 是**转义的竖线**：markdown 表格里写不出裸 `|`（会把整行拆成多列），所以 M6 锚点里的
 > `||` 存成 `\|\|`，脚本读的时候还原成 `||`。这条转义回环由 `--self-test` 的第 ㉒ 例钉住（不转义 ⇒

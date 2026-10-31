@@ -3454,9 +3454,11 @@ payload 无键、metrics 无键、事件无字段。引擎自己的发布冒烟�
   盖掉一次真实故障——宿主会读到「至少机器验过了」，而它该去修的那次故障被藏起来了。
   这个不对称是故意的：判据**失败**照样赢（`unverified`），因为「机器说没过」是一个
   已决的答案，而「guard 坏了」不是。
-- **不可续跑终局也照核一次，但结论不变。** `max_rounds_cap` / `stall` /
-  `continuation_exhausted` 上判据会跑一遍并记账，但 `revise` 收尾仍是既有的
-  `non_continuable`。闸门只贴标签，不新造停止行为。
+- **不可续跑终局也照核一次。** `max_rounds_cap` / `stall` /
+  `continuation_exhausted` 上判据会跑一遍并记账，`revise` 收尾仍是既有的
+  `non_continuable`。闸门只贴标签，不新造停止行为。这一面唯一的控制流后果是下面那节
+  **预算类停机的补齐轮**（issue #436）：判据没过、且停机原因在引擎允许扩的集合里时，run 先多跑
+  一轮把答案写下来，再降级。
 - **事件只多字段。** `type: "final_guard"` 的事件带 `deliverables_failed: <n>`
   （只在声明了判据时出现），machine-only 那一格另带 `machine_only: true`——
   它的 `action` 仍是 `"skip"`、`reason` 仍是 guard 自己的 skip 原因，宿主不必读 metrics
@@ -3516,6 +3518,42 @@ payload 无键、metrics 无键、事件无字段。引擎自己的发布冒烟�
 `reason: "deliverables_failed"` 与 `deliverables_failed: <n>`（与 guard 补跑桥同一个事件名——
 它就是「引擎又给了一轮」这件事，两个触发面仍然可区分），以及
 `verification.metrics.deliverable_gap_rounds`（**只在**真的发生过补齐轮时出现）。
+
+#### 预算类停机的补齐轮（issue #436）
+
+`judge_done` 不是唯一「机器结论没有读者」的停机面。另一半是**预算类停机**，而且它们恰恰是
+「算出来了但没地方写」撞上的那两格：循环被 `max_rounds_cap`（或 `continuation_exhausted`）掐停，
+判据核过一遍、没过，run 带着一个标签收尾，盘上什么都没有。#435 只接了其中一个停机面；本单把
+**同一段落地动作**接到 `FINAL_GUARD_EXTENDABLE_REASONS` 上，并且**两条出口都接**——
+`src/loop/orchestrator.js` 里 governor 的 stop 分支，以及出圈后的强制收尾那一段。**没有第二套
+nudge**：三个调用点跑的是同一个闭包，它复用的还是 `extensionAllowed` 那道闸、同一道预算闸，以及
+#386 补跑桥那**同一份**一次性配额（`guardExtensionUsed`）。所以一个 run 仍然最多只多领一轮——
+无论哪个机制先开口——而且「跑 → 崩 → 续跑」不会凭空多出一份（旗标落在 run state 里）。
+
+三格就是这份契约的全部：
+
+| 机器证据 | 停机原因 | 结果 |
+| --- | --- | --- |
+| `deliverablesAllPassed !== false`（没声明判据，或全过） | 任意 | **逐字不变**——不多跑一轮、不多发一次请求、不多一个 `deliverable_gap_rounds` 键。健康的 run 不会被啰嗦 |
+| 任一条判据没过 | `max_rounds_cap` / `continuation_exhausted` | **一轮**补齐轮：引擎注入**一条** `judge-control` 用户消息，循环继续；模型真把交付物写下去，下一次 attempt 重算判据就可能拿到 `verified` |
+| 任一条判据没过 | 这个集合之外的任何原因（含 `stall`） | **不补**——run 与从前逐字一致（`final_guard_unverified` / `non_continuable`）。stall 的定义就是「连续无进展」，给它轮次是纯烧钱 |
+
+三条值得逐字读的边界：
+
+- **触发面是机器证据，不是 guard 的意见。** 补齐轮读的是 #435 读的**同一份**「本轮
+  `deliverablesAllPassed === false`」，所以 `skip` / `error` 那两格照旧永不触发（「没人验收」
+  不等于「交付物没交付」）；`revise` 有它自己那条 opt-in 补跑桥——两个触发面互不顶替。
+- **`termination.reason` 仍然不被改写。** 补齐轮多给一轮，不改写停机原因：真把交付物写下去的 run
+  走它本来那条出口（实测形状是 `end_turn` + `verified`），补不上的与从前逐字一致。
+- **每个面用的是同一句话。** 注入的控制文本点名失败的判据（判据的 `name` 与你 `check` 返回的
+  `detail`），并以工单点名缺失的那句开头：**先把结论写进交付物路径**（`落盘优先`——
+  只做写入与只读核对，不开启新的计算，正文里一句「我已经做了」不算数）。governor 的收尾 nudge
+  现在也说同一句话：那条 nudge 是撞墙之前最后一次带工具的真实轮，而工单里的失败形状是「根本没
+  得到把东西写下来的那一轮」，不是「算不出来」。
+
+宿主能观测到什么：与 #435 同一个 `type: "final_guard_extend"` 事件，但多带一个 `stop_reason`
+字段（`"judge_done"` / `"max_rounds_cap"` / `"continuation_exhausted"`），两个触发面因此仍然可
+区分；外加 `verification.metrics.deliverable_gap_rounds`（**只在**真的发生过补齐轮时出现）。
 
 #### 内容判据：`files_written_content_not_placeholder`（issue #435）
 
