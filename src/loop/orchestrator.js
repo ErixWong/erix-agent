@@ -69,9 +69,11 @@ import {
   buildTimeline,
   DEFAULT_WRITE_TOOL_NAMES,
   INTERCEPT_CONVERSATION_TOKENS,
+  judgeDoneBlocker,
   parseJudgeDecision,
   rawWritePaths,
   renderConversation,
+  roundDeliverableFacts,
 } from "../reflection/judge.js";
 import {
   advanceLastToolCall,
@@ -197,6 +199,21 @@ export { parseReflectionDecision };
  * Governor 历史的估算上限（与 #172 A4 之前的内联 4000 同口径）。
  */
 export const GOVERNOR_HISTORY_TOKEN_LIMIT = 4000;
+
+/**
+ * issue #473：`judge` 判 `done:true` 但**该轮没有交付物正文**时，允许「把它降级成一次 nudge」的次数。
+ *
+ * 为什么必须是一次性配额：不设限的实测形状是「评审恒 done + 该轮恒无正文 ⇒ 剩余轮次全被烧掉」
+ * （#435 评论里记着同一条教训：4 轮烧成 8 次 provider 调用）。一次 nudge 的代价是**一轮**主模型
+ * 请求，而它的收益是让模型真的写出交付正文；给一次就够证明这条路径可行，给两次以上只是把钱花在
+ * 同一个判据上。
+ *
+ * 为什么是**内存态**（不像 `guardExtensionUsed` 那样落盘）：它不新增轮次预算、只把「本来要停」
+ * 改成「再跑一轮」，而轮次本身由 `maxRounds` 兜住 ⇒ 「跑 → 崩 → resume」最多按段重来一次，
+ * 上界仍是 `maxRounds`。落盘要多动 `run-state.js` / `resume-manager.js` 两个模块的字段面，
+ * 与本单的行为变化不成比例。
+ */
+export const JUDGE_DONE_GAP_NUDGE_LIMIT = 1;
 
 /**
  * issue #608：预算装不下工作集时的终局原因。
@@ -1869,6 +1886,8 @@ export async function runToolLoop(options) {
     // 「跑 → 崩 → resume」每次都领一份新配额 = 无界成本，所以它随 run-state 落盘、由
     // `resume-manager.js` 恢复（见 `deterministic.guardExtension`）。
     guardExtensionUsed: false,
+    // issue #473：`judge_done` 的「无交付物正文」降级配额（见 `JUDGE_DONE_GAP_NUDGE_LIMIT`）。
+    judgeDoneGapNudges: 0,
     noToolStreak: 0,
     wrapUpNudged: false,
     errorSeen: new Map(),
@@ -2321,7 +2340,7 @@ export async function runToolLoop(options) {
   // 不往字面量里加任何键（加了就等于给未补跑的 run 多一个 `guard_extensions: 0`）。
   // issue #392：`deliverables_machine_only` 同理——只在 guard `skip` + 判据全通过（机器证据单独构成
   // 验收）那一格由 `callFinalGuard` 现写，其余任何一格都不出现这个键。
-  /** @type {{ verified: number, skipped: number, revised: number, unverified: number, guard_error: number, deliverables_checked?: number, deliverables_failed?: number, deliverables_machine_only?: number, guard_extensions?: number }} */
+  /** @type {{ verified: number, skipped: number, revised: number, unverified: number, guard_error: number, deliverables_checked?: number, deliverables_failed?: number, deliverables_machine_only?: number, guard_extensions?: number, deliverable_gap_rounds?: number }} */
   const guardMetrics = {
     verified: 0,
     skipped: 0,
@@ -3523,7 +3542,17 @@ export async function runToolLoop(options) {
     );
   };
 
-  const callRoundJudge = async (round, currentL0, { timeoutMs, conversationBudgetTokens } = {}) => {
+  /**
+   * @param {number} round
+   * @param {object} currentL0
+   * @param {{timeoutMs?: number, conversationBudgetTokens?: number,
+   *   roundFacts?: {roundDeliverable?: object, roundStopReason?: string}}} [options]
+   */
+  const callRoundJudge = async (round, currentL0, {
+    timeoutMs,
+    conversationBudgetTokens,
+    roundFacts,
+  } = {}) => {
     const l0Facts = [...governorState.l0Facts, { round, ...currentL0 }];
     const recentErrors = l0Facts
       .flatMap((fact) => fact.errorTexts ?? (fact.errorText ? [fact.errorText] : []))
@@ -3560,6 +3589,10 @@ export async function runToolLoop(options) {
               maxExtensions: reflectionMaxExtensions,
               nearLimit,
             },
+            // issue #473：把「本轮这段文本是不是被声明为交付物」作为判据的**输入**交给评审。
+            // 口径来自 `roundDeliverableFacts`（与渲染器同一个 `deliverableKindOfBlock`），
+            // 本文件不重算、也不造第三套分类。
+            roundFacts,
           ),
         }],
       }],
@@ -4570,6 +4603,88 @@ export async function runToolLoop(options) {
       return true;
     };
 
+    /** issue #435：`judge_done` 上的**交付物补齐轮**（唯一实现，与上面的 guard 补跑桥共用落地动作）。
+     *
+     * 病灶：`judge_done` 是**最省钱**的停机路径，而机器判据在那一格只做到「不许盖 `verified` 章」
+     * （`termination.js` 的 accept 分支把 `verification` 压成 `unverified / deliverables_failed`），
+     * 却**不影响控制流**——`deliverablesAllPassed` 从前在 orchestrator 里一个读者都没有。于是宿主
+     * 声明的「什么算交付完成」在「评审说做完了」这条路上只能记账，不能要东西。
+     *
+     * 为什么这是**行为变更**（对声明了 `deliverables` 的宿主是 breaking）：从前那一格必然终局，
+     * 现在可能多跑一轮。闸门由三个条件共同把住，缺一个就逐字回到今天：
+     *   1. 停机原因是 `judge_done`（预算类停机有自己的桥 `extendAfterGuard`，两单不互相顶）；
+     *   2. guard 本轮裁决是 `accept`（`skip` / `error` 那两格的语义是「没人验收」，不该向模型要东西）；
+     *   3. 判据**有失败**（`deliverablesAllPassed === false`）——未声明判据时这一位恒为 `true`。
+     * 再加三道既有的成本闸，一个都不新造：一次性配额（与补跑桥**共用** `guardExtensionUsed`，
+     * 所以一个 run 最多领一次「额外一轮」）、`extensionAllowed`（governor 的扩轮判据与计数器）、
+     * `guardExtensionBudgetAllows`（上下文/聚合输出两份预算事实）。
+     *
+     * @param {string} reason 停机原因
+     * @param {{action?:string, deliverablesAllPassed?:boolean, deliverablesFailed?:number,
+     *   deliverablesFailures?:{name:string, detail?:any}[]}} guardDecision `callFinalGuard` 的返回
+     * @returns {Promise<boolean>} true = 已注入补齐指令并回到主循环
+     */
+    const deliverableGapAfterJudgeDone = async (reason, guardDecision) => {
+      if (reason !== "judge_done") return false;
+      if (guardDecision?.action !== "accept") return false;
+      if (guardDecision.deliverablesAllPassed !== false) return false;
+      if (governorState.guardExtensionUsed === true) return false;
+      if (!pendingTailToolUsesAreAnswerable(messages)) return false;
+      if (!extensionAllowed({
+        extensionCount: governorState.extensionCount,
+        maxExtensions: reflectionMaxExtensions,
+        effectiveMaxRounds: governorState.effectiveMaxRounds,
+        maxRoundsCap: reflectionMaxRoundsCap,
+      })) return false;
+      if (!guardExtensionBudgetAllows()) return false;
+      const failures = Array.isArray(guardDecision.deliverablesFailures)
+        ? guardDecision.deliverablesFailures
+        : [];
+      // 控制消息只说**机器判据说的话**（判据名 + 它自己给的 detail）：引擎不解释判据语义，
+      // 也不替模型猜该补什么。没有明细时退化成一句可读的事实，而不是静默什么都不说。
+      const listed = failures
+        .map((failure) => {
+          const name = typeof failure?.name === "string" && failure.name !== "" ? failure.name : "<未命名判据>";
+          return typeof failure?.detail === "string" && failure.detail !== ""
+            ? `- ${name}：${failure.detail}`
+            : `- ${name}：未通过`;
+        })
+        .join("\n");
+      const text = `【交付物补齐】评审判「已完成」，但宿主声明的交付物判据没有通过`
+        + `（失败 ${Number.isSafeInteger(guardDecision.deliverablesFailed) ? guardDecision.deliverablesFailed : failures.length} 条）。`
+        + "请先真正补齐下面这些交付物，再收尾；不要只在正文里声称已经做完。"
+        + (listed === "" ? "" : `\n${listed}`);
+      const fromMaxRounds = governorState.effectiveMaxRounds;
+      // 配额先记账再落地（与补跑桥同一条纪律：落地里有 await，抛错也不该抹掉「已领过」）。
+      governorState.guardExtensionUsed = true;
+      await applyGovernorExtension(text, runLoopState.rounds, "deliverables-gap");
+      // 计数键**只在真的发生过时才出现**（与 `deliverables_machine_only` 同一条加法纪律：
+      // 没走这条路的 run，`verification.metrics` 的键集合与今天逐字一致）。
+      guardMetrics.deliverable_gap_rounds = (guardMetrics.deliverable_gap_rounds ?? 0) + 1;
+      emitEvent({
+        type: "final_guard_extend",
+        round: runLoopState.rounds,
+        from_max_rounds: fromMaxRounds,
+        to_max_rounds: governorState.effectiveMaxRounds,
+        // 复用同一个事件名（它就是「引擎又给了一轮」这件事），但把触发面标清楚：
+        // 不是 guard 判 revise，而是机器判据说交付物没交付。
+        guard_extension: false,
+        reason: "deliverables_failed",
+        deliverables_failed: failures.length,
+      });
+      try {
+        await refreshRunState();
+      } catch (persistenceError) {
+        await reportPersistenceError(persistenceError, {
+          port: "transcript",
+          operation: "saveRunState",
+          phase: "deliverable_gap",
+          fatal: false,
+        });
+      }
+      return true;
+    };
+
   try {
     await refreshRunState();
     // issue #598：**召回**——run 启动读一次 store（读失败 / 没有记录 ⇒ 不装默认 provider，首条请求无块）。
@@ -5205,6 +5320,14 @@ export async function runToolLoop(options) {
     // 身份轮号自增（非 resume 单段调用 budgetRounds 与 rounds 恒等；resume 后 rounds 领先）
     runLoopState.rounds = round;
     const currentRoundMessages = messages.slice(roundStart);
+    // ── issue #473：「这段文本到底是不是被声明为交付物」的唯一口径 ─────────────────────────────
+    // 一次算好、两处读：① 交给评审当**判据输入**（`buildJudgePrompt` 的 `facts`）；
+    // ② 停门自己判 `judge_done`（`judgeDoneBlocker`）。两处读同一个对象，所以不可能出现
+    // 「评审被告知这轮没有交付物、停门却当它有」这种自相矛盾。
+    const roundFacts = {
+      roundDeliverable: roundDeliverableFacts(currentRoundMessages, 0),
+      roundStopReason: roundStopReason ?? "unknown",
+    };
     const currentL0 = extractL0Facts(currentRoundMessages, {
       seenErrors: governorState.errorSeen,
     });
@@ -5252,13 +5375,23 @@ export async function runToolLoop(options) {
     };
     let judgeDecision = runLoopState.interceptJudgeDecision;
     let judgeUsage;
+    // ── issue #473：`judge_done` 的**前置判据**（工单 §2 那条判据链的落点）────────────────────
+    // 它在评审**返回之后**才可能非空（见下面 `else` 分支里的赋值），这里只声明。
+    //   · `judgeDoneBlocker` 拿的就是上面 `roundFacts.roundDeliverable`——与交给评审的那一份
+    //     **同一个对象**（渲染器同一个 `deliverableKindOfBlock`），所以「评审看到的分类」与
+    //     「停门用的分类」不可能分叉；
+    //   · 命中时**不改写 judge 的评分模型/阈值**（工单明禁）：`done`/`confidence` 一字不动，
+    //     只是不拿它当停机许可 ⇒ 降级成一次 nudge，让模型真的把交付正文写出来；
+    //   · 配额见 `JUDGE_DONE_GAP_NUDGE_LIMIT`：用完就回到今天的行为（含 #467 的强制收尾，
+    //     所以「终局正文不再为空」那条保证不被本单吃掉）。
+    let judgeDoneGap = null;
     // end_turn 轮完整评估；工具中途审计的 nearLimit 扩轮决策已由拦截器回传。
     // issue #282（期望 2）：**中止已置位就跳过整次 judge 调用**——judge 是「终局前的增值调用」，用户已按下
     // 停止后再烧一次模型费用毫无收益（停止体感延迟从「一次 LLM 往返」降到「立即」）。跳过之后
     // 终局仍由下方 stop 分支的 aborted 收口（裁决表：docs/termination-decision-table.md）。
     if (runLoopState.roundJudgeEnabled && isEndTurn && !signal?.aborted) {
       try {
-        const judged = await callRoundJudge(round, currentL0);
+        const judged = await callRoundJudge(round, currentL0, { roundFacts });
         judgeDecision = judged.decision;
         judgeUsage = judged.usage;
         const judgeRaw = judged.raw;
@@ -5279,6 +5412,16 @@ export async function runToolLoop(options) {
           });
         } else {
           runLoopState.roundJudgeFailures = 0;
+          // issue #473：`done:true` 只在这一刻才成立，所以前置判据也只能在这一刻算。
+          if (judgeDecision.done === true
+            && judgeDecision.confidence >= JUDGE_DONE_CONFIDENCE_THRESHOLD
+            && isEndTurn
+            && governorState.judgeDoneGapNudges < JUDGE_DONE_GAP_NUDGE_LIMIT) {
+            judgeDoneGap = judgeDoneBlocker({
+              facts: roundFacts.roundDeliverable,
+              selfReport,
+            });
+          }
           const extensionAction = judgeDecision.extend === true
             ? (judgeDecision.direction === "off_track" ? "extend+redirect" : "extend")
             : judgeDecision.extend === false
@@ -5300,10 +5443,15 @@ export async function runToolLoop(options) {
                 : { extendReason: judgeDecision.extendReason }),
               ...(judgeDecision.plan === undefined ? {} : { plan: judgeDecision.plan }),
             },
-            action: judgeDecision.done === true
-              && judgeDecision.confidence >= JUDGE_DONE_CONFIDENCE_THRESHOLD
-              ? "judge_done"
-              : (extensionAction ?? (judgeDecision.done === false ? "nudge" : "continue")),
+            // issue #473：**停门与这条事件读同一个结论**。以前这条事件无条件写
+            // `judge_done`，而真正的停机判据是下面那段；一旦停门开始看交付物分类，事件就会
+            // 在「其实没停」的那一轮里说「停了」——可观测面说谎比没有观测更糟。
+            action: judgeDoneGap !== null
+              ? "nudge"
+              : judgeDecision.done === true
+                && judgeDecision.confidence >= JUDGE_DONE_CONFIDENCE_THRESHOLD
+                ? "judge_done"
+                : (extensionAction ?? (judgeDecision.done === false ? "nudge" : "continue")),
             ...(judgeUsage ? { usage: judgeUsage } : {}),
             ...(typeof judgeRaw === "string" && judgeRaw !== "" ? { raw: judgeRaw } : {}),
           });
@@ -5323,7 +5471,19 @@ export async function runToolLoop(options) {
     }
 
     let action;
-    if (judgeDecision?.done === true
+    if (judgeDoneGap !== null) {
+      // 配额在**落地那一刻**记账（与 guard 补跑桥同一条纪律）：万一下面抛错，「已经领过」这个
+      // 事实不该被抹掉，否则重跑会再领一份。
+      governorState.judgeDoneGapNudges += 1;
+      action = {
+        kind: "nudge",
+        reason: "judge",
+        text: `【Judge 评审意见】评审判「已完成」，但${judgeDoneGap.detail}。`
+          + "请给出真正完成该任务的交付正文（不要只写进度自述或下一步计划）；"
+          + "若确实无法完成，请明确声明不可恢复。",
+        continue: true,
+      };
+    } else if (judgeDecision?.done === true
       && judgeDecision.confidence >= JUDGE_DONE_CONFIDENCE_THRESHOLD
       && isEndTurn) {
       action = {
@@ -5610,6 +5770,12 @@ export async function runToolLoop(options) {
           await appendEngineMessagesToTranscript(continuationMessage, round, "guard-revise");
           continue;
         }
+        // ── issue #435：机器判据说「交付物没交付」时，**最省钱的停机路径不许一停了之** ────────
+        // 位置说明：它在 `revise` 那一段**之后**（`revise` 是 guard 自己的意见，走它自己的重试预算），
+        // 在 `error` / `skip` / `non_continuable` 三条 return 之后 ⇒ 走到这里的 `judge_done` 只可能是
+        // `accept`。未声明 `deliverables` 时 `deliverablesAllPassed` 恒为 `true` ⇒ 本闸门不触发，
+        // 行为与今天逐字一致。
+        if (await deliverableGapAfterJudgeDone(reason, guardDecision)) continue;
       }
       // finalGuard 同样是「终局前的增值调用」：中止若落在它自己那一次调用里，也必须以 aborted 收口，
       // 不得把用户的中止改写成 final_guard 给出的终态（issue #282 期望 3）。

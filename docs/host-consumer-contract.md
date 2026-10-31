@@ -3386,7 +3386,7 @@ is listed too. `truncated` is `true` exactly for `max_rounds_cap`,
 | `termination.reason` | Triggering mechanism (file:line) | Position in the precedence chain | Host switch | Recommended host action |
 |---|---|---|---|---|
 | `end_turn` | governance stop `completion` (`src/reflection/governor.js:118`) or the fall-through stop `complete` (`src/reflection/governor.js:134`), both mapped by `terminationReasonForAction` (`src/loop/termination.js:111`). Inputs: `shouldContinue` (`src/loop/orchestrator.js`), `completionSignalDetected` from a wrapup envelope `done:true`, a `completion.signals` text match, or the LLM normalizer (the end-turn wrap-up block in `src/loop/orchestrator.js`, which calls `normalizeWrapupText` (`src/reflection/wrapup.js`)) | lowest-priority stop in the round chain — every other stop and nudge is evaluated first, and the round judge can pre-empt it with `judge_done` (`src/loop/orchestrator.js`) | not disableable (it is the normal success exit). `wrapup:false` removes the JSON envelope path (`src/loop/orchestrator.js`); `completion:{signals:[…]}` widens keyword detection (`src/loop/orchestrator.js`) | **accept**, but only after inspecting `verification.status` — `end_turn` alone is not a delivery proof |
-| `judge_done` | round judge `done:true` with `confidence >= 0.7` on an end-turn round (`src/loop/orchestrator.js:3357-3365`, `isEndTurn` at `3053`), mapped at `src/loop/termination.js:94` | highest stop in the round: evaluated before the governor, so it outranks stall and completion | `reflection:false`, `reflection:{roundJudge:false}`, `ERIX_NO_ROUND_JUDGE=1`, `ERIX_NO_REFLECTION=1` (`src/loop/orchestrator.js`). Note reflection auto-enables at `maxRounds >= 16` (`src/loop/orchestrator.js`, `src/loop/reflection.js:8`) | **accept then verify**: this is a model-side claim, not a check. Route it through `finalGuard` / CI before downstream use |
+| `judge_done` | round judge `done:true` with `confidence >= 0.7` on an end-turn round (`src/loop/orchestrator.js:3357-3365`, `isEndTurn` at `3053`), mapped at `src/loop/termination.js:94`. **Since issue #473** it also requires that the judged round produced a **deliverable** (`text`) block, or that the model's own envelope did not say `done:false` — see step 6 of the round chain above | highest stop in the round: evaluated before the governor, so it outranks stall and completion | `reflection:false`, `reflection:{roundJudge:false}`, `ERIX_NO_ROUND_JUDGE=1`, `ERIX_NO_REFLECTION=1` (`src/loop/orchestrator.js`). Note reflection auto-enables at `maxRounds >= 16` (`src/loop/orchestrator.js`, `src/loop/reflection.js:8`) | **accept then verify**: this is a model-side claim, not a check. Route it through `finalGuard` / CI before downstream use |
 | `no_tool` | governance stop `noTool` (`src/reflection/governor.js:122`), gated by `noToolRound` (`src/loop/orchestrator.js`) and a streak `>= maxNoToolRounds`, default 3 (`maxNoToolRounds` at `src/loop/orchestrator.js`) | below the completion stop, above the `complete` fall-through | `completion:false` makes `noToolRound` permanently false, so the reason becomes **unreachable** and the run ends `end_turn` instead; `completion:{maxNoToolRounds:n}` moves the threshold (`0` stops on the first occurrence) | **retry / re-prompt**: the run stopped with no completion claim and `truncated:false`, so nothing was truncated — it stalled in prose. Alert if it repeats |
 | `stall` | identical tool-call signature inside the detection window (`src/loop/orchestrator.js:2712-2726`), streak accumulation (`src/loop/orchestrator.js:2763-2770`), stop at `src/reflection/governor.js:67-70` with `STALL_STREAK_LIMIT = 3` (`src/reflection/governor.js:3`), mapped at `src/loop/termination.js:97` | second-highest stop — only `continuation_exhausted` outranks it; deliberately ordered above the wrap-up and repeated-error nudges so it cannot be starved (`src/reflection/governor.js:65`) | `stallDetection:false` makes it **unreachable** (`errorHashes` at `src/loop/orchestrator.js`); `stallDetection:{window,mode}` re-tunes it; `ERIX_STALL_MODE` overrides the mode unless the option is `false` | **alert + retry differently**: `truncated:true`, so never accept the text as an answer. The host's own repeat-guard should trip here |
 | `continuation_exhausted` | provider kept answering `max_tokens` and the continuation budget ran out (`continuationExhausted` at `src/loop/orchestrator.js`, loop at `2635`); governance stop `cap` (`src/reflection/governor.js:62-64` / `133-135`) mapped to this reason **before** `max_rounds_cap` (`src/loop/termination.js:116`) | **first** check in both governance entry points — the top of the chain | `maxTokenContinuations` (`messageRounds` at `src/loop/orchestrator.js`, default 3; `0` makes the first `max_tokens` response terminal) | **retry with more output room** (larger `maxTokens`/`maxOutputTokens`), or accept the partial text and alert; `truncated:true` |
@@ -3454,6 +3454,39 @@ Within one round, exactly one mechanism gets to decide, in this order
    `judge_done`, and a `max_tokens` round can never produce both `judge_done`
    and `continuation_exhausted` (the mapping prefers `judge_done` anyway,
    `src/loop/termination.js:94`).
+   **Since issue #473 the stop has a precondition: `done:true` is not by itself
+   a stop permit** — the engine also asks whether *this round's text is a
+   declared deliverable*. The classification is the renderer's own and has one
+   implementation (`deliverableKindOfBlock` / `roundDeliverableFacts` in
+   `src/reflection/judge.js` — the same function `renderConversation` uses to
+   label a block `### assistant` versus "internal self-talk, not factual
+   evidence"), so the judge input and the stop gate cannot disagree about what
+   counts as a deliverable. Two classes block the stop: **(a) no deliverable
+   text** — zero non-empty `assistant` `text` blocks in the judged round, i.e.
+   the only thing the judge could have read is `reasoning`, which the renderer
+   itself declares inadmissible as evidence; **(b) self-reported incomplete** —
+   the model's own wrap-up envelope says `done:false` (only when the wrap-up
+   protocol is on). Self-report can **veto** a stop, never grant one, which is
+   the same one-way rule the prompt states ("do not trust the model's own
+   report"). The third class the prompt names — "still needs one more step" —
+   needs no separate criterion: `isEndTurn` already excludes every round that
+   carries a `tool_use`, so such a round never reaches this gate.
+   A blocked verdict is **downgraded to one nudge, never rewritten**: `done`
+   and `confidence` are left untouched (issue #473 explicitly forbids touching
+   the judge's scoring model or threshold), the loop continues with a control
+   message naming the reason, and the run can still reach `judge_done` on the
+   next round if that round really delivers. The downgrade is rationed to **one
+   per run** (`JUDGE_DONE_GAP_NUDGE_LIMIT` in `src/loop/orchestrator.js`); once
+   the quota is spent the pre-#473 behaviour returns, including the issue #467
+   forced wrap-up, so "a `judge_done` run never ends with an empty body" is
+   preserved rather than traded away. The same classification is fed **into**
+   the judge prompt (the `facts` argument of `buildJudgePrompt`: block counts,
+   character counts, `stop_reason`, plus a rule that binds "zero deliverable
+   blocks" to `done:false`), so the model-side verdict and the machine-side gate
+   read one set of facts; a caller that omits `facts` gets a byte-identical
+   prompt to the one it had before. Observability follows the real decision: in
+   a downgraded round the `onJudge` record reports `action: "nudge"` instead of
+   `judge_done` (it used to claim the run stopped while the run continued).
 7. **post-stop verification** — after a stop reason exists, forced wrap-up may
    add one more provider call for the six wrap-up-eligible reasons — the three
    non-continuable ones plus `judge_done` (issue #467) plus `end_turn` and
@@ -4158,6 +4191,74 @@ was not delivered", so the machine verdict outranks it in both directions.
 | any failed | `revise` | unchanged from today (retries exhaust into `unverified`, `non_continuable` on budget stops) |
 | not declared | any | **byte-for-byte unchanged**: no payload key, no metric key, no event field |
 
+#### The `judge_done` gap round (issue #435)
+
+`judge_done` is the cheapest way out of the loop, and it used to be the one place where a
+machine verdict changed nothing but a label: the criteria were checked (they always were —
+`judge_done` is in the guard's reason set) and a failure downgraded `verification` to
+`unverified` / `deliverables_failed`, but `deliverablesAllPassed` had **no reader in the
+control flow**, so the run finished anyway. Measured on the run axis, `judge_done`'s
+precision was **77%** with a median confidence of **1.00** — confidently wrong.
+
+**Behaviour change, and it is breaking for hosts that declare `deliverables`.** When all of
+the following hold, the run gets **one more round** instead of stopping:
+
+1. the stop reason is `judge_done`;
+2. the guard's verdict for this attempt is `accept`;
+3. at least one declared criterion failed (`deliverablesAllPassed === false`).
+
+The engine then injects one `judge-control` user message naming the failed criteria (their
+`name` and the `detail` your `check` returned — the engine never interprets a criterion), and
+the loop continues. If the model actually fixes the deliverable, the next attempt recomputes
+the criteria and can reach `verified`; if it does not, the run ends exactly as before
+(`judge_done` with `unverified` / `deliverables_failed`).
+
+Four bounds, all reused rather than invented:
+
+- **One per run.** The gap round shares the `guardExtensionUsed` quota with the
+  budget-stop bridge (issue #386 slice 3), so a run can claim at most one extra round in
+  total, whichever mechanism asks first. The quota is persisted in run state, so a crash +
+  resume does not mint a second one. Without a bound the measured shape was "judge says done
+  forever + criteria fail forever ⇒ every remaining round is spent" (4 rounds → 8 provider
+  calls, ending `final_guard_unverified` / `non_continuable`).
+- **The governor's own extension gate** (`extensionAllowed`) and the **budget gate**
+  (`guardExtensionBudgetAllows`: context budget + aggregate output budget) apply verbatim.
+- **`skip` and `error` never trigger it.** "Nobody checked" is not "the deliverable is
+  missing"; those two cells keep their existing `unverified` / `error` outcomes.
+- **Undeclared criteria ⇒ byte-for-byte unchanged**: no extra round, no extra request, no new
+  metric key.
+
+What a host observes: a `type: "final_guard_extend"` event with `guard_extension: false`,
+`reason: "deliverables_failed"` and `deliverables_failed: <n>` (the same event name as the
+guard bridge — it is the same "the engine granted another round" fact, and the two triggers
+stay distinguishable), and `verification.metrics.deliverable_gap_rounds` (**present only**
+when a gap round actually happened).
+
+#### Content criterion: `files_written_content_not_placeholder` (issue #435)
+
+The engine owns **no** built-in criterion and never reads the disk (the division of labour
+above). The gap that showed up on the run axis was on the **shipped** side: both factories in
+`bin/final-guard.js` only asked `exists()`, so "the file is on disk" was read as "the
+deliverable was delivered". In the measured 0-score runs that reached `judge_done`, **7 of 8
+had the files present and the content wrong**; a prompt experiment made it worse in a
+specific way — with "create the deliverable skeleton first" in the system prompt, two runs
+wrote a `TBD` skeleton in round 1 and never came back to fill it in.
+
+`createContentDeliverableChecks()` adds one optional named criterion, exposed by the CLI as
+`--require-deliverable-content` (off by default, counts toward the 20-criteria limit, and
+requires `--final-guard` for the same reason every other criterion does):
+
+- every path in `fileWrites` must exist, be readable, be **non-empty**, and not **consist
+  solely of** `TBD` / `TODO` / `FIXME` / `<placeholder>` (case-insensitive; markdown
+  decoration and trailing punctuation are ignored, so `## TODO` and a backtick-wrapped FIXME are caught);
+- a body that **contains** but does not **equal** a placeholder **passes on purpose**
+  (`TBD: fill in tomorrow` is ordinary prose). That reverse anchor is not politeness: a
+  criterion that misfires on real content gets switched off by its host, and a switched-off
+  gate is weaker than no gate;
+- it does **not** claim the content is *correct*. A machine cannot judge semantics, and an
+  answer that is wrong but not a placeholder still passes. Judging correctness needs your own
+  `check` or an external scorer.
+
 `reason: "machine_only"` is the one thing a host must read literally: it means **the engine
 accepted the run on the host's own criteria**, *not* that the guard judged it. If your policy
 requires the guard itself to have passed, treat `machine_only` as "my guard skipped — tighten
@@ -4186,7 +4287,9 @@ Four boundaries are deliberate:
 
 - **`termination.reason` is not rewritten.** The gate changes `verification` only; it
   introduces no new stop reason, and the existing `final_guard_unverified` path (retry
-  limit, non-continuable degradation) is untouched.
+  limit, non-continuable degradation) is untouched. The one control-flow consequence the
+  criteria do have is the `judge_done` gap round described below — it adds a round, it does
+  not rename the stop.
 - **A guard error plus passing criteria stays `error`.** A guard that throws or times out is
   an **infrastructure failure** (a broken callback, a dead dependency), and upgrading it to
   `verified: machine_only` would let one machine criterion paper over a run whose guard face

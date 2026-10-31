@@ -806,8 +806,8 @@ headless runtime's product interface.
 ```text
 erix --version, -v
 erix --help, -h
-erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--no-notes] [--no-todo] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>]
-erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>]
+erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes] [--no-todo] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>]
+erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>]
 erix skills [--skills-dir <path>]
 erix mcp [--config <path>]
 ```
@@ -859,6 +859,21 @@ The shared CLI flags are:
   the criteria gate the guard's `accept`, so without a guard there is nothing to
   gate — giving it alone is a usage error (exit 1), not a silent no-op. A failed
   criterion ends the run as `unverified:deliverables_failed` (exit 2).
+- `--require-deliverable-content` (default **off**, issue #435) adds one
+  **content** criterion: every path this run declared it wrote must be non-empty
+  **and not consist solely of a placeholder** (`TBD` / `TODO` / `FIXME` /
+  `<placeholder>`, case-insensitive, ignoring markdown decoration and trailing
+  punctuation). It exists because "the file is on disk" was being read as
+  "the deliverable was delivered" — in the measured 0-score runs that reached
+  `judge_done`, 7 of 8 had **the files present and the content wrong**, and two
+  wrote a `TBD` skeleton in round 1 and never came back. It does **not** claim
+  the content is *correct* (a machine cannot judge semantics); a body that
+  **contains** but does not **equal** a placeholder passes on purpose
+  (`TBD: fill in tomorrow` is normal prose). Same "did not lie" reading as the
+  bare flag (it reads `fileWrites`), so pair it with
+  `--require-deliverable report.md` when the task demands a specific file. Must
+  also be used **with `--final-guard`**, and it counts toward the 20-criteria
+  limit.
 - `--cwd <dir>` sets the working directory this run reports to the guard and to
   the model (default: the process working directory; must be an existing
   directory). It is what the `finalGuard` / `deliverables` payload carries as

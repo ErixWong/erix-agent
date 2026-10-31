@@ -2695,7 +2695,7 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `termination.reason` | 触发机制（file:line） | 在优先级链中的位置 | 宿主开关 | 推荐宿主动作 |
 |---|---|---|---|---|
 | `end_turn` | 治理层 stop `completion`（`src/reflection/governor.js:118`）或兜底 stop `complete`（`src/reflection/governor.js:134`），均由 `terminationReasonForAction` 映射（`src/loop/termination.js:111`）。输入：`shouldContinue`（`src/loop/orchestrator.js`）、`completionSignalDetected`（来自 wrapup 信封 `done:true`、`completion.signals` 关键词命中，或 LLM 归一化器（`src/loop/orchestrator.js` 的 end-turn 收尾块，内部调 `normalizeWrapupText`（`src/reflection/wrapup.js`））） | 轮内优先级**最低**的 stop——其余 stop 与 nudge 都先被试过，且本轮 judge 可以用 `judge_done` 抢走它（`src/loop/orchestrator.js:3357-3365`） | 不可关（它是正常成功出口）。`wrapup:false` 拆掉 JSON 信封通路（`src/loop/orchestrator.js`）；`completion:{signals:[…]}` 拓宽关键词探测（`src/loop/orchestrator.js`） | **接受**，但必须先看 `verification.status`——`end_turn` 本身不是交付证明 |
-| `judge_done` | 本轮 judge `done:true` 且 `confidence >= 0.7` 且发生在 end-turn 轮（`src/loop/orchestrator.js:3357-3365`，`isEndTurn` 在 3053），映射在 `src/loop/termination.js:94` | 轮内**最高**的 stop：先于治理层评估，因此压过 stall 与 completion | `reflection:false`、`reflection:{roundJudge:false}`、`ERIX_NO_ROUND_JUDGE=1`、`ERIX_NO_REFLECTION=1`（`src/loop/orchestrator.js`）。注意 `maxRounds >= 16` 时 reflection 默认自动开启（`src/loop/orchestrator.js`、`src/loop/reflection.js:8`） | **先接受再核验**：这是模型侧的主张而不是检查。交给下游前先过 `finalGuard` / CI |
+| `judge_done` | 本轮 judge `done:true` 且 `confidence >= 0.7` 且发生在 end-turn 轮（`src/loop/orchestrator.js:3357-3365`，`isEndTurn` 在 3053），映射在 `src/loop/termination.js:94`。**issue #473 起**还要求被判的那一轮产出了**交付物**（`text`）块，或模型自己的信封没有写 `done:false`——见上文轮内链条第 6 步 | 轮内**最高**的 stop：先于治理层评估，因此压过 stall 与 completion | `reflection:false`、`reflection:{roundJudge:false}`、`ERIX_NO_ROUND_JUDGE=1`、`ERIX_NO_REFLECTION=1`（`src/loop/orchestrator.js`）。注意 `maxRounds >= 16` 时 reflection 默认自动开启（`src/loop/orchestrator.js`、`src/loop/reflection.js:8`） | **先接受再核验**：这是模型侧的主张而不是检查。交给下游前先过 `finalGuard` / CI |
 | `no_tool` | 治理层 stop `noTool`（`src/reflection/governor.js:122`），门在 `noToolRound`（`src/loop/orchestrator.js`）且连续数 `>= maxNoToolRounds`（默认 3，`maxNoToolRounds`，`src/loop/orchestrator.js`） | 在 completion stop 之下、`complete` 兜底之上 | `completion:false` 使 `noToolRound` 恒为 `false`，此 reason 因此**不可达**，run 会改以 `end_turn` 结束；`completion:{maxNoToolRounds:n}` 可调阈值（`0` 为首次即停） | **重试 / 重新提问**：既没声明完成、`truncated` 又为 `false`（什么都没被截断）——它只是在散文里空转。反复出现则告警 |
 | `stall` | 同一工具调用签名在处理窗口内重复（`src/loop/orchestrator.js:2712-2726`）叠加 streak 累加（`src/loop/orchestrator.js:2763-2770`），stop 在 `src/reflection/governor.js:67-70`，`STALL_STREAK_LIMIT = 3`（`src/reflection/governor.js:3`），映射在 `src/loop/termination.js:97` | 仅次于 `continuation_exhausted` 的 stop；设计上就高于收尾/错误重复 nudge，不能被饿死（`src/reflection/governor.js:65`） | `stallDetection:false` 使其**不可达**（`errorHashes`，`src/loop/orchestrator.js`）；`stallDetection:{window,mode}` 可调；`ERIX_STALL_MODE` 覆盖 mode（选项为 `false` 时不覆盖） | **告警 + 换思路重试**：`truncated:true`，不要把文本当答案接受。宿主自己的重复检测应当在这一点上触发 |
 | `continuation_exhausted` | provider 连续返 `max_tokens` 且补全预算耗尽（`continuationExhausted`，`src/loop/orchestrator.js`，循环在 2635）；治理层 stop `cap`（`src/reflection/governor.js:62-64` / `133-135`）被映射成本 reason，**优先于** `max_rounds_cap`（`src/loop/termination.js:116`） | 两个治理入口的**首要**检查——链顶 | `maxTokenContinuations`（`messageRounds`，`src/loop/orchestrator.js`，默认 3；`0` 使首次 `max_tokens` 就终局） | **用更多输出空间重试**（抬高 `maxTokens`/`maxOutputTokens`），或接受部分文本并告警；`truncated:true` |
@@ -2753,6 +2753,25 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
    （`src/loop/orchestrator.js`）。工具轮因此永远不可能产生 `judge_done`；
    `max_tokens` 轮也不可能同时产生 `judge_done` 与 `continuation_exhausted`
    （映射先优 `judge_done`，`src/loop/termination.js:94`）。
+   **issue #473 起这条停门多了一道前置判据：`done:true` 本身不是停机许可**——引擎还要问
+   「本轮这段文本到底是不是被声明为交付物」。这套分类是**渲染器自己的那一份**、只有一处实现
+   （`src/reflection/judge.js` 的 `deliverableKindOfBlock` / `roundDeliverableFacts`，与
+   `renderConversation` 把块标成 `### assistant` 还是「内部自述，不可作为事实依据」用的是同一个
+   函数），所以评审输入与停门不可能对「什么算交付物」给出两种答案。两类会拦住停门：
+   **（a）没有交付物正文**——被判的那一轮里 assistant 的非空 `text` 块为 0，评审能读到的只有
+   `reasoning`，而渲染器自己声明它不可作为事实依据；**（b）自承缺项**——模型自己的收尾信封写着
+   `done:false`（只在收尾协议开着时存在）。自报只能**否决**、不能**授予**，与提示词里那句
+   「不要相信模型自报」是同一条单向规则。提示词点名的第三类「还需要再跑一步」**不需要**单独判据：
+   `isEndTurn` 已经把任何带 `tool_use` 的轮次排除在外，那种轮次根本到不了这道门。
+   被拦下的裁决**降级成一次 nudge，而不是被改写**：`done` 与 `confidence` 一字不动（issue #473
+   明确禁止动评审的评分模型与阈值），循环带着一条点名原因的引擎控制消息继续，下一轮真交付了照样
+   可以走到 `judge_done`。降级**每 run 只给一次**（`src/loop/orchestrator.js` 的
+   `JUDGE_DONE_GAP_NUDGE_LIMIT`）；配额用完之后回到 #473 之前的行为，包含 issue #467 的强制收尾
+   ——所以「`judge_done` 的 run 终局正文不再为空」这条保证是被**保住**的，不是被换掉的。同一份
+   分类也**喂进**评审提示词（`buildJudgePrompt` 的 `facts` 入参：块数、字符数、`stop_reason`，外加
+   一条把「正文块为 0」绑到 `done:false` 的规则），于是模型侧结论与机器侧闸门读的是同一组事实；
+   不传 `facts` 的调用方拿到的提示词与今天**逐字相同**。可观测面跟着真实决策走：被降级的那一轮
+   `onJudge` 记录报的是 `action: "nudge"`，不再是「run 明明没停、记录却说停了」的 `judge_done`。
 7. **停止后验证**——stop reason 定下来后，六个可收尾 reason（三条不可续跑的 +
    `judge_done`（issue #467）+ `end_turn` / `no_tool`（issue #475，只在整个 run 一个
    字都没写过时才会走到））可能多一次强制收尾的 provider 调用，且只在
@@ -3346,7 +3365,8 @@ payload 无键、metrics 无键、事件无字段。引擎自己的发布冒烟�
 四条边界是刻意的：
 
 - **`termination.reason` 不被改写。** 闸门只改 `verification`，不引入新的停机原因；
-  既有的 `final_guard_unverified` 路径（修订次数触顶、不可续跑降级）一字未动。
+  既有的 `final_guard_unverified` 路径（修订次数触顶、不可续跑降级）一字未动。判据唯一
+  影响到的控制流是下面那一节「`judge_done` 的交付物补齐轮」——它**多给一轮**，不改写停机原因。
 - **guard 报错 + 判据全通过仍然是 `error`。** guard 抛异常/超时是**基础设施故障**
   （宿主回调写错、依赖挂了），把它升级成 `verified: machine_only` 等于用一条机器判据
   盖掉一次真实故障——宿主会读到「至少机器验过了」，而它该去修的那次故障被藏起来了。
@@ -3378,6 +3398,61 @@ payload 无键、metrics 无键、事件无字段。引擎自己的发布冒烟�
 |---|---|---|---|
 | `requireDeliverable: true`（裸 `--require-deliverable`） | 「**你说过要写的东西**还在盘上吗」 | `createDeliverableChecks()` 读 `fileWrites` | **通过**（空集合 ⇒ `every()` 恒真） |
 | `deliverablePaths: [...]`（`--require-deliverable <path>`） | 「**这次任务要求的这些文件**在盘上吗」 | `createNamedDeliverableChecks(paths)` 读宿主清单 | **不通过**（判据与模型的嘴无关） |
+
+#### `judge_done` 的交付物补齐轮（issue #435）
+
+`judge_done` 是最省钱的出圈方式，而它从前是**唯一一处「机器结论只换来一个标签」**的地方：
+判据一直有核（`judge_done` 本来就在 guard 的停机原因集合里），失败也会把 `verification` 压成
+`unverified` / `deliverables_failed`——但 `deliverablesAllPassed` 在控制流里**一个读者都没有**，
+于是 run 照样收尾。按 run 口径实测：`judge_done` 的 precision 只有 **77%**，confidence 中位
+**1.00**（很自信地错）。
+
+**这是行为变更，对声明了 `deliverables` 的宿主是 breaking。** 下面三条**同时**成立时，run 会多跑
+**一轮**而不是停机：
+
+1. 停机原因是 `judge_done`；
+2. 本轮 guard 裁决是 `accept`；
+3. 至少一条声明的判据没过（`deliverablesAllPassed === false`）。
+
+引擎随后注入**一条** `judge-control` 用户消息，点名失败的判据（判据的 `name` 与你 `check` 返回的
+`detail`——引擎从不解释判据语义），循环继续。模型真把交付物补上，下一次 attempt 重算判据就能拿到
+`verified`；补不上则与从前逐字一致（`judge_done` + `unverified` / `deliverables_failed`）。
+
+四条上界，全部复用既有机制、不新造：
+
+- **每 run 一次。** 补齐轮与预算类停机的补跑桥（#386 切片 3）**共用** `guardExtensionUsed` 配额，
+  所以一个 run 无论谁先开口，总共只能领一次「额外一轮」；配额随 run-state 落盘，崩溃后重新续跑
+  不会再领一份。不设限的实测形状是「评审恒 done + 判据恒失败 ⇒ 剩余轮次全被烧掉」（4 轮烧成
+  8 次 provider 调用，终局反而变 `final_guard_unverified` / `non_continuable`）。
+- **governor 自己的扩轮闸**（`extensionAllowed`）与**预算闸**（`guardExtensionBudgetAllows`：
+  上下文预算 + 聚合输出预算）逐字照用。
+- **`skip` / `error` 永不触发。** 「没人验收」不等于「交付物没交付」，那两格保持既有的
+  `unverified` / `error` 结论。
+- **未声明判据 ⇒ 逐字不变**：不多跑一轮、不多发一次请求、不多一个 metrics 键。
+
+宿主能观测到什么：一条 `type: "final_guard_extend"` 事件，带 `guard_extension: false`、
+`reason: "deliverables_failed"` 与 `deliverables_failed: <n>`（与 guard 补跑桥同一个事件名——
+它就是「引擎又给了一轮」这件事，两个触发面仍然可区分），以及
+`verification.metrics.deliverable_gap_rounds`（**只在**真的发生过补齐轮时出现）。
+
+#### 内容判据：`files_written_content_not_placeholder`（issue #435）
+
+引擎**不内置**任何判据、也不读盘（就是上面那条分工纪律）。按 run 口径暴露出来的缺口在**出厂**
+这一侧：`bin/final-guard.js` 的两个工厂都只问 `exists()`，于是「文件在盘上」被当成「交付物已交付」。
+在判完成却 0 分的实测 run 里，**8 个有 7 个是文件都在、内容错**；一次提示词实验还把失败模式推得更
+具体——系统提示词加上「开局先建交付物骨架」之后，两个 run 第 1 轮写了 `TBD` 骨架、再没回去填。
+
+`createContentDeliverableChecks()` 追加一条**可选**命名判据，CLI 面是
+`--require-deliverable-content`（默认关闭，计入 20 条判据上限，且与其他判据一样**必须与
+`--final-guard` 同用**）：
+
+- `fileWrites` 里的每个路径都必须存在、读得出来、**非空**，且**整份不等于** `TBD` / `TODO` /
+  `FIXME` / `<placeholder>`（大小写不敏感；忽略 markdown 装饰与句末标点，所以 `## TODO` 与
+  被反引号包住的 FIXME 都会被抓住）；
+- **含但不等于**占位符的正文**刻意放行**（`TBD: 明天补数据` 是正常正文）。这条反向锚不是客套：
+  一条会误杀正常内容的判据会被宿主直接关掉，而关掉的闸门比没有闸门更弱；
+- 它**不**声称内容**对**。机器判不了语义，一个错答案只要不是占位符照样过。要判正确性，请用你自己
+  的 `check` 或外部评分器。
 
 布尔那条是「没撒谎」判据，不是「做了事」判据：**一次工具都没调**的 run 不会声明任何写路径，
 于是判据通过、`verification` 变成 `verified`（issue #391 回帖里的实测）。「这次必须交付

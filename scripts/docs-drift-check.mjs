@@ -4481,7 +4481,10 @@ const SELF_TEST_CASES = [
   },
   {
     label: "#391 R4：帮助文本侧（真值）加一个新旗标 ⇒ 中英两份 README 同时红（这才是「加旗标忘了文档」的形状）",
-    overlay: { "bin/cli.js": (t) => t.replace("[--require-deliverable [<path>]] [--no-notes]", "[--require-deliverable [<path>]] [--zzz-flag] [--no-notes]", 1) },
+    // ⚠ 靶点是**帮助文本里那一段的逐字片段**：issue #435 给 chat 行补了 `[--require-deliverable-content]`，
+    // 旧片段（`… [<path>]] [--no-notes]`）不再连续 ⇒ 变异落不上、本格变成「恒绿」。#210 R2 的惯例是
+    // 变异没落地就算失败，所以这里跟着帮助文本一起改；改的是**锚点**，不是判据。
+    overlay: { "bin/cli.js": (t) => t.replace("[--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes]", "[--require-deliverable [<path>]] [--zzz-flag] [--require-deliverable-content] [--no-notes]", 1) },
     expect: [/cli-flags: README\.md 的 `erix chat` usage 行缺 旗标 --zzz-flag/,
       /cli-flags: README_cn\.md 的 `erix chat` usage 行缺 旗标 --zzz-flag/],
     expectFiles: [README_EN, README_CN],

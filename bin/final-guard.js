@@ -12,6 +12,9 @@ import { normalizedLabel } from "../src/text/label.js";
 import { DELIVERABLES_LIMIT as ENGINE_DELIVERABLES_LIMIT } from "../src/loop/deliverables.js";
 
 export { buildCaptureStub };
+// issue #435：内容判据的**本体**住在 `final-guard-support.js`（ADR-013 的 300 行上限约束的是本文件，
+// 而这条判据带一整段「为什么判得这么松」的说明）。本文件只做转出，调用方 import 路径不变。
+export { PLACEHOLDER_MARKERS, createContentDeliverableChecks } from "./final-guard-support.js";
 function warningMessage(message) {
   return `finalGuard warning: ${message}`;
 }

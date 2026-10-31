@@ -341,6 +341,11 @@ export function createTerminationManager(ctx) {
     const deliverables = ctx.deliverables;
     let deliverablesAllPassed = true;
     let deliverablesFailed = 0;
+    // issue #435：**失败的条目本身**要带出去。宿主声明的判据是「什么算交付完成」的唯一表达，
+    // 所以「哪几条没过、为什么」只有它自己说得清；补齐轮（`orchestrator.js` 的
+    // `deliverableGapAfterJudgeDone`）要把它写进引擎控制消息，模型才知道该补什么。
+    // 形状与 payload 里那份 `deliverables` 同源（同一次 `runDeliverables` 的结果），不重算。
+    let deliverablesFailures = [];
     if (deliverables !== undefined) {
       const outcome = await runDeliverables(deliverables, payload, {
         timeoutMs: ctx.finalGuardTimeout,
@@ -351,6 +356,7 @@ export function createTerminationManager(ctx) {
       ctx.guardMetrics.deliverables_failed += outcome.failed;
       deliverablesAllPassed = outcome.allPassed;
       deliverablesFailed = outcome.failed;
+      deliverablesFailures = outcome.results.filter((result) => result.ok !== true);
     }
     let timeoutId;
     try {
@@ -384,7 +390,14 @@ export function createTerminationManager(ctx) {
             action: "accept",
             deliverables_failed: deliverablesFailed,
           });
-          return { action: "accept", deliverablesAllPassed: false };
+          // issue #435：把失败清单一起带出去（`deliverablesAllPassed:false` 是「控制流要用的那一位」，
+          // `deliverablesFailures` 是「补齐轮要念给模型听的那几句」）。两个都是**同一次核验**的结果。
+          return {
+            action: "accept",
+            deliverablesAllPassed: false,
+            deliverablesFailed,
+            deliverablesFailures,
+          };
         }
         ctx.guardMetrics.verified += 1;
         ctx.verification = { status: "verified" };
