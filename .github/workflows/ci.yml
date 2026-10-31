@@ -164,24 +164,20 @@ jobs:
       - name: Test hygiene guard self-test
         run: node scripts/test-hygiene-check.mjs --self-test
 
-      # --checkJs 棘轮（issue #214）：当前基线 116 / --with-tools 152，只减不增。
+      # --checkJs 棘轮（issue #214）：只减不增。
       # ⚠ 基线的**唯一真值**是 `scripts/type-check-ratchet.mjs` 里的 `BASELINE_ROOT` / `BASELINE_WITH_TOOLS`；
-      #   这行只是人读提示（不在 `check:docs` 覆盖面内，漂了没人拦），**漂了以脚本为准**。
+      #   本行不抄那两个数（抄件没有闸、会腐烂）：要现值就跑 `npm run check:types -- --baseline`。
       # 干净 checkout 里没有生成的 src/**/*.d.ts；若残留会让棘轮脚本自己硬失败（假绿防线）。
       - name: Type-error ratchet
         run: npm run check:types
 
-      # issue #416：strict 口径的**观测点**（不参与判定）。
-      # ⚠ 别把「不判定」读成「命令自身 exit 恒 0」——那正是本步骤注释原稿写错的一句（2026-10-23 实测纠错）：
-      # `--strict-report` 仍有三条硬失败路径（tsc 起不来 / tsc 非 0 退出却一条错都没解析出来 / 共用的
-      # 陈旧声明守卫撞上残留的 `src/**/*.d.ts`）。实测：`npm run types:build` 之后直接跑
-      # `node scripts/type-check-ratchet.mjs --strict-report` ⇒ **exit 1**（守卫拒绝在「声明遮住实现」时报 0）。
-      # 所以「观测」这件事由下面的 `continue-on-error: true` 兑现，而不是靠命令永远 exit 0：
-      # 环境不干净会让它红（红得对——那种情形下 strict 报 0 是假绿），但它不阻塞流水线。
-      # 棘轮量的 116/152 是**非 strict** 口径；strict 那个数只是日志，现值以命令输出为准（本行不钉它，见
-      # scripts/type-check-ratchet.mjs 的 strict 观测点注释）。
-      - name: Type-error strict observation (observation only, gates nothing)
-        continue-on-error: true
+      # issue #417：strict 口径的**棘轮**（阻塞）——与上面那条是**同一张依赖图**，只多一个 `--strict`。
+      # 它卡的是「新增的 strict 错」，不是存量：基线（`BASELINE_STRICT_ROOT` / `BASELINE_STRICT_WITH_TOOLS`）
+      # 就是本票落地那一刻的实测值，存量按文件切片在后续 PR 里一档一档降。
+      # ⚠ 假绿防线仍然在：tsc 起不来 / tsc 非 0 退出却一条错都没解析出来 / 共用的陈旧声明守卫撞上残留的
+      # `src/**/*.d.ts`（实测：`npm run types:build` 之后直接跑本步 ⇒ exit 1，因为声明会把实现遮成 0 个错）；
+      # 另外「实测 0 而基线 > 0」也按检查面失效判红。两档基线必须同一笔提交里一起测、一起降。
+      - name: Type-error strict ratchet
         run: npm run check:types:strict
 
       - name: Declaration build assertion
