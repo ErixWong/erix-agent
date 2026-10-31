@@ -493,9 +493,9 @@ function mergeFoldedRoundRanges(first, second) {
  *
  * @param {{
  *   assemblyPort?: import("../assembly.js").AssemblyPort,
- *   provider: {chat?: (request: object) => Promise<object>, chatStream?: (request: object) => Promise<object>},
+ *   provider?: {chat?: (request: object) => Promise<object>, chatStream?: (request: object) => Promise<object>},
  *   tools?: object[],
- *   executeTool: (options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
+ *   executeTool?: (options:{id:string, name:string, input:object, context:object, signal:AbortSignal})
  *     => Promise<string|{content:any, metadata?:object, success?:boolean}|Error>,
  *   finalGuard?:(payload:{finalText:string,messages:object[],round:number,rounds:number,signal:AbortSignal,termination:object}) => Promise<{action:"accept"}|{action:"skip",reason:string}|{action:"revise",message:string}>,
  *   deliverables?: {name: string, check: (facts: object) => any}[], // issue #386 slice 2: host-declared delivery checks, verified before every guard call (the canonical home is `capabilities.checks.deliverables`; the flat spelling is a live option).
@@ -570,6 +570,15 @@ function mergeFoldedRoundRanges(first, second) {
  * `options` parameter to `any` (issue #213 R4 — this exact silent fallback is what
  * left the single most host-facing type of the package untyped). A trailing `//` on a
  * property line is safe; a comment line of its own is not. Grouped by the option.
+ *
+ * `provider` / `executeTool` (why both are declared optional):
+ *   The assembly-port route supplies them (`assemblyPort.provider` /
+ *   `assemblyPort.tools.executeTool`), and since issue #519 giving the same key twice throws at
+ *   startup — so a host that passes `assemblyPort` must **not** write them at the call site.
+ *   Declaring them required made the published type surface refuse the only legal assembly-port
+ *   call (measured: `tsc --strict` answered TS2322 for `provider: undefined` and a missing-properties
+ *   error, TS2739, for a call with neither key). The fine-grained route is still guarded at startup: a missing
+ *   `provider.chat` / `chatStream` or `executeTool` throws with the key named.
  *
  * `config.input.wrapup`:
  *   Defaults to true (omit = enabled). ERIX_NO_WRAPUP_INSTRUCTION=1 env overrides even an

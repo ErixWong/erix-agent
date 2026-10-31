@@ -17,6 +17,10 @@
 //             createOpenAIProvider + createFileTools 并用其返回字段），`tsc --strict --skipLibCheck`
 //             必须退 0；再把「未知 option 键」那份单独编译一次，**必须报 TS2353**——证明类型面
 //             真的在拦东西，不是 `any`。额外把正向宿主 emit 出来真跑一遍（发布 JS 可被消费）。
+//             issue #519 的反向证也固化在这一步：把**同一份宿主**的调用点 provider 从
+//             `undefined` 换回真值（= 端口与调用点各给一次）emit 出来跑，**必须非 0 退出且
+//             点名 `assemblyPort.provider` 与 `runToolLoop.provider` 两个来源**——这条闸口
+//             类型面管不到（写法本身是合法 TS），只有真跑才证明它在拦。
 //   5. 冒烟   用装好的包起真子进程：`erix --version` 必须等于 `package.json` 版本；一次 `erix chat`
 //             打**本地假上游**（`fixtures/upstream.mjs`，绑 `127.0.0.1:0`）；再加一条
 //             `--session <不存在的 id>`。退出码按 `bin/cli.js` 的帮助承诺断言：**当前默认不开
@@ -688,10 +692,17 @@ function stepTypeScriptHost({ hostDir }) {
   const hostBadTs = join(hostDir, "host-bad-option-key.ts");
   const hostFlatRetiredTs = join(hostDir, "host-flat-retired-key.ts");
   const hostNestedLegalTs = join(hostDir, "host-nested-legal-key.ts");
+  const hostDoubleProviderTs = join(hostDir, "host-double-provider.ts");
   writeFileSync(hostTs, TS_HOST_SOURCE, "utf8");
   writeFileSync(hostBadTs, TS_HOST_BAD_SOURCE, "utf8");
   writeFileSync(hostFlatRetiredTs, TS_HOST_FLAT_RETIRED_SOURCE, "utf8");
   writeFileSync(hostNestedLegalTs, TS_HOST_NESTED_LEGAL_SOURCE, "utf8");
+  // #519 反向证样本**由正向宿主派生**（只把调用点那行 `provider: undefined` 换成真值），
+  // 这样它不可能与正向样例漂成两套写法；替换没命中就是失败（#210 R2 惯例：没打上的变异不算通过）。
+  if (TS_HOST_DOUBLE_PROVIDER_SOURCE === TS_HOST_SOURCE) {
+    fail("#519 反向证样本没生成：正向宿主的 runToolLoop 调用里找不到 `provider: undefined,` 那一行（派生用的锚点失效了）");
+  }
+  writeFileSync(hostDoubleProviderTs, TS_HOST_DOUBLE_PROVIDER_SOURCE, "utf8");
 
   const tscEnv = childEnv();
   const compile = (file, extraArgs, label) => run(process.execPath, [
@@ -742,6 +753,44 @@ function stepTypeScriptHost({ hostDir }) {
     fail(`编译产物的输出里没有模型终稿文本：${tail(hostRun.stdout)}`);
   }
 
+  // (c2) issue #519 反向证：**同一个键两边各给一次 ⇒ 启动期抛**。
+  //      正向宿主调用点写的是 `provider: undefined`（= 「没给」，契约里明确不算冲突）；
+  //      反向证样本由它派生，只把那一行换成真 provider（= 旧写法）。换完写法本身仍然
+  //      **是合法 TS**（所以先断言 tsc 退 0，
+  //      否则这一格会退化成「类型面在拦」），拦它的必须是运行期闸口：
+  //      非 0 退出 + 文案点名 `assemblyPort.provider (construction)` 与 `runToolLoop.provider (call)`。
+  const doubleCompile = compile(
+    hostDoubleProviderTs,
+    ["--outDir", "dist-double-provider"],
+    "tsc emit #519 双来源宿主（期望 exit 0）",
+  );
+  if (doubleCompile.status !== 0) {
+    fail(`#519 反向证样本在 --strict 下编译不过（退出码 ${doubleCompile.status}）：冲突是启动期规则，`
+      + `类型面本来就该放行这份写法——它编译失败会让这一格失去意义\n${tail(doubleCompile.stdout)}\n${tail(doubleCompile.stderr)}`);
+  }
+  const compiledDoubleEntry = join(hostDir, "dist-double-provider", "host-double-provider.js");
+  if (!existsSync(compiledDoubleEntry)) {
+    fail(`emit 之后找不到 ${relative(hostDir, compiledDoubleEntry)}`);
+  }
+  const doubleRun = run(process.execPath, [compiledDoubleEntry], {
+    cwd: hostDir,
+    env: childEnv({ home: join(tmpRoot, "home") }),
+    label: "编译产物运行（#519 双来源宿主，期望启动期抛）",
+  });
+  const doubleOutput = `${doubleRun.stdout}\n${doubleRun.stderr}`;
+  if (doubleRun.status === 0) {
+    fail("#519 反向证失败：端口与调用点各给一次 provider 的宿主**跑通了**——直连冲突闸口没在拦"
+      + `（样例退回旧写法也能绿）\nstdout=${tail(doubleRun.stdout)}`);
+  }
+  if (!doubleOutput.includes('runToolLoop option conflicts with the assembly port: "provider"')) {
+    fail(`#519 反向证失败：宿主非 0 退出了，但**不是**那条冲突闸口的文案：\n${tail(doubleOutput)}`);
+  }
+  for (const origin of ["assemblyPort.provider (construction)", "runToolLoop.provider (call)"]) {
+    if (!doubleOutput.includes(origin)) {
+      fail(`#519 反向证失败：错误文案没点名来源 ${JSON.stringify(origin)}：\n${tail(doubleOutput)}`);
+    }
+  }
+
   // (d) #522: 退役的**扁平拼写**必须被类型面拦住。运行时早已拒 `maxRounds`（它的家是
   //     `config.run.maxRounds`），但 JSDoc 的顶层曾经还写着它 ⇒ 宿主 `tsc --strict` 放过一个
   //     运行时必抛的写法。这条断言让“类型面比运行时更宽松”再也活不下来。
@@ -765,6 +814,7 @@ function stepTypeScriptHost({ hostDir }) {
 
   notes.push(`tsc --strict：正向 exit 0｜未知 option 键报 TS2353｜编译产物运行输出：${tail(hostRun.stdout, 220)}`);
   notes.push(`tsc --strict #522：扁平 \`maxRounds\` exit ${flatRetired.status}（TS2353 且点名该键）｜嵌套 \`config.run.maxRounds\` exit ${nestedLegal.status}`);
+  notes.push(`#519 直连冲突反向证：双来源宿主 tsc exit ${doubleCompile.status}（类型面放行）｜运行 exit ${doubleRun.status} 且点名 assemblyPort.provider + runToolLoop.provider`);
 }
 
 const TS_HOST_SOURCE = `// 由 scripts/release-check.mjs 生成：真 TypeScript 宿主（编译期断言的对象）。
@@ -808,8 +858,12 @@ const assemblyPort = createAssemblyPort({
 
 const result = await runToolLoop({
   assemblyPort,
-  provider: { chat: stubChat },
-  executeTool: async (toolCall) => "ran:" + String(toolCall.name),
+  // issue #519（0.30.0 破坏包）：直连路线上同一个键在端口与调用点各给一次 ⇒ 启动期抛。
+  // 端口是构造期的家，所以调用点**不重复给** provider / executeTool（后者也由
+  // assemblyPort.tools.executeTool 提供，是同一类冲突的第二个键）。这一行写 undefined 而
+  // 不是省掉，是契约里「undefined = 没给、与端口并存不算冲突」那格的**活体**证明：下面那份
+  // 反向证样本只把它换成真 provider，就必须被启动期闸口拦下。
+  provider: undefined,
   // issue #497 复审 R3: the type surface must match the real group names. This host uses three
   // real groups (run / tuning / metadata); a fake group name (timeouts / reflection / retry, the
   // three that used to sit in the JSDoc) makes tsc --strict report TS2353 here, so "the published
@@ -837,6 +891,14 @@ console.log(
   ].join(" "),
 );
 `;
+
+// issue #519 反向证：**正向宿主本身**，只把调用点的 `provider: undefined` 换成真 provider
+// （= 端口与调用点各给一次）。派生而不是手抄一份：两份样例不可能漂成两套写法，而替换
+// 没命中时上层会直接 fail（没打上的变异不算通过）。
+const TS_HOST_DOUBLE_PROVIDER_SOURCE = TS_HOST_SOURCE.replace(
+  "  provider: undefined,\n",
+  "  provider: { chat: stubChat },\n",
+);
 
 const TS_HOST_BAD_SOURCE = `// 由 scripts/release-check.mjs 生成：反向自证——未知 option 键必须被类型面拦住（TS2353）。
 import { createMemoryTranscriptStore, runToolLoop } from "erix-agent";
