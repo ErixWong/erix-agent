@@ -20,9 +20,12 @@
 //      ⚠ 「user 轮」不包含引擎注入的续接块（`src/loop/continuity-block.js`，issue #589）：
 //      块是状态快照，不是用户查询，复制它会把「上一版状态」当成新消息贴进持久列表。
 //   3) 源里也没有可留的 user 轮 → 放弃本次折叠/压缩，改用未折叠视图；
-//   4) 连未折叠视图都留不出合法视图 → 原样返回，并把 `unrecoverable` 记进统计。
-// 每一步都用 `validateMessages(..., { allowPendingToolUse: false })` 验一遍，
-// 保证回补出来的视图不产生孤儿 tool_result / 缺结果的 tool_use。
+//   4) 连未折叠视图都留不出合法视图 → 原样返回，并把 `unrecoverable`（连同子原因 `reason`）
+//      记进统计。这一格**不重新过一遍** `validateMessages`（刻意跳过，理由就地写在下面那一格
+//      上方）；它对外的信号是 `user_turn_guard_unrecoverable` 事件（issue #296：在那之前这一格
+//      对外零信号，宿主只能看到一个没有 user 轮的请求被上游 400）。
+// 前 3 步每一步都用 `validateMessages(..., { allowPendingToolUse: false })` 验一遍，
+// 保证回补出来的视图不产生孤儿 tool_result / 缺结果的 tool_use；第 4 步按上面的理由**不重验**。
 
 /**
  * @typedef {import("../messages/canonical.js").CanonicalMessage} CanonicalMessage
@@ -176,7 +179,8 @@ function withoutTrailingPendingToolUse(messages) {
  *
  * @param {CanonicalMessage[]} view 即将发给上游（或写回持久列表）的视图
  * @param {CanonicalMessage[]} source 未折叠 / 未压缩的源视图（回补来源）
- * @param {{ action?: string }} [stats] 出参：守卫动作（可观测信号）
+ * @param {{ action?: string, reason?: string }} [stats] 出参：守卫动作（可观测信号）；
+ *   `reason` 只在 `action === "unrecoverable"` 时写，是第 4 格的子原因（issue #296）
  * @returns {CanonicalMessage[]}
  */
 export function ensureUserTurnView(view, source, stats = {}) {
@@ -208,8 +212,34 @@ export function ensureUserTurnView(view, source, stats = {}) {
     return fallbackSource.map((message) => copyMessage(message));
   }
 
+  // 第 4 格：**原样返回**，并把「这一格为什么没救」写成 `reason` 交给调用方上报（issue #296）。
+  //
+  // ⚠ #296 刻意跳过（不是漏了）：这一格**不重新过一遍** `validateMessages`。理由是它拿到的视图
+  // 刚刚**就是**被 `isPassableview` 拒掉的那一个，而 `isPassableview` 内部已经跑过
+  // `validateMessages(..., { allowPendingToolUse: true })`——再验一遍只会得到同一个必然抛错，
+  // 没有一条信息是新的。真要在这里抛，等于把「上游可能照收（宽松 relay / 只吃 assistant 历史的
+  // 宿主）」变成「引擎必失败」，那是行为回退，不是修复：这一格能做的最后一件事就是**如实上报**
+  // （`provider-runner.js` 把它转成 `user_turn_guard_unrecoverable` 事件），而不是假装修好了、
+  // 也不是替宿主决定「这个 run 必须死」。
+  // 「跳过是有意的」这件事由 `test/loop-296-user-turn-unrecoverable.test.js` 的 T2 / T2b 钉住：
+  // 该格既不抛、也不改视图，且必须带上 `reason`——删掉理由注释、删掉上报、或在这里补一条
+  // `validateMessages`，都会变红（三种变异的实测见该单交付报告）。
   stats.action = "unrecoverable";
+  stats.reason = unrecoverableReason(current);
   return current;
+}
+
+/**
+ * 第 4 格的**子原因**：让宿主能从事件里分清「视图空了」「视图没有 user 轮」「视图配对非法」，
+ * 而不是只知道「不可恢复」四个字。三格互斥且穷尽：`isPassableview` 为假就只有这三条。
+ *
+ * @param {CanonicalMessage[]} view
+ * @returns {"empty_view"|"no_user_turn"|"invalid_view"}
+ */
+function unrecoverableReason(view) {
+  if (!Array.isArray(view) || view.length === 0) return "empty_view";
+  if (!hasUserTurn(view)) return "no_user_turn";
+  return "invalid_view";
 }
 
 /**
