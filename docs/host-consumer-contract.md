@@ -3726,7 +3726,7 @@ constraint was applied. What a host can observe, and why none of it answers the 
 
 | observable | where a host reads it | why it cannot answer "was decoding constrained?" |
 |---|---|---|
-| the assistant text | the `onRound` round record (`record.messages` / `record.response`), `result.rounds`, `result.finalText` | constrained and unconstrained decoding both produce text; only checking the text against the schema tells you whether it conforms, and a conforming text is also what an unconstrained model can emit |
+| the assistant text | `record.response.content` / `record.textPreview` from `onRound`, `result.messages`, `result.finalText` | constrained and unconstrained decoding both produce text; only checking the text against the schema tells you whether it conforms, and a conforming text is also what an unconstrained model can emit |
 | `stopReason` | `record.response.stopReason` (canonical `end_turn` / `tool_use` / `max_tokens`; OpenAI `finish_reason` is mapped by `normalizeOpenAIStopReason`) | an honoured schema and an ignored one both end as `end_turn`; `max_tokens` reports a cut answer, not the presence of a grammar |
 | `termination.errorCode` | `result.termination` on a failed run | a 4xx rejection is classified by `classifyHttpError`（`src/providers/errors.js`）, which says the endpoint refused the *request*; a 200 that ignored the schema stays indistinguishable from a 200 that obeyed it |
 | token usage | `onUsage` / `record.usage` / `result.usage` | upstreams report no "grammar constraint" counter; the numbers look the same either way |

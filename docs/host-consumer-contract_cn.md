@@ -2963,7 +2963,7 @@ if ("value" in unparsable || "value" in shapeMismatch || "value" in noCandidate)
 
 | 可观测量 | 宿主从哪里读 | 为什么它答不了「解码被约束了吗」 |
 |---|---|---|
-| 助手正文 | `onRound` 的轮记录（`record.messages` / `record.response`）、`result.rounds`、`result.finalText` | 约束解码与不约束解码都会产出文本；只有拿文本对 schema 做校验才能知道它合不合规，而合规则文本也是不约束的模型能写出来的 |
+| 助手正文 | `onRound` 里的 `record.response.content` / `record.textPreview`、`result.messages`、`result.finalText` | 约束解码与不约束解码都会产出文本；只有拿文本对 schema 做校验才能知道它合不合规，而合规则文本也是不约束的模型能写出来的 |
 | `stopReason` | `record.response.stopReason`（规位值 `end_turn` / `tool_use` / `max_tokens`；OpenAI 的 `finish_reason` 由 `normalizeOpenAIStopReason` 映射） | 被遵守的 schema 与被忽略的 schema 都以 `end_turn` 结束；`max_tokens` 报的是答案被截断，不是有没有语法在生效 |
 | `termination.errorCode` | 失败时的 `result.termination` | 4xx 拒绝由 `classifyHttpError`（`src/providers/errors.js`）分类，说的是端点拒了**这个请求**；而一个无视 schema 的 200 与一个遵守 schema 的 200 完全分不开 |
 | token 用量 | `onUsage` / `record.usage` / `result.usage` | 上游没有「语法约束」这个计数器；两种情况数字长得一样 |
