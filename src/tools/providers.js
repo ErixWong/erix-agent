@@ -26,6 +26,8 @@ function selectedSet(sets, sel) {
 /**
  * @param {{sets:Record<string, object[]>}} options
  * @returns {{listTools:(sel?:{set?:string})=>Promise<object[]>}}
+ * @deprecated issue #429: removed in 0.30 — no in-tree replacement; the host
+ *   builds its own tool provider (any object with `listTools(sel)`).
  */
 export function createStaticToolProvider({ sets }) {
   return {
@@ -79,6 +81,8 @@ async function readSets(filePath) {
 /**
  * @param {{path:string}} options
  * @returns {{listTools:(sel?:{set?:string})=>Promise<object[]>}}
+ * @deprecated issue #429: removed in 0.30 — no in-tree replacement; the host
+ *   builds its own tool provider (any object with `listTools(sel)`).
  */
 export function createJsonFileToolProvider({ path: filePath }) {
   return {
@@ -118,6 +122,8 @@ function mergeProviderSchema(base, overlay) {
 /**
  * @param {{providers:object[]}} options
  * @returns {{listTools:(sel?:{set?:string})=>Promise<object[]>}}
+ * @deprecated issue #429: removed in 0.30 — no in-tree replacement; the host
+ *   builds its own tool provider (any object with `listTools(sel)`).
  */
 export function createCompositeToolProvider({ providers }) {
   const providerList = Array.isArray(providers) ? providers : [];

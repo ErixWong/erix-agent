@@ -92,6 +92,10 @@ function readConfig(prefix) {
  *
  * @param {string} [prefix="LLM_KIT_"]
  * @returns {{resolve: (slot?:string) => Promise<object>}}
+ * @deprecated issue #429: removed in 0.30 — no in-tree replacement; the host
+ *   reads its own environment and implements the duck-typed `resolve(slot)`
+ *   contract (`createJsonFileModelConfigProvider` is a different source, not a
+ *   drop-in replacement).
  */
 export function createEnvModelConfigProvider(prefix = "LLM_KIT_") {
   return {

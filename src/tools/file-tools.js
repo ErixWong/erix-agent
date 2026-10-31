@@ -99,7 +99,11 @@ function parseIntEnv(raw, defaultValue, { min, max }) {
   return value;
 }
 
-/** readFile 单次返回字节上限：`ERIX_FILE_READ_MAX_BYTES` 可覆盖，钳到 [1KiB, 4MiB]。 */
+/**
+ * readFile 单次返回字节上限：`ERIX_FILE_READ_MAX_BYTES` 可覆盖，钳到 [1KiB, 4MiB]。
+ * @deprecated issue #429: removed in 0.30 — no in-tree replacement; the limit is
+ *   在 `createFileTools` 内部解析，宿主不需要（也没有）单独的解析入口。
+ */
 export function resolveFileReadMaxBytes(raw = process.env.ERIX_FILE_READ_MAX_BYTES) {
   return parseIntEnv(raw, FILE_READ_MAX_BYTES_DEFAULT, {
     min: FILE_READ_MAX_BYTES_MIN,

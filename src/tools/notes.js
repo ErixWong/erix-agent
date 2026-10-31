@@ -11,6 +11,11 @@ import {
 import { createToolRegistry } from "./registry.js";
 
 export const MAX_CONTENT_LENGTH = 4000;
+/**
+ * @deprecated issue #429: removed in 0.30 — no in-tree replacement; the
+ *   constant is not wired into any tool schema (the `content` limit is
+ *   `MAX_CONTENT_LENGTH`), so nothing in-tree can be migrated to it.
+ */
 export const NOTE_VALUE_MAX_CHARS = 256;
 // issue #570：目录行（renderNotesDirectory）一直读 current.summary，但工具面从来没有
 // 写入口——读侧有槽、写侧无门，经工具面写出的记录只能退化成「正文首行截 60 字符」。
@@ -29,6 +34,11 @@ function now() {
   return new Date(clock()).toISOString();
 }
 
+/**
+ * @deprecated issue #429: removed in 0.30 — no in-tree replacement; there is no
+ *   supported clock-injection seam on the public surface (only the notes tests
+ *   drive this hook).
+ */
 export function setNotesClock(nextClock) {
   if (typeof nextClock !== "function") throw new TypeError("nextClock must be a function");
   const previous = clock;

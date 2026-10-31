@@ -53,6 +53,9 @@ const RECORD = {
 /**
  * @param {string} label implementation name
  * @param {() => object | Promise<object>} createStore clean store factory
+ * @deprecated issue #429: removed in 0.30 — no in-tree replacement; this is the
+ *   general published suite, `notesStoreCasContract` is an additional CAS
+ *   sub-suite rather than its successor, so deletion needs a re-ruling first.
  */
 export function notesStoreContract(label, createStore) {
   test(`${label}: rejects a port with missing methods`, () => {
