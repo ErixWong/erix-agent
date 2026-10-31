@@ -98,6 +98,7 @@
     "check:cli-real": "node scripts/cli-real-smoke.mjs",
     "check:tests": "node scripts/test-hygiene-check.mjs",
     "check:inventory": "node scripts/flat-count-inventory.mjs . --verify test/compat-pin-inventory.md",
+    "check:config-leaf-values": "node scripts/config-leaf-value-probe.mjs --verify docs/config-leaf-value-status.md docs/config-leaf-value-status_cn.md",
     "check:exports": "node scripts/export-consumer-check.mjs",
     "check:final-guard-probe": "node scripts/final-guard-probe.mjs"
   },
