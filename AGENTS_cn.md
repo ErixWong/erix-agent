@@ -201,8 +201,9 @@ scripts/          # 实验脚本和结果
 - `repository.url` 使用 `git+https://...` 格式（或运行 `npm pkg fix`）。
 - 类型面（issue #213）：顶层 `types` 指向 `./src/index.d.ts`，`exports["."]` 与 `exports["./tools"]` 各带对应的 `types` 条件；
   `exports["./contract-tests"]` **刻意不带** `types`（其目标在 `test/` 下，不在声明依赖图里）。声明由 `prepack` 钩子生成，
-  因此干净检出里一个 `.d.ts` 都没有——装包后应列出 **88** 个 `.d.ts`（在 #246 第一刀的树上实测：`npm pack --dry-run --json`
-  列出整整 88 个，因为本刀把 `src/loop/state-view.js` 接进了声明依赖图，它的声明也开始随包；此前 **87**（在 #626 C1 的树上实测，
+  因此干净检出里一个 `.d.ts` 都没有——装包后应列出 **89** 个 `.d.ts`（在 #643 的树上实测：`npm pack --dry-run --json`
+  列出整整 89 个，因为本单新增 `src/compact/budget-fit.js`；此前 **88**（在 #246 第一刀的树上实测，
+  列出整整 88 个，因为那一刀把 `src/loop/state-view.js` 接进了声明依赖图，它的声明也开始随包）；此前 **87**（在 #626 C1 的树上实测，
   列出整整 87 个，因为那一单新增 `src/tools/delegation/tail.js`；此前 **86**（在 #617 P1b 的树上实测，
   因为该单新增 `src/tools/delegation/tool.js`）；此前 **85**（在 #617 P1a 的树上实测，
   因为该单新增 `src/tools/delegation/roster.js`、`src/tools/delegation/capacity.js` 与

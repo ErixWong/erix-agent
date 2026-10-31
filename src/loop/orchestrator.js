@@ -24,6 +24,7 @@ import {
 import {
   countEstimateCharacters,
   estimateMessageTokens,
+  estimateTokens,
   estimateTokensFromCharacterCounts,
 } from "../tokens.js";
 import { groupIntoRounds } from "../messages/rounds.js";
@@ -161,7 +162,8 @@ import {
   foldSummaryFingerprint,
   stableFingerprint,
 } from "../compact/fold-summary-journal.js";
-import { summarizeFoldedPayload } from "../compact/fold-statistical.js";
+import { FOLD_SUMMARY_MARKER, summarizeFoldedPayload } from "../compact/fold-statistical.js";
+import { foldWithinBudget, prependFoldSummary } from "../compact/budget-fit.js";
 import { createRunSnapshotExecutor } from "./run-snapshot-executor.js";
 import { makeStateView } from "./state-view.js";
 import {
@@ -3845,6 +3847,13 @@ export async function runToolLoop(options) {
     let compacted = false;
     /** @type {{ text: string, fingerprint: string, strategy: string, summary?: string, foldedRoundRange?: any }|undefined} */
     let foldedSummaryFact = undefined;
+    // issue #643：兜底那一发**真的**把机械摘要 prepend 进 head 了吗（预算装不下时不塞）。
+    // 它只用于 #326 的账本判据：`fedSummaryText` 是按「折叠后新出现的消息对象」认的，而
+    // 安全层 / user-turn 守卫也会造新对象（实测把 `[已修剪]开始任务` 当成摘要入账）。
+    let prependedFallbackSummary = false;
+    // issue #643：预算兜底那一发**跑过没有**（跑过 ⇒ `fedSummaryText` 里的「新消息」可能是安全层 /
+    // user-turn 守卫造出来的回显，而不是摘要——见下面 `fedSummaryIsFoldSummary`）。
+    let fallbackRan = false;
     // issue #470（A1）：策略顺手带出的**机械替代物**（`fold-statistical` 的统计摘要 /
     // `fold-llm` 降级分支的那份）。没配内置策略、或宿主自带策略不产它 ⇒ `undefined`，语义照旧。
     // issue #566：`increment` = **本折自己那份**（合并前的增量）。只在「策略的 `text` 不是增量」时
@@ -3873,9 +3882,11 @@ export async function runToolLoop(options) {
         ? configuredStrategy
         : createSlidingWindowStrategy();
       // issue #464 A：兜底路径此前**零可观测痕迹**——`context.strategy` 未配置而预算又兜底触发时，
-      // 实际执行的是引擎库层的 `sliding-window`（整轮 tail keep / head drop，无摘要、无锚点），
-      // 而宿主从 `compaction` 事件里根本看不出来。形状对齐 #182 `model_metadata_missing`：
+      // 实际执行的是引擎库层的 `sliding-window`（整轮 tail keep / head drop），而宿主从
+      // `compaction` 事件里根本看不出来。形状对齐 #182 `model_metadata_missing`：
       // 每 run 恰好一条，detail 首句是固定原文（宿主可直接断言）。
+      // issue #643：兜底的行为变了（折到够用就停 + 把机械摘要 prepend 进 head），首句跟着改——
+      // 旧句「drops whole head rounds without summary or anchors」已经不是事实（那正是本单修的病）。
       if (!configuredStrategy && !compactionFallbackNoticeSent) {
         compactionFallbackNoticeSent = true;
         emitEvent({
@@ -3885,8 +3896,8 @@ export async function runToolLoop(options) {
           ...(parentRunId === undefined ? {} : { parentRunId }),
           round,
           detail: 'engine compaction fallback in effect: context.strategy is not configured, '
-            + 'the library default "sliding-window" strategy drops whole head rounds without '
-            + 'summary or anchors'
+            + 'the library default "sliding-window" strategy folds only the oldest rounds needed '
+            + 'to fit the budget and prepends a mechanical summary'
             + (budgetTokens === undefined
               ? ""
               : `; budgetTokens=${budgetTokens}, estimatedTokens=${estimatedTokens}`),
@@ -4049,12 +4060,15 @@ export async function runToolLoop(options) {
       ) {
         // 同一 compactedMessages，自 tokensAfter 之后只做了 observeCompactionLayer /
         // 投影计算（#172 A2：复用上一次全量估算，不再重跑）
+        fallbackRan = true;
         const fallbackTokensBefore = tokensAfter;
-        const fallback = await createSlidingWindowStrategy().compact(compactedMessages, {
-          keepRounds: 0,
+        // issue #643（= #464 C 档）：兜底**不再写死 `keepRounds: 0`**（那等于「把可折轮次全折掉」）。
+        // `foldWithinBudget` 从最老一轮开始逐轮多折，`estimate <= budgetTokens` 即停——0.29 的现场
+        // 是 14,692 tok 被清成 150 tok（超预算 22% 却只剩 head），模型只好把同一批文件重读。
+        // issue #608：工作集地板在这里仍然最要紧（兜底正是「可能把工作集折掉」的那一格），
+        // 判据与常量都与策略那一发同一个。
+        const fallback = await foldWithinBudget(createSlidingWindowStrategy(), compactedMessages, {
           budgetTokens,
-          // issue #608：预算兜底这一发是 `keepRounds: 0`（全折）——正是「把工作集本身折掉」的那一格，
-          // 所以地板在这里最要紧。与策略那一发同一个判据、同一个常量。
           workingSetRecentRounds,
           protectedMessage: compactionContext.protectedMessage,
           stripHistoricalImages: compactionContext.stripHistoricalImages,
@@ -4076,7 +4090,64 @@ export async function runToolLoop(options) {
             foldedRoundRange,
           );
         }
-        tokensAfter = estimateMessageTokens(compactedMessages);
+        // issue #643（= #464 B 档）：**兜底也产摘要**。`sliding-window` 的 `foldedSummaryText`
+        // 只落账、不 prepend（那是它自己的契约，`test/compact/folded-facts.test.js` 钉着），
+        // 于是兜底之后模型手里只有任务原文 + 一行通用 stub。这里把**已经算好的**机械摘要
+        // prepend 进 head：范围句 / 工具足迹 / 清单 / stub 一次给全。
+        // 取源两种形态（都不是新造摘要）：
+        //   · 配了策略（`fold-llm` / `fold-statistical` / 宿主自带）⇒ 它那一折的摘要已经进过消息，
+        //     这里只补**兜底这一折**覆盖的那些轮（`fallback.foldedSummaryText`）；
+        //   · 没配策略 ⇒ 策略那一发也是库层 `sliding-window`（同样只落账），所以摘要必须覆盖
+        //     **两折合并后**的全部被折轮次，否则最老那批轮次照样只剩计数。
+        const fallbackSummaryText = configuredStrategy
+          ? fallback.foldedSummaryText
+          : (foldedPayload.length > 0
+            ? summarizeFoldedPayload(foldedPayload, {
+              from: foldedRoundRange?.from ?? 1,
+              to: foldedRoundRange?.to ?? foldedRounds,
+              count: foldedRounds,
+              recoveryHint: compactionContext.recoveryHint,
+            })
+            : undefined);
+        // 摘要也是模型要读的 token：**预算装不下它就不塞**（否则这一发会把真正的正文挤给
+        // 安全层去剪，比不塞更差——实测 budgetTokens=99 那类夹具就是被 127 tok 的摘要挤红的）。
+        // 阈值口径与 `foldWithinBudget` 的 `fits` 同一个：折后估算 + 摘要块开销 ≤ 预算。
+        const tokensBeforeSummary = estimateMessageTokens(compactedMessages);
+        const summaryTokens = typeof fallbackSummaryText === "string"
+          ? estimateTokens(fallbackSummaryText)
+          : 0;
+        const summaryFits = budgetTokens === undefined
+          || tokensBeforeSummary + summaryTokens <= budgetTokens;
+        prependedFallbackSummary = summaryFits
+          && typeof fallbackSummaryText === "string" && fallbackSummaryText !== "";
+        compactedMessages = prependedFallbackSummary
+          ? prependFoldSummary(
+            compactedMessages,
+            fallbackSummaryText,
+            compactionContext.summaryRole,
+          )
+          : compactedMessages;
+        tokensAfter = summaryFits
+          ? tokensBeforeSummary + summaryTokens
+          : tokensBeforeSummary;
+        // issue #643：**兜底那一折的替代物也要进账**。此前 `strategyFoldSummary` 只从策略返回值取
+        // （`result.foldSummary` / `result.foldedSummaryText`），策略折 0 轮时它是空的 ⇒ 账上的
+        // `foldedFacts.text` 只能退到 `fedSummaryText`（= 折叠后那条 user 消息的**全文**，含任务原文
+        // 与安全层插的 `[已修剪]`）——既不是替代物、也不是这一折的增量。兜底自己算好的那份机械
+        // 摘要就是这一折的替代物，就地把账补上（策略已经给过就一字不改，累计语义仍归它）。
+        if (fallback.foldedRounds > 0 && typeof fallback.foldedSummaryText === "string"
+          && fallback.foldedSummaryText !== "") {
+          const fallbackSummarySource = {
+            text: fallback.foldedSummaryText,
+            source: "strategy",
+            strategy: typeof strategy?.name === "string" ? strategy.name : "unknown",
+          };
+          strategyFoldSummary = strategyFoldSummary === undefined
+            ? fallbackSummarySource
+            : (!configuredStrategy
+              ? { ...fallbackSummarySource, text: [strategyFoldSummary.text, fallback.foldedSummaryText].filter(Boolean).join("\n\n") }
+              : strategyFoldSummary);
+        }
         if (fallback.foldedRounds > 0) {
           observeCompactionLayer(layers, budgetFallbackLayer?.id, {
             tokensBefore: fallbackTokensBefore,
@@ -4235,7 +4306,17 @@ export async function runToolLoop(options) {
           messages: foldedPayload,
           roundRange: foldedRoundRange ?? null,
         });
-      if (fedSummaryText !== "" && !foldSummaryLedger.journaled(foldedFingerprint)) {
+      // 「这条新消息是摘要」的判据。为什么不能只看「文本非空」：安全层 / user-turn 守卫也会
+      // 造新消息对象（实测把 `[已修剪]开始任务` 当成摘要入账，resume 会把这段垃圾回填进上下文）。
+      // 兜底**没跑过** ⇒ 照 #326 的既有口径（新消息 = 摘要；宿主自带策略就靠这一条）。
+      // 兜底跑过 ⇒ 要求至少一条正向信号：marker（零 LLM 机械摘要）/ 摘要器真跑过（fold-llm）/
+      // 兜底那一发真塞过（#643）。三条都没有，那条「新消息」是回显，不是摘要。
+      const fedSummaryIsFoldSummary = fedSummaryText !== ""
+        && (!fallbackRan
+          || fedSummaryText.includes(FOLD_SUMMARY_MARKER)
+          || lastFoldSummaryOutcome !== undefined
+          || prependedFallbackSummary);
+      if (fedSummaryIsFoldSummary && !foldSummaryLedger.journaled(foldedFingerprint)) {
         foldSummaryLedger.markJournaled(foldedFingerprint);
         foldedSummaryFact = {
           text: fedSummaryText,
