@@ -94,6 +94,9 @@ test("feeds tool results back to the provider on the next round", async () => {
       content: "lookup:x",
       erix: { round: 1, success: true },   // issue #35 年龄标记 = erix.round
     }],
+    // issue #192：这一轮的最后一条就是持久历史的尾巴 ⇒ 它是滚动断点的落点（请求视图上的标记，
+    // `ctx.messages` 不带）。断点因此逐轮前移，下一轮的同一个前缀可以按缓存读。
+    cacheBoundary: true,
   });
 });
 

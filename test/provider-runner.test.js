@@ -45,7 +45,7 @@ function conversation() {
   ];
 }
 
-test("provider runner marks system and first user stable prefix by default", async () => {
+test("provider runner marks system, first user and the rolling tail by default", async () => {
   const messages = conversation();
   const fixture = makeContext({ messages });
 
@@ -58,8 +58,10 @@ test("provider runner marks system and first user stable prefix by default", asy
   });
   assert.equal(request.messages[0].cacheBoundary, true);
   assert.equal("cacheBoundary" in request.messages[1], false);
-  assert.equal("cacheBoundary" in request.messages[2], false);
+  // issue #192：第三个断点是**滚动**的尾部——持久历史的最后一条（这里是第二条 user）。
+  assert.equal(request.messages[2].cacheBoundary, true);
   assert.equal("cacheBoundary" in messages[0], false);
+  assert.equal("cacheBoundary" in messages[2], false, "标记只落在请求视图的副本上");
 });
 
 test("provider runner leaves request shape unchanged when stable prefix caching is disabled", async () => {
@@ -98,5 +100,6 @@ test("provider runner preserves host cache markers while adding stable prefix ma
   });
   assert.equal(request.messages[0].cacheBoundary, true);
   assert.equal(request.messages[0].content[0].cache, true);
-  assert.equal("cacheBoundary" in request.messages[1], false);
+  // issue #192：宿主自己的标记照旧保留，尾部滚动断点同时落在最后一条上。
+  assert.equal(request.messages[1].cacheBoundary, true);
 });
