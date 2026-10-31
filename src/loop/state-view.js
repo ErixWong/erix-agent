@@ -1,7 +1,7 @@
 // @ts-check
-// issue #246 step 0：状态视图工厂——按**显式字段清单**为一个共享可变 state 对象生成「活引用视图」，
-// 用来替代 src/loop/orchestrator.js 里手写的 get/set 访问器。**本单不接线**（没有任何文件 import 它），
-// 所以零运行时行为变化、公共 API 未变；测试见 test/state-view.test.js。
+// issue #246：状态视图工厂——按**显式字段清单**为一个共享可变 state 对象生成「活引用视图」，
+// 用来替代 src/loop/orchestrator.js 里手写的 get/set 访问器。step 0 只建厂；第一刀接线了
+// `runSnapshotContext` 的 run-state 转发面（6 个字段），其余消费者尚未迁移；测试见 test/state-view.test.js。
 //
 // 三条设计红线（同时是 test/state-view.test.js 五条反向证的靶子，改任何一条都会被打红）：
 //   1. **活引用**：描述符里只写闭包 `() => state[key]`，构造时**不取值**。所以视图构造后整体替换

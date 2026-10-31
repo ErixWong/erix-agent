@@ -652,8 +652,12 @@ const READ_LINE_CAPACITY_ROLES = [
   // 一个 import 符号（+238 B / +1 行），bytes 越过 ±2% ⇒ 按 #543 机制复测这一行（描述只改 67.2→68.0
   // 那个平均行字节数，档位 3,850 不变：实测容量 3,853 仍在 [3850, 3899) 里）。
   { role: "fewest", file: "src/loop/option-normalization.js", recorded: { bytes: 37_079, lines: 545, bytesPerLine: 68.0349, capacity: 3_853, cjkShare: 0.1702 } },
-  // CJK 字节占比最高的那一个（2026-10-13 到今一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
-  { role: "densest", file: "src/loop/state-view.js", recorded: { bytes: 2_629, lines: 44, bytesPerLine: 59.75, capacity: 4_387, cjkShare: 0.3731 } },
+  // CJK 字节占比最高的那一个（2026-10-13 到 2026-10-31 一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
+  // 2026-10-31 第一刷（issue #246 第一刀）：这个文件第一次被真实接线（`orchestrator.js` 的
+  // `runSnapshotContext` 转发面），文件头注释里「本单不接线」那句改成接线事实（+14 B，**行数不变**）。
+  // bytes 越过 ±2% 内侧（+0.53%）⇒ 按本测试自己的口径复测这一行（容量 4,387 → 4,364，描述里
+  // 「fits 4,387」仍在 ±1% 内，故描述一字未改；CJK 占比 37.31% → 37.00%，描述里的 `37%` 逐字仍然成立）。
+  { role: "densest", file: "src/loop/state-view.js", recorded: { bytes: 2_643, lines: 44, bytesPerLine: 60.0682, capacity: 4_364, cjkShare: 0.37 } },
   // median 这一行 2026-10-22 换了**文件**（不是只刷数字）：issue #386 切片 1 给
   // `src/loop/termination.js` 加了 finalGuard payload 的组装与四个上限常量（+8,638 B / +163 行，
   // 字节 +74%），它的容量从 7,227 掉到 6,255，已经不再是样本中位（实测中位 7,225）——

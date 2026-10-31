@@ -17,11 +17,12 @@
 
 > **只收「那些 `--self-test` 没覆盖的行为面」** —— 各刀手工做过、验完就散、下一次重构不会因此变红的变异。
 
-具体是四个面、五个捕获者：
+具体是五个面、六个捕获者：
 
 | 行为面 | 为什么它不在任何 `--self-test` 的覆盖面里 |
 |---|---|
 | `state-view` 的三条设计红线（活引用 / `getOnly` 不设 setter / 字段面不泄漏） | 它是 `src/` 里的运行时行为，`--self-test` 家族全在文档 / 打包 / 拼写 / 卫生这些**外围面**上 |
+| `state-view` **接线侧**的字段清单（消费者 ctx 的字段漏一项 ⇒ 那一格变成 `undefined`） | 同上；工厂自测钉的是「视图怎么造」，不钉「哪个 ctx 声明了哪些字段」，漏一项时 ctx 的读-改-写静默丢数 |
 | `result.messages` 与内部状态数组的**身份**契约 | 同上；#246 接线一动它就会破，而破的时候不会有任何门禁红 |
 | provider 的 `retryable` 映射、4xx → `code` 分类、abort 非重试 | 同上（这三条是**宿主可见**的值面：`termination.errorCode` 直接上行） |
 | `sessionScanPrefix` 的哈希式（`-c` 续跑按它筛会话） | 同上；它与 `bin/repl.js` / `src/tools/notes.js` 是两份同式实现，漂一边不会有门禁红 |
@@ -55,8 +56,9 @@
 | M6 | 4xx → code 分类（422 也是 invalid_request） | `src/providers/errors.js` | 115 | `3538a130cd2a` | 1 | `  } else if (status === 400 \|\| status === 422) {` | `  } else if (status === 400) {` | `test/providers/error-classification.test.js` | `classifyHttpError：422 → invalid_request` |
 | M7 | abort 分类（`aborted` 永不重试） | `src/providers/errors.js` | 173 | `67dc3cfd6103` | 1 | `  if (isAbortException(err, opts.signal)) {` | `  if (false && isAbortException(err, opts.signal)) {` | `test/app-container-p0.test.js` | `classifies AbortError and aborted signals as non-retryable aborted errors` |
 | M8 | sessionScanPrefix 哈希式（`-c` 靠它筛会话） | `bin/session-scan.js` | 41 | `df9e0af01aee` | 1 | `  const hash8 = createHash("sha256").update(normalizedCwd).digest("hex").slice(0, 8);` | `  const hash8 = createHash("sha256").update(normalizedCwd).digest("hex").slice(0, 7);` | `test/session-scan.test.js` | `sessionScanPrefix 就是` |
+| M9 | state-view 接线侧的字段清单（漏一项 ⇒ 该字段在 ctx 上变成 `undefined`） | `src/loop/orchestrator.js` | 3745 | `ed509a147bf5` | 1 | `      "toolErrorCount",` | `      "toolErrorCountTypo",` | `test/loop-error-budget-cells.test.js` | `errors.tool=2` |
 
-**合计 8 条样本 / 4 个目标文件 / 5 个捕获者**
+**合计 9 条样本 / 5 个目标文件 / 6 个捕获者**
 
 > 单元格里的 `\|` 是**转义的竖线**：markdown 表格里写不出裸 `|`（会把整行拆成多列），所以 M6 锚点里的
 > `||` 存成 `\|\|`，脚本读的时候还原成 `||`。这条转义回环由 `--self-test` 的第 ㉒ 例钉住（不转义 ⇒

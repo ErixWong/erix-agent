@@ -163,6 +163,7 @@ import {
 } from "../compact/fold-summary-journal.js";
 import { summarizeFoldedPayload } from "../compact/fold-statistical.js";
 import { createRunSnapshotExecutor } from "./run-snapshot-executor.js";
+import { makeStateView } from "./state-view.js";
 import {
   buildToolResultFact,
   createToolCallKeyRegistry,
@@ -3722,48 +3723,32 @@ export async function runToolLoop(options) {
     markAggregateBudgetHit() {
       runLoopState.aggregateBudgetHit = true;
     },
-    get lowBudgetPrompted() {
-      return runLoopState.lowBudgetPrompted;
-    },
-    set lowBudgetPrompted(value) {
-      runLoopState.lowBudgetPrompted = value;
-    },
-    get toolErrorCount() {
-      return runLoopState.toolErrorCount;
-    },
-    set toolErrorCount(value) {
-      runLoopState.toolErrorCount = value;
-    },
-    get runSnapshotFailureCount() {
-      return runLoopState.runSnapshotFailureCount;
-    },
-    set runSnapshotFailureCount(value) {
-      runLoopState.runSnapshotFailureCount = value;
-    },
-    get lastPersistenceFailure() {
-      return runLoopState.lastPersistenceFailure;
-    },
-    set lastPersistenceFailure(value) {
-      runLoopState.lastPersistenceFailure = value;
-    },
-    get judgeInterceptCount() {
-      return runLoopState.judgeInterceptCount;
-    },
-    set judgeInterceptCount(value) {
-      runLoopState.judgeInterceptCount = value;
-    },
-    get interceptJudgeDecision() {
-      return runLoopState.interceptJudgeDecision;
-    },
-    set interceptJudgeDecision(value) {
-      runLoopState.interceptJudgeDecision = value;
-    },
     executedToolIds,
     snapshotResults,
     // 「没存上」账本（ADR-016）：聚合层 fail-closed 丢原文时必须留痕——
     // main 退役了 run-state 的 errors.archive 计数，账本是其继任通道
     errorLedger,
   };
+  // issue #246 第一刀：`runSnapshotContext` 的 **run-state 转发面**（原本是上面字面量里的 6 对
+  // 手写 get/set）改由 `makeStateView()` 按这份**显式字段清单**生成：清单 = 本 ctx 能碰的 run-state
+  // 字段白名单，语义与手写版逐字相同（活引用、可写）。`budgetRounds` / `messages` 留在字面量里，
+  // 因为它们读的是**闭包 `let`** 而不是 run-state 的格子（`messages` 整组留到 #246 第 5 步）。
+  //
+  // ⚠ 挂回 ctx 只能用 `getOwnPropertyDescriptors`（搬**描述符**：get/set 闭包原样搬过去 ⇒ 仍是活引用）。
+  // `Object.assign` / `{ ...view }` / `{ key: view.key }` 都会**调用** getter 把值快照下来，于是
+  // `ctx.toolErrorCount += 1` 这类读-改-写只写进快照、回不到 `runLoopState`，run-state 的 `errors.tool` /
+  // `errors.checkpoint` / `budget.lowBudgetPrompted` 与 judge 拦截计数会静默停在初值
+  // （捕获者：`test/loop-error-budget-cells.test.js`、`test/loop-intercept-count-cells.test.js`）。
+  Object.defineProperties(runSnapshotContext, Object.getOwnPropertyDescriptors(
+    makeStateView(runLoopState, [
+      "lowBudgetPrompted",
+      "toolErrorCount",
+      "runSnapshotFailureCount",
+      "lastPersistenceFailure",
+      "judgeInterceptCount",
+      "interceptJudgeDecision",
+    ]),
+  ));
   const runSnapshotExecutor = createRunSnapshotExecutor(runSnapshotContext);
   const {
     executeToolWithIntercept,

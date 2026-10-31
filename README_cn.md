@@ -157,7 +157,7 @@ src/
     abort.js                       中止信号辅助函数
     block-helpers.js               block 访问辅助函数
     judge-record.js                judge 记录关联字段（模型标识、run 级 outcome 汇总）
-    state-view.js                  活引用状态视图工厂（按显式字段清单生成，#246，尚未接线）
+    state-view.js                  活引用状态视图工厂（按显式字段清单生成；#246 第一刀已接线 runSnapshotContext 的 run-state 转发面）
   providers/
     anthropic.js                   Anthropic provider 与流式处理
     errors.js                       provider 错误与分类
