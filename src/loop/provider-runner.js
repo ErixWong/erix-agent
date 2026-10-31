@@ -8,6 +8,20 @@ import { ensureUserTurnView } from "./request-user-view.js";
 import { pendingTailToolUses } from "./pending-tool-result.js";
 import { appendRunStateToRequestView } from "../run-state.js";
 
+/**
+ * `unknown` → "is a plain record" narrowing.
+ *
+ * The return type is a **type predicate**, not a plain `boolean` (issue #192): a boolean return
+ * narrows nothing, so a caller that had just proved "this is an object" still saw the original
+ * `object` type and reading a field off it stayed a `TS2339` — which is exactly how the tail cache
+ * breakpoint's `tail.cacheBoundary` came out. Declaring the predicate makes the proof usable, and
+ * `Record<string, unknown>` (never `any`) keeps the values unknown so each caller narrows further.
+ *
+ * The parameter type is deliberately left as-is: the implicit `any` there is pre-existing debt
+ * booked by the `--checkJs` ratchet, and paying it here would move that ratchet's baseline.
+ *
+ * @returns {value is Record<string, unknown>}
+ */
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
