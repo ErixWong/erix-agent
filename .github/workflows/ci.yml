@@ -94,6 +94,15 @@ jobs:
       - name: Compatibility-pin inventory verify
         run: npm run check:inventory
 
+      # 阻塞（issue #586）：配置叶子「值类型 / 值域」现状表 docs/config-leaf-value-status{,_cn}.md 由探针
+      # 生成（43 叶 × 8 错值 = 344 格，每格过一次真的两轮 runToolLoop），这里重跑探针并把重算出来的两张表
+      # 与入库的逐字比对：漂了或手改过 ⇒ exit 1 并点名文件。实测约 0.8 秒，所以它阻塞。
+      # ⚠ 表漂了**不许手改数字**：`node scripts/config-leaf-value-probe.mjs --sync docs/config-leaf-value-status.md docs/config-leaf-value-status_cn.md`。
+      # 探针自己还有两道自检（`configSchemaSelfCheck` 红 / 三次基线跑的指纹不一致 ⇒ exit 2），所以「探针坏了」
+      # 不会静默成一张漂亮的红表。
+      - name: Config-leaf value status verify
+        run: npm run check:config-leaf-values
+
       - name: Test hygiene guard
         run: npm run check:tests
 
