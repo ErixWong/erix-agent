@@ -102,6 +102,21 @@ jobs:
       # 不会静默成一张漂亮的红表。
       - name: Config-leaf value status verify
         run: npm run check:config-leaf-values
+      # 阻塞（issue #257 T7）：常驻变异样本表 `test/mutation-samples.md` 的**验表**。
+      # 表里第 4/5/6 列（行号 / 锚点 sha256 / 命中数）与合计行由真树重算，手改数字 = 伪造 ⇒ 本步红。
+      # 放在 Compatibility-pin inventory verify 之后：两条是同一族（**提交进库的表必须与真树对得上**），
+      # 挨着放，红了能一眼看出是哪张表漂了。本步只读 `src/` / `bin/` 与表，不依赖测试跑没跑过。
+      # ⚠ 表漂了**不许手改数字**：`node scripts/mutation-sample-check.mjs --sync test/mutation-samples.md`。
+      - name: Mutation sample table verify
+        run: npm run check:mutation
+
+      # 阻塞：上一条自己的反向证——同一套判据跑在**内存夹具**上（不落盘、不碰真树）：
+      # 手改行号 / sha / 合计行必须红，锚点死了 / 锚点重复 / 捕获者没了 / 空变异 / 签名被削弱必须红，
+      # 删一条样本（含「删了再 --sync 把合计刷对」）必须红在样本数下限，`--sync` 只许改派生列，
+      # 变异没落上也必须判红（#210 R2）。为什么不并进上一条：那条证的是「今天的表与树对得上」，
+      # 这条证的是「判据还拦得住」——把判据改坏时前者照样 exit 0。
+      - name: Mutation sample check self-test
+        run: node scripts/mutation-sample-check.mjs --self-test
 
       - name: Test hygiene guard
         run: npm run check:tests
@@ -156,3 +171,14 @@ jobs:
       # ⚠ 红一条就是回归，按回归查——别再把它当「观测项」。
       - name: docs-drift-check self-test
         run: node scripts/docs-drift-check.mjs --self-test
+
+      # 阻塞（issue #257 T7）：样本表里每一条**真的会被闸咬住**的机器证据——逐条把变异写进真文件、
+      # 跑该条的捕获者、要求它**红且红在该报的那条断言上**（只认 `not ok N - …`，通过时的 `ok N -`
+      # 不算），再还原、再跑一遍要求**绿**（否则这条红不能归因给变异）。
+      # 为什么放在**最后**：① 它跑的是单个测试文件，前面 `Test suite` 已经绿了，「变异后的红」才可归因；
+      # ② 它是整条流水线里**唯一会临时改写 tracked 源文件**的步骤（`src/` / `bin/`），放在末尾，
+      #    后面没有任何步骤会读到一个刚被变异-还原过的树；还原由脚本自己逐条校验（内容与变异前不一致
+      #    就停手并红），并挂了 SIGINT/SIGTERM 还原钩子。实测 8 条 × (变异后 + 还原后) 共 16 次
+      #    `node --test <单文件>`，约 4.5 s。
+      - name: Mutation samples actually bite (mutate → red → restore → green)
+        run: npm run check:mutation:run
