@@ -3187,7 +3187,18 @@ function extractRefOccurrences(text) {
     if (/^[~$]/.test(p)) return; // 用户目录（~/.erix）与环境变量形式（$XDG_CONFIG_HOME）不属于本仓库
     if (p.includes("\\") || (p.startsWith("/") && p.endsWith("/"))) return; // 正则字面量（`/valid NoteRecord/`）不是路径
     if (p.includes("://")) return; // 自定义 URL scheme（`app://skills/skill.mjs`）
-    p = p.replace(/#.*$/, "").replace(/:\d+(?::\d+)?$/, "").replace(/[).,;:;,]+$/, "");
+    // 行号剥除（#621）：**单行 `file.js:N` 与区间 `file.js:N-M` 必须走同一条剥号路径**。
+    // 修前这里只认 `:\d+(?::\d+)?$`，于是 `file.js:226-227` 的尾巴**没被剥掉**，紧接着的扩展名过滤
+    // （`/\.(?:js|mjs|json|md|ts|sh|log)$/`）看到一个以 `-227` 结尾的串 ⇒ 整个 token 被 `return` 丢弃，
+    // 这处引用**一处也不进裁决**（区间形式的裸引用 = 零校验：路径改成什么都绿）。
+    // 剥完之后的裁决边界写在下一条注释里（两条规则各管一段，别把二者混成一条）。
+    p = p.replace(/#.*$/, "").replace(/:\d+(?:-\d+)?(?::\d+)?$/, "").replace(/[).,;:;,]+$/, "");
+    // 裁决边界（#621 期望 2，此前只存在于实现细节里）：
+    //   ① **带外仓前缀**的引用（`pi-subagents:src/…:N`）不做**本仓**存在性核对——路径属于另一个仓，本仓没有
+    //      可核对的真值；`externalRepoPrefixVerdict` 只认「前缀在 EXTERNAL_REPO_PREFIXES 里登记过」，前缀写错
+    //      照样红。这是**预期**，不是漏洞：别为了「区间也红」把外仓路径改成必红。
+    //   ② **区间形式**（`file.js:a-b`）与单行形式（`file.js:a`）走**同一条**裁决路径：剥掉行号后按普通引用
+    //      解析（裸引用查存在性 / 外仓前缀走 ① 的豁免）。区间本身不被核对（行号会漂），但**路径**必须真的存在。
     if (!p || p.startsWith("#")) return;
     if (!p.startsWith("./") && !p.startsWith("../")) {
       if (p.startsWith(".")) return; // .mcp.json / .erix/skills/ 这类宿主侧配置目录
@@ -4426,6 +4437,32 @@ const SELF_TEST_CASES = [
       [REQ_CN]: (t) => t.replace("`app_container:apps/worker/src/pi/`", "`touwaka:apps/worker/src/pi/`"),
     },
     expect: [/外部仓前缀 `app_container:` 没有一处引用真正用到它/],
+  },
+  // —— issue #621：`file.js:a-b` 与 `file.js:a` 必须走**同一条剥号路径**。修前 `:\d+(?::\d+)?$` 只认单行，
+  //    区间尾巴剥不掉 ⇒ 紧接的扩展名过滤看到一个以 `-227` 结尾的串 ⇒ 整个 token 被丢弃，区间形式的引用
+  //    **一处也不进裁决**（路径改成什么都绿）。下面四例同时钉住两条裁决边界：区间已进裁决（①）、
+  //    外仓前缀引用**仍然**不做本仓存在性核对（③ 放行证），而前缀不是免检通道（④）。
+  {
+    label: "#621：契约 EN 的 `bin/cli.js:1032-1042` 路径改坏 ⇒ 必须红（修前区间 token 被整条丢弃，零校验）",
+    overlay: { [CONTRACT_EN]: (t) => t.replace("(`bin/cli.js:1032-1042`)", "(`bin/cli621Probe.js:1032-1042`)") },
+    expect: [/paths: docs\/host-consumer-contract\.md[\s\S]*`bin\/cli621Probe\.js`（第 \d+ 行）：本仓不存在/],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "#621 放行证：同一处改成单行 `bin/cli.js:1032` ⇒ 仍然绿（区间与单行走同一条剥号路径，不是把单行也弄红）",
+    overlay: { [CONTRACT_EN]: (t) => t.replace("(`bin/cli.js:1032-1042`)", "(`bin/cli.js:1032`)") },
+    expectGreen: true,
+  },
+  {
+    label: "#621 边界：外仓前缀 + 区间（`pi-subagents:extension/index.js:137-141`）路径改坏 ⇒ 仍然绿（EXTERNAL_REPO_PREFIXES 语义：外仓路径不做本仓存在性核对，这是预期）",
+    overlay: { [PI_EXT_README]: (t) => t.replace("`pi-subagents:extension/index.js:137-141`", "`pi-subagents:extension/index621Probe.js:137-141`") },
+    expectGreen: true,
+  },
+  {
+    label: "#621 边界：外仓前缀 + 区间但仓名写错（`pi-workflow:`）⇒ 必须红（前缀不是免检通道，区间形式也不例外）",
+    overlay: { [PI_EXT_README]: (t) => t.replace("`pi-subagents:extension/index.js:137-141`", "`pi-workflow:extension/index.js:137-141`") },
+    expect: [/paths: examples\/pi-extension\/README\.md[\s\S]*外部仓前缀 `pi-workflow:`/],
+    expectFiles: [PI_EXT_README],
   },
   // —— issue #391 R4：`cli-flags`（bin/cli.js 帮助文本 ⇄ 两份 README 的 usage 行，双向逐处）——
   {
