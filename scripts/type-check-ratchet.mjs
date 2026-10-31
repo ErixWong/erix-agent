@@ -72,6 +72,11 @@
 // 基线是哪棵树量的（数字不许脱离这句话单独引用）：2026-10-31，基点 `4840004`（issue #417 的工作树，
 //   `typescript@5.9.3` + `@types/node@22.20.5`，Node 22，`src/` 下 0 个 `.d.ts`）。同一对常量必须在
 //   同一次测量里产出，否则两档会漂——这也是 #417 判据 ③ 的原话。
+// 2026-11-01 在同一棵 main 树上重测并下调并集档：**包根 `BASELINE_STRICT_ROOT` 一字未动（1894）**，
+//   并集 `BASELINE_STRICT_WITH_TOOLS` **2128 → 2124**。减掉的 4 个全部来自 `f55eb8f` 那一行
+//   `@returns` 补 `facts`（#375 加事实集时漏了它，下游 4 处 `facts` 属性访问在 strict 档同样计数）；
+//   对照实测：`f55eb8f^` = 2128、`f55eb8f` = 2124（两棵归档树各跑一次 `--strict --with-tools`，
+//   临时把非 strict 并集基线抬 3 格好让脚本跑到 strict 档——归档树上那一档当时是 147 > 144）。
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -238,7 +243,8 @@ const BASELINE_WITH_TOOLS = 143;
 // ⚠ 本票（#417）**只加闸、不修债**：下面的数就是本票落地那一刻的实测，不是 0。清债是按文件切片的后续动作，
 //   每片 PR 降这个常量；在此之前「strict 有几千个错」是绿的，红的是**新增**。
 const BASELINE_STRICT_ROOT = 1894;
-const BASELINE_STRICT_WITH_TOOLS = 2128;
+// 2026-11-01 重测下调 2128 → 2124（−4 = `f55eb8f` 一行 `@returns` 补 `facts`；包根档同笔复测未动）
+const BASELINE_STRICT_WITH_TOOLS = 2124;
 
 const argv = process.argv.slice(2);
 const WITH_TOOLS = argv.includes("--with-tools");
@@ -279,7 +285,7 @@ if (argv.includes("--baseline")) {
     `check:types: 基线 = ${BASELINE} 个 --checkJs 错误（${MODE}；issue #214 棘轮，2026-10-23 实测）\n`
     + `  两档基线：包根入口 ${BASELINE_ROOT}（默认）/ 含 ./tools 入口 ${BASELINE_WITH_TOOLS}（加 --with-tools）\n`
     + `  复现命令：node node_modules/typescript/bin/tsc ${TSC_ARGS.join(" ")}\n`
-    + `check:types:strict: 基线 = ${STRICT_BASELINE} 个 strict 错误（${MODE}；issue #417 棘轮，2026-10-31 实测于基点 4840004）\n`
+    + `check:types:strict: 基线 = ${STRICT_BASELINE} 个 strict 错误（${MODE}；issue #417 棘轮，2026-10-31 实测于基点 4840004；2026-11-01 两档同笔复测：包根 1894 未动，并集 2128 → 2124（−4 = f55eb8f）\n`
     + `  两档基线：包根入口 ${BASELINE_STRICT_ROOT}（默认）/ 含 ./tools 入口 ${BASELINE_STRICT_WITH_TOOLS}（加 --with-tools）\n`
     + `  复现命令：node node_modules/typescript/bin/tsc ${[...TSC_ARGS, ...STRICT_ONLY_ARGS].join(" ")}\n`
     + `  （两档必须同一笔提交里一起测、一起降；strict 与非 strict 是两个互不相干的数，不许拿一档的数去下调另一档）`,
@@ -473,7 +479,7 @@ if (STRICT) {
     + `  参数：${strictArgs.join(" ")}\n`
     + `  复现：node node_modules/typescript/bin/tsc ${strictArgs.join(" ")}\n`
     + `  基线：${STRICT_BASELINE} 个 strict 错误（${MODE}；常量 ${WITH_TOOLS ? "BASELINE_STRICT_WITH_TOOLS" : "BASELINE_STRICT_ROOT"}，`
-    + "issue #417，2026-10-31 实测于基点 4840004；两档必须同一笔提交里一起测、一起降）\n"
+    + "issue #417，2026-10-31 实测于基点 4840004；2026-11-01 两档同笔复测：包根 1894 未动，并集 2128 → 2124（−4 = f55eb8f 那一行 @returns 补 facts）；两档必须同一笔提交里一起测、一起降）\n"
     + `  对照：**非 strict 那一档是另一道棘轮**——\`npm run check:types\` 的基线是 ${BASELINE} 个 --checkJs 错误（${MODE}）；`
     + "两个总数不可互相比，也不许拿一档的数去下调另一档的基线。",
   );
