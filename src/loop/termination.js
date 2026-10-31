@@ -343,7 +343,8 @@ export function createTerminationManager(ctx) {
     let deliverablesFailed = 0;
     // issue #435：**失败的条目本身**要带出去。宿主声明的判据是「什么算交付完成」的唯一表达，
     // 所以「哪几条没过、为什么」只有它自己说得清；补齐轮（`orchestrator.js` 的
-    // `deliverableGapAfterJudgeDone`）要把它写进引擎控制消息，模型才知道该补什么。
+    // `deliverableGapAfterStop`，#435 的 `judge_done` 与 #436 的预算类停机共用那一个闭包）
+    // 要把它写进引擎控制消息，模型才知道该补什么。
     // 形状与 payload 里那份 `deliverables` 同源（同一次 `runDeliverables` 的结果），不重算。
     let deliverablesFailures = [];
     if (deliverables !== undefined) {

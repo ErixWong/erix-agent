@@ -449,6 +449,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/repl.test.js` | 1 | `finalGuard`×1 | OWNED-BY-S5 |
 | `test/run-snapshot-executor.test.js` | 1 | `onToolResult`×1 | MIGRATE · NOT-OPTION-SURFACE（非 runToolLoop 选项面，无规位） |
 | `test/tool-fact-success-parity.test.js` | 1 | `onToolResult`×1 | MIGRATE · NOT-OPTION-SURFACE（非 runToolLoop 选项面，无规位） |
+| `test/loop-deliverables-gap-436.test.js` | 7 | `deliverables`×7 | COMPAT-PIN |
 
 ### 分派小结（按上表口径，**S7c 迁完之后**实测）
 
@@ -462,10 +463,10 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `MIGRATE · S7c`（**本刀已迁完 90 点中的 87**；另 3 点重分类，见下条） | 17 | 0 |
 | `MIGRATE · 含 COMPAT-PIN 格`（迁搭台写点，**逐格**跳过选项面断言） | 3 | 38 |
 | `MIGRATE · NOT-OPTION-SURFACE`（重分类：不是 `runToolLoop` 选项面，**没有规位**） | 9 | 31 |
-| `COMPAT-PIN` | 12 | 73 |  <!-- #519 新增 4 点：`test/loop-direct-route-conflict-519.test.js`；小结由 --verify 打印的 AST 真值（逐点归片 73）对齐 -->
+| `COMPAT-PIN` | 12 | 80 |  <!-- #436 又新增 7 点（`test/loop-deliverables-gap-436.test.js`）；小结按 --verify 打印的 AST 真值对齐 -->  <!-- #519 新增 4 点：`test/loop-direct-route-conflict-519.test.js`；小结由 --verify 打印的 AST 真值（逐点归片 73）对齐 -->
 | `OWNED-BY-S5` | 5 | 13 |
 | `OWNED-BY-S6` | 5 | 21 |
-| **合计（现在实测）** | **66** | **176** |
+| **合计（现在实测）** | **66** | **183** |
 
 脚注：
 
@@ -838,6 +839,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/compact/budget-fallback-643.test.js` | 2 | `strategy`×2 |
 | `test/loop-fold-identity-567.test.js` | 4 | `tools`×4 |
 | `test/loop-direct-route-conflict-519.test.js` | 7 | `onEvent`×4, `session`×4, `completion`×1, `tools`×1, `wrapup`×1 |
+| `test/loop-deliverables-gap-436.test.js` | 4 | `deliverables`×7, `reflection`×2, `resume`×2 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 
