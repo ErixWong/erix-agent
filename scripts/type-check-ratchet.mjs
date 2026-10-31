@@ -34,40 +34,44 @@
 //     **必须在装了 devDependencies 的环境里跑**（`tsc` 取不到时下面直接给指路报错，不堆栈）。
 //
 // 用法：
-//   npm run check:types                       # 默认：包根入口 src/index.js，基线 116
-//   npm run check:types -- --with-tools       # 连 erix-agent/tools 入口一起卡，基线 152
+//   npm run check:types                        # 默认：包根入口 src/index.js，非 strict 基线 108
+//   npm run check:types -- --with-tools        # 连 erix-agent/tools 入口一起卡，非 strict 基线 144
+//   npm run check:types:strict                 # strict 棘轮（issue #417）：同一张依赖图加 `--strict`，基线 `BASELINE_STRICT_ROOT`
+//   npm run check:types:strict -- --with-tools # strict 并集一档，基线 `BASELINE_STRICT_WITH_TOOLS`
 //   node scripts/type-check-ratchet.mjs --verbose                   # 额外打印每文件、每错误码分布
 //   node scripts/type-check-ratchet.mjs --show-errors 20            # 额外打印前 20 条错误定位（定位新错用）
-//   node scripts/type-check-ratchet.mjs --baseline                  # 只打印基线常量与复现命令
-//   node scripts/type-check-ratchet.mjs --print-count               # 只打印实测错误总数（脚本化下调基线用）
+//   node scripts/type-check-ratchet.mjs --baseline                  # 只打印四个基线常量与复现命令
+//   node scripts/type-check-ratchet.mjs --print-count               # 只打印实测错误总数（脚本化下调基线用；加 --strict 打印 strict 那一档）
 //   node scripts/type-check-ratchet.mjs --ignore-stale-declarations # 明知 src/ 下有 .d.ts 生成物仍强行跑
-//   node scripts/type-check-ratchet.mjs --strict-report             # strict 观测点（issue #416）：同一张依赖图加 `--strict`，只打印分布
+//   node scripts/type-check-ratchet.mjs --strict-report             # 旧名（issue #416 的观测点），现在与 --strict 同义，保留是为了不让既有脚本 / 文档一夜失效
 //
-// ── strict 观测点（issue #416）：把「最宽松口径」那笔债变成每次都能看见 ──────────────
-// 病根：上面那对基线（116 / 152）是**不带 `--strict`** 量出来的。同一棵树、同一条命令只加一个
-//   `--strict`，总数就从三位数跳到四位数（构成：TS7006 隐式 any 参数最多、其次 TS2339、TS7005、TS7031、
-//   TS7034、TS7053 ……）—— 这个数**从来没出现在任何门禁或 CI 日志里**。
-//   后果可复证：`types:build` 生成的 75 个 `.d.ts` 在场时，同一条 `--strict` 命令报 **0 个错**（声明里的
-//   `any` 把一切吞了，宿主侧 `tsc --strict` 因此能过）。
-// ⚠ **strict 这个数不是门禁、不钉、会漂——命令输出是唯一真值。** 它随代码改动而变，也随**树**而变：
-//   2026-10-23 在 #416 分支（`feat-261023-08-strict-report`）上实测 **1690 个错 / 65 个文件**，同一天
-//   集成树上同一命令实测 **1687 个 / 65 个文件**（主 agent 实测；两者都是真值，差的是树不是命令）。所以：
-//   · 任何文档 / 注释 / 测试里的字面量都只是「**某棵树某一天**」的快照，带日期与树名才有意义；
-//   · 不同步这字面量（改了也没门禁验它，同步本身只会制造新的谎言）——要现值就跑命令；
-//   · 不要在 CI 或测试里断言某个具体数字（那条断言一定会腐烂；本观测点存在的意义是「看得见」，不是「钉住」）。
-// 本开关**只观测、不判定**：
-//   · 用 `TSC_ARGS` + `--strict`（**同一张依赖图**：入口、module、target 一字不改）跑一次，打印
-//     **总数 + 按文件 + 按错误码**的分布，外加口径说明（入口 / tsc 与 @types 版本 / 逐字复现命令）；
-//   · **观测到的数不影响退出码**：无论 strict 报多少还是 0，只要这次测量本身成立就 exit 0。
-//     ⚠ 但「只观测」不等于「exit 恒 0」：仍有**三条硬失败路径**——tsc 起不来、tsc 非 0 退出却一条错都
-//     没解析出来、`src/**/*.d.ts` 残留（下面那条守卫）。实测：`npm run types:build` 之后直接跑本开关 ⇒
-//     **exit 1**。所以 CI 那一步是 `continue-on-error: true`（红得对，但不阻塞流水线）。
-//   · 棘轮那一侧（`TSC_ARGS` / 两个基线常量 / 判定与退出码）**一字不动**：本开关不新增、也不改动
-//     `TSC_ARGS` 里的任何 flag，`--strict` 只出现在观测路径的数组副本里。
-//   · 复用**陈旧声明守卫**：`src/**/*.d.ts` 在场时观测到的不是实现（实测就是 0），所以与棘轮同样
-//     拒绝运行并报错——「strict 报 0」在那种情形下是假绿，不是好消息。
-// 为什么不卡：strict 那笔（上记的实测值）是**待还的债**（issue #417），不是本轮能清零的东西；先把它摆到
-//   日志里、让每一次 CI 都看得见，再谈还债。等 #417 把它降下来，是否升级成门禁是那一单的决定，不是这一单的。
+// ── strict 棘轮（issue #417）：把「最宽松口径」那笔债也变成只减不增 ──────────────────
+// 来历：issue #416 先把 strict 那一档**摆到日志里**（「只观测、不判定」：跑同一条 tsc 加 `--strict`、打印
+//   总数 + 按文件 + 按错误码的分布，观测到的数不影响退出码）。#417 把同一件事升级成**门禁**：这个开关
+//   现在**参与退出码**，理由很直接——只观测的债会自己长大：#416 记录的快照与 #417 开工时的实测之间
+//   已经差了一大截（具体两个数都不抄在这里：一个在下面的基线常量里，另一个在 #416 的正文里）。
+//
+// 口径（与上面那对非 strict 基线**互不相干**，两条路各自独立判定）：
+//   · 入口、target、module、`--skipLibCheck` 与 `TSC_ARGS` **逐字相同**，只在**数组副本**里多一个 `--strict`
+//     ⇒ 「strict 比非 strict 多出来的错」这个差额是可比的，而两个总数**不可互相比**，更不许拿一档的数
+//     去下调另一档的基线。
+//   · 基线是**两个常量**：`BASELINE_STRICT_ROOT`（包根入口，默认档）与 `BASELINE_STRICT_WITH_TOOLS`
+//     （加 `--with-tools` 的并集档）。两档必须**同一笔提交里一起测、一起降**——#214 的教训（退役的 261
+//     曾悄悄背着 #177 已还掉的那 1 个），非 strict 那对常量也是这么被要求同步的。
+//   · 判定与非 strict 那条路**同构**：超过基线 ⇒ exit 1（点名超出的文件）；等于 ⇒ exit 0；低于 ⇒ exit 0
+//     + 打印「基线可下调至 N」（下调是独立的人工动作，别把收益丢掉）。
+//   · ⚠ 本票**只加闸、不修债**（#417 的边界）：基线取的是本票落地那一刻的实测值，不是 0；清债是按文件
+//     切片的后续动作（每片 PR 降这个常量）。所以「strict 有几千个错」在闸上了之后**照样是绿的**——红的是
+//     **新增**，那才是这道门唯一的存在理由。
+//   · 三条硬失败路径照旧（它们都不是「strict 报了多少」）：tsc 起不来、tsc 非 0 退出却一条错都没解析出来、
+//     `src/**/*.d.ts` 残留（下面那条共用守卫）。加两条与非 strict 同口径的假绿防线：实测 0 而基线 > 0 ⇒
+//     按**检查面失效**判红；`src/**/*.d.ts` 在场 ⇒ 拒绝运行（那种情形下 strict 报 0 是声明把实现遮住了）。
+//   · 棘轮那侧的 `TSC_ARGS` / 两个非 strict 常量 / 那条判定链**一字不动**：`--strict` 只出现在
+//     `STRICT_ONLY_ARGS` 这个副本里，删掉本开关 = 回到 #416 的行为，不会影响非 strict 棘轮。
+//
+// 基线是哪棵树量的（数字不许脱离这句话单独引用）：2026-10-31，基点 `4840004`（issue #417 的工作树，
+//   `typescript@5.9.3` + `@types/node@22.20.5`，Node 22，`src/` 下 0 个 `.d.ts`）。同一对常量必须在
+//   同一次测量里产出，否则两档会漂——这也是 #417 判据 ③ 的原话。
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -214,12 +218,34 @@ const BASELINE_ROOT = 108;
 //   把基线换成当前实测值，属 #214 之后的收紧动作，不要拿它当「反正卡不住」的理由）。
 const BASELINE_WITH_TOOLS = 144;
 
+// ── strict 档基线（issue #417：把 #416 的「只观测」升级成棘轮）──────────────────────
+// 这两个常量是 strict 那一档的**唯一真值**。同一条 tsc 命令（入口 / target / module / `--skipLibCheck` 与非
+// strict 那条逐字相同）只多一个 `--strict`，总量就从三位数跳到四位数（构成：TS7006 隐式 any 参数最多，其次
+// TS2339 / TS7005 / TS7031 / TS7034 / TS7053 …）——这笔债 #416 只摆到日志里，于是它自己长大了；#417 把它也
+// 钉成「只减不增」。
+//
+// 测量口径（数字脱离这句话就没有意义）：
+//   · 树：2026-10-31，基点 `4840004`（issue #417 的隔离工作树），`src/` 下 0 个 `.d.ts`（生成物在场会把两档都
+//     遮成 0，那种 0 是假绿，脚本会直接拒绝运行而不是拿来当基线）；
+//   · 工具：`typescript@5.9.3` + `@types/node@22.20.5`（devDependency，与非 strict 棘轮同一对），Node 22，Linux；
+//   · **两档在同一次测量里产出**（#214 的教训：两档分两次测就会悄悄漂开一格）。
+// 复现命令（逐字，在仓库根目录；`--print-count` 只打印总数，脚本化下调基线时用它）：
+//   node scripts/type-check-ratchet.mjs --strict --print-count
+//   node scripts/type-check-ratchet.mjs --strict --with-tools --print-count
+//
+// 下调规矩（与非 strict 那对完全一致，别发明第二套）：把常量改成命令打印的「可下调至 N」，**单独一次提交**，
+// 提交信息里写清是哪个文件减了多少错；**两档要么一起降、要么都不动**，只降一档 = 把差额推给另一档。
+// ⚠ 本票（#417）**只加闸、不修债**：下面的数就是本票落地那一刻的实测，不是 0。清债是按文件切片的后续动作，
+//   每片 PR 降这个常量；在此之前「strict 有几千个错」是绿的，红的是**新增**。
+const BASELINE_STRICT_ROOT = 1894;
+const BASELINE_STRICT_WITH_TOOLS = 2128;
+
 const argv = process.argv.slice(2);
 const WITH_TOOLS = argv.includes("--with-tools");
 const VERBOSE = argv.includes("--verbose");
 const PRINT_ONLY = argv.includes("--print-count");
 const IGNORE_STALE = argv.includes("--ignore-stale-declarations");
-const STRICT_REPORT = argv.includes("--strict-report");
+const STRICT = argv.includes("--strict") || argv.includes("--strict-report");
 const SHOW_ERRORS = (() => {
   const i = argv.indexOf("--show-errors");
   return i >= 0 && argv[i + 1] !== undefined ? Number(argv[i + 1]) : 0;
@@ -228,6 +254,7 @@ const SHOW_ERRORS = (() => {
 // 与 issue #214 正文口径逐字一致的 tsc 参数（输入文件是唯一的入口；依赖图由它自己拉）。
 const ENTRIES = WITH_TOOLS ? ["src/index.js", "src/tools/index.js"] : ["src/index.js"];
 const BASELINE = WITH_TOOLS ? BASELINE_WITH_TOOLS : BASELINE_ROOT;
+const STRICT_BASELINE = WITH_TOOLS ? BASELINE_STRICT_WITH_TOOLS : BASELINE_STRICT_ROOT;
 const TSC_ARGS = [
   "--noEmit",
   "--allowJs",
@@ -251,7 +278,11 @@ if (argv.includes("--baseline")) {
   console.log(
     `check:types: 基线 = ${BASELINE} 个 --checkJs 错误（${MODE}；issue #214 棘轮，2026-10-23 实测）\n`
     + `  两档基线：包根入口 ${BASELINE_ROOT}（默认）/ 含 ./tools 入口 ${BASELINE_WITH_TOOLS}（加 --with-tools）\n`
-    + `  复现命令：node node_modules/typescript/bin/tsc ${TSC_ARGS.join(" ")}`,
+    + `  复现命令：node node_modules/typescript/bin/tsc ${TSC_ARGS.join(" ")}\n`
+    + `check:types:strict: 基线 = ${STRICT_BASELINE} 个 strict 错误（${MODE}；issue #417 棘轮，2026-10-31 实测于基点 4840004）\n`
+    + `  两档基线：包根入口 ${BASELINE_STRICT_ROOT}（默认）/ 含 ./tools 入口 ${BASELINE_STRICT_WITH_TOOLS}（加 --with-tools）\n`
+    + `  复现命令：node node_modules/typescript/bin/tsc ${[...TSC_ARGS, ...STRICT_ONLY_ARGS].join(" ")}\n`
+    + `  （两档必须同一笔提交里一起测、一起降；strict 与非 strict 是两个互不相干的数，不许拿一档的数去下调另一档）`,
   );
   process.exit(0);
 }
@@ -383,10 +414,10 @@ function depVersion(rel) {
   }
 }
 
-// ── strict 观测点（issue #416）：同一张依赖图 + `--strict`，只打印分布，**不参与 exit code** ──
-// 放在陈旧声明守卫**之后**、棘轮那次 tsc 之前：守卫已经在上面把 `src/**/*.d.ts` 在场的情形拦成 exit 1，
-// 于是「strict 报 0」在这里只有一种含义（真的 0），不会混进「声明把实现遮住了」那种假绿。
-if (STRICT_REPORT) {
+// ── strict 棘轮（issue #417）：同一张依赖图 + `--strict`，**参与 exit code** ────────────
+// 放在陈旧声明守卫**之后**、非 strict 棘轮那次 tsc 之前：守卫已经在上面把 `src/**/*.d.ts` 在场的情形拦成
+// exit 1，于是「strict 报 0」在这里只有一种含义（真的 0），不会混进「声明把实现遮住了」那种假绿。
+if (STRICT) {
   const strictArgs = [...TSC_ARGS, ...STRICT_ONLY_ARGS];
   const strictRun = runTsc(STRICT_ONLY_ARGS);
   if (strictRun.error) {
@@ -397,11 +428,10 @@ if (STRICT_REPORT) {
   const strictParsed = parseTscErrors(strictOutput);
 
   // 与棘轮同一条口径：**没解析到错误 + tsc 非 0 退出 = 跑都没跑成**，不是「strict 已经干净了」。
-  // 这一格是「脚本自己出错」，所以它才允许非 0（观测的数本身永远不影响退出码）。
   if (strictParsed.errors.length === 0 && strictRun.status !== 0) {
     console.error(
       `check:types:strict — 失败 — tsc 退出码 ${strictRun.status}，但没解析到任何 \`error TS…\` 行`
-      + "（不是「0 个 strict 错误」，是跑都没跑成；本命令只在**脚本自己出错**时才非 0）。\n"
+      + "（不是「0 个 strict 错误」，是跑都没跑成）。\n"
       + `  tsc 命令：${process.execPath} ${[tscPath, ...strictArgs].join(" ")}\n`
       + "  tsc 原始输出（末尾 40 行）：\n"
       + strictOutput.trimEnd().split(/\r?\n/).slice(-40).map((l) => `    ${l}`).join("\n"),
@@ -429,14 +459,23 @@ if (STRICT_REPORT) {
   const fileRows = VERBOSE ? strictFiles : strictFiles.slice(0, 10);
   const codeRows = VERBOSE ? strictCodes : strictCodes.slice(0, 8);
 
+  // `--print-count` 在**任何报告之前**就返回：脚本化下调基线时只要那个数（与非 strict 那条路同口径），
+  // 也让「拿到的 stdout 就是一个数」这件事对调用方成立（否则 `Number(stdout)` 会得到 NaN）。
+  if (PRINT_ONLY) {
+    console.log(String(strictTotal));
+    process.exit(0);
+  }
+
   console.log(
-    "check:types:strict — strict 观测点（issue #416；**只观测、不判定**：观测到的数不影响退出码，不卡任何门禁；只有脚本自己跑不成时才非 0）\n"
-    + `  入口：${ENTRIES.join(" + ")}（${MODE}；与 \`npm run check:types\` **同一张依赖图**——输入文件、target、module 一字不改，只多一个 \`--strict\`）\n`
-    + `  tsc：typescript@${depVersion("typescript")} + @types/node@${depVersion("@types/node")}（devDependencies；与棘轮那条路是同一对）\n`
+    "check:types:strict — strict 棘轮（issue #417；与 `npm run check:types` **同一张依赖图**只多一个 `--strict`，**实测数参与退出码**）\n"
+    + `  入口：${ENTRIES.join(" + ")}（${MODE}；输入文件、target、module 一字不改）\n`
+    + `  tsc：typescript@${depVersion("typescript")} + @types/node@${depVersion("@types/node")}（devDependencies；与非 strict 棘轮是同一对）\n`
     + `  参数：${strictArgs.join(" ")}\n`
     + `  复现：node node_modules/typescript/bin/tsc ${strictArgs.join(" ")}\n`
-    + `  对照：**非 strict 才是棘轮量的那个数**——\`npm run check:types\` 的基线是 ${BASELINE} 个 --checkJs 错误（${MODE}）；`
-    + "strict 这一档没有基线、不参与判定，两个数不可互相比、也不许拿 strict 的数去下调基线。",
+    + `  基线：${STRICT_BASELINE} 个 strict 错误（${MODE}；常量 ${WITH_TOOLS ? "BASELINE_STRICT_WITH_TOOLS" : "BASELINE_STRICT_ROOT"}，`
+    + "issue #417，2026-10-31 实测于基点 4840004；两档必须同一笔提交里一起测、一起降）\n"
+    + `  对照：**非 strict 那一档是另一道棘轮**——\`npm run check:types\` 的基线是 ${BASELINE} 个 --checkJs 错误（${MODE}）；`
+    + "两个总数不可互相比，也不许拿一档的数去下调另一档的基线。",
   );
   console.log(`strict 实测：${strictTotal} 个错误 / ${strictFiles.length} 个文件`);
   console.log(
@@ -448,10 +487,55 @@ if (STRICT_REPORT) {
     + codeRows.map(([c, n]) => `TS${c}×${n}`).join("、"),
   );
   if (!VERBOSE && (strictFiles.length > fileRows.length || strictCodes.length > codeRows.length)) {
-    console.log("  （要完整分布：加 --verbose；要单条定位：本命令目前只给聚合，逐条定位请直接跑上面的复现命令）");
+    console.log("  （要完整分布：加 --verbose；要单条定位：加 --show-errors N）");
   }
-  // 观测路径到此结束：**观测到的数（多少都一样）不影响退出码**（issue #416：只观测，不改判定）。
-  // 非 0 只发生在上面那三条「脚本自己跑不成」的路径上，与 strict 报多少无关。
+  if (SHOW_ERRORS > 0) {
+    console.log(strictParsed.errors.slice(0, SHOW_ERRORS).map((e) => `  ${e.file}(${e.line},${e.col}): TS${e.code}: ${e.msg}`).join("\n"));
+  }
+
+  const strictDetail = () =>
+    `\n  每文件：\n${strictFiles.map(([f, n]) => `    ${String(n).padStart(4)}  ${f}`).join("\n")}`
+    + `\n  每错误码：${strictCodes.map(([c, n]) => `TS${c}×${n}`).join("、")}`;
+  const strictSummary = `${strictTotal} 个 strict 错误 / ${strictFiles.length} 个文件`;
+
+  // ⚠ 与非 strict 同口径的假绿防线：0 个错而基线 > 0 ⇒ 先怀疑**检查面失效**，不是「债还完了」。
+  if (strictTotal === 0 && STRICT_BASELINE > 0) {
+    console.error(
+      `check:types:strict — 失败 — 实测 0 个 strict 错误，但基线是 ${STRICT_BASELINE}：一步清零几乎不可能，`
+      + "先怀疑**检查面失效**而不是「债还完了」。\n"
+      + "  依次排查：① `src/` 下是否残留 `.d.ts` 生成物（上面的共用守卫会先拦）；② 入口文件是否还在（当前入口："
+      + ENTRIES.join(", ") + "）；③ tsc 输出形状是否变了（看上面的告警）。\n"
+      + "  确认真的清零了：把本脚本的 `BASELINE_STRICT_ROOT` / `BASELINE_STRICT_WITH_TOOLS` 一起改成 0（那时这条守卫自动解除）。",
+    );
+    process.exit(1);
+  }
+
+  if (strictTotal > STRICT_BASELINE) {
+    // 棘轮变红：strict 那一档新增了错。点名「多在哪」，而不是只喊数字。
+    const top = strictFiles.slice(0, 5).map(([f, n]) => `${f} ${n}`).join("、");
+    console.error(
+      `check:types:strict — 失败 — 实测 ${strictSummary}${strictDetail()}\n`
+      + `  基线 ${STRICT_BASELINE}（issue #417 棘轮，${MODE}），**超出 ${strictTotal - STRICT_BASELINE} 个**。\n`
+      + `  最多的文件：${top}\n`
+      + "  怎么修：\n"
+      + "    · 定位新错：`node scripts/type-check-ratchet.mjs --strict --show-errors 40`；或改动前后各跑一次 `--strict --verbose` 对比每文件计数；\n"
+      + "    · 首选**减掉它**（补 JSDoc 类型；#213 R4 记录过两种会**静默**把参数退化成 `any` 的 JSDoc 形状）；\n"
+      + "    · **不要**为了变绿去调高基线常量：strict 那笔存量债由 #417 按文件切片还，新增必须当场清；\n"
+      + `    确需上调时把 ${STRICT_BASELINE} 改成 ${strictTotal}，并在提交信息里写清是谁的哪批改动、为什么本轮不还。`,
+    );
+    process.exit(1);
+  }
+
+  if (strictTotal < STRICT_BASELINE) {
+    console.log(
+      `check:types:strict: OK — 实测 ${strictSummary}（${MODE}），比基线 ${STRICT_BASELINE} **少 ${STRICT_BASELINE - strictTotal} 个**。\n`
+      + `  基线可下调至 ${strictTotal}：改 scripts/type-check-ratchet.mjs 的 \`BASELINE_STRICT_ROOT\` / \`BASELINE_STRICT_WITH_TOOLS\`\n`
+      + "  并单独提交（两档同一笔提交里一起测、一起降；棘轮只减不增，别把这次收益丢掉）。",
+    );
+    process.exit(0);
+  }
+
+  console.log(`check:types:strict: OK — 实测 ${strictSummary}（${MODE}），等于基线 ${STRICT_BASELINE}（issue #417 棘轮：只减不增）。`);
   process.exit(0);
 }
 
