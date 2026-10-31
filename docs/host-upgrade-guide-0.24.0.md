@@ -1,3 +1,4 @@
+<!-- doc-version: 0.24.0 -->
 # Host upgrade guide: 0.24.0
 
 **This is the "the runtime stops guessing on your behalf" release.** 0.23.0 changed *where the body of a

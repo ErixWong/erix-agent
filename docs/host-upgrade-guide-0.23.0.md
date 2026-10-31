@@ -1,3 +1,4 @@
+<!-- doc-version: 0.23.0 -->
 # Host upgrade guide: 0.23.0
 
 **This is the storage-convergence release.** 0.22.0 shipped the persistence-truth work (issue #326);

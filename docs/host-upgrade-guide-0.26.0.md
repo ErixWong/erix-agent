@@ -1,3 +1,4 @@
+<!-- doc-version: 0.26.0 -->
 # Host upgrade guide: 0.26.0
 
 **This is the "a fold hands you its substitute, and a finished run always has a body" release.** 0.25.0 made a

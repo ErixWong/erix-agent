@@ -93,6 +93,27 @@
 //                 `-r`、`--no-final-guard`）一律计入。现场：`--require-deliverable` 进了帮助文本、契约、
 //                 升级指南，两份 README 的 usage 行一个都没写，而所有门禁一路绿。放行口
 //                 `CLI_FLAG_EXEMPTIONS` 现在为空，且条目空转即红（#210 R2 惯例）。
+//  14. doc-version 指南自述版本（issue #511 判据 1 前半）：每份 `docs/host-upgrade-guide-<X.Y.Z>[_cn].md`
+//                 的**第一行**必须是 `<!-- doc-version: X.Y.Z -->`，且与文件名同源；非 semver 命名的历史指南
+//                 （`v030` 两份）在 `DOC_VERSION_EXEMPT` 里逐条登记并写理由，条目空转即红。
+//                 为什么要有这一行：没有「这份文件记录的是哪个版本」这个真值，下面几条都无从判定。
+//  15. version-attribution 版本归属句（判据 1 后半）：指南里「<verB> adds / removes / 删掉 / 新增」类句式
+//                 里的 `verB` 若 **> 自述版本**（= 在讲**后面那个版本**的事），同一句必须带前向指针
+//                 `see the <verB> upgrade guide` / 「见 <verB> 升级指南」，否则红并点名行号。
+//                 只咬这一侧的理由（向后引用靠判据 2 的树作证、早期版本没有指南可指）写在 §15 节头。
+//  16. guide-claim 指南里的「树 / CHANGELOG」声称（判据 2）：(a) 「没有/删掉了 `config.*`」⇒ 该路径必须
+//                 确实不在 `CONFIG_NAMESPACE_SCHEMA` 里（删除是单调的，今天的树就是证人）；(b) 「`config.*`
+//                 是 V 加的」⇒ 必须出现在 CHANGELOG 的 V 段（未发布版并入下一个已发布段）；
+//                 (c) 「N 个分组 / N 个叶子」只在**自述版本 == package.json** 的那份指南上校（老指南的数是当时
+//                 为真的历史）。
+//  17. changelog-published CHANGELOG 版本段的发布态（判据 3）：带日期的版本段若**不在 registry 的
+//                 `versions` 列表**里，必须在段首标「（未发布 / unpublished）」；反向也看守（已发布却自称未发布红）。
+//  18. published-claim 「本仓版本」与「发布行」两类声称句各对各自的真值（issue #511 评论）：前者对
+//                 `package.json`，后者对 registry 的 `dist-tags.latest`；两类句子都不许带测量日期/「实测」
+//                 （日期自己不会过期，留着它就是给「过期」留一个合法位置）。全文扫描还看守
+//                 「`dist-tags.latest` 后面紧跟的版本号」与「X 从未发布」两形状。
+//                 registry 取不到（离线 / 无缓存）⇒ **降级为告警**并打印原因与来源，不判红（与 `check:cli-real`
+//                 的闸门分类同一口径：网络不可得不是文档漂移）；`--offline` 直接不读 registry。
 //
 // 锚点粒度（issue #210 R3：**别把「存在性」锚点误当成「文档里删一处提及就会红」**）：
 //   · 存在性（每档被检查文档至少命中一次即可；同一句里删掉额外一处提及不会红）：
@@ -129,8 +150,11 @@
 //   node scripts/docs-drift-check.mjs --self-test  # 把 #210 每条清单/单位锚点的反向证固化在脚本里：
 //                                                  # 内存改文档一处 / 内存改源码一处 / 都不改，
 //                                                  # 断言「改→红、不改→绿」；变异没落上去也算失败
+//   node scripts/docs-drift-check.mjs --offline    # 不读 registry（#511 的发布态/发布行判据降级为跳过）：
+//                                                  # 给「无网但要跑全量门禁」的场景用，会把降级原因打进输出
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -3689,11 +3713,592 @@ const SKELETON_PAIRS = [
   ["中英 AGENTS", AGENTS_EN, AGENTS_CN],
 ];
 
+// ── 14. doc-version 自述（issue #511 判据 1 前半）───────────────────────────────
+// 病根（issue #511）：门禁只看守「值对不对」，不看守「这句话属于哪个版本」。0.27 指南曾整篇描述
+// 一棵 **0.28 的树**（「七个分组」「没有 `config.observers` 这一组」「函数值 is now refused」），
+// 而当时 `check:docs:strict` 退出码 **0** —— 版本锚点只比「`package.json` 的版本号有没有被正确
+// 引用」，散文里的**版本归属**无人看守。这类病已第三次出现（#499 的白名单时代错置、#497 的锚点链
+// 陈数、#511 本次）。
+//
+// 判据 1 前半：每份 `docs/host-upgrade-guide-<X.Y.Z>[_cn].md` 的**第一行**必须是机器可读自述
+// `<!-- doc-version: X.Y.Z -->`，且与文件名同源。没有自述 ⇒ 后面两条判据都无从判定「这句话属于
+// 哪个版本」（抽不到真值就报错，#164 口径）。
+const GUIDE_VERSION_RE = /^docs\/host-upgrade-guide-(\d+\.\d+\.\d+)(_cn)?\.md$/;
+const GUIDE_GLOB_RE = /^host-upgrade-guide.*\.md$/;
+const DOC_VERSION_LINE_RE = /^<!--\s*doc-version:\s*(\d+\.\d+\.\d+)\s*-->$/;
+
+/** 非 semver 命名的历史指南：**逐条点名 + 写理由**（条目空转即红，#210 R2 惯例）。
+ *  为什么不是「凡 `host-upgrade-guide*` 都要求自述」：`v030` 那两份是老文件名，一份文件覆盖
+ *  0.3.0–0.3.4 一条边界，**没有单一自述版本可写**——强行填一个版本号等于让门禁承认一句假话。 */
+const DOC_VERSION_EXEMPT = new Map([
+  ["docs/host-upgrade-guide-v030.md", "0.3.x 时代的老文件名：一份文件覆盖 v0.3.0–v0.3.4 一条边界，没有单一自述版本可写（当时指南形态还没有版本锚点）"],
+  ["docs/host-upgrade-guide-v030_cn.md", "同上（中英成对）"],
+]);
+
+/** `--self-test` 用：临时替换放行表（与 `SIM_CLI_FLAG_EXEMPTIONS` 同一课：overlay 只改文本，改不动运行时
+ *  那个 Map）。「登记了却没人用 ⇒ 红」这条反向证要靠它把一条假条目塞进表里才证得到。 */
+let SIM_DOC_VERSION_EXEMPT = null;
+const docVersionExemptions = () => SIM_DOC_VERSION_EXEMPT ?? DOC_VERSION_EXEMPT;
+
+function allGuideDocs() {
+  return readdirSync(path.join(ROOT, "docs"))
+    .filter((f) => GUIDE_GLOB_RE.test(f))
+    .map((f) => `docs/${f}`)
+    .sort();
+}
+
+/** 覆盖面里那些「文件名就能读出被记录版本」的指南。 */
+function versionedGuideDocs() {
+  return allGuideDocs().filter((rel) => GUIDE_VERSION_RE.test(rel));
+}
+
+const guideVersionOf = (rel) => rel.match(GUIDE_VERSION_RE)?.[1] ?? null;
+
+/** 指南的自述版本（走 `textOf` ⇒ `--self-test` 的内存副本同样生效）；没有自述返 null。 */
+function guideDocVersion(rel) {
+  const rec = fileRecord(rel);
+  if (!rec) return null;
+  return rec.lines[0]?.trim().match(DOC_VERSION_LINE_RE)?.[1] ?? null;
+}
+
+function collectDocVersionErrors() {
+  const out = [];
+  const notes = [];
+  const used = new Set();
+  for (const rel of allGuideDocs()) {
+    const version = guideVersionOf(rel);
+    if (version === null) {
+      if (!docVersionExemptions().has(rel)) {
+        out.push(`doc-version: ${rel} 的文件名不是 \`host-upgrade-guide-<X.Y.Z>[_cn].md\`，读不出被记录版本——`
+          + `改名成带版本号的形态；历史文件则在 DOC_VERSION_EXEMPT 里逐条登记并写理由（#511 判据 1）`);
+      } else {
+        used.add(rel);
+      }
+      continue;
+    }
+    const rec = fileRecord(rel);
+    if (!rec) { out.push(`doc-version: ${rel} 读不到（覆盖面里点名了却打不开）`); continue; }
+    const first = (rec.lines[0] ?? "").trim();
+    const m = first.match(DOC_VERSION_LINE_RE);
+    if (!m) {
+      out.push(`doc-version: ${rel} 的第一行不是机器可读自述 \`<!-- doc-version: ${version} -->\`（实际是「${first.slice(0, 60)}」）——`
+        + `指南必须自述它记录的是哪个版本，否则「这句话属于哪个版本」无从看守（#511 判据 1）`);
+      continue;
+    }
+    if (m[1] !== version) {
+      out.push(`doc-version: ${rel} 自述 ${m[1]}，文件名是 ${version}——自述与文件名必须同源，不许两份真值并存（改名或改自述）`);
+      continue;
+    }
+    notes.push(`doc-version: ${rel} 自述 ${m[1]} == 文件名`);
+  }
+  for (const rel of docVersionExemptions().keys()) {
+    if (!used.has(rel)) out.push(`doc-version: DOC_VERSION_EXEMPT 里登记的 ${rel} 不存在（或已改名成带版本号的形态）——`
+      + `空转的放行条目就是后门，删掉它（#210 R2 惯例）`);
+  }
+  notes.push(`doc-version: ${versionedGuideDocs().length} 份带版本号的指南都自述了版本；非 semver 命名的历史指南 ${docVersionExemptions().size} 份按登记豁免`);
+  collectDocVersionErrors.notes = notes;
+  return out;
+}
+
+// ── 15. 版本归属句（issue #511 判据 1 后半）────────────────────────────────────
+// 判据 1 后半：文中「<verB> adds / removes / 删掉 / 新增」类句式里的 `verB` 若 **≠ 自述版本**，
+// 同一句必须带前向指针（`see the <verB> upgrade guide` / 「见 <verB> 升级指南」），否则红并点名行号。
+//
+// 本实现的一个**收窄**（写清理由，别当成漏做）：只咬 `verB > 自述版本` 这一侧（= 这句话在讲
+// **后面那个版本**的事）。理由有三条：
+//   · #511 的现场正是这一侧：0.27 指南（0.27.0 从未发布）整篇在讲 0.28 的树 —— 「前向指针」这个
+//     词本身指的就是「这条事实属于后面那个版本，去读那一份」；
+//   · 向后的错话（「0.26.0 删掉了 X」而其实是 0.28 删的）由判据 2 看守：删掉是**单调**的，今天的树
+//     就是有效证人（树里还有 X ⇒ 那句话错），不需要指针；
+//   · 0.11.0 / 0.12.0 这类早期版本**没有**对应的指南可指，强行要求「见 0.11.0 升级指南」等于让
+//     门禁要求一个死链接。
+const ATTRIBUTION_VERB_EN = String.raw`(?:adds|added|introduces|introduced|ships|shipped|removes|removed|retires|retired|deletes|deleted|renames|renamed|changes|changed|refuses|refused)`;
+const ATTRIBUTION_VERB_CN = String.raw`(?:新增|加入|引入|加了|删掉|删了|删除|移除|退役|不再|改的|改成|变了|变化)`;
+const ATTRIBUTION_AROUND = String.raw`(?:from|since|as of|自|从)`;
+const ATTRIBUTION_RE = new RegExp(
+  String.raw`(?<![\w.])(\d+\.\d+\.\d+)(?![\w.-])[^.;。；]{0,40}?(?:${ATTRIBUTION_VERB_EN}|${ATTRIBUTION_VERB_CN})`
+  + String.raw`|(?:${ATTRIBUTION_VERB_EN}|${ATTRIBUTION_VERB_CN})[^.;。；]{0,40}?(?<![\w.])(\d+\.\d+\.\d+)(?![\w.-])`
+  + String.raw`|(?:${ATTRIBUTION_AROUND})\s*(\d+\.\d+\.\d+)(?![\w.-])`,
+  "g");
+
+/** 把一行切成句子：英文句号/分号（后面跟空白）/ 中文句号、分号、问叹号（**中文标点后不带空格**，
+ *  所以不能统一要求 `\s+`—— 第一版就是统一要求的，于是中文侧「…是 **9 个分组 / 43 个叶子**。基线是
+ *  0.28.0 的七个分组…」永远切不开，整句因「点名了别的版本号」被跳过，中文侧的数量声称一条也没校到
+ *  （#511 自测的中文用例当场红在「改了但没红」）。行内代码里的 `0.27.0` 不会被切开（`.` 后面跟的是
+ *  数字，不是空白），所以「同一句」的判定不会因为版本号里的点而碎掉。 */
+const sentencesOf = (line) => line.split(/(?<=[。！？；])|(?<=[.!?;])\s+/).filter((s) => s.trim().length > 0);
+
+/** 文档 → 句子流（`{ text, line }`）。**必须先合回逻辑块再切句**：markdown 是硬换行的，
+ *  「同一句」经常横跨两行——第一版按行切，于是 0.27 指南里那句 `… (issue #498, from 0.28.0 —\n
+ *  see the 0.28.0 upgrade guide) is …` 的指针落在下一行、被判成「没有指针」，而 0.29 指南里
+ *  「**8 groups / 43 leaves**：0.28.0 的七个分组、41 个叶子…」被拆成两句、后半句凭空变成
+ *  「当前树是 41 个叶子」（两处都是假红）。合并规则：不以块首标记（`#` / `*` / `-` / `>` / `|` /
+ *  `1.`）开头的行，接进上一块。 */
+function docSentences(lines) {
+  const blocks = [];
+  let buf = null;
+  lines.forEach((raw, i) => {
+    const line = raw.trimEnd();
+    if (!line.trim()) { if (buf) { blocks.push(buf); buf = null; } return; }
+    const startsBlock = /^\s*(?:#{1,6}\s|[*\-+]\s|>\s?|\||\d+\.\s)/.test(line);
+    if (buf && !startsBlock) {
+      buf.text += ` ${line.trim()}`;
+      return;
+    }
+    if (buf) blocks.push(buf);
+    buf = { text: line.trim(), line: i + 1 };
+  });
+  if (buf) blocks.push(buf);
+  const out = [];
+  for (const b of blocks) for (const text of sentencesOf(b.text)) out.push({ text, line: b.line });
+  return out;
+}
+
+/** 前向指针：`see the <ver> upgrade guide` / 「见 <ver> 升级指南」。`upgrade`/「升级」可省
+ *  （本仓 0.26.0 指南里就写着「退役细节见 0.27.0 指南」——同一个标记，别为了一个词改文档措辞）。 */
+const forwardPointerRe = (version) => new RegExp(
+  String.raw`(?:see the|见)\s*${version.replace(/\./g, "\\.")}\s*(?:(?:upgrade\s+)?guide|(?:升级)?指南)`);
+
+function collectVersionAttributionErrors() {
+  const out = [];
+  const notes = [];
+  let checked = 0;
+  for (const rel of versionedGuideDocs()) {
+    const docVersion = guideDocVersion(rel);
+    if (!docVersion) continue;              // 缺自述：由判据 1 前半点名，这里不重复报
+    const rec = fileRecord(rel);
+    if (!rec) continue;
+    for (const { text: sentence, line: lineNo } of docSentences(rec.lines)) {
+        for (const m of sentence.matchAll(ATTRIBUTION_RE)) {
+          const version = m[1] ?? m[2] ?? m[3];
+          if (cmpSemver(version, docVersion) <= 0) continue;   // 向后引用不在本判据（理由见节头）
+          checked += 1;
+          if (forwardPointerRe(version).test(sentence)) continue;
+          out.push(`version-attribution: ${rel}:${lineNo} 这句话把事实归给 ${version}（本文件自述 ${docVersion}），`
+            + `但同一句里没有前向指针「see the ${version} upgrade guide」/「见 ${version} 升级指南」——`
+            + `「这句话属于哪个版本」就是靠这个指针看守的（#511 判据 1）：${sentence.trim().slice(0, 110)}`);
+        }
+    }
+  }
+  notes.push(`version-attribution: 前向归属句 ${checked} 处逐句过（` + `向后引用与早期无指南版本按节头理由不入本判据）`);
+  collectVersionAttributionErrors.notes = notes;
+  return out;
+}
+
+// ── 16. 指南里的「树 / CHANGELOG」声称（issue #511 判据 2）───────────────────────
+// 判据 2 的两半，各自的真值来源不同，理由也写在各自的分支里：
+//   (a) **删除声称**（「没有 X 组」/「删掉了 X」+ 点名的 `config.*` 路径）⇒ 该路径必须确实不在
+//       当前树里。删除是**单调**的，所以今天的树对任何版本的指南都是有效证人；
+//   (b) **新增声称**（「X 是 0.27.0 加的」+ 点名的 `config.*` 路径）⇒ 该路径必须出现在 CHANGELOG
+//       的**那一版**段落里。新增**不**单调（今天树里有 X 不能证明是 0.27 加的），所以真值只能从
+//       CHANGELOG 取；而「未发布版本」的条目按本仓惯例并入下一个已发布段（0.27 草案 → 0.28 发布，
+//       0.24 → 0.25 同理），所以取「V 到下一个已发布段」的并集；
+//   (c) **数量声称**（「N 个分组 / N 个叶子」）只在**当前版本**的指南上校——只有那一份指南描述的是
+//       我们手里这棵树；老指南的「七个组」是当时为真的历史，拿今天的 8 个组去判它是假红。
+const CONFIG_NS_SRC = "src/loop/config-namespace.js";
+
+/** 从 `CONFIG_NAMESPACE_SCHEMA` 抽真值：组名与每组的叶子名。抽不到返 null（抽不到真值就报错）。 */
+function configNamespaceTruth() {
+  const rec = fileRecord(CONFIG_NS_SRC);
+  if (!rec) return null;
+  const start = rec.text.indexOf("CONFIG_NAMESPACE_SCHEMA = Object.freeze({");
+  if (start < 0) return null;
+  const end = rec.text.indexOf("\n});", start);
+  const block = rec.text.slice(start, end < 0 ? undefined : end);
+  const groups = [];
+  const leaves = new Map();
+  for (const m of block.matchAll(/^ {2}([a-z][\w]*):\s*Object\.freeze\(\[([\s\S]*?)\]\),/gm)) {
+    groups.push(m[1]);
+    leaves.set(m[1], [...m[2].matchAll(/"([^"]+)"/g)].map((x) => x[1]));
+  }
+  if (!groups.length) return null;
+  return { groups, leaves, leafCount: [...leaves.values()].reduce((n, l) => n + l.length, 0) };
+}
+
+/** 某个 `config.*` 路径是否**真的**在树里。真值取 `CONFIG_NAMESPACE_SCHEMA`（组 / 叶子两张名单），
+ *  **不拿「src 里出现过这个字符串」当判据**——第一版就是那么写的，当场假红：`config.observers` 在
+ *  `src/loop/capabilities-namespace.js` 与 `src/loop/config-namespace.js` 的**注释里**各出现一次
+ *  （解释「这一组整组删掉了」），于是「`config.observers` 不存在」这句真话被判成假话。
+ *  这正是 #299 的同一条课：注释里的名字不是声明。返回 `true/false` = 判得了；`null` = 不适用。 */
+function configPathExists(truth, dotted) {
+  const parts = dotted.split(".");
+  if (parts[0] !== "config") return null;
+  if (parts.length === 2) return truth.groups.includes(parts[1]);
+  if (parts.length === 3) return (truth.leaves.get(parts[1]) ?? []).includes(parts[2]);
+  return null;                       // 更深的路径 schema 不描述 ⇒ 不判（note 里说明，不假装判得了）
+}
+
+/** CHANGELOG 的版本段（标题行 + 该段正文）。 */
+function changelogSections() {
+  const rec = fileRecord("CHANGELOG.md");
+  if (!rec) return null;
+  const out = [];
+  rec.lines.forEach((line, i) => {
+    const m = line.match(/^## \[(\d+\.\d+\.\d+)\](.*)$/);
+    if (!m) return;
+    const dated = /^\s*[-—]\s*\d{4}-\d{2}-\d{2}/.test(m[2]);
+    out.push({ version: m[1], line: i + 1, heading: line.trim(), dated });
+  });
+  // 正文按「本段标题到下一个版本标题」切
+  out.forEach((s, i) => {
+    const from = rec.lines.findIndex((l) => l.trim() === s.heading);
+    const next = out[i + 1] ? rec.lines.findIndex((l, j) => j > from && l.trim() === out[i + 1].heading) : rec.lines.length;
+    s.body = rec.lines.slice(from, next < 0 ? rec.lines.length : next).join("\n");
+  });
+  return out;
+}
+
+const CN_NUMERAL_ONE = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+const EN_NUMERAL_ONE = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+
+/** 句子里「N 个分组 / N 个叶子」这类数量声称（数字、英文数词、中文数词都接）。 */
+function configCountClaims(sentence) {
+  const claims = [];
+  const groupRes = [
+    /(\d+)\s+(?:config\s+)?groups?\b/gi,
+    /\b(one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:config\s+)?groups?\b/gi,
+    /(\d+)\s*个(?:配置)?(?:分组|组)/g,
+    /([一二三四五六七八九十])\s*个(?:配置)?(?:分组|组)/g,
+  ];
+  const leafRes = [
+    /(\d+)\s+(?:config\s+)?leaves\b/gi,
+    /(\d+)\s*个(?:配置)?叶子/g,
+  ];
+  for (const re of groupRes) {
+    re.lastIndex = 0;
+    for (const m of sentence.matchAll(re)) {
+      const n = CN_NUMERAL_ONE[m[1]] ?? EN_NUMERAL_ONE[String(m[1]).toLowerCase()] ?? Number(m[1]);
+      if (Number.isFinite(n)) claims.push({ kind: "分组", value: n, raw: m[0] });
+    }
+  }
+  for (const re of leafRes) {
+    re.lastIndex = 0;
+    for (const m of sentence.matchAll(re)) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n)) claims.push({ kind: "叶子", value: n, raw: m[0] });
+    }
+  }
+  return claims;
+}
+
+/** (a) 删除声称：`no`/`没有`/`removed`/`删掉了` 后面紧跟的 `config.*` 路径。 */
+const REMOVAL_CLAIM_RES = [
+  /(?:\bno|\bNo|\bnot)\s+`(config\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)`/g,
+  /没有\s*`(config\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)`/g,
+  /\b(?:removed|retired|deleted|dropped)\s+`(config\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)`/g,
+  /(?:删掉|删了|删除|移除|退役)(?:了)?\s*`(config\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)`/g,
+];
+
+function collectGuideClaimErrors() {
+  const out = [];
+  const notes = [];
+  const truth = configNamespaceTruth();
+  if (!truth) {
+    out.push(`guide-claim: 从 ${CONFIG_NS_SRC} 抽不到 \`CONFIG_NAMESPACE_SCHEMA\` 的组/叶子真值——`
+      + `抽不到真值就报错（#164 口径），判据 2 不许静默放行`);
+    return out;
+  }
+  const sections = changelogSections();
+  const byVersion = new Map((sections ?? []).map((s) => [s.version, s]));
+  const reg = registryFacts();
+  const publishedSet = reg.ok ? new Set(reg.versions) : null;
+  const emit = (msg) => { (reg.ok && reg.authoritative ? out : warnings).push(reg.ok && reg.authoritative ? msg : `${msg}（registry 数据来自本地缓存/不可得，降级为告警）`); };
+
+  let removalChecked = 0;
+  let removalSkipped = 0;
+  let additionChecked = 0;
+  let countChecked = 0;
+  let countSkipped = 0;
+  for (const rel of versionedGuideDocs()) {
+    const docVersion = guideDocVersion(rel);
+    if (!docVersion) continue;
+    const rec = fileRecord(rel);
+    if (!rec) continue;
+    for (const { text: sentence, line: lineNo } of docSentences(rec.lines)) {
+        // (a) 删除声称：路径必须不在树里
+        for (const re of REMOVAL_CLAIM_RES) {
+          re.lastIndex = 0;
+          for (const m of sentence.matchAll(re)) {
+            const exists = configPathExists(truth, m[1]);
+            if (exists === null) { removalSkipped += 1; continue; }
+            removalChecked += 1;
+            if (!exists) continue;
+            out.push(`guide-claim: ${rel}:${lineNo} 声称 \`${m[1]}\` 不存在/已删，但它在当前树里确实存在——`
+              + `「删掉了 X」是**单调**声称，今天的树就是有效证人（#511 判据 2a）：${sentence.trim().slice(0, 110)}`);
+          }
+        }
+        // (b) 新增声称：路径必须出现在 CHANGELOG 的那一版（未发布段并入下一个已发布段）
+        for (const m of sentence.matchAll(ATTRIBUTION_RE)) {
+          const version = m[1] ?? m[2] ?? m[3];
+          const paths = [...sentence.matchAll(/`(config\.[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)`/g)].map((x) => x[1]);
+          if (!paths.length) continue;
+          additionChecked += 1;
+          const reach = changelogReach(version, byVersion, publishedSet);
+          const body = reach.map((v) => byVersion.get(v)?.body ?? "").join("\n");
+          if (!body) { emit(`guide-claim: ${rel}:${lineNo} 把 \`${paths[0]}\` 归给 ${version}，但 CHANGELOG 里找不到 ${version} 的版本段——真值缺位`); continue; }
+          for (const p of paths) {
+            if (body.includes(p)) continue;
+            emit(`guide-claim: ${rel}:${lineNo} 声称 \`${p}\` 属于 ${version}，但它不在 CHANGELOG 的 ${reach.join(" / ")} 段里——`
+              + `「X 是这一版加的」的真值只能从 CHANGELOG 取（#511 判据 2b）`);
+          }
+        }
+        // (c) 数量声称：只校当前版本的指南
+        if (cmpSemver(docVersion, PKG_VERSION) !== 0) { if (configCountClaims(sentence).length) countSkipped += 1; continue; }
+        if (!/config/i.test(sentence)) continue;
+        // 句子里点名了**别的**版本号 ⇒ 这是历史句（「0.28.0 的七个分组、41 个叶子」），不按今天的树判。
+        // 没有这一条，当前版本指南里任何一句「上一版是 N 组」都会被判成假话（第一版就这么假红过）。
+        if ([...sentence.matchAll(/(?<![\w.])(\d+\.\d+\.\d+)(?![\w.-])/g)].some((m) => m[1] !== PKG_VERSION)) continue;
+        for (const claim of configCountClaims(sentence)) {
+          countChecked += 1;
+          const real = claim.kind === "分组" ? truth.groups.length : truth.leafCount;
+          if (claim.value === real) continue;
+          out.push(`guide-claim: ${rel}:${lineNo} 声称「${claim.raw}」，而 ${CONFIG_NS_SRC} 里是 **${real}** 个${claim.kind}`
+            + `（${claim.kind === "分组" ? truth.groups.join(" / ") : `${truth.groups.length} 组共 ${truth.leafCount} 叶`}）——`
+            + `当前版本的指南描述的就是这棵树，数量对不上就是「这句话属于另一个版本」（#511 判据 2c）`);
+        }
+    }
+  }
+  notes.push(`guide-claim: 删除声称 ${removalChecked} 处（路径逐条对 ${CONFIG_NS_SRC} 的组/叶子名单；`
+    + `${removalSkipped} 处路径 schema 不描述 ⇒ 不判）、新增声称 ${additionChecked} 处（逐条对 CHANGELOG）、`
+    + `数量声称 ${countChecked} 处（只校自述版本 == package.json 的那份指南；老指南的 ${countSkipped} 处数量声称按节头理由跳过：`
+    + `它们描述的是当时的树，今天没有那棵树可对）`);
+  collectGuideClaimErrors.notes = notes;
+  return out;
+}
+
+/** 「V 这一版」在 CHANGELOG 里的可达段落：V 自己 + 它之后的第一个**已发布**段
+ *  （未发布版本的条目按本仓惯例并入下一个已发布版本）。registry 不可得时只看 V 自己。 */
+function changelogReach(version, byVersion, publishedSet) {
+  const out = [version];
+  if (!publishedSet || publishedSet.has(version)) return out;
+  const after = [...byVersion.keys()].filter((v) => cmpSemver(v, version) > 0).sort(cmpSemver);
+  for (const v of after) {
+    if (publishedSet.has(v)) { out.push(v); break; }
+  }
+  return out;
+}
+
+// ── 17. CHANGELOG 版本段的发布态（issue #511 判据 3）────────────────────────────
+// 判据 3：带日期的版本段（`## [X.Y.Z] - YYYY-MM-DD`）若**不在 registry**，必须在该段首行标注
+// 「（未发布 / unpublished）」，否则红。口径参照本仓 0.24.0 先例（从未发布、不回填、保留为历史）。
+// registry 取不到（离线 / 无缓存）⇒ 跳过并在输出里明说原因，**不判红**（与 `check:cli-real` 的
+// 闸门分类同一口径：网络不可得不是文档漂移）。
+const UNPUBLISHED_MARK_RE = /未发布|unpublished/i;
+
+/** 该版本段自己声称「未发布」吗（看标题行，或正文前三行——本仓的写法是段首一句引用块）。
+ *  抽成函数是因为**两条判据都要用它**：判据 3 自己，以及 `--self-test` 的 registry 夹具（见
+ *  `selfTestRegistry`）—— 夹具的「已发布」口径必须与判据的「未发布」口径逐字同源。 */
+function hasUnpublishedMark(s) {
+  return UNPUBLISHED_MARK_RE.test(s.heading) || s.body.split("\n").slice(1, 4).some((l) => UNPUBLISHED_MARK_RE.test(l));
+}
+
+function collectChangelogPublicationErrors() {
+  const out = [];
+  const notes = [];
+  const sections = changelogSections();
+  if (!sections) { out.push("changelog-published: 读不到 CHANGELOG.md，发布态判据无从对账"); return out; }
+  const reg = registryFacts();
+  if (!reg.ok) {
+    notes.push(`changelog-published: 跳过——${reg.why}（判据 3 在 registry 不可得时按约定跳过，不判红）`);
+    collectChangelogPublicationErrors.notes = notes;
+    return out;
+  }
+  const published = new Set(reg.versions);
+  const emit = (msg) => (reg.authoritative ? out : warnings).push(reg.authoritative ? msg : `${msg}（registry 数据来自本地缓存，降级为告警）`);
+  let dated = 0;
+  let marked = 0;
+  for (const s of sections) {
+    if (!s.dated) continue;
+    dated += 1;
+    const hasMark = hasUnpublishedMark(s);
+    if (published.has(s.version)) {
+      if (UNPUBLISHED_MARK_RE.test(s.heading)) {
+        emit(`changelog-published: CHANGELOG:${s.line} 的 ${s.version} 段自称「未发布/unpublished」，但它**在** registry 的 versions 列表里——`
+          + `发布态写反了（判据 3 的两个方向都看守）`);
+      }
+      continue;
+    }
+    if (hasMark) { marked += 1; continue; }
+    emit(`changelog-published: CHANGELOG:${s.line} 的 ${s.version} 段带日期却不在 registry 的 versions 列表里，`
+      + `而段首没有「（未发布 / unpublished）」标注——已发布与未发布必须从段落本身看得出来（#511 判据 3；0.24.0 是先例口径）`);
+  }
+  notes.push(`changelog-published: 带日期的版本段 ${dated} 个，其中 ${marked} 个不在 registry 且已标注未发布（registry 来源：${reg.source}）`);
+  collectChangelogPublicationErrors.notes = notes;
+  return out;
+}
+
+// ── 18. 发布行声称 vs registry（issue #511 评论）────────────────────────────────
+// 盲区（#511 评论）：README 那句「当前发布行 = X」对 npm 世界可能是假话，而门禁看不见——它只保证
+// 文档与本仓版本一致，**从不与 registry 对账**。两类句子必须可分辨，真相来源也不同：
+//   · 「本仓当前版本」⇒ `package.json`；
+//   · 「发布行 / 已发布 / latest」⇒ registry 的 `dist-tags.latest` 与 `versions` 列表。
+// 另一条（#511 第二条评论补的）：这类句子若带一个**测量日期**，日期自己不会过期 ⇒ 光对账不够。
+// 本实现选的是「**把测量日期从句子里去掉**，改成门禁当场对账的输出」，理由：
+//   · 日期是第二份真值，它只能靠人回来改；而门禁每次运行都能当场读一次 registry —— 留日期等于
+//     给「过期」留一个合法位置；
+//   · 「日期早于最近一次发布就点名」需要一个可信的发布时间源（registry 的 `time` 字段），它比
+//     `versions` 列表更容易缺（离线缓存里常常没有 `time`），判据会在最需要它的时候降级成跳过；
+//   · 所以本判据干脆**禁止**这两句里出现日期/「实测」字样：句子只留可当场对账的字面量。
+const OFFLINE = process.argv.includes("--offline");
+const REGISTRY_PKG = "erix-agent";
+let SIM_REGISTRY = null;        // 自测口子：{ ok, authoritative, latest, versions, source }
+let REGISTRY_FACTS = null;
+
+function probeRegistry() {
+  const run = (extra) => execFileSync("npm",
+    ["view", REGISTRY_PKG, "versions", "dist-tags", "--json", ...extra],
+    { encoding: "utf8", timeout: 20000, stdio: ["ignore", "pipe", "ignore"] });
+  const parse = (raw, source) => {
+    const j = JSON.parse(raw);
+    const versions = Array.isArray(j.versions) ? j.versions : [j.versions].filter(Boolean);
+    const latest = j["dist-tags"]?.latest ?? null;
+    if (!latest || !versions.length) return null;
+    return { ok: true, latest, versions, source };
+  };
+  try {
+    const live = parse(run([]), `npm view ${REGISTRY_PKG} versions dist-tags --json（联网）`);
+    if (live) return { ...live, authoritative: true };
+  } catch { /* 联网取不到：退到本地缓存 */ }
+  try {
+    const cached = parse(run(["--offline"]), `npm view ${REGISTRY_PKG} versions dist-tags --json --offline（本地缓存）`);
+    if (cached) {
+      return { ...cached, authoritative: false,
+        why: "联网取 registry 失败，退回 npm 本地缓存——缓存可能落后于 registry，所以这条只告警不判红" };
+    }
+  } catch { /* 缓存也没有 */ }
+  return { ok: false, why: "registry 取不到（联网 `npm view` 与 `npm view --offline` 都失败）" };
+}
+
+/** registry 事实（一次进程只读一次）。`--self-test` 走内存夹具，`--offline` 直接跳过。 */
+function registryFacts() {
+  if (SIM_REGISTRY) return SIM_REGISTRY;
+  if (REGISTRY_FACTS) return REGISTRY_FACTS;
+  REGISTRY_FACTS = OFFLINE
+    ? { ok: false, why: "`--offline`：本脚本在离线口径下不读 registry（缓存可能落后于 registry，把过期数据当真理会把「刚发布」判成红）" }
+    : probeRegistry();
+  return REGISTRY_FACTS;
+}
+
+/** `--self-test` 的 registry 夹具（**只给自测用**：生产路径永远走 `probeRegistry()`）。
+ *  把「已发布」定义成 CHANGELOG 里**带日期且没标未发布**的版本段（`hasUnpublishedMark`，与判据 3 同源），
+ *  `latest` 默认取 `package.json` 的版本。
+ *  为什么从 CHANGELOG 派生、而不写死一份 registry 快照：写死的快照会在下一次真实发布那天过期，
+ *  而过期那天**所有** registry 类用例会一起变红，没人分得清是真回归还是夹具陈了（#292 的教训：
+ *  硬编码 121/164 一降基线就变成空操作）。派生版的唯一风险是「夹具与被测文档同源」——所以每条用例
+ *  都用 `exclude` / `latest` 把**要证的那一个事实**拨到与文档不同的值上，证的是「门禁读到了它」。 */
+function selfTestRegistry({ exclude = [], latest = PKG_VERSION } = {}) {
+  const versions = (changelogSections() ?? [])
+    .filter((s) => s.dated && !hasUnpublishedMark(s))
+    .map((s) => s.version)
+    .filter((v) => !exclude.includes(v));
+  return { ok: true, authoritative: true, latest, versions, source: "self-test 夹具（CHANGELOG 派生）" };
+}
+
+/** 两份「当前版本」声称句的规范写法（形状由本判据看守，改措辞要同步改这里）。 */
+const VERSION_CLAIM_RULES = [
+  { file: AGENTS_EN, label: "AGENTS.md「当前版本」句",
+    repoRe: /Current version: `package\.json` says `(\d+\.\d+\.\d+)`/,
+    pubRe: /`dist-tags\.latest`[^.;]{0,60}?`(\d+\.\d+\.\d+)`/ },
+  { file: AGENTS_CN, label: "AGENTS_cn.md「当前版本」句",
+    repoRe: /当前版本：`package\.json` 写 `(\d+\.\d+\.\d+)`/,
+    pubRe: /`dist-tags\.latest`[^。；]{0,60}?`(\d+\.\d+\.\d+)`/ },
+];
+
+/** 发布行 / 未发布声称的扫描面：宿主会读的那批文档 + 指南 + 两份 README / 需求对照。
+ *  **CHANGELOG 不在面内**：本仓对它的既定口径是「保留那一刻为真的历史」（裸行号棘轮同样把它排除在外），
+ *  拿今天的 registry 去改历史条目等于伪造历史。 */
+function publicationDocs() {
+  return [...new Set([README_EN, README_CN, REQ_EN, REQ_CN, AGENTS_EN, AGENTS_CN,
+    CONTRACT_EN, CONTRACT_CN, ...allGuideDocs()])];
+}
+
+function collectPublishedClaimErrors() {
+  const out = [];
+  const notes = [];
+  const reg = registryFacts();
+  const emit = (msg) => {
+    if (reg.ok && reg.authoritative) out.push(msg);
+    else warnings.push(`${msg}（registry 数据来自本地缓存/不可得，降级为告警）`);
+  };
+  // (1) 两份「当前版本」句：本仓版本对 package.json、发布行对 registry、且不许带测量日期
+  for (const rule of VERSION_CLAIM_RULES) {
+    const rec = fileRecord(rule.file);
+    if (!rec) { out.push(`published-claim: ${rule.file} 读不到，${rule.label}无从核对`); continue; }
+    const idx = rec.lines.findIndex((l) => rule.repoRe.test(l));
+    if (idx < 0) {
+      out.push(`published-claim: ${rule.file} 缺少「${rule.label}」（规范写法：本仓版本对 \`package.json\`、发布行对 \`dist-tags.latest\`，`
+        + `两者都写成可对账的字面量；见 scripts/docs-drift-check.mjs 顶部注释）——检查面失效本身就是漂移`);
+      continue;
+    }
+    const line = rec.lines[idx];
+    const repo = line.match(rule.repoRe)[1];
+    if (repo !== PKG_VERSION) {
+      out.push(`published-claim: ${rule.file}:${idx + 1} 的「${rule.label}」把**本仓版本**写成 ${repo}，package.json 是 ${PKG_VERSION}`);
+    }
+    const pub = line.match(rule.pubRe);
+    if (!pub) {
+      out.push(`published-claim: ${rule.file}:${idx + 1} 的「${rule.label}」没有可对账的发布行字面量`
+        + `（要求 \`dist-tags.latest\` 后面紧跟 \`X.Y.Z\`）——只写「本仓版本」的句子对 npm 世界是假话也无人看守（#511 评论）`);
+    } else if (reg.ok) {
+      if (pub[1] !== reg.latest) {
+        emit(`published-claim: ${rule.file}:${idx + 1} 说发布行（\`dist-tags.latest\`）是 ${pub[1]}，registry 实测是 ${reg.latest}`);
+      }
+    }
+    // 测量日期：这两句里不许有（理由见节头）
+    for (const sentence of sentencesOf(line)) {
+      if (!rule.repoRe.test(sentence) && !rule.pubRe.test(sentence)) continue;
+      const date = sentence.match(/\d{4}-\d{2}-\d{2}/);
+      if (date || /measured|实测/.test(sentence)) {
+        out.push(`published-claim: ${rule.file}:${idx + 1} 的「${rule.label}」里带了测量日期/「实测」字样（${date ? date[0] : "measured/实测"}）——`
+          + `日期自己不会过期，留着它就是给「过期」留一个合法位置；这两句改成门禁**当场对账**的字面量，日期删掉（#511 第二条评论）`);
+      }
+    }
+    // 「未发布」声称与 registry 的方向由下面第 (2) 条全文扫描统一看守（按「版本号紧贴声称」的形状，
+    // 不按整行：这一行里合法的「0.24.0 was never published」会让整行级判据假红——第一版就这么假红过）。
+    notes.push(`published-claim: ${rule.file}:${idx + 1} 本仓版本 ${repo} == package.json`
+      + (reg.ok ? `；发布行 ${pub?.[1] ?? "（缺）"} vs registry ${reg.latest}` : `；registry 未取到（${reg.why}）`));
+  }
+  // (2) 全文扫描：`dist-tags.latest` 后面紧跟的版本号必须 == registry latest；
+  //     「从未发布 / never published」后面紧跟的版本号必须**不在** registry 的 versions 里。
+  for (const rel of publicationDocs()) {
+    const rec = fileRecord(rel);
+    if (!rec) continue;
+    rec.lines.forEach((line, i) => {
+      for (const sentence of sentencesOf(line)) {
+        // 标记**不要求**反引号：契约里那批句子写的是 `npm view erix-agent dist-tags.latest`（整段一个
+        // 行内代码），第一版按「恰好是 `dist-tags.latest` 一个代码段」去匹配，于是 38 行过期值全被漏掉
+        // ——漏的正是这条判据要咬的那批（#511 评论点名「当前发布行」这类句子）。
+        for (const m of sentence.matchAll(/dist-tags\.latest[^.;。；]{0,40}?(\d+\.\d+\.\d+)/g)) {
+          if (!reg.ok) continue;
+          if (m[1] === reg.latest) continue;
+          emit(`published-claim: ${rel}:${i + 1} 把 \`dist-tags.latest\` 写成 ${m[1]}，registry 实测 ${reg.latest}——`
+            + `「发布行」的真相来源是 registry，不是 package.json 也不是记忆（#511 评论）`);
+        }
+        // 形状钉成「版本号在前、声称紧跟着它」（`0.27.0 was **never published**` / `0.27.0 从未发布`）。
+        // 反过来那种（「从未发布，所以 0.28.0 是第一个…」）**不是**对 0.28.0 的声称——第一版实现按
+        // 「前后 40 字内出现」扫，当场把契约里两句这种话误判成「说 0.28.0 / 0.26.0 从未发布」（假红）。
+        for (const m of sentence.matchAll(/(\d+\.\d+\.\d+)[^.;。；]{0,12}?(?:never published|从未发布|unpublished)/g)) {
+          const v = m[1];
+          if (!reg.ok) continue;
+          if (!reg.versions.includes(v)) continue;
+          emit(`published-claim: ${rel}:${i + 1} 说 ${v} 从未发布，但它**在** registry 的 versions 列表里——`
+            + `未发布声称必须对着 registry 的 versions 列表说（#511 判据 3 的同一条真理）`);
+        }
+      }
+    });
+  }
+  collectPublishedClaimErrors.notes = notes;
+  return out;
+}
+
 function collectAllDrift() {
   const out = [...collectAnchorErrors(), ...checkPkgBlocks().errors, ...collectPathErrors(),
     ...collectMarkerLiteralErrors(), ...collectBaselineClaimErrors(),
     ...collectSymbolAnchorErrors(), ...collectBareLineRefErrors(), ...collectRefScanCoverageErrors(),
-    ...collectCliFlagErrors()];
+    ...collectCliFlagErrors(),
+    // issue #511：「这句话属于哪个版本」与「这个版本发布了没有」四条（自测要连它们一起变异）
+    ...collectDocVersionErrors(), ...collectVersionAttributionErrors(), ...collectGuideClaimErrors(),
+    ...collectChangelogPublicationErrors(), ...collectPublishedClaimErrors()];
   for (const [, en, cn] of SKELETON_PAIRS) out.push(...collectSkeletonErrors(en === README_EN ? "中英 README" : "中英 AGENTS", en, cn));
   return out;
 }
@@ -3714,6 +4319,12 @@ for (const e of collectBareLineRefErrors()) err(e);
 for (const n of collectBareLineRefErrors.notes ?? []) note(n);
 for (const e of collectCliFlagErrors()) err(e);
 for (const n of collectCliFlagErrors.notes ?? []) note(n);
+// ── 9. 「这句话属于哪个版本」（issue #511）──────────────────────────────────────
+for (const collect of [collectDocVersionErrors, collectVersionAttributionErrors, collectGuideClaimErrors,
+  collectChangelogPublicationErrors, collectPublishedClaimErrors]) {
+  for (const e of collect()) err(e);
+  for (const n of collect.notes ?? []) note(n);
+}
 for (const e of collectMarkerLiteralErrors()) err(e);
 for (const n of collectMarkerLiteralErrors.notes ?? []) note(n);
 for (const e of collectBaselineClaimErrors()) err(e);
@@ -4644,6 +5255,97 @@ const SELF_TEST_CASES = [
     ],
     expectGreen: true,
   },
+  // ══ issue #511：「这句话属于哪个版本」+「这个版本发布了没有」 ══════════════════════
+  // 本节每个用例都钉**一条判据的一侧**（红侧）或**放行侧**（绿侧）。registry 一律走 `selfTestRegistry()`
+  // 夹具（派生自 CHANGELOG，见那里的注释）：自测不许依赖网络，也不许依赖「今天 registry 恰好是什么」。
+  {
+    label: "#511 判据 1：删掉 0.29 指南第一行的 doc-version 自述 ⇒ 红（自述是后两条判据的真值来源）",
+    overlay: { "docs/host-upgrade-guide-0.29.0.md": (t) => t.replace("<!-- doc-version: 0.29.0 -->\n", "") },
+    expect: [/doc-version: docs\/host-upgrade-guide-0\.29\.0\.md 的第一行不是机器可读自述/],
+  },
+  {
+    label: "#511 判据 1：自述与文件名不同源（0.27 指南自述 0.28.0）⇒ 红（不许两份真值并存）",
+    overlay: { "docs/host-upgrade-guide-0.27.0.md": (t) => t.replace("<!-- doc-version: 0.27.0 -->", "<!-- doc-version: 0.28.0 -->") },
+    expect: [/doc-version: docs\/host-upgrade-guide-0\.27\.0\.md 自述 0\.28\.0，文件名是 0\.27\.0/],
+  },
+  {
+    label: "#511 判据 1 后半：删掉 0.27 指南里那句前向指针 ⇒ 红并点名行号（正是 #511 的病：0.27 的指南在讲 0.28 的树）",
+    overlay: { "docs/host-upgrade-guide-0.27.0.md": (t) => t.replace("from 0.28.0 — see the 0.28.0 upgrade guide) is", "from 0.28.0) is") },
+    expect: [/version-attribution: docs\/host-upgrade-guide-0\.27\.0\.md:\d+ 这句话把事实归给 0\.28\.0/],
+  },
+  {
+    label: "#511 判据 1（放行证）：把中文指针「见 0.28.0 升级指南」写成「见 0.28.0 指南」⇒ 仍绿（`升级` 可省是同一枚标记）",
+    overlay: { "docs/host-upgrade-guide-0.27.0_cn.md": (t) => t.replace("见 0.28.0 升级指南", "见 0.28.0 指南") },
+    expectGreen: true,
+  },
+  {
+    label: "#511 判据 2a：指南声称「没有 config.run 这一组」，而它就在树里 ⇒ 红（删掉是单调声称，今天的树就是证人）",
+    overlay: { "docs/host-upgrade-guide-0.29.0.md": (t) => t + "\n\nThere is no `config.run` group in 0.29.0.\n" },
+    expect: [/guide-claim: docs\/host-upgrade-guide-0\.29\.0\.md:\d+ 声称 `config\.run` 不存在\/已删/],
+  },
+  {
+    label: "#511 判据 2a（放行证 / #299 的课）：声称「没有 config.observers」⇒ 仍绿（这个名字只活在注释里，注释里的名字不是声明）",
+    overlay: { "docs/host-upgrade-guide-0.29.0.md": (t) => t + "\n\nThere is no `config.observers` group in 0.29.0.\n" },
+    expectGreen: true,
+  },
+  {
+    label: "#511 判据 2c：0.29 指南（= 当前版本）把「8 groups」写成 9 ⇒ 红并点名真值",
+    overlay: { "docs/host-upgrade-guide-0.29.0.md": (t) => t.replace("**8 groups / 43 leaves**", "**9 groups / 43 leaves**") },
+    expect: [/guide-claim: docs\/host-upgrade-guide-0\.29\.0\.md:\d+ 声称「9 groups」，而 src\/loop\/config-namespace\.js 里是 \*\*8\*\* 个分组/],
+  },
+  {
+    label: "#511 判据 2c：中文侧同理（「8 个分组」→「9 个分组」⇒ 红；中文数词/阿拉伯数字都要接）",
+    overlay: { "docs/host-upgrade-guide-0.29.0_cn.md": (t) => t.replace("**8 个分组 / 43 个叶子**", "**9 个分组 / 43 个叶子**") },
+    expect: [/guide-claim: docs\/host-upgrade-guide-0\.29\.0_cn\.md:\d+ 声称「9 个分组」，而 src\/loop\/config-namespace\.js 里是 \*\*8\*\* 个分组/],
+  },
+  {
+    label: "#511 判据 2b：指南把某个 config 叶子归给 0.29.0，而 CHANGELOG 的 0.29.0 段没有它 ⇒ 红（新增不单调，真值只能从 CHANGELOG 取）",
+    overlay: { "docs/host-upgrade-guide-0.29.0.md": (t) => t + "\n\n0.29.0 adds `config.run.zzzNotThere`.\n" },
+    simulateRegistry: selfTestRegistry(),
+    expect: [/guide-claim: docs\/host-upgrade-guide-0\.29\.0\.md:\d+ 声称 `config\.run\.zzzNotThere` 属于 0\.29\.0/],
+  },
+  {
+    label: "#511 判据 3：新增一个带日期、不在 registry、也没标「未发布」的版本段 ⇒ 红",
+    overlay: { "CHANGELOG.md": (t) => t.replace("## [0.29.0] - 2026-10-31", "## [0.9.9] - 2026-01-01\n\n### Added\n\n- 自测夹具：一个从未发布的版本段（故意不标未发布）。\n\n## [0.29.0] - 2026-10-31") },
+    simulateRegistry: selfTestRegistry(),
+    expect: [/changelog-published: CHANGELOG:\d+ 的 0\.9\.9 段带日期却不在 registry 的 versions 列表里/],
+  },
+  {
+    label: "#511 判据 3（反向）：给一个**已发布**的版本段加「未发布」标注 ⇒ 红（发布态的两个方向都看守）",
+    overlay: { "CHANGELOG.md": (t) => t.replace("## [0.29.0] - 2026-10-31", "## [0.29.0] - 2026-10-31（未发布 / unpublished）") },
+    simulateRegistry: selfTestRegistry(),
+    expect: [/changelog-published: CHANGELOG:\d+ 的 0\.29\.0 段自称「未发布\/unpublished」/],
+  },
+  {
+    label: "#511 评论：AGENTS.md 的「发布行」写成 0.28.0，registry 说 9.9.9 ⇒ 红（发布行的真相来源是 registry，不是 package.json）",
+    overlay: { [AGENTS_EN]: (t) => t.replace("`dist-tags.latest` — is `0.29.0`", "`dist-tags.latest` — is `0.28.0`") },
+    simulateRegistry: selfTestRegistry({ latest: "9.9.9" }),
+    expect: [/published-claim: AGENTS\.md:\d+ 说发布行（`dist-tags\.latest`）是 0\.28\.0，registry 实测是 9\.9\.9/],
+  },
+  {
+    label: "#511：AGENTS.md 的「本仓版本」写成 0.28.0 ⇒ 红（本仓版本对 package.json，两类句子各对各的真值）",
+    overlay: { [AGENTS_EN]: (t) => t.replace("says `0.29.0` (the repo version)", "says `0.28.0` (the repo version)") },
+    simulateRegistry: selfTestRegistry(),
+    expect: [/published-claim: AGENTS\.md:\d+ 的「AGENTS\.md「当前版本」句」把\*\*本仓版本\*\*写成 0\.28\.0/],
+  },
+  {
+    label: "#511 第二条评论：这两句里塞一个测量日期 ⇒ 红（日期自己不会过期，留着它等于给「过期」留合法位置）",
+    overlay: { [AGENTS_EN]: (t) => t.replace("says `0.29.0` (the repo version)", "says `0.29.0` (the repo version, measured 2026-10-28)") },
+    simulateRegistry: selfTestRegistry(),
+    expect: [/published-claim: AGENTS\.md:\d+ 的「AGENTS\.md「当前版本」句」里带了测量日期/],
+  },
+  {
+    label: "#511：把「0.24.0 从未发布」写成「0.29.0 从未发布」⇒ 红（未发布声称必须对着 registry 的 versions 列表说）",
+    overlay: { [AGENTS_EN]: (t) => t.replace("`0.24.0` was **never published**", "`0.29.0` was **never published**") },
+    simulateRegistry: selfTestRegistry(),
+    expect: [/published-claim: AGENTS\.md:\d+ 说 0\.29\.0 从未发布，但它\*\*在\*\* registry/],
+  },
+  {
+    label: "#511 判据 1（放行表空转）：在 DOC_VERSION_EXEMPT 里登记一份不存在的指南 ⇒ 红（用不上的放行就是后门，#210 R2）",
+    simulateDocVersionExemptions: new Map([...DOC_VERSION_EXEMPT,
+      ["docs/host-upgrade-guide-0.9.9.md", "自测夹具：这份文件不存在，登记它必须红"]]),
+    expect: [/doc-version: DOC_VERSION_EXEMPT 里登记的 docs\/host-upgrade-guide-0\.9\.9\.md 不存在/],
+  },
 ];
 
 /** #279：自测用例数的**下限**（只许涨不许降）。少了就是有用例被删 / 被整例跳过——那正是
@@ -4737,6 +5439,13 @@ function runSelfTest() {
     // overlay 只改文本，改不动运行时那个数组）。放行分支与「空转即红」两条反向证都靠它。
     const cliExemptSaved = SIM_CLI_FLAG_EXEMPTIONS;
     if (c.simulateCliFlagExemptions) SIM_CLI_FLAG_EXEMPTIONS = c.simulateCliFlagExemptions;
+    // #511：registry 事实的配置口子（同一课：overlay 只能改文档，改不动「门禁从 registry 读到了什么」）。
+    // 夹具只在**本用例的 run()** 里挂着，跑完在 finally 里还原——一条也不许留在全局。
+    const registrySaved = SIM_REGISTRY;
+    if (c.simulateRegistry) SIM_REGISTRY = c.simulateRegistry;
+    // #511：doc-version 放行表的配置口子（证「登记了却没人用 ⇒ 红」那一半）。
+    const docExemptSaved = SIM_DOC_VERSION_EXEMPT;
+    if (c.simulateDocVersionExemptions) SIM_DOC_VERSION_EXEMPT = c.simulateDocVersionExemptions;
     let errs = [];
     let landing = null;    // #302：夹具有没有真的落上（null = 本例不挂夹具）
     let afterWhy = null;   // #337：assertAfter 必须在配置口子**还挂着**的时候问（否则临时登记已被还原）
@@ -4747,6 +5456,8 @@ function runSelfTest() {
     } finally {
       SIM_TREE_SHAPE = simSaved; SIM_RENAMED_GUIDE = guideSaved;
       SIM_CLI_FLAG_EXEMPTIONS = cliExemptSaved;   // 放行表一条也不许留在全局
+      SIM_REGISTRY = registrySaved;                // #511：registry 夹具同上
+      SIM_DOC_VERSION_EXEMPT = docExemptSaved;     // #511：doc-version 放行表同上
       if (looseDeclSaved) looseDeclSaved[0].decl = looseDeclSaved[1];   // 判据必须还原，别把探针留在表里
       if (dirClassSaved) {                                              // 同上：临时登记的类别一条也不许留在表里
         const [pattern, prev] = dirClassSaved;

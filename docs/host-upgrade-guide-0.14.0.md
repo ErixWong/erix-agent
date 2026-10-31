@@ -1,3 +1,4 @@
+<!-- doc-version: 0.14.0 -->
 # Host upgrade guide for 0.14.0
 
 Version 0.14.0 splits the run-state terminal status out of the snapshot channel

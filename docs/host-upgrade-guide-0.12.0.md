@@ -1,3 +1,4 @@
+<!-- doc-version: 0.12.0 -->
 # Host upgrade guide for 0.12.0
 
 Version 0.12.0 re-contracts the notes subsystem (issues #67 / ADR-018, plus a

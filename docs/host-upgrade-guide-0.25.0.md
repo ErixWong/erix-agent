@@ -1,3 +1,4 @@
+<!-- doc-version: 0.25.0 -->
 # Host upgrade guide: 0.25.0
 
 **This is the "a fold stops re-billing you for bytes the ledger already has" release.** 0.24.0 changed what

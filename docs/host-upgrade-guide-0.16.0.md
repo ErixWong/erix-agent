@@ -1,3 +1,4 @@
+<!-- doc-version: 0.16.0 -->
 # Host upgrade guide: 0.16.0
 
 Version 0.16.0 adds two explicit `TranscriptStore` requirements and additive

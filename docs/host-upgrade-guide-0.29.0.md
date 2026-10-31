@@ -1,3 +1,4 @@
+<!-- doc-version: 0.29.0 -->
 # Host upgrade guide: 0.29.0
 
 **Release: 0.29.0 (2026-10-31).** This is the release where the library learns to **bookkeep** a child
@@ -317,8 +318,11 @@ If your alerts filter on event names, or your dashboards whitelist diagnostic fi
 
 ## 8. What did not change
 
-* The `runToolLoop` input surface: no option retired, renamed or re-homed; the accepted top-level name
-  set, the `config` schema and the `capabilities` shape are the ones 0.28.0 shipped.
+* The `runToolLoop` input surface: no option retired, renamed or re-homed, and the `capabilities` shape
+  is the one 0.28.0 shipped. The `config` schema is **8 groups / 43 leaves**. The baseline is 0.28.0's
+  seven groups and 41 leaves; this release adds exactly two leaves — `config.run.parentRunId` (§2) and
+  `config.continuity.handoff` (§7.2) — so no other leaf moved. Those two counts are not prose to be
+  trusted: `check:docs` reconciles them against `CONFIG_NAMESPACE_SCHEMA` on every run.
 * Termination, verification and exit-code semantics; the `skipped`-without-guard exit code stays `4`.
 * Transcript and run-state on-disk formats; resume from a ledger written by 0.28.0.
 * The `delegate` tool is **off by default**: it is not in the default tool face and not in the default

@@ -1,3 +1,4 @@
+<!-- doc-version: 0.6.0 -->
 # Host upgrade guide for 0.6.0
 
 Version 0.6.0 makes the host boundary explicit. The changes below are

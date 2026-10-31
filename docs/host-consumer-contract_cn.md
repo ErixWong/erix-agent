@@ -216,7 +216,7 @@ issue #531 的「两个入口、一个家」讲的是这个**容器**，与载�
 | 版本 | 写 `timeoutMs` / `deadlineMs` / `retry` |
 | --- | --- |
 | 0.26.0 及以前（最后一个**已发布**版本） | 顶层可写——那些版本只认这一种写法 |
-| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「这件事有影响」的树 |
+| 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主装到过「这件事有影响」的树 |
 | 0.28.0 及以后（issue #498 S3） | **当场拒**——请写 `config.timing.timeoutMs` / `.deadlineMs` / `.retry`。名称闸口抛 `unknown runToolLoop option: "timeoutMs" (its canonical home is config.timing.timeoutMs; the flat spelling is rejected)`，文案**总是点名新家**：那句话是升级宿主与「自己猜」之间唯一的东西 |
 
 这三个键就是本切片的全部：其它配置分组照旧接受扁平写法，这一点没变。变的是宿主读回值时该依赖的
@@ -231,7 +231,7 @@ issue #531 的「两个入口、一个家」讲的是这个**容器**，与载�
 | 版本 | 写 `context` / `toolResultTtl` / `toolResultFoldMinTokens` |
 | --- | --- |
 | 0.26.0 及以前（最后一个**已发布**版本） | 顶层可写——那些版本只认这一种写法 |
-| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「这件事有影响」的树 |
+| 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主装到过「这件事有影响」的树 |
 | 0.28.0 及以后（issue #498 S3 第二片） | **当场拒**——请写 `config.folding.context` / `config.folding.toolResultTtl` / `config.folding.toolResultFoldMinTokens`。名称闸口抛 `unknown runToolLoop option: "toolResultTtl" (its canonical home is config.folding.toolResultTtl; the flat spelling is rejected)` |
 
 **扁平写法的版本口径**（issue #498 S3，`input` 组 A 段——第三片，也是第一个落在 `config.input` 里的切片）：
@@ -239,7 +239,7 @@ issue #531 的「两个入口、一个家」讲的是这个**容器**，与载�
 | 版本 | 写 `cacheStablePrefix` / `initialMessages` |
 | --- | --- |
 | 0.26.0 及以前（最后一个**已发布**版本） | 顶层可写——那些版本只认这一种写法 |
-| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「这件事有影响」的树 |
+| 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主装到过「这件事有影响」的树 |
 | 0.28.0 及以后（issue #498 S3 第三片） | **当场拒**——请写 `config.input.cacheStablePrefix` / `config.input.messages`。名称闸口抛 `unknown runToolLoop option: "cacheStablePrefix" (its canonical home is config.input.cacheStablePrefix; the flat spelling is rejected)` |
 
 `initialMessages` 是这一段里真正要读的一个，理由就在文案本身：**它点名的家是
@@ -281,7 +281,7 @@ feeder **不退役**：它是端口对种子的写法（issue #513 / #544 / #550
 | 版本 | 写 `initialUserMessage` |
 | --- | --- |
 | 0.26.0 及以前（最后一个**已发布**版本） | 顶层可写——那些版本只认这一种写法 |
-| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「这件事有影响」的树 |
+| 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主装到过「这件事有影响」的树 |
 | 0.28.0 及以后（issue #498 S3 第四片） | **当场拒**——请写 `config.input.initialUserMessage`。名称闸口抛 `unknown runToolLoop option: "initialUserMessage" (its canonical home is config.input.initialUserMessage; the flat spelling is rejected)` |
 
 这是「一次 run 的种子消息」——几乎每个宿主都会写的那一个键，所以值得单独写清楚。两条性质都由机器核住：
@@ -303,7 +303,7 @@ feeder **不退役**：它是端口对种子的写法（issue #513 / #544 / #550
 | 版本 | 写 `cacheCapable` |
 | --- | --- |
 | 0.26.0 及以前（最后一个**已发布**版本） | 顶层可写——那些版本只认这一种写法 |
-| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「这件事有影响」的树 |
+| 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主装到过「这件事有影响」的树 |
 | 0.28.0 及以后（issue #498 S3 第五片） | **当场拒**——请写 `config.tuning.cacheCapable`。名称闸口抛 `unknown runToolLoop option: "cacheCapable" (its canonical home is config.tuning.cacheCapable; the flat spelling is rejected)` |
 
 两条性质都由机器核住：
@@ -330,7 +330,7 @@ feeder **不退役**：它是端口对种子的写法（issue #513 / #544 / #550
 | 版本 | 写 `finalGuardMaxRetries` / `finalGuardTimeoutMs` / `finalGuardExtend` |
 | --- | --- |
 | 0.26.0 及以前（最后一个**已发布**版本） | 顶层可写——那些版本只认这一种写法 |
-| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「这件事有影响」的树 |
+| 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主装到过「这件事有影响」的树 |
 | 0.28.0 及以后（issue #498 S3 第六片） | **当场拒**——请写 `config.guard.finalGuardMaxRetries` / `config.guard.finalGuardTimeoutMs` / `config.guard.finalGuardExtend`。名称闸口抛 `unknown runToolLoop option: "finalGuardTimeoutMs" (its canonical home is config.guard.finalGuardTimeoutMs; the flat spelling is rejected)` |
 
 两条性质都由机器核住：
@@ -356,7 +356,7 @@ feeder **不退役**：它是端口对种子的写法（issue #513 / #544 / #550
 | 版本 | 写 `maxTokens` / `temperature` / `topP` |
 | --- | --- |
 | 0.26.0 及以前（最后一个**已发布**版本） | 顶层可写——那些版本只认这一种写法 |
-| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「这件事有影响」的树 |
+| 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主装到过「这件事有影响」的树 |
 | 0.28.0 及以后（issue #498 S3 第七片） | **当场拒**——请写 `config.tuning.maxTokens` / `config.tuning.temperature` / `config.tuning.topP`。名称闸口抛 `unknown runToolLoop option: "maxTokens" (its canonical home is config.tuning.maxTokens; the flat spelling is rejected)` |
 
 两条性质都由机器核住：
@@ -391,7 +391,7 @@ feeder **不退役**：它是端口对种子的写法（issue #513 / #544 / #550
 | 发布 | 写 `system` |
 | --- | --- |
 | 0.26.0 及以前（**最后已发布**的版本） | 顶层照旧接受——那些版本只认这一种写法 |
-| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主的树里这件事生效过 |
+| 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主的树里这件事生效过 |
 | 0.28.0 及以后（issue #498 S3 第八片） | **当场拒**——请写 `config.input.system`。名称闸口抛 `unknown runToolLoop option: "system" (its canonical home is config.input.system; the flat spelling is rejected)` |
 
 两条性质成立，且都有机器判据：
@@ -431,7 +431,7 @@ A6 当时把 `tools` 退回等裁决、把 `wrapup` 退回待做；两条裁决�
   | 发布 | 写 `config.input.tools` |
   | --- | --- |
   | 0.26.0 及以前（**最后已发布**的版本） | `config` 命名空间当时还不存在，所以没有任何宿主写过这个路径——无迁移成本 |
-  | 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主的树里这件事生效过 |
+  | 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主的树里这件事生效过 |
   | 0.28.0 及以后（issue #527） | **当场拒**——请写顶层 `tools`；叶子不在 schema 上，文案点名第三站 |
 
 * **`wrapup` 已退役（issue #498 S3 A18）——它是这一组最后一个扁平孪生。** A6 定下的顺序被逐字执行：
@@ -446,7 +446,7 @@ A6 当时把 `tools` 退回等裁决、把 `wrapup` 退回待做；两条裁决�
   | 发布 | 写扁平 `wrapup` | 写 `config.input.wrapup` |
   | --- | --- | --- |
   | 0.26.0 及以前（**最后已发布**的版本） | 合法——而且它是当时**唯一**的拼写（`config` 命名空间还不存在） | 不适用（没有 `config` 命名空间） |
-  | 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主的树里这件事生效过 | 同样**从未发布** |
+  | 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主的树里这件事生效过 | 同样**从未发布** |
   | 0.28.0 及以后（issue #498 S3 A18） | **当场拒**——文案点名新家：`unknown runToolLoop option: "wrapup" (its canonical home is config.input.wrapup; the flat spelling is rejected)` | 唯一合法拼写；叶子仍在 schema 上，展开相把它写回 `effectiveOptions.wrapup`，所以引擎每个读侧都不变 |
 
 这条账目是**派生**的、不是记出来的：`input` 组里仍带扁平孪生的成员现在是**零**，而且判据不数叶子——
@@ -636,7 +636,7 @@ unknown runToolLoop option: "context" (its canonical home is config.folding.cont
 | 发布 | 写 `modelMetadata` / `requestId` / `toolContext` / `expert` |
 | --- | --- |
 | 0.26.0 及以前（**最后已发布**的版本） | 顶层照旧接受——那些版本只认这一种写法 |
-| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主的树里这件事生效过 |
+| 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主的树里这件事生效过 |
 | 0.28.0 及以后（issue #498 S3 第九片） | **当场拒**——请写 `config.metadata.modelMetadata` / `.requestId` / `.toolContext` / `.expert`。名称闸口抛 `unknown runToolLoop option: "modelMetadata" (its canonical home is config.metadata.modelMetadata; the flat spelling is rejected)` |
 
 两条性质成立，且都有机器判据：
@@ -675,7 +675,7 @@ value — so pass plain data (host callbacks belong under capabilities.hooks.<na
 | 发布 | 写 `user` / `model` / `task` |
 | --- | --- |
 | 0.26.0 及以前（**最后已发布**的版本） | 顶层照旧接受——那些版本只认这一种写法 |
-| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主的树里这件事生效过 |
+| 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主的树里这件事生效过 |
 | 0.28.0 及以后（issue #498 S3 第十片） | **当场拒**——请写 `config.metadata.user` / `.model` / `.task`。名称闸口抛 `unknown runToolLoop option: "task" (its canonical home is config.metadata.task; the flat spelling is rejected)` |
 
 这一片是**先量后写**的，而那个量正是它不需要夹具的原因：只从白名单删掉一个键时，全量分别红
@@ -715,7 +715,7 @@ config.metadata.session: the opaque per-run payload's home is config.folding.con
 | 版本 | 写 `config.metadata.session` |
 | --- | --- |
 | 0.26.0 及更早（最后一个**已发布**版本） | 根本没有 `config` 命名空间，所以这个问题不存在——`session` 是顶层选项，那是那些版本唯一认识的写法 |
-| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「那个叶子存在」的树 |
+| 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主装到过「那个叶子存在」的树 |
 | 0.28.0 起（issue #531，判词文案 issue #551） | **当场拒**——运行身份写顶层 `session`，不透明载荷写 `config.folding.context.session`。上面那句就是闭门文案；引擎读侧一字未动（`effectiveOptions.session` 还是原来那个值） |
 
 三半都有机器判据（`test/loop-metadata-keys-slice-498s3a9.test.js` S1–S3）：两个入口同值（S1）、冲突文案
@@ -761,7 +761,7 @@ config.metadata.session: the opaque per-run payload's home is config.folding.con
 | 发行版 | 写 `invalidArguments` / `replayPolicy` / `writeToolNames` / `writeToolPathKeys` |
 | --- | --- |
 | 0.26.0 及更早（最后一个**已发布**版本） | 顶层照收——那些版本只认这个写法 |
-| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装到过「这件事有影响」的那棵树 |
+| 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主装到过「这件事有影响」的那棵树 |
 | 0.28.0 及以后（issue #498 S3，第十一片） | **当场拒**——写 `config.run.invalidArguments` / `.replayPolicy` / `.writeToolNames` / `.writeToolPathKeys`。名称闸口抛 `unknown runToolLoop option: "invalidArguments" (its canonical home is config.run.invalidArguments; the flat spelling is rejected)` |
 
 本片是**先量后写**：只从白名单删一个键、跑全量，实测红格 **`invalidArguments` 4 /
@@ -812,7 +812,7 @@ config.metadata.session: the opaque per-run payload's home is config.folding.con
 | 版本 | 顶层写 `partialPersistence` |
 | --- | --- |
 | 0.26.0 及更早（最后一个**已发布**版本） | 顶层接受——那些版本只认这个拼写 |
-| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装过「这件事有影响」的树 |
+| 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主装过「这件事有影响」的树 |
 | 0.28.0 及以后（issue #498 S3，第十二片） | **当场拒**——改写 `config.run.partialPersistence`。名称闸口抛 `unknown runToolLoop option: "partialPersistence" (its canonical home is config.run.partialPersistence; the flat spelling is rejected)` |
 
 **没有搬走的是含义。** `partialPersistence` 是持久性而非重试：它提交一个将死尝试的部分文本，让续跑
@@ -835,7 +835,7 @@ R 格断言写在规位里的值逐字到达 `effectiveOptions.partialPersistenc
 | 版本 | 顶层写 `stallDetection` / `outputHygiene` / `persistence` |
 | --- | --- |
 | 0.26.0 及更早（最后一个**已发布**版本） | 顶层接受——那些版本只认这个拼写 |
-| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装过「这件事有影响」的树 |
+| 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主装过「这件事有影响」的树 |
 | 0.28.0 及以后（issue #498 S3，第十三片） | **当场拒**——改写 `config.run.stallDetection` / `config.run.outputHygiene` / `config.run.persistence`。名称闸口抛 `unknown runToolLoop option: "<key>" (its canonical home is config.run.<key>; the flat spelling is rejected)` |
 
 **为什么一起走、为什么现在才走。** A12 量到 `run` 组四件数据壳**同删**牵动 **176 格**——远高于「必须停止
@@ -895,7 +895,7 @@ G 格就是上面那张闸口二矩阵（`outputHygiene` 与 `persistence` 两�
 | 版本 | 顶层写 `maxTokenContinuations` |
 | --- | --- |
 | 0.26.0 及更早（最后一个**已发布**版本） | 顶层接受——那些版本只认这个拼写 |
-| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装过「这件事有影响」的树 |
+| 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主装过「这件事有影响」的树 |
 | 0.28.0 及以后（issue #498 S3，第十四片） | **当场拒**——改写 `config.run.maxTokenContinuations`。名称闸口抛 `unknown runToolLoop option: "maxTokenContinuations" (its canonical home is config.run.maxTokenContinuations; the flat spelling is rejected)` |
 
 **它是标量，不是数据壳；夹具一行新代码都没加。** 值是数字（默认 `3`），所以闸口二抽查的是两个数字形状
@@ -931,7 +931,7 @@ A12 落的翻译点（`test/helpers/run-direct.js` 的 `withRunFamily`）本来�
 | 版本 | 顶层写 `cwd` |
 | --- | --- |
 | 0.26.0 及更早（最后一个**已发布**版本） | 顶层接受——那些版本只认这个拼写 |
-| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有任何宿主装过「这件事有影响」的树 |
+| 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有任何宿主装过「这件事有影响」的树 |
 | 0.28.0 及以后（issue #498 S3，第十五片） | **当场拒**——改写 `config.run.cwd`。名称闸口抛 `unknown runToolLoop option: "cwd" (its canonical home is config.run.cwd; the flat spelling is rejected)` |
 
 **`cwd` 是纯透传的字符串，类型校验跟着搬家但一句没改。** 引擎从不解释它（不 `chdir`、不校验存在性、
@@ -1178,7 +1178,7 @@ governor 自己的停机动作 `completion`（`src/reflection/governor.js`，`en
 | 版本 | 写扁平 `reflection` |
 | --- | --- |
 | 0.26.0 及更早（最后一个**已发布**版本） | 合法——而且它是唯一拼写（当时还没有 `config` 命名空间） |
-| 0.27.0 | **从未发布**（`npm view erix-agent dist-tags.latest` → `0.26.0`；`versions` 里没有 `0.27.0`），所以没有宿主装到过受这件事影响的树 |
+| 0.27.0 | **从未发布**（`versions` 里没有 `0.27.0`——发布行跳过了它，而这份名单由门禁当场对账），所以没有宿主装到过受这件事影响的树 |
 | 0.28.0 及以后（issue #530） | **当场拒**，且因为它是**混装壳**，文案一句话点名**两站**：`unknown runToolLoop option: "reflection" (its canonical home is config.run.reflection; the flat spelling is rejected) — this shell holds both data and functions: write data as config.run.reflection.<leaf>, and behaviour members as capabilities.hooks.onReflection or capabilities.ports.judgeProvider` |
 
 **两侧拒绝、两条理由分开**（A18 / A23b 的写法）。**扁平**那一侧由**名称**闸口拒（上面那句）。

@@ -1,3 +1,4 @@
+<!-- doc-version: 0.28.0 -->
 # Host upgrade guide: 0.28.0
 
 **Release: 0.28.0 (2026-10-29).** This is the release where the `runToolLoop` input surface stops having

@@ -1,3 +1,4 @@
+<!-- doc-version: 0.17.0 -->
 # Host upgrade guide: 0.17.0
 
 Version 0.17.0 is additive: no API removals, no call-site changes, and no
