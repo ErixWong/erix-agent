@@ -177,7 +177,21 @@ function resolveToolPath(root, value) {
   return path.resolve(root, value);
 }
 
-function expandHomePath(value) {
+/**
+ * `~` / `~/x` 展开（不解析环境变量、不猜别的简写）。
+ *
+ * **只认正斜杠 `~/`**：`~\x` 不是「Windows 风格的家目录」而是一个普通文件名（POSIX 下反斜杠是
+ * 合法文件名字符），把它当分隔符展开就是给模型一条「有时能用」的陷阱；`~x`（未知用户前缀）
+ * 一律不展开、原样返回。
+ *
+ * 导出而不是留在模块内：`examples/pi-extension/erix-run-core.js` 的 `expandUserPath` 是同一条口径
+ * 的第二份实现（宿主形态不能 import 库），#194 要拿它做**跨通道逐一相等**的断言。**没有**加进
+ * `src/tools/index.js`——`erix-agent/tools` 的公开面不变（包 `exports` 也不放深层路径）。
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+export function expandHomePath(value) {
   if (value === "~") return homedir();
   if (typeof value === "string" && value.startsWith("~/")) {
     return path.resolve(homedir(), value.slice(2));

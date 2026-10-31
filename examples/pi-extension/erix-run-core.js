@@ -163,11 +163,27 @@ function intParam(value, { min, max, name, zeroAllowed = false }) {
   return parsed;
 }
 
-/** 展开 `~` 前缀，与 bin/tools.js 的工具路径口径一致。 */
+/**
+ * 展开 `~` 前缀。**只认正斜杠 `~/`**——与库内文件工具的 `expandHomePath`
+ * （`src/tools/file-tools.js`；CLI 的文件工具五件套也走它）同一条口径：
+ *
+ *   - `~`     → `home`
+ *   - `~/x`   → `<home>/x`
+ *   - `~\x`   → **原样返回**（不猜「Windows 风格分隔符」：POSIX 下反斜杠是合法文件名字符）
+ *   - `~x`    → **原样返回**（未知用户前缀，不猜）
+ *
+ * 为什么 #194 改的是这一侧：库侧（`erix-agent/tools`）是宿主可见契约，且 CLI 自己就 import 它，
+ * 改库 = 给所有宿主换语义；本文件是示例扩展，只影响 `erix_run` 一条通道。同口径由
+ * `test/examples/erix-run-core.test.js` 拿**真库函数**（`expandHomePath`）逐一相等钉住。
+ *
+ * @param {unknown} value
+ * @param {{home?:string}} [options]
+ * @returns {string}
+ */
 export function expandUserPath(value, { home = homedir() } = {}) {
   const raw = String(value ?? "");
   if (raw === "~") return home;
-  if (raw.startsWith("~/") || raw.startsWith("~\\")) return path.resolve(home, raw.slice(2));
+  if (raw.startsWith("~/")) return path.resolve(home, raw.slice(2));
   return raw;
 }
 

@@ -75,12 +75,12 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | 参数 | 必填 | 默认 | 说明 |
 |---|---|---|---|
 | `task` | 派工必填 | — | 交给内层 run 的**自包含**任务描述。内层看不到本次 pi 会话历史，必要上下文必须写进 `task`。⚠ #234 之后它在 schema 层**不再硬 required**（`action:"status"` 这类查询调用不带它），必填性改由运行时守：缺了就当场 `ok:false` + `error.code:"bad_params"` |
-| `cwd` | 派工必填 | — | 内层工作目录，必须是**已存在的绝对路径**（`~` 前缀会展开）。相对路径直接判 `bad_params` |
+| `cwd` | 派工必填 | — | 内层工作目录，必须是**已存在的绝对路径**（只认 `~/` 前缀：`~/x` → `<home>/x`；`~\x` / `~x` 原样不动，见下方 ⚠）。相对路径直接判 `bad_params` |
 | `maxRounds` | | `8` | 内层工具循环轮数预算（1..100）。**≥16 会自动开启 judge**（与 `bin/cli.js` 同一策略，`ERIX_NO_REFLECTION=1` 可关） |
 | `strategy` | | 引擎缺省 | 压缩策略内置名字：`sliding-window` \| `fold-statistical` \| `fold-llm`（交给引擎在启动期实例化，见 `docs/host-consumer-contract.md`「Compaction strategy selection」） |
 | `timeoutMs` | | `600000`（10 分钟） | 硬超时，1000..21600000。到点 `abort` 内层 run 并在返回里标注 `timeout: true` |
 | `model` | | 槽位里的 model | 覆盖 `slots.default` 的模型名（endpoint / apiKey 仍走该槽位） |
-| `sessionDir` | | 不落盘 | **过程落盘目录**（绝对路径，`~` 会展开；不存在则递归创建）。给了它就把内层 transcript 落到 `<sessionDir>/<runId>.jsonl`、judge 决策落到 `<sessionDir>/outputs/<runId>/judge.log`，并在返回的 `artifacts` 里给出真路径。坏目录（指到文件 / 不可写）归一成 `bad_params` 终局 |
+| `sessionDir` | | 不落盘 | **过程落盘目录**（绝对路径，只认 `~/` 前缀展开；不存在则递归创建）。给了它就把内层 transcript 落到 `<sessionDir>/<runId>.jsonl`、judge 决策落到 `<sessionDir>/outputs/<runId>/judge.log`，并在返回的 `artifacts` 里给出真路径。坏目录（指到文件 / 不可写）归一成 `bad_params` 终局 |
 | `transcript` | | — | `sessionDir` 的同义写法：`"file"` → 缺省目录 `~/.erix/transcripts`；其它非空串按目录路径处理；`"memory"` / `"none"` / `"off"` → 显式不落盘。两个都给时 `sessionDir` 赢 |
 | `maxExtensions` | | 引擎缺省 `2` | 扩轮上限，落到引擎的 `reflection.maxExtensions`（#498 S6 起装配位置是 `config.run.reflection`，见下文「参数 ⇒ 引擎选项的落点」）。**`0` 是有效值 = 关掉扩轮**（引擎侧是 `>= 0` 判断，所以本层不能用「正整数」卡它）。非法值（负数 / 小数 / 非数字 / >1000）归 `bad_params` |
 | `maxRoundsCap` | | 引擎缺省 `256` | 扩轮后的总轮数硬顶，落到 `reflection.maxRoundsCap`（正整数；引擎会抬到不低于 `maxRounds`）。上限 100000 |
@@ -94,6 +94,12 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | `quiet` | | `false` | 只在 `async:true` 时有意义：**成功的完成不唤醒**父会话（只落 `status.json`），失败 / 中止仍然唤醒。一次派一批切片时用它免得把主会话打断成筛子 |
 | `action` | | — | `status`（当前状态 + 终局四件套）\| `result`（完整终局：四件套 + `artifacts` + **终稿正文 `finalText`**，#261）\| `list`（本进程已知 run 的摘要表）\| `cancel`（把 `signal` 打进内层，终局记成 `aborted`）。`status`/`result`/`cancel` 要带 `runId` |
 | `runId` | | — | `action` 要操作的 run id（就是 `async:true` 返回句柄里的 `runId`）|
+
+> ⚠ **`~` 展开只认正斜杠 `~/`（#194）**：`~` → home、`~/x` → `<home>/x`；`~\x`（反斜杠）与
+> `~x`（未知用户前缀）**原样返回、不展开**——与库内文件工具的 `expandHomePath`
+> （`src/tools/file-tools.js`，CLI 的文件工具五件套也走它）同一条口径（`~\x` 不是「Windows 风格的家目录」：
+> POSIX 下反斜杠是合法文件名字符，把它当分隔符就是给模型一条「有时能用」的陷阱）。`cwd` / `sessionDir` 传 `~\x` 会因为它不再是绝对路径而当场 `bad_params`，
+> 不再静默落进 `<home>/x`。这条同口径由 `test/examples/erix-run-core.test.js` 拿**真库函数**逐一相等钉住。
 
 > ⚠ **三个扩轮参数只在 judge 真的跑了时才生效**：引擎只在 `nearLimit` 且 judge 给了布尔 `extend` 时才读它们，
 > 而本层的 judge 闸门是「`maxRounds ≥ 16` 自动开，`ERIX_NO_REFLECTION=1` 关」（与 #207 之前逐字一致）。
