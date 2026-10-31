@@ -3826,7 +3826,9 @@ const ATTRIBUTION_RE = new RegExp(
  *  0.28.0 的七个分组…」永远切不开，整句因「点名了别的版本号」被跳过，中文侧的数量声称一条也没校到
  *  （#511 自测的中文用例当场红在「改了但没红」）。行内代码里的 `0.27.0` 不会被切开（`.` 后面跟的是
  *  数字，不是空白），所以「同一句」的判定不会因为版本号里的点而碎掉。 */
-const sentencesOf = (line) => line.split(/(?<=[。！？；])|(?<=[.!?;])\s+/).filter((s) => s.trim().length > 0);
+const SENTENCE_TAIL = String.raw`[*_\`）)\]]*`;   // 句末的 markdown 强调/括号/反引号收尾（`.**`、`）**`）
+const sentencesOf = (line) => line.split(new RegExp(String.raw`(?<=[。！？；])${SENTENCE_TAIL}|(?<=[.!?;])${SENTENCE_TAIL}\s+`))
+  .filter((s) => s.trim().length > 0);
 
 /** 文档 → 句子流（`{ text, line }`）。**必须先合回逻辑块再切句**：markdown 是硬换行的，
  *  「同一句」经常横跨两行——第一版按行切，于是 0.27 指南里那句 `… (issue #498, from 0.28.0 —\n
@@ -4291,6 +4293,152 @@ function collectPublishedClaimErrors() {
   return out;
 }
 
+// ── 19. 指南覆盖度：从代码侧取名单，反向要求「该不该有一条」（issue #636）──────
+// 病：门禁只问「已存在的条目是否成对」，从不问「该不该有一条」。0.29.0 的指南写好后，压缩/续接那一整块
+// 是空白（`fold-llm` / `workingSetRecentRounds` / `foldedFacts` / `budget_below_working_set` /
+// `compaction_deferred` 全 0 命中），而这一版恰恰是最影响宿主钱包的一版。同一类缺口第三次应验
+// （CHANGELOG 的 `compaction_deferred`、契约的加法事件表、这次 0.29 指南），三次都靠人肉 review 才发现。
+//
+// 判据：**代码里有、且 CHANGELOG 说「这一版加的」名字，指南必须写到（中英各判一次）。**
+//   · 名单从**代码侧**取（`config` 叶子表、`type: "…"` 的事件名、`process.env.X` 的读点、内置压缩策略名），
+//     不取「文档里已经写了的那些」——拿文档当名单就是本单要防的那个循环；
+//   · 「这一版加的」由 CHANGELOG 的**当前版本段**里「加法句」判定（`ADDITION_VERBS`）：CHANGELOG 是
+//     「这一版改了什么」的既有登记处，它已经成对、已经有门禁；
+//   · 只删一侧（例如只删中文那段的续接块）也红：两个语言版本各判一次，缺哪个点哪个。
+// 为什么**不是**「代码里的每个名字都要进指南」：指南写的是宿主**要动手**的变更，不是全量 API 手册；把 43 个
+// 叶子全塞进去等于让判据绑架文档形态（与 #210「不能机械化的写明为什么」同口径）。为什么**不是**「指南里的
+// 名字要在代码里存在」：那个方向由 §11 符号锚点与 `paths` 看守。
+const ADDITION_VERBS = /(?:\badds?\b|\badded\b|\bintroduces?\b|\bintroduced\b|\bships?\b|\bshipped\b|新增|加入|引入|加了|多一条|新的|新叶子|新事件)/i;
+/** 「加法句」的**邻近距离**：名字必须出现在动词之后这么多字符内。没有它，一条长句里 200 字符开外的
+ *  引用（实测：`shipped a runToolLoop quick start …` 那句里嵌着的报错文案 `… its canonical home is
+ *  config.input.system`）会被当成「这一版加了 `config.input.system`」——而它其实是 0.28 就有的叶子。 */
+const ADDITION_WINDOW = 200;
+
+/** 句子里有没有「动词 + 紧跟着这个名字」的加法形状。 */
+function addedNameHit(sentence, name) {
+  for (const m of sentence.matchAll(new RegExp(ADDITION_VERBS.source, "gi"))) {
+    const at = sentence.indexOf(name, m.index);
+    if (at >= 0 && at - m.index <= ADDITION_WINDOW) return true;
+  }
+  return false;
+}
+
+/** 代码侧「宿主能看见的名字」清单。四张脸各有结构化真值，任何一张抽不到就返回 null（#164 口径：
+ *  抽不到真值就报错，不许静默放行）。 */
+function nameInventory() {
+  const truth = configNamespaceTruth();
+  if (!truth) return null;
+  const names = new Map();                       // 名字 → { kind, proseSafe }
+  const add = (name, kind, proseSafe) => names.set(name, { kind, proseSafe });
+  for (const g of truth.groups) for (const leaf of truth.leaves.get(g) ?? []) add(`config.${g}.${leaf}`, "config 叶子", true);
+  const orch = fileRecord("src/loop/orchestrator.js");
+  if (!orch) return null;
+  // 事件名取**发出去的那一侧**（`type: "…"` 赋值），不取 JSDoc 里的联合：注释不是声明（#299 的课）。
+  // `proseSafe: false`：`text` / `usage` / `compaction` 这类短名在英文散文里到处都是，拿它们做「中英成对」
+  // 会全是假红（实测：0.18/0.19/0.22/0.25/0.28 五份指南各被 `text` / `usage` / `compaction` 误报一次）。
+  // 它们仍进「加法句覆盖」那一侧（CHANGELOG 说「这一版加的」，那一句里的引用不会撞散文）。
+  for (const m of orch.text.matchAll(/\btype:\s*"([a-z][a-z0-9_]{2,})"/g)) add(m[1], "观察者事件", false);
+  const strat = fileRecord("src/compact/strategy-resolution.js");
+  if (!strat) return null;
+  for (const n of truthStrategyNames(strat.text)) add(n, "压缩策略名", true);
+  for (const rel of [...walk("src"), ...walk("bin")]) {
+    if (!rel.endsWith(".js")) continue;
+    const rec = fileRecord(rel);
+    if (!rec) continue;
+    for (const m of rec.text.matchAll(/process\.env\.([A-Z][A-Z0-9_]{3,})/g)) add(m[1], "环境变量", true);
+  }
+  return names;
+}
+
+/** 当前版本 CHANGELOG 段里的「加法句」点到的名字（按代码侧清单过滤）。抽不到段 ⇒ null。 */
+function releaseAddedNames(inventory) {
+  const sections = changelogSections();
+  const sect = (sections ?? []).find((s) => s.version === PKG_VERSION);
+  if (!sect) return null;
+  const out = new Map();
+  for (const { text: sentence } of docSentences(sect.body.split("\n"))) {
+    if (!ADDITION_VERBS.test(sentence)) continue;
+    for (const [name, { kind }] of inventory) if (addedNameHit(sentence, name)) out.set(name, kind);
+  }
+  return out;
+}
+
+/** 覆盖度下限（只许涨不许降的探针，与 `REF_SCAN_DOCS_MINIMUM` / `SYMBOL_ANCHOR_MIN_UNIQUE` 同构）：
+ *  低于它说明抽取逻辑或 CHANGELOG 段被削，本判据正在空跑——那时它会「绿得理直气壮」。
+ *  现值 **4** 是 0.29.0 这一版实测（`config.continuity.handoff` / `config_override_conflict` /
+ *  `compaction` / `compaction_deferred`），没有留余量是刻意的：这一侧的名字来自「CHANGELOG 的加法句」，
+ *  条数本来就少，写小一点等于给「抽取器坏掉」留出静默空间。 */
+const GUIDE_COVERAGE_MIN_NAMES = 4;
+
+function collectGuideCoverageErrors() {
+  const out = [];
+  const notes = [];
+  const inventory = nameInventory();
+  if (!inventory || !inventory.size) {
+    out.push("guide-coverage: 从代码侧抽不到「宿主能看见的名字」清单（config 叶子 / 观察者事件 / 压缩策略名 / 环境变量）——"
+      + "抽不到真值就报错（#164 口径），覆盖度判据不许静默放行");
+    return out;
+  }
+  const added = releaseAddedNames(inventory);
+  if (!added) {
+    out.push(`guide-coverage: 读不到 CHANGELOG 的 ${PKG_VERSION} 段——「这一版加了什么」的真值缺位，`
+      + `覆盖度判据不许静默放行（要么补 CHANGELOG 段，要么改本判据的真值来源）`);
+    return out;
+  }
+  const en = `docs/host-upgrade-guide-${PKG_VERSION}.md`;
+  const cn = `docs/host-upgrade-guide-${PKG_VERSION}_cn.md`;
+  const texts = new Map([[en, fileRecord(en)?.text ?? null], [cn, fileRecord(cn)?.text ?? null]]);
+  for (const [rel, text] of texts) {
+    if (text === null) out.push(`guide-coverage: 读不到 ${rel}——当前版本必须有一对指南，否则覆盖度无从判定`);
+  }
+  let checked = 0;
+  for (const [name, kind] of added) {
+    checked += 1;
+    for (const [rel, text] of texts) {
+      if (text === null || text.includes(name)) continue;
+      out.push(`guide-coverage: ${rel} 没有提到${kind} \`${name}\`，而 CHANGELOG 的 ${PKG_VERSION} 段说它是这一版加的——`
+        + `「该不该有一条」就是靠这条判据看守的（#636）：CHANGELOG 里登记过的新名字，指南必须有一条（中英各一份）`);
+    }
+  }
+  if (checked < GUIDE_COVERAGE_MIN_NAMES) {
+    out.push(`guide-coverage: 本版只判到 ${checked} 个名字（下限 ${GUIDE_COVERAGE_MIN_NAMES}）——抽取逻辑或 CHANGELOG 段被削，`
+      + `这条判据正在空跑（抽不到真值就报错，别拿「没有要判的」换全绿）`);
+  }
+  // (b) 中英成对：**结构化名字**（`config.*` 路径 / 压缩策略名 / 环境变量）在一份指南里出现，就必须在
+  //     它的另一语言版本里也出现。这一侧回答的是同一句「该不该有一条」，但问在**两份**之间：某一段只
+  //     写了一种语言（或者被整块删掉一侧）时，覆盖度判据不会自己发现——中英成对会。逐份指南都判，
+  //     不只判当前版本：历史指南的「那一刻为真」也要两边一致。
+  //     只拿 `proseSafe` 的名字做这一侧：`text` / `usage` / `compaction` 这类短事件名与英文散文撞车，
+  //     拿它们判成对会全是假红（实测五份指南各误报一次）。
+  let parityPairs = 0;
+  let parityChecked = 0;
+  for (const rel of versionedGuideDocs()) {
+    if (rel.endsWith("_cn.md")) continue;
+    const cnRel = rel.replace(/\.md$/, "_cn.md");
+    const enRec = fileRecord(rel);
+    const cnRec = fileRecord(cnRel);
+    if (!enRec || !cnRec) continue;             // 只有单语的老指南（0.6/0.12/0.14…）：没有配对可判
+    parityPairs += 1;
+    for (const [name, { kind, proseSafe }] of inventory) {
+      if (!proseSafe) continue;
+      const inEn = enRec.text.includes(name);
+      const inCn = cnRec.text.includes(name);
+      if (inEn === inCn) continue;
+      parityChecked += 1;
+      const missing = inEn ? cnRel : rel;
+      out.push(`guide-coverage: ${missing} 没有提到${kind} \`${name}\`，而同一份指南的另一语言版本提到了——`
+        + `中英成对是「该不该有一条」的另一半：只写一侧等于另一侧缺一条（#636）`);
+    }
+  }
+  if (parityChecked === 0 && parityPairs === 0) {
+    out.push("guide-coverage: 一份「有中英两版」的升级指南都没找到——成对判据在空跑（抽不到真值就报错）");
+  }
+  notes.push(`guide-coverage: 代码侧清单 ${inventory.size} 个名字，其中 CHANGELOG ${PKG_VERSION} 段的加法句点到 ${checked} 个，`
+    + `逐条要求中英两份指南都提到；另有 ${parityPairs} 对指南按结构化名字做中英成对（${parityChecked} 处不对称）`);
+  collectGuideCoverageErrors.notes = notes;
+  return out;
+}
+
 function collectAllDrift() {
   const out = [...collectAnchorErrors(), ...checkPkgBlocks().errors, ...collectPathErrors(),
     ...collectMarkerLiteralErrors(), ...collectBaselineClaimErrors(),
@@ -4298,7 +4446,9 @@ function collectAllDrift() {
     ...collectCliFlagErrors(),
     // issue #511：「这句话属于哪个版本」与「这个版本发布了没有」四条（自测要连它们一起变异）
     ...collectDocVersionErrors(), ...collectVersionAttributionErrors(), ...collectGuideClaimErrors(),
-    ...collectChangelogPublicationErrors(), ...collectPublishedClaimErrors()];
+    ...collectChangelogPublicationErrors(), ...collectPublishedClaimErrors(),
+    // issue #636：「该不该有一条」——代码侧名单 × CHANGELOG 加法句 ⇒ 指南必须覆盖
+    ...collectGuideCoverageErrors()];
   for (const [, en, cn] of SKELETON_PAIRS) out.push(...collectSkeletonErrors(en === README_EN ? "中英 README" : "中英 AGENTS", en, cn));
   return out;
 }
@@ -4321,7 +4471,7 @@ for (const e of collectCliFlagErrors()) err(e);
 for (const n of collectCliFlagErrors.notes ?? []) note(n);
 // ── 9. 「这句话属于哪个版本」（issue #511）──────────────────────────────────────
 for (const collect of [collectDocVersionErrors, collectVersionAttributionErrors, collectGuideClaimErrors,
-  collectChangelogPublicationErrors, collectPublishedClaimErrors]) {
+  collectChangelogPublicationErrors, collectPublishedClaimErrors, collectGuideCoverageErrors]) {
   for (const e of collect()) err(e);
   for (const n of collect.notes ?? []) note(n);
 }
@@ -5345,6 +5495,30 @@ const SELF_TEST_CASES = [
     simulateDocVersionExemptions: new Map([...DOC_VERSION_EXEMPT,
       ["docs/host-upgrade-guide-0.9.9.md", "自测夹具：这份文件不存在，登记它必须红"]]),
     expect: [/doc-version: DOC_VERSION_EXEMPT 里登记的 docs\/host-upgrade-guide-0\.9\.9\.md 不存在/],
+  },
+  // ══ issue #636：「该不该有一条」——代码侧名单 × CHANGELOG 加法句 ⇒ 指南必须覆盖 ══════════
+  {
+    label: "#636：把 0.29 指南里的 `config.continuity.handoff` 整段改名（= 删掉那一段）⇒ 红并点名「代码里有、CHANGELOG 说这一版加的」",
+    // 变异体必须**不含**那个名字本身（`…handoffSwitch` 仍以 `config.continuity.handoff` 为前缀，
+    // `includes()` 照样命中 ⇒ 变异等于没落上，实测就是这么假绿了一次）。
+    overlay: { "docs/host-upgrade-guide-0.29.0.md": (t) => t.replaceAll("config.continuity.handoff", "the continuity handoff switch") },
+    expect: [/guide-coverage: docs\/host-upgrade-guide-0\.29\.0\.md 没有提到config 叶子 `config\.continuity\.handoff`/],
+  },
+  {
+    label: "#636：只删中文侧的 `compaction_deferred` 那一条 ⇒ 红（另一语言有、这一份没有，就是缺一条）",
+    overlay: { "docs/host-upgrade-guide-0.29.0_cn.md": (t) => t.replace("`compaction_deferred` 事件：当一次折叠因为还有悬空的 `tool_use` 没结清而被推迟时发出。", "一次折叠因为还有悬空的 `tool_use` 没结清而被推迟时，会发出一个事件。") },
+    expect: [/guide-coverage: docs\/host-upgrade-guide-0\.29\.0_cn\.md 没有提到观察者事件 `compaction_deferred`/],
+  },
+  {
+    label: "#636 中英成对：只从中文指南里删掉一个结构化名字（`ERIX_CONTINUITY_DIR`）⇒ 红（成对判据问的是「另一侧有没有一条」）",
+    overlay: { "docs/host-upgrade-guide-0.29.0_cn.md": (t) => t.replaceAll("ERIX_CONTINUITY_DIR", "环境变量") },
+    expect: [/guide-coverage: docs\/host-upgrade-guide-0\.29\.0_cn\.md 没有提到环境变量 `ERIX_CONTINUITY_DIR`/],
+  },
+  {
+    label: "#636（fail-closed）：CHANGELOG 里没有当前版本段 ⇒ 红（「这一版加了什么」的真值缺位，不许静默放行）",
+    overlay: { "CHANGELOG.md": (t) => t.replace("## [0.29.0] - 2026-10-31", "## [0.9.9] - 2026-10-31") },
+    simulateRegistry: selfTestRegistry(),
+    expect: [/guide-coverage: 读不到 CHANGELOG 的 0\.29\.0 段/],
   },
 ];
 

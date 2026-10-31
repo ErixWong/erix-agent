@@ -236,6 +236,15 @@ own contract section.
   (`config.continuity.handoff`, default `off`): turn the switch on and the engine injects the handoff
   instruction itself, so no host provider is needed; `continuityProvider` is an **override**. §7.2 has
   the details, and §7 has the rest of this release's compaction and continuity surface.
+* `config.input.messages` is **the** leaf for a run's seed data (issue #571, second slice). Two host
+  shapes are named instead of implied: `createAgent({ config })` (the initialization tree is the
+  host's single config source, so it still overrides `policy.config` wholesale) and
+  `runToolLoop({ config })` (the direct route). `session.initialMessages` is a **port-level feeder**,
+  not a second leaf: the leaf wins, and two different values produce exactly one
+  `config_override_conflict` event. That event is the other half of the fix — it reports leaves whose
+  values **differ**, and only those: a `config: {}` handed to `createAgent` no longer wipes the leaves
+  the port wrote (it used to, silently, with an empty conflict list), because a call that carries no
+  config leaf now hands over **no** `config` key at all.
 
 ## 7. The compaction and continuity surface
 
@@ -303,18 +312,21 @@ run your own summarizer through a strategy port, the return contract got one har
 whitespace-only summary is a failure, not a success.** It degrades with the new `empty_summary` kind
 (the error code is `summarizer_empty_summary`) instead of silently replacing your history with nothing.
 
-### 7.6 Three new things to observe (issues #588, #608, #594)
+### 7.6 Four new things to observe (issues #588, #608, #594, #568)
 
 * The `compaction_deferred` event: emitted when a fold is postponed because a dangling `tool_use` has
   not been settled yet. A `fatal: false` fact on the existing observer channel, not a new callback.
 * The `budget_below_working_set` diagnostics: emitted when the working set alone cannot fit the budget
   and folding has to stop. Payload: `budgetTokens`, `workingSetTokens`, `suggestedBudgetTokens`,
   `repeatStreak`, `foldLayersOverBudget` (plus `attempts` and a `detail` string).
+* The `continuity_injection_skipped` event: emitted when a continuity block that the host did supply
+  could not be placed in the request (it is the visible half of the "downscaling is never silent"
+  rule in §7.2). Same observer channel, same `fatal: false` shape.
 * The run state's `last=` cell: a ~10-token cursor naming the most recent tool call whose arguments
   **differ** from the previous one, growing to `×N` when the same call repeats — so a host (or a
   resumed model) can see where the run got to without reading the transcript.
 
-If your alerts filter on event names, or your dashboards whitelist diagnostic fields, add these three.
+If your alerts filter on event names, or your dashboards whitelist diagnostic fields, add these four.
 
 ## 8. What did not change
 

@@ -179,6 +179,12 @@ store 自己的命名助手推导，不要自己拼 `<runId>.jsonl`：store 会�
   受预算约束的会话续接块。自 issue #598 起引擎就是它的**默认写者**（`config.continuity.handoff`，默认
   `off`）：开关一开，引擎自己注入交接指令，**不需要宿主提供 provider**；`continuityProvider` 是
   **override**。细节见 §7.2，这一版压缩与续接面的其余部分见 §7。
+* `config.input.messages` 是一次 run 的种子数据的**那一个**叶子（issue #571 片2）。两种宿主形状被**点名**
+  而不是留给人猜：`createAgent({ config })`（初始化那棵树是宿主的唯一配置来源，所以它照旧整棵覆盖
+  `policy.config`）与 `runToolLoop({ config })`（直连路线）。`session.initialMessages` 是**端口级 feeder**，
+  不是第二个叶子：叶赢，两者值不同时恰发一条 `config_override_conflict` 事件。那条事件是这个修法的另一半
+  ——它只报**值不同**的叶子：递给 `createAgent` 的 `config: {}` 不再把端口写的叶子抹掉（以前会，而且是静默
+  抹掉、冲突清单为空），因为一次不带任何配置叶子的调用现在**根本不递** `config` 这个键。
 
 ## 7. 压缩与续接面
 
@@ -232,17 +238,19 @@ store 自己的命名助手推导，不要自己拼 `<runId>.jsonl`：store 会�
 成功。** 它会以新的 `empty_summary` 降级类型失败（错误码是 `summarizer_empty_summary`），而不是静默把你的
 历史换成空。
 
-### 7.6 三处新的可观测面（issue #588、#608、#594）
+### 7.6 四处新的可观测面（issue #588、#608、#594、#568）
 
 * `compaction_deferred` 事件：当一次折叠因为还有悬空的 `tool_use` 没结清而被推迟时发出。它是既有观察者通道上
   一条 `fatal: false` 的事实，不是新回调。
 * `budget_below_working_set` 诊断：当工作集单独就装不进预算、折叠只能停下时发出。载荷：`budgetTokens`、
   `workingSetTokens`、`suggestedBudgetTokens`、`repeatStreak`、`foldLayersOverBudget`（另有 `attempts` 与
   一句 `detail`）。
+* `continuity_injection_skipped` 事件：当宿主**确实**给了续接块、但它没能落进请求时发出（它是 §7.2 那条
+  「降采样绝不静默」的可见那一半）。同一条观察者通道、同样的 `fatal: false` 形状。
 * run state 里的 `last=` 格：一个 ~10 token 的游标，记最近一次**入参不同**的工具调用，同一入参再调就长成
   `×N`——于是宿主（或续跑的模型）不必读 transcript 就知道跑到哪了。
 
-如果你的告警按事件名过滤、或仪表盘按诊断字段白名单取值，把这三样加上。
+如果你的告警按事件名过滤、或仪表盘按诊断字段白名单取值，把这四样加上。
 
 ## 8. 没有变的东西
 
