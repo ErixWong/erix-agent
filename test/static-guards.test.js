@@ -3880,7 +3880,7 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
 // 顶部 Unreleased 非空 ⇒ 面就是它）。地板**必须跟着面一起重测**——「只升不降」是**同一面内**的规则，
 // 跨面重测是 #563 设计好的动作，不是放宽。
 /** 地板校准所在的节标题（`CHANGELOG_PAIR_FLOOR` 是在**这一节**上实测的；面挪走且配对数不足 ⇒ 点名重测）。 */
-const CHANGELOG_PAIR_FLOOR_SURFACE = "## [0.29.0] - 2026-10-31";
+const CHANGELOG_PAIR_FLOOR_SURFACE = "## [Unreleased]";
 /** 两条 bullet 之间最多隔几行才算「紧邻」（0 = 直接相邻，1 = 中间隔一行）。 */
 const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 /** 配对地板：在 `CHANGELOG_PAIR_FLOOR_SURFACE` 那一节上实测的配对数。**同一面内只能升不能降。**
@@ -4028,8 +4028,19 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  * ```
  *
  * 注意第二行里的「已穿底」：校准面挪对之后这条反向证重新承重（挪之前它打的是「不在校准面上不判」）。
+ *
+ * issue #246 第一刀（0.29.0 发布之后的第一条新条目）：`## [Unreleased] ### Changed` 新增一对（状态视图
+ * 工厂接上第一个真实消费者 `runSnapshotContext`，issue 引用集合 #246）⇒ 顶部 Unreleased 重新非空，
+ * 面按 #558 / #563 的设计**从 `## [0.29.0]` 挪回 `## [Unreleased]`**，地板跨面重测 = **1 对**（地板
+ * 28 → 1、校准面标题同步）。这是「面挪走 ⇒ 重测地板」这个**设计好的动作**，不是放宽：同一面内只升不降
+ * 的规则原样保留，而且只有把地板压到实测值，「删一条英文 ⇒ 穿底」与「改一个 issue 引用 ⇒ 穿底」两条
+ * 反向证才重新承重（面不在校准面上时它们会静默跳过）。守卫自己的 diagnostic 原文（改常量**之前**跑的）：
+ *
+ * ```
+ * # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 1 条 / 英文 1 条 / 配对 1 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 28（校准面 \#\# [0.29.0] - 2026-10-31）
+ * ```
  */
-const CHANGELOG_PAIR_FLOOR = 28;
+const CHANGELOG_PAIR_FLOOR = 1;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

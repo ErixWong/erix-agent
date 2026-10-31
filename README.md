@@ -202,7 +202,7 @@ src/
     abort.js                       Abort-signal helpers
     block-helpers.js               Block access helpers
     judge-record.js                Judge record correlation (model identity, run outcome)
-    state-view.js                  Live-reference state view factory for the loop state (#246, not wired yet)
+    state-view.js                  Live-reference state view factory for the loop state (#246; one consumer wired — runSnapshotContext's run-state fields)
   normalization/
     parse-model-json.js            Model-output normalization: normalizeModelJson — L1 byte-preserving repair, gate on the original bytes, optional L2 LLM fallback (issue #406)
   providers/

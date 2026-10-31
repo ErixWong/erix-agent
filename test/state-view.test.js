@@ -3,13 +3,14 @@ import test from "node:test";
 
 import { makeStateView } from "../src/loop/state-view.js";
 
-// issue #246 step 0 的反向证套件：这五条各自钉住 src/loop/state-view.js 的一条设计红线，
+// issue #246 step 0 的反向证套件：这六条各自钉住 src/loop/state-view.js 的一条设计红线，
 // 每条都必须能被对应的单点变异单独打红（变异清单见 REPORT-SV0.md 第 3 节）：
 //   1 活引用 ← getter 退化成构造时快照
 //   2 getOnly ← getOnly 也定义了 setter
 //   3 自定义 setter 保身份 ← set 退化成整对象替换
 //   4 计算 getter 每次重算 ← 计算 getter 改成构造时求值一次
 //   5 字段面 ← 把整个 state 泄进视图（`{ ...state }` 作落地对象）
+//   6 接线姿势（第一刀新增）← 把描述符搬家换成 `Object.assign` / 值快照
 
 test("state-view 活引用：视图构造后整体替换 state 字段读得到，反向写也落得到 state", () => {
   const state = { x: ["v1"], other: 0 };
@@ -79,4 +80,25 @@ test("state-view 字段面（接线前置不变量）：Object.keys(view) 只含
 
   assert.deepEqual(Object.keys(view), ["listed", "alsoListed"]);
   assert.equal("unlisted" in view, false);
+});
+
+// 第一刀（#246）的真实接线姿势：`src/loop/orchestrator.js` 的 `runSnapshotContext` 不能整个换成视图
+// （它还有几十个非状态成员与方法），所以视图是**挂**到既有 ctx 上的。挂法只有一种是对的：
+// `Object.defineProperties(ctx, Object.getOwnPropertyDescriptors(view))` —— 搬的是**描述符**，
+// get/set 闭包原样过去，所以活引用不变。`Object.assign` / `{ ...view }` / `{ key: view.key }`
+// 都会**调用** getter 把值拷下来（快照化），于是 ctx 上的读-改-写（`ctx.toolErrorCount += 1`）
+// 只落在快照上、再也回不到 state。本条钉的就是这个姿势。
+test("state-view 接线姿势：视图描述符搬到既有 ctx 上仍是活引用（不是值快照）", () => {
+  const state = { count: 0 };
+  const ctx = { other: "x" };
+  Object.defineProperties(ctx, Object.getOwnPropertyDescriptors(makeStateView(state, ["count"])));
+
+  state.count = 1; // 整体替换：值快照化的写法会在这里读到 0
+  assert.equal(ctx.count, 1, "描述符搬家丢掉了活引用（构造时把值拷下来了）");
+
+  ctx.count += 1; // 与 run-snapshot-executor 的 `ctx.toolErrorCount += 1` 同形（读-改-写）
+  assert.equal(state.count, 2, "经 ctx 的读-改-写没有落回 state（快照被改了，state 没动）");
+
+  assert.equal(ctx.other, "x", "既有成员被视图搬家挤掉了");
+  assert.deepEqual(Object.keys(ctx), ["other", "count"]);
 });
