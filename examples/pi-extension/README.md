@@ -177,7 +177,8 @@ pi --extension ./examples/pi-extension/erix-run.ts
 - **写不进去不改变终局**：judge.log 建目录 / append 失败只记一次 `diagnostics.persistenceErrors`
   （`channel: "judgeLog"`）并停止后续审计行；已跑完的 run 不会因审计面失败变 `failed`。
 - **落盘就是可续跑的前提**：`resumable` 是**事实**（不是能力声明）——只有 transcript 真写出来了才是
-  `true`，此时 `diagnostics.resume.handle` 给出续跑坐标。语义与用法见下面「续跑 resume」。
+  `true`，此时 `diagnostics.resume.handle` 给出续跑坐标（顶层 `resume` 是同一份事实，
+  见下面「续跑 resume」）。语义与用法见下面「续跑 resume」。
 
 ## 异步执行：派工即返回句柄（issue #234）
 
@@ -465,8 +466,9 @@ pi --extension ./examples/pi-extension/erix-run.ts
 
 ### 与异步作业账本的关系
 
-- **`status.json` 就是续跑坐标**：异步 run 的终局面（`jobView`）整块投 `diagnostics`，所以盘上那份
-  `status.json` 里带着 `diagnostics.resume.handle`，再加上它自己的 `runId` / `sessionDir` / `cwd`。
+- **`status.json` 就是续跑坐标**：异步 run 的终局面（`jobView`）整块投 `diagnostics`，**并且**在顶层
+  投一份 `resume`（#659 第 6 格，与 `delivery` 同族），所以盘上那份 `status.json` 里既带着
+  `diagnostics.resume.handle`、也带着顶层 `resume.handle`，再加上它自己的 `runId` / `sessionDir` / `cwd`。
   `/reload` 或 pi 重启之后（后台 run 已被杀掉），直接 `resume:<statusPath>` 就能接着跑。
 - **续跑的 job 沿用原 `runId`**：job 注册表按原 runId 登记，`statusPath` 还是同一个文件，
   `action:"status"`/`"result"`/`"cancel"` 照旧用那个 runId。

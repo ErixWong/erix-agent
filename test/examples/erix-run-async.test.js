@@ -1549,7 +1549,8 @@ test("#654 缺陷2：未终局时 delivery / notifyTargetSessionId / notifyError
   const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
 
   const running = jobView(registry.get(handle.runId));
-  for (const field of ["delivery", "notifyTargetSessionId", "notifyError", "ownerSessionId", "deduped"]) {
+  for (const field of ["delivery", "notifyTargetSessionId", "notifyError", "ownerSessionId", "deduped",
+    "ownerSessionError", "notifyRetries", "resume"]) {
     assert.ok(field in running, `${field} 必须恒在场（查询侧不必分两种形状解析）`);
   }
   assert.equal(running.delivery, null, "还没投递就给 null（不编一个 sent）");
@@ -1557,6 +1558,9 @@ test("#654 缺陷2：未终局时 delivery / notifyTargetSessionId / notifyError
   assert.equal(running.notifyError, null);
   assert.equal(running.ownerSessionId, null);
   assert.equal(running.deduped, 0);
+  assert.equal(running.ownerSessionError, null, "没有真异常就是 null（不编根因）");
+  assert.equal(running.notifyRetries, 0, "还没排过重试");
+  assert.equal(running.resume, null, "还没终局 = 还没有坐标事实（不是「不能续跑」，那是 resumable 的事）");
 
   job.release();
   await waitUntil(() => registry.get(handle.runId).status === "completed");

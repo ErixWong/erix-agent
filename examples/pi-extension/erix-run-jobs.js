@@ -497,6 +497,12 @@ export function jobView(job, { now = () => Date.now() } = {}) {
     // #659 第 1 格：已经排出去的重试次数（上限 = `NOTIFY_RETRY_DELAYS_MS.length`）。
     notifyRetries: job.notifyRetries ?? 0,
     deduped: job.deduped ?? 0,
+    // —— 异步面独有：**续跑坐标**（issue #659 第 6 格）。与 `delivery` 同族：只读 `status.json` 的
+    //    别的会话不必从 `diagnostics.resume` 里挖，也不必自己去拼 `<sessionDir>/<runId>.jsonl`。
+    //    取值与 `resumable` **同源**（都是 core 的 `resumeFactsOf` 经 `buildSuccessPayload` 落到
+    //    `diagnostics.resume`）：还没终局时是 `null`（「还没有坐标事实」，不是「不能续跑」），
+    //    终局后与 `resumable` 一起出现，不可能一个说能续、一个说没坐标。
+    resume: job.payload?.diagnostics?.resume ?? null,
   };
 }
 

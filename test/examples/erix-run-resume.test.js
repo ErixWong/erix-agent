@@ -415,6 +415,11 @@ test("#207 R2④：异步派工 —— status.json 里带续跑坐标，按它 r
   assert.equal(disk.resumable, true);
   assert.equal(disk.diagnostics.resume.handle, disk.artifacts.transcriptPath);
   assert.equal(disk.diagnostics.resume.handle, path.join(sessionDir, `${runId}.jsonl`));
+  // #659 第 6 格：坐标也在**顶层**（只读 status.json 的别的会话不必从嵌套里挖，也不必自己拼路径）
+  assert.ok(disk.resume !== null && typeof disk.resume === "object",
+    "顶层 resume 坐标必须投影进 status.json（#659 第 6 格：只有 resumable 布尔等于没给入口）");
+  assert.equal(disk.resume.handle, disk.diagnostics.resume.handle, "与 diagnostics.resume 同一份事实");
+  assert.equal(disk.resume.resumable, disk.resumable, "顶层 resumable 与 resume.resumable 不可能一个说能一个说不能");
 
   // 按 status.json 续跑：job 沿用原 runId（不是新开一个身份），status.json 还是同一个文件。
   provider = createFakeProvider([textStep("任务已完成（第二段）")]);
