@@ -24,6 +24,7 @@
 | `../../test/examples/erix-run-resume.test.js` | **#207 R2 续跑单测**：第一次 run 停在 `max_rounds_cap` ⇒ 第二次从账本接着跑（历史 / 轮号 / 账本都不重置）、纯续跑不追加用户轮、三种坐标（transcript / `runId`+`sessionDir` / `status.json`）指到同一份账本、坐标不存在 / 空账本 / 坏 `status.json` 的明确报错、`bad_params` 形状校验、异步面「`status.json` 即续跑坐标 + job 沿用原 `runId`」 |
 | `../../test/examples/erix-run-details.test.js` | **#237 R2：`details` 必须可 JSON 序列化**。对 `started` / `status` / `result` / `list` / `cancel` / `unknown-run` / `error` / `crashed` + **同步终局**逐条断言 `JSON.stringify(details)` 不抛、`content[0].text` 非空、`details` 只含 plain 数据（+#276：视图带了嵌套 `diagnostics`/`verification` 后仍不触发 `detailsDropped`，失败终局的文本面要点名 `termination.errorCode`）（无函数 / 定时器 / promise / 循环引用），并把每个 `kind` 的键集合钉死 |
 | `../../test/examples/plain-data.js` | 测试侧**独立实现**的「活对象」扫描器与 `assertMachineReadableResult`（故意不回读生产码的守卫，否则两边错在一起就是自证） |
+| `erix-run-e2e.test.mjs` | 本目录的**真上游 e2e**（`ERIX_E2E_REAL=1` 才跑，闸门关着一律 skip；闸门开着而配置/凭据/端点不可用则**红**）：真 run 的终局四件套 + transcript 新形状 + 进度行带耗时（`#284/#285`）、显式 `finalGuard` 后 `verification` 不再是 `skipped`（`#314`）、以及 **`#654` 多会话**一格——同一个扩展工厂对 A/B 两个会话各调一次、**A 先派工、B 后 `session_start`**，断言完成通知只回到 A（`notifyTargetSessionId` / `delivery:"sent"` / B 收件箱为空 / `status.json` 里 `delivery`、`notifyTargetSessionId`、`deliveryNote` 恒在场）。另有一段**始终跑、不联网**的确定性回归（`formatLoopEvent` 的耗时读法、`#373` 的窗口账、选项名闸） |
 
 ## 安装
 
