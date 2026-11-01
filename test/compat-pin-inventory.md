@@ -452,6 +452,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/run-snapshot-executor.test.js` | 1 | `onToolResult`×1 | MIGRATE · NOT-OPTION-SURFACE（非 runToolLoop 选项面，无规位） |
 | `test/tool-fact-success-parity.test.js` | 1 | `onToolResult`×1 | MIGRATE · NOT-OPTION-SURFACE（非 runToolLoop 选项面，无规位） |
 | `test/loop-deliverables-gap-436.test.js` | 7 | `deliverables`×7 | COMPAT-PIN |
+| `test/compact/fold-llm-degrade-469.test.js` | 1 | `onEvent`×1 | TODO（人手裁决：分类列） |
 
 ### 分派小结（按上表口径，**S7c 迁完之后**实测）
 
@@ -474,8 +475,9 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `MIGRATE · NOT-OPTION-SURFACE`（重分类：不是 `runToolLoop` 选项面，**没有规位**） | 9 | 31 |
 | `COMPAT-PIN` | 12 | 80 |  <!-- #436 又新增 7 点（`test/loop-deliverables-gap-436.test.js`）；小结按 --verify 打印的 AST 真值对齐 -->  <!-- #519 新增 4 点：`test/loop-direct-route-conflict-519.test.js`；小结由 --verify 打印的 AST 真值（逐点归片 73）对齐 -->
 | `OWNED-BY-S5` | 5 | 13 |
+| `TODO（人手裁决：分类列）` | TODO（人工维护：无清单可数） | 1 |
 | `OWNED-BY-S6` | 5 | 21 |
-| **合计（现在实测）** | **66** | **183** |
+| **合计（现在实测）** | **67** | **184** |
 
 脚注：
 
@@ -700,7 +702,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-v020-rc.test.js` | 3 | `session`×2, `stallDetection`×1 |
 | `test/loop-resume-notice.test.js` | 10 | `tools`×9, `reflection`×1 |
 | `test/loop.test.js` | 31 | `completion`×15, `stallDetection`×12, `reflection`×2, `onToolResult`×1, `tools`×1, `wrapup`×1 |
-| `test/examples/erix-run-core.test.js` | 24 | `finalGuard`×19, `tools`×14, `strategy`×4, `context`×3, `reflection`×3, `onEvent`×1, `onObserverError`×1 |
+| `test/examples/erix-run-core.test.js` | 26 | `finalGuard`×19, `tools`×15, `strategy`×5, `context`×3, `reflection`×3, `onEvent`×1, `onObserverError`×1 |
 | `test/loop-capabilities-namespace-498.test.js` | 14 | `deliverables`×9, `onEvent`×5, `finalGuard`×4, `retry`×3, `onRound`×2, `completion`×1, `context`×1, `modelMetadata`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `resume`×1, `session`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/loop-option-normalization.test.js` | 16 | `session`×8, `tools`×5, `wrapup`×3 |
 | `test/reflection.test.js` | 23 | `completion`×12, `reflection`×10, `resume`×1 |
@@ -844,7 +846,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/tools-delegate-617.test.js` | 6 | `completion`×3, `tools`×3 |
 | `test/cli-delegate-617.test.js` | 8 | `context`×3, `prompt`×2, `session`×2, `tools`×1 |
 | `test/tools-delegate-tail-617.test.js` | 4 | `completion`×2, `tools`×2 |
-| `test/compact/fold-llm-degrade-469.test.js` | 4 | `completion`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
+| `test/compact/fold-llm-degrade-469.test.js` | 4 | `completion`×1, `onEvent`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/cli-delegate-630.test.js` | 3 | `prompt`×1, `session`×1, `tools`×1 |
 | `test/loop-296-user-turn-unrecoverable.test.js` | 1 | `tools`×1 |
 | `test/compact/budget-fallback-643.test.js` | 2 | `strategy`×2 |
@@ -853,6 +855,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-deliverables-gap-436.test.js` | 4 | `deliverables`×7, `reflection`×2, `resume`×2 |
 | `test/loop-empty-content-fragment.test.js` | 1 | `tools`×1 |
 | `test/loop-296-real-adapter-400.test.js` | 1 | `tools`×1 |
+| `test/compact/fold-llm-fail-661.test.js` | 2 | `resume`×1, `strategy`×1 |
 | `test/examples/erix-run-resume.test.js` | 19 | `resume`×17, `tools`×2 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
