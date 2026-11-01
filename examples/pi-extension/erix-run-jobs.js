@@ -25,7 +25,19 @@
 //      每会话各调一次 ⇒ 进程级单槽必然被后到者覆盖，通知投错会话）。
 //   2. **投递事实落盘**：`delivery` / `notifyTargetSessionId` / `notifyError` 进 `jobView`（= `status.json`），
 //      并且三处 settle 路径一律**先投递、后落盘**——先落盘那一刻投递还没发生，盘上永远是空值。
-//      只有 `delivery === "sent"` 才 `claim.settle(true)`（有界重试是下一张单，本文件只做判定）。
+//      只有 `delivery === "sent"` 才 `claim.settle(true)`。
+//
+// issue #659（本文件的四次加法，全在「投递链」与「job 生命周期」上）：
+//   1. **有界重试**：投失败（含 reload 窗口里句柄失效）后按 `NOTIFY_RETRY_DELAYS_MS` 三档重投，
+//      定时器归 job 持有（`job.notifyRetry`）、与看门狗共用 `clearJobTimers`，**不在 factory 里起**。
+//   3. **`sent` 的上界**：`sent` 只是「宿主接受了这次调用」，不是「已送达」；真正的宿主确认只能来自
+//      观察侧（`erix-run.ts` 的 `agent_start` 回路，见 `erix-run-parent-wake.js` 的 `isPending()`）。
+//   5. **`no-owner` 的根因不再无声**：`sessionIdOf()` 真抛异常时原文进 `job.ownerSessionError` →
+//      `jobView.ownerSessionError` + `notifyError`（否则盘上只有一句 `delivery:"no-owner"`）。
+//   6. **续跑坐标进 `jobView`**：顶层 `resume` 与 `delivery` 同族（只读 `status.json` 的会话也拿得到入口）。
+//
+// issue #658（同一份 job 生命周期）：`shutdown(ownerSessionId)` **按会话归属**收口，不再有进程级一次性
+// 开关；看门狗与投递重试两根定时器都只清自己会话的，没有归属的 job（`no-owner` 那一族）不清。
 //
 // ⚠ 后台 run **与扩展同进程**——这是**本单自己的选择**，不是学 pi-subagents：上游**每个**后台 run 都
 // `spawn` 一个独立 runner 进程（`runs/background/async-execution.js:4` 导入 `spawn`、`spawnRunner` 定义在 `:385`、
@@ -64,11 +76,25 @@ export const JOB_REGISTRY_SYMBOL = Symbol.for("erix-run.async-jobs.v1");
 export const SESSION_HANDLE_REGISTRY_SYMBOL = Symbol.for("erix-run.session-handles.v1");
 
 /**
+ * 完成投递的**有界重试档位**（issue #659 第 1 格）。
+ *
+ * 投失败后按这三档各重投一次 ⇒ **重试上限 3 次**（连同首次共 4 次投递尝试），最迟在终局后 45s 收口。
+ * 每次重投都**重算 `isIdle()`**（投递口 `notify` 每次都重新问一次父会话忙不忙，所以「上一档父会话正忙」
+ * 不会把这一档也钉死），也重新按 `ownerSessionId` 查一次句柄（所以 `/reload` 窗口里那句失效上下文
+ * 造成的 `failed` 会被新实例重新注册的句柄救回来）。
+ *
+ * 定时器归 **job** 持有（`job.notifyRetry`），与 run 级看门狗共用 `clearJobTimers`：`settle` /
+ * 看门狗到点 / `action:"cancel"` / `session_shutdown` 四处一起清。**不在扩展 factory 里起定时器。**
+ * 档数与上限是**显式契约**（README 同一份值），不是隐式默认。
+ */
+export const NOTIFY_RETRY_DELAYS_MS = Object.freeze([5_000, 10_000, 30_000]);
+
+/**
  * 投递事实的取值域（issue #654 缺陷 2）。`delivery` 字段**恒在场**（未尝试时是 `null`），取值只在这五个里：
  *
  * | 取值 | 含义 |
  * |---|---|
- * | `sent` | 投递调用被宿主接受（不抛、也没被显式拒绝）。⚠ 诚实边界：pi 的 `sendMessage` 契约是 `void`，异步失败经 `runner.emitError` 上报、不回到调用方 ⇒ 本层能确认的**上界**就是「调用被接受」 |
+ * | `sent` | 投递调用被宿主接受（不抛、也没被显式拒绝）。⚠ **诚实边界（issue #659 第 3 格）**：pi 的 `sendMessage` / `sendUserMessage` 契约是 `void`，异步失败经 `runner.emitError` 上报、**不回到调用方** ⇒ `sent` 能确认的上界只是「宿主接受了这次调用」，**不是「已送达」**。真正的宿主确认只能来自**观察侧**：`agent_start` 是否真的来了（`erix-run-parent-wake.js` 的 `isPending()` / `rearmIfUnstarted()` 回路）。别把 `sent` 当「消息进了会话」消费 |
  * | `deduped` | 同一个 run 的完成已经投过，本次被去重注册表挡下（次数记在 `job.deduped`） |
  * | `failed` | 投递调用抛了异常，或句柄 / 宿主显式拒绝（原因在 `job.notifyError`） |
  * | `orphaned` | 派工会话的句柄查不到（会话已关闭 / 扩展实例已换）⇒ **不投给任何存活会话** |
@@ -463,10 +489,20 @@ export function jobView(job, { now = () => Date.now() } = {}) {
     //    「投没投出去 / 投给了哪个会话 / 为什么没投成」必须能在盘上读到（口径照 #261 R4③）。
     //    它们在 `jobView` 里而不是只在内存 job 上：`status.json` 的内容就是这个函数的返回。
     ownerSessionId: job.ownerSessionId ?? null,
+    // #659 第 5 格：`sessionIdOf()` 真抛过异常时的原文（`no-owner` 的根因不能只靠推断）。
+    ownerSessionError: job.ownerSessionError ?? null,
     delivery: job.delivery ?? null,
     notifyTargetSessionId: job.notifyTargetSessionId ?? null,
     notifyError: job.notifyError ?? null,
+    // #659 第 1 格：已经排出去的重试次数（上限 = `NOTIFY_RETRY_DELAYS_MS.length`）。
+    notifyRetries: job.notifyRetries ?? 0,
     deduped: job.deduped ?? 0,
+    // —— 异步面独有：**续跑坐标**（issue #659 第 6 格）。与 `delivery` 同族：只读 `status.json` 的
+    //    别的会话不必从 `diagnostics.resume` 里挖，也不必自己去拼 `<sessionDir>/<runId>.jsonl`。
+    //    取值与 `resumable` **同源**（都是 core 的 `resumeFactsOf` 经 `buildSuccessPayload` 落到
+    //    `diagnostics.resume`）：还没终局时是 `null`（「还没有坐标事实」，不是「不能续跑」），
+    //    终局后与 `resumable` 一起出现，不可能一个说能续、一个说没坐标。
+    resume: job.payload?.diagnostics?.resume ?? null,
   };
 }
 
@@ -504,6 +540,9 @@ export function handleOf(job) {
  *     // `session` 是**派工会话的句柄**（按 `job.ownerSessionId` 从 `sessionHandles` 查出来的），
  *     // 查不到时本层根本不调 notify（记 `orphaned`），所以投递口拿不到“别的会话的 pi”。
  *   sendRegistry?:object, registry?:object, sessionHandles?:object,
+ *   setTimeout?:Function, clearTimeout?:Function,
+ *     // 定时器注入缝（#659 第 1 格）：run 级看门狗与投递重试都走这两个，单测拿假时钟不用真等 30 秒。
+ *     // 没注入时就是全局 `setTimeout` / `clearTimeout`，行为与注入前逐字一致。
  *   deps?:object,   // 透传给 core.runErixRun 与 writeStatusFile（后者的 fs 注入缝见 #237 R4）,
  * }} [options]
  */
@@ -511,6 +550,9 @@ export function createAsyncRuntime(options = {}) {
   const now = options.now ?? (() => Date.now());
   const home = options.home ?? homedir();
   const env = options.env ?? process.env;
+  /** 定时器（注入缝，见 `options.setTimeout`）：看门狗与投递重试共用同一对。 */
+  const setTimeoutFn = options.setTimeout ?? setTimeout;
+  const clearTimeoutFn = options.clearTimeout ?? clearTimeout;
   const registry = options.registry ?? globalAsyncJobRegistry();
   const sendRegistry = options.sendRegistry ?? globalCompletionSendRegistry();
   /** 会话句柄表（#654）：`sessionId` → 那个会话的投递句柄；默认是进程级按会话键的那一份。 */
@@ -557,6 +599,52 @@ export function createAsyncRuntime(options = {}) {
   };
 
   /**
+   * job 持有的**全部**定时器一起清（#658 / #659 第 1 格：**同一份生命周期**）。
+   *
+   * 现在一个 job 上有两根定时器：run 级看门狗（`job.watchdog`，超时终局）与完成投递的有界重试
+   * （`job.notifyRetry`）。`settle` / 看门狗到点 / `action:"cancel"` / `shutdown` 四处**都走这里**，
+   * 所以「新加一根定时器忘了清」在结构上只剩一处可能出错（而不是四份清理各漏一次）。
+   *
+   * @param {object} job
+   */
+  const clearJobTimers = (job) => {
+    if (job.watchdog !== undefined) { clearTimeoutFn(job.watchdog); job.watchdog = undefined; }
+    if (job.notifyRetry !== undefined) { clearTimeoutFn(job.notifyRetry); job.notifyRetry = undefined; }
+  };
+
+  /**
+   * 投失败后的**有界重试**（#659 第 1 格）：按 `NOTIFY_RETRY_DELAYS_MS` 的三档各重投一次。
+   *
+   * 为什么需要它：`claim.settle(false)` 只把去重条目删掉（#656 已修好那半边），**没有任何第二个
+   * 调用者会再来一次** —— 释放的去重位白白空着，一次 `failed`（或 `/reload` 窗口里的失效句柄）
+   * 就是永久静默。
+   *
+   * 有界性三条：① 档数固定为 `NOTIFY_RETRY_DELAYS_MS.length`（重试上限 3 次）；② 同一时刻只挂一根
+   * 定时器（`job.notifyRetry` 非空就不重复排）；③ 已经 `sent` 就把剩下的档撤掉。
+   *
+   * @param {object} job
+   * @returns {boolean} 这次是否真的排了一档
+   */
+  const scheduleNotifyRetry = (job) => {
+    if (job.notifyRetry !== undefined) return false;
+    const attempt = job.notifyRetries ?? 0;
+    if (attempt >= NOTIFY_RETRY_DELAYS_MS.length) return false;
+    const delay = NOTIFY_RETRY_DELAYS_MS[attempt];
+    job.notifyRetries = attempt + 1;
+    job.notifyRetryAt = now() + delay;
+    const timer = setTimeoutFn(() => {
+      job.notifyRetry = undefined;
+      // 到点重投：**重算 `isIdle()`**（投递口每次都重新问一次父会话忙不忙）并按 `ownerSessionId`
+      // 重新查一次句柄（`/reload` 窗口里旧句柄的失效上下文会被新实例救回）。
+      notifyThenPersist(job);
+    }, delay);
+    job.notifyRetry = timer;
+    // 重试不该把 node 进程钉住（与看门狗同一条）。
+    timer?.unref?.();
+    return true;
+  };
+
+  /**
    * 完成投递（**带去重** + **按会话隔离**）。`sendRegistry.claim` 不是 owned 就直接返回 —— 同一 run 的终局
    * 可能被看门狗与内层返回各触发一次，`/reload` 后旧闭包还可能再来一次，只许投一次。
    *
@@ -596,7 +684,7 @@ export function createAsyncRuntime(options = {}) {
     if (ownerSessionId !== undefined && session === undefined) {
       // 派工会话已不在（会话关了 / 扩展实例换了）：**不投给任何存活会话**。
       recordDelivery(job, "orphaned", { target: ownerSessionId });
-      // 没投出去 ⇒ 去重位让给将来（有界重试是下一张单 S3，本单只做判定）。
+      // 没投出去 ⇒ 去重位让给将来（由 `notifyThenPersist` 排下一档重试）。
       claim.settle(false, now());
       return { delivered: false, deduped: false, delivery: "orphaned", triggersTurn };
     }
@@ -604,7 +692,12 @@ export function createAsyncRuntime(options = {}) {
     try {
       const verdict = notify(job, content, { triggersTurn, outcome, session });
       delivery = deliveryOf(verdict);
-      recordDelivery(job, delivery, { target: ownerSessionId ?? null, error: notifyErrorOf(verdict) });
+      recordDelivery(job, delivery, {
+        target: ownerSessionId ?? null,
+        // #659 第 5 格：`no-owner` 的根因不能只靠「没有会话身份」这句推断——`sessionIdOf()` 真抛过异常时
+        // 把原文一并落进 `notifyError`（否则盘上只有一个 `delivery:"no-owner"`，没有任何解释）。
+        error: notifyErrorOf(verdict) ?? (delivery === "no-owner" ? job.ownerSessionError : undefined),
+      });
     } catch (error) {
       // 投不出去：去重注册表要把它让给下一次重试（照 pi-subagents sendCompletion 的 try/catch 口径）
       delivery = recordDelivery(job, "failed", {
@@ -623,17 +716,30 @@ export function createAsyncRuntime(options = {}) {
    * 先落盘那一刻 `delivery` / `notifyTargetSessionId` 还没被赋值 ⇒ 盘上永远是空值，加字段等于没加。
    * 投递链上真抛了也收成 `delivery:"failed"` 的可机读事实，**绝不跳过落盘**
    * （盘上没有终局比投递失败更糟：查询侧会永远停在 running）。
+   *
+   * #659 第 1 格：这也是**重试的入口**——没投成（`delivery !== "sent"`）就排下一档，投成了就把剩下的
+   * 档撤掉。重试到点后调的也是这个函数，所以「重投 + 落盘」永远是同一条链，不会出现「重投成功但盘上
+   * 还写着 failed」的盘面。
    */
   const notifyThenPersist = (job) => {
+    let result;
     try {
-      notifySettled(job);
+      result = notifySettled(job);
     } catch (error) {
       recordDelivery(job, "failed", {
         target: job.notifyTargetSessionId,
         error: textOf(error?.message ?? error),
       });
     }
+    if (job.delivery === "sent") {
+      // 投成了：剩下的档不必再跑（`notifyRetries` 保留已发生的次数，那是历史事实）。
+      if (job.notifyRetry !== undefined) { clearTimeoutFn(job.notifyRetry); job.notifyRetry = undefined; }
+      job.notifyRetryAt = undefined;
+    } else {
+      scheduleNotifyRetry(job);
+    }
     persistStatus(job);
+    return result;
   };
 
   const settle = (job, payload) => {
@@ -648,14 +754,15 @@ export function createAsyncRuntime(options = {}) {
     job.payload = payload;
     job.status = outcomeOf(payload);
     job.finishedAt = now();
-    if (job.watchdog !== undefined) { clearTimeout(job.watchdog); job.watchdog = undefined; }
+    // #658 / #659：看门狗与投递重试一起清（同一份 job 生命周期，见 `clearJobTimers`）。
+    clearJobTimers(job);
     // ⚠ 顺序（#654 缺陷 2 的顺序坑）：**先投递、后落盘**。`status.json` 的内容就是 `jobView` 的投影，
     // 先落盘那一刻 `delivery` / `notifyTargetSessionId` 还没被赋值 ⇒ 盘上永远是空值（等于没修）。
     notifyThenPersist(job);
   };
 
   /** 派工：立即返回句柄，内层 run 在后台跑（**不 await**）。 */
-  const start = (rawParams, { signal, sessionId } = {}) => {
+  const start = (rawParams, { signal, sessionId, sessionOwnerError } = {}) => {
     // 参数校验同步做：坏参数必须当场报给模型，不能变成「派工成功了但后台一条错误载荷」。
     // 形状上直接复用同步面（runErixRun 会把 ErixRunError 归一成 ok:false + error.code 载荷），
     // 免得同一个坏参数在同步/异步两条路上给出两种形状（一个有 structuredContent、一个只剩文本）。
@@ -681,6 +788,10 @@ export function createAsyncRuntime(options = {}) {
       // #654 缺陷 1：派工那一刻的**会话身份**（`ctx.sessionManager.getSessionId()`）。投递时按它查句柄，
       // 所以「谁派的工」是一件记在 job 上的事实，不再取决于「哪个会话最后启动」。
       ownerSessionId: typeof sessionId === "string" && sessionId !== "" ? sessionId : undefined,
+      // #659 第 5 格：拿不到会话身份的**根因**（`sessionIdOf()` 真抛异常时的原文）。以前这个异常被
+      // `catch { return undefined }` 吃掉 ⇒ 盘上只剩一句 `delivery:"no-owner"`，没有任何解释字段。
+      ownerSessionError: typeof sessionOwnerError === "string" && sessionOwnerError !== ""
+        ? sessionOwnerError : undefined,
       cwd: params.cwd ?? resumeTarget?.cwd,
       model: params.model ?? null,
       maxRounds: params.maxRounds,
@@ -703,7 +814,7 @@ export function createAsyncRuntime(options = {}) {
 
     // run 级看门狗（机制 5 / R5）：定时器**不在 execute() 里**，异步分支返回后到点仍要把
     // 终局写成 aborted 并落进 status.json —— 否则查询侧永远停在 running。
-    job.watchdog = setTimeout(() => {
+    job.watchdog = setTimeoutFn(() => {
       job.timedOut = true;
       job.status = "aborted";
       job.finishedAt = now();
@@ -822,7 +933,7 @@ export function createAsyncRuntime(options = {}) {
       job.cancelReason = `erix_run 被调用方取消（action:"cancel"）`;
       job.status = "aborted";
       job.finishedAt = now();
-      if (job.watchdog !== undefined) { clearTimeout(job.watchdog); job.watchdog = undefined; }
+      clearJobTimers(job);
       // 先投递、后落盘（#654 缺陷 2 的顺序坑，口径同 settle）：否则返回的 view / 盘上都看不到投递事实。
       notifyThenPersist(job);
       // signal 打进内层 runToolLoop（R3）：runErixRun 的 relayCancel 会把终局写成 aborted
@@ -837,18 +948,38 @@ export function createAsyncRuntime(options = {}) {
   };
 
   /**
-   * 生命周期清理（机制 6）：`session_shutdown` 调它，**幂等**（重复调用不重复清、不抛）。
+   * 生命周期清理（机制 6 / **issue #658**）：`session_shutdown` 调它，**按会话归属收口**、**幂等**。
+   *
+   * 修前是两个坑叠在一起：`shutdown()` 挂在**进程级 runtime 单例**上、带一个**永不复位**的 `shutDown` 开关，
+   * 而且清的是 `registry.list()`（**全进程所有 job**，不分会话）。于是任一会话按一次 `/new` · `/resume` ·
+   * `/reload` · 退出，就一次性摘掉**全进程所有在跑 run** 的超时看门狗——那些 run 的真超时既不写 `aborted`
+   * 也不投递，`status.json` 永远停在 `running`（假事实，比「没醒」更糟）。
+   *
+   * 现在：只清 `job.ownerSessionId === ownerSessionId` 的 job（#654 已经把会话身份记在 job 上，判据现成），
+   * 而且清的是**这一份 job 生命周期上的全部定时器**（看门狗 + 投递重试，见 `clearJobTimers`）。
+   * 一次性开关去掉：清自己会话的定时器本来就幂等（第二次没有东西可清 ⇒ 返回 false），不需要开关防重入
+   * ——那个开关恰好就是「第一击之后再也不会清」的根源。
+   *
+   * **没有归属的 job（`ownerSessionId === undefined`，即 `delivery:"no-owner"` 那一族）不归任何会话**，
+   * 所以本函数**不清它们**（传空/缺 owner 时直接返回 false）：摘掉不属于自己的定时器不是清理，是破坏。
+   * 它们的定时器只由自己的 settle / 看门狗到点 / `action:"cancel"` 收口。
+   *
    * ⚠ 不 abort 在跑的 run：同进程的 run 归进程活着这件事管（README 的限制条），
    *   扩展重载 / 会话切换时把人家正在跑的活掐掉不是清理，是破坏。
+   *
+   * @param {string} [ownerSessionId] 触发 `session_shutdown` 的那个会话（#654 的 `sessionId`）
+   * @returns {boolean} 这次是否真的清掉了东西（第二次调用 ⇒ false，幂等）
    */
-  let shutDown = false;
-  const shutdown = () => {
-    if (shutDown) return false;
-    shutDown = true;
+  const shutdown = (ownerSessionId) => {
+    const owner = typeof ownerSessionId === "string" && ownerSessionId !== "" ? ownerSessionId : undefined;
+    if (owner === undefined) return false;
+    let cleared = 0;
     for (const job of registry.list()) {
-      if (job.watchdog !== undefined) { clearTimeout(job.watchdog); job.watchdog = undefined; }
+      if (job.ownerSessionId !== owner) continue;
+      if (job.watchdog !== undefined || job.notifyRetry !== undefined) cleared += 1;
+      clearJobTimers(job);
     }
-    return true;
+    return cleared > 0;
   };
 
   return {
