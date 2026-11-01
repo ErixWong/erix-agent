@@ -14,10 +14,11 @@
 //  R1 NOT_REGISTERED        候选（零消费者）没有登记标记 ⇒ 红。登记是这张票的交付物本身。
 //  R2 NOT_A_CANDIDATE       **有消费者**的公共名被标了删除标记（不论版本）⇒ 红。这是本判据的反向证靶子：
 //                           删掉一个真消费者不会让候选数变（消费面在别处），所以只能靠这条拦。
-//  R3 WRONG_VERSION         标记里的删除版本 ≠ 该名字在登记表里绑的版本（缺省 `0.30`，见 `REMOVAL_REGISTRY`）⇒ 红。
+//  R3 WRONG_VERSION         标记里的删除版本 ≠ 唯一合法版本（`NEXT_BREAKING_VERSION`，当前 `0.30`）⇒ 红。
 //                            写错版本等于把删除挪到另一个发布包里，比不写更危险（读的人以为对过账）。
-//                            **逐个名字**可移：宿主仓实测在用的名字由登记表绑到更晚的发布包，其余仍是缺省 0.30。
-//                            缺省值住在常量 `DEFAULT_REMOVAL_VERSION` 里，登记表只覆盖它点名的名字。
+//                            合法边界**只有一个**：0.30 还没发布，往上再编一个版本号（例如 0.31）就是把
+//                            「0.30 的发布阻塞」伪装成「已排期」——读的人会以为删不删只等时间。
+//                            版本真值住在常量 `NEXT_BREAKING_VERSION` 里，登记表**不再**按名字覆盖它。
 //  R4 NO_MIGRATION          标记没写「迁移到什么」⇒ 红。两种合法形状：
 //                             · `` migrate to `X` ``（`X` 必须是树里真的声明出来的符号——指到空气里等于没写）；
 //                             · `no in-tree replacement`（仓内确实没有替代，明确写出来，别编一个）。
@@ -30,11 +31,26 @@
 //  R6 UNRESOLVED_DECLARATION 有 `@deprecated` 却认不出它贴的是哪个公共名（形状本工具不认）⇒ 红，
 //                            不许静默跳过（「认不出」不等于「没问题」）。
 //  R7 REGISTRY_ENTRY_IDLE   登记表里的一条名字**没对上任何标记** ⇒ 红（#210 R2 惯例：静默不匹配的豁免条目
-//                            本身就是错）。它拦的是「把名字从 0.30 挪到 0.31 之后忘了改标记」这种单向豁免：
-//                            登记表说「这个名等到 0.31 再删」，而源码里已经没有它的标记（或标记被删了）——
-//                            读登记表的人会以为删除仍在计划里，实际上这条登记已经空转。
-//  R8 REGISTRY_ENTRY_INVALID 登记表的条目形状不合规（缺理由 / 版本不是 `x.y`）⇒ 红。没有理由的豁免就是
-//                            下一任读者无法复核的免检通道；版本不是 `x.y` 则 R3 无法按名字对账。
+//                            本身就是错）。它拦的是单向账本：登记表说「这个名字现在删不掉」，而源码里已经没有
+//                            它的标记（或标记被删了）——读登记表的人会以为阻塞还在，实际上这条账已经空转。
+//  R8 REGISTRY_ENTRY_INVALID 登记表的条目形状不合规（缺理由 / 没有 `hostFacts` / 版本写了却不是 `x.y`）⇒ 红。
+//                            没有理由、也没有可复核宿主事实的条目，就是下一任读者无法重跑的免检通道。
+//  R9 REGISTRY_FOREIGN_VERSION 登记表里出现 `NEXT_BREAKING_VERSION` 以外的版本号 ⇒ 红并点名。**这一条就是
+//                            「不许发明版本号」的机器拦法**：0.30 尚未发布，拿 0.31 承接一个真实的 0.30 阻塞
+//                            等于把发布阻塞写成已排期；合法边界只有一个，登记表记的是**为什么删不掉**，
+//                            不是「换个版本号逃生口」。
+//  R10 MARKER_HOST_FACT_MISSING 登记表声明的宿主事实（`hostFacts`：`<宿主仓>/<文件>:<行>`）在**标记正文里
+//                            找不到** ⇒ 红并点名缺哪一条。账本的理由必须与标记的措辞对得上：把标记里的宿主
+//                            事实句删掉、账本还留着理由，读标记的人就再也看不出「为什么删不掉」。
+//  R11 MARKER_HOST_FACT_UNLEDGERED 标记自称发布阻塞（正文里有字面量 `release blocker`）却**没有账本条目** ⇒
+//                            红并点名。删掉账本条目不会让宿主迁移；这条拦的是「把账本删干净就当作已排期」的
+//                            反向逃生口。（措辞约定：写「这一版删不掉」就用 `Release blocker for 0.30:` 开头。）
+//
+// ── 这张账本是什么（不是版本表）─────────────────────────────────────────────────
+//  `REMOVAL_REGISTRY` 记的是**0.30 的发布阻塞**：宿主仓真的在导入、所以这一版不能删的名字，逐条写清
+//  「哪个宿主、哪个文件:行」。删除的前提是**宿主先迁移**（不是「等下一个版本号」）。宿主侧的可跑判据是
+//  `scripts/host-consumer-probe.mjs`（`npm run check:host-consumers -- --hosts <宿主目录>`），它已接进
+//  `AGENTS.md` / `AGENTS_cn.md` 的 0.30 预发布清单：跑不出命中才允许发 0.30。
 //
 // ── 三档口径（与清点工具同一份）───────────────────────────────────────────────
 //  候选 = 「包内消费者（`src/` `bin/`）+ 发布面消费者（`examples/` `test/contract/`）+ 自身定义文件内引用」
@@ -43,12 +59,14 @@
 //
 // ── 边界（必须写进报告，不许含糊）─────────────────────────────────────────────
 //  本判据只证**仓内**零消费者。宿主仓（touwaka / app_container / erix-station / pi）不在扫描面里，
-//  它们的 import 这里一个都看不见 ⇒ **删除前必须另核宿主**。本判据拦的是「登记与清点脱钩」，
-//  不是「可以删了」。
+//  它们的 import 这里一个都看不见 ⇒ **删除前必须另核宿主**。本判据拦的是「登记与清点脱钩」与
+//  「账本与标记脱钩」，不是「可以删了」；「宿主还在不在用」只有 `check:host-consumers` 说得清。
+//  另一条边界：把账本条目**和**标记里的宿主事实句一起删掉，本判据不会红（那时标记只是一条普通的
+//  0.30 删除承诺）——拦住这种情形的是发布前置清单里那一次宿主探针，不是这里。
 //
 // ── 退出码（本仓惯例：读不出真值就红，不许假绿）───────────────────────────────
-//  0 = 登记与清点一致（且 R3–R8 全过）
-//  1 = 判据红（上面 R1–R8 任一条，逐条点名）
+//  0 = 登记与清点一致（且 R3–R11 全过）
+//  1 = 判据红（上面 R1–R11 任一条，逐条点名）
 //  2 = 读不出真值：清点工具跑不起来/清点不完整（它自己 exit 2）、`--types` 模式下生成物不存在、
 //      或扫描面读不出。**不许**把「读不出」当成「没问题」。
 //
@@ -72,55 +90,73 @@ const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const DEFAULT_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 /**
- * 缺省删除版本（#429 决策：零消费者导出并入 0.30 破坏包）。没有在 `REMOVAL_REGISTRY` 里单独登记的名字
- * 都绑这个版本。改这里 = 改缺省口径，报告里要写。
+ * 唯一合法的移除版本：0.30（尚未发布的破坏包）。
+ *
+ * 为什么是**一个**常量而不是「每个名字一个版本」：0.30 还没发布，往上再编一个版本号（0.31）就是把
+ * 「0.30 的发布阻塞」写成「已排期」——读的人会以为删不删只等时间。合法边界只有一个；宿主仓在用的名字
+ * 不能靠换版本号绕过去，只能靠**宿主先迁移**或**这一版不删**。R9 看守这一条。
+ *
+ * 改这里 = 切割一个新的破坏版本，报告里要写，且必须同时改标记与账本（R3 / R9 会红）。
  */
-export const DEFAULT_REMOVAL_VERSION = "0.30";
+export const NEXT_BREAKING_VERSION = "0.30";
 
-/** 兼容别名：缺省版本就是「不登记时的版本」。新代码请用 `DEFAULT_REMOVAL_VERSION`。 */
+/** 缺省删除版本 = 唯一合法版本（没有在 `REMOVAL_REGISTRY` 里点名的名字都绑它）。 */
+export const DEFAULT_REMOVAL_VERSION = NEXT_BREAKING_VERSION;
+
+/** 兼容别名：缺省版本就是「不登记时的版本」。新代码请用 `NEXT_BREAKING_VERSION`。 */
 export const REMOVAL_VERSION = DEFAULT_REMOVAL_VERSION;
 
 /**
- * 逐个名字的移除版本登记表：名字 → `{ version, reason }`。
+ * **0.30 发布阻塞账本**：名字 → `{ reason, hostFacts }`。
  *
- * 为什么需要它：0.30 是**整包**的删除包，但「仓内零消费者」不等于「宿主零消费者」——本判据看不见宿主仓
- * （边界写在文件头与报告里）。宿主侧核验过的名字若仍在被导入，就不能跟 0.30 一起删；把它的删除版本
- * 单独挪后，比把整张票推翻更小、也更可核：读的人从这一个名字上就能看出「它为什么还在」。
+ * 它不是版本表（版本只有一个，见 `NEXT_BREAKING_VERSION`），而是「这个名字现在为什么删不掉」的账本：
+ * 「仓内零消费者」不等于「宿主零消费者」——本判据看不见宿主仓（边界写在文件头与报告里），而宿主侧
+ * 真的还在导入。于是这两个名字不能跟 0.30 一起删，**删除前提 = 宿主先迁移**。
  *
- * 两条纪律（都由 R7 / R8 看守）：
- *   · 条目必须**真的对上一条标记**（空转即红，与 #210 R2 同口径）——否则登记表会变成一张「看起来已安排」
- *     的空头支票；
- *   · 条目必须写 `reason`（宿主仓实测在导入的证据 / 迁移去向）——没有理由的豁免没人能复核。
+ * 三条纪律（由 R7 / R8 / R9 / R10 / R11 看守）：
+ *   · 条目必须**真的对上一条标记**（空转即红，与 #210 R2 同口径）；
+ *   · 条目必须写 `reason`（为什么删不掉），且**不许**写别的版本号（R9：唯一合法版本是 0.30）；
+ *   · `hostFacts` 里的每一条 `<宿主仓>/<文件>:<行>` 必须在**标记正文里逐字出现**（R10）——账本的理由
+ *     与标记的措辞必须对得上，否则读标记的人看不出阻塞在哪；反过来，标记自称发布阻塞却没有账本
+ *     条目也是红（R11）。
  *
- * 今天登记的两条都来自宿主仓扫描：宿主消费者探针 `scripts/host-consumer-probe.mjs` 会把它们的命中
- * 逐条点名（哪个宿主、哪个文件:行）。
+ * 今天登记的两条都来自宿主仓扫描：`scripts/host-consumer-probe.mjs`
+ * （`npm run check:host-consumers -- --hosts <宿主目录>`）会把它们的命中逐条点名（哪个宿主、哪个文件:行），
+ * 那条命令已接进 0.30 预发布清单。
  */
 export const REMOVAL_REGISTRY = Object.freeze({
   notesStoreContract: {
-    version: "0.31",
-    reason: "host-side audit: touwaka (tests/llm-kit-adapters/notes-store-contract.test.mjs) and app_container "
-      + "(apps/worker/test/notes-store.test.js) import it from the `erix-agent/contract-tests` entry today; "
-      + "that entry keeps exporting it, so the removal waits for the 0.31 bundle",
+    reason: "host-side audit: touwaka and app_container import it from the `erix-agent/contract-tests` entry "
+      + "today, so deleting it in 0.30 breaks two live hosts until they migrate",
+    hostFacts: [
+      "app_container/apps/worker/test/notes-store.test.js:5",
+      "touwaka/tests/llm-kit-adapters/notes-store-contract.test.mjs:7",
+    ],
   },
   createAnthropicProvider: {
-    version: "0.31",
-    reason: "host-side audit: app_container (apps/worker/src/pi/erix-adapter.js) imports it, and there is no "
-      + "in-tree replacement until the assembly port converges — deleting it in 0.30 would break a live host",
+    reason: "host-side audit: app_container imports it, and there is no in-tree replacement until the assembly "
+      + "port converges, so deleting it in 0.30 breaks a live host until it migrates",
+    hostFacts: [
+      "app_container/apps/worker/src/pi/erix-adapter.js:2",
+    ],
   },
 });
 
 /**
- * 某个公共名绑定的删除版本：登记表里点名就按登记表，否则缺省。
+ * 某个公共名绑定的删除版本。
+ *
+ * 合法值只有一个（`NEXT_BREAKING_VERSION`）：账本条目**不该**带 `version`；万一有人写了，这里如实回它
+ * （于是 R3 与 R9 会同时点名那个名字），而不是默默把它当成 0.30。
  *
  * @param {string} name
- * @param {Record<string, {version?: string, reason?: string}>} registry
+ * @param {Record<string, {version?: string, reason?: string, hostFacts?: string[]}>} registry
  * @returns {string}
  */
 export function removalVersionOf(name, registry = REMOVAL_REGISTRY) {
   const entry = registry?.[name];
   return typeof entry?.version === "string" && entry.version.trim() !== ""
     ? entry.version.trim()
-    : DEFAULT_REMOVAL_VERSION;
+    : NEXT_BREAKING_VERSION;
 }
 
 /** 扫描面：与清点工具同一份语料（消费者面 + 暴露面），登记标记只可能出现在这些文件里。 */
@@ -137,7 +173,22 @@ export const CODES = {
   UNRESOLVED_DECLARATION: "R6",
   REGISTRY_ENTRY_IDLE: "R7",
   REGISTRY_ENTRY_INVALID: "R8",
+  REGISTRY_FOREIGN_VERSION: "R9",
+  MARKER_HOST_FACT_MISSING: "R10",
+  MARKER_HOST_FACT_UNLEDGERED: "R11",
 };
+
+/**
+ * 标记里「我在这一版删不掉」的自称。账本双向对账用它（R11）：有自称、没账本条目 ⇒ 红。
+ * 它是**标记措辞约定**的一部分（写 0.30 的发布阻塞就这么开头），不是另一份名单。
+ */
+export const HOST_BLOCKER_PHRASE = /release blocker/i;
+
+/**
+ * 宿主事实的形状：`<宿主仓>/<文件>:<行>`（例如 `app_container/apps/worker/src/pi/erix-adapter.js:2`）。
+ * 账本的 `hostFacts` 每一条都必须长这样（R8）——没形状的事实无法重核，也就无法在宿主改名后重新定位。
+ */
+export const HOST_FACT_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+:\d+$/;
 
 // ─────────────────────────────── 源码形状 ───────────────────────────────
 
@@ -295,7 +346,7 @@ export function declaredSymbols(records) {
  * 判据本体（纯函数：给语料与清点结果，返回红项；不读盘、不写盘，自测因此可以打内存副本）。
  *
  * @param {{records: Array<{rel: string, text: string}>, inventory: object,
- *          registry?: Record<string, {version?: string, reason?: string}>}} input
+ *          registry?: Record<string, {version?: string, reason?: string, hostFacts?: string[]}>}} input
  *   `registry` 是逐个名字的移除版本登记表（缺省 = 模块里那张 `REMOVAL_REGISTRY`）；自测靠注入它打反向证。
  * @returns {{reds: Array<{code: string, name: string, file?: string, line?: number|null, detail: string}>,
  *            registered: Array<object>, candidates: Array<object>}}
@@ -340,7 +391,7 @@ export function verify({ records, inventory, registry = REMOVAL_REGISTRY }) {
           + "——给有消费者的符号标删除，是宿主可见破坏的提前承诺",
       });
     }
-    // R3：删除版本（逐个名字：登记表点名就按登记表，否则缺省）
+    // R3：删除版本（合法边界只有一个：`NEXT_BREAKING_VERSION`）
     const version = /(\d+\.\d+)/.exec(row.tag)?.[1] ?? null;
     if (version === null) {
       reds.push({
@@ -356,8 +407,9 @@ export function verify({ records, inventory, registry = REMOVAL_REGISTRY }) {
         name: row.name,
         file: row.file,
         line: row.line,
-        detail: `标记写的删除版本是 ${version}，这个名字绑的是 ${expected}`
-          + `（${registry[row.name] ? "来自 REMOVAL_REGISTRY 的逐名登记" : `未在 REMOVAL_REGISTRY 里登记 ⇒ 缺省 ${DEFAULT_REMOVAL_VERSION}`}）`,
+        detail: `标记写的删除版本是 ${version}，唯一合法的移除版本是 ${expected}`
+          + `（\`NEXT_BREAKING_VERSION\`${registry[row.name] ? "；这个名字在账本里，账本不改版本" : ""}）`
+          + "——0.30 还没发布，往上再编一个版本号等于把发布阻塞写成已排期",
       });
     }
     // R4：迁移目标
@@ -382,20 +434,39 @@ export function verify({ records, inventory, registry = REMOVAL_REGISTRY }) {
     }
   }
 
-  // R7 / R8：登记表自身的两条判据（空转即红 / 条目形状）。
-  // 它们必须在 R1 之前报：R7 说的是「登记表里有一条没对上标记」，与「候选没登记」（R1）是相反方向的两件事。
+  // R7 / R8 / R9 / R10：账本自身的判据（空转即红 / 条目形状 / 版本号 / 宿主事实对账）。
+  // 它们必须在 R1 之前报：R7 说的是「账本里有一条没对上标记」，与「候选没登记」（R1）是相反方向的两件事。
+  const entriesByName = new Map(entries.map((row) => [row.name, row]));
   for (const [name, entry] of Object.entries(registry ?? {})) {
     const version = typeof entry?.version === "string" ? entry.version.trim() : "";
     const reason = typeof entry?.reason === "string" ? entry.reason.trim() : "";
-    if (!/^\d+\.\d+$/.test(version) || reason === "") {
+    const hostFacts = Array.isArray(entry?.hostFacts) ? entry.hostFacts : null;
+    const factsOk = hostFacts !== null && hostFacts.length > 0
+      && hostFacts.every((fact) => typeof fact === "string" && HOST_FACT_RE.test(fact));
+    const versionOk = version === "" || /^\d+\.\d+$/.test(version);
+    if (reason === "" || !factsOk || !versionOk) {
       reds.push({
         code: CODES.REGISTRY_ENTRY_INVALID,
         name,
         file: "scripts/deprecated-export-check.mjs",
         line: null,
-        detail: `REMOVAL_REGISTRY 的条目形状不合规：version=${JSON.stringify(entry?.version ?? null)}`
-          + `（必须是 \`x.y\`）、reason=${reason === "" ? "空" : "有"}（必须写理由）——`
-          + "没有理由的豁免是下一任读者无法复核的免检通道",
+        detail: `REMOVAL_REGISTRY 的条目形状不合规：reason=${reason === "" ? "空" : "有"}（必须写理由）、`
+          + `hostFacts=${factsOk ? `${hostFacts.length} 条` : JSON.stringify(entry?.hostFacts ?? null)}`
+          + `（必须是至少一条 \`<宿主仓>/<文件>:<行>\`）、version=${version === "" ? "未写" : JSON.stringify(version)}`
+          + `（要么不写——唯一合法版本是 ${NEXT_BREAKING_VERSION}——要么写成 \`x.y\`）——`
+          + "没有理由、也没有可复核宿主事实的账本条目，是下一任读者无法重跑的免检通道",
+      });
+    }
+    // R9：登记表里出现别的版本号 ⇒ 红（合法边界只有一个）
+    if (version !== "" && version !== NEXT_BREAKING_VERSION) {
+      reds.push({
+        code: CODES.REGISTRY_FOREIGN_VERSION,
+        name,
+        file: "scripts/deprecated-export-check.mjs",
+        line: null,
+        detail: `REMOVAL_REGISTRY 把 \`${name}\` 绑到了 ${version}，但唯一合法的移除版本是 ${NEXT_BREAKING_VERSION}`
+          + `（\`NEXT_BREAKING_VERSION\`）——0.30 还没发布，用 ${version} 承接一个真实的 0.30 阻塞，`
+          + "等于把「这一版删不掉」伪装成「已排期」；账本只记为什么删不掉，不记换到哪一版",
       });
     }
     if (!registeredNames.has(name)) {
@@ -404,10 +475,41 @@ export function verify({ records, inventory, registry = REMOVAL_REGISTRY }) {
         name,
         file: "scripts/deprecated-export-check.mjs",
         line: null,
-        detail: `REMOVAL_REGISTRY 登记了 \`${name}\`（版本 ${version || "?"}），但源码里**没有任何** \`@deprecated\` 标记`
-          + "对上这个名字——登记表说它等更晚的发布包再删，实际这条登记已空转（#210 R2：静默不匹配的豁免条目本身就是错）",
+        detail: `REMOVAL_REGISTRY 登记了 \`${name}\`${version === "" ? "" : `（版本 ${version}）`}，但源码里**没有任何** \`@deprecated\` 标记`
+          + "对上这个名字——账本说它现在删不掉，实际这条账已空转（#210 R2：静默不匹配的豁免条目本身就是错）",
       });
+      continue;   // R10 无从对账（标记都不在），R7 已经点名
     }
+    // R10：账本声明的宿主事实必须逐字出现在标记正文里
+    const marker = entriesByName.get(name);
+    if (factsOk) {
+      const missing = hostFacts.filter((fact) => !marker.tag.includes(fact));
+      if (missing.length > 0) {
+        reds.push({
+          code: CODES.MARKER_HOST_FACT_MISSING,
+          name,
+          file: marker.file,
+          line: marker.line,
+          detail: `标记正文里找不到账本声明的宿主事实 ${missing.map((fact) => `\`${fact}\``).join("、")}`
+            + "——账本的理由必须与标记的措辞对得上：宿主事实句被删掉，读标记的人就再也看不出为什么这一版删不掉"
+            + "（要重核就重跑 `npm run check:host-consumers -- --hosts <宿主目录>`）",
+        });
+      }
+    }
+  }
+
+  // R11：标记自称发布阻塞，却没有账本条目 ⇒ 红（删掉账本不会让宿主迁移）
+  for (const row of entries) {
+    if (!HOST_BLOCKER_PHRASE.test(row.tag)) continue;
+    if (Object.prototype.hasOwnProperty.call(registry ?? {}, row.name)) continue;
+    reds.push({
+      code: CODES.MARKER_HOST_FACT_UNLEDGERED,
+      name: row.name,
+      file: row.file,
+      line: row.line,
+      detail: "标记自称「release blocker」（这一版删不掉），但 `REMOVAL_REGISTRY` 没有这个名字的账本条目"
+        + "——删掉账本条目不会让宿主迁移，只会让下一个读标记的人以为宿主已经不在用",
+    });
   }
 
   // R1：候选必须有登记
@@ -488,28 +590,32 @@ function renderReport({ inventory, result, types, root, registry = REMOVAL_REGIS
   lines.push(`清点事实：${inventory.total} 个导出名 ⇒ 零消费者候选 ${result.candidates.length} 个`
     + `（清点工具：node scripts/export-consumer-check.mjs）`);
   const perName = Object.keys(registry ?? {}).length;
-  lines.push(`登记事实：${result.registered.length} 个公共名带删除标记（缺省删除版本 ${DEFAULT_REMOVAL_VERSION}；`
-    + `逐名登记表 ${perName} 条：${Object.entries(registry ?? {}).map(([n, e]) => `\`${n}\` → ${e.version}`).join("、") || "（空）"}）`);
+  lines.push(`登记事实：${result.registered.length} 个公共名带删除标记；唯一合法的移除版本 ${NEXT_BREAKING_VERSION}`
+    + `（\`NEXT_BREAKING_VERSION\`，登记表不改版本）；0.30 发布阻塞账本 ${perName} 条`);
   lines.push("");
   lines.push("## 候选 × 登记");
   const byName = new Map(result.registered.map((row) => [row.name, row]));
-  lines.push("| 名字 | 定义文件 | 登记 | 删除版本 | 迁移目标 |");
-  lines.push("|---|---|---|---|---|");
+  lines.push("| 名字 | 定义文件 | 登记 | 删除版本 | 迁移目标 | 账本 |");
+  lines.push("|---|---|---|---|---|---|");
   for (const row of result.candidates) {
     const reg = byName.get(row.name);
     const tag = reg?.tag ?? "";
     const migrate = /migrate to\s+`([^`]+)`/i.exec(tag)?.[1];
     const target = migrate ? `\`${migrate}\`` : (/no in-tree replacement/i.test(tag) ? "no in-tree replacement" : "—");
     const bound = removalVersionOf(row.name, registry);
-    const versionCell = bound === DEFAULT_REMOVAL_VERSION ? bound : `${bound}（逐名登记）`;
-    lines.push(`| \`${row.name}\` | \`${row.def}\` | ${reg ? `✓ ${reg.file}:${reg.line}` : "✗ 未登记"} | ${versionCell} | ${target} |`);
+    const versionCell = bound === NEXT_BREAKING_VERSION ? bound : `${bound}（账本里写了别的版本号 ⇒ R9 红）`;
+    const ledger = Object.prototype.hasOwnProperty.call(registry ?? {}, row.name) ? "✓ 发布阻塞（宿主在用）" : "—";
+    lines.push(`| \`${row.name}\` | \`${row.def}\` | ${reg ? `✓ ${reg.file}:${reg.line}` : "✗ 未登记"} | ${versionCell} | ${target} | ${ledger} |`);
   }
   if (perName > 0) {
     lines.push("");
-    lines.push("## 逐名移除版本登记表（`REMOVAL_REGISTRY`：每个条目必须对得上一条标记，且必须写理由）");
+    lines.push("## 0.30 发布阻塞账本（`REMOVAL_REGISTRY`：每条必须对得上一条标记、写理由、且宿主事实逐字出现在标记里）");
     for (const [name, entry] of Object.entries(registry)) {
-      lines.push(`- \`${name}\` → ${entry.version} —— ${entry.reason}`);
+      lines.push(`- \`${name}\` —— ${entry.reason}`);
+      for (const fact of entry.hostFacts ?? []) lines.push(`    · 宿主事实：\`${fact}\``);
     }
+    lines.push("  删除前提 = 上面这些宿主先迁移；宿主侧可跑判据：");
+    lines.push("  `npm run check:host-consumers -- --hosts <宿主目录>`（已接进 0.30 预发布清单）。");
   }
   if (types) {
     lines.push("");
@@ -523,7 +629,8 @@ function renderReport({ inventory, result, types, root, registry = REMOVAL_REGIS
   lines.push("");
   if (result.reds.length === 0 && (types?.reds.length ?? 0) === 0) {
     lines.push(`结论：绿 —— ${result.candidates.length} 个候选全部登记且写法合规；`
-      + "没有「有消费者却标删除」的名字；逐名登记表每一条都对得上标记且写了理由。");
+      + `没有「有消费者却标删除」的名字；所有标记都只写唯一合法版本 ${NEXT_BREAKING_VERSION}；`
+      + "账本每一条都对得上标记、写了理由、且宿主事实逐字出现在标记正文里。");
   } else {
     lines.push("## 红项（逐条点名）");
     for (const red of [...result.reds, ...(types?.reds ?? [])]) {
@@ -534,9 +641,12 @@ function renderReport({ inventory, result, types, root, registry = REMOVAL_REGIS
   lines.push("");
   lines.push("## 边界（本判据证明不了的事）");
   lines.push("  只证**仓内**零消费者：宿主仓（touwaka / app_container / erix-station / pi）不在扫描面里，");
-  lines.push("  它们的 import 这里一个都看不见 ⇒ **删除前必须另核宿主**。本判据拦的是「登记与清点脱钩」，");
-  lines.push("  不是「可以删了」。宿主侧的核验由 `node scripts/host-consumer-probe.mjs --hosts <目录>` 做");
-  lines.push("  （`npm run check:host-consumers`），它把被导入的候选名字逐条点名到宿主仓 / 文件:行。");
+  lines.push("  它们的 import 这里一个都看不见 ⇒ **删除前必须另核宿主**。本判据拦的是「登记与清点脱钩」与");
+  lines.push("  「账本与标记脱钩」，不是「可以删了」。宿主侧的核验由 `node scripts/host-consumer-probe.mjs --hosts <目录>` 做");
+  lines.push("  （`npm run check:host-consumers`），它把被导入的候选名字逐条点名到宿主仓 / 文件:行；");
+  lines.push("  那条命令已接进 0.30 预发布清单：跑不出命中才允许发 0.30。");
+  lines.push("  另一条边界：账本条目**与**标记里的宿主事实句一起删掉时本判据不红（那时标记只是一条普通的");
+  lines.push("  0.30 删除承诺）——拦住那种情形的是发布前那一次宿主探针，不是这里。");
   lines.push("");
   lines.push("## 逐字复现");
   lines.push("  node scripts/deprecated-export-check.mjs              # 本表");
@@ -798,8 +908,8 @@ function runSelfTest() {
     }
   }
 
-  // ── 例⑨ R2 在「逐名登记表把版本挪后」之后仍然拦得住：给有消费者的名字打 0.31 标记 ⇒ 仍红并点名 ──
-  // 本票要的那一枪：版本可以逐名挪，但「有消费者」这条性质与版本无关——0.31 不是免死金牌。
+  // ── 例⑨ R2 在「版本写成 0.31」时仍然拦得住：给有消费者的名字打 0.31 标记 ⇒ 仍红并点名 ──
+  // 本票要的那一枪：「有消费者」这条性质与版本无关——写一个更晚的版本号不是免死金牌（R2 + R3 双红）。
   {
     const consumed = inventory.names
       .filter((row) => row.kind === "package-consumed" && row.consumerFiles.length > 0 && !REMOVAL_REGISTRY[row.name])
@@ -820,7 +930,7 @@ function runSelfTest() {
         expect(
           Boolean(hit),
           `⑨ R2 给有消费者的 \`${consumed.name}\`（${consumed.def}）打上 **0.31** 标记 ⇒ 仍红并点名（${hit?.code} ${hit?.name}）`,
-          `⑨ R2 给有消费者的 \`${consumed.name}\` 打 0.31 标记后**没**被抓出——版本挪后就变成免死金牌了`
+          `⑨ R2 给有消费者的 \`${consumed.name}\` 打 0.31 标记后**没**被抓出——写个更晚的版本号就变成免死金牌了`
             + `（红项：${after.reds.map((r) => `${r.code}:${r.name}`).join(",") || "无"}）`,
         );
         const restored = verify({ records, inventory });
@@ -833,21 +943,21 @@ function runSelfTest() {
     }
   }
 
-  // ── 例⑩ 登记表是**承重**的：把它清空 ⇒ 真树里那两条 0.31 标记变 R3 红；换回真表 ⇒ 绿 ──
-  // 这一条证的是「登记表真的在给版本供值」，而不是一张摆在旁边没人读的表。
+  // ── 例⑩ 账本是**承重**的：把它清空 ⇒ 真树里那两条「release blocker」标记变成 R11 红（没有账本条目）；
+  // 换回真表 ⇒ 绿。这一条证的是「账本真的在记阻塞事实」，而不是一张摆在旁边没人读的表。
   {
     const emptyRegistry = verify({ records, inventory, registry: {} });
-    const moved = Object.keys(REMOVAL_REGISTRY);
-    const wrongVersionNames = emptyRegistry.reds
-      .filter((red) => red.code === CODES.WRONG_VERSION)
+    const ledgered = Object.keys(REMOVAL_REGISTRY);
+    const unledgeredNames = emptyRegistry.reds
+      .filter((red) => red.code === CODES.MARKER_HOST_FACT_UNLEDGERED)
       .map((red) => red.name);
-    const allMovedCaught = moved.every((name) => wrongVersionNames.includes(name));
+    const allCaught = ledgered.every((name) => unledgeredNames.includes(name));
     const restored = verify({ records, inventory, registry: REMOVAL_REGISTRY });
     expect(
-      moved.length > 0 && allMovedCaught && restored.reds.length === 0,
-      `⑩ 登记表清空 ⇒ ${moved.length} 个逐名登记的版本变 R3 红（${wrongVersionNames.join(",")}）⇒ 换回真表 ⇒ 绿（${restored.reds.length} 红）`,
-      `⑩ 登记表清空后没把逐名登记的版本报成 R3：登记 ${JSON.stringify(moved)}，R3 点名 ${JSON.stringify(wrongVersionNames)}`
-        + `（还原 ${restored.reds.length} 红）——登记表没有在给版本供值`,
+      ledgered.length > 0 && allCaught && restored.reds.length === 0,
+      `⑩ 账本清空 ⇒ ${ledgered.length} 个自称发布阻塞的标记变 R11 红（${unledgeredNames.join(",")}）⇒ 换回真账本 ⇒ 绿（${restored.reds.length} 红）`,
+      `⑩ 账本清空后没把「自称发布阻塞却没有账本条目」报成 R11：账本 ${JSON.stringify(ledgered)}，R11 点名 ${JSON.stringify(unledgeredNames)}`
+        + `（还原 ${restored.reds.length} 红）——账本没有在记阻塞事实`,
     );
   }
 
@@ -857,7 +967,7 @@ function runSelfTest() {
     const withGhost = verify({
       records,
       inventory,
-      registry: { ...REMOVAL_REGISTRY, [ghostName]: { version: "0.31", reason: "self-test: 这一条故意不对应任何标记" } },
+      registry: { ...REMOVAL_REGISTRY, [ghostName]: { reason: "self-test: 这一条故意不对应任何标记", hostFacts: ["self-test/ghost.js:1"] } },
     });
     const hit = withGhost.reds.find((red) => red.code === CODES.REGISTRY_ENTRY_IDLE && red.name === ghostName);
     expect(
@@ -897,21 +1007,70 @@ function runSelfTest() {
     }
   }
 
-  // ── 例⑫ R8：登记表条目形状不合规（缺理由 / 版本不是 x.y）⇒ 红并点名 ──
+  // ── 例⑫ R8：账本条目形状不合规（缺理由 / 没有 hostFacts / 版本不是 x.y）⇒ 红并点名 ──
   {
     const target = Object.keys(REMOVAL_REGISTRY)[0];
     if (!target) {
-      failures.push("⑫ R8：真登记表是空的——这一枪打不出去");
+      failures.push("⑫ R8：真账本是空的——这一枪打不出去");
     } else {
-      const noReason = verify({ records, inventory, registry: { ...REMOVAL_REGISTRY, [target]: { version: REMOVAL_REGISTRY[target].version, reason: "" } } });
-      const badVersion = verify({ records, inventory, registry: { ...REMOVAL_REGISTRY, [target]: { version: "next", reason: "self-test" } } });
+      const facts = REMOVAL_REGISTRY[target].hostFacts;
+      const noReason = verify({ records, inventory, registry: { ...REMOVAL_REGISTRY, [target]: { reason: "", hostFacts: facts } } });
+      const noFacts = verify({ records, inventory, registry: { ...REMOVAL_REGISTRY, [target]: { reason: "self-test", hostFacts: [] } } });
+      const badVersion = verify({ records, inventory, registry: { ...REMOVAL_REGISTRY, [target]: { version: "next", reason: "self-test", hostFacts: facts } } });
       const hitNoReason = noReason.reds.find((red) => red.code === CODES.REGISTRY_ENTRY_INVALID && red.name === target);
+      const hitNoFacts = noFacts.reds.find((red) => red.code === CODES.REGISTRY_ENTRY_INVALID && red.name === target);
       const hitBadVersion = badVersion.reds.find((red) => red.code === CODES.REGISTRY_ENTRY_INVALID && red.name === target);
       expect(
-        Boolean(hitNoReason) && Boolean(hitBadVersion),
-        `⑫ R8 \`${target}\` 的登记缺理由 / 版本写成 \`next\` ⇒ 各自 R8 红并点名（${hitNoReason?.code} ${hitNoReason?.name} / ${hitBadVersion?.code} ${hitBadVersion?.name}）`,
-        `⑫ R8 形状不合规的条目没被抓出：缺理由=${Boolean(hitNoReason)}、版本非法=${Boolean(hitBadVersion)}`,
+        Boolean(hitNoReason) && Boolean(hitNoFacts) && Boolean(hitBadVersion),
+        `⑫ R8 \`${target}\` 的条目缺理由 / 没有 hostFacts / 版本写成 \`next\` ⇒ 各自 R8 红并点名（${hitNoReason?.code} ${hitNoReason?.name} / ${hitNoFacts?.code} ${hitNoFacts?.name} / ${hitBadVersion?.code} ${hitBadVersion?.name}）`,
+        `⑫ R8 形状不合规的条目没被抓出：缺理由=${Boolean(hitNoReason)}、无 hostFacts=${Boolean(hitNoFacts)}、版本非法=${Boolean(hitBadVersion)}`,
       );
+    }
+  }
+
+  // ── 例⑬ R9：账本里出现 `NEXT_BREAKING_VERSION` 以外的版本号（0.31）⇒ 红并点名；
+  // 写同一个合法版本（0.30）⇒ 不红（控制组）。这一条就是「不许发明版本号」的机器拦法。──
+  {
+    const target = Object.keys(REMOVAL_REGISTRY)[0];
+    if (!target) {
+      failures.push("⑬ R9：真账本是空的——这一枪打不出去");
+    } else {
+      const entry = REMOVAL_REGISTRY[target];
+      const foreign = verify({ records, inventory, registry: { ...REMOVAL_REGISTRY, [target]: { ...entry, version: "0.31" } } });
+      const hit = foreign.reds.find((red) => red.code === CODES.REGISTRY_FOREIGN_VERSION && red.name === target);
+      const sameVersion = verify({ records, inventory, registry: { ...REMOVAL_REGISTRY, [target]: { ...entry, version: NEXT_BREAKING_VERSION } } });
+      const control = sameVersion.reds.filter((red) => red.name === target);
+      expect(
+        Boolean(hit) && control.length === 0,
+        `⑬ R9 把 \`${target}\` 的版本写成 0.31 ⇒ 红并点名（${hit?.code} ${hit?.name}）；写成合法的 ${NEXT_BREAKING_VERSION} ⇒ 不红（控制组 ${control.length} 红）`,
+        `⑬ R9 账本里的外来版本号没被抓出：R9=${Boolean(hit)}（控制组 ${control.map((r) => r.code).join(",") || "无"}）`,
+      );
+    }
+  }
+
+  // ── 例⑭ R10：把标记里的宿主事实句删掉、账本还留着理由 ⇒ 红并点名缺哪一条；还原 ⇒ 绿 ──
+  {
+    const target = Object.keys(REMOVAL_REGISTRY)[0];
+    const facts = REMOVAL_REGISTRY[target]?.hostFacts ?? [];
+    const registration = collectRegistrations(records, new Set(inventory.names.map((row) => row.name))).entries
+      .find((row) => row.name === target);
+    const fact = facts[0];
+    if (!target || !fact || !registration) {
+      failures.push(`⑭ R10：真账本 / 真标记里找不到 \`${target ?? "?"}\` 的宿主事实——这一枪打不出去`);
+    } else {
+      const mutated = mutate(records, { rel: registration.file, from: fact, to: "the host adapter" });
+      if (mutated.missed) {
+        failures.push(`⑭ R10：变异没落上——${mutated.missed}`);
+      } else {
+        const after = verify({ records: mutated.records, inventory });
+        const hit = after.reds.find((red) => red.code === CODES.MARKER_HOST_FACT_MISSING && red.name === target);
+        const restored = verify({ records, inventory });
+        expect(
+          Boolean(hit) && hit.detail.includes(fact) && restored.reds.length === 0,
+          `⑭ R10 把 \`${target}\` 标记里的宿主事实 \`${fact}\` 删掉（账本还留着）⇒ 红并点名缺哪一条（${hit?.code} ${hit?.name}）⇒ 还原 ⇒ 绿（${restored.reds.length} 红）`,
+          `⑭ R10 标记里的宿主事实被删掉、账本还在，却没报 R10（红项：${after.reds.map((r) => `${r.code}:${r.name}`).join(",") || "无"}）`,
+        );
+      }
     }
   }
 
@@ -987,8 +1146,9 @@ export function main(argv = process.argv.slice(2)) {
   if (opts.json) {
     console.log(JSON.stringify({
       tool: "deprecated-export-check",
-      generatedFor: "issue #429：零消费者导出登记 @deprecated，删除并入 0.30（宿主在用的名字逐名挪后）",
+      generatedFor: "issue #429：零消费者导出登记 @deprecated，删除并入 0.30；宿主在用的名字记进 0.30 发布阻塞账本（不换版本号）",
       gate: true,
+      nextBreakingVersion: NEXT_BREAKING_VERSION,
       removalVersion: DEFAULT_REMOVAL_VERSION,
       removalRegistry: REMOVAL_REGISTRY,
       root: opts.root,
@@ -1002,7 +1162,8 @@ export function main(argv = process.argv.slice(2)) {
       reds,
       types: types ? { reds: types.reds, skipped: types.skipped } : null,
       boundary: "只证仓内零消费者；宿主仓（touwaka / app_container / erix-station / pi）不在扫描面里，"
-        + "宿主侧由 node scripts/host-consumer-probe.mjs --hosts <目录> 核（npm run check:host-consumers）",
+        + "宿主侧由 node scripts/host-consumer-probe.mjs --hosts <目录> 核（npm run check:host-consumers，"
+        + "已接进 0.30 预发布清单：跑不出命中才允许发 0.30）",
       reproduce: [
         "node scripts/deprecated-export-check.mjs",
         "node scripts/deprecated-export-check.mjs --types",

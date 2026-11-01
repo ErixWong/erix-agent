@@ -334,13 +334,17 @@ function createRequestContext(timeoutMs, externalSignal) {
  *   extraBody?:Record<string,unknown>,
  * }} options provider construction options
  * @returns {{protocol:"anthropic", model:string, chat:Function, chatStream:Function}}
- * @deprecated issue #429: removed in 0.31 — no in-tree replacement; the host
+ * @deprecated issue #429: removed in 0.30 — no in-tree replacement; the host
  *   builds the provider object itself (the duck-typed `{protocol, model, chat,
- *   chatStream}` shape). The removal moved from 0.30 to 0.31 because the host
- *   consumer probe found a live importer (app_container builds its adapter on
- *   this factory) and there is no in-tree replacement until the assembly port
- *   converges; this is also the only Anthropic-protocol factory on the public
- *   surface, so the move needs a host-side audit first.
+ *   chatStream}` shape).
+ *   Release blocker for 0.30: `scripts/host-consumer-probe.mjs` still finds a
+ *   live import of this factory, and the only in-tree alternative is the
+ *   assembly port (not converged), so deleting it in 0.30 breaks a live host
+ *   unless that host migrates first. Host fact (re-run the probe to re-check):
+ *   `app_container/apps/worker/src/pi/erix-adapter.js:2`.
+ *   Deletion premise = that host import is gone; until then this name ships in
+ *   0.30 and the ledger entry in `REMOVAL_REGISTRY`
+ *   (`scripts/deprecated-export-check.mjs`) records why.
  */
 export function createAnthropicProvider({
   endpoint,

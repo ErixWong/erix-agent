@@ -53,13 +53,18 @@ const RECORD = {
 /**
  * @param {string} label implementation name
  * @param {() => object | Promise<object>} createStore clean store factory
- * @deprecated issue #429: removed in 0.31 — no in-tree replacement; this is the
+ * @deprecated issue #429: removed in 0.30 — no in-tree replacement; this is the
  *   general published suite, `notesStoreCasContract` is an additional CAS
- *   sub-suite rather than its successor, so deletion needs a re-ruling first.
- *   The removal moved from 0.30 to 0.31 because the host consumer probe found
- *   live importers (touwaka and app_container run this suite today): the
- *   `erix-agent/contract-tests` entry keeps exporting it, and that entry is
- *   where a host migrating off it should stay.
+ *   sub-suite rather than its successor, and the `erix-agent/contract-tests`
+ *   entry is where a host migrating off it should stay.
+ *   Release blocker for 0.30: `scripts/host-consumer-probe.mjs` still finds live
+ *   imports of this suite, so deleting it in 0.30 breaks live hosts unless they
+ *   migrate first. Host facts (re-run the probe to re-check):
+ *   `app_container/apps/worker/test/notes-store.test.js:5`,
+ *   `touwaka/tests/llm-kit-adapters/notes-store-contract.test.mjs:7`.
+ *   Deletion premise = those host imports are gone; until then this name ships
+ *   in 0.30 and the ledger entry in `REMOVAL_REGISTRY`
+ *   (`scripts/deprecated-export-check.mjs`) records why.
  */
 export function notesStoreContract(label, createStore) {
   test(`${label}: rejects a port with missing methods`, () => {
