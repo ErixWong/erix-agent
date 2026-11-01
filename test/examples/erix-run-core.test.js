@@ -2035,3 +2035,80 @@ test("#391 R1：库面缺 createNamedDeliverableChecks ⇒ lib_missing（不静�
   assert.equal(payload.error.code, "lib_missing");
   assert.match(payload.error.message, /createNamedDeliverableChecks/u);
 });
+
+test("#661：引擎抛 summarizer_failed 时 harness 的终局不是静默成功（ok:false + 错误码 + 空终稿）", async () => {
+  // issue #661 判据 9：摘要器失败现在是终局错误，这条测的是**宿主通道**——
+  // `runErixRun` 接到引擎抛出的 `summarizer_failed` 之后，交付给 pi 的载荷必须仍是
+  // `ok:false` + `termination.reason="failed"` + `error.code`，绝不能因为「run 跑完了」而变成成功形状。
+  // 真跑 `runToolLoop`（不 stub 引擎），只注入假 provider / 假 slot / 内存 store。
+  //
+  // 折叠怎么被触发（夹具的关键，改之前先读）：`keepRounds` 缺省 6 ⇒ 历史不到 7 轮时 fold-llm 一轮都
+  // 折不动，预算兜底（零 LLM 的 `sliding-window`）会先把它折掉，摘要器一次都不会被调。所以这里
+  // 让**前 3 轮很小、第 4 轮很大**：第 4 轮把估算顶到预算 2 倍以上 ⇒ 引擎把 keepRounds 收到 2 ⇒
+  // fold-llm 真的折 2 轮 ⇒ 摘要器被调 ⇒ 失败。
+  const SUMMARY_SYSTEM = "你是对话历史压缩器";
+  let turns = 0;
+  const summaryRequests = [];
+  const provider = {
+    protocol: "fake",
+    model: "fake-model",
+    async chat(request) {
+      // system 在 provider 请求里是 `{content, cacheBoundary}`（本层传了 `config.input.system`），
+      // 也可能是裸字符串（没传时）——两种都认。
+      const system = typeof request?.system === "string"
+        ? request.system
+        : String(request?.system?.content ?? "");
+      if (system.includes(SUMMARY_SYSTEM)) {
+        summaryRequests.push(request);
+        throw new Error("summarizer exploded (erix_run 661)");
+      }
+      if (turns < 6) {
+        turns += 1;
+        return {
+          content: [{ type: "tool_use", id: `tu_${turns}`, name: "work", input: { path: `a${turns}.js` } }],
+          stopReason: "tool_use",
+          usage: { input_tokens: 100, output_tokens: 20 },
+        };
+      }
+      return {
+        content: [{ type: "text", text: "这条终稿不该被当成结果" }],
+        stopReason: "end_turn",
+        usage: { input_tokens: 100, output_tokens: 20 },
+      };
+    },
+  };
+  provider.chatStream = provider.chat;
+
+  const payload = await core.runErixRun(
+    { task: "触发折叠", cwd: repoRoot, strategy: "fold-llm", maxRounds: 8 },
+    {
+      env: {},
+      home: "/tmp/fake-home",
+      now: () => 1_700_000_000_000,
+      loadLib: async () => fakeLib(),
+      // 预算 = 3000 - 200 - max(2000, 300) = 800 token。
+      loadSlot: async () => fakeSlot({ contextWindowTokens: 3_000, maxOutputTokens: 200 }),
+      createProvider: () => provider,
+      createAssembly: () => ({
+        tools: [],
+        // 前 3 轮小、第 4 轮起很大（见上面夹具说明）。
+        executeTool: async ({ id }) => {
+          const round = Number(String(id).split("_")[1]);
+          return `tool output ${id} ${"z".repeat(round >= 4 ? 5_000 : 200)}`;
+        },
+      }),
+      createStore: () => createMemoryTranscriptStore(),
+      runLoop: (options) => runToolLoop(options),
+    },
+  );
+
+  assert.ok(summaryRequests.length > 0, "前提：这条 run 真的走到了摘要器（否则测的是别的东西）");
+  assert.equal(payload.ok, false, "摘要器失败绝不能被报成成功");
+  assert.equal(payload.termination.reason, "failed");
+  assert.equal(payload.termination.errorCode, "summarizer_failed");
+  assert.equal(payload.error?.code, "summarizer_failed");
+  assert.match(String(payload.error?.message), /摘要失败|summarizer_failed/u);
+  assert.equal(payload.finalText, "", "失败的 run 不许交出「看起来像答案」的终稿");
+  // 反向锁：这条 run 的载荷里不许出现任何降级替代物的痕迹。
+  assert.doesNotMatch(JSON.stringify(payload), /已降级为统计摘要/u);
+});

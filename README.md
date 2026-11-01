@@ -603,9 +603,12 @@ Only `verification.status === "verified"` means that a final text passed a
 guard. `skipped` means that no verification was performed or no comparable
 capture existed; it is not a positive correctness result. The CLI therefore
 uses a distinct exit code (`4`) for `skipped`, so callers cannot mistake
-"not checked" for "checked and passed". Verification covers the values
-declared in `findings`; statements that never enter `findings` are not
-checked.
+"not checked" for "checked and passed". A **failed terminal state** has its own
+code as well: since issue #661 a run that ends `termination.reason === "failed"`
+(the fold summarizer failing is one such case) exits **`5`**, so a scripted
+caller never has to parse stdout to tell "ran but unverified" (`4`) from
+"really failed". Verification covers the values declared in `findings`;
+statements that never enter `findings` are not checked.
 
 ### Reflection and judge governance
 

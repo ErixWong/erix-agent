@@ -2129,8 +2129,23 @@ run 级旋钮 `config.tuning.maxTokens` / `config.tuning.temperature` / `config.
 - 它的 usage 走与其他辅助调用同一的 `addUsage` 路径并入 run 总账（`persist`，`src/loop/orchestrator.js`，
   `trackLatest: false`），并通过 `onUsage` 上报，因此 `result.usage` / `error.usage` 是完整的。这次调用
   **不推 `rounds`**、不参与 stall 检测、也不更新后续压缩判断用的 `latestApiInputTokens` / `latestApiEstimatedTokens`。
-- summarizer reject / throw / 返回空文本时，与注入式 summarizer 一样降级到统计摘要（下一轮上下文里
-  会出现 `[fold-llm 摘要失败…]` 标记）。摘要失败不会杀死 run。
+- **摘要器失败是终局错误（issue #661，破坏性）。** reject / throw / 超时 / 返回空文本时，折叠这一步
+  抛出 `KitError("summarizer_failed", …, { retryable: false, cause })`，run 以
+  `termination.reason === "failed"`、`termination.errorCode === "summarizer_failed"` 收尾。异常本身带三个
+  事实：`details.kind`（`timeout` / `context_window_exceeded` / `empty_summary` / `error`）、`errorCode`
+  （根因自己的 `code`，没有就是 `"unknown"`——与 `persistence_failed` 同一条规则）、`unpersisted`
+  （#109 的账单：异常路径不返回 result，账单只能随异常走）。唯一保留的自动重试是**超窗缩输入**
+  （`context_window_exceeded` ⇒ 带更短输入重试一次）；重试仍失败 ⇒ 同一个错误，`details.kind` 仍是
+  `context_window_exceeded`。失败那一折**什么都不应用**：没有 `record.foldedFacts`、没有
+  `compactionStats` 那一条、没有 `type: "compaction"` 事件、不推折叠水位线、也不给下一次折叠留
+  「上一份摘要」。`[fold-llm 摘要失败…]` 那条标记已删——那个形状不再存在。
+- 宿主的三种处置。契约只列选项，**不**声称任何宿主已经选了哪一种（当前没有活跃宿主可问）：
+  1. **拿异常自行决定** —— `termination.errorCode === "summarizer_failed"` 加 `details.kind` 就是全部分类：
+     重跑任务、换模型、或者把它显式暴露给人；
+  2. **续跑** —— 在同一个 run 上打开 `config.run` 里的续跑开关，从 transcript 接着跑；失败那一折
+     什么都没写，所以既不重放也不漏放。这一次的摘要器必须是好的，否则同一折会再失败一次；
+  3. **改选 `fold-statistical`** —— 一次 LLM 都不调、确定性、不会这样失败。它自 #661 起是一个
+     **显式**选择（`context.strategy` / `--compaction`），不再是自动兜底。
 - 自己注入策略对象仍是覆盖通道（比如把 summarizer 接成便宜模型）。该形态下引擎**不**为摘要记账——由宿主自己算。
 
 ### 装配自检断言点
@@ -2681,7 +2696,7 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `runId` | 每条 `onJudge` 记录与 `run_outcome` 事件 | 宿主传给 `runToolLoop` 的 run 标识，也是流式决策与终局记录之间的 join 键。宿主没传 `runId` 时该字段**缺省**——引擎不自己编一个。 |
 | `model` | 每条 `onJudge` 记录与 `run_outcome` 事件 | 被评决策发生时 run **实际使用**的模型标识，从 run 选项 / provider 配置解析。探测顺序与 `modelMetadataFor()` 一致（`modelConfig` → `modelMetadata` → `model` → `provider` → `context`），键顺序 `model` → `model_name`（与 provider 构造侧同口径），首个命中且**不合并**。绝不硬编码。任一候选都探不到非空名字时该字段**缺省**：写 `"unknown"` 会让「没配模型」与「真有个叫 unknown 的模型」在账面上无法区分。 |
 | `judgeModel` | `onJudge` 记录，仅当 judge 走了与 run 不同的 evaluator 模型 | 让 per-model 校准能区分「被评的模型」与「评它的模型」。judge 与 run 同模型时缺省。 |
-| `compaction` 统计 | `onEvent`（`type: "compaction"`）与 `<runId>.state.json` 里的 `deterministic.compactionStats` 窗口 | 既有键-round-for-round 不动。**additive（issue #464 A）：** `strategyName` 只在引擎能如实说出时才出现——它写的是**真正执行了本次折叠**的那个策略（含库层兜底的 `"sliding-window"`），不是宿主配置项原文。忽略它的宿主看到的形状与从前逐字一致。**到底写哪一个名字（issue #657）：** 折叠入口有两个可能的执行者——宿主配置的那个策略，以及引擎自己的预算兜底（`sliding-window`，只折「折到够用」所需的最老几轮）。配置策略**折了 ≥1 轮** ⇒ 写**它**的名字（兜底随后又折了也一样）；配置策略**折 0 轮**、活是兜底干的 ⇒ 写**兜底实例**的名字（`"sliding-window"`）——它从不报一个一轮都没折过的策略。一次折叠窗口里谁都没折 ⇒ 整个 `strategyName` 键不出现。对引擎已知的层名，它与 `layers` 对得上：这个名字指向的 budget 相层必然 `triggered > 0`。宿主自带的策略对象没有对应层——`getCompactionLayerForStrategy` 只映射内置的策略名——所以它的折叠在 `layers` 上不留任何痕迹；这类名字的自证是同一格上的 `foldedRounds > 0` 加 `compacted === true`。 **additive（issue #469 ④）：** `foldSummary` 记的是这一发摘要调用的**结果状态**——`degradeKind`（`timeout` / `context_window_exceeded` / `error`）、`degradeReason`、`inputTruncated`、`droppedMessages`、`finishReason`、`inputTokens`、`outputTokens`、`priorSummaryTruncated`、`priorSummaryBytes`、`droppedRounds`、`attempts`、`budgetExhausted`、`reused`。与 `strategyName` 同口径：**无事实 ⇒ 无键**——这次折叠什么都没产出诊断信号时，形状逐字不变。摘要正文本身不进这里（它在 `record.foldedFacts` 上）。 |
+| `compaction` 统计 | `onEvent`（`type: "compaction"`）与 `<runId>.state.json` 里的 `deterministic.compactionStats` 窗口 | 既有键-round-for-round 不动。**additive（issue #464 A）：** `strategyName` 只在引擎能如实说出时才出现——它写的是**真正执行了本次折叠**的那个策略（含库层兜底的 `"sliding-window"`），不是宿主配置项原文。忽略它的宿主看到的形状与从前逐字一致。**到底写哪一个名字（issue #657）：** 折叠入口有两个可能的执行者——宿主配置的那个策略，以及引擎自己的预算兜底（`sliding-window`，只折「折到够用」所需的最老几轮）。配置策略**折了 ≥1 轮** ⇒ 写**它**的名字（兜底随后又折了也一样）；配置策略**折 0 轮**、活是兜底干的 ⇒ 写**兜底实例**的名字（`"sliding-window"`）——它从不报一个一轮都没折过的策略。一次折叠窗口里谁都没折 ⇒ 整个 `strategyName` 键不出现。对引擎已知的层名，它与 `layers` 对得上：这个名字指向的 budget 相层必然 `triggered > 0`。宿主自带的策略对象没有对应层——`getCompactionLayerForStrategy` 只映射内置的策略名——所以它的折叠在 `layers` 上不留任何痕迹；这类名字的自证是同一格上的 `foldedRounds > 0` 加 `compacted === true`。 **additive（issue #469 ④）、取值域缩小（issue #661）：** `foldSummary` 记的是**真产出了摘要的那一折**的结果状态——`inputTruncated`、`droppedMessages`、`finishReason`、`inputTokens`、`outputTokens`、`priorSummaryTruncated`、`priorSummaryBytes`、`droppedRounds`、`attempts`、`reused`。其中 `attempts` / `inputTruncated` / `droppedMessages` / `droppedRounds` 由超窗重试那条路产生。`degradeKind` / `degradeReason` **名字留在形状里，但不再有降级语义**：自 #661 起摘要器失败是终局错误，能走到这条 stat 的折叠都没降级，树内也没有任何写点会产出这两个键（resume 出来的 0.30 之前的账本行仍可能带着它们）。`budgetExhausted` 本来只可能出现在失败那一支，所以它改成随异常走：`details.budgetExhausted`。与 `strategyName` 同口径：**无事实 ⇒ 无键**——这次折叠什么都没产出诊断信号时，形状逐字不变。摘要正文本身不进这里（它在 `record.foldedFacts` 上）。 |
 | `compaction_strategy_fallback` 事件 | `onEvent`，一个 run 最多一条 | **additive（issue #464 A）。** `{ type: "compaction_strategy_fallback", round, detail }`，仅在 `context.strategy` **未配置**且折叠是**预算兜底触发**的那一刻发出——也就是引擎库层的 `sliding-window` 真的跑了。issue #643 起这一发**只折够用的最老轮次**（不再把所有可折轮次一路清到 `keepRounds: 0`），并把**已经算好的**机械摘要 prepend 进 head，所以模型仍然看得见折了什么（issue #464 B）。形状对齐 `model_metadata_missing`（issue #182）：`detail` 首句是宿主可直接断言的固定原文，能解析出预算时再附上 `budgetTokens` / `estimatedTokens`。 |
 | `compaction_deferred` 事件 | `onEvent`，每推迟一发压缩一条 | **additive（issue #588）。** `{ type: "compaction_deferred", runId?, round, reason: "pending_tool_use", detail: string }`——续写（`max_tokens` continuation）循环里那一发压缩被跳过时发出，原因是请求尾部是一条 `tool_result` 还没回来的 assistant `tool_use`（`pendingTailToolUses` (`src/loop/pending-tool-result.js`)）。既不结清、也不放宽配对规则；下一轮开圈的压缩面对的就是跑完的轮。终止语义一个字没动。 |
 | `continuity_injection_skipped` 事件 | `onEvent`，续接块每有一轮没能落位发一条 | **additive（issue #568）。** `{ type: "continuity_injection_skipped", runId?, round, reason, detail: string }`——这一轮的请求里没有注入续接块（例如 `reason: "pending_tool_use"`：在那个位置插入会破坏 `tool_use`/`tool_result` 配对）。跳过是上报出来的，而不是拿机械文本顶上去。 |
@@ -2767,8 +2782,13 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
 | `error` | guard 抛错、返回非法裁决或超时（对可用性 fail-open，但永远不会变 `verified`） | `timeout` 或 `error`——两者都由 `errorReason`（`src/loop/termination.js`）决出 | `3` |
 
 `exitCodeForVerification` 对其他任何 status（包括根本没有 `verification` 对象）都返回
-`0`，所以**退出码 0 本身不是已验答案的证明**——请读 `verification.status`。抛错的 run
-从 CLI 顶层 handler 退出 `1`（`bin/cli.js:1032-1042`），那是失败信号，不是核验结果。
+`0`，所以**退出码 0 本身不是已验答案的证明**——请读 `verification.status`。
+
+**失败终局**自 issue #661 起有自己的退出码：`termination.reason === "failed"` 的 run 退出 **`5`**
+（`bin/cli.js` 的 `exitCodeForRunFailure`），那是失败信号，不是核验结果。#661 之前它退 `1`——
+与用法错误同码，于是脚本化调用方只能靠 stdout 里那句 `termination=failed` 才能把「跑完但没核验」
+（`4`）与「真的失败了」分开。`aborted` 的 run 与 run 开始前就抛的错（用法错误、会话不存在）仍是
+`1`；`5` 与 `2` / `3` / `4` 永不重叠。
 
 ### 机制优先级与互斥关系
 

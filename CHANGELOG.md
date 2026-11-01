@@ -3,6 +3,57 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Breaking
+
+- **A failing fold summarizer is now a terminal error instead of a silent "degraded to a
+  statistical summary" (issue #661; ships with **0.30.0**, which is not published yet — the
+  published line is 0.29.0).** The user-facing reason, in the reporter's words: *when the LLM
+  summary fails it has to raise, so the user knows; otherwise the run keeps going quietly, the
+  quality drops, and nobody notices.* Until now a rejected / throwing / timed-out / empty-text
+  summary answer was swallowed and replaced by a mechanical statistical summary with a
+  `[fold-llm 摘要失败，已降级为统计摘要（原因: …）]` banner, so a run whose summarizer was broken
+  ended exactly like a healthy one. `fold-llm` now throws
+  `KitError("summarizer_failed", …, { retryable: false, cause })` from the compaction step: the
+  run ends `termination.reason === "failed"` / `termination.errorCode === "summarizer_failed"`,
+  the error carries `details.kind` (`timeout` / `context_window_exceeded` / `empty_summary` /
+  `error`), `errorCode` (the root cause's own `code`, `"unknown"` when it has none — the same
+  rule `persistence_failed` uses) and `unpersisted` (the #109 ledger rides on the exception,
+  because an exception path returns no result). Nothing from the failed fold is applied: no
+  `record.foldedFacts`, no `compactionStats` entry, no `type: "compaction"` event, no advance of
+  the fold watermark, no "previous summary" left for the next fold. The **one** automatic retry
+  that stays is over-window input shrinking (`context_window_exceeded` ⇒ one retry with a
+  smaller input); if that retry fails too, the same error is raised with `details.kind` still
+  `context_window_exceeded`. The `[fold-llm 摘要失败…]` marker is gone; `compactionStats[].foldSummary`
+  keeps its field names but `degradeKind` / `degradeReason` no longer carry degrade semantics
+  (no in-tree writer produces them), and `budgetExhausted` moves to `details.budgetExhausted`
+  because it could only ever appear on the failure branch. Hosts have three dispositions — take
+  the exception and decide, `resume` (the failed fold wrote nothing, so nothing is replayed or
+  skipped; the summarizer must be healthy on that attempt), or choose `fold-statistical`
+  explicitly (zero LLM calls, cannot fail this way — it is **not** an automatic fallback). **The
+  CLI also stops being mute:** a failed terminal state exits **`5`** (`exitCodeForRunFailure` in
+  `bin/cli.js`) instead of sharing `1` with usage errors, so a scripted caller can tell "ran but
+  unverified" (`4`) from "really failed" without parsing stdout.
+- **摘要器失败现在是终局错误，不再是静默的「降级为统计摘要」（issue #661；随 **0.30.0** 发布，
+  0.30.0 尚未发布——已发布线是 0.29.0）。** 用户原话（动机）：*LLM 做摘要失败了必须报错好让用户知道，
+  不然静默着跑，质量差，也没人发现问题。* 此前 reject / throw / 超时 / 返回空文本的摘要应答会被吞掉，
+  换成一份机械统计摘要并挂一行 `[fold-llm 摘要失败，已降级为统计摘要（原因: …）]`，于是摘要器坏了的
+  run 与正常的 run 终局一模一样。现在 `fold-llm` 在折叠这一步抛
+  `KitError("summarizer_failed", …, { retryable: false, cause })`：run 以
+  `termination.reason === "failed"` / `termination.errorCode === "summarizer_failed"` 收尾，异常上带
+  `details.kind`（`timeout` / `context_window_exceeded` / `empty_summary` / `error`）、`errorCode`
+  （根因自己的 `code`，没有就是 `"unknown"`——与 `persistence_failed` 同一条规则）与 `unpersisted`
+  （#109 的账单随异常走，因为异常路径不返回 result）。失败那一折**什么都不应用**：没有
+  `record.foldedFacts`、没有 `compactionStats` 那一条、没有 `type: "compaction"` 事件、不推折叠水位线、
+  也不给下一次折叠留「上一份摘要」。**唯一**保留的自动重试是超窗缩输入（`context_window_exceeded` ⇒
+  带更短输入重试一次）；重试仍失败 ⇒ 同一个错误，`details.kind` 仍是 `context_window_exceeded`。
+  `[fold-llm 摘要失败…]` 那条标记已删；`compactionStats[].foldSummary` 的字段名留着，但
+  `degradeKind` / `degradeReason` 不再有降级语义（树内已无写点），`budgetExhausted` 搬到
+  `details.budgetExhausted`（它本来只可能出现在失败那一支）。宿主三种处置：拿异常自行决定 / `resume`
+  （失败那一折什么都没写，既不重放也不漏放；这一次摘要器必须是好的）/ 显式改选 `fold-statistical`
+  （一次 LLM 都不调、不会这样失败——它**不是**自动兜底）。**CLI 也不再是哑的：** 失败终局退出 **`5`**
+  （`bin/cli.js` 的 `exitCodeForRunFailure`），不再与用法错误共用 `1`，于是脚本化调用方不必解析
+  stdout 就能把「跑完但没核验」（`4`）与「真的失败了」分开。
+
 ### Fixed
 
 - **The fold ledger stops crediting work to a strategy that never folded (issue #657, bug fix — this
