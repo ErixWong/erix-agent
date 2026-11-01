@@ -31,6 +31,14 @@
 //  7. 命中判据 = 标识符边界（`(?<![\w$])NAME(?![\w$])`），所以 `extractL0` 不会被 `extractL0Facts`
 //     的命中顶替成「有消费者」。注释里的字面提及**照算**（工单口径是「搜这个名字」）；
 //     想只看代码可以再谈口径，但那是另一张票。
+//  8. **宿主契约套件单列一类，不进「可删候选」**（口径漏洞⑤）：`exports["./contract-tests"]` 那一个入口
+//     再导出的名字，消费者**按定义在宿主仓**（宿主 `import { … } from "erix-agent/contract-tests"`），
+//     所以「仓内零命中」对这一类天然成立——把这种天然成立当成「可删」，就是让闸逼出一个假裁决。
+//     成员**从 `package.json` 的 `exports` 现解析**（`hostContractNames()`），不抄名字清单：抄一份名单，
+//     下一个新增的契约套件就又会掉进同一个坑。这一类在清点里记 `kind: "host-contract"`，只出现在
+//     「包内 / 发布面 / 自身定义文件内都零命中」那一格；真要删一个契约套件，得先做宿主审计
+//     （`npm run check:host-consumers -- --hosts <宿主目录>`）并写进 `scripts/deprecated-export-check.mjs`
+//     的 `CONTRACT_DELETION_OVERRIDES` 账本（带理由），不能由「仓内零消费者」自动判出来。
 //
 // ── 三个坑（本仓明文警告过，主 agent 亲手踩过两次；每一条都在 `--self-test` 里有反向证）──
 //  坑 1：`new RegExp(…, "g")` 配 `.test()` / `.exec()` 是**有状态**的（`lastIndex` 会推进），
@@ -81,6 +89,13 @@ const DEFAULT_ROOT = fileURLToPath(new URL("..", import.meta.url));
 /** 公共入口的**内置兵底清单**（`package.json` 读得到时以 `exports` 为准，见 `resolveEntries()`）。
  *  今天三个：`.` / `./tools` / `./contract-tests`——三个都是发布面（`files` 里含 `test/contract`）。 */
 export const ENTRIES = ["src/index.js", "src/tools/index.js", "test/contract/index.js"];
+/**
+ * **宿主契约套件**那个入口的键（`package.json` 的 `exports` 里唯一的那个子路径）。
+ *
+ * 这里只写死**键**，成员名字一律从该入口现解析（`hostContractNames()`）——键是结构，名单是事实：
+ * 写死名单就等于「下一次新增契约套件又踩同一个坑」，那正是本口径要修的病。
+ */
+export const HOST_CONTRACT_ENTRY_KEY = "./contract-tests";
 /** 包内消费者面（口径 2 第一档）。 */
 export const CONSUMER_DIRS = ["src", "bin"];
 /** 发布面消费者（口径 2 第二档）：`examples/` 与随包发布的 `test/contract/`。 */
@@ -415,6 +430,64 @@ function relativePath(fromDir, spec) {
   return abs.slice(1);   // 去掉前导 "/"：得到 `src/…` 形式的仓库相对路径
 }
 
+/**
+ * **宿主契约套件这一类**（口径 8）：从 `package.json` 的 `exports[HOST_CONTRACT_ENTRY_KEY]` 出发，
+ * 解析该入口**再导出的名字集合**。
+ *
+ * 为什么必须从 `exports` 派生而不是写死名单：写死名单 = 下一次新增一个契约套件时，它又不在名单里，
+ * 于是又一次被「仓内零消费者」判成可删候选——同一个坑换个名字再踩一遍。入口键是**结构**（写死在
+ * `HOST_CONTRACT_ENTRY_KEY`），成员是**事实**（现解析）。
+ *
+ * 三种「抽不出成员」的情形，语义各不相同：
+ *   · `exports` 里**没有**这个键 ⇒ 这一类不存在（空集合），**不是错**——那正是「入口被拿掉 ⇒ 不再豁免」
+ *     的形状（`--self-test` 例⑬ 靠它打反向证）。
+ *   · 键在、目标抽不出字符串 / 文件不在语料里 / 入口解析失败 ⇒ 也返回空集合，但**留一条 warning**：
+ *     豁免会静默消失 ⇒ 类成员回到候选清单 ⇒ 下游 R1 红。这是 **fail-closed**（红得更多，不是更少），
+ *     所以不把它当「读不出真值」再报一次错（入口本身的错由 `resolveEntries()` / `ENTRY_MISSING` 报）。
+ *
+ * @param {object|null} pkg 已解析的 `package.json`（`resolveEntries()` 给的那份，不重读盘）
+ * @param {Array<{rel: string, text: string}>} records 语料（入口原文从这里取，与清点同一份）
+ * @returns {{entry: string|null, names: Set<string>, warnings: Array<{code: string, message: string}>}}
+ */
+export function hostContractNames(pkg, records) {
+  const result = { entry: null, names: new Set(), warnings: [] };
+  const exported = pkg?.exports;
+  if (!exported || typeof exported !== "object" || Array.isArray(exported)) return result;
+  const value = exported[HOST_CONTRACT_ENTRY_KEY];
+  if (value === undefined) return result;   // 没有这个入口 ⇒ 没有这一类（不是错）
+  const target = typeof value === "string"
+    ? value
+    : (value?.default ?? value?.import ?? value?.require ?? null);
+  if (typeof target !== "string") {
+    result.warnings.push({
+      code: "CONTRACT_CLASS_UNREADABLE",
+      message: `exports[${JSON.stringify(HOST_CONTRACT_ENTRY_KEY)}] 里抽不出字符串目标——`
+        + "这一类不再豁免（成员回到候选清单，下游会红），不是「没问题」",
+    });
+    return result;
+  }
+  const rel = target.replace(/^\.\//, "");
+  result.entry = rel;
+  const text = new Map((records ?? []).map((r) => [r.rel, r.text])).get(rel);
+  if (text === undefined) {
+    result.warnings.push({
+      code: "CONTRACT_CLASS_UNREADABLE",
+      message: `宿主契约套件入口 ${rel} 不在语料里——这一类不再豁免（成员回到候选清单，下游会红）`,
+    });
+    return result;
+  }
+  try {
+    const parsed = parseEntryExports(text, rel);
+    result.names = new Set(parsed.names.map((item) => item.name));
+  } catch (err) {
+    result.warnings.push({
+      code: "CONTRACT_CLASS_UNREADABLE",
+      message: `宿主契约套件入口 ${rel} 解析不了（${err.message}）——这一类不再豁免`,
+    });
+  }
+  return result;
+}
+
 // ─────────────────────────────── 语料 ───────────────────────────────
 
 /** 递归列文件。**读不出就报**，不静默跳过（口径漏洞④a）。错误推进 `errors`，不另造返回值。 */
@@ -494,7 +567,7 @@ export function buildRecords(root, dirs = SCAN_DIRS) {
  * `exports` 的值可以是字符串，也可以是 `{ types, default }` 这类条件对象（本仓 `.` 与 `./tools` 就是）；
  * 只认 `default` / `import` / `require` 三个键，抽不到字符串就是**读不出真值**（exit 2），不静默当作没这个入口。
  *
- * @returns {{entries: string[], errors: Array<object>, warnings: Array<object>, source: string}}
+ * @returns {{entries: string[], errors: Array<object>, warnings: Array<object>, source: string, pkg: object|null}}
  */
 export function resolveEntries(root) {
   const errors = [];
@@ -509,7 +582,7 @@ export function resolveEntries(root) {
       message: `package.json 读不到/解析不了（${pkgPath}：${err.message}）——`
         + "公共入口由 `exports` 决定，读不出它就不知道有几个入口，清点不是真值",
     });
-    return { entries: [...ENTRIES], errors, warnings, source: "fallback" };
+    return { entries: [...ENTRIES], errors, warnings, source: "fallback", pkg: null };
   }
   const exported = pkg?.exports;
   if (!exported || typeof exported !== "object" || Array.isArray(exported)) {
@@ -517,7 +590,7 @@ export function resolveEntries(root) {
       code: "PACKAGE_EXPORTS_UNREADABLE",
       message: "package.json 里没有可读的 `exports` 对象——公共入口清单无从确定，清点不是真值",
     });
-    return { entries: [...ENTRIES], errors, warnings, source: "fallback" };
+    return { entries: [...ENTRIES], errors, warnings, source: "fallback", pkg };
   }
   const entries = [];
   for (const [key, value] of Object.entries(exported)) {
@@ -541,7 +614,7 @@ export function resolveEntries(root) {
   if (!entries.length) {
     errors.push({ code: "PACKAGE_EXPORTS_UNREADABLE", message: "`exports` 里一个代码入口都抽不出来——总数会是假 0" });
   }
-  return { entries, errors, warnings, source: pkgPath };
+  return { entries, errors, warnings, source: pkgPath, pkg };
 }
 
 // ─────────────────────────────── 清点 ───────────────────────────────
@@ -553,9 +626,12 @@ export function resolveEntries(root) {
  * @returns {{total: number, names: Array<object>, candidates: Array<object>, tiers: object,
  *            warnings: Array<object>, errors: Array<object>, incomplete: boolean, exportStars: Array<object>}}
  */
-export function computeInventory(records, { entries = ENTRIES, root = null, extraErrors = [], extraWarnings = [] } = {}) {
+export function computeInventory(records, {
+  entries = ENTRIES, root = null, extraErrors = [], extraWarnings = [], contractNames = new Set(),
+} = {}) {
   const errors = [...extraErrors];
   const warnings = [...extraWarnings];
+  const hostContract = contractNames instanceof Set ? contractNames : new Set(contractNames ?? []);
   const byRel = new Map(records.map((r) => [r.rel, r.text]));
   const entryParsed = new Map();
   for (const entry of entries) {
@@ -686,18 +762,23 @@ export function computeInventory(records, { entries = ENTRIES, root = null, extr
     });
   }
 
-  // 分档（口径 2/3/4）：kind 是给人看的分类，`--json` 里逐行带一份。
+  // 分档（口径 2/3/4/8）：kind 是给人看的分类，`--json` 里逐行带一份。
+  //
+  // `host-contract` 只占**最后一格**（包内 / 发布面 / 自身定义文件内都零命中）——它回答的是「那个零命中
+  // 是不是天然的」：契约套件的消费者按定义在宿主仓（口径 8），仓内零命中不是死导出，所以它不是可删候选。
+  // 放在最后而不是最前，是为了不吞掉其他档的信息（一个既被发布面用、又在类里的名字仍然报 publish-*）。
   for (const row of names) {
     if (row.kind !== "unknown") continue;
     if (row.consumerHits > 0) row.kind = "package-consumed";
     else if (row.publishHits > 0) row.kind = row.internalUses > 0 ? "publish+internal" : "publish-only";
     else if (row.internalUses === null) row.kind = "internal-unknown";
     else if (row.internalUses > 0) row.kind = "internal-only";
+    else if (hostContract.has(row.name)) row.kind = "host-contract";
     else row.kind = "zero-reference";
   }
   const TIER_KINDS = [
     "package-consumed", "publish-only", "publish+internal", "internal-only", "zero-reference",
-    "outside-corpus", "internal-unknown", "definition-missing", "definition-symbol-missing",
+    "host-contract", "outside-corpus", "internal-unknown", "definition-missing", "definition-symbol-missing",
   ];
   const tiers = Object.fromEntries(TIER_KINDS.map((kind) => [kind, names.filter((r) => r.kind === kind).length]));
 
@@ -765,9 +846,12 @@ export const CRITERIA = [
   "test/ 的命中记「自身测试数」、docs/ 的命中记「文档提及数」、scripts/ 的命中记 scriptMentions，三者都**不算消费者**（暴露面 ≠ 使用）。",
   "命中判据 = 标识符边界（(?<![\\w$])NAME(?![\\w$])），所以 extractL0 不会被 extractL0Facts 顶替；注释里的字面提及照算。",
   "扫描面目录不存在/读不出、定义文件里找不到该符号 ⇒ 清点不完整（exit 2，分类码可区分），不许静默跳过。",
+  "宿主契约套件（`exports[\"./contract-tests\"]` 再导出的名字，成员现解析、不抄名单）单列一类：它们的消费者按定义在宿主仓，仓内零命中是天然的，所以不进「可删候选」；真要删得先做宿主审计并写进 `CONTRACT_DELETION_OVERRIDES` 账本（带理由）。",
 ];
 
-export function renderReport(inventory, { root = DEFAULT_ROOT, entries = ENTRIES, importedButUnused = [] } = {}) {
+export function renderReport(inventory, {
+  root = DEFAULT_ROOT, entries = ENTRIES, importedButUnused = [], contractNames = new Set(), contractEntry = null,
+} = {}) {
   const lines = [];
   const t = inventory.tiers ?? {};
   const byKind = (...kinds) => inventory.names.filter((r) => kinds.includes(r.kind));
@@ -782,6 +866,13 @@ export function renderReport(inventory, { root = DEFAULT_ROOT, entries = ENTRIES
   lines.push(`零消费者（包内 + 发布面都零命中）：${inventory.candidates.length + (t["internal-only"] ?? 0) + (t["internal-unknown"] ?? 0)} / ${inventory.total}`
     + `——其中 ${t["internal-only"] ?? 0} 个在自身定义文件里仍被引用（internal-only，不是死导出），`
     + `${inventory.candidates.length} 个是真·零引用（只有这一档才谈得上「可删候选」）`);
+  const contractRows = inventory.names.filter((row) => contractNames.has(row.name));
+  lines.push(`宿主契约套件（\`exports[${JSON.stringify(HOST_CONTRACT_ENTRY_KEY)}]\`${contractEntry ? ` → ${contractEntry}` : ""}`
+    + ` 现解析出 ${contractRows.length} 个名字，成员不写死）：**这一类不参与删除判据**——`
+    + "它的消费者按定义在宿主仓（宿主 `import { … } from \"erix-agent/contract-tests\"`），所以「仓内零命中」对它天然成立；"
+    + "真要删一个契约套件，得先做宿主审计（`npm run check:host-consumers -- --hosts <宿主目录>`）"
+    + "并把它显式写进 `scripts/deprecated-export-check.mjs` 的 `CONTRACT_DELETION_OVERRIDES` 账本（带理由），"
+    + "不能由「仓内零消费者」自动判出来。");
   lines.push("");
   lines.push("## 口径（每一句都可复算）");
   CRITERIA.forEach((c, i) => lines.push(`  ${i + 1}. ${c}`));
@@ -797,6 +888,15 @@ export function renderReport(inventory, { root = DEFAULT_ROOT, entries = ENTRIES
     }
   }
   const publishRows = byKind("publish-only", "publish+internal");
+  lines.push("");
+  lines.push(`## 宿主契约套件（${contractRows.length} 个：**不参与删除判据**——消费者按定义在宿主仓）`);
+  if (!contractRows.length) {
+    lines.push("（无：`package.json` 的 `exports` 里没有这个入口，所以没有这一类要豁免）");
+  } else {
+    lines.push("| 名字 | 定义文件 | 本清点里的分档 |");
+    lines.push("|---|---|---|");
+    for (const row of contractRows) lines.push(`| \`${row.name}\` | \`${row.def}\` | ${row.kind} |`);
+  }
   lines.push("");
   lines.push(`## 发布面消费者（${publishRows.length} 个：**不该删**——随包发布，宿主安装后自己跑）`);
   if (!publishRows.length) {
@@ -830,6 +930,8 @@ export function renderReport(inventory, { root = DEFAULT_ROOT, entries = ENTRIES
   lines.push("## 零引用不等于可以删");
   lines.push("  这批名字里有一批是**给宿主用的公共 API**（仓内没人用，宿主在用）；删除要等宿主迁移 + 版本边界，");
   lines.push("  那是另一张票。本工具只清点，不判定、不挂门禁、不删任何导出。");
+  lines.push("  宿主契约套件更彻底：它们的消费者**按定义**在宿主仓，仓内零命中是这一类存在的前提而不是证据——");
+  lines.push("  所以它们不进候选清单（要删先做宿主审计 + 显式账本）。");
   if (importedButUnused.length) {
     lines.push("");
     lines.push(`## 附：bin/ 里「import 了却从未使用」的名字（${importedButUnused.length} 个，#419③ 那类；只报不改）`);
@@ -860,7 +962,8 @@ export function renderReport(inventory, { root = DEFAULT_ROOT, entries = ENTRIES
 // 反向证 + 放行证，每条都打印**三态数**（原值 / 变异后 / 还原后）。
 // 变异一律打在**内存副本**上：真树那一条也只在 `buildRecords()` 出来的记录里改字，
 // 仓内源码全程只读（#411 的纪律）。变异没落上按 #210 R2 判失败。
-// 口径漏洞①–④（三入口 / 发布面档 / internal-only / 两个读不出真值的漏口）各有一条，例⑧–例⑫。
+// 口径漏洞①–⑤（三入口 / 发布面档 / internal-only / 两个读不出真值的漏口 / 宿主契约套件这一类）
+// 各有一条，例⑧–例⑭。
 
 const SELF_TEST_FAKE_ENTRY = "src/index.js";
 
@@ -912,7 +1015,8 @@ function runSelfTest() {
   // ── 例① 真树：删掉一个真消费者的那一处引用 ⇒ 候选数 +1；加回来 ⇒ 回到原值 ──
   {
     const records = buildRecords(DEFAULT_ROOT);
-    const baseline = computeInventory(records, { root: DEFAULT_ROOT });
+    const contractNames = hostContractNames(resolveEntries(DEFAULT_ROOT).pkg, records).names;
+    const baseline = computeInventory(records, { root: DEFAULT_ROOT, contractNames });
     if (baseline.incomplete) {
       failures.push(`例①：真树清点本身就不完整（${baseline.errors.map((e) => e.code).join(",")}）——反向证的基线不是真值`);
     } else {
@@ -934,8 +1038,8 @@ function runSelfTest() {
         if (missed) {
           failures.push(`例①：变异没落上——${missed}（反向证自身失效：靶子已与真树脱节）`);
         } else {
-          const after = computeInventory(mutated, { root: DEFAULT_ROOT });
-          const restored = computeInventory(records, { root: DEFAULT_ROOT });   // 记录没被改：这就是「加回来」
+          const after = computeInventory(mutated, { root: DEFAULT_ROOT, contractNames });
+          const restored = computeInventory(records, { root: DEFAULT_ROOT, contractNames });   // 记录没被改：这就是「加回来」
           const delta = after.candidates.length - baseline.candidates.length;
           const flipped = after.candidates.some((r) => r.name === target.name)
             && !baseline.candidates.some((r) => r.name === target.name);
@@ -1187,6 +1291,71 @@ function runSelfTest() {
     );
   }
 
+  // ── 例⑬ 口径漏洞⑤a：类别是**从 exports 派生的**，不是写死的名单 ──
+  // 把 `exports["./contract-tests"]` 从 package.json 里拿掉 ⇒ 这一类不再豁免 ⇒ 同一个名字立刻回到候选。
+  // 这一条证的是「派生的」：名单式实现（写死 12 个名字）在这里会纹丝不动，于是名字仍然被豁免。
+  {
+    const records = buildRecords(DEFAULT_ROOT);
+    const pkg = resolveEntries(DEFAULT_ROOT).pkg;
+    const derived = hostContractNames(pkg, records);
+    const baseline = computeInventory(records, { root: DEFAULT_ROOT, contractNames: derived.names });
+    const target = baseline.names
+      .filter((row) => row.kind === "host-contract")
+      .sort((a, b) => a.name.localeCompare(b.name))[0];
+    if (!derived.names.size || !target) {
+      failures.push("⑬ 口径⑤a：真树里没有一个「只在宿主契约套件这一类里零命中」的名字——这一枪打不出去，反向证失效");
+    } else {
+      const withoutEntry = JSON.parse(JSON.stringify(pkg));
+      delete withoutEntry.exports[HOST_CONTRACT_ENTRY_KEY];
+      const dropped = hostContractNames(withoutEntry, records);
+      const after = computeInventory(records, { root: DEFAULT_ROOT, contractNames: dropped.names });
+      const back = computeInventory(records, { root: DEFAULT_ROOT, contractNames: derived.names });
+      const flipped = after.candidates.some((row) => row.name === target.name);
+      const kindAfter = after.names.find((row) => row.name === target.name)?.kind;
+      expect(
+        dropped.names.size === 0 && flipped && kindAfter === "zero-reference"
+          && !back.candidates.some((row) => row.name === target.name),
+        `⑬ 口径⑤a 类别是派生的：类成员 ${derived.names.size} 个 → 把 \`exports[${JSON.stringify(HOST_CONTRACT_ENTRY_KEY)}]\` 从 package.json 拿掉`
+          + ` ⇒ 类成员 ${dropped.names.size} 个，\`${target.name}\` 从 ${target.kind} 回到候选（kind=${kindAfter}）`
+          + ` → 还原 ⇒ 类成员 ${derived.names.size} 个、候选 ${back.candidates.length} 个且它不在里面`,
+        `⑬ 口径⑤a 没复现出来：类成员 ${derived.names.size} → ${dropped.names.size}（期望 0），flipped=${flipped}，`
+          + `kind=${kindAfter}（期望 zero-reference）——类别的豁免不是从 exports 派生的`,
+      );
+    }
+  }
+
+  // ── 例⑭ 口径漏洞⑤b：新增一个契约套件自动被覆盖（不用回来改清单）──
+  // 给那个入口再加一个导出名 ⇒ 它自动进类别、自动不进候选；同一棵树不给类别 ⇒ 它是候选（证明豁免来自类别）。
+  {
+    const records = buildRecords(DEFAULT_ROOT);
+    const pkg = resolveEntries(DEFAULT_ROOT).pkg;
+    const entry = hostContractNames(pkg, records).entry;
+    const NEW_NAME = "selfTestNewSuiteContract";
+    const extraRel = "test/contract/selftest-suite.js";
+    const withExtra = records.map((record) => (record.rel === entry
+      ? { ...record, text: `${record.text}export { ${NEW_NAME} } from "./selftest-suite.js";\n` }
+      : record));
+    withExtra.push({ rel: extraRel, text: `export function ${NEW_NAME}() {}\n` });
+    const derived = hostContractNames(pkg, withExtra);
+    const withClass = computeInventory(withExtra, { root: DEFAULT_ROOT, contractNames: derived.names });
+    const withoutClass = computeInventory(withExtra, { root: DEFAULT_ROOT, contractNames: new Set() });
+    const row = withClass.names.find((item) => item.name === NEW_NAME);
+    const inCandidatesWithClass = withClass.candidates.some((item) => item.name === NEW_NAME);
+    const inCandidatesWithout = withoutClass.candidates.some((item) => item.name === NEW_NAME);
+    if (!entry) {
+      failures.push("⑭ 口径⑤b：package.json 的 exports 里没有宿主契约套件入口——这一枪打不出去");
+    } else {
+      expect(
+        derived.names.has(NEW_NAME) && row?.kind === "host-contract" && !inCandidatesWithClass
+          && inCandidatesWithout,
+        `⑭ 口径⑤b 新增套件自动被覆盖：入口加一个导出名 ⇒ 类成员 ${hostContractNames(pkg, records).names.size} → ${derived.names.size}，`
+          + `\`${NEW_NAME}\` 进类（kind=${row?.kind}）且不在候选里；同一棵树不给类别 ⇒ 它是候选（${inCandidatesWithout}）`,
+        `⑭ 口径⑤b 没复现出来：类成员 ${derived.names.size}，kind=${row?.kind}（期望 host-contract），`
+          + `在候选里=${inCandidatesWithClass}（期望 false），不给类别时在候选里=${inCandidatesWithout}（期望 true）`,
+      );
+    }
+  }
+
   for (const p of passed) console.log(`  ✓ ${p}`);
   for (const f of failures) console.log(`  ✗ ${f}`);
   if (failures.length) {
@@ -1228,11 +1397,14 @@ export function main(argv = process.argv.slice(2)) {
   const entryResolution = resolveEntries(opts.root);
   const corpus = scanCorpus(opts.root);
   const records = corpus.records;
+  // 口径 8：宿主契约套件这一类从 `exports` 现派生（不抄名单），成员不进「可删候选」。
+  const hostContract = hostContractNames(entryResolution.pkg, records);
   const inventory = computeInventory(records, {
     root: opts.root,
     entries: entryResolution.entries,
+    contractNames: hostContract.names,
     extraErrors: [...entryResolution.errors, ...corpus.errors],
-    extraWarnings: entryResolution.warnings,
+    extraWarnings: [...entryResolution.warnings, ...hostContract.warnings],
   });
   const entries = entryResolution.entries;
   const importedButUnused = scanImportedButUnused(records, "bin");
@@ -1248,6 +1420,12 @@ export function main(argv = process.argv.slice(2)) {
       total: inventory.total,
       tiers: inventory.tiers,
       criteria: CRITERIA,
+      hostContract: {
+        entry: hostContract.entry,
+        entryKey: HOST_CONTRACT_ENTRY_KEY,
+        names: [...hostContract.names].sort(),
+        note: "宿主契约套件这一类不参与删除判据（消费者按定义在宿主仓）；删除需要宿主审计 + 显式账本，见 scripts/deprecated-export-check.mjs 的 CONTRACT_DELETION_OVERRIDES",
+      },
       candidates: inventory.candidates.map((r) => ({
         name: r.name, def: r.def, kind: r.kind, testHits: r.testHits, docHits: r.docHits,
         scriptMentions: r.scriptMentions, internalUses: r.internalUses, entries: r.entries,
@@ -1274,7 +1452,10 @@ export function main(argv = process.argv.slice(2)) {
     };
     console.log(JSON.stringify(payload, null, 2));
   } else {
-    console.log(renderReport(inventory, { root: opts.root, entries, importedButUnused }));
+    console.log(renderReport(inventory, {
+      root: opts.root, entries, importedButUnused,
+      contractNames: hostContract.names, contractEntry: hostContract.entry,
+    }));
   }
   return inventory.incomplete ? 2 : 0;
 }

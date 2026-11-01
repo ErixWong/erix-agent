@@ -108,6 +108,16 @@ test("真树：三档清单能被第二套实现复算出来（脚本少报 / �
     const { maskedText } = parseEntryExports(readFileSync(join(ROOT, entry), "utf8"), entry);
     return [entry, maskedText];
   }));
+  // 第二套实现之三：**宿主契约套件这一类**从 `package.json` 的 `exports` 自己重算一遍
+  // （不复用脚本的 `hostContractNames()`：成员名单必须是派生的，不是抄的）。
+  const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+  const contractTarget = pkg.exports?.["./contract-tests"];
+  const contractEntry = (typeof contractTarget === "string"
+    ? contractTarget
+    : (contractTarget?.default ?? contractTarget?.import ?? contractTarget?.require))?.replace(/^\.\//, "");
+  const contractNames = new Set(contractEntry
+    ? parseEntryExports(readFileSync(join(ROOT, contractEntry), "utf8"), contractEntry).names.map((n) => n.name)
+    : []);
   const defText = new Map(records.map((r) => [r.rel, r.text]));
   const independent = { package: [], publish: [], internal: [], zero: [] };
   for (const row of payload.names) {
@@ -125,7 +135,8 @@ test("真树：三档清单能被第二套实现复算出来（脚本少报 / �
     if (pkg > 0) independent.package.push(row.name);
     if (pkg === 0 && publish > 0) independent.publish.push(row.name);   // 档位表只列「包内零命中」的那些
     if (pkg === 0 && publish === 0 && internal > 0) independent.internal.push(row.name);
-    if (pkg === 0 && publish === 0 && internal === 0) independent.zero.push(row.name);
+    // 宿主契约套件这一类不进「真·零引用」（它们的消费者按定义在宿主仓，仓内零命中是天然的）。
+    if (pkg === 0 && publish === 0 && internal === 0 && !contractNames.has(row.name)) independent.zero.push(row.name);
   }
   const sorted = (list) => [...list].sort();
   assert.deepEqual(
@@ -133,6 +144,18 @@ test("真树：三档清单能被第二套实现复算出来（脚本少报 / �
     sorted(payload.candidates.map((c) => c.name)),
     "第二套实现算出的「真·零引用」清单与脚本不一致——脚本在静默少报/多报，清点不是真值",
   );
+  // 宿主契约套件这一类：成员从 `exports` 派生，且一个都不许进可删候选。
+  assert.deepEqual(
+    sorted(payload.hostContract.names),
+    sorted([...contractNames]),
+    "宿主契约套件的成员与第二套实现（从 package.json 的 exports 派生）不一致——这一类必须派生，不许写名单",
+  );
+  for (const name of contractNames) {
+    assert.ok(
+      !payload.candidates.some((c) => c.name === name),
+      `${name} 属于宿主契约套件（消费者按定义在宿主仓），不得进「可删候选」`,
+    );
+  }
   assert.deepEqual(
     sorted(independent.publish),
     sorted(payload.publishConsumers.map((c) => c.name)),
@@ -147,6 +170,7 @@ test("真树：三档清单能被第二套实现复算出来（脚本少报 / �
   const t = payload.tiers;
   assert.equal(
     t["package-consumed"] + t["publish-only"] + t["publish+internal"] + t["internal-only"] + t["zero-reference"]
+      + t["host-contract"]
       + t["outside-corpus"] + t["internal-unknown"] + t["definition-missing"] + t["definition-symbol-missing"],
     payload.total,
     `分档计数加起来不等于总数：${JSON.stringify(t)} vs ${payload.total}`,
