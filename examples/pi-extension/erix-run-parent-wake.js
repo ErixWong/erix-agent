@@ -2,6 +2,11 @@
 // （全文 46 行，含末尾 sourceMappingURL 行；逐行对照见 docs/research/2026-10-13-pi-subagents-async-attribution.md §2），
 // 只改了单号、文本常量与 `Symbol.for` 键名，**分支结构一条没动**（上游没有的只有下面那个 `peekReservation`）。
 //
+// issue #654 改的是**调用侧**，本文件内部的 branch 结构仍然一条没动：唤醒器不再存在扩展的模块级单槽里，
+// 而是**每个会话一份**（扩展 factory 作用域里的 `sessionHandle`），所以 `pi.sendMessage` 与 `ctx.isIdle()`
+// 都只作用于**自己那个会话**。本文件能这么用是因为它没有别的全局状态：只依赖构造时注入的 `pi`
+// 与 `bindSession(ctx)` 注入的 `ctx`（跨会话共享的只有那个按 `sessionManager` 键的 reservation WeakMap）。
+//
 // 为什么必须双分支（都是上游踩过的坑）：
 //   - `pi.sendMessage(msg, {triggerTurn:true})` 只有在父会话 **idle** 时才真的触发一轮；
 //     父会话正忙时硬触发会打断它，所以退化成「追加消息 + `deliverAs:"steer"` 排队」。

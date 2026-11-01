@@ -194,6 +194,12 @@ jobs:
       - name: Type-error ratchet
         run: npm run check:types
 
+      # 工具档（`--with-tools`）是**另一档基线**：`src/tools/file-tools.js` 与 `src/skills/loader.js` 不在包根的
+      # import 图里，于是 `BASELINE_WITH_TOOLS` 曾经没有任何 CI 闸看着（issue #653）——那个常量漂了也看不见。
+      # ⚠ 基线的**唯一真值**仍是 `scripts/type-check-ratchet.mjs` 的 `BASELINE_WITH_TOOLS`，本行不抄那个数。
+      - name: Type-error ratchet (tools entry tier)
+        run: npm run check:types -- --with-tools
+
       # issue #417：strict 口径的**棘轮**（阻塞）——与上面那条是**同一张依赖图**，只多一个 `--strict`。
       # 它卡的是「新增的 strict 错」，不是存量：基线（`BASELINE_STRICT_ROOT` / `BASELINE_STRICT_WITH_TOOLS`）
       # 就是本票落地那一刻的实测值，存量按文件切片在后续 PR 里一档一档降。
@@ -202,6 +208,11 @@ jobs:
       # 另外「实测 0 而基线 > 0」也按检查面失效判红。两档基线必须同一笔提交里一起测、一起降。
       - name: Type-error strict ratchet
         run: npm run check:types:strict
+
+      # 同一档的工具档（issue #653）：两档必须同一笔提交里一起测、一起降，那就得两档都在 CI 上被判。
+      # ⚠ 基线真值是 `scripts/type-check-ratchet.mjs` 的 `BASELINE_STRICT_WITH_TOOLS`，本行不抄。
+      - name: Type-error strict ratchet (tools entry tier)
+        run: npm run check:types:strict -- --with-tools
 
       - name: Declaration build assertion
         run: npm run check:types-build
