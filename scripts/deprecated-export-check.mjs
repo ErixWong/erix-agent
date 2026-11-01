@@ -45,6 +45,16 @@
 //  R11 MARKER_HOST_FACT_UNLEDGERED 标记自称发布阻塞（正文里有字面量 `release blocker`）却**没有账本条目** ⇒
 //                            红并点名。删掉账本条目不会让宿主迁移；这条拦的是「把账本删干净就当作已排期」的
 //                            反向逃生口。（措辞约定：写「这一版删不掉」就用 `Release blocker for 0.30:` 开头。）
+//  R12 CONTRACT_DELETION_UNLEDGERED  **属于宿主契约套件这一类**（`exports["./contract-tests"]` 再导出的名字，
+//                            成员从 `package.json` 现派生）的名字带着 0.30 删除标记 ⇒ 红并点名，**除非**它显式登记在
+//                            `CONTRACT_DELETION_OVERRIDES` 里且**带理由**（理由为空 ⇒ 红）。
+//                            这一类的消费者按定义在宿主仓，所以「仓内零消费者」对它天然成立——那条判据不能用来
+//                            推「可以删」（清点工具已把它排除出候选）。真要删一个契约套件仍然可以，但必须把
+//                            「宿主已经迁移完」写进账本，不能再由「仓内零消费者」自动判出来。
+//                            它接管了 R2 在这一类上的那一枪（R2 对类成员不再报，见下面的 R2 循环）：
+//                            结果一样是红，只是原因更准——不是「它有消费者」，而是「删宿主契约没走账本」。
+//  R13 CONTRACT_DELETION_OVERRIDE_FOREIGN  `CONTRACT_DELETION_OVERRIDES` 登记了一个**不属于这一类**的名字 ⇒
+//                            红并点名（#210 R2 口径：空转/越界的豁免条目本身就是错——账本只能给这一类用）。
 //
 // ── 这张账本是什么（不是版本表）─────────────────────────────────────────────────
 //  `REMOVAL_REGISTRY` 记的是**0.30 的发布阻塞**：宿主仓真的在导入、所以这一版不能删的名字，逐条写清
@@ -56,6 +66,9 @@
 //  候选 = 「包内消费者（`src/` `bin/`）+ 发布面消费者（`examples/` `test/contract/`）+ 自身定义文件内引用」
 //  全零命中。internal-only（只在自己定义文件里用）**不是**候选：它的处置是去掉 `export` 而不是删符号，
 //  所以给它标「0.30 删除」同样是错的 ⇒ R2 会点名。
+//  第四类：**宿主契约套件**（`exports[HOST_CONTRACT_ENTRY_KEY]` 再导出的名字，成员现派生）——它们的
+//  消费者按定义在宿主仓，「仓内零命中」天然成立 ⇒ 清点工具把它们排除出候选（`kind: "host-contract"`），
+//  删除改由 R12 看守：没有 `CONTRACT_DELETION_OVERRIDES` 账本条目 + 理由，就不许带 0.30 删除标记。
 //
 // ── 边界（必须写进报告，不许含糊）─────────────────────────────────────────────
 //  本判据只证**仓内**零消费者。宿主仓（touwaka / app_container / erix-station / pi）不在扫描面里，
@@ -65,8 +78,8 @@
 //  0.30 删除承诺）——拦住这种情形的是发布前置清单里那一次宿主探针，不是这里。
 //
 // ── 退出码（本仓惯例：读不出真值就红，不许假绿）───────────────────────────────
-//  0 = 登记与清点一致（且 R3–R11 全过）
-//  1 = 判据红（上面 R1–R11 任一条，逐条点名）
+//  0 = 登记与清点一致（且 R3–R13 全过）
+//  1 = 判据红（上面 R1–R13 任一条，逐条点名）
 //  2 = 读不出真值：清点工具跑不起来/清点不完整（它自己 exit 2）、`--types` 模式下生成物不存在、
 //      或扫描面读不出。**不许**把「读不出」当成「没问题」。
 //
@@ -81,8 +94,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  HOST_CONTRACT_ENTRY_KEY,
   buildRecords,
   computeInventory,
+  hostContractNames,
   resolveEntries,
 } from "./export-consumer-check.mjs";
 
@@ -120,19 +135,15 @@ export const REMOVAL_VERSION = DEFAULT_REMOVAL_VERSION;
  *     与标记的措辞必须对得上，否则读标记的人看不出阻塞在哪；反过来，标记自称发布阻塞却没有账本
  *     条目也是红（R11）。
  *
- * 今天登记的两条都来自宿主仓扫描：`scripts/host-consumer-probe.mjs`
- * （`npm run check:host-consumers -- --hosts <宿主目录>`）会把它们的命中逐条点名（哪个宿主、哪个文件:行），
+ * 今天登记的只剩一条（`createAnthropicProvider`），它来自宿主仓扫描：`scripts/host-consumer-probe.mjs`
+ * （`npm run check:host-consumers -- --hosts <宿主目录>`）会把它的命中逐条点名（哪个宿主、哪个文件:行），
  * 那条命令已接进 0.30 预发布清单。
+ *
+ * `notesStoreContract` **不在**这张表里：它是宿主契约套件（`exports["./contract-tests"]` 这一类），
+ * 这一类不参与「零消费者」删除判据（消费者按定义在宿主仓），所以它既不该带 0.30 删除标记，
+ * 也不需要在阻塞账本里占一条；真要删一个契约套件走 `CONTRACT_DELETION_OVERRIDES`，不走这张表。
  */
 export const REMOVAL_REGISTRY = Object.freeze({
-  notesStoreContract: {
-    reason: "host-side audit: touwaka and app_container import it from the `erix-agent/contract-tests` entry "
-      + "today, so deleting it in 0.30 breaks two live hosts until they migrate",
-    hostFacts: [
-      "app_container/apps/worker/test/notes-store.test.js:5",
-      "touwaka/tests/llm-kit-adapters/notes-store-contract.test.mjs:7",
-    ],
-  },
   createAnthropicProvider: {
     reason: "host-side audit: app_container imports it, and there is no in-tree replacement until the assembly "
       + "port converges, so deleting it in 0.30 breaks a live host until it migrates",
@@ -141,6 +152,23 @@ export const REMOVAL_REGISTRY = Object.freeze({
     ],
   },
 });
+
+/**
+ * **契约套件删除账本**：宿主契约套件（`exports[HOST_CONTRACT_ENTRY_KEY]` 这一类）里允许带 0.30 删除标记的
+ * 名字 → `{ reason }`。
+ *
+ * 为什么这一类要单独一张账本：它们的消费者**按定义**在宿主仓，所以「仓内零消费者」对这个类天然成立——
+ * 用那条判据推「可以删」，就是让闸逼出一个假裁决。真要删仍然可以，但必须在这里写清**为什么现在可以删**
+ * （宿主已经迁移完、替代套件已到位……），且理由不能为空（R12 看守）。
+ *
+ * 三条纪律：
+ *   · 带删除标记的类成员必须有条目 + 理由（R12）；
+ *   · 条目只能给**属于这一类**的名字用（R13：越界 / 空转的条目本身就是错，#210 R2）；
+ *   · 本表**不是**版本表：版本仍由 `NEXT_BREAKING_VERSION` 唯一决定。
+ *
+ * 今天它是**空的**：没有任何契约套件在 0.30 被删。
+ */
+export const CONTRACT_DELETION_OVERRIDES = Object.freeze({});
 
 /**
  * 某个公共名绑定的删除版本。
@@ -176,6 +204,8 @@ export const CODES = {
   REGISTRY_FOREIGN_VERSION: "R9",
   MARKER_HOST_FACT_MISSING: "R10",
   MARKER_HOST_FACT_UNLEDGERED: "R11",
+  CONTRACT_DELETION_UNLEDGERED: "R12",
+  CONTRACT_DELETION_OVERRIDE_FOREIGN: "R13",
 };
 
 /**
@@ -346,15 +376,24 @@ export function declaredSymbols(records) {
  * 判据本体（纯函数：给语料与清点结果，返回红项；不读盘、不写盘，自测因此可以打内存副本）。
  *
  * @param {{records: Array<{rel: string, text: string}>, inventory: object,
- *          registry?: Record<string, {version?: string, reason?: string, hostFacts?: string[]}>}} input
+ *          registry?: Record<string, {version?: string, reason?: string, hostFacts?: string[]}>,
+ *          contractNames?: Set<string>,
+ *          overrides?: Record<string, {reason?: string}>}} input
  *   `registry` 是逐个名字的移除版本登记表（缺省 = 模块里那张 `REMOVAL_REGISTRY`）；自测靠注入它打反向证。
+ *   `contractNames` 是宿主契约套件那一类的名字集合（从 `package.json` 的 `exports` 现派生，见
+ *   `hostContractNames()`）；缺省空集合 = 没有这一类（R12/R13 空转，R2 照旧管所有名字）。
+ *   `overrides` 是契约套件删除账本（缺省 = `CONTRACT_DELETION_OVERRIDES`）。
  * @returns {{reds: Array<{code: string, name: string, file?: string, line?: number|null, detail: string}>,
  *            registered: Array<object>, candidates: Array<object>}}
  */
-export function verify({ records, inventory, registry = REMOVAL_REGISTRY }) {
+export function verify({
+  records, inventory, registry = REMOVAL_REGISTRY,
+  contractNames = new Set(), overrides = CONTRACT_DELETION_OVERRIDES,
+}) {
   const reds = [];
   const names = inventory.names ?? [];
   const publicNames = new Set(names.map((row) => row.name));
+  const contractClass = contractNames instanceof Set ? contractNames : new Set(contractNames ?? []);
   const candidates = names.filter((row) => row.kind === "zero-reference");
   const candidateNames = new Set(candidates.map((row) => row.name));
   const symbols = declaredSymbols(records);
@@ -375,7 +414,10 @@ export function verify({ records, inventory, registry = REMOVAL_REGISTRY }) {
   for (const row of entries) {
     const expected = removalVersionOf(row.name, registry);
     // R2：有消费者的公共名被标了删除（版本无关——0.30 和 0.31 一样是宿主可见破坏的提前承诺）
-    if (!candidateNames.has(row.name)) {
+    // 宿主契约套件这一类**不走 R2**：它的「消费者」按定义在宿主仓（仓内看不见），所以 R2 的证据句
+    // （包内 / 发布面 / internal-only 命中）对它不成立。它的删除由 R12 单独看守（结果一样是红，
+    // 只是原因更准：不是「它有消费者」，而是「删宿主契约没走账本」）。
+    if (!candidateNames.has(row.name) && !contractClass.has(row.name)) {
       const meta = names.find((r) => r.name === row.name);
       const evidence = meta?.consumerFiles?.length
         ? `仓内消费者：${meta.consumerFiles.slice(0, 3).join("、")}`
@@ -512,6 +554,67 @@ export function verify({ records, inventory, registry = REMOVAL_REGISTRY }) {
     });
   }
 
+  // R12 / R13：契约套件这一类的删除**只能走显式账本**。
+  //   R13（先报）：账本条目只能给这一类用——越界/空转的条目本身就是错（#210 R2），且它会让「给一个
+  //   普通名字开一张豁免条」变成可能。理由为空也是 R12 的一种形状（下面逐条判）。
+  //   R12：带删除标记的类成员必须有条目 + 理由。
+  const contractOverrideNames = new Set();
+  const contractEntryNames = new Set(Object.keys(overrides ?? {}));
+  for (const [name, entry] of Object.entries(overrides ?? {})) {
+    const reason = typeof entry?.reason === "string" ? entry.reason.trim() : "";
+    if (!contractClass.has(name)) {
+      reds.push({
+        code: CODES.CONTRACT_DELETION_OVERRIDE_FOREIGN,
+        name,
+        file: "scripts/deprecated-export-check.mjs",
+        line: null,
+        detail: `CONTRACT_DELETION_OVERRIDES 登记了 \`${name}\`，但它不属于宿主契约套件这一类`
+          + `（\`exports[${JSON.stringify(HOST_CONTRACT_ENTRY_KEY)}]\` 再导出的名字，成员从 package.json 现派生）`
+          + "——账本只能给这一类用：越界条目会让「给一个普通名字开一张豁免条」变成可能",
+      });
+      continue;
+    }
+    if (reason === "") {
+      reds.push({
+        code: CODES.CONTRACT_DELETION_UNLEDGERED,
+        name,
+        file: "scripts/deprecated-export-check.mjs",
+        line: null,
+        detail: `CONTRACT_DELETION_OVERRIDES 里 \`${name}\` 的条目**没写理由**`
+          + "——没有理由的条目就是下一任读者无法重跑的免检通道；删一个宿主契约套件，必须写清为什么现在可以删",
+      });
+      continue;
+    }
+    if (!registeredNames.has(name)) {
+      reds.push({
+        code: CODES.CONTRACT_DELETION_OVERRIDE_FOREIGN,
+        name,
+        file: "scripts/deprecated-export-check.mjs",
+        line: null,
+        detail: `CONTRACT_DELETION_OVERRIDES 登记了 \`${name}\`，但源码里**没有任何** \`@deprecated\` 标记对上这个名字`
+          + "——账本说「允许删」，实际这条账已空转（#210 R2：静默不匹配的豁免条目本身就是错）",
+      });
+      continue;
+    }
+    contractOverrideNames.add(name);
+  }
+  for (const row of entries) {
+    if (!contractClass.has(row.name)) continue;
+    if (contractOverrideNames.has(row.name)) continue;
+    // 条目在、但形状不合规（理由为空 / 越界 / 空转）：上面已经逐条点名过，这里不重复报同一件事。
+    if (contractEntryNames.has(row.name)) continue;
+    reds.push({
+      code: CODES.CONTRACT_DELETION_UNLEDGERED,
+      name: row.name,
+      file: row.file,
+      line: row.line,
+      detail: `被标了「${removalVersionOf(row.name, registry)} 删除」，但它属于宿主契约套件这一类`
+        + `（\`exports[${JSON.stringify(HOST_CONTRACT_ENTRY_KEY)}]\` 导出的名字）——这一类的消费者**按定义在宿主仓**，`
+        + "所以「仓内零消费者」对它天然成立，不是可删的证据；要删必须先在 CONTRACT_DELETION_OVERRIDES 里登记它并写清理由"
+        + "（宿主已迁移完 / 替代套件已到位），并跑 `npm run check:host-consumers -- --hosts <宿主目录>` 核宿主",
+    });
+  }
+
   // R1：候选必须有登记
   const registered = registeredNames;
   for (const row of candidates) {
@@ -582,7 +685,7 @@ export function verifyTypes({ root, candidates }) {
 
 // ─────────────────────────────── 报告 ───────────────────────────────
 
-function renderReport({ inventory, result, types, root, registry = REMOVAL_REGISTRY }) {
+function renderReport({ inventory, result, types, root, registry = REMOVAL_REGISTRY, contractNames = new Set(), contractEntry = null }) {
   const lines = [];
   lines.push("deprecated-export-check：零消费者导出 × `@deprecated` 登记对账（issue #429）");
   lines.push("");
@@ -592,6 +695,11 @@ function renderReport({ inventory, result, types, root, registry = REMOVAL_REGIS
   const perName = Object.keys(registry ?? {}).length;
   lines.push(`登记事实：${result.registered.length} 个公共名带删除标记；唯一合法的移除版本 ${NEXT_BREAKING_VERSION}`
     + `（\`NEXT_BREAKING_VERSION\`，登记表不改版本）；0.30 发布阻塞账本 ${perName} 条`);
+  const contractRows = inventory.names.filter((row) => contractNames.has(row.name));
+  lines.push(`宿主契约套件：${contractRows.length} 个名字（\`exports[${JSON.stringify(HOST_CONTRACT_ENTRY_KEY)}]\``
+    + `${contractEntry ? ` → ${contractEntry}` : ""} 现派生）——**不参与删除判据**，带删除标记必须有`
+    + ` \`CONTRACT_DELETION_OVERRIDES\` 条目 + 理由（R12/R13）；今天该账本 `
+    + `${Object.keys(CONTRACT_DELETION_OVERRIDES).length} 条`);
   lines.push("");
   lines.push("## 候选 × 登记");
   const byName = new Map(result.registered.map((row) => [row.name, row]));
@@ -645,6 +753,8 @@ function renderReport({ inventory, result, types, root, registry = REMOVAL_REGIS
   lines.push("  「账本与标记脱钩」，不是「可以删了」。宿主侧的核验由 `node scripts/host-consumer-probe.mjs --hosts <目录>` 做");
   lines.push("  （`npm run check:host-consumers`），它把被导入的候选名字逐条点名到宿主仓 / 文件:行；");
   lines.push("  那条命令已接进 0.30 预发布清单：跑不出命中才允许发 0.30。");
+  lines.push("  宿主契约套件更彻底：它们的消费者**按定义**在宿主仓，仓内零命中是这一类存在的前提，不是可删的证据；");
+  lines.push("  所以它们不进候选清单（清点工具单列 `host-contract`），带删除标记必须有账本条目 + 理由（R12/R13）。");
   lines.push("  另一条边界：账本条目**与**标记里的宿主事实句一起删掉时本判据不红（那时标记只是一条普通的");
   lines.push("  0.30 删除承诺）——拦住那种情形的是发布前那一次宿主探针，不是这里。");
   lines.push("");
@@ -717,16 +827,20 @@ function runSelfTest() {
 
   const records = buildRecords(DEFAULT_ROOT);
   const entryResolution = resolveEntries(DEFAULT_ROOT);
+  // 宿主契约套件这一类：与真跑同一条派生路径（`package.json` 的 `exports` 现解析，不抄名单）。
+  const hostContract = hostContractNames(entryResolution.pkg, records);
+  const contractNames = hostContract.names;
   const inventory = computeInventory(records, {
     root: DEFAULT_ROOT,
     entries: entryResolution.entries,
+    contractNames,
     extraErrors: entryResolution.errors,
   });
   if (inventory.incomplete) {
     console.log(`deprecated-export-check --self-test: 失败 — 真树清点本身不完整（${inventory.errors.map((e) => e.code).join(",")}），反向证基线不是真值`);
     return 1;
   }
-  const baseline = verify({ records, inventory });
+  const baseline = verify({ records, inventory, contractNames });
   const candidates = baseline.candidates;
 
   // ── 例① 基线：真树今天必须是绿的（否则反向证的「还原 ⇒ 绿」没有意义）──
@@ -746,14 +860,14 @@ function runSelfTest() {
     if (mutated.missed) {
       failures.push(`② R1：变异没落上——${mutated.missed}`);
     } else {
-      const after = verify({ records: mutated.records, inventory });
+      const after = verify({ records: mutated.records, inventory, contractNames });
       const hit = after.reds.find((red) => red.code === CODES.NOT_REGISTERED && red.name === candidate.name);
       expect(
         Boolean(hit),
         `② R1 删掉 \`${candidate.name}\` 的登记 ⇒ 红并点名（${hit?.code} ${hit?.name}）`,
         `② R1 删掉 \`${candidate.name}\` 的登记后没有报 NOT_REGISTERED（红项：${after.reds.map((r) => `${r.code}:${r.name}`).join(",") || "无"}）`,
       );
-      const restored = verify({ records, inventory });
+      const restored = verify({ records, inventory, contractNames });
       expect(
         restored.reds.length === 0,
         `②b 还原 ⇒ 绿（${restored.reds.length} 红）`,
@@ -778,14 +892,14 @@ function runSelfTest() {
       if (mutated.missed) {
         failures.push(`③ R2：变异没落上——${mutated.missed}`);
       } else {
-        const after = verify({ records: mutated.records, inventory });
+        const after = verify({ records: mutated.records, inventory, contractNames });
         const hit = after.reds.find((red) => red.code === CODES.NOT_A_CANDIDATE && red.name === consumed.name);
         expect(
           Boolean(hit),
           `③ R2 给有消费者的 \`${consumed.name}\`（${consumed.def}，消费者 ${consumed.consumerFiles[0]}）也标上 ⇒ 红并点名（${hit?.code} ${hit?.name}）`,
           `③ R2 给有消费者的 \`${consumed.name}\` 标上删除后**没**被抓出（红项：${after.reds.map((r) => `${r.code}:${r.name}`).join(",") || "无"}）`,
         );
-        const restored = verify({ records, inventory });
+        const restored = verify({ records, inventory, contractNames });
         expect(
           restored.reds.length === 0,
           `③b 还原 ⇒ 绿（${restored.reds.length} 红）`,
@@ -806,7 +920,7 @@ function runSelfTest() {
     if (mutated.missed) {
       failures.push(`④ R3：变异没落上——${mutated.missed}`);
     } else {
-      const after = verify({ records: mutated.records, inventory });
+      const after = verify({ records: mutated.records, inventory, contractNames });
       const hit = after.reds.find((red) => red.code === CODES.WRONG_VERSION && red.name === candidate.name);
       expect(
         Boolean(hit),
@@ -826,7 +940,7 @@ function runSelfTest() {
     if (noTarget.missed) {
       failures.push(`⑤ R4：变异没落上——${noTarget.missed}`);
     } else {
-      const after = verify({ records: noTarget.records, inventory });
+      const after = verify({ records: noTarget.records, inventory, contractNames });
       const hit = after.reds.find((red) => red.code === CODES.NO_MIGRATION && red.name === candidate.name);
       expect(
         Boolean(hit),
@@ -842,7 +956,7 @@ function runSelfTest() {
     if (bogusTarget.missed) {
       failures.push(`⑤b R4：变异没落上——${bogusTarget.missed}`);
     } else {
-      const after = verify({ records: bogusTarget.records, inventory });
+      const after = verify({ records: bogusTarget.records, inventory, contractNames });
       const hit = after.reds.find((red) => red.code === CODES.NO_MIGRATION && red.name === candidate.name);
       expect(
         Boolean(hit),
@@ -863,7 +977,7 @@ function runSelfTest() {
     if (mutated.missed) {
       failures.push(`⑥ R5：变异没落上——${mutated.missed}`);
     } else {
-      const after = verify({ records: mutated.records, inventory });
+      const after = verify({ records: mutated.records, inventory, contractNames });
       const codes = after.reds.filter((red) => red.name === candidate.name).map((red) => red.code);
       expect(
         codes.includes(CODES.TAG_NOT_ADJACENT) || codes.includes(CODES.NOT_REGISTERED),
@@ -897,7 +1011,7 @@ function runSelfTest() {
       if (mutated.missed) {
         failures.push(`⑧ internal-only：变异没落上——${mutated.missed}`);
       } else {
-        const after = verify({ records: mutated.records, inventory });
+        const after = verify({ records: mutated.records, inventory, contractNames });
         const hit = after.reds.find((red) => red.code === CODES.NOT_A_CANDIDATE && red.name === internalOnly.name);
         expect(
           Boolean(hit),
@@ -925,7 +1039,7 @@ function runSelfTest() {
       if (mutated.missed) {
         failures.push(`⑨ R2@0.31：变异没落上——${mutated.missed}`);
       } else {
-        const after = verify({ records: mutated.records, inventory });
+        const after = verify({ records: mutated.records, inventory, contractNames });
         const hit = after.reds.find((red) => red.code === CODES.NOT_A_CANDIDATE && red.name === consumed.name);
         expect(
           Boolean(hit),
@@ -933,7 +1047,7 @@ function runSelfTest() {
           `⑨ R2 给有消费者的 \`${consumed.name}\` 打 0.31 标记后**没**被抓出——写个更晚的版本号就变成免死金牌了`
             + `（红项：${after.reds.map((r) => `${r.code}:${r.name}`).join(",") || "无"}）`,
         );
-        const restored = verify({ records, inventory });
+        const restored = verify({ records, inventory, contractNames });
         expect(
           restored.reds.length === 0,
           `⑨b 还原 ⇒ 绿（${restored.reds.length} 红）`,
@@ -946,13 +1060,13 @@ function runSelfTest() {
   // ── 例⑩ 账本是**承重**的：把它清空 ⇒ 真树里那两条「release blocker」标记变成 R11 红（没有账本条目）；
   // 换回真表 ⇒ 绿。这一条证的是「账本真的在记阻塞事实」，而不是一张摆在旁边没人读的表。
   {
-    const emptyRegistry = verify({ records, inventory, registry: {} });
+    const emptyRegistry = verify({ records, inventory, contractNames, registry: {} });
     const ledgered = Object.keys(REMOVAL_REGISTRY);
     const unledgeredNames = emptyRegistry.reds
       .filter((red) => red.code === CODES.MARKER_HOST_FACT_UNLEDGERED)
       .map((red) => red.name);
     const allCaught = ledgered.every((name) => unledgeredNames.includes(name));
-    const restored = verify({ records, inventory, registry: REMOVAL_REGISTRY });
+    const restored = verify({ records, inventory, contractNames, registry: REMOVAL_REGISTRY });
     expect(
       ledgered.length > 0 && allCaught && restored.reds.length === 0,
       `⑩ 账本清空 ⇒ ${ledgered.length} 个自称发布阻塞的标记变 R11 红（${unledgeredNames.join(",")}）⇒ 换回真账本 ⇒ 绿（${restored.reds.length} 红）`,
@@ -967,6 +1081,7 @@ function runSelfTest() {
     const withGhost = verify({
       records,
       inventory,
+      contractNames,
       registry: { ...REMOVAL_REGISTRY, [ghostName]: { reason: "self-test: 这一条故意不对应任何标记", hostFacts: ["self-test/ghost.js:1"] } },
     });
     const hit = withGhost.reds.find((red) => red.code === CODES.REGISTRY_ENTRY_IDLE && red.name === ghostName);
@@ -996,7 +1111,7 @@ function runSelfTest() {
         failures.push(`⑪b R7：\`${movedName}\` 的标记块没被剥掉（变异没落上：declIndex=${declIndex}、depIndex=${depIndex}）`);
       } else {
         const recordsWithoutMarker = records.map((record) => (record.rel === markerOwner.rel ? { ...record, text: strippedText } : record));
-        const after = verify({ records: recordsWithoutMarker, inventory });
+        const after = verify({ records: recordsWithoutMarker, inventory, contractNames });
         const idle = after.reds.find((red) => red.code === CODES.REGISTRY_ENTRY_IDLE && red.name === movedName);
         expect(
           Boolean(idle),
@@ -1014,9 +1129,9 @@ function runSelfTest() {
       failures.push("⑫ R8：真账本是空的——这一枪打不出去");
     } else {
       const facts = REMOVAL_REGISTRY[target].hostFacts;
-      const noReason = verify({ records, inventory, registry: { ...REMOVAL_REGISTRY, [target]: { reason: "", hostFacts: facts } } });
-      const noFacts = verify({ records, inventory, registry: { ...REMOVAL_REGISTRY, [target]: { reason: "self-test", hostFacts: [] } } });
-      const badVersion = verify({ records, inventory, registry: { ...REMOVAL_REGISTRY, [target]: { version: "next", reason: "self-test", hostFacts: facts } } });
+      const noReason = verify({ records, inventory, contractNames, registry: { ...REMOVAL_REGISTRY, [target]: { reason: "", hostFacts: facts } } });
+      const noFacts = verify({ records, inventory, contractNames, registry: { ...REMOVAL_REGISTRY, [target]: { reason: "self-test", hostFacts: [] } } });
+      const badVersion = verify({ records, inventory, contractNames, registry: { ...REMOVAL_REGISTRY, [target]: { version: "next", reason: "self-test", hostFacts: facts } } });
       const hitNoReason = noReason.reds.find((red) => red.code === CODES.REGISTRY_ENTRY_INVALID && red.name === target);
       const hitNoFacts = noFacts.reds.find((red) => red.code === CODES.REGISTRY_ENTRY_INVALID && red.name === target);
       const hitBadVersion = badVersion.reds.find((red) => red.code === CODES.REGISTRY_ENTRY_INVALID && red.name === target);
@@ -1036,9 +1151,9 @@ function runSelfTest() {
       failures.push("⑬ R9：真账本是空的——这一枪打不出去");
     } else {
       const entry = REMOVAL_REGISTRY[target];
-      const foreign = verify({ records, inventory, registry: { ...REMOVAL_REGISTRY, [target]: { ...entry, version: "0.31" } } });
+      const foreign = verify({ records, inventory, contractNames, registry: { ...REMOVAL_REGISTRY, [target]: { ...entry, version: "0.31" } } });
       const hit = foreign.reds.find((red) => red.code === CODES.REGISTRY_FOREIGN_VERSION && red.name === target);
-      const sameVersion = verify({ records, inventory, registry: { ...REMOVAL_REGISTRY, [target]: { ...entry, version: NEXT_BREAKING_VERSION } } });
+      const sameVersion = verify({ records, inventory, contractNames, registry: { ...REMOVAL_REGISTRY, [target]: { ...entry, version: NEXT_BREAKING_VERSION } } });
       const control = sameVersion.reds.filter((red) => red.name === target);
       expect(
         Boolean(hit) && control.length === 0,
@@ -1062,15 +1177,121 @@ function runSelfTest() {
       if (mutated.missed) {
         failures.push(`⑭ R10：变异没落上——${mutated.missed}`);
       } else {
-        const after = verify({ records: mutated.records, inventory });
+        const after = verify({ records: mutated.records, inventory, contractNames });
         const hit = after.reds.find((red) => red.code === CODES.MARKER_HOST_FACT_MISSING && red.name === target);
-        const restored = verify({ records, inventory });
+        const restored = verify({ records, inventory, contractNames });
         expect(
           Boolean(hit) && hit.detail.includes(fact) && restored.reds.length === 0,
           `⑭ R10 把 \`${target}\` 标记里的宿主事实 \`${fact}\` 删掉（账本还留着）⇒ 红并点名缺哪一条（${hit?.code} ${hit?.name}）⇒ 还原 ⇒ 绿（${restored.reds.length} 红）`,
           `⑭ R10 标记里的宿主事实被删掉、账本还在，却没报 R10（红项：${after.reds.map((r) => `${r.code}:${r.name}`).join(",") || "无"}）`,
         );
       }
+    }
+  }
+
+  // ── 例⑮ R12：宿主契约套件带 0.30 删除标记 ⇒ 红并点名；放进 `CONTRACT_DELETION_OVERRIDES` 带理由 ⇒ 绿；
+  // 理由删空 ⇒ 再红。这一条是「真删仍然可以，但不能由『仓内零消费者』自动判出来」的机器拦法。──
+  {
+    const target = [...contractNames].sort()
+      .find((name) => !baseline.registered.some((row) => row.name === name));
+    const meta = target ? inventory.names.find((row) => row.name === target) : null;
+    if (!target || !meta) {
+      failures.push("⑮ R12：真树里找不到一个「属于宿主契约套件、却没带删除标记」的名字——这一枪打不出去");
+    } else {
+      const mutated = injectTag(records, {
+        name: target,
+        def: meta.def,
+        tag: `@deprecated issue #429: removed in ${DEFAULT_REMOVAL_VERSION} — no in-tree replacement.`,
+      });
+      if (mutated.missed) {
+        failures.push(`⑮ R12：变异没落上——${mutated.missed}`);
+      } else {
+        const after = verify({ records: mutated.records, inventory, contractNames });
+        const hit = after.reds.find((red) => red.code === CODES.CONTRACT_DELETION_UNLEDGERED && red.name === target);
+        const withLedger = verify({
+          records: mutated.records,
+          inventory,
+          contractNames,
+          overrides: { [target]: { reason: "self-test: 宿主已迁移完，替代套件已到位" } },
+        });
+        const blankReason = verify({
+          records: mutated.records,
+          inventory,
+          contractNames,
+          overrides: { [target]: { reason: "   " } },
+        });
+        const hitBlank = blankReason.reds.find((red) => red.code === CODES.CONTRACT_DELETION_UNLEDGERED && red.name === target);
+        const restored = verify({ records, inventory, contractNames });
+        expect(
+          Boolean(hit) && withLedger.reds.length === 0 && Boolean(hitBlank) && restored.reds.length === 0,
+          `⑮ R12 契约套件 \`${target}\` 带 0.30 删除标记 ⇒ 红并点名（${hit?.code} ${hit?.name}）`
+            + ` ⇒ 登记进 CONTRACT_DELETION_OVERRIDES 带理由 ⇒ 绿（${withLedger.reds.length} 红）`
+            + ` ⇒ 理由删空 ⇒ 再红（${hitBlank?.code} ${hitBlank?.name}）⇒ 还原 ⇒ 绿（${restored.reds.length} 红）`,
+          `⑮ R12 没按预期：无账本时红=${Boolean(hit)}（期望 true）/ 带理由后 ${withLedger.reds.map((r) => `${r.code}:${r.name}`).join(",") || "0 红"}`
+            + ` / 理由为空时红=${Boolean(hitBlank)}（期望 true）/ 还原后 ${restored.reds.length} 红（期望 0）`,
+        );
+      }
+    }
+  }
+
+  // ── 例⑯ R13：账本条目只能给这一类用（越界 / 空转都是错，#210 R2 口径）──
+  {
+    const outsider = candidates[0]?.name;
+    if (!outsider) {
+      failures.push("⑯ R13：真树里一个候选都没有——这一枪打不出去");
+    } else {
+      const foreign = verify({
+        records,
+        inventory,
+        contractNames,
+        overrides: { [outsider]: { reason: "self-test: 这个名字根本不属于契约套件这一类" } },
+      });
+      const hit = foreign.reds.find((red) => red.code === CODES.CONTRACT_DELETION_OVERRIDE_FOREIGN && red.name === outsider);
+      // 空转：属于这一类、却没有删除标记的条目——与 R7 同一条规矩（空转的豁免条目本身就是错）。
+      const idleTarget = [...contractNames].sort()
+        .find((name) => !baseline.registered.some((row) => row.name === name));
+      const idle = idleTarget
+        ? verify({ records, inventory, contractNames, overrides: { [idleTarget]: { reason: "self-test: 没有对应标记的空转条目" } } })
+        : null;
+      const idleHit = idle?.reds.find((red) => red.code === CODES.CONTRACT_DELETION_OVERRIDE_FOREIGN && red.name === idleTarget);
+      expect(
+        Boolean(hit) && (idle ? Boolean(idleHit) : true),
+        `⑯ R13 账本只能给这一类用：给非类成员 \`${outsider}\` 开条目 ⇒ 红并点名（${hit?.code} ${hit?.name}）`
+          + (idle ? `；给类成员 \`${idleTarget}\` 开一条没有标记的空转条目 ⇒ 也红（${idleHit?.code} ${idleHit?.name}）` : ""),
+        `⑯ R13 没按预期：越界条目红=${Boolean(hit)}（期望 true）/ 空转条目红=${idle ? Boolean(idleHit) : "（未测）"}（期望 true）`,
+      );
+    }
+  }
+
+  // ── 例⑰ 豁免必须是**派生**的：把 `exports[HOST_CONTRACT_ENTRY_KEY]` 从 package.json 拿掉 ⇒ 这一类不再豁免
+  // ⇒ 同一个名字立刻回到候选并触发 R1（这一条把「名单式实现」钉死：写死名单在这里纹丝不动）。──
+  {
+    // 靶子必须是**本来靠这一类才不进候选**的那个名字（kind = host-contract）：只有它会在豁免消失后
+    // 翻成 zero-reference ⇒ 触发 R1。其他类成员（publish-* / internal-only）本来就不是候选，打不中。
+    const target = inventory.names
+      .filter((row) => row.kind === "host-contract")
+      .sort((a, b) => a.name.localeCompare(b.name))[0]?.name;
+    if (!target || !entryResolution.pkg) {
+      failures.push("⑰ R1@派生：真树里找不到可用的契约套件名 / package.json 读不到——这一枪打不出去");
+    } else {
+      const pkgWithoutEntry = JSON.parse(JSON.stringify(entryResolution.pkg));
+      delete pkgWithoutEntry.exports[HOST_CONTRACT_ENTRY_KEY];
+      const dropped = hostContractNames(pkgWithoutEntry, records);
+      const invNoClass = computeInventory(records, {
+        root: DEFAULT_ROOT,
+        entries: entryResolution.entries,
+        contractNames: dropped.names,
+      });
+      const after = verify({ records, inventory: invNoClass, contractNames: dropped.names });
+      const hit = after.reds.find((red) => red.code === CODES.NOT_REGISTERED && red.name === target);
+      const back = verify({ records, inventory, contractNames });
+      expect(
+        dropped.names.size === 0 && Boolean(hit) && back.reds.length === 0,
+        `⑰ 豁免是派生的：类成员 ${contractNames.size} 个 → 把 \`exports[${JSON.stringify(HOST_CONTRACT_ENTRY_KEY)}]\` 从 package.json 拿掉`
+          + ` ⇒ 类成员 ${dropped.names.size} 个，\`${target}\` 回到候选并触发 R1（${hit?.code} ${hit?.name}）→ 还原 ⇒ 绿（${back.reds.length} 红）`,
+        `⑰ 豁免不是派生的：类成员 ${contractNames.size} → ${dropped.names.size}（期望 0），R1 红=${Boolean(hit)}（期望 true）`
+          + `，还原后 ${back.reds.length} 红（期望 0）`,
+      );
     }
   }
 
@@ -1115,11 +1336,14 @@ export function main(argv = process.argv.slice(2)) {
 
   const records = buildRecords(opts.root);
   const entryResolution = resolveEntries(opts.root);
+  // 宿主契约套件这一类从 `package.json` 的 `exports` 现派生（不抄名单）——R12/R13 的判定面。
+  const hostContract = hostContractNames(entryResolution.pkg, records);
   const inventory = computeInventory(records, {
     root: opts.root,
     entries: entryResolution.entries,
+    contractNames: hostContract.names,
     extraErrors: entryResolution.errors,
-    extraWarnings: entryResolution.warnings,
+    extraWarnings: [...entryResolution.warnings, ...hostContract.warnings],
   });
   if (inventory.incomplete) {
     const codes = inventory.errors.map((error) => error.code);
@@ -1129,7 +1353,7 @@ export function main(argv = process.argv.slice(2)) {
     return 2;
   }
 
-  const result = verify({ records, inventory });
+  const result = verify({ records, inventory, contractNames: hostContract.names });
   let types = null;
   if (opts.types) {
     types = verifyTypes({ root: opts.root, candidates: result.candidates });
@@ -1154,6 +1378,13 @@ export function main(argv = process.argv.slice(2)) {
       root: opts.root,
       total: inventory.total,
       tiers: inventory.tiers,
+      hostContract: {
+        entry: hostContract.entry,
+        entryKey: HOST_CONTRACT_ENTRY_KEY,
+        names: [...hostContract.names].sort(),
+        deletionOverrides: CONTRACT_DELETION_OVERRIDES,
+        note: "这一类不参与「零消费者」删除判据（消费者按定义在宿主仓）；带 0.30 删除标记必须有 CONTRACT_DELETION_OVERRIDES 条目 + 理由（R12/R13）",
+      },
       candidates: result.candidates.map((row) => ({
         name: row.name, def: row.def, removalVersion: removalVersionOf(row.name),
         registered: result.registered.some((reg) => reg.name === row.name),
@@ -1171,7 +1402,10 @@ export function main(argv = process.argv.slice(2)) {
       ],
     }, null, 2));
   } else {
-    console.log(renderReport({ inventory, result, types, root: opts.root }));
+    console.log(renderReport({
+      inventory, result, types, root: opts.root,
+      contractNames: hostContract.names, contractEntry: hostContract.entry,
+    }));
   }
   return reds.length === 0 ? 0 : 1;
 }

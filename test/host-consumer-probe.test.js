@@ -40,7 +40,7 @@ async function hostRepo(files, { name = "mini-host", prefix = "erix-host-probe-"
 test("真宿主目录：导入被登记为将删除的零消费者导出 ⇒ exit 1 并点名宿主仓 / 文件:行 / 名字", async () => {
   const host = await hostRepo({
     "src/adapter.js": [
-      'import { runToolLoop } from "erix-agent";',
+      'import { createAnthropicProvider, runToolLoop } from "erix-agent";',
       'import { notesStoreContract } from "erix-agent/contract-tests";',
       "",
     ].join("\n"),
@@ -50,10 +50,12 @@ test("真宿主目录：导入被登记为将删除的零消费者导出 ⇒ exi
   assert.match(result.stdout, /## 命中（exit 1）/u, "报告要有命中小节");
   assert.match(
     result.stdout,
-    new RegExp(`\`notesStoreContract\` @ 宿主仓 \`mini-host\` — \`${host}/src/adapter\\.js:2\``, "u"),
+    new RegExp(`\`createAnthropicProvider\` @ 宿主仓 \`mini-host\` — \`${host}/src/adapter\\.js:1\``, "u"),
     `命中要逐条点名宿主仓 / 文件:行 / 名字：\n${result.stdout}`,
   );
   assert.match(result.stdout, /登记删除版本 0\.30/u, "点名时要带登记的删除版本（宿主据此判断影响面）");
+  // 宿主契约套件这一类**不进候选**（消费者按定义在宿主仓，仓内零命中是天然的）⇒ 宿主导入它不是删除命中。
+  assert.ok(!/`notesStoreContract` @ 宿主仓/u.test(result.stdout), "宿主契约套件不参与删除判据，不得进命中表");
   // 非候选名字（`runToolLoop` 有仓内消费者）不得被点名
   assert.ok(!/`runToolLoop` @ 宿主仓/u.test(result.stdout), "非候选名字不该进命中表");
 });

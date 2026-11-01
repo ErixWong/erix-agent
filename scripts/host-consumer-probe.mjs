@@ -57,6 +57,7 @@ import { fileURLToPath } from "node:url";
 import {
   buildRecords,
   computeInventory,
+  hostContractNames,
   resolveEntries,
 } from "./export-consumer-check.mjs";
 import {
@@ -539,11 +540,15 @@ export function probeHosts({
 export function currentCandidates(root = DEFAULT_ROOT) {
   const records = buildRecords(root);
   const entryResolution = resolveEntries(root);
+  // 宿主契约套件这一类不参与「零消费者」删除判据（消费者按定义在宿主仓）⇒ 也不进求交面。
+  // 派生口径与 `check:exports` / `check:exports:deprecated` **同一份**（`hostContractNames()`，不抄名单）。
+  const hostContract = hostContractNames(entryResolution.pkg, records);
   const inventory = computeInventory(records, {
     root,
     entries: entryResolution.entries,
+    contractNames: hostContract.names,
     extraErrors: entryResolution.errors,
-    extraWarnings: entryResolution.warnings,
+    extraWarnings: [...entryResolution.warnings, ...hostContract.warnings],
   });
   return { inventory, candidates: inventory.candidates ?? [] };
 }
@@ -553,6 +558,7 @@ export function currentCandidates(root = DEFAULT_ROOT) {
 export const CRITERIA = [
   "入口引用的形状：`import { … } from \"erix-agent\"` / `\"erix-agent/<子路径>\"`、`export { … } from …`、`require(\"erix-agent…\")`（含 `const { … } = require(…)` 解构）、动态 `import(\"erix-agent…\")`。",
   "候选清单来自 `scripts/export-consumer-check.mjs` 的 `computeInventory()`（现算，不抄第二份名单）。",
+  "宿主契约套件（`exports[\"./contract-tests\"]` 这一类的导出名）**不在**候选里：它们的消费者按定义在宿主仓，仓内零命中是天然的 ⇒ 宿主导入它们不是「删除命中」。",
   "求交 = 宿主 import 的**导出名** ∩ 零消费者候选名；命中就点名宿主仓 / 文件:行 / 名字 / 绑定的删除版本。",
   "解析不出名字的形状（命名空间 / 默认 / 裸 require / 动态 import / export *）逐类计数并打印，不静默丢弃。",
   "注释与字符串内容先涂白再解析：注释里写 `require('erix-agent')`、测试夹具里把 import 语句当字符串存，都不算一次导入。",
