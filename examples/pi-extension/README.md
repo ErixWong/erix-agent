@@ -21,6 +21,7 @@
 | `../../test/examples/erix-run-async.test.js` | **#234 异步面单测**：立即返回、`status`→`result` 生命周期、`cancel` 终局 `aborted`、`status.json` 落盘与跨 `/reload` 回落读盘、去重注册表、parent-wake 两条分支 + pending 窗口 + reload 安全、run 级看门狗、`quiet` 唤醒策略、`shutdown` 幂等；**#276 八条**钉住「异步终局视图覆盖同步结果的每个字段」（字段表从 core 载荷构造器派生、`UNPROJECTED_SYNC_FIELDS` 恒空、`result`/`status`/`status.json` 三处同形、未终局零值形状、句柄/摘要子集钉死） |
 | `../../test/examples/erix-run-core.smoke.test.js` | 真机冒烟（一次真 relay 调用，默认跳过） |
 | `../../test/examples/erix-run-pi-load.test.js` | 用 **pi 自己的装载器**（jiti + 虚拟模块）加载 `.ts`，断言注册成功、失败路径不抛错；#237 之后还拿**真 `execute()`** 把每条返回路径的 `details` 序列化一遍 |
+| `../../test/examples/erix-run-resume.test.js` | **#207 R2 续跑单测**：第一次 run 停在 `max_rounds_cap` ⇒ 第二次从账本接着跑（历史 / 轮号 / 账本都不重置）、纯续跑不追加用户轮、三种坐标（transcript / `runId`+`sessionDir` / `status.json`）指到同一份账本、坐标不存在 / 空账本 / 坏 `status.json` 的明确报错、`bad_params` 形状校验、异步面「`status.json` 即续跑坐标 + job 沿用原 `runId`」 |
 | `../../test/examples/erix-run-details.test.js` | **#237 R2：`details` 必须可 JSON 序列化**。对 `started` / `status` / `result` / `list` / `cancel` / `unknown-run` / `error` / `crashed` + **同步终局**逐条断言 `JSON.stringify(details)` 不抛、`content[0].text` 非空、`details` 只含 plain 数据（+#276：视图带了嵌套 `diagnostics`/`verification` 后仍不触发 `detailsDropped`，失败终局的文本面要点名 `termination.errorCode`）（无函数 / 定时器 / promise / 循环引用），并把每个 `kind` 的键集合钉死 |
 | `../../test/examples/plain-data.js` | 测试侧**独立实现**的「活对象」扫描器与 `assertMachineReadableResult`（故意不回读生产码的守卫，否则两边错在一起就是自证） |
 
@@ -97,6 +98,7 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | `quiet` | | `false` | 只在 `async:true` 时有意义：**成功的完成不唤醒**父会话（只落 `status.json`），失败 / 中止仍然唤醒。一次派一批切片时用它免得把主会话打断成筛子 |
 | `action` | | — | `status`（当前状态 + 终局四件套）\| `result`（完整终局：四件套 + `artifacts` + **终稿正文 `finalText`**，#261）\| `list`（本进程已知 run 的摘要表）\| `cancel`（把 `signal` 打进内层，终局记成 `aborted`）。`status`/`result`/`cancel` 要带 `runId` |
 | `runId` | | — | `action` 要操作的 run id（就是 `async:true` 返回句柄里的 `runId`）|
+| `resume` | | — | **#207 R2：从一个已有 run 的账本接着跑**（不传 = 起一次全新 run）。三种坐标只认这三种：① `status.json` 的绝对路径（自带 `runId`/`sessionDir`/`cwd` ⇒ 最省事）；② transcript 的绝对路径（就是终局 `diagnostics.resume.handle` 给的那个值）；③ `runId` 字符串（**必须**同时给 `sessionDir`）。②③ 不带工作目录 ⇒ 还要传 `cwd`（① 可以省）。坐标不成立一律**明确报错**（`resume_not_found` / `bad_params`），**不会静默起新 run**。详见下面「续跑 resume」 |
 
 > ⚠ **`~` 展开只认正斜杠 `~/`（#194）**：`~` → home、`~/x` → `<home>/x`；`~\x`（反斜杠）与
 > `~x`（未知用户前缀）**原样返回、不展开**——与库内文件工具的 `expandHomePath`
@@ -129,6 +131,7 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | `requireDeliverable` / `deliverablePaths` | `deliverables`（`{name, check}` 数组） | `capabilities.checks.deliverables` |
 | `sessionDir` / `transcript` / `async` / `quiet` / `action` / `model` | —（本层的落盘与异步面，不是引擎选项） | 不进 `runToolLoop` |
 | `runId` | `runId` | `config.run.runId`（**会**进引擎选项：它是 run 自己的 id，`finalGuard` / `deliverables` 载荷与落盘文件名都读它）|
+| `resume` | `resume` | `config.run.resume`（#207 R2：续跑开关，只在宿主传了 `resume` 时出现；**不传就连这个键都没有**。扁平 `resume` 已在引擎侧退役）|
 
 留在顶层的只有 `provider` / `executeTool` / `store` / `signal` / `diagnostics`：它们是引擎的适配器端口对象、
 中止信号与错误出口，能力面**没有**它们的规位（`capabilities.ports` 只收壳内实现，不收适配器端口对象）。
@@ -173,8 +176,8 @@ pi --extension ./examples/pi-extension/erix-run.ts
   **真引擎函数**逐字符对账钉住——算错就等于往返回里报一个不存在的路径。
 - **写不进去不改变终局**：judge.log 建目录 / append 失败只记一次 `diagnostics.persistenceErrors`
   （`channel: "judgeLog"`）并停止后续审计行；已跑完的 run 不会因审计面失败变 `failed`。
-- 落盘不等于可续跑：`runToolLoop` 的 `resume` 通道（R2）是另一张单，本层现在**不接**，
-  所以 `resumable` 恒 `false`。
+- **落盘就是可续跑的前提**：`resumable` 是**事实**（不是能力声明）——只有 transcript 真写出来了才是
+  `true`，此时 `diagnostics.resume.handle` 给出续跑坐标。语义与用法见下面「续跑 resume」。
 
 ## 异步执行：派工即返回句柄（issue #234）
 
@@ -334,7 +337,9 @@ pi --extension ./examples/pi-extension/erix-run.ts
   `docs/research/2026-10-13-pi-subagents-async-attribution.md` §6（旧版本这里写的「`pi-subagents` 也没为每个子任务
   spawn 子进程（全仓唯一 `spawnSync` 在 `herdr-pi-bridge.js:1`）」是假的，#269 已改：上游 `spawnSync` 有十来处，
   但都是 git / ssh 辅助调用，跟跑子任务无关）。
-- **跨重启恢复不属于本单**（那是 #207 R2 + run-state store 的地盘），`resumable` 仍恒 `false`。
+- **后台 run 不会自动续跑**：pi 进程退出 / 扩展 `/reload` 会杀掉它，盘上只留最后一个已知状态。
+  但只要带了 `sessionDir`，`status.json` 就在盘上，之后可以用 `resume:<那个 status.json 路径>`
+  从账本接着跑（#207 R2，见下面「续跑 resume」）——**手动**续跑，不是自动重连。
 - 内存注册表**不跨进程重启**；要跨 `/reload` 可查就必须传 `sessionDir`。
 - `async:true` 时，派工这次工具调用自己的 `signal` **不接**到后台 run（它在 `execute()` 返回时就失效了）；
   后台 run 的取消通道是 `action:"cancel"`。
@@ -389,6 +394,70 @@ pi --extension ./examples/pi-extension/erix-run.ts
 边界：**以上是 `--mode rpc` 下验的**（无 UI，事件流可直接读）；**交互式 TUI 界面层未逐字验**
 （消息渲染、`customType:"erix-run-notify"` 的显示效果）。另：跟跑工作树扩展时要加 `--no-extensions`
 （只关自动发现，显式 `--extension` 仍生效），否则安装副本也被加载，两个 `erix_run` 撞名 pi 直接退。
+
+## 续跑：resume（issue #207 R2）
+
+一句话：**一次 run 可以从它自己的账本接着跑，而不是整单重跑。** 引擎的续跑入口一直是
+`config.run.resume: true` + 原 `runId` + 装着账本的 store（读侧是 `restoreResume`
+（`src/loop/resume-manager.js`）：它**只读账本**重建消息历史、轮号、折叠/TTL 状态与治理计数）；
+本层（#207 R2）补的是「宿主怎么把这三件东西递进去」，以及**坐标不成立时明确报错**。
+
+### 坐标：`resume` 只认这三种写法
+
+| 写法 | 例子 | 自带什么 | 还要不要 `cwd` |
+|---|---|---|---|
+| ① `status.json` 的绝对路径 | `<sessionDir>/outputs/<runId>/status.json` | `runId` / `sessionDir` / `cwd` | 不用 |
+| ② transcript 的绝对路径 | `<sessionDir>/<runId>.jsonl` | `runId`（文件名反推）/ `sessionDir`（父目录） | **要** |
+| ③ `runId` 字符串 | `erix-run-2026-…-a1b2c3` | 只有 `runId` ⇒ **必须**同时给 `sessionDir` | **要** |
+
+终局面里的续跑坐标就在 `diagnostics.resume`：`handle` 是**原样回传给 `resume` 的那个字面值**
+（持久化 run 就是 transcript 的绝对路径），`runId` / `sessionDir` / `transcriptPath` 是同一份事实的
+可机读全貌。模型可见文本的 `[facts]` 行会把它和 `cwd` 一起打出来（只存在于可机读面等于没给：模型读的是文本）。
+
+### 语义（四件必须知道的事）
+
+1. **历史不重置**：`restoreResume` 从账本重建上下文，所以续跑的第一次请求里就有上一次的
+   task / assistant 正文 / 工具结果；轮号接着数（`rounds` 不是从 0 重数），用量也不再从零开始。
+2. **新任务 = 一条新的用户轮**：传了 `task` 就用引擎公共导出 `appendUserTurn`
+   （`src/store/append-user-turn.js`，与 CLI `-c|--continue` 同一条通道）写进账本；不传 `task` 就是
+   「纯接着跑」（账本里不追加任何宿主轮）。`appendUserTurn` 的 round 推导 / 去重键 / 记录形状都是
+   引擎的契约，本层不手搭第二份。
+3. **沿用原 `runId` 与 `sessionDir`**：transcript / judge.log / status.json 全是同一个文件（坐标说哪里
+   就在哪里；宿主另传的 `sessionDir` 不会把账本搬走）。显式给一个不同的 `deps.runId` 是身份冲突，
+   当场 `bad_params`。
+4. **账本只增不减**：续跑往同一份 `.jsonl` 里追加，不改写已有行。
+
+### 坐标不成立 ⇒ 明确报错（不静默起新 run）
+
+| 情形 | `error.code` |
+|---|---|
+| 坐标文件不存在 / 账本是 0 字节 | `resume_not_found` |
+| 非字符串 / 空白串 / 相对路径 / 不是 `.json`/`.jsonl` / `runId` 却没给 `sessionDir` / `status.json` 不是合法 JSON 或缺 `runId` / 哈希化 transcript 文件名（`run-h-*` 反推不回 runId）/ 与显式 `runId` 冲突 | `bad_params` |
+
+两类都在**装配期**报（`stage: "assembly"`），走的是与其它坏参数同一条路：`ok:false` 的终局载荷 +
+`error.code`，**一次 provider 请求都不会发**。
+
+### 与异步作业账本的关系
+
+- **`status.json` 就是续跑坐标**：异步 run 的终局面（`jobView`）整块投 `diagnostics`，所以盘上那份
+  `status.json` 里带着 `diagnostics.resume.handle`，再加上它自己的 `runId` / `sessionDir` / `cwd`。
+  `/reload` 或 pi 重启之后（后台 run 已被杀掉），直接 `resume:<statusPath>` 就能接着跑。
+- **续跑的 job 沿用原 `runId`**：job 注册表按原 runId 登记，`statusPath` 还是同一个文件，
+  `action:"status"`/`"result"`/`"cancel"` 照旧用那个 runId。
+- **完成通知按「派工序」去重**（不是按 runId）：续跑让同一个 run 合法地结算多次，每次派工各投一次；
+  同一个 job 内部的重复结算（看门狗 + 内层返回、`/reload` 后旧闭包）仍然只投一次（#654 的语义不变）。
+
+### 诚实边界（没覆盖的）
+
+- **不是自动续跑**：进程退出 / `/reload` 之后没有任何东西会自己把 run 拉起来，得宿主（或模型）再发一次
+  `resume`。本层只提供通道与坐标。
+- **崩溃现场的重放由引擎决定**：文件 store 会写 run snapshot 与 `<runId>.state.json`，所以「跑到一半被
+  杀掉」的 run 续跑时，引擎的 `restoreResume` 会自己接回在飞工具与折叠状态。本层**不额外造**任何
+  续跑语义，也不保证每一次都能接回——接不接回是引擎的判据，不是本层的开关。
+- **`cwd` 不会自动记住**（transcript / runId 坐标）：续跑的工作目录要么宿主传，要么来自 `status.json`；
+  两处都没有就报 `bad_params` 并点名要 `cwd`（猜一个目录去继续跑旧账本比报错更糟）。
+- **纯内存 run 不可续跑**：没传 `sessionDir` / `transcript` 时 `resumable=false`，`diagnostics.resume.reason`
+  会写明「没落盘」（落盘失败则是另一种文案）。
 
 ## 模型配置
 
@@ -583,7 +652,7 @@ system prompt 也复用 `buildCliToolsSystemPrompt()`，再叠加「交付物落
   },
   "extensionCount": 0,                     // 本次真扩了几轮（从引擎 reflection.onReflection 数出来）
   "maxExtensions": 0,                      // 本次生效的扩轮上限：judge 没开就是 0；开着且未传参 = 引擎缺省 2
-  "resumable": false,                      // 终局能不能续跑：R2 未落地，本单一律 false
+  "resumable": true,                       // #207 R2：**事实**——盘上有可续跑的账本才是 true（纯内存 run 是 false + 原因）
   "verification": { "status": "skipped" },  // 引擎的验证结论（来自 runToolLoop 的返回）；没给时是 undefined，JSON 里不落盘
   "error": { "name": "Error", "message": "…", "code": "…", "stage": "…" },  // **只在抛错路径**：成功载荷里没这个键（#277：两个面都真会返它，schema 已声明）
   "diagnostics": {
@@ -595,6 +664,16 @@ system prompt 也复用 `buildCliToolsSystemPrompt()`，再叠加「交付物落
     "libSource": "ERIX_AGENT_LIB=…", "strategy": "sliding-window",
     "runId": "…", "maxRounds": 8, "timeoutMs": 300000, "elapsedMs": 6276,
     "sessionDir": "/home/eric/.erix/transcripts",   // 未落盘时 null
+    // #207 R2：续跑坐标（顶层 resumable 是同一份事实的布尔投影）。handle 原样回传给 resume 参数即可。
+    "resume": {
+      "resumable": true,
+      "handle": "/home/eric/.erix/transcripts/erix-run-….jsonl",  // = transcriptPath；不可续跑时 null
+      "handleKind": "transcript",
+      "runId": "erix-run-…", "sessionDir": "/home/eric/.erix/transcripts",
+      "transcriptPath": "/home/eric/.erix/transcripts/erix-run-….jsonl",
+      "resumedFrom": null,                 // 本次是续跑时给 {handle, kind, runId, sessionDir, transcriptPath}
+      "reason": "…"                        // **只在 resumable=false 时**：没落盘 / 落盘失败
+    },
     "reflection": { "enabled": false, "requested": {}, "maxExtensions": 0,
       // 只在宿主真传了 judgeDoneAdvisory 时才有这个键（requested = 传了什么，enabled = 本次真下发了吗）
       "judgeDoneAdvisory": { "requested": true, "enabled": false, "reason": "judge 未开启（需 maxRounds ≥ 16 且未设 ERIX_NO_REFLECTION=1）⇒ 开关没下发，本次没生效" } },
@@ -621,8 +700,10 @@ system prompt 也复用 `buildCliToolsSystemPrompt()`，再叠加「交付物落
 **`extensionCount` / `maxExtensions` 的口径**：前者是引擎**真的执行了扩轮**的次数（唯一可靠入口是
 `reflection.onReflection`，它在 `governorState.extensionCount += 1` 旁边被调），后者是**生效上限**：
 judge 闸门关着 = `0`（根本没额度），闸门开着且没传参 = 引擎缺省 `2`（这个 2 是引用引擎默认值，
-本层**不把它下发**，不传就是引擎自己定）。**`resumable` 是能力声明而不是状态**：#207 R2 的
-`resume` 通道落地前恒 `false`（常量 `RESUMABLE`）——落盘不等于能续跑。
+本层**不把它下发**，不传就是引擎自己定）。**`resumable` 是事实而不是能力声明**（#207 R2）：判据只有
+一条——**盘上有没有可续跑的账本**（`artifacts.transcriptPath` 此刻是不是真路径）。所以它由
+`resumeFactsOf` 现算（在 `examples/pi-extension/erix-run-core.js` 里），而不是一个常量；不可续跑时
+`diagnostics.resume.reason` 会写明是「没落盘」还是「落盘失败」。
 
 `termination.reason` 一律是**引擎给的**（`end_turn` / `judge_done` / `no_tool` / `stall` /
 `max_rounds_cap` / `continuation_exhausted` / `final_guard_unverified` / `aborted` / `failed` /
@@ -784,6 +865,10 @@ ERIX_PI_SMOKE=1 node --test test/examples/erix-run-core.smoke.test.js   # 真机
 - `erix-run-async.test.js` 里的 **#237 R4** 四条钉 `status.json` 的 tmp + rename 原子写（顺序、
   旧内容不被破坏、不留 `.tmp-` 残留、错误进 `statusWriteError` 而不抛）；注入缝是
   `writeStatusFile(input, deps)` 与 `createAsyncRuntime({deps})`。
+- `erix-run-resume.test.js`（**#207 R2**）全离线：真 `runToolLoop` + 假 provider + 临时目录（`makeTmp`），
+  不触网、不碰 `~/.erix`。它能杀什么：把 `config.run.resume` 从装配里摘掉 ⇒ 第二次 run 变成整单重跑
+  （上下文里就没有第一次的 task / 工具结果，`rounds` 也从 1 重数）当场红；把坐标不成立的分支改成
+  「静默起新 run」⇒ `provider.requests.length === 0` 那条断言红。
 - `erix-run-pi-load.test.js` 除了装载自证，#237 之后还拿**真 `execute()`** 把 `started` / `status` /
   `cancel` / `result` / `list` / `unknown-run` / `error` / 同步失败八条路径的 `details` 各序列化一次
   （内层库指到不存在的路径 → 后台 run 秒回 `lib_missing`，不触网、不花模型钱）。

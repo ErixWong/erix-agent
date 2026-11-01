@@ -164,6 +164,12 @@ const HISTORY_DOC_PATTERNS = [
   { re: /^docs\/issue-469-[^/]+\.md$/, why: "历史记录：issue #469 的分析/修复计划档案" },
   { re: /^docs\/tasks\/[^/]+\.md$/, why: "历史记录：任务工作目录（实验记录、交接稿）" },
   { re: /^docs\/host-upgrade-guide-[^/]+\.md$/, why: "历史记录：版本化升级指南，写的是该版本当时怎么迁（迁移前后对照表要点名扁平拼写）" },
+  // issue #644 ③：符号锚点声称链从 AGENTS 搬到 `docs/maintenance/` 之后，这两份是**历史账本**——
+  // 逐字保留历次合并的实测流水，其中引用的都是**当时**的写法。
+  // 为什么**按文件名点名**而不是把整个 `docs/maintenance/` 目录归成历史：目录不是文档分类的证据。
+  // 一个「现状类」文档随手放进该目录就会拿到历史待遇（正文可含退役拼写 + 只按钉数对账），那是一条后门。
+  // 点名这两份 = 「这两份的内容是历史」，与目录名无关；同目录的其他文件仍按未登记路径照扫。
+  { re: /^docs\/maintenance\/symbol-anchor-ledger(_cn)?\.md$/, why: "历史记录：符号锚点声称链账本（#644 ③ 从 AGENTS 搬来）——正文是历次合并的实测流水，逐字保留，命中数由钉子看守" },
 ];
 /** 契约：退役拼写的定义处。它点名扁平拼写是它的职责，不是漂移。 */
 const CONTRACT_DOC_PATTERNS = [
@@ -298,6 +304,12 @@ const HISTORY_BODY_PINS = Object.freeze({
   "docs/host-upgrade-guide-v030_cn.md": 49,
   "docs/issue-469-470-analysis.md": 4,
   "docs/issue-469-470-fix-plan.md": 9,
+  // issue #644 ③：符号锚点声称链从 AGENTS 搬到这两份之后新入历史类。各 1 处命中，且那 1 处是
+  // **同名异义**（`user`：链里讲的是「一条聚合 `user` 消息」，不是 runToolLoop 的顶层拼写）——所以它
+  // 不触发 `--strict` 的 REGRESSION，但**计入钉子**：钉子的活就是「这份历史没被改写成规位形态」。
+  // 值取自扫描器自己报的 `uses=1`（不是手算），与其它历史钉子同一个口径。
+  "docs/maintenance/symbol-anchor-ledger.md": 1,
+  "docs/maintenance/symbol-anchor-ledger_cn.md": 1,
   "docs/research/2026-09-13-notes-why.md": 15,
   "docs/research/2026-09-26-strategy-variance-and-cache-economics.md": 2,
   "docs/research/2026-10-13-pi-subagents-async-attribution.md": 3,
@@ -1008,10 +1020,36 @@ async function selfTest(retired, manifest) {
       ["docs/host-upgrade-guide-0.28.0_cn.md", "history"],
       ["docs/host-upgrade-guide-0.29.0.md", "history"],
       ["docs/host-upgrade-guide-0.29.0_cn.md", "history"],
+      // issue #644 ③：符号锚点声称链账本（从 AGENTS 搬来的历史），中英各一份。
+      ["docs/maintenance/symbol-anchor-ledger.md", "history"],
+      ["docs/maintenance/symbol-anchor-ledger_cn.md", "history"],
       ["docs/host-consumer-contract.md", "contract"],
       ["docs/host-consumer-contract_cn.md", "contract"],
     ];
     for (const [rel, kind] of expected) eq(classify(rel).kind, kind, rel);
+  });
+  t("docs/maintenance 账本的分类登记是承重的（#644 ③）：删掉登记 ⇒ 本格红；登记与未登记两个方向各按各的规矩判", () => {
+    for (const rel of ["docs/maintenance/symbol-anchor-ledger.md", "docs/maintenance/symbol-anchor-ledger_cn.md"]) {
+      // 反向证：把 HISTORY_DOC_PATTERNS 里那条登记删掉 ⇒ classify 返回 current ⇒ 这一句就红。
+      eq(classify(rel).kind, "history", `${rel} 的分类`);
+      if (!/历史/.test(classify(rel).why)) throw new Error(`${rel} 的分类理由没说清是历史：${classify(rel).why}`);
+      // 钉子必须给、且挂对表：挂在 history 表里对得上；同一格挂到 current 表 ⇒ 「钉子挂错了表」必须报。
+      eq(pinEntryProblems("history", { [rel]: 1 }, manifest).length, 0, `${rel} 的历史钉子`);
+      eq(pinEntryProblems("current", { [rel]: 1 }, manifest).length, 1, `${rel} 的钉子挂错表`);
+      // 真实树上钉子 = 实测命中数（删钉子 ⇒ UNPINNED；改正文 ⇒ SUSPECT，两个方向都由 verdictFor 判）。
+      const live = scanDocs({ retired }).filter((r) => r.file === rel);
+      eq(live.length, 1, `${rel} 在扫描面里（面只取 git ls-files，未入库的文件不在面上）`);
+      eq(live[0].kind, "history", `${rel} 实测分类`);
+      eq(live[0].verdict, "ok", `${rel} 的判词`);
+      eq(live[0].uses.length, HISTORY_BODY_PINS[rel], `${rel} 的钉子与实测命中数`);
+    }
+    // 反向（另一个方向）：**目录名不是分类证据**——同目录里未登记的路径仍按现状类照扫。
+    eq(classify("docs/maintenance/zzz-current.md").kind, "current", "同目录未登记路径");
+    eq(verdictFor({ kind: classify("docs/maintenance/zzz-current.md").kind, uses: 1, strictUses: 1 }), "REGRESSION",
+      "未登记 ⇒ 现状类：有非同名异义的退役拼写就红");
+    eq(verdictFor({ kind: "history", uses: 1, strictUses: 0, pin: 1 }), "ok", "登记为历史 ⇒ 按钉数对账");
+    eq(verdictFor({ kind: "history", uses: 0, strictUses: 0, pin: 1 }), "SUSPECT(dropped)", "历史正文被改写成规位形态");
+    eq(verdictFor({ kind: "history", uses: 1, strictUses: 0 }), "UNPINNED", "历史类有命中却没钉");
   });
   t("未知分类没有退路：拿一份未登记路径的真文本跑，判定仍按现状类算", () => {
     eq(verdictFor({ kind: classify("docs/zzz-unknown.md").kind, uses: 1, strictUses: 1 }), "REGRESSION", "未登记 + 1 处 use");

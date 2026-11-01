@@ -22,7 +22,7 @@
 // 绝不写真实的 ~/.erix 与 ~/.pi。
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { before, describe, it } from "node:test";
@@ -4281,5 +4281,57 @@ describe("静态守卫：CHANGELOG 未发布节的中英配对地板（issue #56
       + `（地板 ${CHANGELOG_PAIR_FLOOR}${onFloorSurface ? "，已穿底" : "，不在校准面上不判"}）+ 中文第 ${target.cn} 行无对应；`
       + `把该条的 #${firstIssue} 改成 #999（数量不变）⇒ ${swapped.pairs.length} 对；还原 ⇒ `
       + `${restored.pairs.length} 对全绿`);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// 规则 9（issue #644 ③）：`docs/maintenance/` 账本的**拼写分类**两个方向都钉住
+//
+// 病根：`scripts/retired-spelling-scan.mjs` 的 `classify()` 按**路径**分类，未登记路径一律按「现状类」
+// 扫（未知分类不是免检）。符号锚点声称链从 AGENTS 搬到 `docs/maintenance/symbol-anchor-ledger{,_cn}.md`
+// 之后，这两份是**历史**（正文是历次合并的实测流水，逐字保留，其中引用的都是当时的写法）：不登记
+// ⇒ 它按现状类被扫 ⇒ 一旦正文里出现一处退役扁平拼写就是 REGRESSION（历史被当成漂移）；
+// 登记了却没钉子 ⇒ UNPINNED。所以这一格同时钉两个方向：
+//   ① **登记是点名的，不是整个目录**：`HISTORY_DOC_PATTERNS` 里那条正则必须命中这两份、且**不**命中
+//      同目录里的其他路径（否则「往 docs/maintenance/ 丢一份现状文档」就白拿历史待遇 = 后门）；
+//   ② **真实树上两份都按历史类判、钉子等于实测命中数**：拿 `--json` 的真值问，不抄数。
+// 为什么在测试侧再钉一遍：`--self-test` 里那一例证的是「删掉登记 ⇒ 本格红」，但自测跑的是内存夹具与
+// 函数调用；这里要的是「真实入库面 + 真 CLI」上这两个方向同时成立（与规则 4 的分工同一口径）。
+describe("静态守卫：docs/maintenance 账本的拼写分类（issue #644 ③）", () => {
+  const SCAN_SRC = "scripts/retired-spelling-scan.mjs";
+  const LEDGERS = ["docs/maintenance/symbol-anchor-ledger.md", "docs/maintenance/symbol-anchor-ledger_cn.md"];
+
+  it("登记是点名的（不是整个目录）：命中这两份、不命中同目录的其他路径", () => {
+    const src = readFileSync(join(ROOT, SCAN_SRC), "utf8");
+    const start = src.indexOf("const HISTORY_DOC_PATTERNS = [");
+    assert.ok(start > 0, `抽不到 ${SCAN_SRC} 的 \`const HISTORY_DOC_PATTERNS = [\`——分类表被挪走或改名`);
+    const block = src.slice(start, src.indexOf("];", start));
+    assert.ok(block.length > 100, "HISTORY_DOC_PATTERNS 是空的：历史分类整条没了（那两份会按现状类扫）");
+    // 逐条取出 `re: /…/` 里的源码文本，找那条提到 maintenance 的
+    const patterns = [...block.matchAll(/re: \/(.+?)\/,\s*why:/g)].map((m) => m[1]);
+    assert.ok(patterns.length > 0, "一条正则都抽不到——这一格在空跑");
+    const maint = patterns.filter((p) => p.includes("maintenance"));
+    assert.equal(maint.length, 1, `HISTORY_DOC_PATTERNS 里提到 maintenance 的条目应恰好 1 条，实测 ${maint.length} 条`);
+    const re = new RegExp(maint[0]);
+    for (const rel of LEDGERS) assert.ok(re.test(rel), `分类正则 /${maint[0]}/ 没命中 ${rel}（搬完没登记分类）`);
+    // 反向：目录名不是分类证据——同目录的其他文档不许自动继承历史待遇
+    for (const rel of ["docs/maintenance/zzz-current.md", "docs/maintenance/notes_cn.md", "docs/maintenance/symbol-anchor-ledger.md.bak"]) {
+      assert.equal(re.test(rel), false, `分类正则 /${maint[0]}/ 连 ${rel} 都命中——整目录被归成历史 = 后门`);
+    }
+  });
+
+  it("真实树上两份都按历史类判、且钉子等于实测命中数（没有钉子 = UNPINNED）", () => {
+    const out = execFileSync(process.execPath, [join(ROOT, SCAN_SRC), "--json"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    const payload = JSON.parse(out);
+    assert.ok(Array.isArray(payload.files) && payload.files.length > 50, `--json 的 files 面退化了（${payload.files?.length} 份）`);
+    for (const rel of LEDGERS) {
+      const row = payload.files.find((f) => f.file === rel);
+      assert.ok(row, `${rel} 不在扫描面上——面只取 \`git ls-files\`，未入库的文件不在面上（提交前这一格会红）`);
+      assert.equal(row.kind, "history", `${rel} 的分类应是历史（实测 ${row.kind}）——删掉 HISTORY_DOC_PATTERNS 那条登记就变成 current`);
+      assert.equal(typeof row.pin, "number", `${rel} 没有命中数钉子（历史类必须给钉，否则正文被改写也看不出来）`);
+      assert.equal(row.pin, row.uses.length, `${rel} 的钉子 ${row.pin} ≠ 实测命中 ${row.uses.length}（正文被改写了？）`);
+      assert.equal(row.verdict, "ok", `${rel} 的判词应是 ok（实测 ${row.verdict}）`);
+    }
   });
 });

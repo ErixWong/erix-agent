@@ -237,7 +237,12 @@ export function formatAsyncResult(outcome) {
       + ` usage=↑${view?.usage?.input_tokens ?? 0}/↓${view?.usage?.output_tokens ?? 0}`,
       `artifacts transcript=${view?.artifacts?.transcriptPath ?? "none"}`
       + ` judgeLog=${view?.artifacts?.judgeLogPath ?? "none"}`
-      + ` extensions=${view?.extensionCount ?? 0}/${view?.maxExtensions ?? 0} resumable=${view?.resumable === true}`,
+      + ` extensions=${view?.extensionCount ?? 0}/${view?.maxExtensions ?? 0} resumable=${view?.resumable === true}`
+      // #207 R2：视图里带着坐标就必须在文本面也报出来（模型读的是文本；只存在可机读面等于没给）。
+      // 同步面的口径同此（`formatPayloadForModel` 的 `[facts]` 行）。
+      + (view?.resumable === true
+        ? ` resume=${JSON.stringify(view?.diagnostics?.resume?.handle ?? "")} cwd=${JSON.stringify(view?.cwd ?? "")}`
+        : `（${view?.diagnostics?.resume?.reason ?? "没有可续跑的账本"}）`),
       `cwd=${view?.cwd ?? "?"} sessionDir=${view?.sessionDir ?? "none"} statusPath=${view?.statusPath ?? "none"}`,
     );
     // #276：异步文本面也得把 diagnostics 的自查结论报出来。工具描述写着「ok:false 先读

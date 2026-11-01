@@ -2,7 +2,8 @@
 //
 // 覆盖（本文件只管**基础原语**，S3 的六条判据与真跨进程证据在
 // `test/tools-delegation-capacity-630.test.js`）：
-//   · 固定槽位池：`open(..., "wx")` 独占创建 ⇒ 依次占格，占满即 `capacity_full` 并点名持有者；
+//   · 固定槽位池：整份内容先写进临时文件、再 `link(2)` 排他发布（issue #652）⇒ 依次占格，
+//     占满即 `capacity_full` 并点名持有者；
 //   · `release` 幂等、只删自己的槽、且能还掉「池子调小之后」高号槽里的租约；
 //   · 读不出内容的槽位按 `corrupt` 点名（不静默丢）；旧的 `<runId>.lock` 不参与；
 //   · 入参校验（`now` / `maxConcurrent` / `maxAgeMs`）。

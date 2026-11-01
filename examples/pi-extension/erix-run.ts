@@ -233,7 +233,8 @@ const parameters = Type.Object({
     description:
       "true = 派工即返回句柄 {runId,status,cwd,model,maxRounds,timeoutMs,sessionDir,statusPath}，主会话不阻塞；"
       + "内层 run 在**同进程**后台跑，终局经通知回到本会话。缺省 false = 原有同步语义（等到底才返回）。"
-      + "⚠ pi 进程退出 / 扩展 /reload 会杀掉后台 run（跨重启恢复不在本能力面内）。",
+      + "⚠ pi 进程退出 / 扩展 /reload 会杀掉后台 run，且**不会自动续跑**；但只要带了 sessionDir，"
+      + "status.json 就在盘上，之后可以用 resume:<那个 status.json 路径> 从账本接着跑（#207 R2）。",
   })),
   quiet: Type.Optional(Type.Boolean({
     description:
@@ -250,6 +251,24 @@ const parameters = Type.Object({
   ),
   runId: Type.Optional(Type.String({
     description: 'action 要操作的 run id（就是 async:true 返回的句柄里的 runId）。',
+  })),
+  // —— issue #207 R2：从**盘上账本**续跑 ——
+  resume: Type.Optional(Type.String({
+    description:
+      "**从一个已有 run 的账本接着跑**（默认不传 = 起一次全新 run）。引擎的续跑入口是 "
+      + "`config.run.resume: true` + 原 runId + 装着账本的 store（引擎 `restoreResume` 只认账本），"
+      + "所以本参数只负责「指到那个 run」，坐标不成立就**当场报错**（`resume_not_found`），"
+      + "不会静默起一个新 run。\n"
+      + "接受的三种写法（只认这三种）：\n"
+      + "① status.json 的绝对路径（`<sessionDir>/outputs/<runId>/status.json`，异步面落盘的那份，自带 runId/sessionDir/cwd ⇒ 最省事）；\n"
+      + "② transcript 的绝对路径（`<sessionDir>/<runId>.jsonl`，就是终局面里 `diagnostics.resume.handle` 给的那个值）；\n"
+      + "③ runId 字符串（此时**必须**同时传 sessionDir 才能定位账本）。\n"
+      + "②③ 两种坐标**不带工作目录** ⇒ 还要传 `cwd`（沿用原 run 的 cwd；终局面里也给了）；"
+      + "① 自带 cwd，可以省。\n"
+      + "语义：账本里的消息历史/轮号/用量**全部接着用**（不重置）；传了 `task` 就把它当作一条新的用户轮追加进账本"
+      + "（与 CLI `-c|--continue` 同一条通道 `appendUserTurn`），不传 `task` 就纯接着跑。"
+      + "续跑沿用原 runId ⇒ transcript / judge.log / status.json 都是同一个文件（异步面也一样，job 按原 runId 登记）。\n"
+      + "⚠ 前提：那次 run 必须**落了盘**（传过 sessionDir / transcript）；纯内存 run 的 `resumable` 是 false 且没有 handle。",
   })),
 });
 
@@ -348,6 +367,8 @@ export const erixRunTool = defineTool({
     + "返回结构化终局 {finalText, rounds, usage, termination, verification, artifacts, extensionCount, maxExtensions, resumable, diagnostics, timeout}；"
     + "termination.reason 是引擎裁决（end_turn/judge_done/no_tool/stall/max_rounds_cap/aborted/failed…），"
     + "失败时读 termination.errorCode 再决定重试；verification.status 是引擎对最终答案的验证结论（只有 verified 可当已验证事实，end_turn 本身不是）；artifacts 给出过程产物（transcript / judge.log）的真路径，未落盘为 null。"
+    + "resumable 是**事实**：那次 run 落了盘才是 true，此时 diagnostics.resume.handle 就是可续跑的坐标，"
+    + "传 resume=<handle>（+ 原 cwd）就接着那份账本跑。"
     + "async:true 时立即返回句柄 {runId,status,cwd,model,maxRounds,sessionDir,statusPath}（主会话不阻塞），"
     + "之后用 action:\"status\"/\"result\"/\"list\"/\"cancel\" 查与控；完成时终局摘要会作为通知回到本会话。"
     + "每次调用都是一次完整多轮 run，成本不低。",
@@ -358,9 +379,9 @@ export const erixRunTool = defineTool({
     "erix_run 返回 ok:false 时先读 termination.reason / termination.errorCode / diagnostics 再决定下一步，别盲目重跑。",
     "erix_run 的 verification.status 是引擎的验证结论（verified/skipped/unverified/error）：只有 verified 才可当已验证事实消费；缺 finalGuard 时恒为 skipped，end_turn 本身不是交付证明。",
     "要过期内审内层过程时传 sessionDir：返回的 artifacts.transcriptPath / artifacts.judgeLogPath 是真路径（null = 本次没落盘）。",
-    "erix_run 的终局不可续跑（resumable 恒 false）；要重试就重跑一次，别期待 resume。扩轮只在 maxRounds ≥ 16 开了 judge 后才会发生。",
+    "erix_run 的 resumable 是**事实而不是承诺**：传了 sessionDir / transcript（落了盘）且 transcript 真写出来了才是 true。为 true 时 diagnostics.resume.handle 就是续跑坐标，下一次调用传 resume=<handle>（+ 原 cwd）就**接着那份账本跑**（消息历史/轮号/用量都不重置；传了 task 就当成一条新的用户轮追加）；为 false 时 diagnostics.resume.reason 会说是哪一种没有（没落盘 / 落盘失败）。扩轮只在 maxRounds ≥ 16 开了 judge 后才会发生。",
     "要「派工即返回、不阻塞主会话」就传 async:true 并带上 sessionDir，拿住返回的 runId；之后用 action:\"status\" 查进度、action:\"result\" 取终局四件套 + artifacts、action:\"cancel\" 取消（终局记成 aborted）。",
-    "async:true 的后台 run 与 pi 同进程：pi 退出或 /reload 会杀掉它，status.json 只留下最后一个已知状态（不会自动续跑）。一次派一批且不想被打断时传 quiet:true（成功的完成不唤醒你，失败/中止仍然唤醒）。",
+    "async:true 的后台 run 与 pi 同进程：pi 退出或 /reload 会杀掉它，status.json 只留下最后一个已知状态（**不会自动续跑**）。要接着跑就传 resume:<那个 status.json 的绝对路径>（或 diagnostics.resume.handle + cwd）。一次派一批且不想被打断时传 quiet:true（成功的完成不唤醒你，失败/中止仍然唤醒）。",
     "收到 [erix_run <runId>] 的完成通知后，用 action:\"result\" 取完整终局再决定下一步；别只凭通知里的一行摘要下结论。",
     // #276：异步终局视图（status/result/status.json）与同步返回同形（含 diagnostics），所以上面那条
     // 「ok:false 先读 termination.errorCode / diagnostics」在异步面同样成立——别拿「那是同步面的字段」当借口。
