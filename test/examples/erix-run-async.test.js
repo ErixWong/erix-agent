@@ -504,9 +504,29 @@ function fakePi() {
   };
 }
 
-function fakeCtx({ idle = true, sessionId = "s-1", sessionManager } = {}) {
+/**
+ * pi 侧 `invalidate()` 的原文（`dist/core/extensions/runner.js` 的 `invalidate` 默认文案，逐字取）。
+ * #659 第 4 格要求 reload 窗口内的 `notifyError` 带上它——那是这个窗口里唯一可机读的根因。
+ */
+const STALE_CTX_MESSAGE = "This extension ctx is stale after session replacement or reload."
+  + " Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload()."
+  + " For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession."
+  + " For reload, do not use the old ctx after await ctx.reload().";
+
+function fakeCtx({ idle = true, sessionId = "s-1", sessionManager, stale = false } = {}) {
   const manager = sessionManager ?? { getSessionId: () => sessionId };
-  return { isIdle: () => idle, sessionManager: manager };
+  let isStale = stale;
+  return {
+    isIdle: () => {
+      // 真 pi 的 `ExtensionContext` 在 `AgentSession.reload()` 里 `oldRunner.invalidate()` 之后，
+      // 每个访问器都 `assertActive()` 抛原文（`dist/core/extensions/runner.js` 的 `invalidate` 默认文案）。
+      if (isStale) throw new Error(STALE_CTX_MESSAGE);
+      return idle;
+    },
+    sessionManager: manager,
+    /** 模拟 `oldRunner.invalidate()`：此后旧 ctx 的访问器一律抛失效上下文原文。 */
+    markStale() { isStale = true; },
+  };
 }
 
 test("#234 机制2：idle 分支 —— 消息只追加（triggerTurn:false），另发一条 steer 用户消息起一轮", () => {
@@ -1592,9 +1612,10 @@ test("#654 缺陷2：派工时拿不到会话身份 ⇒ delivery:\"no-owner\"，
   }
 });
 
-test("#654 缺陷1：session_shutdown(\"quit\") 摘掉本会话句柄；\"reload\" 保留（新实例会以同一 sessionId 重新注册）", async () => {
+test("#654 缺陷1 / #659 第4格：quit 摘句柄；reload 保留 —— 但 reload 窗口内结算 ⇒ failed + 失效上下文原文，且重试已排", async () => {
   const env = await offlineRunEnv();
   const sessionHandles = jobsApi.globalSessionHandleRegistry();
+  const sessionDir = await tempDir("erix-run-659-reload-window-");
   const quitSession = "654-shutdown-quit";
   const reloadSession = "654-shutdown-reload";
   try {
@@ -1606,10 +1627,34 @@ test("#654 缺陷1：session_shutdown(\"quit\") 摘掉本会话句柄；\"reload
     assert.equal(sessionHandles.has(quitSession), false,
       "quit 之后投递按 owner 查不到 ⇒ orphaned（而不是投进一个已经不存在的会话）");
 
+    // reload：句柄**保留**（取舍没变：新实例会以同一个 sessionId 覆盖登记，摘掉只会制造一段假 orphaned）。
     const reload = startSession(extension, { sessionId: reloadSession });
     reload.handlers.get("session_shutdown")({ reason: "reload" });
     assert.equal(sessionHandles.has(reloadSession), true,
-      "reload 不算会话走了：新实例会以同一个 sessionId 重新注册，摘掉只会制造一段假 orphaned 窗口");
+      "reload 不算会话走了：句柄留着，新实例会以同一个 sessionId 重新注册");
+
+    // 但「保留」的**代价**必须被断言，而不是只断言「键还在」：
+    // `AgentSession.reload()` 会 `oldRunner.invalidate()`，旧 ctx 的每个访问器此后抛失效上下文原文
+    // （`ctx.isIdle()` 就是唤醒器双分支要读的第一句）⇒ 这个窗口里结算必然投不出去。
+    reload.ctx.markStale();
+    const { job } = await dispatchAndSettle(extension, reload, {
+      task: "t", cwd: sessionDir, sessionDir, async: true, maxRounds: 2,
+    });
+    assert.equal(jobView(job).delivery, "failed",
+      "reload 窗口里投不出去就是 failed（不是 sent，也不是假装 orphaned）");
+    assert.match(jobView(job).notifyError ?? "", /Do not use a captured pi/u,
+      "notifyError 要带 pi 侧 invalidate() 的原文（这个窗口里唯一可机读的根因）");
+    const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId: job.runId }), "utf8"));
+    assert.equal(disk.delivery, "failed", "status.json 上也要读得到（/reload 之后唯一残留）");
+    assert.match(disk.notifyError ?? "", /Do not use a captured pi/u);
+
+    // #659 第 1 格：这个窗口**有救回通道** —— 失败后已排下一档重投，由新实例重新登记的句柄接住。
+    assert.notEqual(job.notifyRetry, undefined, "投失败必须排下一档重试（否则这个窗口永远静默）");
+
+    // #658 / #659 同一份清理：会话真的走了 ⇒ 这一档重试与看门狗一起被清（两单合一的那条）。
+    reload.handlers.get("session_shutdown")({ reason: "quit" });
+    assert.equal(job.notifyRetry, undefined, "session_shutdown 要清投递重试定时器");
+    assert.equal(job.watchdog, undefined);
   } finally {
     sessionHandles.delete(quitSession);
     sessionHandles.delete(reloadSession);
