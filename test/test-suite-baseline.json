@@ -156,6 +156,18 @@
       "todo": 0,
       "cancelled": 0,
       "why": "观察树 = d6c43be208064d77167b6b047f3f55efd4e588dd（含本片测试改动）；tests +1 是有意的增删（issue #657 落地后的覆盖缺口）：test/compaction-strategy-fallback.test.js 从 8 格涨到 9 格（+1：「真值表第一行的宿主对象半边」——宿主自带 name: \"host-strategy\" 的策略对象真的折了 ≥1 轮 ⇒ strategyName 与 foldedFacts.strategy 都写它自己的名字；同一格顺带钉住「策略被问了但一轮没折 ⇒ 无键」，那是反向证的锚点）。其余文件的格数不动；skip 仍是 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），上限 14 不动。"
+    },
+    {
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "c4446d3ccee2fb50c1c6764991ab6f0c41d3f580",
+      "tests": 3303,
+      "pass": 3291,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "合并 `origin/main` `cbb695c` 之后两边用例增删叠加后的实测值（本片 #657 的 +8/+1 与上游 21 个提交的 +2/+1/+7/+1/+7 叠加；merge-tree 判 CONFLICT，按登记表「合并后重跑现测重登」处置，不抄任何一边）。numbers 逐字来自 `npm test` 的 TAP 汇总行（日志 /tmp/merge657-test.log 第 21024 行起），经 scripts/suite-summary-reconcile.mjs 的 parseSummaries/pickSummary 直接取出，非手抄。skipped 仍是 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），maxSkipped 上限 14 不动。"
     }
   ]
 }
