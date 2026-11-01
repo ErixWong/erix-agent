@@ -1,6 +1,7 @@
 // issue #234：erix_run 异步执行面的离线单测（派工即返回句柄 / status→result 生命周期 /
 // cancel 终局 aborted / status.json 落盘 / 投递去重 / parent-wake 两条分支 + pending 窗口 +
 // reload 安全 / run 级看门狗 / quiet 唤醒策略）。
+// issue #654：末尾一节把「投递可观测性」与「按会话隔离投递句柄」也钉在这里（见那节的节头注释）。
 //
 // 全部离线：内层 run 走注入的 runJob（或假 lib + 假 provider 的真 runToolLoop），
 // cwd/home/sessionDir 一律注入临时目录 —— 不碰真实 ~/.erix，不触网。
@@ -9,6 +10,7 @@
 
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { register } from "node:module";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -1091,4 +1093,350 @@ test("#276 R2⑤：刻意只给子集的两个视图要钉死，并在 README �
 
   job.release();
   await waitUntil(() => runtime.act({ action: "list" }).active === 0);
+});
+
+// ---------------------------------------------------------------------------
+// issue #654：异步完成唤醒的「投递可观测性」与「按会话隔离投递句柄」。
+//
+// 现场：pi-web 在**一个 Node 进程里跑 N 个会话**，扩展 factory 对每个会话各调一次（pi 的
+// `dist/core/extensions/loader.js` 把 factory 缓存在进程级 `extensionCache`，但 `await factory(api)`
+// 那一处是每会话各调一次）。修前 `erix-run.ts` 把唤醒器与 `pi` 放在**模块级单槽**里 ⇒ 后启动的
+// 会话覆盖前一个：A 会话派工的 run 结算时把通知投到了 B 会话的 `pi` 上，连「父会话忙不忙」
+// （`ctx.isIdle()`）读的也是 B 的。reservation 的隔离当时有测试（上面那组共享 sessionManager 的
+// 用例），**投递句柄的隔离一条都没有**。
+//
+// 三条缺陷（下面逐条钉住）：
+//   1. 投递句柄是进程级单槽 ⇒ 改成按 `sessionId` 键的句柄表（`globalSessionHandleRegistry`），
+//      投递时按 `job.ownerSessionId` 查；查不到记 `delivery:"orphaned"`，**没有「投给最后启动的会话」这条路**；
+//   2. 投递事实不落盘（`delivery` / `notifyTargetSessionId` / `notifyError` 不在 `jobView` 里），
+//      而且三处 settle 路径是「先落盘、后投递」⇒ 只加字段也读不到（顺序坑）；
+//   3. 成功判定过松（`notify(...) !== false` ⇒ `claim.settle(true)` 锁死去重位，再没有重投机会）。
+//
+// 怎么在离线单测里跑**真的**扩展 factory：`erix-run.ts` 是 TS，而且 import 了三个没装进本仓的包
+// （零依赖红线）。这里用 Node 自带的模块钩子（`module.register` + `data:` URL 的 resolve hook）
+// 把那三个裸包名解析成三行桩，于是 `import()` 能加载**同一份**扩展模块——两个假 pi 各跑一次
+// factory、各发一次 `session_start`，就是 pi 在多会话宿主里对两个会话做的事。
+// 内层 run 不碰网络：`HOME` 指空临时目录（没有 `~/.erix/config.json` ⇒ `runErixRun` 以
+// `config_missing` 当场终局，实测 ~34ms），走的是**真的** settle → notify 链，不是手搓的假 settle。
+// ---------------------------------------------------------------------------
+
+/** pi 的三个裸包名 → 三行桩（只为让 `erix-run.ts` 能被 import；本层不测它们的语义）。 */
+const PI_MODULE_STUBS = {
+  "@earendil-works/pi-ai": "export const StringEnum = (values) => ({ type: 'string', enum: values });",
+  "@earendil-works/pi-coding-agent": "export const defineTool = (definition) => definition;",
+  "typebox": "const node = () => ({});\nexport const Type = new Proxy({}, { get: () => () => node() });",
+};
+
+/** 已加载的扩展模块（同一份模块多次 factory 调用，正是 pi 在多会话宿主里的行为）。 */
+let extensionModule;
+
+/**
+ * 加载 `examples/pi-extension/erix-run.ts`（**同一份**模块）。
+ * `module.register` 的钩子必须在 `import()` 之前注册，且只在**本进程**生效
+ * （`node --test` 每个测试文件一个子进程 ⇒ 不会污染别的文件）。
+ */
+async function loadExtensionModule() {
+  if (extensionModule !== undefined) return extensionModule;
+  const stubUrls = Object.fromEntries(Object.entries(PI_MODULE_STUBS)
+    .map(([specifier, source]) => [specifier, `data:text/javascript,${encodeURIComponent(source)}`]));
+  const hook = `const STUBS = ${JSON.stringify(stubUrls)};
+export async function resolve(specifier, context, next) {
+  if (Object.prototype.hasOwnProperty.call(STUBS, specifier)) return { url: STUBS[specifier], shortCircuit: true };
+  return next(specifier, context);
+}`;
+  register(`data:text/javascript,${encodeURIComponent(hook)}`, import.meta.url);
+  extensionModule = await import("../../examples/pi-extension/erix-run.ts");
+  return extensionModule;
+}
+
+/**
+ * 一个「会话」：假 pi + 假 ctx + 各自的收件箱；跑一次 factory + 一次 `session_start`
+ * （= pi 在多会话宿主里对每个会话做的事）。
+ */
+function startSession(extension, { sessionId, idle = true } = {}) {
+  const calls = { sendMessage: [], sendUserMessage: [] };
+  const handlers = new Map();
+  const pi = {
+    registerTool: () => {},
+    on: (name, handler) => { handlers.set(name, handler); },
+    sendMessage: (message, options) => calls.sendMessage.push({ message, options }),
+    sendUserMessage: (content, options) => calls.sendUserMessage.push({ content, options }),
+  };
+  extension.default(pi);
+  const ctx = fakeCtx({ idle, sessionId });
+  handlers.get("session_start")?.({}, ctx);
+  return { calls, handlers, ctx, pi, received: () => calls.sendMessage.length + calls.sendUserMessage.length };
+}
+
+/**
+ * 让「真 settle」在离线环境里发生：`HOME` 指空临时目录（没有配置 ⇒ `config_missing`），
+ * `ERIX_AGENT_LIB` 指本仓（不依赖裸包名自解析）。返回 `restore()`。
+ *
+ * ⚠ `HOME` 必须在**第一次** `session_start` 之前改：扩展的进程级 runtime 在那时才建（`home = homedir()`）。
+ */
+async function offlineRunEnv() {
+  const home = await tempDir("erix-run-654-home-");
+  const before = { HOME: process.env.HOME, ERIX_AGENT_LIB: process.env.ERIX_AGENT_LIB };
+  process.env.HOME = home;
+  process.env.ERIX_AGENT_LIB = repoRoot;
+  return {
+    restore() {
+      for (const [key, value] of Object.entries(before)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    },
+  };
+}
+
+/** 走**真的** `execute()` 派工并等它终局；返回 runId 与内存里的 job。 */
+async function dispatchAndSettle(extension, session, params) {
+  const result = await extension.erixRunTool.execute("tc-654", params, undefined, undefined, session.ctx);
+  const runId = result.details?.handle?.runId;
+  assert.equal(typeof runId, "string", `派工必须回句柄，实测 details=${JSON.stringify(result.details)}`);
+  const registry = jobsApi.globalAsyncJobRegistry();
+  await waitUntil(() => {
+    const job = registry.get(runId);
+    return job !== undefined && !["queued", "running"].includes(job.status);
+  }, { label: "#654 settle", timeoutMs: 5_000 });
+  return { runId, job: registry.get(runId), result };
+}
+
+test("#654 缺陷1+2：A 派工的 run 结算后收到消息的是 A（不是后启动的 B），且 delivery/notifyTargetSessionId 进 status.json", async () => {
+  const env = await offlineRunEnv();
+  const sessionDir = await tempDir("erix-run-654-two-sessions-");
+  const sessionHandles = jobsApi.globalSessionHandleRegistry();
+  const sessionA = "654-two-A";
+  const sessionB = "654-two-B";
+  try {
+    const extension = await loadExtensionModule();
+    // 先 A 后 B：修前 B 会覆盖 A 的模块级单槽（`piRef = pi` / `wake = createParentWake(pi)`）
+    const a = startSession(extension, { sessionId: sessionA });
+    const b = startSession(extension, { sessionId: sessionB });
+
+    const { runId, job } = await dispatchAndSettle(extension, a, {
+      task: "t", cwd: sessionDir, sessionDir, async: true, maxRounds: 2,
+    });
+
+    // ① 收件人：派工的那个会话，不是最后启动的那个
+    assert.equal(a.calls.sendMessage.length, 1,
+      `A（派工会话）必须收到完成通知，实测 ${a.calls.sendMessage.length} 条`);
+    assert.equal(a.calls.sendUserMessage.length, 1, "A 应该被排一条 steer 唤醒（idle 分支）");
+    assert.equal(b.calls.sendMessage.length, 0,
+      "B（后启动的会话）绝不能收到 A 派工的完成通知——修前这条必红（通知投到了 B）");
+    assert.equal(b.calls.sendUserMessage.length, 0, "B 也不能被排 steer 唤醒");
+    assert.deepEqual(a.calls.sendMessage[0].options, { triggerTurn: false }, "idle 分支：通知只追加");
+    assert.deepEqual(a.calls.sendUserMessage[0], { content: PARENT_WAKE_TEXT, options: { deliverAs: "steer" } },
+      "起一轮靠 steer 用户消息（分支结构没变）");
+
+    // ② 投递事实在 jobView 里（= action:"status" / action:"result" 的 view）
+    const view = jobView(job);
+    assert.equal(view.delivery, "sent", "投递事实要能在视图里读到");
+    assert.equal(view.notifyTargetSessionId, sessionA, "投递目标必须是派工会话");
+    assert.equal(view.ownerSessionId, sessionA, "job 上要记着派工那一刻的会话身份");
+    assert.equal(view.notifyError, null, "投成功不该留错误");
+    assert.equal(view.deduped, 0, "这条 run 只投了一次");
+
+    // ③ 同一份事实在 status.json 上（/reload 之后唯一残留 ⇒ 盘上读不到等于永久丢）
+    const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId }), "utf8"));
+    assert.equal(disk.delivery, "sent", "status.json 必须带 delivery（「先投递后落盘」的看守：顺序反了这里恒为 null）");
+    assert.equal(disk.notifyTargetSessionId, sessionA);
+    assert.equal(disk.ownerSessionId, sessionA);
+
+    // ④ action:"status" 走的是同一条查询面
+    const statusResult = await extension.erixRunTool.execute(
+      "tc-654-status", { action: "status", runId }, undefined, undefined, a.ctx,
+    );
+    assert.equal(statusResult.details?.view?.delivery, "sent", "action:\"status\" 也带同一份投递事实");
+    assert.equal(statusResult.details?.view?.notifyTargetSessionId, sessionA);
+  } finally {
+    sessionHandles.delete(sessionA);
+    sessionHandles.delete(sessionB);
+    env.restore();
+  }
+});
+
+test("#654 缺陷1：owner 会话的句柄查不到 ⇒ delivery:\"orphaned\"，且不投给任何存活会话", async () => {
+  const env = await offlineRunEnv();
+  const sessionDir = await tempDir("erix-run-654-orphaned-");
+  const sessionHandles = jobsApi.globalSessionHandleRegistry();
+  const sessionA = "654-orphan-A";
+  const sessionB = "654-orphan-B";
+  try {
+    const extension = await loadExtensionModule();
+    const a = startSession(extension, { sessionId: sessionA });
+    const b = startSession(extension, { sessionId: sessionB });
+
+    // 派工之后、结算之前，会话 A 走了（`session_shutdown("quit")` 做的就是这一件事，见下一条用例）
+    const pending = extension.erixRunTool.execute(
+      "tc-654-orphan", { task: "t", cwd: sessionDir, sessionDir, async: true, maxRounds: 2 }, undefined, undefined, a.ctx,
+    );
+    sessionHandles.delete(sessionA);
+    const result = await pending;
+    const runId = result.details.handle.runId;
+    const registry = jobsApi.globalAsyncJobRegistry();
+    await waitUntil(() => {
+      const job = registry.get(runId);
+      return job !== undefined && !["queued", "running"].includes(job.status);
+    }, { label: "#654 orphaned settle", timeoutMs: 5_000 });
+
+    const job = registry.get(runId);
+    assert.equal(a.received(), 0, "owner 的句柄没了就不投（连 A 自己也不投）");
+    assert.equal(b.received(), 0, "更不能改投给别的存活会话（B）——修前正是「投给最后一个会话」");
+    assert.equal(jobView(job).delivery, "orphaned");
+    assert.equal(jobView(job).notifyTargetSessionId, sessionA, "orphaned 仍要记下**本来该投给谁**");
+
+    const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId }), "utf8"));
+    assert.equal(disk.delivery, "orphaned", "status.json 上也要读得到（否则 /reload 之后这件事就没人知道）");
+    assert.equal(disk.notifyTargetSessionId, sessionA);
+  } finally {
+    sessionHandles.delete(sessionA);
+    sessionHandles.delete(sessionB);
+    env.restore();
+  }
+});
+
+test("#654 缺陷2：派工时拿不到会话身份 ⇒ delivery:\"no-owner\"，一个会话都不投（不猜目标）", async () => {
+  const env = await offlineRunEnv();
+  const sessionDir = await tempDir("erix-run-654-no-owner-");
+  const sessionHandles = jobsApi.globalSessionHandleRegistry();
+  const sessionA = "654-no-owner-A";
+  try {
+    const extension = await loadExtensionModule();
+    // A 是个正常会话（句柄在表里）；派工的那个会话拿不到 sessionId（宿主没给 / 给了空串）
+    const a = startSession(extension, { sessionId: sessionA });
+    const anonymous = startSession(extension, { sessionId: "" });
+
+    const { job } = await dispatchAndSettle(extension, anonymous, {
+      task: "t", cwd: sessionDir, sessionDir, async: true, maxRounds: 2,
+    });
+
+    assert.equal(a.received(), 0, "没有会话身份时不能退化成「投给某个存活会话」");
+    assert.equal(anonymous.received(), 0, "连匿名会话自己也不投（没有可靠目标就不猜）");
+    assert.equal(jobView(job).delivery, "no-owner");
+    assert.equal(jobView(job).notifyTargetSessionId, null, "没有目标就是 null，不编一个 id");
+    assert.equal(jobView(job).ownerSessionId, null);
+  } finally {
+    sessionHandles.delete(sessionA);
+    env.restore();
+  }
+});
+
+test("#654 缺陷1：session_shutdown(\"quit\") 摘掉本会话句柄；\"reload\" 保留（新实例会以同一 sessionId 重新注册）", async () => {
+  const env = await offlineRunEnv();
+  const sessionHandles = jobsApi.globalSessionHandleRegistry();
+  const quitSession = "654-shutdown-quit";
+  const reloadSession = "654-shutdown-reload";
+  try {
+    const extension = await loadExtensionModule();
+
+    const quit = startSession(extension, { sessionId: quitSession });
+    assert.equal(sessionHandles.has(quitSession), true, "session_start 之后句柄必须在表里");
+    quit.handlers.get("session_shutdown")({ reason: "quit" });
+    assert.equal(sessionHandles.has(quitSession), false,
+      "quit 之后投递按 owner 查不到 ⇒ orphaned（而不是投进一个已经不存在的会话）");
+
+    const reload = startSession(extension, { sessionId: reloadSession });
+    reload.handlers.get("session_shutdown")({ reason: "reload" });
+    assert.equal(sessionHandles.has(reloadSession), true,
+      "reload 不算会话走了：新实例会以同一个 sessionId 重新注册，摘掉只会制造一段假 orphaned 窗口");
+  } finally {
+    sessionHandles.delete(quitSession);
+    sessionHandles.delete(reloadSession);
+    env.restore();
+  }
+});
+
+test("#654 缺陷2：未终局时 delivery / notifyTargetSessionId / notifyError 恒在场（null），取值域只有五个", async () => {
+  assert.deepEqual([...jobsApi.DELIVERY_VALUES], ["sent", "deduped", "failed", "orphaned", "no-owner"],
+    "投递事实的取值域是契约（README 同口径）");
+
+  const sessionDir = await tempDir("erix-run-654-preterminal-");
+  const job = gatedJob();
+  const { runtime, registry } = await makeRuntime({ job: job.job, sent: [] });
+  const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
+
+  const running = jobView(registry.get(handle.runId));
+  for (const field of ["delivery", "notifyTargetSessionId", "notifyError", "ownerSessionId", "deduped"]) {
+    assert.ok(field in running, `${field} 必须恒在场（查询侧不必分两种形状解析）`);
+  }
+  assert.equal(running.delivery, null, "还没投递就给 null（不编一个 sent）");
+  assert.equal(running.notifyTargetSessionId, null);
+  assert.equal(running.notifyError, null);
+  assert.equal(running.ownerSessionId, null);
+  assert.equal(running.deduped, 0);
+
+  job.release();
+  await waitUntil(() => registry.get(handle.runId).status === "completed");
+});
+
+test("#654 缺陷2（顺序坑）：投递事实必须**先产生再落盘**——status.json 上读得到 delivery / notifyTargetSessionId", async () => {
+  const sessionDir = await tempDir("erix-run-654-order-");
+  const sent = [];
+  const sessionHandles = jobsApi.createSessionHandleRegistry();
+  const handleOfOwner = { deliver: () => true };
+  sessionHandles.set("654-order-sess", handleOfOwner);
+  const runtime = createAsyncRuntime({
+    home: await tempDir("erix-run-654-order-home-"),
+    registry: createAsyncJobRegistry(),
+    sendRegistry: createCompletionSendRegistry(),
+    sessionHandles,
+    runJob: async () => ({ ...P_OK }),
+    // 只收下「投递口拿到的句柄」：断言「拿到的是 owner 会话的句柄」这一件事
+    notify: (runJob, content, options) => {
+      sent.push(options.session);
+      return "sent";
+    },
+  });
+
+  const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true }, { sessionId: "654-order-sess" });
+  await waitUntil(() => runtime.registry.get(handle.runId).status === "completed");
+
+  const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId: handle.runId }), "utf8"));
+  assert.equal(disk.delivery, "sent",
+    "先落盘后投递会让这里永远是 null（缺陷 2 的顺序坑：只加字段不调顺序等于没修）");
+  assert.equal(disk.notifyTargetSessionId, "654-order-sess");
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0], handleOfOwner, "投递口拿到的必须是 **owner 会话的** 句柄");
+});
+
+test("#654 缺陷3：投递失败不再被记成「已投递」——false / 抛异常都记 failed，且去重位没被锁死", async () => {
+  const sessionDir = await tempDir("erix-run-654-failed-");
+  const attempts = [];
+  const sessionHandles = jobsApi.createSessionHandleRegistry();
+  sessionHandles.set("654-fail-sess", { deliver: () => true });
+  const registry = createAsyncJobRegistry();
+  const sendRegistry = createCompletionSendRegistry();
+  const runtime = createAsyncRuntime({
+    home: await tempDir("erix-run-654-failed-home-"),
+    registry,
+    sendRegistry,
+    sessionHandles,
+    runJob: async () => ({ ...P_OK }),
+    notify: (runJob, content, options) => {
+      attempts.push(options.session);
+      if (attempts.length === 1) return false;                     // 宿主显式拒绝
+      if (attempts.length === 2) throw new Error("host exploded");  // 调用抛异常
+      return "sent";
+    },
+  });
+
+  const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true }, { sessionId: "654-fail-sess" });
+  await waitUntil(() => registry.get(handle.runId).status === "completed");
+  const job = registry.get(handle.runId);
+  assert.equal(jobView(job).delivery, "failed", "显式 false 不能记成已投递");
+
+  // 旧代码在这里就锁死了（`notify(...) !== false` ⇒ `claim.settle(true)`），下面两次都只会是 deduped。
+  assert.equal(runtime.notifySettled(job).delivery, "failed", "抛异常也要记 failed");
+  assert.match(jobView(job).notifyError ?? "", /host exploded/u, "失败原因要可机读（进 status.json）");
+
+  assert.equal(runtime.notifySettled(job).delivery, "sent");
+  assert.equal(attempts.length, 3, "三次都真的调了投递口（失败没有被记成已投递）");
+  assert.equal(jobView(job).notifyError, null, "成功之后不该留着上一次的错误");
+
+  const dedupedAgain = runtime.notifySettled(job);
+  assert.equal(dedupedAgain.deduped, true, "投成功之后才允许去重");
+  assert.equal(jobView(job).delivery, "sent", "去重不能把「已经投出去」改写成 deduped");
+  assert.equal(jobView(job).deduped, 1);
+  assert.equal(attempts.length, 3, "deduped 不再调投递口");
 });

@@ -57,6 +57,7 @@ import {
   createAsyncRuntime,
   globalAsyncJobRegistry,
   globalCompletionSendRegistry,
+  globalSessionHandleRegistry,
 } from "./erix-run-jobs.js";
 import {
   formatAsyncResult,
@@ -405,6 +406,9 @@ export const erixRunTool = defineTool({
         // ⚠ async:true 时这个 signal **不接**：它在本次工具调用结束时就失效了，
         //    后台 run 的取消通道是 action:"cancel"。
         signal: signal ?? ctx?.signal,
+        // #654：派工那一刻的会话身份 —— 结算时按它查**这个会话的**投递句柄
+        // （不再有「模块级 piRef / wake 单槽」那种投给最后启动会话的路径）。
+        sessionId: sessionIdOf(ctx),
         onProgress,
       });
     } catch (error) {
@@ -432,28 +436,85 @@ export const erixRunTool = defineTool({
 // 生命周期规矩（analysis §6）：**不在 factory 里起定时器/进程/监听**。factory 只 registerTool
 // 与 pi.on(...)（pi.on 是扩展的正常机制，pi-subagents 同样在 factory 里挂）；定时器只在真的
 // 派工之后由 job 持有，session_shutdown 做幂等清理。
+//
+// issue #654（多会话宿主）：**唤醒器与本会话的 ctx 一律退回 factory 作用域的局部**。
+// pi-web 在一个 Node 进程里跑 N 个会话，扩展 factory 对**每个会话各调一次**（pi 的
+// `dist/core/extensions/loader.js` 把 factory 缓存在进程级 `extensionCache`，但 `await factory(api)`
+// 那一处是每会话各调一次），所以模块级 `let wake / piRef` 这种单槽必然被后到者覆盖：
+// A 会话派工的 run 结算时会把通知投到 B 会话的 `pi` 上，连「父会话忙不忙」（`ctx.isIdle()`）
+// 读的也是 B 的。上游 pi-subagents 就是每会话一份（`registerSubagentExtension(pi)` 里
+// `createParentWake(pi)`，闭包捕获自己的 `pi`），结构上不可能互相覆盖——本层照那个形状还原，
+// 不自研第二套。
+//
+// 进程级仍然只有**按会话键**的表：job 注册表 / 去重注册表（跨会话查询、取消是既有需求，
+// 见 `createAsyncJobRegistry` 的注释）加一张 `sessionHandles`（`sessionId` → 本会话的投递句柄）。
+// 投递时按 `job.ownerSessionId` 查**那个会话的**句柄；查不到就记 `delivery:"orphaned"`，
+// **没有「投给最后启动的那个会话」这条路**。
 // ---------------------------------------------------------------------------
 
-/** 当前扩展实例的唤醒器与异步运行时（session_start 时绑定 ctx，缺位时首次调用惰性建）。 */
-let wake: ReturnType<typeof createParentWake> | undefined;
-let runtime: ReturnType<typeof createAsyncRuntime> | undefined;
-let piRef: ExtensionAPI | undefined;
+/**
+ * 一个会话的投递句柄（#654）：闭包捕获**自己这个会话的** `pi` 与唤醒器。
+ * 由 `session_start` 注册进进程级的 `sessionHandles`（按 `sessionId` 键），
+ * 投递时由 `erix-run-jobs.js` 按 `job.ownerSessionId` 查出来交给 `sendNotify`。
+ */
+export interface SessionDeliveryHandle {
+  readonly sessionId: string | undefined;
+  /** 投一条完成通知；返回 `false` = 本句柄明确拒绝（抛异常也算失败，判定在 `sendNotify`）。 */
+  deliver(message: { customType: string, content: string, display: boolean }, options: { triggersTurn: boolean }): boolean;
+  agentStarted(): void;
+  sessionShutdown(reason?: string): void;
+}
 
-function sendNotify(job: object, content: string, options: { triggersTurn: boolean, outcome: string }) {
-  const pi = piRef;
-  if (pi === undefined) return false;
+/** 投递口交给 jobs 层的判定（`erix-run-jobs.js` 的 `deliveryOf` 认这三种形状）。 */
+type DeliveryVerdict = "sent" | "no-owner" | { delivery: "failed", error: string };
+
+/** 异步运行时（**进程级单例**：它的三张表都是 `Symbol.for` 挂 globalThis 的共享表）。 */
+let runtime: ReturnType<typeof createAsyncRuntime> | undefined;
+
+/**
+ * 派工那一刻的会话身份（#654）：`ctx.sessionManager.getSessionId()`。
+ * 读不到（测试装载器直接调 `execute()`、或宿主没给 sessionManager）就是 `undefined`——
+ * 那时投递口记 `no-owner` 并**不投**，不猜一个会话。
+ */
+function sessionIdOf(ctx: ExtensionContext | undefined): string | undefined {
+  try {
+    const id = ctx?.sessionManager?.getSessionId?.();
+    return typeof id === "string" && id !== "" ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 完成通知的投递口（#654）：**不读任何模块级 `pi` / 唤醒器单槽** —— 目标会话的句柄由 jobs 层
+ * 按 `job.ownerSessionId` 查出来、经 `options.session` 交进来，所以这里没有「最后一个启动的会话」可投。
+ *
+ * 返回值就是投递事实（`DELIVERY_VALUES` 的取值），由 jobs 层记账：
+ *   - 没有会话身份（`session === undefined`）⇒ `"no-owner"`，**不投**；
+ *   - `pi.sendMessage` / `pi.sendUserMessage` 抛异常 ⇒ `{delivery:"failed", error}`；
+ *   - 句柄显式返回 `false` ⇒ `failed`；其余 ⇒ `sent`。
+ *
+ * ⚠ 诚实边界：pi 的 `sendMessage` 契约是 `void`（`dist/core/agent-session.js` 的 `runner.bindCore`
+ * 里是 `.catch(err => runner.emitError(...))`，异步失败经 `emitError` 上报、**不回到调用方**），
+ * 所以本层能确认的上界是「宿主接受了这次投递调用」，不是「消息真的进了会话」。
+ */
+function sendNotify(
+  _job: object,
+  content: string,
+  options: { triggersTurn: boolean, outcome: string, session?: SessionDeliveryHandle },
+): DeliveryVerdict {
+  const session = options.session;
+  if (session === undefined) return "no-owner";
   const message = { customType: NOTIFY_CUSTOM_TYPE, content, display: true };
   try {
-    if (wake === undefined) {
-      // 没走过 session_start（例如测试装载器直接调 execute()）：只追加，不硬触发一轮。
-      pi.sendMessage(message, { triggerTurn: false });
-    } else {
-      wake.sendMessage(message, { triggerTurn: options.triggersTurn });
+    const accepted = session.deliver(message, { triggersTurn: options.triggersTurn });
+    if (accepted === false) {
+      return { delivery: "failed", error: "会话句柄拒绝了这次投递（deliver 返回 false）" };
     }
-    return true;
-  } catch {
+    return "sent";
+  } catch (error) {
     // 投不出去：去重注册表要把它让给下一次重试（照 pi-subagents sendCompletion 的 try/catch 口径）
-    return false;
+    return { delivery: "failed", error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -462,6 +523,7 @@ function asyncRuntime() {
     runtime = createAsyncRuntime({
       registry: globalAsyncJobRegistry(),
       sendRegistry: globalCompletionSendRegistry(),
+      sessionHandles: globalSessionHandleRegistry(),
       notify: sendNotify,
     });
   }
@@ -476,25 +538,59 @@ function asyncRuntime() {
 
 export default function (pi: ExtensionAPI) {
   // 工厂里不起定时器/监听器（生命周期规则）：定时器由 job 在真正派工时创建。
-  piRef = pi;
   pi.registerTool(erixRunTool);
+
+  // #654：这两个都是 **factory 作用域的局部**（每个会话各一份），不是模块级单槽。
+  // 宿主每调一次 factory 就得到一对新的，闭包捕获的是**自己那个会话的** `pi`。
+  let wake: ReturnType<typeof createParentWake> | undefined;
+  let sessionId: string | undefined;
+
+  /** 本会话的投递句柄：`deliver` 只会用本实例的 `pi` / 唤醒器。 */
+  const sessionHandle: SessionDeliveryHandle = {
+    get sessionId() { return sessionId; },
+    deliver(message, options) {
+      if (wake === undefined) {
+        // 没走过 session_start（例如测试装载器直接调 execute()）：只追加，不硬触发一轮。
+        pi.sendMessage(message, { triggerTurn: false });
+        return true;
+      }
+      wake.sendMessage(message, { triggerTurn: options.triggersTurn });
+      return true;
+    },
+    agentStarted() { wake?.agentStarted(); },
+    sessionShutdown(reason) { wake?.sessionShutdown(reason); },
+  };
 
   // 唤醒器在 session_start 绑 ctx（不在 factory）：reservation 挂在 Symbol.for + WeakMap，
   // 所以 /reload 之后新建的唤醒器仍拿得到同一个 sessionManager 的 pending 状态。
   pi.on("session_start", (_event, ctx: ExtensionContext) => {
     wake = createParentWake(pi);
     wake.bindSession(ctx as never);
+    const previous = sessionId;
+    sessionId = sessionIdOf(ctx);
+    // 同一个 factory 实例被换了会话（newSession / fork / switchSession）：旧键得摘掉，
+    // 否则它指向一个已经不属于它的会话 id。
+    if (previous !== undefined && previous !== sessionId) globalSessionHandleRegistry().delete(previous);
+    // 登记到进程级**按会话键**的句柄表：别的会话（以及 /reload 之后的新实例）投递时按 owner 查到它。
+    if (sessionId !== undefined) globalSessionHandleRegistry().set(sessionId, sessionHandle);
     asyncRuntime();
   });
 
   // 唤醒已经换来一轮 → 清 pending（照 pi-subagents extension/index.js:1031 的同一条）。
   pi.on("agent_start", () => {
-    wake?.agentStarted();
+    sessionHandle.agentStarted();
   });
 
   pi.on("session_shutdown", (event) => {
     // 幂等清理：定时器清掉、唤醒 pending 按 reload 与否分别处理；重复调用不抛。
     asyncRuntime().shutdown();
-    wake?.sessionShutdown((event as { reason?: string })?.reason);
+    const reason = (event as { reason?: string })?.reason;
+    sessionHandle.sessionShutdown(reason);
+    // #654：会话真的走了就把句柄摘掉 —— 之后那个会话的 job 结算时按 owner 查不到句柄，
+    // 记 `delivery:"orphaned"`（而不是投进一个已经不存在的会话）。
+    // `reload` 不算走了：新实例会以同一个 sessionId 重新注册，摘掉反而会制造一段假 orphaned 窗口。
+    if (reason !== "reload" && sessionId !== undefined) {
+      globalSessionHandleRegistry().delete(sessionId);
+    }
   });
 }

@@ -18,6 +18,15 @@
 // 与 pi 的接线（`pi.sendMessage` / `ctx.isIdle()` / `session_start`）全在 erix-run.ts 与
 // erix-run-parent-wake.js 里；**本文件不 import pi**，所以 `node --test` 可以直接加载它。
 //
+// issue #654（本文件的两次加法，都不碰上面的机制）：
+//   1. **按会话隔离的投递句柄**：job 上记派工那一刻的 `ownerSessionId`，投递前按它去
+//      `createSessionHandleRegistry()` 查**那个会话的**句柄；查不到就记 `delivery:"orphaned"`，
+//      **绝不退化成「投给进程里最后启动的那个会话」**（pi-web 一个进程跑 N 个会话，扩展 factory
+//      每会话各调一次 ⇒ 进程级单槽必然被后到者覆盖，通知投错会话）。
+//   2. **投递事实落盘**：`delivery` / `notifyTargetSessionId` / `notifyError` 进 `jobView`（= `status.json`），
+//      并且三处 settle 路径一律**先投递、后落盘**——先落盘那一刻投递还没发生，盘上永远是空值。
+//      只有 `delivery === "sent"` 才 `claim.settle(true)`（有界重试是下一张单，本文件只做判定）。
+//
 // ⚠ 后台 run **与扩展同进程**——这是**本单自己的选择**，不是学 pi-subagents：上游**每个**后台 run 都
 // `spawn` 一个独立 runner 进程（`runs/background/async-execution.js:4` 导入 `spawn`、`spawnRunner` 定义在 `:385`、
 // `:484` 真调用，调用点 `:1255` / `:1800`；旧注释说它「也没为每个子任务 spawn」是假的，#269 已改）。
@@ -50,6 +59,21 @@ export const COMPLETION_SEND_REGISTRY_CAP = 4_096;
 /** 去重注册表 / job 注册表挂在 globalThis 的 `Symbol.for` 键（扩展 `/reload` 之后不丢）。 */
 export const SEND_REGISTRY_SYMBOL = Symbol.for("erix-run.completion-send-registry.v1");
 export const JOB_REGISTRY_SYMBOL = Symbol.for("erix-run.async-jobs.v1");
+/** 会话句柄注册表（issue #654）：`sessionId` → 那个会话的投递句柄。 */
+export const SESSION_HANDLE_REGISTRY_SYMBOL = Symbol.for("erix-run.session-handles.v1");
+
+/**
+ * 投递事实的取值域（issue #654 缺陷 2）。`delivery` 字段**恒在场**（未尝试时是 `null`），取值只在这五个里：
+ *
+ * | 取值 | 含义 |
+ * |---|---|
+ * | `sent` | 投递调用被宿主接受（不抛、也没被显式拒绝）。⚠ 诚实边界：pi 的 `sendMessage` 契约是 `void`，异步失败经 `runner.emitError` 上报、不回到调用方 ⇒ 本层能确认的**上界**就是「调用被接受」 |
+ * | `deduped` | 同一个 run 的完成已经投过，本次被去重注册表挡下（次数记在 `job.deduped`） |
+ * | `failed` | 投递调用抛了异常，或句柄 / 宿主显式拒绝（原因在 `job.notifyError`） |
+ * | `orphaned` | 派工会话的句柄查不到（会话已关闭 / 扩展实例已换）⇒ **不投给任何存活会话** |
+ * | `no-owner` | 这条 job 没有会话身份（派工时没拿到 `sessionId`）⇒ 本层不替调用方猜目标 |
+ */
+export const DELIVERY_VALUES = Object.freeze(["sent", "deduped", "failed", "orphaned", "no-owner"]);
 
 function textOf(value) {
   if (typeof value === "string") return value;
@@ -164,6 +188,73 @@ export function createAsyncJobRegistry() {
 export function globalAsyncJobRegistry() {
   const store = /** @type {any} */ (globalThis);
   return store[JOB_REGISTRY_SYMBOL] ?? (store[JOB_REGISTRY_SYMBOL] = createAsyncJobRegistry());
+}
+
+/**
+ * 会话句柄注册表（issue #654 缺陷 1）：**按 `sessionId` 键**，不是进程级单槽。
+ *
+ * 为什么需要它：pi 的多会话宿主（pi-web）在**一个 Node 进程里跑 N 个会话**，扩展 factory 对每个
+ * 会话各调一次（pi 的 `loader.js` 把 factory 缓存在进程级 `extensionCache`，但 `await factory(api)`
+ * 处是**每会话各调一次**）——所以「模块级 `let wake / piRef`」这种单槽必然被后到者覆盖：A 会话
+ * 派工的 run 结算时会把通知投到 B 会话的 `pi` 上，连「父会话忙不忙」（`ctx.isIdle()`）读的也是 B 的。
+ *
+ * 句柄由扩展在 `session_start` 里注册（每会话一份，闭包捕获**自己那个会话的** `pi` / 唤醒器）；
+ * 投递时按 `job.ownerSessionId` 查——查不到就是 `orphaned`，不允许退化成「最后一个会话」。
+ * `Symbol.for` 挂 globalThis 的理由与另两个注册表同：`/reload` 之后新实例仍能查到旧 run 的归属。
+ */
+export function createSessionHandleRegistry() {
+  /** @type {Map<string, object>} */
+  const handles = new Map();
+  const usable = (sessionId) => typeof sessionId === "string" && sessionId !== "";
+  return {
+    set(sessionId, handle) {
+      // 空 id / 空句柄不登记：它们只会变成「投给谁都不对」的垃圾条目。
+      if (!usable(sessionId) || handle === null || handle === undefined) return false;
+      handles.set(sessionId, handle);
+      return true;
+    },
+    get: (sessionId) => (usable(sessionId) ? handles.get(sessionId) : undefined),
+    has: (sessionId) => usable(sessionId) && handles.has(sessionId),
+    delete: (sessionId) => handles.delete(sessionId),
+    ids: () => [...handles.keys()],
+    get size() { return handles.size; },
+    clear: () => handles.clear(),
+  };
+}
+
+export function globalSessionHandleRegistry() {
+  const store = /** @type {any} */ (globalThis);
+  return store[SESSION_HANDLE_REGISTRY_SYMBOL]
+    ?? (store[SESSION_HANDLE_REGISTRY_SYMBOL] = createSessionHandleRegistry());
+}
+
+/**
+ * 投递口的返回值 → 投递事实（issue #654 缺陷 3）。
+ *
+ * 旧的判定是 `accepted = notify(...) !== false`：`true` 只代表「调用没抛」，随后 `claim.settle(true)`
+ * 把去重位记成已投递，连重投的机会都没了。现在把三件事一起纳入判定：
+ *   - `false` ⇒ `failed`（宿主/句柄显式拒绝）；
+ *   - `DELIVERY_VALUES` 里的字符串或 `{delivery}` 对象 ⇒ 原样记（投递口自己说得更细，比如 `no-owner`）；
+ *   - 其余真值 / `undefined` ⇒ `sent`（pi 的 `sendMessage` 契约是 `void`，不抛即“被接受”，上界见 `DELIVERY_VALUES` 表）。
+ *
+ * @param {unknown} verdict
+ * @returns {string}
+ */
+function deliveryOf(verdict) {
+  if (verdict === false) return "failed";
+  if (typeof verdict === "string") return DELIVERY_VALUES.includes(verdict) ? verdict : "sent";
+  if (verdict !== null && typeof verdict === "object") {
+    const claimed = /** @type {{delivery?:unknown}} */ (verdict).delivery;
+    if (typeof claimed === "string") return DELIVERY_VALUES.includes(claimed) ? claimed : "sent";
+  }
+  return "sent";
+}
+
+/** @param {unknown} verdict */
+function notifyErrorOf(verdict) {
+  if (verdict === null || typeof verdict !== "object") return undefined;
+  const error = /** @type {{error?:unknown}} */ (verdict).error;
+  return typeof error === "string" && error !== "" ? error : undefined;
 }
 
 /**
@@ -360,6 +451,15 @@ export function jobView(job, { now = () => Date.now() } = {}) {
     // —— 异步面独有：落盘与进度
     statusWriteError: job.statusWriteError,
     progressTail: (job.progress ?? []).slice(-10),
+    // —— 异步面独有：**投递事实**（issue #654 缺陷 2）。四个字段**恒在场**（未尝试时 `null` / `0`），
+    //    不是「投成功了才写」——`status.json` 是 `/reload`、pi 重启后唯一残留，
+    //    「投没投出去 / 投给了哪个会话 / 为什么没投成」必须能在盘上读到（口径照 #261 R4③）。
+    //    它们在 `jobView` 里而不是只在内存 job 上：`status.json` 的内容就是这个函数的返回。
+    ownerSessionId: job.ownerSessionId ?? null,
+    delivery: job.delivery ?? null,
+    notifyTargetSessionId: job.notifyTargetSessionId ?? null,
+    notifyError: job.notifyError ?? null,
+    deduped: job.deduped ?? 0,
   };
 }
 
@@ -391,8 +491,12 @@ export function handleOf(job) {
  * @param {{
  *   home?:string, env?:NodeJS.ProcessEnv, now?:()=>number,
  *   runJob?:(params:object, opts:{signal:AbortSignal, onProgress?:(line:string)=>void, runId:string})=>Promise<any>,
- *   notify?:(job:object, content:string, opts:{triggersTurn:boolean, outcome:string})=>unknown,
- *   sendRegistry?:object, registry?:object,
+ *   notify?:(job:object, content:string, opts:{triggersTurn:boolean, outcome:string, session?:object})=>unknown,
+ *     // 返回值就是投递事实（见 `deliveryOf`）：`false` / `{delivery:"failed", error}` ⇒ failed；
+ *     // `DELIVERY_VALUES` 里的字符串（或 `{delivery}`）⇒ 原样记账；其余真值 / `undefined` ⇒ sent。
+ *     // `session` 是**派工会话的句柄**（按 `job.ownerSessionId` 从 `sessionHandles` 查出来的），
+ *     // 查不到时本层根本不调 notify（记 `orphaned`），所以投递口拿不到“别的会话的 pi”。
+ *   sendRegistry?:object, registry?:object, sessionHandles?:object,
  *   deps?:object,   // 透传给 core.runErixRun 与 writeStatusFile（后者的 fs 注入缝见 #237 R4）,
  * }} [options]
  */
@@ -402,6 +506,8 @@ export function createAsyncRuntime(options = {}) {
   const env = options.env ?? process.env;
   const registry = options.registry ?? globalAsyncJobRegistry();
   const sendRegistry = options.sendRegistry ?? globalCompletionSendRegistry();
+  /** 会话句柄表（#654）：`sessionId` → 那个会话的投递句柄；默认是进程级按会话键的那一份。 */
+  const sessionHandles = options.sessionHandles ?? globalSessionHandleRegistry();
   const deps = options.deps ?? {};
   /** 内层 run 的唯一注入缝（单测拿它换掉真引擎；默认就是 core.runErixRun） */
   const runJob = options.runJob ?? ((params, opts) => runErixRun(params, {
@@ -425,15 +531,40 @@ export function createAsyncRuntime(options = {}) {
   };
 
   /**
-   * 完成投递（**带去重**）。`sendRegistry.claim` 不是 owned 就直接返回 —— 同一 run 的终局
+   * 记一笔投递事实（#654 缺陷 2）。四个字段都进 `jobView` → `status.json`，所以调用顺序比“记得写”更重要：
+   * 见下面 `notifyThenPersist`（**先投递、后落盘**）。
+   *
+   * @param {object} job
+   * @param {string} delivery
+   * @param {{target?:string|null, error?:string}} [facts]
+   */
+  const recordDelivery = (job, delivery, facts = {}) => {
+    job.delivery = delivery;
+    // `null` 也是事实（“没有目标会话”），只有 `undefined`（= 调用方没提供）才不动旧值。
+    if (facts.target !== undefined) job.notifyTargetSessionId = facts.target;
+    job.notifyError = facts.error;
+    return delivery;
+  };
+
+  /**
+   * 完成投递（**带去重** + **按会话隔离**）。`sendRegistry.claim` 不是 owned 就直接返回 —— 同一 run 的终局
    * 可能被看门狗与内层返回各触发一次，`/reload` 后旧闭包还可能再来一次，只许投一次。
+   *
+   * 归属校验（#654 缺陷 1）：投递目标只从 `job.ownerSessionId` 查 `sessionHandles`，**没有任何回退到
+   * “进程里最后启动的那个会话”的路径**。查不到就记 `orphaned` 并**不调 notify**。
+   *
+   * @param {object} job
+   * @returns {{delivered:boolean, deduped:boolean, delivery:string, triggersTurn?:boolean}}
    */
   const notifySettled = (job) => {
     const key = `erix-run:${job.runId}`;
     const claim = sendRegistry.claim(key, now());
     if (claim.owned !== true) {
       job.deduped = (job.deduped ?? 0) + 1;
-      return { delivered: false, deduped: true };
+      // 去重**不覆盖**已有的投递事实：先到的那次已经写了 `sent`，那一份才是事实；
+      // 只有在同一个 job 上还没记过任何投递时（`/reload` 后的新实例、或被看门狗先抢到）才记 `deduped`。
+      if (job.delivery === undefined) recordDelivery(job, "deduped", { target: job.notifyTargetSessionId });
+      return { delivered: false, deduped: true, delivery: job.delivery ?? "deduped" };
     }
     const view = jobView(job, { now });
     const outcome = job.status === "completed" || job.status === "failed" || job.status === "aborted"
@@ -446,15 +577,50 @@ export function createAsyncRuntime(options = {}) {
       + ` transcript=${view.artifacts.transcriptPath ?? "none"} judgeLog=${view.artifacts.judgeLogPath ?? "none"}`
       + (view.error?.message ? ` error=${view.error.message}` : "")
       + `；用 erix_run(action:"result", runId:${JSON.stringify(job.runId)}) 取完整终局。`;
-    let accepted = false;
-    try {
-      accepted = notify(job, content, { triggersTurn, outcome }) !== false;
-    } catch (error) {
-      job.notifyError = textOf(error?.message ?? error);
-      accepted = false;
+    const ownerSessionId = typeof job.ownerSessionId === "string" && job.ownerSessionId !== ""
+      ? job.ownerSessionId : undefined;
+    const session = ownerSessionId === undefined ? undefined : sessionHandles.get(ownerSessionId);
+    if (ownerSessionId !== undefined && session === undefined) {
+      // 派工会话已不在（会话关了 / 扩展实例换了）：**不投给任何存活会话**。
+      recordDelivery(job, "orphaned", { target: ownerSessionId });
+      // 没投出去 ⇒ 去重位让给将来（有界重试是下一张单 S3，本单只做判定）。
+      claim.settle(false, now());
+      return { delivered: false, deduped: false, delivery: "orphaned", triggersTurn };
     }
-    claim.settle(accepted, now());
-    return { delivered: accepted, deduped: false, triggersTurn };
+    let delivery = "failed";
+    try {
+      const verdict = notify(job, content, { triggersTurn, outcome, session });
+      delivery = deliveryOf(verdict);
+      recordDelivery(job, delivery, { target: ownerSessionId ?? null, error: notifyErrorOf(verdict) });
+    } catch (error) {
+      // 投不出去：去重注册表要把它让给下一次重试（照 pi-subagents sendCompletion 的 try/catch 口径）
+      delivery = recordDelivery(job, "failed", {
+        target: ownerSessionId ?? null,
+        error: textOf(error?.message ?? error),
+      });
+    }
+    // 缺陷 3：只有**真的投出去**（sent）才把去重位记成已投递；其余一律 `settle(false)`（条目删掉），
+    // 让将来的重投还有机会。旧代码是 `notify(...) !== false` ⇒ true 就锁死，连重投机会都没了。
+    claim.settle(delivery === "sent", now());
+    return { delivered: delivery === "sent", deduped: false, delivery, triggersTurn };
+  };
+
+  /**
+   * “先投递、后落盘”（#654 缺陷 2 的**顺序坑**）。`status.json` 的内容就是 `jobView` 的投影：
+   * 先落盘那一刻 `delivery` / `notifyTargetSessionId` 还没被赋值 ⇒ 盘上永远是空值，加字段等于没加。
+   * 投递链上真抛了也收成 `delivery:"failed"` 的可机读事实，**绝不跳过落盘**
+   * （盘上没有终局比投递失败更糟：查询侧会永远停在 running）。
+   */
+  const notifyThenPersist = (job) => {
+    try {
+      notifySettled(job);
+    } catch (error) {
+      recordDelivery(job, "failed", {
+        target: job.notifyTargetSessionId,
+        error: textOf(error?.message ?? error),
+      });
+    }
+    persistStatus(job);
   };
 
   const settle = (job, payload) => {
@@ -470,12 +636,13 @@ export function createAsyncRuntime(options = {}) {
     job.status = outcomeOf(payload);
     job.finishedAt = now();
     if (job.watchdog !== undefined) { clearTimeout(job.watchdog); job.watchdog = undefined; }
-    persistStatus(job);
-    notifySettled(job);
+    // ⚠ 顺序（#654 缺陷 2 的顺序坑）：**先投递、后落盘**。`status.json` 的内容就是 `jobView` 的投影，
+    // 先落盘那一刻 `delivery` / `notifyTargetSessionId` 还没被赋值 ⇒ 盘上永远是空值（等于没修）。
+    notifyThenPersist(job);
   };
 
   /** 派工：立即返回句柄，内层 run 在后台跑（**不 await**）。 */
-  const start = (rawParams, { signal } = {}) => {
+  const start = (rawParams, { signal, sessionId } = {}) => {
     // 参数校验同步做：坏参数必须当场报给模型，不能变成「派工成功了但后台一条错误载荷」。
     // 形状上直接复用同步面（runErixRun 会把 ErixRunError 归一成 ok:false + error.code 载荷），
     // 免得同一个坏参数在同步/异步两条路上给出两种形状（一个有 structuredContent、一个只剩文本）。
@@ -489,6 +656,9 @@ export function createAsyncRuntime(options = {}) {
     const job = {
       runId,
       status: "queued",
+      // #654 缺陷 1：派工那一刻的**会话身份**（`ctx.sessionManager.getSessionId()`）。投递时按它查句柄，
+      // 所以「谁派的工」是一件记在 job 上的事实，不再取决于「哪个会话最后启动」。
+      ownerSessionId: typeof sessionId === "string" && sessionId !== "" ? sessionId : undefined,
       cwd: params.cwd,
       model: params.model ?? null,
       maxRounds: params.maxRounds,
@@ -514,8 +684,8 @@ export function createAsyncRuntime(options = {}) {
       job.finishedAt = now();
       job.watchdog = undefined;
       job.timedOutReason = `erix_run 超时（${job.timeoutMs}ms）`;
-      persistStatus(job);
-      notifySettled(job);
+      // 先投递、后落盘（#654 缺陷 2 的顺序坑，口径同 settle）。
+      notifyThenPersist(job);
       // 真正的 abort 走 job 自己的 controller → runErixRun 的 deps.signal → 内层 runToolLoop
       job.controller.abort(new Error(job.timedOutReason));
     }, params.timeoutMs);
@@ -619,10 +789,10 @@ export function createAsyncRuntime(options = {}) {
       job.status = "aborted";
       job.finishedAt = now();
       if (job.watchdog !== undefined) { clearTimeout(job.watchdog); job.watchdog = undefined; }
-      persistStatus(job);
+      // 先投递、后落盘（#654 缺陷 2 的顺序坑，口径同 settle）：否则返回的 view / 盘上都看不到投递事实。
+      notifyThenPersist(job);
       // signal 打进内层 runToolLoop（R3）：runErixRun 的 relayCancel 会把终局写成 aborted
       job.controller.abort(new Error(job.cancelReason));
-      notifySettled(job);
       return { kind: "cancel", cancelled: true, view: jobView(job, { now }) };
     }
     if (action === "result") {
@@ -647,7 +817,10 @@ export function createAsyncRuntime(options = {}) {
     return true;
   };
 
-  return { start, sync, act, dispatch, shutdown, registry, sendRegistry, notifySettled, settle, persistStatus, jobs: registry.jobs };
+  return {
+    start, sync, act, dispatch, shutdown, registry, sendRegistry, sessionHandles,
+    notifySettled, settle, persistStatus, notifyThenPersist, jobs: registry.jobs,
+  };
 
   function dispatch(params, opts = {}) {
     const action = textOf(params?.action).trim();

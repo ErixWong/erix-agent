@@ -46,12 +46,15 @@ cp -r examples/pi-extension ~/.pi/agent/extensions/erix-run
 pi --extension ./examples/pi-extension/erix-run.ts
 ```
 
-> **为什么 `.ts` 在 pi 里能用而 `node` 直接 import 不行**：pi 用 jiti 加载扩展，并把
+> **为什么 `.ts` 在 pi 里能用**：pi 用 jiti 加载扩展，并把
 > `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` / `typebox` 作为虚拟模块注入
 > （`dist/core/extensions/virtual-modules.js`）。本仓零依赖，这些包名在仓库里根本不存在，
-> 所以 `node --check` 能过（Node 22.18+ 自带类型剥离，语法没问题），但 `node -e "import('./erix-run.ts')"`
-> 会以 `ERR_MODULE_NOT_FOUND: Cannot find package '@earendil-works/pi-ai'` 失败——这是预期的，
-> 加载自证走 `test/examples/erix-run-pi-load.test.js`（用 pi 的装载器，真跑）。
+> 所以直接 `node -e "import('./erix-run.ts')"` 会以 `ERR_MODULE_NOT_FOUND: Cannot find package '@earendil-works/pi-ai'` 失败。
+> 两条离线加载路径都已实测：
+> ① **真装载器**（`test/examples/erix-run-pi-load.test.js`，用 pi 自己的 `dist/core/extensions/loader.js`，装了 pi 才跑）；
+> ② **Node 自带类型剥离 + `module.register` 的 resolve 钩子**（`test/examples/erix-run-async.test.js` 的 #654 一节）：
+> 把上面三个裸包名解析成三行桩，于是 `import()` 能加载**同一份**扩展模块，多个假 pi 各跑一次 factory、
+> 各发一次 `session_start`——「多会话宿主」那条缺陷只能这样离线复现（pi 的装载器不让你换 `pi`）。
 
 ### 让扩展找到 erix-agent 库
 
@@ -221,7 +224,9 @@ pi --extension ./examples/pi-extension/erix-run.ts
 
 内容包含**终局四件套**（`termination.reason` / `truncated` / `rounds` / `usage`）+ `artifacts`
 （**沿用 core 的 `resolveArtifacts` 口径**，宁给 `null` 不猜路径，不另写一份）+ 运行时事实
-（`cwd` / `sessionDir` / `timeout` / `aborted` / `progressTail`）。内层还没给出终局时
+（`cwd` / `sessionDir` / `timeout` / `aborted` / `progressTail`）+ **投递事实**
+（`ownerSessionId` / `delivery` / `notifyTargetSessionId` / `notifyError` / `deduped`，见下面
+「按会话隔离投递句柄 + 投递可观测性」）。内层还没给出终局时
 `termination` 是 `null`——本层不替引擎发明一个 `reason`。没传 `sessionDir` 的异步 run 只有内存表（查不到跨 `/reload`）。
 
 #### 终局视图的字段覆盖：`syncOnlyFields` 是空集（issue #276）
@@ -281,6 +286,37 @@ pi --extension ./examples/pi-extension/erix-run.ts
   失败 / 中止仍然唤醒。
 - **投递去重**：TTL（10 分钟）+ 容量上限（4096）的注册表，防同一 run 被投递多次（看门狗与内层返回
   两个触发源、`/reload` 后旧实例闭包、宿主重试）；两个常量与 `pi-subagents` 逐字同值。
+
+#### 按会话隔离投递句柄 + 投递可观测性（issue #654）
+
+**现场**：pi-web 在**一个 Node 进程里跑 N 个会话**，扩展 factory 对每个会话各调一次（pi 的
+`dist/core/extensions/loader.js` 把 factory 缓存在进程级 `extensionCache`，但 `await factory(api)`
+那一处是每会话各调一次）。修前本扩展把唤醒器与 `pi` 放在**模块级单槽**里 ⇒ 后启动的会话覆盖前一个：
+**A 会话派工的 run 结算时把通知投到了 B 会话的 `pi` 上**，连「父会话忙不忙」（`ctx.isIdle()`）读的
+也是 B 的（「父会话正忙所以退化成 steer」这个分支决策本身读的是别人的忙闲）。
+
+| 面 | 修前 | 现在 |
+|---|---|---|
+| 唤醒器 / `pi` | 模块级单槽（后到者覆盖） | **factory 作用域局部**，每会话一份；`erix-run-parent-wake.js` 的 `createParentWake` 只依赖注入的 `pi` 与 `bindSession(ctx)`，所以结构上投不到别的会话 |
+| 投递目标 | 永远是「最后启动的那个会话」 | job 上记 `ownerSessionId`（派工那一刻的 `ctx.sessionManager.getSessionId()`），投递前按它查 `erix-run-jobs.js` 里 `createSessionHandleRegistry` 登记的**那个会话的句柄** |
+| 查不到 owner 句柄 | 不存在这一档（照样投） | `delivery:"orphaned"`，**不投给任何存活会话**（会话 `session_shutdown("quit")` 会把句柄摘掉；`"reload"` 保留，因为新实例会以同一 `sessionId` 重新注册） |
+| 派工时没有会话身份 | 投给模块级 `pi` | `delivery:"no-owner"`，**不猜目标**（宁可只落盘，也不投给一个可能不相干的会话） |
+
+**投递事实落盘（缺陷 2）**：`delivery` / `notifyTargetSessionId` / `notifyError` / `ownerSessionId` /
+`deduped` 都在 `erix-run-jobs.js` 的 `jobView` 里 ⇒ `action:"status"` /
+`action:"result"` / `status.json` 三处都读得到，且**字段恒在场**（还没投递时是 `null` / `0`，不是缺键）。
+`delivery` 的取值域是 `erix-run-jobs.js` 导出的 `DELIVERY_VALUES` 那五个：
+`sent` / `deduped` / `failed` / `orphaned` / `no-owner`。
+
+⚠ **顺序坑（同一个缺陷的另一半）**：三处 settle 路径（内层返回 / 看门狗到点 / `action:"cancel"`）原本是
+**先落盘、后投递**，而 `status.json` 的内容就是 `jobView` 的投影——只加字段不调顺序，落盘那一刻
+`delivery` 还没被赋值，盘上永远是空值（等于没修）。现在一律**先投递、后落盘**。
+
+**成功判定（缺陷 3）**：只有 `delivery === "sent"` 才把去重位记成「已投递」；`false` / 抛异常 / 显式
+`failed` 都记 `failed`，并把去重条目删掉（让将来的重投还有机会——**有界重试是下一张单，本层只做判定**）。
+⚠ **诚实边界**：pi 的 `sendMessage` / `sendUserMessage` 契约是 `void`（失败经宿主 `runner.emitError`
+上报，不回到调用方），所以 `sent` 能确认的上界是「宿主接受了这次投递调用」，**不是**「消息真的进了会话」；
+能确认失败的只有三种：没有目标会话（`no-owner` / `orphaned`）、句柄显式拒绝、调用抛异常。
 
 ### 5. `timeoutMs` 定时器归 run 级（不在 `execute()` 里）
 
