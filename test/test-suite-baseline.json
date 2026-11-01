@@ -204,6 +204,18 @@
       "todo": 0,
       "cancelled": 0,
       "why": "合并树现测重登：波13 两支续跑交付合入 #652 之后（1315975）的实测 = 3297 + 7（test/examples/erix-run-resume.test.js，#207 R2 七条离线用例）+ 2（test/static-guards.test.js 的 docs/maintenance 拼写分类两例，#644 ③），净增 +9/-0。两位交付者都按并行派单红线未改本格，期望值按「派生数只在最终树测」在此重跑填写。skipped 仍是那 12 条真上游与真 relay 门禁，未新增 skip。"
+    },
+    {
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "e0e5e6930916a82ae4de3d85d4dcfd5c4c4476d1",
+      "tests": 3315,
+      "pass": 3303,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "合并 `origin/main` `34caaab` 后的现测重登：合并提交 e0e5e69 的树上跑 `npm test`（日志 /tmp/merge657b-test.log 第 21104 行起），六个计数逐字取自 TAP 汇总行，经 `npm run check:test-summary -- --log /tmp/merge657b-test.log` 复核为 `TEST-SUMMARY-VERDICT ok`。= 上游 34caaab 的 3306 + 本片 #657 的 +9（compaction-strategy-fallback 4→9 的 +5 与 fold-facts-text-657 的 +4），与上一次合并 cbb695c 3294 + 9 = 3303 是同一条账。expect.tests 不抄任何一边（上游 3306 / 本片 3303 同格双改 ⇒ merge-tree 判 CONFLICT），按本文件「合并后重跑现测重登」处置。skipped 仍是那 12 条真上游与真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），maxSkipped 上限 14 不动。"
     }
   ]
 }
