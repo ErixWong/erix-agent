@@ -25,6 +25,7 @@ import * as core from "../../examples/pi-extension/erix-run-core.js";
 import * as jobsApi from "../../examples/pi-extension/erix-run-jobs.js";
 import {
   COMPLETION_SEND_TTL_MS,
+  NOTIFY_RETRY_DELAYS_MS,
   createAsyncJobRegistry,
   createAsyncRuntime,
   createCompletionSendRegistry,
@@ -104,6 +105,41 @@ async function makeRuntime({ job, sent, registry = createAsyncJobRegistry(), sen
     ...extra,
   });
   return { runtime, home, registry, sendRegistry, sent };
+}
+
+/**
+ * 假时钟（issue #659 第 1 格）：投递重试的三档是 5s / 10s / 30s，真等一轮要 45 秒。
+ *
+ * `setTimeout` / `clearTimeout` / `now` 三个注进 `createAsyncRuntime`（看门狗与重试共用同一对），
+ * 所以 `tick()` 推的是**真代码路径**，不是重写一份重试逻辑。
+ */
+function fakeClock(start = 1_000_000) {
+  let current = start;
+  let seq = 0;
+  /** @type {Map<number, {fn:Function, at:number, delay:number}>} */
+  const timers = new Map();
+  return {
+    timers,
+    now: () => current,
+    setTimeout: (fn, delay) => {
+      seq += 1;
+      timers.set(seq, { fn, at: current + delay, delay });
+      return seq;
+    },
+    clearTimeout: (id) => { timers.delete(id); },
+    /** 还挂着的定时器延迟（升序）：钉「档位」用。 */
+    pendingDelays: () => [...timers.values()].map((timer) => timer.delay).sort((a, b) => a - b),
+    /** 推到**最早**那个定时器并执行它；一个都没有就返回 false。 */
+    tick() {
+      const next = [...timers.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+      if (next === undefined) return false;
+      const [id, timer] = next;
+      timers.delete(id);
+      current = timer.at;
+      timer.fn();
+      return true;
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -468,9 +504,29 @@ function fakePi() {
   };
 }
 
-function fakeCtx({ idle = true, sessionId = "s-1", sessionManager } = {}) {
+/**
+ * pi 侧 `invalidate()` 的原文（`dist/core/extensions/runner.js` 的 `invalidate` 默认文案，逐字取）。
+ * #659 第 4 格要求 reload 窗口内的 `notifyError` 带上它——那是这个窗口里唯一可机读的根因。
+ */
+const STALE_CTX_MESSAGE = "This extension ctx is stale after session replacement or reload."
+  + " Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload()."
+  + " For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession."
+  + " For reload, do not use the old ctx after await ctx.reload().";
+
+function fakeCtx({ idle = true, sessionId = "s-1", sessionManager, stale = false } = {}) {
   const manager = sessionManager ?? { getSessionId: () => sessionId };
-  return { isIdle: () => idle, sessionManager: manager };
+  let isStale = stale;
+  return {
+    isIdle: () => {
+      // 真 pi 的 `ExtensionContext` 在 `AgentSession.reload()` 里 `oldRunner.invalidate()` 之后，
+      // 每个访问器都 `assertActive()` 抛原文（`dist/core/extensions/runner.js` 的 `invalidate` 默认文案）。
+      if (isStale) throw new Error(STALE_CTX_MESSAGE);
+      return idle;
+    },
+    sessionManager: manager,
+    /** 模拟 `oldRunner.invalidate()`：此后旧 ctx 的访问器一律抛失效上下文原文。 */
+    markStale() { isStale = true; },
+  };
 }
 
 test("#234 机制2：idle 分支 —— 消息只追加（triggerTurn:false），另发一条 steer 用户消息起一轮", () => {
@@ -505,6 +561,66 @@ test("#234 机制2：triggerTurn 不是 true 时一律透传（不建 reservatio
   assert.equal(wake.sendMessage({ content: "x" }), false);
   assert.equal(calls.sendUserMessage.length, 0);
   assert.equal(calls.sendMessage.length, 2);
+});
+
+test("#659 第2格：rearmIfUnstarted —— pending 且从未起轮才补排 steer（有界：同一个 reservation 只补一次）", () => {
+  let now = 200_000;
+  const { pi, calls } = fakePi();
+  const wake = createParentWake(pi, () => now);
+  wake.bindSession(fakeCtx({ idle: true }));
+
+  // 没有欠账时什么都不做（session_start / agent_end 每次都会调它，不能无中生有一条 steer）
+  assert.equal(wake.rearmIfUnstarted(), false);
+  assert.equal(calls.sendUserMessage.length, 0);
+
+  wake.sendMessage({ content: "a" }, { triggerTurn: true });
+  assert.equal(calls.sendUserMessage.length, 1);
+  assert.equal(wake.isPending(), true, "排了 steer 但还没有 agent_start ⇒ 欠着一轮");
+
+  // 补偿回路：不干等 WAKE_PENDING_MS，直接补排一次
+  assert.equal(wake.rearmIfUnstarted(), true);
+  assert.equal(calls.sendUserMessage.length, 2, "补排的也是同一条 steer 提示（走同一个投递口）");
+  assert.deepEqual(calls.sendUserMessage[1], { content: PARENT_WAKE_TEXT, options: { deliverAs: "steer" } });
+
+  // 有界：同一个 reservation 只补一次（否则每个 agent_end 都再排一条，父会话变成永动机）
+  assert.equal(wake.rearmIfUnstarted(), false);
+  assert.equal(calls.sendUserMessage.length, 2);
+
+  // agent_start 清位 ⇒ 欠账结清，再调什么都不做
+  wake.agentStarted();
+  assert.equal(wake.isPending(), false);
+  assert.equal(wake.rearmIfUnstarted(), false);
+  assert.equal(calls.sendUserMessage.length, 2);
+
+  // 新排一条 steer 是**新的一次欠账**：补偿额度跟着重置（不会因为上一轮用掉就再也不补）
+  wake.sendMessage({ content: "b" }, { triggerTurn: true });
+  assert.equal(calls.sendUserMessage.length, 3);
+  assert.equal(wake.rearmIfUnstarted(), true, "新欠账要有新的补偿额度");
+  assert.equal(calls.sendUserMessage.length, 4);
+});
+
+test("#659 第3格：`sent` 的上界是「宿主接受了这次调用」—— pi 返回 void 不算已送达，只有 agent_start 才是确认", () => {
+  const { pi, calls } = fakePi();
+  const wake = createParentWake(pi);
+  wake.bindSession(fakeCtx({ idle: true }));
+
+  // 投递口把消息交给了 pi（`sendMessage` / `sendUserMessage` 的契约都是 void，不抛 ≠ 送达）
+  assert.equal(wake.sendMessage({ customType: "erix-run-notify", content: "done" }, { triggerTurn: true }), true);
+  assert.equal(calls.sendMessage.length, 1);
+  assert.equal(calls.sendUserMessage.length, 1);
+  assert.equal(wake.isPending(), true,
+    "宿主接受了调用，但观察侧还没看到 agent_start ⇒ 这条唤醒仍然欠着（sent 不是已送达）");
+
+  // 观察侧确认：`agent_start` 真的来了，才算「进了会话」
+  wake.agentStarted();
+  assert.equal(wake.isPending(), false, "只有 agent_start 能结清欠账");
+
+  // 文档面同一条边界（#659 第 3 格要求在代码注释与 README 里写准确，不许写成「已送达」）
+  for (const relative of ["examples/pi-extension/erix-run-jobs.js", "examples/pi-extension/README.md"]) {
+    const text = readFileSync(path.join(repoRoot, relative), "utf8");
+    assert.match(text, /宿主接受了这次(投递)?调用/u, `${relative} 要写清 sent 的上界是「宿主接受了这次调用」`);
+    assert.match(text, /不是\*{0,2}「已送达」/u, `${relative} 必须显式否掉「已送达」这个读法`);
+  }
 });
 
 test("#234 机制2：WAKE_PENDING_MS 窗口 —— 窗口内不重复排 steer，超窗后重新排，agent_start 清位", () => {
@@ -599,13 +715,185 @@ test("#234 机制3：唤醒策略 —— quiet 的成功完成不唤醒，失败
 // 机制 6：session_shutdown 幂等清理 + 落盘面的 artifacts 口径
 // ---------------------------------------------------------------------------
 
-test("#234 机制6：shutdown 幂等（重复调用不重复清、不抛），并清掉在跑 run 的看门狗定时器", async () => {
-  const { runtime, registry } = await makeRuntime({ job: gatedJob().job, sent: [] });
-  const { handle } = runtime.start({ task: "t", cwd: repoRoot, async: true, timeoutMs: core.MIN_TIMEOUT_MS });
-  assert.notEqual(registry.get(handle.runId).watchdog, undefined, "派工后定时器必须在");
-  assert.equal(runtime.shutdown(), true);
-  assert.equal(runtime.shutdown(), false, "第二次调用必须是 no-op");
-  assert.equal(registry.get(handle.runId).watchdog, undefined);
+test("#658：shutdown 按会话归属收口 —— A 的 session_shutdown 只清 A 的定时器（B 的看门狗还在，到点仍写 aborted），幂等", async () => {
+  const clock = fakeClock();
+  const sessionDir = await tempDir("erix-run-658-shutdown-");
+  const sessionHandles = jobsApi.createSessionHandleRegistry();
+  sessionHandles.set("658-A", { deliver: () => true });
+  sessionHandles.set("658-B", { deliver: () => true });
+  const runtime = createAsyncRuntime({
+    home: await tempDir("erix-run-658-shutdown-home-"),
+    registry: createAsyncJobRegistry(),
+    sendRegistry: createCompletionSendRegistry(),
+    sessionHandles,
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    // 永不 settle：看门狗是这两个 job 唯一的终局来源（被摘掉就永远停在 running）。
+    runJob: gatedJob().job,
+    notify: () => "sent",
+  });
+  const params = { task: "t", cwd: sessionDir, sessionDir, async: true, timeoutMs: core.MIN_TIMEOUT_MS };
+  const a = runtime.start(params, { sessionId: "658-A" });
+  const b = runtime.start(params, { sessionId: "658-B" });
+  const jobA = runtime.registry.get(a.handle.runId);
+  const jobB = runtime.registry.get(b.handle.runId);
+  assert.notEqual(jobA.watchdog, undefined, "派工后定时器必须在");
+  assert.notEqual(jobB.watchdog, undefined);
+
+  // 会话 A 走了：只清 A 的。修前这里清的是 `registry.list()`（全进程），B 会被一起摘掉。
+  assert.equal(runtime.shutdown("658-A"), true);
+  assert.equal(jobA.watchdog, undefined, "A 自己的看门狗要清掉");
+  assert.notEqual(jobB.watchdog, undefined,
+    "B 的看门狗不能被 A 的 session_shutdown 摘掉（#658 修前这条必红：任一会话的 /new·/resume·/reload 都摘全进程）");
+  // 幂等：重复调用不重复清、不抛
+  assert.equal(runtime.shutdown("658-A"), false, "第二次调用没有东西可清（一次性开关换成按归属清之后，幂等靠「没东西可清」）");
+  assert.equal(runtime.shutdown("658-A"), false);
+
+  // 端到端事实：A 关掉之后，B 到点仍把终局写成 aborted 并落进 status.json
+  assert.equal(clock.tick(), true);
+  assert.equal(jobB.status, "aborted", "B 的超时终局还得发生（摘掉看门狗就不会有这一下）");
+  assert.equal(jobB.timedOut, true);
+  const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId: b.handle.runId }), "utf8"));
+  assert.equal(disk.status, "aborted");
+  assert.equal(disk.timeout, true, "盘上要读得到「是超时终局」，不能永远停在 running");
+
+  // 没有归属的 job（`delivery:"no-owner"` 那一族）不归任何会话 ⇒ 谁都清不掉
+  const anonymous = runtime.start(params, {});
+  const jobAnon = runtime.registry.get(anonymous.handle.runId);
+  assert.notEqual(jobAnon.watchdog, undefined);
+  assert.equal(runtime.shutdown(), false, "没有归属就不清（摘别人的定时器不是清理）");
+  assert.equal(runtime.shutdown(""), false);
+  assert.notEqual(jobAnon.watchdog, undefined, "匿名 job 的定时器只能由它自己的 settle / 看门狗 / cancel 收口");
+});
+
+// ---------------------------------------------------------------------------
+// #659 第 1 格：投失败后的有界重试（5s / 10s / 30s 三档，每次重算 isIdle()）
+//
+// 为什么必须有：`claim.settle(false)` 只把去重条目删掉（#656 已修好那半边），而 `notifySettled` 的三个
+// 调用点全在 settle 路径上 —— **没有任何第二个调用者会再来一次**，释放的去重位白白空着。
+// 这里用假时钟（`fakeClock`）推真代码路径，不真等 45 秒。
+// ---------------------------------------------------------------------------
+
+test("#659 第1格：重试档位是显式契约（5s / 10s / 30s 三档，重试上限 3 次）", () => {
+  assert.deepEqual([...NOTIFY_RETRY_DELAYS_MS], [5_000, 10_000, 30_000],
+    "档数与上限是显式契约（README 同一份值），不是隐式默认");
+});
+
+test("#659 第1格：投失败 ⇒ 到点重投，三档走完（5s / 10s）就成功；每次重投都重算 isIdle()", async () => {
+  const clock = fakeClock();
+  const sessionDir = await tempDir("erix-run-659-retry-");
+  const sessionHandles = jobsApi.createSessionHandleRegistry();
+  sessionHandles.set("659-retry", { deliver: () => true });
+  /** @type {{at:number, idle:boolean}[]} */
+  const attempts = [];
+  let idle = false;
+  const runtime = createAsyncRuntime({
+    home: await tempDir("erix-run-659-retry-home-"),
+    registry: createAsyncJobRegistry(),
+    sendRegistry: createCompletionSendRegistry(),
+    sessionHandles,
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    runJob: async () => ({ ...P_OK }),
+    // 投递口每次被调时**重新问一次**父会话忙不忙（生产里就是 `wake.sendMessage` 的 `ctx.isIdle()`）
+    notify: () => {
+      attempts.push({ at: clock.now(), idle });
+      if (attempts.length <= 2) return { delivery: "failed", error: "父会话忙（isIdle=false）" };
+      return "sent";
+    },
+  });
+
+  const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true }, { sessionId: "659-retry" });
+  await waitUntil(() => runtime.registry.get(handle.runId).status === "completed");
+  const job = runtime.registry.get(handle.runId);
+  assert.equal(jobView(job).delivery, "failed", "首次投失败就是 failed（不谎报 sent）");
+  assert.equal(job.notifyRetries, 1, "失败后立即排第一档");
+  assert.deepEqual(clock.pendingDelays(), [NOTIFY_RETRY_DELAYS_MS[0]], "第一档是 5s");
+
+  // 父会话现在空闲了：重投要能拿到这个新事实（每档重算 isIdle）
+  idle = true;
+  const firstAt = attempts[0].at;
+  assert.equal(clock.tick(), true, "第一档到点必须真的重投");
+  assert.equal(attempts.length, 2);
+  assert.equal(attempts[1].idle, true, "重投时读的是当下的 isIdle()，不是首次投递时那个值");
+  assert.equal(jobView(job).delivery, "failed");
+  assert.deepEqual(clock.pendingDelays(), [NOTIFY_RETRY_DELAYS_MS[1]], "第二档是 10s");
+
+  assert.equal(clock.tick(), true);
+  assert.equal(attempts.length, 3);
+  assert.equal(jobView(job).delivery, "sent", "第三档投成 ⇒ 盘上变 sent");
+  assert.deepEqual(clock.pendingDelays(), [], "投成之后剩下的档要撤掉（不再排）");
+  // 三档的时间线逐字钉住：0 / +5s / +15s
+  assert.deepEqual(attempts.map((attempt) => attempt.at - firstAt), [0, 5_000, 15_000]);
+
+  // 盘上的事实也是 sent（重投成功必须跟着落盘，否则「重投成功但盘上还写 failed」）
+  const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId: handle.runId }), "utf8"));
+  assert.equal(disk.delivery, "sent");
+  assert.equal(disk.notifyError, null);
+  assert.equal(disk.notifyRetries, 2, "已发生的重试次数是历史事实");
+});
+
+test("#659 第1格：一直投不出去 ⇒ 三档后停（有界，不无限重试）", async () => {
+  const clock = fakeClock();
+  const sessionDir = await tempDir("erix-run-659-retry-exhaust-");
+  const sessionHandles = jobsApi.createSessionHandleRegistry();
+  sessionHandles.set("659-exhaust", { deliver: () => true });
+  let attempts = 0;
+  const runtime = createAsyncRuntime({
+    home: await tempDir("erix-run-659-exhaust-home-"),
+    registry: createAsyncJobRegistry(),
+    sendRegistry: createCompletionSendRegistry(),
+    sessionHandles,
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    runJob: async () => ({ ...P_OK }),
+    notify: () => { attempts += 1; return { delivery: "failed", error: "宿主一直在拒" }; },
+  });
+  const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true }, { sessionId: "659-exhaust" });
+  await waitUntil(() => runtime.registry.get(handle.runId).status === "completed");
+
+  // 首次 + 三档 = 4 次尝试，之后彻底停手
+  for (let index = 0; index < NOTIFY_RETRY_DELAYS_MS.length; index += 1) {
+    assert.equal(clock.tick(), true, `第 ${index + 1} 档重试必须排上`);
+  }
+  assert.equal(attempts, NOTIFY_RETRY_DELAYS_MS.length + 1, "首次 + 三档 = 4 次，不多不少");
+  assert.deepEqual(clock.pendingDelays(), [], "用尽三档后不再挂定时器");
+  assert.equal(clock.tick(), false, "没有第四档（有界）");
+  const job = runtime.registry.get(handle.runId);
+  assert.equal(job.notifyRetries, NOTIFY_RETRY_DELAYS_MS.length);
+  assert.equal(jobView(job).delivery, "failed", "用尽重试仍然是 failed —— 不粉饰成 sent");
+  assert.match(jobView(job).notifyError ?? "", /宿主一直在拒/u, "盘上留得住根因");
+});
+
+test("#659 第1格 / #658：重试定时器与看门狗是**同一份 job 生命周期** —— settle 清、shutdown 按归属清", async () => {
+  const clock = fakeClock();
+  const sessionDir = await tempDir("erix-run-659-retry-lifecycle-");
+  const sessionHandles = jobsApi.createSessionHandleRegistry();
+  sessionHandles.set("659-life", { deliver: () => true });
+  const runtime = createAsyncRuntime({
+    home: await tempDir("erix-run-659-life-home-"),
+    registry: createAsyncJobRegistry(),
+    sendRegistry: createCompletionSendRegistry(),
+    sessionHandles,
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    runJob: async () => ({ ...P_OK }),
+    notify: () => ({ delivery: "failed", error: "宿主拒" }),
+  });
+  const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true }, { sessionId: "659-life" });
+  await waitUntil(() => runtime.registry.get(handle.runId).status === "completed");
+  const job = runtime.registry.get(handle.runId);
+  assert.notEqual(job.notifyRetry, undefined);
+  assert.equal(job.watchdog, undefined, "settle 已经把看门狗清了（同一个 `clearJobTimers`）");
+
+  // session_shutdown 必须把**新加的**这根定时器也清掉（两单合一的那条）
+  assert.equal(runtime.shutdown("659-life"), true);
+  assert.equal(job.notifyRetry, undefined, "session_shutdown 要清投递重试定时器");
+  assert.deepEqual(clock.pendingDelays(), [], "清完之后一根定时器都不剩");
 });
 
 test("#234 R6：status.json 的 artifacts 沿用 core 的 resolveArtifacts 口径（文件真在盘上才给路径）", async () => {
@@ -1153,7 +1441,7 @@ export async function resolve(specifier, context, next) {
  * 一个「会话」：假 pi + 假 ctx + 各自的收件箱；跑一次 factory + 一次 `session_start`
  * （= pi 在多会话宿主里对每个会话做的事）。
  */
-function startSession(extension, { sessionId, idle = true } = {}) {
+function startSession(extension, { sessionId, idle = true, sessionManager } = {}) {
   const calls = { sendMessage: [], sendUserMessage: [] };
   const handlers = new Map();
   const pi = {
@@ -1163,7 +1451,9 @@ function startSession(extension, { sessionId, idle = true } = {}) {
     sendUserMessage: (content, options) => calls.sendUserMessage.push({ content, options }),
   };
   extension.default(pi);
-  const ctx = fakeCtx({ idle, sessionId });
+  // `sessionManager` 显式传入时两次 `startSession` 可以共享它 = 同一个会话被 `/reload` 换了个扩展实例
+  // （reservation 的 WeakMap 按 `sessionManager` 键，所以这是「pending 跨 reload 不丢」的建模方式）。
+  const ctx = fakeCtx({ idle, sessionId, ...(sessionManager === undefined ? {} : { sessionManager }) });
   handlers.get("session_start")?.({}, ctx);
   return { calls, handlers, ctx, pi, received: () => calls.sendMessage.length + calls.sendUserMessage.length };
 }
@@ -1322,9 +1612,10 @@ test("#654 缺陷2：派工时拿不到会话身份 ⇒ delivery:\"no-owner\"，
   }
 });
 
-test("#654 缺陷1：session_shutdown(\"quit\") 摘掉本会话句柄；\"reload\" 保留（新实例会以同一 sessionId 重新注册）", async () => {
+test("#654 缺陷1 / #659 第4格：quit 摘句柄；reload 保留 —— 但 reload 窗口内结算 ⇒ failed + 失效上下文原文，且重试已排", async () => {
   const env = await offlineRunEnv();
   const sessionHandles = jobsApi.globalSessionHandleRegistry();
+  const sessionDir = await tempDir("erix-run-659-reload-window-");
   const quitSession = "654-shutdown-quit";
   const reloadSession = "654-shutdown-reload";
   try {
@@ -1336,13 +1627,124 @@ test("#654 缺陷1：session_shutdown(\"quit\") 摘掉本会话句柄；\"reload
     assert.equal(sessionHandles.has(quitSession), false,
       "quit 之后投递按 owner 查不到 ⇒ orphaned（而不是投进一个已经不存在的会话）");
 
+    // reload：句柄**保留**（取舍没变：新实例会以同一个 sessionId 覆盖登记，摘掉只会制造一段假 orphaned）。
     const reload = startSession(extension, { sessionId: reloadSession });
     reload.handlers.get("session_shutdown")({ reason: "reload" });
     assert.equal(sessionHandles.has(reloadSession), true,
-      "reload 不算会话走了：新实例会以同一个 sessionId 重新注册，摘掉只会制造一段假 orphaned 窗口");
+      "reload 不算会话走了：句柄留着，新实例会以同一个 sessionId 重新注册");
+
+    // 但「保留」的**代价**必须被断言，而不是只断言「键还在」：
+    // `AgentSession.reload()` 会 `oldRunner.invalidate()`，旧 ctx 的每个访问器此后抛失效上下文原文
+    // （`ctx.isIdle()` 就是唤醒器双分支要读的第一句）⇒ 这个窗口里结算必然投不出去。
+    reload.ctx.markStale();
+    const { job } = await dispatchAndSettle(extension, reload, {
+      task: "t", cwd: sessionDir, sessionDir, async: true, maxRounds: 2,
+    });
+    assert.equal(jobView(job).delivery, "failed",
+      "reload 窗口里投不出去就是 failed（不是 sent，也不是假装 orphaned）");
+    assert.match(jobView(job).notifyError ?? "", /Do not use a captured pi/u,
+      "notifyError 要带 pi 侧 invalidate() 的原文（这个窗口里唯一可机读的根因）");
+    const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId: job.runId }), "utf8"));
+    assert.equal(disk.delivery, "failed", "status.json 上也要读得到（/reload 之后唯一残留）");
+    assert.match(disk.notifyError ?? "", /Do not use a captured pi/u);
+
+    // #659 第 1 格：这个窗口**有救回通道** —— 失败后已排下一档重投，由新实例重新登记的句柄接住。
+    assert.notEqual(job.notifyRetry, undefined, "投失败必须排下一档重试（否则这个窗口永远静默）");
+
+    // #658 / #659 同一份清理：会话真的走了 ⇒ 这一档重试与看门狗一起被清（两单合一的那条）。
+    reload.handlers.get("session_shutdown")({ reason: "quit" });
+    assert.equal(job.notifyRetry, undefined, "session_shutdown 要清投递重试定时器");
+    assert.equal(job.watchdog, undefined);
   } finally {
     sessionHandles.delete(quitSession);
     sessionHandles.delete(reloadSession);
+    env.restore();
+  }
+});
+
+test("#659 第2格：agent_end / session_start 发现 pending 且从未起轮 ⇒ 补排一次 steer（isPending 的生产消费者）", async () => {
+  const env = await offlineRunEnv();
+  const sessionHandles = jobsApi.globalSessionHandleRegistry();
+  const sessionDir = await tempDir("erix-run-659-rearm-");
+  const agentEndSession = "659-rearm-agent-end";
+  const reloadSession = "659-rearm-reload";
+  try {
+    const extension = await loadExtensionModule();
+
+    // ① `agent_end` 补偿：一条完成通知排了 steer，但那一轮没起（没有 agent_start）
+    const session = startSession(extension, { sessionId: agentEndSession });
+    await dispatchAndSettle(extension, session, { task: "t", cwd: sessionDir, sessionDir, async: true, maxRounds: 2 });
+    assert.equal(session.calls.sendUserMessage.length, 1, "idle 分支：完成通知后面排一条 steer（reservation 建立）");
+
+    session.handlers.get("agent_end")({});
+    assert.equal(session.calls.sendUserMessage.length, 2,
+      "agent_end 时 isPending() 仍为 true ⇒ 补排一次 steer（修前 isPending 生产面零调用者 ⇒ 这里永远只有 1 条）");
+    assert.deepEqual(session.calls.sendUserMessage[1], { content: PARENT_WAKE_TEXT, options: { deliverAs: "steer" } },
+      "补排走同一个投递口与同一条提示文本");
+
+    // 有界：同一个 reservation 只补一次（否则每个 agent_end 都再排一条）
+    session.handlers.get("agent_end")({});
+    assert.equal(session.calls.sendUserMessage.length, 2, "有界：同一个 reservation 只补一次");
+
+    // agent_start 才算「换来了这一轮」⇒ 清位，之后 agent_end 不再补
+    session.handlers.get("agent_start")({});
+    session.handlers.get("agent_end")({});
+    assert.equal(session.calls.sendUserMessage.length, 2, "欠账结清之后不许再补");
+
+    // ② `session_start` 补偿（/reload 窗口）：同一个 sessionManager + 同一个 sessionId，
+    //    旧实例排的 steer 没换来一轮就被 reload 打断 ⇒ 新实例的 session_start 用**新 pi** 补排。
+    const manager = { getSessionId: () => reloadSession };
+    const before = startSession(extension, { sessionId: reloadSession, sessionManager: manager });
+    await dispatchAndSettle(extension, before, { task: "t", cwd: sessionDir, sessionDir, async: true, maxRounds: 2 });
+    assert.equal(before.calls.sendUserMessage.length, 1);
+
+    const after = startSession(extension, { sessionId: reloadSession, sessionManager: manager });
+    assert.equal(after.calls.sendUserMessage.length, 1,
+      "session_start 也要消费 isPending()：reload 窗口里欠着的那一轮由新实例补排（且用的是新 pi）");
+    assert.equal(before.calls.sendUserMessage.length, 1, "旧实例不能再被用来投递（它的 pi 已经失效）");
+  } finally {
+    sessionHandles.delete(agentEndSession);
+    sessionHandles.delete(reloadSession);
+    env.restore();
+  }
+});
+
+test("#659 第5格：getSessionId() 真抛异常 ⇒ 仍是 no-owner，但盘上带根因（ownerSessionError / notifyError）", async () => {
+  const env = await offlineRunEnv();
+  const sessionHandles = jobsApi.globalSessionHandleRegistry();
+  const sessionDir = await tempDir("erix-run-659-owner-throw-");
+  const throwingSession = "659-owner-throw";
+  try {
+    const extension = await loadExtensionModule();
+
+    // 会话正常启动（session_start 里 getSessionId 还能用），之后派工那一刻才真抛
+    const session = startSession(extension, { sessionId: throwingSession });
+    session.ctx.sessionManager.getSessionId = () => { throw new Error("session manager exploded"); };
+    const { job } = await dispatchAndSettle(extension, session, {
+      task: "t", cwd: sessionDir, sessionDir, async: true, maxRounds: 2,
+    });
+
+    assert.equal(jobView(job).delivery, "no-owner", "拿不到会话身份就是 no-owner（不猜目标）");
+    assert.match(jobView(job).ownerSessionError ?? "", /session manager exploded/u,
+      "真异常的原文要进 ownerSessionError（以前 `catch { return undefined }` 把它吃掉了）");
+    assert.match(jobView(job).notifyError ?? "", /session manager exploded/u,
+      "no-owner 的根因也要进 notifyError（否则盘上只有一句 no-owner，没有任何解释字段）");
+    const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId: job.runId }), "utf8"));
+    assert.equal(disk.delivery, "no-owner");
+    assert.match(disk.ownerSessionError ?? "", /session manager exploded/u, "status.json 上读得到根因");
+    assert.match(disk.notifyError ?? "", /session manager exploded/u);
+
+    // 对照：**正常缺失**（宿主没给 sessionManager）不是异常 ⇒ 不留假根因
+    const anonymous = startSession(extension, { sessionId: "" });
+    anonymous.ctx.sessionManager = undefined;
+    const normal = await dispatchAndSettle(extension, anonymous, {
+      task: "t", cwd: sessionDir, sessionDir, async: true, maxRounds: 2,
+    });
+    assert.equal(jobView(normal.job).delivery, "no-owner");
+    assert.equal(jobView(normal.job).ownerSessionError, null, "没有异常就不许编一条根因");
+    assert.equal(jobView(normal.job).notifyError, null);
+  } finally {
+    sessionHandles.delete(throwingSession);
     env.restore();
   }
 });
@@ -1357,7 +1759,8 @@ test("#654 缺陷2：未终局时 delivery / notifyTargetSessionId / notifyError
   const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true });
 
   const running = jobView(registry.get(handle.runId));
-  for (const field of ["delivery", "notifyTargetSessionId", "notifyError", "ownerSessionId", "deduped"]) {
+  for (const field of ["delivery", "notifyTargetSessionId", "notifyError", "ownerSessionId", "deduped",
+    "ownerSessionError", "notifyRetries", "resume"]) {
     assert.ok(field in running, `${field} 必须恒在场（查询侧不必分两种形状解析）`);
   }
   assert.equal(running.delivery, null, "还没投递就给 null（不编一个 sent）");
@@ -1365,6 +1768,9 @@ test("#654 缺陷2：未终局时 delivery / notifyTargetSessionId / notifyError
   assert.equal(running.notifyError, null);
   assert.equal(running.ownerSessionId, null);
   assert.equal(running.deduped, 0);
+  assert.equal(running.ownerSessionError, null, "没有真异常就是 null（不编根因）");
+  assert.equal(running.notifyRetries, 0, "还没排过重试");
+  assert.equal(running.resume, null, "还没终局 = 还没有坐标事实（不是「不能续跑」，那是 resumable 的事）");
 
   job.release();
   await waitUntil(() => registry.get(handle.runId).status === "completed");

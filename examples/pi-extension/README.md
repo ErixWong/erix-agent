@@ -18,7 +18,7 @@
 | `erix-run-parent-wake.js` | 唤醒父会话的双分支（idle 真触发 / 忙时追加 + `deliverAs:"steer"` 排队）+ `WAKE_PENDING_MS` pending 窗口 + `Symbol.for` WeakMap（`/reload` 不丢）。**逐分支对照** `pi-subagents` 的 `src/shared/parent-wake.js`（全文 46 行，分支结构一一对应，另多一个测试用的 `peekReservation`），**不 import pi** |
 | `index.ts` | 目录形态的入口（pi 把「含 `index.ts` 的子目录」当成一条扩展加载） |
 | `../../test/examples/erix-run-core.test.js` | core 单测（fake provider / 注入 fake lib，全离线） |
-| `../../test/examples/erix-run-async.test.js` | **#234 异步面单测**：立即返回、`status`→`result` 生命周期、`cancel` 终局 `aborted`、`status.json` 落盘与跨 `/reload` 回落读盘、去重注册表、parent-wake 两条分支 + pending 窗口 + reload 安全、run 级看门狗、`quiet` 唤醒策略、`shutdown` 幂等；**#276 八条**钉住「异步终局视图覆盖同步结果的每个字段」（字段表从 core 载荷构造器派生、`UNPROJECTED_SYNC_FIELDS` 恒空、`result`/`status`/`status.json` 三处同形、未终局零值形状、句柄/摘要子集钉死） |
+| `../../test/examples/erix-run-async.test.js` | **#234 异步面单测**：立即返回、`status`→`result` 生命周期、`cancel` 终局 `aborted`、`status.json` 落盘与跨 `/reload` 回落读盘、去重注册表、parent-wake 两条分支 + pending 窗口 + reload 安全、run 级看门狗、`quiet` 唤醒策略；**#276 八条**钉住「异步终局视图覆盖同步结果的每个字段」（字段表从 core 载荷构造器派生、`UNPROJECTED_SYNC_FIELDS` 恒空、`result`/`status`/`status.json` 三处同形、未终局零值形状、句柄/摘要子集钉死）；**#654 七条**按会话隔离投递句柄与投递可观测性；**#658** 一条钉 `shutdown` 按会话归属收口（A 的 `session_shutdown` 不摘 B 的看门狗，B 到点仍写 `aborted`）；**#659** 八条钉有界重试（假时钟推三档）/ `isPending()` 的补偿回路（`agent_end` 与 `session_start`）/ `sent` 的上界 / reload 窗口内的失败事实 / `no-owner` 的根因 / 顶层 `resume` 坐标 |
 | `../../test/examples/erix-run-core.smoke.test.js` | 真机冒烟（一次真 relay 调用，默认跳过） |
 | `../../test/examples/erix-run-pi-load.test.js` | 用 **pi 自己的装载器**（jiti + 虚拟模块）加载 `.ts`，断言注册成功、失败路径不抛错；#237 之后还拿**真 `execute()`** 把每条返回路径的 `details` 序列化一遍 |
 | `../../test/examples/erix-run-resume.test.js` | **#207 R2 续跑单测**：第一次 run 停在 `max_rounds_cap` ⇒ 第二次从账本接着跑（历史 / 轮号 / 账本都不重置）、纯续跑不追加用户轮、三种坐标（transcript / `runId`+`sessionDir` / `status.json`）指到同一份账本、坐标不存在 / 空账本 / 坏 `status.json` 的明确报错、`bad_params` 形状校验、异步面「`status.json` 即续跑坐标 + job 沿用原 `runId`」 |
@@ -177,7 +177,8 @@ pi --extension ./examples/pi-extension/erix-run.ts
 - **写不进去不改变终局**：judge.log 建目录 / append 失败只记一次 `diagnostics.persistenceErrors`
   （`channel: "judgeLog"`）并停止后续审计行；已跑完的 run 不会因审计面失败变 `failed`。
 - **落盘就是可续跑的前提**：`resumable` 是**事实**（不是能力声明）——只有 transcript 真写出来了才是
-  `true`，此时 `diagnostics.resume.handle` 给出续跑坐标。语义与用法见下面「续跑 resume」。
+  `true`，此时 `diagnostics.resume.handle` 给出续跑坐标（顶层 `resume` 是同一份事实）。语义与用法
+  见下面「续跑 resume」。
 
 ## 异步执行：派工即返回句柄（issue #234）
 
@@ -290,6 +291,43 @@ pi --extension ./examples/pi-extension/erix-run.ts
 - **投递去重**：TTL（10 分钟）+ 容量上限（4096）的注册表，防同一 run 被投递多次（看门狗与内层返回
   两个触发源、`/reload` 后旧实例闭包、宿主重试）；两个常量与 `pi-subagents` 逐字同值。
 
+#### 补偿回路：`isPending()` 真的被生产路径消费（issue #659 第 2 格）
+
+`erix-run-parent-wake.js` 的 `isPending()`（reservation 还在 = 「steer 排了、但还没换来一轮」）
+以前**只有测试在调**：定义了判据、丢了消费方。后果就是上游注释自己写的那条风险——被处理掉或失败的
+唤醒 prompt **不会发 `agent_start`**，于是 reservation 只能等 `WAKE_PENDING_MS` 超时，那一轮静默丢掉。
+
+现在 `isPending()` 有两个生产消费者，外加 `agent_start` 那一侧的清位，全在 `erix-run.ts` 的生命周期接线里：
+
+| 事件 | 调什么 | 干什么 |
+|---|---|---|
+| `agent_start` | `agentStarted()` | 唤醒换来一轮了 ⇒ 清位（`sentAt` 与补偿额度一起清） |
+| `agent_end` | `rearmIfUnstarted()` | 这一轮跑完但 `isPending()` 仍为 true ⇒ **补排一次 steer** |
+| `session_start` | `rearmIfUnstarted()` | `/reload` 窗口里保留的 pending ⇒ 由新实例补排一次（用新 `pi`） |
+
+**有界**：同一个 reservation 只补一次（`rearmed`），新排一条 steer 或 `agent_start` 都会重置它——
+否则每个 `agent_end` 都会再排一条，父会话变成永动机。
+
+对照上游（`pi-subagents:` 前缀 = 那个仓的路径，不是本仓）：`pi-subagents:src/extension/index.js` 的
+`isActive:` 回调真的在调 `parentWake.isPending()`，`pi-subagents:src/runs/background/notify.js` 另有
+`unstartedWakes` / `hasPendingDelivery()`。本仓是同一件事的两面（观察侧补偿），不是新设计。
+
+#### 投失败后的有界重试（issue #659 第 1 格）
+
+`notifySettled` 的三个调用点全在 settle 路径上（内层返回 / 看门狗到点 / `action:"cancel"`）⇒
+`claim.settle(false)` 释放的去重位**没有任何第二个调用者会再来一次**。现在的重试契约是**显式**的
+（`erix-run-jobs.js` 的 `NOTIFY_RETRY_DELAYS_MS`，README 与代码同一份值）：
+
+| 项 | 值 |
+|---|---|
+| 档位 | **5s / 10s / 30s 三档**（`[5_000, 10_000, 30_000]`） |
+| 重试上限 | **3 次**（连同首次共 4 次投递尝试；最迟在终局后 45s 收口） |
+| 每次重投重算什么 | `isIdle()`（投递口每次重新问父会话忙不忙）**与** `ownerSessionId` 的句柄（`/reload` 后新实例登记的句柄能接住） |
+| 定时器归谁 | **job**（`job.notifyRetry`），与 run 级看门狗共用 `clearJobTimers`；`settle` / 看门狗到点 / `cancel` / `session_shutdown` 四处一起清。**不在 factory 里起定时器** |
+| 什么时候停 | 投成（`sent`）⇒ 剩下的档撤掉；三档用尽 ⇒ 停手，`delivery` 保持 `failed` |
+
+`status.json` 上的 `notifyRetries` 是「已经排出去过几档」的历史事实（不是「还能重几次」的承诺）。
+
 #### 按会话隔离投递句柄 + 投递可观测性（issue #654）
 
 **现场**：pi-web 在**一个 Node 进程里跑 N 个会话**，扩展 factory 对每个会话各调一次（pi 的
@@ -306,26 +344,60 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | 派工时没有会话身份 | 投给模块级 `pi` | `delivery:"no-owner"`，**不猜目标**（宁可只落盘，也不投给一个可能不相干的会话） |
 
 **投递事实落盘（缺陷 2）**：`delivery` / `notifyTargetSessionId` / `notifyError` / `ownerSessionId` /
-`deduped` 都在 `erix-run-jobs.js` 的 `jobView` 里 ⇒ `action:"status"` /
+`ownerSessionError` / `notifyRetries` / `deduped` 都在 `erix-run-jobs.js` 的 `jobView` 里 ⇒ `action:"status"` /
 `action:"result"` / `status.json` 三处都读得到，且**字段恒在场**（还没投递时是 `null` / `0`，不是缺键）。
 `delivery` 的取值域是 `erix-run-jobs.js` 导出的 `DELIVERY_VALUES` 那五个：
 `sent` / `deduped` / `failed` / `orphaned` / `no-owner`。
+
+`ownerSessionError`（issue #659 第 5 格）：`sessionIdOf()` 读会话身份时的**真异常**原文。以前那个
+`catch { return undefined }` 会把异常吃掉 ⇒ 真异常静默降级成 `delivery:"no-owner"`，盘上没有任何
+解释字段。现在原文同时进 `ownerSessionError` 与 `notifyError`（后者只在 `no-owner` 且没有别的投递错误时
+承接），所以「为什么没有 owner」在盘上读得到。
 
 ⚠ **顺序坑（同一个缺陷的另一半）**：三处 settle 路径（内层返回 / 看门狗到点 / `action:"cancel"`）原本是
 **先落盘、后投递**，而 `status.json` 的内容就是 `jobView` 的投影——只加字段不调顺序，落盘那一刻
 `delivery` 还没被赋值，盘上永远是空值（等于没修）。现在一律**先投递、后落盘**。
 
 **成功判定（缺陷 3）**：只有 `delivery === "sent"` 才把去重位记成「已投递」；`false` / 抛异常 / 显式
-`failed` 都记 `failed`，并把去重条目删掉（让将来的重投还有机会——**有界重试是下一张单，本层只做判定**）。
-⚠ **诚实边界**：pi 的 `sendMessage` / `sendUserMessage` 契约是 `void`（失败经宿主 `runner.emitError`
-上报，不回到调用方），所以 `sent` 能确认的上界是「宿主接受了这次投递调用」，**不是**「消息真的进了会话」；
-能确认失败的只有三种：没有目标会话（`no-owner` / `orphaned`）、句柄显式拒绝、调用抛异常。
+`failed` 都记 `failed`，并把去重条目删掉，由 `notifyThenPersist` 排下一档**有界重试**（见上面
+「投失败后的有界重试」）。
+
+⚠ **诚实边界（issue #659 第 3 格）：`sent` 不是「已送达」。** pi 的 `sendMessage` / `sendUserMessage`
+契约是 `void`（失败经宿主 `runner.emitError` 上报，**不回到调用方**），所以 `sent` 能确认的上界只是
+「**宿主接受了这次调用**」，**不是**「消息真的进了会话」。真正的宿主确认只能来自**观察侧**：
+`agent_start` 是否真的来了（`erix-run-parent-wake.js` 的 `isPending()` / `rearmIfUnstarted()` 回路——
+`sent` 之后 `isPending()` 仍然是 true 就是「还没被确认」）。能确认失败的只有三种：没有目标会话
+（`no-owner` / `orphaned`）、句柄显式拒绝、调用抛异常。下游**不许**把 `sent` 当「已送达」消费。
 
 ### 5. `timeoutMs` 定时器归 run 级（不在 `execute()` 里）
 
 异步分支返回后，定时器仍要把终局写成 `aborted` 并落进 `status.json`（否则查询侧永远停在 `running`）。
 即使内层 run **连 abort 都不理**，看门狗也会到点把盘上状态推到 `aborted` 并发一次通知；之后内层真终局
 到了仍会**覆盖落盘**（四件套以引擎为准）但**不再二次投递**。
+
+### 5b. `session_shutdown` 按会话归属收口（issue #658）
+
+`shutdown(ownerSessionId)` 只清 `job.ownerSessionId === ownerSessionId` 的 job，清的是**这一份 job
+生命周期上的全部定时器**（run 级看门狗 + 投递重试，两者共一个 `clearJobTimers`）。
+
+修前是两个坑叠在一起：`shutdown()` 挂在**进程级 runtime 单例**上、带一个**永不复位的 `shutDown` 开关**，
+而且清的是 `registry.list()`（**全进程所有 job**，不分会话）。于是任一会话按一次 `/new` · `/resume` ·
+`/reload` · 退出，就一次性摘掉**全进程所有在跑 run** 的超时看门狗——那些 run 的真超时既不写 `aborted`
+也不投递，`status.json` 永久停在 `running`（假事实）。
+
+| 事项 | 处置 |
+|---|---|
+| 一次性 `shutDown` 开关 | **去掉**。清自己会话的定时器本来就幂等（第二次没东西可清 ⇒ 返回 `false`），不需要开关防重入 |
+| 没有 `ownerSessionId` 的 job（`delivery:"no-owner"` 那一族） | **不归任何会话 ⇒ 不清**（传空/缺 owner 直接返回 `false`）。它们的定时器只由自己的 `settle` / 看门狗到点 / `action:"cancel"` 收口 |
+| 在跑的 run | **仍然不 abort**（同进程的 run 归进程活着这件事管；抹掉别人的活不是清理） |
+
+### 5c. 续跑坐标也在 `status.json` 的**顶层**（issue #659 第 6 格）
+
+`jobView` 以前只有顶层 `resumable`（布尔），坐标只在 `diagnostics.resume` 里。只读 `status.json`
+的别的会话得自己从嵌套里挖，或者自己拼 `<sessionDir>/<runId>.jsonl`。现在顶层也有 `resume`，
+与 `delivery` 同族（恒在场；还没终局时是 `null` = 「还没有坐标事实」，不是「不能续跑」），
+值与 `resumable` **同源**（都来自 core 的 `resumeFactsOf` 经 `buildSuccessPayload` 落的
+`diagnostics.resume`），不可能一个说能续、一个说没坐标。
 
 ### 6. 限制（写死，不要猜）
 
@@ -439,8 +511,9 @@ pi --extension ./examples/pi-extension/erix-run.ts
 
 ### 与异步作业账本的关系
 
-- **`status.json` 就是续跑坐标**：异步 run 的终局面（`jobView`）整块投 `diagnostics`，所以盘上那份
-  `status.json` 里带着 `diagnostics.resume.handle`，再加上它自己的 `runId` / `sessionDir` / `cwd`。
+- **`status.json` 就是续跑坐标**：异步 run 的终局面（`jobView`）整块投 `diagnostics`，**并且**在顶层
+  投一份 `resume`（#659 第 6 格，与 `delivery` 同族），所以盘上那份 `status.json` 里既带着
+  `diagnostics.resume.handle`、也带着顶层 `resume.handle`，再加上它自己的 `runId` / `sessionDir` / `cwd`。
   `/reload` 或 pi 重启之后（后台 run 已被杀掉），直接 `resume:<statusPath>` 就能接着跑。
 - **续跑的 job 沿用原 `runId`**：job 注册表按原 runId 登记，`statusPath` 还是同一个文件，
   `action:"status"`/`"result"`/`"cancel"` 照旧用那个 runId。
