@@ -53,7 +53,7 @@ test("真宿主目录：导入被登记为将删除的零消费者导出 ⇒ exi
     new RegExp(`\`notesStoreContract\` @ 宿主仓 \`mini-host\` — \`${host}/src/adapter\\.js:2\``, "u"),
     `命中要逐条点名宿主仓 / 文件:行 / 名字：\n${result.stdout}`,
   );
-  assert.match(result.stdout, /登记删除版本 0\.31/u, "点名时要带登记的删除版本（宿主据此判断影响面）");
+  assert.match(result.stdout, /登记删除版本 0\.30/u, "点名时要带登记的删除版本（宿主据此判断影响面）");
   // 非候选名字（`runToolLoop` 有仓内消费者）不得被点名
   assert.ok(!/`runToolLoop` @ 宿主仓/u.test(result.stdout), "非候选名字不该进命中表");
 });
@@ -99,7 +99,7 @@ test("--json：同一份事实可机器读（命中带 repo / file / line / name
   assert.equal(hit.repo, "mini-host");
   assert.equal(hit.line, 1);
   assert.equal(hit.spec, "erix-agent");
-  assert.equal(hit.removalVersion, "0.31");
+  assert.equal(hit.removalVersion, "0.30", "唯一合法的移除版本是 0.30（账本只记阻塞，不换版本号）");
   assert.ok(payload.candidates.some((row) => row.name === "createAnthropicProvider"), "候选清单要带出来（现算的那份）");
 });
 

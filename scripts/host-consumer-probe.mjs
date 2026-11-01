@@ -14,7 +14,8 @@
 //   2. 与 `npm run check:exports` **现算**的零消费者候选求交——候选清单来自
 //      `scripts/export-consumer-check.mjs` 的 `computeInventory()`（**import 进来**，不抄第二份名单：
 //      抄一份就是两条漂移路径，那正是 #429 修掉的口径漏洞①的同型错误）；
-//   3. 命中 ⇒ exit 1，逐条点名「哪个宿主仓 / 哪个文件:行 / 导入了哪个被登记为将删除的名字（绑的删除版本）」；
+//   3. 命中 ⇒ exit 1，逐条点名「哪个宿主仓 / 哪个文件:行 / 导入了哪个被登记为将删除的名字（绑的删除版本
+//      0.30，与 `NEXT_BREAKING_VERSION` 同一个值）」；
 //   4. 目录不存在 / 不可读 ⇒ **不是错误**：exit 0 + 分类原因（`HOST_DIR_MISSING` / `HOST_DIR_NOT_DIR` /
 //      `HOST_DIR_UNREADABLE`）。CI 上没有宿主仓检出，这一条必须让它绿——探针绝不许变成 CI 对宿主仓的硬依赖；
 //   5. 不给 `--hosts` ⇒ 只打印口径与「未判定」，exit 0（`npm run check:host-consumers` 默认不阻断）。
@@ -26,7 +27,15 @@
 //   · 注释里提到的 `require("erix-agent")` 不算（先做一遍注释涂白；字符串字面量保留，因为模块说明符本身
 //     就是字符串）。
 //   · 宿主仓可以不在本机：给不出目录时这条判据**不成立**，报告会明说「未判定」而不是「绿」。
-//   · 它不判定「该不该删」：命中说明「现在删会打断这个宿主」，怎么处置（挪版本 / 先迁宿主）是人的决定。
+//   · 它不判定「该不该删」：命中说明「现在删会打断这个宿主」。处置只有两条——**宿主先迁移**，
+//     或者**这一版不删该名字**（名字记进 `REMOVAL_REGISTRY` 账本，版本仍是 0.30）。
+//     ⚠ **不许**用「把删除版本往后挪」来处置：0.30 尚未发布，往上一层的版本号是发明出来的。
+//
+// ── 它在发布流程里的位置（0.30 发布前置）─────────────────────────────────────
+//   `AGENTS.md` / `AGENTS_cn.md` 的预发布清单把它列为 0.30 的**发布前置检查**：
+//   `npm run check:host-consumers -- --hosts <宿主仓目录>` 跑不出命中才允许发 0.30；有命中 ⇒ 要么宿主
+//   先迁移，要么这一版不删该名字。它在 CI 里**不跑**（CI 没有宿主仓检出）——不给目录时 exit 0 并打印
+//   分类原因，那是「未判定」，不是绿。
 //
 // ── 退出码（与家族同构：读不出真值就红，不许假绿）───────────────────────────────
 //   0 = 没有命中（或压根没给宿主目录 / 给的目录不存在——分类原因打印出来，不是静默绿）
@@ -581,8 +590,10 @@ export function renderReport({ probe, candidates, total, hosts, root }) {
           + `（\`${hit.kind}\` from \`${hit.spec}\`；登记删除版本 ${hit.removalVersion}）`);
       }
       lines.push("");
-      lines.push("怎么读这张表：命中 = **现在删就会打断这个宿主**。处置有两条路——把该名字的删除版本往后挪");
-      lines.push("（`REMOVAL_REGISTRY`，见 `npm run check:exports:deprecated`），或先让宿主迁走再删。");
+      lines.push("怎么读这张表：命中 = **现在删就会打断这个宿主**。处置只有两条——先让宿主迁走，或**这一版不删该名字**");
+      lines.push("（名字记进 `REMOVAL_REGISTRY` 账本，版本仍是 0.30，见 `npm run check:exports:deprecated`）。");
+      lines.push("不许拿「把删除版本往后挪」当处置：0.30 尚未发布，下一个版本号是发明出来的。");
+      lines.push("本命令是 0.30 的**发布前置检查**：跑不出命中才允许发 0.30。");
     }
   }
   if (probe.skipped.length) {
@@ -847,6 +858,7 @@ export function main(argv = process.argv.slice(2)) {
       root: opts.root,
       hosts: opts.hosts,
       defaultRemovalVersion: DEFAULT_REMOVAL_VERSION,
+      nextBreakingVersion: DEFAULT_REMOVAL_VERSION,
       removalRegistry: REMOVAL_REGISTRY,
       total: inventory.total,
       candidates: candidates.map((row) => ({ name: row.name, def: row.def, removalVersion: removalVersionOf(row.name) })),
