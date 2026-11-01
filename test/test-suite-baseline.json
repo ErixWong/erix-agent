@@ -228,6 +228,18 @@
       "todo": 0,
       "cancelled": 0,
       "why": "issue #661 落地的现测重登：在 44c134f 的树上跑 `npm test`（日志 /tmp/661-final.log），六个计数逐字取自 TAP 汇总行，经 `npm run check:test-summary -- --log /tmp/661-final.log` 复核为 `TEST-SUMMARY-VERDICT ok`。= 上一格 3315 + 本片新增 6 格（`test/compact/fold-llm-fail-661.test.js` 判据 1/2/3/4/5/6/8 共 5 格 + `test/examples/erix-run-core.test.js` 判据 9 的 harness 通道 1 格）；被反转的旧格子一个没删（逐文件计数与 main 相同）。skipped 仍是那 12 条真上游与真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），maxSkipped 上限 14 不动。"
+    },
+    {
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "ef5a3fecb4952a787c8ccc79c8eca97e0f4f07b0",
+      "tests": 3321,
+      "pass": 3309,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "合并 `origin/main` `a366cce`（#429 后续：宿主契约套件从删除判据里摘出去）后的现测复核：合并提交 ef5a3fe 的树上跑 `npm test`（日志 /tmp/661-merged.log），六个计数与上一格逐字相同（3321 / 3309 / 0 / 12 / 0 / 0）——上游那两笔只动 scripts/ 与 test/contract、test/export-consumer-check、test/host-consumer-probe，没有增删用例 ⇒ `expect.tests` 不动、`maxSkipped` 仍是 14。`git fetch origin` 本身此刻连不上 github（134 s 超时），`origin/main` 的 ref 是同一 clone 里另一次推送在 00:20:51 更新的（reflog `update by push`），这是我能核实到的最新上游。"
     }
   ]
 }
