@@ -105,6 +105,7 @@
     "check:mutation:run": "node scripts/mutation-sample-check.mjs --run test/mutation-samples.md",
     "check:exports": "node scripts/export-consumer-check.mjs",
     "check:exports:deprecated": "node scripts/deprecated-export-check.mjs",
+    "check:host-consumers": "node scripts/host-consumer-probe.mjs",
     "check:final-guard-probe": "node scripts/final-guard-probe.mjs"
   },
   "license": "MIT",

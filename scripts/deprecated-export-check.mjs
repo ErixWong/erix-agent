@@ -12,10 +12,12 @@
 //
 // ── 判据（每一条都点名到 符号 @ 文件:行）───────────────────────────────────────
 //  R1 NOT_REGISTERED        候选（零消费者）没有登记标记 ⇒ 红。登记是这张票的交付物本身。
-//  R2 NOT_A_CANDIDATE       **有消费者**的公共名被标了「0.30 删除」⇒ 红。这是本判据的反向证靶子：
+//  R2 NOT_A_CANDIDATE       **有消费者**的公共名被标了删除标记（不论版本）⇒ 红。这是本判据的反向证靶子：
 //                           删掉一个真消费者不会让候选数变（消费面在别处），所以只能靠这条拦。
-//  R3 WRONG_VERSION         标记里的删除版本 ≠ `0.30`（常量 `REMOVAL_VERSION`）⇒ 红。
+//  R3 WRONG_VERSION         标记里的删除版本 ≠ 该名字在登记表里绑的版本（缺省 `0.30`，见 `REMOVAL_REGISTRY`）⇒ 红。
 //                            写错版本等于把删除挪到另一个发布包里，比不写更危险（读的人以为对过账）。
+//                            **逐个名字**可移：宿主仓实测在用的名字由登记表绑到更晚的发布包，其余仍是缺省 0.30。
+//                            缺省值住在常量 `DEFAULT_REMOVAL_VERSION` 里，登记表只覆盖它点名的名字。
 //  R4 NO_MIGRATION          标记没写「迁移到什么」⇒ 红。两种合法形状：
 //                             · `` migrate to `X` ``（`X` 必须是树里真的声明出来的符号——指到空气里等于没写）；
 //                             · `no in-tree replacement`（仓内确实没有替代，明确写出来，别编一个）。
@@ -27,6 +29,12 @@
 //                            新写的 @deprecated 一样静默消失——所以 `--types` 模式读生成物，不只读源码。
 //  R6 UNRESOLVED_DECLARATION 有 `@deprecated` 却认不出它贴的是哪个公共名（形状本工具不认）⇒ 红，
 //                            不许静默跳过（「认不出」不等于「没问题」）。
+//  R7 REGISTRY_ENTRY_IDLE   登记表里的一条名字**没对上任何标记** ⇒ 红（#210 R2 惯例：静默不匹配的豁免条目
+//                            本身就是错）。它拦的是「把名字从 0.30 挪到 0.31 之后忘了改标记」这种单向豁免：
+//                            登记表说「这个名等到 0.31 再删」，而源码里已经没有它的标记（或标记被删了）——
+//                            读登记表的人会以为删除仍在计划里，实际上这条登记已经空转。
+//  R8 REGISTRY_ENTRY_INVALID 登记表的条目形状不合规（缺理由 / 版本不是 `x.y`）⇒ 红。没有理由的豁免就是
+//                            下一任读者无法复核的免检通道；版本不是 `x.y` 则 R3 无法按名字对账。
 //
 // ── 三档口径（与清点工具同一份）───────────────────────────────────────────────
 //  候选 = 「包内消费者（`src/` `bin/`）+ 发布面消费者（`examples/` `test/contract/`）+ 自身定义文件内引用」
@@ -39,8 +47,8 @@
 //  不是「可以删了」。
 //
 // ── 退出码（本仓惯例：读不出真值就红，不许假绿）───────────────────────────────
-//  0 = 登记与清点一致（且 R3–R6 全过）
-//  1 = 判据红（上面 R1–R6 任一条，逐条点名）
+//  0 = 登记与清点一致（且 R3–R8 全过）
+//  1 = 判据红（上面 R1–R8 任一条，逐条点名）
 //  2 = 读不出真值：清点工具跑不起来/清点不完整（它自己 exit 2）、`--types` 模式下生成物不存在、
 //      或扫描面读不出。**不许**把「读不出」当成「没问题」。
 //
@@ -63,8 +71,57 @@ import {
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const DEFAULT_ROOT = fileURLToPath(new URL("..", import.meta.url));
 
-/** 本轮登记表绑定的删除版本（#429 决策：并入 0.30 破坏包）。改这里 = 改口径，报告里要写。 */
-export const REMOVAL_VERSION = "0.30";
+/**
+ * 缺省删除版本（#429 决策：零消费者导出并入 0.30 破坏包）。没有在 `REMOVAL_REGISTRY` 里单独登记的名字
+ * 都绑这个版本。改这里 = 改缺省口径，报告里要写。
+ */
+export const DEFAULT_REMOVAL_VERSION = "0.30";
+
+/** 兼容别名：缺省版本就是「不登记时的版本」。新代码请用 `DEFAULT_REMOVAL_VERSION`。 */
+export const REMOVAL_VERSION = DEFAULT_REMOVAL_VERSION;
+
+/**
+ * 逐个名字的移除版本登记表：名字 → `{ version, reason }`。
+ *
+ * 为什么需要它：0.30 是**整包**的删除包，但「仓内零消费者」不等于「宿主零消费者」——本判据看不见宿主仓
+ * （边界写在文件头与报告里）。宿主侧核验过的名字若仍在被导入，就不能跟 0.30 一起删；把它的删除版本
+ * 单独挪后，比把整张票推翻更小、也更可核：读的人从这一个名字上就能看出「它为什么还在」。
+ *
+ * 两条纪律（都由 R7 / R8 看守）：
+ *   · 条目必须**真的对上一条标记**（空转即红，与 #210 R2 同口径）——否则登记表会变成一张「看起来已安排」
+ *     的空头支票；
+ *   · 条目必须写 `reason`（宿主仓实测在导入的证据 / 迁移去向）——没有理由的豁免没人能复核。
+ *
+ * 今天登记的两条都来自宿主仓扫描：宿主消费者探针 `scripts/host-consumer-probe.mjs` 会把它们的命中
+ * 逐条点名（哪个宿主、哪个文件:行）。
+ */
+export const REMOVAL_REGISTRY = Object.freeze({
+  notesStoreContract: {
+    version: "0.31",
+    reason: "host-side audit: touwaka (tests/llm-kit-adapters/notes-store-contract.test.mjs) and app_container "
+      + "(apps/worker/test/notes-store.test.js) import it from the `erix-agent/contract-tests` entry today; "
+      + "that entry keeps exporting it, so the removal waits for the 0.31 bundle",
+  },
+  createAnthropicProvider: {
+    version: "0.31",
+    reason: "host-side audit: app_container (apps/worker/src/pi/erix-adapter.js) imports it, and there is no "
+      + "in-tree replacement until the assembly port converges — deleting it in 0.30 would break a live host",
+  },
+});
+
+/**
+ * 某个公共名绑定的删除版本：登记表里点名就按登记表，否则缺省。
+ *
+ * @param {string} name
+ * @param {Record<string, {version?: string, reason?: string}>} registry
+ * @returns {string}
+ */
+export function removalVersionOf(name, registry = REMOVAL_REGISTRY) {
+  const entry = registry?.[name];
+  return typeof entry?.version === "string" && entry.version.trim() !== ""
+    ? entry.version.trim()
+    : DEFAULT_REMOVAL_VERSION;
+}
 
 /** 扫描面：与清点工具同一份语料（消费者面 + 暴露面），登记标记只可能出现在这些文件里。 */
 const TAG_SCAN_DIRS = ["src", "bin", "examples", "test", "docs", "scripts"];
@@ -78,6 +135,8 @@ export const CODES = {
   NO_MIGRATION: "R4",
   TAG_NOT_ADJACENT: "R5",
   UNRESOLVED_DECLARATION: "R6",
+  REGISTRY_ENTRY_IDLE: "R7",
+  REGISTRY_ENTRY_INVALID: "R8",
 };
 
 // ─────────────────────────────── 源码形状 ───────────────────────────────
@@ -235,11 +294,13 @@ export function declaredSymbols(records) {
 /**
  * 判据本体（纯函数：给语料与清点结果，返回红项；不读盘、不写盘，自测因此可以打内存副本）。
  *
- * @param {{records: Array<{rel: string, text: string}>, inventory: object, publicNames?: Set<string>}} input
+ * @param {{records: Array<{rel: string, text: string}>, inventory: object,
+ *          registry?: Record<string, {version?: string, reason?: string}>}} input
+ *   `registry` 是逐个名字的移除版本登记表（缺省 = 模块里那张 `REMOVAL_REGISTRY`）；自测靠注入它打反向证。
  * @returns {{reds: Array<{code: string, name: string, file?: string, line?: number|null, detail: string}>,
  *            registered: Array<object>, candidates: Array<object>}}
  */
-export function verify({ records, inventory }) {
+export function verify({ records, inventory, registry = REMOVAL_REGISTRY }) {
   const reds = [];
   const names = inventory.names ?? [];
   const publicNames = new Set(names.map((row) => row.name));
@@ -247,6 +308,7 @@ export function verify({ records, inventory }) {
   const candidateNames = new Set(candidates.map((row) => row.name));
   const symbols = declaredSymbols(records);
   const { entries, adjacentUnresolved } = collectRegistrations(records, publicNames);
+  const registeredNames = new Set(entries.map((row) => row.name));
 
   // R5 / R6：标记没贴在声明上（贴错位置 / 认不出贴给谁）——先报，因为它会让 R1 假红（标记在但读不到）。
   for (const row of adjacentUnresolved) {
@@ -260,7 +322,8 @@ export function verify({ records, inventory }) {
     });
   }
   for (const row of entries) {
-    // R2：有消费者的公共名被标了「0.30 删除」
+    const expected = removalVersionOf(row.name, registry);
+    // R2：有消费者的公共名被标了删除（版本无关——0.30 和 0.31 一样是宿主可见破坏的提前承诺）
     if (!candidateNames.has(row.name)) {
       const meta = names.find((r) => r.name === row.name);
       const evidence = meta?.consumerFiles?.length
@@ -273,11 +336,11 @@ export function verify({ records, inventory }) {
         name: row.name,
         file: row.file,
         line: row.line,
-        detail: `被标了「${REMOVAL_VERSION} 删除」，但它不是零消费者候选（kind=${meta?.kind ?? "unknown"}；${evidence}）`
+        detail: `被标了「${expected} 删除」，但它不是零消费者候选（kind=${meta?.kind ?? "unknown"}；${evidence}）`
           + "——给有消费者的符号标删除，是宿主可见破坏的提前承诺",
       });
     }
-    // R3：删除版本
+    // R3：删除版本（逐个名字：登记表点名就按登记表，否则缺省）
     const version = /(\d+\.\d+)/.exec(row.tag)?.[1] ?? null;
     if (version === null) {
       reds.push({
@@ -285,15 +348,16 @@ export function verify({ records, inventory }) {
         name: row.name,
         file: row.file,
         line: row.line,
-        detail: `标记里没有删除版本（期望 ${REMOVAL_VERSION}）：${JSON.stringify(row.tag)}`,
+        detail: `标记里没有删除版本（期望 ${expected}）：${JSON.stringify(row.tag)}`,
       });
-    } else if (version !== REMOVAL_VERSION) {
+    } else if (version !== expected) {
       reds.push({
         code: CODES.WRONG_VERSION,
         name: row.name,
         file: row.file,
         line: row.line,
-        detail: `标记写的删除版本是 ${version}，本轮登记表绑定的是 ${REMOVAL_VERSION}`,
+        detail: `标记写的删除版本是 ${version}，这个名字绑的是 ${expected}`
+          + `（${registry[row.name] ? "来自 REMOVAL_REGISTRY 的逐名登记" : `未在 REMOVAL_REGISTRY 里登记 ⇒ 缺省 ${DEFAULT_REMOVAL_VERSION}`}）`,
       });
     }
     // R4：迁移目标
@@ -318,8 +382,36 @@ export function verify({ records, inventory }) {
     }
   }
 
+  // R7 / R8：登记表自身的两条判据（空转即红 / 条目形状）。
+  // 它们必须在 R1 之前报：R7 说的是「登记表里有一条没对上标记」，与「候选没登记」（R1）是相反方向的两件事。
+  for (const [name, entry] of Object.entries(registry ?? {})) {
+    const version = typeof entry?.version === "string" ? entry.version.trim() : "";
+    const reason = typeof entry?.reason === "string" ? entry.reason.trim() : "";
+    if (!/^\d+\.\d+$/.test(version) || reason === "") {
+      reds.push({
+        code: CODES.REGISTRY_ENTRY_INVALID,
+        name,
+        file: "scripts/deprecated-export-check.mjs",
+        line: null,
+        detail: `REMOVAL_REGISTRY 的条目形状不合规：version=${JSON.stringify(entry?.version ?? null)}`
+          + `（必须是 \`x.y\`）、reason=${reason === "" ? "空" : "有"}（必须写理由）——`
+          + "没有理由的豁免是下一任读者无法复核的免检通道",
+      });
+    }
+    if (!registeredNames.has(name)) {
+      reds.push({
+        code: CODES.REGISTRY_ENTRY_IDLE,
+        name,
+        file: "scripts/deprecated-export-check.mjs",
+        line: null,
+        detail: `REMOVAL_REGISTRY 登记了 \`${name}\`（版本 ${version || "?"}），但源码里**没有任何** \`@deprecated\` 标记`
+          + "对上这个名字——登记表说它等更晚的发布包再删，实际这条登记已空转（#210 R2：静默不匹配的豁免条目本身就是错）",
+      });
+    }
+  }
+
   // R1：候选必须有登记
-  const registered = new Set(entries.map((row) => row.name));
+  const registered = registeredNames;
   for (const row of candidates) {
     if (registered.has(row.name)) continue;
     reds.push({
@@ -388,25 +480,36 @@ export function verifyTypes({ root, candidates }) {
 
 // ─────────────────────────────── 报告 ───────────────────────────────
 
-function renderReport({ inventory, result, types, root }) {
+function renderReport({ inventory, result, types, root, registry = REMOVAL_REGISTRY }) {
   const lines = [];
   lines.push("deprecated-export-check：零消费者导出 × `@deprecated` 登记对账（issue #429）");
   lines.push("");
   lines.push(`根目录：${root}`);
   lines.push(`清点事实：${inventory.total} 个导出名 ⇒ 零消费者候选 ${result.candidates.length} 个`
     + `（清点工具：node scripts/export-consumer-check.mjs）`);
-  lines.push(`登记事实：${result.registered.length} 个公共名带「${REMOVAL_VERSION} 删除」标记`);
+  const perName = Object.keys(registry ?? {}).length;
+  lines.push(`登记事实：${result.registered.length} 个公共名带删除标记（缺省删除版本 ${DEFAULT_REMOVAL_VERSION}；`
+    + `逐名登记表 ${perName} 条：${Object.entries(registry ?? {}).map(([n, e]) => `\`${n}\` → ${e.version}`).join("、") || "（空）"}）`);
   lines.push("");
   lines.push("## 候选 × 登记");
   const byName = new Map(result.registered.map((row) => [row.name, row]));
-  lines.push("| 名字 | 定义文件 | 登记 | 迁移目标 |");
-  lines.push("|---|---|---|---|");
+  lines.push("| 名字 | 定义文件 | 登记 | 删除版本 | 迁移目标 |");
+  lines.push("|---|---|---|---|---|");
   for (const row of result.candidates) {
     const reg = byName.get(row.name);
     const tag = reg?.tag ?? "";
     const migrate = /migrate to\s+`([^`]+)`/i.exec(tag)?.[1];
     const target = migrate ? `\`${migrate}\`` : (/no in-tree replacement/i.test(tag) ? "no in-tree replacement" : "—");
-    lines.push(`| \`${row.name}\` | \`${row.def}\` | ${reg ? `✓ ${reg.file}:${reg.line}` : "✗ 未登记"} | ${target} |`);
+    const bound = removalVersionOf(row.name, registry);
+    const versionCell = bound === DEFAULT_REMOVAL_VERSION ? bound : `${bound}（逐名登记）`;
+    lines.push(`| \`${row.name}\` | \`${row.def}\` | ${reg ? `✓ ${reg.file}:${reg.line}` : "✗ 未登记"} | ${versionCell} | ${target} |`);
+  }
+  if (perName > 0) {
+    lines.push("");
+    lines.push("## 逐名移除版本登记表（`REMOVAL_REGISTRY`：每个条目必须对得上一条标记，且必须写理由）");
+    for (const [name, entry] of Object.entries(registry)) {
+      lines.push(`- \`${name}\` → ${entry.version} —— ${entry.reason}`);
+    }
   }
   if (types) {
     lines.push("");
@@ -419,7 +522,8 @@ function renderReport({ inventory, result, types, root }) {
   }
   lines.push("");
   if (result.reds.length === 0 && (types?.reds.length ?? 0) === 0) {
-    lines.push(`结论：绿 —— ${result.candidates.length} 个候选全部登记且写法合规；没有「有消费者却标删除」的名字。`);
+    lines.push(`结论：绿 —— ${result.candidates.length} 个候选全部登记且写法合规；`
+      + "没有「有消费者却标删除」的名字；逐名登记表每一条都对得上标记且写了理由。");
   } else {
     lines.push("## 红项（逐条点名）");
     for (const red of [...result.reds, ...(types?.reds ?? [])]) {
@@ -431,12 +535,14 @@ function renderReport({ inventory, result, types, root }) {
   lines.push("## 边界（本判据证明不了的事）");
   lines.push("  只证**仓内**零消费者：宿主仓（touwaka / app_container / erix-station / pi）不在扫描面里，");
   lines.push("  它们的 import 这里一个都看不见 ⇒ **删除前必须另核宿主**。本判据拦的是「登记与清点脱钩」，");
-  lines.push("  不是「可以删了」。");
+  lines.push("  不是「可以删了」。宿主侧的核验由 `node scripts/host-consumer-probe.mjs --hosts <目录>` 做");
+  lines.push("  （`npm run check:host-consumers`），它把被导入的候选名字逐条点名到宿主仓 / 文件:行。");
   lines.push("");
   lines.push("## 逐字复现");
   lines.push("  node scripts/deprecated-export-check.mjs              # 本表");
   lines.push("  node scripts/deprecated-export-check.mjs --types      # 追加生成物核对（先 npm run types:build）");
   lines.push("  node scripts/deprecated-export-check.mjs --self-test  # 反向证");
+  lines.push("  node scripts/host-consumer-probe.mjs --hosts <宿主目录>  # 宿主侧求交（给了目录才判）");
   return lines.join("\n");
 }
 
@@ -557,7 +663,7 @@ function runSelfTest() {
       const mutated = injectTag(records, {
         name: consumed.name,
         def: consumed.def,
-        tag: `@deprecated issue #429: removed in ${REMOVAL_VERSION} — no in-tree replacement.`,
+        tag: `@deprecated issue #429: removed in ${DEFAULT_REMOVAL_VERSION} — no in-tree replacement.`,
       });
       if (mutated.missed) {
         failures.push(`③ R2：变异没落上——${mutated.missed}`);
@@ -579,12 +685,12 @@ function runSelfTest() {
     }
   }
 
-  // ── 例④ R3：把删除版本写错（0.30 → 0.31）⇒ 红并点名 ──
+  // ── 例④ R3：把删除版本写错（缺省 0.30 → 0.31，且这个名字没在登记表里）⇒ 红并点名 ──
   {
     // 靶串带上迁移目标：`src/tokens.js` 里有两个候选，只替换 `removed in 0.30` 会打到另一个名字上。
     const mutated = mutate(records, {
       rel: candidate.def,
-      from: `removed in ${REMOVAL_VERSION} — migrate to \`estimateMessageTokens\``,
+      from: `removed in ${DEFAULT_REMOVAL_VERSION} — migrate to \`estimateMessageTokens\``,
       to: "removed in 0.31 — migrate to `estimateMessageTokens`",
     });
     if (mutated.missed) {
@@ -676,7 +782,7 @@ function runSelfTest() {
       const mutated = injectTag(records, {
         name: internalOnly.name,
         def: internalOnly.def,
-        tag: `@deprecated issue #429: removed in ${REMOVAL_VERSION} — no in-tree replacement.`,
+        tag: `@deprecated issue #429: removed in ${DEFAULT_REMOVAL_VERSION} — no in-tree replacement.`,
       });
       if (mutated.missed) {
         failures.push(`⑧ internal-only：变异没落上——${mutated.missed}`);
@@ -689,6 +795,123 @@ function runSelfTest() {
           `⑧ internal-only \`${internalOnly.name}\` 被标删除后没被抓出（红项：${after.reds.map((r) => `${r.code}:${r.name}`).join(",") || "无"}）`,
         );
       }
+    }
+  }
+
+  // ── 例⑨ R2 在「逐名登记表把版本挪后」之后仍然拦得住：给有消费者的名字打 0.31 标记 ⇒ 仍红并点名 ──
+  // 本票要的那一枪：版本可以逐名挪，但「有消费者」这条性质与版本无关——0.31 不是免死金牌。
+  {
+    const consumed = inventory.names
+      .filter((row) => row.kind === "package-consumed" && row.consumerFiles.length > 0 && !REMOVAL_REGISTRY[row.name])
+      .sort((a, b) => a.name.localeCompare(b.name))[0];
+    if (!consumed) {
+      failures.push("⑨ R2@0.31：真树里找不到「有包内消费者且未登记」的名字——这一枪打不出去，反向证失效");
+    } else {
+      const mutated = injectTag(records, {
+        name: consumed.name,
+        def: consumed.def,
+        tag: "@deprecated issue #429: removed in 0.31 — no in-tree replacement.",
+      });
+      if (mutated.missed) {
+        failures.push(`⑨ R2@0.31：变异没落上——${mutated.missed}`);
+      } else {
+        const after = verify({ records: mutated.records, inventory });
+        const hit = after.reds.find((red) => red.code === CODES.NOT_A_CANDIDATE && red.name === consumed.name);
+        expect(
+          Boolean(hit),
+          `⑨ R2 给有消费者的 \`${consumed.name}\`（${consumed.def}）打上 **0.31** 标记 ⇒ 仍红并点名（${hit?.code} ${hit?.name}）`,
+          `⑨ R2 给有消费者的 \`${consumed.name}\` 打 0.31 标记后**没**被抓出——版本挪后就变成免死金牌了`
+            + `（红项：${after.reds.map((r) => `${r.code}:${r.name}`).join(",") || "无"}）`,
+        );
+        const restored = verify({ records, inventory });
+        expect(
+          restored.reds.length === 0,
+          `⑨b 还原 ⇒ 绿（${restored.reds.length} 红）`,
+          `⑨b 还原后没有回到绿（${restored.reds.map((r) => `${r.code}:${r.name}`).join(",")}）`,
+        );
+      }
+    }
+  }
+
+  // ── 例⑩ 登记表是**承重**的：把它清空 ⇒ 真树里那两条 0.31 标记变 R3 红；换回真表 ⇒ 绿 ──
+  // 这一条证的是「登记表真的在给版本供值」，而不是一张摆在旁边没人读的表。
+  {
+    const emptyRegistry = verify({ records, inventory, registry: {} });
+    const moved = Object.keys(REMOVAL_REGISTRY);
+    const wrongVersionNames = emptyRegistry.reds
+      .filter((red) => red.code === CODES.WRONG_VERSION)
+      .map((red) => red.name);
+    const allMovedCaught = moved.every((name) => wrongVersionNames.includes(name));
+    const restored = verify({ records, inventory, registry: REMOVAL_REGISTRY });
+    expect(
+      moved.length > 0 && allMovedCaught && restored.reds.length === 0,
+      `⑩ 登记表清空 ⇒ ${moved.length} 个逐名登记的版本变 R3 红（${wrongVersionNames.join(",")}）⇒ 换回真表 ⇒ 绿（${restored.reds.length} 红）`,
+      `⑩ 登记表清空后没把逐名登记的版本报成 R3：登记 ${JSON.stringify(moved)}，R3 点名 ${JSON.stringify(wrongVersionNames)}`
+        + `（还原 ${restored.reds.length} 红）——登记表没有在给版本供值`,
+    );
+  }
+
+  // ── 例⑪ R7：登记表里一条**对不上任何标记**的条目 ⇒ 红并点名（#210 R2：空转的豁免条目本身就是错）──
+  {
+    const ghostName = "SELFTEST_GHOST_ENTRY_NOT_IN_TREE";
+    const withGhost = verify({
+      records,
+      inventory,
+      registry: { ...REMOVAL_REGISTRY, [ghostName]: { version: "0.31", reason: "self-test: 这一条故意不对应任何标记" } },
+    });
+    const hit = withGhost.reds.find((red) => red.code === CODES.REGISTRY_ENTRY_IDLE && red.name === ghostName);
+    expect(
+      Boolean(hit),
+      `⑪ R7 登记表里加一条没有标记的 \`${ghostName}\` ⇒ 红并点名（${hit?.code} ${hit?.name}）`,
+      `⑪ R7 空转的登记表条目没被抓出（红项：${withGhost.reds.map((r) => `${r.code}:${r.name}`).join(",") || "无"}）`,
+    );
+    // 反过来：把**真**登记表里的一个名字从源码标记侧抹掉（标记删了、登记还在）⇒ 同样是 R7，且这条是真树形状。
+    const movedName = Object.keys(REMOVAL_REGISTRY)[0];
+    const registeredEntries = collectRegistrations(records, new Set(inventory.names.map((row) => row.name))).entries;
+    const registration = registeredEntries.find((row) => row.name === movedName);
+    const markerOwner = registration ? records.find((record) => record.rel === registration.file) : null;
+    if (!movedName || !registration || !markerOwner) {
+      failures.push(`⑪b R7：真树里找不到 \`${movedName ?? "?"}\` 的登记（collectRegistrations 没给出 file）——这一枪打不出去`);
+    } else {
+      const lines = markerOwner.text.split("\n");
+      const declIndex = lines.findIndex((line) => declaredNameOf(line) === movedName);
+      const closeIndex = declIndex - 1;
+      let openIndex = closeIndex;
+      while (openIndex >= 0 && !/^\s*\/\*\*(?!\*)/.test(lines[openIndex])) openIndex -= 1;
+      const depIndex = lines.findIndex((line, i) => i > openIndex && i < closeIndex && /@deprecated\b/.test(line));
+      let end = depIndex + 1;
+      while (end < closeIndex && !/^\s*\*\s*@\w/.test(lines[end])) end += 1;
+      const strippedText = [...lines.slice(0, depIndex), ...lines.slice(end)].join("\n");
+      if (declIndex < 0 || depIndex < 0 || strippedText === markerOwner.text) {
+        failures.push(`⑪b R7：\`${movedName}\` 的标记块没被剥掉（变异没落上：declIndex=${declIndex}、depIndex=${depIndex}）`);
+      } else {
+        const recordsWithoutMarker = records.map((record) => (record.rel === markerOwner.rel ? { ...record, text: strippedText } : record));
+        const after = verify({ records: recordsWithoutMarker, inventory });
+        const idle = after.reds.find((red) => red.code === CODES.REGISTRY_ENTRY_IDLE && red.name === movedName);
+        expect(
+          Boolean(idle),
+          `⑪b R7 把 \`${movedName}\` 的标记从源码里删掉（登记表还留着）⇒ R7 红并点名（${idle?.code} ${idle?.name}）`,
+          `⑪b R7 标记删了、登记还在，却没报空转（红项：${after.reds.map((r) => `${r.code}:${r.name}`).join(",") || "无"}）`,
+        );
+      }
+    }
+  }
+
+  // ── 例⑫ R8：登记表条目形状不合规（缺理由 / 版本不是 x.y）⇒ 红并点名 ──
+  {
+    const target = Object.keys(REMOVAL_REGISTRY)[0];
+    if (!target) {
+      failures.push("⑫ R8：真登记表是空的——这一枪打不出去");
+    } else {
+      const noReason = verify({ records, inventory, registry: { ...REMOVAL_REGISTRY, [target]: { version: REMOVAL_REGISTRY[target].version, reason: "" } } });
+      const badVersion = verify({ records, inventory, registry: { ...REMOVAL_REGISTRY, [target]: { version: "next", reason: "self-test" } } });
+      const hitNoReason = noReason.reds.find((red) => red.code === CODES.REGISTRY_ENTRY_INVALID && red.name === target);
+      const hitBadVersion = badVersion.reds.find((red) => red.code === CODES.REGISTRY_ENTRY_INVALID && red.name === target);
+      expect(
+        Boolean(hitNoReason) && Boolean(hitBadVersion),
+        `⑫ R8 \`${target}\` 的登记缺理由 / 版本写成 \`next\` ⇒ 各自 R8 红并点名（${hitNoReason?.code} ${hitNoReason?.name} / ${hitBadVersion?.code} ${hitBadVersion?.name}）`,
+        `⑫ R8 形状不合规的条目没被抓出：缺理由=${Boolean(hitNoReason)}、版本非法=${Boolean(hitBadVersion)}`,
+      );
     }
   }
 
@@ -764,21 +987,27 @@ export function main(argv = process.argv.slice(2)) {
   if (opts.json) {
     console.log(JSON.stringify({
       tool: "deprecated-export-check",
-      generatedFor: "issue #429：零消费者导出登记 @deprecated，删除并入 0.30",
+      generatedFor: "issue #429：零消费者导出登记 @deprecated，删除并入 0.30（宿主在用的名字逐名挪后）",
       gate: true,
-      removalVersion: REMOVAL_VERSION,
+      removalVersion: DEFAULT_REMOVAL_VERSION,
+      removalRegistry: REMOVAL_REGISTRY,
       root: opts.root,
       total: inventory.total,
       tiers: inventory.tiers,
       candidates: result.candidates.map((row) => ({
-        name: row.name, def: row.def,
+        name: row.name, def: row.def, removalVersion: removalVersionOf(row.name),
         registered: result.registered.some((reg) => reg.name === row.name),
         registration: result.registered.find((reg) => reg.name === row.name) ?? null,
       })),
       reds,
       types: types ? { reds: types.reds, skipped: types.skipped } : null,
-      boundary: "只证仓内零消费者；宿主仓（touwaka / app_container / erix-station / pi）不在扫描面里，删除前须另核宿主",
-      reproduce: ["node scripts/deprecated-export-check.mjs", "node scripts/deprecated-export-check.mjs --types"],
+      boundary: "只证仓内零消费者；宿主仓（touwaka / app_container / erix-station / pi）不在扫描面里，"
+        + "宿主侧由 node scripts/host-consumer-probe.mjs --hosts <目录> 核（npm run check:host-consumers）",
+      reproduce: [
+        "node scripts/deprecated-export-check.mjs",
+        "node scripts/deprecated-export-check.mjs --types",
+        "node scripts/host-consumer-probe.mjs --hosts <宿主目录>",
+      ],
     }, null, 2));
   } else {
     console.log(renderReport({ inventory, result, types, root: opts.root }));
