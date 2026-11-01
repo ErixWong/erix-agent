@@ -250,7 +250,7 @@ scripts/          # experiment scripts and results
   `SYMBOL_VALUE_MEMBERSHIP` in `scripts/docs-drift-check.mjs`. Because the bare-line ratchet keys on
   (document, target file, line range) — **never on the doc's own line number** — rewriting
   `` `symbol` (`path:1517-1531`) `` into a bare `path:1517-1531` leaves that count untouched while deleting the
-  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 219`:
+  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 234`:
   dropping below it is red — that is the degeneration being caught, not a ratchet rise — and exceeding it earns a "raise the floor" note.
   Both numbers are read back out of the script's own text, which is what lets `--self-test` prove they are locks.
   The measurement log that used to sit in this parenthetical — every past reading, merge by merge, with the tree
@@ -288,7 +288,7 @@ scripts/          # experiment scripts and results
   plus **every** `docs/host-upgrade-guide*.md` (discovered from the directory, so a new guide is
   covered the moment it exists). Directory discovery has a silent failure mode — renaming a guide away from that
   pattern shrinks the coverage in the script **and** in the test that mirrors the same glob, so both numbers still
-  agree: `REF_SCAN_DOCS_MINIMUM = 47` is the floor, and the count it stands for (pinned documents + the guides the
+  agree: `REF_SCAN_DOCS_MINIMUM = 49` is the floor, and the count it stands for (pinned documents + the guides the
   directory scan finds) is machine-checked: `check:docs` reads the stated numbers back out of every document that
   states them (both READMEs and the ledger) and compares them with the scan, so a stale copy is red, not prose.
   `test/docs-anchor-ratchet.test.js` keeps its own pinned list of the same documents plus the discovered guide set
