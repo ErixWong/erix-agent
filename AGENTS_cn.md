@@ -192,10 +192,18 @@ scripts/          # 实验脚本和结果
     清掉即可：`find src -name '*.d.ts' -delete`（生成物不入库、可随时重建）。
   - 故意留着的盲区（规格就是这么定的）：第二个公共入口 `src/tools/index.js` 会拉进包根图里**到不了**的
     `src/tools/file-tools.js`（20 个错）与 `src/skills/loader.js`（16 个），所以这两个文件的新错默认**卡不住**；
-    `npm run check:types -- --with-tools` 卡并集（基线 **142** / 29 个文件 = 107 + 19 + 16，与压低它的那笔修同一笔提交里复测；**CI 只跑包根那一档，这一档没有任何闸看着**——所以常量在这里过期是看不见的；这里的每文件计数每次下调都要重新数——本轮两档各降的那 2 个**一个都不在** `src/tools/file-tools.js` 与 `src/skills/loader.js`（仍 20 / 16），全在 `src/loop/orchestrator.js` 14 → 12；上一笔两档各降的那 6 个**一个都不在** `src/tools/file-tools.js` 与 `src/skills/loader.js`（仍 20 / 16）：是 `src/run-state.js` 10 → 4、`src/loop/orchestrator.js` 17 → 14、`src/reflection/wrapup.js` 3 → 0（退出错误集合），对 `src/compact/pipeline.js` 3 → 6 与 `src/compact/fold-llm.js` 2 → 5；上一轮两档各降的那同一个 1 是 `src/messages/openai-normalization.js` 1 → 0，来自 issue #409（`6b604e7` 把 `parseOpenAIToolArguments` 改走共享的 `parseToolArguments`，`d9a0989` 再把 `parseJsonWithRepair` 的 `@returns` 拍平成单形状、把新文件 `src/messages/tool-arguments.js` 短暂带进的那 1 个也消掉），带错文件数随之 31 → 30；上一轮（2026-10-22）`src/tools/file-tools.js` 23 → 20、`src/skills/loader.js` 仍 16，156 → 153 的那 3 个全在这里，是 PR #370（issue #358 读侧诚实性）把 `editDiffTruncated` 并进那个 cause 联合类型顺带消掉的；再上一轮 160 → 156 的 4 个也全在这个文件（27 → 23），来自 PR #356 为 `toolMarker` 加的 `markerCount` 窄化），将来收紧就走这条路，不要拿它当「反正卡不住」的理由。
+    `npm run check:types -- --with-tools` 卡并集（基线 **142** / 29 个文件 = 107 + 19 + 16，与压低它的那笔修同一笔提交里复测；**两档在 CI 上都有自己的步骤**——`--with-tools` 那两步紧跟包根档，所以常量在这里过期会像别处一样红，issue #653；这里的每文件计数每次下调都要重新数——本轮两档各降的那 2 个**一个都不在** `src/tools/file-tools.js` 与 `src/skills/loader.js`（仍 20 / 16），全在 `src/loop/orchestrator.js` 14 → 12；上一笔两档各降的那 6 个**一个都不在** `src/tools/file-tools.js` 与 `src/skills/loader.js`（仍 20 / 16）：是 `src/run-state.js` 10 → 4、`src/loop/orchestrator.js` 17 → 14、`src/reflection/wrapup.js` 3 → 0（退出错误集合），对 `src/compact/pipeline.js` 3 → 6 与 `src/compact/fold-llm.js` 2 → 5；上一轮两档各降的那同一个 1 是 `src/messages/openai-normalization.js` 1 → 0，来自 issue #409（`6b604e7` 把 `parseOpenAIToolArguments` 改走共享的 `parseToolArguments`，`d9a0989` 再把 `parseJsonWithRepair` 的 `@returns` 拍平成单形状、把新文件 `src/messages/tool-arguments.js` 短暂带进的那 1 个也消掉），带错文件数随之 31 → 30；上一轮（2026-10-22）`src/tools/file-tools.js` 23 → 20、`src/skills/loader.js` 仍 16，156 → 153 的那 3 个全在这里，是 PR #370（issue #358 读侧诚实性）把 `editDiffTruncated` 并进那个 cause 联合类型顺带消掉的；再上一轮 160 → 156 的 4 个也全在这个文件（27 → 23），来自 PR #356 为 `toolMarker` 加的 `markerCount` 窄化），将来收紧就走这条路，不要拿它当「反正卡不住」的理由。
     ⚠ 退役的 261 里悄悄留着 #177 已经还掉的那 1 个（那一档当时没跟着复测）：**下调基线必须两档在同一笔提交里一起复测、一起降**。
   - 工具链许可（issue #213，#214 重申）：`typescript` + `@types/node` 只能待在 dev——零运行时依赖红线约束的是
     `src/`/`bin/` 的 import（`node:` 内置 + 相对路径），本门禁也不新增依赖（只用 `node:` 内置，不建 tsconfig、不引入新工具）。
+  - **量数纪律（issue #653），对本文提到的每一道棘轮、每一张派生表都成立**：
+    - **派生数与基线只在最终树上取。** 基线、派生表、覆盖面下限都是「量在哪棵树上」的快照；同批还有别的分支没合进来时就取数，
+      得到的是「谁也不会真的构建的那棵树」的数。
+    - **基点落后 main 就先 rebase 再取数。** 本分支的基点在 main 后面时，先 rebase 到 main，之后再取数——在旧基点上读出来的数，
+      描述的是已经不存在的那棵树。
+    - **降债与它对应的基线 / 派生表更新在同一个 PR 里原子地进。** 同一个 PR 内部保留多个 commit（审阅边界照旧可读）是对的，
+      但两半必须一起进：只降债、不降常量（或不同步刷新派生表）的中间态绝不许单独进 main——正是这个中间态让 strict 棘轮的
+      反向证与树对不上（issue #653）。
 - `--strict` 棘轮规则（issue #417）：同一条 `tsc` 命令追加 `--strict`，与**它自己**那一对基线
   （`scripts/type-check-ratchet.mjs` 里的 `BASELINE_STRICT_ROOT` / `BASELINE_STRICT_WITH_TOOLS`）比较，自 #417 起是
   **阻塞**门禁——#416 只把它做成观测点（把数打出来、不卡任何东西），而那笔债在没人卡的期间一直在长。契约与非
@@ -203,6 +211,9 @@ scripts/          # 实验脚本和结果
   **两档必须同一笔提交里一起测、一起降**。两个总数是两次独立测量、不是差额——不许用一个推另一个，也不许把
   任何一个抄进文档（常量是唯一真值，命令表里 `check:types:strict` 那一行也是这么写的）。**#417 只加闸**：基线就是
   入库那一刻的总数，存量债由后续切片按文件还，红的是**新增**的一处 strict 错——包括加在覆盖面已有文件里的那一处。
+  上面 `--checkJs` 规则里的**量数纪律**对本文一档同样逐字成立：派生数与基线只在最终树上取、基点落后 main 时先 rebase 再取数、
+  降债与它对应的基线更新在同一个 PR 里一起进（PR 内部可保留多个 commit），但「只降债、不降基线」的中间态绝不许单独进 main
+  ——那正是本档反向证与树对不上的形态（issue #653）。
 
 ## 4. npm 发布指南（已根据 2026-08 政策验证）
 

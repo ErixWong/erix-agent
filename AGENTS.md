@@ -162,7 +162,7 @@ scripts/          # experiment scripts and results
   - Known hole, deliberately left open by the spec: the second public entry `src/tools/index.js` pulls in
     `src/tools/file-tools.js` (19 errors) and `src/skills/loader.js` (16), which the package-root graph never
     reaches, so new errors there are **not** caught by the default gate. `npm run check:types -- --with-tools`
-    gates the union (baseline **142** / 29 files = 107 + 19 + 16, re-measured together with the fix that lowered it; **CI runs only the package-root tier, so this tier is watched by no gate** — that is why a stale constant here stays invisible); the per-file counts are
+    gates the union (baseline **142** / 29 files = 107 + 19 + 16, re-measured together with the fix that lowered it; **both tiers now have their own CI step** — the `--with-tools` steps sit right after the package-root ones, so a stale constant here reds like any other, issue #653); the per-file counts are
     re-counted every time the tiers are lowered — this round both tiers lost the same six units and none of them is
     in `src/tools/file-tools.js` or `src/skills/loader.js` (still 20 / 16): the −6 is `src/run-state.js` 10 → 4,
     `src/loop/orchestrator.js` 17 → 14, `src/reflection/wrapup.js` 3 → 0 (that file leaves the error-carrying set)
@@ -181,6 +181,17 @@ scripts/          # experiment scripts and results
   - Toolchain allowance (issue #213, restated here for #214): `typescript` + `@types/node` may stay dev-only —
     the zero-runtime-dependency red line constrains what `src/`/`bin/` import (`node:` builtins + relative
     paths), and this gate adds no dependency either (only `node:` builtins, no tsconfig, no new tool).
+  - **Measurement discipline (issue #653), and it binds every ratchet and every derived table in this repository**:
+    - **Take derived numbers and baselines on the final tree only.** A baseline, a derived table and a coverage
+      floor are each a snapshot of the tree they were taken on; taking one while a sibling branch is still
+      arriving yields a number for a tree nobody will ever build on.
+    - **Rebase before measuring.** When this branch's base is behind `main`, rebase onto `main` first and take
+      the numbers after that — a number read off a stale base describes a tree that no longer exists.
+    - **A debt slice and its baseline / derived-table update go in as one PR, atomically.** Several commits
+      inside that PR are fine (the review boundary stays readable), but the two halves arrive together: lowering
+      debt without lowering the constant — or without refreshing the derived table — must never reach `main` on
+      its own, because that intermediate state is exactly what made the strict ratchet's reverse proof disagree
+      with the tree (issue #653).
 - `--strict` ratchet rule (issue #417): the same `tsc` invocation as the `--checkJs` ratchet with `--strict`
   appended, compared against its **own** pair of baselines (`BASELINE_STRICT_ROOT` / `BASELINE_STRICT_WITH_TOOLS`
   in `scripts/type-check-ratchet.mjs`), is a **blocking** ratchet since #417 — #416 introduced it as an observation
@@ -191,6 +202,11 @@ scripts/          # experiment scripts and results
   document (the constants are the only truth; the `check:types:strict` row in the command table says the same).
   **#417 only adds the gate**: the baseline is the total at introduction, the existing debt is paid down file by
   file in later slices, and what reds is a *new* strict error — including one added to a file the graph already covers.
+  The measurement discipline stated in the `--checkJs` rule above binds this tier verbatim: derived numbers and
+  baselines are taken on the final tree only, the branch is rebased onto `main` before that reading, and a debt
+  slice arrives together with its baseline update in one PR — several commits inside it are fine, but the
+  "debt lowered, baseline not lowered" state never reaches `main` alone (that is the state in which this tier's
+  reverse proof and the tree disagree, issue #653).
 - Documentation rule (issue #164): any change to `README*.md`, `docs/requirements*.md`, a default value, or the
   `files`/`exports` list must keep `npm run check:docs` green. The check reads ground truth from
   `package.json` and `src/`, so docs cannot silently drift; the required phrasing for
