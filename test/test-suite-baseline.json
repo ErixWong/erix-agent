@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 上限**，不是实测抄件：`expect.tests` 必须逐字相等、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3323,
+    "tests": 3328,
     "fail": 0,
     "maxSkipped": 14
   },
@@ -228,6 +228,18 @@
       "todo": 0,
       "cancelled": 0,
       "why": "tests +8 是有意的增删（issue #658 / #659 合成一片）：test/examples/erix-run-async.test.js 新增 8 条 —— #659 第1格 4 条（档位是显式契约 / 三档走完就成功且每档重算 isIdle / 用尽三档就停 / 重试定时器与看门狗同一份 job 生命周期）、第2格 2 条（rearmIfUnstarted 单元级有界语义 / 扩展级 agent_end 与 session_start 两条补偿回路）、第3格 1 条（sent 的上界：pi 返回 void 不算已送达，只有 agent_start 是确认；同一条还钉住 README 与 jobs 注释里的字面口径）、第5格 1 条（getSessionId() 真抛异常 ⇒ no-owner 但盘上带根因）；另有两条是**改写不是新增**（#234 机制6 改成 #658 的按归属收口、#654 那条 reload 用例改成断言窗口内结算的失败事实），#207 R2④ 与「未终局恒在场」只是加断言。数字逐字来自本次 `npm test` 的 TAP 汇总行（/tmp/tap.log 第 21153 行起），经 `npm run check:test-summary -- --log /tmp/tap.log` 取出（同一份日志里 pass=3311 / skipped=12）。skipped 仍是那 12 条真上游与真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），未新增 skip，maxSkipped 上限 14 不动。"
+    },
+    {
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "62ababb",
+      "tests": 3328,
+      "pass": 3316,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests +5 是有意的增删（issue #665）：test/examples/erix-run-async.test.js 新增 5 条 —— 四条可见文案分支（failed 带根因与已重试次数 / orphaned 说清 owner 会话已不在并点名目标 / no-owner 带 ownerSessionError 原文与「没有真异常就是 null」两条 / sent 断言文案里连 marker 都不出现）+ 一条「三档重试后只留最后一条诊断（原位替换，不累积）」；另有一条是**加断言不是新增**（#654「未终局恒在场」那条把 deliveryNote 也列进恒在场清单）。数字逐字来自本次 `npm test` 的 TAP 汇总行（同一份日志 `/tmp/tap-665.log`），经 `npm run check:test-summary -- --log /tmp/tap-665.log` 取出（`TEST-SUMMARY-VERDICT ok`，同一份日志里 pass=3316 / skipped=12）。⚠ 这里不写日志行号：TAP 日志的行号会随任意一条用例的打印行数漂（本片两次跑同一条命令就差了一行），抄行号只会制造一份会过期的引用。skipped 仍是那 12 条真上游与真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），未新增 skip，maxSkipped 上限 14 不动。"
     }
   ]
 }

@@ -1760,7 +1760,7 @@ test("#654 缺陷2：未终局时 delivery / notifyTargetSessionId / notifyError
 
   const running = jobView(registry.get(handle.runId));
   for (const field of ["delivery", "notifyTargetSessionId", "notifyError", "ownerSessionId", "deduped",
-    "ownerSessionError", "notifyRetries", "resume"]) {
+    "ownerSessionError", "notifyRetries", "deliveryNote", "resume"]) {
     assert.ok(field in running, `${field} 必须恒在场（查询侧不必分两种形状解析）`);
   }
   assert.equal(running.delivery, null, "还没投递就给 null（不编一个 sent）");
@@ -1770,6 +1770,7 @@ test("#654 缺陷2：未终局时 delivery / notifyTargetSessionId / notifyError
   assert.equal(running.deduped, 0);
   assert.equal(running.ownerSessionError, null, "没有真异常就是 null（不编根因）");
   assert.equal(running.notifyRetries, 0, "还没排过重试");
+  assert.equal(running.deliveryNote, null, "还没投递 = 没有诊断句（#665：null 也是恒在场的事实，不是缺键）");
   assert.equal(running.resume, null, "还没终局 = 还没有坐标事实（不是「不能续跑」，那是 resumable 的事）");
 
   job.release();
@@ -1845,4 +1846,170 @@ test("#654 缺陷3：投递失败不再被记成「已投递」——false / 抛
   assert.equal(jobView(job).delivery, "sent", "去重不能把「已经投出去」改写成 deduped");
   assert.equal(jobView(job).deduped, 1);
   assert.equal(attempts.length, 3, "deduped 不再调投递口");
+});
+
+// ---------------------------------------------------------------------------
+// issue #665：投递失败在会话面**完全静默** —— 把 delivery 诊断写进调用方会读的文案。
+//
+// 现场：投递事实（`delivery` / `notifyError` / `notifyRetries` / `ownerSessionError`）早就落在
+// `jobView` / `status.json` 上（#654 缺陷 2），但**会话面一句都没有**：`failed` / `orphaned` /
+// `no-owner` 三态刻意不投（或投不出去），于是通知正文里那行 `[erix_run …]` 根本没送到过，故障只能靠
+// 读盘反推。这一节钉住的是**文案**那一面（不是再加字段）：只要 `delivery` 不是 `sent`，调用方
+// （`action:"status"` / `action:"result"` 的返回文本）就必须读到一句解释；`sent` 时一句都不许加。
+//
+// 四处断言各自对应一条变异：把某个分支改回「静默」⇒ 点名的那条变红；把 `withDeliveryNote` 的
+// **原位替换**改回「无脑追加」⇒ 最后那条「只留最后一条」变红。
+// ---------------------------------------------------------------------------
+
+/** 文本面里的投递诊断行（`delivery:` 开头）；正常路径应当是空数组。 */
+function deliveryLines(text) {
+  return text.split("\n").filter((line) => line.startsWith("delivery:"));
+}
+
+/** 一条 job 走完（含用尽三档重试）的 runtime；`notify` 决定投递事实，时钟是假的（不真等 45s）。 */
+async function deliveryRuntime({ prefix, sessionId, sessionOwnerError, notify, sessionHandles = jobsApi.createSessionHandleRegistry() }) {
+  const clock = fakeClock();
+  const sessionDir = await tempDir(`${prefix}-`);
+  const registry = createAsyncJobRegistry();
+  const runtime = createAsyncRuntime({
+    home: await tempDir(`${prefix}-home-`),
+    registry,
+    sendRegistry: createCompletionSendRegistry(),
+    sessionHandles,
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    runJob: async () => ({ ...P_OK }),
+    notify,
+  });
+  const { handle } = runtime.start(
+    { task: "t", cwd: sessionDir, sessionDir, async: true },
+    { ...(sessionId === undefined ? {} : { sessionId }), ...(sessionOwnerError === undefined ? {} : { sessionOwnerError }) },
+  );
+  await waitUntil(() => registry.get(handle.runId).status === "completed", { label: `${prefix} completed` });
+  return { clock, runtime, registry, sessionDir, runId: handle.runId };
+}
+
+test("#665：投递失败（failed）⇒ 文案里带 notifyError 根因与已重试次数", async () => {
+  const sessionHandles = jobsApi.createSessionHandleRegistry();
+  sessionHandles.set("665-failed", { deliver: () => true });
+  const { clock, runtime, runId } = await deliveryRuntime({
+    prefix: "erix-run-665-failed",
+    sessionId: "665-failed",
+    sessionHandles,
+    notify: () => ({ delivery: "failed", error: "宿主一直在拒（isIdle=false）" }),
+  });
+  // 三档重试走完（用尽）：首次 + 三档 = 4 次尝试，notifyRetries 停在 3
+  for (let index = 0; index < NOTIFY_RETRY_DELAYS_MS.length; index += 1) {
+    assert.equal(clock.tick(), true, `第 ${index + 1} 档重试必须排上`);
+  }
+  const view = runtime.act({ action: "result", runId }).view;
+  assert.equal(view.delivery, "failed");
+  assert.equal(view.notifyRetries, NOTIFY_RETRY_DELAYS_MS.length);
+
+  const lines = deliveryLines(textOf(formatAsyncResult(runtime.act({ action: "result", runId }))));
+  assert.equal(lines.length, 1, `failed 必须有一句解释（且只有一句），实测 ${JSON.stringify(lines)}`);
+  assert.match(lines[0], /^delivery: failed \(/u, "句首是 marker + 取值，机器也认得出");
+  assert.match(lines[0], /宿主一直在拒/u, "根因（notifyError）要进文案——调用方读的是这一句，不是盘");
+  assert.match(lines[0], /已重试 3 次/u, "重试次数要与 notifyRetries 对上");
+
+  // `status` 与 `result` 共用同一处拼装（不是两套文案）
+  const statusText = textOf(formatAsyncResult(runtime.act({ action: "status", runId })));
+  assert.deepEqual(deliveryLines(statusText), lines, "action:\"status\" 与 action:\"result\" 是同一句");
+});
+
+test("#665：owner 会话已不在（orphaned）⇒ 文案说清「owner 会话已不在」，并点名本该投给谁", async () => {
+  let attempts = 0;
+  // 句柄表里**没有** owner：会话关了 / 扩展实例换了（#654 缺陷 1 的 orphaned 那一档）
+  const { runtime, sessionDir, runId } = await deliveryRuntime({
+    prefix: "erix-run-665-orphaned",
+    sessionId: "665-gone",
+    notify: () => { attempts += 1; return "sent"; },
+  });
+  assert.equal(attempts, 0, "查不到 owner 的句柄就不投（不猜一个存活会话）");
+
+  const view = runtime.act({ action: "status", runId }).view;
+  assert.equal(view.delivery, "orphaned");
+  const lines = deliveryLines(textOf(formatAsyncResult(runtime.act({ action: "status", runId }))));
+  assert.equal(lines.length, 1, `orphaned 必须有一句解释（且只有一句），实测 ${JSON.stringify(lines)}`);
+  assert.match(lines[0], /^delivery: orphaned \(/u);
+  assert.match(lines[0], /665-gone/u, "要点名**本来该投给**哪个会话");
+  assert.match(lines[0], /已不在/u, "说清是「owner 会话已不在」，不是笼统的「没投出去」");
+
+  // 盘上那一句与文本面逐字相同（同一处拼装：只读 status.json 的会话读到的是同一句人话）
+  const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId }), "utf8"));
+  assert.equal(disk.deliveryNote, lines[0], "status.json 上的诊断句与文本面必须逐字同源");
+});
+
+test("#665：派工时拿不到会话身份（no-owner）⇒ 文案带 ownerSessionError 根因", async () => {
+  const rootCause = "sessionManager 已失效：Do not use a captured pi after reload";
+  const withError = await deliveryRuntime({
+    prefix: "erix-run-665-no-owner-err",
+    sessionId: undefined,
+    sessionOwnerError: rootCause,
+    notify: () => "no-owner",
+  });
+  const view = withError.runtime.act({ action: "result", runId: withError.runId }).view;
+  assert.equal(view.delivery, "no-owner");
+  const lines = deliveryLines(textOf(formatAsyncResult(withError.runtime.act({ action: "result", runId: withError.runId }))));
+  assert.equal(lines.length, 1, `no-owner 必须有一句解释（且只有一句），实测 ${JSON.stringify(lines)}`);
+  assert.match(lines[0], /^delivery: no-owner \(/u);
+  assert.match(lines[0], /ownerSessionError=/u, "必须点名根因字段（不是一句没有出处的「没有会话身份」）");
+  assert.match(lines[0], /Do not use a captured pi/u, "根因原文要进文案");
+
+  // 没有真异常时也不许留一个空解释：说清「就是宿主没给 sessionId」，而不是编一个根因
+  const noError = await deliveryRuntime({
+    prefix: "erix-run-665-no-owner-plain",
+    sessionId: undefined,
+    notify: () => "no-owner",
+  });
+  const plainLines = deliveryLines(textOf(formatAsyncResult(noError.runtime.act({ action: "status", runId: noError.runId }))));
+  assert.equal(plainLines.length, 1);
+  assert.match(plainLines[0], /ownerSessionError=null/u, "没有真异常就明说 null，不编根因");
+});
+
+test("#665：投成功（sent）⇒ 文案里一句投递诊断都没有（正常路径不贴噪音）", async () => {
+  const sessionHandles = jobsApi.createSessionHandleRegistry();
+  sessionHandles.set("665-sent", { deliver: () => true });
+  const { runtime, runId } = await deliveryRuntime({
+    prefix: "erix-run-665-sent",
+    sessionId: "665-sent",
+    sessionHandles,
+    notify: () => "sent",
+  });
+
+  const view = runtime.act({ action: "result", runId }).view;
+  assert.equal(view.delivery, "sent");
+  assert.equal(view.deliveryNote, null, "sent 时那句人话是 null（不是「delivery: sent」这种噪音）");
+  for (const action of ["status", "result"]) {
+    const text = textOf(formatAsyncResult(runtime.act({ action, runId })));
+    assert.deepEqual(deliveryLines(text), [], `action:"${action}" 的正常路径不许出现投递诊断，实测 ${JSON.stringify(deliveryLines(text))}`);
+    assert.doesNotMatch(text, /delivery:/u, "连 marker 都不许出现");
+  }
+});
+
+test("#665：重试三档后文案只保留最后一条诊断（原位替换，不累积）", async () => {
+  const sessionHandles = jobsApi.createSessionHandleRegistry();
+  sessionHandles.set("665-accumulate", { deliver: () => true });
+  let attempt = 0;
+  const { clock, runtime, registry, runId } = await deliveryRuntime({
+    prefix: "erix-run-665-accumulate",
+    sessionId: "665-accumulate",
+    sessionHandles,
+    // 每次尝试给一条**不同**的根因：留下的必须是最后那条，不是第一条
+    notify: () => { attempt += 1; return { delivery: "failed", error: `第 ${attempt} 次被拒` }; },
+  });
+  for (let index = 0; index < NOTIFY_RETRY_DELAYS_MS.length; index += 1) {
+    assert.equal(clock.tick(), true, `第 ${index + 1} 档重试必须排上`);
+  }
+  assert.equal(attempt, NOTIFY_RETRY_DELAYS_MS.length + 1, "首次 + 三档 = 4 次尝试");
+
+  const note = jobView(registry.get(runId)).deliveryNote;
+  assert.equal((note.match(/delivery:/gu) ?? []).length, 1, `诊断不许累积，实测 ${JSON.stringify(note)}`);
+  assert.match(note, /第 4 次被拒/u, "留下的必须是**最后**一条根因（不是第一次那条）");
+  assert.match(note, /已重试 3 次/u, "重试次数是历史事实，跟着刷新");
+
+  const lines = deliveryLines(textOf(formatAsyncResult(runtime.act({ action: "result", runId }))));
+  assert.equal(lines.length, 1, `文本面也只许有一句，实测 ${JSON.stringify(lines)}`);
+  assert.equal(lines[0], note, "文本面与视图是同一句（同一处拼装）");
 });

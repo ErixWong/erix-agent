@@ -39,6 +39,12 @@
 // issue #658（同一份 job 生命周期）：`shutdown(ownerSessionId)` **按会话归属**收口，不再有进程级一次性
 // 开关；看门狗与投递重试两根定时器都只清自己会话的，没有归属的 job（`no-owner` 那一族）不清。
 //
+// issue #665（把诊断补到**调用方会读的那一面**）：投递事实早就在 `jobView` / `status.json` 上（#654），
+// 但通知正文只在投成功时才存在 ⇒ `failed` / `orphaned` / `no-owner` 三态在会话面**零痕迹**，故障只能
+// 靠读盘反推。现在 `deliveryNote` 把这件事收成**一句人话**（`DELIVERY_NOTE_MARKER` = `delivery:`），
+// 由 `withDeliveryNote` **原位替换**维护（重试多档只留最后一条），并在 `erix-run-format.js` 的
+// `action:"status"` / `action:"result"` 文本面原样打出（一处拼装）。`delivery` 等字段的恒在场口径没动。
+//
 // ⚠ 后台 run **与扩展同进程**——这是**本单自己的选择**，不是学 pi-subagents：上游**每个**后台 run 都
 // `spawn` 一个独立 runner 进程（`runs/background/async-execution.js:4` 导入 `spawn`、`spawnRunner` 定义在 `:385`、
 // `:484` 真调用，调用点 `:1255` / `:1800`；旧注释说它「也没为每个子任务 spawn」是假的，#269 已改）。
@@ -101,6 +107,90 @@ export const NOTIFY_RETRY_DELAYS_MS = Object.freeze([5_000, 10_000, 30_000]);
  * | `no-owner` | 这条 job 没有会话身份（派工时没拿到 `sessionId`）⇒ 本层不替调用方猜目标 |
  */
 export const DELIVERY_VALUES = Object.freeze(["sent", "deduped", "failed", "orphaned", "no-owner"]);
+
+/**
+ * 投递诊断在**那句人话**里的 marker（issue #665）：`delivery: <解释>`。
+ *
+ * 为什么是一个 marker 而不是「随便拼一段中文」：诊断是**每次投递尝试都可能改写**的一段文字，
+ * 而这段文字要跟着 job 走完三档重试。带 marker 才能用 `withDeliveryNote` 做**原位替换**
+ * （而不是每投一次就往尾巴上再粘一段）。
+ */
+export const DELIVERY_NOTE_MARKER = "delivery:";
+
+/**
+ * 把一段投递诊断写进一句人话：**原位替换**，绝不追加（issue #665）。
+ *
+ * 写法：定位**最后一次**出现的 `DELIVERY_NOTE_MARKER` → 只保留它前面的 head → 再拼新值；
+ * `text` 为空（或不是字符串）时把诊断清掉（head 也为空就整体清成 `undefined`）。
+ *
+ * 为什么必须是替换而不是追加：投失败后的有界重试（#659 第 1 格）会**多次**走到记录投递事实
+ * 这一步，`scheduleNotifyRetry` 每排一档还会再刷新一次（重试次数变了）。无脑追加会让同一句
+ * 文案里出现 4 段 `delivery: failed (…)`——这正是「往一句人话里追加诊断」最容易写坏的地方。
+ *
+ * @param {string|null|undefined} note 上一版的那句人话（`undefined` / `null` = 还没有）
+ * @param {string|null|undefined} text 这一段诊断（不含 marker；`undefined` / `""` = 清掉诊断）
+ * @returns {string|undefined}
+ */
+export function withDeliveryNote(note, text) {
+  const head = typeof note === "string" ? note : "";
+  const at = head.lastIndexOf(DELIVERY_NOTE_MARKER);
+  const base = at === -1 ? head : head.slice(0, at);
+  if (typeof text !== "string" || text === "") return base === "" ? undefined : base;
+  return `${base}${DELIVERY_NOTE_MARKER} ${text}`;
+}
+
+/**
+ * 一条投递事实 → 那句人话的正文（不含 marker）。`sent` / 还没尝试 ⇒ `undefined`（**不添噪音**）。
+ *
+ * 判据式的口径（issue #665）：**只要 `delivery` 不是 `sent`，就必须有一句解释**——
+ * `failed` 带根因与重试次数、`orphaned` 说清 owner 会话已不在、`no-owner` 带 `ownerSessionError`；
+ * `sent` 是正常路径，一句都不加（否则只是往正常路径上贴噪音）。
+ *
+ * @param {{delivery?:unknown, notifyError?:unknown, notifyRetries?:unknown, ownerSessionError?:unknown, notifyTargetSessionId?:unknown}} job
+ * @returns {string|undefined}
+ */
+export function deliveryNoteText(job) {
+  const delivery = job?.delivery;
+  if (delivery === undefined || delivery === null || delivery === "sent") return undefined;
+  const text = (value) => (typeof value === "string" && value !== "" ? value : undefined);
+  const retries = typeof job?.notifyRetries === "number" ? job.notifyRetries : 0;
+  if (delivery === "failed") {
+    const reason = text(job?.notifyError) ?? "根因未记录（投递口没给 notifyError）";
+    return `failed (${reason}, 已重试 ${retries} 次)`;
+  }
+  if (delivery === "orphaned") {
+    const target = text(job?.notifyTargetSessionId) ?? "（未记录）";
+    return `orphaned (owner 会话 ${target} 已不在，不投给任何存活会话)`;
+  }
+  if (delivery === "no-owner") {
+    const cause = text(job?.ownerSessionError);
+    return `no-owner (派工时拿不到会话身份；`
+      + (cause === undefined
+        ? "ownerSessionError=null（没有真异常，就是宿主没给 sessionId）"
+        : `ownerSessionError=${cause}`)
+      + ")";
+  }
+  if (delivery === "deduped") {
+    return "deduped (本次结算被去重注册表挡下，投递已由同一 run 的另一次结算完成)";
+  }
+  // 取值域外（`deliveryOf` 只吐 `DELIVERY_VALUES` 里的值）：宁可说「没登记」，也不假装解释过了。
+  return `${String(delivery)} (这个取值没有登记解释口径)`;
+}
+
+/**
+ * 按 job 上**当下**的投递事实重写那句人话（issue #665）：原位替换，幂等。
+ *
+ * 两个调用点，都是「投递事实刚变了」那一刻：`recordDelivery`（每次尝试结束）与
+ * `scheduleNotifyRetry`（排出一档 ⇒ `notifyRetries` 变了，句子里的次数要跟上）。
+ * 同一个 job 上一共最多被调十次上下，而**文案始终只有一段**——靠的是 `withDeliveryNote` 的替换语义。
+ *
+ * @param {object} job
+ * @returns {string|undefined}
+ */
+function refreshDeliveryNote(job) {
+  job.deliveryNote = withDeliveryNote(job.deliveryNote, deliveryNoteText(job));
+  return job.deliveryNote;
+}
 
 function textOf(value) {
   if (typeof value === "string") return value;
@@ -496,6 +586,11 @@ export function jobView(job, { now = () => Date.now() } = {}) {
     notifyError: job.notifyError ?? null,
     // #659 第 1 格：已经排出去的重试次数（上限 = `NOTIFY_RETRY_DELAYS_MS.length`）。
     notifyRetries: job.notifyRetries ?? 0,
+    // #665：投递诊断的**那句人话**（`delivery` 不是 `sent` 时非空）。与 `elapsedMs` 同族：派生值，
+    // 但物化在视图里——调用方读的是文案（`erix-run-format.js` 原样打这一句），`status.json` 读的是同一句，
+    // 不必自己拿 `delivery` + `notifyError` + `notifyRetries` + `ownerSessionError` 去拼。
+    // 恒在场：没尝试过 / 投成功（`sent` 不贴噪音）时是 `null`。
+    deliveryNote: job.deliveryNote ?? null,
     deduped: job.deduped ?? 0,
     // —— 异步面独有：**续跑坐标**（issue #659 第 6 格）。与 `delivery` 同族：只读 `status.json` 的
     //    别的会话不必从 `diagnostics.resume` 里挖，也不必自己去拼 `<sessionDir>/<runId>.jsonl`。
@@ -595,6 +690,8 @@ export function createAsyncRuntime(options = {}) {
     // `null` 也是事实（“没有目标会话”），只有 `undefined`（= 调用方没提供）才不动旧值。
     if (facts.target !== undefined) job.notifyTargetSessionId = facts.target;
     job.notifyError = facts.error;
+    // #665：投递事实一变就把那句人话重写一遍（原位替换，不是追加）。
+    refreshDeliveryNote(job);
     return delivery;
   };
 
@@ -632,6 +729,9 @@ export function createAsyncRuntime(options = {}) {
     const delay = NOTIFY_RETRY_DELAYS_MS[attempt];
     job.notifyRetries = attempt + 1;
     job.notifyRetryAt = now() + delay;
+    // #665：句子里的「已重试 N 次」读的就是 `notifyRetries`，所以排档之后要再刷一次
+    // （原位替换 ⇒ 刷两次也只有一段）。
+    refreshDeliveryNote(job);
     const timer = setTimeoutFn(() => {
       job.notifyRetry = undefined;
       // 到点重投：**重算 `isIdle()`**（投递口每次都重新问一次父会话忙不忙）并按 `ownerSessionId`

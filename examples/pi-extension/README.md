@@ -369,6 +369,31 @@ pi --extension ./examples/pi-extension/erix-run.ts
 `sent` 之后 `isPending()` 仍然是 true 就是「还没被确认」）。能确认失败的只有三种：没有目标会话
 （`no-owner` / `orphaned`）、句柄显式拒绝、调用抛异常。下游**不许**把 `sent` 当「已送达」消费。
 
+#### 投递诊断进调用方会读的文案（issue #665）
+
+上面的字段让投递事实**可读**，但会话面是**静默**的：通知正文只在投成功时才存在，所以
+`failed` / `orphaned` / `no-owner` 三态在会话里零痕迹，故障只能靠翻 `status.json` 反推。现在把诊断
+写进调用方真正会读的那一面——`action:"status"` / `action:"result"` 的**返回文本**（一处拼装：
+`erix-run-format.js` 的 `formatAsyncResult` 原样打 `jobView.deliveryNote` 那一句）。
+
+| `delivery` | 文案里那一句 |
+|---|---|
+| `sent` / 还没尝试 | **一句都不加**（`deliveryNote` 是 `null`）。正常路径不贴噪音 |
+| `failed` | `delivery: failed (<notifyError 根因>, 已重试 N 次)` |
+| `orphaned` | `delivery: orphaned (owner 会话 <id> 已不在，不投给任何存活会话)` |
+| `no-owner` | `delivery: no-owner (派工时拿不到会话身份；ownerSessionError=<原文>)` |
+| `deduped` | `delivery: deduped (本次结算被去重注册表挡下，投递已由同一 run 的另一次结算完成)` |
+
+判据式的口径：**只要 `delivery` 不是 `sent`，文案里就必须有一句解释**；`sent` 时不许添噪音。
+
+**多次重试只留最后一条**：诊断句由 `erix-run-jobs.js` 的 `withDeliveryNote` 维护，写法是**原位替换**
+——定位最后一次出现的 marker（`DELIVERY_NOTE_MARKER`，即 `delivery:`）→ 只保留它前面的 head → 再拼新值；
+新值为空时把诊断清回 `undefined`。所以三档重试（连同每次排档对「已重试 N 次」的刷新）之后，
+文案里始终只有一段，且是**最后那条**根因——而不是四段拼在一起的长条。
+
+`jobView.deliveryNote` 与 `delivery` 同族**恒在场**（没尝试过 / 投成功时是 `null`，不是缺键），
+所以只读 `status.json` 的会话读到的也是同一句人话。`notifyRetryAt` 仍不在此列（那是「排了档才有」的瞬态键）。
+
 ### 5. `timeoutMs` 定时器归 run 级（不在 `execute()` 里）
 
 异步分支返回后，定时器仍要把终局写成 `aborted` 并落进 `status.json`（否则查询侧永远停在 `running`）。
