@@ -144,8 +144,10 @@ const HELP_TEXT = `用法：
   --tools <名1,名2>    工具白名单：只保留列表内的工具（内置+skill+MCP）；未知名字警告并忽略，过滤后为空则报错
   --compaction <名>   上下文压缩策略：${BUILTIN_COMPACTION_STRATEGY_NAMES.join(" | ")}（默认：fold-llm）。
                       fold-llm 每次压缩会多一次主力模型调用（输入为被折叠的老轮次），其 usage
-                      已计入本次 run 总账；摘要器失败/超时会自动降级为统计摘要（fold-statistical，
-                      零 LLM），run 不失败。也可用 config 字段 compaction 固定（旗标优先）。
+                      已计入本次 run 总账；摘要器失败（含默认 30s 上限的超时）是**终局错误**
+                      summarizer_failed：run 以 failed 结束、退出码 5，不会退回统计摘要。想要
+                      「一次 LLM 都不调、永不失败」的折叠就显式选 fold-statistical（零 LLM）。
+                      也可用 config 字段 compaction 固定（旗标优先）。
 
 环境变量：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
