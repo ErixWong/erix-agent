@@ -18,7 +18,7 @@
 | `erix-run-parent-wake.js` | 唤醒父会话的双分支（idle 真触发 / 忙时追加 + `deliverAs:"steer"` 排队）+ `WAKE_PENDING_MS` pending 窗口 + `Symbol.for` WeakMap（`/reload` 不丢）。**逐分支对照** `pi-subagents` 的 `src/shared/parent-wake.js`（全文 46 行，分支结构一一对应，另多一个测试用的 `peekReservation`），**不 import pi** |
 | `index.ts` | 目录形态的入口（pi 把「含 `index.ts` 的子目录」当成一条扩展加载） |
 | `../../test/examples/erix-run-core.test.js` | core 单测（fake provider / 注入 fake lib，全离线） |
-| `../../test/examples/erix-run-async.test.js` | **#234 异步面单测**：立即返回、`status`→`result` 生命周期、`cancel` 终局 `aborted`、`status.json` 落盘与跨 `/reload` 回落读盘、去重注册表、parent-wake 两条分支 + pending 窗口 + reload 安全、run 级看门狗、`quiet` 唤醒策略、`shutdown` 幂等；**#276 八条**钉住「异步终局视图覆盖同步结果的每个字段」（字段表从 core 载荷构造器派生、`UNPROJECTED_SYNC_FIELDS` 恒空、`result`/`status`/`status.json` 三处同形、未终局零值形状、句柄/摘要子集钉死） |
+| `../../test/examples/erix-run-async.test.js` | **#234 异步面单测**：立即返回、`status`→`result` 生命周期、`cancel` 终局 `aborted`、`status.json` 落盘与跨 `/reload` 回落读盘、去重注册表、parent-wake 两条分支 + pending 窗口 + reload 安全、run 级看门狗、`quiet` 唤醒策略；**#276 八条**钉住「异步终局视图覆盖同步结果的每个字段」（字段表从 core 载荷构造器派生、`UNPROJECTED_SYNC_FIELDS` 恒空、`result`/`status`/`status.json` 三处同形、未终局零值形状、句柄/摘要子集钉死）；**#654 七条**按会话隔离投递句柄与投递可观测性；**#658** 一条钉 `shutdown` 按会话归属收口（A 的 `session_shutdown` 不摘 B 的看门狗，B 到点仍写 `aborted`）；**#659** 八条钉有界重试（假时钟推三档）/ `isPending()` 的补偿回路（`agent_end` 与 `session_start`）/ `sent` 的上界 / reload 窗口内的失败事实 / `no-owner` 的根因 / 顶层 `resume` 坐标 |
 | `../../test/examples/erix-run-core.smoke.test.js` | 真机冒烟（一次真 relay 调用，默认跳过） |
 | `../../test/examples/erix-run-pi-load.test.js` | 用 **pi 自己的装载器**（jiti + 虚拟模块）加载 `.ts`，断言注册成功、失败路径不抛错；#237 之后还拿**真 `execute()`** 把每条返回路径的 `details` 序列化一遍 |
 | `../../test/examples/erix-run-resume.test.js` | **#207 R2 续跑单测**：第一次 run 停在 `max_rounds_cap` ⇒ 第二次从账本接着跑（历史 / 轮号 / 账本都不重置）、纯续跑不追加用户轮、三种坐标（transcript / `runId`+`sessionDir` / `status.json`）指到同一份账本、坐标不存在 / 空账本 / 坏 `status.json` 的明确报错、`bad_params` 形状校验、异步面「`status.json` 即续跑坐标 + job 沿用原 `runId`」 |
@@ -177,8 +177,8 @@ pi --extension ./examples/pi-extension/erix-run.ts
 - **写不进去不改变终局**：judge.log 建目录 / append 失败只记一次 `diagnostics.persistenceErrors`
   （`channel: "judgeLog"`）并停止后续审计行；已跑完的 run 不会因审计面失败变 `failed`。
 - **落盘就是可续跑的前提**：`resumable` 是**事实**（不是能力声明）——只有 transcript 真写出来了才是
-  `true`，此时 `diagnostics.resume.handle` 给出续跑坐标（顶层 `resume` 是同一份事实，
-  见下面「续跑 resume」）。语义与用法见下面「续跑 resume」。
+  `true`，此时 `diagnostics.resume.handle` 给出续跑坐标（顶层 `resume` 是同一份事实）。语义与用法
+  见下面「续跑 resume」。
 
 ## 异步执行：派工即返回句柄（issue #234）
 
@@ -297,7 +297,7 @@ pi --extension ./examples/pi-extension/erix-run.ts
 以前**只有测试在调**：定义了判据、丢了消费方。后果就是上游注释自己写的那条风险——被处理掉或失败的
 唤醒 prompt **不会发 `agent_start`**，于是 reservation 只能等 `WAKE_PENDING_MS` 超时，那一轮静默丢掉。
 
-现在它有三个生产消费者，全在 `erix-run.ts` 的生命周期接线里：
+现在 `isPending()` 有两个生产消费者，外加 `agent_start` 那一侧的清位，全在 `erix-run.ts` 的生命周期接线里：
 
 | 事件 | 调什么 | 干什么 |
 |---|---|---|
