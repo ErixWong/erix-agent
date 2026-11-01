@@ -39,6 +39,12 @@
 // issue #658（同一份 job 生命周期）：`shutdown(ownerSessionId)` **按会话归属**收口，不再有进程级一次性
 // 开关；看门狗与投递重试两根定时器都只清自己会话的，没有归属的 job（`no-owner` 那一族）不清。
 //
+// issue #665（把诊断补到**调用方会读的那一面**）：投递事实早就在 `jobView` / `status.json` 上（#654），
+// 但通知正文只在投成功时才存在 ⇒ `failed` / `orphaned` / `no-owner` 三态在会话面**零痕迹**，故障只能
+// 靠读盘反推。现在 `deliveryNote` 把这件事收成**一句人话**（`DELIVERY_NOTE_MARKER` = `delivery:`），
+// 由 `withDeliveryNote` **原位替换**维护（重试多档只留最后一条），并在 `erix-run-format.js` 的
+// `action:"status"` / `action:"result"` 文本面原样打出（一处拼装）。`delivery` 等字段的恒在场口径没动。
+//
 // ⚠ 后台 run **与扩展同进程**——这是**本单自己的选择**，不是学 pi-subagents：上游**每个**后台 run 都
 // `spawn` 一个独立 runner 进程（`runs/background/async-execution.js:4` 导入 `spawn`、`spawnRunner` 定义在 `:385`、
 // `:484` 真调用，调用点 `:1255` / `:1800`；旧注释说它「也没为每个子任务 spawn」是假的，#269 已改）。
