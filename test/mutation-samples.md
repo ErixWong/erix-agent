@@ -66,7 +66,7 @@
 | M11 | state-view 接线侧的字段清单（`providerContext` 面漏一项 ⇒ 该字段在 ctx 上变 `undefined`） | `src/loop/orchestrator.js` | 2750 | `ebeefb88aa8f` | 1 | `      "roundEventDeltas",` | `      "roundEventDeltasTypo",` | `test/loop-fr2.test.js` | `retries a retryable provider error with the original messages` |
 | M12 | #567 折叠身份：`foldId` 必须随被折轮区间变化（去掉 `roundRange` ⇒ 两次不同折叠撞同一个 id） | `src/compact/fold-summary-journal.js` | 114 | `29df1d1d7b6d` | 1 | `    roundRange: input?.roundRange ?? null,` | `    roundRange: null,` | `test/loop-fold-identity-567.test.js` | `foldId 随被折轮区间变化` |
 | M13 | #567 折叠身份：`seq` 由引擎给（不让宿主从 0 数；不写该键 ⇒ 载荷里没有序号） | `src/compact/fold-summary-journal.js` | 602 | `e7dd1878acdd` | 1 | `    ...(seq === undefined ? {} : { seq }),` | `    ...(undefined ? { seq } : {}),` | `test/loop-fold-identity-567.test.js` | `seq 由引擎给` |
-| M14 | #436 预算类停机的交付物补齐轮（机器证据的极性写反：健康 run 被啰嗦 / 失败的 run 不补） | `src/loop/orchestrator.js` | 4677 | `03c17bbf0f31` | 1 | `      if (guardDecision.deliverablesAllPassed !== false) return false;` | `      if (guardDecision.deliverablesAllPassed === false) return false;` | `test/loop-deliverables-gap-436.test.js` | `#436 ① deliverables_failed = 0 ⇒ 不 nudge` |
+| M14 | #436 预算类停机的交付物补齐轮（机器证据的极性写反：健康 run 被啰嗦 / 失败的 run 不补） | `src/loop/orchestrator.js` | 4728 | `03c17bbf0f31` | 1 | `      if (guardDecision.deliverablesAllPassed !== false) return false;` | `      if (guardDecision.deliverablesAllPassed === false) return false;` | `test/loop-deliverables-gap-436.test.js` | `#436 ① deliverables_failed = 0 ⇒ 不 nudge` |
 
 **合计 14 条样本 / 7 个目标文件 / 10 个捕获者**
 

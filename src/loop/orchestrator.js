@@ -3768,6 +3768,14 @@ export async function runToolLoop(options) {
     // issue #643：预算兜底那一发**跑过没有**（跑过 ⇒ `fedSummaryText` 里的「新消息」可能是安全层 /
     // user-turn 守卫造出来的回显，而不是摘要——见下面 `fedSummaryIsFoldSummary`）。
     let fallbackRan = false;
+    // issue #657：**预算兜底那一发折了几轮**（兜底没跑 ⇒ 0）。
+    // `strategyName` 的契约是「**真正执行了这次折叠**的那个策略」（#464 A 原话），而兜底从来是
+    // 另建实例 ⇒ 只记入口选了谁就答不出这一问。这个数与 `strategyFoldedRounds` 一起决定
+    // `actualFolderName`（见下面那处注释），四个写点共用同一份判断。
+    let budgetFallbackFoldedRounds = 0;
+    // issue #657：兜底实例的名字（只有兜底真折了才有意义；`unknown` 是取不到名字时的占位，与既有
+    // `strategy` 字段的兜底字面量同口径）。
+    let budgetFallbackName = "unknown";
     // issue #470（A1）：策略顺手带出的**机械替代物**（`fold-statistical` 的统计摘要 /
     // `fold-llm` 降级分支的那份）。没配内置策略、或宿主自带策略不产它 ⇒ `undefined`，语义照旧。
     // issue #566：`increment` = **本折自己那份**（合并前的增量）。只在「策略的 `text` 不是增量」时
@@ -3942,9 +3950,12 @@ export async function runToolLoop(options) {
           strategy: typeof strategy?.name === "string" ? strategy.name : "unknown",
         };
       }
-      foldedRounds = Number.isSafeInteger(result.foldedRounds)
+      // issue #657：**策略这一折折了几轮**（入口选中的那个策略实例自己报的，兜底那一发之前）。
+      // 单独留一份是因为 `foldedRounds` 随后会被兜底加上去——而「谁真干了活」要分两层看。
+      const strategyFoldedRounds = Number.isSafeInteger(result.foldedRounds)
         ? result.foldedRounds
         : 0;
+      foldedRounds = strategyFoldedRounds;
       compacted = result.compacted === true;
       protectedDowngraded = 0;
       let tokensAfter = estimateMessageTokens(compactedMessages);
@@ -3976,12 +3987,19 @@ export async function runToolLoop(options) {
         // 投影计算（#172 A2：复用上一次全量估算，不再重跑）
         fallbackRan = true;
         const fallbackTokensBefore = tokensAfter;
+        // issue #657：兜底那一发的**实例**提成局部常量（原来是在 `foldWithinBudget(...)` 里就地
+        // `createSlidingWindowStrategy()`，那个实例没有任何引用 ⇒ 只能报入口选中的名字）。
+        // 它只做两件事：交给 `foldWithinBudget`，以及下面如实报「真正干活的是它」。
+        const budgetFallbackStrategy = createSlidingWindowStrategy();
+        budgetFallbackName = typeof budgetFallbackStrategy?.name === "string"
+          ? budgetFallbackStrategy.name
+          : "unknown";
         // issue #643（= #464 C 档）：兜底**不再写死 `keepRounds: 0`**（那等于「把可折轮次全折掉」）。
         // `foldWithinBudget` 从最老一轮开始逐轮多折，`estimate <= budgetTokens` 即停——0.29 的现场
         // 是 14,692 tok 被清成 150 tok（超预算 22% 却只剩 head），模型只好把同一批文件重读。
         // issue #608：工作集地板在这里仍然最要紧（兜底正是「可能把工作集折掉」的那一格），
         // 判据与常量都与策略那一发同一个。
-        const fallback = await foldWithinBudget(createSlidingWindowStrategy(), compactedMessages, {
+        const fallback = await foldWithinBudget(budgetFallbackStrategy, compactedMessages, {
           budgetTokens,
           workingSetRecentRounds,
           protectedMessage: compactionContext.protectedMessage,
@@ -3992,7 +4010,10 @@ export async function runToolLoop(options) {
         });
         compactedMessages = fallback.messages;
         foldedPayload = [...foldedPayload, ...(fallback.foldedPayload ?? [])];
-        foldedRounds += fallback.foldedRounds ?? 0;
+        budgetFallbackFoldedRounds = Number.isSafeInteger(fallback.foldedRounds)
+          ? fallback.foldedRounds
+          : 0;
+        foldedRounds += budgetFallbackFoldedRounds;
         compacted = compacted || fallback.compacted === true;
         // 缺陷 ③：**合并**两个区间，不是「策略折过就丢掉兜底那份」。
         // 水位线（`foldedThrough`）只从这一个区间取 ⇒ 丢掉兜底那一折的 `to` 会让水位线低估，
@@ -4054,7 +4075,10 @@ export async function runToolLoop(options) {
           const fallbackSummarySource = {
             text: fallback.foldedSummaryText,
             source: "strategy",
-            strategy: typeof strategy?.name === "string" ? strategy.name : "unknown",
+            // issue #657：这份正文是**兜底这一折**自己算的 ⇒ 它记的也必须是自己。
+            // （改前写的是入口选中的策略名：配置策略折 0 轮、兜底替它干完活时，账上把功劳记给了
+            // 没动手的那一个。真值表见 `actualFolderName` 那处注释。）
+            strategy: budgetFallbackName,
           };
           strategyFoldSummary = strategyFoldSummary === undefined
             ? fallbackSummarySource
@@ -4074,6 +4098,28 @@ export async function runToolLoop(options) {
           tokensAfter,
         );
       }
+      // ── issue #657：**真正干活的层**（四个写点共用这一个局部）────────────────────────────
+      //
+      // `strategyName` 的契约（#464 A，`docs/host-consumer-contract.md`）是「**真正执行了这次折叠**
+      // 的那个策略」。而折叠入口里有**两个**可能的执行者：
+      //   · `strategy`——入口选中的那个（宿主配的 / 未配时库层 `sliding-window`）；
+      //   · `budgetFallbackStrategy`——策略折完仍超预算时**另建**的库层 `sliding-window`。
+      // 改前四个写点读的都是 `typeof strategy?.name`（= 入口选了谁），而兜底从不回写它 ⇒ 配置策略
+      // 折 0 轮、兜底替它干完活那一格里，账上把功劳记给了**没动手**的那一个（#657 缺陷一）。
+      //
+      // 真值表（真值 = 上面两个 `*FoldedRounds`，不是「配了什么」）：
+      //   ① 配置策略折了 ≥1 轮             ⇒ 配置名（不管兜底随后折没折：它确实做了它那份）
+      //   ② 配置策略折 0 轮 + 兜底折了 ≥1 轮 ⇒ **兜底实例名**（"sliding-window"）
+      //   ③ 未配策略（入口那一发就是库层兜底）⇒ 两个名字本来都是 "sliding-window"，不变
+      //   ④ 谁都没折                       ⇒ `undefined` ⇒ 不写键（「无事实 ⇒ 无键」，
+      //      `createCompactionStat` 同口径）；改前这里会写出「入口选了谁」，而它一次都没折
+      //
+      // ⚠ 故意**不**新增 `foldedBy` 之类的键（#657 已否决乙方案）：`layers` 里 `triggered > 0` 的
+      // budget 相层就是同一件事，多一个键只多一份会漂的拷贝；而「我配了什么」宿主自己知道，引擎
+      // 独占的信息只有「谁真做了」。
+      const actualFolderName = strategyFoldedRounds > 0
+        ? (typeof strategy?.name === "string" ? strategy.name : undefined)
+        : (budgetFallbackFoldedRounds > 0 ? budgetFallbackName : undefined);
       // ── issue #608：**显式劣化**（折不动就说出来，别打转）────────────────────────────────
       // 判据是**循环**，不是单次：连续 `WORKING_SET_LOOP_ATTEMPTS` 次折叠尝试都满足
       //   ① 工作集（最近 N 轮 tool_result）本身就超过预算；**且**
@@ -4243,7 +4289,9 @@ export async function runToolLoop(options) {
         foldedSummaryFact = {
           text: fedSummaryText,
           fingerprint: foldedFingerprint,
-          strategy: typeof strategy?.name === "string" ? strategy.name : "unknown",
+          // issue #657：事实行上的 `strategy` 也写**真正干活的那一层**（改前写入口选中的名字，
+          // 配置策略折 0 轮、兜底真折时它是一句假话）。真值表见 `actualFolderName` 那处注释。
+          strategy: actualFolderName ?? "unknown",
           ...(lastFoldSummaryOutcome === undefined
             ? {}
             : { summary: lastFoldSummaryOutcome.summary }),
@@ -4320,7 +4368,8 @@ export async function runToolLoop(options) {
           : {}),
         source: strategyFoldSummary?.source
           ?? (lastFoldSummaryOutcome === undefined ? "strategy" : "llm"),
-        strategy: typeof strategy?.name === "string" ? strategy.name : "unknown",
+        // issue #657：同一真值表的第四个写点（轮记录 `foldedFacts.strategy`）。
+        strategy: actualFolderName ?? "unknown",
         roundRange: foldedRoundRange ?? undefined,
         rounds: foldedRounds,
         degradeReason: strategyFoldSummary?.degradeReason,
@@ -4389,7 +4438,9 @@ export async function runToolLoop(options) {
         ...compactionStat,
         protectedDowngraded,
         // issue #464 A：写实例上的名字（含库层兜底的 `"sliding-window"`），不是配置项原文。
-        strategyName: typeof strategy?.name === "string" ? strategy.name : undefined,
+        // issue #657：而「实例」必须是**真正干了这一折活的那个**——配置策略折 0 轮、预算兜底
+        // 替它折了时写兜底实例名（`undefined` ⇒ 不写键，与「无事实 ⇒ 无键」同口径）。
+        strategyName: actualFolderName,
         ...(userTurnGuard === undefined ? {} : { userTurnGuard, userTurnGuardChannel }),
         // issue #469-④：“为什么没拿到摘要”与“成本去哪了”同时入账（只取小字段，不搬正文）。
         foldSummary: {
