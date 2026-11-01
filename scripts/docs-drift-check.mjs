@@ -52,30 +52,26 @@
 //                 注释里写一句 `// "judge_done"` 也不再给弱档供值。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
-//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 219`（现测 **219 组 / 724 处**：issue #518 / #297 中英契约成对补的「空 `content` 片段」段在两种语言里各多引 request-user-view 模块的一个判据函数 ⇒ +1 组 / +1 处，在合并后的树上 `--verbose` 重测（连量两次相同，不动点）；此前 **218 组 / 723 处**：issue #286 **T-c** 把 `src/loop/orchestrator.js` / `src/providers/*` / `src/skills/loader.js` / `src/loop/run-snapshot-executor.js` 等族剩下的裸行号在中英契约与 `docs/host-upgrade-guide-0.17.0.md` 里逐处换成符号锚点 ⇒ **+27 组 / +86 处**（637 → 723），在合并后的树上 `--verbose` 实测（连量两次相同，不动点）⇒ 下限 191 → **218**；此前 **191 组 / 637 处**（#286 T-b2 + #375 + #308 三条链项在合并树上重算）；再此前 **188 组 / 601 处**：issue #545 把 `policy` 收成只装数据，「构造期 + 调用期同键」的活样本从 `policy.todoStateProvider` 换成端口派生键（origin `port.session`），契约中英两处叙述因此各多引一个函数锚点 `assertAssemblyOverrideConflicts`（`src/assembly.js`）⇒ +1 组 / +1 处，在合入 main `66a362f` 之后的树上 `--verbose` 实测；此前 **153 组 / 452 处**：issue #498 S4c 相对基点 `cdf0f6d` 的 **151 组 / 444 处**是 **+2 组 / +8 处**——契约中英成对改动新增的 `#### capabilities.ports (issue #498 S4c)` 小节把「9 个没有扁平别名的叶子」的去向表 `CAPABILITY_SLOT_DESTINATIONS`（`src/loop/capabilities-namespace.js`）在两种语言里各引两处，并把策略对象原样透传的那个函数 `resolveCompactionStrategy`（`src/compact/strategy-resolution.js`）各引一处（+2 组 / +6 处），AGENTS 中英声称句自己也把这两组各引一处（+2 处），在本分支树上 `--verbose` 实测；此前 **151 组 / 444 处**：issue #498 S4b 的契约中英成对改动 +1 组 / +6 处——`config` 一节新增 `CONFIG_LEAF_ALIAS_PATHS`（`src/loop/config-namespace.js`）这条「唯一登记在案的叶子别名」锚点，另加 `normalizeDeliverables`（`src/loop/deliverables.js`）与同一别名符号的若干处重引，在本分支树上 `--verbose` 实测；此前 **150 组 / 438 处**：issue #498 S4a 让契约中英各新增成对一节「capabilities 命名空间」，引用新模块 `capabilities-namespace.js` 的三组符号（schema 表 / 回调名单 / 派生别名表）⇒ +3 组 / +8 处，在 main `b3ee7f1` 的树上 `--verbose` 实测；此前 **147 组 / 430 处**：#497 复审第二轮把 AGENTS 声称句里被串行吞掉的 `again to 121` / `again to 122` 两条链项放回降序位置、删掉重复段 ⇒ 组数不变、处数 432 → 430；那 147 组 / 432 处本身是 #497 复审的六条必改让契约中英各多引 `resolveAssemblyMember`（`src/assembly.js`）与 `modelMetadataFor`（`src/loop/budget.js`）后在**最终树**上实测的 +2 组 / +9 处，裸行号一处未增、仍 130 vs 130）；此前 145 组 / 423 处（issue #497 的 `config` 命名空间让契约中英各多一节、引用六个新符号，在合入 main `109a0a3`（#499 之后）的树上重测）；此前 **139 组 / 416 处**（issue #499 退役 `context.onFoldSummary`，契约中英与 README 中英声称句各多引一处 `CONTEXT_OPTION_NAMES`（`src/assembly-validators.js`）⇒ +1 组 / +4 处，在 main `109a0a3` 上实测）；此前 138 组 / 412 处（issue #496 的契约中英各一节新增四组闸口符号，在本分支树上重测）；此前 134 组 / 398 处（issue #467 在契约「终局」小节中英新增的正文多带了两组锚点 `hasFinalDraft`（`src/loop/termination.js`）与 `appendEngineMessagesToTranscript`（`src/loop/orchestrator.js`），EN +2 处 / CN +1 处，在合入 `main` `f489398e` 之后的树上重测）；此前 130 组 / 387 处（issue #433 fix 1 的「CLI 判死后从账本续跑」契约中英成对小节 +1 组（`IDLE_RETRY_BASE_DELAY_MS`（`bin/idle.js`），另把既有的 `restoreResume`（`src/loop/resume-manager.js`）锚点各多引一处 ⇒ +4 处），在 `main` `cf280d7` 之上重测）；此前 129 组 / 380 处：issue #440 的「CLI idle 判死保留载荷」契约中英成对小节 +3 组（`idleTimeoutFailure` / `IDLE_TIMEOUT_CODE`（`bin/idle.js`）、`annotateTermination`（`src/loop/termination.js`）），在合流 `main` 之后重测；此前 126 组 / 389 处：PR #451（issue #406 B2-b）合并前的评审必修项把契约中英里指向 end-turn 收尾块的两处裸行号换成符号锚点 `normalizeWrapupText`（`src/reflection/wrapup.js`），中英各一处 ⇒ +1 组，下限随之抬到 126（在合并 `main` `7d0e9dd` 之后的树上重测，不取两支最大值）；
-//                 此前 125 组 / 385 处：#443 的归一化底座与 main 上的 #438 逐轮分账、#434 install 档合流之后在**合并后的树**上重测（下限不许取两支的最大值：合并树上同时挂着两支的锚点），下限随之抬到 125；此前 123 组 / 355 处：PR #443 合并前评审的必修项让契约中英「可选调用的成本」一节 +1 组 / +5 处（`DEFAULT_PROVIDER_TIMEOUT_MS`（`src/config/slot-provider.js`）在契约中英各一处 + AGENTS_cn 声称句一处，另有既有锚点 `jsonCandidates`（`src/text/json-candidates.js`）随候选一段的改写在中英契约各多一处），下限随之抬到 123；
-//                 此前 122 组 / 346 处：issue #438 的逐轮用量分账小节让契约中英各多一处 `addUsage`（`src/loop/orchestrator.js`）锚点（+1 组 / +4 处），下限随之抬到 122；此前 issue #406 B2-a 的 `normalizeModelJson` 契约中英成对一节让锚点面 +2 组 / +9 处（`normalizeModelJson`（`src/normalization/parse-model-json.js`）与 `createProviderForSlot`（`src/config/slot-provider.js`）），下限随之抬到 122；此前 issue #424 的升级路径守卫让契约中英各多两处既有锚点（+0 组 / +4 处），下限不变；
-//                 此前 issue #430 的「分片锚点钉在首片」让契约中英各多一处锚点（+1 组 / +2 处）：`threeToolCrashScene`（`test/loop-resume-unpersisted-tool-results.test.js`，指向新的钉住用例），下限随之抬到 121（两支合流后实测 122 组 / 346 处：AGENTS.md 的声称句自己也因合并多了一处 `threeToolCrashScene` 锚点）；此前 issue #420 的 A 集合入账
-//                 +1 组 / +8 处：`journalResumeUnpersistedToolResults`（`src/loop/orchestrator.js`），契约中英各一处 + AGENTS_cn 声称句一处。
-//                 上一版 119 组 / 327 处是 issue #409 的工具引数判词
-//                 +5 组 / +10 处：`REPAIR_RULES`、`parseJsonWithRepair`（`src/text/repair-json.js`）、`parseToolArguments`、
-//                 `describeToolArgumentsParseError`（`src/messages/tool-arguments.js`）、`RUN_TOOL_LOOP_OPTION_NAMES`
-//                 （`src/loop/option-normalization.js`），每组分中英两处。上一版 114 组 / 317 处是 issue #407 的流式思考别名 +5 组 / +30 处）：
-//                 裸行号棘轮的唯一键不含文档自己的行号 ⇒ 「把符号锚点退化成裸行号」在棘轮那一侧一字不变，
-//                 只有这条下限会红（#286 T-a 返工 R1）。生效值同样从脚本自身文本读，自测靠调它证锁。
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 219`：低于它就红（那是「锚点在退化」
+//                 被抓，不是棘轮抬高），高于它会催你把下限抬上去。生效值从脚本自身文本读，自测靠调它证锁。
+//                 每一次抬高下限的实测流水（哪次合并、在哪棵树上量的、多少组多少处）已整条搬到
+//                 `docs/maintenance/symbol-anchor-ledger.md`（历史类文档）；本文不再复述任何历史读数，
+//                 现值一律跑 `--verbose`。裸行号棘轮的唯一键不含文档自己的行号 ⇒ 「把符号锚点退化成裸行号」
+//                 在棘轮那一侧一字不变，只有这条下限会红（#286 T-a 返工 R1）。
 //  12. bare-lines 裸行号棘轮（issue #286 T-a）：`src/**.js:N` / `:N-M` 形态的引用按唯一
 //                 (文档, 目标文件, 行区间) 计数，**只减不增**：基线 `BARE_LINE_REF_BASELINE = 6`（现值；
 //                 80 / 130 / 142 / 232 / 244 是 #286 T-b2、PR #451、#326 B1 删区间、#286 T-b1a 与 T-a 落地时的
 //                 旧值，别把历史数当现值），超了红
 //                 （并提示「可以把基线降到 N」），低于基线算过但会催你降。**越界行号是 error**，不是观察项。
-//                 覆盖面 = 宿主会读的 22 份文档：README{,_cn} / AGENTS{,_cn} / host-consumer-contract{,_cn}
-//                 + `docs/host-upgrade-guide*.md` 全部（按目录实扫，新指南落地即自动纳面）。
+//                 覆盖面 = 宿主会读的那批文档（清单 = `SYMBOL_DOCS_STATIC` + 按目录实扫的指南；份数别在这里抄，
+//                 跑 `--verbose` 看 note）。
 //                 正则 `src\/[A-Za-z0-9_./-]+\.js:(\d+)(?:-(\d+))?`；#286 T-a 落地时该口径实测 248 唯一区间 /
 //                 279 次出现，减去 `BARE_LINE_EXEMPTIONS` 的 4 处示例/外仓路径 ⇒ 当时基线 244（**历史值**；
 //                 现值一律跑 `--verbose` 复核，别只信注释）。
-//                 覆盖面本身有下限 `REF_SCAN_DOCS_MINIMUM = 43`（13 份点名 + 30 份实扫指南，工单 261016-307
-//                 的 R4 把 20 抬到 22）：按目录实扫意味着「把某份指南改名到不匹配模式」会让脚本与测试侧一起
-//                 少一份而数字仍相等 ⇒ 静默缩面，这条下限与测试侧硬编码的 16 份清单就是那道报警（#286 T-a R2）。
+//                 覆盖面本身有下限 `REF_SCAN_DOCS_MINIMUM`（现值见常量本身，别在注释里抄一份）：按目录实扫意味着
+//                 「把某份指南改名到不匹配模式」会让脚本与测试侧一起少一份而数字仍相等 ⇒ 静默缩面，这条下限与
+//                 测试侧硬编码的清单就是那道报警（#286 T-a R2）。文档里写着的「点名几份 + 实扫几份 = 下限」也
+//                 由 `collectRefScanCountClaimErrors()` 逐格对账（#635 ①）：抄错一格就红并点名是哪份的哪个数。
 //                 豁免是**三信号 AND**（① 表里点名这一条 ② 引用行含那个占位路径 ③ 同一行有就地声明词）：
 //                 评审 R4 把从前的整行 OR 收紧——同一行只剩一句 `for example` 之类的附带措辞不算声明。
 //                 条目自己还要过配置校 `bareLineExemptionEntryErrors()`：声明词若能匹配空串（这一侧恒真）
@@ -184,6 +180,10 @@ const ARCH_EN = "docs/architecture.md";
 const ARCH_CN = "docs/architecture_cn.md";
 const CHARTS_EN = "docs/charts.md";
 const CHARTS_CN = "docs/charts_cn.md";
+/** issue #644 ③：符号锚点声称链的新家（历史类文档，`retired-spelling-scan.mjs` 按路径把它归成 history）。
+ *  它同时在锚点面内（见 `SYMBOL_DOCS_STATIC`）：搬动不能让 (符号, 文件) 组数掉下去。 */
+const LEDGER_EN = "docs/maintenance/symbol-anchor-ledger.md";
+const LEDGER_CN = "docs/maintenance/symbol-anchor-ledger_cn.md";
 const RATCHET_SRC = "scripts/type-check-ratchet.mjs";
 /** 工具事实契约常量的真值出处（工单 261014 T1）。 */
 const TOOL_FACT_SRC = "src/tool-fact.js";
@@ -1557,9 +1557,9 @@ function collectBaselineClaimErrors() {
 //   · 2.8.2 bare-lines：`path:N` / `path:N-M` 形态的**裸行号引用**只减不增（R2 棘轮 + R3 越界必红）。
 //
 // 覆盖面与正则（工单 #286 T-a 的口径，脚本自己会数——别只信注释，跑 `--verbose` 看 note）：
-//   覆盖面 = 宿主会读的 22 份文档：README{,_cn}.md、AGENTS{,_cn}.md、docs/host-consumer-contract{,_cn}.md
-//     这 6 份硬编码 + `docs/host-upgrade-guide*.md` 全部 16 份（按目录**实扫**：新增一份指南就自动纳面，
-//     不存在「新文档漏在覆盖面外」的形状；0.21.0 那一对落地即 14 → 16）。
+//   覆盖面 = `SYMBOL_DOCS_STATIC` 点名的那批 + `docs/host-upgrade-guide*.md` 全部（按目录**实扫**：新增一份
+//     指南就自动纳面，不存在「新文档漏在覆盖面外」的形状）。份数不在这里抄——跑 `--verbose` 看 ref-scan 那条 note，
+//     文档里写着的份数由 `collectRefScanCountClaimErrors()` 逐格对账（#635 ①）。
 //   正则 = BARE_LINE_RE：**实现面只算 `src/**.js:N[-M]`**（就是工单那条口径）。这段注释以前写「前缀面
 //     放宽到 src|bin|scripts|test|docs|examples|fixtures」——**那一步从未落地**：现正则只匹配 `src/`，
 //     于是 `bin/cli.js:841-848` 这类行号根本不进棘轮（`bin/final-guard.js:86`、`test/contract/…:124-142`
@@ -1585,23 +1585,20 @@ function collectBaselineClaimErrors() {
 /** #286 T-a：覆盖面清单里被硬编码的那几份（升级指南按目录实扫，见 `refScanDocs()`）。 */
 const SYMBOL_DOCS_STATIC = [README_EN, README_CN, AGENTS_EN, AGENTS_CN, CONTRACT_EN, CONTRACT_CN,
   // 工单 261021-03 B1：活文档纳面（架构 / 图表 / 需求对照中英各一份 + pi 扩展 README）。
-  ARCH_EN, ARCH_CN, CHARTS_EN, CHARTS_CN, REQ_EN, REQ_CN, PI_EXT_README];
+  ARCH_EN, ARCH_CN, CHARTS_EN, CHARTS_CN, REQ_EN, REQ_CN, PI_EXT_README,
+  // issue #644 ③：符号锚点声称链从 AGENTS 搬到 docs/maintenance/ 之后，这两份必须留在锚点面内——
+  // 唯一 (符号, 文件) 组数是跨文档并集，链项引的那些锚点换了文档不能变成「消失」。
+  LEDGER_EN, LEDGER_CN];
 
 /** #286 返工 R2：覆盖面份数的**下限**。病根：覆盖面是「硬编码那批 + 按 `^host-upgrade-guide.*\.md$` 实扫」，
  *  于是有人把某份指南改名到不再匹配那个模式（或把它挪出 `docs/`），脚本与测试侧的 glob **一起少一份**，
- *  两边数字仍然相等 ⇒ 静默缩面、全绿。测试侧另硬编码一份当前 22 份的清单做对照，这里再钉一道份数下限。
- *  抬下限的理由（工单 261021-03 B1，**24 → 31**）：覆盖面从「6 份硬编码 + 18 份实扫指南」抬到
- *  「13 份点名文档（6 入口 + 架构/图表/需求对照中英六份 + pi 扩展 README）+ 18 份实扫指南」——
- *  那七份是工单点名的活文档，它们不在面内时「`src/providers/index.js` 这类路径漂了不会红」。
- *  （工单写「8 份 / 32」，但它点名的清单只有 7 份：CHANGELOG 按 #286 既定口径**不进**棘轮面。
- *  抬下限的理由（工单 261021-12 发版准备，**31 → 33**）：0.23.0 的中英成对宿主升级指南
- *  （`docs/host-upgrade-guide-0.23.0.md` / `_cn.md`）落地，实扫指南 18 → **20** ⇒ 13 份点名 + 20 份实扫 = 33。
- *  抬下限的理由（工单 261022-17 发版准备，**33 → 35**）：0.24.0 的中英成对宿主升级指南
- *  （`docs/host-upgrade-guide-0.24.0.md` / `_cn.md`）落地，实扫指南 20 → **22** ⇒ 13 份点名 + 22 份实扫 = 35。
- *  抬下限的理由（工单 docs-261031-01 发版准备，**43 → 45**）：0.29.0 的中英成对宿主升级指南
- *  （`docs/host-upgrade-guide-0.29.0.md` / `_cn.md`）落地，实扫指南 30 → **32** ⇒ 13 份点名 + 32 份实扫 = 45。
+ *  两边数字仍然相等 ⇒ 静默缩面、全绿。测试侧另硬编码一份当前清单做对照，这里再钉一道份数下限。
+ *  现值 = `SYMBOL_DOCS_STATIC.length`（点名那批）+ 目录实扫到的指南份数，**由本文件算出来**：
+ *  下限只是「不许比它小」的地板，它本身不解释自己为什么是这个数——所以文档里写的那组份数（点名几份 +
+ *  实扫几份 = 下限）由 `collectRefScanCountClaimErrors()` 逐格对账（#635 ①）。
+ *  历史（每一次抬高的理由：哪份指南落地、哪七份活文档纳面）在 `docs/maintenance/symbol-anchor-ledger.md`。
  *  写法必须保持这一行不变形（自测要改这个数）。 */
-const REF_SCAN_DOCS_MINIMUM = 45;
+const REF_SCAN_DOCS_MINIMUM = 47;
 
 /** #280 同款的「树形口子」，只给 `--self-test` 用（**不是豁免开关**）：模拟「某份指南改名到不匹配模式」。 */
 let SIM_RENAMED_GUIDE = null;
@@ -1648,6 +1645,131 @@ function collectRefScanCoverageErrors() {
   }
   notes.push(`ref-scan: 覆盖面 ${docs.length} 份文档（${SYMBOL_DOCS_STATIC.length} 份点名 + ${docs.length - SYMBOL_DOCS_STATIC.length} 份按目录实扫的升级指南），下限 ${minimum}`);
   collectRefScanCoverageErrors.notes = notes;
+  return out;
+}
+
+/* ── #635 ①：文档里「点名几份 + 实扫几份 = 下限」这类**份数声称**必须等于实测 ─────────────
+ * 病根：那句话是散文。脚本按目录实扫、测试侧另抄一份清单，两边自己算得没错，可**文档里写着的数**
+ * 没人核对——现场：`README.md` 同一句里写着「That is 43 documents」又说「13 pinned + 32 …（= 45）」，
+ * 两个数互相矛盾，而所有门禁一路绿（唯一被机器校过的是 `REF_SCAN_DOCS_MINIMUM = N` 那个常量声称）。
+ * 判据（**静态对账**：一次目录扫描 + 几次正则，不跑 tsc、不跑 npm）：
+ *   · 每份登记文档必须命中它登记的正则——句子被删也要红（否则「删掉这句话」就是合法逃逸）；
+ *   · 每个捕获到的份数必须等于本文件自己算出来的真值（点名 = `SYMBOL_DOCS_STATIC.length`、
+ *     实扫指南 = 目录里匹配的份数、合计、下限常量），红时点名「哪份文档的哪个数、声称多少、实测多少」。
+ * 为什么真值取 `refScanDocs()`：它与覆盖面判据同源（自测的「改名一份指南」树形口子也照同一条路走），
+ * 拿另算一份的目录数会让那条例外反向证多出一条与主题无关的红。
+ */
+const REF_SCAN_COUNT_CLAIMS = [
+  {
+    doc: README_EN,
+    rules: [
+      { re: /\((\d+) today, discovered from the directory\)/g, groups: ["guides"],
+        label: "upgrade guides discovered from the directory" },
+      { re: /That is (\d+) documents \(`REF_SCAN_DOCS_MINIMUM = (\d+)`: (\d+) pinned \+ the (\d+) upgrade-guide files/g,
+        groups: ["total", "floor", "pinned", "guides"], label: "live-document count" },
+    ],
+  },
+  {
+    doc: README_CN,
+    rules: [
+      { re: /（当前 (\d+) 份，按目录实扫）/g, groups: ["guides"], label: "按目录实扫到的升级指南份数" },
+      { re: /共 (\d+) 份（`REF_SCAN_DOCS_MINIMUM = (\d+)`：(\d+) 份点名 \+ 按目录实扫到的 (\d+) 份升级指南）/g,
+        groups: ["total", "floor", "pinned", "guides"], label: "活文档份数" },
+    ],
+  },
+  {
+    doc: LEDGER_EN,
+    rules: [
+      { re: /The anchor face is \*\*(\d+) pinned documents \+ the (\d+) upgrade-guide files the directory scan finds = (\d+)\*\*\s*\(`REF_SCAN_DOCS_MINIMUM = (\d+)`\)/g,
+        groups: ["pinned", "guides", "total", "floor"], label: "anchor-face document count" },
+    ],
+  },
+  {
+    doc: LEDGER_CN,
+    rules: [
+      { re: /锚点覆盖面是 \*\*(\d+) 份点名文档 \+ 按目录实扫到的 (\d+) 份升级指南 = (\d+)\*\*（`REF_SCAN_DOCS_MINIMUM = (\d+)`）/g,
+        groups: ["pinned", "guides", "total", "floor"], label: "锚点覆盖面份数" },
+    ],
+  },
+];
+
+/** 份数声称的真值（与覆盖面判据同源：`refScanDocs()`）。 */
+function refScanCountTruth() {
+  const docs = refScanDocs();
+  const pinned = SYMBOL_DOCS_STATIC.length;
+  const floor = refScanDocsMinimum();
+  return { pinned, guides: docs.length - pinned, total: docs.length, floor };
+}
+
+/** 把「点名 / 实扫 / 合计 / 下限」翻成人话（报错文案与 note 共用一份，别在别处再抄）。 */
+const REF_SCAN_COUNT_LABEL = Object.freeze({
+  pinned: "点名文档", guides: "实扫指南", total: "文档合计", floor: "下限常量",
+});
+
+function collectRefScanCountClaimErrors() {
+  const out = [];
+  const notes = [];
+  const truth = refScanCountTruth();
+  let claims = 0;
+  for (const { doc, rules } of REF_SCAN_COUNT_CLAIMS) {
+    const text = textOf(doc);
+    if (typeof text !== "string") {
+      out.push(`ref-scan-claims: ${doc} 读不到文本——份数声称面少一份，等于这份文档的数没人校`);
+      continue;
+    }
+    for (const { re, groups, label } of rules) {
+      const hits = [...text.matchAll(re)];
+      if (!hits.length) {
+        out.push(`ref-scan-claims: ${doc} 里找不到「${label}」那条份数声称——`
+          + "句子被删也要红（否则删掉这句话就是合法逃逸；声称面登记在 REF_SCAN_COUNT_CLAIMS）");
+        continue;
+      }
+      for (const m of hits) {
+        const line = text.slice(0, m.index).split("\n").length;
+        groups.forEach((key, i) => {
+          const claimed = Number(m[i + 1]);
+          const want = truth[key];
+          claims += 1;
+          if (claimed !== want) {
+            out.push(`ref-scan-claims: ${doc}:${line} 声称「${REF_SCAN_COUNT_LABEL[key]}」${claimed}，`
+              + `但脚本实测 ${want}——份数声称必须等于实测（${label}）；`
+              + "改文档里的数，或把 SYMBOL_DOCS_STATIC / 目录里的指南一起改到一致");
+          }
+        });
+      }
+    }
+  }
+  notes.push(`ref-scan-claims: ${REF_SCAN_COUNT_CLAIMS.length} 份文档的 ${claims} 处份数声称全部等于实测`
+    + `（点名 ${truth.pinned} / 实扫 ${truth.guides} / 合计 ${truth.total} / 下限 ${truth.floor}）`);
+  collectRefScanCountClaimErrors.notes = notes;
+  return out;
+}
+
+/* ── #644 ③：指令面必须指着声称链的新家 ────────────────────────────────────────
+ * 搬链之后，AGENTS 里只剩「常量 + 一句指针」。指针本身也要有闸：把它删掉，下一位读者就再也找不到
+ * 那条链（历史还在 docs/maintenance/，但指令面上没有任何线索）——这是「搬走了但没人知道搬哪去了」。
+ * 判据是**存在性**（每份指令面文档必须点名自己语言的那一份账本），不是措辞对账。
+ */
+const LEDGER_POINTER_RULES = Object.freeze([
+  { doc: AGENTS_EN, ledger: LEDGER_EN },
+  { doc: AGENTS_CN, ledger: LEDGER_CN },
+]);
+
+function collectLedgerPointerErrors() {
+  const out = [];
+  for (const { doc, ledger } of LEDGER_POINTER_RULES) {
+    const text = textOf(doc);
+    if (typeof text !== "string") {
+      out.push(`ledger-pointer: ${doc} 读不到文本——指令面少一份，指针判据在这份上失效`);
+      continue;
+    }
+    if (!text.includes(ledger)) {
+      out.push(`ledger-pointer: ${doc} 里没有指向 \`${ledger}\` 的指针——`
+        + "符号锚点的实测流水整条住在那份账本里（issue #644 ③）；指令面上删掉这句指针，"
+        + "下一位读者就找不到它，也就没人知道那条链搬哪去了");
+    }
+  }
+  collectLedgerPointerErrors.notes = [`ledger-pointer: ${LEDGER_POINTER_RULES.length} 份指令面文档都指着各自的账本`];
   return out;
 }
 
@@ -2077,250 +2199,14 @@ function collectSymbolAnchorSpanErrors(occurrences) {
 
 /** 符号锚点的**只增不减下限**（#286 T-a 返工 R1）。为什么必须有它：裸行号棘轮的唯一键是
  *  (文档, 目标文件, 行区间)，**不含文档行号**——于是把
- *  \`emitEvent\`（\`src/loop/orchestrator.js:1517-1531\`） 改写成不带括号、不带链接的裸
- *  \`src/loop/orchestrator.js:1517-1531\`，棘轮那一侧的计数**一字不变**（照旧绿），而符号声明校验
+ *  `emitEvent`（`src/loop/orchestrator.js:1517-1531`）改写成不带括号、不带链接的裸
+ *  `src/loop/orchestrator.js:1517-1531`，棘轮那一侧的计数**一字不变**（照旧绿），而符号声明校验
  *  整条消失。没有这条下限，#286 后面几刀就能「一边把裸行号换成符号锚点、一边偷偷退回去」而全程全绿。
  *  与 `BARE_LINE_REF_BASELINE` 同构：生效值从脚本**自身文本**里读（自测能把它调高来证它真的是锁）。
- *  现测值 = 我自己那条 note 打出来的唯一 (符号, 文件) 组数 / 处数（`--verbose` 可复核）。
- *  升下限的理由（工单 261016-305 / issue #305，24 → **27**，+3 组 / 44 → 50 处）：中英《宿主消费者契约》
- *  新增成对的「Reflection 决策解析」小节，按本单红线用**符号锚点**引用 `parseReflectionDecision`
- *  （`src/loop/reflection.js`）与 `jsonCandidates`（`src/text/json-candidates.js`）、`truncate`
- *  （`src/reflection/judge.js`）——锚点在变多，是这条下限想看见的方向。
- *  升下限的理由（工单 261016-307 发版准备 R4，32 → **35**，+3 组 / 70 → 86 处）：`docs/host-upgrade-guide-0.21.0.md`
- *  与 `_cn.md` 成对落地，按同一红线全部用符号锚点引用 `parseModelJson`（`src/text/parse-model-json.js`）、
- *  `jsonCandidates`（`src/text/json-candidates.js`）、`ensureUserTurnView` / `isUserTurnGuardAction`
- *  （`src/loop/request-user-view.js`）、`parseReflectionDecision`（`src/loop/reflection.js`）、
- *  `safeTruncateMessages`（`src/loop/budget.js`）、`validateMessages`（`src/messages/rounds.js`），外加 #293 那一刀
- *  在 0.19.0 中英指南里补的 `readFile`（`src/tools/file-tools.js`）与 `runToolLoop`（`src/loop/orchestrator.js`）——
- *  `--verbose` 实测 35 组 / 86 处。
- *  升下限的理由（工单 261016-307 / issue #307，27 → **32**，+5 组 / 50 → 70 处）：中英契约成对新增
- *  「统一入口 `parseModelJson`」小节，按同一红线全部用**符号锚点**引用 `parseModelJson`
- *  （`src/text/parse-model-json.js`）、`tryParseWrapupJson`（`src/reflection/wrapup.js`）、
- *  `extractL0Facts`（`src/reflection/l0.js`）、`parseFoldSummaryMatch`
- *  （`src/compact/fold-statistical.js`），并把「轮次 judge 保留自己的扫描」那句已经腐烂的引用改成
- *  指向 `parseJudgeDecision`（`src/reflection/judge.js`）——`--verbose` 实测 32 组 / 70 处。
- *  #313（工单 261016-313-obs）在契约中英新增「erix_run 终局面」一节，带进 10 组新锚点：
- *  `--verbose` 实测 **42 组 / 91 处**（契约 EN 45 / CN 44 + 两份 0.19 指南各 1），于是下限升到 42
- *  （不升就是**假绿**：#286 返工 R1 的两例自测会因「实测 ≫ 下限」而 fail-open；#302 之前那种
- *  「干净 clone 本来就会红 3 例」的前提已经不存在——现在干净检出上 `--self-test` 实测 103 例全 ✓，
- *  所以这里只剩 fail-open 这一个理由）。
- *  升下限的理由（工单 261016-021 归版收尾 R3，53 → **63**，+10 组 / 122 → 165 处）：
- *  `docs/host-upgrade-guide-0.21.0.md` 与 `_cn.md` 成对补上 #313 / #314 / #312(b) 三节（EN 8 → 30 处、
- *  CN 6 → 27 处），全部用符号锚点引用宿主扩展与引擎的真声明——
- *  `summarizeCompactionLayers` / `formatCompactionLayerSummary` / `buildDiagnostics` /
- *  `countNoteToolEvent` / `COMPACTION_LAYER_ROLES` / `NOTE_COUNT_SOURCE` /
- *  `COMPACTION_STATS_SOURCE` / `COMPACTION_STATS_TRUNCATION_NOTE` / `parseRunParams` /
- *  `buildLoopOptions` / `buildSystemPrompt` / `buildToolListLine` /
- *  `assertToolListMatchesRegistered` / `HOST_REGISTERED_TOOL_PHRASES`
- *  （均 `examples/pi-extension/erix-run-core.js`）、`inspectFinalDraft` 一族的
- *  `FINAL_DRAFT_SECTIONS` / `FINAL_DRAFT_PROMPT` / `FINAL_GUARD_TIMEOUT_MS` /
- *  `FINAL_GUARD_WORST_CASE_MS` / `collectToolResultText`
- *  （`examples/pi-extension/erix-run-final-guard.js`）、`cliToolDefinitions` /
- *  `CLI_TOOL_PROMPT_PHRASES` / `buildCliToolsSystemPrompt`（`bin/tools.js`）、
- *  `COMPACTION_LAYER_IDS` / `observeCompactionLayer` / `createCompactionStat` /
- *  `normalizeCompactionStats`（`src/compact/pipeline.js`）、`createDeterministicRunState`
- *  （`src/run-state.js`）、`guardMetrics` / `remainingMs`（`src/loop/orchestrator.js`）、
- *  `FINAL_GUARD_TERMINATION_REASONS`（`src/loop/termination.js`）——`--verbose` 实测 **63 组 / 165 处**，
- *  裸行号棘轮不受影响（同一刀 `--verbose` 实测仍是 146 唯一区间 − 4 处豁免 = 142 = 基线）。
- *  升下限的理由（工单 261021-03 B1，67 → **72**，+5 组 / 168 → 180 处）：覆盖面从 24 抬到 31，新纳面的
- *  `docs/charts{,_cn}.md` 与 `examples/pi-extension/README.md` 带进 5 组新锚点（`resolvedToolResultTtl` /
- *  `markStablePrefix`（`src/loop/orchestrator.js` / `src/loop/provider-runner.js`）、`loadModelSlot` /
- *  `createProviderForSlot`（`examples/pi-extension/erix-run-core.js`）与 `createJsonFileModelConfigProvider`
- *  （`src/config/json-file.js`））——`--verbose` 实测 72 组 / 180 处。不升就是下限在空转（那条 note 自己会报）。
- *  升下限的理由（工单 261021-12 发版准备，76 → **77**，+1 组 / 189 → 192 处）：0.23.0 的中英成对宿主升级指南
- *  （`docs/host-upgrade-guide-0.23.0.md` / `_cn.md`）按同一红线全部用符号锚点引用
- *  `foldMessageRows`（`src/store/message-rows.js`）、`projectTranscriptForDisplay`（`src/display/projection.js`）——
- *  `--verbose` 实测 77 组 / 192 处（唯一组数只增不减，这条下限跟着实测走）。
- *  升下限的理由（工单 F2 / issue #361，77 → **80**，+3 组 / 194 → 201 处）：契约中英成对新增
- *  「落盘行形状 ≠ `load()` 之后的形状」小节，按同一红线全部用符号锚点引用 `isRoundCarrier`
- *  （`src/store/message-rows.js`）、`createMemoryTranscriptStore`（`src/store/memory.js`）、
- *  `createFileTranscriptStore`（`src/store/file.js`）——`--verbose` 实测 80 组 / 201 处。不升就是
- *  **假绿**：#286 返工 R1 的两例自测会因「实测 ≫ 下限」而 fail-open（本单实测正是如此：77 的下限
- *  在 80 组上已经空转，两例从 ✓ 变红）。
- *  再升一次的理由（工单 261022-13 / issue #315，80 → **81**，+1 组 / 201 → 203 处）：#315 的
- *  `compactionStatsWindow` 小节按同一红线用符号锚点引用 `createDeterministicRunState`
- *  （`src/run-state.js`）与 `normalizeCompactionStats`（`src/compact/pipeline.js`），合并后
- *  `--verbose` 实测 81 组 / 203 处；下限不跟着升，#286 返工 R1 的两例自测就会再次 fail-open
- *  （把 `defaultSleep` 退化成裸行号后 80 ≥ 80 不红 ⇒ 用例判「锚点仍是 fail-open」）。
- *  再升一次的理由（工单 261022-17 发版准备，81 → **95**，+14 组 / 203 → 238 处）：0.24.0 的中英成对宿主升级指南
- *  （`docs/host-upgrade-guide-0.24.0.md` / `_cn.md`）按同一红线全部用符号锚点引用
- *  `compactionStatsWindow` / `validateRunState` / `RUN_STATE_MAX_SERIALIZED_BYTES` / `COMPACTION_STATS_SERIALIZED_LIMIT`
- *  （`src/run-state.js`）、`COMPACTION_STATS_STATE_LIMIT`（`src/compact/pipeline.js`）、
- *  `assertSnapshotPersisted`（`src/loop/run-snapshot-executor.js`）、`makePersistenceFailure`（`src/loop/orchestrator.js`）、
- *  `terminationErrorCodeForError`（`src/loop/termination.js`）、`toolMarker` / `displayName` / `searchRootError` /
- *  `withDeprecation`（`src/tools/file-tools.js`）、`BASELINE_WITH_TOOLS`（`scripts/type-check-ratchet.mjs`）、
- *  `makeTmp`（`test/helpers/tmp.js`）——`--verbose` 实测 **95 组 / 238 处**（两份新指南各 15 处 = 30 处，14 组是新的；
- *  余下 5 处是中英 AGENTS 里同一批锚点的声称句）。
- *  下限不跟着升，#286 返工 R1 的两例自测就会再次 fail-open。
- *  再升一次的理由（工单 P / issue #386 切片 1，95 → **98**，+3 组 / 238 → 244 处）：契约中英成对新增
- *  「`finalGuard` 载荷：既有 7 键 + 10 个加法事实」小节，按同一红线全部用符号锚点引用
- *  `callFinalGuard`（`src/loop/termination.js`）、`summarizeArgument`（`src/reflection/judge.js`）、
- *  `resolveTaskBrief`（`src/loop/task-brief.js`），外加 0.24.0 中英指南新 §8 的同一批锚点——
- *  `--verbose` 实测 **98 组 / 247 处**（契约 EN 69 / CN 68 + 两份 0.24.0 指南各 15 / 16 处 +
- *  中英 AGENTS 里同一批锚点的声称句：`AGENTS_cn.md` 8 处、`AGENTS.md` 用 "in `path`" 句式不入锚点面）。
- *  再升一次的理由（工单 R / issue #386 切片 3，98 → **102**，+4 组 / 247 → 260 处）：契约中英成对新增
- *  「预算类停机上的补跑桥」小节（`### Budget-type stops: the opt-in guard bridge` /
- *  `#### 预算类停机上的补跑桥`），0.24.0 中英指南同步加 §10，按同一红线全部用符号锚点引用
- *  `extensionAllowed`（`src/reflection/governor.js`，本单把它的可见性从私有改成导出——判定表一字未动）、
- *  `applyGovernorExtension`（`src/loop/orchestrator.js`）、`FINAL_GUARD_EXTENDABLE_REASONS`
- *  （`src/loop/termination.js`）、`isApiInputOverBudget`（`src/loop/budget.js`）——`--verbose` 实测
- *  **102 组 / 260 处**（契约 EN 73 / CN 72、两份 0.24.0 指南各 +2 处、`AGENTS_cn.md` 8 → 11 处，其余不变）。
- *  再升一次的理由（issue #393 修轮，102 → **103**，+1 组 / 260 → 262 处）：契约中英成对补的两句
- *  （「悬空 `tool_use` 先结清再注入」那一颗 + 「`metrics.verified` 不等于 `verification.status`」那一颗）
- *  按同一红线用符号锚点引用 `PENDING_TOOL_RESULT_TEXT`（`src/loop/orchestrator.js`）——`--verbose` 实测
- *  **103 组 / 262 处**（契约 EN 73 → 74 / CN 72 → 73，其余不变）。
- *    *    *  （issue #391，98 → **100**，+2 组 / 247 → 252 处）：契约中英「交付物机器判据」小节
- *  成对新增两个锚点——`createDeliverableChecks` 与 `createNamedDeliverableChecks`（都在
- *  `bin/final-guard.js`）：宿主面只给**命名**判据（布尔开关 + 命名路径清单），判据本体必须在文档里
- *  指到真声明（分支内 `--verbose` 实测 100 组 / 252 处；rebase 到 `2cb3303` 之后为 **105 组 / 264 处**：契约 EN 75 / CN 74）。
- *  再升一次的理由（issue #407，109 → **114**，+5 组 / 287 → 317 处）：流式思考别名（只认
- *  `delta.reasoning_content` ⇒ 走引擎自己拼的请求时**两个模型的思考 100% 丢失**）的变更说明按同一红线
- *  用符号锚点引用 `streamReasoningText` / `REASONING_DELTA_FIELDS` / `chatStream` / `probeStreamUsage`
- *  （`src/providers/openai.js`）与 `openAIResponseToCanonical`（`src/messages/canonical.js`）——落点是
- *  CHANGELOG（不入面）、契约中英「推理文本」各一句、两份 0.24.0 指南新增的 §15，以及中英 AGENTS 的声称句
- *  （**声称句自己也入锚点面**：`AGENTS.md` 从 0 组变 2 组、`AGENTS_cn.md` 15 → 17）。
- *  `--verbose` 实测 **114 组 / 317 处**（契约 EN 84 → 85 / CN 80 → 81，0.24.0 指南 EN 21 → 29 / CN 24 → 32）。
- *  下限不跟着升，#286 返工 R1 的两例自测就会再次 fail-open（实测正是如此：109 的下限在 114 组上空转，
- *  两例从 ✓ 变红），而 `--self-test` 是 CI 的阻断步。
- *  再升一次的理由（issue #420，119 → **120**，+1 组 / 327 → 335 处）：A 集合（崩溃前已执行完、结果已成型、
- *  账本里没有对应 `tool_result` 行）逐条入账的写入口按同一条红线用符号锚点引用
- *  `journalResumeUnpersistedToolResults`（`src/loop/orchestrator.js`）——落点是契约中英「续跑后账本闭合」
- *  各一处与 AGENTS_cn 的声称句一处（`--verbose` 实测 120 组 / 335 处：契约 EN 92 / CN 88）。下限不跟着升，
- *  R1 的两例自测就会空转。
- *  再升一次的理由（issue #438，120 → **121**，+1 组 / 339 → 344 处）：逐轮用量分账（续写覆盖 `response`
- *  ⇒ 轮档案只记最后一发）的契约中英成对小节按同一条红线用符号锚点引用 `addUsage`
- *  （`src/loop/orchestrator.js`，分桶的唯一记账点）与既有的 `forceFinalIfNeeded`
- *  （`src/loop/termination.js`）——`--verbose` 实测 **121 组 / 344 处**（契约 EN 96 / CN 92）。
- *  再升一次的理由（issue #438 与 #430 合流，121 → **122**，+1 组 / 344 → 346 处）：两支各自把下限抬到 121
- *  （#438 的 `addUsage` 与 #430 的 `threeToolCrashScene`），合流后两支的锚点**同时**在树上，而中英 AGENTS 的
- *  声称句本身也各多一处锚点（`AGENTS.md` 因合并多出 `threeToolCrashScene`）——`--verbose` 实测
- *  **122 组 / 346 处**（契约 EN 97 / CN 93、AGENTS.md 2、AGENTS_cn.md 22），下限随之抬到 122。
- *  再升一次的理由（issue #430，120 → **121**，+1 组 / 339 → 341 处）：崩溃轮 ≥3 条 `tool_result` 仍要折回
- *  一条聚合 `user` 消息的修法（分片锚点钉在首片）按同一条红线用符号锚点指到新的钉住用例
- *  `threeToolCrashScene`（`test/loop-resume-unpersisted-tool-results.test.js`）——落点是契约中英
- *  「续跑后账本闭合」各一处。下限不跟着升，R1 的两例自测就会空转。
- *
- *  再升一次的理由（issue #440，125 → **128**，+3 组 / 385 → 391 处）：CLI 的 idle 判死不再丢掉引擎的终局载荷，
- *  契约中英成对新增「CLI 的 idle 判死保留载荷」小节，按同一条红线用符号锚点引用 `idleTimeoutFailure` /
- *  `IDLE_TIMEOUT_CODE`（`bin/idle.js`，前者是唯一的错误构造入口，后者是判别面 `code` 的唯一声明）与
- *  `annotateTermination`（`src/loop/termination.js`，载荷是在那条终局路径上盖上去的）——单支上 `--verbose`
- *  实测 **128 组 / 391 处**（契约 EN 104 → 107 / CN 99 → 102，其余不变）；128 / 391 是**历史值**，不是现值。
- *
- *  再升一次的理由（issue #440 合流 `main`，128 → **129**，+1 组）：合并进来的 PR #451 把契约中英指向
- *  end-turn 收尾块的两处裸行号换成符号锚点 `normalizeWrapupText`（`src/reflection/wrapup.js`），中英各一处
- *  ⇒ +1 组——下限不许取两支的最大值（合并树上同时挂着两支的锚点，128 + 1 = 129）；合并树上 `--verbose` 实测
- *  **129 组 / 380 处**（契约 EN 109 / CN 104、AGENTS.md 7、AGENTS_cn.md 28，其余不变）。处数从合流当天的
- *  401 降到 380，是 #440 评审把 AGENTS_cn 里重复的声称句并成一份的结果（**组数一字未变**，只少了重复的处）。
- *
- *  再升一次的理由（issue #433 fix 1，129 → **130**，+1 组 / 380 → 387 处）：CLI 判死后从账本续跑，
- *  契约中英成对新增「CLI 判死后从账本续跑 / The CLI retries a silent kill from the transcript」小节，
- *  用符号锚点引用 `IDLE_RETRY_BASE_DELAY_MS`（`bin/idle.js`，退避起点，另两个常量在正文里只写名字、
- *  不挂文件 ⇒ 不计入本判据）并把既有的 `restoreResume`（`src/loop/resume-manager.js`，续跑重建上下文的
- *  唯一入口）各多引一处。`--verbose` 当时实测 **130 组 / 387 处**（契约 EN 111 / CN 106，其余不变）。
- *
- *  再升一次的理由（issue #467，130 → **132**，+2 组 / 387 → 390 处）：#467 把强制收尾接进 `judge_done`，契约中英的
- *  「终局」小节各新增一段，新增正文把两个符号与各自文件写进了同一处锚点 ⇒ 新增两组 (符号, 文件)
- *  `hasFinalDraft`（`src/loop/termination.js`）与 `appendEngineMessagesToTranscript`（`src/loop/orchestrator.js`）
- *  （EN +2 处 / CN +1 处）。在本分支（合入 `main` `f489398e` 之后）`--verbose` 实测 **132 组 / 390 处**（契约
- *  EN 113 / CN 107，其余不变）；129 / 380 与 130 / 387 都是**历史值**，不是现值。
- *
- *
- *  再升一次的理由（0.26.0 发版收尾，132 → **134**，+2 组 / 390 → 398 处）：新增的
- *  `docs/host-upgrade-guide-0.26.0.md` 与 `docs/host-upgrade-guide-0.26.0_cn.md` 中英成对，各自把两个符号与
- *  各自的文件写进同一处锚点 ⇒ 多出两组唯一 (符号, 文件) 键：`buildFoldedFacts`
- *  （`src/compact/fold-summary-journal.js`，折叠替代物的构造器）与 `planFoldedHistoryTrim`
- *  （`src/compact/resume-fold-trim.js`，续跑按水位线裁剪的规划器）。在本分支 `--verbose` 实测
- *  **134 组 / 398 处**（新指南 EN 2 处 / CN 2 处，其余文档不变）；130 / 387 与 132 / 390 都是**历史值**，
- *  不是现值。issue #496（S1）把输入校验做成「规范化表示的性质」后，契约中英各多了一节
- *  `### Where option validation happens (issue #496)` / `### 选项校验发生在哪里（issue #496）`，
- *  引用四个闸口符号：`assertRunToolLoopOptionNames`（`src/loop/option-normalization.js`）、
- *  `assertSemanticOptionValues` 与 `collectSemanticOptionProblems`（`src/assembly-validators.js`）、
- *  `normalizeDeliverables`（`src/loop/deliverables.js`）—— 在**本分支的树**上 `--verbose` 实测
- *  **138 组 / 412 处**（契约 EN 113 → 117 处 / CN 107 → 111 处，中英 AGENTS 各 11 → 14 / 31 → 34 处；
- *  裸行号一处未增、仍 130 vs 130）。issue #499（退役 `context.onFoldSummary`）让契约中英与 README 中英各多引一处 `CONTEXT_OPTION_NAMES`（`src/assembly-validators.js`）⇒ +1 组 / +4 处，在合入 main `109a0a3` 之后的树上实测 **139 组 / 416 处**（裸行号一处未增、仍 130 vs 130）。 issue #497（S2）新增 `config` 嵌套命名空间后，契约中英各多一节
- *  `### The config namespace (issue #497)` / `### config 命名空间（issue #497）`，引用六个符号：
- *  `CONFIG_NAMESPACE_SCHEMA` / `CONFIG_ALIAS_PATHS` / `CONFIG_SURFACE_OPTION_NAMES` /
- *  `configSchemaSelfCheck` / `CAPABILITY_OPTION_NAMES`（`src/loop/config-namespace.js`）与
- *  `normalizeRunToolLoopOptions`（`src/loop/option-normalization.js`）—— 在**本分支的树**上
- *  `--verbose` 实测 **145 组 / 423 处**（相对 #499 落地的 main `109a0a3` 是 +6 组 / +7 处；裸行号一处未增、仍 130 vs 130）。
- *  issue #571（`createAgent`）在契约中英各加一节「初始化与每次调用的分工」，引用四个符号：
- *  `createAgent` / `runToolLoop`（`src/loop/orchestrator.js`）、`CONFIG_LEAF_BINDING` /
- *  `configLeafNamesForBinding` / `configSchemaSelfCheck` / `CONFIG_NAMESPACE_SCHEMA`
- *  （`src/loop/config-namespace.js`）—— 新增 **4 组**唯一 (符号, 文件) 键，在本分支树上
- *  `--verbose` 实测 **158 组 / 489 处**（此前 154 组 / 473 处；裸行号一处未增），下限随之抬到 158。
- *  写法必须保持 `const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 一行（自测的两例要改这个数）。 * 片A（切版前的 #569 / #568 文档补齐，issue #578）：契约中英成对新增
- * `## Fold trigger ratio and the session continuity block`（`## 折叠触发比例与会话续接块`）一节，
- * 引 `validateContextFoldAtRatio` / `CONTEXT_OPTION_NAMES`（`src/assembly-validators.js`）、
- * `CONTINUITY_BLOCK_START` / `upsertContinuityInMessages` / `positionContinuityBlock` /
- * `CONTINUITY_DEFAULT_MAX_TOKENS` / `CONTINUITY_MAX_ENTRY_CHARS` / `renderContinuityBlock`
- * （`src/loop/continuity-block.js`）、`isApiInputOverBudget`（`src/loop/budget.js`）、
- * `markStablePrefix`（`src/loop/provider-runner.js`）、`estimateMessageTokens`（`src/tokens.js`）
- * ⇒ **+6 组 / +24 处**（同一棵树实测：改前 158 组 / 492 处，是把两份契约退回备份跑出来的，不是拿 AGENTS 里的
- * 历史声称当基线——那句写的 489 自己就过期了 3 处）。
- * ⚠ **本条自己被数了两遍**：这句说明里的 `(path)` 锚点也在 `symbols` 覆盖面内（AGENTS.md 20 → 25 组、AGENTS_cn.md
- * 43 → 47 组），所以地板**必须在改完 AGENTS 之后**重测——先量后写会得到偏低的 163，而 `--self-test` 那两例的判据是
- * 「实测 == 地板」，偏低就红（实测踩过：地板 163 时一条报 163 ≠ 162、另一例升到 164 反而不红）。 * A2（同一次切版前补充，#588 / #589）又加了观察者事件表两行与续接块两条结构性规则 ⇒ 现值 **168 组 / 521 处**。
- * 因为上面那句 AGENTS 声称句自带锚点，这次校准是**迭代到不动点**做的：写 → 量 → 改数 → 再量，连量两次数字不再变（前一次
- * 一次量出来就写，拿到了偏低的 164）。诊断原文：
- *
- * ```
- * ✓ symbol-anchor: 实测 168 组 > 下限 164 组——符号锚点在变多（好方向），请把 SYMBOL_ANCHOR_MIN_UNIQUE 升到 168，否则下限就在空转
- * ```
- *
- * issue #617 P2 的 0.28.0 升级指南成对小节（「CLI 的 `delegate` 是示例，不是契约」）引了
- * `createDelegateTool` / `TERMINATION_TO_STATE`（`src/tools/delegation/tool.js`）、
- * `writeRecord`（`src/tools/delegation/roster.js`）、`createCliDelegation`（`bin/delegation.js`）
- * 四组新锚点 ⇒ 168 → **172 组**（中英各一处，组数 +2 是因为同一 (符号, 文件) 在两种语言里只算一组；
- * AGENTS 中英的声称句自己也引这四组，所以 170 → 172 是**改完 AGENTS 之后**重测的不动点），在本分支树上 `--verbose` 实测。
- *  抬下限的理由（工单 docs-261031-01 发版准备，**172 → 180**，两刀合一）：① 0.28.0 指南里那段 delegate
- *  示例面迁到新的 0.29.0 中英指南对，§2–§5 按同一红线用符号锚点引用 `createDelegateTool` /
- *  `TERMINATION_TO_STATE`（`src/tools/delegation/tool.js`）、`judgeRecordFields`
- *  （`src/loop/judge-record.js`）与 `completionMarkerKey`（`src/tools/delegation/notify.js`）⇒ +3 组 / +5 处；
- *  ② review 追加的 §7「压缩与续接面」再引 `DEFAULT_COMPACTION_STRATEGY`（`bin/config.js`）、
- *  `HANDOFF_INSTRUCTION` / `resolveContinuityDir`（`src/loop/continuity-block.js`）、`SUMMARIZER_PROMPT_GUIDE`
- *  （`src/compact/fold-llm.js`）与 `parseFoldSummaries`（`src/compact/fold-statistical.js`），AGENTS 中英的
- *  声称句自己也引这几组 ⇒ +5 组 / +14 处。合计 `--verbose` 实测 **180 组 / 549 处**（连量两次相同，
- *  不动点；不升就是下限在空转）。
- *
- * issue #637（归一化兜底的截断判别）的契约中英成对段落引 `stopReasonOf`（`src/normalization/parse-model-json.js`）
- * ⇒ **+1 组 / +5 处**（契约中英各一处、AGENTS 中英的声称句各一处、脚本头这一处），`--verbose` 实测
- * **180 组 / 546 处**（连量两次相同，不动点）⇒ 下限 179 → **180**。
- *
- * issue #286 **T-b2**（最后一刀）：`src/loop/provider-runner.js` / `src/loop/termination.js` /
- * `src/reflection/governor.js` 三族里剩下的裸行号引用（中英契约各 27 处 + `docs/soak.md` 2 处）
- * 按 B 方案换成符号锚点——`callProvider` / `queueEvent`（provider-runner）、
- * `TRUNCATED_TERMINATION_REASONS` / `FINAL_GUARD_TERMINATION_REASONS` / `withErrorCode` /
- * `forceFinalIfNeeded` / `terminationReasonForAction`（termination）、`decideRoundAction` /
- * `decideWithEvaluation` / `STALL_STREAK_LIMIT` 与治理层 stop 值（governor）——新增 **8 组**唯一
- * (符号, 文件) 键，`--verbose` 实测 **188 组 / 601 处**（连量两次相同，不动点）⇒ 下限 180 → **188**。
- 
- *
- *  * issue #375（参数错误的统一出口）的契约中英成对小节引 `paramError` / `paramErrorFacts`
- * （`src/tools/file-tools.js`）⇒ **+2 组 / +4 处**（契约中英各一处，AGENTS 中英的声称句不带锚点、不计），
- * `--verbose` 在**合并后的树**上重算实测 **191 组 / 637 处**（与 #286 T-b2 的 +8 组叠加，两支不取最大值）⇒ 下限 188 → **191**。
- 
- 
- *
- * issue #308（`response_format` 是透传、不是语法约束保证）的契约中英成对新增一节，引
- * `applyProviderPayloadOptions`（`src/providers/payload.js`）⇒ **+1 组 / +8 处**（契约中英各四处、
- * 脚本头这一处）。它在**自己分支**上量到 181 组 / 554 处，但那棵树没有 #286 T-b2（+8）与 #375（+2）；
- * 在**合并后的树**上重算实测 **191 组 / 637 处**（连量三轮相同，不动点）⇒ 下限 190 → **191**。
- 
- * issue #286 **T-c**（最后一刀）：中英契约与 `docs/host-upgrade-guide-0.17.0.md` 里剩下的 76 个裸行号键逐处换成
- * 「符号 + 文件」锚点（首选修法：删区间只留符号），族别与增量：`src/loop/orchestrator.js` 24 键
- * （`persist` / `replayForToolUse` / `fail` / `noToolRound` / `stallWindow` / `stallStreak` / `isEndTurn` /
- * `finalGuardRetryLimit` / `appendEngineMessagesToTranscript` / `callRoundJudge` / `no_final_guard`）、
- * `src/providers/errors.js` 6（`classifyHttpError` / `RETRYABLE_CODES` / `validateProviderConfig`）、
- * `src/providers/openai.js` 6（`createOpenAIProvider` / `buildPayload`）、`src/providers/anthropic.js` 4
- * （`createAnthropicProvider`）、`src/skills/loader.js` 4（`buildSkillTools` / `validateTools`）、
- * `src/loop/run-snapshot-executor.js` 4（`executeToolBlock` / `normalizeExecutionResult` /
- * `createRunSnapshotExecutor`，含 0.17.0 指南两处）、`src/loop/termination.js` 的
- * `FINAL_GUARD_NON_CONTINUABLE_REASONS`，其余单点族 `src/index.js` / `src/loop/abort.js` 之外的
- * `canonical` / `projection` / `aggregate-budget` / `budget` / `api-key` / `json-file` / `static` /
- * `compact/budget` / `sliding-window` / `reflection` / `notes-port` / `tools/notes` 各 2 键。
- * ⇒ 新增 **+27 组**唯一 (符号, 文件) 键、处数 637 → **723**，`--verbose` 在**合并后的树**上实测
- * **219 组 / 724 处**（issue #518 / #297 的中英契约成对补段 +1 组 / +1 处，合并后 `--verbose` 连量两次相同，不动点）⇒ 下限 **218 → 219**。历史上 218 组 / 723 处（连量两次相同，不动点）⇒ 下限 191 → **218**。
- */
+ *  现值 = 我自己那条 note 打出来的唯一 (符号, 文件) 组数 / 处数（跑 `--verbose` 现读，本文不抄）。
+ *  历史（每一次抬高下限的链项：哪次合并、引了哪些符号、在哪棵树上量的）**不在本文件**：
+ *  issue #644 ③ 把它整条搬到了 `docs/maintenance/symbol-anchor-ledger.md`（历史类文档，正文有命中数钉子）。
+ *  这里只留判据与写法：`const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 必须保持一行（自测的两例要改这个数）。 */
 const SYMBOL_ANCHOR_MIN_UNIQUE = 219;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
@@ -2951,7 +2837,10 @@ for (const rel of [README_EN, README_CN]) {
  *  契约×2 + pi 扩展 README）——这三对是「会被人当成现状读」的活文档，死引用漂了不会红的代价比
  *  入口文档只高不低。 */
 const PATH_DOCS = [README_EN, README_CN, PI_EXT_README, CONTRACT_EN, CONTRACT_CN, AGENTS_EN, AGENTS_CN,
-  ARCH_EN, ARCH_CN, CHARTS_EN, CHARTS_CN, REQ_EN, REQ_CN];
+  ARCH_EN, ARCH_CN, CHARTS_EN, CHARTS_CN, REQ_EN, REQ_CN,
+  // issue #644 ③：账本既然在锚点面内（`SYMBOL_DOCS_STATIC`），它的普通路径引用也该校——
+  // 一份「符号锚点要被校验」的文档，没有理由让它的路径引用免检。
+  LEDGER_EN, LEDGER_CN];
 
 // 引用裁决分类（四类，**没一类能整目录/整前缀豁免**；每条白名单必须写理由）。
 // 白名单条目还会被反向校：没人引用、或分类与 .gitignore 不再自洽 → 红，所以条目不会烂在那里。
@@ -4507,6 +4396,8 @@ function collectAllDrift() {
   const out = [...collectAnchorErrors(), ...checkPkgBlocks().errors, ...collectPathErrors(),
     ...collectMarkerLiteralErrors(), ...collectBaselineClaimErrors(),
     ...collectSymbolAnchorErrors(), ...collectBareLineRefErrors(), ...collectRefScanCoverageErrors(),
+    // #635 ① / #644 ③：份数声称的机器对账 + 指令面指着账本的那句指针
+    ...collectRefScanCountClaimErrors(), ...collectLedgerPointerErrors(),
     ...collectCliFlagErrors(),
     // issue #511：「这句话属于哪个版本」与「这个版本发布了没有」四条（自测要连它们一起变异）
     ...collectDocVersionErrors(), ...collectVersionAttributionErrors(), ...collectGuideClaimErrors(),
@@ -4527,6 +4418,11 @@ for (const [label, en, cn] of SKELETON_PAIRS) {
 // ── 7. 跑清单/单位类锚点、marker 字面、棘轮当前值与 package.json 清单比对 ────────
 for (const e of collectRefScanCoverageErrors()) err(e);
 for (const n of collectRefScanCoverageErrors.notes ?? []) note(n);
+// #635 ① / #644 ③
+for (const e of collectRefScanCountClaimErrors()) err(e);
+for (const n of collectRefScanCountClaimErrors.notes ?? []) note(n);
+for (const e of collectLedgerPointerErrors()) err(e);
+for (const n of collectLedgerPointerErrors.notes ?? []) note(n);
 for (const e of collectSymbolAnchorErrors()) err(e);
 for (const n of collectSymbolAnchorErrors.notes ?? []) note(n);
 for (const e of collectBareLineRefErrors()) err(e);
@@ -5583,6 +5479,38 @@ const SELF_TEST_CASES = [
     overlay: { "CHANGELOG.md": (t) => t.replace("## [0.29.0] - 2026-10-31", "## [0.9.9] - 2026-10-31") },
     simulateRegistry: selfTestRegistry(),
     expect: [/guide-coverage: 读不到 CHANGELOG 的 0\.29\.0 段/],
+  },
+  // ══ issue #635 ①：文档里的「点名几份 + 实扫几份 = 下限」份数声称必须等于实测 ══════════
+  {
+    label: "#635 ①：把账本英文侧的「点名文档」数从 15 改成 16 ⇒ 红并点名那份文档的哪个数（份数声称是散文时没人校，正是本单的病根）",
+    overlay: { [LEDGER_EN]: (t) => t.replace("**15 pinned documents", "**16 pinned documents") },
+    expect: [/ref-scan-claims: docs\/maintenance\/symbol-anchor-ledger\.md:\d+ 声称「点名文档」16，但脚本实测 15/],
+    expectFiles: [LEDGER_EN],
+  },
+  {
+    label: "#635 ①：把 README 英文侧的「That is 47 documents」改回 43 ⇒ 红（修前 43 与同一句里的 45 互相矛盾而门禁一路绿）",
+    overlay: { [README_EN]: (t) => t.replace("That is 47 documents", "That is 43 documents") },
+    expect: [/ref-scan-claims: README\.md:\d+ 声称「文档合计」43，但脚本实测 47/],
+    expectFiles: [README_EN],
+  },
+  {
+    label: "#635 ①（句子被删也要红）：把中文 README 里「（当前 32 份，按目录实扫）」整句删掉 ⇒ 红（删句子 = 合法逃逸）",
+    overlay: { [README_CN]: (t) => t.replace("（当前 32 份，按目录实扫）", "") },
+    expect: [/ref-scan-claims: README_cn\.md 里找不到「按目录实扫到的升级指南份数」那条份数声称/],
+    expectFiles: [README_CN],
+  },
+  // ══ issue #644 ③：指令面必须指着声称链的新家（搬走了但没人知道搬哪去 = 没搬）══════════
+  {
+    label: "#644 ③：从 AGENTS.md 里删掉指向账本的指针 ⇒ 红并点名（指令面上再没有任何线索指向那条链）",
+    overlay: { [AGENTS_EN]: (t) => t.replaceAll(LEDGER_EN, "the anchor ledger") },
+    expect: [/ledger-pointer: AGENTS\.md 里没有指向 `docs\/maintenance\/symbol-anchor-ledger\.md` 的指针/],
+    expectFiles: [AGENTS_EN],
+  },
+  {
+    label: "#644 ③：中文侧同样删掉指针 ⇒ 红（中英成对：只留一侧等于另一侧的读者找不到）",
+    overlay: { [AGENTS_CN]: (t) => t.replaceAll(LEDGER_CN, "那份账本") },
+    expect: [/ledger-pointer: AGENTS_cn\.md 里没有指向 `docs\/maintenance\/symbol-anchor-ledger_cn\.md` 的指针/],
+    expectFiles: [AGENTS_CN],
   },
 ];
 

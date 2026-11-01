@@ -1,9 +1,10 @@
 # ADR-021: Where the symbol-anchor claim chain lives — evaluation and migration plan (issue #644 ③)
 
-> **Status: proposal (2026-10-31).** This record evaluates the question and fixes the migration
-> checklist. It does **not** move the chain: the move changes which documents the anchor face covers
-> and how the only-up floor is bucketed, so it gets its own ticket, its own reverse proofs and its own
-> measurement on the merged tree.
+> **Status: proposal (2026-10-31); implemented (2026-11-01).** This record evaluated the question and
+> fixed the migration checklist; the move itself landed in the ticket it asked for. The destination it
+> picked at implementation time is `docs/maintenance/symbol-anchor-ledger.md` / `_cn.md` — the checklist
+> below still says `docs/symbol-anchor-claim-chain.md`, which was the plan, not the outcome. The chain was
+> moved verbatim, the pair stays inside the anchor face, and the spelling gate classifies it as history.
 
 - Related: issue #642 (the instruction-face scanner `scripts/agents-directive-scan.mjs`), issue #644 ① / ②
   (the scanner's reverse proof and `--sync`), issue #286 T-a (symbol anchors + the bare-line ratchet),
