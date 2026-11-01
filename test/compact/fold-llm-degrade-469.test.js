@@ -66,7 +66,10 @@ test("#469-① 摘要专属超时：只中断这一发，不连坐 run；原因�
   }
 });
 
-test("#469-①④ 超时降级：折叠照常完成，degradeKind 落进 foldSummary", async () => {
+test("#469-①④ 摘要器超时 ⇒ 终局 summarizer_failed（details.kind=timeout），不重试", async () => {
+  // issue #661 语义反转：改前这一格断言「折叠照常完成，degradeKind 落进 foldSummary」
+  // （#33 D 的降级路径）。那条路径已删 ⇒ 摘要器超时是**终局错误**，
+  // 分类从 `foldSummary.degradeKind` 搬到异常的 `details.kind`。
   let calls = 0;
   const strategy = createFoldLlmStrategy({
     summarizer: async () => {
@@ -76,13 +79,17 @@ test("#469-①④ 超时降级：折叠照常完成，degradeKind 落进 foldSum
       throw error;
     },
   });
-  const result = await strategy.compact(conversation(), { keepRounds: 1 });
-  assert.equal(result.compacted, true, "摘要失败不得让折叠本身失败");
+  const error = await strategy.compact(conversation(), { keepRounds: 1 }).then(
+    () => assert.fail("摘要器超时必须抛错（不许返回降级替代物）"),
+    (thrown) => thrown,
+  );
   assert.equal(calls, 1, "超时不是超窗，不做重试");
-  assert.equal(result.foldSummary.source, "statistical");
-  assert.equal(result.foldSummary.degradeKind, "timeout");
-  assert.match(result.foldSummary.degradeReason, /timed out/u);
-  assert.match(result.messages[0].content.map((b) => b.text ?? "").join(""), /降级为统计摘要/u);
+  assert.equal(error.code, "summarizer_failed");
+  assert.equal(error.details.kind, "timeout");
+  // `errorCode` 取根因自己的 code（与 `terminationErrorCodeForError` 同一口径）。
+  assert.equal(error.errorCode, "summarizer_timeout");
+  assert.equal(error.retryable, false);
+  assert.match(error.message, /timed out/u);
 });
 
 test("#469-② 超窗（网关 400）：带更短的输入重试一次并成功，不再静默降级", async () => {
@@ -229,45 +236,37 @@ test("#486 P1-A 宿主 abort 不是超时：不许被改写成 summarizer_timeou
 // 变异实验：把 `assertUsableSummary` 的 `trim() === ""` 分支删掉（退回旧的
 // `typeof !== "string"` 判断）⇒ 本格两条全红（`source` 变 `llm`、无降级标记、`degradeKind` 变 `undefined`）。
 
-const degradedHeadText = (result) => result.messages
-  .flatMap((message) => (Array.isArray(message?.content) ? message.content : []))
-  .map((block) => (block?.type === "text" ? String(block.text ?? "") : ""))
-  .join("\n");
+// issue #661：这三格原来的口径是「空摘要 = 失败 ⇒ 走 #33 D 降级路径」。降级路径已删，
+// 失败仍然是失败，只是出口从「降级替代物」变成 `summarizer_failed` 终局错误；
+// `empty_summary` 这个分类**逐字保留**（它回答的是「模型没产出」，不是「不可用」）。
+const expectSummarizerFailure = async (strategy) => strategy
+  .compact(conversation(), { keepRounds: 1 })
+  .then(
+    () => assert.fail("摘要器返回空内容必须抛错（不许返回降级替代物）"),
+    (thrown) => thrown,
+  );
 
-test("#469-② 空串摘要 ⇒ 降级（标记 + 统计摘要 + degradeKind=empty_summary），折叠本身不失败", async () => {
-  const strategy = createFoldLlmStrategy({ summarizer: async () => "" });
-  const result = await strategy.compact(conversation(), { keepRounds: 1 });
-
-  assert.equal(result.compacted, true, "空摘要不得让折叠本身失败（run 不该因为它在半路死掉）");
-  assert.equal(result.foldSummary.source, "statistical",
-    `空摘要必须如实记成降级（实测 source=${String(result.foldSummary.source)}）`);
-  assert.equal(result.foldSummary.degradeKind, "empty_summary",
-    `降级原因必须可分辨（实测 ${String(result.foldSummary.degradeKind)}）`);
-  assert.equal(result.foldSummary.degradeReason, "摘要器返回空内容");
-
-  const head = degradedHeadText(result);
-  assert.match(head, /\[fold-llm 摘要失败，已降级为统计摘要（原因: 摘要器返回空内容）\]/u,
-    `折叠块首行必须是降级标记（实测：${head.slice(0, 120)}）`);
-  // 不只是标记：标记后面必须**真有**统计摘要（否则「降级」也是空的）。
-  assert.match(head, /已折叠/u, `降级后必须带上统计摘要正文（实测：${head.slice(0, 200)}）`);
-  assert.ok(head.length > "\\[fold-llm 摘要失败，已降级为统计摘要（原因: 摘要器返回空内容）\\]".length + 20,
-    `折叠块不许退化成「只有标记」（实测 ${head.length} 字符）`);
-  // 机械替代物照旧入账（source/increment 口径不变）。
-  assert.equal(result.foldSummary.incrementOrigin, "mechanical");
-  assert.ok(typeof result.foldSummary.increment === "string" && result.foldSummary.increment !== "");
+test("#469-② 空串摘要 ⇒ 终局 summarizer_failed（details.kind=empty_summary）", async () => {
+  const error = await expectSummarizerFailure(createFoldLlmStrategy({ summarizer: async () => "" }));
+  assert.equal(error.code, "summarizer_failed");
+  assert.equal(error.details.kind, "empty_summary",
+    `失败原因必须可分辨（实测 ${String(error.details.kind)}）`);
+  assert.equal(error.errorCode, "summarizer_empty_summary");
+  assert.match(error.message, /摘要器返回空内容/u);
 });
 
 test("#469-② 只有空白的摘要同样算失败（`trim()` 口径，不是只判空串）", async () => {
-  const strategy = createFoldLlmStrategy({ summarizer: async () => "  \n\t \n " });
-  const result = await strategy.compact(conversation(), { keepRounds: 1 });
-
-  assert.equal(result.compacted, true);
-  assert.equal(result.foldSummary.source, "statistical", "只有空白的摘要不是内容");
-  assert.equal(result.foldSummary.degradeKind, "empty_summary");
-  assert.match(degradedHeadText(result), /降级为统计摘要（原因: 摘要器返回空内容）/u);
+  const error = await expectSummarizerFailure(
+    createFoldLlmStrategy({ summarizer: async () => "  \n\t \n " }),
+  );
+  assert.equal(error.code, "summarizer_failed");
+  assert.equal(error.details.kind, "empty_summary", "只有空白的摘要不是内容");
 });
 
-test("#469-② 真引擎（fold-llm + 空串摘要器）：run 正常收尾，折叠块是降级形状（不是「看起来正常」的空摘要）", async () => {
+test("#469-② 真引擎（fold-llm + 空串摘要器）：run 以 summarizer_failed 终局，且失败那一折什么都没应用", async () => {
+  // issue #661 语义反转：改前这一格断言「run 正常收尾 + 折叠块是降级形状」。
+  // 现在摘要是终局错误 ⇒ run 以 `failed` 收尾；而「先失败后应用」要求失败的这一折
+  // 在账上不留任何痕迹（下面逐条断言，见 issue #661 判据 2 / 3）。
   const store = createMemoryTranscriptStore();
   const runId = "s-469-empty-summary";
   let turns = 0;
@@ -293,7 +292,8 @@ test("#469-② 真引擎（fold-llm + 空串摘要器）：run 正常收尾，�
   };
   provider.chatStream = provider.chat;
 
-  const run = await runDirect({
+  const events = [];
+  const failure = await runDirect({
     capabilities: { ports: { strategy: createFoldLlmStrategy({ summarizer: async () => "" }) } },
     provider,
     runId,
@@ -307,34 +307,43 @@ test("#469-② 真引擎（fold-llm + 空串摘要器）：run 正常收尾，�
     // 正文放在 **tool_result** 里（不在 `tool_use.input` 里）：这样「工作集」才有量级，
     // 折叠决策才会在有多轮可折时发生。
     executeTool: async ({ input }) => `ECHO:${String(input?.text ?? "")}_${"填充".repeat(300)}`,
+    onEvent: (event) => { events.push(event); },
     maxRounds: 20,
     completion: false,
     wrapup: false,
     stallDetection: false,
     config: { folding: { context: { budgetTokens: 300, keepRounds: 0 } } },
-  });
+  }).then(
+    () => assert.fail("摘要器失败必须让 run 以 failed 终局（不许静默跑完）"),
+    (error) => error,
+  );
 
-  assert.ok(String(run?.finalText ?? "").includes("收尾结论"),
-    `空摘要不许把 run 拖死：${JSON.stringify(run?.termination ?? {})} rounds=${run?.rounds}`);
-  assert.equal(run.termination.reason, "end_turn",
-    `终局必须是正常收尾（实测 ${String(run.termination.reason)}）`);
-  const messagesJson = JSON.stringify(run.messages ?? []);
-  assert.ok(messagesJson.includes("已降级为统计摘要（原因: 摘要器返回空内容）"),
-    "真引擎的折叠块里必须留下降级标记（否则「空摘要」在默认路径上仍然静默）");
+  assert.equal(failure.code, "summarizer_failed");
+  assert.equal(failure.details.kind, "empty_summary");
+  assert.equal(failure.termination?.reason, "failed",
+    `终局必须是 failed（实测 ${String(failure.termination?.reason)}）`);
+  assert.equal(failure.termination?.errorCode, "summarizer_failed");
 
-  // 落账面同样如实：`compactionStats.foldSummary` 与轮记录 `foldedFacts` 都得说「降级 + 空内容」。
-  const stats = (run.compactionStats ?? []).filter((stat) => stat.foldSummary !== undefined);
-  assert.ok(stats.length > 0, "前提：这条 run 必须真的折叠过");
-  for (const stat of stats) {
-    assert.equal(stat.foldSummary.degradeKind, "empty_summary",
-      `降级分类必须可分辨（实测 ${String(stat.foldSummary.degradeKind)}）`);
-    assert.equal(stat.foldSummary.degradeReason, "摘要器返回空内容");
-  }
+  // 判据 2：失败的 run 里既没有折叠块，也没有那条被删掉的降级标记。
   const records = await store.load(runId);
-  const facts = records.map((record) => record.foldedFacts).filter((fact) => fact !== undefined);
-  assert.ok(facts.length > 0, "前提：折叠必须落进轮记录");
-  for (const fact of facts) {
-    assert.equal(fact.source, "statistical", "空摘要不得被记成模型摘要");
-    assert.equal(fact.degradeReason, "摘要器返回空内容");
-  }
+  const whole = JSON.stringify(records);
+  assert.ok(records.length > 0, "前提：run 必须真的落了轮记录");
+  assert.ok(!whole.includes("【上下文折叠·"), "失败那一折不许留下折叠块");
+  assert.ok(!whole.includes("[fold-llm 摘要失败"), "降级标记已被删除，不许再出现");
+
+  // 判据 3-①：一个 `foldedFacts` 键都不许出现。
+  assert.deepEqual(
+    records.map((record) => record.foldedFacts).filter((fact) => fact !== undefined),
+    [],
+  );
+  // 判据 3-②：没有 compaction stat，也没有 `type: "compaction"` 事件。
+  assert.deepEqual(events.filter((event) => event?.type === "compaction"), []);
+  const runState = await store.loadRunState(runId);
+  assert.deepEqual(runState?.deterministic?.compactionStats ?? [], []);
+  assert.equal(runState?.deterministic?.fold?.foldedRounds ?? 0, 0);
+  // 判据 3-③：水位线没动（resume 的 `foldedThrough` 从轮记录推导 ⇒ 这里没有任何可推导的区间）。
+  assert.deepEqual(
+    records.map((record) => record.foldedRoundRange).filter((range) => range !== undefined),
+    [],
+  );
 });

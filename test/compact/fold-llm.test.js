@@ -382,7 +382,9 @@ test("constructor parameter errors stay fail-loud (summarizer must be a function
   });
 });
 
-test("degrades to a statistical summary when the summarizer rejects at runtime (issue #33 D)", async () => {
+test("summarizer rejects at runtime ⇒ terminal summarizer_failed, never a statistical substitute (issue #661)", async () => {
+  // issue #661 语义反转：改前这条断言的是「降级为统计摘要」那块替代物（issue #33 D）；
+  // 那条路径已删——摘要器失败现在是**终局错误**。反向锁：messages 里不得再出现任何降级标记。
   const messages = [
     { role: "user", content: "task" },
     {
@@ -400,29 +402,32 @@ test("degrades to a statistical summary when the summarizer rejects at runtime (
     { role: "assistant", content: [{ type: "text", text: "old" }] },
     { role: "user", content: "keep" },
   ];
+  const before = JSON.stringify(messages);
   const strategy = createFoldLlmStrategy({
     summarizer: async () => {
       throw new Error("LLM provider unavailable: rate limited");
     },
   });
-  const result = await strategy.compact(messages, { keepRounds: 1 });
-  const text = result.messages[0].content[0].text;
-
-  // compact 正常返回：降级标记可识别、含截断原因；统计摘要本体（足迹/锚点/恢复提示）齐全。
-  assert.match(text, /^\[fold-llm 摘要失败，已降级为统计摘要（原因: LLM provider unavailable: rate limited）\]/u);
-  assert.match(text, /【上下文折叠·v1·erix-9f6e2c】早期第 1–2 轮（共 2 轮）已折叠。/u);
-  assert.match(text, /工具足迹：exec×1。/u);
-  assert.match(text, /需要原文请重读文件或查看持久笔记；关键值应当已落盘/u);
-  assert.match(text, /^shas: 0c309e6$/mu);
-  assert.match(text, /^paths: src\/compact\/fold-llm\.js:1$/mu);
-  // foldedPayload 仍随 transcript 归档。
-  assert.deepEqual(result.foldedPayload, messages.slice(1, 4));
-  assert.equal(result.compacted, true);
-  assert.equal(result.foldedRounds, 2);
-  assert.deepEqual(result.messages.at(-1), messages.at(-1));
+  await assert.rejects(
+    () => strategy.compact(messages, { keepRounds: 1 }),
+    (error) => {
+      assert.equal(error.code, "summarizer_failed");
+      assert.equal(error.details.kind, "error");
+      assert.equal(error.retryable, false);
+      // `errorCode` 与 `termination.errorCode` 同一套口径：取根因自己的 code（取不到即 unknown）。
+      assert.equal(error.errorCode, "unknown");
+      assert.match(error.message, /LLM provider unavailable: rate limited/u);
+      return true;
+    },
+  );
+  // 先失败后应用：失败的这一折连输入都不许改（策略不得就地改写调用方的数组）。
+  assert.equal(JSON.stringify(messages), before);
 });
 
-test("degraded summary carries stubs and the artifact navigation record (review fix)", async () => {
+test("failed fold leaves no recovery substitute behind (stubs / navigation record / artifact body)", async () => {
+  // 改前这一格钉的是「降级摘要不比统计摘要少恢复信息」（stub 行 + 导航记录）。
+  // issue #661：失败即抛 ⇒ 那一份替代物根本不存在，改为反向锁：
+  // ① 异常里不带被折原文（凭据不进错误消息）；② 抛出的错误上没有 foldedPayload / messages。
   const messages = [
     { role: "user", content: "task" },
     {
@@ -452,75 +457,73 @@ test("degraded summary carries stubs and the artifact navigation record (review 
     },
     stubFor: () => "[已折叠] 值：nonce=abc123；原文：/tmp/archive/001-exec.txt",
   });
-  const result = await strategy.compact(messages, { keepRounds: 1 });
-  const text = result.messages[0].content[0].text;
-
-  assert.match(text, /已降级为统计摘要/u);
-  // 降级摘要不比原生 statistical 摘要少恢复信息：stub 行 + artifact 导航记录。
-  assert.match(text, /^\[已折叠\] 值：nonce=abc123；原文：\/tmp\/archive\/001-exec\.txt$/mu);
-  assert.match(text, /^导航记录：\{/mu);
-  assert.match(text, /001-exec\.txt/u);
-  assert.doesNotMatch(text, /credential=must-not-enter-summary/u);
+  const error = await strategy.compact(messages, { keepRounds: 1 }).then(
+    () => assert.fail("摘要器失败必须抛错（不许返回降级替代物）"),
+    (thrown) => thrown,
+  );
+  assert.equal(error.code, "summarizer_failed");
+  assert.equal(error.details.kind, "error");
+  const whole = `${error.message}\n${JSON.stringify(error.details)}`;
+  assert.doesNotMatch(whole, /credential=must-not-enter-summary/u);
+  assert.doesNotMatch(whole, /已降级为统计摘要/u);
+  assert.equal(error.foldedPayload, undefined);
+  assert.equal(error.messages, undefined);
 });
 
-test("degrades when the summarizer throws synchronously or returns a non-string", async () => {
+test("a synchronous throw and a non-string return both fail the same way", async () => {
+  // issue #661：两种旧降级形状（同步抛 / 非字符串）现在都走同一个出口。
   const messages = [
     { role: "user", content: "task" },
     { role: "assistant", content: [{ type: "text", text: "old" }] },
     { role: "user", content: "keep" },
   ];
-  const syncThrow = await createFoldLlmStrategy({
-    summarizer: () => {
-      throw new Error("sync blow up");
+  await assert.rejects(
+    () => createFoldLlmStrategy({
+      summarizer: () => {
+        throw new Error("sync blow up");
+      },
+    }).compact(messages, { keepRounds: 1 }),
+    (error) => {
+      assert.equal(error.code, "summarizer_failed");
+      assert.equal(error.details.kind, "error");
+      assert.match(error.message, /sync blow up/u);
+      return true;
     },
-  }).compact(messages, { keepRounds: 1 });
-  assert.match(
-    syncThrow.messages[0].content[0].text,
-    /\[fold-llm 摘要失败，已降级为统计摘要（原因: sync blow up）\]/u,
   );
 
-  const nonString = await createFoldLlmStrategy({
-    summarizer: async () => ({ not: "a string" }),
-  }).compact(messages, { keepRounds: 1 });
-  assert.match(
-    nonString.messages[0].content[0].text,
-    /\[fold-llm 摘要失败，已降级为统计摘要（原因: fold-llm summarizer must return a string）\]/u,
+  await assert.rejects(
+    () => createFoldLlmStrategy({
+      summarizer: async () => ({ not: "a string" }),
+    }).compact(messages, { keepRounds: 1 }),
+    (error) => {
+      assert.equal(error.code, "summarizer_failed");
+      assert.equal(error.details.kind, "error");
+      assert.match(error.message, /fold-llm summarizer must return a string/u);
+      return true;
+    },
   );
 });
 
-test("degraded summary respects anchors:false exactly like the normal path", async () => {
+test("anchors:false does not change the failure shape (no anchor section is invented)", async () => {
+  // 改前：降级摘要也要尊重 anchors:false（不造锚点节）。issue #661：失败根本没有正文，
+  // 所以这条变成「异常里没有锚点正文」的反向锁。
   const messages = [
     { role: "user", content: "task" },
     { role: "assistant", content: [{ type: "text", text: "old 1ed3f35" }] },
     { role: "user", content: "keep" },
   ];
-  const result = await createFoldLlmStrategy({
+  const error = await createFoldLlmStrategy({
     summarizer: async () => {
       throw new Error("boom");
     },
     anchors: false,
-  }).compact(messages, { keepRounds: 1 });
-
-  const text = result.messages[0].content[0].text;
-  assert.match(text, /已降级为统计摘要/u);
-  assert.doesNotMatch(text, /## 锚点索引/u);
-  assert.doesNotMatch(text, /1ed3f35/u);
+  }).compact(messages, { keepRounds: 1 }).then(
+    () => assert.fail("摘要器失败必须抛错"),
+    (thrown) => thrown,
+  );
+  assert.equal(error.code, "summarizer_failed");
+  const whole = `${error.message}\n${JSON.stringify(error.details)}`;
+  assert.doesNotMatch(whole, /## 锚点索引/u);
+  assert.doesNotMatch(whole, /1ed3f35/u);
 });
 
-test("a long failure reason is truncated inside the degradation marker", async () => {
-  const messages = [
-    { role: "user", content: "task" },
-    { role: "assistant", content: [{ type: "text", text: "old" }] },
-    { role: "user", content: "keep" },
-  ];
-  const result = await createFoldLlmStrategy({
-    summarizer: async () => {
-      throw new Error(`e${"x".repeat(300)}`);
-    },
-  }).compact(messages, { keepRounds: 1 });
-
-  const text = result.messages[0].content[0].text;
-  const marker = text.split("\n")[0];
-  assert.match(marker, /已降级为统计摘要（原因: ex{1,119}…?）\]$/u);
-  assert.ok(marker.length < 200);
-});

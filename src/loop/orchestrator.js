@@ -1721,6 +1721,14 @@ export async function runToolLoop(options) {
       return reused;
     }
     const summary = await compactionSummarizer(input);
+    // issue #661（「先失败后应用」第 ④ 条）：**不可用的摘要不记账**。空串 / 空白 / 非字符串在
+    // `fold-llm` 里会被 `assertUsableSummary` 判死并抛 `summarizer_failed`；若这里已经把那份
+    // 空串写进复用账本、把 `lastFoldSummaryOutcome` 设成它，失败就留下了「上一份摘要」残值
+    // （下一次折叠会把它当续写基底与指纹来源）。判据与 `assertUsableSummary` 同一口径，
+    // 但**不在这里抛**：抛点只有一处（`fold-llm` 的 `callSummarizerWithBound`）。
+    if (typeof summary !== "string" || summary.trim() === "") {
+      return summary;
+    }
     foldSummaryLedger.remember(fingerprint, summary);
     lastFoldSummaryOutcome = { fingerprint, summary, reused: false, ...roundRangePart };
     return summary;
@@ -3909,7 +3917,23 @@ export async function runToolLoop(options) {
       ]) {
         if (compactionContext[key] !== undefined) compactOptions[key] = compactionContext[key];
       }
-      const result = await strategy.compact(messages, compactOptions);
+      // issue #661：摘要器失败是**终局错误**（`KitError("summarizer_failed")`，由
+      // `fold-llm` 的 `callSummarizerWithBound` 抛出），不再被吞回一份「降级为统计摘要」的
+      // 替代物。两条口径在这里落地：
+      //   ① 异常一路穿出去 ⇒ `fail()` 把它落成 `termination.reason = "failed"` /
+      //      `errorCode = "summarizer_failed"`（`withErrorCode` 读的就是 `error.code`）；
+      //   ② 账单随异常走（#109 口径，与 `makePersistenceFailure` 同一先例）：异常路径不返回
+      //      result ⇒ `errorLedger` 里那些「没能落盘的条目」只能挂在异常上，否则一起消失。
+      let result;
+      try {
+        result = await strategy.compact(messages, compactOptions);
+      } catch (compactionError) {
+        if (compactionError?.code === "summarizer_failed"
+          && compactionError.unpersisted === undefined) {
+          Object.assign(compactionError, { unpersisted: errorLedger.toUnpersisted() });
+        }
+        throw compactionError;
+      }
       for (const message of messages) preCompactionMessages.add(message);
       if (!Array.isArray(result?.messages)) {
         throw new TypeError("Compaction strategy must return a messages array");

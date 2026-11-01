@@ -126,25 +126,30 @@ test("#470-1 fold-statistical（零 LLM）：替代物落进轮记录，含范�
   ))?.summary ?? ""), "`record.summary` 不得被替代物覆盖");
 });
 
-test("#470-3 下界锁：summarizer 必然失败时，LLM 摘要缺席但机械事实仍在轮记录上", async () => {
+test("#470-3 下界锁（issue #661 反转）：summarizer 必然失败 ⇒ run 以 summarizer_failed 终局，轮记录上没有 foldedFacts", async () => {
+  // issue #661 语义反转：改前这一格锁的是「LLM 缺席但机械事实补位」（#33 D 的降级路径）。
+  // 那条路径已删 ⇒ 失败的这一折**什么都没应用**：机械替代物也不许补位，
+  // run 也不再「看起来跑完了」。
   const store = createMemoryTranscriptStore();
   summaryCalls = 0;
   const provider = createProvider({ mainScript: [toolTurn("a"), endTurn("收尾结论")], failSummary: true });
-  await runToolLoop(withSeed(runOptions("470-degrade", store, provider, {
+  const failure = await runToolLoop(withSeed(runOptions("470-degrade", store, provider, {
     budgetTokens: 300,
     keepRounds: 0,
     strategy: "fold-llm",
-  })));
+  }))).then(
+    () => assert.fail("摘要器失败必须让 run 以 failed 终局"),
+    (error) => error,
+  );
 
   assert.ok(summaryCalls >= 1, "前置：这真的试过 LLM 摘要（否则下界锁是空断言）");
+  assert.equal(failure.code, "summarizer_failed");
+  assert.equal(failure.details.kind, "error");
+  assert.equal(failure.termination?.reason, "failed");
   const records = await store.load("470-degrade");
-  const withFacts = foldRoundRecords(records);
-  assert.ok(withFacts.length >= 1, "LLM 缺席时机械事实必须补位（旧形状是两者皆无）");
-  const facts = withFacts[0][FOLDED_FACTS_RECORD_FIELD];
-  assert.equal(facts.source, "statistical");
-  assert.match(String(facts.degradeReason), /summarizer boom/u,
-    "降级原因要可指认，而不是只塞进摘要正文里的一条字符串");
-  assert.match(facts.text, /工具足迹/u);
+  assert.deepEqual(foldRoundRecords(records), [], "失败那一折不许留下 foldedFacts");
+  assert.equal(JSON.stringify(records).includes("工具足迹"), false,
+    "机械替代物同样不许补位（「先失败后应用」）");
 });
 
 test("#470-4 尺寸上界：投影 ≤ 声明上限，且只挂在折叠轮（不随折叠次数累积）", async () => {

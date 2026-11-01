@@ -169,19 +169,43 @@ test("#657-7 同一折的 `increment` 逐字不变（仍是机械替代物），
   assert.equal(facts.origin, "semantic", "父键的 origin 仍是 semantic（摘要器写的）");
 });
 
-test("#657-8 反向锁：降级路径（摘要器失败）的 `foldedFacts.text` 仍是统计摘要，形状不因本修法变化", async () => {
+test("#657-8 反向锁（issue #661 反转）：摘要器失败 ⇒ 根本没有 `foldedFacts`", async () => {
+  // PR #660 在这里加的是一条「降级路径反向锁」——它锁的正是 issue #661 删掉的那条分支。
+  // 处置（工单 §3 特别交代）：**不许删格子**，改写成「失败 ⇒ 一个折叠记录都没有」：
+  // 没有统计摘要替代物、没有 `source:"statistical"`、也没有 `degradeReason`。
   const provider = makeProvider({ toolTurns: 4, summaryBytes: 400, failSummary: true });
-  const { folds, stats } = await runChain({ runId: "657-8-degrade", provider });
-  assert.ok(folds.length >= 1, `前置：摘要器失败不得让折叠本身失败（实测 ${folds.length} 折）`);
-  const { facts } = folds[0];
-  // 降级分支交的仍是**那份统计摘要**（不是带「[fold-llm 摘要失败…]」前言的那份 —— 后者会改账上形状）。
-  assert.equal(facts.text.startsWith("【上下文折叠·v1·"), true,
-    `降级时累计体就是统计摘要（实测 ${JSON.stringify(facts.text.slice(0, 40))}）`);
-  assert.equal(facts.text.includes("[fold-llm 摘要失败"), false,
-    "降级前言属于消息流，不属于账本替代物（本修法一个字都没动这条分支）");
-  assert.equal(facts.source, "statistical", "降级时 `source` 如实说是统计摘要");
-  assert.ok(stats.some((stat) => stat.foldSummary?.degradeReason !== undefined),
-    "前置：降级原因确实进了事件面的 `foldSummary`");
+  const store = createMemoryTranscriptStore();
+  const events = [];
+  const failure = await runDirect({
+    provider,
+    executeTool: async ({ id }) => `tool output ${id} ${TOOL_FILLER.repeat(600)}`,
+    config: {
+      run: { maxRounds: 20, completion: false, reflection: false },
+      folding: { context: { budgetTokens: 1000, keepRounds: 0, strategy: "fold-llm" } },
+    },
+    seed: `${TASK_MARKER} ${"y".repeat(1500)}`,
+    store,
+    runId: "657-8-degrade",
+    capabilities: {
+      hooks: {
+        onEvent: (event) => { if (event.type === "compaction") events.push(event.compaction); },
+      },
+    },
+  }).then(
+    () => assert.fail("摘要器失败必须让 run 以 failed 终局（不许降级成统计摘要）"),
+    (error) => error,
+  );
+
+  assert.equal(failure.code, "summarizer_failed");
+  assert.equal(failure.details.kind, "error");
+  assert.equal(failure.termination?.reason, "failed");
+  const records = await store.load("657-8-degrade");
+  assert.deepEqual(
+    records.filter((record) => record?.[FOLDED_FACTS_RECORD_FIELD] !== undefined),
+    [],
+    "失败那一折不许留下 `foldedFacts`（一个键都不许出现）",
+  );
+  assert.deepEqual(events, [], "也不许留下 compaction 事件（stats 与事件同一处落点）");
 });
 
 test("#657-9 `compactionStats[].foldSummary` 不受影响：那里 `text` 显式写死为 undefined（正文只走账本）", async () => {
