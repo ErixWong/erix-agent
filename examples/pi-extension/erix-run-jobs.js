@@ -948,18 +948,38 @@ export function createAsyncRuntime(options = {}) {
   };
 
   /**
-   * 生命周期清理（机制 6）：`session_shutdown` 调它，**幂等**（重复调用不重复清、不抛）。
+   * 生命周期清理（机制 6 / **issue #658**）：`session_shutdown` 调它，**按会话归属收口**、**幂等**。
+   *
+   * 修前是两个坑叠在一起：`shutdown()` 挂在**进程级 runtime 单例**上、带一个**永不复位**的 `shutDown` 开关，
+   * 而且清的是 `registry.list()`（**全进程所有 job**，不分会话）。于是任一会话按一次 `/new` · `/resume` ·
+   * `/reload` · 退出，就一次性摘掉**全进程所有在跑 run** 的超时看门狗——那些 run 的真超时既不写 `aborted`
+   * 也不投递，`status.json` 永远停在 `running`（假事实，比「没醒」更糟）。
+   *
+   * 现在：只清 `job.ownerSessionId === ownerSessionId` 的 job（#654 已经把会话身份记在 job 上，判据现成），
+   * 而且清的是**这一份 job 生命周期上的全部定时器**（看门狗 + 投递重试，见 `clearJobTimers`）。
+   * 一次性开关去掉：清自己会话的定时器本来就幂等（第二次没有东西可清 ⇒ 返回 false），不需要开关防重入
+   * ——那个开关恰好就是「第一击之后再也不会清」的根源。
+   *
+   * **没有归属的 job（`ownerSessionId === undefined`，即 `delivery:"no-owner"` 那一族）不归任何会话**，
+   * 所以本函数**不清它们**（传空/缺 owner 时直接返回 false）：摘掉不属于自己的定时器不是清理，是破坏。
+   * 它们的定时器只由自己的 settle / 看门狗到点 / `action:"cancel"` 收口。
+   *
    * ⚠ 不 abort 在跑的 run：同进程的 run 归进程活着这件事管（README 的限制条），
    *   扩展重载 / 会话切换时把人家正在跑的活掐掉不是清理，是破坏。
+   *
+   * @param {string} [ownerSessionId] 触发 `session_shutdown` 的那个会话（#654 的 `sessionId`）
+   * @returns {boolean} 这次是否真的清掉了东西（第二次调用 ⇒ false，幂等）
    */
-  let shutDown = false;
-  const shutdown = () => {
-    if (shutDown) return false;
-    shutDown = true;
+  const shutdown = (ownerSessionId) => {
+    const owner = typeof ownerSessionId === "string" && ownerSessionId !== "" ? ownerSessionId : undefined;
+    if (owner === undefined) return false;
+    let cleared = 0;
     for (const job of registry.list()) {
-      if (job.watchdog !== undefined) { clearTimeout(job.watchdog); job.watchdog = undefined; }
+      if (job.ownerSessionId !== owner) continue;
+      if (job.watchdog !== undefined || job.notifyRetry !== undefined) cleared += 1;
+      clearJobTimers(job);
     }
-    return true;
+    return cleared > 0;
   };
 
   return {

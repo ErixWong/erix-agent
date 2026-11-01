@@ -354,6 +354,30 @@ pi --extension ./examples/pi-extension/erix-run.ts
 即使内层 run **连 abort 都不理**，看门狗也会到点把盘上状态推到 `aborted` 并发一次通知；之后内层真终局
 到了仍会**覆盖落盘**（四件套以引擎为准）但**不再二次投递**。
 
+### 5b. `session_shutdown` 按会话归属收口（issue #658）
+
+`shutdown(ownerSessionId)` 只清 `job.ownerSessionId === ownerSessionId` 的 job，清的是**这一份 job
+生命周期上的全部定时器**（run 级看门狗 + 投递重试，两者共一个 `clearJobTimers`）。
+
+修前是两个坑叠在一起：`shutdown()` 挂在**进程级 runtime 单例**上、带一个**永不复位的 `shutDown` 开关**，
+而且清的是 `registry.list()`（**全进程所有 job**，不分会话）。于是任一会话按一次 `/new` · `/resume` ·
+`/reload` · 退出，就一次性摘掉**全进程所有在跑 run** 的超时看门狗——那些 run 的真超时既不写 `aborted`
+也不投递，`status.json` 永久停在 `running`（假事实）。
+
+| 事项 | 处置 |
+|---|---|
+| 一次性 `shutDown` 开关 | **去掉**。清自己会话的定时器本来就幂等（第二次没东西可清 ⇒ 返回 `false`），不需要开关防重入 |
+| 没有 `ownerSessionId` 的 job（`delivery:"no-owner"` 那一族） | **不归任何会话 ⇒ 不清**（传空/缺 owner 直接返回 `false`）。它们的定时器只由自己的 `settle` / 看门狗到点 / `action:"cancel"` 收口 |
+| 在跑的 run | **仍然不 abort**（同进程的 run 归进程活着这件事管；抹掉别人的活不是清理） |
+
+### 5c. 续跑坐标也在 `status.json` 的**顶层**（issue #659 第 6 格）
+
+`jobView` 以前只有顶层 `resumable`（布尔），坐标只在 `diagnostics.resume` 里。只读 `status.json`
+的别的会话得自己从嵌套里挖，或者自己拼 `<sessionDir>/<runId>.jsonl`。现在顶层也有 `resume`，
+与 `delivery` 同族（恒在场；还没终局时是 `null` = 「还没有坐标事实」，不是「不能续跑」），
+值与 `resumable` **同源**（都来自 core 的 `resumeFactsOf` 经 `buildSuccessPayload` 落的
+`diagnostics.resume`），不可能一个说能续、一个说没坐标。
+
 ### 6. 限制（写死，不要猜）
 
 - **后台 run 与扩展同进程**：pi 进程退出 / 扩展 `/reload` 会杀掉它（`status.json` 只留下最后一个已知状态，

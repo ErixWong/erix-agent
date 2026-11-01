@@ -619,7 +619,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", (event) => {
     // 幂等清理：定时器清掉、唤醒 pending 按 reload 与否分别处理；重复调用不抛。
-    asyncRuntime().shutdown();
+    // #658：**按会话归属**清（只清本会话 owner 的看门狗与投递重试），不再无差别清全进程。
+    asyncRuntime().shutdown(sessionId);
     const reason = (event as { reason?: string })?.reason;
     sessionHandle.sessionShutdown(reason);
     // #654：会话真的走了就把句柄摘掉 —— 之后那个会话的 job 结算时按 owner 查不到句柄，

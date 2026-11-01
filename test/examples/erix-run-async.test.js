@@ -659,6 +659,58 @@ test("#234 机制3：唤醒策略 —— quiet 的成功完成不唤醒，失败
 // 机制 6：session_shutdown 幂等清理 + 落盘面的 artifacts 口径
 // ---------------------------------------------------------------------------
 
+test("#658：shutdown 按会话归属收口 —— A 的 session_shutdown 只清 A 的定时器（B 的看门狗还在，到点仍写 aborted），幂等", async () => {
+  const clock = fakeClock();
+  const sessionDir = await tempDir("erix-run-658-shutdown-");
+  const sessionHandles = jobsApi.createSessionHandleRegistry();
+  sessionHandles.set("658-A", { deliver: () => true });
+  sessionHandles.set("658-B", { deliver: () => true });
+  const runtime = createAsyncRuntime({
+    home: await tempDir("erix-run-658-shutdown-home-"),
+    registry: createAsyncJobRegistry(),
+    sendRegistry: createCompletionSendRegistry(),
+    sessionHandles,
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    // 永不 settle：看门狗是这两个 job 唯一的终局来源（被摘掉就永远停在 running）。
+    runJob: gatedJob().job,
+    notify: () => "sent",
+  });
+  const params = { task: "t", cwd: sessionDir, sessionDir, async: true, timeoutMs: core.MIN_TIMEOUT_MS };
+  const a = runtime.start(params, { sessionId: "658-A" });
+  const b = runtime.start(params, { sessionId: "658-B" });
+  const jobA = runtime.registry.get(a.handle.runId);
+  const jobB = runtime.registry.get(b.handle.runId);
+  assert.notEqual(jobA.watchdog, undefined, "派工后定时器必须在");
+  assert.notEqual(jobB.watchdog, undefined);
+
+  // 会话 A 走了：只清 A 的。修前这里清的是 `registry.list()`（全进程），B 会被一起摘掉。
+  assert.equal(runtime.shutdown("658-A"), true);
+  assert.equal(jobA.watchdog, undefined, "A 自己的看门狗要清掉");
+  assert.notEqual(jobB.watchdog, undefined,
+    "B 的看门狗不能被 A 的 session_shutdown 摘掉（#658 修前这条必红：任一会话的 /new·/resume·/reload 都摘全进程）");
+  // 幂等：重复调用不重复清、不抛
+  assert.equal(runtime.shutdown("658-A"), false, "第二次调用没有东西可清（一次性开关换成按归属清之后，幂等靠「没东西可清」）");
+  assert.equal(runtime.shutdown("658-A"), false);
+
+  // 端到端事实：A 关掉之后，B 到点仍把终局写成 aborted 并落进 status.json
+  assert.equal(clock.tick(), true);
+  assert.equal(jobB.status, "aborted", "B 的超时终局还得发生（摘掉看门狗就不会有这一下）");
+  assert.equal(jobB.timedOut, true);
+  const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId: b.handle.runId }), "utf8"));
+  assert.equal(disk.status, "aborted");
+  assert.equal(disk.timeout, true, "盘上要读得到「是超时终局」，不能永远停在 running");
+
+  // 没有归属的 job（`delivery:"no-owner"` 那一族）不归任何会话 ⇒ 谁都清不掉
+  const anonymous = runtime.start(params, {});
+  const jobAnon = runtime.registry.get(anonymous.handle.runId);
+  assert.notEqual(jobAnon.watchdog, undefined);
+  assert.equal(runtime.shutdown(), false, "没有归属就不清（摘别人的定时器不是清理）");
+  assert.equal(runtime.shutdown(""), false);
+  assert.notEqual(jobAnon.watchdog, undefined, "匿名 job 的定时器只能由它自己的 settle / 看门狗 / cancel 收口");
+});
+
 // ---------------------------------------------------------------------------
 // #659 第 1 格：投失败后的有界重试（5s / 10s / 30s 三档，每次重算 isIdle()）
 //
@@ -758,6 +810,34 @@ test("#659 第1格：一直投不出去 ⇒ 三档后停（有界，不无限重
   assert.equal(job.notifyRetries, NOTIFY_RETRY_DELAYS_MS.length);
   assert.equal(jobView(job).delivery, "failed", "用尽重试仍然是 failed —— 不粉饰成 sent");
   assert.match(jobView(job).notifyError ?? "", /宿主一直在拒/u, "盘上留得住根因");
+});
+
+test("#659 第1格 / #658：重试定时器与看门狗是**同一份 job 生命周期** —— settle 清、shutdown 按归属清", async () => {
+  const clock = fakeClock();
+  const sessionDir = await tempDir("erix-run-659-retry-lifecycle-");
+  const sessionHandles = jobsApi.createSessionHandleRegistry();
+  sessionHandles.set("659-life", { deliver: () => true });
+  const runtime = createAsyncRuntime({
+    home: await tempDir("erix-run-659-life-home-"),
+    registry: createAsyncJobRegistry(),
+    sendRegistry: createCompletionSendRegistry(),
+    sessionHandles,
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    runJob: async () => ({ ...P_OK }),
+    notify: () => ({ delivery: "failed", error: "宿主拒" }),
+  });
+  const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true }, { sessionId: "659-life" });
+  await waitUntil(() => runtime.registry.get(handle.runId).status === "completed");
+  const job = runtime.registry.get(handle.runId);
+  assert.notEqual(job.notifyRetry, undefined);
+  assert.equal(job.watchdog, undefined, "settle 已经把看门狗清了（同一个 `clearJobTimers`）");
+
+  // session_shutdown 必须把**新加的**这根定时器也清掉（两单合一的那条）
+  assert.equal(runtime.shutdown("659-life"), true);
+  assert.equal(job.notifyRetry, undefined, "session_shutdown 要清投递重试定时器");
+  assert.deepEqual(clock.pendingDelays(), [], "清完之后一根定时器都不剩");
 });
 
 test("#234 R6：status.json 的 artifacts 沿用 core 的 resolveArtifacts 口径（文件真在盘上才给路径）", async () => {
