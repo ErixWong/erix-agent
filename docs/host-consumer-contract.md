@@ -6342,10 +6342,12 @@ sample detail, because a host that reads them differently will build a wrong orc
 
 * **The concurrency quota is cross-process atomic, and a crashed holder's slot is reclaimed.** The
   quota is a fixed pool of slot files in the lease directory, and taking one is a **single exclusive
-  create** — "count the leases, then create one" is gone, so two processes racing for the last slot
-  can no longer both win (before issue #630 S3 they could, and the pool silently over-issued). When
-  the slot a process wants is already taken, the library reads that holder and reclaims the slot
-  only if it can prove the holder is gone: your `isProcessAlive` predicate decides whenever the
+  publish** — the whole lease is written to a sibling temp file first and then published under the
+  slot name (see the reclaim-boundary subsection below; issue #652) — so "count the leases, then
+  create one" is gone, and two processes racing for the last slot can no longer both win (before
+  issue #630 S3 they could, and the pool silently over-issued). When the slot a process wants is
+  already taken, the library reads that holder and reclaims the slot only if it can prove the holder
+  is gone: your `isProcessAlive` predicate decides whenever the
   lease carries a pid (a pid the predicate calls alive is never taken, however old the lease), and
   only when no predicate was supplied (or the lease carries no pid) does an age threshold apply —
   30 minutes by default, a **fallback** rather than an authority, which is why a child's own time
@@ -6449,15 +6451,38 @@ part a host is most likely to over-read. Everything below is what
   in place and nothing raises, so **this is not an error signal to branch on**: it is a bounded
   over-issue risk. Do not derive the live set from `list` alone, and do not retry in a loop when a
   slot will not come.
-* **No promise that a cross-process observer never sees a half-written slot.** Taking a slot is one
-  exclusive **create** followed by one write of the lease bytes (`writeSlot`), not one atomic
-  create-with-content; a second process reading that slot in between can see an empty or partial
-  file. That observation lands in the corrupt channel above — named, blocking, not deleted — which
-  is why a corrupt entry means "this slot could not be read at that moment", **not** "this slot is
-  abandoned": it can be a healthy holder in the middle of acquiring, and it becomes an ordinary
-  holder as soon as the write lands. Closing that window is a separate change (issue #652); until
-  then the library answers conservatively, and a host must not turn a transient corrupt entry into
-  a reclaim of its own.
+  **This window has no deterministic concurrency test.** It is reasoned out from the syscall
+  order and reported here as a bounded risk, not pinned by a test: nothing in the suite forces two
+  processes to judge the same dead holder on the same slot at the same instant. What *is* pinned
+  deterministically is the single-reclaimer path and the exclusive publish below (issue #652). Read
+  the gap as a gap, not as a guarantee.
+* **No observer ever sees a half-written slot (issue #652).** Taking a slot is two steps, and the
+  slot name only exists after the second one: `writeTempSlot` writes the complete lease bytes into a
+  sibling temp file (`slot-<i>.lock.tmp-<pid>-<seq>-<rand>`, created `wx`, written once, `fsync`ed),
+  then `publishSlot` publishes that file under the slot name with **`link(2)`** and unlinks the temp
+  name. A concurrent reader therefore sees either **no such file name** or a **complete** lease —
+  never an empty or partial one, which is what the pre-#652 "exclusive create, then write" order
+  could show it. `link` is not `rename`: it answers `EEXIST` when the target name exists, so "is this
+  slot free?" and "do I own this slot?" are still one system call (POSIX `link()`'s `EEXIST` case;
+  on Linux the name check and the directory entry are one atomic operation inside a filesystem, and
+  the temp file lives in the same directory, so `EXDEV` cannot arise). A plain `rename` would
+  silently replace another holder's freshly published slot — it would void the exclusion — and is
+  therefore **not** the primitive this library uses.
+* **A publish that loses the slot is not an error, and it leaves nothing behind.** `EEXIST` from the
+  publish means someone else took that slot in between: the temp file is deleted and `acquire` moves
+  on to the next slot under exactly the old rule (`capacity_full` once every slot is held, naming the
+  holders). Any other failure deletes the temp file and rethrows. No temp file survives a failed
+  publish, so a loser never leaves a file that a later reader could mistake for something.
+* **A crashed publisher leaves garbage, never a slot, and the garbage is collected.** A process that
+  dies between "temp file written" and "published" leaves a `slot-<i>.lock.tmp-…` file behind. It is
+  **not** a slot: only `slot-<i>.lock` is a slot name, so `list`, `acquire`, `release` and `sweep`
+  never read it as a holder and it never consumes quota. Two fallback paths collect it, and both
+  delete **only** temp files older than `maxAgeMs` (judged by the filesystem's own mtime — a younger
+  one may be another process's in-flight publish and is never touched): `acquire` does it silently at
+  the start of every call (`reclaimStaleTemps`), and `sweep` does it explicitly and reports every
+  deleted name in its `temps` array. Consequently a `corrupt` slot is now only what a hand-edited or
+  foreign file makes it — this library's own write path can no longer produce one — and a transient
+  `corrupt` entry is no longer a sign of a healthy holder in the middle of acquiring.
 
 ## erix_run final face: per-layer compaction and notes counters (issue #313)
 
