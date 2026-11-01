@@ -1499,6 +1499,46 @@ test("#654 缺陷1：session_shutdown(\"quit\") 摘掉本会话句柄；\"reload
   }
 });
 
+test("#659 第5格：getSessionId() 真抛异常 ⇒ 仍是 no-owner，但盘上带根因（ownerSessionError / notifyError）", async () => {
+  const env = await offlineRunEnv();
+  const sessionHandles = jobsApi.globalSessionHandleRegistry();
+  const sessionDir = await tempDir("erix-run-659-owner-throw-");
+  const throwingSession = "659-owner-throw";
+  try {
+    const extension = await loadExtensionModule();
+
+    // 会话正常启动（session_start 里 getSessionId 还能用），之后派工那一刻才真抛
+    const session = startSession(extension, { sessionId: throwingSession });
+    session.ctx.sessionManager.getSessionId = () => { throw new Error("session manager exploded"); };
+    const { job } = await dispatchAndSettle(extension, session, {
+      task: "t", cwd: sessionDir, sessionDir, async: true, maxRounds: 2,
+    });
+
+    assert.equal(jobView(job).delivery, "no-owner", "拿不到会话身份就是 no-owner（不猜目标）");
+    assert.match(jobView(job).ownerSessionError ?? "", /session manager exploded/u,
+      "真异常的原文要进 ownerSessionError（以前 `catch { return undefined }` 把它吃掉了）");
+    assert.match(jobView(job).notifyError ?? "", /session manager exploded/u,
+      "no-owner 的根因也要进 notifyError（否则盘上只有一句 no-owner，没有任何解释字段）");
+    const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId: job.runId }), "utf8"));
+    assert.equal(disk.delivery, "no-owner");
+    assert.match(disk.ownerSessionError ?? "", /session manager exploded/u, "status.json 上读得到根因");
+    assert.match(disk.notifyError ?? "", /session manager exploded/u);
+
+    // 对照：**正常缺失**（宿主没给 sessionManager）不是异常 ⇒ 不留假根因
+    const anonymous = startSession(extension, { sessionId: "" });
+    anonymous.ctx.sessionManager = undefined;
+    const normal = await dispatchAndSettle(extension, anonymous, {
+      task: "t", cwd: sessionDir, sessionDir, async: true, maxRounds: 2,
+    });
+    assert.equal(jobView(normal.job).delivery, "no-owner");
+    assert.equal(jobView(normal.job).ownerSessionError, null, "没有异常就不许编一条根因");
+    assert.equal(jobView(normal.job).notifyError, null);
+  } finally {
+    sessionHandles.delete(throwingSession);
+    env.restore();
+  }
+});
+
 test("#654 缺陷2：未终局时 delivery / notifyTargetSessionId / notifyError 恒在场（null），取值域只有五个", async () => {
   assert.deepEqual([...jobsApi.DELIVERY_VALUES], ["sent", "deduped", "failed", "orphaned", "no-owner"],
     "投递事实的取值域是契约（README 同口径）");

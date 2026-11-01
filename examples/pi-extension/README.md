@@ -322,10 +322,15 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | 派工时没有会话身份 | 投给模块级 `pi` | `delivery:"no-owner"`，**不猜目标**（宁可只落盘，也不投给一个可能不相干的会话） |
 
 **投递事实落盘（缺陷 2）**：`delivery` / `notifyTargetSessionId` / `notifyError` / `ownerSessionId` /
-`deduped` 都在 `erix-run-jobs.js` 的 `jobView` 里 ⇒ `action:"status"` /
+`ownerSessionError` / `notifyRetries` / `deduped` 都在 `erix-run-jobs.js` 的 `jobView` 里 ⇒ `action:"status"` /
 `action:"result"` / `status.json` 三处都读得到，且**字段恒在场**（还没投递时是 `null` / `0`，不是缺键）。
 `delivery` 的取值域是 `erix-run-jobs.js` 导出的 `DELIVERY_VALUES` 那五个：
 `sent` / `deduped` / `failed` / `orphaned` / `no-owner`。
+
+`ownerSessionError`（issue #659 第 5 格）：`sessionIdOf()` 读会话身份时的**真异常**原文。以前那个
+`catch { return undefined }` 会把异常吃掉 ⇒ 真异常静默降级成 `delivery:"no-owner"`，盘上没有任何
+解释字段。现在原文同时进 `ownerSessionError` 与 `notifyError`（后者只在 `no-owner` 且没有别的投递错误时
+承接），所以「为什么没有 owner」在盘上读得到。
 
 ⚠ **顺序坑（同一个缺陷的另一半）**：三处 settle 路径（内层返回 / 看门狗到点 / `action:"cancel"`）原本是
 **先落盘、后投递**，而 `status.json` 的内容就是 `jobView` 的投影——只加字段不调顺序，落盘那一刻

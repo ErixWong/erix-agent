@@ -419,6 +419,10 @@ export const erixRunTool = defineTool({
     };
 
     let outcome;
+    // #654：派工那一刻的会话身份 —— 结算时按它查**这个会话的**投递句柄
+    // （不再有「模块级 piRef / wake 单槽」那种投给最后启动会话的路径）。
+    // #659 第 5 格：拿不到时把**根因**一起带下去（`sessionIdOf()` 真抛过异常 ⇒ 盘上要有解释字段）。
+    const owner = sessionIdOf(ctx);
     try {
       // 分流（同步 / 异步派工 / action 查询）全在 erix-run-jobs 的 runtime 里，本文件只负责形状。
       outcome = await asyncRuntime().dispatch(params ?? {}, {
@@ -427,9 +431,8 @@ export const erixRunTool = defineTool({
         // ⚠ async:true 时这个 signal **不接**：它在本次工具调用结束时就失效了，
         //    后台 run 的取消通道是 action:"cancel"。
         signal: signal ?? ctx?.signal,
-        // #654：派工那一刻的会话身份 —— 结算时按它查**这个会话的**投递句柄
-        // （不再有「模块级 piRef / wake 单槽」那种投给最后启动会话的路径）。
-        sessionId: sessionIdOf(ctx),
+        sessionId: owner.sessionId,
+        sessionOwnerError: owner.error,
         onProgress,
       });
     } catch (error) {
@@ -496,13 +499,21 @@ let runtime: ReturnType<typeof createAsyncRuntime> | undefined;
  * 派工那一刻的会话身份（#654）：`ctx.sessionManager.getSessionId()`。
  * 读不到（测试装载器直接调 `execute()`、或宿主没给 sessionManager）就是 `undefined`——
  * 那时投递口记 `no-owner` 并**不投**，不猜一个会话。
+ *
+ * #659 第 5 格：**真异常不再无声**。可选链已经盖了「`sessionManager` / `getSessionId` 不存在」这种
+ * 正常缺失；这个 `catch` 兜的是真异常（`getSessionId()` 抛了）——它会把派工降级成
+ * `delivery:"no-owner"`，所以异常原文必须跟着回去（→ `job.ownerSessionError` → `jobView` 与 `notifyError`），
+ * 而不是吃掉后只留一句 `no-owner` 在盘上。
+ *
+ * @param {ExtensionContext|undefined} ctx
+ * @returns {{sessionId?:string, error?:string}}
  */
-function sessionIdOf(ctx: ExtensionContext | undefined): string | undefined {
+function sessionIdOf(ctx: ExtensionContext | undefined): { sessionId?: string, error?: string } {
   try {
     const id = ctx?.sessionManager?.getSessionId?.();
-    return typeof id === "string" && id !== "" ? id : undefined;
-  } catch {
-    return undefined;
+    return typeof id === "string" && id !== "" ? { sessionId: id } : {};
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -591,7 +602,8 @@ export default function (pi: ExtensionAPI) {
     wake = createParentWake(pi);
     wake.bindSession(ctx as never);
     const previous = sessionId;
-    sessionId = sessionIdOf(ctx);
+    const owner = sessionIdOf(ctx);
+    sessionId = owner.sessionId;
     // 同一个 factory 实例被换了会话（newSession / fork / switchSession）：旧键得摘掉，
     // 否则它指向一个已经不属于它的会话 id。
     if (previous !== undefined && previous !== sessionId) globalSessionHandleRegistry().delete(previous);

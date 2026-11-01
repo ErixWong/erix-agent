@@ -489,6 +489,8 @@ export function jobView(job, { now = () => Date.now() } = {}) {
     //    「投没投出去 / 投给了哪个会话 / 为什么没投成」必须能在盘上读到（口径照 #261 R4③）。
     //    它们在 `jobView` 里而不是只在内存 job 上：`status.json` 的内容就是这个函数的返回。
     ownerSessionId: job.ownerSessionId ?? null,
+    // #659 第 5 格：`sessionIdOf()` 真抛过异常时的原文（`no-owner` 的根因不能只靠推断）。
+    ownerSessionError: job.ownerSessionError ?? null,
     delivery: job.delivery ?? null,
     notifyTargetSessionId: job.notifyTargetSessionId ?? null,
     notifyError: job.notifyError ?? null,
@@ -684,7 +686,12 @@ export function createAsyncRuntime(options = {}) {
     try {
       const verdict = notify(job, content, { triggersTurn, outcome, session });
       delivery = deliveryOf(verdict);
-      recordDelivery(job, delivery, { target: ownerSessionId ?? null, error: notifyErrorOf(verdict) });
+      recordDelivery(job, delivery, {
+        target: ownerSessionId ?? null,
+        // #659 第 5 格：`no-owner` 的根因不能只靠「没有会话身份」这句推断——`sessionIdOf()` 真抛过异常时
+        // 把原文一并落进 `notifyError`（否则盘上只有一个 `delivery:"no-owner"`，没有任何解释）。
+        error: notifyErrorOf(verdict) ?? (delivery === "no-owner" ? job.ownerSessionError : undefined),
+      });
     } catch (error) {
       // 投不出去：去重注册表要把它让给下一次重试（照 pi-subagents sendCompletion 的 try/catch 口径）
       delivery = recordDelivery(job, "failed", {
@@ -749,7 +756,7 @@ export function createAsyncRuntime(options = {}) {
   };
 
   /** 派工：立即返回句柄，内层 run 在后台跑（**不 await**）。 */
-  const start = (rawParams, { signal, sessionId } = {}) => {
+  const start = (rawParams, { signal, sessionId, sessionOwnerError } = {}) => {
     // 参数校验同步做：坏参数必须当场报给模型，不能变成「派工成功了但后台一条错误载荷」。
     // 形状上直接复用同步面（runErixRun 会把 ErixRunError 归一成 ok:false + error.code 载荷），
     // 免得同一个坏参数在同步/异步两条路上给出两种形状（一个有 structuredContent、一个只剩文本）。
@@ -775,6 +782,10 @@ export function createAsyncRuntime(options = {}) {
       // #654 缺陷 1：派工那一刻的**会话身份**（`ctx.sessionManager.getSessionId()`）。投递时按它查句柄，
       // 所以「谁派的工」是一件记在 job 上的事实，不再取决于「哪个会话最后启动」。
       ownerSessionId: typeof sessionId === "string" && sessionId !== "" ? sessionId : undefined,
+      // #659 第 5 格：拿不到会话身份的**根因**（`sessionIdOf()` 真抛异常时的原文）。以前这个异常被
+      // `catch { return undefined }` 吃掉 ⇒ 盘上只剩一句 `delivery:"no-owner"`，没有任何解释字段。
+      ownerSessionError: typeof sessionOwnerError === "string" && sessionOwnerError !== ""
+        ? sessionOwnerError : undefined,
       cwd: params.cwd ?? resumeTarget?.cwd,
       model: params.model ?? null,
       maxRounds: params.maxRounds,
