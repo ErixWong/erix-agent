@@ -390,31 +390,32 @@ export function walkHost(hostDir) {
 }
 
 /**
- * 命中所在的**宿主仓**：从文件所在目录往上找，最近的带 `.git` 或 `package.json` 的目录就是仓根。
- * 仓根有 `package.json` 且写了 `name` 就用它（`worker` / `touwaka` 比 `apps` 之类目录名更能指认宿主），
- * 否则退回目录名；都拿不到就退回被扫描目录自己的名字——报告里不会出现空白的「哪个宿主仓」。
+ * 命中所在的**宿主仓**：先往上找最近的带 `.git` 的目录（那是**仓边界**，名字就是宿主仓的名字——
+ * `touwaka` / `app_container` / `erix-station`），找不到 `.git` 再退回最近的 `package.json` 的 `name`
+ * （monorepo 里的工作区包名），再不行退回目录名。报告里不会出现空白的「哪个宿主仓」。
  */
 export function hostRepoOf(absFile, hostDir) {
   const stop = resolve(hostDir);
+  const chain = [];
   let dir = dirname(resolve(absFile));
   while (dir.startsWith(stop)) {
-    const pkgPath = join(dir, "package.json");
-    const hasGit = existsSync(join(dir, ".git"));
-    if (hasGit || existsSync(pkgPath)) {
-      if (existsSync(pkgPath)) {
-        try {
-          const name = JSON.parse(readFileSync(pkgPath, "utf8"))?.name;
-          if (typeof name === "string" && name.trim() !== "") return name.trim();
-        } catch {
-          // 读不出 package.json 就退回目录名（不静默丢掉「哪个宿主仓」这一格）
-        }
-      }
-      return basename(dir);
-    }
+    chain.push(dir);
     if (dir === stop) break;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
+  }
+  const gitRoot = chain.find((candidate) => existsSync(join(candidate, ".git")));
+  if (gitRoot) return basename(gitRoot);
+  const pkgDir = chain.find((candidate) => existsSync(join(candidate, "package.json")));
+  if (pkgDir) {
+    try {
+      const name = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"))?.name;
+      if (typeof name === "string" && name.trim() !== "") return name.trim();
+    } catch {
+      // 读不出 package.json 就退回目录名（不静默丢掉「哪个宿主仓」这一格）
+    }
+    return basename(pkgDir);
   }
   return basename(stop);
 }
