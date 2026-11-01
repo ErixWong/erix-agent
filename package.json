@@ -61,7 +61,9 @@
     "docs/host-upgrade-guide-0.28.0.md",
     "docs/host-upgrade-guide-0.28.0_cn.md",
     "docs/host-upgrade-guide-0.29.0.md",
-    "docs/host-upgrade-guide-0.29.0_cn.md"
+    "docs/host-upgrade-guide-0.29.0_cn.md",
+    "docs/host-upgrade-guide-0.30.0.md",
+    "docs/host-upgrade-guide-0.30.0_cn.md"
   ],
   "repository": {
     "type": "git",

@@ -299,6 +299,10 @@ const HISTORY_BODY_PINS = Object.freeze({
   // 钉子只钉命中数，钉住「没人改写这一段历史」）。
   "docs/host-upgrade-guide-0.29.0.md": 15,
   "docs/host-upgrade-guide-0.29.0_cn.md": 15,
+  // 0.30.0 的逐名表与 provider 配方：12 处全是 provider 工厂参数（`model` / `maxTokens` / `system` /
+  // `temperature` / `stream`），按 AMBIGUOUS_KEYS 一律标 ambiguous——它们不是 runToolLoop 的输入面拼写。
+  "docs/host-upgrade-guide-0.30.0.md": 12,
+  "docs/host-upgrade-guide-0.30.0_cn.md": 12,
   "docs/host-upgrade-guide-0.6.0.md": 12,
   "docs/host-upgrade-guide-v030.md": 49,
   "docs/host-upgrade-guide-v030_cn.md": 49,
