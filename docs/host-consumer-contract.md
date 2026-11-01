@@ -6402,6 +6402,62 @@ sample detail, because a host that reads them differently will build a wrong orc
   the engine sees it, and `delegate` itself is never handed down (v1 does not recurse). With no
   allowlist the child keeps the full face, exactly as before.
 
+### The reclaim boundary: the corrupt channel and the two-reclaimer window
+
+The quota property above stops at "the slot is reclaimed". **How far that reclaim reaches is
+contract too**, because a host that reads it as stronger than it is will build the wrong retry
+policy. This subsection refines the first property rather than adding a seventh, and it is the
+part a host is most likely to over-read. Everything below is what
+`src/tools/delegation/capacity.js` does today.
+
+* **A slot whose bytes do not parse into a holder is named corrupt: it is not a known holder, but
+  it is still occupied.** The reader (`parseHolder`) refuses the bytes when the JSON does not
+  parse, when it is not an object, when the holder identity or `acquiredAt` is missing or of the
+  wrong type, and when the `slot` recorded inside disagrees with the file name; the snapshotter
+  (`snapshotSlot`) reports that as `kind: "corrupt"`. Such a slot never appears in a `holders`
+  array — the library cannot name an occupant it cannot read — and it is **not free either**:
+  while it is young it is not available for a new lease (that one slot, not the whole pool), so it
+  can be exactly what makes `acquire` return `capacity_full` — a pool of one whose only slot is a
+  young corrupt file fails that way with an empty `holders` array — and that same result names it
+  in a separate `corrupt` array (each entry carries the file, the slot number and the reason),
+  so the block is never silent. `list` reports it in its own `corrupt` array and never counts it
+  as a lease. Read that array as "occupied by something I cannot identify" — never as "free",
+  and never as "safe to delete".
+* **A corrupt slot is reclaimed only on the acquire path, and only by the filesystem's own
+  mtime.** The liveness predicate cannot help here: a corrupt slot carries no pid to ask about, so
+  the age fallback is all that is left — `judgeCorruptReclaimable` compares `Date.now()` with the
+  slot's own `mtimeMs` (the `now` you pass in describes your lease clock and has no say over a
+  file whose content cannot be read) against the same `maxAgeMs` (30 minutes by default). An
+  explicit `sweep` never deletes one: it names it in `corrupt`, counts it in `kept` and moves on —
+  `sweep` reclaims only readable holders it can prove dead or stale, and it skips the run ids you
+  list as owned. `release` cannot remove a corrupt slot either: it deletes only a slot whose
+  recorded identity is the caller's, and a corrupt slot has no identity.
+* **The known residual window: two reclaimers judging one dead holder.** Reclaim is read → judge →
+  read again (same inode, same bytes) → `unlink` → exclusive create again, so the target is always
+  the holder that was read twice. What is **not** closed is the few microseconds between that
+  second read and the `unlink`: to land in it, two processes must judge the same dead holder on
+  the same slot at the same moment, and Node core offers neither `flock` nor a conditional unlink.
+  The consequences are bounded and known. In the simple interleaving both unlinks hit the holder
+  both of them confirmed; the first exclusive create after them wins the slot, and the loser sees
+  `EEXIST` and **retreats to the next slot instead of retrying this one**. The expensive shape is
+  the interleaving unlink → create → unlink: the second unlink then removes the winner's freshly
+  written slot file and the second create succeeds, so **two processes each believe they hold the
+  same slot while only one file exists** — `list` under-counts by one lease (two children alive,
+  one lease visible) until one of them releases, and the invisible holder's own `release` finds no
+  slot carrying its identity and answers `released: false` without throwing. Nothing is repaired
+  in place and nothing raises, so **this is not an error signal to branch on**: it is a bounded
+  over-issue risk. Do not derive the live set from `list` alone, and do not retry in a loop when a
+  slot will not come.
+* **No promise that a cross-process observer never sees a half-written slot.** Taking a slot is one
+  exclusive **create** followed by one write of the lease bytes (`writeSlot`), not one atomic
+  create-with-content; a second process reading that slot in between can see an empty or partial
+  file. That observation lands in the corrupt channel above — named, blocking, not deleted — which
+  is why a corrupt entry means "this slot could not be read at that moment", **not** "this slot is
+  abandoned": it can be a healthy holder in the middle of acquiring, and it becomes an ordinary
+  holder as soon as the write lands. Closing that window is a separate change (issue #652); until
+  then the library answers conservatively, and a host must not turn a transient corrupt entry into
+  a reclaim of its own.
+
 ## erix_run final face: per-layer compaction and notes counters (issue #313)
 
 The engine has reported per-layer compaction for every round all along: each `compactionStats`
