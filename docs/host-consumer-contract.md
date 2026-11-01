@@ -6412,8 +6412,9 @@ part a host is most likely to over-read. Everything below is what
 
 * **A slot whose bytes do not parse into a holder is named corrupt: it is not a known holder, but
   it is still occupied.** The reader (`parseHolder`) refuses the bytes when the JSON does not
-  parse, when it is not an object, when the holder identity or `acquiredAt` is missing or of the
-  wrong type, and when the `slot` recorded inside disagrees with the file name; the snapshotter
+  parse, when it is not an object, when the holder identity fields (`runId` and `pid`) or
+  `acquiredAt` are missing or of the wrong type, and when the `slot` recorded inside disagrees
+  with the file name; the snapshotter
   (`snapshotSlot`) reports that as `kind: "corrupt"`. Such a slot never appears in a `holders`
   array — the library cannot name an occupant it cannot read — and it is **not free either**:
   while it is young it is not available for a new lease (that one slot, not the whole pool), so it

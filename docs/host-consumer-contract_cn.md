@@ -5026,7 +5026,8 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
 以下每一条都是 `src/tools/delegation/capacity.js` 今天的实际行为。
 
 * **读不出持有者的槽一律点名 corrupt：它不算已知 holder，但它仍然占着槽。** 读取侧（`parseHolder`）
-  在四种情况下拒收这份字节——JSON 解析不了、解析出来不是对象、持有者身份或 `acquiredAt` 缺失或类型不对、
+  在四种情况下拒收这份字节——JSON 解析不了、解析出来不是对象、持有者身份字段（`runId` 与 `pid`）或
+  `acquiredAt` 缺失或类型不对、
   以及内容里记的 `slot` 与文件名不符；快照侧（`snapshotSlot`）把这种结果报成 `kind: "corrupt"`。
   这样的槽永远不会出现在 `holders` 数组里——库没法给一个读不出身份的占用者点名——但它**也不是空的**：
   在它还年轻的时候拿不到新租约（只是这一格，不是整个池子），所以它完全可以就是 `acquire` 返回
