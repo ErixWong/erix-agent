@@ -43,6 +43,7 @@ import {
   newRunId,
   parseRunParams,
   resolveArtifacts,
+  resolveResumeTarget,
   runErixRun,
 } from "./erix-run-core.js";
 
@@ -171,6 +172,11 @@ export function createAsyncJobRegistry() {
   const jobs = new Map();
   /** @type {Set<string>} */
   const dirs = new Set();
+  // #207 R2：**派工序**（不是 run 序）。续跑会让同一个 runId 对应多次派工，而完成投递的去重
+  // 注册表键从前就是 `runId`（那时候 runId 与派工一一对应）。现在一个 run 可以合法地结算两次，
+  // 所以键要改成「runId + 派工序」；序号挂在注册表上（`Symbol.for` 挂 globalThis）⇒ `/reload` 之后
+  // 新实例接着数，不会把 `#1` 又发一次。
+  let dispatchSeq = 0;
   return {
     jobs,
     dirs,
@@ -180,6 +186,7 @@ export function createAsyncJobRegistry() {
     list: () => [...jobs.values()],
     noteDir: (dir) => { if (typeof dir === "string" && dir !== "") dirs.add(dir); },
     knownDirs: () => [...dirs],
+    nextDispatchSeq: () => (dispatchSeq += 1),
     get size() { return jobs.size; },
     clear: () => { jobs.clear(); dirs.clear(); },
   };
@@ -490,7 +497,7 @@ export function handleOf(job) {
  *
  * @param {{
  *   home?:string, env?:NodeJS.ProcessEnv, now?:()=>number,
- *   runJob?:(params:object, opts:{signal:AbortSignal, onProgress?:(line:string)=>void, runId:string})=>Promise<any>,
+ *   runJob?:(params:object, opts:{signal:AbortSignal, onProgress?:(line:string)=>void, runId:string, resumeTarget?:object})=>Promise<any>,
  *   notify?:(job:object, content:string, opts:{triggersTurn:boolean, outcome:string, session?:object})=>unknown,
  *     // 返回值就是投递事实（见 `deliveryOf`）：`false` / `{delivery:"failed", error}` ⇒ failed；
  *     // `DELIVERY_VALUES` 里的字符串（或 `{delivery}`）⇒ 原样记账；其余真值 / `undefined` ⇒ sent。
@@ -516,6 +523,9 @@ export function createAsyncRuntime(options = {}) {
     home,
     now,
     ...(opts.runId === undefined ? {} : { runId: opts.runId }),
+    // #207 R2：异步派工的续跑坐标已经在 `start()` 里解过（job 的 runId / sessionDir 靠它对齐），
+    // 这里原样交给 core，免得两边各解一份、解出两个答案。
+    ...(opts.resumeTarget === undefined ? {} : { resumeTarget: opts.resumeTarget }),
     signal: opts.signal,
     ...(opts.onProgress === undefined ? {} : { onProgress: opts.onProgress }),
   }));
@@ -557,7 +567,10 @@ export function createAsyncRuntime(options = {}) {
    * @returns {{delivered:boolean, deduped:boolean, delivery:string, triggersTurn?:boolean}}
    */
   const notifySettled = (job) => {
-    const key = `erix-run:${job.runId}`;
+    // #207 R2：键 = **这一次派工**，不是 `runId`。续跑让同一个 run 合法地结算多次（每次都是一次
+    // 新的工具调用），而同一个 job 内部的重复结算（看门狗 + 内层返回、`/reload` 后旧闭包）仍然
+    // 共用一个键 ⇒ #654 的去重语义不变，只是不再把「续跑」误判成重复投递。
+    const key = `erix-run:${job.notifyKey ?? job.runId}`;
     const claim = sendRegistry.claim(key, now());
     if (claim.owned !== true) {
       job.deduped = (job.deduped ?? 0) + 1;
@@ -647,27 +660,39 @@ export function createAsyncRuntime(options = {}) {
     // 形状上直接复用同步面（runErixRun 会把 ErixRunError 归一成 ok:false + error.code 载荷），
     // 免得同一个坏参数在同步/异步两条路上给出两种形状（一个有 structuredContent、一个只剩文本）。
     let params;
+    let resumeTarget;
     try {
       params = parseRunParams(rawParams, { home });
+      // #207 R2：续跑的 job 必须**沿用原 runId / sessionDir**（账本、judge.log、status.json 全按它命名），
+      // 所以坐标在这里先解一次。坐标不成立（run 不存在 / 账本为空）时走与坏参数同一条路：当场
+      // 返回 `ok:false` 的载荷（`error.code = resume_not_found`），**不派工**、不静默起新 run。
+      resumeTarget = params.resume === undefined
+        ? undefined
+        : resolveResumeTarget({ spec: params.resume, sessionDir: params.sessionDir, home });
     } catch {
       return sync(rawParams, { signal });
     }
-    const runId = newRunId(now);
+    const runId = resumeTarget?.runId ?? newRunId(now);
+    // 续跑时 `params.sessionDir` 可能来自坐标（宿主只传了 transcript 路径）；产物布局跟它对。
+    const sessionDir = resumeTarget?.sessionDir ?? params.sessionDir;
     const job = {
       runId,
       status: "queued",
       // #654 缺陷 1：派工那一刻的**会话身份**（`ctx.sessionManager.getSessionId()`）。投递时按它查句柄，
       // 所以「谁派的工」是一件记在 job 上的事实，不再取决于「哪个会话最后启动」。
       ownerSessionId: typeof sessionId === "string" && sessionId !== "" ? sessionId : undefined,
-      cwd: params.cwd,
+      cwd: params.cwd ?? resumeTarget?.cwd,
       model: params.model ?? null,
       maxRounds: params.maxRounds,
       timeoutMs: params.timeoutMs,
-      sessionDir: params.sessionDir,
+      sessionDir,
       quiet: rawParams?.quiet === true,
       createdAt: now(),
       progress: [],
-      persistence: params.sessionDir === undefined ? undefined : artifactPaths({ sessionDir: params.sessionDir, runId }),
+      // #207 R2：完成投递去重键的**派工身份**（见 `notifySettled`）。同一 job 的重复结算共用它，
+      // 不同派工（含续跑）各不相同。
+      notifyKey: `${runId}#${registry.nextDispatchSeq?.() ?? 0}`,
+      persistence: sessionDir === undefined ? undefined : artifactPaths({ sessionDir, runId }),
       controller: new AbortController(),
       timedOut: false,
     };
@@ -703,8 +728,17 @@ export function createAsyncRuntime(options = {}) {
     // 派工工具调用自己的 signal **不接**：它在 execute() 返回时就结束了，接上去等于每个
     // 后台 run 一出生就被取消。取消通道是 action:"cancel"（R3）。
     void signal;
+    // #207 R2：`params` 是**归一化结果**（`resume` 已被解成坐标对象），而下游 `runJob`（默认就是
+    // `core.runErixRun`）会再归一化一次——喂一个坐标对象进去会被当成非法值。所以回传前把
+    // `resume` 还原成**原始拼写**（同一份字符串重新解一次得到同一组坐标）。
+    const runParams = params.resume === undefined ? params : { ...params, resume: params.resume.raw };
     Promise.resolve()
-      .then(() => runJob(params, { signal: job.controller.signal, onProgress, runId }))
+      .then(() => runJob(runParams, {
+        signal: job.controller.signal,
+        onProgress,
+        runId,
+        ...(resumeTarget === undefined ? {} : { resumeTarget }),
+      }))
       .then(
         (payload) => settle(job, payload),
         (error) => settle(job, {

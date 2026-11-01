@@ -111,6 +111,13 @@ test("pi 装载器能加载 erix-run.ts 并注册 erix_run（离线，不触网�
   for (const key of ["async", "quiet", "action", "runId"]) {
     assert.equal(schema.properties[key].description.length > 20, true, `${key} 要给模型看得见的说明`);
   }
+  // #207 R2：续跑参数面。描述里必须把「三种坐标 + 不静默起新 run」写给模型看——
+  // 模型只有从描述里知道 resume 收什么、错了报什么码，才可能把 handle 用回去。
+  assert.equal(schema.properties.resume.type, "string", "resume 是字符串坐标（runId / status.json / transcript）");
+  assert.equal(schema.properties.resume.description.length > 20, true, "resume 要给模型看得见的说明");
+  assert.match(schema.properties.resume.description, /resume_not_found/u);
+  assert.match(schema.properties.resume.description, /status\.json/u);
+  assert.match(schema.properties.resume.description, /transcript/u);
   // #234：outputSchema 仍只描述同步终局面（异步句柄与 action 结果的可机读数据在 details）
   assert.equal("kind" in (definition.outputSchema.properties ?? {}), false,
     "异步面不能把同步终局的 15 个字段（#277 后含 verification/error）改软");

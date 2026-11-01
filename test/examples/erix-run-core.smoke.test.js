@@ -103,7 +103,9 @@ test(`真机冒烟：core 级 erix_run 修好临时目录里的 bug（配置 ${c
   assert.equal(existsSync(payload.artifacts.transcriptPath), true);
   assert.equal(payload.artifacts.transcriptPath.startsWith(sessionDir), true);
   assert.equal(payload.diagnostics.sessionDir, sessionDir);
-  assert.equal(payload.resumable, false);
+  // #207 R2：resumable 现在是**事实**（盘上有账本 ⇒ true），坐标在 diagnostics.resume 里。
+  assert.equal(payload.resumable, true);
+  assert.equal(payload.diagnostics.resume.handle, payload.artifacts.transcriptPath);
   assert.equal(typeof payload.extensionCount, "number");
   assert.equal(typeof payload.maxExtensions, "number");
   assert.equal(typeof payload.finalText, "string");
@@ -336,7 +338,9 @@ test("默认段：core 级 erix_run 在本地假上游上修好 bug（装配链�
   assert.equal(payload.diagnostics.modelMetadataMissing, null, "装配自查：元数据必须到位");
   assert.equal(payload.diagnostics.model, OFFLINE_MODEL, "diagnostics 必须记录实际使用的模型");
   assert.equal(payload.diagnostics.configPath, configPath, "配置必须来自 <HOME>/.erix/config.json");
-  assert.equal(payload.resumable, false);
+  // #207 R2：传了 sessionDir 且 transcript 真写出来了 ⇒ 可续跑，handle 就是那个账本路径。
+  assert.equal(payload.resumable, true);
+  assert.equal(payload.diagnostics.resume.handle, payload.artifacts.transcriptPath);
   assert.equal(typeof payload.extensionCount, "number");
   assert.equal(typeof payload.maxExtensions, "number");
 
