@@ -239,7 +239,7 @@
       "skipped": 12,
       "todo": 0,
       "cancelled": 0,
-      "why": "tests +5 是有意的增删（issue #665）：test/examples/erix-run-async.test.js 新增 5 条 —— 四条可见文案分支（failed 带根因与已重试次数 / orphaned 说清 owner 会话已不在并点名目标 / no-owner 带 ownerSessionError 原文与「没有真异常就是 null」两条 / sent 断言文案里连 marker 都不出现）+ 一条「三档重试后只留最后一条诊断（原位替换，不累积）」；另有一条是**加断言不是新增**（#654「未终局恒在场」那条把 deliveryNote 也列进恒在场清单）。数字逐字来自本次 `npm test` 的 TAP 汇总行（/tmp/tap-665.log 第 21184 行起），经 `npm run check:test-summary -- --log /tmp/tap-665.log` 取出（同一份日志里 pass=3316 / skipped=12）。skipped 仍是那 12 条真上游与真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），未新增 skip，maxSkipped 上限 14 不动。"
+      "why": "tests +5 是有意的增删（issue #665）：test/examples/erix-run-async.test.js 新增 5 条 —— 四条可见文案分支（failed 带根因与已重试次数 / orphaned 说清 owner 会话已不在并点名目标 / no-owner 带 ownerSessionError 原文与「没有真异常就是 null」两条 / sent 断言文案里连 marker 都不出现）+ 一条「三档重试后只留最后一条诊断（原位替换，不累积）」；另有一条是**加断言不是新增**（#654「未终局恒在场」那条把 deliveryNote 也列进恒在场清单）。数字逐字来自本次 `npm test` 的 TAP 汇总行（同一份日志 `/tmp/tap-665.log`），经 `npm run check:test-summary -- --log /tmp/tap-665.log` 取出（`TEST-SUMMARY-VERDICT ok`，同一份日志里 pass=3316 / skipped=12）。⚠ 这里不写日志行号：TAP 日志的行号会随任意一条用例的打印行数漂（本片两次跑同一条命令就差了一行），抄行号只会制造一份会过期的引用。skipped 仍是那 12 条真上游与真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），未新增 skip，maxSkipped 上限 14 不动。"
     }
   ]
 }
