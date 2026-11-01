@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 上限**，不是实测抄件：`expect.tests` 必须逐字相等、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3315,
+    "tests": 3321,
     "fail": 0,
     "maxSkipped": 14
   },
@@ -216,6 +216,18 @@
       "todo": 0,
       "cancelled": 0,
       "why": "合并 `origin/main` `34caaab` 后的现测重登：合并提交 e0e5e69 的树上跑 `npm test`（日志 /tmp/merge657b-test.log 第 21104 行起），六个计数逐字取自 TAP 汇总行，经 `npm run check:test-summary -- --log /tmp/merge657b-test.log` 复核为 `TEST-SUMMARY-VERDICT ok`。= 上游 34caaab 的 3306 + 本片 #657 的 +9（compaction-strategy-fallback 4→9 的 +5 与 fold-facts-text-657 的 +4），与上一次合并 cbb695c 3294 + 9 = 3303 是同一条账。expect.tests 不抄任何一边（上游 3306 / 本片 3303 同格双改 ⇒ merge-tree 判 CONFLICT），按本文件「合并后重跑现测重登」处置。skipped 仍是那 12 条真上游与真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），maxSkipped 上限 14 不动。"
+    },
+    {
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "44c134fdf4ed699cf17450b9814f58f2130cd01f",
+      "tests": 3321,
+      "pass": 3309,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "issue #661 落地的现测重登：在 44c134f 的树上跑 `npm test`（日志 /tmp/661-final.log），六个计数逐字取自 TAP 汇总行，经 `npm run check:test-summary -- --log /tmp/661-final.log` 复核为 `TEST-SUMMARY-VERDICT ok`。= 上一格 3315 + 本片新增 6 格（`test/compact/fold-llm-fail-661.test.js` 判据 1/2/3/4/5/6/8 共 5 格 + `test/examples/erix-run-core.test.js` 判据 9 的 harness 通道 1 格）；被反转的旧格子一个没删（逐文件计数与 main 相同）。skipped 仍是那 12 条真上游与真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），maxSkipped 上限 14 不动。"
     }
   ]
 }
