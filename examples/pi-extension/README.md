@@ -290,6 +290,22 @@ pi --extension ./examples/pi-extension/erix-run.ts
 - **投递去重**：TTL（10 分钟）+ 容量上限（4096）的注册表，防同一 run 被投递多次（看门狗与内层返回
   两个触发源、`/reload` 后旧实例闭包、宿主重试）；两个常量与 `pi-subagents` 逐字同值。
 
+#### 投失败后的有界重试（issue #659 第 1 格）
+
+`notifySettled` 的三个调用点全在 settle 路径上（内层返回 / 看门狗到点 / `action:"cancel"`）⇒
+`claim.settle(false)` 释放的去重位**没有任何第二个调用者会再来一次**。现在的重试契约是**显式**的
+（`erix-run-jobs.js` 的 `NOTIFY_RETRY_DELAYS_MS`，README 与代码同一份值）：
+
+| 项 | 值 |
+|---|---|
+| 档位 | **5s / 10s / 30s 三档**（`[5_000, 10_000, 30_000]`） |
+| 重试上限 | **3 次**（连同首次共 4 次投递尝试；最迟在终局后 45s 收口） |
+| 每次重投重算什么 | `isIdle()`（投递口每次重新问父会话忙不忙）**与** `ownerSessionId` 的句柄（`/reload` 后新实例登记的句柄能接住） |
+| 定时器归谁 | **job**（`job.notifyRetry`），与 run 级看门狗共用 `clearJobTimers`；`settle` / 看门狗到点 / `cancel` / `session_shutdown` 四处一起清。**不在 factory 里起定时器** |
+| 什么时候停 | 投成（`sent`）⇒ 剩下的档撤掉；三档用尽 ⇒ 停手，`delivery` 保持 `failed` |
+
+`status.json` 上的 `notifyRetries` 是「已经排出去过几档」的历史事实（不是「还能重几次」的承诺）。
+
 #### 按会话隔离投递句柄 + 投递可观测性（issue #654）
 
 **现场**：pi-web 在**一个 Node 进程里跑 N 个会话**，扩展 factory 对每个会话各调一次（pi 的

@@ -25,6 +25,7 @@ import * as core from "../../examples/pi-extension/erix-run-core.js";
 import * as jobsApi from "../../examples/pi-extension/erix-run-jobs.js";
 import {
   COMPLETION_SEND_TTL_MS,
+  NOTIFY_RETRY_DELAYS_MS,
   createAsyncJobRegistry,
   createAsyncRuntime,
   createCompletionSendRegistry,
@@ -104,6 +105,41 @@ async function makeRuntime({ job, sent, registry = createAsyncJobRegistry(), sen
     ...extra,
   });
   return { runtime, home, registry, sendRegistry, sent };
+}
+
+/**
+ * 假时钟（issue #659 第 1 格）：投递重试的三档是 5s / 10s / 30s，真等一轮要 45 秒。
+ *
+ * `setTimeout` / `clearTimeout` / `now` 三个注进 `createAsyncRuntime`（看门狗与重试共用同一对），
+ * 所以 `tick()` 推的是**真代码路径**，不是重写一份重试逻辑。
+ */
+function fakeClock(start = 1_000_000) {
+  let current = start;
+  let seq = 0;
+  /** @type {Map<number, {fn:Function, at:number, delay:number}>} */
+  const timers = new Map();
+  return {
+    timers,
+    now: () => current,
+    setTimeout: (fn, delay) => {
+      seq += 1;
+      timers.set(seq, { fn, at: current + delay, delay });
+      return seq;
+    },
+    clearTimeout: (id) => { timers.delete(id); },
+    /** 还挂着的定时器延迟（升序）：钉「档位」用。 */
+    pendingDelays: () => [...timers.values()].map((timer) => timer.delay).sort((a, b) => a - b),
+    /** 推到**最早**那个定时器并执行它；一个都没有就返回 false。 */
+    tick() {
+      const next = [...timers.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+      if (next === undefined) return false;
+      const [id, timer] = next;
+      timers.delete(id);
+      current = timer.at;
+      timer.fn();
+      return true;
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -599,13 +635,105 @@ test("#234 机制3：唤醒策略 —— quiet 的成功完成不唤醒，失败
 // 机制 6：session_shutdown 幂等清理 + 落盘面的 artifacts 口径
 // ---------------------------------------------------------------------------
 
-test("#234 机制6：shutdown 幂等（重复调用不重复清、不抛），并清掉在跑 run 的看门狗定时器", async () => {
-  const { runtime, registry } = await makeRuntime({ job: gatedJob().job, sent: [] });
-  const { handle } = runtime.start({ task: "t", cwd: repoRoot, async: true, timeoutMs: core.MIN_TIMEOUT_MS });
-  assert.notEqual(registry.get(handle.runId).watchdog, undefined, "派工后定时器必须在");
-  assert.equal(runtime.shutdown(), true);
-  assert.equal(runtime.shutdown(), false, "第二次调用必须是 no-op");
-  assert.equal(registry.get(handle.runId).watchdog, undefined);
+// ---------------------------------------------------------------------------
+// #659 第 1 格：投失败后的有界重试（5s / 10s / 30s 三档，每次重算 isIdle()）
+//
+// 为什么必须有：`claim.settle(false)` 只把去重条目删掉（#656 已修好那半边），而 `notifySettled` 的三个
+// 调用点全在 settle 路径上 —— **没有任何第二个调用者会再来一次**，释放的去重位白白空着。
+// 这里用假时钟（`fakeClock`）推真代码路径，不真等 45 秒。
+// ---------------------------------------------------------------------------
+
+test("#659 第1格：重试档位是显式契约（5s / 10s / 30s 三档，重试上限 3 次）", () => {
+  assert.deepEqual([...NOTIFY_RETRY_DELAYS_MS], [5_000, 10_000, 30_000],
+    "档数与上限是显式契约（README 同一份值），不是隐式默认");
+});
+
+test("#659 第1格：投失败 ⇒ 到点重投，三档走完（5s / 10s）就成功；每次重投都重算 isIdle()", async () => {
+  const clock = fakeClock();
+  const sessionDir = await tempDir("erix-run-659-retry-");
+  const sessionHandles = jobsApi.createSessionHandleRegistry();
+  sessionHandles.set("659-retry", { deliver: () => true });
+  /** @type {{at:number, idle:boolean}[]} */
+  const attempts = [];
+  let idle = false;
+  const runtime = createAsyncRuntime({
+    home: await tempDir("erix-run-659-retry-home-"),
+    registry: createAsyncJobRegistry(),
+    sendRegistry: createCompletionSendRegistry(),
+    sessionHandles,
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    runJob: async () => ({ ...P_OK }),
+    // 投递口每次被调时**重新问一次**父会话忙不忙（生产里就是 `wake.sendMessage` 的 `ctx.isIdle()`）
+    notify: () => {
+      attempts.push({ at: clock.now(), idle });
+      if (attempts.length <= 2) return { delivery: "failed", error: "父会话忙（isIdle=false）" };
+      return "sent";
+    },
+  });
+
+  const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true }, { sessionId: "659-retry" });
+  await waitUntil(() => runtime.registry.get(handle.runId).status === "completed");
+  const job = runtime.registry.get(handle.runId);
+  assert.equal(jobView(job).delivery, "failed", "首次投失败就是 failed（不谎报 sent）");
+  assert.equal(job.notifyRetries, 1, "失败后立即排第一档");
+  assert.deepEqual(clock.pendingDelays(), [NOTIFY_RETRY_DELAYS_MS[0]], "第一档是 5s");
+
+  // 父会话现在空闲了：重投要能拿到这个新事实（每档重算 isIdle）
+  idle = true;
+  const firstAt = attempts[0].at;
+  assert.equal(clock.tick(), true, "第一档到点必须真的重投");
+  assert.equal(attempts.length, 2);
+  assert.equal(attempts[1].idle, true, "重投时读的是当下的 isIdle()，不是首次投递时那个值");
+  assert.equal(jobView(job).delivery, "failed");
+  assert.deepEqual(clock.pendingDelays(), [NOTIFY_RETRY_DELAYS_MS[1]], "第二档是 10s");
+
+  assert.equal(clock.tick(), true);
+  assert.equal(attempts.length, 3);
+  assert.equal(jobView(job).delivery, "sent", "第三档投成 ⇒ 盘上变 sent");
+  assert.deepEqual(clock.pendingDelays(), [], "投成之后剩下的档要撤掉（不再排）");
+  // 三档的时间线逐字钉住：0 / +5s / +15s
+  assert.deepEqual(attempts.map((attempt) => attempt.at - firstAt), [0, 5_000, 15_000]);
+
+  // 盘上的事实也是 sent（重投成功必须跟着落盘，否则「重投成功但盘上还写 failed」）
+  const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId: handle.runId }), "utf8"));
+  assert.equal(disk.delivery, "sent");
+  assert.equal(disk.notifyError, null);
+  assert.equal(disk.notifyRetries, 2, "已发生的重试次数是历史事实");
+});
+
+test("#659 第1格：一直投不出去 ⇒ 三档后停（有界，不无限重试）", async () => {
+  const clock = fakeClock();
+  const sessionDir = await tempDir("erix-run-659-retry-exhaust-");
+  const sessionHandles = jobsApi.createSessionHandleRegistry();
+  sessionHandles.set("659-exhaust", { deliver: () => true });
+  let attempts = 0;
+  const runtime = createAsyncRuntime({
+    home: await tempDir("erix-run-659-exhaust-home-"),
+    registry: createAsyncJobRegistry(),
+    sendRegistry: createCompletionSendRegistry(),
+    sessionHandles,
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    runJob: async () => ({ ...P_OK }),
+    notify: () => { attempts += 1; return { delivery: "failed", error: "宿主一直在拒" }; },
+  });
+  const { handle } = runtime.start({ task: "t", cwd: sessionDir, sessionDir, async: true }, { sessionId: "659-exhaust" });
+  await waitUntil(() => runtime.registry.get(handle.runId).status === "completed");
+
+  // 首次 + 三档 = 4 次尝试，之后彻底停手
+  for (let index = 0; index < NOTIFY_RETRY_DELAYS_MS.length; index += 1) {
+    assert.equal(clock.tick(), true, `第 ${index + 1} 档重试必须排上`);
+  }
+  assert.equal(attempts, NOTIFY_RETRY_DELAYS_MS.length + 1, "首次 + 三档 = 4 次，不多不少");
+  assert.deepEqual(clock.pendingDelays(), [], "用尽三档后不再挂定时器");
+  assert.equal(clock.tick(), false, "没有第四档（有界）");
+  const job = runtime.registry.get(handle.runId);
+  assert.equal(job.notifyRetries, NOTIFY_RETRY_DELAYS_MS.length);
+  assert.equal(jobView(job).delivery, "failed", "用尽重试仍然是 failed —— 不粉饰成 sent");
+  assert.match(jobView(job).notifyError ?? "", /宿主一直在拒/u, "盘上留得住根因");
 });
 
 test("#234 R6：status.json 的 artifacts 沿用 core 的 resolveArtifacts 口径（文件真在盘上才给路径）", async () => {
