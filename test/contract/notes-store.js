@@ -53,9 +53,13 @@ const RECORD = {
 /**
  * @param {string} label implementation name
  * @param {() => object | Promise<object>} createStore clean store factory
- * @deprecated issue #429: removed in 0.30 — no in-tree replacement; this is the
+ * @deprecated issue #429: removed in 0.31 — no in-tree replacement; this is the
  *   general published suite, `notesStoreCasContract` is an additional CAS
  *   sub-suite rather than its successor, so deletion needs a re-ruling first.
+ *   The removal moved from 0.30 to 0.31 because the host consumer probe found
+ *   live importers (touwaka and app_container run this suite today): the
+ *   `erix-agent/contract-tests` entry keeps exporting it, and that entry is
+ *   where a host migrating off it should stay.
  */
 export function notesStoreContract(label, createStore) {
   test(`${label}: rejects a port with missing methods`, () => {

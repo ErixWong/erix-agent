@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 上限**，不是实测抄件：`expect.tests` 必须逐字相等、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3284,
+    "tests": 3294,
     "fail": 0,
     "maxSkipped": 14
   },
@@ -64,6 +64,54 @@
     {
       "env": "local",
       "node": "22.23.2",
+      "commit": "d15dc1b",
+      "tests": 3279,
+      "pass": 3267,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests +2 是有意的增删：#296 新增 test/loop-296-real-adapter-400.test.js（T1 真 OpenAI 适配器 + chat / T1b 真 Anthropic 适配器 + chatStream，各一条）。skip 仍是 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），maxSkipped 上限 14 未动。"
+    },
+    {
+      "env": "local",
+      "node": "22.23.2",
+      "commit": "074c075574807e5a38d923d6d209b799c0db8d23",
+      "tests": 3278,
+      "pass": 3266,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests +1 是有意的增删：issue #653 在 test/type-check-strict-ratchet.test.js 新增一条「反向证不靠树恰好贴基线」的用例（把副本基线临时抬高、断言注入处数与红/绿仍正确）。skip 仍是 12 条真上游 / 真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），maxSkipped 上限按 CI 口径保持 14。"
+    },
+    {
+      "env": "local",
+      "node": "22.23.2",
+      "commit": "1cd9579",
+      "tests": 3284,
+      "pass": 3272,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests +7 是有意的增删：新增 test/host-consumer-probe.test.js（7 例，钉宿主消费者探针的整链路：命中 exit 1 并点名 / 未命中 exit 0 / 不给 --hosts ⇒ 未判定 exit 0 / 目录不存在与不是目录的分类原因 / --json 同一份事实 / --self-test / npm script 与中英 AGENTS 成对）。skip 仍是 12 条真上游 / 真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），上限 14 不动。"
+    },
+    {
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "084668cd0f168726931a730e447d36ae6291a816",
+      "tests": 3287,
+      "pass": 3275,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "波12 四片合并后的最终树：+7 探针测试（c2）、+2 真适配器 400 集成测试（c4）、+1 基线相对反向证（c1）；skip 仍是 12 条真上游/真 relay 门禁。教训记录：第一次跑这棵树时没装 devDependency ⇒ typescript 缺失让 4 条严档棘轮用例按环境跳过，tests 相同但 skipped 变 16、pass 变 31 少 4 —— 「skipped 涨了」要先查是不是自己把工具链跑没了，别急着抬上限。"
+    },
+    {
+      "env": "local",
+      "node": "22.23.2",
       "commit": "9c3cfc9409324a8f85365580a45064e8c173798c",
       "tests": 3284,
       "pass": 3272,
@@ -72,6 +120,18 @@
       "todo": 0,
       "cancelled": 0,
       "why": "tests +7 是有意的增删：issue #654 在 test/examples/erix-run-async.test.js 新增 7 条（双会话复现「A 派工 B 后启动 ⇒ A 收到」/ orphaned / no-owner / session_shutdown quit 与 reload / 字段恒在场与取值域 / 投递事实先产生再落盘 / 判定不再锁死去重位）。skipped 仍是那 12 条真上游与真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），未新增 skip。"
+    },
+    {
+      "env": "local",
+      "node": "22.23.2",
+      "commit": "8f52738",
+      "tests": 3294,
+      "pass": 3282,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "合并树现测重登：merge origin/main `d6b3f09`（波12 收尾，登记表那一格已被它改成 3287）进本 PR 之后实测。= 主干 3287 + 本 PR 新增 7 条（test/examples/erix-run-async.test.js 的 #654 七条，净增 +7/-0）。本 PR 自己在 `8f52738` 那棵树上登记的是 3284（= 当时的 main 3277 + 7），与主干的 3287 同格双改 ⇒ merge-tree 判 CONFLICT，按本文件「合并后重跑现测重登」那条处置，不抄任何一边。skipped 仍是那 12 条真上游与真 relay 门禁，未新增 skip。"
     }
   ]
 }
