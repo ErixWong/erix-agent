@@ -12,7 +12,7 @@
 //   - 观察者（onEvent 等）在 0.18 之后是安全的（抛错经 onObserverError 上报、不改
 //     termination），本层仍接 onObserverError 并计数进 diagnostics。
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
@@ -71,10 +71,18 @@ export const DELIVERABLE_PATHS_LIMIT = 20;
 /** #207 R1：下发给引擎 `reflection:{…}` 的扩轮参数名单（也是 diagnostics 里 `requested` 的键）。 */
 export const EXTENSION_PARAM_NAMES = Object.freeze(["maxExtensions", "maxRoundsCap", "extensionStep"]);
 /**
- * 本层能不能续跑（#207 R4）。**只有 R2（`resume` 通道，另单）落地后才能翻成 true**；
- * 在 R2 之前声称可续跑就是假事实，所以这里是一个具名常量而不是一处字面量。
+ * `resume` 参数接受的两种**文件坐标**（#207 R2）：`status.json`（异步面落盘的那份状态）与
+ * transcript（账本本体 `<sessionDir>/<runId>.jsonl`）。扩展名是判别键，所以只认这两个。
  */
-export const RESUMABLE = false;
+export const RESUME_PATH_EXTENSIONS = Object.freeze([".json", ".jsonl"]);
+export const RESUME_STATUS_EXTENSION = ".json";
+export const RESUME_TRANSCRIPT_EXTENSION = ".jsonl";
+/**
+ * 终局「不能续跑」的两种**具体**原因（#207 R2）。`resumable` 不再是常量：它是「盘上有没有可续跑的
+ * 账本」这条事实（见 `resumeFactsOf`），所以两种不成立的情形必须各自说清，不拿一句「不可续跑」糊住。
+ */
+export const RESUME_REASON_MEMORY = "没有可续跑的账本：这次 run 没传 sessionDir / transcript（纯内存 store，进程退出即丢）";
+export const RESUME_REASON_NO_TRANSCRIPT = "没有可续跑的账本：transcript 没写出来（装配期就失败 / 落盘失败），artifacts.transcriptPath 为 null";
 /** provider 单次请求/流的超时（对齐 bin/cli.js 的 300s，非 run 级超时）。 */
 export const PROVIDER_TIMEOUT_MS = 300_000;
 /**
@@ -351,47 +359,60 @@ export function resolveArtifacts({ transcriptPath, judgeLogPath }) {
 /**
  * 工具参数 → 归一化参数。抛 `ErixRunError("bad_params")`。
  *
+ * #207 R2：`resume` 在场时 `task` 与 `cwd` 都可省（续跑可以不带新任务；工作目录可以由账本坐标里的
+ * `status.json.cwd` 提供）。`resume` 的**形状**在这里校（字符串 / 绝对路径 / 只认 .json 与 .jsonl），
+ * 坐标的**存在性**在 `resolveResumeTarget` 里校（要读盘）。
+ *
  * @param {{task?:unknown, cwd?:unknown, maxRounds?:unknown, strategy?:unknown, timeoutMs?:unknown, model?:unknown,
  *   sessionDir?:unknown, transcript?:unknown, maxExtensions?:unknown, maxRoundsCap?:unknown, extensionStep?:unknown,
  *   judgeDoneAdvisory?:unknown, finalGuard?:unknown, finalGuardTimeoutMs?:unknown,
- *   requireDeliverable?:unknown, deliverablePaths?:unknown}} raw
+ *   requireDeliverable?:unknown, deliverablePaths?:unknown, resume?:unknown}} raw
  * @param {{home?:string}} [options]
- * @returns {{task:string, cwd:string, maxRounds:number, strategy?:string, timeoutMs:number, model?:string,
+ * @returns {{task:string, cwd?:string, maxRounds:number, strategy?:string, timeoutMs:number, model?:string,
  *   sessionDir?:string, maxExtensions?:number, maxRoundsCap?:number, extensionStep?:number,
  *   judgeDoneAdvisory?:boolean, finalGuard?:boolean, finalGuardTimeoutMs?:number,
- *   requireDeliverable?:boolean, deliverablePaths?:string[]}}
+ *   requireDeliverable?:boolean, deliverablePaths?:string[], resume?:object}}
  */
 export function parseRunParams(raw = {}, { home = homedir() } = {}) {
+  // #207 R2：resume 先解析——它决定 `task` / `cwd` 的必填性（续跑可以不带新任务、也可以沿用账本里的
+  // 工作目录），所以它的形状校验必须早于这两个字段。
+  const resumeSpec = parseResumeSpec(raw, { home });
+
   const task = textOf(raw?.task).trim();
-  if (task === "") {
+  if (task === "" && resumeSpec === undefined) {
     throw new ErixRunError("bad_params", "task 必填且不能是空字符串");
   }
 
   const rawCwd = textOf(raw?.cwd).trim();
+  let cwd;
   if (rawCwd === "") {
-    throw new ErixRunError("bad_params", "cwd 必填（绝对路径）");
-  }
-  const cwd = expandUserPath(rawCwd, { home });
-  if (!path.isAbsolute(cwd)) {
-    throw new ErixRunError(
-      "bad_params",
-      `cwd 必须是绝对路径，收到 ${JSON.stringify(rawCwd)}（相对路径会随 pi 的工作目录漂移）`,
-    );
-  }
-  if (!existsSync(cwd)) {
-    throw new ErixRunError("bad_cwd", `cwd 不存在：${cwd}`);
+    // 续跑时 cwd 可以省：账本坐标是 `status.json` 的话里面有原始 `cwd`（见 `resolveResumeTarget`），
+    // 解析在 `runErixRun` 里做（要读盘）。不带 resume 时仍是硬必填。
+    if (resumeSpec === undefined) throw new ErixRunError("bad_params", "cwd 必填（绝对路径）");
+  } else {
+    cwd = expandUserPath(rawCwd, { home });
+    if (!path.isAbsolute(cwd)) {
+      throw new ErixRunError(
+        "bad_params",
+        `cwd 必须是绝对路径，收到 ${JSON.stringify(rawCwd)}（相对路径会随 pi 的工作目录漂移）`,
+      );
+    }
+    if (!existsSync(cwd)) {
+      throw new ErixRunError("bad_cwd", `cwd 不存在：${cwd}`);
+    }
   }
 
   /** @type {Record<string, unknown>} */
   const params = {
     task,
-    cwd,
+    ...(cwd === undefined ? {} : { cwd }),
     maxRounds: positiveInt(raw?.maxRounds, DEFAULT_MAX_ROUNDS, {
       min: 1, max: MAX_MAX_ROUNDS, name: "maxRounds",
     }),
     timeoutMs: positiveInt(raw?.timeoutMs, DEFAULT_TIMEOUT_MS, {
       min: MIN_TIMEOUT_MS, max: MAX_TIMEOUT_MS, name: "timeoutMs",
     }),
+    ...(resumeSpec === undefined ? {} : { resume: resumeSpec }),
   };
 
   const strategy = raw?.strategy;
@@ -607,6 +628,200 @@ function parseSessionDir(raw, { home }) {
     );
   }
   return dir;
+}
+
+/**
+ * `resume` 参数的**形状**解析（#207 R2）：只回答「宿主想续哪个 run、用哪种坐标说的」，不碰 fs。
+ *
+ * 接受三种形态（其余一律 `bad_params`，不静默当「没传」）：
+ *   1. `status.json` 的绝对路径 → `{kind:"status", path}`（异步面的 status.json 里带着 `runId` /
+ *      `sessionDir` / `cwd`，所以这是**最完整**的一种坐标）；
+ *   2. transcript（`<sessionDir>/<runId>.jsonl`）的绝对路径 → `{kind:"transcript", path}`；
+ *   3. 裸 `runId` 字符串 → `{kind:"runId", runId}`（**必须**同时给 `sessionDir` / `transcript`，
+ *      否则 `resolveResumeTarget` 无处找账本）。
+ *
+ * 判别顺序是「先看是不是路径（带分隔符或 .json/.jsonl 后缀）」，所以 `runId` 里恰好带点（
+ * `a.b.c`）但没后缀时仍当 `runId`；而 `notes.txt` 这种**看着像路径**又不以 `.json/.jsonl`
+ * 结尾的会被当场拒掉（不当 `runId` 静默建一个新 run）。
+ *
+ * @param {any} raw 工具入参
+ * @param {{home:string}} options
+ * @returns {{raw:string, kind:"runId"|"status"|"transcript", runId?:string, path?:string}|undefined}
+ */
+export function parseResumeSpec(raw, { home }) {
+  const value = raw?.resume;
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string") {
+    throw new ErixRunError(
+      "bad_params",
+      `resume 只能是字符串（runId，或 status.json / transcript 的绝对路径），收到 ${JSON.stringify(value)}`,
+    );
+  }
+  const spec = value.trim();
+  if (spec === "") {
+    throw new ErixRunError("bad_params", "resume 传了值就不能是空白字符串（不传 = 不续跑，起一次全新 run）");
+  }
+  const expanded = expandUserPath(spec, { home });
+  const looksLikePath = expanded.includes("/") || /\.(?:json|jsonl)$/iu.test(expanded);
+  if (!looksLikePath) {
+    if (/\s/u.test(spec)) {
+      throw new ErixRunError("bad_params", `resume 的 runId 不能含空白字符，收到 ${JSON.stringify(spec)}`);
+    }
+    return { raw: spec, kind: "runId", runId: spec };
+  }
+  if (!path.isAbsolute(expanded)) {
+    throw new ErixRunError(
+      "bad_params",
+      `resume 的路径必须是绝对路径，收到 ${JSON.stringify(spec)}（相对路径会随 pi 的工作目录漂移）`,
+    );
+  }
+  const ext = path.extname(expanded).toLowerCase();
+  if (!RESUME_PATH_EXTENSIONS.includes(ext)) {
+    throw new ErixRunError(
+      "bad_params",
+      `resume 路径只认 ${RESUME_PATH_EXTENSIONS.join(" / ")}（status.json 或 transcript），收到 ${JSON.stringify(spec)}`,
+    );
+  }
+  return {
+    raw: spec,
+    kind: ext === RESUME_TRANSCRIPT_EXTENSION ? "transcript" : "status",
+    path: expanded,
+  };
+}
+
+/**
+ * `resume` 坐标 → 引擎能用的那一组身份（#207 R2）：`{runId, sessionDir, transcriptPath, cwd?}`。
+ *
+ * 引擎的续跑入口是 **`config.run.resume: true` + `runId` + 装着账本的 store**（`restoreResume`
+ * 只认账本），所以本函数只负责「把宿主给的坐标变成那三件东西」，并在任一件不成立时**明确报错**：
+ *   - 坐标文件不存在 / 账本是空的 ⇒ `resume_not_found`（不是 `bad_params`：形状是对的，是那个 run 不存）
+ *   - 形状对但**无法反推**（`run-h-*` 哈希化文件名、`runId` 却没给 `sessionDir`）⇒ `bad_params`
+ *
+ * `cwd` 只在坐标自带时返回（`status.json` 有 `cwd`）；没有就由调用方决定（要么宿主传了，要么报错）。
+ *
+ * @param {{spec:object, sessionDir?:string, home?:string,
+ *   exists?:(p:string)=>boolean, readFile?:(p:string, enc:"utf8")=>string, sizeOf?:(p:string)=>number}} input
+ * @returns {{kind:string, handle:string, runId:string, sessionDir:string, transcriptPath:string, cwd?:string}}
+ */
+export function resolveResumeTarget({
+  spec, sessionDir, home = homedir(), exists = existsSync, readFile = readFileSync, sizeOf,
+} = {}) {
+  if (spec === undefined || spec === null || typeof spec !== "object") {
+    throw new ErixRunError("bad_params", "resolveResumeTarget 需要 parseResumeSpec 的产物");
+  }
+  const sizeOfFile = sizeOf ?? ((file) => statSync(file).size);
+  /** 账本必须真在盘上且**不是空的**：空账本引擎会以「resume: 无可恢复记录」把真正的终局原因盖掉。 */
+  const assertLedger = ({ runId, dir, handle }) => {
+    const transcriptPath = artifactPaths({ sessionDir: dir, runId }).transcriptPath;
+    if (!exists(transcriptPath)) {
+      throw new ErixRunError(
+        "resume_not_found",
+        `resume 指向的 run 没有账本：${transcriptPath} 不存在`
+        + `（runId=${JSON.stringify(runId)} sessionDir=${JSON.stringify(dir)}；`
+        + "是不是 runId 与 sessionDir 不配对，或那次 run 没传 sessionDir？）",
+      );
+    }
+    if (sizeOfFile(transcriptPath) === 0) {
+      throw new ErixRunError(
+        "resume_not_found",
+        `resume 指向的 run 账本是空的：${transcriptPath}（一条记录都没落盘 ⇒ 没有可续跑的现场）`,
+      );
+    }
+    return { handle, runId, sessionDir: dir, transcriptPath };
+  };
+
+  if (spec.kind === "transcript") {
+    if (!exists(spec.path)) {
+      throw new ErixRunError("resume_not_found", `resume 指向的 transcript 不存在：${spec.path}`);
+    }
+    const dir = path.dirname(spec.path);
+    const runId = path.basename(spec.path, RESUME_TRANSCRIPT_EXTENSION);
+    if (runId.startsWith(HASHED_RUN_ID_PREFIX)) {
+      // 引擎的 `safeRunId()` 把过长的 id 哈希成 `run-h-*`，从文件名反推不回原 id；硬猜就是
+      // 用一个错的 runId 去读一个错的账本。此时只能走 status.json 或 runId+sessionDir 两种坐标。
+      throw new ErixRunError(
+        "bad_params",
+        `resume 不能只给哈希化的 transcript 文件名（${path.basename(spec.path)}）：`
+        + "该形态反推不回 runId，请改传 status.json 的绝对路径，或传 runId + sessionDir",
+      );
+    }
+    return { kind: spec.kind, ...assertLedger({ runId, dir, handle: spec.path }) };
+  }
+
+  if (spec.kind === "status") {
+    if (!exists(spec.path)) {
+      throw new ErixRunError("resume_not_found", `resume 指向的 status.json 不存在：${spec.path}`);
+    }
+    let status;
+    try {
+      status = JSON.parse(readFile(spec.path, "utf8"));
+    } catch (error) {
+      throw new ErixRunError(
+        "bad_params",
+        `resume 指向的 status.json 不是合法 JSON：${spec.path}（${error?.message ?? String(error)}）`,
+        { cause: error },
+      );
+    }
+    const runId = typeof status?.runId === "string" && status.runId !== "" ? status.runId : undefined;
+    if (runId === undefined) {
+      throw new ErixRunError(
+        "bad_params",
+        `resume 指向的 status.json 里没有 runId 字段：${spec.path}（这不是 erix_run 写的 status.json？）`,
+      );
+    }
+    // 布局只由 `artifactPaths` 定：`<sessionDir>/outputs/<safeRunId>/status.json` ⇒ 往上两层就是
+    // sessionDir。status.json 自带 sessionDir 时以它为准（宿主可能搬过目录）。
+    const dir = typeof status.sessionDir === "string" && status.sessionDir !== ""
+      ? status.sessionDir
+      : path.resolve(path.dirname(spec.path), "..", "..");
+    const target = assertLedger({ runId, dir, handle: spec.path });
+    return {
+      kind: spec.kind,
+      ...target,
+      ...(typeof status.cwd === "string" && status.cwd !== "" ? { cwd: status.cwd } : {}),
+    };
+  }
+
+  // kind === "runId"：必须能从别处拿到 sessionDir。
+  const dir = typeof sessionDir === "string" && sessionDir !== "" ? sessionDir : undefined;
+  if (dir === undefined) {
+    throw new ErixRunError(
+      "bad_params",
+      `resume 传 runId（${JSON.stringify(spec.runId)}）时必须同时给 sessionDir（或 transcript），`
+      + "否则本层无处找它的账本；也可以直接传 status.json / transcript 的绝对路径",
+    );
+  }
+  const target = assertLedger({ runId: spec.runId, dir, handle: spec.runId });
+  return { kind: spec.kind, ...target };
+}
+
+/**
+ * 终局的「能不能续跑」事实（#207 R2）——取代了旧的 `RESUMABLE = false` 常量。
+ *
+ * 判据只有一条：**盘上有没有可续跑的账本**，也就是 `artifacts.transcriptPath` 此刻是不是一个真路径。
+ * 没有就写明是哪一种没有（没传 sessionDir / 落盘失败），不拿一句「不可续跑」糊住。
+ *
+ * `handle` 就是**原样回传给 `resume` 参数**的那个字面值（这里是 transcript 的绝对路径）；
+ * `resumedFrom` 只在本次 run 本身是续跑时非 null。
+ *
+ * @param {{runId?:string, sessionDir?:string|null, artifacts?:object, resumedFrom?:object|null}} input
+ * @returns {{resumable:boolean, handle:string|null, handleKind:string|null, runId:string|null,
+ *   sessionDir:string|null, transcriptPath:string|null, reason?:string, resumedFrom:object|null}}
+ */
+export function resumeFactsOf({ runId, sessionDir, artifacts, resumedFrom } = {}) {
+  const transcriptPath = typeof artifacts?.transcriptPath === "string" ? artifacts.transcriptPath : null;
+  const resumable = transcriptPath !== null;
+  const dir = typeof sessionDir === "string" && sessionDir !== "" ? sessionDir : null;
+  return {
+    resumable,
+    handle: resumable ? transcriptPath : null,
+    handleKind: resumable ? "transcript" : null,
+    runId: typeof runId === "string" && runId !== "" ? runId : null,
+    sessionDir: dir,
+    transcriptPath,
+    ...(resumable ? {} : { reason: dir === null ? RESUME_REASON_MEMORY : RESUME_REASON_NO_TRANSCRIPT }),
+    resumedFrom: resumedFrom ?? null,
+  };
 }
 
 /**
@@ -1282,7 +1497,8 @@ export function formatLoopEvent(event) {
  * 信号 / 错误出口。⚠ 对 pi 的**工具参数面**零变化：`erix-run.ts` 的 schema（`task` / `cwd` /
  * `model` / `maxRounds` / `strategy` / `timeoutMs` / `sessionDir` / `transcript` / `maxExtensions` /
  * `maxRoundsCap` / `extensionStep` / `async` / `quiet` / `action` / `runId` / `finalGuard` /
- * `requireDeliverable` / `deliverablePaths` / `judgeDoneAdvisory` / `finalGuardTimeoutMs`）一个字节
+ * `requireDeliverable` / `deliverablePaths` / `judgeDoneAdvisory` / `finalGuardTimeoutMs` /
+ * `resume`）一个字节
  * 没动，返回的四件套（`finalText` / `termination` / `verification` / `artifacts`）也不变——变的只有
  * **这一层递给引擎的形状**。逐条去向（叶子名 = 顶层键名，别名表在引擎侧，本层不手抄第二套）：
  *
@@ -1290,6 +1506,7 @@ export function formatLoopEvent(event) {
  * | --- | --- |
  * | `system` / `initialUserMessage` / `tools` / `wrapup` | `config.input.*` |
  * | `maxRounds` / `stream` / `runId` / `cwd` / `completion` | `config.run.*` |
+ * | `resume`（#207 R2：续跑开关；只在宿主传了 `resume` 参数时出现，默认连键都没有） | `config.run.resume` |
  * | `reflection`（数据半边：`enabled` / 扩轮三参数 / `judgeDoneAdvisory`） | `config.run.reflection` |
  * | `timeoutMs` / `retry` | `config.timing.*` |
  * | `context`（内置策略名是数据，不是端口实现） | `config.folding.context` |
@@ -1313,6 +1530,7 @@ export function formatLoopEvent(event) {
  *
  * @param {{
  *   params: {task:string, cwd:string, maxRounds:number, timeoutMs:number, strategy?:string,
+ *     resume?:object,
  *     finalGuardTimeoutMs?:number},
  *   slot: object,
  *   provider: object,
@@ -1375,7 +1593,9 @@ export function buildLoopOptions(input) {
   const config = {
     input: {
       system: system ?? buildSystemPrompt({ lib: { binTools: {} }, cwd: params.cwd, tools: tools.tools }),
-      initialUserMessage: params.task,
+      // #207 R2：续跑可以不带新任务（纯接着跑），那时**不写这个键**——空串会被引擎当成一条
+      // 空正文用户轮（非 resume 路径上真的会发出去），少一个键比发一条空消息安全。
+      ...(params.task === "" ? {} : { initialUserMessage: params.task }),
       // 对话型宿主（pi 是人机协同侧）：收尾 JSON 信封会污染交回给 pi 的终稿文本，关掉。
       wrapup: false,
     },
@@ -1383,6 +1603,10 @@ export function buildLoopOptions(input) {
       maxRounds: params.maxRounds,
       stream: false,
       runId,
+      // #207 R2：引擎的续跑开关。规位是 `config.run.resume`（扁平 `resume` 已在 #498 S3 A19
+      // 退役），读侧是 `src/loop/resume-manager.js` 的 `restoreResume`（它只认 `ctx.resume`
+      // + `ctx.runId` + 装着账本的 `ctx.store`）。不传 ⇒ 连这个键都没有（默认行为逐字不变）。
+      ...(params.resume === undefined ? {} : { resume: true }),
       // #391 R1：`cwd` 是引擎的**纯透传**选项（只进 finalGuard / deliverables 的事实载荷）。
       // 本层早已有 `params.cwd`（绝对路径 + 存在性都已验），漏的只是往下传：不传的话
       // 升级指南 §9 的判据会拼成 `"undefined/report.md"`，每次 accept 都被判 `deliverables_failed`。
@@ -1483,7 +1707,8 @@ function sampleList(items) {
  *
  * - `artifacts`：**未落盘就是 `null`**，绝不猜路径（见 `resolveArtifacts`）。
  * - `extensionCount` / `maxExtensions`：本次 run 用了几次扩轮 / 生效上限是多少（0 = 根本没开）。
- * - `resumable`：读 `RESUMABLE` 常量（#207 R2 未落地前恒 `false`）。
+ * - `resumable`：**事实而不是能力声明**（#207 R2）——盘上有可续跑的账本才是 `true`，
+ *   即 `input.resume.resumable`（见 `resumeFactsOf`）。坐标全貌在 `diagnostics.resume`。
  */
 function decisionFacts(input) {
   const artifacts = input?.artifacts ?? { transcriptPath: null, judgeLogPath: null };
@@ -1494,7 +1719,9 @@ function decisionFacts(input) {
     },
     extensionCount: Number.isSafeInteger(input?.extensionCount) ? input.extensionCount : 0,
     maxExtensions: Number.isSafeInteger(input?.maxExtensions) ? input.maxExtensions : 0,
-    resumable: input?.resumable === true,
+    // #207 R2：**事实**而不是能力声明 —— 盘上有可续跑的账本才是 true（见 `resumeFactsOf`）。
+    // 坐标（handle / runId / sessionDir）走 `diagnostics.resume`（同一份事实的可机读全貌）。
+    resumable: input?.resume?.resumable === true,
   };
 }
 
@@ -1504,7 +1731,7 @@ function decisionFacts(input) {
  * @param {any} result runToolLoop 的返回值
  * @param {{timeout:boolean, aborted:boolean, observerErrors:any[], metadataEvents:any[],
  *   ledgerErrors:any[], context:object, artifacts?:object, extensionCount?:number,
- *   maxExtensions?:number, resumable?:boolean}} input
+ *   maxExtensions?:number, resume?:object}} input
  */
 export function buildSuccessPayload(result, input) {
   const termination = result?.termination ?? { reason: "failed", detail: "engine returned no termination" };
@@ -1876,6 +2103,16 @@ function buildDiagnostics(input, source) {
     elapsedMs: context.elapsedMs,
     // #207 R3/R4：落盘位置与扩轮闸门（requested = 宿主传了什么，enabled=false 就是没生效）。
     sessionDir: context.sessionDir ?? null,
+    // #207 R2：**续跑坐标**（与顶层 `resumable` 同一份事实的可机读全貌）。这里同时是异步面
+    // `status.json` 的来源（`jobView` 整块投 `diagnostics`）⇒ 盘上那唯一残留里就带着
+    // 「拿什么参数可以接着跑」：`handle` 原样回传给 `resume` 即可，`runId` / `sessionDir`
+    // 是另一种等价写法（`resume: runId` + `sessionDir`）。
+    resume: input.resume ?? resumeFactsOf({
+      runId: context.runId,
+      sessionDir: context.sessionDir,
+      artifacts: input.artifacts,
+      resumedFrom: context.resumedFrom,
+    }),
     reflection: context.reflection ?? null,
     // #314 R3：guard 的成本接在同一棵 diagnostics 树下（不另起顶层字段）。
     // 未开启时也要留一行如实的话：默认关 ⇒ 引擎给的 verification 只能是 `skipped`。
@@ -1921,6 +2158,9 @@ export function newRunId(now = () => Date.now()) {
  *   createStore?:()=>object,
  *   runLoop?:(options:object)=>Promise<any>,
  *   now?:()=>number,
+ *   runId?:string,             // 显式 runId（异步层派工时给；与 resume 指向的 runId 必须一致）
+ *   resumeTarget?:object,      // 已解析的续跑坐标（异步层先解一次，免得两边各解一份）
+ *   readFile?:Function, exists?:Function, sizeOf?:Function,  // resolveResumeTarget 的注入缝
  * }} [deps]
  */
 export async function runErixRun(rawParams = {}, deps = {}) {
@@ -1990,6 +2230,42 @@ export async function runErixRun(rawParams = {}, deps = {}) {
 
   try {
     const params = parseRunParams(rawParams, { home });
+    // #207 R2：续跑坐标先落地（要读盘）——它决定 `runId` / `sessionDir` / `cwd` 三件东西，
+    // 所以必须在装配任何端口之前定下来。坐标不成立就在这里报 `resume_not_found` / `bad_params`，
+    // **绝不静默起一个全新 run**（那会让宿主以为在续跑旧会话，实际上又花了一整单钱）。
+    const resumeTarget = deps.resumeTarget ?? (params.resume === undefined
+      ? undefined
+      : resolveResumeTarget({
+        spec: params.resume,
+        sessionDir: params.sessionDir,
+        home,
+        ...(deps.readFile === undefined ? {} : { readFile: deps.readFile }),
+        ...(deps.exists === undefined ? {} : { exists: deps.exists }),
+        ...(deps.sizeOf === undefined ? {} : { sizeOf: deps.sizeOf }),
+      }));
+    if (resumeTarget !== undefined) {
+      // 工作目录：宿主传了就用宿主的；没传就用坐标里带的（只有 status.json 有 `cwd`）。
+      // 两处都没有 ⇒ 明确报错，不猜一个（猜错就是在一个不相干的目录里继续跑旧账本）。
+      if (params.cwd === undefined) {
+        if (typeof resumeTarget.cwd !== "string" || resumeTarget.cwd === "") {
+          throw new ErixRunError(
+            "bad_params",
+            `resume 续跑 ${resumeTarget.runId} 需要 cwd：这个坐标里没有原始工作目录`
+            + "（transcript / runId 坐标不带 cwd）⇒ 请显式传 cwd",
+          );
+        }
+        params.cwd = resumeTarget.cwd;
+      }
+      // 续跑必须沿用原 `sessionDir`：账本在那边，换一个目录就是另一个 run。
+      params.sessionDir = resumeTarget.sessionDir;
+      context.resumedFrom = {
+        handle: resumeTarget.handle,
+        kind: resumeTarget.kind,
+        runId: resumeTarget.runId,
+        sessionDir: resumeTarget.sessionDir,
+        transcriptPath: resumeTarget.transcriptPath,
+      };
+    }
     context.cwd = params.cwd;
     context.strategy = params.strategy;
     context.maxRounds = params.maxRounds;
@@ -2086,7 +2362,16 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       ? deps.createProvider(libIndex, slot)
       : createProviderForSlot(libIndex, slot);
     // runId 先算：notes 的 scope（notesDir 下的 run/<scopeRef>/）与 transcript 同一身份。
-    const runId = deps.runId ?? newRunId(now);
+    // #207 R2：续跑**必须沿用原 runId**（账本、judge.log、status.json 都按它命名）。显式给了
+    // 一个不同的 runId 就是两个身份撞在一起，当场报错而不默默盖掉其中一个。
+    if (resumeTarget !== undefined && deps.runId !== undefined && deps.runId !== resumeTarget.runId) {
+      throw new ErixRunError(
+        "bad_params",
+        `resume 指向 run ${resumeTarget.runId}，与显式 runId ${deps.runId} 冲突`
+        + "（续跑只能沿用原 runId：账本与产物都按它命名）",
+      );
+    }
+    const runId = resumeTarget?.runId ?? deps.runId ?? newRunId(now);
     context.runId = runId;
     const tools = deps.createAssembly
       ? deps.createAssembly({ lib: libIndex, cwd: params.cwd, runId, sessionDir: params.sessionDir, onToolEvent: (info) => {
@@ -2126,6 +2411,22 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       judgeLogPath: runPersistence.judgeLogPath,
     };
 
+    // #207 R2：续跑时把**这次的新任务**当成一个用户轮写进账本（与 CLI `-c` 同一条通道：
+    // 引擎公共导出 `appendUserTurn`，round 复用账本最大轮号，dedupKey 走 `:input:` 命名空间）。
+    // 不自己手搭记录：round 推导 / 去重 / 记录形状都是引擎的契约，抄一份就是两份口径。
+    if (resumeTarget !== undefined && params.task !== "") {
+      const appendUserTurn = libIndex?.appendUserTurn;
+      if (typeof appendUserTurn !== "function") {
+        throw new ErixRunError(
+          "lib_missing",
+          "续跑要把本次新任务作为用户轮写进账本，需要 erix-agent 入口导出 appendUserTurn"
+          + "（包根 src/index.js 已有；检查 ERIX_AGENT_LIB 指向的检出是否太旧）",
+        );
+      }
+      await appendUserTurn(store, { key: runId, text: params.task });
+      progress(`续跑：本次任务已作为用户轮追加到账本（runId=${runId}，round 复用账本最大轮号）`);
+    }
+
     progress(
       `erix_run 启动：model=${context.model ?? "?"} cwd=${params.cwd} maxRounds=${params.maxRounds}`
       + ` strategy=${params.strategy ?? "（未配置，走引擎缺省）"} timeoutMs=${params.timeoutMs}`
@@ -2133,6 +2434,10 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       + (guardHeadroomMs > 0
         ? ` finalGuard=on（硬 abort 余量 +${guardHeadroomMs}ms，等待上限 ${params.finalGuardTimeoutMs}ms）`
         : "")
+      // #207 R2：续跑就把「从哪接着跑」当面说出来（宿主看进度就能分清「续跑」与「整单重跑」）。
+      + (resumeTarget === undefined
+        ? ""
+        : ` resume=on（runId=${resumeTarget.runId} handle=${resumeTarget.handle}）`)
       + `（lib: ${context.libSource}）`,
     );
     if (params.sessionDir !== undefined) {
@@ -2300,7 +2605,13 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       artifacts: resolveArtifacts(persistence),
       extensionCount,
       maxExtensions,
-      resumable: RESUMABLE,
+      // #207 R2：续跑坐标与「能不能续跑」的事实（旧版这里是一个恒 false 的常量）。
+      resume: resumeFactsOf({
+        runId: context.runId,
+        sessionDir: context.sessionDir,
+        artifacts: resolveArtifacts(persistence),
+        resumedFrom: context.resumedFrom,
+      }),
     });
     progress(
       `erix_run 结束：termination=${payload.termination.reason}`
@@ -2324,7 +2635,12 @@ export async function runErixRun(rawParams = {}, deps = {}) {
       artifacts: resolveArtifacts(persistence ?? {}),
       extensionCount,
       maxExtensions,
-      resumable: RESUMABLE,
+      resume: resumeFactsOf({
+        runId: context.runId,
+        sessionDir: context.sessionDir,
+        artifacts: resolveArtifacts(persistence ?? {}),
+        resumedFrom: context.resumedFrom,
+      }),
     });
     progress(
       `erix_run 终局（抛错路径）：${payload.termination.reason}`
@@ -2416,11 +2732,19 @@ export function formatPayloadForModel(payload, { limit = 20_000 } = {}) {
   }
   // #207 R4：把决策事实也给模型看（它才能自己决定「去读 transcript」还是「直接重跑」）。
   const artifacts = payload?.artifacts;
+  // #207 R2：`resumable` 现在是**事实**（盘上有可续跑的账本）。true 时把 handle 与 cwd 一并给出去——
+  // 模型只要把这两个字面值原样回传给 `resume` / `cwd` 就能接着跑（transcript 坐标本身不带工作目录，
+  // 所以 cwd 必须跟 handle 一起给；status.json 坐标自带 cwd，那里可以省）；false 时说出**是哪一种没有**。
+  const resume = payload?.diagnostics?.resume;
   lines.push(`[facts] transcript=${artifacts?.transcriptPath ?? "none"}`
     + ` judgeLog=${artifacts?.judgeLogPath ?? "none"}`
     + ` extensions=${payload?.extensionCount ?? 0}/${payload?.maxExtensions ?? 0}`
     + ` resumable=${payload?.resumable === true}`
-    + (payload?.resumable === true ? "" : "（本层未接 resume，终局不可续跑）"));
+    + (payload?.resumable === true
+      ? `（要接着跑就传 resume=${JSON.stringify(resume?.handle ?? "")}`
+        + ` cwd=${JSON.stringify(diagnostics?.cwd ?? "")}）`
+      : `（${resume?.reason ?? "没有可续跑的账本"}）`)
+    + (resume?.resumedFrom ? ` 本次是续跑（from=${resume.resumedFrom.handle}）` : ""));
   const reflection = diagnostics?.reflection;
   if (reflection && reflection.enabled === false && Object.keys(reflection.requested ?? {}).length > 0) {
     // 传了扩轮参数但 judge 闸门没开 → 明说它没生效，别假称传了。

@@ -823,7 +823,7 @@ test("#207 R3：judge.log 写不进去只记账，不把已跑完的 run 带成 
 });
 
 test("#207 R4：artifacts / extensionCount / maxExtensions / resumable（不落盘时 null，不编造路径）", async () => {
-  // ① 纯内存：两个路径都是 null（而不是“猜一个”），resumable 本单一律 false
+  // ① 纯内存：两个路径都是 null（而不是“猜一个”），resumable 是**事实** ⇒ false（没有账本可续跑）
   const memory = await core.runErixRun(
     { task: "t", cwd: repoRoot },
     makeDepsWithoutStore({ provider: createFakeProvider(TWO_ROUND_SCRIPT) }),
@@ -832,8 +832,18 @@ test("#207 R4：artifacts / extensionCount / maxExtensions / resumable（不落�
   assert.deepEqual(memory.artifacts, { transcriptPath: null, judgeLogPath: null });
   assert.equal(memory.extensionCount, 0);
   assert.equal(memory.maxExtensions, 0, "judge 没开启 = 根本没有扩轮额度");
-  assert.equal(memory.resumable, false, "R2 未落地，不得声称可续跑");
-  assert.equal(core.RESUMABLE, false);
+  assert.equal(memory.resumable, false, "#207 R2：纯内存 run 没有账本，不得声称可续跑");
+  // #207 R2：坐标与「为什么不能续跑」都写在 diagnostics.resume 里（不是一句空话）。
+  assert.deepEqual(memory.diagnostics.resume, {
+    resumable: false,
+    handle: null,
+    handleKind: null,
+    runId: memory.diagnostics.runId,
+    sessionDir: null,
+    transcriptPath: null,
+    reason: core.RESUME_REASON_MEMORY,
+    resumedFrom: null,
+  });
   // 不落盘也不往 diagnostics 里撒谎
   assert.equal(memory.diagnostics.sessionDir, null);
   assert.deepEqual(memory.diagnostics.reflection, {
@@ -863,6 +873,17 @@ test("#207 R4：artifacts / extensionCount / maxExtensions / resumable（不落�
     assert.equal(existsSync(value), true, `artifacts 里的路径必须在盘上：${value}`);
   }
   assert.equal(persisted.diagnostics.sessionDir, sessionDir);
+  // #207 R2：落了盘 ⇒ resumable 是事实上的 true，handle 就是那个 transcript 路径。
+  assert.equal(persisted.resumable, true);
+  assert.deepEqual(persisted.diagnostics.resume, {
+    resumable: true,
+    handle: persisted.artifacts.transcriptPath,
+    handleKind: "transcript",
+    runId,
+    sessionDir,
+    transcriptPath: persisted.artifacts.transcriptPath,
+    resumedFrom: null,
+  });
 });
 
 test("#207 R4：judge 没跑过（judge.log 未建）时 judgeLogPath 仍是 null，不拿目录当一个产物", async () => {
