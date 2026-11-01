@@ -543,6 +543,42 @@ test("#234 机制2：triggerTurn 不是 true 时一律透传（不建 reservatio
   assert.equal(calls.sendMessage.length, 2);
 });
 
+test("#659 第2格：rearmIfUnstarted —— pending 且从未起轮才补排 steer（有界：同一个 reservation 只补一次）", () => {
+  let now = 200_000;
+  const { pi, calls } = fakePi();
+  const wake = createParentWake(pi, () => now);
+  wake.bindSession(fakeCtx({ idle: true }));
+
+  // 没有欠账时什么都不做（session_start / agent_end 每次都会调它，不能无中生有一条 steer）
+  assert.equal(wake.rearmIfUnstarted(), false);
+  assert.equal(calls.sendUserMessage.length, 0);
+
+  wake.sendMessage({ content: "a" }, { triggerTurn: true });
+  assert.equal(calls.sendUserMessage.length, 1);
+  assert.equal(wake.isPending(), true, "排了 steer 但还没有 agent_start ⇒ 欠着一轮");
+
+  // 补偿回路：不干等 WAKE_PENDING_MS，直接补排一次
+  assert.equal(wake.rearmIfUnstarted(), true);
+  assert.equal(calls.sendUserMessage.length, 2, "补排的也是同一条 steer 提示（走同一个投递口）");
+  assert.deepEqual(calls.sendUserMessage[1], { content: PARENT_WAKE_TEXT, options: { deliverAs: "steer" } });
+
+  // 有界：同一个 reservation 只补一次（否则每个 agent_end 都再排一条，父会话变成永动机）
+  assert.equal(wake.rearmIfUnstarted(), false);
+  assert.equal(calls.sendUserMessage.length, 2);
+
+  // agent_start 清位 ⇒ 欠账结清，再调什么都不做
+  wake.agentStarted();
+  assert.equal(wake.isPending(), false);
+  assert.equal(wake.rearmIfUnstarted(), false);
+  assert.equal(calls.sendUserMessage.length, 2);
+
+  // 新排一条 steer 是**新的一次欠账**：补偿额度跟着重置（不会因为上一轮用掉就再也不补）
+  wake.sendMessage({ content: "b" }, { triggerTurn: true });
+  assert.equal(calls.sendUserMessage.length, 3);
+  assert.equal(wake.rearmIfUnstarted(), true, "新欠账要有新的补偿额度");
+  assert.equal(calls.sendUserMessage.length, 4);
+});
+
 test("#659 第3格：`sent` 的上界是「宿主接受了这次调用」—— pi 返回 void 不算已送达，只有 agent_start 才是确认", () => {
   const { pi, calls } = fakePi();
   const wake = createParentWake(pi);
@@ -1385,7 +1421,7 @@ export async function resolve(specifier, context, next) {
  * 一个「会话」：假 pi + 假 ctx + 各自的收件箱；跑一次 factory + 一次 `session_start`
  * （= pi 在多会话宿主里对每个会话做的事）。
  */
-function startSession(extension, { sessionId, idle = true } = {}) {
+function startSession(extension, { sessionId, idle = true, sessionManager } = {}) {
   const calls = { sendMessage: [], sendUserMessage: [] };
   const handlers = new Map();
   const pi = {
@@ -1395,7 +1431,9 @@ function startSession(extension, { sessionId, idle = true } = {}) {
     sendUserMessage: (content, options) => calls.sendUserMessage.push({ content, options }),
   };
   extension.default(pi);
-  const ctx = fakeCtx({ idle, sessionId });
+  // `sessionManager` 显式传入时两次 `startSession` 可以共享它 = 同一个会话被 `/reload` 换了个扩展实例
+  // （reservation 的 WeakMap 按 `sessionManager` 键，所以这是「pending 跨 reload 不丢」的建模方式）。
+  const ctx = fakeCtx({ idle, sessionId, ...(sessionManager === undefined ? {} : { sessionManager }) });
   handlers.get("session_start")?.({}, ctx);
   return { calls, handlers, ctx, pi, received: () => calls.sendMessage.length + calls.sendUserMessage.length };
 }
@@ -1574,6 +1612,53 @@ test("#654 缺陷1：session_shutdown(\"quit\") 摘掉本会话句柄；\"reload
       "reload 不算会话走了：新实例会以同一个 sessionId 重新注册，摘掉只会制造一段假 orphaned 窗口");
   } finally {
     sessionHandles.delete(quitSession);
+    sessionHandles.delete(reloadSession);
+    env.restore();
+  }
+});
+
+test("#659 第2格：agent_end / session_start 发现 pending 且从未起轮 ⇒ 补排一次 steer（isPending 的生产消费者）", async () => {
+  const env = await offlineRunEnv();
+  const sessionHandles = jobsApi.globalSessionHandleRegistry();
+  const sessionDir = await tempDir("erix-run-659-rearm-");
+  const agentEndSession = "659-rearm-agent-end";
+  const reloadSession = "659-rearm-reload";
+  try {
+    const extension = await loadExtensionModule();
+
+    // ① `agent_end` 补偿：一条完成通知排了 steer，但那一轮没起（没有 agent_start）
+    const session = startSession(extension, { sessionId: agentEndSession });
+    await dispatchAndSettle(extension, session, { task: "t", cwd: sessionDir, sessionDir, async: true, maxRounds: 2 });
+    assert.equal(session.calls.sendUserMessage.length, 1, "idle 分支：完成通知后面排一条 steer（reservation 建立）");
+
+    session.handlers.get("agent_end")({});
+    assert.equal(session.calls.sendUserMessage.length, 2,
+      "agent_end 时 isPending() 仍为 true ⇒ 补排一次 steer（修前 isPending 生产面零调用者 ⇒ 这里永远只有 1 条）");
+    assert.deepEqual(session.calls.sendUserMessage[1], { content: PARENT_WAKE_TEXT, options: { deliverAs: "steer" } },
+      "补排走同一个投递口与同一条提示文本");
+
+    // 有界：同一个 reservation 只补一次（否则每个 agent_end 都再排一条）
+    session.handlers.get("agent_end")({});
+    assert.equal(session.calls.sendUserMessage.length, 2, "有界：同一个 reservation 只补一次");
+
+    // agent_start 才算「换来了这一轮」⇒ 清位，之后 agent_end 不再补
+    session.handlers.get("agent_start")({});
+    session.handlers.get("agent_end")({});
+    assert.equal(session.calls.sendUserMessage.length, 2, "欠账结清之后不许再补");
+
+    // ② `session_start` 补偿（/reload 窗口）：同一个 sessionManager + 同一个 sessionId，
+    //    旧实例排的 steer 没换来一轮就被 reload 打断 ⇒ 新实例的 session_start 用**新 pi** 补排。
+    const manager = { getSessionId: () => reloadSession };
+    const before = startSession(extension, { sessionId: reloadSession, sessionManager: manager });
+    await dispatchAndSettle(extension, before, { task: "t", cwd: sessionDir, sessionDir, async: true, maxRounds: 2 });
+    assert.equal(before.calls.sendUserMessage.length, 1);
+
+    const after = startSession(extension, { sessionId: reloadSession, sessionManager: manager });
+    assert.equal(after.calls.sendUserMessage.length, 1,
+      "session_start 也要消费 isPending()：reload 窗口里欠着的那一轮由新实例补排（且用的是新 pi）");
+    assert.equal(before.calls.sendUserMessage.length, 1, "旧实例不能再被用来投递（它的 pi 已经失效）");
+  } finally {
+    sessionHandles.delete(agentEndSession);
     sessionHandles.delete(reloadSession);
     env.restore();
   }

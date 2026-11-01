@@ -291,6 +291,27 @@ pi --extension ./examples/pi-extension/erix-run.ts
 - **投递去重**：TTL（10 分钟）+ 容量上限（4096）的注册表，防同一 run 被投递多次（看门狗与内层返回
   两个触发源、`/reload` 后旧实例闭包、宿主重试）；两个常量与 `pi-subagents` 逐字同值。
 
+#### 补偿回路：`isPending()` 真的被生产路径消费（issue #659 第 2 格）
+
+`erix-run-parent-wake.js` 的 `isPending()`（reservation 还在 = 「steer 排了、但还没换来一轮」）
+以前**只有测试在调**：定义了判据、丢了消费方。后果就是上游注释自己写的那条风险——被处理掉或失败的
+唤醒 prompt **不会发 `agent_start`**，于是 reservation 只能等 `WAKE_PENDING_MS` 超时，那一轮静默丢掉。
+
+现在它有三个生产消费者，全在 `erix-run.ts` 的生命周期接线里：
+
+| 事件 | 调什么 | 干什么 |
+|---|---|---|
+| `agent_start` | `agentStarted()` | 唤醒换来一轮了 ⇒ 清位（`sentAt` 与补偿额度一起清） |
+| `agent_end` | `rearmIfUnstarted()` | 这一轮跑完但 `isPending()` 仍为 true ⇒ **补排一次 steer** |
+| `session_start` | `rearmIfUnstarted()` | `/reload` 窗口里保留的 pending ⇒ 由新实例补排一次（用新 `pi`） |
+
+**有界**：同一个 reservation 只补一次（`rearmed`），新排一条 steer 或 `agent_start` 都会重置它——
+否则每个 `agent_end` 都会再排一条，父会话变成永动机。
+
+对照上游（`pi-subagents:` 前缀 = 那个仓的路径，不是本仓）：`pi-subagents:src/extension/index.js` 的
+`isActive:` 回调真的在调 `parentWake.isPending()`，`pi-subagents:src/runs/background/notify.js` 另有
+`unstartedWakes` / `hasPendingDelivery()`。本仓是同一件事的两面（观察侧补偿），不是新设计。
+
 #### 投失败后的有界重试（issue #659 第 1 格）
 
 `notifySettled` 的三个调用点全在 settle 路径上（内层返回 / 看门狗到点 / `action:"cancel"`）⇒

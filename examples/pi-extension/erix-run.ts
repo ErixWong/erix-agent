@@ -486,6 +486,8 @@ export interface SessionDeliveryHandle {
   /** 投一条完成通知；返回 `false` = 本句柄明确拒绝（抛异常也算失败，判定在 `sendNotify`）。 */
   deliver(message: { customType: string, content: string, display: boolean }, options: { triggersTurn: boolean }): boolean;
   agentStarted(): void;
+  /** #659 第 2 格：补偿回路（`session_start` / `agent_end` 里调），返回是否真补排了 steer。 */
+  rearmIfUnstarted(): boolean;
   sessionShutdown(reason?: string): void;
 }
 
@@ -593,6 +595,7 @@ export default function (pi: ExtensionAPI) {
       return true;
     },
     agentStarted() { wake?.agentStarted(); },
+    rearmIfUnstarted() { return wake?.rearmIfUnstarted() ?? false; },
     sessionShutdown(reason) { wake?.sessionShutdown(reason); },
   };
 
@@ -610,11 +613,23 @@ export default function (pi: ExtensionAPI) {
     // 登记到进程级**按会话键**的句柄表：别的会话（以及 /reload 之后的新实例）投递时按 owner 查到它。
     if (sessionId !== undefined) globalSessionHandleRegistry().set(sessionId, sessionHandle);
     asyncRuntime();
+    // #659 第 2 格（观察侧补偿回路）：`reload` 期间保留的 pending 在这里被消费——旧实例排的 steer
+    // 没换来一轮（没有 `agent_start`）就被 `/reload` 打断了，新实例拿着同一个 reservation，
+    // `isPending()` 仍为 true ⇒ 补排一次 steer，而不是干等 `WAKE_PENDING_MS` 超时。
+    sessionHandle.rearmIfUnstarted();
   });
 
   // 唤醒已经换来一轮 → 清 pending（照 pi-subagents extension/index.js:1031 的同一条）。
   pi.on("agent_start", () => {
     sessionHandle.agentStarted();
+  });
+
+  // #659 第 2 格：`agent_end` 是「这一轮跑完了」的观察点——若 steer 排过、却**从未**换来一轮
+  // （`isPending()` 仍为 true），就在这里补排一次（有界：同一个 reservation 只补一次）。
+  // 这一条就是 `isPending()` 的生产消费者：上游 `pi-subagents:src/extension/index.js` 的 `isActive:`
+  // 回调读的是同一个值，`pi-subagents:src/runs/background/notify.js` 的 `unstartedWakes` 是同一类账。
+  pi.on("agent_end", () => {
+    sessionHandle.rearmIfUnstarted();
   });
 
   pi.on("session_shutdown", (event) => {
