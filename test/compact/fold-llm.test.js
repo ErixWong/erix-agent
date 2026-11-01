@@ -527,3 +527,23 @@ test("anchors:false does not change the failure shape (no anchor section is inve
   assert.doesNotMatch(whole, /1ed3f35/u);
 });
 
+test("a long failure reason is truncated inside the summarizer_failed message", async () => {
+  // issue #661：文案上限（120 字符）从降级标记搬到了异常消息上——超长原因不得把终局
+  // 消息撑爆（宿主/日志都读这一句）。
+  const messages = [
+    { role: "user", content: "task" },
+    { role: "assistant", content: [{ type: "text", text: "old" }] },
+    { role: "user", content: "keep" },
+  ];
+  const error = await createFoldLlmStrategy({
+    summarizer: async () => {
+      throw new Error(`e${"x".repeat(300)}`);
+    },
+  }).compact(messages, { keepRounds: 1 }).then(
+    () => assert.fail("摘要器失败必须抛错"),
+    (thrown) => thrown,
+  );
+  assert.equal(error.code, "summarizer_failed");
+  assert.match(error.message, /^fold-llm 摘要失败（error）：ex{1,119}$/u);
+  assert.ok(error.message.length < 200, `异常消息必须短（实测 ${error.message.length}）`);
+});
