@@ -549,7 +549,15 @@ test("C6 行为证据：ports.strategy 的 shouldCompact / compact 真被调（�
   assert.equal(shouldCompactCalls, 1, "shouldCompact 真被调");
   assert.equal(compactCalls, 1, "compact 真被调");
   assert.deepEqual(self, [strategy, strategy], "对象原样透传（同一个引用），没有被包一层");
-  assert.equal(result.compactionStats[0].strategyName, "spy-strategy", "轮记录里记的就是这个策略对象的名字");
+  // issue #657：这一半按真值表改（`strategyName` 只写**真正折过**的那一层）。
+  // 本夹具的 `compact` 只回 `{ messages, foldedRoundRange }`、**没有** `foldedRounds` ⇒
+  // `foldedRounds === 0`；而预算兜底也没有可折的轮次（种子里只有一条 user 消息，`groupIntoRounds`
+  // 给出 0 轮）⇒ **谁都没折** ⇒ 按「无事实 ⇒ 无键」不写这个键。
+  // 改前这里断言的是 `"spy-strategy"`：那是**入口选中的名字**，而它这一折一轮都没折（`compacted:false`）。
+  // 本用例的意图（`shouldCompact` / `compact` 真被调、对象同一性保留）一个字都没动——上面
+  // `assert.deepEqual(self, [strategy, strategy])` 已经证了「同一个引用原样透传」。
+  assert.equal(Object.hasOwn(result.compactionStats[0], "strategyName"), false,
+    "谁都没折 ⇒ 不写 strategyName（写入口选中的名字就是在说假话，#657 真值表第 4 行）");
 });
 
 // ================================================================ C7. 4 个新 hooks 行为证据
@@ -1100,7 +1108,10 @@ test("C17 优先级方向（strategy）：context.strategy 与 capabilities.port
   assert.equal(portShouldCompact, 1, "capabilities.ports.strategy.shouldCompact 真被调");
   assert.equal(portCompact, 1, "capabilities.ports.strategy.compact 真被调");
   assert.deepEqual([shellShouldCompact, shellCompact], [0, 0], "context.strategy（壳内那份）零调用——`??` 顺序翻转这里就红");
-  assert.equal(result.compactionStats[0].strategyName, "port-strategy", "轮记录里记的是端口位那个策略");
+  // issue #657：同 C6 那格——本夹具谁都没折（`foldedRounds === 0` 且兜底无可折轮次）⇒ 无键。
+  // 本用例的意图（端口位赢、壳里零调用）一个字都没动：上面那两行调用计数才是它的判据。
+  assert.equal(Object.hasOwn(result.compactionStats[0], "strategyName"), false,
+    "谁都没折 ⇒ 不写 strategyName（改前写的是入口选中的 `port-strategy`）");
 });
 
 // ================================================================ C18. 装配口路线的真 run

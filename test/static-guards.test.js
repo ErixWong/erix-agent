@@ -4039,8 +4039,16 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  * ```
  * # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 1 条 / 英文 1 条 / 配对 1 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 28（校准面 \#\# [0.29.0] - 2026-10-31）
  * ```
+ *
+ * issue #657：`## [Unreleased] ### Fixed` 再新增一对（折叠账本两处「说假话」，issue 引用集合 #657）
+ * ⇒ 面没挪，仍是 `## [Unreleased]`，实测变成 **2 对**，地板 1 → 2（同一面内只升不降，这次是**升**）。
+ * 守卫自己的 diagnostic 原文（改常量**之前**跑的）：
+ *
+ * ```
+ * # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 2 条 / 英文 2 条 / 配对 2 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 1（校准面 \#\# [Unreleased]）
+ * ```
  */
-const CHANGELOG_PAIR_FLOOR = 1;
+const CHANGELOG_PAIR_FLOOR = 2;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

@@ -437,9 +437,6 @@ export function createFoldLlmStrategy({
             settings.anchors,
             settings.onLayer,
           );
-        // #470：`source` 说清「交给模型的那份是 LLM 
-        // 摘要还是机械降级」；降级时 `text` 就是
-        // 那份机械文本（上面已经算过，不重负）；LLM 成功时不重造摘要，由引擎投影实际喂出去那份。
         // ③ 的续写基底：记下这次真进了上下文的那份（下一轮折叠的「上一份」）。
         lastFoldSummaryText = compactedSummary;
         foldSummary = {
@@ -447,7 +444,12 @@ export function createFoldLlmStrategy({
           // issue #566：本折那份 = 机械替代物 ⇒ 自报 mechanical。
           increment: mechanicalSummaryText,
           incrementOrigin: "mechanical",
-          ...(statisticalFallbackText === undefined ? {} : { text: statisticalFallbackText }),
+          // #470：`source` 说清「交给模型的那份是 LLM 摘要还是机械降级」；降级时 `text` 是那份机械文本。
+          // issue #657（缺陷二）：**成功分支也交 `text`** = 已存进 `lastFoldSummaryText` 的累计摘要（不重算）。
+          // 改前它不给这个键 ⇒ 引擎落回 `fedSummaryText`（折叠后那条消息**全文** = 摘要 + 原任务正文）
+          // ⇒ 账上 54–78% 是模型还在 head 里看着的任务原文，`truncated` 从第 2 折起恒真。
+          // 降级分支行为等价：那一行重写成三元式，仍交 `statisticalFallbackText`
+          text: summary === undefined ? statisticalFallbackText : compactedSummary,
           ...(degradeReason === undefined ? {} : { degradeReason }),
           ...(degradeKind === undefined ? {} : { degradeKind }),
           ...(prior.truncated ? { priorSummaryTruncated: true, priorSummaryBytes: prior.bytes } : {}),

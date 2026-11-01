@@ -3,6 +3,55 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Fixed
+
+- **The fold ledger stops crediting work to a strategy that never folded (issue #657, bug fix — this
+  restores the promise issue #464 A already made, it adds no capability).** The fold entry has two
+  possible performers: the strategy the host configured, and the engine's own budget fallback
+  (`sliding-window`), which folds only the oldest rounds still needed to fit the budget. The four
+  write points all read "which strategy did the entry pick", while the fallback instance was created
+  inline and never written back — so in the cell where the configured strategy folds **0** rounds and
+  the fallback does the work (the common case: with a tight budget `keepRounds` is clamped to 2 and a
+  round can swallow 20 KB, so `selectFoldedRounds` gets `target = 0`), three ledgers reported the
+  configured name: `compactionStats[].strategyName`, `record.foldedFacts.strategy` and
+  `record.foldedSummary.strategy`. They now report **the layer that really folded**: the configured
+  name when it folded ≥ 1 round (even if the fallback folded more), the fallback instance name
+  (`"sliding-window"`) when it folded 0 rounds and the fallback did the work, and **no key at all**
+  when nobody folded. **Hosts that built a dashboard on the wrong value will see it change** — that
+  value was never the truth; the cross-lock now in the tests is what should have caught it (the same
+  stat already carried `layers`, where the budget-phase layer with `triggered > 0` said the truth all
+  along). No new key: `foldedBy` was rejected because `layers` already carries exactly that.
+- **On the `fold-llm` success path `record.foldedFacts.text` no longer contains the task body (issue
+  #657).** The strategy only handed `text` back on the degradation path, so the engine fell back to
+  `fedSummaryText` — the **whole** text of the message the fold produced, i.e. the summary plus the
+  original task body that `prependSummary` leaves behind in the head. Measured: the summary was only
+  22% of a 2,034-byte ledger row on the first fold and 44–48% from the second on, `truncated` was
+  permanently true from fold 2 (`FOLDED_FACTS_MAX_BYTES = 2048` keeps the prefix), and `bytesBefore`
+  only grew. The success branch now hands back the cumulative summary it already holds
+  (`compactedSummary` — not recomputed, not a new summary), so the host-visible body is **shorter**;
+  `increment` is byte-for-byte unchanged, and the `foldedSummary` fact row (which by contract records
+  what was actually fed to the model, task body included) is untouched. `bytes` is a body size, not
+  a saving: it counts the stand-in body itself, never how much context the fold released.
+- **折叠账本不再把功劳记给「一轮都没折」的策略（issue #657，修 bug——回到 issue #464 A 已经写下的
+  承诺，不是新增能力）。** 折叠入口有两个可能的执行者：宿主配置的策略，与引擎自己的预算兜底
+  （`sliding-window`，只折「折到够用」所需的最老几轮）。四个写点读的都是「入口选了谁」，而兜底实例
+  是就地新建、从不回写 ⇒ 在「配置策略折 **0** 轮、活是兜底干的」那一格（这是常态不是角落：紧预算下
+  `keepRounds` 被收到 2，而一轮能吞 20 KB，于是 `selectFoldedRounds` 拿到 `target = 0`），三处账一起
+  报了配置名：`compactionStats[].strategyName`、`record.foldedFacts.strategy` 与
+  `record.foldedSummary.strategy`。现在它们报**真正折了的那一层**：配置策略折了 ≥1 轮 ⇒ 写配置名
+  （兜底随后又折了也一样）；配置策略折 0 轮、兜底干的活 ⇒ 写兜底实例名（`"sliding-window"`）；
+  谁都没折 ⇒ **整个键不出现**。**按错误值建了看板的宿主会看到值变化**——那个值本来就不是事实；
+  本片新增的交叉锁正是当初该抓住它的东西（同一条 stat 上早就带着 `layers`，其中 `triggered > 0`
+  的 budget 相层一直说的是真话）。不新增键：`foldedBy` 被否掉，因为 `layers` 已经把这件事说全了。
+- **`fold-llm` 成功路径上 `record.foldedFacts.text` 不再含任务原文（issue #657）。** 策略只在降级
+  分支交出 `text`，于是引擎落回 `fedSummaryText`——折叠产出那条消息的**全文**，即摘要 **+**
+  `prependSummary` 留在 head 里的原任务正文。实测：摘要只占第 1 折 2,034 字节账目的 **22%**，第 2 折
+  起只剩 44–48%，`truncated` 从第 2 折起恒真（`FOLDED_FACTS_MAX_BYTES = 2048` 保前缀），
+  `bytesBefore` 单调涨。成功分支现在交出它**手里已有的那份累计摘要**（`compactedSummary`——不重算、
+  不是新摘要），所以**宿主可见的正文变短了**；`increment` 逐字不变，`foldedSummary` 事实行（按契约
+  记的是「实际喂给模型的那份」，含任务原文是**真话**）一个字都没动。`bytes` 是正文尺寸、不是省下的
+  量：它计的是替代物正文自身的字节数，从来不是这一折释放了多少上下文。
+
 ## [0.29.0] - 2026-10-31
 
 ### Added

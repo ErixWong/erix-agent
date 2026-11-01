@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 上限**，不是实测抄件：`expect.tests` 必须逐字相等、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3306,
+    "tests": 3315,
     "fail": 0,
     "maxSkipped": 14
   },
@@ -133,7 +133,89 @@
       "cancelled": 0,
       "why": "合并树现测重登：merge origin/main `d6b3f09`（波12 收尾，登记表那一格已被它改成 3287）进本 PR 之后实测。= 主干 3287 + 本 PR 新增 7 条（test/examples/erix-run-async.test.js 的 #654 七条，净增 +7/-0）。本 PR 自己在 `8f52738` 那棵树上登记的是 3284（= 当时的 main 3277 + 7），与主干的 3287 同格双改 ⇒ merge-tree 判 CONFLICT，按本文件「合并后重跑现测重登」那条处置，不抄任何一边。skipped 仍是那 12 条真上游与真 relay 门禁，未新增 skip。"
     },
-    {"env": "local", "node": "v22.23.2", "commit": "111537b", "tests": 3297, "pass": 3285, "fail": 0, "skipped": 12, "todo": 0, "cancelled": 0, "why": "合并树现测重登：merge #652（fbb57bc）进主干 cbb695c 之后实测 = 主干 3294 + 本票新增 3 条（test/tools-delegation-capacity-652.test.js：半写窗口注入用例 / 双竞争者抢最后一格 / 崩溃残留临时文件），净增 +3/-0。交付者按并行派单红线未改本格（其报告把 TESTS_DRIFT +3 记成预期红），期望值按「派生数只在最终树测」由主 agent 在此重跑现测填写。skipped 仍是那 12 条真上游与真 relay 门禁，未新增 skip。"},
-    {"env": "local", "node": "v22.23.2", "commit": "78fb44f", "tests": 3306, "pass": 3294, "fail": 0, "skipped": 12, "todo": 0, "cancelled": 0, "why": "合并树现测重登：波13 两支续跑交付合入 #652 之后（1315975）的实测 = 3297 + 7（test/examples/erix-run-resume.test.js，#207 R2 七条离线用例）+ 2（test/static-guards.test.js 的 docs/maintenance 拼写分类两例，#644 ③），净增 +9/-0。两位交付者都按并行派单红线未改本格，期望值按「派生数只在最终树测」在此重跑填写。skipped 仍是那 12 条真上游与真 relay 门禁，未新增 skip。"}
+    {
+      "env": "local",
+      "node": "22.23.2",
+      "commit": "881910b087f0c965ef5690cfde0cefef78134935",
+      "tests": 3285,
+      "pass": 3273,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests +8 是有意的增删（issue #657）：test/compaction-strategy-fallback.test.js 从 4 格涨到 8 格（+4：缺失的那一格、真值表前两行、第 4 行「无键」、strategyName ↔ layers 交叉锁），新增 test/compact/fold-facts-text-657.test.js（+4：成功路径的 text 不含任务原文 / increment 逐字不变 / 降级路径反向锁 / compactionStats.foldSummary.text 仍缺席）。skip 仍是 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），上限 14 不动。"
+    },
+    {
+      "env": "local",
+      "node": "22.23.2",
+      "commit": "d6c43be208064d77167b6b047f3f55efd4e588dd",
+      "tests": 3286,
+      "pass": 3274,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "观察树 = d6c43be208064d77167b6b047f3f55efd4e588dd（含本片测试改动）；tests +1 是有意的增删（issue #657 落地后的覆盖缺口）：test/compaction-strategy-fallback.test.js 从 8 格涨到 9 格（+1：「真值表第一行的宿主对象半边」——宿主自带 name: \"host-strategy\" 的策略对象真的折了 ≥1 轮 ⇒ strategyName 与 foldedFacts.strategy 都写它自己的名字；同一格顺带钉住「策略被问了但一轮没折 ⇒ 无键」，那是反向证的锚点）。其余文件的格数不动；skip 仍是 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），上限 14 不动。"
+    },
+    {
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "c4446d3ccee2fb50c1c6764991ab6f0c41d3f580",
+      "tests": 3303,
+      "pass": 3291,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "合并 `origin/main` `cbb695c` 之后两边用例增删叠加后的实测值（本片 #657 的 +8/+1 与上游 21 个提交的 +2/+1/+7/+1/+7 叠加；merge-tree 判 CONFLICT，按登记表「合并后重跑现测重登」处置，不抄任何一边）。numbers 逐字来自 `npm test` 的 TAP 汇总行（日志 /tmp/merge657-test.log 第 21024 行起），经 scripts/suite-summary-reconcile.mjs 的 parseSummaries/pickSummary 直接取出，非手抄。skipped 仍是 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），maxSkipped 上限 14 不动。"
+    },
+    {
+      "env": "ci",
+      "node": "22.23.4",
+      "commit": "e5ae435a8c3a3265329f5b308b389bd5a0e89024",
+      "tests": 3303,
+      "pass": 3289,
+      "fail": 0,
+      "skipped": 14,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "CI 干净检出（GitHub Actions，node 22 = 声明的 engines 下限）跑在 #657 分支树 e5ae435 上。tests 3303 与本地逐字同值（用例增删与环境无关）。skipped = 14 = expect.maxSkipped 上限：本地实测 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE 闸门关）+ CI 上多跳的 2 条 pi 装载器用例，SKIP 原因逐字是「找不到已安装的 @earendil-works/pi-coding-agent（设 PI_CODING_AGENT_ROOT 指向安装目录）」，两条分别是「pi 装载器能加载 erix-run.ts 并注册 erix_run（离线，不触网）」与「#237：execute() 每条返回路径的 details 都可 JSON 序列化（真装载器 + 真 execute）」——开发机装了 pi 所以不跳，CI 没装。差集是按 SKIP 行逐条比出来的，不是推算。run = 41316498150 / job = 124877564506，该 run 的 `TEST-SUMMARY-VERDICT ok`。"
+    },
+    {
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "111537b",
+      "tests": 3297,
+      "pass": 3285,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "合并树现测重登：merge #652（fbb57bc）进主干 cbb695c 之后实测 = 主干 3294 + 本票新增 3 条（test/tools-delegation-capacity-652.test.js：半写窗口注入用例 / 双竞争者抢最后一格 / 崩溃残留临时文件），净增 +3/-0。交付者按并行派单红线未改本格（其报告把 TESTS_DRIFT +3 记成预期红），期望值按「派生数只在最终树测」由主 agent 在此重跑现测填写。skipped 仍是那 12 条真上游与真 relay 门禁，未新增 skip。"
+    },
+    {
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "78fb44f",
+      "tests": 3306,
+      "pass": 3294,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "合并树现测重登：波13 两支续跑交付合入 #652 之后（1315975）的实测 = 3297 + 7（test/examples/erix-run-resume.test.js，#207 R2 七条离线用例）+ 2（test/static-guards.test.js 的 docs/maintenance 拼写分类两例，#644 ③），净增 +9/-0。两位交付者都按并行派单红线未改本格，期望值按「派生数只在最终树测」在此重跑填写。skipped 仍是那 12 条真上游与真 relay 门禁，未新增 skip。"
+    },
+    {
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "e0e5e6930916a82ae4de3d85d4dcfd5c4c4476d1",
+      "tests": 3315,
+      "pass": 3303,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "合并 `origin/main` `34caaab` 后的现测重登：合并提交 e0e5e69 的树上跑 `npm test`（日志 /tmp/merge657b-test.log 第 21104 行起），六个计数逐字取自 TAP 汇总行，经 `npm run check:test-summary -- --log /tmp/merge657b-test.log` 复核为 `TEST-SUMMARY-VERDICT ok`。= 上游 34caaab 的 3306 + 本片 #657 的 +9（compaction-strategy-fallback 4→9 的 +5 与 fold-facts-text-657 的 +4），与上一次合并 cbb695c 3294 + 9 = 3303 是同一条账。expect.tests 不抄任何一边（上游 3306 / 本片 3303 同格双改 ⇒ merge-tree 判 CONFLICT），按本文件「合并后重跑现测重登」处置。skipped 仍是那 12 条真上游与真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），maxSkipped 上限 14 不动。"
+    }
   ]
 }
