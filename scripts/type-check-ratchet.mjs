@@ -34,8 +34,8 @@
 //     **必须在装了 devDependencies 的环境里跑**（`tsc` 取不到时下面直接给指路报错，不堆栈）。
 //
 // 用法：
-//   npm run check:types                        # 默认：包根入口 src/index.js，非 strict 基线 108
-//   npm run check:types -- --with-tools        # 连 erix-agent/tools 入口一起卡，非 strict 基线 144
+//   npm run check:types                        # 默认：包根入口 src/index.js，非 strict 基线 103
+//   npm run check:types -- --with-tools        # 连 erix-agent/tools 入口一起卡，非 strict 基线 138
 //   npm run check:types:strict                 # strict 棘轮（issue #417）：同一张依赖图加 `--strict`，基线 `BASELINE_STRICT_ROOT`
 //   npm run check:types:strict -- --with-tools # strict 并集一档，基线 `BASELINE_STRICT_WITH_TOOLS`
 //   node scripts/type-check-ratchet.mjs --verbose                   # 额外打印每文件、每错误码分布
@@ -212,7 +212,14 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 //   搬进首行带 `// @ts-check` 的新模块 `src/loop/judge-runner.js` 之后，它第一次进入 build-types 的检查面
 //   （tsc exit 2）⇒ 补一行 `/** @type {Error & {code?: string}} */` 修掉（零行为变化）。
 //   带错文件数仍是 **27 个**（`src/loop/judge-runner.js` 自身 0 个错），可及 78 / 宿主不可及 29 = 107。
-const BASELINE_ROOT = 107;
+// 下调记录：**107 → 103**（issue #661 收尾，2026-11-01）——减的 4 个**全部**在 `src/compact/fold-llm.js`
+//   （5 → 1）：#661 删掉「摘要器失败 ⇒ 返回统计摘要替代物」那条路径之后，那四条指向旧失败形状
+//   `{ degradeKind, degradeReason, … }` 联合类型的 TS2339（`.summary` / `.degradeReason` / `.degradeKind` /
+//   `.budgetExhausted`）随写点一起消失；剩下的 1 个是该文件第 290 行的 TS2741（默认 summarizer 缺席），
+//   与本刀无关。带错文件数仍是 **27 个**（`fold-llm.js` 没退出错误集合），可及 74 / 宿主不可及 29 = 103
+//   （`src/compact/fold-llm.js` 在公共半边：`src/index.js` 直接 `export … from` 它）。两档同笔下调，
+//   并集 142 → 138 是**同一次测量**里的同一个 −4。
+const BASELINE_ROOT = 103;
 
 // `--with-tools` 的基线：把第二个公共入口 `src/tools/index.js` 也喂给 tsc 后的并集。
 // 复现命令（逐字）：
@@ -225,12 +232,15 @@ const BASELINE_ROOT = 107;
 //   与当时的常量 143、与实测的 `src/tools/file-tools.js` 19 个都不符，本笔一并改正）、
 //   146 个 = 110 + 20 + 16（2026-10-31 上一笔）、152 个 / 30 个文件 = 116 + 20 + 16（2026-10-23 复测）；
 //   2026-10-22 那轮的 153 个 = 117 + 20 + 16、再上一轮的 156 个 = 117 + 23 + 16、2026-10-21 那轮的 160 个 = 117 + 27 + 16、2026-10-15 那轮的 162 个 = 119 + 27 + 16、2026-10-13 在同一棵 `39e96f1` 上复测的 164 个 = 121 + 27 + 16 都是**历史值**（与旧常量的差额逐个落在 `src/store/notes.js`、`src/display/projection.js`、`src/tools/file-tools.js` 与 `src/messages/openai-normalization.js`，同上面那些下调记录；
-//   `loader.js` 16 这个计数自 #214 起一字未动，本次也逐个复核过）。#214 时代入库的是 **261**，
+//   `loader.js` 16 这个计数自 #214 起一字未动，本次也逐个复核过）。
+//   2026-11-01（#661 收尾）两档同笔各降 4：并集 **142 → 138**，与包根档同一个 −4（全在
+//   `src/compact/fold-llm.js` 5 → 1）；`src/tools/file-tools.js` 仍 19、`src/skills/loader.js` 仍 16，
+//   两个只有 `./tools` 才拉进来的文件一个错都没变。#214 时代入库的是 **261**，
 //   而它**从来没跟着 #177 刀 1 复测过**：同一对 tsc/@types 在改前树 `8f83375` 实测这一档是 **260**，
 //   于是 261 → 185 的 76 个 = #249 的 75 个 + #177 欠下的那 1 个（教训：下调基线要**两档一起复测**）。为什么默认不带它：#214 正文给的口径就是 `src/index.js`，
 //   默认值必须与规格逐字一致；但它**是**真实盲区，所以这里留一条可随时收紧的通道（收紧=把默认入口加上并
 //   把基线换成当前实测值，属 #214 之后的收紧动作，不要拿它当「反正卡不住」的理由）。
-const BASELINE_WITH_TOOLS = 142;
+const BASELINE_WITH_TOOLS = 138;
 
 // ── strict 档基线（issue #417：把 #416 的「只观测」升级成棘轮）──────────────────────
 // 这两个常量是 strict 那一档的**唯一真值**。同一条 tsc 命令（入口 / target / module / `--skipLibCheck` 与非
