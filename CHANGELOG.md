@@ -30,7 +30,8 @@
   only grew. The success branch now hands back the cumulative summary it already holds
   (`compactedSummary` — not recomputed, not a new summary), so the host-visible body is **shorter**;
   `increment` is byte-for-byte unchanged, and the `foldedSummary` fact row (which by contract records
-  what was actually fed to the model, task body included) is untouched.
+  what was actually fed to the model, task body included) is untouched. `bytes` is a body size, not
+  a saving: it counts the stand-in body itself, never how much context the fold released.
 - **折叠账本不再把功劳记给「一轮都没折」的策略（issue #657，修 bug——回到 issue #464 A 已经写下的
   承诺，不是新增能力）。** 折叠入口有两个可能的执行者：宿主配置的策略，与引擎自己的预算兜底
   （`sliding-window`，只折「折到够用」所需的最老几轮）。四个写点读的都是「入口选了谁」，而兜底实例
@@ -48,7 +49,8 @@
   起只剩 44–48%，`truncated` 从第 2 折起恒真（`FOLDED_FACTS_MAX_BYTES = 2048` 保前缀），
   `bytesBefore` 单调涨。成功分支现在交出它**手里已有的那份累计摘要**（`compactedSummary`——不重算、
   不是新摘要），所以**宿主可见的正文变短了**；`increment` 逐字不变，`foldedSummary` 事实行（按契约
-  记的是「实际喂给模型的那份」，含任务原文是**真话**）一个字都没动。
+  记的是「实际喂给模型的那份」，含任务原文是**真话**）一个字都没动。`bytes` 是正文尺寸、不是省下的
+  量：它计的是替代物正文自身的字节数，从来不是这一折释放了多少上下文。
 
 ## [0.29.0] - 2026-10-31
 
