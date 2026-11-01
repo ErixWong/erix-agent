@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 上限**，不是实测抄件：`expect.tests` 必须逐字相等、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3285,
+    "tests": 3286,
     "fail": 0,
     "maxSkipped": 14
   },
@@ -72,6 +72,18 @@
       "todo": 0,
       "cancelled": 0,
       "why": "tests +8 是有意的增删（issue #657）：test/compaction-strategy-fallback.test.js 从 4 格涨到 8 格（+4：缺失的那一格、真值表前两行、第 4 行「无键」、strategyName ↔ layers 交叉锁），新增 test/compact/fold-facts-text-657.test.js（+4：成功路径的 text 不含任务原文 / increment 逐字不变 / 降级路径反向锁 / compactionStats.foldSummary.text 仍缺席）。skip 仍是 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），上限 14 不动。"
+    },
+    {
+      "env": "local",
+      "node": "22.23.2",
+      "commit": "919a7b9（#657 收尾提交）之上，含本片尚未提交的测试改动",
+      "tests": 3286,
+      "pass": 3274,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests +1 是有意的增删（issue #657 落地后的覆盖缺口）：test/compaction-strategy-fallback.test.js 从 8 格涨到 9 格（+1：「真值表第一行的宿主对象半边」——宿主自带 name: \"host-strategy\" 的策略对象真的折了 ≥1 轮 ⇒ strategyName 与 foldedFacts.strategy 都写它自己的名字；同一格顺带钉住「策略被问了但一轮没折 ⇒ 无键」，那是反向证的锚点）。其余文件的格数不动；skip 仍是 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），上限 14 不动。"
     }
   ]
 }

@@ -13,6 +13,8 @@ import assert from "node:assert/strict";
 import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { groupIntoRounds } from "../src/messages/rounds.js";
+import { estimateMessageTokens } from "../src/tokens.js";
 import {
   COMPACTION_PIPELINE,
   getCompactionLayerForStrategy,
@@ -262,6 +264,118 @@ async function runFoldLlmChain({
   };
 }
 
+/**
+ * 宿主**自带的**折叠策略对象（#657 真值表第一行的「宿主对象」半边）。
+ *
+ * 与内置策略的关键区别是**它不在 `COMPACTION_PIPELINE` 里**：`name` 是宿主自己起的
+ * （`"host-strategy"`），`getCompactionLayerForStrategy` 的映射表认不出它 ⇒ 这一折在 `layers` 上
+ * 不留任何痕迹（`observeCompactionLayer` 只在选中层存在时被调）。于是「它到底干没干活」只能靠
+ * `foldedRounds` / `compacted` 这两个字段自证——这正是交叉锁要分两支的原因。
+ *
+ * 它**真的干活**：`compact` 折走最老的一轮（`foldedRounds: 1`），返回形状照
+ * `src/compact/sliding-window.js`（`messages` / `compacted` / `foldedRounds` / `foldedPayload` /
+ * `foldedRoundRange` / `tokensBefore` / `tokensAfter`），所以它走的确实是引擎的**策略**那条主路
+ * （而不是只被调一下就原样返回）。
+ */
+function createHostStrategy() {
+  const calls = { shouldCompact: 0, compact: 0, foldedRounds: 0 };
+  return {
+    name: "host-strategy",
+    calls,
+    async shouldCompact() {
+      calls.shouldCompact += 1;
+      return true;
+    },
+    async compact(messages, options = {}) {
+      calls.compact += 1;
+      const tokensBefore = estimateMessageTokens(messages);
+      // `roundOffset` 是引擎给的水位线（第二次折叠起非零），口径与 sliding-window 的
+      // `roundRangeForIndexes` 一致：区间号是**会话里**的轮号，不是本次可折列表的下标。
+      const offset = Number.isSafeInteger(options.roundOffset) ? options.roundOffset : 0;
+      const { head, rounds } = groupIntoRounds(messages);
+      if (rounds.length === 0) {
+        // 没有可折的轮次 ⇒ 如实报 0（本夹具的第一发就是这一种：策略被问了、但还没有轮次可折）。
+        return {
+          messages,
+          compacted: false,
+          foldedRounds: 0,
+          foldedPayload: [],
+          tokensBefore,
+          tokensAfter: tokensBefore,
+        };
+      }
+      const folded = rounds.slice(0, 1);
+      const retained = rounds.slice(1);
+      // 归档那一份与内存那一份分开（浅拷贝一层，同 sliding-window 的 `cloneFoldPayload` 口径）。
+      const foldedPayload = folded
+        .flatMap((round) => round.messages)
+        .map((message) => ({ ...message }));
+      calls.foldedRounds += folded.length;
+      const compactedMessages = [...head, ...retained.flatMap((round) => round.messages)];
+      return {
+        messages: compactedMessages,
+        compacted: true,
+        foldedRounds: folded.length,
+        foldedPayload,
+        foldedRoundRange: { from: offset + 1, to: offset + folded.length },
+        tokensBefore,
+        tokensAfter: estimateMessageTokens(compactedMessages),
+      };
+    },
+  };
+}
+
+/**
+ * 一条「宿主自带策略对象」的折叠链：事件面 + 账本面（夹具形状照 `runFoldLlmChain`）。
+ *
+ * 策略对象走 `capabilities.ports.strategy` —— 这是**唯一**的规位：配置面只装数据（那棵子树要能过
+ * JSON 往返），`config.folding.context.strategy` 里塞函数会被名称闸口当场拒（实测文案
+ * `config.folding.context.strategy.shouldCompact is not accepted`）。
+ */
+async function runHostStrategyChain({
+  runId,
+  budgetTokens = 1200,
+  toolTurns = 6,
+  toolBytes = 9000,
+  seedBytes = 200,
+}) {
+  const events = [];
+  const store = createMemoryTranscriptStore();
+  const provider = summaryProvider({ toolTurns, summaryBytes: 400 });
+  const hostStrategy = createHostStrategy();
+  const result = await runDirect({
+    provider,
+    seed: `start ${"y".repeat(seedBytes)}`,
+    executeTool: async ({ id }) => `out ${id} ${"z".repeat(toolBytes)}`,
+    config: {
+      run: { maxRounds: 12, completion: false, reflection: false },
+      // 宿主策略自己决定折几轮，`keepRounds` 对它没有约束 ⇒ 这里只给触发折叠所需的两个数。
+      folding: { context: { budgetTokens, foldAtRatio: 1 } },
+    },
+    capabilities: {
+      ports: { strategy: hostStrategy },
+      hooks: { onEvent: (event) => events.push(event) },
+    },
+    store,
+    runId,
+  });
+  const records = await store.load(runId);
+  return {
+    result,
+    provider,
+    // ⚠ 返回值上的这个键**故意**叫 `hostStrategy` 而不是 `strategy`：`scripts/flat-count-inventory.mjs`
+    // 数的是 `test/**` 里出现的属性名，`strategy` 是它认的兼容钉子键之一（口径是「属性写法的名字」，
+    // 分不清「选项写点」和「普通对象键」）⇒ 叫 `strategy` 会让 `test/compat-pin-inventory.md` 凭空
+    // 多一个与兼容性无关的写点。这里不是在绕开计数器，而是不给那张表添噪声。
+    hostStrategy,
+    compactions: events.filter((event) => event.type === "compaction"),
+    notices: events.filter((event) => event.type === EVENT_TYPE),
+    facts: records
+      .filter((record) => record?.[FOLDED_FACTS_RECORD_FIELD] !== undefined)
+      .map((record) => record[FOLDED_FACTS_RECORD_FIELD]),
+  };
+}
+
 test("#657 缺失的那一格：配置策略折 0 轮 + 预算兜底真折 ⇒ 三处账都写兜底实例名，且不发兜底诊断事件", async () => {
   // 这一格此前**零测试覆盖**（#464 A 的四格只覆盖「未配置策略」与「配了策略」两种入口状态，
   // 而「配了策略但它一轮都没折」是第三种：入口有策略、干活的却是兜底）。
@@ -354,6 +468,55 @@ test("#657 真值表前两行：配置策略真的折了 ⇒ 仍写配置名（�
   }
 });
 
+test("#657 真值表第一行的宿主对象半边：宿主自带策略真的折了 ⇒ 账上写它自己的名字", async () => {
+  // 为什么要有这一格（#657 落地的覆盖缺口）：真值表第 1 行原先只有**内置** `fold-llm` 证过，
+  // 而 #657 把两处夹具的期望值从 `"spy-strategy"` / `"port-strategy"` 改成「键不存在」（它们确实
+  // 一轮没折，改得对）之后，**没有任何一条用例证明「宿主自带策略对象真的折了 ⇒ 写它自己的名字」**
+  // ——「把断言改掉之后覆盖悄悄丢了」那一类。本格就是那一半。
+  const { compactions, notices, facts, provider, hostStrategy } = await runHostStrategyChain({
+    runId: "657-host-strategy",
+  });
+
+  // 前置①：干活的必须是**宿主对象自己**（不是内置策略、也不是兜底）。
+  assert.ok(hostStrategy.calls.compact >= 1, "前置：宿主的 compact 真被调");
+  assert.ok(hostStrategy.calls.foldedRounds >= 1, "前置：宿主对象真的折走了 ≥1 轮");
+  assert.equal(provider.summaryCalls(), 0, "前置：本格与内置 fold-llm 无关（摘要器零调用）");
+  assert.equal(notices.length, 0, "配了策略（哪怕是宿主对象）就不存在兜底，不得发诊断事件");
+  assert.ok(compactions.length >= 1, "前置：必须有 compaction 统计");
+
+  // ① 事件面：写的是**宿主自己的名字**，不是兜底实例名、也不是空键。
+  const folded = compactions
+    .map((event) => event.compaction)
+    .filter((stat) => stat.foldedRounds > 0);
+  assert.ok(folded.length >= 1, "前置：必须有「宿主对象真折了」的那一格");
+  for (const stat of folded) {
+    assert.equal(stat.strategyName, "host-strategy",
+      "宿主对象折了 ≥1 轮 ⇒ 写它自己的名字（真值表第 1 行；改前这里也对，但只被内置 fold-llm 证过）");
+    assert.equal(stat.compacted, true,
+      "前置：compacted 与 foldedRounds 同向——宿主对象没有 `layers` 可对，这两个字段是它唯一的自证");
+  }
+
+  // ② 账本面：轮记录 `foldedFacts.strategy` 与事件面同一个真值（这一处在改前是四个写点里的一个）。
+  assert.ok(facts.length >= 1, "前置：账本里必须有折叠轮记录");
+  for (const entry of facts) {
+    assert.equal(entry.strategy, "host-strategy",
+      "`record.foldedFacts.strategy` 也必须写宿主自己的名字（同一份 `actualFolderName`）");
+    assert.ok(entry.rounds >= 1, "前置：这条事实行确实记了折过的轮次");
+  }
+
+  // ③ 反向（本格咬人的锚点）：策略被问了、但还没有轮次可折的那一发必须**不写**这个键。
+  // 这一行就是反向证的对象：把 `actualFolderName` 的最后一支改回 `strategy.name`（= 改前「写入口
+  // 选中谁」的写法），这一发会拿到一个一次都没折过的入口名 ⇒ 本断言红。
+  const idle = compactions
+    .map((event) => event.compaction)
+    .filter((stat) => stat.foldedRounds === 0);
+  assert.ok(idle.length >= 1, "前置：必须有「策略被问了、但还没有轮次可折」的那一发");
+  for (const stat of idle) {
+    assert.equal(Object.hasOwn(stat, "strategyName"), false,
+      "宿主对象一轮没折 ⇒ 同样无键（真值表第 4 行不区分内置/宿主）");
+  }
+});
+
 test("#657 真值表第 4 行：谁都没折 ⇒ 不写 strategyName 这个键（不是写入口选中的名字）", async () => {
   // 现场：配置的 fold-llm 请求了折叠但一轮都没折（keepRounds 收紧到可折轮次为 0），而折完
   // 仍装得进预算 ⇒ 兜底也不动。改前这一格写的是 `"fold-llm"`——一个**一次都没折过**的策略名。
@@ -401,16 +564,33 @@ test("#657 交叉锁：`strategyName` 必须与同一条 stat 上 `layers` 里 b
         continue;
       }
       // 正向：写出来的名字必须指向一个**真的触发过**的 budget 相层。
+      //
+      // issue #657（宿主对象那一半）：这条口径只对**内置折叠策略名**成立。`getCompactionLayerForStrategy`
+      // 的表是从 `COMPACTION_PIPELINE[].strategyNames` 现推的，里面只有内置名；而宿主自带的策略对象
+      // （`capabilities.ports.strategy`，`name` 由宿主自己起）**在 `layers` 里没有对应层**——
+      // `observeCompactionLayer` 只在选中层存在时被调，引擎也不会替一个它不认识的策略造层。
+      // 所以分两支，而不是为了让用例绿就删掉这一块：
+      //   · 内置名 ⇒ 继续要求它点名的那一层 `triggered > 0`（原来的锁，一个字没松）；
+      //   · 非内置名 ⇒ 它只能是宿主自己的策略对象（`actualFolderName` 的来源只有四种：`undefined`、
+      //     内置实例名、兜底实例名 `"sliding-window"`、以及宿主对象的 `name`），改要求
+      //     `foldedRounds > 0` **且** `compacted === true`——没有 `layers` 可对时，这两个字段就是
+      //     它唯一能自证「真干了这一折活」的证据（宿主对象的那一格见下面第五格）。
       const namedLayer = layerIdForName(stat.strategyName);
-      assert.ok(namedLayer !== undefined,
-        `${where}：${JSON.stringify(stat.strategyName)} 不是内置折叠策略名，本锁无从对照（夹具变了就同步本用例）`);
+      if (namedLayer === undefined) {
+        assert.ok(stat.foldedRounds > 0,
+          `${where}：非内置名（宿主自带策略，layers 里没有它的层）却一轮都没折 ⇒ 账本在说假话`);
+        assert.equal(stat.compacted, true,
+          `${where}：非内置名却没 compacted ⇒ 「写了名字」与「真折了」对不上`);
+        continue;
+      }
       assert.ok(stat.layers[namedLayer].triggered > 0,
         `${where}：strategyName 点名的那一层一次都没触发 ⇒ 账本在说假话（#657 缺陷一）`);
       assert.ok(triggeredBudgetLayers.length > 0, `${where}：写了名字却没有任何 budget 相层触发过`);
     }
   };
 
-  // 四格覆盖真值表的四行：未配置（入口兜底）/ 配置折 0 + 兜底折 / 配置真折 / 两层都折。
+  // 五格覆盖真值表的四行 × 两种策略来源：未配置（入口兜底）/ 配置折 0 + 兜底折 / 配置真折 /
+  // 两层都折 / 宿主自带对象真折（它没有层可对，走的是非内置名那一支）。
   const unconfigured = await run({ runId: "657-lock-unconfigured" });
   check("未配置策略", unconfigured.compactions.map((event) => event.compaction));
   check("配置折 0 + 兜底折", (await runFoldLlmChain({
@@ -424,5 +604,9 @@ test("#657 交叉锁：`strategyName` 必须与同一条 stat 上 `layers` 里 b
   check("两层都折 / 谁都没折", (await runFoldLlmChain({
     runId: "657-lock-row-two", budgetTokens: 900, keepRounds: 1, foldAtRatio: 0.5,
     toolTurns: 6, toolBytes: 1200, seedBytes: 300, summaryBytes: 2000,
+  })).compactions.map((event) => event.compaction));
+  // 宿主自带策略对象：它折了 ≥1 轮、名字也是它自己的，但 `layers` 里**没有任何层**能对得上。
+  check("宿主自带策略真折", (await runHostStrategyChain({
+    runId: "657-lock-host-strategy",
   })).compactions.map((event) => event.compaction));
 });
