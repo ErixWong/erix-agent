@@ -252,6 +252,18 @@
       "todo": 0,
       "cancelled": 0,
       "why": "tests +8 是有意的增删（issue #658 / #659 合成一片）：test/examples/erix-run-async.test.js 新增 8 条 —— #659 第1格 4 条（档位是显式契约 / 三档走完就成功且每档重算 isIdle / 用尽三档就停 / 重试定时器与看门狗同一份 job 生命周期）、第2格 2 条（rearmIfUnstarted 单元级有界语义 / 扩展级 agent_end 与 session_start 两条补偿回路）、第3格 1 条（sent 的上界：pi 返回 void 不算已送达，只有 agent_start 是确认；同一条还钉住 README 与 jobs 注释里的字面口径）、第5格 1 条（getSessionId() 真抛异常 ⇒ no-owner 但盘上带根因）；另有两条是**改写不是新增**（#234 机制6 改成 #658 的按归属收口、#654 那条 reload 用例改成断言窗口内结算的失败事实），#207 R2④ 与「未终局恒在场」只是加断言。数字逐字来自本次 `npm test` 的 TAP 汇总行（/tmp/tap.log 第 21153 行起），经 `npm run check:test-summary -- --log /tmp/tap.log` 取出（同一份日志里 pass=3311 / skipped=12）。skipped 仍是那 12 条真上游与真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），未新增 skip，maxSkipped 上限 14 不动。"
+    },
+    {
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "804ea2c299f79787fdb95156ff6627a97bca5b61",
+      "tests": 3329,
+      "pass": 3317,
+      "fail": 0,
+      "skipped": 12,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "合并树现测重登：merge `origin/main` `631e92e`（#664 异步唤醒补偿回路一片，9 个提交）进本片之后的实测。= 上一格 3321（本片 #661 落地）+ 上游 #658/#659 新增 8 条用例（test/examples/erix-run-async.test.js，#659 第1格 4 / 第2格 2 / 第3格 1 / 第5格 1），与上游自己在 0cbd91d 登记的 3323 = 3315 + 8 是同一条账。六个计数逐字取自本树 `npm test` 的 TAP 汇总行（日志 /tmp/661-final2.log，第 1..3223 之后那 6 行 `# tests 3329` / `# pass 3317` / `# fail 0` / `# cancelled 0` / `# skipped 12` / `# todo 0`），非手抄。expect.tests 不抄任何一边（本片 3321 / 上游 3323 同格双改 ⇒ merge-tree 判 CONFLICT），按本文件「合并后重跑现测重登」处置。skipped 仍是那 12 条真上游与真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），未新增 skip，maxSkipped 上限 14 不动。"
     }
   ]
 }
