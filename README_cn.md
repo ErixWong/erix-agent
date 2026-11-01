@@ -671,8 +671,9 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 - **活文档——有门禁，必须「今天为真」。** `README*.md`、`AGENTS*.md`、中英契约（`docs/host-consumer-contract.md` /
   `docs/host-consumer-contract_cn.md`）、**全部** `docs/host-upgrade-guide*.md`（当前 32 份，按目录实扫），再加上
   工单 261021-03 B1 新纳面的中英架构（`docs/architecture.md` / `docs/architecture_cn.md`）、中英图表
-  （`docs/charts.md` / `docs/charts_cn.md`）、中英需求对照（`docs/requirements.md` / `docs/requirements_cn.md`）
-  与 `erix_run` 的 README（`examples/pi-extension/README.md`）。共 45 份（`REF_SCAN_DOCS_MINIMUM = 45`：13 份点名 + 按目录实扫到的 32 份升级指南）：文件改名、
+  （`docs/charts.md` / `docs/charts_cn.md`）、中英需求对照（`docs/requirements.md` / `docs/requirements_cn.md`）、
+  `erix_run` 的 README（`examples/pi-extension/README.md`）与维护账本中英（`docs/maintenance/symbol-anchor-ledger.md` /
+  `docs/maintenance/symbol-anchor-ledger_cn.md`——正文是**历史**账本，门禁钉它的正文而不是要求它写现状）。共 47 份（`REF_SCAN_DOCS_MINIMUM = 47`：15 份点名 + 按目录实扫到的 32 份升级指南）：文件改名、
   行号漂到另一个函数、符号在 `src/` 里已不存在，都会把 `npm run check:docs` 压红。
 - **快照档案——「首部写的那一日为真」。** `docs/v0.0-contracts*.md` / `docs/v0.1-contracts*.md` /
   `docs/v0.2-contracts*.md`、`docs/design/`、`docs/research/`、`docs/harness-comparison/`（共 28 份）。每份首部都有一行
