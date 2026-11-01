@@ -94,7 +94,7 @@ export const NOTIFY_RETRY_DELAYS_MS = Object.freeze([5_000, 10_000, 30_000]);
  *
  * | 取值 | 含义 |
  * |---|---|
- * | `sent` | 投递调用被宿主接受（不抛、也没被显式拒绝）。⚠ 诚实边界：pi 的 `sendMessage` 契约是 `void`，异步失败经 `runner.emitError` 上报、不回到调用方 ⇒ 本层能确认的**上界**就是「调用被接受」 |
+ * | `sent` | 投递调用被宿主接受（不抛、也没被显式拒绝）。⚠ **诚实边界（issue #659 第 3 格）**：pi 的 `sendMessage` / `sendUserMessage` 契约是 `void`，异步失败经 `runner.emitError` 上报、**不回到调用方** ⇒ `sent` 能确认的上界只是「宿主接受了这次调用」，**不是「已送达」**。真正的宿主确认只能来自**观察侧**：`agent_start` 是否真的来了（`erix-run-parent-wake.js` 的 `isPending()` / `rearmIfUnstarted()` 回路）。别把 `sent` 当「消息进了会话」消费 |
  * | `deduped` | 同一个 run 的完成已经投过，本次被去重注册表挡下（次数记在 `job.deduped`） |
  * | `failed` | 投递调用抛了异常，或句柄 / 宿主显式拒绝（原因在 `job.notifyError`） |
  * | `orphaned` | 派工会话的句柄查不到（会话已关闭 / 扩展实例已换）⇒ **不投给任何存活会话** |

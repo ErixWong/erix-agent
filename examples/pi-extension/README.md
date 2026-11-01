@@ -332,10 +332,15 @@ pi --extension ./examples/pi-extension/erix-run.ts
 `delivery` 还没被赋值，盘上永远是空值（等于没修）。现在一律**先投递、后落盘**。
 
 **成功判定（缺陷 3）**：只有 `delivery === "sent"` 才把去重位记成「已投递」；`false` / 抛异常 / 显式
-`failed` 都记 `failed`，并把去重条目删掉（让将来的重投还有机会——**有界重试是下一张单，本层只做判定**）。
-⚠ **诚实边界**：pi 的 `sendMessage` / `sendUserMessage` 契约是 `void`（失败经宿主 `runner.emitError`
-上报，不回到调用方），所以 `sent` 能确认的上界是「宿主接受了这次投递调用」，**不是**「消息真的进了会话」；
-能确认失败的只有三种：没有目标会话（`no-owner` / `orphaned`）、句柄显式拒绝、调用抛异常。
+`failed` 都记 `failed`，并把去重条目删掉，由 `notifyThenPersist` 排下一档**有界重试**（见上面
+「投失败后的有界重试」）。
+
+⚠ **诚实边界（issue #659 第 3 格）：`sent` 不是「已送达」。** pi 的 `sendMessage` / `sendUserMessage`
+契约是 `void`（失败经宿主 `runner.emitError` 上报，**不回到调用方**），所以 `sent` 能确认的上界只是
+「**宿主接受了这次调用**」，**不是**「消息真的进了会话」。真正的宿主确认只能来自**观察侧**：
+`agent_start` 是否真的来了（`erix-run-parent-wake.js` 的 `isPending()` / `rearmIfUnstarted()` 回路——
+`sent` 之后 `isPending()` 仍然是 true 就是「还没被确认」）。能确认失败的只有三种：没有目标会话
+（`no-owner` / `orphaned`）、句柄显式拒绝、调用抛异常。下游**不许**把 `sent` 当「已送达」消费。
 
 ### 5. `timeoutMs` 定时器归 run 级（不在 `execute()` 里）
 

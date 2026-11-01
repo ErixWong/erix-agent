@@ -543,6 +543,30 @@ test("#234 机制2：triggerTurn 不是 true 时一律透传（不建 reservatio
   assert.equal(calls.sendMessage.length, 2);
 });
 
+test("#659 第3格：`sent` 的上界是「宿主接受了这次调用」—— pi 返回 void 不算已送达，只有 agent_start 才是确认", () => {
+  const { pi, calls } = fakePi();
+  const wake = createParentWake(pi);
+  wake.bindSession(fakeCtx({ idle: true }));
+
+  // 投递口把消息交给了 pi（`sendMessage` / `sendUserMessage` 的契约都是 void，不抛 ≠ 送达）
+  assert.equal(wake.sendMessage({ customType: "erix-run-notify", content: "done" }, { triggerTurn: true }), true);
+  assert.equal(calls.sendMessage.length, 1);
+  assert.equal(calls.sendUserMessage.length, 1);
+  assert.equal(wake.isPending(), true,
+    "宿主接受了调用，但观察侧还没看到 agent_start ⇒ 这条唤醒仍然欠着（sent 不是已送达）");
+
+  // 观察侧确认：`agent_start` 真的来了，才算「进了会话」
+  wake.agentStarted();
+  assert.equal(wake.isPending(), false, "只有 agent_start 能结清欠账");
+
+  // 文档面同一条边界（#659 第 3 格要求在代码注释与 README 里写准确，不许写成「已送达」）
+  for (const relative of ["examples/pi-extension/erix-run-jobs.js", "examples/pi-extension/README.md"]) {
+    const text = readFileSync(path.join(repoRoot, relative), "utf8");
+    assert.match(text, /宿主接受了这次(投递)?调用/u, `${relative} 要写清 sent 的上界是「宿主接受了这次调用」`);
+    assert.match(text, /不是\*{0,2}「已送达」/u, `${relative} 必须显式否掉「已送达」这个读法`);
+  }
+});
+
 test("#234 机制2：WAKE_PENDING_MS 窗口 —— 窗口内不重复排 steer，超窗后重新排，agent_start 清位", () => {
   let now = 100_000;
   const { pi, calls } = fakePi();

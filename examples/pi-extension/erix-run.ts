@@ -515,9 +515,12 @@ function sessionIdOf(ctx: ExtensionContext | undefined): string | undefined {
  *   - `pi.sendMessage` / `pi.sendUserMessage` 抛异常 ⇒ `{delivery:"failed", error}`；
  *   - 句柄显式返回 `false` ⇒ `failed`；其余 ⇒ `sent`。
  *
- * ⚠ 诚实边界：pi 的 `sendMessage` 契约是 `void`（`dist/core/agent-session.js` 的 `runner.bindCore`
- * 里是 `.catch(err => runner.emitError(...))`，异步失败经 `emitError` 上报、**不回到调用方**），
- * 所以本层能确认的上界是「宿主接受了这次投递调用」，不是「消息真的进了会话」。
+ * ⚠ 诚实边界（issue #659 第 3 格）：pi 的 `sendMessage` / `sendUserMessage` 契约是 `void`
+ * （`dist/core/agent-session.js` 的 `runner.bindCore` 里是 `.catch(err => runner.emitError(...))`，
+ * 异步失败经 `emitError` 上报、**不回到调用方**），所以本层能确认的上界是「宿主接受了这次投递调用」，
+ * **不是「已送达」**。真正的宿主确认只能来自**观察侧**：`agent_start` 是否真的来了
+ * （`erix-run-parent-wake.js` 的 `isPending()` / `rearmIfUnstarted()` 回路——`sent` 之后 `isPending()`
+ * 仍然是 true 就是「还没被确认」）。`delivery:"sent"` 的下游不许当成「消息进了会话」消费。
  */
 function sendNotify(
   _job: object,
