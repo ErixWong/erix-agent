@@ -27,14 +27,28 @@
 
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { register } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { formatSkip, printableEndpoint, resolveRealUpstream, TMP_PREFIX } from "../e2e-real-gate.mjs";
+import {
+  formatSkip,
+  GAP_CODES,
+  printableEndpoint,
+  resolveRealUpstream,
+  TMP_PREFIX,
+} from "../e2e-real-gate.mjs";
 // 选项名闸（`RUN_TOOL_LOOP_OPTION_NAMES` 的唯一执行点）：见下面那条「始终跑、不联网」的前置格。
 import { assertRunToolLoopOptionNames } from "../../src/loop/option-normalization.js";
 import * as core from "./erix-run-core.js";
+import {
+  globalAsyncJobRegistry,
+  globalSessionHandleRegistry,
+  jobView,
+  statusFilePath,
+} from "./erix-run-jobs.js";
+import { PARENT_WAKE_TEXT } from "./erix-run-parent-wake.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -569,6 +583,241 @@ test("erix_run 真机：显式 finalGuard:true ⇒ verification 不再是 skippe
     assert.match(core.formatPayloadForModel(payload), /finalGuard calls=\d+/u);
     assert.match(progressLines.join("\n"), /finalGuard=on/u, "启动行要把余量与等待上限说出来");
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #654 / #665：真上游的**多会话**维 —— A 派工、B 后 `session_start` ⇒ 完成通知只能回 A。
+//
+// 为什么这一格必须走真上游：`test/examples/erix-run-async.test.js` 的 #654 那七条已经用假 pi 钉住了
+// 「按 owner 查句柄」，但注入的是假 runtime / 假 lib，**没有一条**在真 `erix_run` 链路上
+// （真扩展 factory × 2 + 真 `runToolLoop` + 真落盘）走过「两个会话、A 派工、B 后启动」这个形状。
+// 于是「通知投给最后一次 `session_start` 的会话」那类缺陷，在真上游回归面上是**零防护**：
+// 下次有人重构 `session_shutdown` 或投递路由，`npm test` 会全绿而缺陷长回来。
+//
+// 形状（三件事必须同时成立，否则这条用例证明不了任何事）：
+//   1. 同一个扩展工厂 `extension.default(pi)` 调**两次**，各带一个不同的 `sessionManager`
+//      （两个会话 A、B），各自跑过 `session_start` —— 这是 pi 在多会话宿主里对一个进程做的事；
+//   2. **A 先派工、B 后 `session_start`** ⇒ 「最后一次 `session_start`」是 B、owner 是 A，两者可区分；
+//   3. 一张极小的真 async 派工（读一个临时文件、答一行，`maxRounds` 压到 3）。
+// 断言：投递落点是 **A**（`notifyTargetSessionId === A.sessionId`）、`delivery === "sent"`、
+// B 一个通知都没收到、`status.json` 里 `delivery` / `notifyTargetSessionId` / `deliveryNote` **恒在场**。
+//
+// 闸门口径（与 `check:release:real` 同一套）：闸门**没开**一律 skip（`npm test` 必须离线可重复）；
+// 闸门**开着**而配置/凭据/端点不可用时**红**——发版清单不能把「没跑成」报成绿（PR #289 阻断 1 的镜像）。
+// ---------------------------------------------------------------------------
+
+/** pi 的三个裸包名 → 三行桩（只为让 `erix-run.ts` 能被 import；与离线 #654 格同一套装置）。 */
+const PI_MODULE_STUBS = {
+  "@earendil-works/pi-ai": "export const StringEnum = (values) => ({ type: 'string', enum: values });",
+  "@earendil-works/pi-coding-agent": "export const defineTool = (definition) => definition;",
+  "typebox": "const node = () => ({});\nexport const Type = new Proxy({}, { get: () => () => node() });",
+};
+
+/** 已加载的扩展模块（同一份模块被多次 factory 调用，正是 pi 在多会话宿主里的行为）。 */
+let extensionModule;
+
+/**
+ * 加载 `examples/pi-extension/erix-run.ts`（**同一份**模块）。
+ * `register` 的钩子必须在 `import()` 之前注册，且只在**本进程**生效（`node --test` 每个文件一个子进程）。
+ */
+async function loadExtensionModule() {
+  if (extensionModule !== undefined) return extensionModule;
+  const stubUrls = Object.fromEntries(Object.entries(PI_MODULE_STUBS)
+    .map(([specifier, source]) => [specifier, `data:text/javascript,${encodeURIComponent(source)}`]));
+  const hook = `const STUBS = ${JSON.stringify(stubUrls)};
+export async function resolve(specifier, context, next) {
+  if (Object.prototype.hasOwnProperty.call(STUBS, specifier)) return { url: STUBS[specifier], shortCircuit: true };
+  return next(specifier, context);
+}`;
+  register(`data:text/javascript,${encodeURIComponent(hook)}`, import.meta.url);
+  extensionModule = await import("./erix-run.ts");
+  return extensionModule;
+}
+
+/**
+ * 一个「会话」：假 pi + 假 ctx + 各自的收件箱；跑一次 factory + 一次 `session_start`
+ * （= pi 在多会话宿主里对每个会话做的事）。两个会话各有**自己的** `sessionManager`。
+ */
+function startSession(extension, { sessionId, idle = true }) {
+  const calls = { sendMessage: [], sendUserMessage: [] };
+  const handlers = new Map();
+  const pi = {
+    registerTool: () => {},
+    on: (name, handler) => { handlers.set(name, handler); },
+    sendMessage: (message, options) => calls.sendMessage.push({ message, options }),
+    sendUserMessage: (content, options) => calls.sendUserMessage.push({ content, options }),
+  };
+  extension.default(pi);
+  const ctx = {
+    isIdle: () => idle,
+    sessionManager: { getSessionId: () => sessionId },
+  };
+  handlers.get("session_start")?.({}, ctx);
+  return {
+    calls,
+    handlers,
+    ctx,
+    pi,
+    sessionId,
+    received: () => calls.sendMessage.length + calls.sendUserMessage.length,
+  };
+}
+
+/** 轮询直到谓词为真（真 run 在后台跑，结算时刻由模型决定）。 */
+function waitUntil(predicate, { label = "条件", timeoutMs = 5_000, intervalMs = 50 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    const tick = () => {
+      let ok = false;
+      try {
+        ok = predicate() === true;
+      } catch (error) {
+        reject(error);
+        return;
+      }
+      if (ok) {
+        resolve();
+        return;
+      }
+      if (Date.now() > deadline) {
+        reject(new Error(`${label} 超时（${timeoutMs}ms）`));
+        return;
+      }
+      setTimeout(tick, intervalMs);
+    };
+    tick();
+  });
+}
+
+const MULTI_SESSION_ANSWER = "665-multisession 标记行：答案就是 261102\n";
+const MULTI_SESSION_TASK = [
+  "工作目录里有 answer.txt。",
+  "1) 用 readFile 读它的全文（一次工具调用就够）；",
+  "2) 然后用一句话回答：文件里那行文字是什么。",
+  "首行写「任务已完成」。",
+].join("\n");
+
+test("erix_run 真机 e2e（#654 多会话）：A 派工的异步 run 结算后只投给 A，后启动的 B 一条通知都收不到", {
+  timeout: 10 * 60 * 1000,
+}, async (t) => {
+  const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
+  if (!gate.ok) {
+    if (gate.code === GAP_CODES.GATE_MISSING) {
+      t.skip(`真上游闸门关着（离线可重复）：${formatSkip(gate)}`);
+      return;
+    }
+    // 闸门开着而配置/凭据/端点不可用 ⇒ **必须红**：预发布清单不能把「没跑成」报成绿。
+    assert.fail(`ERIX_E2E_REAL=1 但真上游不可用 ⇒ 这条用例必须红（不许 skip）：${formatSkip(gate)}`);
+  }
+
+  const dir = mkdtempSync(path.join(tmpdir(), TMP_PREFIX.erixRun));
+  const sessionDir = path.join(dir, "sessions");
+  writeFileSync(path.join(dir, "answer.txt"), MULTI_SESSION_ANSWER, "utf8");
+  const sessionA = "665-multi-A";
+  const sessionB = "665-multi-B";
+  const handles = globalSessionHandleRegistry();
+  const before = {
+    lib: process.env[core.LIB_ENV],
+    config: process.env[core.CONFIG_PATH_ENV],
+  };
+  try {
+    // 扩展在**第一次** `session_start` 里建进程级 runtime，`env` 那一刻被捕获 ⇒ 这两项必须先设好。
+    process.env[core.LIB_ENV] = repoRoot;
+    process.env[core.CONFIG_PATH_ENV] = gate.configPath;
+
+    const extension = await loadExtensionModule();
+    const a = startSession(extension, { sessionId: sessionA });
+
+    // ① A 先派工（async：立即回句柄，内层 run 在后台跑）
+    const dispatched = await extension.erixRunTool.execute(
+      "tc-665-multi",
+      {
+        task: MULTI_SESSION_TASK,
+        cwd: dir,
+        sessionDir,
+        async: true,
+        maxRounds: 3,
+        timeoutMs: 3 * 60 * 1000,
+      },
+      undefined,
+      undefined,
+      a.ctx,
+    );
+    const runId = dispatched?.details?.handle?.runId;
+    assert.equal(typeof runId, "string",
+      `派工必须回句柄，实测 details=${JSON.stringify(dispatched?.details)}`);
+
+    // ② B **后** `session_start`：此刻「最后一次 session_start」是 B，而 owner 是 A。
+    const b = startSession(extension, { sessionId: sessionB });
+    assert.notEqual(b.sessionId, a.sessionId,
+      "两个会话的 id 必须可区分，否则「投给最后一次 session_start」与「投给 owner」这两种实现分不出来");
+
+    // ③ 等真 run 结算（真模型 + 真落盘）
+    const registry = globalAsyncJobRegistry();
+    await waitUntil(() => {
+      const job = registry.get(runId);
+      return job !== undefined && !["queued", "running"].includes(job.status);
+    }, { label: `run ${runId} 结算`, timeoutMs: 3 * 60 * 1000, intervalMs: 100 });
+
+    const job = registry.get(runId);
+    const view = jobView(job);
+    console.log(`[654] runId=${runId} status=${view.status} termination=${JSON.stringify(view.termination)} `
+      + `rounds=${view.rounds} ↑${view.usage?.input_tokens}/↓${view.usage?.output_tokens} `
+      + `delivery=${view.delivery} notifyTargetSessionId=${JSON.stringify(view.notifyTargetSessionId)} `
+      + `ownerSessionId=${JSON.stringify(view.ownerSessionId)} deliveryNote=${JSON.stringify(view.deliveryNote)}`);
+    console.log(`[654] A 收件箱：sendMessage=${a.calls.sendMessage.length} `
+      + `sendUserMessage=${a.calls.sendUserMessage.length}；B 收件箱：sendMessage=${b.calls.sendMessage.length} `
+      + `sendUserMessage=${b.calls.sendUserMessage.length}`);
+
+    // —— 先证明「这真是一次真上游的 run」（否则下面的投递断言在「run 没跑」的世界里也可能绿）——
+    assert.equal(job.payload?.termination?.reason, "end_turn",
+      `内层 run 必须自然收尾（maxRounds=3 的任务只需两轮），实测 ${JSON.stringify(job.payload?.termination)}`);
+    assert.ok(job.payload?.usage?.input_tokens > 0 && job.payload?.usage?.output_tokens > 0,
+      `真上游必须真的打了一次模型，实测 usage=${JSON.stringify(job.payload?.usage)}`);
+
+    // —— 投递落点：A（派工的那个会话），不是 B（最后 session_start 的那个）——
+    assert.equal(a.calls.sendMessage.length, 1,
+      `A（派工会话）必须收到 1 条完成通知，实测 ${a.calls.sendMessage.length} 条`);
+    assert.equal(a.calls.sendUserMessage.length, 1, "A 应该被排一条 steer 唤醒（idle 分支）");
+    assert.match(String(a.calls.sendMessage[0]?.message?.content ?? ""), new RegExp(`\\[erix_run ${runId}\\]`, "u"),
+      "A 收到的必须是**这一条 run** 的完成通知");
+    assert.deepEqual(a.calls.sendMessage[0]?.options, { triggerTurn: false }, "idle 分支：通知只追加");
+    assert.deepEqual(a.calls.sendUserMessage[0],
+      { content: PARENT_WAKE_TEXT, options: { deliverAs: "steer" } },
+      "起一轮靠 steer 用户消息（分支结构没变）");
+
+    assert.equal(b.calls.sendMessage.length, 0,
+      "B（后 session_start 的会话）绝不能收到 A 派工的完成通知——投递路由一旦退回「最后一个会话」，这条当场红");
+    assert.equal(b.calls.sendUserMessage.length, 0, "B 也不能被排 steer 唤醒");
+    assert.equal(b.received(), 0, `B 的收件箱必须为空，实测 ${b.received()} 条`);
+
+    // —— 投递事实（内存视图 = action:"status"/"result" 的同一份）——
+    assert.equal(view.delivery, "sent", "投递事实要能在视图里读到");
+    assert.equal(view.notifyTargetSessionId, sessionA, "投递目标必须是**派工**会话 A");
+    assert.equal(view.ownerSessionId, sessionA, "job 上要记着派工那一刻的会话身份");
+    assert.equal(view.notifyError, null, "投成功不该留错误");
+
+    // —— 同一份事实在 status.json 上（/reload、pi 重启后唯一残留）——
+    const statusPath = statusFilePath({ sessionDir, runId });
+    assert.ok(existsSync(statusPath), `status.json 必须落盘：${statusPath}`);
+    const disk = JSON.parse(readFileSync(statusPath, "utf8"));
+    for (const key of ["delivery", "notifyTargetSessionId", "deliveryNote"]) {
+      assert.ok(Object.hasOwn(disk, key),
+        `status.json 必须**恒在场**地带 ${key}（缺键 = 盘上读不到投递事实）：实际键=${Object.keys(disk).join(",")}`);
+    }
+    assert.equal(disk.delivery, "sent", "status.json 上的 delivery 必须是 sent（「先投递后落盘」的顺序坑看守）");
+    assert.equal(disk.notifyTargetSessionId, sessionA, "status.json 上的目标会话必须是 A");
+    assert.equal(disk.ownerSessionId, sessionA);
+    assert.equal(disk.deliveryNote, null, "sent 是正常路径：deliveryNote 恒在场但为 null（不贴噪音）");
+  } finally {
+    handles.delete(sessionA);
+    handles.delete(sessionB);
+    for (const [key, value] of [[core.LIB_ENV, before.lib], [core.CONFIG_PATH_ENV, before.config]]) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     rmSync(dir, { recursive: true, force: true });
   }
 });
