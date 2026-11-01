@@ -1,10 +1,16 @@
 // issue #566：折叠记录 **append-only** —— 每一折的增量成为一条不可变、可独立读取的账本记录。
 //
 // 病根（比工单正文更准的前提，主 agent 已核对）：账本今天每折写一条 `foldedFacts`，但
-// `foldedFacts.text` 承载的是**截至本折的累计替代物**（`fold-llm` 尤其明显：它是「折叠后那条
-// user 消息的全文」= 历次摘要叠起来 + 原任务正文）。连续 N 折之后账本里有 N 份累计快照，
+// `foldedFacts.text` 承载的是**截至本折的累计替代物**。连续 N 折之后账本里有 N 份累计快照，
 // 每一折的增量只能靠 diff 相邻两份快照还原；其中任意一份被 `FOLDED_FACTS_MAX_BYTES`（2048）
 // 前缀夹断，那个增量就**永久不可还原**。
+//
+// ⚠ 历史（issue #657 已修，本注释同步）：上面那句原文写的是「`fold-llm` 尤其明显：它是「折叠后
+// 那条 user 消息的全文」= 历次摘要叠起来 **+ 原任务正文**」。那半句「+ 原任务正文」是**当时记账
+// 缺陷的书面证据**（`fold-llm` 成功分支不给 `foldSummary.text` ⇒ 引擎落回 `fedSummaryText`，
+// 把任务原文一起拼进累计体），不是累计体应有的形状。修完之后 `foldedFacts.text` 就是**纯累计
+// 摘要**（`fold-llm` 交出的 `compactedSummary`），本文件所有断言与判据一个字都没动——它们量的
+// 本来就是「累计体 vs 增量」这两份正文的关系，与累计体里该不该有任务原文无关。
 //
 // 本单的做法：**另开一个键** `foldedFacts.increment`（`text` 的语义一字未改），
 // 值是「本折自己删掉的那一段」的替代物（合并前那一份，由策略从真实产物取，不从累计文本反推）。
@@ -384,7 +390,10 @@ test("#566-2 不需要 diff 两份累计快照，就能拿到第 k 折的 from/t
 // ---- 判据 3：夹断不影响增量（本单的核心价值断言）----------------------------------
 
 test("#566-3 累计体被 2048 前缀夹断时，本折增量仍完整可读", async () => {
-  const { folds } = await runFoldLlmChain({ runId: "566-truncate", toolTurns: 8 });
+  // issue #657：夹断的**来源**变了——改前累计体里混着原任务正文，几乎必然超上限；改后它是纯累计
+  // 摘要，只有**摘要自己**长过上限才会夹断。所以本格把摘要器调大（2600 字节）来造同一个现场：
+  // 要测的东西（「累计侧被夹断 ⇒ 增量侧仍完整可读」）与判据一字未动。
+  const { folds } = await runFoldLlmChain({ runId: "566-truncate", toolTurns: 8, summaryBytes: 2600 });
   assert.ok(folds.length >= 2, `前置：至少两折（实测 ${folds.length}）`);
   const truncated = folds.filter(({ facts }) => facts.truncated === true);
   assert.ok(truncated.length >= 1,
@@ -416,14 +425,17 @@ test("#566-3 累计体被 2048 前缀夹断时，本折增量仍完整可读", a
       `第 ${round} 轮：增量不是被夹断的那一份`);
   }
 
-  // 对照：同一份账本里，**未**被夹断的那一折的累计体仍然完整（夹断只发生在累计侧，
-  // 且两者现在是**两个写者**：父键是摘要器写的累计体，增量是引擎机械算的本折替代物）。
-  const first = folds[0];
-  assert.equal(first.facts.truncated, undefined, "前置：第 1 折的累计体还没被夹断");
+  // 对照：同一夹具把摘要器调回默认大小 ⇒ 累计体本来就装得下 ⇒ **不**夹断（上界只对超限的那一侧生效）。
+  // issue #657 之前这里读的是**同一个 run** 的第 1 折（那时累计体含任务正文，第 1 折 2034 字节、
+  // 第 2 折起夹断）；那个「第 1 折还没超」只是任务正文长度的副产物，不是判据要的性质。改成
+  // 「同一夹具、只调摘要大小」之后，量的仍然是「夹断只发生在累计侧，且两者是两个写者」。
+  const small = await runFoldLlmChain({ runId: "566-truncate-small", toolTurns: 8 });
+  const first = small.folds[0];
+  assert.equal(first.facts.truncated, undefined, "对照：摘要器 400 字节时累计体不超上限（不夹断）");
   assert.equal(first.facts.text.includes("LLM_SUMMARY_1"), true,
-    "第 1 折的累计体是摘要器写的（父键语义一字未改）");
+    "累计体是摘要器写的（父键语义一字未改）");
   assert.equal(incrementOf(first.facts).text.includes("LLM_SUMMARY_1"), false,
-    "第 1 折的增量是机械替代物（两个写者各说各的，互不冒充）");
+    "增量是机械替代物（两个写者各说各的，互不冒充）");
 });
 
 // ---- 判据 5：模型可见面零变化 ----------------------------------------------------
