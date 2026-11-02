@@ -2,7 +2,8 @@
 //
 // 本文件是工单 §6 判据 1/2/3/4/5/6/8 的机器证据，全部零真实 LLM、零真实 `~/.erix`：
 //   · 判据 1：必抛 summarizer + `strategy:"fold-llm"` ⇒ 抛错，`code === "summarizer_failed"`，
-//     `details.kind` 是四类之一，`errorCode` 按 `terminationErrorCodeForError` 口径；
+//     `details.kind` 是四类之一，`errorCode` 按 `terminationErrorCodeForError` 口径，且
+//     `cause` **就是**摘要器抛出的那个原始错误（同一性断言——工单 §1 的 `cause` 此前无人钉）；
 //   · 判据 2：同一 run 的 messages 里没有 `【上下文折叠·` 块，也没有 `[fold-llm 摘要失败` 字面量；
 //   · 判据 3：「先失败后应用」四条（foldedFacts / compactionStats+事件 / 水位线 / 上一份摘要）；
 //   · 判据 4：超窗缩输入重试**仍在**（首次超窗、二次成功 ⇒ 折叠成功且 `attempts` 有值）；
@@ -41,17 +42,21 @@ function makeProvider({ toolTurns = 3, summaryThrows = true, summaryText = SUMMA
   let turns = 0;
   const mainRequests = [];
   const summaryRequests = [];
+  // issue #661：失败异常上的 `cause` 必须是**摘要器抛出的那个对象本身**（同一性），所以夹具把那一份
+  // 留住（挂在 `provider.summaryError` 上），供断言取引用——不按文案认，也不按 `instanceof` 认。
+  const summaryError = new Error("summarizer exploded (661 fixture)");
   const provider = {
     protocol: "fake",
     model: "fake-model",
     mainRequests,
     summaryRequests,
+    summaryError,
     async chat(request) {
       const isSummary = typeof request?.system === "string"
         && request.system.includes(SUMMARY_SYSTEM);
       if (isSummary) {
         summaryRequests.push(request);
-        if (summaryThrows) throw new Error("summarizer exploded (661 fixture)");
+        if (summaryThrows) throw summaryError;
         return {
           content: [{ type: "text", text: summaryText }],
           stopReason: "end_turn",
@@ -161,6 +166,10 @@ test("#661-1/2/3/8 必抛 summarizer ⇒ summarizer_failed 终局，失败那一
   // 与 `makePersistenceFailure` 取值对称：`errorCode` 记根因自己的 code（这里是没有 code 的 Error）。
   assert.equal(failure.errorCode, "unknown");
   assert.equal(failure.retryable, false);
+  // 工单 §1 的 `cause` 不是装饰：失败异常上的 `cause` 必须**就是**摘要器抛出的那个原始错误
+  // （断同一性——文案相同的新 Error、被包装过的 Error 都过不了这一条）。
+  assert.equal(failure.cause, provider.summaryError,
+    `cause 必须是摘要器抛出的那个原始错误（实测 ${String(failure.cause?.message)}）`);
   assert.equal(failure.termination?.reason, "failed");
   assert.equal(failure.termination?.errorCode, "summarizer_failed");
 
