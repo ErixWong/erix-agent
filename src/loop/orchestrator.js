@@ -381,6 +381,41 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
 }
 
 /**
+ * issue #661（审计 A3）：把「本 run 的终局事实」挂到**本次新建的载体**上，而不是就地改写来者错误。
+ *
+ * 为什么不能就地 `Object.assign`：宿主自定义策略可以**跨两次折叠复用同一个 Error 实例**（甚至跨
+ * run 缓存它）。就地写 `unpersisted` 之后，第二次进到这里时 `unpersisted === undefined` 这个前置判断
+ * 看到的是**上一次**留下的空数组 ⇒ 本 run 真有未落盘条目也挂不上去，账单串档（审计实测的形状）。
+ * 「把前置判断删掉」不是修法——那只是让每次折叠都覆写同一个外来对象，宿主自己挂的东西照样被踩。
+ *
+ * 载体必须保住宿主可依赖的面：`instanceof KitError`（来者是 KitError 时）、`code` / `message` /
+ * `details` / `termination` / `retryable` / `cause`，以及来者自己的其余属性。姿势是「同原型 +
+ * 逐个搬 own 属性**描述符**」：`message` / `stack` / `cause` 在 Error 上是**非枚举**的 own 属性，
+ * `Object.assign` 收不到，`getOwnPropertyDescriptors` 收得到 ⇒ 一份信息都不丢（`stack` 与来者同值，
+ * 语义不变）。`cause` / `details` 是**引用**搬运，同一性也留着。
+ *
+ * @param {any} error 来者错误（**只读**：本函数不写它一个字段）
+ * @param {Record<string, unknown>} additions 要挂到载体上的本次终局事实
+ * @returns {any}
+ */
+function copyErrorCarrier(error, additions) {
+  const carrier = Object.create(Object.getPrototypeOf(error));
+  const descriptors = Object.getOwnPropertyDescriptors(error);
+  // 本次要挂的字段以 `additions` 为准（来者若带同名字段，已在调用侧读过了）。
+  for (const key of Object.keys(additions)) delete descriptors[key];
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    // 来者可能被 `Object.freeze` 过：载体是本 run 自己的对象，`fail()` 还要往上写
+    // `termination` / `usage`，所以数据属性一律放开写权限（值与同一性不变）。
+    if ("value" in descriptor) descriptor.writable = true;
+    descriptor.configurable = true;
+    descriptors[key] = descriptor;
+  }
+  Object.defineProperties(carrier, descriptors);
+  Object.defineProperties(carrier, Object.getOwnPropertyDescriptors(additions));
+  return carrier;
+}
+
+/**
  * 缺陷 ③：把**策略那一折**与**预算兜底那一折**的轮次区间合并成一个。
  *
  * 区间形状是 `roundRangeForIndexes()` 的 `{from, to}`（与 `foldedRoundRange` / `buildFoldedFacts.roundRange`
@@ -3928,9 +3963,15 @@ export async function runToolLoop(options) {
       try {
         result = await strategy.compact(messages, compactOptions);
       } catch (compactionError) {
-        if (compactionError?.code === "summarizer_failed"
-          && compactionError.unpersisted === undefined) {
-          Object.assign(compactionError, { unpersisted: errorLedger.toUnpersisted() });
+        // issue #661（审计 A3）：账单挂到**本次新建的载体**上再抛，绝不就地改写宿主抛上来的错误
+        // 对象——宿主策略复用同一个 Error 实例时，就地写会让第一次的 `[]` 永久挡住第二次（账单串档）。
+        // 前置判断保留（来者自带账单就不覆盖），但它现在读的是**来者自己的**字段：引擎不再往
+        // 来者身上写东西，所以「上一次 run 留下的陈旧空数组」这个串档来源已经不存在了。
+        if (compactionError?.code === "summarizer_failed") {
+          const unpersisted = compactionError.unpersisted === undefined
+            ? errorLedger.toUnpersisted()
+            : compactionError.unpersisted;
+          throw copyErrorCarrier(compactionError, { unpersisted });
         }
         throw compactionError;
       }

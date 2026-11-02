@@ -2139,7 +2139,10 @@ run 级旋钮 `config.tuning.maxTokens` / `config.tuning.temperature` / `config.
   `termination.reason === "failed"`、`termination.errorCode === "summarizer_failed"` 收尾。异常本身带三个
   事实：`details.kind`（`timeout` / `context_window_exceeded` / `empty_summary` / `error`）、`errorCode`
   （根因自己的 `code`，没有就是 `"unknown"`——与 `persistence_failed` 同一条规则）、`unpersisted`
-  （#109 的账单：异常路径不返回 result，账单只能随异常走）。唯一保留的自动重试是**超窗缩输入**
+  （#109 的账单：异常路径不返回 result，账单只能随异常走）。引擎**不**改写宿主策略抛上来的错误对象：
+  账单挂在本 run 新建的终局错误载体上（同原型 ⇒ 来者是 `KitError` 时 `instanceof` 仍成立；`code` /
+  `message` / `details` / `cause` 与来者一致），宿主自己那个对象一个字段都不动——跨折叠复用同一个
+  `Error` 实例，也就不会把上一次的陈旧账单串到下一次。唯一保留的自动重试是**超窗缩输入**
   （`context_window_exceeded` ⇒ 带更短输入重试一次）；重试仍失败 ⇒ 同一个错误，`details.kind` 仍是
   `context_window_exceeded`。失败那一折**什么都不应用**：没有 `record.foldedFacts`、没有
   `compactionStats` 那一条、没有 `type: "compaction"` 事件、不推折叠水位线、也不给下一次折叠留

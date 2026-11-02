@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createFoldLlmStrategy } from "../../src/compact/fold-llm.js";
+import { KitError } from "../../src/providers/errors.js";
 import { FOLD_SUMMARY_MARKER } from "../../src/compact/fold-statistical.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { runDirect } from "../helpers/run-direct.js";
@@ -337,4 +338,129 @@ test("#661-6 resume：失败后换一个健康的摘要器续跑，run 能跑完
   assert.ok(afterResume.length > afterCrash.length, "resume 必须接着写账本（不是从头再跑）");
   assert.ok(afterResume.some((record) => record.foldedFacts !== undefined),
     "恢复后的折叠必须真的落账（这是「摘要器已恢复」的行为证据）");
+});
+
+// ── 审计 A3：账单挂在「本 run 新建的载体」上，不就地改写来者错误 ──────────────────────────
+//
+// 病根（审计实测）：orchestrator 原先对下层错误直接 `Object.assign(compactionError, { unpersisted })`，
+// 只在 `unpersisted === undefined` 时挂。宿主自定义策略**跨两次折叠复用同一个 Error 实例**时，第一次
+// 挂上的 `[]` 会永久挡住第二次——第二次即便本 run 真有未落盘账单，错误上仍是陈旧空数组（账单串档）。
+//
+// 反向锁：把修法退回 `Object.assign(来者)` ⇒ ① 的第二段立刻红（第二次拿到的是 `[]`），② 的
+// `Object.hasOwn(shared, "unpersisted")` 也会红。两条都断状态，不断文案。
+
+/** 宿主自己构造的 `summarizer_failed` 错误（内置摘要器每次新建，只有自定义策略会复用）。 */
+function makeHostSummarizerFailure() {
+  const cause = new Error("host summarizer exploded (A3 fixture)");
+  const error = new KitError(
+    "summarizer_failed",
+    `fold-llm 摘要失败（error）：${cause.message}`,
+    { retryable: false, cause },
+  );
+  Object.assign(error, { details: { kind: "error" }, errorCode: "unknown" });
+  return error;
+}
+
+/**
+ * 一条会走到「宿主策略那一折」的 run（`capabilities.ports.strategy` 是对象形态的唯一规位）。
+ *
+ * 策略**每次都抛同一个** `error` 实例（审计复现的形状：跨折叠/跨 run 复用），并且只在
+ * 「本 run 已经跑过工具调用」之后才 `shouldCompact() === true` —— 这样折叠落在第 2 轮，
+ * `seedLedger` 的持久化失败先入账，本 run 的 `unpersisted` 才是非空的（否则测的是空账单）。
+ */
+async function runReusingFailure({
+  runId,
+  error,
+  store = createMemoryTranscriptStore(),
+  seedLedger = false,
+}) {
+  const state = { toolCalls: 0 };
+  let seeded = false;
+  const strategy = {
+    name: "host-strategy-661",
+    async shouldCompact() {
+      return state.toolCalls > 0;
+    },
+    async compact() {
+      throw error;
+    },
+  };
+  const provider = makeProvider({ toolTurns: 4 });
+  const run = runDirect({
+    provider,
+    runId,
+    store,
+    seed: `开始任务 ${"y".repeat(200)}`,
+    executeTool: async ({ id, context }) => {
+      state.toolCalls += 1;
+      if (seedLedger && !seeded) {
+        seeded = true;
+        await context.reportPersistenceFailure({
+          port: "notes",
+          operation: "note_take",
+          phase: "write",
+          error: new Error("notes backend down (A3 fixture)"),
+        });
+      }
+      return `tool output for ${id} ${"z".repeat(9000)}`;
+    },
+    config: {
+      run: { maxRounds: 12, completion: false },
+      input: { wrapup: false },
+      folding: { context: { budgetTokens: 1200, foldAtRatio: 1 } },
+    },
+    capabilities: { ports: { strategy } },
+  });
+  return { run, store };
+}
+
+test("#661-A3① 复用同一个失败实例跨两次折叠 ⇒ 第二次带的是本 run 的账单，不是陈旧的 []", async () => {
+  const shared = makeHostSummarizerFailure();
+  const store = createMemoryTranscriptStore();
+
+  // 第一次：账本为空 ⇒ 账单是 `[]`（修前这一份就挂在**来者**身上）。
+  const first = await rejectionOf(
+    runReusingFailure({ runId: "661-a3-first", error: shared, store }).then(({ run }) => run),
+    "第一次折叠（账本为空）",
+  );
+  assert.equal(first.code, "summarizer_failed");
+  assert.deepEqual(first.unpersisted, [], "第一次账本为空 ⇒ 异常上的账单是空数组");
+
+  // 第二次：同一个 Error 实例、账本里有真条目 ⇒ 必须看到**第二次**的条目。
+  const second = await rejectionOf(
+    runReusingFailure({ runId: "661-a3-second", error: shared, store, seedLedger: true })
+      .then(({ run }) => run),
+    "第二次折叠（账本有真条目）",
+  );
+  assert.equal(second.code, "summarizer_failed");
+  assert.ok(Array.isArray(second.unpersisted) && second.unpersisted.length > 0,
+    `第二次必须带本 run 的账单，不是陈旧的 []（实测 ${JSON.stringify(second.unpersisted)}）`);
+  assert.ok(second.unpersisted.some((entry) => entry.port === "notes"),
+    "账单里必须能看到第二次那条 notes 端口的失败");
+});
+
+test("#661-A3② 引擎不就地改写宿主抛上来的错误对象（它的 unpersisted 仍是 undefined）", async () => {
+  const shared = makeHostSummarizerFailure();
+  const failure = await rejectionOf(
+    runReusingFailure({ runId: "661-a3-untouched", error: shared, seedLedger: true })
+      .then(({ run }) => run),
+    "折叠失败",
+  );
+
+  // ②：宿主那个对象一个字段都不该被引擎动过（断「没有这个 own 属性」与「值仍是 undefined」）。
+  assert.equal(Object.hasOwn(shared, "unpersisted"), false,
+    "宿主抛出的 Error 实例上不许被挂 unpersisted（引擎不改写来者对象）");
+  assert.equal(shared.unpersisted, undefined);
+  assert.equal(shared.termination, undefined, "宿主那个对象连终局载荷都不该被挂上");
+
+  // 载体必须保住宿主可依赖的面（复制语义，不是替换语义）。
+  assert.notEqual(failure, shared, "抛出的必须是本 run 新建的载体，不是宿主那个对象");
+  assert.ok(failure instanceof KitError, "来者是 KitError ⇒ 载体仍 instanceof KitError");
+  assert.equal(failure.code, shared.code);
+  assert.equal(failure.message, shared.message);
+  assert.equal(failure.details, shared.details, "details 按引用保留（同一性）");
+  assert.equal(failure.cause, shared.cause, "cause 按引用保留（同一性）");
+  assert.equal(failure.retryable, shared.retryable);
+  assert.ok(Array.isArray(failure.unpersisted) && failure.unpersisted.length > 0,
+    "载体上带着本 run 的账单");
 });

@@ -2644,7 +2644,12 @@ messages and the folded round range. Its cost and accounting are part of the con
   error itself carries three facts: `details.kind` (`timeout` / `context_window_exceeded` /
   `empty_summary` / `error`), `errorCode` (the root cause's own `code`, `"unknown"` when it has
   none — the same rule `persistence_failed` uses) and `unpersisted` (the #109 ledger: an
-  exception path returns no result, so the ledger rides on the error). The one automatic retry
+  exception path returns no result, so the ledger rides on the error). The engine does **not**
+  rewrite the error object a host strategy threw: the ledger is attached to a fresh
+  terminal-error carrier created for this run (same prototype, so `instanceof KitError` still
+  holds when the thrown error was one; same `code` / `message` / `details` / `cause`), and the
+  host's own object is left untouched — a host that reuses one `Error` instance across folds
+  therefore cannot leak a stale ledger into the next run. The one automatic retry
   that stays is **over-window input shrinking** (`context_window_exceeded` ⇒ one retry with a
   smaller input); if that retry fails too, the same error is raised with `details.kind` still
   `context_window_exceeded`. Nothing from the failed fold is applied: no `record.foldedFacts`,
