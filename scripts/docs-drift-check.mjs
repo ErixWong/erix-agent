@@ -3838,6 +3838,289 @@ function collectSuiteInventoryErrors() {
   return errors;
 }
 
+// ── 2.13 强制收尾资格「按状态，不按 reason 枚举」（issue #475 post-stop verification）──
+// 病历（issue #677 补充范围）：契约 §7「post-stop verification / 停止后验证」那句曾把资格写成
+// **reason 白名单**（#467 的形状：往白名单上贴一条 `judge_done`），而 #475 把判据下沉成**状态**——
+// 「被预算/截断掐断的那三条沿用更严的截断判据，其余 reason 只过一个判据：整个 run 一个字都没写过」，
+// 于是新增 reason 天然被覆盖。这句话此前**零机器闸**：它既可以被压平回白名单口径（假话回潮），
+// 也可以与 `src/loop/termination.js` 的成员集合悄悄脱节（源码加了/删了 reason，契约照旧）。
+// 本族把它接上，三条形状各有一腿：
+//   ① 两侧逐条语义（中英同一套 facet id）：状态口径、三条沿用截断判据、其余只看「一个字都没写过」、
+//      新增 reason 天然覆盖、覆盖 ≠ 安全、覆盖那句点名 guard 集合与 `end_turn` / `no_tool`；
+//      任一侧压平/退回假话 ⇒ 红；
+//   ② 中英背离：某条语义只有一侧写了 ⇒ 缺语义 + 背离两条都报；
+//   ③ 固定 reason 名单 × 源码成员集合：契约点名的「三条不可续跑」必须**恰好等于**
+//      `FORCED_FINAL_TRUNCATED_REASONS`（双向），「覆盖 ≠ 安全」点名的 `end_turn` / `no_tool`
+//      必须真在 `FINAL_GUARD_TERMINATION_REASONS` 里；任一失配 ⇒ 红（改源码不改契约必红）。
+
+/** 真值源：两个 reason 集合都在这里（`src/loop/termination.js`）。 */
+const FORCED_FINAL_TRUTH_SRC = "src/loop/termination.js";
+/** 被预算/截断掐断的三条（函数作用域内私有，**不导出**——所以按名字在代码面里找字面量）。 */
+const FORCED_FINAL_TRUNCATED_SET = "FORCED_FINAL_TRUNCATED_REASONS";
+/** guard 适用 reason 集合（「覆盖 ≠ 安全」那句的真值）。 */
+const FORCED_FINAL_GUARD_SET = "FINAL_GUARD_TERMINATION_REASONS";
+
+/** §7 小节的起止行：按**编号 + 标题**定位（编号变了就红，fail-closed，不静默抓错段）。 */
+const FORCED_FINAL_SECTION = Object.freeze({
+  [CONTRACT_EN]: /^7\. \*\*post-stop verification\*\*/u,
+  [CONTRACT_CN]: /^7\. \*\*停止后验证\*\*/u,
+});
+const FORCED_FINAL_SECTION_END = /^8\. /u;
+
+/** 契约点名「三条不可续跑 reason」的那一句（名单在紧随其后的括号里）。 */
+const FORCED_FINAL_THREE_CLAIM = Object.freeze({
+  [CONTRACT_EN]: /the three non-continuable reasons\s*\(([^)]*)\)/u,
+  [CONTRACT_CN]: /三条不可续跑的 reason\s*（([^）]*)）/u,
+});
+
+/** 「覆盖 ≠ 安全」那一句的起点（后面点名 guard 集合与两个 reason）。 */
+const FORCED_FINAL_COVERAGE = Object.freeze({
+  [CONTRACT_EN]: /Coverage is not safety/u,
+  [CONTRACT_CN]: /覆盖\s*≠\s*安全/u,
+});
+
+/**
+ * 判据面：中英**同一个 id**（一侧缺 ⇒ 「缺语义」+「中英背离」两条都报）。
+ * 正则只认语义：`has to` / `必须` 一类同义改写仍绿，白名单口径必红（它缺下面这些腿）。
+ */
+const FORCED_FINAL_FACETS = Object.freeze([
+  {
+    id: "eligibility-is-state",
+    why: "资格是**一个状态**，不是 reason 白名单（#475 把判据从原因枚举下沉到状态）",
+    re: {
+      [CONTRACT_EN]: /state,\s*not\s+a\s+whitelist\s+of\s+reasons/u,
+      [CONTRACT_CN]: /一个状态、不是\s*reason\s*白名单/u,
+    },
+  },
+  {
+    id: "truncated-keeps-stricter-test",
+    why: "那三条被预算/截断掐断的 reason 沿用更严的截断判据（不是「都要补发」）",
+    re: {
+      [CONTRACT_EN]: /keep\s+the\s+stricter\s+truncation\s+test/u,
+      [CONTRACT_CN]: /沿用下面更严的截断判据/u,
+    },
+  },
+  {
+    id: "others-one-test-empty-body",
+    why: "其余 reason 只过一个判据：整个 run 一个字都没写过",
+    re: {
+      [CONTRACT_EN]: /the\s+whole\s+run\s+wrote\s+not\s+a\s+single\s+character/u,
+      [CONTRACT_CN]: /整个\s*run\s*一个字都没写过/u,
+    },
+  },
+  {
+    id: "new-reason-covered-by-construction",
+    why: "新增 reason 天然被覆盖（不必再「记着回来贴一条」）",
+    re: {
+      [CONTRACT_EN]: /covered\s+by\s+construction/u,
+      [CONTRACT_CN]: /天然被覆盖/u,
+    },
+  },
+  {
+    id: "coverage-is-not-safety",
+    why: "覆盖 ≠ 安全：guard 覆盖了那两格，不等于那两格安全",
+    re: {
+      [CONTRACT_EN]: /Coverage\s+is\s+not\s+safety/u,
+      [CONTRACT_CN]: /覆盖\s*≠\s*安全/u,
+    },
+  },
+]);
+
+/**
+ * 「覆盖 ≠ 安全」那一句必须点名的东西：guard 集合常量 + 两个**真在集合里**的 reason
+ * （成员关系由 `forcedFinalTruth()` 当场核——改源码成员集合而不改契约必红）。
+ */
+const FORCED_FINAL_COVERAGE_NAMES = Object.freeze([
+  { id: "guard-set-constant", token: "FINAL_GUARD_TERMINATION_REASONS", why: "必须点名 guard 适用 reason 集合那个常量" },
+  { id: "guard-set-end_turn", token: "end_turn", why: "必须点名 `end_turn`（它早就在 guard 集合里）" },
+  { id: "guard-set-no_tool", token: "no_tool", why: "必须点名 `no_tool`（它早就在 guard 集合里）" },
+]);
+
+/** 压平/退回假话的形状：把资格写成白名单或固定条数枚举。 */
+const FORCED_FINAL_ENUMERATION = Object.freeze([
+  {
+    why: "把资格写成「白名单 / 固定 reason 清单」——那正是 #475 之前那条假承诺的形状（新增 reason 会漏）",
+    re: {
+      [CONTRACT_EN]: /eligibility\s+is\s+(?:a\s+|an\s+)?(?:fixed\s+|static\s+)?(?:whitelist|reason\s+whitelist|list\s+of\s+reasons)/iu,
+      [CONTRACT_CN]: /资格是(?:一份)?\s*(?:固定\s*)?reason\s*白名单/u,
+    },
+  },
+  {
+    why: "把资格写成固定条数（「只有六个 reason」）——条数是枚举的影子，源码一加 reason 就成假话",
+    re: {
+      [CONTRACT_EN]: /only\s+(?:the\s+)?(?:six|6)\s+(?:guard-eligible\s+)?reasons/iu,
+      [CONTRACT_CN]: /只(?:有|对)\s*(?:那)?\s*(?:6|六)\s*个\s*(?:guard\s*适用\s*)?reason/u,
+    },
+  },
+]);
+
+/**
+ * 从源码**代码面**里抽一个 `NAME = new Set([...])` 的成员（注释先涂空：注释里提到 reason 不算成员）。
+ *
+ * @param {string} code 涂过注释的源码
+ * @param {string} name 集合常量名
+ * @returns {string[]|null} 抽不到返回 `null`（调用方按 #164 口径报错，不猜）
+ */
+function reasonSetMembers(code, name) {
+  const m = code.match(new RegExp(`${name}\\s*=\\s*new Set\\(\\[([\\s\\S]*?)\\]\\)`, "u"));
+  if (!m) return null;
+  return [...m[1].matchAll(/"([^"]+)"/gu)].map((x) => x[1]);
+}
+
+/**
+ * 真值：两个 reason 集合 + 「截断三条 ⊆ guard 集合」这条源码内不变量。
+ *
+ * 为什么还要最后那条不变量：契约 §7 的结构（「那三条沿用更严判据，发完之后 finalGuard 才可以
+ * accept / skip / revise / 失败」）只有在截断三条**都在** guard 集合里时才成立；集合一旦分叉，
+ * 契约那句话就变成假话，而两边看起来都「没改」。
+ *
+ * @returns {{truncated: string[], guardEligible: string[], errors: string[]}}
+ */
+function forcedFinalTruth() {
+  const src = textOf(FORCED_FINAL_TRUTH_SRC);
+  if (typeof src !== "string") {
+    return {
+      truncated: [], guardEligible: [],
+      errors: [`forced-final/truth: 读不到 ${FORCED_FINAL_TRUTH_SRC}——强制收尾资格的真值无从抽起`
+        + "（#164 口径：抽不到真值就报错）"],
+    };
+  }
+  const code = maskJs(src, { keepStrings: true });
+  const errors = [];
+  const truncated = reasonSetMembers(code, FORCED_FINAL_TRUNCATED_SET);
+  const guardEligible = reasonSetMembers(code, FORCED_FINAL_GUARD_SET);
+  if (truncated === null || truncated.length === 0) {
+    errors.push(`forced-final/truth: ${FORCED_FINAL_TRUTH_SRC} 的**代码面**里抽不到 \`${FORCED_FINAL_TRUNCATED_SET}\` 的成员`
+      + "——「那三条沿用更严截断判据」这条真值无从对账（#164 口径：抽不到真值就报错）");
+  }
+  if (guardEligible === null || guardEligible.length === 0) {
+    errors.push(`forced-final/truth: ${FORCED_FINAL_TRUTH_SRC} 的**代码面**里抽不到 \`${FORCED_FINAL_GUARD_SET}\` 的成员`
+      + "——「覆盖 ≠ 安全」那句的真值无从对账（#164 口径：抽不到真值就报错）");
+  }
+  if (truncated !== null && guardEligible !== null) {
+    const orphans = truncated.filter((reason) => !guardEligible.includes(reason));
+    if (orphans.length) {
+      errors.push(`forced-final/truth: \`${FORCED_FINAL_TRUNCATED_SET}\` 里的 ${orphans.join(" / ")} 不在 `
+        + `\`${FORCED_FINAL_GUARD_SET}\` 里——契约 §7 说「那三条沿用更严判据、发完之后 finalGuard 才可以 accept / `
+        + "skip / revise / 失败」，集合分叉之后那句话就是假话（两侧都要跟着改）");
+    }
+  }
+  return { truncated: truncated ?? [], guardEligible: guardEligible ?? [], errors };
+}
+
+/**
+ * 在一份契约的正文里定位 §7（post-stop verification / 停止后验证）那一段。
+ *
+ * @param {string} rel 文档相对路径
+ * @param {string} src 文档正文（可以是 overlay 之后的文本）
+ * @returns {{start:number,end:number,line:number,text:string}|null} 抽不到返回 `null`
+ */
+function forcedFinalWindowOf(rel, src) {
+  const head = FORCED_FINAL_SECTION[rel];
+  if (!head) return null;
+  const text = String(src);
+  const lines = text.split("\n");
+  const from = lines.findIndex((line) => head.test(line));
+  if (from === -1) return null;
+  let to = lines.length;
+  for (let i = from + 1; i < lines.length; i += 1) {
+    if (FORCED_FINAL_SECTION_END.test(lines[i])) { to = i; break; }
+  }
+  const start = lines.slice(0, from).join("\n").length + (from === 0 ? 0 : 1);
+  const end = to >= lines.length ? text.length : lines.slice(0, to).join("\n").length + 1;
+  return { start, end, line: from + 1, text: lines.slice(from, to).join("\n") };
+}
+
+/**
+ * 本族的判据：真值（两个 reason 集合）× 两份契约 §7 那一段（逐条语义 + 名单成员对账 + 压平）。
+ *
+ * @returns {string[]} 错误文本（不直接写全局，好让 `--self-test` 复用同一份实现）
+ */
+function collectForcedFinalEligibilityErrors() {
+  const errors = [];
+  const notes = [];
+  const truth = forcedFinalTruth();
+  errors.push(...truth.errors);
+
+  const present = new Map(FORCED_FINAL_FACETS.map((facet) => [facet.id, new Set()]));
+  for (const doc of SUITE_INVENTORY_DOCS) {
+    const src = textOf(doc);
+    if (typeof src !== "string") {
+      errors.push(`forced-final: 读不到 ${doc}——它是本族必须对账的两份契约之一，读不到就等于那份没人校`);
+      continue;
+    }
+    const win = forcedFinalWindowOf(doc, src);
+    if (win === null) {
+      errors.push(`forced-final: ${doc} 里找不到 §7「post-stop verification / 停止后验证」那一段`
+        + "（编号或标题被改）——本族的判据在这份文档上失效（#164 口径：抽不到真值就报错）");
+      continue;
+    }
+    for (const facet of FORCED_FINAL_FACETS) {
+      const re = facet.re[doc];
+      if (re.test(win.text)) { present.get(facet.id).add(doc); continue; }
+      errors.push(`forced-final: ${doc}:${win.line} 的 §7 缺一条语义——${facet.why}（判据 ${re}）`);
+    }
+    for (const bad of FORCED_FINAL_ENUMERATION) {
+      if (!bad.re[doc].test(win.text)) continue;
+      errors.push(`forced-final: ${doc}:${win.line} 的 §7 被压平/退回假话——${bad.why}`);
+    }
+    // 「覆盖 ≠ 安全」那一句：点名 guard 集合 + 两个真在集合里的 reason。
+    const coverageAt = win.text.search(FORCED_FINAL_COVERAGE[doc]);
+    if (coverageAt === -1) continue;   // 上面「覆盖 ≠ 安全」那条 facet 已经报过
+    const coverage = win.text.slice(coverageAt);
+    for (const item of FORCED_FINAL_COVERAGE_NAMES) {
+      if (coverage.includes(item.token)) continue;
+      errors.push(`forced-final: ${doc}:${win.line} 的 §7「覆盖 ≠ 安全」那句里没有点名 \`${item.token}\`——${item.why}`);
+    }
+    // ③ 固定 reason 名单 × 源码成员集合（双向）：契约点名的「三条」必须恰好是真值那一集。
+    const claim = win.text.match(FORCED_FINAL_THREE_CLAIM[doc]);
+    if (!claim) {
+      errors.push(`forced-final: ${doc}:${win.line} 的 §7 里抽不到「三条不可续跑 reason」那句点名的名单`
+        + "——资格口径的关键那一句被改写/删掉，本族的成员对账在这份文档上失效（#164 口径）");
+      continue;
+    }
+    const named = [...new Set([...claim[1].matchAll(/`([^`]+)`/gu)].map((m) => m[1]))];
+    if (named.length === 0) {
+      errors.push(`forced-final: ${doc}:${win.line} 的 §7「三条不可续跑 reason」那句一个 reason 名都没点名`
+        + "（括号里没有反引号名字）——按条数枚举不是合法写法（issue #677 补充范围）");
+      continue;
+    }
+    for (const reason of named.filter((r) => !truth.truncated.includes(r))) {
+      errors.push(`forced-final: ${doc}:${win.line} 的 §7 点名了 \`${reason}\` 属于「不可续跑三条」，`
+        + `但 ${FORCED_FINAL_TRUTH_SRC} 的 \`${FORCED_FINAL_TRUNCATED_SET}\` 里没有它（真值：`
+        + `${truth.truncated.map((r) => `\`${r}\``).join(" / ") || "抽不到"}）`);
+    }
+    for (const reason of truth.truncated.filter((r) => !named.includes(r))) {
+      errors.push(`forced-final: ${doc}:${win.line} 的 §7 漏掉了 \`${reason}\`——它在 `
+        + `${FORCED_FINAL_TRUTH_SRC} 的 \`${FORCED_FINAL_TRUNCATED_SET}\` 里（改源码成员集合而不改契约 = 契约在撒谎）`);
+    }
+    for (const item of FORCED_FINAL_COVERAGE_NAMES.filter((x) => x.token !== "FINAL_GUARD_TERMINATION_REASONS")) {
+      if (!coverage.includes(item.token)) continue;
+      if (truth.guardEligible.includes(item.token)) continue;
+      errors.push(`forced-final: ${doc}:${win.line} 的 §7 说 \`${item.token}\` 早就在 \`${FORCED_FINAL_GUARD_SET}\` 里，`
+        + `但 ${FORCED_FINAL_TRUTH_SRC} 的那个集合里没有它（改源码成员集合而不改契约 = 契约在撒谎）`);
+    }
+  }
+
+  // 中英背离：一条 facet 只有一侧写了 ⇒ 另一侧读者拿到的是一半的答案（「只改一边不算改」）。
+  for (const facet of FORCED_FINAL_FACETS) {
+    const hit = present.get(facet.id);
+    if (hit.size === 0 || hit.size === SUITE_INVENTORY_DOCS.length) continue;
+    const missing = SUITE_INVENTORY_DOCS.filter((doc) => !hit.has(doc));
+    errors.push(`forced-final: 中英背离——「${facet.why}」只有 ${[...hit].join("、")} 写了，`
+      + `${missing.join("、")} 没有（issue #677 补充范围：一侧真一侧假也必须红）`);
+  }
+
+  notes.push(`forced-final: 契约 §7「post-stop verification / 停止后验证」（issue #475 / #677）按 `
+    + `${FORCED_FINAL_FACETS.length} 条语义 × 中英两侧逐条对账，外加「覆盖 ≠ 安全」点名 `
+    + `${FORCED_FINAL_COVERAGE_NAMES.length} 个名字、固定名单 × 源码成员集合双向对账、压平/条数枚举另判 `
+    + `${FORCED_FINAL_ENUMERATION.length} 种形状；真值 ${FORCED_FINAL_TRUTH_SRC}：`
+    + `\`${FORCED_FINAL_TRUNCATED_SET}\` = ${truth.truncated.map((r) => `\`${r}\``).join(" / ") || "（抽不到）"}；`
+    + `\`${FORCED_FINAL_GUARD_SET}\` 含 ${truth.guardEligible.length} 个 reason`);
+  collectForcedFinalEligibilityErrors.notes = notes;
+  return errors;
+}
+
 // ── 3. README 引用的 package.json 清单（files / exports）────────────────────────
 // issue #210 的**主修项**：这块原先是 fail-open 的——围栏定位靠真值键（`b["./tools"]`、
 // `b.includes("src")`），文档把 `"./tools"` 改名或整个删掉时块就找不到了，于是退化成一条 warn
@@ -5799,6 +6082,8 @@ function collectAllDrift() {
     ...collectRetiredSemanticsErrors(),
     // issue #677：契约「套件清单」的 unknownSlot 形态（真值 = test/contract/model-config-provider.js，见 §2.12）
     ...collectSuiteInventoryErrors(),
+    // issue #677 补充范围：强制收尾资格「按状态，不按 reason 枚举」（真值 = src/loop/termination.js，见 §2.13）
+    ...collectForcedFinalEligibilityErrors(),
     // issue #511：「这句话属于哪个版本」与「这个版本发布了没有」四条（自测要连它们一起变异）
     ...collectDocVersionErrors(), ...collectVersionAttributionErrors(), ...collectGuideClaimErrors(),
     ...collectChangelogPublicationErrors(), ...collectPublishedClaimErrors(),
@@ -5840,6 +6125,9 @@ for (const n of collectRetiredSemanticsErrors.notes ?? []) note(n);
 // issue #677：契约「套件清单」的 unknownSlot 形态（中英两侧 × 套件真值，逐形态窗口过）
 for (const e of collectSuiteInventoryErrors()) err(e);
 for (const n of collectSuiteInventoryErrors.notes ?? []) note(n);
+// issue #677 补充范围：强制收尾资格（中英两侧 × src/loop/termination.js 的两个 reason 集合）
+for (const e of collectForcedFinalEligibilityErrors()) err(e);
+for (const n of collectForcedFinalEligibilityErrors.notes ?? []) note(n);
 // ── 9. 「这句话属于哪个版本」（issue #511）──────────────────────────────────────
 for (const collect of [collectDocVersionErrors, collectVersionAttributionErrors, collectGuideClaimErrors,
   collectChangelogPublicationErrors, collectPublishedClaimErrors, collectGuideCoverageErrors, collectBundleTableErrors]) {
@@ -5988,6 +6276,109 @@ const SUITE_INVENTORY_ONE_LEG_MISSING = Object.freeze({
   [CONTRACT_EN]: [
     "`resolve()` → default slot, `resolve(slot)` → named slot, `apiKey` indirect-reference materialisation (ADR-001), and the unknown-slot answer stated **per provider shape** (issue #518): a slot-map provider (static / json-file) must **throw**, naming the unknown slot and listing the available ones, never falling back to default, while a single-config provider returns the same config under any slot name",
   ],
+});
+
+/** #677（#475）：§7 资格句的**句尾标记**——打靶时只换到这一行为止，§7 后面的事实一字不动。 */
+const FORCED_FINAL_ELIGIBILITY_END = Object.freeze({
+  [CONTRACT_EN]: /wrote not a single character\./u,
+  [CONTRACT_CN]: /一个字都没写过。/u,
+});
+
+/**
+ * #677（#475）自测用的「§7 资格句」打靶器：把 §7 里**那一段资格陈述**整段换成 `build()`。
+ *
+ * 为什么只换这一段：§7 后半段（payload-only、`FORCED_FINAL_FALLBACK_TEXT` 兜底、事件面）被符号锚点与
+ * 路径判据盯着，整段重写会把那些判据一起弄红，反向证就证明不了「这一族在判这句话」。段界由
+ * `forcedFinalWindowOf`（小节）+ 句尾标记共同定，替换文本由用例**从零构造**（不抄文档原话）；
+ * 小节或句尾标记找不到 ⇒ 原样返回 ⇒ 框架报「变异没落上」（#210 R2）。
+ */
+function mutateForcedFinalEligibility(doc, build) {
+  return (text) => {
+    const win = forcedFinalWindowOf(doc, text);
+    if (win === null) return text;
+    const lines = win.text.split("\n");
+    const stop = lines.findIndex((line) => FORCED_FINAL_ELIGIBILITY_END[doc].test(line));
+    if (stop === -1) return text;
+    const kept = lines.slice(stop + 1).join("\n");
+    const body = [build(), kept].filter((part) => part !== "").join("\n");
+    const tail = win.end >= text.length ? "" : `\n${text.slice(win.end)}`;
+    return `${text.slice(0, win.start)}${body}${tail}`;
+  };
+}
+
+/**
+ * #677（#475）：往 `src/loop/termination.js` 的某个 `NAME = new Set([...])` 里加/删成员。
+ *
+ * 自包含：按**常量名**定位集合字面量，成员由用例给（不抄源码原话）。找不到集合、或要删的成员
+ * 不在集合里 ⇒ 原样返回（框架报「变异没落上」，不给空跑留门）。
+ */
+function mutateReasonSet(name, { add = [], remove = [] } = {}) {
+  return (text) => {
+    const m = text.match(new RegExp(`(${name}\\s*=\\s*new Set\\(\\[)([\\s\\S]*?)(\\]\\))`, "u"));
+    if (!m) return text;
+    let body = m[2];
+    for (const member of remove) {
+      const next = body.split("\n").filter((line) => !line.includes(`"${member}"`)).join("\n");
+      if (next === body) return text;                  // 要删的成员不在集合里 ⇒ 变异没落上
+      body = next;
+    }
+    for (const member of add) {
+      if (body.includes(`"${member}"`)) return text;    // 已经在了 ⇒ 变异没落上
+      body = `${body.replace(/\s*$/u, "")}\n    "${member}",\n  `;
+    }
+    return `${text.slice(0, m.index)}${m[1]}${body}${m[3]}${text.slice(m.index + m[0].length)}`;
+  };
+}
+
+/** #677（#475）：资格句的**正确**语义（同义改写、五条腿一条不少）——「恢复 ⇒ 绿」那一格用它。 */
+const FORCED_FINAL_CANON = Object.freeze({
+  [CONTRACT_EN]: [
+    "7. **post-stop verification** — once a stop reason exists, forced wrap-up can",
+    "   make one more provider call. Eligibility is a **state, not a whitelist of",
+    "   reasons** (issue #475): the three non-continuable reasons",
+    "   (`max_rounds_cap` / `stall` / `continuation_exhausted`) keep the stricter",
+    "   truncation test below, while any other reason — `judge_done` (issue #467),",
+    "   `end_turn` and `no_tool` (issue #475), and any reason a later release adds —",
+    "   is eligible on one test only: the whole run wrote not a single character.",
+    "   A new reason is therefore covered by construction — nobody has to \"append a",
+    "   row to the whitelist\" again.",
+  ].join("\n"),
+  [CONTRACT_CN]: [
+    "7. **停止后验证**——stop reason 定下来之后，可能多一次强制收尾的 provider 调用。",
+    "   资格是**一个状态、不是 reason 白名单**（issue #475）：三条不可续跑的 reason",
+    "   （`max_rounds_cap` / `stall` / `continuation_exhausted`）沿用下面更严的截断判据，",
+    "   其余 reason —— `judge_done`（issue #467）、`end_turn` / `no_tool`（issue #475）、",
+    "   以及后续版本新增的任何 reason —— 只过一个判据：整个 run 一个字都没写过。",
+    "   ⇒ 新增 reason 天然被覆盖，不必再「记着回来贴一条」。",
+  ].join("\n"),
+});
+
+/** #677（#475）：**退回假话**（#475 之前那套：资格是一份 reason 白名单 / 固定六个）。 */
+const FORCED_FINAL_FLAT = Object.freeze({
+  [CONTRACT_EN]: [
+    "7. **post-stop verification** — after a stop reason exists, forced wrap-up may",
+    "   add one more provider call. Eligibility is a whitelist of reasons (issue",
+    "   #475): only the six guard-eligible reasons listed in",
+    "   `FINAL_GUARD_TERMINATION_REASONS` (`src/loop/termination.js`) get that call.",
+  ].join("\n"),
+  [CONTRACT_CN]: [
+    "7. **停止后验证**——stop reason 定下来后，可能多一次强制收尾的 provider 调用。",
+    "   资格是一份 reason 白名单（issue #475）：只对 6 个 guard 适用 reason 补发一次。",
+  ].join("\n"),
+});
+
+/** #677（#475）：**只少一条腿**（其余 reason 不再说「只过一个判据：整个 run 一个字都没写过」）
+ *  ——中英背离那一格用它。注意腿要挑**落在被替换那一段里**的：§7 后面被保留下来的原文会照旧供腿。 */
+const FORCED_FINAL_ONE_LEG_MISSING = Object.freeze({
+  [CONTRACT_EN]: [
+    "7. **post-stop verification** — after a stop reason exists, forced wrap-up may",
+    "   add one more provider call. Eligibility is a **state, not a whitelist of",
+    "   reasons** (issue #475): the three non-continuable reasons",
+    "   (`max_rounds_cap` / `stall` / `continuation_exhausted`) keep the stricter",
+    "   truncation test below, while every other reason — `judge_done` (issue #467),",
+    "   `end_turn` and `no_tool` (issue #475), and any reason a later release adds —",
+    "   is eligible without any further test.",
+  ].join("\n"),
 });
 
 const SELF_TEST_CASES = [
@@ -7286,12 +7677,78 @@ const SELF_TEST_CASES = [
         () => suiteInventoryRowLine(CONTRACT_EN, SUITE_INVENTORY_CANON[CONTRACT_EN])),
     },
     expectMutateMiss: true,
+  },  // ══ issue #677 补充范围（#475）：强制收尾资格「按状态，不按 reason 枚举」（§2.13）══════════
+  // 三种形状各钉一侧，外加「改源码成员集合而不改契约 ⇒ 必红」与「变异没落上算失败」：
+  //   ① EN 单侧退回假话 → 红；② CN 单侧退回假话 → 红；③ 只改 EN 一条腿 → 红（缺语义 + 中英背离）；
+  //   ④ 源码两个 reason 集合都加一个成员、契约不改 → 红（固定名单 × 成员集合失配）；
+  //   ⑤ 源码 guard 集合删掉 `no_tool` → 红（「覆盖 ≠ 安全」那句失去真值）；
+  //   ⑥ 两侧同义改写（= 恢复正确语义）→ 绿；⑦ §7 那段不在目标文档里 → 「变异没落上」算失败（#210 R2）。
+  {
+    label: "#677（#475）：EN 单侧把强制收尾资格退回「reason 白名单 + 固定六个」的假话 ⇒ 红并点名 EN",
+    overlay: {
+      [CONTRACT_EN]: mutateForcedFinalEligibility(CONTRACT_EN, () => FORCED_FINAL_FLAT[CONTRACT_EN]),
+    },
+    expect: [/forced-final: docs\/host-consumer-contract\.md:\d+ 的 §7 被压平\/退回假话——把资格写成「白名单/,
+      /forced-final: docs\/host-consumer-contract\.md:\d+ 的 §7 被压平\/退回假话——把资格写成固定条数/,
+      /forced-final: docs\/host-consumer-contract\.md:\d+ 的 §7 缺一条语义——资格是\*\*一个状态\*\*，不是 reason 白名单/],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "#677（#475）：CN 单侧把同一句退回假话 ⇒ 红并点名 CN（中英成对：只留一侧的正确口径不算修好）",
+    overlay: {
+      [CONTRACT_CN]: mutateForcedFinalEligibility(CONTRACT_CN, () => FORCED_FINAL_FLAT[CONTRACT_CN]),
+    },
+    expect: [/forced-final: docs\/host-consumer-contract_cn\.md:\d+ 的 §7 被压平\/退回假话——把资格写成「白名单/,
+      /forced-final: docs\/host-consumer-contract_cn\.md:\d+ 的 §7 缺一条语义——资格是\*\*一个状态\*\*，不是 reason 白名单/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#677（#475）：只改 EN 一条腿（不再说「其余 reason 只过一个判据：整个 run 一个字都没写过」）⇒ 红：缺语义 + 中英背离",
+    overlay: {
+      [CONTRACT_EN]: mutateForcedFinalEligibility(CONTRACT_EN, () => FORCED_FINAL_ONE_LEG_MISSING[CONTRACT_EN]),
+    },
+    expect: [/forced-final: docs\/host-consumer-contract\.md:\d+ 的 §7 缺一条语义——其余 reason 只过一个判据：整个 run 一个字都没写过/,
+      /forced-final: 中英背离——「其余 reason 只过一个判据：整个 run 一个字都没写过」只有 docs\/host-consumer-contract_cn\.md 写了，docs\/host-consumer-contract\.md 没有/],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "#677（#475）：源码两个 reason 集合都加一个成员、契约一个字不改 ⇒ 红（固定名单 × 源码成员集合失配）",
+    overlay: {
+      "src/loop/termination.js": (t) => mutateReasonSet(FORCED_FINAL_GUARD_SET, { add: ["zzz_probe_reason"] })(
+        mutateReasonSet(FORCED_FINAL_TRUNCATED_SET, { add: ["zzz_probe_reason"] })(t)),
+    },
+    expect: [/forced-final: docs\/host-consumer-contract\.md:\d+ 的 §7 漏掉了 `zzz_probe_reason`/,
+      /forced-final: docs\/host-consumer-contract_cn\.md:\d+ 的 §7 漏掉了 `zzz_probe_reason`/],
+    expectFiles: [CONTRACT_EN, CONTRACT_CN],
+  },
+  {
+    label: "#677（#475）：源码 guard 集合删掉 `no_tool` ⇒ 红（「覆盖 ≠ 安全」那句点名的成员不再成立）",
+    overlay: { "src/loop/termination.js": mutateReasonSet(FORCED_FINAL_GUARD_SET, { remove: ["no_tool"] }) },
+    expect: [/forced-final: docs\/host-consumer-contract\.md:\d+ 的 §7 说 `no_tool` 早就在 `FINAL_GUARD_TERMINATION_REASONS` 里/,
+      /forced-final: docs\/host-consumer-contract_cn\.md:\d+ 的 §7 说 `no_tool` 早就在 `FINAL_GUARD_TERMINATION_REASONS` 里/],
+    expectFiles: [CONTRACT_EN, CONTRACT_CN],
+  },
+  {
+    label: "#677（#475・恢复证）：中英两侧都换成同义改写（五条腿一条不少）⇒ 绿（闸咬语义，不咬措辞）",
+    overlay: {
+      [CONTRACT_EN]: mutateForcedFinalEligibility(CONTRACT_EN, () => FORCED_FINAL_CANON[CONTRACT_EN]),
+      [CONTRACT_CN]: mutateForcedFinalEligibility(CONTRACT_CN, () => FORCED_FINAL_CANON[CONTRACT_CN]),
+    },
+    expectGreen: true,
+  },
+  {
+    label: "#677（#475）变异器空转证：§7 那段不在目标文档里时，必须判「变异没落上」而不是假绿（#210 R2）",
+    overlay: {
+      "docs/testing.md": mutateForcedFinalEligibility(CONTRACT_EN, () => FORCED_FINAL_FLAT[CONTRACT_EN]),
+    },
+    expectMutateMiss: true,
   },
 ];
 
+
 /** #279：自测用例数的**下限**（只许涨不许降）。少了就是有用例被删 / 被整例跳过——那正是
  *  「拿跳过换全绿」的溃败方向，与棘轮基线同理：降下限必须写理由，不能默默降。 */
-const MIN_SELF_TEST_CASES = 99;   // #677 又加了一族「套件清单 unknownSlot」反向证/放行证；工单 261021-03 B1 加了 6 例前缀反向证（实测 **109** 例：#337 又加 2 例目录规则反向证，修前 95 例；#391 R4 又加 6 例 `cli-flags` 反向证/放行证；下限留余量给并行分支，见上：别按当天条数写死）
+const MIN_SELF_TEST_CASES = 99;   // #677 加了两族反向证/放行证（「套件清单 unknownSlot」+「强制收尾资格 #475」）；工单 261021-03 B1 加了 6 例前缀反向证（实测 **109** 例：#337 又加 2 例目录规则反向证，修前 95 例；#391 R4 又加 6 例 `cli-flags` 反向证/放行证；下限留余量给并行分支，见上：别按当天条数写死）
 
 function runSelfTest() {
   const run = () => collectAllDrift();
