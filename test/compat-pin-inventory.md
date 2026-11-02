@@ -768,7 +768,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-observer-isolation.test.js` | 4 | `completion`×2, `context`×1, `reflection`×1 |
 | `test/loop-run-state-cells.test.js` | 0 | |
 | `test/loop-termination-reason-cell.test.js` | 4 | `completion`×2, `stallDetection`×2 |
-| `test/cli-process.test.js` | 3 | `prompt`×3 |
+| `test/cli-process.test.js` | 5 | `prompt`×5 |
 | `test/e2e/upstream.test.js` | 2 | `onDelta`×5, `onUsage`×2, `completion`×1, `onEvent`×1, `stallDetection`×1 |
 | `test/examples/erix-run-notes-lifecycle.test.js` | 3 | `tools`×3 |
 | `test/loop-forced-final-by-state-475.test.js` | 3 | `completion`×3 |

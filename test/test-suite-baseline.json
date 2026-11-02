@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "subject": "npm test\uff08node --test\uff09\u81ea\u5df1\u6253\u5370\u7684 TAP \u6c47\u603b\u884c\uff1a`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
-  "truth": "\u771f\u503c = \u5f53\u6b21 `node --test` \u6253\u5370\u7684\u6c47\u603b\u884c\uff08\u547d\u4ee4\u73b0\u7b97\uff0c\u968f\u73af\u5883\u53d8\uff1a\u771f\u4e0a\u6e38\u95e8\u7981\u5f00\u6ca1\u5f00\u3001pi \u88c5\u8f7d\u5668\u88c5\u6ca1\u88c5\uff0c\u90fd\u4f1a\u6539 skipped\uff09\u3002\u672c\u6587\u4ef6\u662f**\u671f\u671b\u503c + \u4e0a\u9650**\uff0c\u4e0d\u662f\u5b9e\u6d4b\u6284\u4ef6\uff1a`expect.tests` \u5fc5\u987b\u9010\u5b57\u76f8\u7b49\u3001`expect.fail` \u5fc5\u987b\u4e3a 0\u3001`expect.maxSkipped` \u53ea\u8bb8\u4e0d\u4f4e\u4e8e\u5b9e\u6d4b\u3002\u6570\u5b57\u6f02\u4e86\u53ea\u6709\u4e24\u6761\u5408\u6cd5\u5904\u7f6e\u2014\u2014\u6709\u610f\u589e\u5220\u7528\u4f8b\u5c31\u540c\u7247\u6539\u8fd9\u91cc\u5e76\u8865\u4e00\u6761 observations\uff08\u5199\u6e05 commit / \u73af\u5883 / \u4e3a\u4ec0\u4e48\u5dee\uff09\uff0c\u610f\u5916\u7684\u5c31\u4fee\u56de\u53bb\uff1b**\u7edd\u4e0d\u8bb8\u4e3a\u4e86\u5bf9\u4e0a\u6570\u5b57\u53bb\u6539\u6d4b\u8bd5**\uff08\u52a0 skip\u3001\u5220\u7528\u4f8b\u3001\u628a\u65ad\u8a00\u5220\u6210\u6052\u771f\uff09\u3002\u672c\u6587\u4ef6\u6ca1\u6709 `--sync`\uff1a\u673a\u5668\u53ea\u8bfb\u5b83\uff0c\u4e0d\u6539\u5b83\u3002",
+  "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
+  "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 上限**，不是实测抄件：`expect.tests` 必须逐字相等、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3333,
+    "tests": 3335,
     "fail": 0,
     "maxSkipped": 15
   },
-  "skipCeilingWhy": "\u4e0a\u9650\u53d6\u7684\u662f**\u5df2\u91cf\u5230\u7684\u6700\u5927\u73af\u5883**\uff08CI\uff09\u3002CI \u955c\u50cf\u91cc\u6ca1\u88c5 @earendil-works/pi-coding-agent\uff0c\u90a3\u4e24\u6761\u88c5\u8f7d\u5668\u7528\u4f8b\u6309\u73af\u5883\u8df3\u8fc7\uff0c\u4e8e\u662f CI \u6bd4\u672c\u5730\u591a 2 \u6761 skip\uff1b\u4e0a\u9650\u6309 CI \u5b9a\uff0c\u672c\u5730\u8df3\u5f97\u66f4\u5c11\u662f\u7eff\uff08\u68d8\u8f6e\u65b9\u5411\uff1a\u591a\u8df3\u624d\u7ea2\uff09\u3002\u62ac\u4e0a\u9650\u8981\u5199\u6e05\u7406\u7531\u5e76\u540c\u7247\u6539\u8fd9\u4e00\u683c\u3002",
+  "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
   "observations": [
     {
       "env": "ci",
@@ -21,7 +21,7 @@
       "skipped": 14,
       "todo": 0,
       "cancelled": 0,
-      "why": "CI \u5e72\u51c0\u68c0\u51fa\uff1a\u6ca1\u6709 @earendil-works/pi-coding-agent \u21d2 \u4e24\u6761\u88c5\u8f7d\u5668\u7528\u4f8b\u6309\u73af\u5883\u8df3\u8fc7\uff08\u672c\u5730\u88c5\u4e86 \u21d2 \u5c11\u4e24\u6761 skip\uff09\uff0c\u6240\u4ee5 pass \u6bd4\u672c\u5730\u5c11 2\u3001skipped \u591a 2\uff1btests \u4e0e\u672c\u5730\u76f8\u540c\u3002"
+      "why": "CI 干净检出：没有 @earendil-works/pi-coding-agent ⇒ 两条装载器用例按环境跳过（本地装了 ⇒ 少两条 skip），所以 pass 比本地少 2、skipped 多 2；tests 与本地相同。"
     },
     {
       "env": "local",
@@ -33,7 +33,7 @@
       "skipped": 12,
       "todo": 0,
       "cancelled": 0,
-      "why": "\u5f00\u53d1\u673a\u88c5\u4e86 pi-coding-agent\uff08PI_CODING_AGENT_ROOT \u53ef\u89e3\u6790\uff09\u21d2 \u90a3\u4e24\u6761\u4e0d\u8df3\u8fc7\uff1b\u5176\u4f59 12 \u6761 skip \u5168\u662f\u771f\u4e0a\u6e38/\u771f relay \u95e8\u7981\u672a\u5f00\uff08ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE\uff09\u3002"
+      "why": "开发机装了 pi-coding-agent（PI_CODING_AGENT_ROOT 可解析）⇒ 那两条不跳过；其余 12 条 skip 全是真上游/真 relay 门禁未开（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE）。"
     },
     {
       "env": "local",
@@ -45,7 +45,7 @@
       "skipped": 12,
       "todo": 0,
       "cancelled": 0,
-      "why": "tests +12 \u662f\u6709\u610f\u7684\u589e\u5220\uff1a#648 \u65b0\u589e test/loop-guard-verdict-648.test.js\uff086 \u4f8b\uff09\u4e0e #518/#297 \u65b0\u589e test/loop-empty-content-fragment.test.js\uff086 \u4f8b\uff09\u3002skip \u4ecd\u662f 12 \u6761\u771f\u4e0a\u6e38/\u771f relay \u95e8\u7981\uff08ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE\uff09\u3002"
+      "why": "tests +12 是有意的增删：#648 新增 test/loop-guard-verdict-648.test.js（6 例）与 #518/#297 新增 test/loop-empty-content-fragment.test.js（6 例）。skip 仍是 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE）。"
     },
     {
       "env": "ci",
@@ -59,7 +59,7 @@
       "skipped": 14,
       "todo": 0,
       "cancelled": 0,
-      "why": "\u540c\u63d0\u4ea4\u5728 CI \u4e0a tests \u4e0e\u672c\u5730\u76f8\u540c\uff08+12\uff09\uff0c\u4f46 `fail = 1`\uff1a`not ok - capacity\uff08#630 S3 \u6838\u5fc3\u8bc1\u636e\uff09\uff1a5 \u4e2a\u771f node \u5b50\u8fdb\u7a0b\u540c\u65f6\u62a2 2 \u4e2a\u69fd \u21d2 \u6070\u597d 2 \u4e2a\u6210\u529f`\uff08\u672c\u5730\u8fde\u8dd1 3 \u6b21\u5168\u7eff\uff09\u3002\u673a\u5236\u4e0e\u4fee\u6cd5\u89c1 issue #651 \u2014\u2014 \u767b\u8bb0\u7684 `expect.fail = 0` \u56e0\u6b64**\u6545\u610f\u4e0d\u653e\u884c**\uff0c\u8fd9\u6761\u7ea2\u8981\u7559\u7740\u76f4\u5230 #651 \u4fee\u6389\u3002"
+      "why": "同提交在 CI 上 tests 与本地相同（+12），但 `fail = 1`：`not ok - capacity（#630 S3 核心证据）：5 个真 node 子进程同时抢 2 个槽 ⇒ 恰好 2 个成功`（本地连跑 3 次全绿）。机制与修法见 issue #651 —— 登记的 `expect.fail = 0` 因此**故意不放行**，这条红要留着直到 #651 修掉。"
     },
     {
       "env": "local",
@@ -71,7 +71,7 @@
       "skipped": 12,
       "todo": 0,
       "cancelled": 0,
-      "why": "tests +2 \u662f\u6709\u610f\u7684\u589e\u5220\uff1a#296 \u65b0\u589e test/loop-296-real-adapter-400.test.js\uff08T1 \u771f OpenAI \u9002\u914d\u5668 + chat / T1b \u771f Anthropic \u9002\u914d\u5668 + chatStream\uff0c\u5404\u4e00\u6761\uff09\u3002skip \u4ecd\u662f 12 \u6761\u771f\u4e0a\u6e38/\u771f relay \u95e8\u7981\uff08ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE\uff09\uff0cmaxSkipped \u4e0a\u9650 14 \u672a\u52a8\u3002"
+      "why": "tests +2 是有意的增删：#296 新增 test/loop-296-real-adapter-400.test.js（T1 真 OpenAI 适配器 + chat / T1b 真 Anthropic 适配器 + chatStream，各一条）。skip 仍是 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），maxSkipped 上限 14 未动。"
     },
     {
       "env": "local",
@@ -83,7 +83,7 @@
       "skipped": 12,
       "todo": 0,
       "cancelled": 0,
-      "why": "tests +1 \u662f\u6709\u610f\u7684\u589e\u5220\uff1aissue #653 \u5728 test/type-check-strict-ratchet.test.js \u65b0\u589e\u4e00\u6761\u300c\u53cd\u5411\u8bc1\u4e0d\u9760\u6811\u6070\u597d\u8d34\u57fa\u7ebf\u300d\u7684\u7528\u4f8b\uff08\u628a\u526f\u672c\u57fa\u7ebf\u4e34\u65f6\u62ac\u9ad8\u3001\u65ad\u8a00\u6ce8\u5165\u5904\u6570\u4e0e\u7ea2/\u7eff\u4ecd\u6b63\u786e\uff09\u3002skip \u4ecd\u662f 12 \u6761\u771f\u4e0a\u6e38 / \u771f relay \u95e8\u7981\uff08ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE\uff09\uff0cmaxSkipped \u4e0a\u9650\u6309 CI \u53e3\u5f84\u4fdd\u6301 14\u3002"
+      "why": "tests +1 是有意的增删：issue #653 在 test/type-check-strict-ratchet.test.js 新增一条「反向证不靠树恰好贴基线」的用例（把副本基线临时抬高、断言注入处数与红/绿仍正确）。skip 仍是 12 条真上游 / 真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），maxSkipped 上限按 CI 口径保持 14。"
     },
     {
       "env": "local",
@@ -95,7 +95,7 @@
       "skipped": 12,
       "todo": 0,
       "cancelled": 0,
-      "why": "tests +7 \u662f\u6709\u610f\u7684\u589e\u5220\uff1a\u65b0\u589e test/host-consumer-probe.test.js\uff087 \u4f8b\uff0c\u9489\u5bbf\u4e3b\u6d88\u8d39\u8005\u63a2\u9488\u7684\u6574\u94fe\u8def\uff1a\u547d\u4e2d exit 1 \u5e76\u70b9\u540d / \u672a\u547d\u4e2d exit 0 / \u4e0d\u7ed9 --hosts \u21d2 \u672a\u5224\u5b9a exit 0 / \u76ee\u5f55\u4e0d\u5b58\u5728\u4e0e\u4e0d\u662f\u76ee\u5f55\u7684\u5206\u7c7b\u539f\u56e0 / --json \u540c\u4e00\u4efd\u4e8b\u5b9e / --self-test / npm script \u4e0e\u4e2d\u82f1 AGENTS \u6210\u5bf9\uff09\u3002skip \u4ecd\u662f 12 \u6761\u771f\u4e0a\u6e38 / \u771f relay \u95e8\u7981\uff08ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE\uff09\uff0c\u4e0a\u9650 14 \u4e0d\u52a8\u3002"
+      "why": "tests +7 是有意的增删：新增 test/host-consumer-probe.test.js（7 例，钉宿主消费者探针的整链路：命中 exit 1 并点名 / 未命中 exit 0 / 不给 --hosts ⇒ 未判定 exit 0 / 目录不存在与不是目录的分类原因 / --json 同一份事实 / --self-test / npm script 与中英 AGENTS 成对）。skip 仍是 12 条真上游 / 真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），上限 14 不动。"
     },
     {
       "env": "local",
@@ -107,7 +107,7 @@
       "skipped": 12,
       "todo": 0,
       "cancelled": 0,
-      "why": "\u6ce212 \u56db\u7247\u5408\u5e76\u540e\u7684\u6700\u7ec8\u6811\uff1a+7 \u63a2\u9488\u6d4b\u8bd5\uff08c2\uff09\u3001+2 \u771f\u9002\u914d\u5668 400 \u96c6\u6210\u6d4b\u8bd5\uff08c4\uff09\u3001+1 \u57fa\u7ebf\u76f8\u5bf9\u53cd\u5411\u8bc1\uff08c1\uff09\uff1bskip \u4ecd\u662f 12 \u6761\u771f\u4e0a\u6e38/\u771f relay \u95e8\u7981\u3002\u6559\u8bad\u8bb0\u5f55\uff1a\u7b2c\u4e00\u6b21\u8dd1\u8fd9\u68f5\u6811\u65f6\u6ca1\u88c5 devDependency \u21d2 typescript \u7f3a\u5931\u8ba9 4 \u6761\u4e25\u6863\u68d8\u8f6e\u7528\u4f8b\u6309\u73af\u5883\u8df3\u8fc7\uff0ctests \u76f8\u540c\u4f46 skipped \u53d8 16\u3001pass \u53d8 31 \u5c11 4 \u2014\u2014 \u300cskipped \u6da8\u4e86\u300d\u8981\u5148\u67e5\u662f\u4e0d\u662f\u81ea\u5df1\u628a\u5de5\u5177\u94fe\u8dd1\u6ca1\u4e86\uff0c\u522b\u6025\u7740\u62ac\u4e0a\u9650\u3002"
+      "why": "波12 四片合并后的最终树：+7 探针测试（c2）、+2 真适配器 400 集成测试（c4）、+1 基线相对反向证（c1）；skip 仍是 12 条真上游/真 relay 门禁。教训记录：第一次跑这棵树时没装 devDependency ⇒ typescript 缺失让 4 条严档棘轮用例按环境跳过，tests 相同但 skipped 变 16、pass 变 31 少 4 —— 「skipped 涨了」要先查是不是自己把工具链跑没了，别急着抬上限。"
     },
     {
       "env": "local",
@@ -119,7 +119,7 @@
       "skipped": 12,
       "todo": 0,
       "cancelled": 0,
-      "why": "tests +7 \u662f\u6709\u610f\u7684\u589e\u5220\uff1aissue #654 \u5728 test/examples/erix-run-async.test.js \u65b0\u589e 7 \u6761\uff08\u53cc\u4f1a\u8bdd\u590d\u73b0\u300cA \u6d3e\u5de5 B \u540e\u542f\u52a8 \u21d2 A \u6536\u5230\u300d/ orphaned / no-owner / session_shutdown quit \u4e0e reload / \u5b57\u6bb5\u6052\u5728\u573a\u4e0e\u53d6\u503c\u57df / \u6295\u9012\u4e8b\u5b9e\u5148\u4ea7\u751f\u518d\u843d\u76d8 / \u5224\u5b9a\u4e0d\u518d\u9501\u6b7b\u53bb\u91cd\u4f4d\uff09\u3002skipped \u4ecd\u662f\u90a3 12 \u6761\u771f\u4e0a\u6e38\u4e0e\u771f relay \u95e8\u7981\uff08ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE\uff09\uff0c\u672a\u65b0\u589e skip\u3002"
+      "why": "tests +7 是有意的增删：issue #654 在 test/examples/erix-run-async.test.js 新增 7 条（双会话复现「A 派工 B 后启动 ⇒ A 收到」/ orphaned / no-owner / session_shutdown quit 与 reload / 字段恒在场与取值域 / 投递事实先产生再落盘 / 判定不再锁死去重位）。skipped 仍是那 12 条真上游与真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），未新增 skip。"
     },
     {
       "env": "local",
@@ -131,7 +131,7 @@
       "skipped": 12,
       "todo": 0,
       "cancelled": 0,
-      "why": "\u5408\u5e76\u6811\u73b0\u6d4b\u91cd\u767b\uff1amerge origin/main `d6b3f09`\uff08\u6ce212 \u6536\u5c3e\uff0c\u767b\u8bb0\u8868\u90a3\u4e00\u683c\u5df2\u88ab\u5b83\u6539\u6210 3287\uff09\u8fdb\u672c PR \u4e4b\u540e\u5b9e\u6d4b\u3002= \u4e3b\u5e72 3287 + \u672c PR \u65b0\u589e 7 \u6761\uff08test/examples/erix-run-async.test.js \u7684 #654 \u4e03\u6761\uff0c\u51c0\u589e +7/-0\uff09\u3002\u672c PR \u81ea\u5df1\u5728 `8f52738` \u90a3\u68f5\u6811\u4e0a\u767b\u8bb0\u7684\u662f 3284\uff08= \u5f53\u65f6\u7684 main 3277 + 7\uff09\uff0c\u4e0e\u4e3b\u5e72\u7684 3287 \u540c\u683c\u53cc\u6539 \u21d2 merge-tree \u5224 CONFLICT\uff0c\u6309\u672c\u6587\u4ef6\u300c\u5408\u5e76\u540e\u91cd\u8dd1\u73b0\u6d4b\u91cd\u767b\u300d\u90a3\u6761\u5904\u7f6e\uff0c\u4e0d\u6284\u4efb\u4f55\u4e00\u8fb9\u3002skipped \u4ecd\u662f\u90a3 12 \u6761\u771f\u4e0a\u6e38\u4e0e\u771f relay \u95e8\u7981\uff0c\u672a\u65b0\u589e skip\u3002"
+      "why": "合并树现测重登：merge origin/main `d6b3f09`（波12 收尾，登记表那一格已被它改成 3287）进本 PR 之后实测。= 主干 3287 + 本 PR 新增 7 条（test/examples/erix-run-async.test.js 的 #654 七条，净增 +7/-0）。本 PR 自己在 `8f52738` 那棵树上登记的是 3284（= 当时的 main 3277 + 7），与主干的 3287 同格双改 ⇒ merge-tree 判 CONFLICT，按本文件「合并后重跑现测重登」那条处置，不抄任何一边。skipped 仍是那 12 条真上游与真 relay 门禁，未新增 skip。"
     },
     {
       "env": "local",
@@ -143,7 +143,7 @@
       "skipped": 12,
       "todo": 0,
       "cancelled": 0,
-      "why": "tests +8 \u662f\u6709\u610f\u7684\u589e\u5220\uff08issue #657\uff09\uff1atest/compaction-strategy-fallback.test.js \u4ece 4 \u683c\u6da8\u5230 8 \u683c\uff08+4\uff1a\u7f3a\u5931\u7684\u90a3\u4e00\u683c\u3001\u771f\u503c\u8868\u524d\u4e24\u884c\u3001\u7b2c 4 \u884c\u300c\u65e0\u952e\u300d\u3001strategyName \u2194 layers \u4ea4\u53c9\u9501\uff09\uff0c\u65b0\u589e test/compact/fold-facts-text-657.test.js\uff08+4\uff1a\u6210\u529f\u8def\u5f84\u7684 text \u4e0d\u542b\u4efb\u52a1\u539f\u6587 / increment \u9010\u5b57\u4e0d\u53d8 / \u964d\u7ea7\u8def\u5f84\u53cd\u5411\u9501 / compactionStats.foldSummary.text \u4ecd\u7f3a\u5e2d\uff09\u3002skip \u4ecd\u662f 12 \u6761\u771f\u4e0a\u6e38/\u771f relay \u95e8\u7981\uff08ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE\uff09\uff0c\u4e0a\u9650 14 \u4e0d\u52a8\u3002"
+      "why": "tests +8 是有意的增删（issue #657）：test/compaction-strategy-fallback.test.js 从 4 格涨到 8 格（+4：缺失的那一格、真值表前两行、第 4 行「无键」、strategyName ↔ layers 交叉锁），新增 test/compact/fold-facts-text-657.test.js（+4：成功路径的 text 不含任务原文 / increment 逐字不变 / 降级路径反向锁 / compactionStats.foldSummary.text 仍缺席）。skip 仍是 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），上限 14 不动。"
     },
     {
       "env": "local",
@@ -155,7 +155,7 @@
       "skipped": 12,
       "todo": 0,
       "cancelled": 0,
-      "why": "\u89c2\u5bdf\u6811 = d6c43be208064d77167b6b047f3f55efd4e588dd\uff08\u542b\u672c\u7247\u6d4b\u8bd5\u6539\u52a8\uff09\uff1btests +1 \u662f\u6709\u610f\u7684\u589e\u5220\uff08issue #657 \u843d\u5730\u540e\u7684\u8986\u76d6\u7f3a\u53e3\uff09\uff1atest/compaction-strategy-fallback.test.js \u4ece 8 \u683c\u6da8\u5230 9 \u683c\uff08+1\uff1a\u300c\u771f\u503c\u8868\u7b2c\u4e00\u884c\u7684\u5bbf\u4e3b\u5bf9\u8c61\u534a\u8fb9\u300d\u2014\u2014\u5bbf\u4e3b\u81ea\u5e26 name: \"host-strategy\" \u7684\u7b56\u7565\u5bf9\u8c61\u771f\u7684\u6298\u4e86 \u22651 \u8f6e \u21d2 strategyName \u4e0e foldedFacts.strategy \u90fd\u5199\u5b83\u81ea\u5df1\u7684\u540d\u5b57\uff1b\u540c\u4e00\u683c\u987a\u5e26\u9489\u4f4f\u300c\u7b56\u7565\u88ab\u95ee\u4e86\u4f46\u4e00\u8f6e\u6ca1\u6298 \u21d2 \u65e0\u952e\u300d\uff0c\u90a3\u662f\u53cd\u5411\u8bc1\u7684\u951a\u70b9\uff09\u3002\u5176\u4f59\u6587\u4ef6\u7684\u683c\u6570\u4e0d\u52a8\uff1bskip \u4ecd\u662f 12 \u6761\u771f\u4e0a\u6e38/\u771f relay \u95e8\u7981\uff08ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE\uff09\uff0c\u4e0a\u9650 14 \u4e0d\u52a8\u3002"
+      "why": "观察树 = d6c43be208064d77167b6b047f3f55efd4e588dd（含本片测试改动）；tests +1 是有意的增删（issue #657 落地后的覆盖缺口）：test/compaction-strategy-fallback.test.js 从 8 格涨到 9 格（+1：「真值表第一行的宿主对象半边」——宿主自带 name: \"host-strategy\" 的策略对象真的折了 ≥1 轮 ⇒ strategyName 与 foldedFacts.strategy 都写它自己的名字；同一格顺带钉住「策略被问了但一轮没折 ⇒ 无键」，那是反向证的锚点）。其余文件的格数不动；skip 仍是 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），上限 14 不动。"
     },
     {
       "env": "local",
@@ -167,7 +167,7 @@
       "skipped": 12,
       "todo": 0,
       "cancelled": 0,
-      "why": "\u5408\u5e76 `origin/main` `cbb695c` \u4e4b\u540e\u4e24\u8fb9\u7528\u4f8b\u589e\u5220\u53e0\u52a0\u540e\u7684\u5b9e\u6d4b\u503c\uff08\u672c\u7247 #657 \u7684 +8/+1 \u4e0e\u4e0a\u6e38 21 \u4e2a\u63d0\u4ea4\u7684 +2/+1/+7/+1/+7 \u53e0\u52a0\uff1bmerge-tree \u5224 CONFLICT\uff0c\u6309\u767b\u8bb0\u8868\u300c\u5408\u5e76\u540e\u91cd\u8dd1\u73b0\u6d4b\u91cd\u767b\u300d\u5904\u7f6e\uff0c\u4e0d\u6284\u4efb\u4f55\u4e00\u8fb9\uff09\u3002numbers \u9010\u5b57\u6765\u81ea `npm test` \u7684 TAP \u6c47\u603b\u884c\uff08\u65e5\u5fd7 /tmp/merge657-test.log \u7b2c 21024 \u884c\u8d77\uff09\uff0c\u7ecf scripts/suite-summary-reconcile.mjs \u7684 parseSummaries/pickSummary \u76f4\u63a5\u53d6\u51fa\uff0c\u975e\u624b\u6284\u3002skipped \u4ecd\u662f 12 \u6761\u771f\u4e0a\u6e38/\u771f relay \u95e8\u7981\uff08ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE\uff09\uff0cmaxSkipped \u4e0a\u9650 14 \u4e0d\u52a8\u3002"
+      "why": "合并 `origin/main` `cbb695c` 之后两边用例增删叠加后的实测值（本片 #657 的 +8/+1 与上游 21 个提交的 +2/+1/+7/+1/+7 叠加；merge-tree 判 CONFLICT，按登记表「合并后重跑现测重登」处置，不抄任何一边）。numbers 逐字来自 `npm test` 的 TAP 汇总行（日志 /tmp/merge657-test.log 第 21024 行起），经 scripts/suite-summary-reconcile.mjs 的 parseSummaries/pickSummary 直接取出，非手抄。skipped 仍是 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），maxSkipped 上限 14 不动。"
     },
     {
       "env": "ci",
@@ -179,7 +179,7 @@
       "skipped": 14,
       "todo": 0,
       "cancelled": 0,
-      "why": "CI \u5e72\u51c0\u68c0\u51fa\uff08GitHub Actions\uff0cnode 22 = \u58f0\u660e\u7684 engines \u4e0b\u9650\uff09\u8dd1\u5728 #657 \u5206\u652f\u6811 e5ae435 \u4e0a\u3002tests 3303 \u4e0e\u672c\u5730\u9010\u5b57\u540c\u503c\uff08\u7528\u4f8b\u589e\u5220\u4e0e\u73af\u5883\u65e0\u5173\uff09\u3002skipped = 14 = expect.maxSkipped \u4e0a\u9650\uff1a\u672c\u5730\u5b9e\u6d4b 12 \u6761\u771f\u4e0a\u6e38/\u771f relay \u95e8\u7981\uff08ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE \u95f8\u95e8\u5173\uff09+ CI \u4e0a\u591a\u8df3\u7684 2 \u6761 pi \u88c5\u8f7d\u5668\u7528\u4f8b\uff0cSKIP \u539f\u56e0\u9010\u5b57\u662f\u300c\u627e\u4e0d\u5230\u5df2\u5b89\u88c5\u7684 @earendil-works/pi-coding-agent\uff08\u8bbe PI_CODING_AGENT_ROOT \u6307\u5411\u5b89\u88c5\u76ee\u5f55\uff09\u300d\uff0c\u4e24\u6761\u5206\u522b\u662f\u300cpi \u88c5\u8f7d\u5668\u80fd\u52a0\u8f7d erix-run.ts \u5e76\u6ce8\u518c erix_run\uff08\u79bb\u7ebf\uff0c\u4e0d\u89e6\u7f51\uff09\u300d\u4e0e\u300c#237\uff1aexecute() \u6bcf\u6761\u8fd4\u56de\u8def\u5f84\u7684 details \u90fd\u53ef JSON \u5e8f\u5217\u5316\uff08\u771f\u88c5\u8f7d\u5668 + \u771f execute\uff09\u300d\u2014\u2014\u5f00\u53d1\u673a\u88c5\u4e86 pi \u6240\u4ee5\u4e0d\u8df3\uff0cCI \u6ca1\u88c5\u3002\u5dee\u96c6\u662f\u6309 SKIP \u884c\u9010\u6761\u6bd4\u51fa\u6765\u7684\uff0c\u4e0d\u662f\u63a8\u7b97\u3002run = 41316498150 / job = 124877564506\uff0c\u8be5 run \u7684 `TEST-SUMMARY-VERDICT ok`\u3002"
+      "why": "CI 干净检出（GitHub Actions，node 22 = 声明的 engines 下限）跑在 #657 分支树 e5ae435 上。tests 3303 与本地逐字同值（用例增删与环境无关）。skipped = 14 = expect.maxSkipped 上限：本地实测 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE 闸门关）+ CI 上多跳的 2 条 pi 装载器用例，SKIP 原因逐字是「找不到已安装的 @earendil-works/pi-coding-agent（设 PI_CODING_AGENT_ROOT 指向安装目录）」，两条分别是「pi 装载器能加载 erix-run.ts 并注册 erix_run（离线，不触网）」与「#237：execute() 每条返回路径的 details 都可 JSON 序列化（真装载器 + 真 execute）」——开发机装了 pi 所以不跳，CI 没装。差集是按 SKIP 行逐条比出来的，不是推算。run = 41316498150 / job = 124877564506，该 run 的 `TEST-SUMMARY-VERDICT ok`。"
     },
     {
       "env": "local",
@@ -191,7 +191,7 @@
       "skipped": 12,
       "todo": 0,
       "cancelled": 0,
-      "why": "\u5408\u5e76\u6811\u73b0\u6d4b\u91cd\u767b\uff1amerge #652\uff08fbb57bc\uff09\u8fdb\u4e3b\u5e72 cbb695c \u4e4b\u540e\u5b9e\u6d4b = \u4e3b\u5e72 3294 + \u672c\u7968\u65b0\u589e 3 \u6761\uff08test/tools-delegation-capacity-652.test.js\uff1a\u534a\u5199\u7a97\u53e3\u6ce8\u5165\u7528\u4f8b / \u53cc\u7ade\u4e89\u8005\u62a2\u6700\u540e\u4e00\u683c / \u5d29\u6e83\u6b8b\u7559\u4e34\u65f6\u6587\u4ef6\uff09\uff0c\u51c0\u589e +3/-0\u3002\u4ea4\u4ed8\u8005\u6309\u5e76\u884c\u6d3e\u5355\u7ea2\u7ebf\u672a\u6539\u672c\u683c\uff08\u5176\u62a5\u544a\u628a TESTS_DRIFT +3 \u8bb0\u6210\u9884\u671f\u7ea2\uff09\uff0c\u671f\u671b\u503c\u6309\u300c\u6d3e\u751f\u6570\u53ea\u5728\u6700\u7ec8\u6811\u6d4b\u300d\u7531\u4e3b agent \u5728\u6b64\u91cd\u8dd1\u73b0\u6d4b\u586b\u5199\u3002skipped \u4ecd\u662f\u90a3 12 \u6761\u771f\u4e0a\u6e38\u4e0e\u771f relay \u95e8\u7981\uff0c\u672a\u65b0\u589e skip\u3002"
+      "why": "合并树现测重登：merge #652（fbb57bc）进主干 cbb695c 之后实测 = 主干 3294 + 本票新增 3 条（test/tools-delegation-capacity-652.test.js：半写窗口注入用例 / 双竞争者抢最后一格 / 崩溃残留临时文件），净增 +3/-0。交付者按并行派单红线未改本格（其报告把 TESTS_DRIFT +3 记成预期红），期望值按「派生数只在最终树测」由主 agent 在此重跑现测填写。skipped 仍是那 12 条真上游与真 relay 门禁，未新增 skip。"
     },
     {
       "env": "local",
@@ -203,7 +203,7 @@
       "skipped": 12,
       "todo": 0,
       "cancelled": 0,
-      "why": "\u5408\u5e76\u6811\u73b0\u6d4b\u91cd\u767b\uff1a\u6ce213 \u4e24\u652f\u7eed\u8dd1\u4ea4\u4ed8\u5408\u5165 #652 \u4e4b\u540e\uff081315975\uff09\u7684\u5b9e\u6d4b = 3297 + 7\uff08test/examples/erix-run-resume.test.js\uff0c#207 R2 \u4e03\u6761\u79bb\u7ebf\u7528\u4f8b\uff09+ 2\uff08test/static-guards.test.js \u7684 docs/maintenance \u62fc\u5199\u5206\u7c7b\u4e24\u4f8b\uff0c#644 \u2462\uff09\uff0c\u51c0\u589e +9/-0\u3002\u4e24\u4f4d\u4ea4\u4ed8\u8005\u90fd\u6309\u5e76\u884c\u6d3e\u5355\u7ea2\u7ebf\u672a\u6539\u672c\u683c\uff0c\u671f\u671b\u503c\u6309\u300c\u6d3e\u751f\u6570\u53ea\u5728\u6700\u7ec8\u6811\u6d4b\u300d\u5728\u6b64\u91cd\u8dd1\u586b\u5199\u3002skipped \u4ecd\u662f\u90a3 12 \u6761\u771f\u4e0a\u6e38\u4e0e\u771f relay \u95e8\u7981\uff0c\u672a\u65b0\u589e skip\u3002"
+      "why": "合并树现测重登：波13 两支续跑交付合入 #652 之后（1315975）的实测 = 3297 + 7（test/examples/erix-run-resume.test.js，#207 R2 七条离线用例）+ 2（test/static-guards.test.js 的 docs/maintenance 拼写分类两例，#644 ③），净增 +9/-0。两位交付者都按并行派单红线未改本格，期望值按「派生数只在最终树测」在此重跑填写。skipped 仍是那 12 条真上游与真 relay 门禁，未新增 skip。"
     },
     {
       "env": "local",
@@ -215,7 +215,7 @@
       "skipped": 12,
       "todo": 0,
       "cancelled": 0,
-      "why": "\u5408\u5e76 `origin/main` `34caaab` \u540e\u7684\u73b0\u6d4b\u91cd\u767b\uff1a\u5408\u5e76\u63d0\u4ea4 e0e5e69 \u7684\u6811\u4e0a\u8dd1 `npm test`\uff08\u65e5\u5fd7 /tmp/merge657b-test.log \u7b2c 21104 \u884c\u8d77\uff09\uff0c\u516d\u4e2a\u8ba1\u6570\u9010\u5b57\u53d6\u81ea TAP \u6c47\u603b\u884c\uff0c\u7ecf `npm run check:test-summary -- --log /tmp/merge657b-test.log` \u590d\u6838\u4e3a `TEST-SUMMARY-VERDICT ok`\u3002= \u4e0a\u6e38 34caaab \u7684 3306 + \u672c\u7247 #657 \u7684 +9\uff08compaction-strategy-fallback 4\u21929 \u7684 +5 \u4e0e fold-facts-text-657 \u7684 +4\uff09\uff0c\u4e0e\u4e0a\u4e00\u6b21\u5408\u5e76 cbb695c 3294 + 9 = 3303 \u662f\u540c\u4e00\u6761\u8d26\u3002expect.tests \u4e0d\u6284\u4efb\u4f55\u4e00\u8fb9\uff08\u4e0a\u6e38 3306 / \u672c\u7247 3303 \u540c\u683c\u53cc\u6539 \u21d2 merge-tree \u5224 CONFLICT\uff09\uff0c\u6309\u672c\u6587\u4ef6\u300c\u5408\u5e76\u540e\u91cd\u8dd1\u73b0\u6d4b\u91cd\u767b\u300d\u5904\u7f6e\u3002skipped \u4ecd\u662f\u90a3 12 \u6761\u771f\u4e0a\u6e38\u4e0e\u771f relay \u95e8\u7981\uff08ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE\uff09\uff0cmaxSkipped \u4e0a\u9650 14 \u4e0d\u52a8\u3002"
+      "why": "合并 `origin/main` `34caaab` 后的现测重登：合并提交 e0e5e69 的树上跑 `npm test`（日志 /tmp/merge657b-test.log 第 21104 行起），六个计数逐字取自 TAP 汇总行，经 `npm run check:test-summary -- --log /tmp/merge657b-test.log` 复核为 `TEST-SUMMARY-VERDICT ok`。= 上游 34caaab 的 3306 + 本片 #657 的 +9（compaction-strategy-fallback 4→9 的 +5 与 fold-facts-text-657 的 +4），与上一次合并 cbb695c 3294 + 9 = 3303 是同一条账。expect.tests 不抄任何一边（上游 3306 / 本片 3303 同格双改 ⇒ merge-tree 判 CONFLICT），按本文件「合并后重跑现测重登」处置。skipped 仍是那 12 条真上游与真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），maxSkipped 上限 14 不动。"
     },
     {
       "env": "local",
@@ -227,7 +227,7 @@
       "skipped": 12,
       "todo": 0,
       "cancelled": 0,
-      "why": "tests +8 \u662f\u6709\u610f\u7684\u589e\u5220\uff08issue #658 / #659 \u5408\u6210\u4e00\u7247\uff09\uff1atest/examples/erix-run-async.test.js \u65b0\u589e 8 \u6761 \u2014\u2014 #659 \u7b2c1\u683c 4 \u6761\uff08\u6863\u4f4d\u662f\u663e\u5f0f\u5951\u7ea6 / \u4e09\u6863\u8d70\u5b8c\u5c31\u6210\u529f\u4e14\u6bcf\u6863\u91cd\u7b97 isIdle / \u7528\u5c3d\u4e09\u6863\u5c31\u505c / \u91cd\u8bd5\u5b9a\u65f6\u5668\u4e0e\u770b\u95e8\u72d7\u540c\u4e00\u4efd job \u751f\u547d\u5468\u671f\uff09\u3001\u7b2c2\u683c 2 \u6761\uff08rearmIfUnstarted \u5355\u5143\u7ea7\u6709\u754c\u8bed\u4e49 / \u6269\u5c55\u7ea7 agent_end \u4e0e session_start \u4e24\u6761\u8865\u507f\u56de\u8def\uff09\u3001\u7b2c3\u683c 1 \u6761\uff08sent \u7684\u4e0a\u754c\uff1api \u8fd4\u56de void \u4e0d\u7b97\u5df2\u9001\u8fbe\uff0c\u53ea\u6709 agent_start \u662f\u786e\u8ba4\uff1b\u540c\u4e00\u6761\u8fd8\u9489\u4f4f README \u4e0e jobs \u6ce8\u91ca\u91cc\u7684\u5b57\u9762\u53e3\u5f84\uff09\u3001\u7b2c5\u683c 1 \u6761\uff08getSessionId() \u771f\u629b\u5f02\u5e38 \u21d2 no-owner \u4f46\u76d8\u4e0a\u5e26\u6839\u56e0\uff09\uff1b\u53e6\u6709\u4e24\u6761\u662f**\u6539\u5199\u4e0d\u662f\u65b0\u589e**\uff08#234 \u673a\u52366 \u6539\u6210 #658 \u7684\u6309\u5f52\u5c5e\u6536\u53e3\u3001#654 \u90a3\u6761 reload \u7528\u4f8b\u6539\u6210\u65ad\u8a00\u7a97\u53e3\u5185\u7ed3\u7b97\u7684\u5931\u8d25\u4e8b\u5b9e\uff09\uff0c#207 R2\u2463 \u4e0e\u300c\u672a\u7ec8\u5c40\u6052\u5728\u573a\u300d\u53ea\u662f\u52a0\u65ad\u8a00\u3002\u6570\u5b57\u9010\u5b57\u6765\u81ea\u672c\u6b21 `npm test` \u7684 TAP \u6c47\u603b\u884c\uff08/tmp/tap.log \u7b2c 21153 \u884c\u8d77\uff09\uff0c\u7ecf `npm run check:test-summary -- --log /tmp/tap.log` \u53d6\u51fa\uff08\u540c\u4e00\u4efd\u65e5\u5fd7\u91cc pass=3311 / skipped=12\uff09\u3002skipped \u4ecd\u662f\u90a3 12 \u6761\u771f\u4e0a\u6e38\u4e0e\u771f relay \u95e8\u7981\uff08ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE\uff09\uff0c\u672a\u65b0\u589e skip\uff0cmaxSkipped \u4e0a\u9650 14 \u4e0d\u52a8\u3002"
+      "why": "tests +8 是有意的增删（issue #658 / #659 合成一片）：test/examples/erix-run-async.test.js 新增 8 条 —— #659 第1格 4 条（档位是显式契约 / 三档走完就成功且每档重算 isIdle / 用尽三档就停 / 重试定时器与看门狗同一份 job 生命周期）、第2格 2 条（rearmIfUnstarted 单元级有界语义 / 扩展级 agent_end 与 session_start 两条补偿回路）、第3格 1 条（sent 的上界：pi 返回 void 不算已送达，只有 agent_start 是确认；同一条还钉住 README 与 jobs 注释里的字面口径）、第5格 1 条（getSessionId() 真抛异常 ⇒ no-owner 但盘上带根因）；另有两条是**改写不是新增**（#234 机制6 改成 #658 的按归属收口、#654 那条 reload 用例改成断言窗口内结算的失败事实），#207 R2④ 与「未终局恒在场」只是加断言。数字逐字来自本次 `npm test` 的 TAP 汇总行（/tmp/tap.log 第 21153 行起），经 `npm run check:test-summary -- --log /tmp/tap.log` 取出（同一份日志里 pass=3311 / skipped=12）。skipped 仍是那 12 条真上游与真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），未新增 skip，maxSkipped 上限 14 不动。"
     },
     {
       "env": "local",
@@ -239,7 +239,7 @@
       "skipped": 12,
       "todo": 0,
       "cancelled": 0,
-      "why": "tests +5 \u662f\u6709\u610f\u7684\u589e\u5220\uff08issue #665\uff09\uff1atest/examples/erix-run-async.test.js \u65b0\u589e 5 \u6761 \u2014\u2014 \u56db\u6761\u53ef\u89c1\u6587\u6848\u5206\u652f\uff08failed \u5e26\u6839\u56e0\u4e0e\u5df2\u91cd\u8bd5\u6b21\u6570 / orphaned \u8bf4\u6e05 owner \u4f1a\u8bdd\u5df2\u4e0d\u5728\u5e76\u70b9\u540d\u76ee\u6807 / no-owner \u5e26 ownerSessionError \u539f\u6587\u4e0e\u300c\u6ca1\u6709\u771f\u5f02\u5e38\u5c31\u662f null\u300d\u4e24\u6761 / sent \u65ad\u8a00\u6587\u6848\u91cc\u8fde marker \u90fd\u4e0d\u51fa\u73b0\uff09+ \u4e00\u6761\u300c\u4e09\u6863\u91cd\u8bd5\u540e\u53ea\u7559\u6700\u540e\u4e00\u6761\u8bca\u65ad\uff08\u539f\u4f4d\u66ff\u6362\uff0c\u4e0d\u7d2f\u79ef\uff09\u300d\uff1b\u53e6\u6709\u4e00\u6761\u662f**\u52a0\u65ad\u8a00\u4e0d\u662f\u65b0\u589e**\uff08#654\u300c\u672a\u7ec8\u5c40\u6052\u5728\u573a\u300d\u90a3\u6761\u628a deliveryNote \u4e5f\u5217\u8fdb\u6052\u5728\u573a\u6e05\u5355\uff09\u3002\u6570\u5b57\u9010\u5b57\u6765\u81ea\u672c\u6b21 `npm test` \u7684 TAP \u6c47\u603b\u884c\uff08\u540c\u4e00\u4efd\u65e5\u5fd7 `/tmp/tap-665.log`\uff09\uff0c\u7ecf `npm run check:test-summary -- --log /tmp/tap-665.log` \u53d6\u51fa\uff08`TEST-SUMMARY-VERDICT ok`\uff0c\u540c\u4e00\u4efd\u65e5\u5fd7\u91cc pass=3316 / skipped=12\uff09\u3002\u26a0 \u8fd9\u91cc\u4e0d\u5199\u65e5\u5fd7\u884c\u53f7\uff1aTAP \u65e5\u5fd7\u7684\u884c\u53f7\u4f1a\u968f\u4efb\u610f\u4e00\u6761\u7528\u4f8b\u7684\u6253\u5370\u884c\u6570\u6f02\uff08\u672c\u7247\u4e24\u6b21\u8dd1\u540c\u4e00\u6761\u547d\u4ee4\u5c31\u5dee\u4e86\u4e00\u884c\uff09\uff0c\u6284\u884c\u53f7\u53ea\u4f1a\u5236\u9020\u4e00\u4efd\u4f1a\u8fc7\u671f\u7684\u5f15\u7528\u3002skipped \u4ecd\u662f\u90a3 12 \u6761\u771f\u4e0a\u6e38\u4e0e\u771f relay \u95e8\u7981\uff08ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE\uff09\uff0c\u672a\u65b0\u589e skip\uff0cmaxSkipped \u4e0a\u9650 14 \u4e0d\u52a8\u3002"
+      "why": "tests +5 是有意的增删（issue #665）：test/examples/erix-run-async.test.js 新增 5 条 —— 四条可见文案分支（failed 带根因与已重试次数 / orphaned 说清 owner 会话已不在并点名目标 / no-owner 带 ownerSessionError 原文与「没有真异常就是 null」两条 / sent 断言文案里连 marker 都不出现）+ 一条「三档重试后只留最后一条诊断（原位替换，不累积）」；另有一条是**加断言不是新增**（#654「未终局恒在场」那条把 deliveryNote 也列进恒在场清单）。数字逐字来自本次 `npm test` 的 TAP 汇总行（同一份日志 `/tmp/tap-665.log`），经 `npm run check:test-summary -- --log /tmp/tap-665.log` 取出（`TEST-SUMMARY-VERDICT ok`，同一份日志里 pass=3316 / skipped=12）。⚠ 这里不写日志行号：TAP 日志的行号会随任意一条用例的打印行数漂（本片两次跑同一条命令就差了一行），抄行号只会制造一份会过期的引用。skipped 仍是那 12 条真上游与真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE），未新增 skip，maxSkipped 上限 14 不动。"
     },
     {
       "env": "local",
@@ -251,16 +251,16 @@
       "skipped": 13,
       "todo": 0,
       "cancelled": 0,
-      "why": "tests +1 \u662f\u6709\u610f\u7684\u589e\u5220\uff08#665 \u7684\u771f\u4e0a\u6e38\u9762\uff09\uff1aexamples/pi-extension/erix-run-e2e.test.mjs \u65b0\u589e\u4e00\u6761**\u591a\u4f1a\u8bdd**\u771f\u4e0a\u6e38\u7528\u4f8b\uff08A \u6d3e\u5de5\u3001B \u540e session_start \u21d2 \u901a\u77e5\u53ea\u56de A\uff1bdelivery/notifyTargetSessionId/deliveryNote \u6052\u5728\u573a\uff09\u3002\u5b83\u662f gated \u683c\uff1a\u95f8\u95e8\u5173\u7740\u65f6 skip \u4f46**\u4ecd\u8ba1\u5165 tests**\uff0c\u6240\u4ee5 skipped \u4ece 12 \u53d8 13\uff08\u2264 maxSkipped 14\uff0c\u4e0a\u9650\u4e0d\u52a8\uff09\u3002\u6570\u5b57\u9010\u5b57\u6765\u81ea\u672c\u6b21 `npm test` \u7684 TAP \u6c47\u603b\u884c\uff08\u540c\u4e00\u4efd\u65e5\u5fd7 /tmp/tap-665b.log\uff09\uff0c\u7ecf `npm run check:test-summary -- --log /tmp/tap-665b.log` \u590d\u6838\u4e3a `TEST-SUMMARY-VERDICT ok`\u3002\u26a0 \u4e0d\u5199\u65e5\u5fd7\u884c\u53f7\uff1aTAP \u884c\u53f7\u4f1a\u968f\u4efb\u610f\u4e00\u6761\u7528\u4f8b\u7684\u6253\u5370\u884c\u6570\u6f02\uff08#665 \u524d\u4e00\u7247\u5df2\u8e29\u8fc7\uff09\u3002"
+      "why": "tests +1 是有意的增删（#665 的真上游面）：examples/pi-extension/erix-run-e2e.test.mjs 新增一条**多会话**真上游用例（A 派工、B 后 session_start ⇒ 通知只回 A；delivery/notifyTargetSessionId/deliveryNote 恒在场）。它是 gated 格：闸门关着时 skip 但**仍计入 tests**，所以 skipped 从 12 变 13（≤ maxSkipped 14，上限不动）。数字逐字来自本次 `npm test` 的 TAP 汇总行（同一份日志 /tmp/tap-665b.log），经 `npm run check:test-summary -- --log /tmp/tap-665b.log` 复核为 `TEST-SUMMARY-VERDICT ok`。⚠ 不写日志行号：TAP 行号会随任意一条用例的打印行数漂（#665 前一片已踩过）。"
     },
     {
       "date": "2026-11-02",
-      "command": "CI\uff08GitHub Actions node 22\uff0cERIX_E2E_REAL \u672a\u5f00\uff09\u2192 npm run check:test-summary -- --log \"$RUNNER_TEMP/test-suite.log\"",
-      "tree": "PR #667\uff08\u771f\u4e0a\u6e38 e2e \u8865 #654 \u591a\u4f1a\u8bdd\u4e00\u683c\uff09",
+      "command": "CI（GitHub Actions node 22，ERIX_E2E_REAL 未开）→ npm run check:test-summary -- --log \"$RUNNER_TEMP/test-suite.log\"",
+      "tree": "PR #667（真上游 e2e 补 #654 多会话一格）",
       "tests": 3329,
       "fail": 0,
       "skipped": 15,
-      "note": "\u62ac maxSkipped 14 \u2192 15\u3002\u65b0\u589e\u90a3\u6761\u771f\u4e0a\u6e38 e2e \u683c\u8d70 ERIX_E2E_REAL \u95f8\u95e8\uff0c\u79bb\u7ebf\u6bb5\u5fc5\u987b skip\uff08npm test \u8981\u79bb\u7ebf\u53ef\u91cd\u590d\uff09\uff0c\u800c **skip \u8ba1\u6570\u53ea\u5728 CI \u73af\u5883\u624d\u8d8a\u8fc7\u4e0a\u9650**\uff1a\u672c\u673a\u540c\u4e00\u6761\u547d\u4ee4\u662f 13\uff08\u672c\u673a\u6709\u82e5\u5e72 CI \u6ca1\u6709\u7684\u683c\u5b50\u8dd1\u4e86\u771f\u503c\uff09\uff0c\u6240\u4ee5 worker \u672c\u5730 `VERDICT ok` \u662f\u771f\u8bdd\uff0c\u53ea\u662f\u5b83\u6d4b\u7684\u662f\u53e6\u4e00\u4e2a\u73af\u5883\u2014\u2014\u8fd9\u6b63\u662f\u672c\u4ed3\u628a\u4e0a\u9650\u5b9a\u4e49\u6210\u300c\u8fc4\u4eca\u6d4b\u5230\u7684\u6700\u5927\u73af\u5883\u300d\u800c\u4e0d\u662f\u300c\u672c\u673a\u6d4b\u5230\u591a\u5c11\u300d\u7684\u539f\u56e0\u3002**\u6ca1\u6709**\u628a\u7528\u4f8b\u6539\u6210\u975e skip \u6765\u51d1\u7eff\uff1a\u95f8\u95e8\u6ca1\u5f00\u5c31 skip \u662f\u8fd9\u6761\u683c\u7684\u6b63\u786e\u884c\u4e3a\uff0c\u4e3a\u4e86\u8ba9\u8ba1\u6570\u597d\u770b\u800c\u5728\u79bb\u7ebf\u8dd1\u771f\u4e0a\u6e38\u624d\u662f\u9519\u7684\u3002"
+      "note": "抬 maxSkipped 14 → 15。新增那条真上游 e2e 格走 ERIX_E2E_REAL 闸门，离线段必须 skip（npm test 要离线可重复），而 **skip 计数只在 CI 环境才越过上限**：本机同一条命令是 13（本机有若干 CI 没有的格子跑了真值），所以 worker 本地 `VERDICT ok` 是真话，只是它测的是另一个环境——这正是本仓把上限定义成「迄今测到的最大环境」而不是「本机测到多少」的原因。**没有**把用例改成非 skip 来凑绿：闸门没开就 skip 是这条格的正确行为，为了让计数好看而在离线跑真上游才是错的。"
     },
     {
       "env": "local",
@@ -272,7 +272,19 @@
       "skipped": 13,
       "todo": 0,
       "cancelled": 0,
-      "why": "tests +4 \u662f\u6709\u610f\u7684\u589e\u5220\uff08#670 \u56db\u683c\uff09\uff1a\u2460 test/examples/erix-run-async.test.js \u65b0\u589e\u300c\u6839\u56e0\u6b63\u6587\u542b delivery: \u21d2 \u56db\u6863\u91cd\u8bd5\u540e\u4ecd\u53ea\u6709\u4e00\u53e5\u8bca\u65ad\u300d\uff08\u7b2c 1 \u683c\uff09\uff1b\u2461 \u540c\u6587\u4ef6\u65b0\u589e\u4e24\u6761\u7b2c 4 \u683c\uff08\u5047\u6295\u9012\u53e3\u8fd4\u56de undefined / \u6295\u9012\u8c03\u7528\u70b9\u9759\u6001\u5b88\u536b\uff09\uff1b\u2462 examples/pi-extension/erix-run-e2e.test.mjs \u65b0\u589e\u4e00\u6761**\u59cb\u7ec8\u8dd1\u3001\u4e0d\u8054\u7f51**\u7684\u591a\u4f1a\u8bdd\u683c\u5f62\u72b6\u81ea\u8bc1\uff08\u5047 provider \u96f6\u5ef6\u8fdf\u7ed3\u7b97\uff0c\u91cf\u51fa\u4fee\u524d\u5f62\u72b6\u7684\u5047\u7eff\u7a97\u53e3\uff0c\u7b2c 2 \u683c\uff09\u3002skipped \u4ecd\u662f 13\uff08\u672c\u673a\u672a\u5f00 ERIX_E2E_REAL\uff1b\u65b0\u589e\u7684\u81ea\u8bc1\u683c\u4e0d\u662f gated \u683c\uff0c\u771f\u8dd1\uff09\uff0cmaxSkipped 15 \u4e0d\u52a8\u3002\u6570\u5b57\u9010\u5b57\u6765\u81ea\u672c\u6b21 `npm test` \u7684 TAP \u6c47\u603b\u884c\uff08\u65e5\u5fd7 /tmp/tap.log\uff09\uff0c\u7ecf `npm run check:test-summary -- --log /tmp/tap.log` \u590d\u6838\u4e3a `TEST-SUMMARY-VERDICT ok`\u3002\u26a0 \u4e0d\u5199 TAP \u884c\u53f7\uff1a\u884c\u53f7\u4f1a\u968f\u4efb\u610f\u4e00\u6761\u7528\u4f8b\u7684\u6253\u5370\u884c\u6570\u6f02\u3002"
+      "why": "tests +4 是有意的增删（#670 四格）：① test/examples/erix-run-async.test.js 新增「根因正文含 delivery: ⇒ 四档重试后仍只有一句诊断」（第 1 格）；② 同文件新增两条第 4 格（假投递口返回 undefined / 投递调用点静态守卫）；③ examples/pi-extension/erix-run-e2e.test.mjs 新增一条**始终跑、不联网**的多会话格形状自证（假 provider 零延迟结算，量出修前形状的假绿窗口，第 2 格）。skipped 仍是 13（本机未开 ERIX_E2E_REAL；新增的自证格不是 gated 格，真跑），maxSkipped 15 不动。数字逐字来自本次 `npm test` 的 TAP 汇总行（日志 /tmp/tap.log），经 `npm run check:test-summary -- --log /tmp/tap.log` 复核为 `TEST-SUMMARY-VERDICT ok`。⚠ 不写 TAP 行号：行号会随任意一条用例的打印行数漂。"
+    },
+    {
+      "env": "local",
+      "node": "22.23.2",
+      "commit": "71b3b52",
+      "tests": 3335,
+      "pass": 3322,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests +2 是有意的增加（#398③ 两格）：test/cli-process.test.js 新增 describe「真起 repl 子进程：裸 --require-deliverable」两格——① 模型写相对路径 report.md ⇒ 裸判据（createDeliverableChecks，按核验那一刻的进程 cwd 解析原始字符串）判 verified 且 deliverables_checked:1/failed:0；② 写完再 exec rm -f 删掉 ⇒ 同一格判 deliverables_failed:1/unverified:1。判别力实证：把 bin/repl.js 里 requireDeliverable === true 的接线断掉两格全红；把 bin/final-guard.js 裸判据缺省 exists 改成 () => true 只让 ② 红。skipped 仍 13 ≤ 上限 15（真 PTY 可用，两格都真跑，无 skip）。"
     }
   ]
 }
