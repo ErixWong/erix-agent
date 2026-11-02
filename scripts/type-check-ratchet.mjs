@@ -263,9 +263,13 @@ const BASELINE_WITH_TOOLS = 138;
 //   每片 PR 降这个常量；在此之前「strict 有几千个错」是绿的，红的是**新增**。
 // 2026-11-01（#177 刀4）两档同笔各降 1：包根 1894 → 1893、并集 2124 → 2123——同一条
 // `error.code` TS2339（理由见上面 `BASELINE_ROOT` 那条下调记录），两档在**同一次测量里**产出。
-const BASELINE_STRICT_ROOT = 1893;
+// 2026-11-02（#661 审计 A3 收尾）两档同笔各降 1：包根 1893 → 1892、并集 2123 → 2122——`src/loop/orchestrator.js`
+// 的折叠 catch 把 `unpersisted` 的两次访问合并成一次 `any` 视图读（`copyErrorCarrier` 载体化之后多出来的
+// 那一次 `compactionError.unpersisted` 不再直接点属性），同一段里 `Property 'unpersisted' does not exist on
+// type '{}'` 由 2 个减到 1 个；两档在**同一次测量里**产出（1892 / 2122）。
+const BASELINE_STRICT_ROOT = 1892;
 // 2026-11-01 重测下调 2128 → 2124（−4 = `f55eb8f` 一行 `@returns` 补 `facts`；包根档同笔复测未动）
-const BASELINE_STRICT_WITH_TOOLS = 2123;
+const BASELINE_STRICT_WITH_TOOLS = 2122;
 
 const argv = process.argv.slice(2);
 const WITH_TOOLS = argv.includes("--with-tools");
