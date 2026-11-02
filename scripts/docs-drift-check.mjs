@@ -1410,10 +1410,14 @@ function collectMarkerLiteralErrors() {
 
 // ── 2.7 `--checkJs` 棘轮**当前值** ↔ 棘轮常量（issue #274，只做最省的那一档）──────
 // 真值 = scripts/type-check-ratchet.mjs 里的两个常量；文档侧 = AGENTS 中英里**复述这两个数**的句式。
-// 本单**没做**的那两档（代价不对等，写在这里不为完成率造活）：
+// 本文件**没做**的那两档（代价不对等，写在这里不为完成率造活）：
 //   · 真跑 tsc 核 `--listFiles` 的文件数（「基线 **N** / M files」那一句里的 M）：要 spawn tsc，而
-//     check:docs 是文档门禁里跑得最勤的一条（每次文档改动），为此把 check:docs 变成十秒级不值得；
-//     棘轮自己会校文件数（issue #630 S2 / J 起该句式只校基线数，M 不再写死——写死就是一枚哑弹）。
+//     check:docs 是文档门禁里跑得最勤的一条（每次文档改动），为此把 check:docs 变成十秒级不值得。
+//     **这条对账因此不在本文件里**：它住在 `scripts/type-check-ratchet.mjs`（issue #635 ①，常量
+//     `DOC_FILE_COUNT_CLAIMS`）—— 那个脚本本来就已经量出每档的「错误总数 + 带错文件数」，所以那里的对账是
+//     **零额外 tsc 运行**；它逐处判（中英各判各的）、两档各判各的（句子里那个 N 等于哪一档的基线就按哪一档
+//     的实测 M 判），写错了 exit 1 并点名，读不到声称句 exit 2。本文件只校那个 **N**（下面
+//     `BASELINE_CLAIM_RULES` 里 `\d+ files` 那一处只认句式、不认 M），M 全部交给棘轮那一步。
 //   · 生成声明文件数（63）：那要跑 types:build，同样的理由。
 // 「历史值不误伤」是这规则的命门：AGENTS 里同时存在 142/185/218/226/261 这些**已退役的**基线值
 // （#251/#255/#265 那几段在讲棘轮降下来的过程），所以句式必须钉到「常量名 / 基线词」上，
@@ -1479,7 +1483,8 @@ const BASELINE_CLAIM_RULES = [
     // 匹配不上 ⇒ 那条规则（要求必现）让它变红得莫名其妙，而把它改成新数字又只是把哑弹往后推一格。
     // ⚠ 注释里别写那句 `required:` 字面量：`test/static-guards.test.js` 用 `\brequired:\s*true\b` 扫
     // 整块对象体，注释里出现一次就会让它的反向证（降级 required ⇒ 必须红）变成空操作。
-    // 这里只校**基线那个数**（文件数是报告信息，棘轮自己会打出来，见本文件 2.7 节那两条未做的档）。
+    // 这里只校**基线那个数**；M 由 `scripts/type-check-ratchet.mjs` 逐处对（issue #635 ①，常量
+    // `DOC_FILE_COUNT_CLAIMS`）——那条对账零额外 tsc 运行，理由见本文件 2.7 节。
     id: "「基线 **N** / M 个文件」声明",
     tier: "withTools",
     required: true,
