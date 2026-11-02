@@ -2916,10 +2916,7 @@ function nearestStrategyName(line, wordEnd, winStart, winEnd, names) {
 function compactionUnmarkedDefaultClaims(src, names, markerRes) {
   const claims = [];
   const words = compactionDefaultWords();
-  let fenced = false;
   for (const [i, line] of src.split("\n").entries()) {
-    if (/^\s*```/u.test(line)) { fenced = !fenced; continue; }
-    if (fenced) continue;   // 代码围栏里的是样例，不是声称
     if (!names.some((name) => line.includes(name))) continue;
     for (const word of words) {
       for (const m of line.matchAll(new RegExp(word.re.source, word.re.flags))) {
