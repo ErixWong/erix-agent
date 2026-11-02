@@ -1,0 +1,198 @@
+// 第 7 步 `cli-real-smoke` 的**机器可读汇总行**契约（issue #678）：生产者
+// （`scripts/cli-real-smoke.mjs`）与消费者（`scripts/release-real-check.mjs`）共用这一份格式，
+// 免得两边各写一遍正则、各有一个真相。
+//
+// 病根（#678 原话：只看 `tests=?` 会误判成「跑过但不知道证了什么」）：第 7 步跑的是
+// `scripts/cli-real-smoke.mjs`，它打的**不是** `node --test` 的 TAP，于是清单里的
+// `parseTapSummary()` 在它身上一个字段也取不到 ⇒ 汇总里只剩 `tests=? pass=? fail=? skip=?`。
+// 那个 `?` 是对的（取不到不许写 0），但它把两件完全不同的事压成同一个符号：
+// 「C1–C8 全跑了且全过」与「一条都没跑」。这一行补的就是那格空白——它把冒烟自己数出来的
+// `checks / pass / fail`（外加 `dry` / 失败 id）交给清单。
+//
+// 本模块只做三件事：
+//   1. `formatSmokeLine()`：生产者打印
+//      `RELEASE-REAL-SMOKE id=cli-real checks=8 pass=8 fail=0 dry=false failed=- status=ok`；
+//   2. `parseSmokeLine()`：消费者读回这一行；**取不到 ⇒ `undefined`，绝不补 0**（同 `parseTapSummary`
+//      的口径：写 0 会把「没摘要」读成「零失败」）；
+//   3. `checkCode()`：把 `C4 装后的 CLI 真跑了 ≥2 次工具（不是空转）` 这样的完整 id 压成 `C4`，
+//      好让 `failed=` 一栏短到能塞进一行汇总（失败时仍点得名是哪条 C 红了）。
+//
+// 两条刻意的设计：
+//   · `pass` **由 `checks - fail` 推**，不另传一个数：两处各传一个数迟早会印出
+//     「checks=8 pass=8 fail=1」这种自相矛盾的行，而这一行正是拿来判读的东西。
+//   · `checks` 是**生产者实际跑过的 `check()` 条数**（`cli-real-smoke.mjs` 里 `check()` 自己数），
+//     不是任何地方写死的 8：`--dry` 只跑 C8 ⇒ `checks=1`，将来加 C9 ⇒ 全跑时 `checks=9`。
+//     硬编码正是本票要防的第二件事（「8/8 全绿」可能只是抄来的字面量）。
+//
+// 零依赖：只用 ESM 语法本身（连 `node:` 内置都不需要），与仓内其余 `scripts/*.mjs` 同口径。
+
+/** 固定前缀。消费者按它找行；`grep '^RELEASE-REAL-SMOKE'` 必须能直接命中（行首、无日志前缀）。 */
+export const SMOKE_PREFIX = "RELEASE-REAL-SMOKE";
+
+/** 汇总行里的固定 id（第 7 步只有一条生产者）。 */
+export const SMOKE_STEP_ID = "cli-real";
+
+/** `status` 的三档：`ok` = 全过；`fail` = 有断言红；`error` = 脚本自身抛了（可能一条断言都没跑到）。 */
+export const SMOKE_STATUSES = Object.freeze(["ok", "fail", "error"]);
+
+const STATUS_SET = new Set(SMOKE_STATUSES);
+
+/**
+ * 汇总行的**必填字段**（一个都不能少）。Copilot 独立验收 PR #681 的阻断点就是这里：修前只查三个计数，
+ * 缺 `dry` / `failed` / `status` 的行被默认值补成 `dry=false` / `failed=[]` / `status=ok` ⇒ 半行读成
+ * 「全绿」。现在缺任一 ⇒ `parseSmokeLine()` 返回 `undefined`，消费端写 `cli_real=?`。
+ */
+export const REQUIRED_FIELDS = Object.freeze([
+  "id", "checks", "pass", "fail", "dry", "failed", "status",
+]);
+
+/**
+ * 把一条检查的完整 id 压成短码（`C4 …` ⇒ `C4`）。不是 `C<n>` 形状的 id 原样返回
+ * （宁可长一点，也不要把它吞成空串）。
+ *
+ * @param {unknown} id
+ * @returns {string}
+ */
+export function checkCode(id) {
+  const text = String(id ?? "").trim();
+  const found = /^(C\d+)(?![\w])/u.exec(text);
+  return found ? found[1] : text;
+}
+
+/**
+ * 拼出机器可读汇总行（生产者用）。
+ *
+ * @param {{ id?: string, checks: number, fail?: number, dry?: boolean,
+ *   failed?: string[], status?: "ok"|"fail"|"error" }} line
+ *   `checks` = 实际跑过的 `check()` 条数；`fail` = 其中红的条数；`failed` = 红的那几条的 id；
+ *   `dry` = `--dry` 真跑了没有（自报，不许把 C1–C7 未跑说成全过）。
+ * @returns {string}
+ */
+export function formatSmokeLine({
+  id = SMOKE_STEP_ID, checks, fail = 0, dry = false, failed = [], status = "ok",
+} = {}) {
+  const total = Number(checks);
+  const red = Number(fail);
+  // 生产者与消费者同一套数字判据：溢出 / 非安全整数（`"9".repeat(400)` ⇒ `Infinity`）一律不印——
+  // 那种行到了消费者手上就是 `Infinity + 0 === Infinity` 把「计数自洽」那条判据弄失效（PR #681 第二轮阻断点）。
+  if (!Number.isSafeInteger(total) || total < 0) {
+    throw new Error(`checks 必须是非负安全整数（≤ Number.MAX_SAFE_INTEGER），实际 ${JSON.stringify(checks)}`);
+  }
+  if (!Number.isSafeInteger(red) || red < 0) {
+    throw new Error(`fail 必须是非负安全整数（≤ Number.MAX_SAFE_INTEGER），实际 ${JSON.stringify(fail)}`);
+  }
+  if (red > total) {
+    throw new Error(`fail=${red} 大于 checks=${total}：自相矛盾的汇总行不如不印（红数来自 check() 结果）`);
+  }
+  if (!STATUS_SET.has(status)) {
+    throw new Error(`status 必须是 ${SMOKE_STATUSES.join(" / ")} 之一，实际 ${JSON.stringify(status)}`);
+  }
+  if (!Array.isArray(failed)) {
+    throw new Error(`failed 必须是数组（红的那几条 check id），实际 ${typeof failed}`);
+  }
+  const codes = failed.map(checkCode).filter((code) => code !== "");
+  if (codes.length !== red) {
+    throw new Error(`failed 列表 ${codes.length} 条与 fail=${red} 对不上：失败 id 与失败数必须是同一份事实`);
+  }
+  // 生产者也不许印出消费者会拒读的组合（`ok` 却有红 / `fail` 却没红）：两侧同一套不变量。
+  if (status === "ok" && red !== 0) {
+    throw new Error(`status=ok 却 fail=${red}：状态与计数打架（消费者会把这种行当没读到）`);
+  }
+  if (status === "fail" && red === 0) {
+    throw new Error("status=fail 却 fail=0：状态与计数打架（消费者会把这种行当没读到）");
+  }
+  return [
+    SMOKE_PREFIX,
+    `id=${id}`,
+    `checks=${total}`,
+    `pass=${total - red}`,
+    `fail=${red}`,
+    `dry=${dry === true ? "true" : "false"}`,
+    `failed=${codes.length > 0 ? codes.join(",") : "-"}`,
+    `status=${status}`,
+  ].join(" ");
+}
+
+/**
+ * 从子进程输出里读回汇总行（消费者用）。多条命中取**最后**一条（生产者只在收尾印一次，
+ * 取最后一条是为了万一有中间态也不被它骗）。
+ *
+ * **七个字段一个都不能少、一个都不能坏**（Copilot 独立验收 PR #681 的阻断点：修前缺 `dry` / `failed` /
+ * `status` 的行会被默认值补成 `dry=false` / `failed=[]` / `status=ok` ⇒ 半行被读成「全绿」，那正是
+ * 本票要防的假绿）。任一条不成立 ⇒ 返回 `undefined`（当「没读到」，消费方写 `cli_real=?`）：
+ * - 缺 `id` / `checks` / `pass` / `fail` / `dry` / `failed` / `status` 任一；
+ * - `id` 不是 `cli-real`（这条汇总行只属于第 7 步）；
+ * - 计数不是非负**安全整数**，或 `pass + fail !== checks`（不自洽）。溢出 / 非安全整数一律拒读：
+ *   `"9".repeat(400)` 被 `Number()` 变成 `Infinity`，而 `Infinity + 0 === Infinity` 恰好让「自洽」
+ *   那条判据失效 ⇒ `Infinity/Infinity/0` 会被当成合法计数印进汇总（PR #681 第二轮阻断点）；
+ * - `dry` 不是 `true` / `false`，`status` 不是 `ok` / `fail` / `error`；
+ * - `failed` 不是 `-` 也不是非空逗号列表（空串 / `C4,,C7` 这种空洞同样算坏行），或条数 ≠ `fail`；
+ * - `status=ok` 却 `fail > 0`、或 `status=fail` 却 `fail = 0`（状态与计数打架）；
+ * - 同一字段写两遍（`checks=1 checks=2`）或出现不是 `key=value` 的碎片。
+ *
+ * 未知的**多出来**的字段不判死（将来生产者加字段时旧消费者照旧能读）。
+ *
+ * @param {string} text
+ * @returns {{ id: string, checks: number, pass: number, fail: number, dry: boolean,
+ *   failed: string[], status: string } | undefined}
+ */
+export function parseSmokeLine(text) {
+  if (typeof text !== "string" || text === "") return undefined;
+  const line = text
+    .split("\n")
+    .map((raw) => raw.trim())
+    .filter((raw) => raw.startsWith(SMOKE_PREFIX))
+    .at(-1);
+  if (line === undefined) return undefined;
+  const fields = new Map();
+  for (const token of line.slice(SMOKE_PREFIX.length).trim().split(/\s+/u)) {
+    if (token === "") continue;
+    const at = token.indexOf("=");
+    // 不是 key=value 的碎片 ⇒ 整行当坏行（宁可显示 ?，也不许从半截行里猜出计数）。
+    if (at <= 0) return undefined;
+    const key = token.slice(0, at);
+    // 同一个字段写两遍就是自相矛盾（两处各写一个数，谁说了算？）——不猜，当没读到。
+    if (fields.has(key)) return undefined;
+    fields.set(key, token.slice(at + 1));
+  }
+  // 声明的必填字段一个都不能少：缺字段曾经被默认值补成 dry=false / failed=[] / status=ok（假绿）。
+  for (const key of REQUIRED_FIELDS) {
+    if (!fields.has(key)) return undefined;
+  }
+  if (fields.get("id") !== SMOKE_STEP_ID) return undefined;
+  const num = (key) => {
+    const raw = fields.get(key);
+    if (!/^\d+$/u.test(raw)) return undefined;
+    const value = Number(raw);
+    // 位数超长时 `Number()` 会给出 `Infinity`（而 `Infinity + 0 === Infinity` 能绕过下面的自洽判据），
+    // 2^53 以上则静默丢精度（`"9007199254740993"` → 9007199254740992）⇒ 两者都当坏行。
+    return Number.isSafeInteger(value) ? value : undefined;
+  };
+  const checks = num("checks");
+  const pass = num("pass");
+  const fail = num("fail");
+  if (checks === undefined || pass === undefined || fail === undefined) return undefined;
+  if (pass + fail !== checks) return undefined;
+  const dryRaw = fields.get("dry");
+  if (dryRaw !== "true" && dryRaw !== "false") return undefined;
+  const status = fields.get("status");
+  if (!STATUS_SET.has(status)) return undefined;
+  const failedRaw = fields.get("failed");
+  if (failedRaw !== "-" && failedRaw.split(",").some((code) => code.trim() === "")) return undefined;
+  const failed = failedRaw === "-" ? [] : failedRaw.split(",").map((code) => code.trim());
+  // 失败数与失败 id 必须是同一份事实（`fail=2 failed=C4` 这种对不上的一律当没读到）。
+  if (failed.length !== fail) return undefined;
+  // 状态与计数打架（`ok` 却有红 / `fail` 却没红）同样是坏行。`error` 不额外约束：脚本自身抛了时
+  // 可能一条断言都没跑到，也可能在红之后又抛。
+  if (status === "ok" && fail !== 0) return undefined;
+  if (status === "fail" && fail === 0) return undefined;
+  return {
+    id: fields.get("id"),
+    checks,
+    pass,
+    fail,
+    dry: dryRaw === "true",
+    failed,
+    status,
+  };
+}

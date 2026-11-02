@@ -100,6 +100,66 @@
   `test/cli-compaction-strategy-visibility-673.test.js`（假 HOME + 真 socket 假上游，靠
   `--compact-budget` + `keepRounds` 逼出真折叠），外加兜底事件的进程内钉子——CLI 按设计构造不出它
   （那里 `context.strategy` 永远是配置好的）。
+- **The pre-release checklist now shows what its installed-CLI smoke step actually proved (issue
+  #678, visibility only — no engine change, no new flag).** `ERIX_E2E_REAL=1 npm run
+  check:release:real` runs eight steps and the seventh is `scripts/cli-real-smoke.mjs`, which is not
+  a `node --test` suite: it prints its own log lines. Two things were wrong at once — the checklist's
+  TAP summary parser found nothing in it (so that step showed up as `tests=? pass=? fail=? skip=?`),
+  and that step's own `PASS`/`FAIL` lines were replayed **only when it went red**, so a green run
+  never carried its checks into the summary at all. The fix takes the **machine-readable counts
+  line** option rather than “replay the step's `PASS`/`FAIL` lines on green”. The `?` is deliberate (a
+  summary that cannot be read must never be printed as zero failures) but it made "C1–C8 all ran
+  and all passed" and "nothing ran" look identical. The smoke now ends with one machine-readable
+  line — `RELEASE-REAL-SMOKE id=cli-real checks=8 pass=8 fail=0 dry=false failed=- status=ok` — and
+  the checklist folds it into the same summary as `cli_real=<checks>/<pass>/<fail>`, adding
+  `dry=true` when that run was `--dry` (only C8 runs then, so `checks=1`; the unrun C1–C7 are never
+  counted as passed), `failed=C4,C7` naming which checks went red, and `status=error` when the
+  script itself threw (the counts can then be far below a full run, and `0/0/0` must not read as
+  green). Those counts come from the smoke's own `check()` results — never from a literal — and the
+  format plus its parser live in one shared module (`scripts/smoke-summary-line.mjs`) so producer
+  and consumer cannot drift. That line counts as readable **only** when all seven declared fields
+  are present and legal (`id=cli-real`, the three counts as **safe** integers with
+  `pass + fail = checks`, `dry`, `failed` whose length equals `fail`, `status`), so a truncated line is
+  never completed by defaults — before that rule,
+  `RELEASE-REAL-SMOKE id=cli-real checks=1 pass=1 fail=0` was accepted and silently became
+  `dry=false / failed=[] / status=ok` (a half line read as green), and a 400-digit numeric field became
+  `Infinity`, which `Infinity + 0 === Infinity` let past the consistency check so the summary printed
+  `Infinity/Infinity/0` (both caught by independent reviews on PR #681); a step that declares it
+  reports a summary but whose line is missing
+  keeps `cli_real=?` instead of being silently dropped. Nothing else moved: the TAP-fed
+  `tests/pass/fail/skip` fields keep their `?` semantics, and the gate-closed path still runs no
+  step at all. Offline suite `test/release-real-step7-678.test.js` covers the line contract
+  (including the malformed and self-contradictory shapes that must parse as "not read"), the four
+  summary shapes, a real `--dry` run against a local fake endpoint, and the gate-closed path (exit
+  0, no step runs, no summary line). The reverse proof is mutation-based and end-to-end: a copy of the
+  smoke script gets one deliberately failing check injected into its `--dry` branch (the real tree is
+  never written), the copy really reports `checks=2 pass=1 fail=1 failed=C9`, and the checklist
+  summary must move from `cli_real=1/1/0` to `cli_real=2/1/1 failed=C9` — with “the mutation did not
+  land” (target string absent, or present more than once) counted as a **failure**, never as green.
+- **发版前清单现在会显示「装后 CLI 冒烟这一步到底证了什么」（issue #678，只做可见性——引擎未动、
+  无新旗标）。** `ERIX_E2E_REAL=1 npm run check:release:real` 跑八步，第七步是
+  `scripts/cli-real-smoke.mjs`，它不是 `node --test` 套件、打的是自己的日志行，于是两件事同时错：
+  清单里的 TAP 汇总解析器在它身上一个字段也取不到（那一格只剩 `tests=? pass=? fail=? skip=?`），
+  而它自己的 `PASS`/`FAIL` 行**只在红时**才被回放，绿时那几条检查根本不进汇总。修法选的是
+  **机器可读计数行**这一种（不是「绿时也转发它的 `PASS`/`FAIL` 行」那种）。那个 `?` 是刻意的（读不到的摘要绝不许印成「零失败」），但它把「C1–C8 全跑全过」与「一条都没跑」压成同一个符号。
+  现在冒烟收尾多打一行机器可读汇总——
+  `RELEASE-REAL-SMOKE id=cli-real checks=8 pass=8 fail=0 dry=false failed=- status=ok`——清单把它
+  并进同一行汇总成 `cli_real=<checks>/<pass>/<fail>`，另外三档只在真发生时才印：`dry=true`（那次
+  跑的是 `--dry`，只跑了 C8 ⇒ `checks=1`，没跑的 C1–C7 绝不许算成过）、`failed=C4,C7`（点名红的是
+  哪几条）、`status=error`（脚本自身抛了，计数可能远小于全跑，`0/0/0` 不许读成全绿）。计数一律取自
+  冒烟自己 `check()` 的结果——**不是**任何写死的字面量；行格式与解析只有一份真源
+  （`scripts/smoke-summary-line.mjs`），生产端与消费端不会漂成两个口径。「读得到」的判据是**七个字段
+  全在且都合法**（`id=cli-real`、三个计数是**安全整数**且满足 `pass + fail = checks`、`dry`、长度等于 `fail` 的
+  `failed`、`status`），所以残行不会被默认值补齐——修前 `RELEASE-REAL-SMOKE id=cli-real checks=1
+  pass=1 fail=0` 会被读成 `dry=false / failed=[] / status=ok`（半行被当成全绿），400 位的数字字段还会
+  变成 `Infinity`，而 `Infinity + 0 === Infinity` 恰好绕过自洽判据，于是汇总印出
+  `Infinity/Infinity/0`（两格都是 PR #681 的独立验收逮到的）；声明了会报汇总却读不到那一行的步骤照样留一格 `cli_real=?`，不许静默省略。其余未动：喂 TAP 的 `tests/pass/fail/skip` 保持 `?`
+  语义，闸门关着时仍然一步都不跑。离线套件 `test/release-real-step7-678.test.js` 覆盖行契约（含必须
+  读成「没读到」的残行与自相矛盾形状）、四种汇总形状、一次打本地假端点的真 `--dry` 跑，以及闸门
+  关着那条路（exit 0、不起跑任何一步、不产汇总行）。反向证是变异式且端到端的：往冒烟脚本**副本**的
+  `--dry` 分支真注入一条必红检查（真树一个字节不写），副本真的报 `checks=2 pass=1 fail=1 failed=C9`，
+  清单汇总必须从 `cli_real=1/1/0` 变成 `cli_real=2/1/1 failed=C9`；**变异没落上**（靶串不在、或出现
+  多次）一律算**失败**，绝不当绿。
 
 - **The compaction budget becomes a configuration leaf, the two disagreeing fallbacks become one, and a
   missing window stops being silent (issue #682).** The budget used to exist only as the

@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3369,
+    "tests": 3386,
     "fail": 0,
     "maxSkipped": 15
   },
@@ -384,6 +384,35 @@
       "todo": 0,
       "cancelled": 0,
       "why": "issue #682 的现测重登：tests +11 是有意的增删 —— test/config.test.js 新增 4 格（预算优先级四态 / 缺 maxOutputTokens 两路径相等 / 非法 compactBudgetTokens 在 load 期报错 / 缺窗口告警文本）、test/model-metadata-diagnostics.test.js 新增 3 格（引擎四态 / modelMetadata.budgetTokens 真被消费 / 非法值在 config 闸口点名）、test/tools-delegation-foreign-630.test.js 的 F 项由 2 格扩成 6 格（flag / config / derived / disabled 四态正面断言 + 原非法值归位成输入校验 + 反向证，净 +4）。3358 + 11 = 3369。六个计数逐字取自本树 `npm test` 的 TAP 汇总行，经 `npm run check:test-summary -- --log <本树 npm test 日志>` 复核为 `TEST-SUMMARY-VERDICT ok`；非手抄。skipped 13 = 12 条真上游/真 relay 门禁 + 1 条真上游多会话格（闸门关 ⇒ skip 但计入 tests），maxSkipped 上限 15 不动。⚠ 不写 TAP 行号：行号会随任意一条用例的打印行数漂。"
+    },
+    {
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "c8a9e36（base）+ 本单工作树",
+      "branch": "fix-261102-10-release-real-step7-678",
+      "tests": 3375,
+      "pass": 3362,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "#678 release-real 第 7 步可见性：tests +13 是有意的增删，新增 test/release-real-step7-678.test.js 十七格（行契约八格——含 PR #681 两轮独立验收要求的「七个字段缺一不可 / 非法值读不回来」与「溢出/非安全整数读不回来（Infinity 不许进汇总）」两格 / 汇总展示三格 / 生产端真跑一次 --dry 一格 / 闸门关着无副作用一格 / 两格变异式反向证 / 两处静态接线钉子）。它们全部离线：唯一 spawn 的两条子进程分别跑 `scripts/cli-real-smoke.mjs --dry`（打本地 127.0.0.1 假端点，只探 TCP）与 `scripts/release-real-check.mjs`（闸门关 ⇒ 一步不跑），不打模型、不装包、不联网。六个计数逐字取自本树 `npm test` 的 TAP 汇总行（日志 /tmp/678-sandbox-npm-test.log），经 `npm run check:test-summary -- --log /tmp/678-sandbox-npm-test.log` 复核为 `TEST-SUMMARY-VERDICT ok` 并打出「可抬到 3371」（随后补上变异式反向证两格与 PR #681 阻断点那一格，同一套跑法复测为 tests=3375 / pass=3362，日志 /tmp/678-sandbox-npm-test.log，故登记值取 3375）；观测树是 c8a9e36 之上的本单工作树（登记与用例同一提交，未在测试上做任何删改）。skipped 仍是那 12 条真上游/真 relay 门禁 + 1 条真上游多会话格（闸门关 ⇒ skip 但计入 tests），maxSkipped 15 不动。⚠ 不写 TAP 行号：行号会随任意一条用例的打印行数漂。"
+    },
+    {
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "merge 4d5015f（refs/remotes/github/main）+ 7b9016f（分支 head）",
+      "branch": "fix-261102-10-release-real-step7-678（merge origin/main）",
+      "mergeBase": "c8a9e36cc99f9b3416d3d746637dc120f707bba1",
+      "mainSha": "4d5015f7efbd2fe16443aac109fcfe8d5f3c3a8a",
+      "headSha": "7b9016f",
+      "tests": 3386,
+      "pass": 3373,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "合并树现测重登（#682 从 main 进来 + #678 在本分支）：3369（main 侧，含 #682 的 +11）+ 17（本分支新增 test/release-real-step7-678.test.js 十七格）= 3386；pass 3373 = 3356 + 17，fail 0，skipped 13 不变。六个计数逐字取自**合并后工作树**的 `npm test` TAP 汇总行（日志 /tmp/678-merge-npm-test.log），经 `npm run check:test-summary -- --log /tmp/678-merge-npm-test.log` 复核；非手抄、非按分支值相加推定。登记面：merge base c8a9e36，main 4d5015f，分支 head 7b9016f。冲突只落在 test/static-guards.test.js（CHANGELOG 配对地板：两侧各自把 5 抬到 6，#682 与 #678 各一对 ⇒ 合流后实测 7 对，地板取 7）与 test/test-suite-baseline.json（本文件，两侧 observations 全部保留）。skipped 13 = 12 条真上游/真 relay 门禁 + 1 条真上游多会话格（闸门关 ⇒ skip 但计入 tests），maxSkipped 上限 15 不动。⚠ 不写 TAP 行号：行号会随任意一条用例的打印行数漂。"
     }
   ]
 }

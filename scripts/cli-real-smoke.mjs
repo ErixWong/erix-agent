@@ -17,6 +17,18 @@
 // `ERIX_E2E_REAL=1` 才跑，否则**退出码 0 + 分类说明**（gate 缺失 / 配置缺失 / JSON 坏了 /
 // 缺字段 / 端点不可达），真上游不许变成任何默认门禁的硬依赖。
 //
+// 收尾的**机器可读汇总行**（issue #678）：本脚本打的不是 `node --test` 的 TAP，所以
+// `npm run check:release:real` 的清单里它那一格原本只剩 `tests=? pass=? fail=? skip=?`——`?` 是诚实的
+// （取不到不许写 0），但它把「C1–C8 全跑全过」与「一条都没跑」压成同一个符号。收尾印一行
+// （格式与解析都在 `scripts/smoke-summary-line.mjs`，生产/消费共用一份）：
+//
+//   RELEASE-REAL-SMOKE id=cli-real checks=8 pass=8 fail=0 dry=false failed=- status=ok
+//
+// 口径三条：① `checks` 是 `check()` 自己数的**实际条数**（不写死 8：`--dry` 只跑 C8 ⇒ `checks=1`，
+// 将来加 C9 ⇒ 全跑时 9）；② `dry` 自报 `--dry` 真跑了没有，C1–C7 未跑绝不许读成全过；③ 红的时候
+// `failed=C4,C7` 点名是哪几条（红数 / 失败 id 与 `check()` 的结果是同一份事实）。闸门没开时
+// **不印**（一条检查都没跑，没有东西可汇总；消费方照旧显示 `?`）。
+//
 // 隔离纪律（照 `scripts/release-check.mjs` 的先例）：
 // - `npm pack` / `npm i` 一律带一次性 `--cache` 与 `--userconfig`，子进程清掉 `npm_config_*`
 //   与代理变量（含 `NODE_USE_ENV_PROXY`）→ 真实 `~/.npmrc` 一个字节都不动（前后哈希对账）。
@@ -40,6 +52,7 @@ import { fakeHomeEnv, writeConfigHome } from "../fixtures/config-shape.mjs";
 import {
   CONFIG_PATH_ENV, defaultConfigPath, formatSkip, printableEndpoint, resolveRealUpstream, TMP_PREFIX,
 } from "../examples/e2e-real-gate.mjs";
+import { formatSmokeLine, SMOKE_STEP_ID } from "./smoke-summary-line.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const NPM = process.platform === "win32" ? "npm.cmd" : "npm";
@@ -185,7 +198,13 @@ function cleanupGeneratedDeclarations() {
 // —— 逐条打点的断言器（报告要贴的就是这张表）——
 
 /** @type {string[]} */ const failures = [];
+/** 实际跑过的 `check()` 条数（汇总行的 `checks` 就是它——不写死 8，见文件头）。 */
+let checksRun = 0;
+/** 闸门开没开（没开 ⇒ 一条检查都没跑 ⇒ 收尾不印汇总行）。 */
+let gateOpened = false;
+
 function check(id, fn, detail = "") {
+  checksRun += 1;
   try {
     fn();
     log(`PASS [4] ${id}${detail ? `  — ${detail}` : ""}`);
@@ -198,6 +217,29 @@ function check(id, fn, detail = "") {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+/**
+ * 收尾的机器可读汇总行（issue #678）。格式 / 解析的唯一真源在 `scripts/smoke-summary-line.mjs`；
+ * 这里只负责把**真实**的三个数交出去：`checksRun`（`check()` 自己数）、`failures`（红的那几条 id）、
+ * `DRY_RUN`（`--dry` 自报，不许把 C1–C7 未跑说成全过）。
+ *
+ * 行首不加 `[check:cli-real]` 日志前缀：它是给机器 grep 的（`^RELEASE-REAL-SMOKE`），
+ * 加了前缀就不再是「固定前缀的机器可读行」。
+ *
+ * @param {"ok"|"fail"|"error"} [statusOverride] 脚本自身抛了时传 `error`（可能一条断言都没跑到）
+ */
+function emitSmokeLine(statusOverride) {
+  if (!gateOpened) return;
+  const status = statusOverride ?? (failures.length > 0 ? "fail" : "ok");
+  console.log(formatSmokeLine({
+    id: SMOKE_STEP_ID,
+    checks: checksRun,
+    fail: failures.length,
+    dry: DRY_RUN,
+    failed: failures,
+    status,
+  }));
 }
 
 /**
@@ -290,6 +332,7 @@ async function main() {
     return;
   }
   log(`闸门开：model=${gate.model} endpoint=${printableEndpoint(gate.endpoint)}`);
+  gateOpened = true;
 
   // 污染对账的靶子 = 闸门**实际选中**的那份配置（`ERIX_E2E_CONFIG` 可以把它指到仓外）。
   // 基线必须在任何子进程（npm / CLI）起跑前取。
@@ -579,9 +622,15 @@ async function main() {
 }
 
 main().then(() => {
+  // 汇总行先印：它描述的是**已经跑完的**那几条，后面按退出码收尾（两条路都要印，否则
+  // 「跑了一半就红」的那次在清单里连 checks 都没有）。
+  emitSmokeLine();
   // 失败靠 process.exitCode，不用 throw（throw 会把已经跑完的断言表埋在栈里）
   if (failures.length > 0) process.exitCode = 1;
 }, (error) => {
   log(`脚本自身失败：${error?.stack ?? error}`);
+  // 断言全过但脚本自己抛了（例：`npm pack` 失败）⇒ `status=error`：`checks` 可能远小于全跑时的条数，
+  // 不许让 `0/0/0` 读起来像「全绿」。
+  emitSmokeLine(failures.length > 0 ? "fail" : "error");
   process.exitCode = 1;
 });
