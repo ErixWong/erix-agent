@@ -5,7 +5,7 @@
 // 一个字段也取不到 ⇒ 汇总里只剩 `tests=? pass=? fail=? skip=?`。`?` 本身是对的（取不到不许写 0），
 // 但它把「C1–C8 全跑全过」与「一条都没跑」压成同一个符号。
 //
-// 本文件四组牙（全部离线、不依赖真上游）：
+// 本文件五组牙（全部离线、不依赖真上游）：
 //   A. **行契约**（`scripts/smoke-summary-line.mjs`）：生产/消费共用的那一行的形状与不变量。
 //      `pass` 由 `checks - fail` 推（不许两处各传一个数）、`fail > checks` 抛、失败 id 压成 `C4`、
 //      `dry` 自报、半行/自相矛盾的行**读不回来**（⇒ 消费方写 `?`，绝不补 0）。
@@ -17,9 +17,15 @@
 //      行首没有 `[check:cli-real]` 前缀（要能 `grep '^RELEASE-REAL-SMOKE'`），假 HOME 一个字节没被写。
 //   D. **闸门关着仍无副作用**（`node scripts/release-real-check.mjs`，`ERIX_E2E_REAL` 未设）：exit 0、
 //      一步都不跑、不出现 `=== [i/N]` 步骤横幅、也不出现汇总行（没跑过就没有可汇总的东西）。
+//   E. **反向证：冒烟的结果变了，清单汇总必须跟着变**（issue #678 评论 id 6577783318 点名要求的那一格）。
+//      变异打在**真脚本的副本**上（不碰真树，同 `agents-directive-scan --self-test` 的先例）：往副本的
+//      `--dry` 分支真注入一条必红检查 ⇒ 副本自己报 `checks=2 pass=1 fail=1 failed=C9`，清单汇总必须从
+//      `cli_real=1/1/0` 变成 `cli_real=2/1/1 failed=C9`。**变异没落上算失败**（#210 R2 口径）：靶串不在
+//      源文件里、或替换后文本没变 ⇒ 本格直接红，不许静默变绿（下面还单独证一次「靶串不存在会被抓住」）。
 //
 // 反向证（本文件为什么不是恒绿）：B 组对「`?` 变成 `0`」「`failed=` 丢失」「`dry` 丢失」逐条断言；
-// C 组对「写死 8」直接打红（`--dry` 时 `checks` 必须是 1）；D 组对「闸门关着还跑步骤」打红。
+// C 组对「写死 8」直接打红（`--dry` 时 `checks` 必须是 1）；D 组对「闸门关着还跑步骤」打红；
+// E 组对「汇总没跟着冒烟的结果变」打红。
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
@@ -58,8 +64,7 @@ function stripComments(source) {
 }
 
 /** 起一个只接受连接、立刻断开的本地 TCP 服务：闸门探端点只判 TCP 可达，一条消息也不发。 */
-async function startFakeEndpoint() {
-  const sockets = new Set();
+async function startFakeEndpoint() {  const sockets = new Set();
   const server = createServer((socket) => {
     sockets.add(socket);
     socket.on("error", () => {});
@@ -250,6 +255,127 @@ test("#678 闸门关着：check:release:real 一步都不跑、exit 0、不产�
   assert.match(out, /一步都没跑/u);
   assert.doesNotMatch(out, /=== \[\d+\/\d+\]/u, "闸门关着不许起跑任何一步");
   assert.ok(!out.includes(SMOKE_PREFIX), "没跑过就没有可汇总的东西：闸门关着时不许出现汇总行");
+});
+
+// ── E. 反向证：冒烟的结果变了，清单汇总必须跟着变 ───────────────────
+
+/**
+ * **只替换一次**，否则算「变异没落上」（#210 R2 口径：靶串不在 ⇒ 这一例必须红，不许静默变绿）。
+ *
+ * @param {string} text
+ * @param {string} from 靶串（必须恰好出现 1 次）
+ * @param {string} to
+ * @returns {string}
+ */
+function mutateOnce(text, from, to) {
+  const hits = text.split(from).length - 1;
+  assert.equal(hits, 1,
+    `变异没落上：靶串在源文件里出现 ${hits} 次（要求恰好 1 次）——变异没落上算失败，`
+    + `否则这一格就是空断言：${JSON.stringify(from.slice(0, 80))}`);
+  const mutated = text.replace(from, to);
+  assert.notEqual(mutated, text, "变异没落上：替换后文本与原来一样");
+  return mutated;
+}
+
+/** `--dry` 分支里 C8 那一行（唯一靶点：带它上一行的注释才能定位到 DRY 分支，不是正常路径那个）。 */
+const DRY_BRANCH_TARGET = "    // 只跑污染对账：不 pack、不装、不打模型（一条请求也不发）。详见 `DRY_RUN` 的注释。\n"
+  + "    checkHomePollution(pollutionTarget);\n";
+/** 注入一条必红检查（真变异：它会让副本自己报 `checks=2 pass=1 fail=1 failed=C9`）。 */
+const DRY_BRANCH_MUTANT = DRY_BRANCH_TARGET
+  + "    check(\"C9 变异注入的必红检查\", () => { assert(false, \"变异注入：这条必须红\"); });\n";
+
+/**
+ * 把「冒烟脚本 + 它的两个相对依赖 + package.json」复制成一棵最小可跑树。
+ * 变异打在这棵树里，**真树一个字节不动**（与 `agents-directive-scan --self-test` 的合成树同一条纪律）。
+ *
+ * @param {(source: string) => string} [mutate]
+ */
+async function makeSmokeTree(mutate) {
+  const dir = await makeTmp("release-real-678-tree-");
+  for (const rel of ["fixtures", "examples", "scripts"]) {
+    await mkdir(join(dir, rel), { recursive: true });
+  }
+  for (const rel of ["scripts/smoke-summary-line.mjs", "fixtures/config-shape.mjs",
+    "examples/e2e-real-gate.mjs", "package.json"]) {
+    await writeFile(join(dir, rel), await readFile(join(ROOT, rel)));
+  }
+  const original = await readFile(SMOKE_SCRIPT, "utf8");
+  const source = mutate === undefined ? original : mutate(original);
+  await writeFile(join(dir, "scripts", "cli-real-smoke.mjs"), source, "utf8");
+  return { dir, script: join(dir, "scripts", "cli-real-smoke.mjs"), original, source };
+}
+
+/** 在一棵（可能是变异的）冒烟树上跑一次 `--dry`，返回 `{ status, stdout }`。 */
+async function runSmokeTree(tree, { home, configPath, port }) {
+  const env = { ...process.env, HOME: home, ERIX_E2E_REAL: "1", ERIX_E2E_CONFIG: configPath };
+  const result = spawnSync(process.execPath, [tree.script, "--dry"], {
+    cwd: tree.dir, env, encoding: "utf8", timeout: 120_000,
+  });
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+/** 消费端真路（`runStep` + `main` 用的就是这两步）：读回汇总行 → 拼出汇总格。 */
+function checklistCell(stdout) {
+  return summaryLine(parseTapSummary(stdout), { smoke: parseSmokeLine(stdout), expectsSmoke: true });
+}
+
+test("#678 反向证：把冒烟的结果行改坏（真注入一条必红检查）⇒ 清单汇总的 pass/fail 跟着变", async () => {
+  const endpoint = await startFakeEndpoint();
+  const home = await makeTmp("release-real-678-mut-home-");
+  try {
+    await mkdir(join(home, ".erix"), { recursive: true });
+    const configPath = join(home, ".erix", "config.json");
+    await writeFile(configPath, JSON.stringify({
+      slots: {
+        default: {
+          model: "fake-model-678", endpoint: `http://127.0.0.1:${endpoint.port}/v1`, apiKey: "fake-key-678",
+        },
+      },
+    }, null, 2), "utf8");
+    const run = { home, configPath, port: endpoint.port };
+
+    // ① 未变异的副本：全绿，清单汇总里是 1/1/0（先确立对照组）。
+    const baselineTree = await makeSmokeTree();
+    const baseline = await runSmokeTree(baselineTree, run);
+    assert.equal(baseline.status, 0, `对照组副本应 exit 0，实际 ${baseline.status}\n${baseline.stdout}`);
+    assert.equal(checklistCell(baseline.stdout), "tests=? pass=? fail=? skip=? cli_real=1/1/0 dry=true",
+      `对照组汇总不对：\n${baseline.stdout}`);
+
+    // ② 变异副本：真注入一条必红检查（靶串不在 ⇒ `mutateOnce` 当场红 = 变异没落上算失败）。
+    const mutantTree = await makeSmokeTree((source) => mutateOnce(source, DRY_BRANCH_TARGET, DRY_BRANCH_MUTANT));
+    assert.notEqual(mutantTree.source, mutantTree.original, "变异没落上：副本源码与真源码一样");
+    const mutant = await runSmokeTree(mutantTree, run);
+    assert.equal(mutant.status, 1, `变异副本必须 exit 1，实际 ${mutant.status}\n${mutant.stdout}`);
+
+    // ③ 冒烟自己报出来的三个数必须真的变了（否则下一步证明不了「汇总跟着冒烟走」）。
+    const mutantSmoke = parseSmokeLine(mutant.stdout);
+    assert.notEqual(mutantSmoke, undefined, `变异副本没印出汇总行：\n${mutant.stdout}`);
+    assert.deepEqual(
+      { checks: mutantSmoke.checks, pass: mutantSmoke.pass, fail: mutantSmoke.fail, failed: mutantSmoke.failed },
+      { checks: 2, pass: 1, fail: 1, failed: ["C9"] },
+      `变异副本自报的计数不对：\n${mutant.stdout}`,
+    );
+    assert.notDeepEqual(
+      { checks: mutantSmoke.checks, pass: mutantSmoke.pass, fail: mutantSmoke.fail },
+      { checks: 1, pass: 1, fail: 0 },
+      "变异没落上：冒烟自己报的计数没变（那这一格证明不了汇总会跟着变）",
+    );
+
+    // ④ 清单汇总必须跟着变——这就是评论 id 6577783318 要的那一格。
+    assert.equal(checklistCell(mutant.stdout), "tests=? pass=? fail=? skip=? cli_real=2/1/1 dry=true failed=C9",
+      `汇总没跟着冒烟的结果变：\n${mutant.stdout}`);
+    assert.notEqual(checklistCell(mutant.stdout), checklistCell(baseline.stdout),
+      "变异前后清单汇总一模一样 ⇒ 汇总根本没读冒烟的结果");
+  } finally {
+    await endpoint.close();
+  }
+});
+
+test("#678 反向证：变异没落上（靶串不在源文件里）必须当场红，不许静默变绿", () => {
+  assert.throws(() => mutateOnce("这里没有那个靶串", "不存在的靶串", "x"), /变异没落上/u,
+    "靶串不在源文件里时必须报错——否则「变异没落上」会被当成绿");
+  assert.throws(() => mutateOnce(`${DRY_BRANCH_TARGET}${DRY_BRANCH_TARGET}`, DRY_BRANCH_TARGET, "x"),
+    /出现 2 次/u, "靶串出现多次时同样必须报错（替错地方 = 变异没落上）");
 });
 
 // ── 静态钉子：上面那些动态断言靠的是脚本里的这两处接线 ───────────────────────
