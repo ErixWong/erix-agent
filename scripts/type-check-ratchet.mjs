@@ -268,6 +268,7 @@ const VERBOSE = argv.includes("--verbose");
 const PRINT_ONLY = argv.includes("--print-count");
 const IGNORE_STALE = argv.includes("--ignore-stale-declarations");
 const STRICT = argv.includes("--strict") || argv.includes("--strict-report");
+const SELF_TEST = argv.includes("--self-test");
 const SHOW_ERRORS = (() => {
   const i = argv.indexOf("--show-errors");
   return i >= 0 && argv[i + 1] !== undefined ? Number(argv[i + 1]) : 0;
@@ -453,45 +454,102 @@ function depVersion(rel) {
 //     「读不到真值」永远不等于「没问题」（#164 口径）。
 // ⚠ strict 档不跑这条对账：文档里这两句说的是非 strict 棘轮，strict 的带错文件数是**另一个量**（#417 明令
 //   禁止拿一档的数去顶另一档）。strict 那一步照样只判它自己的基线常量。
+//
+// ── #672：再补四处「M 个文件」形状的现状声称（此前六道门禁全绿也拦不住）───────────────────
+// 补的四处在**包根档**的段落里：
+//   · `AGENTS.md:105`  `(27 files) are accepted debt`          —— 承接同句前半的 `107 of them`；
+//   · `AGENTS.md:132`  `**27 of them carrying errors**`        —— 承接上一段的 `--listFiles`（入口 `src/index.js`）；
+//   · `AGENTS_cn.md:149` `107 个错（涉 27 个文件）`；
+//   · `AGENTS_cn.md:153` `其中 **27 个带错**`。
+// **逐条裁决**（哪些数字参与判定、哪些是历史值不参与）——本单最容易做错的就是这里，所以写死在代码里：
+//   · 参与判定的只有这四处里的 M。同一批句子里还有一批**历史值**，一律不判：
+//       EN 105–111：`the #214 measurement was 218`、`took 75 more`、`openai.js 46 → 7`、`anthropic.js 45 → 9`、
+//         `the other 27 error-carrying files moved by zero`、`notes.js 27 → 6`、`the other 28 … moved by zero`、
+//         `142 / 185`（PR #249 / issue #265 当时的对照树读数）；
+//       EN 128–132：`the 65 recorded on 2026-10-21`、`the 58 on 2026-10-13`、`the 56 before #265`；
+//       CN 149：`#214 首测是 218`、`75 个`、`46 → 7`、`45 → 9`、`其余 27 个带错文件一个没动`、`27 → 6`、
+//         `其余 28 个带错文件一个没动`、`142 / 185`；
+//       CN 153：`2026-10-21 记的 65`、`2026-10-13 记的 58`、`#265 之前的 56`。
+//     判据靠**句式锚点**把现状声称钉住，而不是「抽一个两位数」：`(M files)` 必须紧跟在 `N of them` 之后；
+//     `**M of them carrying errors**` 必须整段加粗（`the other 27 error-carrying files` 那种叙述没有这层壳）；
+//     中文侧同理（`个错（涉 M 个文件）`、`其中 **M 个带错**`；`其余 27 个带错文件` 不带 `其中 **… **`）。
+//     一刀切抽「两位数字」会把上面那批历史值全判红——它们讲的是**当时为真**的事实，不是现状声称。
+//   · 这四处都写在包根档的段落里（`npm run check:types` 的默认档 / 入口 `src/index.js` 的 `--listFiles`），
+//     所以它们的 `tier` 声明为 `"root"`：只有包根档那次运行判它们，`--with-tools` 那次把它们记成 deferred。
+//     反过来说，拿 29（并集档的带错文件数）去填这四处必须红——那是「拿另一档的数顶本档」，不是「差两个也算过」。
+//   · `tier: "root"` **不是**把 27 写死：它只声明「这句归哪一档」，期望值仍然从本次实测取（见
+//     `reconcileDocFileCounts` 里 `measuredFiles` 的来源）。
 const DOC_FILE_COUNT_CLAIMS = [
-  { rel: "AGENTS.md", form: "baseline **N** / M files", re: /baseline\s+\*\*(\d+)\*\*\s*\/\s*(\d+)\s*files/g },
-  { rel: "AGENTS_cn.md", form: "基线 **N** / M 个文件", re: /基线\s*\*\*(\d+)\*\*\s*\/\s*(\d+)\s*个文件/g },
+  // #635 ①：`基线 **N** / M 个文件` —— 句中带基线 N，按 N 认领档位（`tier: null` ⇒ 用第 1 组认档）。
+  { rel: "AGENTS.md", form: "baseline **N** / M files", tier: null,
+    re: /baseline\s+\*\*(\d+)\*\*\s*\/\s*(\d+)\s*files/g },
+  { rel: "AGENTS_cn.md", form: "基线 **N** / M 个文件", tier: null,
+    re: /基线\s*\*\*(\d+)\*\*\s*\/\s*(\d+)\s*个文件/g },
+
+  // #672：四处「M 个文件」现状声称（都属包根档；裁决理由见本节头注释）。最后一组 = M。
+  { rel: "AGENTS.md", form: "N of them (M files)", tier: "root",
+    re: /\d+\s+of them\s*\((\d+)\s+files\)/g },
+  { rel: "AGENTS_cn.md", form: "N 个错（涉 M 个文件）", tier: "root",
+    re: /\d+\s*个错（涉\s*(\d+)\s*个文件）/g },
+  { rel: "AGENTS.md", form: "**M of them carrying errors**", tier: "root",
+    re: /\*\*(\d+) of them carrying errors\*\*/g },
+  { rel: "AGENTS_cn.md", form: "其中 **M 个带错**", tier: "root",
+    re: /其中\s*\*\*(\d+)\s*个带错\*\*/g },
 ];
 
 /**
- * 把两份指令面文档里「基线 **N** / M 个文件」的声称与**本次实测**逐处对账（issue #635 ①）。
+ * 把两份指令面文档里「带错文件数」的现状声称与**本次实测**逐处对账（issue #635 ①；#672 扩到四种形状）。
  *
- * @param {{measuredTotal: number, measuredFiles: number, tierBaseline: number, tierName: string,
- *   otherBaseline: number, verboseCommand: string}} m
- *   `measuredTotal` / `measuredFiles` = 本次 tsc 实测的错误总数与带错文件数（就是棘轮判定用的那两个量）；
- *   `tierBaseline` = 本档的基线常量值（用它认领一处声称属于哪一档）；
+ * @param {{errors: {file: string}[], tierBaseline: number, tierId: "root" | "withTools", tierName: string,
+ *   otherBaseline: number, verboseCommand: string, sources?: Record<string, string>}} m
+ *   `errors` = 本次 tsc 解析出来的错误。**实测两维都从它现算**：总数 = 条数，带错文件数 = 去重后的文件数。
+ *     为什么在函数内部算而不由调用方传进来：#672 的验收 (e) 要求「判据里那处实测来源被换成常量字面量 ⇒
+ *     自测必须红」，而自测喂的就是**合成的 errors 数组**（见 `runDocClaimSelfTest`）——把这里换成 `27` 这种
+ *     字面量，自测里那份「41 个文件」的夹具当场就对不上。
+ *   `tierBaseline` = 本档的基线常量值（`tier: null` 的声称句用它认领档位）；
+ *   `tierId` = 本档的档位标识（`tier` 声明了档位的声称句只由对应的那一次运行判）；
  *   `otherBaseline` = 另一档的基线常量值（那几处不归本档判）；
- *   `verboseCommand` = 报错里给的「看分布」命令（两档的尾巴不同）。
- * @returns {{errors: {kind: "unreadable" | "mismatch", text: string}[], judged: number, deferred: number}}
+ *   `verboseCommand` = 报错里给的「看分布」命令（两档的尾巴不同）；
+ *   `sources` = 自测注入的文档正文（给了就**只用它**，缺哪份就算读不到；生产路径不传，走 readFileSync）。
+ * @returns {{errors: {kind: "unreadable" | "mismatch", text: string}[], judged: number, deferred: number,
+ *   measuredTotal: number, measuredFiles: number}}
  *   `errors` 为空才允许 exit 0；`judged` / `deferred` 只用于自述（判了几处、几处归另一档）。
  */
-function reconcileDocFileCounts({ measuredTotal, measuredFiles, tierBaseline, tierName, otherBaseline, verboseCommand }) {
-  const errors = [];
+function reconcileDocFileCounts({ errors, tierBaseline, tierId, tierName, otherBaseline, verboseCommand, sources }) {
+  const out = [];
   let judged = 0;
   let deferred = 0;
+  const measuredTotal = Array.isArray(errors) ? errors.length : NaN;
+  const measuredFiles = Array.isArray(errors) ? new Set(errors.map((e) => e.file)).size : NaN;
+  const verdict = () => ({ errors: out, judged, deferred, measuredTotal, measuredFiles });
   // 「读不到实测值」也是读不到真值：没有 M 就没有对账的右半边。
   if (!Number.isFinite(measuredFiles) || measuredFiles <= 0) {
-    errors.push({ kind: "unreadable", text: `读不到本次实测的带错文件数（${measuredFiles}）——没有真值就无法对账。`
+    out.push({ kind: "unreadable", text: `读不到本次实测的带错文件数（${measuredFiles}）——没有真值就无法对账。`
       + "先确认 tsc 真的跑起来了（上面的陈旧声明守卫、入口、tsc 输出形状）。" });
-    return { errors, judged, deferred };
+    return verdict();
   }
   for (const doc of DOC_FILE_COUNT_CLAIMS) {
     let src;
-    try {
-      src = readFileSync(path.join(ROOT, doc.rel), "utf8");
-    } catch (err) {
-      errors.push({ kind: "unreadable", text: `${doc.rel} 读不到（${err?.code ?? err?.message ?? err}）——`
-        + `「${doc.form}」这条声称句没法对账；读不到真值不等于没问题。` });
-      continue;
+    if (sources) {
+      // 自测夹具：只认注入的那份，缺了就是读不到（**不回退**去读真实文档，否则「文档不在」这条用例永远测不到）。
+      if (typeof sources[doc.rel] === "string") src = sources[doc.rel];
+      else {
+        out.push({ kind: "unreadable", text: `${doc.rel} 读不到（自测夹具里没有这份文档）——`
+          + `「${doc.form}」这条声称句没法对账；读不到真值不等于没问题。` });
+        continue;
+      }
+    } else {
+      try {
+        src = readFileSync(path.join(ROOT, doc.rel), "utf8");
+      } catch (err) {
+        out.push({ kind: "unreadable", text: `${doc.rel} 读不到（${err?.code ?? err?.message ?? err}）——`
+          + `「${doc.form}」这条声称句没法对账；读不到真值不等于没问题。` });
+        continue;
+      }
     }
     const hits = [...src.matchAll(new RegExp(doc.re.source, doc.re.flags))];
     if (!hits.length) {
-      errors.push({ kind: "unreadable", text: `${doc.rel} 里一处「${doc.form}」都抽不到——该声称句被整句删了或改了形，`
+      out.push({ kind: "unreadable", text: `${doc.rel} 里一处「${doc.form}」都抽不到——该声称句被整句删了或改了形，`
         + `这条对账在这个文件已经失效（真值：本次实测 ${measuredTotal} 个错 / ${measuredFiles} 个文件，${tierName}）。`
         + "\n      要改句式就同步本脚本的 `DOC_FILE_COUNT_CLAIMS`（与 `docs-drift-check.mjs` 的 `BASELINE_CLAIM_RULES` 一起改），"
         + "别让规则静默空转。" });
@@ -499,35 +557,180 @@ function reconcileDocFileCounts({ measuredTotal, measuredFiles, tierBaseline, ti
     }
     for (const hit of hits) {
       const at = `${doc.rel}:${src.slice(0, hit.index).split("\n").length}`;
-      const claimedN = Number(hit[1]);
-      const claimedM = Number(hit[2]);
-      const sentence = hit[0];
-      if (claimedN === otherBaseline) {
-        // 另一档的句子：本档没有那一档的实测值（那要多跑一次 tsc，本单的红线是「不新增 tsc 运行」），
-        // 交给那一档自己那一步判——CI 上两档都有步骤，所以它不会被漏掉。
-        deferred += 1;
-        continue;
-      }
-      if (claimedN !== tierBaseline) {
-        errors.push({ kind: "mismatch", text: `${at} 声称基线 ${claimedN} / ${claimedM} 个文件，但 ${claimedN} 既不等于本档`
-          + `（${tierName}）的基线 ${tierBaseline}，也不等于另一档的 ${otherBaseline}——认不出这句属于哪一档，`
-          + `文件数也就无从判定（「${sentence}」）。` });
-        continue;
+      // 约定的分组：**最后一组是 M**；`tier: null` 的声称句第 1 组是基线 N（用它认档）。
+      const claimedM = Number(hit[hit.length - 1]);
+      const sentence = hit[0].replace(/\s+/g, " ").trim();
+      if (doc.tier !== null) {
+        if (doc.tier !== tierId) {
+          // 另一档的句子：本档没有那一档的实测值（那要多跑一次 tsc，本单的红线是「不新增 tsc 运行」），
+          // 交给那一档自己那一步判——CI 上两档都有步骤，所以它不会被漏掉。
+          deferred += 1;
+          continue;
+        }
+      } else {
+        const claimedN = Number(hit[1]);
+        if (claimedN === otherBaseline) {
+          deferred += 1;
+          continue;
+        }
+        if (claimedN !== tierBaseline) {
+          out.push({ kind: "mismatch", text: `${at} 声称基线 ${claimedN} / ${claimedM} 个文件，但 ${claimedN} 既不等于本档`
+            + `（${tierName}）的基线 ${tierBaseline}，也不等于另一档的 ${otherBaseline}——认不出这句属于哪一档，`
+            + `文件数也就无从判定（「${sentence}」）。` });
+          continue;
+        }
       }
       judged += 1;
       if (claimedM !== measuredFiles) {
-        errors.push({ kind: "mismatch", text: `${at} 声称 **${claimedM} 个带错文件**，本次实测 **${measuredFiles} 个**`
-          + `（${tierName}：${measuredTotal} 个错；「${sentence}」）。\n`
+        const tierOfClaim = doc.tier === null ? "按句中的基线 N 认档" : `文档里这句声明属${doc.tier === "root" ? "包根" : "并集"}档`;
+        out.push({ kind: "mismatch", text: `${at} 声称 **${claimedM} 个带错文件**，本次实测 **${measuredFiles} 个**`
+          + `（${tierName}：${measuredTotal} 个错；${tierOfClaim}；「${sentence}」）。\n`
           + `      正解：① 先跑 \`${verboseCommand}\` 看每文件分布，确认这个文件数是**真的**`
           + "（新增错落在新文件里 / 有文件归零退出了错误集合）；"
           + `\n        ② 是真的就把文档里那个数改成 ${measuredFiles}（中英两处同形句一起改，中英成对）；`
           + "\n        ③ **不要**为了让这里变绿去改判据 / 基线常量 / 放宽 `--checkJs` 或 `--strict`——"
-          + "棘轮只减不增，改判据只是把这条谎换个地方藏。" });
+          + "棘轮只减不增，改判据只是把这条谎换个地方藏。\n"
+          + "        ④ 也**不要**拿另一档的带错文件数来填本档：两档是两个数（本仓既有教训，见 `BASELINE_WITH_TOOLS` 那条注释）。" });
       }
     }
   }
-  return { errors, judged, deferred };
+  return verdict();
 }
+
+/**
+ * 文档对账判据自己的反向证（issue #672 的验收 (e)：**实测来源被换成常量字面量 ⇒ 自测必须红**）。
+ *
+ * 为什么要有它：#672 之前这条对账只判「基线 **N** / M 个文件」一种形状，四处「M 个文件」声称写错也不红；
+ * 而把 `measuredFiles` 换成字面量 `27` 会让判据在**今天**照样全绿（实测就是 27），直到 #669 把基线降下去
+ * 的那天才突然红成一片。所以自测用**合成夹具**跑同一个 `reconcileDocFileCounts`：
+ *   · 夹具的实测值是 **41 / 43 个文件**（不是真实树上的 27 / 29）——任何写死的 27 / 29 都会在第一条用例上红；
+ *   · 两次运行用**不同的**实测值（41 / 43），证明 M 确实从 `errors` 现算，而不是从常量或某一份缓存里拿；
+ *   · 历史值（218 / 75 / 46→7 / 45→9 / 其余 27 个带错文件 / 142 / 185 / 65 / 58 / 56）改成任意数仍必须绿。
+ *
+ * @returns {string[]} 失败用例（空数组 = 自测绿）
+ */
+function runDocClaimSelfTest() {
+  const failures = [];
+  const ok = (label, cond, detail) => {
+    if (!cond) failures.push(`${label}${detail ? `（${detail}）` : ""}`);
+  };
+
+  /** 合成 errors：`n` 条错误分布在 `fileCount` 个文件上（两者分开，才能证明判的是文件数不是错误数）。 */
+  const synthErrors = (n, fileCount) => Array.from({ length: n }, (_, i) => ({
+    file: `src/f${i % fileCount}.js`, line: i + 1, col: 1, code: "TS2339", msg: "self-test",
+  }));
+
+  /**
+   * 合成两份指令面文档：四处现状声称各一处 + 一批历史值（可逐项改数）。
+   * 句式与真实文档**逐字同形**（只是把文件数换成 `enM` / `cnM`），否则自测证明不了生产正则还咬得住。
+   */
+  const synthDocs = ({ enM, cnM, history = {} }) => {
+    const h = { was: 218, more: 75, first: 46, second: 45, other: 27, other2: 28, pair: "142 / 185", f65: 65, f58: 58, f56: 56, ...history };
+    const en = [
+      "- `--checkJs` ratchet rule (issue #214): `npm run check:types` does **not** aim for zero errors — 107 of them",
+      `  (${enM} files) are accepted debt (the #214 measurement was ${h.was}; issue #177 knife 1 took one off`,
+      "  `src/loop/orchestrator.js`; PR #249 took",
+      `  ${h.more} more, **all of it in two files**: \`src/providers/openai.js\` ${h.first} → 7 and \`src/providers/anthropic.js\` ${h.second} → 9,`,
+      `  the other ${h.other} error-carrying files moved by zero; issue #265's refactor took 21 more, again`,
+      `  **all of it in one file**: \`src/store/notes.js\` 27 → 6, and the other ${h.other2} error-carrying files`,
+      `  moving by zero — verified against the \`7354fab^\` tree exported with \`git archive\`, which reproduces`,
+      `  ${h.pair} verbatim).`,
+      "    `--checkJs` plus `src/index.js` already pulls the whole import graph — `--listFiles` prints how many files under",
+      `    \`src/\` that one entry reaches (the number lives in that output; the ${h.f65} recorded on 2026-10-21, the ${h.f58} on`,
+      `    2026-10-13 and the ${h.f56} before #265 are **historical values**),`,
+      `    **${enM} of them carrying errors** — so picking "just the public entry" as`,
+      // #635 ① 那一种形状（`基线 **N** / M files`）也放进夹具：并集档那一句在包根档那次运行里应当 deferred，
+      // 在并集档那次运行里才是本档的声称句。不放进夹具的话，自测会因「一处都抽不到」而整片变红（那不是真问题）。
+      `- the tools tier: baseline **142** / ${enM} files (two tiers are separate numbers).`,
+    ].join("\n");
+    const cn = [
+      "- `--checkJs` 棘轮规则（issue #214）：`npm run check:types` **不追求清零**——107 个错（涉 " + cnM + " 个文件）是已接受的债（#214 首测是 " + h.was + "，issue #177 刀 1 给 `src/loop/orchestrator.js` 还掉 1 个；PR #249（即 #213 的两个 provider 工厂 JSDoc）又还掉 " + h.more + " 个，**全部落在那两个工厂文件**：`src/providers/openai.js` " + h.first + " → 7、`src/providers/anthropic.js` " + h.second + " → 9，其余 " + h.other + " 个带错文件一个没动；issue #265 把 `src/store/notes.js` 的端口语义抽进两个新模块后又还掉 21 个，**同样全部落在那一个文件**：`src/store/notes.js` 27 → 6，两个首行 `// @ts-check` 的新模块各自贡献 0 个，其余 " + h.other2 + " 个带错文件一个没动——逐文件对账用的是 `git archive` 取出的 `7354fab^` 对照树，它在同一条命令下逐字复现 " + h.pair + "）。",
+      "    `src/index.js` 已经会把整张 import 图拉进来（`--listFiles` 打印单入口能到 `src/` 下多少个文件（这个数由那条命令打印、本文不抄；2026-10-21 记的 " + h.f65 + "、2026-10-13 记的 " + h.f58 + "、#265 之前的 " + h.f56 + " 都是**历史值**），其中 **" + cnM + " 个带错**），",
+      "- 含 `./tools` 档：基线 **142** / " + cnM + " 个文件（两档是两个数）。",
+    ].join("\n");
+    return { "AGENTS.md": en, "AGENTS_cn.md": cn };
+  };
+
+  /** 生产口径的两档常量（只用于认档，**不是** M 的期望值；M 一律来自 `errors`）。 */
+  const ROOT_BASELINE = 107;
+  const WITH_TOOLS_BASELINE = 142;
+  const run = ({ tier, errors, docs }) => reconcileDocFileCounts({
+    errors,
+    tierBaseline: tier === "root" ? ROOT_BASELINE : WITH_TOOLS_BASELINE,
+    tierId: tier,
+    tierName: tier === "root" ? "包根入口" : "含 ./tools 入口",
+    otherBaseline: tier === "root" ? WITH_TOOLS_BASELINE : ROOT_BASELINE,
+    verboseCommand: "node scripts/type-check-ratchet.mjs --verbose",
+    sources: docs,
+  });
+
+  // ① 判据真的在判：41 个带错文件 + 四处都写 41 ⇒ 四处全判、0 错。
+  const green41 = run({ tier: "root", errors: synthErrors(60, 41), docs: synthDocs({ enM: 41, cnM: 41 }) });
+  ok("41 个文件 / 文档写 41 应当全绿", green41.errors.length === 0 && green41.judged === 4,
+    `errors=${JSON.stringify(green41.errors)} judged=${green41.judged}`);
+  ok("41 个文件 / 文档写 41 的实测值必须是现算的 41", green41.measuredFiles === 41, `measuredFiles=${green41.measuredFiles}`);
+
+  // ② 防硬编码复活：换一个实测值（43 个文件），文档跟着写 43 也必须绿。
+  //    任何把 measuredFiles 换成 27 / 29 这类字面量的改动，会让 ① 和 ② 至少一条红。
+  const green43 = run({ tier: "root", errors: synthErrors(50, 43), docs: synthDocs({ enM: 43, cnM: 43 }) });
+  ok("43 个文件 / 文档写 43 应当全绿（实测值换了，判据得跟着换）", green43.errors.length === 0 && green43.judged === 4,
+    `errors=${JSON.stringify(green43.errors)}`);
+  ok("43 个文件那次的实测值必须是 43", green43.measuredFiles === 43, `measuredFiles=${green43.measuredFiles}`);
+
+  // ③ 判的是**带错文件数**，不是错误条数：60 条错分布在 3 个文件上 ⇒ 真值是 3。
+  const fewFiles = run({ tier: "root", errors: synthErrors(60, 3), docs: synthDocs({ enM: 3, cnM: 3 }) });
+  ok("60 条错 / 3 个文件时真值必须是 3（不是 60）", fewFiles.errors.length === 0 && fewFiles.measuredFiles === 3,
+    `measuredFiles=${fewFiles.measuredFiles} errors=${JSON.stringify(fewFiles.errors)}`);
+
+  // ④ 逐处判 + 中英各判各的：只改英文侧那两个数 ⇒ 恰好两条红（英文侧两处），且都不点名中文文档。
+  const enOnly = run({ tier: "root", errors: synthErrors(60, 41), docs: synthDocs({ enM: 99, cnM: 41 }) });
+  ok("只改英文侧 ⇒ 恰好两条红且都点名 AGENTS.md", enOnly.errors.length === 2
+    && enOnly.errors.every((e) => e.text.includes("AGENTS.md:") && e.text.includes("99"))
+    && !enOnly.errors.some((e) => e.text.includes("AGENTS_cn.md")), JSON.stringify(enOnly.errors));
+
+  // ⑤ 反向：只改中文侧 ⇒ 恰好两条红，都点名 AGENTS_cn.md（中英独立判，不是「成对才红」）。
+  const cnOnly = run({ tier: "root", errors: synthErrors(60, 41), docs: synthDocs({ enM: 41, cnM: 29 }) });
+  ok("只改中文侧 ⇒ 恰好两条红且都点名 AGENTS_cn.md", cnOnly.errors.length === 2
+    && cnOnly.errors.every((e) => e.text.includes("AGENTS_cn.md:") && e.text.includes("29"))
+    && !cnOnly.errors.some((e) => e.text.includes("AGENTS.md:")), JSON.stringify(cnOnly.errors));
+
+  // ⑥ 拿另一档的数顶本档：包根档写 29（并集档的带错文件数）⇒ 四处全红。
+  const crossTier = run({ tier: "root", errors: synthErrors(60, 41), docs: synthDocs({ enM: 29, cnM: 29 }) });
+  ok("包根档的句子写 29（另一档的数）⇒ 四处全红", crossTier.errors.length === 4, JSON.stringify(crossTier.errors));
+
+  // ⑦ 两档分开判：并集档那次运行不判这四处（它们声明属包根档）⇒ 0 错、4 处 deferred；它只判自己那两句。
+  const withToolsRun = run({ tier: "withTools", errors: synthErrors(50, 43), docs: synthDocs({ enM: 43, cnM: 43 }) });
+  ok("并集档那次运行把这四处记成 deferred、不拿自己的 43 去判", withToolsRun.errors.length === 0
+    && withToolsRun.judged === 2 && withToolsRun.deferred === 4, JSON.stringify(withToolsRun));
+
+  // ⑧ 历史值改成任意数 ⇒ 仍绿（本单的放行证明：一刀切正则会在这里红）。
+  const history = { was: 999, more: 999, first: 99, second: 99, other: 999, other2: 999, pair: "999 / 999", f65: 999, f58: 999, f56: 999 };
+  const histGreen = run({ tier: "root", errors: synthErrors(60, 41), docs: synthDocs({ enM: 41, cnM: 41, history }) });
+  ok("历史值（218 / 75 / 46→7 / 45→9 / 其余 27 / 142 / 185 / 65 / 58 / 56）改成任意数 ⇒ 仍绿",
+    histGreen.errors.length === 0 && histGreen.judged === 4, JSON.stringify(histGreen.errors));
+
+  // ⑨ 整句被删 ⇒ 读不到（exit 2 那一路），不是静默绿。
+  const deleted = synthDocs({ enM: 41, cnM: 41 });
+  deleted["AGENTS.md"] = deleted["AGENTS.md"].replace("(41 files)", "(files)");
+  const deletedVerdict = run({ tier: "root", errors: synthErrors(60, 41), docs: deleted });
+  ok("英文侧那句被删 ⇒ 一条 unreadable", deletedVerdict.errors.length === 1
+    && deletedVerdict.errors[0].kind === "unreadable" && deletedVerdict.errors[0].text.includes("AGENTS.md"),
+  JSON.stringify(deletedVerdict.errors));
+
+  // ⑩ 文档不在 ⇒ 读不到（不因为「缺一份」而绿）。
+  const missingCn = run({ tier: "root", errors: synthErrors(60, 41), docs: { "AGENTS.md": synthDocs({ enM: 41, cnM: 41 })["AGENTS.md"] } });
+  ok("中文侧整份读不到 ⇒ 三条 unreadable 且都点名 AGENTS_cn.md", missingCn.errors.length === 3
+    && missingCn.errors.every((e) => e.kind === "unreadable" && e.text.includes("AGENTS_cn.md")),
+  JSON.stringify(missingCn.errors));
+
+  // ⑪ 实测为空（没有带错文件）⇒ 读不到真值，不许当「文档也写 0 就绿」。
+  const noMeasurement = run({ tier: "root", errors: [], docs: synthDocs({ enM: 0, cnM: 0 }) });
+  ok("实测 0 个带错文件 ⇒ 一条 unreadable（读不到真值不等于没问题）", noMeasurement.errors.length === 1
+    && noMeasurement.errors[0].kind === "unreadable", JSON.stringify(noMeasurement.errors));
+
+  return failures;
+}
+
 
 /**
  * 把文档对账的结论落成退出码：**读不到真值 ⇒ exit 2**，**写错了 ⇒ exit 1**（#164 口径：读不到 ≠ 没问题）。
@@ -539,11 +742,28 @@ function exitOnDocFileCountErrors(verdict) {
   const unreadable = verdict.errors.filter((e) => e.kind === "unreadable");
   const code = unreadable.length ? 2 : 1;
   console.error(
-    "check:types: 失败 — 指令面文档的「基线 **N** / M 个文件」声称与本次实测对不上"
-    + `（issue #635 ①；${code === 2 ? "读不到真值" : "文档写错了"} ⇒ exit ${code}）：\n`
+    "check:types: 失败 — 指令面文档的「带错文件数」声称与本次实测对不上"
+    + "（issue #635 ① / #672：`基线 **N** / M 个文件`、`N of them (M files)`、`N 个错（涉 M 个文件）`、`**M of them carrying errors**`、`其中 **M 个带错**`；"
+    + `${code === 2 ? "读不到真值" : "文档写错了"} ⇒ exit ${code}）：\n`
     + verdict.errors.map((e) => `  · ${e.text}`).join("\n"),
   );
   process.exit(code);
+}
+
+// ── 判据自己的反向证（#672 验收 (e)）：**无条件跑**，不靠「有人记得加 --self-test」────────
+// 零 tsc 运行、毫秒级，所以直接搭在主路径上：自测红了就是判据自己坏了，先修它再看实测数。
+// `--self-test` 只是把同一份自测单独跑一遍（不跑 tsc），方便反向证与排障。
+const docClaimSelfTestFailures = runDocClaimSelfTest();
+if (docClaimSelfTestFailures.length) {
+  console.error(
+    "check:types: 失败 — 文档对账判据的自测红了（判据自己坏了，先修它，别拿实测数去调）：\n"
+    + docClaimSelfTestFailures.map((f) => `  · ${f}`).join("\n"),
+  );
+  process.exit(1);
+}
+if (SELF_TEST) {
+  console.log("check:types: --self-test OK — 文档对账判据的反向证全绿（合成夹具：实测 41 / 43 个文件，未跑 tsc）");
+  process.exit(0);
 }
 
 // ── strict 棘轮（issue #417）：同一张依赖图 + `--strict`，**参与 exit code** ────────────
@@ -761,9 +981,9 @@ if (total > BASELINE) {
 // 而文档那一维的谎**一例都不许过 exit 0**。放在 `--print-count` 之后是为了让那一步的 stdout 仍然只是一个数。
 const otherTierCommand = WITH_TOOLS ? "npm run check:types" : "npm run check:types -- --with-tools";
 const docVerdict = reconcileDocFileCounts({
-  measuredTotal: total,
-  measuredFiles: files.length,
+  errors,
   tierBaseline: BASELINE,
+  tierId: WITH_TOOLS ? "withTools" : "root",
   tierName: MODE,
   otherBaseline: WITH_TOOLS ? BASELINE_ROOT : BASELINE_WITH_TOOLS,
   verboseCommand: `node scripts/type-check-ratchet.mjs --verbose${WITH_TOOLS ? " --with-tools" : ""}`,
@@ -771,10 +991,10 @@ const docVerdict = reconcileDocFileCounts({
 if (docVerdict.errors.length) exitOnDocFileCountErrors(docVerdict);
 console.log(
   docVerdict.judged > 0
-    ? `check:types: 文档对账 OK — ${docVerdict.judged} 处「基线 **N** / M 个文件」声称句的 M 都等于本次实测的 `
-      + `${files.length} 个带错文件（${MODE}）`
+    ? `check:types: 文档对账 OK — ${docVerdict.judged} 处「带错文件数」声称句的 M 都等于本次实测的 `
+      + `${docVerdict.measuredFiles} 个带错文件（${MODE}）`
       + (docVerdict.deferred > 0 ? `；另 ${docVerdict.deferred} 处属另一档，由 \`${otherTierCommand}\` 判` : "")
-    : `check:types: 文档对账 — 本档（${MODE}）没有「基线 **N** / M 个文件」声称句；`
+    : `check:types: 文档对账 — 本档（${MODE}）没有「带错文件数」声称句；`
       + `${docVerdict.deferred} 处属另一档，由 \`${otherTierCommand}\` 判`,
 );
 
