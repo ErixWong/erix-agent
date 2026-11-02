@@ -42,7 +42,8 @@
 // issue #665（把诊断补到**调用方会读的那一面**）：投递事实早就在 `jobView` / `status.json` 上（#654），
 // 但通知正文只在投成功时才存在 ⇒ `failed` / `orphaned` / `no-owner` 三态在会话面**零痕迹**，故障只能
 // 靠读盘反推。现在 `deliveryNote` 把这件事收成**一句人话**（`DELIVERY_NOTE_MARKER` = `delivery:`），
-// 由 `withDeliveryNote` **原位替换**维护（重试多档只留最后一条），并在 `erix-run-format.js` 的
+// 正文由 `deliveryNoteText` 按**结构化事实**生成、整句由 `deliveryNoteSentence` 装出来（重试多档只留
+// 最后一条：每次都重算，不从上一版文案里猜边界——#670 第 1 格的根因），并在 `erix-run-format.js` 的
 // `action:"status"` / `action:"result"` 文本面原样打出（一处拼装）。`delivery` 等字段的恒在场口径没动。
 //
 // ⚠ 后台 run **与扩展同进程**——这是**本单自己的选择**，不是学 pi-subagents：上游**每个**后台 run 都
@@ -111,32 +112,29 @@ export const DELIVERY_VALUES = Object.freeze(["sent", "deduped", "failed", "orph
 /**
  * 投递诊断在**那句人话**里的 marker（issue #665）：`delivery: <解释>`。
  *
- * 为什么是一个 marker 而不是「随便拼一段中文」：诊断是**每次投递尝试都可能改写**的一段文字，
- * 而这段文字要跟着 job 走完三档重试。带 marker 才能用 `withDeliveryNote` 做**原位替换**
- * （而不是每投一次就往尾巴上再粘一段）。
+ * 为什么是一个 marker 而不是「随便拼一段中文」：调用方（模型 / 读 `status.json` 的会话）要能一眼
+ * 认出这一行是投递诊断，机器也能按前缀筛。
+ *
+ * ⚠ issue #670 第 1 格：marker **只是装饰**，不是「诊断从哪儿开始」的边界。边界由结构化字段
+ * （`job.deliveryNoteBody`）给出——以前用 `lastIndexOf(marker)` 从上一版文案里猜边界，正文里
+ * 一旦出现 `delivery:`（`notifyError` 是外部文本，什么都可能有）就会猜错，逐档重试叠成
+ * 多重前缀且尾部逐档截断。别再把 marker 当边界用。
  */
 export const DELIVERY_NOTE_MARKER = "delivery:";
 
 /**
- * 把一段投递诊断写进一句人话：**原位替换**，绝不追加（issue #665）。
+ * 诊断**正文** → 那句人话（`delivery: <正文>`）。纯函数：只拼装，不解析、不扫描任何自由文本
+ * （issue #670 第 1 格）。`text` 为空或不是字符串 ⇒ `undefined`（诊断被清掉）。
  *
- * 写法：定位**最后一次**出现的 `DELIVERY_NOTE_MARKER` → 只保留它前面的 head → 再拼新值；
- * `text` 为空（或不是字符串）时把诊断清掉（head 也为空就整体清成 `undefined`）。
+ * 「多次重试只留最后一条」不靠这个函数做替换，而靠调用方**每次都用当下事实重算正文**
+ * （`refreshDeliveryNote`：`job.deliveryNoteBody = deliveryNoteText(job)`）。
  *
- * 为什么必须是替换而不是追加：投失败后的有界重试（#659 第 1 格）会**多次**走到记录投递事实
- * 这一步，`scheduleNotifyRetry` 每排一档还会再刷新一次（重试次数变了）。无脑追加会让同一句
- * 文案里出现 4 段 `delivery: failed (…)`——这正是「往一句人话里追加诊断」最容易写坏的地方。
- *
- * @param {string|null|undefined} note 上一版的那句人话（`undefined` / `null` = 还没有）
- * @param {string|null|undefined} text 这一段诊断（不含 marker；`undefined` / `""` = 清掉诊断）
+ * @param {string|null|undefined} text 诊断正文（不含 marker；`undefined` / `""` = 没有诊断）
  * @returns {string|undefined}
  */
-export function withDeliveryNote(note, text) {
-  const head = typeof note === "string" ? note : "";
-  const at = head.lastIndexOf(DELIVERY_NOTE_MARKER);
-  const base = at === -1 ? head : head.slice(0, at);
-  if (typeof text !== "string" || text === "") return base === "" ? undefined : base;
-  return `${base}${DELIVERY_NOTE_MARKER} ${text}`;
+export function deliveryNoteSentence(text) {
+  if (typeof text !== "string" || text === "") return undefined;
+  return `${DELIVERY_NOTE_MARKER} ${text}`;
 }
 
 /**
@@ -178,17 +176,23 @@ export function deliveryNoteText(job) {
 }
 
 /**
- * 按 job 上**当下**的投递事实重写那句人话（issue #665）：原位替换，幂等。
+ * 按 job 上**当下**的投递事实重写那句人话（issue #665）：结构化重算，幂等。
  *
  * 两个调用点，都是「投递事实刚变了」那一刻：`recordDelivery`（每次尝试结束）与
  * `scheduleNotifyRetry`（排出一档 ⇒ `notifyRetries` 变了，句子里的次数要跟上）。
- * 同一个 job 上一共最多被调十次上下，而**文案始终只有一段**——靠的是 `withDeliveryNote` 的替换语义。
+ * 同一个 job 上一共最多被调十次上下，而**文案始终只有一段**——靠的是**正文与整句分开存**：
+ * 正文（`job.deliveryNoteBody`）每次都从当下事实重算，整句只是 `marker + 正文`。
+ *
+ * issue #670 第 1 格：这里**不读**上一版文案。以前的做法是「从上一版文案里找最后一个 marker、
+ * 截掉它后面的部分、再拼新值」，而正文含外部文本（`notifyError` / `ownerSessionError`），
+ * 只要外部文本里出现 `delivery:`，边界就落在正文内部 ⇒ 每档重试多嵌一层、尾部逐档截断。
  *
  * @param {object} job
  * @returns {string|undefined}
  */
 function refreshDeliveryNote(job) {
-  job.deliveryNote = withDeliveryNote(job.deliveryNote, deliveryNoteText(job));
+  job.deliveryNoteBody = deliveryNoteText(job);
+  job.deliveryNote = deliveryNoteSentence(job.deliveryNoteBody);
   return job.deliveryNote;
 }
 
