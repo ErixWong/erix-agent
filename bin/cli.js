@@ -815,6 +815,186 @@ async function runMcp({ configPath }) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// issue #673：折叠事实的**展示层**。
+//
+// 现场：issue #657 已经让 `compactionStats[].strategyName` / `type: "compaction"` 事件说出
+// 「实际执行折叠的那一层」，#661 已经让摘要器失败响亮失败——但 CLI 一个字都不显示
+// （`grep -c strategyName bin/cli.js` 曾经是 `0`）。本片只补**展示/留痕**，不改引擎事实：
+//   · 终局 stdout 一行机器可读的折叠摘要（`formatCompactionFoldSummary`）；
+//   · 运行中的即时提示走 **stderr**（`formatCompactionEventLine` / `formatCompactionFallbackEventLine`），
+//     不写 stdout，免得污染 `--stream` 的终稿字节流；
+//   · 同一批事件送进 `judge.log`（`createRunEventHandlers`），与 `run_outcome` 同生命周期。
+// 三条硬纪律：① **无事实 ⇒ 无行**（零折叠 / 没有策略名时输出逐字不变）；② 不造数（拿不到就少写一个
+// key，而不是写 0 或占位值）；③ 展示层失败不得把已完成的 run 变 failed（写 stderr 吞错，与 judge.log
+// 写入器同一条纪律）。
+// ---------------------------------------------------------------------------
+
+/** 终局折叠摘要行的固定前缀（人类可读 + 机器可 grep）。 */
+const FOLD_SUMMARY_PREFIX = "=== 折叠 ===";
+
+/**
+ * 终局折叠摘要行（issue #673）：只从 `result.compactionStats` 的**真实折叠事实**取数。
+ *
+ * 形状（`key=value`，固定前缀，便于脚本 grep）：
+ * `=== 折叠 === strategy=fold-llm folds=1 foldedRounds=2 tokens=11143->8332`
+ *
+ * 口径：
+ *   · `strategy` = 真正执行过折叠的策略名，按首次出现顺序去重、逗号分隔（**不重排**——顺序本身就是
+ *     事实：先折的是谁）；
+ *   · `folds` = `compacted === true` 的统计条数（一次折叠一条）；
+ *   · `foldedRounds` = 这些折叠各自折掉的轮数之和；
+ *   · `tokens` = 首条有效折叠的 `tokensBefore` -> 末条有效折叠的 `tokensAfter`。
+ *     这里**故意不写** `rounds=<first>-><last>`：`compactionStats` 里没有「这一折发生时总共有几轮」
+ *     这个事实，凑出来的数字就是造假；能如实说出的是 `foldedRounds`。
+ *
+ * @param {Array<Record<string, unknown>>|undefined} compactionStats `result.compactionStats`
+ * @returns {string|null} 没有真实折叠、或引擎说不出策略名时返回 `null`（调用方据此保持输出逐字不变）
+ */
+export function formatCompactionFoldSummary(compactionStats) {
+  if (!Array.isArray(compactionStats)) return null;
+  const folds = compactionStats.filter((stat) => stat?.compacted === true);
+  if (folds.length === 0) return null;
+  const strategies = [];
+  for (const stat of folds) {
+    const name = typeof stat.strategyName === "string" ? stat.strategyName.trim() : "";
+    if (name !== "" && !strategies.includes(name)) strategies.push(name);
+  }
+  // 「说不出谁折的」不是「折叠没发生」，但一行不带 strategy 的摘要会被读成配置项原文 ⇒ 宁可不打。
+  if (strategies.length === 0) return null;
+  const foldedRounds = folds.reduce(
+    (total, stat) => total + (Number.isSafeInteger(stat.foldedRounds) ? stat.foldedRounds : 0),
+    0,
+  );
+  const tokensBefore = folds[0]?.tokensBefore;
+  const tokensAfter = folds[folds.length - 1]?.tokensAfter;
+  const parts = [
+    FOLD_SUMMARY_PREFIX,
+    `strategy=${strategies.join(",")}`,
+    `folds=${folds.length}`,
+    `foldedRounds=${foldedRounds}`,
+  ];
+  if (Number.isFinite(tokensBefore) && Number.isFinite(tokensAfter)) {
+    parts.push(`tokens=${tokensBefore}->${tokensAfter}`);
+  }
+  return parts.join(" ");
+}
+
+/**
+ * 一次折叠的**即时提示行**（stderr，issue #673）。
+ *
+ * 只认 `compacted === true` 的 `compaction` 事件：同一条事件通道上还跑着 user-turn 守卫与 TTL 层
+ * 那类「有统计、但什么都没折」的记录，给它们打一行「折叠」就是假话。
+ *
+ * @param {*} event `onEvent` 收到的 `compaction` 事件
+ * @returns {string|null} 不是一次真折叠时返回 `null`（无事发生不多打一行）
+ */
+export function formatCompactionEventLine(event) {
+  if (event?.type !== "compaction") return null;
+  const stat = event.compaction ?? {};
+  if (stat.compacted !== true) return null;
+  const strategyName = typeof stat.strategyName === "string" ? stat.strategyName.trim() : "";
+  const parts = ["[compaction]"];
+  if (event.round !== undefined) parts.push(`round=${event.round}`);
+  parts.push(`strategy=${strategyName === "" ? "unknown" : strategyName}`);
+  parts.push(`foldedRounds=${Number.isSafeInteger(stat.foldedRounds) ? stat.foldedRounds : 0}`);
+  parts.push(`tokensBefore=${Number.isFinite(stat.tokensBefore) ? stat.tokensBefore : "unknown"}`);
+  parts.push(`tokensAfter=${Number.isFinite(stat.tokensAfter) ? stat.tokensAfter : "unknown"}`);
+  return parts.join(" ");
+}
+
+/**
+ * 预算兜底那次折叠的**即时提示行**（stderr，issue #673）。
+ *
+ * `detail` 的首句是引擎写死的原文（#464 A 的判据锚），所以这里原样带上整句（压成单行），
+ * 不截断、不改写：宿主/脚本要断言的就是那一句。
+ *
+ * @param {*} event `onEvent` 收到的 `compaction_strategy_fallback` 事件
+ * @returns {string|null} 事件类型不符时返回 `null`
+ */
+export function formatCompactionFallbackEventLine(event) {
+  if (event?.type !== "compaction_strategy_fallback") return null;
+  const detail = typeof event.detail === "string" && event.detail.trim() !== ""
+    ? event.detail.trim().replace(/\s+/gu, " ")
+    : "unknown";
+  const parts = ["[compaction]", "fallback"];
+  if (event.round !== undefined) parts.push(`round=${event.round}`);
+  parts.push(`detail=${detail}`);
+  return parts.join(" ");
+}
+
+/**
+ * `onEvent` 的出口：judge.log 落盘 + 即时提示 + idle 喂表（issue #165 / #441 / #673）。
+ *
+ * 抽成工厂（而不是留在 `runChat` 闭包里）是为了让「即时提示走 stderr」与「事件进 judge.log」
+ * 这两件事各自能被证一次：真折叠走子进程端到端（`test/cli-compaction-strategy-visibility-673.test.js`），
+ * 而 `compaction_strategy_fallback` 在 CLI 里构造不出来（CLI 永远配置策略 ⇒ 引擎那条兜底永不触发），
+ * 所以它由这个工厂的进程内用例直接钉住——**不是**拿源码字符串断言糊弄。
+ *
+ * @param {object} [options]
+ * @param {string|undefined} [options.judgeLogPath] judge.log 路径（缺省/空 ⇒ 不落盘，与从前一致）
+ * @param {() => void} [options.touchIdle] 喂 idle 看门狗（`attempt` / `recovering` 视为进展）
+ * @param {(line: string) => void} [options.writeStderr] stderr 写出口（测试可注入；缺省真写 stderr）
+ * @returns {{appendJudgeLogRecord: ((record: any) => void)|undefined, onEvent: (event: any) => void}}
+ */
+export function createRunEventHandlers({
+  judgeLogPath,
+  touchIdle = () => {},
+  writeStderr = (line) => { process.stderr.write(`${line}\n`); },
+} = {}) {
+  let judgeLogWriteFailed = false;
+  // judge-log 为同信任域全量审计档案（与 run JSONL/工具捕获同目录，本就明文）：
+  // 原始 info 原样落盘，不做脱敏——脱敏是 token hub 职责（ADR-009 信任模型）
+  const appendJudgeLogRecord = judgeLogPath
+    ? (record) => {
+      if (judgeLogWriteFailed) return;
+      try {
+        appendFileSync(
+          judgeLogPath,
+          `${JSON.stringify({ ts: new Date().toISOString(), ...record })}\n`,
+          "utf8",
+        );
+      } catch (error) {
+        judgeLogWriteFailed = true;
+        console.error(`Judge log write failed: ${error?.message ?? String(error)}`);
+      }
+    }
+    : undefined;
+  // 展示层失败不得改变终局：引擎现状「宿主 onEvent 抛错是 fatal 的」（#173），而写 stderr 抛错
+  // （EPIPE 之类）与 judge.log 写失败同一性质——留痕没成，run 已经跑完了。
+  const emitStderr = (line) => {
+    if (line === null) return;
+    try {
+      writeStderr(line);
+    } catch {
+      // 吞掉：不让一次展示层写失败把已完成的 run 带成 failed。
+    }
+  };
+  // issue #441：`onEvent` **总是**注册。两件事：
+  //   ① `attempt` / `recovering` 喂一次 idle 表——重试本身是进展（引擎已经决定重试、并真的发起了下一次
+  //      尝试）；不喂的话默认 300s 窗口会在退避期把重试打断，又回到「静默 = 不可重试 abort」的老路
+  //      （派生出来的相位截止严格小于 idle 窗口，但**退避**不在那个窗口里，只能靠这里补）。
+  //   ② `run_outcome` 汇总记录落 judge.log。
+  // issue #673：`compaction` / `compaction_strategy_fallback` 也落 judge.log，并在 stderr 打一行即时
+  // 提示——只加渠道，不改事件 payload 本体（引擎事实一个字没动）。
+  // 只抄**真的折了**的那一类（`compacted === true`）：同一条事件通道上还跑着 user-turn 守卫与 TTL
+  // 层那些「有统计、但什么都没折」的记录，把它们写进 judge.log 会让「零折叠 ⇒ judge.log 里没有
+  // `type: "compaction"`」这句承诺不成立（#673 验收原文）。stderr 与 judge.log 因此口径一致。
+  const onEvent = (event) => {
+    if (event?.type === "attempt" || event?.type === "recovering") touchIdle();
+    if (event?.type === "run_outcome") appendJudgeLogRecord?.(event);
+    if (event?.type === "compaction" && event.compaction?.compacted === true) {
+      appendJudgeLogRecord?.(event);
+      emitStderr(formatCompactionEventLine(event));
+    }
+    if (event?.type === "compaction_strategy_fallback") {
+      appendJudgeLogRecord?.(event);
+      emitStderr(formatCompactionFallbackEventLine(event));
+    }
+  };
+  return { appendJudgeLogRecord, onEvent };
+}
+
 export async function runChat(options = {}) {
   const runId = options.session ?? defaultSessionId(options.cwd ?? process.cwd(), { unique: true });
   const notesDir = resolveNotesDir(options.notesDir);
@@ -1075,38 +1255,18 @@ async function runChatWithNotes({
   // issue #165：注入路径与默认路径共用下面同一个写入器 appendJudgeLogRecord，两类记录
   // （judge 决策 + run 级 outcome 汇总）因此逐字段同形，不存在“走默认路径才多字段”的分叉。
   const judgeLogPath = judgeLog ?? process.env.ERIX_JUDGE_LOG ?? path.join(archiveDir, "judge.log");
-  let judgeLogWriteFailed = false;
-  // judge-log 为同信任域全量审计档案（与 run JSONL/工具捕获同目录，本就明文）：
-  // 原始 info 原样落盘，不做脱敏——脱敏是 token hub 职责（ADR-009 信任模型）
-  const appendJudgeLogRecord = judgeLogPath
-    ? (record) => {
-      if (judgeLogWriteFailed) return;
-      try {
-        appendFileSync(
-          judgeLogPath,
-          `${JSON.stringify({ ts: new Date().toISOString(), ...record })}\n`,
-          "utf8",
-        );
-      } catch (error) {
-        judgeLogWriteFailed = true;
-        console.error(`Judge log write failed: ${error?.message ?? String(error)}`);
-      }
-    }
-    : undefined;
-  const onJudge = appendJudgeLogRecord;
   // issue #165：run 终局的 `run_outcome` 汇总记录也落同一个 judge.log，使「judge 决策 ↔ run
-  // 终局」在同一文件内按 runId join（per-model 校准指标不需第二条档案）。只挑这一条，其余事件
-  // 不抄进 judge.log。引擎现状「宿主 onEvent 抛错是 fatal 的」（#173），而写入器内部已吞错，
-  // 不会把已跑完的 run 带成 failed。
-  // issue #441：`onEvent` 现在**总是**注册（此前只在 judge-log 可写时注册）。两件事：
-  //   ① `attempt` / `recovering` 喂一次 idle 表——重试本身是进展（引擎已经决定重试、并真的发起了下一次
-  //      尝试）；不喂的话默认 300s 窗口会在退避期把重试打断，又回到「静默 = 不可重试 abort」的老路
-  //      （派生出来的相位截止严格小于 idle 窗口，但**退避**不在那个窗口里，只能靠这里补）。
-  //   ② `run_outcome` 汇总记录照旧落 judge.log。
-  const onEvent = (event) => {
-    if (event?.type === "attempt" || event?.type === "recovering") idle?.touch();
-    if (event?.type === "run_outcome") appendJudgeLogRecord?.(event);
-  };
+  // 终局」在同一文件内按 runId join（per-model 校准指标不需第二条档案）。引擎现状「宿主 onEvent
+  // 抛错是 fatal 的」（#173），而写入器内部已吞错，不会把已跑完的 run 带成 failed。
+  // issue #441：`onEvent` **总是**注册（此前只在 judge-log 可写时注册），`attempt` / `recovering`
+  // 要喂 idle 表（重试本身是进展；不喂的话退避期会被默认 300s 窗口打断）。
+  // issue #673：折叠事件也走这条出口——`compaction` / `compaction_strategy_fallback` 落 judge.log，
+  // 并在 stderr 打一行即时提示（只加渠道，不改事件 payload；出口本体见 `createRunEventHandlers`）。
+  const { appendJudgeLogRecord, onEvent } = createRunEventHandlers({
+    judgeLogPath,
+    touchIdle: () => idle?.touch(),
+  });
+  const onJudge = appendJudgeLogRecord;
 
   let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt({
     todo: !todoDisabled,
@@ -1429,6 +1589,11 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
     if (protectedDowngraded > 0) {
       console.log(`⚠️ 压缩预算不足：已降级 ${protectedDowngraded} 条最旧 protected 消息；如需保留原文，请提高 compact budget 或减少保护集。`);
     }
+    // issue #673：终局折叠摘要行。只在「真的发生了折叠、且引擎说出了是哪一层折的」时打——
+    // 零折叠 / 没有 `strategyName` ⇒ `null` ⇒ 这一段 stdout 逐字与从前一致（`=== 统计 ===` 仍是
+    // 最后一行，靠尾行取数的脚本不受影响）。
+    const foldSummaryLine = formatCompactionFoldSummary(result.compactionStats);
+    if (foldSummaryLine !== null) console.log(foldSummaryLine);
     console.log(
       `\n=== 统计 === model=${config.model} rounds=${result.rounds} truncated=${result.truncated} termination=${result.termination?.reason ?? "unknown"} usage=${JSON.stringify(result.usage)} compacted=${compacted} ${formatGuardMetrics(result.verification)}`,
     );

@@ -3399,6 +3399,19 @@ groupable per model, and one additive event makes them joinable to a terminal
 outcome. No existing field changes name, shape, or meaning, and a host that
 ignores all three behaves exactly as before.
 
+**What the CLI host writes (issue #673).** `erix chat` is a host like any other, so this is a
+display/audit choice, not a new engine fact: it appends the `compaction` event of every **real**
+fold (`compacted === true`, carrying the executing `strategyName`) and the one-shot
+`compaction_strategy_fallback` event to the same `judge.log` as `run_outcome`, and prints one
+immediate line per such event to **stderr** (`[compaction] round=… strategy=… foldedRounds=…
+tokensBefore=… tokensAfter=…`, or `[compaction] fallback round=… detail=…`). Nothing goes to
+stdout there — a `--stream` run's final bytes stay untouched — and a run that folded nothing
+writes no extra line and no `type: "compaction"` record (fold-adjacent stats that folded no round
+— the user-turn guard and the TTL layer — are deliberately not copied, so "no fold" stays
+readable as "no record"). The engine's own surfaces (event payloads, `compactionStats`,
+`judge.log` field shapes) are unchanged; a host that does not use the CLI sees byte-for-byte what
+it saw before.
+
 | Field | Present on | Contract |
 |---|---|---|
 | `runId` | every `onJudge` record and the `run_outcome` event | The run id the host passed to `runToolLoop`; it is the join key between the streamed decisions and the terminal record. When the host passed no `runId` the field is **absent** — the engine does not synthesize one. |
