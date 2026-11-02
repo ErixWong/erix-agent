@@ -3968,9 +3968,12 @@ export async function runToolLoop(options) {
         // 前置判断保留（来者自带账单就不覆盖），但它现在读的是**来者自己的**字段：引擎不再往
         // 来者身上写东西，所以「上一次 run 留下的陈旧空数组」这个串档来源已经不存在了。
         if (compactionError?.code === "summarizer_failed") {
-          const unpersisted = compactionError.unpersisted === undefined
+          // `unpersisted` 是宿主可加的字段（`KitError` 的 JSDoc 没声明它），从 `any` 视图读：
+          // 直接点属性会给 `--checkJs` 棘轮添新错（#214 只减不增）。
+          const incoming = /** @type {any} */ (compactionError).unpersisted;
+          const unpersisted = incoming === undefined
             ? errorLedger.toUnpersisted()
-            : compactionError.unpersisted;
+            : incoming;
           throw copyErrorCarrier(compactionError, { unpersisted });
         }
         throw compactionError;
