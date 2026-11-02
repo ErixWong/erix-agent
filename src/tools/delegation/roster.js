@@ -14,9 +14,11 @@
  * 设计判据（照两个真实实现的面，不带它们的宿主语义进来）：
  *   - 记录面参考 pi-subagents 的 `AsyncStatus`（字段名沿用同一套词汇：runId / parentRunId /
  *     state / cwd / model / createdAt / updatedAt / endedAt / deadlineAt / timedOut / pid …），
- *     但收敛到工单钉死的 **21 项**（#630 S1 由 18 项 +3：`resultText` / `resultTruncated` /
+ *     但收敛到工单钉死的 **22 项**（#630 S1 由 18 项 +3：`resultText` / `resultTruncated` /
  *     `errorMessage`——后台子 run 的终稿与失败原因必须能从名册里取回，见 `tool.js` 的
- *     `finishRun`）；除 `state` 外全部 opaque。
+ *     `finishRun`；issue #682 再 +1：`budgetSource`——子 run 的压缩预算来源
+ *     `flag` / `config` / `derived` / `disabled`，由宿主的 `runChild` 交回、库原样落盘不解释）；
+ *     除 `state` 外全部 opaque。
  *   - 落盘一条记录一个文件 `<rosterDir>/<runId>.json`，写必须**原子**（同目录临时文件 +
  *     `rename`）——半写出的 JSON 比没有更糟（重算会把它当损坏或更糟，当活态）。
  *   - **文件名不是身份来源**：记录内的 `runId` 必须等于文件名；不等 ⇒ 视为损坏，点名报出
@@ -70,6 +72,8 @@ import { dirname, join } from "node:path";
  * @property {boolean} [resultTruncated]    `resultText` 被截断过 ⇒ 恰好写 `true`（没截断就不写这个键）
  * @property {string} [errorMessage]        子 run 抛错时的错误文本（issue #630 S1；写侧截到
  *                                          `ERROR_MESSAGE_LIMIT` = 1000 字符），正常结束不写
+ * @property {string} [budgetSource]        子 run 压缩预算的来源（issue #682：`flag` / `config` /
+ *                                          `derived` / `disabled`；opaque，库不解释、只搬运）
  */
 
 /** 名册 `state` 的封闭取值（工单钉死 7 个；其余一律不得写进名册）。 */
@@ -118,6 +122,9 @@ const OPTIONAL_KEYS = [
   "resultText",
   "resultTruncated",
   "errorMessage",
+  // issue #682：子 run 的压缩预算来源（四态）。宿主 `runChild` 交回，库只搬运——
+  // 「父与子的预算为什么不同」从此在名册上可读，而不是要重新推一遍配置。
+  "budgetSource",
 ];
 
 let tmpCounter = 0;
