@@ -1028,7 +1028,7 @@ The shared CLI flags are:
   settable as the `slots.default.compaction` config field). `fold-llm` costs one extra
   main-model call per compaction. A host that calls the library with no strategy gets the
   library behaviour instead — see the contract's "default" note: the two layers are separate
-  facts, and `bin/` is a verifier/debugger, not the contract surface. Since issue #673 the CLI
+  facts, and `bin/` is a verifier/debugger, not the contract surface. Since issue #673 `erix chat`
   also **shows** which layer really folded: each real fold prints one stderr line
   (`[compaction] round=… strategy=… foldedRounds=… tokensBefore=… tokensAfter=…`), the run ends
   with one machine-parsable `=== 折叠 === strategy=… folds=… foldedRounds=… tokens=…` line next
