@@ -2699,6 +2699,249 @@ function collectCliFlagErrors() {
   return errors;
 }
 
+// ── 2.10 压缩策略「默认值」的分层对账（issue #668 ①）────────────────────────────────
+//
+// 病根（#668 ①，现场在契约里）：`fold-llm` is therefore opt-in; `fold-statistical` remains the
+// default everywhere (library default stays `sliding-window` when no strategy is set) —— 一句话把
+// **两层**「默认」混成一句，而两层都不对：
+//   · **库层**：不配策略时，预算溢出由 `fallback: true` 的那一层接手 = `sliding-window`
+//     （真值 = `src/compact/pipeline.js` 里那一层的 `strategyNames`）；
+//   · **CLI 层**：`slots.default.compaction` 缺省 = `fold-llm`（真值 = `bin/cli.js` 帮助文本里的
+//     「默认：…」字样，与 `bin/config.js` 的 `DEFAULT_COMPACTION_STRATEGY` 常量同源）。
+// **没有任何一层默认 `fold-statistical`**：它是 `fold-llm` 摘要失败 / 超时之后的确定性降级兜底。
+// 把 CLI 的默认写成「库的默认」是本仓红线里的错（`bin/` 是校验器/调试器，不是契约面）。
+//
+// 为什么只登记**具体搭配**、不做自然语言判定（#668 自己划的边界）：判据必须机械、可复现。本节两条：
+//   ① **分层声称**（`COMPACTION_CLAIM_SHAPES`）：句子用登记过的标记词（`library default` / `库层默认`
+//      / `CLI slot default` / `CLI 槽位默认`）指出**它说的是哪一层**，紧随其后的策略名必须等于**那一层**
+//      的源码真值。句子改了没同步源码 / 源码改了没同步句子 —— 两个方向都红并点名 `doc:行`。
+//      登记过的 (文档, 层) 组合必须**至少命中一次**（`COMPACTION_CLAIM_REQUIRED`）：整句被删掉也红。
+//      中英成对：同一对文档里每层的声明点处数必须相等（只在一侧删掉就是红）。
+//   ② **退役句式**（`COMPACTION_MIXED_SHAPES`）：`X remains the default everywhere` /
+//      `默认 everywhere 仍是 X` 这一种**把两层混成一句**的写法整体退役 —— 它既指不出层，也无法与
+//      任何一层的真值对账；改写方向是拆成两句、各写一层（这正是本票要的「分层陈述」）。
+//
+// 覆盖面（#668 点名的活文档）：两份契约、两份 README、两份 AGENTS、两份需求文档、`erix_run` 的
+// README。`CHANGELOG.md` 与升级指南不在面内（历史记录写的是当时为真，改它等于伪造历史）。
+
+/** 库层真值出处：`fallback: true` 的那一层就是「不配策略时接手」的那一个。 */
+const COMPACTION_PIPELINE_SRC = "src/compact/pipeline.js";
+/** CLI 层真值出处：帮助文本里的「默认：…」字样。 */
+const COMPACTION_CLI_SRC = "bin/cli.js";
+/** CLI 层真值的常量形态（与帮助文本必须同源，否则源码自己就不自洽）。 */
+const COMPACTION_CLI_CONST_SRC = "bin/config.js";
+
+/** 压缩策略「默认值」这句话的**活文档**面（#668 点名的清单，顺序即报告顺序）。 */
+const COMPACTION_DEFAULT_DOCS = Object.freeze([README_EN, README_CN, AGENTS_EN, AGENTS_CN,
+  CONTRACT_EN, CONTRACT_CN, REQ_EN, REQ_CN, PI_EXT_README]);
+
+/**
+ * 分层声称的登记句式：`layer` = 这句话指的是哪一层，捕获组 = 它声称的策略名。
+ *
+ * 标记词后面 `[^。\n]{0,60}?` 只允许「同一行、同一句」里的连接词——跨句、跨行的搭配不算声称
+ * （那是另一句话的事，硬连起来只会变成措辞绑架）。标记词本身足够具体（`library default` /
+ * `库层默认` / `CLI slot default` / `CLI 槽位默认`），所以捕获组不必再按内置名单收紧：
+ * 名字写错（比如写成 `fold-statistical`）**必须**被抓到，那正是本票的病。
+ *
+ * @returns {Array<{id: string, layer: "library"|"cli", re: RegExp, where: string}>}
+ */
+function compactionClaimShapes() {
+  return [
+    {
+      id: "library",
+      layer: "library",
+      re: /(?:library default|库层默认)[^。\n]{0,60}?`([a-z][a-z-]*)`/giu,
+      where: `${COMPACTION_PIPELINE_SRC} 的 \`fallback: true\` 层`,
+    },
+    {
+      id: "cli",
+      layer: "cli",
+      re: /(?:CLI(?:'s)? (?:own )?slot default|CLI 槽位默认)[^。\n]{0,60}?`([a-z][a-z-]*)`/giu,
+      where: `${COMPACTION_CLI_SRC} 帮助文本里的「默认：…」`,
+    },
+  ];
+}
+
+/**
+ * 登记过的 (文档, 层) 组合：**必须命中至少一次**。删掉整句声明 = 检查面在这份文档失效 ⇒ 红
+ * （#210 那族「句子被删也要红」的口径，与 `BASELINE_CLAIM_RULES` 的 `required: true` 同形）。
+ */
+const COMPACTION_CLAIM_REQUIRED = Object.freeze([
+  { doc: CONTRACT_EN, layer: "library" },
+  { doc: CONTRACT_EN, layer: "cli" },
+  { doc: CONTRACT_CN, layer: "library" },
+  { doc: CONTRACT_CN, layer: "cli" },
+  { doc: README_EN, layer: "cli" },
+  { doc: README_CN, layer: "cli" },
+  { doc: PI_EXT_README, layer: "library" },
+]);
+
+/**
+ * 退役句式：把两层混成一句的写法（#668 判定的矛盾形态，改写方向 = 拆成两句）。
+ * 捕获组同样只认内置策略名（理由同上：这是「压缩策略默认值」的锚点，不是通用默认值锚点）。
+ *
+ * @param {string[]} names 内置策略名
+ */
+function compactionMixedShapes(names) {
+  const alt = names.map((name) => name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("|");
+  return [
+    { id: "en-remains-default-everywhere", re: new RegExp(`\`(${alt})\`\\s+(?:still\\s+)?remains\\s+the\\s+default\\s+everywhere`, "giu") },
+    { id: "cn-default-everywhere", re: new RegExp(`默认(?:\\s*everywhere)?\\s*仍是\\s*\`(${alt})\``, "gu") },
+  ];
+}
+
+/**
+ * 两层真值。抽不到就报错（#164 口径：抽不到真值 ≠ 没有漂移）。三处 CLI 字样（帮助文本两处 +
+ * `bin/config.js` 常量）必须彼此相等，否则源码自己就不自洽，文档写哪一个都是错的。
+ *
+ * @returns {{errors: string[], library: string|null, cli: string|null, names: string[]}}
+ */
+function compactionDefaultTruth() {
+  const errors = [];
+  let library = null;
+  let cli = null;
+  let names = [];
+
+  const pipeline = textOf(COMPACTION_PIPELINE_SRC);
+  if (typeof pipeline !== "string") {
+    errors.push(`compaction-default: 读不到 ${COMPACTION_PIPELINE_SRC}——库层默认值无从抽起（检查面失效）`);
+  } else {
+    // ⚠ `fallback: true` 有两层：`slidingWindow`（有策略名）与 `enforceSize`（安全层，`strategyNames: []`）。
+    // 「库层默认是哪个策略」问的是**带策略名**的那一层，所以先按「有策略名」筛，再要求它唯一。
+    const blocks = pipeline.split(/layer\(\{/u).slice(1);
+    const fallback = blocks
+      .filter((block) => /\bfallback:\s*true\b/u.test(block))
+      .filter((block) => /strategyNames:\s*\[[^\]]*[a-z]/u.test(block));
+    if (fallback.length !== 1) {
+      errors.push(`compaction-default: ${COMPACTION_PIPELINE_SRC} 里 \`fallback: true\` 且**带策略名**的层不是恰好一个`
+        + `（实测 ${fallback.length} 个）——「库层默认是哪个策略」失去唯一真值来源（#164 口径：抽不到就报错）`);
+    } else {
+      const names = [...(fallback[0].match(/strategyNames:\s*\[([^\]]*)\]/u)?.[1] ?? "")
+        .matchAll(/"([a-z][a-z-]*)"/gu)].map((m) => m[1]);
+      if (names.length !== 1) {
+        errors.push(`compaction-default: ${COMPACTION_PIPELINE_SRC} 的 \`fallback: true\` 层 \`strategyNames\` 抽出来是 `
+          + `${JSON.stringify(names)}——兜底层必须恰好声明一个策略名，否则「库层默认」无从对账`);
+      } else {
+        [library] = names;
+      }
+    }
+  }
+
+  if (typeof pipeline === "string") {
+    // 内置策略名集合（现推，不抄）：分层声称的捕获组只认这些名字，免得把别的主题的默认句误判成策略声称
+    names = [...new Set([...pipeline.matchAll(/strategyNames:\s*\[([^\]]*)\]/gu)]
+      .flatMap((m) => [...m[1].matchAll(/"([a-z][a-z-]*)"/gu)].map((x) => x[1])))];
+    if (names.length === 0) {
+      errors.push(`compaction-default: 从 ${COMPACTION_PIPELINE_SRC} 的 \`strategyNames\` 里抽不到任何策略名——`
+        + "分层声称的捕获组会退化成「任何反引号里的词」，判据失去边界（#164 口径：抽不到就报错）");
+    }
+  }
+
+  const help = textOf(COMPACTION_CLI_SRC);
+  const cliConst = textOf(COMPACTION_CLI_CONST_SRC);
+  const flagDefault = typeof help === "string"
+    ? help.match(/--compaction <名>[\s\S]{0,160}?（默认：([a-z][a-z-]*)）/u)?.[1] ?? null
+    : null;
+  const slotDefault = typeof help === "string"
+    ? help.match(/slots\.default\.compaction[\s\S]{0,160}?默认 ([a-z][a-z-]*)/u)?.[1] ?? null
+    : null;
+  const constantDefault = typeof cliConst === "string"
+    ? cliConst.match(/^export const DEFAULT_COMPACTION_STRATEGY = "([a-z][a-z-]*)";/mu)?.[1] ?? null
+    : null;
+  const cliSides = [
+    ["`--compaction` 帮助行", flagDefault],
+    ["`slots.default.compaction` 帮助行", slotDefault],
+    [`${COMPACTION_CLI_CONST_SRC} 的 \`DEFAULT_COMPACTION_STRATEGY\``, constantDefault],
+  ];
+  for (const [what, value] of cliSides) {
+    if (value === null) {
+      errors.push(`compaction-default: 从 ${what} 里抽不到默认策略名——CLI 层真值来源失效（#164 口径：抽不到就报错）`);
+    }
+  }
+  const known = cliSides.map(([, value]) => value).filter((value) => value !== null);
+  if (new Set(known).size > 1) {
+    errors.push(`compaction-default: CLI 层的三处字样彼此不一致（${cliSides.map(([what, value]) => `${what} = ${value ?? "抽不到"}`).join("；")}）`
+      + "——源码自己就不自洽，文档写哪一个都是错的");
+  } else if (known.length === 3) {
+    [cli] = known;
+  }
+  return { errors, library, cli, names };
+}
+
+function collectCompactionDefaultErrors() {
+  const errors = [];
+  const notes = [];
+  const truth = compactionDefaultTruth();
+  errors.push(...truth.errors);
+  if (truth.library === null || truth.cli === null) {
+    // 抽不到真值就别再往下判：拿 null 去比会把整面文档染红成噪音（#164 的第一条报错已经点名了）
+    collectCompactionDefaultErrors.notes = ["compaction-default: 真值抽不到，本节的逐处对账本轮未执行（上面已报红）"];
+    return errors;
+  }
+  if (truth.names.length === 0) {
+    collectCompactionDefaultErrors.notes = ["compaction-default: 内置策略名集合抽不到，本节未执行（上面已报红）"];
+    return errors;
+  }
+  const claimShapes = compactionClaimShapes();
+  const mixedShapes = compactionMixedShapes(truth.names);
+  const layerTruth = { library: truth.library, cli: truth.cli };
+  const layerName = { library: "库层", cli: "CLI 层" };
+
+  /** 每个 (文档, 层) 的声明点处数（中英成对与覆盖面都读它）。 */
+  const counts = new Map();
+  const bump = (doc, layer) => counts.set(`${doc}|${layer}`, (counts.get(`${doc}|${layer}`) ?? 0) + 1);
+
+  for (const doc of COMPACTION_DEFAULT_DOCS) {
+    const src = textOf(doc);
+    if (typeof src !== "string") {
+      errors.push(`compaction-default: 读不到 ${doc}——它登记在活文档面里，读不到就等于那份没人校`);
+      continue;
+    }
+    for (const shape of claimShapes) {
+      for (const m of src.matchAll(new RegExp(shape.re.source, shape.re.flags))) {
+        bump(doc, shape.layer);
+        const claimed = m[1];
+        const want = layerTruth[shape.layer];
+        if (claimed === want) continue;
+        errors.push(`compaction-default/${shape.id}: ${doc}:${lineOf(src, m.index)} 说${layerName[shape.layer]}默认是 `
+          + `\`${claimed}\`，但${layerName[shape.layer]}的真值是 \`${want}\`（真值在 ${shape.where}）。`
+          + `\n      「${snippetOf(src, m.index)}」`
+          + `\n      两层不是一件事：库层不配策略时由兜底层接手，CLI 槽位是另一层自己的选择——分开写，别混成一句。`);
+      }
+    }
+    for (const shape of mixedShapes) {
+      for (const m of src.matchAll(new RegExp(shape.re.source, shape.re.flags))) {
+        errors.push(`compaction-default/${shape.id}: ${doc}:${lineOf(src, m.index)} 把两层的「默认」混成了一句`
+          + `（\`${m[1]}\` + 「default everywhere / 默认 everywhere」）——这种写法指不出是哪一层，也没有任何一层默认 `
+          + `\`fold-statistical\`。拆成两句：库层默认 = \`${truth.library}\`（不配策略时由兜底层接手），`
+          + `CLI 槽位默认 = \`${truth.cli}\`（\`slots.default.compaction\` 缺省时解析成它）。`
+          + `\n      「${snippetOf(src, m.index)}」`);
+      }
+    }
+  }
+
+  for (const { doc, layer } of COMPACTION_CLAIM_REQUIRED) {
+    if ((counts.get(`${doc}|${layer}`) ?? 0) > 0) continue;
+    errors.push(`compaction-default: ${doc} 里一处「${layerName[layer]}默认」声明都没有——`
+      + `该组合登记为必须命中（整句被删掉、或标记词被改写，检查面在这份文档就失效了）`);
+  }
+  for (const [en, cn] of [[CONTRACT_EN, CONTRACT_CN], [README_EN, README_CN], [REQ_EN, REQ_CN], [AGENTS_EN, AGENTS_CN]]) {
+    for (const layer of ["library", "cli"]) {
+      const a = counts.get(`${en}|${layer}`) ?? 0;
+      const b = counts.get(`${cn}|${layer}`) ?? 0;
+      if (a === b) continue;
+      errors.push(`compaction-default: 声明点处数中英不齐：${en} ${a} 处 vs ${cn} ${b} 处（${layerName[layer]}）`
+        + "——中英是成对译文，只在一侧删掉整句声明就是这种形状");
+    }
+  }
+
+  notes.push(`compaction-default: 压缩策略默认值分层对账（库层 \`${truth.library}\` ← ${COMPACTION_PIPELINE_SRC} 的兜底层；`
+    + `CLI 层 \`${truth.cli}\` ← ${COMPACTION_CLI_SRC} 帮助文本 + ${COMPACTION_CLI_CONST_SRC} 常量；`
+    + `${COMPACTION_DEFAULT_DOCS.length} 份活文档逐处对账，退役句式 ${mixedShapes.length} 种）`);
+  collectCompactionDefaultErrors.notes = notes;
+  return errors;
+}
+
 // ── 3. README 引用的 package.json 清单（files / exports）────────────────────────
 // issue #210 的**主修项**：这块原先是 fail-open 的——围栏定位靠真值键（`b["./tools"]`、
 // `b.includes("src")`），文档把 `"./tools"` 改名或整个删掉时块就找不到了，于是退化成一条 warn
@@ -4650,6 +4893,8 @@ function collectAllDrift() {
     // #635 ① / #644 ③：份数声称的机器对账 + 指令面指着账本的那句指针
     ...collectRefScanCountClaimErrors(), ...collectLedgerPointerErrors(),
     ...collectCliFlagErrors(),
+    // #668 ①：压缩策略「默认值」的分层对账（库层 / CLI 层各自绑源码真值）
+    ...collectCompactionDefaultErrors(),
     // issue #511：「这句话属于哪个版本」与「这个版本发布了没有」四条（自测要连它们一起变异）
     ...collectDocVersionErrors(), ...collectVersionAttributionErrors(), ...collectGuideClaimErrors(),
     ...collectChangelogPublicationErrors(), ...collectPublishedClaimErrors(),
@@ -4682,6 +4927,9 @@ for (const e of collectBareLineRefErrors()) err(e);
 for (const n of collectBareLineRefErrors.notes ?? []) note(n);
 for (const e of collectCliFlagErrors()) err(e);
 for (const n of collectCliFlagErrors.notes ?? []) note(n);
+// #668 ①：压缩策略默认值（库层 / CLI 层分开对账）
+for (const e of collectCompactionDefaultErrors()) err(e);
+for (const n of collectCompactionDefaultErrors.notes ?? []) note(n);
 // ── 9. 「这句话属于哪个版本」（issue #511）──────────────────────────────────────
 for (const collect of [collectDocVersionErrors, collectVersionAttributionErrors, collectGuideClaimErrors,
   collectChangelogPublicationErrors, collectPublishedClaimErrors, collectGuideCoverageErrors, collectBundleTableErrors]) {
@@ -5286,8 +5534,11 @@ const SELF_TEST_CASES = [
     expect: [/baseline\/「基线 \*\*N\*\* \/ M 个文件」声明: 声明点处数中英不齐：AGENTS\.md 1 处 vs AGENTS_cn\.md 2 处/],
   },
   {
-    label: "历史值不被误伤（对照）：CN 叙述里的 142 改成 143 必须仍然绿",
-    overlay: { [AGENTS_CN]: (t) => t.replace("**无 `.d.ts` 在场 = 142 个错**", "**无 `.d.ts` 在场 = 143 个错**") },
+    label: "历史值不被误伤（对照）：CN 叙述里的退役基线 142 / 185 改成 143 / 185 必须仍然绿",
+    // 靶子换过一次（issue #650）：原来钉的是「**无 `.d.ts` 在场 = 142 个错**」，那是 B 类抄件，
+    // 清账时按「命令自己打印」改写了；换成同一份文档里**仍在**的退役基线叙述（142 / 185 那一对，
+    // 它既不在任何现值句式里、也不该被现值句式咬住）。变异没落上仍然算失败（#210 R2）。
+    overlay: { [AGENTS_CN]: (t) => t.replace("逐字复现 142 / 185", "逐字复现 143 / 185") },
     expectGreen: true,
   },
   {
@@ -5616,6 +5867,66 @@ const SELF_TEST_CASES = [
     simulateCliFlagExemptions: [
       { doc: README_EN, command: "chat", flag: "--require-deliverable", why: "测试用：这一条确实是刻意的例外" },
     ],
+    expectGreen: true,
+  },
+  // —— issue #668 ①：压缩策略「默认值」的分层对账（库层 / CLI 层各自绑源码真值）——
+  // 每例钉一侧：把谎放回去 ⇒ 红并点名行；改源码真值 ⇒ 红（证锚点绑的是源码不是文案）；
+  // 只改中英一边 ⇒ 红；删掉整句声明 ⇒ 红（覆盖面）；只动措辞、不动名字 ⇒ 绿（放行证）。
+  {
+    label: "#668 ①：把「两层混成一句」的谎放回契约 EN（`fold-statistical` remains the default everywhere）⇒ 红并点名行号",
+    overlay: {
+      [CONTRACT_EN]: (t) => t.replace("No layer defaults to `fold-statistical`:",
+        "`fold-statistical` remains the default everywhere (library default stays `sliding-window` when no strategy is set).\n  No layer defaults to `fold-statistical`:"),
+    },
+    expect: [/compaction-default\/en-remains-default-everywhere: docs\/host-consumer-contract\.md:\d+ /],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "#668 ①：把同一个谎放回契约 CN（默认 everywhere 仍是 `fold-statistical`）⇒ 红并点名行号",
+    overlay: {
+      [CONTRACT_CN]: (t) => t.replace("  没有任何一层默认 `fold-statistical`：",
+        "  默认 everywhere 仍是 `fold-statistical`。\n  没有任何一层默认 `fold-statistical`："),
+    },
+    expect: [/compaction-default\/cn-default-everywhere: docs\/host-consumer-contract_cn\.md:\d+ /],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#668 ①：把库层真值 `sliding-window` 在源码里临时改名 ⇒ 红（证锚点绑的是源码，不是文案）",
+    overlay: { [COMPACTION_PIPELINE_SRC]: (t) => t.replace('strategyNames: ["sliding-window"],', 'strategyNames: ["sliding-window-renamed"],') },
+    expect: [/compaction-default\/library: docs\/host-consumer-contract\.md:\d+ 说库层默认是 `sliding-window`/],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "#668 ①：`bin/cli.js` 帮助文本只改一处默认 ⇒ 红（CLI 层三处字样必须同源，否则源码自己就不自洽）",
+    overlay: { [COMPACTION_CLI_SRC]: (t) => t.replace("（默认：fold-llm）", "（默认：fold-statistical）") },
+    expect: [/compaction-default: CLI 层的三处字样彼此不一致/],
+  },
+  {
+    label: "#668 ①：CLI 层三处字样一起改成 `fold-statistical`（源码自洽、文档没跟）⇒ 红（文档侧 CLI 声明与真值不符）",
+    overlay: {
+      [COMPACTION_CLI_SRC]: (t) => t.replace("（默认：fold-llm）", "（默认：fold-statistical）").replace("，默认 fold-llm；", "，默认 fold-statistical；"),
+      [COMPACTION_CLI_CONST_SRC]: (t) => t.replace('export const DEFAULT_COMPACTION_STRATEGY = "fold-llm";', 'export const DEFAULT_COMPACTION_STRATEGY = "fold-statistical";'),
+    },
+    expect: [/compaction-default\/cli: docs\/host-consumer-contract\.md:\d+ 说CLI 层默认是 `fold-llm`/,
+      /compaction-default\/cli: README\.md:\d+ 说CLI 层默认是 `fold-llm`/],
+    expectFiles: [CONTRACT_EN, README_EN],
+  },
+  {
+    label: "#668 ①：只改中文契约的库层声明（`sliding-window` → `fold-statistical`）⇒ 红（中英成对，只改一边就红）",
+    overlay: { [CONTRACT_CN]: (t) => t.replace("**库层默认**（未配策略时）是 `sliding-window`", "**库层默认**（未配策略时）是 `fold-statistical`") },
+    expect: [/compaction-default\/library: docs\/host-consumer-contract_cn\.md:\d+ 说库层默认是 `fold-statistical`/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#668 ①：删掉中文契约那半句 CLI 槽位默认 ⇒ 红（覆盖面 + 中英处数不齐，两个方向都点名）",
+    overlay: { [CONTRACT_CN]: (t) => t.replace("**CLI 槽位默认**是 `fold-llm`", "**CLI 槽位**不是库默认") },
+    expect: [/compaction-default: docs\/host-consumer-contract_cn\.md 里一处「CLI 层默认」声明都没有/,
+      /compaction-default: 声明点处数中英不齐：docs\/host-consumer-contract\.md 1 处 vs docs\/host-consumer-contract_cn\.md 0 处（CLI 层）/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#668 ①（放行证）：只改契约 EN 的措辞、不动那两个名字 ⇒ 仍然绿（闸咬的是名字与层，不是排版）",
+    overlay: { [CONTRACT_EN]: (t) => t.replace("No layer defaults to `fold-statistical`:", "The degrade target is `fold-statistical`; no layer defaults to `fold-statistical`:") },
     expectGreen: true,
   },
   // ══ issue #511：「这句话属于哪个版本」+「这个版本发布了没有」 ══════════════════════
