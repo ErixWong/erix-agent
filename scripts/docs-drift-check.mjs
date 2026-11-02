@@ -4838,6 +4838,36 @@ function replaceUnique(needle, replacement) {
   };
 }
 
+/**
+ * `--self-test` 的变异器：把一句话**追加**到某份文档末尾，并在格内先证「这句话原本不在文档里」。
+ *
+ * 为什么追加也要自带断言（#210 R2）：`after !== before` 对 append **恒真**，harness 那条「变异没落上」
+ * 的判据在这里是空转的——追加永远「落上」，哪怕追加的是一句文档里本来就有的老话；那种格证明不了
+ * 「门禁怎么判这句陈述」，红了也可能是别的什么把它弄红的。所以两半都断言：追加前**恰好 0 次**、追加后
+ * **恰好 1 次**；任一不成立就原样返回，由既有的「变异没落到 X 上」判据报红。
+ */
+function appendUnique(sentence) {
+  return (text) => {
+    if (text.split(sentence).length !== 1) return text;            // 已经出现 ⇒ 靶子不成立
+    const after = `${text}${text.endsWith("\n") ? "" : "\n"}\n${sentence}\n`;
+    return after.split(sentence).length === 2 ? after : text;      // 追加后必须恰好一次
+  };
+}
+
+/**
+ * `#668` 点名的**合法保留形态**就写在 `fold-summary-journal.js` 的注释里：一句「`fold-llm` 的降级兜底」
+ * 自带历史限定语（`#661 之前` / `已被删`）。这一格**不抄原文**——现读那一行，读不到、或者历史限定语
+ * 被删掉，都原样返回 ⇒ 自测按「变异没落上」报红。于是这格钉的永远是源码里那句真话，而不是本脚本里的
+ * 一份抄件（#621 的教训：靶子跟着用例走，不跟着某句活文档走）。
+ */
+const JOURNAL_RETENTION_LINE = (() => {
+  const line = read("src/compact/fold-summary-journal.js").split("\n").find((l) => l.includes("降级兜底"));
+  return line === undefined ? null : line.trim();
+})();
+
+/** 本族自测用的一句「退役语义」谎。①-A 与 ② 用的是**同一句**：两格唯一的差别是它落在哪一类文件里。 */
+const RETIRED_SEMANTICS_LIE = "摘要器失败或超时的时候，引擎会自动降级为统计摘要，run 照常完成。";
+
 // ── 15. 版本归属句（issue #511 判据 1 后半）────────────────────────────────────
 // 判据 1 后半：文中「<verB> adds / removes / 删掉 / 新增」类句式里的 `verB` 若 **≠ 自述版本**，
 // 同一句必须带前向指针（`see the <verB> upgrade guide` / 「见 <verB> 升级指南」），否则红并点名行号。
@@ -6611,6 +6641,43 @@ const SELF_TEST_CASES = [
     overlay: {
       [README_CN]: replaceUnique("provider-summarizer.js          用本 run provider 的 fold-llm 默认 summarizer",
         "provider-summarizer.js          用本 run provider 的 fold-llm 引擎默认的 summarizer"),
+    },
+    expectGreen: true,
+  },
+  // —— issue #668 ②：退役语义「摘要器失败 ⇒ 降级/兜底为统计摘要」（§2.11）——
+  // 这一族此前**零自测**（上一笔只手工变异验过，没钉进清单）。下面四格各钉一侧：
+  //   ①-A 谎进**活文档** → 红并点名 file:line；
+  //   ②   **同一句**谎进**历史类文件** → 不红（判据只咬活面，历史正文一字不改）；
+  //   ③   `fold-summary-journal` 那句带历史限定语的「`fold-llm` 的降级兜底」（#668 点名的合法保留形态）
+  //        进**活文档** → 不红（靶子现读源码，不抄原文）；
+  //   ④   同一句谎 + 历史限定语、落在**同一份活文档**里 → 不红（证「历史框定」这条放行读法真的在放行：
+  //        它和 ①-A 只差一个限定语，一个绿一个红）。
+  {
+    label: "#668 ②：把「摘要器失败 ⇒ 自动降级为统计摘要」这句谎放进活文档 ⇒ 红，并点名文件+行",
+    overlay: { "docs/testing.md": appendUnique(RETIRED_SEMANTICS_LIE) },
+    expect: [/retired-semantics: docs\/testing\.md:\d+ 说「摘要器失败\/超时 ⇒ 自动降级或兜底为统计摘要」/],
+    expectFiles: ["docs/testing.md"],
+  },
+  {
+    label: "#668 ②（对照）：**同一句**谎放进历史类文件（`docs/decisions/`）⇒ 不红（判据只咬活面）",
+    overlay: { "docs/decisions/003-compaction-strategies.md": appendUnique(RETIRED_SEMANTICS_LIE) },
+    expectGreen: true,
+  },
+  {
+    label: "#668 ②（放行证）：`fold-summary-journal` 那句带历史限定语的「`fold-llm` 的降级兜底」进活文档 ⇒ 不红",
+    overlay: {
+      "docs/testing.md": (t) => {
+        if (JOURNAL_RETENTION_LINE === null) return t;                 // 源码里那句没了 ⇒ 变异没落上 ⇒ 红
+        if (!RS_HISTORICAL.test(JOURNAL_RETENTION_LINE)) return t;     // 历史限定语被删 ⇒ 这格不再证「合法保留」
+        return appendUnique(JOURNAL_RETENTION_LINE)(t);
+      },
+    },
+    expectGreen: true,
+  },
+  {
+    label: "#668 ②（放行证）：同一句谎 + 历史限定语、落在同一份活文档 ⇒ 不红（「历史框定」那条读法在放行）",
+    overlay: {
+      "docs/testing.md": appendUnique(`${RETIRED_SEMANTICS_LIE.replace("。", "")}——那是 #661 之前的行为，那条路径已被删。`),
     },
     expectGreen: true,
   },
