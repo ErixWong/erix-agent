@@ -38,6 +38,15 @@ export const SMOKE_STATUSES = Object.freeze(["ok", "fail", "error"]);
 const STATUS_SET = new Set(SMOKE_STATUSES);
 
 /**
+ * 汇总行的**必填字段**（一个都不能少）。Copilot 独立验收 PR #681 的阻断点就是这里：修前只查三个计数，
+ * 缺 `dry` / `failed` / `status` 的行被默认值补成 `dry=false` / `failed=[]` / `status=ok` ⇒ 半行读成
+ * 「全绿」。现在缺任一 ⇒ `parseSmokeLine()` 返回 `undefined`，消费端写 `cli_real=?`。
+ */
+export const REQUIRED_FIELDS = Object.freeze([
+  "id", "checks", "pass", "fail", "dry", "failed", "status",
+]);
+
+/**
  * 把一条检查的完整 id 压成短码（`C4 …` ⇒ `C4`）。不是 `C<n>` 形状的 id 原样返回
  * （宁可长一点，也不要把它吞成空串）。
  *
@@ -83,6 +92,13 @@ export function formatSmokeLine({
   if (codes.length !== red) {
     throw new Error(`failed 列表 ${codes.length} 条与 fail=${red} 对不上：失败 id 与失败数必须是同一份事实`);
   }
+  // 生产者也不许印出消费者会拒读的组合（`ok` 却有红 / `fail` 却没红）：两侧同一套不变量。
+  if (status === "ok" && red !== 0) {
+    throw new Error(`status=ok 却 fail=${red}：状态与计数打架（消费者会把这种行当没读到）`);
+  }
+  if (status === "fail" && red === 0) {
+    throw new Error("status=fail 却 fail=0：状态与计数打架（消费者会把这种行当没读到）");
+  }
   return [
     SMOKE_PREFIX,
     `id=${id}`,
@@ -99,8 +115,18 @@ export function formatSmokeLine({
  * 从子进程输出里读回汇总行（消费者用）。多条命中取**最后**一条（生产者只在收尾印一次，
  * 取最后一条是为了万一有中间态也不被它骗）。
  *
- * 判据：三个计数缺一个、或 `pass + fail !== checks`（自相矛盾）⇒ 返回 `undefined`——
- * 当「没读到」，**不许**降级成 0。
+ * **七个字段一个都不能少、一个都不能坏**（Copilot 独立验收 PR #681 的阻断点：修前缺 `dry` / `failed` /
+ * `status` 的行会被默认值补成 `dry=false` / `failed=[]` / `status=ok` ⇒ 半行被读成「全绿」，那正是
+ * 本票要防的假绿）。任一条不成立 ⇒ 返回 `undefined`（当「没读到」，消费方写 `cli_real=?`）：
+ * - 缺 `id` / `checks` / `pass` / `fail` / `dry` / `failed` / `status` 任一；
+ * - `id` 不是 `cli-real`（这条汇总行只属于第 7 步）；
+ * - 计数不是非负整数，或 `pass + fail !== checks`（不自洽）；
+ * - `dry` 不是 `true` / `false`，`status` 不是 `ok` / `fail` / `error`；
+ * - `failed` 不是 `-` 也不是非空逗号列表（空串 / `C4,,C7` 这种空洞同样算坏行），或条数 ≠ `fail`；
+ * - `status=ok` 却 `fail > 0`、或 `status=fail` 却 `fail = 0`（状态与计数打架）；
+ * - 同一字段写两遍（`checks=1 checks=2`）或出现不是 `key=value` 的碎片。
+ *
+ * 未知的**多出来**的字段不判死（将来生产者加字段时旧消费者照旧能读）。
  *
  * @param {string} text
  * @returns {{ id: string, checks: number, pass: number, fail: number, dry: boolean,
@@ -118,29 +144,47 @@ export function parseSmokeLine(text) {
   for (const token of line.slice(SMOKE_PREFIX.length).trim().split(/\s+/u)) {
     if (token === "") continue;
     const at = token.indexOf("=");
-    if (at <= 0) continue;
-    fields.set(token.slice(0, at), token.slice(at + 1));
+    // 不是 key=value 的碎片 ⇒ 整行当坏行（宁可显示 ?，也不许从半截行里猜出计数）。
+    if (at <= 0) return undefined;
+    const key = token.slice(0, at);
+    // 同一个字段写两遍就是自相矛盾（两处各写一个数，谁说了算？）——不猜，当没读到。
+    if (fields.has(key)) return undefined;
+    fields.set(key, token.slice(at + 1));
   }
+  // 声明的必填字段一个都不能少：缺字段曾经被默认值补成 dry=false / failed=[] / status=ok（假绿）。
+  for (const key of REQUIRED_FIELDS) {
+    if (!fields.has(key)) return undefined;
+  }
+  if (fields.get("id") !== SMOKE_STEP_ID) return undefined;
   const num = (key) => {
     const raw = fields.get(key);
-    return raw !== undefined && /^\d+$/u.test(raw) ? Number(raw) : undefined;
+    return /^\d+$/u.test(raw) ? Number(raw) : undefined;
   };
   const checks = num("checks");
   const pass = num("pass");
   const fail = num("fail");
   if (checks === undefined || pass === undefined || fail === undefined) return undefined;
   if (pass + fail !== checks) return undefined;
-  const failed = (fields.get("failed") ?? "")
-    .split(",")
-    .map((code) => code.trim())
-    .filter((code) => code !== "" && code !== "-");
+  const dryRaw = fields.get("dry");
+  if (dryRaw !== "true" && dryRaw !== "false") return undefined;
+  const status = fields.get("status");
+  if (!STATUS_SET.has(status)) return undefined;
+  const failedRaw = fields.get("failed");
+  if (failedRaw !== "-" && failedRaw.split(",").some((code) => code.trim() === "")) return undefined;
+  const failed = failedRaw === "-" ? [] : failedRaw.split(",").map((code) => code.trim());
+  // 失败数与失败 id 必须是同一份事实（`fail=2 failed=C4` 这种对不上的一律当没读到）。
+  if (failed.length !== fail) return undefined;
+  // 状态与计数打架（`ok` 却有红 / `fail` 却没红）同样是坏行。`error` 不额外约束：脚本自身抛了时
+  // 可能一条断言都没跑到，也可能在红之后又抛。
+  if (status === "ok" && fail !== 0) return undefined;
+  if (status === "fail" && fail === 0) return undefined;
   return {
-    id: fields.get("id") ?? "",
+    id: fields.get("id"),
     checks,
     pass,
     fail,
-    dry: fields.get("dry") === "true",
+    dry: dryRaw === "true",
     failed,
-    status: fields.get("status") ?? "ok",
+    status,
   };
 }

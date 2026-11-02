@@ -129,6 +129,11 @@ test("#678 行契约：自相矛盾的行在生产者侧就抛，不许进汇总
     /与 fail=1 对不上/u, "失败数与失败 id 必须是同一份事实");
   assert.throws(() => formatSmokeLine({ checks: 1, fail: 0, status: "green" }), /status 必须是/u);
   assert.throws(() => formatSmokeLine({ checks: -1 }), /非负整数/u);
+  // 生产者也不许印出消费者会拒读的组合（两侧同一套不变量：status 与计数不许打架）。
+  assert.throws(() => formatSmokeLine({ checks: 1, fail: 1, failed: ["C4"], status: "ok" }),
+    /status=ok 却 fail=1/u);
+  assert.throws(() => formatSmokeLine({ checks: 1, fail: 0, failed: [], status: "fail" }),
+    /status=fail 却 fail=0/u);
 });
 
 test("#678 行契约：读不回来的三种形状都返回 undefined（消费方写 ?，绝不补 0）", () => {
@@ -139,6 +144,57 @@ test("#678 行契约：读不回来的三种形状都返回 undefined（消费�
   // 自相矛盾（pass + fail ≠ checks）⇒ 同样当没读到，不许把 8/8/1 印成「8 条全过还红 1 条」。
   assert.equal(parseSmokeLine(`${SMOKE_PREFIX} id=cli-real checks=8 pass=8 fail=1 dry=false failed=C4 status=fail`),
     undefined);
+});
+
+test("#678 行契约（Copilot 阻断点）：声明的七个字段缺一不可、值不合法就读不回来，合法行仍绿", () => {
+  // 对照组：合法完整行必须读回来——否则下面那批「读不回来」可能是恒真。
+  const legal = `${SMOKE_PREFIX} id=cli-real checks=1 pass=1 fail=0 dry=true failed=- status=ok`;
+  assert.deepEqual(parseSmokeLine(legal), {
+    id: "cli-real", checks: 1, pass: 1, fail: 0, dry: true, failed: [], status: "ok",
+  });
+  assert.equal(summaryLine({}, { smoke: parseSmokeLine(legal), expectsSmoke: true }),
+    "tests=? pass=? fail=? skip=? cli_real=1/1/0 dry=true");
+  // 将来生产者**多**一个字段不该把旧消费者弄瞎（多出来的字段不判死）。
+  assert.notEqual(parseSmokeLine(`${legal} extra=1`), undefined, "多出来的未知字段不该让整行读不回来");
+
+  // ① Copilot 独立验收 PR #681 的现场复现行：只有三个计数，dry / failed / status 全缺。
+  const copilot = `${SMOKE_PREFIX} id=cli-real checks=1 pass=1 fail=0`;
+  assert.equal(parseSmokeLine(copilot), undefined, "缺 dry/failed/status 的半行必须读不回来");
+  assert.equal(summaryLine({}, { smoke: parseSmokeLine(copilot), expectsSmoke: true }),
+    "tests=? pass=? fail=? skip=? cli_real=?", "半行必须在汇总里写 ?，不许补成 1/1/0 全绿");
+
+  // ② 逐个字段删：缺任一个就够（七格都点名，不靠「碰巧缺的是 checks」）。
+  for (const key of ["id", "checks", "pass", "fail", "dry", "failed", "status"]) {
+    const line = legal.split(" ").filter((token) => !token.startsWith(`${key}=`)).join(" ");
+    assert.notEqual(line, legal, `变异没落上：${key} 没被删掉（那这一格是空断言）`);
+    assert.equal(parseSmokeLine(line), undefined, `缺 ${key} 的行必须读不回来`);
+    assert.equal(summaryLine({}, { smoke: parseSmokeLine(line), expectsSmoke: true }),
+      "tests=? pass=? fail=? skip=? cli_real=?", `缺 ${key} 时汇总必须写 cli_real=?`);
+  }
+
+  // ③ 值不合法 / 不自洽：同样一律当「没读到」。每条都先证「变异真的落上了」。
+  const red = (body) => `${SMOKE_PREFIX} ${body}`;
+  const illegal = [
+    ["非法 dry（值不认）", legal.replace("dry=true", "dry=maybe")],
+    ["非法 dry（空值）", legal.replace("dry=true", "dry=")],
+    ["非法 status（值不认）", legal.replace("status=ok", "status=green")],
+    ["非法 status（空值）", legal.replace("status=ok", "status=")],
+    ["failed 条数与 fail 不一致", red("id=cli-real checks=3 pass=1 fail=2 dry=false failed=C4 status=fail")],
+    ["failed 空洞（C4,,C7）", red("id=cli-real checks=2 pass=0 fail=2 dry=false failed=C4,,C7 status=fail")],
+    ["failed 不是 - 却为空", red("id=cli-real checks=1 pass=1 fail=0 dry=false failed= status=ok")],
+    ["id 不是 cli-real", legal.replace("id=cli-real", "id=other")],
+    ["计数不自洽（pass+fail≠checks）", red("id=cli-real checks=8 pass=8 fail=1 dry=false failed=C4 status=fail")],
+    ["status=ok 却有红", red("id=cli-real checks=2 pass=1 fail=1 dry=false failed=C4 status=ok")],
+    ["status=fail 却没红", legal.replace("status=ok", "status=fail")],
+    ["同一字段写两遍", `${legal} checks=2`],
+    ["不是 key=value 的碎片", `${legal} junk`],
+  ];
+  for (const [name, line] of illegal) {
+    assert.notEqual(line, legal, `变异没落上：${name} 的靶串没落上（那这一格是空断言）`);
+    assert.equal(parseSmokeLine(line), undefined, `${name} 必须读不回来`);
+    assert.equal(summaryLine({}, { smoke: parseSmokeLine(line), expectsSmoke: true }),
+      "tests=? pass=? fail=? skip=? cli_real=?", `${name} 时汇总必须写 cli_real=?`);
+  }
 });
 
 test("#678 行契约：多条命中取最后一条（收尾那一条才是真话）", () => {
