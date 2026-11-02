@@ -1428,6 +1428,10 @@ function collectMarkerLiteralErrors() {
 //     **零额外 tsc 运行**；它逐处判（中英各判各的）、两档各判各的（句子里那个 N 等于哪一档的基线就按哪一档
 //     的实测 M 判），写错了 exit 1 并点名，读不到声称句 exit 2。本文件只校那个 **N**（下面
 //     `BASELINE_CLAIM_RULES` 里 `\d+ files` 那一处只认句式、不认 M），M 全部交给棘轮那一步。
+//     issue #672 又把「带错文件数」的**另外四种形状**接进棘轮（`N of them (M files)` /
+//     `**M of them carrying errors**` / `N 个错（涉 M 个文件）` / `其中 **M 个带错**`）；本文件对它们只做
+//     **句式看守 + 中英处数对账**（两条 `shapeOnly: true` 的规则，复用 `assertPairCensus`）：
+//     整句被删 / 单边删句都在这里红，而那个 M 的**真值**仍只在棘轮那一步判——不在这里抄第二份。
 //   · 生成声明文件数（63）：那要跑 types:build，同样的理由。
 // 「历史值不误伤」是这规则的命门：AGENTS 里同时存在 142/185/218/226/261 这些**已退役的**基线值
 // （#251/#255/#265 那几段在讲棘轮降下来的过程），所以句式必须钉到「常量名 / 基线词」上，
@@ -1513,6 +1517,35 @@ const BASELINE_CLAIM_RULES = [
       { rel: AGENTS_CN, re: /BASELINE_WITH_TOOLS\s*=\s*(\d+)/g },
     ],
   },
+  // ── issue #672：两族「M 个文件」现状声称的**句式看守**（真值不在这里，在棘轮那一步）───────
+  // 这两条只干两件事：① 句式必须还在（整句被删就红）；② 中英**处数**必须相等（单边删句就红）。
+  // 那个 M 的真值对账**不在本文件**：`check:docs` 不跑 tsc、拿不到实测，所以 M 由
+  // `scripts/type-check-ratchet.mjs` 的 `DOC_FILE_COUNT_CLAIMS`（#635 ① / #672）逐处对。
+  // 所以这里 `shapeOnly: true`：**不**把捕获组拿去和基线常量比（M 不是 N，比了就是拿错东西判），
+  // 只数处数；`tier: "shape"` 是个不参与 `wantOf()` 的占位，看代码的人一眼能看出它不是档位。
+  // 句式本身（与棘轮那边逐字同形）：`(M files)` 必须紧跟在 `N of them` 后面、`**M of them carrying errors**`
+  // 必须整段加粗；中文侧是 `个错（涉 M 个文件）` 与 `其中 **M 个带错**`。历史值（`the other 27
+  // error-carrying files` / `其余 27 个带错文件` / `142 / 185` 那一族）不落进这两个句式。
+  {
+    id: "「N of them (M files) / N 个错（涉 M 个文件）」声明",
+    tier: "shape",
+    shapeOnly: true,
+    required: true,
+    claims: [
+      { rel: AGENTS_EN, re: /\d+\s+of them\s*\((\d+)\s+files\)/g },
+      { rel: AGENTS_CN, re: /\d+\s*个错（涉\s*(\d+)\s*个文件）/g },
+    ],
+  },
+  {
+    id: "「**M of them carrying errors** / 其中 **M 个带错**」声明",
+    tier: "shape",
+    shapeOnly: true,
+    required: true,
+    claims: [
+      { rel: AGENTS_EN, re: /\*\*(\d+) of them carrying errors\*\*/g },
+      { rel: AGENTS_CN, re: /其中\s*\*\*(\d+)\s*个带错\*\*/g },
+    ],
+  },
 ];
 
 /** 从棘轮脚本里抽两个基线常量（抽不到就是检查面失效，#164 口径）。 */
@@ -1550,14 +1583,19 @@ function collectBaselineClaimErrors() {
       for (const c of m) {
         total += 1;
         const at = `${rel}:${lineOf(src, c.index)}`;
-        const why = rule.tier === "sum"
-          ? (() => {
-            const [a, b, cc] = c.slice(1).map(Number);
-            if (a !== Number(truth.root)) return `首项 \`${a}\` 应等于 ${RATCHET_SRC} 的 BASELINE_ROOT（${truth.root}）`;
-            if (a + b + cc !== Number(truth.withTools)) return `分解式 ${a} + ${b} + ${cc} = ${a + b + cc}，不等于 BASELINE_WITH_TOOLS（${truth.withTools}）`;
-            return null;
-          })()
-          : (c[1] === wantOf(rule.tier) ? null : `声称 ${c[1]}，但 ${RATCHET_SRC} 的 ${nameOf(rule.tier)} 是 ${wantOf(rule.tier)}`);
+        // `shapeOnly`（issue #672）：只数处数、不判那个数。M（带错文件数）的真值不在这里——
+        // 它要跑 tsc 才拿得到，所以由 `scripts/type-check-ratchet.mjs` 的 `DOC_FILE_COUNT_CLAIMS` 逐处对；
+        // 拿 `c[1]` 去和基线常量比就是拿错东西判（M ≠ N），比了只会得到一条永远红的假判据。
+        const why = rule.shapeOnly
+          ? null
+          : rule.tier === "sum"
+            ? (() => {
+              const [a, b, cc] = c.slice(1).map(Number);
+              if (a !== Number(truth.root)) return `首项 \`${a}\` 应等于 ${RATCHET_SRC} 的 BASELINE_ROOT（${truth.root}）`;
+              if (a + b + cc !== Number(truth.withTools)) return `分解式 ${a} + ${b} + ${cc} = ${a + b + cc}，不等于 BASELINE_WITH_TOOLS（${truth.withTools}）`;
+              return null;
+            })()
+            : (c[1] === wantOf(rule.tier) ? null : `声称 ${c[1]}，但 ${RATCHET_SRC} 的 ${nameOf(rule.tier)} 是 ${wantOf(rule.tier)}`);
         if (why) {
           out.push(`baseline/${rule.id}: ${at} ${why}。\n      棘轮基线的唯一真值在 ${RATCHET_SRC}：改常量就要同时改文档，`
             + `改文档就只能改成常量那个值（历史值 142/185/218/226/261 属于「已降下来」的叙述，不该出现在这些当前值句式里）；`
@@ -1567,8 +1605,9 @@ function collectBaselineClaimErrors() {
     }
     assertPairCensus(out, { rule: `baseline/${rule.id}`, counts, docs: rule.claims.map((c) => c.rel) });
   }
-  notes.push(`baseline: AGENTS 中英共 ${total} 处当前值声明（含分解式算术闭合）全部等于 ${RATCHET_SRC} 的 `
-    + `BASELINE_ROOT=${truth.root} / BASELINE_WITH_TOOLS=${truth.withTools}`);
+  notes.push(`baseline: AGENTS 中英共 ${total} 处现值声明（含分解式算术闭合与 #672 的句式看守）——`
+    + `前几族的数全部等于 ${RATCHET_SRC} 的 BASELINE_ROOT=${truth.root} / BASELINE_WITH_TOOLS=${truth.withTools}，`
+    + "#672 那两族只数处数（M 由 `scripts/type-check-ratchet.mjs` 对实测）");
   collectBaselineClaimErrors.notes = notes;
   return out;
 }
