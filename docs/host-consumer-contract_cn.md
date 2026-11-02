@@ -2124,8 +2124,15 @@ run 级旋钮 `config.tuning.maxTokens` / `config.tuning.temperature` / `config.
 （`src/compact/provider-summarizer.js`）：每次压缩一次无工具补全，输入是
 `SUMMARIZER_PROMPT_GUIDE` + 被折叠消息的确定性序列化 + 被折叠轮次范围。成本与记账属于契约：
 
-- **每次压缩多一次主力模型调用**，输入体量约等于被折叠的老轮次。因此 `fold-llm` 只能显式选用；
-  默认 everywhere 仍是 `fold-statistical`（库层未配策略时仍为 `sliding-window`）。
+- **每次压缩多一次主力模型调用**，输入体量约等于被折叠的老轮次。因此 `fold-llm` 只能显式选用，
+  而「默认是什么」是**两层各自的事实**，不是一句话：
+  - **库层默认**（未配策略时）是 `sliding-window`：没有选中策略的预算溢出由 `src/compact/pipeline.js`
+    里那个兜底层接手，它的 `strategyNames` 就是这一半的唯一真值。
+  - **CLI 槽位默认**是 `fold-llm`：`slots.default.compaction` 不设时由 `bin/cli.js` 解析成它。
+    那是 **CLI 层的选择，不是库默认**——`bin/` 是校验器/调试器，不是契约面；什么都不配的宿主拿到的是
+    上面那条库层行为，不是这一条。
+  没有任何一层默认 `fold-statistical`：它是 `fold-llm` 摘要失败或超时后的确定性降级兜底
+  （零额外模型调用，run 不会因此失败）。
 - 它的 usage 走与其他辅助调用同一的 `addUsage` 路径并入 run 总账（`persist`，`src/loop/orchestrator.js`，
   `trackLatest: false`），并通过 `onUsage` 上报，因此 `result.usage` / `error.usage` 是完整的。这次调用
   **不推 `rounds`**、不参与 stall 检测、也不更新后续压缩判断用的 `latestApiInputTokens` / `latestApiEstimatedTokens`。

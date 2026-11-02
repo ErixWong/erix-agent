@@ -851,7 +851,8 @@ judge 闸门关着 = `0`（根本没额度），闸门开着且没传参 = 引�
   审计（intercept）也按频率抽样的 judge 调用。要压住扩轮的花费就 `maxExtensions: 0`（一次也不扩），
   要控住总量就同时传 `maxRoundsCap` / `extensionStep`（扩轮后的总轮数硬顶与步长）。
 - **`fold-llm` 每压缩一次多花一次主力模型调用**（输入约等于被折叠轮次的大小，见契约「Compaction
-  strategy selection」）。默认用 `fold-statistical`/`sliding-window` 更省。
+  strategy selection」）。本扩展不传 `strategy` 时走**库层默认**：预算溢出时由 `sliding-window` 接手
+  （零 LLM）；要更省就别选语义折叠，在调用侧显式传 `strategy: "fold-statistical"`。
 - **`maxRounds ≥ 16` 会自动开 judge**（每轮 end_turn 一次评估 + 可能的扩轮），`ERIX_NO_REFLECTION=1` 关。
   开着的 run 可以用 `maxExtensions` / `maxRoundsCap` / `extensionStep` 调扩轮形状（直传引擎
   `reflection:{…}`，**本层不改引擎默认值**：不传就一个键都不写）；`maxExtensions: 0` 是「一次也不许扩」。
