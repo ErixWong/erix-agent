@@ -128,7 +128,7 @@ test("#678 行契约：自相矛盾的行在生产者侧就抛，不许进汇总
   assert.throws(() => formatSmokeLine({ checks: 2, fail: 1, failed: [] }),
     /与 fail=1 对不上/u, "失败数与失败 id 必须是同一份事实");
   assert.throws(() => formatSmokeLine({ checks: 1, fail: 0, status: "green" }), /status 必须是/u);
-  assert.throws(() => formatSmokeLine({ checks: -1 }), /非负整数/u);
+  assert.throws(() => formatSmokeLine({ checks: -1 }), /非负安全整数/u);
   // 生产者也不许印出消费者会拒读的组合（两侧同一套不变量：status 与计数不许打架）。
   assert.throws(() => formatSmokeLine({ checks: 1, fail: 1, failed: ["C4"], status: "ok" }),
     /status=ok 却 fail=1/u);
@@ -195,6 +195,56 @@ test("#678 行契约（Copilot 阻断点）：声明的七个字段缺一不可�
     assert.equal(summaryLine({}, { smoke: parseSmokeLine(line), expectsSmoke: true }),
       "tests=? pass=? fail=? skip=? cli_real=?", `${name} 时汇总必须写 cli_real=?`);
   }
+});
+
+test("#678 行契约（Copilot 第二轮阻断点）：溢出 / 非安全整数的计数必须读不回来（Infinity 不许进汇总）", () => {
+  // 夹具自证：这个串真的会变成 Infinity——否则本格证明不了「溢出」这条判据。
+  const big = "9".repeat(400);
+  assert.equal(Number(big), Infinity, "夹具失效：400 位 9 必须被 Number() 读成 Infinity");
+  assert.equal(Number.isSafeInteger(Number(big)), false, "夹具失效：Infinity 必须不是安全整数");
+
+  // Copilot 复现行：checks / pass 都是 400 位 9、fail=0——`Infinity + 0 === Infinity` 恰好绕过
+  // 「计数自洽」那条判据，修前会被当成合法计数印成 `Infinity/Infinity/0`。
+  const overflow = `${SMOKE_PREFIX} id=cli-real checks=${big} pass=${big} fail=0 dry=false failed=- status=ok`;
+  assert.equal(parseSmokeLine(overflow), undefined,
+    "400 位数字的自洽行必须读不回来（溢出后 Infinity + 0 === Infinity，自洽判据拦不住）");
+  assert.equal(summaryLine({}, { smoke: parseSmokeLine(overflow), expectsSmoke: true }),
+    "tests=? pass=? fail=? skip=? cli_real=?", "溢出必须写 cli_real=?，不许印 Infinity/Infinity/0");
+
+  // 边界：MAX_SAFE_INTEGER 之上（含丢精度的那一格）同样当坏行。
+  const unsafe = [
+    ["Number.MAX_SAFE_INTEGER + 1", "9007199254740992"],
+    ["2^53 + 1 的字面串（Number() 会静默丢精度）", "9007199254740993"],
+    ["100 位数字", "9".repeat(100)],
+  ];
+  for (const [name, digits] of unsafe) {
+    assert.equal(Number.isSafeInteger(Number(digits)), false,
+      `夹具失效：${name} 必须是非安全整数，实际 ${Number(digits)}`);
+    const line = `${SMOKE_PREFIX} id=cli-real checks=${digits} pass=${digits} fail=0 dry=false failed=- status=ok`;
+    assert.equal(parseSmokeLine(line), undefined, `${name} 必须读不回来`);
+    assert.equal(summaryLine({}, { smoke: parseSmokeLine(line), expectsSmoke: true }),
+      "tests=? pass=? fail=? skip=? cli_real=?", `${name} 时汇总必须写 cli_real=?`);
+  }
+
+  // 边界上的**合法**大整数仍要读得回来：判据是「安全」，不是「小」（否则等于把正常值也拒了）。
+  const maxSafe = String(Number.MAX_SAFE_INTEGER);
+  const legalBig = `${SMOKE_PREFIX} id=cli-real checks=${maxSafe} pass=${maxSafe} fail=0 dry=false failed=- status=ok`;
+  assert.deepEqual(parseSmokeLine(legalBig), {
+    id: "cli-real",
+    checks: Number.MAX_SAFE_INTEGER,
+    pass: Number.MAX_SAFE_INTEGER,
+    fail: 0,
+    dry: false,
+    failed: [],
+    status: "ok",
+  }, "MAX_SAFE_INTEGER 本身是合法计数，必须读得回来");
+  assert.equal(summaryLine({}, { smoke: parseSmokeLine(legalBig), expectsSmoke: true }),
+    `tests=? pass=? fail=? skip=? cli_real=${maxSafe}/${maxSafe}/0`);
+
+  // 生产者侧同一套判据：不许印出消费者会拒读的计数（两侧不能各有一套数字规则）。
+  assert.throws(() => formatSmokeLine({ checks: 2 ** 53 }), /非负安全整数/u);
+  assert.throws(() => formatSmokeLine({ checks: 1, fail: 2 ** 53 }), /非负安全整数/u);
+  assert.throws(() => formatSmokeLine({ checks: Infinity }), /非负安全整数/u);
 });
 
 test("#678 行契约：多条命中取最后一条（收尾那一条才是真话）", () => {

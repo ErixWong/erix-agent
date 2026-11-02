@@ -73,11 +73,13 @@ export function formatSmokeLine({
 } = {}) {
   const total = Number(checks);
   const red = Number(fail);
-  if (!Number.isInteger(total) || total < 0) {
-    throw new Error(`checks 必须是非负整数，实际 ${JSON.stringify(checks)}`);
+  // 生产者与消费者同一套数字判据：溢出 / 非安全整数（`"9".repeat(400)` ⇒ `Infinity`）一律不印——
+  // 那种行到了消费者手上就是 `Infinity + 0 === Infinity` 把「计数自洽」那条判据弄失效（PR #681 第二轮阻断点）。
+  if (!Number.isSafeInteger(total) || total < 0) {
+    throw new Error(`checks 必须是非负安全整数（≤ Number.MAX_SAFE_INTEGER），实际 ${JSON.stringify(checks)}`);
   }
-  if (!Number.isInteger(red) || red < 0) {
-    throw new Error(`fail 必须是非负整数，实际 ${JSON.stringify(fail)}`);
+  if (!Number.isSafeInteger(red) || red < 0) {
+    throw new Error(`fail 必须是非负安全整数（≤ Number.MAX_SAFE_INTEGER），实际 ${JSON.stringify(fail)}`);
   }
   if (red > total) {
     throw new Error(`fail=${red} 大于 checks=${total}：自相矛盾的汇总行不如不印（红数来自 check() 结果）`);
@@ -120,7 +122,9 @@ export function formatSmokeLine({
  * 本票要防的假绿）。任一条不成立 ⇒ 返回 `undefined`（当「没读到」，消费方写 `cli_real=?`）：
  * - 缺 `id` / `checks` / `pass` / `fail` / `dry` / `failed` / `status` 任一；
  * - `id` 不是 `cli-real`（这条汇总行只属于第 7 步）；
- * - 计数不是非负整数，或 `pass + fail !== checks`（不自洽）；
+ * - 计数不是非负**安全整数**，或 `pass + fail !== checks`（不自洽）。溢出 / 非安全整数一律拒读：
+ *   `"9".repeat(400)` 被 `Number()` 变成 `Infinity`，而 `Infinity + 0 === Infinity` 恰好让「自洽」
+ *   那条判据失效 ⇒ `Infinity/Infinity/0` 会被当成合法计数印进汇总（PR #681 第二轮阻断点）；
  * - `dry` 不是 `true` / `false`，`status` 不是 `ok` / `fail` / `error`；
  * - `failed` 不是 `-` 也不是非空逗号列表（空串 / `C4,,C7` 这种空洞同样算坏行），或条数 ≠ `fail`；
  * - `status=ok` 却 `fail > 0`、或 `status=fail` 却 `fail = 0`（状态与计数打架）；
@@ -158,7 +162,11 @@ export function parseSmokeLine(text) {
   if (fields.get("id") !== SMOKE_STEP_ID) return undefined;
   const num = (key) => {
     const raw = fields.get(key);
-    return /^\d+$/u.test(raw) ? Number(raw) : undefined;
+    if (!/^\d+$/u.test(raw)) return undefined;
+    const value = Number(raw);
+    // 位数超长时 `Number()` 会给出 `Infinity`（而 `Infinity + 0 === Infinity` 能绕过下面的自洽判据），
+    // 2^53 以上则静默丢精度（`"9007199254740993"` → 9007199254740992）⇒ 两者都当坏行。
+    return Number.isSafeInteger(value) ? value : undefined;
   };
   const checks = num("checks");
   const pass = num("pass");

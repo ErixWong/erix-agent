@@ -118,11 +118,14 @@
   green). Those counts come from the smoke's own `check()` results — never from a literal — and the
   format plus its parser live in one shared module (`scripts/smoke-summary-line.mjs`) so producer
   and consumer cannot drift. That line counts as readable **only** when all seven declared fields
-  are present and legal (`id=cli-real`, the three counts with `pass + fail = checks`, `dry`, `failed`
-  whose length equals `fail`, `status`), so a truncated line is never completed by defaults — before
-  that rule, `RELEASE-REAL-SMOKE id=cli-real checks=1 pass=1 fail=0` was accepted and silently
-  became `dry=false / failed=[] / status=ok`, i.e. a half line read as green (caught by an
-  independent review on PR #681); a step that declares it reports a summary but whose line is missing
+  are present and legal (`id=cli-real`, the three counts as **safe** integers with
+  `pass + fail = checks`, `dry`, `failed` whose length equals `fail`, `status`), so a truncated line is
+  never completed by defaults — before that rule,
+  `RELEASE-REAL-SMOKE id=cli-real checks=1 pass=1 fail=0` was accepted and silently became
+  `dry=false / failed=[] / status=ok` (a half line read as green), and a 400-digit numeric field became
+  `Infinity`, which `Infinity + 0 === Infinity` let past the consistency check so the summary printed
+  `Infinity/Infinity/0` (both caught by independent reviews on PR #681); a step that declares it
+  reports a summary but whose line is missing
   keeps `cli_real=?` instead of being silently dropped. Nothing else moved: the TAP-fed
   `tests/pass/fail/skip` fields keep their `?` semantics, and the gate-closed path still runs no
   step at all. Offline suite `test/release-real-step7-678.test.js` covers the line contract
@@ -146,10 +149,11 @@
   哪几条）、`status=error`（脚本自身抛了，计数可能远小于全跑，`0/0/0` 不许读成全绿）。计数一律取自
   冒烟自己 `check()` 的结果——**不是**任何写死的字面量；行格式与解析只有一份真源
   （`scripts/smoke-summary-line.mjs`），生产端与消费端不会漂成两个口径。「读得到」的判据是**七个字段
-  全在且都合法**（`id=cli-real`、三个计数满足 `pass + fail = checks`、`dry`、长度等于 `fail` 的
+  全在且都合法**（`id=cli-real`、三个计数是**安全整数**且满足 `pass + fail = checks`、`dry`、长度等于 `fail` 的
   `failed`、`status`），所以残行不会被默认值补齐——修前 `RELEASE-REAL-SMOKE id=cli-real checks=1
-  pass=1 fail=0` 会被读成 `dry=false / failed=[] / status=ok`，也就是半行被当成全绿（PR #681 的独立
-  验收逮到的正是这一格）；声明了会报汇总却读不到那一行的步骤照样留一格 `cli_real=?`，不许静默省略。其余未动：喂 TAP 的 `tests/pass/fail/skip` 保持 `?`
+  pass=1 fail=0` 会被读成 `dry=false / failed=[] / status=ok`（半行被当成全绿），400 位的数字字段还会
+  变成 `Infinity`，而 `Infinity + 0 === Infinity` 恰好绕过自洽判据，于是汇总印出
+  `Infinity/Infinity/0`（两格都是 PR #681 的独立验收逮到的）；声明了会报汇总却读不到那一行的步骤照样留一格 `cli_real=?`，不许静默省略。其余未动：喂 TAP 的 `tests/pass/fail/skip` 保持 `?`
   语义，闸门关着时仍然一步都不跑。离线套件 `test/release-real-step7-678.test.js` 覆盖行契约（含必须
   读成「没读到」的残行与自相矛盾形状）、四种汇总形状、一次打本地假端点的真 `--dry` 跑，以及闸门
   关着那条路（exit 0、不起跑任何一步、不产汇总行）。反向证是变异式且端到端的：往冒烟脚本**副本**的
