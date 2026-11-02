@@ -89,7 +89,7 @@ export function modelMetadataFor({ modelConfig, modelMetadata, model, provider, 
  * 由宿主（CLI）解析，引擎把 `context.budgetSource` 原样带出；引擎自己认的显式预算一律是 `config`。
  * 非法的显式值**不在这里吞掉**——原样返回，交给调用方的 `validateBudget` 抛 `invalid_budget`。
  *
- * @param {{contextBudgetTokens?: number, contextBudgetSource?: string, metadata?: *}} input
+ * @param {{contextBudgetTokens?: number, contextBudgetSource?: "flag"|"config"|"derived"|"disabled", metadata?: *}} input
  * @returns {{budgetTokens: number|undefined, source: "flag"|"config"|"derived"|"disabled"|undefined}}
  */
 export function resolveBudgetTokens({ contextBudgetTokens, contextBudgetSource, metadata }) {

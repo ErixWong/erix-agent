@@ -1608,7 +1608,11 @@ export async function runToolLoop(options) {
     contextBudgetSource: context?.budgetSource,
     metadata,
   });
-  const budgetTokens = resolvedBudget.budgetTokens;
+  // `any` 是**刻意**的（#417 的 strict 棘轮只减不增）：这一格以前由 `let budgetTokens = context?.budgetTokens`
+  // 推断成 `any`，下游十来处使用点都按「已判非 undefined」写。收窄成 `number | undefined` 会在那些
+  // 使用点新增 strict 错误（本轮不还这笔债），而这里也不该靠 `!` 掩盖——`validateBudget` 就在下一行
+  // 做真正的运行期校验。
+  const budgetTokens = /** @type {any} */ (resolvedBudget.budgetTokens);
   if (budgetTokens !== undefined) validateBudget(budgetTokens);
   // issue #182：预算推不出来且原因确实是元数据不齐（宿主自己给了 context.budgetTokens 时
   // 压缩仍然启用，不该告警）——发一次性诊断事件。

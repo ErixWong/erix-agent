@@ -23,7 +23,7 @@
 |---|---|---|
 | 停止 import §2 里那 15 个名字 | 它们是零消费者导出，登记在 0.30 破坏包里删除 | §2 |
 | **先**把 `createAnthropicProvider` 的 import 换掉，再升级 | 宿主真在用，而工厂在 0.30.0 已不存在——ESM 下 import 一个不存在的名字在**模块加载期**就失败 | §3 |
-| 其余什么都不用改 | 没有选项、默认值、事件或磁盘格式搬家 | §4 |
+| 其余不用改（除 §4.1 那一处**新增**配置叶子） | 没有选项、默认值、事件或磁盘格式搬家；§4.1 新增一个配置叶子，并说明随之而来的 slot 同名键迁移危险 | §4 / §4.1 |
 
 ## 2. 十五个没人 import 的名字
 
@@ -203,13 +203,29 @@ system 消息归一化。那些是它自己的便利件；你若依赖过它们�
 
 ## 4. 没有变的东西
 
-* `runToolLoop` 的输入面、`capabilities` 形状与每一个配置叶子。本版没有退役、改名或搬家任何选项。
+* `runToolLoop` 的输入面、`capabilities` 形状与每一个**既有**配置叶子。本版没有退役、改名或搬家任何选项
+  （§4.1 只**新增**一个叶子）。
 * 终止、验证与退出码语义，包括「有 `skipped` 但没有 guard」那个退出码。
 * 观察者事件、诊断字段与 run state 块。
 * transcript 与 run state 的磁盘格式；上一个发布版本写下的账本仍然可以续跑。
 * notes 工具面（五个工具加 `createBuiltinNotesTools`、`MAX_CONTENT_LENGTH`、`resolveNotesDir`）、文件工具、派生
   簿记模块，以及全部 provider 协议件。
 * 零运行时依赖这条规矩。
+
+### 4.1 一处新增配置叶子，以及它带来的 slot 同名键迁移危险（issue #682）
+
+0.30.0 还**新增**一个配置叶子；没有退役任何东西。`config.metadata.modelMetadata.budgetTokens` 是引擎侧的
+**显式压缩预算**（正整数）。优先级一句话：CLI 旗标 `--compact-budget` > CLI slot
+`slots.default.compactBudgetTokens` > 引擎载体字段 `budgetTokens` > 窗口派生 > **关闭**。缺窗口**不是**启动
+失败：压缩保持关闭、run 照常跑，CLI 打**一行 stderr 告警**（以前是哑的）。以前「缺 `maxOutputTokens`」时
+两个互相打架的数——配置加载器那条路径的 16384 与 `buildCompactionContext` 里的 65536——现在来自同一个
+常量，所以两条路径派生出同一个预算（此前差 49152 token，约等于 262144 窗口的 18.8%）。
+
+**迁移危险，直说：** 今天**未知的 slot 字段是惰性的**——内置 provider 原样拷贝 slot，工厂又只读固定参数
+列表，所以认不出的键既上不了线也不会抛错。加了这两个叶子之后，这一点对两个预算键改变了：**谁以前恰好把
+`compactBudgetTokens`（CLI slot）或 `budgetTokens`（载体）写进了 slot，它会从「被忽略」变成「生效并被校验」**
+——这个值现在真的驱动折叠，写坏了会被拒（CLI 在配置加载期拒；引擎在首次请求前以 `invalid_budget` 拒）。
+删掉那个键，或者把它写成一个真预算。slot 对象的其余部分一字未变。
 
 ## 5. 在你这边怎么验
 

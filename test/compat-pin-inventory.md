@@ -736,7 +736,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-timing-slice-498s3.test.js` | 7 | `completion`×3, `stallDetection`×2, `retry`×1, `wrapup`×1 |
 | `test/loop-input-slice-498s3c.test.js` | 12 | `wrapup`×4, `completion`×2, `initialMessages`×2, `session`×2, `tools`×2 |
 | `test/loop-fr2.test.js` | 7 | `completion`×7 |
-| `test/model-metadata-diagnostics.test.js` | 8 | `completion`×5, `outputHygiene`×1, `session`×1, `tools`×1 |
+| `test/model-metadata-diagnostics.test.js` | 9 | `completion`×5, `modelMetadata`×1, `outputHygiene`×1, `session`×1, `tools`×1 |
 | `test/persistence-diagnostics.test.js` | 11 | `completion`×9, `reflection`×2 |
 | `test/run-state.test.js` | 1 | `resume`×1 |
 | `test/compaction-strategy-name.test.js` | 10 | `strategy`×8, `completion`×2 |

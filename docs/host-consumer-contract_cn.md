@@ -2021,10 +2021,10 @@ server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那�
 ## 模型元数据与预算推导（issue #182）
 
 `modelConfig` 与 `modelMetadata` 是白名单选项名，但它们能携带哪些字段此前契约零字。
-其中只有 `contextWindowTokens` 与 `maxOutputTokens` 这一对字段对引擎自己的预算推算
-有分量（且必须成对），其余字段全部流向 provider 请求。两个预算字段都不写的宿主，
-整个 run 的上下文压缩与单轮聚合输出预算都是关的，唯一的信号就是下文的
-`model_metadata_missing` 事件。
+其中只有三个字段对引擎自己的预算推算有分量：`contextWindowTokens` 与 `maxOutputTokens`
+这一对（必须成对），加上 issue #682 的**显式** `budgetTokens`；其余字段全部流向 provider 请求。
+一个都不写的宿主，整个 run 的上下文压缩与单轮聚合输出预算都是关的，引擎侧的信号是下文的
+`model_metadata_missing` 事件（`erix` CLI 另外打一行 stderr 告警，见「预算推导」）。
 
 ### 探测顺序与槽位选择
 
@@ -2036,10 +2036,11 @@ server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那�
 | 4 | `provider` | 两个内置工厂在构造时拿到 `contextWindowTokens` / `maxOutputTokens` 后，会将其回挂在返回的对象上（`createOpenAIProvider`（`src/providers/openai.js`）、`createAnthropicProvider`（`src/providers/anthropic.js`）） |
 | 5 | `context` | 压缩上下文选项 |
 
-- 探测按上述固定顺序 duck-type，返回**第一个**携带任一字段的候选
+- 探测按上述固定顺序 duck-type，返回**第一个**携带三个预算字段中任一的候选
   （`modelMetadataFor`（`src/loop/budget.js`），调用点 `notifyModelMetadataMissing`，`src/loop/orchestrator.js`）。
   字段**从不跨候选合并**：slot 里只写 `contextWindowTokens`、`modelMetadata` 里只写
   `maxOutputTokens`，结果是什么预算也推不出来。这一对字段必须写在同一个对象里。
+  只带 `budgetTokens` 的候选同样会被找到（issue #682：显式预算不需要窗口）。
 - `modelConfig` 必须是解析器（`{ resolve(slot?) }`）。直接把普通配置对象当
   `modelConfig` 传会在启动期抛 `assembly port is missing methods:
   modelConfig.resolve`——因为这个选项名一出现就被当成端口读
@@ -2063,6 +2064,7 @@ server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那�
 |---|---|---|---|---|
 | `contextWindowTokens` | token（正安全整数） | 否 | **是**——预算输入，也决定输出截断上限的尺寸 | 推不出预算 → 压缩与聚合输出预算均关；上限退回 `4096` |
 | `maxOutputTokens` | token（≥ 0 的安全整数） | 是，作为 `maxTokens` 缺席时的 `max_tokens` 默认值 | **是**——第二个必需的预算输入 | OpenAI 不写 `max_tokens`；Anthropic 用 `4096`；推不出预算 |
+| `budgetTokens` | token（正安全整数） | 否 | **是**——**显式**压缩预算（issue #682）：原样使用，**优先于** `computeBudget` 派生 | 没有显式预算 ⇒ 由窗口那一对派生；那一对不齐 ⇒ 压缩保持关闭 |
 | `maxTokens` | token | 是——请求 `max_tokens`，优先于 `maxOutputTokens` | **否**，从不参与预算 | 字段省略 |
 | `temperature` | 数值 | 是——`temperature` | 否 | 字段省略 |
 | `topP` | 数值 | 是——`top_p` | 否 | 字段省略 |
@@ -2081,26 +2083,38 @@ run 级旋钮 `config.tuning.maxTokens` / `config.tuning.temperature` / `config.
 注入每一次请求，`buildPayload`（`src/providers/openai.js`） 同理。它们的**扁平**写法已在 0.28.0 退役（见上文 `tuning` 组版本口径）；
 被覆盖的 slot 字段是另一张面，一字未动。
 
-**slot 里的未知字段是惰性的，也是安全的。** 内置 provider 原样拷贝 slot
+**slot 里的未知字段是惰性的，也是安全的——除了现在变成已知字段的预算键。** 内置 provider 原样拷贝 slot
 （`createJsonFileModelConfigProvider`（`src/config/json-file.js`）、`createStaticModelConfigProvider`（`src/config/static.js`）），两个工厂又只读固定的
 参数列表（`createOpenAIProvider`（`src/providers/openai.js`）、`createAnthropicProvider`（`src/providers/anthropic.js`）），
 所以认不出的键既上不了线，也不会抛错。这条安全声明只覆盖
 **slot 对象**：*顶层* `runToolLoop` 选项写错名仍会抛 `TypeError`（见「`runToolLoop`
-选项与工具执行契约」）。
+选项与工具执行契约」）。**issue #682 为一个键收窄了它：** `budgetTokens`（以及 CLI 的
+`compactBudgetTokens`）以前是未知 slot 键——被忽略、惰性——现在是**已知**字段：它被读进预算并被校验
+（非正 / 非整数的 `budgetTokens` 在首次请求前抛 `invalid_budget`；CLI 在配置加载期拒掉非法
+`compactBudgetTokens`）。谁以前恰好写过同名键，必须删掉它或把它写成一个真预算。
 
 ### 预算推导
 
-`budgetTokens = context.budgetTokens ?? computeBudget({ contextWindowTokens, maxOutputTokens })`，
+`budgetTokens = context.budgetTokens ?? carrier.budgetTokens ?? computeBudget({ contextWindowTokens, maxOutputTokens })`，
 其中 `computeBudget = contextWindowTokens - maxOutputTokens - max(2000, ceil(窗口 × 0.1))`
-（`persist`，`src/loop/orchestrator.js`、`computeBudget`（`src/compact/budget.js`））。
+（`resolveBudgetTokens`（`src/loop/budget.js`）、`computeBudget`（`src/compact/budget.js`））。
 `budgetTokens` 是上下文压缩、单轮聚合输出预算、以及 request-view 预算块的总门。
 输出截断上限是另一套推导：先看显式 `outputHygiene.limit`，否则
 `clamp(15% × contextWindowTokens, 8192, 100000)`，否则 `4096`
 （`persist`，`src/loop/orchestrator.js`）。
 
+**优先级一句话（issue #682）：** CLI 旗标 `--compact-budget` > CLI slot
+`slots.default.compactBudgetTokens` > 引擎载体字段 `budgetTokens` > 窗口派生 > **关闭**（既没有窗口
+也没有显式预算）。引擎先读 `context.budgetTokens`（CLI 已经把旗标 / slot 的先后解析进这个值，
+并把胜出来源作为 `context.budgetSource` 一起带过来），再看载体字段，最后才派生。
+**缺窗口不是启动失败：** 压缩保持关闭、run 照常跑；`erix` CLI 打**一行 stderr 告警**
+（未配置 `slots.default.contextWindowTokens` ⇒ 不启用自动压缩，并点名两种显式设预算的方式），
+子 run 的记录带 `budgetSource`（`flag` / `config` / `derived` / `disabled`）。
+
 | 启动时的条件 | 引擎行为 |
 |---|---|
-| 五个候选里两个字段都找不到 | **静默跳过**：`budgetTokens` 保持 `undefined`，压缩与聚合输出预算保持关，并且恰好发**一条** `model_metadata_missing` 事件 |
+| 五个候选里两个窗口字段都找不到，且没有显式 `budgetTokens` | `budgetTokens` 保持 `undefined`，压缩与聚合输出预算保持关，并且恰好发**一条** `model_metadata_missing` 事件；CLI 另打它那一行 stderr 告警（issue #682：引擎事件不变，CLI 那行是新的） |
+| 载体带了 `budgetTokens` | 原样使用、绕开派生；非正 / 非整数值由 `validateBudget` 在首次请求前抛 `invalid_budget` |
 | 字段找到了但值非法（非整数、字符串、窗口 ≤ 0、`maxOutputTokens` < 0）或窗口不够大（算出的预算 ≤ 0） | `computeBudget` 在首次 provider 调用前**抛 `invalid_budget`** |
 | 宿主自己给了 `context.budgetTokens` | 完全绕开推导——压缩是否启用只看这个值，且无论探测到什么**都不发**事件；非正 / 非整数值由 `validateBudget` 抛 `invalid_budget` |
 | 宿主给了 `context.strategy` | 策略被询问时会原样拿到 `budgetTokens`，所以配了策略就能在零元数据下自己门控压缩（`stateAvailability`，`src/loop/orchestrator.js`）；注意内置 sliding-window 策略也是拿这个值去比，`undefined` 时永不触发（`shouldCompact`（`src/compact/sliding-window.js`）） |
@@ -5063,6 +5077,9 @@ provider 会拒收纯文本的 assistant 历史。受支持的模式是单 store
   绝不会读到半截答案。`result` 返回名册的终态字段（`ok` / 子 run 身份 / `state` / `endedAt` /
   `termination` / `verification`）再加 `text`，其中 `text` 上限 **4000 字符**（被截断时带
   `truncated: true`）、`error` 上限 **1000**。后台起子的宿主因此读到的是答案本身，而不是拿 `tail` 去猜。
+  **issue #682 再加一个 opaque 字段：** 宿主的 `runChild` 返回 `budgetSource`
+  （`flag` / `config` / `derived` / `disabled`）时，同一次终态写会把它落盘，`result` 也把它交回去——
+  于是「子为什么按与父不同的预算折叠」在名册上读得到，不用重新从配置推一遍。
 * **名册里记录工作目录的那个字段，写的是子 run 实际跑在的目录——前提是宿主说了。** 模型请求里的
   工作目录是请求、不是事实：库不解析相对路径，也不知道你的缺省目录是谁。端口是 `cwdFor`
   （收到模型请求的目录与子 run 身份，返回非空字符串）；提供了它，库就**只解析一次**，并且**同一个值**

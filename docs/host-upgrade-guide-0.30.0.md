@@ -31,7 +31,7 @@ red until it follows.
 |---|---|---|
 | Stop importing the 15 names in §2 | they are zero-consumer exports, registered for removal in the 0.30 breaking bundle | §2 |
 | Replace your `createAnthropicProvider` import **before** you upgrade | a live host imports it, and the factory is gone in 0.30.0 — an ESM import of a missing name fails at module load | §3 |
-| Nothing else | no option, default, event or on-disk format moves | §4 |
+| Nothing else (except the one **additive** leaf in §4.1) | no option, default, event or on-disk format moves; §4.1 adds one configuration leaf and states the slot-key migration danger that comes with it | §4 / §4.1 |
 
 ## 2. The fifteen names nothing imports
 
@@ -225,8 +225,8 @@ canonical response; returning raw SSE text is not a response.
 
 ## 4. What does not change
 
-* The `runToolLoop` input surface, the `capabilities` shape, and every configuration leaf. No option
-  is retired, renamed or re-homed by this release.
+* The `runToolLoop` input surface, the `capabilities` shape, and every existing configuration leaf.
+  No option or leaf is retired, renamed or re-homed by this release (§4.1 only **adds** one leaf).
 * Termination, verification and exit-code semantics, including the `skipped`-without-guard exit code.
 * Observer events, diagnostic fields, and the run-state block.
 * Transcript and run-state on-disk formats; a ledger written by the previous release still resumes.
@@ -234,6 +234,25 @@ canonical response; returning raw SSE text is not a response.
   `resolveNotesDir`), the file tools, the delegation bookkeeping modules, and every provider protocol
   helper.
 * The zero-runtime-dependency rule.
+
+### 4.1 One additive configuration leaf, and the slot-key migration it triggers (issue #682)
+
+0.30.0 also **adds** one configuration leaf; nothing is retired. `config.metadata.modelMetadata.budgetTokens`
+is the engine-side **explicit compaction budget** (a positive integer). The priority is one sentence:
+CLI flag `--compact-budget` > CLI slot `slots.default.compactBudgetTokens` > the engine carrier field
+`budgetTokens` > the window derivation > **off**. A missing window is **not** a startup failure:
+compaction stays off and the CLI prints **one stderr warning line** (it used to be silent). Two numbers
+that used to disagree when `maxOutputTokens` was absent — 16384 on the config-loader path and 65536
+inside `buildCompactionContext` — now come from one constant, so both paths derive the same budget
+(49152 tokens apart before, ≈ 18.8% of a 262144-token window).
+
+**The migration danger, stated plainly:** today an unknown slot field is **inert** — the built-in
+providers copy a slot verbatim and the factories read a fixed parameter list, so an unrecognized key
+can neither reach the wire nor throw. Adding these leaves changes that for the two budget keys: **if
+you had already written `compactBudgetTokens` (CLI slot) or `budgetTokens` (carrier) into a slot by
+coincidence, it goes from ignored to effective and validated** — the value now drives folding, and a
+malformed one is refused (the CLI at config load; the engine with `invalid_budget` before the first
+request). Remove the key, or make it a real budget. Nothing else about slot objects changed.
 
 ## 5. Verify it on your side
 

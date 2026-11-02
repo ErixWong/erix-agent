@@ -2501,12 +2501,14 @@ future factory-side labelling change and this subsection must ship in the same P
 ## Model metadata and budget derivation (issue #182)
 
 `modelConfig` and `modelMetadata` are whitelisted option names whose payload
-fields used to be documented nowhere. Exactly two of those fields are
-load-bearing for the engine's own budget math — `contextWindowTokens` and
-`maxOutputTokens` — and everything else a slot carries goes to the provider
-request instead. A host that writes neither budget field keeps context
-compaction and the per-round aggregate output budget switched off for the whole
-run; the only signal is the `model_metadata_missing` event named below.
+fields used to be documented nowhere. Exactly three of those fields are
+load-bearing for the engine's own budget math — `contextWindowTokens`,
+`maxOutputTokens` and, since issue #682, the **explicit** `budgetTokens` — and
+everything else a slot carries goes to the provider request instead. A host that
+writes none of them keeps context compaction and the per-round aggregate output
+budget switched off for the whole run; the engine's signal is the
+`model_metadata_missing` event named below (the `erix` CLI additionally prints
+one stderr line, see "Budget derivation").
 
 ### Probe order and slot selection
 
@@ -2519,11 +2521,12 @@ run; the only signal is the `model_metadata_missing` event named below.
 | 5 | `context` | the compaction-context option |
 
 - The probe is a duck-type over that exact order and returns the **first**
-  candidate that carries either field (`modelMetadataFor` (`src/loop/budget.js`), called at
-  `notifyModelMetadataMissing` at `src/loop/orchestrator.js`). Fields are **never merged across
-  candidates**: a slot with only `contextWindowTokens` plus a `modelMetadata`
+  candidate that carries any of the three budget fields (`modelMetadataFor` (`src/loop/budget.js`),
+  called at `notifyModelMetadataMissing` at `src/loop/orchestrator.js`). Fields are **never merged
+  across candidates**: a slot with only `contextWindowTokens` plus a `modelMetadata`
   carrying `maxOutputTokens` derives no budget at all. Keep the pair in one
-  object.
+  object. A candidate carrying only `budgetTokens` is found too (issue #682: an
+  explicit budget needs no window).
 - `modelConfig` must be a resolver (`{ resolve(slot?) }`). A plain config object
   passed as `modelConfig` is rejected at startup with
   `assembly port is missing methods: modelConfig.resolve`, because the option
@@ -2551,6 +2554,7 @@ run; the only signal is the `model_metadata_missing` event named below.
 |---|---|---|---|---|
 | `contextWindowTokens` | tokens (safe integer > 0) | no | **yes** — budget input, and it sizes the output-truncation limit | no budget derivable → compaction and aggregate output budget off; limit falls back to `4096` |
 | `maxOutputTokens` | tokens (safe integer ≥ 0) | yes, as the default `max_tokens` when `maxTokens` is absent | **yes** — second required budget input | OpenAI omits `max_tokens`; Anthropic uses `4096`; no budget derivable |
+| `budgetTokens` | tokens (safe integer > 0) | no | **yes** — the **explicit** compaction budget (issue #682). It is used verbatim and **wins over** the `computeBudget` derivation | no explicit budget: derive from the window pair; when that pair is incomplete, compaction stays off |
 | `maxTokens` | tokens | yes — request `max_tokens`, wins over `maxOutputTokens` | **no**, never a budget input | field omitted |
 | `temperature` | number | yes — `temperature` | no | field omitted |
 | `topP` | number | yes — `top_p` | no | field omitted |
@@ -2572,28 +2576,44 @@ The run-level knobs `config.tuning.maxTokens` / `config.tuning.temperature` /
 retired in 0.28.0 (see the `tuning` version policy above); the slot fields they override are a
 different plane and are untouched.
 
-**Unknown slot fields are inert and safe.** The built-in providers copy the slot
-verbatim (`createJsonFileModelConfigProvider` (`src/config/json-file.js`), `createStaticModelConfigProvider` (`src/config/static.js`)), and both
+**Unknown slot fields are inert and safe — except the budget keys, which are known now.** The
+built-in providers copy the slot verbatim (`createJsonFileModelConfigProvider` (`src/config/json-file.js`), `createStaticModelConfigProvider` (`src/config/static.js`)), and both
 factories read a fixed parameter list (`createOpenAIProvider` (`src/providers/openai.js`),
 `createAnthropicProvider` (`src/providers/anthropic.js`)), so an unrecognized key cannot reach the wire
 and cannot throw. That safety statement is about **slot
 objects** only: an unknown *top-level* `runToolLoop` option still throws
-`TypeError` (see "`runToolLoop` options").
+`TypeError` (see "`runToolLoop` options"). **Issue #682 narrows it for one key:** `budgetTokens`
+(and the CLI's `compactBudgetTokens`) used to be an unknown slot key — ignored, inert — and is now a
+**known** field: it is read into the budget and validated (a non-positive / non-integer
+`budgetTokens` throws `invalid_budget` before the first request; the CLI refuses a malformed
+`compactBudgetTokens` at config load). A host that had already written either key by coincidence
+must remove it or make it a real budget.
 
 ### Budget derivation
 
-`budgetTokens = context.budgetTokens ?? computeBudget({ contextWindowTokens, maxOutputTokens })`
+`budgetTokens = context.budgetTokens ?? carrier.budgetTokens ?? computeBudget({ contextWindowTokens, maxOutputTokens })`
 with `computeBudget = contextWindowTokens - maxOutputTokens - max(2000, ceil(window × 0.1))`
-(`persist` at `src/loop/orchestrator.js`, `computeBudget` (`src/compact/budget.js`)).
+(`resolveBudgetTokens` (`src/loop/budget.js`), `computeBudget` (`src/compact/budget.js`)).
 `budgetTokens` is the gate for context compaction, for the per-round aggregate
 output budget, and for the budget block in the request view. The output-truncation
 limit is a separate derivation: explicit `outputHygiene.limit` first, else
 `clamp(15% × contextWindowTokens, 8192, 100000)`, else `4096`
 (`persist` at `src/loop/orchestrator.js`).
 
+**Priority, one sentence (issue #682):** the CLI flag `--compact-budget` > the CLI slot
+`slots.default.compactBudgetTokens` > the engine carrier field `budgetTokens` > the window derivation
+> **off** (no window, no explicit budget). The engine reads `context.budgetTokens` first (the CLI has
+already resolved the flag / slot precedence into it and passes the winning source along as
+`context.budgetSource`), then the carrier field, then derives. **Missing window is not a startup
+failure:** compaction stays off and the run continues; the `erix` CLI prints **one stderr warning
+line** (`slots.default.contextWindowTokens` unset ⇒ auto-compaction disabled, with both ways to set
+a budget named) and the child-run record carries `budgetSource` (`flag` / `config` / `derived` /
+`disabled`).
+
 | Condition at startup | Engine behavior |
 |---|---|
-| neither field found in any of the five candidates | **silent skip**: `budgetTokens` stays `undefined`, compaction and the aggregate output budget stay off, and exactly **one** `model_metadata_missing` event is emitted |
+| neither window field found in any of the five candidates **and** no explicit `budgetTokens` | `budgetTokens` stays `undefined`, compaction and the aggregate output budget stay off, and exactly **one** `model_metadata_missing` event is emitted; the CLI also prints its one stderr warning line (issue #682 — the engine event is unchanged, the CLI line is new) |
+| the carrier carries `budgetTokens` | it is used verbatim and derivation is bypassed; a non-positive / non-integer value throws `invalid_budget` from `validateBudget` before the first request |
 | fields found but malformed (non-integer, string, window ≤ 0, `maxOutputTokens` < 0) or too small (derived budget ≤ 0) | `computeBudget` **throws `invalid_budget`** before the first provider call |
 | host supplies `context.budgetTokens` | derivation is bypassed entirely — compaction is on whatever that value enables, and **no** event is emitted whatever the probe found; a non-positive / non-integer value throws `invalid_budget` from `validateBudget` |
 | host supplies `context.strategy` | the strategy is asked with `budgetTokens` as-is, so a configured strategy can gate compaction without any metadata (`stateAvailability` at `src/loop/orchestrator.js`); note the built-in sliding-window strategy compares against that value and therefore never fires on `undefined` (`shouldCompact` (`src/compact/sliding-window.js`)) |
@@ -6462,7 +6482,10 @@ sample detail, because a host that reads them differently will build a wrong orc
   record's terminal fields (ok / runId / state / endedAt / termination / verification) plus `text`,
   and `text` is capped at **4000** characters (`truncated: true` when it was cut) while `error` is
   capped at **1000**. A host that started a child in the background therefore reads the answer itself
-  instead of inferring it from `tail`.
+  instead of inferring it from `tail`. **Issue #682 adds one opaque field:** when the host's
+  `runChild` returns `budgetSource` (`flag` / `config` / `derived` / `disabled`), the same terminal
+  write stores it and `result` returns it, so "why does the child fold under a different budget than
+  the parent" is readable from the roster instead of re-derived from configuration.
 * **The roster's cwd field is the directory the child actually ran in — when the host says so.** The
   cwd a model asks for is a request, not a fact: the library does not resolve relative paths and does
   not know your default directory. The port is `cwdFor(requested, runId) => string`; when it is

@@ -379,7 +379,14 @@ describe("真起 CLI 子进程：参数、退出码、stdout/stderr、落盘（i
     assert.match(result.stdout, /=== 终稿 ===/u);
     assert.match(result.stdout, /=== 统计 ===/u);
     assert.match(result.stdout, /guard=off/u);
-    assert.equal(result.stderr, "");
+    // issue #682：缺窗口不再哑巴——成功 run 的 stderr 现在**恰好**有一行告警（不是整段静默）。
+    // 语义没变：压缩仍然关闭（本 run 没有折叠事实），告警只是把这件事说出来。
+    assert.equal(
+      result.stderr,
+      "erix: 未配置上下文窗口（slots.default.contextWindowTokens）⇒ 本次不启用自动压缩；"
+        + "可用 --compact-budget <tokens> 或 slots.default.compactBudgetTokens 显式指定预算。\n",
+      `缺窗口的告警必须**只**是这一行：${JSON.stringify(result.stderr)}`,
+    );
 
     // 落盘形状（README「Configuration and local state」那张布局 + judge.log 默认位置）。
     const prefix = expectedScanPrefix(sandbox.project);

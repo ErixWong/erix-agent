@@ -597,11 +597,12 @@ const CONFIG_LEAF_VALUE_RULES = Object.freeze({
   // no host that was accepted before is refused now.
   "metadata.modelMetadata": (value, path) => {
     if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
-    const budget = /** @type {Record<string, unknown>} */ (value).budgetTokens;
-    if (budget === undefined) return undefined;
+    const raw = /** @type {Record<string, unknown>} */ (value).budgetTokens;
+    if (raw === undefined) return undefined;
+    const budget = typeof raw === "number" ? raw : Number.NaN;
     return Number.isSafeInteger(budget) && budget > 0
       ? undefined
-      : `${path}.budgetTokens must be a positive integer (received: ${describeConfigValueType(budget)})`;
+      : `${path}.budgetTokens must be a positive integer (received: ${describeConfigValueType(raw)})`;
   },
 });
 
