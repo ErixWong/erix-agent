@@ -1857,8 +1857,8 @@ test("#654 缺陷3：投递失败不再被记成「已投递」——false / 抛
 // 读盘反推。这一节钉住的是**文案**那一面（不是再加字段）：只要 `delivery` 不是 `sent`，调用方
 // （`action:"status"` / `action:"result"` 的返回文本）就必须读到一句解释；`sent` 时一句都不许加。
 //
-// 四处断言各自对应一条变异：把某个分支改回「静默」⇒ 点名的那条变红；把 `withDeliveryNote` 的
-// **原位替换**改回「无脑追加」⇒ 最后那条「只留最后一条」变红。
+// 四处断言各自对应一条变异：把某个分支改回「静默」⇒ 点名的那条变红；把「正文与整句分开存」改回
+// 「从上一版文案里猜 marker 边界」⇒ 最后那条「只留最后一条」与 #670 第 1 格（正文含 `delivery:`）变红。
 // ---------------------------------------------------------------------------
 
 /** 文本面里的投递诊断行（`delivery:` 开头）；正常路径应当是空数组。 */
@@ -2012,4 +2012,37 @@ test("#665：重试三档后文案只保留最后一条诊断（原位替换，�
   const lines = deliveryLines(textOf(formatAsyncResult(runtime.act({ action: "result", runId }))));
   assert.equal(lines.length, 1, `文本面也只许有一句，实测 ${JSON.stringify(lines)}`);
   assert.equal(lines[0], note, "文本面与视图是同一句（同一处拼装）");
+});
+
+test("#670 第1格：根因正文里含 `delivery:` ⇒ 四档（首次 + 三档重试）之后仍只有一句诊断且正文逐字完整", async () => {
+  // 根因是**外部文本**：`notifyError` 原样接受宿主/投递口给的错误串，`Error.message` 什么都可能有。
+  // 修前 `withDeliveryNote` 用 `lastIndexOf("delivery:")` 从上一版文案里猜边界 ⇒ 命中正文里这个，
+  // 每档重试多嵌一层前缀、尾部逐档截断（三档重试 = 三重前缀）。
+  const hostError = "delivery: late";
+  const sessionHandles = jobsApi.createSessionHandleRegistry();
+  sessionHandles.set("670-marker", { deliver: () => true });
+  let attempt = 0;
+  const { clock, runtime, registry, runId } = await deliveryRuntime({
+    prefix: "erix-run-670-marker",
+    sessionId: "670-marker",
+    sessionHandles,
+    notify: () => {
+      attempt += 1;
+      return { delivery: "failed", error: `${hostError}（第 ${attempt} 次）` };
+    },
+  });
+  for (let index = 0; index < NOTIFY_RETRY_DELAYS_MS.length; index += 1) {
+    assert.equal(clock.tick(), true, `第 ${index + 1} 档重试必须排上`);
+  }
+  assert.equal(attempt, NOTIFY_RETRY_DELAYS_MS.length + 1, "首次 + 三档 = 4 次尝试");
+
+  const note = jobView(registry.get(runId)).deliveryNote;
+  // 逐字：一个 marker + 一句诊断。正文里的 `delivery:` 是**正文的一部分**，不是第二句的边界。
+  assert.equal(note, `delivery: failed (${hostError}（第 4 次）, 已重试 3 次)`,
+    `诊断只许一句且正文逐字完整（不许嵌套/截断），实测 ${JSON.stringify(note)}`);
+  assert.equal((note.match(/failed \(/gu) ?? []).length, 1, `不许嵌套，实测 ${JSON.stringify(note)}`);
+  assert.equal(note.endsWith("已重试 3 次)"), true, `结尾不许被截断，实测 ${JSON.stringify(note)}`);
+
+  const lines = deliveryLines(textOf(formatAsyncResult(runtime.act({ action: "result", runId }))));
+  assert.deepEqual(lines, [note], "文本面也只许有这一句，且与视图逐字同源（同一处拼装）");
 });

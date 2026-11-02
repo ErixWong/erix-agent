@@ -387,10 +387,16 @@ pi --extension ./examples/pi-extension/erix-run.ts
 
 判据式的口径：**只要 `delivery` 不是 `sent`，文案里就必须有一句解释**；`sent` 时不许添噪音。
 
-**多次重试只留最后一条**：诊断句由 `erix-run-jobs.js` 的 `withDeliveryNote` 维护，写法是**原位替换**
-——定位最后一次出现的 marker（`DELIVERY_NOTE_MARKER`，即 `delivery:`）→ 只保留它前面的 head → 再拼新值；
-新值为空时把诊断清回 `undefined`。所以三档重试（连同每次排档对「已重试 N 次」的刷新）之后，
-文案里始终只有一段，且是**最后那条**根因——而不是四段拼在一起的长条。
+**多次重试只留最后一条**：诊断句由 `erix-run-jobs.js` 维护，写法是**正文与整句分开存**——
+`deliveryNoteText(job)` 按**结构化事实**（`delivery` / `notifyError` / `notifyRetries` /
+`ownerSessionError`）生成正文，`deliveryNoteSentence(正文)` 只负责在前面拼 `DELIVERY_NOTE_MARKER`。
+每次投递事实一变就**重算**，所以三档重试（连同每次排档对「已重试 N 次」的刷新）之后，文案里始终
+只有一段，且是**最后那条**根因。
+
+⚠ 这里曾经是「从上一版文案里 `lastIndexOf("delivery:")` 找 marker、截掉后面再拼新值」——正文里
+含**外部文本**（`notifyError` 是宿主/投递口给的错误原文，`notifyErrorOf()` 接受任意非空字符串），
+只要那文本里出现 `delivery:`，边界就落在正文内部：每档重试多嵌一层前缀、尾部逐档截断（三档重试
+叠成三重前缀，issue #670 第 1 格）。**marker 不是边界**：诊断的边界只能来自结构化字段。
 
 `jobView.deliveryNote` 与 `delivery` 同族**恒在场**（没尝试过 / 投成功时是 `null`，不是缺键），
 所以只读 `status.json` 的会话读到的也是同一句人话。`notifyRetryAt` 仍不在此列（那是「排了档才有」的瞬态键）。
