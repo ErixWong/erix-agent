@@ -1128,19 +1128,23 @@ function runSelfTest() {
       return gaps;
     };
     const gapsReal = coverageGaps(texts);
+    expect(
+      gapsReal.length === 0,
+      `⑩b 账本 ${ledgered.length} 个名字在中英两份指南里都有条目且迁移条款非空（0 缺；读法与 check:docs 的 bundle-table 同一份）`,
+      `⑩b 标记自称「已被 0.30 指南覆盖」，真指南却缺条目：${JSON.stringify(gapsReal)}——那句自称是空话`,
+    );
     const victim = ledgered[0];
     const victimRow = bundleRowsFromText(texts[BUNDLE_GUIDE_DOCS[0]]).rows.get(victim);
     if (!victim || !victimRow) {
-      failures.push("⑩b 指南覆盖：真指南里找不到账本第一个名字那一行——这一枪打不出去（变异无从落下）");
+      failures.push("⑩b 指南覆盖：真指南里找不到账本第一个名字那一行——变异无从落下（上一格已经点名）");
     } else {
       const lines = texts[BUNDLE_GUIDE_DOCS[0]].split("\n");
       const mutated = { ...texts, [BUNDLE_GUIDE_DOCS[0]]: [...lines.slice(0, victimRow.line - 1), ...lines.slice(victimRow.line)].join("\n") };
       const gapsMutated = coverageGaps(mutated);
       expect(
-        gapsReal.length === 0 && gapsMutated.length > 0,
-        `⑩b 账本 ${ledgered.length} 个名字在中英两份指南里都有条目且迁移条款非空（0 缺）；把英文那份的 \`${victim}\` 行删掉（内存副本）⇒ 同一套读法报缺（${gapsMutated[0]}）`,
-        `⑩b 指南覆盖没按预期：真指南缺 ${JSON.stringify(gapsReal)}（期望 0 缺，否则标记那句「已被指南覆盖」是空话）；`
-          + `变异后缺 ${JSON.stringify(gapsMutated)}（期望 >0，否则变异没落上）`,
+        gapsMutated.length > 0,
+        `⑩b 把英文那份的 \`${victim}\` 行删掉（内存副本）⇒ 同一套读法报缺（${gapsMutated[0]}）`,
+        `⑩b 变异没落上：删掉指南那一行后读法仍报 0 缺——「指南覆盖」这一半没有被钉住`,
       );
     }
   }
