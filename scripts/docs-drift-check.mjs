@@ -4740,6 +4740,26 @@ function mutateRef(from, to, opts = {}) {
   };
 }
 
+/** #621：自测的**合成区间锚点夹具**——把区间引用注进 overlay 自己的内存副本，变异打在注入的这条上。
+ *
+ *  为什么不再拿文档原话当靶子：这两例修前把契约里一句原话（`` (`bin/cli.js:1032-1042`) ``）硬编码成变异靶，
+ *  #661 按 #286 的首选修法（删区间、只留符号）把那处区间删掉之后，两次 `replace` 都成了空操作，
+ *  `--self-test` 当场 2/148 红（CI 的独立必需步骤）。**靶子必须跟着用例走**，不跟着某句活文档走——
+ *  否则下一次删句子又把反向证变成空跑，而空跑的表现正是「变异没落上」（#210 R2）。
+ *
+ *  `mutate` 收到注入的锚点字面量，返回要写进副本的那一条；返回值与入参**逐字相同**时原样返回文本
+ *  ⇒ `runSelfTest` 的「变异没落上」判据会红，不会留下「注入了但没变异」的假绿。
+ *
+ *  注意：`bin/` 前缀不在 `BARE_LINE_RE` 的 `src/` 覆盖面里，注入**不抬** `BARE_LINE_REF_BASELINE` 棘轮。
+ */
+function injectRangeAnchor(mutate) {
+  const injected = "`bin/cli.js:1032-1042`";
+  const mutated = mutate(injected);
+  return (text) => (mutated === injected
+    ? text
+    : `${text}\n\n自测夹具（#621，只在 --self-test 的内存副本里）：下面这条区间引用是这一例的变异靶子，不依赖契约现存哪句原文。\n\n${mutated}\n`);
+}
+
 // 棘轮两档的当前真值**现读**棘轮脚本，不写死（issue #292 踩到的坑）：下面 5 条 baseline 反向证的变异串
 // 原先硬编码 121 / 164，基线一降到 119 / 162 就全部变成空操作，而 #210 R2 把「变异没打上」判成红 ——
 // 于是「下调常量 + 同步文档」这笔完全正常的提交会打红 5 条反向证。现读之后，以后再降基线不必回来改这里。
@@ -5549,15 +5569,21 @@ const SELF_TEST_CASES = [
   //    区间尾巴剥不掉 ⇒ 紧接的扩展名过滤看到一个以 `-227` 结尾的串 ⇒ 整个 token 被丢弃，区间形式的引用
   //    **一处也不进裁决**（路径改成什么都绿）。下面四例同时钉住两条裁决边界：区间已进裁决（①）、
   //    外仓前缀引用**仍然**不做本仓存在性核对（③ 放行证），而前缀不是免检通道（④）。
+  //    ⚠ 前两例的靶子是 `injectRangeAnchor` **注入**的合成锚点：它们只依赖「契约文本里有一条区间引用」
+  //    这件事由夹具自己保证，不再依赖契约里现存哪句原话（#661 删掉那句之后，旧靶子变成了空操作）。
   {
-    label: "#621：契约 EN 的 `bin/cli.js:1032-1042` 路径改坏 ⇒ 必须红（修前区间 token 被整条丢弃，零校验）",
-    overlay: { [CONTRACT_EN]: (t) => t.replace("(`bin/cli.js:1032-1042`)", "(`bin/cli621Probe.js:1032-1042`)") },
+    label: "#621：overlay 注入的区间锚点路径改坏 ⇒ 必须红（修前区间 token 被整条丢弃，零校验）",
+    overlay: {
+      [CONTRACT_EN]: injectRangeAnchor((anchor) => anchor.replace("bin/cli.js:1032-1042", "bin/cli621Probe.js:1032-1042")),
+    },
     expect: [/paths: docs\/host-consumer-contract\.md[\s\S]*`bin\/cli621Probe\.js`（第 \d+ 行）：本仓不存在/],
     expectFiles: [CONTRACT_EN],
   },
   {
-    label: "#621 放行证：同一处改成单行 `bin/cli.js:1032` ⇒ 仍然绿（区间与单行走同一条剥号路径，不是把单行也弄红）",
-    overlay: { [CONTRACT_EN]: (t) => t.replace("(`bin/cli.js:1032-1042`)", "(`bin/cli.js:1032`)") },
+    label: "#621 放行证：注入的同一处收窄成单行 `bin/cli.js:1032` ⇒ 仍然绿（区间与单行走同一条剥号路径，不是把单行也弄红）",
+    overlay: {
+      [CONTRACT_EN]: injectRangeAnchor((anchor) => anchor.replace("bin/cli.js:1032-1042", "bin/cli.js:1032")),
+    },
     expectGreen: true,
   },
   {
