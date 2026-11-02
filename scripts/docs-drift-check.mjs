@@ -3559,6 +3559,568 @@ function collectRetiredSemanticsErrors() {
   return errors;
 }
 
+// ── 2.12 契约「套件清单」的 unknownSlot 形态（issue #677）────────────────────────────
+// 病历：契约里有一张「套件清单 / Suite inventory」散文表（EN `### Suite inventory (issue #183)`、
+// CN `### 套件清单（issue #183）`），`model-config-provider.js` 那一行讲的是**按 provider 形态分别作答**
+// 的未知槽名答案（issue #518：一条断言盖住两种形态 = 那条假承诺的病根）。这张表此前**零机器闸**
+// （`grep -rn '套件清单\|Suite inventory' scripts/*.mjs` = 0），于是它可以被悄悄压平 / 单边改写 / 与真值
+// 脱节而门禁一路绿。本族把它接上：
+//   ① 真值：`test/contract/model-config-provider.js` 里 `unknownSlot.mode` 的判别值（注释先涂空——
+//      注释里讲形态是合法的，代码里才是真值），**至少**要能抽出 `throws` / `single-config` 两种；
+//   ② 两侧逐条语义：槽位图形态（static / json-file）未知槽名必须 throw、点名该槽名、列出可用槽位、
+//      不许回落 default；单配置形态任何槽名返回同一份配置，且**不是**「未知回落 default」；
+//   ③ 判据按**形态窗口**分段过：窗口按形态标记切（槽位图 → 单配置），每段只准出现自己那条腿的断言
+//      ——把两段合成「都要抛」或「都返回同一份」就是 #518 的压平，必红；
+//   ④ 中英同一套 facet id：任一侧缺一条 ⇒ 既报「缺语义」又报「中英背离」（只改一边不算改）。
+
+/** 真值源：unknownSlot 的形态判别就写在这个套件里（`test/contract/model-config-provider.js`）。 */
+const SUITE_INVENTORY_TRUTH_SRC = "test/contract/model-config-provider.js";
+
+/** 两份契约里「套件清单」小节的标题行（按行首定位，不在全文里瞎搜）。 */
+const SUITE_INVENTORY_SECTION = Object.freeze({
+  [CONTRACT_EN]: /^### Suite inventory\b/u,
+  [CONTRACT_CN]: /^### 套件清单/u,
+});
+
+/** 那一行的行首键（表格第一格）。行丢了 = 本族在这份文档上失效，按 #164 口径报错。 */
+const SUITE_INVENTORY_ROW_KEY = "`model-config-provider.js`";
+
+/** 形态窗口的分界标记：`slotmap` 段 = 槽位图形态那条腿，`single` 段 = 单配置形态那条腿。 */
+const SUITE_INVENTORY_MARKERS = Object.freeze({
+  [CONTRACT_EN]: Object.freeze({ slotmap: /slot-map/u, single: /single-config/u }),
+  [CONTRACT_CN]: Object.freeze({ slotmap: /槽位图形态/u, single: /单配置形态/u }),
+});
+
+/**
+ * 判据面：每种形态的每一条语义各一格，**中英同一个 id**（一侧缺 ⇒ 「缺语义」+「中英背离」两条都报）。
+ *
+ * `mode` 是该 facet 对应的 `unknownSlot.mode` 真值值：真值里的形态集合与这里的 `mode` 集合必须相等
+ * （真值加了一种形态而文档没跟 = 文档在撒谎；真值删了一种而文档仍在讲 = 同一件事的另一面）。
+ * 正则只认**语义**，不抄原话：同义改写（`must throw` → `has to throw`）仍应绿，压平/删句必红。
+ */
+const SUITE_INVENTORY_FACETS = Object.freeze([
+  {
+    id: "slot-map-shape",
+    mode: "throws",
+    window: "slotmap",
+    why: "槽位图形态（static / json-file）必须点名——#518 的病就是把两种形态混成一条",
+    re: {
+      [CONTRACT_EN]: /slot-map\b[^|]{0,60}\(static\s*\/\s*json-file\)/u,
+      [CONTRACT_CN]: /槽位图形态[^|]{0,60}（static\s*\/\s*json-file）/u,
+    },
+  },
+  {
+    id: "slot-map-throws",
+    mode: "throws",
+    window: "slotmap",
+    why: "槽位图形态的未知槽名必须 throw / 抛错",
+    re: {
+      [CONTRACT_EN]: /\bthrow(?:s|ing)?\b/u,
+      [CONTRACT_CN]: /抛错|抛异常|抛出错误/u,
+    },
+  },
+  {
+    id: "slot-map-names-unknown",
+    mode: "throws",
+    window: "slotmap",
+    why: "错误必须点名那个未知槽名（宿主才看得懂写错了哪个槽）",
+    re: {
+      [CONTRACT_EN]: /nam(?:e|es|ing)\s+the\s+unknown\s+slot/u,
+      [CONTRACT_CN]: /点名[^|。；\n]{0,8}槽名/u,
+    },
+  },
+  {
+    id: "slot-map-lists-available",
+    mode: "throws",
+    window: "slotmap",
+    why: "错误必须列出可用槽位",
+    re: {
+      [CONTRACT_EN]: /list(?:s|ing)?\s+the\s+available\b/u,
+      [CONTRACT_CN]: /列出[^|。；\n]{0,8}可用槽位/u,
+    },
+  },
+  {
+    id: "slot-map-no-default-fallback",
+    mode: "throws",
+    window: "slotmap",
+    why: "不得回落 default（#518：写错槽位 ⇒ 跑的是另一个模型，且永远不知道）",
+    re: {
+      [CONTRACT_EN]: /never\s+fall(?:s|ing)?\s*back\s+to\s+default/u,
+      [CONTRACT_CN]: /(?:不许|不得|不会|不)\s*回落\s*default/u,
+    },
+  },
+  {
+    id: "single-config-shape",
+    mode: "single-config",
+    window: "single",
+    why: "单配置形态必须点名",
+    re: {
+      [CONTRACT_EN]: /single-config\b/u,
+      [CONTRACT_CN]: /单配置形态/u,
+    },
+  },
+  {
+    id: "single-config-same-config",
+    mode: "single-config",
+    window: "single",
+    why: "单配置形态任何槽名都返回同一份配置",
+    re: {
+      [CONTRACT_EN]: /returns?\s+the\s+same\s+config/u,
+      [CONTRACT_CN]: /返回同一份配置/u,
+    },
+  },
+  {
+    id: "single-config-not-default-fallback",
+    mode: "single-config",
+    window: "single",
+    why: "单配置形态是**形态差异**，不是「未知回落 default」——两者混为一谈就是 #518 那条假承诺",
+    re: {
+      [CONTRACT_EN]: /not\s+an?\s+unknown-slot\s+fallback\s+to\s+default/u,
+      [CONTRACT_CN]: /不是[^|。；\n]{0,16}回落\s*default/u,
+    },
+  },
+]);
+
+/**
+ * 窗口内的**反向**判据：压平（一条断言盖住两种形态）的两种典型形状。
+ * 「单配置那段里说 throw」= 两种都要抛；「槽位图那段里说返回同一份」= 两种都不选槽。
+ */
+const SUITE_INVENTORY_FLATTENED = Object.freeze([
+  {
+    window: "single",
+    why: "单配置形态那一段里出现了 throw / 抛错 ⇒ 两种形态被压平成「未知槽名都要抛」（#518 的病）",
+    re: { [CONTRACT_EN]: /\bthrow(?:s|ing)?\b/u, [CONTRACT_CN]: /抛错|抛异常|抛出错误/u },
+  },
+  {
+    window: "slotmap",
+    why: "槽位图形态那一段里出现了「返回同一份配置」⇒ 两种形态被压平（槽位图形态不许有这条腿）",
+    re: { [CONTRACT_EN]: /returns?\s+the\s+same\s+config/u, [CONTRACT_CN]: /返回同一份配置/u },
+  },
+]);
+
+/** 本族必须两边都写的两份文档（顺序即报错顺序）。 */
+const SUITE_INVENTORY_DOCS = Object.freeze([CONTRACT_EN, CONTRACT_CN]);
+
+/**
+ * 在一份契约的正文里定位「套件清单」小节，取出 `model-config-provider.js` 那一行。
+ *
+ * 返回 `{ start, end, line, text, cell }`：`start/end` 是整行在正文里的偏移（自测的定点打靶器用），
+ * `line` 是 1 起的行号，`cell` 是第 2 列（「断言什么」那一格）——语义窗口只在格内算，
+ * 不让后面两格的散文混进窗口。抽不到就返回 `null`（调用方按 #164 口径报错，不回退、不静默）。
+ *
+ * @param {string} rel 文档相对路径（决定小节标题与形态标记）
+ * @param {string} src 文档正文（可以是 overlay 之后的文本）
+ * @returns {{start:number,end:number,line:number,text:string,cell:string}|null}
+ */
+function suiteInventoryRowOf(rel, src) {
+  const heading = SUITE_INVENTORY_SECTION[rel];
+  const markers = SUITE_INVENTORY_MARKERS[rel];
+  if (!heading || !markers) return null;
+  const lines = String(src).split("\n");
+  const from = lines.findIndex((line) => heading.test(line));
+  if (from === -1) return null;
+  let to = lines.length;
+  for (let i = from + 1; i < lines.length; i += 1) {
+    if (/^#{2,3}\s/u.test(lines[i])) { to = i; break; }
+  }
+  for (let i = from + 1; i < to; i += 1) {
+    const line = lines[i];
+    if (!line.startsWith(`| ${SUITE_INVENTORY_ROW_KEY}`)) continue;
+    const start = lines.slice(0, i).join("\n").length + 1;
+    const parts = line.split("|");
+    return { start, end: start + line.length, line: i + 1, text: line, cell: parts.length >= 4 ? parts[2] : "" };
+  }
+  return null;
+}
+
+/**
+ * 真值：`unknownSlot.mode` 的判别值集合（**代码面**，注释先涂空、字符串保留）。
+ *
+ * 为什么涂注释：那个文件的 JSDoc 里就写着 `{mode:"throws", name, available}`（那是在**讲**契约，
+ * 合法的）；真值只能是代码里真正参与判别的字面量，否则「注释里写一种形态」就能糊过门禁。
+ *
+ * @returns {{modes: string[], errors: string[]}}
+ */
+function suiteInventoryTruth() {
+  const src = textOf(SUITE_INVENTORY_TRUTH_SRC);
+  if (typeof src !== "string") {
+    return {
+      modes: [],
+      errors: [`suite-inventory/truth: 读不到 ${SUITE_INVENTORY_TRUTH_SRC}——「未知槽名按 provider 形态分别作答」`
+        + "这条真值无从抽起（#164 口径：抽不到真值就报错）"],
+    };
+  }
+  const code = maskJs(src, { keepStrings: true });
+  const modes = [...new Set([...code.matchAll(/unknownSlot\.mode\s*[!=]==?\s*"([^"]+)"/gu)].map((m) => m[1]))].sort();
+  const errors = [];
+  if (modes.length === 0) {
+    errors.push(`suite-inventory/truth: ${SUITE_INVENTORY_TRUTH_SRC} 的**代码面**里抽不到任何 \`unknownSlot.mode\` 判别值`
+      + "——未知槽名的答案不再按形态分开，而两份契约仍在说它按形态分开（改真值不改文档 = 文档在撒谎）");
+    return { modes, errors };
+  }
+  const declared = [...new Set(SUITE_INVENTORY_FACETS.map((facet) => facet.mode))].sort();
+  for (const mode of modes.filter((m) => !declared.includes(m))) {
+    errors.push(`suite-inventory/truth: ${SUITE_INVENTORY_TRUTH_SRC} 的 unknownSlot 形态里多出 \`${mode}\`，`
+      + `而两份契约的套件清单没有为它写一条答案（真值加了形态、文档没跟；文档声明的形态只有 ${declared.join(" / ")}）`);
+  }
+  for (const mode of declared.filter((m) => !modes.includes(m))) {
+    errors.push(`suite-inventory/truth: ${SUITE_INVENTORY_TRUTH_SRC} 的 unknownSlot 形态里抽不到 \`${mode}\`」`
+      + "——真值已经不再区分这种形态，而两份契约仍在为它陈述答案（改真值不改文档 = 文档在撒谎）");
+  }
+  return { modes, errors };
+}
+
+/**
+ * 本族的判据：真值（两种 mode）× 两份契约的套件清单行（逐形态窗口、逐条语义、中英同 id）。
+ *
+ * @returns {string[]} 错误文本（不直接写全局，好让 `--self-test` 复用同一份实现）
+ */
+function collectSuiteInventoryErrors() {
+  const errors = [];
+  const notes = [];
+  const truth = suiteInventoryTruth();
+  errors.push(...truth.errors);
+
+  const present = new Map(SUITE_INVENTORY_FACETS.map((facet) => [facet.id, new Set()]));
+  for (const doc of SUITE_INVENTORY_DOCS) {
+    const src = textOf(doc);
+    if (typeof src !== "string") {
+      errors.push(`suite-inventory: 读不到 ${doc}——它是本族必须对账的两份契约之一，读不到就等于那份没人校`);
+      continue;
+    }
+    const row = suiteInventoryRowOf(doc, src);
+    if (row === null) {
+      errors.push(`suite-inventory: ${doc} 的「套件清单」小节里找不到 \`model-config-provider.js\` 那一行——`
+        + "套件清单少一行 / 小节标题被改，本族的判据在这份文档上失效（#164 口径：抽不到真值就报错）");
+      continue;
+    }
+    const markers = SUITE_INVENTORY_MARKERS[doc];
+    const slotmapAt = row.cell.search(markers.slotmap);
+    const singleAt = row.cell.search(markers.single);
+    if (slotmapAt === -1 || singleAt === -1 || singleAt < slotmapAt) {
+      errors.push(`suite-inventory: ${doc}:${row.line} 的 \`model-config-provider.js\` 行切不出「槽位图 → 单配置」两段形态窗口`
+        + `（槽位图标记 ${slotmapAt === -1 ? "缺" : "在"} / 单配置标记 ${singleAt === -1 ? "缺" : "在"}`
+        + `${singleAt !== -1 && slotmapAt !== -1 && singleAt < slotmapAt ? " / 顺序颠倒" : ""}）——`
+        + "两种 provider 形态的答案被压平成一条，正是 #518 之前那条假承诺的形状（issue #677）");
+      continue;
+    }
+    const windows = { slotmap: row.cell.slice(slotmapAt, singleAt), single: row.cell.slice(singleAt) };
+    for (const facet of SUITE_INVENTORY_FACETS) {
+      const re = facet.re[doc];
+      if (re.test(windows[facet.window])) {
+        present.get(facet.id).add(doc);
+        continue;
+      }
+      errors.push(`suite-inventory: ${doc}:${row.line} 的 \`model-config-provider.js\` 行缺一条语义——${facet.why}`
+        + `（${facet.window === "slotmap" ? "槽位图形态" : "单配置形态"}那一段里没写到；判据 ${re}）`);
+    }
+    for (const flat of SUITE_INVENTORY_FLATTENED) {
+      const re = flat.re[doc];
+      if (!re.test(windows[flat.window])) continue;
+      errors.push(`suite-inventory: ${doc}:${row.line} 的 \`model-config-provider.js\` 行被压平了——${flat.why}`);
+    }
+  }
+
+  // 中英背离：一条 facet 只有一侧写了 ⇒ 另一侧读者拿到的是一半的答案（「只改一边不算改」）。
+  for (const facet of SUITE_INVENTORY_FACETS) {
+    const hit = present.get(facet.id);
+    if (hit.size === 0 || hit.size === SUITE_INVENTORY_DOCS.length) continue;
+    const missing = SUITE_INVENTORY_DOCS.filter((doc) => !hit.has(doc));
+    errors.push(`suite-inventory: 中英背离——「${facet.why}」只有 ${[...hit].join("、")} 写了，`
+      + `${missing.join("、")} 没有（issue #677：任一侧缺语义或被压平都必须红）`);
+  }
+
+  notes.push(`suite-inventory: 套件清单的 \`model-config-provider.js\` 行（issue #677）按 `
+    + `${SUITE_INVENTORY_FACETS.length} 条语义 × 中英两侧逐条对账（形态窗口内分段判，压平另判 `
+    + `${SUITE_INVENTORY_FLATTENED.length} 种形状）；真值 ${SUITE_INVENTORY_TRUTH_SRC} 的 unknownSlot 形态 = `
+    + `${truth.modes.length ? truth.modes.map((m) => `\`${m}\``).join(" / ") : "（抽不到）"}`);
+  collectSuiteInventoryErrors.notes = notes;
+  return errors;
+}
+
+// ── 2.13 强制收尾资格「按状态，不按 reason 枚举」（issue #475 post-stop verification）──
+// 病历（issue #677 补充范围）：契约 §7「post-stop verification / 停止后验证」那句曾把资格写成
+// **reason 白名单**（#467 的形状：往白名单上贴一条 `judge_done`），而 #475 把判据下沉成**状态**——
+// 「被预算/截断掐断的那三条沿用更严的截断判据，其余 reason 只过一个判据：整个 run 一个字都没写过」，
+// 于是新增 reason 天然被覆盖。这句话此前**零机器闸**：它既可以被压平回白名单口径（假话回潮），
+// 也可以与 `src/loop/termination.js` 的成员集合悄悄脱节（源码加了/删了 reason，契约照旧）。
+// 本族把它接上，三条形状各有一腿：
+//   ① 两侧逐条语义（中英同一套 facet id）：状态口径、三条沿用截断判据、其余只看「一个字都没写过」、
+//      新增 reason 天然覆盖、覆盖 ≠ 安全、覆盖那句点名 guard 集合与 `end_turn` / `no_tool`；
+//      任一侧压平/退回假话 ⇒ 红；
+//   ② 中英背离：某条语义只有一侧写了 ⇒ 缺语义 + 背离两条都报；
+//   ③ 固定 reason 名单 × 源码成员集合：契约点名的「三条不可续跑」必须**恰好等于**
+//      `FORCED_FINAL_TRUNCATED_REASONS`（双向），「覆盖 ≠ 安全」点名的 `end_turn` / `no_tool`
+//      必须真在 `FINAL_GUARD_TERMINATION_REASONS` 里；任一失配 ⇒ 红（改源码不改契约必红）。
+
+/** 真值源：两个 reason 集合都在这里（`src/loop/termination.js`）。 */
+const FORCED_FINAL_TRUTH_SRC = "src/loop/termination.js";
+/** 被预算/截断掐断的三条（函数作用域内私有，**不导出**——所以按名字在代码面里找字面量）。 */
+const FORCED_FINAL_TRUNCATED_SET = "FORCED_FINAL_TRUNCATED_REASONS";
+/** guard 适用 reason 集合（「覆盖 ≠ 安全」那句的真值）。 */
+const FORCED_FINAL_GUARD_SET = "FINAL_GUARD_TERMINATION_REASONS";
+
+/** §7 小节的起止行：按**编号 + 标题**定位（编号变了就红，fail-closed，不静默抓错段）。 */
+const FORCED_FINAL_SECTION = Object.freeze({
+  [CONTRACT_EN]: /^7\. \*\*post-stop verification\*\*/u,
+  [CONTRACT_CN]: /^7\. \*\*停止后验证\*\*/u,
+});
+const FORCED_FINAL_SECTION_END = /^8\. /u;
+
+/** 契约点名「三条不可续跑 reason」的那一句（名单在紧随其后的括号里）。 */
+const FORCED_FINAL_THREE_CLAIM = Object.freeze({
+  [CONTRACT_EN]: /the three non-continuable reasons\s*\(([^)]*)\)/u,
+  [CONTRACT_CN]: /三条不可续跑的 reason\s*（([^）]*)）/u,
+});
+
+/** 「覆盖 ≠ 安全」那一句的起点（后面点名 guard 集合与两个 reason）。 */
+const FORCED_FINAL_COVERAGE = Object.freeze({
+  [CONTRACT_EN]: /Coverage is not safety/u,
+  [CONTRACT_CN]: /覆盖\s*≠\s*安全/u,
+});
+
+/**
+ * 判据面：中英**同一个 id**（一侧缺 ⇒ 「缺语义」+「中英背离」两条都报）。
+ * 正则只认语义：`has to` / `必须` 一类同义改写仍绿，白名单口径必红（它缺下面这些腿）。
+ */
+const FORCED_FINAL_FACETS = Object.freeze([
+  {
+    id: "eligibility-is-state",
+    why: "资格是**一个状态**，不是 reason 白名单（#475 把判据从原因枚举下沉到状态）",
+    re: {
+      [CONTRACT_EN]: /state,\s*not\s+a\s+whitelist\s+of\s+reasons/u,
+      [CONTRACT_CN]: /一个状态、不是\s*reason\s*白名单/u,
+    },
+  },
+  {
+    id: "truncated-keeps-stricter-test",
+    why: "那三条被预算/截断掐断的 reason 沿用更严的截断判据（不是「都要补发」）",
+    re: {
+      [CONTRACT_EN]: /keep\s+the\s+stricter\s+truncation\s+test/u,
+      [CONTRACT_CN]: /沿用下面更严的截断判据/u,
+    },
+  },
+  {
+    id: "others-one-test-empty-body",
+    why: "其余 reason 只过一个判据：整个 run 一个字都没写过",
+    re: {
+      [CONTRACT_EN]: /the\s+whole\s+run\s+wrote\s+not\s+a\s+single\s+character/u,
+      [CONTRACT_CN]: /整个\s*run\s*一个字都没写过/u,
+    },
+  },
+  {
+    id: "new-reason-covered-by-construction",
+    why: "新增 reason 天然被覆盖（不必再「记着回来贴一条」）",
+    re: {
+      [CONTRACT_EN]: /covered\s+by\s+construction/u,
+      [CONTRACT_CN]: /天然被覆盖/u,
+    },
+  },
+  {
+    id: "coverage-is-not-safety",
+    why: "覆盖 ≠ 安全：guard 覆盖了那两格，不等于那两格安全",
+    re: {
+      [CONTRACT_EN]: /Coverage\s+is\s+not\s+safety/u,
+      [CONTRACT_CN]: /覆盖\s*≠\s*安全/u,
+    },
+  },
+]);
+
+/**
+ * 「覆盖 ≠ 安全」那一句必须点名的东西：guard 集合常量 + 两个**真在集合里**的 reason
+ * （成员关系由 `forcedFinalTruth()` 当场核——改源码成员集合而不改契约必红）。
+ */
+const FORCED_FINAL_COVERAGE_NAMES = Object.freeze([
+  { id: "guard-set-constant", token: "FINAL_GUARD_TERMINATION_REASONS", why: "必须点名 guard 适用 reason 集合那个常量" },
+  { id: "guard-set-end_turn", token: "end_turn", why: "必须点名 `end_turn`（它早就在 guard 集合里）" },
+  { id: "guard-set-no_tool", token: "no_tool", why: "必须点名 `no_tool`（它早就在 guard 集合里）" },
+]);
+
+/** 压平/退回假话的形状：把资格写成白名单或固定条数枚举。 */
+const FORCED_FINAL_ENUMERATION = Object.freeze([
+  {
+    why: "把资格写成「白名单 / 固定 reason 清单」——那正是 #475 之前那条假承诺的形状（新增 reason 会漏）",
+    re: {
+      [CONTRACT_EN]: /eligibility\s+is\s+(?:a\s+|an\s+)?(?:fixed\s+|static\s+)?(?:whitelist|reason\s+whitelist|list\s+of\s+reasons)/iu,
+      [CONTRACT_CN]: /资格是(?:一份)?\s*(?:固定\s*)?reason\s*白名单/u,
+    },
+  },
+  {
+    why: "把资格写成固定条数（「只有六个 reason」）——条数是枚举的影子，源码一加 reason 就成假话",
+    re: {
+      [CONTRACT_EN]: /only\s+(?:the\s+)?(?:six|6)\s+(?:guard-eligible\s+)?reasons/iu,
+      [CONTRACT_CN]: /只(?:有|对)\s*(?:那)?\s*(?:6|六)\s*个\s*(?:guard\s*适用\s*)?reason/u,
+    },
+  },
+]);
+
+/**
+ * 从源码**代码面**里抽一个 `NAME = new Set([...])` 的成员（注释先涂空：注释里提到 reason 不算成员）。
+ *
+ * @param {string} code 涂过注释的源码
+ * @param {string} name 集合常量名
+ * @returns {string[]|null} 抽不到返回 `null`（调用方按 #164 口径报错，不猜）
+ */
+function reasonSetMembers(code, name) {
+  const m = code.match(new RegExp(`${name}\\s*=\\s*new Set\\(\\[([\\s\\S]*?)\\]\\)`, "u"));
+  if (!m) return null;
+  return [...m[1].matchAll(/"([^"]+)"/gu)].map((x) => x[1]);
+}
+
+/**
+ * 真值：两个 reason 集合 + 「截断三条 ⊆ guard 集合」这条源码内不变量。
+ *
+ * 为什么还要最后那条不变量：契约 §7 的结构（「那三条沿用更严判据，发完之后 finalGuard 才可以
+ * accept / skip / revise / 失败」）只有在截断三条**都在** guard 集合里时才成立；集合一旦分叉，
+ * 契约那句话就变成假话，而两边看起来都「没改」。
+ *
+ * @returns {{truncated: string[], guardEligible: string[], errors: string[]}}
+ */
+function forcedFinalTruth() {
+  const src = textOf(FORCED_FINAL_TRUTH_SRC);
+  if (typeof src !== "string") {
+    return {
+      truncated: [], guardEligible: [],
+      errors: [`forced-final/truth: 读不到 ${FORCED_FINAL_TRUTH_SRC}——强制收尾资格的真值无从抽起`
+        + "（#164 口径：抽不到真值就报错）"],
+    };
+  }
+  const code = maskJs(src, { keepStrings: true });
+  const errors = [];
+  const truncated = reasonSetMembers(code, FORCED_FINAL_TRUNCATED_SET);
+  const guardEligible = reasonSetMembers(code, FORCED_FINAL_GUARD_SET);
+  if (truncated === null || truncated.length === 0) {
+    errors.push(`forced-final/truth: ${FORCED_FINAL_TRUTH_SRC} 的**代码面**里抽不到 \`${FORCED_FINAL_TRUNCATED_SET}\` 的成员`
+      + "——「那三条沿用更严截断判据」这条真值无从对账（#164 口径：抽不到真值就报错）");
+  }
+  if (guardEligible === null || guardEligible.length === 0) {
+    errors.push(`forced-final/truth: ${FORCED_FINAL_TRUTH_SRC} 的**代码面**里抽不到 \`${FORCED_FINAL_GUARD_SET}\` 的成员`
+      + "——「覆盖 ≠ 安全」那句的真值无从对账（#164 口径：抽不到真值就报错）");
+  }
+  if (truncated !== null && guardEligible !== null) {
+    const orphans = truncated.filter((reason) => !guardEligible.includes(reason));
+    if (orphans.length) {
+      errors.push(`forced-final/truth: \`${FORCED_FINAL_TRUNCATED_SET}\` 里的 ${orphans.join(" / ")} 不在 `
+        + `\`${FORCED_FINAL_GUARD_SET}\` 里——契约 §7 说「那三条沿用更严判据、发完之后 finalGuard 才可以 accept / `
+        + "skip / revise / 失败」，集合分叉之后那句话就是假话（两侧都要跟着改）");
+    }
+  }
+  return { truncated: truncated ?? [], guardEligible: guardEligible ?? [], errors };
+}
+
+/**
+ * 在一份契约的正文里定位 §7（post-stop verification / 停止后验证）那一段。
+ *
+ * @param {string} rel 文档相对路径
+ * @param {string} src 文档正文（可以是 overlay 之后的文本）
+ * @returns {{start:number,end:number,line:number,text:string}|null} 抽不到返回 `null`
+ */
+function forcedFinalWindowOf(rel, src) {
+  const head = FORCED_FINAL_SECTION[rel];
+  if (!head) return null;
+  const text = String(src);
+  const lines = text.split("\n");
+  const from = lines.findIndex((line) => head.test(line));
+  if (from === -1) return null;
+  let to = lines.length;
+  for (let i = from + 1; i < lines.length; i += 1) {
+    if (FORCED_FINAL_SECTION_END.test(lines[i])) { to = i; break; }
+  }
+  const start = lines.slice(0, from).join("\n").length + (from === 0 ? 0 : 1);
+  const end = to >= lines.length ? text.length : lines.slice(0, to).join("\n").length + 1;
+  return { start, end, line: from + 1, text: lines.slice(from, to).join("\n") };
+}
+
+/**
+ * 本族的判据：真值（两个 reason 集合）× 两份契约 §7 那一段（逐条语义 + 名单成员对账 + 压平）。
+ *
+ * @returns {string[]} 错误文本（不直接写全局，好让 `--self-test` 复用同一份实现）
+ */
+function collectForcedFinalEligibilityErrors() {
+  const errors = [];
+  const notes = [];
+  const truth = forcedFinalTruth();
+  errors.push(...truth.errors);
+
+  const present = new Map(FORCED_FINAL_FACETS.map((facet) => [facet.id, new Set()]));
+  for (const doc of SUITE_INVENTORY_DOCS) {
+    const src = textOf(doc);
+    if (typeof src !== "string") {
+      errors.push(`forced-final: 读不到 ${doc}——它是本族必须对账的两份契约之一，读不到就等于那份没人校`);
+      continue;
+    }
+    const win = forcedFinalWindowOf(doc, src);
+    if (win === null) {
+      errors.push(`forced-final: ${doc} 里找不到 §7「post-stop verification / 停止后验证」那一段`
+        + "（编号或标题被改）——本族的判据在这份文档上失效（#164 口径：抽不到真值就报错）");
+      continue;
+    }
+    for (const facet of FORCED_FINAL_FACETS) {
+      const re = facet.re[doc];
+      if (re.test(win.text)) { present.get(facet.id).add(doc); continue; }
+      errors.push(`forced-final: ${doc}:${win.line} 的 §7 缺一条语义——${facet.why}（判据 ${re}）`);
+    }
+    for (const bad of FORCED_FINAL_ENUMERATION) {
+      if (!bad.re[doc].test(win.text)) continue;
+      errors.push(`forced-final: ${doc}:${win.line} 的 §7 被压平/退回假话——${bad.why}`);
+    }
+    // 「覆盖 ≠ 安全」那一句：点名 guard 集合 + 两个真在集合里的 reason。
+    const coverageAt = win.text.search(FORCED_FINAL_COVERAGE[doc]);
+    if (coverageAt === -1) continue;   // 上面「覆盖 ≠ 安全」那条 facet 已经报过
+    const coverage = win.text.slice(coverageAt);
+    for (const item of FORCED_FINAL_COVERAGE_NAMES) {
+      if (coverage.includes(item.token)) continue;
+      errors.push(`forced-final: ${doc}:${win.line} 的 §7「覆盖 ≠ 安全」那句里没有点名 \`${item.token}\`——${item.why}`);
+    }
+    // ③ 固定 reason 名单 × 源码成员集合（双向）：契约点名的「三条」必须恰好是真值那一集。
+    const claim = win.text.match(FORCED_FINAL_THREE_CLAIM[doc]);
+    if (!claim) {
+      errors.push(`forced-final: ${doc}:${win.line} 的 §7 里抽不到「三条不可续跑 reason」那句点名的名单`
+        + "——资格口径的关键那一句被改写/删掉，本族的成员对账在这份文档上失效（#164 口径）");
+      continue;
+    }
+    const named = [...new Set([...claim[1].matchAll(/`([^`]+)`/gu)].map((m) => m[1]))];
+    if (named.length === 0) {
+      errors.push(`forced-final: ${doc}:${win.line} 的 §7「三条不可续跑 reason」那句一个 reason 名都没点名`
+        + "（括号里没有反引号名字）——按条数枚举不是合法写法（issue #677 补充范围）");
+      continue;
+    }
+    for (const reason of named.filter((r) => !truth.truncated.includes(r))) {
+      errors.push(`forced-final: ${doc}:${win.line} 的 §7 点名了 \`${reason}\` 属于「不可续跑三条」，`
+        + `但 ${FORCED_FINAL_TRUTH_SRC} 的 \`${FORCED_FINAL_TRUNCATED_SET}\` 里没有它（真值：`
+        + `${truth.truncated.map((r) => `\`${r}\``).join(" / ") || "抽不到"}）`);
+    }
+    for (const reason of truth.truncated.filter((r) => !named.includes(r))) {
+      errors.push(`forced-final: ${doc}:${win.line} 的 §7 漏掉了 \`${reason}\`——它在 `
+        + `${FORCED_FINAL_TRUTH_SRC} 的 \`${FORCED_FINAL_TRUNCATED_SET}\` 里（改源码成员集合而不改契约 = 契约在撒谎）`);
+    }
+    for (const item of FORCED_FINAL_COVERAGE_NAMES.filter((x) => x.token !== "FINAL_GUARD_TERMINATION_REASONS")) {
+      if (!coverage.includes(item.token)) continue;
+      if (truth.guardEligible.includes(item.token)) continue;
+      errors.push(`forced-final: ${doc}:${win.line} 的 §7 说 \`${item.token}\` 早就在 \`${FORCED_FINAL_GUARD_SET}\` 里，`
+        + `但 ${FORCED_FINAL_TRUTH_SRC} 的那个集合里没有它（改源码成员集合而不改契约 = 契约在撒谎）`);
+    }
+  }
+
+  // 中英背离：一条 facet 只有一侧写了 ⇒ 另一侧读者拿到的是一半的答案（「只改一边不算改」）。
+  for (const facet of FORCED_FINAL_FACETS) {
+    const hit = present.get(facet.id);
+    if (hit.size === 0 || hit.size === SUITE_INVENTORY_DOCS.length) continue;
+    const missing = SUITE_INVENTORY_DOCS.filter((doc) => !hit.has(doc));
+    errors.push(`forced-final: 中英背离——「${facet.why}」只有 ${[...hit].join("、")} 写了，`
+      + `${missing.join("、")} 没有（issue #677 补充范围：一侧真一侧假也必须红）`);
+  }
+
+  notes.push(`forced-final: 契约 §7「post-stop verification / 停止后验证」（issue #475 / #677）按 `
+    + `${FORCED_FINAL_FACETS.length} 条语义 × 中英两侧逐条对账，外加「覆盖 ≠ 安全」点名 `
+    + `${FORCED_FINAL_COVERAGE_NAMES.length} 个名字、固定名单 × 源码成员集合双向对账、压平/条数枚举另判 `
+    + `${FORCED_FINAL_ENUMERATION.length} 种形状；真值 ${FORCED_FINAL_TRUTH_SRC}：`
+    + `\`${FORCED_FINAL_TRUNCATED_SET}\` = ${truth.truncated.map((r) => `\`${r}\``).join(" / ") || "（抽不到）"}；`
+    + `\`${FORCED_FINAL_GUARD_SET}\` 含 ${truth.guardEligible.length} 个 reason`);
+  collectForcedFinalEligibilityErrors.notes = notes;
+  return errors;
+}
+
 // ── 3. README 引用的 package.json 清单（files / exports）────────────────────────
 // issue #210 的**主修项**：这块原先是 fail-open 的——围栏定位靠真值键（`b["./tools"]`、
 // `b.includes("src")`），文档把 `"./tools"` 改名或整个删掉时块就找不到了，于是退化成一条 warn
@@ -5518,6 +6080,10 @@ function collectAllDrift() {
     ...collectCompactionDefaultErrors(),
     // #668 ②：退役语义「摘要器失败 ⇒ 降级/兜底为统计摘要」——活面 × 源码真值（见 §2.11）
     ...collectRetiredSemanticsErrors(),
+    // issue #677：契约「套件清单」的 unknownSlot 形态（真值 = test/contract/model-config-provider.js，见 §2.12）
+    ...collectSuiteInventoryErrors(),
+    // issue #677 补充范围：强制收尾资格「按状态，不按 reason 枚举」（真值 = src/loop/termination.js，见 §2.13）
+    ...collectForcedFinalEligibilityErrors(),
     // issue #511：「这句话属于哪个版本」与「这个版本发布了没有」四条（自测要连它们一起变异）
     ...collectDocVersionErrors(), ...collectVersionAttributionErrors(), ...collectGuideClaimErrors(),
     ...collectChangelogPublicationErrors(), ...collectPublishedClaimErrors(),
@@ -5556,6 +6122,12 @@ for (const n of collectCompactionDefaultErrors.notes ?? []) note(n);
 // #668 ②：退役语义（活面 = 入库 Markdown + bin/src JS，历史类不判；源码真值当场对账）
 for (const e of collectRetiredSemanticsErrors()) err(e);
 for (const n of collectRetiredSemanticsErrors.notes ?? []) note(n);
+// issue #677：契约「套件清单」的 unknownSlot 形态（中英两侧 × 套件真值，逐形态窗口过）
+for (const e of collectSuiteInventoryErrors()) err(e);
+for (const n of collectSuiteInventoryErrors.notes ?? []) note(n);
+// issue #677 补充范围：强制收尾资格（中英两侧 × src/loop/termination.js 的两个 reason 集合）
+for (const e of collectForcedFinalEligibilityErrors()) err(e);
+for (const n of collectForcedFinalEligibilityErrors.notes ?? []) note(n);
 // ── 9. 「这句话属于哪个版本」（issue #511）──────────────────────────────────────
 for (const collect of [collectDocVersionErrors, collectVersionAttributionErrors, collectGuideClaimErrors,
   collectChangelogPublicationErrors, collectPublishedClaimErrors, collectGuideCoverageErrors, collectBundleTableErrors]) {
@@ -5651,6 +6223,163 @@ const B_SPLIT = (() => {
   }
   return { b: NaN, c: NaN };
 })();
+
+/**
+ * #677 自测用的「套件清单」行：**从零构造**，不抄文档原话。
+ *
+ * 工单要求「靶子必须自包含」：文档将来怎么改写都不该让反向证空转。所以行是按「小节标题 + 行首键」
+ * 定位的（`suiteInventoryRowOf`），替换文本由用例自己拼出来——变异体永远与文档同形，只有**语义**
+ * 是变量。找不到行就原样返回，由框架既有的「变异没落上」判据报红（#210 R2）。
+ *
+ * @param {string} doc 目标契约（决定表头格与后两列的语言）
+ * @param {string[]} cells 第 2 列（「断言什么」）起的格子，顺序拼进表格行
+ */
+function suiteInventoryRowLine(doc, cells) {
+  const head = doc === CONTRACT_CN ? "`model-config-provider.js`（4 条）" : "`model-config-provider.js` (4 tests)";
+  const tail = doc === CONTRACT_CN
+    ? ["你的 provider 的槽位解析与 key 物化", "没有任何引擎侧内容：它从不加载引擎"]
+    : ["your provider's slot resolution and key materialisation", "nothing engine-side: it never loads the engine"];
+  return `| ${[head, ...cells, ...tail].join(" | ")} |`;
+}
+
+/** #677：把「套件清单」里那一行整行换成 `build()` 的结果（定点打靶，不依赖原话）。 */
+function mutateSuiteInventoryRow(doc, build) {
+  return (text) => {
+    const row = suiteInventoryRowOf(doc, text);
+    if (row === null) return text;
+    return `${text.slice(0, row.start)}${build()}${text.slice(row.end)}`;
+  };
+}
+
+/** #677：**正确**答案的另一种写法（与文档现文同义、不同词）——「恢复/改写正确语义 ⇒ 绿」那一格用它。 */
+const SUITE_INVENTORY_CANON = Object.freeze({
+  [CONTRACT_EN]: [
+    "`resolve()` → default slot, `resolve(slot)` → named slot, `apiKey` indirect-reference materialisation (ADR-001), and the unknown-slot answer stated **per provider shape** (issue #518): a slot-map provider (static / json-file) has to **throw**, naming the unknown slot and listing the available ones, and never falls back to default; a single-config provider returns the same config under any slot name — a shape difference, not an unknown-slot fallback to default",
+  ],
+  [CONTRACT_CN]: [
+    "`resolve()` → default 槽，`resolve(slot)` → 具名槽，`apiKey` 间接引用物化（ADR-001），以及按 provider 形态分别陈述的「未知槽名」答案（issue #518）：槽位图形态（static / json-file）必须**抛错**，错误点名该未知槽名并列出可用槽位，**不许回落 default**；单配置形态则任何槽名都返回同一份配置——这是形态差异，不是「未知槽名回落 default」",
+  ],
+});
+
+/** #677：**压平**答案（#518 的病：一条断言盖住两种形态——「都要抛」）。 */
+const SUITE_INVENTORY_FLAT = Object.freeze({
+  [CONTRACT_EN]: [
+    "`resolve()` → default slot, `resolve(slot)` → named slot, `apiKey` indirect-reference materialisation (ADR-001), and the unknown-slot answer (issue #518): a slot-map provider (static / json-file) and a single-config provider both must **throw**, naming the unknown slot and listing the available ones, never falling back to default",
+  ],
+  [CONTRACT_CN]: [
+    "`resolve()` → default 槽，`resolve(slot)` → 具名槽，`apiKey` 间接引用物化（ADR-001），以及按 provider 形态分别陈述的「未知槽名」答案（issue #518）：槽位图形态（static / json-file）与单配置形态都必须**抛错**，错误点名该未知槽名并列出可用槽位，**不许回落 default**",
+  ],
+});
+
+/** #677：**只少一条腿**（单配置那段不再说「这是形态差异、不是未知回落 default」）——中英背离那一格用它。 */
+const SUITE_INVENTORY_ONE_LEG_MISSING = Object.freeze({
+  [CONTRACT_EN]: [
+    "`resolve()` → default slot, `resolve(slot)` → named slot, `apiKey` indirect-reference materialisation (ADR-001), and the unknown-slot answer stated **per provider shape** (issue #518): a slot-map provider (static / json-file) must **throw**, naming the unknown slot and listing the available ones, never falling back to default, while a single-config provider returns the same config under any slot name",
+  ],
+});
+
+/** #677（#475）：§7 资格句的**句尾标记**——打靶时只换到这一行为止，§7 后面的事实一字不动。 */
+const FORCED_FINAL_ELIGIBILITY_END = Object.freeze({
+  [CONTRACT_EN]: /wrote not a single character\./u,
+  [CONTRACT_CN]: /一个字都没写过。/u,
+});
+
+/**
+ * #677（#475）自测用的「§7 资格句」打靶器：把 §7 里**那一段资格陈述**整段换成 `build()`。
+ *
+ * 为什么只换这一段：§7 后半段（payload-only、`FORCED_FINAL_FALLBACK_TEXT` 兜底、事件面）被符号锚点与
+ * 路径判据盯着，整段重写会把那些判据一起弄红，反向证就证明不了「这一族在判这句话」。段界由
+ * `forcedFinalWindowOf`（小节）+ 句尾标记共同定，替换文本由用例**从零构造**（不抄文档原话）；
+ * 小节或句尾标记找不到 ⇒ 原样返回 ⇒ 框架报「变异没落上」（#210 R2）。
+ */
+function mutateForcedFinalEligibility(doc, build) {
+  return (text) => {
+    const win = forcedFinalWindowOf(doc, text);
+    if (win === null) return text;
+    const lines = win.text.split("\n");
+    const stop = lines.findIndex((line) => FORCED_FINAL_ELIGIBILITY_END[doc].test(line));
+    if (stop === -1) return text;
+    const kept = lines.slice(stop + 1).join("\n");
+    const body = [build(), kept].filter((part) => part !== "").join("\n");
+    const tail = win.end >= text.length ? "" : `\n${text.slice(win.end)}`;
+    return `${text.slice(0, win.start)}${body}${tail}`;
+  };
+}
+
+/**
+ * #677（#475）：往 `src/loop/termination.js` 的某个 `NAME = new Set([...])` 里加/删成员。
+ *
+ * 自包含：按**常量名**定位集合字面量，成员由用例给（不抄源码原话）。找不到集合、或要删的成员
+ * 不在集合里 ⇒ 原样返回（框架报「变异没落上」，不给空跑留门）。
+ */
+function mutateReasonSet(name, { add = [], remove = [] } = {}) {
+  return (text) => {
+    const m = text.match(new RegExp(`(${name}\\s*=\\s*new Set\\(\\[)([\\s\\S]*?)(\\]\\))`, "u"));
+    if (!m) return text;
+    let body = m[2];
+    for (const member of remove) {
+      const next = body.split("\n").filter((line) => !line.includes(`"${member}"`)).join("\n");
+      if (next === body) return text;                  // 要删的成员不在集合里 ⇒ 变异没落上
+      body = next;
+    }
+    for (const member of add) {
+      if (body.includes(`"${member}"`)) return text;    // 已经在了 ⇒ 变异没落上
+      body = `${body.replace(/\s*$/u, "")}\n    "${member}",\n  `;
+    }
+    return `${text.slice(0, m.index)}${m[1]}${body}${m[3]}${text.slice(m.index + m[0].length)}`;
+  };
+}
+
+/** #677（#475）：资格句的**正确**语义（同义改写、五条腿一条不少）——「恢复 ⇒ 绿」那一格用它。 */
+const FORCED_FINAL_CANON = Object.freeze({
+  [CONTRACT_EN]: [
+    "7. **post-stop verification** — once a stop reason exists, forced wrap-up can",
+    "   make one more provider call. Eligibility is a **state, not a whitelist of",
+    "   reasons** (issue #475): the three non-continuable reasons",
+    "   (`max_rounds_cap` / `stall` / `continuation_exhausted`) keep the stricter",
+    "   truncation test below, while any other reason — `judge_done` (issue #467),",
+    "   `end_turn` and `no_tool` (issue #475), and any reason a later release adds —",
+    "   is eligible on one test only: the whole run wrote not a single character.",
+    "   A new reason is therefore covered by construction — nobody has to \"append a",
+    "   row to the whitelist\" again.",
+  ].join("\n"),
+  [CONTRACT_CN]: [
+    "7. **停止后验证**——stop reason 定下来之后，可能多一次强制收尾的 provider 调用。",
+    "   资格是**一个状态、不是 reason 白名单**（issue #475）：三条不可续跑的 reason",
+    "   （`max_rounds_cap` / `stall` / `continuation_exhausted`）沿用下面更严的截断判据，",
+    "   其余 reason —— `judge_done`（issue #467）、`end_turn` / `no_tool`（issue #475）、",
+    "   以及后续版本新增的任何 reason —— 只过一个判据：整个 run 一个字都没写过。",
+    "   ⇒ 新增 reason 天然被覆盖，不必再「记着回来贴一条」。",
+  ].join("\n"),
+});
+
+/** #677（#475）：**退回假话**（#475 之前那套：资格是一份 reason 白名单 / 固定六个）。 */
+const FORCED_FINAL_FLAT = Object.freeze({
+  [CONTRACT_EN]: [
+    "7. **post-stop verification** — after a stop reason exists, forced wrap-up may",
+    "   add one more provider call. Eligibility is a whitelist of reasons (issue",
+    "   #475): only the six guard-eligible reasons listed in",
+    "   `FINAL_GUARD_TERMINATION_REASONS` (`src/loop/termination.js`) get that call.",
+  ].join("\n"),
+  [CONTRACT_CN]: [
+    "7. **停止后验证**——stop reason 定下来后，可能多一次强制收尾的 provider 调用。",
+    "   资格是一份 reason 白名单（issue #475）：只对 6 个 guard 适用 reason 补发一次。",
+  ].join("\n"),
+});
+
+/** #677（#475）：**只少一条腿**（其余 reason 不再说「只过一个判据：整个 run 一个字都没写过」）
+ *  ——中英背离那一格用它。注意腿要挑**落在被替换那一段里**的：§7 后面被保留下来的原文会照旧供腿。 */
+const FORCED_FINAL_ONE_LEG_MISSING = Object.freeze({
+  [CONTRACT_EN]: [
+    "7. **post-stop verification** — after a stop reason exists, forced wrap-up may",
+    "   add one more provider call. Eligibility is a **state, not a whitelist of",
+    "   reasons** (issue #475): the three non-continuable reasons",
+    "   (`max_rounds_cap` / `stall` / `continuation_exhausted`) keep the stricter",
+    "   truncation test below, while every other reason — `judge_done` (issue #467),",
+    "   `end_turn` and `no_tool` (issue #475), and any reason a later release adds —",
+    "   is eligible without any further test.",
+  ].join("\n"),
+});
 
 const SELF_TEST_CASES = [
   // —— pkg-block / exports：#210 报的四种破坏，**前两种修前是绿的** ——
@@ -6876,11 +7605,150 @@ const SELF_TEST_CASES = [
     overlay: { [BUNDLE_GUIDE_EN]: (t) => `${t}\n\nA closing paragraph that states no fact at all.\n` },
     expectGreen: true,
   },
+  // ══ issue #677：契约「套件清单」的 unknownSlot 形态（§2.12）════════════════════════════
+  // 这一族的靶子**自包含**：行按「小节标题 + 行首键」定位，替换文本由 `suiteInventoryRowLine` 从零构造
+  // （不抄文档原话），于是文档将来怎么改写都不会让变异体与文档脱节。七格各钉一侧：
+  //   ① EN 单侧压平 → 红；② CN 单侧压平 → 红；③ 只改 EN 一条腿 → 红（缺语义 + 中英背离）；
+  //   ④ 真值改名 → 红；⑤ 真值少一种形态 → 红；⑥ 注释里写第三种形态 → 绿（注释不是真值）；
+  //   ⑦ 两侧换成同义改写（= 恢复正确语义）→ 绿（闸咬语义，不咬措辞）；
+  //   ⑧ 那一行不在目标文档里时 → 「变异没落上」算失败（#210 R2）。
+  {
+    label: "#677：EN 单侧把套件清单的未知槽名答案压平成一条（两种形态都「必须抛」）⇒ 红并点名 EN",
+    overlay: {
+      [CONTRACT_EN]: mutateSuiteInventoryRow(CONTRACT_EN,
+        () => suiteInventoryRowLine(CONTRACT_EN, SUITE_INVENTORY_FLAT[CONTRACT_EN])),
+    },
+    expect: [/suite-inventory: docs\/host-consumer-contract\.md:\d+ 的 `model-config-provider\.js` 行被压平了/,
+      /suite-inventory: docs\/host-consumer-contract\.md:\d+ 的 `model-config-provider\.js` 行缺一条语义——单配置形态任何槽名都返回同一份配置/],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "#677：CN 单侧把同一处答案压平 ⇒ 红并点名 CN（中英成对：只留一侧的正确语义不算修好）",
+    overlay: {
+      [CONTRACT_CN]: mutateSuiteInventoryRow(CONTRACT_CN,
+        () => suiteInventoryRowLine(CONTRACT_CN, SUITE_INVENTORY_FLAT[CONTRACT_CN])),
+    },
+    expect: [/suite-inventory: docs\/host-consumer-contract_cn\.md:\d+ 的 `model-config-provider\.js` 行被压平了/,
+      /suite-inventory: docs\/host-consumer-contract_cn\.md:\d+ 的 `model-config-provider\.js` 行缺一条语义——单配置形态任何槽名都返回同一份配置/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#677：只改 EN 一条腿（单配置那段删掉「不是未知回落 default」）⇒ 红：缺语义 + 中英背离",
+    overlay: {
+      [CONTRACT_EN]: mutateSuiteInventoryRow(CONTRACT_EN,
+        () => suiteInventoryRowLine(CONTRACT_EN, SUITE_INVENTORY_ONE_LEG_MISSING[CONTRACT_EN])),
+    },
+    expect: [/suite-inventory: docs\/host-consumer-contract\.md:\d+ 的 `model-config-provider\.js` 行缺一条语义——单配置形态是\*\*形态差异\*\*/,
+      /suite-inventory: 中英背离——「单配置形态是\*\*形态差异\*\*[\s\S]*?只有 docs\/host-consumer-contract_cn\.md 写了，docs\/host-consumer-contract\.md 没有/],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "#677：套件真值把 `single-config` 改名成 `single`（文档没跟）⇒ 红：多出一种形态 + 少了一种形态",
+    overlay: { "test/contract/model-config-provider.js": (t) => t.split('"single-config"').join('"single"') },
+    expect: [/suite-inventory\/truth: test\/contract\/model-config-provider\.js 的 unknownSlot 形态里多出 `single`/,
+      /suite-inventory\/truth: test\/contract\/model-config-provider\.js 的 unknownSlot 形态里抽不到 `single-config`/],
+  },
+  {
+    label: "#677：套件真值里 `single-config` 这个形态整个没了（只剩 throws）⇒ 红（真值少一种形态、文档还在讲）",
+    overlay: { "test/contract/model-config-provider.js": (t) => t.split('"single-config"').join('"throws"') },
+    expect: [/suite-inventory\/truth: test\/contract\/model-config-provider\.js 的 unknownSlot 形态里抽不到 `single-config`/],
+  },
+  {
+    label: "#677（放行证）：真值文件的**注释**里提到第三种形态 ⇒ 仍绿（注释里讲形态不是真值）",
+    overlay: {
+      "test/contract/model-config-provider.js": appendUnique('// unknownSlot.mode === "third-mode" —— 注释里讲形态不算真值（issue #677）'),
+    },
+    expectGreen: true,
+  },
+  {
+    label: "#677（恢复证）：中英两侧都换成同义改写（形态语义一条不少）⇒ 绿（闸咬语义，不咬措辞）",
+    overlay: {
+      [CONTRACT_EN]: mutateSuiteInventoryRow(CONTRACT_EN,
+        () => suiteInventoryRowLine(CONTRACT_EN, SUITE_INVENTORY_CANON[CONTRACT_EN])),
+      [CONTRACT_CN]: mutateSuiteInventoryRow(CONTRACT_CN,
+        () => suiteInventoryRowLine(CONTRACT_CN, SUITE_INVENTORY_CANON[CONTRACT_CN])),
+    },
+    expectGreen: true,
+  },
+  {
+    label: "#677 变异器空转证：套件清单那一行不在目标文档里时，必须判「变异没落上」而不是假绿（#210 R2）",
+    overlay: {
+      "docs/testing.md": mutateSuiteInventoryRow(CONTRACT_EN,
+        () => suiteInventoryRowLine(CONTRACT_EN, SUITE_INVENTORY_CANON[CONTRACT_EN])),
+    },
+    expectMutateMiss: true,
+  },  // ══ issue #677 补充范围（#475）：强制收尾资格「按状态，不按 reason 枚举」（§2.13）══════════
+  // 三种形状各钉一侧，外加「改源码成员集合而不改契约 ⇒ 必红」与「变异没落上算失败」：
+  //   ① EN 单侧退回假话 → 红；② CN 单侧退回假话 → 红；③ 只改 EN 一条腿 → 红（缺语义 + 中英背离）；
+  //   ④ 源码两个 reason 集合都加一个成员、契约不改 → 红（固定名单 × 成员集合失配）；
+  //   ⑤ 源码 guard 集合删掉 `no_tool` → 红（「覆盖 ≠ 安全」那句失去真值）；
+  //   ⑥ 两侧同义改写（= 恢复正确语义）→ 绿；⑦ §7 那段不在目标文档里 → 「变异没落上」算失败（#210 R2）。
+  {
+    label: "#677（#475）：EN 单侧把强制收尾资格退回「reason 白名单 + 固定六个」的假话 ⇒ 红并点名 EN",
+    overlay: {
+      [CONTRACT_EN]: mutateForcedFinalEligibility(CONTRACT_EN, () => FORCED_FINAL_FLAT[CONTRACT_EN]),
+    },
+    expect: [/forced-final: docs\/host-consumer-contract\.md:\d+ 的 §7 被压平\/退回假话——把资格写成「白名单/,
+      /forced-final: docs\/host-consumer-contract\.md:\d+ 的 §7 被压平\/退回假话——把资格写成固定条数/,
+      /forced-final: docs\/host-consumer-contract\.md:\d+ 的 §7 缺一条语义——资格是\*\*一个状态\*\*，不是 reason 白名单/],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "#677（#475）：CN 单侧把同一句退回假话 ⇒ 红并点名 CN（中英成对：只留一侧的正确口径不算修好）",
+    overlay: {
+      [CONTRACT_CN]: mutateForcedFinalEligibility(CONTRACT_CN, () => FORCED_FINAL_FLAT[CONTRACT_CN]),
+    },
+    expect: [/forced-final: docs\/host-consumer-contract_cn\.md:\d+ 的 §7 被压平\/退回假话——把资格写成「白名单/,
+      /forced-final: docs\/host-consumer-contract_cn\.md:\d+ 的 §7 缺一条语义——资格是\*\*一个状态\*\*，不是 reason 白名单/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#677（#475）：只改 EN 一条腿（不再说「其余 reason 只过一个判据：整个 run 一个字都没写过」）⇒ 红：缺语义 + 中英背离",
+    overlay: {
+      [CONTRACT_EN]: mutateForcedFinalEligibility(CONTRACT_EN, () => FORCED_FINAL_ONE_LEG_MISSING[CONTRACT_EN]),
+    },
+    expect: [/forced-final: docs\/host-consumer-contract\.md:\d+ 的 §7 缺一条语义——其余 reason 只过一个判据：整个 run 一个字都没写过/,
+      /forced-final: 中英背离——「其余 reason 只过一个判据：整个 run 一个字都没写过」只有 docs\/host-consumer-contract_cn\.md 写了，docs\/host-consumer-contract\.md 没有/],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "#677（#475）：源码两个 reason 集合都加一个成员、契约一个字不改 ⇒ 红（固定名单 × 源码成员集合失配）",
+    overlay: {
+      "src/loop/termination.js": (t) => mutateReasonSet(FORCED_FINAL_GUARD_SET, { add: ["zzz_probe_reason"] })(
+        mutateReasonSet(FORCED_FINAL_TRUNCATED_SET, { add: ["zzz_probe_reason"] })(t)),
+    },
+    expect: [/forced-final: docs\/host-consumer-contract\.md:\d+ 的 §7 漏掉了 `zzz_probe_reason`/,
+      /forced-final: docs\/host-consumer-contract_cn\.md:\d+ 的 §7 漏掉了 `zzz_probe_reason`/],
+    expectFiles: [CONTRACT_EN, CONTRACT_CN],
+  },
+  {
+    label: "#677（#475）：源码 guard 集合删掉 `no_tool` ⇒ 红（「覆盖 ≠ 安全」那句点名的成员不再成立）",
+    overlay: { "src/loop/termination.js": mutateReasonSet(FORCED_FINAL_GUARD_SET, { remove: ["no_tool"] }) },
+    expect: [/forced-final: docs\/host-consumer-contract\.md:\d+ 的 §7 说 `no_tool` 早就在 `FINAL_GUARD_TERMINATION_REASONS` 里/,
+      /forced-final: docs\/host-consumer-contract_cn\.md:\d+ 的 §7 说 `no_tool` 早就在 `FINAL_GUARD_TERMINATION_REASONS` 里/],
+    expectFiles: [CONTRACT_EN, CONTRACT_CN],
+  },
+  {
+    label: "#677（#475・恢复证）：中英两侧都换成同义改写（五条腿一条不少）⇒ 绿（闸咬语义，不咬措辞）",
+    overlay: {
+      [CONTRACT_EN]: mutateForcedFinalEligibility(CONTRACT_EN, () => FORCED_FINAL_CANON[CONTRACT_EN]),
+      [CONTRACT_CN]: mutateForcedFinalEligibility(CONTRACT_CN, () => FORCED_FINAL_CANON[CONTRACT_CN]),
+    },
+    expectGreen: true,
+  },
+  {
+    label: "#677（#475）变异器空转证：§7 那段不在目标文档里时，必须判「变异没落上」而不是假绿（#210 R2）",
+    overlay: {
+      "docs/testing.md": mutateForcedFinalEligibility(CONTRACT_EN, () => FORCED_FINAL_FLAT[CONTRACT_EN]),
+    },
+    expectMutateMiss: true,
+  },
 ];
+
 
 /** #279：自测用例数的**下限**（只许涨不许降）。少了就是有用例被删 / 被整例跳过——那正是
  *  「拿跳过换全绿」的溃败方向，与棘轮基线同理：降下限必须写理由，不能默默降。 */
-const MIN_SELF_TEST_CASES = 99;   // 工单 261021-03 B1 加了 6 例前缀反向证（实测 **109** 例：#337 又加 2 例目录规则反向证，修前 95 例；#391 R4 又加 6 例 `cli-flags` 反向证/放行证；下限留余量给并行分支，见上：别按当天条数写死）
+const MIN_SELF_TEST_CASES = 99;   // #677 加了两族反向证/放行证（「套件清单 unknownSlot」+「强制收尾资格 #475」）；工单 261021-03 B1 加了 6 例前缀反向证（实测 **109** 例：#337 又加 2 例目录规则反向证，修前 95 例；#391 R4 又加 6 例 `cli-flags` 反向证/放行证；下限留余量给并行分支，见上：别按当天条数写死）
 
 function runSelfTest() {
   const run = () => collectAllDrift();
