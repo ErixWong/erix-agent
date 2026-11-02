@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { hasUserTurn, isRealUserTurn } from "../src/loop/request-user-view.js";
 import { runToolLoop } from "../src/loop/orchestrator.js";
+import { FORCED_FINAL_FALLBACK_TEXT } from "../src/loop/termination.js";
 import { makeTmp } from "./helpers/tmp.js";
 
 const RUN = "empty-content";
@@ -194,8 +195,11 @@ test("T3: 一轮工具都没有时，assistant 空 content 跑满轮数 ⇒ max_
   assert.equal(result.termination.reason, "max_rounds_cap");
 });
 
-test("T3: 单轮 assistant 空 content + end_turn ⇒ end_turn（终稿为空），不是 stall", async () => {
+test("T3: 单轮 assistant 空 content + end_turn ⇒ end_turn（收尾也没正文 ⇒ 引擎兜底文案），不是 stall", async () => {
   const { result } = await runScripted([emptyEndTurn]);
   assert.equal(result.termination.reason, "end_turn");
-  assert.equal(result.finalText, "");
+  // issue #476：这一格会走一发强制收尾，而脚本化 provider 重复最后一步 ⇒ 收尾同样没有正文
+  // ⇒ 终稿是**引擎兜底文案**（不是空串），并用 `finalTextFallback` 标明它不是模型写的。
+  assert.equal(result.finalText, FORCED_FINAL_FALLBACK_TEXT);
+  assert.equal(result.finalTextFallback, true);
 });

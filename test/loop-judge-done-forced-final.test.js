@@ -18,8 +18,10 @@
 //   ② #467 成本上界：末轮**有**正文时一发都不多花（`hasFinalDraft()` 挡住，真机账 90 次里挡掉 84 次）；
 //   ③ 配额用完（评审连续两次判 done 而该轮仍只有 reasoning）⇒ 落回 #467 的强制收尾：
 //      `{forcedFinal:true, finalText:<正文>}` —— 「终局正文不再为空」这条保证不被 #473 吃掉；
-//   ④ 残留的可判别性：收尾那一发仍然只出 reasoning 时，`{forcedFinal:true, finalText:""}` 这个组合
-//      必须与「引擎根本没问」（`forcedFinal` 缺席）**可判别**——否则票面残留 1 连量都量不出来；
+//   ④ 残留的可判别性：收尾那一发仍然只出 reasoning 时，`{forcedFinal:true}` + **引擎兜底文案**
+//      + `finalTextFallback:true` 这个组合必须与「引擎根本没问」（`forcedFinal` 缺席）**可判别**
+//      ——否则票面残留 1 连量都量不出来（issue #476 把这一格的空正文换成了固定事实句，
+//      「这条不是模型写的」由 `finalTextFallback` 说）；
 //   ⑤ #467 逃生阀：`ERIX_NO_FORCED_FINAL=1` 时回到「问都不问」的形状（#473 的 nudge 仍发生）。
 //
 // ⚠ 断言口径：强制收尾产出的正文落在**最后一条 `round_end` 之后**，拿 `round_end.finalText` 量会把
@@ -28,6 +30,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { FORCED_FINAL_FALLBACK_TEXT } from "../src/loop/termination.js";
 
 const JUDGE_DONE = {
   done: true,
@@ -163,7 +166,7 @@ test("#473 ③ 配额用完（评审两次判 done 而该轮仍只有 reasoning�
   assert.equal(lastRoundEnd.finalText, "", "正文落在这条轮记录**之后**，验收别拿它量");
 });
 
-test("#467 ④ 收尾那一发仍只出 reasoning ⇒ {forcedFinal:true, finalText:\"\"} 必须可判别", async () => {
+test("#467 ④ 收尾那一发仍只出 reasoning ⇒ {forcedFinal:true} + 兜底文案 + finalTextFallback 必须可判别", async () => {
   const { result, events, provider } = await runCase({
     script: [
       toolRound,
@@ -176,7 +179,10 @@ test("#467 ④ 收尾那一发仍只出 reasoning ⇒ {forcedFinal:true, finalTe
 
   assert.equal(provider.requests.length, 4, "收尾那一发确实发了（不是没问）");
   assert.equal(result.termination.forcedFinal, true);
-  assert.equal(result.finalText, "", "票面残留 1：只发一次不重试 ⇒ 仍可能空");
+  // issue #476：终局不再是一个空串——落一条固定事实句（「收尾未产出正文」），并且用
+  // `finalTextFallback` 标明它不是模型写的。
+  assert.equal(result.finalText, FORCED_FINAL_FALLBACK_TEXT, "票面残留 1：收尾只发一次不重试 ⇒ 落引擎兜底文案");
+  assert.equal(result.finalTextFallback, true, "兜底文案不是模型正文，宿主必须能判定");
   assert.equal(forcedFinalEvents(events).length, 1);
   // 「问过但没内容」与「根本没问」必须可判别（②格是 forcedFinal 缺席 + 正文非空；这里是反过来）
   assert.notEqual(result.termination.forcedFinal, undefined);

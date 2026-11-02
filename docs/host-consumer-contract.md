@@ -3585,6 +3585,16 @@ Within one round, exactly one mechanism gets to decide, in this order
    judge card last, even after issue #467. And since an `accept` verdict must never
    rest on `finalText` being non-empty (see `S6a`), a host-side acceptance decision
    has to read `termination.forcedFinal`.
+   If that single wrap-up request still produces no body (blank counts as empty), the
+   engine does **not** ask again (issue #476): `result.finalText` is then a fixed
+   engine-generated placeholder — `FORCED_FINAL_FALLBACK_TEXT` (`src/loop/termination.js`),
+   which only states the fact that the wrap-up produced no text — and
+   `result.finalTextFallback` is `true`, so a host can tell an engine fallback from model
+   prose without matching strings. The placeholder is applied **after** `finalGuard` (it
+   never enters the guard payload or a `deliverables` `check`), so it cannot improve
+   `verification` (`skipped` without a guard, `unverified` when the guard did not pass),
+   and it is never written into `messages` / the transcript: those keep exactly what the
+   model produced.
 8. **`fail()` classification** — any throw at any point replaces all of the
    above with `aborted` (signal set) or `failed` / `persistence_failed`
    (`fail` (`src/loop/orchestrator.js`)).
