@@ -52,7 +52,7 @@
 //                 注释里写一句 `// "judge_done"` 也不再给弱档供值。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
-//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 234`：低于它就红（那是「锚点在退化」
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 235`：低于它就红（那是「锚点在退化」
 //                 被抓，不是棘轮抬高），高于它会催你把下限抬上去。生效值从脚本自身文本读，自测靠调它证锁。
 //                 每一次抬高下限的实测流水（哪次合并、在哪棵树上量的、多少组多少处）已整条搬到
 //                 `docs/maintenance/symbol-anchor-ledger.md`（历史类文档）；本文不再复述任何历史读数，
@@ -2275,7 +2275,7 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  历史（每一次抬高下限的链项：哪次合并、引了哪些符号、在哪棵树上量的）**不在本文件**：
  *  issue #644 ③ 把它整条搬到了 `docs/maintenance/symbol-anchor-ledger.md`（历史类文档，正文有命中数钉子）。
  *  这里只留判据与写法：`const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 必须保持一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 234;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 235;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {

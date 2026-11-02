@@ -32,6 +32,7 @@ import {
   buildCompactionContext,
   loadCliConfig,
   normalizeCompactionOption,
+  resolveCompactionBudget,
   splitCompactionContext,
 } from "./config.js";
 // issue #441：与 `bin/cli.js` **同一份**取值口径（静默相位截止按 `--idle-timeout` 派生）。
@@ -836,10 +837,12 @@ MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=searc
         // dedupKey 唯一性与幂等判据由引擎负责，REPL 不再手搓记录）。
         await appendUserTurn(store, { key: options.session, text: line });
       }
+      // issue #682：恢复提示的开关与预算同源（旗标 > 配置叶子 > 窗口派生 > 关闭）。
+      const compactionBudgetEnabled = resolveCompactionBudget(config, options.compactBudget).budgetTokens !== undefined;
       const context = buildCompactionContext(
         config,
         options.compactBudget,
-        options.compactBudget !== undefined || config.contextWindowTokens
+        compactionBudgetEnabled
           ? ({ foldedPayload }) => buildCaptureRecoveryHint({
             archiveDir,
             foldedPayload,

@@ -30,7 +30,7 @@
 
 ## 2. 叶子账（实测，不抄任何数字）
 
-**实测 43 叶 = 30 init / 13 call**，分 8 组；今天**已有值规则**的叶子 2 / 43：`config.run.stream`、`config.continuity.handoff`。
+**实测 43 叶 = 30 init / 13 call**，分 8 组；今天**已有值规则**的叶子 3 / 43：`config.run.stream`、`config.continuity.handoff`、`config.metadata.modelMetadata`。
 
 | 分组 | 叶数 | 叶子 |
 | --- | --- | --- |

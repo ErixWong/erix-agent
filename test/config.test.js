@@ -5,11 +5,16 @@ import { join } from "node:path";
 import { makeTmp } from "./helpers/tmp.js";
 
 import {
+  COMPACTION_BUDGET_SOURCES,
+  COMPACTION_DISABLED_WARNING,
   buildCompactionContext,
   defaultConfigPath,
   loadCliConfig,
   normalizeCompactionOption,
+  resetCompactionDisabledWarning,
+  resolveCompactionBudget,
 } from "../bin/config.js";
+import { computeBudget } from "../src/compact/budget.js";
 
 const ENV_NAMES = [
   "HOME",
@@ -419,4 +424,136 @@ test("normalizeCompactionOption validates CLI values and config feeds the strate
       );
     });
   });
+});
+
+// ── issue #682：压缩预算做成配置项 + 两处兜底合一 + 缺窗口要出声 ──────────────────────────
+test("#682 判据：压缩预算优先级四态各一格（旗标 > 配置叶子 > 窗口派生 > 关闭）", () => {
+  assert.deepEqual(COMPACTION_BUDGET_SOURCES, ["flag", "config", "derived", "disabled"]);
+
+  const full = { contextWindowTokens: 20000, maxOutputTokens: 2000, compactBudgetTokens: 7000 };
+  // ① 旗标（--compact-budget）赢过配置叶子与窗口派生。
+  assert.deepEqual(resolveCompactionBudget(full, 8000), { budgetTokens: 8000, source: "flag" });
+  // ② 没有旗标 ⇒ 配置叶子（slots.default.compactBudgetTokens）赢过窗口派生。
+  assert.deepEqual(resolveCompactionBudget(full, undefined), { budgetTokens: 7000, source: "config" });
+  // ③ 两者都没有 ⇒ 由窗口派生（computeBudget 公式本体未动：20000 - 2000 - max(2000, 2000)）。
+  assert.deepEqual(
+    resolveCompactionBudget({ contextWindowTokens: 20000, maxOutputTokens: 2000 }, undefined),
+    { budgetTokens: 16000, source: "derived" },
+  );
+  // ④ 没有窗口也没有显式预算 ⇒ 关闭（预算 undefined，语义是「不折叠」）。
+  assert.deepEqual(
+    resolveCompactionBudget({ maxOutputTokens: 2000 }, undefined),
+    { budgetTokens: undefined, source: "disabled" },
+  );
+
+  // 来源是**上下文数据**（子 run 记录带得走），四态里前三态在 buildCompactionContext 上可见。
+  assert.equal(buildCompactionContext(full, 8000).budgetSource, "flag");
+  assert.equal(buildCompactionContext(full, 8000).budgetTokens, 8000);
+  assert.equal(buildCompactionContext(full).budgetSource, "config");
+  assert.equal(buildCompactionContext(full).budgetTokens, 7000);
+  assert.equal(
+    buildCompactionContext({ contextWindowTokens: 20000, maxOutputTokens: 2000 }).budgetSource,
+    "derived",
+  );
+  // 配置叶子能救「缺窗口」：有显式预算就不需要窗口，也不算关闭。
+  const rescued = buildCompactionContext({ compactBudgetTokens: 5000 });
+  assert.equal(rescued.budgetTokens, 5000);
+  assert.equal(rescued.budgetSource, "config");
+});
+
+test("#682 判据：缺 maxOutputTokens 时两条路径算出同一个预算（两条都真跑到）", async () => {
+  await withDirectory(async (directory) => {
+    const configPath = await writeConfig(directory, {
+      slots: {
+        default: {
+          endpoint: "https://budget.example.invalid",
+          apiKey: "file-config-key",
+          model: "file-model",
+          contextWindowTokens: 262144,
+          // 刻意不写 maxOutputTokens：缺陷就出在「同一个缺失字段两处各兜各的」。
+        },
+      },
+    });
+
+    await withEnvironment({}, async () => {
+      // 路径 1：真的过配置加载器（loader 的 DEFAULT_MAX_OUTPUT_TOKENS 兜底）。
+      const loaded = await loadCliConfig({ configPath });
+      assert.equal(loaded.maxOutputTokens, 16384);
+      const viaLoader = buildCompactionContext(loaded).budgetTokens;
+
+      // 路径 2：直接调 buildCompactionContext（以前这里 `?? 65536` 会算出另一个数）。
+      const direct = buildCompactionContext({ contextWindowTokens: 262144 }).budgetTokens;
+
+      assert.equal(viaLoader, direct, "两条路径必须算出同一个预算（#682 的原始缺陷：差 49152 token）");
+      assert.equal(viaLoader, computeBudget({ contextWindowTokens: 262144, maxOutputTokens: 16384 }));
+      // 反向证：旧侧门（65536）确实会算出另一个数——所以「相等」不是两边都错的巧合。
+      assert.notEqual(viaLoader, computeBudget({ contextWindowTokens: 262144, maxOutputTokens: 65536 }));
+    });
+  });
+});
+
+test("#682 判据：非法 slots.default.compactBudgetTokens 在 load 期报错（不是静默忽略）", async () => {
+  for (const value of [0, -1, 1.5, "4096", true, {}, []]) {
+    await withDirectory(async (directory) => {
+      const configPath = await writeConfig(directory, {
+        slots: {
+          default: {
+            endpoint: "https://budget-invalid.example.invalid",
+            apiKey: "file-config-key",
+            model: "file-model",
+            contextWindowTokens: 20000,
+            compactBudgetTokens: value,
+          },
+        },
+      });
+      await withEnvironment({}, async () => {
+        await assert.rejects(
+          loadCliConfig({ configPath }),
+          /slots\.default\.compactBudgetTokens 必须是正整数/u,
+          `非法值 ${JSON.stringify(value)} 必须在 load 期报错`,
+        );
+      });
+    });
+  }
+
+  await withDirectory(async (directory) => {
+    const configPath = await writeConfig(directory, {
+      slots: {
+        default: {
+          endpoint: "https://budget-valid.example.invalid",
+          apiKey: "file-config-key",
+          model: "file-model",
+          contextWindowTokens: 20000,
+          compactBudgetTokens: 9000,
+        },
+      },
+    });
+    await withEnvironment({}, async () => {
+      assert.equal((await loadCliConfig({ configPath })).compactBudgetTokens, 9000);
+    });
+  });
+});
+
+test("#682 判据：缺窗口必须打一行 stderr 告警（不是只断言「不折叠」）", () => {
+  resetCompactionDisabledWarning();
+  const writes = [];
+  const originalWrite = process.stderr.write;
+  process.stderr.write = (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  };
+  try {
+    // 语义不变：缺窗口 ⇒ 不折叠（返回 undefined）。
+    assert.equal(buildCompactionContext({ maxOutputTokens: 2000 }), undefined);
+    // 进程内只打一次（父 run + 每个子 run 共用同一行，不刷屏）。
+    assert.equal(buildCompactionContext({ maxOutputTokens: 2000 }), undefined);
+  } finally {
+    process.stderr.write = originalWrite;
+    resetCompactionDisabledWarning();
+  }
+
+  assert.deepEqual(writes, [`${COMPACTION_DISABLED_WARNING}\n`], "必须**真的**写一行 stderr");
+  assert.match(COMPACTION_DISABLED_WARNING, /不启用自动压缩/u);
+  assert.match(COMPACTION_DISABLED_WARNING, /contextWindowTokens/u);
+  assert.match(COMPACTION_DISABLED_WARNING, /compactBudgetTokens/u, "告警要告诉用户怎么显式指定预算");
 });

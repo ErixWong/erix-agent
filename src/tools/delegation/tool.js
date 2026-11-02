@@ -265,7 +265,7 @@ export function createDelegateTool(options) {
    * `{ ok: false, error }`。这里刻意写成「一个对象 + 可选成员」而不是可判别联合：`--checkJs` 下
    * 联合的否定收窄在 JSDoc 字面量类型上不生效（tsc 只认 `.text` 那一侧），写成可选成员既过闸又不用 cast。
    * @param {string} runId
-   * @param {{ ok: boolean, text?: *, termination?: *, verification?: *, error?: * }} outcome
+   * @param {{ ok: boolean, text?: *, termination?: *, verification?: *, budgetSource?: *, error?: * }} outcome
    * @param {boolean} background
    */
   const finishRun = (runId, outcome, background) => {
@@ -282,6 +282,10 @@ export function createDelegateTool(options) {
     };
     if (outcome.ok && outcome.termination !== undefined) next.termination = outcome.termination;
     if (outcome.ok && outcome.verification !== undefined) next.verification = outcome.verification;
+    // issue #682：子 run 的压缩预算来源（opaque，四态字符串）——与终态**同一次写**落盘。
+    if (outcome.ok && typeof outcome.budgetSource === "string" && outcome.budgetSource !== "") {
+      next.budgetSource = outcome.budgetSource;
+    }
     if (outcome.ok) {
       // 宿主没给 text（不是字符串）就不写这个字段——绝不允许写成 "undefined"。
       const text = outcome.text;
@@ -491,6 +495,8 @@ export function createDelegateTool(options) {
     if (typeof record.resultText === "string") result.text = record.resultText;
     if (record.resultTruncated === true) result.truncated = true;
     if (typeof record.errorMessage === "string") result.error = record.errorMessage;
+    // issue #682：预算来源随终局一起回去（父不用再猜子按什么预算折）。
+    if (typeof record.budgetSource === "string") result.budgetSource = record.budgetSource;
     return result;
   };
 

@@ -30,6 +30,7 @@ import {
   buildContinuityConfig,
   loadCliConfig,
   normalizeCompactionOption,
+  resolveCompactionBudget,
   splitCompactionContext,
 } from "./config.js";
 // issue #441：把引擎自带的可重试静默相位截止接到 provider（取值关系见 bin/provider-timeouts.js 头注释）。
@@ -1221,10 +1222,13 @@ async function runChatWithNotes({
   } catch (error) {
     usageError(error?.message ?? String(error));
   }
+  // issue #682：恢复提示的开关与预算同源（旗标 > 配置叶子 > 窗口派生 > 关闭），
+  // 不再自己拼 `compactBudget !== undefined || config.contextWindowTokens` 那半套次序。
+  const compactionBudgetEnabled = resolveCompactionBudget(config, compactBudget).budgetTokens !== undefined;
   const baseContext = buildCompactionContext(
     config,
     compactBudget,
-    compactBudget !== undefined || config.contextWindowTokens
+    compactionBudgetEnabled
       ? ({ foldedPayload }) => buildCaptureRecoveryHint({
         archiveDir,
         foldedPayload,

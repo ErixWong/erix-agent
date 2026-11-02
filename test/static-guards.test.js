@@ -4070,18 +4070,29 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  * # 配对地板：实测 5 对 > 地板 4 对 ⇒ 可以抬地板到 5
  * ```
  *
- * issue #678：`## [Unreleased] ### Added` 再新增一对（发版前清单第 7 步 `cli-real-smoke` 的结果进汇总：
- * `RELEASE-REAL-SMOKE …` 行 → `cli_real=<checks>/<pass>/<fail>`，issue 引用集合 #678）⇒ 面没挪，仍是
- * `## [Unreleased]`，实测变成 **6 对**，地板 5 → 6（同一条规则：只升不降，这次又是**升**）。
- * 守卫自己的 diagnostic 原文（改常量**之前**跑的，`npm test` 的 TAP 里那条 `not ok`）：
+ * issue #682：`## [Unreleased] ### Added` 再新增一对（压缩预算配置叶子 + 两处兜底合一 + 缺窗口出声，
+ * issue 引用集合 #682）⇒ 面没挪，仍是 `## [Unreleased]`，实测变成 **6 对**，地板 5 → 6（同一面内只升不降，
+ * 这次又是**升**）。守卫自己的 diagnostic 原文（改常量**之前**跑的）：
  *
  * ```
  * # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 6 条 / 英文 6 条 / 配对 6 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 5（校准面 \#\# [Unreleased]）
  * # 配对地板：实测 6 对 > 地板 5 对 ⇒ 可以抬地板到 6
- * 校准面（## [Unreleased]）上实测 6 对 ≠ 地板 5 对：地板必须恰等于校准面上的实测值
+ * ```
+ *
+ * issue #678：`## [Unreleased] ### Added` 再新增一对（发版前清单第 7 步 `cli-real-smoke` 的结果进汇总：
+ * `RELEASE-REAL-SMOKE …` 行 → `cli_real=<checks>/<pass>/<fail>`，issue 引用集合 #678）⇒ 面没挪，仍是
+ * `## [Unreleased]`。**与 #682 合流之后**实测变成 **7 对**（#682 那对 + #678 那对），地板 6 → 7（同一条
+ * 规则：只升不降，这次又是**升**）。守卫自己的 diagnostic 原文（改常量**之前**跑的，`npm test` 的 TAP 里
+ * 那条 `not ok`）：
+ *
+ * ```
+ * # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 7 条 / 英文 7 条 / 配对 7 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 6（校准面 \#\# [Unreleased]）
+ * # 配对地板：实测 7 对 > 地板 6 对 ⇒ 可以抬地板到 7
+ * 校准面（## [Unreleased]）上实测 7 对 ≠ 地板 6 对：地板必须恰等于校准面上的实测值
+ * ```
  * ```
  */
-const CHANGELOG_PAIR_FLOOR = 6;
+const CHANGELOG_PAIR_FLOOR = 7;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
