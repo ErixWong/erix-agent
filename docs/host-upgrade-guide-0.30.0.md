@@ -235,6 +235,11 @@ canonical response; returning raw SSE text is not a response.
   helper.
 * The zero-runtime-dependency rule.
 
+One display-layer change rides along and changes no engine fact: `erix chat` now prints one line per real
+fold and appends the same records to `judge.log`, so a run that folded its context is visible as a
+`type: "compaction"` event (plus one `compaction_strategy_fallback` when the configured strategy could
+not run). The events themselves did not move: same names, same payloads.
+
 ### 4.1 One additive configuration leaf, and the slot-key migration it triggers (issue #682)
 
 0.30.0 also **adds** one configuration leaf; nothing is retired. `config.metadata.modelMetadata.budgetTokens`

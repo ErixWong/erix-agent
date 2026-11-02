@@ -3,6 +3,8 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+## [0.30.0] - 2026-11-03（未发布 / unpublished）
+
 ### Breaking
 
 - **A failing fold summarizer is now a terminal error instead of a silent "degraded to a
@@ -55,7 +57,9 @@
 ### Added
 
 - **The CLI stops being mute about which layer folded (issue #673, display layer only — no engine
-  fact changes).** Until now `grep -c strategyName bin/cli.js` was `0`: issue #657 had already made
+  fact changes).** 0.30.0 **adds** those fold records to `judge.log` — `type: "compaction"` per
+  real fold, `compaction_strategy_fallback` for the one-shot fallback — and prints both channels.
+  Until now `grep -c strategyName bin/cli.js` was `0`: issue #657 had already made
   `compactionStats[].strategyName` and the `type: "compaction"` event tell the truth about which
   strategy actually performed a fold, and issue #661 had made a failing summarizer fail loudly — but
   `erix chat` printed none of it, so a user watching a run could not tell a semantic `fold-llm` fold
@@ -80,6 +84,8 @@
   in-process pin for the fallback event, which the CLI cannot construct by design (`context.strategy`
   is always configured there).
 - **CLI 不再对「到底哪一层折了」保持哑巴（issue #673，只做展示层——引擎事实一个字未改）。**
+  0.30.0 **新增**把那些折叠记录写进 `judge.log`——每次真实折叠一条 `type: "compaction"`，一次性兜底
+  一条 `compaction_strategy_fallback`——并把两个通道都打印出来。
   此前 `grep -c strategyName bin/cli.js` 是 `0`：issue #657 已经让 `compactionStats[].strategyName`
   与 `type: "compaction"` 事件说出「真正执行折叠的是哪个策略」，issue #661 已经让摘要器失败响亮
   失败——但 `erix chat` 一个字都不显示，于是看着一个 run 跑的用户分不清语义 `fold-llm` 折叠与静默的
@@ -162,7 +168,9 @@
   多次）一律算**失败**，绝不当绿。
 
 - **The compaction budget becomes a configuration leaf, the two disagreeing fallbacks become one, and a
-  missing window stops being silent (issue #682).** The budget used to exist only as the
+  missing window stops being silent (issue #682).** 0.30.0 **adds** one configuration leaf,
+  `config.metadata.modelMetadata.budgetTokens` — the engine-side explicit compaction budget,
+  validated at the config gate. The budget used to exist only as the
   `--compact-budget` flag (not in any slot, so a child run could not read it) and the same missing
   `maxOutputTokens` was defaulted in two places — `DEFAULT_MAX_OUTPUT_TOKENS = 16384` in the config
   loader and `?? 65536` inside `buildCompactionContext` — so one absent field produced two budgets
@@ -178,7 +186,9 @@
   / `disabled`). `test/tools-delegation-foreign-630.test.js`'s F item stops using an illegal-value
   error text as a probe and asserts the transmitted **value and source** positively with a legal
   integer; the illegal-value case stays as an input-validation cell.
-- **压缩预算做成配置叶子、两处互相打架的兜底合成一处、缺窗口不再哑巴（issue #682）。** 预算此前只以
+- **压缩预算做成配置叶子、两处互相打架的兜底合成一处、缺窗口不再哑巴（issue #682）。** 0.30.0
+  **新增**一个配置叶子 `config.metadata.modelMetadata.budgetTokens`——引擎侧的显式压缩预算，在 config
+  闸口校验。预算此前只以
   `--compact-budget` 旗标存在（不在任何 slot 里，子 run 读不到），而同一个「缺 `maxOutputTokens`」在两处
   各兜各的——配置加载器的 `DEFAULT_MAX_OUTPUT_TOKENS = 16384` 与 `buildCompactionContext` 里的 `?? 65536`
   ——于是一个缺失字段算出两个相差 49152 token 的预算（约等于 262144 窗口的 18.8%）。现在：① CLI slot

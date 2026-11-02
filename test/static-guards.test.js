@@ -3880,7 +3880,7 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
 // 顶部 Unreleased 非空 ⇒ 面就是它）。地板**必须跟着面一起重测**——「只升不降」是**同一面内**的规则，
 // 跨面重测是 #563 设计好的动作，不是放宽。
 /** 地板校准所在的节标题（`CHANGELOG_PAIR_FLOOR` 是在**这一节**上实测的；面挪走且配对数不足 ⇒ 点名重测）。 */
-const CHANGELOG_PAIR_FLOOR_SURFACE = "## [Unreleased]";
+const CHANGELOG_PAIR_FLOOR_SURFACE = "## [0.30.0] - 2026-11-03（未发布 / unpublished）";
 /** 两条 bullet 之间最多隔几行才算「紧邻」（0 = 直接相邻，1 = 中间隔一行）。 */
 const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 /** 配对地板：在 `CHANGELOG_PAIR_FLOOR_SURFACE` 那一节上实测的配对数。**同一面内只能升不能降。**
@@ -4091,6 +4091,25 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  * 校准面（## [Unreleased]）上实测 7 对 ≠ 地板 6 对：地板必须恰等于校准面上的实测值
  * ```
  * ```
+ *
+ * 切版（0.30.0 发版准备，release-261103-01-030）：`## [Unreleased]` 改名成
+ * `## [0.30.0] - 2026-11-03（未发布 / unpublished）`，并在它上面**留一个空的 `## [Unreleased]`**
+ * （规则 8 / 规则 9 共用的 `resolveChangelogScanSurface()` 要求顶部版本节标题是 `## [Unreleased]`，
+ * 直接改名会让它 `ok: false`；空段不是装饰，是那两条规则的输入）。
+ * **切版后 `## [Unreleased]` 是空的 ⇒ 它上面实测 0 对**（0 条 bullet，没有可配的条目）；面按
+ * #558 / #563 的设计退到刚开的版本节 ⇒ **校准面跟着挪**到新标题，否则 `onFloorSurface` 恒 false，
+ * 「地板必须恰等于实测值」与「掉一条就穿底」两条反向证会**静默跳过**（那不是绿，是闸门没装——0.29.0
+ * 切版 `9fb1e43` 同一条动作）。新面上实测仍是 **7 对**（条目一条没动，只换了节名）⇒ 地板 7 不变，
+ * 只改校准面标题。守卫自己的 diagnostic 原文（改常量**之前**跑的：面已退让、校准面还是旧标题）：
+ *
+ * ```
+ * # 配对地板：判据面 = \#\# [0.30.0] - 2026-11-03（未发布 / unpublished）（第 6 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 为空 ⇒ 退到刚开的版本节）；中文 7 条 / 英文 7 条 / 配对 7 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 7（校准面 \#\# [Unreleased]）
+ * # 配对地板反向证：删掉第 10 行英文条目 ⇒ 6 对（地板 7，不在校准面上不判）+ 中文第 38 行无对应；把该条的 \#109 改成 \#999（数量不变）⇒ 6 对；还原 ⇒ 7 对全绿
+ * ```
+ *
+ * 挪完之后那条反向证重新承重（diagnostic 变成「已穿底」而不是「不在校准面上不判」）。**新增下版条目时
+ * 重测**：下一条条目落进 `## [Unreleased]` 之后面会自动回到它（`fellBack: false`），那时校准面与地板
+ * 都要按**实测**重测——同一面内只升不降，跨面重测不是放宽。
  */
 const CHANGELOG_PAIR_FLOOR = 7;
 
