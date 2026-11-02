@@ -16,6 +16,85 @@ import {
 import { PROVIDER_PHASE_TIMEOUT_FIELDS, assertPhaseTimeoutValue } from "./provider-timeouts.js";
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 16384;
+
+/**
+ * 压缩预算的**唯一**优先级实现（issue #682）：
+ *
+ *   旗标（`--compact-budget`） > 配置叶子（`slots.default.compactBudgetTokens`） > 窗口派生 > 关闭
+ *
+ * 为什么必须是**一个**函数：`bin/cli.js` / `bin/repl.js` / `bin/delegation.js`（子 run）与
+ * `bin/config.js` 内部的 `buildCompactionContext` 是四处调用方。以前「显式预算」只走旗标，
+ * 而子 run 读不到旗标 ⇒ 父显式给的预算在子侧静默丢失（#630 S2/F 才补了一根下传管子）。
+ * 现在配置叶子天然被父子共享，下传管子退化为「只服务旗标临时覆盖」；四处共用本函数，
+ * 不许任何一处另写一套次序。
+ *
+ * 四态（`COMPACTION_BUDGET_SOURCES`）是**可观测事实**，不是形容词：
+ *   · `flag`     —— `--compact-budget <tokens>`（显式临时覆盖）；
+ *   · `config`   —— `slots.default.compactBudgetTokens`（持久配置，父子自动继承）；
+ *   · `derived`  —— 由 `contextWindowTokens` + `maxOutputTokens` 推导（`computeBudget`）；
+ *   · `disabled` —— 没有窗口也没有显式预算 ⇒ **不折叠**（语义保留，只出声：一行 stderr 告警）。
+ *
+ * @param {{contextWindowTokens?: number, maxOutputTokens?: number, compactBudgetTokens?: number}|undefined} config
+ * @param {number|undefined} explicitBudget CLI 旗标（`--compact-budget`）
+ * @returns {{budgetTokens: number|undefined, source: "flag"|"config"|"derived"|"disabled"}}
+ */
+export function resolveCompactionBudget(config, explicitBudget) {
+  if (explicitBudget !== undefined) {
+    return { budgetTokens: explicitBudget, source: "flag" };
+  }
+  const configured = config?.compactBudgetTokens;
+  if (configured !== undefined) {
+    // load 期已经校过一次（`loadCliConfig`）；这里是**直接调用**（测试 / 宿主脚本）的第二道闸。
+    // 非法值不许悄悄退回「派生」——那正是「配了等于没配」的静默形状。
+    if (!Number.isSafeInteger(configured) || configured <= 0) {
+      throw new Error(
+        `compactBudgetTokens 必须是正整数（收到 ${JSON.stringify(configured)}）；`
+        + "省略它则按上下文窗口推导预算。",
+      );
+    }
+    return { budgetTokens: configured, source: "config" };
+  }
+  if (!config?.contextWindowTokens) {
+    return { budgetTokens: undefined, source: "disabled" };
+  }
+  // issue #682：**两处兜底合一**。`maxOutputTokens` 缺省时只认 `DEFAULT_MAX_OUTPUT_TOKENS`
+  // （与 `loadCliConfig` 同一个常量），不再有 `?? 65536` 这条能算出另一个数的侧门——
+  // 同一个「没配这个字段」以前在 262144 窗口下差 49152 token（≈窗口 18.8%）。
+  return {
+    budgetTokens: computeBudget({
+      contextWindowTokens: config.contextWindowTokens,
+      maxOutputTokens: config.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+    }),
+    source: "derived",
+  };
+}
+
+/** 压缩预算的四个来源态（`resolveCompactionBudget` 的 `source`）。 */
+export const COMPACTION_BUDGET_SOURCES = Object.freeze(["flag", "config", "derived", "disabled"]);
+
+/**
+ * 缺窗口时那一行 stderr 告警（issue #682 判据：**只加告警**，不许改成启动失败）。
+ *
+ * 为什么需要它：`--compact-budget` 之前，缺 `contextWindowTokens` 的 run 会「整场不折叠且不出声」——
+ * 用户看到的是「跑完了」，看不到「压缩从来没启用」。语义保留（不折叠），但必须说出来。
+ */
+export const COMPACTION_DISABLED_WARNING = "erix: 未配置上下文窗口（slots.default.contextWindowTokens）⇒ 本次不启用自动压缩；"
+  + "可用 --compact-budget <tokens> 或 slots.default.compactBudgetTokens 显式指定预算。";
+
+/** 进程内只打一次：父 run + 每个子 run 共用同一行告警，不刷屏。 */
+let compactionDisabledWarned = false;
+
+/** 测试用：把「已告警」的进程级水位复位（默认 sink 的去重标记）。 */
+export function resetCompactionDisabledWarning() {
+  compactionDisabledWarned = false;
+}
+
+/** 默认 sink：一行 stderr，进程内去重。 */
+function warnCompactionDisabledOnce() {
+  if (compactionDisabledWarned) return;
+  compactionDisabledWarned = true;
+  process.stderr.write(`${COMPACTION_DISABLED_WARNING}\n`);
+}
 // issue #614：CLI 默认走 **语义折叠**（fold-llm）。
 //
 // 为什么改（#614 / #607 的实测）：CLI 必然有可用 provider（它就是用来跑模型的），却曾默认
@@ -136,6 +215,28 @@ function parsePositiveInteger(value) {
   return Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
+/**
+ * issue #682：CLI slot 字段 `slots.default.compactBudgetTokens`（压缩预算的持久配置叶子）。
+ *
+ * 口径照同文件 `compaction`（#167）那个既有先例：**非法值在 load 期就报错**，带收到的值与
+ * 省略后的行为，而不是悄悄退回 `undefined`（「配了等于没配」是本仓反复拒绝的形状）。
+ *
+ * @param {unknown} value `slots.default.compactBudgetTokens` 的原始值
+ * @returns {number|undefined} 省略 / `null` ⇒ `undefined`（= 不覆盖，按窗口派生）
+ */
+function resolveCompactBudgetTokens(value) {
+  if (value === undefined || value === null) return undefined;
+  const parsed = parsePositiveInteger(value);
+  if (parsed === undefined) {
+    throw new Error(
+      `config 字段 slots.default.compactBudgetTokens 必须是正整数（收到 ${JSON.stringify(value)}）。`
+      + "省略它则按上下文窗口推导预算（slots.default.contextWindowTokens）；"
+      + "要临时覆盖请用 --compact-budget <tokens>。",
+    );
+  }
+  return parsed;
+}
+
 function missingConfigError(missing) {
   if (missing.includes("LLM_KIT_MODEL or ERIX_DEFAULT_MODEL or slots.default.model")) {
     return new Error(
@@ -161,6 +262,8 @@ export async function loadCliConfig({ configPath, model: modelOverride } = {}) {
     parsePositiveInteger(fileConfig.maxOutputTokens)
     ?? DEFAULT_MAX_OUTPUT_TOKENS;
   const contextWindowTokens = parsePositiveInteger(fileConfig.contextWindowTokens);
+  // issue #682：slot 字段 compactBudgetTokens（非法值在 load 期就报错，照 `compaction` 的既有做法）。
+  const compactBudgetTokens = resolveCompactBudgetTokens(fileConfig.compactBudgetTokens);
   // issue #167：config 字段 compaction（非法值在 load 期就报错，带合法值列表）
   const compaction = fileConfig.compaction === undefined
     ? undefined
@@ -213,6 +316,7 @@ export async function loadCliConfig({ configPath, model: modelOverride } = {}) {
     ...modelOptions,
     maxOutputTokens,
     contextWindowTokens,
+    ...(compactBudgetTokens === undefined ? {} : { compactBudgetTokens }),
     ...(compaction === undefined ? {} : { compaction }),
     ...(continuity === undefined ? {} : { continuity }),
   };
@@ -277,24 +381,21 @@ export function splitCompactionContext(context) {
   };
 }
 
-export function buildCompactionContext(config, explicitBudget, recoveryHint, stubFor) {
+export function buildCompactionContext(config, explicitBudget, recoveryHint, stubFor, options = {}) {
   const strategyName = resolveCompactionStrategyName(config?.compaction);
-  if (explicitBudget !== undefined) {
-    return withRecoveryHint({
-      budgetTokens: explicitBudget,
-      protectedMessage: isRealUser,
-    }, strategyName, recoveryHint, stubFor);
-  }
-  if (!config.contextWindowTokens) {
+  // issue #682：**唯一**的优先级实现（旗标 > 配置叶子 > 窗口派生 > 关闭），四处调用方共用。
+  const resolved = resolveCompactionBudget(config, explicitBudget);
+  if (resolved.budgetTokens === undefined) {
+    // 缺窗口 ⇒ 保留「不折叠」（返回 undefined，引擎侧压缩总开关不进入），但**必须出声**：
+    // 一行 stderr 告警（默认 sink 进程内去重；测试可注入自己的 sink 断言文本）。
+    (options.warn ?? warnCompactionDisabledOnce)(COMPACTION_DISABLED_WARNING);
     return withRecoveryHint(undefined, strategyName, recoveryHint, stubFor);
   }
 
-  const budget = computeBudget({
-    contextWindowTokens: config.contextWindowTokens,
-    maxOutputTokens: config.maxOutputTokens ?? 65536,
-  });
   return withRecoveryHint({
-    budgetTokens: budget,
+    budgetTokens: resolved.budgetTokens,
+    // issue #682：来源进 `config.folding.context`（数据面），子 run 记录因此带得走四态。
+    budgetSource: resolved.source,
     protectedMessage: isRealUser,
   }, strategyName, recoveryHint, stubFor);
 }

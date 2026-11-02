@@ -236,6 +236,11 @@ export const CONFIG_NAMESPACE_SCHEMA = Object.freeze({
   // 宿主带来的数据：引擎**按已知字段**读其中的值，其余键原样透传 / 拼进 payload。
   //   · `model` / `modelMetadata`：`contextWindowTokens` / `maxOutputTokens` 两个数字被读
   //     （`modelMetadataFor`（`src/loop/budget.js`）→ 压缩预算与输出卫生的 15% 窗口钳制）；
+  //   · issue #682：同一个载体上还认第三个数字 **`budgetTokens`**——引擎侧的**显式压缩预算**。
+  //     优先级：`context.budgetTokens`（宿主/CLI 已解析，含 `--compact-budget`）> 本叶子 >
+  //     `computeBudget` 派生 > 无窗口则关闭（`resolveBudgetTokens`（`src/loop/budget.js`））。
+  //     它是**已知字段**，所以形状在 `CONFIG_LEAF_VALUE_RULES` 里校（正整数；非法值在 config 闸口
+  //     当场点名，不是带到 `validateBudget` 才炸）；载体上的其余键仍是宿主数据、原样透传。
   //   · `expert` / `user` / `task` / `requestId` / `toolContext`：拼进工具上下文与 judge 简报。
   // 这五个键里的后五个曾经只有「透传」一面，所以本组以前写成「引擎不解释其内部结构」；
   // 按现判据（文件头约束 3）它们同属配置面，描述按实测改。
@@ -582,6 +587,23 @@ const CONFIG_LEAF_VALUE_RULES = Object.freeze({
     ? undefined
     : `${path} must be one of "off" / "prompt" / "prompt-and-fallback"`
       + ` (received: ${describeConfigValueType(value)})`),
+  // issue #682: `config.metadata.modelMetadata.budgetTokens` — the engine-side **explicit compaction
+  // budget** (the third known number on the same carrier, next to `contextWindowTokens` /
+  // `maxOutputTokens`). It must be a positive integer: the value is used as `budgetTokens` verbatim
+  // (it bypasses `computeBudget`), so a fractional / zero / string value would either be silently
+  // coerced downstream or blow up after the first request. Refusing it here names the full path at
+  // the config gate instead. Only this **new** sub-field is checked — the rest of the carrier stays
+  // an opaque host data bag, and the two pre-existing numbers keep their current (late) verdicts, so
+  // no host that was accepted before is refused now.
+  "metadata.modelMetadata": (value, path) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const raw = /** @type {Record<string, unknown>} */ (value).budgetTokens;
+    if (raw === undefined) return undefined;
+    const budget = typeof raw === "number" ? raw : Number.NaN;
+    return Number.isSafeInteger(budget) && budget > 0
+      ? undefined
+      : `${path}.budgetTokens must be a positive integer (received: ${describeConfigValueType(raw)})`;
+  },
 });
 
 /** The leaf value-rule table (exported for the self-check and tests to read; read-only). */

@@ -1,5 +1,4 @@
 import { KitError } from "../providers/errors.js";
-import { computeBudget } from "../compact/budget.js";
 import { createProviderSummarizer, summarizerThinkingMode } from "../compact/provider-summarizer.js";
 import { DEFAULT_SUMMARY_MAX_TOKENS } from "../compact/fold-llm.js";
 import { resolveCompactionStrategy } from "../compact/strategy-resolution.js";
@@ -133,6 +132,7 @@ import {
   modelMetadataFor,
   normalizeToolNameSet,
   projectedApiInputTokens,
+  resolveBudgetTokens,
   safeTruncateMessages,
   toolContextFor,
   validateBudget,
@@ -1599,13 +1599,20 @@ export async function runToolLoop(options) {
   // 避免两处口径漂移。
   const budgetMetadataComplete = metadata?.contextWindowTokens !== undefined
     && metadata?.maxOutputTokens !== undefined;
-  let budgetTokens = context?.budgetTokens;
-  if (budgetTokens === undefined && budgetMetadataComplete) {
-    budgetTokens = computeBudget({
-      contextWindowTokens: metadata.contextWindowTokens,
-      maxOutputTokens: metadata.maxOutputTokens,
-    });
-  }
+  // issue #682：引擎侧叶子 `config.metadata.modelMetadata.budgetTokens`（显式预算）优先于
+  // `computeBudget` 派生。裁决点只有一个（`resolveBudgetTokens`（`src/loop/budget.js`）），
+  // 于是「显式值 / 派生 / 关闭」不会再在两处各答一次（#682 的原始缺陷形状）。
+  const resolvedBudget = resolveBudgetTokens({
+    contextBudgetTokens: context?.budgetTokens,
+    // `flag` / `config` 的前半段由宿主（CLI）解析，引擎原样带出；没给就是 `undefined`。
+    contextBudgetSource: context?.budgetSource,
+    metadata,
+  });
+  // `any` 是**刻意**的（#417 的 strict 棘轮只减不增）：这一格以前由 `let budgetTokens = context?.budgetTokens`
+  // 推断成 `any`，下游十来处使用点都按「已判非 undefined」写。收窄成 `number | undefined` 会在那些
+  // 使用点新增 strict 错误（本轮不还这笔债），而这里也不该靠 `!` 掩盖——`validateBudget` 就在下一行
+  // 做真正的运行期校验。
+  const budgetTokens = /** @type {any} */ (resolvedBudget.budgetTokens);
   if (budgetTokens !== undefined) validateBudget(budgetTokens);
   // issue #182：预算推不出来且原因确实是元数据不齐（宿主自己给了 context.budgetTokens 时
   // 压缩仍然启用，不该告警）——发一次性诊断事件。

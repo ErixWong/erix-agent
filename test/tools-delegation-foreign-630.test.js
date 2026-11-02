@@ -236,22 +236,26 @@ test("真装配（#630 S2 D-5 反向证）：真正活着的子，result 仍答 
   await a.execute({ action: "cancel", runId: started.runId });
 });
 
-// ── F：父的显式压缩预算下传给子 ───────────────────────────────────────────────────────
-test("真装配（#630 S2 F）：父的显式 compactBudget 真的到了子的引擎里（精确值探针）", async () => {
-  const root = await makeTmp("erix-delegation-630-f-");
-  const provider = {
-    protocol: "fake",
-    model: "fake-model",
-    async chat() {
-      return { content: [{ type: "text", text: "ok" }], stopReason: "end_turn" };
-    },
-    async chatStream(request) {
-      return this.chat(request);
-    },
-  };
-  const delegation = createCliDelegation({
-    buildProvider: () => provider,
-    config: { model: "fake-model", maxOutputTokens: 1000 },
+// ── F：父的显式压缩预算下传给子（issue #682 改成合法整数的正面断言） ─────────────────────
+//
+// 旧探针（#630 S2 F）：给一个非整数预算，靠子引擎 `validateBudget` 的报错文本证明「预算到了子那一侧」。
+// 那是「用异常文本当探针」——它证明得了**传到了**，却证明不了「传对了」，也没法断言**来源**。
+// issue #682 之后子 run 的记录带 `budgetTokens` / `budgetSource`（值 + 四态），于是这里改成
+// **合法整数 + 正面断言**：值逐字相等，来源逐字正确。非整数那条**保留**，归位成**输入校验**用例。
+const fakeProvider = {
+  protocol: "fake",
+  model: "fake-model",
+  async chat() {
+    return { content: [{ type: "text", text: "ok" }], stopReason: "end_turn" };
+  },
+  async chatStream(request) {
+    return this.chat(request);
+  },
+};
+
+function delegationFor(root, options = {}) {
+  return createCliDelegation({
+    buildProvider: () => fakeProvider,
     cwd: root,
     todo: false,
     notesDir: join(root, "notes"),
@@ -259,45 +263,107 @@ test("真装配（#630 S2 F）：父的显式 compactBudget 真的到了子的�
     maxRounds: 4,
     notify: () => {},
     childToolOutput: () => {},
-    // 探针值：引擎的 `validateBudget`（`src/loop/budget.js`）对非正整数会抛出
-    // `budgetTokens must be a positive integer (got <值>)` —— 它把**子 run 引擎实际收到的**预算
-    // 逐字打出来，这就是「预算 == 父给的那个数」的精确证据（合法值下这个数没有任何对外可读的出口，
-    // 而 `--compact-budget` 本身只收整数，所以这个非整数只可能来自本测试）。
+    ...options,
+  });
+}
+
+test("真装配（#682 判据）：父的显式 compactBudget 以合法整数下传，子记录里值与来源都对（flag）", async () => {
+  const root = await makeTmp("erix-delegation-682-f-flag-");
+  const delegation = delegationFor(root, {
+    config: { model: "fake-model", maxOutputTokens: 1000, contextWindowTokens: 20000 },
+    compactBudget: 4321,
+  });
+
+  // ① 子边界（宿主交给库的那份记录）：值逐字相等、来源是 flag。
+  const child = await delegation.runChild({
+    task: "随便干点什么",
+    runId: "child-682-flag",
+    signal: new AbortController().signal,
+  });
+  assert.equal(child.budgetTokens, 4321, "子 run 实际收到的预算必须逐字等于父给的合法整数");
+  assert.equal(child.budgetSource, "flag", "来源必须是旗标（--compact-budget）");
+
+  // ② 落盘的名册记录同样带来源（issue #682 的「子 run 记录里带上预算来源」）。
+  const ran = await delegation.execute({ action: "run", task: "随便干点什么" }, { runId: "parent-682-flag" });
+  assert.equal(ran.ok, true, JSON.stringify(ran));
+  const record = readRecord(join(root, "delegation"), ran.runId);
+  assert.equal(record.budgetSource, "flag", "名册记录必须带预算来源");
+});
+
+test("真装配（#682 判据）：没有旗标时预算来自配置叶子，值/来源同样正面可见（config）", async () => {
+  const root = await makeTmp("erix-delegation-682-f-config-");
+  const delegation = delegationFor(root, {
+    // slot 字段 `compactBudgetTokens`（loadCliConfig 的产物）：父子天然继承，不需要旗标。
+    config: { model: "fake-model", maxOutputTokens: 1000, contextWindowTokens: 20000, compactBudgetTokens: 2222 },
+  });
+
+  const child = await delegation.runChild({
+    task: "随便干点什么",
+    runId: "child-682-config",
+    signal: new AbortController().signal,
+  });
+  assert.equal(child.budgetTokens, 2222, "配置叶子的值必须原样到子 run");
+  assert.equal(child.budgetSource, "config", "来源必须是配置叶子");
+
+  const ran = await delegation.execute({ action: "run", task: "随便干点什么" }, { runId: "parent-682-config" });
+  assert.equal(ran.ok, true, JSON.stringify(ran));
+  assert.equal(readRecord(join(root, "delegation"), ran.runId).budgetSource, "config");
+});
+
+test("真装配（#682 判据）：既无旗标也无配置叶子时来源是 derived（窗口派生），值=computeBudget", async () => {
+  const root = await makeTmp("erix-delegation-682-f-derived-");
+  const delegation = delegationFor(root, {
+    config: { model: "fake-model", maxOutputTokens: 1000, contextWindowTokens: 20000 },
+  });
+
+  const child = await delegation.runChild({
+    task: "随便干点什么",
+    runId: "child-682-derived",
+    signal: new AbortController().signal,
+  });
+  // computeBudget 公式本体未动：20000 - 1000 - max(2000, 2000) = 17000。
+  assert.equal(child.budgetTokens, 17000);
+  assert.equal(child.budgetSource, "derived");
+});
+
+test("真装配（#682 判据）：缺窗口且无显式预算 ⇒ 来源是 disabled（不折叠，但不是「没记录」）", async () => {
+  const root = await makeTmp("erix-delegation-682-f-disabled-");
+  const delegation = delegationFor(root, {
+    config: { model: "fake-model", maxOutputTokens: 1000 },
+  });
+
+  const child = await delegation.runChild({
+    task: "随便干点什么",
+    runId: "child-682-disabled",
+    signal: new AbortController().signal,
+  });
+  assert.equal(child.budgetTokens, undefined);
+  assert.equal(child.budgetSource, "disabled");
+});
+
+test("输入校验（原 #630 S2 F 探针，归位）：非整数预算由子引擎的 validateBudget 拒掉", async () => {
+  const root = await makeTmp("erix-delegation-630-f-");
+  const delegation = delegationFor(root, {
+    config: { model: "fake-model", maxOutputTokens: 1000 },
+    // 这条**不是**「下传证明」——值是宿主注入的非法输入，`--compact-budget` 本身只收整数。
+    // 它证明的是「非法预算不会被悄悄吞掉」：子引擎的 `validateBudget` 当场拒并点名收到的值。
     compactBudget: 1234.5,
   });
 
   const ran = await delegation.execute({ action: "run", task: "随便干点什么" }, { runId: "parent-630f" });
-  assert.equal(ran.ok, false, `非整数预算必须让子引擎当场拒（说明预算真的到了子那一侧）：${JSON.stringify(ran)}`);
+  assert.equal(ran.ok, false, `非整数预算必须让子引擎当场拒：${JSON.stringify(ran)}`);
   assert.equal(ran.state, "failed");
   assert.match(
     ran.error,
     /budgetTokens must be a positive integer \(got 1234\.5\)/u,
-    `子 run 引擎收到的预算必须逐字等于父给的那个值（缺陷 F：以前父的显式预算在子侧被静默丢掉）：${ran.error}`,
+    `非法输入必须被输入校验拒掉：${ran.error}`,
   );
 });
 
 test("真装配（#630 S2 F 反向证）：不给 compactBudget ⇒ 子侧行为与接线前逐字一致（不炸）", async () => {
   const root = await makeTmp("erix-delegation-630-f-none-");
-  const provider = {
-    protocol: "fake",
-    model: "fake-model",
-    async chat() {
-      return { content: [{ type: "text", text: "ok" }], stopReason: "end_turn" };
-    },
-    async chatStream(request) {
-      return this.chat(request);
-    },
-  };
-  const delegation = createCliDelegation({
-    buildProvider: () => provider,
+  const delegation = delegationFor(root, {
     config: { model: "fake-model", maxOutputTokens: 1000 },
-    cwd: root,
-    todo: false,
-    notesDir: join(root, "notes"),
-    rosterDir: join(root, "delegation"),
-    maxRounds: 4,
-    notify: () => {},
-    childToolOutput: () => {},
   });
   const ran = await delegation.execute({ action: "run", task: "随便干点什么" }, { runId: "parent-630fn" });
   assert.equal(ran.ok, true, `没给预算 ⇒ 子照旧跑得起来（undefined 分支不许变）：${JSON.stringify(ran)}`);

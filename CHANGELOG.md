@@ -101,6 +101,36 @@
   `--compact-budget` + `keepRounds` 逼出真折叠），外加兜底事件的进程内钉子——CLI 按设计构造不出它
   （那里 `context.strategy` 永远是配置好的）。
 
+- **The compaction budget becomes a configuration leaf, the two disagreeing fallbacks become one, and a
+  missing window stops being silent (issue #682).** The budget used to exist only as the
+  `--compact-budget` flag (not in any slot, so a child run could not read it) and the same missing
+  `maxOutputTokens` was defaulted in two places — `DEFAULT_MAX_OUTPUT_TOKENS = 16384` in the config
+  loader and `?? 65536` inside `buildCompactionContext` — so one absent field produced two budgets
+  49152 tokens apart (≈ 18.8% of a 262144-token window). Now: (a) the CLI slot
+  `slots.default.compactBudgetTokens` is a real field, validated **at config load** (a malformed value
+  throws, it is never silently ignored); (b) the engine reads the explicit `budgetTokens` on the
+  model-metadata carrier (`config.metadata.modelMetadata.budgetTokens`), validated at the config gate;
+  (c) the priority is one implementation shared by `bin/cli.js` / `bin/repl.js` / `bin/delegation.js`
+  and `bin/config.js` itself — **flag > config leaf > window derivation > off**; (d) `buildCompactionContext`
+  no longer carries its own `?? 65536` side door, so both paths derive the same budget; (e) a missing
+  window keeps its "no folding" semantics (never a startup failure) but the CLI prints **one stderr
+  warning line**, and the child-run roster record carries `budgetSource` (`flag` / `config` / `derived`
+  / `disabled`). `test/tools-delegation-foreign-630.test.js`'s F item stops using an illegal-value
+  error text as a probe and asserts the transmitted **value and source** positively with a legal
+  integer; the illegal-value case stays as an input-validation cell.
+- **压缩预算做成配置叶子、两处互相打架的兜底合成一处、缺窗口不再哑巴（issue #682）。** 预算此前只以
+  `--compact-budget` 旗标存在（不在任何 slot 里，子 run 读不到），而同一个「缺 `maxOutputTokens`」在两处
+  各兜各的——配置加载器的 `DEFAULT_MAX_OUTPUT_TOKENS = 16384` 与 `buildCompactionContext` 里的 `?? 65536`
+  ——于是一个缺失字段算出两个相差 49152 token 的预算（约等于 262144 窗口的 18.8%）。现在：① CLI slot
+  `slots.default.compactBudgetTokens` 是真字段，**在配置加载期**校验（非法值抛错，绝不静默忽略）；② 引擎读
+  模型元数据载体上的显式 `budgetTokens`（`config.metadata.modelMetadata.budgetTokens`），在 config 闸口校验；
+  ③ 优先级是**一个**实现，`bin/cli.js` / `bin/repl.js` / `bin/delegation.js` 与 `bin/config.js` 自身共用
+  ——**旗标 > 配置叶子 > 窗口派生 > 关闭**；④ `buildCompactionContext` 不再自带 `?? 65536` 侧门，两条路径
+  派生出同一个预算；⑤ 缺窗口保留「不折叠」语义（绝不改成启动失败），但 CLI 打**一行 stderr 告警**，子 run
+  的名册记录带上 `budgetSource`（`flag` / `config` / `derived` / `disabled`）。
+  `test/tools-delegation-foreign-630.test.js` 的 F 项不再拿非法值报错文本当探针，改成用合法整数**正面断言**
+  下传的值与来源；非法值那条保留成输入校验格。
+
 ### Fixed
 
 - **The fold ledger stops crediting work to a strategy that never folded (issue #657, bug fix — this

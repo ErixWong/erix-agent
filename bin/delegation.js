@@ -51,7 +51,7 @@ import {
 import { createDelegateTool } from "../src/tools/index.js";
 import { transcriptPath } from "../src/store/file.js";
 import { createCliAssemblyRoot } from "./assembly-root.js";
-import { buildCompactionContext, splitCompactionContext } from "./config.js";
+import { buildCompactionContext, resolveCompactionBudget, splitCompactionContext } from "./config.js";
 import { buildCaptureRecoveryHint, buildCaptureStub } from "./final-guard.js";
 import {
   buildArchiveNotice,
@@ -270,12 +270,15 @@ export function createCliDelegation({
     // 压缩口径与父同一份配置（子 run 也可能跑长任务）；恢复提示落在子 run 自己的归档里。
     // issue #630 S2 / F：父的**显式**预算（`--compact-budget`）必须下传——以前这一位写死 `undefined`，
     // 于是父显式给的预算在子侧静默丢失（子的 `buildCompactionContext` 只能看 `config.contextWindowTokens`
-    // 推出来的自动值）。`undefined` 时与接线前逐字一致。恢复提示的开关条件也跟父侧同构（父侧是
-    // `compactBudget !== undefined || config.contextWindowTokens`）。
+    // 推出来的自动值）。
+    // issue #682：预算次序与父侧**同一个实现**（`resolveCompactionBudget`：旗标 > 配置叶子 > 派生 > 关闭），
+    // 恢复提示的开关也从它派生。子 run 的**记录**带上预算值与来源（`budgetTokens` / `budgetSource`），
+    // 于是「父与子的预算为什么不一样」在名册里读得到，不用猜。
+    const childBudget = resolveCompactionBudget(config, compactBudget);
     const compaction = buildCompactionContext(
       config,
       compactBudget,
-      compactBudget !== undefined || config.contextWindowTokens
+      childBudget.budgetTokens !== undefined
         ? ({ foldedPayload }) => buildCaptureRecoveryHint({
           archiveDir: assembly.archiveDir,
           foldedPayload,
@@ -348,6 +351,10 @@ export function createCliDelegation({
         text: result.finalText,
         termination: result.termination?.reason,
         verification: result.verification,
+        // issue #682：子 run 记录里的预算事实（值 + 来源四态）。库只把它当 opaque 字段落名册，
+        // 不解释；父的 `delegate action="result"` 因此读得到「子到底按什么预算折」。
+        budgetTokens: childBudget.budgetTokens,
+        budgetSource: childBudget.source,
       };
     } catch (error) {
       // abort / timeout / 轮数耗尽：引擎抛的错上带 `termination` ⇒ 这是子 run 的**结局**，
@@ -358,6 +365,8 @@ export function createCliDelegation({
           text: error.finalText ?? "",
           termination: error.termination.reason,
           verification: error.verification,
+          budgetTokens: childBudget.budgetTokens,
+          budgetSource: childBudget.source,
         };
       }
       throw error;

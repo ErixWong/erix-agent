@@ -30,7 +30,7 @@
 
 ## 2. Leaf account (measured, no number copied)
 
-**Measured: 43 leaves = 30 init / 13 call**, in 8 groups; **2 of 43** leaves carry a value rule today: `config.run.stream`, `config.continuity.handoff`.
+**Measured: 43 leaves = 30 init / 13 call**, in 8 groups; **3 of 43** leaves carry a value rule today: `config.run.stream`, `config.continuity.handoff`, `config.metadata.modelMetadata`.
 
 | group | leaves | names |
 | --- | --- | --- |
