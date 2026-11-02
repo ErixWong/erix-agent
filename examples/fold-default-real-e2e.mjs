@@ -341,10 +341,21 @@ async function runArm({ runId, gate, strategy, summarizerTimeoutMs }) {
     tokensBefore: stat.tokensBefore,
     tokensAfter: stat.tokensAfter,
     // issue #661：这一格改前报 `foldSummary.degradeKind`，那条降级路径删掉后它永远是 `undefined`
-    // （一个空格子）。降级事实现在只能随异常走 ⇒ 报**真实存在**的字段：本次折叠用的是哪条成功路
-    // 径（`fold-llm` 恒 `"llm"`）与超窗重试的 `attempts`（无此键 = 首发就成，不是「没试过」）。
-    summarySource: stat.foldSummary?.source,
-    summaryAttempts: stat.foldSummary?.attempts ?? 1,
+    // （一个空格子）。降级事实现在只能随异常走 ⇒ 改报**真实存在**的字段：摘要器那一发的结果状态
+    // （`createProviderSummarizer` 的 `onMeta` → 引擎写进 `compactionStats[].foldSummary`，
+    // 字段实测为 `finishReason` / `inputTokens` / `outputTokens` / `inputTruncated` / `droppedMessages`）。
+    // 口径与契约同源：**无事实 ⇒ 无键**——`fold-statistical` 那臂根本不调摘要器、没有 `foldSummary`，
+    // 就不许给它编一个数（那只是把一个空格子换成一个假格子）。
+    ...(stat.foldSummary === undefined
+      ? {}
+      : {
+        ...(stat.foldSummary.finishReason === undefined
+          ? {}
+          : { summarizerFinishReason: stat.foldSummary.finishReason }),
+        ...(stat.foldSummary.inputTokens === undefined && stat.foldSummary.outputTokens === undefined
+          ? {}
+          : { summarizerTokens: `${stat.foldSummary.inputTokens ?? "-"}↑/${stat.foldSummary.outputTokens ?? "-"}↓` }),
+      }),
   }));
 
   return {
