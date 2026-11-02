@@ -646,8 +646,9 @@ function startSession(extension, { sessionId, idle = true }) {
   const pi = {
     registerTool: () => {},
     on: (name, handler) => { handlers.set(name, handler); },
-    sendMessage: (message, options) => calls.sendMessage.push({ message, options }),
-    sendUserMessage: (content, options) => calls.sendUserMessage.push({ content, options }),
+    // #670 第 4 格：契约是 `void` ⇒ 块体（表达式体会返回 push 的长度）
+    sendMessage(message, options) { calls.sendMessage.push({ message, options }); },
+    sendUserMessage(content, options) { calls.sendUserMessage.push({ content, options }); },
   };
   extension.default(pi);
   const ctx = {
