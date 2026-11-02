@@ -12,6 +12,11 @@ This document was first drafted on 2026-08-29 and has been reconciled with the i
 
 ### app_container (`app_container:apps/worker/src/pi/` + `app_container:packages/context`)
 
+> This host has since been merged into the successor project `fde-workshop`, together with
+> `erix-station`. The `app_container` checkout is still on disk and still imports this package, so the
+> paths below are readable today; what changed is which project owns the work, not whether the old
+> code exists.
+
 - Existing capabilities: dual-protocol normalization (OpenAI/Anthropic to common `tool_use`/`tool_result` blocks), stall detection based on signature-window comparison, a fixed ten-round hard window, `max_tokens` continuation, and skeleton folding for idea conversations (`chat_summary_json` plus the `foldedUpTo` watermark).
 - Pain points: (1) the hard window silently discards early rounds, so a 24-round development task can lose half its history and the model may redo completed work; (2) a provider error fails the whole task and causes the reaper to start over, wasting the LLM calls already paid for; (3) `pi_models.context_window_tokens` is stored but was not wired into the loop (`llm-context-budget.md` §7, “not changed this cycle”); and (4) skeleton-folding output had no deterministic size enforcement, relying on the LLM to obey the budget instead of keeping the final size a code invariant.
 

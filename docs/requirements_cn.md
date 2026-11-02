@@ -11,6 +11,9 @@
 
 ### app_container（`app_container:apps/worker/src/pi/` + `app_container:packages/context`）
 
+> 这个宿主已与 `erix-station` 一起合并进后继项目 `fde-workshop`。`app_container` 检出仍在盘上、仍导入本包，
+> 所以下面这些路径今天仍然可读；变的是这份工作归哪个项目，不是旧代码还在不在。
+
 - 已有能力：双协议归一化（OpenAI/Anthropic → 统一的 `tool_use`/`tool_result` 块）、基于签名窗口比对的停滞检测、固定十轮硬窗口、`max_tokens` 续写，以及 idea 对话的骨架折叠（`chat_summary_json` 加 `foldedUpTo` 水位线）。
 - 痛点：（1）硬窗口会静默丢弃早期轮次，因此一个 24 轮的开发任务可能丢失一半历史，模型可能重复已完成的工作；（2）provider 错误会使整个任务失败，导致 reaper 从头开始，浪费已经支付的 LLM 调用；（3）`pi_models.context_window_tokens` 已存储，却没有接入循环（`llm-context-budget.md` §7，“本周期不改”）；（4）骨架折叠输出没有确定性的大小约束，依赖 LLM 遵守预算，而不是将最终大小保持为代码不变量。
 
