@@ -4545,6 +4545,20 @@ function insertBundleRow(anchorName, row) {
   };
 }
 
+/**
+ * `--self-test` 的变异器：把**唯一**一处 `needle` 换成 `replacement`。
+ *
+ * 为什么比裸 `String.replace` 严：裸 `replace` 只换第一处，靶子有第二份时探针照样「落上」——那
+ * 就不是「这句谎」在被判，而是「恰好第一句」在被判。所以要求**恰好一处**：0 处（锚点没了）与
+ * 2+ 处（靶子不唯一）都原样返回，由 harness 的「变异没落上」判据判红（#279 / #210 R2 惯例）。
+ */
+function replaceUnique(needle, replacement) {
+  return (text) => {
+    const parts = text.split(needle);
+    return parts.length === 2 ? `${parts[0]}${replacement}${parts[1]}` : text;
+  };
+}
+
 // ── 15. 版本归属句（issue #511 判据 1 后半）────────────────────────────────────
 // 判据 1 后半：文中「<verB> adds / removes / 删掉 / 新增」类句式里的 `verB` 若 **≠ 自述版本**，
 // 同一句必须带前向指针（`see the <verB> upgrade guide` / 「见 <verB> 升级指南」），否则红并点名行号。
@@ -6227,6 +6241,46 @@ const SELF_TEST_CASES = [
     overlay: { [CONTRACT_EN]: (t) => t.replace("No layer defaults to `fold-statistical`:", "The degrade target is `fold-statistical`; no layer defaults to `fold-statistical`:") },
     expectGreen: true,
   },
+  // —— issue #668 ① 的**残留盲区**（本单）：① ② 靠标记词定位句子，于是「新写一句不带标记的默认声称」
+  // 整句落在面外。③ 反过来：默认声称 + 内置策略名同句搭配就必须带层标记词。下面四例各钉一侧：
+  // 英文谎 → 红并点名行；中文谎 → 红 + 中英处数不齐；default summarizer 那一族 → 绿（放行证）；
+  // 同一句谎 + 抽掉一条判据词 → 又变绿（证规则真在判那个词，不是措辞巧合）。
+  {
+    label: "#668 ① ③：契约 EN 插一句**不带任何分层标记词**的默认声称（By default, compaction uses `fold-statistical`）⇒ 红并点名行",
+    overlay: {
+      [CONTRACT_EN]: replaceUnique("No layer defaults to `fold-statistical`:",
+        "By default, compaction uses `fold-statistical` whenever a host does not configure a strategy.\n  No layer defaults to `fold-statistical`:"),
+    },
+    expect: [/compaction-default\/unmarked: docs\/host-consumer-contract\.md:\d+ 说默认是 `fold-statistical`/],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "#668 ① ③：中文契约插同形的无标记谎（未配策略时默认用 `fold-statistical`）⇒ 红 + 中英未标记处数不齐",
+    overlay: {
+      [CONTRACT_CN]: replaceUnique("  没有任何一层默认 `fold-statistical`：",
+        "  未配策略时默认用 `fold-statistical`。\n  没有任何一层默认 `fold-statistical`："),
+    },
+    expect: [/compaction-default\/unmarked: docs\/host-consumer-contract_cn\.md:\d+ 说默认是 `fold-statistical`/,
+      /compaction-default\/unmarked: 未标记的默认声称处数中英不齐：docs\/host-consumer-contract\.md 0 处 vs docs\/host-consumer-contract_cn\.md 1 处/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#668 ① ③（放行证）：「默认 + `fold-llm` + summarizer」那一族再插一句 ⇒ 仍然绿（它说的是摘要器，不是默认策略）",
+    overlay: {
+      [CONTRACT_EN]: replaceUnique("The `fold-llm` name injects a default summarizer that reuses **this run's provider**",
+        "The `fold-llm` name injects a default summarizer that reuses **this run's provider**.\nThat default summarizer is engine-provided, and `fold-llm` itself stays opt-in."),
+    },
+    expectGreen: true,
+  },
+  {
+    label: "#668 ① ③（退化证）：同一句谎 + 抽掉 `default` 这条判据词 ⇒ 又变绿（证规则真在判那个词）",
+    overlay: {
+      [CONTRACT_EN]: replaceUnique("No layer defaults to `fold-statistical`:",
+        "By default, compaction uses `fold-statistical` whenever a host does not configure a strategy.\n  No layer defaults to `fold-statistical`:"),
+    },
+    simulateCompactionDropWordIds: ["en-default"],
+    expectGreen: true,
+  },
   // ══ issue #511：「这句话属于哪个版本」+「这个版本发布了没有」 ══════════════════════
   // 本节每个用例都钉**一条判据的一侧**（红侧）或**放行侧**（绿侧）。registry 一律走 `selfTestRegistry()`
   // 夹具（派生自 CHANGELOG，见那里的注释）：自测不许依赖网络，也不许依赖「今天 registry 恰好是什么」。
@@ -6522,6 +6576,19 @@ function runSelfTest() {
     // #511：doc-version 放行表的配置口子（证「登记了却没人用 ⇒ 红」那一半）。
     const docExemptSaved = SIM_DOC_VERSION_EXEMPT;
     if (c.simulateDocVersionExemptions) SIM_DOC_VERSION_EXEMPT = c.simulateDocVersionExemptions;
+    // #668 ① ③：判据词表的配置口子（同一课：overlay 只能改文档，改不动运行时那份词表）。
+    // 退化证靠它：抽掉 `en-default` 之后同一句谎又变绿 ⇒ 证规则真在判那个词，不是措辞巧合。
+    // 抽的名字必须**真的在表里**（配置口子没落上就算探针失败，不许把 exit 0 当通过）。
+    const wordIdsSaved = SIM_COMPACTION_DROP_WORD_IDS;
+    if (c.simulateCompactionDropWordIds) {
+      const unknown = c.simulateCompactionDropWordIds
+        .filter((id) => !COMPACTION_DEFAULT_WORDS.some((word) => word.id === id));
+      if (unknown.length) {
+        OVERLAY.clear(); SIM_TREE_SHAPE = simSaved; SIM_RENAMED_GUIDE = guideSaved;
+        return { pass: false, msg: `${label}：配置口子没落上（判据词表里没有 ${unknown.join(", ")}）` };
+      }
+      SIM_COMPACTION_DROP_WORD_IDS = c.simulateCompactionDropWordIds;
+    }
     let errs = [];
     let landing = null;    // #302：夹具有没有真的落上（null = 本例不挂夹具）
     let afterWhy = null;   // #337：assertAfter 必须在配置口子**还挂着**的时候问（否则临时登记已被还原）
@@ -6534,6 +6601,7 @@ function runSelfTest() {
       SIM_CLI_FLAG_EXEMPTIONS = cliExemptSaved;   // 放行表一条也不许留在全局
       SIM_REGISTRY = registrySaved;                // #511：registry 夹具同上
       SIM_DOC_VERSION_EXEMPT = docExemptSaved;     // #511：doc-version 放行表同上
+      SIM_COMPACTION_DROP_WORD_IDS = wordIdsSaved; // #668 ① ③：判据词表一条也不许留在全局
       if (looseDeclSaved) looseDeclSaved[0].decl = looseDeclSaved[1];   // 判据必须还原，别把探针留在表里
       if (dirClassSaved) {                                              // 同上：临时登记的类别一条也不许留在表里
         const [pattern, prev] = dirClassSaved;
