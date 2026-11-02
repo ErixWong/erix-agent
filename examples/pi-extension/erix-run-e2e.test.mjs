@@ -43,6 +43,10 @@ import {
 import { assertRunToolLoopOptionNames } from "../../src/loop/option-normalization.js";
 import * as core from "./erix-run-core.js";
 import {
+  createAsyncJobRegistry,
+  createAsyncRuntime,
+  createCompletionSendRegistry,
+  createSessionHandleRegistry,
   globalAsyncJobRegistry,
   globalSessionHandleRegistry,
   jobView,
@@ -588,21 +592,32 @@ test("erix_run 真机：显式 finalGuard:true ⇒ verification 不再是 skippe
 });
 
 // ---------------------------------------------------------------------------
-// #654 / #665：真上游的**多会话**维 —— A 派工、B 后 `session_start` ⇒ 完成通知只能回 A。
+// #654 / #665 / #670 第 2 格：真上游的**多会话**维 —— A、B 各自 `session_start`（A 先 B 后）
+// **之后** A 才派工 ⇒ 完成通知只能回 A。
 //
 // 为什么这一格必须走真上游：`test/examples/erix-run-async.test.js` 的 #654 那七条已经用假 pi 钉住了
 // 「按 owner 查句柄」，但注入的是假 runtime / 假 lib，**没有一条**在真 `erix_run` 链路上
-// （真扩展 factory × 2 + 真 `runToolLoop` + 真落盘）走过「两个会话、A 派工、B 后启动」这个形状。
+// （真扩展 factory × 2 + 真 `runToolLoop` + 真落盘）走过「两个会话、owner 是 A、最后注册的是 B」这个形状。
 // 于是「通知投给最后一次 `session_start` 的会话」那类缺陷，在真上游回归面上是**零防护**：
 // 下次有人重构 `session_shutdown` 或投递路由，`npm test` 会全绿而缺陷长回来。
 //
 // 形状（三件事必须同时成立，否则这条用例证明不了任何事）：
 //   1. 同一个扩展工厂 `extension.default(pi)` 调**两次**，各带一个不同的 `sessionManager`
 //      （两个会话 A、B），各自跑过 `session_start` —— 这是 pi 在多会话宿主里对一个进程做的事；
-//   2. **A 先派工、B 后 `session_start`** ⇒ 「最后一次 `session_start`」是 B、owner 是 A，两者可区分；
+//   2. **两个会话先注册完（A 先 B 后），A 再派工** ⇒ 「最后注册的句柄」是 B、owner 是 A，两者可区分；
 //   3. 一张极小的真 async 派工（读一个临时文件、答一行，`maxRounds` 压到 3）。
 // 断言：投递落点是 **A**（`notifyTargetSessionId === A.sessionId`）、`delivery === "sent"`、
 // B 一个通知都没收到、`status.json` 里 `delivery` / `notifyTargetSessionId` / `deliveryNote` **恒在场**。
+//
+// ⚠ #670 第 2 格（为什么是「把 B 的 `session_start` 挪到派工之前」而不是「在 B 注册后加一条断言」）：
+// 修前的顺序是「A 派工 → B `session_start` → 等结算」，于是存在一个窗口：run 若在 B 注册之前就
+// 结算（模型快 / 命中缓存 / 日后有人调小 `maxRounds`），投递那一刻注册表里只有 A，「取最后注册的
+// 句柄」这个**错误实现**拿到的也是 A ⇒ 本用例的断言（目标是 A / B 收件箱为空）全绿，它静默失去
+// 证明力。加一条「B 注册后立刻断言 `delivery === null`」只能把这个窗口变成**可观测**（而且它本身
+// 依赖同一件事「run 还没结算」才不红，只是把赌注从“结果绿”换成“前提成立”），时序依赖仍在。
+// 把 B 的注册挪到派工**之前**则是把窗口从结构上消掉：派工那一刻注册表已含 B，run 再快也不可能
+// 早于 B 注册，于是「最后注册的句柄 = B」与「owner = A」在任何时序下都可区分 ⇒ 假绿不可能。
+// 下面紧跟的那条**离线反向自证**用「派工后立即结算」的假 provider 把这件事量出来（不联网、始终跑）。
 //
 // 闸门口径（与 `check:release:real` 同一套）：闸门**没开**一律 skip（`npm test` 必须离线可重复）；
 // 闸门**开着**而配置/凭据/端点不可用时**红**——发版清单不能把「没跑成」报成绿（PR #289 阻断 1 的镜像）。
@@ -700,7 +715,109 @@ const MULTI_SESSION_TASK = [
   "首行写「任务已完成」。",
 ].join("\n");
 
-test("erix_run 真机 e2e（#654 多会话）：A 派工的异步 run 结算后只投给 A，后启动的 B 一条通知都收不到", {
+// ---------------------------------------------------------------------------
+// #670 第 2 格：多会话格的**反向自证**（离线、始终跑）——「派工后立即结算」也分得出
+// 「最后注册的句柄」与「owner」。
+//
+// 它量的是**形状**而不是真模型：假 provider（`runJob` 立即 resolve）把「run 快」推到极限
+// （零延迟结算），然后分别用**修前形状**与**修后形状**跑一遍真 `createAsyncRuntime` 的投递链：
+//   - 修后（B 在派工前注册）：投递时刻注册表已含 B ⇒ 正确实现拿到 A，「取最后注册的句柄」拿到 B。
+//     run 再快也没用——错误实现在**任何时序**下都红。
+//   - 修前（B 在结算后才注册）：投递时刻注册表只有 A ⇒ 错误实现拿到的也是 A，与正确实现
+//     **不可区分**，用例的断言全绿 ⇒ 那是一条假绿。
+// 所以「把 B 挪到派工之前」比「加一条 `delivery === null` 断言」强：后者只能把假绿变成**可观测**
+// （它自己也要靠「run 还没结算」才不红，赌注从“结果绿”换成“前提成立”），前者把窗口从结构上消掉。
+// ---------------------------------------------------------------------------
+
+/** 「派工后立即结算」的假 provider 返回值（终局面四件套最小集）。 */
+const INSTANT_PAYLOAD = {
+  ok: true,
+  finalText: "x",
+  rounds: 1,
+  truncated: false,
+  usage: { input_tokens: 1, output_tokens: 1 },
+  termination: { reason: "end_turn" },
+  timeout: false,
+  aborted: false,
+  artifacts: { transcriptPath: null, judgeLogPath: null },
+  extensionCount: 0,
+  maxExtensions: 0,
+  resumable: false,
+};
+
+/**
+ * 跑一遍「A 注册 → （可选）B 注册 → A 派工 → 立即结算 → （可选）B 注册」，返回投递事实。
+ *
+ * `lastRegisteredAtDelivery` 是**投递那一刻**注册表里最后登记的那个句柄——也就是错误实现
+ * 「取最后一个会话」会拿到的东西。它不是模拟出来的：就在 `notify` 回调里读真注册表。
+ */
+async function dispatchAndDeliverInstantly({ registerBBeforeDispatch }) {
+  const dir = mkdtempSync(path.join(tmpdir(), TMP_PREFIX.erixRun));
+  try {
+    const sessionHandles = createSessionHandleRegistry();
+    const handleA = { session: "A" };
+    const handleB = { session: "B" };
+    sessionHandles.set("A", handleA);
+    if (registerBBeforeDispatch) sessionHandles.set("B", handleB);
+    const delivered = [];
+    const lastRegisteredAtDelivery = [];
+    const registry = createAsyncJobRegistry();
+    const runtime = createAsyncRuntime({
+      home: dir,
+      registry,
+      sendRegistry: createCompletionSendRegistry(),
+      sessionHandles,
+      runJob: async () => ({ ...INSTANT_PAYLOAD }),
+      notify: (job, content, options) => {
+        delivered.push(options.session);
+        const lastId = sessionHandles.ids().at(-1);
+        lastRegisteredAtDelivery.push({ id: lastId, handle: sessionHandles.get(lastId) });
+        return "sent";
+      },
+    });
+    const { handle } = runtime.start(
+      { task: "t", cwd: dir, sessionDir: dir, async: true },
+      { sessionId: "A" },
+    );
+    await waitUntil(() => {
+      const job = registry.get(handle.runId);
+      return job !== undefined && !["queued", "running"].includes(job.status);
+    }, { label: "立即结算", timeoutMs: 5_000 });
+    if (!registerBBeforeDispatch) sessionHandles.set("B", handleB);
+    return {
+      delivered: delivered[0],
+      lastRegisteredAtDelivery: lastRegisteredAtDelivery[0],
+      handleA,
+      handleB,
+      view: jobView(registry.get(handle.runId)),
+    };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("erix_run e2e #654 多会话格的形状自证（离线）：B 在派工前注册 ⇒ 「取最后注册的句柄」在任何时序下都红", async () => {
+  // ① 修后形状（本用例的形状）：零延迟结算，B 仍已在注册表里
+  const fresh = await dispatchAndDeliverInstantly({ registerBBeforeDispatch: true });
+  assert.equal(fresh.delivered, fresh.handleA, "正确实现（按 owner 查句柄）投给 A");
+  assert.equal(fresh.view.notifyTargetSessionId, "A", "投递目标与 owner 一致");
+  assert.equal(fresh.view.delivery, "sent");
+  assert.equal(fresh.lastRegisteredAtDelivery.handle, fresh.handleB,
+    `新形状下「最后注册的句柄」必然是 B（实测 ${JSON.stringify(fresh.lastRegisteredAtDelivery.id)}）`
+    + " ⇒ 「取最后一个会话」这类错误实现拿到的不会是 A，用例的断言（A 收到 / B 收件箱空）当场红");
+  assert.notEqual(fresh.lastRegisteredAtDelivery.handle, fresh.handleA,
+    "新形状下 owner 与「最后注册」永不可能重合 ⇒ 提前结算再也不会假绿");
+
+  // ② 修前形状（A 派工 → B 注册 → 等结算）：run 一旦在 B 注册前结算，错误实现也拿到 A
+  const stale = await dispatchAndDeliverInstantly({ registerBBeforeDispatch: false });
+  assert.equal(stale.delivered, stale.handleA, "旧形状下正确实现照样拿到 A（所以「结果绿」本身不证明形状");
+  assert.equal(stale.lastRegisteredAtDelivery.handle, stale.handleA,
+    "旧形状下投递时刻注册表里只有 A ⇒ 「取最后注册的句柄」与「按 owner 查」给出同一个答案"
+    + "（这就是修前那条用例的假绿窗口：它只能靠「run 恰好比 B 慢」才成立）");
+  assert.equal(stale.view.notifyTargetSessionId, "A", "旧形状下盘面也照样是 A：假绿不会留下任何痕迹");
+});
+
+test("erix_run 真机 e2e（#654 多会话）：两个会话先注册完（A 先 B 后）再派工，结算后只投给派工会话 A，B 一条通知都收不到", {
   timeout: 10 * 60 * 1000,
 }, async (t) => {
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
@@ -729,9 +846,18 @@ test("erix_run 真机 e2e（#654 多会话）：A 派工的异步 run 结算后�
     process.env[core.CONFIG_PATH_ENV] = gate.configPath;
 
     const extension = await loadExtensionModule();
+    // ① 两个会话先各自 `session_start`（A 先、B 后）——**在派工之前就把注册顺序定死**（#670 第 2 格）：
+    //    注册顺序 A→B 照样让「最后注册的句柄」与 owner 可区分，但「run 在 B 注册之前就结算」这个
+    //    假绿窗口被从结构上消掉（run 再快也不可能早于 B 注册）。修前是「A 先派工、B 后注册」。
     const a = startSession(extension, { sessionId: sessionA });
+    const b = startSession(extension, { sessionId: sessionB });
+    assert.notEqual(b.sessionId, a.sessionId,
+      "两个会话的 id 必须可区分，否则「投给最后一次 session_start」与「投给 owner」这两种实现分不出来");
+    // 屏障本体：注册表里最后登记的就是 B（「取最后一个句柄」这类错误实现会挑到它）。
+    assert.equal(handles.ids().at(-1), sessionB,
+      `屏障：B 必须是最后注册的会话（实测 ${JSON.stringify(handles.ids())}）`);
 
-    // ① A 先派工（async：立即回句柄，内层 run 在后台跑）
+    // ② A 派工（async：立即回句柄，内层 run 在后台跑）；此刻两个会话都已注册。
     const dispatched = await extension.erixRunTool.execute(
       "tc-665-multi",
       {
@@ -749,11 +875,6 @@ test("erix_run 真机 e2e（#654 多会话）：A 派工的异步 run 结算后�
     const runId = dispatched?.details?.handle?.runId;
     assert.equal(typeof runId, "string",
       `派工必须回句柄，实测 details=${JSON.stringify(dispatched?.details)}`);
-
-    // ② B **后** `session_start`：此刻「最后一次 session_start」是 B，而 owner 是 A。
-    const b = startSession(extension, { sessionId: sessionB });
-    assert.notEqual(b.sessionId, a.sessionId,
-      "两个会话的 id 必须可区分，否则「投给最后一次 session_start」与「投给 owner」这两种实现分不出来");
 
     // ③ 等真 run 结算（真模型 + 真落盘）
     const registry = globalAsyncJobRegistry();
