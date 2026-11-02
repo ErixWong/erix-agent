@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3335,
+    "tests": 3342,
     "fail": 0,
     "maxSkipped": 15
   },
@@ -285,6 +285,18 @@
       "todo": 0,
       "cancelled": 0,
       "why": "tests +2 是有意的增加（#398③ 两格）：test/cli-process.test.js 新增 describe「真起 repl 子进程：裸 --require-deliverable」两格——① 模型写相对路径 report.md ⇒ 裸判据（createDeliverableChecks，按核验那一刻的进程 cwd 解析原始字符串）判 verified 且 deliverables_checked:1/failed:0；② 写完再 exec rm -f 删掉 ⇒ 同一格判 deliverables_failed:1/unverified:1。判别力实证：把 bin/repl.js 里 requireDeliverable === true 的接线断掉两格全红；把 bin/final-guard.js 裸判据缺省 exists 改成 () => true 只让 ② 红。skipped 仍 13 ≤ 上限 15（真 PTY 可用，两格都真跑，无 skip）。"
+    },
+    {
+      "env": "local",
+      "node": "22.23.2",
+      "commit": "a68137f",
+      "tests": 3342,
+      "pass": 3329,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests +7 是有意的增加，两笔各自有实测基点可查：① +6 来自 #476（新建 test/loop-forced-final-fallback-476.test.js 六格：max_rounds_cap 兜底 / end_turn 兜底 / budget_below_working_set 兜底 / 末轮已有正文的对照 / 带 guard 判 revise / guard accept 但交付物判据没过）。在只合了 #476 的树（26e5a0c）上单独测得 3341 = 3335 + 6，这是直接证据。② +1 来自 #663（test/host-consumer-probe.test.js 覆盖判据那一格）。两笔都不是被删或被吞：fail 恒 0。判别力实证（主 agent 独立跑的变异，不与 worker 的重复）：把兜底判据剔掉 ctx.forcedFinal === true 半边、只留判空 ⇒ npm test 退 1，红在新文件之外的两条既有逃生阀测试（#475 与 #467 ⑤ 的 ERIX_NO_FORCED_FINAL=1 那两条）——证明「关掉强制收尾时空正文必须仍是空正文」这条是被既有语义钉住的，不靠新测试自证。skipped 仍 13 ≤ 上限 15。另：本次抬值本身就是 #662 放宽后的第一次——同一棵树在旧口径下会因为「比登记值多」而红。"
     }
   ]
 }
