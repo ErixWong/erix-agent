@@ -5813,17 +5813,22 @@ function registryFacts() {
 
 /** `--self-test` 的 registry 夹具（**只给自测用**：生产路径永远走 `probeRegistry()`）。
  *  把「已发布」定义成 CHANGELOG 里**带日期且没标未发布**的版本段（`hasUnpublishedMark`，与判据 3 同源），
- *  `latest` 默认取 `package.json` 的版本。
+ *  `latest` 默认取那份名单里的**最高版本**（= 这一版从 CHANGELOG 能推出来的发布行）。
+ *  为什么不是 `package.json` 的版本：切版（发版准备）那一刻两者**有意不同**——树内已经是 0.30.0，
+ *  registry 还是 0.29.0（`## [0.30.0] - …（未发布 / unpublished）`）。拿 `PKG_VERSION` 当 latest 会让
+ *  「AGENTS 的发布行句」在所有放行证里假红，而那句恰好是对的。派生自 `versions` 则两个事实同源。
  *  为什么从 CHANGELOG 派生、而不写死一份 registry 快照：写死的快照会在下一次真实发布那天过期，
  *  而过期那天**所有** registry 类用例会一起变红，没人分得清是真回归还是夹具陈了（#292 的教训：
  *  硬编码 121/164 一降基线就变成空操作）。派生版的唯一风险是「夹具与被测文档同源」——所以每条用例
  *  都用 `exclude` / `latest` 把**要证的那一个事实**拨到与文档不同的值上，证的是「门禁读到了它」。 */
-function selfTestRegistry({ exclude = [], latest = PKG_VERSION } = {}) {
+function selfTestRegistry({ exclude = [], latest } = {}) {
   const versions = (changelogSections() ?? [])
     .filter((s) => s.dated && !hasUnpublishedMark(s))
     .map((s) => s.version)
     .filter((v) => !exclude.includes(v));
-  return { ok: true, authoritative: true, latest, versions, source: "self-test 夹具（CHANGELOG 派生）" };
+  const derivedLatest = [...versions].sort(cmpSemver).at(-1) ?? PKG_VERSION;
+  return { ok: true, authoritative: true, latest: latest ?? derivedLatest, versions,
+    source: "self-test 夹具（CHANGELOG 派生）" };
 }
 
 /** 两份「当前版本」声称句的规范写法（形状由本判据看守，改措辞要同步改这里）。 */
@@ -7444,14 +7449,14 @@ const SELF_TEST_CASES = [
     expectGreen: true,
   },
   {
-    label: "#511 判据 2c：0.29 指南（= 当前版本）把「8 groups」写成 9 ⇒ 红并点名真值",
-    overlay: { "docs/host-upgrade-guide-0.29.0.md": (t) => t.replace("**8 groups / 43 leaves**", "**9 groups / 43 leaves**") },
-    expect: [/guide-claim: docs\/host-upgrade-guide-0\.29\.0\.md:\d+ 声称「9 groups」，而 src\/loop\/config-namespace\.js 里是 \*\*8\*\* 个分组/],
+    label: "#511 判据 2c：0.30 指南（= 当前版本）里出现「9 groups」的数量声称 ⇒ 红并点名真值（切版后当前版本指南本身不写数量，所以把错误声称注入到它上面：判据咬的是「当前版本那份指南说了什么」）",
+    overlay: { "docs/host-upgrade-guide-0.30.0.md": (t) => t + "\n\nThe configuration namespace still reads **9 groups / 43 leaves** today.\n" },
+    expect: [/guide-claim: docs\/host-upgrade-guide-0\.30\.0\.md:\d+ 声称「9 groups」，而 src\/loop\/config-namespace\.js 里是 \*\*8\*\* 个分组/],
   },
   {
-    label: "#511 判据 2c：中文侧同理（「8 个分组」→「9 个分组」⇒ 红；中文数词/阿拉伯数字都要接）",
-    overlay: { "docs/host-upgrade-guide-0.29.0_cn.md": (t) => t.replace("**8 个分组 / 43 个叶子**", "**9 个分组 / 43 个叶子**") },
-    expect: [/guide-claim: docs\/host-upgrade-guide-0\.29\.0_cn\.md:\d+ 声称「9 个分组」，而 src\/loop\/config-namespace\.js 里是 \*\*8\*\* 个分组/],
+    label: "#511 判据 2c：中文侧同理（「9 个分组」⇒ 红；中文数词/阿拉伯数字都要接）",
+    overlay: { "docs/host-upgrade-guide-0.30.0_cn.md": (t) => t + "\n\n`config` 命名空间今天仍然是 **9 个分组 / 43 个叶子**。\n" },
+    expect: [/guide-claim: docs\/host-upgrade-guide-0\.30\.0_cn\.md:\d+ 声称「9 个分组」，而 src\/loop\/config-namespace\.js 里是 \*\*8\*\* 个分组/],
   },
   {
     label: "#511 判据 2b：指南把某个 config 叶子归给 0.29.0，而 CHANGELOG 的 0.29.0 段没有它 ⇒ 红（新增不单调，真值只能从 CHANGELOG 取）",
@@ -7479,13 +7484,13 @@ const SELF_TEST_CASES = [
   },
   {
     label: "#511：AGENTS.md 的「本仓版本」写成 0.28.0 ⇒ 红（本仓版本对 package.json，两类句子各对各的真值）",
-    overlay: { [AGENTS_EN]: (t) => t.replace("says `0.29.0` (the repo version)", "says `0.28.0` (the repo version)") },
+    overlay: { [AGENTS_EN]: (t) => t.replace("says `0.30.0` (the repo version)", "says `0.28.0` (the repo version)") },
     simulateRegistry: selfTestRegistry(),
     expect: [/published-claim: AGENTS\.md:\d+ 的「AGENTS\.md「当前版本」句」把\*\*本仓版本\*\*写成 0\.28\.0/],
   },
   {
     label: "#511 第二条评论：这两句里塞一个测量日期 ⇒ 红（日期自己不会过期，留着它等于给「过期」留合法位置）",
-    overlay: { [AGENTS_EN]: (t) => t.replace("says `0.29.0` (the repo version)", "says `0.29.0` (the repo version, measured 2026-10-28)") },
+    overlay: { [AGENTS_EN]: (t) => t.replace("says `0.30.0` (the repo version)", "says `0.30.0` (the repo version, measured 2026-11-03)") },
     simulateRegistry: selfTestRegistry(),
     expect: [/published-claim: AGENTS\.md:\d+ 的「AGENTS\.md「当前版本」句」里带了测量日期/],
   },
@@ -7510,9 +7515,9 @@ const SELF_TEST_CASES = [
     expect: [/guide-coverage: docs\/host-upgrade-guide-0\.29\.0\.md 没有提到config 叶子 `config\.continuity\.handoff`/],
   },
   {
-    label: "#636：只删中文侧的 `compaction_deferred` 那一条 ⇒ 红（另一语言有、这一份没有，就是缺一条）",
-    overlay: { "docs/host-upgrade-guide-0.29.0_cn.md": (t) => t.replace("`compaction_deferred` 事件：当一次折叠因为还有悬空的 `tool_use` 没结清而被推迟时发出。", "一次折叠因为还有悬空的 `tool_use` 没结清而被推迟时，会发出一个事件。") },
-    expect: [/guide-coverage: docs\/host-upgrade-guide-0\.29\.0_cn\.md 没有提到观察者事件 `compaction_deferred`/],
+    label: "#636：只删中文侧的 `compaction` 事件那一条 ⇒ 红（CHANGELOG 的 0.30.0 段说这一版加了它，中文指南没有就是缺一条）",
+    overlay: { "docs/host-upgrade-guide-0.30.0_cn.md": (t) => t.replaceAll("compaction", "折叠事件") },
+    expect: [/guide-coverage: docs\/host-upgrade-guide-0\.30\.0_cn\.md 没有提到观察者事件 `compaction`/],
   },
   {
     label: "#636 中英成对：只从中文指南里删掉一个结构化名字（`ERIX_CONTINUITY_DIR`）⇒ 红（成对判据问的是「另一侧有没有一条」）",
@@ -7521,9 +7526,9 @@ const SELF_TEST_CASES = [
   },
   {
     label: "#636（fail-closed）：CHANGELOG 里没有当前版本段 ⇒ 红（「这一版加了什么」的真值缺位，不许静默放行）",
-    overlay: { "CHANGELOG.md": (t) => t.replace("## [0.29.0] - 2026-10-31", "## [0.9.9] - 2026-10-31") },
+    overlay: { "CHANGELOG.md": (t) => t.replace("## [0.30.0] - 2026-11-03（未发布 / unpublished）", "## [0.9.9] - 2026-11-03") },
     simulateRegistry: selfTestRegistry(),
-    expect: [/guide-coverage: 读不到 CHANGELOG 的 0\.29\.0 段/],
+    expect: [/guide-coverage: 读不到 CHANGELOG 的 0\.30\.0 段/],
   },
   // ══ issue #635 ①：文档里的「点名几份 + 实扫几份 = 下限」份数声称必须等于实测 ══════════
   {

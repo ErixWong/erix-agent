@@ -212,6 +212,10 @@ system 消息归一化。那些是它自己的便利件；你若依赖过它们�
   簿记模块，以及全部 provider 协议件。
 * 零运行时依赖这条规矩。
 
+另有一处只动展示层、不改任何引擎事实的变更：`erix chat` 现在每发生一次真实折叠就打一行，并把同样的记录
+追加进 `judge.log`，所以折叠过上下文的 run 以 `type: "compaction"` 事件可见（配置的策略跑不起来时另有
+一条 `compaction_strategy_fallback`）。事件本身一处未动——名字、载荷都照旧。
+
 ### 4.1 一处新增配置叶子，以及它带来的 slot 同名键迁移危险（issue #682）
 
 0.30.0 还**新增**一个配置叶子；没有退役任何东西。`config.metadata.modelMetadata.budgetTokens` 是引擎侧的
