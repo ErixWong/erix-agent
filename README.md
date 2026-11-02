@@ -1028,14 +1028,22 @@ The shared CLI flags are:
   settable as the `slots.default.compaction` config field). `fold-llm` costs one extra
   main-model call per compaction. A host that calls the library with no strategy gets the
   library behaviour instead — see the contract's "default" note: the two layers are separate
-  facts, and `bin/` is a verifier/debugger, not the contract surface.
+  facts, and `bin/` is a verifier/debugger, not the contract surface. Since issue #673 the CLI
+  also **shows** which layer really folded: each real fold prints one stderr line
+  (`[compaction] round=… strategy=… foldedRounds=… tokensBefore=… tokensAfter=…`), the run ends
+  with one machine-parsable `=== 折叠 === strategy=… folds=… foldedRounds=… tokens=…` line next
+  to `=== 统计 ===`, and the fold events are appended to `judge.log`. That is a display/audit
+  channel over facts the engine already reports (`compactionStats[].strategyName`, issue #657) —
+  a run that folded nothing prints exactly what it printed before.
 - `--tools <comma-separated names>` is a hard capability whitelist for both
   `chat` and `repl`; unknown names warn, and an empty filtered set is an error.
 - `--judge-log <path>` appends judge decisions (round + interception) as JSONL
   in `chat`, each carrying `runId` and the resolved `model`, plus one terminal
   `run_outcome` record for the run (that record is written even when the judge was off:
   it is the run terminal record, not a decision, and it is what makes per-model run
-  accounting possible without a second archive). Default location is
+  accounting possible without a second archive) and, since issue #673, one record per real
+  fold (`type: "compaction"`, carrying the executing `strategyName`) plus the one-shot
+  `compaction_strategy_fallback`. Default location is
   `<archive dir>/judge.log`; unset fields mean "could not resolve", never a
   placeholder. The archive is written verbatim (redaction was retired in #55).
 

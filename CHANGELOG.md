@@ -52,7 +52,54 @@
   （失败那一折什么都没写，既不重放也不漏放；这一次摘要器必须是好的）/ 显式改选 `fold-statistical`
   （一次 LLM 都不调、不会这样失败——它**不是**自动兜底）。**CLI 也不再是哑的：** 失败终局退出 **`5`**
   （`bin/cli.js` 的 `exitCodeForRunFailure`），不再与用法错误共用 `1`，于是脚本化调用方不必解析
-  stdout 就能把「跑完但没核验」（`4`）与「真的失败了」分开。
+### Added
+
+- **The CLI stops being mute about which layer folded (issue #673, display layer only — no engine
+  fact changes).** Until now `grep -c strategyName bin/cli.js` was `0`: issue #657 had already made
+  `compactionStats[].strategyName` and the `type: "compaction"` event tell the truth about which
+  strategy actually performed a fold, and issue #661 had made a failing summarizer fail loudly — but
+  `erix chat` printed none of it, so a user watching a run could not tell a semantic `fold-llm` fold
+  from a silent `sliding-window` fallback. `erix chat` now (a) prints one **stderr** line per real
+  fold — `[compaction] round=8 strategy=fold-llm foldedRounds=2 tokensBefore=11143 tokensAfter=8332`
+  — plus one line for the one-shot `compaction_strategy_fallback` carrying `detail`'s fixed first
+  sentence, (b) ends the run with one machine-parsable line next to the existing summary,
+  `=== 折叠 === strategy=fold-llm folds=1 foldedRounds=2 tokens=11143->8332` (`strategy` = the names
+  that actually folded, in first-appearance order; `folds` = real fold count; `foldedRounds` = their
+  sum; `tokens` = the first fold's `tokensBefore` → the last fold's `tokensAfter` — no `rounds=`
+  range is printed because `compactionStats` carries no round total, and inventing one would be
+  fabrication), and (c) appends those same events to `judge.log` (`type: "compaction"` /
+  `"compaction_strategy_fallback"`, `ts` added by the existing writer, payload verbatim). Nothing on
+  the engine side moved: no new event, no new field, no `src/` edit, no new CLI flag, and no
+  `--quiet`. Both channels are silent when nothing folded — a zero-fold run keeps its stdout, stderr
+  and `judge.log` byte-for-byte (fold-adjacent stats that folded no round are not copied, so "no
+  fold" stays readable as "no record") — and the immediate line goes to stderr precisely so a
+  `--stream` run's final bytes stay untouched. A failing stderr write (EPIPE) is swallowed exactly
+  like the judge-log writer already does: a display failure never turns a finished run into a failed
+  one. New process-level suite `test/cli-compaction-strategy-visibility-673.test.js` (fake HOME + real
+  socket fake upstream, a real fold forced through `--compact-budget` + `keepRounds`) plus an
+  in-process pin for the fallback event, which the CLI cannot construct by design (`context.strategy`
+  is always configured there).
+- **CLI 不再对「到底哪一层折了」保持哑巴（issue #673，只做展示层——引擎事实一个字未改）。**
+  此前 `grep -c strategyName bin/cli.js` 是 `0`：issue #657 已经让 `compactionStats[].strategyName`
+  与 `type: "compaction"` 事件说出「真正执行折叠的是哪个策略」，issue #661 已经让摘要器失败响亮
+  失败——但 `erix chat` 一个字都不显示，于是看着一个 run 跑的用户分不清语义 `fold-llm` 折叠与静默的
+  `sliding-window` 兜底。`erix chat` 现在 ① 每次**真折叠**在 **stderr** 打一行
+  `[compaction] round=8 strategy=fold-llm foldedRounds=2 tokensBefore=11143 tokensAfter=8332`，并给
+  一次性 `compaction_strategy_fallback` 也打一行（带 `detail` 那句写死的首句）；② 终局在既有统计行
+  旁边多一行可被脚本 grep 的
+  `=== 折叠 === strategy=fold-llm folds=1 foldedRounds=2 tokens=11143->8332`（`strategy` = 真正折过
+  的策略名，按首次出现顺序；`folds` = 真折叠条数；`foldedRounds` = 它们之和；`tokens` = 首条折叠的
+  `tokensBefore` → 末条折叠的 `tokensAfter`——**不打** `rounds=` 区间，因为 `compactionStats` 里没有
+  「当时总共几轮」这个事实，凑一个就是造假）；③ 把同一批事件追加进 `judge.log`
+  （`type: "compaction"` / `"compaction_strategy_fallback"`，`ts` 由既有写入器加，payload 原样）。
+  引擎侧一处未动：没有新事件、没有新字段、没有 `src/` 改动、没有新 CLI 旗标，也没有 `--quiet`。
+  一次没折时两条渠道都安静——零折叠 run 的 stdout / stderr / `judge.log` 逐字不变（折叠旁边那些
+  「一轮没折」的统计不抄，这样「没折叠」在账上就是「没记录」）——即时提示走 stderr 正是为了
+  `--stream` 的终稿字节流一字不动。stderr 写失败（EPIPE）与 judge.log 写入器同一条纪律被吞掉：
+  展示层失败绝不把已跑完的 run 变成失败。新增进程级套件
+  `test/cli-compaction-strategy-visibility-673.test.js`（假 HOME + 真 socket 假上游，靠
+  `--compact-budget` + `keepRounds` 逼出真折叠），外加兜底事件的进程内钉子——CLI 按设计构造不出它
+  （那里 `context.strategy` 永远是配置好的）。
 
 ### Fixed
 

@@ -2702,6 +2702,17 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 两个 additive 字段让这些记录能按模型分组，一个 additive 事件让它们能与终局 join。
 既有字段名称、形状、语义一律不动，完全不读这三个新字段的宿主行为与之前一致。
 
+**CLI 这个宿主往里写什么（issue #673）。** `erix chat` 与其它宿主同格，所以这是**展示/留痕**的
+选择，不是引擎新事实：它把每一次**真折叠**的 `compaction` 事件（`compacted === true`，带真正
+执行折叠的 `strategyName`）与一次性 `compaction_strategy_fallback` 事件，和 `run_outcome` 一起
+追加进同一份 `judge.log`；并在 **stderr** 上每个这种事件打一行即时提示
+（`[compaction] round=… strategy=… foldedRounds=… tokensBefore=… tokensAfter=…`，或
+`[compaction] fallback round=… detail=…`）。这一路**不写 stdout**——`--stream` 的终稿字节流
+一字不动；一次没折的 run 不多打一行、也不写 `type: "compaction"` 记录（折叠旁边的那些「一轮
+没折」的统计——user-turn 守卫与 TTL 层——故意不抄，这样「没折叠」在账上就是「没记录」）。引擎
+自己的面（事件 payload、`compactionStats`、`judge.log` 的字段形状）一个字未改；不用 CLI 的宿主
+看到的与从前逐字相同。
+
 | 字段 | 出现在 | 契约 |
 |---|---|---|
 | `runId` | 每条 `onJudge` 记录与 `run_outcome` 事件 | 宿主传给 `runToolLoop` 的 run 标识，也是流式决策与终局记录之间的 join 键。宿主没传 `runId` 时该字段**缺省**——引擎不自己编一个。 |

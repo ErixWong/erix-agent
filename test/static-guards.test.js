@@ -4049,8 +4049,17 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  * ```
  * # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 3 条 / 英文 3 条 / 配对 3 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 2（校准面 \#\# [Unreleased]）
  * ```
+ *
+ * issue #673：`## [Unreleased] ### Added` 再新增一对（CLI 折叠可见性：终局摘要行 + stderr 即时提示 +
+ * judge.log 落盘，issue 引用集合 #673）⇒ 面没挪，仍是 `## [Unreleased]`，实测变成 **4 对**，
+ * 地板 3 → 4（同一条规则：只升不降，这次又是**升**）。守卫自己的 diagnostic 原文（改常量**之前**跑的）：
+ *
+ * ```
+ * # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 4 条 / 英文 4 条 / 配对 4 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 3（校准面 \#\# [Unreleased]）
+ * # 配对地板：实测 4 对 > 地板 3 对 ⇒ 可以抬地板到 4
+ * ```
  */
-const CHANGELOG_PAIR_FLOOR = 3;
+const CHANGELOG_PAIR_FLOOR = 4;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
