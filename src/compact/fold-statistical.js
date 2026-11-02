@@ -1177,7 +1177,7 @@ function prependSummary(
 }
 
 /**
- * 对给定 foldedPayload 生成统计摘要文本（fold-llm 降级路径复用，避免复制逻辑）。
+ * 对给定 foldedPayload 生成统计摘要文本（`fold-llm` 的机械替代物、`sliding-window` 与引擎定稿处都复用它，避免复制逻辑）。
  * 工具足迹、锚点节、恢复提示与 fold-statistical 的 compact 产物同一套规则。
  *
  * @param {object[]} foldedPayload Raw folded messages.

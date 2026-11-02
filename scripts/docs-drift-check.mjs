@@ -3299,6 +3299,266 @@ function collectCompactionDefaultErrors() {
   return errors;
 }
 
+// ── 2.11 退役语义「摘要器失败 ⇒ 降级/兜底为统计摘要」（issue #668 ②）──────────────
+//
+// 病根（#668 ②）：issue #661 把「`fold-llm` 摘要器失败/超时 ⇒ 静默降级为统计摘要、run 不失败」判死
+// （现在是终局错误 `summarizer_failed`：run 以 `failed` 结束、CLI 退出码 5）。三处**活文档**在撒谎的
+// 那几句已由 #661 自己修掉；本节买的是**防回潮**——那句话再出现在活面上就红。
+//
+// 为什么不能拿一条正则了事（本节的**全部**风险）：朴素搭配会同时命中「已死的谎」与「还活着的事实」——
+//   · `src/compact/fold-llm.js` 里那几处讲的是**仍然存在**的降级分类（`classifyFoldDegradeKind`）与
+//     「改前是什么」；`src/loop/orchestrator.js` 里那几处讲的是 #643 的**预算兜底 + 机械摘要**，
+//     那是另一套机制，与摘要器失败无关；
+//   · `src/compact/fold-summary-journal.js` 里「`fold-llm` 的降级兜底」是**合法保留形态**：
+//     #661 之前写下的旧账本行仍可能带 `source: "statistical"`，映射表照旧要认它。
+// 所以判据是「搭配 + 三种合法读法」，不是「出现某个词就红」：
+//   ① **搭配**：同一行里「降级 / 兜底 / 回退 / 退回 / degrade / fall back / fallback」与
+//      「统计摘要 / statistical summary」相距 ≤ 30 字符。英文的**连字符形态**（`statistical-summary
+//      degradation`）也算：0.30 指南与 charts 用的就是它，而只认空格形态的正则漏掉了
+//      `src/compact/provider-summarizer.js` 里一句一模一样的谎（#661 之后它一直是假话，门禁一路绿）。
+//   ② **三种合法读法**（命中带其中一条 ⇒ 记为 `mention`，不红）：
+//      · 直接否定：`不再` / `不会` / `从未` / `no longer` 与降级动词之间只隔 ≤ 8 个**非断句**字符
+//        （`不会退回统计摘要`、`不再降级统计摘要`）。刻意**不**把「句子里出现 `不会` / `not`」当放行：
+//        「失败不会让 run 失败，而是降级为统计摘要」正是谎的形状，而它的 `不会` 并不紧挨降级动词；
+//      · 对照：那半句前面 24 字符内有 `instead of` / `rather than` / `not a` / `而不是` / `而非` / `不是`；
+//      · 历史框定：命中行上下各 ≤ 2 行（遇空行止）的同一段里出现时态标记（`改前` / `此前` /
+//        `已被删` / `旧语义` / `removed` / `used to` / `退役` …）——历史要留，但不许冒充现状。
+//   ③ 判据只咬**活面**：入库清单（`git ls-files`）里的 `*.md` 加 `bin/`、`src/` 的 JS（**注释也在面内**：
+//      改代码的人读的第一手材料就是注释），按路径剔掉历史类。面**只取** `git ls-files`（#560 的教训），
+//      绝不走文件系统遍历；`git` 拿不到清单就报红，不回退。
+//
+// 与 `LIVE_DOC_HISTORY` 的差别是**故意的**：那一族的题目是「默认值变了没有」，版本化升级指南讲的正是
+// 「变了」，所以它在面内；本族的题目是「旧行为还在不在」，0.29 指南里「统计摘要器降为降级兜底」是
+// **当时为真**的记录，把它算成谎等于逼人改历史（#668 的分类表也把它列在历史一类）。
+//
+// 源码真值（`retiredSemanticsTruth()`）：本节不抄文档，而是把文档那半句**绑到源码**上——
+// `src/compact/fold-llm.js` 的**代码面**（注释先涂空、字符串留着，与 #299 的符号抽取同一份词法分类）
+// 必须仍有 `summarizer_failed`，且必须**不再**出现退役横幅 `已降级为统计摘要`。任一翻转 ⇒ 红：
+// 那说明「失败即降级」的路径回来了（或终局错误没了），此时活文档里每一处「失败是终局错误、不再降级」
+// 都变成假话——**改源码真值不改文档**就是这么被抓到的（自测里有一格专门打它）。
+
+/** 本族的历史面（写的是「当时如此」）：正文一字不改，也不进判据。 */
+const RETIRED_SEMANTICS_HISTORY = Object.freeze([
+  /^CHANGELOG\.md$/u,
+  /^docs\/v0\./u,
+  /^docs\/decisions\//u,
+  /^docs\/design\//u,
+  /^docs\/research\//u,
+  /^docs\/harness-comparison\//u,
+  /^docs\/tasks\//u,
+  /^docs\/delivery\//u,
+  /^docs\/issue-469-/u,
+  /^docs\/host-upgrade-guide-/u,
+]);
+
+/** 源码面：`bin/` 与 `src/` 的 JS（注释也在面内）。 */
+const RETIRED_SEMANTICS_SOURCE = /^(?:bin|src)\/.*\.js$/u;
+
+/** 真值出处：退役路径就在这个文件里（终局错误与退役横幅都在它身上）。 */
+const RETIRED_SEMANTICS_TRUTH_SRC = "src/compact/fold-llm.js";
+/** 退役横幅的字面量（#661 之前 fold-llm 失败时打的那一块）。回到**代码面**就是路径回来了。 */
+const RETIRED_SEMANTICS_BANNER = "已降级为统计摘要";
+
+/** 搭配的两半。`fall(?:s|ing)?\s*back` 连 `falls back` / `falling back` 一起认。 */
+const RS_DEGRADE = /(?:降级|兜底|回退|退回|degrad\w*|fall(?:s|ing)?\s*back|fallback)/giu;
+/** `statistical summary` 与 `statistical-summary` 都算（见上面 §2.11 的 ①）。 */
+const RS_STATISTICAL = /(?:统计摘要|statistical[\s-]+summary)/giu;
+/** 搭配的距离上限（字符）。 */
+const RS_PAIR_WINDOW = 30;
+/** 文件级快速排除：两半**都**得出现过才可能搭配（`--self-test` 一轮要跑上百次，
+ *  而 249 份入库文件里只有 21 份同时带这两半——这不是放宽判据，是同一个条件的廉价前判）。 */
+const RS_ANY_DEGRADE = /(?:降级|兜底|回退|退回|degrad|fall)/iu;
+const RS_ANY_STATISTICAL = /(?:统计摘要|statistical)/iu;
+/** ②·直接否定：否定词与降级动词之间只隔 ≤ 8 个非断句字符。 */
+const RS_NEGATION = /(?:不再|不会|从未|no longer)\s*[^。；\n]{0,8}?(?:降级|兜底|回退|退回|degrad\w*|fall(?:s|ing)?\s*back|fallback)/iu;
+/** ②·对照：命中半句前面这段窗口里出现对照词。 */
+const RS_CONTRAST = /(?:instead of|rather than|not a |而不是|而非|不是|并非)/iu;
+const RS_CONTRAST_LEAD = 24;
+/** ②·历史框定：同一段里的时态标记。 */
+const RS_HISTORICAL = /改前|此前|以前|原来|旧语义|旧账本|旧版|已删|被删|删掉|删除|移除|removed|deleted|dropped|used to|previously|退役|retired/iu;
+
+/** 中英成对的那两对活文档（复用 `assertPairCensus`，不另造处数对账）。 */
+const RETIRED_SEMANTICS_PAIRS = Object.freeze([[REQ_EN, REQ_CN], [CHARTS_EN, CHARTS_CN]]);
+/** 必须命中至少一次的文档（整句被删掉、或措辞改到判据够不着 ⇒ 检查面在这份文档失效）。 */
+const RETIRED_SEMANTICS_REQUIRED = Object.freeze([REQ_EN, REQ_CN, CHARTS_EN, CHARTS_CN]);
+
+/** 面只算一次：`--self-test` 一轮要跑上百次全量检查，但 overlay 改的是**正文**，入库清单不变。 */
+let RETIRED_SEMANTICS_FACE_CACHE = null;
+
+/**
+ * 本族的扫描面 = **入库**清单（`git ls-files`）里的 Markdown 与 `bin/`、`src/` 的 JS，按路径剔掉历史类。
+ *
+ * 为什么走 `git ls-files` 而不是遍历文件系统（#560 的教训）：遍历会把不入库的文件喂给判据，
+ * 于是同一份仓库内容在开发树与干净克隆里给出两个答案。清单拿不到 ⇒ **报红**（#164 口径：
+ * 抽不到真值就报错），**没有**文件系统回退分支。
+ *
+ * @returns {{docs: string[], error: string|null}}
+ */
+function retiredSemanticsFace() {
+  if (RETIRED_SEMANTICS_FACE_CACHE !== null) return { docs: RETIRED_SEMANTICS_FACE_CACHE, error: null };
+  let raw;
+  try {
+    raw = execFileSync("git", ["ls-files", "-z", "--cached", "--full-name"], {
+      cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 32 * 1024 * 1024,
+    });
+  } catch (error) {
+    const detail = String(error?.stderr ?? error?.message ?? error).trim().split("\n").filter(Boolean)[0] ?? String(error);
+    return {
+      docs: [],
+      error: `retired-semantics/face: 取不到入库清单（\`git ls-files\` 失败：${detail}）——本族的扫描面失效。`
+        + "不许退回文件系统遍历：那会把不入库的文件喂给判据，让门在开发树与干净克隆里给出两个答案（#560）",
+    };
+  }
+  const docs = [...new Set(raw.split("\0")
+    .filter((rel) => rel.length > 0)
+    .map((rel) => rel.split(path.sep).join("/")))]
+    .filter((rel) => rel.endsWith(".md") || RETIRED_SEMANTICS_SOURCE.test(rel))
+    .filter((rel) => !RETIRED_SEMANTICS_HISTORY.some((re) => re.test(rel)))
+    .sort();
+  if (docs.length === 0) {
+    return { docs, error: "retired-semantics/face: 入库清单剔掉历史类之后是空的——本族会假绿（#164 口径：抽不到真值就报错）" };
+  }
+  RETIRED_SEMANTICS_FACE_CACHE = docs;
+  return { docs, error: null };
+}
+
+/** 命中行上下各 ≤ 2 行的同段窗口（遇空行止）。历史框定只在这个窗口里找。 */
+function retiredSemanticsWindow(lines, index, span = 2) {
+  let from = index;
+  let to = index;
+  while (from > 0 && index - from < span && lines[from - 1].trim() !== "") from -= 1;
+  while (to + 1 < lines.length && to - index < span && lines[to + 1].trim() !== "") to += 1;
+  return lines.slice(from, to + 1).join("\n");
+}
+
+/**
+ * 一段文本里所有「降级 × 统计摘要」的搭配。
+ *
+ * @param {string} src 文件正文
+ * @returns {Array<{line: number, why: string|null, snippet: string}>} `why === null` ⇒ 声称（红）；
+ *   否则是带标记的合法读法（`negation` / `contrast` / `historical`）。
+ */
+function retiredSemanticsHits(src) {
+  const hits = [];
+  const lines = src.split("\n");
+  for (const [index, line] of lines.entries()) {
+    const degrade = [...line.matchAll(RS_DEGRADE)].map((m) => m.index);
+    const statistical = [...line.matchAll(RS_STATISTICAL)].map((m) => m.index);
+    if (degrade.length === 0 || statistical.length === 0) continue;
+    let closest = null;
+    for (const d of degrade) {
+      for (const s of statistical) {
+        const gap = Math.abs(d - s);
+        if (gap > RS_PAIR_WINDOW) continue;
+        if (closest === null || gap < closest.gap) closest = { gap, start: Math.min(d, s) };
+      }
+    }
+    if (closest === null) continue;
+    const window = retiredSemanticsWindow(lines, index);
+    const lead = line.slice(Math.max(0, closest.start - RS_CONTRAST_LEAD), closest.start);
+    const why = RS_NEGATION.test(window) ? "negation"
+      : RS_CONTRAST.test(lead) ? "contrast"
+        : RS_HISTORICAL.test(window) ? "historical" : null;
+    hits.push({ line: index + 1, why, snippet: line.trim().slice(0, 160) });
+  }
+  return hits;
+}
+
+/**
+ * 源码真值：`fold-llm` 的失败出口**必须**仍是终局错误，且退役横幅**必须**不在代码面里。
+ *
+ * 注释先涂空、字符串留着（`maskJs`，与 #299 的符号抽取同一份词法分类）：注释里引用那句横幅是合法的
+ * （那是在讲它退役了），而它若回到**代码**里，一定是字符串字面量。
+ *
+ * @returns {{errors: string[], terminal: boolean, bannerGone: boolean}}
+ */
+function retiredSemanticsTruth() {
+  const errors = [];
+  const src = textOf(RETIRED_SEMANTICS_TRUTH_SRC);
+  if (typeof src !== "string") {
+    errors.push(`retired-semantics/truth: 读不到 ${RETIRED_SEMANTICS_TRUTH_SRC}——「摘要器失败是终局错误」这条真值`
+      + "无从抽起（检查面失效，#164 口径：抽不到真值就报错）");
+    return { errors, terminal: false, bannerGone: false };
+  }
+  const code = maskJs(src, { keepStrings: true });
+  const terminal = /summarizer_failed/u.test(code);
+  if (!terminal) {
+    errors.push(`retired-semantics/truth: ${RETIRED_SEMANTICS_TRUTH_SRC} 的**代码面**里抽不到 \`summarizer_failed\`——`
+      + "摘要器失败不再是终局错误，而活文档仍在说它是（改源码真值不改文档 = 文档在撒谎）");
+  }
+  const bannerLine = code.split("\n").findIndex((line) => line.includes(RETIRED_SEMANTICS_BANNER));
+  const bannerGone = bannerLine === -1;
+  if (!bannerGone) {
+    errors.push(`retired-semantics/truth: ${RETIRED_SEMANTICS_TRUTH_SRC}:${bannerLine + 1} 的**代码面**里又出现了退役横幅`
+      + `字面量 \`${RETIRED_SEMANTICS_BANNER}\`——「失败即降级为统计摘要」那条路径回到了代码里，`
+      + "而活文档仍在说「失败是终局错误、不再降级」：两侧必须一起动（改源码真值不改文档 = 文档在撒谎）");
+  }
+  return { errors, terminal, bannerGone };
+}
+
+/**
+ * 本族的判据：活面上每一处「降级 × 统计摘要」的搭配都必须带三种合法读法之一，
+ * 且那半句必须与源码真值一致（见 §2.11 的节头）。
+ *
+ * @returns {string[]} 错误文本（不直接写全局，好让 `--self-test` 复用同一份实现）
+ */
+function collectRetiredSemanticsErrors() {
+  const errors = [];
+  const notes = [];
+  const face = retiredSemanticsFace();
+  if (face.error !== null) errors.push(face.error);
+
+  const claims = [];
+  const mentions = [];
+  const perDoc = new Map();
+  for (const doc of face.docs) {
+    const src = textOf(doc);
+    if (typeof src !== "string") {
+      errors.push(`retired-semantics: 读不到 ${doc}——它在入库面里，读不到就等于那份没人校`);
+      continue;
+    }
+    if (!RS_ANY_DEGRADE.test(src) || !RS_ANY_STATISTICAL.test(src)) continue;
+    for (const hit of retiredSemanticsHits(src)) {
+      perDoc.set(doc, (perDoc.get(doc) ?? 0) + 1);
+      (hit.why === null ? claims : mentions).push({ doc, ...hit });
+    }
+  }
+
+  for (const claim of claims) {
+    errors.push(`retired-semantics: ${claim.doc}:${claim.line} 说「摘要器失败/超时 ⇒ 自动降级或兜底为统计摘要」，`
+      + "而 issue #661 起那是**终局错误**（`summarizer_failed`：run 以 `failed` 结束、CLI 退出码 5，不退回统计摘要）"
+      + `\n      「${claim.snippet}」`
+      + "\n      三种合法写法（判据认这三种）：① 直接否定——`不再` / `不会` / `no longer` 紧挨着降级动词；"
+      + "② 对照——`instead of` / `rather than` / `而不是` / `而非` 紧挨着那半句；"
+      + "③ 历史框定——同一段里带 `改前` / `此前` / `已被删` / `removed` 一类时态标记（历史要留，但不许冒充现状）。"
+      + "\n      想表达「零 LLM 的折叠」请显式点名 `fold-statistical` 是**替代选择**，而不是 `fold-llm` 的自动兜底。");
+  }
+
+  const truth = retiredSemanticsTruth();
+  errors.push(...truth.errors);
+  if ((!truth.terminal || !truth.bannerGone) && claims.length + mentions.length > 0) {
+    errors.push(`retired-semantics/truth: 源码真值已经不再支持「失败即终局」这句话，而活面里仍有 `
+      + `${claims.length + mentions.length} 处相关陈述（声称 ${claims.length} / 带标记的保留形态 ${mentions.length}）——`
+      + "改源码真值不改文档就是这种形状，两侧必须一起动");
+  }
+
+  for (const doc of RETIRED_SEMANTICS_REQUIRED) {
+    if ((perDoc.get(doc) ?? 0) > 0) continue;
+    errors.push(`retired-semantics: ${doc} 里一处「退役语义」陈述都没有——该文件登记为必须命中`
+      + "（整句被删掉、或措辞改到判据够不着，检查面在这份文档就失效了）");
+  }
+  const counts = {};
+  for (const doc of RETIRED_SEMANTICS_PAIRS.flat()) counts[doc] = perDoc.get(doc) ?? 0;
+  assertPairCensus(errors, { rule: "retired-semantics", counts, docs: RETIRED_SEMANTICS_PAIRS.flat() });
+
+  notes.push(`retired-semantics: 「摘要器失败 ⇒ 降级/兜底为统计摘要」这条退役语义（#668 ②）在 `
+    + `${face.docs.length} 份入库活文件上逐行对账（Markdown + \`bin/\`/\`src/\` 的 JS，历史类按路径不判）：`
+    + `声称 ${claims.length} 处（红）/ 带标记的保留形态 ${mentions.length} 处；源码真值 \`summarizer_failed\` `
+    + `${truth.terminal ? "在" : "缺"}、退役横幅 ${truth.bannerGone ? "已不在代码面里" : "又回到代码面里"}`);
+  collectRetiredSemanticsErrors.notes = notes;
+  return errors;
+}
+
 // ── 3. README 引用的 package.json 清单（files / exports）────────────────────────
 // issue #210 的**主修项**：这块原先是 fail-open 的——围栏定位靠真值键（`b["./tools"]`、
 // `b.includes("src")`），文档把 `"./tools"` 改名或整个删掉时块就找不到了，于是退化成一条 warn
@@ -5226,6 +5486,8 @@ function collectAllDrift() {
     ...collectCliFlagErrors(),
     // #668 ①：压缩策略「默认值」的分层对账（库层 / CLI 层各自绑源码真值）
     ...collectCompactionDefaultErrors(),
+    // #668 ②：退役语义「摘要器失败 ⇒ 降级/兜底为统计摘要」——活面 × 源码真值（见 §2.11）
+    ...collectRetiredSemanticsErrors(),
     // issue #511：「这句话属于哪个版本」与「这个版本发布了没有」四条（自测要连它们一起变异）
     ...collectDocVersionErrors(), ...collectVersionAttributionErrors(), ...collectGuideClaimErrors(),
     ...collectChangelogPublicationErrors(), ...collectPublishedClaimErrors(),
@@ -5261,6 +5523,9 @@ for (const n of collectCliFlagErrors.notes ?? []) note(n);
 // #668 ①：压缩策略默认值（库层 / CLI 层分开对账）
 for (const e of collectCompactionDefaultErrors()) err(e);
 for (const n of collectCompactionDefaultErrors.notes ?? []) note(n);
+// #668 ②：退役语义（活面 = 入库 Markdown + bin/src JS，历史类不判；源码真值当场对账）
+for (const e of collectRetiredSemanticsErrors()) err(e);
+for (const n of collectRetiredSemanticsErrors.notes ?? []) note(n);
 // ── 9. 「这句话属于哪个版本」（issue #511）──────────────────────────────────────
 for (const collect of [collectDocVersionErrors, collectVersionAttributionErrors, collectGuideClaimErrors,
   collectChangelogPublicationErrors, collectPublishedClaimErrors, collectGuideCoverageErrors, collectBundleTableErrors]) {
