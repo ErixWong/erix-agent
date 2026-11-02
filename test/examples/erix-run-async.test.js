@@ -919,7 +919,12 @@ test("#234 R6：status.json 的 artifacts 沿用 core 的 resolveArtifacts 口�
   assert.equal(disk.status, "aborted");
   assert.equal(disk.termination, null, "内层还没给出终局时不替引擎发明 termination.reason");
   assert.equal(disk.timeout, true, "看门狗致因要如实标在盘上");
-  assert.ok(runtime.registry.size >= 0);
+  // #670 第 3 格：`assert.ok(runtime.registry.size >= 0)` 对 `Map.size` 恒真（等于没断言）。
+  // 这条用例的意图是「**全程没派工**，只是拿 jobView / writeStatusFile 看一个手搓 job」⇒
+  // 注册表必须还是空的：多登记一条就意味着有人在这个只读路径上偷偷开了一个 job。
+  assert.equal(runtime.registry.size, 0,
+    `这条用例没派工 ⇒ job 注册表必须还是空的（实测 ${runtime.registry.size}，说明有代码在只读路径上登记了 job）`);
+  assert.equal(runtime.registry.get(runId), undefined, "手搓的那个 job 也不许被登记进注册表");
 });
 
 // ---------------------------------------------------------------------------
