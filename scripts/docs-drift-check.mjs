@@ -2716,7 +2716,7 @@ function collectCliFlagErrors() {
 // **没有任何一层默认 `fold-statistical`**：它是 `fold-llm` 摘要失败 / 超时之后的确定性降级兜底。
 // 把 CLI 的默认写成「库的默认」是本仓红线里的错（`bin/` 是校验器/调试器，不是契约面）。
 //
-// 为什么只登记**具体搭配**、不做自然语言判定（#668 自己划的边界）：判据必须机械、可复现。本节两条：
+// 为什么只登记**具体搭配**、不做自然语言判定（#668 自己划的边界）：判据必须机械、可复现。本节三条：
 //   ① **分层声称**（`COMPACTION_CLAIM_SHAPES`）：句子用登记过的标记词（`library default` / `库层默认`
 //      / `CLI slot default` / `CLI 槽位默认`）指出**它说的是哪一层**，紧随其后的策略名必须等于**那一层**
 //      的源码真值。句子改了没同步源码 / 源码改了没同步句子 —— 两个方向都红并点名 `doc:行`。
@@ -2725,9 +2725,22 @@ function collectCliFlagErrors() {
 //   ② **退役句式**（`COMPACTION_MIXED_SHAPES`）：`X remains the default everywhere` /
 //      `默认 everywhere 仍是 X` 这一种**把两层混成一句**的写法整体退役 —— 它既指不出层，也无法与
 //      任何一层的真值对账；改写方向是拆成两句、各写一层（这正是本票要的「分层陈述」）。
+//   ③ **无标记的默认声称**（`compactionUnmarkedDefaultClaims`，issue #668 ① 的残留盲区）：①② 都靠
+//      **标记词**判断句子指哪一层，于是「新写一句不带任何标记词的默认声称」整句落在面外 —— 现场：
+//      往契约里插一句 `By default, compaction uses `fold-statistical` whenever a host does not
+//      configure a strategy.`，`check:docs` exit 0。#668 正文自己警告过这个病：**关键词面窄于语义面**
+//      （上一次漏检就是因为它写的是「降级兜底」而不是「降级为统计摘要」）。所以 ③ 不是再往标记词表
+//      里加几个词，而是把①的报错理由**反过来当规则**：活文档里凡「默认声称 + 三个内置策略名之一」
+//      同句搭配，**必须**带分层标记词，否则红并点名 `文件:行`，报错给出正解（拆成两句、各带层标记）。
+//      判据必须落在「**这句在说默认策略**」而不是「句子里同时出现了 default 和策略名」——见
+//      `compactionUnmarkedDefaultClaims` 上那段「怎么区分」的注释（本单的全部风险都在那儿）。
 //
-// 覆盖面（#668 点名的活文档）：两份契约、两份 README、两份 AGENTS、两份需求文档、`erix_run` 的
-// README。`CHANGELOG.md` 与升级指南不在面内（历史记录写的是当时为真，改它等于伪造历史）。
+// ① ② 的覆盖面（#668 点名的活文档）：两份契约、两份 README、两份 AGENTS、两份需求文档、`erix_run` 的
+// README。`CHANGELOG.md` 与升级指南不在① ② 面内（历史记录写的是当时为真，改它等于伪造历史）。
+// ③ 的覆盖面**另算**：入库 Markdown 全扫（`git ls-files`，#560 的教训：清单不许退回文件系统遍历），
+// 只按路径剔掉**历史类**（`CHANGELOG.md` / `docs/v0.*` / `docs/decisions|design|research|harness-comparison|
+// tasks|delivery/` / `docs/issue-469-*`）——升级指南留在面内：它们讲的正是「默认变了」，一句新的默认声称
+// 落在那里同样要指得出层（`The CLI's default compaction strategy is now `fold-llm`` 这种带层名的写法照旧绿）。
 
 /** 库层真值出处：`fallback: true` 的那一层就是「不配策略时接手」的那一个。 */
 const COMPACTION_PIPELINE_SRC = "src/compact/pipeline.js";
@@ -2741,6 +2754,40 @@ const COMPACTION_DEFAULT_DOCS = Object.freeze([README_EN, README_CN, AGENTS_EN, 
   CONTRACT_EN, CONTRACT_CN, REQ_EN, REQ_CN, PI_EXT_README]);
 
 /**
+ * 分层标记词表（**唯一一份**，① ② ③ 共用）：一句话用它指出「我说的是哪一层」。
+ *
+ * `binds: true` 的条目同时被 `compactionClaimShapes()` 拿去**绑策略名**做真值对账——所以必须窄：
+ * 标记词后面必须紧跟一个反引号里的策略名，捕获组才圈得准（`CLI slot default` 而不是 `CLI default`：
+ * 后者会把「CLI 默认值不变：`erix chat` 不带 `--final-guard` 仍是 `skipped`」读成策略声称）。
+ * `binds: false` 的条目只回答「这句指了层吗」（③ 读它），不绑值——放宽它们不会把别的主题的默认句
+ * 读成策略声称，只会让更多句子被认成「指了层」：升级指南的标题句 `The CLI's default compaction
+ * strategy is now `fold-llm`` 就是这种形态（它点了层名，但没有 `slot` 这个字）。
+ *
+ * `layer: null` 的条目是**量化形态**：`no layer defaults to X` / `没有任何一层默认 X` 把两层一起否掉，
+ * 它本身就是分层陈述（不是某一层的默认声称），所以既不绑值、也不属于任何一层。
+ */
+const COMPACTION_LAYER_MARKERS = Object.freeze([
+  {
+    id: "library",
+    layer: "library",
+    binds: true,
+    marker: "library default|库层默认",
+    where: `${COMPACTION_PIPELINE_SRC} 的 \`fallback: true\` 层`,
+  },
+  {
+    id: "cli",
+    layer: "cli",
+    binds: true,
+    marker: "CLI(?:'s)? (?:own )?slot default|CLI 槽位默认",
+    where: `${COMPACTION_CLI_SRC} 帮助文本里的「默认：…」`,
+  },
+  // 下面三条只判「指了层」，不绑值（理由见上）。
+  { id: "library-named", layer: "library", binds: false, marker: "library(?:-layer)? default|库层默认" },
+  { id: "cli-named", layer: "cli", binds: false, marker: "CLI(?:'s)? (?:own )?(?:slot )?default|CLI (?:槽位|的)?默认" },
+  { id: "layer-quantified", layer: null, binds: false, marker: "no layer (?:defaults?|defaulting) to|任何一层默认|every layer(?:'s)? default" },
+]);
+
+/**
  * 分层声称的登记句式：`layer` = 这句话指的是哪一层，捕获组 = 它声称的策略名。
  *
  * 标记词后面 `[^。\n]{0,60}?` 只允许「同一行、同一句」里的连接词——跨句、跨行的搭配不算声称
@@ -2748,23 +2795,225 @@ const COMPACTION_DEFAULT_DOCS = Object.freeze([README_EN, README_CN, AGENTS_EN, 
  * `库层默认` / `CLI slot default` / `CLI 槽位默认`），所以捕获组不必再按内置名单收紧：
  * 名字写错（比如写成 `fold-statistical`）**必须**被抓到，那正是本票的病。
  *
+ * 句式**从标记词表生成**（`binds: true` 那几条）：标记词的唯一一份在 `COMPACTION_LAYER_MARKERS`，
+ * 这里不再抄一遍字符串。
+ *
  * @returns {Array<{id: string, layer: "library"|"cli", re: RegExp, where: string}>}
  */
 function compactionClaimShapes() {
-  return [
-    {
-      id: "library",
-      layer: "library",
-      re: /(?:library default|库层默认)[^。\n]{0,60}?`([a-z][a-z-]*)`/giu,
-      where: `${COMPACTION_PIPELINE_SRC} 的 \`fallback: true\` 层`,
-    },
-    {
-      id: "cli",
-      layer: "cli",
-      re: /(?:CLI(?:'s)? (?:own )?slot default|CLI 槽位默认)[^。\n]{0,60}?`([a-z][a-z-]*)`/giu,
-      where: `${COMPACTION_CLI_SRC} 帮助文本里的「默认：…」`,
-    },
-  ];
+  return COMPACTION_LAYER_MARKERS.filter((entry) => entry.binds).map((entry) => ({
+    id: entry.id,
+    layer: entry.layer,
+    re: new RegExp(`(?:${entry.marker})[^。\\n]{0,60}?\`([a-z][a-z-]*)\``, "giu"),
+    where: entry.where,
+  }));
+}
+
+/**
+ * ③ 的「这句指了层吗」判据：标记词表的**宽松全集**（含不绑值的形态）。
+ *
+ * @returns {RegExp[]}
+ */
+function compactionLayerMarkerRes() {
+  return COMPACTION_LAYER_MARKERS.map((entry) => new RegExp(entry.marker, "iu"));
+}
+
+/**
+ * ③ 的判据词表：什么叫「这句在说默认」。
+ *
+ * 为什么不是 `default` 一刀切：`(?<![\w./])` / `(?![\w./-])` 只认**独立的词**，于是
+ * `slots.default.compaction`、`defaultHeaders`、`fold-default-real-e2e.mjs` 这些**标识符里的
+ * default** 被排掉——它们不是声称（不排掉的话，每一句提到 `slots.default.compaction` 的话都会
+ * 被判成默认声称）。
+ *
+ * 两侧的写法**刻意不对称**，别“对称化”掉：
+ *   · 前面只排 `[\w./]`，**不排** `-`：英文里 `engine-default summarizer` 是正常的复合词，
+ *     `README.md:1367` 那句「ships an engine-default summarizer」就在这里。把 `-` 也排掉，
+ *     `the engine-default strategy is X` 这种真声称会连带漏掉（实测：排掉 `-` 时，把 summarizer
+ *     排除拿掉也抓不到 README.md:1367）。
+ *   · 后面排 `[\w./-]`：`fold-default-real-e2e.mjs` 的 `default` 后面跟的是 `-`，那是标识符。
+ * 中文侧 `默认` / `缺省` 是同一件事；`缺省` 在本仓多出现在「引擎缺省」这类表格格里，而表格格的
+ * 边界在下面的窗口里被切断，它不会把「引擎缺省」与隔壁格的策略名连起来。
+ *
+ * 这三条就是 ③ 的**全部**判据词——它们被抽掉，③ 就什么也判不到（见 `--self-test` 的退化证）。
+ */
+const COMPACTION_DEFAULT_WORDS = Object.freeze([
+  { id: "en-default", re: /(?<![\w./])default(?:s|ed|ing)?(?![\w./-])/giu },
+  { id: "cn-default", re: /默认/gu },
+  { id: "cn-quesheng", re: /缺省/gu },
+]);
+
+/** `--self-test` 用：临时**抽掉**一条判据词（与 `SIM_CLI_FLAG_EXEMPTIONS` 同一课：overlay 只改文本，
+ *  改不动运行时那个数组）。**不是豁免开关**：生产路径永远读 `COMPACTION_DEFAULT_WORDS` 全集，
+ *  而「全集被清空」本身会报红（`collectCompactionDefaultErrors` 里的空转判据）。 */
+let SIM_COMPACTION_DROP_WORD_IDS = null;
+
+/** ③ 实际使用的判据词（自测可临时抽掉一条，见上）。 */
+function compactionDefaultWords() {
+  const drop = new Set(SIM_COMPACTION_DROP_WORD_IDS ?? []);
+  return COMPACTION_DEFAULT_WORDS.filter((word) => !drop.has(word.id));
+}
+
+/** 句子边界：默认声称与策略名必须落在**同一句**里（跨句的搭配是两句话的事）。
+ *  `.` 只当句号用（后面跟空白）：`pipeline.js` / `0.30.0` 里的点不是句子边界。 */
+const COMPACTION_CLAIM_STOP = /[。；;！!？?]|\.(?=\s)/u;
+
+/** `text` 里**最后一个**句界之后的位置（无句界返回 0）。 */
+function afterLastStop(text) {
+  let at = 0;
+  for (const m of text.matchAll(new RegExp(COMPACTION_CLAIM_STOP.source, "gu"))) at = m.index + m[0].length;
+  return at;
+}
+
+/** `text` 里**第一个**句界的位置（无句界返回 -1）。 */
+function firstStop(text) {
+  const m = text.match(new RegExp(COMPACTION_CLAIM_STOP.source, "u"));
+  return m ? m.index : -1;
+}
+
+/** 策略名当**路径**用时不算声称：`src/compact/fold-llm.js` 说的是文件，不是默认策略。 */
+function strategyNameIsPath(line, index, name) {
+  const before = line[index - 1] ?? "";
+  const after = line.slice(index + name.length, index + name.length + 4);
+  return before === "/" || before === "\\" || /^\.(?:js|mjs|cjs|ts|json)\b/u.test(after);
+}
+
+/**
+ * 窗口里与默认词**最近**的那个策略名（先向前、再向后），距离上限 60 / 40 字符。
+ * 超上限不算声称（那是同一句里另一个子句的事，硬连起来就是措辞绑架）。
+ */
+function nearestStrategyName(line, wordEnd, winStart, winEnd, names) {
+  const forward = [];
+  const backward = [];
+  for (const name of names) {
+    for (let at = line.indexOf(name); at !== -1; at = line.indexOf(name, at + 1)) {
+      if (at < winStart || at + name.length > winEnd) continue;
+      if (strategyNameIsPath(line, at, name)) continue;
+      if (at >= wordEnd) {
+        if (at - wordEnd <= 60) forward.push({ name, at });
+      } else if (wordEnd - (at + name.length) <= 40) {
+        backward.push({ name, at });
+      }
+    }
+  }
+  const picked = forward.sort((a, b) => a.at - b.at)[0] ?? backward.sort((a, b) => b.at - a.at)[0];
+  return picked ? picked.name : null;
+}
+
+/**
+ * ③ 的判据：把一份文档里**指不出层**的默认声称逐处抽出来。
+ *
+ * ## 怎么区分「说默认策略」与「说默认 summarizer」（本单全部风险所在）
+ *
+ * 「句子里同时出现 default 和策略名」不是判据——现树里合法的不同话题句一抓一大把：
+ * `README.md:1367`（`"fold-llm"` ships an engine-default summarizer）、`docs/host-consumer-contract.md:2620`
+ * （`fold-llm` name injects a default summarizer）、`docs/host-consumer-contract.md:2055` /
+ * `docs/host-consumer-contract_cn.md:1679`（`normalizeWrapupWithLlm` 那条的 `fold-llm` default
+ * summarizer）、`README_cn.md:185`（`fold-llm` 默认 summarizer）。所以判据是五道闸，**每一道都在削
+ * 「这句在说默认策略」以外的读法**：
+ *   ① **默认词必须是独立的词**：标识符里的 `default`（`slots.default.compaction` / `defaultHeaders` /
+ *      `fold-default-real-e2e.mjs`）不是声称；
+ *   ② **默认词紧跟 summarizer / summary / 摘要**（≤ 3 个词，可带 `的`）⇒ 这句说的是**摘要器**，不是
+ *      默认策略，放行（上面那五句全部落在这一道）；
+ *   ③ **策略名当路径用**（`src/compact/fold-llm.js`）不算声称——它说的是文件；
+ *   ④ **同一句、同一表格格**：跨句 / 跨 `|` 的搭配是两句话（两个格）的事；
+ *   ⑤ **距离上限**（前 60 / 后 40 字符）：超出去就是另一个子句，硬连起来只会变成措辞绑架。
+ * 剩下还命中的，才是「这句在说默认是哪个策略」。它若带了分层标记词（`COMPACTION_LAYER_MARKERS`）
+ * 就交给 ① 去做真值对账；不带就是 ③ 的红。
+ *
+ * @param {string} src 文档正文
+ * @param {string[]} names 内置策略名（从 `src/compact/pipeline.js` 现推，不抄）
+ * @param {RegExp[]} markerRes 分层标记词（`compactionLayerMarkerRes()`）
+ * @returns {Array<{line: number, name: string, snippet: string}>}
+ */
+function compactionUnmarkedDefaultClaims(src, names, markerRes) {
+  const claims = [];
+  const words = compactionDefaultWords();
+  for (const [i, line] of src.split("\n").entries()) {
+    if (!names.some((name) => line.includes(name))) continue;
+    for (const word of words) {
+      for (const m of line.matchAll(new RegExp(word.re.source, word.re.flags))) {
+        // 表格格边界：一句的「默认」不该跨过 `|` 去绑隔壁格的策略名
+        const cellStart = line.lastIndexOf("|", m.index) + 1;
+        const barAfter = line.indexOf("|", m.index + m[0].length);
+        const cellEnd = barAfter === -1 ? line.length : barAfter;
+        const wordEnd = m.index + m[0].length;
+        const before = line.slice(cellStart, m.index);
+        const after = line.slice(wordEnd, cellEnd);
+        const winStart = cellStart + afterLastStop(before);
+        const stop = firstStop(after);
+        const winEnd = wordEnd + (stop === -1 ? after.length : stop);
+        // ② 默认词紧跟 summarizer / summary / 摘要 ⇒ 这句说的是摘要器，不是默认策略
+        if (/^[-\s*`]*(?:的\s*)?(?:[`\w./-]+\s+){0,2}?(?:summar|摘要)/iu.test(line.slice(wordEnd, winEnd))) continue;
+        // 指了层 ⇒ 放行（真值对账交给 ①）
+        if (markerRes.some((re) => re.test(line.slice(winStart, winEnd)))) continue;
+        const name = nearestStrategyName(line, wordEnd, winStart, winEnd, names);
+        if (name === null) continue;
+        claims.push({
+          line: i + 1,
+          name,
+          snippet: line.slice(Math.max(0, m.index - 40), Math.min(line.length, wordEnd + 60)).trim(),
+        });
+      }
+    }
+  }
+  return claims;
+}
+
+/**
+ * ③ 的扫描面里**不判**的路径（历史类）：`CHANGELOG.md` 与带日期的档案写的是「当时为真」，
+ * 改它等于伪造历史。**升级指南不在这一档**：它们讲的正是「默认变了」，一句新的默认声称落在那里
+ * 同样要指得出层（`The CLI's default compaction strategy is now `fold-llm`` 这种带层名的写法照旧绿）。
+ */
+const LIVE_DOC_HISTORY = Object.freeze([
+  /^CHANGELOG\.md$/u,
+  /^docs\/v0\./u,
+  /^docs\/decisions\//u,
+  /^docs\/design\//u,
+  /^docs\/research\//u,
+  /^docs\/harness-comparison\//u,
+  /^docs\/tasks\//u,
+  /^docs\/delivery\//u,
+  /^docs\/issue-469-/u,
+]);
+
+/** 清单只算一次：`--self-test` 一轮要跑 160+ 次全量检查，但 overlay 改的是**正文**，入库清单不变。 */
+let LIVE_DOC_FACE_CACHE = null;
+
+/**
+ * ③ 的扫描面 = **入库** Markdown 清单（`git ls-files`），按路径剔掉历史类。
+ *
+ * 为什么走 `git ls-files` 而不是遍历文件系统（#560 的教训）：遍历会把不入库的文件喂给判据，
+ * 于是开发树与干净克隆给出两个答案。`git` 不可用 / 不在仓库内 / 清单为空 ⇒ **报红**（#164 口径：
+ * 抽不到真值就报错），**没有**文件系统回退分支。
+ *
+ * @returns {{docs: string[], error: string|null}}
+ */
+function liveDocFace() {
+  if (LIVE_DOC_FACE_CACHE !== null) return { docs: LIVE_DOC_FACE_CACHE, error: null };
+  let raw;
+  try {
+    raw = execFileSync("git", ["ls-files", "-z", "--cached", "--full-name", "--", "*.md"], {
+      cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 32 * 1024 * 1024,
+    });
+  } catch (error) {
+    const detail = String(error?.stderr ?? error?.message ?? error).trim().split("\n").filter(Boolean)[0] ?? String(error);
+    return {
+      docs: [],
+      error: `compaction-default/unmarked: 取不到入库 Markdown 清单（\`git ls-files\` 失败：${detail}）——`
+        + "③ 的扫描面失效。不许退回文件系统遍历：那会把不入库的文件喂给判据，让门在开发树与干净克隆里给出两个答案（#560）",
+    };
+  }
+  const docs = [...new Set(raw.split("\0")
+    .filter((rel) => rel.length > 0 && rel.endsWith(".md"))
+    .map((rel) => rel.split(path.sep).join("/")))]
+    .filter((rel) => !LIVE_DOC_HISTORY.some((re) => re.test(rel)))
+    .sort();
+  if (docs.length === 0) {
+    return { docs, error: "compaction-default/unmarked: 入库 Markdown 清单剔掉历史类之后是空的——③ 会假绿（#164 口径：抽不到真值就报错）" };
+  }
+  LIVE_DOC_FACE_CACHE = docs;
+  return { docs, error: null };
 }
 
 /**
@@ -2779,6 +3028,19 @@ const COMPACTION_CLAIM_REQUIRED = Object.freeze([
   { doc: README_EN, layer: "cli" },
   { doc: README_CN, layer: "cli" },
   { doc: PI_EXT_README, layer: "library" },
+]);
+
+/**
+ * 中英成对的那几对活文档：**只登记一次**，两处判据都读它——
+ *   ① 已标记的声明点处数（每层）必须相等；
+ *   ③ 未标记的默认声称处数必须相等（只在一侧写了谎就是这种形状）。
+ * 另造一张表就是第二条漂移路径（#429 的口径）。
+ */
+const COMPACTION_DOC_PAIRS = Object.freeze([
+  [CONTRACT_EN, CONTRACT_CN],
+  [README_EN, README_CN],
+  [REQ_EN, REQ_CN],
+  [AGENTS_EN, AGENTS_CN],
 ]);
 
 /**
@@ -2930,7 +3192,7 @@ function collectCompactionDefaultErrors() {
     errors.push(`compaction-default: ${doc} 里一处「${layerName[layer]}默认」声明都没有——`
       + `该组合登记为必须命中（整句被删掉、或标记词被改写，检查面在这份文档就失效了）`);
   }
-  for (const [en, cn] of [[CONTRACT_EN, CONTRACT_CN], [README_EN, README_CN], [REQ_EN, REQ_CN], [AGENTS_EN, AGENTS_CN]]) {
+  for (const [en, cn] of COMPACTION_DOC_PAIRS) {
     for (const layer of ["library", "cli"]) {
       const a = counts.get(`${en}|${layer}`) ?? 0;
       const b = counts.get(`${cn}|${layer}`) ?? 0;
@@ -2940,9 +3202,50 @@ function collectCompactionDefaultErrors() {
     }
   }
 
+  // ── ③ 无标记的默认声称（issue #668 ① 的残留盲区）────────────────────────────
+  // ①② 都靠标记词定位句子，于是「新写一句不带标记的默认声称」整句落在面外。这一节反过来：
+  // 只要「默认声称 + 内置策略名」同句搭配，就**必须**带层标记词。判据（五道闸）在
+  // `compactionUnmarkedDefaultClaims` 上那段「怎么区分」的注释里。
+  const markerRes = compactionLayerMarkerRes();
+  const face = liveDocFace();
+  if (face.error !== null) errors.push(face.error);
+  if (compactionDefaultWords().length === 0) {
+    errors.push("compaction-default/unmarked: 判据词表 `COMPACTION_DEFAULT_WORDS` 是空的——"
+      + "③ 会一句也判不到（抽不到判据词就报错，#164 口径；这一条不是豁免开关）");
+  }
+  /** 每份文档里**指不出层**的默认声称处数（中英成对与报告都读它）。 */
+  const unmarked = new Map();
+  let unmarkedTotal = 0;
+  for (const doc of face.docs) {
+    const src = textOf(doc);
+    if (typeof src !== "string") continue;   // 入库清单里读不到的那份由 `paths:` 那一节点名
+    const claims = compactionUnmarkedDefaultClaims(src, truth.names, markerRes);
+    if (claims.length === 0) continue;
+    unmarked.set(doc, claims.length);
+    unmarkedTotal += claims.length;
+    for (const claim of claims) {
+      errors.push(`compaction-default/unmarked: ${doc}:${claim.line} 说默认是 \`${claim.name}\`，却没有指出这是**哪一层**——`
+        + "这种写法指不出是哪一层，无法与任何一层的真值对账（登记过的分层标记词：`library default` / `库层默认` / "
+        + "`CLI slot default` / `CLI 槽位默认`，或明确量化「no layer defaults to / 任何一层默认」）。"
+        + `\n      「${claim.snippet}」`
+        + "\n      正解是拆成两句、各带层标记："
+        + `库层 = \`${truth.library}\`（不配策略时由 ${COMPACTION_PIPELINE_SRC} 的兜底层接手）`
+        + `；CLI 槽位 = \`${truth.cli}\`（\`slots.default.compaction\` 缺省时解析成它）。`
+        + "\n      只谈「默认 summarizer」（`default summarizer` / `默认 summarizer`）的句子不在此列——那是另一个话题。");
+    }
+  }
+  for (const [en, cn] of COMPACTION_DOC_PAIRS) {
+    const a = unmarked.get(en) ?? 0;
+    const b = unmarked.get(cn) ?? 0;
+    if (a === b) continue;
+    errors.push(`compaction-default/unmarked: 未标记的默认声称处数中英不齐：${en} ${a} 处 vs ${cn} ${b} 处`
+      + "——中英是成对译文，只在一侧写了这句（或只在一侧改过）就是这种形状");
+  }
+
   notes.push(`compaction-default: 压缩策略默认值分层对账（库层 \`${truth.library}\` ← ${COMPACTION_PIPELINE_SRC} 的兜底层；`
     + `CLI 层 \`${truth.cli}\` ← ${COMPACTION_CLI_SRC} 帮助文本 + ${COMPACTION_CLI_CONST_SRC} 常量；`
-    + `${COMPACTION_DEFAULT_DOCS.length} 份活文档逐处对账，退役句式 ${mixedShapes.length} 种）`);
+    + `${COMPACTION_DEFAULT_DOCS.length} 份活文档逐处对账，退役句式 ${mixedShapes.length} 种；`
+    + `③ 无标记的默认声称 ${unmarkedTotal} 处（入库 Markdown 面 ${face.docs.length} 份，历史类不判，判据词 ${compactionDefaultWords().length} 条））`);
   collectCompactionDefaultErrors.notes = notes;
   return errors;
 }
@@ -4249,6 +4552,20 @@ function insertBundleRow(anchorName, row) {
     if (at < 0) return text;
     lines.splice(at, 0, row);
     return lines.join("\n");
+  };
+}
+
+/**
+ * `--self-test` 的变异器：把**唯一**一处 `needle` 换成 `replacement`。
+ *
+ * 为什么比裸 `String.replace` 严：裸 `replace` 只换第一处，靶子有第二份时探针照样「落上」——那
+ * 就不是「这句谎」在被判，而是「恰好第一句」在被判。所以要求**恰好一处**：0 处（锚点没了）与
+ * 2+ 处（靶子不唯一）都原样返回，由 harness 的「变异没落上」判据判红（#279 / #210 R2 惯例）。
+ */
+function replaceUnique(needle, replacement) {
+  return (text) => {
+    const parts = text.split(needle);
+    return parts.length === 2 ? `${parts[0]}${replacement}${parts[1]}` : text;
   };
 }
 
@@ -5934,6 +6251,69 @@ const SELF_TEST_CASES = [
     overlay: { [CONTRACT_EN]: (t) => t.replace("No layer defaults to `fold-statistical`:", "The degrade target is `fold-statistical`; no layer defaults to `fold-statistical`:") },
     expectGreen: true,
   },
+  // —— issue #668 ① 的**残留盲区**（本单）：① ② 靠标记词定位句子，于是「新写一句不带标记的默认声称」
+  // 整句落在面外。③ 反过来：默认声称 + 内置策略名同句搭配就必须带层标记词。下面四例各钉一侧：
+  // 英文谎 → 红并点名行；中文谎 → 红 + 中英处数不齐；default summarizer 那一族 → 绿（放行证）；
+  // 同一句谎 + 抽掉一条判据词 → 又变绿（证规则真在判那个词，不是措辞巧合）。
+  {
+    label: "#668 ① ③：契约 EN 插一句**不带任何分层标记词**的默认声称（By default, compaction uses `fold-statistical`）⇒ 红并点名行",
+    overlay: {
+      [CONTRACT_EN]: replaceUnique("No layer defaults to `fold-statistical`:",
+        "By default, compaction uses `fold-statistical` whenever a host does not configure a strategy.\n  No layer defaults to `fold-statistical`:"),
+    },
+    expect: [/compaction-default\/unmarked: docs\/host-consumer-contract\.md:\d+ 说默认是 `fold-statistical`/],
+    expectFiles: [CONTRACT_EN],
+  },
+  {
+    label: "#668 ① ③：中文契约插同形的无标记谎（未配策略时默认用 `fold-statistical`）⇒ 红 + 中英未标记处数不齐",
+    overlay: {
+      [CONTRACT_CN]: replaceUnique("  没有任何一层默认 `fold-statistical`：",
+        "  未配策略时默认用 `fold-statistical`。\n  没有任何一层默认 `fold-statistical`："),
+    },
+    expect: [/compaction-default\/unmarked: docs\/host-consumer-contract_cn\.md:\d+ 说默认是 `fold-statistical`/,
+      /compaction-default\/unmarked: 未标记的默认声称处数中英不齐：docs\/host-consumer-contract\.md 0 处 vs docs\/host-consumer-contract_cn\.md 1 处/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#668 ① ③（放行证）：「默认 + `fold-llm` + summarizer」那一族再插一句 ⇒ 仍然绿（它说的是摘要器，不是默认策略）",
+    overlay: {
+      [CONTRACT_EN]: replaceUnique("The `fold-llm` name injects a default summarizer that reuses **this run's provider**",
+        "The `fold-llm` name injects a default summarizer that reuses **this run's provider**.\nThat default summarizer is engine-provided, and `fold-llm` itself stays opt-in."),
+    },
+    expectGreen: true,
+  },
+  {
+    label: "#668 ① ③（退化证）：同一句谎 + 抽掉 `default` 这条判据词 ⇒ 又变绿（证规则真在判那个词）",
+    overlay: {
+      [CONTRACT_EN]: replaceUnique("No layer defaults to `fold-statistical`:",
+        "By default, compaction uses `fold-statistical` whenever a host does not configure a strategy.\n  No layer defaults to `fold-statistical`:"),
+    },
+    simulateCompactionDropWordIds: ["en-default"],
+    expectGreen: true,
+  },
+  // —— #668 ① ③ 的**围栏决定**（这笔改动买的是未来覆盖，这两例就是它的价钱）。
+  // 背景：原实现把 ``` 围栏里的行整段跳过（理由「围栏里的是样例，不是声称」），可本仓的围栏里
+  // 放的不只是样例：README 的模块树就是围栏，而 `README_cn.md:185` 那句「用本 run provider 的
+  // fold-llm 默认 summarizer」是一句**真的**描述性声称。所以跳过围栏 = 整类真声称从判据里消失。
+  // 下面两例钉住这个决定的**两面**：围栏里的谎必须红（否则那 3 行白删），围栏里的
+  // summarizer 句子必须绿（否则排除逻辑在围栏里不成立，同样白删）。
+  {
+    label: "#668 ① ③（围栏）：把一句无标记的默认策略谎放进**代码围栏里** ⇒ 红并点名行（跳过围栏就等于放过这一类）",
+    overlay: {
+      "docs/soak.md": replaceUnique("# 便宜自测（不联网",
+        "# By default, compaction uses `fold-statistical` unless a host configures a strategy.\n# 便宜自测（不联网"),
+    },
+    expect: [/compaction-default\/unmarked: docs\/soak\.md:\d+ 说默认是 `fold-statistical`/],
+    expectFiles: ["docs/soak.md"],
+  },
+  {
+    label: "#668 ① ③（围栏・放行证）：围栏里的「默认 + `fold-llm` + summarizer」句（README_cn.md:185 那一类）⇒ 绿",
+    overlay: {
+      [README_CN]: replaceUnique("provider-summarizer.js          用本 run provider 的 fold-llm 默认 summarizer",
+        "provider-summarizer.js          用本 run provider 的 fold-llm 引擎默认的 summarizer"),
+    },
+    expectGreen: true,
+  },
   // ══ issue #511：「这句话属于哪个版本」+「这个版本发布了没有」 ══════════════════════
   // 本节每个用例都钉**一条判据的一侧**（红侧）或**放行侧**（绿侧）。registry 一律走 `selfTestRegistry()`
   // 夹具（派生自 CHANGELOG，见那里的注释）：自测不许依赖网络，也不许依赖「今天 registry 恰好是什么」。
@@ -6229,6 +6609,19 @@ function runSelfTest() {
     // #511：doc-version 放行表的配置口子（证「登记了却没人用 ⇒ 红」那一半）。
     const docExemptSaved = SIM_DOC_VERSION_EXEMPT;
     if (c.simulateDocVersionExemptions) SIM_DOC_VERSION_EXEMPT = c.simulateDocVersionExemptions;
+    // #668 ① ③：判据词表的配置口子（同一课：overlay 只能改文档，改不动运行时那份词表）。
+    // 退化证靠它：抽掉 `en-default` 之后同一句谎又变绿 ⇒ 证规则真在判那个词，不是措辞巧合。
+    // 抽的名字必须**真的在表里**（配置口子没落上就算探针失败，不许把 exit 0 当通过）。
+    const wordIdsSaved = SIM_COMPACTION_DROP_WORD_IDS;
+    if (c.simulateCompactionDropWordIds) {
+      const unknown = c.simulateCompactionDropWordIds
+        .filter((id) => !COMPACTION_DEFAULT_WORDS.some((word) => word.id === id));
+      if (unknown.length) {
+        OVERLAY.clear(); SIM_TREE_SHAPE = simSaved; SIM_RENAMED_GUIDE = guideSaved;
+        return { pass: false, msg: `${label}：配置口子没落上（判据词表里没有 ${unknown.join(", ")}）` };
+      }
+      SIM_COMPACTION_DROP_WORD_IDS = c.simulateCompactionDropWordIds;
+    }
     let errs = [];
     let landing = null;    // #302：夹具有没有真的落上（null = 本例不挂夹具）
     let afterWhy = null;   // #337：assertAfter 必须在配置口子**还挂着**的时候问（否则临时登记已被还原）
@@ -6241,6 +6634,7 @@ function runSelfTest() {
       SIM_CLI_FLAG_EXEMPTIONS = cliExemptSaved;   // 放行表一条也不许留在全局
       SIM_REGISTRY = registrySaved;                // #511：registry 夹具同上
       SIM_DOC_VERSION_EXEMPT = docExemptSaved;     // #511：doc-version 放行表同上
+      SIM_COMPACTION_DROP_WORD_IDS = wordIdsSaved; // #668 ① ③：判据词表一条也不许留在全局
       if (looseDeclSaved) looseDeclSaved[0].decl = looseDeclSaved[1];   // 判据必须还原，别把探针留在表里
       if (dirClassSaved) {                                              // 同上：临时登记的类别一条也不许留在表里
         const [pattern, prev] = dirClassSaved;
