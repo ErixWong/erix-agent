@@ -1,4 +1,5 @@
 import { KitError } from "../providers/errors.js";
+import { computeBudget } from "../compact/budget.js";
 import { enforceSize } from "../compact/enforce-size.js";
 import { estimateMessageTokens, estimateTokens } from "../tokens.js";
 import { groupIntoRounds } from "../messages/rounds.js";
@@ -64,8 +65,51 @@ export function modelMetadataFor({ modelConfig, modelMetadata, model, provider, 
     && (
       candidate.contextWindowTokens !== undefined
       || candidate.maxOutputTokens !== undefined
+      // issue #682：显式预算也是「这一格带预算元数据」的证据。只带 `budgetTokens` 的载体
+      // （例如只配了预算、没配窗口的宿主）以前会被 `modelMetadataFor` 整个跳过。
+      || candidate.budgetTokens !== undefined
     )
   ));
+}
+
+/**
+ * 压缩预算的**引擎侧**唯一裁决点（issue #682）。
+ *
+ * 优先级一句话写死：**显式值优先于 `computeBudget` 派生**——
+ *   · `context.budgetTokens`（宿主/CLI 已经解析过的那一格，含 `--compact-budget` 旗标）最优先；
+ *   · 否则 `config.metadata.modelMetadata.budgetTokens`（引擎叶子，`config` 面的持久配置）；
+ *   · 否则窗口派生（`computeBudget`，公式本体未动）；
+ *   · 否则 `undefined` = 关闭压缩（语义保留；CLI 侧另有一行 stderr 告警，见 `bin/config.js`）。
+ *
+ * 为什么把裁决收在这里：`modelMetadataFor` 的五个候选（`modelConfig` / `modelMetadata` / `model` /
+ * `provider` / `context`）是同一族「模型元数据载体」，加一个已知字段就必须在同一处决定它和派生的
+ * 次序，否则「带了 budgetTokens 但缺 maxOutputTokens」会在两处各答一次（#682 的原始缺陷形状）。
+ *
+ * `source` 是**来源标注**（`flag` / `config` / `derived` / `disabled`）：`flag` / `config` 的前半段
+ * 由宿主（CLI）解析，引擎把 `context.budgetSource` 原样带出；引擎自己认的显式预算一律是 `config`。
+ * 非法的显式值**不在这里吞掉**——原样返回，交给调用方的 `validateBudget` 抛 `invalid_budget`。
+ *
+ * @param {{contextBudgetTokens?: number, contextBudgetSource?: string, metadata?: *}} input
+ * @returns {{budgetTokens: number|undefined, source: "flag"|"config"|"derived"|"disabled"|undefined}}
+ */
+export function resolveBudgetTokens({ contextBudgetTokens, contextBudgetSource, metadata }) {
+  if (contextBudgetTokens !== undefined) {
+    return { budgetTokens: contextBudgetTokens, source: contextBudgetSource };
+  }
+  const explicit = metadata?.budgetTokens;
+  if (explicit !== undefined) {
+    return { budgetTokens: explicit, source: "config" };
+  }
+  if (metadata?.contextWindowTokens !== undefined && metadata?.maxOutputTokens !== undefined) {
+    return {
+      budgetTokens: computeBudget({
+        contextWindowTokens: metadata.contextWindowTokens,
+        maxOutputTokens: metadata.maxOutputTokens,
+      }),
+      source: "derived",
+    };
+  }
+  return { budgetTokens: undefined, source: "disabled" };
 }
 
 /**

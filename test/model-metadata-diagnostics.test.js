@@ -11,6 +11,7 @@ import { runDirect } from "./helpers/run-direct.js";
 import { createAssemblyPort } from "../src/assembly.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { modelMetadataFor, resolveBudgetTokens } from "../src/loop/budget.js";
 
 const EVENT_TYPE = "model_metadata_missing";
 // issue #182 约定的 detail 原文（无显式 outputHygiene.limit 时的完整形态）。
@@ -352,4 +353,99 @@ test("startup diagnostic throw plus abort: the abort is the only thing that ends
   // 承诺范围）；关键是每一笔都是宿主自己的错、终局由 abort 决定。
   assert.ok(observerErrors.length >= 1);
   assert.ok(observerErrors.every((error) => error.message === "host onEvent blew up"));
+});
+
+// ── issue #682：引擎侧叶子 `config.metadata.modelMetadata.budgetTokens` ─────────────────────
+test("#682 判据：引擎侧预算四态各一格（context > modelMetadata.budgetTokens > 派生 > 关闭）", () => {
+  // ① 宿主/CLI 已经解析好的那一格（含 --compact-budget 旗标）最优先，来源原样带出。
+  assert.deepEqual(
+    resolveBudgetTokens({
+      contextBudgetTokens: 8000,
+      contextBudgetSource: "flag",
+      metadata: { contextWindowTokens: 20000, maxOutputTokens: 2000, budgetTokens: 7000 },
+    }),
+    { budgetTokens: 8000, source: "flag" },
+  );
+  // ② 没有 context 预算 ⇒ 引擎叶子（显式值优先于 computeBudget 派生）。
+  assert.deepEqual(
+    resolveBudgetTokens({
+      metadata: { contextWindowTokens: 20000, maxOutputTokens: 2000, budgetTokens: 7000 },
+    }),
+    { budgetTokens: 7000, source: "config" },
+  );
+  // ③ 没有显式值 ⇒ 窗口派生（公式本体未动）。
+  assert.deepEqual(
+    resolveBudgetTokens({ metadata: { contextWindowTokens: 20000, maxOutputTokens: 2000 } }),
+    { budgetTokens: 16000, source: "derived" },
+  );
+  // ④ 既没有显式值也没有窗口 ⇒ 关闭（undefined = 不折叠）。
+  assert.deepEqual(
+    resolveBudgetTokens({ metadata: { maxOutputTokens: 2000 } }),
+    { budgetTokens: undefined, source: "disabled" },
+  );
+  // 只带 budgetTokens 的载体也必须被 modelMetadataFor 认出来（以前它被整个跳过）。
+  assert.deepEqual(
+    modelMetadataFor({ modelMetadata: { budgetTokens: 1234 } }),
+    { budgetTokens: 1234 },
+  );
+});
+
+test("#682 判据：modelMetadata.budgetTokens 真的被引擎消费（小预算触发折叠、无缺失事件）", async () => {
+  const events = [];
+  const provider = createFakeProvider([
+    ...Array.from({ length: 3 }, (_, index) => ({
+      content: [{ type: "tool_use", id: `budget-leaf-${index}`, name: "work", input: {} }],
+      stopReason: "tool_use",
+    })),
+    ...Array.from({ length: 6 }, () => ({
+      content: [{ type: "text", text: "done" }],
+      stopReason: "end_turn",
+    })),
+  ]);
+  const result = await runDirect({
+    provider,
+    seed: "start",
+    executeTool: async () => "x".repeat(2000),
+    config: { run: { completion: false }, metadata: { modelMetadata: { budgetTokens: 64 } } },
+    store: createMemoryTranscriptStore(),
+    runId: "metadata-explicit-budget-leaf",
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
+  });
+
+  assert.equal(result.finalText, "done");
+  assert.equal(noticesOf(events).length, 0, "有显式预算 ⇒ 不是「预算元数据缺失」");
+  assert.ok(
+    events.some((event) => event.type === "compaction"),
+    "预算 64 必须真的触发折叠（显式值被消费，而不是被当成没配）",
+  );
+});
+
+test("#682 判据：非法 modelMetadata.budgetTokens 在 config 闸口点名完整路径", async () => {
+  for (const value of [0, -1, 1.5, "4096", true]) {
+    await assert.rejects(
+      runDirect({
+        provider: textProvider(),
+        seed: "start",
+        executeTool: async () => "unused",
+        config: { metadata: { modelMetadata: { budgetTokens: value } } },
+        store: createMemoryTranscriptStore(),
+        runId: "metadata-bad-budget-leaf",
+      }),
+      /config\.metadata\.modelMetadata\.budgetTokens must be a positive integer/u,
+      `非法值 ${JSON.stringify(value)} 必须在 config 闸口被拒`,
+    );
+  }
+  // 反向证：合法正整数被接受（且不需要窗口）。
+  const events = [];
+  const result = await runDirect({
+    provider: textProvider(),
+    seed: "start",
+    executeTool: async () => "unused",
+    config: { metadata: { modelMetadata: { budgetTokens: 5000 } } },
+    store: createMemoryTranscriptStore(),
+    runId: "metadata-good-budget-leaf",
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
+  });
+  assert.equal(result.finalText, "done");
+  assert.equal(noticesOf(events).length, 0);
 });
