@@ -1016,9 +1016,11 @@ The shared CLI flags are:
   `erix repl` has no retry.
 - `--compact-budget <tokens>` overrides the automatic compaction budget.
 - `--compaction <name>` selects the compaction strategy
-  (`sliding-window | fold-statistical | fold-llm`, default `fold-llm`, or the
-  `slots.default.compaction` config field). `fold-llm` costs one extra main-model call
-  per compaction.
+  (`sliding-window | fold-statistical | fold-llm`; the CLI slot default is `fold-llm`, also
+  settable as the `slots.default.compaction` config field). `fold-llm` costs one extra
+  main-model call per compaction. A host that calls the library with no strategy gets the
+  library behaviour instead — see the contract's "default" note: the two layers are separate
+  facts, and `bin/` is a verifier/debugger, not the contract surface.
 - `--tools <comma-separated names>` is a hard capability whitelist for both
   `chat` and `repl`; unknown names warn, and an empty filtered set is an error.
 - `--judge-log <path>` appends judge decisions (round + interception) as JSONL

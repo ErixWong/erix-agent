@@ -2623,8 +2623,17 @@ input is `SUMMARIZER_PROMPT_GUIDE` plus a deterministic serialization of the fol
 messages and the folded round range. Its cost and accounting are part of the contract:
 
 - **One extra call on the run's main model per compaction**, with an input roughly the
-  size of the folded rounds. `fold-llm` is therefore opt-in; `fold-statistical` remains
-  the default everywhere (library default stays `sliding-window` when no strategy is set).
+  size of the folded rounds. `fold-llm` is therefore opt-in, and the two layers that can
+  answer "what is the default" are separate facts, not one sentence:
+  - **The library default** (no strategy configured) is `sliding-window`: a budget overflow
+    with no selected strategy is handled by the fallback layer in `src/compact/pipeline.js`,
+    whose `strategyNames` is the only truth for this half.
+  - **The CLI slot default** is `fold-llm`: `slots.default.compaction` left unset resolves to
+    it in `bin/cli.js`. That is a **CLI-layer choice, not a library default** — `bin/` is a
+    verifier/debugger, not the contract surface, and a host that configures nothing gets the
+    library behaviour above, not this one.
+  No layer defaults to `fold-statistical`: it is the deterministic summary `fold-llm` degrades
+  to when its summarizer fails or times out (zero extra model calls, never a failed run).
 - Its usage is merged into the run aggregate through the same `addUsage` path as other
   auxiliary calls (`persist` at `src/loop/orchestrator.js`, `trackLatest: false`) and is also
   reported through `onUsage`, so `result.usage` / `error.usage` are complete. The call
