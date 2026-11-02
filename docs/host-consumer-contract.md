@@ -2623,8 +2623,15 @@ input is `SUMMARIZER_PROMPT_GUIDE` plus a deterministic serialization of the fol
 messages and the folded round range. Its cost and accounting are part of the contract:
 
 - **One extra call on the run's main model per compaction**, with an input roughly the
-  size of the folded rounds. `fold-llm` is therefore opt-in; `fold-statistical` remains
-  the default everywhere (library default stays `sliding-window` when no strategy is set).
+  size of the folded rounds. **Two layers, two different defaults — do not collapse them into
+  one value** (issue #614). At the **CLI layer** `fold-llm` *is* the default: `bin/config.js`
+  `DEFAULT_COMPACTION_STRATEGY`, i.e. the value `--compaction` / `slots.default.compaction`
+  falls back to. At the **library layer** an unset `context.strategy` still resolves to *no
+  configured strategy* (`src/compact/strategy-resolution.js`), and the engine then falls back to
+  the library default `sliding-window` once the budget is exceeded (`src/loop/orchestrator.js`,
+  observable as one `compaction_strategy_fallback` event per run). So a library host that wants
+  `fold-llm` selects it explicitly — and `fold-statistical` is **not** the default anywhere: it is
+  an explicit zero-LLM choice.
 - Its usage is merged into the run aggregate through the same `addUsage` path as other
   auxiliary calls (`persist` at `src/loop/orchestrator.js`, `trackLatest: false`) and is also
   reported through `onUsage`, so `result.usage` / `error.usage` are complete. The call
