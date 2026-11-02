@@ -1,11 +1,25 @@
 #!/usr/bin/env node
-// issue #429 的**宿主侧半边**：把「宿主仓真的在导入的名字」与「仓内零消费者候选」求交，命中就点名。
+// issue #429 的**宿主侧半边**：把「宿主仓真的在导入的名字」与「仓内零消费者候选」求交，再拿命中的名字去
+// 当前版本的升级指南里找它那一行条目。判据是**覆盖**，不是否决。
 //
 // 为什么需要它（`check:exports:deprecated` 自己写明的边界）：
-//   那条判据只证**仓内**零消费者。宿主仓（touwaka / app_container / erix-station / pi）不在它的扫描面里，
-//   它们的 import 一个都看不见。于是「仓内零消费者 ⇒ 可以标 0.30 删除」这条推论在宿主侧从未被机器核过：
-//   主 agent 手工 grep 才发现有两个名字正在被两个活宿主导入，其中一个还没有仓内替代方案。手工 grep
-//   不可复现、也不会在下次改名后重新跑一遍 ⇒ 这里把它做成一条**可跑的机器检查**。
+//   那条判据只证**仓内**零消费者。宿主仓（touwaka / fde-workshop / 以及仍在盘上的旧检出 app_container、
+//   erix-station / pi）不在它的扫描面里，它们的 import 一个都看不见。于是「仓内零消费者 ⇒ 可以标 0.30 删除」
+//   这条推论在宿主侧从未被机器核过：主 agent 手工 grep 才发现有名字正在被活宿主导入，其中一个还没有仓内替代
+//   方案。手工 grep 不可复现、也不会在下次改名后重新跑一遍 ⇒ 这里把它做成一条**可跑的机器检查**。
+//
+// ── 口径（#429 纠错：下游不握否决权）────────────────────────────────────────────
+//   本仓是**上游**。上游删一个导出，不需要下游批准；需要的是**破坏可见、可迁**。所以判据不是「宿主零命中才
+//   许删」（那等于把否决权交给下游的迁移进度），而是：
+//
+//     **每一个「计划删除、且已知有真实宿主在 import」的名字，必须在当前版本的升级指南里有一行对应条目
+//     （含迁移写法）。**
+//
+//   做到 ⇒ 绿，并把「已知会被破坏的宿主引用」逐条列出来（哪个仓、哪个文件:行、指南哪一行、迁移怎么写）；
+//   漏一条 ⇒ 红，点名宿主仓 / 文件:行 / 名字 / 缺的是哪份指南的哪一格。
+//
+//   换句话说：命中不再是「不许发版」的证据，而是「这一页必须已经写到它」的清单。删不删、什么时候删，是上游
+//   按自己的版本边界决定的事；宿主侧的义务只是**被告知怎么迁**。
 //
 // ── 它做什么 ──────────────────────────────────────────────────────────────────
 //   1. 从 `--hosts <目录>`（可多次给，也可逗号分隔）里**递归**提取所有对 `erix-agent` 的入口引用：
@@ -14,11 +28,14 @@
 //   2. 与 `npm run check:exports` **现算**的零消费者候选求交——候选清单来自
 //      `scripts/export-consumer-check.mjs` 的 `computeInventory()`（**import 进来**，不抄第二份名单：
 //      抄一份就是两条漂移路径，那正是 #429 修掉的口径漏洞①的同型错误）；
-//   3. 命中 ⇒ exit 1，逐条点名「哪个宿主仓 / 哪个文件:行 / 导入了哪个被登记为将删除的名字（绑的删除版本
-//      0.30，与 `NEXT_BREAKING_VERSION` 同一个值）」；
-//   4. 目录不存在 / 不可读 ⇒ **不是错误**：exit 0 + 分类原因（`HOST_DIR_MISSING` / `HOST_DIR_NOT_DIR` /
+//   3. 把命中的名字拿到当前版本的升级指南逐名表里找条目——**表的读法**来自
+//      `scripts/bundle-guide-table.mjs`，与 `check:docs` 的 `bundle-table` 对账用的是同一份读法（不抄第二份
+//      名单，否则「指南写了什么」就有两个答案）；
+//   4. 每个命中名字在**中英两份**指南里都要有一行、且那一行的迁移条款格非空 ⇒ 覆盖；缺任一份 / 条款格空
+//      ⇒ exit 1，逐条点名「哪个宿主仓 / 哪个文件:行 / 哪个名字 / 缺哪份指南的哪一格」；
+//   5. 目录不存在 / 不可读 ⇒ **不是错误**：exit 0 + 分类原因（`HOST_DIR_MISSING` / `HOST_DIR_NOT_DIR` /
 //      `HOST_DIR_UNREADABLE`）。CI 上没有宿主仓检出，这一条必须让它绿——探针绝不许变成 CI 对宿主仓的硬依赖；
-//   5. 不给 `--hosts` ⇒ 只打印口径与「未判定」，exit 0（`npm run check:host-consumers` 默认不阻断）。
+//   6. 不给 `--hosts` ⇒ 只打印口径与「未判定」，exit 0（`npm run check:host-consumers` 默认不阻断）。
 //
 // ── 边界（本探针证明不了的事，报告里也印一遍）──────────────────────────────────
 //   · 只认**静态可解析**的入口引用：名字从 import/export/require 的名单里读。命名空间导入（`import * as ns`）、
@@ -27,25 +44,25 @@
 //   · 注释里提到的 `require("erix-agent")` 不算（先做一遍注释涂白；字符串字面量保留，因为模块说明符本身
 //     就是字符串）。
 //   · 宿主仓可以不在本机：给不出目录时这条判据**不成立**，报告会明说「未判定」而不是「绿」。
-//   · 它不判定「该不该删」：命中说明「现在删会打断这个宿主」。处置只有两条——**宿主先迁移**，
-//     或者**这一版不删该名字**（名字记进 `REMOVAL_REGISTRY` 账本，版本仍是 0.30）。
-//     ⚠ **不许**用「把删除版本往后挪」来处置：0.30 尚未发布，往上一层的版本号是发明出来的。
+//   · 它**不**判定「该不该删」，也**不**判定「指南写得对不对」：条款是否照抄标记、入口列是否写对、中英是否
+//     一致，是 `check:docs` 的 `bundle-table` 那一半。这里只问一件事：**命中的名字，指南有没有写到它。**
+//   · 「命中为 0」**不等于**「删了不会破坏任何宿主」：它只说明这一次扫到的宿主检出里没有静态命中。宿主可能
+//     在别处、可能用动态 import、也可能用命名空间导入（那类形状单列在「解析不出名字」一节）。
 //
-// ── 它在发布流程里的位置（0.30 发布前置）─────────────────────────────────────
+// ── 它在发布流程里的位置 ──────────────────────────────────────────────────────
 //   `AGENTS.md` / `AGENTS_cn.md` 的预发布清单把它列为 0.30 的**发布前置检查**：
-//   `npm run check:host-consumers -- --hosts <宿主仓目录>` 跑不出命中才允许发 0.30；有命中 ⇒ 要么宿主
-//   先迁移，要么这一版不删该名字。它在 CI 里**不跑**（CI 没有宿主仓检出）——不给目录时 exit 0 并打印
-//   分类原因，那是「未判定」，不是绿。
+//   `npm run check:host-consumers -- --hosts <宿主仓目录>` 跑绿 = 每一处已知的宿主引用都已被指南覆盖。
+//   它在 CI 里**不跑**（CI 没有宿主仓检出）——不给目录时 exit 0 并打印分类原因，那是「未判定」，不是绿。
 //
 // ── 退出码（与家族同构：读不出真值就红，不许假绿）───────────────────────────────
-//   0 = 没有命中（或压根没给宿主目录 / 给的目录不存在——分类原因打印出来，不是静默绿）
-//   1 = 命中：宿主正在导入被登记为将删除的零消费者导出（逐条点名）
-//   2 = 读不出真值：清点工具跑不起来 / 清点不完整（`computeInventory` 报 incomplete）
+//   0 = 判定了、且每一处命中都被指南覆盖（或压根没给宿主目录 / 给的目录不存在——分类原因打印出来，不是静默绿）
+//   1 = 有命中名字在指南里缺条目（逐条点名宿主仓 / 文件:行 / 名字 / 缺哪一格）
+//   2 = 读不出真值：清点工具跑不起来 / 清点不完整（`computeInventory` 报 incomplete）/ 指南表读不出
 //
 // ── 用法 ──────────────────────────────────────────────────────────────────────
 //   node scripts/host-consumer-probe.mjs --hosts /home/eric/projects   # 判定（递归扫该目录）
-//   node scripts/host-consumer-probe.mjs --hosts ../touwaka --hosts ../app_container
-//   node scripts/host-consumer-probe.mjs --hosts ../touwaka,../app_container   # 逗号分隔同义
+//   node scripts/host-consumer-probe.mjs --hosts ../touwaka --hosts ../fde-workshop
+//   node scripts/host-consumer-probe.mjs --hosts ../touwaka,../fde-workshop   # 逗号分隔同义
 //   node scripts/host-consumer-probe.mjs                               # 不给目录 ⇒ 未判定，exit 0
 //   node scripts/host-consumer-probe.mjs --json                        # 机器读同一份事实
 //   node scripts/host-consumer-probe.mjs --root <dir>                  # 换根（自测用）
@@ -65,6 +82,13 @@ import {
   REMOVAL_REGISTRY,
   removalVersionOf,
 } from "./deprecated-export-check.mjs";
+// 逐名表的**读法**（版本号 / 两份文件名 / 一行长什么样 / 哪一格是迁移条款）与 `check:docs` 的
+// `bundle-table` 对账共用同一份：两边各读一份就是两条会各自漂移的真相。
+import {
+  BUNDLE_GUIDE_DOCS,
+  BUNDLE_GUIDE_VERSION,
+  bundleRowsFromText,
+} from "./bundle-guide-table.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const DEFAULT_ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -90,6 +114,17 @@ export const HOST_CODES = {
   DIR_NOT_DIR: "HOST_DIR_NOT_DIR",
   DIR_UNREADABLE: "HOST_DIR_UNREADABLE",
   FILE_UNREADABLE: "HOST_FILE_UNREADABLE",
+};
+
+/** 指南表的分类原因（读不出真值 ⇒ exit 2，与家族同构；不是「没命中」）。 */
+export const GUIDE_CODES = {
+  TABLE_MISSING: "GUIDE_TABLE_MISSING",
+  TABLE_UNREADABLE: "GUIDE_TABLE_UNREADABLE",
+};
+
+/** 覆盖判定的两态（报告、`--json` 与自测共用一份措辞）。 */
+export const COVERAGE_CODES = {
+  ENTRY_MISSING: "GUIDE_ENTRY_MISSING",
 };
 
 /** 解析不出名字的引用形状（逐类计数，不静默丢）。 */
@@ -401,8 +436,9 @@ export function walkHost(hostDir) {
 
 /**
  * 命中所在的**宿主仓**：先往上找最近的带 `.git` 的目录（那是**仓边界**，名字就是宿主仓的名字——
- * `touwaka` / `app_container` / `erix-station`），找不到 `.git` 再退回最近的 `package.json` 的 `name`
- * （monorepo 里的工作区包名），再不行退回目录名。报告里不会出现空白的「哪个宿主仓」。
+ * `touwaka` / `fde-workshop`，以及仍在盘上的旧检出 `app_container` / `erix-station`），找不到 `.git`
+ * 再退回最近的 `package.json` 的 `name`（monorepo 里的工作区包名），再不行退回目录名。报告里不会出现
+ * 空白的「哪个宿主仓」。
  */
 export function hostRepoOf(absFile, hostDir) {
   const stop = resolve(hostDir);
@@ -553,13 +589,110 @@ export function currentCandidates(root = DEFAULT_ROOT) {
   return { inventory, candidates: inventory.candidates ?? [] };
 }
 
+// ─────────────────────────────── 指南覆盖（机器交集） ───────────────────────────────
+
+/**
+ * 读当前版本升级指南的逐名表（中英两份）。
+ *
+ * 读法来自 `scripts/bundle-guide-table.mjs`（与 `check:docs` 的 `bundle-table` 对账同一份）：版本号、文件名、
+ * 一行长什么样都只有那一份定义。读不出（文件没了 / 打不开）**不抛**：返回分类原因，调用侧据此 exit 2——
+ * 「读不出真值」不许当成「没命中」。
+ *
+ * @param {string} root
+ * @param {(abs: string) => string} read 注入点（自测打内存夹具，不写盘）
+ * @returns {{guides: Array<{rel: string, rows: Map<string, object>}>, error: null|{code: string, message: string}}}
+ */
+export function readGuideTables(root = DEFAULT_ROOT, read = (abs) => readFileSync(abs, "utf8")) {
+  const guides = [];
+  for (const rel of BUNDLE_GUIDE_DOCS) {
+    let text;
+    try {
+      text = read(join(root, rel));
+    } catch (err) {
+      return {
+        guides: [],
+        error: {
+          code: err?.code === "ENOENT" ? GUIDE_CODES.TABLE_MISSING : GUIDE_CODES.TABLE_UNREADABLE,
+          message: `${rel} 读不出（${err?.code ?? err?.message}）——覆盖判据的另一半（指南写了什么）无从核对`,
+        },
+      };
+    }
+    guides.push({ rel, rows: bundleRowsFromText(text).rows });
+  }
+  return { guides, error: null };
+}
+
+/**
+ * 覆盖判定（纯函数：`hits` × `guides`，不打盘、不看时钟）。
+ *
+ * 判据只有一条：**命中名字在中英两份指南里都要有一行、且那一行的迁移条款格非空**。缺任一份、或条款格是
+ * 空的（「有一行但没写怎么迁」= 读者拿不到迁移写法）⇒ 未覆盖。
+ *
+ * 为什么两份都要：指南中英成对是这一族的既有规矩（只改一边不算改）。只覆盖英文那份等于半个交付。
+ *
+ * @param {{hits: Array<{name: string}>, guides: Array<{rel: string, rows: Map<string, object>}>}} input
+ * @returns {{covered: Array<{name: string, entries: Array<{rel: string, line: number, clause: string, entry: string}>,
+ *            hits: Array<object>}>,
+ *            uncovered: Array<{name: string, hits: Array<object>, reason: string, detail: string}>}}
+ */
+export function judgeHostCoverage({ hits, guides }) {
+  const byName = new Map();
+  for (const hit of hits) {
+    const list = byName.get(hit.name) ?? [];
+    list.push(hit);
+    byName.set(hit.name, list);
+  }
+  const covered = [];
+  const uncovered = [];
+  for (const [name, nameHits] of [...byName.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const entries = [];
+    const missing = [];
+    for (const guide of guides) {
+      const row = guide.rows.get(name);
+      if (!row) { missing.push(`${guide.rel}（没有 \`${name}\` 这一行）`); continue; }
+      if (String(row.clause ?? "").trim() === "") {
+        missing.push(`${guide.rel}:${row.line}（有一行，但迁移条款格是空的）`);
+        continue;
+      }
+      entries.push({ rel: guide.rel, line: row.line, clause: row.clause, entry: row.entry });
+    }
+    if (missing.length) {
+      uncovered.push({
+        name,
+        hits: nameHits,
+        reason: COVERAGE_CODES.ENTRY_MISSING,
+        detail: `缺指南条目：${missing.join("、")}`,
+      });
+    } else {
+      covered.push({ name, entries, hits: nameHits });
+    }
+  }
+  return { covered, uncovered };
+}
+
+/**
+ * 退出码（与报告同一份裁决，不许两处各判一次）。
+ *
+ * `judged = false` ⇒ 0：那是「未判定」（没给宿主目录 / 目录读不出），不是绿也不是红——报告会照实说。
+ * `judged = true` ⇒ 有未覆盖的名字就 1，全覆盖才 0。
+ *
+ * @param {{judged: boolean, uncovered: Array<object>}} input
+ * @returns {0|1}
+ */
+export function exitCodeOf({ judged, uncovered }) {
+  if (!judged) return 0;
+  return (uncovered ?? []).length === 0 ? 0 : 1;
+}
+
 // ─────────────────────────────── 报告 ───────────────────────────────
 
 export const CRITERIA = [
   "入口引用的形状：`import { … } from \"erix-agent\"` / `\"erix-agent/<子路径>\"`、`export { … } from …`、`require(\"erix-agent…\")`（含 `const { … } = require(…)` 解构）、动态 `import(\"erix-agent…\")`。",
   "候选清单来自 `scripts/export-consumer-check.mjs` 的 `computeInventory()`（现算，不抄第二份名单）。",
   "宿主契约套件（`exports[\"./contract-tests\"]` 这一类的导出名）**不在**候选里：它们的消费者按定义在宿主仓，仓内零命中是天然的 ⇒ 宿主导入它们不是「删除命中」。",
-  "求交 = 宿主 import 的**导出名** ∩ 零消费者候选名；命中就点名宿主仓 / 文件:行 / 名字 / 绑定的删除版本。",
+  "求交 = 宿主 import 的**导出名** ∩ 零消费者候选名；命中 = 「这个宿主现在就会被打断」，要的是**可见 + 可迁**，不是「不许删」。",
+  "判据是**覆盖**：每个命中名字在**中英两份**当前版本升级指南里都要有一行逐名条目，且那一行的迁移条款格非空。做到 ⇒ 绿并逐条列出已知会被破坏的宿主引用；缺任一份 / 条款格空 ⇒ 红，点名宿主仓 / 文件:行 / 名字 / 缺哪一格。",
+  "指南逐名表的读法来自 `scripts/bundle-guide-table.mjs`——与 `check:docs` 的 `bundle-table` 对账同一份读法，指南「写了什么」只有一个答案。",
   "解析不出名字的形状（命名空间 / 默认 / 裸 require / 动态 import / export *）逐类计数并打印，不静默丢弃。",
   "注释与字符串内容先涂白再解析：注释里写 `require('erix-agent')`、测试夹具里把 import 语句当字符串存，都不算一次导入。",
   "被探包**自己的检出**（最近的 `package.json` 的 `name` 是 `erix-agent`）不算宿主，跳过并计数——否则本仓自己的 `scripts/release-check.mjs` 会把自己的契约套件报成「宿主在用」。",
@@ -567,13 +700,28 @@ export const CRITERIA = [
   "不给 `--hosts` 时只打印口径，exit 0——「没给目录」是**未判定**，不是绿。",
 ];
 
-export function renderReport({ probe, candidates, total, hosts, root }) {
+/**
+ * 人读报告。
+ *
+ * @param {{probe: object, coverage: object, candidates: Array<object>, total: number,
+ *          hosts: string[], root: string, judged: boolean, guideRead: object}} input
+ */
+export function renderReport({ probe, coverage, candidates, total, hosts, root, judged, guideRead }) {
   const lines = [];
-  lines.push("host-consumer-probe：宿主仓 × 零消费者候选 求交（issue #429 的宿主侧半边）");
+  const hostSkips = probe.skipped.filter((row) => row.scope === "host");
+  lines.push("host-consumer-probe：宿主仓 × 零消费者候选 求交，再拿命中的名字去指南里找条目（issue #429 的宿主侧半边）");
   lines.push("");
   lines.push(`根目录（被探的包）：${root}`);
   lines.push(`清点事实：${total} 个导出名 ⇒ 零消费者候选 ${candidates.length} 个`
     + "（`computeInventory()` 现算，未抄第二份名单）");
+  if (guideRead?.error) {
+    lines.push(`指南表（${BUNDLE_GUIDE_VERSION}）：读不出 —— [${guideRead.error.code}] ${guideRead.error.message}`);
+  } else {
+    const rowsText = (guideRead?.guides ?? []).map((guide) => `${guide.rel} ${guide.rows.size} 行`).join("、");
+    lines.push(`指南表（${BUNDLE_GUIDE_VERSION}）：${rowsText}`
+      + "（读法与 `check:docs` 的 `bundle-table` 对账同一份：`scripts/bundle-guide-table.mjs`）");
+  }
+  lines.push("");
   if (!hosts.length) {
     lines.push("宿主目录：（未给 `--hosts`）");
     lines.push("");
@@ -584,22 +732,44 @@ export function renderReport({ probe, candidates, total, hosts, root }) {
     lines.push(`宿主目录：${hosts.join("、")}`);
     lines.push(`扫描：${probe.stats.scannedFiles} 个代码文件；本包自己的检出跳过 ${probe.stats.ownCheckoutFiles} 个；`
       + `超大文件跳过 ${probe.stats.oversized} 个；解析不出名字的引用 ${probe.stats.unresolved} 处；`
-      + `整目录跳过 ${probe.skipped.filter((row) => row.scope === "host").length} 个`);
+      + `整目录跳过 ${hostSkips.length} 个`);
     lines.push("");
-    if (probe.hits.length === 0) {
-      lines.push("## 命中：0 处");
-      lines.push("结论：绿 —— 扫到的宿主仓没有导入任何「被登记为将删除」的零消费者导出。");
-    } else {
-      lines.push(`## 命中（exit 1）：${probe.hits.length} 处 —— 宿主正在导入被登记为将删除的名字`);
-      for (const hit of probe.hits) {
-        lines.push(`- \`${hit.name}\` @ 宿主仓 \`${hit.repo}\` — \`${hit.file}:${hit.line}\``
-          + `（\`${hit.kind}\` from \`${hit.spec}\`；登记删除版本 ${hit.removalVersion}）`);
+    if (!judged) {
+      lines.push("## 结论：**未判定** —— 给的宿主目录一个都读不出来（分类原因见下）");
+      lines.push("  这不是绿：本探针没有看到任何宿主代码，覆盖判据无从成立。");
+    } else if (coverage.uncovered.length > 0) {
+      lines.push(`## 命中但指南没有条目（exit 1）：${coverage.uncovered.length} 个名字 —— 破坏不可见，也就不可迁`);
+      for (const row of coverage.uncovered) {
+        for (const hit of row.hits) {
+          lines.push(`- \`${row.name}\` @ 宿主仓 \`${hit.repo}\` — \`${hit.file}:${hit.line}\``
+            + `（\`${hit.kind}\` from \`${hit.spec}\`；登记删除版本 ${hit.removalVersion}）`
+            + ` ⇒ [${row.reason}] ${row.detail}`);
+        }
       }
       lines.push("");
-      lines.push("怎么读这张表：命中 = **现在删就会打断这个宿主**。处置只有两条——先让宿主迁走，或**这一版不删该名字**");
-      lines.push("（名字记进 `REMOVAL_REGISTRY` 账本，版本仍是 0.30，见 `npm run check:exports:deprecated`）。");
-      lines.push("不许拿「把删除版本往后挪」当处置：0.30 尚未发布，下一个版本号是发明出来的。");
-      lines.push("本命令是 0.30 的**发布前置检查**：跑不出命中才允许发 0.30。");
+      lines.push("怎么读这张表：这些名字现在删就会打断上面点名的宿主，而当前版本的升级指南没有告诉那个宿主怎么迁。");
+      lines.push("处置是**补指南**（一行逐名条目 + 迁移写法），不是「不许删」——本仓是上游，删除由自己的版本边界决定；");
+      lines.push("下游不握否决权。补完再跑一遍：绿 = 每一处已知的宿主引用都已被指南覆盖。");
+    } else if (probe.hits.length === 0) {
+      lines.push("## 命中：0 处");
+      lines.push("结论：绿 —— 这次扫到的宿主检出里，没有一处静态导入「被登记为将删除」的零消费者导出，");
+      lines.push("  所以这一版没有已知会被打断的宿主引用需要指南点名。");
+      lines.push("  ⚠ 「0 处」只覆盖**这次扫到的目录 + 静态可解析的形状**（见下面的边界），不是「删了不会破坏任何宿主」的证明。");
+    } else {
+      lines.push(`## 命中（${probe.hits.length} 处）—— 全部已被 ${BUNDLE_GUIDE_VERSION} 指南覆盖：绿`);
+      lines.push("这就是「已知会被破坏的宿主引用」清单：下面每一条在升级指南里都有对应条目，宿主照条目迁移即可。");
+      for (const row of coverage.covered) {
+        for (const hit of row.hits) {
+          lines.push(`- \`${row.name}\` @ 宿主仓 \`${hit.repo}\` — \`${hit.file}:${hit.line}\``
+            + `（\`${hit.kind}\` from \`${hit.spec}\`；登记删除版本 ${hit.removalVersion}）`);
+        }
+        for (const entry of row.entries) {
+          lines.push(`  ↳ 指南条目：\`${entry.rel}:${entry.line}\`（入口 ${entry.entry}）——迁移写法：${entry.clause}`);
+        }
+      }
+      lines.push("");
+      lines.push("怎么读这张表：命中 = **这一版删了就会打断上面那个宿主**，而指南已经写清怎么迁。");
+      lines.push("所以它是「破坏可见、可迁」的清单，不是「不许发版」的清单：删不删由上游的版本边界决定。");
     }
   }
   if (probe.skipped.length) {
@@ -632,6 +802,8 @@ export function renderReport({ probe, candidates, total, hosts, root }) {
   lines.push("  · 只认静态可解析的名单式引用：命名空间 / 默认 / 裸 require / 动态 import 解析不出名字，");
   lines.push("    它们单列在「解析不出名字」一节——那条通道既不能证明「在用」，也不能证明「没在用」。");
   lines.push("  · 宿主不在本机 ⇒ 这条判据不成立（报告写「未判定」）。它不替代宿主自己的契约测试。");
+  lines.push("  · 它不判「指南写得对不对」（条款是否照抄标记、入口列是否写对、中英是否一致 = `check:docs` 的");
+  lines.push("    `bundle-table` 那一半）；这里只问一件事：命中的名字，指南有没有写到它、有没有写怎么迁。");
   lines.push("");
   lines.push("## 逐字复现");
   lines.push("  node scripts/host-consumer-probe.mjs --hosts <宿主目录>   # 判定");
@@ -797,6 +969,103 @@ function runSelfTest() {
     );
   }
 
+  // ── 例⑨⑩⑪ 覆盖判据的三态（#429 纠错的核心）：命中 + 指南无条目 ⇒ 红；补上条目 ⇒ 绿；删掉条目 ⇒ 又红 ──
+  //
+  // 这一组打在 `readGuideTables()` + `judgeHostCoverage()` + `exitCodeOf()` 这条**真链路**上（注入读盘函数，
+  // 夹具是内存里的指南文本），不是打在某个字符串匹配上：改坏任何一环，三态就会有一态不对。
+  {
+    const fixtureRoot = "/fixtures/root";
+    const guideText = (rows) => [
+      "| Name | What it did | Migration clause | Entry | Definition |",
+      "|---|---|---|---|---|",
+      ...rows.map(([name, clause]) => `| \`${name}\` | did a thing | ${clause} | \`.\` | \`${name}\` (\`src/x.js\`) |`),
+      "",
+    ].join("\n");
+    const makeRead = (rowsByName) => (abs) => {
+      const rel = abs.slice(fixtureRoot.length + 1);
+      if (!(rel in rowsByName)) {
+        const err = new Error(`no ${rel}`);
+        err.code = "ENOENT";
+        throw err;
+      }
+      return rowsByName[rel];
+    };
+    const hit = {
+      name: "createAnthropicProvider", repo: "mini-host", file: "/hosts/acme/src/a.js", line: 3,
+      kind: "import-names", spec: "erix-agent", removalVersion: "0.30",
+    };
+    const judge = (rowsByName) => {
+      const read = readGuideTables(fixtureRoot, makeRead(rowsByName));
+      return {
+        read,
+        coverage: judgeHostCoverage({ hits: [hit], guides: read.guides }),
+        exit: exitCodeOf({ judged: true, uncovered: judgeHostCoverage({ hits: [hit], guides: read.guides }).uncovered }),
+      };
+    };
+    const CLAUSE = "no in-tree replacement — the host builds it itself";
+
+    // ⑨ 命中但指南没有这一行 ⇒ 未覆盖、exit 1，且点名缺哪一份
+    const before = judge({
+      [BUNDLE_GUIDE_DOCS[0]]: guideText([["somethingElse", CLAUSE]]),
+      [BUNDLE_GUIDE_DOCS[1]]: guideText([["somethingElse", CLAUSE]]),
+    });
+    expect(
+      before.coverage.uncovered.length === 1 && before.coverage.uncovered[0].name === "createAnthropicProvider"
+        && before.coverage.uncovered[0].reason === COVERAGE_CODES.ENTRY_MISSING
+        && BUNDLE_GUIDE_DOCS.every((rel) => before.coverage.uncovered[0].detail.includes(rel))
+        && before.exit === 1,
+      `⑨ 命中 + 指南无条目 ⇒ 未覆盖 ${JSON.stringify(before.coverage.uncovered.map((row) => row.name))}、exit ${before.exit}`
+        + `（点名两份都缺）`,
+      `⑨ 命中但指南没条目时没有判红：${JSON.stringify(before.coverage.uncovered)} exit=${before.exit}`,
+    );
+
+    // ⑩ 补上指南条目（中英两份）⇒ 覆盖、exit 0，且把条目行号带出来
+    const after = judge({
+      [BUNDLE_GUIDE_DOCS[0]]: guideText([["createAnthropicProvider", CLAUSE]]),
+      [BUNDLE_GUIDE_DOCS[1]]: guideText([["createAnthropicProvider", CLAUSE]]),
+    });
+    expect(
+      after.coverage.covered.length === 1 && after.coverage.uncovered.length === 0 && after.exit === 0
+        && after.coverage.covered[0].entries.length === 2
+        && after.coverage.covered[0].entries.every((entry) => entry.line === 3 && entry.clause === CLAUSE),
+      `⑩ 补上指南条目 ⇒ 覆盖 ${JSON.stringify(after.coverage.covered.map((row) => row.name))}、`
+        + `条目行 ${after.coverage.covered[0]?.entries.map((e) => `${e.rel}:${e.line}`).join("、")}、exit ${after.exit}`,
+      `⑩ 补上条目后仍未判绿：${JSON.stringify(after.coverage)} exit=${after.exit}`,
+    );
+
+    // ⑪ 把条目删掉 ⇒ 又红（同一份夹具的三态闭合：红 → 绿 → 红）
+    const again = judge({
+      [BUNDLE_GUIDE_DOCS[0]]: guideText([["somethingElse", CLAUSE]]),
+      [BUNDLE_GUIDE_DOCS[1]]: guideText([["createAnthropicProvider", CLAUSE]]),
+    });
+    expect(
+      again.coverage.uncovered.length === 1 && again.exit === 1
+        && again.coverage.uncovered[0].detail.includes(BUNDLE_GUIDE_DOCS[0]),
+      `⑪ 删掉英文那份的条目 ⇒ 又红（exit ${again.exit}），且只点名缺的那一份`,
+      `⑪ 删掉条目后没有判红：${JSON.stringify(again.coverage.uncovered)} exit=${again.exit}`,
+    );
+
+    // ⑫「有一行但迁移条款格是空的」不算覆盖：读者拿不到迁移写法 = 破坏不可迁
+    const emptyClause = judge({
+      [BUNDLE_GUIDE_DOCS[0]]: guideText([["createAnthropicProvider", ""]]),
+      [BUNDLE_GUIDE_DOCS[1]]: guideText([["createAnthropicProvider", CLAUSE]]),
+    });
+    expect(
+      emptyClause.coverage.uncovered.length === 1 && emptyClause.exit === 1
+        && emptyClause.coverage.uncovered[0].detail.includes("迁移条款格是空的"),
+      `⑫ 条目在但迁移条款格空 ⇒ 仍红（exit ${emptyClause.exit}）`,
+      `⑫ 迁移条款格空也被当成覆盖了：${JSON.stringify(emptyClause.coverage)}`,
+    );
+
+    // ⑬ 指南表读不出 ⇒ 分类原因（调用侧 exit 2），不是「0 命中所以绿」
+    const missing = readGuideTables(fixtureRoot, makeRead({}));
+    expect(
+      missing.guides.length === 0 && missing.error?.code === GUIDE_CODES.TABLE_MISSING,
+      `⑬ 指南表不存在 ⇒ [${missing.error?.code}] ${missing.error?.message}`,
+      `⑬ 指南表读不出没有走分类原因：${JSON.stringify(missing)}`,
+    );
+  }
+
   if (failures.length) {
     console.log("");
     for (const failure of failures) console.log(`  ✗ ${failure}`);
@@ -856,34 +1125,64 @@ export function main(argv = process.argv.slice(2)) {
   const hostSkips = probe.skipped.filter((row) => row.scope === "host");
   const judged = opts.hosts.length > 0 && hostSkips.length < opts.hosts.length;
 
+  // 指南表是判据的另一半。**只有判定了才把它当硬真值**：没给宿主目录时这一格是「未判定」，
+  // 指南读不出不该把 CI 形态（`npm run check:host-consumers`，无参数）压红——但报告要照实说出来。
+  const guideRead = readGuideTables(opts.root);
+  if (judged && guideRead.error) {
+    console.error(`host-consumer-probe: 指南表读不出（exit 2）——[${guideRead.error.code}] ${guideRead.error.message}`);
+    console.error("  覆盖判据 = 宿主命中 × 指南条目；缺一半就无从判定（不许把「读不出」当成「没命中」）");
+    return 2;
+  }
+  const coverage = judgeHostCoverage({ hits: probe.hits, guides: guideRead.guides });
+  const exitCode = exitCodeOf({ judged, uncovered: coverage.uncovered });
+
   if (opts.json) {
     console.log(JSON.stringify({
       tool: "host-consumer-probe",
-      generatedFor: "issue #429 的宿主侧半边：宿主仓真的在导入的零消费者导出",
+      generatedFor: "issue #429 的宿主侧半边：宿主仓真的在导入的零消费者导出，× 当前版本升级指南的覆盖",
       gate: judged,
+      verdict: !judged ? "not-judged" : (exitCode === 0 ? "covered" : "uncovered"),
       root: opts.root,
       hosts: opts.hosts,
       defaultRemovalVersion: DEFAULT_REMOVAL_VERSION,
       nextBreakingVersion: DEFAULT_REMOVAL_VERSION,
       removalRegistry: REMOVAL_REGISTRY,
+      guideVersion: BUNDLE_GUIDE_VERSION,
+      guides: (guideRead.guides ?? []).map((guide) => ({ rel: guide.rel, rows: guide.rows.size })),
+      guideError: guideRead.error ?? null,
       total: inventory.total,
       candidates: candidates.map((row) => ({ name: row.name, def: row.def, removalVersion: removalVersionOf(row.name) })),
       hits: probe.hits,
+      covered: coverage.covered.map((row) => ({
+        name: row.name,
+        hits: row.hits.map((hit) => ({ repo: hit.repo, file: hit.file, line: hit.line })),
+        entries: row.entries,
+      })),
+      uncovered: coverage.uncovered.map((row) => ({
+        name: row.name,
+        reason: row.reason,
+        detail: row.detail,
+        hits: row.hits.map((hit) => ({ repo: hit.repo, file: hit.file, line: hit.line })),
+      })),
       unresolved: probe.unresolved,
       skipped: probe.skipped,
       stats: probe.stats,
       judged,
       criteria: CRITERIA,
-      boundary: "只认静态可解析的名单式入口引用；宿主不在本机时这条判据不成立（未判定，不是绿）",
+      boundary: "只认静态可解析的名单式入口引用；宿主不在本机时这条判据不成立（未判定，不是绿）。"
+        + "本探针不判「指南写得对不对」（那是 check:docs 的 bundle-table 那一半）",
       reproduce: [
         "node scripts/host-consumer-probe.mjs --hosts <宿主目录>",
         "node scripts/host-consumer-probe.mjs --self-test",
       ],
     }, null, 2));
   } else {
-    console.log(renderReport({ probe, candidates, total: inventory.total, hosts: opts.hosts, root: opts.root }));
+    console.log(renderReport({
+      probe, coverage, candidates, total: inventory.total,
+      hosts: opts.hosts, root: opts.root, judged, guideRead,
+    }));
   }
-  return probe.hits.length === 0 ? 0 : 1;
+  return exitCode;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(SCRIPT_PATH)) {

@@ -58,9 +58,11 @@
 //
 // ── 这张账本是什么（不是版本表）─────────────────────────────────────────────────
 //  `REMOVAL_REGISTRY` 记的是**0.30 的发布阻塞**：宿主仓真的在导入、所以这一版不能删的名字，逐条写清
-//  「哪个宿主、哪个文件:行」。删除的前提是**宿主先迁移**（不是「等下一个版本号」）。宿主侧的可跑判据是
-//  `scripts/host-consumer-probe.mjs`（`npm run check:host-consumers -- --hosts <宿主目录>`），它已接进
-//  `AGENTS.md` / `AGENTS_cn.md` 的 0.30 预发布清单：跑不出命中才允许发 0.30。
+//  「哪个宿主、哪个文件:行」。宿主侧的可跑判据是 `scripts/host-consumer-probe.mjs`
+//  （`npm run check:host-consumers -- --hosts <宿主目录>`），它已接进 `AGENTS.md` / `AGENTS_cn.md` 的
+//  0.30 预发布清单。那条判据是**覆盖**、不是否决：本仓是上游，删一个导出不需要下游批准，需要的是
+//  **破坏可见、可迁**——每个「已知有宿主在 import」的名字必须在当前版本的升级指南里有一行条目
+//  （含迁移写法），漏一条才红。
 //
 // ── 三档口径（与清点工具同一份）───────────────────────────────────────────────
 //  候选 = 「包内消费者（`src/` `bin/`）+ 发布面消费者（`examples/` `test/contract/`）+ 自身定义文件内引用」
@@ -71,7 +73,8 @@
 //  删除改由 R12 看守：没有 `CONTRACT_DELETION_OVERRIDES` 账本条目 + 理由，就不许带 0.30 删除标记。
 //
 // ── 边界（必须写进报告，不许含糊）─────────────────────────────────────────────
-//  本判据只证**仓内**零消费者。宿主仓（touwaka / app_container / erix-station / pi）不在扫描面里，
+//  本判据只证**仓内**零消费者。宿主仓（touwaka / fde-workshop，以及仍在盘上、仍带活引用的旧检出
+//  app_container / erix-station / pi）不在扫描面里，
 //  它们的 import 这里一个都看不见 ⇒ **删除前必须另核宿主**。本判据拦的是「登记与清点脱钩」与
 //  「账本与标记脱钩」，不是「可以删了」；「宿主还在不在用」只有 `check:host-consumers` 说得清。
 //  另一条边界：把账本条目**和**标记里的宿主事实句一起删掉，本判据不会红（那时标记只是一条普通的
@@ -126,7 +129,8 @@ export const REMOVAL_VERSION = DEFAULT_REMOVAL_VERSION;
  *
  * 它不是版本表（版本只有一个，见 `NEXT_BREAKING_VERSION`），而是「这个名字现在为什么删不掉」的账本：
  * 「仓内零消费者」不等于「宿主零消费者」——本判据看不见宿主仓（边界写在文件头与报告里），而宿主侧
- * 真的还在导入。于是这两个名字不能跟 0.30 一起删，**删除前提 = 宿主先迁移**。
+ * 真的还在导入。账本记的是**阻塞在哪个事实上**（谁在 import、哪一行），不是排期：处置要么是宿主先迁移，
+ * 要么是这一版不删它。
  *
  * 三条纪律（由 R7 / R8 / R9 / R10 / R11 看守）：
  *   · 条目必须**真的对上一条标记**（空转即红，与 #210 R2 同口径）；
@@ -146,7 +150,9 @@ export const REMOVAL_VERSION = DEFAULT_REMOVAL_VERSION;
 export const REMOVAL_REGISTRY = Object.freeze({
   createAnthropicProvider: {
     reason: "host-side audit: app_container imports it, and there is no in-tree replacement until the assembly "
-      + "port converges, so deleting it in 0.30 breaks a live host until it migrates",
+      + "port converges, so deleting it in 0.30 breaks a live host until it migrates. "
+      + "That checkout has since been merged into the successor project fde-workshop; it is still on disk and "
+      + "still carries this import, so the fact below still reads",
     hostFacts: [
       "app_container/apps/worker/src/pi/erix-adapter.js:2",
     ],
@@ -748,11 +754,13 @@ function renderReport({ inventory, result, types, root, registry = REMOVAL_REGIS
   }
   lines.push("");
   lines.push("## 边界（本判据证明不了的事）");
-  lines.push("  只证**仓内**零消费者：宿主仓（touwaka / app_container / erix-station / pi）不在扫描面里，");
+  lines.push("  只证**仓内**零消费者：宿主仓（touwaka / fde-workshop，以及仍在盘上、仍带活引用的旧检出");
+  lines.push("  app_container / erix-station / pi）不在扫描面里，");
   lines.push("  它们的 import 这里一个都看不见 ⇒ **删除前必须另核宿主**。本判据拦的是「登记与清点脱钩」与");
   lines.push("  「账本与标记脱钩」，不是「可以删了」。宿主侧的核验由 `node scripts/host-consumer-probe.mjs --hosts <目录>` 做");
   lines.push("  （`npm run check:host-consumers`），它把被导入的候选名字逐条点名到宿主仓 / 文件:行；");
-  lines.push("  那条命令已接进 0.30 预发布清单：跑不出命中才允许发 0.30。");
+  lines.push("  那条命令已接进 0.30 预发布清单，判据是**覆盖**：命中的每个名字都要在指南里有一行条目（含迁移写法），");
+  lines.push("  漏一条才红——下游不握否决权，但破坏必须可见、可迁。");
   lines.push("  宿主契约套件更彻底：它们的消费者**按定义**在宿主仓，仓内零命中是这一类存在的前提，不是可删的证据；");
   lines.push("  所以它们不进候选清单（清点工具单列 `host-contract`），带删除标记必须有账本条目 + 理由（R12/R13）。");
   lines.push("  另一条边界：账本条目**与**标记里的宿主事实句一起删掉时本判据不红（那时标记只是一条普通的");
@@ -1392,9 +1400,10 @@ export function main(argv = process.argv.slice(2)) {
       })),
       reds,
       types: types ? { reds: types.reds, skipped: types.skipped } : null,
-      boundary: "只证仓内零消费者；宿主仓（touwaka / app_container / erix-station / pi）不在扫描面里，"
+      boundary: "只证仓内零消费者；宿主仓（touwaka / fde-workshop，以及仍在盘上、仍带活引用的旧检出"
+        + " app_container / erix-station / pi）不在扫描面里，"
         + "宿主侧由 node scripts/host-consumer-probe.mjs --hosts <目录> 核（npm run check:host-consumers，"
-        + "已接进 0.30 预发布清单：跑不出命中才允许发 0.30）",
+        + "已接进 0.30 预发布清单；判据是覆盖：命中的每个名字都要在指南里有一行条目，漏一条才红）",
       reproduce: [
         "node scripts/deprecated-export-check.mjs",
         "node scripts/deprecated-export-check.mjs --types",

@@ -11,7 +11,7 @@ erix 与 pi 的关系是互补的：
 - **pi 是交互式 agent**：人在环，支持 TUI/subagent/MCP 工作流。
 - **erix 是无头 agent**：无人值守，由宿主调度。
 
-边界止于一个 agent 任务生命周期。多角色编排、仲裁、重试调度、reaper 和任务队列属于宿主（`app_container` / `touwaka`）的职责，不属于本库。保持这一边界，可以避免把小型运行时变成无头 agent 平台，并保留零依赖设计。
+边界止于一个 agent 任务生命周期。多角色编排、仲裁、重试调度、reaper 和任务队列属于宿主（`fde-workshop` / `touwaka`）的职责，不属于本库。保持这一边界，可以避免把小型运行时变成无头 agent 平台，并保留零依赖设计。
 
 CLI（`erix`）是验证器和调试器，不是产品：
 
@@ -23,7 +23,7 @@ CLI（`erix`）是验证器和调试器，不是产品：
 
 > **安全边界：** 运行时不执行安全策略。安全责任由调用方承担。在本地运行意味着让 agent 访问你的本地信任域；嵌入式或沙盒部署必须由宿主隔离。CLI 工具有意允许任意文件路径和 shell 命令，不添加白名单或确认提示。
 
-项目面向包括 `app_container`（PI Agent 审计/开发路径）和 `touwaka`（AgentLoop/对话路径）在内的集成。这些宿主集成不属于本包的生命周期边界。
+项目面向包括 `fde-workshop`（PI Agent 审计/开发路径；它是 `erix-station` 与 `app_container` 合并后的项目，依赖本包并在它的 worker 容器镜像里跑本包）和 `touwaka`（AgentLoop/对话路径）在内的集成。这些宿主集成不属于本包的生命周期边界。被取代的 `erix-station` 与 `app_container` 检出仍在盘上、仍导入本包，所以宿主清单换名不等于说它们已经消失。
 
 ## 快速开始
 

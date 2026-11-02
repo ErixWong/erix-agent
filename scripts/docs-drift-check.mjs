@@ -168,6 +168,16 @@ import {
   hostContractNames,
   resolveEntries as resolveExportEntries,
 } from "./export-consumer-check.mjs";
+// 逐名表的**读法**（几格 / 第一格长什么样 / 入口列认哪几种写法 / 版本号从哪来）住在共享模块里：
+// `scripts/host-consumer-probe.mjs` 的覆盖判据读的是同一张表，各读各的 = 两条会各自漂移的真相。
+import {
+  BUNDLE_GUIDE_CN,
+  BUNDLE_GUIDE_DOCS,
+  BUNDLE_GUIDE_EN,
+  BUNDLE_GUIDE_VERSION,
+  bundleEntryClaim,
+  bundleRowsFromText,
+} from "./bundle-guide-table.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const STRICT = process.argv.includes("--strict");
@@ -3473,7 +3483,7 @@ const EXTERNAL_REPO_PATHS = new Map([
  * 仓名必须是 `EXTERNAL_REPO_PREFIXES` 里登记过的那几个；不带前缀就是本仓路径，必须解得到。** */
 const EXTERNAL_REPO_PREFIXES = new Map([
   ["touwaka", "宿主 touwaka 仓：`docs/requirements{,_cn}.md` §1 的消费方画像写的就是它的代码位置（`lib/agent/`、`lib/context-organizer/`）"],
-  ["app_container", "宿主 app_container 仓：同上 §1 的另一个消费方（`apps/worker/src/pi/` + `packages/context`）；裸行号一侧的外仓根就地声明见 `BARE_LINE_EXEMPTIONS` 的 `apps/worker/` 两条"],
+  ["app_container", "宿主 app_container 仓：同上 §1 的另一个消费方（`apps/worker/src/pi/` + `packages/context`）。该仓已与 erix-station 合并进后继项目 fde-workshop，旧检出仍在盘上、仍带活引用，所以这些路径今天仍可读；裸行号一侧的外仓根就地声明见 `BARE_LINE_EXEMPTIONS` 的 `apps/worker/` 两条"],
   ["pi-subagents", "上游 pi-subagents 仓：`examples/pi-extension/README.md` §6 与 `docs/research/2026-10-13-*` 的对照证据行号都在那个子模块里（本仓没有 `src/runs/`）"],
 ]);
 /** 前缀形状：`<小写仓名>:<路径>`。**排除** `://`（URL / 自定义 scheme，`push()` 早已整段跳过，这里再兜一道）、
@@ -4336,40 +4346,12 @@ function collectDocVersionErrors() {
 //
 // 边界（写清，别当漏做）：候选集**为空**时（0.30 已发布、待删包已清空），这一页转为**历史记录**，闸只校
 // 中英名字集合与行形状——否则发版那天会逼着人把「这一版删了什么」的记录删掉。空集不空转：note 会明说。
-const BUNDLE_GUIDE_VERSION = "0.30.0";
-const BUNDLE_GUIDE_EN = `docs/host-upgrade-guide-${BUNDLE_GUIDE_VERSION}.md`;
-const BUNDLE_GUIDE_CN = `docs/host-upgrade-guide-${BUNDLE_GUIDE_VERSION}_cn.md`;
+// 版本号、两份文件名、入口列的合法写法、以及「一行长什么样」都从 `scripts/bundle-guide-table.mjs` 读：
+// `scripts/host-consumer-probe.mjs` 的覆盖判据读的是同一张表（同一份读法，不抄第二份）。
 
-/** 入口列的合法写法（逐字）：只 `.`、只 `./tools`、两者都有（用 `+` 连接）。 */
-const BUNDLE_ENTRY_TOKENS = new Map([
-  ["`.`", "root"],
-  ["`./tools`", "tools"],
-]);
-
-/** 一行的表格格（`| a | b |` → `["a", "b"]`）；不是表格行返 null。 */
-function tableCells(line) {
-  const trimmed = line.trim();
-  if (trimmed.length < 2 || !trimmed.startsWith("|") || !trimmed.endsWith("|")) return null;
-  return trimmed.slice(1, -1).split("|").map((cell) => cell.trim());
-}
-
-/** 逐名表的一行：**恰好 5 格**且第一格是**恰好一个**反引号标识符（别的表格不会被误当成逐名行）。 */
-const BUNDLE_ROW_NAME_RE = /^`([A-Za-z_$][\w$]*)`$/;
-
-/** 一份指南里的逐名行（`name → {line, clause, entry}`）与重复行。 */
+/** 一份指南里的逐名行（`name → {line, clause, entry}`）与重复行（读法在共享模块里，这里只负责取文本）。 */
 function bundleRowsOf(rel) {
-  const rows = new Map();
-  const dupes = [];
-  textOf(rel).split("\n").forEach((line, i) => {
-    const cells = tableCells(line);
-    if (!cells || cells.length !== 5) return;
-    const m = BUNDLE_ROW_NAME_RE.exec(cells[0]);
-    if (!m) return;
-    const row = { name: m[1], line: i + 1, clause: cells[2], entry: cells[3] };
-    if (rows.has(m[1])) dupes.push(`\`${m[1]}\`（第 ${rows.get(m[1]).line} 行与第 ${i + 1} 行）`);
-    else rows.set(m[1], row);
-  });
-  return { rows, dupes };
+  return bundleRowsFromText(textOf(rel));
 }
 
 /** 入口文件里 `export { … } from "…"` 的再导出名。块内行注释先剥掉，否则注释里的中文会被逗号切碎。 */
@@ -4384,18 +4366,6 @@ function entryExportNames(rel) {
     }
   }
   return names;
-}
-
-/** 入口列 → 声称的入口集合（写法不认识返 null，调用侧报红）。 */
-function bundleEntryClaim(cell) {
-  const parts = String(cell ?? "").split("+").map((part) => part.trim()).filter(Boolean);
-  const claimed = new Set();
-  for (const part of parts) {
-    const key = BUNDLE_ENTRY_TOKENS.get(part);
-    if (!key) return null;
-    claimed.add(key);
-  }
-  return claimed.size ? claimed : null;
 }
 
 /** `@deprecated` 标记里的迁移条款（与 `deprecated-export-check` 的 R4 同一套形状）；没有返 null。 */
@@ -4443,7 +4413,7 @@ function bundleTruth() {
 function collectBundleTableErrors() {
   const out = [];
   const notes = [];
-  const docs = [BUNDLE_GUIDE_EN, BUNDLE_GUIDE_CN];
+  const docs = BUNDLE_GUIDE_DOCS;
   const truth = bundleTruth();
   if (truth.failure) {
     out.push(`bundle-table: ${truth.failure}`);
@@ -4461,7 +4431,7 @@ function collectBundleTableErrors() {
   if (!BUNDLE_GUIDE_VERSION.startsWith(`${NEXT_BREAKING_VERSION}.`)) {
     out.push(`bundle-table: 指南版本 ${BUNDLE_GUIDE_VERSION} 与唯一合法移除边界 \`NEXT_BREAKING_VERSION\`（${NEXT_BREAKING_VERSION}）`
       + "不是同一个 x.y——0.30 是唯一合法的移除边界，这一页必须绑在它上面"
-      + "（改边界 = 同时改指南名与本文件的 BUNDLE_GUIDE_VERSION）");
+      + "（改边界 = 同时改指南名与 scripts/bundle-guide-table.mjs 的 BUNDLE_GUIDE_VERSION）");
   }
   const entrySets = {
     root: entryExportNames("src/index.js"),

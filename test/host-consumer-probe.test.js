@@ -2,9 +2,10 @@
 //
 // 分工（与 `test/export-consumer-check.test.js` 同一套惯例）：
 //   - **反向证**（多行 import 行号、子路径 / 再导出、六种解析不出名字的形状、注释与字符串涂白、
-//     require 解构取属性名、求交两态、目录不存在 / 不是目录的分类原因）都在
+//     require 解构取属性名、求交两态、目录不存在 / 不是目录的分类原因、以及覆盖判据的三态：命中但指南无
+//     条目 ⇒ 红 / 补上条目 ⇒ 绿 / 删掉条目 ⇒ 又红 / 条款格空 ⇒ 仍红 / 指南表读不出 ⇒ 分类原因）都在
 //     `node scripts/host-consumer-probe.mjs --self-test` 里。这里只 spawn 它一次并断言 exit 0——
-//     本文件**不**重复那 10 条判据（写两份只会让两边一起腐烂）。
+//     本文件**不**重复那些判据（写两份只会让两边一起腐烂）。
 //   - 本文件钉的是「真树 + 真宿主目录」这一层的**整链路行为**：读盘 → 现算候选 → 求交 → 点名 → 退出码，
 //     以及「没给宿主目录 / 给了不存在的目录 ⇒ 未判定但 exit 0」这条 CI 形态（探针不得变成 CI 对宿主仓的
 //     硬依赖）。
@@ -17,6 +18,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { makeTmp } from "./helpers/tmp.js";
+import { currentCandidates } from "../scripts/host-consumer-probe.mjs";
 
 const ROOT = dirname(fileURLToPath(new URL(".", import.meta.url)));
 const SCRIPT = fileURLToPath(new URL("../scripts/host-consumer-probe.mjs", import.meta.url));
@@ -37,7 +39,7 @@ async function hostRepo(files, { name = "mini-host", prefix = "erix-host-probe-"
   return root;
 }
 
-test("真宿主目录：导入被登记为将删除的零消费者导出 ⇒ exit 1 并点名宿主仓 / 文件:行 / 名字", async () => {
+test("真宿主目录：命中一个「指南已覆盖」的名字 ⇒ exit 0，并把它列为「已知会被破坏的宿主引用」", async () => {
   const host = await hostRepo({
     "src/adapter.js": [
       'import { createAnthropicProvider, runToolLoop } from "erix-agent";',
@@ -46,18 +48,40 @@ test("真宿主目录：导入被登记为将删除的零消费者导出 ⇒ exi
     ].join("\n"),
   });
   const result = runScript(["--hosts", host]);
-  assert.equal(result.status, 1, `命中必须 exit 1：\n${result.stdout}\n${result.stderr}`);
-  assert.match(result.stdout, /## 命中（exit 1）/u, "报告要有命中小节");
+  assert.equal(result.status, 0, `命中被指南覆盖时是绿（覆盖判据，不是否决）：\n${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout, /## 命中（1 处）—— 全部已被 .* 指南覆盖：绿/u, "报告要有「已覆盖」小节");
   assert.match(
     result.stdout,
     new RegExp(`\`createAnthropicProvider\` @ 宿主仓 \`mini-host\` — \`${host}/src/adapter\\.js:1\``, "u"),
     `命中要逐条点名宿主仓 / 文件:行 / 名字：\n${result.stdout}`,
   );
   assert.match(result.stdout, /登记删除版本 0\.30/u, "点名时要带登记的删除版本（宿主据此判断影响面）");
+  assert.match(
+    result.stdout,
+    /↳ 指南条目：`docs\/host-upgrade-guide-0\.30\.0\.md:\d+`[\s\S]*↳ 指南条目：`docs\/host-upgrade-guide-0\.30\.0_cn\.md:\d+`/u,
+    `每个命中都要带出中英两份指南的条目行（迁移写法的出处）：\n${result.stdout}`,
+  );
   // 宿主契约套件这一类**不进候选**（消费者按定义在宿主仓，仓内零命中是天然的）⇒ 宿主导入它不是删除命中。
   assert.ok(!/`notesStoreContract` @ 宿主仓/u.test(result.stdout), "宿主契约套件不参与删除判据，不得进命中表");
   // 非候选名字（`runToolLoop` 有仓内消费者）不得被点名
   assert.ok(!/`runToolLoop` @ 宿主仓/u.test(result.stdout), "非候选名字不该进命中表");
+});
+
+test("真树 × 全候选：每一个零消费者候选都在指南里有一行（覆盖判据在真树上成立）", async () => {
+  const { candidates } = currentCandidates();
+  assert.ok(candidates.length > 0, "现算候选集为空时这条用例失去意义（先看 check:exports 是不是坏了）");
+  const names = candidates.map((row) => row.name);
+  const host = await hostRepo({
+    "src/all-candidates.js": `import { ${names.join(", ")} } from "erix-agent";\n`,
+  });
+  const result = runScript(["--hosts", host]);
+  assert.equal(result.status, 0, `全部候选都该被指南覆盖：\n${result.stdout}${result.stderr}`);
+  for (const name of names) {
+    assert.match(result.stdout, new RegExp(`\`${name}\` @ 宿主仓 \`mini-host\``, "u"),
+      `候选 \`${name}\` 没被点名（命中表漏了它）：\n${result.stdout}`);
+  }
+  const guideRows = result.stdout.match(/↳ 指南条目：/gu) ?? [];
+  assert.equal(guideRows.length, names.length * 2, `每个名字要带中英两条指南条目（实得 ${guideRows.length} 条）`);
 });
 
 test("真宿主目录：只导入有消费者的名字 ⇒ exit 0（绿，且不误报）", async () => {
@@ -87,14 +111,19 @@ test("宿主目录不存在 / 是文件 ⇒ exit 0 + 分类原因（不是静默
   assert.match(notDir.stdout, /\[HOST_DIR_NOT_DIR\]/u, "要区分「不存在」与「不是目录」");
 });
 
-test("--json：同一份事实可机器读（命中带 repo / file / line / name / removalVersion）", async () => {
+test("--json：同一份事实可机器读（命中带 repo / file / line / name / removalVersion，另带覆盖结论）", async () => {
   const host = await hostRepo({
     "src/adapter.js": 'import { createAnthropicProvider } from "erix-agent";\n',
   });
   const result = runScript(["--hosts", host, "--json"]);
-  assert.equal(result.status, 1);
+  assert.equal(result.status, 0, `被指南覆盖的命中是绿：${result.stdout}${result.stderr}`);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.gate, true, "给了宿主目录且扫得到 ⇒ 这一轮是判定形态");
+  assert.equal(payload.verdict, "covered", "机器读法要能区分「覆盖」与「未覆盖」");
+  assert.equal(payload.guideVersion, "0.30.0", "指南版本要带出来（覆盖判据绑在唯一合法移除边界上）");
+  assert.equal(payload.covered.length, 1, `应恰好一个被覆盖的名字：${JSON.stringify(payload.covered)}`);
+  assert.equal(payload.covered[0].entries.length, 2, "中英两份指南各一条条目");
+  assert.deepEqual(payload.uncovered, [], "没有未覆盖的名字");
   assert.equal(payload.hits.length, 1, `应恰好一条命中：${JSON.stringify(payload.hits)}`);
   const [hit] = payload.hits;
   assert.equal(hit.name, "createAnthropicProvider");
@@ -105,7 +134,7 @@ test("--json：同一份事实可机器读（命中带 repo / file / line / name
   assert.ok(payload.candidates.some((row) => row.name === "createAnthropicProvider"), "候选清单要带出来（现算的那份）");
 });
 
-test("--self-test：反向证（10 条）exit 0", () => {
+test("--self-test：反向证（含覆盖判据三态）exit 0", () => {
   const result = runScript(["--self-test"]);
   assert.equal(result.status, 0, `--self-test 必须绿：\n${result.stdout}\n${result.stderr}`);
   assert.match(result.stdout, /host-consumer-probe --self-test: OK/u);

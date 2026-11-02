@@ -3289,8 +3289,10 @@ Its value proposition comes down to one thing: `partialPersistence` lowers only 
 front of a user (that is `error.finalText`), and the snapshot writes it performs in steady
 state are a net loss when a host's own crash-requeue rate is low. So measure that rate
 before enabling it — the share of queued runs with `attempts > 1` (`run_queue.attempts`, the
-number erix-station reads) — and decide from your own number rather than from a threshold
-measured somewhere else. The host that asked for the option is itself the evidence, cited as
+number the host that asked for this option reads) — and decide from your own number rather than
+from a threshold measured somewhere else. That host, `erix-station`, has since been merged into
+the successor project `fde-workshop`; the old checkout is still on disk and still imports this
+package. The host that asked for the option is itself the evidence, cited as
 observation and not as advice: over ten days of development erix-station saw roughly one
 natural crash-requeue (`attempts > 1` on 8 of 133 runs, 3 of those 8 being deliberate
 `docker pause` / `kill -9` drills); ⚠ that is a single-machine, single-user sample taken
