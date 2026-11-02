@@ -672,7 +672,7 @@ export function createTerminationManager(ctx) {
       ...(ctx.forcedFinal ? { forcedFinal: true } : {}),
     }, error);
     return {
-      finalText: ctx.finalText,
+      finalText: forcedFinalFallbackApplies() ? FORCED_FINAL_FALLBACK_TEXT : ctx.finalText,
       messages: ctx.messages,
       transcript: [...ctx.messages],
       rounds: ctx.rounds,
@@ -698,8 +698,20 @@ export function createTerminationManager(ctx) {
       // completionErrors 由第 4 步接线（收尾失败不覆盖主结果）。
       unpersisted: ctx.errorLedger.toUnpersisted(),
       completionErrors: [],
+      // issue #476（新键，纯加法，只在真的兜底时出现）：`finalText` 是**引擎兜底文案**，不是模型正文。
+      // 宿主因此能分支处理（例如「没有可交付结论」⇒ 转人工 / 重跑），不必去比字符串。
+      ...(forcedFinalFallbackApplies() ? { finalTextFallback: true } : {}),
     };
   };
+
+  // issue #476：兜底判据的**唯一一处**（`makeResult` 的 `finalText` 与 `finalTextFallback` 两处都读它）。
+  // 两个条件缺一不可：① 强制收尾真的跑过（`forcedFinal`）—— 没跑过时正文为空是今天的正常形状
+  // （`ERIX_NO_FORCED_FINAL=1`、或末轮本来就只出 reasoning 而这一路不收尾的 run），不许凭空造正文；
+  // ② 终局正文仍是空白（空白也算空）。判据落在 `makeResult` 而不是收尾那一发里：guard 判 `revise`
+  // 之后治理可能继续、`finalText` 会被后续轮次重写，兜底只能按**最终**状态判。
+  const forcedFinalFallbackApplies = () => (
+    ctx.forcedFinal === true && ctx.finalText.trim() === ""
+  );
 
   // ── issue #648：guard 的非 accept 判定必须留下**机器可读**的结论 ─────────────────────────────
   // 病灶：`revise` 从前只涨 `metrics.revised` 并发一条 `final_guard` 事件，终局 `verification`
@@ -800,3 +812,24 @@ export function createTerminationManager(ctx) {
     finish,
   };
 }
+
+// ── issue #476：强制收尾**问过之后**终局仍是空正文时，落的那一条固定终稿文案 ──────────────────────
+// 现场：`termination.forcedFinal === true` 而 `finalText === ""`——收尾那一发被要求只出正文，模型仍然
+// 什么都没写（#467 交付时登记的残留 1 就是这个形状）。#467 / #475 的「再问一发」到这里已经用掉了
+// 收尾预算，补一发既不保证有内容、又要再吃一次收尾预算 ⇒ **用户裁决：落一条固定文案，不补发**。
+//
+// 三条硬约束（改之前先读）：
+//   1. **它是事实句**：说清「收尾未产出正文」，不冒充模型结论、不含任何编造的结果。宿主拿到的
+//      `result.finalText` 因此永远可读；「这条不是模型写的」由 `finalTextFallback: true` 判定。
+//   2. **它只落在 `result.finalText` 这一面**：`messages` / 账本里那条 assistant 仍是模型真正产出的
+//      那一条（空正文就是空正文）。往对话历史里塞一段模型没说过的话，`store.load()` 之后的分支会把它
+//      当成模型的话读回来——那不是兜底，那是伪造。
+//   3. **它不改任何裁决**：兜底在 `makeResult` 里做，晚于 `callFinalGuard` ⇒ guard 的 payload 里
+//      `finalText` 仍是空的那一份，交付物判据读到的也是同一份 ⇒ `verification` 不会因为多了一条兜底
+//      正文变好（没跑 guard 仍 `skipped`，跑了没过仍 `unverified`）。兜底正文**不是**已验证交付物。
+//
+// 英文只在这里写一次：文档与测试都引用本常量，不另抄字面量。
+export const FORCED_FINAL_FALLBACK_TEXT =
+  "No final text was produced: the forced wrap-up request returned no body, so this run has no"
+  + " conclusion to report. This text is an engine-generated placeholder, not model output, and must"
+  + " not be treated as a result.";

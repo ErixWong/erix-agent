@@ -2842,6 +2842,13 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
    只带 `{type, round, reason}`，`run_outcome` 不带 `finalText`。因此只按事件渲染的
    宿主，修完之后仍然会把评审卡当成最后一条可见内容。又因为 `accept` 永远不得建立在
    `finalText` 非空之上（见 `S6a`），宿主侧的验收判定必须读 `termination.forcedFinal`。
+   如果那一发收尾**仍然没有正文**（空白也算空），引擎**不再问第二发**（issue #476）：
+   此时 `result.finalText` 是一条固定的引擎兜底文案 —— 常量 `FORCED_FINAL_FALLBACK_TEXT`
+   （`src/loop/termination.js`），它只陈述「收尾未产出正文」这个事实 —— 同时
+   `result.finalTextFallback` 为 `true`，宿主不必比字符串就能分清「引擎兜底」与「模型正文」。
+   兜底在 `finalGuard` **之后**落地（它从不进 guard 的 payload，也不进 `deliverables` 的
+   `check`），因此它不会让 `verification` 变好（没接 guard 仍 `skipped`，guard 没过仍
+   `unverified`）；它也不写进 `messages` / 账本 —— 那两处保持模型真正产出的那份。
 8. **`fail()` 分类**——任何时刻抛错都会用 `aborted`（信号已置）或 `failed` /
    `persistence_failed` 替换掉上面全部（`fail`（`src/loop/orchestrator.js`））。
 

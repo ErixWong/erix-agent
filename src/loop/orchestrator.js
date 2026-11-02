@@ -696,7 +696,7 @@ function mergeFoldedRoundRanges(first, second) {
  *      `onPersistenceError`/`diagnostics.error`（持久化账本 + delivery_failure）、
  *      `finalGuard`（核验状态）、`reflection.onReflection`（仍按未隔离处理，抛错杀 run）。
  * @returns {Promise<{
- *   finalText:string,
+ *   finalText:string, finalTextFallback?:boolean, // issue #476：终稿是引擎兜底文案（收尾问过仍无正文）时出现且为 true，否则**缺席**
  *   messages:object[],
  *   transcript:object[],
  *   rounds:number,
