@@ -9,6 +9,11 @@
 //     · 低于基线 → **仍 exit 0**，并打印「基线可下调至 N」提示（改基线是一次独立的人工动作，见下）
 //   本单**不追求清零**（issue #214 的非目标），只把 200+ 个存量错误从「没人知道的债」变成「只减不增的棘轮」。
 //
+// 第二件事（issue #635 ①）：它还把**本次实测的带错文件数**与两份指令面文档里那句「基线 **N** / M 个文件」
+//   的 **M** 逐处对一遍（M 这一维从 #630 S2 起没人校：写 29 还是 99 都绿）。写错了 ⇒ **exit 1** 并点名
+//   （文件:行、文档的 M、实测的 M）；读不到声称句 / 读不到实测值 ⇒ **exit 2**。为什么不放进 `check:docs`：
+//   那条门禁从不跑 tsc，而要判 M 就得 spawn 一次 tsc；棘轮本来就已经量出 M 了 ⇒ 这里是零额外 tsc 运行。
+//
 // 与 #213 的两个门禁的分工（别混）：
 //   · `types:build` / `check:types-build` = 「**还能不能产出随包 `.d.ts`**」（tsc exit 0 + 公共符号在不在），
 //     它跑的是 `--declaration --emitDeclarationOnly`、**不带 `--checkJs`**，对类型质量零评判。
@@ -445,6 +450,116 @@ function depVersion(rel) {
   }
 }
 
+// ── 文档对账（issue #635 ①）：棘轮实测的**带错文件数** ↔ 指令面文档的声称句 ──────────────
+// 这一维从 issue #630 S2 / J 起就没人校：`scripts/docs-drift-check.mjs` 的 `BASELINE_CLAIM_RULES` 只校
+// 「基线 **N** / M 个文件」里那个 **N**，M 从写死的 `30 files` 改成 `\d+ files` 之后成了**哑弹**（文档写
+// `29 files` 还是 `99 files` 都绿）。#635 ① 给的正解是**从实测往文档方向**对账，而那条对账天然属于这里：
+// 棘轮本来就已经把每档的「错误总数 + 带错文件数」算出来了 ⇒ 这条是**零额外 tsc 运行**。
+// 为什么不放进 `check:docs`：`docs-drift-check.mjs` 从不跑 tsc，要它判 M 就得 spawn 一次 tsc，而
+// `check:docs` 是文档门禁里跑得最勤的一条（每次文档改动），为此把它变成十秒级不值得。分工是：
+// N 的正本对账仍在 `docs-drift-check.mjs` 的 `BASELINE_CLAIM_RULES` 里，本文件只用 N 认领这句声称属于哪一档。
+// 三条口径（都是本仓既有惯例，别放宽）：
+//   · **逐处判**（per-occurrence），不是 existence-level：#210 的教训是 existence-level 的锚点把整句删掉都
+//     不红。这里每抽到一处就单独比一次，中英两侧各判各的。
+//   · **两档各自独立**：句子里那个 N 等于哪一档的基线，就按**哪一档**的实测文件数判。拿并集档的数去顶包根档
+//     （或反过来）会红，而不是「反正差两个也算过」。
+//   · 读不到（文档不在 / 抽不到声称句 / 抽不到实测值）⇒ **exit 2**；写错了 ⇒ **exit 1**。
+//     「读不到真值」永远不等于「没问题」（#164 口径）。
+// ⚠ strict 档不跑这条对账：文档里这两句说的是非 strict 棘轮，strict 的带错文件数是**另一个量**（#417 明令
+//   禁止拿一档的数去顶另一档）。strict 那一步照样只判它自己的基线常量。
+const DOC_FILE_COUNT_CLAIMS = [
+  { rel: "AGENTS.md", form: "baseline **N** / M files", re: /baseline\s+\*\*(\d+)\*\*\s*\/\s*(\d+)\s*files/g },
+  { rel: "AGENTS_cn.md", form: "基线 **N** / M 个文件", re: /基线\s*\*\*(\d+)\*\*\s*\/\s*(\d+)\s*个文件/g },
+];
+
+/**
+ * 把两份指令面文档里「基线 **N** / M 个文件」的声称与**本次实测**逐处对账（issue #635 ①）。
+ *
+ * @param {{measuredTotal: number, measuredFiles: number, tierBaseline: number, tierName: string,
+ *   otherBaseline: number, verboseCommand: string}} m
+ *   `measuredTotal` / `measuredFiles` = 本次 tsc 实测的错误总数与带错文件数（就是棘轮判定用的那两个量）；
+ *   `tierBaseline` = 本档的基线常量值（用它认领一处声称属于哪一档）；
+ *   `otherBaseline` = 另一档的基线常量值（那几处不归本档判）；
+ *   `verboseCommand` = 报错里给的「看分布」命令（两档的尾巴不同）。
+ * @returns {{errors: {kind: "unreadable" | "mismatch", text: string}[], judged: number, deferred: number}}
+ *   `errors` 为空才允许 exit 0；`judged` / `deferred` 只用于自述（判了几处、几处归另一档）。
+ */
+function reconcileDocFileCounts({ measuredTotal, measuredFiles, tierBaseline, tierName, otherBaseline, verboseCommand }) {
+  const errors = [];
+  let judged = 0;
+  let deferred = 0;
+  // 「读不到实测值」也是读不到真值：没有 M 就没有对账的右半边。
+  if (!Number.isFinite(measuredFiles) || measuredFiles <= 0) {
+    errors.push({ kind: "unreadable", text: `读不到本次实测的带错文件数（${measuredFiles}）——没有真值就无法对账。`
+      + "先确认 tsc 真的跑起来了（上面的陈旧声明守卫、入口、tsc 输出形状）。" });
+    return { errors, judged, deferred };
+  }
+  for (const doc of DOC_FILE_COUNT_CLAIMS) {
+    let src;
+    try {
+      src = readFileSync(path.join(ROOT, doc.rel), "utf8");
+    } catch (err) {
+      errors.push({ kind: "unreadable", text: `${doc.rel} 读不到（${err?.code ?? err?.message ?? err}）——`
+        + `「${doc.form}」这条声称句没法对账；读不到真值不等于没问题。` });
+      continue;
+    }
+    const hits = [...src.matchAll(new RegExp(doc.re.source, doc.re.flags))];
+    if (!hits.length) {
+      errors.push({ kind: "unreadable", text: `${doc.rel} 里一处「${doc.form}」都抽不到——该声称句被整句删了或改了形，`
+        + `这条对账在这个文件已经失效（真值：本次实测 ${measuredTotal} 个错 / ${measuredFiles} 个文件，${tierName}）。`
+        + "\n      要改句式就同步本脚本的 `DOC_FILE_COUNT_CLAIMS`（与 `docs-drift-check.mjs` 的 `BASELINE_CLAIM_RULES` 一起改），"
+        + "别让规则静默空转。" });
+      continue;
+    }
+    for (const hit of hits) {
+      const at = `${doc.rel}:${src.slice(0, hit.index).split("\n").length}`;
+      const claimedN = Number(hit[1]);
+      const claimedM = Number(hit[2]);
+      const sentence = hit[0];
+      if (claimedN === otherBaseline) {
+        // 另一档的句子：本档没有那一档的实测值（那要多跑一次 tsc，本单的红线是「不新增 tsc 运行」），
+        // 交给那一档自己那一步判——CI 上两档都有步骤，所以它不会被漏掉。
+        deferred += 1;
+        continue;
+      }
+      if (claimedN !== tierBaseline) {
+        errors.push({ kind: "mismatch", text: `${at} 声称基线 ${claimedN} / ${claimedM} 个文件，但 ${claimedN} 既不等于本档`
+          + `（${tierName}）的基线 ${tierBaseline}，也不等于另一档的 ${otherBaseline}——认不出这句属于哪一档，`
+          + `文件数也就无从判定（「${sentence}」）。` });
+        continue;
+      }
+      judged += 1;
+      if (claimedM !== measuredFiles) {
+        errors.push({ kind: "mismatch", text: `${at} 声称 **${claimedM} 个带错文件**，本次实测 **${measuredFiles} 个**`
+          + `（${tierName}：${measuredTotal} 个错；「${sentence}」）。\n`
+          + `      正解：① 先跑 \`${verboseCommand}\` 看每文件分布，确认这个文件数是**真的**`
+          + "（新增错落在新文件里 / 有文件归零退出了错误集合）；"
+          + `\n        ② 是真的就把文档里那个数改成 ${measuredFiles}（中英两处同形句一起改，中英成对）；`
+          + "\n        ③ **不要**为了让这里变绿去改判据 / 基线常量 / 放宽 `--checkJs` 或 `--strict`——"
+          + "棘轮只减不增，改判据只是把这条谎换个地方藏。" });
+      }
+    }
+  }
+  return { errors, judged, deferred };
+}
+
+/**
+ * 把文档对账的结论落成退出码：**读不到真值 ⇒ exit 2**，**写错了 ⇒ exit 1**（#164 口径：读不到 ≠ 没问题）。
+ *
+ * @param {{errors: {kind: "unreadable" | "mismatch", text: string}[]}} verdict `reconcileDocFileCounts` 的返回值
+ * @returns {void}
+ */
+function exitOnDocFileCountErrors(verdict) {
+  const unreadable = verdict.errors.filter((e) => e.kind === "unreadable");
+  const code = unreadable.length ? 2 : 1;
+  console.error(
+    "check:types: 失败 — 指令面文档的「基线 **N** / M 个文件」声称与本次实测对不上"
+    + `（issue #635 ①；${code === 2 ? "读不到真值" : "文档写错了"} ⇒ exit ${code}）：\n`
+    + verdict.errors.map((e) => `  · ${e.text}`).join("\n"),
+  );
+  process.exit(code);
+}
+
 // ── strict 棘轮（issue #417）：同一张依赖图 + `--strict`，**参与 exit code** ────────────
 // 放在陈旧声明守卫**之后**、非 strict 棘轮那次 tsc 之前：守卫已经在上面把 `src/**/*.d.ts` 在场的情形拦成
 // exit 1，于是「strict 报 0」在这里只有一种含义（真的 0），不会混进「声明把实现遮住了」那种假绿。
@@ -654,6 +769,28 @@ if (total > BASELINE) {
   );
   process.exit(1);
 }
+
+// ── 文档对账（issue #635 ①）：棘轮绿了之后，指令面文档里那句「基线 **N** / M 个文件」的 M 也得是真值 ──
+// 放在棘轮判定**之后**、两条绿路之前：棘轮红时先报它自己那笔债（新增错，那条信息更能定位改动），
+// 而文档那一维的谎**一例都不许过 exit 0**。放在 `--print-count` 之后是为了让那一步的 stdout 仍然只是一个数。
+const otherTierCommand = WITH_TOOLS ? "npm run check:types" : "npm run check:types -- --with-tools";
+const docVerdict = reconcileDocFileCounts({
+  measuredTotal: total,
+  measuredFiles: files.length,
+  tierBaseline: BASELINE,
+  tierName: MODE,
+  otherBaseline: WITH_TOOLS ? BASELINE_ROOT : BASELINE_WITH_TOOLS,
+  verboseCommand: `node scripts/type-check-ratchet.mjs --verbose${WITH_TOOLS ? " --with-tools" : ""}`,
+});
+if (docVerdict.errors.length) exitOnDocFileCountErrors(docVerdict);
+console.log(
+  docVerdict.judged > 0
+    ? `check:types: 文档对账 OK — ${docVerdict.judged} 处「基线 **N** / M 个文件」声称句的 M 都等于本次实测的 `
+      + `${files.length} 个带错文件（${MODE}）`
+      + (docVerdict.deferred > 0 ? `；另 ${docVerdict.deferred} 处属另一档，由 \`${otherTierCommand}\` 判` : "")
+    : `check:types: 文档对账 — 本档（${MODE}）没有「基线 **N** / M 个文件」声称句；`
+      + `${docVerdict.deferred} 处属另一档，由 \`${otherTierCommand}\` 判`,
+);
 
 if (total < BASELINE) {
   console.log(

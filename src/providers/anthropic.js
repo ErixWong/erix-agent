@@ -337,14 +337,17 @@ function createRequestContext(timeoutMs, externalSignal) {
  * @deprecated issue #429: removed in 0.30 — no in-tree replacement; the host
  *   builds the provider object itself (the duck-typed `{protocol, model, chat,
  *   chatStream}` shape).
- *   Release blocker for 0.30: `scripts/host-consumer-probe.mjs` still finds a
- *   live import of this factory, and the only in-tree alternative is the
- *   assembly port (not converged), so deleting it in 0.30 breaks a live host
- *   unless that host migrates first. Host fact (re-run the probe to re-check):
+ *   Known host-visible breakage: `scripts/host-consumer-probe.mjs` finds a
+ *   live import of this factory, so deleting it in 0.30 does break that host.
+ *   The breakage is taken knowingly — a host hit is not a veto on the deletion
+ *   (this package is the upstream, so retiring an export is its own call), it
+ *   is the reason the name has to be **visible and migratable**: the deletion
+ *   is covered by the 0.30 upgrade guide, both language halves, with the
+ *   migration clause above. Host fact (re-run the probe to re-check):
  *   `app_container/apps/worker/src/pi/erix-adapter.js:2`.
- *   Deletion premise = that host import is gone; until then this name ships in
- *   0.30 and the ledger entry in `REMOVAL_REGISTRY`
- *   (`scripts/deprecated-export-check.mjs`) records why.
+ *   The ledger entry in `REMOVAL_REGISTRY` (`scripts/deprecated-export-check.mjs`)
+ *   records that known breakage — which host, which `file:line`, and why the
+ *   name goes anyway — so the entry and this marker stay in step.
  */
 export function createAnthropicProvider({
   endpoint,

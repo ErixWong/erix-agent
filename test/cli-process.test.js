@@ -1060,3 +1060,98 @@ describe("真起 repl 子进程：会话目录 = 进程目录，相对交付物�
     assert.match(line, /unverified:1/u);
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// issue #398-3 第 ③ 条：**裸** `--require-deliverable` 的 repl 进程级证据
+//
+// 取证（在 e8add6e 上逐条核过，别照工单描述改测试）：
+//   · 上面那个 describe 的 3 格用的全是**命名**形状（`--require-deliverable <path>` ⇒
+//     `createNamedDeliverableChecks`，按 `facts.cwd` 解析）。裸旗标走的是**另一个函数**
+//     `createDeliverableChecks`（`bin/final-guard.js:168`）：读 `fileWrites` 里的**原始字符串**，
+//     用缺省 `existsSync()` ⇒ 按**核验那一刻的进程 cwd** 解析。repl 侧此前一格进程级证据都没有。
+//   · 工单 ③ 要的「会话中进程目录发生过变化（`!cd`）」这一维**当前不可达，不是缺一格**：
+//     `bin/repl.js:351` 的 `parseCommand` 只认 `/` 前缀、白名单里没有 cd；`bin/repl.js:814` 的
+//     `handleInput` 把非 `/` 行一律当 prompt 交给模型；`grep -rn chdir bin src` 只有 3 处注释、
+//     零处调用；`git log --all -S'!cd'` 为空。所以 repl 里没有任何输入能改进程目录。
+//   · 但这正是裸旗标将来会出事的地方，两格断言就是它的探针：repl 的 `cwd` 在
+//     `bin/repl.js:497` **开机时取一次**（`process.cwd()`），命名判据按它解析；裸判据按核验时的
+//     进程 cwd 解析。两者今天恒等（没人 chdir），一旦 `!cd` 落地就分叉——`fileWrites` 里的相对
+//     路径会按新目录重新解析，于是「明明写了」被判成 `deliverables_failed`（假阴）。
+//     修法属 issue #398 第 ② 条（判据本体读原始字符串）的裁决范围，本单**不动 `bin/`**。
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+
+describe("真起 repl 子进程：裸 --require-deliverable 读 fileWrites 原始路径（issue #398-3 第 ③ 条）", () => {
+  it("① 相对路径真写出来 ⇒ deliverables_checked:1 / deliverables_failed:0（原始字符串按进程目录解析）", async (t) => {
+    if (PTY_DRIVER === null) {
+      t.skip("本环境没有可用的 PTY 驱动（`script`）：repl 非交互终端会拒绝启动，进程级证据无法在此机上取");
+      return;
+    }
+    const script = [];
+    const sandbox = await makeSandbox(t, { script });
+    script.push(
+      // 相对路径：`fileWrites` 里存的就是 `"report.md"` 这个**原始字符串**。
+      sseResponse({ frames: sseOpenAI(openAIToolCallChunks("writeFile", { path: "report.md", content: "42" }, "call-3983-bare-ok")) }),
+      sseResponse({ frames: sseOpenAI(openAITextChunks(["已写入 report.md。任务已完成"])) }),
+    );
+
+    const result = await runReplSession({
+      args: ["repl", "--final-guard", "--require-deliverable", "--max-rounds", "4"],
+      home: sandbox.home,
+      cwd: sandbox.project,
+      prompt: "把 42 写进 report.md",
+    });
+
+    assert.ok(await sandbox.upstream.waitForRequests(2, 2_000),
+      `repl 没把两轮（写工具 + 收尾）都发给模型端点；stdout=${JSON.stringify(result.stdout.slice(-600))}`);
+    // 磁盘事实：相对路径落在**子进程**目录里。
+    assert.equal(existsSync(join(sandbox.project, "report.md")), true,
+      `相对路径必须落在会话（= 子进程）目录；stdout=${JSON.stringify(result.stdout.slice(-600))}`);
+    assert.equal(readFileSync(join(sandbox.project, "report.md"), "utf8"), "42");
+    // 反证：判据的 `existsSync("report.md")` 解析的是子进程目录，不是测试进程目录（仓库根）。
+    assert.equal(existsSync(join(REPO_ROOT, "report.md")), false,
+      "裸判据按进程 cwd 解析原始路径——这里钉住它解析的是子进程的那个 cwd");
+    const line = guardStatsLine(result.stdout);
+    assert.match(line,
+      /guard=\{verified:0,skipped:1,revised:0,unverified:0,guard_error:0,deliverables_checked:1,deliverables_failed:0\}/u,
+      `判据成立时必须 checked:1 / failed:0 且终局不是 unverified；stdout=${JSON.stringify(result.stdout.slice(-600))}`);
+    assert.equal(result.code, 0,
+      `repl 只在非 TTY 时置退出码 1；实得 ${result.code}，stderr=${JSON.stringify(result.stderr.slice(-300))}`);
+  });
+
+  it("② 相对路径写过又被删掉 ⇒ deliverables_checked:1 / deliverables_failed:1 / unverified:1（收尾时的磁盘事实）", async (t) => {
+    if (PTY_DRIVER === null) {
+      t.skip("本环境没有可用的 PTY 驱动（`script`）：repl 非交互终端会拒绝启动，进程级证据无法在此机上取");
+      return;
+    }
+    const script = [];
+    const sandbox = await makeSandbox(t, { script });
+    script.push(
+      // 先声明写（`fileWrites` 因此有 `"report.md"`）……
+      sseResponse({ frames: sseOpenAI(openAIToolCallChunks("writeFile", { path: "report.md", content: "42" }, "call-3983-bare-w")) }),
+      // ……再删掉。`exec` 的 cwd 也是子进程目录（`bin/tools.js:711`），所以这里也是相对路径。
+      sseResponse({ frames: sseOpenAI(openAIToolCallChunks("exec", { command: "rm -f report.md" }, "call-3983-bare-rm")) }),
+      sseResponse({ frames: sseOpenAI(openAITextChunks(["已清理 report.md。任务已完成"])) }),
+    );
+
+    const result = await runReplSession({
+      args: ["repl", "--final-guard", "--require-deliverable", "--max-rounds", "5"],
+      home: sandbox.home,
+      cwd: sandbox.project,
+      prompt: "先写再删 report.md",
+    });
+
+    assert.ok(await sandbox.upstream.waitForRequests(3, 2_000),
+      `三轮（写 / 删 / 收尾）都该发出去；stdout=${JSON.stringify(result.stdout.slice(-600))}`);
+    // 前提：写确实发生过、收尾时也确实不在盘上（否则这条会退化成「模型没动手」的另一种绿）。
+    assert.equal(existsSync(join(sandbox.project, "report.md")), false,
+      `本用例的前提是交付物收尾时**不在**盘上；stdout=${JSON.stringify(result.stdout.slice(-600))}`);
+    const line = guardStatsLine(result.stdout);
+    assert.match(line, /deliverables_checked:1/u,
+      `统计行必须给出判据计数；stdout=${JSON.stringify(result.stdout.slice(-600))}`);
+    assert.match(line, /deliverables_failed:1/u,
+      "裸判据必须在收尾时重新 stat 一次原始路径（读过就忘 = 假阳）");
+    assert.match(line, /unverified:1/u, "终局是 unverified（不是 verified，也不是「没验」）");
+    assert.equal(result.code, 0,
+      "repl 没有退出码承诺：终局 unverified 也退 0（chat 的 exit 2 是另一条承诺面，别混）");
+  });
+});

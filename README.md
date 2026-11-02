@@ -22,7 +22,7 @@ The relationship with pi is complementary:
 
 The boundary ends at one agent task lifecycle. Multi-role orchestration,
 arbitration, retry scheduling, reapers, and task queues belong to the host
-(`app_container` / `touwaka`), not to this library. Keeping that boundary
+(`fde-workshop` / `touwaka`), not to this library. Keeping that boundary
 avoids turning a small runtime into a headless-agent platform and preserves
 the zero-dependency design.
 
@@ -48,9 +48,14 @@ repository bundles the `notes` skill; the todo skill is an example under
 > file paths and shell commands and do not add an allowlist or confirmation
 > prompt.
 
-The project is intended for integrations including `app_container` (PI Agent
-audit/development paths) and `touwaka` (AgentLoop/conversation paths). Those
-host integrations are outside this package's lifecycle boundary.
+The project is intended for integrations including `fde-workshop` (PI Agent
+audit/development paths; it is the project `erix-station` and `app_container`
+were merged into, and it depends on this package and runs it in its worker
+container image) and `touwaka` (AgentLoop/conversation paths). Those host
+integrations are outside this package's lifecycle boundary. The superseded
+`erix-station` and `app_container` checkouts still exist on disk and still
+import this package, so a rename in the host list is not a claim that they are
+gone.
 
 ## Quickstart
 
@@ -1019,9 +1024,11 @@ The shared CLI flags are:
   `erix repl` has no retry.
 - `--compact-budget <tokens>` overrides the automatic compaction budget.
 - `--compaction <name>` selects the compaction strategy
-  (`sliding-window | fold-statistical | fold-llm`, default `fold-llm`, or the
-  `slots.default.compaction` config field). `fold-llm` costs one extra main-model call
-  per compaction.
+  (`sliding-window | fold-statistical | fold-llm`; the CLI slot default is `fold-llm`, also
+  settable as the `slots.default.compaction` config field). `fold-llm` costs one extra
+  main-model call per compaction. A host that calls the library with no strategy gets the
+  library behaviour instead — see the contract's "default" note: the two layers are separate
+  facts, and `bin/` is a verifier/debugger, not the contract surface.
 - `--tools <comma-separated names>` is a hard capability whitelist for both
   `chat` and `repl`; unknown names warn, and an empty filtered set is an error.
 - `--judge-log <path>` appends judge decisions (round + interception) as JSONL

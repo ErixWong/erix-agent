@@ -2623,15 +2623,18 @@ input is `SUMMARIZER_PROMPT_GUIDE` plus a deterministic serialization of the fol
 messages and the folded round range. Its cost and accounting are part of the contract:
 
 - **One extra call on the run's main model per compaction**, with an input roughly the
-  size of the folded rounds. **Two layers, two different defaults — do not collapse them into
-  one value** (issue #614). At the **CLI layer** `fold-llm` *is* the default: `bin/config.js`
-  `DEFAULT_COMPACTION_STRATEGY`, i.e. the value `--compaction` / `slots.default.compaction`
-  falls back to. At the **library layer** an unset `context.strategy` still resolves to *no
-  configured strategy* (`src/compact/strategy-resolution.js`), and the engine then falls back to
-  the library default `sliding-window` once the budget is exceeded (`src/loop/orchestrator.js`,
-  observable as one `compaction_strategy_fallback` event per run). So a library host that wants
-  `fold-llm` selects it explicitly — and `fold-statistical` is **not** the default anywhere: it is
-  an explicit zero-LLM choice.
+  size of the folded rounds. `fold-llm` is therefore opt-in, and the two layers that can
+  answer "what is the default" are separate facts, not one sentence:
+  - **The library default** (no strategy configured) is `sliding-window`: a budget overflow
+    with no selected strategy is handled by the fallback layer in `src/compact/pipeline.js`,
+    whose `strategyNames` is the only truth for this half.
+  - **The CLI slot default** is `fold-llm`: `slots.default.compaction` left unset resolves to
+    it in `bin/cli.js`. That is a **CLI-layer choice, not a library default** — `bin/` is a
+    verifier/debugger, not the contract surface, and a host that configures nothing gets the
+    library behaviour above, not this one.
+  No layer defaults to `fold-statistical`: it is an explicit zero-LLM choice, and since
+  issue #661 a failing `fold-llm` summarizer is a **terminal error** rather than a degrade to
+  it (the next bullet states the failure shape).
 - Its usage is merged into the run aggregate through the same `addUsage` path as other
   auxiliary calls (`persist` at `src/loop/orchestrator.js`, `trackLatest: false`) and is also
   reported through `onUsage`, so `result.usage` / `error.usage` are complete. The call
@@ -3313,8 +3316,10 @@ Its value proposition comes down to one thing: `partialPersistence` lowers only 
 front of a user (that is `error.finalText`), and the snapshot writes it performs in steady
 state are a net loss when a host's own crash-requeue rate is low. So measure that rate
 before enabling it — the share of queued runs with `attempts > 1` (`run_queue.attempts`, the
-number erix-station reads) — and decide from your own number rather than from a threshold
-measured somewhere else. The host that asked for the option is itself the evidence, cited as
+number the host that asked for this option reads) — and decide from your own number rather than
+from a threshold measured somewhere else. That host, `erix-station`, has since been merged into
+the successor project `fde-workshop`; the old checkout is still on disk and still imports this
+package. The host that asked for the option is itself the evidence, cited as
 observation and not as advice: over ten days of development erix-station saw roughly one
 natural crash-requeue (`attempts > 1` on 8 of 133 runs, 3 of those 8 being deliberate
 `docker pause` / `kill -9` drills); ⚠ that is a single-machine, single-user sample taken
@@ -3616,6 +3621,16 @@ Within one round, exactly one mechanism gets to decide, in this order
    judge card last, even after issue #467. And since an `accept` verdict must never
    rest on `finalText` being non-empty (see `S6a`), a host-side acceptance decision
    has to read `termination.forcedFinal`.
+   If that single wrap-up request still produces no body (blank counts as empty), the
+   engine does **not** ask again (issue #476): `result.finalText` is then a fixed
+   engine-generated placeholder — the constant `FORCED_FINAL_FALLBACK_TEXT`
+   (`src/loop/termination.js`), which only states the fact that the wrap-up produced
+   no text — and `result.finalTextFallback` is `true`, so a host can tell an engine
+   fallback from model prose without matching strings. The placeholder is applied
+   **after** `finalGuard` (it never enters the guard payload or a `deliverables`
+   `check`), so it cannot improve `verification` (`skipped` without a guard,
+   `unverified` when the guard did not pass), and it is never written into
+   `messages` / the transcript: those keep exactly what the model produced.
 8. **`fail()` classification** — any throw at any point replaces all of the
    above with `aborted` (signal set) or `failed` / `persistence_failed`
    (`fail` (`src/loop/orchestrator.js`)).

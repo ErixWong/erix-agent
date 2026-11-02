@@ -11,7 +11,7 @@ erix 与 pi 的关系是互补的：
 - **pi 是交互式 agent**：人在环，支持 TUI/subagent/MCP 工作流。
 - **erix 是无头 agent**：无人值守，由宿主调度。
 
-边界止于一个 agent 任务生命周期。多角色编排、仲裁、重试调度、reaper 和任务队列属于宿主（`app_container` / `touwaka`）的职责，不属于本库。保持这一边界，可以避免把小型运行时变成无头 agent 平台，并保留零依赖设计。
+边界止于一个 agent 任务生命周期。多角色编排、仲裁、重试调度、reaper 和任务队列属于宿主（`fde-workshop` / `touwaka`）的职责，不属于本库。保持这一边界，可以避免把小型运行时变成无头 agent 平台，并保留零依赖设计。
 
 CLI（`erix`）是验证器和调试器，不是产品：
 
@@ -23,7 +23,7 @@ CLI（`erix`）是验证器和调试器，不是产品：
 
 > **安全边界：** 运行时不执行安全策略。安全责任由调用方承担。在本地运行意味着让 agent 访问你的本地信任域；嵌入式或沙盒部署必须由宿主隔离。CLI 工具有意允许任意文件路径和 shell 命令，不添加白名单或确认提示。
 
-项目面向包括 `app_container`（PI Agent 审计/开发路径）和 `touwaka`（AgentLoop/对话路径）在内的集成。这些宿主集成不属于本包的生命周期边界。
+项目面向包括 `fde-workshop`（PI Agent 审计/开发路径；它是 `erix-station` 与 `app_container` 合并后的项目，依赖本包并在它的 worker 容器镜像里跑本包）和 `touwaka`（AgentLoop/对话路径）在内的集成。这些宿主集成不属于本包的生命周期边界。被取代的 `erix-station` 与 `app_container` 检出仍在盘上、仍导入本包，所以宿主清单换名不等于说它们已经消失。
 
 ## 快速开始
 
@@ -587,7 +587,7 @@ erix mcp [--config <path>]
 - `--idle-timeout <seconds>` 在没有进展后中止；`chat` 默认为 300，`repl` 默认为 0（禁用）。**工具执行时间不再计入静默窗口**（issue #433）：工具跑着的时候看门狗持续被喂表，所以一条长的安装/编译命令不会再打死整个 run——而且每次被喂过表的工具执行都会在 stderr 留一行 `[idle-heartbeat] <工具名>：执行期喂过 idle 计时器 N 次`（只在 `N > 0` 时打），这就是这件事的可观测证据。这份喂表是有上限的——`exec` 的天花板被钳到 `idle − 60s`（下限 30s），所以真正挂住的命令仍然以「命令超时」收场（默认 240s，即 `300 − 60`），而不是被看门狗悄悄吃掉。显式设置的 `ERIX_EXEC_TIMEOUT_MS` 若**等于或高于**该天花板，会被**收敛**成 `min(exec, idle − 60s)` 并打一条 loud 日志（issue #433 fix 4）；CLI **不**启动即报错——`exec == idle` 是 bench 两臂的真实配置，判据是「终局不得是 `idle_timeout`」。**这份让步有界，但不是没有代价**：`idle ≤ 30s` 时下限 30s 压过 `idle − 60s`，`exec < idle` 根本不可能成立，工具执行期最坏 = `30s + idle`——实测 `idle=1` → 30.8s、`30` → 52.5s、`120` → 150s，默认 `300` 的上界 540s（= `240 + 300`）。这一种情形也会打日志。
 - `--idle-retry-budget <seconds>`（仅 `chat`，默认 900）是**判死后从 transcript 续跑**的总预算（issue #433 fix 1）：看门狗命中之后，CLI 指数退避（`1s`、`2s`、`4s`……上限 30s）再从**持久化 transcript** 恢复同一个 run（`resume`），而不是把任务从头重跑——已经付过费的轮次与 token 都留着。**这改变了静默 run 的默认墙钟**：依赖「静默 ⇒ 快速退出」的宿主必须显式传 `--idle-retry-budget 0`（一次 `idle_timeout`，即 #433 之前的形状；且传 `0` 时 CLI **不打任何重试行**，stderr 与 #433 之前逐字同形，issue #456）。双闸都要过：预算——**从第一次判死起的墙钟总时长**（退避**与**重试尝试都算），不是「退避之和」——以及次数硬上限 8 次。**实测最坏**（上游永久静默、`--idle-timeout 1`、默认预算）：从启动到退出 **130.3s**，共 9 发，退避 `1, 2, 4, 8, 16, 30, 30, 30` 秒（第 5 次重试之后 30s 上限开始生效）——这个窗口下先撞的是**次数**闸。默认 `--idle-timeout 300` 时先撞的是预算：从启动 **约 1200s**——**这一格是推算、不是实测**（300s 首窗 + 900s 预算 + 最后一个窗口：判死落在 300s / 601s / 903s / 1207s，第四次判死时已用 907s ≥ 900s）；模型用**等比实测**验证：`idle=2` / `budget=6` + 永久静默 ⇒ **9084ms**、3 发、退避 `[1000, 2000]`ms、`exhausted: "budget"`（「预算 + 启动」那种口径会得 7s / 2 发，被实测否掉）。**第一次重试约在 2s 时发起**（1s 窗口 + 1s 首段退避）。预算用尽时终局仍然是 `idle_timeout`（并保留 issue #440 的四件载荷），而记账（重试次数 / 每次退避 / 累计 usage）会挂在终局载荷上（`result.idleRetry` / `error.idleRetry`），并在 `judge.log` 里逐步写 `type: "idle_retry"` 记录。它**不是**「所有静默都被救」：`--stream` 的静默先撞 provider 的可重试相位截止（issue #441），`erix repl` 也没有重试。
 - `--compact-budget <tokens>` 覆盖自动压缩预算。
-- `--compaction <名>` 选择压缩策略（`sliding-window | fold-statistical | fold-llm`，默认 `fold-llm`；也可用 `slots.default.compaction` 固定）。`fold-llm` 每次压缩多一次主力模型调用。
+- `--compaction <名>` 选择压缩策略（`sliding-window | fold-statistical | fold-llm`；CLI 槽位默认 `fold-llm`，也可用 `slots.default.compaction` 固定）。`fold-llm` 每次压缩多一次主力模型调用。不配策略直接调库的宿主拿到的是**库层**行为，不是这一条——两层各自的事实见契约里那条「默认」说明；`bin/` 是校验器/调试器，不是契约面。
 - `--tools <逗号分隔名称>` 是 `chat` 和 `repl` 的硬能力白名单；未知名称会告警，过滤后为空会报错。
 - `--judge-log <path>` 在 `chat` 中以 JSONL 追加轮次/judge 拦截决策，每条带 `runId` 与解析出的 `model`，末尾再追加一条 run 级 `run_outcome` 汇总记录（这条终局记录即使 judge 关闭也会写——它是 run 的终局记录而非决策，有了它就不必为了 per-model 记账再开第二份档案）；默认落 `<归档目录>/judge.log`，探不到的字段缺省而非写占位值；档案原样落盘（脱敏已于 #55 退役）。
 

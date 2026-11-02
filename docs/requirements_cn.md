@@ -11,6 +11,9 @@
 
 ### app_container（`app_container:apps/worker/src/pi/` + `app_container:packages/context`）
 
+> 这个宿主已与 `erix-station` 一起合并进后继项目 `fde-workshop`。`app_container` 检出仍在盘上、仍导入本包，
+> 所以下面这些路径今天仍然可读；变的是这份工作归哪个项目，不是旧代码还在不在。
+
 - 已有能力：双协议归一化（OpenAI/Anthropic → 统一的 `tool_use`/`tool_result` 块）、基于签名窗口比对的停滞检测、固定十轮硬窗口、`max_tokens` 续写，以及 idea 对话的骨架折叠（`chat_summary_json` 加 `foldedUpTo` 水位线）。
 - 痛点：（1）硬窗口会静默丢弃早期轮次，因此一个 24 轮的开发任务可能丢失一半历史，模型可能重复已完成的工作；（2）provider 错误会使整个任务失败，导致 reaper 从头开始，浪费已经支付的 LLM 调用；（3）`pi_models.context_window_tokens` 已存储，却没有接入循环（`llm-context-budget.md` §7，“本周期不改”）；（4）骨架折叠输出没有确定性的大小约束，依赖 LLM 遵守预算，而不是将最终大小保持为代码不变量。
 
@@ -71,7 +74,7 @@
 | FR-3.1 | `budget = contextWindowTokens − maxOutputTokens − max(2000, 10% of the window)` | **已交付。** `computeBudget` 实现该公式，并拒绝无效或非正预算。 |
 | FR-3.2 | 按每个 CJK 字符 1.5 tokens、每个非 CJK token 3.5 个字符估算 token，再加 15% 余量；保持保守，并使系数可配置 | **已交付，并增加了额外计费。** `estimateTokens` 使用这些默认值和可配置系数，消息估算还会在适用时加入每条消息开销以及图片、reasoning、raw-block、工具名和工具输入成本。 |
 | FR-3.3 | 折叠整组：一轮是一个 assistant 消息及其紧随的工具结果消息，遵循各协议的配对规则；永不折叠 system header 或首个 user 消息 | **由压缩策略交付。** `validateMessages` 和 `groupIntoRounds` 强制相邻工具配对，策略会保留头部直到首个真实 user 消息。`protectedMessage` 可以增加保护。如果必须执行最后一道安全截断才能满足预算，受保护消息可能被降级，或者单条超预算的受保护消息可能以 `invalid_budget` 失败；这并不无条件保证每个回退视图都能保留头部。 |
-| FR-3.4 | 提供策略演进 `sliding-window` → `fold-statistical` → `fold-llm`（可选 summarizer、开箱即可选用）；将 Psyche 定义为独立的、面向对话的上下文塑形理念，而不是第四种已交付策略 | **三个策略均已交付；Psyche 已明确拆分。** `createSlidingWindowStrategy`、`createFoldStatisticalStrategy` 和 `createFoldLlmStrategy` 已交付，且自 issue #167 起 `context.strategy` 也接受名字 `"sliding-window" | "fold-statistical" | "fold-llm"`（对象形式行为逐字不变；未知名字启动期抛错）。`fold-llm` 不再需要宿主自写胶水：名字形态下引擎会注入一个复用本 run 主力 provider 的默认 summarizer（`src/compact/provider-summarizer.js`），手动注入 summarizer 的对象形式保留为覆盖通道；CLI 以 `--compaction` / `slots.default.compaction` 提供同一选择，自 issue #614 起默认为 `fold-llm`。`src/` 中不存在 `psyche` 策略；`src/reflection/` 是独立的 judge/governor/wrap-up/L0 治理层，而非压缩策略。 |
+| FR-3.4 | 提供策略演进 `sliding-window` → `fold-statistical` → `fold-llm`（可选 summarizer、开箱即可选用）；将 Psyche 定义为独立的、面向对话的上下文塑形理念，而不是第四种已交付策略 | **三个策略均已交付；Psyche 已明确拆分。** `createSlidingWindowStrategy`、`createFoldStatisticalStrategy` 和 `createFoldLlmStrategy` 已交付，且自 issue #167 起 `context.strategy` 也接受名字 `"sliding-window" | "fold-statistical" | "fold-llm"`（对象形式行为逐字不变；未知名字启动期抛错）。`fold-llm` 不再需要宿主自写胶水：名字形态下引擎会注入一个复用本 run 主力 provider 的默认 summarizer（`src/compact/provider-summarizer.js`），手动注入 summarizer 的对象形式保留为覆盖通道；CLI 以 `--compaction` / `slots.default.compaction` 提供同一选择，**CLI 槽位默认**是 `fold-llm`。`src/` 中不存在 `psyche` 策略；`src/reflection/` 是独立的 judge/governor/wrap-up/L0 治理层，而非压缩策略。 |
 | FR-3.5 | 通过在代码中修剪字段，而不是信任 LLM，强制限制 LLM 生成摘要的确定性大小 | **`fold-llm` 已交付（含引擎自带的默认 summarizer）；不适用于未交付的 Psyche 策略。** `src/compact/enforce-size.js` 应用字段优先级，`src/compact/fold-llm.js` 通过确定性回退截断强制执行 `maxSummaryTokens`——无论 summarizer 是宿主注入的还是引擎提供的（issue #167），同一上限都生效；且默认 summarizer 的摘要 usage 会计入 run 总账；自 issue #661 起摘要器失败是**终局错误**（`summarizer_failed`，run 以 failed 结束、CLI 退出码 5），不再降级成统计摘要——想要「一次 LLM 都不调、永不失败」的折叠就显式选 `fold-statistical`。`fold-statistical` 是确定性的，不依赖 LLM 摘要。 |
 | FR-3.6 | 跟踪折叠轮次，并在 `TranscriptStore` 中保留完整载荷；将请求视图折叠与 checkpoint 数据分离 | **已交付。** `runToolLoop` 跟踪折叠范围，并在持久化轮次/checkpoint 数据中记录 `foldedPayload`。工具结果 TTL 折叠只作用于请求视图：旧且大的结果替换为导航摘要/JSON 骨架占位符，而 checkpoint 保留全文。预警轮给模型在折叠前提炼笔记的机会。 |
 

@@ -13,8 +13,9 @@
  *      `TEST-SUMMARY tests=… pass=… fail=… skipped=… todo=… cancelled=… source=<文件>:<行>` —— 可 grep、
  *      可 diff、可被别的脚本读。
  *   2. **对账**：与 `test/test-suite-baseline.json` 的 `expect` 逐项比，红时**点名差值**：
- *        · `TESTS_DRIFT`      `tests` 必须逐字等于登记值（新增/删除用例是**有意行为** ⇒ 同片改登记表并补一条
- *          `observations`；数字自己漂掉就是回归）；
+ *        · `TESTS_DRIFT`      `tests` **不得小于**登记值（棘轮方向与 `check:types` 同构：少一格是**事故**——
+ *          那少掉的就是被删/被吞掉的覆盖 ⇒ 红并点名差值；多出来 ⇒ **绿**，另打一行 `TEST-SUMMARY-HINT`
+ *          「登记值可抬到 N」。抬值仍是**人**的动作，脚本只提示、不改写）；
  *        · `FAIL_NONZERO`     `fail` 必须等于登记值（登记值恒为 0）；
  *        · `SKIPPED_OVER`     `skipped` **不得高于**登记上限（棘轮方向：跳得更少是绿，跳得更多是红）；
  *        · `TAP_INCONSISTENT` `pass + fail + cancelled + skipped + todo === tests` 不成立 ⇒ 日志被截断或伪造
@@ -25,8 +26,9 @@
  * ── 谁是真值（这一条比脚本本身重要）─────────────────────────────────────────────
  *   真值 = **当次 `node --test` 打印的汇总行**（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，
  *   都会改 `skipped`）。登记文件是**期望值 + 上限**，不是「抄一次就永远对」的快照：
- *     · 它不会、也不许被脚本自动改写（**没有 `--sync`**：`tests` 变了是**人**该解释的事，机器只会把新数抄成
- *       「历史正确」，那正是本单要消灭的那种「数字没有闸」）；
+ *     · 它不会、也不许被脚本自动改写（**没有 `--sync`**）：抬登记值仍然是**人**的动作——机器自动把实测抄成
+ *       登记值，就等于把「这一次恰好跑了多少」永久合法化，而**少用例才是事故**，恰恰是自动抄写最容易盖掉
+ *       的那一类（抄一次，「掉了 3 条」就变成「新基线」）。所以机器只提示「可抬到 N」，不改写一格；
  *     · 数字漂了只有两条合法处置：① 有意增删用例 ⇒ 同片改 `expect.tests` + 补一条 `observations`（写清
  *       commit / 环境 / 为什么差）；② 意外漂了 ⇒ 修回去；
  *     · **绝不许为了对上数字去改测试**（加 `skip`、删用例、把断言删成恒真）—— 那是拿覆盖面换绿灯。
@@ -60,12 +62,15 @@ export const SUMMARY_PREFIX = "TEST-SUMMARY";
 export const EXPECTED_PREFIX = "TEST-SUMMARY-EXPECTED";
 export const OBSERVATION_PREFIX = "TEST-SUMMARY-OBSERVATION";
 export const VERDICT_PREFIX = "TEST-SUMMARY-VERDICT";
+/** 棘轮提示行（绿且实测**高于**登记值时打一行；不是判定，也不是错误）。 */
+export const HINT_PREFIX = "TEST-SUMMARY-HINT";
 
 /** 退出码（与文件头三档同源，别在别处再抄一份）。 */
 export const EXIT = Object.freeze({ OK: 0, RED: 1, UNREADABLE: 2 });
 
 /** 判据码（报告、`--json`、自测共用一份）。 */
 export const CODES = Object.freeze({
+  /** `tests` **小于**登记值（掉用例）；大于不是错——那是 `TEST-SUMMARY-HINT` 提示抬值。 */
   TESTS_DRIFT: "TESTS_DRIFT",
   FAIL_NONZERO: "FAIL_NONZERO",
   SKIPPED_OVER: "SKIPPED_OVER",
@@ -185,7 +190,7 @@ export function signed(delta) {
  *
  * @param {Record<string, number>} values
  * @param {{tests: number, fail: number, maxSkipped: number}} expect
- * @returns {{code: string, message: string}[]} 空数组 = 绿
+ * @returns {{code: string, message: string}[]} 空数组 = 绿（`tests` 高于登记值也是绿：那走 `ratchetHints`）
  */
 export function reconcile(values, expect) {
   const reds = [];
@@ -204,12 +209,12 @@ export function reconcile(values, expect) {
         + ` = ${accounted} ≠ tests ${tests}——日志被截断或伪造，读到的不是一份完整汇总`,
     });
   }
-  if (tests !== expect.tests) {
+  if (tests < expect.tests) {
     reds.push({
       code: CODES.TESTS_DRIFT,
-      message: `tests ${tests} ≠ 登记值 ${expect.tests}（${signed(tests - expect.tests)}）`
-        + "——有意增删用例就同片改 test/test-suite-baseline.json 的 expect.tests 并补一条 observations；"
-        + "不是有意的那就是回归",
+      message: `tests ${tests} < 登记值 ${expect.tests}（${signed(tests - expect.tests)}）`
+        + "——少的那些用例就是掉了覆盖（被删、被吞、或某个文件整份没跑）：先修回去；"
+        + "确实是有意删的，就同片把 test/test-suite-baseline.json 的 expect.tests 降到实测值并补一条 observations",
     });
   }
   if (fail !== expect.fail) {
@@ -241,6 +246,24 @@ export function formatExpectedLine(expect, registryPath) {
   return `${EXPECTED_PREFIX} tests=${expect.tests} fail=${expect.fail} maxSkipped=${expect.maxSkipped} registry=${registryPath}`;
 }
 
+/**
+ * 棘轮提示：实测 `tests` **高于**登记值时给一行「登记值可抬到 N」（照 `check:types` 的「基线可下调至 N」句式）。
+ *
+ * 降/抬都是**人**的动作：本脚本只提示，不改写登记表（没有 `--sync`）。没有东西可提示 ⇒ 空数组。
+ *
+ * @param {Record<string, number>} values
+ * @param {{tests: number, fail: number, maxSkipped: number}} expect
+ * @returns {string[]}
+ */
+export function ratchetHints(values, expect) {
+  if (values.tests <= expect.tests) return [];
+  return [
+    `${HINT_PREFIX} 登记值可抬到 ${values.tests}（当前登记值 ${expect.tests}，本次实测 ${values.tests}，`
+      + `${signed(values.tests - expect.tests)}）——多出来的用例不是事故，抬登记值仍是人的动作：`
+      + "本脚本只提示，不改写 test/test-suite-baseline.json（没有 --sync）",
+  ];
+}
+
 /** 一条环境观测（历史事实，不参与判定）。 */
 export function formatObservationLine(observation) {
   const keys = ["tests", "pass", "fail", "skipped", "todo", "cancelled"];
@@ -259,7 +282,7 @@ export function formatObservationLine(observation) {
  * 纯函数形态的对账（自测直接调它，不 spawn 子进程、不落盘）。
  *
  * @param {{logText: string, registry: unknown, pick?: string, source?: string}} input
- * @returns {{exit: number, lines: string[], reds: {code: string, message: string}[], summary: object|null}}
+ * @returns {{exit: number, lines: string[], reds: {code: string, message: string}[], hints: string[], summary: object|null}}
  */
 export function runReconcile({ logText, registry, pick = "last", source = "<memory>" }) {
   const validated = validateRegistry(registry);
@@ -286,6 +309,8 @@ export function runReconcile({ logText, registry, pick = "last", source = "<memo
     };
   }
   const reds = reconcile(summary.values, validated.expect);
+  // 提示只在**绿**的时候出现：红的时候该看的是红（抬值提示与一条真红并排只会分散注意力）。
+  const hints = reds.length ? [] : ratchetHints(summary.values, validated.expect);
   const lines = [
     formatSummaryLine(summary.values, `${source}:${summary.line}`),
     formatExpectedLine(validated.expect, DEFAULT_REGISTRY),
@@ -293,8 +318,9 @@ export function runReconcile({ logText, registry, pick = "last", source = "<memo
       ? `${VERDICT_PREFIX} red codes=${reds.map((red) => red.code).join(",")}`
       : `${VERDICT_PREFIX} ok`,
     ...reds.map((red) => `  ✗ ${red.code}: ${red.message}`),
+    ...hints,
   ];
-  return { exit: reds.length ? EXIT.RED : EXIT.OK, lines, reds, summary };
+  return { exit: reds.length ? EXIT.RED : EXIT.OK, lines, reds, hints, summary };
 }
 
 // ─────────────────────────────── 自测 ───────────────────────────────
@@ -336,19 +362,25 @@ const CASES = [
   },
   {
     id: "A2",
-    label: "tests 比登记值多 1 ⇒ exit 1，点名 TESTS_DRIFT 与 +1",
+    label: "tests 比登记值多 1 ⇒ 绿，并打一行「登记值可抬到 N」（抬值仍是人的动作）",
     log: tapLog({ ...GOOD, tests: 3266, pass: 3254 }),
     registry: registryOf({ tests: 3265, fail: 0, maxSkipped: 12 }),
-    expectExit: 1,
-    expectLines: [/^TEST-SUMMARY-VERDICT red codes=TESTS_DRIFT$/u, /✗ TESTS_DRIFT: tests 3266 ≠ 登记值 3265（\+1）/u],
+    expectExit: 0,
+    expectLines: [
+      /^TEST-SUMMARY-VERDICT ok$/u,
+      /^TEST-SUMMARY-HINT 登记值可抬到 3266（当前登记值 3265，本次实测 3266，\+1）/u,
+    ],
+    // 绿归绿，但「多出来」不许被当成漂：它不是 TESTS_DRIFT（少才是）。
+    rejectLines: [/✗ TESTS_DRIFT/u],
   },
   {
     id: "A3",
-    label: "tests 比登记值少 1 ⇒ exit 1，点名 TESTS_DRIFT 与 -1（少也算漂：少掉的那一格可能就是被删的用例）",
+    label: "tests 比登记值少 1 ⇒ 红并点名 -1（少掉的那一格就是掉了覆盖：这是本判据唯一的红方向）",
     log: tapLog({ ...GOOD, tests: 3264, pass: 3252 }),
     registry: registryOf({ tests: 3265, fail: 0, maxSkipped: 12 }),
     expectExit: 1,
-    expectLines: [/✗ TESTS_DRIFT: tests 3264 ≠ 登记值 3265（-1）/u],
+    expectLines: [/^TEST-SUMMARY-VERDICT red codes=TESTS_DRIFT$/u, /✗ TESTS_DRIFT: tests 3264 < 登记值 3265（-1）/u],
+    rejectLines: [/^TEST-SUMMARY-HINT/u],
   },
   {
     id: "A4",
@@ -401,11 +433,11 @@ const CASES = [
   },
   {
     id: "A10",
-    label: "把登记值改错（3265 → 3264）⇒ 同一份日志由绿转红并点名差值（证明登记表真的被读、不是装饰）",
+    label: "把登记值改高（3265 → 3266）⇒ 同一份日志由绿转红并点名 -1（证明登记表真的被读、不是装饰）",
     log: tapLog(GOOD),
-    registry: registryOf({ tests: 3264, fail: 0, maxSkipped: 12 }),
+    registry: registryOf({ tests: 3266, fail: 0, maxSkipped: 12 }),
     expectExit: 1,
-    expectLines: [/✗ TESTS_DRIFT: tests 3265 ≠ 登记值 3264（\+1）/u],
+    expectLines: [/✗ TESTS_DRIFT: tests 3265 < 登记值 3266（-1）/u],
   },
   {
     id: "A11",
@@ -425,15 +457,15 @@ const CASES = [
   },
   {
     id: "A13",
-    label: "变异必须真的落上（#210 R2）：把夹具里的 tests/pass 各 +1，换不到就判这一例失败",
+    label: "变异必须真的落上（#210 R2）：把夹具里的 tests/pass 各 -1，换不到就判这一例失败",
     log: tapLog(GOOD),
     mutate: [
-      { from: "# tests 3265", to: "# tests 3266" },
-      { from: "# pass 3253", to: "# pass 3254" },
+      { from: "# tests 3265", to: "# tests 3264" },
+      { from: "# pass 3253", to: "# pass 3252" },
     ],
     registry: registryOf({ tests: 3265, fail: 0, maxSkipped: 12 }),
     expectExit: 1,
-    expectLines: [/✗ TESTS_DRIFT: tests 3266 ≠ 登记值 3265（\+1）/u],
+    expectLines: [/✗ TESTS_DRIFT: tests 3264 < 登记值 3265（-1）/u],
   },
   {
     id: "A14",
@@ -446,10 +478,27 @@ const CASES = [
     expectExit: 0,
     expectLines: [/^TEST-SUMMARY tests=3265 pass=3253 fail=0 skipped=12/u],
   },
+  {
+    id: "A15",
+    label: "tests 比登记值多 3（skipped 正好贴上限）⇒ 仍绿，提示里的 N 是本次实测值而不是登记值",
+    log: tapLog({ ...GOOD, tests: 3268, pass: 3256 }),
+    registry: registryOf({ tests: 3265, fail: 0, maxSkipped: 12 }),
+    expectExit: 0,
+    expectLines: [/^TEST-SUMMARY-HINT 登记值可抬到 3268（当前登记值 3265，本次实测 3268，\+3）/u],
+  },
+  {
+    id: "A16",
+    label: "tests 多但 fail = 1 ⇒ 仍是红，且不打抬值提示（提示不许盖过一条真红）",
+    log: tapLog({ ...GOOD, tests: 3266, pass: 3253, fail: 1 }),
+    registry: registryOf({ tests: 3265, fail: 0, maxSkipped: 12 }),
+    expectExit: 1,
+    expectLines: [/^TEST-SUMMARY-VERDICT red codes=FAIL_NONZERO$/u, /✗ FAIL_NONZERO: fail 1 ≠ 登记值 0（\+1）/u],
+    rejectLines: [/^TEST-SUMMARY-HINT/u],
+  },
 ];
 
 /** 用例数下限：删用例 / 整例跳过不算修好（与 test-hygiene-check 同一课）。 */
-const MIN_SELF_TEST_CASES = 14;
+const MIN_SELF_TEST_CASES = 16;
 
 /**
  * 接线自检：**真树**上的三件事（不落盘、只读）。
@@ -518,6 +567,45 @@ export function checkWiring(root = ROOT) {
   return problems;
 }
 
+/**
+ * S1：「没有 `--sync`」这条纪律本身的反向证（读本脚本源码，不落盘、不 spawn）。
+ *
+ * 纪律的写法如果只剩一句注释，下一个想「刷一下登记表」的人只要加三行就能加回来。所以这里直接看源码：
+ * 对账那条路上**不许有任何写回登记表的 API**，也不许出现 `--sync` 的参数解析。
+ * 唯一的写是 `$GITHUB_STEP_SUMMARY` 的追加（写的是 CI 运行页，不是登记表）。
+ *
+ * @param {string} scriptPath
+ * @returns {string[]} 问题列表（空 = 绿）
+ */
+export function checkNoSync(scriptPath = SCRIPT_PATH) {
+  const problems = [];
+  let source;
+  try {
+    source = readFileSync(scriptPath, "utf8");
+  } catch (error) {
+    return [`读不到本脚本源码 ${scriptPath}：${error.message}`];
+  }
+  // API 名拆开拼：否则本函数自己的字面量会把检查结果污染成恒红（自指）。
+  const writeApis = ["write" + "FileSync", "write" + "File", "rename" + "Sync", "copy" + "FileSync",
+    "rm" + "Sync", "unlink" + "Sync", "truncate" + "Sync", "create" + "WriteStream"];
+  for (const api of writeApis) {
+    if (source.includes(api)) {
+      problems.push(`源码里出现 ${api}——登记表只能人改：对账那条路必须只读（唯一的写是 $GITHUB_STEP_SUMMARY 的追加）`);
+    }
+  }
+  const appendCall = "append" + "FileSync(";
+  const appends = source.split(appendCall).length - 1;
+  if (appends !== 1) {
+    problems.push(`appendFileSync 出现 ${appends} 次，期望恰好 1 次（只许写 $GITHUB_STEP_SUMMARY）`);
+  } else if (!source.includes(`${appendCall}stepSummary,`)) {
+    problems.push("appendFileSync 的第一个实参不是 stepSummary——写进去的不是 CI 运行页");
+  }
+  // 有开关就有「刷一下」的诱惑：连解析代码都不许存在。
+  const syncFlag = /(?:includes|indexOf|flagValue)\(\s*["'`]--sync["'`]/u;
+  if (syncFlag.test(source)) problems.push("源码里出现了 `--sync` 的参数解析——登记值只能人改，脚本不许自动改写");
+  return problems;
+}
+
 function runSelfTest() {
   const failures = [];
   const passed = [];
@@ -558,6 +646,13 @@ function runSelfTest() {
         + `\n      实测输出：${result.lines.join("\n      ")}`);
       continue;
     }
+    // rejectLines：**不该**出现的行（例如「登记值可抬到 N」不得在红的时候出现）。
+    const leaked = (testCase.rejectLines ?? []).filter((re) => result.lines.some((line) => re.test(line)));
+    if (leaked.length) {
+      failures.push(`${who}：出现不该出现的行（命中 ${leaked.map(String).join(" ; ")}）`
+        + `\n      实测输出：${result.lines.join("\n      ")}`);
+      continue;
+    }
     passed.push(`${who} → exit ${result.exit}${result.reds.length ? `（${result.reds.map((red) => red.code).join(",")}）` : ""}`);
   }
 
@@ -566,6 +661,14 @@ function runSelfTest() {
     for (const problem of wiringProblems) failures.push(`W1（ci.yml 接线）：${problem}`);
   } else {
     passed.push("W1（ci.yml 接线）→ Test suite 落文件 + 对账步骤 + 自测步骤 + 登记表形状都在");
+  }
+
+  // S1：「没有 `--sync`」这条纪律本身要咬得住 —— 脚本里不许有任何把登记表写回去的路径。
+  const syncProblems = checkNoSync();
+  if (syncProblems.length) {
+    for (const problem of syncProblems) failures.push(`S1（没有 --sync）：${problem}`);
+  } else {
+    passed.push("S1（没有 --sync）→ 源码里没有写文件 / 没有 --sync 开关：登记值只能人改");
   }
 
   // `--print` 走真登记表：它必须读得出来、且与 `expect` 三格自洽（形状坏了这里就红）。
@@ -590,10 +693,10 @@ function runSelfTest() {
   for (const line of passed) console.log(`  ✓ ${line}`);
   for (const line of failures) console.log(`  ✗ ${line}`);
   if (failures.length) {
-    console.log(`suite-summary-reconcile --self-test: 失败 — ${failures.length} 处未达预期（共 ${CASES.length} 例 + 接线/登记表 2 项）`);
+    console.log(`suite-summary-reconcile --self-test: 失败 — ${failures.length} 处未达预期（共 ${CASES.length} 例 + 接线/登记表/无 --sync 3 项）`);
     process.exit(1);
   }
-  console.log(`suite-summary-reconcile --self-test: OK — ${CASES.length} 例反向证/放行证 + 接线 + 登记表全部按预期（合成夹具，不落盘、不跑测试）`);
+  console.log(`suite-summary-reconcile --self-test: OK — ${CASES.length} 例反向证/放行证 + 接线 + 登记表 + 无 --sync 全部按预期（合成夹具，不落盘、不跑测试）`);
 }
 
 // ─────────────────────────────── CLI ───────────────────────────────

@@ -2124,13 +2124,15 @@ run 级旋钮 `config.tuning.maxTokens` / `config.tuning.temperature` / `config.
 （`src/compact/provider-summarizer.js`）：每次压缩一次无工具补全，输入是
 `SUMMARIZER_PROMPT_GUIDE` + 被折叠消息的确定性序列化 + 被折叠轮次范围。成本与记账属于契约：
 
-- **每次压缩多一次主力模型调用**，输入体量约等于被折叠的老轮次。**两层默认不是同一个值，不许挤成一句**
-  （issue #614）：**CLI 层**默认就是 `fold-llm`——`bin/config.js` 的
-  `DEFAULT_COMPACTION_STRATEGY`，也就是 `--compaction` / `slots.default.compaction` 没写时落到的那一格；
-  **库层**未配 `context.strategy` 时解析结果仍是「没有策略」（`src/compact/strategy-resolution.js`），
-  超预算时由引擎退回库层默认的 `sliding-window`（`src/loop/orchestrator.js`，每个 run 可观察为一条
-  `compaction_strategy_fallback` 事件）。所以库层宿主想用 `fold-llm` 仍要**显式**选它；
-  `fold-statistical` 在**哪一层都不是默认值**——它是一个显式的「零 LLM」选择。
+- **每次压缩多一次主力模型调用**，输入体量约等于被折叠的老轮次。因此 `fold-llm` 只能显式选用，
+  而「默认是什么」是**两层各自的事实**，不是一句话：
+  - **库层默认**（未配策略时）是 `sliding-window`：没有选中策略的预算溢出由 `src/compact/pipeline.js`
+    里那个兜底层接手，它的 `strategyNames` 就是这一半的唯一真值。
+  - **CLI 槽位默认**是 `fold-llm`：`slots.default.compaction` 不设时由 `bin/cli.js` 解析成它。
+    那是 **CLI 层的选择，不是库默认**——`bin/` 是校验器/调试器，不是契约面；什么都不配的宿主拿到的是
+    上面那条库层行为，不是这一条。
+  没有任何一层默认 `fold-statistical`：它是一个显式的「零 LLM」选择；自 issue #661 起 `fold-llm`
+  摘要器失败是**终局错误**，不再是降级到它（失败形状见下一条）。
 - 它的 usage 走与其他辅助调用同一的 `addUsage` 路径并入 run 总账（`persist`，`src/loop/orchestrator.js`，
   `trackLatest: false`），并通过 `onUsage` 上报，因此 `result.usage` / `error.usage` 是完整的。这次调用
   **不推 `rounds`**、不参与 stall 检测、也不更新后续压缩判断用的 `latestApiInputTokens` / `latestApiEstimatedTokens`。
@@ -2639,7 +2641,8 @@ issue #282 之后它收口在终局判定本身，而不是在每个调用点各
 它的价值主张说到底是这一条：`partialPersistence` 只降低**续跑时重新生成这段正文**的成本；它不是
 把这段正文摆到用户面前的渠道（那是 `error.finalText`），而它在稳态下做的那些快照写入，在宿主自己的
 崩溃重排队率低时是净亏。所以先量那个数再决定——排队里的 run 中 `attempts > 1` 的占比
-（`run_queue.attempts`，erix-station 读的就是这个数）——按你自己的数决定，别照搬别处量出来的阈值。
+（`run_queue.attempts`，提出这个选项的那个宿主读的就是这个数）——按你自己的数决定，别照搬别处量出来的阈值。
+那个宿主 `erix-station` 已并入后继项目 `fde-workshop`；旧检出仍在盘上、仍导入本包。
 提出这个选项的宿主本身就是证据，这是观测、不是建议：erix-station 开发期十天里自然崩溃重排约 1 次
 （全量 `attempts > 1` 为 8/133，其中 3 条是人为 `docker pause` / `kill -9` 演练）；⚠ 单机单用户、
 且是它修完自身缺陷之后的样本，不外推。这也不构成退役这个选项的理由：它留在白名单里，五个测试文件
@@ -2863,6 +2866,13 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
    只带 `{type, round, reason}`，`run_outcome` 不带 `finalText`。因此只按事件渲染的
    宿主，修完之后仍然会把评审卡当成最后一条可见内容。又因为 `accept` 永远不得建立在
    `finalText` 非空之上（见 `S6a`），宿主侧的验收判定必须读 `termination.forcedFinal`。
+   如果那一发收尾**仍然没有正文**（空白也算空），引擎**不再问第二发**（issue #476）：
+   此时 `result.finalText` 是一条固定的引擎兜底文案 —— 常量 `FORCED_FINAL_FALLBACK_TEXT`
+   （`src/loop/termination.js`），它只陈述「收尾未产出正文」这个事实 —— 同时
+   `result.finalTextFallback` 为 `true`，宿主不必比字符串就能分清「引擎兜底」与「模型正文」。
+   兜底在 `finalGuard` **之后**落地（它从不进 guard 的 payload，也不进 `deliverables` 的
+   `check`），因此它不会让 `verification` 变好（没接 guard 仍 `skipped`，guard 没过仍
+   `unverified`）；它也不写进 `messages` / 账本 —— 那两处保持模型真正产出的那份。
 8. **`fail()` 分类**——任何时刻抛错都会用 `aborted`（信号已置）或 `failed` /
    `persistence_failed` 替换掉上面全部（`fail`（`src/loop/orchestrator.js`））。
 
