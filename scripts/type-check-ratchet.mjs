@@ -480,21 +480,24 @@ function depVersion(rel) {
 //   · `tier: "root"` **不是**把 27 写死：它只声明「这句归哪一档」，期望值仍然从本次实测取（见
 //     `reconcileDocFileCounts` 里 `measuredFiles` 的来源）。
 const DOC_FILE_COUNT_CLAIMS = [
-  // #635 ①：`基线 **N** / M 个文件` —— 句中带基线 N，按 N 认领档位（`tier: null` ⇒ 用第 1 组认档）。
+  // 分组用**命名组**：`n` = 句中的基线（只有 `tier: null` 的声称句有），`m` = 要判的带错文件数。
+  // 带 `d` 标志是为了拿 `indices.groups.m`：报错要点名的是**那个数字所在的行**（`(27 files)` 在下一行，
+  // 拿整段匹配的起点报行会错行——#672 的验收要求「各自点名那一行」）。
+  // #635 ①：`基线 **N** / M 个文件` —— 句中带基线 N，按 N 认领档位（`tier: null`）。
   { rel: "AGENTS.md", form: "baseline **N** / M files", tier: null,
-    re: /baseline\s+\*\*(\d+)\*\*\s*\/\s*(\d+)\s*files/g },
+    re: /baseline\s+\*\*(?<n>\d+)\*\*\s*\/\s*(?<m>\d+)\s*files/gd },
   { rel: "AGENTS_cn.md", form: "基线 **N** / M 个文件", tier: null,
-    re: /基线\s*\*\*(\d+)\*\*\s*\/\s*(\d+)\s*个文件/g },
+    re: /基线\s*\*\*(?<n>\d+)\*\*\s*\/\s*(?<m>\d+)\s*个文件/gd },
 
-  // #672：四处「M 个文件」现状声称（都属包根档；裁决理由见本节头注释）。最后一组 = M。
+  // #672：四处「M 个文件」现状声称（都属包根档；裁决理由见本节头注释）。
   { rel: "AGENTS.md", form: "N of them (M files)", tier: "root",
-    re: /\d+\s+of them\s*\((\d+)\s+files\)/g },
+    re: /\d+\s+of them\s*\((?<m>\d+)\s+files\)/gd },
   { rel: "AGENTS_cn.md", form: "N 个错（涉 M 个文件）", tier: "root",
-    re: /\d+\s*个错（涉\s*(\d+)\s*个文件）/g },
+    re: /\d+\s*个错（涉\s*(?<m>\d+)\s*个文件）/gd },
   { rel: "AGENTS.md", form: "**M of them carrying errors**", tier: "root",
-    re: /\*\*(\d+) of them carrying errors\*\*/g },
+    re: /\*\*(?<m>\d+) of them carrying errors\*\*/gd },
   { rel: "AGENTS_cn.md", form: "其中 **M 个带错**", tier: "root",
-    re: /其中\s*\*\*(\d+)\s*个带错\*\*/g },
+    re: /其中\s*\*\*(?<m>\d+)\s*个带错\*\*/gd },
 ];
 
 /**
@@ -556,9 +559,10 @@ function reconcileDocFileCounts({ errors, tierBaseline, tierId, tierName, otherB
       continue;
     }
     for (const hit of hits) {
-      const at = `${doc.rel}:${src.slice(0, hit.index).split("\n").length}`;
-      // 约定的分组：**最后一组是 M**；`tier: null` 的声称句第 1 组是基线 N（用它认档）。
-      const claimedM = Number(hit[hit.length - 1]);
+      // 报错点名的是**那个数字所在的行**（`(27 files)` 与 `107 of them` 常常不在同一行）。
+      const mStart = hit.indices.groups.m[0];
+      const at = `${doc.rel}:${src.slice(0, mStart).split("\n").length}`;
+      const claimedM = Number(hit.groups.m);
       const sentence = hit[0].replace(/\s+/g, " ").trim();
       if (doc.tier !== null) {
         if (doc.tier !== tierId) {
@@ -568,7 +572,7 @@ function reconcileDocFileCounts({ errors, tierBaseline, tierId, tierName, otherB
           continue;
         }
       } else {
-        const claimedN = Number(hit[1]);
+        const claimedN = Number(hit.groups.n);
         if (claimedN === otherBaseline) {
           deferred += 1;
           continue;
