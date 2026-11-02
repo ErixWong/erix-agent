@@ -102,6 +102,22 @@
   不是新摘要），所以**宿主可见的正文变短了**；`increment` 逐字不变，`foldedSummary` 事实行（按契约
   记的是「实际喂给模型的那份」，含任务原文是**真话**）一个字都没动。`bytes` 是正文尺寸、不是省下的
   量：它计的是替代物正文自身的字节数，从来不是这一折释放了多少上下文。
+- **The contract gains the #475 §2 second-order risk and a clarified eligibility rule (issue #475,
+  documentation only — no behaviour change).** Wrap-up eligibility used to be written in the contract
+  as a whitelist of six reasons, while the implementation had long since moved to a state test ⇒ it now
+  reads "the three truncation reasons keep `hasFinalDraft()`, and every other reason — **including any a
+  later release adds** — is judged on one thing only: whether the run wrote a single character of
+  terminal text"; and it spells out that `FINAL_GUARD_TERMINATION_REASONS`
+  (`src/loop/termination.js`) already **contains** `end_turn` / `no_tool` — "the guard covers those two
+  cells" ≠ "those two cells are safe": a guard that judges by the deliverable catches a silent run,
+  while a `finalText.trim() !== ""` rubber stamp certifies that silent run as `verified`. Both language
+  halves changed together.
+- **契约补一条二阶风险与资格口径澄清（#475 §2，纯文档、零行为变更）**：强制收尾的资格在契约里原先写成
+  「六个 reason 的白名单」，而实现早已下沉到状态 ⇒ 改成「三条截断 reason 沿用 `hasFinalDraft()`，其余
+  reason（**含后续版本新增的**）只看终稿正文是否为空」；并写明 `FINAL_GUARD_TERMINATION_REASONS`
+  （`src/loop/termination.js`）本来就**含** `end_turn` / `no_tool`——「guard 覆盖了这两格」≠「这两格是
+  安全的」：以交付物为据的 guard 能拦下哑局，`finalText.trim() !== ""` 的橡皮章 guard 会把哑局一并洗成
+  `verified`。中英两份成对改。
 
 ## [0.29.0] - 2026-10-31
 

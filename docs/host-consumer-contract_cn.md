@@ -2850,15 +2850,24 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
    一条把「正文块为 0」绑到 `done:false` 的规则），于是模型侧结论与机器侧闸门读的是同一组事实；
    不传 `facts` 的调用方拿到的提示词与今天**逐字相同**。可观测面跟着真实决策走：被降级的那一轮
    `onJudge` 记录报的是 `action: "nudge"`，不再是「run 明明没停、记录却说停了」的 `judge_done`。
-7. **停止后验证**——stop reason 定下来后，六个可收尾 reason（三条不可续跑的 +
-   `judge_done`（issue #467）+ `end_turn` / `no_tool`（issue #475，只在整个 run 一个
-   字都没写过时才会走到））可能多一次强制收尾的 provider 调用，且只在
-   `hasFinalDraft`（`src/loop/termination.js`）为假时——也就是这个 run 本来会以零
-   终稿收场时（强制收尾在 `forceFinalIfNeeded`（`src/loop/termination.js`）里），然后 `finalGuard` 可以 accept /
-   skip / revise / 失败。`revise` 不是终局：它注入一条用户消息，本轮治理重新开始
+7. **停止后验证**——stop reason 定下来后，可能多一次强制收尾的 provider 调用。
+   资格是**一个状态、不是 reason 白名单**（issue #475）：三条不可续跑的 reason
+   （`max_rounds_cap` / `stall` / `continuation_exhausted`）沿用下面更严的截断判据，
+   其余 reason —— `judge_done`（issue #467）、`end_turn` / `no_tool`（issue #475）、
+   以及后续版本新增的任何 reason —— 只过一个判据：整个 run 一个字都没写过。
+   ⇒ 新增 reason 天然被覆盖，不必再「记着回来贴一条」。对那三条截断 reason，
+   这次调用是否发出，
+   由下面更严的那条判据决定：`hasFinalDraft`（`src/loop/termination.js`）为假时——
+   也就是这个 run 本来会以零终稿收场时（强制收尾在 `forceFinalIfNeeded`（`src/loop/termination.js`）里）——才发。
+   发完之后 `finalGuard` 才可以 accept / skip / revise / 失败。`revise` 不是终局：它注入一条用户消息，本轮治理重新开始
    （`appendEngineMessagesToTranscript`（`src/loop/orchestrator.js`））。修订重试次数受 `finalGuardMaxRetries`
    约束（默认 2，`budgetRounds`，`src/loop/orchestrator.js`），guard 自身超时默认 30s
    （`budgetRounds`，`src/loop/orchestrator.js`）。
+   **覆盖 ≠ 安全（issue #475 §2）**：`FINAL_GUARD_TERMINATION_REASONS`
+   （`src/loop/termination.js`）**含** `end_turn` 与 `no_tool`，宿主只要接了
+   `finalGuard`，这两格本来就一直在跑 guard。guard 若以交付物为据，哑局会被拦下；
+   guard 若只是 `finalText.trim() !== ""` 的橡皮章，它会把哑局一并洗成 `verified`。
+   ⇒ 把「guard 覆盖了这两格」读成「这两格是安全的」，就是本条要拦的那个错。
    强制收尾产出的正文是**只在 payload 面**的（issue #467）：它经 `result.finalText`
    到达宿主，另在账本里多出一条由 `appendEngineMessagesToTranscript`
    （`src/loop/orchestrator.js`）写的行，而这条行的 `roundKey` 与最后一条轮记录
