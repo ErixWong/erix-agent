@@ -344,8 +344,9 @@ export const FOLDED_FACT_ORIGINS = Object.freeze(["mechanical", "semantic", "hos
  * `source` → `origin` 的映射（`source` 的既有取值一字未改，这里只是读它）。
  *
  * 口径：
- *   · `statistical` / `strategy` —— 零 LLM 的机械替代物（`fold-statistical`、`sliding-window`、
- *     以及 `fold-llm` 的降级兜底）⇒ `mechanical`；
+ *   · `statistical` / `strategy` —— 零 LLM 的机械替代物（`fold-statistical`、`sliding-window`，
+ *     以及 **#661 之前** `fold-llm` 的降级兜底）⇒ `mechanical`；那条降级路径 issue #661 起已被删、
+ *     引擎不再产出这类正文，但 #661 之前写下的旧账本行仍可能带着它 ⇒ 映射照旧要认（历史来源，仍需可读）；
  *   · `llm` —— 摘要器真的写了正文 ⇒ `semantic`；
  *   · `host` —— 宿主自带策略注入的正文 ⇒ `host`；
  *   · **其余未知来源一律 `host`**：引擎只对自己产出的文本自报 `mechanical` / `semantic`，

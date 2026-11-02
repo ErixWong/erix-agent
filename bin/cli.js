@@ -174,7 +174,8 @@ const HELP_TEXT = `用法：
   slots.default.maxOutputTokens 可设置输出 token 上限（默认：16384）。
   slots.default.contextWindowTokens 可启用自动压缩（超预算自动折叠早期轮次）；--compact-budget <值> 可覆盖自动预算。
   slots.default.compaction 可固定压缩策略（sliding-window / fold-statistical / fold-llm，默认 fold-llm；
-                      统计摘要是 fold-llm 失败/超时后的降级兜底）；--compaction 可覆盖。
+                      摘要器失败（含超时）是终局错误 summarizer_failed，不会退回统计摘要；
+                      想要零 LLM 且永不失败的折叠就显式选 fold-statistical）；--compaction 可覆盖。
 
 退出码：
   0  成功（开了 --final-guard 时为 verified）
