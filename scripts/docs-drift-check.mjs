@@ -2816,16 +2816,24 @@ function compactionLayerMarkerRes() {
 /**
  * ③ 的判据词表：什么叫「这句在说默认」。
  *
- * 为什么不是 `default` 一刀切：`(?<![\w.\-/])` / `(?![\w.\-/])` 只认**独立的词**，于是
+ * 为什么不是 `default` 一刀切：`(?<![\w./])` / `(?![\w./-])` 只认**独立的词**，于是
  * `slots.default.compaction`、`defaultHeaders`、`fold-default-real-e2e.mjs` 这些**标识符里的
  * default** 被排掉——它们不是声称（不排掉的话，每一句提到 `slots.default.compaction` 的话都会
- * 被判成默认声称）。中文侧 `默认` / `缺省` 是同一件事；`缺省` 在本仓多出现在「引擎缺省」这类
- * 表格格里，而表格格的边界在下面的窗口里被切断，它不会把「引擎缺省」与隔壁格的策略名连起来。
+ * 被判成默认声称）。
+ *
+ * 两侧的写法**刻意不对称**，别“对称化”掉：
+ *   · 前面只排 `[\w./]`，**不排** `-`：英文里 `engine-default summarizer` 是正常的复合词，
+ *     `README.md:1367` 那句「ships an engine-default summarizer」就在这里。把 `-` 也排掉，
+ *     `the engine-default strategy is X` 这种真声称会连带漏掉（实测：排掉 `-` 时，把 summarizer
+ *     排除拿掉也抓不到 README.md:1367）。
+ *   · 后面排 `[\w./-]`：`fold-default-real-e2e.mjs` 的 `default` 后面跟的是 `-`，那是标识符。
+ * 中文侧 `默认` / `缺省` 是同一件事；`缺省` 在本仓多出现在「引擎缺省」这类表格格里，而表格格的
+ * 边界在下面的窗口里被切断，它不会把「引擎缺省」与隔壁格的策略名连起来。
  *
  * 这三条就是 ③ 的**全部**判据词——它们被抽掉，③ 就什么也判不到（见 `--self-test` 的退化证）。
  */
 const COMPACTION_DEFAULT_WORDS = Object.freeze([
-  { id: "en-default", re: /(?<![\w.\-/])default(?:s|ed|ing)?(?![\w.\-/])/giu },
+  { id: "en-default", re: /(?<![\w./])default(?:s|ed|ing)?(?![\w./-])/giu },
   { id: "cn-default", re: /默认/gu },
   { id: "cn-quesheng", re: /缺省/gu },
 ]);
@@ -6276,6 +6284,29 @@ const SELF_TEST_CASES = [
         "By default, compaction uses `fold-statistical` whenever a host does not configure a strategy.\n  No layer defaults to `fold-statistical`:"),
     },
     simulateCompactionDropWordIds: ["en-default"],
+    expectGreen: true,
+  },
+  // —— #668 ① ③ 的**围栏决定**（这笔改动买的是未来覆盖，这两例就是它的价钱）。
+  // 背景：原实现把 ``` 围栏里的行整段跳过（理由「围栏里的是样例，不是声称」），可本仓的围栏里
+  // 放的不只是样例：README 的模块树就是围栏，而 `README_cn.md:185` 那句「用本 run provider 的
+  // fold-llm 默认 summarizer」是一句**真的**描述性声称。所以跳过围栏 = 整类真声称从判据里消失。
+  // 下面两例钉住这个决定的**两面**：围栏里的谎必须红（否则那 3 行白删），围栏里的
+  // summarizer 句子必须绿（否则排除逻辑在围栏里不成立，同样白删）。
+  {
+    label: "#668 ① ③（围栏）：把一句无标记的默认策略谎放进**代码围栏里** ⇒ 红并点名行（跳过围栏就等于放过这一类）",
+    overlay: {
+      "docs/soak.md": replaceUnique("# 便宜自测（不联网",
+        "# By default, compaction uses `fold-statistical` unless a host configures a strategy.\n# 便宜自测（不联网"),
+    },
+    expect: [/compaction-default\/unmarked: docs\/soak\.md:\d+ 说默认是 `fold-statistical`/],
+    expectFiles: ["docs/soak.md"],
+  },
+  {
+    label: "#668 ① ③（围栏・放行证）：围栏里的「默认 + `fold-llm` + summarizer」句（README_cn.md:185 那一类）⇒ 绿",
+    overlay: {
+      [README_CN]: replaceUnique("provider-summarizer.js          用本 run provider 的 fold-llm 默认 summarizer",
+        "provider-summarizer.js          用本 run provider 的 fold-llm 引擎默认的 summarizer"),
+    },
     expectGreen: true,
   },
   // ══ issue #511：「这句话属于哪个版本」+「这个版本发布了没有」 ══════════════════════
