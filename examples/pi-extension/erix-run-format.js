@@ -245,6 +245,13 @@ export function formatAsyncResult(outcome) {
         : `（${view?.diagnostics?.resume?.reason ?? "没有可续跑的账本"}）`),
       `cwd=${view?.cwd ?? "?"} sessionDir=${view?.sessionDir ?? "none"} statusPath=${view?.statusPath ?? "none"}`,
     );
+    // #665：**投递诊断进文本面**。以前投递事实只落在盘上（`delivery` / `notifyError` / `notifyRetries`），
+    // 会话面完全静默 —— 投失败、owner 会话已不在、派工时没会话身份，调用方看到的都只是「`resumable=true`
+    // 却等不到唤醒」。现在只要 `delivery` 不是 `sent` 就有一句人话（句子由 jobs 层的
+    // `deliveryNoteSentence` 从结构化正文装出来，正文每次按当下事实重算 ⇒ 重试多档也只留最后一条）；
+    // `sent` / 还没尝试时 `deliveryNote` 是 `null`，这一行**不出现**（正常路径不贴噪音）。拼装只此一处，
+    // `status` 与 `result` 共用。
+    if (typeof view?.deliveryNote === "string" && view.deliveryNote !== "") lines.push(view.deliveryNote);
     // #276：异步文本面也得把 diagnostics 的自查结论报出来。工具描述写着「ok:false 先读
     // termination.errorCode / diagnostics」，而模型读的是**文本**——视图里带上了但文本不报，
     // 对模型等于还是没给（同步面 `formatPayloadForModel` 本来就有这一行，口径照它）。

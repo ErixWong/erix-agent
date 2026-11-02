@@ -24,6 +24,7 @@
 | `../../test/examples/erix-run-resume.test.js` | **#207 R2 续跑单测**：第一次 run 停在 `max_rounds_cap` ⇒ 第二次从账本接着跑（历史 / 轮号 / 账本都不重置）、纯续跑不追加用户轮、三种坐标（transcript / `runId`+`sessionDir` / `status.json`）指到同一份账本、坐标不存在 / 空账本 / 坏 `status.json` 的明确报错、`bad_params` 形状校验、异步面「`status.json` 即续跑坐标 + job 沿用原 `runId`」 |
 | `../../test/examples/erix-run-details.test.js` | **#237 R2：`details` 必须可 JSON 序列化**。对 `started` / `status` / `result` / `list` / `cancel` / `unknown-run` / `error` / `crashed` + **同步终局**逐条断言 `JSON.stringify(details)` 不抛、`content[0].text` 非空、`details` 只含 plain 数据（+#276：视图带了嵌套 `diagnostics`/`verification` 后仍不触发 `detailsDropped`，失败终局的文本面要点名 `termination.errorCode`）（无函数 / 定时器 / promise / 循环引用），并把每个 `kind` 的键集合钉死 |
 | `../../test/examples/plain-data.js` | 测试侧**独立实现**的「活对象」扫描器与 `assertMachineReadableResult`（故意不回读生产码的守卫，否则两边错在一起就是自证） |
+| `erix-run-e2e.test.mjs` | 本目录的**真上游 e2e**（`ERIX_E2E_REAL=1` 才跑，闸门关着一律 skip；闸门开着而配置/凭据/端点不可用则**红**）：真 run 的终局四件套 + transcript 新形状 + 进度行带耗时（`#284/#285`）、显式 `finalGuard` 后 `verification` 不再是 `skipped`（`#314`）、以及 **`#654` 多会话**一格——同一个扩展工厂对 A/B 两个会话各调一次、**两个会话先注册完（A 先 B 后）再派工**（#670 第 2 格：注册顺序在派工之前就定死 ⇒ 「run 比 B 快」的假绿窗口从结构上不存在），断言完成通知只回到 A（`notifyTargetSessionId` / `delivery:"sent"` / B 收件箱为空 / `status.json` 里 `delivery`、`notifyTargetSessionId`、`deliveryNote` 恒在场）。另有一段**始终跑、不联网**的确定性回归（`formatLoopEvent` 的耗时读法、`#373` 的窗口账、选项名闸、以及多会话格的**形状自证**：零延迟结算下「取最后注册的句柄」与「按 owner 查」仍可区分） |
 
 ## 安装
 
@@ -368,6 +369,37 @@ pi --extension ./examples/pi-extension/erix-run.ts
 `agent_start` 是否真的来了（`erix-run-parent-wake.js` 的 `isPending()` / `rearmIfUnstarted()` 回路——
 `sent` 之后 `isPending()` 仍然是 true 就是「还没被确认」）。能确认失败的只有三种：没有目标会话
 （`no-owner` / `orphaned`）、句柄显式拒绝、调用抛异常。下游**不许**把 `sent` 当「已送达」消费。
+
+#### 投递诊断进调用方会读的文案（issue #665）
+
+上面的字段让投递事实**可读**，但会话面是**静默**的：通知正文只在投成功时才存在，所以
+`failed` / `orphaned` / `no-owner` 三态在会话里零痕迹，故障只能靠翻 `status.json` 反推。现在把诊断
+写进调用方真正会读的那一面——`action:"status"` / `action:"result"` 的**返回文本**（一处拼装：
+`erix-run-format.js` 的 `formatAsyncResult` 原样打 `jobView.deliveryNote` 那一句）。
+
+| `delivery` | 文案里那一句 |
+|---|---|
+| `sent` / 还没尝试 | **一句都不加**（`deliveryNote` 是 `null`）。正常路径不贴噪音 |
+| `failed` | `delivery: failed (<notifyError 根因>, 已重试 N 次)` |
+| `orphaned` | `delivery: orphaned (owner 会话 <id> 已不在，不投给任何存活会话)` |
+| `no-owner` | `delivery: no-owner (派工时拿不到会话身份；ownerSessionError=<原文>)` |
+| `deduped` | `delivery: deduped (本次结算被去重注册表挡下，投递已由同一 run 的另一次结算完成)` |
+
+判据式的口径：**只要 `delivery` 不是 `sent`，文案里就必须有一句解释**；`sent` 时不许添噪音。
+
+**多次重试只留最后一条**：诊断句由 `erix-run-jobs.js` 维护，写法是**正文与整句分开存**——
+`deliveryNoteText(job)` 按**结构化事实**（`delivery` / `notifyError` / `notifyRetries` /
+`ownerSessionError`）生成正文，`deliveryNoteSentence(正文)` 只负责在前面拼 `DELIVERY_NOTE_MARKER`。
+每次投递事实一变就**重算**，所以三档重试（连同每次排档对「已重试 N 次」的刷新）之后，文案里始终
+只有一段，且是**最后那条**根因。
+
+⚠ 这里曾经是「从上一版文案里 `lastIndexOf("delivery:")` 找 marker、截掉后面再拼新值」——正文里
+含**外部文本**（`notifyError` 是宿主/投递口给的错误原文，`notifyErrorOf()` 接受任意非空字符串），
+只要那文本里出现 `delivery:`，边界就落在正文内部：每档重试多嵌一层前缀、尾部逐档截断（三档重试
+叠成三重前缀，issue #670 第 1 格）。**marker 不是边界**：诊断的边界只能来自结构化字段。
+
+`jobView.deliveryNote` 与 `delivery` 同族**恒在场**（没尝试过 / 投成功时是 `null`，不是缺键），
+所以只读 `status.json` 的会话读到的也是同一句人话。`notifyRetryAt` 仍不在此列（那是「排了档才有」的瞬态键）。
 
 ### 5. `timeoutMs` 定时器归 run 级（不在 `execute()` 里）
 

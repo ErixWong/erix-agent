@@ -52,7 +52,7 @@
 //                 注释里写一句 `// "judge_done"` 也不再给弱档供值。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
 //                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
-//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 219`：低于它就红（那是「锚点在退化」
+//                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 234`：低于它就红（那是「锚点在退化」
 //                 被抓，不是棘轮抬高），高于它会催你把下限抬上去。生效值从脚本自身文本读，自测靠调它证锁。
 //                 每一次抬高下限的实测流水（哪次合并、在哪棵树上量的、多少组多少处）已整条搬到
 //                 `docs/maintenance/symbol-anchor-ledger.md`（历史类文档）；本文不再复述任何历史读数，
@@ -154,6 +154,20 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+// 14b（0.30 破坏包逐名表）的真值来源：**不抄名单**，走与 `npm run check:exports:deprecated` 同一套函数。
+// 那两个脚本都带 `process.argv[1] === 本文件` 的 main 守卫，import 它们不跑 CLI；清点逻辑（`computeInventory`）
+// 与登记解析（`verify`）各只有一份，这正是 issue #429 修掉的口径漏洞（第二份名单 = 第二条漂移路径）。
+import {
+  NEXT_BREAKING_VERSION,
+  verify as verifyDeprecatedExports,
+} from "./deprecated-export-check.mjs";
+import {
+  buildRecords as buildExportRecords,
+  computeInventory as computeExportInventory,
+  hostContractNames,
+  resolveEntries as resolveExportEntries,
+} from "./export-consumer-check.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const STRICT = process.argv.includes("--strict");
@@ -1598,7 +1612,7 @@ const SYMBOL_DOCS_STATIC = [README_EN, README_CN, AGENTS_EN, AGENTS_CN, CONTRACT
  *  实扫几份 = 下限）由 `collectRefScanCountClaimErrors()` 逐格对账（#635 ①）。
  *  历史（每一次抬高的理由：哪份指南落地、哪七份活文档纳面）在 `docs/maintenance/symbol-anchor-ledger.md`。
  *  写法必须保持这一行不变形（自测要改这个数）。 */
-const REF_SCAN_DOCS_MINIMUM = 47;
+const REF_SCAN_DOCS_MINIMUM = 49;
 
 /** #280 同款的「树形口子」，只给 `--self-test` 用（**不是豁免开关**）：模拟「某份指南改名到不匹配模式」。 */
 let SIM_RENAMED_GUIDE = null;
@@ -2207,7 +2221,7 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  历史（每一次抬高下限的链项：哪次合并、引了哪些符号、在哪棵树上量的）**不在本文件**：
  *  issue #644 ③ 把它整条搬到了 `docs/maintenance/symbol-anchor-ledger.md`（历史类文档，正文有命中数钉子）。
  *  这里只留判据与写法：`const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 必须保持一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 219;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 234;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
@@ -3753,6 +3767,243 @@ function collectDocVersionErrors() {
   return out;
 }
 
+// ── 14b. 0.30 破坏包的逐名表（issue #429 的**文档面**）──────────────────────────
+// 病根：`@deprecated` 标记说「0.30 删」，而**指南是给人读的那一份**——它写谁、写几行、条款是不是照抄标记，
+// 在 #429 之前没有任何东西看守。手抄一份名单进文档，下一次登记一变动文档就成假话；而这正是本仓
+// `computeInventory()`「名单现算、不抄第二份」那条口径在文档侧的同一个病。
+//
+// 判据（每条都点名到 指南:行 与 名字）：
+//   1. 两份指南在（删掉一份 ⇒ 红）；页面版本必须是唯一合法移除边界 `NEXT_BREAKING_VERSION` 的 x.y + `.0`
+//      （0.30 → 0.30.0）——边界一变，这一页必须跟着走；
+//   2. **双向**对账：现算候选集里有、表里缺 ⇒ 红（点名）；表里有、候选集里没有 ⇒ 红（点名）；
+//      同一个名字两行 ⇒ 红（多出来的那行不会被集合对账看见）；
+//   3. **中英对账**：两份的名字集合必须相等（只改一边 ⇒ 红），同一名字的入口列必须逐字相同；
+//   4. **迁移条款照抄标记**：每行的条款格必须含该名字 `@deprecated` 标记里的那一条
+//      （`` migrate to `X` `` / `no in-tree replacement`）——「另编一套说法」在这里红；
+//   5. **入口列现算**：`.` / `./tools` 两个入口由 `src/index.js` / `src/tools/index.js` 的再导出块现读，
+//      写错入口 ⇒ 红（名字对了、住址错了，读者会去错子路径找它）。
+//
+// 边界（写清，别当漏做）：候选集**为空**时（0.30 已发布、待删包已清空），这一页转为**历史记录**，闸只校
+// 中英名字集合与行形状——否则发版那天会逼着人把「这一版删了什么」的记录删掉。空集不空转：note 会明说。
+const BUNDLE_GUIDE_VERSION = "0.30.0";
+const BUNDLE_GUIDE_EN = `docs/host-upgrade-guide-${BUNDLE_GUIDE_VERSION}.md`;
+const BUNDLE_GUIDE_CN = `docs/host-upgrade-guide-${BUNDLE_GUIDE_VERSION}_cn.md`;
+
+/** 入口列的合法写法（逐字）：只 `.`、只 `./tools`、两者都有（用 `+` 连接）。 */
+const BUNDLE_ENTRY_TOKENS = new Map([
+  ["`.`", "root"],
+  ["`./tools`", "tools"],
+]);
+
+/** 一行的表格格（`| a | b |` → `["a", "b"]`）；不是表格行返 null。 */
+function tableCells(line) {
+  const trimmed = line.trim();
+  if (trimmed.length < 2 || !trimmed.startsWith("|") || !trimmed.endsWith("|")) return null;
+  return trimmed.slice(1, -1).split("|").map((cell) => cell.trim());
+}
+
+/** 逐名表的一行：**恰好 5 格**且第一格是**恰好一个**反引号标识符（别的表格不会被误当成逐名行）。 */
+const BUNDLE_ROW_NAME_RE = /^`([A-Za-z_$][\w$]*)`$/;
+
+/** 一份指南里的逐名行（`name → {line, clause, entry}`）与重复行。 */
+function bundleRowsOf(rel) {
+  const rows = new Map();
+  const dupes = [];
+  textOf(rel).split("\n").forEach((line, i) => {
+    const cells = tableCells(line);
+    if (!cells || cells.length !== 5) return;
+    const m = BUNDLE_ROW_NAME_RE.exec(cells[0]);
+    if (!m) return;
+    const row = { name: m[1], line: i + 1, clause: cells[2], entry: cells[3] };
+    if (rows.has(m[1])) dupes.push(`\`${m[1]}\`（第 ${rows.get(m[1]).line} 行与第 ${i + 1} 行）`);
+    else rows.set(m[1], row);
+  });
+  return { rows, dupes };
+}
+
+/** 入口文件里 `export { … } from "…"` 的再导出名。块内行注释先剥掉，否则注释里的中文会被逗号切碎。 */
+function entryExportNames(rel) {
+  const names = new Set();
+  for (const block of textOf(rel).matchAll(/export\s*\{([\s\S]*?)\}\s*from\s*"[^"]+";/g)) {
+    for (const raw of block[1].replace(/\/\/[^\n]*/g, "").split(",")) {
+      const token = raw.trim();
+      if (!token) continue;
+      const alias = token.split(/\s+as\s+/);
+      names.add((alias[1] ?? alias[0]).trim());
+    }
+  }
+  return names;
+}
+
+/** 入口列 → 声称的入口集合（写法不认识返 null，调用侧报红）。 */
+function bundleEntryClaim(cell) {
+  const parts = String(cell ?? "").split("+").map((part) => part.trim()).filter(Boolean);
+  const claimed = new Set();
+  for (const part of parts) {
+    const key = BUNDLE_ENTRY_TOKENS.get(part);
+    if (!key) return null;
+    claimed.add(key);
+  }
+  return claimed.size ? claimed : null;
+}
+
+/** `@deprecated` 标记里的迁移条款（与 `deprecated-export-check` 的 R4 同一套形状）；没有返 null。 */
+function bundleClauseOf(tag) {
+  const text = String(tag ?? "");
+  const migrate = /migrate to\s+`([^`]+)`/i.exec(text);
+  if (migrate) return `migrate to \`${migrate[1]}\``;
+  if (/no in-tree replacement/i.test(text)) return "no in-tree replacement";
+  return null;
+}
+
+/** 现算候选集（本进程只算一次：候选集由 `src/` + `package.json` 派生，自测的变异全打在文档上，
+ *  重算一百多次只会把本来就四分钟的自测抬成两倍）。 */
+let BUNDLE_TRUTH = null;
+function bundleTruth() {
+  if (BUNDLE_TRUTH) return BUNDLE_TRUTH;
+  const records = buildExportRecords(ROOT);
+  const entries = resolveExportEntries(ROOT);
+  const hostContract = hostContractNames(entries.pkg, records);
+  const inventory = computeExportInventory(records, {
+    root: ROOT,
+    entries: entries.entries,
+    contractNames: hostContract.names,
+    extraErrors: entries.errors,
+    extraWarnings: [...entries.warnings, ...hostContract.warnings],
+  });
+  if (inventory.incomplete) {
+    BUNDLE_TRUTH = {
+      failure: `清点不完整（${inventory.errors.map((e) => e.code).join(",") || "未给出 code"}）——候选集不是真值，`
+        + "本判据无从对账（#164 口径：抽不到真值就报错，不许静默放行）",
+    };
+    return BUNDLE_TRUTH;
+  }
+  const result = verifyDeprecatedExports({ records, inventory, contractNames: hostContract.names });
+  const rows = new Map();
+  for (const row of result.candidates) {
+    const registered = result.registered.find((reg) => reg.name === row.name);
+    rows.set(row.name, { def: row.def, tag: registered?.tag ?? null });
+  }
+  BUNDLE_TRUTH = { rows };
+  return BUNDLE_TRUTH;
+}
+
+/** 0.30 破坏包的两份逐名表 ↔ 现算候选集（双向）、中英一致、迁移条款照抄标记、入口列现算。 */
+function collectBundleTableErrors() {
+  const out = [];
+  const notes = [];
+  const docs = [BUNDLE_GUIDE_EN, BUNDLE_GUIDE_CN];
+  const truth = bundleTruth();
+  if (truth.failure) {
+    out.push(`bundle-table: ${truth.failure}`);
+    collectBundleTableErrors.notes = notes;
+    return out;
+  }
+  const candidates = truth.rows;
+  const missingFiles = docs.filter((rel) => !existsSync(path.join(ROOT, rel)));
+  if (missingFiles.length) {
+    out.push(`bundle-table: 0.30 破坏包的逐名表不见了：${missingFiles.join(" / ")}——`
+      + `这份表是「${NEXT_BREAKING_VERSION} 删哪些名字」的唯一人读面（中英成对），删文件不算处置`);
+    collectBundleTableErrors.notes = notes;
+    return out;
+  }
+  if (!BUNDLE_GUIDE_VERSION.startsWith(`${NEXT_BREAKING_VERSION}.`)) {
+    out.push(`bundle-table: 指南版本 ${BUNDLE_GUIDE_VERSION} 与唯一合法移除边界 \`NEXT_BREAKING_VERSION\`（${NEXT_BREAKING_VERSION}）`
+      + "不是同一个 x.y——0.30 是唯一合法的移除边界，这一页必须绑在它上面"
+      + "（改边界 = 同时改指南名与本文件的 BUNDLE_GUIDE_VERSION）");
+  }
+  const entrySets = {
+    root: entryExportNames("src/index.js"),
+    tools: entryExportNames("src/tools/index.js"),
+  };
+  const parsed = new Map();
+  for (const rel of docs) {
+    const { rows, dupes } = bundleRowsOf(rel);
+    parsed.set(rel, rows);
+    for (const dupe of dupes) {
+      out.push(`bundle-table: ${rel} 同一个名字有两行：${dupe}——逐名表一行一个名字，多出来那行不会被集合对账看见`);
+    }
+    if (candidates.size === 0) continue;   // 空集：本页转历史（见节头边界）
+    for (const name of [...candidates.keys()].filter((n) => !rows.has(n))) {
+      out.push(`bundle-table: ${rel} 缺 \`${name}\`——它现在是零消费者候选`
+        + "（`node scripts/deprecated-export-check.mjs --json` 现算），指南必须逐名列出破坏包里的每个名字；"
+        + "少一行 = 这一页在说谎（名单由脚本派生，不许手抄）");
+    }
+    for (const name of [...rows.keys()].filter((n) => !candidates.has(n))) {
+      out.push(`bundle-table: ${rel} 多出 \`${name}\`——它不在现算候选集里（要么这个名字没登记删除，要么已经被删掉）；`
+        + "表里多一行同样是假话（#210 R2：空转的条目本身就是错）");
+    }
+    for (const [name, row] of rows) {
+      const truthRow = candidates.get(name);
+      if (!truthRow) continue;
+      const clause = bundleClauseOf(truthRow.tag);
+      if (clause === null) {
+        out.push(`bundle-table: ${rel}:${row.line} \`${name}\` 的 \`@deprecated\` 标记里没有迁移条款`
+          + "（`check:exports:deprecated` 的 R4 会红）——先修标记，再让这一页照抄");
+      } else if (!row.clause.includes(clause)) {
+        out.push(`bundle-table: ${rel}:${row.line} \`${name}\` 的迁移条款格没照抄标记里的那一条：`
+          + `标记写的是「${clause}」，这一格写的是「${row.clause.slice(0, 90)}」——`
+          + "指南不许另编一套说法（条款的唯一真值在那个名字的 `@deprecated` 标记里）");
+      }
+      const claimed = bundleEntryClaim(row.entry);
+      if (claimed === null) {
+        out.push(`bundle-table: ${rel}:${row.line} \`${name}\` 的入口列写法不认识：「${row.entry}」——`
+          + "只接受 `.` / `./tools` / `.` + `./tools` 三种逐字写法");
+        continue;
+      }
+      for (const [key, set] of Object.entries(entrySets)) {
+        if (claimed.has(key) === set.has(name)) continue;
+        out.push(`bundle-table: ${rel}:${row.line} \`${name}\` 的入口列说它在 ${key === "root" ? "`.`" : "`./tools`"}，`
+          + `但 ${key === "root" ? "src/index.js" : "src/tools/index.js"} 的再导出块里${set.has(name) ? "有" : "没有"}这个名字`
+          + "——名字对了、住址错了，读者会去错的子路径找它");
+      }
+    }
+  }
+  const enRows = parsed.get(BUNDLE_GUIDE_EN) ?? new Map();
+  const cnRows = parsed.get(BUNDLE_GUIDE_CN) ?? new Map();
+  const enOnly = [...enRows.keys()].filter((name) => !cnRows.has(name));
+  const cnOnly = [...cnRows.keys()].filter((name) => !enRows.has(name));
+  if (enOnly.length || cnOnly.length) {
+    out.push("bundle-table: 0.30 指南中英两份的名字集合不一致（只改一边不算改）："
+      + `${enOnly.length ? `EN 有 CN 没有：${enOnly.join(", ")}` : ""}${enOnly.length && cnOnly.length ? "；" : ""}`
+      + `${cnOnly.length ? `CN 有 EN 没有：${cnOnly.join(", ")}` : ""}`);
+  }
+  for (const [name, en] of enRows) {
+    const cn = cnRows.get(name);
+    if (!cn || en.entry === cn.entry) continue;
+    out.push(`bundle-table: \`${name}\` 的入口列中英不一致：EN「${en.entry}」vs CN「${cn.entry}」——`
+      + "入口是事实，不是措辞，两侧必须逐字相同");
+  }
+  notes.push(`bundle-table: 0.30 破坏包逐名表 ${docs.length} 份（${BUNDLE_GUIDE_VERSION}）对账现算候选集 ${candidates.size} 个名字，`
+    + `EN ${enRows.size} 行 / CN ${cnRows.size} 行；入口列现读 src/index.js（${entrySets.root.size} 个再导出名）/ `
+    + `src/tools/index.js（${entrySets.tools.size} 个）`
+    + (candidates.size === 0 ? "；候选集为空 ⇒ 本页已转历史，只校中英一致与行形状" : ""));
+  collectBundleTableErrors.notes = notes;
+  return out;
+}
+
+/** `--self-test` 的变异器：删掉某名字的整行（打不上就原样返回 ⇒ 自测的「变异没落上」判据会红）。 */
+function dropBundleRow(name) {
+  const rowRe = new RegExp("^\\|\\s*`" + name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "`\\s*\\|");
+  return (text) => {
+    const lines = text.split("\n");
+    const kept = lines.filter((line) => !rowRe.test(line));
+    return kept.length === lines.length ? text : kept.join("\n");
+  };
+}
+
+/** `--self-test` 的变异器：在某一行前插一行（锚行找不到就原样返回）。 */
+function insertBundleRow(anchorName, row) {
+  const rowRe = new RegExp("^\\|\\s*`" + anchorName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "`\\s*\\|");
+  return (text) => {
+    const lines = text.split("\n");
+    const at = lines.findIndex((line) => rowRe.test(line));
+    if (at < 0) return text;
+    lines.splice(at, 0, row);
+    return lines.join("\n");
+  };
+}
+
 // ── 15. 版本归属句（issue #511 判据 1 后半）────────────────────────────────────
 // 判据 1 后半：文中「<verB> adds / removes / 删掉 / 新增」类句式里的 `verB` 若 **≠ 自述版本**，
 // 同一句必须带前向指针（`see the <verB> upgrade guide` / 「见 <verB> 升级指南」），否则红并点名行号。
@@ -4403,7 +4654,9 @@ function collectAllDrift() {
     ...collectDocVersionErrors(), ...collectVersionAttributionErrors(), ...collectGuideClaimErrors(),
     ...collectChangelogPublicationErrors(), ...collectPublishedClaimErrors(),
     // issue #636：「该不该有一条」——代码侧名单 × CHANGELOG 加法句 ⇒ 指南必须覆盖
-    ...collectGuideCoverageErrors()];
+    ...collectGuideCoverageErrors(),
+    // 14b：0.30 破坏包的逐名表 ↔ 现算候选集（issue #429 的文档面）
+    ...collectBundleTableErrors()];
   for (const [, en, cn] of SKELETON_PAIRS) out.push(...collectSkeletonErrors(en === README_EN ? "中英 README" : "中英 AGENTS", en, cn));
   return out;
 }
@@ -4431,7 +4684,7 @@ for (const e of collectCliFlagErrors()) err(e);
 for (const n of collectCliFlagErrors.notes ?? []) note(n);
 // ── 9. 「这句话属于哪个版本」（issue #511）──────────────────────────────────────
 for (const collect of [collectDocVersionErrors, collectVersionAttributionErrors, collectGuideClaimErrors,
-  collectChangelogPublicationErrors, collectPublishedClaimErrors, collectGuideCoverageErrors]) {
+  collectChangelogPublicationErrors, collectPublishedClaimErrors, collectGuideCoverageErrors, collectBundleTableErrors]) {
   for (const e of collect()) err(e);
   for (const n of collect.notes ?? []) note(n);
 }
@@ -5488,14 +5741,14 @@ const SELF_TEST_CASES = [
     expectFiles: [LEDGER_EN],
   },
   {
-    label: "#635 ①：把 README 英文侧的「That is 47 documents」改回 43 ⇒ 红（修前 43 与同一句里的 45 互相矛盾而门禁一路绿）",
-    overlay: { [README_EN]: (t) => t.replace("That is 47 documents", "That is 43 documents") },
-    expect: [/ref-scan-claims: README\.md:\d+ 声称「文档合计」43，但脚本实测 47/],
+    label: "#635 ①：把 README 英文侧的「That is 49 documents」改回 43 ⇒ 红（修前 43 与同一句里的 45 互相矛盾而门禁一路绿）",
+    overlay: { [README_EN]: (t) => t.replace("That is 49 documents", "That is 43 documents") },
+    expect: [/ref-scan-claims: README\.md:\d+ 声称「文档合计」43，但脚本实测 49/],
     expectFiles: [README_EN],
   },
   {
-    label: "#635 ①（句子被删也要红）：把中文 README 里「（当前 32 份，按目录实扫）」整句删掉 ⇒ 红（删句子 = 合法逃逸）",
-    overlay: { [README_CN]: (t) => t.replace("（当前 32 份，按目录实扫）", "") },
+    label: "#635 ①（句子被删也要红）：把中文 README 里「（当前 34 份，按目录实扫）」整句删掉 ⇒ 红（删句子 = 合法逃逸）",
+    overlay: { [README_CN]: (t) => t.replace("（当前 34 份，按目录实扫）", "") },
     expect: [/ref-scan-claims: README_cn\.md 里找不到「按目录实扫到的升级指南份数」那条份数声称/],
     expectFiles: [README_CN],
   },
@@ -5511,6 +5764,54 @@ const SELF_TEST_CASES = [
     overlay: { [AGENTS_CN]: (t) => t.replaceAll(LEDGER_CN, "那份账本") },
     expect: [/ledger-pointer: AGENTS_cn\.md 里没有指向 `docs\/maintenance\/symbol-anchor-ledger_cn\.md` 的指针/],
     expectFiles: [AGENTS_CN],
+  },
+  // ══ 14b：0.30 破坏包的逐名表由闸对账（issue #429 的**文档面**）══════════════════════
+  // 这一族证的是「表不是手抄的」：删一行 / 加一行 / 只改一边 / 改自编条款 / 写错入口，五种都要红并点名，
+  // 而只改散文必须仍然绿（闸咬事实，不咬措辞）。
+  {
+    label: "14b：0.30 指南删掉一个候选行（`estimateMessagesTokens`）⇒ 红并点名那个名字",
+    overlay: { [BUNDLE_GUIDE_EN]: dropBundleRow("estimateMessagesTokens") },
+    expect: [/bundle-table: docs\/host-upgrade-guide-0\.30\.0\.md 缺 `estimateMessagesTokens`/],
+    expectFiles: [BUNDLE_GUIDE_EN],
+  },
+  {
+    label: "14b：0.30 指南多一行不存在的名字（`createNothingProvider`）⇒ 红并点名（多一个也是假话）",
+    overlay: {
+      [BUNDLE_GUIDE_EN]: insertBundleRow("createCompositeToolProvider",
+        "| `createNothingProvider` | nothing at all | no in-tree replacement | `.` | `createNothingProvider` (`src/tools/providers.js`) |"),
+    },
+    expect: [/bundle-table: docs\/host-upgrade-guide-0\.30\.0\.md 多出 `createNothingProvider`/],
+    expectFiles: [BUNDLE_GUIDE_EN],
+  },
+  {
+    label: "14b：只改中英一边（CN 删掉同一行 `setNotesClock`）⇒ 红：CN 缺名 + 中英名字集合不一致",
+    overlay: { [BUNDLE_GUIDE_CN]: dropBundleRow("setNotesClock") },
+    expect: [/bundle-table: docs\/host-upgrade-guide-0\.30\.0_cn\.md 缺 `setNotesClock`/,
+      /bundle-table: 0\.30 指南中英两份的名字集合不一致（只改一边不算改）：EN 有 CN 没有：setNotesClock/],
+    expectFiles: [BUNDLE_GUIDE_CN],
+  },
+  {
+    label: "14b：把一行的迁移条款改成自编说法 ⇒ 红（条款的唯一真值在那个名字的 `@deprecated` 标记里）",
+    overlay: {
+      [BUNDLE_GUIDE_EN]: (t) => t.replace("migrate to `estimateMessageTokens` — identical behaviour",
+        "migrate to `estimateMessageTokensV2` — better behaviour"),
+    },
+    expect: [/bundle-table: docs\/host-upgrade-guide-0\.30\.0\.md:\d+ `estimateMessagesTokens` 的迁移条款格没照抄标记里的那一条/],
+    expectFiles: [BUNDLE_GUIDE_EN],
+  },
+  {
+    label: "14b：把一行的入口列写错（`createStaticToolProvider` 的 `./tools` 写成 `.`）⇒ 红（名字对了、住址错了）",
+    overlay: {
+      [BUNDLE_GUIDE_EN]: (t) => t.replace("| `./tools` | `createStaticToolProvider` (`src/tools/providers.js`) |",
+        "| `.` | `createStaticToolProvider` (`src/tools/providers.js`) |"),
+    },
+    expect: [/bundle-table: docs\/host-upgrade-guide-0\.30\.0\.md:\d+ `createStaticToolProvider` 的入口列说它在 `\.`，但 src\/index\.js 的再导出块里没有这个名字/],
+    expectFiles: [BUNDLE_GUIDE_EN],
+  },
+  {
+    label: "14b：0.30 指南只改散文（末尾补一段不陈述事实的话）⇒ 仍然 0 错（闸咬事实，不咬措辞）",
+    overlay: { [BUNDLE_GUIDE_EN]: (t) => `${t}\n\nA closing paragraph that states no fact at all.\n` },
+    expectGreen: true,
   },
 ];
 
