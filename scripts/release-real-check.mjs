@@ -29,6 +29,17 @@
 //   那是装置坏了，不是「这条不需要跑」。别的 skip（例：跨版本那条的「旧 CLI 0.22.0 不可用」）
 //   不判红，但在汇总里**点名**——不许静默。
 //
+// 每条的汇总形状（issue #678）：`tests/pass/fail/skip` 来自 `node --test` 的 TAP 汇总行，**取不到就是
+// `?`**（不许写 0——「没摘要」与「零失败」是两件事）。第 7 条 `cli-real-smoke.mjs` 打的不是 TAP，
+// 所以它收尾时自报一行 `RELEASE-REAL-SMOKE id=cli-real checks=8 pass=8 fail=0 dry=false failed=- status=ok`
+// （格式与解析的唯一真源：`scripts/smoke-summary-line.mjs`），清单把它转成同一行里的额外一格：
+//
+//   [7/8] OK  tests=? pass=? fail=? skip=? cli_real=8/8/0  42.0s  装后 CLI 真机冒烟（scripts/cli-real-smoke.mjs）
+//
+// `checks` 是冒烟自己 `check()` 数的实际条数（不是写死的 8），`dry=true` 表示那次跑的是 `--dry`
+// （只跑了 C8——不许把 C1–C7 未跑读成全过），`failed=C4` 点名红的那几条，`status=error` 表示
+// 脚本自身抛了（计数可能远小于全跑）。行里读不到就写 `cli_real=?`，**不省略、不补 0**。
+//
 // 隔离：本脚本**一个字节也不写**（不建临时目录、不写 `~/.erix`、不写 `~/.npmrc`）。每条子命令
 // 自带隔离（`--dir` 临时目录 / 假 `HOME` / 真配置只读 + 前后哈希对账），把隔离留在消费点是刻意的
 // 「谁落盘谁负责」：这里再包一层假 `HOME` 会让子命令读不到真配置，等于用隔离换假绿。
@@ -43,6 +54,7 @@ import { fileURLToPath } from "node:url";
 import {
   GAP_CODES, REAL_GATE_ENV, formatSkip, printableEndpoint, resolveRealUpstream,
 } from "../examples/e2e-real-gate.mjs";
+import { parseSmokeLine } from "./smoke-summary-line.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
@@ -97,6 +109,10 @@ const STEPS = [
     id: "cli-real",
     label: "装后 CLI 真机冒烟（scripts/cli-real-smoke.mjs）",
     argv: ["scripts/cli-real-smoke.mjs"],
+    // issue #678：这一条打的不是 TAP，它收尾时自报一行 `RELEASE-REAL-SMOKE …`（格式与解析在
+    // `scripts/smoke-summary-line.mjs`）。`smoke: true` = 汇总里必须为它留一格 `cli_real=`：
+    // 读到就填真实计数，读不到写 `?`（绝不当 0，也绝不静默省略）。
+    smoke: true,
   },
   {
     // issue #619：前面五条没有一条碰**压缩**，而 #611（摘要器提示词加「## 教训与坑」）与 #614
@@ -126,8 +142,10 @@ function childEnv() {
 /**
  * 从 TAP 输出里取 `# tests / # pass / # fail / # skipped`。
  *
- * 不是每条都产 TAP（第 ⑥ 条 `cli-real-smoke.mjs` 打的是自己的日志行），所以取不到的字段一律
- * `undefined`——**不许**用 0 冒充，否则「没摘要」会被读成「零失败」。
+ * 不是每条都产 TAP（第 7 条 `cli-real-smoke.mjs` 打的是自己的日志行 + 一行机器可读汇总），所以
+ * 取不到的字段一律 `undefined`——**不许**用 0 冒充，否则「没摘要」会被读成「零失败」。
+ * 第 7 条的真实计数走 `parseSmokeLine()`（`RELEASE-REAL-SMOKE` 行，见下），不进这四个字段：
+ * TAP 的 `tests/pass/fail/skipped` 与冒烟自己的 `checks/pass/fail` 是**两套**数，不并进同一格。
  *
  * @param {string} text
  * @returns {{ tests?: number, pass?: number, fail?: number, skipped?: number }}
@@ -178,11 +196,12 @@ const quoteArg = (arg) => (/[\s'"`$\\]/u.test(arg) ? `'${arg.replaceAll("'", "'\
 /**
  * 跑一条。超时用**进程组**杀（`node --test` 自己还会 spawn 子进程，只杀直接子进程会留下孤儿继续烧钱）。
  *
- * @param {{ id: string, label: string, argv: string[] }} step
+ * @param {{ id: string, label: string, argv: string[], smoke?: boolean }} step
  * @param {number} index 从 1 开始的序号
  * @param {number} total
  * @returns {Promise<{ id: string, label: string, status: "ok"|"red", reason?: string,
- *   summary: ReturnType<typeof parseTapSummary>, skips: string[], output: string, elapsedMs: number }>}
+ *   summary: ReturnType<typeof parseTapSummary>, smokeSummary: ReturnType<typeof parseSmokeLine>,
+ *   skips: string[], output: string, elapsedMs: number }>}
  */
 function runStep(step, index, total) {
   log(`=== [${index}/${total}] ${step.label} ===`);
@@ -221,6 +240,7 @@ function runStep(step, index, total) {
         status: "red",
         reason: `子进程起不来：${error?.message ?? error}`,
         summary: {},
+        smokeSummary: undefined,
         skips: [],
         output,
         elapsedMs: Date.now() - startedAt,
@@ -229,6 +249,8 @@ function runStep(step, index, total) {
     child.on("close", (code, signal) => {
       clearTimeout(timer);
       const summary = parseTapSummary(output);
+      // 第 7 条（`smoke: true`）的真实计数在这一行里；别的步骤没有这一行 ⇒ `undefined`。
+      const smokeSummary = step.smoke === true ? parseSmokeLine(output) : undefined;
       const skips = skipReasons(output);
       const elapsedMs = Date.now() - startedAt;
       const gaps = gateGapSkips(skips);
@@ -243,18 +265,57 @@ function runStep(step, index, total) {
       } else if (gaps.length > 0) {
         status = "red";
         reason = `闸门开着却出现闸门/配置类 skip（预检与子进程口径不一致）：${gaps.join(" ｜ ")}`;
+      } else if (smokeSummary !== undefined && smokeSummary.fail > 0) {
+        // 退出码 0 而自报 fail>0 ⇒ 两边口径打架（与上面 gaps 同一类：装置坏了，不是这条不需要跑）。
+        status = "red";
+        reason = `自报 fail=${smokeSummary.fail} 但退出码 0（退出码与汇总行口径不一致）`;
       }
-      settle({ ...step, status, reason, summary, skips, output, elapsedMs });
+      if (status === "red" && smokeSummary !== undefined && smokeSummary.failed.length > 0) {
+        // 红的时候点名是哪几条 C 红了（尾巴里有全文，但汇总里也得能一眼看到）。
+        reason += `；失败的检查：${smokeSummary.failed.join(",")}`;
+      }
+      settle({ ...step, status, reason, summary, smokeSummary, skips, output, elapsedMs });
     });
   });
 }
 
+/**
+ * 第 7 条的机器可读汇总行 → 一格 `cli_real=`（issue #678）。
+ *
+ * `cli_real=8/8/0`（checks/pass/fail，三者都来自 `cli-real-smoke.mjs` 里 `check()` 的实际结果）；
+ * 另外三档只在**真发生**时才印：
+ * - `dry=true`：那次跑的是 `--dry`（只跑了 C8）——「C1–C7 未跑」不许读成全过；
+ * - `failed=C4,C7`：红的是哪几条（红数在 `cli_real=` 里，id 在这里）；
+ * - `status=error`：脚本自己抛了（可能一条断言都没跑到）——`0/0/0` 不能读成全绿。
+ *
+ * `undefined` ⇒ `cli_real=?`：与 `tests=?` 同一条规矩（取不到不写 0）。
+ *
+ * @param {ReturnType<typeof parseSmokeLine>} smoke
+ * @returns {string}
+ */
+export function smokeSummaryLine(smoke) {
+  if (smoke === undefined) return "cli_real=?";
+  const extra = [];
+  if (smoke.dry) extra.push("dry=true");
+  if (smoke.failed.length > 0) extra.push(`failed=${smoke.failed.join(",")}`);
+  if (smoke.status === "error") extra.push("status=error");
+  return [`cli_real=${smoke.checks}/${smoke.pass}/${smoke.fail}`, ...extra].join(" ");
+}
+
 /** `tests=2 pass=2 fail=0 skip=0`；取不到的字段写 `?`（不许用 0 冒充）。 */
-function summaryLine(summary) {
+export function summaryLine(summary, { smoke = undefined, expectsSmoke = false } = {}) {
   const part = (key, label) => `${label}=${summary[key] === undefined ? "?" : summary[key]}`;
-  return [
+  const fields = [
     part("tests", "tests"), part("pass", "pass"), part("fail", "fail"), part("skipped", "skip"),
-  ].join(" ");
+  ];
+  // 只有「声明了自己会报汇总」的步骤才印这一格：别的步骤没有这格，印了会读成「它没报」。
+  if (expectsSmoke) fields.push(smokeSummaryLine(smoke));
+  return fields.join(" ");
+}
+
+/** 一条结果的汇总文字（`summaryLine` + 该步的冒烟格）；两处打印共用，免得两行字漂成两个口径。 */
+function resultSummaryLine(result) {
+  return summaryLine(result.summary, { smoke: result.smokeSummary, expectsSmoke: result.smoke === true });
 }
 
 /** 红的时候回放现场尾部（超时的那条常常只有半截 TAP，tail 就是全部证据）。 */
@@ -303,7 +364,7 @@ async function main() {
     log("");
     const result = await runStep(step, i + 1, STEPS.length);
     results.push(result);
-    log(`[${i + 1}/${STEPS.length}] ${result.status.toUpperCase()}  ${summaryLine(result.summary)}  ${seconds(result.elapsedMs)}`
+    log(`[${i + 1}/${STEPS.length}] ${result.status.toUpperCase()}  ${resultSummaryLine(result)}  ${seconds(result.elapsedMs)}`
       + (result.reason ? `  — ${result.reason}` : ""));
     if (result.status === "red") printTail(result.output);
   }
@@ -314,7 +375,7 @@ async function main() {
   log("");
   log("=== 汇总 ===");
   for (const [i, result] of results.entries()) {
-    log(`  [${i + 1}/${STEPS.length}] ${result.status === "ok" ? "ok " : "RED"}  ${summaryLine(result.summary)}`
+    log(`  [${i + 1}/${STEPS.length}] ${result.status === "ok" ? "ok " : "RED"}  ${resultSummaryLine(result)}`
       + `  ${seconds(result.elapsedMs)}  ${result.label}`);
   }
   for (const result of skipped) {
@@ -339,8 +400,9 @@ async function main() {
   return 0;
 }
 
-// 直接跑才进 main：导出的解析器（`parseTapSummary` / `skipReasons` / `gateGapSkips`）要能被单独
-// 引用而不触发「预检 + 跑七条真上游」——脚本被 import 一次就烧一遍真金是不可接受的副作用。
+// 直接跑才进 main：导出的解析器（`parseTapSummary` / `skipReasons` / `gateGapSkips` / `summaryLine` /
+// `smokeSummaryLine`）要能被单独引用而不触发「预检 + 跑七条真上游」——脚本被 import 一次就烧一遍真金
+// 是不可接受的副作用。
 const invokedDirectly = process.argv[1] !== undefined
   && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 

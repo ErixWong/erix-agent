@@ -4069,8 +4069,19 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  * # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 5 条 / 英文 5 条 / 配对 5 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 4（校准面 \#\# [Unreleased]）
  * # 配对地板：实测 5 对 > 地板 4 对 ⇒ 可以抬地板到 5
  * ```
+ *
+ * issue #678：`## [Unreleased] ### Added` 再新增一对（发版前清单第 7 步 `cli-real-smoke` 的结果进汇总：
+ * `RELEASE-REAL-SMOKE …` 行 → `cli_real=<checks>/<pass>/<fail>`，issue 引用集合 #678）⇒ 面没挪，仍是
+ * `## [Unreleased]`，实测变成 **6 对**，地板 5 → 6（同一条规则：只升不降，这次又是**升**）。
+ * 守卫自己的 diagnostic 原文（改常量**之前**跑的，`npm test` 的 TAP 里那条 `not ok`）：
+ *
+ * ```
+ * # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 6 条 / 英文 6 条 / 配对 6 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 5（校准面 \#\# [Unreleased]）
+ * # 配对地板：实测 6 对 > 地板 5 对 ⇒ 可以抬地板到 6
+ * 校准面（## [Unreleased]）上实测 6 对 ≠ 地板 5 对：地板必须恰等于校准面上的实测值
+ * ```
  */
-const CHANGELOG_PAIR_FLOOR = 5;
+const CHANGELOG_PAIR_FLOOR = 6;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
@@ -4160,7 +4171,7 @@ describe("静态守卫：CHANGELOG 未发布节的中英配对地板（issue #56
     const problems = collectChangelogPairingProblems(text);
     // 地板是在 `CHANGELOG_PAIR_FLOOR_SURFACE` 那一节上实测的（#571 面随 #571 片1 的条目挪到
     // `## [Unreleased]`，所以地板 = 在 Unreleased 上重测的值：#571 起 1 对、#574 ⇒ 2 对、#575 ⇒ 3 对、
-    // #572 ⇒ 4 对、#571 片2 ⇒ 5 对）。
+    // #572 ⇒ 4 对、#571 片2 ⇒ 5 对；#678 ⇒ 6 对）。
     // 面被 `resolveChangelogScanSurface` 挪到别的节（例如 0.29 开版后顶部 Unreleased 又空了 ⇒ 退到刚开的
     // 版本节）时，这个数就没有校准依据了。
     const onFloorSurface = Boolean(problems.surface)
