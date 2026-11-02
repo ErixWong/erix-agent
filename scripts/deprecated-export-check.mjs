@@ -42,9 +42,12 @@
 //  R10 MARKER_HOST_FACT_MISSING 登记表声明的宿主事实（`hostFacts`：`<宿主仓>/<文件>:<行>`）在**标记正文里
 //                            找不到** ⇒ 红并点名缺哪一条。账本的理由必须与标记的措辞对得上：把标记里的宿主
 //                            事实句删掉、账本还留着理由，读标记的人就再也看不出「为什么删不掉」。
-//  R11 MARKER_HOST_FACT_UNLEDGERED 标记自称发布阻塞（正文里有字面量 `release blocker`）却**没有账本条目** ⇒
-//                            红并点名。删掉账本条目不会让宿主迁移；这条拦的是「把账本删干净就当作已排期」的
-//                            反向逃生口。（措辞约定：写「这一版删不掉」就用 `Release blocker for 0.30:` 开头。）
+//  R11 MARKER_HOST_FACT_UNLEDGERED 标记自称「已知的宿主可见破坏」（正文里有字面量 `known host-visible breakage`）
+//                            却**没有账本条目** ⇒ 红并点名。账本记的是可复核的那笔账（谁在 import、哪一行）；
+//                            标记声称破坏已知、账本却没有那一条，等于在公共面上写下一句没人能重跑的断言。
+//                            （措辞约定：写「这是已知的宿主可见破坏」就用 `Known host-visible breakage:` 开头。）
+//                            注：这条**不是**「宿主没迁 ⇒ 不许删」的否决权——账本条目只让破坏可见，删除照旧；
+//                            所以 R11 拦的是「声称与账本脱钩」，不是「删得太早」。
 //  R12 CONTRACT_DELETION_UNLEDGERED  **属于宿主契约套件这一类**（`exports["./contract-tests"]` 再导出的名字，
 //                            成员从 `package.json` 现派生）的名字带着 0.30 删除标记 ⇒ 红并点名，**除非**它显式登记在
 //                            `CONTRACT_DELETION_OVERRIDES` 里且**带理由**（理由为空 ⇒ 红）。
@@ -56,13 +59,15 @@
 //  R13 CONTRACT_DELETION_OVERRIDE_FOREIGN  `CONTRACT_DELETION_OVERRIDES` 登记了一个**不属于这一类**的名字 ⇒
 //                            红并点名（#210 R2 口径：空转/越界的豁免条目本身就是错——账本只能给这一类用）。
 //
-// ── 这张账本是什么（不是版本表）─────────────────────────────────────────────────
-//  `REMOVAL_REGISTRY` 记的是**0.30 的发布阻塞**：宿主仓真的在导入、所以这一版不能删的名字，逐条写清
-//  「哪个宿主、哪个文件:行」。宿主侧的可跑判据是 `scripts/host-consumer-probe.mjs`
-//  （`npm run check:host-consumers -- --hosts <宿主目录>`），它已接进 `AGENTS.md` / `AGENTS_cn.md` 的
-//  0.30 预发布清单。那条判据是**覆盖**、不是否决：本仓是上游，删一个导出不需要下游批准，需要的是
-//  **破坏可见、可迁**——每个「已知有宿主在 import」的名字必须在当前版本的升级指南里有一行条目
-//  （含迁移写法），漏一条才红。
+// ── 这张账本是什么（已知破坏清单，不是版本表，也不是否决权）─────────────────────
+//  `REMOVAL_REGISTRY` 记的是**已知会被真宿主 import、删除即造成破坏**的名字账：宿主仓真的在导入，
+//  所以 0.30 删掉它就是一次真实的破坏——逐条写清「哪个宿主、哪个文件:行」以及 reason（为什么照样删）。
+//  它是**已知破坏清单**，不是删除的否决权：本仓是上游，退役一个导出是自己的决定，宿主的命中不是「保留它」
+//  的理由，而是「这笔破坏必须被写下来、且可迁」的理由。可迁的那一半由**升级指南**兑现：每个账本条目
+//  都必须在当前版本的升级指南里有逐名条目（中英两份、含迁移写法）——`check:docs` 的 `bundle-table`
+//  双向对账（指南逐名表 ↔ 现算候选集）看守这一半；宿主侧那一半由 `scripts/host-consumer-probe.mjs`
+//  （`npm run check:host-consumers -- --hosts <宿主目录>`）看守，它已接进 `AGENTS.md` / `AGENTS_cn.md`
+//  的 0.30 预发布清单，判据是**覆盖**、不是否决。
 //
 // ── 三档口径（与清点工具同一份）───────────────────────────────────────────────
 //  候选 = 「包内消费者（`src/` `bin/`）+ 发布面消费者（`examples/` `test/contract/`）+ 自身定义文件内引用」
@@ -103,6 +108,9 @@ import {
   hostContractNames,
   resolveEntries,
 } from "./export-consumer-check.mjs";
+// 指南逐名表的**读法**住在共享模块里（`check:docs` 的 `bundle-table` 与 `host-consumer-probe` 的覆盖判据
+// 读的是同一份）：本脚本只在自测里用它钉「账本条目 ⇔ 指南条目」这一半，不抄第二份表形状。
+import { BUNDLE_GUIDE_DOCS, bundleRowsFromText } from "./bundle-guide-table.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const DEFAULT_ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -125,34 +133,38 @@ export const DEFAULT_REMOVAL_VERSION = NEXT_BREAKING_VERSION;
 export const REMOVAL_VERSION = DEFAULT_REMOVAL_VERSION;
 
 /**
- * **0.30 发布阻塞账本**：名字 → `{ reason, hostFacts }`。
+ * **0.30 已知破坏账本**：名字 → `{ reason, hostFacts }`。
  *
- * 它不是版本表（版本只有一个，见 `NEXT_BREAKING_VERSION`），而是「这个名字现在为什么删不掉」的账本：
+ * 它记的不是排期，也不是删除的否决权，而是**已知会被真宿主 import、删除即造成破坏**的名字：
  * 「仓内零消费者」不等于「宿主零消费者」——本判据看不见宿主仓（边界写在文件头与报告里），而宿主侧
- * 真的还在导入。账本记的是**阻塞在哪个事实上**（谁在 import、哪一行），不是排期：处置要么是宿主先迁移，
- * 要么是这一版不删它。
+ * 真的还在导入。账本把那次破坏写成**可复核的事实**（谁在 import、哪一行）加一句 reason
+ * （为什么照样删）。宿主命中从来不是「这一版不许删」：本仓是上游，删除由自己的版本边界决定；
+ * 账本买的是「破坏可见」，升级指南的逐名条目买的是「破坏可迁」——两半都到位，删除就是正当的。
  *
  * 三条纪律（由 R7 / R8 / R9 / R10 / R11 看守）：
  *   · 条目必须**真的对上一条标记**（空转即红，与 #210 R2 同口径）；
- *   · 条目必须写 `reason`（为什么删不掉），且**不许**写别的版本号（R9：唯一合法版本是 0.30）；
- *   · `hostFacts` 里的每一条 `<宿主仓>/<文件>:<行>` 必须在**标记正文里逐字出现**（R10）——账本的理由
- *     与标记的措辞必须对得上，否则读标记的人看不出阻塞在哪；反过来，标记自称发布阻塞却没有账本
- *     条目也是红（R11）。
+ *   · 条目必须写 `reason`（为什么明知会破坏仍然删），且**不许**写别的版本号（R9：唯一合法版本是 0.30）；
+ *   · `hostFacts` 里的每一条 `<宿主仓>/<文件>:<行>` 必须在**标记正文里逐字出现**（R10）——账本的事实
+ *     与标记的措辞必须对得上，否则读标记的人看不出破坏落在谁身上；反过来，标记自称
+ *     「known host-visible breakage」却没有账本条目也是红（R11）。
  *
  * 今天登记的只剩一条（`createAnthropicProvider`），它来自宿主仓扫描：`scripts/host-consumer-probe.mjs`
  * （`npm run check:host-consumers -- --hosts <宿主目录>`）会把它的命中逐条点名（哪个宿主、哪个文件:行），
- * 那条命令已接进 0.30 预发布清单。
+ * 那条命令已接进 0.30 预发布清单。它在 0.30 升级指南里的逐名条目（中英两份、带迁移写法）由
+ * `check:docs` 的 `bundle-table` 对账看守——指南漏掉这个名字就是红，所以「可迁」不是一句口号。
  *
  * `notesStoreContract` **不在**这张表里：它是宿主契约套件（`exports["./contract-tests"]` 这一类），
  * 这一类不参与「零消费者」删除判据（消费者按定义在宿主仓），所以它既不该带 0.30 删除标记，
- * 也不需要在阻塞账本里占一条；真要删一个契约套件走 `CONTRACT_DELETION_OVERRIDES`，不走这张表。
+ * 也不需要在已知破坏账本里占一条；真要删一个契约套件走 `CONTRACT_DELETION_OVERRIDES`，不走这张表。
  */
 export const REMOVAL_REGISTRY = Object.freeze({
   createAnthropicProvider: {
-    reason: "host-side audit: app_container imports it, and there is no in-tree replacement until the assembly "
-      + "port converges, so deleting it in 0.30 breaks a live host until it migrates. "
-      + "That checkout has since been merged into the successor project fde-workshop; it is still on disk and "
-      + "still carries this import, so the fact below still reads",
+    reason: "host-side audit: app_container imports it, and there is no in-tree replacement, so deleting it in "
+      + "0.30 breaks a live host at module load. That breakage is taken knowingly (this package is the upstream; "
+      + "a host hit is not a veto) and it is migratable: the 0.30 upgrade guide carries this name's row in both "
+      + "language halves with the `no in-tree replacement` clause. That checkout has since been merged into the "
+      + "successor project fde-workshop; it is still on disk and still carries this import, so the fact below "
+      + "still reads",
     hostFacts: [
       "app_container/apps/worker/src/pi/erix-adapter.js:2",
     ],
@@ -215,10 +227,15 @@ export const CODES = {
 };
 
 /**
- * 标记里「我在这一版删不掉」的自称。账本双向对账用它（R11）：有自称、没账本条目 ⇒ 红。
- * 它是**标记措辞约定**的一部分（写 0.30 的发布阻塞就这么开头），不是另一份名单。
+ * 标记里「这是已知的宿主可见破坏」的自称。账本双向对账用它（R11）：有自称、没账本条目 ⇒ 红。
+ *
+ * 它是**标记措辞约定**的一部分（写「删除会造成已知的宿主可见破坏」就这么开头），不是另一份名单。
+ * 注意它判的是**断言与账本的耦合**，不是「删得早不早」：本仓是上游，命中宿主从来不是删除的否决权，
+ * 这句自称买的是「这笔破坏被写下来、且由升级指南兑现可迁」——账本条目 + 指南条目才是它的两半。
+ * 措辞必须与语义同向：把句子写成 `not a release blocker` 之类的否定式**不**算数，检测器认的是这条
+ * 肯定式自称（否定的写法既逃不过旧概念，也证明不了新概念）。
  */
-export const HOST_BLOCKER_PHRASE = /release blocker/i;
+export const HOST_BREAKAGE_CLAIM = /known host-visible breakage/i;
 
 /**
  * 宿主事实的形状：`<宿主仓>/<文件>:<行>`（例如 `app_container/apps/worker/src/pi/erix-adapter.js:2`）。
@@ -548,15 +565,16 @@ export function verify({
 
   // R11：标记自称发布阻塞，却没有账本条目 ⇒ 红（删掉账本不会让宿主迁移）
   for (const row of entries) {
-    if (!HOST_BLOCKER_PHRASE.test(row.tag)) continue;
+    if (!HOST_BREAKAGE_CLAIM.test(row.tag)) continue;
     if (Object.prototype.hasOwnProperty.call(registry ?? {}, row.name)) continue;
     reds.push({
       code: CODES.MARKER_HOST_FACT_UNLEDGERED,
       name: row.name,
       file: row.file,
       line: row.line,
-      detail: "标记自称「release blocker」（这一版删不掉），但 `REMOVAL_REGISTRY` 没有这个名字的账本条目"
-        + "——删掉账本条目不会让宿主迁移，只会让下一个读标记的人以为宿主已经不在用",
+      detail: "标记自称「known host-visible breakage」（这是已知的宿主可见破坏），但 `REMOVAL_REGISTRY`"
+        + " 没有这个名字的账本条目——自称买的是「这笔破坏被写下来」，账本条目是唯一记着「哪个宿主、哪一行」的地方；"
+        + "没有它，读标记的人无从复核这笔破坏是否真的存在，也无从知道指南该覆盖谁",
     });
   }
 
@@ -700,7 +718,7 @@ function renderReport({ inventory, result, types, root, registry = REMOVAL_REGIS
     + `（清点工具：node scripts/export-consumer-check.mjs）`);
   const perName = Object.keys(registry ?? {}).length;
   lines.push(`登记事实：${result.registered.length} 个公共名带删除标记；唯一合法的移除版本 ${NEXT_BREAKING_VERSION}`
-    + `（\`NEXT_BREAKING_VERSION\`，登记表不改版本）；0.30 发布阻塞账本 ${perName} 条`);
+    + `（\`NEXT_BREAKING_VERSION\`，登记表不改版本）；0.30 已知破坏账本 ${perName} 条`);
   const contractRows = inventory.names.filter((row) => contractNames.has(row.name));
   lines.push(`宿主契约套件：${contractRows.length} 个名字（\`exports[${JSON.stringify(HOST_CONTRACT_ENTRY_KEY)}]\``
     + `${contractEntry ? ` → ${contractEntry}` : ""} 现派生）——**不参与删除判据**，带删除标记必须有`
@@ -718,18 +736,19 @@ function renderReport({ inventory, result, types, root, registry = REMOVAL_REGIS
     const target = migrate ? `\`${migrate}\`` : (/no in-tree replacement/i.test(tag) ? "no in-tree replacement" : "—");
     const bound = removalVersionOf(row.name, registry);
     const versionCell = bound === NEXT_BREAKING_VERSION ? bound : `${bound}（账本里写了别的版本号 ⇒ R9 红）`;
-    const ledger = Object.prototype.hasOwnProperty.call(registry ?? {}, row.name) ? "✓ 发布阻塞（宿主在用）" : "—";
+    const ledger = Object.prototype.hasOwnProperty.call(registry ?? {}, row.name) ? "✓ 已知破坏（宿主在用）" : "—";
     lines.push(`| \`${row.name}\` | \`${row.def}\` | ${reg ? `✓ ${reg.file}:${reg.line}` : "✗ 未登记"} | ${versionCell} | ${target} | ${ledger} |`);
   }
   if (perName > 0) {
     lines.push("");
-    lines.push("## 0.30 发布阻塞账本（`REMOVAL_REGISTRY`：每条必须对得上一条标记、写理由、且宿主事实逐字出现在标记里）");
+    lines.push("## 0.30 已知破坏账本（`REMOVAL_REGISTRY`：每条必须对得上一条标记、写理由、且宿主事实逐字出现在标记里）");
     for (const [name, entry] of Object.entries(registry)) {
       lines.push(`- \`${name}\` —— ${entry.reason}`);
       for (const fact of entry.hostFacts ?? []) lines.push(`    · 宿主事实：\`${fact}\``);
     }
-    lines.push("  删除前提 = 上面这些宿主先迁移；宿主侧可跑判据：");
-    lines.push("  `npm run check:host-consumers -- --hosts <宿主目录>`（已接进 0.30 预发布清单）。");
+    lines.push("  这些名字**不是删不掉**：它们是「删除会造成已知的宿主可见破坏」——破坏已写下来（上面的事实），");
+    lines.push("  也已可迁（0.30 升级指南里中英两份都有逐名条目，`check:docs` 的 `bundle-table` 对账看守）。");
+    lines.push("  宿主侧可跑判据：`npm run check:host-consumers -- --hosts <宿主目录>`（已接进 0.30 预发布清单）。");
   }
   if (types) {
     lines.push("");
@@ -1065,8 +1084,11 @@ function runSelfTest() {
     }
   }
 
-  // ── 例⑩ 账本是**承重**的：把它清空 ⇒ 真树里那两条「release blocker」标记变成 R11 红（没有账本条目）；
-  // 换回真表 ⇒ 绿。这一条证的是「账本真的在记阻塞事实」，而不是一张摆在旁边没人读的表。
+  // ── 例⑩ 账本是**承重**的：把它清空 ⇒ 真树里那条「known host-visible breakage」标记变成 R11 红
+  // （它声称的那笔破坏没有账本条目可复核）；换回真表 ⇒ 绿。
+  // 这一条钉的是「账本真的在记破坏事实」，不是一张摆在旁边没人读的表。账本的语义从
+  // 「宿主没迁 ⇒ 这一版不许删」换成「已知破坏 ⇒ 指南必须覆盖」之后，这条反向证照样成立：
+  // R11 判的正是「标记声称的破坏有没有账本条目」，与「能不能删」无关（删不删由版本边界决定）。
   {
     const emptyRegistry = verify({ records, inventory, contractNames, registry: {} });
     const ledgered = Object.keys(REMOVAL_REGISTRY);
@@ -1077,10 +1099,50 @@ function runSelfTest() {
     const restored = verify({ records, inventory, contractNames, registry: REMOVAL_REGISTRY });
     expect(
       ledgered.length > 0 && allCaught && restored.reds.length === 0,
-      `⑩ 账本清空 ⇒ ${ledgered.length} 个自称发布阻塞的标记变 R11 红（${unledgeredNames.join(",")}）⇒ 换回真账本 ⇒ 绿（${restored.reds.length} 红）`,
-      `⑩ 账本清空后没把「自称发布阻塞却没有账本条目」报成 R11：账本 ${JSON.stringify(ledgered)}，R11 点名 ${JSON.stringify(unledgeredNames)}`
-        + `（还原 ${restored.reds.length} 红）——账本没有在记阻塞事实`,
+      `⑩ 账本清空 ⇒ ${ledgered.length} 个自称「known host-visible breakage」的标记变 R11 红（${unledgeredNames.join(",")}）⇒ 换回真账本 ⇒ 绿（${restored.reds.length} 红）`,
+      `⑩ 账本清空后没把「自称已知宿主破坏却没有账本条目」报成 R11：账本 ${JSON.stringify(ledgered)}，R11 点名 ${JSON.stringify(unledgeredNames)}`
+        + `（还原 ${restored.reds.length} 红）——账本没有在记破坏事实`,
     );
+  }
+
+  // ── 例⑩b 自称的另一半「已被 0.30 升级指南覆盖」不是装饰：账本里每个名字在中英两份指南里都必须有一行、
+  // 且迁移条款格非空。读法与 `check:docs` 的 `bundle-table` / `host-consumer-probe` **同一份**
+  // （`scripts/bundle-guide-table.mjs`，不抄第二份表形状）。把那一行从内存副本里删掉 ⇒ 同一套读法必须报缺
+  // ——变异没落上算失败。这样「账本 = 已知破坏 + 指南覆盖」两半都被反向证钉住：
+  // ⑩ 钉「破坏被写下来」，⑩b 钉「破坏可迁」。──
+  {
+    const ledgered = Object.keys(REMOVAL_REGISTRY);
+    const texts = {};
+    for (const rel of BUNDLE_GUIDE_DOCS) texts[rel] = readFileSync(join(DEFAULT_ROOT, rel), "utf8");
+    /** 账本名字 × 指南：返回「缺哪一格」的清单（空 = 全覆盖）。 */
+    const coverageGaps = (guideTexts) => {
+      const gaps = [];
+      for (const rel of BUNDLE_GUIDE_DOCS) {
+        const rows = bundleRowsFromText(guideTexts[rel]).rows;
+        for (const name of ledgered) {
+          const row = rows.get(name);
+          if (!row) gaps.push(`${rel}（没有 \`${name}\` 这一行）`);
+          else if (String(row.clause ?? "").trim() === "") gaps.push(`${rel}:${row.line}（有一行，但迁移条款格是空的）`);
+        }
+      }
+      return gaps;
+    };
+    const gapsReal = coverageGaps(texts);
+    const victim = ledgered[0];
+    const victimRow = bundleRowsFromText(texts[BUNDLE_GUIDE_DOCS[0]]).rows.get(victim);
+    if (!victim || !victimRow) {
+      failures.push("⑩b 指南覆盖：真指南里找不到账本第一个名字那一行——这一枪打不出去（变异无从落下）");
+    } else {
+      const lines = texts[BUNDLE_GUIDE_DOCS[0]].split("\n");
+      const mutated = { ...texts, [BUNDLE_GUIDE_DOCS[0]]: [...lines.slice(0, victimRow.line - 1), ...lines.slice(victimRow.line)].join("\n") };
+      const gapsMutated = coverageGaps(mutated);
+      expect(
+        gapsReal.length === 0 && gapsMutated.length > 0,
+        `⑩b 账本 ${ledgered.length} 个名字在中英两份指南里都有条目且迁移条款非空（0 缺）；把英文那份的 \`${victim}\` 行删掉（内存副本）⇒ 同一套读法报缺（${gapsMutated[0]}）`,
+        `⑩b 指南覆盖没按预期：真指南缺 ${JSON.stringify(gapsReal)}（期望 0 缺，否则标记那句「已被指南覆盖」是空话）；`
+          + `变异后缺 ${JSON.stringify(gapsMutated)}（期望 >0，否则变异没落上）`,
+      );
+    }
   }
 
   // ── 例⑪ R7：登记表里一条**对不上任何标记**的条目 ⇒ 红并点名（#210 R2：空转的豁免条目本身就是错）──
@@ -1378,7 +1440,7 @@ export function main(argv = process.argv.slice(2)) {
   if (opts.json) {
     console.log(JSON.stringify({
       tool: "deprecated-export-check",
-      generatedFor: "issue #429：零消费者导出登记 @deprecated，删除并入 0.30；宿主在用的名字记进 0.30 发布阻塞账本（不换版本号）",
+      generatedFor: "issue #429：零消费者导出登记 @deprecated，删除并入 0.30；已知会被宿主 import 的名字记进 0.30 已知破坏账本（破坏可见 + 指南可迁，不换版本号）",
       gate: true,
       nextBreakingVersion: NEXT_BREAKING_VERSION,
       removalVersion: DEFAULT_REMOVAL_VERSION,
