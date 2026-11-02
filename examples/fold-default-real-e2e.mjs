@@ -10,6 +10,12 @@
 // 用法（闸门与其余真机脚本同一口径，缺省 skip + 分类原因 + exit 0）：
 //   ERIX_E2E_REAL=1 node --test examples/fold-default-real-e2e.mjs
 //
+// issue #661（破坏性，本文件已跟上）：**摘要器失败不再是降级**。改前失败那一折返回一份统计摘要
+// 替代物（块里多一段 `[fold-llm 摘要失败，已降级为统计摘要（原因: …）]`），run 照常 `end_turn`；
+// 现在失败即抛 `KitError("summarizer_failed")`，run 以 `termination.reason === "failed"` 收尾，
+// 那一折**什么都不应用**（无块、无 `compactionStats` 条目、无 `type:"compaction"` 事件）。所以下面
+// 第 ⑤ 条已从「降级臂」反转成「失败臂」：判据是终局错误码，而那条降级标记降为**反向锁**。
+//
 // ---------------------------------------------------------------------------
 // 为什么「预置历史 + 真模型只跑 1 轮」，而不是「10 段逐段翻译让模型自己跑 10 轮」
 //
@@ -24,7 +30,7 @@
 // 边界上——门禁不该建在一个不稳定现象上。改成「历史由测试预置、真模型只跑最后一轮」之后：
 // **折叠必然发生**（历史是我们造的）、**run 只花一次主请求 + 一次摘要请求**（~1 分钟）、
 // **模型行为方差与判据无关**（判据全落在引擎不变量上：块在不在、语义分节在不在、摘要器被调了几次、
-// 机械锚点保没保住被折轮次的 TOK 标记、失败路降不降级）。
+// 机械锚点保没保住被折轮次的 TOK 标记、失败路是不是终局错误）。
 //
 // 预置历史走的是**文档化的输入通道** `config.input.messages`（= 顶层 `initialMessages`，
 // `src/loop/config-namespace.js#CONFIG_LEAF_ALIASES` 里唯一那条别名）：它正是「这次要发什么」，
@@ -47,13 +53,16 @@
 //
 //   ① 折叠块出现，且含 `## 阶段` 或 `## 教训与坑` —— 语义层真的在（#611 第六节没丢）。
 //   ② **摘要器请求数 ≥ 1**（包装 provider 计数，按 `SUMMARIZER_PROMPT_GUIDE` 首行认）—— 防
-//      「降级成统计摘要」蒙过关：降级也产块、块里也有锚点节，只看块形状分不出语义与机械。
+//      「跑成了统计摘要」蒙过关：统计摘要也产块、块里也有锚点节，只看块形状分不出语义与机械。
+//      （#661 起失败不再降级，所以这一条的反向证只有第 ④ 条：显式统计策略那臂计数必须是 0。）
 //   ③ 折叠块里 **被折轮次的 TOK 标记逐字保留** —— 机械保真层没被语义层挤掉，这是「语义 + 机械
 //      两者都做」的回归守卫。**不要求**没被折的轮次（它们还在上下文里，不该出现在块里）。
 //   ④ 显式 `strategy: "fold-statistical"` 的第二跑 ⇒ **摘要器 0 次**、块里是统计摘要标记 ——
 //      反向证，证明第 ② 条测的是真的（不是「计数永远 ≥1」）。
-//   ⑤ 降级路：摘要器超时配成 1ms（`folding.context.summarizerTimeoutMs`，`createProviderSummarizer`
-//      的旋钮）⇒ 块里出现降级标记、且 **run 正常收尾** —— 失败路用自己的旋钮构造，不等模型抽风。
+//   ⑤ 失败路：摘要器超时配成 1ms（`folding.context.summarizerTimeoutMs`，`createProviderSummarizer`
+//      的旋钮）⇒ **终局 `summarizer_failed`**（`details.kind === "timeout"`）、run 以 `failed` 收尾、
+//      且块里**没有**降级标记 —— 失败路用自己的旋钮构造，不等模型抽风。issue #661 改前这一格断的是
+//      「块里出现降级标记 + run 正常 `end_turn`」，那条替代物已被删（见文件头 #661 段）。
 //
 // 已删除（裁决：测的是模型行为，不是引擎不变量）：~~10 段全译完 / 编号行按序 1..10~~。
 //
@@ -89,7 +98,11 @@ import { formatSkip, printableEndpoint, resolveRealUpstream } from "./e2e-real-g
  */
 const GUIDE_FIRST_LINE = SUMMARIZER_PROMPT_GUIDE.split("\n")[0];
 
-/** 折叠降级标记（`src/compact/fold-llm.js` 里那条模板的字面形态，没有导出常量 ⇒ 只能按形状匹配）。 */
+/**
+ * issue #661 **删掉**的那条降级前言的字面形态（`src/compact/fold-llm.js` 里已无此模板，也没有导出
+ * 常量 ⇒ 只能按形状匹配）。本文件里它是**反向锁**：失败臂必须证明这条标记**不**出现。
+ * 反向锁自己也要有正向对照（见下面离线自检 ⑤），否则「不许出现」可能只是因为正则永远匹配不上。
+ */
 const DEGRADE_PATTERN = /\[fold-llm 摘要失败，已降级为统计摘要（原因: .+）\]/u;
 
 /** 预置历史的段数（每段 = 2 轮：工具轮 + 译文轮 ⇒ 20 轮 ≫ `keepRounds` 默认 6）。 */
@@ -290,39 +303,64 @@ async function runArm({ runId, gate, strategy, summarizerTimeoutMs }) {
   };
 
   const startedAt = Date.now();
-  const result = await runToolLoop({
-    provider,
-    tools: TOOLS,
-    executeTool,
-    config: {
-      input: { messages: history, wrapup: false },
-      run: { runId, maxRounds: MAX_ROUNDS, completion: false, reflection: false },
-      folding: {
-        context: {
-          budgetTokens: BUDGET_TOKENS,
-          ...(strategy === undefined ? {} : { strategy }),
-          ...(summarizerTimeoutMs === undefined ? {} : { summarizerTimeoutMs }),
+  // issue #661：摘要器失败是**终局错误** ⇒ `runToolLoop` 直接 reject（不再返回降级替代物）。
+  // 失败臂要断的正是这个异常，所以在这里接住它，而不是让整条 e2e 以未捕获拒绝崩掉
+  // （那样连「哪一条断言红了」都看不出来）。成功臂 `failure === undefined`。
+  let result;
+  let failure;
+  try {
+    result = await runToolLoop({
+      provider,
+      tools: TOOLS,
+      executeTool,
+      config: {
+        input: { messages: history, wrapup: false },
+        run: { runId, maxRounds: MAX_ROUNDS, completion: false, reflection: false },
+        folding: {
+          context: {
+            budgetTokens: BUDGET_TOKENS,
+            ...(strategy === undefined ? {} : { strategy }),
+            ...(summarizerTimeoutMs === undefined ? {} : { summarizerTimeoutMs }),
+          },
         },
       },
-    },
-    capabilities: {
-      hooks: {
-        onBeforeFold: ({ messages }) => { beforeFold.push(messages); },
-        onAfterFold: ({ messages, foldedRoundRange }) => { afterFold.push({ messages, foldedRoundRange }); },
+      capabilities: {
+        hooks: {
+          onBeforeFold: ({ messages }) => { beforeFold.push(messages); },
+          onAfterFold: ({ messages, foldedRoundRange }) => { afterFold.push({ messages, foldedRoundRange }); },
+        },
       },
-    },
-  });
+    });
+  } catch (error) {
+    failure = error;
+  }
 
-  const stats = (Array.isArray(result.compactionStats) ? result.compactionStats : []).map((stat) => ({
+  const stats = (Array.isArray(result?.compactionStats) ? result.compactionStats : []).map((stat) => ({
     strategy: stat.strategyName,
     foldedRounds: stat.foldedRounds,
     tokensBefore: stat.tokensBefore,
     tokensAfter: stat.tokensAfter,
-    degradeKind: stat.foldSummary?.degradeKind,
+    // issue #661：这一格改前报 `foldSummary.degradeKind`，那条降级路径删掉后它永远是 `undefined`
+    // （一个空格子）。降级事实现在只能随异常走 ⇒ 改报**真实存在**的字段：摘要器那一发的结果状态
+    // （`createProviderSummarizer` 的 `onMeta` → 引擎写进 `compactionStats[].foldSummary`，
+    // 字段实测为 `finishReason` / `inputTokens` / `outputTokens` / `inputTruncated` / `droppedMessages`）。
+    // 口径与契约同源：**无事实 ⇒ 无键**——`fold-statistical` 那臂根本不调摘要器、没有 `foldSummary`，
+    // 就不许给它编一个数（那只是把一个空格子换成一个假格子）。
+    ...(stat.foldSummary === undefined
+      ? {}
+      : {
+        ...(stat.foldSummary.finishReason === undefined
+          ? {}
+          : { summarizerFinishReason: stat.foldSummary.finishReason }),
+        ...(stat.foldSummary.inputTokens === undefined && stat.foldSummary.outputTokens === undefined
+          ? {}
+          : { summarizerTokens: `${stat.foldSummary.inputTokens ?? "-"}↑/${stat.foldSummary.outputTokens ?? "-"}↓` }),
+      }),
   }));
 
   return {
     result,
+    failure,
     counts,
     markers,
     stats,
@@ -335,17 +373,21 @@ async function runArm({ runId, gate, strategy, summarizerTimeoutMs }) {
   };
 }
 
-/** 每条臂开跑前的固定诊断行（报告要贴的就是这些数字）。 */
+/** 每条臂开跑前的固定诊断行（报告要贴的就是这些数字）。失败臂没有 `result`，改打终局异常。 */
 function reportArm(label, arm, strategyName) {
-  const { result } = arm;
+  const { result, failure } = arm;
+  const termination = result?.termination ?? failure?.termination;
   console.log(`[619] ${label} strategy=${strategyName} 耗时=${(arm.elapsedMs / 1000).toFixed(1)}s`
-    + ` termination=${JSON.stringify(result.termination)} rounds=${result.rounds}`
-    + ` ↑${result.usage?.input_tokens}/↓${result.usage?.output_tokens}`);
+    + ` termination=${JSON.stringify(termination)} rounds=${result?.rounds ?? 0}`
+    + ` ↑${result?.usage?.input_tokens ?? "-"}/↓${result?.usage?.output_tokens ?? "-"}`
+    + (failure === undefined
+      ? ""
+      : ` 终局异常=${failure.code}/${String(failure.details?.kind)}（errorCode=${String(failure.errorCode)}）`));
   console.log(`[619] ${label} 预置历史=${arm.historyTokens} token（预算 ${BUDGET_TOKENS}）`
     + `｜摘要器请求=${arm.counts.summarizer} 主循环请求=${arm.counts.main} 折叠次数=${arm.folds}`
     + `｜被折区间=${JSON.stringify(arm.foldedRoundRange)}`);
   console.log(`[619] ${label} compactionStats=${JSON.stringify(arm.stats)}`);
-  console.log(`[619] ${label} 模型终稿=${JSON.stringify(String(result.finalText ?? "").slice(0, 200))}`);
+  console.log(`[619] ${label} 模型终稿=${JSON.stringify(String(result?.finalText ?? "").slice(0, 200))}`);
 }
 
 /** 真上游闸门：关着 ⇒ `t.skip` 分类原因（与其余真机脚本同形，`npm test` 必须离线可重复）。 */
@@ -365,14 +407,14 @@ function assertBlockPresent(arm, label) {
   assert.notEqual(arm.block, undefined,
     `${label}没折出块。先看构造：预置历史 ${arm.historyTokens} token / 预算 ${BUDGET_TOKENS}`
     + `（要 > 预算才折）、折叠次数=${arm.folds}、compactionStats=${JSON.stringify(arm.stats)}`
-    + `、termination=${JSON.stringify(arm.result.termination)}。构造够大还不折 ⇒ 是产品没折，不是模型没跑。`);
+    + `、termination=${JSON.stringify(arm.result?.termination)}。构造够大还不折 ⇒ 是产品没折，不是模型没跑。`);
 }
 
 // ---------------------------------------------------------------------------
 // 离线自检（始终跑，不联网）：钉住判据本身，防止它们悄悄退化成永远为真
 // ---------------------------------------------------------------------------
 
-test("断言集自身的不变量：摘要器分类 / 折叠块定位 / 机械锚点保真（始终跑，不联网）", () => {
+test("断言集自身的不变量：摘要器分类 / 折叠块定位 / 机械锚点保真 / 降级前言反向锁（始终跑，不联网）", () => {
   const marker = "TOK-3-deadbeef";
   const original = headPrompt();
 
@@ -409,6 +451,13 @@ test("断言集自身的不变量：摘要器分类 / 折叠块定位 / 机械�
     `预置历史只有 ${estimateMessageTokens(history)} token，离预算 ${BUDGET_TOKENS} 太近（要 > 1.15 倍）`
     + " ⇒ 引擎侧 normalize 之后可能算不超，折叠就不会发生");
   assert.ok((history.length - 1) / 2 > 6, `预置历史只有 ${(history.length - 1) / 2} 轮，没超过 keepRounds 默认 6`);
+
+  // ⑤ issue #661 降级前言的反向锁：先证明这个正则**真的认得出**那条被删掉的标记，否则失败臂的
+  //    「不许出现」可能只是因为正则永远匹配不上（恒真的反向锁比没有锁更坏）。
+  assert.equal(DEGRADE_PATTERN.test("[fold-llm 摘要失败，已降级为统计摘要（原因: timeout）]"), true,
+    "DEGRADE_PATTERN 认不出 #661 删掉的那条标记 ⇒ 失败臂的反向锁是恒真的");
+  assert.equal(DEGRADE_PATTERN.test("## 阶段\n取了第 3 段"), false,
+    "DEGRADE_PATTERN 匹配正常摘要 ⇒ 失败臂的反向锁会假红");
 });
 
 // ---------------------------------------------------------------------------
@@ -490,10 +539,10 @@ test("真上游 e2e（统计臂反向证）：显式 fold-statistical ⇒ 统计
 });
 
 // ---------------------------------------------------------------------------
-// 判据 ⑤：摘要器超时 1ms ⇒ 降级标记出现、run 正常收尾
+// 判据 ⑤（issue #661 反转）：摘要器超时 1ms ⇒ 终局 `summarizer_failed`，没有降级替代物
 // ---------------------------------------------------------------------------
 
-test("真上游 e2e（降级路）：摘要器超时 1ms ⇒ 块里出现降级标记且 run 正常收尾", {
+test("真上游 e2e（失败路）：摘要器超时 1ms ⇒ 终局 summarizer_failed（kind=timeout），块里没有降级标记", {
   timeout: 10 * 60 * 1000,
 }, async (t) => {
   const gate = await gateOrSkip(t);
@@ -501,26 +550,38 @@ test("真上游 e2e（降级路）：摘要器超时 1ms ⇒ 块里出现降级�
 
   const strategyName = resolveCompactionStrategyName(undefined);
   const arm = await runArm({
-    runId: "fold-degrade-real-619",
+    runId: "fold-summarizer-failed-real-661",
     gate,
     strategy: strategyName,
     summarizerTimeoutMs: 1,
   });
-  reportArm("降级臂", arm, `${strategyName}（summarizerTimeoutMs=1）`);
+  reportArm("失败臂", arm, `${strategyName}（summarizerTimeoutMs=1）`);
 
-  assertBlockPresent(arm, "降级臂");
-  console.log("=== 降级臂折叠块原文（前 1200 字符）===");
-  console.log(arm.block.slice(0, 1200));
+  // 判据 ⑤-a（#661 反转）：失败是**终局错误**，不是「块里多一段降级标记、run 照常收尾」。
+  // 改前这三条断的是 `DEGRADE_PATTERN` 在场 + `termination.reason === "end_turn"` +
+  // 账上 `degradeKind === "timeout"`；现在那条替代物不存在，所以方向反过来。
+  const failure = arm.failure;
+  assert.notEqual(failure, undefined,
+    `摘要器超时必须让 run 以异常收尾（issue #661）。实测 termination=${JSON.stringify(arm.result?.termination)}`
+    + `、块=${JSON.stringify(String(arm.block ?? "").slice(0, 300))}——块在 = 旋钮没生效或降级路径又回来了。`);
+  assert.equal(failure.code, "summarizer_failed",
+    `终局异常的 code 必须是 summarizer_failed（实测 ${String(failure.code)}）：${failure.message}`);
+  assert.equal(failure.details?.kind, "timeout",
+    `超时旋钮（folding.context.summarizerTimeoutMs=1）必须归因到 timeout（实测 ${String(failure.details?.kind)}）`
+    + `：${failure.message}`);
+  assert.equal(failure.termination?.reason, "failed",
+    `摘要器失败必须以 failed 收尾：termination=${JSON.stringify(failure.termination)}`);
 
-  // 判据 ⑤-a 降级标记在场（摘要器真的失败了，而且失败被写进了块）。
-  assert.equal(DEGRADE_PATTERN.test(arm.block), true,
-    `块里没有降级标记（超时没生效？）：${arm.block.slice(0, 400)}`);
-  // 判据 ⑤-b run 不失败：正常收尾 + 账上留了 degradeKind=timeout。
-  assert.equal(arm.result.termination?.reason, "end_turn",
-    `降级把 run 弄死了：termination=${JSON.stringify(arm.result.termination)}`);
-  assert.ok(arm.stats.some((stat) => stat.degradeKind === "timeout"),
-    `账上一条 degradeKind=timeout 都没有（旋钮没生效？）：${JSON.stringify(arm.stats)}`);
+  // 判据 ⑤-b（反向锁）：被 #661 删掉的那条降级前言**不许**出现，而且失败的这一折连块都不许折出来
+  // （「什么都没应用」）。两条一起断：只断正则不在场，可能只是「块根本没取到」。
+  assert.equal(arm.block, undefined,
+    `失败那一折不许折出块（#661：无 foldedFacts / 无 compactionStats / 无事件）：${String(arm.block).slice(0, 400)}`);
+  assert.equal(DEGRADE_PATTERN.test(arm.block ?? ""), false,
+    `块里出现了被删掉的降级标记（#661 后这个形状不存在）：${String(arm.block).slice(0, 400)}`);
+  assert.equal(arm.folds, 0,
+    `失败的这一折不许走完折叠钩子（实测 folds=${arm.folds}）——说明失败被吞了`);
 
-  console.log(`[619] PASS ⑤ 超时 1ms ⇒ 降级标记在场（${arm.stats.filter((stat) => stat.degradeKind === "timeout").length}`
-    + ` 次 timeout）+ run 正常 end_turn（rounds=${arm.result.rounds}）`);
+  console.log(`[619] PASS ⑤ 超时 1ms ⇒ ${failure.code}/${String(failure.details?.kind)}`
+    + `（errorCode=${String(failure.errorCode)}）→ termination=${String(failure.termination?.reason)}`
+    + `｜块未生成（folds=${arm.folds}）+ 无降级标记`);
 });

@@ -253,6 +253,7 @@
 | `test/loop-run-slice-498s3a11.test.js` | 0（容器/白名单面） | #498 S3 `run` 组 A11 片的**选项面钉**：小四件的旧名反向拒绝（逐字文案 + 新家路径）、**闸口二八格矩阵（合法形状扁平/规位两侧 exit 0，数组夹函数那一格 as-is）**、数据键里的函数值只点一站、**读侧不动**（引数裁决 / resume 重放 / judge 的写工具集与路径键优先级）、`session` #531 裁决与 `maxTokenContinuations` 撞名归属、四向闭合与 schema 自检、禁手抄键数（A3 扫全 `test/`）。**能力面 0 写点**（它不碰任何 `on*` 回调），所以本表这一行是 `0` 而不是数字 |
 | `test/loop-direct-route-conflict-519.test.js` | 4 | #519 的**直连路线冲突闸口钉**：三格（两边不同值抛并点名两个来源 / 一边 `undefined` 不抛 / 两边同值也抛）+ 例外清单恰三项 + 覆盖面自洽（端口产出的每个键要么被闸口拦住、要么在例外清单里）。写点全部落在**活**选项上（`onEvent` 在调用点那一侧是合法的补洞写法），不是退役扁平键 ⇒ 登记备查、不许迁 |
 | `test/loop-context-on-fold-summary-retired-499.test.js` | 8 | #499 的**范围钉**：`context.onFoldSummary` 退役、**顶层扁平 `onFoldSummary` 必须还在**（它 `import` 了 `RUN_TOOL_LOOP_OPTION_NAMES` 并断言 `includes("onFoldSummary")`）⇒ S9 之前这里必须保持扁平 |
+| `test/compact/fold-llm-degrade-469.test.js` | 1 | #661 的**向后兼容钉**（人手裁决，理由见「MIGRATE」表下方那段）：这一格用 `createCompactionStat({ foldSummary: { degradeKind: "timeout", … } })` 断言**读侧投影**逐字保住 `degradeKind` / `degradeReason`——引擎自 #661 起不再产出这两个键，但 #661 之前写下的旧账本行仍可能带着它们，resume 之后读侧必须照样认得；同一格还钉「无事实 ⇒ 无键」。删/迁它就等于悄悄改掉旧账本的读法 ⇒ 登记备查、不许迁 |
 
 
 ### COMPAT-PIN 逐文件判定（#498 S3 第九片 `metadata` A8：四个小键删键）
@@ -452,6 +453,15 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/run-snapshot-executor.test.js` | 1 | `onToolResult`×1 | MIGRATE · NOT-OPTION-SURFACE（非 runToolLoop 选项面，无规位） |
 | `test/tool-fact-success-parity.test.js` | 1 | `onToolResult`×1 | MIGRATE · NOT-OPTION-SURFACE（非 runToolLoop 选项面，无规位） |
 | `test/loop-deliverables-gap-436.test.js` | 7 | `deliverables`×7 | COMPAT-PIN |
+| `test/compact/fold-llm-degrade-469.test.js` | 1 | `onEvent`×1 | COMPAT-PIN |
+
+> **人手裁决（#661 收尾）：`test/compact/fold-llm-degrade-469.test.js` = `COMPAT-PIN`。**
+> 这一格的 `onEvent` 写点在第 3 格「折叠结果状态」里：它用 `createCompactionStat({ compacted: true,
+> foldSummary: { ...metas[0], degradeKind: "timeout", text: "…" } })` 断言读侧投影**逐字保住**
+> `degradeKind` / `degradeReason` 这两个键（同一格还钉「无事实 ⇒ 无键」）。#661 删掉的是**写点**
+> （引擎不再产出这两个键），**读侧形状一字未动**——#661 之前写下的旧账本行仍可能带着
+> `degradeKind` / `degradeReason`，读侧投影必须保住它们。所以它钉的是**向后兼容**，不是迁移中
+> 的写点：S9 退役扁平键时这一格一个字都不许动。
 
 ### 分派小结（按上表口径，**S7c 迁完之后**实测）
 
@@ -472,10 +482,10 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `MIGRATE · S7c`（**本刀已迁完 90 点中的 87**；另 3 点重分类，见下条） | 17 | 0 |
 | `MIGRATE · 含 COMPAT-PIN 格`（迁搭台写点，**逐格**跳过选项面断言） | 3 | 38 |
 | `MIGRATE · NOT-OPTION-SURFACE`（重分类：不是 `runToolLoop` 选项面，**没有规位**） | 9 | 31 |
-| `COMPAT-PIN` | 12 | 80 |  <!-- #436 又新增 7 点（`test/loop-deliverables-gap-436.test.js`）；小结按 --verify 打印的 AST 真值对齐 -->  <!-- #519 新增 4 点：`test/loop-direct-route-conflict-519.test.js`；小结由 --verify 打印的 AST 真值（逐点归片 73）对齐 -->
+| `COMPAT-PIN` | 13 | 81 |  <!-- #436 又新增 7 点（`test/loop-deliverables-gap-436.test.js`）；小结按 --verify 打印的 AST 真值对齐 -->  <!-- #519 新增 4 点：`test/loop-direct-route-conflict-519.test.js`；小结由 --verify 打印的 AST 真值（逐点归片 73）对齐 -->
 | `OWNED-BY-S5` | 5 | 13 |
 | `OWNED-BY-S6` | 5 | 21 |
-| **合计（现在实测）** | **66** | **183** |
+| **合计（现在实测）** | **67** | **184** |
 
 脚注：
 
@@ -700,7 +710,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-v020-rc.test.js` | 3 | `session`×2, `stallDetection`×1 |
 | `test/loop-resume-notice.test.js` | 10 | `tools`×9, `reflection`×1 |
 | `test/loop.test.js` | 31 | `completion`×15, `stallDetection`×12, `reflection`×2, `onToolResult`×1, `tools`×1, `wrapup`×1 |
-| `test/examples/erix-run-core.test.js` | 24 | `finalGuard`×19, `tools`×14, `strategy`×4, `context`×3, `reflection`×3, `onEvent`×1, `onObserverError`×1 |
+| `test/examples/erix-run-core.test.js` | 26 | `finalGuard`×19, `tools`×15, `strategy`×5, `context`×3, `reflection`×3, `onEvent`×1, `onObserverError`×1 |
 | `test/loop-capabilities-namespace-498.test.js` | 14 | `deliverables`×9, `onEvent`×5, `finalGuard`×4, `retry`×3, `onRound`×2, `completion`×1, `context`×1, `modelMetadata`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `resume`×1, `session`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/loop-option-normalization.test.js` | 16 | `session`×8, `tools`×5, `wrapup`×3 |
 | `test/reflection.test.js` | 23 | `completion`×12, `reflection`×10, `resume`×1 |
@@ -844,7 +854,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/tools-delegate-617.test.js` | 6 | `completion`×3, `tools`×3 |
 | `test/cli-delegate-617.test.js` | 8 | `context`×3, `prompt`×2, `session`×2, `tools`×1 |
 | `test/tools-delegate-tail-617.test.js` | 4 | `completion`×2, `tools`×2 |
-| `test/compact/fold-llm-degrade-469.test.js` | 4 | `completion`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
+| `test/compact/fold-llm-degrade-469.test.js` | 4 | `completion`×1, `onEvent`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/cli-delegate-630.test.js` | 3 | `prompt`×1, `session`×1, `tools`×1 |
 | `test/loop-296-user-turn-unrecoverable.test.js` | 1 | `tools`×1 |
 | `test/compact/budget-fallback-643.test.js` | 2 | `strategy`×2 |
@@ -853,6 +863,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-deliverables-gap-436.test.js` | 4 | `deliverables`×7, `reflection`×2, `resume`×2 |
 | `test/loop-empty-content-fragment.test.js` | 1 | `tools`×1 |
 | `test/loop-296-real-adapter-400.test.js` | 1 | `tools`×1 |
+| `test/compact/fold-llm-fail-661.test.js` | 2 | `resume`×1, `strategy`×1 |
 | `test/examples/erix-run-resume.test.js` | 19 | `resume`×17, `tools`×2 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）

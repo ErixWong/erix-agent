@@ -61,6 +61,10 @@ const EXIT_NOT_VERIFIED = 4;
 // issue #391 R3：交付物判据没过 ⇒ `verification.status = "unverified"` ⇒ exit 2
 // （`exitCodeForVerification` 的既有承诺，不是新加的退出码）。
 const EXIT_UNVERIFIED = 2;
+// issue #661：**失败终局**有自己的码（`bin/cli.js#exitCodeForRunFailure`）。
+// 改前一次 `termination=failed` 的 run 与用法错误同为 1 ⇒ 脚本化调用方只能从 stdout 文本分辨
+// 「跑完但没核验」（4）与「真的失败了」。
+const EXIT_RUN_FAILED = 5;
 
 /** 宿主可能带进来的代理类变量：进出都要保存并清掉。 */
 const PROXY_VARS = [
@@ -813,7 +817,7 @@ describe("真起 CLI 子进程：参数、退出码、stdout/stderr、落盘（i
     assert.ok(last.includes("T2-SRC"), "恢复的请求体要带上被恢复会话的历史");
   });
 
-  it("上游 500：退出 1、把上游错误文案给用户，并真的发过请求", async (t) => {
+  it("上游 500：退出 5（失败终局专用码）、把上游错误文案给用户，并真的发过请求", async (t) => {
     const sandbox = await makeSandbox(t, {
       script: [jsonResponse({ error: { message: "t2-upstream-boom-500" } }, { status: 500 })],
     });
@@ -823,7 +827,10 @@ describe("真起 CLI 子进程：参数、退出码、stdout/stderr、落盘（i
     );
     assert.ok(await sandbox.upstream.waitForRequests(1, 2_000), "500 用例必须真的发过请求");
     assert.equal(sandbox.upstream.requestCount, 1, "ERIX_RETRY_ATTEMPTS=0 时不该重发");
-    assert.equal(result.code, EXIT_USAGE, `失败 run 退 1（README：run 抛错 → CLI 顶层 1）；stdout=${JSON.stringify(result.stdout.slice(-200))}`);
+    // issue #661：失败终局不再与用法错误共用 1（也不与「未核验」的 4 共用）。
+    assert.equal(result.code, EXIT_RUN_FAILED, `失败 run 必须退 ${EXIT_RUN_FAILED}（termination=failed 的专用码）；`
+      + `stdout=${JSON.stringify(result.stdout.slice(-200))}`);
+    assert.notEqual(result.code, EXIT_NOT_VERIFIED, "失败与「跑完但没核验」不许同码");
     assert.match(result.stderr, /t2-upstream-boom-500/u, "上游的报错文案要透出来，别只留一句「失败」");
     assert.match(result.stderr, /错误：/u);
   });
@@ -836,7 +843,7 @@ describe("真起 CLI 子进程：参数、退出码、stdout/stderr、落盘（i
       ["chat", "再炸一个", ...MINIMAL_CHAT_FLAGS],
       { env: { ERIX_RETRY_ATTEMPTS: "1" } },
     );
-    assert.equal(result.code, EXIT_USAGE);
+    assert.equal(result.code, EXIT_RUN_FAILED, "重发用尽仍是失败终局 ⇒ 同一个失败码");
     assert.equal(sandbox.upstream.requestCount, 2, "attempts=1 意味着首发之外再重发 1 次");
     assert.ok(
       sandbox.upstream.pathsFor().every((path) => path === "/v1/chat/completions"),

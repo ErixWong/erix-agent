@@ -166,40 +166,47 @@ test("fold-llm by name summarizes folded rounds with the run provider and books 
   assert.ok(events.some((event) => event.type === "compaction"));
 });
 
-test("a failing summarizer degrades to the statistical summary instead of killing the run", async () => {
+test("a failing summarizer fails the run with summarizer_failed instead of degrading", async () => {
+  // issue #661 语义反转：改前这条断言「run 照常 end_turn + 折叠块里是降级标记」。
+  // 降级路径已删 ⇒ 摘要器失败 = 终局错误；反向锁：请求里再也不许出现那条降级标记。
   const provider = createSummarizingProvider({
     mainScript: BASE_SCRIPT,
     summaryError: new Error("upstream 503"),
   });
-  const { result } = await runWithProvider(provider, { strategy: "fold-llm" });
+  const failure = await runWithProvider(provider, { strategy: "fold-llm" }).then(
+    () => assert.fail("摘要器失败必须让 run 以 failed 终局"),
+    (error) => error,
+  );
 
   assert.equal(provider.summaryRequests.length, 1);
-  assert.equal(result.termination.reason, "end_turn");
-  assert.equal(result.finalText, "final answer");
-  assert.equal(result.usage.input_tokens, provider.mainRequests.length * 100);
-  const nextRequest = JSON.stringify(provider.mainRequests.at(-1));
-  assert.match(nextRequest, /摘要失败，已降级为统计摘要/u);
-  assert.match(nextRequest, /upstream 503/u);
-  // 降级摘要仍带折叠 stub / 导航信息（不比原生统计摘要少）
-  assert.match(nextRequest, /上下文折叠/u);
+  assert.equal(failure.code, "summarizer_failed");
+  assert.equal(failure.details.kind, "error");
+  assert.equal(failure.termination?.reason, "failed");
+  assert.equal(failure.termination?.errorCode, "summarizer_failed");
+  // 反向锁：失败后没有第二次主请求，更没有把降级替代物塞进上下文。
+  const nextRequest = JSON.stringify(provider.mainRequests.at(-1) ?? {});
+  assert.doesNotMatch(nextRequest, /已降级为统计摘要/u);
+  assert.doesNotMatch(nextRequest, /upstream 503/u);
 });
 
-test("an empty summarizer answer also degrades rather than folding into nothing", async () => {
+test("an empty summarizer answer fails the run rather than folding into nothing", async () => {
+  // issue #661：空串 / 空白摘要不再降级（那是「模型什么都没产出」，不是成功的空摘要）。
+  // 旧夹具为「测得到降级」调过预算与工具输出长度；现在断言的是终局错误，夹具保持原样即可。
   const provider = createSummarizingProvider({ mainScript: BASE_SCRIPT, summaryText: "   " });
-  // issue #564：折叠摘要多了「工具调用清单」与 tool_use 入参抽来的锚点节（≈70 tokens）。
-  // 这个夹具原先卡在「折叠前 409 > 预算 400 ≥ 折叠后 333」的窗口上，加法一进来就顶破窗口，
-  // safety 层于是把整份摘要连同 head 一起裁掉——断言变成测不到降级。
-  // 修夹具不修断言：预算 700 + 被折工具输出加长到 4000 字符（折叠前 1592 > 700 ≥ 折叠后 402），
-  // 两侧都留出余量，断言逐字不动。
-  const { result } = await runWithProvider(
+  const failure = await runWithProvider(
     provider,
     { strategy: "fold-llm", budgetTokens: 700 },
     undefined,
     { toolOutputChars: 4000 },
+  ).then(
+    () => assert.fail("空摘要必须让 run 以 failed 终局"),
+    (error) => error,
   );
 
-  assert.equal(result.termination.reason, "end_turn");
-  assert.match(JSON.stringify(provider.mainRequests.at(-1)), /摘要失败，已降级为统计摘要/u);
+  assert.equal(failure.code, "summarizer_failed");
+  assert.equal(failure.details.kind, "empty_summary");
+  assert.equal(failure.termination?.reason, "failed");
+  assert.match(JSON.stringify(provider.mainRequests.at(-1) ?? {}), /^(?!.*已降级为统计摘要)/u);
 });
 
 test("object-form strategies keep working verbatim, including their own summarizer", async () => {

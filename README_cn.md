@@ -452,6 +452,8 @@ failed
 
 只有 `verification.status === "verified"` 表示终稿通过了 guard。`skipped` 表示没有执行核验，或没有可比较的 capture；它不是正确性的正面结论。
 
+**失败终局**也有自己的退出码：自 issue #661 起，`termination.reason === "failed"` 的 run（折叠摘要器失败就是其中一种）退出 **`5`**，于是脚本化调用方不必解析 stdout 就能把「跑完但没核验」（`4`）与「真的失败了」分开。
+
 ### Reflection 与 judge 治理
 
 省略 `reflection` 时，当 `maxRounds >= 16`（`DEFAULT_REFLECTION_MIN_ROUNDS`），库会自动启用基础 judge，除非设置了 `ERIX_NO_REFLECTION=1`。传入 `reflection: false` 可禁用。CLI 的 `chat` 复用同一个常量（不再有单独门槛），因此两边默认值不会漂移；`repl` 显式传入 `reflection: false`。`ERIX_NO_ROUND_JUDGE=1` 会禁用 round judging，但不会禁用透明拦截。

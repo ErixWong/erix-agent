@@ -7,9 +7,14 @@ names are removed**. Every one of them was registered as a *zero-consumer* expor
 repository imports it, nothing in the host checkouts the probe can see imports it — and the one name
 that a live host does import gets a recipe (§3) rather than a promise.
 
-Nothing else moves. No `runToolLoop` option is retired, renamed or re-homed, no default value
-changes, no observer event, diagnostic field or on-disk format changes. A host that never imported any
-of the 16 names upgrades by bumping the version.
+Nothing else moves in the input surface. No `runToolLoop` option is retired, renamed or re-homed, no
+default value changes, and no observer event, diagnostic field or on-disk format changes. A host that
+never imported any of the 16 names upgrades by bumping the version. **One behaviour change does ride
+along, and a host that folds its context notices it:** a failing `fold-llm` summarizer is now a
+terminal error instead of a silent "degraded to a statistical summary" (issue #661), so the run ends
+`failed` with the error code `summarizer_failed`, and the CLI exits **`5`** for a failed terminal
+state instead of sharing `1` with usage errors. The host-consumer contract specifies the error shape
+and `CHANGELOG.md` records the change under `Breaking`.
 
 **Why this table cannot rot.** The name set of the two tables below is reconciled, in the same
 `check:docs` run, against the candidate list that `node scripts/deprecated-export-check.mjs --json`

@@ -144,8 +144,10 @@ const HELP_TEXT = `用法：
   --tools <名1,名2>    工具白名单：只保留列表内的工具（内置+skill+MCP）；未知名字警告并忽略，过滤后为空则报错
   --compaction <名>   上下文压缩策略：${BUILTIN_COMPACTION_STRATEGY_NAMES.join(" | ")}（默认：fold-llm）。
                       fold-llm 每次压缩会多一次主力模型调用（输入为被折叠的老轮次），其 usage
-                      已计入本次 run 总账；摘要器失败/超时会自动降级为统计摘要（fold-statistical，
-                      零 LLM），run 不失败。也可用 config 字段 compaction 固定（旗标优先）。
+                      已计入本次 run 总账；摘要器失败（含默认 30s 上限的超时）是**终局错误**
+                      summarizer_failed：run 以 failed 结束、退出码 5，不会退回统计摘要。想要
+                      「一次 LLM 都不调、永不失败」的折叠就显式选 fold-statistical（零 LLM）。
+                      也可用 config 字段 compaction 固定（旗标优先）。
 
 环境变量：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
@@ -172,14 +174,16 @@ const HELP_TEXT = `用法：
   slots.default.maxOutputTokens 可设置输出 token 上限（默认：16384）。
   slots.default.contextWindowTokens 可启用自动压缩（超预算自动折叠早期轮次）；--compact-budget <值> 可覆盖自动预算。
   slots.default.compaction 可固定压缩策略（sliding-window / fold-statistical / fold-llm，默认 fold-llm；
-                      统计摘要是 fold-llm 失败/超时后的降级兜底）；--compaction 可覆盖。
+                      摘要器失败（含超时）是终局错误 summarizer_failed，不会退回统计摘要；
+                      想要零 LLM 且永不失败的折叠就显式选 fold-statistical）；--compaction 可覆盖。
 
 退出码：
   0  成功（开了 --final-guard 时为 verified）
   1  用法错误 / 会话不存在（--session 或 -c 找不到可续跑的 transcript）
   2  终稿核验未通过（unverified）
   3  核验过程出错（error）
-  4  核验未执行（skipped：没有归档输出或归档里无可核验值）`;
+  4  核验未执行（skipped：没有归档输出或归档里无可核验值）
+  5  终局失败（termination=failed，例如摘要器失败 summarizer_failed）`;
 
 const MCP_HELP_TEXT = `用法：
   erix mcp [--config <path>]
@@ -1556,6 +1560,24 @@ async function main(args) {
   return result;
 }
 
+/**
+ * issue #661：**失败终局的独立退出码**。
+ *
+ * 现场（实测）：退出码此前只来自 `exitCodeForVerification`（2/3/4），而 `termination=failed`
+ * 的 run 落到顶层 catch 时与用法错误同为 `1` ⇒ 脚本化调用方只能从 stdout 文本里那句
+ * `termination=failed` 分辨「跑完但没核验」（4）与「真的失败了」。一个失败的 run 必须是
+ * 一个**独立**的非零码。
+ *
+ * 只认 `termination.reason === "failed"`（引擎抛错时 `annotateTermination` 挂的终局载荷）；
+ * `aborted` 仍是 `1`（中止不是失败，既有语义不动），没有 `termination` 的用法错误也是 `1`。
+ *
+ * @param {*} error 顶层 catch 接到的那个错误
+ * @returns {number}
+ */
+export function exitCodeForRunFailure(error) {
+  return error?.termination?.reason === "failed" ? 5 : 1;
+}
+
 export function exitCodeForVerification(verification) {
   if (verification?.status === "unverified") return 2;
   if (verification?.status === "error") return 3;
@@ -1582,7 +1604,7 @@ if (
       console.error(`错误：${error?.message ?? String(error)}`);
     }
     if (error?.showHelp) console.error(`\n${HELP_TEXT}`);
-    process.exitCode = 1;
+    process.exitCode = exitCodeForRunFailure(error);
   } finally {
     await closeAllMcpServers();
   }

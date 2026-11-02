@@ -182,21 +182,24 @@ test("#469-B1 传了就真生效：maxPriorSummaryBytes 极小 ⇒ priorSummaryT
   );
 });
 
-test("#469-B1 传了就真生效：summarizerTimeoutMs 极小 ⇒ summarizer_timeout / degradeKind=timeout", async () => {
+test("#469-B1 传了就真生效：summarizerTimeoutMs 极小 ⇒ 终局 summarizer_failed（details.kind=timeout）", async () => {
+  // issue #661 语义反转：改前这一格断言「run 不中止 + foldSummary.degradeKind === "timeout"」。
+  // 摘要器失败现在是终局错误 ⇒ 旋钮**仍然真的生效**（这一发确实按 25 ms 超时），
+  // 只是归因从账上的 `degradeKind` 搬到异常的 `details.kind`，且 run 不再「看起来跑完了」。
   const release = keepalive();
   try {
     const provider = createFakeProvider({
       // 真 provider 的形状：挂住不回，直到被 signal / 死线打断。
       summaryChat: () => new Promise(() => {}),
     });
-    const result = await runFolding(provider, { summarizerTimeoutMs: 25 });
-    const stats = (result.compactionStats ?? []).filter((stat) => stat.foldSummary !== undefined);
-    assert.ok(stats.length > 0, "前提：确实发生过折叠");
-    assert.ok(
-      stats.some((stat) => stat.foldSummary.degradeKind === "timeout"),
-      `极小 summarizerTimeoutMs 必须走超时归因：${JSON.stringify(stats.map((stat) => stat.foldSummary))}`,
+    const failure = await runFolding(provider, { summarizerTimeoutMs: 25 }).then(
+      () => assert.fail("摘要器超时必须让 run 以 failed 终局（issue #661）"),
+      (error) => error,
     );
-    assert.equal(result.termination, undefined ?? result.termination, "保持可读：run 不得因摘要超时而中止");
+    assert.equal(failure.code, "summarizer_failed");
+    assert.equal(failure.details.kind, "timeout", "极小 summarizerTimeoutMs 必须走超时归因");
+    assert.equal(failure.errorCode, "summarizer_timeout");
+    assert.equal(failure.termination?.reason, "failed");
   } finally {
     release();
   }

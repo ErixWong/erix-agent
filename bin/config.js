@@ -23,9 +23,11 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 16384;
 // （阶段 / 下一步 / 教训与坑）。64k 预算 / 300 段逐段翻译的实测里 80.3% 的重读有相当一部分
 // 是「不知道做到哪 / 不知道结论」——正是语义折叠该给的那两节。
 //
-// 统计摘要（fold-statistical）的正确位置是**降级兜底**，不是默认：fold-llm 的摘要器失败 /
-// 超时（默认 30s 上限）时引擎自动退回它——零 LLM、确定性、永不失败（`src/compact/fold-llm.js`
-// 的 `[fold-llm 摘要失败，已降级为统计摘要（原因: …）]` 那条路径，本单不改）。
+// 统计摘要（fold-statistical）的位置是**零 LLM 的替代选择**，不是 fold-llm 的自动兜底：
+// issue #661 起摘要器失败（含默认 30s 上限的超时）是**终局错误** `summarizer_failed`，
+// 引擎不再退回统计摘要（那条 `[fold-llm 摘要失败，已降级为统计摘要（原因: …）]` 路径已删）。
+// 想要「一次 LLM 都不调、永不失败」的折叠就显式选它：`--compaction fold-statistical`
+// / `config.compaction`。
 //
 // 显式选择**仍然生效**：`--compaction fold-statistical` / `config.compaction` 优先于本默认值
 // （见 `resolveCompactionStrategyName`：`--compaction` > config.compaction > 这里）。

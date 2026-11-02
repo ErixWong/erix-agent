@@ -381,6 +381,41 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
 }
 
 /**
+ * issue #661（审计 A3）：把「本 run 的终局事实」挂到**本次新建的载体**上，而不是就地改写来者错误。
+ *
+ * 为什么不能就地 `Object.assign`：宿主自定义策略可以**跨两次折叠复用同一个 Error 实例**（甚至跨
+ * run 缓存它）。就地写 `unpersisted` 之后，第二次进到这里时 `unpersisted === undefined` 这个前置判断
+ * 看到的是**上一次**留下的空数组 ⇒ 本 run 真有未落盘条目也挂不上去，账单串档（审计实测的形状）。
+ * 「把前置判断删掉」不是修法——那只是让每次折叠都覆写同一个外来对象，宿主自己挂的东西照样被踩。
+ *
+ * 载体必须保住宿主可依赖的面：`instanceof KitError`（来者是 KitError 时）、`code` / `message` /
+ * `details` / `termination` / `retryable` / `cause`，以及来者自己的其余属性。姿势是「同原型 +
+ * 逐个搬 own 属性**描述符**」：`message` / `stack` / `cause` 在 Error 上是**非枚举**的 own 属性，
+ * `Object.assign` 收不到，`getOwnPropertyDescriptors` 收得到 ⇒ 一份信息都不丢（`stack` 与来者同值，
+ * 语义不变）。`cause` / `details` 是**引用**搬运，同一性也留着。
+ *
+ * @param {any} error 来者错误（**只读**：本函数不写它一个字段）
+ * @param {Record<string, unknown>} additions 要挂到载体上的本次终局事实
+ * @returns {any}
+ */
+function copyErrorCarrier(error, additions) {
+  const carrier = Object.create(Object.getPrototypeOf(error));
+  const descriptors = Object.getOwnPropertyDescriptors(error);
+  // 本次要挂的字段以 `additions` 为准（来者若带同名字段，已在调用侧读过了）。
+  for (const key of Object.keys(additions)) delete descriptors[key];
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    // 来者可能被 `Object.freeze` 过：载体是本 run 自己的对象，`fail()` 还要往上写
+    // `termination` / `usage`，所以数据属性一律放开写权限（值与同一性不变）。
+    if ("value" in descriptor) descriptor.writable = true;
+    descriptor.configurable = true;
+    descriptors[key] = descriptor;
+  }
+  Object.defineProperties(carrier, descriptors);
+  Object.defineProperties(carrier, Object.getOwnPropertyDescriptors(additions));
+  return carrier;
+}
+
+/**
  * 缺陷 ③：把**策略那一折**与**预算兜底那一折**的轮次区间合并成一个。
  *
  * 区间形状是 `roundRangeForIndexes()` 的 `{from, to}`（与 `foldedRoundRange` / `buildFoldedFacts.roundRange`
@@ -1721,6 +1756,14 @@ export async function runToolLoop(options) {
       return reused;
     }
     const summary = await compactionSummarizer(input);
+    // issue #661（「先失败后应用」第 ④ 条）：**不可用的摘要不记账**。空串 / 空白 / 非字符串在
+    // `fold-llm` 里会被 `assertUsableSummary` 判死并抛 `summarizer_failed`；若这里已经把那份
+    // 空串写进复用账本、把 `lastFoldSummaryOutcome` 设成它，失败就留下了「上一份摘要」残值
+    // （下一次折叠会把它当续写基底与指纹来源）。判据与 `assertUsableSummary` 同一口径，
+    // 但**不在这里抛**：抛点只有一处（`fold-llm` 的 `callSummarizerWithBound`）。
+    if (typeof summary !== "string" || summary.trim() === "") {
+      return summary;
+    }
     foldSummaryLedger.remember(fingerprint, summary);
     lastFoldSummaryOutcome = { fingerprint, summary, reused: false, ...roundRangePart };
     return summary;
@@ -3909,7 +3952,32 @@ export async function runToolLoop(options) {
       ]) {
         if (compactionContext[key] !== undefined) compactOptions[key] = compactionContext[key];
       }
-      const result = await strategy.compact(messages, compactOptions);
+      // issue #661：摘要器失败是**终局错误**（`KitError("summarizer_failed")`，由
+      // `fold-llm` 的 `callSummarizerWithBound` 抛出），不再被吞回一份「降级为统计摘要」的
+      // 替代物。两条口径在这里落地：
+      //   ① 异常一路穿出去 ⇒ `fail()` 把它落成 `termination.reason = "failed"` /
+      //      `errorCode = "summarizer_failed"`（`withErrorCode` 读的就是 `error.code`）；
+      //   ② 账单随异常走（#109 口径，与 `makePersistenceFailure` 同一先例）：异常路径不返回
+      //      result ⇒ `errorLedger` 里那些「没能落盘的条目」只能挂在异常上，否则一起消失。
+      let result;
+      try {
+        result = await strategy.compact(messages, compactOptions);
+      } catch (compactionError) {
+        // issue #661（审计 A3）：账单挂到**本次新建的载体**上再抛，绝不就地改写宿主抛上来的错误
+        // 对象——宿主策略复用同一个 Error 实例时，就地写会让第一次的 `[]` 永久挡住第二次（账单串档）。
+        // 前置判断保留（来者自带账单就不覆盖），但它现在读的是**来者自己的**字段：引擎不再往
+        // 来者身上写东西，所以「上一次 run 留下的陈旧空数组」这个串档来源已经不存在了。
+        if (compactionError?.code === "summarizer_failed") {
+          // `unpersisted` 是宿主可加的字段（`KitError` 的 JSDoc 没声明它），从 `any` 视图读：
+          // 直接点属性会给 `--checkJs` 棘轮添新错（#214 只减不增）。
+          const incoming = /** @type {any} */ (compactionError).unpersisted;
+          const unpersisted = incoming === undefined
+            ? errorLedger.toUnpersisted()
+            : incoming;
+          throw copyErrorCarrier(compactionError, { unpersisted });
+        }
+        throw compactionError;
+      }
       for (const message of messages) preCompactionMessages.add(message);
       if (!Array.isArray(result?.messages)) {
         throw new TypeError("Compaction strategy must return a messages array");

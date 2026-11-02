@@ -1,5 +1,9 @@
 import { groupIntoRounds } from "../messages/rounds.js";
 import { estimateMessageTokens, estimateTokens } from "../tokens.js";
+// issue #661：摘要器失败是**终局错误**，错误码口径与 `termination.errorCode` 同一份实现
+//（`src/loop/termination.js#terminationErrorCodeForError`），不在这里另抄一份取 `code` 的逻辑。
+import { terminationErrorCodeForError } from "../loop/termination.js";
+import { KitError } from "../providers/errors.js";
 import { enforceSize } from "./enforce-size.js";
 import { extractAnchors } from "./anchors.js";
 import { buildFoldFidelitySection } from "./fold-fidelity.js";
@@ -259,7 +263,8 @@ function enforceSummarySize(summary, maxSummaryTokens, onLayer) {
  * issue #469-②：`maxSummarizerInputTokens` 是交给 summarizer 
  * 的被折消息上限（token），
  * 不传 ⇒ 不裁（旧行为）；超窗失败（网关 400）
- * 无论配不配都会**带更短的输入重试一次**再降级。
+ * 无论配不配都会**带更短的输入重试一次**——重试仍失败 ⇒ 抛 `summarizer_failed`
+ *（issue #661：不再有「降级为统计摘要」那条替代路径）。
  * 说明写在这里而不是类型字面量内部：JSDoc 
  * 的类型字面量里不能写 `//` 注释行，否则
  * `TS1131` 会把整块类型打断（这条坑在本文件与 `provider-summarizer.js` 
@@ -291,8 +296,9 @@ export function createFoldLlmStrategy({
     throw new TypeError("fold-llm summarizer must be a function");
   }
   const summaryBudget = normalizedSummaryTokens(maxSummaryTokens);
-  // issue #469-③：本实例**上一次真喂进上下文**的折叠摘要（LLM 或统计降级都算），
-  // 下一次折叠把它当续写基底；宿主 / resume 可用 `previousSummary` 覆盖。
+  // issue #469-③：本实例**上一次真喂进上下文**的折叠摘要（#661 起只可能是 LLM 摘要——
+  // 失败那一折会抛，走不到这里），下一次折叠把它当续写基底；宿主 / resume 可用
+  // `previousSummary` 覆盖。
   let lastFoldSummaryText;
 
   return {
@@ -341,27 +347,24 @@ export function createFoldLlmStrategy({
       });
 
       let compactedHead = head;
-      // issue #470（A1）：本次折叠的**机械替代物**与**LLM 摘要在场标记**（进账本用，不进消息流）。
-      /** @type {{ source: string, text?: string, increment?: string, incrementOrigin?: string, degradeReason?: string }|undefined} */
+      // issue #470（A1）：本次折叠的**机械替代物**（进账本用，不进消息流）。
+      /** @type {{ source: string, text?: string, increment?: string, incrementOrigin?: string }|undefined} */
       let foldSummary = undefined;
       if (folded.length > 0) {
         const range = roundRange ?? { from: 1, to: folded.length };
-        // 降级摘要的恢复信息（评审修复）：与 fold-statistical 共用 resolveFoldStubs /
-        // buildFoldNavigationRecord（复用不复制），保证降级摘要不比原生统计摘要少
-        // `[已折叠] …` stub 与 artifact 导航记录。
+        // 机械替代物（stub / 导航记录）与摘要器无关，先算好；它们只是**账本**的一份，
+        // 不是摘要失败时的替代物（issue #661 已删掉那条替代路径）。
         const foldedStubs = await resolveFoldStubs(foldedPayload, settings.stubFor);
         const navigationRecord = buildFoldNavigationRecord(foldedPayload, range);
-        // 降级兜底（issue #33 D）：summarizer 运行时失败（reject/throw）不再让 run 中途死亡，
-        // 改为对同一 foldedPayload 生成统计摘要并加可识别降级标记；
-        // 构造期参数错误（summarizer 非函数）在 createFoldLlmStrategy 里已 fail-loud，不经此路径。
-        let summary;
-        let degradeReason;
-        // issue #469-①②③：失败不再是「一条 `slice(0,120)` 字符串」。
-        // 分类后：可自愈的先重试，
-        // 不可自愈的把**原因类型**留到账上（timeout / 
-        // context_window_exceeded / error）。
-        let degradeKind;
-        let droppedInputMessages = 0;
+        // issue #661：`callSummarizerWithBound` **失败即抛**（`KitError("summarizer_failed")`）。
+        // 改前它返回一份「降级为统计摘要」的替代物（issue #33 D 的旧语义），于是摘要器挂了
+        // 的 run 与摘要器正常的 run 在终局上长得一样——用户永远不知道质量掉了。
+        // 现在失败就是失败：异常一路穿到 run 的终局（`termination.reason === "failed"`，
+        // `errorCode === "summarizer_failed"`）。构造期参数错误（summarizer 非函数）仍在
+        // `createFoldLlmStrategy` 里 fail-loud，不经此路径。
+        //
+        // 「先失败后应用」：下面每一处状态写入（`lastFoldSummaryText` / `foldSummary` /
+        // `compactedHead`）都在 `await` **之后** ⇒ 抛出的那一折一个键都不留。
         // issue #469（裁决 A）：取源链 **显式调用参数 > 策略构造参数 > in-run 闭包 > 账本播种**。
         // 账本排最后 ⇒ 非 resume / 挑不出覆盖事实时它为空，行为逐字退回今天的形状（纯加法）。
         const continuationBase = await resolveContinuationBase(
@@ -396,10 +399,8 @@ export function createFoldLlmStrategy({
             optionValue(callOptions, options, "maxSummarizerInputTokens", undefined),
           ),
         });
-        summary = summarizerOutcome.summary;
-        degradeReason = summarizerOutcome.degradeReason;
-        degradeKind = summarizerOutcome.degradeKind;
-        droppedInputMessages = summarizerOutcome.droppedMessages;
+        const summary = summarizerOutcome.summary;
+        const droppedInputMessages = summarizerOutcome.droppedMessages;
         // issue #566：本折的机械替代物总是算（零 LLM）。
         // `compactedSummary` 是续写累计体（prior 会被续写进输出），
         // 不是本折增量。
@@ -409,9 +410,6 @@ export function createFoldLlmStrategy({
             foldedPayload,
             settings.anchors && typeof settings.anchors === "object" ? settings.anchors : {},
           );
-        if (summary === undefined && fallbackAnchors?.text !== "") {
-          settings.onLayer?.({ layerId: "anchors" });
-        }
         const mechanicalSummaryText = summarizeFoldedPayload(foldedPayload, {
           from: range.from,
           to: range.to,
@@ -421,37 +419,31 @@ export function createFoldLlmStrategy({
           ...(navigationRecord === undefined ? {} : { navigationRecord }),
           ...(fallbackAnchors === undefined ? {} : { anchors: fallbackAnchors }),
         });
-        const statisticalFallbackText = summary === undefined
-          ? mechanicalSummaryText
-          : undefined;
-        const compactedSummary = summary === undefined
-          ? `[fold-llm 摘要失败，已降级为统计摘要（原因: ${degradeReason}）]\n`
-            + statisticalFallbackText
-          : appendFoldFidelity(
-            enforceSummarySize(
-              withRecoveryHint(summary, recoveryHint),
-              summaryBudget,
-              settings.onLayer,
-            ),
-            foldedPayload,
-            settings.anchors,
+        const compactedSummary = appendFoldFidelity(
+          enforceSummarySize(
+            withRecoveryHint(summary, recoveryHint),
+            summaryBudget,
             settings.onLayer,
-          );
+          ),
+          foldedPayload,
+          settings.anchors,
+          settings.onLayer,
+        );
         // ③ 的续写基底：记下这次真进了上下文的那份（下一轮折叠的「上一份」）。
+        // issue #661：只有拿到摘要才写 ⇒ 失败那一折不会给下一次折叠留残值。
         lastFoldSummaryText = compactedSummary;
         foldSummary = {
-          source: summary === undefined ? "statistical" : "llm",
+          // issue #661：`fold-llm` 只有一条成功路径（失败即抛），所以 `source` 恒为 `"llm"`。
+          // 改前失败分支写 `"statistical"`——那是被删掉的「降级为统计摘要」替代物的自报。
+          source: "llm",
           // issue #566：本折那份 = 机械替代物 ⇒ 自报 mechanical。
           increment: mechanicalSummaryText,
           incrementOrigin: "mechanical",
-          // #470：`source` 说清「交给模型的那份是 LLM 摘要还是机械降级」；降级时 `text` 是那份机械文本。
+          // #470：`text` 说清「交给模型的那份」是什么。
           // issue #657（缺陷二）：**成功分支也交 `text`** = 已存进 `lastFoldSummaryText` 的累计摘要（不重算）。
           // 改前它不给这个键 ⇒ 引擎落回 `fedSummaryText`（折叠后那条消息**全文** = 摘要 + 原任务正文）
           // ⇒ 账上 54–78% 是模型还在 head 里看着的任务原文，`truncated` 从第 2 折起恒真。
-          // 降级分支行为等价：那一行重写成三元式，仍交 `statisticalFallbackText`
-          text: summary === undefined ? statisticalFallbackText : compactedSummary,
-          ...(degradeReason === undefined ? {} : { degradeReason }),
-          ...(degradeKind === undefined ? {} : { degradeKind }),
+          text: compactedSummary,
           ...(prior.truncated ? { priorSummaryTruncated: true, priorSummaryBytes: prior.bytes } : {}),
           ...(prior.bytes > 0 && !prior.truncated ? { priorSummaryBytes: prior.bytes } : {}),
           // issue #469（裁决 A）：基底从哪来——`"ledger"` = resume 后从账本播的，
@@ -463,7 +455,6 @@ export function createFoldLlmStrategy({
             ? { droppedRounds: summarizerOutcome.droppedRounds }
             : {}),
           ...(summarizerOutcome.attempts > 1 ? { attempts: summarizerOutcome.attempts } : {}),
-          ...(summarizerOutcome.budgetExhausted === true ? { budgetExhausted: true } : {}),
           ...(droppedInputMessages > 0
             ? { inputTruncated: true, droppedMessages: droppedInputMessages }
             : {}),
@@ -499,13 +490,12 @@ export function createFoldLlmStrategy({
 }
 
 /**
- * issue #469-①：降级原因分类。今天超时（无任何阀门）、
- * 超窗（网关 400）、普通报错**三堆塌成
- * 同一条文案**，
- * 所以宿主从记录上分不出「这次降级本可以自愈」还是「摘要器真
- * 的挂了」。
- * 只分类不改文案（`degradeReason` 原文照旧保留，以免动既有断言）
- * 。
+ * issue #469-①：摘要器失败的**归因分类**。超时、超窗（网关 400）、普通报错此前塌成
+ * 同一条文案，宿主从记录上分不出「这次本可以自愈」还是「摘要器真的挂了」。
+ *
+ * issue #661：分类结果不再落成 `degradeKind`（那条降级路径已删），而是
+ * `summarizer_failed` 异常上的 `details.kind`。四类原值不变：
+ * `timeout` / `context_window_exceeded` / `empty_summary` / `error`。
  *
  * @param {*} error 可以是 Error / 带 `code` 的自定义错 / 
  * 字符串（降级路径上什么都会抛上来）
@@ -689,8 +679,9 @@ function normalizePriorSummary(value, maxBytes) {
  *
  * `typeof "" === "string"` 曾把「模型什么都没写」当成成功 ⇒ 折叠块里只有恢复提示 +
  * 锚点，既无语义内容、也无降级标记（看上去正常，实际是空的）。空串 / 只有空白的串
- * 一律当**失败**：抛错 ⇒ 走既有的 #33 D 降级路径（降级标记 + 统计摘要），原因分类为
- * `empty_summary`（`summarizer_empty_summary`），文案「摘要器返回空内容」。
+ * 一律当**失败**：抛错 ⇒ 由 `callSummarizerWithBound` 包成 `summarizer_failed`
+ *（issue #661；改前是 #33 D 的「降级为统计摘要」），原因分类为 `empty_summary`
+ *（`summarizer_empty_summary`），文案「摘要器返回空内容」。
  *
  * 非字符串的旧口径（`TypeError` + `error` 类）逐字不动。
  *
@@ -710,10 +701,62 @@ function assertUsableSummary(summary) {
 }
 
 /**
+ * issue #661：摘要器失败的**唯一**出口。
+ *
+ * 改前这里是「返回一份降级替代物」（issue #33 D），于是摘要器挂了的 run 与摘要器正常的 run
+ * 在终局上长得一样（只有 stdout 里一块 `[fold-llm 摘要失败，已降级为统计摘要（原因: …）]`）。
+ * 现在是终局错误：`KitError("summarizer_failed")` 一路穿到 `termination.reason === "failed"`。
+ *
+ * 三个字段的口径：
+ *   · `errorCode` —— **与 `makePersistenceFailure`（`src/loop/orchestrator.js`）取值对称**：
+ *     记根因自己的 `code`（`terminationErrorCodeForError`，取不到即 `"unknown"`），
+ *     `cause` 仍是底层错误对象；
+ *   · `details.kind` —— `classifyFoldDegradeKind` 的四类原值（`timeout` /
+ *     `context_window_exceeded` / `empty_summary` / `error`）。刻意**不**叫
+ *     `summarizer_unavailable`：`empty_summary` 是「模型返回空串/空白」的确定性故障，
+ *     换模型才有用，不叫「不可用」；
+ *   · `details` 上的诊断事实（`attempts` / `droppedMessages` / `droppedRounds` /
+ *     `budgetExhausted`）—— 异常路径不返回 result，这些事实只能随异常走，否则「为什么失败」
+ *     与「试过几次」一起消失。
+ *
+ * 用 `Object.assign` 写 `errorCode` / `details`：`KitError` 的 JSDoc 没声明这两个 additive
+ * 字段，直接赋值会让 `--checkJs` 棘轮多背 TS2339（#214 的「只减不增」）。
+ *
+ * @param {*} error 底层错误（超时 / 网关 400 / 空摘要 / 任意 reject）
+ * @param {{ kind?: "timeout"|"context_window_exceeded"|"empty_summary"|"error",
+ *   droppedMessages?: number, droppedRounds?: number, attempts?: number,
+ *   budgetExhausted?: boolean }} [facts]
+ * @returns {KitError}
+ */
+function summarizerFailure(error, facts = {}) {
+  const kind = facts.kind ?? classifyFoldDegradeKind(error);
+  const reason = String(error?.message ?? error).slice(0, 120);
+  const failure = new KitError(
+    "summarizer_failed",
+    `fold-llm 摘要失败（${kind}）：${reason}`,
+    { retryable: false, cause: error },
+  );
+  Object.assign(failure, {
+    errorCode: terminationErrorCodeForError(error),
+    details: {
+      kind,
+      ...(facts.droppedMessages > 0 ? { droppedMessages: facts.droppedMessages } : {}),
+      ...(facts.droppedRounds > 0 ? { droppedRounds: facts.droppedRounds } : {}),
+      ...(facts.attempts > 1 ? { attempts: facts.attempts } : {}),
+      ...(facts.budgetExhausted === true ? { budgetExhausted: true } : {}),
+    },
+  });
+  return failure;
+}
+
+/**
  * issue #469-①②③：一次折叠的摘要步骤。
  *   · 首发与（仅超窗时允许的）自愈重试共享一条 `budgetMs` 死线；
  *   · **超时绝不重试**（宿主裁决 ②：重试只是把一次卡顿变成两次）；
- *   · 失败不抛（沿用 #33 D 降级语义），把分类后的原因与预算事实带回去。
+ *   · **失败即抛** `summarizer_failed`（issue #661：不再返回降级替代物）。
+ *
+ * 保留「超窗 ⇒ 缩输入重试一次」：那不是降级，是让调用装得下。重试仍失败 ⇒ 同样抛，
+ * `details.kind` 保持 `context_window_exceeded`（超窗归因不因重试又失败而被掩盖）。
  */
 async function callSummarizerWithBound({
   summarizer,
@@ -739,12 +782,8 @@ async function callSummarizerWithBound({
       ...(left === undefined ? {} : { timeoutMs: Math.max(1, left) }),
     });
   };
-  const fail = (error, droppedMessages, extra = {}) => ({
-    degradeKind: classifyFoldDegradeKind(error),
-    degradeReason: String(error?.message ?? error).slice(0, 120),
+  const fail = (error, droppedMessages, extra = {}) => summarizerFailure(error, {
     droppedMessages,
-    droppedRounds: 0,
-    attempts: 1,
     ...extra,
   });
   const first = trimFoldedPayloadToLimits(payload, {
@@ -757,37 +796,36 @@ async function callSummarizerWithBound({
     return { summary, droppedMessages: first.dropped, attempts: 1, ...limitPart };
   } catch (error) {
     if (classifyFoldDegradeKind(error) !== "context_window_exceeded") {
-      return fail(error, first.dropped, limitPart);
+      // issue #661：非超窗失败（超时 / 空摘要 / 任意 reject）没有自愈余地 ⇒ 直接终局。
+      throw fail(error, first.dropped, limitPart);
     }
     const left = remaining();
     if (left !== undefined && left < MIN_RETRY_REMAINING_MS) {
-      // 预算不够一次有意义的尝试：降级，并把「不是自愈不了，是没时间」写清楚。
-      return fail(error, first.dropped, { ...limitPart, budgetExhausted: true });
+      // 预算不够一次有意义的尝试：仍抛，但把「不是自愈不了，是没时间」写进 details。
+      throw fail(error, first.dropped, { ...limitPart, budgetExhausted: true });
     }
     const retryBound = retryBoundFor(inputBoundTokens, first.messages);
-    if (retryBound === undefined) return fail(error, first.dropped, limitPart);
+    if (retryBound === undefined) throw fail(error, first.dropped, limitPart);
     const retry = trimBeforeRetry(first.messages, retryBound);
-    if (retry.dropped === 0 && retry.collapsed === 0) return fail(error, first.dropped, limitPart);
+    if (retry.dropped === 0 && retry.collapsed === 0) throw fail(error, first.dropped, limitPart);
     try {
       const retrySummary = assertUsableSummary(await invoke(retry.messages));
       return {
         summary: retrySummary,
         droppedMessages: first.dropped + retry.dropped + retry.collapsed,
         attempts: 2,
-        retried: true,
         ...limitPart,
       };
     } catch (retryError) {
-      // 重试又失败：若仍是超窗，原因仍记超窗（否则会被普通错误掩盖）。
+      // 重试又失败：若仍是普通报错，归因仍记超窗（否则「为什么缩了输入」会被掩盖）；
+      // 超时 / 空摘要保留自己的分类（issue #661：`details.kind` 是四类原值）。
       const kind = classifyFoldDegradeKind(retryError);
-      return {
-        degradeKind: kind === "error" ? "context_window_exceeded" : kind,
-        degradeReason: String(retryError?.message ?? retryError).slice(0, 120),
+      throw summarizerFailure(retryError, {
+        kind: kind === "error" ? "context_window_exceeded" : kind,
         droppedMessages: first.dropped + retry.dropped + retry.collapsed,
         droppedRounds: first.droppedRounds,
         attempts: 2,
-        ...limitPart,
-      };
+      });
     }
   }
 }

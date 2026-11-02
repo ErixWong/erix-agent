@@ -2632,16 +2632,43 @@ messages and the folded round range. Its cost and accounting are part of the con
     it in `bin/cli.js`. That is a **CLI-layer choice, not a library default** — `bin/` is a
     verifier/debugger, not the contract surface, and a host that configures nothing gets the
     library behaviour above, not this one.
-  No layer defaults to `fold-statistical`: it is the deterministic summary `fold-llm` degrades
-  to when its summarizer fails or times out (zero extra model calls, never a failed run).
+  No layer defaults to `fold-statistical`: it is an explicit zero-LLM choice, and since
+  issue #661 a failing `fold-llm` summarizer is a **terminal error** rather than a degrade to
+  it (the next bullet states the failure shape).
 - Its usage is merged into the run aggregate through the same `addUsage` path as other
   auxiliary calls (`persist` at `src/loop/orchestrator.js`, `trackLatest: false`) and is also
   reported through `onUsage`, so `result.usage` / `error.usage` are complete. The call
   does **not** advance `rounds`, does not feed stall detection, and does not update the
   `latestApiInputTokens` / `latestApiEstimatedTokens` used by later compaction decisions.
-- A rejected, throwing, or empty-text summary answer degrades to the statistical summary
-  exactly like an injected summarizer (the `[fold-llm 摘要失败…]` marker then appears in
-  the next round's context). A failed summary never kills the run.
+- **A failing summarizer is a terminal error (issue #661, breaking).** A rejected, throwing,
+  timed-out, or empty-text summary answer raises `KitError("summarizer_failed", …,
+  { retryable: false, cause })` out of the compaction step, so the run ends with
+  `termination.reason === "failed"` and `termination.errorCode === "summarizer_failed"`. The
+  error itself carries three facts: `details.kind` (`timeout` / `context_window_exceeded` /
+  `empty_summary` / `error`), `errorCode` (the root cause's own `code`, `"unknown"` when it has
+  none — the same rule `persistence_failed` uses) and `unpersisted` (the #109 ledger: an
+  exception path returns no result, so the ledger rides on the error). The engine does **not**
+  rewrite the error object a host strategy threw: the ledger is attached to a fresh
+  terminal-error carrier created for this run (same prototype, so `instanceof KitError` still
+  holds when the thrown error was one; same `code` / `message` / `details` / `cause`), and the
+  host's own object is left untouched — a host that reuses one `Error` instance across folds
+  therefore cannot leak a stale ledger into the next run. The one automatic retry
+  that stays is **over-window input shrinking** (`context_window_exceeded` ⇒ one retry with a
+  smaller input); if that retry fails too, the same error is raised with `details.kind` still
+  `context_window_exceeded`. Nothing from the failed fold is applied: no `record.foldedFacts`,
+  no `compactionStats` entry, no `type: "compaction"` event, no advance of the fold watermark,
+  and no "previous summary" carried into the next fold. The `[fold-llm 摘要失败…]` marker is
+  gone — that shape no longer exists.
+- Three dispositions for a host. The contract states the options; it does **not** claim that
+  any host has adopted one (there is no active host to poll):
+  1. **Take the exception and decide** — `termination.errorCode === "summarizer_failed"` plus
+     `details.kind` is the whole classification: retry the task, switch model, or surface it.
+  2. **Resume** — the resume switch under `config.run`, on the same run, continues from the
+     transcript; the failed fold wrote nothing, so nothing is replayed or skipped. The
+     summarizer must be healthy on that attempt, otherwise the same fold fails again.
+  3. **Choose `fold-statistical`** — zero LLM calls, deterministic, cannot fail this way. Since
+     #661 it is an **explicit** choice (`context.strategy` / `--compaction`), never an automatic
+     fallback.
 - Injecting your own strategy object stays the override channel (e.g. a summarizer on a
   cheaper model). In that form the engine books **no** usage for the summary call — the
   host accounts for it.
@@ -3377,7 +3404,7 @@ ignores all three behaves exactly as before.
 | `runId` | every `onJudge` record and the `run_outcome` event | The run id the host passed to `runToolLoop`; it is the join key between the streamed decisions and the terminal record. When the host passed no `runId` the field is **absent** — the engine does not synthesize one. |
 | `model` | every `onJudge` record and the `run_outcome` event | The model the run actually used when the judged decision was made, resolved from run options / provider configuration. Probe order matches `modelMetadataFor()` (`modelConfig` → `modelMetadata` → `model` → `provider` → `context`), key order `model` → `model_name` (same as provider construction), first hit wins and candidates are **not** merged. Never hardcoded. When no candidate yields a non-empty name the field is **absent**: writing `"unknown"` would make "no model configured" indistinguishable from a model literally named `unknown`. |
 | `judgeModel` | `onJudge` records, only when the judge ran on a different evaluator model | Lets per-model calibration distinguish the evaluated model from the model evaluating it. Absent when the judge shares the run's model. |
-| `compaction` stat | `onEvent` (`type: "compaction"`) and the `<runId>.state.json` `deterministic.compactionStats` window | Existing keys are unchanged. **Additive (issue #464 A):** `strategyName` is present only when the engine could state it truthfully — it names the strategy that **actually performed** this fold, including the library fallback (`"sliding-window"`), not the host's config value. Hosts that ignore it see the previous shape verbatim. **Which name, exactly (issue #657):** the fold entry has two possible performers — the strategy the host configured, and the engine's own budget fallback (`sliding-window`), which folds only the oldest rounds still needed to fit the budget. If the configured strategy folded at least one round, `strategyName` is **its** name (even when the fallback then folded more); if the configured strategy folded **zero** rounds and the fallback did the work, `strategyName` is the **fallback's** name (`"sliding-window"`) — it never reports a strategy that folded nothing. A fold window where nobody folded carries no `strategyName` key at all. For the layer names the engine knows, it agrees with `layers`: the budget-phase layer this name points at has `triggered > 0`. A host-supplied strategy object has no layer of its own — `getCompactionLayerForStrategy` maps only the built-in strategy names — so its fold leaves no trace in `layers`; for such a name the self-evidence is `foldedRounds > 0` together with `compacted === true` on the same stat. **Additive (issue #469 ④):** `foldSummary` carries the **result state** of this fold's summarizer call — `degradeKind` (`timeout` / `context_window_exceeded` / `error`), `degradeReason`, `inputTruncated`, `droppedMessages`, `finishReason`, `inputTokens`, `outputTokens`, `priorSummaryTruncated`, `priorSummaryBytes`, `droppedRounds`, `attempts`, `budgetExhausted`, `reused`. Same discipline as `strategyName`: **no fact, no key** — a fold that produced nothing diagnostic leaves the shape byte-for-byte unchanged. The summary text itself never lands here (it lives on `record.foldedFacts`). |
+| `compaction` stat | `onEvent` (`type: "compaction"`) and the `<runId>.state.json` `deterministic.compactionStats` window | Existing keys are unchanged. **Additive (issue #464 A):** `strategyName` is present only when the engine could state it truthfully — it names the strategy that **actually performed** this fold, including the library fallback (`"sliding-window"`), not the host's config value. Hosts that ignore it see the previous shape verbatim. **Which name, exactly (issue #657):** the fold entry has two possible performers — the strategy the host configured, and the engine's own budget fallback (`sliding-window`), which folds only the oldest rounds still needed to fit the budget. If the configured strategy folded at least one round, `strategyName` is **its** name (even when the fallback then folded more); if the configured strategy folded **zero** rounds and the fallback did the work, `strategyName` is the **fallback's** name (`"sliding-window"`) — it never reports a strategy that folded nothing. A fold window where nobody folded carries no `strategyName` key at all. For the layer names the engine knows, it agrees with `layers`: the budget-phase layer this name points at has `triggered > 0`. A host-supplied strategy object has no layer of its own — `getCompactionLayerForStrategy` maps only the built-in strategy names — so its fold leaves no trace in `layers`; for such a name the self-evidence is `foldedRounds > 0` together with `compacted === true` on the same stat. **Additive (issue #469 ④), value range narrowed (issue #661):** `foldSummary` carries the **result state** of a fold that actually produced a summary — `inputTruncated`, `droppedMessages`, `finishReason`, `inputTokens`, `outputTokens`, `priorSummaryTruncated`, `priorSummaryBytes`, `droppedRounds`, `attempts`, `reused`. `attempts` / `inputTruncated` / `droppedMessages` / `droppedRounds` are produced by the over-window retry path. `degradeKind` / `degradeReason` **keep their names in the shape but no longer carry degrade semantics**: since #661 a failing summarizer is a terminal error, so no fold that reaches this stat was degraded, and no in-tree writer produces those two keys (a resumed ledger row written before 0.30 may still carry them). `budgetExhausted` could only ever appear on the failure branch, so it now rides on the exception as `details.budgetExhausted` instead. Same discipline as `strategyName`: **no fact, no key** — a fold that produced nothing diagnostic leaves the shape byte-for-byte unchanged. The summary text itself never lands here (it lives on `record.foldedFacts`). |
 | `compaction_strategy_fallback` event | `onEvent`, at most once per run | **Additive (issue #464 A).** `{ type: "compaction_strategy_fallback", round, detail }`, emitted exactly when `context.strategy` is **not** configured *and* the fold was budget-triggered, i.e. the engine's own `sliding-window` fallback ran. Since issue #643 that fallback folds only the oldest rounds it needs to reach the budget (it no longer clears every foldable round down to `keepRounds: 0`) and prepends the mechanical summary it already computed, so the model still sees what was folded (issue #464 B). Shape follows `model_metadata_missing` (issue #182): the first sentence of `detail` is fixed text hosts can assert on, then `budgetTokens` / `estimatedTokens` are appended when a budget resolves. |
 | `compaction_deferred` event | `onEvent`, one per deferred compaction | **Additive (issue #588).** `{ type: "compaction_deferred", runId?, round, reason: "pending_tool_use", detail: string }` — emitted when the compaction inside a `max_tokens` continuation is skipped because the request tail is an assistant `tool_use` whose `tool_result` has not arrived (`pendingTailToolUses` (`src/loop/pending-tool-result.js`)). Nothing is settled and no pairing rule is loosened; the next round's compaction sees the completed round. No termination semantic changes. |
 | `continuity_injection_skipped` event | `onEvent`, one per round where the continuity block could not be placed | **Additive (issue #568).** `{ type: "continuity_injection_skipped", runId?, round, reason, detail: string }` — the block was not injected into that request (e.g. `reason: "pending_tool_use"`, where inserting it would break `tool_use`/`tool_result` pairing). A skip is reported instead of substituting machine text. |
@@ -3490,9 +3517,16 @@ configured, a `verified` verdict is not available to them, because a guard
 
 `exitCodeForVerification` returns `0` for any other status, including a missing
 `verification` object, so **exit code 0 is not by itself proof of a verified
-answer** — read `verification.status`. A run that threw exits `1` from the CLI's
-top-level handler (`bin/cli.js:1032-1042`), which is a failure signal, not a
-verification outcome.
+answer** — read `verification.status`.
+
+A **failed terminal state** has its own code since issue #661: a run that ends with
+`termination.reason === "failed"` exits **`5`** (`exitCodeForRunFailure` in
+`bin/cli.js`), which is a failure signal, not a verification outcome. Before #661
+that run exited `1`, the same code as a usage error — so a scripted caller could
+only tell "ran but unverified" (`4`) from "really failed" by reading the
+`termination=failed` text on stdout. `aborted` runs and errors thrown before a run
+starts (usage errors, a missing session) still exit `1`; `5` never overlaps `2` /
+`3` / `4`.
 
 ### Mechanism precedence and mutual exclusion
 

@@ -92,7 +92,11 @@ test("#469-② 每次调用可用「剩余预算」覆盖本实例默认超时",
   }
 });
 
-test("#469-② 预算耗尽 ⇒ 超窗也不再重试，原因记 budgetExhausted", async () => {
+test("#469-② 预算耗尽 ⇒ 超窗也不再重试，budgetExhausted 随异常走", async () => {
+  // issue #661 语义反转：改前这一格断言「降级 + foldSummary.budgetExhausted」。
+  // 降级路径已删 ⇒ 这一折是终局错误；`budgetExhausted` 这个事实**不许消失**，它从
+  // `compactionStats.foldSummary` 搬到异常的 `details` 上（异常路径不返回 result，
+  // 事实只能随异常走）。
   let calls = 0;
   const strategy = createFoldLlmStrategy({
     summarizer: async () => {
@@ -102,16 +106,19 @@ test("#469-② 预算耗尽 ⇒ 超窗也不再重试，原因记 budgetExhauste
       );
     },
   });
-  const result = await strategy.compact(conversation(), {
+  const error = await strategy.compact(conversation(), {
     keepRounds: 1,
     summarizerBudgetMs: 1,
-  });
+  }).then(
+    () => assert.fail("超窗且预算耗尽必须抛 summarizer_failed"),
+    (thrown) => thrown,
+  );
   assert.equal(calls, 1, "30 s 是整条步骤的硬上限，不是每次尝试的上限");
-  assert.equal(result.foldSummary.source, "statistical");
-  assert.equal(result.foldSummary.degradeKind, "context_window_exceeded");
-  assert.equal(result.foldSummary.budgetExhausted, true);
-  // `attempts` 只在真的试了不止一次时进账（与「无事发生 ⇒ 无键」同口径）。
-  assert.equal("attempts" in result.foldSummary, false);
+  assert.equal(error.code, "summarizer_failed");
+  assert.equal(error.details.kind, "context_window_exceeded", "超窗归因不许被重试/预算掩盖");
+  assert.equal(error.details.budgetExhausted, true);
+  // `attempts` 只在真的试了不止一次时出现（与「无事发生 ⇒ 无键」同口径）。
+  assert.equal("attempts" in error.details, false);
 });
 
 test("#469-③ 上一份折叠摘要是续写基底：第二次折叠拿得到第一次的摘要", async () => {

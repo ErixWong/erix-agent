@@ -150,8 +150,9 @@ const FOLD_THINKING_OFF_FIELDS = Object.freeze({
  *
  * `enable_thinking` / `chat_template_kwargs` 是 vLLM / Qwen 一类 chat-template 后端的开关；
  * Anthropic 侧 `thinking` 是**对象形态**（`{type:"enabled", budget_tokens}`），而且它的请求体
- * 对未知字段是 400——把这两个键发过去会让**每一次折叠都失败**（降级成统计摘要，账上只留一条
- * `degradeKind:"error"`）。Anthropic 的思考本来就是默认关的，不需要显式关 ⇒ 那边退回 `"inherit"`。
+ * 对未知字段是 400——把这两个键发过去会让**每一次折叠都失败**（issue #661 起是终局错误
+ * `summarizer_failed`，`details.kind === "error"`；改前是降级成统计摘要 + 一条 `degradeKind`）。
+ * Anthropic 的思考本来就是默认关的，不需要显式关 ⇒ 那边退回 `"inherit"`。
  *
  * @param {string|undefined} protocol provider 的 `protocol` 判别键（`"openai"` / `"anthropic"` / …）
  * @returns {"off"|"inherit"}
@@ -358,7 +359,13 @@ export function createProviderSummarizer({
     }
     const summary = textOfContent(response?.content).trim();
     if (summary === "") {
-      throw new TypeError("default fold-llm summarizer returned no text");
+      // issue #661：空产出归到 `empty_summary` 这一类，而不是笼统的 `error`。
+      // `fold-llm` 的 `assertUsableSummary` 对「宿主自带 summarizer 返回空串」已经这么分类
+      // （`summarizer_empty_summary`）；内置这一条不跟上的话，同一个故障在默认路径上会被
+      // 报成 `details.kind === "error"`——「模型什么都没写」与「摘要器真挂了」又分不开了。
+      const error = new TypeError("default fold-llm summarizer returned no text");
+      Object.assign(error, { code: "summarizer_empty_summary" });
+      throw error;
     }
     return summary;
   };

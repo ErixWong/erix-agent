@@ -699,7 +699,15 @@ const READ_LINE_CAPACITY_ROLES = [
   // （显式关思考 + 每次调用的剩余预算）。fold-llm 的容量 6,952 量级 → 6756（38.796 B/line），恰好落在样本中位上
   // ⇒ 角色从 `src/tools/notes.js` 改钉它（与当场样本中位完全相等）。描述里 `median 6,952 (37.7)` →
   // `median 6,756 (38.8)` 是**同位数替换**（对本文件字节中性）。容差常量一个都没动。
-  { role: "median", file: "src/compact/fold-llm.js", recorded: { bytes: 33_137, lines: 809, bytesPerLine: 40.9604, capacity: 6_399, cjkShare: 0.1898 } },
+  // 2026-11-01 第十四刷（issue #661，**换文件**）：`src/compact/fold-llm.js` 的摘要器失败出口从
+  // 「返回降级替代物」改成抛 `summarizer_failed`（删掉那条替代路径、补上分类与账本事实），
+  // 净 +3,221 字节 / +40 行 ⇒ 均行字节 40.9604 → **42.8245**、容量 6,399 → **6,121**（−4.3%，越过 ±2%）。
+  // 更关键的是**样本中位同时挪了**（6,399 → 6,268）：它不再是「最接近中位」的那个文件（差 2.3%）。
+  // 按 #275 的「中位只钉写死样本」口径换锚点：改钉 `src/store/file.js`（24,171 B / 578 行 ⇒
+  // 41.8183 B/line ⇒ 6,268 行，与当场样本中位**完全相等**，分母 578 行 ⇒ ±2% 的额度是 ±125 行）。
+  // 描述里 `median 6,399 (41.0)` → `median 6,268 (41.8)` 是**同位数替换**（对本文件字节中性 ⇒
+  // `self` 那一行不用再刷）。容差常量一个都没动。
+  { role: "median", file: "src/store/file.js", recorded: { bytes: 24_171, lines: 578, bytesPerLine: 41.8183, capacity: 6_268, cjkShare: 0.1896 } },
   // 2026-10-23 #391：`most` 也**换了文件**——`bin/guard-metrics.js` 从 456 B / 17 行长到 1,063 B / 23 行
   // （均行 26.8 → 46.2），容量 9,772 → 5,671，已经不是「一次装得最多」那一个。样本里现在最大的是
   // `src/messages/openai-normalization.js`（5,496 B / 201 行 ⇒ 27.34 B/line ⇒ 9,587 行），描述里那一档随之

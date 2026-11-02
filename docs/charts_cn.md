@@ -308,7 +308,7 @@ flowchart TD
 | `ttl` | 每次 provider attempt；配置允许且结果估算 token 达到 `minTokens`：`currentRound - erixRound >= ttl` 时折为句柄，`age === ttl - 1` 时只追加预警。错误结果、`note_`/`todo_`、缺少轮号的旧结果保守不折。其 `triggered` 只统计实际折叠的 `tool_result` 数量，不统计仅预警的请求 | 单个 `tool_result` | 仅请求视图中的 `【已折叠·TTL】`句柄，含工具/入参片段、估算 token、读取轮、取回提示；可附 `导航` digest 与 JSON `骨架`。临界前一轮只追加 TTL 预警。`ctx.messages`、run snapshot、round archive 保留全文 |
 | `slidingWindow` | 预算超限且没有选定整轮策略（包括已配置策略但其 `shouldCompact()` 返回 false），或选定策略完成后本地估算/API 输入投影仍超限；兜底使用 `keepRounds: 0` | 整轮（assistant + 配对 `tool_result`） | 保留 head/受保护轮与近期轮；被折轮原文进入 `foldedPayload`，可把 `stubFor` 结果追加到 head，并生成有界 `navigationRecord` |
 | `foldStatistical` | `config.folding.context.strategy` 主动要求压缩且策略名为 `fold-statistical` | 整轮 | 带折叠轮范围、工具足迹、存根、恢复提示、导航记录的确定性摘要；`foldedPayload` 与摘要分离保存 |
-| `foldLlm` | `config.folding.context.strategy` 主动要求压缩且策略名为 `fold-llm` | 整轮 | 注入的 summarizer 生成摘要；摘要先过 `enforceSize`，失败时降级统计摘要；随后可追加机械保真段；原文仍在 `foldedPayload` |
+| `foldLlm` | `config.folding.context.strategy` 主动要求压缩且策略名为 `fold-llm` | 整轮 | 注入的 summarizer 生成摘要；摘要先过 `enforceSize`，失败时是**终局错误**（`summarizer_failed`，issue #661），不再降级统计摘要；随后可追加机械保真段；原文仍在 `foldedPayload` |
 | `anchors` | 整轮折叠实际产生 anchors 或 fold-fidelity 段落；`anchors: false` 只关闭锚点索引，`fold-llm` 的用户引文/反向信号仍可能触发 | 被折整轮中的可识别原文片段 | `anchors.js` 从 tool-result 与真实 user 文本机械抽取路径、SHA、issue、URL、错误行（最多 20 条/1200 字符）；`fold-llm` 另外由 `fold-fidelity.js` 逐字引用最新未解决 user 输入（最多 800 字符）并标出撤销信号。零 LLM，不承担档案导航 |
 | `enforceSize` | fold-llm 的摘要尺寸强制，或所有策略/滑窗之后仍超预算的最终安全截断 | 字段/消息（最终兜底也会按完整轮移除） | 低优先级字段替换为 `[已修剪]`，移除图片、清空 tool input，必要时降级受保护消息；`protectedDowngraded` 记录降级，单条受保护消息仍放不下则抛 `invalid_budget` |
 

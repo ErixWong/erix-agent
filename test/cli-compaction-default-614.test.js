@@ -85,11 +85,13 @@ const MAX_ROUNDS = 14;
 const FIXTURE_FILE_LINES = 200;
 
 /**
- * 既有降级标记（`src/compact/fold-llm.js` 的 `[fold-llm 摘要失败，已降级为统计摘要（原因: …）]`）。
- * 不是新加的常量：本单**不许改降级逻辑**，所以这里按既有字面量断言（与
- * `test/compact/fold-llm.test.js` 同一口径）。
+ * 被 issue #661 删掉的降级标记（`[fold-llm 摘要失败，已降级为统计摘要（原因: …）]`）。
+ * 它现在只剩**反向锁**这一个用途：摘要器失败时这条字面量一个字节都不许出现
+ * （失败是终局错误，不再是替代物）。
  */
 const DEGRADE_MARKER = /\[fold-llm 摘要失败，已降级为统计摘要（原因: /u;
+/** issue #661：失败终局的独立退出码（`bin/cli.js#exitCodeForRunFailure`）。 */
+const EXIT_RUN_FAILED = 5;
 
 const PROXY_VARS = [
   "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy",
@@ -307,32 +309,35 @@ test("#614 判据1/4a：不传 --compaction ⇒ 摘要器那一发真的发了�
 });
 
 // ---------------------------------------------------------------------------
-// 判据 3 + 4b：摘要器失败 ⇒ 既有降级标记，run 不失败
+// 判据 3 + 4b（issue #661 反转）：摘要器失败 ⇒ run 以 failed 终局 + 独立退出码 5
 // ---------------------------------------------------------------------------
 
-test("#614 判据3/4b：摘要器返回错误 ⇒ 折叠块含既有降级标记，run 不失败", async (t) => {
+test("#614 判据3/4b：摘要器返回错误 ⇒ run 失败（退出码 5），折叠块里没有任何降级替代物", async (t) => {
   const run = await runFoldScenario(t, { summarizerFails: true });
 
-  // run 不失败：退出码仍是「核验 skipped」那一个，termination 是正常原因。
-  assert.equal(run.code, EXIT_NOT_VERIFIED, `摘要器失败**不许**让 run 失败：退出码 ${run.code}，`
-    + `期望 ${EXIT_NOT_VERIFIED}\nstdout(tail)=${run.stdout.slice(-800)}\nstderr(tail)=${run.stderr.slice(-800)}`);
-  assert.match(run.stdout, /termination=no_tool/u, "termination 必须仍是正常原因（no_tool）");
-  assert.match(run.stdout, /compacted=true/u, "这一次 chat 必须真的折叠过");
+  // issue #661 语义反转：改前这里断言「run 不失败 + 折叠块含降级标记」。
+  // 现在摘要器失败是终局错误 ⇒ 退出码是**失败专用**的 5，与「跑完但没核验」的 4 不同码。
+  assert.equal(run.code, EXIT_RUN_FAILED, `摘要器失败必须给失败专用退出码 ${EXIT_RUN_FAILED}，`
+    + `实测 ${run.code}\nstdout(tail)=${run.stdout.slice(-800)}\nstderr(tail)=${run.stderr.slice(-800)}`);
+  assert.notEqual(EXIT_RUN_FAILED, EXIT_NOT_VERIFIED, "失败与「未核验」不许共用同一个码");
+  // 失败路径不打印 `=== 统计 ===`（run 抛错就收工）⇒ 「到得了人眼前」的证据是 stderr 的那句
+  // 错误消息（含摘要器失败的分类），不是 stdout 的终局行。
+  assert.match(run.stderr, /摘要失败/u, `stderr 必须说出摘要器失败：${run.stderr.slice(-400)}`);
 
   const summarizerRequests = run.requests.filter(({ kind }) => kind === "summarizer");
   assert.ok(summarizerRequests.length >= 1, "失败路也必须真的发过摘要器请求（否则测的是别的东西）");
 
+  // 反向锁：被删掉的降级标记与统计摘要头部都不许再进请求。
   const degraded = mainRequestWith(run.requests, DEGRADE_MARKER);
-  assert.ok(
-    degraded !== undefined,
-    "折叠块里没有既有降级标记 `[fold-llm 摘要失败，已降级为统计摘要（原因: …）]`；分类结果："
-    + run.requests.map(({ kind }) => kind).join(","),
+  assert.equal(
+    degraded,
+    undefined,
+    "折叠块里仍出现了被删掉的降级标记 `[fold-llm 摘要失败，已降级为统计摘要（原因: …）]`；"
+    + `分类结果：${run.requests.map(({ kind }) => kind).join(",")}`,
   );
-  // 降级块里必须是**统计摘要**那份（可观测性：降级不是「什么都没有」）。
-  assert.ok(degraded.body.includes(FOLD_SUMMARY_MARKER), "降级块里没有统计摘要头部标记");
-  // 反向：失败路里**不许**出现摘要器应答的指纹（否则「失败却用了应答」）。
-  assert.ok(!degraded.body.includes(SEMANTIC_SUMMARY_MARKER), "摘要器失败了，折叠块里却出现了它的应答");
-  t.diagnostic(`判据 3 折叠块原文片段：\n${excerpt(degraded.body, "[fold-llm 摘要失败")}`);
+  const statistical = mainRequestWith(run.requests, FOLD_SUMMARY_MARKER);
+  assert.equal(statistical, undefined, "摘要器失败后不许把统计摘要塞进上下文");
+  assert.ok(!run.stdout.includes("已降级为统计摘要"), "stdout 里也不许出现降级替代物");
 });
 
 // ---------------------------------------------------------------------------
