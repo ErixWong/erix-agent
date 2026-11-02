@@ -168,8 +168,8 @@ const DEFAULT_FOLD_SUMMARIZER_TIMEOUT_MS = 30_000;
  *
  * One tool-free completion per compaction: input = summarizer prompt guide + serialized
  * folded messages + round range; output text becomes the summary. Any thrown/rejected
- * error falls through to the pre-existing statistical-summary degradation in
- * `createFoldLlmStrategy`, so a run never dies because the summary call failed.
+ * error (including the timeout below) is a **terminal** error: since issue #661 it is
+ * `summarizer_failed`, so the run ends `failed` instead of degrading to a statistical summary.
  *
  * Usage accounting belongs to the caller-supplied `chat` (the engine merges it into the
  * run ledger); `onUsage` is only the host-visible notification.
