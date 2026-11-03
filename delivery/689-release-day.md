@@ -152,7 +152,7 @@ git status --porcelain:
 
 ## 失败纪律与续跑
 
-状态文件：`$RUNNER_TEMP` / `os.tmpdir()` 下的 `erix-release-day-state.json`（`--state <file>` 或
+状态文件：`$RUNNER_TEMP` / `os.tmpdir()` 下的 erix-release-day-state.json（`--state <file>` 或
 `RELEASE_DAY_STATE` 可覆盖），**不入库**。四个相位 `preflight_ok → published_unwritten → written → finalized`。
 
 - **「publish 成功但回写失败」是可恢复状态**：`writeback` 一进门先把 `phase=published_unwritten` + `published=<版本>`
