@@ -1129,8 +1129,8 @@ function runSelfTest() {
   {
     const deps = fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_REAL: "1" } });
     const result = runPreflight({ root: DEFAULT_ROOT, hosts: [DEFAULT_ROOT], deps, dry: true });
-    expect(result.verdict === VERDICT.PASS && result.steps.length === 5,
-      "②c 闸门开 + 宿主目录在 + 五步全绿 ⇒ pass（对照组）",
+    expect(result.verdict === VERDICT.PASS && result.steps.length === PREFLIGHT_STEPS.length,
+      "②c 闸门开 + 宿主目录在 + 每一步都全绿 ⇒ pass（对照组）",
       `②c 对照组不绿：verdict=${result.verdict} steps=${JSON.stringify(result.steps)}`);
     expect(deps.calls.some((line) => line.includes("check:release:real")) && deps.calls.some((line) => line.includes("--hosts")),
       "②c 闸门开着时真上游与宿主探针都真跑了",
