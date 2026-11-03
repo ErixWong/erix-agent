@@ -40,9 +40,9 @@
 //
 // ── `KNOWN_NOT_REMOVED` 是什么（已知未删除清单，不是放宽）────────────────────────
 //  它记的是「指南声称删了、而今天运行时**仍然**导出」的名字，每条必须带 `why`（为什么今天还在）。
-//  它存在的原因是排期而不是口径：0.30 的处置（真删 vs 撤标记）在 issue #688，今天还没拍，而本单
-//  （#687）**一个导出都不许删**。所以今天这张表必须覆盖全部 16 个名字，`check:release` 才绿；登记表一
-//  清空，同一次跑就会逐名红出来（`--self-test` 把这两态都钉住）。
+//  它存在的原因是排期而不是口径：本单（#687）只建闸、一个导出都不许删，所以当时这张表必须覆盖全部 16 个
+//  名字；issue #688 真删之后，这张表清空，同一次跑才绿。反向仍然成立：把条目留在表里而删除真的发生了，
+//  同一跑会逐名红 G3（`--self-test` 把这两态都钉住）。
 //  它是**棘轮**：删除真的发生之后，对应条目必须删掉（G3 会点名），条目只许减、不许留余量。
 //
 // ── 退出码（本仓惯例：读不出真值就红，不许假绿）───────────────────────────────
@@ -99,90 +99,11 @@ export const GATE_CODES = Object.freeze({
  *   · 条数与 G1 现算的红名数**双向**对账：少一条 ⇒ 那一条 G1 红；多一条 ⇒ 那一条 G3 红；
  *   · 它**不是**放宽：指南删掉那一行，这条登记立刻空转（G3）；删除真的发生，这条登记也立刻空转（G3）。
  *
- * 今天它必须覆盖全部 16 个名字，因为 issue #688（真删 vs 撤标记）还没拍、而 #687 一个导出都不许删。
+ * 今天它是**空的**：issue #688 把那 16 个名字真的删了，指南说「已删除」而运行时也说「已删除」——这条账
+ * 全部还清。它是**棘轮**：删除真的发生之后对应条目必须删掉（G3 会点名），条目只许减、不许留余量；将来
+ * 若又出现「指南说删了、包还在」，那一条必须重新登记并写清 why。
  */
-export const KNOWN_NOT_REMOVED = Object.freeze([
-  {
-    name: "createCompositeToolProvider",
-    why: "`./tools` 仍然导出它：它是把多个工具提供者合成一个 `listTools(sel)` 的公开工厂。"
-      + "删除它是 issue #688 的处置（真删 vs 撤标记），#687 只建闸、一个导出都不许删。",
-  },
-  {
-    name: "createEnvModelConfigProvider",
-    why: "root 仍然导出它：它按环境变量读一个槽位，宿主要迁到自己的 `resolve(slot)` 实现。"
-      + "删除它是 issue #688 的处置，#687 一个导出都不许删。",
-  },
-  {
-    name: "createJsonFileToolProvider",
-    why: "`./tools` 仍然导出它：它从 JSON 文件（或目录）读工具集。"
-      + "删除它是 issue #688 的处置，#687 一个导出都不许删。",
-  },
-  {
-    name: "createStaticToolProvider",
-    why: "`./tools` 仍然导出它：它提供一份固定的内存 schema 集合。"
-      + "删除它是 issue #688 的处置，#687 一个导出都不许删。",
-  },
-  {
-    name: "estimateMessagesTokens",
-    why: "root 仍然导出它：它是 `estimateMessageTokens` 的一行别名，删除只是 import 站点的改名。"
-      + "删除它是 issue #688 的处置，#687 一个导出都不许删。",
-  },
-  {
-    name: "extractL0",
-    why: "root 仍然导出它：它是 `extractL0Facts` 的旧名别名，两者同一个函数。"
-      + "删除它是 issue #688 的处置，#687 一个导出都不许删。",
-  },
-  {
-    name: "extractL0Fact",
-    why: "root 仍然导出它：同一个事实抽取器的单数拼写别名。"
-      + "删除它是 issue #688 的处置，#687 一个导出都不许删。",
-  },
-  {
-    name: "MESSAGE_OVERHEAD_TOKENS",
-    why: "root 仍然导出它：它是 `MESSAGE_OVERHEAD` 的拼写别名（同一个常量，不是另一个旋钮）。"
-      + "删除它是 issue #688 的处置，#687 一个导出都不许删。",
-  },
-  {
-    name: "NOTE_VALUE_MAX_CHARS",
-    why: "root 与 `./tools` 两个入口都仍然导出它：没有任何工具 schema 读这个长度常量，但删常量是"
-      + "issue #688 的处置，#687 一个导出都不许删。",
-  },
-  {
-    name: "parseReflectionSummary",
-    why: "root 仍然导出它：它是 `parseL1Summary` 的旧名别名。"
-      + "删除它是 issue #688 的处置，#687 一个导出都不许删。",
-  },
-  {
-    name: "parseSummary",
-    why: "root 仍然导出它：同一个内联摘要解析器的更短拼写。"
-      + "删除它是 issue #688 的处置，#687 一个导出都不许删。",
-  },
-  {
-    name: "removeRecord",
-    why: "`./tools` 仍然导出它：它是花名册记录的删除原语（`reconcile` 只重写状态、不删文件）。"
-      + "删除它是 issue #688 的处置，#687 一个导出都不许删。",
-  },
-  {
-    name: "resolveFileReadMaxBytes",
-    why: "`./tools` 仍然导出它：单次读取字节上限的解析器（真正生效的那份在 `createFileTools` 里）。"
-      + "删除它是 issue #688 的处置，#687 一个导出都不许删。",
-  },
-  {
-    name: "serializeFoldedMessages",
-    why: "root 仍然导出它：它是 `serializeFoldedMessagesWithMeta` 的薄包装（丢掉了 dropped / total / bounded 账）。"
-      + "删除它是 issue #688 的处置，#687 一个导出都不许删。",
-  },
-  {
-    name: "setNotesClock",
-    why: "`./tools` 仍然导出它：只被 notes 测试驱动的时钟注入钩子。"
-      + "删除它是 issue #688 的处置，#687 一个导出都不许删。",
-  },
-  {
-    name: "createAnthropicProvider",
-    why: "root 仍然导出它，而 `scripts/deprecated-export-check.mjs` 的 `REMOVAL_REGISTRY` 记着宿主仓"
-      + "真的在 import 这个工厂 ⇒ 删它要等宿主迁移完。处置在 issue #688，#687 一个导出都不许删。",
-  },
-]);
+export const KNOWN_NOT_REMOVED = Object.freeze([]);
 
 /** 一行的入口集合 → 有序数组（`bundleEntryClaim` 的 Set 顺序不稳定，打印要稳定）。 */
 function orderEntries(entries) {
@@ -569,6 +490,12 @@ function runSelfTest() {
   }
 
   const claims = real.claims;
+  // issue #688 之后真登记表是**空的**（16 个名字真删了，账全部还清）。下面的反向证仍然需要一个
+  // 「登记表兜住 N 条」的世界，所以在内存里合成一份：名字取自真指南的名集，每条都带 why。
+  const synthRegistry = [...claims.keys()].map((name) => ({
+    name,
+    why: "self-test: 合成登记（真表已清空，见 issue #688）——只用来证登记表这一侧的判据仍然咬人",
+  }));
   const firstName = [...claims.keys()][0];
   const firstClaim = /** @type {{name: string, entries: string[], files: Array<{file: string, line: number}>}} */ (claims.get(firstName));
   const firstEntry = firstClaim.entries[0];
@@ -653,27 +580,29 @@ function runSelfTest() {
     );
 
     // ── 例⑥ 同一份运行时面 + 真登记表 ⇒ 绿，并打印「已知未删除 N 条」──
-    const registered = evaluateGuideRemoval({ claims, runtime: stillThere, registry: KNOWN_NOT_REMOVED });
+    const registered = evaluateGuideRemoval({ claims, runtime: stillThere, registry: synthRegistry });
     expect(
-      registered.reds.length === 0 && registered.known.length === KNOWN_NOT_REMOVED.length,
-      `⑥ 真登记表 ${KNOWN_NOT_REMOVED.length} 条 ⇒ 绿，已知未删除 ${registered.known.length} 条（N=${registered.known.length}）`,
-      `⑥ 真登记表没有全兜住：红 ${registered.reds.length} 处（${registered.reds.slice(0, 3).map((r) => `${r.code}:${r.name}`).join(",")}），`
-        + `已知未删除 ${registered.known.length} 条（期望 ${KNOWN_NOT_REMOVED.length}）`,
+      registered.reds.length === 0 && registered.known.length === synthRegistry.length,
+      `⑥ 合成登记表 ${synthRegistry.length} 条 ⇒ 绿，已知未删除 ${registered.known.length} 条（N=${registered.known.length}）`,
+      `⑥ 合成登记表没有全兜住：红 ${registered.reds.length} 处（${registered.reds.slice(0, 3).map((r) => `${r.code}:${r.name}`).join(",")}），`
+        + `已知未删除 ${registered.known.length} 条（期望 ${synthRegistry.length}）`,
     );
+    const realEmpty = evaluateGuideRemoval({ claims, runtime: removedWorld, registry: KNOWN_NOT_REMOVED });
     expect(
-      KNOWN_NOT_REMOVED.length === claims.size,
-      `⑥b 登记表条数 ${KNOWN_NOT_REMOVED.length} = 名集 ${claims.size}（双向对账的今天取值）`,
-      `⑥b 登记表条数 ${KNOWN_NOT_REMOVED.length} ≠ 名集 ${claims.size}——少一条会红 G1、多一条会红 G3（登记表必须与名集同步）`,
+      KNOWN_NOT_REMOVED.length === 0 && realEmpty.reds.length === 0,
+      `⑥b 真登记表 0 条（#688 已全部还清）+ 全删净的世界 ⇒ 绿（${realEmpty.reds.length} 红）`,
+      `⑥b 真登记表不是「0 条 + 全删净 ⇒ 绿」：条数 ${KNOWN_NOT_REMOVED.length}、红 ${realEmpty.reds.length} 处`
+        + `（${realEmpty.reds.slice(0, 3).map((r) => `${r.code}:${r.name}`).join(",")}）`,
     );
   }
 
   // ── 例⑦ 少一条 ⇒ G1 点名那一条；多一条 ⇒ G3 点名那一条（双向漂移）──
   {
-    const trimmed = KNOWN_NOT_REMOVED.filter((row) => row.name !== firstName);
+    const trimmed = synthRegistry.filter((row) => row.name !== firstName);
     const short = evaluateGuideRemoval({ claims, runtime: stillThere, registry: trimmed });
     const shortHit = short.reds.find((red) => red.code === GATE_CODES.STILL_EXPORTED && red.name === firstName);
     const ghost = { name: "selfTestGhostName", why: "self-test: 指南两份都没有声明删除这个名字（故意空转）" };
-    const long = evaluateGuideRemoval({ claims, runtime: stillThere, registry: [...KNOWN_NOT_REMOVED, ghost] });
+    const long = evaluateGuideRemoval({ claims, runtime: stillThere, registry: [...synthRegistry, ghost] });
     const longHit = long.reds.find((red) => red.code === GATE_CODES.REGISTRY_IDLE && red.name === ghost.name);
     expect(
       Boolean(shortHit) && short.reds.length === 1 && Boolean(longHit) && long.reds.length === 1,
@@ -685,8 +614,8 @@ function runSelfTest() {
 
   // ── 例⑧ 空 why ⇒ 红 G2 ──
   {
-    const target = KNOWN_NOT_REMOVED[0];
-    const blank = KNOWN_NOT_REMOVED.map((row) => (row.name === target.name ? { ...row, why: "   " } : row));
+    const target = synthRegistry[0];
+    const blank = synthRegistry.map((row) => (row.name === target.name ? { ...row, why: "   " } : row));
     const verdict = evaluateGuideRemoval({ claims, runtime: stillThere, registry: blank });
     const hit = verdict.reds.find((red) => red.code === GATE_CODES.REGISTRY_NO_WHY && red.name === target.name);
     expect(
@@ -702,7 +631,7 @@ function runSelfTest() {
     if (!world) {
       failures.push(`⑨ G3：变异没落上——\`${firstName}\` 不在 ${firstEntry} 的合成运行时面上`);
     } else {
-      const verdict = evaluateGuideRemoval({ claims, runtime: world, registry: KNOWN_NOT_REMOVED });
+      const verdict = evaluateGuideRemoval({ claims, runtime: world, registry: synthRegistry });
       const hit = verdict.reds.find((red) => red.code === GATE_CODES.REGISTRY_IDLE && red.name === firstName);
       expect(
         Boolean(hit) && verdict.known.every((row) => row.name !== firstName),
@@ -777,7 +706,7 @@ function runSelfTest() {
     const duplicated = evaluateGuideRemoval({
       claims,
       runtime: stillThere,
-      registry: [...KNOWN_NOT_REMOVED, { name: KNOWN_NOT_REMOVED[0].name, why: "self-test: 故意重复" }],
+      registry: [...synthRegistry, { name: synthRegistry[0].name, why: "self-test: 故意重复" }],
     });
     expect(
       malformed.reds.some((red) => red.code === GATE_CODES.REGISTRY_MALFORMED)
