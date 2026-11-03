@@ -225,11 +225,28 @@ canonical response; returning raw SSE text is not a response.
 
 ## 4. What does not change
 
-* The `runToolLoop` input surface, the `capabilities` shape, and every existing configuration leaf.
-  No option or leaf is retired, renamed or re-homed by this release (§4.1 only **adds** one leaf).
-* Termination, verification and exit-code semantics, including the `skipped`-without-guard exit code.
-* Observer events, diagnostic fields, and the run-state block.
-* Transcript and run-state on-disk formats; a ledger written by the previous release still resumes.
+Six surfaces, taken one at a time — this release moves three of them and leaves three alone. A row that says
+"unchanged" is a promise: the names and payloads you read yesterday are the ones you read today.
+
+* **Options — unchanged.** The `runToolLoop` input surface, the `capabilities` shape, and every existing
+  configuration leaf. No option or leaf is retired, renamed or re-homed by this release (§4.1 only **adds**
+  one leaf).
+* **Defaults — unchanged.** No existing option's default value is re-specified here; the one derivation that
+  used to disagree with itself is folded into a single constant, and §4.1 says which.
+* **Observer events — unchanged.** Same event names, same payloads. What moved is where the CLI *prints*
+  them — see the note after this list — not what the engine emits.
+* **Diagnostic fields — changed in this release.** `compactionStats` entries keep their shape, but the fields
+  inside moved: `strategyName` now names the layer that really folded, `foldSummary` keeps its field names
+  while `degradeKind` / `degradeReason` no longer have an in-tree writer, and `budgetExhausted` moved to
+  `details.budgetExhausted` on the failure branch (it only ever existed there).
+* **On-disk formats — changed in this release.** The fold ledger gained a fold identity — `foldedFacts.foldId`
+  plus its run-scoped `seq` — and `foldedFacts.text` on the `fold-llm` success path no longer carries the task
+  body. A ledger written by the previous release still resumes: the reader seeds the identity from the records
+  it finds and numbers the older ones in ledger order.
+* **Final payload — changed in this release.** `finalTextFallback: true` says the `finalText` you are holding is
+  the engine's fallback text, not the model's; a failed run carries `termination.errorCode` and the
+  `unpersisted` ledger on the thrown error; and `exitCodeForRunFailure` gives a failed run its own exit code
+  instead of sharing the usage-error one. Termination and verification semantics themselves did not move.
 * The notes tool surface (five tools plus `createBuiltinNotesTools`, `MAX_CONTENT_LENGTH`,
   `resolveNotesDir`), the file tools, the delegation bookkeeping modules, and every provider protocol
   helper.
