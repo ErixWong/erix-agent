@@ -67,7 +67,7 @@ function roundRangeLabel(roundRange) {
  * @param {object[]} messages
  * @param {{from?: number, to?: number}|undefined} roundRange
  * @param {{ maxTokens?: number }} [options]
- * @deprecated issue #429: removed in 0.30 — migrate to
+ * @deprecated issue #429: removed in 0.31 — migrate to
  *   `serializeFoldedMessagesWithMeta` (same text under `.text`, plus the
  *   `dropped` / `total` / `bounded` accounting this thin wrapper throws away).
  */

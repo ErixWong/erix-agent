@@ -12,7 +12,7 @@ import { createToolRegistry } from "./registry.js";
 
 export const MAX_CONTENT_LENGTH = 4000;
 /**
- * @deprecated issue #429: removed in 0.30 — no in-tree replacement; the
+ * @deprecated issue #429: removed in 0.31 — no in-tree replacement; the
  *   constant is not wired into any tool schema (the `content` limit is
  *   `MAX_CONTENT_LENGTH`), so nothing in-tree can be migrated to it.
  */
@@ -35,7 +35,7 @@ function now() {
 }
 
 /**
- * @deprecated issue #429: removed in 0.30 — no in-tree replacement; there is no
+ * @deprecated issue #429: removed in 0.31 — no in-tree replacement; there is no
  *   supported clock-injection seam on the public surface (only the notes tests
  *   drive this hook).
  */
