@@ -1887,9 +1887,11 @@ sections. Do not extrapolate observer isolation to those callbacks.
 
 ## Provider request injection (issue #181)
 
-`createOpenAIProvider` and `createAnthropicProvider` accept two additional, fully
-optional option keys, so a host can tag outgoing requests with its own
-attribution identifiers (per-run / per-session) without wrapping `fetchImpl`:
+`createOpenAIProvider` — the only provider factory this package publishes — accepts
+two additional, fully optional option keys, so a host can tag outgoing requests with
+its own attribution identifiers (per-run / per-session) without wrapping `fetchImpl`.
+The internal Anthropic adapter (`src/providers/anthropic.js`) takes the same two keys
+for hosts that build their provider object on top of it:
 
 ```js
 const provider = createOpenAIProvider({
@@ -2517,7 +2519,7 @@ one stderr line, see "Budget derivation").
 | 1 | the **resolved** `modelConfig` | the object returned by `modelConfig.resolve(session?.modelSlot)` — the resolver itself is never probed |
 | 2 | `modelMetadata` | metadata-only carrier; nothing else reads it |
 | 3 | `model` | the `model` option object |
-| 4 | `provider` | both built-in factories re-expose `contextWindowTokens` / `maxOutputTokens` on the returned object when they were given them (`createOpenAIProvider` (`src/providers/openai.js`), `createAnthropicProvider` (`src/providers/anthropic.js`)) |
+| 4 | `provider` | a provider object re-exposes `contextWindowTokens` / `maxOutputTokens` on itself when it was given them (`createOpenAIProvider` (`src/providers/openai.js`) does; a host-built provider should too) |
 | 5 | `context` | the compaction-context option |
 
 - The probe is a duck-type over that exact order and returns the **first**
@@ -2577,9 +2579,9 @@ retired in 0.28.0 (see the `tuning` version policy above); the slot fields they 
 different plane and are untouched.
 
 **Unknown slot fields are inert and safe — except the budget keys, which are known now.** The
-built-in providers copy the slot verbatim (`createJsonFileModelConfigProvider` (`src/config/json-file.js`), `createStaticModelConfigProvider` (`src/config/static.js`)), and both
-factories read a fixed parameter list (`createOpenAIProvider` (`src/providers/openai.js`),
-`createAnthropicProvider` (`src/providers/anthropic.js`)), so an unrecognized key cannot reach the wire
+built-in providers copy the slot verbatim (`createJsonFileModelConfigProvider` (`src/config/json-file.js`), `createStaticModelConfigProvider` (`src/config/static.js`)), and the
+provider factory reads a fixed parameter list (`createOpenAIProvider` (`src/providers/openai.js`),
+as does the internal Anthropic adapter in `src/providers/anthropic.js`), so an unrecognized key cannot reach the wire
 and cannot throw. That safety statement is about **slot
 objects** only: an unknown *top-level* `runToolLoop` option still throws
 `TypeError` (see "`runToolLoop` options"). **Issue #682 narrows it for one key:** `budgetTokens`
@@ -4834,9 +4836,9 @@ overriding any caller-forged `__erix` injection. The returned object contains:
 
 - `definitions` — the four `note_*` schemas;
 - `resolveTools` — the registry schema-resolution view; hosts that need a
-  `ToolProvider` shape (e.g. for `createCompositeToolProvider` aggregation)
-  build it themselves:
-  `createStaticToolProvider({ sets: { default: notes.definitions } })`;
+  `ToolProvider` shape (e.g. to aggregate several tool sets) build the duck-typed
+  `{ listTools(sel) }` object themselves around `notes.definitions` — the package
+  publishes no tool-provider factory;
 - `executors(name, input, context)` — the registry positional view;
 - `executeTool({id, name, input, context, signal})` — the structured view that
   matches the `runToolLoop` / run-snapshot-executor calling convention (the

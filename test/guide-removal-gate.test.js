@@ -94,11 +94,9 @@ test("#687 A：名集是读出来的（中英两份，入口按指南行；任�
     const files = new Set(claim.files.map((file) => file.file));
     assert.equal(files.size, 2, `\`${claim.name}\` 只在一份指南里出现：${[...files].join(", ")}`);
   }
-  assert.deepEqual(
-    [...claims.keys()].sort(),
-    KNOWN_NOT_REMOVED.map((row) => row.name).sort(),
-    "登记表的名字集合必须与指南声称的名集逐字相同（双向漂移由下面两条用例钉住）",
-  );
+  // issue #688：16 个名字真的删了 ⇒ 这条账全部还清，登记表必须是空的（棘轮：条目只许减）。
+  // 将来若又出现「指南说删了、包还在」，那一条必须重新登记并写清 why——上面两条仍然管着它。
+  assert.deepEqual(KNOWN_NOT_REMOVED, [], "删除已经发生（#688），KNOWN_NOT_REMOVED 必须清空，不许留余量");
   t.diagnostic(`名集 ${claims.size} 个名字，读取提示 ${notes.length} 条`);
 });
 
@@ -107,7 +105,8 @@ test("#687 B：同一跑的两态——真登记表 ⇒ 绿（打印已知未删
   const surface = await sourceSurface();
   const stillExported = stillExportedIn(claims, surface);
 
-  // 今天的事实：登记表条数 = 现算仍导出名数（少一条 ⇒ 下面 cleared 会多一条红；多一条 ⇒ 真登记表会红 G3）。
+  // 今天的事实：指南说删了 16 个，运行时一个都不再导出 ⇒ 登记表为空、现算仍导出名数为 0。
+  assert.equal(stillExported.size, 0, "真树的运行时导出面上不该再有指南声称已删的名字（#688 的删除真的发生了）");
   assert.equal(
     KNOWN_NOT_REMOVED.length,
     stillExported.size,
@@ -139,10 +138,12 @@ test("#687 B：同一跑的两态——真登记表 ⇒ 绿（打印已知未删
 test("#687 B2：合成「一个都没删」的世界也走同一条判据（不依赖真树今天的导出面）", () => {
   const { claims } = realClaims();
   const surface = stillThereSurface(claims);
-  const registered = evaluateGuideRemoval({ claims, runtime: surface, registry: KNOWN_NOT_REMOVED });
+  // 真登记表已清空（#688）⇒ 用合成登记表证「登记表兜住 N 条」这一侧仍然成立。
+  const synth = [...claims.keys()].map((name) => ({ name, why: "自测：合成登记（真表已清空，见 issue #688）" }));
+  const registered = evaluateGuideRemoval({ claims, runtime: surface, registry: synth });
   const cleared = evaluateGuideRemoval({ claims, runtime: surface, registry: [] });
   assert.equal(registered.reds.length, 0);
-  assert.equal(registered.known.length, KNOWN_NOT_REMOVED.length);
+  assert.equal(registered.known.length, synth.length);
   assert.equal(cleared.reds.length, claims.size);
 });
 
@@ -150,17 +151,19 @@ test("#687 C：登记表自己也被看守（空 why / 空转条目 / 双向漂�
   const { claims } = realClaims();
   const surface = stillThereSurface(claims);
   const firstName = [...claims.keys()][0];
+  // issue #688 之后真登记表是空的 ⇒ 这一组反向证用内存里的合成登记表打靶（真表空 ≠ 判据失效）。
+  const synth = [...claims.keys()].map((name) => ({ name, why: "自测：合成登记（真表已清空，见 issue #688）" }));
 
   // 空 why ⇒ 红。
-  const blankWhy = KNOWN_NOT_REMOVED.map((row) => (row.name === firstName ? { ...row, why: "  " } : row));
+  const blankWhy = synth.map((row) => (row.name === firstName ? { ...row, why: "  " } : row));
   const blank = evaluateGuideRemoval({ claims, runtime: surface, registry: blankWhy });
   assert.ok(blank.reds.some((red) => red.code === GATE_CODES.REGISTRY_NO_WHY && red.name === firstName));
 
   // 少一条 ⇒ 那一条红 G1（正向断言）；多一条 ⇒ 那一条红 G3（空转条目）。
-  const short = evaluateGuideRemoval({ claims, runtime: surface, registry: KNOWN_NOT_REMOVED.filter((row) => row.name !== firstName) });
+  const short = evaluateGuideRemoval({ claims, runtime: surface, registry: synth.filter((row) => row.name !== firstName) });
   assert.deepEqual(short.reds.map((red) => `${red.code}:${red.name}`), [`${GATE_CODES.STILL_EXPORTED}:${firstName}`]);
   const ghost = { name: "guideRemovalGateGhost", why: "自测：指南两份都没有声称删除这个名字" };
-  const long = evaluateGuideRemoval({ claims, runtime: surface, registry: [...KNOWN_NOT_REMOVED, ghost] });
+  const long = evaluateGuideRemoval({ claims, runtime: surface, registry: [...synth, ghost] });
   assert.deepEqual(long.reds.map((red) => `${red.code}:${red.name}`), [`${GATE_CODES.REGISTRY_IDLE}:${ghost.name}`]);
 
   // 删除真的发生了、登记还在 ⇒ 红 G3（这条账已还清，必须删）。
@@ -168,7 +171,7 @@ test("#687 C：登记表自己也被看守（空 why / 空转条目 / 双向漂�
   const entry = firstClaim.entries[0];
   const deleted = { root: [...surface.root], tools: [...surface.tools] };
   deleted[entry] = deleted[entry].filter((name) => name !== firstName);
-  const afterDelete = evaluateGuideRemoval({ claims, runtime: deleted, registry: KNOWN_NOT_REMOVED });
+  const afterDelete = evaluateGuideRemoval({ claims, runtime: deleted, registry: synth });
   assert.ok(afterDelete.reds.some((red) => red.code === GATE_CODES.REGISTRY_IDLE && red.name === firstName));
   assert.ok(afterDelete.known.every((row) => row.name !== firstName));
 
@@ -178,7 +181,7 @@ test("#687 C：登记表自己也被看守（空 why / 空转条目 / 双向漂�
   const duplicated = evaluateGuideRemoval({
     claims,
     runtime: surface,
-    registry: [...KNOWN_NOT_REMOVED, { name: firstName, why: "自测：故意重复" }],
+    registry: [...synth, { name: firstName, why: "自测：故意重复" }],
   });
   assert.ok(duplicated.reds.some((red) => red.code === GATE_CODES.REGISTRY_DUPLICATE && red.name === firstName));
 });
@@ -210,7 +213,7 @@ test("#687 D：读不出真值 ⇒ exit 2（指南缺失 / 表解析不出 / 运
     registry: [],
     read: (abs) => {
       if (abs.endsWith("CHANGELOG.md")) {
-        return "# Changelog\n\n## [0.30.0] - 2026-01-01\n\n### Breaking\n\n- `runToolLoop` drops `maxRounds`.\n";
+        return "# Changelog\n\n## [0.31.0] - 2026-01-01\n\n### Breaking\n\n- `runToolLoop` drops `maxRounds`.\n";
       }
       return brokenTable;
     },
@@ -241,17 +244,17 @@ test("#687 F：CLI 单独跑——不给 --runtime ⇒ exit 2；给真值 ⇒ �
   const { claims } = realClaims();
   const dir = await makeTmp("erix-guide-removal-gate-");
 
-  // 一个都没删的世界 ⇒ 真登记表全兜住 ⇒ exit 0。
-  const stillThere = join(dir, "still-there.json");
-  writeFileSync(stillThere, JSON.stringify(stillThereSurface(claims)), "utf8");
-  const green = spawnSync(process.execPath, [SCRIPT, "--runtime", stillThere], { cwd: ROOT, encoding: "utf8" });
-  assert.equal(green.status, 0, `全兜住必须 exit 0：\n${green.stdout}\n${green.stderr}`);
-  assert.match(green.stdout, new RegExp(`已知未删除 ${KNOWN_NOT_REMOVED.length} 条（N=${KNOWN_NOT_REMOVED.length}）`, "u"));
-
-  // 删除真的发生了、登记还在 ⇒ 逐名红 G3 ⇒ exit 1（不许因为「运行时没有它」而变绿）。
+  // 真树今天的形状：指南说删了 16 个、运行时一个都没有、登记表为空 ⇒ exit 0，已知未删除 0 条。
   const removed = join(dir, "removed.json");
   writeFileSync(removed, JSON.stringify({ root: [], tools: [] }), "utf8");
-  const red = spawnSync(process.execPath, [SCRIPT, "--runtime", removed], { cwd: ROOT, encoding: "utf8" });
-  assert.equal(red.status, 1, `登记已还清必须 exit 1：\n${red.stdout}\n${red.stderr}`);
-  assert.match(red.stderr, /REGISTRY_IDLE/u);
+  const green = spawnSync(process.execPath, [SCRIPT, "--runtime", removed], { cwd: ROOT, encoding: "utf8" });
+  assert.equal(green.status, 0, `全删净 + 空登记表必须 exit 0：\n${green.stdout}\n${green.stderr}`);
+  assert.match(green.stdout, /已知未删除 0 条（N=0）/u, "删干净之后这条账是 0 条");
+
+  // 「一个都没删」的世界 + 空登记表 ⇒ 逐名红 G1 ⇒ exit 1（#687 的原病：指南说删了、包还在）。
+  const stillThere = join(dir, "still-there.json");
+  writeFileSync(stillThere, JSON.stringify(stillThereSurface(claims)), "utf8");
+  const red = spawnSync(process.execPath, [SCRIPT, "--runtime", stillThere], { cwd: ROOT, encoding: "utf8" });
+  assert.equal(red.status, 1, `指南说删了而运行时还在导出时必须 exit 1：\n${red.stdout}\n${red.stderr}`);
+  assert.match(red.stderr, /STILL_EXPORTED/u);
 });

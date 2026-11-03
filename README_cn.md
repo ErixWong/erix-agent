@@ -390,6 +390,8 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
   "docs/host-upgrade-guide-0.29.0_cn.md",
   "docs/host-upgrade-guide-0.30.0.md",
   "docs/host-upgrade-guide-0.30.0_cn.md",
+  "docs/host-upgrade-guide-0.31.0.md",
+  "docs/host-upgrade-guide-0.31.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -606,7 +608,7 @@ erix mcp [--config <path>]
 
 重复的 `exec` 命令会正常执行并返回新输出：引擎不做幂等分类、不检测重跑、也不发重跑告知（ADR-016）。重跑值可能不同，所以副作用与重跑风险由宿主的权限/沙箱/幂等层承担——引擎的审计事实是归档输出本身，而不是"这条命令是否可重放"。
 
-内置的 `notes` 工具提供 `note_take`、`note_read`、`note_list` 和 `note_forget`。它是一个面向 run、pull-only 的便利索引，用于事实、一次性值、决策和 artifact 引用；它不是逐轮日志，也不是 provenance 证据源（guard 的证据是 transcript 的归档输出）。headless 宿主可以从包根或 `erix-agent/tools` 通过 `createBuiltinNotesTools` 全套装配工厂注册；工厂返回 6 键 canonical API（`definitions`、双视图执行器 `executors` / 结构化 `executeTool`、`resolveTools`、run 生命周期钩子 `lifecycle.onRunComplete`（只 completeRun——过期清理归宿主按会话时钟调度 `store.purge`，CLI 在 run 收尾后接着执行）、ADR-015 折叠点 `semanticStateProvider`）——全部绑定同一 run scope 与同一 `NotesStore` 实例。需要 `ToolProvider` 形态的宿主可用 `createStaticToolProvider({ sets: { default: notes.definitions } })` 自建。CLI 已于 v0.11.0 退役 bundled `skills/notes/skill.mjs` 兼容 shim（issue #61）：启用 notes 时统一经工厂装配（可用 `--no-notes` / `ERIX_NO_NOTES=1` 关闭），`erix skills` 不再列出 bundled notes skill；用户和项目 skill 仍可从 `~/.erix/skills/`、项目的 `.erix/skills/` 或 `--skills-dir <path>` 提供。`erix skills` 会列出发现的 skill。
+内置的 `notes` 工具提供 `note_take`、`note_read`、`note_list` 和 `note_forget`。它是一个面向 run、pull-only 的便利索引，用于事实、一次性值、决策和 artifact 引用；它不是逐轮日志，也不是 provenance 证据源（guard 的证据是 transcript 的归档输出）。headless 宿主可以从包根或 `erix-agent/tools` 通过 `createBuiltinNotesTools` 全套装配工厂注册；工厂返回 6 键 canonical API（`definitions`、双视图执行器 `executors` / 结构化 `executeTool`、`resolveTools`、run 生命周期钩子 `lifecycle.onRunComplete`（只 completeRun——过期清理归宿主按会话时钟调度 `store.purge`，CLI 在 run 收尾后接着执行）、ADR-015 折叠点 `semanticStateProvider`）——全部绑定同一 run scope 与同一 `NotesStore` 实例。需要 `ToolProvider` 形态的宿主自己写一个 `{ listTools(sel) }` 对象包住 `notes.definitions`（本包不提供工具 provider 工厂）。CLI 已于 v0.11.0 退役 bundled `skills/notes/skill.mjs` 兼容 shim（issue #61）：启用 notes 时统一经工厂装配（可用 `--no-notes` / `ERIX_NO_NOTES=1` 关闭），`erix skills` 不再列出 bundled notes skill；用户和项目 skill 仍可从 `~/.erix/skills/`、项目的 `.erix/skills/` 或 `--skills-dir <path>` 提供。`erix skills` 会列出发现的 skill。
 
 MCP 使用标准 `.mcp.json` 配置，并支持 stdio 和 HTTP server。`mcp` proxy 提供 `list`、`search`、`call` 和 `status` action。`erix mcp` 会列出已配置的 server 及其连接状态。
 
@@ -673,11 +675,11 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 本仓不是每份 Markdown 都在声明同一件事，门禁也按不同的口径筛（`scripts/docs-drift-check.mjs` + `test/docs-anchor-ratchet.test.js`）。三类：
 
 - **活文档——有门禁，必须「今天为真」。** `README*.md`、`AGENTS*.md`、中英契约（`docs/host-consumer-contract.md` /
-  `docs/host-consumer-contract_cn.md`）、**全部** `docs/host-upgrade-guide*.md`（当前 34 份，按目录实扫），再加上
+  `docs/host-consumer-contract_cn.md`）、**全部** `docs/host-upgrade-guide*.md`（当前 36 份，按目录实扫），再加上
   工单 261021-03 B1 新纳面的中英架构（`docs/architecture.md` / `docs/architecture_cn.md`）、中英图表
   （`docs/charts.md` / `docs/charts_cn.md`）、中英需求对照（`docs/requirements.md` / `docs/requirements_cn.md`）、
   `erix_run` 的 README（`examples/pi-extension/README.md`）与维护账本中英（`docs/maintenance/symbol-anchor-ledger.md` /
-  `docs/maintenance/symbol-anchor-ledger_cn.md`——正文是**历史**账本，门禁钉它的正文而不是要求它写现状）。共 49 份（`REF_SCAN_DOCS_MINIMUM = 49`：15 份点名 + 按目录实扫到的 34 份升级指南）：文件改名、
+  `docs/maintenance/symbol-anchor-ledger_cn.md`——正文是**历史**账本，门禁钉它的正文而不是要求它写现状）。共 51 份（`REF_SCAN_DOCS_MINIMUM = 51`：15 份点名 + 按目录实扫到的 36 份升级指南）：文件改名、
   行号漂到另一个函数、符号在 `src/` 里已不存在，都会把 `npm run check:docs` 压红。
 - **快照档案——「首部写的那一日为真」。** `docs/v0.0-contracts*.md` / `docs/v0.1-contracts*.md` /
   `docs/v0.2-contracts*.md`、`docs/design/`、`docs/research/`、`docs/harness-comparison/`（共 28 份）。每份首部都有一行

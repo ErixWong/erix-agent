@@ -3,6 +3,55 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+## [0.31.0] - 2026-11-10（未发布 / unpublished）
+
+### Breaking
+
+- **The sixteen names the 0.30.0 guide announced are really removed now (issue #688).** The 0.30.0
+  guide said "16 exported names are removed" and the shipped `erix-agent@0.30.0` still exported every
+  one of them, so the boundary moved to this release: `serializeFoldedMessages`, `extractL0Fact`,
+  `extractL0`, `parseSummary`, `parseReflectionSummary`, `MESSAGE_OVERHEAD_TOKENS`,
+  `estimateMessagesTokens`, `createEnvModelConfigProvider` and `createAnthropicProvider` leave the
+  package root, while `createStaticToolProvider`, `createJsonFileToolProvider`,
+  `createCompositeToolProvider`, `resolveFileReadMaxBytes`, `setNotesClock`, `removeRecord` and
+  `NOTE_VALUE_MAX_CHARS` leave `erix-agent/tools` (`NOTE_VALUE_MAX_CHARS` lived on both entries, so
+  sixteen names make seventeen entry rows). **The export retires, not the implementation**: every one
+  of these still exists inside `src/` as an internal part, and the Anthropic protocol helpers
+  (`canonicalToAnthropicRequest`, `anthropicResponseToCanonical`, `createAnthropicStreamAssembler`)
+  stay public. An ESM `import` of a removed name now fails at module load. `createOpenAIProvider` is
+  the only provider factory the package publishes; other protocols are the host's own provider
+  object. Migration is per name: six are one-line aliases (`estimateMessagesTokens` →
+  `estimateMessageTokens`, `extractL0` / `extractL0Fact` → `extractL0Facts`, `parseSummary` /
+  `parseReflectionSummary` → `parseL1Summary`, `MESSAGE_OVERHEAD_TOKENS` → `MESSAGE_OVERHEAD`,
+  `serializeFoldedMessages` → `serializeFoldedMessagesWithMeta`), the rest carry no in-tree
+  replacement. `docs/host-upgrade-guide-0.31.0.md` is the page that ships this boundary; the
+  `createAnthropicProvider` entry stays in `REMOVAL_REGISTRY` as a **landed** record (the host fact
+  `app_container/apps/worker/src/pi/erix-adapter.js:2` is still on disk), and the new R14 of
+  `check:exports:deprecated` reds if a landed name ever comes back onto the public surface.
+- **Errata for the 0.30.0 page (issue #686).** 0.30.0 registered the markers and shipped the guide
+  but deleted nothing: the 0.30.0 guide's §2 and §3 now say so in place, and the deletion itself is
+  this release. A host on 0.30.0 that had already migrated saw no breakage — and neither did one
+  that had not migrated.
+- **0.30.0 指南宣布的那 16 个名字现在真的删了（issue #688）。** 0.30.0 的指南写着「16 个导出名被删除」，
+  而发出去的 `erix-agent@0.30.0` 仍然把每一个都还给了消费者，所以边界挪到了这一版：`serializeFoldedMessages`、
+  `extractL0Fact`、`extractL0`、`parseSummary`、`parseReflectionSummary`、`MESSAGE_OVERHEAD_TOKENS`、
+  `estimateMessagesTokens`、`createEnvModelConfigProvider` 与 `createAnthropicProvider` 离开包根；
+  `createStaticToolProvider`、`createJsonFileToolProvider`、`createCompositeToolProvider`、
+  `resolveFileReadMaxBytes`、`setNotesClock`、`removeRecord` 与 `NOTE_VALUE_MAX_CHARS` 离开
+  `erix-agent/tools`（`NOTE_VALUE_MAX_CHARS` 两个入口都有，所以 16 个名字对应 17 行入口）。**退役的是导出，
+  不是实现**：这些符号仍然作为内部件活在 `src/` 里，Anthropic 协议助手（`canonicalToAnthropicRequest`、
+  `anthropicResponseToCanonical`、`createAnthropicStreamAssembler`）继续公开。再 import 一个被删的名字会在
+  模块加载期失败。`createOpenAIProvider` 是本包唯一发布的 provider 工厂，其他协议由宿主自己提供 provider
+  对象。迁移逐名给：六个是一行别名（`estimateMessagesTokens` → `estimateMessageTokens`，`extractL0` /
+  `extractL0Fact` → `extractL0Facts`，`parseSummary` / `parseReflectionSummary` → `parseL1Summary`，
+  `MESSAGE_OVERHEAD_TOKENS` → `MESSAGE_OVERHEAD`，`serializeFoldedMessages` →
+  `serializeFoldedMessagesWithMeta`），其余没有仓内替代物。落地这一边界的是
+  `docs/host-upgrade-guide-0.31.0.md`；`createAnthropicProvider` 那一条以**已落地**（`status: "landed"`）
+  形态留在 `REMOVAL_REGISTRY` 里（宿主事实 `app_container/apps/worker/src/pi/erix-adapter.js:2` 仍在盘上），
+  而 `check:exports:deprecated` 新增的 R14 会在「已落地的名字又回到公共导出面」时红。
+- **0.30.0 那一页的勘误（issue #686）。** 0.30.0 登记了标记、发了指南，但一个都没删：0.30.0 指南的 §2 与 §3
+  现在就地写清了这一点，删除本身是这一版。在 0.30.0 上，已经迁完的宿主看不到破坏——没迁的也看不到。
+
 ## [0.30.0] - 2026-11-03
 
 ### Breaking

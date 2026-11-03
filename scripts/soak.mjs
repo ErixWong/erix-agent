@@ -13,7 +13,6 @@ import {
   buildTimeline,
   canonicalToAnthropicRequest,
   canonicalToOpenAIMessages,
-  createAnthropicProvider,
   createFileTranscriptStore,
   createOpenAIProvider,
   estimateTokens,
@@ -24,6 +23,10 @@ import {
   TOOL_RESULT_CONTRACT,
   validateMessages,
 } from "../src/index.js";
+// issue #688: the Anthropic factory is no longer a public export (it is an internal part now —
+// the protocol layer stays public, the factory does not). soak is a repository script, not a host,
+// so it reaches the module directly instead of going through the package entry.
+import { createAnthropicProvider } from "../src/providers/anthropic.js";
 
 // 中止/重试路径上，被抛弃的 in-flight 请求可能在 run 已经收口之后才拒绝。Node 22 默认
 // `--unhandled-rejections=throw` 会**直接把进程打死**（真机 soak 实测：abort 之后报告根本没写出来）。

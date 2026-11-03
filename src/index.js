@@ -1,7 +1,6 @@
 // erix-agent 公共导出（tools 子路径 v0.2 才落地，见 package.json exports）
 export { KitError, classifyHttpError, classifyFetchException } from "./providers/errors.js";
 export { createOpenAIProvider } from "./providers/openai.js";
-export { createAnthropicProvider } from "./providers/anthropic.js";
 export {
   canonicalToOpenAIMessages,
   canonicalToolsToOpenAI,
@@ -31,10 +30,8 @@ export {
 export {
   estimateTokens,
   estimateMessageTokens,
-  estimateMessagesTokens,
   IMAGE_TOKEN_COST,
   MESSAGE_OVERHEAD,
-  MESSAGE_OVERHEAD_TOKENS,
 } from "./tokens.js";
 export { computeBudget } from "./compact/budget.js";
 export { createSlidingWindowStrategy } from "./compact/sliding-window.js";
@@ -67,7 +64,6 @@ export { createMemoryNotesStore } from "./store/notes-memory.js";
 export {
   createBuiltinNotesTools,
   MAX_CONTENT_LENGTH,
-  NOTE_VALUE_MAX_CHARS,
   resolveNotesDir,
 } from "./tools/notes.js";
 export {
@@ -82,7 +78,6 @@ export {
   createStaticModelConfigProvider,
   createModelConfigResolver,
 } from "./config/static.js";
-export { createEnvModelConfigProvider } from "./config/env.js";
 export { createJsonFileModelConfigProvider } from "./config/json-file.js";
 export { resolveApiKey } from "./config/api-key.js";
 // 槽位 → provider 的构造件（issue #406 B2-a 的 C-a）：宿主拿 L2 兜底得先有 provider，
@@ -95,7 +90,7 @@ export {
   isBuiltinCompactionStrategyName,
   resolveCompactionStrategy,
 } from "./compact/strategy-resolution.js";
-export { createProviderSummarizer, serializeFoldedMessages } from "./compact/provider-summarizer.js";
+export { createProviderSummarizer } from "./compact/provider-summarizer.js";
 export { createAgent, runToolLoop } from "./loop/orchestrator.js";
 // issue #571：逐叶「初始化 / 每次调用」的绑定事实（`"init"` / `"call"`）。它是**机器可读**的
 // 公开事实，唯一来源在 `src/loop/config-namespace.js`（与 `CONFIG_NAMESPACE_SCHEMA` 同处、由自检
@@ -120,12 +115,5 @@ export {
   isStuckOnRepeatedError,
   shouldWrapUp,
 } from "./reflection/governor.js";
-export {
-  extractL0Fact,
-  extractL0,
-  extractL0Facts,
-  parseL1Summary,
-  parseReflectionSummary,
-  parseSummary,
-} from "./reflection/l0.js";
+export { extractL0Facts, parseL1Summary } from "./reflection/l0.js";
 export { DEFAULT_REFLECTION_MIN_ROUNDS } from "./loop/reflection.js";

@@ -506,19 +506,25 @@ export function makeOwnCheckoutDetector() {
 /**
  * 探针本体（纯函数：`walk` / `read` 可注入，自测因此打内存夹具、不写盘）。
  *
- * @param {{hosts: string[], candidates: Array<{name: string}>, registry?: object,
+ * `retired` 是**当前版本升级指南声称已删**的名字（issue #688）：删完之后那些名字不再是「零消费者候选」
+ * （它们根本不在导出面上了），但宿主对它们的导入恰恰是**这一版已经打断**的引用——不把它们纳入求交，
+ * 探针就会在「真删了」的那一版报告「0 处命中」，把最该被指南覆盖的那一笔账静默掉。
+ *
+ * @param {{hosts: string[], candidates: Array<{name: string}>, retired?: string[], registry?: object,
  *          walk?: (host: string) => object, read?: (abs: string) => string}} input
  * @returns {{hits: Array<object>, unresolved: Array<object>, skipped: Array<object>, stats: object}}
  */
 export function probeHosts({
   hosts,
   candidates,
+  retired = [],
   registry = REMOVAL_REGISTRY,
   walk = walkHost,
   read = (abs) => readFileSync(abs, "utf8"),
   isOwn = makeOwnCheckoutDetector(),
 }) {
-  const candidateNames = new Set((candidates ?? []).map((row) => row.name));
+  const retiredNames = new Set(retired ?? []);
+  const candidateNames = new Set([...(candidates ?? []).map((row) => row.name), ...retiredNames]);
   const hits = [];
   const unresolved = [];
   const skipped = [];
@@ -555,6 +561,7 @@ export function probeHosts({
           spec: ref.spec,
           kind: ref.kind,
           removalVersion: removalVersionOf(ref.name, registry),
+          retired: retiredNames.has(ref.name),
         });
       }
       for (const row of parsed.unresolved) {
@@ -706,14 +713,16 @@ export const CRITERIA = [
  * @param {{probe: object, coverage: object, candidates: Array<object>, total: number,
  *          hosts: string[], root: string, judged: boolean, guideRead: object}} input
  */
-export function renderReport({ probe, coverage, candidates, total, hosts, root, judged, guideRead }) {
+export function renderReport({ probe, coverage, candidates, total, hosts, root, judged, guideRead, retiredCount = 0 }) {
   const lines = [];
   const hostSkips = probe.skipped.filter((row) => row.scope === "host");
   lines.push("host-consumer-probe：宿主仓 × 零消费者候选 求交，再拿命中的名字去指南里找条目（issue #429 的宿主侧半边）");
   lines.push("");
   lines.push(`根目录（被探的包）：${root}`);
   lines.push(`清点事实：${total} 个导出名 ⇒ 零消费者候选 ${candidates.length} 个`
-    + "（`computeInventory()` 现算，未抄第二份名单）");
+    + "（`computeInventory()` 现算，未抄第二份名单）；求交面另外并入**当前指南声称已删**的名字"
+    + `（issue #688：真删之后它们不再进候选清单，但宿主对它们的导入正是这一版已经打断的引用）：`
+    + `${retiredCount} 个`);
   if (guideRead?.error) {
     lines.push(`指南表（${BUNDLE_GUIDE_VERSION}）：读不出 —— [${guideRead.error.code}] ${guideRead.error.message}`);
   } else {
@@ -761,7 +770,8 @@ export function renderReport({ probe, coverage, candidates, total, hosts, root, 
       for (const row of coverage.covered) {
         for (const hit of row.hits) {
           lines.push(`- \`${row.name}\` @ 宿主仓 \`${hit.repo}\` — \`${hit.file}:${hit.line}\``
-            + `（\`${hit.kind}\` from \`${hit.spec}\`；登记删除版本 ${hit.removalVersion}）`);
+            + `（\`${hit.kind}\` from \`${hit.spec}\`；登记删除版本 ${hit.removalVersion}`
+            + `${hit.retired ? "；这一版已删" : ""}）`);
         }
         for (const entry of row.entries) {
           lines.push(`  ↳ 指南条目：\`${entry.rel}:${entry.line}\`（入口 ${entry.entry}）——迁移写法：${entry.clause}`);
@@ -1121,13 +1131,14 @@ export function main(argv = process.argv.slice(2)) {
     return 2;
   }
 
-  const probe = probeHosts({ hosts: opts.hosts, candidates });
-  const hostSkips = probe.skipped.filter((row) => row.scope === "host");
-  const judged = opts.hosts.length > 0 && hostSkips.length < opts.hosts.length;
-
   // 指南表是判据的另一半。**只有判定了才把它当硬真值**：没给宿主目录时这一格是「未判定」，
   // 指南读不出不该把 CI 形态（`npm run check:host-consumers`，无参数）压红——但报告要照实说出来。
+  // 它同时给出求交面的另一半：指南声称已删的名字（issue #688 之后真删的那批不再进候选清单）。
   const guideRead = readGuideTables(opts.root);
+  const retiredNames = [...new Set((guideRead.guides ?? []).flatMap((guide) => [...guide.rows.keys()]))].sort();
+  const probe = probeHosts({ hosts: opts.hosts, candidates, retired: retiredNames });
+  const hostSkips = probe.skipped.filter((row) => row.scope === "host");
+  const judged = opts.hosts.length > 0 && hostSkips.length < opts.hosts.length;
   if (judged && guideRead.error) {
     console.error(`host-consumer-probe: 指南表读不出（exit 2）——[${guideRead.error.code}] ${guideRead.error.message}`);
     console.error("  覆盖判据 = 宿主命中 × 指南条目；缺一半就无从判定（不许把「读不出」当成「没命中」）");
@@ -1179,7 +1190,7 @@ export function main(argv = process.argv.slice(2)) {
   } else {
     console.log(renderReport({
       probe, coverage, candidates, total: inventory.total,
-      hosts: opts.hosts, root: opts.root, judged, guideRead,
+      hosts: opts.hosts, root: opts.root, judged, guideRead, retiredCount: retiredNames.length,
     }));
   }
   return exitCode;

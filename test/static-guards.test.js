@@ -3880,7 +3880,7 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
 // 顶部 Unreleased 非空 ⇒ 面就是它）。地板**必须跟着面一起重测**——「只升不降」是**同一面内**的规则，
 // 跨面重测是 #563 设计好的动作，不是放宽。
 /** 地板校准所在的节标题（`CHANGELOG_PAIR_FLOOR` 是在**这一节**上实测的；面挪走且配对数不足 ⇒ 点名重测）。 */
-const CHANGELOG_PAIR_FLOOR_SURFACE = "## [0.30.0] - 2026-11-03";
+const CHANGELOG_PAIR_FLOOR_SURFACE = "## [0.31.0] - 2026-11-10（未发布 / unpublished）";
 /** 两条 bullet 之间最多隔几行才算「紧邻」（0 = 直接相邻，1 = 中间隔一行）。 */
 const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 /** 配对地板：在 `CHANGELOG_PAIR_FLOOR_SURFACE` 那一节上实测的配对数。**同一面内只能升不能降。**
@@ -4120,7 +4120,7 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  * # 配对地板反向证：删掉第 10 行英文条目 ⇒ 6 对（地板 7，已穿底）+ 中文第 37 行无对应；把该条的 \#109 改成 \#999（数量不变）⇒ 6 对；还原 ⇒ 7 对全绿
  * ```
  */
-const CHANGELOG_PAIR_FLOOR = 7;
+const CHANGELOG_PAIR_FLOOR = 2;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
@@ -4210,7 +4210,9 @@ describe("静态守卫：CHANGELOG 未发布节的中英配对地板（issue #56
     const problems = collectChangelogPairingProblems(text);
     // 地板是在 `CHANGELOG_PAIR_FLOOR_SURFACE` 那一节上实测的（#571 面随 #571 片1 的条目挪到
     // `## [Unreleased]`，所以地板 = 在 Unreleased 上重测的值：#571 起 1 对、#574 ⇒ 2 对、#575 ⇒ 3 对、
-    // #572 ⇒ 4 对、#571 片2 ⇒ 5 对；#678 ⇒ 6 对）。
+    // #572 ⇒ 4 对、#571 片2 ⇒ 5 对；#678 ⇒ 6 对；0.30.0 开版后 ⇒ 7 对）。
+    // issue #688 开了 0.31.0 这一节（顶部 Unreleased 为空 ⇒ 面退到它）⇒ 按注释第 3 条重测：
+    // 0.31.0 节实测 2 对（一条 Breaking 的英文 + 它的中文译本）。
     // 面被 `resolveChangelogScanSurface` 挪到别的节（例如 0.29 开版后顶部 Unreleased 又空了 ⇒ 退到刚开的
     // 版本节）时，这个数就没有校准依据了。
     const onFloorSurface = Boolean(problems.surface)

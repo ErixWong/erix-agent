@@ -435,6 +435,8 @@ quoted blocks below against it):
   "docs/host-upgrade-guide-0.29.0_cn.md",
   "docs/host-upgrade-guide-0.30.0.md",
   "docs/host-upgrade-guide-0.30.0_cn.md",
+  "docs/host-upgrade-guide-0.31.0.md",
+  "docs/host-upgrade-guide-0.31.0_cn.md",
   "test/contract/assembly-port.js",
   "test/contract/engine-api.js",
   "test/contract/execute-tool.js",
@@ -1124,8 +1126,9 @@ package root or `erix-agent/tools`; the factory returns the canonical 6-key API
 (completeRun only — expired-retention cleanup is host-scheduled via
 session-clock `store.purge`; the CLI chains it after run completion), and the
 ADR-015 fold-point `semanticStateProvider`) — all bound to one run scope and one `NotesStore`
-instance. Hosts that need a `ToolProvider` shape can build one from
-`createStaticToolProvider({ sets: { default: notes.definitions } })`. The CLI
+instance. Hosts that need a `ToolProvider` shape build their own object (any
+`{ listTools(sel) }`) around `notes.definitions`; the package ships no tool-provider
+factory. The CLI
 retired the bundled `skills/notes/skill.mjs` compatibility shim in v0.11.0
 (issue #61): when notes are enabled they are assembled exclusively through the
 factory (`--no-notes` / `ERIX_NO_NOTES=1` opts out) and `erix skills`
@@ -1256,12 +1259,12 @@ Not every Markdown file in this repository claims the same thing, and the gate k
 
 - **Live documentation — gated, must be true *today*.** `README*.md`, `AGENTS*.md`, the consumer contract pair
   (`docs/host-consumer-contract.md` / `docs/host-consumer-contract_cn.md`), **every** `docs/host-upgrade-guide*.md`
-  (34 today, discovered from the directory), plus — since 工单 261021-03 B1 — the architecture pair
+  (36 today, discovered from the directory), plus — since 工单 261021-03 B1 — the architecture pair
   (`docs/architecture.md` / `docs/architecture_cn.md`), the chart pair (`docs/charts.md` / `docs/charts_cn.md`),
   the requirements pair (`docs/requirements.md` / `docs/requirements_cn.md`), the `erix_run` README
   (`examples/pi-extension/README.md`) and the maintenance ledger pair
   (`docs/maintenance/symbol-anchor-ledger.md` / `docs/maintenance/symbol-anchor-ledger_cn.md` — its body is a
-  *history* ledger, so the gate pins that body instead of asking it to describe today). That is 49 documents (`REF_SCAN_DOCS_MINIMUM = 49`: 15 pinned + the 34 upgrade-guide files found by the directory scan): a renamed file, a moved
+  *history* ledger, so the gate pins that body instead of asking it to describe today). That is 51 documents (`REF_SCAN_DOCS_MINIMUM = 51`: 15 pinned + the 36 upgrade-guide files found by the directory scan): a renamed file, a moved
   line or a symbol that no longer exists in `src/` turns `npm run check:docs` red.
 - **Snapshot archives — true at the date in their own header.** `docs/v0.0-contracts*.md` /
   `docs/v0.1-contracts*.md` / `docs/v0.2-contracts*.md`, `docs/design/`, `docs/research/`, `docs/harness-comparison/`

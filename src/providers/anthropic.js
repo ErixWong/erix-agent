@@ -334,7 +334,7 @@ function createRequestContext(timeoutMs, externalSignal) {
  *   extraBody?:Record<string,unknown>,
  * }} options provider construction options
  * @returns {{protocol:"anthropic", model:string, chat:Function, chatStream:Function}}
- * @deprecated issue #429: removed in 0.30 — no in-tree replacement; the host
+ * @deprecated issue #429: removed in 0.31 — no in-tree replacement; the host
  *   builds the provider object itself (the duck-typed `{protocol, model, chat,
  *   chatStream}` shape).
  *   Known host-visible breakage: `scripts/host-consumer-probe.mjs` finds a

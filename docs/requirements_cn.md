@@ -50,7 +50,7 @@
 
 | # | 需求 | 状态与实现 |
 |---|---|---|
-| FR-1.1 | OpenAI 兼容（`chat/completions`）和 Anthropic（`messages`）协议，均支持流式与非流式 | **已交付。** `createOpenAIProvider` 和 `createAnthropicProvider` 暴露 `chat` 与 `chatStream`。 |
+| FR-1.1 | OpenAI 兼容（`chat/completions`）和 Anthropic（`messages`）协议，均支持流式与非流式 | **已交付。** `createOpenAIProvider` 暴露 `chat` 与 `chatStream`；Anthropic 适配器是内部件，走 Anthropic 的宿主自己提供 provider 对象（协议助手仍然公开）。 |
 | FR-1.2 | 将两种协议归一为一种内部块格式（`text` / `tool_use` / `tool_result`） | **已交付。** `src/messages/canonical.js` 和 `src/messages/anthropic.js` 还会在需要时保留 `raw`、图片和 reasoning 块。 |
 | FR-1.3 | 通用错误类别：`timeout` / `rate_limited` / `auth` / `network` / `server`，并带有可重试标记 | **已交付。** `src/providers/errors.js` 提供 `KitError`、HTTP 分类、fetch 异常分类和 `retryable`；它还暴露显式的 `aborted`、`provider_config`、`invalid_messages` 及相关不可重试错误。 |
 | FR-1.4 | 对于包含错误正文的 HTTP 2xx 响应，保留真实上游消息，而不是报告误导性的 missing-choice 错误 | **已交付。** 两个 provider 都会检查成功响应正文中的 provider 错误并保留上游消息；缺少 `choices` 的 OpenAI 响应会包含有界的响应预览。 |
@@ -82,7 +82,7 @@
 
 | # | 需求 | 状态与实现 |
 |---|---|---|
-| FR-4.1 | `ModelConfigProvider` 契约，提供 static、environment 和 JSON-file 实现；`apiKey` 可间接引用环境变量或文件 | **已交付，但实现为 duck-typed 的 `resolve(slot)` 契约，而非类或正式接口。** `createStaticModelConfigProvider`、`createEnvModelConfigProvider` 和 `createJsonFileModelConfigProvider` 已实现；`resolveApiKey` 支持直接值、`apiKeyEnv` 和 `apiKeyFile`。 |
+| FR-4.1 | `ModelConfigProvider` 契约，提供 static 和 JSON-file 实现；`apiKey` 可间接引用环境变量或文件 | **已交付，但实现为 duck-typed 的 `resolve(slot)` 契约，而非类或正式接口。** `createStaticModelConfigProvider` 与 `createJsonFileModelConfigProvider` 已发布，宿主在同一个 `resolve(slot)` 形状里自己读环境变量（环境变量工厂不再是公共入口）；`resolveApiKey` 支持直接值、`apiKeyEnv` 和 `apiKeyFile`。 |
 | FR-4.2 | `TranscriptStore` 契约，提供 memory 和 JSONL-file 实现，包括崩溃恢复 | **已交付。** `createMemoryTranscriptStore` 和 `createFileTranscriptStore` 实现 transcript、运行状态和 checkpoint 方法。file store 会修复或隔离损坏的末尾 JSONL 片段，`runToolLoop({ store, runId, resume: true })` 会恢复 transcript 和待处理的 checkpoint 工作。恰好一次的副作用仍由宿主负责。 |
 
 ### FR-5 工具体系

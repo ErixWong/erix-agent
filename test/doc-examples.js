@@ -195,7 +195,7 @@ if (__calls__.length !== 1) throw new Error(\`executeTool stub 应被调用 1 �
   // fence #1（EN :70，provider 请求注入口 defaultHeaders / extraBody，issue #181）
   {
     linkImports: [
-      `import { createAnthropicProvider, createOpenAIProvider } from ${JSON.stringify(INDEX_URL)};`,
+      `import { createOpenAIProvider } from ${JSON.stringify(INDEX_URL)};`,
     ],
     stubs: `
 const __requests__ = [];

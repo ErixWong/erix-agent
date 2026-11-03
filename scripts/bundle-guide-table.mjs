@@ -18,7 +18,7 @@
 // 这个文件没有 CLI 入口（`node scripts/bundle-guide-table.mjs` 什么都不做，exit 0）：它是库，不是门。
 
 /** 破坏包对应的指南版本（`<NEXT_BREAKING_VERSION>.0`；`docs-drift-check` 会校它等于唯一合法移除边界）。 */
-export const BUNDLE_GUIDE_VERSION = "0.30.0";
+export const BUNDLE_GUIDE_VERSION = "0.31.0";
 export const BUNDLE_GUIDE_EN = `docs/host-upgrade-guide-${BUNDLE_GUIDE_VERSION}.md`;
 export const BUNDLE_GUIDE_CN = `docs/host-upgrade-guide-${BUNDLE_GUIDE_VERSION}_cn.md`;
 /** 两份（中英成对）：名字集合必须相等，条款与入口列必须逐字相同。 */
