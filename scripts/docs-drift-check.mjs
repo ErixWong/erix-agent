@@ -346,9 +346,29 @@ const VERSION_CLAIM_RULES = [
 // （CI 上没有 registry，离线自测不许联网）。不给 `--published` ⇒ exit 2 且一个字节都不写：
 // 「已发布与否」没有真值时，往哪一边写都是猜。
 const CHANGELOG_FILE = "CHANGELOG.md";
+/** requirements §4 阶段表里被标为 `current` 的那一行（issue #699 ④）：`**v0.9.0–v0.30.0 — current**`。
+ *  它是**当前版本声称**（阶段表覆盖到哪一版），切版之后必须跟着 `package.json` 走；但不在
+ *  `CURRENT_CLAIMS` 里就没人回写它，于是切版后它停在旧版，而 `--strict` 遇那条 warning 即红。
+ *
+ *  **为什么不直接塞进 `CURRENT_CLAIMS`**：那几条是「写错就 exit 1」的硬声称，而阶段表停在旧版在本仓的
+ *  既定口径里是**滞后信号**（§1 末尾「版本历史 / 阶段表的最高条目落后于 package.json 只算滞后信号：
+ *  先告警后阻塞」）——把它升级成 error 会改变那条政策。所以严重度维持 warning，只把它接进**写盘面**：
+ *  回写之后那条 warning 自然不再发，`--strict` 也就绿了。
+ *  窄面：正则**只命中那一行的上界版本号本身**（后顾锁定 `| **vX.Y.Z–v`、前瞻锁定 ` — current**`），
+ *  于是 `--sync` 的替换面就是那 6 个字节：行首下界、行内其余字节、表里其它行、表外一切句子都动不了。
+ *  （写成「整行匹配 + 捕获上界」也能对，但 `--sync` 的替换用 `whole.indexOf(captured)` 定位：上下界写成
+ *  同一个版本号时（`v0.31.0–v0.31.0`）它会换掉**下界**——前瞻/后顾把这个坑也堵了，实测见交付报告） */
+const STAGE_ROW_CLAIMS = [
+  { file: REQ_EN, label: "requirements §4 阶段表 current 行",
+    re: /(?<=^\|\s*\*\*v\d+\.\d+\.\d+–v)(\d+\.\d+\.\d+)(?=\s*—\s*current\*\*)/gmu },
+  { file: REQ_CN, label: "requirements_cn §4 阶段表 current 行",
+    re: /(?<=^\|\s*\*\*v\d+\.\d+\.\d+–v)(\d+\.\d+\.\d+)(?=\s*—\s*当前\*\*)/gmu },
+];
+
 /** `--sync` 的改写面：`fact` 指向真值（`version` = 本仓版本 / `published` = 发布行）。 */
 const RELEASE_STATE_TARGETS = [
   ...CURRENT_CLAIMS.map((claim) => ({ file: claim.file, id: `「${claim.label}」`, fact: "version", re: claim.re })),
+  ...STAGE_ROW_CLAIMS.map((claim) => ({ file: claim.file, id: `「${claim.label}」`, fact: "version", re: claim.re })),
   { file: AGENTS_EN, id: "AGENTS.md「本仓版本」句", fact: "version", re: VERSION_CLAIM_RULES[0].repoRe },
   { file: AGENTS_EN, id: "AGENTS.md「发布行」句", fact: "published", re: VERSION_CLAIM_RULES[0].pubRe },
   { file: AGENTS_CN, id: "AGENTS_cn.md「本仓版本」句", fact: "version", re: VERSION_CLAIM_RULES[1].repoRe },
@@ -6450,12 +6470,18 @@ function releaseAddedNames(inventory) {
   return out;
 }
 
-/** 覆盖度下限（只许涨不许降的探针，与 `REF_SCAN_DOCS_MINIMUM` / `SYMBOL_ANCHOR_MIN_UNIQUE` 同构）：
- *  低于它说明抽取逻辑或 CHANGELOG 段被削，本判据正在空跑——那时它会「绿得理直气壮」。
- *  现值 **4** 是 0.29.0 这一版实测（`config.continuity.handoff` / `config_override_conflict` /
- *  `compaction` / `compaction_deferred`），没有留余量是刻意的：这一侧的名字来自「CHANGELOG 的加法句」，
- *  条数本来就少，写小一点等于给「抽取器坏掉」留出静默空间。 */
-const GUIDE_COVERAGE_MIN_NAMES = 4;
+/** 代码侧名字集的**下限**（只许涨不许降的探针，与 `REF_SCAN_DOCS_MINIMUM` / `SYMBOL_ANCHOR_MIN_UNIQUE` 同构）：
+ *  低于它说明 `nameInventory()` 的抽取逻辑被削（config schema / 事件发点 / 策略名 / `process.env` 读点里
+ *  有一张脸抽不出来了）——那时本节会「绿得理直气壮」。
+ *
+ *  **为什么量的是它、而不是「与本版段的交集 ≥ N」**（issue #699 ②）：旧下限（`GUIDE_COVERAGE_MIN_NAMES = 4`）
+ *  量的是「本版 CHANGELOG 段的**加法句**点到几个名字」，于是**合法零新增版恒假**：0.31.0 是纯删除 + 勘误 +
+ *  发版流程的一版，段里一个加法句都没有 ⇒ 判据在 0.31 上永远红（切版树实测 `check:docs` exit 1，红话就是
+ *  「本版只判到 0 个名字（下限 4）」）。「这一版没有新增」是合法事实，不是抽取器坏了；抽取器坏不坏，
+ *  问的是代码侧那张名单还抽不抽得出来（`inventory.size`），那是本常量看守的那一侧。
+ *  现值 **92** 是 0.30.0 这棵树实测（config 叶子 + 观察者事件 + 压缩策略名 + 环境变量）：没有留余量是刻意的
+ *  ——降它必须写理由，不能默默降。 */
+const NAME_INVENTORY_MIN_NAMES = 92;
 
 function collectGuideCoverageErrors() {
   const out = [];
@@ -6487,9 +6513,10 @@ function collectGuideCoverageErrors() {
         + `「该不该有一条」就是靠这条判据看守的（#636）：CHANGELOG 里登记过的新名字，指南必须有一条（中英各一份）`);
     }
   }
-  if (checked < GUIDE_COVERAGE_MIN_NAMES) {
-    out.push(`guide-coverage: 本版只判到 ${checked} 个名字（下限 ${GUIDE_COVERAGE_MIN_NAMES}）——抽取逻辑或 CHANGELOG 段被削，`
-      + `这条判据正在空跑（抽不到真值就报错，别拿「没有要判的」换全绿）`);
+  if (inventory.size < NAME_INVENTORY_MIN_NAMES) {
+    out.push(`guide-coverage: 从代码侧只抽到 ${inventory.size} 个名字（下限 ${NAME_INVENTORY_MIN_NAMES}）——`
+      + "抽取逻辑被削了（config 叶子 / 观察者事件 / 压缩策略名 / 环境变量四张脸里有一张抽不出来），"
+      + "这条判据正在空跑（抽不到真值就报错，别拿「没有要判的」换全绿；降下限要写理由，#699 ②）");
   }
   // (b) 中英成对：**结构化名字**（`config.*` 路径 / 压缩策略名 / 环境变量）在一份指南里出现，就必须在
   //     它的另一语言版本里也出现。这一侧回答的是同一句「该不该有一条」，但问在**两份**之间：某一段只
@@ -6522,6 +6549,12 @@ function collectGuideCoverageErrors() {
   }
   notes.push(`guide-coverage: 代码侧清单 ${inventory.size} 个名字，其中 CHANGELOG ${PKG_VERSION} 段的加法句点到 ${checked} 个，`
     + `逐条要求中英两份指南都提到；另有 ${parityPairs} 对指南按结构化名字做中英成对（${parityChecked} 处不对称）`);
+  if (checked === 0) {
+    // 合法零新增版：本版段里没有「加法句」点到代码侧名字（纯删除 / 勘误 / 发版流程版就是这种）。
+    // 这一条只打印、不判红——健康与否由上面 `NAME_INVENTORY_MIN_NAMES` 看守（#699 ②）。
+    notes.push(`guide-coverage: CHANGELOG ${PKG_VERSION} 段没有加法句点到代码侧名字 ⇒ 本版是零新增版，`
+      + "「该不该有一条」这一半无可判项（不是抽取器坏了：代码侧清单仍然抽到 " + inventory.size + " 个名字）");
+  }
   collectGuideCoverageErrors.notes = notes;
   return out;
 }
@@ -6592,6 +6625,185 @@ const SURFACE_DISPLAY_ONLY = /\bdisplay layer only\b|\bno engine fact changes?\b
 /** 本版那一对指南（判据的扫描面与自测的靶子同源，不写第二份文件名）。 */
 const SURFACE_GUIDE_EN = `docs/host-upgrade-guide-${PKG_VERSION}.md`;
 const SURFACE_GUIDE_CN = `docs/host-upgrade-guide-${PKG_VERSION}_cn.md`;
+
+// ── 自测期望里「当前版」的真值面（issue #699 ③）───────────────────────────────
+/** 把一份路径变成可嵌进 `new RegExp` 的字面量（`docs/host-upgrade-guide-0.30.0.md` 里的点必须转义）。 */
+const rePath = (rel) => String(rel).replace(/[.*+?^${}()|()[\]\\]/g, "\\$&");
+/** **当前版指南的路径在自测期望里必须现读**（#699 ③）。把 `0.30.0` 抄进期望正则，切版当天就是
+ *  「判据点对 0.31 那份指南，期望还在要 0.30 那份」⇒ 整族反向证在切版树上集体红（合成 0.31 树实测 6 例：
+ *  #690 读不出 ①② 与 #511 判据 2c 中英两条）。生产判据一侧本来就是动态的（上面 `SURFACE_GUIDE_EN/CN`），
+ *  这里只是把**期望**拉回同一个真值：`judge` 是红话前缀的判据 id，`tail` 是路径之后那段**正则字面量**
+ *  （传字面量而不是字符串：省掉「字符串里再转义一层」这个坑，`.source` 原样接上）。
+ *  **历史夹具不在此列**（0.27 / 0.29 的指南、0.31 破坏包那份逐名表：钉的是历史文档，切版不改那条事实）。 */
+const guideExpectRe = (judge, rel, tail) => Object.assign(
+  new RegExp(`${esc(judge)}: ${rePath(rel)}${tail.source}`, "u"),
+  // 打上「路径来自真值」的标记，供 runSelfTest 的静态校查认（见那里的 #699 ③ 那一刀）。
+  { pinnedToTruthPath: true });
+/** 自测变异器：把**本版**那条 CHANGELOG 段首整行交给 `build(那一行)` 重写（#699 ③：不再抄死 `## [0.30.0] - 2026-11-03`
+ *  这一行——它随版本走，切版后抄的那一行不在盘上，变异等于没落上）。 */
+const rewriteCurrentChangelogHeading = (build) => (text) =>
+  text.replace(new RegExp(`^## \\[${esc(PKG_VERSION)}\\].*$`, "mu"), (line) => build(line));
+/** 自测变异器：改 AGENTS 两句里的**本仓版本**（`VERSION_CLAIM_RULES` 的 repoRe 就是判据读的同一形状），
+ *  与上一条同理：`says \`0.30.0\`` 这种字面量在切版后的树上不存在。 */
+const mutateRepoVersionClaim = (to) => (text) =>
+  text.replace(VERSION_CLAIM_RULES[0].repoRe, `Current version: \`package.json\` says \`${to}\``);
+const addMeasurementDateToRepoClaim = (date) => (text) =>
+  text.replace(VERSION_CLAIM_RULES[0].repoRe, (whole) => `${whole}, measured ${date}`);
+
+// ── #690 那一族的「两半前提自己带上」（issue #699 ③ (a)）───────────────────────
+/**
+ * 这一族考的是「**当前版指南 §4** × **本版 CHANGELOG**」这一条对账，两半前提都得成立：
+ *   ① 本版段里有这一格的**字段级变更证据**（`declaredSurfaceChanges`）；
+ *   ② 当前版 §4 里**有这一格可定位的声明**（`surfaceClaimBlocks`，规范形状是六格 bullet）。
+ * 0.30 两半都是现成的（加法版 + 六格 bullet）。**0.31 是纯删除版**：段里 70 处反引号全是退役导出名
+ * （按定义不属于六格 ⇒ ① 是空的），§4 也只有一段散文（⇒ ② 没有按格的行）。于是「只变异指南侧」的
+ * 老写法在两棵树上表现不同：0.30 树上落得上、0.31 树上锚点找不到 ⇒ **用例静默失效**（#210 R2 那一类）。
+ * 合成 0.31 树上这 7 例全部报「变异没落到」，就是这个洞在报信（`/tmp/b699/cutB-selftest-final.log`）。
+ *
+ * 所以这一族的**前提由夹具自己带上**，名字一律从真值现取（`cell.truth()` 与本版段），不抄 0.30 的原话：
+ *   · `surfaceCaseEvidence(cellId)` —— 这一格这一例的**证据名字**：本版段里已有该格证据就用它自己的
+ *     （0.30 是这种，红话与改前逐字相同）；没有就从该格真值里取一个真实成员，并回报「要注入」。
+ *   · `addSurfaceEvidence(cellId)` —— 把那条证据注进本版段（只在上一行说「要注入」时才带上）。
+ *   · `putSurfaceBullet(lang, cellId, body)` —— 把这一格在 §4 里的声明**换成 `body`**；那一格本来没有
+ *     bullet（0.31 的散文形状）就在 §4 节首**补一条**（`surfaceClaimBlocks` 是「第一处声明为准」，
+ *     补在节尾会被原有散文抢先声明）。§4 整节找不到 ⇒ 原样返回 ⇒ 框架照旧报「变异没落上」。
+ *   · `writeSurfaceCells(lang, omitCellId)` —— 把 §4 正文写成**规范六格 bullet**（`omit` 那一格不写），
+ *     用来考「整格缺席」：缺席必须是「这一格被删」，不能是「整节本来就没有按格的形状」。
+ * **历史夹具不跟着漂**：0.29 / 0.27 指南那些用例钉的是历史文档，`SURFACE_GUIDE_*` 也不该套到它们身上。
+ */
+const SURFACE_CASE_PREFERRED = Object.freeze({
+  diagnostics: "degradeKind", disk: "record.foldedFacts.text", finalPayload: "exitCodeForRunFailure",
+});
+const SURFACE_CASE_EVIDENCE = new Map();
+
+/** 某一格在自测里的证据名字与「要不要注入证据」（见上面的节头；同一格只算一次）。 */
+function surfaceCaseEvidence(cellId) {
+  if (SURFACE_CASE_EVIDENCE.has(cellId)) return SURFACE_CASE_EVIDENCE.get(cellId);
+  const truths = new Map();
+  for (const cell of SURFACE_CELLS) {
+    const t = cell.truth();
+    if (t) truths.set(cell.id, t);
+  }
+  const declared = declaredSurfaceChanges(PKG_VERSION, truths);
+  const own = [...(declared?.byCell.get(cellId) ?? [])].sort();
+  const preferred = SURFACE_CASE_PREFERRED[cellId];
+  const members = [...(truths.get(cellId) ?? [])].sort();
+  const out = own.length
+    ? { name: own.includes(preferred) ? preferred : own[0], inject: false, source: `本版 CHANGELOG ${PKG_VERSION} 段里该格已有的证据` }
+    : members.length
+      ? { name: members.includes(preferred) ? preferred : members[0], inject: true, source: "本版段对这一格没有变更证据 ⇒ 证据由夹具从该格真值注入" }
+      // 真值抽不出（提取器坏了）：让「抽不到成员真值」那条红自己去红，这里不另造名字。
+      : { name: preferred ?? cellId, inject: false, source: "该格真值抽不出" };
+  SURFACE_CASE_EVIDENCE.set(cellId, out);
+  return out;
+}
+
+/** 往本版段里注入一条「这一格在本版变了」的证据。**句式的三个形状都是判据定的**：落在
+ *  `SURFACE_CHANGE_SHAPES`（`changed`）里、**不**落进 `SURFACE_ADDITIVE_SHAPES`（否则 `guide-coverage`
+ *  会多要一条指南覆盖）、**不**落进 `SURFACE_DISPLAY_ONLY`（展示层句子里的名字不是变更证人）。 */
+const addSurfaceEvidence = (cellId) => (text) => {
+  const { name } = surfaceCaseEvidence(cellId);
+  const line = `- Self-test premise (#699 ③): the \`${name}\` field changed in this release`
+    + ` —— this line is the fixture's own witness for the \`${cellId}\` cell.`;
+  const head = new RegExp(`^## \[${esc(PKG_VERSION)}\].*$`, "mu");
+  return head.test(text) ? text.replace(head, (h) => `${h}\n\n${line}`) : text;
+};
+
+/** §4 那一节的行范围（`{head, end}`，与判据的 `unchangedSurfaceSection` 同一个断法：到下一个 `##`/`###` 为止）。 */
+function surfaceSectionSpan(lines, lang) {
+  const head = lines.findIndex((l) => SURFACE_SECTION_HEADING[lang].test(l.trim()));
+  if (head < 0) return null;
+  let end = head + 1;
+  while (end < lines.length && !/^#{2,3}\s/u.test(lines[end])) end += 1;
+  return { head, end };
+}
+
+/** 规范 bullet 的正文（changed + 点名一个该格的证据名字）：`writeSurfaceCells` 用它把「不是被测格」的
+ *  五格写成**自洽**的形状，于是红只从被测那一格来（#210 的「红只从被变异的地方来」）。 */
+function surfaceCanonicalBullet(lang, cell) {
+  const ev = surfaceCaseEvidence(cell.id);
+  const declared = declaredSurfaceChanges(PKG_VERSION, surfaceTruthMap());
+  const own = [...(declared?.byCell.get(cell.id) ?? [])].sort();
+  const name = own[0] ?? ev.name;
+  return lang === "en"
+    ? `${SURFACE_BULLET.en[cell.id]} changed in this release.** \`${name}\` is named here;`
+      + " this cell is not the subject of this case."
+    : `${SURFACE_BULLET.cn[cell.id]}这一版变了。** 这里点名 \`${name}\`；这一格不是本例的被测格。`;
+}
+
+/** 六格真值的 Map（判据里那份的同款构造；自测夹具用它挑名字）。 */
+function surfaceTruthMap() {
+  const truths = new Map();
+  for (const cell of SURFACE_CELLS) {
+    const t = cell.truth();
+    if (t) truths.set(cell.id, t);
+  }
+  return truths;
+}
+
+/** 把某一格在 §4 里的声明换成 `body`；那一格没有 bullet 时补在**节首**（见节头）。 */
+function putSurfaceBullet(lang, cellId, body) {
+  return (text) => {
+    const lines = text.split("\n");
+    const prefix = SURFACE_BULLET[lang][cellId];
+    const at = lines.findIndex((l) => l.startsWith(prefix));
+    if (at >= 0) {
+      let stop = at + 1;
+      while (stop < lines.length && lines[stop].trim() !== "" && !/^\s*(?:[*+-]|\d+\.)\s/u.test(lines[stop])) stop += 1;
+      return [...lines.slice(0, at), ...body.split("\n"), ...lines.slice(stop)].join("\n");
+    }
+    const span = surfaceSectionSpan(lines, lang);
+    if (!span) return text;          // 整节找不到 ⇒ 原样返回 ⇒ 框架报「变异没落上」（不假绿）
+    return [...lines.slice(0, span.head + 1), "", ...body.split("\n"), ...lines.slice(span.head + 1)].join("\n");
+  };
+}
+
+/** #636 那一例的**目标名字**（#699 ③(a)）：`preferred` 在本版仍是「代码侧名单里的名字」、而本版段又把它
+ *  算成这一版加的 ⇒ 直接用它（0.30 是这种，红话与改前逐字相同）；本版段没有这笔加法 ⇒ 从代码侧名单里
+ *  取一个真实成员当目标，并回报「加法句要注入」。名字一律现取，不抄 `compaction` 这一笔历史事实。 */
+const GUIDE_COVERAGE_TARGETS = new Map();
+function guideCoverageCaseTarget(preferred = "compaction") {
+  if (GUIDE_COVERAGE_TARGETS.has(preferred)) return GUIDE_COVERAGE_TARGETS.get(preferred);
+  const inventory = nameInventory();
+  const added = releaseAddedNames(inventory) ?? new Map();
+  let out;
+  if (added.has(preferred)) {
+    out = { name: preferred, kind: added.get(preferred), inject: false };
+  } else {
+    const hit = [...(inventory ?? new Map())].find(([n, v]) => v?.kind === "观察者事件" && !n.includes("."))
+      ?? [...(inventory ?? new Map()).entries()][0];
+    out = hit ? { name: hit[0], kind: hit[1]?.kind ?? "名字", inject: true }
+      : { name: preferred, kind: "观察者事件", inject: false };
+  }
+  GUIDE_COVERAGE_TARGETS.set(preferred, out);
+  return out;
+}
+
+/** 往本版段里补一条**加法句**（`guide-coverage` 的证人：`ADDITION_VERBS` + 反引号里的名字）。 */
+const addGuideCoverageClaim = (name) => (text) => {
+  const line = `- Self-test premise (#699 ③): this release adds the observer event \`${name}\`.`;
+  const head = new RegExp(`^## \\[${esc(PKG_VERSION)}\\].*$`, "mu");
+  return head.test(text) ? text.replace(head, (h) => `${h}\n\n${line}`) : text;
+};
+
+/** 把某一版指南里对 `name` 的**提及**去掉：没提过就先补一条提及再改掉
+ *  （两棵树上「删掉那条提及」都真的落得上；`after === before` 会被框架判成变异没落上）。 */
+const dropGuideMention = (name) => (text) => {
+  const seeded = text.includes(name) ? text
+    : `${text.trimEnd()}\n\n<!-- self-test premise (#699 ③): mentions \`${name}\` in this line. -->\n`;
+  return seeded.split(name).join("该名字");
+};
+
+/** 把 §4 正文整节写成规范六格 bullet；`omitCellId` 那一格**不写**（= 整格缺席）。见节头。 */
+function writeSurfaceCells(lang, omitCellId = null) {
+  return (text) => {
+    const lines = text.split("\n");
+    const span = surfaceSectionSpan(lines, lang);
+    if (!span) return text;
+    const body = ["", ...SURFACE_CELLS.filter((c) => c.id !== omitCellId).map((c) => surfaceCanonicalBullet(lang, c))];
+    return [...lines.slice(0, span.head + 1), ...body, "", ...lines.slice(span.end)].join("\n");
+  };
+}
 
 /** 六格在指南里的**行首锚**：自测按格替换/删除 bullet 时用（改措辞要同步这里）。 */
 const SURFACE_BULLET = Object.freeze({
@@ -6857,10 +7069,20 @@ function collectUnchangedSurfaceErrors() {
       + "对账判据不许静默放行");
     return done();
   }
+  // issue #699 ①：**零归属不是「提取器坏了」的信号**。真值提取器坏掉的信号是上面那一圈逐格判的
+  // 「抽不到「X」格的成员真值」（`cell.truth()` 返回 null ⇒ 真值集为空）。六格真值各自非空时，本版段里的
+  // 反引号名字可能**一个都不属于六格**——0.31.0 是纯删除版，段里 70 处反引号全是**已经从导出面消失**的
+  // 导出名（`estimateMessagesTokens` / `setNotesClock` / `NOTE_VALUE_MAX_CHARS` …），按定义进不了六格：
+  // 六格量的是「这一版还在的输入面 / 诊断字段 / 磁盘格式 / 事件 / 默认值 / 终局载荷」，退役导出名不在其中。
+  // 旧判据把这种合法形状判成「本判据正在空跑」，于是 `check:docs` 在 0.31 上**永远 exit 2**（切版树与
+  // 「切版 + 已补 §4」树都实测过）。修的是误报：判据一格没删，只把「零归属」从红降级成一条打印说明，
+  // 并把每格真值规模一起印出来（读者能当场看见「六格都在、只是这一版没动它们」）。
+  // 「本判据正在空跑」这句话只允许在**真值集为空**时说（上面那条 fail 里已经说了），这里不许再说。
   if (declared.namesSeen > 0 && declared.anyMember === 0) {
-    fail(`unchanged-surface: CHANGELOG 的 ${PKG_VERSION} 段里有 ${declared.namesSeen} 处反引号字段名，`
-      + "但一格也没解析出来——六格的成员判据（或真值提取器）坏了，本判据正在空跑");
-    return done();
+    notes.push(`unchanged-surface: CHANGELOG ${PKG_VERSION} 段里有 ${declared.namesSeen} 处反引号字段名，`
+      + `但一处也没落进六格（各格真值规模：${[...truths].map(([id, set]) => `${id}=${set.size}`).join(" / ")}）——`
+      + "这是「本版只有删除 / 勘误 / 发版流程」的合法形状：那些名字已从导出面消失，按定义不属于六格，"
+      + "所以不判红；真值集本身抽不出来（提取器坏了）由上面那条「抽不到成员真值」判红（#699 ①）");
   }
   let cellsJudged = 0;
   for (const [rel, lang] of [[en, "en"], [cn, "cn"]]) {
@@ -8319,14 +8541,14 @@ const SELF_TEST_CASES = [
     expectGreen: true,
   },
   {
-    label: "#511 判据 2c：0.30 指南（= 当前版本）里出现「9 groups」的数量声称 ⇒ 红并点名真值（切版后当前版本指南本身不写数量，所以把错误声称注入到它上面：判据咬的是「当前版本那份指南说了什么」）",
-    overlay: { "docs/host-upgrade-guide-0.30.0.md": (t) => t + "\n\nThe configuration namespace still reads **9 groups / 43 leaves** today.\n" },
-    expect: [/guide-claim: docs\/host-upgrade-guide-0\.30\.0\.md:\d+ 声称「9 groups」，而 src\/loop\/config-namespace\.js 里是 \*\*8\*\* 个分组/],
+    label: "#511 判据 2c：**当前版本那份**指南里出现「9 groups」的数量声称 ⇒ 红并点名真值（指南本身不写数量，所以把错误声称注入到它上面：判据咬的是「当前版本那份指南说了什么」，靶子与期望都随 PKG_VERSION 现读，#699 ③）",
+    overlay: { [SURFACE_GUIDE_EN]: (t) => t + "\n\nThe configuration namespace still reads **9 groups / 43 leaves** today.\n" },
+    expect: [guideExpectRe("guide-claim", SURFACE_GUIDE_EN, /:\d+ 声称「9 groups」，而 src\/loop\/config-namespace\.js 里是 \*\*8\*\* 个分组/)],
   },
   {
     label: "#511 判据 2c：中文侧同理（「9 个分组」⇒ 红；中文数词/阿拉伯数字都要接）",
-    overlay: { "docs/host-upgrade-guide-0.30.0_cn.md": (t) => t + "\n\n`config` 命名空间今天仍然是 **9 个分组 / 43 个叶子**。\n" },
-    expect: [/guide-claim: docs\/host-upgrade-guide-0\.30\.0_cn\.md:\d+ 声称「9 个分组」，而 src\/loop\/config-namespace\.js 里是 \*\*8\*\* 个分组/],
+    overlay: { [SURFACE_GUIDE_CN]: (t) => t + "\n\n`config` 命名空间今天仍然是 **9 个分组 / 43 个叶子**。\n" },
+    expect: [guideExpectRe("guide-claim", SURFACE_GUIDE_CN, /:\d+ 声称「9 个分组」，而 src\/loop\/config-namespace\.js 里是 \*\*8\*\* 个分组/)],
   },
   {
     label: "#511 判据 2b：指南把某个 config 叶子归给 0.29.0，而 CHANGELOG 的 0.29.0 段没有它 ⇒ 红（新增不单调，真值只能从 CHANGELOG 取）",
@@ -8354,13 +8576,13 @@ const SELF_TEST_CASES = [
   },
   {
     label: "#511：AGENTS.md 的「本仓版本」写成 0.28.0 ⇒ 红（本仓版本对 package.json，两类句子各对各的真值）",
-    overlay: { [AGENTS_EN]: (t) => t.replace("says `0.30.0` (the repo version)", "says `0.28.0` (the repo version)") },
+    overlay: { [AGENTS_EN]: mutateRepoVersionClaim("0.28.0") },
     simulateRegistry: selfTestRegistry(),
     expect: [/published-claim: AGENTS\.md:\d+ 的「AGENTS\.md「当前版本」句」把\*\*本仓版本\*\*写成 0\.28\.0/],
   },
   {
     label: "#511 第二条评论：这两句里塞一个测量日期 ⇒ 红（日期自己不会过期，留着它等于给「过期」留合法位置）",
-    overlay: { [AGENTS_EN]: (t) => t.replace("says `0.30.0` (the repo version)", "says `0.30.0` (the repo version, measured 2026-11-03)") },
+    overlay: { [AGENTS_EN]: addMeasurementDateToRepoClaim("2026-11-03") },
     simulateRegistry: selfTestRegistry(),
     expect: [/published-claim: AGENTS\.md:\d+ 的「AGENTS\.md「当前版本」句」里带了测量日期/],
   },
@@ -8385,9 +8607,16 @@ const SELF_TEST_CASES = [
     expect: [/guide-coverage: docs\/host-upgrade-guide-0\.29\.0\.md 没有提到config 叶子 `config\.continuity\.handoff`/],
   },
   {
-    label: "#636：只删中文侧的 `compaction` 事件那一条 ⇒ 红（CHANGELOG 的 0.30.0 段说这一版加了它，中文指南没有就是缺一条）",
-    overlay: { "docs/host-upgrade-guide-0.30.0_cn.md": (t) => t.replaceAll("compaction", "折叠事件") },
-    expect: [/guide-coverage: docs\/host-upgrade-guide-0\.30\.0_cn\.md 没有提到观察者事件 `compaction`/],
+    label: `#636：只删中文侧对 \`${guideCoverageCaseTarget().name}\` 那条事件的提及 ⇒ 红（本版段说这一版加了它，中文指南没有就是缺一条）`,
+    // 前提自带（#699 ③(a)）：0.31 那种纯删除版里「这一版加了某个观察者事件」这笔加法不存在、中文指南里也
+    // 没提过它 ⇒ 老写法「把 \`compaction\` 改掉」在切版树上锚不到（= 用例静默失效）。名字与加法句都由
+    // `guideCoverageCaseTarget` / `addGuideCoverageClaim` 现取现补，两棵树同一判据。
+    overlay: {
+      ...(guideCoverageCaseTarget().inject ? { "CHANGELOG.md": addGuideCoverageClaim(guideCoverageCaseTarget().name) } : {}),
+      [SURFACE_GUIDE_CN]: dropGuideMention(guideCoverageCaseTarget().name),
+    },
+    expect: [guideExpectRe("guide-coverage", SURFACE_GUIDE_CN,
+      new RegExp(` 没有提到.* \`${esc(guideCoverageCaseTarget().name)}\``, "u"))],
   },
   {
     label: "#636 中英成对：只从中文指南里删掉一个结构化名字（`ERIX_CONTINUITY_DIR`）⇒ 红（成对判据问的是「另一侧有没有一条」）",
@@ -8396,9 +8625,9 @@ const SELF_TEST_CASES = [
   },
   {
     label: "#636（fail-closed）：CHANGELOG 里没有当前版本段 ⇒ 红（「这一版加了什么」的真值缺位，不许静默放行）",
-    overlay: { "CHANGELOG.md": (t) => t.replace("## [0.30.0] - 2026-11-03", "## [0.9.9] - 2026-11-03") },
+    overlay: { "CHANGELOG.md": rewriteCurrentChangelogHeading(() => "## [0.9.9] - 2026-11-03") },
     simulateRegistry: selfTestRegistry(),
-    expect: [/guide-coverage: 读不到 CHANGELOG 的 0\.30\.0 段/],
+    expect: [new RegExp(`guide-coverage: 读不到 CHANGELOG 的 ${esc(PKG_VERSION)} 段`, "u")],
   },
   // ══ issue #635 ①：文档里的「点名几份 + 实扫几份 = 下限」份数声称必须等于实测 ══════════
   {
@@ -8635,58 +8864,68 @@ const SELF_TEST_CASES = [
   // 前三条就是**改动前的原句**：把某一格退回修前的写法 ⇒ 必须红，且点名「格名 + 字段名」。
   // 这一族证明的是「闸真咬人」——不是跟着改口一起变绿。
   {
-    label: "#690（还原）EN 磁盘格式退回改动前的原句 ⇒ 红并点名 record.foldedFacts.text",
+    label: `#690（还原）EN 磁盘格式退回改动前的原句 ⇒ 红并点名 ${surfaceCaseEvidence("disk").name}`,
     overlay: {
-      [SURFACE_GUIDE_EN]: replaceSurfaceBullet(SURFACE_BULLET.en.disk,
-        () => "* Transcript and run-state on-disk formats; a ledger written by the previous release still resumes."),
+      ...(surfaceCaseEvidence("disk").inject ? { "CHANGELOG.md": addSurfaceEvidence("disk") } : {}),
+      [SURFACE_GUIDE_EN]: putSurfaceBullet("en", "disk",
+        "* Transcript and run-state on-disk formats; a ledger written by the previous release still resumes."),
     },
     expect: [
-      /unchanged-surface: docs\/host-upgrade-guide-0\.30\.0\.md:\d+ 第「on-disk formats」格写着不变/,
-      /record\.foldedFacts\.text/,
+      guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /:\d+ 第「on-disk formats」格写着不变/),
+      new RegExp(esc(surfaceCaseEvidence("disk").name), "u"),
     ],
     expectFiles: [SURFACE_GUIDE_EN],
   },
   {
-    label: "#690（还原）EN 诊断字段退回「observer events, diagnostic fields…」那句 ⇒ 红并点名 degradeKind",
+    label: `#690（还原）EN 诊断字段退回「observer events, diagnostic fields…」那句 ⇒ 红并点名 ${surfaceCaseEvidence("diagnostics").name}`,
     overlay: {
-      [SURFACE_GUIDE_EN]: replaceSurfaceBullet(SURFACE_BULLET.en.diagnostics,
-        () => "* Observer events, diagnostic fields, and the run-state block."),
+      ...(surfaceCaseEvidence("diagnostics").inject ? { "CHANGELOG.md": addSurfaceEvidence("diagnostics") } : {}),
+      [SURFACE_GUIDE_EN]: putSurfaceBullet("en", "diagnostics",
+        "* Observer events, diagnostic fields, and the run-state block."),
     },
     expect: [
-      /unchanged-surface: docs\/host-upgrade-guide-0\.30\.0\.md:\d+ 第「diagnostic fields」格写着不变/,
-      /degradeKind/,
+      guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /:\d+ 第「diagnostic fields」格写着不变/),
+      new RegExp(esc(surfaceCaseEvidence("diagnostics").name), "u"),
     ],
   },
   {
-    label: "#690（还原）EN 终局载荷退回「Termination, verification and exit-code…」那句 ⇒ 红并点名 exitCodeForRunFailure",
+    label: `#690（还原）EN 终局载荷退回「Termination, verification and exit-code…」那句 ⇒ 红并点名 ${surfaceCaseEvidence("finalPayload").name}`,
     overlay: {
-      [SURFACE_GUIDE_EN]: replaceSurfaceBullet(SURFACE_BULLET.en.finalPayload,
-        () => "* Termination, verification and exit-code semantics, including the `skipped`-without-guard exit code."),
+      ...(surfaceCaseEvidence("finalPayload").inject ? { "CHANGELOG.md": addSurfaceEvidence("finalPayload") } : {}),
+      [SURFACE_GUIDE_EN]: putSurfaceBullet("en", "finalPayload",
+        "* Termination, verification and exit-code semantics, including the `skipped`-without-guard exit code."),
     },
     expect: [
-      /unchanged-surface: docs\/host-upgrade-guide-0\.30\.0\.md:\d+ 第「final payload」格写着不变/,
-      /exitCodeForRunFailure/,
+      guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /:\d+ 第「final payload」格写着不变/),
+      new RegExp(esc(surfaceCaseEvidence("finalPayload").name), "u"),
     ],
   },
   {
-    label: "#690（中英各自判）CN 诊断字段整条删掉 ⇒ 红在 CN 这一侧（整格缺席），EN 不受影响",
-    overlay: { [SURFACE_GUIDE_CN]: dropSurfaceBullet(SURFACE_BULLET.cn.diagnostics) },
+    label: `#690（中英各自判）CN 诊断字段整格缺席 ⇒ 红在 CN 这一侧，EN 不受影响（证据：${surfaceCaseEvidence("diagnostics").name}）`,
+    // 缺席必须是「这一格被删」，不能是「整节本来就没有按格的形状」——所以两侧都先写成规范六格，
+    // 中文侧再少写那一格（#699 ③(a)；0.31 的 §4 是一段散文，直接删那条 bullet 会什么都删不掉）。
+    overlay: {
+      ...(surfaceCaseEvidence("diagnostics").inject ? { "CHANGELOG.md": addSurfaceEvidence("diagnostics") } : {}),
+      [SURFACE_GUIDE_EN]: writeSurfaceCells("en"),
+      [SURFACE_GUIDE_CN]: writeSurfaceCells("cn", "diagnostics"),
+    },
     expect: [
-      /unchanged-surface: docs\/host-upgrade-guide-0\.30\.0_cn\.md:\d+ 第「诊断字段」格整格缺席/,
-      /degradeKind/,
+      guideExpectRe("unchanged-surface", SURFACE_GUIDE_CN, /:\d+ 第「诊断字段」格整格缺席/),
+      new RegExp(esc(surfaceCaseEvidence("diagnostics").name), "u"),
     ],
     expectFiles: [SURFACE_GUIDE_CN],
-    reject: [/unchanged-surface: docs\/host-upgrade-guide-0\.30\.0\.md/u],
+    reject: [guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /(?:)/)],
   },
   {
-    label: "#690 声明了变更却不点名该格字段 ⇒ 红（「变了」不点名等于没对账）",
+    label: `#690 声明了变更却不点名该格字段 ⇒ 红（「变了」不点名等于没对账；该格证据：${surfaceCaseEvidence("disk").name}）`,
     overlay: {
-      [SURFACE_GUIDE_EN]: replaceSurfaceBullet(SURFACE_BULLET.en.disk,
-        () => "* **On-disk formats — changed in this release.** The fold ledger moved; the names are in §1."),
+      ...(surfaceCaseEvidence("disk").inject ? { "CHANGELOG.md": addSurfaceEvidence("disk") } : {}),
+      [SURFACE_GUIDE_EN]: putSurfaceBullet("en", "disk",
+        "* **On-disk formats — changed in this release.** The fold ledger moved; the names are in §1."),
     },
     expect: [
-      /unchanged-surface: docs\/host-upgrade-guide-0\.30\.0\.md:\d+ 第「on-disk formats」格声明了变更，却没有点名/,
-      /record\.foldedFacts\.text/,
+      guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /:\d+ 第「on-disk formats」格声明了变更，却没有点名/),
+      new RegExp(esc(surfaceCaseEvidence("disk").name), "u"),
     ],
   },
   {
@@ -8694,18 +8933,20 @@ const SELF_TEST_CASES = [
     overlay: {
       [SURFACE_GUIDE_EN]: replaceUnique("## 4. What does not change", "## 4. Notes on what moved"),
     },
-    expect: [/unchanged-surface: docs\/host-upgrade-guide-0\.30\.0\.md 里找不到「不变」那一节/],
+    expect: [guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, / 里找不到「不变」那一节/)],
   },
   {
     label: "#690 读不出（②）：本版 CHANGELOG 段读不到 ⇒ 红（真值缺位不许当绿）",
-    overlay: { "CHANGELOG.md": replaceUnique("## [0.30.0] - 2026-11-03", "## 0.30.0 - 2026-11-03") },
-    expect: [/unchanged-surface: 读不到 CHANGELOG 的 0\.30\.0 段/],
+    overlay: { "CHANGELOG.md": rewriteCurrentChangelogHeading((line) => line.replace(`## [${PKG_VERSION}]`, `## ${PKG_VERSION}`)) },
+    expect: [new RegExp(`unchanged-surface: 读不到 CHANGELOG 的 ${esc(PKG_VERSION)} 段`, "u")],
   },
   {
     label: "#690（反向证）纯加法的名字不是变更证据：选项格写「不变」仍绿",
+    // 这一例的靶子是「本版段里那一笔纯加法」（0.30 段里的 `config.metadata.modelMetadata.budgetTokens`）：
+    // 它**不需要**证据注入（前提本来就是「这一格没有变更证据」），但 §4 是散文形状时也要落得上（#699 ③(a)）。
     overlay: {
-      [SURFACE_GUIDE_EN]: replaceSurfaceBullet(SURFACE_BULLET.en.options,
-        () => "* **Options — unchanged.** The `runToolLoop` input surface, the `capabilities` shape, and every\n"
+      [SURFACE_GUIDE_EN]: putSurfaceBullet("en", "options",
+        "* **Options — unchanged.** The `runToolLoop` input surface, the `capabilities` shape, and every\n"
           + "  existing configuration leaf. The added `config.metadata.modelMetadata.budgetTokens` leaf\n"
           + "  changes no existing leaf (§4.1)."),
     },
@@ -8825,6 +9066,27 @@ function runSelfTest() {
   if (!symbolAnchorOccurrences(refScanDocs()).length) {
     failures.push("symbol-anchor: 覆盖面里抽到 0 处「符号 + 文件」锚点——提取逻辑或覆盖面被改坏，"
       + "本节全部符号锚点反向证都在空跑（抽不到真值就报错，#164 口径）");
+  }
+  // #699 ③：**当前版**指南的路径在期望里被抄成字面量，就是「切版当天整族反向证变红」的病根
+  // （判据现算 `docs/host-upgrade-guide-<本版>.md`，期望还在要上一版那份）。这一刀把它钉死：
+  // 期望 / reject 里出现「本版指南」那条路径的，必须由 `guideExpectRe` 现读常量构造。
+  for (const [i, c] of SELF_TEST_CASES.entries()) {
+    const who3 = c.label ?? `第 ${i + 1} 例`;
+    for (const [key, list] of [["expect", c.expect ?? []], ["reject", c.reject ?? []]]) {
+      for (const re of list) {
+        const src = String(re?.source ?? "");
+        // 只有「红话路径 = 当前版指南」的那两个判据受这一刀管：`unchanged-surface` 与 `guide-coverage`
+        // 现算 `docs/host-upgrade-guide-${PKG_VERSION}.md`。`bundle-table` 那份是 0.31 破坏包的**历史**逐名表
+        // （路径是钉住的那份指南，不随当前版走），历史指南（0.27 / 0.29）的字面量同理——都不算抄错。
+        const judge = src.match(/^([a-z][a-z0-9-]*(?:\/[a-z0-9-]+)?):/u)?.[1];
+        const named = src.match(/host-upgrade-guide-(\d+\.\d+\.\d+)/u)?.[1];
+        if ((judge === "unchanged-surface" || judge === "guide-coverage")
+          && named === PKG_VERSION && re?.pinnedToTruthPath !== true) {
+          failures.push(`${who3}：${key} 里把当前版指南写成字面量（${named}）——切版当天这一例必然红在路径上；`
+            + "用 `guideExpectRe(判据 id, SURFACE_GUIDE_EN/CN, …)` 现读常量构造（#699 ③）");
+        }
+      }
+    }
   }
   for (const [i, c] of SELF_TEST_CASES.entries()) {
     const who = c.label ?? `第 ${i + 1} 例`;

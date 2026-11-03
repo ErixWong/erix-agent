@@ -885,8 +885,8 @@ const SYNC_FIXTURE = Object.freeze({
   "README_cn.md": "# 夹具\n\n当前发布版本：**v0.30.0**（2026-11-03；**0.27.0 从未发布**）。下面引用的 `files` 清单以 `package.json` 为权威：\n",
   "AGENTS.md": "- Current version: `package.json` says `0.30.0` (the repo version) and the published line — npm's `dist-tags.latest` — is `0.30.0`; `check:docs` reconciles both live. `0.24.0` was **never published** to the registry.\n",
   "AGENTS_cn.md": "- 当前版本：`package.json` 写 `0.30.0`（本仓版本），发布行——npm 的 `dist-tags.latest`——是 `0.30.0`。`0.24.0` **从未发布**到 registry。\n",
-  "docs/requirements.md": "This document was reconciled with the implementation shipped in version 0.30.0. It exists in package version 0.30.0.\n",
-  "docs/requirements_cn.md": "本文档现已与 0.30.0 版本交付的实现完成对照；下面将分期计划与 package 版本 0.30.0 对齐。\n",
+  "docs/requirements.md": "This document was reconciled with the implementation shipped in version 0.30.0. It exists in package version 0.30.0.\n\n| **v0.9.0–v0.30.0 — current** | scope | status |\n",
+  "docs/requirements_cn.md": "本文档现已与 0.30.0 版本交付的实现完成对照；下面将分期计划与 package 版本 0.30.0 对齐。\n\n| **v0.9.0–v0.30.0 — 当前** | 范围 | 状态 |\n",
   "CHANGELOG.md": "# Changelog\n\n## [Unreleased]\n\n## [0.31.0]（未发布 / unpublished）\n\n### Breaking\n\n- something\n\n## [0.30.0] - 2026-11-03\n\n- older\n",
 });
 
@@ -1166,8 +1166,89 @@ function selfTestSync(checker) {
       const before = snapshotTree(tree);
       const result = runSync(tree, ["--published", "0.31.0", "--published-date", "2026-11-03"]);
       const changes = diffSnapshot(before, snapshotTree(tree));
-      expect(result.status === 0 && changes.length === 0, "⑦d 同一组参数重跑 ⇒ exit 0 且 0 字节写入（幂等）",
+     expect(result.status === 0 && changes.length === 0, "⑦d 同一组参数重跑 ⇒ exit 0 且 0 字节写入（幂等）",
         `⑦d 幂等被打破：exit ${result.status}，改动 ${changes.join(", ") || "（无）"}`);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  }
+
+  // (h) requirements §4 阶段表的 **current 行**接进写盘面（issue #699 ④）：中英**成对**跟着 package.json 走，
+  //     而**窄面**由逐行比对看守——阶段表里只准那一行动，其余行（含上界以外的每一个字节）逐字不动。
+  {
+    const tree = mkdtempSync(path.join(os.tmpdir(), "erix-release-day-sync-h-"));
+    try {
+      writeFixtureTree(tree);
+      writeFileSync(path.join(tree, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
+      const result = runSync(tree, ["--published", "0.31.0", "--published-date", "2026-11-03"]);
+      expect(result.status === 0, "⑦h 带阶段表 current 行的树：`--sync --published 0.31.0` exit 0",
+        `⑦h exit ${result.status}\n${result.stdout}${result.stderr}`);
+      const rows = {};
+      for (const [rel, label] of [["docs/requirements.md", "current"], ["docs/requirements_cn.md", "当前"]]) {
+        const before = SYNC_FIXTURE[rel].split("\n");
+        const after = readFileSync(path.join(tree, rel), "utf8").split("\n");
+        const moved = before.map((line, i) => (line === after[i] ? null : i))
+          .filter((i) => i !== null && after[i] !== undefined);
+        const tableMoved = moved.filter((i) => before[i].startsWith("| "));
+        expect(tableMoved.length === 1 && before[tableMoved[0]].includes(`— ${label}`)
+            && after[tableMoved[0]] === before[tableMoved[0]].replace("v0.9.0–v0.30.0", "v0.9.0–v0.31.0"),
+          `⑦h ${rel} 的阶段表**只有 current 那一行**变了，且只把上界换成 0.31.0（行首下界、其余单元格逐字未动）`,
+          `⑦h ${rel} 阶段表动了 ${tableMoved.length} 行（期望恰好 1 行且是 current 行）：`
+            + tableMoved.map((i) => `\n  - ${before[i].slice(0, 60)}…\n  + ${(after[i] ?? "（无此行）").slice(0, 60)}…`).join(""));
+        rows[rel] = after[tableMoved[0]] ?? "";
+      }
+      // 中英**成对**：两侧同一行都跟着 package.json 走（只动一边就是漏了一边）
+      expect(rows["docs/requirements.md"].includes("v0.9.0–v0.31.0 \u2014 current")
+          && rows["docs/requirements_cn.md"].includes("v0.9.0–v0.31.0 \u2014 当前"),
+        "⑦h 中英两侧的 current 行**成对**回写到 0.31.0（不是只改一边）",
+        `⑦h 两侧不是成对回写：EN=${rows["docs/requirements.md"].slice(0, 40)} / CN=${rows["docs/requirements_cn.md"].slice(0, 40)}`);
+      // 窄面的定位面：上下界写成同一个版本号时，换的必须是**上界**
+      // （`--sync` 用 `whole.indexOf(captured)` 定位；整行匹配那种写法在这里会换掉下界）
+      rmSync(tree, { recursive: true, force: true });
+      mkdirp(tree);
+      writeFixtureTree(tree, {
+        ...SYNC_FIXTURE,
+        "docs/requirements.md": SYNC_FIXTURE["docs/requirements.md"]
+          .replace("**v0.9.0\u2013v0.30.0 \u2014 current**", "**v0.31.0\u2013v0.31.0 \u2014 current**"),
+        "docs/requirements_cn.md": SYNC_FIXTURE["docs/requirements_cn.md"]
+          .replace("**v0.9.0\u2013v0.30.0 \u2014 当前**", "**v0.31.0\u2013v0.31.0 \u2014 当前**"),
+      });
+      writeFileSync(path.join(tree, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.32.0"\n}\n', "utf8");
+      const equal = runSync(tree, ["--version", "0.32.0", "--published", "0.32.0", "--published-date", "2026-11-04"]);
+      const enRow = readFileSync(path.join(tree, "docs/requirements.md"), "utf8")
+        .split("\n").find((line) => line.includes("\u2014 current")) ?? "";
+      const cnRow = readFileSync(path.join(tree, "docs/requirements_cn.md"), "utf8")
+        .split("\n").find((line) => line.includes("\u2014 当前")) ?? "";
+      expect(equal.status === 0 && enRow.includes("**v0.31.0\u2013v0.32.0 \u2014 current**")
+          && cnRow.includes("**v0.31.0\u2013v0.32.0 \u2014 当前**"),
+        "⑦h 上下界同值（`v0.31.0\u2013v0.31.0`）时只换**上界**⇒ `v0.31.0\u2013v0.32.0`（中英两侧；写反了就是回写跑到下界上）",
+        `⑦h 上下界同值时换错了字节：exit ${equal.status}，EN=${enRow.slice(0, 46)} / CN=${cnRow.slice(0, 46)}`);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  }
+
+  // (i) 阶段表里**没有** current 行 ⇒ exit 2 且 0 字节写入：新接进写盘面的声称句读不出，
+  //     与其余句子同一口径（「读不出」永远不等于「没这句话」，更不等于绿）
+  {
+    const tree = mkdtempSync(path.join(os.tmpdir(), "erix-release-day-sync-i-"));
+    try {
+      const noRow = {
+        ...SYNC_FIXTURE,
+        "docs/requirements.md": SYNC_FIXTURE["docs/requirements.md"].replace("\n| **v0.9.0\u2013v0.30.0 \u2014 current** | scope | status |", ""),
+        "docs/requirements_cn.md": SYNC_FIXTURE["docs/requirements_cn.md"].replace("\n| **v0.9.0\u2013v0.30.0 \u2014 当前** | 范围 | 状态 |", ""),
+      };
+      writeFixtureTree(tree, noRow);
+      writeFileSync(path.join(tree, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
+      const before = snapshotTree(tree);
+      const result = runSync(tree, ["--published", "0.31.0", "--published-date", "2026-11-03"]);
+      const changes = diffSnapshot(before, snapshotTree(tree));
+      expect(result.status === 2 && changes.length === 0,
+        "⑦i 阶段表缺 current 行 ⇒ exit 2 且 0 字节写入（新写盘面也 fail-closed，不许静默跳过那一处）",
+        `⑦i exit ${result.status}、改动 ${changes.join(", ") || "（无）"}；输出：${result.stdout}${result.stderr}`);
+      expect(/current \u884c/.test(result.stdout) && /docs\/requirements\.md/.test(result.stdout),
+        "⑦i 报错点名「阶段表 current 行」与缺它的那份文档（不是笼统一句「读不出」）",
+        `⑦i 没点名是哪一处读不出：${result.stdout}`);
     } finally {
       rmSync(tree, { recursive: true, force: true });
     }
