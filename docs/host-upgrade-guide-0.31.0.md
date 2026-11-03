@@ -86,10 +86,46 @@ That clause is meant literally.
 
 ## 4. What does not change
 
-Everything else on the input surface: no `runToolLoop` option is retired, renamed or re-homed by
-this release, no default value changes, no observer event, diagnostic field or on-disk format
-changes, and the notes tool surface, the file tools, the delegation bookkeeping modules and every
-provider protocol helper stay where they were. The zero-runtime-dependency rule also stays.
+Six surfaces, taken one at a time. This release deletes exports and nothing else: not one member of
+these six surfaces moves, so every row below says **unchanged** — and each row says what it means by
+that, because an "unchanged" that does not name the members it covers is not worth reading. The
+cross-check runs in both directions: the `[0.31.0]` section of `CHANGELOG.md`, which is the only
+record of what this version changed, names no member of any of the six surfaces. A name that leaves
+the package root is not an input-surface member: the sixteen names in §2 are exports, not options,
+not events, not payload keys.
+
+* **Options — unchanged.** No `runToolLoop` option is retired, renamed or re-homed by this release,
+  and the configuration namespace keeps every group and every leaf it had in 0.30.0 —
+  `run.maxRounds`, `folding.toolResultTtl`, `guard.finalGuardMaxRetries`, `timing.timeoutMs`,
+  `metadata.modelMetadata` and the rest, at the same nesting. The CLI flag set is the same set too
+  (`--compaction`, `--compact-budget`, `--final-guard`, `--require-deliverable`, `--delegate` and the
+  rest): this release adds no flag and drops none.
+* **Defaults — unchanged.** No existing option's default value is re-specified here. The two loader
+  constants that carry them, `DEFAULT_MAX_OUTPUT_TOKENS` and `DEFAULT_COMPACTION_STRATEGY`, hold the
+  values they held in 0.30.0, so a configuration that omitted them derives what it derived before.
+* **Observer events — unchanged.** The same event names go out with the same payloads: `round_start`,
+  `round_end`, `tool_use`, `tool_result`, `usage`, `run_outcome`, `persistence_error`, `compaction`,
+  `compaction_strategy_fallback` and the rest of the set. Nothing is renamed, nothing is added, and
+  `type: "compaction"` still means what it meant in 0.30.0.
+* **Diagnostic fields — unchanged.** The `compactionStats` entry keeps the shape 0.30.0 wrote,
+  including the fields that release moved: `strategyName`, the `foldSummary` sub-object,
+  `degradeKind` / `degradeReason` (still without an in-tree writer) and `budgetExhausted` on the
+  failure branch.
+* **On-disk formats — unchanged.** The fold ledger keeps its 0.30.0 shape — `foldedFacts` with
+  `foldId`, `seq`, `text`, `source`, `strategy`, `roundRange` and the rest — so a ledger written by
+  0.30.0 resumes under 0.31.0 with no migration step and no renumbering pass. The run-state and
+  transcript files are written by the same code.
+* **Final payload — unchanged.** `makeResult` returns the same keys (`finalText`, `messages`,
+  `transcript`, `rounds`, `truncated`, `verification`, `guardVerdict`, `metrics`, `runState`, `usage`,
+  `engineUsage`, `compactionStats`, `completionErrors`, `finalTextFallback`, `forcedFinal`), a failed
+  run still carries `termination.errorCode`, and the exit codes keep their meanings:
+  `exitCodeForRunFailure` for a failed run, `exitCodeForVerification` for a run that did not verify,
+  and neither of them shares the usage-error code.
+* What did **not** move either: the notes tool surface (`createBuiltinNotesTools`,
+  `MAX_CONTENT_LENGTH`, `resolveNotesDir` and the five notes tools), the file tools, the delegation
+  bookkeeping modules, every provider protocol helper (`canonicalToAnthropicRequest`,
+  `anthropicResponseToCanonical`, `createAnthropicStreamAssembler`), and the
+  zero-runtime-dependency rule.
 
 ## 5. Verify it on your side
 
