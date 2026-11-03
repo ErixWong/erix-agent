@@ -345,7 +345,7 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
 - 永远不要提交 token、API key 或其他凭据。
 
 权威的版本口径是 [`package.json`](package.json) 的 `version` 字段（`npm run check:docs` 会校验本文的
-发布行）。当前发布版本：**v0.30.0**（2026-11-03；**0.27.0 从未发布**）。下面引用的 `files` 清单以 `package.json` 为权威：
+发布行）。当前发布版本：**v0.31.0**（2026-11-03；**0.27.0 从未发布**）。下面引用的 `files` 清单以 `package.json` 为权威：
 
 ```json
 [
@@ -694,7 +694,7 @@ MCP 配置从当前目录的 `.mcp.json` 或 `~/.erix/mcp.json` 读取。本地�
 
 ## 状态与版本历史
 
-权威的版本口径是 [`package.json`](package.json) 的 `version` 字段，`npm run check:docs` 会校验下面这行发布声明。当前发布版本：**v0.30.0**（2026-11-03；**0.27.0 从未发布**，已发布线是 0.26.0 → 0.30.0）。完整且权威的历史见 [CHANGELOG.md](CHANGELOG.md)；下面条目只列出改变了宿主消费方式的发布。0.6.0 破坏窗口的迁移步骤见
+权威的版本口径是 [`package.json`](package.json) 的 `version` 字段，`npm run check:docs` 会校验下面这行发布声明。当前发布版本：**v0.31.0**（2026-11-03；**0.27.0 从未发布**，已发布线是 0.26.0 → 0.30.0）。完整且权威的历史见 [CHANGELOG.md](CHANGELOG.md)；下面条目只列出改变了宿主消费方式的发布。0.6.0 破坏窗口的迁移步骤见
 [docs/host-upgrade-guide-0.6.0.md](docs/host-upgrade-guide-0.6.0.md)。
 
 - **v0.29.0 (2026-10-31)**：「库给子 run 记账，却从不启动任何东西」那一版——`erix-agent/tools` 上的 `createDelegateTool`（一个工具、六个动作，显式开启且默认关闭），新增一个配置叶子 `config.run.parentRunId`（镜像进 judge 记录 / `run_outcome` / 事件 / 诊断），五个宿主端口（漏接每一个的代价都点名），外加六处「让记录与结果说真话」的修正（名册 18 → 21 字段、`result.text` 上限 4000、`tail` 的两种失败理由分开、跨进程原子的槽位池、`unverified` 桶、完成标记键加分隔符）。`runToolLoop` 的输入面纯加法：没有选项被退役、改名或搬家。迁移步骤见 [docs/host-upgrade-guide-0.29.0.md](docs/host-upgrade-guide-0.29.0.md) / [中文](docs/host-upgrade-guide-0.29.0_cn.md)。

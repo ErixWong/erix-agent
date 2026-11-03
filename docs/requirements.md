@@ -2,7 +2,7 @@
 
 > Chinese version: [requirements_cn.md](requirements_cn.md)
 
-This document was first drafted on 2026-08-29 and has been reconciled with the implementation shipped in version 0.30.0. It describes the library's actual scope and APIs, not an unqualified list of future plans.
+This document was first drafted on 2026-08-29 and has been reconciled with the implementation shipped in version 0.31.0. It describes the library's actual scope and APIs, not an unqualified list of future plans.
 
 ## 1. Consumer context and pain points
 
@@ -98,7 +98,7 @@ The library boundary ends at the lifecycle of one agent task: start, run, stop, 
 
 ## 4. Phasing and implementation status
 
-The original phase plan is reconciled below with what exists in package version 0.30.0. “Delivered” describes repository code; consumer migrations and real-provider benchmark runs remain external acceptance work.
+The original phase plan is reconciled below with what exists in package version 0.31.0. “Delivered” describes repository code; consumer migrations and real-provider benchmark runs remain external acceptance work.
 
 | Version | Scope | Acceptance/status |
 |---|---|---|

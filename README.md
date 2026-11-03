@@ -1284,7 +1284,7 @@ current contract. And a path that points into **another** repository is written 
 
 The authoritative version is the `version` field of
 [`package.json`](package.json), and `npm run check:docs` verifies the release
-line below against it. Current release: **v0.30.0** (2026-11-03). The complete,
+line below against it. Current release: **v0.31.0** (2026-11-03). The complete,
 authoritative history is [CHANGELOG.md](CHANGELOG.md); the bullets below list
 only the releases that changed how a host consumes the runtime. The 0.6.0
 migration steps remain in
