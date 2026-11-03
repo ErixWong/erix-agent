@@ -7,7 +7,7 @@
 
 ### Breaking
 
-- **The sixteen names the 0.30.0 guide announced are really removed now (issue #688).** The 0.30.0
+- **The sixteen names the 0.30.0 guide announced are really removed now (issue #688, PR #694).** The 0.30.0
   guide said "16 exported names are removed" and the shipped `erix-agent@0.30.0` still exported every
   one of them, so the boundary moved to this release: `serializeFoldedMessages`, `extractL0Fact`,
   `extractL0`, `parseSummary`, `parseReflectionSummary`, `MESSAGE_OVERHEAD_TOKENS`,
@@ -32,7 +32,7 @@
   but deleted nothing: the 0.30.0 guide's §2 and §3 now say so in place, and the deletion itself is
   this release. A host on 0.30.0 that had already migrated saw no breakage — and neither did one
   that had not migrated.
-- **0.30.0 指南宣布的那 16 个名字现在真的删了（issue #688）。** 0.30.0 的指南写着「16 个导出名被删除」，
+- **0.30.0 指南宣布的那 16 个名字现在真的删了（issue #688，PR #694）。** 0.30.0 的指南写着「16 个导出名被删除」，
   而发出去的 `erix-agent@0.30.0` 仍然把每一个都还给了消费者，所以边界挪到了这一版：`serializeFoldedMessages`、
   `extractL0Fact`、`extractL0`、`parseSummary`、`parseReflectionSummary`、`MESSAGE_OVERHEAD_TOKENS`、
   `estimateMessagesTokens`、`createEnvModelConfigProvider` 与 `createAnthropicProvider` 离开包根；
@@ -49,6 +49,17 @@
   `docs/host-upgrade-guide-0.31.0.md`；`createAnthropicProvider` 那一条以**已落地**（`status: "landed"`）
   形态留在 `REMOVAL_REGISTRY` 里（宿主事实 `app_container/apps/worker/src/pi/erix-adapter.js:2` 仍在盘上），
   而 `check:exports:deprecated` 新增的 R14 会在「已落地的名字又回到公共导出面」时红。
+- **The release day is one command, minus the half only a human can do (issue #689, PR #695).**
+  `npm run release:day` walks preflight → publish → writeback → finalize, resumes from a state file, and
+  refuses to tag before the release state has been written back; the pre-release checklist
+  (`--stage preflight`) is the AGENTS §4 list in order and stops at the first red, naming the step. It
+  touches `package.json` (the `release:day` script) and the command table, and the half it deliberately
+  does not do — `npm publish`'s device-flow scan — stays a human step that it prints for you.
+- **发版日收敛成一条命令，人工只剩那一半（issue #689，PR #695）。** `npm run release:day` 把
+  preflight → publish → writeback → finalize 串起来，能从状态文件续跑，并且在发布态回写之前拒绝打 tag；
+  发版前清单（`--stage preflight`）就是 AGENTS §4 那份列表按顺序跑、任一红就停在那一步并点名。公开面上
+  它改的是 `package.json`（`release:day` 那条 script）与命令表，而它**刻意不做**的那一半——`npm publish`
+  的 device-flow 扫码——仍然是人的一步，脚本只把操作单打给你。
 - **0.30.0 那一页的勘误（issue #686）。** 0.30.0 登记了标记、发了指南，但一个都没删：0.30.0 指南的 §2 与 §3
   现在就地写清了这一点，删除本身是这一版。在 0.30.0 上，已经迁完的宿主看不到破坏——没迁的也看不到。
 
@@ -215,7 +226,7 @@
   多次）一律算**失败**，绝不当绿。
 
 - **The compaction budget becomes a configuration leaf, the two disagreeing fallbacks become one, and a
-  missing window stops being silent (issue #682).** 0.30.0 **adds** one configuration leaf,
+  missing window stops being silent (issue #682, PR #684).** 0.30.0 **adds** one configuration leaf,
   `config.metadata.modelMetadata.budgetTokens` — the engine-side explicit compaction budget,
   validated at the config gate. The budget used to exist only as the
   `--compact-budget` flag (not in any slot, so a child run could not read it) and the same missing
@@ -233,7 +244,7 @@
   / `disabled`). `test/tools-delegation-foreign-630.test.js`'s F item stops using an illegal-value
   error text as a probe and asserts the transmitted **value and source** positively with a legal
   integer; the illegal-value case stays as an input-validation cell.
-- **压缩预算做成配置叶子、两处互相打架的兜底合成一处、缺窗口不再哑巴（issue #682）。** 0.30.0
+- **压缩预算做成配置叶子、两处互相打架的兜底合成一处、缺窗口不再哑巴（issue #682，PR #684）。** 0.30.0
   **新增**一个配置叶子 `config.metadata.modelMetadata.budgetTokens`——引擎侧的显式压缩预算，在 config
   闸口校验。预算此前只以
   `--compact-budget` 旗标存在（不在任何 slot 里，子 run 读不到），而同一个「缺 `maxOutputTokens`」在两处
@@ -250,7 +261,7 @@
 
 ### Fixed
 
-- **The fold ledger stops crediting work to a strategy that never folded (issue #657, bug fix — this
+- **The fold ledger stops crediting work to a strategy that never folded (issue #657, PR #660, bug fix — this
   restores the promise issue #464 A already made, it adds no capability).** The fold entry has two
   possible performers: the strategy the host configured, and the engine's own budget fallback
   (`sliding-window`), which folds only the oldest rounds still needed to fit the budget. The four
@@ -277,7 +288,7 @@
   `increment` is byte-for-byte unchanged, and the `foldedSummary` fact row (which by contract records
   what was actually fed to the model, task body included) is untouched. `bytes` is a body size, not
   a saving: it counts the stand-in body itself, never how much context the fold released.
-- **折叠账本不再把功劳记给「一轮都没折」的策略（issue #657，修 bug——回到 issue #464 A 已经写下的
+- **折叠账本不再把功劳记给「一轮都没折」的策略（issue #657，PR #660，修 bug——回到 issue #464 A 已经写下的
   承诺，不是新增能力）。** 折叠入口有两个可能的执行者：宿主配置的策略，与引擎自己的预算兜底
   （`sliding-window`，只折「折到够用」所需的最老几轮）。四个写点读的都是「入口选了谁」，而兜底实例
   是就地新建、从不回写 ⇒ 在「配置策略折 **0** 轮、活是兜底干的」那一格（这是常态不是角落：紧预算下
@@ -296,7 +307,7 @@
   不是新摘要），所以**宿主可见的正文变短了**；`increment` 逐字不变，`foldedSummary` 事实行（按契约
   记的是「实际喂给模型的那份」，含任务原文是**真话**）一个字都没动。`bytes` 是正文尺寸、不是省下的
   量：它计的是替代物正文自身的字节数，从来不是这一折释放了多少上下文。
-- **The contract gains the #475 §2 second-order risk and a clarified eligibility rule (issue #475,
+- **The contract gains the #475 §2 second-order risk and a clarified eligibility rule (issue #475, PR #484,
   documentation only — no behaviour change).** Wrap-up eligibility used to be written in the contract
   as a whitelist of six reasons, while the implementation had long since moved to a state test ⇒ it now
   reads "the three truncation reasons keep `hasFinalDraft()`, and every other reason — **including any a
@@ -306,12 +317,290 @@
   cells" ≠ "those two cells are safe": a guard that judges by the deliverable catches a silent run,
   while a `finalText.trim() !== ""` rubber stamp certifies that silent run as `verified`. Both language
   halves changed together.
-- **契约补一条二阶风险与资格口径澄清（#475 §2，纯文档、零行为变更）**：强制收尾的资格在契约里原先写成
+- **契约补一条二阶风险与资格口径澄清（#475 §2，纯文档、零行为变更；PR #484）**：强制收尾的资格在契约里原先写成
   「六个 reason 的白名单」，而实现早已下沉到状态 ⇒ 改成「三条截断 reason 沿用 `hasFinalDraft()`，其余
   reason（**含后续版本新增的**）只看终稿正文是否为空」；并写明 `FINAL_GUARD_TERMINATION_REASONS`
   （`src/loop/termination.js`）本来就**含** `end_turn` / `no_tool`——「guard 覆盖了这两格」≠「这两格是
   安全的」：以交付物为据的 guard 能拦下哑局，`finalText.trim() !== ""` 的橡皮章 guard 会把哑局一并洗成
   `verified`。中英两份成对改。
+
+### 补记（issue #691）：0.30.0 窗口里碰到公开面的合并，逐条现读补记
+
+这一节是 **#691 的补记，不是发布当天写的**。0.30.0 发出去时，这一段只点名了 9 个号，而
+`v0.29.0..v0.30.0` 之间的 53 个 first-parent 合并碰到了公开面（`src/` `bin/` `package.json`
+与公开文档集）；其中 **44 个合并一个号都没有**，落到号上是 48 个号。复盘（#686）时人工按主题阅读
+只找出 4 条，机械按路径类别判是 48 个号——这个差本身就是 #691 那道闸存在的理由。
+下面每条都**从它自己的合并提交现读**（主题 + 那次合并改了哪些公开面文件），来源合并的短 sha 写在
+条目里；按合并时间从早到晚排列。同一批里已经有条目的三个合并（#475、#657、#682）只补上它们各自的
+PR 号，不重复叙述。
+
+- **The event-type surface and the contract's event table are reconciled by a gate, and the assembly
+  port's double-emission gets an end-to-end pin (issue #595, #503, #506; merge `81541c5`; backfilled by
+  #691).** `docs/host-consumer-contract.md` / `_cn.md` gain the rows that make the emitted-event set
+  checkable, `src/loop/orchestrator.js` carries the emission-side change, and the CJK-density assertion
+  stops pinning a ranking and pins behaviour instead.
+- **类型面与契约事件表之间新增一条对账判据，装配口「双发」补端到端钉数，CJK 密度断言从钉排名改成
+  钉行为（issue #595、#503、#506；合并 `81541c5`；#691 补记）。** 公开面改动落在
+  `docs/host-consumer-contract.md` / `_cn.md`（把「发出去的事件集合」写成可判的一行）与
+  `src/loop/orchestrator.js`（发射侧）。
+- **Range references (`file.js:a-b`) and single-line references now go through one line-suffix
+  stripping path, and the truncation truth is computed once (issue #621, #208; merge `165d48d`;
+  backfilled by #691).** Before this, a range token was dropped whole, so a reference written as a
+  range was never adjudicated at all; the contract (both halves) states the rule and
+  `src/tools/file-tools.js` implements it.
+- **区间行号引用（`file.js:a-b`）与单行引用走同一条剥号路径，截断真值只算一次（issue #621、#208；
+  合并 `165d48d`；#691 补记）。** 修前区间 token 会被整条丢弃 ⇒ 区间写法的引用一处也不进裁决；
+  规则写进契约中英两份，实现落在 `src/tools/file-tools.js`。
+- **The request-view guard's `unrecoverable` verdict carries an outward signal, and "deliberately not
+  re-verified" is pinned (issue #296; merge `87c6879`; backfilled by #691).**
+  `src/loop/request-user-view.js`, `src/loop/provider-runner.js` and `src/loop/orchestrator.js` move
+  together with the contract (both halves), which gains one row on that signal.
+- **请求视图守卫的 `unrecoverable` 补对外信号，并把「刻意不重验」钉住（issue #296；合并 `87c6879`；
+  #691 补记）。** `src/loop/request-user-view.js`、`src/loop/provider-runner.js`、
+  `src/loop/orchestrator.js` 与契约中英两份同笔改，契约多一行讲那个信号。
+- **The continuity block's reason vocabulary is reconciled between its comment and its literals, and
+  `moved_to_tail` gains its three pieces of evidence (issue #640; merge `bf2c88d`; backfilled by
+  #691).** Only `src/loop/continuity-block.js` changed on the public surface.
+- **续接块的 reason 词表按「注释点名集合 = 代码字面量」对账，`moved_to_tail` 补三件证据（issue #640；
+  合并 `bf2c88d`；#691 补记）。** 公开面上只有 `src/loop/continuity-block.js` 改了。
+- **`npm run check:config-leaf-values` appears (issue #586; merge `af2d54e`; backfilled by #691):** the
+  config-leaf value-type / value-domain status tables are generated by a probe and reconciled on every
+  run, so a hand-edited table is red. `package.json` gains the script; no runtime behaviour changed.
+- **新增 `npm run check:config-leaf-values`（issue #586；合并 `af2d54e`；#691 补记）**：配置叶子的
+  值类型 / 值域现状表由探针生成、每次运行都对账，手改表就红。`package.json` 加这条 script，运行时
+  行为零变更。
+- **`npm run check:mutation` and `check:mutation:run` appear (issue #257 T7; merge `3ee458d`;
+  backfilled by #691):** a committed mutation-sample table whose derived columns are recomputed from the
+  tree, plus a run mode that proves each sample still bites. `package.json` gains both scripts.
+- **新增 `npm run check:mutation` 与 `check:mutation:run`（issue #257 T7；合并 `3ee458d`；#691 补记）**：
+  常驻变异样本表 + 从真树重算派生列 + 逐条证明样本仍然咬得住。`package.json` 加这两条 script。
+- **The `judge_done` stop gate now looks at deliverables instead of the model's self-report, and a
+  machine criterion can influence control flow (issue #473, #435; merge `c92c8fa`; backfilled by #691).**
+  This is the widest public-surface change in the window: `src/loop/orchestrator.js`,
+  `src/loop/termination.js` and `src/reflection/judge.js` move together with the CLI
+  (`bin/cli.js`, `bin/final-guard.js`, `bin/final-guard-support.js`, `bin/repl.js`), which gains the
+  deliverable flags and the content criterion, and with the contract (both halves).
+- **`judge_done` 停门改成看交付物而不是模型自述，机器判据可以影响控制流（issue #473、#435；
+  合并 `c92c8fa`；#691 补记）。** 这是本窗口最宽的一笔公开面改动：`src/loop/orchestrator.js`、
+  `src/loop/termination.js`、`src/reflection/judge.js` 与 CLI 同改（`bin/cli.js`、`bin/final-guard.js`、
+  `bin/final-guard-support.js`、`bin/repl.js`，新增交付物旗标与内容判据），契约中英两份一起改。
+- **`~` expansion accepts only the `~/` form (issue #194; merge `b495364`; backfilled by #691):**
+  `src/tools/file-tools.js` stops expanding a bare `~user` path, so the library's file tools and the pi
+  extension's `erix_run` share one rule.
+- **`~` 展开只认 `~/` 这一种写法（issue #194；合并 `b495364`；#691 补记）**：`src/tools/file-tools.js`
+  不再展开裸 `~user` 形式，库内文件工具与 pi 扩展的 `erix_run` 从此一条口径。
+- **The normalizer's L2 fallback judges "cut off by the token ceiling" as its own `truncated` verdict
+  (issue #637; merge `ddcfc82`; backfilled by #691):** `src/normalization/parse-model-json.js` reads
+  `stopReason` instead of letting the model guess the missing bytes, and the contract (both halves)
+  states the new verdict.
+- **归一化的 L2 兜底把「被 token 上限截断」判成独立一档 `truncated`（issue #637；合并 `ddcfc82`；
+  #691 补记）**：`src/normalization/parse-model-json.js` 改读 `stopReason`，不再让模型猜缺失字节；
+  契约中英两份写明这一档。
+- **The other half of the event gate lands — every emission site must be a member of the event union —
+  and six really-emitted events join it (issue #641; merge `f0d8fcd`; backfilled by #691).**
+  `src/loop/orchestrator.js` and the contract (both halves) change together.
+- **事件闸补上「发射处 ⊆ 事件联合」这半边，6 个真发出去的事件补进联合（issue #641；合并 `f0d8fcd`；
+  #691 补记）。** `src/loop/orchestrator.js` 与契约中英两份同笔改。
+- **`state-view` gets its first real consumer (issue #246, slice 1; merge `9efe38e`; backfilled by
+  #691):** `runSnapshotContext`'s run-state forwarding surface is generated by `makeStateView`, and both
+  READMEs' module-map line follows the change.
+- **`state-view` 接上第一个真实消费者（issue #246 第一刀；合并 `9efe38e`；#691 补记）**：
+  `runSnapshotContext` 的 run-state 转发面改由 `makeStateView` 生成，两份 README 的模块地图行跟着改。
+- **The gates start policing which version a sentence belongs to (issue #511; merge `2065a26`;
+  backfilled by #691):** upgrade guides must self-declare their version, forward pointers are checked,
+  the tree is reconciled against `CHANGELOG.md`, and the published line is read live from the registry.
+  The contract (both halves) changed with it.
+- **门禁开始看守「这句话属于哪个版本」（issue #511；合并 `2065a26`；#691 补记）**：升级指南必须
+  自述版本、前向指针要判、树与 `CHANGELOG.md` 对账、发布行从 registry 现读。契约中英两份同笔改。
+- **Three families of bare line references become symbol anchors (issue #286 T-b2; merge `f959722`;
+  backfilled by #691).** Documentation-level: the contract (both halves) only, no behaviour change.
+- **三族裸行号引用换成符号锚点（issue #286 T-b2；合并 `f959722`；#691 补记）。** 纯文档面：
+  只有契约中英两份，零行为变更。
+- **`npm run check:exports:deprecated` appears, and the 0.30 removal bundle is marked in the source
+  (issue #429; merge `b508528`; backfilled by #691):** zero-consumer exports get `@deprecated` markers
+  with a migration clause — `src/providers/anthropic.js`, `src/tokens.js`, `src/tools/*`,
+  `src/reflection/l0.js`, `src/config/env.js`, `src/compact/provider-summarizer.js` — and
+  `package.json` gains the gate that reconciles the markers with the live candidate list.
+- **新增 `npm run check:exports:deprecated`，并在源码里标出 0.30 的移除包（issue #429；合并
+  `b508528`；#691 补记）**：零消费者导出逐个打上带迁移条款的 `@deprecated` 标记——
+  `src/providers/anthropic.js`、`src/tokens.js`、`src/tools/*`、`src/reflection/l0.js`、
+  `src/config/env.js`、`src/compact/provider-summarizer.js`——`package.json` 加上那道把标记与现算候选
+  清单对账的闸。
+- **The AGENTS instruction-face scanner is wired in (issue #642; merge `f4733ce`; backfilled by #691):**
+  `package.json` gains `check:agents-directives`, and CI runs it as a blocking step.
+- **AGENTS 指令面扫描器接进命令面与 CI（issue #642；合并 `f4733ce`；#691 补记）**：`package.json`
+  加上 `check:agents-directives`，CI 里它是阻塞步。
+- **The claim chain takes the union of both branches, and `normalizeIntegerWithReport` gains its facts
+  (issue #375, #286; merge `d067d54`; backfilled by #691):** `src/tools/file-tools.js` (+250/−31),
+  `src/tools/index.js` and the contract (both halves).
+- **声称链取两支的并集，`normalizeIntegerWithReport` 补上事实集（issue #375、#286；合并 `d067d54`；
+  #691 补记）**：`src/tools/file-tools.js`（+250/−31）、`src/tools/index.js` 与契约中英两份。
+- **The claim chain keeps all three items, and both READMEs plus the contract gain the anchor rows
+  (issue #308, #286, #375; merge `ac3ca5d`; backfilled by #691).** Documentation-level.
+- **声称链三项都留，两份 README 与契约补上锚点行（issue #308、#286、#375；合并 `ac3ca5d`；
+  #691 补记）。** 纯文档面。
+- **`providerContext`'s state-forwarding surface is generated by `makeStateView` (issue #246, slice 2;
+  merge `fd3ad48`; backfilled by #691):** `src/loop/orchestrator.js`, `src/loop/state-view.js` and both
+  READMEs' module map.
+- **`providerContext` 的状态转发面改由 `makeStateView` 生成（issue #246 第二刀；合并 `fd3ad48`；
+  #691 补记）**：`src/loop/orchestrator.js`、`src/loop/state-view.js` 与两份 README 的模块地图。
+- **The fallback fold stops as soon as the budget is met, and the fallback produces a summary too
+  (issue #643; merge `a65acba`; backfilled by #691):** new `src/compact/budget-fit.js`,
+  `src/loop/orchestrator.js`, the contract (both halves) and both READMEs.
+- **兜底折到够用就停，兜底也产摘要（issue #643；合并 `a65acba`；#691 补记）**：新增
+  `src/compact/budget-fit.js`，改 `src/loop/orchestrator.js`，契约中英两份与两份 README 同笔改。
+- **`check:agents-directives` gains its `--verify` half, so the derived numbers in its own table are
+  reconciled too (issue #644; merge `3dca9a7`; backfilled by #691).** `package.json` only.
+- **`check:agents-directives` 补上 `--verify` 那半边，它自己表里的派生数也要对账（issue #644；
+  合并 `3dca9a7`；#691 补记）。** 公开面上只有 `package.json`。
+- **The remaining bare line-reference families become symbol anchors (issue #286 T-c; merge `4840004`;
+  backfilled by #691).** Documentation-level: the contract (both halves) only.
+- **剩余裸行号族换成符号锚点（issue #286 T-c；合并 `4840004`；#691 补记）。** 纯文档面：只有契约
+  中英两份。
+- **`--strict` becomes a ratchet, and both tier baselines land with it (issue #417; merge `ff4cf11`;
+  backfilled by #691):** `npm run check:types:strict` now runs `scripts/type-check-ratchet.mjs --strict`,
+  so the strict tier blocks instead of only reporting.
+- **`--strict` 做成棘轮，两档基线同笔入库（issue #417；合并 `ff4cf11`；#691 补记）**：
+  `npm run check:types:strict` 从只出报告改成跑 `scripts/type-check-ratchet.mjs --strict`，这一档从此阻塞。
+- **Fold events get an identity: a stable `foldedFacts.foldId` plus its run-scoped `seq`, and the
+  delivery order is pinned (issue #567; merge `83796b9`; backfilled by #691).**
+  `src/compact/fold-summary-journal.js` and `src/loop/orchestrator.js` change together with the contract
+  (both halves). This is the field pair the 0.30.0 guide's §4 lists as a moved on-disk format.
+- **折叠事件有了身份：稳定的 `foldedFacts.foldId` 加 run 内单调的 `seq`，投递时序写死（issue #567；
+  合并 `83796b9`；#691 补记）。** `src/compact/fold-summary-journal.js` 与
+  `src/loop/orchestrator.js` 同笔改，契约中英两份一起改。这一对字段就是 0.30.0 指南 §4 列出的
+  「变了的磁盘格式」。
+- **A direct-route option given on both the port and the call site now throws at startup instead of
+  silently winning (issue #519; merge `2d310b6`; backfilled by #691)** — a 0.30.0 breaking change:
+  `src/assembly.js` and `src/loop/option-normalization.js` change together with the contract (both
+  halves).
+- **同一个键在端口与调用点各给一次，现在启动期直接抛，不再静默取一侧（issue #519；合并 `2d310b6`；
+  #691 补记）**——0.30.0 的破坏项：`src/assembly.js` 与 `src/loop/option-normalization.js` 同笔改，
+  契约中英两份一起改。
+- **Budget-class stops also get one "write-first" deliverable catch-up round (issue #436, #435; merge
+  `8e4fcf8`; backfilled by #691):** both wall-hit exits are wired, reusing the machine evidence and
+  `guardExtensionUsed` from the earlier slice. `src/loop/orchestrator.js`, `src/loop/termination.js`,
+  `src/reflection/governor.js` and the contract (both halves).
+- **预算类停机也接一次「落盘优先」交付物补齐轮（issue #436、#435；合并 `8e4fcf8`；#691 补记）**：
+  两条撞墙出口都接上，复用前一片的机器证据与 `guardExtensionUsed`。改
+  `src/loop/orchestrator.js`、`src/loop/termination.js`、`src/reflection/governor.js` 与契约中英两份。
+- **Anthropic's tail rolling cache breakpoint is the one disposition taken (issue #192; merge
+  `9579798`; backfilled by #691):** `src/loop/provider-runner.js` and `src/loop/termination.js` change,
+  and the cache-breakpoint section is written in both contract halves.
+- **Anthropic 尾部滚动缓存断点，只做这一条裁决（issue #192；合并 `9579798`；#691 补记）**：
+  改 `src/loop/provider-runner.js` 与 `src/loop/termination.js`，缓存断点那一节中英成对写进契约。
+- **The strict ratchet's one new error is paid off in the same slice (issue #417, #192; merge
+  `b232e17`; backfilled by #691):** `src/loop/provider-runner.js`'s `isRecord` gains a type predicate
+  (pure JSDoc, no runtime change).
+- **strict 棘轮新增的那一处当场还清（issue #417、#192；合并 `b232e17`；#691 补记）**：
+  `src/loop/provider-runner.js` 的 `isRecord` 补类型谓词（纯 JSDoc，运行时不变）。
+- **The release checklist's real TypeScript host no longer gives the same key on both sides, and the
+  type surface makes `provider` / `executeTool` optional (issue #519; merge `64aca52`; backfilled by
+  #691).** `src/loop/orchestrator.js` only, plus the reverse proofs that were turned into permanent
+  cases.
+- **发版清单里那个真 TS 宿主不再两边给同一个键，类型面把 `provider` / `executeTool` 改成可选
+  （issue #519；合并 `64aca52`；#691 补记）。** 公开面上只改 `src/loop/orchestrator.js`，另把反向证
+  固化成常驻格子。
+- **`#375`'s fact set joins `normalizeIntegerWithReport` (issue #375; merge `9c0fbeb`; backfilled by
+  #691).** `src/tools/file-tools.js` only.
+- **#375 的事实集补进 `normalizeIntegerWithReport`（issue #375；合并 `9c0fbeb`；#691 补记）。**
+  公开面上只改 `src/tools/file-tools.js`。
+- **The guard's non-`accept` verdicts leave machine evidence in the final `verification`
+  (issue #648; merge `5bb7f12`; backfilled by #691):** `revise` / `skip` / `error` now show up as
+  `verification.guardVerdict` — a pure addition that moves neither the verdict semantics nor the exit
+  codes. `src/loop/termination.js` and the contract (both halves).
+- **guard 的非 `accept` 裁决（`revise` / `skip` / `error`）在终局 `verification` 里留机器证据
+  （issue #648；合并 `5bb7f12`；#691 补记）**：新增 `verification.guardVerdict`——纯加法，不动裁决
+  语义与退出码。改 `src/loop/termination.js` 与契约中英两份。
+- **Empty content fragments are written down for both the user and the assistant side, and the stall
+  cell is corrected to what was measured (issue #518, #297; merge `69e39f7`; backfilled by #691).**
+  The contract (both halves) gains the paired rows.
+- **空 content 片段在 user / assistant 两侧的口径成对写进契约，stall 那一格按实测改成
+  `no_tool` / `max_rounds_cap`（issue #518、#297；合并 `69e39f7`；#691 补记）。** 契约中英两份
+  各补成对的行。
+- **`npm run check:test-summary` appears (issue #301; merge `2e996b2`; backfilled by #691):** the TAP
+  summary of a finished `node --test` run is reconciled against a committed expectation file in CI, so
+  "CI is green" stops being an adjective without numbers. `package.json` gains the script.
+- **新增 `npm run check:test-summary`（issue #301；合并 `2e996b2`；#691 补记）**：跑完的
+  `node --test` TAP 汇总与入库的期望值在 CI 里对账，「CI 是绿的」不再是没数字的形容词。
+  `package.json` 加这条 script。
+- **The judge call unit moves out into `src/loop/judge-runner.js` (issue #177, slice 4; merge
+  `91dbe09`; backfilled by #691):** the body is moved verbatim and `orchestrator` keeps a thin
+  same-named shell, so the public entry does not move; `src/loop/judge-runner.js` is new,
+  `src/loop/orchestrator.js` shrinks, both READMEs' module map gains the line, and the contract (both
+  halves) is re-anchored.
+- **judge 调用单元外提成 `src/loop/judge-runner.js`（issue #177 刀4；合并 `91dbe09`；#691 补记）**：
+  正文逐字搬迁、`orchestrator` 留同名薄壳（对外入口不动）；新增 `src/loop/judge-runner.js`，
+  `src/loop/orchestrator.js` 相应瘦身，两份 README 的模块地图补一行，契约中英两份重新锚定。
+- **The removal version stays 0.30 and the host probe enters the pre-release checklist (issue #429;
+  merge `cbb695c`; backfilled by #691):** the invented 0.31 version number is withdrawn, so
+  `src/providers/anthropic.js`'s marker reads 0.30 again and the 0.30 release-blocker ledger records
+  why the name still ships.
+- **删除版本回到 0.30，宿主探针进发版前清单（issue #429；合并 `cbb695c`；#691 补记）**：撤销那个
+  发明出来的 0.31 版本号 ⇒ `src/providers/anthropic.js` 的标记改回 0.30，0.30 的发布阻塞账本记下
+  这个名字为什么照发。
+- **Slot claiming writes a complete temporary file and publishes it with `link(2)`, which removes the
+  half-written slot window (issue #652; merge `111537b`; backfilled by #691).**
+  `src/tools/delegation/capacity.js` (+250/−36), `src/tools/delegation/tool.js` and the contract (both
+  halves).
+- **占格改成「全量写临时文件 + `link(2)` 排他发布」，消除半写槽窗口（issue #652；合并 `111537b`；
+  #691 补记）**：`src/tools/delegation/capacity.js`（+250/−36）、`src/tools/delegation/tool.js`
+  与契约中英两份。
+- **The symbol-anchor claim chain moves into `docs/maintenance`, and the document-count claims become
+  machine-reconciled (issue #644, #635; merge `78fb44f`; backfilled by #691).** Both READMEs change;
+  the ledger itself is an internal doc.
+- **符号锚点声称链搬进 `docs/maintenance`，文档份数声称改成机器对账（issue #644、#635；合并
+  `78fb44f`；#691 补记）。** 两份 README 改了；账本本身是内部文档。
+- **The compaction strategy default is stated per layer, and an unmarked default claim is blocked
+  (issue #650, #668; merge `efeef10`; backfilled by #691):** both READMEs and the contract (both
+  halves) stop saying "`fold-statistical` is the default everywhere".
+- **压缩策略默认值按层陈述，无标记的默认声称被拦下（issue #650、#668；合并 `efeef10`；#691 补记）**：
+  两份 README 与契约中英两份不再说「`fold-statistical` 到处都是默认」。
+- **The requirement documents stop repeating a stale default claim (issue #668; merge `ba98ff6`;
+  backfilled by #691).** `docs/requirements.md` / `_cn.md` only.
+- **需求文档里那句过期的默认声称改掉（issue #668；合并 `ba98ff6`；#691 补记）。** 只改
+  `docs/requirements.md` / `_cn.md`。
+- **A forced final with no body at all now falls back to a fixed terminal draft, and the payload says
+  so (issue #476; merge `26e5a0c`; backfilled by #691):** `src/loop/termination.js` and
+  `src/loop/orchestrator.js` change, the contract (both halves) gains the rows, and
+  `finalTextFallback: true` is the flag a host reads to know the `finalText` it holds is the engine's
+  fallback rather than the model's. The fallback runs after the guard, so the verification verdict does
+  not move.
+- **强制收尾后仍然一个字都没有，就落一份固定的兜底终稿，并在终局载荷里说出来（issue #476；合并
+  `26e5a0c`；#691 补记）**：改 `src/loop/termination.js` 与 `src/loop/orchestrator.js`，契约中英
+  两份补行；`finalTextFallback: true` 是宿主读的那个标记——手里的 `finalText` 是引擎兜底而不是模型
+  写的。兜底晚于 guard，所以验证结论不动。
+- **The host list is refreshed and the probe's criterion becomes "the breakage must be covered by the
+  guide" (issue #663, #429; merge `a68137f`; backfilled by #691):** both READMEs, both contract halves
+  and both requirements files change, because `erix-station` / `app_container` merged into
+  `fde-workshop` and a host hit is a reason for a guide row, not a veto on the deletion.
+- **宿主清单换血，探针判据改成「破坏必须被指南覆盖」（issue #663、#429；合并 `a68137f`；#691 补记）**：
+  两份 README、契约中英两份、需求中英两份都改了——`erix-station` / `app_container` 已并入
+  `fde-workshop`，而宿主命中是「指南必须有一行」的理由，不是删除的否决权。
+- **The removal ledger changes semantics — a host hit is a known breakage, not a veto (issue #674,
+  #429; merge `086781d`; backfilled by #691):** the `@deprecated` marker on
+  `src/providers/anthropic.js` now records the known host-visible breakage, which host, which
+  `file:line`, and why the name goes anyway.
+- **退役导出账本改语义——宿主命中是「已知破坏」，不是否决权（issue #674、#429；合并 `086781d`；
+  #691 补记）**：`src/providers/anthropic.js` 上的 `@deprecated` 标记改成记下这笔已知的宿主可见破坏
+  （哪个宿主、哪个 `file:line`、以及为什么照删）。
+- **The contract states the unknown-slot answer per provider shape (issue #675, #498; merge
+  `e6713ab`; backfilled by #691):** a slot map must throw rather than fall back to a default, and the
+  contract's row says so for each shape — both halves.
+- **契约按 provider 形态陈述未知槽的答案（issue #675、#498；合并 `e6713ab`；#691 补记）**：槽位图
+  必须抛，不许回落默认；契约那一行按形态各写一遍，中英两份。
+- **The retired semantics "a failing summarizer degrades to a statistical summary" becomes a blocking
+  anchor (issue #680, #668; merge `27e0063`; backfilled by #691):** `src/compact/fold-statistical.js`
+  and `src/compact/provider-summarizer.js` change so that the sentence can no longer be written as if
+  it were current.
+- **退役语义「摘要器失败 ⇒ 降级为统计摘要」接成阻断锚点（issue #680、#668；合并 `27e0063`；
+  #691 补记）**：改 `src/compact/fold-statistical.js` 与 `src/compact/provider-summarizer.js`，那句话
+  从此不能再被当成现状写出来。
+- **The suite-inventory and forced-final-eligibility rows are stated per provider shape (issue #677,
+  PR #683; merge `99fe074`; backfilled by #691).** The contract (both halves) only — the rows are the
+  ones that make those two gates judge semantics instead of wording.
+- **套件清单与强制收尾资格那两行按 provider 形态陈述（issue #677、PR #683；合并 `99fe074`；#691 补记）。**
+  只改契约中英两份——那两行是让那两道闸判语义而不是判措辞的东西。
 
 ## [0.29.0] - 2026-10-31
 

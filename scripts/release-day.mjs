@@ -10,12 +10,13 @@
 // 只把**必须人做**的那一步（`npm publish` 的 device-flow 扫码）留在人手里。
 //
 // ── 四个阶段（`--stage`；`--all` 按序跑）────────────────────────────────────────
-//   preflight  AGENTS §4 的四条前置，按顺序跑，**任一红就停在那一步并点名第几步**：
-//                1 `npm run check:docs`                 文档漂移 + 中英同步
-//                2 `npm run check:docs:strict`          同上，告警也阻塞
-//                3 `ERIX_E2E_REAL=1 npm run check:release:real`   真上游；**闸门关着 ⇒ 未判定**
-//                4 `npm run check:release`              离线：tarball / 装好的包 / TS 宿主 / 假上游 CLI
-//                5 `npm run check:host-consumers -- --hosts …`   宿主侧探针；**没给目录或目录不在 ⇒ 未判定**
+//   preflight  AGENTS §4 的前置清单，按顺序跑，**任一红就停在那一步并点名第几步**：
+//                1 `npm run check:changelog`           本版 CHANGELOG 覆盖了碰到公开面的合并号（issue #691）
+//                2 `npm run check:docs`                 文档漂移 + 中英同步
+//                3 `npm run check:docs:strict`          同上，告警也阻塞
+//                4 `ERIX_E2E_REAL=1 npm run check:release:real`   真上游；**闸门关着 ⇒ 未判定**
+//                5 `npm run check:release`              离线：tarball / 装好的包 / TS 宿主 / 假上游 CLI
+//                6 `npm run check:host-consumers -- --hosts …`   宿主侧探针；**没给目录或目录不在 ⇒ 未判定**
 //              未判定（not-judged）**不是绿**：`ERIX_E2E_REAL` 缺失时那一族一步都不跑，脚本明说「未判定」，
 //              整体 exit 2（不是 0）。目录不存在按探针自己的口径（`HOST_DIR_MISSING` / `HOST_DIR_NOT_DIR`）判未判定。
 //   publish    脚本**不 fork `npm publish`**（理由见下）。preflight 全绿后它把「请你自己在终端跑 `npm publish`」
@@ -94,11 +95,15 @@ export const PHASE = Object.freeze({
 });
 
 /**
- * preflight 的五步（AGENTS §4 的前置清单，顺序即清单顺序）。`gate` 非空 ⇒ 这一步可能是「未判定」：
+ * preflight 的六步（AGENTS §4 的前置清单，顺序即清单顺序）。`gate` 非空 ⇒ 这一步可能是「未判定」：
  *   · `ERIX_E2E_REAL` —— 环境变量闸门关着时真上游那一族**一步都不跑**；
  *   · `hosts`         —— 没给 `--hosts` 或给的目录都不在时，探针自己也是「未判定」。
+ *
+ * 第 1 步是 issue #691 的 CHANGELOG 覆盖闸：它读的是本版段 × 上一个 tag 以来的 first-parent 合并，
+ * 与「发出去的这一版到底改了什么」直接相关，所以排在最前（最便宜，且它红了后面那一族没必要跑）。
  */
 export const PREFLIGHT_STEPS = Object.freeze([
+  { id: "changelog", label: "check:changelog", argv: ["npm", "run", "check:changelog"] },
   { id: "docs", label: "check:docs", argv: ["npm", "run", "check:docs"] },
   { id: "docs-strict", label: "check:docs:strict", argv: ["npm", "run", "check:docs:strict"] },
   {
@@ -1082,11 +1087,11 @@ function runSelfTest() {
   {
     const deps = fakeDeps({ override: { "npm run check:release": { status: 1 } } });
     const result = runPreflight({ root: DEFAULT_ROOT, hosts: [DEFAULT_ROOT], deps, dry: true });
-    expect(result.verdict === VERDICT.FAIL && result.failedAt === 4 && result.failedId === "release",
-      `① preflight 第 4 步红 ⇒ 停在第 4 步并点名 release（steps=${result.steps.length}）`,
-      `① 没停在第 4 步：verdict=${result.verdict} failedAt=${result.failedAt} failedId=${result.failedId}`);
+    expect(result.verdict === VERDICT.FAIL && result.failedAt === 5 && result.failedId === "release",
+      `① preflight 第 5 步红 ⇒ 停在第 5 步并点名 release（steps=${result.steps.length}）`,
+      `① 没停在第 5 步：verdict=${result.verdict} failedAt=${result.failedAt} failedId=${result.failedId}`);
     expect(!deps.calls.some((line) => line.includes("check:host-consumers")),
-      "① 红之后的第 5 步一步都没跑（顺序闸）",
+      "① 红之后的第 6 步一步都没跑（顺序闸）",
       `① 红了还在往下跑：${deps.calls.filter((line) => line.includes("check:host-consumers")).join(", ")}`);
     expect(result.steps.at(-1)?.exitCode === 1, "① 红的那一步带着它的退出码（exit 1）",
       `① 红的那一步没带退出码：${JSON.stringify(result.steps.at(-1))}`);
@@ -1124,8 +1129,8 @@ function runSelfTest() {
   {
     const deps = fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_REAL: "1" } });
     const result = runPreflight({ root: DEFAULT_ROOT, hosts: [DEFAULT_ROOT], deps, dry: true });
-    expect(result.verdict === VERDICT.PASS && result.steps.length === 5,
-      "②c 闸门开 + 宿主目录在 + 五步全绿 ⇒ pass（对照组）",
+    expect(result.verdict === VERDICT.PASS && result.steps.length === PREFLIGHT_STEPS.length,
+      "②c 闸门开 + 宿主目录在 + 每一步都全绿 ⇒ pass（对照组）",
       `②c 对照组不绿：verdict=${result.verdict} steps=${JSON.stringify(result.steps)}`);
     expect(deps.calls.some((line) => line.includes("check:release:real")) && deps.calls.some((line) => line.includes("--hosts")),
       "②c 闸门开着时真上游与宿主探针都真跑了",
