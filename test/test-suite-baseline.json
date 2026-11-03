@@ -3,12 +3,24 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3386,
+    "tests": 3393,
     "fail": 0,
     "maxSkipped": 15
   },
   "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
   "observations": [
+    {
+      "env": "local",
+      "node": "22.23.2",
+      "commit": "e0a8c13e737e26625f0094064938932453038714",
+      "tests": 3393,
+      "pass": 3380,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "issue #687 同片新增 test/guide-removal-gate.test.js 七格（名集读取 / 同一跑两态 / 登记表自证 / 读不出 ⇒ exit 2 / --self-test / CLI 退出码），所以 tests 与 pass 各 +7，fail 0、skipped 13 不变。六个计数逐字取自本工作树的 `npm test` TAP 汇总行（日志 /tmp/687-npm-test.log），并经 `npm run check:test-summary -- --log /tmp/687-npm-test.log` 复核（VERDICT ok + 抬值提示 3393）；非手抄。登记面：merge base main 7474748，本分支 head e0a8c13。"
+    },
     {
       "env": "ci",
       "node": "22.23.4",

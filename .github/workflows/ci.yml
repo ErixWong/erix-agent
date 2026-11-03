@@ -176,6 +176,15 @@ jobs:
       - name: Deprecated-export registry self-test
         run: node scripts/deprecated-export-check.mjs --self-test
 
+      # 阻塞（issue #687）：上上条那一族都只在**文档与登记**这一侧对账，没有一条把「指南说了什么」与
+      # 「装好的包真的导出什么」放在一起比——0.30.0 指南声称那一批导出已删除，而发布物
+      # 一个都没删，这一态可以一路绿到发布之后。真正的对账在 `npm run check:release` 第 2 步（用**装好的包**
+      # 的运行时导出面判，红就点名 `名字 @ 指南文件:行 @ 入口`，读不出 ⇒ exit 2）；本步是那条闸自己的反向证
+      # （合成夹具 + 真指南只读，不装包）：登记表清空 ⇒ 逐名红、空 `why` ⇒ 红、空转条目 ⇒ 红、
+      # 表解析不出 ⇒ exit 2，变异没落上一律算失败（#210 R2）。例数由命令自己打印。
+      - name: Guide removal gate self-test
+        run: node scripts/guide-removal-gate.mjs --self-test
+
       - name: Test hygiene guard
         run: npm run check:tests
 

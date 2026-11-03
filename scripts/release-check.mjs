@@ -11,6 +11,9 @@
 //   2. 装     tarball 装进一次性临时项目（`npm i <tgz>`，`--offline` + 一次性 cache/userconfig），
 //             断言消费者视角 `import("erix-agent")` 拿到 `runToolLoop`、
 //             `import("erix-agent/tools")` 拿到 `createFileTools`，两者都是 function。
+//             issue #687：同一份探针把两个入口的**运行时导出名**落盘，交给
+//             `scripts/guide-removal-gate.mjs` 与升级指南的「已删除」声称对账——指南说删了、发布物还在导出
+//             ⇒ 红；读不出（指南缺失 / 表解析不出 / 探针没产出）⇒ exit 2。
 //   3. 跑     用**装好的包**跑随包的 `test/contract/` 契约套件（`erix-agent/contract-tests`），
 //             这正是文档给消费者的自跑路径。
 //   4. 编译   在临时项目里写一个**真 TypeScript 宿主**（assemblyPort + runToolLoop +
@@ -72,6 +75,9 @@ import { fakeHomeEnv, upstreamFields, writeConfigHome } from "../fixtures/config
 // issue #598：第 6 步的实现在它自己那个脚本里（同一套离线/自清理纪律，可单跑：
 // `node scripts/cli-continuity-smoke.mjs`）。本文件只负责「用**装好的包**跑它」。
 import { runCliContinuitySmoke } from "./cli-continuity-smoke.mjs";
+// issue #687：升级指南声称「已删除」的导出名必须在**装好的包**的运行时导出面上真的不存在。
+// 指南的读法（表形状、入口列）在 `scripts/bundle-guide-table.mjs`，本文件只把装包探针产出的运行时面喂给它。
+import { formatRed, verifyGuideRemoval } from "./guide-removal-gate.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
@@ -122,10 +128,25 @@ const savedProxyValues = new Map();
 let erixDirBefore = "";
 let npmrcBefore = "";
 
-class ReleaseCheckError extends Error {}
+/** 失败时带退出码：1 = 判据红；2 = 读不出真值（本仓惯例，见 `scripts/guide-removal-gate.mjs` 的文件头）。 */
+class ReleaseCheckError extends Error {
+  /**
+   * @param {string} message
+   * @param {number} [exitCode]
+   */
+  constructor(message, exitCode = 1) {
+    super(message);
+    this.name = "ReleaseCheckError";
+    this.exitCode = exitCode;
+  }
+}
 
-function fail(message) {
-  throw new ReleaseCheckError(message);
+/**
+ * @param {string} message
+ * @param {number} [exitCode] 1 = 判据红（缺省）；2 = 读不出真值
+ */
+function fail(message, exitCode = 1) {
+  throw new ReleaseCheckError(message, exitCode);
 }
 
 // ---------------------------------------------------------------------------
@@ -531,10 +552,55 @@ function stepInstall({ hostDir, tarballPath, npmEnv }) {
     fail(`消费者视角 import 断言失败，退出码 ${probe.status}\n${tail(probe.stdout)}\n${tail(probe.stderr)}`);
   }
   notes.push(`import 探针：${tail(probe.stdout, 200)}`);
+
+  // (f) issue #687：指南声称「已删除」的名字必须在**这个装好的包**的运行时导出面上真的不存在。
+  stepGuideRemovalGate({ hostDir });
+
   return { installedVersion: JSON.parse(readFileSync(join(hostDir, "node_modules", "erix-agent", "package.json"), "utf8")).version };
 }
 
+/** 装包探针把两个入口的运行时导出名写在这里（`hostDir` 下）；本闸吃那一份真值。 */
+const RUNTIME_SURFACE_FILE = "probe-runtime-exports.json";
+
+/**
+ * 指南「已删除」声称 ↔ 装好的包的运行时导出面（issue #687）。
+ *
+ * 为什么必须用**装好的包**而不是仓内 `src/`：指南随包发布、读者拿到的就是那一份运行时面。仓内导出名与
+ * 发布物一致是另一道闸的事（`check:exports` / `check:types-build`）；这一条断言的是「读者 `import` 到什么」。
+ * 读不出（探针没产出 / 形状坏了 / 指南读不出）⇒ **exit 2**，与 `guide-removal-gate.mjs` 的退出码同一套语义：
+ * 读不出真值不是绿。
+ *
+ * @param {{hostDir: string}} params
+ */
+function stepGuideRemovalGate({ hostDir }) {
+  const surfacePath = join(hostDir, RUNTIME_SURFACE_FILE);
+  if (!existsSync(surfacePath)) {
+    fail(`装包探针没有产出运行时导出面（${RUNTIME_SURFACE_FILE}）——`
+      + "指南声称删了哪些名字、包还在不在导出，这一问无从核对；读不出不是绿", 2);
+  }
+  let runtimeSurface;
+  try {
+    runtimeSurface = JSON.parse(readFileSync(surfacePath, "utf8"));
+  } catch (error) {
+    fail(`运行时导出面读不出（${RUNTIME_SURFACE_FILE}）：${/** @type {Error} */ (error).message}`, 2);
+  }
+
+  const gate = verifyGuideRemoval({ runtime: runtimeSurface });
+  if (gate.status === 2) {
+    fail(`升级指南「已删除」对账读不出真值（exit 2）：\n  ${gate.errors.map((error) => `[${error.code}] ${error.message}`).join("\n  ")}`, 2);
+  }
+  if (gate.status === 1) {
+    fail(`升级指南「已删除」对账红了 ${gate.reds.length} 处（指南说删了、发布物还在导出）：\n  `
+      + `${gate.reds.map(formatRed).join("\n  ")}`);
+  }
+  const knownCount = gate.known.length;
+  notes.push(`升级指南「已删除」对账：名集 ${gate.claims.size} 个名字（中英两份，入口按指南行）全部不在运行时导出面上；`
+    + `运行时面 root ${runtimeSurface.root.length} 键 / ./tools ${runtimeSurface.tools.length} 键；`
+    + `已知未删除 ${knownCount} 条（N=${knownCount}）`);
+}
+
 const PROBE_SOURCE = `import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 
 const root = await import("erix-agent");
 const tools = await import("erix-agent/tools");
@@ -547,6 +613,13 @@ for (const [name, value] of expected) {
   assert.equal(typeof value, "function", name + " 不是 function（实际 " + typeof value + "）");
   console.log(name + ": function");
 }
+
+// issue #687：把两个入口的**运行时导出名**落盘，交给 scripts/guide-removal-gate.mjs 与指南的「已删除」声称对账。
+// 写的是命名空间对象的 own keys（ESM 的导出面就是它），不是 import 列表：漏写一个名字就等于没在断言它。
+writeFileSync("probe-runtime-exports.json", JSON.stringify({
+  root: Object.keys(root).sort(),
+  tools: Object.keys(tools).sort(),
+}));
 `;
 
 // ---------------------------------------------------------------------------
@@ -1175,6 +1248,7 @@ process.on("exit", () => {
 
 try {
   await main();
-} catch {
-  process.exitCode = 1;
+} catch (error) {
+  // 读不出真值（exit 2）与判据红（exit 1）不许压成同一个码：前者是「这道闸没跑起来」，后者是「跑了、红了」。
+  process.exitCode = error instanceof ReleaseCheckError && error.exitCode === 2 ? 2 : 1;
 }
