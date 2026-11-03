@@ -111,6 +111,16 @@
 //                 「`dist-tags.latest` 后面紧跟的版本号」与「X 从未发布」两形状。
 //                 registry 取不到（离线 / 无缓存）⇒ **降级为告警**并打印原因与来源，不判红（与 `check:cli-real`
 //                 的闸门分类同一口径：网络不可得不是文档漂移）；`--offline` 直接不读 registry。
+//  19. unchanged-surface 「不变」那一节 × 本版 CHANGELOG 的字段真值（issue #690）：本版 CHANGELOG 段里被
+//                 声明**变更**（不是纯加法）的字段名落到六格（选项 / 默认值 / 观察者事件 / 诊断字段 /
+//                 磁盘格式 / 终局载荷）中的哪一格，指南那一格就**不许**写「不变」，红时点名
+//                 `文件:行 + 字段名 + 格名`；本版没有变更证据的格子写「不变」保持绿（反向不许逼文档造条目）。
+//                 **中英各判一次**（一侧被整句删掉红在缺的那一侧）；六格的成员判据从源码现算、不抄名单。
+//                 **读不出 = 红，且是 exit 2**（§4 找不到 / 本版 CHANGELOG 段读不到 / 段里有反引号字段名
+//                 而解析为空）——与「文档与真值打架」的 exit 1 分开，别让「闸自己坏了」混进文档漂移里。
+//                 与相邻闸的分工：**#687 管「指南称已删 ↔ 运行时导出」**（这个名字还在不在），
+//                 **本条管「指南称不变 ↔ 本版真值」**（这一版字段动没动），既有 `defaults` / `files` /
+//                 `exports` / 符号锚点是「文档字面量 ↔ 源码字面量」——三条互不重叠，别合并成一条模糊判据。
 //
 // 锚点粒度（issue #210 R3：**别把「存在性」锚点误当成「文档里删一处提及就会红」**）：
 //   · 存在性（每档被检查文档至少命中一次即可；同一句里删掉额外一处提及不会红）：
@@ -6074,6 +6084,412 @@ function collectGuideCoverageErrors() {
   return out;
 }
 
+// ── 20. 「不变」声明 × 本版 CHANGELOG 的字段真值（issue #690）────────────────────
+// 病：升级指南里「以下东西不变」那一节是**假话**。0.30 指南的 §4 明写「观察者事件、诊断字段与 run-state
+// 块」以及「transcript 与 run-state 的磁盘格式」不变，而**同一版 CHANGELOG** 记着 `degradeKind` /
+// `degradeReason` 不再有写者、`budgetExhausted` 搬到 `details.`、`record.foldedFacts.text` 不再含任务
+// 原文、失败终局改走 `exitCodeForRunFailure` 的独立退出码。这些名字在指南里 0 命中，而所有门禁一路绿。
+//
+// 与相邻闸的分工（**别合并成一条模糊判据**）：
+//   · #687 管「指南称**已删** ↔ 运行时导出」——问的是「这个名字还在不在」；
+//   · 本条管「指南称**不变** ↔ 本版真值」——问的是「这一版的字段到底动没动」；
+//   · `check:docs` 既有的 `defaults` / `files` / `exports` / 符号锚点 / 裸行号棘轮是「文档字面量 ↔
+//     源码字面量」，各自独立，本条一个字都不动它们。
+//
+// 判据（两个方向都看守）：
+//   ① **正向**：本版 CHANGELOG 段里被声明**变更**（不是纯加法）的字段名，落到六格里的哪一格，指南那一格
+//      就**不许**写「不变」；红时点名 `文件:行 + 字段名 + 格名`。
+//   ② **反向**：本版没有任何变更证据的格子，指南写「不变」保持绿——不许逼文档为无变更的版本造条目。
+//   ③ **读不出 = 红（exit 2）**：找不到那一节 / 读不到本版 CHANGELOG 段 / 段里有反引号字段名而解析结果
+//      为空 ⇒ 真值缺位。读不出永远不等于绿。
+//   ④ **中英各自判**：两份指南各跑一遍（变更真值同源），于是「一侧被整句删掉」红在**缺那一侧**。
+//
+// 六格的成员判据**从源码现算**，不抄名单（抄名单正是 #429 修过的漂移路径：名单会与代码各自腐烂）：
+//   · 观察者事件 = 本版段里以 `type: "…"` / 引号字面量写出来、且 `src/loop/orchestrator.js` 确实发得出去的事件名；
+//   · 选项       = `CONFIG_NAMESPACE_SCHEMA` 的叶子路径与叶子名 + `bin/cli.js` 的旗标与 slot 键；
+//   · 默认值     = `bin/config.js` 里 `DEFAULT_*` 这类「某个选项的缺省值」常量；
+//   · 诊断字段   = `createCompactionStat` 造出来的 `compactionStats` 条目形状的键（含 `foldSummary` 子键）；
+//   · 磁盘格式   = `fold-summary-journal.js` 声明的轮记录字段 + `buildFoldedFacts({…})` 这个折叠记录字面量的键；
+//   · 终局载荷   = `makeResult` 的返回键 + `termination` 的键 + `bin/cli.js` 的退出码符号。
+//
+// 「被声明变更」的判据也写在脚本里（不靠人读）：
+//   · 只有**变更形状**（`no longer` / `moves to` / `instead of` / 改名 / 删掉 / 搬到 / `→` …）才算证据；
+//   · **纯加法**（`adds` / `新增` / `纯加法`）不算——「既有面不变」与「多了一个新叶子」不是同一句话，
+//     加法由 §4.1 与 `guide-coverage` 那一侧看守（否则「这一版新增了一个叶子」会把「既有叶子不变」判成假话）；
+//   · 条目自带「只做展示层 / 不改任何引擎事实」限定语的**不算**引擎面变更证据（0.30 的 `judge.log` 那一条
+//     正是这种：事件名与载荷都没动，动的是打印到哪里）。
+//
+// 为什么指南一侧按「格」判而不是按整节判：整节一句「以上都不变」对读者是承诺，对门禁是一团糊——判据要能
+// 点名「哪一格、哪个字段」。所以每格单独取声明：同一格里**没有**「这一版变了」那句固定话术的，就按「不变」算。
+const SURFACE_SECTION_HEADING = Object.freeze({
+  en: /^##\s*\d+\.\s*What does not change\b/u,
+  cn: /^##\s*\d+\.\s*没有变的东西/u,
+});
+
+/** 每格一句「这一格变了」的固定话术（指南侧唯一的变更标记；红/绿只看它在不在这一格里）。 */
+const SURFACE_CHANGED_MARK = Object.freeze({
+  en: /changed in this release|changes in this release|changed this release/iu,
+  cn: /这一版变了|本版变了|这一版改了|本版改了/u,
+});
+
+/** 字段名形状：标识符，可带点分路径与 `[]` 后缀（`compactionStats[].strategyName` / `config.a.b`）。 */
+const SURFACE_NAME_SHAPE = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:\[\])?$/u;
+
+/** 变更形状（**证据**）：只认「既有字段被改/搬/删/改名」，不认「新增」。 */
+const SURFACE_CHANGE_SHAPES = new RegExp(String.raw`\bno longer\b|\bmoves? to\b|\bmoved to\b|\binstead of\b`
+  + String.raw`|\brenamed?\b|\brenames\b|\bremoves?\b|\bremoved\b|\bretires?\b|\bretired\b|\bdeletes?\b|\bdeleted\b`
+  + String.raw`|\breplaces?\b|\breplaced\b|\bstops?\b|\bstopped\b|\bchanged?\b|\bchanges\b|→|->`
+  + String.raw`|不再|搬到|移入|改成|改为|删掉|删除|移除|退役|改名|变了`, "u");
+
+/** 加法形状：**不算**变更证据（理由见节头）。 */
+const SURFACE_ADDITIVE_SHAPES = /\badds?\b|\badded\b|\bnew\b|\badditive\b|新增|加入|引入|纯加法/iu;
+
+/** 条目级限定语：只动展示层 / 不改引擎事实 ⇒ 这一条里的名字不是引擎面变更的证人。 */
+const SURFACE_DISPLAY_ONLY = /\bdisplay layer only\b|\bno engine fact changes?\b|\bno engine change\b|\bvisibility only\b|\bdocumentation only\b|\bno behaviour change\b|\bno behavior change\b|只做展示层|只做可见性|不改任何引擎事实|纯文档|零行为变更/iu;
+
+/** 本版那一对指南（判据的扫描面与自测的靶子同源，不写第二份文件名）。 */
+const SURFACE_GUIDE_EN = `docs/host-upgrade-guide-${PKG_VERSION}.md`;
+const SURFACE_GUIDE_CN = `docs/host-upgrade-guide-${PKG_VERSION}_cn.md`;
+
+/** 六格在指南里的**行首锚**：自测按格替换/删除 bullet 时用（改措辞要同步这里）。 */
+const SURFACE_BULLET = Object.freeze({
+  en: {
+    options: "* **Options —",
+    defaults: "* **Defaults —",
+    events: "* **Observer events —",
+    diagnostics: "* **Diagnostic fields —",
+    disk: "* **On-disk formats —",
+    finalPayload: "* **Final payload —",
+  },
+  cn: {
+    options: "* **选项——",
+    defaults: "* **默认值——",
+    events: "* **观察者事件——",
+    diagnostics: "* **诊断字段——",
+    disk: "* **磁盘格式——",
+    finalPayload: "* **终局载荷——",
+  },
+});
+
+/**
+ * 六格：`id`（内部键）+ 中英格名（红时点名用）+ 中英「这一格在讲什么」的标记 + 成员真值构造器。
+ * 顺序即**归属优先级**：一个名字同时像两格时，先命中的那格赢（`compactionStats` 是诊断字段，不是终局载荷）。
+ */
+const SURFACE_CELLS = Object.freeze([
+  { id: "diagnostics", en: "diagnostic fields", cn: "诊断字段",
+    marker: { en: /\bdiagnostic fields?\b|\bdiagnostics\b/iu, cn: /诊断字段/u },
+    truth: () => surfaceDiagnosticNames() },
+  { id: "disk", en: "on-disk formats", cn: "磁盘格式",
+    marker: { en: /\bon-disk\b|\bdisk formats?\b/iu, cn: /磁盘格式|磁盘/u },
+    truth: () => surfaceDiskNames() },
+  { id: "events", en: "observer events", cn: "观察者事件",
+    marker: { en: /\bobserver events?\b/iu, cn: /观察者事件/u },
+    truth: () => surfaceEventNames() },
+  { id: "options", en: "options", cn: "选项",
+    marker: { en: /\boptions?\b|\binput surface\b|\bconfiguration leaf\b/iu, cn: /选项|输入面|配置叶子/u },
+    truth: () => surfaceOptionNames() },
+  { id: "defaults", en: "defaults", cn: "默认值",
+    marker: { en: /\bdefaults?\b/iu, cn: /默认值|默认/u },
+    truth: () => surfaceDefaultNames() },
+  { id: "finalPayload", en: "final payload", cn: "终局载荷",
+    marker: { en: /\bfinal payload\b|\bterminal payload\b|\bexit[- ]codes?\b/iu, cn: /终局载荷|终局|退出码/u },
+    truth: () => surfaceFinalPayloadNames() },
+]);
+
+/** 观察者事件：`src/loop/orchestrator.js` 里 `type: "…"` 真正发出去的事件类型。 */
+function surfaceEventNames() {
+  const rec = fileRecord("src/loop/orchestrator.js");
+  if (!rec) return null;
+  return new Set([...rec.text.matchAll(/\btype:\s*"([a-z][a-z0-9_]{2,})"/gu)].map((m) => m[1]));
+}
+
+/** 选项：配置叶子（路径 + 叶子名）+ CLI 旗标 + slot 键。真值来自 schema 与 `bin/cli.js`。 */
+function surfaceOptionNames() {
+  const truth = configNamespaceTruth();
+  const cli = fileRecord("bin/cli.js");
+  if (!truth || !cli) return null;
+  const out = new Set();
+  for (const group of truth.groups) {
+    out.add(group);
+    for (const leaf of truth.leaves.get(group) ?? []) {
+      out.add(leaf);
+      out.add(`config.${group}.${leaf}`);
+    }
+  }
+  for (const m of cli.text.matchAll(/(?<![\w-])(--[a-z][a-z0-9-]+)/gu)) out.add(m[1]);
+  for (const m of cli.text.matchAll(/\bslots\.[A-Za-z][\w]*\.([A-Za-z][\w]*)/gu)) out.add(m[1]);
+  return out;
+}
+
+/** 默认值：`bin/config.js` 里 `DEFAULT_*` 这类「某个选项的缺省值」常量（**不是**任意大写常量）。 */
+function surfaceDefaultNames() {
+  const rec = fileRecord("bin/config.js");
+  if (!rec) return null;
+  return new Set([...rec.text.matchAll(/\b(DEFAULT_[A-Z0-9_]+)/gu)].map((m) => m[1]));
+}
+
+/** 诊断字段：`createCompactionStat` 造出来的 `compactionStats` 条目形状的键（含 `foldSummary` 子键）。 */
+function surfaceDiagnosticNames() {
+  const rec = fileRecord("src/compact/pipeline.js");
+  if (!rec) return null;
+  const start = rec.text.indexOf("export function createCompactionStat(");
+  const end = start < 0 ? -1 : rec.text.indexOf("export const COMPACTION_STATS_STATE_LIMIT", start);
+  if (start < 0 || end < 0) return null;
+  const block = rec.text.slice(start, end);
+  const out = new Set(["compactionStats"]);
+  for (const m of block.matchAll(/(?:^|[,{(\s])([A-Za-z_$][\w$]*)\s*:/gu)) out.add(m[1]);
+  for (const m of block.matchAll(/\.([A-Za-z_$][\w$]*)\s*=[^=]/gu)) out.add(m[1]);
+  return out;
+}
+
+/** 磁盘格式：`*_RECORD_FIELD` 声明的轮记录字段 + `buildFoldedFacts({…})` 这个折叠记录字面量的键。 */
+function surfaceDiskNames() {
+  const journal = fileRecord("src/compact/fold-summary-journal.js");
+  const orch = fileRecord("src/loop/orchestrator.js");
+  if (!journal || !orch) return null;
+  const out = new Set([...journal.text.matchAll(/export const [A-Z_]+_RECORD_FIELD\s*=\s*"([^"]+)"/gu)].map((m) => m[1]));
+  const masked = maskJs(orch.text, { keepStrings: false });
+  const at = masked.indexOf("buildFoldedFacts({");
+  if (at < 0) return null;
+  let depth = 0;
+  let end = -1;
+  for (let i = masked.indexOf("{", at); i >= 0 && i < masked.length; i += 1) {
+    if (masked[i] === "{") depth += 1;
+    else if (masked[i] === "}") { depth -= 1; if (depth === 0) { end = i; break; } }
+  }
+  if (end < 0) return null;
+  for (const m of masked.slice(at, end).matchAll(/(?:^|[,{(])\s*([A-Za-z_$][\w$]*)\s*:/gmu)) out.add(m[1]);
+  return out.size ? out : null;
+}
+
+/** 终局载荷：`makeResult` 的返回键 + `termination` 的键 + `bin/cli.js` 的退出码符号。 */
+function surfaceFinalPayloadNames() {
+  const term = fileRecord("src/loop/termination.js");
+  const cli = fileRecord("bin/cli.js");
+  if (!term || !cli) return null;
+  const start = term.text.indexOf("const makeResult = ");
+  const end = start < 0 ? -1 : term.text.indexOf("const forcedFinalFallbackApplies", start);
+  if (start < 0 || end < 0) return null;
+  const out = new Set();
+  for (const m of term.text.slice(start, end).matchAll(/(?:^|[,{(]\s*)([A-Za-z_$][\w$]*)\s*:/gmu)) out.add(m[1]);
+  for (const m of term.text.matchAll(/\b([A-Za-z_$][\w$]*)\s*:\s*terminationErrorCodeForError/gu)) out.add(m[1]);
+  for (const m of cli.text.matchAll(/export function (exitCode[A-Za-z0-9_]*)/gu)) out.add(m[1]);
+  return out.size ? out : null;
+}
+
+/** 一段散文里的「字段名」候选：反引号里的名字（含 `type: "x"` / `"x"` 这种事件字面量）。 */
+function surfaceNamesIn(sentence) {
+  const out = [];
+  for (const m of sentence.matchAll(/`([^`\n]+)`/gu)) {
+    const span = m[1].trim();
+    const quoted = span.match(/^type:\s*"([a-z][a-z0-9_]{2,})"$/u) ?? span.match(/^"([a-z][a-z0-9_]{2,})"$/u);
+    if (quoted) { out.push({ name: quoted[1], quoted: true }); continue; }
+    if (SURFACE_NAME_SHAPE.test(span)) out.push({ name: span, quoted: false });
+  }
+  return out;
+}
+
+/** 一个名字属于哪一格（`null` = 六格都不认）。`truths` 是 `id → Set`（一次判据内只现算一遍）。 */
+function surfaceCellOf(name, { quoted = false, truths }) {
+  const bare = name.replace(/\[\]$/u, "");
+  const parts = bare.split(".");
+  // `record.` 是轮记录的前缀：`record.foldedFacts.text` 的格身份由 `foldedFacts` 决定，
+  // **不再回落到末段**——否则 `text` 会把它抢去「观察者事件」（`text` 确实是一个事件名）。
+  const root = parts[0] === "record" ? parts[1] : parts[0];
+  const last = parts.at(-1);
+  for (const cell of SURFACE_CELLS) {
+    const truth = truths.get(cell.id);
+    if (!truth) continue;
+    if (cell.id === "events" && !quoted) continue;      // 事件名只认 `type: "…"` / 引号字面量（裸 `text` 是散文）
+    if (truth.has(root)) return cell;
+    if (parts[0] !== "record" && parts.length > 1 && truth.has(last)) return cell;
+  }
+  return null;
+}
+
+/** 本版 CHANGELOG 段：逐条（bullet）切，逐句判「有没有变更形状」。读不到返 null。 */
+function declaredSurfaceChanges(version, truths) {
+  const sections = changelogSections();
+  const sect = (sections ?? []).find((s) => s.version === version);
+  if (!sect) return null;
+  const byCell = new Map(SURFACE_CELLS.map((c) => [c.id, new Set()]));
+  const entries = [];
+  let cur = null;
+  for (const line of sect.body.split("\n")) {
+    if (/^- /u.test(line)) { cur = { line: sect.line, lines: [line] }; entries.push(cur); continue; }
+    if (cur) cur.lines.push(line);
+  }
+  let namesSeen = 0;
+  let anyMember = 0;
+  let changedCount = 0;
+  for (const entry of entries) {
+    const entryText = entry.lines.join(" ");
+    if (SURFACE_DISPLAY_ONLY.test(entryText)) continue;   // 展示层/纯文档条目不是引擎面变更的证人
+    for (const sentence of sentencesOf(entryText)) {
+      const names = surfaceNamesIn(sentence);
+      for (const { name, quoted } of names) {
+        namesSeen += 1;
+        if (surfaceCellOf(name, { quoted, truths })) anyMember += 1;
+      }
+      if (!names.length || !SURFACE_CHANGE_SHAPES.test(sentence)) continue;
+      for (const { name, quoted } of names) {
+        const cell = surfaceCellOf(name, { quoted, truths });
+        if (!cell) continue;
+        byCell.get(cell.id).add(name);
+        changedCount += 1;
+      }
+    }
+  }
+  return { byCell, namesSeen, anyMember, changedCount, line: sect.line };
+}
+
+/** 那一节（到第一个 `###` 子节或下一个 `##` 为止）。找不到返 null。 */
+function unchangedSurfaceSection(rel, lang) {
+  const rec = fileRecord(rel);
+  if (!rec) return null;
+  const head = rec.lines.findIndex((line) => SURFACE_SECTION_HEADING[lang].test(line.trim()));
+  if (head < 0) return null;
+  const lines = [];
+  for (let i = head + 1; i < rec.lines.length; i += 1) {
+    const line = rec.lines[i];
+    if (/^#{2,3}\s/u.test(line)) break;
+    lines.push({ text: line, line: i + 1 });
+  }
+  return { heading: head + 1, lines };
+}
+
+/** 把那一节切成「块」（一条 bullet / 一个自然段 = 一个声明单元），每块记它点名了哪几格。 */
+function surfaceClaimBlocks(section, lang) {
+  const blocks = [];
+  let cur = null;
+  for (const { text, line } of section.lines) {
+    if (!text.trim()) { cur = null; continue; }
+    const starts = /^\s*(?:[*+-]|\d+\.)\s/u.test(text);
+    if (starts || cur === null) { cur = { text: "", line }; blocks.push(cur); }
+    cur.text += ` ${text.trim()}`;
+  }
+  const claims = new Map();
+  for (const block of blocks) {
+    for (const cell of SURFACE_CELLS) {
+      if (!cell.marker[lang].test(block.text)) continue;
+      if (claims.has(cell.id)) continue;             // 第一处声明为准（红也只点一次名）
+      claims.set(cell.id, { line: block.line, changed: SURFACE_CHANGED_MARK[lang].test(block.text), text: block.text });
+    }
+  }
+  return claims;
+}
+
+/** 指南里点到的名字是否就是 CHANGELOG 声明变更的那一个（允许 `record.` 前缀 / 点分后缀的写法差）。 */
+const surfaceNameMatches = (declared, name) => declared === name
+  || declared.endsWith(`.${name}`) || name.endsWith(`.${declared}`);
+
+function collectUnchangedSurfaceErrors() {
+  const out = [];
+  const notes = [];
+  const readFailures = [];
+  const done = () => {
+    collectUnchangedSurfaceErrors.notes = notes;
+    collectUnchangedSurfaceErrors.readFailures = readFailures;
+    return out;
+  };
+  const fail = (msg) => { out.push(msg); readFailures.push(msg); };
+  const guides = versionedGuideDocs().filter((rel) => guideDocVersion(rel) === PKG_VERSION);
+  const en = guides.find((rel) => !rel.endsWith("_cn.md")) ?? null;
+  const cn = guides.find((rel) => rel.endsWith("_cn.md")) ?? null;
+  if (!en || !cn) {
+    fail(`unchanged-surface: 当前版本 ${PKG_VERSION} 没有一对指南（EN=${en ?? "缺"} / CN=${cn ?? "缺"}）——`
+      + "「不变」声明无从对账（读不出 = 红，不许静默放行）");
+    return done();
+  }
+  const truths = new Map();
+  for (const cell of SURFACE_CELLS) {
+    const truth = cell.truth();
+    if (truth) truths.set(cell.id, truth);
+    else fail(`unchanged-surface: 抽不到「${cell.cn}」格的成员真值（源码里的形状定位点不见了）——`
+      + "抽不到真值就报错，这一格不许当作「没有变更证据」（#164 口径）");
+  }
+  if (readFailures.length) return done();
+  const declared = declaredSurfaceChanges(PKG_VERSION, truths);
+  if (!declared) {
+    fail(`unchanged-surface: 读不到 CHANGELOG 的 ${PKG_VERSION} 段——「这一版到底动了哪些字段」的真值缺位，`
+      + "对账判据不许静默放行");
+    return done();
+  }
+  if (declared.namesSeen > 0 && declared.anyMember === 0) {
+    fail(`unchanged-surface: CHANGELOG 的 ${PKG_VERSION} 段里有 ${declared.namesSeen} 处反引号字段名，`
+      + "但一格也没解析出来——六格的成员判据（或真值提取器）坏了，本判据正在空跑");
+    return done();
+  }
+  let cellsJudged = 0;
+  for (const [rel, lang] of [[en, "en"], [cn, "cn"]]) {
+    const section = unchangedSurfaceSection(rel, lang);
+    if (!section) {
+      fail(`unchanged-surface: ${rel} 里找不到「不变」那一节（标题应为 `
+        + `\`${lang === "en" ? "## N. What does not change" : "## N. 没有变的东西"}\`）——`
+        + "读不出这一节就等于没有声明可对账（读不出 = 红，exit 2）");
+      continue;
+    }
+    const claims = surfaceClaimBlocks(section, lang);
+    for (const cell of SURFACE_CELLS) {
+      cellsJudged += 1;
+      const changedNames = [...declared.byCell.get(cell.id)];
+      if (!changedNames.length) continue;            // ② 反向：本版没有变更证据 ⇒ 写「不变」保持绿
+      const claim = claims.get(cell.id);
+      const label = cell[lang];
+      const list = changedNames.join(", ");
+      if (!claim) {
+        out.push(`unchanged-surface: ${rel}:${section.heading} 第「${label}」格整格缺席——本版 CHANGELOG 声明 `
+          + `${list} 变了，而这一节里没有这一格的任何声明（中英各自判：一侧被整句删掉不算处置，#690）`);
+        continue;
+      }
+      if (!claim.changed) {
+        out.push(`unchanged-surface: ${rel}:${claim.line} 第「${label}」格写着不变，而本版 CHANGELOG 声明这些字段变了：`
+          + `${list}——「不变」与同一版 CHANGELOG 打架（#690）`);
+        continue;
+      }
+      const named = surfaceNamesIn(claim.text)
+        .filter(({ name, quoted }) => surfaceCellOf(name, { quoted, truths })?.id === cell.id)
+        .filter(({ name }) => changedNames.some((d) => surfaceNameMatches(d, name)));
+      if (!named.length) {
+        out.push(`unchanged-surface: ${rel}:${claim.line} 第「${label}」格声明了变更，却没有点名本版 CHANGELOG 里`
+          + `任何一个该格字段（本版该格声明变更的是：${list}）——「变了」不点名等于没对账（#690）`);
+      }
+    }
+  }
+  const total = [...declared.byCell.values()].reduce((n, set) => n + set.size, 0);
+  const touched = [...declared.byCell.entries()].filter(([, set]) => set.size > 0).map(([id]) => id);
+  notes.push(`unchanged-surface: CHANGELOG ${PKG_VERSION} 段解析出 ${declared.namesSeen} 处反引号字段名，`
+    + `其中 ${total} 处是变更证据、落到 ${touched.length} 格（${touched.join(" / ") || "无"}）；`
+    + `指南 ${en} / ${cn} 各判 ${cellsJudged / 2} 格（声明不变 / 声明变更并点名 / 整格缺席）`);
+  return done();
+}
+
+/** `--self-test` 的变异器：把某条 bullet 整条删掉（锚不上 ⇒ 原样返回 ⇒ 框架报「变异没落上」）。 */
+function dropSurfaceBullet(prefix) {
+  return (text) => {
+    const lines = text.split("\n");
+    const at = lines.findIndex((line) => line.startsWith(prefix));
+    if (at < 0) return text;
+    let end = at + 1;
+    while (end < lines.length && lines[end].trim() !== "" && !/^\s*(?:[*+-]|\d+\.)\s/u.test(lines[end])) end += 1;
+    return [...lines.slice(0, at), ...lines.slice(end)].join("\n");
+  };
+}
+
+/** `--self-test` 的变异器：把某条 bullet 的正文换掉（`build()` 从零构造，不抄文档原话）。 */
+function replaceSurfaceBullet(prefix, build) {
+  return (text) => {
+    const lines = text.split("\n");
+    const at = lines.findIndex((line) => line.startsWith(prefix));
+    if (at < 0) return text;
+    let end = at + 1;
+    while (end < lines.length && lines[end].trim() !== "" && !/^\s*(?:[*+-]|\d+\.)\s/u.test(lines[end])) end += 1;
+    const body = build();
+    if (body === null) return text;
+    return [...lines.slice(0, at), ...body.split("\n"), ...lines.slice(end)].join("\n");
+  };
+}
+
 function collectAllDrift() {
   const out = [...collectAnchorErrors(), ...checkPkgBlocks().errors, ...collectPathErrors(),
     ...collectMarkerLiteralErrors(), ...collectBaselineClaimErrors(),
@@ -6095,7 +6511,9 @@ function collectAllDrift() {
     // issue #636：「该不该有一条」——代码侧名单 × CHANGELOG 加法句 ⇒ 指南必须覆盖
     ...collectGuideCoverageErrors(),
     // 14b：0.30 破坏包的逐名表 ↔ 现算候选集（issue #429 的文档面）
-    ...collectBundleTableErrors()];
+    ...collectBundleTableErrors(),
+    // issue #690：「不变」那一节 × 本版 CHANGELOG 的字段真值（六格逐格对账，中英各判一次，见本节第 20 段的节头）
+    ...collectUnchangedSurfaceErrors()];
   for (const [, en, cn] of SKELETON_PAIRS) out.push(...collectSkeletonErrors(en === README_EN ? "中英 README" : "中英 AGENTS", en, cn));
   return out;
 }
@@ -6135,10 +6553,15 @@ for (const e of collectForcedFinalEligibilityErrors()) err(e);
 for (const n of collectForcedFinalEligibilityErrors.notes ?? []) note(n);
 // ── 9. 「这句话属于哪个版本」（issue #511）──────────────────────────────────────
 for (const collect of [collectDocVersionErrors, collectVersionAttributionErrors, collectGuideClaimErrors,
-  collectChangelogPublicationErrors, collectPublishedClaimErrors, collectGuideCoverageErrors, collectBundleTableErrors]) {
+  collectChangelogPublicationErrors, collectPublishedClaimErrors, collectGuideCoverageErrors, collectBundleTableErrors,
+  collectUnchangedSurfaceErrors]) {
   for (const e of collect()) err(e);
   for (const n of collect.notes ?? []) note(n);
 }
+// issue #690 ③：**读不出 = 红，而且是 exit 2**。这一族与「文档与真值打架」（exit 1）分开：
+// 前者是「判据没有真值可判」（§4 找不到 / 本版 CHANGELOG 段读不到 / 名字解析为空），后者是「判得了且判出漂移」。
+// 把两者印成同一个退出码，等于让「闸自己坏了」与「文档写错了」在 CI 里长得一模一样。
+const READ_FAILURES = collectUnchangedSurfaceErrors.readFailures ?? [];
 for (const e of collectMarkerLiteralErrors()) err(e);
 for (const n of collectMarkerLiteralErrors.notes ?? []) note(n);
 for (const e of collectBaselineClaimErrors()) err(e);
@@ -7748,6 +8171,86 @@ const SELF_TEST_CASES = [
     },
     expectMutateMiss: true,
   },
+  // —— #690：「不变」那一节 × 本版 CHANGELOG 的字段真值（六格逐格对账）——
+  // 前三条就是**改动前的原句**：把某一格退回修前的写法 ⇒ 必须红，且点名「格名 + 字段名」。
+  // 这一族证明的是「闸真咬人」——不是跟着改口一起变绿。
+  {
+    label: "#690（还原）EN 磁盘格式退回改动前的原句 ⇒ 红并点名 record.foldedFacts.text",
+    overlay: {
+      [SURFACE_GUIDE_EN]: replaceSurfaceBullet(SURFACE_BULLET.en.disk,
+        () => "* Transcript and run-state on-disk formats; a ledger written by the previous release still resumes."),
+    },
+    expect: [
+      /unchanged-surface: docs\/host-upgrade-guide-0\.30\.0\.md:\d+ 第「on-disk formats」格写着不变/,
+      /record\.foldedFacts\.text/,
+    ],
+    expectFiles: [SURFACE_GUIDE_EN],
+  },
+  {
+    label: "#690（还原）EN 诊断字段退回「observer events, diagnostic fields…」那句 ⇒ 红并点名 degradeKind",
+    overlay: {
+      [SURFACE_GUIDE_EN]: replaceSurfaceBullet(SURFACE_BULLET.en.diagnostics,
+        () => "* Observer events, diagnostic fields, and the run-state block."),
+    },
+    expect: [
+      /unchanged-surface: docs\/host-upgrade-guide-0\.30\.0\.md:\d+ 第「diagnostic fields」格写着不变/,
+      /degradeKind/,
+    ],
+  },
+  {
+    label: "#690（还原）EN 终局载荷退回「Termination, verification and exit-code…」那句 ⇒ 红并点名 exitCodeForRunFailure",
+    overlay: {
+      [SURFACE_GUIDE_EN]: replaceSurfaceBullet(SURFACE_BULLET.en.finalPayload,
+        () => "* Termination, verification and exit-code semantics, including the `skipped`-without-guard exit code."),
+    },
+    expect: [
+      /unchanged-surface: docs\/host-upgrade-guide-0\.30\.0\.md:\d+ 第「final payload」格写着不变/,
+      /exitCodeForRunFailure/,
+    ],
+  },
+  {
+    label: "#690（中英各自判）CN 诊断字段整条删掉 ⇒ 红在 CN 这一侧（整格缺席），EN 不受影响",
+    overlay: { [SURFACE_GUIDE_CN]: dropSurfaceBullet(SURFACE_BULLET.cn.diagnostics) },
+    expect: [
+      /unchanged-surface: docs\/host-upgrade-guide-0\.30\.0_cn\.md:\d+ 第「诊断字段」格整格缺席/,
+      /degradeKind/,
+    ],
+    expectFiles: [SURFACE_GUIDE_CN],
+    reject: [/unchanged-surface: docs\/host-upgrade-guide-0\.30\.0\.md/u],
+  },
+  {
+    label: "#690 声明了变更却不点名该格字段 ⇒ 红（「变了」不点名等于没对账）",
+    overlay: {
+      [SURFACE_GUIDE_EN]: replaceSurfaceBullet(SURFACE_BULLET.en.disk,
+        () => "* **On-disk formats — changed in this release.** The fold ledger moved; the names are in §1."),
+    },
+    expect: [
+      /unchanged-surface: docs\/host-upgrade-guide-0\.30\.0\.md:\d+ 第「on-disk formats」格声明了变更，却没有点名/,
+      /record\.foldedFacts\.text/,
+    ],
+  },
+  {
+    label: "#690 读不出（①）：§4 那一节被改名 ⇒ 红，且是「读不出」那一族（exit 2）",
+    overlay: {
+      [SURFACE_GUIDE_EN]: replaceUnique("## 4. What does not change", "## 4. Notes on what moved"),
+    },
+    expect: [/unchanged-surface: docs\/host-upgrade-guide-0\.30\.0\.md 里找不到「不变」那一节/],
+  },
+  {
+    label: "#690 读不出（②）：本版 CHANGELOG 段读不到 ⇒ 红（真值缺位不许当绿）",
+    overlay: { "CHANGELOG.md": replaceUnique("## [0.30.0] - 2026-11-03", "## 0.30.0 - 2026-11-03") },
+    expect: [/unchanged-surface: 读不到 CHANGELOG 的 0\.30\.0 段/],
+  },
+  {
+    label: "#690（反向证）纯加法的名字不是变更证据：选项格写「不变」仍绿",
+    overlay: {
+      [SURFACE_GUIDE_EN]: replaceSurfaceBullet(SURFACE_BULLET.en.options,
+        () => "* **Options — unchanged.** The `runToolLoop` input surface, the `capabilities` shape, and every\n"
+          + "  existing configuration leaf. The added `config.metadata.modelMetadata.budgetTokens` leaf\n"
+          + "  changes no existing leaf (§4.1)."),
+    },
+    expectGreen: true,
+  },
 ];
 
 
@@ -7938,6 +8441,11 @@ if (SELF_TEST) {
 if (VERBOSE) {
   console.log("docs-drift-check 检查面：");
   for (const c of checked) console.log(`  ✓ ${c}`);
+}
+if (READ_FAILURES.length) {
+  console.log(`docs-drift-check: 读不出 — ${READ_FAILURES.length} 处真值缺位（exit 2：读不出永远不等于绿）`);
+  for (const e of READ_FAILURES) console.log(`  ✗ ${e}`);
+  process.exit(2);
 }
 if (errors.length || (STRICT && warnings.length)) {
   console.log(`docs-drift-check: 失败 — ${errors.length} 处漂移${STRICT && warnings.length ? `，${warnings.length} 处告警（--strict）` : ""}`);
