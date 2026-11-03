@@ -128,46 +128,21 @@ createOpenAIProvider({
   thinking_format
 }) => LlmProvider
 
-createAnthropicProvider({
-  endpoint,
-  apiKey,
-  model,
-  model_name,
-  fetchImpl = fetch,
-  transport,
-  protocol = "anthropic",
-  timeoutMs,
-  timeout,
-  requestTimeoutMs,
-  firstByteTimeoutMs,
-  streamIdleTimeoutMs,
-  streamTotalTimeoutMs,
-  timeouts,
-  clock,
-  maxTokens,
-  maxOutputTokens,
-  temperature,
-  topP,
-  thinking,
-  reasoning,
-  reasoning_effort,
-  enable_thinking,
-  chat_template_kwargs,
-  providerOptions,
-  frequency_penalty,
-  presence_penalty,
-  response_format,
-  model_type,
-  supports_reasoning,
-  thinking_format
-}) => LlmProvider
 ```
 
-The actual factories also accept the snake-case timeout aliases and the
+**`createOpenAIProvider` is the only provider factory the package publishes.** Other
+protocols are the host's own provider object: the Anthropic adapter is still an
+internal part of this library (`src/providers/anthropic.js`), and its protocol
+helpers — `canonicalToAnthropicRequest`, `anthropicResponseToCanonical`,
+`createAnthropicStreamAssembler` — stay public, but the factory itself is not a
+public entry any more. A host that speaks Anthropic builds the duck-typed
+`{ protocol, model, chat, chatStream }` object itself (the 0.31 upgrade guide
+carries a copyable recipe).
+
+The factory also accepts the snake-case timeout aliases and the
 provider-specific reasoning/payload fields implemented in
-`src/providers/openai.js` and `src/providers/anthropic.js`. `model_name` is an
-alias for `model`; `protocol` defaults to `"openai"` or `"anthropic"`
-respectively. `endpoint`, `apiKey`, and the selected model must be non-empty
+`src/providers/openai.js`. `model_name` is an alias for `model`; `protocol`
+defaults to `"openai"`. `endpoint`, `apiKey`, and the selected model must be non-empty
 strings. The default request timeout is `120000` ms. Without explicit
 phase-specific settings, streaming uses a `120000` ms first-byte timeout,
 `120000` ms idle timeout, and `300000` ms total timeout. The legacy
@@ -175,9 +150,9 @@ phase-specific settings, streaming uses a `120000` ms first-byte timeout,
 
 `chatStream` emits optional `onDelta`, `onReasoningDelta`, `onToolCall`,
 `onUsage`, and `onEvent` callbacks supplied on the request. The OpenAI adapter
-uses chat/completions serialization and SSE parsing; the Anthropic adapter uses
-Messages serialization and content-block SSE parsing. Both return
-`ChatResponse` in canonical form.
+uses chat/completions serialization and SSE parsing; the Anthropic adapter
+(host-supplied, see above) uses Messages serialization and content-block SSE
+parsing. Either returns `ChatResponse` in canonical form.
 
 Provider failures are represented by `KitError`. HTTP status classification
 maps 408 to `timeout`, 429 to `rate_limited`, 401/403 to `auth`, 5xx to
@@ -615,14 +590,16 @@ Checkpoint and transcript persistence retain the full tool-result text.
 
 ```js
 createStaticModelConfigProvider(configOrSlots)
-createEnvModelConfigProvider(prefix = "LLM_KIT_")
 createJsonFileModelConfigProvider({ path })
 resolveApiKey(config = {})
 ```
 
 `createStaticModelConfigProvider` accepts one config object or
 `{ slots: { default, ... } }`. Its `resolve(slot = "default")` selects the
-requested slot, falling back to `default`. The JSON-file provider requires a
+requested slot, falling back to `default`. **The environment-variable provider
+is no longer published** (`createEnvModelConfigProvider` retired with the 0.31
+bundle): a host that reads its configuration out of the environment implements
+the same duck-typed `resolve(slot)` itself. The JSON-file provider requires a
 JSON object with a `slots` object and uses the same slot fallback. The
 environment provider reads one config from the supplied prefix and ignores the
 slot argument.
@@ -713,11 +690,13 @@ createToolRegistry({ executors, schemas }) => {
   executeTool,
   resolveTools(provider, sel)
 }
-
-createStaticToolProvider({ sets })
-createJsonFileToolProvider({ path })
-createCompositeToolProvider({ providers })
 ```
+
+**Tool providers are host-built.** The three factories that used to sit here
+(`createStaticToolProvider`, `createJsonFileToolProvider`,
+`createCompositeToolProvider`) retired with the 0.31 bundle: a `ToolProvider` is
+a duck-typed `{ listTools(sel) }` object, so the host writes the one it needs
+instead of importing a factory.
 
 The executor map is the code-owned capability set. A `ToolProvider` selects
 schemas and can overlay descriptions and constraints, but cannot introduce an
@@ -728,9 +707,9 @@ executor; invalid input becomes an error string and does not reach the
 executor. Direct `runToolLoop` callers that do not use `createToolRegistry`
 are responsible for their own input validation.
 
-The static and JSON-file providers select `sel.set` or `default`. The
-composite provider merges schemas by name in provider order. The
-`erix-agent/tools` subpath exports the tool registry, the tool providers, the
+A host-built provider selects `sel.set` or `default`; merging several providers
+by name is the host's own composition. The
+`erix-agent/tools` subpath exports the tool registry, the
 canonical file tools (`src/tools/file-tools.js`, issue #184) and the skill-package
 loader (`src/skills/loader.js`, issue #197). These are opt-in helpers, not an
 implicit tool set installed into `runToolLoop`, and none of them is on the package

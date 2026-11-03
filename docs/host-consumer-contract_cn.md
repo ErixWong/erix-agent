@@ -1537,8 +1537,9 @@ Anthropic 流式组装**三处共用**的那一份，所以两条协议在这里
 
 ## Provider 请求注入口（issue #181）
 
-`createOpenAIProvider` 与 `createAnthropicProvider` 新增两个完全可选的选项，让宿主无需
-包装 `fetchImpl` 就能给自己的请求打上归因标识（会话级 / run 级）：
+`createOpenAIProvider`——本包唯一发布的 provider 工厂——新增两个完全可选的选项，让宿主无需
+包装 `fetchImpl` 就能给自己的请求打上归因标识（会话级 / run 级）。内部件 Anthropic 适配器
+（`src/providers/anthropic.js`）接受同样两个键，供宿主在它之上自建 provider 对象时使用：
 
 ```js
 const provider = createOpenAIProvider({
@@ -2033,7 +2034,7 @@ server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那�
 | 1 | **已解析的** `modelConfig` | `modelConfig.resolve(session?.modelSlot)` 返回的对象——解析器本身从不被探测 |
 | 2 | `modelMetadata` | 只承载元数据；没有其他地方读它 |
 | 3 | `model` | `model` 选项对象 |
-| 4 | `provider` | 两个内置工厂在构造时拿到 `contextWindowTokens` / `maxOutputTokens` 后，会将其回挂在返回的对象上（`createOpenAIProvider`（`src/providers/openai.js`）、`createAnthropicProvider`（`src/providers/anthropic.js`）） |
+| 4 | `provider` | provider 对象在构造时拿到 `contextWindowTokens` / `maxOutputTokens` 后，会将其回挂在自身上（`createOpenAIProvider`（`src/providers/openai.js`）如此；宿主自建的 provider 也应如此） |
 | 5 | `context` | 压缩上下文选项 |
 
 - 探测按上述固定顺序 duck-type，返回**第一个**携带三个预算字段中任一的候选
@@ -2085,7 +2086,7 @@ run 级旋钮 `config.tuning.maxTokens` / `config.tuning.temperature` / `config.
 
 **slot 里的未知字段是惰性的，也是安全的——除了现在变成已知字段的预算键。** 内置 provider 原样拷贝 slot
 （`createJsonFileModelConfigProvider`（`src/config/json-file.js`）、`createStaticModelConfigProvider`（`src/config/static.js`）），两个工厂又只读固定的
-参数列表（`createOpenAIProvider`（`src/providers/openai.js`）、`createAnthropicProvider`（`src/providers/anthropic.js`）），
+参数列表（`createOpenAIProvider`（`src/providers/openai.js`），内部件 Anthropic 适配器 `src/providers/anthropic.js` 同理），
 所以认不出的键既上不了线，也不会抛错。这条安全声明只覆盖
 **slot 对象**：*顶层* `runToolLoop` 选项写错名仍会抛 `TypeError`（见「`runToolLoop`
 选项与工具执行契约」）。**issue #682 为一个键收窄了它：** `budgetTokens`（以及 CLI 的
@@ -3834,8 +3835,8 @@ tools 层（注入 store）共用的兜底。
 
 - `definitions`——四个 `note_*` schema；
 - `resolveTools`——registry schema 解析视图；需要 `ToolProvider` 形态的宿主
-  （如用于 `createCompositeToolProvider` 聚合）可自行构建：
-  `createStaticToolProvider({ sets: { default: notes.definitions } })`；
+  （如用于聚合多套工具）自己写一个 duck-typed 的 `{ listTools(sel) }` 对象包住
+  `notes.definitions`——本包不提供工具 provider 工厂；
 - `executors(name, input, context)`——registry 位置参数形态；
 - `executeTool({id, name, input, context, signal})`——结构化形态，对齐 `runToolLoop`/
   run-snapshot-executor 的调用约定（位置参数形态 `executeTool(name, input, context)`

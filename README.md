@@ -1124,8 +1124,9 @@ package root or `erix-agent/tools`; the factory returns the canonical 6-key API
 (completeRun only — expired-retention cleanup is host-scheduled via
 session-clock `store.purge`; the CLI chains it after run completion), and the
 ADR-015 fold-point `semanticStateProvider`) — all bound to one run scope and one `NotesStore`
-instance. Hosts that need a `ToolProvider` shape can build one from
-`createStaticToolProvider({ sets: { default: notes.definitions } })`. The CLI
+instance. Hosts that need a `ToolProvider` shape build their own object (any
+`{ listTools(sel) }`) around `notes.definitions`; the package ships no tool-provider
+factory. The CLI
 retired the bundled `skills/notes/skill.mjs` compatibility shim in v0.11.0
 (issue #61): when notes are enabled they are assembled exclusively through the
 factory (`--no-notes` / `ERIX_NO_NOTES=1` opts out) and `erix skills`

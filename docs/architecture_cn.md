@@ -114,44 +114,13 @@ createOpenAIProvider({
   thinking_format
 }) => LlmProvider
 
-createAnthropicProvider({
-  endpoint,
-  apiKey,
-  model,
-  model_name,
-  fetchImpl = fetch,
-  transport,
-  protocol = "anthropic",
-  timeoutMs,
-  timeout,
-  requestTimeoutMs,
-  firstByteTimeoutMs,
-  streamIdleTimeoutMs,
-  streamTotalTimeoutMs,
-  timeouts,
-  clock,
-  maxTokens,
-  maxOutputTokens,
-  temperature,
-  topP,
-  thinking,
-  reasoning,
-  reasoning_effort,
-  enable_thinking,
-  chat_template_kwargs,
-  providerOptions,
-  frequency_penalty,
-  presence_penalty,
-  response_format,
-  model_type,
-  supports_reasoning,
-  thinking_format
-}) => LlmProvider
 ```
 
-实际工厂还接受 snake-case 超时别名，以及 `src/providers/openai.js` 和 `src/providers/anthropic.js` 实现的提供器专用 reasoning/payload 字段。`model_name` 是 `model` 的别名；`protocol` 分别默认为 `"openai"` 或 `"anthropic"`。`endpoint`、`apiKey` 和所选模型必须是非空字符串。默认请求超时为 `120000` ms。未显式设置分阶段参数时，流式传输使用 `120000` ms 首字节超时、`120000` ms 空闲超时和 `300000` ms 总超时。旧版 `timeout`/`timeoutMs` 设置仍是覆盖整个请求的截止时间。
+**`createOpenAIProvider` 是本包唯一发布的 provider 工厂。** 其他协议由宿主自己提供 provider 对象：Anthropic 适配器仍是本库的内部件（`src/providers/anthropic.js`），它的协议助手——`canonicalToAnthropicRequest`、`anthropicResponseToCanonical`、`createAnthropicStreamAssembler`——继续公开，但工厂本身不再是公共入口。走 Anthropic 的宿主自己构造那个 duck-typed 的 `{ protocol, model, chat, chatStream }` 对象（0.31 升级指南里有一份可复制的配方）。
 
-`chatStream` 会发出请求中提供的可选 `onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage` 和 `onEvent` 回调。OpenAI 适配器使用 chat/completions 序列化和 SSE 解析；Anthropic 适配器使用 Messages 序列化和 content-block SSE 解析。两者都以规范形式返回 `ChatResponse`。
+实际工厂还接受 snake-case 超时别名，以及 `src/providers/openai.js` 实现的提供器专用 reasoning/payload 字段。`model_name` 是 `model` 的别名；`protocol` 默认为 `"openai"`。`endpoint`、`apiKey` 和所选模型必须是非空字符串。默认请求超时为 `120000` ms。未显式设置分阶段参数时，流式传输使用 `120000` ms 首字节超时、`120000` ms 空闲超时和 `300000` ms 总超时。旧版 `timeout`/`timeoutMs` 设置仍是覆盖整个请求的截止时间。
+
+`chatStream` 会发出请求中提供的可选 `onDelta`、`onReasoningDelta`、`onToolCall`、`onUsage` 和 `onEvent` 回调。OpenAI 适配器使用 chat/completions 序列化和 SSE 解析；Anthropic 适配器（宿主自带，见上）使用 Messages 序列化和 content-block SSE 解析。两者都以规范形式返回 `ChatResponse`。
 
 提供器失败表示为 `KitError`。HTTP 状态分类将 408 映射为 `timeout`，429 映射为 `rate_limited`，401/403 映射为 `auth`，5xx 映射为 `server`，400/422 映射为 `invalid_request`，404 映射为 `not_found`，409 映射为 `conflict`（issue #179；三个新增 code 与它们所取代的 `unknown` 一样不可重试），其余状态映射为 `unknown`。Fetch 和 abort 失败分别分类，错误中还带有可用的 `retryable` 以及 status、phase 和 elapsed-time 元数据。
 
@@ -426,12 +395,11 @@ createFoldLlmStrategy({
 
 ```js
 createStaticModelConfigProvider(configOrSlots)
-createEnvModelConfigProvider(prefix = "LLM_KIT_")
 createJsonFileModelConfigProvider({ path })
 resolveApiKey(config = {})
 ```
 
-`createStaticModelConfigProvider` 接受一个配置对象或 `{ slots: { default, ... } }`。其 `resolve(slot = "default")` 选择请求的槽位，找不到时回退到 `default`。JSON-file 提供器要求一个包含 `slots` 对象的 JSON 对象，并使用相同的槽位回退。环境提供器从给定前缀读取一个配置，并忽略槽位参数。
+`createStaticModelConfigProvider` 接受一个配置对象或 `{ slots: { default, ... } }`。其 `resolve(slot = "default")` 选择请求的槽位，找不到时回退到 `default`。**环境变量提供器不再发布**（`createEnvModelConfigProvider` 随 0.31 破坏包退役）：从环境变量读配置的宿主自己实现同一个 duck-typed 的 `resolve(slot)`。JSON-file 提供器要求一个包含 `slots` 对象的 JSON 对象，并使用相同的槽位回退。
 
 `resolveApiKey` 依次检查 `apiKey`、由 `apiKeyEnv` 指定的环境变量，以及由 `apiKeyFile` 指定的文件。凭据文件可读取但对组/其他用户可读时会发出警告，不会拒绝。解析后的配置由宿主传给提供器工厂。
 
@@ -477,14 +445,13 @@ createToolRegistry({ executors, schemas }) => {
   resolveTools(provider, sel)
 }
 
-createStaticToolProvider({ sets })
-createJsonFileToolProvider({ path })
-createCompositeToolProvider({ providers })
 ```
+
+**工具 provider 由宿主自建。** 原先放在这里的三个工厂（`createStaticToolProvider`、`createJsonFileToolProvider`、`createCompositeToolProvider`）随 0.31 破坏包退役：`ToolProvider` 就是一个 duck-typed 的 `{ listTools(sel) }` 对象，宿主需要哪个就自己写哪个，不再从工厂 import。
 
 执行器映射是由代码拥有的能力集合。`ToolProvider` 选择 schema，并可以覆盖描述和约束，但不能引入注册表中不存在的执行器。对于此类 schema，`resolveTools` 会以 `KitError("tool_unknown_executor", ...)` 失败。注册表执行会在调用执行器前校验 `required`、属性 `type` 和 `maxLength`；无效输入会变成错误字符串，不会到达执行器。不使用 `createToolRegistry` 的直接 `runToolLoop` 调用方须负责自己的输入校验。
 
-static 和 JSON-file 提供器选择 `sel.set` 或 `default`。composite 提供器按提供器顺序以名称合并 schema。`erix-agent/tools` 子路径导出工具注册表、工具 provider、文件工具规范实现（`src/tools/file-tools.js`，issue #184）与技能包 loader（`src/skills/loader.js`，issue #197）。这些是显式选择的助手，不是安装到 `runToolLoop` 中的隐式工具集，而且它们都不在包根导出面上。两条历史事实很容易被并成一句错话：牢笼助手（`JailError` / `createJail`）与当时的 `createFileTools` 是在 **0.6.0** 破坏窗口删除的（commit `a8cd193`；0.5.1 是最后一个还带着它们的版本），而 `createFileTools` 在 **0.18.0** 以上面那个规范实现回来了；牢笼则彻底没回来——按 ADR-009，本库不提供安全边界。模型侧取回采用 note-first：先使用 `note_list`，再使用 `note_read`；transcript recall API 已在 0.8.0 退役。
+宿主自建的 provider 选择 `sel.set` 或 `default`；把多个 provider 按名称合并是宿主自己的组合。`erix-agent/tools` 子路径导出工具注册表、文件工具规范实现（`src/tools/file-tools.js`，issue #184）与技能包 loader（`src/skills/loader.js`，issue #197）。这些是显式选择的助手，不是安装到 `runToolLoop` 中的隐式工具集，而且它们都不在包根导出面上。两条历史事实很容易被并成一句错话：牢笼助手（`JailError` / `createJail`）与当时的 `createFileTools` 是在 **0.6.0** 破坏窗口删除的（commit `a8cd193`；0.5.1 是最后一个还带着它们的版本），而 `createFileTools` 在 **0.18.0** 以上面那个规范实现回来了；牢笼则彻底没回来——按 ADR-009，本库不提供安全边界。模型侧取回采用 note-first：先使用 `note_list`，再使用 `note_read`；transcript recall API 已在 0.8.0 退役。
 
 ## 4. 源码布局
 

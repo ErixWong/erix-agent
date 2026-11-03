@@ -53,7 +53,7 @@ The library boundary ends at the lifecycle of one agent task: start, run, stop, 
 
 | # | Requirement | Status and implementation |
 |---|---|---|
-| FR-1.1 | OpenAI-compatible (`chat/completions`) and Anthropic (`messages`) protocols, both streaming and non-streaming | **Delivered.** `createOpenAIProvider` and `createAnthropicProvider` expose `chat` and `chatStream`. |
+| FR-1.1 | OpenAI-compatible (`chat/completions`) and Anthropic (`messages`) protocols, both streaming and non-streaming | **Delivered.** `createOpenAIProvider` exposes `chat` and `chatStream`; the Anthropic adapter is an internal part, so a host that speaks Anthropic supplies its own provider object (the protocol helpers stay public). |
 | FR-1.2 | Normalize both protocols into one internal block format (`text` / `tool_use` / `tool_result`) | **Delivered.** `src/messages/canonical.js` and `src/messages/anthropic.js` also preserve `raw`, image, and reasoning blocks where needed. |
 | FR-1.3 | Common error classes: `timeout` / `rate_limited` / `auth` / `network` / `server`, with a retryability marker | **Delivered.** `src/providers/errors.js` provides `KitError`, HTTP classification, fetch-exception classification, and `retryable`; it also exposes explicit `aborted`, `provider_config`, `invalid_messages`, and related non-retryable errors. |
 | FR-1.4 | For HTTP 2xx responses containing an error body, preserve the real upstream message instead of reporting a misleading missing-choice error | **Delivered.** Both providers inspect successful response bodies for provider errors and preserve the upstream message; OpenAI responses missing `choices` include a bounded response preview. |
@@ -85,7 +85,7 @@ The library boundary ends at the lifecycle of one agent task: start, run, stop, 
 
 | # | Requirement | Status and implementation |
 |---|---|---|
-| FR-4.1 | A `ModelConfigProvider` contract with static, environment, and JSON-file implementations; `apiKey` may refer indirectly to an environment variable or file | **Delivered as a duck-typed `resolve(slot)` contract rather than a class or formal interface.** `createStaticModelConfigProvider`, `createEnvModelConfigProvider`, and `createJsonFileModelConfigProvider` are implemented; `resolveApiKey` supports direct values, `apiKeyEnv`, and `apiKeyFile`. |
+| FR-4.1 | A `ModelConfigProvider` contract with static and JSON-file implementations; `apiKey` may refer indirectly to an environment variable or file | **Delivered as a duck-typed `resolve(slot)` contract rather than a class or formal interface.** `createStaticModelConfigProvider` and `createJsonFileModelConfigProvider` are published, and a host reads its own environment inside the same `resolve(slot)` shape (the environment-variable factory is no longer a public entry); `resolveApiKey` supports direct values, `apiKeyEnv`, and `apiKeyFile`. |
 | FR-4.2 | A `TranscriptStore` contract with memory and JSONL-file implementations, including crash resume | **Delivered.** `createMemoryTranscriptStore` and `createFileTranscriptStore` implement transcript, run-state, and checkpoint methods. The file store repairs or isolates a damaged trailing JSONL fragment, and `runToolLoop({ store, runId, resume: true })` restores transcript and pending checkpoint work. Exactly-once side effects remain the host's responsibility. |
 
 ### FR-5 Tool system
