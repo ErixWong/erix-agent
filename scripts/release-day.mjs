@@ -61,7 +61,7 @@
 // ── 用法 ──────────────────────────────────────────────────────────────────────
 //   npm run release:day -- --stage preflight [--hosts <宿主仓目录> …]
 //   npm run release:day -- --stage publish
-//   npm run release:day -- --stage writeback --version <x.y.z> --published <x.y.z>
+//   npm run release:day -- --stage writeback --version <x.y.z> --published <x.y.z> [--published-date <YYYY-MM-DD>]
 //   npm run release:day -- --stage finalize [--version <x.y.z>]
 //   npm run release:day -- --all [--hosts …]          # 按序跑；publish 那一步是人工停点
 //   npm run release:day -- --all --dry                # 什么都不改、什么都不发、不写盘
@@ -315,7 +315,8 @@ export function runPublish({ root = DEFAULT_ROOT, version, deps = defaultDeps(),
  * ① `docs-drift-check --sync`（只改发布态那几句）→ ② 提交 → ③ 立刻重跑 `check:docs` 证明回写自洽。
  * 一进门先把 `phase=published_unwritten` 落盘：回写失败时这一笔就是 `--all` 的续跑坐标。
  *
- * @param {{root?: string, version?: string, published?: string|null, deps?: ReturnType<typeof defaultDeps>,
+ * @param {{root?: string, version?: string, published?: string|null, publishedDate?: string|null,
+ *          deps?: ReturnType<typeof defaultDeps>,
  *          stateFile?: string, dry?: boolean, commit?: boolean}} [options]
  * @returns {number} EXIT.OK / EXIT.RED / EXIT.NOT_JUDGED
  */
@@ -323,6 +324,7 @@ export function runWriteback({
   root = DEFAULT_ROOT,
   version = null,
   published = null,
+  publishedDate = null,
   deps = defaultDeps(),
   stateFile = stateFilePath({ env: deps.env }),
   dry = false,
@@ -372,6 +374,9 @@ export function runWriteback({
   }
 
   const syncArgv = ["node", DOCS_SYNC_SCRIPT, "--sync", "--published", published, "--version", currentVersion];
+  // issue #697：段首日期与「未发布」标记是同一步写的两半。发版当天不传 `--published-date` ⇒ 回写自己取
+  // 当天 UTC+8（真值只有一个来源：`docs-drift-check --sync` 的缺省值）；跨零点的发版作业 / 补写才显式给。
+  if (publishedDate) syncArgv.push("--published-date", publishedDate);
   log(`writeback ① 回写发布态：${syncArgv.join(" ")}`);
   if (dry) {
     log("writeback（--dry）：不跑回写、不提交、不重跑 check:docs——一个字节都不写");
@@ -411,10 +416,25 @@ export function runWriteback({
     committed = true;
   }
 
-  // ③ 回写之后**立刻**重跑 check:docs 证明回写自洽
+  // ③ 回写之后**立刻**重跑 check:docs 证明回写自洽。
+  //    issue #697：回写发生在**打 tag 之前**，所以此刻 `check:docs` 会把「registry 说已发布、tag 还没打」
+  //    判成 **exit 2 未判定（TAG_MISSING）**——那不是红（若判红，writeback 会被自己刚做的那件事判死）。
+  //    所以这里分三种结果：exit 0 = 自洽；exit 2 且**每一处未判定都是 TAG_MISSING** = 未判定（tag 打完
+  //    finalize 会再对一次）；其余（含 exit 2 但带别的读不出、以及 exit 1）= 红。
   log("writeback ③ 回写自洽证明：`npm run check:docs`");
-  const docs = run(["npm", "run", "check:docs"], { cwd: root, env });
-  if (docs.status !== 0) {
+  const docs = capture(["npm", "run", "check:docs"], { cwd: root, env });
+  if (docs.status === 2) {
+    const codes = [...String(docs.stdout ?? "").matchAll(/^docs-drift-check: 未判定 (\S+) — /gmu)].map((m) => m[1]);
+    const onlyTagMissing = codes.length > 0 && codes.every((code) => code === "TAG_MISSING");
+    if (!onlyTagMissing) {
+      log(`writeback ③ → **红**（exit 2，但未判定的原因不止 TAG_MISSING：${codes.join(", ") || "一处未判定标记都没读到"}）`
+        + "——「读不出真值」里只有「tag 还没打」这一种能在 writeback 阶段放过");
+      writeState(stateFile, { ...base, phase: PHASE.PUBLISHED_UNWRITTEN, writeback: { ok: false, why: `check:docs exit 2 (${codes.join(",") || "unreadable"})` } });
+      return EXIT.RED;
+    }
+    log(`writeback ③ → **未判定**（exit 2 / ${codes.join(", ")}）：回写已写入，但「段首日期 ↔ tag 日期」这一半`
+      + "现在没有真值——tag 是 finalize 才打的，打完再跑 `check:docs` 会自己对；其余门禁全绿");
+  } else if (docs.status !== 0) {
     log(`writeback ③ → **红**（exit ${docs.status}）——回写写进去了，但 check:docs 不绿（见上）`);
     writeState(stateFile, { ...base, phase: PHASE.PUBLISHED_UNWRITTEN, writeback: { ok: false, why: `check:docs exit ${docs.status}` } });
     log("      状态仍是「已发布、未回写」：**不许**往下打 tag（tag 出去了而文档没自洽就是 0.30.0 那一幕）");
@@ -660,6 +680,7 @@ function remoteUrls(capture, opts) {
  *   · 其它                  ⇒ preflight → publish（人工停点）。
  *
  * @param {{root?: string, hosts?: string[], version?: string|null, published?: string|null,
+ *          publishedDate?: string|null,
  *          deps?: ReturnType<typeof defaultDeps>, stateFile?: string, dry?: boolean,
  *          publishCmd?: string|null, commit?: boolean}} [options]
  * @returns {number} 退出码
@@ -669,6 +690,7 @@ export function runAll({
   hosts = [],
   version = null,
   published = null,
+  publishedDate = null,
   deps = defaultDeps(),
   stateFile = stateFilePath({ env: deps.env }),
   dry = false,
@@ -690,7 +712,7 @@ export function runAll({
     const resumedPublished = published ?? state.published ?? null;
     log(`--all：状态文件说 v${currentVersion} **已发布、未回写**（phase=published_unwritten）→ 从 **writeback** 续跑；`
       + "不重复发布（脚本从不自己发布）");
-    const writebackStatus = runWriteback({ root, version: currentVersion, published: resumedPublished, deps, stateFile, dry, commit });
+    const writebackStatus = runWriteback({ root, version: currentVersion, published: resumedPublished, publishedDate, deps, stateFile, dry, commit });
     if (writebackStatus !== EXIT.OK) return writebackStatus;
     return runFinalize({ root, version: currentVersion, deps, stateFile, dry });
   }
@@ -723,7 +745,7 @@ export function runAll({
     const publishStatus = runPublish({ root, version: currentVersion, deps, publishCmd, dry });
     return publishStatus === EXIT.OK ? EXIT.OK : publishStatus;
   }
-  const writebackStatus = runWriteback({ root, version: currentVersion, published, deps, stateFile, dry, commit });
+  const writebackStatus = runWriteback({ root, version: currentVersion, published, publishedDate, deps, stateFile, dry, commit });
   if (writebackStatus !== EXIT.OK) return writebackStatus;
   return runFinalize({ root, version: currentVersion, deps, stateFile, dry });
 }
@@ -733,7 +755,7 @@ export function runAll({
 function parseArgs(argv) {
   const opts = {
     stage: null, all: false, dry: false, selfTest: false, help: false, error: null,
-    version: null, published: null, hosts: [], publishCmd: null, state: null, root: null,
+    version: null, published: null, publishedDate: null, hosts: [], publishCmd: null, state: null, root: null,
     tagTarget: null, commit: true,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -749,6 +771,8 @@ function parseArgs(argv) {
     else if (arg.startsWith("--version=")) opts.version = arg.slice("--version=".length);
     else if (arg === "--published") { opts.published = next(); i += 1; }
     else if (arg.startsWith("--published=")) opts.published = arg.slice("--published=".length);
+    else if (arg === "--published-date") { opts.publishedDate = next(); i += 1; }
+    else if (arg.startsWith("--published-date=")) opts.publishedDate = arg.slice("--published-date=".length);
     else if (arg === "--hosts") {
       for (const part of String(next() ?? "").split(",")) if (part.trim()) opts.hosts.push(part.trim());
       i += 1;
@@ -783,7 +807,7 @@ export function main(argv = process.argv.slice(2), injected = null) {
     console.log("用法：");
     console.log("  node scripts/release-day.mjs --stage preflight [--hosts <宿主仓目录> …]");
     console.log("  node scripts/release-day.mjs --stage publish [--publish-cmd <cmd>]");
-    console.log("  node scripts/release-day.mjs --stage writeback --version <x.y.z> --published <x.y.z> [--no-commit]");
+    console.log("  node scripts/release-day.mjs --stage writeback --version <x.y.z> --published <x.y.z> [--published-date <YYYY-MM-DD>] [--no-commit]");
     console.log("  node scripts/release-day.mjs --stage finalize [--version <x.y.z>]");
     console.log("  node scripts/release-day.mjs --all [--dry] [--hosts …]");
     console.log("  node scripts/release-day.mjs --self-test");
@@ -802,6 +826,7 @@ export function main(argv = process.argv.slice(2), injected = null) {
     dry: opts.dry,
     version: opts.version,
     published: opts.published,
+    publishedDate: opts.publishedDate,
     hosts: opts.hosts,
     publishCmd: opts.publishCmd,
     tagTarget: opts.tagTarget,
@@ -862,7 +887,7 @@ const SYNC_FIXTURE = Object.freeze({
   "AGENTS_cn.md": "- 当前版本：`package.json` 写 `0.30.0`（本仓版本），发布行——npm 的 `dist-tags.latest`——是 `0.30.0`。`0.24.0` **从未发布**到 registry。\n",
   "docs/requirements.md": "This document was reconciled with the implementation shipped in version 0.30.0. It exists in package version 0.30.0.\n",
   "docs/requirements_cn.md": "本文档现已与 0.30.0 版本交付的实现完成对照；下面将分期计划与 package 版本 0.30.0 对齐。\n",
-  "CHANGELOG.md": "# Changelog\n\n## [Unreleased]\n\n## [0.31.0] - 2026-11-10（未发布 / unpublished）\n\n### Breaking\n\n- something\n\n## [0.30.0] - 2026-11-03\n\n- older\n",
+  "CHANGELOG.md": "# Changelog\n\n## [Unreleased]\n\n## [0.31.0]（未发布 / unpublished）\n\n### Breaking\n\n- something\n\n## [0.30.0] - 2026-11-03\n\n- older\n",
 });
 
 function writeFixtureTree(root, files = SYNC_FIXTURE) {
@@ -1030,14 +1055,14 @@ function selfTestSync(checker) {
     }
   }
 
-  // (c) 发布态与段首标记：0.31.0 已发布 ⇒ 段首「未发布」标记被摘掉，其余字节不动
+  // (c) 发布态与段首标记 + 日期：0.31.0 已发布 ⇒ 段首写成 `## [0.31.0] - <发布日期>`（标记摘掉、日期写上），其余字节不动
   {
     const tree = mkdtempSync(path.join(os.tmpdir(), "erix-release-day-sync-c-"));
     try {
       writeFixtureTree(tree);
       writeFileSync(path.join(tree, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
-      const result = runSync(tree, ["--published", "0.31.0"]);
-      expect(result.status === 0, "⑦c `--sync --version 0.31.0 --published 0.31.0` exit 0",
+      const result = runSync(tree, ["--published", "0.31.0", "--published-date", "2026-11-03"]);
+      expect(result.status === 0, "⑦c `--sync --version 0.31.0 --published 0.31.0 --published-date 2026-11-03` exit 0",
         `⑦c exit ${result.status}\n${result.stdout}${result.stderr}`);
       const expected = {
         ...SYNC_FIXTURE,
@@ -1048,14 +1073,84 @@ function selfTestSync(checker) {
         "AGENTS_cn.md": SYNC_FIXTURE["AGENTS_cn.md"].split("0.30.0").join("0.31.0"),
         "docs/requirements.md": SYNC_FIXTURE["docs/requirements.md"].split("0.30.0").join("0.31.0"),
         "docs/requirements_cn.md": SYNC_FIXTURE["docs/requirements_cn.md"].split("0.30.0").join("0.31.0"),
-        "CHANGELOG.md": SYNC_FIXTURE["CHANGELOG.md"].replace("## [0.31.0] - 2026-11-10（未发布 / unpublished）", "## [0.31.0] - 2026-11-10"),
+        "CHANGELOG.md": SYNC_FIXTURE["CHANGELOG.md"].replace("## [0.31.0]（未发布 / unpublished）", "## [0.31.0] - 2026-11-03"),
       };
       const changelog = readFileSync(path.join(tree, "CHANGELOG.md"), "utf8");
-      expect(changelog === expected["CHANGELOG.md"], "⑦c CHANGELOG 的 0.31.0 段首「未发布 / unpublished」标记被摘掉，段里其余字节逐字不动",
-        "⑦c CHANGELOG 不是「只摘掉段首标记」的期望文本——回写跑到了段首之外");
+      expect(changelog === expected["CHANGELOG.md"],
+        "⑦c CHANGELOG 的 0.31.0 段首**同一行**写成 `## [0.31.0] - 2026-11-03`（标记与日期同一步写），段里其余字节逐字不动",
+        `⑦c CHANGELOG 不是「段首那一行重写成发布形状」的期望文本——回写跑到了段首之外：\n${changelog}`);
       const mismatched = Object.keys(expected).filter((rel) => readFileSync(path.join(tree, rel), "utf8") !== expected[rel]);
-      expect(mismatched.length === 0, "⑦c 全部文件逐字节等于期望文本（发布态句子换成 0.31.0 + 段首标记摘掉，其余一字未动）",
+      expect(mismatched.length === 0, "⑦c 全部文件逐字节等于期望文本（发布态句子换成 0.31.0 + 段首那一行写成发布日期，其余一字未动）",
         `⑦c 这些文件与期望文本不一致：${mismatched.join(", ")}`);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  }
+
+  // (e) 反方向：段首带着日期 + 未发布标记、发布行仍是上一版 ⇒ 段首**只留**版本与标记（日期被拿掉）
+  {
+    const tree = mkdtempSync(path.join(os.tmpdir(), "erix-release-day-sync-e-"));
+    try {
+      const dated = {
+        ...SYNC_FIXTURE,
+        "CHANGELOG.md": SYNC_FIXTURE["CHANGELOG.md"].replace("## [0.31.0]（未发布 / unpublished）",
+          "## [0.31.0] - 2026-11-10（未发布 / unpublished）"),
+      };
+      writeFixtureTree(tree, dated);
+      writeFileSync(path.join(tree, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
+      const before = snapshotTree(tree);
+      const result = runSync(tree, ["--version", "0.31.0", "--published", "0.30.0"]);
+      expect(result.status === 0, "⑦e 未发布态回写（发布行 0.30.0 < 本仓版本 0.31.0）exit 0",
+        `⑦e exit ${result.status}\n${result.stdout}${result.stderr}`);
+      const after = snapshotTree(tree);
+      expect(after.get("CHANGELOG.md") === dated["CHANGELOG.md"].replace(
+        "## [0.31.0] - 2026-11-10（未发布 / unpublished）", "## [0.31.0]（未发布 / unpublished）"),
+        "⑦e 未发布段的段首日期被拿掉，只剩 `## [0.31.0]（未发布 / unpublished）`",
+        `⑦e 段首不是「只留版本与标记」的形状：\n${after.get("CHANGELOG.md")}`);
+      const lineDiff = before.get("CHANGELOG.md").split("\n")
+        .filter((line, i) => line !== after.get("CHANGELOG.md").split("\n")[i]);
+      expect(lineDiff.length === 1, "⑦e CHANGELOG 逐行比对只有一行变（段首那一行；段里其余字节逐字不动）",
+        `⑦e 变了 ${lineDiff.length} 行：${lineDiff.join(" | ")}`);
+      expect(before.get("CHANGELOG.md").split("\n").length === after.get("CHANGELOG.md").split("\n").length,
+        "⑦e 行数不变（回写不增行不删行，只改段首那一行）",
+        "⑦e 行数变了：回写把段首那一行拆成/合并成了多行");
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  }
+
+  // (f) 不给 `--published-date` ⇒ 缺省 = **当天 UTC+8**（标记与日期同一步写，日期不是从旧文本里抄的）
+  {
+    const tree = mkdtempSync(path.join(os.tmpdir(), "erix-release-day-sync-f-"));
+    try {
+      writeFixtureTree(tree);
+      writeFileSync(path.join(tree, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
+      const todayBefore = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+      const result = runSync(tree, ["--published", "0.31.0"]);
+      const todayAfter = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+      const heading = readFileSync(path.join(tree, "CHANGELOG.md"), "utf8").split("\n")
+        .find((line) => line.startsWith("## [0.31.0]"));
+      const wanted = [`## [0.31.0] - ${todayBefore}`, `## [0.31.0] - ${todayAfter}`];
+      expect(result.status === 0 && wanted.includes(heading),
+        `⑦f 缺省日期 = 当天 UTC+8（实测段首：${heading}）`,
+        `⑦f 缺省日期不是当天 UTC+8：段首 ${JSON.stringify(heading)}（期望 ${wanted.join(" / ")}），exit ${result.status}`);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  }
+
+  // (g) `--published-date` 形状不对 ⇒ exit 2 且一个字节都不写
+  {
+    const tree = mkdtempSync(path.join(os.tmpdir(), "erix-release-day-sync-g-"));
+    try {
+      writeFixtureTree(tree);
+      writeFileSync(path.join(tree, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
+      const before = snapshotTree(tree);
+      const result = runSync(tree, ["--published", "0.31.0", "--published-date", "2026/11/03"]);
+      const changes = diffSnapshot(before, snapshotTree(tree));
+      expect(result.status === 2 && changes.length === 0,
+        "⑦g `--published-date 2026/11/03` ⇒ exit 2 且 0 字节写入（日期真值形状不对就不回写）",
+        `⑦g exit ${result.status}、改动 ${changes.join(", ") || "（无）"}`);
     } finally {
       rmSync(tree, { recursive: true, force: true });
     }
@@ -1067,9 +1162,9 @@ function selfTestSync(checker) {
     try {
       writeFixtureTree(tree);
       writeFileSync(path.join(tree, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
-      runSync(tree, ["--published", "0.31.0"]);
+      runSync(tree, ["--published", "0.31.0", "--published-date", "2026-11-03"]);
       const before = snapshotTree(tree);
-      const result = runSync(tree, ["--published", "0.31.0"]);
+      const result = runSync(tree, ["--published", "0.31.0", "--published-date", "2026-11-03"]);
       const changes = diffSnapshot(before, snapshotTree(tree));
       expect(result.status === 0 && changes.length === 0, "⑦d 同一组参数重跑 ⇒ exit 0 且 0 字节写入（幂等）",
         `⑦d 幂等被打破：exit ${result.status}，改动 ${changes.join(", ") || "（无）"}`);
@@ -1167,6 +1262,59 @@ function runSelfTest() {
         `③ 续跑又停在 publish（exit ${allStatus}）——那就等于要人再发一次`);
     } finally {
       rmSync(tree, { recursive: true, force: true });
+    }
+  }
+
+  // ③b issue #697：回写后 check:docs 的 **exit 2 / TAG_MISSING** 是「未判定」不是红——tag 是 finalize
+  // 才打的，writeback 自己那次 check:docs 只能得到这个结论。它必须**不**把回写判死（否则发版日永远卡在这里）。
+  {
+    const tree = mkdtempSync(path.join(os.tmpdir(), "erix-release-day-wb-tagmissing-"));
+    const stateFile = path.join(tree, "state.json");
+    try {
+      writeFixtureTree(tree);
+      writeFileSync(path.join(tree, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
+      const deps = fakeDeps({
+        capture: (argv) => (argv.join(" ") === "npm run check:docs"
+          ? { status: 2,
+            stdout: "docs-drift-check: 未判定 — 1 处真值缺位（exit 2：未判定既不是绿也不是红）\n"
+              + "docs-drift-check: 未判定 TAG_MISSING — changelog-date: registry 说 0.31.0 已发布，但仓库里没有 tag v0.31.0\n" }
+          : null),
+      });
+      const status = runWriteback({ root: tree, version: "0.31.0", published: "0.31.0", deps, stateFile, dry: false, commit: false });
+      const state = JSON.parse(readFileSync(stateFile, "utf8"));
+      expect(status === EXIT.OK, "③b check:docs exit 2 / 仅 TAG_MISSING ⇒ 未判定，回写不判红（exit 0）",
+        `③b 回写把「tag 还没打」判成了红：exit ${status}`);
+      expect(state.phase === PHASE.WRITTEN,
+        `③b 状态进到 written（tag 可以往下打；实测 phase=${state.phase}）`,
+        `③b 状态没进 written（${JSON.stringify(state)}）——finalize 会被自己的顺序闸拦住`);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  }
+
+  // ③c issue #697：exit 2 但**不是** TAG_MISSING（或一处未判定标记都没读到）⇒ 仍然是红——「读不出」
+  // 里只有「tag 还没打」这一种能在 writeback 阶段放过，否则 exit 2 就成了万能放行口。
+  {
+    for (const [name, stdout] of [
+      ["别的未判定代码", "docs-drift-check: 未判定 OTHER_UNREADABLE — 某处真值缺位\n"],
+      ["没有未判定标记", "docs-drift-check: 读不出 — 1 处真值缺位\n"],
+    ]) {
+      const tree = mkdtempSync(path.join(os.tmpdir(), "erix-release-day-wb-notjudged-"));
+      const stateFile = path.join(tree, "state.json");
+      try {
+        writeFixtureTree(tree);
+        writeFileSync(path.join(tree, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
+        const deps = fakeDeps({
+          capture: (argv) => (argv.join(" ") === "npm run check:docs" ? { status: 2, stdout } : null),
+        });
+        const status = runWriteback({ root: tree, version: "0.31.0", published: "0.31.0", deps, stateFile, dry: false, commit: false });
+        const state = JSON.parse(readFileSync(stateFile, "utf8"));
+        expect(status === EXIT.RED && state.phase === PHASE.PUBLISHED_UNWRITTEN,
+          `③c exit 2 且${name} ⇒ 红、状态留在 published_unwritten（不许拿 exit 2 当放行口）`,
+          `③c ${name} 时 exit ${status}、phase=${state.phase}（期望 1 / ${PHASE.PUBLISHED_UNWRITTEN}）`);
+      } finally {
+        rmSync(tree, { recursive: true, force: true });
+      }
     }
   }
 

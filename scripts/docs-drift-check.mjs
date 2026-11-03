@@ -8727,7 +8727,7 @@ const SELF_TEST_CASES = [
   {
     label: "#697 ②：已发布段的日期与 tag 日期不一致 ⇒ 红并点名两个日期",
     overlay: { "CHANGELOG.md": replaceUnique("## [0.30.0] - 2026-11-03", "## [0.30.0] - 2026-11-04") },
-    simulateRegistry: { ok: true, authoritative: true, latest: "0.30.0", versions: ["0.30.0"], source: "self-test 夹具" },
+    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
     simulateTagFacts: { ok: true, dates: new Map([["0.30.0", { date: "2026-11-03", kind: "annotated" }]]), source: "self-test 夹具" },
     simulateDateTagExemptions: [],
     expect: [/changelog-date: CHANGELOG:\d+ 的 0\.30\.0 段写 2026-11-04，tag v0\.30\.0 是 2026-11-03/],
@@ -8736,7 +8736,7 @@ const SELF_TEST_CASES = [
   {
     label: "#697 ②（登记证）：同一处不一致登记进 CHANGELOG_DATE_TAG_EXEMPTIONS ⇒ 绿（历史事实不改）",
     overlay: { "CHANGELOG.md": replaceUnique("## [0.30.0] - 2026-11-03", "## [0.30.0] - 2026-11-04") },
-    simulateRegistry: { ok: true, authoritative: true, latest: "0.30.0", versions: ["0.30.0"], source: "self-test 夹具" },
+    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
     simulateTagFacts: { ok: true, dates: new Map([["0.30.0", { date: "2026-11-03", kind: "annotated" }]]), source: "self-test 夹具" },
     simulateDateTagExemptions: [{ version: "0.30.0", why: "self-test 探针：登记之后同一处不一致不红" }],
     expectGreen: true,
@@ -8746,7 +8746,7 @@ const SELF_TEST_CASES = [
     overlay: {
       "CHANGELOG.md": replaceUnique("## [0.31.0]（未发布 / unpublished）", "## [0.31.0] — 截至本提交尚未发布"),
     },
-    simulateRegistry: { ok: true, authoritative: true, latest: "0.30.0", versions: ["0.30.0"], source: "self-test 夹具" },
+    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
     simulateTagFacts: { ok: true, dates: new Map([["0.30.0", { date: "2026-11-03", kind: "annotated" }]]), source: "self-test 夹具" },
     simulateDateTagExemptions: [{ version: "9.9.9", why: "self-test 探针：空转条目" }],
     expect: [/changelog-date: CHANGELOG_DATE_TAG_EXEMPTIONS 里 9\.9\.9 那一条是空转的/],
@@ -8757,26 +8757,26 @@ const SELF_TEST_CASES = [
     overlay: {
       "CHANGELOG.md": replaceUnique("## [0.31.0]（未发布 / unpublished）", "## [0.31.0] — 截至本提交尚未发布"),
     },
-    simulateRegistry: { ok: true, authoritative: true, latest: "0.30.0", versions: ["0.30.0"], source: "self-test 夹具" },
+    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
     simulateTagFacts: { ok: true, dates: new Map(), source: "self-test 夹具：一个 tag 都没有" },
     simulateDateTagExemptions: [],
     expectNotJudged: ["TAG_MISSING"],
     expectExit: 2,
   },
   {
-    label: "#697 ③（历史段无 tag 不判）：registry 说已发布但不是 latest、又没有 tag ⇒ 记一笔跳过，不 exit 2",
+    label: "#697 ③（历史段无 tag 不判）：registry 说已发布但不是 latest、又没有 tag ⇒ 记一笔跳过，不 exit 2（只有 latest 缺 tag 才算 TAG_MISSING）",
     overlay: {
       "CHANGELOG.md": replaceUnique("## [0.31.0]（未发布 / unpublished）", "## [0.31.0] — 截至本提交尚未发布"),
     },
-    simulateRegistry: { ok: true, authoritative: true, latest: "0.29.0", versions: ["0.30.0", "0.29.0"], source: "self-test 夹具" },
-    simulateTagFacts: { ok: true, dates: new Map([["0.29.0", { date: "2026-10-31", kind: "annotated" }]]), source: "self-test 夹具" },
+    simulateRegistry: selfTestRegistry(),
+    simulateTagFacts: { ok: true, dates: new Map([["0.30.0", { date: "2026-11-03", kind: "annotated" }]]), source: "self-test 夹具：只有 latest 那个 tag" },
     simulateDateTagExemptions: [],
     expectGreen: true,
   },
   {
     label: "#697（历史段不受 (a) 管）：历史段的「带日期 + 正文标未发布」不改口 ⇒ 绿",
     overlay: { "CHANGELOG.md": replaceUnique("## [0.24.0] - 2026-10-22", "## [0.24.0] - 2026-10-23") },
-    simulateRegistry: { ok: true, authoritative: true, latest: "0.30.0", versions: ["0.30.0"], source: "self-test 夹具" },
+    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
     simulateTagFacts: { ok: true, dates: new Map([["0.30.0", { date: "2026-11-03", kind: "annotated" }]]), source: "self-test 夹具" },
     simulateDateTagExemptions: [],
     expectGreen: true,
@@ -8786,7 +8786,7 @@ const SELF_TEST_CASES = [
     overlay: {
       "CHANGELOG.md": replaceUnique("## [0.31.0]（未发布 / unpublished）", "## [0.31.0] — 截至本提交尚未发布"),
     },
-    simulateRegistry: { ok: true, authoritative: true, latest: "0.30.0", versions: ["0.30.0"], source: "self-test 夹具" },
+    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
     simulateTagFacts: { ok: true, dates: new Map([["0.30.0", { date: "2026-11-03", kind: "annotated" }]]), source: "self-test 夹具" },
     simulateDateTagExemptions: [],
     expectGreen: true,
@@ -8796,7 +8796,7 @@ const SELF_TEST_CASES = [
     overlay: {
       "CHANGELOG.md": replaceUnique("## [0.31.0]（未发布 / unpublished）", "## [0.31.0] — 截至本提交尚未发布"),
     },
-    simulateRegistry: { ok: true, authoritative: true, latest: "0.30.0", versions: ["0.30.0"], source: "self-test 夹具" },
+    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
     simulateTagFacts: { ok: false, why: "self-test 夹具：不是 git 仓（干净检出）" },
     simulateDateTagExemptions: [],
     expectGreen: true,

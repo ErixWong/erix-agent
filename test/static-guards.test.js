@@ -3880,7 +3880,7 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
 // 顶部 Unreleased 非空 ⇒ 面就是它）。地板**必须跟着面一起重测**——「只升不降」是**同一面内**的规则，
 // 跨面重测是 #563 设计好的动作，不是放宽。
 /** 地板校准所在的节标题（`CHANGELOG_PAIR_FLOOR` 是在**这一节**上实测的；面挪走且配对数不足 ⇒ 点名重测）。 */
-const CHANGELOG_PAIR_FLOOR_SURFACE = "## [0.31.0] - 2026-11-10（未发布 / unpublished）";
+const CHANGELOG_PAIR_FLOOR_SURFACE = "## [0.31.0]（未发布 / unpublished）";
 /** 两条 bullet 之间最多隔几行才算「紧邻」（0 = 直接相邻，1 = 中间隔一行）。 */
 const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 /** 配对地板：在 `CHANGELOG_PAIR_FLOOR_SURFACE` 那一节上实测的配对数。**同一面内只能升不能降。**
@@ -4121,7 +4121,9 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  * ```
  *
  * issue #691：`## [0.31.0]` 段新增一对条目（发版日收敛成一条命令 `release:day`，issue #689 / PR #695）。
- * 面没挪，仍是 `## [0.31.0] - 2026-11-10（未发布 / unpublished）`，实测变成 **3 对**，地板 2 → 3。
+ * 面没挪，仍是 `## [0.31.0]（未发布 / unpublished）`，实测变成 **3 对**，地板 2 → 3。
+ * （issue #697 把 0.31.0 段首的占位日期 ` - 2026-11-10` 摘掉了——未发布段不许带发布日期。
+ *  段里的 bullet 一条没动 ⇒ 实测仍是 **3 对**，地板 3 不变，只改校准面标题。）
  * 照旧**先贴守卫自己打的 diagnostic、再动常量**（顺序反了就等于拿常量去凑实测）：
  *
  * ```
