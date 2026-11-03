@@ -346,9 +346,29 @@ const VERSION_CLAIM_RULES = [
 // （CI 上没有 registry，离线自测不许联网）。不给 `--published` ⇒ exit 2 且一个字节都不写：
 // 「已发布与否」没有真值时，往哪一边写都是猜。
 const CHANGELOG_FILE = "CHANGELOG.md";
+/** requirements §4 阶段表里被标为 `current` 的那一行（issue #699 ④）：`**v0.9.0–v0.30.0 — current**`。
+ *  它是**当前版本声称**（阶段表覆盖到哪一版），切版之后必须跟着 `package.json` 走；但不在
+ *  `CURRENT_CLAIMS` 里就没人回写它，于是切版后它停在旧版，而 `--strict` 遇那条 warning 即红。
+ *
+ *  **为什么不直接塞进 `CURRENT_CLAIMS`**：那几条是「写错就 exit 1」的硬声称，而阶段表停在旧版在本仓的
+ *  既定口径里是**滞后信号**（§1 末尾「版本历史 / 阶段表的最高条目落后于 package.json 只算滞后信号：
+ *  先告警后阻塞」）——把它升级成 error 会改变那条政策。所以严重度维持 warning，只把它接进**写盘面**：
+ *  回写之后那条 warning 自然不再发，`--strict` 也就绿了。
+ *  窄面：正则**只命中那一行的上界版本号本身**（后顾锁定 `| **vX.Y.Z–v`、前瞻锁定 ` — current**`），
+ *  于是 `--sync` 的替换面就是那 6 个字节：行首下界、行内其余字节、表里其它行、表外一切句子都动不了。
+ *  （写成「整行匹配 + 捕获上界」也能对，但 `--sync` 的替换用 `whole.indexOf(captured)` 定位：上下界写成
+ *  同一个版本号时（`v0.31.0–v0.31.0`）它会换掉**下界**——前瞻/后顾把这个坑也堵了，实测见交付报告） */
+const STAGE_ROW_CLAIMS = [
+  { file: REQ_EN, label: "requirements §4 阶段表 current 行",
+    re: /(?<=^\|\s*\*\*v\d+\.\d+\.\d+–v)(\d+\.\d+\.\d+)(?=\s*—\s*current\*\*)/gmu },
+  { file: REQ_CN, label: "requirements_cn §4 阶段表 current 行",
+    re: /(?<=^\|\s*\*\*v\d+\.\d+\.\d+–v)(\d+\.\d+\.\d+)(?=\s*—\s*当前\*\*)/gmu },
+];
+
 /** `--sync` 的改写面：`fact` 指向真值（`version` = 本仓版本 / `published` = 发布行）。 */
 const RELEASE_STATE_TARGETS = [
   ...CURRENT_CLAIMS.map((claim) => ({ file: claim.file, id: `「${claim.label}」`, fact: "version", re: claim.re })),
+  ...STAGE_ROW_CLAIMS.map((claim) => ({ file: claim.file, id: `「${claim.label}」`, fact: "version", re: claim.re })),
   { file: AGENTS_EN, id: "AGENTS.md「本仓版本」句", fact: "version", re: VERSION_CLAIM_RULES[0].repoRe },
   { file: AGENTS_EN, id: "AGENTS.md「发布行」句", fact: "published", re: VERSION_CLAIM_RULES[0].pubRe },
   { file: AGENTS_CN, id: "AGENTS_cn.md「本仓版本」句", fact: "version", re: VERSION_CLAIM_RULES[1].repoRe },

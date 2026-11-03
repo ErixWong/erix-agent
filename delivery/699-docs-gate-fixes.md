@@ -23,7 +23,7 @@
 | `/tmp/b699/selftest-before.log` | 真树 0.30 改前基线：198 例全绿（不重测） |
 | `/tmp/b699/selftest-cut031-before.log` | 合成 0.31 树改前基线：**54/199 例未达预期**（不重测） |
 | `/tmp/b699/selftest-cut031g-before.log` | 同一棵合成树的 git 版（50/199），用来分辨「哪些失败来自树不是 git 仓」 |
-| `/tmp/b699/docs-cut031-before.log` / `docs-strict-before.log` | `check:docs` 在切版树上 exit 2 / 真树 exit 0 的改前记录 |
+| `/tmp/b699/docs-cut031-before.log` / `/tmp/b699/docs-strict-before.log` | `check:docs` 在切版树上 exit 2 / 真树 exit 0 的改前记录（写成绝对路径：裸文件名会被 `archive-refs` 判成「指向被 `.gitignore` 忽略的仓内路径且未分类」，于是这份报告自己让 `check:docs` 红） |
 
 没有打不开的路径。`/home/eric/projects/erix-llm-kit` 未被读写（工单禁）。
 
