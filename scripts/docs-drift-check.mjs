@@ -6626,6 +6626,30 @@ const SURFACE_DISPLAY_ONLY = /\bdisplay layer only\b|\bno engine fact changes?\b
 const SURFACE_GUIDE_EN = `docs/host-upgrade-guide-${PKG_VERSION}.md`;
 const SURFACE_GUIDE_CN = `docs/host-upgrade-guide-${PKG_VERSION}_cn.md`;
 
+// ── 自测期望里「当前版」的真值面（issue #699 ③）───────────────────────────────
+/** 把一份路径变成可嵌进 `new RegExp` 的字面量（`docs/host-upgrade-guide-0.30.0.md` 里的点必须转义）。 */
+const rePath = (rel) => String(rel).replace(/[.*+?^${}()|()[\]\\]/g, "\\$&");
+/** **当前版指南的路径在自测期望里必须现读**（#699 ③）。把 `0.30.0` 抄进期望正则，切版当天就是
+ *  「判据点对 0.31 那份指南，期望还在要 0.30 那份」⇒ 整族反向证在切版树上集体红（合成 0.31 树实测 6 例：
+ *  #690 读不出 ①② 与 #511 判据 2c 中英两条）。生产判据一侧本来就是动态的（上面 `SURFACE_GUIDE_EN/CN`），
+ *  这里只是把**期望**拉回同一个真值：`judge` 是红话前缀的判据 id，`tail` 是路径之后那段**正则字面量**
+ *  （传字面量而不是字符串：省掉「字符串里再转义一层」这个坑，`.source` 原样接上）。
+ *  **历史夹具不在此列**（0.27 / 0.29 的指南、0.31 破坏包那份逐名表：钉的是历史文档，切版不改那条事实）。 */
+const guideExpectRe = (judge, rel, tail) => Object.assign(
+  new RegExp(`${esc(judge)}: ${rePath(rel)}${tail.source}`, "u"),
+  // 打上「路径来自真值」的标记，供 runSelfTest 的静态校查认（见那里的 #699 ③ 那一刀）。
+  { pinnedToTruthPath: true });
+/** 自测变异器：把**本版**那条 CHANGELOG 段首整行交给 `build(那一行)` 重写（#699 ③：不再抄死 `## [0.30.0] - 2026-11-03`
+ *  这一行——它随版本走，切版后抄的那一行不在盘上，变异等于没落上）。 */
+const rewriteCurrentChangelogHeading = (build) => (text) =>
+  text.replace(new RegExp(`^## \\[${esc(PKG_VERSION)}\\].*$`, "mu"), (line) => build(line));
+/** 自测变异器：改 AGENTS 两句里的**本仓版本**（`VERSION_CLAIM_RULES` 的 repoRe 就是判据读的同一形状），
+ *  与上一条同理：`says \`0.30.0\`` 这种字面量在切版后的树上不存在。 */
+const mutateRepoVersionClaim = (to) => (text) =>
+  text.replace(VERSION_CLAIM_RULES[0].repoRe, `Current version: \`package.json\` says \`${to}\``);
+const addMeasurementDateToRepoClaim = (date) => (text) =>
+  text.replace(VERSION_CLAIM_RULES[0].repoRe, (whole) => `${whole}, measured ${date}`);
+
 /** 六格在指南里的**行首锚**：自测按格替换/删除 bullet 时用（改措辞要同步这里）。 */
 const SURFACE_BULLET = Object.freeze({
   en: {
@@ -8362,14 +8386,14 @@ const SELF_TEST_CASES = [
     expectGreen: true,
   },
   {
-    label: "#511 判据 2c：0.30 指南（= 当前版本）里出现「9 groups」的数量声称 ⇒ 红并点名真值（切版后当前版本指南本身不写数量，所以把错误声称注入到它上面：判据咬的是「当前版本那份指南说了什么」）",
-    overlay: { "docs/host-upgrade-guide-0.30.0.md": (t) => t + "\n\nThe configuration namespace still reads **9 groups / 43 leaves** today.\n" },
-    expect: [/guide-claim: docs\/host-upgrade-guide-0\.30\.0\.md:\d+ 声称「9 groups」，而 src\/loop\/config-namespace\.js 里是 \*\*8\*\* 个分组/],
+    label: "#511 判据 2c：**当前版本那份**指南里出现「9 groups」的数量声称 ⇒ 红并点名真值（指南本身不写数量，所以把错误声称注入到它上面：判据咬的是「当前版本那份指南说了什么」，靶子与期望都随 PKG_VERSION 现读，#699 ③）",
+    overlay: { [SURFACE_GUIDE_EN]: (t) => t + "\n\nThe configuration namespace still reads **9 groups / 43 leaves** today.\n" },
+    expect: [guideExpectRe("guide-claim", SURFACE_GUIDE_EN, /:\d+ 声称「9 groups」，而 src\/loop\/config-namespace\.js 里是 \*\*8\*\* 个分组/)],
   },
   {
     label: "#511 判据 2c：中文侧同理（「9 个分组」⇒ 红；中文数词/阿拉伯数字都要接）",
-    overlay: { "docs/host-upgrade-guide-0.30.0_cn.md": (t) => t + "\n\n`config` 命名空间今天仍然是 **9 个分组 / 43 个叶子**。\n" },
-    expect: [/guide-claim: docs\/host-upgrade-guide-0\.30\.0_cn\.md:\d+ 声称「9 个分组」，而 src\/loop\/config-namespace\.js 里是 \*\*8\*\* 个分组/],
+    overlay: { [SURFACE_GUIDE_CN]: (t) => t + "\n\n`config` 命名空间今天仍然是 **9 个分组 / 43 个叶子**。\n" },
+    expect: [guideExpectRe("guide-claim", SURFACE_GUIDE_CN, /:\d+ 声称「9 个分组」，而 src\/loop\/config-namespace\.js 里是 \*\*8\*\* 个分组/)],
   },
   {
     label: "#511 判据 2b：指南把某个 config 叶子归给 0.29.0，而 CHANGELOG 的 0.29.0 段没有它 ⇒ 红（新增不单调，真值只能从 CHANGELOG 取）",
@@ -8397,13 +8421,13 @@ const SELF_TEST_CASES = [
   },
   {
     label: "#511：AGENTS.md 的「本仓版本」写成 0.28.0 ⇒ 红（本仓版本对 package.json，两类句子各对各的真值）",
-    overlay: { [AGENTS_EN]: (t) => t.replace("says `0.30.0` (the repo version)", "says `0.28.0` (the repo version)") },
+    overlay: { [AGENTS_EN]: mutateRepoVersionClaim("0.28.0") },
     simulateRegistry: selfTestRegistry(),
     expect: [/published-claim: AGENTS\.md:\d+ 的「AGENTS\.md「当前版本」句」把\*\*本仓版本\*\*写成 0\.28\.0/],
   },
   {
     label: "#511 第二条评论：这两句里塞一个测量日期 ⇒ 红（日期自己不会过期，留着它等于给「过期」留合法位置）",
-    overlay: { [AGENTS_EN]: (t) => t.replace("says `0.30.0` (the repo version)", "says `0.30.0` (the repo version, measured 2026-11-03)") },
+    overlay: { [AGENTS_EN]: addMeasurementDateToRepoClaim("2026-11-03") },
     simulateRegistry: selfTestRegistry(),
     expect: [/published-claim: AGENTS\.md:\d+ 的「AGENTS\.md「当前版本」句」里带了测量日期/],
   },
@@ -8429,8 +8453,8 @@ const SELF_TEST_CASES = [
   },
   {
     label: "#636：只删中文侧的 `compaction` 事件那一条 ⇒ 红（CHANGELOG 的 0.30.0 段说这一版加了它，中文指南没有就是缺一条）",
-    overlay: { "docs/host-upgrade-guide-0.30.0_cn.md": (t) => t.replaceAll("compaction", "折叠事件") },
-    expect: [/guide-coverage: docs\/host-upgrade-guide-0\.30\.0_cn\.md 没有提到观察者事件 `compaction`/],
+    overlay: { [SURFACE_GUIDE_CN]: (t) => t.replaceAll("compaction", "折叠事件") },
+    expect: [guideExpectRe("guide-coverage", SURFACE_GUIDE_CN, / 没有提到观察者事件 `compaction`/)],
   },
   {
     label: "#636 中英成对：只从中文指南里删掉一个结构化名字（`ERIX_CONTINUITY_DIR`）⇒ 红（成对判据问的是「另一侧有没有一条」）",
@@ -8439,9 +8463,9 @@ const SELF_TEST_CASES = [
   },
   {
     label: "#636（fail-closed）：CHANGELOG 里没有当前版本段 ⇒ 红（「这一版加了什么」的真值缺位，不许静默放行）",
-    overlay: { "CHANGELOG.md": (t) => t.replace("## [0.30.0] - 2026-11-03", "## [0.9.9] - 2026-11-03") },
+    overlay: { "CHANGELOG.md": rewriteCurrentChangelogHeading(() => "## [0.9.9] - 2026-11-03") },
     simulateRegistry: selfTestRegistry(),
-    expect: [/guide-coverage: 读不到 CHANGELOG 的 0\.30\.0 段/],
+    expect: [new RegExp(`guide-coverage: 读不到 CHANGELOG 的 ${esc(PKG_VERSION)} 段`, "u")],
   },
   // ══ issue #635 ①：文档里的「点名几份 + 实扫几份 = 下限」份数声称必须等于实测 ══════════
   {
@@ -8684,7 +8708,7 @@ const SELF_TEST_CASES = [
         () => "* Transcript and run-state on-disk formats; a ledger written by the previous release still resumes."),
     },
     expect: [
-      /unchanged-surface: docs\/host-upgrade-guide-0\.30\.0\.md:\d+ 第「on-disk formats」格写着不变/,
+      guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /:\d+ 第「on-disk formats」格写着不变/),
       /record\.foldedFacts\.text/,
     ],
     expectFiles: [SURFACE_GUIDE_EN],
@@ -8696,7 +8720,7 @@ const SELF_TEST_CASES = [
         () => "* Observer events, diagnostic fields, and the run-state block."),
     },
     expect: [
-      /unchanged-surface: docs\/host-upgrade-guide-0\.30\.0\.md:\d+ 第「diagnostic fields」格写着不变/,
+      guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /:\d+ 第「diagnostic fields」格写着不变/),
       /degradeKind/,
     ],
   },
@@ -8707,7 +8731,7 @@ const SELF_TEST_CASES = [
         () => "* Termination, verification and exit-code semantics, including the `skipped`-without-guard exit code."),
     },
     expect: [
-      /unchanged-surface: docs\/host-upgrade-guide-0\.30\.0\.md:\d+ 第「final payload」格写着不变/,
+      guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /:\d+ 第「final payload」格写着不变/),
       /exitCodeForRunFailure/,
     ],
   },
@@ -8715,11 +8739,11 @@ const SELF_TEST_CASES = [
     label: "#690（中英各自判）CN 诊断字段整条删掉 ⇒ 红在 CN 这一侧（整格缺席），EN 不受影响",
     overlay: { [SURFACE_GUIDE_CN]: dropSurfaceBullet(SURFACE_BULLET.cn.diagnostics) },
     expect: [
-      /unchanged-surface: docs\/host-upgrade-guide-0\.30\.0_cn\.md:\d+ 第「诊断字段」格整格缺席/,
+      guideExpectRe("unchanged-surface", SURFACE_GUIDE_CN, /:\d+ 第「诊断字段」格整格缺席/),
       /degradeKind/,
     ],
     expectFiles: [SURFACE_GUIDE_CN],
-    reject: [/unchanged-surface: docs\/host-upgrade-guide-0\.30\.0\.md/u],
+    reject: [guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /(?:)/)],
   },
   {
     label: "#690 声明了变更却不点名该格字段 ⇒ 红（「变了」不点名等于没对账）",
@@ -8728,7 +8752,7 @@ const SELF_TEST_CASES = [
         () => "* **On-disk formats — changed in this release.** The fold ledger moved; the names are in §1."),
     },
     expect: [
-      /unchanged-surface: docs\/host-upgrade-guide-0\.30\.0\.md:\d+ 第「on-disk formats」格声明了变更，却没有点名/,
+      guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /:\d+ 第「on-disk formats」格声明了变更，却没有点名/),
       /record\.foldedFacts\.text/,
     ],
   },
@@ -8737,12 +8761,12 @@ const SELF_TEST_CASES = [
     overlay: {
       [SURFACE_GUIDE_EN]: replaceUnique("## 4. What does not change", "## 4. Notes on what moved"),
     },
-    expect: [/unchanged-surface: docs\/host-upgrade-guide-0\.30\.0\.md 里找不到「不变」那一节/],
+    expect: [guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, / 里找不到「不变」那一节/)],
   },
   {
     label: "#690 读不出（②）：本版 CHANGELOG 段读不到 ⇒ 红（真值缺位不许当绿）",
-    overlay: { "CHANGELOG.md": replaceUnique("## [0.30.0] - 2026-11-03", "## 0.30.0 - 2026-11-03") },
-    expect: [/unchanged-surface: 读不到 CHANGELOG 的 0\.30\.0 段/],
+    overlay: { "CHANGELOG.md": rewriteCurrentChangelogHeading((line) => line.replace(`## [${PKG_VERSION}]`, `## ${PKG_VERSION}`)) },
+    expect: [new RegExp(`unchanged-surface: 读不到 CHANGELOG 的 ${esc(PKG_VERSION)} 段`, "u")],
   },
   {
     label: "#690（反向证）纯加法的名字不是变更证据：选项格写「不变」仍绿",
@@ -8868,6 +8892,27 @@ function runSelfTest() {
   if (!symbolAnchorOccurrences(refScanDocs()).length) {
     failures.push("symbol-anchor: 覆盖面里抽到 0 处「符号 + 文件」锚点——提取逻辑或覆盖面被改坏，"
       + "本节全部符号锚点反向证都在空跑（抽不到真值就报错，#164 口径）");
+  }
+  // #699 ③：**当前版**指南的路径在期望里被抄成字面量，就是「切版当天整族反向证变红」的病根
+  // （判据现算 `docs/host-upgrade-guide-<本版>.md`，期望还在要上一版那份）。这一刀把它钉死：
+  // 期望 / reject 里出现「本版指南」那条路径的，必须由 `guideExpectRe` 现读常量构造。
+  for (const [i, c] of SELF_TEST_CASES.entries()) {
+    const who3 = c.label ?? `第 ${i + 1} 例`;
+    for (const [key, list] of [["expect", c.expect ?? []], ["reject", c.reject ?? []]]) {
+      for (const re of list) {
+        const src = String(re?.source ?? "");
+        // 只有「红话路径 = 当前版指南」的那两个判据受这一刀管：`unchanged-surface` 与 `guide-coverage`
+        // 现算 `docs/host-upgrade-guide-${PKG_VERSION}.md`。`bundle-table` 那份是 0.31 破坏包的**历史**逐名表
+        // （路径是钉住的那份指南，不随当前版走），历史指南（0.27 / 0.29）的字面量同理——都不算抄错。
+        const judge = src.match(/^([a-z][a-z0-9-]*(?:\/[a-z0-9-]+)?):/u)?.[1];
+        const named = src.match(/host-upgrade-guide-(\d+\.\d+\.\d+)/u)?.[1];
+        if ((judge === "unchanged-surface" || judge === "guide-coverage")
+          && named === PKG_VERSION && re?.pinnedToTruthPath !== true) {
+          failures.push(`${who3}：${key} 里把当前版指南写成字面量（${named}）——切版当天这一例必然红在路径上；`
+            + "用 `guideExpectRe(判据 id, SURFACE_GUIDE_EN/CN, …)` 现读常量构造（#699 ③）");
+        }
+      }
+    }
   }
   for (const [i, c] of SELF_TEST_CASES.entries()) {
     const who = c.label ?? `第 ${i + 1} 例`;

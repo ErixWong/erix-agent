@@ -38,6 +38,47 @@
 | 真树（`package.json` = 0.30.0） | 198/198 绿（`/tmp/b699/selftest-before.log`） | 待填 |
 | 合成切版树（`package.json` = 0.31.0） | **54/199 未达预期**（`/tmp/b699/selftest-cut031-before.log`） | 待填 |
 
+## ③ 自测期望把「当前版」钉成字面量（`scripts/docs-drift-check.mjs` 的 `SELF_TEST_CASES`）
+
+**改前**（合成 0.31 树上实测的失败，`/tmp/b699/selftest-cut031g-before.log`）：期望正则里抄死了
+`docs/host-upgrade-guide-0\.30\.0`，而生产判据一侧本来就是 `SURFACE_GUIDE_EN/CN = docs/host-upgrade-guide-${PKG_VERSION}.md`
+（`:6626-6627`，动态）⇒ 切版当天「判据点对 0.31 那份指南，期望还在要 0.30 那份」，一族反向证集体红。
+同族的另外三处同一病：AGENTS 本仓版本句的变异锚 `says \`0.30.0\` (the repo version)`、
+CHANGELOG 本版段首锚 `## [0.30.0] - 2026-11-03`（两处）、以及 `读不到 CHANGELOG 的 0\.30\.0 段` 这两条期望。
+
+**改后**：
+
+| 位置 | 改法 |
+|---|---|
+| `unchanged-surface` 6 条期望（含 CN 那条的 `reject`） | 全部换成 `guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN/CN, /…/)`：路径由常量现读，`judge` 前缀与 `tail` 保持原红话形状 |
+| `#511 判据 2c` 中英两条（`guide-claim`） | 靶子与期望都改成当前版指南（label 里那句「0.30 指南」同步改成「当前版本那份」） |
+| `#636` 中文侧 `compaction` 那一条 | 靶子 `[SURFACE_GUIDE_CN]` + 期望 `guideExpectRe("guide-coverage", …)`（**名字本身仍是 0.30 那笔加法**，见下面「前提型残留」） |
+| `#690 读不出（②）` / `#636（fail-closed）` | 变异器换成 `rewriteCurrentChangelogHeading(...)`（按 `^## [${PKG_VERSION}]` 现定位本版段首），期望换成 `new RegExp(… ${esc(PKG_VERSION)} 段)` |
+| `#511` 两条 AGENTS 变异 | `mutateRepoVersionClaim("0.28.0")` / `addMeasurementDateToRepoClaim(date)`——都走 `VERSION_CLAIM_RULES[0].repoRe`，即判据读的同一形状 |
+| 防它再烂回来 | `runSelfTest` 里加一刀静态校：`unchanged-surface` / `guide-coverage` 的期望或 reject 里出现**等于本版**的 `host-upgrade-guide-<N>` 字面量、且不是 `guideExpectRe` 构造的 ⇒ 直接记失败（`bundle-table` 那份是 0.31 破坏包的历史逐名表、0.27 / 0.29 是历史指南，都不受这一刀管） |
+
+**没动的历史夹具**（按工单点名）：`#621` / `#391 R4` / `#668 ①` 那三条（`docs/host-consumer-contract*`、README 旗标行），
+以及 `#511 判据 2b`（0.29 指南）、`#636` 的 0.29 靶子、`14b` 全族（钉的是 0.31 破坏包逐名表——那份指南是历史文档，
+路径不随当前版走）。`test/docs-anchor-ratchet.test.js:61-64` 已同时列 0.30 / 0.31 两对，未改。
+
+**实测**：真树 `node scripts/docs-drift-check.mjs --self-test` = **198 例全绿**（`/tmp/b699/selftest-real-step2.log`，
+与改前基线同数）；`node --test test/docs-anchor-ratchet.test.js` = **6/6 绿**；
+合成 0.31 切版树同一步从 **50 → 7**（`/tmp/b699/selftest-cutB-step2.log`，剩下 7 条见「前提型残留」）。
+
+## 顺带（① 解除短路后被抓到的一条真漂移）：0.31 中文指南 §4 标题
+
+`docs/host-upgrade-guide-0.31.0_cn.md:72` 写的是 `## 4. 不变的部分`，而 `unchanged-surface` 要求的规范标题是
+`## N. 没有变的东西`（`host-upgrade-guide-0.30.0_cn.md:214` 用的就是它）。① 之前那一族在零归属分支就
+`return done()` 收口了，这一格从来没被审到；短路解除后它当场红：
+
+```
+unchanged-surface: docs/host-upgrade-guide-0.31.0_cn.md 里找不到「不变」那一节（标题应为 `## N. 没有变的东西`）——读不出这一节就等于没有声明可对账（读不出 = 红，exit 2）
+```
+
+这是**真漂移**（不是误报），改法是把标题对齐规范名，一个字节的内容不改；改完合成树的
+`node scripts/docs-drift-check.mjs` 从 exit 2 变 **exit 0**（`125 项对齐 package.json 0.31.0 与源码`），
+真树 `check:docs` 仍 **exit 0**（0.31 那一版还没成为当前版，这一格在真树上不参与判定）。
+
 ## 三态反向证
 
 （待填）
