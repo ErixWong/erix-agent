@@ -14,8 +14,8 @@
 
 ## 1. The one current number in this file
 
-The anchor face is **15 pinned documents + the 34 upgrade-guide files the directory scan finds = 49**
-(`REF_SCAN_DOCS_MINIMUM = 49`). `check:docs` reads those numbers back out of every document that states them
+The anchor face is **15 pinned documents + the 36 upgrade-guide files the directory scan finds = 51**
+(`REF_SCAN_DOCS_MINIMUM = 51`). `check:docs` reads those numbers back out of every document that states them
 (this pair and both READMEs) and compares them with the scan, so this sentence cannot go stale in silence.
 
 ## 2. The chain, verbatim

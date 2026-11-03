@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 
 import { makeTmp } from "./helpers/tmp.js";
 import { currentCandidates } from "../scripts/host-consumer-probe.mjs";
+import { BUNDLE_GUIDE_DOCS, bundleRowsFromText } from "../scripts/bundle-guide-table.mjs";
 
 const ROOT = dirname(fileURLToPath(new URL(".", import.meta.url)));
 const SCRIPT = fileURLToPath(new URL("../scripts/host-consumer-probe.mjs", import.meta.url));
@@ -55,10 +56,11 @@ test("真宿主目录：命中一个「指南已覆盖」的名字 ⇒ exit 0，
     new RegExp(`\`createAnthropicProvider\` @ 宿主仓 \`mini-host\` — \`${host}/src/adapter\\.js:1\``, "u"),
     `命中要逐条点名宿主仓 / 文件:行 / 名字：\n${result.stdout}`,
   );
-  assert.match(result.stdout, /登记删除版本 0\.30/u, "点名时要带登记的删除版本（宿主据此判断影响面）");
+  assert.match(result.stdout, /登记删除版本 0\.31/u, "点名时要带登记的删除版本（宿主据此判断影响面）");
+  assert.match(result.stdout, /这一版已删/u, "命中要标出它已经不在公共导出面上（issue #688 的 retired 形态）");
   assert.match(
     result.stdout,
-    /↳ 指南条目：`docs\/host-upgrade-guide-0\.30\.0\.md:\d+`[\s\S]*↳ 指南条目：`docs\/host-upgrade-guide-0\.30\.0_cn\.md:\d+`/u,
+    /↳ 指南条目：`docs\/host-upgrade-guide-0\.31\.0\.md:\d+`[\s\S]*↳ 指南条目：`docs\/host-upgrade-guide-0\.31\.0_cn\.md:\d+`/u,
     `每个命中都要带出中英两份指南的条目行（迁移写法的出处）：\n${result.stdout}`,
   );
   // 宿主契约套件这一类**不进候选**（消费者按定义在宿主仓，仓内零命中是天然的）⇒ 宿主导入它不是删除命中。
@@ -67,18 +69,22 @@ test("真宿主目录：命中一个「指南已覆盖」的名字 ⇒ exit 0，
   assert.ok(!/`runToolLoop` @ 宿主仓/u.test(result.stdout), "非候选名字不该进命中表");
 });
 
-test("真树 × 全候选：每一个零消费者候选都在指南里有一行（覆盖判据在真树上成立）", async () => {
+test("真树 × 全退役名：当前指南声称已删的每个名字都在指南里有一行（覆盖判据在真树上成立）", async () => {
+  // issue #688：16 个名字删干净之后，真树里的零消费者候选是 0（它们连导出面都不在了）。求交面因此
+  // 由「候选 ∪ 当前指南声称已删的名字」组成——这里用指南那一半（唯一读法住在 bundle-guide-table.mjs）。
   const { candidates } = currentCandidates();
-  assert.ok(candidates.length > 0, "现算候选集为空时这条用例失去意义（先看 check:exports 是不是坏了）");
-  const names = candidates.map((row) => row.name);
+  assert.equal(candidates.length, 0, "本仓当前的零消费者候选应为 0（16 个已删）；非 0 说明有新的待删名，请同时更新本用例");
+  const names = [...new Set(BUNDLE_GUIDE_DOCS.flatMap((rel) =>
+    [...bundleRowsFromText(readFileSync(join(ROOT, rel), "utf8")).rows.keys()]))].sort();
+  assert.ok(names.length > 0, "指南读不出名字集合时这条用例失去意义（先看 check:docs 的 bundle-table）");
   const host = await hostRepo({
-    "src/all-candidates.js": `import { ${names.join(", ")} } from "erix-agent";\n`,
+    "src/all-retired.js": `import { ${names.join(", ")} } from "erix-agent";\n`,
   });
   const result = runScript(["--hosts", host]);
-  assert.equal(result.status, 0, `全部候选都该被指南覆盖：\n${result.stdout}${result.stderr}`);
+  assert.equal(result.status, 0, `全部退役名都该被指南覆盖：\n${result.stdout}${result.stderr}`);
   for (const name of names) {
     assert.match(result.stdout, new RegExp(`\`${name}\` @ 宿主仓 \`mini-host\``, "u"),
-      `候选 \`${name}\` 没被点名（命中表漏了它）：\n${result.stdout}`);
+      `退役名 \`${name}\` 没被点名（命中表漏了它）：\n${result.stdout}`);
   }
   const guideRows = result.stdout.match(/↳ 指南条目：/gu) ?? [];
   assert.equal(guideRows.length, names.length * 2, `每个名字要带中英两条指南条目（实得 ${guideRows.length} 条）`);
@@ -120,7 +126,7 @@ test("--json：同一份事实可机器读（命中带 repo / file / line / name
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.gate, true, "给了宿主目录且扫得到 ⇒ 这一轮是判定形态");
   assert.equal(payload.verdict, "covered", "机器读法要能区分「覆盖」与「未覆盖」");
-  assert.equal(payload.guideVersion, "0.30.0", "指南版本要带出来（覆盖判据绑在唯一合法移除边界上）");
+  assert.equal(payload.guideVersion, "0.31.0", "指南版本要带出来（覆盖判据绑在唯一合法移除边界上）");
   assert.equal(payload.covered.length, 1, `应恰好一个被覆盖的名字：${JSON.stringify(payload.covered)}`);
   assert.equal(payload.covered[0].entries.length, 2, "中英两份指南各一条条目");
   assert.deepEqual(payload.uncovered, [], "没有未覆盖的名字");
@@ -130,8 +136,9 @@ test("--json：同一份事实可机器读（命中带 repo / file / line / name
   assert.equal(hit.repo, "mini-host");
   assert.equal(hit.line, 1);
   assert.equal(hit.spec, "erix-agent");
-  assert.equal(hit.removalVersion, "0.30", "唯一合法的移除版本是 0.30（账本只记阻塞，不换版本号）");
-  assert.ok(payload.candidates.some((row) => row.name === "createAnthropicProvider"), "候选清单要带出来（现算的那份）");
+  assert.equal(hit.removalVersion, "0.31", "唯一合法的移除版本是 0.31（账本只记阻塞，不换版本号）");
+  assert.equal(hit.retired, true, "这一版已经删掉的名字要标出来（它不再是候选，但宿主导入它就是已经发生的破坏）");
+  assert.ok(Array.isArray(payload.candidates), "候选清单要带出来（现算的那份；#688 之后为空是事实）");
 });
 
 test("--self-test：反向证（含覆盖判据三态）exit 0", () => {

@@ -3,9 +3,17 @@
 
 **Release: 0.30.0.** 0.30.0 is the
 breaking bundle the library has been pointing at since the deprecation registry landed: **16 exported
-names are removed**. Every one of them was registered as a *zero-consumer* export — nothing in this
+names are removed**.
+
+Every one of them was registered as a *zero-consumer* export — nothing in this
 repository imports it, nothing in the host checkouts the probe can see imports it — and the one name
 that a live host does import gets a recipe (§3) rather than a promise.
+
+> **Errata (issue #688): they were not removed in 0.30.0.** This page announced the sixteen
+> deletions and the shipped `erix-agent@0.30.0` still exported every one of them from the package
+> root and `erix-agent/tools`. Read the two tables below as the *registration record*; the deletion
+> itself lands in 0.31.0 — **see the 0.31.0 upgrade guide** for the boundary that actually ships, and
+> §2 / §3 below carry the same correction in place.
 
 Nothing else moves in the input surface. No `runToolLoop` option is retired, renamed or re-homed, no
 default value changes, and no observer event, diagnostic field or on-disk format changes. A host that
@@ -34,6 +42,10 @@ red until it follows.
 | Nothing else (except the one **additive** leaf in §4.1) | no option, default, event or on-disk format moves; §4.1 adds one configuration leaf and states the slot-key migration danger that comes with it | §4 / §4.1 |
 
 ## 2. The fifteen names nothing imports
+
+**Errata (issue #688): 0.30.0 kept exporting all fifteen.** The rows below are the registration
+record; the deletion really happens in 0.31.0 — **see the 0.31.0 upgrade guide**. A host on 0.30.0
+that had already migrated saw no breakage, and one that had not migrated saw none either.
 
 Measured, not asserted: the candidate list this section is reconciled against is the set of exports
 whose in-package, publish-surface and own-file consumers are all zero. If you never imported one of
@@ -75,8 +87,9 @@ in `app_container/apps/worker/src/pi/erix-adapter.js`; re-check it with the host
 (`npm run check:host-consumers -- --hosts <host repo dirs>`), which is the half of this decision this
 repository cannot see by itself.
 
-In 0.30.0 the factory is gone, and the failure mode is not a warning: the package is ESM, so an
-`import` of a name that no longer exists fails **at module load**. A host that upgrades first and
+**Errata (issue #688): in 0.30.0 the factory was *not* gone** — `erix-agent@0.30.0` still exported
+it. It is removed in 0.31.0 (**see the 0.31.0 upgrade guide**). The failure mode is not a warning:
+the package is ESM, so an `import` of a name that no longer exists fails **at module load**. A host that upgrades first and
 migrates later does not degrade — it fails to start.
 
 | Name | What it did | Migration clause | Entry | Definition |
@@ -285,8 +298,8 @@ request). Remove the key, or make it a real budget. Nothing else about slot obje
    streaming request and assert `finish()` returns the same two fields. A thrown `KitError` with a
    status is an HTTP problem; a thrown `TypeError` is your payload, not the network.
 3. **Type-check against the published declarations** (`tsc --strict`). Every name in this bundle is
-   absent from the generated declarations of 0.30.0, so an import that survived the migration is a
-   compile error, not a runtime surprise.
+   absent from the generated declarations of 0.31.0 (**see the 0.31.0 upgrade guide**), so an import
+   that survived the migration is a compile error, not a runtime surprise.
 4. **Re-run the gates that own this page.** `npm run check:docs` reconciles the tables above against
    the live candidate list; `npm run check:exports:deprecated` reconciles the markers themselves. If
    you add or drop a name in the bundle, both move in the same commit.
