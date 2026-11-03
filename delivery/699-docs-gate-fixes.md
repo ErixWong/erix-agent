@@ -85,3 +85,29 @@ notes.push("unchanged-surface: CHANGELOG <v> 段里有 N 处反引号字段名�
   四条都还在跑），只是这一版六格都没有变更证据 ⇒ 按既有的「② 反向」放行。
 - 打印里带**每格真值规模**，读者能当场看见「六格都在、只是这一版没动它们」——这是它降级成说明后仍然
   可核对的证据面。
+
+## ② `guide-coverage` 的「下限 4」误报（`collectGuideCoverageErrors`）
+
+**改前**：`GUIDE_COVERAGE_MIN_NAMES = 4`，判据是
+
+```
+if (checked < GUIDE_COVERAGE_MIN_NAMES) fail("guide-coverage: 本版只判到 0 个名字（下限 4）——抽取逻辑或
+                                              CHANGELOG 段被削，这条判据正在空跑");
+```
+
+`checked` = `releaseAddedNames()` 从**本版段的加法句**里点到的 inventory 名字数。0.31 段全是删除 / 勘误 /
+发版流程，一个加法句都没有 ⇒ `checked = 0` ⇒ 恒红（主 agent 把 ① 短路之后实测 `check:docs` **exit 1**，
+红话就是这一句）。**合法零新增版恒假**。
+
+**改后**：健康判据换成「代码侧名字集还抽不抽得出来」，即 `NAME_INVENTORY_MIN_NAMES = 92`（0.30 这棵树
+实测：config 叶子 + 观察者事件 + 压缩策略名 + 环境变量 = 92），低于它才红：
+
+```
+guide-coverage: 从代码侧只抽到 N 个名字（下限 92）——抽取逻辑被削了（四张脸里有一张抽不出来）…
+```
+
+- 「与本版段交集 ≥ 4」不再是否决条件：`checked === 0` 时只打印一条说明
+  （「本版是零新增版，这一半无可判项；不是抽取器坏了：代码侧清单仍然抽到 92 个名字」），不红、不 exit。
+- 92 是**只许涨不许降**的棘轮（与 `REF_SCAN_DOCS_MINIMUM` / `SYMBOL_ANCHOR_MIN_UNIQUE` /
+  `MIN_SELF_TEST_CASES` 同构）：降它要写理由。
+- 原有的 `!inventory.size` fail 与「读不到 CHANGELOG 段」fail 原样保留（fail-closed 那两条没动）。
