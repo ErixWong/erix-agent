@@ -105,6 +105,16 @@
 //                 为真的历史）。
 //  17. changelog-published CHANGELOG 版本段的发布态（判据 3）：带日期的版本段若**不在 registry 的
 //                 `versions` 列表**里，必须在段首标「（未发布 / unpublished）」；反向也看守（已发布却自称未发布红）。
+//  17b. changelog-date 段首日期是事实，不是占位（issue #697）：(a) **正在准备的那一段**（版本序最高的版本段）
+//                 标了「未发布」就不许带发布日期——发布日期是「发布这件事」的产物（合法形状
+//                 `## [X.Y.Z]（未发布 / unpublished）`）；历史段不受此限（0.24.0 / 0.21.0 / 0.12.0 / 0.8.0 是
+//                 「带日期 + 正文标未发布」的历史记录，改它们等于改历史事实）。(b) **已发布段**的日期必须与
+//                 `vX.Y.Z` tag 的日期同一天（UTC+8 本地日历日；附注 tag 取 tagger date，轻量 tag 取所指提交的
+//                 author date），不一致 ⇒ 红并点名两个日期。**registry 说已发布但没有 tag ⇒ exit 2 未判定
+//                 （`TAG_MISSING`）而不是红**：`release:day` 的 writeback 先翻标记（并写日期）、finalize 之后才
+//                 打 tag，那一刻判红等于让它自己那次 `check:docs` 把 writeback 判死。`TAG_MISSING` 只咬 registry
+//                 的 `latest`——本仓 31 个已发布版本里只有 11 个有 tag（打 tag 是 0.14.0 之后才零星开始的），
+//                 对每个已发布段都要求 tag ⇒ 这条闸会永久 exit 2（= 没有闸）。更早的已发布段**有 tag 才判**。
 //  18. published-claim 「本仓版本」与「发布行」两类声称句各对各自的真值（issue #511 评论）：前者对
 //                 `package.json`，后者对 registry 的 `dist-tags.latest`；两类句子都不许带测量日期/「实测」
 //                 （日期自己不会过期，留着它就是给「过期」留一个合法位置）。全文扫描还看守
@@ -159,11 +169,14 @@
 //                                                  # 断言「改→红、不改→绿」；变异没落上去也算失败
 //   node scripts/docs-drift-check.mjs --offline    # 不读 registry（#511 的发布态/发布行判据降级为跳过）：
 //                                                  # 给「无网但要跑全量门禁」的场景用，会把降级原因打进输出
-//   node scripts/docs-drift-check.mjs --sync --published <x.y.z> [--version <x.y.z>] [--root <dir>]
+//   node scripts/docs-drift-check.mjs --sync --published <x.y.z> [--version <x.y.z>]
+//        [--published-date <YYYY-MM-DD>] [--root <dir>]
 //                                                  # **发布态回写**（issue #689，本脚本唯一的写盘模式）：
 //                                                  # 只改发布态那几句——README / requirements 的当前版本句、
 //                                                  # 两份 AGENTS 的「本仓版本」与「发布行」、CHANGELOG 当前版本段
-//                                                  # 段首的「未发布」标记；其余字节一字不动。版本号取自
+//                                                  # 段首那一行（「未发布」标记 **与日期**，issue #697：标记与日期
+//                                                  # 是同一件事的两半，分开写就会一半新一半旧；`--published-date`
+//                                                  # 缺省 = 当天 UTC+8）；其余字节一字不动。版本号取自
 //                                                  # `package.json`，发布行由 `--published` 给（CI 上没有 registry，
 //                                                  # 离线自测不许联网）；**不给 `--published` ⇒ exit 2 且 0 字节写入**。
 //                                                  # `--root` 只给 `--sync` 用（合成树 / 自测）。
@@ -278,6 +291,19 @@ function cmpSemver(a, b) {
   return 0;
 }
 
+/** **退出码的唯一来源**（issue #697，沿用 #575 的纪律）：主路径与 `--self-test` 读同一份，
+ *  所以「未判定 ⇒ exit 2、不是红（exit 1）」在自测里是可证的，而不是靠读代码相信。
+ *  优先级：真值缺位 / 未判定（2）> 漂移（1）> 绿（0）——「闸自己没真值」不能长得和「文档写错了」一样。
+ *
+ * @param {{errors?: string[], warnings?: string[], readFailures?: string[], notJudged?: unknown[], strict?: boolean}} [facts]
+ * @returns {0|1|2}
+ */
+function docsDriftExitCode({ errors = [], warnings = [], readFailures = [], notJudged = [], strict = false } = {}) {
+  if (readFailures.length || notJudged.length) return 2;
+  if (errors.length || (strict && warnings.length)) return 1;
+  return 0;
+}
+
 // ── 1. 版本声明 ───────────────────────────────────────────────────────────────
 // 「当前版本」的规范写法（新增/改写文档时请沿用，否则等于绕过检查）：
 //   README.md     Current release: **vX.Y.Z**
@@ -341,14 +367,17 @@ function flagValue(argv, flag) {
 
 /**
  * **发布态回写**（`--sync`）：把 `RELEASE_STATE_TARGETS` 里那几处句子的版本字面量改成给定真值，
- * 再把 CHANGELOG 当前版本段的「未发布」标记按发布态对齐。**先全部定位、再落盘**：任何一处声称句
+ * 再把 CHANGELOG 当前版本段的「未发布」标记与段首日期按发布态对齐。**先全部定位、再落盘**：任何一处声称句
  * 读不到 / 命中 0 处 ⇒ exit 2 且一个字节都不写（「读不出」永远不等于「没这句话」）。
  *
- * @param {{root?: string, version?: string, published?: string|null,
+ * `publishedDate`（issue #697）：发布态那一半的日期，缺省 = 当天 UTC+8（发布日期是发布这件事的产物，
+ * 不是从哪份旧文本里抄的常量）。标记与日期**同一步写**：分开写就会一半新一半旧。
+ *
+ * @param {{root?: string, version?: string, published?: string|null, publishedDate?: string|null,
  *          log?: (line: string) => void}} [options]
  * @returns {number} 0 = 写完（或本来就一致）/ 2 = 真值缺位或声称句读不出（未写盘）
  */
-export function syncReleaseState({ root = ROOT, version, published = null, log = console.log } = {}) {
+export function syncReleaseState({ root = ROOT, version, published = null, publishedDate = null, log = console.log } = {}) {
   const pkgText = (() => {
     try { return readFileSync(path.join(root, "package.json"), "utf8"); } catch { return null; }
   })();
@@ -380,6 +409,17 @@ export function syncReleaseState({ root = ROOT, version, published = null, log =
   if (nextVersion !== pkgVersion) {
     log(`docs-drift-check --sync: ⚠ \`--version ${nextVersion}\` 覆盖了 package.json 的 ${pkgVersion}`
       + "（只给合成树 / 自测用；发版日回写不传它，版本号一律取自 package.json）");
+  }
+  // 段首日期（issue #697）：真值是「发布当天」。`--published-date` 只给「当天不是本机日历日」的情形
+  // （跨零点的发版作业 / 补写）；不给就用当天 UTC+8（本仓发版时区）。形状不对 ⇒ exit 2 不写盘。
+  const date = publishedDate === null || publishedDate === "" ? todayUtc8() : publishedDate;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    log(`docs-drift-check --sync: \`--published-date ${publishedDate}\` 不是 YYYY-MM-DD——日期真值形状不对就不回写`);
+    return 2;
+  }
+  if (published !== nextVersion) {
+    log(`docs-drift-check --sync: 段还没发布（发布行 ${published} ≠ 本仓版本 ${nextVersion}）——段首只写「未发布」标记，`
+      + `不写日期${publishedDate ? "（`--published-date` 本次不用）" : ""}`);
   }
   const facts = { version: nextVersion, published };
 
@@ -426,7 +466,7 @@ export function syncReleaseState({ root = ROOT, version, published = null, log =
     after.set(target.file, next);
   }
 
-  // CHANGELOG：当前版本段的段首「未发布」标记跟着发布态走（判据 3 读的就是它）。
+  // CHANGELOG：当前版本段段首那一行跟着发布态走（判据 3 读标记、判据 17b 读日期——两半同一步写）。
   let changelogText = null;
   try { changelogText = readFileSync(path.join(root, CHANGELOG_FILE), "utf8"); } catch {
     problems.push(`${CHANGELOG_FILE} 读不出——发布态没有落脚处（判据 3 的段首标记就在它里面）`);
@@ -442,14 +482,18 @@ export function syncReleaseState({ root = ROOT, version, published = null, log =
         + "CHANGELOG 一个字节未动（缺段由 check:docs 的 guide-coverage 判红）");
     } else {
       const heading = lines[at];
-      const marked = /未发布|unpublished/i.test(heading);
       const isPublished = published === nextVersion;
-      if (isPublished && marked) {
-        lines[at] = heading.replace(UNPUBLISHED_HEADING_RE, "");
-        edits.push({ file: CHANGELOG_FILE, id: `${nextVersion} 段首`, line: at + 1, from: "（未发布 / unpublished）", to: "（已发布：去掉标记）" });
-      } else if (!isPublished && !marked) {
-        lines[at] = `${heading}（未发布 / unpublished）`;
-        edits.push({ file: CHANGELOG_FILE, id: `${nextVersion} 段首`, line: at + 1, from: "（无标记）", to: "（未发布 / unpublished）" });
+      // 段首那一行的**规范形状**（issue #697）：
+      //   已发布 ⇒ `## [X.Y.Z] - <发布日期>`；未发布 ⇒ `## [X.Y.Z]（未发布 / unpublished）`。
+      // 两个方向都把整行重写成规范形状，于是「标记」与「日期」不可能一半新一半旧；行外的字节一字不动
+      // （窄面由 `npm run release:day --self-test` 的逐字节比对看守）。
+      const prefix = (new RegExp(`^##\\s*\\[${esc(nextVersion)}\\]`).exec(heading) ?? [heading])[0];
+      const canonical = isPublished
+        ? `${prefix.trimEnd()} - ${date}`
+        : `${prefix.trimEnd()}（未发布 / unpublished）`;
+      if (canonical !== heading) {
+        lines[at] = canonical;
+        edits.push({ file: CHANGELOG_FILE, id: `${nextVersion} 段首`, line: at + 1, from: heading, to: canonical });
       }
       before.set(CHANGELOG_FILE, changelogText);
       after.set(CHANGELOG_FILE, lines.join("\n"));
@@ -482,6 +526,7 @@ if (SYNC) {
     root: ROOT,
     version: flagValue(process.argv, "--version") ?? PKG_VERSION,
     published: flagValue(process.argv, "--published"),
+    publishedDate: flagValue(process.argv, "--published-date"),
   }));
 }
 
@@ -5820,8 +5865,10 @@ function changelogSections() {
   rec.lines.forEach((line, i) => {
     const m = line.match(/^## \[(\d+\.\d+\.\d+)\](.*)$/);
     if (!m) return;
-    const dated = /^\s*[-—]\s*\d{4}-\d{2}-\d{2}/.test(m[2]);
-    out.push({ version: m[1], line: i + 1, heading: line.trim(), dated });
+    const dateMatch = m[2].match(/^\s*[-—]\s*(\d{4}-\d{2}-\d{2})/);
+    const dated = Boolean(dateMatch);
+    // `date`（issue #697）：段首的发布日期字面量，没有就是 null——日期判据（§17b）拿它当被对账的那一侧。
+    out.push({ version: m[1], line: i + 1, heading: line.trim(), dated, date: dateMatch ? dateMatch[1] : null });
   });
   // 正文按「本段标题到下一个版本标题」切
   out.forEach((s, i) => {
@@ -6008,6 +6055,167 @@ function collectChangelogPublicationErrors() {
   }
   notes.push(`changelog-published: 带日期的版本段 ${dated} 个，其中 ${marked} 个不在 registry 且已标注未发布（registry 来源：${reg.source}）`);
   collectChangelogPublicationErrors.notes = notes;
+  return out;
+}
+
+// ── 17b. CHANGELOG 段首日期（issue #697）──────────────────────────────────────
+// 病：`## [0.31.0] - 2026-11-10（未发布 / unpublished）`——没发布却写了发布日期，而判据 3 只看标记、
+// 从不看日期。发布日期是「发布这件事」的产物，所以它有两半真理：
+//   (a) **正在准备的那一段**（版本序最高的版本段）标了未发布就不许带日期。历史段不受此限：本仓有先例
+//       （0.24.0 / 0.21.0 / 0.12.0 / 0.8.0 都是「带日期 + 正文标未发布」的历史记录），改它们等于改历史事实。
+//   (b) **已发布段的日期必须与 tag 日期同一天**（UTC+8 本地日历日；附注 tag 取 tagger date，轻量 tag 取
+//       所指提交的 author date）。不一致 ⇒ 红并点名两个日期。
+// 为什么 (b) 的红是红、而「registry 说已发布但 tag 不存在」是 **exit 2 未判定**：`release:day` 的 writeback
+//   先翻「已发布」标记（并写日期）、finalize 之后才打 tag。那一刻 registry 已经是新版本、tag 还没有——
+//   若判成红，writeback 自己那次 `check:docs` 会把 writeback 判死（而它做的事正是本单要求的）。
+//   「读不出真值」与「文档与真值打架」必须是两个退出码（与 #690 ③ / #575 同一口径）：这里给 `TAG_MISSING`。
+// 为什么 `TAG_MISSING` 只咬 **registry 的 `latest`**：本仓已发布版本里只有少数有 tag（打 tag 是 0.14.0 之后
+//   才零星开始的，具体数跑 `--verbose` / 看 notes），对每个已发布段都要求 tag ⇒ 这条闸会永久 exit 2（= 没有闸）。
+//   被验证的「发布这件事」永远是 registry 说的 latest；更早的已发布段**有 tag 才判**（没有就记一笔跳过）。
+// 历史不一致的登记表：两条（跨零点的发版作业）都是当时为真的事实，**不许为了绿去改历史**；条目空转即红（#210 R2）。
+const CHANGELOG_DATE_TAG_EXEMPTIONS = [
+  { version: "0.19.0", why: "tag v0.19.0 的 tagger date 是 2026-10-14 00:50（+0800），CHANGELOG 写 2026-10-13——发版作业跨了零点，两处都是当时为真的事实，不回填" },
+  { version: "0.25.0", why: "tag v0.25.0 的 tagger date 是 2026-10-25 02:15（+0000 = UTC+8 10:15），CHANGELOG 写 2026-10-24——同上，跨零点的发版作业，不回填" },
+];
+
+/** 自测口子：临时替掉登记表（overlay 只改文本，改不动运行时数组）。 */
+let SIM_DATE_TAG_EXEMPTIONS = null;
+function dateTagExemptions() {
+  return SIM_DATE_TAG_EXEMPTIONS ?? CHANGELOG_DATE_TAG_EXEMPTIONS;
+}
+
+/** epoch 秒 → UTC+8 本地日历日（本仓发版时区；tag 的 tagger/author 时间戳换成这一天）。 */
+function utc8Day(epochSeconds) {
+  return new Date((Number(epochSeconds) + 8 * 3600) * 1000).toISOString().slice(0, 10);
+}
+/** 今天（UTC+8 本地日历日）。`--sync` 的 `--published-date` 缺省值。 */
+function todayUtc8() {
+  return utc8Day(Math.floor(Date.now() / 1000));
+}
+/** 自测夹具用：日期字串 ±N 天（纯日历算术，不碰时区）。 */
+function shiftDay(date, days) {
+  const [y, m, d] = date.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d) + days * 86400000).toISOString().slice(0, 10);
+}
+
+/** tag 面：`vX.Y.Z` → 发布日期（UTC+8 日历日）。一次进程只读一次。
+ *  读不出（不是 git 仓 / git 不在 PATH 上）⇒ `{ok:false}`，判据降级为「不判」并说明原因——
+ *  「干净检出」（`git archive | tar -x`，没有 `.git`）也必须能让 check:docs 绿，这是 #280 的口径。 */
+function probeTagDates() {
+  let raw;
+  try {
+    raw = execFileSync("git", ["-C", ROOT, "for-each-ref", "refs/tags",
+      "--format=%(refname:short)%09%(objecttype)%09%(taggerdate:raw)%09%(authordate:raw)"],
+    { encoding: "utf8", timeout: 20000, stdio: ["ignore", "pipe", "ignore"] });
+  } catch (err) {
+    return { ok: false, why: `\`git for-each-ref refs/tags\` 跑不起来（${/** @type {{code?: string}} */ (err)?.code ?? "unknown"}）`
+      + "——不是 git 仓（干净检出）或 git 不在 PATH 上" };
+  }
+  const dates = new Map();
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    const [ref, kind, tagger, author] = line.split("\t");
+    const m = /^v(\d+\.\d+\.\d+)$/.exec(ref ?? "");
+    if (!m) continue;
+    const stamp = kind === "tag" ? tagger : author;
+    const epoch = Number(String(stamp ?? "").split(" ")[0]);
+    if (!Number.isFinite(epoch) || epoch <= 0) continue;
+    dates.set(m[1], { date: utc8Day(epoch), kind: kind === "tag" ? "annotated" : "lightweight" });
+  }
+  return { ok: true, dates,
+    source: "`git for-each-ref refs/tags`（附注 tag 取 tagger date，轻量 tag 取所指提交的 author date）" };
+}
+
+let SIM_TAG_FACTS = null;   // 自测口子：{ ok, dates: Map<version, {date, kind}>, source }
+let TAG_FACTS = null;
+
+/** tag 面事实（一次进程只读一次）。`--self-test` 走内存夹具。 */
+function tagDateFacts() {
+  if (SIM_TAG_FACTS) return SIM_TAG_FACTS;
+  if (!TAG_FACTS) TAG_FACTS = probeTagDates();
+  return TAG_FACTS;
+}
+
+/** `--self-test` 的 tag 面夹具（**只给自测用**：生产路径永远走 `probeTagDates()`）。
+ *  从 CHANGELOG 派生：带日期且没标未发布的版本段 = 已发布，tag 日期**取段首那天**（= 一致）；
+ *  登记在 `CHANGELOG_DATE_TAG_EXEMPTIONS` 里的版本故意错开一天（复现「历史段与 tag 不一致」这个真实形状，
+ *  否则那两条登记会在自测里变成空转条目）。要证「门禁真读到了 tag 面」时用 `simulateTagFacts` 显式拨开。 */
+function selfTestTagFacts() {
+  const dates = new Map();
+  const exempt = new Set(dateTagExemptions().map((e) => e.version));
+  for (const s of changelogSections() ?? []) {
+    if (!s.dated || hasUnpublishedMark(s)) continue;
+    dates.set(s.version, { date: exempt.has(s.version) ? shiftDay(s.date, 1) : s.date, kind: "annotated" });
+  }
+  return { ok: true, dates,
+    source: "self-test 夹具（CHANGELOG 派生；登记在 CHANGELOG_DATE_TAG_EXEMPTIONS 里的版本故意错开一天）" };
+}
+
+/** §17b 的判据本体。`out` = 红（exit 1）；`notJudged` = 未判定（`TAG_MISSING`，主路径 exit 2）。 */
+function collectChangelogDateErrors() {
+  const out = [];
+  const notes = [];
+  const notJudged = [];
+  collectChangelogDateErrors.notes = notes;
+  collectChangelogDateErrors.notJudged = notJudged;
+  const sections = changelogSections();
+  if (!sections) {
+    out.push("changelog-date: 读不到 CHANGELOG.md，段首日期判据无从对账");
+    return out;
+  }
+  const top = [...sections].sort((a, b) => cmpSemver(b.version, a.version))[0] ?? null;
+  // (a) 正在准备的那一段：标了未发布就不许带日期（与 registry 可得与否无关——标记本身就是「没发布」的声称）
+  if (top && top.dated && hasUnpublishedMark(top)) {
+    out.push(`changelog-date: CHANGELOG:${top.line} 的 ${top.version} 段标了「未发布 / unpublished」却带着发布日期 ${top.date}——`
+      + "发布日期是「发布这件事」的产物，段还没发布就不该有日期（issue #697 判据 1）。"
+      + `合法形状：\`## [${top.version}]（未发布 / unpublished）\`；发布时由 \`docs-drift-check --sync\` 一次写成 \`## [${top.version}] - <发布日期>\``);
+  }
+  const reg = registryFacts();
+  const facts = tagDateFacts();
+  if (!reg.ok) {
+    notes.push(`changelog-date: 已发布段 ↔ tag 日期这一半跳过——${reg.why}（没有 registry 就没有「哪些段已发布」这个真值）`);
+    return out;
+  }
+  if (!facts.ok) {
+    notes.push(`changelog-date: 已发布段 ↔ tag 日期这一半跳过——${facts.why}（读不出 tag 面 ≠ 日期写错了；干净检出没有 .git，按 #280 口径不判）`);
+    return out;
+  }
+  const published = new Set(reg.versions);
+  const exemptions = dateTagExemptions();
+  let compared = 0;
+  let noTag = 0;
+  const exemptUsed = new Set();
+  for (const s of sections) {
+    if (!s.dated || !published.has(s.version)) continue;
+    if (hasUnpublishedMark(s)) continue;   // 判据 3 已按「已发布却自称未发布」判红，这里不重复
+    const tag = facts.dates.get(s.version) ?? null;
+    if (!tag) {
+      if (s.version === reg.latest) {
+        notJudged.push({ code: "TAG_MISSING",
+          message: `changelog-date: registry 说 ${s.version} 已发布（\`dist-tags.latest\`），但仓库里没有 tag v${s.version}——`
+            + "日期无从对账（writeback 之后、finalize 之前正是这个状态；打完 tag 再跑这一条会自己对）" });
+      } else {
+        noTag += 1;
+      }
+      continue;
+    }
+    const mismatch = s.date !== tag.date;
+    const exempt = exemptions.find((e) => e.version === s.version);
+    if (mismatch && exempt) { exemptUsed.add(s.version); continue; }
+    compared += 1;
+    if (mismatch) {
+      out.push(`changelog-date: CHANGELOG:${s.line} 的 ${s.version} 段写 ${s.date}，tag v${s.version} 是 ${tag.date}——`
+        + "发布日期是「发布这件事」的产物，两边必须是同一天（UTC+8 本地日历日；附注 tag 取 tagger date，轻量 tag 取所指提交的 author date；issue #697 判据 2）");
+    }
+  }
+  // 登记表空转即红（#210 R2）：条目对应的段不再「已发布 + 有 tag + 不一致」就说明这一条该删了。
+  for (const e of exemptions) {
+    if (exemptUsed.has(e.version)) continue;
+    out.push(`changelog-date: CHANGELOG_DATE_TAG_EXEMPTIONS 里 ${e.version} 那一条是空转的（该段不再与 tag 不一致 / 已不在 registry / 没有 tag）——`
+      + "登记表只装真实存在的不一致，修好一处就该删掉那条（#210 R2 口径）");
+  }
+  notes.push(`changelog-date: 已发布段日期 ↔ tag 日期对账 ${compared} 段（另 ${exemptUsed.size} 段按 CHANGELOG_DATE_TAG_EXEMPTIONS 登记为历史不一致、`
+    + `${noTag} 段没有 tag ⇒ 不判；tag 面来源：${facts.source}）`);
   return out;
 }
 
@@ -6742,6 +6950,8 @@ function collectAllDrift() {
     // issue #511：「这句话属于哪个版本」与「这个版本发布了没有」四条（自测要连它们一起变异）
     ...collectDocVersionErrors(), ...collectVersionAttributionErrors(), ...collectGuideClaimErrors(),
     ...collectChangelogPublicationErrors(), ...collectPublishedClaimErrors(),
+    // issue #697：段首日期是事实——未发布段不许带日期、已发布段的日期必须与 tag 同一天（§17b）
+    ...collectChangelogDateErrors(),
     // issue #636：「该不该有一条」——代码侧名单 × CHANGELOG 加法句 ⇒ 指南必须覆盖
     ...collectGuideCoverageErrors(),
     // 14b：0.30 破坏包的逐名表 ↔ 现算候选集（issue #429 的文档面）
@@ -6788,10 +6998,13 @@ for (const n of collectForcedFinalEligibilityErrors.notes ?? []) note(n);
 // ── 9. 「这句话属于哪个版本」（issue #511）──────────────────────────────────────
 for (const collect of [collectDocVersionErrors, collectVersionAttributionErrors, collectGuideClaimErrors,
   collectChangelogPublicationErrors, collectPublishedClaimErrors, collectGuideCoverageErrors, collectBundleTableErrors,
-  collectUnchangedSurfaceErrors]) {
+  collectUnchangedSurfaceErrors, collectChangelogDateErrors]) {
   for (const e of collect()) err(e);
   for (const n of collect.notes ?? []) note(n);
 }
+// issue #697：`TAG_MISSING` = **未判定**（不是红）。它与 `READ_FAILURES` 同一个退出码（exit 2），
+// 但印成自己的形状（带机器可读的 code），好让 `release:day` 的 writeback 分辨「tag 还没打」与「别的读不出」。
+const NOT_JUDGED = collectChangelogDateErrors.notJudged ?? [];
 // issue #690 ③：**读不出 = 红，而且是 exit 2**。这一族与「文档与真值打架」（exit 1）分开：
 // 前者是「判据没有真值可判」（§4 找不到 / 本版 CHANGELOG 段读不到 / 名字解析为空），后者是「判得了且判出漂移」。
 // 把两者印成同一个退出码，等于让「闸自己坏了」与「文档写错了」在 CI 里长得一模一样。
@@ -8498,6 +8711,96 @@ const SELF_TEST_CASES = [
     },
     expectGreen: true,
   },
+  // ══ issue #697：CHANGELOG 段首日期（§17b）═══════════════════════════════════════════
+  // 判据是两半：未发布段不许带日期（①）；已发布段日期 ↔ tag 日期（②）。③ 是两种 exit 的分工：
+  // 「registry 说已发布但没有 tag」= **exit 2 未判定**，不是红。所有 tag/registry 事实都走夹具
+  // （`simulateTagFacts` / `simulateRegistry`），**不依赖本机 tag 面与网络**。
+  {
+    label: "#697 ①：正在准备的那一段（版本序最高）标了未发布却带着发布日期 ⇒ 红（registry 不可得也判）",
+    overlay: {
+      "CHANGELOG.md": replaceUnique("## [0.31.0]（未发布 / unpublished）", "## [0.31.0] - 2026-11-10（未发布 / unpublished）"),
+    },
+    simulateRegistry: { ok: false, why: "self-test 夹具：registry 不可得" },
+    expect: [/changelog-date: CHANGELOG:\d+ 的 0\.31\.0 段标了「未发布 \/ unpublished」却带着发布日期 2026-11-10/],
+    expectExit: 1,
+  },
+  {
+    label: "#697 ②：已发布段的日期与 tag 日期不一致 ⇒ 红并点名两个日期",
+    overlay: { "CHANGELOG.md": replaceUnique("## [0.30.0] - 2026-11-03", "## [0.30.0] - 2026-11-04") },
+    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
+    simulateTagFacts: { ok: true, dates: new Map([["0.30.0", { date: "2026-11-03", kind: "annotated" }]]), source: "self-test 夹具" },
+    simulateDateTagExemptions: [],
+    expect: [/changelog-date: CHANGELOG:\d+ 的 0\.30\.0 段写 2026-11-04，tag v0\.30\.0 是 2026-11-03/],
+    expectExit: 1,
+  },
+  {
+    label: "#697 ②（登记证）：同一处不一致登记进 CHANGELOG_DATE_TAG_EXEMPTIONS ⇒ 绿（历史事实不改）",
+    overlay: { "CHANGELOG.md": replaceUnique("## [0.30.0] - 2026-11-03", "## [0.30.0] - 2026-11-04") },
+    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
+    simulateTagFacts: { ok: true, dates: new Map([["0.30.0", { date: "2026-11-03", kind: "annotated" }]]), source: "self-test 夹具" },
+    simulateDateTagExemptions: [{ version: "0.30.0", why: "self-test 探针：登记之后同一处不一致不红" }],
+    expectGreen: true,
+  },
+  {
+    label: "#697 ②（空转证）：登记表里一条对不上任何不一致的条目 ⇒ 红（#210 R2）",
+    overlay: {
+      "CHANGELOG.md": replaceUnique("## [0.31.0]（未发布 / unpublished）", "## [0.31.0] — 截至本提交尚未发布"),
+    },
+    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
+    simulateTagFacts: { ok: true, dates: new Map([["0.30.0", { date: "2026-11-03", kind: "annotated" }]]), source: "self-test 夹具" },
+    simulateDateTagExemptions: [{ version: "9.9.9", why: "self-test 探针：空转条目" }],
+    expect: [/changelog-date: CHANGELOG_DATE_TAG_EXEMPTIONS 里 9\.9\.9 那一条是空转的/],
+    expectExit: 1,
+  },
+  {
+    label: "#697 ③：registry 说 latest 已发布但没有 tag ⇒ 未判定 TAG_MISSING，exit 2 而不是红",
+    overlay: {
+      "CHANGELOG.md": replaceUnique("## [0.31.0]（未发布 / unpublished）", "## [0.31.0] — 截至本提交尚未发布"),
+    },
+    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
+    simulateTagFacts: { ok: true, dates: new Map(), source: "self-test 夹具：一个 tag 都没有" },
+    simulateDateTagExemptions: [],
+    expectNotJudged: ["TAG_MISSING"],
+    expectExit: 2,
+  },
+  {
+    label: "#697 ③（历史段无 tag 不判）：registry 说已发布但不是 latest、又没有 tag ⇒ 记一笔跳过，不 exit 2（只有 latest 缺 tag 才算 TAG_MISSING）",
+    overlay: {
+      "CHANGELOG.md": replaceUnique("## [0.31.0]（未发布 / unpublished）", "## [0.31.0] — 截至本提交尚未发布"),
+    },
+    simulateRegistry: selfTestRegistry(),
+    simulateTagFacts: { ok: true, dates: new Map([["0.30.0", { date: "2026-11-03", kind: "annotated" }]]), source: "self-test 夹具：只有 latest 那个 tag" },
+    simulateDateTagExemptions: [],
+    expectGreen: true,
+  },
+  {
+    label: "#697（历史段不受 (a) 管）：历史段的「带日期 + 正文标未发布」不改口 ⇒ 绿",
+    overlay: { "CHANGELOG.md": replaceUnique("## [0.24.0] - 2026-10-22", "## [0.24.0] - 2026-10-23") },
+    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
+    simulateTagFacts: { ok: true, dates: new Map([["0.30.0", { date: "2026-11-03", kind: "annotated" }]]), source: "self-test 夹具" },
+    simulateDateTagExemptions: [],
+    expectGreen: true,
+  },
+  {
+    label: "#697 ⑤（放行证）：未发布段换成本仓另一种合法无日期形状 ⇒ 绿",
+    overlay: {
+      "CHANGELOG.md": replaceUnique("## [0.31.0]（未发布 / unpublished）", "## [0.31.0] — 截至本提交尚未发布"),
+    },
+    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
+    simulateTagFacts: { ok: true, dates: new Map([["0.30.0", { date: "2026-11-03", kind: "annotated" }]]), source: "self-test 夹具" },
+    simulateDateTagExemptions: [],
+    expectGreen: true,
+  },
+  {
+    label: "#697（干净检出）：tag 面读不出 ⇒ 日期↔tag 这一半跳过，不判红（#280 口径）",
+    overlay: {
+      "CHANGELOG.md": replaceUnique("## [0.31.0]（未发布 / unpublished）", "## [0.31.0] — 截至本提交尚未发布"),
+    },
+    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
+    simulateTagFacts: { ok: false, why: "self-test 夹具：不是 git 仓（干净检出）" },
+    simulateDateTagExemptions: [],
+    expectGreen: true,
+  },
 ];
 
 
@@ -8532,11 +8835,17 @@ function runSelfTest() {
     for (const re of c.reject ?? []) {
       if (re.test("")) failures.push(`${who}：反向期望被削弱——reject 正则 ${re} 连空串都匹配，等于禁止一切报错`);
     }
-    if (!c.expectGreen && !c.expectMutateMiss && !(c.expect ?? []).length && !(c.expectFiles ?? []).length) {
-      failures.push(`${who}：期望被削弱——既不是放行证（expectGreen）也没写 expect / expectFiles，等于整例被跳过`);
+    if (!c.expectGreen && !c.expectMutateMiss && !c.expectNotJudged
+      && !(c.expect ?? []).length && !(c.expectFiles ?? []).length) {
+      failures.push(`${who}：期望被削弱——既不是放行证（expectGreen）也没写 expect / expectFiles / expectNotJudged，等于整例被跳过`);
     }
   }
+  // issue #697：日期↔tag 那一半的**真值面**在自测里必须是夹具。否则自测会绑在本机 tag 面上（
+  // 干净检出 / 浅克隆里没有 tag），而且「对照组绿」会变成「这台机器碰巧有那几个 tag」。
+  const tagFactsSaved = SIM_TAG_FACTS;
+  SIM_TAG_FACTS = selfTestTagFacts();
   const control = run();
+  SIM_TAG_FACTS = tagFactsSaved;
   if (control.length) {
     failures.push(`对照组（源码与文档都不改）本该 0 错，实测 ${control.length} 处：\n      ${control.join("\n      ")}`);
   } else {
@@ -8547,6 +8856,9 @@ function runSelfTest() {
   // 返回 { pass, msg }；所有状态还原（OVERLAY / 树形口子 / 配置口子）都在这里，调用方只管记账。
   function execCase(c, shape) {
     const label = shape ? `${c.label}［树形 ${shape}］` : c.label;
+    // issue #697：tag 面夹具必须在**应用 overlay 之前**派生——否则「夹具从被测文档派生」会让
+    // 「改日期 ⇒ 仍绿」变成永真（夹具与被测面同源，就是本单要堵的那种假绿）。
+    const tagFixture = selfTestTagFacts();
     let missedOn = null;   // #286 T-a：变异没打上的那一处（`expectMutateMiss` 用例等的就是它）
     for (const [rel, mutate] of Object.entries(c.overlay ?? {})) {   // #280：纯树形例可以不带 overlay
       const before = read(rel);
@@ -8596,6 +8908,12 @@ function runSelfTest() {
     // 夹具只在**本用例的 run()** 里挂着，跑完在 finally 里还原——一条也不许留在全局。
     const registrySaved = SIM_REGISTRY;
     if (c.simulateRegistry) SIM_REGISTRY = c.simulateRegistry;
+    // issue #697：tag 面 / 历史不一致登记表的配置口子（同一课：overlay 只能改文档，改不动
+    // 「门禁从 git 读到了什么」与运行时那张登记表）。默认用夹具，一条也不许留在全局。
+    const tagFactsSaved = SIM_TAG_FACTS;
+    SIM_TAG_FACTS = c.simulateTagFacts ?? tagFixture;
+    const dateExemptSaved = SIM_DATE_TAG_EXEMPTIONS;
+    if (c.simulateDateTagExemptions) SIM_DATE_TAG_EXEMPTIONS = c.simulateDateTagExemptions;
     // #511：doc-version 放行表的配置口子（证「登记了却没人用 ⇒ 红」那一半）。
     const docExemptSaved = SIM_DOC_VERSION_EXEMPT;
     if (c.simulateDocVersionExemptions) SIM_DOC_VERSION_EXEMPT = c.simulateDocVersionExemptions;
@@ -8623,6 +8941,8 @@ function runSelfTest() {
       SIM_TREE_SHAPE = simSaved; SIM_RENAMED_GUIDE = guideSaved;
       SIM_CLI_FLAG_EXEMPTIONS = cliExemptSaved;   // 放行表一条也不许留在全局
       SIM_REGISTRY = registrySaved;                // #511：registry 夹具同上
+      SIM_TAG_FACTS = tagFactsSaved;               // #697：tag 面夹具同上
+      SIM_DATE_TAG_EXEMPTIONS = dateExemptSaved;   // #697：登记表口子同上
       SIM_DOC_VERSION_EXEMPT = docExemptSaved;     // #511：doc-version 放行表同上
       SIM_COMPACTION_DROP_WORD_IDS = wordIdsSaved; // #668 ① ③：判据词表一条也不许留在全局
       if (looseDeclSaved) looseDeclSaved[0].decl = looseDeclSaved[1];   // 判据必须还原，别把探针留在表里
@@ -8642,6 +8962,27 @@ function runSelfTest() {
     // #337：绿只说明「静态分类不再报」，证不到扫描面——这里让用例自己再问一句生产谓词（如
     // 「这条类别真在 SKIPPED_DIR_KINDS 里」）。返回非空字符串就是失败。
     if (afterWhy) return { pass: false, msg: `${label}：${afterWhy}` };
+    // issue #697：「未判定」自己就是结论（`TAG_MISSING` ⇒ exit 2，不是红）。
+    if (c.expectNotJudged) {
+      const items = collectChangelogDateErrors.notJudged ?? [];
+      const codes = items.map((x) => x.code);
+      const missedCodes = c.expectNotJudged.filter((code) => !codes.includes(code));
+      if (missedCodes.length) {
+        return { pass: false, msg: `${label}：未判定里没有 ${missedCodes.join(", ")}（实测 ${codes.join(", ") || "空"}）——TAG_MISSING 没被认出来` };
+      }
+      if (errs.length) {
+        return { pass: false, msg: `${label}：这是「未判定」用例，不该红（实测 ${errs.length} 处：${errs.join(" ; ")}）` };
+      }
+      return { pass: true, msg: `${label} → 未判定 ${codes.join(", ")}、0 处红（未判定 ≠ 红）` };
+    }
+    // 退出码只能有一份来源（#575 的纪律）：这一栏读的是主路径用的那个 `docsDriftExitCode`。
+    if (c.expectExit !== undefined) {
+      const notJudged = collectChangelogDateErrors.notJudged ?? [];
+      const code = docsDriftExitCode({ errors: errs, warnings: [], readFailures: [], notJudged, strict: true });
+      if (code !== c.expectExit) {
+        return { pass: false, msg: `${label}：退出码应为 ${c.expectExit}，实测 ${code}（红 ${errs.length} 处 / 未判定 ${notJudged.length} 处）` };
+      }
+    }
     if (c.expectGreen) {
       return errs.length
         ? { pass: false, msg: `${label}：变异之后本该绿（这条是在证「白名单/就地声明真的在放行」），实测 ${errs.length} 处红：\n      ${errs.join("\n      ")}` }
@@ -8689,18 +9030,30 @@ if (VERBOSE) {
   console.log("docs-drift-check 检查面：");
   for (const c of checked) console.log(`  ✓ ${c}`);
 }
+if (NOT_JUDGED.length) {
+  // issue #697：未判定（`TAG_MISSING`）自己的形状。机器可读的 `docs-drift-check: 未判定 <CODE> — …` 前缀
+  // 是 `release:day` 的 writeback 分辨「tag 还没打」与「别的读不出」的入口（只靠退出码分不出来）。
+  console.log(`docs-drift-check: 未判定 — ${NOT_JUDGED.length} 处真值缺位（exit 2：未判定既不是绿也不是红）`);
+  for (const item of NOT_JUDGED) console.log(`docs-drift-check: 未判定 ${item.code} — ${item.message}`);
+}
 if (READ_FAILURES.length) {
   console.log(`docs-drift-check: 读不出 — ${READ_FAILURES.length} 处真值缺位（exit 2：读不出永远不等于绿）`);
   for (const e of READ_FAILURES) console.log(`  ✗ ${e}`);
-  process.exit(2);
 }
-if (errors.length || (STRICT && warnings.length)) {
+// 退出码只有一份来源（#575 的同款纪律）：主路径与 `--self-test` 读同一个 `docsDriftExitCode`，
+// 所以「未判定 ⇒ exit 2 而不是红」这条映射在自测里是可证的，而不是靠读代码相信。
+const EXIT_CODE = docsDriftExitCode({
+  errors, warnings, readFailures: READ_FAILURES, notJudged: NOT_JUDGED, strict: STRICT,
+});
+if (EXIT_CODE === 1) {
   console.log(`docs-drift-check: 失败 — ${errors.length} 处漂移${STRICT && warnings.length ? `，${warnings.length} 处告警（--strict）` : ""}`);
   for (const e of errors) console.log(`  ✗ ${e}`);
   for (const w of warnings) console.log(`  ⚠ ${w}`);
-  process.exit(1);
 }
-console.log(
-  `docs-drift-check: OK — 版本/默认值/清单（含中英逐处对账）/模块地图/路径/中英骨架共 ${checked.length} 项对齐 package.json ${PKG_VERSION} 与源码`
-  + (warnings.length ? `（${warnings.length} 处告警，先告警后阻塞：\n` + warnings.map((w) => `  ⚠ ${w}`).join("\n") + "\n）" : ""),
-);
+if (EXIT_CODE === 0) {
+  console.log(
+    `docs-drift-check: OK — 版本/默认值/清单（含中英逐处对账）/模块地图/路径/中英骨架共 ${checked.length} 项对齐 package.json ${PKG_VERSION} 与源码`
+    + (warnings.length ? `（${warnings.length} 处告警，先告警后阻塞：\n` + warnings.map((w) => `  ⚠ ${w}`).join("\n") + "\n）" : ""),
+  );
+}
+process.exit(EXIT_CODE);
