@@ -336,6 +336,22 @@ export function runWriteback({
     return EXIT.RED;
   }
 
+  // 回写前工作树必须干净：`git commit -a` 只该提交回写自己动过的已跟踪文件。脏树上跑会把别人的改动一起
+  // 提交进「发布态回写」那个提交里——那正是「这一步到底改了什么」说不清的起点。
+  if (!dry) {
+    const pre = capture(["git", "status", "--porcelain"], { cwd: root, env });
+    if (pre.status !== 0) {
+      log(`writeback: 读不出 \`git status --porcelain\`（exit ${pre.status}）——不知道工作树干净不干净就不回写`);
+      return EXIT.RED;
+    }
+    if (pre.stdout.trim()) {
+      log("writeback → **红**：回写前工作树必须干净（回写只提交它自己改的那几份文档）——当前有未提交的改动：");
+      for (const line of pre.stdout.trim().split("\n").slice(0, 10)) log(`      ${line}`);
+      log("      先提交 / 收好它们，再跑 `--stage writeback`（`--no-commit` 可以让回写只写盘不提交）。");
+      return EXIT.RED;
+    }
+  }
+
   const previous = readState(stateFile) ?? {};
   const base = {
     schema: 1,
@@ -371,6 +387,7 @@ export function runWriteback({
     return EXIT.RED;
   }
   const dirty = status.stdout.trim();
+  let committed = false;
   if (!dirty) {
     log("writeback ② 回写后工作树没有改动（文档本来就是发布态）——跳过提交");
   } else if (!commit) {
@@ -386,6 +403,7 @@ export function runWriteback({
       writeState(stateFile, { ...base, phase: PHASE.PUBLISHED_UNWRITTEN, writeback: { ok: false, why: `commit exit ${commitResult.status}` } });
       return EXIT.RED;
     }
+    committed = true;
   }
 
   // ③ 回写之后**立刻**重跑 check:docs 证明回写自洽
@@ -398,7 +416,8 @@ export function runWriteback({
     return EXIT.RED;
   }
   writeState(stateFile, { ...base, phase: PHASE.WRITTEN, writeback: { ok: true, why: null } });
-  log(`writeback → 绿：发布态已回写、已提交、check:docs 自洽（状态 ${stateFile}：phase=${PHASE.WRITTEN}）`);
+  log(`writeback → 绿：发布态已回写、${committed ? "已提交" : "无需提交"}、check:docs 自洽`
+    + `（状态 ${stateFile}：phase=${PHASE.WRITTEN}）`);
   return EXIT.OK;
 }
 
@@ -1268,6 +1287,25 @@ function runSelfTest() {
       const status = runFinalize({ root: tree, version: "0.31.0", deps, stateFile, dry: false });
       expect(status === EXIT.RED, "⑩ 工作树不干净 ⇒ finalize 红（回写没提交就不许打 tag）", `⑩ 脏树却放行了：exit ${status}`);
       expect(!deps.calls.some((line) => line.startsWith("git tag")), "⑩ 脏树下没打 tag", `⑩ 脏树却打了 tag：${deps.calls.join(" | ")}`);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  }
+
+  // ⑬ 回写前工作树脏 ⇒ 红，且不写状态文件（回写提交不许夹带别人的改动）
+  {
+    const tree = mkdtempSync(path.join(os.tmpdir(), "erix-release-day-wbdirty-"));
+    const stateFile = path.join(tree, "state.json");
+    try {
+      writeFixtureTree(tree);
+      writeFileSync(path.join(tree, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
+      const deps = fakeDeps({ capture: gitPlumbing({ version: "0.31.0", status: " M README.md\n" }) });
+      const status = runWriteback({ root: tree, version: "0.31.0", published: "0.31.0", deps, stateFile, dry: false });
+      expect(status === EXIT.RED, "⑬ 回写前工作树脏 ⇒ 红（回写提交不许夹带别人的改动）", `⑬ 脏树上回写放行了：exit ${status}`);
+      expect(!deps.calls.some((line) => line.includes("--sync")), "⑬ 脏树上没跑 --sync（一个字节都没写）",
+        `⑬ 脏树上跑了 --sync：${deps.calls.join(" | ")}`);
+      expect(!existsSync(stateFile), "⑬ 脏树红了不留状态文件（还没发布成功这一笔，不许留）",
+        "⑬ 脏树上留了状态文件");
     } finally {
       rmSync(tree, { recursive: true, force: true });
     }
