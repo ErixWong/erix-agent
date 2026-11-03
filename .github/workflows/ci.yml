@@ -137,6 +137,18 @@ jobs:
       - name: Compatibility-pin inventory verify
         run: npm run check:inventory
 
+      # 阻塞（issue #689）：发版日那条命令（`npm run release:day`）自己的反向证。
+      # 病根：0.30.0 发布当天两件事都是**人工串步骤**漏掉的——发布态没回写（文档还写着「未发布 / latest 0.29.0」），
+      # 以及指南说「16 个导出已在 0.30 删除」而运行时全在。本步守的是那条命令**拦得住**：
+      # preflight 某步红必须停在那一步并点名、闸门关着的真上游与不在的 `--hosts` 目录必须判「未判定」而不是绿、
+      # 回写失败必须留下可续跑的「已发布、未回写」状态且重跑从 writeback 续（不重复发布）、没回写就 finalize 必须红
+      # （不许没发布就打 tag）、两侧 `ls-remote` 不一致必须红、`--dry` 一个字节都不写、`--sync` 只动发布态那几句。
+      # 全离线：合成树 + 假 runner，不联网、不装包、不碰 ~/.erix 与真实 ~/.npmrc；例数由命令自己打印。
+      # 与 `Compatibility-pin inventory verify` 挨着放：同一族是「提交进库的东西必须与真树对得上」——
+      # 那张表是清点，这条是发版日那张状态机与回写面。
+      - name: Release-day command self-test
+        run: node scripts/release-day.mjs --self-test
+
       # 阻塞（issue #586）：配置叶子「值类型 / 值域」现状表 docs/config-leaf-value-status{,_cn}.md 由探针
       # 生成（43 叶 × 8 错值 = 344 格，每格过一次真的两轮 runToolLoop），这里重跑探针并把重算出来的两张表
       # 与入库的逐字比对：漂了或手改过 ⇒ exit 1 并点名文件。实测约 0.8 秒，所以它阻塞。
