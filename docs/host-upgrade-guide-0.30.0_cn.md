@@ -203,13 +203,26 @@ system 消息归一化。那些是它自己的便利件；你若依赖过它们�
 
 ## 4. 没有变的东西
 
-* `runToolLoop` 的输入面、`capabilities` 形状与每一个**既有**配置叶子。本版没有退役、改名或搬家任何选项
-  （§4.1 只**新增**一个叶子）。
-* 终止、验证与退出码语义，包括「有 `skipped` 但没有 guard」那个退出码。
-* 观察者事件、诊断字段与 run state 块。
-* transcript 与 run state 的磁盘格式；上一个发布版本写下的账本仍然可以续跑。
-* notes 工具面（五个工具加 `createBuiltinNotesTools`、`MAX_CONTENT_LENGTH`、`resolveNotesDir`）、文件工具、派生
-  簿记模块，以及全部 provider 协议件。
+六格逐格说，因为这一版动了其中三格、另外三格原样不动。写「不变」就是一句承诺：昨天读到的名字与载荷，
+今天读到的还是那一份。
+
+* **选项——不变。** `runToolLoop` 的输入面、`capabilities` 形状与每一个**既有**配置叶子。本版没有退役、
+  改名或搬家任何选项（§4.1 只**新增**一个叶子）。
+* **默认值——不变。** 既有选项的缺省值一个都没重定；唯一那处「自己跟自己打架」的派生被合成一个常量，
+  是哪一处由 §4.1 说。
+* **观察者事件——不变。** 事件名与载荷都照旧。变的是 CLI **打印**到哪里（见本节后面那条注），不是引擎
+  发出什么。
+* **诊断字段——这一版变了。** `compactionStats` 条目的形状留着，但里面的字段动了：`strategyName` 现在
+  报真正执行折叠的那一层，`foldSummary` 的字段名留着而 `degradeKind` / `degradeReason` 树内已无写者，
+  `budgetExhausted` 在失败那一支搬到 `details.budgetExhausted`（它本来就只可能出现在那里）。
+* **磁盘格式——这一版变了。** 折叠账本多了一份折叠身份——`foldedFacts.foldId` 与 run 内单调的 `seq`
+  ——`fold-llm` 成功路径上的 `foldedFacts.text` 也不再含任务原文。上一个发布版本写下的账本仍然可以续跑：
+  读取侧从账本里已有的记录播回身份，并按账本顺序给更早的那些补号。
+* **终局载荷——这一版变了。** `finalTextFallback: true` 说明你手里那份 `finalText` 是引擎兜底文案而不是
+  模型正文；失败终局在抛出的错误上带 `termination.errorCode` 与 `unpersisted` 账单；`exitCodeForRunFailure`
+  给失败 run 一个自己的退出码，不再与用法错误共用。终止与验证语义本身没动。
+* notes 工具面（五个工具加 `createBuiltinNotesTools`、`MAX_CONTENT_LENGTH`、`resolveNotesDir`）、文件工具、
+  派生簿记模块，以及全部 provider 协议件。
 * 零运行时依赖这条规矩。
 
 另有一处只动展示层、不改任何引擎事实的变更：`erix chat` 现在每发生一次真实折叠就打一行，并把同样的记录
