@@ -91,6 +91,41 @@ unchanged-surface: docs/host-upgrade-guide-0.31.0_cn.md 里找不到「不变」
 
 （待填）
 
+## #702：AGENTS 指令面写清「条目由谁写、编号即可、sha 可后补」+ 真盲区的人工补偿
+
+**没动 `CHANGELOG.md`**（本单一字未改；`## [0.31.0]` 段现在仍缺 `#691` / `#696` 的归因条目，那是 **#700** 的活）。
+判据事实（`scripts/changelog-coverage-check.mjs`，逐条读过）：取号 `issueNumbersIn()`（`:151`，把 `#398③` 归一成 `398`）、
+段侧取号 `sectionNumbers: new Set(issueNumbersIn(section.body))`（`:508`）、裁决「段里有这个号 = 绿 / 在豁免表里 = 跳过 / 否则红」
+（`:413-423`）、真盲区「主题里没有号的合并」只打印不判红（`:345-350` 收集、`:427-430` 打印）——
+**比较的是 issue 编号，条目从不要求带 sha**，所以「合并 sha 合并前不可知 ⇒ 闸对自己恒红」是误述，本次不加任何豁免。
+
+新增句子原文（中英成对，各两句）：
+
+**`AGENTS.md` §3 命令表 `check:changelog` 行末**：
+> **Who writes the entry (issue #702)**: the PR that touches the public surface puts **its own** issue number into the current version's CHANGELOG section, in that same PR. What the gate compares is the **number** — the section body and the merge subject go through the same reader, and an entry is never required to carry a merge sha (the sha of a merge that has not happened yet is not knowable, so a rule demanding it would be red against every PR including itself). Writing `#702` in the entry is therefore enough and the sha can be added later; forgetting the number goes red on `main`, and that red is the enforcement doing its job, not a bug and not a row for `COVERAGE_EXEMPTIONS` (which exists only for the reverse case: behaviour-visible yet category-exempt). `npm run release:day -- --stage preflight` runs this gate as step 1 with no waiver
+
+**`AGENTS.md` §4 发版前必跑清单末尾（「Beyond the mechanical gates」那段之后）**：
+> One more human pass before the tag, and it is the only thing standing between an unnamed public change and a released tag: when `check:changelog` prints its **`unattributed`** note — a merge that touched the public surface but whose subject carries no issue number, so the gate cannot attribute it to any entry — it **prints and does not block**, by design (a merge subject is prose, and demanding that some entry name it is not achievable). For every short sha in that note, read its first-parent diff (`git diff --name-only <merge>^1 <merge>`) and either confirm the public change is already described in this version's CHANGELOG section, or write down a reason a later reader can check. That list is printed on purpose so this step has an input; nothing in the machine gates will do it for you.
+
+**`AGENTS_cn.md` §3 同位置**：
+> **这条条目由谁写（issue #702）**：碰到公开面的那个 PR，在**它自己这个 PR 里**把自己那个 issue 号写进本版 CHANGELOG 段。闸比的是**编号**——段正文与合并主题走的是同一个取号器，而条目从来不要求带合并 sha（还没发生的那次合并的 sha 不可知，要求它等于让每一条 PR 对自己恒红）。所以条目里写 `#702` 就够了，sha 事后可以补；忘写编号就会红在 `main` 上，那道红是强制在生效，不是 bug，也不是塞进 `COVERAGE_EXEMPTIONS` 的理由（那张表只为反向情形存在：看着属类别豁免、实则行为可见）。`npm run release:day -- --stage preflight` 第一步照旧跑它，没有豁免
+
+**`AGENTS_cn.md` §4 同位置**：
+> 打 tag 前还有一遍人工，而它是「一个没被点名的公开改动」与「已经发布的 tag」之间唯一的屏障：`check:changelog` 打印 **`unattributed`** 那条 note 时——碰到公开面的合并，主题里一个 issue 号都没有，闸归因不到任何条目——它**只打印、不阻塞**，这是设计（合并主题是散文，要求某条条目必须点名它做不到）。对那条 note 里的每一个短 sha，读它的 first-parent diff（`git diff --name-only <merge>^1 <merge>`），要么确认那个公开改动已经写进本版 CHANGELOG 段，要么留下一个后来的人能复核的理由。这张清单是**故意打印**的，好让这一步有输入；机器门禁里没有任何一条会替你做这件事。
+
+**门禁实测**（工单要求「随后跑 `check:agents-directives` 与其 `--self-test`」）：
+`npm run check:agents-directives` ⇒ `--strict: OK — 0 处红` + `--verify`「2 份指令面文件 × 3 类，逐格等于实测」，exit 0；
+`node scripts/agents-directive-scan.mjs --self-test` ⇒ **16 例 × 3 种欠账形态全部按预期**，exit 0。
+每格上限与改后实测（`--json` 报告）：`AGENTS.md` A=4/上限 4、B=0/0、C=0/0；`AGENTS_cn.md` A=1/上限 1、B=0/0、C=0/0。
+新句**没有**给指令面添任何新命中（A/C 两格都在上限上、`--verify` 要求逐格相等还能绿，就是这件事的证明）：
+两句都不写工单状态词、不抄实测数、不写裸行号坐标。
+
+## 闸内实红与归属（#700 的活，本单没碰）
+
+`npm run check:changelog` 在 base `dc5783f` 与本分支上都是 **exit 1**（改前 / 改后同一份输出，字节相同）：
+本版段缺 `#691`、`#696`、`#700` 等公开面合并的归因条目。**这是闸按设计红**（#702 的原话：忘写编号就红在 main），
+不是误报，也不该由本单补写——补写就是往别人的段里塞别人的条目。
+
 ## 未验证项
 
 （待填）
