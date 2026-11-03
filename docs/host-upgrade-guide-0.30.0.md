@@ -39,7 +39,7 @@ red until it follows.
 |---|---|---|
 | Stop importing the 15 names in §2 | they are zero-consumer exports, registered for removal in the 0.30 breaking bundle | §2 |
 | Replace your `createAnthropicProvider` import **before** you upgrade | a live host imports it, and the factory is gone in 0.30.0 — an ESM import of a missing name fails at module load | §3 |
-| Nothing else (except the one **additive** leaf in §4.1) | no option, default, event or on-disk format moves; §4.1 adds one configuration leaf and states the slot-key migration danger that comes with it | §4 / §4.1 |
+| Nothing else — except what §4 lists one by one | three of the six surfaces in §4 moved (diagnostic fields, on-disk formats, the final payload), and §4.1 adds one configuration leaf; every other option, default and event name stays where it was | §4 / §4.1 |
 
 ## 2. The fifteen names nothing imports
 
@@ -241,9 +241,12 @@ canonical response; returning raw SSE text is not a response.
 Six surfaces, taken one at a time — this release moves three of them and leaves three alone. A row that says
 "unchanged" is a promise: the names and payloads you read yesterday are the ones you read today.
 
-* **Options — unchanged.** The `runToolLoop` input surface, the `capabilities` shape, and every existing
-  configuration leaf. No option or leaf is retired, renamed or re-homed by this release (§4.1 only **adds**
-  one leaf).
+* **Options — unchanged in name, one acceptance rule got stricter.** The `runToolLoop` input surface,
+  the `capabilities` shape, and every existing configuration leaf: no option or leaf is retired, renamed
+  or re-homed by this release (§4.1 only **adds** one leaf). One thing does bite, and it is not a rename:
+  an option given on **both** the assembly port and the call site used to let one side win silently and
+  now throws at startup (issue #519; the sample this release's own release check compiles is `provider`
+  given on each side). Remove one of the two, or the run does not start.
 * **Defaults — unchanged.** No existing option's default value is re-specified here; the one derivation that
   used to disagree with itself is folded into a single constant, and §4.1 says which.
 * **Observer events — unchanged.** Same event names, same payloads. What moved is where the CLI *prints*
@@ -260,10 +263,15 @@ Six surfaces, taken one at a time — this release moves three of them and leave
   the engine's fallback text, not the model's; a failed run carries `termination.errorCode` and the
   `unpersisted` ledger on the thrown error; and `exitCodeForRunFailure` gives a failed run its own exit code
   instead of sharing the usage-error one. Termination and verification semantics themselves did not move.
-* The notes tool surface (five tools plus `createBuiltinNotesTools`, `MAX_CONTENT_LENGTH`,
-  `resolveNotesDir`), the file tools, the delegation bookkeeping modules, and every provider protocol
-  helper.
-* The zero-runtime-dependency rule.
+* What did **not** move: the notes tool surface (five tools plus `createBuiltinNotesTools`,
+  `MAX_CONTENT_LENGTH`, `resolveNotesDir`), every provider protocol helper, and the
+  zero-runtime-dependency rule.
+* Two modules kept every exported name and still changed behaviour on an edge, so read them before you
+  depend on the old edge: `src/tools/file-tools.js` (`~` expansion accepts only the `~/` form, issue
+  #194; a range reference and a single-line reference now share one line-suffix stripping path, issue
+  #621) and the delegation slot claim in `src/tools/delegation/capacity.js` (a slot is written to a
+  complete temporary file and published with `link(2)`, so a half-written slot can no longer be read,
+  issue #652).
 
 One display-layer change rides along and changes no engine fact: `erix chat` now prints one line per real
 fold and appends the same records to `judge.log`, so a run that folded its context is visible as a
