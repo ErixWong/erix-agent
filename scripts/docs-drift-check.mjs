@@ -159,8 +159,16 @@
 //                                                  # 断言「改→红、不改→绿」；变异没落上去也算失败
 //   node scripts/docs-drift-check.mjs --offline    # 不读 registry（#511 的发布态/发布行判据降级为跳过）：
 //                                                  # 给「无网但要跑全量门禁」的场景用，会把降级原因打进输出
+//   node scripts/docs-drift-check.mjs --sync --published <x.y.z> [--version <x.y.z>] [--root <dir>]
+//                                                  # **发布态回写**（issue #689，本脚本唯一的写盘模式）：
+//                                                  # 只改发布态那几句——README / requirements 的当前版本句、
+//                                                  # 两份 AGENTS 的「本仓版本」与「发布行」、CHANGELOG 当前版本段
+//                                                  # 段首的「未发布」标记；其余字节一字不动。版本号取自
+//                                                  # `package.json`，发布行由 `--published` 给（CI 上没有 registry，
+//                                                  # 离线自测不许联网）；**不给 `--published` ⇒ exit 2 且 0 字节写入**。
+//                                                  # `--root` 只给 `--sync` 用（合成树 / 自测）。
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -192,7 +200,22 @@ import {
   bundleRowsFromText,
 } from "./bundle-guide-table.mjs";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+/** `--sync`（issue #689）：**发布态回写**。它是本脚本唯一的写盘模式，且只写 `RELEASE_STATE_TARGETS`
+ *  列出的那几处发布态句子（见下方那张表的节头）。判据模式一个字节都不写。 */
+const SYNC = process.argv.includes("--sync");
+/** `--root <dir>`：**只给 `--sync` 用**（合成树自测 / 回写到别的检出）。判据模式永远跑在本仓根上：
+ *  让 `--root` 能改判据的检查面，等于给「换一棵树就能绿」留一个口子。 */
+const ROOT_ARG = (() => {
+  const i = process.argv.indexOf("--root");
+  if (i >= 0) return process.argv[i + 1] ?? "";
+  const eq = process.argv.find((a) => a.startsWith("--root="));
+  return eq ? eq.slice("--root=".length) : null;
+})();
+if (ROOT_ARG !== null && !SYNC) {
+  console.error("docs-drift-check: `--root` 只和 `--sync` 一起用（判据永远跑在本仓根上，不许指到别的树）");
+  process.exit(2);
+}
+const ROOT = ROOT_ARG !== null ? path.resolve(ROOT_ARG) : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const STRICT = process.argv.includes("--strict");
 const VERBOSE = process.argv.includes("--verbose");
 
@@ -269,6 +292,198 @@ const CURRENT_CLAIMS = [
   { file: REQ_CN, label: "requirements_cn 对照版本", re: /与\s*(\d+\.\d+\.\d+)\s*版本交付的实现/ },
   { file: REQ_CN, label: "requirements_cn §4 对照版本", re: /package 版本\s*(\d+\.\d+\.\d+)/ },
 ];
+
+/** 两份「当前版本」声称句的规范写法（形状由本判据看守，改措辞要同步改这里）。
+ *  **`--sync` 读的是同一张表**（issue #689）：回写改的就是这两条正则会命中的捕获组，所以
+ *  「回写写对了」与「门禁读到了」是同一个事实，没有第二份措辞。 */
+const VERSION_CLAIM_RULES = [
+  { file: AGENTS_EN, label: "AGENTS.md「当前版本」句",
+    repoRe: /Current version: `package\.json` says `(\d+\.\d+\.\d+)`/,
+    pubRe: /`dist-tags\.latest`[^.;]{0,60}?`(\d+\.\d+\.\d+)`/ },
+  { file: AGENTS_CN, label: "AGENTS_cn.md「当前版本」句",
+    repoRe: /当前版本：`package\.json` 写 `(\d+\.\d+\.\d+)`/,
+    pubRe: /`dist-tags\.latest`[^。；]{0,60}?`(\d+\.\d+\.\d+)`/ },
+];
+
+// ── 发布态回写（`--sync`，issue #689）─────────────────────────────────────────
+// 病根（issue #686 复盘）：0.30.0 发布当天两件事都是**人工串步骤**漏掉的——①发布态没回写，文档里还写着
+// 「未发布 / latest 0.29.0」（registry 已经是 0.30.0）；②指南写着「16 个导出已在 0.30 删除」而运行时全还在。
+// ②由 #687 / #688 修；①的机器面就是这张表：**发布成功之后、打 tag 之前**必须先回写，回写完立刻重跑
+// `check:docs` 证明回写自洽（`npm run release:day --stage writeback` 把这两步串起来）。
+//
+// 窄面纪律：**只准改下面这张表列出的捕获组，别的一个字节都不写**。每一行都是**门禁自己会读的那一处**
+// （`CURRENT_CLAIMS` 的当前版本句 / `VERSION_CLAIM_RULES` 的本仓版本与发布行两句 / `changelog-published`
+// 判据 3 的段首「未发布」标记），所以回写不可能写到判据看不见的地方去；反过来，只要回写后 `check:docs`
+// 绿，就是「回写自洽」的机器证据。
+//
+// 真值：本仓版本取自 `package.json`（`--version` 只给合成树 / 自测用），**发布行由 `--published <x.y.z>` 给**
+// （CI 上没有 registry，离线自测不许联网）。不给 `--published` ⇒ exit 2 且一个字节都不写：
+// 「已发布与否」没有真值时，往哪一边写都是猜。
+const CHANGELOG_FILE = "CHANGELOG.md";
+/** `--sync` 的改写面：`fact` 指向真值（`version` = 本仓版本 / `published` = 发布行）。 */
+const RELEASE_STATE_TARGETS = [
+  ...CURRENT_CLAIMS.map((claim) => ({ file: claim.file, id: `「${claim.label}」`, fact: "version", re: claim.re })),
+  { file: AGENTS_EN, id: "AGENTS.md「本仓版本」句", fact: "version", re: VERSION_CLAIM_RULES[0].repoRe },
+  { file: AGENTS_EN, id: "AGENTS.md「发布行」句", fact: "published", re: VERSION_CLAIM_RULES[0].pubRe },
+  { file: AGENTS_CN, id: "AGENTS_cn.md「本仓版本」句", fact: "version", re: VERSION_CLAIM_RULES[1].repoRe },
+  { file: AGENTS_CN, id: "AGENTS_cn.md「发布行」句", fact: "published", re: VERSION_CLAIM_RULES[1].pubRe },
+];
+/** CHANGELOG 段首的「未发布」标记（判据 3 / `changelog-published` 读的就是它）。 */
+const UNPUBLISHED_HEADING_RE = /\s*（未发布[^）]*）|\s*\(unpublished\)/;
+
+/** 一个 CLI 旗标的值（`--flag v` 与 `--flag=v` 两种写法都认）。 */
+function flagValue(argv, flag) {
+  const i = argv.indexOf(flag);
+  if (i >= 0) return argv[i + 1] ?? "";
+  const eq = argv.find((a) => a.startsWith(`${flag}=`));
+  return eq ? eq.slice(flag.length + 1) : null;
+}
+
+/**
+ * **发布态回写**（`--sync`）：把 `RELEASE_STATE_TARGETS` 里那几处句子的版本字面量改成给定真值，
+ * 再把 CHANGELOG 当前版本段的「未发布」标记按发布态对齐。**先全部定位、再落盘**：任何一处声称句
+ * 读不到 / 命中 0 处 ⇒ exit 2 且一个字节都不写（「读不出」永远不等于「没这句话」）。
+ *
+ * @param {{root?: string, version?: string, published?: string|null,
+ *          log?: (line: string) => void}} [options]
+ * @returns {number} 0 = 写完（或本来就一致）/ 2 = 真值缺位或声称句读不出（未写盘）
+ */
+export function syncReleaseState({ root = ROOT, version, published = null, log = console.log } = {}) {
+  const pkgText = (() => {
+    try { return readFileSync(path.join(root, "package.json"), "utf8"); } catch { return null; }
+  })();
+  const pkgVersion = (() => {
+    try { return JSON.parse(pkgText ?? "").version; } catch { return undefined; }
+  })();
+  if (!pkgVersion) {
+    log(`docs-drift-check --sync: 读不出 ${path.join(root, "package.json")} 的 version——没有本仓版本真值就不回写`);
+    return 2;
+  }
+  const nextVersion = version ?? pkgVersion;
+  if (!/^\d+\.\d+\.\d+$/.test(nextVersion)) {
+    log(`docs-drift-check --sync: 版本号 ${JSON.stringify(nextVersion)} 不是 x.y.z——真值形状不对就不回写`);
+    return 2;
+  }
+  if (published === null || published === "") {
+    log("docs-drift-check --sync: 缺 `--published <x.y.z>`——「已发布与否」没有真值（CI 上没有 registry，"
+      + "离线自测不许联网），往哪一边写都是猜；**本次一个字节都没写**。发布成功之后回写请给 `--published <版本>`。");
+    return 2;
+  }
+  if (!/^\d+\.\d+\.\d+$/.test(published)) {
+    log(`docs-drift-check --sync: \`--published ${published}\` 不是 x.y.z——真值形状不对就不回写`);
+    return 2;
+  }
+  if (cmpSemver(published, nextVersion) > 0) {
+    log(`docs-drift-check --sync: 发布行 ${published} 高于本仓版本 ${nextVersion}——这个组合在 npm 上不成立，不回写`);
+    return 2;
+  }
+  if (nextVersion !== pkgVersion) {
+    log(`docs-drift-check --sync: ⚠ \`--version ${nextVersion}\` 覆盖了 package.json 的 ${pkgVersion}`
+      + "（只给合成树 / 自测用；发版日回写不传它，版本号一律取自 package.json）");
+  }
+  const facts = { version: nextVersion, published };
+
+  /** @type {Map<string, string>} */
+  const before = new Map();
+  /** @type {Map<string, string>} */
+  const after = new Map();
+  const edits = [];
+  const notes = [];
+  const problems = [];
+
+  for (const target of RELEASE_STATE_TARGETS) {
+    if (!before.has(target.file)) {
+      try {
+        before.set(target.file, readFileSync(path.join(root, target.file), "utf8"));
+        after.set(target.file, before.get(target.file));
+      } catch (err) {
+        problems.push(`${target.file} 读不出（${/** @type {{code?: string}} */ (err)?.code ?? "unknown"}）——回写不许在真值缺位时动盘`);
+        continue;
+      }
+    }
+    const text = after.get(target.file);
+    const value = facts[target.fact];
+    const re = new RegExp(target.re.source, target.re.flags.includes("g") ? target.re.flags : `${target.re.flags}g`);
+    let hits = 0;
+    const next = text.replace(re, (whole, current, offset) => {
+      hits += 1;
+      if (current === value) return whole;
+      const at = whole.indexOf(current);
+      edits.push({
+        file: target.file,
+        id: target.id,
+        line: text.slice(0, offset).split("\n").length,
+        from: current,
+        to: value,
+      });
+      return whole.slice(0, at) + value + whole.slice(at + current.length);
+    });
+    if (hits === 0) {
+      problems.push(`${target.file} 里找不到${target.id}——声称句形状变了（规范写法见本文件顶部注释），`
+        + "回写不许猜一句写上去");
+      continue;
+    }
+    after.set(target.file, next);
+  }
+
+  // CHANGELOG：当前版本段的段首「未发布」标记跟着发布态走（判据 3 读的就是它）。
+  let changelogText = null;
+  try { changelogText = readFileSync(path.join(root, CHANGELOG_FILE), "utf8"); } catch {
+    problems.push(`${CHANGELOG_FILE} 读不出——发布态没有落脚处（判据 3 的段首标记就在它里面）`);
+  }
+  if (changelogText !== null) {
+    const lines = changelogText.split("\n");
+    const at = lines.findIndex((line) => new RegExp(`^##\\s*\\[${esc(nextVersion)}\\]`).test(line));
+    if (at < 0) {
+      // 不是错误：`changelog-published`（判据 3）只对**已存在的**带日期段判发布态；「当前版本没有 CHANGELOG 段」
+      // 由 `check:docs` 的 `guide-coverage` 判红（它要求 CHANGELOG 有 `package.json` 那一版），所以回写之后的
+      // `check:docs` 会把这种缺位抓出来——这里只记一笔，不替门禁裁决，也不往 CHANGELOG 里造一段。
+      notes.push(`${CHANGELOG_FILE} 里没有 ${nextVersion} 的版本段（\`## [${nextVersion}]\`）——发布态没有落脚处，`
+        + "CHANGELOG 一个字节未动（缺段由 check:docs 的 guide-coverage 判红）");
+    } else {
+      const heading = lines[at];
+      const marked = /未发布|unpublished/i.test(heading);
+      const isPublished = published === nextVersion;
+      if (isPublished && marked) {
+        lines[at] = heading.replace(UNPUBLISHED_HEADING_RE, "");
+        edits.push({ file: CHANGELOG_FILE, id: `${nextVersion} 段首`, line: at + 1, from: "（未发布 / unpublished）", to: "（已发布：去掉标记）" });
+      } else if (!isPublished && !marked) {
+        lines[at] = `${heading}（未发布 / unpublished）`;
+        edits.push({ file: CHANGELOG_FILE, id: `${nextVersion} 段首`, line: at + 1, from: "（无标记）", to: "（未发布 / unpublished）" });
+      }
+      before.set(CHANGELOG_FILE, changelogText);
+      after.set(CHANGELOG_FILE, lines.join("\n"));
+    }
+  }
+
+  if (problems.length) {
+    log(`docs-drift-check --sync: 读不出真值 / 声称句缺位（${problems.length} 处）——**本次一个字节都没写**：`);
+    for (const problem of problems) log(`  ✗ ${problem}`);
+    return 2;
+  }
+
+  for (const note of notes) log(`  · ${note}`);
+  const changed = [...after.keys()].filter((rel) => after.get(rel) !== before.get(rel));
+  if (!changed.length) {
+    log(`docs-drift-check --sync: 已经是发布态（本仓版本 ${nextVersion} / 发布行 ${published}）——没有可写的东西，0 字节写入`);
+    return 0;
+  }
+  for (const rel of changed) writeFileSync(path.join(root, rel), /** @type {string} */ (after.get(rel)), "utf8");
+  log(`docs-drift-check --sync: 回写 ${edits.length} 处发布态句子（${changed.length} 个文件）——`
+    + `本仓版本 ${nextVersion} / 发布行 ${published}：`);
+  for (const edit of edits) log(`  · ${edit.file}:${edit.line} ${edit.id} ${edit.from} → ${edit.to}`);
+  log("  回写面只有这几处：其余字节逐字未动（--sync 的窄面由 `npm run release:day --self-test` 的反向证看守）");
+  log("  下一步：`npm run check:docs` 必须绿（回写自洽的机器证据）——`npm run release:day --stage writeback` 会自动跑它");
+  return 0;
+}
+
+if (SYNC) {
+  process.exit(syncReleaseState({
+    root: ROOT,
+    version: flagValue(process.argv, "--version") ?? PKG_VERSION,
+    published: flagValue(process.argv, "--published"),
+  }));
+}
 
 for (const claim of CURRENT_CLAIMS) {
   const text = read(claim.file);
@@ -5868,15 +6083,7 @@ function selfTestRegistry({ exclude = [], latest } = {}) {
     source: "self-test 夹具（CHANGELOG 派生）" };
 }
 
-/** 两份「当前版本」声称句的规范写法（形状由本判据看守，改措辞要同步改这里）。 */
-const VERSION_CLAIM_RULES = [
-  { file: AGENTS_EN, label: "AGENTS.md「当前版本」句",
-    repoRe: /Current version: `package\.json` says `(\d+\.\d+\.\d+)`/,
-    pubRe: /`dist-tags\.latest`[^.;]{0,60}?`(\d+\.\d+\.\d+)`/ },
-  { file: AGENTS_CN, label: "AGENTS_cn.md「当前版本」句",
-    repoRe: /当前版本：`package\.json` 写 `(\d+\.\d+\.\d+)`/,
-    pubRe: /`dist-tags\.latest`[^。；]{0,60}?`(\d+\.\d+\.\d+)`/ },
-];
+/** 两份「当前版本」声称句的规范写法：见 §1 的 `VERSION_CLAIM_RULES`（`--sync` 读同一张表，别再抄一份）。 */
 
 /** 发布行 / 未发布声称的扫描面：宿主会读的那批文档 + 指南 + 两份 README / 需求对照。
  *  **CHANGELOG 不在面内**：本仓对它的既定口径是「保留那一刻为真的历史」（裸行号棘轮同样把它排除在外），
