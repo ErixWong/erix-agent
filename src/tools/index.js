@@ -1,14 +1,8 @@
 export { createToolRegistry } from "./registry.js";
-export {
-  createStaticToolProvider,
-  createJsonFileToolProvider,
-  createCompositeToolProvider,
-} from "./providers.js";
 // 文件工具规范实现（issue #184）：**只从 `erix-agent/tools` 子路径导出**，不在包根
 // （ADR-005 第二层：「不属于主导出」；实测 `src/index.js` 不转出 `createFileTools`），CLI 反过来 import 它。
 export {
   createFileTools,
-  resolveFileReadMaxBytes,
   truncateDisplayText,
   FILE_TOOL_DEFINITIONS,
   FILE_READ_MAX_BYTES_DEFAULT,
@@ -41,9 +35,7 @@ export {
   note_read,
   note_take,
   resolveNotesDir,
-  setNotesClock,
   MAX_CONTENT_LENGTH,
-  NOTE_VALUE_MAX_CHARS,
 } from "./notes.js";
 // 派生（子 run）簿记件（issue #617 P1a）：名册 / 并发配额租约 / 完成通知去重。
 // 纯簿记——不 fork / 不 spawn / 不等子进程，不解释 opaque 字段，进程存活这类外部事实
@@ -54,7 +46,6 @@ export {
   writeRecord,
   readRecord,
   listRecords,
-  removeRecord,
   reconcile,
 } from "./delegation/roster.js";
 export {
