@@ -475,6 +475,10 @@ export function runFinalize({
     target = blame.stdout.split("\n")[0].split(" ")[0];
     log(`finalize ② tag 目标 = ${target}（\`package.json\` version 行最后一次被改动的提交 = **切版提交**，\`git blame\` 现读）`);
     log("     不指向回写提交：发布出去的那棵树是切版提交，回写只改文档（先例 `v0.30.0`）");
+  } else {
+    log(`finalize ② tag 目标 = ${target}（\`--tag-target\` 显式给的；下面三条判据照样核）`);
+  }
+  {
     const atTarget = capture(["git", "show", `${target}:package.json`], { cwd: root, env });
     if (atTarget.status !== 0) {
       log(`finalize ② → 红：\`git show ${target}:package.json\` 读不出（exit ${atTarget.status}）`);
@@ -491,6 +495,16 @@ export function runFinalize({
       log(`finalize ② → 红：${target} 不是 HEAD 的祖先——tag 不许指向一棵不在 main 历史上的树`);
       return EXIT.RED;
     }
+    // 「产出这次发布的那棵树」的机器判据：运行时面（src / bin / package.json / skills）与 HEAD 逐字相同。
+    // 回写只动文档，所以文档面的差异是**预期的**；运行时面有差异说明 tag 指错了树。
+    // 先例 `v0.30.0` 的 tag 指向发布分支的合并提交（1e3a277 → 2fe4424），两者在 src/bin/package.json 上逐字相同。
+    const surface = capture(["git", "diff", "--quiet", target, "HEAD", "--", "src", "bin", "package.json", "skills"], { cwd: root, env });
+    if (surface.status !== 0) {
+      log(`finalize ② → 红：${target} 与 HEAD 的运行时面（src / bin / package.json / skills）不一致——`
+        + "那不是产出这次发布的那棵树（回写只该动文档面）");
+      return EXIT.RED;
+    }
+    log("     运行时面校验：tag 目标与 HEAD 在 src / bin / package.json / skills 上逐字相同（回写只动文档面）");
   }
   const headSha = capture(["git", "rev-parse", "HEAD"], { cwd: root, env }).stdout.trim();
 
@@ -508,7 +522,10 @@ export function runFinalize({
       log(`finalize ③ tag \`${tag}\` 已存在且指向 ${target}——不重复打`);
     } else {
       const tagged = run(
-        ["git", "tag", "-a", tag, "-m", `erix-agent ${currentVersion}（release-day：发布态已回写、check:docs 自洽）`, target],
+        ["git", "tag", "-a", tag, "-m",
+          `erix-agent ${currentVersion}：本 tag 指向产出 erix-agent@${currentVersion} tarball 的那棵树`
+          + `（${target}，即 package.json version 行的切版提交；不指向回写提交——回写只动文档面）。`
+          + "发布态回写在 tag 之前已完成，check:docs 自洽。", target],
         { cwd: root, env },
       );
       if (tagged.status !== 0) {
@@ -637,6 +654,10 @@ export function runAll({
   const { log } = deps;
   const currentVersion = version ?? pkgVersion(root);
   const state = dry ? null : readState(stateFile);
+  if (state && state.version === currentVersion && state.phase === PHASE.FINALIZED) {
+    log(`--all：状态文件说 v${currentVersion} 已经 finalize 完（phase=finalized）——不重复打 tag、不重复推、不重复回写`);
+    return EXIT.OK;
+  }
   if (state && state.version === currentVersion && state.phase === PHASE.WRITTEN) {
     log(`--all：状态文件说 v${currentVersion} 已发布 + 已回写（phase=written）→ 从 **finalize** 续跑`);
     return runFinalize({ root, version: currentVersion, deps, stateFile, dry });
@@ -893,6 +914,8 @@ function gitPlumbing({
   urls = ["https://github.com/ErixWong/erix-agent.git", "https://git.erix.vip/eric/erix-llm-kit.git"],
   sides = null,
   tagExists = false,
+  surfaceDiff = 0,
+  targetVersion = null,
 } = {}) {
   const sideMap = sides ?? Object.fromEntries(urls.map((url) => [url, { main: head, tag: cut }]));
   return (argv) => {
@@ -900,7 +923,10 @@ function gitPlumbing({
     if (line === "git status --porcelain") return { stdout: status };
     if (line === "git rev-parse --abbrev-ref HEAD") return { stdout: `${branch}\n` };
     if (line.startsWith("git blame --porcelain -L ")) return { stdout: `${cut} 1 1 1\n\tauthor x\n` };
-    if (line.startsWith("git show ") && line.endsWith(":package.json")) return { stdout: `{\n  "version": "${version}"\n}\n` };
+    if (line.startsWith("git show ") && line.endsWith(":package.json")) {
+      return { stdout: `{\n  "version": "${targetVersion ?? version}"\n}\n` };
+    }
+    if (line.startsWith("git diff --quiet ")) return { status: surfaceDiff };
     if (line.startsWith("git merge-base --is-ancestor ")) return { status: 0 };
     if (line === "git rev-parse HEAD") return { stdout: `${head}\n` };
     if (line.startsWith("git rev-parse -q --verify refs/tags/")) return tagExists ? { stdout: "tagobject\n" } : { status: 1 };
@@ -1242,6 +1268,41 @@ function runSelfTest() {
       const status = runFinalize({ root: tree, version: "0.31.0", deps, stateFile, dry: false });
       expect(status === EXIT.RED, "⑩ 工作树不干净 ⇒ finalize 红（回写没提交就不许打 tag）", `⑩ 脏树却放行了：exit ${status}`);
       expect(!deps.calls.some((line) => line.startsWith("git tag")), "⑩ 脏树下没打 tag", `⑩ 脏树却打了 tag：${deps.calls.join(" | ")}`);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  }
+
+  // ⑫ tag 目标的运行时面与 HEAD 不一致 ⇒ 红（tag 不许指向一棵不是「产出这次发布」的树）
+  {
+    const tree = mkdtempSync(path.join(os.tmpdir(), "erix-release-day-surface-"));
+    const stateFile = path.join(tree, "state.json");
+    try {
+      writeFixtureTree(tree);
+      writeFileSync(path.join(tree, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
+      writeState(stateFile, { schema: 1, version: "0.31.0", phase: PHASE.WRITTEN, published: "0.31.0", updatedAt: "now" });
+      const deps = fakeDeps({ capture: gitPlumbing({ version: "0.31.0", surfaceDiff: 1 }) });
+      const status = runFinalize({ root: tree, version: "0.31.0", deps, stateFile, dry: false });
+      expect(status === EXIT.RED, "⑫ 切版提交与 HEAD 的运行时面不一致 ⇒ finalize 红", `⑫ 运行时面不一致却放行了：exit ${status}`);
+      expect(!deps.calls.some((line) => line.startsWith("git tag")), "⑫ 运行时面不一致时没打 tag", `⑫ 打了 tag：${deps.calls.join(" | ")}`);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  }
+
+  // ⑪ `--all` 读到 phase=finalized ⇒ 什么都不再做（不重复打 tag / 推 / 回写）
+  {
+    const tree = mkdtempSync(path.join(os.tmpdir(), "erix-release-day-done-"));
+    const stateFile = path.join(tree, "state.json");
+    try {
+      writeFixtureTree(tree);
+      writeFileSync(path.join(tree, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
+      writeState(stateFile, { schema: 1, version: "0.31.0", phase: PHASE.FINALIZED, published: "0.31.0", updatedAt: "now" });
+      const deps = fakeDeps({ capture: gitPlumbing({ version: "0.31.0" }) });
+      const status = runAll({ root: tree, deps, stateFile, dry: false, version: "0.31.0" });
+      expect(status === EXIT.OK && deps.calls.length === 0,
+        "⑪ 状态文件说已经 finalize 完 ⇒ `--all` 一个子进程都不起（不重复打 tag / 推 / 回写）",
+        `⑪ 已经 finalize 完还在动：exit ${status}，argv=${deps.calls.join(" | ") || "（无）"}`);
     } finally {
       rmSync(tree, { recursive: true, force: true });
     }
