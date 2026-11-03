@@ -65,6 +65,7 @@ scripts/          # 实验脚本和结果
 | `node --check <file>` | 语法安全检查 |
 | `npm run check:syntax` | **全量**语法检查（issue #187）：`scripts/syntax-check.mjs` 把 `git ls-files` 里每一个跟踪的 `.js`/`.mjs`/`.cjs`（`src/`、`bin/`、`scripts/`、`test/`、`examples/`、`fixtures/`）都过一遍 `node --check`，红就点名文件并非零退出。`npm run check` 故意**保留**成单文件的 `node --check src/index.js`：`check:docs` 会校文档引用的命令真的存在，把它换掉反而制造文档漂移 |
 | `npm run check:test-summary` | **套件汇总对账**（issue #301）：`scripts/suite-summary-reconcile.mjs` 从一份落盘的日志里读出跑完的 `node --test` 打印的 TAP 汇总（`# tests` / `# pass` / `# fail` / `# skipped`，外加 `node --test` 打在它们旁边的兄弟计数，`--log <文件>` 或 `-` 读 stdin），与 `test/test-suite-baseline.json` 对账，打印固定前缀的 `TEST-SUMMARY …` 行加 `TEST-SUMMARY-VERDICT ok|red`，并在 `$GITHUB_STEP_SUMMARY` 存在时把这两行追加进去。红（exit 1，点名差值）：`tests` **低于**登记值（掉用例才是事故——比登记值多跑出来的那次仍是绿，并多打一行 `TEST-SUMMARY-HINT` 点名登记值可以抬到哪个数，因为抬值仍是人的动作）、`fail` 不等于登记值、`skipped` 高于登记上限，或汇总行自身不自洽（`pass` / `fail` / `cancelled` / `skipped` 加兄弟计数必须加起来等于 `tests`）。日志里没有完整汇总块 ⇒ exit 2 —— 「没读到」永远不等于「没问题」。登记文件是**期望值、不是实测抄件**：真值是当次命令打印的那份汇总，且随环境变（真上游门禁开没开、pi 装载器装没装，都会改 `skipped`），所以上限取的是已量到的最大环境，跳得更少仍是绿。这个文件刻意**没有** `--sync`：抬登记值仍是人的动作，而「哪一次恰好少跑了几个用例」绝不许靠自动抄写把自己洗成新基线。也绝不为对上数字去改测试。`--print` 打印登记值加已记录的 `observations` 且不做任何判定，`-- --self-test` 是这道门自己的反向证（合成的 TAP 夹具与登记表，外加 CI 接线：`Test suite` 那一步带 `pipefail` 地 tee、两个新步骤都在、本命令真的指向那个脚本） |
+| `npm run check:changelog` | **碰到公开面的合并必须在版本 CHANGELOG 段里被点名**（issue #691 —— #636 预言、#686 量到的那个缺口）：`scripts/changelog-coverage-check.mjs` 回答的是其他 CHANGELOG 门禁都没问的那个问题——*该不该有一条*。区间与段都从树里现读，不拄手写清单：待判版本 = `CHANGELOG.md` 里最新的 `## [x.y.z]` 段（`--version` 可指定），区间 = 版本序上比它小的最大 tag `..` 该版本自己的 tag（该版本还没打 tag 时上端取 `HEAD`），合并集 = `git log --first-parent --merges`。一个合并算**行为可见**，当且仅当它的 first-parent diff（`git diff --name-only <merge>^1 <merge>`）碰到公开面路径——`src/`、`bin/`、`package.json`、两份 README、宿主契约、需求文件、或本版升级指南；只碰测试、内部文档、`scripts/`、交付记录、`AGENTS*`、CI 配置、示例的合并归**类别豁免**，那是规则算出来的、不是往登记表里塞的。覆盖**只查一边**：每一个碰到公开面的合并号都必须在那个版本的 CHANGELOG 段里、或在已登记的豁免里——散文里引用旧 issue 号是合法的，反向会把它们判成假红。红时点名 issue 号、合并的短 sha、以及它碰到的公开面文件。`COVERAGE_EXEMPTIONS` 只为**反向**情形存在（看起来属类别豁免、但确实行为可见）：每条都要带 `why`，空转条目红、空 `why` 红，条数与 `COVERAGE_EXEMPTION_MAX` **双向**对账。区间端点解析不出、段读不到、git 不可用 ⇒ exit 2 而不是放行。`node scripts/changelog-coverage-check.mjs --self-test` 是这条闸自己的反向证，跑在 `os.tmpdir()` 里**自建的合成 git 仓**上（自己的 tag、分支与合并，不碰本仓历史），并且把接线本身也当判据：阻塞的 CI 步骤夹在 `check:test-summary` 与 `check:docs` 之间、checkout 取全历史、npm script 指向那个文件 |
 | `npm run check:docs` | 文档漂移检查（`scripts/docs-drift-check.mjs`：版本声明、README 引用的 `files`/`exports` 清单、模块地图、文中路径与命令、从 `src/` 直抽的关键默认值（规则集在脚本里，本文不抄条数）、`bin/cli.js` 帮助文本与两份 README 的 usage 行双向对账的 CLI 旗标清单、中英 README 标题骸架，**以及自 issue #511 起的「这句话属于哪个版本」**：每份升级指南第一行必须自述版本；把事实归给**后面**那个版本的句子必须带指向那份指南的前向指针；「没有 `config.X`」对 `CONFIG_NAMESPACE_SCHEMA` 核、「V 加的」对该版 CHANGELOG 段核；每个带日期的 CHANGELOG 段必须写明发布了没有；`AGENTS*.md` 那两句「当前版本」当场对账——本仓版本对 `package.json`、发布行对 npm 的 `dist-tags.latest`——且两句都不许带测量日期），**以及自 issue #668 起的退役语义**：摘要器失败是终局错误，所以任何把「降级 / 兜底」这类动词与「统计摘要」并列的句子都必须带三种合法读法之一——直接否定、对照（`instead of` / `rather than`），或同一段里的历史框定——平铺直叙的声称会红并点名文件与行，而历史类页面正文一字不改；这条判据同时绑到源码真值（`fold-llm` 的代码面必须仍有那条终局错误路径、退役横幅不得回到代码面），**issue #677 起的契约「套件清单」**：中英套件清单里 `model-config-provider.js` 那一行按 provider 形态逐条对账到 `test/contract/model-config-provider.js` 的 `unknownSlot` 形态——槽位图形态（static / json-file）未知槽名必须抛错、点名该槽名并列出可用槽位、不得回落 default，单配置形态则任何槽名都返回同一份配置，这是形态差异而不是「未知回落 default」——于是把两种形态压平成一句、只改一侧少一条腿、或改真值的形态集合而文档没跟，都会红，**同一批 #677 还接了强制收尾资格那一句**：契约 §7（停止后验证）同样上闸——资格必须写成状态，而不是 reason 白名单或固定条数，它点名的三条不可续跑 reason 必须等于 `src/loop/termination.js` 的 `FORCED_FINAL_TRUNCATED_REASONS`，而 `end_turn` / `no_tool` 必须真在那个文件的 `FINAL_GUARD_TERMINATION_REASONS` 里，于是把它压平回白名单口径、只改一侧少一条腿、或改源码成员集合而契约没跟，都会红；且条数由命令自己打印（本文不抄）+ 中英契约标题结构对齐 |
 | `npm run check:docs:strict` | 同上，但把告警升级为失败 |
 | `node scripts/docs-drift-check.mjs --self-test` | 清单/枚举/单位类锚点的反向证自测（issue #210）：改文档一处声明 → 红、改源码真值 → 红、都不改 → 绿；变异没落上去也算失败（#210 R2） **自 issue #302 起，在哪棵树里跑都不影响结论**：`#280` 那两条树形用例跑在**合成树夹具**上，判定与本机是否存在那个不入库的 `docs/tasks/` 目录无关——「无 / 空 / 有 `docs/tasks/`」三种形状各在 `git archive HEAD | tar -x` 造出的检出里跑一遍，例数与红数都由那条命令自己打印（本文两个数都不抄）。#302 之前是另一回事：没有 `docs/tasks/` 的检出里 3 例是**已知假红**（树里有个空的则 5 例），由 issue #281 记录在案——那批红已经不存在，所以「必须在开发树里跑」是历史，不是现在的要求。 |
@@ -234,11 +235,12 @@ scripts/          # 实验脚本和结果
 
 ```bash
 npm run release:day -- --stage preflight --hosts <宿主仓目录>
-#   [1/5] check:docs                            文档审计（漂移 + 中英成对）
-#   [2/5] check:docs:strict                     同上，告警也阻塞
-#   [3/5] ERIX_E2E_REAL=1 check:release:real    真机清单；闸门关着 ⇒ 未判定，绝不是绿
-#   [4/5] check:release                         离线：tarball 形状 / 装后包 / TS 宿主 / CLI 假上游
-#   [5/5] check:host-consumers -- --hosts …     宿主侧探针：每一处命中都必须已被升级指南覆盖
+#   [1/6] check:changelog                       本版 CHANGELOG 段点名了每一个碰到公开面的合并（issue #691）
+#   [2/6] check:docs                            文档审计（漂移 + 中英成对）
+#   [3/6] check:docs:strict                     同上，告警也阻塞
+#   [4/6] ERIX_E2E_REAL=1 check:release:real    真机清单；闸门关着 ⇒ 未判定，绝不是绿
+#   [5/6] check:release                         离线：tarball 形状 / 装后包 / TS 宿主 / CLI 假上游
+#   [6/6] check:host-consumers -- --hosts …     宿主侧探针：每一处命中都必须已被升级指南覆盖
 ```
 
 它按顺序跑，**任一红就停在那一步并点名第几步**。不带 `ERIX_E2E_REAL=1` 时真上游那一步**什么都不跑**——那**不是**通过，

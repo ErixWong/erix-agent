@@ -33,7 +33,13 @@ jobs:
       matrix:
         node: [22]
     steps:
+      # issue #691：`fetch-depth: 0` 是 CHANGELOG 覆盖闸的**硬前置**——`check:changelog` 要读
+      # `git log --first-parent --merges <上一个 tag>..<本版 tag|HEAD>` 与 `git tag`，而默认的浅克隆
+      # （depth 1、不带 tag）两样都没有：那时它按设计 exit 2（读不出真值 ≠ 绿），CI 会一直红。
+      # 取全历史 + 全 tag 是这一步唯一的目的；本仓体积小，代价可以忽略。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -72,6 +78,20 @@ jobs:
       # 为什么不并进上一条：那条证的是「今天的数字与登记值对得上」，这条证的是「判据还拦得住」。
       - name: Test suite summary reconcile self-test
         run: npm run check:test-summary -- --self-test
+
+      # 阻塞（issue #691）：**碰到公开面的 first-parent 合并必须在本版 CHANGELOG 段里被点名**。
+      # 病根：既有 CHANGELOG 门禁只查「已有条目是否中英成对」，不查「该不该有一条」——0.30.0 发布时
+      # 段里只点名 9 个号，而区间里 53 个合并碰到了公开面（src/ / bin/ / package.json / 公开文档集），
+      # 其中 48 个一个号都没写。复盘时人工「主题式阅读」只找出 4 条，机械按路径类别判是 48 条。
+      # 判据只查一边（碰到公开面的合并号 ⊆ 本版段号 ∪ 带 why 的豁免登记），反向不查：散文里引用历史
+      # issue 号是合法的，反向会把它们判成假红。只碰 test/ / 内部 docs/ / scripts/ / delivery/ 的合并
+      # 归**类别豁免**（规则在脚本里，不逐条登记）；只有「类别判成豁免、但确实行为可见」才逐条登记，
+      # 且空 why / 空转条目 / 条数双向漂移都红。读不出真值（区间无 tag、段读不到、git 不可用）exit 2。
+      # 放在 `Test suite` / `check:test-summary` 之后：本闸读的是 CHANGELOG 与 git 历史，与用例跑没跑过无关，
+      # 但排在测试之后能让「这一版到底改了什么」在测试已经绿的前提下判；放在 `check:docs` 之前：
+      # 它是文档面里最便宜的一条，且它红了就没有必要再跑那一族。
+      - name: CHANGELOG coverage of public-surface merges
+        run: npm run check:changelog
 
       - name: Documentation drift check
         run: npm run check:docs
