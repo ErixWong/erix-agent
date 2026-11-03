@@ -6650,6 +6650,161 @@ const mutateRepoVersionClaim = (to) => (text) =>
 const addMeasurementDateToRepoClaim = (date) => (text) =>
   text.replace(VERSION_CLAIM_RULES[0].repoRe, (whole) => `${whole}, measured ${date}`);
 
+// ── #690 那一族的「两半前提自己带上」（issue #699 ③ (a)）───────────────────────
+/**
+ * 这一族考的是「**当前版指南 §4** × **本版 CHANGELOG**」这一条对账，两半前提都得成立：
+ *   ① 本版段里有这一格的**字段级变更证据**（`declaredSurfaceChanges`）；
+ *   ② 当前版 §4 里**有这一格可定位的声明**（`surfaceClaimBlocks`，规范形状是六格 bullet）。
+ * 0.30 两半都是现成的（加法版 + 六格 bullet）。**0.31 是纯删除版**：段里 70 处反引号全是退役导出名
+ * （按定义不属于六格 ⇒ ① 是空的），§4 也只有一段散文（⇒ ② 没有按格的行）。于是「只变异指南侧」的
+ * 老写法在两棵树上表现不同：0.30 树上落得上、0.31 树上锚点找不到 ⇒ **用例静默失效**（#210 R2 那一类）。
+ * 合成 0.31 树上这 7 例全部报「变异没落到」，就是这个洞在报信（`/tmp/b699/cutB-selftest-final.log`）。
+ *
+ * 所以这一族的**前提由夹具自己带上**，名字一律从真值现取（`cell.truth()` 与本版段），不抄 0.30 的原话：
+ *   · `surfaceCaseEvidence(cellId)` —— 这一格这一例的**证据名字**：本版段里已有该格证据就用它自己的
+ *     （0.30 是这种，红话与改前逐字相同）；没有就从该格真值里取一个真实成员，并回报「要注入」。
+ *   · `addSurfaceEvidence(cellId)` —— 把那条证据注进本版段（只在上一行说「要注入」时才带上）。
+ *   · `putSurfaceBullet(lang, cellId, body)` —— 把这一格在 §4 里的声明**换成 `body`**；那一格本来没有
+ *     bullet（0.31 的散文形状）就在 §4 节首**补一条**（`surfaceClaimBlocks` 是「第一处声明为准」，
+ *     补在节尾会被原有散文抢先声明）。§4 整节找不到 ⇒ 原样返回 ⇒ 框架照旧报「变异没落上」。
+ *   · `writeSurfaceCells(lang, omitCellId)` —— 把 §4 正文写成**规范六格 bullet**（`omit` 那一格不写），
+ *     用来考「整格缺席」：缺席必须是「这一格被删」，不能是「整节本来就没有按格的形状」。
+ * **历史夹具不跟着漂**：0.29 / 0.27 指南那些用例钉的是历史文档，`SURFACE_GUIDE_*` 也不该套到它们身上。
+ */
+const SURFACE_CASE_PREFERRED = Object.freeze({
+  diagnostics: "degradeKind", disk: "record.foldedFacts.text", finalPayload: "exitCodeForRunFailure",
+});
+const SURFACE_CASE_EVIDENCE = new Map();
+
+/** 某一格在自测里的证据名字与「要不要注入证据」（见上面的节头；同一格只算一次）。 */
+function surfaceCaseEvidence(cellId) {
+  if (SURFACE_CASE_EVIDENCE.has(cellId)) return SURFACE_CASE_EVIDENCE.get(cellId);
+  const truths = new Map();
+  for (const cell of SURFACE_CELLS) {
+    const t = cell.truth();
+    if (t) truths.set(cell.id, t);
+  }
+  const declared = declaredSurfaceChanges(PKG_VERSION, truths);
+  const own = [...(declared?.byCell.get(cellId) ?? [])].sort();
+  const preferred = SURFACE_CASE_PREFERRED[cellId];
+  const members = [...(truths.get(cellId) ?? [])].sort();
+  const out = own.length
+    ? { name: own.includes(preferred) ? preferred : own[0], inject: false, source: `本版 CHANGELOG ${PKG_VERSION} 段里该格已有的证据` }
+    : members.length
+      ? { name: members.includes(preferred) ? preferred : members[0], inject: true, source: "本版段对这一格没有变更证据 ⇒ 证据由夹具从该格真值注入" }
+      // 真值抽不出（提取器坏了）：让「抽不到成员真值」那条红自己去红，这里不另造名字。
+      : { name: preferred ?? cellId, inject: false, source: "该格真值抽不出" };
+  SURFACE_CASE_EVIDENCE.set(cellId, out);
+  return out;
+}
+
+/** 往本版段里注入一条「这一格在本版变了」的证据。**句式的三个形状都是判据定的**：落在
+ *  `SURFACE_CHANGE_SHAPES`（`changed`）里、**不**落进 `SURFACE_ADDITIVE_SHAPES`（否则 `guide-coverage`
+ *  会多要一条指南覆盖）、**不**落进 `SURFACE_DISPLAY_ONLY`（展示层句子里的名字不是变更证人）。 */
+const addSurfaceEvidence = (cellId) => (text) => {
+  const { name } = surfaceCaseEvidence(cellId);
+  const line = `- Self-test premise (#699 ③): the \`${name}\` field changed in this release`
+    + ` —— this line is the fixture's own witness for the \`${cellId}\` cell.`;
+  const head = new RegExp(`^## \[${esc(PKG_VERSION)}\].*$`, "mu");
+  return head.test(text) ? text.replace(head, (h) => `${h}\n\n${line}`) : text;
+};
+
+/** §4 那一节的行范围（`{head, end}`，与判据的 `unchangedSurfaceSection` 同一个断法：到下一个 `##`/`###` 为止）。 */
+function surfaceSectionSpan(lines, lang) {
+  const head = lines.findIndex((l) => SURFACE_SECTION_HEADING[lang].test(l.trim()));
+  if (head < 0) return null;
+  let end = head + 1;
+  while (end < lines.length && !/^#{2,3}\s/u.test(lines[end])) end += 1;
+  return { head, end };
+}
+
+/** 规范 bullet 的正文（changed + 点名一个该格的证据名字）：`writeSurfaceCells` 用它把「不是被测格」的
+ *  五格写成**自洽**的形状，于是红只从被测那一格来（#210 的「红只从被变异的地方来」）。 */
+function surfaceCanonicalBullet(lang, cell) {
+  const ev = surfaceCaseEvidence(cell.id);
+  const declared = declaredSurfaceChanges(PKG_VERSION, surfaceTruthMap());
+  const own = [...(declared?.byCell.get(cell.id) ?? [])].sort();
+  const name = own[0] ?? ev.name;
+  return lang === "en"
+    ? `${SURFACE_BULLET.en[cell.id]} changed in this release.** \`${name}\` is named here;`
+      + " this cell is not the subject of this case."
+    : `${SURFACE_BULLET.cn[cell.id]}这一版变了。** 这里点名 \`${name}\`；这一格不是本例的被测格。`;
+}
+
+/** 六格真值的 Map（判据里那份的同款构造；自测夹具用它挑名字）。 */
+function surfaceTruthMap() {
+  const truths = new Map();
+  for (const cell of SURFACE_CELLS) {
+    const t = cell.truth();
+    if (t) truths.set(cell.id, t);
+  }
+  return truths;
+}
+
+/** 把某一格在 §4 里的声明换成 `body`；那一格没有 bullet 时补在**节首**（见节头）。 */
+function putSurfaceBullet(lang, cellId, body) {
+  return (text) => {
+    const lines = text.split("\n");
+    const prefix = SURFACE_BULLET[lang][cellId];
+    const at = lines.findIndex((l) => l.startsWith(prefix));
+    if (at >= 0) {
+      let stop = at + 1;
+      while (stop < lines.length && lines[stop].trim() !== "" && !/^\s*(?:[*+-]|\d+\.)\s/u.test(lines[stop])) stop += 1;
+      return [...lines.slice(0, at), ...body.split("\n"), ...lines.slice(stop)].join("\n");
+    }
+    const span = surfaceSectionSpan(lines, lang);
+    if (!span) return text;          // 整节找不到 ⇒ 原样返回 ⇒ 框架报「变异没落上」（不假绿）
+    return [...lines.slice(0, span.head + 1), "", ...body.split("\n"), ...lines.slice(span.head + 1)].join("\n");
+  };
+}
+
+/** #636 那一例的**目标名字**（#699 ③(a)）：`preferred` 在本版仍是「代码侧名单里的名字」、而本版段又把它
+ *  算成这一版加的 ⇒ 直接用它（0.30 是这种，红话与改前逐字相同）；本版段没有这笔加法 ⇒ 从代码侧名单里
+ *  取一个真实成员当目标，并回报「加法句要注入」。名字一律现取，不抄 `compaction` 这一笔历史事实。 */
+const GUIDE_COVERAGE_TARGETS = new Map();
+function guideCoverageCaseTarget(preferred = "compaction") {
+  if (GUIDE_COVERAGE_TARGETS.has(preferred)) return GUIDE_COVERAGE_TARGETS.get(preferred);
+  const inventory = nameInventory();
+  const added = releaseAddedNames(inventory) ?? new Map();
+  let out;
+  if (added.has(preferred)) {
+    out = { name: preferred, kind: added.get(preferred), inject: false };
+  } else {
+    const hit = [...(inventory ?? new Map())].find(([n, v]) => v?.kind === "观察者事件" && !n.includes("."))
+      ?? [...(inventory ?? new Map()).entries()][0];
+    out = hit ? { name: hit[0], kind: hit[1]?.kind ?? "名字", inject: true }
+      : { name: preferred, kind: "观察者事件", inject: false };
+  }
+  GUIDE_COVERAGE_TARGETS.set(preferred, out);
+  return out;
+}
+
+/** 往本版段里补一条**加法句**（`guide-coverage` 的证人：`ADDITION_VERBS` + 反引号里的名字）。 */
+const addGuideCoverageClaim = (name) => (text) => {
+  const line = `- Self-test premise (#699 ③): this release adds the observer event \`${name}\`.`;
+  const head = new RegExp(`^## \\[${esc(PKG_VERSION)}\\].*$`, "mu");
+  return head.test(text) ? text.replace(head, (h) => `${h}\n\n${line}`) : text;
+};
+
+/** 把某一版指南里对 `name` 的**提及**去掉：没提过就先补一条提及再改掉
+ *  （两棵树上「删掉那条提及」都真的落得上；`after === before` 会被框架判成变异没落上）。 */
+const dropGuideMention = (name) => (text) => {
+  const seeded = text.includes(name) ? text
+    : `${text.trimEnd()}\n\n<!-- self-test premise (#699 ③): mentions \`${name}\` in this line. -->\n`;
+  return seeded.split(name).join("该名字");
+};
+
+/** 把 §4 正文整节写成规范六格 bullet；`omitCellId` 那一格**不写**（= 整格缺席）。见节头。 */
+function writeSurfaceCells(lang, omitCellId = null) {
+  return (text) => {
+    const lines = text.split("\n");
+    const span = surfaceSectionSpan(lines, lang);
+    if (!span) return text;
+    const body = ["", ...SURFACE_CELLS.filter((c) => c.id !== omitCellId).map((c) => surfaceCanonicalBullet(lang, c))];
+    return [...lines.slice(0, span.head + 1), ...body, "", ...lines.slice(span.end)].join("\n");
+  };
+}
+
 /** 六格在指南里的**行首锚**：自测按格替换/删除 bullet 时用（改措辞要同步这里）。 */
 const SURFACE_BULLET = Object.freeze({
   en: {
@@ -8452,9 +8607,16 @@ const SELF_TEST_CASES = [
     expect: [/guide-coverage: docs\/host-upgrade-guide-0\.29\.0\.md 没有提到config 叶子 `config\.continuity\.handoff`/],
   },
   {
-    label: "#636：只删中文侧的 `compaction` 事件那一条 ⇒ 红（CHANGELOG 的 0.30.0 段说这一版加了它，中文指南没有就是缺一条）",
-    overlay: { [SURFACE_GUIDE_CN]: (t) => t.replaceAll("compaction", "折叠事件") },
-    expect: [guideExpectRe("guide-coverage", SURFACE_GUIDE_CN, / 没有提到观察者事件 `compaction`/)],
+    label: `#636：只删中文侧对 \`${guideCoverageCaseTarget().name}\` 那条事件的提及 ⇒ 红（本版段说这一版加了它，中文指南没有就是缺一条）`,
+    // 前提自带（#699 ③(a)）：0.31 那种纯删除版里「这一版加了某个观察者事件」这笔加法不存在、中文指南里也
+    // 没提过它 ⇒ 老写法「把 \`compaction\` 改掉」在切版树上锚不到（= 用例静默失效）。名字与加法句都由
+    // `guideCoverageCaseTarget` / `addGuideCoverageClaim` 现取现补，两棵树同一判据。
+    overlay: {
+      ...(guideCoverageCaseTarget().inject ? { "CHANGELOG.md": addGuideCoverageClaim(guideCoverageCaseTarget().name) } : {}),
+      [SURFACE_GUIDE_CN]: dropGuideMention(guideCoverageCaseTarget().name),
+    },
+    expect: [guideExpectRe("guide-coverage", SURFACE_GUIDE_CN,
+      new RegExp(` 没有提到.* \`${esc(guideCoverageCaseTarget().name)}\``, "u"))],
   },
   {
     label: "#636 中英成对：只从中文指南里删掉一个结构化名字（`ERIX_CONTINUITY_DIR`）⇒ 红（成对判据问的是「另一侧有没有一条」）",
@@ -8702,58 +8864,68 @@ const SELF_TEST_CASES = [
   // 前三条就是**改动前的原句**：把某一格退回修前的写法 ⇒ 必须红，且点名「格名 + 字段名」。
   // 这一族证明的是「闸真咬人」——不是跟着改口一起变绿。
   {
-    label: "#690（还原）EN 磁盘格式退回改动前的原句 ⇒ 红并点名 record.foldedFacts.text",
+    label: `#690（还原）EN 磁盘格式退回改动前的原句 ⇒ 红并点名 ${surfaceCaseEvidence("disk").name}`,
     overlay: {
-      [SURFACE_GUIDE_EN]: replaceSurfaceBullet(SURFACE_BULLET.en.disk,
-        () => "* Transcript and run-state on-disk formats; a ledger written by the previous release still resumes."),
+      ...(surfaceCaseEvidence("disk").inject ? { "CHANGELOG.md": addSurfaceEvidence("disk") } : {}),
+      [SURFACE_GUIDE_EN]: putSurfaceBullet("en", "disk",
+        "* Transcript and run-state on-disk formats; a ledger written by the previous release still resumes."),
     },
     expect: [
       guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /:\d+ 第「on-disk formats」格写着不变/),
-      /record\.foldedFacts\.text/,
+      new RegExp(esc(surfaceCaseEvidence("disk").name), "u"),
     ],
     expectFiles: [SURFACE_GUIDE_EN],
   },
   {
-    label: "#690（还原）EN 诊断字段退回「observer events, diagnostic fields…」那句 ⇒ 红并点名 degradeKind",
+    label: `#690（还原）EN 诊断字段退回「observer events, diagnostic fields…」那句 ⇒ 红并点名 ${surfaceCaseEvidence("diagnostics").name}`,
     overlay: {
-      [SURFACE_GUIDE_EN]: replaceSurfaceBullet(SURFACE_BULLET.en.diagnostics,
-        () => "* Observer events, diagnostic fields, and the run-state block."),
+      ...(surfaceCaseEvidence("diagnostics").inject ? { "CHANGELOG.md": addSurfaceEvidence("diagnostics") } : {}),
+      [SURFACE_GUIDE_EN]: putSurfaceBullet("en", "diagnostics",
+        "* Observer events, diagnostic fields, and the run-state block."),
     },
     expect: [
       guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /:\d+ 第「diagnostic fields」格写着不变/),
-      /degradeKind/,
+      new RegExp(esc(surfaceCaseEvidence("diagnostics").name), "u"),
     ],
   },
   {
-    label: "#690（还原）EN 终局载荷退回「Termination, verification and exit-code…」那句 ⇒ 红并点名 exitCodeForRunFailure",
+    label: `#690（还原）EN 终局载荷退回「Termination, verification and exit-code…」那句 ⇒ 红并点名 ${surfaceCaseEvidence("finalPayload").name}`,
     overlay: {
-      [SURFACE_GUIDE_EN]: replaceSurfaceBullet(SURFACE_BULLET.en.finalPayload,
-        () => "* Termination, verification and exit-code semantics, including the `skipped`-without-guard exit code."),
+      ...(surfaceCaseEvidence("finalPayload").inject ? { "CHANGELOG.md": addSurfaceEvidence("finalPayload") } : {}),
+      [SURFACE_GUIDE_EN]: putSurfaceBullet("en", "finalPayload",
+        "* Termination, verification and exit-code semantics, including the `skipped`-without-guard exit code."),
     },
     expect: [
       guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /:\d+ 第「final payload」格写着不变/),
-      /exitCodeForRunFailure/,
+      new RegExp(esc(surfaceCaseEvidence("finalPayload").name), "u"),
     ],
   },
   {
-    label: "#690（中英各自判）CN 诊断字段整条删掉 ⇒ 红在 CN 这一侧（整格缺席），EN 不受影响",
-    overlay: { [SURFACE_GUIDE_CN]: dropSurfaceBullet(SURFACE_BULLET.cn.diagnostics) },
+    label: `#690（中英各自判）CN 诊断字段整格缺席 ⇒ 红在 CN 这一侧，EN 不受影响（证据：${surfaceCaseEvidence("diagnostics").name}）`,
+    // 缺席必须是「这一格被删」，不能是「整节本来就没有按格的形状」——所以两侧都先写成规范六格，
+    // 中文侧再少写那一格（#699 ③(a)；0.31 的 §4 是一段散文，直接删那条 bullet 会什么都删不掉）。
+    overlay: {
+      ...(surfaceCaseEvidence("diagnostics").inject ? { "CHANGELOG.md": addSurfaceEvidence("diagnostics") } : {}),
+      [SURFACE_GUIDE_EN]: writeSurfaceCells("en"),
+      [SURFACE_GUIDE_CN]: writeSurfaceCells("cn", "diagnostics"),
+    },
     expect: [
       guideExpectRe("unchanged-surface", SURFACE_GUIDE_CN, /:\d+ 第「诊断字段」格整格缺席/),
-      /degradeKind/,
+      new RegExp(esc(surfaceCaseEvidence("diagnostics").name), "u"),
     ],
     expectFiles: [SURFACE_GUIDE_CN],
     reject: [guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /(?:)/)],
   },
   {
-    label: "#690 声明了变更却不点名该格字段 ⇒ 红（「变了」不点名等于没对账）",
+    label: `#690 声明了变更却不点名该格字段 ⇒ 红（「变了」不点名等于没对账；该格证据：${surfaceCaseEvidence("disk").name}）`,
     overlay: {
-      [SURFACE_GUIDE_EN]: replaceSurfaceBullet(SURFACE_BULLET.en.disk,
-        () => "* **On-disk formats — changed in this release.** The fold ledger moved; the names are in §1."),
+      ...(surfaceCaseEvidence("disk").inject ? { "CHANGELOG.md": addSurfaceEvidence("disk") } : {}),
+      [SURFACE_GUIDE_EN]: putSurfaceBullet("en", "disk",
+        "* **On-disk formats — changed in this release.** The fold ledger moved; the names are in §1."),
     },
     expect: [
       guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, /:\d+ 第「on-disk formats」格声明了变更，却没有点名/),
-      /record\.foldedFacts\.text/,
+      new RegExp(esc(surfaceCaseEvidence("disk").name), "u"),
     ],
   },
   {
@@ -8770,9 +8942,11 @@ const SELF_TEST_CASES = [
   },
   {
     label: "#690（反向证）纯加法的名字不是变更证据：选项格写「不变」仍绿",
+    // 这一例的靶子是「本版段里那一笔纯加法」（0.30 段里的 `config.metadata.modelMetadata.budgetTokens`）：
+    // 它**不需要**证据注入（前提本来就是「这一格没有变更证据」），但 §4 是散文形状时也要落得上（#699 ③(a)）。
     overlay: {
-      [SURFACE_GUIDE_EN]: replaceSurfaceBullet(SURFACE_BULLET.en.options,
-        () => "* **Options — unchanged.** The `runToolLoop` input surface, the `capabilities` shape, and every\n"
+      [SURFACE_GUIDE_EN]: putSurfaceBullet("en", "options",
+        "* **Options — unchanged.** The `runToolLoop` input surface, the `capabilities` shape, and every\n"
           + "  existing configuration leaf. The added `config.metadata.modelMetadata.budgetTokens` leaf\n"
           + "  changes no existing leaf (§4.1)."),
     },

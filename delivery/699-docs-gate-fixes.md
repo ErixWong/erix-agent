@@ -126,6 +126,41 @@ unchanged-surface: docs/host-upgrade-guide-0.31.0_cn.md 里找不到「不变」
 本版段缺 `#691`、`#696`、`#700` 等公开面合并的归因条目。**这是闸按设计红**（#702 的原话：忘写编号就红在 main），
 不是误报，也不该由本单补写——补写就是往别人的段里塞别人的条目。
 
+## ③ 的后续（评审追出来的第 5 格）：#690 / #636 那 7 例**变异不落 = 用例静默失效**
+
+**读数**：合成 0.31 切版树上 `--self-test` 从 52 降到 **7**，7 例全部报 `变异没落到 docs/host-upgrade-guide-0.31.0{_cn}.md 上`
+（`/tmp/b699/cutB-selftest-final.log`）。**根因**（评审定位，我核对过）：这一族的**靶子**跟着 `PKG_VERSION` 走（判据本来就只审当前版那一对指南），
+但它们要替换的**锚点文字**是 0.30 §4 的**原句**，而 0.31 的 §4 是一段散文（`## 4. What does not change` 下面没有六格 bullet）
+⇒ 锚点找不到 ⇒ 变异不落。**真树全绿掩盖了它**：本版还是 0.30 时靶子与锚点恰好同源，这个洞只在切版树上暴露。
+
+**每条二选一（评审给的口径），7 例全部走 (a)，没有走 (b) 的**：
+
+| 用例 | 选 | 理由与改法 |
+|---|---|---|
+| `#690（还原）EN 磁盘格式退回原句 ⇒ 红并点名 <名字>` | **(a)** | 本意是「当前版 §4 × 本版 CHANGELOG 对账」。锚点不再抄 0.30 原句：`putSurfaceBullet("en","disk", …)` 按**格**定位（`SURFACE_BULLET` 行首锚），那一格没有 bullet（0.31 的散文形状）就在 §4 **节首补一条**（`surfaceClaimBlocks` 是「第一处声明为准」，补在节尾会被散文抢先）；§4 整节找不到 ⇒ 原样返回 ⇒ 照旧红「变异没落上」 |
+| `#690（还原）EN 诊断字段… ⇒ 红并点名 <名字>` | **(a)** | 同上，`putSurfaceBullet("en","diagnostics", …)` |
+| `#690（还原）EN 终局载荷… ⇒ 红并点名 <名字>` | **(a)** | 同上，`putSurfaceBullet("en","finalPayload", …)` |
+| `#690（中英各自判）CN 诊断字段整格缺席 ⇒ 红在 CN，EN 不受影响` | **(a)** | 缺席必须是「这一格被删」，不能是「整节本来就没有按格的形状」⇒ 两侧先 `writeSurfaceCells` 写成规范六格，中文侧 `omit` 那一格；EN 侧一并写成自洽六格，`reject` 的「EN 不受影响」才真的在判 |
+| `#690 声明了变更却不点名该格字段 ⇒ 红` | **(a)** | 同第一行（磁盘格），正文是「changed 但不点名」那句 |
+| `#690（反向证）纯加法的名字不是变更证据：选项格写「不变」仍绿` | **(a)** | 前提本来就是「这一格没有变更证据」⇒ 不注入证据，只把锚点从「替换 0.30 那句」换成按格 `putSurfaceBullet`（散文形状也落得上） |
+| `#636：只删中文侧对 <名字> 的提及 ⇒ 红` | **(a)** | 目标名字与「这一版加了它」那笔加法都从**当前版**现取：`guideCoverageCaseTarget()`（本版段里有这笔加法就用 `compaction`，没有就从代码侧名单里取一个真实的观察者事件名）+ `addGuideCoverageClaim()` 注入加法句 + `dropGuideMention()` 先补提及再改掉 ⇒ 两棵树上「删掉那条提及」都落得上 |
+
+**为什么没有 (b)**：这四族判据（`unchanged-surface` / `guide-coverage`）**只审当前版本那一对指南**（`SURFACE_GUIDE_EN/CN` 由 `PKG_VERSION` 现算）。
+把靶子钉回 `docs/host-upgrade-guide-0.30.0*.md` 会让变异落在**判据根本不看的那份文件**上 ⇒ 症状从「变异没落上」变成「改了但没红」，
+同样是静默失效，只是换了个死法。真要 (b) 就得让用例能钉「被测版本」，而 `PKG_VERSION` 是装载时从 `package.json` 现读的，自测没有这个口子。
+
+**两半前提自己带上**（`scripts/docs-drift-check.mjs` 里新增的夹具，全部现取真值、不抄历史）：
+`surfaceCaseEvidence(cellId)`（本版段有该格证据就用它自己的名字；没有就从 `cell.truth()` 里取一个真实成员并回报「要注入」）、
+`addSurfaceEvidence(cellId)`（注入那条变更证据，句式必须落在 `SURFACE_CHANGE_SHAPES`、不落进 `SURFACE_ADDITIVE_SHAPES` / `SURFACE_DISPLAY_ONLY`）、
+`putSurfaceBullet(lang, cellId, body)`、`writeSurfaceCells(lang, omit)`、`guideCoverageCaseTarget()` / `addGuideCoverageClaim()` / `dropGuideMention()`。
+
+**自证「变异不落 ⇒ 判失败」这条判据没被我放宽**：7 例改完后真树 `--self-test` 仍是 **198 例全绿**（`/tmp/b699/selftest-real-step3.log`），
+其中包含既有的两例变异器空转证（`#286`、`#677` 各一条 `expectMutateMiss`）——它们红的机制就是 `after === before`，我没有碰它。
+另外故意把 `surfaceSectionSpan` 的节标题锚改坏过一次（见下一节的反向证），7 例立刻成排报「变异没落到」⇒ 新夹具吃的也是同一根判据。
+
+**没走 (b) 的代价（写清）**：这 7 例现在证的是「**判据在自带前提下的裁决**」，不再顺带证「0.30 那份 §4 的原句长这样」。
+后一件事仍由真树的**对照组**与 `#690 读不出（①②）` 两条看守，没有事实失去看守。
+
 ## 未验证项
 
 （待填）
