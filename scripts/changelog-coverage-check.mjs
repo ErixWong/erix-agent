@@ -977,6 +977,7 @@ export function main(argv = process.argv.slice(2)) {
           covered: result.verdict.covered,
           exempt: result.verdict.exemptTotal,
           missing: result.verdict.missing.length,
+          unattributed: result.verdict.unattributed,
         }
         : null,
     }, null, 2));
