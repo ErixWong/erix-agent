@@ -6450,12 +6450,18 @@ function releaseAddedNames(inventory) {
   return out;
 }
 
-/** 覆盖度下限（只许涨不许降的探针，与 `REF_SCAN_DOCS_MINIMUM` / `SYMBOL_ANCHOR_MIN_UNIQUE` 同构）：
- *  低于它说明抽取逻辑或 CHANGELOG 段被削，本判据正在空跑——那时它会「绿得理直气壮」。
- *  现值 **4** 是 0.29.0 这一版实测（`config.continuity.handoff` / `config_override_conflict` /
- *  `compaction` / `compaction_deferred`），没有留余量是刻意的：这一侧的名字来自「CHANGELOG 的加法句」，
- *  条数本来就少，写小一点等于给「抽取器坏掉」留出静默空间。 */
-const GUIDE_COVERAGE_MIN_NAMES = 4;
+/** 代码侧名字集的**下限**（只许涨不许降的探针，与 `REF_SCAN_DOCS_MINIMUM` / `SYMBOL_ANCHOR_MIN_UNIQUE` 同构）：
+ *  低于它说明 `nameInventory()` 的抽取逻辑被削（config schema / 事件发点 / 策略名 / `process.env` 读点里
+ *  有一张脸抽不出来了）——那时本节会「绿得理直气壮」。
+ *
+ *  **为什么量的是它、而不是「与本版段的交集 ≥ N」**（issue #699 ②）：旧下限（`GUIDE_COVERAGE_MIN_NAMES = 4`）
+ *  量的是「本版 CHANGELOG 段的**加法句**点到几个名字」，于是**合法零新增版恒假**：0.31.0 是纯删除 + 勘误 +
+ *  发版流程的一版，段里一个加法句都没有 ⇒ 判据在 0.31 上永远红（切版树实测 `check:docs` exit 1，红话就是
+ *  「本版只判到 0 个名字（下限 4）」）。「这一版没有新增」是合法事实，不是抽取器坏了；抽取器坏不坏，
+ *  问的是代码侧那张名单还抽不抽得出来（`inventory.size`），那是本常量看守的那一侧。
+ *  现值 **92** 是 0.30.0 这棵树实测（config 叶子 + 观察者事件 + 压缩策略名 + 环境变量）：没有留余量是刻意的
+ *  ——降它必须写理由，不能默默降。 */
+const NAME_INVENTORY_MIN_NAMES = 92;
 
 function collectGuideCoverageErrors() {
   const out = [];
@@ -6487,9 +6493,10 @@ function collectGuideCoverageErrors() {
         + `「该不该有一条」就是靠这条判据看守的（#636）：CHANGELOG 里登记过的新名字，指南必须有一条（中英各一份）`);
     }
   }
-  if (checked < GUIDE_COVERAGE_MIN_NAMES) {
-    out.push(`guide-coverage: 本版只判到 ${checked} 个名字（下限 ${GUIDE_COVERAGE_MIN_NAMES}）——抽取逻辑或 CHANGELOG 段被削，`
-      + `这条判据正在空跑（抽不到真值就报错，别拿「没有要判的」换全绿）`);
+  if (inventory.size < NAME_INVENTORY_MIN_NAMES) {
+    out.push(`guide-coverage: 从代码侧只抽到 ${inventory.size} 个名字（下限 ${NAME_INVENTORY_MIN_NAMES}）——`
+      + "抽取逻辑被削了（config 叶子 / 观察者事件 / 压缩策略名 / 环境变量四张脸里有一张抽不出来），"
+      + "这条判据正在空跑（抽不到真值就报错，别拿「没有要判的」换全绿；降下限要写理由，#699 ②）");
   }
   // (b) 中英成对：**结构化名字**（`config.*` 路径 / 压缩策略名 / 环境变量）在一份指南里出现，就必须在
   //     它的另一语言版本里也出现。这一侧回答的是同一句「该不该有一条」，但问在**两份**之间：某一段只
@@ -6522,6 +6529,12 @@ function collectGuideCoverageErrors() {
   }
   notes.push(`guide-coverage: 代码侧清单 ${inventory.size} 个名字，其中 CHANGELOG ${PKG_VERSION} 段的加法句点到 ${checked} 个，`
     + `逐条要求中英两份指南都提到；另有 ${parityPairs} 对指南按结构化名字做中英成对（${parityChecked} 处不对称）`);
+  if (checked === 0) {
+    // 合法零新增版：本版段里没有「加法句」点到代码侧名字（纯删除 / 勘误 / 发版流程版就是这种）。
+    // 这一条只打印、不判红——健康与否由上面 `NAME_INVENTORY_MIN_NAMES` 看守（#699 ②）。
+    notes.push(`guide-coverage: CHANGELOG ${PKG_VERSION} 段没有加法句点到代码侧名字 ⇒ 本版是零新增版，`
+      + "「该不该有一条」这一半无可判项（不是抽取器坏了：代码侧清单仍然抽到 " + inventory.size + " 个名字）");
+  }
   collectGuideCoverageErrors.notes = notes;
   return out;
 }
@@ -6857,10 +6870,20 @@ function collectUnchangedSurfaceErrors() {
       + "对账判据不许静默放行");
     return done();
   }
+  // issue #699 ①：**零归属不是「提取器坏了」的信号**。真值提取器坏掉的信号是上面那一圈逐格判的
+  // 「抽不到「X」格的成员真值」（`cell.truth()` 返回 null ⇒ 真值集为空）。六格真值各自非空时，本版段里的
+  // 反引号名字可能**一个都不属于六格**——0.31.0 是纯删除版，段里 70 处反引号全是**已经从导出面消失**的
+  // 导出名（`estimateMessagesTokens` / `setNotesClock` / `NOTE_VALUE_MAX_CHARS` …），按定义进不了六格：
+  // 六格量的是「这一版还在的输入面 / 诊断字段 / 磁盘格式 / 事件 / 默认值 / 终局载荷」，退役导出名不在其中。
+  // 旧判据把这种合法形状判成「本判据正在空跑」，于是 `check:docs` 在 0.31 上**永远 exit 2**（切版树与
+  // 「切版 + 已补 §4」树都实测过）。修的是误报：判据一格没删，只把「零归属」从红降级成一条打印说明，
+  // 并把每格真值规模一起印出来（读者能当场看见「六格都在、只是这一版没动它们」）。
+  // 「本判据正在空跑」这句话只允许在**真值集为空**时说（上面那条 fail 里已经说了），这里不许再说。
   if (declared.namesSeen > 0 && declared.anyMember === 0) {
-    fail(`unchanged-surface: CHANGELOG 的 ${PKG_VERSION} 段里有 ${declared.namesSeen} 处反引号字段名，`
-      + "但一格也没解析出来——六格的成员判据（或真值提取器）坏了，本判据正在空跑");
-    return done();
+    notes.push(`unchanged-surface: CHANGELOG ${PKG_VERSION} 段里有 ${declared.namesSeen} 处反引号字段名，`
+      + `但一处也没落进六格（各格真值规模：${[...truths].map(([id, set]) => `${id}=${set.size}`).join(" / ")}）——`
+      + "这是「本版只有删除 / 勘误 / 发版流程」的合法形状：那些名字已从导出面消失，按定义不属于六格，"
+      + "所以不判红；真值集本身抽不出来（提取器坏了）由上面那条「抽不到成员真值」判红（#699 ①）");
   }
   let cellsJudged = 0;
   for (const [rel, lang] of [[en, "en"], [cn, "cn"]]) {
