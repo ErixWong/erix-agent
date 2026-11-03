@@ -63,6 +63,52 @@
 - **0.30.0 那一页的勘误（issue #686）。** 0.30.0 登记了标记、发了指南，但一个都没删：0.30.0 指南的 §2 与 §3
   现在就地写清了这一点，删除本身是这一版。在 0.30.0 上，已经迁完的宿主看不到破坏——没迁的也看不到。
 
+### Added
+
+- **`npm run check:changelog` lands: a merge that touched the public surface has to be named in the current
+  version's section (issue #691, PR #696; merge `a5cc4ba`; backfilled by #700).** Every CHANGELOG gate
+  before it asked whether an entry that already exists is EN/CN-paired; none asked **whether an entry is
+  owed in the first place**. The 0.30.0 retro (issue #686) measured what that cost: the section named 9
+  numbers, while 53 first-parent merges in `v0.29.0..v0.30.0` touched the public surface and 44 of them —
+  48 numbers — named none; reading the merge subjects by hand turned up 4 of them, the path-category rule
+  turns up 48, and that difference is the argument for the gate. `scripts/changelog-coverage-check.mjs`
+  reads both halves out of the tree instead of off a hand-kept list: the version under test is the newest
+  `## [x.y.z]` section of `CHANGELOG.md`, the range is the greatest tag below it `..` that version's own tag
+  (`HEAD` while the version is untagged), the merge set is `git log --first-parent --merges`, and a merge
+  counts as behaviour-visible when its first-parent diff (`git diff --name-only <merge>^1 <merge>`) touches
+  `src/`, `bin/`, `package.json`, either README, the host-consumer contract, the requirements files, or
+  **this** version's upgrade guide. Adjudication runs in **one direction only** — public-surface merge
+  numbers ⊆ section numbers ∪ registered exemptions — because citing an older issue in prose is legitimate
+  and the reverse direction would redden it; a merge that touched only `test/`, non-public `docs/`,
+  `scripts/`, `delivery/`, `AGENTS*`, `.github/` or `examples/` is exempt **by path category, computed by
+  rule**, not by register, and `COVERAGE_EXEMPTIONS` covers only the opposite case (category-exempt yet
+  behaviour-visible), which is why it stays empty and is reconciled against `COVERAGE_EXEMPTION_MAX` in
+  both directions. Unreadable truth — an endpoint with no tag, a section that cannot be read, git unusable —
+  exits **2**, never green. What this merge changes on the public surface is one line of `package.json`
+  (the `check:changelog` script); everything else it carries is toolchain: the gate itself, the blocking CI
+  step between `check:test-summary` and `check:docs` (the checkout therefore carries `fetch-depth: 0`, since
+  a shallow clone holds neither tags nor history and the gate would sit at exit 2 forever), step 1 of
+  `npm run release:day -- --stage preflight`, and the 44 entries batch-backfilled into the 0.30.0 section.
+  No runtime behaviour changes; nothing for a host to migrate.
+- **新增 `npm run check:changelog`：碰到公开面的合并必须在本版 CHANGELOG 段里被点名（issue #691、PR #696；
+  合并 `a5cc4ba`；#700 补记）。** 它之前每一条 CHANGELOG 门禁问的都是「已有的条目中英成不成对」，没有一条问
+  「**该不该有一条**」。0.30.0 的复盘（issue #686）量到了代价：那一段只点名 9 个号，而 `v0.29.0..v0.30.0`
+  之间 53 个 first-parent 合并碰到了公开面，其中 44 个合并（落到号上是 48 个）一个号都没写——人工读主题
+  只找出 4 条，按路径类别机械判是 48 条，这个差本身就是这条闸存在的理由。
+  `scripts/changelog-coverage-check.mjs` 两边都从树里现读、不拄手写清单：待判版本 = `CHANGELOG.md` 里最新的
+  `## [x.y.z]` 段，区间 = 版本序上比它小的最大 tag `..` 该版本自己的 tag（该版本未打 tag 时上端取 `HEAD`），
+  合并集 = `git log --first-parent --merges`；一个合并算行为可见，当且仅当它的 first-parent diff
+  （`git diff --name-only <merge>^1 <merge>`）碰到 `src/`、`bin/`、`package.json`、两份 README、宿主契约、
+  需求文件，或**本版**升级指南。裁决**只查一边**（碰到公开面的合并号 ⊆ 段里的号 ∪ 带 `why` 的豁免登记），
+  因为散文里引用旧 issue 号是合法的、反向会把它们判成假红；只碰 `test/`、非公开 `docs/`、`scripts/`、
+  `delivery/`、`AGENTS*`、`.github/`、`examples/` 的合并归**类别豁免**——那是规则算出来的、不是往登记表里塞的，
+  而 `COVERAGE_EXEMPTIONS` 只为反向情形（类别判成豁免、实则行为可见）存在，所以它是空的、条数还与
+  `COVERAGE_EXEMPTION_MAX` 双向对账。真值读不出（区间端点没有 tag、段读不到、git 不可用）⇒ **exit 2**，
+  绝不静默绿。这次合并在公开面上只改 `package.json` 的一行（`check:changelog` 那条 script），其余全是工具面：
+  闸本身、夹在 `check:test-summary` 与 `check:docs` 之间那条阻塞 CI 步骤（checkout 因此带 `fetch-depth: 0`——
+  浅克隆既没 tag 也没历史，只会让闸永远停在 exit 2）、`npm run release:day -- --stage preflight` 的第 1 步，
+  以及一次性补进 0.30.0 段的那 44 条。运行时行为零变更，宿主什么都不用迁。
+
 ## [0.30.0] - 2026-11-03
 
 ### Breaking
