@@ -1,7 +1,7 @@
 <!-- doc-version: 0.30.0 -->
 # Host upgrade guide: 0.30.0
 
-**Release: 0.30.0 (unreleased — this page is a release-preparation document).** 0.30.0 is the
+**Release: 0.30.0.** 0.30.0 is the
 breaking bundle the library has been pointing at since the deprecation registry landed: **16 exported
 names are removed**. Every one of them was registered as a *zero-consumer* export — nothing in this
 repository imports it, nothing in the host checkouts the probe can see imports it — and the one name

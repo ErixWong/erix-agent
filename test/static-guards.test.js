@@ -3880,7 +3880,7 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
 // 顶部 Unreleased 非空 ⇒ 面就是它）。地板**必须跟着面一起重测**——「只升不降」是**同一面内**的规则，
 // 跨面重测是 #563 设计好的动作，不是放宽。
 /** 地板校准所在的节标题（`CHANGELOG_PAIR_FLOOR` 是在**这一节**上实测的；面挪走且配对数不足 ⇒ 点名重测）。 */
-const CHANGELOG_PAIR_FLOOR_SURFACE = "## [0.30.0] - 2026-11-03（未发布 / unpublished）";
+const CHANGELOG_PAIR_FLOOR_SURFACE = "## [0.30.0] - 2026-11-03";
 /** 两条 bullet 之间最多隔几行才算「紧邻」（0 = 直接相邻，1 = 中间隔一行）。 */
 const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 /** 配对地板：在 `CHANGELOG_PAIR_FLOOR_SURFACE` 那一节上实测的配对数。**同一面内只能升不能降。**
@@ -4110,6 +4110,15 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  * 挪完之后那条反向证重新承重（diagnostic 变成「已穿底」而不是「不在校准面上不判」）。**新增下版条目时
  * 重测**：下一条条目落进 `## [Unreleased]` 之后面会自动回到它（`fellBack: false`），那时校准面与地板
  * 都要按**实测**重测——同一面内只升不降，跨面重测不是放宽。
+ *
+ * 0.30.0 发布完成后（`npm publish` 成功、registry latest 已是 0.30.0）：CHANGELOG 的当前段去掉
+ * `（未发布 / unpublished）` 标注，校准面标题同步为 `## [0.30.0] - 2026-11-03`。条目集合未动 ⇒ 实测仍是
+ * **7 对**，地板仍为 7。守卫自己的 diagnostic 原文：
+ *
+ * ```
+ * # 配对地板：判据面 = \#\# [0.30.0] - 2026-11-03（第 6 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 为空 ⇒ 退到刚开的版本节）；中文 7 条 / 英文 7 条 / 配对 7 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 7（校准面 \#\# [0.30.0] - 2026-11-03）
+ * # 配对地板反向证：删掉第 10 行英文条目 ⇒ 6 对（地板 7，已穿底）+ 中文第 37 行无对应；把该条的 \#109 改成 \#999（数量不变）⇒ 6 对；还原 ⇒ 7 对全绿
+ * ```
  */
 const CHANGELOG_PAIR_FLOOR = 7;
 

@@ -7478,7 +7478,7 @@ const SELF_TEST_CASES = [
   },
   {
     label: "#511 评论：AGENTS.md 的「发布行」写成 0.28.0，registry 说 9.9.9 ⇒ 红（发布行的真相来源是 registry，不是 package.json）",
-    overlay: { [AGENTS_EN]: (t) => t.replace("`dist-tags.latest` — is `0.29.0`", "`dist-tags.latest` — is `0.28.0`") },
+    overlay: { [AGENTS_EN]: (t) => t.replace("`dist-tags.latest` — is `0.30.0`", "`dist-tags.latest` — is `0.28.0`") },
     simulateRegistry: selfTestRegistry({ latest: "9.9.9" }),
     expect: [/published-claim: AGENTS\.md:\d+ 说发布行（`dist-tags\.latest`）是 0\.28\.0，registry 实测是 9\.9\.9/],
   },
@@ -7526,7 +7526,7 @@ const SELF_TEST_CASES = [
   },
   {
     label: "#636（fail-closed）：CHANGELOG 里没有当前版本段 ⇒ 红（「这一版加了什么」的真值缺位，不许静默放行）",
-    overlay: { "CHANGELOG.md": (t) => t.replace("## [0.30.0] - 2026-11-03（未发布 / unpublished）", "## [0.9.9] - 2026-11-03") },
+    overlay: { "CHANGELOG.md": (t) => t.replace("## [0.30.0] - 2026-11-03", "## [0.9.9] - 2026-11-03") },
     simulateRegistry: selfTestRegistry(),
     expect: [/guide-coverage: 读不到 CHANGELOG 的 0\.30\.0 段/],
   },

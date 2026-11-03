@@ -3,13 +3,12 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
-## [0.30.0] - 2026-11-03（未发布 / unpublished）
+## [0.30.0] - 2026-11-03
 
 ### Breaking
 
 - **A failing fold summarizer is now a terminal error instead of a silent "degraded to a
-  statistical summary" (issue #661; ships with **0.30.0**, which is not published yet — the
-  published line is 0.29.0).** The user-facing reason, in the reporter's words: *when the LLM
+  statistical summary" (issue #661; ships with **0.30.0**).** The user-facing reason, in the reporter's words: *when the LLM
   summary fails it has to raise, so the user knows; otherwise the run keeps going quietly, the
   quality drops, and nobody notices.* Until now a rejected / throwing / timed-out / empty-text
   summary answer was swallowed and replaced by a mechanical statistical summary with a
@@ -35,8 +34,7 @@
   CLI also stops being mute:** a failed terminal state exits **`5`** (`exitCodeForRunFailure` in
   `bin/cli.js`) instead of sharing `1` with usage errors, so a scripted caller can tell "ran but
   unverified" (`4`) from "really failed" without parsing stdout.
-- **摘要器失败现在是终局错误，不再是静默的「降级为统计摘要」（issue #661；随 **0.30.0** 发布，
-  0.30.0 尚未发布——已发布线是 0.29.0）。** 用户原话（动机）：*LLM 做摘要失败了必须报错好让用户知道，
+- **摘要器失败现在是终局错误，不再是静默的「降级为统计摘要」（issue #661；随 **0.30.0** 发布）。** 用户原话（动机）：*LLM 做摘要失败了必须报错好让用户知道，
   不然静默着跑，质量差，也没人发现问题。* 此前 reject / throw / 超时 / 返回空文本的摘要应答会被吞掉，
   换成一份机械统计摘要并挂一行 `[fold-llm 摘要失败，已降级为统计摘要（原因: …）]`，于是摘要器坏了的
   run 与正常的 run 终局一模一样。现在 `fold-llm` 在折叠这一步抛
