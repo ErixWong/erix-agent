@@ -253,8 +253,14 @@ writeback → 绿：发布态已回写、已提交、check:docs 自洽（phase=w
 | 22 | `npm run check:types-build` | 0 | 87 个 `.d.ts` 生成 + 断言 + 清理，工作树干净 |
 | 23 | `npm run check:exports:deprecated` | 0 | 登记面与候选面一致 |
 | 24 | `node scripts/guide-removal-gate.mjs --self-test` | 0 | 18 条判据 |
-| 25 | `npm run check:release` | 0 | 6 步全绿，18.9 s（墙钟 19 s） |
+| 25 | `npm run check:release` | 0 | 6 步全绿，19 s（墙钟 19.1 s） |
 | 26 | `node scripts/test-hygiene-check.mjs --self-test` | 0 | 13 例 |
+
+上面这一轮跑在**最终树**上（`git status --porcelain` 干净，日志 `/tmp/689-gates-final.txt`）：26 条命令
+逐条 `EXIT=0`，没有一条非零。一处发现写在这里，因为它改了我第一版的写法：`delivery/*.md` 也在 `check:docs`
+的 `paths` 面内——本报告最初把状态文件名写成反引号形态，被判成「裸文件名三级都解不到」而红
+（`archive-refs: delivery/689-release-day.md … erix-release-day-state.json（第 155 行）`），改成非引用形态后绿。
+也就是说**交付报告本身也要过文档门禁**，这一条对后来写报告的人有用。
 
 `check:types*` 的四条都打印「基线可下调」的提示（94/129/1845/2058）。**本片没有下调**：棘轮下调要求
 「改常量 + 单独提交 + 说清哪个文件少了多少」，那是另一笔账，混进发版日这一片会让「这次为什么变」不可归因。
