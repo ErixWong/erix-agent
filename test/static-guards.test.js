@@ -3880,7 +3880,7 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
 // 顶部 Unreleased 非空 ⇒ 面就是它）。地板**必须跟着面一起重测**——「只升不降」是**同一面内**的规则，
 // 跨面重测是 #563 设计好的动作，不是放宽。
 /** 地板校准所在的节标题（`CHANGELOG_PAIR_FLOOR` 是在**这一节**上实测的；面挪走且配对数不足 ⇒ 点名重测）。 */
-const CHANGELOG_PAIR_FLOOR_SURFACE = "## [0.31.0]（未发布 / unpublished）";
+const CHANGELOG_PAIR_FLOOR_SURFACE = "## [Unreleased]";
 /** 两条 bullet 之间最多隔几行才算「紧邻」（0 = 直接相邻，1 = 中间隔一行）。 */
 const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 /** 配对地板：在 `CHANGELOG_PAIR_FLOOR_SURFACE` 那一节上实测的配对数。**同一面内只能升不能降。**
@@ -3889,6 +3889,14 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  * 随后 #571（本单）把那条目搬进了 `## [Unreleased]`（0.28.0 已发布），面跟着挪到 `## [Unreleased]`
  * ⇒ **在新面上重测 = 1 对**。反向证（删一条英文 / 改一个 issue 引用 ⇒ 配对数必须掉到地板**以下**）
  * 要求地板恰等于实测值，否则它们会说「地板拦不住」——所以这个数不是拍出来的，是量出来的。只许继续往上抬。
+ *
+ * issue #421（本单）：0.31.0 发布（`86af907` 的发布态回写）之后顶部 `## [Unreleased]` 是空的 ⇒ 面退到
+ * `## [0.31.0] - 2026-11-04`（实测 7 对，与当时的地板 7 相等）。#421 是这个新 Unreleased 里的**第一条**：
+ * 一节英文 + 它的中文译本（issue 引用集合两侧都是 `#394 / #414 / #420 / #421 / #424 / #430`）⇒ 面按
+ * `resolveChangelogScanSurface` 回到 `## [Unreleased]`，**在新面上重测 = 1 对**，地板随之 7 → 1、
+ * 校准面跟着改成 `## [Unreleased]`。这正是上面那段「跨面重测是 #563 设计好的动作，不是放宽」的动作：
+ * 旧数 7 是在**另一节**上量的，拿它判这一节只会造一条与面无关的假红（判词原文会说「请重测地板」）。
+ * 反向证仍然成立：这一节只有 1 对 ⇒ 删掉那条英文（或改掉它的一个 issue 引用）就掉到 0 对 < 地板 1。
  *
  * issue #574：`## [Unreleased] ### Fixed` 新增一对 `createAgent` 条目（同一个 issue 引用集合 #574 + #524）
  * ⇒ 在**同一个面**上实测 **2 对**（中文 2 / 英文 2 / 无对应 0，`node --test test/static-guards.test.js`
@@ -4179,7 +4187,7 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *
  * 抬到 7 后在同一切版树上重跑：校准绿，同一格的反向证照旧报「已穿底」（数字由那一次跑打印，不搬进本文）。
  */
-const CHANGELOG_PAIR_FLOOR = 7;
+const CHANGELOG_PAIR_FLOOR = 1;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

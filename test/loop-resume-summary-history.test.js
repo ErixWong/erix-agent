@@ -34,6 +34,11 @@ const harness = (records) => {
     governorState: { errorSeen: {}, runningLog: [], l0Facts: [], historyLimit: 50 },
     restoreErrorSeen: () => {},
     addGovernorHistory: (round, summary) => { history.push({ round, summary }); },
+    // issue #421：`restoreResume` 现在也**读**这两批（A 集合 / B 集合）来算「哪些 id 已结清」——
+    // 它们由 orchestrator 的 ctx 访问器提供，真 ctx 里恒为数组。本夹具是「最小可跑 ctx」，
+    // 这里补上「什么都没交过来」的形态（不是放宽断言：本单钉的是轮次历史那一格）。
+    resumeUnpersistedToolResults: [],
+    resumePendingTools: [],
     // engine stubs: restoreResume 从 ctx 上解构走的引擎内部动作（记账/通知类），本单测只钉
     // 「轮次历史里那格是什么」，这些一律 no-op。
     recordFileWrites: () => undefined,
