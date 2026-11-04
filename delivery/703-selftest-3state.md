@@ -338,7 +338,7 @@ npm run check:version-states -- --only S2,S3 --keep   # 只跑某几态并留着
 |---|---|---|
 | 本工作树 + `PATH=/tmp/fakebin:$PATH`（`/tmp/fakebin/npm` 是一枚 `exit 1` 的桩，任何 `npm view` 都失败） | `node --test test/version-state-probe-703.test.js` | **`# tests 7 / # pass 7 / # fail 0`**，exit 0，59.5 s（`/tmp/t703-offline.log`） |
 | 0.31-未发布宿主 `/tmp/w2/host31`（同步了本轮两个文件之后复跑） | 同上 | **7 / 0 fail**（`/tmp/t703-031host-b.log`） |
-| 本工作树（最终态） | `npm test`（同一最终态跑了两遍，逐字同数） | **`# tests 3407 / # pass 3394 / # fail 0 / # skipped 13 / # todo 0 / # cancelled 0`**，exit 0（`/tmp/npm-test-r4.log` 与 `/tmp/npm-test-final5.log`） |
+| 本工作树（最终态） | `npm test`（同一最终态**连跑三遍，逐字同数**） | **`# tests 3407 / # pass 3394 / # fail 0 / # skipped 13 / # todo 0 / # cancelled 0`**，exit 0（`/tmp/npm-test-r4.log`、`/tmp/npm-test-final5.log`、`/tmp/npm-test-final6.log`）；三遍的 `check:test-summary -- --log` 都是 `TEST-SUMMARY-VERDICT ok` |
 | 同一份日志 | `npm run check:test-summary -- --log /tmp/npm-test-r4.log` | **`TEST-SUMMARY-VERDICT ok`**（登记 3407 = 实测 3407 ⇒ 连 HINT 都不再打） |
 | 本工作树（最终态） | `check:docs` / `:strict` / `check:docs-spelling` / `check:agents-directives` / `check:tests` / `check:changelog` | **全 exit 0**（日志 `/tmp/f-check-docs.log`、`/tmp/f-check-docs:strict.log`、`/tmp/f-check-docs-spelling.log`、`/tmp/f-check-agents-directives.log`、`/tmp/f-check-tests.log`、`/tmp/f-check-changelog.log`） |
 | 本工作树（最终态） | `node --test test/static-guards.test.js` / `node --test test/version-state-probe-703.test.js` | **54 / 0 fail** 与 **7 / 0 fail**（`/tmp/f-static.log`、`/tmp/f-probe.log`） |
