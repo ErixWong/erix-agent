@@ -112,7 +112,8 @@
     "check:exports:deprecated": "node scripts/deprecated-export-check.mjs",
     "check:host-consumers": "node scripts/host-consumer-probe.mjs",
     "release:day": "node scripts/release-day.mjs",
-    "check:final-guard-probe": "node scripts/final-guard-probe.mjs"
+    "check:final-guard-probe": "node scripts/final-guard-probe.mjs",
+    "check:version-states": "node scripts/version-state-probe.mjs"
   },
   "license": "MIT",
   "devDependencies": {

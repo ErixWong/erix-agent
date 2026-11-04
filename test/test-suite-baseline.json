@@ -3,12 +3,26 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3400,
+    "tests": 3407,
     "fail": 0,
     "maxSkipped": 15
   },
   "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
   "observations": [
+    {
+      "date": "2026-11-04",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "34f8499（#703 第二轮，登记与用例同一分支同一批次）",
+      "branch": "feat-261104-01-selftest-3state-703",
+      "tests": 3407,
+      "pass": 3394,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests +7 是有意的增删，且**整支 #703 的账一次结清**：test/version-state-probe-703.test.js 第一轮 4 格 → 第二轮 7 格（新增 A「探针自己的 --self-test 在合成宿主上 13 例全绿并报条数」、B「宿主实跑要么判定要么带代号的 exit 2 且先印事实读数」、F「探针代码行里不许出现宿主版本号字面量」、G「npm script 接线钉子」，保留第一轮的 --only 写错态名 / --registry-json 读不出 / 假 latest 三格；**没有删格、没有把期望签名放宽成匹配任意格**）。登记值从 3400 抬到 3407 而不是 3404：第一轮那 +4 当时按「抬登记值是人的动作」留在提示里没抬，第二轮由主 agent 验收单一次性结清。六个计数逐字取自本工作树 `npm test` 的 TAP 汇总行（日志 /tmp/npm-test-r2.log），经 `npm run check:test-summary -- --log /tmp/npm-test-r2.log` 复核为 `TEST-SUMMARY-VERDICT ok` 并打出「可抬到 3407（+7）」，非手抄。skipped 仍是那 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE）+ 1 条真上游多会话格（闸门关 ⇒ skip 但计入 tests），maxSkipped 上限 15 不动。探针的新用例全部离线：合成树写在 makeTmp()，registry 基线走 --registry-base auto/注入文件，不打网络、不打模型。"
+    },
     {
       "env": "local",
       "node": "v22.23.2",

@@ -109,6 +109,78 @@
   浅克隆既没 tag 也没历史，只会让闸永远停在 exit 2）、`npm run release:day -- --stage preflight` 的第 1 步，
   以及一次性补进 0.30.0 段的那 44 条。运行时行为零变更，宿主什么都不用迁。
 
+### Fixed
+
+- **Two `docs-drift-check --self-test` fixture defects that had been latent for a whole version, and a release-state
+  probe that no longer needs the tree to be pre-cut (issue #703, PR #706).** Six `#690` reverse-proof cases turned red the
+  moment the tree was cut to the next version, and every one of them was the fixture lying rather than the product:
+  **(1)** `addSurfaceEvidence` built its CHANGELOG-heading regex inside a template literal, so the `\[` / `\]`
+  escapes arrived at `RegExp` as `[` / `]` and the substitution returned the text unchanged — five cases had been
+  asserting on a mutation that was never applied (the same file's `rewriteCurrentChangelogHeading` already used the
+  doubled form; only this one site missed it). **(2)** the injected witness names were taken from the cell's own
+  truth list without asking the criterion who owns them, while `surfaceCellOf` resolves a name to the **first** cell
+  that matches it — the fixture injected a witness belonging to another cell (measured: the on-disk-formats case
+  got a diagnostics-field name), so the red it produced was not the cell the case was about; the fix keeps only the
+  members that `surfaceCellOf(name, { quoted: true })` attributes back to this cell, and `runSelfTest` gained a
+  static check that fails when a cell yields no member attributing to it at all (a drifting attribution extractor
+  can no longer pass silently). A third case had written its mutation into the EN half of a page only, which is not
+  a criterion but a fabricated EN/CN divergence. **No criterion was bought with a green**: `unchanged-surface`
+  (#690), `guide-coverage`, `changelog-date` (#697) and `published-claim` are byte-identical, no case was deleted
+  and no expected signature was widened to "any cell". The registry fact became injectable
+  (`docs-drift-check --registry-json <file>`; unreadable or malformed is exit 2, never "skipped"; CI passes nothing,
+  so the production reading is unchanged), and `scripts/version-state-probe.mjs` — `npm run check:version-states`,
+  which is the one public-surface line this carries, a `package.json` script — drives the three legal release states
+  (cut-but-unpublished / published-but-untagged / fully published) plus a contradiction state through the production
+  judgement on mechanically built trees. Its second round removed the same disease from **the probe itself**: the
+  current version used to be derived from the tree running the probe (a CHANGELOG section above `package.json`), so
+  the probe only worked *before* a version cut — now it comes from `--src <host>` / `--next` / `--previous`,
+  `--registry-base auto|<file>` runs it offline, an exit 2 prints the facts it did read before its reason code
+  (`NO_INFLIGHT_SECTION`, `NEXT_ALREADY_PUBLISHED`, …) instead of saying nothing, and
+  `node scripts/version-state-probe.mjs --self-test` (reverse proofs on three synthetic hosts, case count printed)
+  is its own guard. No behaviour change in the runtime, nothing for a host to migrate.
+- **本版的自测夹具里有两处潜伏了一整版的缺陷，外加一个不再要求「切版前」才能跑的发布态探针（issue #703、PR #706）。**
+  树一切到下一版，`#690` 那六例反向证就集体红，而逐条查下去**全是夹具在说谎，不是产品回归**：**(1)**
+  `addSurfaceEvidence` 的段首正则是在模板字面量里拼的，`\[` / `\]` 到 `RegExp` 手里退化成了 `[` / `]`，替换
+  因此**原样返回**——五例一直在断言一个根本没落上的变异（同一文件里的 `rewriteCurrentChangelogHeading` 用的就是
+  双写形式，只有这一处漏了）；**(2)** 注入型证人的名字是从那一格的成员表里直接抽的，没问判据「这个名字归谁」，
+  而 `surfaceCellOf` 是**先命中的那格赢**——实测注入了一条属于别格的证人（磁盘格式那一格抽到了诊断字段的名字），
+  于是红的不是本例考的那一格；修法是只保留 `surfaceCellOf(name, { quoted: true })` 会归回本格的成员，并给
+  `runSelfTest` 加了一刀静态校查：某格一个都不归本格就直接报（归属提取器再飘就绿不过去）。第三例是把变异只写进了
+  中英两半里的 EN 半边——那不叫判据，叫凭空造出一条中英背离。**没有用放宽判据换绿灯**：`unchanged-surface`（#690）、
+  `guide-coverage`、`changelog-date`（#697）、`published-claim` 四条一字未改，没有删用例，也没有把期望签名放宽成
+  「匹配任意格」。registry 事实改成可注入（`docs-drift-check --registry-json <file>`；读不出 / 形状不对 = exit 2，
+  绝不是「跳过」；CI 不传它 ⇒ 生产口径一字未变），而 `scripts/version-state-probe.mjs`（`npm run check:version-states`，
+  本单在公开面上只有那一行 `package.json` script）在机械合成的树上把三个合法发布态（切版未发布 / 已发布未打 tag /
+  发布完成）加一个矛盾态推过**生产判定**。第二轮把同样的病从**探针自己身上**拔掉：「当前版」原本从「跑它的那棵树」
+  推（CHANGELOG 里高于 `package.json` 的那一段），于是它只能在**切版前**工作——现在它来自 `--src <宿主>` /
+  `--next` / `--previous`，`--registry-base auto|<file>` 让它离线可跑，exit 2 在报代号（`NO_INFLIGHT_SECTION`、
+  `NEXT_ALREADY_PUBLISHED` …）之前先把已读到的事实印出来（不许静默什么都不判），而
+  `node scripts/version-state-probe.mjs --self-test`（三棵合成宿主上的反向证，条数由命令自己打印）是它自己的闸。
+  零行为变更，宿主什么都不用迁。
+- **The 0.31.0 CN guide's §4 heading was not the string the gate reads — and this release is 0.31.0 (issue #704;
+  merge `3da5d76`; backfilled by #703).** That merge fixed the four false reds of the docs gate (#699 ①②④ green,
+  ③ half of it, the cut-state probe left to #703) and wrote into the instruction face who owns a CHANGELOG entry
+  (#702); on the public surface its first-parent diff touches one file, `docs/host-upgrade-guide-0.31.0_cn.md`.
+  **Direction, stated so a later reader cannot misread it: this merge *corrected* that page's §4 heading — from
+  `## 4. 不变的部分` (written that way by `7917360` in the #688 slice) to `## 4. 没有变的东西`, which is the string
+  `unchanged-surface` uses to locate the CN half (the EN half already matched); proof: `git show ac3eab9 --
+  docs/host-upgrade-guide-0.31.0_cn.md`.** It stayed latent because nothing read that anchor until this same merge
+  made that family of expectations read-live — and once something reads an anchor, an anchor that is not the string
+  the gate reads is a cell the gate cannot find, and "cannot find" is exit 2, not green. Because this release **is**
+  0.31.0, that page is the current version's upgrade guide, which is public surface by path
+  (`git diff --name-only 3da5d76^1 3da5d76`), so the entry is owed in this section.
+  Host-visible effect: one heading in one CN document — no option, no export, no default, no behaviour change.
+- **0.31.0 那份 CN 指南的 §4 标题不是门禁要读的那串字，而本版就是 0.31.0（issue #704；合并 `3da5d76`；#703 补记）。**
+  那次合并修的是文档闸的四格误报（#699 ①②④ 全绿、③ 修了一半、切版探针留给 #703），并把「条目该由谁写」写进了
+  指令面（#702）。它在公开面上只碰一个文件 `docs/host-upgrade-guide-0.31.0_cn.md`。**方向说清，免得后来人读反**：
+  这次合并是把那一页的 §4 标题「改对」——从 `## 4. 不变的部分`（`7917360` 在 #688 那一刀写进去的）改成
+  `## 4. 没有变的东西`，也就是 `unchanged-surface` 找 CN 半边要读的那串字（EN 半边本来就对得上）；证据
+  `git show ac3eab9 -- docs/host-upgrade-guide-0.31.0_cn.md`。它此前潜伏着，是因为**没有任何东西读那个锚点**——直到
+  同一次合并把那一族自测的期望改成现读；一旦有东西去读锚点，「锚点不是门禁读的那串字」就等于「门禁找不到那一格」，
+  而找不到是 exit 2，不是绿。因为本版就是 0.31.0，那一页就是**本版的升级指南**，按路径算公开面（依据是
+  `git diff --name-only 3da5d76^1 3da5d76`），所以这条账记在这一段。宿主可见的差别：一份中文文档里的一个标题——
+  没有选项、没有导出、没有默认值、零行为变更。
+
 ## [0.30.0] - 2026-11-03
 
 ### Breaking
