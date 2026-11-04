@@ -21,9 +21,17 @@
 | `/tmp/p703/base-selftest.log` | 我自己跑的**真树 0.30 基线**：`--self-test` exit 0，198 例全绿（6m23s） |
 | `/tmp/p703/S1/` | 我自建的第一棵探针树（形状见下节），日志 `/tmp/p703/S1-selftest.log` / `/tmp/p703/S1-strict.log` |
 | `/tmp/s1-main-drift.log` | 主 agent 在 erix-698 上跑的 S1 读数：**6/199** |
+| `/home/eric/projects/worktrees/erix-698` | 切版摞（`053d35e`，含 #698 的 §4 六格）：**只读**，只把它的 `git ls-files` 清单拷出来 |
+| `/tmp/s1full` / `/tmp/s1full-selftest.log` | 主 agent 的最终验收树（`bde9ef8` = main + 切版 + #698 + 我的 `83ec163`）：**只读没改**（日志是主 agent 跑的） |
+| `/tmp/p703/S1FULL2` | `/tmp/s1full` 的拷贝 + 只覆盖 `scripts/docs-drift-check.mjs`（`268637f`）+ 自建 tag/registry 桩 —— 最终树修完的读数在这棵上称 |
+| `/tmp/p703/M698` | erix-698 工作树的入库清单拷贝 + 同一个覆盖 —— 同一形状的第二份对照 |
+| `/tmp/p703/probe-full.log` / `/tmp/p703/probe-full2.log` | `npm run check:version-states` 全量输出（修前 2 红 / 修后四态全达预期） |
+| `/tmp/p703/real-selftest-2.log` / `/tmp/p703/npm-test-final.log` / `/tmp/p703/g-docs.log` 等 | 最终态的真树自测、`npm test`、各条文档闸 |
+| 本单新增的工作树文件 | `scripts/version-state-probe.mjs`、`test/version-state-probe-703.test.js`（新建）；`scripts/docs-drift-check.mjs`、`docs/testing.md`、`docs/testing_cn.md`、`package.json`（改） |
 
-没有打不开的路径。`/home/eric/projects/erix-llm-kit` 未被读写（工单禁）。
-`docs/host-upgrade-guide-0.31.0*.md` 只读：**本单不动**（#698 的地盘）。
+`.scratch/version-states/`（合成树与 registry 桩）：**写**（`.gitignore` 已登记为 scratch 类，不入库）。
+**未写**：`docs/host-upgrade-guide-0.31.0*.md`、`CHANGELOG.md`、`src/`、`/home/eric/projects/erix-llm-kit`（工单禁）、
+`/tmp/s1full`、`/home/eric/projects/worktrees/erix-698`。
 
 ## 基点：我自己现跑的读数（2026-11-04，UTC+8）
 
@@ -126,6 +134,73 @@ version-state-probe: OK — 4 个发布态（S1/S2/S3/contradiction）全部达�
 
 条数：**198 → 198**（没涨也没掉；新闸不在自测里加例，而在 `runSelfTest` 的静态校查里 + 一个新测试文件 `test/version-state-probe-703.test.js`（4 例，进 `npm test`））。
 
+## 其余门禁读数（本分支最终态）
+
+| 命令 | 期望 | 实测 |
+|---|---|---|
+| `npm test` | 0 fail | **exit 0**：`# tests 3404 / pass 3391 / fail 0 / skipped 13 / cancelled 0`（日志 `/tmp/p703/npm-test-final.log`） |
+| `npm run check:test-summary -- --log <上面那份>` | verdict ok | **exit 0**：`TEST-SUMMARY-VERDICT ok`（登记 3400，实测 3404，`TEST-SUMMARY-HINT` 提示可抬到 3404 —— **抬登记值仍是人的动作**，本单没改 `test/test-suite-baseline.json`） |
+| `npm run check:docs` | exit 0 | **exit 0**（`docs-drift-check: OK — … 123 项对齐 package.json 0.30.0 与源码` + `docs-sync-check: OK — 中英契约标题结构对齐（106 节）`） |
+| `npm run check:docs:strict` | exit 0 | **exit 0** |
+| `npm run check:docs-spelling` | exit 0 | **exit 0**（`--strict: OK — 0 处红`） |
+| `npm run check:agents-directives` | exit 0 | **exit 0**（`--strict: OK — 0 处红`，存量欠账 2 份登记・超上限 0・空转 0） |
+| `npm run check:tests`（新增测试文件后补跑） | exit 0 | **exit 0**（扫 293 个文件，无 `/tmp` 字面量、无 `mkdtemp` 直调、无豁免） |
+| `node --test test/static-guards.test.js` | 0 fail | **exit 0**：`# tests 54 / pass 54 / fail 0` |
+
+**未跑**（本单预算不够，且不在工单要求的闸里）：`check:release` / `check:release:real` / `check:mutation:run` / `types` 家族。
+
+## 最终验收树上的读数（主 agent 的树 = main + 切版 + #698 + #703）
+
+主 agent 在 `/tmp/s1full`（`bde9ef8`，含我的 `83ec163`）上亲跑：**2/199 红**，与我同数同两条。
+那两条的根因与修法见上面「第一轮修完只从 6 降到 2」那一节（已以 `268637f` 提交 —— **它不在 `/tmp/s1full` 里**，
+所以那棵树自己跑仍是 2 红；我没有改它）。
+
+为了在**那棵树的形状**上称修完的读数，我把它整棵拷到 `/tmp/p703/S1FULL2`（`tar` 排除 `node_modules`/`logs`/`.git`），
+只覆盖 `scripts/docs-drift-check.mjs`（= `268637f`）+ `scripts/version-state-probe.mjs`，然后自己 `git init` +
+按 CHANGELOG 带日期段建附注 tag（登记表里的 0.19.0 / 0.25.0 错开一天），**不建** `v0.31.0`（= S1 的 tag 面），
+registry 桩用探针产的 `/tmp/p703/m698-s1.json`（latest=0.30.0）。结果：
+
+| 树 | 命令 | 读数 |
+|---|---|---|
+| `/tmp/p703/S1FULL2`（= `/tmp/s1full` + `268637f`） | `node scripts/docs-drift-check.mjs --strict --registry-json …` | **exit 0**（125 项对齐 `package.json 0.31.0`） |
+| 同一棵 | `node scripts/docs-drift-check.mjs --self-test --registry-json …` | **exit 0 / 198 例全绿，对照组绿**（`/tmp/p703/S1FULL2-selftest.log`） |
+| 同一棵的形状的另一份（erix-698 工作树 + 同一个覆盖） | 同上两条 | 同样 **exit 0 / 198 全绿**（`/tmp/p703/M698-selftest.log`） |
+| 真树（本分支 `268637f`） | `node scripts/docs-drift-check.mjs --self-test` | **exit 0 / 198 全绿（无回归）**（`/tmp/p703/real-selftest-2.log`） |
+
+现在 disk 那一例点的名是 **`fingerprint`**（disk 格自己、且判据会归回 disk 的成员），不再是不属于本格的
+`degradeReason`；期望签名仍硬指「on-disk formats」那一格，**没放宽成匹配任意格**。
+
+## 交接 / 复现命令
+
+```bash
+# 三态探针（在主仓根上跑；会读一次 npm registry 拿 versions 名单）
+npm run check:version-states            # 四态全跑（含 S1 的整趟 --self-test，约 8 分钟）
+npm run check:version-states -- --fast  # 只跑逐态判定（秒级，进 npm test 的就是这一档）
+npm run check:version-states -- --only S2,S3 --keep   # 只跑某几态并留着合成树
+# 桩留在 .scratch/version-states/fixtures/{S1,S2,S3,contradiction}.json（.scratch 已登记为 scratch 类）
+```
+
+合完树之后最终验收就直接跑：`npm run check:version-states`（命令自己从当前工作树现取事实，不需要适配）。
+
+## 遗留 / 风险
+
+1. **`test/test-suite-baseline.json` 没抬**：`check:test-summary` 打 `TEST-SUMMARY-HINT`（登记 3400 → 实测 3404，+4 =
+   本单新增的 `test/version-state-probe-703.test.js`）。抬登记值按那台闸的口径是**人的动作**（它只提示不改写）。
+2. **探针需要一次真 registry 读数**（`versions` 名单的真值在 npm，不在 CHANGELOG：`0.21.0` / `0.24.0` 就是
+   「有日期但从未发布」两个反例）⇒ 离线环境跑它会 **exit 2 并说明原因**，不会静默假绿。CI 本来就能联网。
+3. **探针在「下一版已经发布」的机器上 exit 2**（registry 里已经有 `v下一版` ⇒ S1 不再是合法态）——设计如此，
+   它要的是「切版与发布之间」这个窗口；下一次发布之后请在下一次切版（CHANGELOG 出现更高段）之后再跑。
+   同理：CHANGELOG 没有高于 `package.json` 的段时它也 exit 2（本单没让探针自己造一个段，避免把「切版」做成
+   第二份回写规则）。
+4. **`#690` 那族在纯删除版上依赖「注入型证人」**：现在有三重钉 —— 变异不落上算失败（框架原有）、
+   注入名字必须归回本格（`surfaceCaseEvidence` 反查）、某格一个都不归本格时 `runSelfTest` 静态校查直接报。
+5. 本单**没改** `docs/host-upgrade-guide-0.31.0*.md`（#698 地盘）、没改 CHANGELOG 段内容、没动 `src/`。
+6. 合成树里发现的一个**与本单无关的硬伤**（没修，只记一笔）：`read()`（`scripts/docs-drift-check.mjs:265`）
+   对「index 里有、磁盘上没有」的入库文件直接 `readFileSync` ENOENT 抛死整个检查（实测
+   `/tmp/p703/S1-selftest-fixed.log`），而不是计成 READ_FAILURES ⇒ 半删除态的工树会把 `check:docs` 砸成
+   一个带堆栈的崩溃。另：本仓是 linked worktree，`.git` 是指针文件 ⇒ 任何「`cp -a` 一份树」的探针配方
+   都会让子树继续读原仓 index/refs（tag 面失控 + index 漂移即砸）。
+
 ## 探针跑的是哪棵树（交接要点）
 
 `scripts/version-state-probe.mjs` 的合成树 = **它自己所在的那份工作树**（入库清单 `git ls-files` + 工树内容）。
@@ -141,6 +216,8 @@ version-state-probe: OK — 4 个发布态（S1/S2/S3/contradiction）全部达�
 - [x] registry 事实可注入（`--registry-json`）+ 它自己的反向证（`test/version-state-probe-703.test.js` 的 C/D 两例）
 - [x] S1/S2/S3 三态探针（`scripts/version-state-probe.mjs` + `npm run check:version-states`）+ 矛盾态反向证
 - [x] S1 合成树 `--self-test` exit 0 的最终读数（198 全绿，`/tmp/p703/probe-full2.log`）
+- [x] 「main + #703 + #698」三态读数的**形状对照**（见下两节：`/tmp/p703/S1FULL2`、`/tmp/p703/M698`）
 - [x] 真树 `--self-test` 仍 198 全绿（无回归，`/tmp/p703/real-selftest-2.log`）
 - [ ] `npm test` / `check:test-summary` / `check:docs` / `:strict` / `check:docs-spelling` / `check:agents-directives` / `static-guards`（下表逐条回填）
-- [ ] 在「main + #703 + #698」合树上的 S1 验收读数（主 agent 合完才有那棵树）
+- [x] 最终验收树（main + 切版 + #698 + #703）上的 `--self-test` 读数：**exit 0 / 198 全绿**（`/tmp/p703/S1FULL2-selftest.log`）
+- [x] `npm test` / `check:test-summary` / `check:docs` / `:strict` / `check:docs-spelling` / `check:agents-directives` / `check:tests` / `static-guards`（上表逐条）
