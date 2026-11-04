@@ -112,7 +112,7 @@
 ### Fixed
 
 - **Two `docs-drift-check --self-test` fixture defects that had been latent for a whole version, and a release-state
-  probe that no longer needs the tree to be pre-cut (issue #703).** Six `#690` reverse-proof cases turned red the
+  probe that no longer needs the tree to be pre-cut (issue #703, PR #706).** Six `#690` reverse-proof cases turned red the
   moment the tree was cut to the next version, and every one of them was the fixture lying rather than the product:
   **(1)** `addSurfaceEvidence` built its CHANGELOG-heading regex inside a template literal, so the `\[` / `\]`
   escapes arrived at `RegExp` as `[` / `]` and the substitution returned the text unchanged — five cases had been
@@ -138,7 +138,7 @@
   (`NO_INFLIGHT_SECTION`, `NEXT_ALREADY_PUBLISHED`, …) instead of saying nothing, and
   `node scripts/version-state-probe.mjs --self-test` (reverse proofs on three synthetic hosts, case count printed)
   is its own guard. No behaviour change in the runtime, nothing for a host to migrate.
-- **本版的自测夹具里有两处潜伏了一整版的缺陷，外加一个不再要求「切版前」才能跑的发布态探针（issue #703）。**
+- **本版的自测夹具里有两处潜伏了一整版的缺陷，外加一个不再要求「切版前」才能跑的发布态探针（issue #703、PR #706）。**
   树一切到下一版，`#690` 那六例反向证就集体红，而逐条查下去**全是夹具在说谎，不是产品回归**：**(1)**
   `addSurfaceEvidence` 的段首正则是在模板字面量里拼的，`\[` / `\]` 到 `RegExp` 手里退化成了 `[` / `]`，替换
   因此**原样返回**——五例一直在断言一个根本没落上的变异（同一文件里的 `rewriteCurrentChangelogHeading` 用的就是
@@ -160,19 +160,24 @@
 - **The 0.31.0 CN guide's §4 heading was not the string the gate reads — and this release is 0.31.0 (issue #704;
   merge `3da5d76`; backfilled by #703).** That merge fixed the four false reds of the docs gate (#699 ①②④ green,
   ③ half of it, the cut-state probe left to #703) and wrote into the instruction face who owns a CHANGELOG entry
-  (#702); on the public surface its first-parent diff touches one file, `docs/host-upgrade-guide-0.31.0_cn.md`,
-  where §4 was titled `## 4. 不变的部分` while `unchanged-surface` locates the CN half through
-  `## N. 没有变的东西` (the EN half already matched) — once that family's expectations were made read-live by the
-  same merge, an anchor that is not the string the gate reads is simply a cell the gate cannot find, and "cannot
-  find" is exit 2, not green. Because this release **is** 0.31.0, that page is the current version's upgrade guide,
-  which is public surface by path (`git diff --name-only 3da5d76^1 3da5d76`), so the entry is owed in this section.
+  (#702); on the public surface its first-parent diff touches one file, `docs/host-upgrade-guide-0.31.0_cn.md`.
+  **Direction, stated so a later reader cannot misread it: this merge *corrected* that page's §4 heading — from
+  `## 4. 不变的部分` (written that way by `7917360` in the #688 slice) to `## 4. 没有变的东西`, which is the string
+  `unchanged-surface` uses to locate the CN half (the EN half already matched); proof: `git show ac3eab9 --
+  docs/host-upgrade-guide-0.31.0_cn.md`.** It stayed latent because nothing read that anchor until this same merge
+  made that family of expectations read-live — and once something reads an anchor, an anchor that is not the string
+  the gate reads is a cell the gate cannot find, and "cannot find" is exit 2, not green. Because this release **is**
+  0.31.0, that page is the current version's upgrade guide, which is public surface by path
+  (`git diff --name-only 3da5d76^1 3da5d76`), so the entry is owed in this section.
   Host-visible effect: one heading in one CN document — no option, no export, no default, no behaviour change.
 - **0.31.0 那份 CN 指南的 §4 标题不是门禁要读的那串字，而本版就是 0.31.0（issue #704；合并 `3da5d76`；#703 补记）。**
   那次合并修的是文档闸的四格误报（#699 ①②④ 全绿、③ 修了一半、切版探针留给 #703），并把「条目该由谁写」写进了
-  指令面（#702）。它在公开面上只碰一个文件 `docs/host-upgrade-guide-0.31.0_cn.md`：那里的 §4 写的是
-  `## 4. 不变的部分`，而 `unchanged-surface` 找 CN 半边靠的是 `## N. 没有变的东西`（EN 半边本来就对得上）——
-  同一次合并把那一族自测的期望改成现读之后，「锚点不是门禁读的那串字」就等于「门禁找不到那一格」，而找不到是
-  exit 2，不是绿。因为本版就是 0.31.0，那一页就是**本版的升级指南**，按路径算公开面（依据是
+  指令面（#702）。它在公开面上只碰一个文件 `docs/host-upgrade-guide-0.31.0_cn.md`。**方向说清，免得后来人读反**：
+  这次合并是把那一页的 §4 标题「改对」——从 `## 4. 不变的部分`（`7917360` 在 #688 那一刀写进去的）改成
+  `## 4. 没有变的东西`，也就是 `unchanged-surface` 找 CN 半边要读的那串字（EN 半边本来就对得上）；证据
+  `git show ac3eab9 -- docs/host-upgrade-guide-0.31.0_cn.md`。它此前潜伏着，是因为**没有任何东西读那个锚点**——直到
+  同一次合并把那一族自测的期望改成现读；一旦有东西去读锚点，「锚点不是门禁读的那串字」就等于「门禁找不到那一格」，
+  而找不到是 exit 2，不是绿。因为本版就是 0.31.0，那一页就是**本版的升级指南**，按路径算公开面（依据是
   `git diff --name-only 3da5d76^1 3da5d76`），所以这条账记在这一段。宿主可见的差别：一份中文文档里的一个标题——
   没有选项、没有导出、没有默认值、零行为变更。
 
