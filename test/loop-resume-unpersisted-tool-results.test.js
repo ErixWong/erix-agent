@@ -40,9 +40,11 @@ import {
 } from "../src/loop/messages.js";
 import { validateMessages } from "../src/messages/rounds.js";
 import { foldLedgerMessages } from "../src/store/message-rows.js";
+import { createFileTranscriptStore } from "../src/store/file.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { withSeed } from "./helpers/run-direct.js";
+import { makeTmp } from "./helpers/tmp.js";
 
 const RUN_ID = "resume-unpersisted-results";
 const TOOLS = [{ name: "work", replay: "safe", inputSchema: { type: "object" } }];
@@ -1081,6 +1083,30 @@ test("#421 中段悬空（已完成轮形状）· 首片行不可得 ⇒ 桩只�
   assert.equal(stubRowsOf(rows).length, 0, "锚点不可得时**一行都不许写**（宁可只修内存，也不造坏形状）");
   assert.deepEqual(ledgerAggregates(await inner.load(RUN_ID)), [{ role: "user", ids: ["t1"] }],
     "账本必须保持修前形状（本次修复不改变账本，只让 run 起得来）");
+});
+
+test("#421 中段悬空（崩溃轮形状）· file store 真落盘：桩写进文件、第二次恢复仍只一张", async () => {
+  // 与上面那条同一个形状，换**真落盘**的 store：内存 store 证的是逻辑，这里证的是
+  // 「桩真的进了档案」——`load()` 折回来仍是一条聚合 user 消息，第二次恢复不再补第二条。
+  const dir = await makeTmp("erix-421-midseq-");
+  const store = createFileTranscriptStore({ dir });
+  await midSequenceDanglingScene(store, { toolUseIds: ["t1", "t2"], resultIds: ["t1"] });
+
+  const provider = createFakeProvider([endTurn("续接完成")]);
+  const resumed = await runLoop({ store, provider, executeTool: async () => "unused" });
+  assert.equal(resumed.ok, true, `第一次恢复必须成功（实测：${String(resumed.error)}）`);
+  assert.deepEqual(stubBlocks(provider.requests[0].messages).map((block) => block.tool_use_id), ["t2"],
+    "第一次恢复：桩必须补进上下文");
+  assert.deepEqual(ledgerAggregates(await store.load(RUN_ID)), [{ role: "user", ids: ["t1", "t2"] }],
+    "桩必须真的落进档案：`load()` 折回来仍是一条聚合 user 消息（t1 + 桩 t2）");
+
+  const secondProvider = createFakeProvider([endTurn("第二次续接完成")]);
+  const second = await runLoop({ store, provider: secondProvider, executeTool: async () => "unused" });
+  assert.equal(second.ok, true, `第二次恢复必须成功（实测：${String(second.error)}）`);
+  assert.deepEqual(stubBlocks(secondProvider.requests[0].messages).map((block) => block.tool_use_id), ["t2"],
+    "第二次恢复：账本已认它 ⇒ 上下文里仍只有那一张桩（不是两张）");
+  assert.deepEqual(ledgerAggregates(await store.load(RUN_ID)), [{ role: "user", ids: ["t1", "t2"] }],
+    "第二次恢复之后账本形状不许变（仍是一条聚合 user 消息，桩不翻倍）");
 });
 
 test("#421 配对成功的情形 ⇒ 上下文与账本里**零桩**（不掩盖真错误）", async () => {
