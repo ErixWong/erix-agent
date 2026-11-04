@@ -14,7 +14,7 @@
       "env": "local",
       "node": "v22.23.2",
       "commit": "34f8499（#703 第二轮，登记与用例同一分支同一批次）",
-      "branch": "feat-261103-10-selftest-3state-703",
+      "branch": "feat-261104-01-selftest-3state-703",
       "tests": 3407,
       "pass": 3394,
       "fail": 0,
