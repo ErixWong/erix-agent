@@ -51,15 +51,16 @@
 
 | # | 用例 | 实测判词 | 归类 | 根因与修法 |
 |---|---|---|---|---|
-| 1 | `#690（还原）EN 磁盘格式退回原句 ⇒ 红并点名 degradeReason` | 变异没落到 CHANGELOG.md 上 | **`fixture-invalid`（真 bug：自测夹具自己的正则转义错）** | `addSurfaceEvidence`（`scripts/docs-drift-check.mjs:6708`）写的是模板字面量 `` `^## \[${esc(PKG_VERSION)}\].*$` ``：JS 先把 `\[` / `\]` 吃成 `[` / `]` ⇒ 正则源是 `^## [0\.31\.0].*$` = **字符类**（只认 `0 . 3 1` 五个字符），而段首真实文本是 `## [0.31.0]（未发布 / unpublished）`，`## ` 后面紧跟的是字面 `[` ⇒ 永不命中 ⇒ 变异不落上。**0.30 真树上这一族 `inject=false`（本版段里已有该格证据）⇒ 这个笔误从不被调用 ⇒ 198 全绿把它藏了一整版**；0.31 是纯删除版（段里 70 处反引号全是退役导出名，不属于六格）⇒ `inject=true` ⇒ 五例同时报信。⇒ **这不是假阳，是反向证自己把潜伏的夹具 bug 报出来了**（#210 R2 要的就是这个）。修法：转义改成 `\\[` / `\\]`（同文件的 `rewriteCurrentChangelogHeading` / `addGuideCoverageClaim` 用的都是这个形状，只有这一处漏了）。 |
+| 1 | `#690（还原）EN 磁盘格式退回原句 ⇒ 红并点名 degradeReason` | 变异没落到 CHANGELOG.md 上 | **`fixture-invalid`（真 bug 一：转义；修完后仍剩「归错格」的真 bug 二）** | 修法一：转义改成 `\\[` / `\\]`（同文件的 `rewriteCurrentChangelogHeading` / `addGuideCoverageClaim` 用的都是这个形状，只有这一处漏了）。修法二（仅 1/5 两例需要）：注入的名字改为**只取判据会归回本格的成员**，见下节。 |
 | 2 | `#690（还原）EN 诊断字段退回「observer events…」⇒ 红并点名 degradeKind` | 同上 | 同上（同一个根因，同一个注入器） | 同 #1 |
 | 3 | `#690（还原）EN 终局载荷退回「Termination, verification…」⇒ 红并点名 exitCodeForRunFailure` | 同上 | 同上 | 同 #1 |
 | 4 | `#690（中英各自判）CN 诊断字段整格缺席 ⇒ 红在 CN 侧（证据：degradeKind）` | 同上 | 同上 | 同 #1（这一例的 CHANGELOG 侧也走 `addSurfaceEvidence("diagnostics")`） |
 | 5 | `#690 声明了变更却不点名该格字段 ⇒ 红（该格证据：degradeReason）` | 同上 | 同上 | 同 #1 |
 | 6 | `#690（反向证）纯加法的名字不是变更证据：选项格写「不变」仍绿` | 本该绿，实测 2 处 `guide-coverage` 红（CN 指南没提 `config.metadata.model` / `config.metadata.modelMetadata`） | **`fixture-invalid`（变异只写了一半）** | 这一例把「本版新增叶子」那句话只写进 **EN 半** 的选项格；句里的 `config.metadata.modelMetadata.budgetTokens` 子串含代码侧清单里的两个叶子名 ⇒ `guide-coverage` 的中英成对那一半要求 CN 侧也提。0.30 两份指南**本来就都提过**这两个叶子（所以历史上没红），0.31 两份**都是 0 次提及**（已现查）⇒ 只改一侧就是凭空造一处中英背离。修法：这一例的中英**两半都写**（变异要落在它自己考的那一格，不能附带造出第二条红）；**不动 `docs/host-upgrade-guide-0.31.0*.md`**（#698 的地盘）。 |
 
-**没有一例是 `real-regression`**：六例全红在自测夹具自身（一处转义错 + 一处只写一半的变异），#697 两条判据、
-`unchanged-surface` / `guide-coverage` 两个判据本体一行没改。
+**没有一例是 `real-regression`**：六例全红在自测夹具自身（三处：① 注入器正则转义漏了；② 一例的变异只写了一半；
+③ 注入的名字没按判据的归属反查），#697 两条判据、`unchanged-surface` / `guide-coverage` 两个判据本体一行没改。
+**修都是加限不让夹具说谎，不是放宽判据换绿灯**（硬约束）。
 
 ## 修了什么（逐条对应上表）
 
@@ -68,6 +69,33 @@
 | `addSurfaceEvidence` 的段首正则转义 `\[` → `\\[`、`\]` → `\\]` | `scripts/docs-drift-check.mjs` 的 `addSurfaceEvidence` | 6 例表 #1–#5 |
 | `#690（反向证）纯加法` 那一例的变异**中英两半都写** | `SELF_TEST_CASES` 里那一例的 `overlay` | 6 例表 #6 |
 | registry 事实可注入：`--registry-json <file>`（读不出 = exit 2，不是跳过） | `scripts/docs-drift-check.mjs` 的 `registryFacts` / `loadRegistryFixture` + 顶部旗标注释 | 活 1 |
+
+### 第一轮修完只从 6 降到 2：剩下的两例是**另一个独立 bug**（不是同一个根因）
+
+`npm run check:version-states` 的第一次全量跑（`/tmp/p703/probe-full.log`）报 **2/199**：
+
+- `#690（还原）EN 磁盘格式退回改动前的原句 ⇒ 红并点名 degradeReason`
+- `#690 声明了变更却不点名该格字段 ⇒ 红（该格证据：degradeReason）`
+
+判词不是「变异没落上」了，而是「**红了但没点该点的名**」：
+
+```
+实测：unchanged-surface: docs/host-upgrade-guide-0.31.0.md:91 第「diagnostic fields」格写着不变，
+      而本版 CHANGELOG 声明这些字段变了：degradeReason ——「不变」与同一版 CHANGELOG 打架（#690）
+```
+
+**根因**：`surfaceCaseEvidence("disk")` 从该格成员真值里取 `members[0]`，而 `degradeReason` **同时属于两格**
+（它既是 `fold-summary-journal.js` 的账本记录字段，也是诊断字段），而 `surfaceCellOf` 是按
+`SURFACE_CELLS` 的顺序**先命中的那格赢**（诊断字段排在磁盘格式前面）⇒ 注入下去的证人被裁判到了
+**另一格**，红的是 diagnostic fields，用例要的是 on-disk formats。归类：**`fixture-invalid`**
+（夹具挑名字时没反查归属），**不是 `unchanged-surface` 判据回归**。
+
+**修法（没放宽任何判据）**：`surfaceCaseEvidence` 选名字时先按**判据自己的归属函数**过一遗
+（`surfaceCellOf(name, { quoted: true, truths }).id === cellId`），只取会归回本格的成员。
+`quoted: true` 与注入句里的反引号同口径。另外在 `runSelfTest` 的**静态校查**里加了一刀（与
+「用例数被削」「符号锚点抽到 0 处」同一位置，跑变异**之前**报）：若某格的真值里**一个都**不被判据归回本格
+⇒ 直接报「注入型证人无法成立」，这一刀在 0.30 树上也不空转（归属顺序飘了就会红）。
+**未改** `unchanged-surface` / `guide-coverage` / `changelog-date` 任何一行判据；**未删**任何用例。
 
 ## 读数表
 
@@ -78,12 +106,41 @@
 | 3 | S1 探针树 `--strict`（改前） | exit 0 | **exit 0** | `/tmp/p703/S1-strict.log` |
 | 4 | 主 agent 的 S1 树 `--self-test`（改前） | — | **6/199**（与 #2 同批同判词） | `/tmp/s1-main-drift.log` |
 | 5 | 真树 `--self-test`（改后） | exit 0 / 198（不许掉条数） | **exit 0 / 198 全绿** | `/tmp/p703/real-selftest-fixed.log` |
-| 6 | S1 探针树 `--self-test`（改后） | **exit 0** | 待重跑（上一轮 S1 树因共享 index 里新增了 `delivery/703-*.md` 而 ENOENT 崩，已改为机械建树） | `/tmp/p703/S1-selftest-fixed.log` |
+| 6 | S1 探针树 `--self-test`（只修了转义那一刀） | exit 0 | exit 1 / **2** 例（disk 那一格被归到了诊断字段） | `/tmp/p703/probe-full.log` |
+| 7 | 真树 `--self-test`（归属反查修完之后） | exit 0 / 198 | **exit 0 / 198 全绿（无回归）** | `/tmp/p703/real-selftest-2.log` |
+| 8 | **`npm run check:version-states` 全量（四态 + S1 整趟自测）** | 全部达预期 | **exit 0**：S1 `--strict` 0 + `--self-test` **198 全绿**；S2 **exit 2 点名 `TAG_MISSING`**；S3 **exit 0**；矛盾态 **exit 1 点名 `published-claim`** | `/tmp/p703/probe-full2.log` |
+
+第 8 行的原文读数（逐字摘自探针自己的输出）：
+
+```text
+── S1：切版未发布（段首无日期 + 无 tag + registry 还是上一版）
+    ✓ 段首是「未发布且无日期」形状（#697 ①）   ✓ AGENTS 的发布行声称 = 0.30.0   ✓ tag 面没有 v0.31.0
+    ✓ exit 0（绿）
+    ✓ `--self-test` exit 0（切版树上的 CI 阻断项）
+         → docs-drift-check --self-test: OK — 198 例反向证/放行证全部按预期，对照组绿
+── S2：✓ exit 2（未判定）  ✓ 点名 TAG_MISSING
+── S3：✓ v0.31.0 的 tagger date = 2026-11-04  ✓ exit 0（绿）
+── contradiction：✓ exit 1（红）  ✓ 点名 published-claim
+version-state-probe: OK — 4 个发布态（S1/S2/S3/contradiction）全部达预期，含矛盾态反向证与 S1 的整趟 --self-test
+```
+
+条数：**198 → 198**（没涨也没掉；新闸不在自测里加例，而在 `runSelfTest` 的静态校查里 + 一个新测试文件 `test/version-state-probe-703.test.js`（4 例，进 `npm test`））。
+
+## 探针跑的是哪棵树（交接要点）
+
+`scripts/version-state-probe.mjs` 的合成树 = **它自己所在的那份工作树**（入库清单 `git ls-files` + 工树内容）。
+本轮读数跑在 `feat-261104-01-selftest-3state-703` = **main `3da5d76` + #703**，**不含 #698**：
+那两份 `docs/host-upgrade-guide-0.31.0*.md` 在本分支上 §4 仍是一段散文（#698 的地盘，本单不改）。
+⇒ **最终 S1 验收必须在「main + #703 + #698」合起来的树上重跑 `npm run check:version-states`**（命令本身不需适配：
+它从当前工作树现取事实，合完树直接跑就是那棵树的读数；只是 §4 从散文变六格 bullet 后，`#690` 那六例的
+前提两半都成在，读数应该仍是 198 全绿或因 #698 加例而更高）。本单**不**预先改 `docs/host-upgrade-guide-0.31.0*.md`。
 
 ## 未完成
 
-- [x] 6 例逐条归类与修复（上两节）
-- [x] registry 事实可注入（`--registry-json`）
-- [ ] S1/S2/S3 三态探针（进工作树 `scripts/version-state-probe.mjs`，禁止人肉 `cp -a`）+ 矛盾态反向证 + 一条 `npm run`
-- [ ] `npm test` / `check:docs` / `:strict` / `check:docs-spelling` / `check:agents-directives` / `static-guards` / `check:test-summary`
-- [ ] S1 合成树 `--self-test` exit 0 的最终读数
+- [x] 6 例逐条归类与修复（上三节：**6 → 2 → 0**，两个独立根因）
+- [x] registry 事实可注入（`--registry-json`）+ 它自己的反向证（`test/version-state-probe-703.test.js` 的 C/D 两例）
+- [x] S1/S2/S3 三态探针（`scripts/version-state-probe.mjs` + `npm run check:version-states`）+ 矛盾态反向证
+- [x] S1 合成树 `--self-test` exit 0 的最终读数（198 全绿，`/tmp/p703/probe-full2.log`）
+- [x] 真树 `--self-test` 仍 198 全绿（无回归，`/tmp/p703/real-selftest-2.log`）
+- [ ] `npm test` / `check:test-summary` / `check:docs` / `:strict` / `check:docs-spelling` / `check:agents-directives` / `static-guards`（下表逐条回填）
+- [ ] 在「main + #703 + #698」合树上的 S1 验收读数（主 agent 合完才有那棵树）

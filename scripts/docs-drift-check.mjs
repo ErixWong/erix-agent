@@ -6723,21 +6723,24 @@ const SURFACE_CASE_EVIDENCE = new Map();
 /** 某一格在自测里的证据名字与「要不要注入证据」（见上面的节头；同一格只算一次）。 */
 function surfaceCaseEvidence(cellId) {
   if (SURFACE_CASE_EVIDENCE.has(cellId)) return SURFACE_CASE_EVIDENCE.get(cellId);
-  const truths = new Map();
-  for (const cell of SURFACE_CELLS) {
-    const t = cell.truth();
-    if (t) truths.set(cell.id, t);
-  }
+  const truths = surfaceTruthMap();
   const declared = declaredSurfaceChanges(PKG_VERSION, truths);
   const own = [...(declared?.byCell.get(cellId) ?? [])].sort();
   const preferred = SURFACE_CASE_PREFERRED[cellId];
-  const members = [...(truths.get(cellId) ?? [])].sort();
+  // **名字必须被判据自己归回这一格**：真值成员里有相当一部分名字同时属于几格，而 `surfaceCellOf`
+  // 是按 `SURFACE_CELLS` 的顺序**先命中的那格赢**（诊断字段在磁盘格式前面）。不反查就会注进一条
+  // 「归属于别的格」的证人：0.31 探针树上实测抽到 `degradeReason`（它同时是折叠账本的记录字段与诊断
+  // 字段）⇒ 注入后红的是「diagnostic fields 格写着不变」，而用例要的是「on-disk formats」（#703）。
+  // `quoted: true` 与注入句里的反引号同口径（否则事件格那一格会被当散文）。
+  const attributed = (name) => surfaceCellOf(name, { quoted: true, truths })?.id === cellId;
+  const members = [...(truths.get(cellId) ?? [])].filter(attributed).sort();
   const out = own.length
     ? { name: own.includes(preferred) ? preferred : own[0], inject: false, source: `本版 CHANGELOG ${PKG_VERSION} 段里该格已有的证据` }
     : members.length
-      ? { name: members.includes(preferred) ? preferred : members[0], inject: true, source: "本版段对这一格没有变更证据 ⇒ 证据由夹具从该格真值注入" }
+      ? { name: members.includes(preferred) ? preferred : members[0], inject: true,
+        source: "本版段对这一格没有变更证据 ⇒ 证据由夹具从该格真值注入（只取判据会归回本格的成员）" }
       // 真值抽不出（提取器坏了）：让「抽不到成员真值」那条红自己去红，这里不另造名字。
-      : { name: preferred ?? cellId, inject: false, source: "该格真值抽不出" };
+      : { name: preferred ?? cellId, inject: false, source: "该格真值抽不出（或一个都不归本格 ⇒ 归属提取器飘了）" };
   SURFACE_CASE_EVIDENCE.set(cellId, out);
   return out;
 }
@@ -9122,6 +9125,19 @@ function runSelfTest() {
   if (!symbolAnchorOccurrences(refScanDocs()).length) {
     failures.push("symbol-anchor: 覆盖面里抽到 0 处「符号 + 文件」锚点——提取逻辑或覆盖面被改坏，"
       + "本节全部符号锚点反向证都在空跑（抽不到真值就报错，#164 口径）");
+  }
+  // #703：**注入型证人必须被判据自己归回它那一格**。`surfaceCellOf` 按 `SURFACE_CELLS` 的顺序
+  // **先命中的那格赢**，而成员真值里一批名字同时属于几格（`degradeReason` 既是折叠账本的记录字段也是
+  // 诊断字段）。名字归错格时，注入下去红的是**另一格** ⇒ 用例报「红了但没点该点的名」，看着像文档漂移、
+  // 其实是夹具在说谎（0.31 探针树上实测到的是 disk 抽到 `degradeReason`）。不等到切版那天才暴。
+  for (const cellId of Object.keys(SURFACE_CASE_PREFERRED)) {
+    const truths703 = surfaceTruthMap();
+    const attributed703 = [...(truths703.get(cellId) ?? [])]
+      .filter((n) => surfaceCellOf(n, { quoted: true, truths: truths703 })?.id === cellId);
+    if (!attributed703.length) {
+      failures.push(`#690 夹具（#703）：「${cellId}」那一格的真值里没有一个名字是判据会归回本格的 ⇒ 注入型证人无法成立。`
+        + "要么提取器把名字全给了排在它前面的格（归属顺序飘了），要么提取面被改坏（抽不到真值就报错，#164 口径）");
+    }
   }
   // #699 ③：**当前版**指南的路径在期望里被抄成字面量，就是「切版当天整族反向证变红」的病根
   // （判据现算 `docs/host-upgrade-guide-<本版>.md`，期望还在要上一版那份）。这一刀把它钉死：
