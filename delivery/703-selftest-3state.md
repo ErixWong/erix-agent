@@ -170,6 +170,25 @@ registry 桩用探针产的 `/tmp/p703/m698-s1.json`（latest=0.30.0）。结果
 现在 disk 那一例点的名是 **`fingerprint`**（disk 格自己、且判据会归回 disk 的成员），不再是不属于本格的
 `degradeReason`；期望签名仍硬指「on-disk formats」那一格，**没放宽成匹配任意格**。
 
+## 改动落点（「没放宽判据」的机器证据）
+
+`git diff -U0 3da5d76..HEAD -- scripts/docs-drift-check.mjs` 的每一处 hunk 落在哪（行号 = 新文件）：
+
+| hunk | 落在 | 性质 |
+|---|---|---|
+| 123 / 174 | 文件顶部的判据注释与 `--registry-json` 旗标注释 | 文档 |
+| 6265 / 6328 / 6332 / 6334 | `loadRegistryFixture`（新增）与 `registryFacts()` 多一条**优先级**（注入桩 > `--offline` > `npm view`） | 生产路径的**旗标面**；CI 不传 ⇒ 行为一字不变 |
+| 6726 / 6730 / 6740 / 6743 | `surfaceCaseEvidence`（**自测夹具**取证据名字） | 自测 |
+| 6755 | `addSurfaceEvidence`（**自测夹具**的注入器正则） | 自测 |
+| 8999 / 9008 | `SELF_TEST_CASES` 里「纯加法」那一例的 `overlay`（中英两半都写） | 自测 |
+| 9129 | `runSelfTest` 的**静态校查**新增一刀 | 自测 |
+
+⇒ **没有任何一处落在生产判据本体里**：`unchanged-surface`（#690）、`guide-coverage`（#636）、`changelog-date`（#697
+的「未发布段不许带日期」与「已发布段日期 ↔ tag 日期」）、`published-claim`（#511）四段一字未改，
+`CHANGELOG_DATE_TAG_EXEMPTIONS` 与 `SURFACE_CELLS` 的本体也未改；没有删用例、没有把期望签名放宽成匹配任意格。
+#697 两条判据仍在源码里，并被自测的 `#697 ①` / `#697 ②` / `#697 ②（登记证）` / `#697 ②（空转证）` / `#697 ③`
+五例盯着（在 S1 / S2 / S3 三棵合成树上也都跑到了，见 `/tmp/p703/probe-full2.log`）。
+
 ## 交接 / 复现命令
 
 ```bash
