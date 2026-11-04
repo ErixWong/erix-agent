@@ -328,3 +328,19 @@ npm run check:version-states -- --only S2,S3 --keep   # 只跑某几态并留着
 4. `#704` 那条条目是我**替主 agent 补记**的（那次合并的作者是主 agent）：摘要只从它自己的主题与 `git diff --name-only 3da5d76^1 3da5d76` 现读。要改写口径请直接改那两条 bullet，**别删**——删了 `check:changelog` 立刻红回来（它就是为这件事装的）。
 5. `check:version-states` 仍**没接进 CI**（工单没要求；接的话需要 7~8 分钟 + 联网，或接 `--fast --registry-base auto` 的秒级档并把全量档留给发布日）。这是**主 agent 的口径决定**，不是本单欠的账。
 6. 本轮公开面只多两处 CHANGELOG 条目本身（`CHANGELOG.md` 在 `files` 里随包发），零运行时变更；宿主无需迁移。
+
+### 补记：把「测试面离线」从口号做成实测（commit `b3d0fc0` 之后的最后一格）
+
+上表写「测试面已全离线」时，A 格其实还会走探针缺省那条 `npm view`（父进程要先解析事实）。现在 A 格也带 `--registry-base auto`，
+于是**整个测试文件不再需要网络**——这不是断言，是我量过的：
+
+| 树 / 环境 | 命令 | 读数 |
+|---|---|---|
+| 本工作树 + `PATH=/tmp/fakebin:$PATH`（`/tmp/fakebin/npm` 是一枚 `exit 1` 的桩，任何 `npm view` 都失败） | `node --test test/version-state-probe-703.test.js` | **`# tests 7 / # pass 7 / # fail 0`**，exit 0，59.5 s（`/tmp/t703-offline.log`） |
+| 0.31-未发布宿主 `/tmp/w2/host31`（同步了本轮两个文件之后复跑） | 同上 | **7 / 0 fail**（`/tmp/t703-031host-b.log`） |
+| 本工作树（最终态） | `npm test` | **`# tests 3407 / # pass 3394 / # fail 0 / # skipped 13 / # todo 0 / # cancelled 0`**，exit 0（`/tmp/npm-test-r4.log`） |
+| 同一份日志 | `npm run check:test-summary -- --log /tmp/npm-test-r4.log` | **`TEST-SUMMARY-VERDICT ok`**（登记 3407 = 实测 3407 ⇒ 连 HINT 都不再打） |
+| 本工作树（最终态） | `check:docs` / `:strict` / `check:docs-spelling` / `check:agents-directives` / `check:tests` / `check:changelog` | **全 exit 0**（日志 `/tmp/f-check-docs.log`、`/tmp/f-check-docs:strict.log`、`/tmp/f-check-docs-spelling.log`、`/tmp/f-check-agents-directives.log`、`/tmp/f-check-tests.log`、`/tmp/f-check-changelog.log`） |
+| 本工作树（最终态） | `node --test test/static-guards.test.js` / `node --test test/version-state-probe-703.test.js` | **54 / 0 fail** 与 **7 / 0 fail**（`/tmp/f-static.log`、`/tmp/f-probe.log`） |
+
+`check:test-summary` 不带 `--log` 是 **exit 2 `NO_LOG_ARG`**（「没给日志就没有可对账的数字」），这是它的设计口径，不是本轮的洞 —— CI 那一步带 `--log "$RUNNER_TEMP/test-suite.log"` 跑。

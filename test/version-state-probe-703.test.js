@@ -46,7 +46,8 @@ const NOT_JUDGED_CODES = [
 
 test("A. 探针自己的 --self-test：合成宿主上 13 例全绿并报条数（切版前后两棵宿主同一份读数）", { timeout: 900000 }, async () => {
   const out = await makeTmp("version-states-selftest-");
-  const r = runNode(PROBE, ["--self-test", "--out", out], { timeout: 900000 });
+  // `--registry-base auto`：这一格必须**离线**跑得动（`npm` 被换成失败桩也要绿，实测见交付报告）。
+  const r = runNode(PROBE, ["--self-test", "--registry-base", "auto", "--out", out], { timeout: 900000 });
   const body = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   assert.equal(r.status, 0, `--self-test 应当全绿，实测 exit ${r.status}：\n${body.slice(-6000)}`);
   // 条数由命令自己打印；这里是**地板**（少一格 = 有一例被删/被跳过 ⇒ 红）。现测 13 例。
