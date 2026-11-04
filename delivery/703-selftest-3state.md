@@ -240,3 +240,91 @@ npm run check:version-states -- --only S2,S3 --keep   # 只跑某几态并留着
 - [ ] `npm test` / `check:test-summary` / `check:docs` / `:strict` / `check:docs-spelling` / `check:agents-directives` / `static-guards`（下表逐条回填）
 - [x] 最终验收树（main + 切版 + #698 + #703）上的 `--self-test` 读数：**exit 0 / 198 全绿**（`/tmp/p703/S1FULL2-selftest.log`）
 - [x] `npm test` / `check:test-summary` / `check:docs` / `:strict` / `check:docs-spelling` / `check:agents-directives` / `check:tests` / `static-guards`（上表逐条）
+
+---
+
+## 第二轮（主 agent 验收抓到的两个缺口）
+
+- 起点：本分支第一轮头 `5f2de87`（工作树干净）；本轮 head 见 `git log`（`65ba1f4` → `c41b27c` 之后另有本报告一笔）
+- 纪律照旧：每完成一步立刻 commit；数字全部我自己在盘上跑的命令现取，**没有把主 agent 给的数当我的结果**
+
+### 取证边界（本轮）
+
+| 路径 | 用途 |
+|---|---|
+| `/home/eric/projects/worktrees/erix-703/scripts/version-state-probe.mjs` | **本轮主改动**：事实来源改成 `--src` / `--next` / `--previous` / `--registry-base`，exit 2 全部带代号，新增 `--self-test` |
+| `/home/eric/projects/worktrees/erix-703/test/version-state-probe-703.test.js` | 4 格 → 7 格（第一轮的三格原样保留，另加自测 / 宿主实跑 / 静态守卫 / 接线钉子四格） |
+| `/home/eric/projects/worktrees/erix-703/CHANGELOG.md` | 0.31.0 段新增 `### Fixed` 两对中英条目（自登记 `#703`、替 `#704` 补记） |
+| `/home/eric/projects/worktrees/erix-703/docs/testing.md` / `docs/testing_cn.md` | 第 8 条改写：事实来源 + 「在哪一类树上判 / 在哪一类树上未判定」两句（中英成对） |
+| `/home/eric/projects/worktrees/erix-703/test/static-guards.test.js` | `CHANGELOG_PAIR_FLOOR` 4 → 6（守卫自己的 diagnostic 原文照抄，只升不降） |
+| `/home/eric/projects/worktrees/erix-703/test/test-suite-baseline.json` | `expect.tests` 3400 → 3407 + 一条 observations（整支 #703 的 +7 一次结清） |
+| `/tmp/w2/host31` | **我自己造的「0.31.0 未发布宿主」**：`git ls-files` 清单拷贝 + `package.json` 置 `0.31.0` + 跑本仓 `--sync --published 0.30.0` 回写 + 独立 `git init`/commit + 按带日期段建附注 tag（登记表 0.19.0 / 0.25.0 错开一天） |
+| `/tmp/w2/host31-r1` | **改前复现树**：`git archive 5f2de87`（第一轮的头）+ 同样的切版配方 ⇒ 一棵合法的 0.31 未发布宿主，用来现取「缺口 B 改前」的读数 |
+| `/tmp/w2/s1full-r2` | 主 agent 验收树 `/tmp/s1full` 的**入库清单拷贝**（`git -C /tmp/s1full ls-files` + `tar`）+ 只覆盖本轮那两个文件 ⇒ 「在主 agent 的 0.31 树形状上跑」的证据 |
+| `/tmp/gapA-before.log` / `/tmp/gapA-after.log` | 缺口 A 改前 / 改后的 `check:changelog` 全文 |
+| `/tmp/t703-round1-on-031.log` / `/tmp/vs-round1-031.log` | 第一轮代码在 0.31 未发布宿主上的读数（2 红 / `--fast` exit 2） |
+| `/tmp/t703-030.log` / `/tmp/t703-031host.log` / `/tmp/t703-s1full.log` | 本轮测试文件在三种树上的读数（7/7 / 7/7 / 7/7） |
+| `/tmp/vs-030-full.log` / `/tmp/vs-031-full.log` | `npm run check:version-states` 全量（含 S1 整趟自测）在两种宿主上的读数 |
+| `/tmp/st1.log` | 探针自己的 `--self-test` 13 例全文 |
+| `/tmp/selftest-r2.log` / `/tmp/npm-test-r2-final.log` | 真树 `--self-test`（198）与最终 `npm test` 的 TAP |
+| `/tmp/s1full`、`/home/eric/projects/worktrees/erix-698` | **只读**（只跑过 `git ls-files` / `tar` 取清单，一个字节没写） |
+
+**本轮未写**：`scripts/docs-drift-check.mjs`（**生产判据本体一字未动**）、`src/`、`docs/host-upgrade-guide-0.31.0*.md`（#698 地盘）、`/tmp/s1full`、erix-698。
+`git diff --stat 5f2de87..HEAD` 只碰七个文件：`CHANGELOG.md`、`docs/testing.md`、`docs/testing_cn.md`、`scripts/version-state-probe.mjs`、
+`test/static-guards.test.js`、`test/test-suite-baseline.json`、`test/version-state-probe-703.test.js`（+ 本报告）。
+
+### 基点：第二轮开工前我现跑的读数（2026-11-04，UTC+8）
+
+| 树 | 命令 | 读数 |
+|---|---|---|
+| `/tmp/w2/host31-r1`（= 第一轮头 `5f2de87` 的入库清单 + `package.json 0.31.0` + `--sync` 回写 + 独立 git） | `node --test test/version-state-probe-703.test.js` | **`# tests 4 / # pass 2 / # fail 2`**：`not ok 1 - A. 探针：S3（发布完成）绿 + 矛盾态红并点名 published-claim`（`expected: 0 actual: 2`）、`not ok 2 - B. 探针：--only 写错态名…`（`/tmp/t703-round1-on-031.log`） |
+| 同一棵 | `npm run check:version-states -- --fast` | **exit 2**：`version-state-probe: 本仓 CHANGELOG 里没有高于 package.json（0.31.0）的版本段 ⇒ 「切版未发布」（S1）没有落脚处`（`/tmp/vs-round1-031.log`） |
+| 本分支 `5f2de87`（0.30 宿主） | `npm run check:changelog` | **exit 1**：`✗ #704 的合并 3da5d76 碰到了公开面（docs/host-upgrade-guide-0.31.0_cn.md），而 0.31.0 段里没有它` + `changelog-coverage: 红 1 处（缺项 1 个，见上）`（`/tmp/gapA-before.log`；我这棵树上 #703 的合并还没发生，所以只剩 #704 这一条） |
+
+⇒ 两个缺口都在我自己的树上复现了，**不是照抄主 agent 的表**。
+
+### 缺口 B：把「当前版」从宿主手里拿走（commit `65ba1f4`）
+
+| 改动 | 位置 | 后果 |
+|---|---|---|
+| 「要切的那一版」= `--next` >（`--src` 树 CHANGELOG 里**未发布且不低于该树 `package.json`** 的最高段）；「上一版」= `--previous` >（该树里**已发布**（带日期且没标未发布，与判据 3 同口径）且低于它的最高段） | `scripts/version-state-probe.mjs` 的 `derivedNext` / `derivedPrevious` | 宿主的 `package.json` 只剩**下界**一个用途；切版前后两棵树推出**同一对**版本 |
+| `--src <dir>`：入库清单、CHANGELOG 段面、`CHANGELOG_DATE_TAG_EXEMPTIONS`、registry 包名全部从这棵树现读 | `SRC` / `readSrc` / `trackedFiles` / `buildTree` / 新增 `buildHost` | 测试与探针都能拿**合成宿主**当基准，而不是拿跑它的树 |
+| `--registry-base <file\|auto>`：`auto` 从来源树 CHANGELOG 机械现推（口径 = `srcPublished()`，**不是**「带日期」——`0.21.0` / `0.24.0` / `0.27.0` 自标未发布，抄「带日期」会造出 4 处 `published-claim` 假红，第一轮踩过） | `resolveRegistryBase()` | 探针与测试**离线**；表头写「来源：合成」，不冒充实测 |
+| 每个 exit 2 带代号，且**先印已读到的事实**再报代号 | `fail(msg, code)` / `failFacts()` / `printAttemptFacts()` | 「静默什么都不判」在结构上不可能；机器能分辨「未判定」与「红」 |
+| `--only` 的合法性校验提到一切事实读取之前 | 参数闸 | 打错态名在连事实都推不出的树上也照样报得出（自测例 10） |
+| 新增 `node scripts/version-state-probe.mjs --self-test` | `runSelfTest()` | **13 例反向证**跑在三棵机械合成宿主（切版前 / 切版后未发布 / 发布回写后）上，离线，**43 秒**；例 1+2 钉「两棵宿主同一份读数」 |
+| `setVersion` 把「本来就是那一版」与「找不到 version 那一行」分开报 | `setVersion()` | 合成「切版前宿主」不再假红 |
+
+探针自己的 13 例（`/tmp/st1.log`，`--self-test: OK — 13 例`）：① 合成宿主「切版后未发布」当基准跑 S2/S3/矛盾态；② 合成宿主「切版前」当基准 ⇒ **同一份读数**；③ `--next/--previous` 参数接管；④ 发布回写后的宿主 ⇒ **exit 2 点名 `NO_INFLIGHT_SECTION`** 且先印读数；⑤ `--next` 指回已发布段 ⇒ `NEXT_ALREADY_PUBLISHED`（参数不许硬掰）；⑥⑦ `--registry-base` 读不出 / 形状不对 ⇒ `REGISTRY_BASE_UNREADABLE`；⑧ versions 里已有要切的那一版 ⇒ `NEXT_ALREADY_PUBLISHED`；⑨ versions 里没有上一版 ⇒ `PREVIOUS_NOT_PUBLISHED`；⑩ `--only S9` ⇒ `UNKNOWN_STATE`（先于事实）；⑪ `--next` 指向不存在的段 ⇒ `NEXT_SECTION_MISSING`；⑫ `--previous` 不低于 `--next` ⇒ `PREVIOUS_NOT_BELOW_NEXT`；⑬ `--src` 不存在 ⇒ `SRC_UNREADABLE`。
+
+### 缺口 A：`#703` 欠的那条条目（commit `34f8499`）
+
+`### Fixed` 两对中英条目，形状照该段既有补记条目（摘要 + 归因括号）：
+
+- **自登记 `#703`**：摘要从 `git diff 3da5d76..HEAD` 现读——两处潜伏一整版的夹具缺陷（`addSurfaceEvidence` 的段首正则在模板字面量里被吃掉 ⇒ 变异原样返回；注入型证人没按 `surfaceCellOf(name, { quoted: true })` 的归属反查 ⇒ 红的不是本格）+ 第三例「变异只写了一半」+ `runSelfTest` 的静态校查 + `--registry-json` 注入口子 + 三态探针与它自己的闸（第二轮把「宿主版本相关」从探针自己身上拔掉）。公开面 = `package.json` 那一行 script，零行为变更。
+- **替 `#704` 补记**：合并 `3da5d76` 的 first-parent diff 只碰一个公开面文件 `docs/host-upgrade-guide-0.31.0_cn.md`（`## 4. 不变的部分` → `## 4. 没有变的东西`，正是 `unchanged-surface` 读 CN 半边的锚点）；本版就是 0.31.0 ⇒ 那份指南是本版的升级指南 = 公开面 ⇒ 记在这一段。归因括号写 `#704`（闸取的号）+ `合并 3da5d76` + `#703 补记`。
+- **没替 `#698` 写**（那是 #698 分支的地盘）。
+
+| | 读数 |
+|---|---|
+| 改前（`/tmp/gapA-before.log`） | `✗ #704 的合并 3da5d76 碰到了公开面（docs/host-upgrade-guide-0.31.0_cn.md），而 0.31.0 段里没有它` ⇒ `changelog-coverage: 红 1 处（缺项 1 个，见上）`，**exit 1** |
+| 改后（`/tmp/gapA-after.log`） | `· 公开面合并号 7 个：命中 7 / 登记豁免 0 / 缺项 0` ⇒ `changelog-coverage: OK — 0.31.0 段覆盖了区间 v0.30.0..HEAD 里每一个碰到公开面的合并号`，**exit 0** |
+
+### 判据逐条自检（工单的五条，全绿才算交付）
+
+| # | 判据 | 我现跑的读数 |
+|---|---|---|
+| 1 | `node --test test/version-state-probe-703.test.js` 在 0.30 与 0.31-未发布两种宿主上全绿 | 0.30 宿主（本工作树）：**7 / 0 fail**（`/tmp/t703-030.log`）；机械合成的 0.31-未发布宿主 `/tmp/w2/host31`：**7 / 0 fail**（`/tmp/t703-031host.log`）；主 agent 验收树形状 `/tmp/w2/s1full-r2`：**7 / 0 fail**（`/tmp/t703-s1full.log`） |
+| 2 | `check:version-states` 在两种宿主上各给一条明确结论，且那个 exit 2 有用例覆盖 | 0.30 宿主全量 **exit 0**（09:27:41→09:34:08：S1 `--strict` 0 + `--self-test: OK — 198 例`，S2 exit 2 `TAG_MISSING`，S3 exit 0，矛盾态 exit 1 点名 `published-claim`）；0.31-未发布宿主全量 **exit 0**（09:34:08→09:40:43，四态同上，头一行 `package.json=0.31.0` 而「要切的那一版 0.31.0 / 上一版 0.30.0」与前一棵**逐字相同**）。未判定那一支：测试 B 格钉「要么判定、要么带代号的 exit 2 且先印读数」，带代号的九种各有自测例（上表 ④⑤⑥⑦⑧⑨⑩⑪⑫⑬） |
+| 3 | `npm run check:changelog` exit 0（贴改前/改后） | 见上表：**exit 1 → exit 0** |
+| 4 | `npm test` 0 fail + 四计数 + `check:test-summary -- --log` ok；各文档闸与 `static-guards` 全 0；真树 `--self-test` 198 全绿 | `npm test`（最终树，`/tmp/npm-test-r2-final.log`）：**`# tests 3407 / # pass 3394 / # fail 0 / # skipped 13 / # todo 0 / # cancelled 0`**，exit 0；`npm run check:test-summary -- --log …`：**`TEST-SUMMARY-VERDICT ok`**（登记值已按现测抬到 3407，HINT 消失）；`check:docs` 0、`check:docs:strict` 0、`check:docs-spelling` 0（`--strict: OK — 0 处红`）、`check:agents-directives` 0、`check:tests` 0（293 文件、`/tmp` 字面量与 `mkdtemp` 直接调用 0）、`node --test test/static-guards.test.js` **54 / 0 fail**；真树 `node scripts/docs-drift-check.mjs --self-test`：**`OK — 198 例反向证/放行证全部按预期，对照组绿`**（exit 0，`/tmp/selftest-r2.log`） |
+| 5 | 不许删用例 / 不许把期望签名放宽成「匹配任意格」/ 不动 #690 · #697 判据本体 | `git diff --stat 5f2de87..HEAD` 里**没有 `scripts/docs-drift-check.mjs`**（第二轮生产判据 0 行改动，#690 `unchanged-surface`、#697 `changelog-date`、`published-claim`、`guide-coverage` 一字未动）；测试文件 4 格 → 7 格：第一轮的 `--only 写错态名` / `--registry-json 读不出` / `假 latest ⇒ 点名 published-claim` 三格**逐字保留**（第一格还多加 `UNKNOWN_STATE` 与「一个态都不跑」两条断言），第一轮 A 格的三条签名 `✓ exit 0（绿）` / `✓ exit 1（红）` / `✓ 点名 published-claim` 原样留在新 A/B 两格里；`static-guards` 的 CHANGELOG 中英配对地板 4 → 6 是**抬**（守卫自己的 diagnostic 原文照抄进注释），抬完反向证照旧承重：「删一条英文 ⇒ 5 对（地板 6，已穿底）」 |
+
+### 遗留 / 风险（第二轮）
+
+1. **探针缺省仍联网**读一次 `npm view`（人要的是真值）；离线请给 `--registry-base auto`。测试面已全离线（`auto` + 注入文件），`npm test` 不再依赖网络。
+2. **「0.31-未发布宿主」是我机械合成的**（`/tmp/w2/host31`）+ 主 agent 树的清单拷贝（`/tmp/w2/s1full-r2`）两种都跑了；`/tmp/s1full` 本体我一字节没写。要在那棵真树上复核：把本轮的 `scripts/version-state-probe.mjs` 与 `test/version-state-probe-703.test.js` 覆盖过去，跑 `node --test test/version-state-probe-703.test.js` 与 `npm run check:version-states` 即可（命令不需适配）。
+3. **发布完成那一天 `check:version-states` 会未判定**（段面已是已发布 ⇒ `NO_INFLIGHT_SECTION`，exit 2 + 读数）——设计如此，且有用例；那一刻要判就得等下一次切版或显式给 `--next`。这条替换了第一轮「CHANGELOG 没有高于 `package.json` 的段就 exit 2、且没人看守」的局面。
+4. `#704` 那条条目是我**替主 agent 补记**的（那次合并的作者是主 agent）：摘要只从它自己的主题与 `git diff --name-only 3da5d76^1 3da5d76` 现读。要改写口径请直接改那两条 bullet，**别删**——删了 `check:changelog` 立刻红回来（它就是为这件事装的）。
+5. `check:version-states` 仍**没接进 CI**（工单没要求；接的话需要 7~8 分钟 + 联网，或接 `--fast --registry-base auto` 的秒级档并把全量档留给发布日）。这是**主 agent 的口径决定**，不是本单欠的账。
+6. 本轮公开面只多两处 CHANGELOG 条目本身（`CHANGELOG.md` 在 `files` 里随包发），零运行时变更；宿主无需迁移。
