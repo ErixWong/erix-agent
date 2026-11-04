@@ -457,10 +457,10 @@ function assert(ok, what, detail = "") {
   if (!ok) problems.push(`${what}${detail ? `（${detail}）` : ""}`);
   return ok;
 }
-/** 输出里逐条找得到才算数（**硬指名字**，不许「匹配任意一行」）。 */
-function assertNames(body, needles, label) {
-  const missing = needles.filter((n) => !body.includes(n));
-  return assert(missing.length === 0, label, missing.length ? `输出里缺：${JSON.stringify(missing)}` : "");
+/** 输出里逐条找得到才算数（**硬指名字**，不许「匹配任意一行」）；每一条单独打一行 ✓/✗，少一条就少一行绿。 */
+function assertNames(body, needles) {
+  for (const needle of needles) assert(body.includes(needle), `点名 ${needle}`, "输出里找不到这个串 ⇒ 该判的那一条没跑到");
+  return needles.length;
 }
 
 /** 事实读数头：判定要印，**未判定的那条 exit 2 之前也要印** ⇒ 「静默什么都不判」在结构上不可能。 */
@@ -691,7 +691,7 @@ function runSelfTest() {
     const r = spawnProbe(c.args);
     const body = r.out;
     assert(r.code === c.code, `exit ${c.code}`, `实测 exit ${r.code}`);
-    assertNames(body, c.names, `点名 ${JSON.stringify(c.names)}`);
+    assertNames(body, c.names);
     if (r.code !== c.code || c.names.some((n) => !body.includes(n))) {
       console.log(body.split("\n").slice(0, 25).map((l) => `         │ ${l}`).join("\n"));
     }
