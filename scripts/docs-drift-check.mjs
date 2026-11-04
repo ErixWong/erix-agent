@@ -120,7 +120,9 @@
 //                 （日期自己不会过期，留着它就是给「过期」留一个合法位置）。全文扫描还看守
 //                 「`dist-tags.latest` 后面紧跟的版本号」与「X 从未发布」两形状。
 //                 registry 取不到（离线 / 无缓存）⇒ **降级为告警**并打印原因与来源，不判红（与 `check:cli-real`
-//                 的闸门分类同一口径：网络不可得不是文档漂移）；`--offline` 直接不读 registry。
+//                 的闸门分类同一口径：网络不可得不是文档漂移）；`--offline` 直接不读 registry；
+//                 `--registry-json <file>`（issue #703）把这份事实换成一个**探针桩**（只给合成树用，读不出 = exit 2，
+//                 CI 不传 ⇒ 生产口径不变）。
 //  19. unchanged-surface 「不变」那一节 × 本版 CHANGELOG 的字段真值（issue #690）：本版 CHANGELOG 段里被
 //                 声明**变更**（不是纯加法）的字段名落到六格（选项 / 默认值 / 观察者事件 / 诊断字段 /
 //                 磁盘格式 / 终局载荷）中的哪一格，指南那一格就**不许**写「不变」，红时点名
@@ -169,6 +171,10 @@
 //                                                  # 断言「改→红、不改→绿」；变异没落上去也算失败
 //   node scripts/docs-drift-check.mjs --offline    # 不读 registry（#511 的发布态/发布行判据降级为跳过）：
 //                                                  # 给「无网但要跑全量门禁」的场景用，会把降级原因打进输出
+//   node scripts/docs-drift-check.mjs --registry-json <file>
+//                                                  # issue #703：把 registry 事实换成一个**桩**（`{"latest":…, "versions":[…]}`），
+//                                                  # 给合成树表达「这一版已发布」这种还没发生的态（`npm run check:version-states`）；
+//                                                  # 桩读不出 / 形状不对 = exit 2（不是跳过）；CI 的 check:docs 不传它
 //   node scripts/docs-drift-check.mjs --sync --published <x.y.z> [--version <x.y.z>]
 //        [--published-date <YYYY-MM-DD>] [--root <dir>]
 //                                                  # **发布态回写**（issue #689，本脚本唯一的写盘模式）：
@@ -6256,6 +6262,44 @@ const REGISTRY_PKG = "erix-agent";
 let SIM_REGISTRY = null;        // 自测口子：{ ok, authoritative, latest, versions, source }
 let REGISTRY_FACTS = null;
 
+/**
+ * issue #703：registry 事实的**探针注入** —— `--registry-json <file>`（同一口子也认 env
+ * `ERIX_DOCS_REGISTRY_JSON`，便于子进程传）。为什么要有它：自测早就有内存夹具（`simulateRegistry`），
+ * 但**生产裁决路径**的 registry 事实只能 `npm view` 现读 ⇒ 「0.31.0 已发布」这种**还没发生**的发布态在
+ * 合成树上无法表达（真 registry 永远说 0.30.0），而 issue #703 要的 S2/S3 探针要证的正是这一半事实。
+ * 口径：
+ *   · 形状 `{"latest": "x.y.z", "versions": ["x.y.z", ...]}`，可选 `"authoritative": false`；
+ *   · 读不出 / 解析不了 / 形状不对 ⇒ **当场 exit 2**（真值缺位永远不等于绿；静默降级会让「注入没落上」长成绿）；
+ *   · 只在合成树探针里用：CI 的 `check:docs` / `check:docs:strict` 不带这个旗标 ⇒ 生产口径一字未变；
+ *     `source` 里写明它是注入而不是实测，`--verbose` 的 notes 会原样打出来（探针拿它做「桩真的被读了」的证）。
+ */
+const REGISTRY_FIXTURE_PATH = flagValue(process.argv, "--registry-json")
+  || process.env.ERIX_DOCS_REGISTRY_JSON || "";
+const REGISTRY_FIXTURE = REGISTRY_FIXTURE_PATH ? loadRegistryFixture(REGISTRY_FIXTURE_PATH) : null;
+
+/** 读一个 registry 桩（不在表上就当场 exit 2，不降级）。 */
+function loadRegistryFixture(spec) {
+  const abs = path.isAbsolute(spec) ? spec : path.join(ROOT, spec);
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(abs, "utf8"));
+  } catch (e) {
+    console.error(`docs-drift-check: --registry-json ${abs} 读不出 / 解析不了（${/** @type {{message?: string}} */ (e)?.message}）`
+      + "——注入的 registry 真值缺位，exit 2（不是跳过）");
+    process.exit(2);
+  }
+  const latest = typeof parsed?.latest === "string" ? parsed.latest : null;
+  const versions = Array.isArray(parsed?.versions)
+    ? parsed.versions.filter((v) => typeof v === "string" && v.length > 0) : [];
+  if (!latest || !versions.includes(latest) || !versions.length) {
+    console.error(`docs-drift-check: --registry-json ${abs} 形状不对（要 {"latest": "x.y.z", "versions": [...]} 且 latest 必须在 versions 里）`
+      + "——exit 2（不是跳过）");
+    process.exit(2);
+  }
+  return { ok: true, authoritative: parsed.authoritative !== false, latest, versions,
+    source: `--registry-json ${spec}（issue #703 探针注入，不是 npm registry 实测）` };
+}
+
 function probeRegistry() {
   const run = (extra) => execFileSync("npm",
     ["view", REGISTRY_PKG, "versions", "dist-tags", "--json", ...extra],
@@ -6281,13 +6325,13 @@ function probeRegistry() {
   return { ok: false, why: "registry 取不到（联网 `npm view` 与 `npm view --offline` 都失败）" };
 }
 
-/** registry 事实（一次进程只读一次）。`--self-test` 走内存夹具，`--offline` 直接跳过。 */
+/** registry 事实（一次进程只读一次）。`--self-test` 走内存夹具，`--registry-json` 走探针桩，`--offline` 直接跳过。 */
 function registryFacts() {
   if (SIM_REGISTRY) return SIM_REGISTRY;
   if (REGISTRY_FACTS) return REGISTRY_FACTS;
-  REGISTRY_FACTS = OFFLINE
+  REGISTRY_FACTS = REGISTRY_FIXTURE ?? (OFFLINE
     ? { ok: false, why: "`--offline`：本脚本在离线口径下不读 registry（缓存可能落后于 registry，把过期数据当真理会把「刚发布」判成红）" }
-    : probeRegistry();
+    : probeRegistry());
   return REGISTRY_FACTS;
 }
 
@@ -6705,7 +6749,12 @@ const addSurfaceEvidence = (cellId) => (text) => {
   const { name } = surfaceCaseEvidence(cellId);
   const line = `- Self-test premise (#699 ③): the \`${name}\` field changed in this release`
     + ` —— this line is the fixture's own witness for the \`${cellId}\` cell.`;
-  const head = new RegExp(`^## \[${esc(PKG_VERSION)}\].*$`, "mu");
+  // `\\[` / `\\]` 不能写成 `\[` / `\]`：模板字面量里那对反斜杠会被 JS 吃掉，正则变成
+  // `^## [0\.31\.0].*$` = **字符类**（只认 `0 . 3 1` 五个字符之一），段首 `## [` 的方括号永远匹配不上
+  // ⇒ 变异不落上。0.30 树上这一族 `inject=false`（本版段里已有该格证据），这个笔误被藏了一整版；
+  // 0.31 是纯删除版（段里 70 处反引号全是退役导出名）⇒ `inject=true` ⇒ 五例同时报「变异没落到 CHANGELOG.md 上」。
+  // 同一文件的 `rewriteCurrentChangelogHeading` / `addGuideCoverageClaim` 用的都是 `\\[`，只有这里是漏的（issue #703）。
+  const head = new RegExp(`^## \\[${esc(PKG_VERSION)}\\].*$`, "mu");
   return head.test(text) ? text.replace(head, (h) => `${h}\n\n${line}`) : text;
 };
 
@@ -8944,11 +8993,18 @@ const SELF_TEST_CASES = [
     label: "#690（反向证）纯加法的名字不是变更证据：选项格写「不变」仍绿",
     // 这一例的靶子是「本版段里那一笔纯加法」（0.30 段里的 `config.metadata.modelMetadata.budgetTokens`）：
     // 它**不需要**证据注入（前提本来就是「这一格没有变更证据」），但 §4 是散文形状时也要落得上（#699 ③(a)）。
+    // **中英两半都得写**：这条声明点名的 `config.metadata.modelMetadata.budgetTokens` 里含着代码侧清单里的
+    // `config.metadata.model` / `config.metadata.modelMetadata` 两个叶子名，只写 EN 一侧就等于凭空造一处中英背离
+    // ——`guide-coverage` 的中英成对那一半会红，而它红的不是本例要考的「加法 ≠ 变更证据」。0.30 两半指南本来就
+    // 都提过这两个叶子（所以历史上没红），0.31 两半都没提 ⇒ 只改一侧就红（issue #703 的 S1 探针树暴露）。
     overlay: {
       [SURFACE_GUIDE_EN]: putSurfaceBullet("en", "options",
         "* **Options — unchanged.** The `runToolLoop` input surface, the `capabilities` shape, and every\n"
           + "  existing configuration leaf. The added `config.metadata.modelMetadata.budgetTokens` leaf\n"
           + "  changes no existing leaf (§4.1)."),
+      [SURFACE_GUIDE_CN]: putSurfaceBullet("cn", "options",
+        "* **选项——不变。** `runToolLoop` 的输入面、`capabilities` 形状与每一个既有配置叶子都没动；"
+          + "本版**新增**的 `config.metadata.modelMetadata.budgetTokens` 叶子不改动任何既有叶子（§4.1）。"),
     },
     expectGreen: true,
   },
