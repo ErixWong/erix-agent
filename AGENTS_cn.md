@@ -213,7 +213,7 @@ scripts/          # 实验脚本和结果
   以下都是**历史值**，按当时为真保留：67（#307 之后，2026-10-16 实测）、66（#305 新增 `src/text/json-candidates.js` 之后）、
   65（#292 之后，2026-10-15）、64（0.20.0 的 tarball）、63（0.19.0 时代）；体积差也是 0.18.0 的历史（tarball 自己会打印体积）。
   `npm run check:types-build` 是「还能不能生成」的门禁。
-- 当前版本：`package.json` 写 `0.31.0`（本仓版本），发布行——npm 的 `dist-tags.latest`——是 `0.30.0`。这两句由 `check:docs` 每次运行**当场对账**（它读 `package.json` 与 registry，句子过期就红），所以两句都不带测量日期：日期自己不会过期，而当场对账不需要第二份真值（issue #511）。版本变更使用 `npm version <x.y.z> --no-git-tag-version`（功能完整的首发版本不要使用 0.0.0）。`0.24.0` **从未发布**到 registry（已发布序列是 0.23.0 -> 0.25.0），且刻意**不补发**：`0.25.0` 已取代它，`CHANGELOG.md` 里 0.24.0 那段保留为「那一刻为真」的历史。
+- 当前版本：`package.json` 写 `0.31.0`（本仓版本），发布行——npm 的 `dist-tags.latest`——是 `0.31.0`。这两句由 `check:docs` 每次运行**当场对账**（它读 `package.json` 与 registry，句子过期就红），所以两句都不带测量日期：日期自己不会过期，而当场对账不需要第二份真值（issue #511）。版本变更使用 `npm version <x.y.z> --no-git-tag-version`（功能完整的首发版本不要使用 0.0.0）。`0.24.0` **从未发布**到 registry（已发布序列是 0.23.0 -> 0.25.0），且刻意**不补发**：`0.25.0` 已取代它，`CHANGELOG.md` 里 0.24.0 那段保留为「那一刻为真」的历史。
 
 ### npm 2026 政策变化（TOTP 停止 + bypass token 限制）
 - ❌ 不再支持新的 TOTP 注册（`enable-2fa` 返回 404）。
