@@ -899,10 +899,13 @@ test("#430 正常轮 3 个工具调用 ⇒ 落盘 partOf 不链式、load() 一�
 //   · **崩溃轮形状**：那一轮的轮载体行还没落 ⇒ 消息行原样留在 `load()` 输出里 ⇒ 首片行**看得见** ⇒
 //     桩可以落账（`partOf` → 首片）。这也是「同一个 runId 永久起不来」的典型现场。
 //   · **已完成轮形状**（宿主真机：第 25 轮早就跑完了）：消息行已被折叠层吸进轮载体，`load()` 只剩
-//     载体行 ⇒ **首片行的 key 不可得**（公共 store 面没有「列原始行」的入口）⇒ 桩只进本次上下文，
-//     不写账本，并走既有 `onEvent` 通道如实报 `resume_journal_skipped`
-//     （`reason: "mid_sequence_aggregate_row_not_in_ledger"`）。下一次恢复会再算一次同一张桩
-//     ⇒ 结果稳定、不累积；账本保持修前的形状（**不比修前更坏**）。
+//     载体行。issue #714 之前这里**首片行的 key 不可得**（公共 store 面没有「列原始行」的入口）⇒ 桩
+//     只进本次上下文、不写账本，并报 `resume_journal_skipped`
+//     （`reason: "mid_sequence_aggregate_row_not_in_ledger"`）。#714 给 store 面加了一个**可选**原始行
+//     读口（`loadRawRows`，内置两个 store 都提供）：折叠只是读侧变换、原始行从来没消失，把未折叠行
+//     交出来就足以寻址首片行 ⇒ 桩照样落账、账本闭合。
+//   · **缺省路径**（宿主 store 不提供那个读口）：逐字退回 #421 的口径（只修内存 + 发那条事件），
+//     不抛错——那是**缺能力时的降级**，由本组最后一条用例独立钉住（向后兼容的正证）。
 
 const STUB_TEXT = UNPERSISTED_TOOL_RESULT_TEXT;
 /** 桩块（按正文逐字认，不按 marker 前缀认：撞车的另一条正文必须在本组用例里显形）。 */
@@ -1044,11 +1047,13 @@ test("#421 中段悬空（崩溃轮形状）· 补桩并进紧跟的聚合 user 
     "第二次恢复不得再写一条桩行（0 = 幂等，1+ = 同一张桩被重复入账）");
 });
 
-test("#421 中段悬空（已完成轮形状）· 首片行不可得 ⇒ 桩只进上下文，不写账本，如实报事件", async () => {
+test("#421/#714 中段悬空（已完成轮形状）· 首片行经可选原始行读口可得 ⇒ 桩落账、账本闭合、不发跳过事件", async () => {
   // 宿主真机的现场：那一轮**跑完了**（轮载体行已落），消息行被折叠层吸进载体 ⇒ `load()` 里
-  // 没有首片消息行 ⇒ 没有合法的 `partOf` 目标（公共 store 面不暴露原始行）。
-  // 这一格**不入账**：写一条指向不了聚合消息的分片行，会让桩变成另一条 user 消息（孤立
-  // `tool_result`），比修前更坏。降级为「只修本次上下文 + 如实报事件」，账本保持修前形状。
+  // 没有首片消息行。折叠只是**读侧**变换，原始行在介质上从来没消失 —— issue #714 于是给 store 面加了
+  // 一个**可选**原始行读口（`loadRawRows` = `load()` 的未折叠输入，内置两个 store 都提供）：首片行
+  // 的 key 仍然寻址得到 ⇒ 桩以 `partOf` 落账、账本闭合。写入口（`journalResumeMidSequenceToolResults`）
+  // 与 #430 的锚点纪律**一字未改**，缺的只是「折叠后仍能寻址首片行」这个能力。
+  // 「宿主 store 不提供这个读口」的那一格由下面那条独立用例钉住（降级 = 只修内存 + 发事件）。
   const inner = createMemoryTranscriptStore();
   await midSequenceDanglingScene(inner, { toolUseIds: ["t1", "t2"], resultIds: ["t1"], withRoundCarrier: true });
   const ledgerBefore = foldLedgerMessages(await inner.load(RUN_ID)).map((entry) => entry.message);
@@ -1074,6 +1079,71 @@ test("#421 中段悬空（已完成轮形状）· 首片行不可得 ⇒ 桩只�
     "桩必须补进本次上下文（id 集合与 tool_use 一致）");
   validateMessages(provider.requests[0].messages);
 
+  // 判据 2：锚点可得 ⇒ 桩真的入了账 ⇒ 同一形状上**不再**发那条跳过事件。
+  const skipped = events.filter((event) => event?.type === "resume_journal_skipped"
+    && event?.reason === "mid_sequence_aggregate_row_not_in_ledger");
+  assert.equal(skipped.length, 0,
+    "锚点可得时不得再报「这批桩没有入账」（事件格子：`journalResumeMidSequenceToolResults`）");
+  assert.deepEqual(ledgerAggregates(await inner.load(RUN_ID)), [{ role: "user", ids: ["t1", "t2"] }],
+    "桩必须折回它所属的那条聚合 user 消息（形状 = 一条消息两个结果）");
+
+  // 落盘形状（#430 的锚点纪律在**已完成轮**上同样成立）：桩是分片行，`partOf` → 首片行；
+  // `seq` 地板来自原始行（该轮已有 seq 0 / 1 ⇒ 桩是 2），重号会被判成同 key 异 payload。
+  const stubRows = stubRowsOf(rows);
+  assert.equal(stubRows.length, 1, "桩必须落成**恰好一行**（0 = 没入账，2 = 双喂）");
+  assert.equal(stubRows[0].partOf, `${RUN_ID}:msg:2:1`,
+    "桩必须 `partOf` 指向那条聚合消息的**首片**行（`t1` 那一行）——分片 key 不是合法的 `partOf` 目标");
+  assert.notEqual(stubRows[0].partOf, stubRows[0].dedupKey, "锚点不许是桩自己那一行（链式 `partOf` 的坑）");
+  assert.equal(stubRows[0].seq, 2, "seq 必须接在该轮最大 seq（1）之后：重号会被判成同 key 异 payload");
+  assert.equal(stubRows[0].round, 2, "桩属于它那条聚合消息的轮（不是恢复时的新轮）");
+
+  // 判据 1（本单核心）：宿主 `load()` 折出来的账本必须过得了**严格配对**。修前这一句抛
+  // `Invalid message at index 2: tool_result ids do not match assistant tool_use ids`。
+  validateMessages(foldLedgerMessages(await inner.load(RUN_ID)).map((entry) => entry.message));
+
+  // 第二次恢复：账本已认它 ⇒ 上下文仍只有一张桩、账本不再多写一行（幂等靠 `settledIds`，不新增去重键）。
+  const second = recordRoundWrites(inner);
+  const secondProvider = createFakeProvider([endTurn("第二次续接完成")]);
+  const again = await runLoop({ store: second.store, provider: secondProvider, executeTool: async () => "unused" });
+  assert.equal(again.ok, true, `第二次恢复必须成功（实测：${String(again.error)}）`);
+  assert.deepEqual(stubBlocks(secondProvider.requests[0].messages).map((block) => block.tool_use_id), ["t2"],
+    "第二次恢复之后，桩在上下文里必须恰好一张（账本已认它，不得再补）");
+  assert.equal(stubRowsOf(second.rows).length, 0,
+    "第二次恢复不得再写一条桩行（0 = 幂等，1+ = 同一张桩被重复入账）");
+});
+
+test("#714 缺省（宿主 store 没有原始行读口）· 行为与修前逐字相同：只修内存 + 如实报事件，不抛错", async () => {
+  // **向后兼容的正证**：新读口是**可选**能力（`docs/host-consumer-contract.md` 的
+  // "TranscriptStore capability tiers"）。宿主最小实现（只有 `appendRound` / `load`）不提供它 ⇒ 引擎必须
+  // 逐字退回 #421 的口径：本次上下文补桩、账本一行不写、发一条 `resume_journal_skipped`
+  // （`reason: "mid_sequence_aggregate_row_not_in_ledger"`）、run 照旧起得来——**不是**抛错、也不是
+  // 换一条写路径。
+  // ⚠ 这一格**不是**设计终态，是缺能力时的降级：账本因此仍过不了严格配对，下面那条 `assert.throws`
+  // 把这条残留如实钉住（免得下一个人把「绿」当成「账本已闭合」）。宿主补上 `loadRawRows` 就闭合
+  // （上一条用例），中英契约的 capability 表里写着这条迁移路径。
+  const base = createMemoryTranscriptStore();
+  await midSequenceDanglingScene(base, { toolUseIds: ["t1", "t2"], resultIds: ["t1"], withRoundCarrier: true });
+  const storeWithoutProbe = { ...base };
+  delete storeWithoutProbe.loadRawRows;
+  assert.equal(typeof storeWithoutProbe.loadRawRows, "undefined",
+    "前置：这个 store 真的没有原始行读口（否则本条测的是上一条）");
+
+  const events = [];
+  const { store, rows } = recordRoundWrites(storeWithoutProbe);
+  const provider = createFakeProvider([endTurn("续接完成")]);
+  const resumed = await runLoop({
+    store,
+    provider,
+    executeTool: async () => "unused",
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
+  });
+  assert.equal(resumed.ok, true,
+    "恢复必须成功（缺能力时降级，不是抛错；实测：" + String(resumed.error));
+  assert.equal(provider.requests.length, 1, "恢复必须真的发过一次模型请求");
+  assert.deepEqual(stubBlocks(provider.requests[0].messages).map((block) => block.tool_use_id), ["t2"],
+    "桩必须补进本次上下文（id 集合与 tool_use 一致）");
+  validateMessages(provider.requests[0].messages);
+
   const skipped = events.filter((event) => event?.type === "resume_journal_skipped"
     && event?.reason === "mid_sequence_aggregate_row_not_in_ledger");
   assert.equal(skipped.length, 1,
@@ -1081,8 +1151,41 @@ test("#421 中段悬空（已完成轮形状）· 首片行不可得 ⇒ 桩只�
   assert.equal(skipped[0].count, 1, "报的条数必须等于没入账的桩数");
   assert.equal(skipped[0].round, 2, "报的轮号必须是那条聚合消息的轮");
   assert.equal(stubRowsOf(rows).length, 0, "锚点不可得时**一行都不许写**（宁可只修内存，也不造坏形状）");
-  assert.deepEqual(ledgerAggregates(await inner.load(RUN_ID)), [{ role: "user", ids: ["t1"] }],
-    "账本必须保持修前形状（本次修复不改变账本，只让 run 起得来）");
+  assert.deepEqual(ledgerAggregates(await base.load(RUN_ID)), [{ role: "user", ids: ["t1"] }],
+    "**缺省路径**的账本必须保持修前形状（新读口缺席时这一条仍然成立，且只描述这一条路径）");
+  const ledgerAfter = foldLedgerMessages(await base.load(RUN_ID)).map((entry) => entry.message);
+  assert.throws(() => validateMessages(ledgerAfter),
+    /tool_result ids do not match assistant tool_use ids/u,
+    "残留（如实钉住，不是绿）：缺能力时账本仍过不了严格配对——宿主补上 `loadRawRows` 才闭合");
+});
+
+test("#714 中段悬空（已完成轮形状）· file store 真落盘：桩写进文件、`load()` 折出来的账本闭合", async () => {
+  // 与上一条同一个形状（已完成轮），换**真落盘**的 store：证的是「内置两个 store 都提供原始行读口」
+  // —— 文件里 `load()` 只返回 2 行，而首片消息行仍在文件里（`loadRawRows` 看得到 4 行）⇒ 锚点算得出来
+  // ⇒ 桩真的进了档案，且下一次恢复不再补第二条。
+  const dir = await makeTmp("erix-714-midseq-");
+  const store = createFileTranscriptStore({ dir });
+  await midSequenceDanglingScene(store, { toolUseIds: ["t1", "t2"], resultIds: ["t1"], withRoundCarrier: true });
+  // 前置（#714 的事实底座）：折叠是**读侧**变换，原始行没消失。
+  assert.equal((await store.load(RUN_ID)).length, 2, "前置：`load()` 只返回 2 行（已完成轮的消息行被吸进载体）");
+  assert.equal((await store.loadRawRows(RUN_ID)).length, 4, "前置：原始行读口看得见 4 行（首片行还在文件里）");
+
+  const provider = createFakeProvider([endTurn("续接完成")]);
+  const resumed = await runLoop({ store, provider, executeTool: async () => "unused" });
+  assert.equal(resumed.ok, true, `恢复必须成功（实测：${String(resumed.error)}）`);
+  assert.deepEqual(stubBlocks(provider.requests[0].messages).map((block) => block.tool_use_id), ["t2"],
+    "桩必须补进本次上下文");
+  assert.deepEqual(ledgerAggregates(await store.load(RUN_ID)), [{ role: "user", ids: ["t1", "t2"] }],
+    "桩必须真的落进档案：`load()` 折回来仍是一条聚合 user 消息（t1 + 桩 t2）");
+  // 本单核心：宿主 `load()` 折出来的账本过得了严格配对（修前抛 `Invalid message at index 2`）。
+  validateMessages(foldLedgerMessages(await store.load(RUN_ID)).map((entry) => entry.message));
+
+  const secondProvider = createFakeProvider([endTurn("第二次续接完成")]);
+  const second = await runLoop({ store, provider: secondProvider, executeTool: async () => "unused" });
+  assert.equal(second.ok, true, `第二次恢复必须成功（实测：${String(second.error)}）`);
+  assert.deepEqual(stubBlocks(secondProvider.requests[0].messages).map((block) => block.tool_use_id), ["t2"],
+    "第二次恢复：账本已认它 ⇒ 上下文里仍只有那一张桩（不是两张）");
+  validateMessages(foldLedgerMessages(await store.load(RUN_ID)).map((entry) => entry.message));
 });
 
 test("#421 中段悬空（崩溃轮形状）· file store 真落盘：桩写进文件、第二次恢复仍只一张", async () => {

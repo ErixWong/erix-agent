@@ -16,6 +16,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { foldMessageRows } from "../../src/store/message-rows.js";
+
 const ROUND_1 = {
   round: 1,
   ts: "2026-08-29T00:00:00.000Z",
@@ -410,6 +412,27 @@ export function transcriptStoreContract(label, createStore) {
     // 引擎与宿主拼时间线用的就是这一个口径：折叠后的总条数必须等于“一条逻辑消息一项”的条数。
     assert.equal(loaded.flatMap((record) => record.messages ?? []).length, expected.length,
       "折叠后 flatMap(record => record.messages) 的条数必须等于消息行数（不新增、不丢失）");
+  });
+
+  // issue #714：可选**原始行读口** `loadRawRows`（anchor probe）。引擎用它给「账本中段悬空的
+  // `tool_use`」补桩找 `partOf` 锚点：`load()` 折叠之后，已完成轮的首片消息行被吸进载体、寻址不到；
+  // 把**未折叠行**交出来就够了（折叠只是读侧变换，原始行从未消失）。判据只有一条：**与 `load()` 同源**
+  // —— 对它跑一遍 `foldMessageRows` 必须逐字等于 `load()`。宿主最小实现可以不提供（缺它就退回修前口径）。
+  test(`${label}: 可选原始行读口 loadRawRows 与 load 同源（实现时，issue #714）`, async () => {
+    const store = await createStore();
+    if (typeof store.loadRawRows !== "function") return; // 可选能力：最小实现不提供
+    const { rows } = foldRound(5);
+    for (const row of rows) await store.appendRound(foldRunId, row);
+
+    const raw = await store.loadRawRows(foldRunId);
+    assert.equal(raw.length, rows.length,
+      `原始行读口必须交出**未折叠**的全部行（实测 ${String(raw.length)} 行，应为 ${String(rows.length)}）`);
+    assert.deepEqual(raw.map((record) => record.dedupKey ?? record.roundKey),
+      rows.map((row) => row.dedupKey),
+      "顺序与落盘顺序一致（它是 `load()` 的输入，不是另一套读法）");
+    assert.deepEqual(foldMessageRows(raw), await store.load(foldRunId),
+      "对它跑一遍折叠层必须逐字等于 `load()`（两个读口同源，否则锚点算在一份账本、上下文折自另一份）");
+    assert.deepEqual(await store.loadRawRows("missing-raw-run"), [], "未知 runId 返回空数组");
   });
 
   test(`${label}: folded/foldedPayload 元数据往返`, async () => {
