@@ -1109,6 +1109,59 @@ test("#421 中段悬空（崩溃轮形状）· file store 真落盘：桩写进�
     "第二次恢复之后账本形状不许变（仍是一条聚合 user 消息，桩不翻倍）");
 });
 
+test("#421 宿主 store 不折叠（`load()` 原样返回落盘行）· 已完成轮的桩也落账，seq 不重号", async () => {
+  // 内置两个 store 的 `load()` 都会折叠，所以「已完成轮」的消息行在 `load()` 里看不见（那一格只修内存，
+  // 见上一条用例）。但契约允许宿主自研 store **不折**（`src/loop/resume-manager.js` 会自己再折一次）——
+  // 那种宿主上首片行仍然看得见，桩就**落得了账**。这一格同时钉住两件事：
+  //   ① 已完成轮的桩真的写进账本（`partOf` → 首片）；
+  //   ② 该轮的 `seq` 地板被抬到「落盘行里最大 seq + 1」（重号 ⇒ 内置 store 会抛 `dedup_payload_conflict`）。
+  const rows = [];
+  const seen = new Map();
+  const store = {
+    async appendRound(runId, record) {
+      const key = record?.dedupKey ?? record?.roundKey;
+      const payload = JSON.stringify(record);
+      if (seen.has(key)) {
+        // 与内置 store 同一条判据（`src/store/transcript-dedup.js`）：同 key 异 payload 直接抛。
+        if (seen.get(key) !== payload) throw new Error(`dedup_payload_conflict: ${key}`);
+        return;
+      }
+      seen.set(key, payload);
+      rows.push(structuredClone(record));
+    },
+    async load() { return rows.map((row) => structuredClone(row)); },
+    async markRunState() {},
+    async saveRunState() {},
+    async loadRunState() { return undefined; },
+    async loadRunStateStatus() { return undefined; },
+  };
+  await midSequenceDanglingScene(store, { toolUseIds: ["t1", "t2"], resultIds: ["t1"], withRoundCarrier: true });
+
+  const provider = createFakeProvider([endTurn("续接完成")]);
+  const resumed = await runLoop({ store, provider, executeTool: async () => "unused" });
+  assert.equal(resumed.ok, true, `恢复必须成功（实测：${String(resumed.error)}）`);
+  assert.deepEqual(stubBlocks(provider.requests[0].messages).map((block) => block.tool_use_id), ["t2"],
+    "桩必须补进本次上下文");
+
+  const stubRows = stubRowsOf(rows);
+  assert.equal(stubRows.length, 1, "不折叠的宿主上，已完成轮的桩也必须落成恰好一行");
+  assert.equal(stubRows[0].partOf, `${RUN_ID}:msg:2:1`,
+    "`partOf` 必须指向聚合消息的**首片**行（从 `load()` 里看得见的落盘行认出来）");
+  assert.equal(stubRows[0].seq, 2, "seq 必须接在该轮最大 seq（1）之后：重号会被判成同 key 异 payload");
+  assert.equal(new Set(rows.map((row) => row?.dedupKey ?? row?.roundKey)).size, rows.length,
+    "全档的 key 必须唯一（seq 重号 = dedup_payload_conflict）");
+
+  // 第二次恢复：`load()` 仍不折叠，桩已在账本里 ⇒ 上下文里仍只一张、且不再写新行。
+  const before = rows.length;
+  const secondProvider = createFakeProvider([endTurn("第二次续接完成")]);
+  const second = await runLoop({ store, provider: secondProvider, executeTool: async () => "unused" });
+  assert.equal(second.ok, true, `第二次恢复必须成功（实测：${String(second.error)}）`);
+  assert.deepEqual(stubBlocks(secondProvider.requests[0].messages).map((block) => block.tool_use_id), ["t2"],
+    "第二次恢复：桩在上下文里必须仍只有一张");
+  assert.equal(stubRowsOf(rows).length, 1, "第二次恢复不得再写一条桩行");
+  assert.ok(rows.length > before, "第二次恢复本身仍会写它自己的行（前置：这一次真的跑过）");
+});
+
 test("#421 配对成功的情形 ⇒ 上下文与账本里**零桩**（不掩盖真错误）", async () => {
   // ① 账本本来就配好对：恢复之后一个桩都不许出现。
   const paired = createMemoryTranscriptStore();

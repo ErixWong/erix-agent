@@ -106,17 +106,24 @@ export function countResumeAnchor(records) {
  * issue #421：把「恢复上下文里那条聚合 `tool_result` user 消息」映射回**账本里承载它的那一行**的 key。
  *
  * 为什么需要这个映射：中段补桩要落成一条 `partOf` 指向**该聚合消息首片**的**分片行**（#430 的纪律：
- * 锚点只钉在首片、分片 key 不是合法的 `partOf` 目标）。而折叠后的上下文里看不出「这条消息是哪一行
- * 落的」（`foldLedgerMessages` 只给消息与轮号），所以这里回**落盘行**（`store.load()` 的原始输出，
- * 未经折叠）里找。
+ * 锚点只钉在首片、分片 key 不是合法的 `partOf` 目标）。而折叠后的逻辑消息序列里看不出「这条消息是
+ * 哪一行落的」（`foldLedgerMessages` 只给消息与轮号），所以这里回 `store.load()` 的行里找
+ * （`loadedRecords`）：**消息行还看得见**就认得出来。
  *
  * 判据：`kind:"message"` + 安全整数 `seq` + **首片**（无 `partOf`）+ 轮号相同 + 它是 user 消息，
  * 且**第一个 block** 就是那条聚合消息的第一个 `tool_result`（引擎写侧对每个结果单独落一行，
  * 首片行的 content 就是 `[toolResult]` ⇒ 首个 `tool_use_id` 足以认人）。
  *
- * 找不到就返回 `undefined`（调用方据此**不入账**，只留内存里的桩）：典型场景是升级前的旧账本
- * （正文在轮载体行里、根本没有消息行）。那种账本上新写一条消息行会被折叠层当成「新一轮正文」
- * 拼到载体行后面 ⇒ 桩会变成**另一条** user 消息（孤立 `tool_result`，反而把错误形状变多）。
+ * 找不到就返回 `undefined`（调用方据此**不入账**，只留内存里的桩）。这一格的**边界是 store 面的
+ * 事实**，不是选择：内置两个 store 的 `load()` 都跑 `foldMessageRows`，于是**已完成轮**的消息行
+ * 已经被吸进轮载体行、`load()` 里再也看不见 ⇒ 没有合法的 `partOf` 目标。会落进这里的三种现场：
+ *   · 升级前的旧账本（正文全在轮载体行里，一条消息行都没有）；
+ *   · 崩溃轮（轮载体行还没落）—— **但那一格消息行看得见**，所以走的是上面的正常路径；
+ *   · 内置 store 上的**已完成轮**（宿主真机那一格：第 25 轮早跑完了）。
+ * 为什么宁可不入账也不写：那种账本上新写一条消息行会被折叠层当成「该轮多出来的一条正文」拼到
+ * 载体行后面 ⇒ 桩变成**另一条** user 消息（孤立 `tool_result`），比修前更坏。
+ * 不折叠的宿主（`load()` 原样返回落盘行，恢复侧自己再折一次）不受这条边界限制——首片行看得见，
+ * 已完成轮的桩照样落账，`test/loop-resume-unpersisted-tool-results.test.js` 有专格钉它。
  *
  * 残留风险（有意接受，记在这里而不是假装没有）：provider `id` **不保证 run 内唯一**（issue #284），
  * 若同一轮里两条聚合消息的首个 `tool_use_id` 恰好相同，这里会认到先出现的那一行。后果是桩落进
@@ -535,8 +542,9 @@ export async function restoreResume(ctx) {
       const midSequenceStubs = await answerPendingMidSequenceToolUses(ctx.messages, {
         settledIds: midSequenceSettledIds,
         roundOf: (message) => ctx.messageRounds.get(message),
-        // 锚点从**落盘行**（`loadedRecords`）找，不是从折叠后的 `records`：已完成轮的消息行
-        // 已经被折叠层吸进载体行，`records` 里只剩载体（没有 `seq`，也就没有 `partOf` 目标）。
+        // 锚点从 `loadedRecords`（`store.load()` 的行）找，不是从引擎再折一遍的 `records`：宿主
+        // 自研 store 不折叠时，`records` 里那些消息行已经被 `foldMessageRows` 吸进载体行（没有
+        // `seq`、也就没有 `partOf` 目标），而 `loadedRecords` 里它们还在。内置 store 两条一样。
         anchorOf: (message) => firstSliceRowKeyOf(
           loadedRecords,
           message,
@@ -544,10 +552,11 @@ export async function restoreResume(ctx) {
         ),
       });
       ctx.resumeMidSequenceToolResults = midSequenceStubs;
-      // 真要落账的那几张桩：把它们所属轮的 `seq` 地板抬到「落盘行里真实的最大 `seq` + 1」。
-      // 为什么只在这一格抬：本单是**第一个往已完成轮写消息行的调用点**，而那种轮的消息行在
-      // `records` 里已经看不见了（被折叠层吸进载体）⇒ 崩溃现场那一段播种的「按正文条数」地板
-      // 会把它算小，分片行重号 ⇒ `dedup_payload_conflict`（既不覆盖也不静默丢弃，整 run 崩）。
+      // 真要落账的那几张桩：把它们所属轮的 `seq` 地板抬到「`load()` 行里真实的最大 `seq` + 1」。
+      // 为什么只在这一格抬：本单是**第一个往已完成轮写消息行的调用点**（不折叠的宿主那一格），
+      // 而那种轮的消息行在引擎再折一遍的 `records` 里已经看不见了（被吸进载体）⇒ 崩溃现场那一段
+      // 播种的「按正文条数」地板会把它算小，分片行重号 ⇒ `dedup_payload_conflict`（既不覆盖也不
+      // 静默丢弃，整 run 崩）。
       // 没有桩要写 ⇒ 一个字节都不碰（`ctx.messageSeqByRound` 的存在性因此不是本函数的额外要求）。
       const journaledRounds = new Set(midSequenceStubs
         .filter((stub) => typeof stub?.partOf === "string" && stub.partOf !== "")
