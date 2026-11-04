@@ -71,9 +71,35 @@ notes 工具原样保留。
 
 ## 4. 没有变的东西
 
-输入面上的其余一切：这一版没有 `runToolLoop` 选项被退役、改名或搬家，没有默认值变化，也没有观察者事件、
-诊断字段或磁盘格式变化；notes 工具表面、文件工具、派生簿记模块与全部 provider 协议助手都留在原处。
-零运行时依赖的红线同样不变。
+六格逐格说。这一版只删导出、不动引擎面：这六格里没有一个成员挪过位置，所以下面每一格都写**不变**——
+而且每一格都写清这句「不变」覆盖哪些成员，因为不点名成员的「不变」不值得读。反方向的对照同样成立：
+`CHANGELOG.md` 的 `[0.31.0]` 段是这一版唯一的变更记录，它没有点到这六格里任何一个成员。离开包根的名字
+不是输入面成员：§2 那十六个是导出，不是选项、不是事件、不是载荷键。
+
+* **选项——不变。** 这一版没有退役、改名或搬家任何 `runToolLoop` 选项，配置命名空间也把 0.30.0 的每个
+  分组、每个叶子都留着——`run.maxRounds`、`folding.toolResultTtl`、`guard.finalGuardMaxRetries`、
+  `timing.timeoutMs`、`metadata.modelMetadata` 等，嵌套位置也照旧。CLI 旗标集合同样照旧
+  （`--compaction`、`--compact-budget`、`--final-guard`、`--require-deliverable`、`--delegate` 等）：
+  这一版没加旗标，也没删旗标。
+* **默认值——不变。** 既有选项的缺省值一个都没重定。承载它们的两个加载器常量 `DEFAULT_MAX_OUTPUT_TOKENS`
+  与 `DEFAULT_COMPACTION_STRATEGY` 取值与 0.30.0 相同，所以以前省略它们的配置今天派生出同一份结果。
+* **观察者事件——不变。** 事件名与载荷都照旧：`round_start`、`round_end`、`tool_use`、`tool_result`、
+  `usage`、`run_outcome`、`persistence_error`、`compaction`、`compaction_strategy_fallback` 等整份集合
+  一个不多一个不少，也没有改名；`type: "compaction"` 的含义与 0.30.0 一致。
+* **诊断字段——不变。** `compactionStats` 条目保留 0.30.0 写下的形状，包括那一版挪过的字段：
+  `strategyName`、`foldSummary` 子对象、`degradeKind` / `degradeReason`（仍然没有树内写者）以及失败分支
+  上的 `budgetExhausted`。
+* **磁盘格式——不变。** 折叠账本保持 0.30.0 的形状——`foldedFacts` 连同 `foldId`、`seq`、`text`、
+  `source`、`strategy`、`roundRange` 等——所以 0.30.0 写下的账本在 0.31.0 上直接续跑，不需要迁移步骤，
+  也不需要补号。run 状态文件与 transcript 仍由同一段代码写出。
+* **终局载荷——不变。** `makeResult` 返回同一组键（`finalText`、`messages`、`transcript`、`rounds`、
+  `truncated`、`verification`、`guardVerdict`、`metrics`、`runState`、`usage`、`engineUsage`、
+  `compactionStats`、`completionErrors`、`finalTextFallback`、`forcedFinal`），失败的 run 仍然带
+  `termination.errorCode`，退出码含义也没变：`exitCodeForRunFailure` 给失败 run、
+  `exitCodeForVerification` 给没过验证的 run，两者都不与用法错误的码共用。
+* 同样没动的：notes 工具面（`createBuiltinNotesTools`、`MAX_CONTENT_LENGTH`、`resolveNotesDir` 与五个
+  notes 工具）、文件工具、派生簿记模块、全部 provider 协议助手（`canonicalToAnthropicRequest`、
+  `anthropicResponseToCanonical`、`createAnthropicStreamAssembler`），以及零运行时依赖这条规矩。
 
 ## 5. 在你自己那边验证
 

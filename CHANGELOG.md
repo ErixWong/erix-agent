@@ -181,6 +181,33 @@
   `git diff --name-only 3da5d76^1 3da5d76`），所以这条账记在这一段。宿主可见的差别：一份中文文档里的一个标题——
   没有选项、没有导出、没有默认值、零行为变更。
 
+- **0.31.0 is the version cut itself: the number, the release-state writeback, and the §4 the docs gate reads (issue #698,
+  PR #707).** Three things land in one cut because the gate needs all three at once: `package.json` `0.30.0 → 0.31.0`; the
+  current-version sentences in both READMEs, both requirements docs and both AGENTS files rewritten by
+  `docs-drift-check --sync` (a narrow face — only those sentences, every other byte is refused); and **§4 “What does not
+  change” added to both language halves of `docs/host-upgrade-guide-0.31.0.md` / `_cn.md` with all six cells** (options /
+  defaults / observer events / diagnostic fields / on-disk formats / final payload). §4 is not decoration: the
+  `unchanged-surface` criterion compares each cell's “unchanged” claim against the **same version's** CHANGELOG, and a
+  guide with no §4 hands it no cells to read — “cannot find the cell” is exit 2, not green — which is exactly how 0.30.0
+  shipped a §4 claiming nothing changed while its own CHANGELOG recorded diagnostic-field and final-payload changes the
+  guide never mentioned (issue #686; the field-by-field list lives in the `## [0.30.0]` section, and it stays there on
+  purpose — naming those fields **in this section** would make 0.31.0 claim they changed, which is what the cells above
+  now guard). The six cells here state what is genuinely unchanged in a
+  **pure-deletion** release; the deletion itself is the Breaking entry above. The cut also moves the phase table's
+  `current` row to `v0.9.0–v0.31.0` (EN/CN pair — that row joined `--sync`'s narrow face in #699 ④, and re-running
+  `--sync` on the cut changed exactly those two lines). Host-visible effect: documentation and a version number, no new
+  behaviour beyond the removals.
+- **0.31.0 就是切版本身：版本号、发布态回写，以及门禁要读的那一节 §4（issue #698、PR #707）。** 三件事必须同批，因为门禁一次就要看全三样：
+  `package.json` `0.30.0 → 0.31.0`；两份 README、两份 requirements、两份 AGENTS 里「本版」那些句子由 `docs-drift-check --sync`
+  成对改写（那是**窄面**——只准动那些句子，其余字节一律拒绝）；以及 **`docs/host-upgrade-guide-0.31.0.md` / `_cn.md` 两份都补上
+  §4「没有变的东西」，六格齐全**（选项 / 默认值 / 观察者事件 / 诊断字段 / 磁盘格式 / 终局载荷）。§4 不是装饰：`unchanged-surface`
+  这条判据是拿**每一格**的「不变」声明去对**同一版**的 CHANGELOG，指南没有 §4 就等于没格子给它读——**「找不到那一格」是 exit 2，不是绿**——
+  0.30.0 就是这么发出去的：它的 §4 说什么都没变，而同一版 CHANGELOG 记着诊断字段与终局载荷上的改动，指南里一笔没提
+  （issue #686；逐字段清单就在 `## [0.30.0]` 那一段里，**故意只放在那里**——在本段里点名那些字段就等于声称「0.31.0 改了它们」，
+  而上面那六格守的正是这件事）。这六格在这里说的是「一个纯删除版里哪些东西真的没变」；删除本身见上面
+  Breaking 那条。这一刀还把阶段表的 `current` 行推到 `v0.9.0–v0.31.0`（中英成对——那一行自 #699 ④ 起进了 `--sync` 的窄面，
+  在切版树上重跑 `--sync` 实测就只动这两行）。宿主可见的差别：文档与版本号，除删除之外没有新行为。
+
 ## [0.30.0] - 2026-11-03
 
 ### Breaking
