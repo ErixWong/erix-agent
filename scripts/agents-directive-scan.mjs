@@ -39,11 +39,14 @@
 //        · `external-repo-coordinate`：带**登记过的**外部仓前缀（`<repo>:src/…js:N`）不是本仓坐标；仓名清单
 //          从 `scripts/docs-drift-check.mjs` 的 `EXTERNAL_REPO_PREFIXES` **现读**，清单外的仓名照样红。
 //   4. **字节预算**（`LENGTH_BUDGETS`，issue #726）：这张面是 system prompt 的一部分、**折叠不动它** ⇒
-//      每轮全额重发（2026-11-05 relay 实测：本仓 AGENTS.md 109,937 字节 = 27,769 tokens ≈ 3.67 字节/token）。
+//      每轮全额重发（2026-11-05 主 agent 在 relay 上**逐份**实测的比值是 **3.4 字节/token**）。
 //      #642 那把闸只看「面上有没有会过期的可变量」，**不看这张面有多长**，于是它一路长到 112,464 字节。
-//      长度本身因此成为一条判据：实测 > 预算 ⇒ 红（打印实测 / 预算 / 折算 tokens），`--sync` 是唯一合法
-//      的改法，`--verify` 要求「预算 = 实测」，空转（预算行没有对应文件 / 预算写成 0）即红。
-//      折算比 `BYTES_PER_TOKEN = 3.67` **不是常数**（换模型/分词器/中英比例都会漂），只用于折算，不参与判定。
+//      长度本身因此成为一条判据：实测 > 预算 ⇒ 红（打印实测 / 预算 / 超量 / 折算 tokens）。
+//      预算**不是手填的数**，是从实测推出来的：`ceil512(实测) + 1024`（见 `budgetFor()`）——向上取整到
+//      512 字节是为了不让「多打一个空格」就红，`1024` 是给一次正当编辑留的余量（总余量 ≤ 512 + 1024）。
+//      `--sync` 是唯一合法的改法（它写的也是这个推出来的值），`--verify` 对任何「不等于推出来的那一格」
+//      判红（抄高抄低都红，双向），空转（预算行没有对应文件 / 预算写成 0）即红。
+//      折算比 `BYTES_PER_TOKEN = 3.4` **不是常数**（换模型/分词器/中英比例都会漂），只用于折算，不参与判定。
 //   5. **存量欠账**（`DEBT_CEILINGS`）：本票**只建闸、不清账**（票面原话：别一上来清零，那会让本批其他单的
 //      证据叙述变成回归）。所以每份指令面文件 × 每个类别钉一个**上限**：实测 > 上限 ⇒ 红（新写进去的
 //      可变量必须改成不变式/复现命令，或者显式抬上限并在报告里说明）；实测 < 上限 ⇒ 绿 + 提示
@@ -330,13 +333,46 @@ export const DEBT_CEILINGS = Object.freeze({
 
 // ── 3b. 长度判据（issue #726：指令面的**字节预算**） ─────────────────────────
 /**
- * 字节 → token 的换算比：**3.67 字节/token**。
+ * 字节 → token 的换算比：**3.4 字节/token**。
  *
- * 这是 **2026-11-05 在 relay 上实测的比值**（本仓 `AGENTS.md` 109,937 字节 ⇒ 27,769 prompt tokens），
+ * 这是 **2026-11-05 主 agent 在 relay 上单独实测的比值**（每份文件各测一次，不是合并测的），
  * **不是常数**：换模型、换分词器、换文档形态（中英混排比例）都会漂。它只用来把「多少字节」翻成
  * 「每轮多贵」给人看；**判定永远按字节**，不按 token——拿一个会漂的比值当判据，就是再造一份会腐烂的清单。
+ *
+ * 先前那一版写的是 `3.67`：那是把两份文件**合并**测出来的比值（总字节 ÷ 总 tokens），偏保守，
+ * 会把同一个字节数报贵（32,548 字节：3.67 报 8,869 tokens，3.4 报 9,573——差 704）。别再用它。
  */
-export const BYTES_PER_TOKEN = 3.67;
+export const BYTES_PER_TOKEN = 3.4;
+
+/**
+ * 预算的向上取整粒度（字节）：`ceil512(实测)`。
+ *
+ * 为什么要取整：预算贴着实测写（`预算 = 实测`）等于零余量——多打一个空格就红，人于是学会了
+ * 「先跑 `--sync` 再提交」，派生闸就退化成一道人人绕过的仪式。取整到 512 让一次正常的句子修正
+ * 不必顺手改预算，同时 512 字节这个量级仍然远小于「又塞回一整段参考材料」。
+ */
+export const BUDGET_ROUNDING = 512;
+
+/**
+ * 取整之后再加的余量（字节）：**1024**，即总余量上限 512 + 1024 = 1536 ≤ 2048。
+ *
+ * 为什么不更大：余量就是「可以不红地长多少」。一次正当编辑（补一句纪律、把一条命令写清楚）在
+ * 几百字节量级；把余量放到几千，等于把这条判据变成摆设。
+ */
+export const BUDGET_HEADROOM = 1024;
+
+/**
+ * 一份指令面文件**应有的**预算（字节）：`ceil512(实测) + 1024`。
+ *
+ * 这是本闸唯一一份「预算从哪来」的定义：`--sync` 写的就是它，`--verify` 比的就是它。
+ * 手填任何别的数（哪怕更宽松）都是抄件，`--verify` 双向红。
+ *
+ * @param {number} bytes 实测字节数
+ * @returns {number}
+ */
+export function budgetFor(bytes) {
+  return Math.ceil(bytes / BUDGET_ROUNDING) * BUDGET_ROUNDING + BUDGET_HEADROOM;
+}
 
 /** 字节数折成 token（四舍五入；只用于报告，不参与判定）。 */
 export function tokensOf(bytes) {
@@ -347,26 +383,28 @@ export function tokensOf(bytes) {
  * 指令面每份文件的**字节预算**（issue #726 的长度判据）。
  *
  * 病根：#642 那把闸只看「面上有没有会过期的可变量」，**不看这张面有多长**——于是 AGENTS 一路长到
- * 112,464 字节（≈30.6k tokens），而它是 system prompt 的一部分、折叠不动它 ⇒ **每一轮都全额重发**。
+ * 112,464 字节（≈33k tokens），而它是 system prompt 的一部分、折叠不动它 ⇒ **每一轮都全额重发**。
  * 本闸是防复发的那一半：长度本身成为一条判据，超了就红。
  *
  * 纪律与 `DEBT_CEILINGS` 逐条同构（同一套理由，不重写第二份）：
- *   · 预算**是派生态**（瘦身后的实测值），`--sync <文件>` 是**唯一合法**的改法；
- *   · `--verify <文件>` 逐格要求**相等**（预算 = 实测），手改一个数字就红，抄高抄低都红；
- *   · `--strict` 是棘轮：实测 > 预算 ⇒ 红，实测 < 预算 ⇒ 绿 + 提示「可降到 N」；
+ *   · 预算**是派生态**：它由实测推出来（`budgetFor()` = `ceil512(实测) + 1024`），`--sync <文件>` 是
+ *     **唯一合法**的改法；
+ *   · `--verify <文件>` 逐格要求**等于推出来的那一格**，手改一个数字就红，**抄高抄低都是红**（双向）；
+ *   · `--strict` 是棘轮：实测 > 预算 ⇒ 红，实测 ≤ 预算 ⇒ 绿（余量以内不红，这正是余量的用途）；
  *   · **空转即红**：预算表里有一行、指令面上却没有这份文件（死条目），或者预算被写成 0（不可能成立）。
  *
- * 预算值 = issue #726 瘦身后的实测字节数（由 `--sync` 写进来，不是手填的凑整值）。
+ * 表里写的是 `budgetFor(实测)`，不是实测本身：两者差的就是「可以不红地长多少」。
  *
  * @type {Readonly<Record<string, number>>}
  */
 export const LENGTH_BUDGETS = Object.freeze({
-  // issue #726 瘦身后的实测值（瘦身前 112,464 字节 ≈ 30.6k tokens）。逐字保留 §1/§2/§4/§5/§6/§7/§8 与 §3
-  // 的纪律句，只把「碰到那道闸才需要读」的参考材料搬进 `docs/maintenance/command-reference.md` 之后的落点。
-  // 想再降就继续搬参考材料，搬完跑 `--sync`——这个数只能由实测重写，不许手填（--verify 逐格比）。
-  "AGENTS.md": 32548,
-  // 同上（中文侧瘦身前 100,591 字节）。
-  "AGENTS_cn.md": 28823,
+  // issue #726 收口后：实测 32,548 字节 ⇒ ceil512 = 32,768 ⇒ + 1024 余量 = 33,792
+  //（瘦身前 112,464 字节）。逐字保留 §1/§2/§4/§5/§6/§7/§8 与 §3 的纪律句，只把「碰到那道闸才需要读」
+  // 的参考材料搬进 `docs/maintenance/command-reference.md` 之后的落点。
+  // 想再降就继续搬参考材料，搬完跑 `--sync`——这个数只能由实测推出来，不许手填（--verify 逐格比）。
+  "AGENTS.md": 33792,
+  // 同上：实测 28,823 字节 ⇒ ceil512 = 29,184 ⇒ + 1024 = 30,208（中文侧瘦身前 100,591 字节）。
+  "AGENTS_cn.md": 30208,
 });
 
 // ── 4. 真值（名单从源码推，不抄） ─────────────────────────────────────────────
@@ -523,9 +561,17 @@ export function lengthVerdicts({ measured, budgets = LENGTH_BUDGETS }) {
       continue;
     }
     if (bytes > budget) {
-      overBudget.push({ file, bytes, budget, tokens: tokensOf(bytes), budgetTokens: tokensOf(budget) });
-    } else if (bytes < budget) {
-      downgradableBudget.push({ file, bytes, budget });
+      overBudget.push({
+        file, bytes, budget, over: bytes - budget,
+        tokens: tokensOf(bytes), budgetTokens: tokensOf(budget), overTokens: tokensOf(bytes - budget),
+      });
+    } else {
+      // 绿不等于「什么都不用说」：预算比推出来的那一格窄（但仍在实测之上）时提示可刷高，
+      // 比推出来的那一格宽时提示可刷低——两个方向都是「--sync 会把这一格写成 budgetFor(实测)」。
+      const derived = budgetFor(bytes);
+      if (budget !== derived) {
+        downgradableBudget.push({ file, bytes, budget, derived, headroom: budget - bytes });
+      }
     }
   }
   for (const [file, budget] of Object.entries(budgets)) {
@@ -557,6 +603,9 @@ export function lengthVerdicts({ measured, budgets = LENGTH_BUDGETS }) {
  *   · `overBudget`：指令面某份文件的字节数 > 预算（issue #726 的长度判据）；
  *   · `unregisteredBudget`：指令面上的文件没有字节预算行（新入指令面却忘了钉预算）；
  *   · `idleBudgets`：预算行没有对应文件（死条目）或预算被写成 0（不可能成立的格子）。
+ *
+ * `downgradableBudget` 不是红：预算与 `budgetFor(实测)` 不一致但仍在实测之上 ⇒ 绿 + 提示「--sync 会把这一格
+ * 写成 N」。抄高抄低真正被拦在 `--verify`（双向红）——`--strict` 只负责「长度不许长过预算」这一条。
  *
  * @param {{report: Array<object>, exemptions: ReadonlyArray<object>, ceilings: Readonly<Record<string, object>>,
  *   staleConstants?: Array<object>, length?: object|null}} input
@@ -854,7 +903,12 @@ export function budgetsFromSource(text) {
 }
 
 /**
- * 验预算表：逐格与实测比。**不改任何文件**，返回问题清单（空 = 绿）。
+ * 验预算表：逐格与**推出来的那一格**（`budgetFor(实测)`）比。**不改任何文件**，返回问题清单（空 = 绿）。
+ *
+ * 为什么比推出来的值而不是比实测：预算的用途是留一点余量（`ceil512 + 1024`），所以它天然不等于实测；
+ * 真正的“抄件”是「人手写上去的任何一个数字」——而唯一合法的数字是那个函数算出来的。
+ * 比它大 ⇒ 余量被手工放宽（今天不红，明天就能塞回一整段参考材料）；比它小 ⇒ 贴上限或已经超了。
+ * 两个方向都红，这就是“双向”。
  *
  * @param {{text: string, measured: Map<string, number>}} input
  * @returns {string[]}
@@ -869,9 +923,10 @@ export function verifyBudgets({ text, measured }) {
         + "`--sync` 不替你编理由注释，人手加一条再跑 --sync）");
       continue;
     }
-    if (budget !== bytes) {
-      problems.push(`${file}：预算 ${budget} / 实测 ${bytes} 字节（≈${tokensOf(bytes)} tokens）`
-        + "（手改派生数 = 伪造；跑 --sync）");
+    if (budget !== budgetFor(bytes)) {
+      problems.push(`${file}：预算 ${budget} / 实测 ${bytes} 字节（≈${tokensOf(bytes)} tokens）——`
+        + `这一格应该是 ${budgetFor(bytes)}（= ceil${BUDGET_ROUNDING}(${bytes}) + ${BUDGET_HEADROOM}），`
+        + `差 ${budget - budgetFor(bytes)} 字节（手改派生数 = 伪造，抄高抄低都是红；跑 --sync）`);
     }
   }
   for (const file of table.keys()) {
@@ -884,7 +939,7 @@ export function verifyBudgets({ text, measured }) {
 }
 
 /**
- * 刷预算表：把每一行的数字重写成实测值（**只碰数字**，行尾的理由注释一个字不动）。
+ * 刷预算表：把每一行的数字重写成**推出来的那一格**（`budgetFor(实测)`；**只碰数字**，行尾的理由注释一个字不动）。
  *
  * @param {{text: string, measured: Map<string, number>}} input
  * @returns {{text: string, changes: Array<{file: string, from: number, to: number}>,
@@ -897,9 +952,10 @@ export function syncBudgets({ text, measured }) {
   const dead = [...table.keys()].filter((file) => !measured.has(file));
   const changes = [];
   const rebuilt = body.replace(LENGTH_ROW_RE, (row, file, digits) => {
-    const next = measured.get(file);
-    if (next === undefined) return row;
-    if (Number(digits) !== next) changes.push({ file, from: Number(digits), to: next });
+    const bytes = measured.get(file);
+    if (bytes === undefined) return row;
+    const next = budgetFor(bytes);
+    if (Number(digits) !== next) changes.push({ file, from: Number(digits), to: next, measured: bytes });
     return `\n  "${file}": ${next},`;
   });
   return { text: `${text.slice(0, start)}${head}${rebuilt}${tail}${text.slice(end)}`, changes, missing, dead };
@@ -958,7 +1014,7 @@ function mainVerifyTable({ target, root, io }) {
     return 1;
   }
   console.log(`  ${measured.size} 份指令面文件 × ${Object.keys(CATEGORIES).length} 类，逐格等于实测；`
-    + `${measuredBytes.size} 份指令面文件的字节数逐格等于预算`);
+    + `${measuredBytes.size} 份指令面文件的字节数逐格等于推出来的那一格（ceil${BUDGET_ROUNDING}(实测) + ${BUDGET_HEADROOM}）`);
   console.log(`复跑：node scripts/agents-directive-scan.mjs --verify ${rel}`);
   return 0;
 }
@@ -1017,7 +1073,8 @@ function mainSyncTable({ target, root, io }) {
   }
   for (const change of budgetResult.changes) {
     console.log(`  ${change.to > change.from ? "↑" : "↓"} ${change.file} 字节预算：`
-      + `${change.from} → ${change.to}（≈${tokensOf(change.to)} tokens；${change.to > change.from
+      + `${change.from} → ${change.to}（实测 ${change.measured} ⇒ ceil${BUDGET_ROUNDING} + ${BUDGET_HEADROOM}；`
+      + `≈${tokensOf(change.to)} tokens；${change.to > change.from
         ? "抬高 = 这张面又长长了，先在报告里写明为什么" : "清账"}）`);
   }
   console.log(`  改动 ${result.changes.length + budgetResult.changes.length} 格`
@@ -1084,11 +1141,14 @@ function printReport({ report, gate, constants, externalPrefixes, staleConstants
   console.log("\n── 指令面长度（字节预算，issue #726；折叠不动它 ⇒ 每轮全额重发） ──");
   for (const entry of directive) {
     const budget = budgets[entry.file];
+    const headroom = budget === undefined ? null : budget - entry.bytes;
     console.log(`  ${entry.file}  ${entry.bytes} 字节 / 预算 ${budget ?? "（未登记）"} 字节`
+      + (headroom === null ? "" : `（余量 ${headroom}）`)
       + `  ≈ ${tokensOf(entry.bytes)} tokens（换算比 ${BYTES_PER_TOKEN} 字节/token）`);
   }
   for (const d of gate.downgradableBudget) {
-    console.log(`  ↓ ${d.file} 实测 ${d.bytes} < 预算 ${d.budget} 字节——存量在变少，可把预算降到 ${d.bytes}（--sync）`);
+    console.log(`  ↓ ${d.file} 实测 ${d.bytes} 字节 / 预算 ${d.budget}——与推出来的那一格 ${d.derived}`
+      + `（= ceil${BUDGET_ROUNDING}(${d.bytes}) + ${BUDGET_HEADROOM}）不一致，\`--sync\` 会把它写成 ${d.derived}`);
   }
   console.log(`  换算口径：${BYTES_PER_TOKEN} 字节/token 是 2026-11-05 在 relay 上实测的比值（不是常数），只用于折算，不参与判定\n`);
 
@@ -1105,7 +1165,8 @@ function printReport({ report, gate, constants, externalPrefixes, staleConstants
     for (const v of gate.idleExemptions) console.log(`  ✗ 例外 \`${v.id}\` 在指令面上一处也没命中（空转条目，#210 R2）——删掉它，或修好它的判据`);
     for (const v of gate.idleCeilings) console.log(`  ✗ ${v.file} ${v.category} 类上限 ${v.ceiling} 而实测 0（整条登记空转）`);
     for (const v of gate.overBudget) {
-      console.log(`  ✗ ${v.file} 字节数 ${v.bytes} > 预算 ${v.budget}（≈${v.tokens} tokens vs ≈${v.budgetTokens} tokens）`
+      console.log(`  ✗ ${v.file} 字节数 ${v.bytes} > 预算 ${v.budget}，超量 ${v.over} 字节`
+        + `（≈${v.tokens} tokens vs ≈${v.budgetTokens} tokens，超 ≈${v.overTokens} tokens）`
         + "—— 把参考材料搬进冷层（`docs/maintenance/command-reference.md`），或者跑 `--sync` 把预算抬上去并在报告里说明为什么");
     }
     for (const v of gate.unregisteredBudget) {
@@ -1202,9 +1263,9 @@ const FIXTURE_BODIES = Object.freeze({
  *
  * 两张表的数字都由**夹具自己的内容**算出来，不手抄：
  *   · 上限 = 夹具实测命中数 + `margin`（三个类别的命中数是固定的：每类一条）；
- *   · 字节预算 = 夹具 AGENTS 两份的 UTF-8 字节数。
- * 两张表都写**实测值**（不带 `margin`）：`--verify` 要求「表 = 实测」，所以表永远是贴着实测的那一份；
- * 欠账形态（上限/预算比实测高多少）只活在内存里的 `ceilings` / `budgets` 注入里，不进夹具文件——
+ *   · 字节预算 = `budgetFor(夹具 AGENTS 两份的字节数)`（= `ceil512(实测) + 1024`）。
+ * 两张表都写**推出来的那一格**（上限 = 实测 + 0，预算 = budgetFor(实测)）：`--verify` 要求「表 = 推出来的那一格」，
+ * 所以表永远是那一份；欠账形态（上限比实测高多少）只活在内存里的 `ceilings` 注入里，不进夹具文件——
  * 否则「干净表上 `--verify` 绿」这一格会随形态变红，而它本来就与形态无关。
  */
 function fixtureFiles() {
@@ -1234,10 +1295,10 @@ function fixtureFiles() {
       "});",
       "",
       "export const LENGTH_BUDGETS = Object.freeze({",
-      `  // ${enBytes}：夹具 AGENTS.md 的字节数（实测值）`,
-      `  "AGENTS.md": ${enBytes},`,
-      `  // ${cnBytes}：夹具 AGENTS_cn.md 的字节数（实测值）`,
-      `  "AGENTS_cn.md": ${cnBytes},`,
+      `  // ${enBytes} 字节实测 ⇒ ${budgetFor(enBytes)}（= ceil${BUDGET_ROUNDING} + ${BUDGET_HEADROOM}）`,
+      `  "AGENTS.md": ${budgetFor(enBytes)},`,
+      `  // ${cnBytes} 字节实测 ⇒ ${budgetFor(cnBytes)}（同上）`,
+      `  "AGENTS_cn.md": ${budgetFor(cnBytes)},`,
       "});",
       "",
     ].join("\n"),
@@ -1759,11 +1820,12 @@ async function selfTest() {
       const abs = path.join(tree.dir, rel);
       const pristine = readFileSync(abs, "utf8");
       eq((await runCaptured(["--verify", rel], tree)).code, 0, "干净预算表 `--verify` 的退出码");
-      const cell = `"AGENTS.md": ${tree.measuredBytes["AGENTS.md"]},`;
+      const cell = `"AGENTS.md": ${budgetFor(tree.measuredBytes["AGENTS.md"])},`;
       if (!pristine.includes(cell)) throw new Error("变异没落上：预算表里找不到那一格");
-      // 两个方向都试：抄高（预算比实测大）与抄低（预算比实测小）都必须红——预算表是量出来的，不是写出来的
+      // 两个方向都试：抄高（预算比推出来的那一格大）与抄低（比它小）都必须红——
+      // 预算表是算出来的，不是写出来的
       for (const delta of [7, -7]) {
-        const tampered = pristine.replace(cell, `"AGENTS.md": ${tree.measuredBytes["AGENTS.md"] + delta},`);
+        const tampered = pristine.replace(cell, `"AGENTS.md": ${budgetFor(tree.measuredBytes["AGENTS.md"]) + delta},`);
         if (tampered === pristine) throw new Error("变异没落上：手改预算那一格没改到");
         writeFileSync(abs, tampered);
         const run = await runCaptured(["--verify", rel], tree);
@@ -1794,6 +1856,54 @@ async function selfTest() {
       tree.removeTracked("AGENTS_xx.md");
       eq((await runCaptured(["--strict"], tree)).code, 0, "拿掉那份文件后 `--strict` 的退出码");
     }));
+
+    t("反向证 ⑫：字节预算 = `ceil512(实测) + 1024`（推出来的那一格）；刚好等于预算不红；远高于预算同样红；"
+      + "余量上限 ≤ 2048；变异落不上算失败", async () => {
+      // ① 公式本身：取整边界两侧 + 本单收口后的两份实测值（这两个数是实测，不是手填的预算）
+      eq(budgetFor(1), BUDGET_ROUNDING + BUDGET_HEADROOM, "budgetFor(1) = ceil512(1) + 余量");
+      eq(budgetFor(BUDGET_ROUNDING), BUDGET_ROUNDING + BUDGET_HEADROOM,
+        "budgetFor(512) = ceil512(512) + 余量（正好一整格不多进一位）");
+      eq(budgetFor(BUDGET_ROUNDING + 1), 2 * BUDGET_ROUNDING + BUDGET_HEADROOM,
+        "budgetFor(513) = ceil512(513) + 余量（多一字节就进一格）");
+      eq(budgetFor(32548), 33792, "本单收口后的 EN 预算（实测 32,548 ⇒ 33,792）");
+      eq(budgetFor(28823), 30208, "本单收口后的 CN 预算（实测 28,823 ⇒ 30,208）");
+      // ② 余量上限：任务书要求 ≤ 2048 字节；取整 + 余量一起算
+      const maxHeadroom = BUDGET_ROUNDING + BUDGET_HEADROOM;
+      if (!(maxHeadroom <= 2048)) throw new Error(`余量上限 ${maxHeadroom} 字节 > 2048（本闸不允许更大的余量）`);
+      eq(budgetFor(32768) - 32768, BUDGET_HEADROOM, "正好落在 512 整格上时余量就是余量常数本身");
+      const enHeadroom = budgetFor(32548) - 32548;
+      if (!(enHeadroom >= BUDGET_HEADROOM && enHeadroom <= maxHeadroom)) {
+        throw new Error(`EN 的余量 ${enHeadroom} 不在 [${BUDGET_HEADROOM}, ${maxHeadroom}] 里（取整补位 + 余量常数）`);
+      }
+      await withFixture(shape.margin, async (tree) => {
+        const rel = "AGENTS.md";
+        const pristine = readFileSync(path.join(tree.dir, rel), "utf8");
+        // ③ 刚好等于预算 ⇒ 不红（边界是「超过」而不是「达到」）
+        tree.budgets = { ...tree.budgets, [rel]: tree.measuredBytes[rel] };
+        eq((await runCaptured(["--strict"], tree)).code, 0, "预算 = 实测（刚好等于预算）时 `--strict` 的退出码");
+        // ④ 远高于预算 ⇒ 同样红（不是只有「刚刚超一个字节」才红），且超量 / 实测 / 预算三个数都对得上
+        const inject = 4096;
+        writeFileSync(path.join(tree.dir, rel), `${pristine}${"y".repeat(inject)}`);
+        const landed = Buffer.byteLength(readFileSync(path.join(tree.dir, rel), "utf8"), "utf8");
+        eq(landed, tree.measuredBytes[rel] + inject, "注入后文件的字节数（变异真的落上了）");
+        const red = await runCaptured(["--strict", "--json"], tree);
+        eq(red.code, 1, "远高于预算时 `--strict --json` 的退出码");
+        const over = JSON.parse(red.stdout).gate.overBudget.find((v) => v.file === rel);
+        if (over === undefined) throw new Error("远高于预算时红集合里没有超预算格");
+        eq(over.bytes, landed, "报出来的实测字节数");
+        eq(over.over, landed - over.budget, "报出来的超量（字节）");
+        eq(over.overTokens, Math.round((landed - over.budget) / BYTES_PER_TOKEN), "报出来的超量（tokens）");
+        const text = await runCaptured(["--strict"], tree);
+        if (!/超量 \d+ 字节/.test(text.stdout)) {
+          throw new Error(`文本分支没报超量：${text.stdout.slice(-400)}`);
+        }
+        // ⑤ 变异没落上就算失败（#210 R2）：把文件写回原样后必须真的回到绿，否则上面那格是假红
+        writeFileSync(path.join(tree.dir, rel), pristine);
+        eq(Buffer.byteLength(readFileSync(path.join(tree.dir, rel), "utf8"), "utf8"), tree.measuredBytes[rel],
+          "还原后文件的字节数");
+        eq((await runCaptured(["--strict"], tree)).code, 0, "还原后 `--strict` 的退出码");
+      });
+    });
 
     return pending;
   };
