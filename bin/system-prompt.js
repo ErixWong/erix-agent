@@ -56,7 +56,14 @@ export function buildProjectInstructionsSection(discovery) {
  * @returns {string}
  */
 export function formatProjectInstructionsNotice(discovery) {
-  if (discovery.files.length === 0) return `[项目约定] 未发现 ${PROJECT_INSTRUCTIONS_FILENAME}`;
+  if (discovery.files.length === 0) {
+    const base = `[项目约定] 未发现 ${PROJECT_INSTRUCTIONS_FILENAME}`;
+    // 路径在、但读不了（目录 / 权限 …）：说清是「不可用」，不是「这个目录没有约定文件」。
+    const skipped = discovery.skipped
+      .map((entry) => `${entry.path} 不可用：${entry.code}`)
+      .join("，");
+    return skipped === "" ? base : `${base}（${skipped}）`;
+  }
   const paths = discovery.files.map((file) => file.path).join(", ");
   const base = `[项目约定] 已注入 ${discovery.files.length} 个文件 / ${discovery.totalBytes} 字节 (${paths})`;
   return discovery.truncated ? `${base}（超过 ${discovery.limit} 字节上限，已截断）` : base;

@@ -151,6 +151,24 @@ test("#716 发现函数：只读 cwd 这一层，不向上找父目录、不碰 
   }
 });
 
+test("#716 发现函数：AGENTS.md 是个目录 ⇒ 不抛，留痕行说「不可用」而不是「没有这个文件」", async () => {
+  const dir = await makeTmp("erix-716-isdir-");
+  try {
+    const path = join(dir, PROJECT_INSTRUCTIONS_FILENAME);
+    mkdirSync(path, { recursive: true });
+    const discovery = discoverProjectInstructions({ cwd: dir });
+    assert.deepEqual(discovery.files, []);
+    assert.equal(discovery.skipped.length, 1);
+    assert.equal(discovery.skipped[0].code, "EISDIR");
+    const notice = buildCliSystemPrompt({ cwd: dir }).notice;
+    assert.match(String(notice), /^\[项目约定\] 未发现 AGENTS\.md（/u);
+    assert.ok(String(notice).includes(path));
+    assert.match(String(notice), /不可用：EISDIR/u);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("#716 发现函数：cwd 必须由调用方显式给（库内不猜路径）", () => {
   assert.throws(() => discoverProjectInstructions({}), /cwd/u);
   assert.throws(() => discoverProjectInstructions({ cwd: "  " }), /cwd/u);

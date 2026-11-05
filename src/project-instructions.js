@@ -102,7 +102,14 @@ export function discoverProjectInstructions({ cwd, maxBytes = PROJECT_INSTRUCTIO
     if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return emptyDiscovery(limit);
     return { ...emptyDiscovery(limit), skipped: [{ path: filePath, code: String(error?.code ?? error?.name ?? error) }] };
   }
-  if (!stats.isFile()) return emptyDiscovery(limit);
+  // 路径在、但不是普通文件（目录 / 设备 …）：算「没找到可用约定」，但把原因记进 `skipped`，
+  // 免得调用方把它说成「这个目录没有 AGENTS.md」（那是另一件事）。
+  if (!stats.isFile()) {
+    return {
+      ...emptyDiscovery(limit),
+      skipped: [{ path: filePath, code: stats.isDirectory() ? "EISDIR" : "ENOTFILE" }],
+    };
+  }
 
   let buffer;
   try {
