@@ -3,12 +3,26 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3423,
+    "tests": 3437,
     "fail": 0,
     "maxSkipped": 15
   },
   "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
   "observations": [
+    {
+      "date": "2026-11-05",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "8804607（merge origin/main 5c0db9d 进 feat-261105-01-agents-discovery）",
+      "branch": "feat-261105-01-agents-discovery",
+      "tests": 3437,
+      "pass": 3424,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "合并树现测重登：本分支把 3407 抬到 3423（#716 的 16 格），上游 main 在此期间把 #712/#713/#714/#715 合入但**未抬 expect.tests**（仍 3407，只加 observations，按「多出来是绿」处置）⇒ 同格双改，merge 无冲突但登记值谁都不代表合并树，按本文件「合并后重跑现测重登」处置，不抄任何一边。实测 = 本分支 3423 + 上游四支合入新增的 14 格 = 3437；六个计数逐字取自在 8804607 这棵树跑的 npm test TAP 汇总行（日志 /tmp/719-merge-test.log），经 npm run check:test-summary -- --log 同一份日志复核，非手抄、非按分支值相加推定。**fail 从 1 归 0**：#719 前一次登记（5d15c9e）时那条 version-state-probe 的 A 格红是 main 自带的（基点 86af907 上独立复现过，跟踪单 #713），而 #713 已由 PR #722 合入 main ⇒ 合并树里它已绿，不是本片修的、也不欠任何放行。skipped 13 = 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE）+ 1 条真上游多会话格（闸门关 ⇒ skip 但计入 tests），maxSkipped 上限 15 不动。本次登记的提交只改这一份登记表。"
+    },
     {
       "date": "2026-11-05",
       "env": "local",
