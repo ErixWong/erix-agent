@@ -3,6 +3,10 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Breaking
+
+### Changed
+
 ### Added
 
 - **The `[Unreleased]` carry is now a preflight gate (issue #715).** Nothing ever moved entries out of
@@ -43,6 +47,61 @@
   红并点名「找不到版本节」，不静默放过），日期形状用 `docs-drift-check.mjs` 自己那一条，版本号从
   `package.json` 现读而不是写死。`--self-test` 新增三态与三条反向证（按判词给的形状搬运 ⇒ 转绿、顶部标题被改名
   ⇒ 红、版本节被拿掉 ⇒ 红变未判定），变异没落上按失败算而不是按绿算。
+
+### Fixed
+
+- **The release-state probe's `--self-test` now synthesizes its own version face (issue #713).** The thirteen
+  cases used to copy the host tree's `package.json` and CHANGELOG section face into the fixtures, so "the version
+  being cut" was still derived from the host: on a tree that had already written the release back and had not cut
+  the next version yet (the normal state after 0.31.0) no unpublished section sat at or above `package.json`, and
+  the whole batch exited 2 naming `NO_INFLIGHT_SECTION`. The self-test now builds a synthetic seed host first:
+  the tracked-file list and the other documents are still copied from the host (the judged scan surface must keep
+  the real tree's shape), while the version face is synthesized — the version being cut is the highest *published*
+  section in the seed, the previous version is the highest published section below it, sections above it are
+  dropped, and the unpublished heading shape goes through `docs-drift-check --sync` instead of hand-edited bytes.
+  Two new cases mutate those fixtures (delete the in-flight section; raise the fixture `package.json` above every
+  section) and must go red themselves, naming the missing landing point.
+- **发布态探针的 `--self-test` 现在自己合成版本面（issue #713）。** 那十三例过去把宿主树的 `package.json` 与
+  CHANGELOG 段面原样抄进夹具，于是「正在切的那一版」仍然从宿主推：在「发版回写之后、下一次切版之前」的树上
+  （0.31.0 发布后的常态），没有任何未发布段不低于 `package.json`，整批 exit 2 并点名 `NO_INFLIGHT_SECTION`。
+  现在自测先造一棵合成种子宿主——入库清单与其余文档仍从宿主机械复制（判据的扫描面必须与真树同形），
+  而版本面由自测合成：要切的那一版取种子里**已发布段**的最高一版，上一版取低于它的最高已发布段，
+  高于它的段整段拿掉，段首「未发布」形状走 `docs-drift-check --sync` 而不是手改字节。另有两例专门变异这些
+  夹具（把在飞段整段拿掉 / 把夹具 `package.json` 抬到高于所有段），它们必须**自己**红并点名落点缺失。
+- **A `tool_use` stranded in the middle of the ledger no longer bricks the run (issue #421, with the
+  tail settled in #394 and the write side in #414 / #420 / #424 / #430).** The engine requires every
+  `tool_use` of an assistant message to be settled by the **immediately following** user message with
+  exactly the same id set (`src/messages/rounds.js#validateMessages`); a ledger that breaks this fails
+  locally as `invalid_messages` with **zero HTTP requests**, and that `runId` never starts again. The
+  tail half and the write side were already fixed; this is the remaining half. On resume, before any
+  model request, every mid-sequence `tool_use` that **no ledger row ever settled** gets one stub
+  `tool_result` (`is_error: true`, body starting with the `[erix]` marker and saying the call ran but
+  its result never reached the ledger) merged into the user message that follows its assistant — same
+  page, never an inserted page — so `invalid_messages` degrades from *unrecoverable* to a *visible loss*
+  the model can re-issue. The pairing predicate and the block constructor stay single-sourced
+  (`pendingMidSequenceToolUses` / `buildToolResultFact`), the criterion is the **ledger** (a result that
+  another round already settled is never stubbed), the stub body is its own constant (the tail's "never
+  executed" sentence would be a lie here), and when the aggregate message's first-slice row is still
+  visible the stub is journaled with `partOf` pointing at it (#430's anchor discipline). Boundaries,
+  stated: no new `executionStatus` value (the closed set stays `intercepted / interrupted / rejected`),
+  no page inserted between two adjacent assistant messages, and when the round's body has already been
+  folded into its carrier row there is no `partOf` target at all (`load()` no longer exposes it) — there
+  the stub repairs this run's context only and the engine reports `resume_journal_skipped` instead of
+  writing a row that would land in the wrong message.
+- **账本中段悬空的 `tool_use` 不再让 run 永久起不来（issue #421，尾部在 #394、写侧在 #414 / #420 /
+  #424 / #430 已经修过）。** 引擎要求一条 assistant 消息里的每个 `tool_use` 都由**紧接其后**的那条 user
+  消息以**一模一样**的 id 集合结清（`src/messages/rounds.js#validateMessages`）；账本违反这一条就在本地
+  以 `invalid_messages` 失败、**0 次 HTTP**，而且那个 `runId` 再也起不来。尾部与写侧都已经修过，这是剩下
+  的那一半：恢复时、任何模型请求发出之前，每个「**账本里没有任何一行结清过**」的中段 `tool_use` 都补一张
+  桩 `tool_result`（`is_error: true`，正文以 `[erix]` marker 开头、说明这次调用跑过但结果没落盘），
+  **并进**它所属 assistant 紧接的那条 user 消息——同页合并，绝不插页——于是 `invalid_messages` 从
+  **不可恢复**降级成**可见的丢失**，模型可以重发调用。配对判据与结果块构造点都仍是单一来源
+  （`pendingMidSequenceToolUses` / `buildToolResultFact`），判据是**账本**（别的轮已经结清过的结果一律
+  不补），桩正文是它自己的常量（尾部那句「从未执行」放在这里就是假话），而聚合消息的首片行仍可见时，
+  桩会以 `partOf` 指向它入账（#430 的锚点纪律）。边界写明：不新增 `executionStatus` 值（闭集仍是
+  `intercepted / interrupted / rejected`）、不在两条相邻 assistant 之间插页、而当那一轮的正文已经被折进
+  轮载体行时根本不存在 `partOf` 目标（`load()` 不再暴露它）——那一格只修本次上下文，引擎如实报
+  `resume_journal_skipped`，而不是写一行会落进错消息的分片。## [0.31.0] - 2026-11-04
 
 ## [0.31.0] - 2026-11-04
 

@@ -56,6 +56,7 @@
 //      且本仓 index 里每多一个新文件、合成树磁盘上就少一个 ⇒ `read()` ENOENT 直接崩
 //      （实测 `/tmp/p703/S1-selftest-fixed.log`）。独立小仓 ⇒ 磁盘与 index 自洽，tag 随便建删都不碰主仓。
 //   3. `package.json` 的 version 置为下一版（**这一维唯一要模拟的事实**）。
+//      自测（`--self-test`）例外：那一族合成树的**版本面**由自测自己造（见下一节），不从宿主抄。
 //   4. 发布态回写走本仓自己的窄面：在合成树里跑 `node scripts/docs-drift-check.mjs --sync --published <发布行>
 //      [--published-date D]` —— 当前版本句、AGENTS 两句、§4 阶段表 current 行、CHANGELOG 段首那一行
 //      一次写齐，不手改任何一个字节（手改 = 第二次实现一遍回写规则，它会漂移）。
@@ -64,6 +65,24 @@
 //      红得与本次探针无关）。要「缺 tag」的态就不建那一个。
 //   6. registry 桩：`--registry-json <file>`（issue #703 给 `docs-drift-check.mjs` 加的注入口子），
 //      `versions` = 上面那一节的基线（真读 / auto 现推 / 文件），latest 逐态给。
+//
+// ── `--self-test` 的版本面由**自测自己造**（issue #713：宿主树只当模板）────────────────────────
+// 病根（#713 现场）：`--self-test` 原先也走上面第 3 条——把宿主树的 `package.json` / CHANGELOG 段面
+// 原样抄进夹具，于是「要切的那一版」仍然**从宿主推**：在「发版回写之后、下一次切版之前」的树上
+// （本仓 0.31.0 发布后的常态）根本没有「未发布且不低于 package.json」的段 ⇒ 整批 exit 2，
+// 而测试文件的文件头把这 13 例写成「全在机械合成的宿主上跑」。也就是说自证词与实况不符：病没消，
+// 只是从「当前版」挪到了「正在切的那一版」（#703 第二轮的缺口 B 换个位置复发）。
+// 现在自测先造一棵**合成种子宿主**（`<out>/.selftest-seed`）：
+//   · 入库清单与其余文档仍从宿主树机械复制（判据的扫描面必须与真树同形，这一半不能凭空造）；
+//   · **版本面**由自测合成：`要切的那一版` = 种子里**已发布段**（带日期且没标未发布）的最高一版，
+//     `上一版` = 低于它的最高已发布段；高于它的段整段摘掉（那些是「夹具这一版之后的事」）；
+//     `package.json` 置为要切的那一版；段首的「未发布」形状走本仓自己的窄面
+//     （`docs-drift-check --sync --published <上一版>`），不手改任何一个字节。
+//   · 于是 13 例的落点全部指向**夹具**，宿主树只剩两个用途：当复制的模板、打印读数。
+// 为什么「要切的那一版」取「已发布段的最高一版」而不是「再 +1 个补丁号」：那棵树上确实有一份
+// 与它自洽的发布面（指南、§4 阶段表、当前版本句、CHANGELOG 段），合成种子只翻它的**发布态**；
+// 凭空加一版还得同时造指南，而 `unchanged-surface` 会当场判「当前版本没有一对指南」——那是**第二份
+// 发布面规则**，它会漂移（与上面第 4 条同一个理由）。
 //
 // 只读不改本仓：合成树落在 `.scratch/`（已登记的 scratch 目录类），探针一个字节都不写入库文件。
 //
@@ -77,12 +96,14 @@
 //   node scripts/version-state-probe.mjs --registry-base auto            # 离线：registry 基线机械现推
 //   node scripts/version-state-probe.mjs --registry-base <file>          # 或给一份 {"latest","versions"}
 //   node scripts/version-state-probe.mjs --self-test     # 这件工具自己的反向证（合成宿主上跑，离线，条数自己印）
+//                                                       # 版本面由自测自己合成 ⇒ 与宿主停在哪一版无关
 //
 // 退出码：0 = 四个态都达预期；1 = 有态不达预期（反向证没红也算）；2 = 事实缺位（读不到 / 合成树建不起来 /
 // 这一棵树今天没有可判的发布态）——**每一个 exit 2 都带一个代号**（`NO_INFLIGHT_SECTION`、
 // `NEXT_SECTION_MISSING`、`NO_PREVIOUS_RELEASE`、`PREVIOUS_NOT_BELOW_NEXT`、`UNKNOWN_STATE`、
 // `REGISTRY_UNREADABLE`、`REGISTRY_BASE_UNREADABLE`、`PREVIOUS_NOT_PUBLISHED`、`NEXT_ALREADY_PUBLISHED`、
-// `SRC_UNREADABLE`、`TREE_BUILD_FAILED`、`SYNC_FAILED`），因为「未判定」必须能被机器分辨，不能只靠读散文。
+// `SRC_UNREADABLE`、`TREE_BUILD_FAILED`、`SYNC_FAILED`、`SEED_UNREADABLE`），因为「未判定」必须能被机器分辨，
+// 不能只靠读散文。
 import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -101,8 +122,11 @@ const flagValue = (name, dflt = null) => {
   return eq ? eq.slice(name.length + 1) : dflt;
 };
 const OUT = path.resolve(flagValue("--out", path.join(ROOT, ".scratch", "version-states")));
-/** `--src <dir>`：**事实与入库清单的来源树**（缺省 = 本脚本所在的仓根）。合成宿主就靠这一维喂进来。 */
-const SRC = path.resolve(flagValue("--src", ROOT));
+/** `--src <dir>`：**宿主树**（缺省 = 本脚本所在的仓根）。判据的事实来源是下面的 `SRC`：
+ *  非自测时它就是宿主树；自测时它是**合成种子**（issue #713：版本面由自测自己造，宿主只当模板 + 读数）。 */
+const HOST_SRC = path.resolve(flagValue("--src", ROOT));
+/** 事实来源树（全脚本只读它）。自测时在下面被换成合成种子。 */
+let SRC = HOST_SRC;
 /** `--registry-base <file|auto>`：registry `versions` 名单的来源（缺省 = `npm view` 现读）。 */
 const REGISTRY_BASE = flagValue("--registry-base", "");
 const GIT_ID = {
@@ -140,6 +164,17 @@ if (REGISTRY_BASE && REGISTRY_BASE !== "auto" && !/\.json$/iu.test(REGISTRY_BASE
   fail(`--registry-base ${JSON.stringify(REGISTRY_BASE)} 既不是 auto 也不是 .json 文件路径`, "REGISTRY_BASE_UNREADABLE");
 }
 
+// ── 子进程 / git 薄封装（先于事实读取：造合成种子要用它们）──────────────────────────────
+function run(cmd, cmdArgs, opts = {}) {
+  const r = spawnSync(cmd, cmdArgs, { encoding: "utf8", timeout: opts.timeout ?? 120000, ...opts });
+  if (r.error) fail(`${cmd} ${cmdArgs.join(" ")} 跑不起来：${r.error.message}`, "TREE_BUILD_FAILED");
+  return { code: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+}
+const git = (dir, ...a) => run("git", ["-C", dir, ...a], { env: { ...process.env, ...GIT_ID } });
+/** 附注 tag 的 tagger date = 第二个参数（git 认 `GIT_COMMITTER_DATE`，实测与 `%(taggerdate:raw)` 一致）。 */
+const gitTagDated = (dir, version, day) => run("git", ["-C", dir, "tag", "-a", "-m", `synthetic ${version}`, `v${version}`, "HEAD"],
+  { env: { ...process.env, ...GIT_ID, GIT_COMMITTER_DATE: `${day} 12:00:00 +0800` } });
+
 // ── 事实：从 `--src` 那棵树现读，一个版本号都不写死 ──────────────────────────────────
 const cmpSemver = (a, b) => {
   const x = a.split(".").map(Number);
@@ -154,6 +189,12 @@ const shiftDay = (date, days) => {
   const [y, m, d] = date.split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d) + days * 86400000).toISOString().slice(0, 10);
 };
+
+// ── `--self-test`：先把**事实来源树**换成自测自己合成的种子（issue #713）────────────────────
+// 这一行必须在下面的全部事实读取之前：自测的 13 例全部跑在夹具上，所以「要切的那一版」也得从夹具现推，
+// 不许从宿主推（#713 的病就是后者：宿主停在「已发版、未切下一版」时整批 exit 2）。
+// 它也必须排在 `cmpSemver` 之后（种子要用它比段面）。
+if (SELF_TEST) SRC = buildSelfTestSeed(HOST_SRC);
 
 if (!existsSync(SRC) || !statSync(SRC).isDirectory()) {
   fail(`--src ${SRC} 不是存在的目录 ⇒ 事实来源树没有着落（缺省是本脚本所在的仓根）`, "SRC_UNREADABLE");
@@ -297,36 +338,27 @@ if (REG.versions.includes(nextVersion)) {
 }
 
 // ── 合成树 ──────────────────────────────────────────────────────────────────────────
-function run(cmd, cmdArgs, opts = {}) {
-  const r = spawnSync(cmd, cmdArgs, { encoding: "utf8", timeout: opts.timeout ?? 120000, ...opts });
-  if (r.error) fail(`${cmd} ${cmdArgs.join(" ")} 跑不起来：${r.error.message}`, "TREE_BUILD_FAILED");
-  return { code: r.status ?? -1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
-}
-const git = (dir, ...a) => run("git", ["-C", dir, ...a], { env: { ...process.env, ...GIT_ID } });
-/** 附注 tag 的 tagger date = 第二个参数（git 认 `GIT_COMMITTER_DATE`，实测与 `%(taggerdate:raw)` 一致）。 */
-const gitTagDated = (dir, version, day) => run("git", ["-C", dir, "tag", "-a", "-m", `synthetic ${version}`, `v${version}`, "HEAD"],
-  { env: { ...process.env, ...GIT_ID, GIT_COMMITTER_DATE: `${day} 12:00:00 +0800` } });
-
-/** 入库清单（含可执行位）；与判据自己取扫描面的那条命令同源，不另发明一套「什么算入库」。**取的是 `--src` 那棵树**。 */
-function trackedFiles() {
-  const r = run("git", ["-C", SRC, "ls-files", "-z"]);
-  if (r.code !== 0) fail(`git -C ${SRC} ls-files 失败：${r.out.trim()}`, "TREE_BUILD_FAILED");
+/** 入库清单（含可执行位）；与判据自己取扫描面的那条命令同源，不另发明一套「什么算入库」。
+ *  `srcDir` 缺省 = `--src`（宿主树）；造合成种子时显式给宿主树，因为那一刻 `SRC` 还没换过去。 */
+function trackedFiles(srcDir = SRC) {
+  const r = run("git", ["-C", srcDir, "ls-files", "-z"]);
+  if (r.code !== 0) fail(`git -C ${srcDir} ls-files 失败：${r.out.trim()}`, "TREE_BUILD_FAILED");
   return r.out.split("\0").filter(Boolean);
 }
 
 /**
- * 机械合成一棵树：从 `--src` 复制入库清单 + 一个只用一次的 `git init` + 一次 commit。
- * **不复用 `--src` 的 `.git`**：本仓是 linked worktree，`.git` 只是一个指针文件，`cp -a` 之后的树继续读
+ * 机械合成一棵树：从 `srcDir`（缺省 = `--src`）复制入库清单 + 一个只用一次的 `git init` + 一次 commit。
+ * **不复用来源树的 `.git`**：本仓是 linked worktree，`.git` 只是一个指针文件，`cp -a` 之后的树继续读
  * **原仓的 index 与 refs** ⇒ tag 面失控，而且 index 里每多一个文件、拷贝里就少一个 ⇒ 读取器直接 ENOENT 砸死
  * （实测 `/tmp/p703/S1-selftest-fixed.log`，见第一轮交付报告的遗留第 6 条）。
  */
-function buildTree(dir) {
+function buildTree(dir, srcDir = SRC) {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
-  const files = trackedFiles();
-  if (!files.length) fail(`git -C ${SRC} ls-files 返回空清单 ⇒ 合成树会是空树`, "TREE_BUILD_FAILED");
+  const files = trackedFiles(srcDir);
+  if (!files.length) fail(`git -C ${srcDir} ls-files 返回空清单 ⇒ 合成树会是空树`, "TREE_BUILD_FAILED");
   for (const rel of files) {
-    const src = path.join(SRC, rel);
+    const src = path.join(srcDir, rel);
     if (!existsSync(src)) continue;         // index 里有、磁盘上没有（半删除态）：合成树不需要
     const dst = path.join(dir, rel);
     mkdirSync(path.dirname(dst), { recursive: true });
@@ -352,6 +384,73 @@ function buildHost(dir, { version = null } = {}) {
   const built = buildTree(dir);
   if (version) setVersion(dir, version);
   return built;
+}
+
+/**
+ * 把 CHANGELOG 里**高于** `version` 的版本段整段摘掉（标题行到下一个 `## ` 标题之前）。
+ * 为什么要有这一步（issue #713）：宿主要已经切到下一版（树上多一段更高版本的未发布段），那段会被
+ * 「未发布且不低于 package.json」的口径选中 ⇒ 夹具的「要切的那一版」跟着宿主漂，
+ * 「两棵宿主同一份读数」就不成立了。摘掉是**合成种子的版本面定义**（夹具的历史止于它自己的当前版），
+ * 不是判据放宽：段面之外一个字节不动。
+ * @returns {string[]} 被摘掉的版本（供打印；空数组 = 宿主本来就没有更高的段）
+ */
+function dropSectionsAbove(dir, version) {
+  const p = path.join(dir, "CHANGELOG.md");
+  const lines = readFileSync(p, "utf8").split("\n");
+  const kept = [];
+  const dropped = [];
+  let dropping = null;
+  for (const line of lines) {
+    if (/^## /u.test(line)) {
+      const head = /^##\s*\[(\d+\.\d+\.\d+)\]/u.exec(line);
+      dropping = head && cmpSemver(head[1], version) > 0 ? head[1] : null;
+    }
+    if (dropping) { if (!dropped.includes(dropping)) dropped.push(dropping); continue; }
+    kept.push(line);
+  }
+  if (dropped.length) writeFileSync(p, kept.join("\n"), "utf8");
+  return dropped;
+}
+
+/**
+ * `--self-test` 的**合成种子**（issue #713）：自测那几棵宿主树全部从这棵种子长出来，而种子的
+ * **版本面由本函数合成** ⇒ 「要切的那一版」不再从宿主树推。配方（全部机械，不手改字节）：
+ *   1. 入库清单 + 其余文档从宿主树抄（判据的扫描面必须与真树同形，这一半不能凭空造）；
+ *   2. `要切的那一版` = 种子里**已发布段**（带日期且没标未发布）的最高一版；`上一版` = 低于它的最高已发布段；
+ *      为什么不是「再 +1 个补丁号」：那棵树上确实有一份与它自洽的发布面（指南 / §4 阶段表 / 当前版本句 /
+ *      CHANGELOG 段），合成种子只翻它的**发布态**；凭空加一版还得同时造指南，
+ *      而 `unchanged-surface` 会当场判「当前版本没有一对指南」——那是**第二份发布面规则**，它会漂移。
+ *   3. 高于它的段整段摘掉（它们是「夹具这一版之后的事」，留着就会把「要切的那一版」抬到宿主那一边）；
+ *   4. `package.json` 置为要切的那一版；段首「未发布」形状走本仓自己的窄面
+ *      （`docs-drift-check --sync --published <上一版>`），不手改任何一个字节。
+ * @param {string} hostSrc 宿主树（`--src`，缺省 = 本脚本所在的仓根）
+ * @returns {string} 合成种子目录（之后全脚本的 `SRC` 就是它）
+ */
+function buildSelfTestSeed(hostSrc) {
+  const seed = path.join(OUT, ".selftest-seed");
+  mkdirSync(OUT, { recursive: true });
+  const built = buildTree(seed, hostSrc);
+  const sections = changelogSections(readFileSync(path.join(seed, "CHANGELOG.md"), "utf8"));
+  const published = sections.filter((s) => s.date && !s.marked).map((s) => s.version).sort(cmpSemver);
+  const next = published.at(-1) ?? null;
+  if (!next) {
+    fail(`宿主树 ${hostSrc} 的 CHANGELOG 里没有任何「已发布（带日期且没标未发布）」的版本段 ⇒ 合成种子没有版本面可造`
+      + "（自测要的「上一版」必须是一份真到过的发布段）", "SEED_UNREADABLE");
+  }
+  const previous = published.filter((v) => cmpSemver(v, next) < 0).at(-1) ?? null;
+  if (!previous) {
+    fail(`宿主树 ${hostSrc} 的 CHANGELOG 里只有 ${next} 这一个已发布段 ⇒ 合成种子没有「上一版」这个基准`,
+      "SEED_UNREADABLE");
+  }
+  const dropped = dropSectionsAbove(seed, next);
+  setVersion(seed, next);
+  stampReleaseState(seed, { published: previous, date: null });
+  console.log(`  [种子] 合成种子宿主 ${seed}：入库清单 ${built.files} 个文件从宿主树 ${hostSrc} 机械复制，`
+    + "**版本面由自测合成**（宿主停在哪一版都不影响）");
+  console.log(`         要切的那一版 ${next}（种子里最高的已发布段） · 上一版 ${previous} · `
+    + `摘掉高于 ${next} 的段：${dropped.length ? dropped.join(" / ") : "（无）"} · `
+    + "段首「未发布」形状走 --sync（不手改字节）");
+  return seed;
 }
 
 /**
@@ -467,6 +566,7 @@ function assertNames(body, needles) {
 function printFactsHeader(mode = "") {
   const nextSection = srcSections.find((s) => s.version === nextVersion) ?? null;
   console.log(`version-state-probe（issue #703）· 事实来源树 --src=${SRC}`
+    + (SELF_TEST ? `（**合成种子**：版本面由 --self-test 自己造）· 宿主树 ${HOST_SRC}（只当模板 + 读数）` : "")
     + `（它的 package.json=${srcPkgVersion}：**只当「未发布段的下界」用，不是「当前版」**）`);
   console.log(`  要切的那一版 ${nextVersion}（${NEXT_FLAG ? "参数 --next 给的" : `由 ${path.join(SRC, "CHANGELOG.md")} 现推：未发布且不低于本仓版本的最高段`}）`
     + ` · 上一版 ${previousVersion}（${PREV_FLAG ? "参数 --previous 给的" : "同一棵树现推：已发布段里低于它的最高段"}）`
@@ -477,7 +577,9 @@ function printFactsHeader(mode = "") {
 }
 /** 推不出「正在切的那一版 / 上一版」时也要先把读数印出来（配合上面的注释）。 */
 function printAttemptFacts() {
-  console.log(`version-state-probe（issue #703）· 事实来源树 --src=${SRC}（它的 package.json=${srcPkgVersion}）`);
+  console.log(`version-state-probe（issue #703）· 事实来源树 --src=${SRC}`
+    + (SELF_TEST ? `（**合成种子**；宿主树 ${HOST_SRC} 只当模板 + 读数）` : "")
+    + `（它的 package.json=${srcPkgVersion}）`);
   console.log(`  CHANGELOG 版本段 ${srcSections.length} 个 · 未发布段 ${JSON.stringify(srcSections.filter((s) => s.unpublished).map((s) => s.version))}`
     + ` · 已发布段（带日期且没标未发布）最高 ${JSON.stringify(srcPublished().at(-1) ?? null)}`);
 }
@@ -577,6 +679,11 @@ function main() {
 // 第二轮的病灶就在这里：第一版让测试拿**宿主**当基准，于是探针自己成了「宿主版本相关」的（宿主一切到
 // 下一版，2/4 条用例红）。这里三棵宿主全是机械合成的，**两棵「正在切」的宿主（切版前 / 切版后未发布）
 // 必须给同一份读数**——那一条就是「探针不再从宿主推」的机器证据。离线（registry 基线走 auto / 注入文件）。
+//
+// issue #713：三棵宿主本身也不再从宿主树抄版本面——它们从上面那棵**合成种子**（`buildSelfTestSeed()`）
+// 长出来，而种子的 `package.json` 版本与 CHANGELOG 段面是自测合成的。宿主树只剩两个用途：当复制的模板、
+// 打印读数。最后两例是「夹具真的在承重」的反向证（#210 R2）：把夹具里的在飞段删掉 / 把夹具的
+// `package.json` 抬到高于所有段，**该例自己**红并点名落点缺失，同一批里没被变异的那棵仍然绿。
 function runSelfTest() {
   printFactsHeader("--self-test：合成宿主上跑，不读跑它的那棵树");
   const HOSTS = path.join(OUT, ".selftest");
@@ -592,6 +699,27 @@ function runSelfTest() {
   assert(buildHost(HOST_POST, { version: nextVersion }).files > 0, `切版后未发布宿主建起来了（package.json=${nextVersion}）`);
   assert(buildHost(HOST_RELEASED, { version: nextVersion }).files > 0, `发布回写后宿主建起来了（package.json=${nextVersion}）`);
   stampReleaseState(HOST_RELEASED, { published: nextVersion, date: RELEASE_DATE });
+
+  // ── 两棵**变异夹具**（反向证）：变异落在夹具上才算数（#210 R2），变异没落上就是失败 ────────────────
+  // 两棵都从同一棵「切版后未发布」宿主（= 种子的形状）出发，只动**一处**：
+  //   ① 把「在飞段」整段删掉（夹具里再没有「正在切的那一版」）；
+  //   ② 把 `package.json` 抬到高于所有段（在飞段变成了「低于本仓版本」，按定义不算在飞）。
+  const seedSections = changelogSections(readFileSync(path.join(HOST_POST, "CHANGELOG.md"), "utf8"));
+  const HOST_NO_INFLIGHT = path.join(HOSTS, "no-inflight");
+  buildHost(HOST_NO_INFLIGHT, { version: nextVersion });
+  const droppedInflight = dropSectionsAbove(HOST_NO_INFLIGHT, previousVersion);
+  const stillHasInflight = (dir) => changelogSections(readFileSync(path.join(dir, "CHANGELOG.md"), "utf8"))
+    .some((s) => s.version === nextVersion);
+  assert(droppedInflight.includes(nextVersion) && !stillHasInflight(HOST_NO_INFLIGHT),
+    `变异落上了：夹具里的在飞段 ${nextVersion} 被整段删掉`, `实测摘掉 ${JSON.stringify(droppedInflight)}`);
+  assert(stillHasInflight(HOST_POST), `变异**只**落在那一棵上：同一批里的 ${path.relative(OUT, HOST_POST)} 仍然有 ${nextVersion} 段`);
+  const [nextMajor] = nextVersion.split(".").map(Number);
+  const aboveAll = [nextMajor + 1, 0, 0].join(".");
+  const HOST_PKG_ABOVE = path.join(HOSTS, "pkg-above");
+  buildHost(HOST_PKG_ABOVE, { version: aboveAll });
+  assert(seedSections.every((s) => cmpSemver(s.version, aboveAll) < 0),
+    `变异落上了：夹具 package.json 抬到 ${aboveAll}，高于所有段（最高 ${nextVersion}）`,
+    `实测段面 ${JSON.stringify(seedSections.map((s) => s.version).slice(0, 3))}`);
 
   /** 用**真的 CLI**跑一次：被断言的就是外面那个人看到的退出码与输出。 */
   const spawnProbe = (args, timeout = 900000) => run(process.execPath, [PROBE_PATH, ...args], { timeout });
@@ -684,6 +812,20 @@ function runSelfTest() {
         "--out", path.join(RUNS, "bad-src")],
       code: 2, names: ["SRC_UNREADABLE"],
     },
+    {
+      title: "反向证 ①（#210 R2）：把**夹具里的在飞段**整段删掉 ⇒ 这一例自己红（exit 2 点名 NO_INFLIGHT_SECTION），"
+        + "同一批里没被变异的那棵仍然绿（不是整批都报它）",
+      args: ["--fast", "--only", "S2", "--src", HOST_NO_INFLIGHT, "--registry-base", "auto",
+        "--out", path.join(RUNS, "no-inflight")],
+      code: 2, names: ["NO_INFLIGHT_SECTION", "事实来源树 --src=", "--next"],
+    },
+    {
+      title: `反向证 ②（#210 R2）：把夹具 package.json 抬到 ${aboveAll}（高于所有段）⇒ 同样红（NO_INFLIGHT_SECTION），`
+        + "且判词里回显的正是那个抬高的版本（= 变异真的落在这棵夹具上）",
+      args: ["--fast", "--only", "S2", "--src", HOST_PKG_ABOVE, "--registry-base", "auto",
+        "--out", path.join(RUNS, "pkg-above")],
+      code: 2, names: ["NO_INFLIGHT_SECTION", `不低于 package.json（${aboveAll}）`],
+    },
   ];
 
   for (const c of cases) {
@@ -696,14 +838,20 @@ function runSelfTest() {
       console.log(body.split("\n").slice(0, 25).map((l) => `         │ ${l}`).join("\n"));
     }
   }
-  if (!KEEP) { rmSync(HOSTS, { recursive: true, force: true }); rmSync(RUNS, { recursive: true, force: true }); }
-  console.log(`\nversion-state-probe --self-test：跑了 ${cases.length} 例（合成宿主：切版前 / 切版后未发布 / 发布回写后；registry 基线走注入与 auto ⇒ 离线）`);
+  if (!KEEP) {
+    rmSync(HOSTS, { recursive: true, force: true });
+    rmSync(RUNS, { recursive: true, force: true });
+    rmSync(SRC, { recursive: true, force: true });   // 合成种子（issue #713）：自测自己造的就自己扫干净
+  }
+  console.log(`\nversion-state-probe --self-test：跑了 ${cases.length} 例（合成宿主：切版前 / 切版后未发布 / 发布回写后；`
+    + "夹具的版本面由自测自己合成，宿主树只当模板 + 读数；registry 基线走注入与 auto ⇒ 离线）");
   if (problems.length) {
     console.log(`version-state-probe --self-test: 失败 — ${problems.length} 项未达预期`);
     for (const problem of problems) console.log(`  ✗ ${problem}`);
     process.exit(1);
   }
-  console.log(`version-state-probe --self-test: OK — ${cases.length} 例反向证全达预期（含「两棵宿主同一份读数」那条：探针不再从宿主推当前版）`);
+  console.log(`version-state-probe --self-test: OK — ${cases.length} 例反向证全达预期（含「两棵宿主同一份读数」那条：探针不再从宿主推当前版；`
+    + "夹具版本面由自测合成，与宿主停在哪一版无关）");
   process.exit(0);
 }
 
