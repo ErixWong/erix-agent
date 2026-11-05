@@ -72,8 +72,10 @@ export function formatProjectInstructionsNotice(discovery) {
 /**
  * chat / repl 共用的系统提示装配。
  *
- * @param {object} input
- * @param {string} input.cwd 本次 run 的工作目录（项目约定的根就是它，不向上走）。
+ * @param {object} [input] 选项包（`= {}` 默认值让它可以整体省略；`cwd` 见下）。
+ * @param {string} [input.cwd] 本次 run 的工作目录（项目约定的根就是它，不向上走）。
+ *   JSDoc 写成可选是为了跟 `= {}` 对齐（`--strict` 下默认值必须可赋给参数类型），
+ *   **语义上仍是必填**：缺了它，`discoverProjectInstructions` 会抛中文 `TypeError`。
  * @param {boolean} [input.todo] 是否把 todo 段拼进工具清单（`--no-todo`）。
  * @param {boolean} [input.delegate] 是否把 delegate 拼进清单行（`--delegate`）。
  * @param {string} [input.archiveDir] 工具输出归档目录（`buildArchiveNotice` 用）。

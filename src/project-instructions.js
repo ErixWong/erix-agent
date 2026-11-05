@@ -72,6 +72,41 @@ function truncateToUtf8Boundary(buffer, limit) {
  * @property {{ path: string, code: string }[]} skipped 存在但读不了的文件（不进 `files`、不算注入）
  */
 
+/**
+ * 读 `catch` 到的值上的一个字段（`code` / `name`）。
+ *
+ * 为什么要有这个函数：`catch (error)` 的绑定在 `--strict`（`useUnknownInCatchVariables`）下是
+ * `unknown`，直读 `error.code` / `error.name` 是类型错误。语义与 `error?.field` **逐字一致**：
+ * 非对象（含 `null` / `undefined` / 字符串 / 数字）一律 `undefined`，没有这个属性也是 `undefined`。
+ *
+ * @param {unknown} error
+ * @param {"code" | "name"} field
+ * @returns {unknown} 字段原值（可能是任何类型，调用方自己收口）
+ */
+function errorField(error, field) {
+  const record = typeof error === "object" && error !== null
+    ? error
+    : typeof error === "function" ? error : null;
+  if (record === null) return undefined;
+  // 字面量 `in` 才能让 tsc 窄化出带该属性的形状（变量做 key 时只能窄到 `{}`）。
+  if (field === "code") return "code" in record ? record.code : undefined;
+  return "name" in record ? record.name : undefined;
+}
+
+/**
+ * `code ?? name ?? 原值` 的字符串化——`skipped[].code` 的**唯一**来源（原来这段表达式抄了两遍）。
+ *
+ * 为什么不直接 `String(error)`：Node 的 fs 错误是 `Error` 实例，`String(err)` 得到
+ * `Error: ENOENT: no such file or directory, stat '...'`（带路径，随 cwd 变），而留痕行要的是
+ * 稳定的 `ENOENT`；自定义错误（如 `IdleTimeoutError`）往往只有 `name` 没有 `code`。
+ *
+ * @param {unknown} error
+ * @returns {string}
+ */
+function errorCode(error) {
+  return String(errorField(error, "code") ?? errorField(error, "name") ?? error);
+}
+
 /** @returns {ProjectInstructionsDiscovery} */
 function emptyDiscovery(limit = PROJECT_INSTRUCTIONS_MAX_BYTES) {
   return { files: [], totalBytes: 0, originalBytes: 0, truncated: false, limit, skipped: [] };
@@ -80,7 +115,11 @@ function emptyDiscovery(limit = PROJECT_INSTRUCTIONS_MAX_BYTES) {
 /**
  * 发现 `<cwd>/AGENTS.md`（**只这一层**，不向上走、不碰 home）。
  *
- * @param {{ cwd: string, maxBytes?: number }} options `cwd` 必填：库内不猜路径。
+ * `cwd` 在 JSDoc 里写成**可选**只是为了跟 `= {}` 这个默认值对齐（`--strict` 下默认值必须可赋给
+ * 参数类型）：它**语义上仍是必填**，缺失时下面第一条守卫会抛 `TypeError`，守卫之后窄化成 `string`。
+ * 改成「删掉 `= {}`」或「删掉守卫」都会改动运行期行为，不是这里该做的事。
+ *
+ * @param {{ cwd?: string, maxBytes?: number }} [options] `cwd` 必填：库内不猜路径。
  * @returns {ProjectInstructionsDiscovery}
  */
 export function discoverProjectInstructions({ cwd, maxBytes = PROJECT_INSTRUCTIONS_MAX_BYTES } = {}) {
@@ -99,8 +138,9 @@ export function discoverProjectInstructions({ cwd, maxBytes = PROJECT_INSTRUCTIO
     stats = statSync(filePath);
   } catch (error) {
     // 不存在（或 cwd 本身不是目录）⇒ 空集合。这是常态，不是错误。
-    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return emptyDiscovery(limit);
-    return { ...emptyDiscovery(limit), skipped: [{ path: filePath, code: String(error?.code ?? error?.name ?? error) }] };
+    const fsCode = errorField(error, "code");
+    if (fsCode === "ENOENT" || fsCode === "ENOTDIR") return emptyDiscovery(limit);
+    return { ...emptyDiscovery(limit), skipped: [{ path: filePath, code: errorCode(error) }] };
   }
   // 路径在、但不是普通文件（目录 / 设备 …）：算「没找到可用约定」，但把原因记进 `skipped`，
   // 免得调用方把它说成「这个目录没有 AGENTS.md」（那是另一件事）。
@@ -115,7 +155,7 @@ export function discoverProjectInstructions({ cwd, maxBytes = PROJECT_INSTRUCTIO
   try {
     buffer = readFileSync(filePath);
   } catch (error) {
-    return { ...emptyDiscovery(limit), skipped: [{ path: filePath, code: String(error?.code ?? error?.name ?? error) }] };
+    return { ...emptyDiscovery(limit), skipped: [{ path: filePath, code: errorCode(error) }] };
   }
 
   const injected = truncateToUtf8Boundary(buffer, limit);
