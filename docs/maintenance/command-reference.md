@@ -129,29 +129,29 @@ Link closure inside packaged Markdown, **plus** the `.d.ts` claim reconciliation
 The pre-release manual check as one command (issue #257 T5), six steps in order, red names the step:
 `npm pack` → assert the tarball (declarations present, both current-version upgrade guides, the shipped
 `test/contract/` files, nothing outside the `files` allowlist; Markdown link closure is delegated to
-`check:pack-links` ) → install the tarball into a throwaway temp project and assert `import("erix-agent")`
+`check:pack-links`) → install the tarball into a throwaway temp project and assert `import("erix-agent")`
 /`import("erix-agent/tools")`, **and** reconcile that installed package's runtime export surface against every
 name the upgrade guide claims is removed (issue #687: a name the guide says is gone must really be absent from
 the entry its guide row registers — either language half counts as a claim, and an unrecognised entry column
 checks both entries instead of guessing; a name that is still exported is red and named
-`name @ guide-file:line @ entry` , and the `KNOWN_NOT_REMOVED` ledger in `scripts/guide-removal-gate.mjs` is
+`name @ guide-file:line @ entry`, and the `KNOWN_NOT_REMOVED` ledger in `scripts/guide-removal-gate.mjs` is
 the ratchet that tracks a gap between the two — since issue #688 really deleted the sixteen names the ledger
 is **empty** and the gate is green because the installed package no longer exports any of them; every entry
-carries a `why` , an idle entry (the guide no longer claims it, or the runtime no longer exports it), an empty
+carries a `why`, an idle entry (the guide no longer claims it, or the runtime no longer exports it), an empty
 `why` and a count that drifts from the live red-name count in either direction are red, and a missing guide
 file, an unparsable name table or a missing runtime surface exits 2 rather than passing; the command prints
 its own counts and `node scripts/guide-removal-gate.mjs --self-test` is that gate's reverse proof) → run the
 shipped contract suites through the installed package → compile a real TypeScript host with
-`tsc --strict --skipLibCheck` (exit 0, and an unknown `runToolLoop` option key must fail with `TS2353` ) and
+`tsc --strict --skipLibCheck` (exit 0, and an unknown `runToolLoop` option key must fail with `TS2353`) and
 run the compiled host — plus a sample derived from that host which gives `provider` on both the port and the
 call site, which must exit non-zero naming `assemblyPort.provider` and `runToolLoop.provider` (the issue #519
 direct-route conflict gate is a runtime rule; the spelling itself is legal TS, so only running it proves the
 gate bites) → smoke the installed `erix` CLI against the local scripted upstream
-(`--version` equals `package.json` ; a successful `chat` exits **4** because verification is `skipped` without
-`--final-guard` ; a missing `--session` exits 1) → resume a run across two CLI runs through
+(`--version` equals `package.json`; a successful `chat` exits **4** because verification is `skipped` without
+`--final-guard`; a missing `--session` exits 1) → resume a run across two CLI runs through
 `config.continuity.handoff` (issue #598: a zero-token two-round e2e — run A stores, run B recalls, the option
 defaults off, an illegal value is rejected). Offline (`--offline` npm + a throwaway cache/userconfig + fake
-`HOME` ), self-cleaning, and it prints its own wall clock
+`HOME`), self-cleaning, and it prints its own wall clock
 
 ## check-release-real
 The **pre-release real-upstream checklist** as one command (ticket 261021-13, written after 0.23.0 shipped with neither the doc audit nor the real e2e suites actually run): the gated steps in order (the list and its count are the script's `STEPS`) — `node --test examples/tool-fact-e2e.test.mjs` → `examples/delegate-real-e2e.test.mjs` (parent run delegates a child run, issue #617) → `examples/normalize-truncation-real-e2e.test.mjs` (the normalizer's truncation verdict, issue #637) → `examples/resume-real-e2e.test.mjs` → `examples/cross-version-real-e2e.test.mjs` → `examples/pi-extension/erix-run-e2e.test.mjs` → `node scripts/cli-real-smoke.mjs` → `examples/fold-default-real-e2e.mjs` (the **CLI slot default** compaction strategy `fold-llm` on the real upstream, issue #619) — each announced as `[i/N] <name>` (N is `STEPS.length`) and summarized as `tests/pass/fail` plus elapsed time — except that the seventh step (`node scripts/cli-real-smoke.mjs`) is not a `node --test` suite, so two things were wrong at once: the TAP parser only reads TAP (all four fields stayed `?`), and that step's own `PASS`/`FAIL` lines were replayed **only when it went red**, so on a green run its checks never entered the summary at all. The fix takes the **machine-readable counts line** option (not the “replay the step's `PASS`/`FAIL` lines on green” one): the step now ends by printing one line — `RELEASE-REAL-SMOKE id=cli-real checks=… pass=… fail=… dry=… failed=… status=…` (format and parser in `scripts/smoke-summary-line.mjs`, one source for both sides) — and the checklist folds it into the same summary as `cli_real=<checks>/<pass>/<fail>` on green and red alike, adding `dry=true` when that run was `--dry` (only C8 runs then, so `checks=1`; the unrun C1–C7 are never counted as passed), `failed=C4,…` naming which checks went red, and `status=error` when the script itself threw. Those counts come from the smoke's own `check()` results, never from a literal, and the red tail replay stays a fallback instead of the only channel. A field that cannot be read keeps the `?` (a missing summary is never printed as zero failures, and a step that declares a summary but whose line is missing shows `cli_real=?`) — and that line counts as readable **only** when all seven declared fields are present and legal (`id=cli-real`, the three counts as **safe** integers with `pass + fail = checks` — an over-long numeric field parses to `Infinity` and `Infinity + 0 === Infinity` would slip past that check, so anything above `Number.MAX_SAFE_INTEGER` is unreadable too — `dry=true|false`, `failed=-` or a comma list whose length equals `fail`, and `status=ok|fail|error`), so a truncated line is never completed by defaults: `… checks=1 pass=1 fail=0` with the rest missing reads as unreadable and the summary stays `cli_real=?` instead of being filled in as `1/1/0` (the exact defect an independent review caught on PR #681), each with its own **900 s** hard timeout (a timeout is red, the whole process group is `SIGKILL`ed so no grandchild keeps burning tokens, and the run continues with the next step). Any red ⇒ **exit 1 after the list finishes**, with a closing block naming which steps failed; all green ⇒ exit 0 plus total time. Gate: without `ERIX_E2E_REAL=1` it runs **nothing**, exits 0 and prints a categorized reason (same `GAP_CODES` as `examples/e2e-real-gate.mjs`), so it never becomes a hard dependency of any default gate; with the gate **open** but config/credential/endpoint unusable it exits **1** (a pre-release checklist that did not run must not be reported as green — the mirror image of PR #289 blocker 1), and a child that skips with a gate/config code is red too (the preflight and the child disagreeing means the harness is broken), while other skips (e.g. “old CLI 0.22.0 unavailable”) are named in the summary without turning the run red. Writes **nothing** itself: no temp tree, never `~/.erix`; isolation stays in each step
@@ -162,10 +162,10 @@ The **pre-release real-upstream checklist** as one command (ticket 261021-13, wr
 
 ## check-cli-real
 Gated real-upstream CLI smoke (ticket 261015 T5, #284/#285 wrap-up): `npm pack` → install the tarball into a
-throwaway project → drive the **installed `erix` ** (not `node bin/cli.js` ) against the real relay with a
+throwaway project → drive the **installed `erix`** (not `node bin/cli.js`) against the real relay with a
 ≥2-tool task, then assert the exit-code promise (a success without `--final-guard` exits **4**, verification
-`skipped` ), the `tool_result` field surface in the transcript, and the installed package's own projection.
-Runs only under `ERIX_E2E_REAL=1` ; with the gate closed it exits 0 and prints a **categorized** reason (gate
+`skipped`), the `tool_result` field surface in the transcript, and the installed package's own projection.
+Runs only under `ERIX_E2E_REAL=1`; with the gate closed it exits 0 and prints a **categorized** reason (gate
 missing / config missing / unparsable JSON / missing field / endpoint unreachable). Model name is read from
 `slots.default` (`ERIX_E2E_CONFIG` overrides the path). The cross-version suite
 (`examples/cross-version-real-e2e.test.mjs`) reads its **old ledger from a committed fixture**,
@@ -174,8 +174,8 @@ state/status/snapshot). That fixture is **read-only: never regenerate it in plac
 bytes and the point of the test is that the bytes are what 0.22.0 actually wrote). Only the resume half needs
 the real upstream, so with the gate closed the suite still runs its offline half (2 pass / 0 skip) instead of
 skipping wholesale. Two sibling gated suites: `examples/tool-fact-e2e.test.mjs` and
-`examples/pi-extension/erix-run-e2e.test.mjs` (same gate; they skip under `npm test` , so the real upstream is
-never a hard dependency of the default suite). Needs `node_modules` ; self-cleaning, and it never writes the
+`examples/pi-extension/erix-run-e2e.test.mjs` (same gate; they skip under `npm test`, so the real upstream is
+never a hard dependency of the default suite). Needs `node_modules`; self-cleaning, and it never writes the
 real `~/.npmrc` or `~/.erix/config.json`
 
 ## check-docs-spelling
@@ -183,6 +183,8 @@ real `~/.npmrc` or `~/.erix/config.json`
 
 ## check-agents-directives
 **Blocking gate** (issue #642) for the **instruction face** — `AGENTS.md` / `AGENTS_cn.md`, the page every session injects and executes without verification. `scripts/agents-directive-scan.mjs --strict` reds three classes of variables that live elsewhere and expire: a work-order status claim (a ticket number plus a status word), an expiring measurement copy (a measurement verb plus a number), and a bare source coordinate (a `src/…js` path carrying a line number). Exceptions are an explicit register, each entry carrying its reason, and an entry that matches nothing on the instruction face is red (the #210 R2 convention): the gate-owned-constant class is reconciled **live** against `scripts/*.mjs` (a copy whose number drifted from the constant stops being exempt), the historical-value class only covers sentences that label themselves as history, and the external-repo class reads its repo names out of `EXTERNAL_REPO_PREFIXES` in `scripts/docs-drift-check.mjs`. Pre-existing hits are held as per-file per-class ceilings — a ratchet, so cleaning them up is a pass with a "you may lower the ceiling to N" hint, a new hit is red, and a ceiling left with no hits is red too. The ceilings themselves are **derived state**: `--sync <file>` is the only legal way to change one (it rewrites the digits from the live measurement and leaves every reason comment alone), and `--verify <file>` reds on any cell that is not equal to that measurement — so a hand-copied ceiling is red in both directions, high or low, and the CI step runs both. The file list comes from `git ls-files` only, `CHANGELOG.md` and `docs/` are counted but never judged, and `node scripts/agents-directive-scan.mjs --self-test` is the guard's own reverse proof (synthetic tree fixture; a different debt shape — ceiling-tight or with spare room — must not change any verdict)
+
+**Byte budget (issue #726 — the one block on this page that was *not* moved out of `AGENTS.md`).** The instruction face is part of the system prompt and folding does not touch it, so every byte here is re-sent on **every** turn; issue #726 therefore made length itself a criterion, judged as criterion ⑥ of `--strict`. The budget is **derived state, never a hand-written number**: `budgetFor(measured) = ceil512(measured) + 1024`, i.e. the measured byte count rounded up to the next 512-byte boundary plus a 1,024-byte headroom (total headroom ≤ 512 + 1,024 = 1,536 bytes, deliberately under 2,048: headroom is "how much this page may grow without going red", and a few kilobytes of it would turn the criterion into decoration). `--sync <file>` is the **only** legal way to change a cell — it writes exactly `budgetFor(measured)` and leaves every reason comment alone. `--verify <file>` reds on **any** cell that is not equal to that derived value, so a hand-copied budget is red in both directions, too high and too low, and the CI step runs `--strict` and `--verify` both. `--strict` itself is the ratchet: measured > budget ⇒ red, naming the measured bytes, the budget and the overflow (tokens folded at **3.4 bytes/token** — a 2026-11-05 relay measurement that is *not* a constant and is used for reporting only, never for judging); measured ≤ budget ⇒ green, which is exactly what the headroom is for. An **idle** cell is red on the same convention as the ceilings above: a budget row whose file has left the instruction face (a dead entry), or a budget written as 0 (a cell that can never hold). The remedy for a real overflow is to move reference material onto this page, not to raise the budget; raising it needs a reason in the report and still only happens through `--sync`.
 
 ## types-build
 Generate the published `.d.ts` into `src/**/*.d.ts` and keep them (issue #213; the `prepack` hook runs the same script)
