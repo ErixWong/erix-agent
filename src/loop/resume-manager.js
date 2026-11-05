@@ -3,7 +3,7 @@ import { blocksFor, mergeToolResultsIntoMessages } from "./messages.js";
 import { MESSAGE_ROW_KIND, nextMessageSeqByRound, foldLedgerMessages, foldMessageRows } from "../store/message-rows.js";
 import { extractL0Facts } from "../reflection/l0.js";
 import { buildTimeline } from "../reflection/judge.js";
-import { pendingTailToolUses } from "./pending-tool-result.js";
+import { pendingTailToolUses, answerPendingMidSequenceToolUses } from "./pending-tool-result.js";
 import { planResumeNotice } from "./resume-notice.js";
 import { injectFoldSummaryIntoHead, planFoldedHistoryTrim } from "../compact/resume-fold-trim.js";
 import { validateRunState } from "../run-state.js";
@@ -100,6 +100,44 @@ export function countResumeAnchor(records) {
   // 它与宿主预写行都是「单条 user/text」形状，区别只在**位置**（种子在最前、追问在末尾）。
   while (end > 1 && !isEngineLedgerRow(rows[end - 1])) end -= 1;
   return foldLedgerMessages(rows.slice(0, end)).length;
+}
+
+/**
+ * issue #421：把「上下文里那条聚合 `tool_result` user 消息」映射回**账本里承载它的那一行**的 key。
+ *
+ * 为什么需要：中段补桩要落成一条 `partOf` 指向**该聚合消息首片**的分片行（#430 的纪律：锚点只钉在
+ * 首片、分片 key 不是合法的 `partOf` 目标），而折叠后的逻辑消息序列里看不出「这条消息是哪一行落的」。
+ * 判据：`kind:"message"` + 安全整数 `seq` + **首片**（无 `partOf`）+ 轮号相同 + user 消息，且**第一个
+ * block** 就是那条聚合消息的第一个 `tool_result`（写侧每个结果单独落一行，首片 content 就是
+ * `[toolResult]` ⇒ 首个 `tool_use_id` 足以认人）。
+ *
+ * 找不到 ⇒ 返回 `undefined`，调用方**不入账**、只留内存里的桩。这条边界是 **store 面的事实**：内置
+ * 两个 store 的 `load()` 都跑 `foldMessageRows`，**已完成轮**的消息行已被吸进轮载体 ⇒ 没有合法的
+ * `partOf` 目标（宿主真机那一格）。硬写一行会被折叠层当成「该轮多出来的一条正文」⇒ 桩变成另一条
+ * user 消息（孤立 `tool_result`），比修前更坏。不折叠的宿主不受此限（首片行看得见，桩照样落账）。
+ *
+ * 残留风险（有意接受）：provider `id` 不保证 run 内唯一（issue #284），同轮两条聚合消息首个
+ * `tool_use_id` 相同时会认到先出现的那一行 ⇒ 桩落进同轮另一条聚合消息（不报错、不丢块，形状不对）。
+ *
+ * @param {any[]} rows `store.load()` 返回的行
+ * @param {any} message 上下文里的那条聚合消息
+ * @param {number|undefined} round 该消息的轮号
+ * @returns {string|undefined}
+ */
+function firstSliceRowKeyOf(rows, message, round) {
+  const head = blocksFor(message?.content).find((block) => block?.type === "tool_result");
+  if (head === undefined || head.tool_use_id === undefined) return undefined;
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (row?.kind !== MESSAGE_ROW_KIND) continue;
+    if (!Number.isSafeInteger(row.seq)) continue;
+    if (typeof row.partOf === "string" && row.partOf !== "") continue;
+    if (Number.isSafeInteger(round) && Number.isSafeInteger(row.round) && row.round !== round) continue;
+    const [only] = Array.isArray(row.messages) ? row.messages : [];
+    if (only?.role !== "user") continue;
+    const first = blocksFor(only.content)[0];
+    if (first?.type === "tool_result" && first.tool_use_id === head.tool_use_id) return rowKeyOf(row);
+  }
+  return undefined;
 }
 
 export async function restoreResume(ctx) {
@@ -203,6 +241,13 @@ export async function restoreResume(ctx) {
       }
       const ledgerEntries = foldLedgerMessages(records);
       const ledgerMessages = ledgerEntries.map((entry) => entry.message);
+      // 账本里**已经有结果行**的 `tool_use` id（「已结清」的权威口径，issue #420）。
+      // 提到这里（原本在下面快照分支里）是因为 issue #421 的中段兜底也要它，而那条路
+      // 与「有没有快照」无关：判据是账本，不是快照。
+      const ledgerToolResultIds = new Set(ledgerMessages
+        .flatMap((message) => blocksFor(message?.content))
+        .filter((block) => block?.type === "tool_result")
+        .map((block) => block.tool_use_id));
       const seedRecords = records.filter((record) => (record.round ?? 0) === 0);
       const seedMessages = seedRecords.flatMap((record) => record.messages ?? []);
       ctx.taskBriefSource = seedRecords.length > 0 ? seedMessages : [];
@@ -298,10 +343,6 @@ export async function restoreResume(ctx) {
         // 口径是**纯账本口径**：崩溃时刻账本里已落盘的逻辑消息条数（见下面 `ledgerMessages` 与 `anchor`）。
         const crashToolUses = ctx.resumeRunSnapshot?.pendingToolUses
           ?? (ctx.resumeRunSnapshot?.pendingToolUse ? [ctx.resumeRunSnapshot.pendingToolUse] : []);
-        const ledgerToolResultIds = new Set(ledgerMessages
-          .flatMap((message) => blocksFor(message?.content))
-          .filter((block) => block?.type === "tool_result")
-          .map((block) => block.tool_use_id));
         const unfinishedToolUses = crashToolUses.filter((toolUse) => (
           toolUse?.id !== undefined && !ledgerToolResultIds.has(toolUse.id)
         ));
@@ -467,6 +508,51 @@ export async function restoreResume(ctx) {
         // issue #78 验收修正：resume 想消费 run snapshot 但 store 无任何 loader——
         // 单条去重诊断（loadLatestCheckpoint 旧名也缺才走到这里），跳过崩溃现场恢复。
         ctx.notifyCapabilitySkipped?.("loadLatestRunSnapshot");
+      }
+      // ── issue #421：**中段**悬空 `tool_use` 的读侧兜底 ────────────────────────────────────
+      // 位置：上下文重建完（含 A 集合的内存合并）之后、**任何模型请求之前**、任何裁剪之前（裁剪只动
+      // 上下文，不动账本；桩要跟着它所属的那条聚合消息走）。
+      // 判据是**账本**（`ledgerToolResultIds`，#420 口径），再并上**本进程马上要产出真结果**的两批：
+      // A 集合（结果已成型、只差入账）与 B 集合（补跑段会重跑并接回同一条聚合消息）。这两批必须排除：
+      // 它们的真结果会并进那条聚合消息，而桩已占了同一个 `tool_use_id` ⇒ 同一条消息里出现两个同 id 的
+      // `tool_result` ⇒ id 集合对不上（补桩反而把可恢复的现场变成不可恢复）。这不是放宽判据：
+      // 能配上对的不得出现桩行。
+      const midSequenceSettledIds = new Set(ledgerToolResultIds);
+      for (const toolResult of ctx.resumeUnpersistedToolResults) {
+        if (toolResult?.tool_use_id !== undefined) midSequenceSettledIds.add(toolResult.tool_use_id);
+      }
+      for (const pendingTool of ctx.resumePendingTools) {
+        if (pendingTool?.id !== undefined) midSequenceSettledIds.add(pendingTool.id);
+      }
+      // 入账由 orchestrator（`journalResumeMidSequenceToolResults`）用 `partOf` 指向**首片**完成；
+      // 这里只交出「补了哪几张、该写向哪一行」。锚点从 `loadedRecords`（`store.load()` 的行）找，
+      // 不是引擎再折一遍的 `records`：不折叠的宿主上，后者里的消息行已被吸进载体（没有 `seq`、
+      // 也就没有 `partOf` 目标），而前者里它们还在；内置 store 两条一样。
+      const midSequenceStubs = await answerPendingMidSequenceToolUses(ctx.messages, {
+        settledIds: midSequenceSettledIds,
+        roundOf: (message) => ctx.messageRounds.get(message),
+        anchorOf: (message) => firstSliceRowKeyOf(
+          loadedRecords,
+          message,
+          ctx.messageRounds.get(message),
+        ),
+      });
+      ctx.resumeMidSequenceToolResults = midSequenceStubs;
+      // 真要落账的那几张桩：把所属轮的 `seq` 地板抬到「`load()` 行里最大 `seq` + 1」。本单是第一个往
+      // **已完成轮**写消息行的调用点（不折叠的宿主那一格），而那种轮的消息行在 `records` 里已被吸进
+      // 载体 ⇒ 崩溃现场那一段的「按正文条数」地板会算小，分片行重号 ⇒ `dedup_payload_conflict`
+      // （既不覆盖也不静默丢弃，整 run 崩）。没有桩要写 ⇒ 一个字节都不碰。
+      const journaledRounds = new Set(midSequenceStubs
+        .filter((stub) => typeof stub?.partOf === "string" && stub.partOf !== "")
+        .map((stub) => stub.round)
+        .filter((round) => Number.isSafeInteger(round)));
+      if (journaledRounds.size > 0) {
+        const rawSeqSeed = nextMessageSeqByRound(loadedRecords);
+        for (const round of journaledRounds) {
+          const floor = rawSeqSeed.get(round);
+          if (floor === undefined) continue;
+          ctx.messageSeqByRound.set(round, Math.max(ctx.messageSeqByRound.get(round) ?? 0, floor));
+        }
       }
       // issue #462：**按折叠水位线裁续跑正文**（#460 只修了写侧，读侧一个字节都没省）。
       // 今天 `ctx.messages` 是整段未折账本 ⇒ 续跑第一次折叠必然从 round 1 重折：摘要器重算
