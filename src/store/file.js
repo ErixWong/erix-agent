@@ -392,6 +392,7 @@ async function appendRecord(path, runId, record, dedupCaches) {
  *   saveRunState: (runId:string, snapshot:object) => Promise<void>,
  *   loadRunState: (runId:string) => Promise<object|undefined>,
  *   loadRunStateStatus: (runId:string) => Promise<string|undefined>,
+ *   loadRawRows: (runId:string) => Promise<RoundRecord[]>,
  *   saveRunSnapshot: (runId:string, snapshot:object) => Promise<void>,
  *   loadLatestRunSnapshot: (runId:string) => Promise<object|undefined>,
  *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
@@ -466,6 +467,20 @@ export function createFileTranscriptStore({ dir }) {
       // 工单 261021：读侧折叠——`kind: "message"` 行的正文按轮拼回轮行，宿主可见形状与
       // 「一条消息一落盘」改造前逐字一致；没有消息行的老账本由 foldMessageRows 原样透传。
       return foldMessageRows(await loadRecords(runId));
+    },
+
+    /**
+     * issue #714：可选**原始行读口**（anchor probe）——`load()` 的**未折叠输入**。
+     *
+     * 为什么需要：`load()` 折叠后，已完成轮的消息行已被吸进轮载体，引擎的中段补桩找不到
+     * `partOf` 锚点（首片行 key）。把「落盘行」单独交出来，锚点与 `seq` 地板就都能在**折叠之后**
+     * 也算得出来。语义 = `load()` 读到的同一批行、同一顺序、同一内容，**不过** `foldMessageRows`；
+     * 它不是新的写面、不改变 `load()` 的形状（不折叠的宿主 store 不必实现：缺它就退回修前口径）。
+     * @param {string} runId
+     * @returns {Promise<RoundRecord[]>}
+     */
+    async loadRawRows(runId) {
+      return loadRecords(runId);
     },
 
     async markRunState(runId, state) {

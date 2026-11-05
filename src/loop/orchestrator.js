@@ -2132,6 +2132,14 @@ export async function runToolLoop(options) {
   // 交出来，写入口是本文件的 `journalResumeUnpersistedToolResults`，由它在补跑段之前逐条入账。
   /** @type {any[]} */
   let resumeUnpersistedToolResults = [];
+  // issue #421（中段悬空 `tool_use` 的读侧兜底）：`restoreResume` 在重建好的上下文里找到的「中段悬空、
+  // 账本里也没有任何一行结清过它」的 `tool_use`，已经就地补了桩 `tool_result`（并进了它所属那条
+  // assistant 紧接的下一条 user 消息）。这里交出来的是**待入账的那几张桩**，每张带自己的 `partOf`
+  // （= 它所属那条聚合消息**首片**行的 key，`undefined` = 账本里找不到可接的锚点 ⇒ 只留内存）。
+  // 同一个先例（普通局部变量 + 一对访问器）：`restoreResume` 只读账本，写一律在本文件
+  // （`appendMessageRowToTranscript` / `persist`），写入口是 `journalResumeMidSequenceToolResults`。
+  /** @type {Array<{toolResult: object, round: any, partOf: any}>} */
+  let resumeMidSequenceToolResults = [];
   // issue #424（守卫）：崩溃轮的正文里**是否已有 assistant 行**（`restoreResume` 在已折叠的账本条目上算好
   // 交过来）。`false` = 升级路径（崩溃轮的 assistant 正文只在快照里）⇒ A 集合整段不入账，退回修前的
   // 「只进内存」语义。`undefined` = 本次不是崩溃现场恢复（没有 A 集合，走不到守卫）。
@@ -2234,6 +2242,12 @@ export async function runToolLoop(options) {
     },
     set resumeUnpersistedToolResults(value) {
       resumeUnpersistedToolResults = value;
+    },
+    get resumeMidSequenceToolResults() {
+      return resumeMidSequenceToolResults;
+    },
+    set resumeMidSequenceToolResults(value) {
+      resumeMidSequenceToolResults = Array.isArray(value) ? value : [];
     },
     get resumeCrashRoundAssistantPersisted() {
       return resumeCrashRoundAssistantPersisted;
@@ -3012,6 +3026,51 @@ export async function runToolLoop(options) {
       if (rowKey === undefined && persistedRowKey !== undefined) rowKey = persistedRowKey;
     }
     if (rowKey !== undefined) runLoopState.resumeToolResultRowKey = rowKey;
+  };
+
+  // issue #421（中段悬空 `tool_use` 的读侧兜底）：把 `restoreResume` 补在上下文里的那几张桩
+  // **落进账本**。
+  //
+  // 写侧复用 A 集合那条已验证通道的形状（`appendMessageRowToTranscript` 消息行 + `partOf`），但
+  // 锚点**逐张自带**（不是 A 集合那个单一的 `resumeToolResultRowKey`）：中段悬空可能发生在**任何一轮**，
+  // 而每张桩只能并进它自己那条聚合消息。锚点由 `restoreResume` 在**落盘行**上算好
+  // （`firstSliceRowKeyOf` = 该聚合消息**首片**行的 key）—— #430 的纪律在这里同样成立：
+  //   · 锚点只在首片；分片 key 不是合法的 `partOf` 目标（`foldLedgerMessages` 对分片不新增条目，
+  //     它的 key 指向的是「下一条逻辑消息」）；
+  //   · 本函数每张桩都 `partOf` 同一个（首片）锚点，**从不推进**成刚写那条分片的 key。
+  //
+  // 幂等：桩一旦落账，它的 `tool_use_id` 就进了账本的结果集合 ⇒ 下一次恢复的
+  // `ledgerToolResultIds` 认它 ⇒ `pendingMidSequenceToolUses` 不再返回它，本函数拿到的就是空数组。
+  // 所以不需要额外去重键：
+  // 「该不该补」的判据只有一份（账本），不是「写完再查一遍重不重」。
+  //
+  // 锚点缺失（升级前的旧账本：正文在轮载体行里、根本没有消息行）⇒ **不入账**，只留内存里的桩。
+  // 那种账本上新写消息行会被折叠层拼到载体行后面（桩变成**另一条** user 消息 ⇒ 孤立 `tool_result`），
+  // 比今天更坏。走既有 `onEvent` 通道报一声，宿主可以据此知道「下次恢复还得再补一次」。
+  const journalResumeMidSequenceToolResults = async () => {
+    const stubs = resumeMidSequenceToolResults;
+    if (!Array.isArray(stubs) || stubs.length === 0) return;
+    // 一次性交接（与 A 集合同一条纪律）：guard 补跑桥会回到主循环，这批不得被第二次入账。
+    resumeMidSequenceToolResults = [];
+    const unanchored = stubs.filter((stub) => typeof stub?.partOf !== "string" || stub.partOf === "");
+    if (unanchored.length > 0) {
+      emitEvent({
+        type: "resume_journal_skipped",
+        runId,
+        ...(parentRunId === undefined ? {} : { parentRunId }),
+        round: unanchored[0]?.round,
+        reason: "mid_sequence_aggregate_row_not_in_ledger",
+        count: unanchored.length,
+      });
+    }
+    for (const stub of stubs) {
+      if (typeof stub?.partOf !== "string" || stub.partOf === "") continue;
+      await appendMessageRowToTranscript(
+        { role: "user", content: [stub.toolResult] },
+        stub.round,
+        { partOf: stub.partOf },
+      );
+    }
   };
 
   // issue #326（wo-C）：**引擎自产「上下文事实」的产生即入账**——沿用上面同一先例的形状与命名空间风格
@@ -4897,6 +4956,10 @@ export async function runToolLoop(options) {
     //   · `resumeToolResultRowKey` 由本段**落定一次**（`undefined` 时首个 A 结果就是新的聚合消息锚点；
     //     issue #430 起不随分片推进），补跑段读到的正是这个首片锚点 ⇒ 两种集合接回**同一条**聚合消息。
     await journalResumeUnpersistedToolResults();
+    // issue #421：中段悬空的桩紧跟其后入账（同一写侧、同一种 `partOf` 首片锚点）。放在 A 集合之后
+    // 是因为 A 集合的真结果先于桩（后者是「什么都没有」那一格，判据上已把它们排除掉了）；
+    // 放在补跑段（B 集合）之前是因为补跑段也读 `resumeToolResultRowKey`，而本段只写自带的锚点。
+    await journalResumeMidSequenceToolResults();
     if (runLoopState.resumePendingTools.length > 0) {
       const resumedToolResults = [];
       // 工单 261021（第三刀）：**补跑跑出来的工具结果也逐条入账**，用 `partOf` 接回崩溃轮里
