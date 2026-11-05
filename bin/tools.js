@@ -485,6 +485,16 @@ const CLI_TOOL_PROMPT_GROUPS = {
 };
 
 /**
+ * 短语表的一条：`group` 是拼进哪一段（必须是 `CLI_TOOL_PROMPT_GROUPS` 的 key，运行期核对），
+ * `phrase` 是那一句文案。`--strict` 下这张表的形状必须写出来：不写，`phrases` 就是 `object`，
+ * 于是 `buildCliToolsSystemPrompt({ phrases })` 的调用点报 TS2740（`{}` 缺一大堆短语）。
+ *
+ * @typedef {object} CliToolPromptPhraseEntry
+ * @property {string} group
+ * @property {string} phrase
+ */
+
+/**
  * 短语表：工具名 → 清单行里那一句。**只放文案，不放名单**——名单来自注册面。
  * 每个 key 必须在注册面上（否则 `buildCliToolsSystemPrompt` 抛错），反之注册面上的名字
  * 也必须在这里有一句（同上），两侧都由 `assertPromptPhraseTableMatches` 在 build 期双向核对。
@@ -555,6 +565,12 @@ export function cliToolDefinitions({ todo = true, delegate = false } = {}) {
  * 两侧任一方向不吻合都抛错——这就是「注册面 ⊆ 提示词」（漏列）与「提示词 ⊆ 注册面」（陈旧手抄）。
  * `fullNames` = **全量注册面**（todo=true 那份）：短语表是静态表，todo=false 只是本轮少拼一段，
  * 不能拿它当「陈旧」的依据（否则 todo_* 四条会被误报成手抄残留）。
+ *
+ * @param {string[]} names 本轮注册面（清单行要拼的那些名字）
+ * @param {object} [options]
+ * @param {Record<string, CliToolPromptPhraseEntry>} [options.phrases] 短语表
+ * @param {string[]} [options.fullNames] 陈旧核对的基准集（缺省 = `names`；tsc 的 JSDoc 解析在
+ *   `「` 这种全角括号上会报 TS1127，故这里不引号）
  */
 function assertPromptPhraseTableMatches(names, { phrases = CLI_TOOL_PROMPT_PHRASES, fullNames = names } = {}) {
   const registered = new Set(names);
@@ -570,7 +586,14 @@ function assertPromptPhraseTableMatches(names, { phrases = CLI_TOOL_PROMPT_PHRAS
   }
 }
 
-/** 工具清单行：遍历注册面顺序，按分段样式取短语拼接，以「。」收尾（基础段自身是完整句子，issue #69）。 */
+/**
+ * 工具清单行：遍历注册面顺序，按分段样式取短语拼接，以「。」收尾（基础段自身是完整句子，issue #69）。
+ *
+ * @param {string[]} names 注册面（顺序即输出顺序）
+ * @param {object} [options]
+ * @param {Record<string, CliToolPromptPhraseEntry>} [options.phrases] 短语表
+ * @returns {string}
+ */
 function buildCliToolsToolListLine(names, { phrases = CLI_TOOL_PROMPT_PHRASES } = {}) {
   const segments = [];
   let current = null;
@@ -664,9 +687,16 @@ export function filterToolsByAllowlist(tools, allowlist, { onUnknown } = {}) {
 /**
  * 拼 CLI 系统提示（工具清单行由注册面生成，其余段落是固定文案）。
  *
+ * 根 `@param {object} [input]` 是**必须**的：只有逐属性的 `@param {boolean} [input.delegate]`
+ * 而没有根声明时，`tsc --strict` 会把整个 `input` 推成 `boolean | undefined`（取第一条属性声明的
+ * 类型当参数类型），于是每个调用点都报 TS2345「`{ todo, delegate }` 不可赋给 `boolean | undefined`」。
+ * 症状出现在**调用点**、病根在这个 JSDoc——所以根修在这里，新老调用点一起干净。
+ *
+ * @param {object} [input] 选项包（整体可省：`buildCliToolsSystemPrompt()` 是 golden 用法）。
+ * @param {boolean} [input.todo] 是否拼 todo 段（`--no-todo` 传 false）。
  * @param {boolean} [input.delegate] 是否把 `delegate` 拼进清单行（缺省 false：默认关）。
  * @param {string[]} [input.names] 注册面上的工具名（缺省用真注册面）；测试拿它做变异反证而不动源码。
- * @param {object} [input.phrases] 短语表（缺省 `CLI_TOOL_PROMPT_PHRASES`）。
+ * @param {Record<string, CliToolPromptPhraseEntry>} [input.phrases] 短语表（缺省 `CLI_TOOL_PROMPT_PHRASES`）。
  * @param {string[]} [input.fullNames] 「陈旧」核对的基准集（缺省 = todo+delegate 全开的全量注册面）。
  */
 export function buildCliToolsSystemPrompt({
