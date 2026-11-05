@@ -4186,6 +4186,17 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *     校准面（## [0.31.0]（未发布 / unpublished））上实测 7 对 ≠ 地板 6 对：地板必须恰等于校准面上的实测值
  *
  * 抬到 7 后在同一切版树上重跑：校准绿，同一格的反向证照旧报「已穿底」（数字由那一次跑打印，不搬进本文）。
+ *
+ * issue #715：`## [Unreleased] ### Added` 新增一对条目（`[Unreleased]` 漏搬成了 preflight 的一格，同一个
+ * issue 引用集合 #715）⇒ 顶部 Unreleased 又有内容 ⇒ 面由 `resolveChangelogScanSurface` **挪回它**，于是按
+ * 本文件第 3 条重测。先贴守卫自己的 diagnostic（面挪了、实测变小，这是**换面**不是降地板）：
+ *
+ *     # 配对地板：判据面 = ## [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：
+ *     #   顶部 Unreleased 有内容）；中文 1 条 / 英文 1 条 / 配对 1 对
+ *     #   （其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 7（校准面 ## [0.31.0]（未发布 / unpublished））
+ *     配对地板被踩穿：实测 1 对 < 地板 7 对……面已挪到 ## [Unreleased]，请重测地板
+ *
+ * ⇒ 校准面 0.31.0 → `## [Unreleased]`、地板 7 → 1（在新面上实测的 1 对）。同一面内「只升不降」不变。
  */
 /**
  * issue #713（本单）：顶部的 `## [Unreleased]` 重新有了内容（自登记 #713 的一对中英条目）⇒ 面按
@@ -4208,8 +4219,10 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *
  * ⇒ 地板 1 → 2。**面上每进一对条目就要重测一次**（#714 / #715 两条分支各自带一对，它们合进来时同一格会再红一次，
  * 那是闸在正常工作，不是回归）。
+ * **#715 合进来时再重测（主会话做的合并）**：`## [Unreleased]` 又多一对条目 ⇒ 同一面实测 2 → **3 对**，
+ * 守卫判词 `实测 3 对 > 地板 2 对 ⇒ 可以抬地板到 3` ⇒ 地板 2 → 3。见下面 #714 那一格同一条纪律。
  */
-const CHANGELOG_PAIR_FLOOR = 2;
+const CHANGELOG_PAIR_FLOOR = 3;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

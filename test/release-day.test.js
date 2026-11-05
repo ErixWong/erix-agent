@@ -11,7 +11,7 @@
 //     仓内源码全程只读（finalize 那条用例走的是「顺序闸先红」，所以连 `git tag` 都不会执行）。
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -78,6 +78,55 @@ test("--self-test：离线反向证 exit 0", () => {
   const result = runScript(["--self-test"]);
   assert.equal(result.status, 0, `--self-test 必须绿：\n${result.stdout}\n${result.stderr}`);
   assert.match(result.stdout, /release-day --self-test: OK/u);
+});
+
+test("preflight 第 2 步（issue #715）：`[Unreleased]` 漏搬三态——红 exit 1 / 未判定 exit 2 / 绿 exit 0（真 CLI）", async () => {
+  // 合成树：`npm run <script>` 全部替成 `node -e 0 --`（`--` 之后是 npm 追加的 `--hosts …`，不 `--` 的话
+  // `node` 会把它当自己的选项而 exit 9）。第 2 步读的是 `package.json` + `CHANGELOG.md`，
+  // 其余六步在合成树上没有意义；真值面只有第 2 步，其余门禁在 `--self-test` 里另有反向证）。
+  const dir = await makeTmp("erix-release-day-715-");
+  const tree = join(dir, "tree");
+  mkdirSync(tree, { recursive: true });
+  const scripts = {
+    "check:changelog": "node -e 0 --",
+    "check:docs": "node -e 0 --",
+    "check:docs:strict": "node -e 0 --",
+    "check:release:real": "node -e 0 --",
+    "check:release": "node -e 0 --",
+    "check:host-consumers": "node -e 0 --",
+  };
+  writeFileSync(join(tree, "package.json"),
+    `${JSON.stringify({ name: "erix-agent", version: "0.31.0", scripts }, null, 2)}\n`, "utf8");
+  const heading = "## [0.31.0]（未发布 / unpublished）";
+  const redChangelog = ["# Changelog", "", "## [Unreleased]", "",
+    "- **A stranded entry nobody carried (issue #900).** It belongs in the 0.31.0 section.",
+    "- 第二条停在 `[Unreleased]` 里的中文条目，用来验判词逐条点名。",
+    "", heading, "", "### Breaking", "", "- older", ""].join("\n");
+  const run = (changelog, extra = []) => {
+    writeFileSync(join(tree, "CHANGELOG.md"), changelog, "utf8");
+    return runScript(["--stage", "preflight", "--root", tree, "--state", join(dir, "state.json"), ...extra], {
+      env: { ...process.env, ERIX_E2E_REAL: "1", RELEASE_DAY_STATE: join(dir, "state.json") },
+    });
+  };
+
+  // ① 红：版本节已开（未发布形态）+ 条目还停在 `[Unreleased]`
+  const red = run(redChangelog, ["--hosts", tree]);
+  assert.equal(red.status, 1, `漏搬形态必须 exit 1：\n${red.stdout}\n${red.stderr}`);
+  assert.match(red.stdout, /\[2\/7\][^\n]*\*\*红\*\*/u, "红要落在第 2 步上（不是第 1 步、也不是笼统一句失败）");
+  assert.match(red.stdout, /2 条未入账条目停在/u, "判词要点名条数");
+  assert.match(red.stdout, /4963293/u, "判词要自带可执行动作（4963293 的形状）");
+  assert.match(red.stdout, /停在这一步/u, "红了就停，后面的前置不跑");
+
+  // ② 未判定：本版还没有版本节（还没切版）⇒ exit 2，不是绿也不是红
+  const notJudged = run(redChangelog.replace(`${heading}\n\n`, ""), ["--hosts", tree]);
+  assert.equal(notJudged.status, 2, `还没切版必须 exit 2：\n${notJudged.stdout}\n${notJudged.stderr}`);
+  assert.match(notJudged.stdout, /\[2\/7\][^\n]*\*\*未判定\*\*/u, "未判定要落在第 2 步上");
+  assert.match(notJudged.stdout, /还没切版/u, "读数要说清「还没切版」");
+
+  // ③ 绿：版本节已开 且 `[Unreleased]` 为空 ⇒ 整趟 preflight 全绿 exit 0
+  const green = run(["# Changelog", "", "## [Unreleased]", "", heading, "", "- older", ""].join("\n"), ["--hosts", tree]);
+  assert.equal(green.status, 0, `版本节已开 + \`[Unreleased]\` 空必须 exit 0：\n${green.stdout}\n${green.stderr}`);
+  assert.match(green.stdout, /\[2\/7\][^\n]*→ 绿/u, "第 2 步要报绿");
 });
 
 test("npm script、中英 AGENTS 与 CI 三处接线（成对，且说明里不抄判据条数）", () => {

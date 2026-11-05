@@ -12,13 +12,16 @@
 // ── 四个阶段（`--stage`；`--all` 按序跑）────────────────────────────────────────
 //   preflight  AGENTS §4 的前置清单，按顺序跑，**任一红就停在那一步并点名第几步**：
 //                1 `npm run check:changelog`           本版 CHANGELOG 覆盖了碰到公开面的合并号（issue #691）
-//                2 `npm run check:docs`                 文档漂移 + 中英同步
-//                3 `npm run check:docs:strict`          同上，告警也阻塞
-//                4 `ERIX_E2E_REAL=1 npm run check:release:real`   真上游；**闸门关着 ⇒ 未判定**
-//                5 `npm run check:release`              离线：tarball / 装好的包 / TS 宿主 / 假上游 CLI
-//                6 `npm run check:host-consumers -- --hosts …`   宿主侧探针；**没给目录或目录不在 ⇒ 未判定**
+//                2 `[Unreleased]` 漏搬（**本脚本内联判据，不 spawn**，issue #715）——三态，见下面那一节
+//                3 `npm run check:docs`                 文档漂移 + 中英同步
+//                4 `npm run check:docs:strict`          同上，告警也阻塞
+//                5 `ERIX_E2E_REAL=1 npm run check:release:real`   真上游；**闸门关着 ⇒ 未判定**
+//                6 `npm run check:release`              离线：tarball / 装好的包 / TS 宿主 / 假上游 CLI
+//                7 `npm run check:host-consumers -- --hosts …`   宿主侧探针；**没给目录或目录不在 ⇒ 未判定**
 //              未判定（not-judged）**不是绿**：`ERIX_E2E_REAL` 缺失时那一族一步都不跑，脚本明说「未判定」，
 //              整体 exit 2（不是 0）。目录不存在按探针自己的口径（`HOST_DIR_MISSING` / `HOST_DIR_NOT_DIR`）判未判定。
+//              第 2 步同样会答「未判定」（exit 2）：**还没切版**时它判不了「搬没搬」，那时整趟 preflight 就是
+//              未判定——先切版（bump `package.json` + 开节 + 把标题行插到条目之前），再跑 preflight。
 //   publish    脚本**不 fork `npm publish`**（理由见下）。preflight 全绿后它把「请你自己在终端跑 `npm publish`」
 //              与四条注意一次性打出来，然后 exit 3（= 等你发布）。`--publish-cmd <cmd>` 是**显式开关**，
 //              默认关：不给就永不 fork。
@@ -95,15 +98,23 @@ export const PHASE = Object.freeze({
 });
 
 /**
- * preflight 的六步（AGENTS §4 的前置清单，顺序即清单顺序）。`gate` 非空 ⇒ 这一步可能是「未判定」：
+ * preflight 的七步（AGENTS §4 的前置清单，顺序即清单顺序）。两种步骤形状：
+ *   · `argv`   —— spawn 一个子进程跑 npm script；
+ *   · `probe`  —— **内联判据**（`PREFLIGHT_PROBES` 里的函数，只读文件、不 spawn），issue #715 的漏搬格就是它。
+ * `gate` 非空 ⇒ 这一步可能是「未判定」：
  *   · `ERIX_E2E_REAL` —— 环境变量闸门关着时真上游那一族**一步都不跑**；
  *   · `hosts`         —— 没给 `--hosts` 或给的目录都不在时，探针自己也是「未判定」。
+ * `probe` 步骤自己也会答「未判定」（读不出搬运事实时），口径与本文件其余 gate 一致：未判定不是绿。
  *
  * 第 1 步是 issue #691 的 CHANGELOG 覆盖闸：它读的是本版段 × 上一个 tag 以来的 first-parent 合并，
  * 与「发出去的这一版到底改了什么」直接相关，所以排在最前（最便宜，且它红了后面那一族没必要跑）。
+ * 第 2 步（issue #715）是同一主题的另一半——`[Unreleased]` 里的条目到底搬进本版段没有——所以紧跟其后。
  */
 export const PREFLIGHT_STEPS = Object.freeze([
   { id: "changelog", label: "check:changelog", argv: ["npm", "run", "check:changelog"] },
+  // issue #715：这一格是**内联判据**（`probe` 非空 ⇒ 走 `PREFLIGHT_PROBES`，不 spawn 子进程）。它读的是
+  // 两棵树里的文件（`package.json` + `CHANGELOG.md`），最便宜，而且与第 1 步同一主题，所以紧跟其后。
+  { id: "changelog-unreleased", label: "CHANGELOG [Unreleased] 漏搬（内联判据）", probe: "unreleasedCarry" },
   { id: "docs", label: "check:docs", argv: ["npm", "run", "check:docs"] },
   { id: "docs-strict", label: "check:docs:strict", argv: ["npm", "run", "check:docs:strict"] },
   {
@@ -202,6 +213,160 @@ function cmdline(argv, env = {}) {
   return `${prefix ? `${prefix} ` : ""}${argv.join(" ")}`;
 }
 
+// ────────────────── preflight 的内联判据：`[Unreleased]` 漏搬（issue #715） ──────────────────
+//
+// 病根（本单开单时现验，可当事实）：`## [Unreleased]` 里的条目**没有任何机制**把它搬进下一个版本节，
+// 也没有任何机制提醒：
+//   · `release:day --stage writeback` 的 `--sync` **只重写已存在的版本标题那一行**；那一版**没有段**时
+//     「CHANGELOG 一个字节未动」并记一笔 note，**绝不造段**（`scripts/docs-drift-check.mjs:502-508`）；
+//   · `--stage finalize` 只清 `src/**/*.d.ts` + 打 tag；
+//   · `check:changelog` 对 `[Unreleased]` **全程隐形**：`SECTION_HEADING = /^##\s*\[(\d+\.\d+\.\d+)\]/u`
+//     （`scripts/changelog-coverage-check.mjs:139`），注释自陈「跳过 `[Unreleased]`」，本版 = 第一个数字段；
+//     而且它比对的是**合并主题里的 PR 号**（`git log --first-parent --merges --pretty=%H%x1f%s` 取号）；
+//   · `check:docs` 同样只认数字段（`changelogSections()` 的 `/^## \[(\d+\.\d+\.\d+)\]/`），
+//     现跑全份输出里 `grep -c Unreleased` = 0；
+//   · `guide-coverage`（`scripts/docs-drift-check.mjs:6541`）只兜「版本号升了而段没开」；
+//   · 配对地板（`test/static-guards.test.js` 的 `CHANGELOG_PAIR_FLOOR`）只兜「新版本节被开成空节」：
+//     条目留在原地时判据面**就是** `[Unreleased]`，1 对 = 地板 ⇒ 绿。
+// 所以这一格只判**一种形态**：`package.json` 那一版的版本节**已经开了**（切版做完了），而条目**还停在**
+// `## [Unreleased]`。三态（「未判定」不是绿，与本文件其余 gate 同口径）：
+//   ① 红（exit 1）    版本节已开（且还是未发布形态）＋ `[Unreleased]` 里仍有 bullet ⇒ 判词点名条数、逐条给
+//                     前 60 字，并给出**可执行动作**：按 4963293 的形状把 `## [<版本>]` 那一行放到
+//                     `## [Unreleased]` 与条目之间（正文一字不动，`[Unreleased]` 留空）；
+//   ② 未判定（exit 2）三种「读不出这一版的搬运事实」：
+//                     (a) `package.json` 那一版**还没有版本节** ⇒ 还没切版，先开节再搬运；
+//                     (b) 那一版**已有版本节、但段首带发布日期** ⇒ 那是**已发布**的一版，`[Unreleased]` 里那些
+//                         条目属于下一版 ⇒ 还没切版。**这一条就是「不许做成 `[Unreleased]` 非空即红」的落点**：
+//                         preflight 可能跑在切版之前，那时 `[Unreleased]` 里本来就该有待入账条目；
+//                     (c) `package.json` 版本 / `CHANGELOG.md` 读不出；
+//   ③ 绿（exit 0）    版本节已开 且 `[Unreleased]` 为空。
+//
+// **不新写一个 CHANGELOG 解析器**：扫描面复用 `test/static-guards.test.js` 的 `CHANGELOG_VERSION_HEADING`
+// + `resolveChangelogScanSurface` 的口径（顶部节 = `## [Unreleased]`，其下到下一个 `## ` 为止；bullet =
+// 行首 `- `；顶部节被改名 ⇒ 红并点名「找不到版本节」，不许静默绿），段首「带不带发布日期」复用
+// `docs-drift-check.mjs` 的 `changelogSections()` 那一条正则。版本号从 `package.json` 现读，**不写死**。
+
+/** 顶部版本节标题（与 `test/static-guards.test.js` 的 `CHANGELOG_VERSION_HEADING` 同一字面）。 */
+export const UNRELEASED_HEADING = "## [Unreleased]";
+
+/** 判词里每条 bullet 的前若干字（issue #715 的判据要求：逐条列前 60 字）。 */
+const BULLET_PREVIEW = 60;
+
+/** 段首那一行「带发布日期」的口径——与 `docs-drift-check.mjs` 的 `changelogSections()` 同一条正则。 */
+const DATED_HEADING_SUFFIX = /^\s*[-—]\s*(\d{4}-\d{2}-\d{2})/u;
+
+/** 一条 bullet 的前 `BULLET_PREVIEW` 字（超长才加省略号）。 */
+function bulletPreview(text) {
+  const flat = String(text).trim();
+  return flat.length > BULLET_PREVIEW ? `${flat.slice(0, BULLET_PREVIEW)}…` : flat;
+}
+
+/** 一条内联判据的返回值（`verdict` 是 `VERDICT` 之一；`lines` 是给人看的动作与证据）。 */
+function finding(verdict, why, lines = []) {
+  return { verdict, why, lines };
+}
+
+/**
+ * issue #715：`[Unreleased]` 里的条目**搬进本版段了没有**。只读两棵树里的文件，不写盘、不 spawn。
+ *
+ * @param {{root?: string}} [options]
+ * @returns {{verdict: string, why: string, lines: string[]}}
+ */
+export function probeUnreleasedCarry({ root = DEFAULT_ROOT } = {}) {
+  let version;
+  try {
+    version = pkgVersion(root);
+  } catch (error) {
+    return finding(VERDICT.NOT_JUDGED,
+      `package.json 的版本读不出（${error && error.message ? error.message : error}）——没有版本真值就判不了「搬没搬」`);
+  }
+  let text = null;
+  try {
+    text = readFileSync(path.join(root, "CHANGELOG.md"), "utf8");
+  } catch {
+    text = null;
+  }
+  if (text === null) {
+    return finding(VERDICT.NOT_JUDGED, "CHANGELOG.md 读不出——`[Unreleased]` 与版本节的相对位置无从判");
+  }
+  const lines = text.split("\n").map((line) => line.replace(/\r$/u, ""));
+  const isSectionHeading = (line) => /^## /u.test(line);
+  const sectionEnd = (start) => {
+    for (let i = start + 1; i < lines.length; i += 1) if (isSectionHeading(lines[i])) return i;
+    return lines.length;
+  };
+
+  const top = lines.findIndex((line) => /^## \[/u.test(line));
+  if (top === -1 || !lines[top].startsWith(UNRELEASED_HEADING)) {
+    return finding(
+      VERDICT.FAIL,
+      `找不到版本节 ${JSON.stringify(UNRELEASED_HEADING)}——顶部第一个版本标题是 ${top === -1 ? "（没有）" : JSON.stringify(lines[top])}`,
+      [
+        `动作：在版本标题最上面补一行 \`${UNRELEASED_HEADING}\`（发布时把 \`[Unreleased]\` 改名成 \`## [<版本>] - <日期>\` 的**同一步**就得补新的；先例 4963293）。`,
+        "     没有这一节，条目就没有「还没入账」的容器，本步也判不了——所以它不静默绿（`test/static-guards.test.js` 的规则 8 对同一形态也是红）。",
+      ],
+    );
+  }
+
+  const topTo = sectionEnd(top);
+  /** @type {Array<{line: number, text: string}>} */
+  const bullets = [];
+  for (let i = top + 1; i < topTo; i += 1) if (lines[i].startsWith("- ")) bullets.push({ line: i + 1, text: lines[i] });
+
+  const escaped = version.replace(/\./gu, "\\.");
+  const sectionAt = lines.findIndex((line) => new RegExp(`^##\\s*\\[${escaped}\\]`, "u").test(line));
+  const sectionHeading = sectionAt === -1 ? null : lines[sectionAt];
+  const suffix = sectionHeading === null ? "" : (/^##\s*\[\d+\.\d+\.\d+\](.*)$/u.exec(sectionHeading) ?? ["", ""])[1];
+  const dated = DATED_HEADING_SUFFIX.test(suffix);
+
+  // (a) 还没切版：package.json 那一版在 CHANGELOG 里没有段
+  if (sectionAt === -1) {
+    return finding(VERDICT.NOT_JUDGED, `还没切版：CHANGELOG 里没有 ${version} 的版本节`, [
+      `动作：① 在 \`${UNRELEASED_HEADING}\`（第 ${top + 1} 行）与它的内容之间插入一行 \`## [${version}]（未发布 / unpublished）\`（形状见 4963293：只加这一行，正文一字不动）；`,
+      `     ② 条目跟着标题行一起下移，\`${UNRELEASED_HEADING}\` 留空；③ 切完再跑本步。`,
+      `     现状：\`${UNRELEASED_HEADING}\` 里 ${bullets.length} 条待入账条目。`,
+    ]);
+  }
+
+  // ③ 绿：版本节已开 且 `[Unreleased]` 为空
+  if (bullets.length === 0) {
+    return finding(VERDICT.PASS,
+      `${version} 的版本节在第 ${sectionAt + 1} 行，\`${UNRELEASED_HEADING}\` 里 0 条待入账条目`);
+  }
+
+  // (b) 版本节已开、但段首带发布日期 ⇒ 那一版已经发布，`[Unreleased]` 里这些条目属于下一版
+  if (dated) {
+    return finding(
+      VERDICT.NOT_JUDGED,
+      `还没切版：${version} 的版本节（第 ${sectionAt + 1} 行）段首带发布日期 ⇒ 那是已发布的一版，`
+        + `\`${UNRELEASED_HEADING}\` 里 ${bullets.length} 条属于下一版`,
+      [
+        `动作：把 \`package.json\` 的 version 升到下一版，再在 \`${UNRELEASED_HEADING}\` 与条目之间插入 \`## [<新版本>]（未发布 / unpublished）\`（形状见 4963293）；切完再跑本步。`,
+        "     这一条不是「`[Unreleased]` 非空即红」：preflight 可能跑在切版之前，那时 `[Unreleased]` 里本来就该有待入账条目。",
+      ],
+    );
+  }
+
+  // ① 红：版本节已开（未发布形态）＋ 条目还停在 `[Unreleased]`
+  return finding(
+    VERDICT.FAIL,
+    `${bullets.length} 条未入账条目停在 \`${UNRELEASED_HEADING}\`（第 ${top + 1} 行），`
+      + `而 ${version} 的版本节已经开了（第 ${sectionAt + 1} 行：${String(sectionHeading).trim()}）`,
+    [
+      `动作：按 4963293 的形状，把 \`## [${version}]\` 那一行放到 \`${UNRELEASED_HEADING}\` 与条目之间——`
+        + `第 ${sectionAt + 1} 行那一行挪上来（没有就新建 \`## [${version}]（未发布 / unpublished）\`），`
+        + `正文一字不动，\`${UNRELEASED_HEADING}\` 留空。`,
+      "     既有防线都不看这一形态：`check:changelog` 只认数字段（且比对的是合并主题里的 PR 号）、"
+        + "`guide-coverage` 只兜「版本号升了而段没开」、配对地板只兜「新版本节被开成空节」。",
+      `     待入账条目（前 ${BULLET_PREVIEW} 字）：`,
+      ...bullets.map((bullet, i) => `       ${String(i + 1).padStart(2, " ")}. 第 ${bullet.line} 行 ${bulletPreview(bullet.text)}`),
+    ],
+  );
+}
+
+/** 内联判据表（`PREFLIGHT_STEPS` 里 `probe` 非空的步骤走这里；只读、不 spawn）。 */
+const PREFLIGHT_PROBES = Object.freeze({ unreleasedCarry: probeUnreleasedCarry });
+
 // ─────────────────────────────── preflight ───────────────────────────────
 
 /**
@@ -220,8 +385,28 @@ export function runPreflight({ root = DEFAULT_ROOT, hosts = [], deps = defaultDe
   for (const [index, step] of PREFLIGHT_STEPS.entries()) {
     const n = index + 1;
     const head = `[${n}/${total}] ${step.label}`;
-    let argv = step.argv.slice();
+    let argv = step.argv ? step.argv.slice() : [];
     const stepEnv = { ...env, ...(step.env ?? {}) };
+    if (step.probe) {
+      // 内联判据（issue #715）：只读文件、不 spawn；三态与本文件其余 gate 同口径。
+      const found = PREFLIGHT_PROBES[step.probe]({ root });
+      if (found.verdict === VERDICT.FAIL) {
+        log(`${head} → **红**（exit ${EXIT.RED}）：${found.why}`);
+        for (const line of found.lines) log(`     ${line}`);
+        log(`${head} → 停在这一步，后面的前置不跑`);
+        steps.push({ id: step.id, verdict: VERDICT.FAIL, exitCode: EXIT.RED, why: found.why });
+        return { verdict: VERDICT.FAIL, steps, failedAt: n, failedId: step.id };
+      }
+      if (found.verdict === VERDICT.NOT_JUDGED) {
+        log(`${head} → **未判定**（${found.why}）`);
+        for (const line of found.lines) log(`     ${line}`);
+        steps.push({ id: step.id, verdict: VERDICT.NOT_JUDGED, why: found.why });
+        continue;
+      }
+      log(`${head} → 绿（${found.why}）`);
+      steps.push({ id: step.id, verdict: VERDICT.PASS, why: found.why });
+      continue;
+    }
     if (step.gate === "ERIX_E2E_REAL" && !env.ERIX_E2E_REAL) {
       const why = "ERIX_E2E_REAL 未开：真上游那一族在闸门关着时一步都不跑";
       log(`${head} → **未判定**（${why}）`);
@@ -1255,6 +1440,177 @@ function selfTestSync(checker) {
   }
 }
 
+/**
+ * 跑一段「`root` 是合成树」的 preflight（自测用）。issue #715 之后第 2 步读的是 `root` 里的
+ * `package.json` + `CHANGELOG.md`，所以 preflight 的自测不能拿本仓当 root：本仓 `[Unreleased]`
+ * 里本来就可能有待入账条目（那是正常开发态），拿它当夹具会让自测跟着本仓的内容漂。
+ */
+function withPreflightFixture(fn) {
+  const tree = mkdtempSync(path.join(os.tmpdir(), "erix-release-day-preflight-"));
+  try {
+    writeFixtureTree(tree);
+    return fn(tree);
+  } finally {
+    rmSync(tree, { recursive: true, force: true });
+  }
+}
+
+/**
+ * ⑭ issue #715：`## [Unreleased]` 的漏搬格。三态各一格，外加三条**反向证**（变异不落地 = 失败）。
+ *
+ * 夹具只写 `package.json` + `CHANGELOG.md`（本格只读这两份）：
+ *   · `RED_CHANGELOG` = 切版做完（`## [0.31.0]（未发布 / unpublished）` 已开）但条目**还停在** `[Unreleased]`；
+ *   · 其余形态都是**在它上面做变异**得到的，于是「变异真的落了上」本身也是判据。
+ */
+function selfTestUnreleasedCarry(checker) {
+  const { expect } = checker;
+  const heading = "## [0.31.0]（未发布 / unpublished）";
+  const RED_CHANGELOG = [
+    "# Changelog",
+    "",
+    "## [Unreleased]",
+    "",
+    "- **A stranded entry nobody carried (issue #900).** It belongs in the 0.31.0 section.",
+    "- 第二条停在 `[Unreleased]` 里的中文条目，用来验判词逐条点名，并且故意写到超过六十个字好看到省略号的位置上。",
+    "",
+    heading,
+    "",
+    "### Breaking",
+    "",
+    "- older",
+    "",
+  ].join("\n");
+  const treeFor = (changelog, version = "0.31.0") => {
+    const tree = mkdtempSync(path.join(os.tmpdir(), "erix-release-day-unreleased-"));
+    writeFileSync(path.join(tree, "package.json"), `{\n  "name": "erix-agent",\n  "version": "${version}"\n}\n`, "utf8");
+    writeFileSync(path.join(tree, "CHANGELOG.md"), changelog, "utf8");
+    return tree;
+  };
+  const probeOn = (changelog, version) => {
+    const tree = treeFor(changelog, version);
+    try {
+      return probeUnreleasedCarry({ root: tree });
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  };
+
+  // ⑭a 红：版本节已开（未发布形态）+ 条目还停在 `[Unreleased]`
+  {
+    const found = probeOn(RED_CHANGELOG);
+    expect(found.verdict === VERDICT.FAIL && /2 条未入账条目停在/u.test(found.why),
+      `⑭a 版本节已开 + \`[Unreleased]\` 里 2 条 bullet ⇒ 红，并点名「2 条未入账条目停在」（${found.why}）`,
+      `⑭a 裁决是 ${found.verdict}（why=${found.why}）——漏搬形态必须红`);
+    expect(/4963293/u.test(found.lines.join("\n")) && /## \[0\.31\.0\]/u.test(found.lines.join("\n")),
+      "⑭a 判词自带可执行动作：按 4963293 的形状插入 `## [0.31.0]` 标题行（不是只说「不通过」）",
+      `⑭a 判词里没有可执行动作：${found.lines.join(" | ")}`);
+    const bulletLines = found.lines.filter((line) => /^\s+\d+\. 第 \d+ 行/u.test(line));
+    expect(bulletLines.length === 2,
+      `⑭a 逐条列出 bullet（2 条，带行号）：${bulletLines.map((l) => l.trim().slice(0, 24)).join(" / ")}`,
+      `⑭a 没有逐条列出 bullet：${found.lines.join(" | ")}`);
+    expect(bulletLines.some((line) => line.endsWith("…"))
+        && bulletLines.every((line) => (line.split(" 行 ")[1] ?? "").length <= 61),
+      "⑭a 每条只给前 60 字（超长的加省略号，不把整条贴进判词）",
+      `⑭a bullet 预览长度不对：${bulletLines.join(" | ")}`);
+    expect(found.lines.join("\n").includes("check:changelog")
+        && found.lines.join("\n").includes("guide-coverage")
+        && found.lines.join("\n").includes("配对地板"),
+      "⑭a 判词点名既有三道防线（免得后人以为它们已经兜住这个形态、重复造闸）",
+      `⑭a 判词没写既有防线：${found.lines.join(" | ")}`);
+  }
+
+  // ⑭b 反向证 ①：把标题行插到条目之前（= 4963293 的形状）⇒ 转绿（变异真的落了上）
+  {
+    const mutated = RED_CHANGELOG.replace(`${heading}\n\n`, "")
+      .replace("## [Unreleased]\n\n", `## [Unreleased]\n\n${heading}\n\n`);
+    expect(mutated !== RED_CHANGELOG, "⑭b 变异真的落了上（标题行从下面搬到了条目之前）",
+      "⑭b 变异没落上：两份文本一字相同，这一格什么都没证");
+    const found = probeOn(mutated);
+    expect(found.verdict === VERDICT.PASS,
+      "⑭b 按 4963293 的形状搬运之后 ⇒ 绿（判词给的动作真的能把这格变绿）",
+      `⑭b 搬完之后裁决是 ${found.verdict}（why=${found.why}）`);
+  }
+
+  // ⑭c 反向证 ②：顶部 `## [Unreleased]` 改名而不补新的 ⇒ 点名「找不到版本节」，不是静默绿
+  {
+    const mutated = RED_CHANGELOG.replace("## [Unreleased]\n", "## [0.32.0] - 2026-11-05\n");
+    expect(mutated !== RED_CHANGELOG, "⑭c 变异真的落了上（顶部 `[Unreleased]` 被改名）",
+      "⑭c 变异没落上：这一格什么都没证");
+    const found = probeOn(mutated);
+    expect(found.verdict === VERDICT.FAIL && /找不到版本节/u.test(found.why),
+      "⑭c 顶部 `[Unreleased]` 改名而不补新的 ⇒ 红并点名「找不到版本节」（不许静默绿）",
+      `⑭c 裁决是 ${found.verdict}（why=${found.why}）——改名形态必须被点名`);
+  }
+
+  // ⑭d 反向证 ③：版本节从有到无 ⇒ 从红变**未判定**（不是变绿）
+  {
+    const red = probeOn(RED_CHANGELOG);
+    const mutated = RED_CHANGELOG.replace(`${heading}\n\n`, "");
+    expect(mutated !== RED_CHANGELOG, "⑭d 变异真的落了上（版本节被拿掉）", "⑭d 变异没落上：这一格什么都没证");
+    const found = probeOn(mutated);
+    expect(red.verdict === VERDICT.FAIL && found.verdict === VERDICT.NOT_JUDGED,
+      "⑭d 版本节从有到无 ⇒ 红 → **未判定**（exit 2），不是变绿",
+      `⑭d 从红变成了 ${found.verdict}（期望 ${VERDICT.NOT_JUDGED}；变绿就是静默放行）`);
+    expect(/还没切版/u.test(found.why) && /动作/u.test(found.lines.join("\n")),
+      "⑭d 未判定的读数说清「还没切版」并给出「先开节再搬运」的动作",
+      `⑭d 读数没写可执行动作：${found.why} / ${found.lines.join(" | ")}`);
+  }
+
+  // ⑭e 假红防线：preflight 跑在切版之前（版本节已带发布日期 = 上一版已发布，`[Unreleased]` 里有下一版的条目）
+  {
+    const preCut = RED_CHANGELOG.replace(heading, "## [0.31.0] - 2026-11-04");
+    expect(preCut !== RED_CHANGELOG, "⑭e 变异真的落了上（段首改成带发布日期的形态）", "⑭e 变异没落上");
+    const found = probeOn(preCut);
+    expect(found.verdict === VERDICT.NOT_JUDGED,
+      "⑭e 切版之前（本版已发布、`[Unreleased]` 有待入账条目）⇒ 未判定，**不是红**（这就是「非空即红」要避的那个假红）",
+      `⑭e 切版之前的正常态被判成了 ${found.verdict}（期望 ${VERDICT.NOT_JUDGED}）`);
+  }
+
+  // ⑭f 版本号不写死：读的是 `package.json` 现值（这里换成 7.7.7，判词跟着走）
+  {
+    const other = RED_CHANGELOG.replace(heading, "## [7.7.7]（未发布 / unpublished）");
+    const found = probeOn(other, "7.7.7");
+    expect(found.verdict === VERDICT.FAIL && /## \[7\.7\.7\]/u.test(found.lines.join("\n")),
+      "⑭f 版本号从 `package.json` 现读：7.7.7 的树判词点名 `## [7.7.7]`（不写死 0.31.0）",
+      `⑭f 7.7.7 的树裁决是 ${found.verdict}，判词：${found.lines.join(" | ")}`);
+  }
+
+  // ⑭g 绿：版本节已开 且 `[Unreleased]` 为空（本仓当下的形态）
+  {
+    const found = probeOn(["# Changelog", "", "## [Unreleased]", "", heading, "", "- older", ""].join("\n"));
+    expect(found.verdict === VERDICT.PASS, "⑭g 版本节已开 + `[Unreleased]` 空 ⇒ 绿（对照组）",
+      `⑭g 对照组裁决是 ${found.verdict}（why=${found.why}）`);
+  }
+
+  // ⑭h 接线：这一格红 ⇒ preflight 停在第 2 步、后面的前置一步都不跑；未判定 ⇒ 整体 exit 2
+  {
+    const tree = treeFor(RED_CHANGELOG);
+    try {
+      const deps = fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_REAL: "1" } });
+      const result = runPreflight({ root: tree, hosts: [tree], deps, dry: true });
+      expect(result.verdict === VERDICT.FAIL && result.failedAt === 2 && result.failedId === "changelog-unreleased",
+        "⑭h 漏搬格红 ⇒ preflight 停在第 2 步并点名 changelog-unreleased",
+        `⑭h 没停在第 2 步：verdict=${result.verdict} failedAt=${result.failedAt} failedId=${result.failedId}`);
+      expect(!deps.calls.some((line) => line.includes("check:docs")),
+        "⑭h 这一格红了之后 `check:docs` / `check:release` / 宿主探针一步都没跑（它是最便宜的那一格）",
+        `⑭h 红了还在往下跑：${deps.calls.join(" | ")}`);
+
+      const notJudgedTree = treeFor(RED_CHANGELOG.replace(`${heading}\n\n`, ""));
+      try {
+        const okDeps = fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_REAL: "1" } });
+        const overall = runPreflight({ root: notJudgedTree, hosts: [notJudgedTree], deps: okDeps, dry: true });
+        expect(overall.verdict === VERDICT.NOT_JUDGED,
+          "⑭h 这一格未判定（还没切版）⇒ 整趟 preflight 未判定（exit 2），不是绿",
+          `⑭h 未判定的格把整体判成了 ${overall.verdict}`);
+      } finally {
+        rmSync(notJudgedTree, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  }
+}
+
 function runSelfTest() {
   const checker = makeChecker();
   const { expect } = checker;
@@ -1262,56 +1618,70 @@ function runSelfTest() {
   // ① preflight 某步红 ⇒ 停在那一步并点名
   {
     const deps = fakeDeps({ override: { "npm run check:release": { status: 1 } } });
-    const result = runPreflight({ root: DEFAULT_ROOT, hosts: [DEFAULT_ROOT], deps, dry: true });
-    expect(result.verdict === VERDICT.FAIL && result.failedAt === 5 && result.failedId === "release",
-      `① preflight 第 5 步红 ⇒ 停在第 5 步并点名 release（steps=${result.steps.length}）`,
-      `① 没停在第 5 步：verdict=${result.verdict} failedAt=${result.failedAt} failedId=${result.failedId}`);
-    expect(!deps.calls.some((line) => line.includes("check:host-consumers")),
-      "① 红之后的第 6 步一步都没跑（顺序闸）",
-      `① 红了还在往下跑：${deps.calls.filter((line) => line.includes("check:host-consumers")).join(", ")}`);
-    expect(result.steps.at(-1)?.exitCode === 1, "① 红的那一步带着它的退出码（exit 1）",
-      `① 红的那一步没带退出码：${JSON.stringify(result.steps.at(-1))}`);
+    // issue #715：`root` 用合成树（`[Unreleased]` 空 + 本版段已开 ⇒ 第 2 步绿），于是本格不依赖本仓
+    // CHANGELOG 当下的状态（本仓 `[Unreleased]` 里本来就可能有待入账条目）。
+    withPreflightFixture((tree) => {
+      const result = runPreflight({ root: tree, hosts: [tree], deps, dry: true });
+      const releaseAt = PREFLIGHT_STEPS.findIndex((step) => step.id === "release") + 1;
+      expect(result.verdict === VERDICT.FAIL && result.failedAt === releaseAt && result.failedId === "release",
+        `① preflight 第 ${releaseAt} 步红 ⇒ 停在第 ${releaseAt} 步并点名 release（steps=${result.steps.length}）`,
+        `① 没停在第 ${releaseAt} 步：verdict=${result.verdict} failedAt=${result.failedAt} failedId=${result.failedId}`);
+      expect(!deps.calls.some((line) => line.includes("check:host-consumers")),
+        "① 红之后的最后一步一步都没跑（顺序闸）",
+        `① 红了还在往下跑：${deps.calls.filter((line) => line.includes("check:host-consumers")).join(", ")}`);
+      expect(result.steps.at(-1)?.exitCode === 1, "① 红的那一步带着它的退出码（exit 1）",
+        `① 红的那一步没带退出码：${JSON.stringify(result.steps.at(-1))}`);
+    });
   }
 
   // ② ERIX_E2E_REAL 缺失 ⇒ 未判定，不是绿；那一步一步都没跑
   {
     const deps = fakeDeps();
-    const result = runPreflight({ root: DEFAULT_ROOT, hosts: [DEFAULT_ROOT], deps, dry: true });
-    const realStep = result.steps.find((step) => step.id === "release-real");
-    expect(realStep?.verdict === VERDICT.NOT_JUDGED, "② 闸门关着 ⇒ release-real 判「未判定」（不是 pass）",
-      `② release-real 判成了 ${realStep?.verdict}`);
-    expect(result.verdict === VERDICT.NOT_JUDGED, "② 整体判未判定（不是全绿）",
-      `② 整体判成了 ${result.verdict}`);
-    expect(!deps.calls.some((line) => line.includes("check:release:real")),
-      "② 闸门关着时真上游那一族一步都没跑（没跑 ≠ 绿）",
-      `② 闸门关着却跑了真上游：${deps.calls.filter((line) => line.includes("check:release:real")).join(", ")}`);
+    withPreflightFixture((tree) => {
+      const result = runPreflight({ root: tree, hosts: [tree], deps, dry: true });
+      const realStep = result.steps.find((step) => step.id === "release-real");
+      expect(realStep?.verdict === VERDICT.NOT_JUDGED, "② 闸门关着 ⇒ release-real 判「未判定」（不是 pass）",
+        `② release-real 判成了 ${realStep?.verdict}`);
+      expect(result.verdict === VERDICT.NOT_JUDGED, "② 整体判未判定（不是全绿）",
+        `② 整体判成了 ${result.verdict}`);
+      expect(!deps.calls.some((line) => line.includes("check:release:real")),
+        "② 闸门关着时真上游那一族一步都没跑（没跑 ≠ 绿）",
+        `② 闸门关着却跑了真上游：${deps.calls.filter((line) => line.includes("check:release:real")).join(", ")}`);
+    });
   }
 
   // ②b `--hosts` 目录不存在 ⇒ 未判定（探针口径）
   {
     const deps = fakeDeps();
-    const result = runPreflight({ root: DEFAULT_ROOT, hosts: ["/nonexistent/erix-host-689"], deps, dry: true });
-    const hostStep = result.steps.find((step) => step.id === "host-consumers");
-    expect(hostStep?.verdict === VERDICT.NOT_JUDGED && /HOST_DIR_/.test(hostStep?.why ?? ""),
-      "②b `--hosts` 目录不存在 ⇒ 未判定，并按探针口径点名（HOST_DIR_MISSING / HOST_DIR_NOT_DIR）",
-      `②b 目录不存在时的裁决是 ${hostStep?.verdict}（why=${hostStep?.why}）`);
-    expect(result.verdict === VERDICT.NOT_JUDGED, "②b 整体判未判定（不是绿）", `②b 整体判成了 ${result.verdict}`);
-    expect(!deps.calls.some((line) => line.includes("check:host-consumers")),
-      "②b 目录不存在时探针一步都没跑（未判定不靠 exit 0 的假绿）",
-      `②b 目录不存在却跑了探针：${deps.calls.join(", ")}`);
+    withPreflightFixture((tree) => {
+      const result = runPreflight({ root: tree, hosts: ["/nonexistent/erix-host-689"], deps, dry: true });
+      const hostStep = result.steps.find((step) => step.id === "host-consumers");
+      expect(hostStep?.verdict === VERDICT.NOT_JUDGED && /HOST_DIR_/.test(hostStep?.why ?? ""),
+        "②b `--hosts` 目录不存在 ⇒ 未判定，并按探针口径点名（HOST_DIR_MISSING / HOST_DIR_NOT_DIR）",
+        `②b 目录不存在时的裁决是 ${hostStep?.verdict}（why=${hostStep?.why}）`);
+      expect(result.verdict === VERDICT.NOT_JUDGED, "②b 整体判未判定（不是绿）", `②b 整体判成了 ${result.verdict}`);
+      expect(!deps.calls.some((line) => line.includes("check:host-consumers")),
+        "②b 目录不存在时探针一步都没跑（未判定不靠 exit 0 的假绿）",
+        `②b 目录不存在却跑了探针：${deps.calls.join(", ")}`);
+    });
   }
 
   // ②c 全绿 ⇒ pass（对照组：上面三条不是恒红）
   {
     const deps = fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_REAL: "1" } });
-    const result = runPreflight({ root: DEFAULT_ROOT, hosts: [DEFAULT_ROOT], deps, dry: true });
-    expect(result.verdict === VERDICT.PASS && result.steps.length === PREFLIGHT_STEPS.length,
-      "②c 闸门开 + 宿主目录在 + 每一步都全绿 ⇒ pass（对照组）",
-      `②c 对照组不绿：verdict=${result.verdict} steps=${JSON.stringify(result.steps)}`);
-    expect(deps.calls.some((line) => line.includes("check:release:real")) && deps.calls.some((line) => line.includes("--hosts")),
-      "②c 闸门开着时真上游与宿主探针都真跑了",
-      `②c 闸门开着却没跑：${deps.calls.join(" | ")}`);
+    withPreflightFixture((tree) => {
+      const result = runPreflight({ root: tree, hosts: [tree], deps, dry: true });
+      expect(result.verdict === VERDICT.PASS && result.steps.length === PREFLIGHT_STEPS.length,
+        "②c 闸门开 + 宿主目录在 + 每一步都全绿 ⇒ pass（对照组）",
+        `②c 对照组不绿：verdict=${result.verdict} steps=${JSON.stringify(result.steps)}`);
+      expect(deps.calls.some((line) => line.includes("check:release:real")) && deps.calls.some((line) => line.includes("--hosts")),
+        "②c 闸门开着时真上游与宿主探针都真跑了",
+        `②c 闸门开着却没跑：${deps.calls.join(" | ")}`);
+    });
   }
+
+  // ⑭ issue #715：`## [Unreleased]` 的漏搬格（三态 + 三条反向证）
+  selfTestUnreleasedCarry(checker);
 
   // ③ 回写失败 ⇒ 非零 + 状态文件留下 + 重跑从 writeback 续（不重复发布）
   {
