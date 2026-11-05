@@ -3880,7 +3880,7 @@ describe("静态守卫：CHANGELOG 顶部版本节的卫生（issue #541）", ()
 // 顶部 Unreleased 非空 ⇒ 面就是它）。地板**必须跟着面一起重测**——「只升不降」是**同一面内**的规则，
 // 跨面重测是 #563 设计好的动作，不是放宽。
 /** 地板校准所在的节标题（`CHANGELOG_PAIR_FLOOR` 是在**这一节**上实测的；面挪走且配对数不足 ⇒ 点名重测）。 */
-const CHANGELOG_PAIR_FLOOR_SURFACE = "## [0.31.0]（未发布 / unpublished）";
+const CHANGELOG_PAIR_FLOOR_SURFACE = "## [Unreleased]";
 /** 两条 bullet 之间最多隔几行才算「紧邻」（0 = 直接相邻，1 = 中间隔一行）。 */
 const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 /** 配对地板：在 `CHANGELOG_PAIR_FLOOR_SURFACE` 那一节上实测的配对数。**同一面内只能升不能降。**
@@ -4179,7 +4179,20 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *
  * 抬到 7 后在同一切版树上重跑：校准绿，同一格的反向证照旧报「已穿底」（数字由那一次跑打印，不搬进本文）。
  */
-const CHANGELOG_PAIR_FLOOR = 7;
+/**
+ * issue #713（本单）：顶部的 `## [Unreleased]` 重新有了内容（自登记 #713 的一对中英条目）⇒ 面按
+ * `resolveChangelogScanSurface()` 的选取逻辑**挪回 `## [Unreleased]`**（0.31.0 已发布，那一节不再是
+ * 「刚开的版本节」），于是地板要跟着面一起重测——「只升不降」是**同一面内**的规则，跨面重测是 #563
+ * 设计好的动作，不是放宽。先贴守卫自己**动常量之前**打的原文（未改常量时实跑）：
+ *
+ *     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 1 条 / 英文 1 条 / 配对 1 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 7（校准面 \#\# [0.31.0]（未发布 / unpublished））
+ *     配对地板被踩穿：实测 1 对 < 地板 7 对（中文 1 / 英文 1 / 无对应 0 条）；面已挪到 ## [Unreleased]，请重测地板
+ *
+ * 重测 = **1 对**（新面 `## [Unreleased]` 上只有 #713 那一对），所以常量 7 → 1、校准面标题同时改成
+ * `## [Unreleased]`。代价明写：新面刚开、只有一条条目，反向证（删掉英文侧 / 改一个 issue 引用）仍然
+ * 能让配对数掉到 0，所以「地板拦得住」这一栏照旧承重（`onFloorSurface` 那一支在本面上是**在判**的）。
+ */
+const CHANGELOG_PAIR_FLOOR = 1;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
