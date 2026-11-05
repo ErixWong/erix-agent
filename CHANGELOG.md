@@ -3,8 +3,30 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Breaking
+
+### Changed
+
 ### Fixed
 
+- **The release-state probe's `--self-test` now synthesizes its own version face (issue #713).** The thirteen
+  cases used to copy the host tree's `package.json` and CHANGELOG section face into the fixtures, so "the version
+  being cut" was still derived from the host: on a tree that had already written the release back and had not cut
+  the next version yet (the normal state after 0.31.0) no unpublished section sat at or above `package.json`, and
+  the whole batch exited 2 naming `NO_INFLIGHT_SECTION`. The self-test now builds a synthetic seed host first:
+  the tracked-file list and the other documents are still copied from the host (the judged scan surface must keep
+  the real tree's shape), while the version face is synthesized — the version being cut is the highest *published*
+  section in the seed, the previous version is the highest published section below it, sections above it are
+  dropped, and the unpublished heading shape goes through `docs-drift-check --sync` instead of hand-edited bytes.
+  Two new cases mutate those fixtures (delete the in-flight section; raise the fixture `package.json` above every
+  section) and must go red themselves, naming the missing landing point.
+- **发布态探针的 `--self-test` 现在自己合成版本面（issue #713）。** 那十三例过去把宿主树的 `package.json` 与
+  CHANGELOG 段面原样抄进夹具，于是「正在切的那一版」仍然从宿主推：在「发版回写之后、下一次切版之前」的树上
+  （0.31.0 发布后的常态），没有任何未发布段不低于 `package.json`，整批 exit 2 并点名 `NO_INFLIGHT_SECTION`。
+  现在自测先造一棵合成种子宿主——入库清单与其余文档仍从宿主机械复制（判据的扫描面必须与真树同形），
+  而版本面由自测合成：要切的那一版取种子里**已发布段**的最高一版，上一版取低于它的最高已发布段，
+  高于它的段整段拿掉，段首「未发布」形状走 `docs-drift-check --sync` 而不是手改字节。另有两例专门变异这些
+  夹具（把在飞段整段拿掉 / 把夹具 `package.json` 抬到高于所有段），它们必须**自己**红并点名落点缺失。
 - **A `tool_use` stranded in the middle of the ledger no longer bricks the run (issue #421, with the
   tail settled in #394 and the write side in #414 / #420 / #424 / #430).** The engine requires every
   `tool_use` of an assistant message to be settled by the **immediately following** user message with
@@ -39,7 +61,6 @@
   `intercepted / interrupted / rejected`）、不在两条相邻 assistant 之间插页、而当那一轮的正文已经被折进
   轮载体行时根本不存在 `partOf` 目标（`load()` 不再暴露它）——那一格只修本次上下文，引擎如实报
   `resume_journal_skipped`，而不是写一行会落进错消息的分片。
-
 ## [0.31.0] - 2026-11-04
 
 ### Breaking
