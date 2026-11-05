@@ -3,8 +3,71 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Breaking
+
+### Changed
+
+### Added
+
+- **The `[Unreleased]` carry is now a preflight gate (issue #715).** Nothing ever moved entries out of
+  `## [Unreleased]` and nothing reminded: `release:day --stage writeback`'s `--sync` only rewrites a version
+  heading that already exists (a version with no section leaves `CHANGELOG.md` byte-for-byte untouched),
+  `--stage finalize` only clears `src/**/*.d.ts` and tags, `check:changelog` reads numeric sections only (and
+  compares the PR numbers it takes from merge subjects), `check:docs`'s `guide-coverage` only catches "the
+  version was bumped but no section was opened", and the pairing floor only catches a newly opened section
+  being empty — an entry left in place makes the judged surface `[Unreleased]` itself, one pair equals the
+  floor, and the gate is green. `--stage preflight` therefore gains step 2, an in-process reading (no
+  subprocess) with three answers: **red** when this version's section is already open in its unpublished
+  shape and bullets are still parked under `## [Unreleased]` — the verdict names the count, prints the first
+  60 characters of each entry with its line number, and gives the executable fix (put the `## [<version>]`
+  heading line between `## [Unreleased]` and the entries, exactly the shape of `4963293`; body untouched,
+  `[Unreleased]` left empty); **not judged** (exit 2) when the carry cannot be read — no section for the
+  `package.json` version yet (cut first: bump, open the section, move the heading), or that section already
+  carries a release date (the previous release is out and those entries belong to the next version), so a
+  preflight that runs before the cut is never a false red; **green** only when the section is open and
+  `## [Unreleased]` is empty. It does not parse `CHANGELOG.md` a second way: the scan surface is the one
+  `test/static-guards.test.js` already uses (top `## [Unreleased]` down to the next `## `; a renamed top
+  heading reds naming "no version section" instead of passing quietly), the date shape is
+  `docs-drift-check.mjs`'s own, and the version is read from `package.json` rather than hardcoded.
+  `--self-test` grew the three states plus three reverse proofs (carrying by the prescribed shape turns it
+  green, a renamed top heading reds, removing the section turns red into not judged), and a mutation that
+  does not land counts as a failure rather than a pass.
+- **`[Unreleased]` 的搬运现在是 preflight 的一格（issue #715）。** 过去没有任何机制把条目搬出 `## [Unreleased]`，
+  也没有任何机制提醒：`release:day --stage writeback` 的 `--sync` 只重写**已存在**的版本标题行（那一版没有段时
+  `CHANGELOG.md` 一个字节未动）、`--stage finalize` 只清 `src/**/*.d.ts` 并打 tag、`check:changelog` 只认数字段
+  （且比对的是合并主题里的 PR 号）、`check:docs` 的 `guide-coverage` 只兜「版本号升了而段没开」、配对地板只兜
+  「新开的版本节被开成空节」——条目留在原地时判据面**就是** `[Unreleased]`，一对就等于地板，闸是绿的。于是
+  `--stage preflight` 新增第 2 步（本进程内读文件，不起子进程），答三态：**红**——本版段已开（未发布形态）而
+  bullet 还停在 `## [Unreleased]`，判词点名条数、逐条给出前 60 字与行号，并给可执行动作（把 `## [<版本>]`
+  那一行放到 `## [Unreleased]` 与条目之间，就是 `4963293` 的形状：正文一字不动、`[Unreleased]` 留空）；
+  **未判定（exit 2）**——搬运事实读不出：`package.json` 那一版还没有版本节（先切版：bump、开节、把标题行挪下来），
+  或那一版段首已经带发布日期（上一版已经发出去，这些条目属于下一版），所以跑在切版之前的 preflight 永远不是假红；
+  **绿**——版本节已开且 `## [Unreleased]` 为空。它不另写一套 CHANGELOG 解析器：扫描面就是
+  `test/static-guards.test.js` 已经在用的那一套（顶部 `## [Unreleased]` 到下一个 `## ` 为止；顶部标题被改名 ⇒
+  红并点名「找不到版本节」，不静默放过），日期形状用 `docs-drift-check.mjs` 自己那一条，版本号从
+  `package.json` 现读而不是写死。`--self-test` 新增三态与三条反向证（按判词给的形状搬运 ⇒ 转绿、顶部标题被改名
+  ⇒ 红、版本节被拿掉 ⇒ 红变未判定），变异没落上按失败算而不是按绿算。
+
 ### Fixed
 
+- **The release-state probe's `--self-test` now synthesizes its own version face (issue #713).** The thirteen
+  cases used to copy the host tree's `package.json` and CHANGELOG section face into the fixtures, so "the version
+  being cut" was still derived from the host: on a tree that had already written the release back and had not cut
+  the next version yet (the normal state after 0.31.0) no unpublished section sat at or above `package.json`, and
+  the whole batch exited 2 naming `NO_INFLIGHT_SECTION`. The self-test now builds a synthetic seed host first:
+  the tracked-file list and the other documents are still copied from the host (the judged scan surface must keep
+  the real tree's shape), while the version face is synthesized — the version being cut is the highest *published*
+  section in the seed, the previous version is the highest published section below it, sections above it are
+  dropped, and the unpublished heading shape goes through `docs-drift-check --sync` instead of hand-edited bytes.
+  Two new cases mutate those fixtures (delete the in-flight section; raise the fixture `package.json` above every
+  section) and must go red themselves, naming the missing landing point.
+- **发布态探针的 `--self-test` 现在自己合成版本面（issue #713）。** 那十三例过去把宿主树的 `package.json` 与
+  CHANGELOG 段面原样抄进夹具，于是「正在切的那一版」仍然从宿主推：在「发版回写之后、下一次切版之前」的树上
+  （0.31.0 发布后的常态），没有任何未发布段不低于 `package.json`，整批 exit 2 并点名 `NO_INFLIGHT_SECTION`。
+  现在自测先造一棵合成种子宿主——入库清单与其余文档仍从宿主机械复制（判据的扫描面必须与真树同形），
+  而版本面由自测合成：要切的那一版取种子里**已发布段**的最高一版，上一版取低于它的最高已发布段，
+  高于它的段整段拿掉，段首「未发布」形状走 `docs-drift-check --sync` 而不是手改字节。另有两例专门变异这些
+  夹具（把在飞段整段拿掉 / 把夹具 `package.json` 抬到高于所有段），它们必须**自己**红并点名落点缺失。
 - **A `tool_use` stranded in the middle of the ledger no longer bricks the run (issue #421, with the
   tail settled in #394 and the write side in #414 / #420 / #424 / #430).** The engine requires every
   `tool_use` of an assistant message to be settled by the **immediately following** user message with
