@@ -3,12 +3,26 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3407,
+    "tests": 3423,
     "fail": 0,
     "maxSkipped": 15
   },
   "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
   "observations": [
+    {
+      "date": "2026-11-05",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "5d15c9e",
+      "branch": "feat-261105-01-agents-discovery",
+      "tests": 3423,
+      "pass": 3409,
+      "fail": 1,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests +16 是有意的增删（issue #716）：新增 test/project-instructions-716.test.js 十六格（发现函数七格：存在/缺失不抛/空文件 0 字节/超限截断不劈 UTF-8 码点/不上溯父目录/目录形态 EISDIR/cwd 必填；共享装配器三格：与既有段落共存且落最末、agents:false 逐字节回到 0.31.0 装配、chat 与 repl 只差计划句；留痕行三格：已注入对账路径与字节/未发现/截断说明；旗标一格：chat 与 repl 都认且重复报 usage error；装配级两格：runChat 真把内容拼进 config.input.system 且 noticeLog 收到留痕行、--no-agents 静默）。六个计数由主 agent 在 5d15c9e 的树上亲自重跑 npm test 取得（日志 /tmp/716-mytest.log），逐字取自 TAP 汇总行，非抄交付者报告：3407 + 16 = 3423 与新增格数逐格对得上，没有掉覆盖。fail=1 **不是本片引入**：test/version-state-probe-703.test.js 的 A 格在**基点 86af907 上就已红**（主 agent 另起 /tmp/wt716-verify  detached 树复现同一格：pass 6 / fail 1，NO_INFLIGHT_SECTION —— 0.31.0 已发布 ⇒ 树上没有「未发布」段），跟踪单是 issue #713，不在本单范围；登记值 expect.fail=0 因此**故意不放行**（与 #651 那条 capacity 红的处置同一口径）。skipped 13 = 12 条真上游/真 relay 门禁（ERIX_E2E_REAL / LLM_KIT_E2E / ERIX_PI_SMOKE）+ 1 条真上游多会话格（闸门关 ⇒ skip 但计入 tests），maxSkipped 上限 15 不动。本次登记的提交只改这一份登记表，不改任何测试。"
+    },
     {
       "date": "2026-11-04",
       "env": "local",
