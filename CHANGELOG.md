@@ -22,9 +22,26 @@
   visible the stub is journaled with `partOf` pointing at it (#430's anchor discipline). Boundaries,
   stated: no new `executionStatus` value (the closed set stays `intercepted / interrupted / rejected`),
   no page inserted between two adjacent assistant messages, and when the round's body has already been
-  folded into its carrier row there is no `partOf` target at all (`load()` no longer exposes it) — there
-  the stub repairs this run's context only and the engine reports `resume_journal_skipped` instead of
-  writing a row that would land in the wrong message.
+  folded into its carrier row the folded `load()` exposes no `partOf` target — there the stub repairs
+  this run's context only and the engine reports `resume_journal_skipped` instead of writing a row that
+  would land in the wrong message (issue #714 closes that gap for a store that exposes its raw rows;
+  see the entry below).
+- **A finished round's mid-sequence stub now reaches the ledger too: the store gains an optional
+  raw-row probe (issue #714, closing the boundary stated in the #421 entry above; the anchor
+  discipline is #430's).** Folding is a read-side transform: an already-finished round's
+  `kind: "message"` rows are absorbed into the round carrier, so `load()` no longer exposes the
+  aggregated message's first-slice row and the stub had no `partOf` target — the host's own `load()`
+  therefore kept folding a ledger that can never pass `validateMessages`, and nothing in the archive
+  recorded that a stub had ever been minted. The engine now reads an **optional**
+  `loadRawRows(runId)` off the store — the rows `load()` reads, before folding (same order, same
+  content; a read side only: no write path, `load()`'s shape unchanged) — and anchors on it when
+  present: the stub lands as a slice row pointing at the first slice, that round's `seq` floor comes
+  from the raw rows, and the next `load()` folds a **closed** ledger. Both built-in stores implement
+  it; a store without it degrades to exactly the previous behaviour (the stub repairs this run's
+  context only, one `resume_journal_skipped` event is emitted) instead of failing, and that absence
+  emits no `persistence_capability_degraded` event because the existing channel already reports it. No
+  new `executionStatus` value, no change to the tail (`control_capture`) path, no rewriting of folded
+  history.
 - **账本中段悬空的 `tool_use` 不再让 run 永久起不来（issue #421，尾部在 #394、写侧在 #414 / #420 /
   #424 / #430 已经修过）。** 引擎要求一条 assistant 消息里的每个 `tool_use` 都由**紧接其后**的那条 user
   消息以**一模一样**的 id 集合结清（`src/messages/rounds.js#validateMessages`）；账本违反这一条就在本地
@@ -37,8 +54,19 @@
   不补），桩正文是它自己的常量（尾部那句「从未执行」放在这里就是假话），而聚合消息的首片行仍可见时，
   桩会以 `partOf` 指向它入账（#430 的锚点纪律）。边界写明：不新增 `executionStatus` 值（闭集仍是
   `intercepted / interrupted / rejected`）、不在两条相邻 assistant 之间插页、而当那一轮的正文已经被折进
-  轮载体行时根本不存在 `partOf` 目标（`load()` 不再暴露它）——那一格只修本次上下文，引擎如实报
-  `resume_journal_skipped`，而不是写一行会落进错消息的分片。
+  轮载体行时，折叠后的 `load()` 里没有 `partOf` 目标——那一格只修本次上下文，引擎如实报
+  `resume_journal_skipped`，而不是写一行会落进错消息的分片（issue #714 给「能交出原始行的 store」
+  补上了这条闭合路径，见下一条）。
+- **已完成轮的中段补桩现在也能落账：store 面多了一个可选的原始行读口（issue #714，补的是上一条 #421
+  写明的边界，锚点纪律仍是 #430 的）。** 折叠是读侧变换：已完成轮的 `kind: "message"` 行被吸进轮载体，
+  于是 `load()` 不再暴露那条聚合消息的首片行，桩也就没有 `partOf` 目标——宿主自己的 `load()` 因此永远
+  折出一份过不了 `validateMessages` 的账本，而档案里**没有任何痕迹**记着「补过桩」。引擎现在读 store 上
+  **可选**的 `loadRawRows(runId)`——`load()` 读到的、尚未折叠的行（同一顺序、同一内容；只是读口：不新增
+  写路径、不改变 `load()` 的形状）——有它就以此定锚：桩落成指向首片的分片行、该轮的 `seq` 地板取自原始
+  行，下一次 `load()` 折出来的是一份**闭合**的账本。内置两个 store 都实现；没有它的 store 逐字退回修前
+  行为（桩只修本次上下文、发一条 `resume_journal_skipped`）而不是失败，且这个缺席**不发**
+  `persistence_capability_degraded`（既有通道已经报过了）。不新增 `executionStatus` 值、不动尾部
+  （`control_capture`）那条路、不改写折叠档案。
 
 ## [0.31.0] - 2026-11-04
 

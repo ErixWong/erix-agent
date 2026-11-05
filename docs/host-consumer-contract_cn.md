@@ -1830,6 +1830,7 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 | 可选 run-state | `saveRunState`、`loadRunState`、`markRunState` | 跳过 run-state 持久化；run 正常跑完 |
 | 宿主面向的可选终态读取 | `loadRunStateStatus` | 引擎不调用、不校验；缺失不会发出 capability 降级事件 |
 | 可选预写快路径探针（issue #157） | `loadByDedupKey`、`loadMaxRound` | `appendUserTurn` 回退全量 `load`（成对生效：只实现其一等同全不实现） |
+| 可选原始行锚点探针（issue #714） | `loadRawRows` | 中段补桩只在 `load()` 的**折叠后**行上找锚点，于是已完成轮的首片行寻址不到：那些桩只修本次上下文，引擎如实报 `resume_journal_skipped`，而不是写一行会落进错消息的分片。**不发** `persistence_capability_degraded`——缺席由既有 `resume_journal_skipped` 通道按次恢复如实上报 |
 
 `loadRunStateStatus` 解析为终态**字符串**——`(runId: string) => Promise<string | undefined>`，
 该 run 未记录终态时返回 `undefined`——不是状态记录对象（与 `src/store/memory.js` /
@@ -1838,6 +1839,36 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 可选方法缺失时，引擎对每个缺失方法只发**一条**
 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`），
 随后整轮 run 跳过对应持久化——不每轮刷屏。`getToolMetadata` 与 `emit` 仍是可选项。
+两个**读侧**探针（`loadRunStateStatus`，以及 issue #714 的 `loadRawRows`）是例外：
+它们缺席不发 capability 降级事件，因为降级本来就由管它的那条通道报（见下面那节）。
+
+#### 可选原始行锚点探针（issue #714）
+
+`loadRawRows(runId) => Promise<RoundRecord[]>` 交出 **`load()` 读到的、尚未折叠的行**：
+同一批行、同一落盘顺序、同一内容——它**不**跑 `foldMessageRows`。它只是读口：不新增写路径，
+也不改变 `load()` 返回的形状。
+
+为什么要它。账本中段悬空的 `tool_use` 在恢复时由「每个未结清 id 一张桩 `tool_result`」补齐，
+桩落成一条**分片行**，`partOf` 指向那条聚合消息的**首片**（issue #430 的锚点纪律）。
+找首片 = 在账本里寻址一条 `kind: "message"` 行。折叠是读侧变换，所以**已经跑完**的轮里，
+消息行被吸进轮载体，`load()` 不再暴露它们——锚点寻址不到，桩只能修本次上下文。
+折叠从来没动过介质：行还在那里，所以这个探针就够把账本闭合。
+
+契约语义：
+
+- **与 `load()` 同源**：`foldMessageRows(await store.loadRawRows(runId))` 必须与
+  `await store.load(runId)` 逐字段相等。未知 `runId` 解析成空数组。
+- **缺席 ⇒ 降级，绝不失败**：没有这个方法时行为与 issue #714 之前逐字相同——桩只并进本次
+  上下文、账本一行不写，并发一条 `resume_journal_skipped`
+  （`reason: "mid_sequence_aggregate_row_not_in_ledger"`）。这是**缺能力时的降级**，不是设计终态：
+  宿主补上这个探针，下一次恢复账本就闭合。
+- **提供 ⇒ 闭合账本**：桩以分片行落账（`partOf` → 首片），该轮的 `seq` 地板取自原始行，
+  已完成轮已有的 `seq` 永不被重用。下一次 `load()` 之后，聚合消息带着那张桩，
+  `validateMessages(foldLedgerMessages(load()))` 通过——折叠形状留下的 `invalid_messages` 消失。
+- 内置两个 store 都实现（`createMemoryTranscriptStore`、`createFileTranscriptStore`）；
+  宿主最小实现可以不提供。
+
+桩正文、它的唯一构造点、`executionStatus` 闭集与尾部那条路都不因这个探针而变。
 
 ### 工具重放策略（issue #139）
 
