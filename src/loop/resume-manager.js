@@ -111,10 +111,14 @@ export function countResumeAnchor(records) {
  * block** 就是那条聚合消息的第一个 `tool_result`（写侧每个结果单独落一行，首片 content 就是
  * `[toolResult]` ⇒ 首个 `tool_use_id` 足以认人）。
  *
- * 找不到 ⇒ 返回 `undefined`，调用方**不入账**、只留内存里的桩。这条边界是 **store 面的事实**：内置
- * 两个 store 的 `load()` 都跑 `foldMessageRows`，**已完成轮**的消息行已被吸进轮载体 ⇒ 没有合法的
- * `partOf` 目标（宿主真机那一格）。硬写一行会被折叠层当成「该轮多出来的一条正文」⇒ 桩变成另一条
- * user 消息（孤立 `tool_result`），比修前更坏。不折叠的宿主不受此限（首片行看得见，桩照样落账）。
+ * 找不到 ⇒ 返回 `undefined`，调用方**不入账**、只留内存里的桩。硬写一行会被折叠层当成「该轮多出来的
+ * 一条正文」⇒ 桩变成另一条 user 消息（孤立 `tool_result`），比修前更坏。
+ *
+ * 入参是**落盘行**：`store.load()` 的返回值，或（issue #714）store 提供的可选原始行读口
+ * `loadRawRows` 的未折叠行。后者是**已完成轮**那一格的唯一出路：内置两个 store 的 `load()` 都跑
+ * `foldMessageRows`，那种轮的消息行已被吸进轮载体 ⇒ 折叠后的行里没有合法的 `partOf` 目标。store
+ * 不提供这个读口 ⇒ 这一格退回修前口径（只修本次内存 + `resume_journal_skipped`），那是**缺能力时的
+ * 降级**，不是设计终态。
  *
  * 残留风险（有意接受）：provider `id` 不保证 run 内唯一（issue #284），同轮两条聚合消息首个
  * `tool_use_id` 相同时会认到先出现的那一行 ⇒ 桩落进同轮另一条聚合消息（不报错、不丢块，形状不对）。
@@ -525,29 +529,34 @@ export async function restoreResume(ctx) {
         if (pendingTool?.id !== undefined) midSequenceSettledIds.add(pendingTool.id);
       }
       // 入账由 orchestrator（`journalResumeMidSequenceToolResults`）用 `partOf` 指向**首片**完成；
-      // 这里只交出「补了哪几张、该写向哪一行」。锚点从 `loadedRecords`（`store.load()` 的行）找，
-      // 不是引擎再折一遍的 `records`：不折叠的宿主上，后者里的消息行已被吸进载体（没有 `seq`、
-      // 也就没有 `partOf` 目标），而前者里它们还在；内置 store 两条一样。
+      // 这里只交出「补了哪几张、该写向哪一行」。锚点在**落盘行**上找，不是引擎再折一遍的 `records`：
+      // 后者里的消息行可能已被吸进载体（没有 `seq`、也就没有 `partOf` 目标）。
+      // issue #714：可选原始行读口 `loadRawRows` 交出 `load()` 的**未折叠输入**。内置两个 store 的
+      // `load()` 都折叠，**已完成轮**的首片行只剩在原始行里 ⇒ 没有它那一格永远拿不到锚点；提供它时
+      // 账本才闭合。缺这个读口 ⇒ 逐字退回修前口径（只修内存 + `resume_journal_skipped`），不抛错。
+      const anchorRows = typeof ctx.store.loadRawRows === "function"
+        ? await ctx.store.loadRawRows(ctx.runId)
+        : loadedRecords;
       const midSequenceStubs = await answerPendingMidSequenceToolUses(ctx.messages, {
         settledIds: midSequenceSettledIds,
         roundOf: (message) => ctx.messageRounds.get(message),
         anchorOf: (message) => firstSliceRowKeyOf(
-          loadedRecords,
+          anchorRows,
           message,
           ctx.messageRounds.get(message),
         ),
       });
       ctx.resumeMidSequenceToolResults = midSequenceStubs;
-      // 真要落账的那几张桩：把所属轮的 `seq` 地板抬到「`load()` 行里最大 `seq` + 1」。本单是第一个往
-      // **已完成轮**写消息行的调用点（不折叠的宿主那一格），而那种轮的消息行在 `records` 里已被吸进
-      // 载体 ⇒ 崩溃现场那一段的「按正文条数」地板会算小，分片行重号 ⇒ `dedup_payload_conflict`
-      // （既不覆盖也不静默丢弃，整 run 崩）。没有桩要写 ⇒ 一个字节都不碰。
+      // 真要落账的那几张桩：把所属轮的 `seq` 地板抬到「落盘行里最大 `seq` + 1」。本单是第一个往
+      // **已完成轮**写消息行的调用点，而那种轮的消息行在折叠后的行里已被吸进载体 ⇒ 崩溃现场那一段的
+      // 「按正文条数」地板会算小，分片行重号 ⇒ `dedup_payload_conflict`（既不覆盖也不静默丢弃，整 run
+      // 崩）。地板与锚点**同源**（`anchorRows`：原始行看得见 `seq`）。没有桩要写 ⇒ 一个字节都不碰。
       const journaledRounds = new Set(midSequenceStubs
         .filter((stub) => typeof stub?.partOf === "string" && stub.partOf !== "")
         .map((stub) => stub.round)
         .filter((round) => Number.isSafeInteger(round)));
       if (journaledRounds.size > 0) {
-        const rawSeqSeed = nextMessageSeqByRound(loadedRecords);
+        const rawSeqSeed = nextMessageSeqByRound(anchorRows);
         for (const round of journaledRounds) {
           const floor = rawSeqSeed.get(round);
           if (floor === undefined) continue;

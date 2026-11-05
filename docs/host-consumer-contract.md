@@ -2260,6 +2260,7 @@ run), never a multi-version checkpoint. The tiers are:
 | Optional run-state | `saveRunState`, `loadRunState`, `markRunState` | run-state persistence skipped; run completes normally |
 | Host-facing optional terminal-status read | `loadRunStateStatus` | not used or validated by the engine; its absence does not emit a degraded-capability event |
 | Optional fast-path pre-write probes (issue #157) | `loadByDedupKey`, `loadMaxRound` | `appendUserTurn` falls back to full `load` (paired: implementing one without the other behaves exactly like implementing neither) |
+| Optional raw-row anchor probe (issue #714) | `loadRawRows` | mid-sequence `tool_result` stubs are anchored on `load()`'s **folded** rows only, so a finished round's first-slice row is unreachable: those stubs repair the run's context and the engine reports `resume_journal_skipped` instead of journaling a row that would land in the wrong message. No `persistence_capability_degraded` event — the absence is reported per resume on the existing `resume_journal_skipped` channel |
 
 `loadRunStateStatus` resolves to the terminal status **string** —
 `(runId: string) => Promise<string | undefined>`, with `undefined` when no
@@ -2269,7 +2270,51 @@ source typedef in `src/store/memory.js` / `src/store/file.js`).
 When an optional method is absent, the engine emits **one**
 `persistence_capability_degraded` event per missing method (`{type, runId,
 method, detail}`) and skips the corresponding persistence for the whole run —
-no per-round log spam. `getToolMetadata` and `emit` remain optional.
+no per-round log spam. `getToolMetadata` and `emit` remain optional. The two
+read-side probes (`loadRunStateStatus`, and `loadRawRows` from issue #714) are
+the exception: their absence emits no degraded-capability event, because the
+degradation is already reported on the channel that owns it (see the raw-row
+probe section below).
+
+#### Optional raw-row anchor probe (issue #714)
+
+`loadRawRows(runId) => Promise<RoundRecord[]>` returns **the rows `load()` reads,
+before folding**: same rows, same append order, same content — it does not run
+`foldMessageRows`. It is a read side only: it adds no write path, and it does not
+change the shape `load()` returns.
+
+Why it exists. A `tool_use` stranded in the middle of the ledger is settled on
+resume by one stub `tool_result` per unsettled id, journaled as a **slice row**
+whose `partOf` points at the *first slice* of that aggregated message (issue
+#430's anchor discipline). Finding that first slice means addressing a
+`kind: "message"` row in the ledger. Folding is a read-side transform, so on a
+round that has already finished its message rows are absorbed into the round
+carrier and `load()` no longer exposes them — the anchor is unreachable and the
+stub can only repair this run's context. Folding never touched the media: the
+rows are still there, so the probe is enough to close the ledger.
+
+Semantics, stated as a contract:
+
+- **Same source as `load()`**: `foldMessageRows(await store.loadRawRows(runId))`
+  must be deep-equal to `await store.load(runId)`. An unknown `runId` resolves to
+  an empty array.
+- **Absent ⇒ degrade, never fail**: a store without the method behaves exactly as
+  before issue #714 — the stub is merged into this run's context only, no ledger
+  row is written, and one `resume_journal_skipped` event
+  (`reason: "mid_sequence_aggregate_row_not_in_ledger"`) reports it. That is a
+  missing-capability degradation, not the design end state: a host that adds the
+  probe gets a closed ledger on the next resume.
+- **Provided ⇒ close the ledger**: the stub lands as a slice row (`partOf` →
+  first slice) and the `seq` floor for that round is taken from the raw rows, so
+  a finished round's existing `seq` values are never reused. After the next
+  `load()`, the aggregated message carries the stub, and
+  `validateMessages(foldLedgerMessages(load()))` passes — the residual
+  `invalid_messages` from the folded shape is gone.
+- Both built-in stores implement it (`createMemoryTranscriptStore`,
+  `createFileTranscriptStore`); a minimal third-party store need not.
+
+The stub body, its single definition point, the `executionStatus` closed set and
+the tail path are untouched by this probe.
 
 ### Tool replay policy (issue #139)
 

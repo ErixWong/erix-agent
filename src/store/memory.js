@@ -36,6 +36,7 @@ function copyRecord(record) {
  *   saveRunState: (runId:string, snapshot:object) => Promise<void>,
  *   loadRunState: (runId:string) => Promise<object|undefined>,
  *   loadRunStateStatus: (runId:string) => Promise<string|undefined>,
+ *   loadRawRows: (runId:string) => Promise<RoundRecord[]>,
  *   saveRunSnapshot: (runId:string, snapshot:object) => Promise<void>,
  *   loadLatestRunSnapshot: (runId:string) => Promise<object|undefined>,
  *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
@@ -48,6 +49,9 @@ export function createMemoryTranscriptStore() {
   const runSnapshots = new Map();
   const runStates = new Map();
   const runStatuses = new Map();
+  /** 落盘行的**副本**（`load()` 与 `loadRawRows` 的共同输入；折叠只发生在 `load()` 那一侧）。
+   * @param {string} runId @returns {RoundRecord[]} */
+  const rawRows = (runId) => (transcripts.get(runId) ?? []).map(copyRecord);
 
   return {
     /**
@@ -80,7 +84,16 @@ export function createMemoryTranscriptStore() {
 
     async load(runId) {
       // 工单 261021：与 file store 同一个折叠层（两侧不得各抄一套），宿主看到的 `load()` 形状不变。
-      return foldMessageRows((transcripts.get(runId) ?? []).map(copyRecord));
+      return foldMessageRows(rawRows(runId));
+    },
+
+    /**
+     * issue #714：可选**原始行读口**（anchor probe）——`load()` 的**未折叠输入**（同一批行、同一顺序，
+     * 不过 `foldMessageRows`）。内置两个 store 都提供；宿主最小实现可以不给（缺它就退回修前口径）。
+     * @param {string} runId @returns {Promise<RoundRecord[]>}
+     */
+    async loadRawRows(runId) {
+      return rawRows(runId);
     },
 
     async markRunState(runId, state) {
