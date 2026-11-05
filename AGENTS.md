@@ -69,14 +69,14 @@ that gate owns. Do not skip the third column: every trap it names has bitten thi
 
 | Command | What it judges | Before you change it |
 |---|---|---|
-| `npm test` | the whole suite (`node --test`) | adding or editing a test ⇒ read `docs/maintenance/command-reference.md#test-isolation` |
+| `npm test` | the whole suite (`node --test`) | adding or editing a test ⇒ read `docs/maintenance/command-reference.md#test-suite` |
 | `node --check <file>` | one file's syntax | checking a single file ⇒ nothing else to read |
 | `npm run check:syntax` | syntax of **every tracked** `.js`/`.mjs`/`.cjs` | moving or renaming a tracked file ⇒ read `docs/maintenance/command-reference.md#check-syntax` |
 | `npm run check:test-summary` | the suite summary against its registered baseline | touching `test/test-suite-baseline.json` ⇒ read `docs/maintenance/command-reference.md#check-test-summary` |
 | `npm run check:changelog` | CHANGELOG coverage of public-surface merges | merging anything that touches the public surface ⇒ read `docs/maintenance/command-reference.md#check-changelog` |
 | `npm run check:docs` | doc drift + EN/CN sync (versions, lists, module map, paths, claims) | touching `README*`, `docs/`, `files`/`exports`, a default or a version ⇒ read `docs/maintenance/command-reference.md#check-docs` |
 | `npm run check:docs:strict` | the same, warnings block too | same triggers as the row above ⇒ read `docs/maintenance/command-reference.md#check-docs` |
-| `node scripts/docs-drift-check.mjs --self-test` | the anchors' own reverse proof — Before #302 it was the other way round: 3 of the cases were known false reds in a checkout without `docs/tasks/` (not committed); those reds are gone | editing `scripts/docs-drift-check.mjs` ⇒ read `docs/maintenance/command-reference.md#docs-anchors` |
+| `node scripts/docs-drift-check.mjs --self-test` | the anchors' own reverse proof — **Since issue #302 the tree it runs in does not change the verdict**: Before #302 it was the other way round: 3 of the cases were known false reds in a checkout without `docs/tasks/` (not committed); those reds are gone | editing `scripts/docs-drift-check.mjs` ⇒ read `docs/maintenance/command-reference.md#docs-anchors` |
 | `npm run check:docs-examples` | the JS fences of both contract docs and both READMEs | editing a fenced example there ⇒ read `docs/maintenance/command-reference.md#check-docs-examples` |
 | `npm run check:pack-links` | packaged-Markdown links + the `.d.ts` and publish-surface claims | touching `files`/`exports` or a declaration count ⇒ read `docs/maintenance/command-reference.md#check-pack-links` |
 | `npm run check:release` | the offline pre-release checklist as one command | changing anything a packed install ships ⇒ read `docs/maintenance/command-reference.md#check-release` |
@@ -92,7 +92,7 @@ that gate owns. Do not skip the third column: every trap it names has bitten thi
 | `npm run check:mutation:run` | the samples actually bite (mutate → red → restore → green) | same ⇒ read `docs/maintenance/command-reference.md#check-mutation` |
 | `npm run check:exports` | who consumes each exported name — **no gate, no judgement**; three entries incl. `test/contract/`, plus an `internal-only` tier (`scripts/export-consumer-check.mjs`) | removing an export ⇒ read `docs/maintenance/command-reference.md#check-exports` |
 | `npm run check:exports:deprecated` | the zero-consumer deletion registry and the `@deprecated` marker rules | marking or deleting an export ⇒ read `docs/maintenance/command-reference.md#check-exports-deprecated` |
-| `npm run check:host-consumers` | host-side imports of the names marked for removal — judged only with `--hosts`, never in CI, candidate list recomputed live, never copied (`scripts/host-consumer-probe.mjs`) | before a breaking release ⇒ read `docs/maintenance/command-reference.md#check-host-consumers` |
+| `npm run check:host-consumers` | host-side imports of the names marked for removal — judged only with `--hosts`, never in CI, candidate list recomputed live by the probe's own `computeInventory`, never copied (`scripts/host-consumer-probe.mjs`) | before a breaking release ⇒ read `docs/maintenance/command-reference.md#check-host-consumers` |
 | `npm run check:inventory` | the compatibility-pin table against the tests' AST | touching a compatibility pin ⇒ read `docs/maintenance/command-reference.md#check-inventory` |
 | `npm run check:config-leaf-values` | the config-leaf value-status tables against a live probe | touching the config schema ⇒ read `docs/maintenance/command-reference.md#check-config-leaf-values` |
 | `npm run check:types:strict` | the strict ratchet — it blocks; its two baselines live in the script, **do not copy them here** | touching `src/` ⇒ read `docs/maintenance/command-reference.md#type-ratchets` |
