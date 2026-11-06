@@ -447,6 +447,58 @@
   由 `check:mutation:run` 在 CI 里逐条重跑（#210 R2 口径）。
 
 
+- **Resume replays the fold summary byte-for-byte wherever the ledger can prove the exact bytes
+  (issue #738, slice 1: purely additive).** `fold-llm` feeds the model `compactedSummary` — the summarizer
+  output **plus** the recovery hint, the size-clamp output and the mechanical fidelity section — while
+  `record.foldedSummary.summary` is the **raw** summarizer return, and the resume read side preferred
+  `.summary`. So after any fold, the resumed context carried a summary whose bytes were **not** the ones the
+  model had been shown. Nothing reds: the degradation direction is "feed a little less decoration", the
+  request stays valid, `validateMessages` passes — the issue's own words: 沉默成功. The ruling on the issue
+  rejected **both** candidate fixes, and both rejections were re-measured on this tree: preferring `.text`
+  buys nothing (that cell is the projection of **every** text block of the whole new message — summary block
+  **plus** the task body still sitting in head — so preferring it mostly re-feeds the task body a second
+  time), and preferring `.summary` is deliberately pinned by the `#462` planner case in
+  `test/compact/resume-fold-trim.test.js` ("优先用引擎留下的纯摘要"). This slice therefore only **adds**: a
+  third cell `foldedSummary.fedSummaryText`, written when and only when the engine proves it at the write
+  site — `pickFedSummaryTextBlock` re-checks, **after every compaction layer has finalised**, that the
+  string is byte-identical to one **whole** `text` block among the message objects this fold created (the
+  same object-identity criterion #326 uses to claim the summary block). `fold-llm` writes `compactedSummary`;
+  a strategy whose text never entered the context (`sliding-window` journals, never prepends), a merged
+  reconstruction (`fold-statistical`'s second fold), and anything the safety layer rewrote write **no key**
+  — the repository's "no fact, no key" rule, and the reason the cell cannot become a second projection.
+  `.text` and `.summary` keep their meanings and **every** existing reader verbatim (摘要复用读 `.summary`，
+  `ledgerPreviousSummary` 读 `.text`，本轮不动). On resume, `pickFoldSummaryReplay` prefers the new cell
+  **verbatim** — no `trim()`, no body-stripping, both of which are exactly what broke byte-identity — and
+  otherwise walks today's compatibility path unchanged, **without** claiming an old ledger is byte-recoverable.
+  New observability on the same planner: `replaySource` / `savedSummaryBytes` / `replayedSummaryBytes` /
+  `byteEqual` ∈ `equal | differ | unknown`, where **`unknown` means 不可判定** — with no exact saved value the
+  face refuses to report "equal" (and refuses "differ", which would be an equal-sized lie). Reverse proof
+  (the issue's criterion 4): inverting the legacy priority literally (`text` first, no fallback once the strip
+  empties it) reds `#462 规划器：裁掉水位线以下的轮` on `plan.applied === true` first, exit 1. Not in this
+  slice: tightening the read-side priority — step two, which waits for `byteEqual` to be stably `equal` in
+  real ledgers.
+- **续跑在有精确证据的地方逐字回放折叠摘要（issue #738，切片 1：纯加法）。** `fold-llm` 喂给模型的是
+  `compactedSummary`——摘要器原文**加上**恢复提示、尺寸夹断的产物、机械保真节；而
+  `record.foldedSummary.summary` 是摘要器的**原始**返回值，续跑读侧偏偏优先 `.summary`。⇒ 只要折过一次，
+  续跑上下文里那份摘要的字节就**不是**模型当年看过的那一串。而且没有闸会红：退化的方向是「少喂一层装饰」，
+  请求合法、`validateMessages` 通过——工单原话「沉默成功」。工单上那两个候选修法**都被决策推翻**，两条都
+  在本树复跑过：优先 `.text` 什么都买不到（那一格是**整条新消息所有 text 块**的投影 = 摘要块**加上**仍在
+  head 的原任务正文，优先它主要是把任务正文再喂一遍），优先 `.summary` 则是
+  `test/compact/resume-fold-trim.test.js` 的 `#462 规划器` 用例**刻意钉住**的（断言文案「优先用引擎留下的
+  纯摘要」）。所以本切片只做**加法**：第三格 `foldedSummary.fedSummaryText`，写入门槛是**引擎在写侧当场自证**
+  ——`pickFedSummaryTextBlock` 在**全部压缩层定稿之后**再查一遍：这串必须与本次折叠新造出来的那些消息对象里的
+  **某一个完整** `text` 块逐字相同（认领摘要块用的就是 `#326` 那套对象身份口径）。`fold-llm` 写得出的就是
+  `compactedSummary`；文本从没进过上下文的策略（`sliding-window` 只落账不 prepend）、合并重建出来的那一折
+  （`fold-statistical` 第二折）、以及被安全层改写过的形状，**一律不写这个键**——本仓的「无事实不写键」口径，
+  也是这一格不会退化成第二份投影的原因。`.text` 与 `.summary` 的语义与**每一个**既有读者一字未动（摘要复用读
+  `.summary`、`ledgerPreviousSummary` 读 `.text`，本轮都不碰）。续跑侧 `pickFoldSummaryReplay` 有这一格就
+  **原样**回放——不 `trim()`、不剥正文，而这两刀正是毁掉字节一致性的那两刀；没有这一格就完全走今天的兼容路径，
+  并且**不声称**旧账本可以逐字还原。同一个规划器上多了一条可观测面：`replaySource` / `savedSummaryBytes` /
+  `replayedSummaryBytes` / `byteEqual` ∈ `equal | differ | unknown`，其中 **`unknown` 就是「不可判定」**——
+  没有精确保存值时它拒绝报 `equal`（报 `differ` 同样是谎）。反向证（工单判据 4）：把旧路径优先级**字面**反转
+  （优先 `.text`，剥空之后不回头），`#462 规划器：裁掉水位线以下的轮` 先在 `plan.applied === true` 上红，
+  退出码 1。不在本切片：收紧读侧优先级——那是第二步，要等 `byteEqual` 在现网稳定为 `equal`。
+
 ## [0.31.0] - 2026-11-04
 
 ### Breaking
