@@ -97,7 +97,8 @@
   therefore kept folding a ledger that can never pass `validateMessages`, and nothing in the archive
   recorded that a stub had ever been minted. The engine now reads an **optional**
   `loadRawRows(runId)` off the store — the rows `load()` reads, before folding (same order, same
-  content; a read side only: no write path, `load()`'s shape unchanged) — and anchors on it when
+  content; same read path as `load()` including its tail repair, no new write API and no new
+  `load()` shape — wording corrected after review) — and anchors on it when
   present: the stub lands as a slice row pointing at the first slice, that round's `seq` floor comes
   from the raw rows, and the next `load()` folds a **closed** ledger. Both built-in stores implement
   it; a store without it degrades to exactly the previous behaviour (the stub repairs this run's
@@ -124,8 +125,9 @@
   写明的边界，锚点纪律仍是 #430 的）。** 折叠是读侧变换：已完成轮的 `kind: "message"` 行被吸进轮载体，
   于是 `load()` 不再暴露那条聚合消息的首片行，桩也就没有 `partOf` 目标——宿主自己的 `load()` 因此永远
   折出一份过不了 `validateMessages` 的账本，而档案里**没有任何痕迹**记着「补过桩」。引擎现在读 store 上
-  **可选**的 `loadRawRows(runId)`——`load()` 读到的、尚未折叠的行（同一顺序、同一内容；只是读口：不新增
-  写路径、不改变 `load()` 的形状）——有它就以此定锚：桩落成指向首片的分片行、该轮的 `seq` 地板取自原始
+  **可选**的 `loadRawRows(runId)`——`load()` 读到的、尚未折叠的行（同一顺序、同一内容；与 `load()` 同一条
+  读路径、含尾部半行修复，不新增写 API、不改变 `load()` 的形状——措辞已按事实订正）——有它就以此
+  定锚：桩落成指向首片的分片行、该轮的 `seq` 地板取自原始
   行，下一次 `load()` 折出来的是一份**闭合**的账本。内置两个 store 都实现；没有它的 store 逐字退回修前
   行为（桩只修本次上下文、发一条 `resume_journal_skipped`）而不是失败，且这个缺席**不发**
   `persistence_capability_degraded`（既有通道已经报过了）。不新增 `executionStatus` 值、不动尾部
