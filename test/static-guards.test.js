@@ -4316,8 +4316,19 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *
  *     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行）；中文 11 条 / 英文 11 条 / 配对 11 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 10（校准面 ## [Unreleased]）
  *     # 配对地板：实测 11 对 > 地板 10 对 ⇒ 可以抬地板到 11
+ *
+ * issue #741（切片 A，fix-261107-02）：**rebase 到 origin/main `aa94463`（#736 + #738 都已合）之后重测**。
+ * 本支在 `## [Unreleased] ### Changed` 再加一对（折叠替代物与 TTL 降级占位符的笔记断言改成条件式
+ * + 归档丢弃计数不再静默）⇒ 面没挪、仍是 `## [Unreleased]`，同一面实测 **12 对**。
+ * ⚠ 这个 12 是 rebase 后在那一棵上**现跑守卫**数出来的，不是「主干 11 + 本支 1」算出来的（#736、#738、#741
+ * 三条分支各自都抬过一次地板，各算各的；只有守卫在合起来的树上重数才算数，这里相加凑巧也是 12）。
+ * 照旧**先贴守卫自己打的 diagnostic、再动常量**（红的时候红在
+ * `assert.equal(problems.pairs.length, CHANGELOG_PAIR_FLOOR)`，报的是 `12 !== 11`）：
+ *
+ *     # 配对地板：实测 12 对 > 地板 11 对 ⇒ 可以抬地板到 12
+ *         —— rebase 到 aa94463 后的最终树上现跑：node --test --test-name-pattern "中英配对地板" test/static-guards.test.js
  */
-const CHANGELOG_PAIR_FLOOR = 11;
+const CHANGELOG_PAIR_FLOOR = 12;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
@@ -4606,3 +4617,4 @@ describe("静态守卫：docs/maintenance 账本的拼写分类（issue #644 ③
     }
   });
 });
+
