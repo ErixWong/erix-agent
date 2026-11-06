@@ -78,10 +78,13 @@ export const FOLDED_SUMMARY_FED_TEXT_KEY = "fedSummaryText";
  * 所以「拿不到精确串」的策略只是**没有这一格**，回到今天的兼容路径，行为与今天逐字一致；
  * 不是「写了一份近似值」。
  *
- * @param {object} input
- * @param {unknown} input.candidate 策略自称「交给模型的那一份」（`foldSummary.text` / `foldedSummaryText`）
- * @param {any[]} input.messages 压缩**定稿后**的消息列表（就是接下来要被喂出去/落档的那份）
- * @param {Set<object>} input.preCompactionMessages 压缩前就在的消息对象（按身份），它们里面的块不算证据
+ * 三格都是**可选**的（调用方缺任何一格都只是「证不过」而不是抛）：缺 `candidate` ⇒ 没得证；缺
+ * `messages` ⇒ 没有证据面；缺 `preCompactionMessages` ⇒ 按「全部消息都是新造的」处理（宁可多查，不少查）。
+ *
+ * @param {object} [input]
+ * @param {unknown} [input.candidate] 策略自称「交给模型的那一份」（`foldSummary.text` / `foldedSummaryText`）
+ * @param {any[]} [input.messages] 压缩**定稿后**的消息列表（就是接下来要被喂出去/落档的那份）
+ * @param {Set<object>} [input.preCompactionMessages] 压缩前就在的消息对象（按身份），它们里面的块不算证据
  * @returns {string|undefined} 证得过 ⇒ 原样返回候选串；证不过 ⇒ `undefined`（调用方**不写这一格**）
  */
 export function pickFedSummaryTextBlock(input = {}) {
