@@ -25,7 +25,10 @@ export const DEFAULT_RECOVERY_HINT =
  * 三句都是模型可见文本（也是可被宿主编辑的面），改动 = 改模型看到的句子。
  */
 export function unverifiedRecoveryHint(reason) {
-  return `需要原文请重读文件；${unverifiedRecallClause(reason)}；未记录且无法确定性重算时请省略，不要猜测`;
+  // 与默认句同量级（默认句 24 字，本句 ~35 字）：折叠摘要有字节夹断，长出来的每一个字都在
+  // 挤掉正文（#460 尺蠖 / `FOLDED_FACTS_MAX_BYTES`）。TTL 占位符那边才带「不要猜测」半句，
+  // 因为广告语从来不含那条约束，硬加进来等于改两个面。
+  return `需要原文请重读文件；${unverifiedRecallClause(reason)}`;
 }
 
 /**

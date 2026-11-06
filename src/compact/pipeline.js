@@ -280,22 +280,25 @@ export function createCompactionStat({
   }
   // issue #741：归档丢弃量（additive，**只在真丢了东西时出现这个键**，口径同 `foldSummary`）。
   // 不投影 `messages`/`bytes`：那两个是归档本体尺寸，`foldedPayloadMeta` 已有完整一份。
-  if (foldArchive !== null && typeof foldArchive === "object") {
-    const projectedArchive = {
-      ...(Number.isSafeInteger(foldArchive.droppedMessages) && foldArchive.droppedMessages > 0
-        ? { droppedMessages: foldArchive.droppedMessages }
-        : {}),
-      ...(Number.isSafeInteger(foldArchive.droppedBytes) && foldArchive.droppedBytes > 0
-        ? { droppedBytes: foldArchive.droppedBytes }
-        : {}),
-      ...(Number.isSafeInteger(foldArchive.capBytes) && foldArchive.capBytes > 0
+  const droppedMessages = Number.isSafeInteger(foldArchive?.droppedMessages) && foldArchive.droppedMessages > 0
+    ? foldArchive.droppedMessages
+    : 0;
+  const droppedBytes = Number.isSafeInteger(foldArchive?.droppedBytes) && foldArchive.droppedBytes > 0
+    ? foldArchive.droppedBytes
+    : 0;
+  if (droppedMessages > 0 || droppedBytes > 0) {
+    // **真丢了原文**才有这个键（同 `protectedDowngraded` / `foldSummary` 口径）：没丢就不许出现，
+    // 否则每次折叠都挂一个 `{capBytes: 262144}` 的常数键，把既有精确断言洗脏。
+    stat.foldArchive = {
+      droppedMessages,
+      droppedBytes,
+      ...(Number.isSafeInteger(foldArchive?.capBytes) && foldArchive.capBytes > 0
         ? { capBytes: foldArchive.capBytes }
         : {}),
-      ...(Number.isSafeInteger(foldArchive.dedupedMessages) && foldArchive.dedupedMessages > 0
+      ...(Number.isSafeInteger(foldArchive?.dedupedMessages) && foldArchive.dedupedMessages > 0
         ? { dedupedMessages: foldArchive.dedupedMessages }
         : {}),
     };
-    if (Object.keys(projectedArchive).length > 0) stat.foldArchive = projectedArchive;
   }
   return stat;
 }

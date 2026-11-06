@@ -38,7 +38,8 @@ test("prepends a deterministic tool-footprint summary before the head user task"
     + "工具调用清单（机械摘要，不代表执行成功）：\n"
     + "- writeFile path=?\n"
     + "- exec\n"
-    + "需要原文请重读文件或查看持久笔记；关键值应当已落盘";
+    // issue #741：直调策略没有笔记证据 ⇒ 默认广告语走显式未知口径。
+    + "需要原文请重读文件；无可复原的决策记录（原因：无笔记证据）";
 
   assert.equal(strategy.name, "fold-statistical");
   assert.deepEqual(result.messages, [

@@ -419,8 +419,8 @@ test("#566-3 累计体被 2048 前缀夹断时，本折增量仍完整可读", a
       assert.equal(increment.text.includes(`- exec npm test -- --grep case-${n}`), true,
         `第 ${round} 轮：增量必须完整列出本折第 ${n} 轮的清单条目（缺一条就是被夹断了）`);
     }
-    assert.equal(increment.text.includes("需要原文请重读文件或查看持久笔记"), true,
-      `第 ${round} 轮：增量的恢复提示必须完整`);
+    assert.equal(increment.text.includes("无可复原的决策记录（原因：无笔记工具）"), true,
+      `第 ${round} 轮：增量的恢复提示必须完整（issue #741：引擎传下来的工具面里没有笔记工具 ⇒ 无笔记工具那一句，不是「查看持久笔记」）`);
     assert.equal(increment.text.includes("[替代物已按字节上限夹断]"), false,
       `第 ${round} 轮：增量不是被夹断的那一份`);
   }

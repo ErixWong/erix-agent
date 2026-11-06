@@ -572,7 +572,11 @@ test("tool result TTL fold: placeholder replaces aged large results in later req
   const foldedViews = resultContentAt(2);
   assert.equal(foldedViews.length, 2);
   assert.match(foldedViews[0], /【已折叠·TTL】scan path/);
-  assert.match(foldedViews[0], /先用 note_list 查找，再用 note_read 读取/);
+  // issue #741 判据②（集成面）：这个 run 的 `tools` 里没有 `note_*` ⇒ 占位符一个字也不许提笔记，
+  // 并把「没有可复原的记录」连同原因说出来；取回原文改给一条可直接执行的命令。
+  assert.doesNotMatch(foldedViews[0], /note_/u);
+  assert.match(foldedViews[0], /无可复原的决策记录（原因：无笔记工具）/u);
+  assert.match(foldedViews[0], /^取回: sed -n '1,\d+p' /mu);
   assert.ok(!foldedViews[0].includes("xxxx"));
   // r2 产生的结果 age=1 === ttl-1 → 不折，预警行在场
   assert.ok(foldedViews[1].startsWith(big));

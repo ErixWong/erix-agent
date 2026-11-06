@@ -39,12 +39,13 @@ export const NOTE_RECALL_TOOL_NAMES = Object.freeze(["note_take", "note_list", "
 
 /** 三种「没有笔记可指」的原因；字符串本身就是模型可见文本，改动 = 改模型看到的句子。 */
 export const NOTE_RECALL_REASONS = Object.freeze({
+  // 三个原因都要短：它们最终出现在**模型可见文本**里，而折叠摘要有字节夹断（#460 尺蠖）。
   /** 工具面上没有完整的笔记工具族 ⇒ 连路都不存在。 */
-  noSurface: "宿主未把笔记工具放进本 run 的工具面",
+  noSurface: "无笔记工具",
   /** 工具有，但可见账本里一次成功写入都没有 ⇒ 路在，格子是空的。 */
-  emptyNotes: "可见账本里没有任何笔记写入记录",
+  emptyNotes: "无笔记写入",
   /** 调用方没给工具面/账本证据 ⇒ 引擎确实不知道。 */
-  unknown: "引擎没有笔记可用性的证据",
+  unknown: "无笔记证据",
 });
 
 /** 从宿主给的 `tools` 里挑出笔记工具名（不做前缀猜测，只认这三个确定名）。 */
@@ -94,7 +95,8 @@ export function unverifiedRecallClause(reason) {
   const text = typeof reason === "string" && reason.trim() !== ""
     ? reason
     : NOTE_RECALL_REASONS.unknown;
-  return `本区间无可复原的决策记录（原因：${text}）`;
+  // 判据钉的字面是「无可复原的决策记录」；不带「本区间」这类限定词，省下的都是折叠摘要的字节预算。
+  return `无可复原的决策记录（原因：${text}）`;
 }
 
 /** 有笔记证据时的取回指引（沿用 #224/#241 的口径：值没记下来就省略，别猜）。 */
@@ -109,6 +111,7 @@ function unverifiedRetrievalHint(retrievalCommand, reason) {
   const lead = retrievalCommand === undefined
     ? "需要原文请重读源文件（路径见本条工具调用）"
     : "需要原文请执行下方「取回」行那一条命令";
+  // 「不要猜测」半句**保留**：本切片修的是「有没有记录」，不是放松反幻觉约束。
   return `${lead}；${unverifiedRecallClause(reason)}；未记录且无法确定性重算时请省略，不要猜测`;
 }
 
