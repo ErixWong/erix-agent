@@ -107,6 +107,84 @@
 
 ### Fixed
 
+- **The resume crash boundary is derived from the ledger, not from the run snapshot (issue #736).**
+  `crashSiteRound` — the predicate deciding whether a resume faces a crash site or a normally closed run —
+  read only the run snapshot, while #734 had just established that the write which failed **is the snapshot
+  itself** (a rejected `checkpoint_before_tool` leaves the previous, older snapshot as the newest readable
+  one). The detector vanished together with the scene: the anchor was not cut, the pending tail was not
+  settled, and the dangling `tool_use` already in the ledger sat **in the middle** of the context, where
+  #421's same-page merge discipline deliberately does not reach it (`results.length === 0`) ⇒ every request
+  was rejected by the local `validateMessages` before leaving the process (0 tokens, permanently unusable;
+  the host had two such sessions, one with 7 consecutive `run_end`s whose reported index drifted from 685 to
+  693 — one more layer buried per user retry, since each retry pre-writes another row). `restoreResume` now
+  computes `deriveLedgerCrashBoundary(ledgerEntries, settledToolResultIds, isEngineRow)` **before** loading
+  any snapshot: the largest index whose entry is an `assistant` carrying `tool_use` blocks all absent from
+  the ledger's settled-result set (#420's authoritative reading) and whose **suffix** contains only rows
+  carrying `tool_result`, rows attributed to the host (`appendUserTurn`'s `:input:`), or engine control rows
+  (`meta.source === "judge-control"`). Attribution reuses the existing `isEngineLedgerRow`, mirrored onto
+  folded entries by `ledgerRowAttribution` under `foldLedgerMessages`'s own "a fragment adds no entry" rule
+  — this issue adds no second pairing/attribution logic (#394's discipline) — and "user + plain text" is
+  deliberately **not** the attribution test: `#425` pinned that a host row carrying `kind:"message"` still
+  counts as engine-attributed. Nothing new is invented downstream: the crash branch fires on
+  `crashSiteRound || boundary !== null`, the anchor takes the **earlier** of `countResumeAnchor(records)`
+  (#425) and `boundary + 1`, so the dangling block becomes the **tail** and the existing
+  `answerPendingTailToolUses` settles it **before** the resume notice is injected, host pre-written rows
+  still landing last. The snapshot path is untouched — the replay set, the A-set accounting and `partialText`
+  still depend on it — while stale/absent snapshots now fall back to an empty read and the crash round number
+  falls back to the boundary row's own round. A second false statement died with it: `pendingTail` is
+  recomputed **after** the slice, so a notice can no longer tell the model 「崩溃时尾部没有未结清的 tool_use
+  （上一次请求与结果已成对落账）」 about a ledger that does have one. Two standing mutations are registered
+  with this fix (M19 reverts the recognition source to snapshot-only, M20 drops the suffix-attribution half);
+  M20 also reddens #425's 「tail row attributed to engine ⇒ the anchor counts it」 case, which is why that half
+  is load-bearing beyond this issue. **Not in this issue**: ledger self-consistency — the settlement stub
+  still lands as a `:control:` row of its own round, i.e. **after** the host's pre-written row, so a *second*
+  resume of the same run folds back into the same mid-sequence hole (pinned as-is by a test that must flip
+  once the landing-order issue is fixed).
+
+- **恢复的崩溃边界现在从账本推，不从 run snapshot 推（issue #736）。** 判定「这次恢复面对的是崩溃现场还是正常收口」
+  的那格（`crashSiteRound`）过去只读 run snapshot，而 #734 刚刚查实：**失败的那次写正是快照本身**（被拒的
+  `checkpoint_before_tool` 让最新可读快照停在更早那一刻）⇒ 探测器跟现场一起消失 ⇒ 既不裁锚点、也不结清尾部 ⇒
+  账本里那条已落盘的悬空 `tool_use` 坐在上下文**中段**，而 #421 的「同页合并」纪律（`results.length === 0`）恰好
+  够不着它 ⇒ 每次请求在出网之前就被本地 `validateMessages` 拒掉（0 token、永久不可用；宿主两例，其中一例连续 7 次
+  `run_end`、报错 index 从 685 漂到 693 —— 用户每重发一次就多埋一层，因为每次重发宿主都再预写一行）。
+  `restoreResume` 现在在加载任何快照**之前**算 `deriveLedgerCrashBoundary(ledgerEntries, settledToolResultIds,
+  isEngineRow)`：最大下标 `i`，使 `ledgerEntries[i]` 是带 `tool_use` 的 assistant、其 id 全部不在账本的已结清结果
+  集合里（#420 的权威口径），且 `i` **之后**的每一行要么带 `tool_result`、要么归属为宿主（`appendUserTurn` 的
+  `:input:`）、要么是引擎控制行（`meta.source === "judge-control"`）。归属沿用既有的 `isEngineLedgerRow`，由
+  `ledgerRowAttribution` 按 `foldLedgerMessages` 自己那条「分片不加条目」规则镜像到折叠条目上 —— 本单**没有**新写
+  第二份配对/归属逻辑（#394 的纪律）；并且刻意**不**拿「user + 纯文本」那个形状当归属判据：`#425` 钉过「宿主行带上
+  `kind:"message"` 时仍须判引擎」。边界成立之后不发明新形状：崩溃分支判 `crashSiteRound || 边界成立`，锚点取
+  `countResumeAnchor(records)`（#425）与 `边界 + 1` 的**较早**者 ⇒ 悬空块因此变成**尾部** ⇒ 由既有
+  `answerPendingTailToolUses` 在**注入恢复告示之前**结清，宿主预写行照旧最后接回。快照那条路原样保留（B 集合的补跑
+  集合、A 集合入账、`partialText` 仍靠它）；快照陈旧或缺席时读点退回空对象，崩溃轮轮号退回边界那一行自己的轮号。
+  另一句假话随它一起死：`pendingTail` 现在在切片**之后**重算 ⇒ 告示不得再对一本确实有未结清 `tool_use` 的账本说
+  「崩溃时尾部没有未结清的 tool_use（上一次请求与结果已成对落账）」。随本单登记两发常驻变异（M19 把识别源退回只认
+  快照、M20 去掉后缀归属那一半）；M20 同时打红 `#425`「尾行判引擎 ⇒ anchor 计入」⇒ 那半判据的作用面超出本单。
+  **不在本单**：账本自洽 —— 结清桩仍作为它自己那一轮的一条 `:control:` 行落账，即排在宿主预写行**之后** ⇒ 同一个
+  run **再**恢复一次会折回同一个中段洞（已由一条按现状钉住的用例记下，落账顺序那一单修好后它应反转）。
+
+- **恢复的崩溃边界现在从账本推，不从 run snapshot 推（issue #736）。** 判定「这次恢复面对的是崩溃现场还是正常收口」
+  的那格（`crashSiteRound`）过去只读 run snapshot，而 #734 刚刚查实：**失败的那次写正是快照本身**（被拒的
+  `checkpoint_before_tool` 让最新可读快照停在更早那一刻）⇒ 探测器跟现场一起消失 ⇒ 既不裁锚点、也不结清尾部 ⇒
+  账本里那条已落盘的悬空 `tool_use` 坐在上下文**中段**，而 #421 的「同页合并」纪律（`results.length === 0`）恰好
+  够不着它 ⇒ 每次请求在出网之前就被本地 `validateMessages` 拒掉（0 token、永久不可用；宿主两例，其中一例连续 7 次
+  `run_end`、报错 index 从 685 漂到 693 —— 用户每重发一次就多埋一层，因为每次重发宿主都再预写一行）。
+  `restoreResume` 现在在加载任何快照**之前**算 `deriveLedgerCrashBoundary(ledgerEntries, settledToolResultIds,
+  isEngineRow)`：最大下标 `i`，使 `ledgerEntries[i]` 是带 `tool_use` 的 assistant、其 id 全部不在账本的已结清结果
+  集合里（#420 的权威口径），且 `i` **之后**的每一行要么带 `tool_result`、要么归属为宿主（`appendUserTurn` 的
+  `:input:`）、要么是引擎控制行（`meta.source === "judge-control"`）。归属沿用既有的 `isEngineLedgerRow`，由
+  `ledgerRowAttribution` 按 `foldLedgerMessages` 自己那条「分片不加条目」规则镜像到折叠条目上 —— 本单**没有**新写
+  第二份配对/归属逻辑（#394 的纪律）；并且刻意**不**拿「user + 纯文本」那个形状当归属判据：`#425` 钉过「宿主行带上
+  `kind:"message"` 时仍须判引擎」。边界成立之后不发明新形状：崩溃分支判 `crashSiteRound || 边界成立`，锚点取
+  `countResumeAnchor(records)`（#425）与 `边界 + 1` 的**较早**者 ⇒ 悬空块因此变成**尾部** ⇒ 由既有
+  `answerPendingTailToolUses` 在**注入恢复告示之前**结清，宿主预写行照旧最后接回。快照那条路原样保留（B 集合的补跑
+  集合、A 集合入账、`partialText` 仍靠它）；快照陈旧或缺席时读点退回空对象，崩溃轮轮号退回边界那一行自己的轮号。
+  另一句假话随它一起死：`pendingTail` 现在在切片**之后**重算 ⇒ 告示不得再对一本确实有未结清 `tool_use` 的账本说
+  「崩溃时尾部没有未结清的 tool_use（上一次请求与结果已成对落账）」。随本单登记两发常驻变异（M19 把识别源退回只认
+  快照、M20 去掉后缀归属那一半）；M20 同时打红 `#425`「尾行判引擎 ⇒ anchor 计入」⇒ 那半判据的作用面超出本单。
+  **不在本单**：账本自洽 —— 结清桩仍作为它自己那一轮的一条 `:control:` 行落账，即排在宿主预写行**之后** ⇒ 同一个
+  run **再**恢复一次会折回同一个中段洞（已由一条按现状钉住的用例记下，落账顺序那一单修好后它应反转）。
+
 - **The release-state probe's `--self-test` now synthesizes its own version face (issue #713).** The thirteen
   cases used to copy the host tree's `package.json` and CHANGELOG section face into the fixtures, so "the version
   being cut" was still derived from the host: on a tree that had already written the release back and had not cut
