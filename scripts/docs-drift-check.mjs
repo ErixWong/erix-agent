@@ -6355,6 +6355,109 @@ function selfTestRegistry({ exclude = [], latest } = {}) {
     source: "self-test 夹具（CHANGELOG 派生）" };
 }
 
+// ── `--self-test` 的**版本面**夹具（issue #724：版本面由自测自己合成）─────────────────────────
+// 病根（#724 现场）：`#697` 那 8 例与 `#511 评论` 那 1 例把「要判的那一版」抄成了 **0.30.x 发版窗口**的
+// 形状——`## [0.31.0]（未发布 / unpublished）` 段首、`## [0.30.0] - 2026-11-03` 段首、registry 桩钉着
+// `latest: 0.30.0`、AGENTS 的「`dist-tags.latest` — is `0.30.0`」句。0.31.0 发布 + 回写之后这些字面量在
+// 真面上**已不存在** ⇒ `replaceUnique` 打不中 ⇒ 每例都按 #210 R2 报「变异没落上（反向证自身失效）」；
+// 伴随的「本该绿、实测 4 处红 `published-claim: AGENTS.md 说发布行是 0.31.0，registry 实测 0.30.0`」是同一个
+// 成因的下游（桩钉着旧 latest，而文档已经回写成新 latest）。⇒ **每次发版都会重演一次**。
+//
+// 这与 #713（`scripts/version-state-probe.mjs`）同一味病：**把真值抄成一份快照，快照过期**。修法也同族：
+// 版本面由夹具**合成**，真树只当模板。合成规则全部机械，一个版本字面量都不抄：
+//   · `released` = 树里**带日期且没标未发布**的最高段（= registry 的 `latest`，也是 AGENTS 的发布行）；
+//   · `previous` = 低于它的最高已发布段，且**不在** `CHANGELOG_DATE_TAG_EXEMPTIONS` 里
+//     （否则「日期不一致」会被登记表放行，反向证空转）；
+//   · `inflight` = 树里**高于 released 的未发布段**（发版窗口里它本来就在那儿）；没有就由 `released`
+//     机械 +1 个次版本号。两种树因此收敛到**同一个形状**：在飞那一段的段首一律是规范未发布形
+//     `## [X.Y.Z]（未发布 / unpublished）`（`renderVersionFace` 负责落上；没有那一段就开一段）。
+//   · `historicalMarked` = 低于 released 的「带日期 + 标未发布」历史段（判据 (a) 只管正在准备的那一段）。
+// ⇒ 变异体的锚点由**夹具自己写下**（`faceInflightHeading()`），于是「变异没落上」这一类红在结构上不可能
+//   因为发版而复发：锚点不是抄来的字符串，而是本夹具这一轮刚写进 overlay 的那一行。
+// registry 桩 / tag 面仍从 CHANGELOG 派生（`selfTestRegistry` / `selfTestTagFacts`），派生口径与判据同源：
+// `inflight` 段没有日期 ⇒ 它自然不在 `versions` 里、`latest` 自然停在 `released` 上。
+let SELF_TEST_VERSION_FACE = null;
+
+/** 次版本号 +1（`0.31.0` → `0.32.0`）。合成「在飞的那一版」用，**不落在任何一棵真树上**。 */
+function bumpMinor(version) {
+  const [major, minor] = version.split(".").map(Number);
+  return `${major}.${minor + 1}.0`;
+}
+
+/** `--self-test` 的版本面（见上面的节头）。派生一次，全自测共用同一份。
+ *  @returns {{released: object, previous: object|null, inflight: object, historicalMarked: object|null}} */
+function selfTestVersionFace() {
+  if (SELF_TEST_VERSION_FACE) return SELF_TEST_VERSION_FACE;
+  const sections = changelogSections() ?? [];
+  const published = sections
+    .filter((s) => s.dated && !hasUnpublishedMark(s))
+    .sort((a, b) => cmpSemver(a.version, b.version));
+  const released = published.at(-1);
+  if (!released) {
+    // 真值缺位就报错（#164 口径）：没有已发布段 ⇒ 没有「发布行」这个事实，夹具无从合成。
+    throw new Error("docs-drift-check --self-test: CHANGELOG 里没有任何「带日期且没标未发布」的版本段 ⇒ "
+      + "版本面夹具没有 released 这个基准（#724）");
+  }
+  const exempt = new Set(CHANGELOG_DATE_TAG_EXEMPTIONS.map((e) => e.version));
+  const previous = published
+    .filter((s) => cmpSemver(s.version, released.version) < 0 && !exempt.has(s.version))
+    .at(-1) ?? null;
+  const inflightExisting = sections
+    .filter((s) => hasUnpublishedMark(s) && cmpSemver(s.version, released.version) > 0)
+    .sort((a, b) => cmpSemver(b.version, a.version))[0] ?? null;
+  const inflight = inflightExisting ?? { version: bumpMinor(released.version), date: null, heading: null };
+  const historicalMarked = sections
+    .filter((s) => s.dated && hasUnpublishedMark(s) && cmpSemver(s.version, released.version) < 0)
+    .sort((a, b) => cmpSemver(b.version, a.version))[0] ?? null;
+  SELF_TEST_VERSION_FACE = { released, previous, inflight, historicalMarked };
+  return SELF_TEST_VERSION_FACE;
+}
+
+/** 在飞那一段的**规范未发布段首**（夹具自己写下的那一行 = 所有 #697 变异的锚点）。 */
+const faceInflightHeading = () => `## [${selfTestVersionFace().inflight.version}]（未发布 / unpublished）`;
+/** 本仓另一种**合法**无日期形状（⑤ 放行证用它：换一种合法写法仍绿）。 */
+const faceInflightAltHeading = () => `## [${selfTestVersionFace().inflight.version}] — 截至本提交尚未发布`;
+
+/** 自测变异器：把**某一段的段首整行**换成 `build(那一行)`（#724）。
+ *  为什么按「段首行」定位而不是按整串 `replaceUnique`：版本号 + 日期这种字面量会出现在**散文**里
+ *  （本单的 CHANGELOG 条目就引了那两个段首形状，实测当场把 `#697 ②` 的靶子变成两处 ⇒ 「变异没落上」）。
+ *  行锚定（`^## [x.y.z]…$`）把靶子限定在「那一段的标题行」，散文里提到同一个版本号抢不走枪。
+ *  找不到 / 不止一处都原样返回 ⇒ 由 harness 的「变异没落上」报红（#210 R2）。 */
+const rewriteSectionHeading = (version, build) => (text) => {
+  const hits = [...text.matchAll(new RegExp(`^## \\[${esc(version)}\\].*$`, "gmu"))];
+  if (hits.length !== 1) return text;
+  return text.replace(new RegExp(`^## \\[${esc(version)}\\].*$`, "mu"), (line) => build(line));
+};
+
+/** 把版本面落到 CHANGELOG 文本上（`simulateVersionFace` 的落点，见节头）：
+ *  · 树里已有在飞那一段 ⇒ 只把**段首整行**改写成规范未发布形（其余字节一字不动）；
+ *  · 没有那一段 ⇒ 在最高已发布段前**开一段**（合法无日期形 + 一句夹具自述，不描述任何代码事实）。
+ *  已经是这个形状 ⇒ 原样返回（幂等：同一副版本面上重复落不会叠加）。 */
+function renderVersionFace(text) {
+  const face = selfTestVersionFace();
+  const canonical = faceInflightHeading();
+  if (face.inflight.heading) {
+    return text.split(face.inflight.heading).length === 2
+      ? text.replace(face.inflight.heading, canonical) : text;
+  }
+  const anchor = `## [${face.released.version}]`;
+  if (text.split(`\n${anchor}`).length !== 2) return text;   // 锚行找不到 ⇒ 原样返回（由用例的「变异没落上」报红）
+  const block = `${canonical}\n\n### Changed\n\n- 自测夹具合成的一节：在飞的那一版（issue #724 的版本面夹具，不描述任何代码事实）。\n\n`;
+  return text.replace(`\n${anchor}`, `\n${block}${anchor}`);
+}
+
+/** 版本面的 tag 面（最小面：只给 `released` / `previous` 两段的 tag，日期取各自段首）。
+ *  为什么不给全：多给就会把 `CHANGELOG_DATE_TAG_EXEMPTIONS` 那两条历史不一致卷进来，而本族用例都
+ *  用 `simulateDateTagExemptions: []` 关掉登记表 ⇒ 那两条会变成「空转条目」红（#210 R2），与用例要证的事无关。 */
+function faceTagFacts() {
+  const face = selfTestVersionFace();
+  const dates = new Map();
+  for (const s of [face.released, face.previous]) {
+    if (s) dates.set(s.version, { date: s.date, kind: "annotated" });
+  }
+  return { ok: true, dates, source: "self-test 夹具（版本面：released / previous 两段，日期取 CHANGELOG 段首）" };
+}
+
 /** 两份「当前版本」声称句的规范写法：见 §1 的 `VERSION_CLAIM_RULES`（`--sync` 读同一张表，别再抄一份）。 */
 
 /** 发布行 / 未发布声称的扫描面：宿主会读的那批文档 + 指南 + 两份 README / 需求对照。
@@ -6691,6 +6794,19 @@ const rewriteCurrentChangelogHeading = (build) => (text) =>
  *  与上一条同理：`says \`0.30.0\`` 这种字面量在切版后的树上不存在。 */
 const mutateRepoVersionClaim = (to) => (text) =>
   text.replace(VERSION_CLAIM_RULES[0].repoRe, `Current version: \`package.json\` says \`${to}\``);
+/** 自测变异器：改 AGENTS 的**发布行**句（`VERSION_CLAIM_RULES` 的 `pubRe` 就是判据读的同一形状）。
+ *  #724：不再抄 `` `dist-tags.latest` — is `0.30.0` `` 这个字面量——它随发版回写而变，抄它等于把反向证
+ *  钉在某一个发版窗口上（0.31.0 回写后那个字串在真面上就不存在了）。改成「判据自己的正则 + 唯一性」：
+ *  0 处（形状变了）与 2+ 处（靶子不唯一）都原样返回，由 harness 的「变异没落上」报红。 */
+const mutatePublishedClaim = (to, lang = 0) => (text) => {
+  const rule = VERSION_CLAIM_RULES[lang];
+  const hits = [...text.matchAll(new RegExp(rule.pubRe.source, "g"))];
+  if (hits.length !== 1) return text;
+  return text.replace(rule.pubRe, (whole, current) => {
+    const at = whole.indexOf(current);
+    return `${whole.slice(0, at)}${to}${whole.slice(at + current.length)}`;
+  });
+};
 const addMeasurementDateToRepoClaim = (date) => (text) =>
   text.replace(VERSION_CLAIM_RULES[0].repoRe, (whole) => `${whole}, measured ${date}`);
 
@@ -8626,10 +8742,13 @@ const SELF_TEST_CASES = [
     expect: [/changelog-published: CHANGELOG:\d+ 的 0\.29\.0 段自称「未发布\/unpublished」/],
   },
   {
-    label: "#511 评论：AGENTS.md 的「发布行」写成 0.28.0，registry 说 9.9.9 ⇒ 红（发布行的真相来源是 registry，不是 package.json）",
-    overlay: { [AGENTS_EN]: (t) => t.replace("`dist-tags.latest` — is `0.30.0`", "`dist-tags.latest` — is `0.28.0`") },
+    label: `#511 评论：AGENTS.md 的「发布行」写成 ${selfTestVersionFace().previous.version}，registry 说 9.9.9 ⇒ 红（发布行的真相来源是 registry，不是 package.json）`,
+    // #724：不再抄「`dist-tags.latest` — is `0.30.0`」这个字面量（发版回写之后它就不在盘上了），
+    // 改用判据自己的 `pubRe` 定位，写进去的假值也从版本面现取（上一版），不引入新字面量。
+    overlay: { [AGENTS_EN]: mutatePublishedClaim(selfTestVersionFace().previous.version) },
     simulateRegistry: selfTestRegistry({ latest: "9.9.9" }),
-    expect: [/published-claim: AGENTS\.md:\d+ 说发布行（`dist-tags\.latest`）是 0\.28\.0，registry 实测是 9\.9\.9/],
+    expect: [new RegExp(`published-claim: AGENTS\\.md:\\d+ 说发布行（\`dist-tags\\.latest\`）是 `
+      + `${esc(selfTestVersionFace().previous.version)}，registry 实测是 9\\.9\\.9`, "u")],
   },
   {
     label: "#511：AGENTS.md 的「本仓版本」写成 0.28.0 ⇒ 红（本仓版本对 package.json，两类句子各对各的真值）",
@@ -9020,49 +9139,65 @@ const SELF_TEST_CASES = [
   // 判据是两半：未发布段不许带日期（①）；已发布段日期 ↔ tag 日期（②）。③ 是两种 exit 的分工：
   // 「registry 说已发布但没有 tag」= **exit 2 未判定**，不是红。所有 tag/registry 事实都走夹具
   // （`simulateTagFacts` / `simulateRegistry`），**不依赖本机 tag 面与网络**。
+  //
+  // **版本面由夹具自己合成**（issue #724，见 `selfTestVersionFace` 的节头）：这一族每一例都带
+  // `simulateVersionFace`，于是「在飞的那一版」的段首是**夹具刚写下**的那一行（`faceInflightHeading()`），
+  // 变异锚点不是从真树抄来的字符串 ⇒ 「变异没落上」不可能因为发版而复发。registry 桩一律 `selfTestRegistry()`
+  // （派生 = 发布行停在 `released` 上），tag 面一律 `faceTagFacts()`（最小面：released / previous 两段）。
   {
     label: "#697 ①：正在准备的那一段（版本序最高）标了未发布却带着发布日期 ⇒ 红（registry 不可得也判）",
+    simulateVersionFace: true,
     overlay: {
-      "CHANGELOG.md": replaceUnique("## [0.31.0]（未发布 / unpublished）", "## [0.31.0] - 2026-11-10（未发布 / unpublished）"),
+      "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().inflight.version,
+        () => `## [${selfTestVersionFace().inflight.version}] - ${shiftDay(selfTestVersionFace().released.date, 1)}（未发布 / unpublished）`),
     },
     simulateRegistry: { ok: false, why: "self-test 夹具：registry 不可得" },
-    expect: [/changelog-date: CHANGELOG:\d+ 的 0\.31\.0 段标了「未发布 \/ unpublished」却带着发布日期 2026-11-10/],
+    expect: [new RegExp(`changelog-date: CHANGELOG:\\d+ 的 ${esc(selfTestVersionFace().inflight.version)} 段`
+      + `标了「未发布 / unpublished」却带着发布日期 ${esc(shiftDay(selfTestVersionFace().released.date, 1))}`, "u")],
     expectExit: 1,
   },
   {
     label: "#697 ②：已发布段的日期与 tag 日期不一致 ⇒ 红并点名两个日期",
-    overlay: { "CHANGELOG.md": replaceUnique("## [0.30.0] - 2026-11-03", "## [0.30.0] - 2026-11-04") },
-    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
-    simulateTagFacts: { ok: true, dates: new Map([["0.30.0", { date: "2026-11-03", kind: "annotated" }]]), source: "self-test 夹具" },
+    simulateVersionFace: true,
+    overlay: {
+      "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().previous.version,
+        (line) => line.replace(selfTestVersionFace().previous.date, shiftDay(selfTestVersionFace().previous.date, 1))),
+    },
+    simulateRegistry: selfTestRegistry(),
+    simulateTagFacts: faceTagFacts(),
     simulateDateTagExemptions: [],
-    expect: [/changelog-date: CHANGELOG:\d+ 的 0\.30\.0 段写 2026-11-04，tag v0\.30\.0 是 2026-11-03/],
+    expect: [new RegExp(`changelog-date: CHANGELOG:\\d+ 的 ${esc(selfTestVersionFace().previous.version)} 段写 `
+      + `${esc(shiftDay(selfTestVersionFace().previous.date, 1))}，tag v${esc(selfTestVersionFace().previous.version)} 是 `
+      + `${esc(selfTestVersionFace().previous.date)}`, "u")],
     expectExit: 1,
   },
   {
     label: "#697 ②（登记证）：同一处不一致登记进 CHANGELOG_DATE_TAG_EXEMPTIONS ⇒ 绿（历史事实不改）",
-    overlay: { "CHANGELOG.md": replaceUnique("## [0.30.0] - 2026-11-03", "## [0.30.0] - 2026-11-04") },
-    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
-    simulateTagFacts: { ok: true, dates: new Map([["0.30.0", { date: "2026-11-03", kind: "annotated" }]]), source: "self-test 夹具" },
-    simulateDateTagExemptions: [{ version: "0.30.0", why: "self-test 探针：登记之后同一处不一致不红" }],
+    simulateVersionFace: true,
+    overlay: {
+      "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().previous.version,
+        (line) => line.replace(selfTestVersionFace().previous.date, shiftDay(selfTestVersionFace().previous.date, 1))),
+    },
+    simulateRegistry: selfTestRegistry(),
+    simulateTagFacts: faceTagFacts(),
+    simulateDateTagExemptions: [{ version: selfTestVersionFace().previous.version, why: "self-test 探针：登记之后同一处不一致不红" }],
     expectGreen: true,
   },
   {
     label: "#697 ②（空转证）：登记表里一条对不上任何不一致的条目 ⇒ 红（#210 R2）",
-    overlay: {
-      "CHANGELOG.md": replaceUnique("## [0.31.0]（未发布 / unpublished）", "## [0.31.0] — 截至本提交尚未发布"),
-    },
-    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
-    simulateTagFacts: { ok: true, dates: new Map([["0.30.0", { date: "2026-11-03", kind: "annotated" }]]), source: "self-test 夹具" },
+    simulateVersionFace: true,
+    overlay: { "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().inflight.version, () => faceInflightAltHeading()) },
+    simulateRegistry: selfTestRegistry(),
+    simulateTagFacts: faceTagFacts(),
     simulateDateTagExemptions: [{ version: "9.9.9", why: "self-test 探针：空转条目" }],
     expect: [/changelog-date: CHANGELOG_DATE_TAG_EXEMPTIONS 里 9\.9\.9 那一条是空转的/],
     expectExit: 1,
   },
   {
     label: "#697 ③：registry 说 latest 已发布但没有 tag ⇒ 未判定 TAG_MISSING，exit 2 而不是红",
-    overlay: {
-      "CHANGELOG.md": replaceUnique("## [0.31.0]（未发布 / unpublished）", "## [0.31.0] — 截至本提交尚未发布"),
-    },
-    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
+    simulateVersionFace: true,
+    overlay: { "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().inflight.version, () => faceInflightAltHeading()) },
+    simulateRegistry: selfTestRegistry(),
     simulateTagFacts: { ok: true, dates: new Map(), source: "self-test 夹具：一个 tag 都没有" },
     simulateDateTagExemptions: [],
     expectNotJudged: ["TAG_MISSING"],
@@ -9070,39 +9205,80 @@ const SELF_TEST_CASES = [
   },
   {
     label: "#697 ③（历史段无 tag 不判）：registry 说已发布但不是 latest、又没有 tag ⇒ 记一笔跳过，不 exit 2（只有 latest 缺 tag 才算 TAG_MISSING）",
-    overlay: {
-      "CHANGELOG.md": replaceUnique("## [0.31.0]（未发布 / unpublished）", "## [0.31.0] — 截至本提交尚未发布"),
-    },
+    simulateVersionFace: true,
+    overlay: { "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().inflight.version, () => faceInflightAltHeading()) },
     simulateRegistry: selfTestRegistry(),
-    simulateTagFacts: { ok: true, dates: new Map([["0.30.0", { date: "2026-11-03", kind: "annotated" }]]), source: "self-test 夹具：只有 latest 那个 tag" },
+    simulateTagFacts: {
+      ok: true,
+      dates: new Map([[selfTestVersionFace().released.version,
+        { date: selfTestVersionFace().released.date, kind: "annotated" }]]),
+      source: "self-test 夹具：只有 latest 那个 tag",
+    },
     simulateDateTagExemptions: [],
     expectGreen: true,
   },
   {
     label: "#697（历史段不受 (a) 管）：历史段的「带日期 + 正文标未发布」不改口 ⇒ 绿",
-    overlay: { "CHANGELOG.md": replaceUnique("## [0.24.0] - 2026-10-22", "## [0.24.0] - 2026-10-23") },
-    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
-    simulateTagFacts: { ok: true, dates: new Map([["0.30.0", { date: "2026-11-03", kind: "annotated" }]]), source: "self-test 夹具" },
+    simulateVersionFace: true,
+    overlay: {
+      "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().historicalMarked.version,
+        (line) => line.replace(selfTestVersionFace().historicalMarked.date,
+          shiftDay(selfTestVersionFace().historicalMarked.date, 1))),
+    },
+    simulateRegistry: selfTestRegistry(),
+    simulateTagFacts: faceTagFacts(),
     simulateDateTagExemptions: [],
     expectGreen: true,
   },
   {
     label: "#697 ⑤（放行证）：未发布段换成本仓另一种合法无日期形状 ⇒ 绿",
-    overlay: {
-      "CHANGELOG.md": replaceUnique("## [0.31.0]（未发布 / unpublished）", "## [0.31.0] — 截至本提交尚未发布"),
-    },
-    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
-    simulateTagFacts: { ok: true, dates: new Map([["0.30.0", { date: "2026-11-03", kind: "annotated" }]]), source: "self-test 夹具" },
+    simulateVersionFace: true,
+    overlay: { "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().inflight.version, () => faceInflightAltHeading()) },
+    simulateRegistry: selfTestRegistry(),
+    simulateTagFacts: faceTagFacts(),
     simulateDateTagExemptions: [],
     expectGreen: true,
   },
   {
     label: "#697（干净检出）：tag 面读不出 ⇒ 日期↔tag 这一半跳过，不判红（#280 口径）",
-    overlay: {
-      "CHANGELOG.md": replaceUnique("## [0.31.0]（未发布 / unpublished）", "## [0.31.0] — 截至本提交尚未发布"),
-    },
-    simulateRegistry: { ...selfTestRegistry(), latest: "0.30.0" },
+    simulateVersionFace: true,
+    overlay: { "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().inflight.version, () => faceInflightAltHeading()) },
+    simulateRegistry: selfTestRegistry(),
     simulateTagFacts: { ok: false, why: "self-test 夹具：不是 git 仓（干净检出）" },
+    simulateDateTagExemptions: [],
+    expectGreen: true,
+  },
+  // ══ issue #724：反向证的反向证（判据 3 的机器面）══════════════════════════════════════
+  {
+    // 模拟一次**发布回写**：在飞那一段改成已发布形（段首带日期）、AGENTS 中英两句的发布行跟着走到
+    // 新发布行、registry 与 tag 面同步 ⇒ 整棵树必须仍然**绿**。
+    // 为什么不是「在自测里再跑一遍自测」：那是 199 例 × 199 例（≈ 11 小时），而且它要证的并不是
+    // 「自测自己可重入」，而是**版本面换了、判据与夹具都不红**这一件事。两副真版本面上的整趟
+    // `--self-test` 是这条用例的实测背书（issue #724 交付报告里贴了两次退出码）。
+    label: "#724（回写模拟）：在飞的那一段按发布回写改成已发布形（段首带日期、AGENTS 发布行与 registry 一起走到新发布行）⇒ 绿",
+    simulateVersionFace: true,
+    overlay: {
+      "CHANGELOG.md": rewriteSectionHeading(selfTestVersionFace().inflight.version,
+        () => `## [${selfTestVersionFace().inflight.version}] - ${shiftDay(selfTestVersionFace().released.date, 1)}`),
+      [AGENTS_EN]: mutatePublishedClaim(selfTestVersionFace().inflight.version, 0),
+      [AGENTS_CN]: mutatePublishedClaim(selfTestVersionFace().inflight.version, 1),
+    },
+    simulateRegistry: {
+      ok: true,
+      authoritative: true,
+      latest: selfTestVersionFace().inflight.version,
+      versions: [...selfTestRegistry().versions, selfTestVersionFace().inflight.version],
+      source: "self-test 夹具：回写之后（新发布行 = 在飞那一版）",
+    },
+    simulateTagFacts: {
+      ok: true,
+      dates: new Map([
+        [selfTestVersionFace().released.version, { date: selfTestVersionFace().released.date, kind: "annotated" }],
+        [selfTestVersionFace().inflight.version,
+          { date: shiftDay(selfTestVersionFace().released.date, 1), kind: "annotated" }],
+      ]),
+      source: "self-test 夹具：回写之后的两段 tag",
+    },
     simulateDateTagExemptions: [],
     expectGreen: true,
   },
@@ -9198,9 +9374,21 @@ function runSelfTest() {
     // issue #697：tag 面夹具必须在**应用 overlay 之前**派生——否则「夹具从被测文档派生」会让
     // 「改日期 ⇒ 仍绿」变成永真（夹具与被测面同源，就是本单要堵的那种假绿）。
     const tagFixture = selfTestTagFacts();
+    // issue #724：**版本面**夹具先落上（`simulateVersionFace`）。它只能改文本（overlay），所以「在飞的那一版」
+    // 的段首是夹具自己写下的那一行 ⇒ 本用例的变异锚点（`faceInflightHeading()`）就指在这一行上。
+    // 落不上（锚行找不到）**不在这里单独报**：那时用例自己的变异也打不中，由下面那条既有的
+    // 「变异没落到 X 上」报红——同一味病不拿第二条判据重复计数。
+    if (c.simulateVersionFace) {
+      const faceBefore = read("CHANGELOG.md");
+      const faced = renderVersionFace(faceBefore);
+      if (faced !== faceBefore) OVERLAY.set("CHANGELOG.md", faced);
+    }
     let missedOn = null;   // #286 T-a：变异没打上的那一处（`expectMutateMiss` 用例等的就是它）
     for (const [rel, mutate] of Object.entries(c.overlay ?? {})) {   // #280：纯树形例可以不带 overlay
-      const before = read(rel);
+      // #724：读**当前生效的文本**（`textOf`）而不是盘上那一份——上面刚落上的版本面夹具就在 OVERLAY 里，
+      // 用例的变异锚点（`faceInflightHeading()`）指的正是夹具写下的那一行。没有预置 overlay 时
+      // `textOf === read`（两者同源），所以这一改对其余 197 例是零行为变化。
+      const before = textOf(rel);
       const after = mutate(before);
       if (after === before) { missedOn = rel; break; }
       OVERLAY.set(rel, after);
