@@ -4327,6 +4327,16 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *
  *     # 配对地板：实测 12 对 > 地板 11 对 ⇒ 可以抬地板到 12
  *         —— rebase 到 aa94463 后的最终树上现跑：node --test --test-name-pattern "中英配对地板" test/static-guards.test.js
+ *
+ * issue #742（轮记录 `runStateMeta`，feat-261107-08）：**同样在 rebase 到 origin/main `aa94463` 之后重测**，
+ * 本支在 `## [Unreleased] ### Added` 加一对（`runStateMeta: {bytes,capBytes,truncated}`）⇒ 那一棵上同一面
+ * 实测也是 **12 对**（#741 与 #742 各自在自己的树上抬到 12，**两棵不同的树同一个数**，不是谁抄谁）：
+ *
+ *     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行）；中文 12 条 / 英文 12 条 / 配对 12 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 11（校准面 ## [Unreleased]）
+ *     # 配对地板：实测 12 对 > 地板 11 对 ⇒ 可以抬地板到 12
+ *
+ * ⚠ **#741 与 #742 合流之后这个 12 必然旧**（两对同时在面上）⇒ 下面那个常量以**本树现跑守卫**的实测值为准，
+ * 永远不做加法（12 与 12 相加得 24 是错的，两棵树各自数过同一个 12）。
  */
 const CHANGELOG_PAIR_FLOOR = 12;
 
