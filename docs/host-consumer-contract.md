@@ -2276,6 +2276,31 @@ the exception: their absence emits no degraded-capability event, because the
 degradation is already reported on the channel that owns it (see the raw-row
 probe section below).
 
+#### The run snapshot's `messages` cell is round residue, not the transcript (issue #735 slice 2)
+
+`saveRunSnapshot` receives a payload whose `messages` cell is an array with
+**one slot per transcript message, in the transcript's own index space**, but
+only the slots from the current round's start onward carry a body; every slot
+before them is `null`. The elided prefix is by construction already journaled
+(the engine journals each message as it forms, issue 261021 slice 2, plus the
+#326 engine rows), and the only reader of this cell — the resume path's
+upgrade branch for ledgers written before per-message journaling — slices
+`messages.slice(anchor)`, so it never reads a slot that was elided. Nothing
+about the cell's shape moved: the key name, its position among the payload keys
+(the file store `JSON.stringify`s the payload, so key order is host-visible
+bytes) and `Array.isArray(messages) ? messages : []` tolerance for older
+snapshots are all unchanged, and an archive written before this change still
+carries the whole transcript there and is still read unchanged.
+
+Hosts must therefore treat this cell as **opaque resume state owned by the
+engine**: count slots, don't read bodies out of it. A host that wants the
+transcript reads the ledger (`load`), which is the authority for message text
+(issue 261021 slice 3). What the change buys is payload size: on a fixture-driven
+20-round run the payload written per snapshot went from `101136` bytes down to
+`17992` at the last write, and the total written across `39` snapshot writes
+from `1981515` bytes (1.89 MiB) down to `354949` bytes (0.34 MiB) — that cell
+was the bulk of the 2 MiB host-side limit reported in issue #734.
+
 #### Optional raw-row anchor probe (issue #714)
 
 `loadRawRows(runId) => Promise<RoundRecord[]>` returns **the rows `load()` reads,

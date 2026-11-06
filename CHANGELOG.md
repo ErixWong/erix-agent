@@ -547,6 +547,33 @@
   有一例红——那是常驻变异复证，不是愿景。CLI 帮助文本（`bin/cli.js`，即 `erix --help` /
   `erix chat --help` 打的那份）的 `--no-agents` 那一格同步写成 64 KiB 并点出有这句声明；repl 的帮助
   仍只列旗标不写字节上限，与改动前一致。
+- **The run snapshot's `messages` cell now carries round residue, not the whole transcript (issue #735, slice 2).**
+  `persistRunSnapshot` wrote `cloneState(messagesOverride ?? messages)` — every snapshot re-serialized the
+  session from the seed message to now, and that single cell is the bulk of the 2 MiB host-side ceiling
+  #734 reported. Measured on a fixture-driven 20-round run (fake provider, 8 KiB tool output per round,
+  39 snapshot writes): **1 981 515 bytes (1.89 MiB) → 354 949 bytes (0.34 MiB)** total, last write
+  **101 136 → 17 992 bytes**. The cell stays an array **in the transcript's own index space**: slots before
+  the residue hold `null`, so the payload's key order, the cell's position, and the reader's absolute
+  `snapshot.messages.slice(anchor)` all keep working with **zero read-side changes** — that index alignment
+  is the design, not an accident: a shorter array would shift the anchor's absolute index and the very same
+  fixture scene turns red (`invalid_messages`, 0 model requests) when the residue is truncated instead of
+  nulled. **The invariant the write side depends on**, stated in the code comment at the write point and
+  proved on both sides: `residueStart = min(round start, persistedTranscriptLength, length) <= resume anchor`.
+  `persistedTranscriptLength` only advances on a journaling call this process itself saw succeed (both call
+  sites are guarded by `if (persisted)`), and `countResumeAnchor(records)` counts the same append-only ledger
+  at a later instant, so the first term bounds the second; the round-start term covers the one case memory
+  runs ahead of the ledger — a resumed run whose crash-round body was completed from the snapshot and
+  deliberately left un-journaled (#424's guard), which sits *after* the anchor and is exactly what the
+  `min(..., persistedTranscriptLength)` term keeps. Pinning it is the double-crash case (old-format fixture
+  ledger → resume → engine overwrites the snapshot → resume again), which compares its two outcomes
+  byte-for-byte against a **copy of `src/` writing the whole transcript** (issue #411's discipline: the
+  in-repo `src/` is never edited by a mutation probe). The fixture scene is `test/fixtures/journal-0.22.0/`
+  truncated after round 1, so the crash round's body really only exists in the snapshot, and the anchor is
+  recomputed with the reader's own `foldLedgerMessages`, not a hand-copied constant. ⚠ **Host-visible**:
+  reading bodies out of `snapshot.messages` is no longer supported — see “The run snapshot's `messages` cell
+  is round residue” in `docs/host-consumer-contract.md` (and the CN twin). Two pre-existing cases built their
+  crash fixture with `snapshot.messages.slice(0, anchor)`; they now take that prefix from the ledger
+  (`foldLedgerMessages(store.load(runId))`) — the same text, from the side that actually owns it.
 - **The run snapshot stops writing two cells nobody reads (issue #735, slice 1).** `persistRunSnapshot`
   built one payload with four candidate cells; after re-measuring instead of trusting the ticket, two of
   them really have no reader. `toolUse` was a **second, independent `cloneState()` call over the same
@@ -612,6 +639,28 @@
   re-adding `toolUse`, re-adding `ts`, misspelling `pendingToolUses` by one character, and moving `status`
   out of its base slot each turn cases red, and re-adding `toolUse` is now also the standing sample **M18**
   that `check:mutation:run` re-runs in CI (the #210 R2 convention).
+- **run snapshot 的 `messages` 这一格从此只交「轮残余」，不再是整段正文（issue #735，切片 2）。**
+  `persistRunSnapshot` 原来写的是 `cloneState(messagesOverride ?? messages)` —— 每写一次快照就把「从种子
+  到当前轮」的全文重抄一遍，而 #734 报的宿主 2 MiB 上限，大头就是这一格。夹具驱动的 20 轮真跑
+  （fake provider、每轮 8 KiB 工具输出、39 次快照写）实测：**累计 1 981 515 字节（1.89 MiB）→ 354 949
+  字节（0.34 MiB）**，末次写 **101 136 → 17 992 字节**。这一格**仍是数组，且仍在正文自己的下标空间里**：
+  残余之前的格子写 `null`，于是 payload 键序、这格在键序里的位置、以及读侧那个绝对下标的
+  `snapshot.messages.slice(anchor)` 全部**零改动**继续成立 —— 这个下标对齐是设计而不是巧合：换成更短的
+  数组就会挪掉 `anchor` 的绝对下标，同一个夹具现场把残余**截掉**而不是置 null，当场红
+  （`invalid_messages`，0 次模型请求）。**写侧依赖的不变量**（原话写在写点注释里，两侧都证）：
+  `residueStart = min(本轮起点, persistedTranscriptLength, 正文长度) <= 恢复现场的 anchor`。
+  `persistedTranscriptLength` 只在**本进程亲手落盘成功**时才 +1（两处写点都带 `if (persisted)` 守卫），
+  而 `countResumeAnchor(records)` 量的是同一本只追加的账在更晚时刻的条数 ⇒ 第一项界住第二项；第二项
+  「本轮起点」管的是内存跑在账本之前那唯一一种情形——恢复时从快照补进内存、却被 #424 的守卫
+  故意留在账本之外的崩溃轮正文，它排在锚点**之后**，正是 `min(..., persistedTranscriptLength)` 那一项
+  把它留住。钉住它的用例是那条双崩链（旧格式夹具账本 → resume → 引擎亲笔覆盖写快照 → 再 resume），
+  它把两次恢复的结果与一棵**写整段的 `src/` 副本**逐字对账（issue #411 的纪律：变异只发生在副本上，
+  仓内 `src/` 全程只读）。夹具现场是 `test/fixtures/journal-0.22.0/` 截到 round 1 ⇒ 崩溃轮正文真的只在
+  快照里；锚点用读侧自己的 `foldLedgerMessages` 现算，不是抄来的常数。⚠ **宿主可见**：从
+  `snapshot.messages` 里读正文这件事不再被支持 —— 见 `docs/host-consumer-contract.md`（与中文对页）
+  新增的「run snapshot 的 `messages` 这一格是轮残余」。两处原先拿 `snapshot.messages.slice(0, anchor)` 造
+  崩溃现场的既有用例，现在改从**账本**取那段前缀（`foldLedgerMessages(store.load(runId))`）—— 同一段正文，
+  换成真正拥有它的那一侧。
 - **run snapshot 停写两格没有人读的字段（issue #735，切片 1）。** `persistRunSnapshot` 构造的那份
   payload 里有 4 格候选冗余，**不按工单口径、改成自己重测**之后只有 2 格真的无人读：`toolUse` 与
   `pendingToolUse` 是**对同一个源值各自调一次 `cloneState()`**（`cloneState(snapshotPendingToolUse)`
