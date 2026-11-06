@@ -4394,7 +4394,10 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *     # 配对地板：实测 13 对 > 地板 12 对 ⇒ 可以抬地板到 13
  *         —— 红的时候红在 assert.equal(problems.pairs.length, CHANGELOG_PAIR_FLOOR)，报的是 13 !== 12
  */
-const CHANGELOG_PAIR_FLOOR = 14;
+// issue #735 切片 2：`## [Unreleased]` 上重取 = **15 对**（守卫现报原文：「中文 15 条 / 英文 15 条 /
+// 配对 15 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 14」⇒ 抬到 15。
+// 取的是**守卫当场报的那个数**，不是「14 + 本单一对」的加法）。
+const CHANGELOG_PAIR_FLOOR = 15;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

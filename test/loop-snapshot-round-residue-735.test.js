@@ -39,11 +39,12 @@
 // 轮行上，正是「崩溃轮的正文只在快照里」那种旧格式账本。本文件只读它，一个字都不改。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { makeTmp } from "./helpers/tmp.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
@@ -241,7 +242,7 @@ test("#735 切片 2 · 双崩现场（resume → 覆盖写快照 → 再 resume�
     t.skip("变异子进程里不再递归跑对账");
     return;
   }
-  const wholeRoot = mutateEngine("double-crash-baseline",
+  const wholeRoot = await mutateEngine("double-crash-baseline",
     "messages: snapshotTranscriptResidue,",
     "messages: cloneState(transcriptForSnapshot),");
   try {
@@ -363,8 +364,9 @@ test("#735 切片 2 · ④b 变异「删掉残余」⇒ ① 红；只拿掉锚�
 
 // ── ④a 变异「写回整段」：靶子是 `src/` 的副本（issue #411 的纪律：仓内 `src/` 全程只读）──
 
-function mutateEngine(label, search, replace) {
-  const root = mkdtempSync(join(tmpdir(), `snap735-${label}-`));
+async function mutateEngine(label, search, replace) {
+  // 临时目录一律走 `makeTmp`（#185/#199：TMPDIR 卫生 + 可写探针；裸 mkdtemp 由 test-hygiene 闸挡）。
+  const root = await makeTmp(`snap735-${label}-`);
   cpSync(join(REPO_ROOT, "src"), join(root, "src"), { recursive: true });
   // helper 也要拷：它们 `import "../src/…"`，在副本里才会解析到**被改坏的**那一棵。
   cpSync(join(REPO_ROOT, "test/helpers"), join(root, "test/helpers"), { recursive: true });
@@ -381,7 +383,7 @@ test("#735 切片 2 · ④a 变异「写回整段」（副本引擎）⇒ ③ �
     t.skip("变异子进程里不再递归跑变异");
     return;
   }
-  const mutatedRoot = mutateEngine("whole",
+  const mutatedRoot = await mutateEngine("whole",
     "messages: snapshotTranscriptResidue,",
     "messages: cloneState(transcriptForSnapshot),");
   try {
