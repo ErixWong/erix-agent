@@ -3,12 +3,26 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3605,
+    "tests": 3610,
     "fail": 0,
     "maxSkipped": 15
   },
   "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
   "observations": [
+    {
+      "date": "2026-11-07",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "8f1d32e + 随后的 docs/守卫两笔（fix-261107-09-snapshot-round-residue，基点 main=bea46bb）；六个计数取自这一棵树上现跑的 npm test（日志 /tmp/npmtest-final3.log）",
+      "branch": "fix-261107-09-snapshot-round-residue",
+      "tests": 3610,
+      "pass": 3597,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests 3605 → **3610**（+5，全部是有意的增删）：新增 `test/loop-snapshot-round-residue-735.test.js` 5 格（issue #735 切片 2：① 旧格式账本（`test/fixtures/journal-0.22.0` 截到 round 1）的升级路径仍把崩溃轮正文喂给模型；双崩现场 resume → 引擎覆盖写快照 → 再 resume，并把两次恢复的成败与上下文与一棵「写回整段」的 `src/` 副本逐字对账；③ 快照正文位的非 null 条数与独立字节基线；④b 变异「删掉残余」⇒ ① 红 + 「只置空前缀」⇒ 逐字不变；④a 变异「写回整段」（副本引擎 + `node --test` 子进程真退出码）⇒ ③ 红），既有文件一格没增减（两处原先从 `snapshot.messages` 切前缀造崩溃现场的夹具只换了正文来源：`test/loop-invalid-arguments.test.js`、`test/loop-snapshot-write-side-735.test.js`）。`fail=0`；`skipped` 实测 13 = 12 条真上游/真 relay 闸门 + 1 条真上游多会话格，**与登记上限 15 无关**：本机一开始 `node_modules/typescript` 缺失 ⇒ 同一棵树先量到 `skipped 17`（4 条类型棘轮用例自证式跳过），`npm install --include=dev` 之后重跑才是这条 13 —— 记下来是为了下一次别把环境缺依赖当成用例坏了。六个数值字段逐字取自这棵树的 TAP 汇总行并经 `npm run check:test-summary -- --log /tmp/npmtest-final3.log` 复核。同片随动：`test/static-guards.test.js` 的 CHANGELOG 配对地板按守卫现报值 **14 → 15** 重取（守卫原文：「中文 15 条 / 英文 15 条 / 配对 15 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 14」⇒ 抬到它当场报的那个数，**不做相加**）。没删例、没跳过、没放宽断言。"
+    },
     {
       "date": "2026-11-07",
       "env": "local",
