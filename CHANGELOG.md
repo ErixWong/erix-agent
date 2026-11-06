@@ -274,9 +274,10 @@
   payload 里有 4 格候选冗余，**不按工单口径、改成自己重测**之后只有 2 格真的无人读：`toolUse` 与
   `pendingToolUse` 是**对同一个源值各自调一次 `cloneState()`**（`cloneState(snapshotPendingToolUse)`
   写了两遍）⇒ 内容等值但**是两个对象**，不是「一次调用换个名字」。它的零读者证据是**面**而不是名字：
-  把恢复侧真正从快照对象上读的字段穷举出来（`grep -rn "resumeRunSnapshot\(?:\?\)\." src/`），集合是
-  `round` / `pendingToolUse(s)` / `toolResults` / `toolOutputs` / `executedToolIds` / `partialText` /
-  `partialRound` / `messages`——这两格都不在里面；而 `grep -rn "\.toolUse\b" src/ bin/` 在基点 `f6c2566`
+  把恢复侧真正从快照对象上读的字段穷举出来（`grep -rhoE "resumeRunSnapshot\??\.[A-Za-z_]+" src/ | 
+  sed 's/.*\.//' | sort -u`，31 个读点），结果恰好是 `executedToolIds` / `messages` / `partialRound` /
+  `partialText` / `pendingToolUse` / `pendingToolUses` / `round` / `toolOutputs` / `toolResults` 这 9 个——
+  停写的两格都不在里面；而 `grep -rn "\.toolUse\b" src/ bin/` 在基点 `f6c2566`
   上只命中 1 行（`src/loop/orchestrator.js:2853`），那是 `...toolUse` **展开运算符的末尾点号**、不是属性
   访问，所以真的属性访问面为空。（拿 `grep -rn "snapshot\.toolUse\b"` 零命中当证据是无效的：这个字面串
   在基点树上本来一处都不存在——「恒零的 grep 当证据」正是本仓反复栽的那一格。）也别把**另一张面**上的

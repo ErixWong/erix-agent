@@ -9,8 +9,10 @@
 //   那个数属于「另两格也停」的那个切片，不属于这里）：
 //   · 已停写：`toolUse`（它与 `pendingToolUse` 是**两次独立 `cloneState()` 仍同一个源值**，内容等值
 //     但不同址；全仓无属性访问面读它）、`ts`（读侧那个 `ts` 是**账本行 / 消息行**的，不是快照这一格）。
-//     ⇒ 零读者的证据是**面**而不是名字：恢复侧读快照对象那一层只出现 `round` / `pendingToolUse(s)` /
-//     `toolResults` / `toolOutputs` / `executedToolIds` / `partialText(Round)` / `messages`，里面没这两格。
+//     ⇒ 零读者的证据是**面**而不是名字：恢复侧读快照对象那一层只出现 9 个字段 ——
+//     `grep -rhoE "resumeRunSnapshot\??\.[A-Za-z_]+" src/ | sed 's/.*\.//' | sort -u`（31 个读点）得
+//     `executedToolIds` / `messages` / `partialRound` / `partialText` / `pendingToolUse` / `pendingToolUses`
+//     / `round` / `toolOutputs` / `toolResults`，里面没停写的这两格。
 //   · 仍写出：`status`（`test/loop-persistence-phase.test.js` 拿它当分辨调用点的唯一指纹、
 //     `test/loop-invalid-arguments.test.js` 拿 `status === "rejected"` 造崩溃现场夹具、
 //     `test/loop-v020-rc.test.js` / `test/persistence-diagnostics.test.js` 拿

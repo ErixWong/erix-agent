@@ -2887,9 +2887,10 @@ export async function runToolLoop(options) {
         // **已停写（两格）**
         // - `toolUse`：它与 `pendingToolUse` 是**两次独立 `cloneState()` 调用仍同一个源值**
         //   （`cloneState(snapshotPendingToolUse)` 写两遍）⇒ 内容等值但**不同址**，不是同一对象的别名。
-        //   零读者的证据不是名字而面：**恢复侧读快照对象的那一层只出现** `round` / `pendingToolUse(s)` /
-        //   `toolResults` / `toolOutputs` / `executedToolIds` / `partialText` / `partialRound` / `messages`
-        //   这些字段（`grep -rn "resumeRunSnapshot\(?:\?\)\." src/` 的字段集合），其中**没有** `toolUse`；
+        //   零读者的证据不是名字而面：**恢复侧读快照对象那一层只出现 9 个字段** —— 穷举
+        //   `grep -rhoE "resumeRunSnapshot\??\.[A-Za-z_]+" src/ | sed 's/.*\.//' | sort -u`（31 个读点）得
+        //   `executedToolIds` / `messages` / `partialRound` / `partialText` / `pendingToolUse` /
+        //   `pendingToolUses` / `round` / `toolOutputs` / `toolResults`，里面**没有** `toolUse` 也没有 `ts`；
         //   而 `grep -rn "\.toolUse\b" src/ bin/` 在基点 `f6c2566` 上只命中 1 行（`orchestrator.js:2853`），
         //   那是 `...toolUse` 展开运算符的末尾点号，**不是属性访问** ⇒ 真属性访问面为空。
         //   （注意：“`grep "snapshot\.toolUse\b"` 零命中”证不了零读者——基点树上这个字面串本来就不存在。
