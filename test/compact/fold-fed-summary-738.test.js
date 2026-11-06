@@ -24,6 +24,21 @@
 //   D 夹具前提（工单判据 1）：`.summary !== .text` 且 `.text` 明确带着原任务正文，否则 C/E/F 永真；
 //   E 读侧逐字（判据 2）与 F 读侧兼容（判据 3）+ 可观测面（第 4 条：`replaySource` / 两处字节数 /
 //     `byteEqual`，没有精确保存值一律 `"unknown"` = **不可判定**，禁止伪报相等）。
+
+// 反向证（手工跑过，未登记）：把读侧旧优先级**字面反转**（`.text` 优先）后，第一发且唯一一发红的就是
+// `test/compact/resume-fold-trim.test.js` 的 `#462 规划器`，红在 `plan.applied === true`（`false !== true`，退出码 1）
+// ——那一格「优先用引擎留下的纯摘要」正是旧优先级的钉子，「不许反转」这条既有常驻用例守着、也有手工反向证验过落点。
+// 诚实记录一个不那么好看的变体：把 `.text` 排到 `.summary` **前面**、但剥正文剥空后仍回落到 `.summary`，`#462` 抓不到
+// （剥完的 `.text` 是空串，照样回落），是本文件的 `#738-C` / `#738-E` / `#738-F` 三条把它打红的（三条同时红、退出码 1）。
+//
+// 变异样本已登记：`test/mutation-samples.md` 的 **M22** 钉的是**读侧**逐字（短路 `resume-fold-trim.js` 里那条精确分支
+// ⇒ `#738-E` 红）；**M23** 钉的是**写侧**只认**钉住的那一块**（在 `pinFedSummaryBlock` 里丢掉「必须落在插入约定那个
+// 下标」⇒ `#738-G2` 红）。两条打的是不同判据、彼此不互红，所以都得留。**编号是第二次 rebase 之后改的**：
+// main 上 #736 已占用 M19/M20，本片的两条顺延为 M22/M23。
+//
+// 手工反向证（本刀落地时跑过，未登记为常驻样本）：把 `pickFedSummaryTextBlock` 退化成评审那版「定稿里有任一完整
+// text 块与候选相等」⇒ `#738-G` 与 `#738-G2` 一起红（退出码 1）；只删 `pinFedSummaryBlock` 里「必须落在 `content[0]`」
+// 那一条守卫 ⇒ `#738-G2` 红（退出码 1）。⇒ 这两条用例不是恒绿的摆设。
 import test from "node:test";
 import assert from "node:assert/strict";
 import { runToolLoop } from "../../src/loop/orchestrator.js";

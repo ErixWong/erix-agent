@@ -471,7 +471,7 @@
   created"), and an independent review killed it with a probe: the retained head content lives in **the very
   same new message**, so a summary clamped to `SUMMARY\n[已修剪]` next to a carried-over body block still
   reading `SUMMARY` made the engine journal the *body block* as the fed summary. `#738-G` / `#738-G2` pin
-  that counterexample permanently and sample **M20** keeps it biting in CI. `fold-llm` writes
+  that counterexample permanently and standing samples **M22** (read side replays verbatim) / **M23** (write side trusts only the pinned block) keep them biting in CI. `fold-llm` writes
   `compactedSummary`; a strategy whose text never entered the context (`sliding-window` journals, never
   prepends), a merged reconstruction (`fold-statistical`'s second fold), and anything a later layer rewrote
   **or deep-copied** (`safeTruncateMessages` opens with `cloneState` at `src/loop/budget.js:179-180`, which is
@@ -505,7 +505,7 @@
   要么那个消息对象本身还在、而它那个下标上的块逐字等于候选；否则**不写键**。这个判据的第一版是按**文字**搜
   （「本次折叠新造的消息里某一个完整 `text` 块逐字相同」），被独立验收用探针当场打死：保留下来的 head 正文
   就住在**同一条新消息**里，于是摘要块被夹断成 `SUMMARY\n[已修剪]`、而旁边保留块还写着 `SUMMARY` 时，
-  引擎会把**那个正文块**当成「当年 fed 的摘要」记进账。`#738-G` / `#738-G2` 把这个反例常驻钉住，样本 **M20**
+  引擎会把**那个正文块**当成「当年 fed 的摘要」记进账。`#738-G` / `#738-G2` 把这个反例常驻钉住，常驻样本 **M22**（读侧逐字）与 **M23**（写侧只认钉住的那一块）
   让它在 CI 里继续咬人。`fold-llm` 写得出的就是 `compactedSummary`；文本从没进过上下文的策略
   （`sliding-window` 只落账不 prepend）、合并重建出来的那一折（`fold-statistical` 第二折），以及被后面的层
   **改写过或被深拷贝重建过**的形状（`safeTruncateMessages` 起手就 `cloneState`，那是 `structuredClone`，
