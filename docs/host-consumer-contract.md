@@ -2260,7 +2260,7 @@ run), never a multi-version checkpoint. The tiers are:
 | Optional run-state | `saveRunState`, `loadRunState`, `markRunState` | run-state persistence skipped; run completes normally |
 | Host-facing optional terminal-status read | `loadRunStateStatus` | not used or validated by the engine; its absence does not emit a degraded-capability event |
 | Optional fast-path pre-write probes (issue #157) | `loadByDedupKey`, `loadMaxRound` | `appendUserTurn` falls back to full `load` (paired: implementing one without the other behaves exactly like implementing neither) |
-| Optional raw-row anchor probe (issue #714) | `loadRawRows` | mid-sequence `tool_result` stubs are anchored on `load()`'s **folded** rows only, so a finished round's first-slice row is unreachable: those stubs repair the run's context and the engine reports `resume_journal_skipped` instead of journaling a row that would land in the wrong message. No `persistence_capability_degraded` event — the absence is reported per resume on the existing `resume_journal_skipped` channel |
+| Optional raw-row anchor probe (issue #714) | `loadRawRows` | mid-sequence `tool_result` stubs are anchored on `load()`'s **folded** rows only, so a finished round's first-slice row is unreachable: those stubs repair the run's context and the engine reports `resume_journal_skipped` instead of journaling a row that would land in the wrong message. The same degradation applies when that round's carrier already carries its body (issue #729). No `persistence_capability_degraded` event — the absence is reported per resume on the existing `resume_journal_skipped` channel |
 
 `loadRunStateStatus` resolves to the terminal status **string** —
 `(runId: string) => Promise<string | undefined>`, with `undefined` when no
@@ -2280,8 +2280,11 @@ probe section below).
 
 `loadRawRows(runId) => Promise<RoundRecord[]>` returns **the rows `load()` reads,
 before folding**: same rows, same append order, same content — it does not run
-`foldMessageRows`. It is a read side only: it adds no write path, and it does not
-change the shape `load()` returns.
+`foldMessageRows`. It is the same read path as `load()` verbatim — including the
+tail repair: `loadRecords` starts with `repairTranscriptTail(path)`
+(`src/store/file.js`), which opens the file `r+` and isolates/truncates a
+half-written last line, so **a read can rewrite bytes on disk**. What the probe
+does not do is add a write API or change the shape `load()` returns.
 
 Why it exists. A `tool_use` stranded in the middle of the ledger is settled on
 resume by one stub `tool_result` per unsettled id, journaled as a **slice row**
@@ -2310,6 +2313,24 @@ Semantics, stated as a contract:
   `load()`, the aggregated message carries the stub, and
   `validateMessages(foldLedgerMessages(load()))` passes — the residual
   `invalid_messages` from the folded shape is gone.
+- **The round's carrier already carries its body ⇒ no anchor (issue #729)**: when
+  the host keeps *both* the folded round carrier (the one with `messages`) and
+  that round's original message rows — the shape #401 R3 exists for — the probe
+  does find a first-slice row, and it must **not** use it. A stub written there
+  makes the folded body differ from the carrier's existing body, so
+  `foldMessageRows`'s R3 guard stops matching and the whole round body is
+  appended a second time (measured: 3 messages become 5, and the second resume
+  dies on `invalid_messages`). The engine therefore withholds the anchor for any
+  round that already has a body-carrying carrier row (`isRoundCarrier`-shaped,
+  `messages.length > 0`) and degrades exactly like the absent-probe path: the
+  stub repairs this run's context only and one `resume_journal_skipped` reports
+  it. Degrading is the deliberate answer — a doubled ledger is worse than a
+  ledger that is still open.
+- **A candidate row's `round` must match exactly (issue #729)**: a row whose
+  `round` is not an integer is never a fold target, so anchoring a stub there
+  would strand it as an orphan `user` message (`user tool_result has no matching
+  assistant tool_use` — the other `invalid_messages`). Rows whose `round` is not
+  a safe integer are therefore never used as anchors.
 - Both built-in stores implement it (`createMemoryTranscriptStore`,
   `createFileTranscriptStore`); a minimal third-party store need not.
 
