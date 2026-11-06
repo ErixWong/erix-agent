@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3449,
+    "tests": 3451,
     "fail": 0,
     "maxSkipped": 15
   },
@@ -13,7 +13,21 @@
       "date": "2026-11-07",
       "env": "local",
       "node": "v22.23.2",
-      "commit": "a92c713（#735 切片 1：本分支基点 = origin/main f6c2566）",
+      "commit": "b384a99（#735 切片 1 的实现 + 7 条新用例都在这棵树里；本分支基点 = origin/main f6c2566）",
+      "branch": "fix-261107-01-snapshot-write-side",
+      "tests": 3451,
+      "pass": 3438,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "#735 切片 1 现测重登：新增 7 条用例（`test/loop-snapshot-write-side-735.test.js`：写侧不再带 toolUse/ts、保留格照旧写出、`status` 仍分辨调用点、旧快照过 memory store 结构等值往返、旧快照过 file store 的**字节**往返、保留格**键序**等于「基点键序 minus 两格」、引擎亲笔的新形状崩溃现场可被 resume 补跑）⇒ 3444 + 7 = 3451。六个计数逐字取自在**本棵已提交树**（commit b384a99）上跑的 `npm test` TAP 汇总（日志 /tmp/wt735-fix/final-test.log，`# tests 3451` / `# pass 3438` / `# fail 0` / `# skipped 13`），并经 `npm run check:test-summary -- --log` 同一份日志复核 ⇒ 非手抄、非沿用他树。重登后的最终树（只多改 baseline JSON 与样本表行号，不碰任何用例与真值）上复跑 `npm test` 得同一组数（日志 /tmp/wt735-fix/authoritative-test.log），两棵树都是 3451/3438/0/13 ⇒ 登记值不是只能从某一棵恰好被挑中的树上量出来。fail=0；skipped 13 = 12 条真上游/真 relay 门禁 + 1 条真上游多会话格，上限 15 不动（本片没增删任何 skip）。订正说明（copilot 验收必修项 B）：上一条观察曾记 `commit: a92c713` 并称测得 3449，但那棵 `a92c713` 树上**还没有**新增的用例文件（登记值仍是 3444），且该 commit 已不在本分支历史里 ⇒ 那条观察的测量树与所记数字自相矛盾，已由本条取代（本条的 commit 就是被测量那棵树，可 `git ls-tree` 核）。没删例、没跳过、没放宽断言：四格全停时既有守门用例红 10 条（日志 /tmp/wt735-fix/four-cells-stop.log），本切片只停真零读者的 `toolUse`/`ts` 两格 ⇒ 零既有用例需要改。"
+    },
+    {
+      "date": "2026-11-07",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "a92c713（已作废的测量记录：那棵树上 3444，且 `test/loop-snapshot-write-side-735.test.js` 还不存在）",
       "branch": "fix-261107-01-snapshot-write-side",
       "tests": 3449,
       "pass": 3436,
@@ -21,7 +35,7 @@
       "skipped": 13,
       "todo": 0,
       "cancelled": 0,
-      "why": "#735 切片 1 新增 5 条用例（`test/loop-snapshot-write-side-735.test.js`：写侧 payload 不再带 toolUse/ts、有读者的格照旧写出、`status` 仍分辨调用点、旧快照逐字往返、新形状崩溃现场能被 resume 消费）⇒ 3444 + 5 = 3449。六个计数逐字取自在本树跑的 `npm test` TAP 汇总（日志 /tmp/w735-npmtest.log，`# tests 3449` / `# pass 3436` / `# fail 0` / `# skipped 13`），并经 `npm run check:test-summary -- --log` 同一份日志复核（抬登记值前 VERDICT ok 并打出 HINT「可抬到 3449，+5」）⇒ 非手抄。fail=0；skipped 13 = 12 条真上游/真 relay 门禁 + 1 条真上游多会话格，上限 15 不动（本片没新增也不改任何 skip）。没删例、没跳过、没放宽断言：四格全停时实测红 10 例（见 CHANGELOG），故本切片只停真零读者的 `toolUse`/`ts` 两格，`status`/`compactionStats` 原样写出，零既有用例需要改。"
+      "why": "【已由上面那条取代】#735 切片 1 新增 5 条用例（`test/loop-snapshot-write-side-735.test.js`：写侧 payload 不再带 toolUse/ts、有读者的格照旧写出、`status` 仍分辨调用点、旧快照逐字往返、新形状崩溃现场能被 resume 消费）⇒ 3444 + 5 = 3449。事后查明：这条记录自相矛盾——它引用的 `a92c713` 树里没那个新用例文件（登记值 3444），而且 `a92c713` 后来被 amend 掉、已不在本分支历史里；数字本身当时是在未提交的工作树上量的，commit 字段却是 amend 前的值。保留本条只为了留下「派生数不在最终树取」这个病的现场；权威值看上面那条。六个计数逐字取自在本树跑的 `npm test` TAP 汇总（日志 /tmp/w735-npmtest.log，`# tests 3449` / `# pass 3436` / `# fail 0` / `# skipped 13`），并经 `npm run check:test-summary -- --log` 同一份日志复核（抬登记值前 VERDICT ok 并打出 HINT「可抬到 3449，+5」）⇒ 非手抄。fail=0；skipped 13 = 12 条真上游/真 relay 门禁 + 1 条真上游多会话格，上限 15 不动（本片没新增也不改任何 skip）。没删例、没跳过、没放宽断言：四格全停时实测红 10 例（见 CHANGELOG），故本切片只停真零读者的 `toolUse`/`ts` 两格，`status`/`compactionStats` 原样写出，零既有用例需要改。"
     },
     {
       "date": "2026-11-06",
