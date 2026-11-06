@@ -91,10 +91,12 @@ function createProvider({ mainScript }) {
   };
 }
 
-const options = (runId, store, provider, { budgetTokens, steps, resume = false }) => withSeed({
+const options = (runId, store, provider, {
+  budgetTokens, keepRounds = 0, maxRounds = 6, toolBytes = 400, resume = false,
+}) => withSeed({
   provider,
-  executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
-  maxRounds: 6,
+  executeTool: async ({ id }) => `MARK-${id} ${"z".repeat(toolBytes)}`,
+  maxRounds,
   completion: false,
   reflection: false,
   config: {
@@ -114,13 +116,14 @@ const options = (runId, store, provider, { budgetTokens, steps, resume = false }
   runId,
   initialUserMessage: TASK_BODY,
   ...(resume ? { resume: true } : {}),
-  ...(steps === undefined ? {} : { providerSteps: steps }),
 });
 
 const factsOf = (records) => records
   .map((record) => record?.[FOLD_SUMMARY_RECORD_FIELD])
   .filter((fact) => fact && typeof fact === "object" && typeof fact.text === "string");
 const watermarkOf = (records) => Math.max(0, ...records.map((r) => r.foldedRoundRange?.to ?? 0));
+/** 一条消息（含 `tool_result` 里的正文）的可搜索文本 —— 「这一轮的正文在不在上下文里」。 */
+const searchable = (message) => JSON.stringify(message ?? "");
 /** 真实请求里出现过的**全部 text 块原文**（逐字证据的唯一来源）。 */
 const requestedBlocks = (provider) => provider.mainRequests
   .flatMap((request) => (request?.messages ?? []).flatMap((message) => blocksOf(message)));
@@ -132,31 +135,36 @@ test("#738-A 写侧自证：fedSummaryText 在真实请求里对得上，而 .su
   const provider = createProvider({
     mainScript: [toolTurn("a"), toolTurn("b"), { throw: new Error("boom: 崩在折叠之后") }],
   });
-  await assert.rejects(() => runToolLoop(options("738-exact", store, provider, { budgetTokens: 900 })),
+  await assert.rejects(() => runToolLoop(options("738-exact", store, provider, { budgetTokens: 300 })),
     /boom: 崩在折叠之后/u);
   const facts = factsOf(await store.load("738-exact"));
   assert.equal(provider.summaryCalls >= 1, true, "前置：`fold-llm` 必须真跑过摘要器");
   assert.ok(facts.length >= 1, "前置：折叠摘要事实必须已入账");
 
+  // 逐字证据**只来自请求**：把每个请求的每个 text 块摊平（拿引擎自己的账证引擎的账是永真的）。
   const blocks = requestedBlocks(provider);
   assert.ok(blocks.length >= 1, "前置：主循环请求里必须有 text 块");
-  for (const fact of facts) {
+  const withExact = facts.filter((fact) => FOLDED_SUMMARY_FED_TEXT_KEY in fact);
+  assert.ok(withExact.length >= 1,
+    "`fold-llm` 那一档至少要写得出一个精确串（一个都写不出来 = 这一格在本切片里根本没接上）");
+  for (const fact of withExact) {
     const exact = fact[FOLDED_SUMMARY_FED_TEXT_KEY];
-    assert.equal(typeof exact, "string",
-      "`fold-llm` 那一档必须写得出精确串（写不出来 = 这一格在本切片里根本没接上）");
-    // 逐字证据：请求里有一个**完整块**就是它（不是子串、不是投影）。
+    assert.equal(typeof exact, "string", "写了键就必须是字符串（不许空串占位）");
     assert.equal(blocks.includes(exact), true,
       `那一格必须在真实请求里是一个完整块（实测块首：${JSON.stringify(exact.slice(0, 40))}）`);
-    // 工单的缺陷面：`.summary`（摘要器原文）**从来没有作为完整块进过请求** —— 它只是那一块的开头。
-    assert.equal(blocks.includes(fact.summary), false,
-      "`.summary` 不作为完整块出现 ⇒ 它就是「不是当年 fed 的那一串」的那一格，且语义一字未动");
     assert.notEqual(exact, fact.summary, "精确串不是 `.summary` 的副本（否则这格没兑现任何新东西）");
-    assert.equal(exact.startsWith(fact.summary.trim()), true,
+    assert.equal(exact.includes(fact.summary.trim()), true,
       "逐字那串**包着**摘要器原文（恢复提示 / 夹断产物 / 保真节是加在它上面的）");
-    // `.text` 是整条消息的投影：带着仍在 head 的任务正文；精确串不带。
     assert.ok(fact.text.includes(TASK_BODY),
       "前提：`.text` 仍是整条新消息的投影（含仍在 head 的原任务正文），语义一字未动");
     assert.equal(exact.includes(TASK_BODY), false, "精确串是**摘要块本身**，不掺任务正文");
+  }
+  // 工单的缺陷面：`.summary`（摘要器原文）在**任何一折**都没有作为完整块进过请求。
+  // 它就是「不是当年 fed 的那一串」的那一格 —— 而它的语义与读者本切片一字未动。
+  for (const fact of facts) {
+    // 模型确实见过摘要器原文（它是 fed 那一大块里的一段）⇒ 旧路径不是「没喂摘要」，是「喂错了字节」。
+    assert.equal(blocks.includes(fact.summary), false,
+      "`.summary` 不作为**完整块**出现 ⇒ 读侧优先它就是拿错了字节");
   }
 });
 
@@ -173,7 +181,7 @@ test("#738-B 写侧不凑数：`fold-statistical` 那一档拿不到精确插入
   await runToolLoop(withSeed({
     capabilities: { ports: { strategy: createFoldStatisticalStrategy() } },
     provider,
-    executeTool: async ({ id }) => `tool output for ${id} ${"z".repeat(400)}`,
+    executeTool: async ({ id }) => `MARK-${id} ${"z".repeat(4000)}`,
     maxRounds: 8,
     completion: false,
     reflection: false,
@@ -196,6 +204,20 @@ test("#738-B 写侧不凑数：`fold-statistical` 那一档拿不到精确插入
   }
   // 缺席就是缺席：不许写成空串占位（那是把「没量到」写成「量到了空」）。
   assert.equal(missing.every((fact) => fact[FOLDED_SUMMARY_FED_TEXT_KEY] === undefined), true);
+
+  // 这份**真账本**续跑时走的就是兼容路径 ⇒ 可观测面必须报「不可判定」，不是伪报相等。
+  const ledger = await store.load("738-noexact");
+  const plan = planFoldedHistoryTrim({
+    ledgerEntries: foldLedgerMessages(ledger),
+    records: ledger,
+    foldedThrough: watermarkOf(ledger),
+  });
+  assert.equal(plan.applied, true, "前置：这份账本要真的裁得动（否则下面三格是空断言）");
+  assert.notEqual(plan.replaySource, FOLDED_SUMMARY_FED_TEXT_KEY,
+    "没有精确保存值 ⇒ 回填不许声称来自那一格");
+  assert.equal(plan.savedSummaryBytes, null);
+  assert.equal(plan.byteEqual, "unknown",
+    "真账本的兼容回填：**不可判定**就是不可判定（工单第 4 条「禁止伪报相等」）");
 });
 
 // ---- C 端到端：续跑回填的字节 == 崩溃前模型看到的字节 --------------------------------------------
@@ -206,14 +228,19 @@ test("#738-C 端到端：续跑回填的首块逐字等于当年 fed 的那一�
   const first = createProvider({
     mainScript: [toolTurn("a"), toolTurn("b"), { throw: new Error("boom: 崩在折叠之后") }],
   });
-  await assert.rejects(() => runToolLoop(options(runId, store, first, { budgetTokens: 900 })),
-    /boom: 崩在折叠之后/u);
+  // 预算 900 / 工具输出 3000：折得动、且覆盖水位线那一格**没被安全层改写**（实测：预算 300 时
+  // 最新那一格会被 `[已修剪]` 改写过 ⇒ 精确串证不过、续跑退回兼容路径，那是 B 测的形状，不是这条）。
+  await assert.rejects(() => runToolLoop(options(runId, store, first, {
+    budgetTokens: 900, toolBytes: 3000,
+  })), /boom: 崩在折叠之后/u);
   const records = await store.load(runId);
   const watermark = watermarkOf(records);
   assert.ok(watermark >= 1, `前置：水位线必须已推进（实测 ${String(watermark)}）`);
-  const covering = [...factsOf(records)].sort((a, b) => (b.foldedRoundRange?.to ?? 0) - (a.foldedRoundRange?.to ?? 0))[0];
+  const facts = factsOf(records);
+  assert.ok(facts.length >= 1, `前置：崩溃前至少折一次（实测 ${String(facts.length)} 条事实）`);
+  const covering = [...facts].sort((a, b) => (b.foldedRoundRange?.to ?? 0) - (a.foldedRoundRange?.to ?? 0))[0];
   assert.equal(typeof covering[FOLDED_SUMMARY_FED_TEXT_KEY], "string", "前置：覆盖水位线那格要有精确串");
-  assert.notEqual(covering.summary, covering.text, "夹具前提：两格不等（否则本条用例永真）");
+  assert.notEqual(covering.summary, covering.text, "夹具前提：`.summary` 与 `.text` 不等（否则本条永真）");
   assert.ok(covering.text.includes(TASK_BODY), "夹具前提：`.text` 带着原任务正文");
 
   // 纯函数一侧：规划器报的就是逐字回放 + `byteEqual: "equal"`
@@ -242,7 +269,12 @@ test("#738-C 端到端：续跑回填的首块逐字等于当年 fed 的那一�
     "旧路径在这里回填的是 `.summary`（摘要器原文）——本条用例在改前就是红的");
   assert.equal(headBlocks[0].includes(TASK_BODY), false,
     "任务正文仍由它自己那一行提供，摘要块不许掺一份");
-  assert.ok(textOf(head).includes(TASK_BODY) === false || true);
+  // 「不许裁过头」那一侧：水位线（1）之后那一轮的正文必须还在续跑上下文里，且只出现一次。
+  const replayed = resumed.mainRequests[0].messages;
+  assert.equal(replayed.filter((message) => searchable(message).includes("MARK-b")).length, 1,
+    "水位线以上的正文必须还在上下文里，且只出现一次（不多不少）");
+  assert.equal(replayed.filter((message) => searchable(message).includes("MARK-a")).length, 0,
+    "水位线以下（≤ 水位线 1）那一轮的正文不得再被喂一遍 —— 它已经在那份逐字摘要里了");
 });
 
 // ---- D 夹具前提（工单判据 1）---------------------------------------------------------------------

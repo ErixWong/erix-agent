@@ -163,7 +163,7 @@ export function pickCoveringFoldAlternative(records, foldedThrough) {
   return best === undefined ? undefined : { fact: best, origin: "strategy" };
 }
 
-/*!
+/**
  * 从事实体里还原「要回填进上下文的那段摘要正文」，并**当场**对一次字节账（issue #738）。
  *
  * 三个来源，按可靠性排序：
@@ -325,7 +325,7 @@ export function planFoldedHistoryTrim(input = {}) {
     summarySource: picked.origin,
     droppedRounds: new Set(dropped.map((entry) => entry.round)).size,
     // issue #738 第 4 条（可观测）：回填从事实行哪一格取、保存值与回填值各多少字节、是否逐字。
-    // 口彿：`"unknown"` = 账上**没有**精确保存值（旧账本，或那个策略拿不到插入串），
+    // 口径：`"unknown"` = 账上**没有**精确保存值（旧账本，或那个策略拿不到插入串），
     // 它不是「不等」——旧数据逐字能否还原在本切片就是**不可判定**，伪报哪个方向都是谎。
     replaySource: replay.replaySource,
     savedSummaryBytes: replay.savedSummaryBytes,
