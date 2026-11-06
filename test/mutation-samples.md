@@ -69,8 +69,9 @@
 | M14 | #436 预算类停机的交付物补齐轮（机器证据的极性写反：健康 run 被啰嗦 / 失败的 run 不补） | `src/loop/orchestrator.js` | 4862 | `03c17bbf0f31` | 1 | `      if (guardDecision.deliverablesAllPassed !== false) return false;` | `      if (guardDecision.deliverablesAllPassed === false) return false;` | `test/loop-deliverables-gap-436.test.js` | `#436 ① deliverables_failed = 0 ⇒ 不 nudge` |
 | M15 | #657 账本归因：`strategyName` 必须写「真正折了的那一层」，不是折叠入口选中的那个（判定退回旧语义 ⇒ 配置策略折 0 轮时仍报配置名） | `src/loop/orchestrator.js` | 4254 | `1c4845fbec9b` | 1 | `      const actualFolderName = strategyFoldedRounds > 0` | `      const actualFolderName = strategyFoldedRounds >= 0` | `test/compaction-strategy-fallback.test.js` | `#657 交叉锁：` |
 | M16 | #661 摘要器失败必须**抛出**：把失败改回「返回一份替代物」⇒ 失败的 run 又变成静默成功（用户原话：静默着跑，质量差，也没人发现问题） | `src/compact/fold-llm.js` | 800 | `855c35afffb5` | 1 | `      throw fail(error, first.dropped, limitPart);` | `      return { summary: "（摘要器失败，已降级）", droppedMessages: first.dropped, ...limitPart };` | `test/compact/fold-llm-fail-661.test.js` | `#661-1/2/3/8 必抛 summarizer` |
+| M17 | #721 截断声明必须落在**注入正文**里（删掉那一行 ⇒ 模型拿到的残页不再自称是残页，「切在哪个字节」重新变成被测量对象） | `bin/system-prompt.js` | 101 | `ed1d86774160` | 1 | `      + buildTruncationDeclaration(file))` | `      + "")` | `test/project-instructions-716.test.js` | `721 截断时注入正文里出现声明` |
 
-**合计 16 条样本 / 8 个目标文件 / 12 个捕获者**
+**合计 17 条样本 / 9 个目标文件 / 13 个捕获者**
 
 > 单元格里的 `\|` 是**转义的竖线**：markdown 表格里写不出裸 `|`（会把整行拆成多列），所以 M6 锚点里的
 > `||` 存成 `\|\|`，脚本读的时候还原成 `||`。这条转义回环由 `--self-test` 的第 ㉒ 例钉住（不转义 ⇒
