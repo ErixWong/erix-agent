@@ -199,7 +199,9 @@
   (`test/integration/no-todo-switch.test.js`). `discoverProjectInstructions()` now also returns
   `droppedSections` (per file and aggregated), the stderr notice prints the same facts from the same
   formatter, and deleting that one appended line turns a case red — a standing mutation proof, not an
-  aspiration. `erix chat --help` / `erix repl --help` state 64 KiB.
+  aspiration. The `--no-agents` entry in the CLI help text (`bin/cli.js`, what `erix --help` /
+  `erix chat --help` print) now states 64 KiB and says the declaration exists; the repl help lists the
+  flag without the byte limit, exactly as before.
 - **项目约定注入上限抬到 64 KiB，被截断的一页现在在**注入正文里**自己说明（issue #721）。** 上限原是
   `PROJECT_INSTRUCTIONS_MAX_BYTES = 32 * 1024`，而长度闸（`scripts/agents-directive-scan.mjs` 的
   `LENGTH_BUDGETS`）允许本仓这一页长到 33,792 字节——闸说合法的正文注入面装不下：热层实测 32,698 字节，
@@ -211,7 +213,9 @@
   stderr 留痕行只有在场的人才看得见，而 `--no-todo` 那三条断言已经因为 `todo_add` 正好落在旧截断线之外
   绿了几个月（`test/integration/no-todo-switch.test.js`）。`discoverProjectInstructions()` 现在也返回
   `droppedSections`（逐文件与汇总各一份），stderr 留痕行用同一个派生器带出同一批事实，而把追加那一行删掉就
-  有一例红——那是常驻变异复证，不是愿景。`erix chat --help` / `erix repl --help` 同步写 64 KiB。
+  有一例红——那是常驻变异复证，不是愿景。CLI 帮助文本（`bin/cli.js`，即 `erix --help` /
+  `erix chat --help` 打的那份）的 `--no-agents` 那一格同步写成 64 KiB 并点出有这句声明；repl 的帮助
+  仍只列旗标不写字节上限，与改动前一致。
 
 
 ## [0.31.0] - 2026-11-04
