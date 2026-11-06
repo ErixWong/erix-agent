@@ -78,6 +78,8 @@ export const EVENT_TIERS = Object.freeze({
   tool_replay_decision_required: EVENT_TIER_FACT,
   compaction: EVENT_TIER_FACT,
   compaction_deferred: EVENT_TIER_FACT,
+  // 与 `compaction_deferred` 同理：它一次性地记下「降级到了哪个策略」，没别的副本可回放。
+  compaction_strategy_fallback: EVENT_TIER_FACT,
   continuity_injection_skipped: EVENT_TIER_FACT,
   continuity_written: EVENT_TIER_FACT,
   continuity_write_failed: EVENT_TIER_FACT,
@@ -187,8 +189,43 @@ export const RUN_TERMINAL_STATUSES = Object.freeze([
  */
 export function eventTierOf(type) {
   if (typeof type !== "string") return undefined;
-  const tier = EVENT_TIERS[type];
+  const tier = EVENT_TIERS[canonicalEventTypeName(type)];
   return tier === undefined ? undefined : tier;
+}
+
+/**
+ * `EVENT_TIERS` 的**载入期不变量自检**（值域 + 别名闭合）。
+ *
+ * 为什么在载入期判而不是只靠用例：这张表是宿主的清理依据，而它有两个「写错了也不会响」的形状——
+ * 值写成 `"streem"`（拼错的档位，谓词从此永不判它可删）、别名的 `standsFor` 指向一个表里没有的
+ * 名字（查表静默回落成 `undefined`，宿主读成「不知道 ⇒ 不许删」）。两种都是**安静的**失效，
+ * 而宿主侧的代价不对称（前者删错，后者永远删不掉）。载入期一条 `throw` 把它们变成响的。
+ * 只读表本身，零 IO、零副作用；`Object.freeze` 之后表与别名表都不可变，所以这条自检的结论
+ * 在模块生命周期内恒成立。
+ *
+ * @param {Record<string, string>} table
+ * @param {Record<string, { standsFor: string }>} aliases
+ * @param {string[]} allowedTiers
+ * @returns {number} 校验过的键数（自检真的跑了的证据；0 是要红的那种「空表恒真」）
+ */
+function assertTierTable(table, aliases, allowedTiers) {
+  const keys = Object.keys(table);
+  if (keys.length === 0) {
+    throw new TypeError("EVENT_TIERS 是空表 —— 分级面读不到真值，不许当成「没问题」");
+  }
+  for (const name of keys) {
+    if (!allowedTiers.includes(table[name])) {
+      throw new TypeError(`EVENT_TIERS.${name} 的档位 ${JSON.stringify(table[name])} 不在值域 ${allowedTiers.join(" / ")} 里`);
+    }
+  }
+  for (const [alias, entry] of Object.entries(aliases)) {
+    const target = entry.standsFor;
+    if (target === alias) continue; // `judge` 替的是通道，不是另一个事件名
+    if (table[target] === undefined || table[target] !== table[alias]) {
+      throw new TypeError(`HOST_SIDE_EVENT_TYPE_NAMES.${alias} 指向 ${target}，但两者的档位不一致`);
+    }
+  }
+  return keys.length;
 }
 
 /**
@@ -201,6 +238,7 @@ export function canonicalEventTypeName(type) {
   const alias = typeof type === "string" ? HOST_SIDE_EVENT_TYPE_NAMES[type] : undefined;
   return alias === undefined ? type : alias.standsFor;
 }
+
 
 /**
  * The second and third conditions of the contract's cleanup predicate, executable.
@@ -223,3 +261,31 @@ export function streamCleanupEligible({ type, runStatus, ageMs, retentionMs } = 
   if (!Number.isFinite(ageMs) || !Number.isFinite(retentionMs)) return false;
   return ageMs > retentionMs;
 }
+
+/**
+ * 表 ↔ 谓词的一致性自检（同样是载入期，理由同 `assertTierTable`）。
+ *
+ * 只把档位与终态名单放成两张互不引用的常量，就会出现「表说 `delta` 是 `stream`，而谓词因为
+ * 拼错的档位常量永远拒它」这种两边各自绿、宿主永远清不掉的形状。本自检把表里每一个名字都递
+ * 给谓词跑一遍（终态取名单的第一格，年龄取「明显过了窗口」的那一档），要求
+ * **可清理 ⇔ 档位是 `stream`**，两边对不上当场 `throw`。
+ *
+ * @returns {number} 交叉校验过的名字数
+ */
+function assertPredicateAgreesWithTable() {
+  const terminal = RUN_TERMINAL_STATUSES[0];
+  const checks = Object.keys(EVENT_TIERS).filter((name) => eventTierOf(name) !== undefined);
+  for (const name of checks) {
+    const deletable = streamCleanupEligible({ type: name, runStatus: terminal, ageMs: 10, retentionMs: 1 });
+    if (deletable !== (EVENT_TIERS[name] === EVENT_TIER_STREAM)) {
+      throw new TypeError(
+        `分级表与清理谓词对「${name}」的结论不一致：档位 ${EVENT_TIERS[name]}，谓词 ${deletable ? "可删" : "不可删"}`,
+      );
+    }
+  }
+  return checks.length;
+}
+
+assertTierTable(EVENT_TIERS, HOST_SIDE_EVENT_TYPE_NAMES, EVENT_TIER_VALUES);
+assertPredicateAgreesWithTable();
+

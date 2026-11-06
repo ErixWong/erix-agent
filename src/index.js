@@ -97,6 +97,22 @@ export { createAgent, runToolLoop } from "./loop/orchestrator.js";
 // 对账）；导出来是因为宿主得能算「这个键该写在哪」，而不是去读散文。
 export { CONFIG_LEAF_BINDING } from "./loop/config-namespace.js";
 export { parseReflectionDecision } from "./loop/reflection.js";
+// issue #743：事件分级表（宿主清理 `run_events` 那一类表时的唯一分流依据）。`fact` / `stream` /
+// `derived` 三档的定义、逐类理由与「删完回放退化成什么形状」在 `docs/host-consumer-contract.md`
+// 的「Event tier table and the cleanup predicate」一节；这里导出的是那份判据的**机器可读面**。
+// `streamCleanupEligible` 是那条判据的可执行形态（档位 + 终态 + 保留窗口），契约与代码同一份。
+export {
+  EVENT_TIERS,
+  EVENT_TIER_VALUES,
+  EVENT_TIER_FACT,
+  EVENT_TIER_STREAM,
+  EVENT_TIER_DERIVED,
+  HOST_SIDE_EVENT_TYPE_NAMES,
+  RUN_TERMINAL_STATUSES,
+  eventTierOf,
+  canonicalEventTypeName,
+  streamCleanupEligible,
+} from "./loop/event-tiers.js";
 export { parseModelJson } from "./text/parse-model-json.js";
 // 模型输出归一化底座（issue #406 B2-a）：**异步**、L1 保字节修复 + 闸门 + L2 兜底。
 // 与上面那条同步 L0 入口是**两个函数**（设计稿 §10 的分工），不许合并、不许改名：

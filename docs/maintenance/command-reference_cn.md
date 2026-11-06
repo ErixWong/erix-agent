@@ -224,8 +224,9 @@ CHANGELOG 解析器**：扫描面就是 `test/static-guards.test.js` 已经在�
   两种 JSDoc 形状会**静默**把参数退化成 `any`（编译一个错都不报，只有读生成的 `.d.ts` 才看得见；#213 R4 两处都已修）：
   **内联 `@param {{ … }}` 类型字面量里独占一行的 `//` 注释**，以及**没有紧贴被文档化声明的文档块**。
   宿主可见签名要紧的时候，去读生成的 `.d.ts`，而不是源码里的注释。
-  因此干净检出里一个 `.d.ts` 都没有——装包后应列出 **87** 个 `.d.ts`（`npm pack --dry-run --json` 在当前树上
-  列出整整 87 个，因为 issue #688 把 `src/tools/providers.js`、`src/providers/anthropic.js` 与
+  因此干净检出里一个 `.d.ts` 都没有——装包后应列出 **88** 个 `.d.ts`（`npm pack --dry-run --json` 在当前树上
+  列出整整 88 个，因为 issue #743 把 `src/loop/event-tiers.js`（事件分级表，从包入口再导出）接进了声明依赖图；
+  此前 **87**（因为 issue #688 把 `src/tools/providers.js`、`src/providers/anthropic.js` 与
   `src/config/env.js` 移出了声明依赖图——它们唯一的公共再导出退役了，入口侧再没有谁 import 它们；
   此前 **90**（在新增 `src/loop/judge-runner.js` 的那棵树上实测）；此前 **89**（在 #643 的树上实测，
   列出整整 89 个，因为那一单新增 `src/compact/budget-fit.js`）；此前 **88**（在 #246 第一刀的树上实测，

@@ -3521,7 +3521,10 @@ surface. The complete union is the `LoopEvent` typedef (`src/loop/orchestrator.j
 run-time emission site is reconciled against it by
 `test/loop-event-type-emissions-641.test.js` (the loop's `emitEvent(...)`, the direct `onEvent`
 startup diagnostics, the assembly port's `port.emit(...)`, and the `runOutcomeRecord` assembly
-helper). Events that are union members but documented outside this table: `tool_use` /
+helper). A third gate sits beside those two: `test/event-tier-coverage-743.test.js` reconciles the
+same emission sites against the **retention tier** of every name, in both directions (issue #743) —
+that table and the cleanup predicate it feeds are “Event tiers and the cleanup predicate
+(issue #743)”. Events that are union members but documented outside this table: `tool_use` /
 `tool_result` / `tool_replay_decision_required` / `tool_output_aggregate` in “onEvent tool event
 field list”; `forced_final` in the stopping/verification section; `final_guard_extend` in the
 guard-extension sections; `context_unknown_option` in the assembly-port unknown-key section; and
@@ -3529,7 +3532,9 @@ the handoff writer's `continuity_written` (`{ type, runId?, parentRunId?, round,
 path }`) and `continuity_write_failed` (`{ type, runId?, parentRunId?, phase, detail }`) — both
 observational: a failed handoff write never fails the run. The two gates stay side by side on
 purpose: “the additive table is a subset of the union” and “the emitters are a subset of the
-union” are different truths, and a green on one has never implied a green on the other.
+union” are different truths, and a green on one has never implied a green on the other — and the
+tier gate added for the same reason (issue #743) is a third truth, not a restatement of either:
+“every emitted name has a retention tier” is neither of those two subsets.
 
 Why a separate terminal record instead of writing the outcome back into the
 decision records: judge records stream out while the run is still executing and
@@ -6217,6 +6222,165 @@ absent, because a host could then not tell which side to trust. Concretely:
 - calls accepted after the upgrade are unaffected — they always carry a key on both ends.
 
 This is asserted by `test/contract/tool-result-envelope.js` ("复放升级前的已记录结果").
+
+## Event tiers and the cleanup predicate (issue #743)
+
+A host that persists every `onEvent` record pays for it in bytes: on a real host database the
+event table was **91.6% of the whole database**, and `*_delta` types were **99.2% of its rows**.
+The contract never said which of these types are safe to delete, so the host's only safe default
+was "delete nothing" and the table grew forever. This section is that missing statement: a tier
+for every type the engine can emit, one executable predicate, and the shape of what is left behind
+after a delete. The engine side is data, not prose — `src/loop/event-tiers.js`, re-exported from
+the package root:
+`EVENT_TIERS`, `EVENT_TIER_VALUES`, `EVENT_TIER_FACT` / `EVENT_TIER_STREAM` / `EVENT_TIER_DERIVED`,
+`HOST_SIDE_EVENT_TYPE_NAMES`, `RUN_TERMINAL_STATUSES`, `eventTierOf()` (and the predicate's own
+implementation `streamCleanupEligible()`).
+
+The three tiers, and the failure direction:
+
+- **`fact`** — the event is the only durable copy of that fact. Deleting it loses history. Never deletable.
+- **`stream`** — a per-token fragment of something that has a durable assembled copy elsewhere. The
+  only tier the predicate may ever delete.
+- **`derived`** — a projection or counter over facts already durable elsewhere. The host may drop or
+  recompute it at its own discretion; the predicate does not do it for it.
+- **Unknown type ⇒ keep.** `eventTierOf()` answers `undefined` for a name this table does not know.
+  A host that treats "unknown" as deletable deletes the next event type this engine grows.
+
+| Event type | Tier | Deletable | Why |
+|---|---|---|---|
+| `delta` | `stream` | yes | One assistant-text fragment. The assembled text is in the round record's assistant message. |
+| `tool_call` | `stream` | yes | One argument fragment. The assembled call is the `tool_use` event and the record's `tool_use` block, carrying the same `toolCallKey`. |
+| `reasoning_delta` | `stream` | yes | Reasoning fragments. This is the engine's own name — it is **not** `thinking_delta`, which is a Responses-API wire value. |
+| `assistant_delta` | `stream` | yes | A host-side spelling, not an engine name: the engine says `delta`. Registered in `HOST_SIDE_EVENT_TYPE_NAMES` so a lookup by the stored value still resolves. |
+| `tool_call_delta` | `stream` | yes | Same, for `tool_call`. |
+| `tool_use` | `fact` | no | Emitted once per accepted call, after the identity key was attached. No later event repeats it. |
+| `tool_result` | `fact` | no | The fact clone. It is emitted **before** the `RoundRecord` exists, and `content` is explicitly outside the event↔record equation (a fold may rewrite the record's copy), so this event can be the only pre-fold copy. |
+| `tool_replay_decision_required` | `fact` | no | The ask itself. Nothing durable else records it, and the host's answer has to be joinable to it. |
+| `round_start` | `fact` | no | Round boundary. |
+| `round_end` | `fact` | no | Round boundary and the per-round ledger line. |
+| `usage` | `fact` | no | The accounting line the round-ledger-vs-engine-overhead reading depends on. |
+| `attempt` | `fact` | no | One per retry attempt. Delete it and "which attempt produced this" is gone, including the retried-call count. |
+| `compaction` | `fact` | no | That a compaction happened at this round is the fact. |
+| `compaction_deferred` | `fact` | no | A compaction was deferred — nothing durable records the deferral. |
+| `compaction_strategy_fallback` | `fact` | no | Which strategy the compaction fell back to — same: only copy. |
+| `final_guard` | `fact` | no | The verification verdict for this run (see the verification section; `guard_error` / `unverified_error` runs are exactly the ones a host re-audits). |
+| `final_guard_extend` | `fact` | no | The extension request and its outcome. |
+| `forced_final` | `fact` | no | The wrap-up forced a final answer; it is part of the termination story. |
+| `run_outcome` | `fact` | no | The terminal run-level aggregate (`runOutcomeRecord()`), appended after `markRunState`; the host joins it to the judge records by `runId`. |
+| `judge` | `fact` | no | The decision record on the `onJudge` channel. It is **not** a `LoopEvent` type — the record carries no `type` field at all (`emitJudge` spreads `{ ...correlation, ...info }`) — so the tier is keyed by the channel name the host stores it under. |
+| `resume_journal_skipped` | `fact` | no | A durability decision: the journal was skipped. The event is the record. |
+| `continuity_written` | `fact` | no | The handoff write landed — the only record of which handoff is recallable. |
+| `continuity_write_failed` | `fact` | no | The handoff write failed while the run still succeeded. Nothing else survives it. |
+| `continuity_injection_skipped` | `fact` | no | Why the handoff was not injected this time. |
+| `model_metadata_missing` | `fact` | no | One-shot diagnostic; the event itself is the only durable record. |
+| `persistence_capability_degraded` | `fact` | no | Same. |
+| `budget_below_working_set` | `fact` | no | Same. |
+| `config_override_conflict` | `fact` | no | Same. |
+| `context_unknown_option` | `fact` | no | Same. |
+| `user_turn_guard_unrecoverable` | `fact` | no | Same. |
+| `tool_output_aggregate` | `derived` | host's call | A projection over the round's tool outputs; the bytes themselves are in the transcript and the archive, so the number can be recomputed or dropped. |
+| `recovering` | `derived` | host's call | Resume progress notification. The resume truth is the snapshot (`loadLatestRunSnapshot`), not this notification. |
+| `recovered` | `derived` | host's call | Same. |
+
+**How the list is derived — it is not copied from this document.**
+`test/event-tier-coverage-743.test.js` re-derives the emitted names from the emission call sites in
+`src/` (six emitter families: `emitEvent({ type: "…" })`, the launch-time `onEvent?.({ type: "…" })`
+direct calls, the assembly port's `port.emit("…", …)`, the event-assembly helper
+`runOutcomeRecord()`, and the streaming `queueEvent({ type: "…" }, …)` plus
+`dispatchAttemptEvent(…)`), and asserts in both directions: every emitted name has a tier (T1), and
+every key in the table either has an emission site or is a registered host-side spelling (T2). The
+extractor itself is pinned on a synthetic source (T3) so the guard cannot go green on an empty set,
+and each family must still be present in the tree (T4). Adding an event type without grading it
+therefore reddens that test — the defect this ticket is about cannot be introduced silently.
+
+**Three names in the table are not engine emissions.** `assistant_delta` and `tool_call_delta` are
+the spellings a host writes into its own column: a whole-repo scan of `src/`, `bin/` and
+`examples/` finds zero occurrences of either string (T6), while the engine's own names are `delta`
+and `tool_call`. `judge` names the `onJudge` **channel**, whose record has no `type` field at all.
+They are registered in `HOST_SIDE_EVENT_TYPE_NAMES` so `eventTierOf("assistant_delta")` resolves to
+the same tier as `delta`, and the table refuses a registered alias whose target has a different tier
+at load time. No classification asked for by the ticket moved: `tool_call_delta` /
+`reasoning_delta` / `assistant_delta` are `stream`, and `tool_use` / `tool_result` / `round_end` /
+`usage` / `judge` / `compaction` are `fact`.
+
+### The cleanup predicate
+
+`type ∈ stream ∧ run.status ∈ terminal ∧ ts < now − retention` ⇒ deletable. All three, in that
+order. Both halves of the first two are fail-closed:
+
+```js
+import assert from "node:assert/strict";
+import { streamCleanupEligible } from "erix-agent";
+
+// The predicate lives in src/loop/event-tiers.js and is re-exported at the package root.
+// `ageMs` is `now - ts`; `retentionMs` is the host's own window and stays the host's argument.
+const retentionMs = 30 * 24 * 60 * 60 * 1000;
+const olderThanThat = 45 * 24 * 60 * 60 * 1000;
+assert.equal(
+  streamCleanupEligible({ type: "assistant_delta", runStatus: "succeeded", ageMs: olderThanThat, retentionMs }),
+  true,
+); // stream + terminal + over the window ⇒ deletable
+assert.equal(
+  streamCleanupEligible({ type: "tool_result", runStatus: "succeeded", ageMs: olderThanThat, retentionMs }),
+  false,
+); // a fact is never deletable
+assert.equal(
+  streamCleanupEligible({ type: "assistant_delta", runStatus: "running", ageMs: olderThanThat, retentionMs }),
+  false,
+); // not terminal ⇒ keep
+```
+
+`runStatus` is **this repo's** status name, the value the engine writes through `markRunState`, not
+a host database column. The terminal set is exactly `RUN_TERMINAL_STATUSES` — `succeeded`,
+`unverified_error`, `guard_error` (all three chosen by `finish()` from the verification status),
+`aborted`, `failed` (`markRunState(signal?.aborted ? "aborted" : "failed")` on the throwing path).
+`running` — written at start and at every resume — is deliberately **not** terminal, so an in-flight
+or crashed-and-unfinished run keeps its fragments. Two host-side names worth naming: `cancelled`
+and `expired` are host column values with no engine counterpart, and `persistence_failed` is a
+`termination.reason`, not a status. `test/event-tier-coverage-743.test.js` (T7) re-derives this
+list from the `markRunState` write sites, so a new terminal status that skips the table reddens it.
+
+A host's cleanup statement is then one `DELETE` over its own table, with the tier column filled
+from `EVENT_TIERS` at insert time (filling it at read time is how a tier migration silently changes
+what old rows mean):
+
+```sql
+DELETE FROM run_events
+ WHERE tier = 'stream'
+   AND run_status IN ('succeeded', 'unverified_error', 'guard_error', 'aborted', 'failed')
+   AND ts < now() - INTERVAL '30 days';
+```
+
+### What replay degrades into afterwards
+
+- Typewriter replay of an old round is gone. Fragments are the only per-token record, so a re-render
+  of a deleted round shows the final text arriving at once instead of typing out.
+- Everything with a durable copy stays: the assembled `tool_use` / `tool_result` facts (same
+  `toolCallKey`, same `erix`), the round boundaries and the `usage` ledger, the `attempt` retry
+  trail, and the verdicts — `judge`, `final_guard`, `run_outcome`. The run stays auditable end to
+  end; only the "how it was typed" layer is lost.
+- `derived` rows are the host's own decision: the predicate never deletes `tool_output_aggregate`,
+  `recovering` or `recovered`, even though each of them can be recomputed.
+- Deleting `fact` rows is not this predicate's business, and nothing in this section licenses it.
+
+### Do the final guard or recall read these rows? (verified, not assumed)
+
+- **Final guard: no.** Its evidence source is the **transcript**, not the event stream. What it
+  reads, positively: `store.load(runId)` → for each round record `toolOutputs[].toolUseId` and
+  `toolOutputs[].content`, the `messages[].content[]` blocks whose `type === "tool_result"` (via
+  `block.tool_use_id` and `block.content`), and `record.round`; as a legacy source the capture
+  manifests `*.meta.json` under the archive directory (`display`, `archivePath`, `command`,
+  `legacy`) plus the artifact files they point at; and for the deliverable checks, the declared
+  files themselves on disk (`exists` + content). There is no `delta` / `tool_call` /
+  `reasoning_delta` read anywhere in `bin/final-guard*.js`. Deleting `stream` rows cannot change a
+  verdict.
+- **Recall: nothing to read.** Bounded recall is retired in this repo — `recall` does not appear
+  anywhere in `src/`, and the store's read surface is `load`, `loadRawRows`, `loadRunState`,
+  `loadRunStateStatus`, `loadLatestRunSnapshot`, `loadLatestCheckpoint`. A host still on 0.6.x
+  bounded recall has its own read surface, and this section says nothing about it: the tiers are
+  facts about the engine's emission side.
+- The one read side that *does* lose something is a host replaying fragments into its own UI. Read
+  them before deleting, or accept the degradation above — that is the whole cost of this predicate.
 
 ## onEvent tool event field list (issue #284 / #285)
 
