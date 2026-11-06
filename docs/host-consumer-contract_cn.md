@@ -2050,7 +2050,7 @@ server、逐工具决定；一个代理工具顶替无数个 executor（CLI 那�
    挂起调用（连只读类在内）都会变成一次 interrupted 决定。不把快照未知字段原样带回来的
    store 会丢掉记录下来的意图，解析器于是回落到**当前**的 `tools` 数组
    （`replayForToolUse`（`src/loop/orchestrator.js`））；随包发布的 `transcriptStoreContract` 已经会带回
-   一条带 `replay: "unsafe"` 的挂起条目并做深比较（`test/contract/transcript-store.js:124-142`），
+   一条带 `replay: "unsafe"` 的挂起条目并做深比较（`test/contract/transcript-store.js:276-294`），
    所以能跑过该套件的宿主 store 会保留这个字段（另见「Store 保真要求」）。
 9. **知道 fail-fast 在哪。**两个字面量以外的 `replay` 取值，以及未知的 `replayPolicy`，都在
    第一次 provider 调用前抛 `TypeError`（`hasExplicitModelConfigOverride`，`src/loop/orchestrator.js` 与 `:583-587`）——
@@ -5352,7 +5352,7 @@ table-driven 各跑一遍。它们共用**同一份**端口语义实现（`src/s
 
 | 套件 | 第二个参数 | factory 必须交回什么 |
 |---|---|---|
-| `transcriptStoreContract(label, createStore)` | factory | 一个干净的 `TranscriptStore`（必需层 `appendRound`/`load`；run snapshot、run-state 与 issue #157 探针这些方法在存在时会被检验） |
+| `transcriptStoreContract(label, createStore, options?)` | factory（+ 一个可选声明） | 一个干净的 `TranscriptStore`（必需层 `appendRound`/`load`；run snapshot、run-state、`loadRunStateStatus`、`loadRawRows` 与 issue #157 探针这些方法按**能力组**可选，issue #739 把这件事变成套件自己会咬：整组缺席 ⇒ 跳过且**逐格记账为跳过**，整组在场 ⇒ 每个守卫格都必须真的跑到断言（并计调用次数），只实现半组 = 契约违规——于是只实现 `appendRound`/`load` 的 store 能整套通过，而把某个内置可选实现删掉会红。`options.optionalCapabilities` = 本实现声明提供的能力组名（内置 memory/file 声明 run-snapshot、run-state、`loadRunStateStatus`、`loadRawRows`）；声明了却一格没跑 ⇒ 红） |
 | `notesStoreContract(label, createStore)` | factory | 一个干净的 `NotesStore`（write/read/list/complete/revoke/purge） |
 | `notesStoreCasContract(label, createStore)` | factory | 同一个 `NotesStore`，由比较-交换型宿主**额外**注册（issue #183）：并发那条断言容忍一方被拒，不再要求两写都落盘 |
 | `modelConfigProviderContract(label, setup, unknownSlot)` | async setup + **必填的形态声明** | `{ provider, slot, expect: { defaultModel, slotModel, materializedKey } }`；provider 需要一个 `default` 槽加上 `slot`，且 `slot` 的 key 要能经间接引用被物化。`unknownSlot` 声明 provider 是哪种形态（issue #518）：槽位图形态写 `{ mode: "throws", name, available }`（显式未知槽名必须抛，错误点名该名字并列出 `available`），单配置形态写 `{ mode: "single-config", name }`（只带一份配置、槽位名不选任何东西） |
@@ -5370,7 +5370,7 @@ table-driven 各跑一遍。它们共用**同一份**端口语义实现（`src/s
 
 | 套件 | 断言什么 | 你必须满足的部分 | 它顺带钉住的上游内部细节 |
 |---|---|---|---|
-| `transcript-store.js`（22 条） | 记录往返保真（块结构、元数据、未知字段、`meta.source`）、同轮追加顺序、未知键 → `[]`、多 run 隔离、run snapshot 的 latest-only 覆盖写、不带 `state` 的 run-state 快照、写失败向上抛、`round: 0` 种子、折叠载荷往返、成对的探针层，以及同 key 的幂等/冲突层（issue #326：同 payload 重放（含顶层 `ts`/`round` 漂了、字段换了顺序）是 no-op，异 payload 以 `dedup_payload_conflict` 报冲突，数组顺序与宿主自有字段算 payload，`roundKey` 与 `<runId>:round:<n>` 回落键同受约束） | 全部这些：它就是 `TranscriptStore` 契约本身，而随包的保真/保序断言恰恰是「从字段白名单重建」型适配器会挂掉的那几条 | `:input:`/`:engine:round:` 键形状、`(record.dedupKey ?? record.roundKey)` 谓词及其 `??`-而非-`OR` 分叉（issue #171）、探针结果 `null`/`undefined` 的容忍、`dedup_payload_conflict` 错误码 |
+| `transcript-store.js`（28 条） | 记录往返保真（块结构、元数据、未知字段、`meta.source`）、同轮追加顺序、未知键 → `[]`、多 run 隔离、run snapshot 的 latest-only 覆盖写、不带 `state` 的 run-state 快照、写失败向上抛、`round: 0` 种子、折叠载荷往返、成对的探针层，以及同 key 的幂等/冲突层（issue #326：同 payload 重放（含顶层 `ts`/`round` 漂了、字段换了顺序）是 no-op，异 payload 以 `dedup_payload_conflict` 报冲突，数组顺序与宿主自有字段算 payload，`roundKey` 与 `<runId>:round:<n>` 回落键同受约束），以及 \u2014\u2014 issue #739 起 \u2014\u2014 **可选能力守卫账本**：每个可选能力组（run snapshot、run-state、`loadRunStateStatus`、`loadRawRows`、#157 探针）都逐格设守卫，并由每个 label 一条收尾用例核对：缺席 = \u201c跳过**且逐格记为 skipped**\u201d，在场 = \u201c每个守卫格都跑到断言且方法真的被调过\u201d \u2014\u2014 只实现必需面的 store 能整套通过，而悄悄删掉某个原本有的可选实现会红，不再躲在守卫里） | 全部这些：它就是 `TranscriptStore` 契约本身，而随包的保真/保序断言恰恰是「从字段白名单重建」型适配器会挂掉的那几条 | `:input:`/`:engine:round:` 键形状、`(record.dedupKey ?? record.roundKey)` 谓词及其 `??`-而非-`OR` 分叉（issue #171）、探针结果 `null`/`undefined` 的容忍、`dedup_payload_conflict` 错误码 |
 | `notes-store.js`（9 条） | 端口校验（`assertNotesStore`）、落盘前拒绝畸形记录、完整记录往返、作用域隔离与显式未命中、不安全作用域经规范存储与生命周期往返、`limit` 阈值（存量超过 200：给了 limit 就钳到恰好 200，非法 limit 抛错）、带 `expectedState`/`expectedUpdatedAt` guard 的 revoke 可观察消失，以及 issue #265 新增：空 `filters.state` 数组与非法 `filters.source` 必须拒、revoke 墓碑上 `revoked_at`/`revoke_reason` 可见、`purge` 的 `scanned` 是 scope 数且 `before` 只能缩小窗口 | 端口面与记录/guard 语义。issue #183 之后上游硬义务与宿主策略的分界已写死：端口只承诺「可观察消失」（墓碑**或**物理删除皆可）且不管记录过期，而一写者 last-write-wins 是文件适配器自己的事，已不在这里断言。#265 新增只断言 typedef 早已承诺的行为，但它们是发布面上的新断言：宿主适配器曾静默忽略其中任何一条，升级后就会冒新红 | 文件存储形状的错误文案（`/valid NoteRecord/`、`/parseable date/`、`/positive safe integer/`、`/filters\.state/`、`/filters\.source/`）、保留期/purge 时机 |
 | `notes-store.js` → `notesStoreCasContract`（1 条，可选；issue #183） | 并发同键写：至多一方失败，失败必须是抛错而不是静默丢弃，胜者必须是那条以完整形状可读的记录 | 只给比较-交换宿主跑，且是在 `notesStoreContract` 之外的**额外**一层 —— 这个子套件刻意比被移除的 last-write-wins 断言更弱，跑绿它对串行化写者一无所证 | 它顺便踩到的两个载荷内容（`left`/`right`），而不是任何冲突错误文案 |
 | `assembly-port.js`（5 条） | 端口能启动一个真实 loop 并跑完，`emit(type, payload)` 收到带 payload 的事件类型，显式的细粒度 `provider` 选项在**直连路线**上覆盖端口自带的 provider，`assemblyPortOptions(port, { provider })` 在**覆盖通道**上被启动期拒绝（issue #498），缺少 `chat`/`chatStream` 的 provider 在启动时被 `createAssemblyPort` 与 `runToolLoop` 双双拒绝 | 你的端口所必需的适配器与它的 `emit` 接收端 | 优先级规则（直连路线上显式选项胜过端口）、覆盖通道的冲突文案、启动校验的错误文案 |
