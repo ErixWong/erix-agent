@@ -223,13 +223,19 @@ const RETIRED_ADAPTER_METHODS = Object.freeze([
 ]);
 
 /**
- * 现役 memory store 的 API（事故里「有 recall 没有」的那一份名单，抄自 CHANGELOG 的 #257 条目）。
+ * 现役 TranscriptStore 的 API（事故里「有 recall 没有」的那一份名单，抄自 CHANGELOG 的 #257 条目）。
  * 用途只有两个：① 证明本规则的匹配器**不会误报现役名**；② 名单本身要能在 src/ 里查到，
  * 免得这份「反误报样本」自己腐化成编造。
+ *
+ * issue #739 补上三个漏项（#730 记账）：`loadRawRows`（#714 原始行读口，内置两个 store 都实现：
+ * `src/store/memory.js` / `src/store/file.js`）、`loadByDedupKey` 与 `loadMaxRound`（#157 成对快路径
+ * 探针：内置 store 不实现，但引擎侧 `src/store/append-user-turn.js` 探测并调它们，所它们是现役 API）。
+ * 漏项本身不咬人（本名单只是反误报样本），但名单会腐化，所以补全并把出处写进注释。
  */
 const CURRENT_STORE_API = Object.freeze([
   "appendRound", "load", "markRunState", "saveRunState", "saveRunSnapshot", "loadLatestRunSnapshot",
   "saveCheckpoint", "appendCheckpoint", "loadLatestCheckpoint", "loadRunState", "loadRunStateStatus",
+  "loadRawRows", "loadByDedupKey", "loadMaxRound",
 ]);
 
 /** 匹配器：只认「方法调用」这一种形状（`.name(`），单词本身不算——注释、散文、工具名都不算。 */
