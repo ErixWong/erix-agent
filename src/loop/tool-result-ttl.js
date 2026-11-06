@@ -259,7 +259,11 @@ export const READFILE_RETRIEVAL_TOOL_NAMES = Object.freeze(["readFile"]);
 export function retrievalCommandFor(name, input) {
   // 名字先过闸：不在白名单就一个字也不拼（MCP 带 `path` 也算不算）。
   if (!READFILE_RETRIEVAL_TOOL_NAMES.includes(String(name ?? ""))) return undefined;
-  const params = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+  // 显式收成 Record：`input` 是 `unknown`，不收的话下面每个 `params.path` 都是「Property does not
+  // exist on type 'object'」（九条），把 #214 的棘轮顶穿（现测：104 > 基线 103）。
+  const params = input && typeof input === "object" && !Array.isArray(input)
+    ? /** @type {Record<string, unknown>} */ (input)
+    : /** @type {Record<string, unknown>} */ ({});
   if (params.command !== undefined) return undefined;
   const filePath = typeof params.path === "string" ? params.path : "";
   if (filePath === "") return undefined;
