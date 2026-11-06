@@ -13,15 +13,15 @@
       "date": "2026-11-07",
       "env": "local",
       "node": "v22.23.2",
-      "commit": "23ec9df（#741 rebase 到 origin/main `aa94463`（#736 + #738 已合）之后的最后一笔代码/守卫改动；tree `9a5fef667f8d829ce056a6142cbe4eecfb2bea75`）——本格的测量就在这一棵上做（日志 /tmp/aa94463-test.log）；紧随其后的那一笔只改这个 JSON 的登记文本，`git diff --name-only 23ec9df..HEAD` 只列 `test/test-suite-baseline.json`",
-      "branch": "fix-261107-04-ledger-crash-boundary",
-      "tests": 3555,
-      "pass": 3542,
+      "commit": "23ec9df（#741 rebase 到 origin/main `aa94463`（#736 + #738 已合）之后的最后一笔代码/守卫改动；tree `9a5fef667f8d829ce056a6142cbe4eecfb2bea75`）——本格的测量就在这一棵上做（日志 /tmp/aa94463-test.log）；其后的两笔（评审必修 A/B）只动登记 JSON 本身与 `docs/architecture*.md` 两份文档，`git diff --name-only 23ec9df..HEAD` 只列这三份 ⇒ `src/` 与 `test/*.test.js` 一笔没动，本格的计数与被测那一棵仍然逐字相等",
+      "branch": "fix-261107-02-fold-surrogate-honesty",
+      "tests": 3580,
+      "pass": 3567,
       "fail": 0,
       "skipped": 13,
       "todo": 0,
       "cancelled": 0,
-      "why": "tests 3565 → **3580**：+15 格是有意的增删（issue #741 切片 A，含第二轮新增的 2 格 MCP 取回命令用例）——新增 `test/compact/fold-note-honesty-741.test.js` 15 格（`node --test` 现测该文件 `# tests 15`），既有文件一格没增减。fail=0、maxSkipped=15 不变（skipped 实测 13：12 条真上游/真 relay 门禁 + 1 条真上游多会话格）。⚠ **rebase 重测的账**：主干 `d824dc7`(3451) → `a177083`(3541) → `da35840`(3555) → `aa94463`(3565，#738 的 10 条)；登记的 3580 = 3565 + 15，两个加数都在这两棵上现跑，不是推定。同树两档类型棘轮：`check:types` 95/26（基线 103，少 8）、`check:types:strict` 1862/70（基线 1892，少 30；主干 `aa94463` 自己 1864/70 ⇒ **本支净 -2**，本支新增的 strict 错已当场清完，没抬基线）。配对地板由守卫在同一棵上重数 = 12（11 + 本支一对；三条分支各抬过一次，只有守卫重数算数）。"
+      "why": "tests 3565 → **3580**：+15 格是有意的增删（issue #741 切片 A，含第二轮新增的 2 格 MCP 取回命令用例）——新增 `test/compact/fold-note-honesty-741.test.js` 15 格（`node --test` 现测该文件 `# tests 15`），既有文件一格没增减。fail=0、maxSkipped=15 不变（skipped 实测 13：12 条真上游/真 relay 门禁 + 1 条真上游多会话格）。⚠ **rebase 重测的账**：主干 `d824dc7`(3451) → `a177083`(3541) → `da35840`(3555) → `aa94463`(3565，#738 的 10 条)；登记的 3580 = 3565 + 15，两个加数都在这两棵上现跑，不是推定。同树两档类型棘轮：`check:types` 95/26（基线 103，少 8）、`check:types:strict` 1862/70（基线 1892，少 30；主干 `aa94463` 自己 1864/70 ⇒ **本支净 -2**，本支新增的 strict 错已当场清完，没抬基线）。配对地板由守卫在同一棵上重数 = 12（11 + 本支一对；三条分支各抬过一次，只有守卫重数算数）。⚠ 本轮评审必修：本格六个计数与 `branch` 从前是 rebase 时取主干那一侧留下的 **#736 残值**（`fix-261107-04-ledger-crash-boundary` / 3555 / 3542），与下面 `why` 自相矛盾 ⇒ 现在六个数逐字取自**被测量那一棵（`23ec9df`）的 TAP 汇总行**：`# tests 3580` / `# pass 3567` / `# fail 0` / `# cancelled 0` / `# skipped 13` / `# todo 0`（日志 /tmp/aa94463-test.log，本 run 现跑），`branch` 改成本支 `fix-261107-02-fold-surrogate-honesty`。登记面必须等于被测的那一棵。"
     },
     {
       "date": "2026-11-07",
