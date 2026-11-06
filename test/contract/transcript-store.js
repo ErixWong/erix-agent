@@ -30,6 +30,15 @@
 //      并用第三个参数 `optionalCapabilities`（实现方自己声明提供哪些可选能力）钉住
 //      「声明了却没跑过断言 ⇒ 红，点名能力与格子」——于是「内置 store 把某个可选实现删了」
 //      不再在全绿里隐身（那正是原 :423 那个单向守卫的毛病，#730 记过账）。
+//   4. **保证面 = 「到达 + 调用」，不是「断言有语义」**（issue #739 独立评审必修 2）：
+//      账本与计数器能证明「这一格跑到了」、「该能力的方法真被调过」、「实现被删 / 声明未实现 / 半组」；
+//      它**证不了**断言本身还有语义：把某格的 `assert.equal(await store.x("missing"), undefined)` 改成
+//      `assert.ok(true)` 并让实现返回 `{ broken: true }`，本套件仍全绿（评审与本片均实测）。
+//      断言语义由各格子自己负责，不要把「全绿」当成「断言很强」。
+//   5. **契约套件不许写宿主对象**（同一评审必修 1）：计数与「写失败」临时桩都只落在
+//      套件自己造的浅壳上（见 `countingView`），所以宿主把 store `Object.freeze` 起来照样能跑
+//      （钉在 `test/store/frozen-store-contract.test.js`；修前它是 false-red：计数器挂不上去
+//      ⇒ 调用计数恒 0 ⇒ 收尾格红）。
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -39,6 +48,62 @@ import {
   RUN_SNAPSHOT_STORE_METHODS,
   RUN_STATE_STORE_METHODS,
 } from "../../src/assembly-validators.js";
+
+/**
+ * 计数浅壳（issue #739 独立评审必修 1）：把宿主 store 的 API 镜像到一个**套件自己的**对象上，
+ * 方法逐个转发给宿主并计数；对壳的赋值（「写失败」格要临时换桩）只落在壳上，**不写宿主**。
+ *
+ * 为什么不用 `Proxy`：宿主常常把 store 面 `Object.freeze(createMyStore())`，而冻结后属性是
+ * non-writable + non-configurable，`Proxy` 的 `get` trap 必须报告**同一个值**，返回包装函数会当场
+ * `TypeError`——正是要支持的那类宿主用不了。所以用普通对象 + getter 镜像（可枚举性照搬）。
+ * 修前的做法是直接往宿主对象上赋 wrapper：冻结 store 上赋值抛 `TypeError`，被 catch 吞掉
+ * ⇒ 计数恒 0 ⇒ 收尾那条「实现 ⇒ 调用计数 > 0」的核对把一具好实现判成红（false-red）。
+ *
+ * @param {object} host 宿主 store（可以是被 `Object.freeze` 过的）
+ * @param {Map<string, number>} calls 共享的调用计数器
+ * @returns {object} 壳；非对象入参原样返回
+ */
+function countingView(host, calls) {
+  if (host === null || typeof host !== "object") return host;
+  const shell = {};
+  /** 对壳的赋值（契约的「写失败」格）；不回落宿主。 */
+  const overrides = new Map();
+  /** 包装函数的缓存：保证同一个方法的引用稳定（`shell.load === shell.load`）。 */
+  const wrappers = new Map();
+  const seen = new Set();
+  // 沿原型链收集（class 实现的宿主 store 方法在原型上，不是 own 属性）。
+  for (let target = host; target != null && target !== Object.prototype; target = Object.getPrototypeOf(target)) {
+    for (const key of Reflect.ownKeys(target)) {
+      if (typeof key === "string" && key === "constructor") continue;
+      if (seen.has(key)) continue;
+      const descriptor = Object.getOwnPropertyDescriptor(target, key);
+      if (descriptor === undefined || typeof descriptor.value === "symbol") continue;
+      seen.add(key);
+      Object.defineProperty(shell, key, {
+        enumerable: descriptor.enumerable,
+        configurable: true,
+        get() {
+          if (overrides.has(key)) return overrides.get(key);
+          const fn = host[key];
+          if (typeof fn !== "function") return fn;
+          const cached = wrappers.get(key);
+          if (cached !== undefined && cached.fn === fn) return cached.wrapped;
+          const wrapped = (...args) => {
+            calls.set(key, (calls.get(key) ?? 0) + 1);
+            return Reflect.apply(fn, host, args); // 透明转发：不 async 包装，宿主的抛错方式不改
+          };
+          wrappers.set(key, { fn, wrapped });
+          return wrapped;
+        },
+        set(next) {
+          overrides.set(key, next);
+          wrappers.delete(key);
+        },
+      });
+    }
+  }
+  return shell;
+}
 
 /**
  * 可选 capability 的**唯一名单**（issue #739）。组的来源是装配校验（`runSnapshot`/`runState`
@@ -119,28 +184,10 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   const verdicts = new Map();
   /** 调用计数器（方法名 → 次数）：把「内置 store 确实实现了 ⇒ 这些方法真的被调过」钉死。 */
   const calls = new Map();
-  const COUNTED = Symbol("contract-counted");
+  /** 本 label 的统一入口：每个用例拿到的 store 都是计数壳，宿主对象一个字段也不写。 */
+  const traced = async () => countingView(await createStore(), calls);
 
   const verdictKey = (capability, cell) => `${capability}|${cell}`;
-
-  /** 把本组方法包上计数器（幂等：同一个已包装的函数不重复包）。 */
-  function instrument(store, capability) {
-    for (const method of OPTIONAL_CAPABILITIES[capability] ?? []) {
-      const current = store?.[method];
-      if (typeof current !== "function" || current[COUNTED] === true) continue;
-      const original = current.bind(store);
-      const wrapped = async (...args) => {
-        calls.set(method, (calls.get(method) ?? 0) + 1);
-        return original(...args);
-      };
-      try {
-        wrapped[COUNTED] = true;
-        store[method] = wrapped;
-      } catch {
-        // 只读 store（宿主冻结了实现面）：计数器不可用就继续跑，不拿工具性限制去改契约结论。
-      }
-    }
-  }
 
   /** 整组实现 ⇒ true；整组缺席 ⇒ false；半组 ⇒ 当场红（点名缺哪几个方法）。 */
   function probeCapability(store, capability) {
@@ -165,7 +212,6 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   /** 能力守卫（成对）：true ⇒ 本格子必须真跑断言，跑完调用 `capabilityAsserted`；false ⇒ 已记 `skipped`。 */
   function capabilityPresent(store, capability, cell) {
     const present = probeCapability(store, capability);
-    if (present) instrument(store, capability);
     recordVerdict(capability, cell, present ? "pending" : "skipped");
     return present;
   }
@@ -182,13 +228,9 @@ export function transcriptStoreContract(label, createStore, options = {}) {
     if (!hasRunState) return "skipped";
     return typeof store.loadRunStateStatus === "function" ? "exercised" : "fallback";
   }
-  /** 把终态读口挂上调用计数器：必须在**调用之前**包（`statusReaderOutcome` 是断言之后才记账的）。 */
-  function trackStatusReader(store) {
-    instrument(store, "runStateStatus");
-  }
 
   test(`${label}: append/load 往返保真（块结构与元数据）`, async () => {
-    const store = await createStore();
+    const store = await traced();
     await store.appendRound("run-1", ROUND_1);
     await store.appendRound("run-1", ROUND_2);
 
@@ -201,7 +243,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   });
 
   test(`${label}: load 保留同 round 记录的持久化追加顺序`, async () => {
-    const store = await createStore();
+    const store = await traced();
     const runId = "same-round-order-run";
     const engineKey = `${runId}:engine:round:2`;
     const inputKey = `${runId}:input:m1`;
@@ -226,7 +268,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   });
 
   test(`${label}: RoundRecord 与 message 未知字段及 source 标记完整往返`, async () => {
-    const store = await createStore();
+    const store = await traced();
     const record = {
       round: 3,
       ts: "2026-08-29T00:03:00.000Z",
@@ -248,12 +290,12 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   });
 
   test(`${label}: load 未知 runId 返回空数组`, async () => {
-    const store = await createStore();
+    const store = await traced();
     assert.deepEqual(await store.load("nonexistent-run"), []);
   });
 
   test(`${label}: 多 runId 隔离`, async () => {
-    const store = await createStore();
+    const store = await traced();
     await store.appendRound("run-a", ROUND_1);
     await store.appendRound("run-b", ROUND_2);
 
@@ -264,7 +306,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   });
 
   test(`${label}: run snapshot 往返保真与 latest-only 覆盖语义`, async () => {
-    const store = await createStore();
+    const store = await traced();
     if (!capabilityPresent(store, "runSnapshot", "snapshot-latest-only")) return; // 可选能力：最小实现不提供
     const first = {
       round: 1,
@@ -296,19 +338,18 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   });
 
   test(`${label}: run snapshot 未知 runId 返回 undefined`, async () => {
-    const store = await createStore();
+    const store = await traced();
     if (!capabilityPresent(store, "runSnapshot", "snapshot-missing-run")) return; // 可选能力：最小实现不提供
     assert.equal(await store.loadLatestRunSnapshot("missing-snapshot-run"), undefined);
     capabilityAsserted("runSnapshot", "snapshot-missing-run");
   });
 
   test(`${label}: run snapshot/run-state 多 runId 隔离`, async () => {
-    const store = await createStore();
+    const store = await traced();
     // 两个能力各自成对守卫：只实现 run-state（或只实现 snapshot）的宿主 store 也必须能跑完本格子
     // 它实现的那一半，而不是被一个整格守卫静默跳过。
     const hasSnapshot = capabilityPresent(store, "runSnapshot", "snapshot-state-isolation");
     const hasRunState = capabilityPresent(store, "runState", "snapshot-state-isolation");
-    trackStatusReader(store);
     const loadStatus = async (runId) => {
       if (typeof store.loadRunStateStatus === "function") {
         return store.loadRunStateStatus(runId);
@@ -350,7 +391,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   });
 
   test(`${label}: 新写入的 run-state 快照不包含终态 state`, async () => {
-    const store = await createStore();
+    const store = await traced();
     if (!capabilityPresent(store, "runState", "run-state-without-terminal-state")) return; // 可选能力
     await store.saveRunState("snapshot-state", {
       stateVersion: 1,
@@ -364,7 +405,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   });
 
   test(`${label}: run snapshot/run-state 写失败向上抛出`, async () => {
-    const store = await createStore();
+    const store = await traced();
     // 按能力分组：缺席的能力整组不跑（写桩再调用对未实现者是**恒真**的假绿），实现的能力必须真抛真接。
     const writeFailures = [
       ["runSnapshot", [["saveRunSnapshot", ["failed-run", { round: 1 }]]]],
@@ -391,9 +432,8 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   });
 
   test(`${label}: run-state 快照保真且终态独立读取`, async () => {
-    const store = await createStore();
+    const store = await traced();
     const hasRunState = capabilityPresent(store, "runState", "run-state-fidelity");
-    trackStatusReader(store);
     // 终态读口的判决与 run-state 同格：run-state 缺席时这一格也必须记账（否则收尾核对会少一格）。
     recordVerdict("runStateStatus", "run-state-fidelity", statusReaderOutcome(store, hasRunState));
     if (!hasRunState) return; // 可选能力：最小实现不提供
@@ -417,14 +457,14 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   });
 
   test(`${label}: run-state 未知 runId 返回 undefined`, async () => {
-    const store = await createStore();
+    const store = await traced();
     if (!capabilityPresent(store, "runState", "run-state-missing-run")) return; // 可选能力：最小实现不提供
     assert.equal(await store.loadRunState("missing-state-run"), undefined);
     capabilityAsserted("runState", "run-state-missing-run");
   });
 
   test(`${label}: round 0 种子记录与保序（初始消息入档，loop resume 依赖）`, async () => {
-    const store = await createStore();
+    const store = await traced();
     await store.appendRound("run-1", {
       round: 0,
       ts: "2026-08-29T00:00:00.000Z",
@@ -506,7 +546,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   };
 
   test(`${label}: 折叠——消息行按 seq 折回载体行，partOf 分片接进目标消息（issue #401）`, async () => {
-    const store = await createStore();
+    const store = await traced();
     const { rows, expected } = foldRound(2);
     for (const row of rows) await store.appendRound(foldRunId, row);
 
@@ -520,7 +560,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   });
 
   test(`${label}: 折叠幂等——已折叠的账本再读一次逐字一致（issue #401）`, async () => {
-    const store = await createStore();
+    const store = await traced();
     const { rows, expected } = foldRound(3);
     for (const row of rows) await store.appendRound(foldRunId, row);
 
@@ -531,7 +571,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   });
 
   test(`${label}: 折叠守卫——宿主「两份都留」时正文不得翻倍（issue #401）`, async () => {
-    const store = await createStore();
+    const store = await traced();
     // 宿主 materializer 自己折了一份（载体行已经带正文），又把原始消息行一起交回去。
     // 按 R3 的规则：该轮载体已有正文 ⇒ 这一轮跳过（消息行当重复副本丢弃），正文条数不得翻倍。
     const { rows, expected } = foldRound(4);
@@ -552,7 +592,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   // 侧看到的就是一场“模型见过、档案里拼不出来”：thinking 与工具调用整块消失，而格数看起来还是“对了”。
   // 本仓库没有「墓碑行」这个概念（`deleteMessage` 不在这层的职责里），因此本格只钉“不占行 + 块不丢”两条。
   test(`${label}: 折叠——thinking/tool_use 行同样不占独立行且整块保留（issue #458）`, async () => {
-    const store = await createStore();
+    const store = await traced();
     const round = 7;
     const useId = `tool-${String(round)}`;
     const rows = [
@@ -602,7 +642,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   // 把**未折叠行**交出来就够了（折叠只是读侧变换，原始行从未消失）。判据只有一条：**与 `load()` 同源**
   // —— 对它跑一遍 `foldMessageRows` 必须逐字等于 `load()`。宿主最小实现可以不提供（缺它就退回修前口径）。
   test(`${label}: 可选原始行读口 loadRawRows 与 load 同源（实现时，issue #714）`, async () => {
-    const store = await createStore();
+    const store = await traced();
     if (!capabilityPresent(store, "rawRows", "raw-rows-same-source-as-load")) return; // 可选能力：最小实现不提供
     const { rows } = foldRound(5);
     for (const row of rows) await store.appendRound(foldRunId, row);
@@ -620,7 +660,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   });
 
   test(`${label}: folded/foldedPayload 元数据往返`, async () => {
-    const store = await createStore();
+    const store = await traced();
     const payload = [
       { role: "user", content: [{ type: "text", text: "early" }] },
       { role: "assistant", content: [{ type: "text", text: "reply" }] },
@@ -639,7 +679,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   // 成对实现（缺一如缺二，引擎回退全量 load）；实现则必须与 appendRound/load
   // 的既有事实一致，否则快路径与慢路径会得出不同结论。
   test(`${label}: 可选快路径探针 loadByDedupKey/loadMaxRound 与 load 事实一致（实现时）`, async () => {
-    const store = await createStore();
+    const store = await traced();
     if (!capabilityPresent(store, "fastPathProbes", "probe-consistency-with-load")) return; // 未实现：回退全量 load，由上方必需用例覆盖。
 
     // 未命中：返回 null/undefined，不抛错。
@@ -684,7 +724,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   //      命中会让 appendUserTurn 直接返回 written:false，这一轮静默不追加，
   //      不报错也不降级。本用例永久锁住 nullish 语义：宿主写成 OR 会在这里红。
   test(`${label}: loadByDedupKey 按 nullish 判据匹配（dedupKey 存在时绝不回退 roundKey，#171）`, async () => {
-    const store = await createStore();
+    const store = await traced();
     if (!capabilityPresent(store, "fastPathProbes", "probe-nullish-predicate")) return; // 未实现快路径：由全量路径覆盖
 
     const record = {
@@ -738,7 +778,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
     && String(error.message).includes(String(error.key));
 
   test(`${label}: 同 dedupKey 重放同 payload 是幂等 no-op（字段顺序不算差异）`, async () => {
-    const store = await createStore();
+    const store = await traced();
     const first = dedupRecord();
     await store.appendRound("dedup-run", first);
     // 逐字段同值但插入顺序不同（宿主/另一条代码路径重建同一条记录的真实形状）
@@ -754,7 +794,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   });
 
   test(`${label}: 崩溃重跑形状（顶层 ts/round 漂了）仍判幂等，不得误判成冲突`, async () => {
-    const store = await createStore();
+    const store = await traced();
     const first = dedupRecord();
     await store.appendRound("dedup-run", first);
     // appendUserTurn 重跑同一 messageId 时就是这形状：dedupKey 稳、正文稳，
@@ -771,7 +811,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   });
 
   test(`${label}: 同 dedupKey 异 payload 明确报冲突，既不覆盖也不静默丢弃`, async () => {
-    const store = await createStore();
+    const store = await traced();
     const first = dedupRecord();
     await store.appendRound("dedup-run", first);
 
@@ -795,7 +835,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   });
 
   test(`${label}: 数组顺序与嵌套字段是 payload 的一部分（顺序换了就是冲突）`, async () => {
-    const store = await createStore();
+    const store = await traced();
     await store.appendRound("dedup-run", {
       round: 5,
       dedupKey: "dedup-run:engine:round:5",
@@ -820,7 +860,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   });
 
   test(`${label}: 宿主自有未知字段也算 payload（多一个字段就是冲突）`, async () => {
-    const store = await createStore();
+    const store = await traced();
     await store.appendRound("dedup-run", dedupRecord());
 
     await assert.rejects(
@@ -830,7 +870,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   });
 
   test(`${label}: 回落到 roundKey 与隐式 <runId>:round:<n> 键时判据一致`, async () => {
-    const store = await createStore();
+    const store = await traced();
     // 只有 roundKey（dedupKey 缺失）——去重键回落到 roundKey，冲突判据不得退场
     await store.appendRound("roundkey-run", { round: 2, roundKey: "roundkey-run:round:2", messages: ["a"] });
     await assert.rejects(
@@ -855,7 +895,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   //   声明（options.optionalCapabilities）⇒ 必须实现，且必须跑到 exercised——内置 store
   //   把 `loadRawRows` 删掉就会同时踏两条：声明了却没实现 + 格子从 exercised 退成 skipped。
   test(`${label}: 能力守卫成对——缺席即记账跳过、实现即真断言并计数（issue #739）`, async () => {
-    const store = await createStore();
+    const store = await traced();
     // 收尾核对自己都要进账，否则下面任何一句 assert 被删都没人知道（格子清单里没它）。
     const has = (capability) => probeCapability(store, capability);
     const runnable = (capability) => has(capability)
