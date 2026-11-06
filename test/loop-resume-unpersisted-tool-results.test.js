@@ -1188,6 +1188,219 @@ test("#714 中段悬空（已完成轮形状）· file store 真落盘：桩写�
   validateMessages(foldLedgerMessages(await store.load(RUN_ID)).map((entry) => entry.message));
 });
 
+// ── issue #729：宿主把**折好的载体行**与**原始消息行**两份都留（`#401` R3 的事故现场）────────────
+// 现场（纯函数探针先复现，见下）：round 2 的轮载体行**已经带着正文**（`assistant[t1,t2]` + `user[t1]`），
+// 同一轮的消息行（`seq:0` / `seq:1`）也还在账本里。折叠层的 #401 R3 守卫判「载体现有正文 == 从消息行
+// 折出来的正文」⇒ 相等 ⇒ 消息行被当**重复副本**丢弃（`load()` = 2 行 / 3 条消息，形状是对的）。
+// 但桩一旦落账，折出来的那份就**多出桩那一块** ⇒ 判不等 ⇒ 走 `attached` 分支把整轮正文**再拼一遍**
+// （实测 3 → 5 条消息）⇒ `validateMessages` 抛 `invalid_messages`，这个 runId 永久起不来。
+//
+// 修法（定锚侧，`src/loop/resume-manager.js#firstSliceRowKeyOf`）：该轮已有带正文的载体行 ⇒ **不给锚点**
+// ⇒ 逐字退回 #421 的降级（桩只修本次上下文 + 发一条 `resume_journal_skipped`）。
+// **宁可退回降级，也不写一份会翻倍的账。**
+
+/**
+ * 手搭「载体带正文 + 同轮消息行」的账本（两份都留，#401 R3 支持的那种形状）：
+ *   · round 1：任务（消息行）；
+ *   · round 2：**载体行**（`dedupKey` 以 `:round:2` 结尾，正文 = 折好的 assistant + 聚合 user）；
+ *   · round 2：**同一轮的原始消息行**（`seq:0` assistant、`seq:1` 聚合 user）——于是悬空的 `t2` 有
+ *     合法的首片候选行，但那一轮的载体**已经带着正文**。
+ */
+async function bodyCarrierScene(inner) {
+  const ts = () => new Date().toISOString();
+  await inner.appendRound(RUN_ID, {
+    round: 1,
+    roundKey: `${RUN_ID}:round:1`,
+    dedupKey: `${RUN_ID}:msg:1:0`,
+    kind: "message",
+    seq: 0,
+    messages: [{ role: "user", content: [text("任务")] }],
+    ts: ts(),
+  });
+  await inner.appendRound(RUN_ID, {
+    round: 2,
+    roundKey: `${RUN_ID}:round:2`,
+    dedupKey: `${RUN_ID}:round:2`,
+    messages: [
+      { role: "assistant", content: [text("先跑工具"), toolUse("t1"), toolUse("t2")] },
+      { role: "user", content: [toolResultBlock("t1")] },
+    ],
+    ts: ts(),
+  });
+  await inner.appendRound(RUN_ID, {
+    round: 2,
+    roundKey: `${RUN_ID}:round:2`,
+    dedupKey: `${RUN_ID}:msg:2:0`,
+    kind: "message",
+    seq: 0,
+    messages: [{ role: "assistant", content: [text("先跑工具"), toolUse("t1"), toolUse("t2")] }],
+    ts: ts(),
+  });
+  await inner.appendRound(RUN_ID, {
+    round: 2,
+    roundKey: `${RUN_ID}:round:2`,
+    dedupKey: `${RUN_ID}:msg:2:1`,
+    kind: "message",
+    seq: 1,
+    messages: [{ role: "user", content: [toolResultBlock("t1")] }],
+    ts: ts(),
+  });
+  return inner;
+}
+
+/** `load()` 折出来的逻辑消息序列（`restoreResume` 重建上下文的那一份口径）。 */
+const foldedMessagesOf = async (store) => foldLedgerMessages(await store.load(RUN_ID))
+  .map((entry) => entry.message);
+
+test("#729 中段悬空（载体已带正文 + 同轮消息行）· 不给锚点、不写桩、发跳过事件、`load()` 不翻倍、二次恢复仍 ok", async () => {
+  const inner = await bodyCarrierScene(createMemoryTranscriptStore());
+
+  // 前置（这一格到底是不是本单说的形状，逐字钉住）：
+  // ① `load()` 只看见 2 行（round 2 的消息行被 R3 守卫当重复副本丢弃），折出 3 条消息；
+  // ② 原始行读口看得见 4 行（消息行确实还在介质上）——于是**锚点探针命中得了**，这就是本单要堵的洞。
+  assert.equal((await inner.load(RUN_ID)).length, 2,
+    "前置：`load()` 必须是 2 行（round 2 的消息行被 #401 R3 当重复副本丢弃）");
+  assert.equal((await inner.loadRawRows(RUN_ID)).length, 4,
+    "前置：原始行看得见 4 行（首片候选行在介质上 ⇒ 锚点探针命中得了，这正是本单的洞）");
+  const before = await foldedMessagesOf(inner);
+  assert.equal(before.length, 3, "前置：无桩时折出 3 条消息（user / assistant[t1,t2] / user[t1]）");
+  assert.throws(() => validateMessages(before),
+    /tool_result ids do not match assistant tool_use ids/u,
+    "前置：中段悬空账本必须真的过不了严格配对（否则本用例测的是别的东西）");
+
+  const events = [];
+  const { store, rows } = recordRoundWrites(inner);
+  const provider = createFakeProvider([endTurn("续接完成")]);
+  const resumed = await runLoop({
+    store,
+    provider,
+    executeTool: async () => "unused",
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
+  });
+  assert.equal(resumed.ok, true, "恢复必须成功（实测：" + String(resumed.error));
+  assert.equal(provider.requests.length, 1, "恢复必须真的发过一次模型请求");
+
+  // 判据①：桩进得了本次上下文（id 集合与 tool_use 一致），但**一行都不许写**。
+  assert.deepEqual(stubBlocks(provider.requests[0].messages).map((block) => block.tool_use_id), ["t2"],
+    "桩必须补进本次上下文（id 集合与 assistant 的 tool_use 一致）");
+  validateMessages(provider.requests[0].messages);
+  assert.equal(stubRowsOf(rows).length, 0,
+    "载体已带正文的轮**不许写桩**：写下去就会被折叠层再拼一遍（实测 3 → 5 条消息）");
+  assert.equal(rows.filter((record) => record?.round === 2 && record?.kind === "message").length, 0,
+    "落盘行 0 增量：这次恢复不许给 round 2 写任何**消息行**（写了就是桩落了账）");
+  // 落盘行 0 增量（round 2）：消息行必须仍是 2 条、载体行仍是 1 条。（这一轮多出来的那一行是
+  // issue #404 的 `…:engine:round:2:control:resume-notice:…` 控制行——恢复本身就会写它，与桩无关。）
+  const rawRoundTwo = (await inner.loadRawRows(RUN_ID)).filter((record) => record?.round === 2);
+  assert.equal(rawRoundTwo.filter((record) => record?.kind === "message").length, 2,
+    "落盘行 0 增量：round 2 的消息行必须仍是 2 条（第 3 条 = 桩落了账）");
+  assert.equal(rawRoundTwo.filter((record) => record?.kind !== "message"
+    && /:round:2$/u.test(String(record?.dedupKey ?? record?.roundKey))).length, 1,
+    "载体行必须仍是 1 条（桩不许把载体形态撞坏）");
+
+  // 判据②：如实发一条跳过事件（既有 `onEvent` 通道，不新造机制）。
+  const skipped = events.filter((event) => event?.type === "resume_journal_skipped"
+    && event?.reason === "mid_sequence_aggregate_row_not_in_ledger");
+  assert.equal(skipped.length, 1, "必须如实报一次「这批桩没有入账」");
+  assert.equal(skipped[0].count, 1, "报的条数必须等于没入账的桩数");
+  assert.equal(skipped[0].round, 2, "报的轮号必须是那条聚合消息的轮");
+
+  // 判据③：round 2 折出的正文必须与写桩前**逐字相同**（不翻倍）——本单的核心。
+  // （恢复本身会给自己写行：issue #404 的 `…:control:resume-notice:…` 与下一轮的消息行，所以这里
+  // 判的是**那一轮载体折出来的正文**与「全文里带 t1 的 assistant 条数」，不是整个账本的总条数。）
+  const roundTwoCarrier = async () => (await inner.load(RUN_ID)).find((record) => record?.round === 2
+    && /:round:2$/u.test(String(record?.dedupKey ?? record?.roundKey)));
+  const carrierAfter = await roundTwoCarrier();
+  assert.ok(carrierAfter !== undefined, "前置：round 2 的载体行必须还在 `load()` 里");
+  assert.equal(carrierAfter.messages.length, 2,
+    "round 2 的载体正文必须仍是 2 条（修前实测 4 条：整轮正文拼了第二遍；实测 "
+    + `${carrierAfter.messages.length}）`);
+  assert.deepEqual(carrierAfter.messages, before.slice(1),
+    "载体折出来的正文必须与写桩前**逐字相同**（不是「条数对了、内容翻了」）");
+  assert.equal((await inner.load(RUN_ID)).flatMap((record) => record.messages ?? [])
+    .filter((message) => blocksOf([message]).some((block) => block?.type === "tool_use"
+      && block.id === "t1")).length, 1,
+  "整份账本里带 `t1` 的 assistant 必须恰好一条（修前 2 条 = 整轮正文拼了第二遍）");
+  assert.deepEqual(ledgerAggregates(await inner.load(RUN_ID)), [{ role: "user", ids: ["t1"] }],
+    "账本形状必须保持「一条聚合 user 消息只带 t1」（桩不进账本）");
+
+  // 判据④：二次恢复仍 `ok`（修前这里在第一次模型请求之前就 `invalid_messages`，0 次请求）。
+  const secondProvider = createFakeProvider([endTurn("第二次续接完成")]);
+  const again = await runLoop({ store, provider: secondProvider, executeTool: async () => "unused" });
+  assert.equal(again.ok, true,
+    "第二次恢复必须仍然成功（修前：账本翻倍 ⇒ `invalid_messages`，0 次请求；实测：" + String(again.error));
+  assert.deepEqual(stubBlocks(secondProvider.requests[0].messages).map((block) => block.tool_use_id), ["t2"],
+    "第二次恢复：桩仍然只补进本次上下文（恰一张）");
+  assert.equal(stubRowsOf(rows).length, 0, "第二次恢复同样不许写桩行");
+  const carrierTwice = await roundTwoCarrier();
+  assert.deepEqual(carrierTwice?.messages, before.slice(1),
+    "两次恢复之后 round 2 折出的正文仍与最初逐字相同（一个字节都没多）");
+});
+
+// ── issue #729（第二格）：**轮号过滤不对称** ───────────────────────────────────────────────
+// 旧判据是 `Number.isSafeInteger(round) && Number.isSafeInteger(row.round) && row.round !== round`
+// ⇒ `row.round` **不是**安全整数时**不排除**。而折叠层（`src/store/message-rows.js`）对没有整数
+// `round` 的行一律不当折叠目标 ⇒ 命中那种行等于保证桩落成**孤儿 `user` 消息**，以另一种
+// `invalid_messages`（`user tool_result has no matching assistant tool_use`）死。
+// 修后：「`round` 是整数时 `row.round` 必须**严格相等**」。
+
+test("#729 轮号过滤 · 候选行的 `round` 不是整数（折叠层不认它）⇒ 不给锚点、不写桩、二次恢复仍 ok", async () => {
+  const inner = createMemoryTranscriptStore();
+  const ts = () => new Date().toISOString();
+  await inner.appendRound(RUN_ID, {
+    round: 1, roundKey: `${RUN_ID}:round:1`, dedupKey: `${RUN_ID}:msg:1:0`, kind: "message", seq: 0,
+    messages: [{ role: "user", content: [text("任务")] }], ts: ts(),
+  });
+  await inner.appendRound(RUN_ID, {
+    round: 2, roundKey: `${RUN_ID}:round:2`, dedupKey: `${RUN_ID}:msg:2:0`, kind: "message", seq: 0,
+    messages: [{ role: "assistant", content: [text("先跑工具"), toolUse("t1"), toolUse("t2")] }], ts: ts(),
+  });
+  // 聚合 user 消息那一行的 `round` 是字符串（宿主手写 / 序列化回来的现场）：首块确实是 `t1` 的
+  // `tool_result`，但折叠层**不会**把它当折叠目标（`Number.isSafeInteger(record.round)` 不过）。
+  await inner.appendRound(RUN_ID, {
+    round: "2", roundKey: `${RUN_ID}:round:2`, dedupKey: `${RUN_ID}:msg:2:1`, kind: "message", seq: 1,
+    messages: [{ role: "user", content: [toolResultBlock("t1")] }], ts: ts(),
+  });
+  const before = await foldedMessagesOf(inner);
+  assert.deepEqual(before.map((message) => message.role), ["user", "assistant", "user"],
+    "前置：这个账本就是「assistant[t1,t2] 后面只有 t1」的中段悬空形状");
+  assert.throws(() => validateMessages(before),
+    /tool_result ids do not match assistant tool_use ids/u,
+    "前置：中段悬空账本必须真的过不了严格配对（否则本用例测的是别的东西）");
+
+  const events = [];
+  const { store, rows } = recordRoundWrites(inner);
+  const provider = createFakeProvider([endTurn("续接完成")]);
+  const resumed = await runLoop({
+    store,
+    provider,
+    executeTool: async () => "unused",
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
+  });
+  assert.equal(resumed.ok, true, "恢复必须成功（实测：" + String(resumed.error));
+  assert.deepEqual(stubBlocks(provider.requests[0].messages).map((block) => block.tool_use_id), ["t2"],
+    "桩必须补进本次上下文");
+  validateMessages(provider.requests[0].messages);
+
+  // 核心：`round` 不是整数的候选行**不得**当锚点——否则桩落成孤儿 `user` 消息。
+  assert.equal(stubRowsOf(rows).length, 0,
+    "`round` 不是整数的候选行不得被当锚点（桩落成孤儿 `user` 消息 ⇒ 另一种 `invalid_messages`）");
+  const skipped = events.filter((event) => event?.type === "resume_journal_skipped"
+    && event?.reason === "mid_sequence_aggregate_row_not_in_ledger");
+  assert.equal(skipped.length, 1, "锚点不给 ⇒ 必须如实发一条跳过事件");
+  // 落盘行 0 增量：消息行必须仍是原来那 3 条（恢复自己写的是 issue #404 的 `…:control:resume-notice:…`
+  // 控制行与下一轮的正文行，与桩无关）。
+  assert.equal((await inner.loadRawRows(RUN_ID)).filter((record) => record?.round === 2
+    && record?.kind === "message").length, 1,
+  "账本里 `round: 2` 的消息行必须仍只有 1 条（第 2 条 = 桩落了账）");
+
+  // 二次恢复：修前这里因为桩落了账（孤儿 `user`）而 `invalid_messages`。
+  const secondProvider = createFakeProvider([endTurn("第二次续接完成")]);
+  const again = await runLoop({ store, provider: secondProvider, executeTool: async () => "unused" });
+  assert.equal(again.ok, true,
+    "第二次恢复必须仍成功（修前：桩落成孤儿 `user` ⇒ `invalid_messages`；实测：" + String(again.error));
+  assert.equal(stubRowsOf(rows).length, 0, "第二次恢复同样不许写桩行");
+});
+
 test("#421 中段悬空（崩溃轮形状）· file store 真落盘：桩写进文件、第二次恢复仍只一张", async () => {
   // 与上面那条同一个形状，换**真落盘**的 store：内存 store 证的是逻辑，这里证的是
   // 「桩真的进了档案」——`load()` 折回来仍是一条聚合 user 消息，第二次恢复不再补第二条。
