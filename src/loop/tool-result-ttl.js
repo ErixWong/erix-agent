@@ -60,7 +60,19 @@ export const NOTE_RECALL_REASONS = Object.freeze({
 const NOTE_WRITE_OK_STATUSES = new Set(["found", "ok", "saved", "written", "updated", "created"]);
 const NOTE_REVOKE_OK_STATUSES = new Set(["revoked"]);
 
+/**
+ * 账本里的一条消息（`content` 是块数组，块可能是 tool_use / tool_result / 文本）。
+ * 这里的证据判定只做**只读**嗅探，形状按引擎与宿主两种发法都收，所以用 `Record<string, any>`
+ * 而不是 `object`：`object` 上任何属性访问都是 TS2339（现测两处），而 `any` 是**显式**写出的
+ * 未知形状（#213 R4 记的两种会**静默**退化成 `any` 的 JSDoc 形状与此不同 —— 这里是明说）。
+ * @typedef {Record<string, any>} LedgerMessageView
+ */
+
 /** 从宿主给的 `tools` 里挑出笔记工具名（不做前缀猜测，只认这三个确定名）。 */
+/**
+ * @param {Array<{ name?: unknown }> | undefined} [tools] 宿主 supplied 的工具面
+ * @returns {string[]} 命中的笔记工具名（去重）
+ */
 export function noteToolNamesOnSurface(tools) {
   const found = new Set();
   for (const tool of Array.isArray(tools) ? tools : []) {
@@ -70,7 +82,11 @@ export function noteToolNamesOnSurface(tools) {
   return [...found];
 }
 
-/** tool_result 正文：字符串与 `[{type:"text",text}]` 两种形状都收；拿不到就是空串。 */
+/**
+ * tool_result 正文：字符串与 `[{type:"text",text}]` 两种形状都收；拿不到就是空串。
+ * @param {LedgerMessageView | undefined} [block] tool_result 块（或任意带 `content` 的块）
+ * @returns {string}
+ */
 function toolResultText(block) {
   const content = block?.content;
   if (typeof content === "string") return content;
@@ -84,6 +100,9 @@ function toolResultText(block) {
  * 载荷能不能**证实**某个状态。口径：解不出 JSON 对象 = 不能证实（宁可说不知道，不许伪报有）。
  * 引擎自己发的 tool_result 都是 `JSON.stringify(...)`，所以这条不会误伤引擎面；宿主自实现的笔记
  * 工具若只回一句纯文本，代价只是退到「显式未知」口径（安全方向：少一句广告，不撒一句谎）。
+ * @param {LedgerMessageView | undefined} [block] 配上的 tool_result 块
+ * @param {Set<string>} statuses 视为「证实成功」的状态集合
+ * @returns {boolean}
  */
 function payloadConfirms(block, statuses) {
   if (!block || block.is_error === true) return false;
@@ -97,6 +116,10 @@ function payloadConfirms(block, statuses) {
     && typeof parsed.status === "string" && statuses.has(parsed.status);
 }
 
+/**
+ * @param {LedgerMessageView | undefined} [block] tool_result 块
+ * @returns {string | undefined} 载荷里认得出的笔记 key；认不出返回 undefined
+ */
 function payloadKey(block) {
   try {
     const key = JSON.parse(toolResultText(block))?.key;
@@ -119,7 +142,7 @@ function payloadKey(block) {
  *   · 同 key 后续出现成功的 `note_forget` ⇒ 这条写入作废（写过 ≠ 现在还能读）。
  * key 认不出（载荷与入参都没有）⇒ 无法追踪撤销 ⇒ 保守地不算可查。
  *
- * @param {Array<object>} messages
+ * @param {Array<LedgerMessageView>} messages 可见账本（消息数组）
  * @returns {{available: boolean, reason: string, hadWrite: boolean}}
  */
 export function noteWriteEvidence(messages) {
@@ -170,6 +193,10 @@ export function noteWriteEvidence(messages) {
 }
 
 /** 载荷里有没有 `status` 字段（有 ⇒ 这是引擎/宿主自己发的状态机；没有 ⇒ 无法证实）。 */
+/**
+ * @param {LedgerMessageView | undefined} [block] tool_result 块
+ * @returns {boolean}
+ */
 function hasStatusField(block) {
   try {
     const parsed = JSON.parse(toolResultText(block));
@@ -182,6 +209,8 @@ function hasStatusField(block) {
 /**
  * 可见账本里是否有过**现在还能查**的 `note_take` 写入（口径见 `noteWriteEvidence`）。
  * 名字保留是为了不拆既有调用面；语义比旧口径严格得多。
+ * @param {Array<LedgerMessageView> | undefined} [messages] 可见账本
+ * @returns {boolean}
  */
 export function hasNoteWriteEvidence(messages) {
   return noteWriteEvidence(messages).available;
@@ -191,7 +220,7 @@ export function hasNoteWriteEvidence(messages) {
  * 笔记可用性判定（纯函数，无副作用）。`available: true` 的唯一条件是「整族工具在面上 **且**
  * 账本里有成功写入」—— 两者都是引擎看得见的事实，不是推断。
  *
- * @param {{ noteTools?: string[], messages?: Array<object> }} [evidence]
+ * @param {{ noteTools?: string[], messages?: Array<LedgerMessageView> }} [evidence]
  * @returns {{ available: boolean, reason: string, surfaceKnown: boolean }}
  */
 export function resolveNoteRecall({ noteTools, messages } = {}) {
@@ -205,6 +234,10 @@ export function resolveNoteRecall({ noteTools, messages } = {}) {
 }
 
 /** 显式未知口径那半句；`reason` 传的就是文本本体（`NOTE_RECALL_REASONS` 的值），空/缺席回退「无证据」。 */
+/**
+ * @param {string | undefined | null} [reason] 原因文本本体
+ * @returns {string}
+ */
 export function unverifiedRecallClause(reason) {
   const text = typeof reason === "string" && reason.trim() !== ""
     ? reason
@@ -233,6 +266,10 @@ function unverifiedRetrievalHint(retrievalCommand, reason) {
 const RETRIEVAL_WINDOW_LINES = 120;
 
 /** 单引号包住，内部的 `'` 按 shell 规则转义（路径里有空格/引号也不破功）。 */
+/**
+ * @param {string | number} value 待包成 shell 单词的值
+ * @returns {string}
+ */
 function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
@@ -267,8 +304,12 @@ export function retrievalCommandFor(name, input) {
   if (params.command !== undefined) return undefined;
   const filePath = typeof params.path === "string" ? params.path : "";
   if (filePath === "") return undefined;
-  const offset = Number.isSafeInteger(params.offset) && params.offset > 0 ? params.offset : 0;
-  const limit = Number.isSafeInteger(params.limit) && params.limit > 0 ? params.limit : RETRIEVAL_WINDOW_LINES;
+  // `params.*` 是 `unknown`：`Number.isSafeInteger()` 不帮它缩型（TS18046），所以把「是个安全正整数」
+  // 收成一个子判定，返回值自己就是 `number | undefined` —— 语义与原式逐字相同。
+  const positiveInt = (/** @type {unknown} */ value) =>
+    typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  const offset = positiveInt(params.offset) ?? 0;
+  const limit = positiveInt(params.limit) ?? RETRIEVAL_WINDOW_LINES;
   const from = offset + 1;
   return `sed -n '${from},${from + limit - 1}p' ${shellQuote(filePath)}`;
 }
@@ -396,6 +437,11 @@ export function extractContentDigest(content, { maxEntries = 12 } = {}) {
 
 // 折叠占位符：标题行 + 可选 digest 行 + 可选 JSON 骨架行，总量控制在 ~600 字符内
 // （digest 不足 maxEntries 条就多少放多少；超限时从尾向前裁剪 digest 条目）。
+/**
+ * @param {{ inputSummary: string, tokens: number, round: unknown, hint: string,
+ *   text?: string | undefined, skeleton?: string | undefined, retrievalCommand?: string | undefined }} spec
+ * @returns {string}
+ */
 function buildFoldPlaceholder({ inputSummary, tokens, round, hint, text, skeleton, retrievalCommand }) {
   const header = `【已折叠·TTL】${inputSummary}` + `（约 ${tokens} tokens，r${round} 读取）— ${hint}`;
   let entries = collectDigestEntries(text, 12);
@@ -440,6 +486,11 @@ function jsonSkeleton(content) {
   return parts.length === 0 ? undefined : `骨架: ${parts.join(" · ")}`;
 }
 
+/**
+ * @param {{ recall?: { available?: boolean, reason?: string } | undefined,
+ *   retrievalCommand?: string | undefined }} spec
+ * @returns {string}
+ */
 function defaultRetrievalHint({ recall, retrievalCommand }) {
   // issue #741：断言前先问证据。`recall.available` 为假时**一句笔记都不提**，
   // 并把「没有可复原的记录」连同原因明说 —— 而不是指一条可能不存在的 note_* 路。

@@ -23,6 +23,8 @@ export const DEFAULT_RECOVERY_HINT =
 /**
  * 无证据时的广告语（issue #741）：不再提「查看持久笔记」，而是明说没有可复原记录并给原因。
  * 三句都是模型可见文本（也是可被宿主编辑的面），改动 = 改模型看到的句子。
+ * @param {string | undefined | null} [reason] 证据不足的原因文本（`NOTE_RECALL_REASONS` 的值）
+ * @returns {string}
  */
 export function unverifiedRecoveryHint(reason) {
   // 与默认句同量级（默认句 24 字，本句 ~35 字）：折叠摘要有字节夹断，长出来的每一个字都在
@@ -56,6 +58,11 @@ export function resolveRecoveryHint(value, noteRecall) {
 }
 
 /** 从折叠上下文自己推证据：工具面由策略透传，账本 = 本次被折负载 + 仍留下的轮次消息。 */
+/**
+ * @param {Array<Record<string, any>> | undefined} [messages] 可见账本（消息数组）
+ * @param {string[] | undefined} [noteTools] 宿主给的工具面上的笔记名
+ * @returns {{ available: boolean, reason: string, surfaceKnown: boolean }}
+ */
 export function noteRecallFromMessages(messages, noteTools) {
   return resolveNoteRecall({
     noteTools,
@@ -63,6 +70,12 @@ export function noteRecallFromMessages(messages, noteTools) {
   });
 }
 
+/**
+ * @param {{ foldedPayload?: Array<Record<string, any>> | undefined,
+ *   retained?: Array<{ messages?: Array<Record<string, any>> } | undefined> | undefined,
+ *   noteTools?: string[] | undefined } | undefined} [context] 折叠上下文
+ * @returns {{ available: boolean, reason: string, surfaceKnown: boolean }}
+ */
 function noteRecallFromFoldContext(context) {
   return noteRecallFromMessages([
     ...(Array.isArray(context?.foldedPayload) ? context.foldedPayload : []),

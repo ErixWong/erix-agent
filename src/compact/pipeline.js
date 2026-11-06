@@ -285,25 +285,29 @@ export function createCompactionStat({
   }
   // issue #741：归档丢弃量（additive，**只在真丢了东西时出现这个键**，口径同 `foldSummary`）。
   // 不投影 `messages`/`bytes`：那两个是归档本体尺寸，`foldedPayloadMeta` 已有完整一份。
-  const droppedMessages = Number.isSafeInteger(foldArchive?.droppedMessages) && foldArchive.droppedMessages > 0
-    ? foldArchive.droppedMessages
-    : 0;
-  const droppedBytes = Number.isSafeInteger(foldArchive?.droppedBytes) && foldArchive.droppedBytes > 0
-    ? foldArchive.droppedBytes
-    : 0;
+  // `Number.isSafeInteger()` 不帮 `foldArchive?.x` 缩型（`number | undefined` 仍带 undefined，TS18048），
+  // 所以把一个子判定收下来：返回值自己就是 `number`，语义与原式逐字相同。
+  const positiveCount = (/** @type {unknown} */ value) =>
+    typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
+  const droppedMessages = positiveCount(foldArchive?.droppedMessages);
+  const droppedBytes = positiveCount(foldArchive?.droppedBytes);
   if (droppedMessages > 0 || droppedBytes > 0) {
     // **真丢了原文**才有这个键（同 `protectedDowngraded` / `foldSummary` 口径）：没丢就不许出现，
     // 否则每次折叠都挂一个 `{capBytes: 262144}` 的常数键，把既有精确断言洗脏。
-    stat.foldArchive = {
-      droppedMessages,
-      droppedBytes,
-      ...(Number.isSafeInteger(foldArchive?.capBytes) && foldArchive.capBytes > 0
-        ? { capBytes: foldArchive.capBytes }
-        : {}),
-      ...(Number.isSafeInteger(foldArchive?.dedupedMessages) && foldArchive.dedupedMessages > 0
-        ? { dedupedMessages: foldArchive.dedupedMessages }
-        : {}),
-    };
+    // 用 `Object.assign` 而不是 `stat.foldArchive = …`：前者不拿局部字面量类型去要求一个它看不见的键
+    // （同本文件既有的 additive 键写法，运行时行为逐字相同）。
+    Object.assign(stat, {
+      foldArchive: {
+        droppedMessages,
+        droppedBytes,
+        ...(Number.isSafeInteger(foldArchive?.capBytes) && (foldArchive?.capBytes ?? 0) > 0
+          ? { capBytes: foldArchive?.capBytes }
+          : {}),
+        ...(Number.isSafeInteger(foldArchive?.dedupedMessages) && (foldArchive?.dedupedMessages ?? 0) > 0
+          ? { dedupedMessages: foldArchive?.dedupedMessages }
+          : {}),
+      },
+    });
   }
   return stat;
 }
