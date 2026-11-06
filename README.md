@@ -209,7 +209,7 @@ src/
     abort.js                       Abort-signal helpers
     block-helpers.js               Block access helpers
     judge-record.js                Judge record correlation (model identity, run outcome)
-    event-tiers.js                 Retention tier of every emitted event type (`fact` / `stream` / `derived`) plus the host cleanup predicate (issue #743; read-side only — no emission point moved)
+    event-tiers.js                 Retention tier of every `LoopEvent` / `onEvent` type and of the streaming-fragment names (`fact` / `stream` / `derived`) plus the host cleanup predicate (issue #743; the diagnostic error channel's records are outside this table; read-side only — no emission point moved)
     state-view.js                  Live-reference state view factory for the loop state (#246; two consumers wired — `runSnapshotContext`'s run-state fields and `providerContext`'s state fields; `messages` is still handwritten)
   normalization/
     parse-model-json.js            Model-output normalization: normalizeModelJson — L1 byte-preserving repair, gate on the original bytes, optional L2 LLM fallback (issue #406)

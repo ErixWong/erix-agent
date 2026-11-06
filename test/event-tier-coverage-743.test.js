@@ -929,7 +929,7 @@ function docOpeningParagraph(markdown, label) {
   return text;
 }
 
-test("T12 开场那句是限定范围、不是全称（评审第三轮必修：中英两处 + 反向证它会红）", () => {
+test("T12 分级表的范围限定不只在契约开场：契约两处 + 两份 README 模块地图都不许作全称（评审第三、四轮必修）", () => {
   const en = docOpeningParagraph(readFileSync(EN_DOC, "utf8"), "EN");
   const cn = docOpeningParagraph(readFileSync(CN_DOC, "utf8"), "CN");
   // ① 正反两面都要：无范围限定的全称措辞一旦回来，本节就与自己后文（限定 + 排除 persistence_error）打架。
@@ -954,4 +954,24 @@ test("T12 开场那句是限定范围、不是全称（评审第三轮必修：�
   for (const [label, doc] of [["EN", EN_DOC], ["CN", CN_DOC]]) {
     assert.match(readFileSync(doc, "utf8"), /persistence_error/u, `${label} 契约必须写出被排除的诊断错误通道名字`);
   }
+  // ④ **同一条错的第二个现场**（评审第四轮）：根 README 的模块地图里那一行描述同样不许作无范围限定的
+  //    全称。同一条错今晚在三个现场出现过（契约开场、README、以及别片的「drops every」）——
+  //    只改散文等于没改，所以这一族限定词由本用例同时钉两份 README。
+  const readmeIntro = (label, rel, banned, needStreamWord) => {
+    const lines = readFileSync(join(REPO_ROOT, rel), "utf8").split("\n");
+    const rows = lines.filter((line) => /^\s*event-tiers\.js\s{2,}\S/u.test(line));
+    assert.equal(rows.length, 1, `${label}：模块地图里 \`event-tiers.js\` 那一行应当恰好存在一条（实到 ${rows.length} 条）—— 地图形状变了本判据要重新核`);
+    const row = rows[0];
+    assert.ok(
+      !banned.test(row),
+      `${label} 的模块地图把分级表写成无范围限定的全称（命中 ${banned.source}）：引擎确实发 persistence_error，`
+        + "但它走诊断错误通道、不在这张表里 ⇒ 描述必须点名 LoopEvent/onEvent 与流式片段名",
+    );
+    assert.match(row, /LoopEvent/u, `${label} 模块地图那一行必须点名 LoopEvent`);
+    assert.match(row, /onEvent/u, `${label} 模块地图那一行必须点名 onEvent`);
+    assert.match(row, needStreamWord, `${label} 模块地图那一行必须写明流式片段名在面内`);
+    assert.match(row, /persistence_error|诊断错误|diagnostic error/u, `${label} 模块地图那一行要把排除的那条通道也说出来`);
+  };
+  readmeIntro("README.md", "README.md", /\bevery emitted\b/iu, /stream(?:ing|-fragment)/iu);
+  readmeIntro("README_cn.md", "README_cn.md", /每一个发射/u, /流式片段/u);
 });
