@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3643,
+    "tests": 3610,
     "fail": 0,
     "maxSkipped": 15
   },
@@ -13,15 +13,15 @@
       "date": "2026-11-07",
       "env": "local",
       "node": "v22.23.2",
-      "commit": "a09a2e7（#746 第 2 轮收口前最后一笔代码/文档改动：四笔必修 `4f8e216`/`78e9d74`/`e367228`/`7ce0f75` + 坐标更正 `a09a2e7` 全在这棵树里，工作树干净；随后只有一笔改本 JSON 的登记 commit，`src/` 与 `test/*.test.js` 一字未动）",
-      "branch": "fix-261107-10-prompt-note-evidence",
-      "tests": 3635,
-      "pass": 3622,
+      "commit": "8f1d32e + 随后的 docs/守卫两笔（fix-261107-09-snapshot-round-residue，基点 main=bea46bb）；六个计数取自这一棵树上现跑的 npm test（日志 /tmp/npmtest-final3.log）",
+      "branch": "fix-261107-09-snapshot-round-residue",
+      "tests": 3610,
+      "pass": 3597,
       "fail": 0,
       "skipped": 13,
       "todo": 0,
       "cancelled": 0,
-      "why": "第 2 轮（评审必修 4 条 + 追加的坐标更正）落地后的现测重登，取的就是这棵树。测点：`npm test` TAP 原文 `# tests 3635 / # pass 3622 / # fail 0 / # skipped 13 / # todo 0 / # cancelled 0`（日志 /tmp/npt.log），同一份日志经 `npm run check:test-summary -- --log` 复核 `TEST-SUMMARY-VERDICT ok`，脚本自己的 HINT 报「登记值可抬到 3635（当前 3625，+10）」⇒ 抬到 3635 与实测逐字相等，非手抄、非父树相加。+10 的来源逐条数得出：`test/prompt-note-round2-746.test.js` 新增 8 条（必修 2a 子提示词随子工具面闭嘴 / 2b 白名单点名笔记工具不再炸短语表 / 2c 缺省装配面逐字节不变 / 2d 子侧折叠桩的 `noteToolSurface` 必须真被 import / 3a 恢复提示三态 / 3b guard 打回指针三态 + 读失败留痕 / 必修 4 正向「滤掉笔记 ⇒ 折叠桩与 final guard 一起闭嘴」/ 必修 4 反向「留着笔记且有写入 ⇒ 两者同给 note-first」），`test/prompt-note-coverage-746.test.js` 新增 2 条（`G1b` 改判登记清单两份文档逐条点名 + 两道门的区分必须在文档里；`G1c` CLI 系统提示的反向守卫——出现存在断言即红，并带一条合成句自证防恒绿）。`fail=0`；`skipped` 13 与上一登记值同（12 条真上游/真 relay 门禁 + 1 条真上游多会话格），本片没增删任何 skip ⇒ `maxSkipped` 15 不动。没删例、没加 skip、没把断言放宽成恒真：四笔必修每格都留了 RED→GREEN 双向证据（RED 逐条贴在 reports/issue-746-prompt-note-evidence.md，含 `not ok` 原文）。同片随动：`test/mutation-samples.md` 的 M17 派生行号由 `--sync` 重锚（129→144，`bin/system-prompt.js` 加了改判注释把那一行推下去），`--verify` 复验 0 处不一致。"
+      "why": "tests 3605 → **3610**（+5，全部是有意的增删）：新增 `test/loop-snapshot-round-residue-735.test.js` 5 格（issue #735 切片 2：① 旧格式账本（`test/fixtures/journal-0.22.0` 截到 round 1）的升级路径仍把崩溃轮正文喂给模型；双崩现场 resume → 引擎覆盖写快照 → 再 resume，并把两次恢复的成败与上下文与一棵「写回整段」的 `src/` 副本逐字对账；③ 快照正文位的非 null 条数与独立字节基线；④b 变异「删掉残余」⇒ ① 红 + 「只置空前缀」⇒ 逐字不变；④a 变异「写回整段」（副本引擎 + `node --test` 子进程真退出码）⇒ ③ 红），既有文件一格没增减（两处原先从 `snapshot.messages` 切前缀造崩溃现场的夹具只换了正文来源：`test/loop-invalid-arguments.test.js`、`test/loop-snapshot-write-side-735.test.js`）。`fail=0`；`skipped` 实测 13 = 12 条真上游/真 relay 闸门 + 1 条真上游多会话格，**与登记上限 15 无关**：本机一开始 `node_modules/typescript` 缺失 ⇒ 同一棵树先量到 `skipped 17`（4 条类型棘轮用例自证式跳过），`npm install --include=dev` 之后重跑才是这条 13 —— 记下来是为了下一次别把环境缺依赖当成用例坏了。六个数值字段逐字取自这棵树的 TAP 汇总行并经 `npm run check:test-summary -- --log /tmp/npmtest-final3.log` 复核。同片随动：`test/static-guards.test.js` 的 CHANGELOG 配对地板按守卫现报值 **14 → 15** 重取（守卫原文：「中文 15 条 / 英文 15 条 / 配对 15 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 14」⇒ 抬到它当场报的那个数，**不做相加**）。没删例、没跳过、没放宽断言。"
     },
     {
       "date": "2026-11-07",
@@ -641,38 +641,6 @@
       "todo": 0,
       "cancelled": 0,
       "why": "issue #743 **第四轮**（同一条错的第二现场：README 模块地图那一行也作无范围限定的全称）rebase 到 `origin/main fd07d27`（#742 已合）之后现测。主干自己那棵树现登 3590（rebase 后树里的登记值就是它），分支在 fd07d27 之上的增量为 **+15**：`+11` = `test/event-tier-coverage-743.test.js` 的 T1–T11（分级表覆盖、清理谓词四条与边界输入、终态/安全子集实推、derived 空集、诊断通道边界、发射原语边界），`+1` = T12（范围限定守卫：契约开场两处 + 两份 README 模块地图，本轮从只钉契约扩成同时钉 README），`+3` = `test/doc-examples.js` 新写的契约 JS 围栏 L1/L2/L3 三层验证。3590 + 15 = 3605，与本次 TAP 汇总行逐字相等（日志 /tmp/743-r4-test.log，跑前工作树只剩本轮那三处未提交改动、跑后一字未动），经同一份日志复核为 `TEST-SUMMARY-VERDICT ok`；抬值前脚本自己打 `HINT 登记值可抬到 3605（当前登记值 3590，本次实测 3605，+15）` ⇒ 非手抄。**登记值不是在 3580 上加出来的**：本轮 rebase 之后主干读数已经是 3590，分支增量重算 = 15。fail=0；skipped 13 不变（没动任何 skip 判据；历史曾出现 test/version-state-probe-703.test.js 日期敏感跳过，本轮未复现），maxSkipped 上限 15 不动（13 ≤ 15，没有放宽）。"
-    },
-    {
-      "date": "2026-11-07",
-      "env": "local",
-      "node": "v22.23.2",
-      "commit": "765794c（被测量那一棵树的内容；登记这笔提交在它之后，只改这个 JSON）",
-      "branch": "fix-261107-10-prompt-note-evidence",
-      "mergeBase": "bea46bb",
-      "mainSha": "bea46bb",
-      "tests": 3625,
-      "pass": 3612,
-      "fail": 0,
-      "skipped": 13,
-      "todo": 0,
-      "cancelled": 0,
-      "why": "issue #746（提示位接 #741 的证据门）。抬值 **+20 全部来自本轮新增的两个测试文件**，与主干无关：`test/prompt-note-evidence-746.test.js` 15 条（聚合桩/逐条超限桩/guard 摘要/guard 指针/折叠桩/CLI 系统提示/归档提示 × 四种无证据输入 + 有效证据输入；含两条真跑证明逐条超限桩跟着宿主工具面走；含 retrievalCommandFor 拼不出命令时一个 sed 也不许多出来），`test/prompt-note-coverage-746.test.js` 5 条（覆盖面表述 G1、每处真接了门 G2、governor 反向钉 G3、逐文件 `note_*` 字面表 G4、`src/` 不 import `bin/` G5）。3605 + 20 = 3625，与本次 TAP 汇总行逐字相等（日志 /tmp/746-final-test2.log，跑前工作树只剩这个 JSON 未改，跑后一字未动），脚本自己打 `HINT 登记值可抬到 3625（当前登记值 3605，本次实测 3625，+20）` ⇒ 非手抄。⚠ **第一次跑出来是 skipped 17 / SKIPPED_OVER 红**：本工作树 `node_modules` 缺 `typescript`（devDependency），`test/types-strict*.test.js` 四条按环境跳过（13 + 4 = 17 > 上限 15）。处置是**补装依赖**（`npm install --include=dev`，3 个包）而不是抬上限——跳过是环境缺件，不是用例被放宽；补装后 skipped 回到 13，上限 15 一格未动。fail=0，todo=0，cancelled=0。"
-    },
-    {
-      "date": "2026-11-07",
-      "env": "local",
-      "node": "v22.23.2",
-      "commit": "f5bf63c（被测量那一棵树的内容；登记这笔提交在它之后，只改这个 JSON）",
-      "branch": "fix-261107-10-prompt-note-evidence",
-      "mergeBase": "bea46bb",
-      "mainSha": "bea46bb",
-      "tests": 3643,
-      "pass": 3630,
-      "fail": 0,
-      "skipped": 13,
-      "todo": 0,
-      "cancelled": 0,
-      "why": "issue #746 第 3 轮（必修 A/B）。抬值 **+8 全部来自本轮新增的一个测试文件**，与主干无关：`test/prompt-note-round3-746.test.js` 8 条（必修①a 窄名单 ⇒ `note_*` 归零含归档提示那一支、①b 名单点名整族 ⇒ 推回 note-first 且清单行不列 `note_*`、①c 缺省逐字节不变 + `notes:false` 仍是显式覆盖、①d 「递真名单」与「走缺省」逐字节同一句（golden，名单由 `createCliTools` 现取不手抄）、①e `notesOnToolNames` 的整族全有或全无口径、①f 反向钉子：`bin/delegation.js` 再出现 `notes: notesOnToolSurface(childTools)` 就红、两条真装配回归（白名单点名笔记 ⇒ `completed` + note-first；滤掉笔记 ⇒ `note_*` 归零且归档提示在场）。3635 + 8 = 3643，与本次 TAP 汇总行逐字相等（日志 /tmp/r3-final-test.log，跑前工作树在 `f5bf63c` 干净，跑后只剩这个 JSON 未改）；脚本自己打 `HINT 登记值可抬到 3643（当前登记值 3635，本次实测 3643，+8）` ⇒ 非手抄。第 3 轮在 `test/prompt-note-coverage-746.test.js` 里只**扩了既有两格**（`G1b` 补逐条理由断言、`G1c` 换成一组带 `archiveDir` 的探针），没有新增用例，所以那一边 +0。没删例、没加 skip、没把断言删成恒真；skipped 13（上限 15 一格未动）、fail=0、todo=0、cancelled=0。"
     }
   ]
 }
