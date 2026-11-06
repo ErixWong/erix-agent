@@ -2315,7 +2315,8 @@ Semantics, stated as a contract:
   `invalid_messages` from the folded shape is gone.
 - **The round's carrier already carries its body ⇒ no anchor (issue #729)**: when
   the host keeps *both* the folded round carrier (the one with `messages`) and
-  that round's original message rows — the shape #401 R3 exists for — the probe
+  that round's original message rows — the "both copies" shape of *The fold is
+  public API* (issue #401) further down this document — the probe
   does find a first-slice row, and it must **not** use it. A stub written there
   makes the folded body differ from the carrier's existing body, so
   `foldMessageRows`'s R3 guard stops matching and the whole round body is
