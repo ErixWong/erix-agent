@@ -127,20 +127,30 @@ function shellQuote(value) {
 }
 
 /**
+ * 拼取回命令的**白名单**：工具名必须逐字命中这里列出的、入参契约已被核实的 readFile 形态。
+ * 依据：`src/tools/file-tools.js` 的 `readFile`（工具名 `readFile`）读 `input.path` / `input.offset`
+ * （0 基行号）/ `input.limit`（行数）——只有这一种入参形状能逐字翻译成 `sed -n '<from>,<to>p'`。
+ *
+ * 为什么不靠「有 `path` 就当它是读文件」（评审必修 2）：MCP 工具的 `path`+`limit` 是**它自己的语义**
+ * （比如 `mcp__server__search` 的 `limit` 是命中条数、`offset` 是游标），拼成 sed 会指到完全不同的行；
+ * exec / 宿主自定义工具同理。宁可退回「重读源文件」那句，也不发一条把模型指到错地方的命令。
+ * 宿主若真有 readFile 的别名，在这里加上那个名字（加了就要有对应入参契约的依据）。
+ */
+export const READFILE_RETRIEVAL_TOOL_NAMES = Object.freeze(["readFile"]);
+
+/**
  * 从**配对的 tool_use 入参**里拼一条可执行的原文取回命令（issue #741）。
  *
- * 字段来源已核实：`src/tools/file-tools.js` 的 readFile 读 `input.path` / `input.offset`（0 基行号）
- * / `input.limit`（行数），与 `summarizeToolCall` 读的是同一组键。exec 类调用不在此列 ——
- * 它自己的 command 已经在标题行里，本来就可重跑。
- *
- * @returns {string|undefined} 形如 `sed -n '1,120p' 'src/x.js'`；入参里没有路径时 undefined
+ * @param {string} name 工具名；**只认 `READFILE_RETRIEVAL_TOOL_NAMES`**，exec / MCP / 未知工具一律不算
+ * @param {unknown} input 该 tool_use 的入参
+ * @returns {string|undefined} 形如 `sed -n '1,120p' 'src/x.js'`；不在白名单或入参里没有路径时 undefined
  */
 export function retrievalCommandFor(name, input) {
+  // 名字先过闸：不在白名单就一个字也不拼（MCP 带 `path` 也算不算）。
+  if (!READFILE_RETRIEVAL_TOOL_NAMES.includes(String(name ?? ""))) return undefined;
   const params = input && typeof input === "object" && !Array.isArray(input) ? input : {};
-  if (params.command !== undefined || /^(exec|bash|sh|run|command)/i.test(String(name ?? ""))) return undefined;
-  const filePath = typeof params.path === "string"
-    ? params.path
-    : typeof params.file === "string" ? params.file : "";
+  if (params.command !== undefined) return undefined;
+  const filePath = typeof params.path === "string" ? params.path : "";
   if (filePath === "") return undefined;
   const offset = Number.isSafeInteger(params.offset) && params.offset > 0 ? params.offset : 0;
   const limit = Number.isSafeInteger(params.limit) && params.limit > 0 ? params.limit : RETRIEVAL_WINDOW_LINES;

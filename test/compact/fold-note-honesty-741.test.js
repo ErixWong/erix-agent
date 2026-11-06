@@ -23,6 +23,7 @@ import { normalizeCompactionStats } from "../../src/compact/pipeline.js";
 import { DEFAULT_RECOVERY_HINT, ENGINE_RECOVERY_HINTS } from "../../src/compact/helpers.js";
 import {
   NOTE_RECALL_REASONS,
+  READFILE_RETRIEVAL_TOOL_NAMES,
   foldToolResultsForRequest,
   hasNoteWriteEvidence,
   noteToolNamesOnSurface,
@@ -197,6 +198,43 @@ test("取回命令：路径里的空格与单引号不破功，exec 类不给命
     "sed -n '1,10p' 'docs/a b'\\''s.md'");
   assert.equal(retrievalCommandFor("exec", { command: "npm test" }), undefined);
   assert.equal(retrievalCommandFor("scan", { query: "abc" }), undefined, "没有路径入参 ⇒ 拼不出命令，也不许瞎猜");
+});
+
+// 评审必修 2（P1）：旧实现只排掉 exec 名字，**任何**带 `path` 的工具都被套一条 sed。
+// MCP 搜索工具的 `path`/`limit`/`offset` 是它自己的语义（命中条数 / 游标），拼出来的命令会指到
+// 完全不同的行 —— 那比不给命令更不诚实。白名单之外一律 undefined。
+test("取回命令：只认 readFile 形态，MCP / 宿主自定义 / 名字里带 exec 都不拼命令（评审必修 2）", () => {
+  // 评审复现的那条输入：MCP 搜索工具带 path + limit
+  assert.equal(retrievalCommandFor("mcp__server__search", { path: "docs/a.md", limit: 5 }), undefined,
+    "MCP 工具的 `limit` 是命中条数，不是行数 ⇒ 拼 sed 会把模型指到错行");
+  // 名字里有 read/file 也不行：白名单是**逐字**工具名，不是子串匹配
+  assert.equal(retrievalCommandFor("host_readfile", { path: "docs/a.md", offset: 3, limit: 5 }), undefined);
+  assert.equal(retrievalCommandFor("readFileX", { path: "docs/a.md" }), undefined);
+  assert.equal(retrievalCommandFor("searchText", { path: "docs/a.md", limit: 5 }), undefined,
+    "searchText 的返回是命中行，不是连续区间 ⇒ 同一条 sed 不等价");
+  // readFile 的入参契约是 `path`：旧实现还认 `file`，那是没依据的推测
+  assert.equal(retrievalCommandFor("readFile", { file: "docs/a.md" }), undefined);
+  assert.equal(retrievalCommandFor("readFile", { path: "" }), undefined, "空路径拼不出可跑的命令");
+  assert.equal(retrievalCommandFor("readFile", undefined), undefined);
+  // 白名单本身就是可钉的形状（宿主加别名要同时补入参契约的依据）
+  assert.deepEqual(READFILE_RETRIEVAL_TOOL_NAMES, ["readFile"]);
+});
+
+test("取回命令：MCP 带 path 的调用落回「重读源文件」句，占位符里不出现取回行", () => {
+  const stats = {};
+  const view = foldToolResultsForRequest(conversation({ toolName: "mcp__server__search", input: { path: "docs/a.md", limit: 5 } }), {
+    currentRound: 9,
+    ttl: 2,
+    minTokens: 100,
+    noteTools: [],
+    stats,
+  });
+  const text = placeholderOf(view);
+  assert.ok(!text.includes("取回:"), `MCP 调用不许拼取回行（实测：${JSON.stringify(text)}）`);
+  assert.match(text, /需要原文请重读源文件（路径见本条工具调用）/);
+  assert.match(text, /无可复原的决策记录（原因：无笔记工具）/);
+  assert.equal(stats.degradations[0].retrievalCommand, undefined,
+    "降级记录里也不许留下那条拼出来的命令");
 });
 
 test("取回命令：占位符里独立一行，且同一条命令进 TTL 降级记录", () => {
