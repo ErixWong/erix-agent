@@ -73,14 +73,26 @@
   heavily — so that sentence pointed at a path that did not exist *and* reported “I do not know whether
   anything was recorded” as “something was recorded”. Both strings are now conditional on the only two facts
   the engine can actually check: the **tool surface** (is the whole `note_take`/`note_list`/`note_read`
-  family present in the host's `tools` — the family is all-or-nothing) and the **ledger** (did a `note_take`
-  call succeed in the visible messages; a paired `is_error` result does not count). Without either fact the
+  family present in the host's `tools` — the family is all-or-nothing) and the **ledger** (does a
+  `note_take` write in the visible messages still have something to read: a `tool_result` paired with that
+  exact `tool_use_id`, a payload that confirms success (`{status:"found", …}` — while `{status:"invalid"}`,
+  `is_error`, or a payload the engine cannot parse are *not* evidence), and no later successful
+  `note_forget` for the same key (a revoked note was written; it simply is not readable any more). An
+  unpaired `tool_use` proves nothing either way — the independent review's three probes (unpaired /
+  `invalid` / write-then-forget) all used to answer “notes available”. Coverage is no longer claimed
+  either: the tail “the essentials are already in the notes/conclusions above” is **gone**, evidence branch
+  included, because one successful write proves that *a* note exists and never that this folded result's
+  essentials were recorded; what survives is the conditional lookup guidance. Without either fact the
   text says `无可复原的决策记录（原因：…）` (“no recoverable decision record”, naming the reason: no note
-  tools on the surface / no note writes / no evidence at all) and stops mentioning `note_*` anywhere —
+  tools on the surface / no note writes / notes revoked / no evidence at all) and stops mentioning
+  `note_*` anywhere —
   including the warning line, which now says “re-read the source file” instead of ordering a call to a tool
   that is not there. The anti-hallucination clause (“omit what was not recorded … do not guess”) stays in
   both branches; absent evidence now means **unknown**, never “assume notes exist”. Where re-reading is
-  deterministic (the paired `tool_use` carries `path`/`offset`/`limit`, the same keys `readFile` consumes),
+  deterministic (the paired `tool_use` is a `readFile` call carrying `path`/`offset`/`limit`, the one
+  contract `sed` translates literally — the gate is the tool name **plus** that contract, so an MCP search
+  tool's `path`/`limit` (hits, not lines) and any host-registered reader get the fallback sentence instead
+  of a command pointing at the wrong lines),
   the placeholder puts the runnable command on a line of its own — `取回: sed -n '41,120p' 'src/a b.js'`
   (`offset` is a 0-based line index; an unspecified `limit` widens to a stated 120-line window rather than
   pretending to be the whole file) — and the same string joins the TTL degradation record as
@@ -102,11 +114,20 @@
   生产证据（run `b3eeba0f`）：折叠后整场 `note_*` 调用 **0** 次，模型实际在跑 cat/grep/sed —— 那句话既指了
   一条不存在的道路，又把「我不知道有没有记录」报成了「有记录」。现在两句都只看引擎真能核实的两条事实：
   **工具面**（`note_take`/`note_list`/`note_read` 整族在不在宿主 `tools` 里，全有或全无）与**账本**（可见
-  消息里有没有一次**成功**的 `note_take` 写入；配对 `is_error` 的结果不算证据）。缺任一事实就说
-  「无可复原的决策记录（原因：…）」（无笔记工具 / 无笔记写入 / 无笔记证据），且全文一个字也不提 `note_*`
+  消息里那条 `note_take` 写入**现在还有没有东西可读**：有与该 `tool_use_id` **配对**的 `tool_result`、载荷能
+  证实成功（`{status:"found", …}`；`{status:"invalid"}`、`is_error`、引擎解不出的载荷都不算证据），且没被后续
+  一次成功的同 key `note_forget` 撤销——被撤销的笔记是写过，只是不再可读）。未配对的 `tool_use` 两边都证不了
+  什么：独立验收的三个探针（未配对 / `invalid` / 写完又 forget）从前统统返回「有笔记」。**覆盖率也不再声称**
+  ——「要点见对话中已有笔记/结论」**整句删掉**，连有证据那一支都不留：一次成功写入只证明「有一条笔记」，
+  从不证明「这条被折内容的要点被记下来了」；留下的是条件式检索指导（先 `note_list` 再 `note_read`）。
+  缺任一事实就说
+  「无可复原的决策记录（原因：…）」（无笔记工具 / 无笔记写入 / 笔记已撤销 / 无笔记证据），且全文一个字也不提
+  `note_*`
   ——预警行也算：它改成「请现在重读源文件」，不再指挥模型去调一个不在场上的工具。反幻觉那半句（「未记录…
   不要猜测」）两种口径都留着；证据缺席现在是**未知**，不再是「默认有笔记」。能确定性重算的（配对 `tool_use`
-  带 `path`/`offset`/`limit`，就是 `readFile` 消费的同一组键）直接给一条能跑的命令，独占一行：
+  是 `readFile` 调用并带 `path`/`offset`/`limit`——`sed` 能逐字翻译的那份入参契约——才给一条能跑的命令，
+  独占一行（闸门是工具名**加上**那份契约，所以 MCP 搜索工具的 `path`/`limit`（数是命中条数不是行数）与宿主
+  自注册的读文件工具都只拿到那句退路，而不是一条指向错行的命令）：
   `取回: sed -n '41,120p' 'src/a b.js'`（`offset` 是 0 基行号；没给 `limit` 就取一个明说的 120 行窗口，
   而不是假装是全文），同一条字符串以 `retrievalCommand` 进 TTL 降级记录，宿主不必解析占位符。exec 类不给
   命令：它自己的 command 本来就可重跑。 **同一根的可见性：** `buildFoldedRecordArchive` 一直在算归档夹断的

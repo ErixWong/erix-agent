@@ -5586,23 +5586,37 @@ Model-facing retrieval is note-first **when notes actually exist**: use
 `note_list` to discover saved notes, then `note_read` to read the exact note.
 Do not guess forgotten values, and do not depend on a transcript-recall API;
 the retired recall adapters are not part of the 0.8.0 contract. Since issue
-#741 the engine offers that path only on evidence — the whole
-`note_take`/`note_list`/`note_read` family is on the host-supplied tool surface
-**and** a `note_take` call succeeded in the visible ledger. Without either fact
+#741 the engine offers that path only on two facts, both read-only facts about
+the run itself: the whole `note_take`/`note_list`/`note_read` family is on the
+host-supplied tool surface, **and** the visible ledger holds a `note_take` write
+that is still readable — paired with a `tool_result` for that exact
+`tool_use_id`, whose payload confirms success (`{status:"found", …}` as written
+by `writeNote`), and not later revoked by a successful `note_forget` for the
+same key. An unpaired call, a payload reporting `{status:"invalid"}`, a payload
+the engine cannot parse, or a revoked note is not evidence. Without both facts
 the fold substitute and the TTL placeholder say "no recoverable decision record
-(reason: …)" and never mention `note_*`: note availability is host
-configuration, and the engine writes no notes of its own.
+(reason: …)" and never mention `note_*`; the reason is one of four honest
+buckets — no note tools, no note write, notes revoked, no note evidence. The
+evidence-backed wording stays conditional guidance ("look it up with
+`note_list`, then `note_read`"); it does not claim that this folded result's
+key points were recorded, which no ledger fact can prove. Note availability is
+host configuration, and the engine writes no notes of its own.
 
 Old or large tool results may be folded only in the provider request view.
 `toolResultTtl` defaults to `2` rounds (`0` disables folding), and
 `toolResultFoldMinTokens` defaults to `4000` estimated tokens. The warning
 round at `age === ttl - 1` asks the model to extract important facts with
-`note_take` — or, when the note family is not on the tool surface, to re-read
-the source file instead (issue #741). The folded placeholder contains a
-navigation digest and, where applicable, a JSON skeleton; when the paired
-`tool_use` carried a readable path it also carries one runnable retrieval
-command on its own line (`取回: sed -n '<from>,<to>p' '<path>'`) plus the same
-string as `retrievalCommand` on the TTL degradation record. Run snapshots
+`note_take` **only when both note facts above hold**; in every other
+combination — family absent, or the family present with no readable write —
+it asks the model to re-read the source file instead (issue #741). The folded
+placeholder contains a navigation digest and, where applicable, a JSON
+skeleton; when the paired `tool_use` is a `readFile` call — the one tool whose
+`path`/`offset`/`limit` contract the engine can translate literally — it also
+carries one runnable retrieval command on its own line
+(`取回: sed -n '<from>,<to>p' '<path>'`) plus the same string as
+`retrievalCommand` on the TTL degradation record. Any other tool with a `path`
+argument (an MCP search tool's `limit` counts hits, not lines) gets that
+sentence-free fallback instead of a command that would point elsewhere. Run snapshots
 retain the full tool-result text. Note, todo, error, and explicitly protected
 results are not folded.
 
