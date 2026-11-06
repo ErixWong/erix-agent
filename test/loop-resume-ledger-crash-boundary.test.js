@@ -196,6 +196,47 @@ test("#736 假断言反向钉：本形状的告示**不得**写「崩溃时尾�
     `告示必须列出那个未结清的 id，实际：${notices[0].text}`);
 });
 
+test("#736 边界在「**根本没有可用快照**」时同样成立（#734 的另一形态：latest 就是读不到）", async () => {
+  const RUN_ID = "b736-no-snapshot";
+  const base = createMemoryTranscriptStore();
+  await seedCrashLedger(base, RUN_ID);
+  await appendUserTurn(base, { key: RUN_ID, text: "怎么样了？", messageId: "m1" });
+
+  // 比「陈旧」更极端：读点存在但**什么都读不到**（首 run 就崩、或 latest 被拒后没有任何可用快照）。
+  // 这一格与上面那格合起来才是「与快照的新鲜度/存在性无关」两面；只钉一面时另一面可以随便退回去。
+  const store = Object.create(Object.getPrototypeOf(base));
+  Object.assign(store, base);
+  store.loadLatestRunSnapshot = async () => undefined;
+
+  const provider = createFakeProvider([endTurn("恢复了")]);
+  const outcome = await runDirect({
+    provider,
+    resume: true,
+    store,
+    runId: RUN_ID,
+    tools: TOOLS,
+    completion: false,
+    wrapup: false,
+    stallDetection: false,
+    maxRounds: 8,
+    executeTool: async ({ id }) => `out-${String(id)}`,
+  }).then((result) => ({ ok: true, finalText: result.finalText }),
+    (error) => ({ ok: false, code: String(error?.code ?? error?.message ?? error) }));
+
+  assert.ok(outcome.ok, `读不到快照也必须恢复，实际：${JSON.stringify(outcome)}`);
+  const sent = provider.requests[0].messages;
+  assert.equal(resultsFor(sent, "t1").length, 1, "未结清的 `t1` 仍拿到一张桩");
+  const assistantIndex = sent.findIndex((message) => message?.role === "assistant"
+    && blocksOf([message]).some((block) => block?.type === "tool_use"));
+  assert.equal(sent[assistantIndex + 1]?.role, "user");
+  assert.deepEqual(blocksOf(sent.slice(assistantIndex + 1, assistantIndex + 2))
+    .filter((block) => block?.type === "tool_result")
+    .map((block) => block.tool_use_id), ["t1"],
+    "桩仍紧跟那条带悬空 `tool_use` 的 assistant（不在中段）");
+  assert.ok(blocksOf(sent.slice(-1)).some((block) => block?.type === "text"
+    && String(block.text).includes("怎么样了？")), "宿主追问仍在最后一条");
+});
+
 test("#736 判据 2：正常收口（末轮纯文本 end_turn + 宿主追问）⇒ 边界不成立、告示走 NO_PENDING 那一支", async () => {
   const RUN_ID = "b736-normal-close";
   const store = createMemoryTranscriptStore();
