@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3451,
+    "tests": 3483,
     "fail": 0,
     "maxSkipped": 15
   },
@@ -535,6 +535,22 @@
       "todo": 0,
       "cancelled": 0,
       "why": "合并树现测重登（#682 从 main 进来 + #678 在本分支）：3369（main 侧，含 #682 的 +11）+ 17（本分支新增 test/release-real-step7-678.test.js 十七格）= 3386；pass 3373 = 3356 + 17，fail 0，skipped 13 不变。六个计数逐字取自**合并后工作树**的 `npm test` TAP 汇总行（日志 /tmp/678-merge-npm-test.log），经 `npm run check:test-summary -- --log /tmp/678-merge-npm-test.log` 复核；非手抄、非按分支值相加推定。登记面：merge base c8a9e36，main 4d5015f，分支 head 7b9016f。冲突只落在 test/static-guards.test.js（CHANGELOG 配对地板：两侧各自把 5 抬到 6，#682 与 #678 各一对 ⇒ 合流后实测 7 对，地板取 7）与 test/test-suite-baseline.json（本文件，两侧 observations 全部保留）。skipped 13 = 12 条真上游/真 relay 门禁 + 1 条真上游多会话格（闸门关 ⇒ skip 但计入 tests），maxSkipped 上限 15 不动。⚠ 不写 TAP 行号：行号会随任意一条用例的打印行数漂。"
+    },
+    {
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "ebde4dd（分支 head；登记面 = 该提交的内容）",
+      "branch": "test-261107-03-store-contract-capability",
+      "mergeBase": "d99dd6a80a9b80ac851a76543040d46641629116",
+      "mainSha": "d824dc7b25a7aa256bce4553cea2878df1b964f6",
+      "headSha": "ebde4dd",
+      "tests": 3483,
+      "pass": 3470,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "issue #739（test-261107-03）：最终树现测。+32 的可加性有两侧实测支撑，不是推定：① 基点 d99dd6a 用同一命令在临时 worktree 里现跑 = 3451 tests / 3438 pass / 13 skipped（与登记值逐字相等，日志 /tmp/wt739-fix/BASE-npm-test.log）；② 本片新增 = 新文件 test/store/minimal-store-contract.test.js 30 格（契约 28 格 + 本文件自证 2 格）+ 既有两个 label（memory / file）各多一条收尾 `能力守卫成对` = +2 ⇒ 3451 + 30 + 2 = 3483，pass 3438 + 32 = 3470，fail 0，skipped 13 不变（本片没加/没删任何 skip 判据）。六个计数逐字取自最终树的 `npm test` TAP 汇总行（日志 /tmp/wt739-fix/FINAL-npm-test-2.log），经 `npm run check:test-summary -- --log /tmp/wt739-fix/FINAL-npm-test-2.log` 复核；非手抄、非相加推定。skipped 上限**不动**（仍 15）：本片最终树与基点树都实测 13，但 15 是 #735 在 merge 树上取的「更严环境里会多跳两格」的那一份（真上游门禁在直连环境会 skip），本片没动任何 skip 判据 ⇒ 不去收紧一个只在异环境才吃得到余量；契约套件本身在三个 label 上从 27 格变 28 格（新增的是收尾核对用例，不是放宽：可选能力缺席时是 `skipped` **记账**，不是 TAP 的 skip）。"
     }
   ]
 }
