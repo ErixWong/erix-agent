@@ -1299,6 +1299,9 @@ async function runChatWithNotes({
     mcpEnabled: mcpProxy?.enabled === true,
     planDirective: true,
     agents: noAgents !== true,
+    // issue #746（B1）：`tools` 是 `--no-notes` / `ERIX_NO_NOTES` / `--tools` 都过了一遍的**真工具面**。
+    // 提示词里那些 `note_take` / `note_list` / `note_read` 指令从此看它脸色：不在面上就一句不提。
+    tools: tools.tools,
   });
   // 注入的留痕行：transcript 不落 system，不打印这一行就没人能证明注入真的发生了。
   if (projectInstructionsNotice !== null) noticeLog(projectInstructionsNotice);

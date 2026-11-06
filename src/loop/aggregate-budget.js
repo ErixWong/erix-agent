@@ -23,6 +23,9 @@
 // 绝不反复替换。
 
 import { estimateTokens } from "../tokens.js";
+// issue #746：聚合超限桩那句「后续需要该值…」以前无条件命令模型去查 `note_list` / `note_read`，
+// 而宿主可能根本没装配笔记工具（`--no-notes` / `ERIX_NO_NOTES=1`）。现在走 #741 那套证据门。
+import { noteRecallHint } from "./note-prompt-hint.js";
 
 /** 聚合预算占可用输入预算的比例。 */
 export const AGGREGATE_BUDGET_RATIO = 0.30;
@@ -87,15 +90,21 @@ export function estimateInlineCost(content) {
  *
  * 失败结果（is_error）额外保留关键错误片段。
  *
- * @param {{round:number, length:number, errorSnippet?:string}} options
+ * @param {{round:number, length:number, errorSnippet?:string,
+ *   retrieval?: import("./note-prompt-hint.js").NoteRecallHint}} options
+ *   `retrieval` 是那条取回指引（issue #746）。**缺席 = 没有证据**，不是「有笔记」：
+ *   那一格只说重读源文件，且一个 `note_*` 都不出现。
  * @returns {string}
  */
-export function aggregateStubText({ round, length, errorSnippet: snippet }) {
+export function aggregateStubText({ round, length, errorSnippet: snippet, retrieval }) {
   const failed = typeof snippet === "string" && snippet.length > 0
     ? `失败摘要：${snippet}；`
     : "";
+  // 缺省那一格走「无证据」口径（`noteRecallHint({})` ⇒ reason「无笔记证据」）——fail-closed，
+  // 与 #741 的「证据缺席即未知，绝不默认有笔记」是同一条纪律。
+  const hint = retrieval ?? noteRecallHint({});
   return `[本轮工具输出已超单轮聚合预算：完整输出已由引擎归档（第 ${round} 轮，共 ${length} 字符）。${failed}`
-    + "后续需要该值：先用 note_list 查找记录，再用 note_read 读取；"
+    + `后续需要该值：${hint.clause}；`
     + "若未记录且无法确定性重算，请省略对应 findings 声明，不要猜测；"
     + "若原命令有副作用，不要仅凭截断输出判断成败，也不要为补全输出重跑有副作用的命令；"
     + "改用只读方式复核。]";

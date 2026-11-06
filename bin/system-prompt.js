@@ -20,7 +20,25 @@ import {
   PROJECT_INSTRUCTIONS_FILENAME,
   PROJECT_INSTRUCTIONS_MAX_BYTES,
 } from "../src/project-instructions.js";
+// issue #746：笔记可用性的判定住在 `src/`（#741 的证据原点）。方向是 **bin ← src**（AGENTS.md §1
+// 允许的那一侧）：`bin/` 可以 import `src/`，`src/` 永远不许反过来 import `bin/`。
+import { hasNoteToolSurface, noteRecallHint } from "../src/loop/note-prompt-hint.js";
+import { noteToolNamesOnSurface } from "../src/loop/tool-result-ttl.js";
 import { buildArchiveNotice, buildCliToolsSystemPrompt } from "./tools.js";
+
+/**
+ * 从**装配后的真工具面**现推「笔记工具面在不在」（issue #746 B1/B2/B3 的证据入口）。
+ *
+ * 为什么要现推而不是直接拿 `--no-notes` 这个旗标：笔记工具可能从三个地方消失——
+ * `--no-notes` / `ERIX_NO_NOTES=1`（不装配工厂）、`--tools` 白名单滤掉、子 run 的工具面收窄。
+ * 只读一个旗标就会漏后两种。把名字交给 `src/` 的整族口径（全有或全无），与引擎侧同一把尺。
+ *
+ * @param {Array<{ name?: unknown }> | undefined} tools 本次 run **实际**交给模型的工具面
+ * @returns {boolean}
+ */
+export function notesOnToolSurface(tools) {
+  return hasNoteToolSurface(noteToolNamesOnSurface(tools));
+}
 
 /** MCP 代理工具的说明段（chat / repl 共用，逐字节保持 0.31.0 的文案）。 */
 const MCP_PROXY_NOTICE = `
@@ -145,6 +163,9 @@ export function formatProjectInstructionsNotice(discovery) {
  * @param {boolean} [input.planDirective] 是否追加「每轮先声明计划」（chat 有、repl 没有）。
  * @param {boolean} [input.agents] 是否注入项目约定（`--no-agents` 传 false）。
  * @param {number} [input.maxBytes] 注入字节上限（测试用；缺省常量）。
+ * @param {Array<{ name?: unknown }>} [input.tools] 本次 run **实际**的工具面（issue #746）。
+ *   给了它，笔记指引就按**面上的事实**决定（整族 `note_*` 在 ⇒ 沿用原文；不在 ⇒ 一个 `note_*` 都
+ *   不出现）。没给 = 不表态 ⇒ 缺省按「有」（既有调用方与 golden 逐字节不变）。
  * @returns {{
  *   systemPrompt: string,
  *   discovery: import("../src/project-instructions.js").ProjectInstructionsDiscovery | null,
@@ -160,9 +181,12 @@ export function buildCliSystemPrompt({
   planDirective = false,
   agents = true,
   maxBytes = PROJECT_INSTRUCTIONS_MAX_BYTES,
+  tools,
 } = {}) {
-  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt({ todo, delegate })}`;
-  systemPrompt += buildArchiveNotice(archiveDir);
+  // issue #746：`tools` 在场 ⇒ 笔记指引跟着真工具面走；缺席 ⇒ 不表态（缺省「有」）。
+  const notes = Array.isArray(tools) ? notesOnToolSurface(tools) : true;
+  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt({ todo, delegate, notes })}`;
+  systemPrompt += buildArchiveNotice(archiveDir, { notes });
   if (mcpEnabled) systemPrompt += MCP_PROXY_NOTICE;
   if (planDirective) systemPrompt += PLAN_DIRECTIVE;
 

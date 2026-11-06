@@ -24,6 +24,9 @@ import {
   createRoundAggregateGate,
   errorSnippet,
 } from "./aggregate-budget.js";
+// issue #746：逐条输出卫生桩（与聚合桩同一条句式）也不得无条件命令模型去查 `note_*`。
+// 证据从 `ctx.noteTools`（orchestrator 从宿主 `tools` 现推）+ `ctx.messages`（可见账本）来。
+import { noteRecallHint } from "./note-prompt-hint.js";
 
 // run snapshot 落盘失败的 fail-closed 收口（issue #174：原先四处 pre/post-tool 检查逐字重复）：
 // 计数 +1，并把底层持久化失败明细并入对外的 `checkpoint_failed` KitError（宿主可见契约）。
@@ -97,6 +100,16 @@ function truncateJudgeRaw(text) {
 }
 
 export function createRunSnapshotExecutor(ctx) {
+  // issue #746：两条归档桩共用的取回指引。工具面证据缺席（宿主没给整族 note_*）或账本里
+  // 没有现在还能查的 `note_take` 写入 ⇒ 只说重读源文件，**一个 `note_*` 都不出现**。
+  // 每次现算（不缓存）：`ctx.messages` 是活引用，同一轮里前一条笔记写入必须能被后一条看到。
+  const retrievalHintFor = (toolName, toolInput) => noteRecallHint({
+    noteTools: ctx.noteTools,
+    messages: ctx.messages,
+    toolName,
+    toolInput,
+  });
+
   // 单轮聚合输出预算（issue #32 #2）：逐条 outputHygiene 之外的「本轮合计」闸门。
   // 预算基准用引擎既有 budgetTokens（无窗口配置 → 聚合层整体关闭，行为不变）。
   const aggregateGate = createRoundAggregateGate({
@@ -239,7 +252,12 @@ export function createRunSnapshotExecutor(ctx) {
       emitAggregate("archived", { archivedBytes: decision.bytes });
       return {
         ...execution,
-        content: aggregateStubText({ round, length: fullText.length, errorSnippet: snippet }),
+        content: aggregateStubText({
+          round,
+          length: fullText.length,
+          errorSnippet: snippet,
+          retrieval: retrievalHintFor(toolName, block.input),
+        }),
       };
     }
     if (decision.action === "unrecoverable") {
@@ -438,7 +456,7 @@ export function createRunSnapshotExecutor(ctx) {
         ...execution,
         content: `${fullText.slice(0, ctx.outputHygieneLimit)}`
           + `\n[完整输出已由引擎归档（第 ${round} 轮，共 ${fullText.length} 字符）。`
-          + "后续需要该值：先用 note_list 查找记录，再用 note_read 读取；"
+          + `后续需要该值：${retrievalHintFor(toolName, block.input).clause}；`
           + "若未记录且无法确定性重算，请省略对应 findings 声明，不要猜测。不要重跑有副作用的命令。"
           + `若原命令有副作用，不要仅凭截断输出判断成败，也不要为补全输出重跑有副作用的命令；`
           + "改用只读方式复核。]",

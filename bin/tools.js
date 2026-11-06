@@ -621,31 +621,52 @@ function buildCliToolsToolListLine(names, { phrases = CLI_TOOL_PROMPT_PHRASES } 
 const CLI_TOOLS_SYSTEM_PROMPT_VENDOR =
   "\n搜索与目录类工具（searchText/rg/grep/tree）默认跳过 node_modules、dist、build、target、vendor 与 . 开头的目录（结果尾部会回报跳过数量）；要一起搜传 include_vendor=true、include_hidden=true";
 
-const CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE =
-  `
-
-[你的处境]
-上下文会被折叠，早期细节你会真的忘记——不是记不清，是没有。
-拿到后面还要用的具体值/决定时，立刻 note_take；
+// issue #746（B1）：本段的四句笔记指令以前是**硬编码在基础段里**的，于是 `--no-notes` /
+// `ERIX_NO_NOTES=1`（以及 `--tools` 把笔记工具过滤掉）时，提示词仍在命令模型去调三个**不存在**的
+// 工具。现在拆成两块：有笔记工具面时逐字沿用原文（golden 不动），没有时走「重读源文件」那一份。
+// 证据 = 装配后的工具面（`bin/cli.js` / `bin/repl.js` 从真名单现推），不是提示词自己的假设。
+const CLI_TOOLS_SYSTEM_PROMPT_SITUATION_NOTES = `拿到后面还要用的具体值/决定时，立刻 note_take；
 需要早期细节而想不起来时，先 note_list 再 note_read，不要猜。
 若你决定重读文件而不先查笔记（note_list/note_read），必须在可见输出里用一行说明理由（如「笔记可能过期，需最新行号」），便于审计你的取回决策。
 重跑同一命令可能得到不同的值；后续需要精确值时先 note_take 记下，不要凭记忆。
-内部思考（reasoning）一律使用英文；对用户的可见输出不受此限，跟随用户语言。
+`;
+/** 无笔记工具面那一份（一个 `note_*` 都不出现）：取回只剩「重读」这一条真能跑的路。 */
+const CLI_TOOLS_SYSTEM_PROMPT_SITUATION_NO_NOTES = `本场没装配笔记工具，要留住后面还要用的具体值/决定，就写进交付物或可见输出；
+需要早期细节而想不起来时，请重读源文件（或改用只读方式复核），不要凭记忆，也不要猜。
+重跑同一命令可能得到不同的值；不要为了补全输出而重跑有副作用的命令。
+`;
+
+const CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE_HEAD = `
+
+[你的处境]
+上下文会被折叠，早期细节你会真的忘记——不是记不清，是没有。
+`;
+
+const CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE_TAIL = `内部思考（reasoning）一律使用英文；对用户的可见输出不受此限，跟随用户语言。
 终稿的结束协议 JSON 必须带 findings 字段，只把归档输出中出现过的字面值声明为 label→精确值（如 "findings":{"nonce":"abc123"}）；不要声明计数/次数/引用等派生结论；没有关键值时省略该字段。
 
 [工具纪律]
 - 复杂任务先规划并逐步执行`;
 
+/** 「具体数值来源」那条 bullet：有笔记面时指名 `note_read`，没有时不指（issue #746）。 */
+const CLI_TOOLS_SYSTEM_PROMPT_SOURCE_BULLET_NOTES =
+  "- 具体数值必须来自当前工具返回或 note_read，不得编造";
+const CLI_TOOLS_SYSTEM_PROMPT_SOURCE_BULLET_NO_NOTES =
+  "- 具体数值必须来自当前工具返回，不得编造";
+
 // todo 段②：工具纪律行首条 bullet 的 todo 分句（接在基础段「先规划并逐步执行」之后）
 const CLI_TOOLS_SYSTEM_PROMPT_TODO_DISCIPLINE =
   "；长任务用 todo_add 记录进度、todo_done 标记完成，随时 todo_list 核对剩余项";
 
-const CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL =
-  `
+const CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL_HEAD = `
 - 大文件用 readFile 的 offset/limit 分段读取，操作后验证结果
-- 具体数值必须来自当前工具返回或 note_read，不得编造
-- 不要主动读取密钥、凭据或 .env 文件；只用本次工具返回明确给出的来源
+`;
+
+const CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL_REST = `- 不要主动读取密钥、凭据或 .env 文件；只用本次工具返回明确给出的来源
 - 任务完成后直接汇报结果，默认使用中文`;
+
+const CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL = `${CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL_HEAD}${CLI_TOOLS_SYSTEM_PROMPT_SOURCE_BULLET_NOTES}
+${CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL_REST}`;
 
 /** 默认（含 todo、不含 delegate）注册面上的工具名顺序 = 清单行顺序（issue #312(b)：单一来源）。 */
 const CLI_TOOL_NAMES = cliToolDefinitions().map((schema) => schema.name);
@@ -698,6 +719,11 @@ export function filterToolsByAllowlist(tools, allowlist, { onUnknown } = {}) {
  * @param {string[]} [input.names] 注册面上的工具名（缺省用真注册面）；测试拿它做变异反证而不动源码。
  * @param {Record<string, CliToolPromptPhraseEntry>} [input.phrases] 短语表（缺省 `CLI_TOOL_PROMPT_PHRASES`）。
  * @param {string[]} [input.fullNames] 「陈旧」核对的基准集（缺省 = todo+delegate 全开的全量注册面）。
+ * @param {boolean} [input.notes] 笔记工具面在不在（issue #746，B1）。缺省 **true** = 默认装配面确实带着
+ *   整族 `note_*`（chat / repl / `erix_run` 都是），所以缺省路径的字节逐字不变（golden 钉着）。
+ *   `--no-notes` / `ERIX_NO_NOTES=1` / `--tools` 滤掉笔记工具时，调用方从**装配后的真工具面**现推并传
+ *   `notes: false` ⇒ `[你的处境]` 那段与「具体数值来源」那条 bullet 里**一个 `note_*` 都不出现**：
+ *   提示词不再命令模型去调一个场上不存在的工具。它是**事实的投影**，不是提示词自己的假设。
  */
 export function buildCliToolsSystemPrompt({
   todo = true,
@@ -705,6 +731,7 @@ export function buildCliToolsSystemPrompt({
   names,
   phrases = CLI_TOOL_PROMPT_PHRASES,
   fullNames,
+  notes = true,
 } = {}) {
   // ADR-015：ResourceStore 退出模型视野——所有宿主形态同一份提示词，不提 opaque 工件/路径。
   // issue #69：todo=false 时拼接无 todo 段的基础提示（--no-todo / ERIX_NO_TODO）。
@@ -718,17 +745,33 @@ export function buildCliToolsSystemPrompt({
   const effectiveFull = fullNames ?? (names ?? CLI_TOOL_NAMES_FULL);
   assertPromptPhraseTableMatches(effectiveNames, { phrases, fullNames: effectiveFull });
   const list = buildCliToolsToolListLine(effectiveNames, { phrases, fullNames: effectiveFull });
+  const hasNotes = notes !== false;
   return list
     + CLI_TOOLS_SYSTEM_PROMPT_VENDOR
     + "。"
-    + CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE
+    + CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE_HEAD
+    + (hasNotes ? CLI_TOOLS_SYSTEM_PROMPT_SITUATION_NOTES : CLI_TOOLS_SYSTEM_PROMPT_SITUATION_NO_NOTES)
+    + CLI_TOOLS_SYSTEM_PROMPT_BASE_MIDDLE_TAIL
     + (todoEnabled ? CLI_TOOLS_SYSTEM_PROMPT_TODO_DISCIPLINE : "")
-    + CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL;
+    + CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL_HEAD
+    + (hasNotes ? CLI_TOOLS_SYSTEM_PROMPT_SOURCE_BULLET_NOTES : CLI_TOOLS_SYSTEM_PROMPT_SOURCE_BULLET_NO_NOTES)
+    + "\n"
+    + CLI_TOOLS_SYSTEM_PROMPT_BASE_TAIL_REST;
 }
 
-export function buildArchiveNotice(archiveDir) {
+/**
+ * 归档提示（issue #746，B1 的第三处）：`notes: false` 时不再叫模型去查 `note_list` / `note_read`，
+ * 而是让它重读源文件 / 只读复核。缺省 `true` 让既有 golden 逐字节不变。
+ *
+ * @param {string | undefined} archiveDir 归档目录（没给就一个字节也不加）
+ * @param {{ notes?: boolean }} [options] `notes` = 笔记工具面在不在（证据从装配后的真工具面现推）
+ * @returns {string}
+ */
+export function buildArchiveNotice(archiveDir, { notes = true } = {}) {
   if (typeof archiveDir !== "string" || archiveDir.length === 0) return "";
-  return "\n\n[工具输出归档]\n大输出已由引擎全量归档。后续需要精确值时先用 note_list 查找记录，再用 note_read 读取；若未记录且无法确定性重算，请省略对应 findings 声明，不要凭记忆补值，也不要重跑命令。";
+  return notes === false
+    ? "\n\n[工具输出归档]\n大输出已由引擎全量归档。本场没装配笔记工具：后续需要精确值时请重读源文件（只读复核），不要凭记忆补值，也不要重跑命令；无法确定性重算时请省略对应 findings 声明。"
+    : "\n\n[工具输出归档]\n大输出已由引擎全量归档。后续需要精确值时先用 note_list 查找记录，再用 note_read 读取；若未记录且无法确定性重算，请省略对应 findings 声明，不要凭记忆补值，也不要重跑命令。";
 }
 
 

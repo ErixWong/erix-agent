@@ -3787,6 +3787,9 @@ export async function runToolLoop(options) {
     baseToolContext,
     outputHygieneEnabled,
     outputHygieneLimit,
+    // issue #746：两条归档桩（逐条超限 / 单轮聚合）的笔记证据门需要工具面事实。
+    // 只传名字数组（不传整个 `tools`）：引擎不解析笔记载荷，只读只读地知道「整族在不在面上」。
+    noteTools: noteToolSurface,
     aggregateBudgetTokens,
     emitEvent,
     archivedOutputs,

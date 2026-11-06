@@ -672,6 +672,25 @@ export async function runRepl(argv, io = {}) {
     );
   }
 
+  /**
+   * issue #746（B1）：提示词里那份「笔记工具面在不在」的事实，从**本轮真的会送给模型的工具面**现推。
+   * 与 `visibleTools`（每轮run 的工具面）同一口径：allowlist 滤掉了 `note_*` 就不能再叫模型去调它。
+   * 没 allowlist 时是全量（cliTools + skillTools + notes + mcp），与旧行为逐字一致。
+   *
+   * @returns {Array<{ name?: unknown }>}
+   */
+  function replPromptToolSurface() {
+    const all = [
+      ...cliTools.tools,
+      ...skillTools.tools,
+      ...(notesAssembler?.definitions ?? []),
+    ];
+    if (mcpProxy?.enabled) all.push(mcpProxy.schema);
+    return toolsAllowlistNames === undefined
+      ? all
+      : all.filter((tool) => toolsAllowlistNames.has(tool.name));
+  }
+
   const { systemPrompt, notice: projectInstructionsNotice } = buildCliSystemPrompt({
     cwd,
     todo: !todoDisabled,
@@ -680,6 +699,9 @@ export async function runRepl(argv, io = {}) {
     mcpEnabled: mcpProxy?.enabled === true,
     planDirective: false,
     agents: options.noAgents !== true,
+    // issue #746（B1）：提示词里的笔记指引必须跟着**本次真的交给模型的工具面**走。
+    // `toolsAllowlistNames` 在场就是 `--tools` 滤过的结果（笔记工具可能被滤掉），不在场就是全量。
+    tools: replPromptToolSurface(),
   });
   // 注入的留痕行：会话存档与 transcript 都不落 system，不打印这一行就没人能证明注入真的发生了。
   if (projectInstructionsNotice !== null) writeLine(errorOutput, projectInstructionsNotice);
