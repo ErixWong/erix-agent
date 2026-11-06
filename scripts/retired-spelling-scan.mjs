@@ -380,11 +380,18 @@ const CONTRACT_BODY_PINS = Object.freeze({
  * 登记两个文件（中英各一）：漏登一份就是 `UNPINNED`（有命中却没钉），写错路径就是 `DEAD-PIN`，
  * 两条都在红集合里。
  *
+ * 最近一次重登记（issue #716 / #719）：78→79 / 63→64。新增的那 1 处 `cwd`（`canonical:
+ * config.run.cwd`，`ambiguous: true`）来自两份 README 里新写的 `<cwd>/AGENTS.md` 那句——
+ * **同名异义**：那里的 `cwd` 指「当前工作目录」，不是退役的扁平选项键。按 #565 / #637 先例
+ * （main 上 `104c1f9` 那一笔：`loadRawRows` 签名里的 `runId` 是 store 入参，同样登记而不是改写法）
+ * **登记**，**不改写法**：把「`<cwd>/AGENTS.md`」改写成「项目根目录的 AGENTS.md」只是把扫描器的
+ * 一个假阳性搬到散文里，而那句要表达的正是「根就是 cwd」——改完反而说不清根是怎么来的。
+ *
  * @type {Readonly<Record<string, number>>}
  */
 const ROOT_DOC_BODY_PINS = Object.freeze({
-  "README.md": 78,
-  "README_cn.md": 63,
+  "README.md": 79,
+  "README_cn.md": 64,
 });
 
 /** 分类 → 钉子表。现状类没有钉子（它必须为 0）。 */
