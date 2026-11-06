@@ -50,7 +50,7 @@
   修之前，块注释里写一行 `const X = 1;` 就能「证明」X 已声明，注释里一句带引号的名字还能喂进弱档）。
   找不到符号就红，报错会点名该文件里**实际存在的相近符号**；一个文件里连一条声明都抽不到同样算红（#164 口径：
   抽不到真值不许静默放行）。**字符串值**（终止原因、provider 错误码）是唯一弱一档的形态，只在
-  `scripts/docs-drift-check.mjs` 的 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的那 4 个文件里被接受。 裸行号棘轮的唯一键是 (文档, 目标文件, 行区间)，**不含文档自己的行号**——于是把
+  `scripts/docs-drift-check.mjs` 的 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的那 5 个文件里被接受（第 5 份 `bin/final-guard.js` 是 issue #743 加的，为的是让 CLI guard 那两个 skip reason 真被校一次）。 裸行号棘轮的唯一键是 (文档, 目标文件, 行区间)，**不含文档自己的行号**——于是把
   `` `符号`（`路径:1517-1531`） `` 改写成不带括号/链接的裸 `路径:1517-1531`，棘轮那个数一字不变，而符号校验整条消失。
   因此 `symbols` 自带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 235`：掉到下限以下就红——那是「锚点在退化」被抓住，不是棘轮上升——超过它则收到「请把下限升上去」的提示。
   两个数都是从脚本自身文本里读回来的，这正是 `--self-test` 能证明它们真的是锁的原因。
@@ -224,8 +224,9 @@ CHANGELOG 解析器**：扫描面就是 `test/static-guards.test.js` 已经在�
   两种 JSDoc 形状会**静默**把参数退化成 `any`（编译一个错都不报，只有读生成的 `.d.ts` 才看得见；#213 R4 两处都已修）：
   **内联 `@param {{ … }}` 类型字面量里独占一行的 `//` 注释**，以及**没有紧贴被文档化声明的文档块**。
   宿主可见签名要紧的时候，去读生成的 `.d.ts`，而不是源码里的注释。
-  因此干净检出里一个 `.d.ts` 都没有——装包后应列出 **87** 个 `.d.ts`（`npm pack --dry-run --json` 在当前树上
-  列出整整 87 个，因为 issue #688 把 `src/tools/providers.js`、`src/providers/anthropic.js` 与
+  因此干净检出里一个 `.d.ts` 都没有——装包后应列出 **88** 个 `.d.ts`（`npm pack --dry-run --json` 在当前树上
+  列出整整 88 个，因为 issue #743 把 `src/loop/event-tiers.js`（事件分级表，从包入口再导出）接进了声明依赖图；
+  此前 **87**（因为 issue #688 把 `src/tools/providers.js`、`src/providers/anthropic.js` 与
   `src/config/env.js` 移出了声明依赖图——它们唯一的公共再导出退役了，入口侧再没有谁 import 它们；
   此前 **90**（在新增 `src/loop/judge-runner.js` 的那棵树上实测）；此前 **89**（在 #643 的树上实测，
   列出整整 89 个，因为那一单新增 `src/compact/budget-fit.js`）；此前 **88**（在 #246 第一刀的树上实测，

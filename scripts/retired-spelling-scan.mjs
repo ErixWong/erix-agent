@@ -363,7 +363,22 @@ const CONTRACT_BODY_PINS = Object.freeze({
   //
   //     ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=443  uses=444
   //     ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=552  uses=553
-  "docs/host-consumer-contract.md": 444,
+  // 444 → 454（issue #743）：新增的「事件分级与清理判据」一节里，档位名 `stream` 是个**同名异义**命中——
+  // 它说的是事件分级表的三档之一（`fact` / `stream` / `derived`），不是 `config.run.stream`；那一节要逐类
+  // 给档位，而档位名就是这个词，所以**不为了躲钉子把表改成描述说法**（同 #565 / #637 / #714 / #729 的先例：
+  // 契约要能写出真实名字）。EN 新命中 10 处 = 档位名 `stream` 9 处（表内 5 行档位列 + 正文与判据 4 处）
+  // + `runId` 1 处。数取自扫描器自己报的 ✗ 行：
+  //
+  //     ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=444  uses=454
+  //     ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=553  uses=564
+  // 454 → 455（同一刀的后续）：那一节里可执行的围栏改成了「自含且真能跑」的一格（L3 要真执行它），
+  // 它的一句行内注释就写的是「`stream` + terminal + over the window」——进了代码语境就多一处同名异义。
+  // 数取自扫描器现报：`docs/host-consumer-contract.md [contract] verdict=SUSPECT(raised) pin=454 uses=455`。
+  // 455 → 454（独立评审 #743 必修 1 之后）：那一格围栏的行内注释换成了「all four hold ⇒ deletable」
+  // （判据多了「落盘证据」这一条，那句旧措辞本身被换掉），上面那处同名异义因此**掉了一处** ——
+  // 这是「契约改干净了」的方向，不是漏钉。数取自扫描器现报：
+  // `docs/host-consumer-contract.md [contract] verdict=SUSPECT(dropped) pin=455 uses=454`。
+  "docs/host-consumer-contract.md": 454,
   // 565（片A，切版前补 #569/#568 文档）：CN 契约新增「折叠触发比例与会话续接块」一节，其中 provider 回调的
   // 真实键名 `runId`（`({runId, state, previous}) → {text, version}`）是一次同名异义命中——契约必须写出这个键名，
   // 所以**不为了躲钉子而改写成模糊说法**，按判据把钉子登记成扫描器报的值。EN 侧同一句已把 `context` 写成全路径
@@ -375,7 +390,12 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 的入参名，同名异义），新增区间内扫描器计到 1 处 use；数取自它自己报的 `uses=552`。
   // 552 → 553（issue #729）：同 EN 侧那一句的中文侧（`user tool_result has no matching assistant tool_use`
   // 里的 `user`，消息角色，同名异义）；数取自扫描器自己报的 `uses=553`（✗ 行原文见上面 EN 那一格）。
-  "docs/host-consumer-contract_cn.md": 553,
+  // 553 → 564（issue #743）：同 EN 侧那一节的中文侧，同样是档位名 `stream` 的同名异义命中 9 处，外加
+  // `runId` 2 处（store 方法入参名，也是同名异义）；数取自扫描器自己报的 `uses=564`。
+  // 564 → 566（独立评审 #743 必修 1 与 2 之后）：CN 那一节新写了「只有这一档是判据可能删的」与
+  // 「`type ∈ stream ∧ … ∧ 成型副本确实落盘 ∧ …`」这两句（档位名在代码围栏与行内代码里各算一次同名异义）。
+  // 数取自扫描器现报：`docs/host-consumer-contract_cn.md [contract] verdict=SUSPECT(raised) pin=564 uses=566`。
+  "docs/host-consumer-contract_cn.md": 566,
 });
 
 /**
@@ -399,8 +419,12 @@ const CONTRACT_BODY_PINS = Object.freeze({
  * @type {Readonly<Record<string, number>>}
  */
 const ROOT_DOC_BODY_PINS = Object.freeze({
-  "README.md": 79,
-  "README_cn.md": 64,
+  // 79 → 80 / 64 → 65（issue #743）：两份根文档的模块地图多一行 `event-tiers.js`，而那一行必须写出
+  // 三个档位名，其中 `stream` 与退役的扁平选项 `config.run.stream` 同名异义（它在 `AMBIGUOUS_KEYS` 里，
+  // 不进退役判据，但计入本钉子的 uses）。同 #729 的先例：不为了躲钉子把模块名后面的说明改模糊。
+  // 数取自扫描器自己报的 ✗ 行：`README.md … pin=79 uses=80` / `README_cn.md … pin=64 uses=65`。
+  "README.md": 80,
+  "README_cn.md": 65,
 });
 
 /** 分类 → 钉子表。现状类没有钉子（它必须为 0）。 */

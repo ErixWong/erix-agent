@@ -142,6 +142,73 @@
 
 - **A round record now says how big its own `runState` copy is, and whether that copy was truncated (issue #742, first slice: purely additive).** Every round writes a full run-state copy, and the ledger could already say two things about its size (`runState.bounds.maxSerializedBytes`, `runState.bounds.truncated`) but not **how many bytes** this round's copy costs, so a host watching the slope of "one full copy per round" (measured on a production ledger: 41 MB across 500 rounds) had nothing to alert on. Each engine round record now carries a sibling key `runStateMeta: { bytes, capBytes, truncated }`, shaped like the `foldedPayloadMeta` that already sits on the fold archive — that cell is exactly the precedent which made *archive* truncation visible, and the reason #742 asked for the same shape here. Three rules are pinned in code rather than prose: `bytes` reuses `serializedBytes`, i.e. the same `Buffer.byteLength(JSON.stringify(value), "utf8")` that `boundRunState` uses to decide `bounds.truncated` (two rulers would let `truncated` and `bounds.truncated` disagree about the same copy, which is worse than no observability); `capBytes` reads the exported `RUN_STATE_MAX_SERIALIZED_BYTES` and is **not** the literal `65536` (a copied literal is a second ruler that goes quietly stale when the constant moves — pinned by a source-scanning case, because writing the literal and using the constant are *equal in value today* and no value assertion can tell them apart); `truncated` is the **OR** of two facts, over-cap **or** the engine's own clamp stamp. The second half is not decoration and was not known before the end-to-end test was written: the clamp runs **upstream** of the round record, so a round whose state really was squeezed lands its copy *under* the cap (measured fixture: 128 tools + 128 files + 64 todo items + 1200 CJK semantic characters ⇒ copy 64 893 B against the 65 536 B cap, while `bounds.truncated: true` / `omittedTools: 1`) — so `truncated = bytes > capBytes` alone would be **permanently false** in real runs. The two facts stay separately readable (`bytes` / `runState.bounds`); nothing is merged. **No fact, no key**: with no copy to measure (no `runState`, a non-object copy, or one `JSON.stringify` cannot encode) the whole key is absent and the engine never writes `{bytes:0,truncated:false}` as a stand-in, so absence reads as *unknown*, never as "not truncated". The measurement is taken on `cloneState(roundRunState)` — the object actually written — not on the live original; measuring the original could report a byte count that never reached the disk. Mutations measured (restored afterwards): `capBytes: 65536` ⇒ 9 pass / 1 fail; `truncated: false` ⇒ 6 pass / 4 fail. ⚠ **This slice does not reduce a single byte**: every round still writes a full copy and the ledger total still grows linearly with the round count — that is the next slice of #742, not this one. `runState` content, `bounds` semantics and the `onRound` shape are untouched; nothing in the engine reads `runStateMeta`, so resume and stop gates cannot be affected. The golden capture's additive-key exemption grew by the measured amount (`usage` / `engineUsage` / `runStateMeta` per engine round row, 13 / 12 keys across the two scenarios, still pinned row by row).
 - **轮记录现在会说自己那份 `runState` 副本有多大、有没有被夹断（issue #742，第一刀：纯加法）。** 每轮写一份全量 run-state 副本，账本本来就能说两件事（`runState.bounds.maxSerializedBytes`、`runState.bounds.truncated`），却说不出**这一轮的副本花了多少字节**，于是盯着「每轮一份全量副本」这条斜率的宿主无警可报（现网账本实测：500 轮 41 MB）。每条引擎轮记录从此多一个兄弟键 `runStateMeta: { bytes, capBytes, truncated }`，形状照折叠归档上已有的 `foldedPayloadMeta`——那一格正是把*归档*截断变成可见事实的先例，#742 要的就是这个形状。三条口径钉在代码里而不是 prose 里：`bytes` 复用 `serializedBytes`，也就是 `boundRunState` 判 `bounds.truncated` 用的那一句 `Buffer.byteLength(JSON.stringify(value), "utf8")`（两把尺会让 `truncated` 与 `bounds.truncated` 对同一份副本打架，那比没有观测更糟）；`capBytes` 取导出常量 `RUN_STATE_MAX_SERIALIZED_BYTES`，**不是**字面量 `65536`（复制一份字面量就是第二把尺，常量以后调整时它会静默说谎——钉在扫源码那格，因为「写字面量」与「用常量」今天**恰好同值**，任何值断言都分不开）；`truncated` 是**两个事实取或**：超出上限，**或**引擎自己盖的夹断章。后一半不是装饰，也不是先验结论，是写完端到端测试才量出来的：夹断发生在轮记录写点的**上游**，真被挤过的那一轮落盘副本反而**在上限之内**（夹具实测：128 工具 + 128 文件 + 64 条 todo + 1200 字 semantic ⇒ 副本 64 893 B / 上限 65 536 B，同时 `bounds.truncated: true` / `omittedTools: 1`）⇒ 只写 `bytes > capBytes` 会在全真实 run 里**永远为假**。两个事实仍可分开读（`bytes` / `runState.bounds`），没有揉成一个数。**没事实就没这一格**：没有可量的副本（没有 `runState`、副本不是普通对象、`JSON.stringify` 编不了）时整个键缺席，引擎永不写 `{bytes:0,truncated:false}` 充当替身 ⇒ 缺格读成「不知道」，不是「没截断」。量的是 `cloneState(roundRunState)`——真正被写下去的那个对象——而不是活的原件；量原件会报出一个从未上过盘的字节数。变异实测（跑完已还原）：`capBytes: 65536` ⇒ 9 pass / 1 fail；`truncated: false` ⇒ 6 pass / 4 fail。⚠ **本片一个字节也没少**：每轮仍是一份全量副本，账本总量仍随轮数线性增长——那是 #742 的下一刀，不是这一片。`runState` 内容、`bounds` 语义、`onRound` 形状均未动；引擎内不读 `runStateMeta`，resume 与停门判据不可能受影响。金样捕获的新增键豁免面按实测长大（每条引擎轮记录行 `usage` / `engineUsage` / `runStateMeta`，两个场景 13 / 12 个键，仍逐行钉住，一条没合并）。
+- **The engine now publishes a retention tier for every event type it emits (issue #743).**
+  `src/loop/event-tiers.js` exports `EVENT_TIERS` (`fact` / `stream` / `derived`), `eventTierOf()`,
+  `EVENT_TIER_VALUES` and the three tier names, `HOST_SIDE_EVENT_TYPE_NAMES`, `RUN_TERMINAL_STATUSES`,
+  `RUN_CLEANUP_SAFE_STATUSES` and `streamCleanupEligible()`, all re-exported from the package root, so
+  a host that persists `onEvent` records finally has a machine-readable answer to "which rows may go":
+  `type ∈ stream ∧ run.status ∈ cleanup-safe terminal ∧ assembled copy durably readable ∧ ts < now −
+  retention`, all four fail-closed. Being terminal is **not** being persisted: `failed` / `aborted` are
+  written on the throwing path, where a provider may have streamed fragments before any assembled
+  answer existed, so the predicate accepts only the three statuses `finish()` writes and additionally
+  requires the host's own `assembledCopyPersisted: true` (a run whose store writes no round records, or
+  a run whose persistence failed via `persistenceFailed: true`, keeps everything). A **negative**
+  `retentionMs` is rejected rather than read as "delete everything". **No type is currently
+  `derived`**: `recovering` (emitted before the retry backoff, so an abort during the wait leaves no
+  later `attempt`), `recovered` (a **retry**-success notice, not a resume one — the first draft of the
+  contract called it resume) and `tool_output_aggregate` (its payload is the aggregation *decision*;
+  the transcript and archive keep bytes, not those numbers) were all demoted to `fact` — bytes kept are
+  cheaper than history deleted. `assistant_delta` / `tool_call_delta` are registered
+  **host-side** spellings of the engine's `delta` / `tool_call` (a whole-repo scan of `src/`, `bin/`
+  and `examples/` emits neither name), and `judge` keys the `onJudge` channel record, which carries no
+  `type` field at all. The enumeration is the `onEvent` / streaming-observer surface only:
+  `persistence_error` travels the diagnostic **error** channel (`diagnostics.error` /
+  `onPersistenceError`, booked by `src/loop/error-ledger.js`), is not in the table, and reads back as
+  `undefined` — "unknown ⇒ keep". Zero behaviour change: no emission point moved, the engine deletes nothing, and
+  `test/event-tier-coverage-743.test.js` re-derives the emitted names from the emission call sites
+  (six emitter families, the extractor itself self-tested on a synthetic source so the guard cannot go
+  green on an empty set, plus T11 reddening an unregistered **new emitter primitive**) — an event type
+  added without a tier reddens it, mutation-proved by
+  `emitEvent({ type: "mutation_probe_743", round })`: T1 red naming `loop/provider-runner.js:261#emitEvent`,
+  exit 1, restored to green afterwards; the same probe also reddened the neighbouring `#641` gate,
+  which is why the three gates stay separate. `docs/host-consumer-contract.md` and `_cn.md` carry the
+  per-type table with a reason per row, the predicate in both prose and executable form, the terminal
+  statuses this repo really writes (`succeeded` / `unverified_error` / `guard_error` / `aborted` /
+  `failed`, with `running` explicitly not among them — `cancelled` / `expired` are host column values
+  and `persistence_failed` is a `termination.reason`) and which of them the predicate may act on, the shape replay degrades into after a `stream`
+  delete, and the guard / recall read surface as verified rather than assumed: the final guard reads
+  `store.load(runId)` (round `toolOutputs[].toolUseId` / `.content`, `tool_result` blocks by
+  `tool_use_id` / `content`, `record.round`), the legacy `*.meta.json` manifests through the fields
+  `readArtifact` actually validates (`kind`, `schemaVersion`, `truncated`, `digest`, `archivePath`,
+  `locator.lineStart` / `lineEnd`) and the artifact and deliverable files on disk — **not** `command`,
+  and `legacy` is a marker the guard writes onto its own captures, not a manifest field — and never a
+  stream fragment; `recall` does not appear in `src/` at all.
+- **引擎现在为它发出的每一个事件类型公开一个保留档位（issue #743）。**
+  `src/loop/event-tiers.js` 导出 `EVENT_TIERS`（`fact` / `stream` / `derived`）、`eventTierOf()`、
+  `EVENT_TIER_VALUES` 与三个档位名、`HOST_SIDE_EVENT_TYPE_NAMES`、`RUN_TERMINAL_STATUSES`、
+  `RUN_CLEANUP_SAFE_STATUSES` 与 `streamCleanupEligible()`，全部从包入口再导出——于是把 `onEvent` 记录入库的宿主第一次拿到「哪一行可以走」
+  的机器可读答案：`type ∈ stream ∧ run.status ∈ 安全终态 ∧ 成型副本确实落盘 ∧ ts < now − retention`，四条都是 fail-closed。
+  「已终」不等于「已落盘」：`failed` / `aborted` 是抛异常那条路写的，那里 provider 完全可能已经流出碎片而根本没拿到
+  成型正文，所以判据只认 `finish()` 写的那三个终态，并额外要求宿主自己传 `assembledCopyPersisted: true`（一个不往库里写轮记录的 run，
+  或者持久化报过失败的 run（`persistenceFailed: true`），什么都不删）。`retentionMs` 为负一律拒，而不是当成「把全表删完」。
+  **当前没有任何类型是 `derived`**：`recovering`（在退避等待**之前**发出，等待中被中止就没有下一次 `attempt`）、
+  `recovered`（它是**重试**成功告知、不是续跑告知——契约初稿写错了这一条）与 `tool_output_aggregate`（载荷是聚合**判定**，
+  transcript 与归档只存字节不存这些数）全部降回 `fact`——多留字节比删错历史便宜。
+  `assistant_delta` / `tool_call_delta` 是引擎 `delta` / `tool_call` 的**宿主侧**拼写
+  （整仓扫 `src/`、`bin/`、`examples/` 两个名字都不发），`judge` 钉的是 `onJudge` 通道那条记录——它根本没有
+  `type` 字段。枚举面只限 `onEvent` / 流式观察者面：`persistence_error` 走诊断**错误**通道（`diagnostics.error` /
+  `onPersistenceError`，由 `src/loop/error-ledger.js` 记账），不在表里，查表得 `undefined`——「认不得 ⇒ 留着」。行为零变化：一个发射点都没动，引擎一个字节都不删，而 `test/event-tier-coverage-743.test.js`
+  从**发射调用点**现推发射名（六族发射口，抽取器本身在合成源码上自测，免得扫不到东西时静默变绿；T11 还会在新增一个未登记的**发射原语**时跑红）——
+  新增事件类型而忘分级会把它跑红，且做过变异：`emitEvent({ type: "mutation_probe_743", round })` 让 T1 红
+  并点名 `loop/provider-runner.js:261#emitEvent`（exit 1），恢复后绿；同一个探针也让隔壁 `#641` 那道闸红 ——
+  这就是三道闸各自独立的理由。`docs/host-consumer-contract.md` 与 `_cn.md` 逐类列了档位与理由、判据的散文与
+  可执行两面、本仓真正写出的终态名（`succeeded` / `unverified_error` / `guard_error` / `aborted` / `failed`，
+  `running` 故意不在内；`cancelled` / `expired` 是宿主列值，`persistence_failed` 是 `termination.reason`）与判据能动哪几个、
+  删完 `stream` 后回放退化的形状，以及**现验而不是推测**的 guard / recall 读面：终稿核验读 `store.load(runId)`
+  （轮记录的 `toolOutputs[].toolUseId` / `.content`、按 `tool_use_id` / `content` 取的 `tool_result` 块、
+  `record.round`）、旧 `*.meta.json` 清单上 `readArtifact` 真验的那批字段（`kind`、`schemaVersion`、`truncated`、`digest`、
+  `archivePath`、`locator.lineStart` / `lineEnd`）与盘上的工件与交付物文件——**不含** `command`，而 `legacy` 是 guard
+  写在自己 capture 上的标记、不是清单字段；它从不读流式碎片；`src/` 里根本不出现 `recall`。
 
 - **The `[Unreleased]` carry is now a preflight gate (issue #715).** Nothing ever moved entries out of
   `## [Unreleased]` and nothing reminded: `release:day --stage writeback`'s `--sync` only rewrites a version

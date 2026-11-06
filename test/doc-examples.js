@@ -495,7 +495,28 @@ if (!__miss__.startsWith("错误：") || !__miss__.includes("readFile")) {
 rmSync(__editDir__, { recursive: true, force: true });
 `,
   },
-  // fence #10（projectTranscriptForDisplay 展示投影）
+  // fence #10（事件分级与可执行的清理判据，issue #743）
+  // 这一格的**主体不需要任何 stub**：中英两份都写成自含的一格（自带 `import { streamCleanupEligible } from "erix-agent"`），
+  // 而三条断言本身就是那条判据的三种失败方向（stream+已终+过窗口 ⇒ 可删；fact ⇒ 永不；未终 ⇒ 留着）。
+  // 于是 L2 链接的是宿主看到的那个入口（包根再导出），L3 是**真跑**而不是语法过一遍。
+  // epilogue 不是凑数的「跑完就算」：它在主体之后另走一次包根，校两件主体**看不到**的事实——
+  // 表里那个宿主拼写确实落在 `stream` 上，而 `running` 始终不是终态。任一条不对就红。
+  {
+    linkImports: [],
+    stubs: "",
+    epilogue: `
+{
+  const tierModule = await import(${JSON.stringify(INDEX_URL)});
+  if (tierModule.EVENT_TIERS.assistant_delta !== "stream") {
+    throw new Error("表里的宿主侧拼写 assistant_delta 不再落在 stream 档上：契约这一格的说法与代码已漂");
+  }
+  if (tierModule.RUN_TERMINAL_STATUSES.includes("running")) {
+    throw new Error("running 进了终态名单：未终的 run 会被清理判据删掉碎片");
+  }
+}
+`,
+  },
+  // fence #11（projectTranscriptForDisplay 展示投影）
   {
     linkImports: [],
     stubs: `
@@ -518,7 +539,7 @@ const store = { async load() {
 if (__storeLoads__.count !== 1) throw new Error(\`store.load 应被调用 1 次，实际 \${__storeLoads__.count} 次\`);
 `,
   },
-  // fence #11（契约套件标准注入用法，issue #183）
+  // fence #12（契约套件标准注入用法，issue #183）
   // 两层都真验：L2 靠 `erix-agent/contract-tests` 说明符重写到 test/contract/index.js（证明
   // 发布的子路径入盘）；L3 把示例当宿主那样注册 24 条断言（transcript 16 + notes 7 +
   // notes CAS 子套件 1，issue #183）并真的跑完
@@ -804,7 +825,7 @@ export const DOC_TARGETS = [
     name: "host-consumer-contract",
     en: EN_DOC,
     cn: CN_DOC,
-    expectedFences: 12,
+    expectedFences: 13,
     preambles: FENCE_PREAMBLES,
   },
   {

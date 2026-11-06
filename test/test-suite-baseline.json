@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3590,
+    "tests": 3605,
     "fail": 0,
     "maxSkipped": 15
   },
@@ -610,6 +610,23 @@
       "todo": 0,
       "cancelled": 0,
       "why": "#738 第三步续（第二次 rebase 之后）现测重登：main 的登记值 3555（`5d82404` #736 重登）+ 本片 10 条用例（`test/compact/fold-fed-summary-738.test.js`：A/B/C/D/E/F/F2/F3 + 第二轮补的 G（评审反例：摘要块被夹断、同一条新消息里仍有与旧候选同文的正文块 ⇒ 不写 `fedSummaryText`）与 G2（同文歧义四类））⇒ 3555 + 10 = 3565。六个计数逐字取自在本棵树上跑的 `npm test` TAP 汇总（`# tests 3565` / `# pass 3552` / `# fail 0` / `# skipped 13` / `# todo 0` / `# cancelled 0`，日志 /tmp/final-test-10.log），随后在含本条登记的最终树上复跑 `npm test` 并由 `npm run check:test-summary -- --log` 复核（同六个计数 ⇒ 登记值不是只能从某一棵恰好被挑中的树上量出来）。抬值依据是用例数不是绿灯：本片没删例、没加 skip、没把断言删成恒真；`.text` / `.summary` 的既有读者一字未动，`#462 规划器`（钉 `.summary` 优先）照旧绿。skipped 13 与 main 同数（12 条真上游/真 relay 门禁 + 1 条真上游多会话格），上限 15 不动。两次 rebase 的作废数字留档（量的树已不在本分支历史里，不占观察条目）：`ba5b83c`/`1170ea3`/`012b8d1` = 3459/3446/0/13，`004d864` = 3461/3448/0/13（主会话亲跑同一组，并指出 HINT 只是提示、没进表），`cf7c854`（基点 a177083）= 3551/3538/0/13。配对地板另按各树实际成对条目数两次重算：a177083 基点上 9→10，da35840 基点上 10→11（都不是把两笔的数相加）。本片两条变异样本因 main 上 #736 占用 M19/M20 而顺延为 **M22**（读侧逐字）/ **M23**（写侧块身份），表合计 23 条。"
+    },
+    {
+      "date": "2026-11-07",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "a1fae72（被测量那一棵树的内容；登记这笔提交在它之后，只改这个 JSON）",
+      "branch": "feat-261107-06-event-tiers",
+      "mergeBase": "fd07d27",
+      "mainSha": "fd07d27",
+      "headSha": "a1fae72",
+      "tests": 3605,
+      "pass": 3592,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "issue #743 **第四轮**（同一条错的第二现场：README 模块地图那一行也作无范围限定的全称）rebase 到 `origin/main fd07d27`（#742 已合）之后现测。主干自己那棵树现登 3590（rebase 后树里的登记值就是它），分支在 fd07d27 之上的增量为 **+15**：`+11` = `test/event-tier-coverage-743.test.js` 的 T1–T11（分级表覆盖、清理谓词四条与边界输入、终态/安全子集实推、derived 空集、诊断通道边界、发射原语边界），`+1` = T12（范围限定守卫：契约开场两处 + 两份 README 模块地图，本轮从只钉契约扩成同时钉 README），`+3` = `test/doc-examples.js` 新写的契约 JS 围栏 L1/L2/L3 三层验证。3590 + 15 = 3605，与本次 TAP 汇总行逐字相等（日志 /tmp/743-r4-test.log，跑前工作树只剩本轮那三处未提交改动、跑后一字未动），经同一份日志复核为 `TEST-SUMMARY-VERDICT ok`；抬值前脚本自己打 `HINT 登记值可抬到 3605（当前登记值 3590，本次实测 3605，+15）` ⇒ 非手抄。**登记值不是在 3580 上加出来的**：本轮 rebase 之后主干读数已经是 3590，分支增量重算 = 15。fail=0；skipped 13 不变（没动任何 skip 判据；历史曾出现 test/version-state-probe-703.test.js 日期敏感跳过，本轮未复现），maxSkipped 上限 15 不动（13 ≤ 15，没有放宽）。"
     }
   ]
 }
