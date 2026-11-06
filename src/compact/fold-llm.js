@@ -284,7 +284,7 @@ function enforceSummarySize(summary, maxSummaryTokens, onLayer) {
  * @returns {{
  *   name: string,
  *   shouldCompact: (messages: object[], budgetTokens: number) => boolean,
- *   compact: (messages: object[], options?: {keepRounds?: number, budgetTokens?: number}) => Promise<object>,
+ *   compact: (messages: object[], options?: {keepRounds?: number, budgetTokens?: number, recoveryHint?: string, noteTools?: string[]}) => Promise<object>,
  * }}
  */
 export function createFoldLlmStrategy({
@@ -337,6 +337,8 @@ export function createFoldLlmStrategy({
         folded,
         retained,
         roundRange,
+        // issue #741：同 `fold-statistical` —— 拿不到笔记证据就把广告语换成显式未知口径。
+        noteTools: settings.noteTools,
       });
       await runFoldHook(settings.onBeforeFold, {
         messages,

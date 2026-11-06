@@ -44,14 +44,15 @@ test("folds old rounds through the injected summarizer and preserves the payload
   assert.equal(strategy.name, "fold-llm");
   assert.deepEqual(calls[0].messages, messages.slice(1, 5));
   assert.deepEqual(calls[0].roundRange, { from: 1, to: 4 });
-  assert.equal(calls[0].recoveryHint, "需要原文请重读文件或查看持久笔记；关键值应当已落盘");
+  // issue #741：直接调策略 ⇒ 引擎拿不到笔记证据 ⇒ 默认广告语是**显式未知**那一句（不再是「查看持久笔记」）。
+  assert.equal(calls[0].recoveryHint, "需要原文请重读文件；无可复原的决策记录（原因：无笔记证据）");
   assert.deepEqual(result.foldedPayload, messages.slice(1, 5));
   assert.equal(result.foldedRounds, 4);
   assert.equal(result.compacted, true);
   assert.deepEqual(result.messages.at(-1), messages.at(-1));
   assert.equal(result.messages[0].content[0].type, "text");
   assert.match(result.messages[0].content[0].text, new RegExp(summary));
-  assert.match(result.messages[0].content[0].text, /需要原文请重读文件或查看持久笔记；关键值应当已落盘/);
+  assert.match(result.messages[0].content[0].text, /需要原文请重读文件；无可复原的决策记录（原因：无笔记证据）/);
   assert.equal(result.tokensBefore, estimateMessageTokens(messages));
   assert.equal(result.tokensAfter, estimateMessageTokens(result.messages));
 });
@@ -111,7 +112,10 @@ test("publishes note-first recovery guidance requirements", () => {
   // issue #611：五节之后、「恢复提示」之前多一节「教训与坑」（位置判据见
   // test/compact/fold-summary-lessons-611.test.js，这里只把钉子补齐）。
   assert.match(SUMMARIZER_PROMPT_GUIDE, /## 教训与坑（不要重犯的）/);
-  assert.match(SUMMARIZER_PROMPT_GUIDE, /需要原文请重读文件或查看持久笔记；关键值应当已落盘/);
+  // issue #741：提示分两种口径 —— 无证据时（默认那份）不得宣称「查看持久笔记」，
+  // 有证据时（宿主/引擎给出证据后解析出的那一句）才给 note_* 这条路。
+  assert.match(SUMMARIZER_PROMPT_GUIDE, /需要原文请重读文件；无可复原的决策记录（原因：无笔记证据）/);
+  assert.doesNotMatch(SUMMARIZER_PROMPT_GUIDE, /查看持久笔记/);
 });
 
 test("includes an injected recovery hint in the LLM summary", async () => {
@@ -237,7 +241,7 @@ test("adds no mechanical section when the folded payload has nothing to extract"
 
   assert.equal(
     text,
-    "## 下一步\n已完成项禁止重做\n## 恢复提示\n需要原文请重读文件或查看持久笔记；关键值应当已落盘",
+    "## 下一步\n已完成项禁止重做\n## 恢复提示\n需要原文请重读文件；无可复原的决策记录（原因：无笔记证据）",
   );
   assert.doesNotMatch(text, /锚点索引|用户最新未解决输入|中止\/撤销/u);
 });

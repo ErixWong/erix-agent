@@ -16,6 +16,304 @@ import { estimateTokens } from "../tokens.js";
 export const TOOL_RESULT_TTL_DEFAULT = 2;
 export const TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT = 4000;
 
+// ---------------------------------------------------------------------------
+// issue #741 —— 笔记断言的**条件式**出口（prompt 级修复，不是机制级）
+//
+// 病根：TTL 降级占位符与折叠替代物的广告语都**无条件**断言「要点见已有笔记 / 先用 note_list 查」，
+// 而引擎既不写笔记（机制级缺口），也不知道宿主到底有没有装配 `note_*`（配置级缺口）。
+// 生产证据（run b3eeba0f）：折叠后整场 `note_*` 调用 = 0，模型改用 cat/grep/sed 取回原文。
+// 于是那句话同时犯两错：① 指一条不存在的道路；② 把「我不知道有没有记录」伪报成「有记录」。
+//
+// 本模块只做**引擎真能核实**的两件事，且只用来决定措辞，不引入任何写笔记的机制：
+//   · 工具面：宿主传进来的 `tools` 里有没有完整的 `note_take`/`note_list`/`note_read`；
+//   · 账本：可见消息里有没有一次**成功**的 `note_take` 写入（有 tool_use 且配对 tool_result 未报错）。
+// 拿不到证据 ⇒ 走显式未知口径（「无可复原的决策记录」+ 原因），**不许**伪报知道。
+//
+// ⚠ 与 `src/loop/orchestrator.js` 里「引擎不认识 notes」那条注释的边界：那条约束的是**诊断投影**
+// 不许解析笔记载荷。这里只做**工具名/调用是否发生**的只读判定（不解析笔记内容、不读宿主存储），
+// 目的是让模型可见文本不再撒谎 —— 属于 prompt 级，不是把笔记机制搬进引擎。
+// ---------------------------------------------------------------------------
+
+/** 笔记召回这条路需要的工具；**缺任何一个**都不给 `note_*` 指引（整族全有或全无）。 */
+export const NOTE_RECALL_TOOL_NAMES = Object.freeze(["note_take", "note_list", "note_read"]);
+
+/** 三种「没有笔记可指」的原因；字符串本身就是模型可见文本，改动 = 改模型看到的句子。 */
+export const NOTE_RECALL_REASONS = Object.freeze({
+  // 三个原因都要短：它们最终出现在**模型可见文本**里，而折叠摘要有字节夹断（#460 尺蠖）。
+  /** 工具面上没有完整的笔记工具族 ⇒ 连路都不存在。 */
+  noSurface: "无笔记工具",
+  /** 工具有，但可见账本里一次**可证实**的写入都没有 ⇒ 路在，格子是空的。 */
+  emptyNotes: "无笔记写入",
+  /** 写过，但载荷不是成功形状，或随后被 `note_forget` 撤销 ⇒ 写过不等于现在还能查（评审必修 1）。 */
+  revoked: "笔记已撤销",
+  /** 调用方没给工具面/账本证据 ⇒ 引擎确实不知道。 */
+  unknown: "无笔记证据",
+});
+
+/**
+ * `note_take` / `note_forget` 的载荷状态字面。来源已核：`src/tools/notes.js` 的 `writeNote` 成功返回
+ * `{status:"found", action:"saved"|"updated", key, …}`（失败走 `invalid` / `missing`），
+ * `note_forget` 撤销成功返回 `{status:"revoked", key, …}` 并写墓碑。**只读这三个字段**：
+ * 载荷正文（笔记内容）一个字都不解析，也不碰宿主存储（同「引擎不认识 notes」那条边界）。
+ * 成功集合里多收几个同义词，是为了宿主自实现笔记工具时不要把「真有笔记」说成「没笔记」。
+ */
+const NOTE_WRITE_OK_STATUSES = new Set(["found", "ok", "saved", "written", "updated", "created"]);
+const NOTE_REVOKE_OK_STATUSES = new Set(["revoked"]);
+
+/**
+ * 账本里的一条消息（`content` 是块数组，块可能是 tool_use / tool_result / 文本）。
+ * 这里的证据判定只做**只读**嗅探，形状按引擎与宿主两种发法都收，所以用 `Record<string, any>`
+ * 而不是 `object`：`object` 上任何属性访问都是 TS2339（现测两处），而 `any` 是**显式**写出的
+ * 未知形状（#213 R4 记的两种会**静默**退化成 `any` 的 JSDoc 形状与此不同 —— 这里是明说）。
+ * @typedef {Record<string, any>} LedgerMessageView
+ */
+
+/** 从宿主给的 `tools` 里挑出笔记工具名（不做前缀猜测，只认这三个确定名）。 */
+/**
+ * @param {Array<{ name?: unknown }> | undefined} [tools] 宿主 supplied 的工具面
+ * @returns {string[]} 命中的笔记工具名（去重）
+ */
+export function noteToolNamesOnSurface(tools) {
+  const found = new Set();
+  for (const tool of Array.isArray(tools) ? tools : []) {
+    const name = typeof tool?.name === "string" ? tool.name : "";
+    if (NOTE_RECALL_TOOL_NAMES.includes(name)) found.add(name);
+  }
+  return [...found];
+}
+
+/**
+ * tool_result 正文：字符串与 `[{type:"text",text}]` 两种形状都收；拿不到就是空串。
+ * @param {LedgerMessageView | undefined} [block] tool_result 块（或任意带 `content` 的块）
+ * @returns {string}
+ */
+function toolResultText(block) {
+  const content = block?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((part) => (typeof part === "string" ? part : String(part?.text ?? ""))).join("\n");
+  }
+  return "";
+}
+
+/**
+ * 载荷能不能**证实**某个状态。口径：解不出 JSON 对象 = 不能证实（宁可说不知道，不许伪报有）。
+ * 引擎自己发的 tool_result 都是 `JSON.stringify(...)`，所以这条不会误伤引擎面；宿主自实现的笔记
+ * 工具若只回一句纯文本，代价只是退到「显式未知」口径（安全方向：少一句广告，不撒一句谎）。
+ * @param {LedgerMessageView | undefined} [block] 配上的 tool_result 块
+ * @param {Set<string>} statuses 视为「证实成功」的状态集合
+ * @returns {boolean}
+ */
+function payloadConfirms(block, statuses) {
+  if (!block || block.is_error === true) return false;
+  let parsed;
+  try {
+    parsed = JSON.parse(toolResultText(block));
+  } catch {
+    return false;
+  }
+  return !!parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    && typeof parsed.status === "string" && statuses.has(parsed.status);
+}
+
+/**
+ * @param {LedgerMessageView | undefined} [block] tool_result 块
+ * @returns {string | undefined} 载荷里认得出的笔记 key；认不出返回 undefined
+ */
+function payloadKey(block) {
+  try {
+    const key = JSON.parse(toolResultText(block))?.key;
+    return typeof key === "string" && key !== "" ? key : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 可见账本里的笔记写入台账（评审必修 1：旧口径把三种假证据都当成「有笔记可查」）。
+ *
+ * 旧实现只问「有没有一个没被 `is_error` 覆盖的 `note_take` tool_use」，于是
+ *   ① **未配对**（结果没回来 / 根本不会回来）、
+ *   ② **失败载荷**（`{status:"invalid"}`，`is_error` 都没置）、
+ *   ③ **写过又被 `note_forget` 撤销**（墓碑已写，历史 current 不可作当前值）
+ * 都会让模型被指去查一个查不到的东西。新口径三条都要过：
+ *   · 必须存在与该 `tool_use_id` **配对**的 `tool_result`；
+ *   · 该结果不能是 `is_error`，且载荷要能证实为成功状态（`NOTE_WRITE_OK_STATUSES`）；
+ *   · 同 key 后续出现成功的 `note_forget` ⇒ 这条写入作废（写过 ≠ 现在还能读）。
+ * key 认不出（载荷与入参都没有）⇒ 无法追踪撤销 ⇒ 保守地不算可查。
+ *
+ * @param {Array<LedgerMessageView>} messages 可见账本（消息数组）
+ * @returns {{available: boolean, reason: string, hadWrite: boolean}}
+ */
+export function noteWriteEvidence(messages) {
+  const results = new Map();
+  for (const message of Array.isArray(messages) ? messages : []) {
+    for (const block of message?.content ?? []) {
+      // 同一个 id 多条结果时取**后一条**：重试语义下最后一次答复才是当前事实。
+      if (block?.type === "tool_result" && typeof block.tool_use_id === "string") {
+        results.set(block.tool_use_id, block);
+      }
+    }
+  }
+
+  const live = new Set();
+  let failedWrite = false;   // 配对结果明确失败（is_error / status 不是成功值）⇒「没写成」
+  let unverifiable = false;  // 有结果但证实不了（载荷不是 JSON、没有 status、写入认不出 key）⇒「不知道」
+  let sawRevoke = false;     // 成功的 note_forget 作废过一条可查写入
+  for (const message of Array.isArray(messages) ? messages : []) {
+    for (const block of message?.content ?? []) {
+      if (block?.type !== "tool_use") continue;
+      const paired = results.get(block.id);
+      if (block.name === "note_take") {
+        if (!paired) continue;                       // ① 未配对：结果没回来 ⇒ 什么都不说
+        if (!payloadConfirms(paired, NOTE_WRITE_OK_STATUSES)) {
+          if (hasStatusField(paired) || paired.is_error === true) failedWrite = true;
+          else unverifiable = true;
+          continue;
+        }
+        const key = payloadKey(paired) ?? (typeof block.input?.key === "string" ? block.input.key : "");
+        // 写入成功但认不出 key ⇒ 追不到后续撤销 ⇒ 不许算可查（宁可少一句广告）。
+        if (key === "") unverifiable = true;
+        else live.add(key);
+      } else if (block.name === "note_forget") {
+        if (!paired || !payloadConfirms(paired, NOTE_REVOKE_OK_STATUSES)) continue;
+        const key = payloadKey(paired) ?? (typeof block.input?.key === "string" ? block.input.key : "");
+        if (key === "") { live.clear(); sawRevoke = true; continue; }   // 认不出撤销了谁 ⇒ 整本都不再可信
+        if (live.delete(key)) sawRevoke = true;
+      }
+    }
+  }
+
+  if (live.size > 0) return { available: true, reason: "", hadWrite: true };
+  // 三格「查不到」互不覆盖：被撤销 ≠ 无法证实 ≠ 从没写成。优先级按「引擎实际知道什么」排。
+  const reason = sawRevoke
+    ? NOTE_RECALL_REASONS.revoked
+    : (unverifiable ? NOTE_RECALL_REASONS.unknown : NOTE_RECALL_REASONS.emptyNotes);
+  return { available: false, reason, hadWrite: failedWrite || unverifiable };
+}
+
+/** 载荷里有没有 `status` 字段（有 ⇒ 这是引擎/宿主自己发的状态机；没有 ⇒ 无法证实）。 */
+/**
+ * @param {LedgerMessageView | undefined} [block] tool_result 块
+ * @returns {boolean}
+ */
+function hasStatusField(block) {
+  try {
+    const parsed = JSON.parse(toolResultText(block));
+    return !!parsed && typeof parsed === "object" && typeof parsed.status === "string";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 可见账本里是否有过**现在还能查**的 `note_take` 写入（口径见 `noteWriteEvidence`）。
+ * 名字保留是为了不拆既有调用面；语义比旧口径严格得多。
+ * @param {Array<LedgerMessageView> | undefined} [messages] 可见账本
+ * @returns {boolean}
+ */
+export function hasNoteWriteEvidence(messages) {
+  return noteWriteEvidence(messages).available;
+}
+
+/**
+ * 笔记可用性判定（纯函数，无副作用）。`available: true` 的唯一条件是「整族工具在面上 **且**
+ * 账本里有成功写入」—— 两者都是引擎看得见的事实，不是推断。
+ *
+ * @param {{ noteTools?: string[], messages?: Array<LedgerMessageView> }} [evidence]
+ * @returns {{ available: boolean, reason: string, surfaceKnown: boolean }}
+ */
+export function resolveNoteRecall({ noteTools, messages } = {}) {
+  if (!Array.isArray(noteTools)) return { available: false, reason: NOTE_RECALL_REASONS.unknown, surfaceKnown: false };
+  if (!NOTE_RECALL_TOOL_NAMES.every((name) => noteTools.includes(name))) {
+    return { available: false, reason: NOTE_RECALL_REASONS.noSurface, surfaceKnown: true };
+  }
+  const ledger = noteWriteEvidence(messages);
+  if (!ledger.available) return { available: false, reason: ledger.reason, surfaceKnown: true };
+  return { available: true, reason: "", surfaceKnown: true };
+}
+
+/** 显式未知口径那半句；`reason` 传的就是文本本体（`NOTE_RECALL_REASONS` 的值），空/缺席回退「无证据」。 */
+/**
+ * @param {string | undefined | null} [reason] 原因文本本体
+ * @returns {string}
+ */
+export function unverifiedRecallClause(reason) {
+  const text = typeof reason === "string" && reason.trim() !== ""
+    ? reason
+    : NOTE_RECALL_REASONS.unknown;
+  // 判据钉的字面是「无可复原的决策记录」；不带「本区间」这类限定词，省下的都是折叠摘要的字节预算。
+  return `无可复原的决策记录（原因：${text}）`;
+}
+
+/** 有笔记证据时的取回指引（沿用 #224/#241 的口径：值没记下来就省略，别猜）。 */
+const NOTE_RECALL_HINT = "后续需要时先用 note_list 查找，再用 note_read 读取；未记录且无法确定性重算时请省略，不要猜测";
+
+/**
+ * 无证据时的取回指引：能给出一条**可直接执行**的重读命令就给（生产里模型本来就在跑 cat/grep/sed），
+ * 否则退回「重读源文件」。两种都保留「不要猜测」半句 —— 修的是「有没有记录」，不是放松反幻觉约束。
+ */
+function unverifiedRetrievalHint(retrievalCommand, reason) {
+  // 命令本身另起一行（`取回: …`），那行整行可直接粘进 exec；句子里只留指向，不塞第二份命令。
+  const lead = retrievalCommand === undefined
+    ? "需要原文请重读源文件（路径见本条工具调用）"
+    : "需要原文请执行下方「取回」行那一条命令";
+  // 「不要猜测」半句**保留**：本切片修的是「有没有记录」，不是放松反幻觉约束。
+  return `${lead}；${unverifiedRecallClause(reason)}；未记录且无法确定性重算时请省略，不要猜测`;
+}
+
+/** 入参没给 limit 时的重读窗口（行数）；比 readFile 的默认 200 窄，宁小不许谎称是全文。 */
+const RETRIEVAL_WINDOW_LINES = 120;
+
+/** 单引号包住，内部的 `'` 按 shell 规则转义（路径里有空格/引号也不破功）。 */
+/**
+ * @param {string | number} value 待包成 shell 单词的值
+ * @returns {string}
+ */
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * 拼取回命令的**白名单**：工具名必须逐字命中这里列出的、入参契约已被核实的 readFile 形态。
+ * 依据：`src/tools/file-tools.js` 的 `readFile`（工具名 `readFile`）读 `input.path` / `input.offset`
+ * （0 基行号）/ `input.limit`（行数）——只有这一种入参形状能逐字翻译成 `sed -n '<from>,<to>p'`。
+ *
+ * 为什么不靠「有 `path` 就当它是读文件」（评审必修 2）：MCP 工具的 `path`+`limit` 是**它自己的语义**
+ * （比如 `mcp__server__search` 的 `limit` 是命中条数、`offset` 是游标），拼成 sed 会指到完全不同的行；
+ * exec / 宿主自定义工具同理。宁可退回「重读源文件」那句，也不发一条把模型指到错地方的命令。
+ * 宿主若真有 readFile 的别名，在这里加上那个名字（加了就要有对应入参契约的依据）。
+ */
+export const READFILE_RETRIEVAL_TOOL_NAMES = Object.freeze(["readFile"]);
+
+/**
+ * 从**配对的 tool_use 入参**里拼一条可执行的原文取回命令（issue #741）。
+ *
+ * @param {string} name 工具名；**只认 `READFILE_RETRIEVAL_TOOL_NAMES`**，exec / MCP / 未知工具一律不算
+ * @param {unknown} input 该 tool_use 的入参
+ * @returns {string|undefined} 形如 `sed -n '1,120p' 'src/x.js'`；不在白名单或入参里没有路径时 undefined
+ */
+export function retrievalCommandFor(name, input) {
+  // 名字先过闸：不在白名单就一个字也不拼（MCP 带 `path` 也算不算）。
+  if (!READFILE_RETRIEVAL_TOOL_NAMES.includes(String(name ?? ""))) return undefined;
+  // 显式收成 Record：`input` 是 `unknown`，不收的话下面每个 `params.path` 都是「Property does not
+  // exist on type 'object'」（九条），把 #214 的棘轮顶穿（现测：104 > 基线 103）。
+  const params = input && typeof input === "object" && !Array.isArray(input)
+    ? /** @type {Record<string, unknown>} */ (input)
+    : /** @type {Record<string, unknown>} */ ({});
+  if (params.command !== undefined) return undefined;
+  const filePath = typeof params.path === "string" ? params.path : "";
+  if (filePath === "") return undefined;
+  // `params.*` 是 `unknown`：`Number.isSafeInteger()` 不帮它缩型（TS18046），所以把「是个安全正整数」
+  // 收成一个子判定，返回值自己就是 `number | undefined` —— 语义与原式逐字相同。
+  const positiveInt = (/** @type {unknown} */ value) =>
+    typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  const offset = positiveInt(params.offset) ?? 0;
+  const limit = positiveInt(params.limit) ?? RETRIEVAL_WINDOW_LINES;
+  const from = offset + 1;
+  return `sed -n '${from},${from + limit - 1}p' ${shellQuote(filePath)}`;
+}
+
 // note/todo 是轻量状态读数，折叠净收益为负，永不折叠。
 const NEVER_FOLD_NAME = /^(note_|todo_)/i;
 // 占位符里允许出现的原文/入参片段上限（防「换皮重发」）。
@@ -26,6 +324,10 @@ const PLACEHOLDER_CHAR_LIMIT = 600;
 // 预警轮提示文案（单行，追加在原文末尾）。
 const TTL_WARNING_LINE =
   "【TTL 预警】此结果下一轮将折叠为句柄；若后续仍需，请现在用 note_take 记录要点";
+// issue #741：笔记工具不在面上时，这句在指挥模型去调一个**不存在的工具**。
+// 替代文案里不许出现任何 `note_*`（判据②的字面要求）。
+const TTL_WARNING_LINE_NO_NOTES =
+  "【TTL 预警】此结果下一轮将折叠为句柄；若后续仍需原文，请现在重读源文件";
 
 function compactSnippet(value, limit = SNIPPET_LIMIT) {
   const text = String(value ?? "").replace(/\s+/g, " ").trim();
@@ -135,13 +437,18 @@ export function extractContentDigest(content, { maxEntries = 12 } = {}) {
 
 // 折叠占位符：标题行 + 可选 digest 行 + 可选 JSON 骨架行，总量控制在 ~600 字符内
 // （digest 不足 maxEntries 条就多少放多少；超限时从尾向前裁剪 digest 条目）。
-function buildFoldPlaceholder({ inputSummary, tokens, round, hint, text, skeleton }) {
-  const header = `【已折叠·TTL】${inputSummary}`
-    + `（约 ${tokens} tokens，r${round} 读取）— ${hint}`
-    + `；要点见对话中已有笔记/结论`;
+/**
+ * @param {{ inputSummary: string, tokens: number, round: unknown, hint: string,
+ *   text?: string | undefined, skeleton?: string | undefined, retrievalCommand?: string | undefined }} spec
+ * @returns {string}
+ */
+function buildFoldPlaceholder({ inputSummary, tokens, round, hint, text, skeleton, retrievalCommand }) {
+  const header = `【已折叠·TTL】${inputSummary}` + `（约 ${tokens} tokens，r${round} 读取）— ${hint}`;
   let entries = collectDigestEntries(text, 12);
   for (;;) {
     const lines = [header];
+    // 取回命令单独一行：整行就是一条能直接粘进 exec 的命令，不必从长句里抠。
+    if (retrievalCommand !== undefined) lines.push(`取回: ${retrievalCommand}`);
     if (entries.length > 0) lines.push(`导航: ${entries.join(" | ")}`);
     if (skeleton !== undefined) lines.push(skeleton);
     const rendered = lines.join("\n");
@@ -179,8 +486,16 @@ function jsonSkeleton(content) {
   return parts.length === 0 ? undefined : `骨架: ${parts.join(" · ")}`;
 }
 
-function defaultRetrievalHint() {
-  return "后续需要时先用 note_list 查找，再用 note_read 读取；未记录且无法确定性重算时请省略，不要猜测";
+/**
+ * @param {{ recall?: { available?: boolean, reason?: string } | undefined,
+ *   retrievalCommand?: string | undefined }} spec
+ * @returns {string}
+ */
+function defaultRetrievalHint({ recall, retrievalCommand }) {
+  // issue #741：断言前先问证据。`recall.available` 为假时**一句笔记都不提**，
+  // 并把「没有可复原的记录」连同原因明说 —— 而不是指一条可能不存在的 note_* 路。
+  if (recall?.available !== true) return unverifiedRetrievalHint(retrievalCommand, recall?.reason);
+  return NOTE_RECALL_HINT;
 }
 
 function shouldNeverFold(block, toolName) {
@@ -214,6 +529,9 @@ function readRoundMarker(block) {
  * @param {number} [options.ttl=2] 存活轮数：currentRound - 创建轮 >= ttl 时折叠（创建轮读 `erix.round`，旧记录回退顶层 `erixRound`）
  * @param {number} [options.minTokens=4000] 低于此估算 tokens 的结果永不折叠
  * @param {(info:object)=>string} [options.retrievalHint] 自定义取回提示文本生成
+ * @param {string[]} [options.noteTools] 本 run 工具面上的笔记工具名（宿主 `tools` 里 `note_*` 那几个）。
+ *   **缺席即未知**：issue #741 之后缺省不再是「有笔记」而是「没证据」⇒ 占位符走显式未知口径。
+ *   账本证据（本函数拿到的 `messages`）始终会扫，调用方想关掉只能不传 `noteTools`。
  * @param {{foldedCount?: number, warnedCount?: number, tokensBefore?: number, tokensAfter?: number, degradations?: object[]}} [options.stats]
  *   可选的可变统计出参；只报告实际折叠/预警，不改变请求视图语义。
  *   `degradations`（issue #326 wo-C，additive，**只在真的折叠时出现**）：逐条降级事实，供引擎入账「这条工具结果被降级成了什么」
@@ -226,6 +544,7 @@ export function foldToolResultsForRequest(messages, {
   ttl = TOOL_RESULT_TTL_DEFAULT,
   minTokens = TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT,
   retrievalHint,
+  noteTools,
   stats,
 } = {}) {
   const report = stats !== null && typeof stats === "object" && !Array.isArray(stats)
@@ -241,6 +560,9 @@ export function foldToolResultsForRequest(messages, {
   if (!Number.isFinite(currentRound) || !Number.isFinite(ttl) || !Number.isFinite(minTokens)) {
     return messages;
   }
+  // issue #741：一次算定笔记可用性（同一份视图里每个占位符共用同一个判定）。
+  const noteRecall = resolveNoteRecall({ noteTools, messages });
+  const warningLine = noteRecall.available ? TTL_WARNING_LINE : TTL_WARNING_LINE_NO_NOTES;
   // ttl=0 / minTokens<=0 = 关闭，no-op（保持引用不变，调用方零成本）。
   if (ttl <= 0 || minTokens <= 0) return messages;
 
@@ -285,7 +607,7 @@ export function foldToolResultsForRequest(messages, {
         if (age === ttl - 1 && age >= 1) {
           if (estimateTokens(text) >= minTokens) {
             if (nextContent === undefined) nextContent = content.slice();
-            nextContent[index] = { ...block, content: `${text}\n${TTL_WARNING_LINE}` };
+            nextContent[index] = { ...block, content: `${text}\n${warningLine}` };
             changedCount += 1;
             if (report !== undefined) report.warnedCount += 1;
           }
@@ -297,13 +619,17 @@ export function foldToolResultsForRequest(messages, {
       if (tokens < minTokens) continue;
 
       const inputSummary = summarizeToolCall(call.name, call.input);
+      // 能确定性重算的（入参里有路径）就直接给一条可执行命令；exec 类返回 undefined。
+      const retrievalCommand = retrievalCommandFor(call.name, call.input);
       const hint = typeof retrievalHint === "function"
-        ? retrievalHint({ name: toolName, inputSummary, tokens, round: createdRound })
+        ? retrievalHint({ name: toolName, inputSummary, tokens, round: createdRound, noteRecall: noteRecall })
         : defaultRetrievalHint({
           name: toolName,
           inputSummary,
           tokens,
           round: createdRound,
+          recall: noteRecall,
+          retrievalCommand,
         });
       const contentSummary = buildFoldPlaceholder({
         inputSummary,
@@ -312,6 +638,7 @@ export function foldToolResultsForRequest(messages, {
         hint,
         text,
         skeleton: jsonSkeleton(text),
+        ...(noteRecall.available ? {} : { retrievalCommand }),
       });
 
       if (nextContent === undefined) nextContent = content.slice();
@@ -335,6 +662,9 @@ export function foldToolResultsForRequest(messages, {
           chars: text.length,
           contentFingerprint: `sha256:${createHash("sha256").update(text, "utf8").digest("hex").slice(0, 24)}`,
           placeholder: contentSummary,
+          // issue #741（additive，**只在真有值时出现**）：宿主能拿到同一条取回命令，不必解析占位符。
+          ...(retrievalCommand === undefined ? {} : { retrievalCommand }),
+          noteRecall: { available: noteRecall.available, reason: noteRecall.reason },
         });
       }
     }

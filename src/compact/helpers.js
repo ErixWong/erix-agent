@@ -7,25 +7,87 @@
 // 方向也不是「compact 依赖 loop 的编排面」——它是一个**叶子谓词**，与 `isProtectedMessage` 同族。
 import { isContinuityMessage } from "../loop/continuity-block.js";
 import { estimateMessageTokens } from "../tokens.js";
+// issue #741：笔记可用性的判定住在 TTL 模块（那里是工具面/账本证据的原点），本模块只负责
+// 据此选措辞。方向是单向的：`tool-result-ttl.js` 只依赖 `node:crypto` + `../tokens.js`，不反向 import
+// compact，所以这条边不成环（与本文件已有的 `../loop/continuity-block.js` 同一类叶依赖）。
+import { NOTE_RECALL_REASONS, resolveNoteRecall, unverifiedRecallClause } from "../loop/tool-result-ttl.js";
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+// 有笔记证据时的广告语（保持原句，宿主/测试钉的都是这一句）。
 export const DEFAULT_RECOVERY_HINT =
   "需要原文请重读文件或查看持久笔记；关键值应当已落盘";
 
-export function resolveRecoveryHint(value) {
-  return typeof value === "string" && value.trim() !== ""
-    ? value
-    : DEFAULT_RECOVERY_HINT;
+/**
+ * 无证据时的广告语（issue #741）：不再提「查看持久笔记」，而是明说没有可复原记录并给原因。
+ * 三句都是模型可见文本（也是可被宿主编辑的面），改动 = 改模型看到的句子。
+ * @param {string | undefined | null} [reason] 证据不足的原因文本（`NOTE_RECALL_REASONS` 的值）
+ * @returns {string}
+ */
+export function unverifiedRecoveryHint(reason) {
+  // 与默认句同量级（默认句 24 字，本句 ~35 字）：折叠摘要有字节夹断，长出来的每一个字都在
+  // 挤掉正文（#460 尺蠖 / `FOLDED_FACTS_MAX_BYTES`）。TTL 占位符那边才带「不要猜测」半句，
+  // 因为广告语从来不含那条约束，硬加进来等于改两个面。
+  return `需要原文请重读文件；${unverifiedRecallClause(reason)}`;
+}
+
+/**
+ * 引擎自己可能渲染出的全部默认广告语。折叠摘要**合并**时要把它们从标题里剔干净（原代码只剔
+ * `DEFAULT_RECOVERY_HINT` 一句，现在默认句有三条变体，漏一个就会在合并标题里留半句臃肿）。
+ */
+export const ENGINE_RECOVERY_HINTS = Object.freeze([
+  DEFAULT_RECOVERY_HINT,
+  unverifiedRecoveryHint(NOTE_RECALL_REASONS.noSurface),
+  unverifiedRecoveryHint(NOTE_RECALL_REASONS.emptyNotes),
+  unverifiedRecoveryHint(NOTE_RECALL_REASONS.revoked),
+  unverifiedRecoveryHint(NOTE_RECALL_REASONS.unknown),
+]);
+
+/**
+ * @param {unknown} value 宿主给的提示（字符串或函数返回值）；给了就逐字沿用，引擎不改写
+ * @param {{ available?: boolean, reason?: string }} [noteRecall] 笔记可用性证据；**缺席即未知**
+ *   ⇒ 走显式未知口径（issue #741：拿不到证据时不许伪报「有笔记」）
+ */
+export function resolveRecoveryHint(value, noteRecall) {
+  if (typeof value === "string" && value.trim() !== "") return value;
+  return noteRecall?.available === true
+    ? DEFAULT_RECOVERY_HINT
+    : unverifiedRecoveryHint(noteRecall?.reason);
+}
+
+/** 从折叠上下文自己推证据：工具面由策略透传，账本 = 本次被折负载 + 仍留下的轮次消息。 */
+/**
+ * @param {Array<Record<string, any>> | undefined} [messages] 可见账本（消息数组）
+ * @param {string[] | undefined} [noteTools] 宿主给的工具面上的笔记名
+ * @returns {{ available: boolean, reason: string, surfaceKnown: boolean }}
+ */
+export function noteRecallFromMessages(messages, noteTools) {
+  return resolveNoteRecall({
+    noteTools,
+    messages: Array.isArray(messages) ? messages : [],
+  });
+}
+
+/**
+ * @param {{ foldedPayload?: Array<Record<string, any>> | undefined,
+ *   retained?: Array<{ messages?: Array<Record<string, any>> } | undefined> | undefined,
+ *   noteTools?: string[] | undefined } | undefined} [context] 折叠上下文
+ * @returns {{ available: boolean, reason: string, surfaceKnown: boolean }}
+ */
+function noteRecallFromFoldContext(context) {
+  return noteRecallFromMessages([
+    ...(Array.isArray(context?.foldedPayload) ? context.foldedPayload : []),
+    ...(Array.isArray(context?.retained) ? context.retained.flatMap((round) => round?.messages ?? []) : []),
+  ], context?.noteTools);
 }
 
 export async function resolveFoldRecoveryHint(value, context) {
   const resolved = typeof value === "function"
     ? await value(context)
     : value;
-  return resolveRecoveryHint(resolved);
+  return resolveRecoveryHint(resolved, context?.noteRecall ?? noteRecallFromFoldContext(context));
 }
 
 export function optionValue(callOptions, factoryOptions, key, fallback) {
@@ -383,6 +445,9 @@ export function foldOptions(factoryOptions, callOptions = {}) {
   return {
     summaryRole: optionValue(callOptions, factoryOptions, "summaryRole", "user"),
     recoveryHint: optionValue(callOptions, factoryOptions, "recoveryHint"),
+    // issue #741：本 run 工具面上的笔记工具名（引擎在 `compactOptions` 里显式传；不传 ⇒ 证据缺席
+    // ⇒ 默认广告语走显式未知口径）。它只决定措辞，不决定任何机制。名字清单住在 TTL 模块。
+    noteTools: optionValue(callOptions, factoryOptions, "noteTools"),
     protectedMessage: optionValue(callOptions, factoryOptions, "protectedMessage"),
     stripHistoricalImages: optionValue(
       callOptions,

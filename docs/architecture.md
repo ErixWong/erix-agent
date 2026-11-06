@@ -581,8 +581,12 @@ Independent of context compaction, old or large tool results can be folded in
 the provider request view. `config.folding.toolResultTtl` defaults to `2` rounds
 (`0` disables it), and `config.folding.toolResultFoldMinTokens` defaults to
 `4000` estimated tokens. At `age === ttl - 1`, a warning round asks the model to extract
-important facts with `note_take`; at the TTL, the request view replaces the
-result with a navigation digest and, for suitable JSON, a JSON skeleton.
+important facts with `note_take` — but only on note evidence (issue #741: the whole
+note family on the host-supplied tool surface **and** a `note_take` write in the visible
+ledger that is paired, payload-confirmed and not later revoked); with either fact
+missing, that round asks for a re-read of the source file instead. At the TTL, the
+request view replaces the result with a navigation digest and, for suitable JSON, a
+JSON skeleton; a `readFile` call additionally gets one runnable retrieval command.
 Checkpoint and transcript persistence retain the full tool-result text.
 `note_*`, todo, error, and explicitly protected results are not folded.
 
@@ -719,8 +723,24 @@ of that day were deleted in the **0.6.0** breaking window (commit `a8cd193`; 0.5
 was the last release that carried them), and `createFileTools` came back in
 **0.18.0** as the canonical implementation named above. The jail never came back —
 per ADR-009 the library provides no security boundary. Model-facing retrieval
-is note-first: use `note_list` followed by `note_read`; there is no transcript
-transcript retrieval API; recall adapters were retired in 0.8.0.
+is note-first **when there are notes to point at**: use `note_list` followed by
+`note_read`; there is no transcript transcript retrieval API; recall adapters
+were retired in 0.8.0. Since issue #741 **the fold substitute and the TTL
+placeholder** say so only on evidence (the note family on the tool surface plus a
+successful `note_take` in the visible ledger — paired with a result for that
+`tool_use_id`, its payload confirming success, and not later revoked by a successful
+`note_forget`); otherwise those two places state that no recoverable decision record
+exists, with the reason (one of: no note tools, no note write, notes revoked, no note
+evidence), and **their** text drops every `note_*` mention. **Coverage is exactly those
+two entry points — nothing more.** The aggregate-limit stub
+(`src/loop/aggregate-budget.js`), the run-snapshot archive stubs
+(`src/loop/run-snapshot-executor.js`), the memory-loss nudge
+(`src/reflection/governor.js`) and the three CLI hint sites under `bin/` still point at
+`note_list` / `note_read` unconditionally; wiring those six to the same evidence gate is
+issue #746, not this one. The evidence-backed sentence is
+conditional retrieval guidance; it never claims this result's key points are already
+recorded. Note availability stays host configuration — the
+engine writes no notes.
 
 ## 4. Source layout
 

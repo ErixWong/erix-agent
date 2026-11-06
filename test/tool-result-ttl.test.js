@@ -10,6 +10,19 @@ import {
 
 const BIG = "x".repeat(20_000); // ~6600 估算 tokens，高于默认 4000 门槛
 
+// issue #741：占位符的笔记断言改成条件式之后，「有没有笔记可指」成了措辞的输入。
+// 既有判据钉的是 TTL 折叠机制（体积门槛 / 年龄 / digest / 骨架 / 预警），不是那句笔记广告语，
+// 所以夹具**默认带一份笔记证据**（整族工具在面上 + 账本里一次成功的 `note_take` 写入），
+// 让它们继续跑在「有证据」口径上；条件式本身的判据在 test/compact/fold-note-honesty-741.test.js。
+const NOTE_TOOLS = ["note_take", "note_list", "note_read"];
+/** `note_take` 的成功载荷（唯一来源 `src/tools/notes.js` 的 `writeNote`）。 */
+const NOTE_WRITE_OK = JSON.stringify({ status: "found", action: "saved", key: "k-1", scope: "run" });
+
+/** 默认带笔记证据的折叠入口（要跑「无证据」口径请直接调 `foldToolResultsForRequest`）。 */
+function fold(messages, options = {}) {
+  return foldToolResultsForRequest(messages, { noteTools: NOTE_TOOLS, ...options });
+}
+
 function conversation({
   resultContent = BIG,
   erixRound = 1,
@@ -18,6 +31,7 @@ function conversation({
   toolName = "scan",
   input = { path: "src/a.js", offset: 0, limit: 100 },
   extraResultFields = {},
+  noteWrite = true,
 } = {}) {
   return [
     { role: "user", content: [{ type: "text", text: "go" }] },
@@ -37,6 +51,14 @@ function conversation({
         ...extraResultFields,
       }],
     },
+    ...(noteWrite
+      ? [
+        // 载荷抄引擎自己的成功形状（`writeNote` 返 `{status:"found", action:"saved", key, …}`）：
+        // 证据门收紧后，纯文本 `"ok"` 属于「证实不了」，会让这些格子掉进「无证据」口径。
+        { role: "assistant", content: [{ type: "tool_use", id: "note-1", name: "note_take", input: { key: "k-1", content: "结论已记" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "note-1", content: NOTE_WRITE_OK }] },
+      ]
+      : []),
   ];
 }
 
@@ -47,16 +69,16 @@ function resultBlock(view) {
 test("年龄 >= ttl 才折叠；age===ttl-1 预警轮；其余保持原引用", () => {
   const messages = conversation();
   // age=0（当轮结果）：原引用不变、无预警。
-  const fresh = foldToolResultsForRequest(messages, { currentRound: 1, ttl: 2 });
+  const fresh = fold(messages, { currentRound: 1, ttl: 2 });
   assert.equal(fresh, messages);
   // age=1 === ttl-1：预警轮，视图变化（原文 + 预警行），原块不动。
-  const warned = foldToolResultsForRequest(messages, { currentRound: 2, ttl: 2 });
+  const warned = fold(messages, { currentRound: 2, ttl: 2 });
   assert.notEqual(warned, messages);
   assert.match(resultBlock(warned).content, /【TTL 预警】此结果下一轮将折叠为句柄/);
   assert.ok(!resultBlock(warned).content.includes("【已折叠·TTL】"));
   assert.equal(resultBlock(messages).content, BIG); // 原块未被修改
   // age=2 >= ttl：折叠为占位符。
-  const aged = foldToolResultsForRequest(messages, { currentRound: 3, ttl: 2 });
+  const aged = fold(messages, { currentRound: 3, ttl: 2 });
   assert.notEqual(aged, messages);
   assert.match(resultBlock(aged).content, /【已折叠·TTL】/);
 });
@@ -64,7 +86,7 @@ test("年龄 >= ttl 才折叠；age===ttl-1 预警轮；其余保持原引用", 
 test("stats 只统计实际折叠，预警轮不增加 foldedCount", () => {
   const messages = conversation();
   const warningStats = {};
-  foldToolResultsForRequest(messages, {
+  fold(messages, {
     currentRound: 2,
     ttl: 2,
     stats: warningStats,
@@ -77,7 +99,7 @@ test("stats 只统计实际折叠，预警轮不增加 foldedCount", () => {
   });
 
   const foldedStats = {};
-  const view = foldToolResultsForRequest(messages, {
+  const view = fold(messages, {
     currentRound: 3,
     ttl: 2,
     stats: foldedStats,
@@ -90,13 +112,13 @@ test("stats 只统计实际折叠，预警轮不增加 foldedCount", () => {
 
 test("低于 minTokens 的结果永不折叠", () => {
   const messages = conversation({ resultContent: "small" });
-  const view = foldToolResultsForRequest(messages, { currentRound: 10, ttl: 1, minTokens: 4000 });
+  const view = fold(messages, { currentRound: 10, ttl: 1, minTokens: 4000 });
   assert.equal(view, messages);
 });
 
 test("占位符保留工具名/入参摘要/笔记提示，且引用原文为 0", () => {
   const messages = conversation();
-  const view = foldToolResultsForRequest(messages, { currentRound: 3, ttl: 2 });
+  const view = fold(messages, { currentRound: 3, ttl: 2 });
   const folded = resultBlock(view);
   assert.match(folded.content, /【已折叠·TTL】scan path=src\/a\.js offset=0 limit=100/);
   assert.match(folded.content, /约 \d+ tokens，r1 读取/);
@@ -114,7 +136,7 @@ test("占位符保留工具名/入参摘要/笔记提示，且引用原文为 0"
 test("exec 类工具显示 command 前 80 字符", () => {
   const command = `npm run build ${"arg ".repeat(40)}`;
   const messages = conversation({ toolName: "exec", input: { command } });
-  const view = foldToolResultsForRequest(messages, { currentRound: 3, ttl: 2 });
+  const view = fold(messages, { currentRound: 3, ttl: 2 });
   const folded = resultBlock(view);
   const commandIndex = folded.content.indexOf("npm run build");
   const snippet = folded.content.slice(commandIndex, commandIndex + 80);
@@ -130,17 +152,17 @@ test("默认值守护：TOOL_RESULT_TTL_DEFAULT 逐字 2，且同一份历史的
   assert.equal(TOOL_RESULT_TTL_DEFAULT, 2, "默认 TTL 轮数（改这个数就该有题红）");
   const messages = conversation(); // erixRound: 1 ⇒ 本轮 currentRound 下的 age = currentRound - 1
   // 不传 ttl ⇒ 走默认值：age=2 >= 2 ⇒ 折叠
-  const byDefault = foldToolResultsForRequest(messages, { currentRound: 3 });
+  const byDefault = fold(messages, { currentRound: 3 });
   assert.notEqual(byDefault, messages);
   assert.match(resultBlock(byDefault).content, /【已折叠·TTL】/, "默认 TTL 下 age=2 必须折");
   // 预警轮也按默认值走：age=1 === ttl-1
   assert.match(
-    resultBlock(foldToolResultsForRequest(messages, { currentRound: 2 })).content,
+    resultBlock(fold(messages, { currentRound: 2 })).content,
     /【TTL 预警】/,
     "默认 TTL 下 age=1 是预警轮",
   );
   // 显式传更大的 ttl ⇒ 同一份历史、同一轮不折（证明折/不折确实由这个值决定）
-  const widerTtl = foldToolResultsForRequest(messages, {
+  const widerTtl = fold(messages, {
     currentRound: 3,
     ttl: TOOL_RESULT_TTL_DEFAULT + 3,
   });
@@ -179,7 +201,7 @@ test("JSON {success,data} 结果的占位符额外保留骨架行", () => {
     },
   });
   const messages = conversation({ resultContent: content });
-  const view = foldToolResultsForRequest(messages, { currentRound: 3, ttl: 2 });
+  const view = fold(messages, { currentRound: 3, ttl: 2 });
   const folded = resultBlock(view);
   const lines = folded.content.split("\n");
   assert.equal(lines.length, 2);
@@ -193,7 +215,7 @@ test("JSON 骨架带 error 摘要", () => {
     blob: "x".repeat(20_000), // 垫高体积
   });
   const messages = conversation({ resultContent: content });
-  const view = foldToolResultsForRequest(messages, { currentRound: 3, ttl: 2 });
+  const view = fold(messages, { currentRound: 3, ttl: 2 });
   assert.match(resultBlock(view).content, /骨架: success=false · error=boom/);
 });
 
@@ -205,14 +227,14 @@ test("永不折叠名单：is_error / note_* / todo_* / noFold", () => {
     ["todo_add", { toolName: "todo_add", input: {} }],
   ]) {
     const messages = conversation(options);
-    const view = foldToolResultsForRequest(messages, { currentRound: 9, ttl: 1 });
+    const view = fold(messages, { currentRound: 9, ttl: 1 });
     assert.equal(view, messages, `${label} must never fold`);
   }
 });
 
 test("缺失 erixRound 的结果保守不折（旧 checkpoint 恢复场景）", () => {
   const messages = conversation({ erixRound: null });
-  const view = foldToolResultsForRequest(messages, { currentRound: 9, ttl: 1 });
+  const view = fold(messages, { currentRound: 9, ttl: 1 });
   assert.equal(view, messages);
 });
 
@@ -225,13 +247,13 @@ test("反向锁：只有 erix.round（没有顶层 erixRound）的结果仍按�
   const messages = conversation({ omitErixRound: true, erix: { round: 1 } });
   assert.equal(Object.hasOwn(messages[2].content[0], "erixRound"), false,
     "本例必须真的不带顶层年龄标记，否则等于没测回退链的另一头");
-  const view = foldToolResultsForRequest(messages, { currentRound: 3, ttl: 2 });
+  const view = fold(messages, { currentRound: 3, ttl: 2 });
   assert.match(resultBlock(view).content, /【已折叠·TTL】/,
     "只带 erix.round 就必须仍能折叠；读路径只认 erixRound 时这里是静默不折");
   // 年龄口径与顶层旧字段完全一致：age 未达 ttl 不折，预警轮照样触发。
-  assert.equal(foldToolResultsForRequest(messages, { currentRound: 1, ttl: 2 }), messages);
+  assert.equal(fold(messages, { currentRound: 1, ttl: 2 }), messages);
   assert.match(
-    resultBlock(foldToolResultsForRequest(messages, { currentRound: 2, ttl: 2 })).content,
+    resultBlock(fold(messages, { currentRound: 2, ttl: 2 })).content,
     /【TTL 预警】/,
   );
 });
@@ -253,12 +275,12 @@ test("反向锁：两个年龄标记都在且不相等时，以 erix.round 为�
 
 test("折叠占位符里的轮号用的是生效的那一个（erix.round 优先）", () => {
   const messages = conversation({ erixRound: 1, erix: { round: 7 } });
-  const view = foldToolResultsForRequest(messages, { currentRound: 9, ttl: 2 });
+  const view = fold(messages, { currentRound: 9, ttl: 2 });
   assert.match(resultBlock(view).content, /r7 读取/, `实测占位符：${resultBlock(view).content}`);
   assert.ok(!resultBlock(view).content.includes("r1 读取"), "不得把被盖掉的旧轮号放进占位符");
   // 自定义 hint 拿到同一个值（三条读路径共用一个年龄判据）。
   let seen = null;
-  foldToolResultsForRequest(messages, {
+  fold(messages, {
     currentRound: 9,
     ttl: 2,
     retrievalHint: ({ round }) => { seen = round; return "h"; },
@@ -269,11 +291,11 @@ test("折叠占位符里的轮号用的是生效的那一个（erix.round 优先
 test("ttl=0 或 minTokens<=0 为 no-op（返回原引用）", () => {
   const messages = conversation();
   assert.equal(
-    foldToolResultsForRequest(messages, { currentRound: 9, ttl: 0 }),
+    fold(messages, { currentRound: 9, ttl: 0 }),
     messages,
   );
   assert.equal(
-    foldToolResultsForRequest(messages, { currentRound: 9, ttl: 2, minTokens: 0 }),
+    fold(messages, { currentRound: 9, ttl: 2, minTokens: 0 }),
     messages,
   );
 });
@@ -281,7 +303,7 @@ test("ttl=0 或 minTokens<=0 为 no-op（返回原引用）", () => {
 test("浅拷贝：不改原数组、不改原块对象，未折叠消息保持引用", () => {
   const messages = conversation();
   const originalResult = messages[2].content[0];
-  const view = foldToolResultsForRequest(messages, { currentRound: 3, ttl: 2 });
+  const view = fold(messages, { currentRound: 3, ttl: 2 });
   // 原块对象未被修改
   assert.equal(originalResult.content, BIG);
   assert.equal(messages[2].content[0], originalResult);
@@ -296,7 +318,7 @@ test("浅拷贝：不改原数组、不改原块对象，未折叠消息保持�
 
 test("自定义 retrievalHint 生效", () => {
   const messages = conversation();
-  const view = foldToolResultsForRequest(messages, {
+  const view = fold(messages, {
     currentRound: 3,
     ttl: 2,
     retrievalHint: ({ round, tokens }) => `自定义取回 r${round}/${tokens}`,
@@ -306,7 +328,7 @@ test("自定义 retrievalHint 生效", () => {
 
 test("tokens 估算与 estimateTokens 一致", () => {
   const messages = conversation();
-  const view = foldToolResultsForRequest(messages, { currentRound: 3, ttl: 2 });
+  const view = fold(messages, { currentRound: 3, ttl: 2 });
   const expected = estimateTokens(BIG);
   assert.match(resultBlock(view).content, new RegExp(`约 ${expected} tokens`));
 });
@@ -318,7 +340,7 @@ const WARNING_LINE = "【TTL 预警】此结果下一轮将折叠为句柄；若
 test("预警轮：age===ttl-1 的结果末尾追加预警行，且原块对象未被修改", () => {
   const messages = conversation();
   const originalBlock = messages[2].content[0];
-  const view = foldToolResultsForRequest(messages, { currentRound: 2, ttl: 2 });
+  const view = fold(messages, { currentRound: 2, ttl: 2 });
   const warned = resultBlock(view);
   // 原文在场 + 末尾恰好一行预警
   assert.equal(warned.content, `${BIG}\n${WARNING_LINE}`);
@@ -338,36 +360,36 @@ test("预警轮：age===ttl-1 的结果末尾追加预警行，且原块对象�
 
 test("预警轮：age===ttl 当轮直接折叠，无预警", () => {
   const messages = conversation();
-  const view = foldToolResultsForRequest(messages, { currentRound: 3, ttl: 2 });
+  const view = fold(messages, { currentRound: 3, ttl: 2 });
   assert.match(resultBlock(view).content, /【已折叠·TTL】/);
   assert.ok(!resultBlock(view).content.includes("【TTL 预警】"));
 });
 
 test("预警轮：ttl=1 时当轮结果（age=0）无预警不折叠", () => {
   const messages = conversation();
-  const view = foldToolResultsForRequest(messages, { currentRound: 1, ttl: 1 });
+  const view = fold(messages, { currentRound: 1, ttl: 1 });
   assert.equal(view, messages); // age=0：当轮结果在场，原引用不变
   assert.ok(!resultBlock(view).content.includes("【TTL 预警】"));
 });
 
 test("预警轮：体积低于 minTokens 的结果不预警", () => {
   const messages = conversation({ resultContent: "small" });
-  const view = foldToolResultsForRequest(messages, { currentRound: 2, ttl: 2, minTokens: 4000 });
+  const view = fold(messages, { currentRound: 2, ttl: 2, minTokens: 4000 });
   assert.equal(view, messages);
 });
 
 test("预警轮：never-fold 名单（note_*/todo_*）不预警", () => {
   for (const toolName of ["note_read", "todo_add"]) {
     const messages = conversation({ toolName, input: {} });
-    const view = foldToolResultsForRequest(messages, { currentRound: 2, ttl: 2 });
+    const view = fold(messages, { currentRound: 2, ttl: 2 });
     assert.equal(view, messages, `${toolName} must not warn`);
   }
 });
 
 test("预警轮：不重复叠加（多次构建视图各含且仅含一行预警）", () => {
   const messages = conversation();
-  const view1 = foldToolResultsForRequest(messages, { currentRound: 2, ttl: 2 });
-  const view2 = foldToolResultsForRequest(messages, { currentRound: 2, ttl: 2 });
+  const view1 = fold(messages, { currentRound: 2, ttl: 2 });
+  const view2 = fold(messages, { currentRound: 2, ttl: 2 });
   for (const view of [view1, view2]) {
     assert.equal(resultBlock(view).content.split("【TTL 预警】").length - 1, 1);
   }
@@ -466,7 +488,7 @@ function numberedBigSource({ entryCount = 8, padToTokens = true } = {}) {
 
 test("占位符含 digest 导航行（readFile 类行号结果）", () => {
   const messages = conversation({ resultContent: numberedBigSource() });
-  const view = foldToolResultsForRequest(messages, { currentRound: 3, ttl: 2 });
+  const view = fold(messages, { currentRound: 3, ttl: 2 });
   const folded = resultBlock(view);
   const lines = folded.content.split("\n");
   assert.equal(lines.length, 2);
@@ -478,7 +500,7 @@ test("占位符含 digest 导航行（readFile 类行号结果）", () => {
 
 test("占位符总量控制在 ~600 字符内（digest 超限时从尾裁剪）", () => {
   const messages = conversation({ resultContent: numberedBigSource({ entryCount: 12 }) });
-  const view = foldToolResultsForRequest(messages, { currentRound: 3, ttl: 2 });
+  const view = fold(messages, { currentRound: 3, ttl: 2 });
   const folded = resultBlock(view);
   assert.ok(
     folded.content.length <= 600,
@@ -488,7 +510,7 @@ test("占位符总量控制在 ~600 字符内（digest 超限时从尾裁剪）"
   assert.match(folded.content, /^导航: /m);
   // 不足 12 条时有多少放多少
   const fewMessages = conversation({ resultContent: numberedBigSource({ entryCount: 3 }) });
-  const fewView = foldToolResultsForRequest(fewMessages, { currentRound: 3, ttl: 2 });
+  const fewView = fold(fewMessages, { currentRound: 3, ttl: 2 });
   const navLine = resultBlock(fewView).content.split("\n")[1];
   assert.equal(navLine.split(" | ").length, 3);
 });
@@ -504,7 +526,7 @@ test("占位符：digest 与 JSON 骨架同时存在时两行都保留", () => {
     },
   });
   const jsonMessages = conversation({ resultContent: jsonContent });
-  const jsonView = foldToolResultsForRequest(jsonMessages, { currentRound: 3, ttl: 2 });
+  const jsonView = fold(jsonMessages, { currentRound: 3, ttl: 2 });
   const jsonLines = resultBlock(jsonView).content.split("\n");
   assert.equal(jsonLines.length, 2);
   assert.match(jsonLines[1], /骨架: success=true · 共3条/);

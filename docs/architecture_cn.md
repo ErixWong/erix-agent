@@ -389,7 +389,7 @@ createFoldLlmStrategy({
 
 #### Tool-result TTL 折叠
 
-独立于上下文压缩，旧的或较大的工具结果可以在 provider request view 中折叠。`config.folding.toolResultTtl` 默认是 `2` 轮（`0` 表示禁用），`config.folding.toolResultFoldMinTokens` 默认是估算的 `4000` token。在 `age === ttl - 1` 时，warning round 会要求模型使用 `note_take` 提取重要事实；达到 TTL 后，request view 会将结果替换为 navigation digest，并在适合的 JSON 内容中附带 JSON skeleton。checkpoint 和 transcript 持久化保留完整工具结果文本。`note_*`、todo、错误以及显式保护的结果不会折叠。
+独立于上下文压缩，旧的或较大的工具结果可以在 provider request view 中折叠。`config.folding.toolResultTtl` 默认是 `2` 轮（`0` 表示禁用），`config.folding.toolResultFoldMinTokens` 默认是估算的 `4000` token。在 `age === ttl - 1` 时，warning round 会要求模型使用 `note_take` 提取重要事实——但只在**有笔记证据**时才这么说（issue #741：宿主给的工具面上有整族笔记工具，**且**可见账本里有一条现在还能查的 `note_take` 写入：配对、载荷证实成功、未被后续成功的 `note_forget` 撤销）；缺任一事实时那一轮改为要求重读源文件。达到 TTL 后，request view 会将结果替换为 navigation digest，并在适合的 JSON 内容中附带 JSON skeleton；`readFile` 调用还会额外拿到一条可直接执行的取回命令。checkpoint 和 transcript 持久化保留完整工具结果文本。`note_*`、todo、错误以及显式保护的结果不会折叠。
 
 ### 3.4 模型配置提供器
 
@@ -451,7 +451,7 @@ createToolRegistry({ executors, schemas }) => {
 
 执行器映射是由代码拥有的能力集合。`ToolProvider` 选择 schema，并可以覆盖描述和约束，但不能引入注册表中不存在的执行器。对于此类 schema，`resolveTools` 会以 `KitError("tool_unknown_executor", ...)` 失败。注册表执行会在调用执行器前校验 `required`、属性 `type` 和 `maxLength`；无效输入会变成错误字符串，不会到达执行器。不使用 `createToolRegistry` 的直接 `runToolLoop` 调用方须负责自己的输入校验。
 
-宿主自建的 provider 选择 `sel.set` 或 `default`；把多个 provider 按名称合并是宿主自己的组合。`erix-agent/tools` 子路径导出工具注册表、文件工具规范实现（`src/tools/file-tools.js`，issue #184）与技能包 loader（`src/skills/loader.js`，issue #197）。这些是显式选择的助手，不是安装到 `runToolLoop` 中的隐式工具集，而且它们都不在包根导出面上。两条历史事实很容易被并成一句错话：牢笼助手（`JailError` / `createJail`）与当时的 `createFileTools` 是在 **0.6.0** 破坏窗口删除的（commit `a8cd193`；0.5.1 是最后一个还带着它们的版本），而 `createFileTools` 在 **0.18.0** 以上面那个规范实现回来了；牢笼则彻底没回来——按 ADR-009，本库不提供安全边界。模型侧取回采用 note-first：先使用 `note_list`，再使用 `note_read`；transcript recall API 已在 0.8.0 退役。
+宿主自建的 provider 选择 `sel.set` 或 `default`；把多个 provider 按名称合并是宿主自己的组合。`erix-agent/tools` 子路径导出工具注册表、文件工具规范实现（`src/tools/file-tools.js`，issue #184）与技能包 loader（`src/skills/loader.js`，issue #197）。这些是显式选择的助手，不是安装到 `runToolLoop` 中的隐式工具集，而且它们都不在包根导出面上。两条历史事实很容易被并成一句错话：牢笼助手（`JailError` / `createJail`）与当时的 `createFileTools` 是在 **0.6.0** 破坏窗口删除的（commit `a8cd193`；0.5.1 是最后一个还带着它们的版本），而 `createFileTools` 在 **0.18.0** 以上面那个规范实现回来了；牢笼则彻底没回来——按 ADR-009，本库不提供安全边界。模型侧取回采用 note-first——**前提是确有笔记可指**：先使用 `note_list`，再使用 `note_read`；transcript recall API 已在 0.8.0 退役。issue #741 之后**折叠替代物与 TTL 占位符这两处**只在**有证据**时才这么说（工具面上有整族笔记工具，且可见账本里有一条现在还能查的 `note_take` 写入——与那个 `tool_use_id` 配对、载荷证实成功、没被后续成功的 `note_forget` 撤销）；否则这两处明说「无可复原的决策记录」并给出原因（四格之一：无笔记工具 / 无笔记写入 / 笔记已撤销 / 无笔记证据），且**这两处**的模型可见文本里一个 `note_*` 都不出现。**覆盖面就是这两处，不多。**聚合超限桩（`src/loop/aggregate-budget.js`）、run snapshot 归档桩（`src/loop/run-snapshot-executor.js`）、memory-loss 提醒（`src/reflection/governor.js`）与 `bin/` 下三处 CLI 提示仍无条件指向 `note_list` / `note_read`；把这六个入口接到同一个证据门是 issue #746 的事，不在本条。有证据那一句是条件式检索指导，从不声称这条内容的要点已被记下。笔记可用性仍属宿主配置面——引擎自己不写笔记。
 
 ## 4. 源码布局
 

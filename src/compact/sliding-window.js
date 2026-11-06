@@ -79,6 +79,8 @@ export function createSlidingWindowStrategy(options = {}) {
           to: roundRange?.to ?? folded.length,
           count: folded.length,
           recoveryHint: settings.recoveryHint,
+          // issue #741：零 LLM 档的落账文本也不能无条件说「查看持久笔记」。
+          noteTools: settings.noteTools,
           stubs: foldedStubs,
           ...(navigationRecord === undefined ? {} : { navigationRecord }),
         })

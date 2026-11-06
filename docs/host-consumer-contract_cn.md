@@ -2777,7 +2777,7 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `runId` | 每条 `onJudge` 记录与 `run_outcome` 事件 | 宿主传给 `runToolLoop` 的 run 标识，也是流式决策与终局记录之间的 join 键。宿主没传 `runId` 时该字段**缺省**——引擎不自己编一个。 |
 | `model` | 每条 `onJudge` 记录与 `run_outcome` 事件 | 被评决策发生时 run **实际使用**的模型标识，从 run 选项 / provider 配置解析。探测顺序与 `modelMetadataFor()` 一致（`modelConfig` → `modelMetadata` → `model` → `provider` → `context`），键顺序 `model` → `model_name`（与 provider 构造侧同口径），首个命中且**不合并**。绝不硬编码。任一候选都探不到非空名字时该字段**缺省**：写 `"unknown"` 会让「没配模型」与「真有个叫 unknown 的模型」在账面上无法区分。 |
 | `judgeModel` | `onJudge` 记录，仅当 judge 走了与 run 不同的 evaluator 模型 | 让 per-model 校准能区分「被评的模型」与「评它的模型」。judge 与 run 同模型时缺省。 |
-| `compaction` 统计 | `onEvent`（`type: "compaction"`）与 `<runId>.state.json` 里的 `deterministic.compactionStats` 窗口 | 既有键-round-for-round 不动。**additive（issue #464 A）：** `strategyName` 只在引擎能如实说出时才出现——它写的是**真正执行了本次折叠**的那个策略（含库层兜底的 `"sliding-window"`），不是宿主配置项原文。忽略它的宿主看到的形状与从前逐字一致。**到底写哪一个名字（issue #657）：** 折叠入口有两个可能的执行者——宿主配置的那个策略，以及引擎自己的预算兜底（`sliding-window`，只折「折到够用」所需的最老几轮）。配置策略**折了 ≥1 轮** ⇒ 写**它**的名字（兜底随后又折了也一样）；配置策略**折 0 轮**、活是兜底干的 ⇒ 写**兜底实例**的名字（`"sliding-window"`）——它从不报一个一轮都没折过的策略。一次折叠窗口里谁都没折 ⇒ 整个 `strategyName` 键不出现。对引擎已知的层名，它与 `layers` 对得上：这个名字指向的 budget 相层必然 `triggered > 0`。宿主自带的策略对象没有对应层——`getCompactionLayerForStrategy` 只映射内置的策略名——所以它的折叠在 `layers` 上不留任何痕迹；这类名字的自证是同一格上的 `foldedRounds > 0` 加 `compacted === true`。 **additive（issue #469 ④）、取值域缩小（issue #661）：** `foldSummary` 记的是**真产出了摘要的那一折**的结果状态——`inputTruncated`、`droppedMessages`、`finishReason`、`inputTokens`、`outputTokens`、`priorSummaryTruncated`、`priorSummaryBytes`、`droppedRounds`、`attempts`、`reused`。其中 `attempts` / `inputTruncated` / `droppedMessages` / `droppedRounds` 由超窗重试那条路产生。`degradeKind` / `degradeReason` **名字留在形状里，但不再有降级语义**：自 #661 起摘要器失败是终局错误，能走到这条 stat 的折叠都没降级，树内也没有任何写点会产出这两个键（resume 出来的 0.30 之前的账本行仍可能带着它们）。`budgetExhausted` 本来只可能出现在失败那一支，所以它改成随异常走：`details.budgetExhausted`。与 `strategyName` 同口径：**无事实 ⇒ 无键**——这次折叠什么都没产出诊断信号时，形状逐字不变。摘要正文本身不进这里（它在 `record.foldedFacts` 上）。 |
+| `compaction` 统计 | `onEvent`（`type: "compaction"`）与 `<runId>.state.json` 里的 `deterministic.compactionStats` 窗口 | 既有键-round-for-round 不动。**additive（issue #464 A）：** `strategyName` 只在引擎能如实说出时才出现——它写的是**真正执行了本次折叠**的那个策略（含库层兜底的 `"sliding-window"`），不是宿主配置项原文。忽略它的宿主看到的形状与从前逐字一致。**到底写哪一个名字（issue #657）：** 折叠入口有两个可能的执行者——宿主配置的那个策略，以及引擎自己的预算兜底（`sliding-window`，只折「折到够用」所需的最老几轮）。配置策略**折了 ≥1 轮** ⇒ 写**它**的名字（兜底随后又折了也一样）；配置策略**折 0 轮**、活是兜底干的 ⇒ 写**兜底实例**的名字（`"sliding-window"`）——它从不报一个一轮都没折过的策略。一次折叠窗口里谁都没折 ⇒ 整个 `strategyName` 键不出现。对引擎已知的层名，它与 `layers` 对得上：这个名字指向的 budget 相层必然 `triggered > 0`。宿主自带的策略对象没有对应层——`getCompactionLayerForStrategy` 只映射内置的策略名——所以它的折叠在 `layers` 上不留任何痕迹；这类名字的自证是同一格上的 `foldedRounds > 0` 加 `compacted === true`。 **additive（issue #469 ④）、取值域缩小（issue #661）：** `foldSummary` 记的是**真产出了摘要的那一折**的结果状态——`inputTruncated`、`droppedMessages`、`finishReason`、`inputTokens`、`outputTokens`、`priorSummaryTruncated`、`priorSummaryBytes`、`droppedRounds`、`attempts`、`reused`。其中 `attempts` / `inputTruncated` / `droppedMessages` / `droppedRounds` 由超窗重试那条路产生。`degradeKind` / `degradeReason` **名字留在形状里，但不再有降级语义**：自 #661 起摘要器失败是终局错误，能走到这条 stat 的折叠都没降级，树内也没有任何写点会产出这两个键（resume 出来的 0.30 之前的账本行仍可能带着它们）。`budgetExhausted` 本来只可能出现在失败那一支，所以它改成随异常走：`details.budgetExhausted`。与 `strategyName` 同口径：**无事实 ⇒ 无键**——这次折叠什么都没产出诊断信号时，形状逐字不变。摘要正文本身不进这里（它在 `record.foldedFacts` 上）。 **additive（issue #741）：** `foldArchive` 报的是**归档夹断**丢了什么 —— `{ droppedMessages, droppedBytes }`，信息量足够时再加 `capBytes` / `dedupedMessages`。这两个计数从 `buildFoldedRecordArchive` 第一天起就在算，但从来只到 `record.foldedPayloadMeta` 为止，于是「归档把原文丢了」在事件通道与 `<runId>.state.json` 上都是静默的。依旧是同一条纪律：什么都没丢 ⇒ 根本不带 `foldArchive` 键。 |
 | `compaction_strategy_fallback` 事件 | `onEvent`，一个 run 最多一条 | **additive（issue #464 A）。** `{ type: "compaction_strategy_fallback", round, detail }`，仅在 `context.strategy` **未配置**且折叠是**预算兜底触发**的那一刻发出——也就是引擎库层的 `sliding-window` 真的跑了。issue #643 起这一发**只折够用的最老轮次**（不再把所有可折轮次一路清到 `keepRounds: 0`），并把**已经算好的**机械摘要 prepend 进 head，所以模型仍然看得见折了什么（issue #464 B）。形状对齐 `model_metadata_missing`（issue #182）：`detail` 首句是宿主可直接断言的固定原文，能解析出预算时再附上 `budgetTokens` / `estimatedTokens`。 |
 | `compaction_deferred` 事件 | `onEvent`，每推迟一发压缩一条 | **additive（issue #588）。** `{ type: "compaction_deferred", runId?, round, reason: "pending_tool_use", detail: string }`——续写（`max_tokens` continuation）循环里那一发压缩被跳过时发出，原因是请求尾部是一条 `tool_result` 还没回来的 assistant `tool_use`（`pendingTailToolUses` (`src/loop/pending-tool-result.js`)）。既不结清、也不放宽配对规则；下一轮开圈的压缩面对的就是跑完的轮。终止语义一个字没动。 |
 | `continuity_injection_skipped` 事件 | `onEvent`，续接块每有一轮没能落位发一条 | **additive（issue #568）。** `{ type: "continuity_injection_skipped", runId?, round, reason, detail: string }`——这一轮的请求里没有注入续接块（例如 `reason: "pending_tool_use"`：在那个位置插入会破坏 `tool_use`/`tool_result` 配对）。跳过是上报出来的，而不是拿机械文本顶上去。 |
@@ -4387,15 +4387,29 @@ scope 目录数，`purged` 为删除的记录文件数）。可选 `before` 参�
 
 ## 取回与 request-view 折叠
 
-模型侧取回采用 note-first：先用 `note_list` 发现已保存的笔记，再用
-`note_read` 读取精确内容。不要猜测遗忘的值，也不要依赖 transcript recall API；
-recall 适配器已在 0.8.0 契约中退役。
+模型侧取回采用 note-first——**前提是当真有笔记**：先用 `note_list` 发现已保存的笔记，
+再用 `note_read` 读取精确内容。不要猜测遗忘的值，也不要依赖 transcript recall API；
+recall 适配器已在 0.8.0 契约中退役。issue #741 之后，引擎只在**两个事实**同时成立时才给这条路，
+而这两个事实都是关于本场 run 自身的只读事实：`note_take`/`note_list`/`note_read` 整族在宿主给的
+工具面上，**且**可见账本里有一条**现在还能查**的 `note_take` 写入——它要与那个 `tool_use_id`
+**配对**、载荷能证实成功（就是 `writeNote` 写的 `{status:"found", …}`），并且没有被后续一条
+成功的同 key `note_forget` 撤销。未配对的调用、自报 `{status:"invalid"}` 的载荷、引擎解不出
+的载荷、被撤销的笔记，都不算证据。缺任一事实时，折叠替代物与 TTL 占位符说的是「无可复原的
+决策记录（原因：…）」，且一个字也不提 `note_*`；原因是四格诚实口径之一：无笔记工具 /
+无笔记写入 / 笔记已撤销 / 无笔记证据。有证据那一句也仍是**条件式**检索指导（「先用
+`note_list` 查找，再用 `note_read` 读取」），它不声称这条被折内容的要点已被记进笔记——
+那是任何账本事实都证不到的覆盖率。笔记可用性是宿主的配置面，引擎自己一个字节的笔记都不写。
 
 旧的或较大的工具结果只会在 provider request view 中折叠。`toolResultTtl`
 默认为 `2` 轮（`0` 表示禁用），`toolResultFoldMinTokens` 默认为估算的
 `4000` token。在 `age === ttl - 1` 的 warning round 中，模型会被要求使用
-`note_take` 提取重要事实；折叠占位符包含 navigation digest，并在适用时包含
-JSON skeleton。run snapshot 保留完整工具结果文本。note、todo、错误和显式保护的
+`note_take` 提取重要事实——**前提是上面那两个笔记事实同时成立**；其余任何组合（工具族不在面上，
+或工具族在面上但没有还能查的写入）都改为要求它重读源文件（issue #741）。折叠占位符包含
+navigation digest，并在适用时包含 JSON skeleton；配对的 `tool_use` 是 `readFile` 调用时
+（唯一一种入参契约能被引擎逐字翻译的工具），它还会独占一行给一条能跑的取回命令
+（`取回: sed -n '<from>,<to>p' '<path>'`），并把同一条字符串以 `retrievalCommand`
+带在 TTL 降级记录上。其余带 `path` 入参的工具（比如 MCP 搜索工具的 `limit` 数是命中条数
+而不是行数）拿到的只是那句没有命令的退路，而不是一条指向别处的命令。run snapshot 保留完整工具结果文本。note、todo、错误和显式保护的
 结果不会折叠。
 
 ## 重复命令与副作用（ADR-016）

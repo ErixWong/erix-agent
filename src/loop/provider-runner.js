@@ -140,6 +140,8 @@ export async function callProvider(ctx, {
         currentRound: round,
         ttl: foldConfig.ttl,
         minTokens: foldConfig.minTokens,
+        // issue #741：工具面证据转给占位符生成处（缺席 ⇒ 显式未知口径，不伪报「有笔记」）。
+        noteTools: foldConfig.noteTools,
         stats: ttlStats,
       });
     // issue #192（裁决：只做尾部滚动断点）：尾部断点标在**持久历史**的尾巴上，即 run-state /

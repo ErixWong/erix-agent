@@ -142,7 +142,8 @@ export function observeCompactionLayer(
  *   protectedDowngraded?: number,
  *   userTurnGuard?: string,
  *   userTurnGuardChannel?: string,
- *   layers?: Record<string, { triggered: number, tokensSaved: number }>
+ *   layers?: Record<string, { triggered: number, tokensSaved: number }>,
+ *   foldArchive?: { droppedMessages?: number, droppedBytes?: number, capBytes?: number, dedupedMessages?: number }
  * }} [input]
  * @returns {{
  *   compacted: boolean,
@@ -171,8 +172,12 @@ export function observeCompactionLayer(
  *     droppedRounds?: number,
  *     attempts?: number,
  *     budgetExhausted?: boolean,
- *   }
+ *   },
+ *   foldArchive?: { droppedMessages: number, droppedBytes: number, capBytes?: number, dedupedMessages?: number }
  * }}
+ *   `foldArchive`（issue #741）：归档夹断丢掉原文时的计数，**只在真丢了东西时出现**（口径同
+ *   `protectedDowngraded` / `foldSummary` 的「无事实不写键」）。宿主侧契约见 docs/host-consumer-contract.md
+ *   的 `compaction` 事件格。
  */
 export function createCompactionStat({
   compacted = false,
@@ -194,6 +199,11 @@ export function createCompactionStat({
   // 「被裁过多少」。只存小字段：摘要正文本身走轮记录 
   // `foldedFacts`，不进这里（#460 尺蠖）。
   foldSummary,
+  // issue #741（additive）：**归档夹断**丢掉的原文计数。`buildFoldedRecordArchive` 一直在算
+  // `droppedMessages` / `droppedBytes`，但这两个数此前只躺在轮记录的 `foldedPayloadMeta` 里，
+  // 既不进 `compaction` 事件也不进模型可见文本 ⇒ 「原文被丢了」这件事完整静默。
+  // 同一个键同时走事件 / `compactionStats` / `state.json`（下面 `normalizeCompactionStats` 会重建它）。
+  foldArchive,
 } = {}) {
   const stat = {
     compacted: compacted === true,
@@ -273,6 +283,32 @@ export function createCompactionStat({
     };
     if (Object.keys(projected).length > 0) stat.foldSummary = projected;
   }
+  // issue #741：归档丢弃量（additive，**只在真丢了东西时出现这个键**，口径同 `foldSummary`）。
+  // 不投影 `messages`/`bytes`：那两个是归档本体尺寸，`foldedPayloadMeta` 已有完整一份。
+  // `Number.isSafeInteger()` 不帮 `foldArchive?.x` 缩型（`number | undefined` 仍带 undefined，TS18048），
+  // 所以把一个子判定收下来：返回值自己就是 `number`，语义与原式逐字相同。
+  const positiveCount = (/** @type {unknown} */ value) =>
+    typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
+  const droppedMessages = positiveCount(foldArchive?.droppedMessages);
+  const droppedBytes = positiveCount(foldArchive?.droppedBytes);
+  if (droppedMessages > 0 || droppedBytes > 0) {
+    // **真丢了原文**才有这个键（同 `protectedDowngraded` / `foldSummary` 口径）：没丢就不许出现，
+    // 否则每次折叠都挂一个 `{capBytes: 262144}` 的常数键，把既有精确断言洗脏。
+    // 用 `Object.assign` 而不是 `stat.foldArchive = …`：前者不拿局部字面量类型去要求一个它看不见的键
+    // （同本文件既有的 additive 键写法，运行时行为逐字相同）。
+    Object.assign(stat, {
+      foldArchive: {
+        droppedMessages,
+        droppedBytes,
+        ...(Number.isSafeInteger(foldArchive?.capBytes) && (foldArchive?.capBytes ?? 0) > 0
+          ? { capBytes: foldArchive?.capBytes }
+          : {}),
+        ...(Number.isSafeInteger(foldArchive?.dedupedMessages) && (foldArchive?.dedupedMessages ?? 0) > 0
+          ? { dedupedMessages: foldArchive?.dedupedMessages }
+          : {}),
+      },
+    });
+  }
   return stat;
 }
 
@@ -297,6 +333,8 @@ export function normalizeCompactionStats(value, limit = COMPACTION_STATS_STATE_L
     // issue #464 A：`strategyName` 同样要过这道重建——runState / `state.json` 里那份是从上一份
     // 归一化副本再推导的，不在此列就会丢键，于是「事件里有、state 里没」与契约声称相反。
     strategyName: entry?.strategyName,
+    // issue #741：`foldArchive` 同样要过这道重建，否则「`compaction` 事件里有、`state.json` 里没」。
+    foldArchive: entry?.foldArchive,
     // issue #469-④：同样要过这道重建，否则「`compaction` 事件里有、
     // state 里没」。
     foldSummary: entry?.foldSummary,

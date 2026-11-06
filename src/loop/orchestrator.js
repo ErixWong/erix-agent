@@ -154,6 +154,8 @@ import {
   // issue #608：run-state 的 `last=` 游标与 TTL 占位符 / 折叠清单共用同一个「一次调用长什么样」
   // 摘要器（`summarizeToolCall`），不另写一套。
   summarizeToolCall,
+  // issue #741：笔记可用性证据的工具面那半（只读工具名，不解析笔记载荷）。
+  noteToolNamesOnSurface,
 } from "./tool-result-ttl.js";
 import {
   buildFoldedFacts,
@@ -1014,6 +1016,11 @@ export async function runToolLoop(options) {
       return providerTool;
     })
     : tools;
+
+  // issue #741：本 run 工具面上的笔记工具名。引擎**不写笔记**（机制级缺口不在本切片），但它从今天
+  // 起也不能断言笔记存在 —— 这个清单只用来决定模型可见措辞（TTL 占位符 / 折叠替代物广告语），
+  // 不参与任何机制判定。空数组 = 宿主没装配 ⇒ 提示里不出现任何 `note_*` 指引。
+  const noteToolSurface = noteToolNamesOnSurface(tools);
 
   const retryOptions = retry && typeof retry === "object" ? retry : null;
   const retryAttempts = retryOptions === null
@@ -2788,7 +2795,12 @@ export async function runToolLoop(options) {
         effectiveMaxRounds: governorState.effectiveMaxRounds,
         lowBudgetPrompted: runLoopState.lowBudgetPrompted,
       })) return null;
-      return { ttl: resolvedToolResultTtl, minTokens: toolResultFoldMinTokens };
+      return {
+        ttl: resolvedToolResultTtl,
+        minTokens: toolResultFoldMinTokens,
+        // issue #741：笔记可用性的工具面证据。缺席即未知 ⇒ 占位符走显式未知口径。
+        noteTools: noteToolSurface,
+      };
     },
     get messages() {
       return messages;
@@ -4033,6 +4045,11 @@ export async function runToolLoop(options) {
         enumerable: false,
         value: workingSetRecentRounds,
       });
+      // issue #741：笔记工具面（折叠替代物广告语的证据）。非枚举：宿主策略看到的选项键面逐字不变。
+      Object.defineProperty(compactOptions, "noteTools", {
+        enumerable: false,
+        value: noteToolSurface,
+      });
       if (runLoopState.foldedThrough > 0) compactOptions.roundOffset = runLoopState.foldedThrough;
       Object.defineProperty(compactOptions, "onLayer", {
         enumerable: false,
@@ -4653,6 +4670,10 @@ export async function runToolLoop(options) {
           // 正文与指纹不进这里（#460/#470-B 尺寸尺蠖），`foldedFacts` 已有完整一份。
           text: undefined,
         },
+        // issue #741：归档夹断丢掉多少原文，从 2024 年起就一直只活在轮记录的
+        // `foldedPayloadMeta` 里 —— 不进事件、不进模型可见文本 ⇒ 宿主不主动挖就完全静默。
+        // 这里把它接进 `compaction` 事件 / `compactionStats` / `state.json` 三条出口（无丢弃 ⇒ 无键）。
+        ...(foldedArchive?.meta === undefined ? {} : { foldArchive: foldedArchive.meta }),
       }, round);
     }
     // issue #568：**每次折叠后刷新**续接块（这是「无折叠 ⇒ provider 0 次调用」那个洞的另一半）。

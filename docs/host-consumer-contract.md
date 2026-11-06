@@ -3506,7 +3506,7 @@ it saw before.
 | `runId` | every `onJudge` record and the `run_outcome` event | The run id the host passed to `runToolLoop`; it is the join key between the streamed decisions and the terminal record. When the host passed no `runId` the field is **absent** — the engine does not synthesize one. |
 | `model` | every `onJudge` record and the `run_outcome` event | The model the run actually used when the judged decision was made, resolved from run options / provider configuration. Probe order matches `modelMetadataFor()` (`modelConfig` → `modelMetadata` → `model` → `provider` → `context`), key order `model` → `model_name` (same as provider construction), first hit wins and candidates are **not** merged. Never hardcoded. When no candidate yields a non-empty name the field is **absent**: writing `"unknown"` would make "no model configured" indistinguishable from a model literally named `unknown`. |
 | `judgeModel` | `onJudge` records, only when the judge ran on a different evaluator model | Lets per-model calibration distinguish the evaluated model from the model evaluating it. Absent when the judge shares the run's model. |
-| `compaction` stat | `onEvent` (`type: "compaction"`) and the `<runId>.state.json` `deterministic.compactionStats` window | Existing keys are unchanged. **Additive (issue #464 A):** `strategyName` is present only when the engine could state it truthfully — it names the strategy that **actually performed** this fold, including the library fallback (`"sliding-window"`), not the host's config value. Hosts that ignore it see the previous shape verbatim. **Which name, exactly (issue #657):** the fold entry has two possible performers — the strategy the host configured, and the engine's own budget fallback (`sliding-window`), which folds only the oldest rounds still needed to fit the budget. If the configured strategy folded at least one round, `strategyName` is **its** name (even when the fallback then folded more); if the configured strategy folded **zero** rounds and the fallback did the work, `strategyName` is the **fallback's** name (`"sliding-window"`) — it never reports a strategy that folded nothing. A fold window where nobody folded carries no `strategyName` key at all. For the layer names the engine knows, it agrees with `layers`: the budget-phase layer this name points at has `triggered > 0`. A host-supplied strategy object has no layer of its own — `getCompactionLayerForStrategy` maps only the built-in strategy names — so its fold leaves no trace in `layers`; for such a name the self-evidence is `foldedRounds > 0` together with `compacted === true` on the same stat. **Additive (issue #469 ④), value range narrowed (issue #661):** `foldSummary` carries the **result state** of a fold that actually produced a summary — `inputTruncated`, `droppedMessages`, `finishReason`, `inputTokens`, `outputTokens`, `priorSummaryTruncated`, `priorSummaryBytes`, `droppedRounds`, `attempts`, `reused`. `attempts` / `inputTruncated` / `droppedMessages` / `droppedRounds` are produced by the over-window retry path. `degradeKind` / `degradeReason` **keep their names in the shape but no longer carry degrade semantics**: since #661 a failing summarizer is a terminal error, so no fold that reaches this stat was degraded, and no in-tree writer produces those two keys (a resumed ledger row written before 0.30 may still carry them). `budgetExhausted` could only ever appear on the failure branch, so it now rides on the exception as `details.budgetExhausted` instead. Same discipline as `strategyName`: **no fact, no key** — a fold that produced nothing diagnostic leaves the shape byte-for-byte unchanged. The summary text itself never lands here (it lives on `record.foldedFacts`). |
+| `compaction` stat | `onEvent` (`type: "compaction"`) and the `<runId>.state.json` `deterministic.compactionStats` window | Existing keys are unchanged. **Additive (issue #464 A):** `strategyName` is present only when the engine could state it truthfully — it names the strategy that **actually performed** this fold, including the library fallback (`"sliding-window"`), not the host's config value. Hosts that ignore it see the previous shape verbatim. **Which name, exactly (issue #657):** the fold entry has two possible performers — the strategy the host configured, and the engine's own budget fallback (`sliding-window`), which folds only the oldest rounds still needed to fit the budget. If the configured strategy folded at least one round, `strategyName` is **its** name (even when the fallback then folded more); if the configured strategy folded **zero** rounds and the fallback did the work, `strategyName` is the **fallback's** name (`"sliding-window"`) — it never reports a strategy that folded nothing. A fold window where nobody folded carries no `strategyName` key at all. For the layer names the engine knows, it agrees with `layers`: the budget-phase layer this name points at has `triggered > 0`. A host-supplied strategy object has no layer of its own — `getCompactionLayerForStrategy` maps only the built-in strategy names — so its fold leaves no trace in `layers`; for such a name the self-evidence is `foldedRounds > 0` together with `compacted === true` on the same stat. **Additive (issue #469 ④), value range narrowed (issue #661):** `foldSummary` carries the **result state** of a fold that actually produced a summary — `inputTruncated`, `droppedMessages`, `finishReason`, `inputTokens`, `outputTokens`, `priorSummaryTruncated`, `priorSummaryBytes`, `droppedRounds`, `attempts`, `reused`. `attempts` / `inputTruncated` / `droppedMessages` / `droppedRounds` are produced by the over-window retry path. `degradeKind` / `degradeReason` **keep their names in the shape but no longer carry degrade semantics**: since #661 a failing summarizer is a terminal error, so no fold that reaches this stat was degraded, and no in-tree writer produces those two keys (a resumed ledger row written before 0.30 may still carry them). `budgetExhausted` could only ever appear on the failure branch, so it now rides on the exception as `details.budgetExhausted` instead. Same discipline as `strategyName`: **no fact, no key** — a fold that produced nothing diagnostic leaves the shape byte-for-byte unchanged. The summary text itself never lands here (it lives on `record.foldedFacts`). **Additive (issue #741):** `foldArchive` reports what the fold-record **archive clamp** threw away — `{ droppedMessages, droppedBytes }`, plus `capBytes` / `dedupedMessages` when those carry information. Both counts existed in `buildFoldedRecordArchive` from the start but only ever reached `record.foldedPayloadMeta`, so "the archive dropped the original text" was silent on the event channel and in `<runId>.state.json`. Same discipline again: nothing dropped ⇒ no `foldArchive` key at all. |
 | `compaction_strategy_fallback` event | `onEvent`, at most once per run | **Additive (issue #464 A).** `{ type: "compaction_strategy_fallback", round, detail }`, emitted exactly when `context.strategy` is **not** configured *and* the fold was budget-triggered, i.e. the engine's own `sliding-window` fallback ran. Since issue #643 that fallback folds only the oldest rounds it needs to reach the budget (it no longer clears every foldable round down to `keepRounds: 0`) and prepends the mechanical summary it already computed, so the model still sees what was folded (issue #464 B). Shape follows `model_metadata_missing` (issue #182): the first sentence of `detail` is fixed text hosts can assert on, then `budgetTokens` / `estimatedTokens` are appended when a budget resolves. |
 | `compaction_deferred` event | `onEvent`, one per deferred compaction | **Additive (issue #588).** `{ type: "compaction_deferred", runId?, round, reason: "pending_tool_use", detail: string }` — emitted when the compaction inside a `max_tokens` continuation is skipped because the request tail is an assistant `tool_use` whose `tool_result` has not arrived (`pendingTailToolUses` (`src/loop/pending-tool-result.js`)). Nothing is settled and no pairing rule is loosened; the next round's compaction sees the completed round. No termination semantic changes. |
 | `continuity_injection_skipped` event | `onEvent`, one per round where the continuity block could not be placed | **Additive (issue #568).** `{ type: "continuity_injection_skipped", runId?, round, reason, detail: string }` — the block was not injected into that request (e.g. `reason: "pending_tool_use"`, where inserting it would break `tool_use`/`tool_result` pairing). A skip is reported instead of substituting machine text. |
@@ -5582,18 +5582,43 @@ disagree about what counts as verbatim.
 
 ## Retrieval and request-view folding
 
-Model-facing retrieval is note-first: use `note_list` to discover saved notes,
-then `note_read` to read the exact note. Do not guess forgotten values, and do
-not depend on a transcript-recall API; the retired recall adapters are not part
-of the 0.8.0 contract.
+Model-facing retrieval is note-first **when notes actually exist**: use
+`note_list` to discover saved notes, then `note_read` to read the exact note.
+Do not guess forgotten values, and do not depend on a transcript-recall API;
+the retired recall adapters are not part of the 0.8.0 contract. Since issue
+#741 the engine offers that path only on two facts, both read-only facts about
+the run itself: the whole `note_take`/`note_list`/`note_read` family is on the
+host-supplied tool surface, **and** the visible ledger holds a `note_take` write
+that is still readable — paired with a `tool_result` for that exact
+`tool_use_id`, whose payload confirms success (`{status:"found", …}` as written
+by `writeNote`), and not later revoked by a successful `note_forget` for the
+same key. An unpaired call, a payload reporting `{status:"invalid"}`, a payload
+the engine cannot parse, or a revoked note is not evidence. Without both facts
+the fold substitute and the TTL placeholder say "no recoverable decision record
+(reason: …)" and never mention `note_*`; the reason is one of four honest
+buckets — no note tools, no note write, notes revoked, no note evidence. The
+evidence-backed wording stays conditional guidance ("look it up with
+`note_list`, then `note_read`"); it does not claim that this folded result's
+key points were recorded, which no ledger fact can prove. Note availability is
+host configuration, and the engine writes no notes of its own.
 
 Old or large tool results may be folded only in the provider request view.
 `toolResultTtl` defaults to `2` rounds (`0` disables folding), and
 `toolResultFoldMinTokens` defaults to `4000` estimated tokens. The warning
 round at `age === ttl - 1` asks the model to extract important facts with
-`note_take`; the folded placeholder contains a navigation digest and, where
-applicable, a JSON skeleton. Run snapshots retain the full tool-result text.
-Note, todo, error, and explicitly protected results are not folded.
+`note_take` **only when both note facts above hold**; in every other
+combination — family absent, or the family present with no readable write —
+it asks the model to re-read the source file instead (issue #741). The folded
+placeholder contains a navigation digest and, where applicable, a JSON
+skeleton; when the paired `tool_use` is a `readFile` call — the one tool whose
+`path`/`offset`/`limit` contract the engine can translate literally — it also
+carries one runnable retrieval command on its own line
+(`取回: sed -n '<from>,<to>p' '<path>'`) plus the same string as
+`retrievalCommand` on the TTL degradation record. Any other tool with a `path`
+argument (an MCP search tool's `limit` counts hits, not lines) gets that
+sentence-free fallback instead of a command that would point elsewhere. Run snapshots
+retain the full tool-result text. Note, todo, error, and explicitly protected
+results are not folded.
 
 ## Repeated commands and side effects (ADR-016)
 
