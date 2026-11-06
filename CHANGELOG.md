@@ -460,12 +460,24 @@
   time), and preferring `.summary` is deliberately pinned by the `#462` planner case in
   `test/compact/resume-fold-trim.test.js` ("优先用引擎留下的纯摘要"). This slice therefore only **adds**: a
   third cell `foldedSummary.fedSummaryText`, written when and only when the engine proves it at the write
-  site — `pickFedSummaryTextBlock` re-checks, **after every compaction layer has finalised**, that the
-  string is byte-identical to one **whole** `text` block among the message objects this fold created (the
-  same object-identity criterion #326 uses to claim the summary block). `fold-llm` writes `compactedSummary`;
-  a strategy whose text never entered the context (`sliding-window` journals, never prepends), a merged
-  reconstruction (`fold-statistical`'s second fold), and anything the safety layer rewrote write **no key**
-  — the repository's "no fact, no key" rule, and the reason the cell cannot become a second projection.
+  site — and the proof is an **object identity**, never a text match. `pinFedSummaryBlock` pins the summary
+  block at the moment the fold layers have finalised but **before** the safety layer or the user-turn guard
+  can touch it, using the one structural fact all three inserters share (each puts the summary at
+  `content[0]` of the rebuilt message: `fold-llm.js:145`, `fold-statistical.js:1116-1119` + `:1167`,
+  `budget-fit.js:160`) plus uniqueness, and `pickFedSummaryTextBlock` afterwards accepts **only that block**:
+  either the same block object is still reachable in the finalised list with the candidate as its text, or
+  the same message object is still present with the candidate at the pinned index — otherwise **no key**.
+  The first cut of this criterion searched by **text** ("any whole `text` block of a message this fold
+  created"), and an independent review killed it with a probe: the retained head content lives in **the very
+  same new message**, so a summary clamped to `SUMMARY\n[已修剪]` next to a carried-over body block still
+  reading `SUMMARY` made the engine journal the *body block* as the fed summary. `#738-G` / `#738-G2` pin
+  that counterexample permanently and sample **M20** keeps it biting in CI. `fold-llm` writes
+  `compactedSummary`; a strategy whose text never entered the context (`sliding-window` journals, never
+  prepends), a merged reconstruction (`fold-statistical`'s second fold), and anything a later layer rewrote
+  **or deep-copied** (`safeTruncateMessages` opens with `cloneState`, `budget.js:179-180`, which is
+  `structuredClone` — identity cannot survive it) write **no key**, and resume then takes the compatibility
+  path and reports 不可判定 — the repository's "no fact, no key" rule, and the reason the cell cannot
+  become a second projection.
   `.text` and `.summary` keep their meanings and **every** existing reader verbatim (摘要复用读 `.summary`，
   `ledgerPreviousSummary` 读 `.text`，本轮不动). On resume, `pickFoldSummaryReplay` prefers the new cell
   **verbatim** — no `trim()`, no body-stripping, both of which are exactly what broke byte-identity — and
@@ -485,12 +497,20 @@
   在本树复跑过：优先 `.text` 什么都买不到（那一格是**整条新消息所有 text 块**的投影 = 摘要块**加上**仍在
   head 的原任务正文，优先它主要是把任务正文再喂一遍），优先 `.summary` 则是
   `test/compact/resume-fold-trim.test.js` 的 `#462 规划器` 用例**刻意钉住**的（断言文案「优先用引擎留下的
-  纯摘要」）。所以本切片只做**加法**：第三格 `foldedSummary.fedSummaryText`，写入门槛是**引擎在写侧当场自证**
-  ——`pickFedSummaryTextBlock` 在**全部压缩层定稿之后**再查一遍：这串必须与本次折叠新造出来的那些消息对象里的
-  **某一个完整** `text` 块逐字相同（认领摘要块用的就是 `#326` 那套对象身份口径）。`fold-llm` 写得出的就是
-  `compactedSummary`；文本从没进过上下文的策略（`sliding-window` 只落账不 prepend）、合并重建出来的那一折
-  （`fold-statistical` 第二折）、以及被安全层改写过的形状，**一律不写这个键**——本仓的「无事实不写键」口径，
-  也是这一格不会退化成第二份投影的原因。`.text` 与 `.summary` 的语义与**每一个**既有读者一字未动（摘要复用读
+  纯摘要」）。所以本切片只做**加法**：第三格 `foldedSummary.fedSummaryText`，写入门槛是**引擎在写侧当场自证**，
+  而那个自证是**对象身份**、不是文字命中：`pinFedSummaryBlock` 在**折叠层已定稿、而安全层与 user-turn 守卫都
+  还没动手**的那一刻把摘要块钉住，靠的是三条插入路径共用那一个结构性事实（每一条都把摘要块放在被重建消息的
+  `content[0]`：`fold-llm.js:145`、`fold-statistical.js:1116-1119 + :1167`、`budget-fit.js:160`）加上唯一性；
+  之后 `pickFedSummaryTextBlock` **只认钉住的那一块**——要么那个块对象本身还在定稿列表里、而它的文本就是候选，
+  要么那个消息对象本身还在、而它那个下标上的块逐字等于候选；否则**不写键**。这个判据的第一版是按**文字**搜
+  （「本次折叠新造的消息里某一个完整 `text` 块逐字相同」），被独立验收用探针当场打死：保留下来的 head 正文
+  就住在**同一条新消息**里，于是摘要块被夹断成 `SUMMARY\n[已修剪]`、而旁边保留块还写着 `SUMMARY` 时，
+  引擎会把**那个正文块**当成「当年 fed 的摘要」记进账。`#738-G` / `#738-G2` 把这个反例常驻钉住，样本 **M20**
+  让它在 CI 里继续咬人。`fold-llm` 写得出的就是 `compactedSummary`；文本从没进过上下文的策略
+  （`sliding-window` 只落账不 prepend）、合并重建出来的那一折（`fold-statistical` 第二折），以及被后面的层
+  **改写过或被深拷贝重建过**的形状（`safeTruncateMessages` 起手就 `cloneState`，`budget.js:179-180`，
+  那就是 `structuredClone`——身份过不去），**一律不写这个键**，续跑于是走兼容路径并如实报「不可判定」——
+  本仓的「无事实不写键」口径，也是这一格不会退化成第二份投影的原因。`.text` 与 `.summary` 的语义与**每一个**既有读者一字未动（摘要复用读
   `.summary`、`ledgerPreviousSummary` 读 `.text`，本轮都不碰）。续跑侧 `pickFoldSummaryReplay` 有这一格就
   **原样**回放——不 `trim()`、不剥正文，而这两刀正是毁掉字节一致性的那两刀；没有这一格就完全走今天的兼容路径，
   并且**不声称**旧账本可以逐字还原。同一个规划器上多了一条可观测面：`replaySource` / `savedSummaryBytes` /
