@@ -160,7 +160,9 @@ import {
   createFoldIdentityAllocator,
   createFoldSummaryLedger,
   FOLDED_FACTS_RECORD_FIELD,
+  FOLDED_SUMMARY_FED_TEXT_KEY,
   foldSummaryFingerprint,
+  pickFedSummaryTextBlock,
   stableFingerprint,
 } from "../compact/fold-summary-journal.js";
 import { FOLD_SUMMARY_MARKER, summarizeFoldedPayload } from "../compact/fold-statistical.js";
@@ -4456,6 +4458,18 @@ export async function runToolLoop(options) {
           || prependedFallbackSummary);
       if (fedSummaryIsFoldSummary && !foldSummaryLedger.journaled(foldedFingerprint)) {
         foldSummaryLedger.markJournaled(foldedFingerprint);
+        // issue #738 第一步（**纯加法**）：除上面两格之外，再把「本次折叠**实际插入上下文的那一串字节**」
+        // 单独记一格。写入门槛不是「策略报了一个 text」，而是 `pickFedSummaryTextBlock` 的**当场自证**：
+        // 候选串（`foldSummary.text`，`fold-llm` 那一档就是 `compactedSummary`）必须逐字等于本次折叠新造的
+        // 那条消息里的**某一个完整 text 块**，而且是在**所有压缩层定稿之后**的 `messages` 上证（安全层截过
+        // 就证不过）。证不过 ⇒ **不写这一格**：宁可旧数据继续走今天的兼容回填，也不拿拼接投影
+        //（`fedSummaryText` 局部变量）或策略估算值（定稿处现算的 `summarizeFoldedPayload`）凑一份逐字承诺。
+        // 读侧的选择在 `src/compact/resume-fold-trim.js#pickFoldSummaryReplay`（这一格在场 ⇒ 逐字回放）。
+        const fedSummaryExactBlock = pickFedSummaryTextBlock({
+          candidate: strategyFoldSummary?.text,
+          messages,
+          preCompactionMessages,
+        });
         foldedSummaryFact = {
           text: fedSummaryText,
           fingerprint: foldedFingerprint,
@@ -4465,6 +4479,11 @@ export async function runToolLoop(options) {
           ...(lastFoldSummaryOutcome === undefined
             ? {}
             : { summary: lastFoldSummaryOutcome.summary }),
+          // issue #738：无精确插入串 ⇒ 不写键（本仓「无事实不写键」口径；写了就等于向读侧伪报「这就是
+          // 当年 fed 的那一串」）。上面的 `text` / `summary` 两格语义一字未动。
+          ...(fedSummaryExactBlock === undefined
+            ? {}
+            : { [FOLDED_SUMMARY_FED_TEXT_KEY]: fedSummaryExactBlock }),
           ...(foldedRoundRange === undefined ? {} : { foldedRoundRange }),
         };
         // ⚠ 行上**不放**顶层 `foldedRoundRange`：resume 用它算 `foldedThrough`（`records.map(r => r.foldedRoundRange?.to)`），

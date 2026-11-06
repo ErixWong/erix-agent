@@ -40,6 +40,70 @@ export const FOLD_SUMMARY_RECORD_FIELD = "foldedSummary";
 export const TTL_DEGRADATION_RECORD_FIELD = "ttlDegradations";
 
 /**
+ * `foldedSummary` 事实行里承载**实际插入上下文的那一串字节**的子键名（issue #738 第一步）。
+ *
+ * 与同一条事实行上另外两格的分工（三格是三个不同的东西，不能互相「复用」）：
+ *   · `.text` —— 折叠后**那条被并进了摘要的消息**的全部 text 块投影（`#326` 的形状），
+ *     里面**还混着仍在 head 的原任务正文**；语义一字未改。
+ *   · `.summary` —— 摘要器的**原始返回值**（`orchestrator.js` 的 `lastFoldSummaryOutcome.summary`），
+ *     既没有恢复提示、也没有尺寸夹断产物、也没有机械保真节；语义一字未改。
+ *   · `.fedSummaryText`（本键）—— **写侧确实掌握**「这一串就是本次折叠插进上下文的那一块」时
+ *     才写的**逐字副本**（`fold-llm` 那一档就是 `compactedSummary`）。没有精确保存值 ⇒ **不写这一格**
+ *     （本仓的「无事实不写键」口径），绝不拿 `.text` / `.summary` 凑一份。
+ *
+ * 为什么必须新开一格，而不是把读侧优先级反转成「优先 `.text`」：`.text` 是**整条消息**的投影，
+ * 优先它只会让「仍在 head 的任务正文」更容易被**再喂一遍**，并不兑现「续跑回填的字节 == 崩溃前
+ * 模型看到的字节」（现验见 issue #738 决策评论与 `decision-D2`）。
+ */
+export const FOLDED_SUMMARY_FED_TEXT_KEY = "fedSummaryText";
+
+/**
+ * `foldedSummary.fedSummaryText` 的**写侧自证**（issue #738 第一步）：证明「这一串就是实际插入的块」。
+ *
+ * 判据只有一条，而且是**当场对最终那份 `messages` 现查**（不是问策略要一句承诺）：
+ *   `candidate` 必须**逐字等于**本次折叠新造出来的那条消息（对象身份不在 `preCompactionMessages` 里，
+ *   与 `#326` 认领摘要块的同一口径）里的**某一个完整 `text` 块**。
+ *
+ * 为什么这个判据算「自证」而不是「换个字段名」：
+ *   · 折叠策略把摘要插进上下文时都是**整块 prepend**（`fold-llm#prependSummary` /
+ *     `fold-statistical#mergedFoldSummaryContent` / `budget-fit#prependFoldSummary`），所以「真的被插进去」
+ *     与「某个完整块逐字等于它」是同一件事；
+ *   · 插进去之后又被后面的层改写过（安全层 `safeTruncateMessages` 截正文、user-turn 守卫回补、
+ *     `[已修剪]`）⇒ 块不再等于候选 ⇒ **不写**，于是这一格永远不会把「策略以为喂出去的」当成「实际喂出去的」；
+ *   · 策略只落账、不 prepend 的那条路（`sliding-window` 的 `foldedSummaryText`，契约见
+ *     `test/compact/folded-facts.test.js`）⇒ 消息里根本没有这个块 ⇒ **不写**；
+ *   · 引擎在定稿处**就地现算**的机械替代物（`summarizeFoldedPayload`）与兜底那发把两份正文
+ *     `"\n\n"` 拼起来的合并值，都不是任何一个完整块 ⇒ **不写**。这些都是**估算值**，不是插入的字节。
+ *
+ * 所以「拿不到精确串」的策略只是**没有这一格**，回到今天的兼容路径，行为与今天逐字一致；
+ * 不是「写了一份近似值」。
+ *
+ * @param {object} input
+ * @param {unknown} input.candidate 策略自称「交给模型的那一份」（`foldSummary.text` / `foldedSummaryText`）
+ * @param {any[]} input.messages 压缩**定稿后**的消息列表（就是接下来要被喂出去/落档的那份）
+ * @param {Set<object>} input.preCompactionMessages 压缩前就在的消息对象（按身份），它们里面的块不算证据
+ * @returns {string|undefined} 证得过 ⇒ 原样返回候选串；证不过 ⇒ `undefined`（调用方**不写这一格**）
+ */
+export function pickFedSummaryTextBlock(input = {}) {
+  const candidate = input.candidate;
+  if (typeof candidate !== "string" || candidate.trim() === "") return undefined;
+  const before = input.preCompactionMessages instanceof Set
+    ? input.preCompactionMessages
+    : new Set();
+  for (const message of Array.isArray(input.messages) ? input.messages : []) {
+    // 与 `orchestrator.js` 认领 `foldedSummary.text` 同一个身份口径：只认本次折叠**新造出来**的消息。
+    if (before.has(message)) continue;
+    const content = typeof message?.content === "string"
+      ? [{ type: "text", text: message.content }]
+      : Array.isArray(message?.content) ? message.content : [];
+    // **整块**相等才算：子串相等会把「块被截过 / 与别的正文拼在一起」当成证据（那就是拼接投影，
+    // 而这一格唯一的职责是逐字）。
+    if (content.some((block) => block?.type === "text" && block.text === candidate)) return candidate;
+  }
+  return undefined;
+}
+
+/**
  * 轮记录上承载**折叠替代物投影**的字段名（issue #470-A）。
  *
  * 与 `foldedSummary` 的分工：那条是**引擎事实行**（`messages: []`，只在「首次喂出去」时记一次）；
