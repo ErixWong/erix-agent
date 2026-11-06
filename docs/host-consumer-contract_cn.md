@@ -4875,8 +4875,9 @@ T1 承诺的双写期到一个 minor 为止，本刀就是结束它的那一刀�
 
 把每一条 `onEvent` 记录都入库的宿主，代价是按字节付的：一个现网宿主仓里，事件表占**全库 91.6%**，
 而 `*_delta` 三类占这张表行数的 **99.2%**。契约从来没说哪一类可以删，于是宿主唯一安全的默认就是
-「一条都不删」，表就一直长。本节补的就是那句话：引擎能发的每一个类型各是什么档、一条能执行的清理
-判据、以及删完之后剩下什么形状。引擎侧交出去的是**数据而不是散文** —— `src/loop/event-tiers.js`，
+「一条都不删」，表就一直长。本节补的就是那句话：引擎经 `LoopEvent` / `onEvent` 发出的每一个类型、
+加上那三个流式片段名，各是什么档（诊断错误通道那批记录刻意不在表内 —— 见下面「这份枚举刻意不覆盖
+什么」）、一条能执行的清理判据、以及删完之后剩下什么形状。引擎侧交出去的是**数据而不是散文** —— `src/loop/event-tiers.js`，
 并从包入口再导出：`EVENT_TIERS`、`EVENT_TIER_VALUES`、`EVENT_TIER_FACT` / `EVENT_TIER_STREAM` /
 `EVENT_TIER_DERIVED`、`HOST_SIDE_EVENT_TYPE_NAMES`、`RUN_TERMINAL_STATUSES`、
 `RUN_CLEANUP_SAFE_STATUSES`、`eventTierOf()`（以及那条判据自己的实现 `streamCleanupEligible()`）。

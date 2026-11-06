@@ -42,6 +42,10 @@
 //   T11 新增一个**发射原语**时必须红（评审建议项）：把树上所有「带 `{ type:` 实参的被调名」扫一遍，
 //      既不在登记族里、也不在「看着像但不是」清单里的名字 ⇒ 红；两张清单里登记过的名字从树上消失也红
 //      （否则清单会烂掉，而烂掉的守卫比没有守卫更让人安心）。
+//   T12 分级表那一节的**开场句**必须是限定范围（点名 `LoopEvent` / `onEvent` 与流式片段），不许再作
+//      无范围限定的全称（评审第三轮唯一必修）：本节后文本来就把 `persistence_error` 排除在外，
+//      开场作全称就是自己与自己打架。反证用 `--test-name-pattern="T12"` 单独跑过（把限定词换成
+//      「every type the engine can emit」/「引擎能发的每一个类型」⇒ exit 1）。
 //
 // 零 LLM、零写盘、不碰真实 `~/.erix`：只读 `src/` 的源码文本与两份契约文档。
 
@@ -896,4 +900,58 @@ test("T9 契约中英两份的分级表逐行等于 EVENT_TIERS，且中英两�
     );
   }
   assert.deepEqual(en, cn, "中英两侧的分级表行序与内容必须逐处一致");
+});
+
+// ────────────────── T12 开场那句全称话必须带范围限定（评审第三轮唯一必修）──────────────────
+
+/**
+ * 分级表那一节的**开场段**（标题之后、第一张表/第一个档位要点之前）。
+ *
+ * 为什么单独抽这一段而不是整节：必修的那句话是**开场**的无范围限定全称（`every type the engine can emit`
+ * / 「引擎能发的每一个类型」），而本节**后文**本来就写了限定与排除（诊断错误通道那段）。只盯开场，
+ * 才不会把「后文已经限定」当成「开场也限定」——那正是评审抓到的自相矛盾形状。
+ *
+ * @param {string} markdown
+ * @returns {string} 开场段（不含表格行与档位要点）
+ */
+function docOpeningParagraph(markdown, label) {
+  const lines = markdown.split("\n");
+  const start = lines.findIndex((line) => /^#{2,3}\s/.test(line) && /issue\s+#743/iu.test(line));
+  assert.notEqual(start, -1, `${label}：找不到标题带 issue #743 的那一节`);
+  const intro = [];
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (/^#{2,3}\s/.test(line) || line.startsWith("|") || line.startsWith("- **")) break;
+    intro.push(line);
+  }
+  const text = intro.join("\n");
+  assert.ok(text.length > 60, `${label}：开场段只抽到 ${text.length} 字符 —— 形状变了，本判据不许在空段上变绿`);
+  return text;
+}
+
+test("T12 开场那句是限定范围、不是全称（评审第三轮必修：中英两处 + 反向证它会红）", () => {
+  const en = docOpeningParagraph(readFileSync(EN_DOC, "utf8"), "EN");
+  const cn = docOpeningParagraph(readFileSync(CN_DOC, "utf8"), "CN");
+  // ① 正反两面都要：无范围限定的全称措辞一旦回来，本节就与自己后文（限定 + 排除 persistence_error）打架。
+  for (const [label, text, banned] of [
+    ["EN", en, /\bevery type the engine can emit\b/iu],
+    ["CN", cn, /引擎能发的每一个类型/u],
+  ]) {
+    assert.ok(
+      !banned.test(text),
+      `${label} 的开场又变回无范围限定的全称（命中 ${banned.source}）—— 本节只覆盖 LoopEvent/onEvent + 流式片段名，`
+        + "诊断错误通道（persistence_error）在表外，开场必须自己说清范围",
+    );
+  }
+  // ② 限定词得真在句子里（两个名字 + 「流式/stream」那半句 —— 少一个都不算收口）。
+  for (const [label, text] of [["EN", en], ["CN", cn]]) {
+    assert.match(text, /LoopEvent/u, `${label} 开场必须点名 LoopEvent`);
+    assert.match(text, /onEvent/u, `${label} 开场必须点名 onEvent`);
+  }
+  assert.match(en, /stream(?:ing|-fragment)/iu, "EN 开场必须点名流式片段（streaming / stream-fragment）");
+  assert.match(cn, /流式片段/u, "CN 开场必须点名「流式片段」");
+  // ③ 与被排除项的说法彼此一致：开场限定了范围，本节就必须真的写明排除的是诊断错误通道。
+  for (const [label, doc] of [["EN", EN_DOC], ["CN", CN_DOC]]) {
+    assert.match(readFileSync(doc, "utf8"), /persistence_error/u, `${label} 契约必须写出被排除的诊断错误通道名字`);
+  }
 });

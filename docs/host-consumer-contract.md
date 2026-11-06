@@ -6228,8 +6228,10 @@ This is asserted by `test/contract/tool-result-envelope.js` ("复放升级前的
 A host that persists every `onEvent` record pays for it in bytes: on a real host database the
 event table was **91.6% of the whole database**, and `*_delta` types were **99.2% of its rows**.
 The contract never said which of these types are safe to delete, so the host's only safe default
-was "delete nothing" and the table grew forever. This section is that missing statement: a tier
-for every type the engine can emit, one executable predicate, and the shape of what is left behind
+was "delete nothing" and the table grew forever. This section is that missing statement: a tier for
+every `LoopEvent` / `onEvent` type and every streaming-fragment name the engine emits (the
+diagnostic error channel's records are deliberately outside this table — see "What this enumeration
+deliberately does not cover" below), one executable predicate, and the shape of what is left behind
 after a delete. The engine side is data, not prose — `src/loop/event-tiers.js`, re-exported from
 the package root:
 `EVENT_TIERS`, `EVENT_TIER_VALUES`, `EVENT_TIER_FACT` / `EVENT_TIER_STREAM` / `EVENT_TIER_DERIVED`,
