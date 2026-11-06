@@ -189,8 +189,8 @@
   bytes — so a page the length gate called legal did not fit the injection face: the hot page measures
   32,698 bytes, i.e. **70 bytes of headroom**, and 71 more bytes would have cut its tail off silently while
   the gate stayed green. Two gates that never knew about each other is the defect. 64 KiB is arithmetic, not
-  a feeling: the worst pair the two gates allow is 30,720 (the global page, `pi-tools:scripts/check-agents-budget.sh`)
-  + 33,792 = **64,512 bytes ≤ 65,536**, headroom **1,024 bytes**; today's two pages measure 63,197
+  a feeling: the worst pair the two gates allow is 30,720 (the global instruction page's own
+  budget, held in the pi-tools repository) + 33,792 = **64,512 bytes ≤ 65,536**, headroom **1,024 bytes**; today's two pages measure 63,197
   (30,499 + 32,698), so after the raise nothing is cut. Pages still grow, so truncation is now visible: when
   a page is cut, `buildProjectInstructionsSection` appends `[项目约定已截断]` to the **injected body** —
   total bytes, bytes injected this run, bytes dropped, and the names of the dropped `##` sections — because
@@ -204,7 +204,7 @@
   `PROJECT_INSTRUCTIONS_MAX_BYTES = 32 * 1024`，而长度闸（`scripts/agents-directive-scan.mjs` 的
   `LENGTH_BUDGETS`）允许本仓这一页长到 33,792 字节——闸说合法的正文注入面装不下：热层实测 32,698 字节，
   **余量 70 字节**，再长 71 字节就会静默切尾而闸一路绿。「两道闸互相不知道」就是缺陷本体。64 KiB 是算术不是
-  感觉：两道闸允许的最坏两页组合 = 全局页 30,720（`pi-tools:scripts/check-agents-budget.sh`）+ 本仓 33,792
+  感觉：两道闸允许的最坏两页组合 = 全局页 30,720（全局指令页自己那一页的预算，握在 pi-tools 仓里）+ 本仓 33,792
   = **64,512 字节 ≤ 65,536**，余量 **1,024 字节**；今天两页实测 63,197（30,499 + 32,698）⇒ 抬完之后当前
   什么都不再被切。页还会继续长，所以截断现在变得看得见：被切时 `buildProjectInstructionsSection` 在**注入
   正文**末尾追加 `[项目约定已截断]`——全文字节 / 本次注入字节 / 丢弃字节 + 被丢弃的 `##` 小节名——因为
