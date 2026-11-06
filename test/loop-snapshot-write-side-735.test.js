@@ -10,9 +10,15 @@
 //   · 已停写：`toolUse`（它与 `pendingToolUse` 是**两次独立 `cloneState()` 仍同一个源值**，内容等值
 //     但不同址；全仓无属性访问面读它）、`ts`（读侧那个 `ts` 是**账本行 / 消息行**的，不是快照这一格）。
 //     ⇒ 零读者的证据是**面**而不是名字：恢复侧读快照对象那一层只出现 9 个字段 ——
-//     `grep -rhoE "resumeRunSnapshot\??\.[A-Za-z_]+" src/ | sed 's/.*\.//' | sort -u`（31 个读点）得
+//     `grep -rnE "resumeRunSnapshot\??\." src/ | wc -l` 量得**按行计 31 处命中**（按匹配个数是 32：
+//     `src/loop/resume-manager.js:387` 一行上有两处 ⇒ 口径写清，不摆裸数字），字段穷举则是
+//     `grep -rhoE "resumeRunSnapshot\??\.[a-zA-Z]+" src/ | sed 's/.*\.//' | sort -u` 得
 //     `executedToolIds` / `messages` / `partialRound` / `partialText` / `pendingToolUse` / `pendingToolUses`
-//     / `round` / `toolOutputs` / `toolResults`，里面没停写的这两格。
+//     / `round` / `toolOutputs` / `toolResults`，里面没停写的这两格。两条都是 **ERE**，且先在
+//     一个已知会命中的样本上验过：`printf 'x = resumeRunSnapshot.round;\ny = ctx.resumeRunSnapshot?.messages;\n'`
+//     pipe 给 `grep -cE "resumeRunSnapshot\??\."` 答 2，而本文件前一版写的 BRE
+//     `grep -c "resumeRunSnapshot\(?:\?\)\."` 只答 1（静默漏掉可选链那一行），src/ 上是 5 行 vs 31 行
+//     ——少结果与空结果一样，不验模式就不能当证据。
 //   · 仍写出：`status`（`test/loop-persistence-phase.test.js` 拿它当分辨调用点的唯一指纹、
 //     `test/loop-invalid-arguments.test.js` 拿 `status === "rejected"` 造崩溃现场夹具、
 //     `test/loop-v020-rc.test.js` / `test/persistence-diagnostics.test.js` 拿
@@ -20,9 +26,10 @@
 //     （`test/compaction-observability.test.js` 从 `loadLatestCheckpoint()` 读它）。
 //   另两格要停，得先给上面那些用例换指纹 —— 留给后续切片。
 //
-// ⚠ 本文件**不声称字节级**语义，除了那一条名字里写明「file store」的用例：过 memory store + 
+// ⚠ 本文件**不声称字节往返**语义，除了那一条名字里写明「file store」的用例：过 memory store + 
 //   `deepEqual` 的那条证的只是**对象结构等值**（`assert/strict` 的对象比较本来就不看键序）。
-//   字节与键序由两条专用用例钉：file store 旧档字节往返、以及保留格的键序对账。
+//   file store 那条断言的也是较窄的一面：**读旧档不改写盘上字节**（外加对象等值），不是
+//   「写出去再读回来逐字节相同」那种往返（读侧根本不写）。键序另由保留格键序对账那条钉。
 //
 // `persistedTranscriptLength` 与 `messages` 属切片 2（前者有 3 处真读者当截账本夹具的 anchor），
 // 本切片原样写出，所以在 PRESENT 里。
@@ -186,16 +193,17 @@ test("#735 切片 1：带着 toolUse / ts 的**旧**快照过内存 store 仍结
 
   const loaded = await store.loadLatestRunSnapshot("legacy-snapshot-735");
   // ⚠ 本例走的是 **memory store + deepEqual** ⇒ 它证的是**对象结构等值**（`assert/strict` 的对象比较
-  // 本来就不看键序），不是落盘字节。字节面由下面那条 file store 用例钉。
+  // 本来就不看键序），不是落盘字节。「读旧档不改写盘上字节」由下面那条 file store 用例钉。
   assert.deepEqual(loaded, legacySnapshot, "store 层对旧快照必须原样透传（不因新写侧形状而删格）");
   // 旧档的那两格还在 ⇒ 任何拿 `snapshot.toolUse` 兜底的宿主/旧读侧继续拿到它们，不被逆期改写。
   assert.deepEqual(loaded.toolUse, { ...TOOL_BLOCK, replay: "unsafe" });
   assert.equal(loaded.ts, "2026-01-01T00:00:00.000Z");
 });
 
-test("#735 切片 1：file store 上手写的旧档字节仍原样读回（真落盘面：那两格不被改写也不被删）", async () => {
-  // 这一条才托得起「旧档字节仍然可读」那句话：直接把手写的**旧形状 JSON** 落在 file store 的
-  // 快照路径上（模拟 0.31 之前落盘的那堆字节），再让读侧去读它。
+test("#735 切片 1：file store 上手写的旧档过读取仍原样保留（读侧不改写盘上字节：那两格不被改也不被删）", async () => {
+  // 这一条托的是那句较窄但为真的话：**读旧档不改写盘上字节**——不是「写出→读回逐字节相同」的往返
+  // （读侧根本不写）。做法是把手写的**旧形状 JSON** 落在 file store 的快照路径上
+  // （模拟 0.31 之前落盘的那堆字节），再让读侧去读它。
   const dir = await makeTmp("snap735-legacy-");
   const store = createFileTranscriptStore({ dir });
   const legacySnapshot = {
@@ -217,7 +225,7 @@ test("#735 切片 1：file store 上手写的旧档字节仍原样读回（真�
   await writeFile(target, raw, "utf8");
 
   const loaded = await store.loadLatestRunSnapshot("legacy-file-735");
-  assert.deepEqual(loaded, legacySnapshot, "旧档过 file store 必须原样读回");
+  assert.deepEqual(loaded, legacySnapshot, "旧档过 file store 读取必须原样给出（对象面）");
   assert.ok(loaded.toolUse !== undefined && loaded.ts !== undefined,
     "已停写的两格在**旧档**里必须还在（停写只影响新写，不影响旧档）");
   // 字节面：读侧不许改写盘上的旧档（这条是上面那条 deepEqual 给不了的）。

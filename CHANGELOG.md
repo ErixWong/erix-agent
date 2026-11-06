@@ -221,10 +221,19 @@
   them really have no reader. `toolUse` was a **second, independent `cloneState()` call over the same
   source value** as `pendingToolUse` (`cloneState(snapshotPendingToolUse)` written twice — equal content,
   **different objects**, not one call aliased under two names). Its zero-reader evidence is a surface, not
-  a name: enumerate the fields the recovery path actually reads off the snapshot object
-  (`grep -rn "resumeRunSnapshot\(?:\?\)\." src/`) and the set is `round` / `pendingToolUse(s)` /
-  `toolResults` / `toolOutputs` / `executedToolIds` / `partialText` / `partialRound` / `messages` — neither
-  cell is in it; and `grep -rn "\.toolUse\b" src/ bin/` on the base `f6c2566` returns exactly one line
+  a name: enumerate the fields the recovery path actually reads off the snapshot object —
+  `grep -rnE "resumeRunSnapshot\??\." src/ | wc -l` answers **31 hits counted as lines** (32 match
+  instances: `src/loop/resume-manager.js:387` carries two on one line, which is why the counting basis is
+  stated instead of a bare number), and
+  `grep -rhoE "resumeRunSnapshot\??\.[a-zA-Z]+" src/ | sed 's/.*\.//' | sort -u` returns exactly
+  `executedToolIds` / `messages` / `partialRound` / `partialText` / `pendingToolUse` / `pendingToolUses` /
+  `round` / `toolOutputs` / `toolResults` — neither stopped cell is in it. **The pattern was self-tested
+  before being trusted**, because an earlier revision of this very entry cited a BRE form
+  (`grep -rn "resumeRunSnapshot\(?:\?\)\." src/`) that silently missed every optional-chained access:
+  `printf 'x = resumeRunSnapshot.round;\ny = ctx.resumeRunSnapshot?.messages;\n' | grep -c` gives **1** for
+  that BRE versus **2** for the ERE above, and on `src/` the BRE finds 5 lines where the ERE finds 31 — a
+  short result, like a zero result, has to be validated against a sample that is known to match. And
+  `grep -rn "\.toolUse\b" src/ bin/` on the base `f6c2566` returns exactly one line
   (`src/loop/orchestrator.js:2853`), which is the trailing dot of a `...toolUse` **spread**, not a property
   access, so the real property-access surface is empty. (A naive `grep -rn "snapshot\.toolUse\b"` returning
   nothing proves nothing: that literal does not exist anywhere on the base tree — a vacuous grep is the
@@ -238,8 +247,10 @@
   **old** snapshots is unchanged — no `?? ` fallback was deleted, the store layer passes objects through
   untouched — and this is now asserted on two levels: a memory-store case (structural equality, which is
   what `assert/strict` object comparison actually checks: it ignores key order) and a **file-store case
-  that hand-writes the old-shaped JSON to `<runId>.snapshot.json` and compares the bytes on disk after
-  reading**, so `toolUse` / `ts` survive in archives written before this change. The crash-site resume runs
+  that hand-writes the old-shaped JSON to `<runId>.snapshot.json` and asserts that reading it leaves the
+  bytes on disk unchanged** — the narrower claim the case actually earns (the read side never writes, so
+  this is not a write-then-read byte round-trip) — so `toolUse` / `ts` survive in archives written before
+  this change. The crash-site resume runs
   on the engine's **own** new-shape snapshot and replays the in-flight call from `pendingToolUses`, so the
   replay chain provably never touched `toolUse`. **Key order is preserved on purpose**: `src/store/file.js:523`
   serializes with `JSON.stringify(snapshot)`, so key order is host-visible on-disk bytes and the net change
@@ -273,11 +284,18 @@
 - **run snapshot 停写两格没有人读的字段（issue #735，切片 1）。** `persistRunSnapshot` 构造的那份
   payload 里有 4 格候选冗余，**不按工单口径、改成自己重测**之后只有 2 格真的无人读：`toolUse` 与
   `pendingToolUse` 是**对同一个源值各自调一次 `cloneState()`**（`cloneState(snapshotPendingToolUse)`
-  写了两遍）⇒ 内容等值但**是两个对象**，不是「一次调用换个名字」。它的零读者证据是**面**而不是名字：
-  把恢复侧真正从快照对象上读的字段穷举出来（`grep -rhoE "resumeRunSnapshot\??\.[A-Za-z_]+" src/ | 
-  sed 's/.*\.//' | sort -u`，31 个读点），结果恰好是 `executedToolIds` / `messages` / `partialRound` /
-  `partialText` / `pendingToolUse` / `pendingToolUses` / `round` / `toolOutputs` / `toolResults` 这 9 个——
-  停写的两格都不在里面；而 `grep -rn "\.toolUse\b" src/ bin/` 在基点 `f6c2566`
+  写了两遍）⇒ 内容等值但**是两个对象**，不是「一次调用换个名字」。
+  它的零读者证据是**面**而不是名字：`grep -rnE "resumeRunSnapshot\??\." src/ | wc -l` 得**按行计
+  31 处命中**（按匹配个数是 32：`src/loop/resume-manager.js:387` 一行上有两处 ⇒ 所以写清口径而不是
+  只摆一个裸数字）；把字段穷举出来 `grep -rhoE "resumeRunSnapshot\??\.[a-zA-Z]+" src/ |
+  sed 's/.*\.//' | sort -u` 结果恰好是 `executedToolIds` / `messages` / `partialRound` /
+  `partialText` / `pendingToolUse` / `pendingToolUses` / `round` / `toolOutputs` / `toolResults` 这 9 个
+  ——停写的两格都不在里面。**这个模式是先自测才敢用的**：本条目前一版引的是一条 BRE
+  （`grep -rn "resumeRunSnapshot\(?:\?\)\." src/`），它会静默漏掉所有可选链写法——拿两行已知会命中的
+  样本验：`printf 'x = resumeRunSnapshot.round;\ny = ctx.resumeRunSnapshot?.messages;\n' | grep -c`
+  对那条 BRE 答 **1**、对上面那条 ERE 答 **2**；在 `src/` 上 BRE 只找到 5 行而 ERE 找到 31 行 ——
+  **少结果与空结果一样，必须先在已知会命中的样本上验过模式**（本仓口径）。而
+  `grep -rn "\.toolUse\b" src/ bin/` 在基点 `f6c2566`
   上只命中 1 行（`src/loop/orchestrator.js:2853`），那是 `...toolUse` **展开运算符的末尾点号**、不是属性
   访问，所以真的属性访问面为空。（拿 `grep -rn "snapshot\.toolUse\b"` 零命中当证据是无效的：这个字面串
   在基点树上本来一处都不存在——「恒零的 grep 当证据」正是本仓反复栽的那一格。）也别把**另一张面**上的
@@ -288,8 +306,9 @@
   `src/loop/resume-manager.js` 读进内存的那一行），另一个产物、另一张面。对**历史旧快照**的读侧容忍度
   没变：一个 `?? ` fallback 都没删，store 层照原样透传对象，而且这件事现在有两层断言：一层走 memory store
   （**结构等值**——`assert/strict` 的对象比较本来就不看键序，所以说它是字节相等是夸大）；另一层是
-  **file store 用例**，把手写的新形状之前那一版 JSON 直接落到 `<runId>.snapshot.json` 上，读回之后再比
-  **盘上的字节**，于是改动前落的旧档里 `toolUse` / `ts` 仍在是被字节面钉住的。崩溃现场恢复跑在**引擎自己
+  **file store 用例**，把手写的新形状之前那一版 JSON 直接落到 `<runId>.snapshot.json` 上，断言**读它
+  之后盘上字节没被改写**——这才是那条用例真挣到的、较窄的说法（读侧根本不写，所以它不是「写出→读回
+  逐字节相同」的往返），于是改动前落的旧档里 `toolUse` / `ts` 仍在，是被这条断言钉住的。崩溃现场恢复跑在**引擎自己
   写下的新形状**快照上，它从 `pendingToolUses` 补跑那条在飞调用，于是「补跑链路从没碰过 `toolUse`」是被
   证出来的。**键序是刻意保持的**：`src/store/file.js:523` 直接 `JSON.stringify(snapshot)` ⇒ 键序就是宿主
   可见的落盘字节，所以那个对象字面量的净改动就是**删两行**；新增一条用例把保留格的顺序对着「基点键序减去
