@@ -371,7 +371,10 @@ const CONTRACT_BODY_PINS = Object.freeze({
   //
   //     ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=444  uses=454
   //     ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=553  uses=564
-  "docs/host-consumer-contract.md": 454,
+  // 454 → 455（同一刀的后续）：那一节里可执行的围栏改成了「自含且真能跑」的一格（L3 要真执行它），
+  // 它的一句行内注释就写的是「`stream` + terminal + over the window」——进了代码语境就多一处同名异义。
+  // 数取自扫描器现报：`docs/host-consumer-contract.md [contract] verdict=SUSPECT(raised) pin=454 uses=455`。
+  "docs/host-consumer-contract.md": 455,
   // 565（片A，切版前补 #569/#568 文档）：CN 契约新增「折叠触发比例与会话续接块」一节，其中 provider 回调的
   // 真实键名 `runId`（`({runId, state, previous}) → {text, version}`）是一次同名异义命中——契约必须写出这个键名，
   // 所以**不为了躲钉子而改写成模糊说法**，按判据把钉子登记成扫描器报的值。EN 侧同一句已把 `context` 写成全路径

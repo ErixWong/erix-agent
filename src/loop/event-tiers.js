@@ -53,7 +53,7 @@ export const EVENT_TIER_STREAM = "stream";
 /** @type {EventTier} A projection or counter over facts already durable elsewhere. */
 export const EVENT_TIER_DERIVED = "derived";
 
-/** @type {EventTier[]} The whole value range of `EVENT_TIERS`, in declaration order. */
+/** @type {readonly EventTier[]} The whole value range of `EVENT_TIERS`, in declaration order. */
 export const EVENT_TIER_VALUES = Object.freeze([EVENT_TIER_FACT, EVENT_TIER_STREAM, EVENT_TIER_DERIVED]);
 
 /**
@@ -205,7 +205,7 @@ export function eventTierOf(type) {
  *
  * @param {Record<string, string>} table
  * @param {Record<string, { standsFor: string }>} aliases
- * @param {string[]} allowedTiers
+ * @param {readonly string[]} allowedTiers
  * @returns {number} 校验过的键数（自检真的跑了的证据；0 是要红的那种「空表恒真」）
  */
 function assertTierTable(table, aliases, allowedTiers) {
