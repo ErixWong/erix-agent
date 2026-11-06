@@ -374,7 +374,11 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 454 → 455（同一刀的后续）：那一节里可执行的围栏改成了「自含且真能跑」的一格（L3 要真执行它），
   // 它的一句行内注释就写的是「`stream` + terminal + over the window」——进了代码语境就多一处同名异义。
   // 数取自扫描器现报：`docs/host-consumer-contract.md [contract] verdict=SUSPECT(raised) pin=454 uses=455`。
-  "docs/host-consumer-contract.md": 455,
+  // 455 → 454（独立评审 #743 必修 1 之后）：那一格围栏的行内注释换成了「all four hold ⇒ deletable」
+  // （判据多了「落盘证据」这一条，那句旧措辞本身被换掉），上面那处同名异义因此**掉了一处** ——
+  // 这是「契约改干净了」的方向，不是漏钉。数取自扫描器现报：
+  // `docs/host-consumer-contract.md [contract] verdict=SUSPECT(dropped) pin=455 uses=454`。
+  "docs/host-consumer-contract.md": 454,
   // 565（片A，切版前补 #569/#568 文档）：CN 契约新增「折叠触发比例与会话续接块」一节，其中 provider 回调的
   // 真实键名 `runId`（`({runId, state, previous}) → {text, version}`）是一次同名异义命中——契约必须写出这个键名，
   // 所以**不为了躲钉子而改写成模糊说法**，按判据把钉子登记成扫描器报的值。EN 侧同一句已把 `context` 写成全路径
@@ -388,7 +392,10 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 里的 `user`，消息角色，同名异义）；数取自扫描器自己报的 `uses=553`（✗ 行原文见上面 EN 那一格）。
   // 553 → 564（issue #743）：同 EN 侧那一节的中文侧，同样是档位名 `stream` 的同名异义命中 9 处，外加
   // `runId` 2 处（store 方法入参名，也是同名异义）；数取自扫描器自己报的 `uses=564`。
-  "docs/host-consumer-contract_cn.md": 564,
+  // 564 → 566（独立评审 #743 必修 1 与 2 之后）：CN 那一节新写了「只有这一档是判据可能删的」与
+  // 「`type ∈ stream ∧ … ∧ 成型副本确实落盘 ∧ …`」这两句（档位名在代码围栏与行内代码里各算一次同名异义）。
+  // 数取自扫描器现报：`docs/host-consumer-contract_cn.md [contract] verdict=SUSPECT(raised) pin=564 uses=566`。
+  "docs/host-consumer-contract_cn.md": 566,
 });
 
 /**

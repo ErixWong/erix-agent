@@ -50,7 +50,7 @@
 //                 （#164「抽不到真值就报错」）。**只认代码面**（issue #299）：抽取前先做一遍词法分类，注释与字符串
 //                 字面量涂成空格（保换行 ⇒ 行号与原文对齐），所以只活在注释里或引号里的名字**不算**声明，
 //                 注释里写一句 `// "judge_done"` 也不再给弱档供值。唯一的弱一档——「具名字面量成员」（终止原因 / provider 错误码
-//                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 4 个文件生效，
+//                 这类**字符串值**）——只在 `SYMBOL_VALUE_MEMBERSHIP` 里逐份点名并写明理由的 5 个文件生效，
 //                 不做全仓放行。本条**不做**中英处数对账，理由写在 §2.8 的节头。
 //                 另带一条**只增不减的下限** `SYMBOL_ANCHOR_MIN_UNIQUE = 235`：低于它就红（那是「锚点在退化」
 //                 被抓，不是棘轮抬高），高于它会催你把下限抬上去。生效值从脚本自身文本读，自测靠调它证锁。
@@ -2157,6 +2157,11 @@ const SYMBOL_VALUE_MEMBERSHIP = new Map([
   ["src/loop/termination.js", "同上：reason → errorCode 的映射表（`max_rounds_cap` 一类）在本文件里以字面量成员存在"],
   ["src/reflection/governor.js", "治理层的 stop 值（`completion` / `complete` / `noTool` / `cap`）是返回值字符串，契约表引的就是这些值"],
   ["src/providers/errors.js", "provider 错误码（`provider_config` 一类）以字符串成员定义"],
+  // issue #743 建议项：契约的核验状态表把 CLI guard 的两个 skip reason 指到 `bin/final-guard.js:92` /
+  // `:95`。它们是 `{ action: "skip", reason: "…" }` 里的**字符串值**，不是变量名 —— 加了这条点名之后
+  // 这两个符号才第一次真的被校（此前坐标写成 `:86,89` 那种多行号形态，正则不匹配 ⇒ 整条锚点免检，
+  // 而 86 / 89 两个行号本身是错的：86 是函数声明、89 是 `inspectRun` 调用）。
+  ["bin/final-guard.js", "CLI guard 的 skip reason（`no_capture_evidence` / `no_extractable_candidates`）以字面量成员存在，契约的核验状态表引的就是这两个值"],
 ]);
 
 /* ── #299：注释与字符串里的同名**不是**声明 ────────────────────────────────────
@@ -2478,7 +2483,7 @@ function symbolAnchorVerdict(sym, rel) {
  * 判据：区间 `[lo, hi]` 必须覆盖该符号在被引文件里的**至少一处真值位**（`lo <= p <= hi`）。
  *   · 取「全部」声明位而不是首处：`sideEffect` 这类名字在 orchestrator.js 里合法地出现在多处
  *     （194 的归一化与 1091 的 `fail()` 现场），只问首处会把说真话的那条判成假红；
- *   · 弱档（`SYMBOL_VALUE_MEMBERSHIP` 那 4 份点名文件里的字符串值）用「该字面量在文件里的出现行」
+ *   · 弱档（`SYMBOL_VALUE_MEMBERSHIP` 那 5 份点名文件里的字符串值）用「该字面量在文件里的出现行」
  *     当真值位——那一档承认的本来就是「值就定义在这里」，拿声明行去问必然假红；
  *   · **抽不到任何真值位 ⇒ 红**（#164：抽不到真值不许静默放行）。但同一处的 `symbols` 已经因为
  *     「该文件里没有这个符号」红了，这里不重复报（同一条根因交两条红会把自测的点名判据搅混），

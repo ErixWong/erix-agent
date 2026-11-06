@@ -2862,7 +2862,7 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
 | `verification.status` | 含义 | 实际会看到的 `verification.reason` | CLI 退出码 |
 |---|---|---|---|
 | `verified` | 已配置的 guard 接受了一份终答 | —（无 reason 字段） | `0` |
-| `skipped` | 什么都没查——**不是**「答案对」的主张，不得改写成 `verified` | `no_final_guard`（`src/loop/orchestrator.js`）；CLI guard 的 `no_capture_evidence` / `no_extractable_candidates`（`bin/final-guard.js:86,89`） | `4` |
+| `skipped` | 什么都没查——**不是**「答案对」的主张，不得改写成 `verified` | `no_final_guard`（`src/loop/orchestrator.js`）；CLI guard 的 `no_capture_evidence`（`bin/final-guard.js:92`）/ `no_extractable_candidates`（`bin/final-guard.js:95`） | `4` |
 | `unverified` | 核验执行了但未通过 | `non_continuable`（`src/loop/orchestrator.js`）、`max_retries`（`3547-3551`） | `2` |
 | `error` | guard 抛错、返回非法裁决或超时（对可用性 fail-open，但永远不会变 `verified`） | `timeout` 或 `error`——两者都由 `errorReason`（`src/loop/termination.js`）决出 | `3` |
 
@@ -4878,18 +4878,36 @@ T1 承诺的双写期到一个 minor 为止，本刀就是结束它的那一刀�
 「一条都不删」，表就一直长。本节补的就是那句话：引擎能发的每一个类型各是什么档、一条能执行的清理
 判据、以及删完之后剩下什么形状。引擎侧交出去的是**数据而不是散文** —— `src/loop/event-tiers.js`，
 并从包入口再导出：`EVENT_TIERS`、`EVENT_TIER_VALUES`、`EVENT_TIER_FACT` / `EVENT_TIER_STREAM` /
-`EVENT_TIER_DERIVED`、`HOST_SIDE_EVENT_TYPE_NAMES`、`RUN_TERMINAL_STATUSES`、`eventTierOf()`
-（以及那条判据自己的实现 `streamCleanupEligible()`）。
+`EVENT_TIER_DERIVED`、`HOST_SIDE_EVENT_TYPE_NAMES`、`RUN_TERMINAL_STATUSES`、
+`RUN_CLEANUP_SAFE_STATUSES`、`eventTierOf()`（以及那条判据自己的实现 `streamCleanupEligible()`）。
 
 三档，与它们的失败方向：
 
 - **`fact`** —— 这条事件就是那个事实的唯一 durable 副本。删它就等于丢历史。**永不可删**。
 - **`stream`** —— 逐 token 的碎片，而它拼出来的成型形状在别处有一份 durable 副本。
-  **只有这一档**是清理判据可能删的。
-- **`derived`** —— 对已在别处 durable 的事实做的一层投影或计数。宿主自己决定删不删、算不算；
-  判据不替它做这个决定。
+  **只有这一档**是清理判据可能删的 —— 但「别处那份真在盘上」是**宿主存储**的事实，
+  任何档位列都证不了，所以判据还要额外向宿主索取这份证据。
+- **`derived`** —— 对已在别处 durable 的事实做的一层投影或计数，**且本事件不带那份副本里没有的字段**，
+  宿主可以自己重算也可以直接扔。
+  **本表当前没有任何类型是 `derived`。** 三个候选在本切片证不出「别处还有一份能读到的副本」，
+  已降回 `fact`（逐条理由在下面）；这个档位值留着，是为了以后真有一格可重算的投影有个合法去处，
+  而不是新开第四档。
 - **认不得的类型 ⇒ 留着。** 本表里没有的名字，`eventTierOf()` 返 `undefined`。
   把「认不得」当成可删的宿主，会删掉引擎下一个刚长出来的事件类型。
+
+为什么那三条是 `fact` 而不是 `derived`（独立评审 #743 必修 2；每条都去发射点现验过，
+本节初稿里写错了其中两条）：
+
+- `recovering` 在退避等待**之前**就发出（`src/loop/provider-runner.js`：先 `emitEvent`，再
+  `await waitForRetry(delay)`）。等待中被中止，下一次 `attempt` 根本不存在 ⇒「第几次、上限多少」
+  没有第二份副本。
+- `recovered` 是**重试**成功的告知（同文件，provider 返回之后、且本轮先前失败过一次才发），
+  **不是续跑（resume）的告知** —— 而本节初稿写的就是错的后者。账本里那条成型 assistant 消息
+  不记「它是第几次尝试成的」，`loadLatestRunSnapshot` 也不是这条告知的持久副本。
+- `tool_output_aggregate` 带的是**判定字段**（`action`、`reason`、`budgetTokens`、`inlineTokens`、
+  `costTokens`、`projectedTokens`、`contentLength`）。transcript 与归档存的是**内容字节**与被改写后的
+  那条 `tool_result`，这些判定数字哪儿都没持久化。「输出字节在别处存在」不等于「聚合判定也已落盘」
+  —— 评审抓到的正是把这两件事当成一件。
 
 | 事件类型 | 档位 | 可删 | 为什么 |
 |---|---|---|---|
@@ -4923,9 +4941,9 @@ T1 承诺的双写期到一个 minor 为止，本刀就是结束它的那一刀�
 | `config_override_conflict` | `fact` | 不可删 | 同上。 |
 | `context_unknown_option` | `fact` | 不可删 | 同上。 |
 | `user_turn_guard_unrecoverable` | `fact` | 不可删 | 同上。 |
-| `tool_output_aggregate` | `derived` | 宿主自定 | 本轮工具输出的一层投影；字节本身在 transcript 与归档里，所以这个数可重算也可扔。 |
-| `recovering` | `derived` | 宿主自定 | 续跑的进度告知。续跑的真值是 snapshot（`loadLatestRunSnapshot`），不是这条告知。 |
-| `recovered` | `derived` | 宿主自定 | 同上。 |
+| `tool_output_aggregate` | `fact` | 不可删 | 聚合**判定**（`action`、`reason`、`budgetTokens`、`inlineTokens`、`costTokens`、`projectedTokens`、`contentLength`）。transcript 与归档只留字节，不留这些数 —— 见上面那段降级说明。 |
+| `recovering` | `fact` | 不可删 | 在退避等待**之前**发出；等待中被中止就没有下一次 `attempt` 可供重算。 |
+| `recovered` | `fact` | 不可删 | 这是**重试**成功告知（不是续跑）。没有任何 durable 处记着「答案是第几次尝试成的」。 |
 
 **这份清单是怎么来的 —— 不是从这份文档拄的。**
 `test/event-tier-coverage-743.test.js` 从 `src/` 的**发射调用点**现推发射名（六族发射口：
@@ -4944,10 +4962,19 @@ T1 承诺的双写期到一个 minor 为止，本刀就是结束它的那一刀�
 `reasoning_delta` / `assistant_delta` 是 `stream`，`tool_use` / `tool_result` / `round_end` / `usage` /
 `judge` / `compaction` 是 `fact`。
 
+**这份枚举刻意不覆盖什么。** 本表覆盖 `LoopEvent` / `onEvent` 观察者面上的每一个名字，加上流式片段
+那三个名字。它**不**覆盖走诊断**错误**通道的那些记录：`persistence_error`
+（`src/loop/orchestrator.js` 的 `persistenceErrorEvent()`）经 `diagnostics.error` 与
+`onPersistenceError` 报告，由 `src/loop/error-ledger.js` 记账，**不经** `emitEvent` / `onEvent`，
+所以它不是一条 `onEvent` 行，也不在 `EVENT_TIERS` 里。真把它入库的宿主拿 `eventTierOf()` 会拿到
+`undefined` —— 「认不得 ⇒ 留着」，落在安全那一侧。`test/event-tier-coverage-743.test.js`（T10）
+把这几件事钉住，免不得有人把本表读成「引擎所有诊断事件都在这」。另外 T11 会在**新增一个发射原语**
+而六族与「看着像但不是」名单都不认它时跑红，免不得守卫的扫描面静默缩小。
+
 ### 清理判据
 
-`type ∈ stream ∧ run.status ∈ 终态 ∧ ts < now − retention` ⇒ 可删。三条都要，顺序就这个。前两条的
-两面都是 fail-closed：
+`type ∈ stream ∧ run.status ∈ 安全终态 ∧ 成型副本确实落盘 ∧ ts < now − retention` ⇒ 可删。**四条**都要，
+顺序就这个。每一条都 fail-closed —— 缺参数一律答「留着」，从不答「删」：
 
 ```js
 import assert from "node:assert/strict";
@@ -4957,36 +4984,61 @@ import { streamCleanupEligible } from "erix-agent";
 // `ageMs` 就是 `now - ts`；`retentionMs` 是宿主自己的保留窗口，它继续当宿主的入参。
 const retentionMs = 30 * 24 * 60 * 60 * 1000;
 const olderThanThat = 45 * 24 * 60 * 60 * 1000;
+const durable = { assembledCopyPersisted: true }; // 宿主拿得出的证据：那条轮记录读得回来
 assert.equal(
-  streamCleanupEligible({ type: "assistant_delta", runStatus: "succeeded", ageMs: olderThanThat, retentionMs }),
+  streamCleanupEligible({ type: "assistant_delta", runStatus: "succeeded", ageMs: olderThanThat, retentionMs, ...durable }),
   true,
-); // stream + 已终 + 过了窗口 ⇒ 可删
+); // 四条全成立 ⇒ 可删
 assert.equal(
-  streamCleanupEligible({ type: "tool_result", runStatus: "succeeded", ageMs: olderThanThat, retentionMs }),
+  streamCleanupEligible({ type: "tool_result", runStatus: "succeeded", ageMs: olderThanThat, retentionMs, ...durable }),
   false,
 ); // fact 永不可删
 assert.equal(
-  streamCleanupEligible({ type: "assistant_delta", runStatus: "running", ageMs: olderThanThat, retentionMs }),
+  streamCleanupEligible({ type: "assistant_delta", runStatus: "failed", ageMs: olderThanThat, retentionMs, ...durable }),
   false,
-); // 未终 ⇒ 留着
+); // 是终态，但写在抛异常那条路上 —— 根本不保证有成型副本
+assert.equal(
+  streamCleanupEligible({ type: "assistant_delta", runStatus: "succeeded", ageMs: olderThanThat, retentionMs }),
+  false,
+); // 没给「成型副本已落盘」的证据 ⇒ 留着
+assert.equal(
+  streamCleanupEligible({ type: "assistant_delta", runStatus: "succeeded", ageMs: olderThanThat, retentionMs: -1, ...durable }),
+  false,
+); // 负窗口是一个写错了的数，不是「把全表删完」
 ```
 
-`runStatus` 是**本仓的**状态名，引擎经 `markRunState` 写出去的那个值，不是宿主数据库的那一列。
-终态集合恰好是 `RUN_TERMINAL_STATUSES` —— `succeeded`、`unverified_error`、`guard_error`（三个都由
-`finish()` 按核验状态选出）、`aborted`、`failed`（抛异常那条路上的
-`markRunState(signal?.aborted ? "aborted" : "failed")`）。`running` —— 启动与每一次续跑写的就是它 ——
-**故意不是**终态，所以在飞的、以及崩在半路没走完的 run 都留着它的碎片。两个宿主侧名字值得点出来：
-`cancelled` 与 `expired` 是宿主列值，引擎侧没有对应物；`persistence_failed` 是 `termination.reason`，
-不是状态。`test/event-tier-coverage-743.test.js`（T7）从 `markRunState` 的**写点**现推这张名单，
-所以新增一个终态而忘改表会把它跑红。
+**「已终」不等于「答案已落盘」。** `runStatus` 是**本仓的**状态名，引擎经 `markRunState` 写出去的那个
+值，不是宿主数据库的那一列。终态集合是 `RUN_TERMINAL_STATUSES` —— `succeeded`、`unverified_error`、
+`guard_error`（三个都由 `finish()` 按核验状态选出）、`aborted`、`failed`（抛异常那条路上的
+`markRunState(signal?.aborted ? "aborted" : "failed")`）。而判据只认 `RUN_CLEANUP_SAFE_STATUSES` =
+`succeeded` / `unverified_error` / `guard_error`：这三个只在循环走到正常结尾、结果已经做出之后才写。
+`failed` 与 `aborted` 被排除在外，因为抛异常可以发生在 provider 已经流出碎片**之后**、任何成型
+assistant 正文存在**之前** —— 在这两个终态上，碎片可能就是那一轮曾经有过的唯一字节。这一段只覆盖
+引擎能知道的那一半；另一半是宿主的证据：
+
+- `assembledCopyPersisted` —— 只有宿主真能指出那份成型副本（例如携 assistant 正文 / 成型 `tool_use`
+  入参的那条轮记录能经 `store.load(runId)` 读回来）才传 `true`。一个根本不往库里写轮记录的 run，
+  或者拿不出这份副本的宿主，传 `false`（或不传）就什房不删。只认字面 `true`。
+- `persistenceFailed` —— 本 run 的持久化报过失败（`persistence_error`、抛异常的 `appendRound`、
+  `continuity_write_failed`）就传 `true`，它一出现就拒删，不管其余三条多成立：判据本来要靠着的那份
+  副本，恰好就是没落成的那一份。
+
+`running` —— 启动与每一次续跑写的就是它 —— **故意不是**终态，所以在飞的、以及崩在半路没走完的 run
+都留着它的碎片。两个宿主侧名字值得点出来：`cancelled` 与 `expired` 是宿主列值，引擎侧没有对应物；
+`persistence_failed` 是 `termination.reason`，不是状态。`test/event-tier-coverage-743.test.js` 两份
+名单都现推：T7 从 `markRunState` 的**写点**抽终态名，并从 `finish()` 写的名字重推那个**安全子集**
+（所以 `failed` / `aborted` 别想悄悄漏回去），T8 把判据的每一个失败方向钉住，包括那个负窗口。
 
 宿主的清理语句于是就是对自己那张表的**一条** `DELETE`，而档位列要在**插入时**从 `EVENT_TIERS` 填好
-（读时才填，等于让一次档位迁移静默改掉旧行的含义）：
+（读时才填，等于让一次档位迁移静默改掉旧行的含义）。下面那两列证据是宿主自己算出来的列，填的是宿主
+能验的事，不是档位：
 
 ```sql
 DELETE FROM run_events
  WHERE tier = 'stream'
-   AND run_status IN ('succeeded', 'unverified_error', 'guard_error', 'aborted', 'failed')
+   AND run_status IN ('succeeded', 'unverified_error', 'guard_error')
+   AND assembled_copy_persisted
+   AND NOT persistence_failed
    AND ts < now() - INTERVAL '30 days';
 ```
 
@@ -4997,19 +5049,30 @@ DELETE FROM run_events
 - 成型那份全部留着：拼好的 `tool_use` / `tool_result` 事实（同一个 `toolCallKey`、同一个 `erix`）、
   轮边界与 `usage` 台账、`attempt` 重试轨迹，以及裁决 —— `judge`、`final_guard`、`run_outcome`。
   这个 run 从头到尾仍然可审；丢的只是「它是怎么被打出来」那一层。
-- `derived` 那几行是宿主自己的账：判据从不删 `tool_output_aggregate`、`recovering`、`recovered`，
-  尽管它们确实可重算。
+- `derived` 当前是空集，所以这条判据根本不会有「宿主自定」那一类行：曾在那一档上的三个类型
+  （`tool_output_aggregate`、`recovering`、`recovered`）现在是 `fact`，这是一个没证住的主张该有的
+  保守一侧 —— 宿主删不掉它们，多留的是字节。
 - 删 `fact` 行不是这条判据的事，本节也没有任何一句话背书它。
 
 ### 终稿核验与 recall 读不读这些行？（现验，不是推测）
 
-- **终稿核验：不读。** 它的证据源是 **transcript**，不是事件流。它读的东西逐条列出：
-  `store.load(runId)` → 每条轮记录里的 `toolOutputs[].toolUseId` 与 `toolOutputs[].content`、
-  `messages[].content[]` 中 `type === "tool_result"` 的那些块（经 `block.tool_use_id` 与
-  `block.content`）、以及 `record.round`；兼容源是归档目录下那些 `*.meta.json` 归档清单
-  （`display`、`archivePath`、`command`、`legacy`）以它们指到的工件文件本体；交付物判据则直接读
-  被声明的那些文件（`exists` + 内容）。`bin/final-guard*.js` 里没有任何一处读 `delta` /
-  `tool_call` / `reasoning_delta`。删 `stream` 行不可能改变核验结论。
+- **终稿核验：不读。** 它的证据源是 **transcript**，不是事件流。它读的东西逐条列出 ——
+  下面这份是从 `bin/final-guard-support.js` 里逐字读出来的，不是推测：
+  - `store.load(runId)`，然后逐条轮记录：`toolOutputs[].toolUseId` 与 `toolOutputs[].content`
+    （两个都得是字符串才能进那张表）、`messages[].content[]` 中 `type === "tool_result"` 的那些块，
+    经 `block.tool_use_id` 与 `block.content`（一个字符串，或一组 `{ text }` 块），以及 `record.round`
+    （只有当它是安全整数才用；否则标签里写成 `?`，但这条取证仍然计数）；
+  - 兼容源：归档目录下的 `<archiveDir>/*.meta.json`，走 `readCaptureManifests` → `readArtifact`，
+    它读**并校验** `kind`（必为 `erix.tool-capture`）、`schemaVersion`（必为 `1`）、`truncated`
+    （必为 `false`）、`digest`（对工件重算 sha256 对比）、`archivePath`（必为清单同名的 `.txt`、
+    必在归档根内、必为普通非软链文件）与 `locator.lineStart` / `locator.lineEnd`（要验的那一段），
+    而 `display` / `round` 只用来拼标签与告警文案 —— 加上工件文件本身的字节；
+  - 交付物判据：`facts.fileWrites[].path`（按 `facts.cwd` 解析），然后盘上那些被声明的文件
+    （`exists`、非空、不是只有占位符）。
+  没有被读的（不管读者多容易预期它在）：`command` 在这份文件的任何一条读路径上都不存在；
+  `legacy: true` 是 guard **写在自己 capture 对象上的标记**（`archiveSourceTarget` 从 capture 上读它，
+  从不从清单上读）。`bin/final-guard*.js` 里没有任何一处读 `delta` / `tool_call` /
+  `reasoning_delta`。删 `stream` 行不可能改变核验结论。
 - **recall：没有可读的东西。** bounded recall 在本仓已退役 —— `src/` 里根本不出现 `recall`，
   store 的读面是 `load`、`loadRawRows`、`loadRunState`、`loadRunStateStatus`、`loadLatestRunSnapshot`、
   `loadLatestCheckpoint`。还挂在 0.6.x bounded recall 上的宿主有自己的读面，本节对它不说任何话：

@@ -3618,7 +3618,7 @@ configured, a `verified` verdict is not available to them, because a guard
 | `verification.status` | Meaning | `verification.reason` seen in practice | CLI exit code |
 |---|---|---|---|
 | `verified` | the configured guard accepted this final answer | — (no reason field) | `0` |
-| `skipped` | nothing was checked — **not** a claim of correctness | `no_final_guard` (`src/loop/orchestrator.js`); CLI guard `no_capture_evidence` / `no_extractable_candidates` (`bin/final-guard.js:86,89`) | `4` |
+| `skipped` | nothing was checked — **not** a claim of correctness | `no_final_guard` (`src/loop/orchestrator.js`); CLI guard `no_capture_evidence` (`bin/final-guard.js:92`) / `no_extractable_candidates` (`bin/final-guard.js:95`) | `4` |
 | `unverified` | the check ran and was not satisfied | `non_continuable` (`src/loop/orchestrator.js`), `max_retries` (`3547-3551`) | `2` |
 | `error` | the guard threw, decided invalidly, or timed out (fail-open for availability, never `verified`) | `timeout` or `error`, both resolved by `errorReason` (`src/loop/termination.js`) | `3` |
 
@@ -6233,18 +6233,38 @@ for every type the engine can emit, one executable predicate, and the shape of w
 after a delete. The engine side is data, not prose — `src/loop/event-tiers.js`, re-exported from
 the package root:
 `EVENT_TIERS`, `EVENT_TIER_VALUES`, `EVENT_TIER_FACT` / `EVENT_TIER_STREAM` / `EVENT_TIER_DERIVED`,
-`HOST_SIDE_EVENT_TYPE_NAMES`, `RUN_TERMINAL_STATUSES`, `eventTierOf()` (and the predicate's own
-implementation `streamCleanupEligible()`).
+`HOST_SIDE_EVENT_TYPE_NAMES`, `RUN_TERMINAL_STATUSES`, `RUN_CLEANUP_SAFE_STATUSES`, `eventTierOf()`
+(and the predicate's own implementation `streamCleanupEligible()`).
 
 The three tiers, and the failure direction:
 
 - **`fact`** — the event is the only durable copy of that fact. Deleting it loses history. Never deletable.
 - **`stream`** — a per-token fragment of something that has a durable assembled copy elsewhere. The
-  only tier the predicate may ever delete.
-- **`derived`** — a projection or counter over facts already durable elsewhere. The host may drop or
-  recompute it at its own discretion; the predicate does not do it for it.
+  only tier the predicate may ever delete — but “elsewhere” is a fact about the **host's** storage,
+  which no tier column can prove, so the predicate additionally asks the host for that evidence.
+- **`derived`** — a projection or counter over facts already durable elsewhere **and** carrying no
+  field that copy lacks, so the host can recompute it or drop it.
+  **No type in this table is currently `derived`.** The three candidates were demoted to `fact` when
+  this slice could not establish a second durable copy for each one; the tier value stays so a future
+  recomputable projection has a legal home instead of growing a fourth tier.
 - **Unknown type ⇒ keep.** `eventTierOf()` answers `undefined` for a name this table does not know.
   A host that treats "unknown" as deletable deletes the next event type this engine grows.
+
+Why those three are `fact` and not `derived` (issue #743 review, must-fix 2 — each claim was checked
+at the emission site, and two of them were wrong in the first draft of this section):
+
+- `recovering` is emitted **before** the retry backoff waits (`src/loop/provider-runner.js`: the
+  emit, then `await waitForRetry(delay)`). Aborted during that wait and the next `attempt` never
+  exists, so “which attempt, out of how many” has no second copy.
+- `recovered` is a **retry**-success notification (same file, emitted after the provider returned,
+  only when this round had failed once before) — **not** a resume notification, which is what the
+  first draft of this section claimed. The assembled assistant message in the ledger does not record
+  that it was attempt N, and `loadLatestRunSnapshot` is not a persistent copy of this notification.
+- `tool_output_aggregate` carries the **decision** fields (`action`, `reason`, `budgetTokens`,
+  `inlineTokens`, `costTokens`, `projectedTokens`, `contentLength`). The transcript and the archive
+  store the **bytes** and the rewritten `tool_result`; none of those numbers are persisted anywhere.
+  “The output bytes exist elsewhere” is not “the aggregation decision was persisted too” — the review
+  caught exactly that conflation.
 
 | Event type | Tier | Deletable | Why |
 |---|---|---|---|
@@ -6278,9 +6298,9 @@ The three tiers, and the failure direction:
 | `config_override_conflict` | `fact` | no | Same. |
 | `context_unknown_option` | `fact` | no | Same. |
 | `user_turn_guard_unrecoverable` | `fact` | no | Same. |
-| `tool_output_aggregate` | `derived` | host's call | A projection over the round's tool outputs; the bytes themselves are in the transcript and the archive, so the number can be recomputed or dropped. |
-| `recovering` | `derived` | host's call | Resume progress notification. The resume truth is the snapshot (`loadLatestRunSnapshot`), not this notification. |
-| `recovered` | `derived` | host's call | Same. |
+| `tool_output_aggregate` | `fact` | no | The aggregation **decision** (`action`, `reason`, `budgetTokens`, `inlineTokens`, `costTokens`, `projectedTokens`, `contentLength`). The transcript/archive keep the bytes, not these numbers — see the demotion note above. |
+| `recovering` | `fact` | no | Emitted before the retry backoff waits; aborted during the wait and no later `attempt` exists to reconstruct it from. |
+| `recovered` | `fact` | no | A **retry**-success notification (not resume). Nothing durable records “this answer was attempt N”. |
 
 **How the list is derived — it is not copied from this document.**
 `test/event-tier-coverage-743.test.js` re-derives the emitted names from the emission call sites in
@@ -6303,10 +6323,22 @@ at load time. No classification asked for by the ticket moved: `tool_call_delta`
 `reasoning_delta` / `assistant_delta` are `stream`, and `tool_use` / `tool_result` / `round_end` /
 `usage` / `judge` / `compaction` are `fact`.
 
+**What this enumeration deliberately does not cover.** The table covers the `LoopEvent` / `onEvent`
+observer surface plus the three streaming-fragment names. It does **not** cover records that travel
+the diagnostic **error** channel: `persistence_error` (`persistenceErrorEvent()` in
+`src/loop/orchestrator.js`) is reported through `diagnostics.error` and `onPersistenceError` and
+booked by `src/loop/error-ledger.js`; it never passes `emitEvent` / `onEvent`, so it is not an
+`onEvent` row and it is not in `EVENT_TIERS`. A host that stores it anyway gets `undefined` from
+`eventTierOf()` — “unknown ⇒ keep”, the safe side. `test/event-tier-coverage-743.test.js` (T10)
+pins all of that, so nobody reads this table as “every engine diagnostic”. (T11 additionally reddens
+when a **new emitter primitive** appears that neither the six families nor the registered
+look-alike-non-emitters know, so the guard cannot quietly shrink to a smaller surface.)
+
 ### The cleanup predicate
 
-`type ∈ stream ∧ run.status ∈ terminal ∧ ts < now − retention` ⇒ deletable. All three, in that
-order. Both halves of the first two are fail-closed:
+`type ∈ stream ∧ run.status ∈ cleanup-safe terminal ∧ assembled copy durably readable ∧ ts < now − retention`
+⇒ deletable. **All four**, in that order. Every one of them is fail-closed — a missing argument is
+answered “keep”, never “delete”:
 
 ```js
 import assert from "node:assert/strict";
@@ -6316,38 +6348,67 @@ import { streamCleanupEligible } from "erix-agent";
 // `ageMs` is `now - ts`; `retentionMs` is the host's own window and stays the host's argument.
 const retentionMs = 30 * 24 * 60 * 60 * 1000;
 const olderThanThat = 45 * 24 * 60 * 60 * 1000;
+const durable = { assembledCopyPersisted: true }; // the host's evidence: the round record is readable
 assert.equal(
-  streamCleanupEligible({ type: "assistant_delta", runStatus: "succeeded", ageMs: olderThanThat, retentionMs }),
+  streamCleanupEligible({ type: "assistant_delta", runStatus: "succeeded", ageMs: olderThanThat, retentionMs, ...durable }),
   true,
-); // stream + terminal + over the window ⇒ deletable
+); // all four hold ⇒ deletable
 assert.equal(
-  streamCleanupEligible({ type: "tool_result", runStatus: "succeeded", ageMs: olderThanThat, retentionMs }),
+  streamCleanupEligible({ type: "tool_result", runStatus: "succeeded", ageMs: olderThanThat, retentionMs, ...durable }),
   false,
 ); // a fact is never deletable
 assert.equal(
-  streamCleanupEligible({ type: "assistant_delta", runStatus: "running", ageMs: olderThanThat, retentionMs }),
+  streamCleanupEligible({ type: "assistant_delta", runStatus: "failed", ageMs: olderThanThat, retentionMs, ...durable }),
   false,
-); // not terminal ⇒ keep
+); // terminal but written on the throwing path: no assembled copy is guaranteed
+assert.equal(
+  streamCleanupEligible({ type: "assistant_delta", runStatus: "succeeded", ageMs: olderThanThat, retentionMs }),
+  false,
+); // no evidence the assembled copy landed ⇒ keep
+assert.equal(
+  streamCleanupEligible({ type: "assistant_delta", runStatus: "succeeded", ageMs: olderThanThat, retentionMs: -1, ...durable }),
+  false,
+); // a negative window is a typo, not “delete everything”
 ```
 
-`runStatus` is **this repo's** status name, the value the engine writes through `markRunState`, not
-a host database column. The terminal set is exactly `RUN_TERMINAL_STATUSES` — `succeeded`,
-`unverified_error`, `guard_error` (all three chosen by `finish()` from the verification status),
-`aborted`, `failed` (`markRunState(signal?.aborted ? "aborted" : "failed")` on the throwing path).
+**Terminal is not the same as “the answer was persisted”.** `runStatus` is **this repo's** status
+name, the value the engine writes through `markRunState`, not a host database column. The terminal
+set is `RUN_TERMINAL_STATUSES` — `succeeded`, `unverified_error`, `guard_error` (all three chosen by
+`finish()` from the verification status), `aborted`, `failed`
+(`markRunState(signal?.aborted ? "aborted" : "failed")` on the throwing path). The predicate accepts
+only `RUN_CLEANUP_SAFE_STATUSES` = `succeeded` / `unverified_error` / `guard_error`: those are written
+after the loop reached its normal end and produced a result. `failed` and `aborted` are excluded
+because a throw can happen **after** the provider streamed fragments and **before** any assembled
+assistant text exists — on those two the fragments may be the only bytes that round ever had. This
+covers the half the engine can know; the other half is the host's evidence:
+
+- `assembledCopyPersisted` — pass `true` only when the host can actually point at the assembled
+  counterpart (e.g. the round record carrying the assistant message / the `tool_use` input reads back
+  through `store.load(runId)`). A run whose store writes no round records, or a host that cannot show
+  the copy, passes `false` (or omits it) and nothing is deleted. Only the literal `true` counts.
+- `persistenceFailed` — `true` for a run whose persistence reported a failure (`persistence_error`, a
+  throwing `appendRound`, `continuity_write_failed`) refuses deletion regardless of the other three:
+  the copy the predicate would be leaning on is exactly the one that failed.
+
 `running` — written at start and at every resume — is deliberately **not** terminal, so an in-flight
-or crashed-and-unfinished run keeps its fragments. Two host-side names worth naming: `cancelled`
-and `expired` are host column values with no engine counterpart, and `persistence_failed` is a
-`termination.reason`, not a status. `test/event-tier-coverage-743.test.js` (T7) re-derives this
-list from the `markRunState` write sites, so a new terminal status that skips the table reddens it.
+or crashed-and-unfinished run keeps its fragments. Two host-side names worth naming: `cancelled` and
+`expired` are host column values with no engine counterpart, and `persistence_failed` is a
+`termination.reason`, not a status. `test/event-tier-coverage-743.test.js` re-derives both lists:
+T7 pulls the terminal names out of the `markRunState` write sites and re-derives the safe subset from
+what `finish()` writes (so `failed` / `aborted` cannot creep back in), and T8 pins every failure
+direction of the predicate, including the negative window.
 
 A host's cleanup statement is then one `DELETE` over its own table, with the tier column filled
 from `EVENT_TIERS` at insert time (filling it at read time is how a tier migration silently changes
-what old rows mean):
+what old rows mean). The two evidence columns are host-computed columns, filled from what the host
+can verify — not from the tier:
 
 ```sql
 DELETE FROM run_events
  WHERE tier = 'stream'
-   AND run_status IN ('succeeded', 'unverified_error', 'guard_error', 'aborted', 'failed')
+   AND run_status IN ('succeeded', 'unverified_error', 'guard_error')
+   AND assembled_copy_persisted
+   AND NOT persistence_failed
    AND ts < now() - INTERVAL '30 days';
 ```
 
@@ -6359,19 +6420,31 @@ DELETE FROM run_events
   `toolCallKey`, same `erix`), the round boundaries and the `usage` ledger, the `attempt` retry
   trail, and the verdicts — `judge`, `final_guard`, `run_outcome`. The run stays auditable end to
   end; only the "how it was typed" layer is lost.
-- `derived` rows are the host's own decision: the predicate never deletes `tool_output_aggregate`,
-  `recovering` or `recovered`, even though each of them can be recomputed.
+- `derived` is currently empty, so this predicate never has a “host's call” row: the three types that
+  once sat there (`tool_output_aggregate`, `recovering`, `recovered`) are `fact` now, which is the
+  conservative side of an unproven claim — a host that cannot delete them keeps bytes.
 - Deleting `fact` rows is not this predicate's business, and nothing in this section licenses it.
 
 ### Do the final guard or recall read these rows? (verified, not assumed)
 
 - **Final guard: no.** Its evidence source is the **transcript**, not the event stream. What it
-  reads, positively: `store.load(runId)` → for each round record `toolOutputs[].toolUseId` and
-  `toolOutputs[].content`, the `messages[].content[]` blocks whose `type === "tool_result"` (via
-  `block.tool_use_id` and `block.content`), and `record.round`; as a legacy source the capture
-  manifests `*.meta.json` under the archive directory (`display`, `archivePath`, `command`,
-  `legacy`) plus the artifact files they point at; and for the deliverable checks, the declared
-  files themselves on disk (`exists` + content). There is no `delta` / `tool_call` /
+  reads, positively — read out of `bin/final-guard-support.js`, nothing inferred:
+  - `store.load(runId)`, then per round record: `toolOutputs[].toolUseId` and `toolOutputs[].content`
+    (both must be strings to enter the map), the `messages[].content[]` blocks whose
+    `type === "tool_result"` via `block.tool_use_id` and `block.content` (a string, or an array of
+    `{ text }` parts), and `record.round` (only when it is a safe integer — otherwise the label says
+    `?` and the capture still counts);
+  - the legacy compatibility source, `<archiveDir>/*.meta.json`, through `readCaptureManifests` →
+    `readArtifact`, which reads and *validates* `kind` (must be `erix.tool-capture`), `schemaVersion`
+    (must be `1`), `truncated` (must be `false`), `digest` (re-hashed against the artifact),
+    `archivePath` (must be the manifest's sibling `.txt`, inside the archive root, a regular
+    non-symlink file) and `locator.lineStart` / `locator.lineEnd` (the slice it verifies), and uses
+    `display` / `round` only for labels and warning text — plus the artifact file's bytes themselves;
+  - for the deliverable checks, `facts.fileWrites[].path` resolved against `facts.cwd`, then the
+    declared files on disk (`exists`, non-empty, not placeholder-only).
+  Not read, whatever a reader might expect: `command` appears in no read path of that file, and
+  `legacy: true` is a marker the guard **writes onto its own captures** (`archiveSourceTarget` reads
+  it back off a capture, never off a manifest). There is no `delta` / `tool_call` /
   `reasoning_delta` read anywhere in `bin/final-guard*.js`. Deleting `stream` rows cannot change a
   verdict.
 - **Recall: nothing to read.** Bounded recall is retired in this repo — `recall` does not appear

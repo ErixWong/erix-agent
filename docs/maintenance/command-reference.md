@@ -61,8 +61,9 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   declared, and a quoted name in a comment fed the weak literal tier). A missing symbol is red and the message names the nearest
   symbols actually declared there; a file from which no declaration can be extracted at all is red too (#164:
   no silent pass when ground truth cannot be read). Named string *values* — termination reasons, provider error
-  codes — are the one weaker tier and are accepted only in the four files listed with a reason in
-  `SYMBOL_VALUE_MEMBERSHIP` in `scripts/docs-drift-check.mjs`. Because the bare-line ratchet keys on
+  codes — are the one weaker tier and are accepted only in the five files listed with a reason in
+  `SYMBOL_VALUE_MEMBERSHIP` in `scripts/docs-drift-check.mjs` (the fifth, `bin/final-guard.js`, was
+  added for issue #743 so the CLI guard's two skip reasons are actually checked). Because the bare-line ratchet keys on
   (document, target file, line range) — **never on the doc's own line number** — rewriting
   `` `symbol` (`path:1517-1531`) `` into a bare `path:1517-1531` leaves that count untouched while deleting the
   symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 235`:
