@@ -14,6 +14,9 @@ async function makeTempDir() {
 transcriptStoreContract("file", async () => {
   const dir = await makeTempDir();
   return createFileTranscriptStore({ dir });
+}, {
+  // issue #739：同 memory store——声明内置实现提供的可选能力，删掉任一实现都会让收尾核对红。
+  optionalCapabilities: ["runSnapshot", "runState", "runStateStatus", "rawRows"],
 });
 
 // ---- 以下为 file 实现特有行为（不进契约）----

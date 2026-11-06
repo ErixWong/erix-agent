@@ -223,13 +223,31 @@ const RETIRED_ADAPTER_METHODS = Object.freeze([
 ]);
 
 /**
- * 现役 memory store 的 API（事故里「有 recall 没有」的那一份名单，抄自 CHANGELOG 的 #257 条目）。
- * 用途只有两个：① 证明本规则的匹配器**不会误报现役名**；② 名单本身要能在 src/ 里查到，
- * 免得这份「反误报样本」自己腐化成编造。
+ * 现役 TranscriptStore 的 API（事故里「有 recall 没有」的那一份名单，抄自 CHANGELOG 的 #257 条目）。
+ *
+ * **它是什么**：一份**反误报样本**，不是「完整 API 真值」。它只被两条断言用：
+ * ① 证明退役名的匹配器**不会误报现役名**；② 名单本身要还能在 `src/` 里查到，免得这份样本自己腐化成编造。
+ * 第二条只验「名单里每个名字在源码里存在」，**不验完整性** ⇒ 未来新增一个方法而忘了登记，
+ * 本规则不会红（这是已知代价，不是 bug；要「漏项就红」得去抽真值，而那需要另一套机制）。
+ *
+ * **面内两种名字不同范围**（issue #739 独立评审点名要写清）：
+ * · `appendRound`/`load`/`markRunState`/`saveRunState`/`saveRunSnapshot`/`loadLatestRunSnapshot`/
+ * `loadRunState`/`loadRunStateStatus`/`saveCheckpoint`/`appendCheckpoint`/`loadLatestCheckpoint`/
+ * `loadRawRows` —— 这些是**内置 store 真返回的成员**（`src/store/memory.js` / `src/store/file.js`；
+ * `saveCheckpoint`/`appendCheckpoint`/`loadLatestCheckpoint` 是 issue #78 保留的 deprecated 别名），
+ * 宿主适配器如果装的是内置 store，`store.loadRawRows(...)` 这样的调用是现役的。
+ * · `loadByDedupKey`/`loadMaxRound` —— 这两个**不是**内置 store 返回对象的成员（内置 store 不实现），
+ * 它们是 #157 那对成对可选快路径探针：引擎侧 `src/store/append-user-turn.js` **探测并调用**它们
+ * （声明在 `src/store/message-rows.js` 的宿主面 JSDoc 里）。列在本名单里只因为「`.loadByDedupKey(`
+ * 这种写法在现役代码里合法」，不表示某个内置 store 导出这个名字。
+ *
+ * issue #739 补上这三个漏项（#730 记过账）。漏项本身不咬人（上面说了它不验完整性），但名单会腐化，
+ * 所以补全并把每一格的**范围**写在这。
  */
 const CURRENT_STORE_API = Object.freeze([
   "appendRound", "load", "markRunState", "saveRunState", "saveRunSnapshot", "loadLatestRunSnapshot",
   "saveCheckpoint", "appendCheckpoint", "loadLatestCheckpoint", "loadRunState", "loadRunStateStatus",
+  "loadRawRows", "loadByDedupKey", "loadMaxRound",
 ]);
 
 /** 匹配器：只认「方法调用」这一种形状（`.name(`），单词本身不算——注释、散文、工具名都不算。 */
@@ -4253,8 +4271,16 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *
  *     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 8 条 / 英文 8 条 / 配对 8 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 7（校准面 \#\# [Unreleased]）
  *     # 配对地板：实测 8 对 > 地板 7 对 ⇒ 可以抬地板到 8
+ *
+ * issue #739（test-261107-03）：`## [Unreleased] ### Changed` 新增一对（契约套件自己保证可选性是真的，
+ * 同一个 issue 引用 #739）⇒ 面没挪、仍是 `## [Unreleased]`，同一面实测 **9 对**（#713 / #421 / #714 / #715 /
+ * #729 / #724 / #721 / #735 / #739 各一对中英）。照旧**先贴守卫自己打的 diagnostic、再动常量**
+ * （在 402e76f 之后的树上现跑 `npm test` 得到）：
+ *
+ *     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 9 条 / 英文 9 条 / 配对 9 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 8（校准面 \#\# [Unreleased]）
+ *     # 配对地板：实测 9 对 > 地板 8 对 ⇒ 可以抬地板到 9
  */
-const CHANGELOG_PAIR_FLOOR = 8;
+const CHANGELOG_PAIR_FLOOR = 9;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

@@ -7,6 +7,63 @@
 
 ### Changed
 
+- **The shipped `TranscriptStore` contract suite now enforces its own optionality (issue #739).** The suite's
+  header said run snapshot and run-state are optional capabilities and `src/assembly-validators.js` agreed
+  (`OPTIONAL_TRANSCRIPT_STORE_METHODS`), but the suite body called `store.saveRunSnapshot` / `store.saveRunState`
+  unconditionally while `loadRawRows` and the `#157` probes each carried a one-way guard — so a host store
+  implementing only the required tier (`appendRound` + `load`) passed assembly validation and failed the shipped
+  conformance suite with `TypeError: store.saveRunSnapshot is not a function`, and the three wording layers
+  (docs / validators / suite) disagreed, the same root cause #730 booked. Now: the optional-group roster is derived
+  from the validators' own `RUN_SNAPSHOT_STORE_METHODS` / `RUN_STATE_STORE_METHODS` (never hand-copied), every
+  optional cell goes through one guard, and the guard is **paired** — an absent group is skipped *and recorded as
+  skipped*, a present group must have every guarded cell reach its assertions (a call counter backs the "implemented
+  ⇒ really invoked" claim), and a half-implemented group is a contract violation. Per label one accounting case
+  cross-checks the per-cell verdict ledger against the cell roster, so deleting a built-in optional implementation
+  reddens by name instead of hiding in the guard. A new `test/store/minimal-store-contract.test.js` registers the
+  whole suite against a required-tier-only store (folding and the `dedup_payload_conflict` obligation intact, not
+  one optional method present) and that suite is now green; built-in memory/file registrations declare the four
+  optional groups they implement. ⚠ **What actually changed for hosts** (an earlier draft of this entry said the
+  old suite let a half-implemented store "pass every cell it reached" — it did not, see the reverse proof below):
+  the old suite did not tolerate a missing optional group either — **whole-group absent and half-implemented both
+  failed**, by `TypeError` on whichever method happened to be missing, which reads like a broken store rather than
+  a capability the host never chose. The new suite makes **whole group absent** a legal, per-cell-counted skip, and
+  turns **half-implemented** from "fails by accident on the missing method" into a named contract violation listing
+  the missing methods (measured: base tree `d824dc7` + a store with `saveRunSnapshot` but no `loadLatestRunSnapshot`
+  → exit 1 with `store.loadLatestRunSnapshot is not a function`; new tree → exit 1 naming the missing method).
+  Also stated honestly, because the guard does not prove it: the verdict ledger and the call counter prove a cell
+  was **reached** and a capability's methods were **really invoked** — they do not prove the assertions still mean
+  anything (a cell whose `assert.equal(...)` was replaced by `assert.ok(true)` while the implementation returned a
+  wrong value still went green, exit 0; each cell owns its own semantics). The suite no longer writes onto the host
+  store at all — counts and the write-failure stubs land on the suite's own shallow view — so a host may
+  `Object.freeze` its store (pinned by `test/store/frozen-store-contract.test.js`; before this slice a frozen store
+  went red on the call-count check, which was a false red). `transcriptStoreContract` gained an optional third
+  argument `optionalCapabilities`; the two-argument host call sites in the contract keep working. The contract's
+  `transcript-store.js` inventory row states the measured cell count (27 on the base tree vs the registered 22 —
+  already stale before this slice — and 28 with the accounting case).
+- **随包 `TranscriptStore` 契约套件现在自己保证自己的「可选」是真的（issue #739）。** 套件头注释说 run snapshot 与
+  run-state 是可选 capability、`src/assembly-validators.js` 也这么登记（`OPTIONAL_TRANSCRIPT_STORE_METHODS`），
+  而套件体里 `store.saveRunSnapshot` / `store.saveRunState` 是**无条件调用**，同时 `loadRawRows` 与 `#157` 探针却各带
+  一个单向守卫 ⇒ 只实现必需面（`appendRound` + `load`）的宿主 store 能过装配校验、却在随包一致性套件上撞
+  `TypeError: store.saveRunSnapshot is not a function`；文档 / 装配校验 / 套件三处口径各说各话，正是 #730 记过账的病根。
+  修后：可选能力组名单从装配校验自己现推（`RUN_SNAPSHOT_STORE_METHODS` / `RUN_STATE_STORE_METHODS`，不手抄），所有可选格
+  走同一个守卫，且守卫**成对**——整组缺席 ⇒ 跳过**且逐格记为 skipped**；整组在场 ⇒ 每个守卫格都必须跑到断言（另设计数器
+  钉住「实现了 ⇒ 真的被调过」）；只实现半组 = 契约违规。每个 label 一条收尾用例按格子清单逐格核对判决账，于是
+  「内置 store 把某个可选实现删了」变成点名红，不再在全绿里隐身。新增 `test/store/minimal-store-contract.test.js`
+  把整套件注册到一个只有必需面的 store 上（折叠义务与 `dedup_payload_conflict` 义务都在，可选方法一个不给），今天它是绿的；
+  内置 memory/file 的注册处声明它们实现的四个可选能力组。⚠ **对宿主真正变了的是什么**（本条目早先一版写过
+  「半组实现过去能跑到哪绿到哪」，那是错的，反向证在下面）：旧套件也**不容忍缺可选能力**——「整组缺席」与
+  「只实现半组」都会红，红在缺的那个方法上抛 `TypeError`，那读起来像「实现坏了」而不像「宿主没选这个能力」。
+  新套件把**整组缺席**变成合法的、逐格记账的跳过，把**半组实现**从「在缺的方法上偶然撞崩」变成点名缺哪几个方法的
+  明确契约违规（实测：基点 `d824dc7` + 一个有 `saveRunSnapshot` 却没 `loadLatestRunSnapshot` 的 store ⇒ exit 1，
+  报 `store.loadLatestRunSnapshot is not a function`；新树 ⇒ exit 1 并点名缺的方法）。
+  还有一句守卫自己证不了的话，写在这：判决账与调用计数器证明的是「这一格**跑到了**」与「该能力的方法**真被调过**」，
+  它**证不了**断言本身还有语义——把某格 `assert.equal(...)` 换成 `assert.ok(true)` 同时让实现返回错值，套件仍全绿
+  （exit 0）；断言语义由各格子自己负责。另外套件现在**一个字段也不写宿主对象**（计数与「写失败」临时桩都落在
+  套件自己造的浅壳上），所以宿主可以把 store `Object.freeze` 起来（钉在 `test/store/frozen-store-contract.test.js`；
+  本片之前冻结的 store 会红在调用计数那格，那是 false-red）。`transcriptStoreContract` 新增可选第三参
+  `optionalCapabilities`，契约里两参调用写法照旧可用。契约的 `transcript-store.js` 清单行改为现取数
+  （基点实测 27 条 vs 原登记的 22 条——本片之前就已失真——加上收尾用例是 28 条）。
+
 ### Added
 
 - **The `[Unreleased]` carry is now a preflight gate (issue #715).** Nothing ever moved entries out of
