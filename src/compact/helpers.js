@@ -32,8 +32,8 @@ export function unverifiedRecoveryHint(reason) {
 }
 
 /**
- * 引擎自己可能渲染出的全部默认广告语。折叠摘要**合并**时要把它们从标题里剔干（原代码只剔
- * `DEFAULT_RECOVERY_HINT` 一句，现在默认句有三条变体，漏一个就会在合并标题里留半句脗肿）。
+ * 引擎自己可能渲染出的全部默认广告语。折叠摘要**合并**时要把它们从标题里剔干净（原代码只剔
+ * `DEFAULT_RECOVERY_HINT` 一句，现在默认句有三条变体，漏一个就会在合并标题里留半句臃肿）。
  */
 export const ENGINE_RECOVERY_HINTS = Object.freeze([
   DEFAULT_RECOVERY_HINT,
