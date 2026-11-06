@@ -3,12 +3,26 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3444,
+    "tests": 3449,
     "fail": 0,
     "maxSkipped": 15
   },
   "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
   "observations": [
+    {
+      "date": "2026-11-07",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "a92c713（#735 切片 1：本分支基点 = origin/main f6c2566）",
+      "branch": "fix-261107-01-snapshot-write-side",
+      "tests": 3449,
+      "pass": 3436,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "#735 切片 1 新增 5 条用例（`test/loop-snapshot-write-side-735.test.js`：写侧 payload 不再带 toolUse/ts、有读者的格照旧写出、`status` 仍分辨调用点、旧快照逐字往返、新形状崩溃现场能被 resume 消费）⇒ 3444 + 5 = 3449。六个计数逐字取自在本树跑的 `npm test` TAP 汇总（日志 /tmp/w735-npmtest.log，`# tests 3449` / `# pass 3436` / `# fail 0` / `# skipped 13`），并经 `npm run check:test-summary -- --log` 同一份日志复核（抬登记值前 VERDICT ok 并打出 HINT「可抬到 3449，+5」）⇒ 非手抄。fail=0；skipped 13 = 12 条真上游/真 relay 门禁 + 1 条真上游多会话格，上限 15 不动（本片没新增也不改任何 skip）。没删例、没跳过、没放宽断言：四格全停时实测红 10 例（见 CHANGELOG），故本切片只停真零读者的 `toolUse`/`ts` 两格，`status`/`compactionStats` 原样写出，零既有用例需要改。"
+    },
     {
       "date": "2026-11-06",
       "env": "local",
