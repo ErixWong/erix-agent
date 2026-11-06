@@ -142,7 +142,8 @@ export function observeCompactionLayer(
  *   protectedDowngraded?: number,
  *   userTurnGuard?: string,
  *   userTurnGuardChannel?: string,
- *   layers?: Record<string, { triggered: number, tokensSaved: number }>
+ *   layers?: Record<string, { triggered: number, tokensSaved: number }>,
+ *   foldArchive?: { droppedMessages?: number, droppedBytes?: number, capBytes?: number, dedupedMessages?: number }
  * }} [input]
  * @returns {{
  *   compacted: boolean,
@@ -171,8 +172,12 @@ export function observeCompactionLayer(
  *     droppedRounds?: number,
  *     attempts?: number,
  *     budgetExhausted?: boolean,
- *   }
+ *   },
+ *   foldArchive?: { droppedMessages: number, droppedBytes: number, capBytes?: number, dedupedMessages?: number }
  * }}
+ *   `foldArchive`（issue #741）：归档夹断丢掉原文时的计数，**只在真丢了东西时出现**（口径同
+ *   `protectedDowngraded` / `foldSummary` 的「无事实不写键」）。宿主侧契约见 docs/host-consumer-contract.md
+ *   的 `compaction` 事件格。
  */
 export function createCompactionStat({
   compacted = false,

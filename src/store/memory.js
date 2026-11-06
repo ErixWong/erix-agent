@@ -13,6 +13,7 @@ import { dedupConflictError, payloadFingerprint, recordKey } from "./transcript-
  *   roundKey?:string,
  *   navigationRecord?:object,
  *   foldedRoundRange?:{from:number,to:number},
+ *   foldedPayloadMeta?:{count:number,bytes:number,droppedMessages?:number,droppedBytes?:number,capBytes?:number,dedupedMessages?:number},
  *   response?:{content:object[], stopReason?:string, usage?:object},
  *   textPreview?:string,
  *   toolUses?:number,

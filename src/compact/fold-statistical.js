@@ -1185,7 +1185,7 @@ function prependSummary(
  * 工具足迹、锚点节、恢复提示与 fold-statistical 的 compact 产物同一套规则。
  *
  * @param {object[]} foldedPayload Raw folded messages.
- * @param {{from?: number, to?: number, count?: number, recoveryHint?: string,
+ * @param {{from?: number, to?: number, count?: number, recoveryHint?: string, noteTools?: string[],
  *   anchors?: {text: string}, stubs?: string[], navigationRecord?: object}} [options]
  * @returns {string}
  */
