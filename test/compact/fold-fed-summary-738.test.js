@@ -32,6 +32,8 @@ import { createFoldStatisticalStrategy } from "../../src/compact/fold-statistica
 import {
   FOLDED_SUMMARY_FED_TEXT_KEY,
   FOLD_SUMMARY_RECORD_FIELD,
+  pickFedSummaryTextBlock,
+  pinFedSummaryBlock,
 } from "../../src/compact/fold-summary-journal.js";
 import {
   deriveFoldSummaryText,
@@ -378,4 +380,117 @@ test("#738-F3 没裁 ⇒ 一个字节也没回填：可观测面全空，byteEqu
   assert.equal(plan.reason, "no-covering-summary");
   assert.deepEqual([plan.replaySource, plan.savedSummaryBytes, plan.replayedSummaryBytes, plan.byteEqual],
     ["", null, 0, "unknown"]);
+});
+
+// ---- G 评审必修：摘要块的身份 ≠ 「同一条消息里有个同文块」 -----------------------------------------
+
+// 独立评审定罪的误认路径（探针现场，原文见 `rv738a/review-738-fed-summary.md`）：
+//   新消息 = [ 摘要块被夹断成 "SUMMARY\n[已修剪]", 保留下来的正文块 "SUMMARY" ]，候选 = "SUMMARY"
+//   ⇒ 实际插入的摘要块是 `"SUMMARY\n[已修剪]"`，而旧判据（`content.some(block => block.text === candidate)`）
+//   会命中**那个保留正文块**，把 `"SUMMARY"` 当成「当年 fed 的那一串」写进账。
+// 根因是判据不限定「命中的那一块是不是摘要块」。修法是把身份**在安全层动手之前**就钉住
+// （`pinFedSummaryBlock`），定稿处只认那个块对象（`pickFedSummaryTextBlock` 的两档身份）。
+// 这几例全部**直接调这两个函数**，形状与 `orchestrator.js:4361` / `:4484` 的调用完全一致。
+
+/** 评审夹具：候选 = `"SUMMARY"`，同一条新消息里还留着与它同文的正文块。 */
+const REVIEW_CANDIDATE = "SUMMARY";
+
+test("#738-G 反例（评审必修）：摘要块被改写、同一条新消息里仍有同文正文块 ⇒ 不得写 fedSummaryText", () => {
+  // ① 钉住的时刻（折叠层定稿、安全层之前）：摘要块在 content[0]，正文块在它后面 —— 三条插入路径
+  //    都是这个形状（`fold-llm.js:145`、`fold-statistical.js:1116-1119 + :1167`、`budget-fit.js:160`）。
+  const summaryBlock = { type: "text", text: REVIEW_CANDIDATE };
+  const carriedBodyBlock = { type: "text", text: "与摘要同文的保留正文" };
+  const carrierAtInsertion = { role: "user", content: [summaryBlock, carriedBodyBlock] };
+  const pin = pinFedSummaryBlock({
+    candidate: REVIEW_CANDIDATE,
+    messages: [carrierAtInsertion],
+    preCompactionMessages: new Set(),
+  });
+  assert.deepEqual(pin && { blockIndex: pin.blockIndex, sameBlock: pin.block === summaryBlock },
+    { blockIndex: 0, sameBlock: true }, "钉住的必须是 content[0] 那块摘要块（这一步是身份的来源）");
+
+  // ② 安全层动过手：`safeTruncateMessages` 起手 `cloneState(messages)`（`budget.js:179-180`，
+  //    即 `structuredClone`）⇒ 消息与块**全是新对象**，而摘要块被截成了 `"SUMMARY\n[已修剪]"`；
+  //    同一条消息里**另有一块**仍是 `"SUMMARY"` —— 评审探针里那一份。
+  const finalMessages = [{
+    role: "user",
+    content: [
+      { type: "text", text: `${REVIEW_CANDIDATE}\n[已修剪]` },
+      { type: "text", text: REVIEW_CANDIDATE },
+    ],
+  }];
+  // 夹具前提（不是恒真）：定稿里**确实存在**一个与候选逐字同文的块 —— 旧判据正是栽在这里。
+  assert.equal(
+    finalMessages[0].content.some((block) => block.text === REVIEW_CANDIDATE), true,
+    "前提：同文块在场（否则本例挡不住任何事）",
+  );
+  assert.notEqual(finalMessages[0].content[0].text, REVIEW_CANDIDATE,
+    "前提：真正的摘要块已被改写 ⇒ 逐字承诺当场不成立");
+  assert.equal(pickFedSummaryTextBlock({
+    candidate: REVIEW_CANDIDATE, messages: finalMessages, pin,
+  }), undefined, "被截断之后不得再写 fedSummaryText（把保留正文当成当年 fed 的摘要 = 评审定罪的误认）");
+
+  // ②b 另一种碎法：不深拷贝、就地改写文本（同一块对象，文本变了）。两档身份里 ① 的文本核对先碎。
+  summaryBlock.text = `${REVIEW_CANDIDATE}\n[已修剪]`;
+  assert.equal(pickFedSummaryTextBlock({
+    candidate: REVIEW_CANDIDATE, messages: [carrierAtInsertion], pin,
+  }), undefined, "就地改写也必须证不过（块还在，但它已经不是当年那一串了）");
+
+  // ③ 正向对照（**这条才是关键**：整个函数不能靠「一律不写」蒙过上面两例）
+  const untouched = { type: "text", text: REVIEW_CANDIDATE };
+  const carrier = { role: "user", content: [untouched, { type: "text", text: "正文" }] };
+  const goodPin = pinFedSummaryBlock({
+    candidate: REVIEW_CANDIDATE, messages: [carrier], preCompactionMessages: new Set(),
+  });
+  assert.equal(pickFedSummaryTextBlock({
+    candidate: REVIEW_CANDIDATE, messages: [carrier], pin: goodPin,
+  }), REVIEW_CANDIDATE, "身份没断、文本没动 ⇒ 照旧写（写侧的覆盖面不是靠伪报撑住的）");
+});
+
+test("#738-G2 同文歧义一律不写：同一条消息里两块同文 / 两条新消息都命中 / 命中的不是插入下标", () => {
+  // (a) 同一条消息里两块与候选同文 ⇒「哪一块是摘要块」当场不可判 ⇒ 不钉 ⇒ 不写
+  const twinCarrier = {
+    role: "user",
+    content: [{ type: "text", text: "SUMMARY" }, { type: "text", text: "SUMMARY" }],
+  };
+  assert.equal(pinFedSummaryBlock({
+    candidate: "SUMMARY", messages: [twinCarrier], preCompactionMessages: new Set(),
+  }), undefined, "两块同文 ⇒ 不可判");
+
+  // (b) 两条新消息的首块都是候选 ⇒ 同样不可判
+  const carrierA = { role: "user", content: [{ type: "text", text: "SUMMARY" }] };
+  const carrierB = { role: "system", content: [{ type: "text", text: "SUMMARY" }] };
+  assert.equal(pinFedSummaryBlock({
+    candidate: "SUMMARY", messages: [carrierA, carrierB], preCompactionMessages: new Set(),
+  }), undefined, "两条新消息都命中 ⇒ 不可判");
+  assert.equal(pickFedSummaryTextBlock({
+    candidate: "SUMMARY", messages: [carrierA, carrierB], pin: undefined,
+  }), undefined, "没钉住 ⇒ 直接证不过（禁止拿候选去定稿消息里做文字搜索）");
+
+  // (c) 同文块命中的是**保留正文那个下标**，不是插入约定的首块 ⇒ 不敢认
+  //     (c1) 这条消息是压缩前就在的（正文原文行）⇒ 它根本不是本次折叠新造的
+  const bodyFirst = {
+    role: "user",
+    content: [{ type: "text", text: "SUMMARY" }, { type: "text", text: "别的正文" }],
+  };
+  assert.equal(pinFedSummaryBlock({
+    candidate: "SUMMARY",
+    messages: [bodyFirst],
+    preCompactionMessages: new Set([bodyFirst]),
+  }), undefined, "旧消息里的同文块不算证据");
+  //     (c2) 消息是**新造的**，但同文块落在下标 1（`fold-llm` 改写 user 消息时正文跟在摘要块后面，
+  //     评审反例里那块的位置）⇒ 命中不在插入约定那个下标上 ⇒ 一样不敢认
+  const bodySecond = {
+    role: "user",
+    content: [{ type: "text", text: "别的正文" }, { type: "text", text: "SUMMARY" }],
+  };
+  assert.equal(pinFedSummaryBlock({
+    candidate: "SUMMARY",
+    messages: [bodySecond],
+    preCompactionMessages: new Set(),
+  }), undefined, "同文块不在摘要块那个下标上 ⇒ 不算证据（这正是评审坐实的那一类命中）");
+
+  // (d) 候选本身空/非串 ⇒ 没得证
+  assert.equal(pinFedSummaryBlock({ candidate: "   ", messages: [carrierA] }), undefined);
+  assert.equal(pickFedSummaryTextBlock({ candidate: 42, messages: [carrierA], pin: { message: carrierA, blockIndex: 0, block: carrierA.content[0] } }), undefined);
 });

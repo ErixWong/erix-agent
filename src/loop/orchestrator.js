@@ -163,6 +163,7 @@ import {
   FOLDED_SUMMARY_FED_TEXT_KEY,
   foldSummaryFingerprint,
   pickFedSummaryTextBlock,
+  pinFedSummaryBlock,
   stableFingerprint,
 } from "../compact/fold-summary-journal.js";
 import { FOLD_SUMMARY_MARKER, summarizeFoldedPayload } from "../compact/fold-statistical.js";
@@ -4347,6 +4348,19 @@ export async function runToolLoop(options) {
             + " until max_rounds_cap",
         });
       }
+      // ── issue #738 第二步（评审必修）：**摘要块的对象身份要在安全层动手之前钉住** ──────────
+      // 逐字承诺只能在**定稿后**的 `messages` 上证，但那时候「哪一块是摘要块」可能已经被后面的层
+      // 搅浑：安全层把摘要截成 `SUMMARY\n[已修剪]`，而它**同一条消息里**保留下来的正文块恰好还是
+      // `SUMMARY`（评审用探针坐实的误认）。到那时再按文字搜「哪个块等于候选」，就会把那个正文块
+      // 认成摘要块 —— 写进账的是一串**保留正文**，而它自称「这就是当年 fed 的摘要」。
+      // ⇒ 在折叠层已全部定稿（策略那一发 + 预算兜底 + 兜底摘要 prepend）、而安全层与 user-turn 守卫
+      //   **都还没动手**的这一刻，把块对象身份钉下来（三条硬条件见 `pinFedSummaryBlock`：新消息 +
+      //   插入约定那个下标 + 唯一）。钉不住 ⇒ 后面直接证不过 ⇒ 不写这一格。
+      const fedSummaryPin = pinFedSummaryBlock({
+        candidate: strategyFoldSummary?.text,
+        messages: compactedMessages,
+        preCompactionMessages,
+      });
       if (
         budgetBelowWorkingSet === undefined
         && (
@@ -4459,16 +4473,16 @@ export async function runToolLoop(options) {
       if (fedSummaryIsFoldSummary && !foldSummaryLedger.journaled(foldedFingerprint)) {
         foldSummaryLedger.markJournaled(foldedFingerprint);
         // issue #738 第一步（**纯加法**）：除上面两格之外，再把「本次折叠**实际插入上下文的那一串字节**」
-        // 单独记一格。写入门槛不是「策略报了一个 text」，而是 `pickFedSummaryTextBlock` 的**当场自证**：
-        // 候选串（`foldSummary.text`，`fold-llm` 那一档就是 `compactedSummary`）必须逐字等于本次折叠新造的
-        // 那条消息里的**某一个完整 text 块**，而且是在**所有压缩层定稿之后**的 `messages` 上证（安全层截过
-        // 就证不过）。证不过 ⇒ **不写这一格**：宁可旧数据继续走今天的兼容回填，也不拿拼接投影
+        // 单独记一格。写入门槛不是「策略报了一个 text」，而是 `pickFedSummaryTextBlock` 的**当场自证**，
+        // 而它认的是**上面刚钉住的那个块对象身份**（不是文字命中，见 `fedSummaryPin` 那段）：候选串
+        //（`foldSummary.text`，`fold-llm` 那一档就是 `compactedSummary`）必须逐字等于钉住的摘要块，
+        // 而那块在**所有压缩层定稿之后**还得能按对象身份找回来（被截过或被重建过就证不过）。证不过 ⇒ **不写这一格**：宁可旧数据继续走今天的兼容回填，也不拿拼接投影
         //（`fedSummaryText` 局部变量）或策略估算值（定稿处现算的 `summarizeFoldedPayload`）凑一份逐字承诺。
         // 读侧的选择在 `src/compact/resume-fold-trim.js#pickFoldSummaryReplay`（这一格在场 ⇒ 逐字回放）。
         const fedSummaryExactBlock = pickFedSummaryTextBlock({
           candidate: strategyFoldSummary?.text,
           messages,
-          preCompactionMessages,
+          pin: fedSummaryPin,
         });
         foldedSummaryFact = {
           text: fedSummaryText,
