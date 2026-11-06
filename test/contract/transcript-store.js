@@ -117,8 +117,30 @@ export function transcriptStoreContract(label, createStore, options = {}) {
     : new Set(options.optionalCapabilities);
   /** 逐格判决账（`<能力>|<格子>` → pending|exercised|skipped|fallback）。 */
   const verdicts = new Map();
+  /** 调用计数器（方法名 → 次数）：把「内置 store 确实实现了 ⇒ 这些方法真的被调过」钉死。 */
+  const calls = new Map();
+  const COUNTED = Symbol("contract-counted");
 
   const verdictKey = (capability, cell) => `${capability}|${cell}`;
+
+  /** 把本组方法包上计数器（幂等：同一个已包装的函数不重复包）。 */
+  function instrument(store, capability) {
+    for (const method of OPTIONAL_CAPABILITIES[capability] ?? []) {
+      const current = store?.[method];
+      if (typeof current !== "function" || current[COUNTED] === true) continue;
+      const original = current.bind(store);
+      const wrapped = async (...args) => {
+        calls.set(method, (calls.get(method) ?? 0) + 1);
+        return original(...args);
+      };
+      try {
+        wrapped[COUNTED] = true;
+        store[method] = wrapped;
+      } catch {
+        // 只读 store（宿主冻结了实现面）：计数器不可用就继续跑，不拿工具性限制去改契约结论。
+      }
+    }
+  }
 
   /** 整组实现 ⇒ true；整组缺席 ⇒ false；半组 ⇒ 当场红（点名缺哪几个方法）。 */
   function probeCapability(store, capability) {
@@ -143,16 +165,13 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   /** 能力守卫（成对）：true ⇒ 本格子必须真跑断言，跑完调用 `capabilityAsserted`；false ⇒ 已记 `skipped`。 */
   function capabilityPresent(store, capability, cell) {
     const present = probeCapability(store, capability);
+    if (present) instrument(store, capability);
     recordVerdict(capability, cell, present ? "pending" : "skipped");
     return present;
   }
   /** 断言真的跑完了（不调用 ⇒ 判决停在 `pending`，收尾用例红：守卫把「实现了」当「测过了」）。 */
   function capabilityAsserted(capability, cell) {
     recordVerdict(capability, cell, "exercised");
-  }
-  /** 能力缺席、但本格子按契约正文的 legacy 回退了实现（只有 `runStateStatus` 合法）。 */
-  function capabilityFallback(capability, cell) {
-    recordVerdict(capability, cell, "fallback");
   }
   /**
    * `loadRunStateStatus` 的判决（它与 run-state 绑在一起，所以不走 `capabilityPresent` 的跳过口径）：
@@ -162,6 +181,10 @@ export function transcriptStoreContract(label, createStore, options = {}) {
   function statusReaderOutcome(store, hasRunState) {
     if (!hasRunState) return "skipped";
     return typeof store.loadRunStateStatus === "function" ? "exercised" : "fallback";
+  }
+  /** 把终态读口挂上调用计数器：必须在**调用之前**包（`statusReaderOutcome` 是断言之后才记账的）。 */
+  function trackStatusReader(store) {
+    instrument(store, "runStateStatus");
   }
 
   test(`${label}: append/load 往返保真（块结构与元数据）`, async () => {
@@ -285,6 +308,7 @@ export function transcriptStoreContract(label, createStore, options = {}) {
     // 它实现的那一半，而不是被一个整格守卫静默跳过。
     const hasSnapshot = capabilityPresent(store, "runSnapshot", "snapshot-state-isolation");
     const hasRunState = capabilityPresent(store, "runState", "snapshot-state-isolation");
+    trackStatusReader(store);
     const loadStatus = async (runId) => {
       if (typeof store.loadRunStateStatus === "function") {
         return store.loadRunStateStatus(runId);
@@ -368,7 +392,11 @@ export function transcriptStoreContract(label, createStore, options = {}) {
 
   test(`${label}: run-state 快照保真且终态独立读取`, async () => {
     const store = await createStore();
-    if (!capabilityPresent(store, "runState", "run-state-fidelity")) return; // 可选能力：最小实现不提供
+    const hasRunState = capabilityPresent(store, "runState", "run-state-fidelity");
+    trackStatusReader(store);
+    // 终态读口的判决与 run-state 同格：run-state 缺席时这一格也必须记账（否则收尾核对会少一格）。
+    recordVerdict("runStateStatus", "run-state-fidelity", statusReaderOutcome(store, hasRunState));
+    if (!hasRunState) return; // 可选能力：最小实现不提供
     await store.saveRunState("state-run", {
       stateVersion: 3,
       deterministic: { rounds: 2 },
@@ -386,7 +414,6 @@ export function transcriptStoreContract(label, createStore, options = {}) {
     assert.deepEqual(state.deterministic, { rounds: 2 });
     assert.deepEqual(state.semantic, { text: "summary", version: 1 });
     capabilityAsserted("runState", "run-state-fidelity");
-    recordVerdict("runStateStatus", "run-state-fidelity", statusReaderOutcome(store, true));
   });
 
   test(`${label}: run-state 未知 runId 返回 undefined`, async () => {
@@ -818,5 +845,78 @@ export function transcriptStoreContract(label, createStore, options = {}) {
       store.appendRound("implicit-run", { round: 7, messages: [{ role: "user", content: ["x"] }] }),
       (error) => isDedupConflict(error) && error.key === "implicit-run:round:7",
     );
+  });
+
+  // ---- issue #739：守卫成对的收尾核对 -------------------------------------------------
+  // 单向守卫（修前 :423 那个 loadRawRows 守卫的原型）会把「内置 store 把实现删了」变成全绿隐身：
+  // 缺席就 return，套件不知道这份实现**本该**提供该能力。本条把三个方向同时钉住：
+  //   缺席 ⇒ 每一格都必须记 `skipped`（且只许缺席的才能是 skipped）；
+  //   实现 ⇒ 每一格都必须记 `exercised`，且组内每个方法都被真的调过（调用计数器）；
+  //   声明（options.optionalCapabilities）⇒ 必须实现，且必须跑到 exercised——内置 store
+  //   把 `loadRawRows` 删掉就会同时踏两条：声明了却没实现 + 格子从 exercised 退成 skipped。
+  test(`${label}: 能力守卫成对——缺席即记账跳过、实现即真断言并计数（issue #739）`, async () => {
+    const store = await createStore();
+    // 收尾核对自己都要进账，否则下面任何一句 assert 被删都没人知道（格子清单里没它）。
+    const has = (capability) => probeCapability(store, capability);
+    const runnable = (capability) => has(capability)
+      && (capability !== "runStateStatus" || has("runState")); // 终态读口没 run-state 就无处可验
+
+    // 0) 名单与格子清单自洽：每个能力都有格子，格子只指向已知能力，声明的名字必须是已知能力名。
+    for (const capability of Object.keys(OPTIONAL_CAPABILITIES)) {
+      assert.ok(Array.isArray(CAPABILITY_CELLS[capability]) && CAPABILITY_CELLS[capability].length > 0,
+        `${label}: 能力 ${capability} 没有在 CAPABILITY_CELLS 里登记格子 ⇒ 它的守卫无人核对`);
+    }
+    for (const capability of Object.keys(CAPABILITY_CELLS)) {
+      assert.ok(OPTIONAL_CAPABILITIES[capability] !== undefined,
+        `${label}: CAPABILITY_CELLS 里的 ${capability} 不在 OPTIONAL_CAPABILITIES 名单里（手拄了或漏删）`);
+    }
+    for (const capability of declaredCapabilities ?? []) {
+      assert.ok(OPTIONAL_CAPABILITIES[capability] !== undefined,
+        `${label}: optionalCapabilities 声明了未知能力 ${capability}（拼错了，或名单已改名）`);
+    }
+    const knownKeys = new Set(Object.entries(CAPABILITY_CELLS)
+      .flatMap(([capability, cells]) => cells.map((cell) => verdictKey(capability, cell))));
+    for (const key of verdicts.keys()) {
+      assert.ok(knownKeys.has(key), `${label}: 判决账里出现未登记的格子 ${key}（新增守卫格子却没进 CAPABILITY_CELLS）`);
+    }
+
+    for (const [capability, cells] of Object.entries(CAPABILITY_CELLS)) {
+      const implemented = has(capability);
+      const declared = declaredCapabilities?.has(capability) ?? false;
+      if (declared && !implemented) {
+        assert.fail(`${label}: 声明提供可选能力 ${capability}，但 store 上没有整组方法（${OPTIONAL_CAPABILITIES[capability].join("/")}）`
+          + ` ⇒ 实现被删了；守卫不许把它当「宿主本来就没选这个能力」静默跳过`);
+      }
+
+      const runnableNow = runnable(capability);
+      for (const cell of cells) {
+        const key = verdictKey(capability, cell);
+        const outcome = verdicts.get(key);
+        assert.ok(outcome !== undefined, `${label}: 守卫格子 ${key} 没有判决记录 ⇒ 那一格被删了或提前 return 了（绕过了守卫）`);
+        if (implemented) {
+          assert.equal(outcome, "exercised",
+            `${label}: ${capability} 已整组实现，格子 ${cell} 的判决却是 ${outcome}（pending = 守卫说在场但断言没跑完；skipped = 守卫把实现当缺席）`);
+        } else if (capability === "runStateStatus" && outcome === "fallback") {
+          // 契约正文写明的 legacy：实现了 run-state 却没终态读口 ⇒ 终态从快照的 `state` 读。
+          assert.equal(has("runState"), true,
+            `${label}: ${key} 走了 legacy 回退口，但 run-state 根本没实现 ⇒ 这个回退是空跑（什么都没验）`);
+        } else {
+          assert.equal(outcome, "skipped",
+            `${label}: ${capability} 整组缺席，格子 ${cell} 必须是 skipped，实测 ${String(outcome)}`);
+        }
+      }
+
+      if (runnableNow) {
+        const silent = OPTIONAL_CAPABILITIES[capability].filter((method) => (calls.get(method) ?? 0) === 0);
+        assert.deepEqual(silent, [],
+          `${label}: ${capability} 已实现且本套件逐格都判了 exercised，但这些方法一次都没被调用：${silent.join("/")}`
+          + ` ⇒ 调用计数器与判决矛盾（守卫只看了 typeof，没看真的调没调）`);
+      } else {
+        for (const method of OPTIONAL_CAPABILITIES[capability]) {
+          assert.equal(calls.get(method) ?? 0, 0,
+            `${label}: ${capability} 没整组实现，方法 ${method} 却被调了 ${String(calls.get(method))} 次 ⇒ 守卫漏了半实现情形`);
+        }
+      }
+    }
   });
 }
