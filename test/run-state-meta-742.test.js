@@ -61,7 +61,7 @@ test("#742 不超上限也没夹断章：truncated 为假、bytes 与实际序�
 
 test("#742 副本被引擎夹断过（夹断章在上限内）：truncated 仍要为真", () => {
   // 实测：夹断发生在轮记录写点的**上游**（`boundRunState`），落盘的副本本身反而在上限内
-  // （128 工具 / 128 文件 / 64 todo / 1200 字 semantic 的极端轮也只到 28 KB）。
+  // （128 工具 / 128 文件 / 64 条 todo / 1200 字 semantic 的极端轮只到 64 893 B，比上限低 643 B）。
   // 只看 `bytes > capBytes` 会把真被夹断的那一轮报成「没截断」，而夹断章
   // （`bounds.truncated` + `reason: "serialized_size"`）正是现成的那一笔 —— 两个事实取或。
   const state = {

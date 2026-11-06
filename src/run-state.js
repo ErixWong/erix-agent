@@ -223,7 +223,8 @@ function serializedBytes(value) {
  *      `test/run-state-meta-742.test.js` 的源码格。
  *   3. **两个截断事实取或**：`truncated` = 副本**自己超出上限**（`bytes > capBytes`）**或**引擎已在
  *      `bounds.truncated` 上盖了夹断章。只要前者会永久假：实测一份 128 个工具 / 128 个文件 /
- *      64 条 todo / 1200 字 semantic 的极端轮，夹断**后**写到轮记录上的副本只有 28 KB（夹断发生在
+ *      64 条 todo / 1200 字 semantic 的极端轮，夹断**后**写到轮记录上的副本是 64 893 B —— 只比 64 KiB
+ *      的上限低 643 B（夹断发生在
  *      写点**上游**的 `boundRunState`）——只报「超上限」就把真被夹断的那一轮报成没截断，而夹断章
  *      （`omittedTools` / `reason: "serialized_size"`）就是现成的那一笔。两者取或才不会谎报；
  *      两个事实各自仍在 `bytes` / `bounds` 里分得开，这一格不把两者揉成一个数。

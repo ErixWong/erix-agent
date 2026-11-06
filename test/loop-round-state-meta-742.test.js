@@ -7,7 +7,7 @@
 //   * `bytes` 逐字节等于 `Buffer.byteLength(JSON.stringify(record.runState), "utf8")` —— 量的是
 //     **真正落盘的那一份副本**，不是夹断前的候选。
 //   * 夹断发生在写点**上游**的 `boundRunState`，所以「被夹断那一轮」落盘的副本反而**在上限之内**
-//     （现测极端轮：128 工具 / 128 文件 / 64 条 todo / 1200 字 semantic ⇒ 副本 28 KB）。
+//     （现测极端轮：128 工具 / 128 文件 / 64 条 todo / 1200 字 semantic ⇒ 副本 64 893 B，只比上限低 643 B）。
 //     判据里 `bytes > capBytes` 那一半是**夹断前的候选**才成立的事实，它由
 //     `test/run-state-meta-742.test.js` 的超上限形状钉住；轮记录这一格必须靠引擎自己盖的夹断章
 //     （`runState.bounds.truncated`）才报得真，否则真实 run 里 `truncated` 永远是 false。
