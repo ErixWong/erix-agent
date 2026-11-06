@@ -41,6 +41,7 @@ import { join } from "node:path";
 
 import { createFileTranscriptStore, safeRunId } from "../src/store/file.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
+import { foldLedgerMessages } from "../src/store/message-rows.js";
 import { makeTmp } from "./helpers/tmp.js";
 import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
@@ -89,7 +90,9 @@ async function captureWriteSidePayloads() {
 
   assert.ok(payloads.length > 0, "引擎必须真的写过 run snapshot（否则下面的字段面断言是空的）");
   assert.equal(result.finalText, "读完了", "run 必须正常收口（否则现场是个 failed 的 run）");
-  return { payloads, result };
+  // issue #735 切片 2：`messages` 只带轮残余 ⇒ 崩溃现场的「已落盘前缀」只能从账本取（新契约）。
+  return { payloads, result, transcript: foldLedgerMessages(await store.load("snapshot-write-side-735"))
+    .map((entry) => entry.message) };
 }
 
 /** 取「带在飞工具调用」那一条：它才是格最全的写侧现场。 */
@@ -259,7 +262,7 @@ test("#735 切片 1：保留格的**键序**不动（file store 直接 stringify
 test("#735 切片 1：引擎亲笔写下的**新形状**崩溃现场（已无 toolUse / ts）照样能被 resume 消费", async () => {
   // 不手锤崩溃现场（手锤很容易造出「tool_result 没有配对 tool_use」这类非法上下文）：
   // 拿**引擎自己写下**的那条带在飞调用的快照当现场，它已经是新形状。
-  const { payloads } = await captureWriteSidePayloads();
+  const { payloads, transcript } = await captureWriteSidePayloads();
   // 取**工具前**那条写点：那里在飞调用还没结清（`toolResults` 空），恢复侧只能从
   // `pendingToolUses` / `pendingToolUse` 重建它 —— 正是「已停写的 `toolUse` 不在链路上」的判别面。
   const crash = payloads.find((entry) => (
@@ -281,8 +284,10 @@ test("#735 切片 1：引擎亲笔写下的**新形状**崩溃现场（已无 to
   const anchor = crash.persistedTranscriptLength;
   assert.ok(Number.isSafeInteger(anchor) && anchor >= 1, `锚点应当已含已落盘正文（实测 ${anchor}）`);
   const store = createMemoryTranscriptStore();
-  await store.appendRound(CRASH_RUN_ID, { round: 0, messages: crash.messages.slice(0, 1) });
-  await store.appendRound(CRASH_RUN_ID, { round: 1, messages: crash.messages.slice(1, anchor) });
+  assert.ok(transcript.length >= anchor,
+    `账本必须已经落盘到快照锚点（账本 ${transcript.length} 条 vs 锚点 ${anchor}）`);
+  await store.appendRound(CRASH_RUN_ID, { round: 0, messages: structuredClone(transcript.slice(0, 1)) });
+  await store.appendRound(CRASH_RUN_ID, { round: 1, messages: structuredClone(transcript.slice(1, anchor)) });
   await store.saveRunSnapshot(CRASH_RUN_ID, { ...crash, persistedTranscriptLength: anchor });
 
   let replayed = 0;

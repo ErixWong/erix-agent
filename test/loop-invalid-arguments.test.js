@@ -13,6 +13,7 @@ import { runToolLoop } from "../src/loop/orchestrator.js";
 import { runDirect } from "./helpers/run-direct.js";
 import { createOpenAIProvider } from "../src/providers/openai.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
+import { foldLedgerMessages } from "../src/store/message-rows.js";
 import { createMockFetch } from "./helpers/mock-fetch.js";
 
 const READ_FILE_SCHEMA = {
@@ -236,33 +237,39 @@ async function rejectedCrashSnapshot(rawArguments) {
   assert.equal(snapshot.pendingToolUses[0].erix.argumentsParseError.reason, "unparsable",
     "快照里的 pending 调用必须带着判词（否则这一格测的不是崩溃现场）");
   assert.equal(snapshot.toolResults[0].toolResult.erix.executionStatus, "rejected");
-  return snapshot;
+  // issue #735 切片 2：快照的 `messages` 从此只带**轮残余**（锚点之前的前缀是 `null`），
+  // 所以「崩溃时刻已落盘的那段正文」必须从**账本**取，不能再从快照里翻出来 —— 这正是本片的新契约。
+  // 不是「为了让用例好看而改断言」：用例要的还是同一段真正文，只是换了它真正的来源。
+  const transcript = foldLedgerMessages(await store.load("resume-rejected")).map((entry) => entry.message);
+  assert.ok(transcript.length >= 2, `账本里必须已有 seed 与 assistant 正文（实测 ${transcript.length}）`);
+  return { snapshot, transcript };
 }
 
 /** 账本停在快照锚点（结果已产出、还没落账），快照领先一步 —— 崩溃时刻的真实形状。 */
-async function seedCrashSite(snapshot) {
+async function seedCrashSite({ snapshot, transcript }) {
   const anchor = snapshot.persistedTranscriptLength;
   assert.ok(Number.isSafeInteger(anchor) && anchor >= 2,
     `快照锚点必须已含 seed 与 assistant 正文（实测 ${anchor}）`);
   const store = createMemoryTranscriptStore();
-  await store.appendRound("resume-rejected", { round: 0, messages: snapshot.messages.slice(0, 1) });
+  await store.appendRound("resume-rejected", { round: 0, messages: structuredClone(transcript.slice(0, 1)) });
   await store.appendRound("resume-rejected", {
     round: 1,
-    messages: snapshot.messages.slice(1, anchor),
+    messages: structuredClone(transcript.slice(1, anchor)),
   });
   await store.saveRunSnapshot("resume-rejected", { ...snapshot, persistedTranscriptLength: anchor });
   return store;
 }
 
 test("resume：崩溃现场是一条被拒的调用 ⇒ 不补跑，模型看到同一份判词而不是 interrupted 文案", async () => {
-  const snapshot = await rejectedCrashSnapshot('{"path": "a.txt"');
+  const scene = await rejectedCrashSnapshot('{"path": "a.txt"');
+  const { snapshot } = scene;
   const verdict = snapshot.toolResults[0].toolResult.content;
   assert.match(verdict, /正确形状/u, "判词原文取自快照（下面逐字比对的就是它）");
 
   // 两种 replayPolicy 都跑：默认档是「照旧重放」，per-tool-declaration 档才是会把 pending 调用
   // 改写成 interrupted 的那一条 —— 后者是这一格真正的判别面。
   for (const replayPolicy of ["always-replay", "per-tool-declaration"]) {
-    const store = await seedCrashSite(snapshot);
+    const store = await seedCrashSite(scene);
     const fetchImpl = createMockFetch([{
       json: { choices: [{ message: { content: "我改好再试" }, finish_reason: "stop" }] },
     }]);
