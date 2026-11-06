@@ -1,6 +1,6 @@
 import { cloneState } from "./budget.js";
 import { blocksFor, mergeToolResultsIntoMessages } from "./messages.js";
-import { MESSAGE_ROW_KIND, nextMessageSeqByRound, foldLedgerMessages, foldMessageRows } from "../store/message-rows.js";
+import { MESSAGE_ROW_KIND, isRoundCarrier, nextMessageSeqByRound, foldLedgerMessages, foldMessageRows } from "../store/message-rows.js";
 import { extractL0Facts } from "../reflection/l0.js";
 import { buildTimeline } from "../reflection/judge.js";
 import { pendingTailToolUses, answerPendingMidSequenceToolUses } from "./pending-tool-result.js";
@@ -123,6 +123,11 @@ export function countResumeAnchor(records) {
  * 残留风险（有意接受）：provider `id` 不保证 run 内唯一（issue #284），同轮两条聚合消息首个
  * `tool_use_id` 相同时会认到先出现的那一行 ⇒ 桩落进同轮另一条聚合消息（不报错、不丢块，形状不对）。
  *
+ * **该轮载体已带正文 ⇒ 不给锚点（issue #729）**：见 `roundHasBodyCarrier`。宿主把折好的载体行与
+ * 原始消息行**两份都留**时（`#401` R3 的事故现场就是它），桩一落账就绕开 R3 守卫（折出来的那份多
+ * 出桩这一块 ⇒ 判不等）⇒ 整轮正文拼第二遍、`load()` 出一份重复轮的账。宁可退回 #421 的降级（桩只
+ * 修本次上下文 + 发一条 `resume_journal_skipped`），也不写一份会翻倍的账。
+ *
  * @param {any[]} rows `store.load()` 返回的行
  * @param {any} message 上下文里的那条聚合消息
  * @param {number|undefined} round 该消息的轮号
@@ -131,17 +136,50 @@ export function countResumeAnchor(records) {
 function firstSliceRowKeyOf(rows, message, round) {
   const head = blocksFor(message?.content).find((block) => block?.type === "tool_result");
   if (head === undefined || head.tool_use_id === undefined) return undefined;
-  for (const row of Array.isArray(rows) ? rows : []) {
+  const scanned = Array.isArray(rows) ? rows : [];
+  if (roundHasBodyCarrier(scanned, round)) return undefined;
+  for (const row of scanned) {
     if (row?.kind !== MESSAGE_ROW_KIND) continue;
     if (!Number.isSafeInteger(row.seq)) continue;
     if (typeof row.partOf === "string" && row.partOf !== "") continue;
-    if (Number.isSafeInteger(round) && Number.isSafeInteger(row.round) && row.round !== round) continue;
+    // issue #729：轮号是整数时 `row.round` 必须**严格相等**。旧写法把「`row.round` 不是安全整数」
+    // 当成「不排除」，而折叠层（`src/store/message-rows.js`）对没有整数 `round` 的行一律不当折叠
+    // 目标 ⇒ 命中那种行等于保证桩落成**孤儿 `user` 消息**（`user tool_result has no matching
+    // assistant tool_use`），另一种 `invalid_messages`。
+    if (Number.isSafeInteger(round) && row.round !== round) continue;
+    // 轮号未知（`messageRounds` 没有这条消息）：退回逐行判据——候选行自己那一轮已有带正文的载体 ⇒
+    // 同样不给锚点（同一条纪律，不因为「轮号算不出来」就放开）。
+    if (!Number.isSafeInteger(round) && roundHasBodyCarrier(scanned, row.round)) continue;
     const [only] = Array.isArray(row.messages) ? row.messages : [];
     if (only?.role !== "user") continue;
     const first = blocksFor(only.content)[0];
     if (first?.type === "tool_result" && first.tool_use_id === head.tool_use_id) return rowKeyOf(row);
   }
   return undefined;
+}
+
+/**
+ * issue #729：这一轮在**同一份落盘行**里是否已经有「带着正文的载体行」。
+ *
+ * 判据与折叠层逐字同源：载体形态 = `isRoundCarrier`（key 以 `:round:<n>` / `:round:<n>:resume` 结尾），
+ * 「带着正文」= `messages.length > 0`。为什么这一格必须由**定锚侧**判：折叠层唯一的守卫（#401 R3）
+ * 是「载体现有正文 **逐字段深比较** 从消息行折出来的正文」，桩分片行进了消息行集合之后，折出来的
+ * 那份多出桩那一块 ⇒ 判不等 ⇒ 走 `attached` 分支把整轮正文再拼一遍。定锚侧看不见「深比较」的结果，
+ * 只能看「载体有没有正文」——所以口径取**宁可保守**：有正文就不给锚点（退回 #421 的降级）。
+ *
+ * 反例（`…:round:<n>:resume` 载体带的是方向提示那几条引擎控制正文，同轮消息行装的是崩溃轮正文、
+ * **必须**照常折进去）只影响「折叠怎么折」，不影响「桩能不能落账」：那种轮上写桩同样是「折出来的
+ * 那份 ≠ 载体现有正文」⇒ 一样进 `attached` 分支。降级在这一格是**正确**选择，不是损失。
+ *
+ * @param {any[]} rows
+ * @param {number|undefined} round
+ * @returns {boolean}
+ */
+function roundHasBodyCarrier(rows, round) {
+  if (!Number.isSafeInteger(round)) return false;
+  return (Array.isArray(rows) ? rows : []).some((row) => (
+    Array.isArray(row?.messages) && row.messages.length > 0 && isRoundCarrier(row, round)
+  ));
 }
 
 export async function restoreResume(ctx) {

@@ -97,7 +97,8 @@
   therefore kept folding a ledger that can never pass `validateMessages`, and nothing in the archive
   recorded that a stub had ever been minted. The engine now reads an **optional**
   `loadRawRows(runId)` off the store — the rows `load()` reads, before folding (same order, same
-  content; a read side only: no write path, `load()`'s shape unchanged) — and anchors on it when
+  content; same read path as `load()` including its tail repair, no new write API and no new
+  `load()` shape — wording corrected after review) — and anchors on it when
   present: the stub lands as a slice row pointing at the first slice, that round's `seq` floor comes
   from the raw rows, and the next `load()` folds a **closed** ledger. Both built-in stores implement
   it; a store without it degrades to exactly the previous behaviour (the stub repairs this run's
@@ -124,12 +125,41 @@
   写明的边界，锚点纪律仍是 #430 的）。** 折叠是读侧变换：已完成轮的 `kind: "message"` 行被吸进轮载体，
   于是 `load()` 不再暴露那条聚合消息的首片行，桩也就没有 `partOf` 目标——宿主自己的 `load()` 因此永远
   折出一份过不了 `validateMessages` 的账本，而档案里**没有任何痕迹**记着「补过桩」。引擎现在读 store 上
-  **可选**的 `loadRawRows(runId)`——`load()` 读到的、尚未折叠的行（同一顺序、同一内容；只是读口：不新增
-  写路径、不改变 `load()` 的形状）——有它就以此定锚：桩落成指向首片的分片行、该轮的 `seq` 地板取自原始
+  **可选**的 `loadRawRows(runId)`——`load()` 读到的、尚未折叠的行（同一顺序、同一内容；与 `load()` 同一条
+  读路径、含尾部半行修复，不新增写 API、不改变 `load()` 的形状——措辞已按事实订正）——有它就以此
+  定锚：桩落成指向首片的分片行、该轮的 `seq` 地板取自原始
   行，下一次 `load()` 折出来的是一份**闭合**的账本。内置两个 store 都实现；没有它的 store 逐字退回修前
   行为（桩只修本次上下文、发一条 `resume_journal_skipped`）而不是失败，且这个缺席**不发**
   `persistence_capability_degraded`（既有通道已经报过了）。不新增 `executionStatus` 值、不动尾部
   （`control_capture`）那条路、不改写折叠档案。
+- **Anchoring no longer treats a round whose carrier already carries its body as stub-able (issue #729).**
+  The optional raw-row probe from #714 used to anchor the stub on a first-slice row even when the host keeps
+  **both** the folded round carrier (the row with `messages`) and that round's original message rows — the
+  very shape #401 R3 exists for. Once the stub lands, the fold layer's R3 guard (carrier body vs the body
+  folded from the message rows, compared field by field) stops matching, so the `attached` branch appends the
+  **whole round body a second time**: measured, `load()` folds 3 messages into 5 and `validateMessages` still
+  throws `invalid_messages`, bricking that runId. The anchor probe now decides this from the **same
+  `anchorRows`**: if the round has an `isRoundCarrier`-shaped row with `messages.length > 0`, that round gets
+  **no anchor** and degrades verbatim to #421 (stub repairs this run's context only, one
+  `resume_journal_skipped` event). The same function also lost an asymmetry: when the round number is an
+  integer, a candidate row's `round` must match it **exactly** (a row whose `round` is not an integer is never
+  a fold target, so anchoring there would strand the stub as an orphan `user` message and die of the other
+  `invalid_messages`). The EN/CN `loadRawRows` section states both boundaries and replaces the
+  "read side only" wording with the factual one: it is the same read path as `load()` (including the tail
+  half-line repair, so a read **can** rewrite bytes on disk); what it does not add is a write API or a new
+  `load()` shape.
+- **定锚不再把「该轮载体已经带着正文」的轮次当成可落桩的轮次 (issue #729).** #714 给的那个可选原始行
+  读口在宿主把**折好的轮载体**（带 `messages` 那一行）与那一轮的**原始消息行**两份都留时（#401 R3 存在
+  就是为了这个形状）会把桩锚到首片行上，而桩一落账，折叠层的 R3 守卫（载体现有正文 vs 从消息行折出来的
+  正文逐字段深比较）就判不等，于是走 `attached` 分支把**整轮正文再拼一遍**——实测 `load()` 折出 3 条变 5
+  条，`validateMessages` 照样抛 `invalid_messages`，runId 永久起不来。定锚现在**在同一份 `anchorRows` 里**
+  就能判这一格：该轮存在 `isRoundCarrier` 同形的行且 `messages.length > 0` ⇒ 这一轮**不给锚点**，逐字退回
+  #421 的降级（桩只修本次上下文 + 一条 `resume_journal_skipped`）。同一函数里还有一处不对称被收紧：轮号是
+  整数时候选行的 `round` 必须**严格相等**（`round` 不是整数的行从来不是折叠目标，锚在它上面等于让桩落成
+  孤儿 `user` 消息，以另一种 `invalid_messages` 死）。契约中英的 `loadRawRows` 那节写明了这两条边界，并把
+  「read side only」改成事实口径：它与 `load()` 是同一条读路径（含尾部半行修复，一次读**可能**改盘上
+  字节），不新增的只是写 API 与 `load()` 的返回形状。
+
 
 ## [0.31.0] - 2026-11-04
 

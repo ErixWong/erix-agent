@@ -66,11 +66,16 @@ const rowKey = (record) => {
 
 /**
  * 这一行能不能当该轮的载体（正文挂回它身上）。口径见文件头第 2 条。
+ *
+ * **模块内导出、刻意不进 `src/index.js`**（issue #729）：`src/loop/resume-manager.js` 的定锚探针
+ * （`firstSliceRowKeyOf`）必须用**同一个**判据回答「这一轮有没有载体」，否则两处各写一遍
+ * `endsWith(":round:<n>")`，载体形态一改就只剩一处跟着改。宿主面仍然只有 `foldMessageRows`
+ * （`src/index.js` 那句注释没变）：载体形态属于实现口径，宿主不该依赖它。
  * @param {any} record
  * @param {number} round
  * @returns {boolean}
  */
-function isRoundCarrier(record, round) {
+export function isRoundCarrier(record, round) {
   const key = rowKey(record);
   if (key === "") return false;
   return key.endsWith(`:round:${String(round)}`) || key.endsWith(`:round:${String(round)}:resume`);
