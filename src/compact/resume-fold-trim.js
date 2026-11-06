@@ -28,14 +28,35 @@
 //      （`fold-statistical.js` 的 `prependSummary`，`summaryRole` 默认 `"user"`），本模块也并进同一条，
 //      不新造消息、不改角色交替 —— 摘要文本因此落回崩溃前那个位置。
 
-import { FOLDED_FACTS_RECORD_FIELD, FOLD_SUMMARY_RECORD_FIELD } from "./fold-summary-journal.js";
+import {
+  FOLDED_FACTS_RECORD_FIELD,
+  FOLD_SUMMARY_RECORD_FIELD,
+  FOLDED_SUMMARY_FED_TEXT_KEY,
+} from "./fold-summary-journal.js";
 
 /** 一条「覆盖到水位线」的折叠摘要事实。
  * `origin` 如实交代这份替代物从哪来（#462 放宽的那一格）：
  *   · `"journal"` —— `record.foldedSummary` 事实行，即**模型当时真的见过**的那份摘要；
  *   · `"strategy"` —— 轮记录上的 `record.foldedFacts`（#470-B 落的策略替代物），
  *     机械摘要 / 宿主注入文本，模型未必见过 ⇒ 回填的是「等价信息」，不是「模型看过的那份」。
- * @typedef {{ text: string, summary?: string, foldedRoundRange?: { from?: number, to?: number }, from?: number, to?: number, origin?: "journal"|"strategy" }} FoldSummaryFact
+ * `fedSummaryText`（issue #738 第一步，可选）—— 写侧证得「这一串就是实际插入上下文的那一块」时的
+ * 逐字副本；**旧账本没这一格**，写侧拿不到精确串也不写 ⇒ 读侧必须能面临它缺席。
+ * @typedef {{ text: string, summary?: string, fedSummaryText?: string, foldedRoundRange?: { from?: number, to?: number }, from?: number, to?: number, origin?: "journal"|"strategy" }} FoldSummaryFact
+ */
+
+/** 一次摘要回填的**可观测面**（issue #738 第 4 条）：回填来源 + 两处字节数 + 逐字判定。
+ * `replaySource` —— 从事实行的哪一格取的：`"fedSummaryText"` / `"summary"` / `"text"`（没裁 ⇒ `""`）；
+ * `savedSummaryBytes` —— **精确保存值**的字节数，`null` = 账上没有精确保存值（不是 0，0 是「量到了空串」）；
+ * `replayedSummaryBytes` —— 实际回填进上下文的字节数；
+ * `byteEqual` —— `"equal"` / `"differ"` / `"unknown"`。**`"unknown"` 是「不可判定」**：没有精确保存值
+ * 时旧账本逐字与否根本无从得知，报 `"equal"` 是伪报、报 `"differ"` 也是。
+ * @typedef {{
+ *   summaryText: string,
+ *   replaySource: string,
+ *   savedSummaryBytes: number|null,
+ *   replayedSummaryBytes: number,
+ *   byteEqual: "equal"|"differ"|"unknown",
+ * }} FoldSummaryReplay
  */
 
 /** 真实 user 消息（与 `fold-statistical.js` 里 `prependSummary` 找的 `isRealUser` 同口径）：
@@ -143,23 +164,37 @@ export function pickCoveringFoldAlternative(records, foldedThrough) {
 }
 
 /**
- * 从事实体里还原「要回填进上下文的那段摘要正文」。
+ * 从事实体里还原「要回填进上下文的那段摘要正文」，并**当场**对一次字节账（issue #738）。
  *
- * 两个来源，按可靠性排序：
- *   ① `fact.summary` —— 引擎自己跑摘要器时留下的**纯摘要**（`orchestrator.js` 的
- *      `lastFoldSummaryOutcome.summary`），最干净，有就用它；
- *   ② `fact.text` —— 折叠后**那条被并进了摘要的 user 消息**的全文（`#326` 落的形状），
+ * 三个来源，按可靠性排序：
+ *   ① `fact.fedSummaryText` —— 写侧**当场证得**「这一串就是本次折叠插进上下文的那一块」的逐字副本
+ *      （`fold-summary-journal#pickFedSummaryTextBlock`，`fold-llm` 那一档就是 `compactedSummary`）。
+ *      **原样返回，不 `trim()`、不剥正文** —— 这一格的全部意义就是「续跑回填的字节 == 崩溃前模型
+ *      看到的字节」，而 `.trim()` 正是旧路径毁掉字节一致性的那一刀。
+ *   ② `fact.summary` —— 引擎自己跑摘要器时留下的**纯摘要**（`orchestrator.js` 的
+ *      `lastFoldSummaryOutcome.summary`）。它**不是**当年 fed 的那一份（少恢复提示 / 尺寸夹断产物 /
+ *      机械保真节），但它是今天的行为，`#462 规划器` 那条用例把它钉着 ⇒ **一字不动**。
+ *   ③ `fact.text` —— 折叠后**那条被并进了摘要的 user 消息**的全文（`#326` 落的形状），
  *      里面还混着原任务正文（就是 seed 那条 user 消息）。原任务正文在账本里另有一行 ⇒
  *      把它从 `text` 里剥掉，剩下的才是摘要。剥不掉（宿主自己给策略、引擎没见过摘要现场 ⇒
  *      文本口径对不上）时**宁可整段回填**也不猜：多喂一份任务正文，远好过把摘要丢掉。
  *
+ * 字节账（工单 #738 第 4 条「可观测」）：只有 ① 才有**精确保存值**可对比，②③ 一律记 `"unknown"` =
+ * **不可判定**——旧账本没有逐字承诺，报 `"differ"` 与报 `"equal"` 都是伪报。
+ *
  * @param {FoldSummaryFact} fact
  * @param {string[]} headTexts 留在上下文里的那些 head 消息正文（用来剥重复的任务正文）
- * @returns {string}
+ * @returns {FoldSummaryReplay}
  */
-export function deriveFoldSummaryText(fact, headTexts = []) {
+export function pickFoldSummaryReplay(fact, headTexts = []) {
+  const exact = typeof fact?.[FOLDED_SUMMARY_FED_TEXT_KEY] === "string"
+    && /** @type {string} */ (fact[FOLDED_SUMMARY_FED_TEXT_KEY]) !== ""
+    ? /** @type {string} */ (fact[FOLDED_SUMMARY_FED_TEXT_KEY])
+    : undefined;
+  // ① 有逐字副本 ⇒ 原样回放（不 trim、不剥正文：那两刀都会让「逐字一致」当场失效）。
+  if (exact !== undefined) return accountReplay(exact, exact, FOLDED_SUMMARY_FED_TEXT_KEY);
   if (typeof fact?.summary === "string" && fact.summary.trim() !== "") {
-    return fact.summary.trim();
+    return accountReplay(undefined, fact.summary.trim(), "summary");
   }
   let text = String(fact?.text ?? "").trim();
   for (const headText of headTexts) {
@@ -167,7 +202,53 @@ export function deriveFoldSummaryText(fact, headTexts = []) {
     if (!text.includes(headText)) continue;
     text = text.split(headText).join("").trim();
   }
-  return text;
+  return accountReplay(undefined, text, "text");
+}
+
+/**
+ * 回填的字节账。**只描述本次回填**，不去推断「旧数据能不能逐字还原」（那正是本切片不许声称的事）。
+ *
+ * @param {string|undefined} saved 精确保存值（只有 `fedSummaryText` 那一格有）
+ * @param {string} replayed 实际回填的文本
+ * @param {string} replaySource 回填来源（事实行的哪个字段）
+ * @returns {FoldSummaryReplay}
+ */
+function accountReplay(saved, replayed, replaySource) {
+  const replayedSummaryBytes = Buffer.byteLength(replayed, "utf8");
+  if (typeof saved !== "string") {
+    return {
+      summaryText: replayed,
+      replaySource,
+      savedSummaryBytes: null,
+      replayedSummaryBytes,
+      byteEqual: "unknown",
+    };
+  }
+  return {
+    summaryText: replayed,
+    replaySource,
+    savedSummaryBytes: Buffer.byteLength(saved, "utf8"),
+    replayedSummaryBytes,
+    // 按**字节**比，不按字符串比：这一格的承诺是字节面（UTF-16 串相等是比字节更强的条件，
+    // 拿它当判据会把「字节相同、串不等」那种边角（孤立代理对）读成「不逐字」）。
+    byteEqual: Buffer.compare(Buffer.from(saved, "utf8"), Buffer.from(replayed, "utf8")) === 0
+      ? "equal"
+      : "differ",
+  };
+}
+
+/**
+ * 从事实体里还原「要回填进上下文的那段摘要正文」（只有正文，不报字节账）。
+ *
+ * 取源与 `pickFoldSummaryReplay` **同源**（同一处代码，不是两份实现），语义见那里：
+ * `fedSummaryText` 在场就逐字回放，否则 `.summary` 优先、`.text` 去重回退（= 今天的形状）。
+ *
+ * @param {FoldSummaryFact} fact
+ * @param {string[]} headTexts 留在上下文里的那些 head 消息正文（用来剥重复的任务正文）
+ * @returns {string}
+ */
+export function deriveFoldSummaryText(fact, headTexts = []) {
+  return pickFoldSummaryReplay(fact, headTexts).summaryText;
 }
 
 /**
@@ -186,6 +267,10 @@ export function deriveFoldSummaryText(fact, headTexts = []) {
  *   summaryText: string,
  *   summarySource: string,
  *   droppedRounds: number,
+ *   replaySource: string,
+ *   savedSummaryBytes: number|null,
+ *   replayedSummaryBytes: number,
+ *   byteEqual: "equal"|"differ"|"unknown",
  * }}
  */
 export function planFoldedHistoryTrim(input = {}) {
@@ -193,6 +278,8 @@ export function planFoldedHistoryTrim(input = {}) {
   const foldedThrough = Number.isSafeInteger(input.foldedThrough)
     ? /** @type {number} */ (input.foldedThrough)
     : 0;
+  // 没裁 ⇒ 一个字节也没回填：`replaySource` 空、`savedSummaryBytes` 为 `null`、`byteEqual` 是
+  // **不可判定**（不是 `"differ"`：本切片一次都没喂，无从判定）。
   const passthrough = (/** @type {string} */ reason) => ({
     applied: false,
     reason,
@@ -201,6 +288,10 @@ export function planFoldedHistoryTrim(input = {}) {
     summaryText: "",
     summarySource: "",
     droppedRounds: 0,
+    replaySource: "",
+    savedSummaryBytes: /** @type {null} */ (null),
+    replayedSummaryBytes: 0,
+    byteEqual: /** @type {"unknown"} */ ("unknown"),
   });
 
   if (foldedThrough < 1) return passthrough("no-watermark");
@@ -217,22 +308,29 @@ export function planFoldedHistoryTrim(input = {}) {
   const picked = pickCoveringFoldAlternative(input.records, foldedThrough);
   const fact = picked?.fact;
   if (fact === undefined) return passthrough("no-covering-summary");
-  const summaryText = deriveFoldSummaryText(
+  const replay = pickFoldSummaryReplay(
     fact,
     kept.filter((entry) => (entry.round ?? 0) <= 0).map((entry) => textOf(entry.message)),
   );
-  if (summaryText === "") return passthrough("empty-summary");
+  if (replay.summaryText === "") return passthrough("empty-summary");
 
   return {
     applied: true,
     reason: "trimmed",
     messages: kept,
     dropped,
-    summaryText,
+    summaryText: replay.summaryText,
     // 如实交代回填的替代物来源："journal" = 模型当时见过的那份摘要；
     // "strategy" = 策略算出的机械摘要 / 宿主注入文本（模型未必见过，但信息等价）。
     summarySource: picked.origin,
     droppedRounds: new Set(dropped.map((entry) => entry.round)).size,
+    // issue #738 第 4 条（可观测）：回填从事实行哪一格取、保存值与回填值各多少字节、是否逐字。
+    // 口径：`"unknown"` = 账上**没有**精确保存值（旧账本，或那个策略拿不到插入串），
+    // 它不是「不等」——旧数据逐字能否还原在本切片就是**不可判定**，伪报哪个方向都是谎。
+    replaySource: replay.replaySource,
+    savedSummaryBytes: replay.savedSummaryBytes,
+    replayedSummaryBytes: replay.replayedSummaryBytes,
+    byteEqual: replay.byteEqual,
   };
 }
 

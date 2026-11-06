@@ -40,6 +40,138 @@ export const FOLD_SUMMARY_RECORD_FIELD = "foldedSummary";
 export const TTL_DEGRADATION_RECORD_FIELD = "ttlDegradations";
 
 /**
+ * `foldedSummary` 事实行里承载**实际插入上下文的那一串字节**的子键名（issue #738 第一步）。
+ *
+ * 与同一条事实行上另外两格的分工（三格是三个不同的东西，不能互相「复用」）：
+ *   · `.text` —— 折叠后**那条被并进了摘要的消息**的全部 text 块投影（`#326` 的形状），
+ *     里面**还混着仍在 head 的原任务正文**；语义一字未改。
+ *   · `.summary` —— 摘要器的**原始返回值**（`orchestrator.js` 的 `lastFoldSummaryOutcome.summary`），
+ *     既没有恢复提示、也没有尺寸夹断产物、也没有机械保真节；语义一字未改。
+ *   · `.fedSummaryText`（本键）—— **写侧确实掌握**「这一串就是本次折叠插进上下文的那一块」时
+ *     才写的**逐字副本**（`fold-llm` 那一档就是 `compactedSummary`）。没有精确保存值 ⇒ **不写这一格**
+ *     （本仓的「无事实不写键」口径），绝不拿 `.text` / `.summary` 凑一份。
+ *
+ * 为什么必须新开一格，而不是把读侧优先级反转成「优先 `.text`」：`.text` 是**整条消息**的投影，
+ * 优先它只会让「仍在 head 的任务正文」更容易被**再喂一遍**，并不兑现「续跑回填的字节 == 崩溃前
+ * 模型看到的字节」（现验见 issue #738 决策评论与 `decision-D2`）。
+ */
+export const FOLDED_SUMMARY_FED_TEXT_KEY = "fedSummaryText";
+
+/**
+ * 摘要块在**插入那一刻**所在的下标（issue #738 第二步，评审必修）。
+ *
+ * 这不是猜的，是三条插入路径共用的写法——它们都把摘要块放在**被重建的那条消息的 `content` 首位**：
+ *   · `fold-llm.js:118`（新建 system 消息）、`:129`（改写已有 system）、`:145`（改写真实 user 消息，
+ *     `content: [{ type: "text", text: summary }, ...originalContent]`）；
+ *   · `fold-statistical.js:1133` / `:1142` / `:1167`，块由 `mergedFoldSummaryContent`（`:1116-1119`）
+ *     产出，形状是 `[{ type: "text", text: mergedSummary }, ...保留下来的原块]`；
+ *   · `budget-fit.js:137,142,149,160` 的 `prependFoldSummary`（引擎兜底那一发）同样放首位。
+ * ⇒ 保留下来的 head 正文块与摘要块**在同一条新消息里**，只是排在它后面。所以「候选在某一条新消息的
+ * 某一个块里逐字出现」根本不排除命中了那个正文块 —— 那正是评审用探针坐实的误认。
+ */
+export const FOLD_SUMMARY_BLOCK_SLOT = 0;
+
+/** 一条消息的 `content` 块数组（字符串正文归一成一个 text 块，与 `#326` 那套读法同口径）。 */
+function blocksOfMessage(message) {
+  if (typeof message?.content === "string") return [{ type: "text", text: message.content }];
+  return Array.isArray(message?.content) ? message.content : [];
+}
+
+/** 全部与候选**逐字**同文的 text 块（按 `content` 原序）。 */
+function sameTextBlocks(content, candidate) {
+  return content.filter((block) => block?.type === "text" && block.text === candidate);
+}
+
+/**
+ * 把「摘要到底是**哪一块**」的**对象身份**，在折叠层定稿、**安全层动手之前**钉住（issue #738 第二步）。
+ *
+ * 为什么必须单独有这一步：逐字承诺只能在**定稿后**的 `messages` 上证，而到那时候「哪一块是摘要块」
+ * 已经可能被后面的层搅浑——安全层把摘要截成 `SUMMARY\n[已修剪]`，而同一条消息里保留的正文块恰好还是
+ * `SUMMARY`（评审的探针现场）。按**文字**去搜「哪个块等于候选」就会把那个正文块认成摘要块。
+ * 所以身份要在搅浑**之前**钉，之后只认这个对象，不再认文字命中。
+ *
+ * 钉得住的三条硬条件（任一不成立 ⇒ `undefined` ⇒ 调用方**不写这一格**）：
+ *   ① 消息对象不在 `preCompactionMessages` 里（本次折叠新造的，`#326` 的口径）；
+ *   ② 与候选逐字同文的那一块正落在 `content[FOLD_SUMMARY_BLOCK_SLOT]`（上面那个插入约定的下标）；
+ *   ③ **唯一**：这条消息里没有第二块与候选同文，且全部新消息里只有这一条命中 —— 两块同文就
+ *      当场不可判（宁可不钉，也不猜）。
+ *
+ * @param {object} [input]
+ * @param {unknown} [input.candidate] 策略自称「交给模型的那一份」（`foldSummary.text` 等）
+ * @param {any[]} [input.messages] 折叠层定稿、**安全层之前**的那份消息列表
+ * @param {Set<object>} [input.preCompactionMessages] 压缩前就在的消息对象（按身份）
+ * @returns {{message: object, blockIndex: number, block: object}|undefined} 钉住的摘要块坐标
+ */
+export function pinFedSummaryBlock(input = {}) {
+  const candidate = input.candidate;
+  if (typeof candidate !== "string" || candidate.trim() === "") return undefined;
+  const before = input.preCompactionMessages instanceof Set
+    ? input.preCompactionMessages
+    : new Set();
+  let pin;
+  for (const message of Array.isArray(input.messages) ? input.messages : []) {
+    if (message === null || typeof message !== "object" || before.has(message)) continue;
+    const content = blocksOfMessage(message);
+    const hits = sameTextBlocks(content, candidate);
+    if (hits.length === 0) continue;
+    // 同一条消息里有两块与候选同文 ⇒「哪一块是摘要块」当场不可判；命中不在插入约定那个下标上
+    // （= 命中的是保留下来的正文块）⇒ 同样不敢认。
+    if (hits.length !== 1) return undefined;
+    if (content.indexOf(hits[0]) !== FOLD_SUMMARY_BLOCK_SLOT) return undefined;
+    if (pin !== undefined) return undefined;   // 两条新消息都命中 ⇒ 一样不可判
+    pin = { message, blockIndex: FOLD_SUMMARY_BLOCK_SLOT, block: hits[0] };
+  }
+  return pin;
+}
+
+/**
+ * `foldedSummary.fedSummaryText` 的**写侧自证**（issue #738 第二步）：**只认钉住的那一块**。
+ *
+ * 判据从第一步的「候选在某条新消息的**某一个** text 块里逐字出现」（评审坐实它会误认）换成两档
+ * **身份**，都在定稿那份 `messages` 上现查：
+ *   **① 块对象身份** —— `pin.block` 这个**对象本身**还在定稿的某条消息里（没被重建过），而它的
+ *      `text` 已在钉住时与候选逐字对上、这里再核一遍；
+ *   **② 消息身份 + 下标** —— `pin.message` 这个**对象本身**还在定稿列表里，且它
+ *      `content[pin.blockIndex]` 仍是与候选逐字相同的 text 块（层只重建块、没重建消息时兜这一层）；
+ *   **③ 两档都证不过 ⇒ `undefined`** ⇒ 调用方**不写这一格**，读侧回到今天的兼容路径。典型碎法：
+ *      安全层 `safeTruncateMessages` 起手就 `cloneState(messages)`（`src/loop/budget.js:179-180`，
+ *      `cloneState` 就是 `structuredClone`）⇒ 消息与块**全是新对象**，身份带不到定稿；就地改写
+ *      文本同理碎。
+ *
+ * ⇒ 评审那个反例（摘要块被改写成 `"SUMMARY\n[已修剪]"`，同一条新消息里另有一块仍是 `"SUMMARY"`）
+ *   在两档下都证不过：那个同文正文块从来不是钉住的块对象。
+ * ⇒ 禁止拿候选去定稿消息里做**文字搜索**——那正是被推翻的写法；也禁止退回估算回填。
+ *
+ * @param {object} [input]
+ * @param {unknown} [input.candidate] 策略自称「交给模型的那一份」（`foldSummary.text` / `foldedSummaryText`）
+ * @param {any[]} [input.messages] **定稿后**的消息列表（接下来要被喂出去/落档的那份）
+ * @param {{message: object, blockIndex: number, block: object}|undefined} [input.pin]
+ *   `pinFedSummaryBlock` 在安全层之前钉住的那一块；没钉住 ⇒ 直接证不过
+ * @returns {string|undefined} 证得过 ⇒ 原样返回候选串；证不过 ⇒ `undefined`（调用方**不写这一格**）
+ */
+export function pickFedSummaryTextBlock(input = {}) {
+  const candidate = input.candidate;
+  if (typeof candidate !== "string" || candidate.trim() === "") return undefined;
+  const pin = input.pin;
+  if (pin === null || typeof pin !== "object") return undefined;
+  const pinnedBlock = pin.block;
+  if (pinnedBlock === null || typeof pinnedBlock !== "object") return undefined;
+  // 钉住之后再被就地改写过文本 ⇒ 逐字承诺当场碎（不必再看它在不在消息里）。
+  if (pinnedBlock.text !== candidate) return undefined;
+  for (const message of Array.isArray(input.messages) ? input.messages : []) {
+    const content = blocksOfMessage(message);
+    // ① 同一个**块对象**还在 ⇒ 它没被重建，文本刚核过。
+    if (content.includes(pinnedBlock)) return candidate;
+    // ② 同一个**消息对象**还在，且那个下标上的块仍是与候选逐字相同的 text 块。
+    if (message === pin.message) {
+      const atSlot = content[pin.blockIndex];
+      if (atSlot?.type === "text" && atSlot.text === candidate) return candidate;
+    }
+  }
+  return undefined;
+}
+
+/**
  * 轮记录上承载**折叠替代物投影**的字段名（issue #470-A）。
  *
  * 与 `foldedSummary` 的分工：那条是**引擎事实行**（`messages: []`，只在「首次喂出去」时记一次）；
