@@ -725,13 +725,19 @@ was the last release that carried them), and `createFileTools` came back in
 per ADR-009 the library provides no security boundary. Model-facing retrieval
 is note-first **when there are notes to point at**: use `note_list` followed by
 `note_read`; there is no transcript transcript retrieval API; recall adapters
-were retired in 0.8.0. Since issue #741 the engine says so only on evidence (the
-note family on the tool surface plus a successful `note_take` in the visible
-ledger — paired with a result for that `tool_use_id`, its payload confirming success,
-and not later revoked by a successful `note_forget`); otherwise the fold substitute and
-the TTL placeholder state that no recoverable decision record exists, with the reason
-(one of: no note tools, no note write, notes revoked, no note evidence), and the
-model-visible text drops every `note_*` mention. The evidence-backed sentence is
+were retired in 0.8.0. Since issue #741 **the fold substitute and the TTL
+placeholder** say so only on evidence (the note family on the tool surface plus a
+successful `note_take` in the visible ledger — paired with a result for that
+`tool_use_id`, its payload confirming success, and not later revoked by a successful
+`note_forget`); otherwise those two places state that no recoverable decision record
+exists, with the reason (one of: no note tools, no note write, notes revoked, no note
+evidence), and **their** text drops every `note_*` mention. **Coverage is exactly those
+two entry points — nothing more.** The aggregate-limit stub
+(`src/loop/aggregate-budget.js`), the run-snapshot archive stubs
+(`src/loop/run-snapshot-executor.js`), the memory-loss nudge
+(`src/reflection/governor.js`) and the three CLI hint sites under `bin/` still point at
+`note_list` / `note_read` unconditionally; wiring those six to the same evidence gate is
+issue #746, not this one. The evidence-backed sentence is
 conditional retrieval guidance; it never claims this result's key points are already
 recorded. Note availability stays host configuration — the
 engine writes no notes.
