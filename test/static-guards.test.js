@@ -4259,8 +4259,16 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *
  *     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 8 条 / 英文 8 条 / 配对 8 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 7（校准面 \#\# [Unreleased]）
  *     # 配对地板：实测 8 对 > 地板 7 对 ⇒ 可以抬地板到 8
+ *
+ * issue #739（test-261107-03）：`## [Unreleased] ### Changed` 新增一对（契约套件自己保证可选性是真的，
+ * 同一个 issue 引用 #739）⇒ 面没挪、仍是 `## [Unreleased]`，同一面实测 **9 对**（#713 / #421 / #714 / #715 /
+ * #729 / #724 / #721 / #735 / #739 各一对中英）。照旧**先贴守卫自己打的 diagnostic、再动常量**
+ * （在 402e76f 之后的树上现跑 `npm test` 得到）：
+ *
+ *     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 9 条 / 英文 9 条 / 配对 9 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 8（校准面 \#\# [Unreleased]）
+ *     # 配对地板：实测 9 对 > 地板 8 对 ⇒ 可以抬地板到 9
  */
-const CHANGELOG_PAIR_FLOOR = 8;
+const CHANGELOG_PAIR_FLOOR = 9;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
