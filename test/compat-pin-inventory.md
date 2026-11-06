@@ -742,7 +742,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/compaction-strategy-name.test.js` | 10 | `strategy`×8, `completion`×2 |
 | `test/loop-termination.test.js` | 12 | `completion`×6, `stallDetection`×5, `reflection`×1 |
 | `test/cli-idle-retry.test.js` | 11 | `retry`×5, `prompt`×3, `session`×3 |
-| `test/integration/no-todo-switch.test.js` | 11 | `prompt`×5, `session`×5, `tools`×1 |
+| `test/integration/no-todo-switch.test.js` | 15 | `prompt`×7, `session`×7, `tools`×1 |
 | `test/loop-final-guard.test.js` | 11 | `completion`×7, `reflection`×4 |
 | `test/cli-idle.test.js` | 10 | `prompt`×5, `session`×5 |
 | `test/compact/resume-fold-trim.test.js` | 9 | `strategy`×5, `resume`×3, `completion`×1 |
