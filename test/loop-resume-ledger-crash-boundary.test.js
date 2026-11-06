@@ -275,6 +275,49 @@ test("#736 钉住现状：恢复成功后**再**恢复一次，同一份账本�
     + `全序：${JSON.stringify(rawRows.map((row) => row.dedupKey))}`);
 });
 
+test("#736 边界与快照的**存在性**也无关：store 根本没有快照读点时仍从账本推出边界", async () => {
+  const RUN_ID = "b736-no-loader";
+  const base = createMemoryTranscriptStore();
+  await seedCrashLedger(base, RUN_ID);
+  await base.saveRunSnapshot(RUN_ID, staleSnapshot(RUN_ID));
+  await appendUserTurn(base, { key: RUN_ID, text: "怎么样了？", messageId: "m1" });
+
+  // 比「陈旧快照」更极端的一格：store **一个快照读点都没有**（`loadLatestRunSnapshot` 与旧名
+  // `loadLatestCheckpoint` 都缺 ⇒ `restoreResume` 走 #78 那条 `notifyCapabilitySkipped`）。
+  // 这一格证的是：边界不只在「快照陈旧」时顶得住，而是与快照的存在性彻底无关。
+  const store = Object.create(Object.getPrototypeOf(base));
+  Object.assign(store, base);
+  delete store.loadLatestRunSnapshot;
+  delete store.loadLatestCheckpoint;
+  assert.equal(typeof store.loadLatestRunSnapshot, "undefined");
+  assert.equal(typeof store.loadLatestCheckpoint, "undefined");
+
+  const provider = createFakeProvider([endTurn("恢复了")]);
+  const outcome = await runDirect({
+    provider,
+    resume: true,
+    store,
+    runId: RUN_ID,
+    tools: TOOLS,
+    completion: false,
+    wrapup: false,
+    stallDetection: false,
+    maxRounds: 8,
+    executeTool: async ({ id }) => `out-${String(id)}`,
+  }).then((result) => ({ ok: true, finalText: result.finalText }),
+    (error) => ({ ok: false, code: String(error?.code ?? error?.message ?? error) }));
+
+  assert.ok(outcome.ok, `没有快照读点也必须恢复（边界只吃账本），实际：${JSON.stringify(outcome)}`);
+  const sent = provider.requests[0].messages;
+  assert.equal(resultsFor(sent, "t1").length, 1, "未结清的 `t1` 仍拿到一张桩");
+  assert.ok(blocksOf(sent.slice(-1)).some((block) => block?.type === "text"
+    && String(block.text).includes("怎么样了？")), "宿主追问仍在最后一条");
+  const notices = noticeRows(await controlRows(store, RUN_ID));
+  assert.equal(notices.length, 1);
+  assert.ok(notices[0].text.includes("`t1`") && !notices[0].text.includes(RESUME_NOTICE_NO_PENDING),
+    `告示仍必须列出那个未结清的 id，实际：${notices[0]?.text}`);
+});
+
 test("#736 判据 3：崩溃现场同时被快照认出 ⇒ 补跑（B 集合）与桩的 id 互斥，一条聚合消息里不出现两个同 id 结果", async () => {
   const RUN_ID = "b736-both-recognize";
   const store = createMemoryTranscriptStore();
