@@ -2880,9 +2880,46 @@ export async function runToolLoop(options) {
           : [snapshotPendingToolUse];
       return await persist(method, runId, {
         round,
+        // issue #735 切片 1（写侧去冗余）：本格曾写 4 个候选冗余字段，现按**实跑复核**的口径分两档。
+        // **键序与基点逐字一致**（`src/store/file.js:523` 直接 `JSON.stringify(snapshot)` ⇒ 键序是宿主
+        // 可见的落盘字节），所以本片在本格上的净改动就是**删两行**，保留格的相对位置一律不动。
+        //
+        // **已停写（两格）**
+        // - `toolUse`：它与 `pendingToolUse` 是**两次独立 `cloneState()` 调用仍同一个源值**
+        //   （`cloneState(snapshotPendingToolUse)` 写两遍）⇒ 内容等值但**不同址**，不是同一对象的别名。
+        //   零读者的证据不是名字而面：**恢复侧读快照对象那一层只出现 9 个字段** —— 穷举
+        //   `grep -rhoE "resumeRunSnapshot\??\.[A-Za-z_]+" src/ | sed 's/.*\.//' | sort -u`（31 个读点）得
+        //   `executedToolIds` / `messages` / `partialRound` / `partialText` / `pendingToolUse` /
+        //   `pendingToolUses` / `round` / `toolOutputs` / `toolResults`，里面**没有** `toolUse` 也没有 `ts`；
+        //   而 `grep -rn "\.toolUse\b" src/ bin/` 在基点 `f6c2566` 上只命中 1 行（`orchestrator.js:2853`），
+        //   那是 `...toolUse` 展开运算符的末尾点号，**不是属性访问** ⇒ 真属性访问面为空。
+        //   （注意：“`grep "snapshot\.toolUse\b"` 零命中”证不了零读者——基点树上这个字面串本来就不存在。
+        //   另需注意 `event.toolUse`（诊断事件面）与 `toolUseId`（结果条目键）都是**另一回事**，不算读者。）
+        //   恢复侧只走 `pendingToolUse` / `pendingToolUses` 的 fallback（`src/loop/resume-manager.js:386-388,538-541`）
+        //   ⇒ **`pendingToolUse` 原样保留**。
+        // - `ts`：同上口径，快照对象那一层没人读它；读侧确实处理的 `ts` 是**账本行 / 消息行**的 `ts`
+        //   （`src/store/message-rows.js:114-115,326-328` 与 `src/loop/resume-manager.js:336` 的 `record.ts`），
+        //   另一个产物、另一张面。
+        //
+        // **继续写出（工单说零读者，实跑复核**不是**，本切片不动它们）**
+        // - `status`：`src/`+`bin/` 确实零读者（`src/store/file.js:587` 的 `persisted.status` 读的是
+        //   `<runId>.status.json` **另一个产物**），但 `test/` 有 5 处真读者：
+        //   `test/loop-persistence-phase.test.js:87` 拿它当**分辨哪个调用点写下这条快照**的唯一指纹
+        //   （#178 两通道分类守门全钉它上）、`test/loop-invalid-arguments.test.js:234` 拿
+        //   `entry.status === "rejected"` 从真实写入里**造崩溃现场夹具**、`test/loop-v020-rc.test.js:479,605`
+        //   与 `test/persistence-diagnostics.test.js:171` 拿 `status === "executed"` 当注入失败的开关。
+        // - `compactionStats`：`test/compaction-observability.test.js:76` 从 `loadLatestCheckpoint()` 读它，
+        //   断言层详情「透过 result / state / archive / **checkpoint** / events 五面露出」。
+        //   （`src/` 侧的恢复口径确实走 run-state 的 `deterministic.compactionStats`。）
+        //
+        // 处置口径：本切片只动**真零读者**的两格，不按「先停写再改用例来迁就实现」推进。
+        // `status` / `compactionStats` 要停，得先把上面那些用例的指纹换成别的可用信号（读侧/测试侧的活）。
+        // 历史旧快照里这 4 格的存在仍然被读侧容忍（未删任何 `?? ` fallback，store 层逐字透传）。
+        // 入参 `status` 与签名不动：全仓 7 个调用点（本文件 2 个 + `src/loop/run-snapshot-executor.js` 5 个），
+        // 其中 5 个显式传状态（`pending` / `rejected` / `executed` / `intercepted`），两个靠默认值。
+        // `persistedTranscriptLength` 与 `messages` 属切片 2，本切片原样写出。
         status,
         pendingToolUse: cloneState(snapshotPendingToolUse),
-        toolUse: cloneState(snapshotPendingToolUse),
         pendingToolUses: cloneState(snapshotPendingToolUses),
         messages: cloneState(messagesOverride ?? messages),
         persistedTranscriptLength: runLoopState.persistedTranscriptLength,
@@ -2895,7 +2932,6 @@ export async function runToolLoop(options) {
         toolOutputs: cloneState(archivedOutputs.filter((entry) => entry.round === round)),
         compactionStats: cloneState(compactionStats),
         ...(partialText === undefined ? {} : { partialText, partialRound }),
-        ts: new Date().toISOString(),
       });
     } catch (error) {
       if (persistenceInfoFor(error) !== undefined) {
