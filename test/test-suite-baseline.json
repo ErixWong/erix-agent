@@ -3,12 +3,26 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3438,
+    "tests": 3444,
     "fail": 0,
     "maxSkipped": 15
   },
   "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
   "observations": [
+    {
+      "date": "2026-11-06",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "2cd3998（#721 分支：本片基点 = origin/main 7d9a4a6，无需合流）",
+      "branch": "fix-261106-03-inject-visible-truncation",
+      "tests": 3444,
+      "pass": 3431,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "#721 收口后现测重登：上一格 3438 是 #719 合并树上测的；此后 main 进了 #726/#732/#734 等（main tip 7d9a4a6，其 CI run 578 success ⇒ main 自身的实际数不高于登记值），本分支新增 6 条用例（上限 64 KiB 整份注入、声明三字节数与小节名在提示词内、两页合计在上限内不截断等）⇒ 3438 + 6 = 3444。六个计数逐字取自在本树跑的 npm test TAP 汇总（日志 /tmp/e-maintest.log），并经 npm run check:test-summary --log 同一份日志复核（VERDICT ok），非手抄。fail=0。skipped 13 = 12 条真上游/真 relay 门禁 + 1 条真上游多会话格，上限 15 不动。注：main 的 docs-drift-check --self-test 已由 #734 修好（基点与本片均 199/199 全绿，CI run 578 success），所以本片的自测差集为 0 是「两边都绿」，不是「两边都红且红得一样」。"
+    },
     {
       "date": "2026-11-06",
       "env": "local",
