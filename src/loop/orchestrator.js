@@ -79,6 +79,7 @@ import {
   advanceLastToolCall,
   resetLastToolCallStreak,
   createDeterministicRunState,
+  measureRunStateMeta,
   renderRunState,
   upsertRunStateInMessages,
   withSemanticRunState,
@@ -5869,6 +5870,11 @@ export async function runToolLoop(options) {
       judgeDecision,
     );
     const roundRunState = await refreshRunState();
+    // issue #742 切片 A（纯加法，只做可观测）：先把要落盘的那一份副本算出来，再拿它的体积账。
+    // 顺序很要紧：元数据必须量**真正写进轮记录的那一份**（`cloneState` 之后），量原件会在两者
+    // 不等价时报出一个盘上根本不存在的字节数。
+    const roundRunStateCopy = cloneState(roundRunState);
+    const runStateMeta = measureRunStateMeta(roundRunStateCopy);
 
     const record = {
       round,
@@ -5897,7 +5903,13 @@ export async function runToolLoop(options) {
       toolUses: content.filter((block) => block?.type === "tool_use").length,
       summary: roundSummary,
       l0facts: currentL0,
-      runState: cloneState(roundRunState),
+      runState: roundRunStateCopy,
+      // issue #742 切片 A（新键，纯加法）：上面那份 run-state 副本的体积账 `{ bytes, capBytes, truncated }`，
+      // 形状照 `foldedPayloadMeta`。**无值不写键**：副本不是普通对象或序列化不了 ⇒ 整个键缺席
+      // （引擎自己永不写 `{bytes:0,truncated:false}` 充当「没截断」）。宿主可读它给「每轮一份全量副本」
+      // 报警；引擎内**没有**读者，也不参与任何恢复/停门判据。⚠ 它不减少任何字节：每轮仍是一份全量，
+      // 账本总量仍随轮数线性增长（#742 的体积那两刀在后面的切片）。
+      ...(runStateMeta === undefined ? {} : { runStateMeta }),
       ...(compactionStats.length > compactionStatsStart
         ? { compactionStats: cloneState(compactionStats.slice(compactionStatsStart)) }
         : {}),

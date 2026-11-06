@@ -4327,8 +4327,26 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *
  *     # 配对地板：实测 12 对 > 地板 11 对 ⇒ 可以抬地板到 12
  *         —— rebase 到 aa94463 后的最终树上现跑：node --test --test-name-pattern "中英配对地板" test/static-guards.test.js
+ *
+ * issue #742（轮记录 `runStateMeta`，feat-261107-08）：**同样在 rebase 到 origin/main `aa94463` 之后重测**，
+ * 本支在 `## [Unreleased] ### Added` 加一对（`runStateMeta: {bytes,capBytes,truncated}`）⇒ 那一棵上同一面
+ * 实测也是 **12 对**（#741 与 #742 各自在自己的树上抬到 12，**两棵不同的树同一个数**，不是谁抄谁）：
+ *
+ *     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行）；中文 12 条 / 英文 12 条 / 配对 12 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 11（校准面 ## [Unreleased]）
+ *     # 配对地板：实测 12 对 > 地板 11 对 ⇒ 可以抬地板到 12
+ *
+ * ⚠ **#741 与 #742 合流之后这个 12 必然旧**（两对同时在面上）⇒ 下面那个常量以**本树现跑守卫**的实测值为准，
+ * 永远不做加法（12 与 12 相加得 24 是错的，两棵树各自数过同一个 12）。
+ *
+ * **rebase 到 `origin/main a415878`（#741 已合）之后在本树现跑**（issue #742 收口）：#741 那一对（`### Changed`）
+ * 与 #742 那一对（`### Added`）第一次同在一棵树上 ⇒ 同一面实测 **13 对**，地板 12 → **13**。这就是「各自都数过 12、
+ * 合起来却是 13」的活例：加法在这里给的是 24，守卫给的是 13。守卫自己打的 diagnostic（原文抄录）：
+ *
+ *     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 13 条 / 英文 13 条 / 配对 13 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 12（校准面 ## [Unreleased]）
+ *     # 配对地板：实测 13 对 > 地板 12 对 ⇒ 可以抬地板到 13
+ *         —— 红的时候红在 assert.equal(problems.pairs.length, CHANGELOG_PAIR_FLOOR)，报的是 13 !== 12
  */
-const CHANGELOG_PAIR_FLOOR = 12;
+const CHANGELOG_PAIR_FLOOR = 13;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
