@@ -131,6 +131,29 @@
   `persistence_capability_degraded`（既有通道已经报过了）。不新增 `executionStatus` 值、不动尾部
   （`control_capture`）那条路、不改写折叠档案。
 
+- **`docs-drift-check --self-test`'s version face is now synthesized by the self-test instead of copied from a
+  release window (issue #724).** Nine reverse proofs (`#697` ① / ② / ②登记证 / ②空转证 / ③ / ③历史段 /
+  (a) 不管历史段 / ⑤ / 干净检出, plus `#511 评论`) anchored on literals that only existed while 0.30.x was in
+  flight: the unpublished `0.31.0` section heading shape, the dated `0.30.0` one, a registry stub pinned to
+  `latest: 0.30.0`, and the AGENTS sentence naming `0.30.0` as the published line. The 0.31.0
+  writeback deleted every one of them, so each mutation missed and the suite reported "the mutation did not
+  land (the reverse proof invalidated itself)": `--self-test` was **9/199 red on clean main**, and the four
+  incidental `published-claim` reds that came with it had the same cause. The fixture now derives the
+  released version, the previous published one and the in-flight one from the live `CHANGELOG.md` — and
+  synthesizes the in-flight section when the tree has none — so a mutation anchor is a string the fixture
+  itself just wrote: a release can no longer red it. Same family as #713 (the probe whose version face is
+  synthesized the same way). Case count stays 199: no case deleted, none skipped, no assertion relaxed, and
+  the suite is green on both a published face and a synthetic release-window face.
+- **`docs-drift-check --self-test` 的版本面改为由自测自己合成，不再从某一个发版窗口抄（issue #724）。**
+  九条反向证（`#697` ① / ② / ②登记证 / ②空转证 / ③ / ③历史段 / (a) 不管历史段 / ⑤ / 干净检出，外加
+  `#511 评论`）的锚点原本抄的是「0.30.x 在飞」时才有的一批字面量：`0.31.0` 的未发布段首形状、`0.30.0`
+  的带日期段首、钉着 `latest: 0.30.0` 的 registry 桩，以及 AGENTS 里那句把 `0.30.0` 说成发布行的话。
+  0.31.0 的回写把这批字面量全删了，于是每一条变异都打不中，自测报「变异没落到 … 上（反向证自身失效）」：
+  干净 main 上 `--self-test` 是 **9/199 红**，随附的 4 处 `published-claim` 红是同一个成因。夹具现在从
+  **活着的** `CHANGELOG.md` 现推已发布那一版、上一版与在飞那一版（树上没有在飞段时由夹具自己合成一段），
+  于是变异锚点是**夹具这一轮刚写下的字符串**：发版再也红不到它们。与 #713（那件工具的版本面也是自己合成）
+  同族。例数仍是 199：没删例、没跳过、没放宽断言，且「已发布面」与「合成发版窗口面」两副版本面上都绿。
+
 ## [0.31.0] - 2026-11-04
 
 ### Breaking
