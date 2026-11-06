@@ -37,7 +37,7 @@ test("#742 超上限的形状：truncated 为真、bytes 大于 capBytes、capBy
   assert.equal(meta.bytes, expectedBytes(state));
 });
 
-test("#742 不超上限的形状：truncated 为假、bytes 与实际序列化字节逐字节一致", () => {
+test("#742 不超上限也没夹断章：truncated 为假、bytes 与实际序列化字节逐字节一致", () => {
   // 一份引擎自己产出的状态（不是随手造的字典），再加上写点在夹断**之后**才挂上的 `rendered`。
   const state = withSemanticRunState(createDeterministicRunState({
     runId: "meta-below-cap",
@@ -59,7 +59,28 @@ test("#742 不超上限的形状：truncated 为假、bytes 与实际序列化�
   assert.ok(meta.bytes < meta.capBytes);
 });
 
-test("#742 恰好等于上限：算「没超出」，边界不双计", () => {
+test("#742 副本被引擎夹断过（夹断章在上限内）：truncated 仍要为真", () => {
+  // 实测：夹断发生在轮记录写点的**上游**（`boundRunState`），落盘的副本本身反而在上限内
+  // （128 工具 / 128 文件 / 64 todo / 1200 字 semantic 的极端轮也只到 28 KB）。
+  // 只看 `bytes > capBytes` 会把真被夹断的那一轮报成「没截断」，而夹断章
+  // （`bounds.truncated` + `reason: "serialized_size"`）正是现成的那一笔 —— 两个事实取或。
+  const state = {
+    schemaVersion: 1,
+    runId: "clamped-under-cap",
+    stateVersion: 3,
+    asOfRound: 3,
+    stateStatus: "available",
+    deterministic: { budget: {}, tools: [], filesWritten: [], fold: {}, termination: { reason: "running" }, errors: {} },
+    bounds: { maxSerializedBytes: RUN_STATE_MAX_SERIALIZED_BYTES, truncated: true, reason: "serialized_size", omittedTools: 1 },
+  };
+  const meta = measureRunStateMeta(state);
+  assert.notEqual(meta, undefined);
+  assert.ok(meta.bytes < meta.capBytes, "该形状本来就在上限内 ⇒ 这一格走的必须是夹断章那条路");
+  assert.equal(meta.truncated, true);
+  assert.equal(meta.capBytes, RUN_STATE_MAX_SERIALIZED_BYTES);
+});
+
+test("#742 恰好等于上限且无夹断章：算「没截断」，边界不双计", () => {
   // `bytes > capBytes` 才是超出；恰好等于上限是本切片刻意留在「未截断」一侧的边界（`>=` 会双计）。
   // `JSON.stringify({ pad: "x".repeat(n) })` 是 `{"pad":"x…"}` ⇒ `10 + n` 字节（实测 overhead=10，见下格），
   // 取 `n = capBytes - 10` 让总数**恰好**等于上限。
@@ -99,9 +120,11 @@ test("#742 上限必须来自导出常量、truncated 必须是算出来的（�
   assert.doesNotMatch(body, /64\s*\*\s*1024/u, "capBytes 不许写死 64 * 1024");
   assert.match(body, /capBytes:\s*RUN_STATE_MAX_SERIALIZED_BYTES/u);
   assert.match(body, /RUN_STATE_MAX_SERIALIZED_BYTES\b/u);
-  // ② truncated 必须是判出来的常量表达式，不得被写死成 false（写死 ⇒ 观测恒绿）。
+  // ② truncated 必须是算出来的（两个截断事实取或），不得被写死成 false（写死 ⇒ 观测恒绿）。
   assert.doesNotMatch(body, /truncated:\s*false/u);
-  assert.match(body, /truncated:\s*bytes\s*>\s*RUN_STATE_MAX_SERIALIZED_BYTES/u);
+  assert.match(body, /truncated:\s*overCap\s*\|\|\s*clamped/u);
+  assert.match(body, /const overCap = bytes > RUN_STATE_MAX_SERIALIZED_BYTES/u);
+  assert.match(body, /const clamped = state\?\.bounds\?\.truncated === true/u);
   // ③ 字节尺必须复用 `serializedBytes`（`boundRunState` 判 bounds.truncated 用的那一句）。
   assert.match(body, /serializedBytes\(\s*state\s*\)/u, "字节尺必须复用 serializedBytes");
 });

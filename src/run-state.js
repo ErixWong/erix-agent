@@ -221,7 +221,13 @@ function serializedBytes(value) {
  *   2. **上限从导出常量取**：`capBytes = RUN_STATE_MAX_SERIALIZED_BYTES`。写字面量（`65536`）等于把
  *      这把尺复制第二份，常量以后调整时元数据会静默说谎 —— 钉在
  *      `test/run-state-meta-742.test.js` 的源码格。
- *   3. **无值就不给值**：非普通对象（`undefined` / `null` / 数组 / 标量）或序列化不了的副本（循环引用 /
+ *   3. **两个截断事实取或**：`truncated` = 副本**自己超出上限**（`bytes > capBytes`）**或**引擎已在
+ *      `bounds.truncated` 上盖了夹断章。只要前者会永久假：实测一份 128 个工具 / 128 个文件 /
+ *      64 条 todo / 1200 字 semantic 的极端轮，夹断**后**写到轮记录上的副本只有 28 KB（夹断发生在
+ *      写点**上游**的 `boundRunState`）——只报「超上限」就把真被夹断的那一轮报成没截断，而夹断章
+ *      （`omittedTools` / `reason: "serialized_size"`）就是现成的那一笔。两者取或才不会谎报；
+ *      两个事实各自仍在 `bytes` / `bounds` 里分得开，这一格不把两者揉成一个数。
+ *   4. **无值就不给值**：非普通对象（`undefined` / `null` / 数组 / 标量）或序列化不了的副本（循环引用 /
  *      `BigInt` ⇒ `JSON.stringify` 抛）⇒ 返回 `undefined`，**不返回** `{ bytes: 0, truncated: false }`。
  *      调用方据此**不写这一格**；读侧拿到缺格必须当「不知道」，不得伪报成「没截断」。
  *
@@ -231,7 +237,7 @@ function serializedBytes(value) {
  * @param {unknown} state 将要写进轮记录的 run-state 副本（引擎侧是 `cloneState(roundRunState)`）
  * @returns {{bytes: number, capBytes: number, truncated: boolean} | undefined}
  *   `bytes` = 该副本的 UTF-8 序列化字节数；`capBytes` = 单状态上限常量；
- *   `truncated` = 该副本是否**已超出**上限（`bytes > capBytes`，恰好等于上限算没超）；
+ *   `truncated` = 该副本是否被截断（超出上限，或带着引擎的夹断章；恰好等于上限算没超出）；
  *   拿不到值 ⇒ `undefined`（不是零值对象）。
  */
 export function measureRunStateMeta(state) {
@@ -244,10 +250,14 @@ export function measureRunStateMeta(state) {
     return undefined;
   }
   if (!Number.isSafeInteger(bytes) || bytes < 0) return undefined;
+  const overCap = bytes > RUN_STATE_MAX_SERIALIZED_BYTES;
+  // 夹断章从副本自己身上读（`bounds.truncated`）——它是 `boundRunState` / `compactStateForSize`
+  // 已经盖好的章，不是这一格的新发明；读它不改变任何写入内容。
+  const clamped = state?.bounds?.truncated === true;
   return {
     bytes,
     capBytes: RUN_STATE_MAX_SERIALIZED_BYTES,
-    truncated: bytes > RUN_STATE_MAX_SERIALIZED_BYTES,
+    truncated: overCap || clamped,
   };
 }
 
