@@ -4232,8 +4232,13 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 5 条 / 英文 5 条 / 配对 5 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 4（校准面 \#\# [Unreleased]）
  *     # 配对地板：实测 5 对 > 地板 4 对 ⇒ 可以抬地板到 5
  *     校准面（## [Unreleased]）上实测 5 对 ≠ 地板 4 对：地板必须恰等于校准面上的实测值（否则「掉一条就穿底」证不出来）。配对变多了 ⇒ 请抬地板到实测值
+ *
+ * issue #724 这一对条目落进 `### Fixed`（`--self-test` 的版本面改由夹具现推 + 合成）⇒ 面没挪、仍是 `## [Unreleased]`，同一面实测 **6 对**（#713 / #421 / #714 / #715 / #729 / #724 各一对中英）。守卫自己打的 diagnostic 原文（**先贴原文再动常量**，这次同样是主会话在合并 main 之后现跑的）：
+ *
+ *     配对地板：判据面 = \\#\[Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 6 条 / 英文 6 条 / 配对 6 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 5（校准面 \\#\[Unreleased]）
+ *     配对地板：实测 6 对 > 地板 5 对 ⇒ 可以抬地板到 6
  */
-const CHANGELOG_PAIR_FLOOR = 5;
+const CHANGELOG_PAIR_FLOOR = 6;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
