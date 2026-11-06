@@ -42,11 +42,23 @@ export const NOTE_RECALL_REASONS = Object.freeze({
   // 三个原因都要短：它们最终出现在**模型可见文本**里，而折叠摘要有字节夹断（#460 尺蠖）。
   /** 工具面上没有完整的笔记工具族 ⇒ 连路都不存在。 */
   noSurface: "无笔记工具",
-  /** 工具有，但可见账本里一次成功写入都没有 ⇒ 路在，格子是空的。 */
+  /** 工具有，但可见账本里一次**可证实**的写入都没有 ⇒ 路在，格子是空的。 */
   emptyNotes: "无笔记写入",
+  /** 写过，但载荷不是成功形状，或随后被 `note_forget` 撤销 ⇒ 写过不等于现在还能查（评审必修 1）。 */
+  revoked: "笔记已撤销",
   /** 调用方没给工具面/账本证据 ⇒ 引擎确实不知道。 */
   unknown: "无笔记证据",
 });
+
+/**
+ * `note_take` / `note_forget` 的载荷状态字面。来源已核：`src/tools/notes.js` 的 `writeNote` 成功返回
+ * `{status:"found", action:"saved"|"updated", key, …}`（失败走 `invalid` / `missing`），
+ * `note_forget` 撤销成功返回 `{status:"revoked", key, …}` 并写墓碑。**只读这三个字段**：
+ * 载荷正文（笔记内容）一个字都不解析，也不碰宿主存储（同「引擎不认识 notes」那条边界）。
+ * 成功集合里多收几个同义词，是为了宿主自实现笔记工具时不要把「真有笔记」说成「没笔记」。
+ */
+const NOTE_WRITE_OK_STATUSES = new Set(["found", "ok", "saved", "written", "updated", "created"]);
+const NOTE_REVOKE_OK_STATUSES = new Set(["revoked"]);
 
 /** 从宿主给的 `tools` 里挑出笔记工具名（不做前缀猜测，只认这三个确定名）。 */
 export function noteToolNamesOnSurface(tools) {
@@ -58,20 +70,121 @@ export function noteToolNamesOnSurface(tools) {
   return [...found];
 }
 
-/** 可见账本里是否有过**成功**的 `note_take` 写入（配对的 tool_result 缺席视为未报错：折叠只截内容不删行）。 */
+/** tool_result 正文：字符串与 `[{type:"text",text}]` 两种形状都收；拿不到就是空串。 */
+function toolResultText(block) {
+  const content = block?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((part) => (typeof part === "string" ? part : String(part?.text ?? ""))).join("\n");
+  }
+  return "";
+}
+
+/**
+ * 载荷能不能**证实**某个状态。口径：解不出 JSON 对象 = 不能证实（宁可说不知道，不许伪报有）。
+ * 引擎自己发的 tool_result 都是 `JSON.stringify(...)`，所以这条不会误伤引擎面；宿主自实现的笔记
+ * 工具若只回一句纯文本，代价只是退到「显式未知」口径（安全方向：少一句广告，不撒一句谎）。
+ */
+function payloadConfirms(block, statuses) {
+  if (!block || block.is_error === true) return false;
+  let parsed;
+  try {
+    parsed = JSON.parse(toolResultText(block));
+  } catch {
+    return false;
+  }
+  return !!parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    && typeof parsed.status === "string" && statuses.has(parsed.status);
+}
+
+function payloadKey(block) {
+  try {
+    const key = JSON.parse(toolResultText(block))?.key;
+    return typeof key === "string" && key !== "" ? key : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 可见账本里的笔记写入台账（评审必修 1：旧口径把三种假证据都当成「有笔记可查」）。
+ *
+ * 旧实现只问「有没有一个没被 `is_error` 覆盖的 `note_take` tool_use」，于是
+ *   ① **未配对**（结果没回来 / 根本不会回来）、
+ *   ② **失败载荷**（`{status:"invalid"}`，`is_error` 都没置）、
+ *   ③ **写过又被 `note_forget` 撤销**（墓碑已写，历史 current 不可作当前值）
+ * 都会让模型被指去查一个查不到的东西。新口径三条都要过：
+ *   · 必须存在与该 `tool_use_id` **配对**的 `tool_result`；
+ *   · 该结果不能是 `is_error`，且载荷要能证实为成功状态（`NOTE_WRITE_OK_STATUSES`）；
+ *   · 同 key 后续出现成功的 `note_forget` ⇒ 这条写入作废（写过 ≠ 现在还能读）。
+ * key 认不出（载荷与入参都没有）⇒ 无法追踪撤销 ⇒ 保守地不算可查。
+ *
+ * @param {Array<object>} messages
+ * @returns {{available: boolean, reason: string, hadWrite: boolean}}
+ */
+export function noteWriteEvidence(messages) {
+  const results = new Map();
+  for (const message of Array.isArray(messages) ? messages : []) {
+    for (const block of message?.content ?? []) {
+      // 同一个 id 多条结果时取**后一条**：重试语义下最后一次答复才是当前事实。
+      if (block?.type === "tool_result" && typeof block.tool_use_id === "string") {
+        results.set(block.tool_use_id, block);
+      }
+    }
+  }
+
+  const live = new Set();
+  let failedWrite = false;   // 配对结果明确失败（is_error / status 不是成功值）⇒「没写成」
+  let unverifiable = false;  // 有结果但证实不了（载荷不是 JSON、没有 status、写入认不出 key）⇒「不知道」
+  let sawRevoke = false;     // 成功的 note_forget 作废过一条可查写入
+  for (const message of Array.isArray(messages) ? messages : []) {
+    for (const block of message?.content ?? []) {
+      if (block?.type !== "tool_use") continue;
+      const paired = results.get(block.id);
+      if (block.name === "note_take") {
+        if (!paired) continue;                       // ① 未配对：结果没回来 ⇒ 什么都不说
+        if (!payloadConfirms(paired, NOTE_WRITE_OK_STATUSES)) {
+          if (hasStatusField(paired) || paired.is_error === true) failedWrite = true;
+          else unverifiable = true;
+          continue;
+        }
+        const key = payloadKey(paired) ?? (typeof block.input?.key === "string" ? block.input.key : "");
+        // 写入成功但认不出 key ⇒ 追不到后续撤销 ⇒ 不许算可查（宁可少一句广告）。
+        if (key === "") unverifiable = true;
+        else live.add(key);
+      } else if (block.name === "note_forget") {
+        if (!paired || !payloadConfirms(paired, NOTE_REVOKE_OK_STATUSES)) continue;
+        const key = payloadKey(paired) ?? (typeof block.input?.key === "string" ? block.input.key : "");
+        if (key === "") { live.clear(); sawRevoke = true; continue; }   // 认不出撤销了谁 ⇒ 整本都不再可信
+        if (live.delete(key)) sawRevoke = true;
+      }
+    }
+  }
+
+  if (live.size > 0) return { available: true, reason: "", hadWrite: true };
+  // 三格「查不到」互不覆盖：被撤销 ≠ 无法证实 ≠ 从没写成。优先级按「引擎实际知道什么」排。
+  const reason = sawRevoke
+    ? NOTE_RECALL_REASONS.revoked
+    : (unverifiable ? NOTE_RECALL_REASONS.unknown : NOTE_RECALL_REASONS.emptyNotes);
+  return { available: false, reason, hadWrite: failedWrite || unverifiable };
+}
+
+/** 载荷里有没有 `status` 字段（有 ⇒ 这是引擎/宿主自己发的状态机；没有 ⇒ 无法证实）。 */
+function hasStatusField(block) {
+  try {
+    const parsed = JSON.parse(toolResultText(block));
+    return !!parsed && typeof parsed === "object" && typeof parsed.status === "string";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 可见账本里是否有过**现在还能查**的 `note_take` 写入（口径见 `noteWriteEvidence`）。
+ * 名字保留是为了不拆既有调用面；语义比旧口径严格得多。
+ */
 export function hasNoteWriteEvidence(messages) {
-  const errored = new Set();
-  for (const message of Array.isArray(messages) ? messages : []) {
-    for (const block of message?.content ?? []) {
-      if (block?.type === "tool_result" && block.is_error === true) errored.add(block.tool_use_id);
-    }
-  }
-  for (const message of Array.isArray(messages) ? messages : []) {
-    for (const block of message?.content ?? []) {
-      if (block?.type === "tool_use" && block.name === "note_take" && !errored.has(block.id)) return true;
-    }
-  }
-  return false;
+  return noteWriteEvidence(messages).available;
 }
 
 /**
@@ -86,7 +199,8 @@ export function resolveNoteRecall({ noteTools, messages } = {}) {
   if (!NOTE_RECALL_TOOL_NAMES.every((name) => noteTools.includes(name))) {
     return { available: false, reason: NOTE_RECALL_REASONS.noSurface, surfaceKnown: true };
   }
-  if (!hasNoteWriteEvidence(messages)) return { available: false, reason: NOTE_RECALL_REASONS.emptyNotes, surfaceKnown: true };
+  const ledger = noteWriteEvidence(messages);
+  if (!ledger.available) return { available: false, reason: ledger.reason, surfaceKnown: true };
   return { available: true, reason: "", surfaceKnown: true };
 }
 
@@ -114,9 +228,6 @@ function unverifiedRetrievalHint(retrievalCommand, reason) {
   // 「不要猜测」半句**保留**：本切片修的是「有没有记录」，不是放松反幻觉约束。
   return `${lead}；${unverifiedRecallClause(reason)}；未记录且无法确定性重算时请省略，不要猜测`;
 }
-
-/** 有证据时才出现的那半句尾巴（无证据时说「已有笔记」就是假知识）。 */
-const NOTE_RECALL_TAIL = "；要点见对话中已有笔记/结论";
 
 /** 入参没给 limit 时的重读窗口（行数）；比 readFile 的默认 200 窄，宁小不许谎称是全文。 */
 const RETRIEVAL_WINDOW_LINES = 120;
@@ -281,10 +392,8 @@ export function extractContentDigest(content, { maxEntries = 12 } = {}) {
 
 // 折叠占位符：标题行 + 可选 digest 行 + 可选 JSON 骨架行，总量控制在 ~600 字符内
 // （digest 不足 maxEntries 条就多少放多少；超限时从尾向前裁剪 digest 条目）。
-function buildFoldPlaceholder({ inputSummary, tokens, round, hint, text, skeleton, noteTail, retrievalCommand }) {
-  const header = `【已折叠·TTL】${inputSummary}`
-    + `（约 ${tokens} tokens，r${round} 读取）— ${hint}`
-    + noteTail;
+function buildFoldPlaceholder({ inputSummary, tokens, round, hint, text, skeleton, retrievalCommand }) {
+  const header = `【已折叠·TTL】${inputSummary}` + `（约 ${tokens} tokens，r${round} 读取）— ${hint}`;
   let entries = collectDigestEntries(text, 12);
   for (;;) {
     const lines = [header];
@@ -399,7 +508,6 @@ export function foldToolResultsForRequest(messages, {
   // issue #741：一次算定笔记可用性（同一份视图里每个占位符共用同一个判定）。
   const noteRecall = resolveNoteRecall({ noteTools, messages });
   const warningLine = noteRecall.available ? TTL_WARNING_LINE : TTL_WARNING_LINE_NO_NOTES;
-  const noteTail = noteRecall.available ? NOTE_RECALL_TAIL : "";
   // ttl=0 / minTokens<=0 = 关闭，no-op（保持引用不变，调用方零成本）。
   if (ttl <= 0 || minTokens <= 0) return messages;
 
@@ -475,7 +583,6 @@ export function foldToolResultsForRequest(messages, {
         hint,
         text,
         skeleton: jsonSkeleton(text),
-        noteTail,
         ...(noteRecall.available ? {} : { retrievalCommand }),
       });
 

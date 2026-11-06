@@ -40,7 +40,12 @@ const NOTE_TOOLS = ["note_take", "note_list", "note_read"];
 
 /** 判据里钉的两句（模型可见文本，改字面就该在这里红一次）。 */
 const NO_RECORD_CLAUSE = "无可复原的决策记录";
+/** 旧字面：它断言「这条被折内容的要点已经在笔记里」——那是证不到的覆盖率断言（评审必修 1）。 */
 const NOTE_TAIL = "要点见对话中已有笔记/结论";
+/** `note_take` / `note_forget` 的引擎真实载荷（证据门认的是这些 `status` 字面）。 */
+const NOTE_WRITE_OK = JSON.stringify({ status: "found", action: "saved", key: "k-1", scope: "run" });
+const NOTE_WRITE_INVALID = JSON.stringify({ status: "invalid", key: "k-1", reason: "key 必须是非空字符串" });
+const NOTE_FORGET_OK = JSON.stringify({ status: "revoked", key: "k-1" });
 
 /**
  * 一条 readFile 结果 + 可选的 `note_take` 写入记录。
@@ -60,10 +65,13 @@ function conversation({
       role: "user",
       content: [{ type: "tool_result", tool_use_id: "call-1", content: resultContent, erix: { round: createdRound } }],
     },
+    // 载荷形状抄引擎自己的：`src/tools/notes.js` 的 `writeNote` 成功时返回
+    // `{status:"found", action:"saved"|"updated", key, …}`（评审必修 1 把证据门收紧到「配对 + 载荷
+    // 证实成功」，纯文本 `"ok"` 在那道门上是「无法证实」，不是「成功」）。
     ...(noteWrite
       ? [
-        { role: "assistant", content: [{ type: "tool_use", id: "note-1", name: "note_take", input: { text: "结论已记" } }] },
-        { role: "user", content: [{ type: "tool_result", tool_use_id: "note-1", content: "ok" }] },
+        { role: "assistant", content: [{ type: "tool_use", id: "note-1", name: "note_take", input: { key: "k-1", content: "结论已记" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "note-1", content: NOTE_WRITE_OK }] },
       ]
       : []),
   ];
@@ -113,9 +121,14 @@ test("①有笔记证据时两句逐字不变（回归锁：条件式不是删�
 
   const view = foldToolResultsForRequest(withEvidence, { currentRound: 5, ttl: 2, minTokens: 100, noteTools: NOTE_TOOLS });
   const placeholder = placeholderOf(view);
+  // 有证据 ⇒ 仍是那句**条件式**检索指导（note-first），并且不说「无可复原的决策记录」。
   assert.match(placeholder, /先用 note_list 查找，再用 note_read 读取/u);
-  assert.equal(placeholder.includes(NOTE_TAIL), true, "有证据 ⇒ 尾巴仍是原句");
+  assert.match(placeholder, /未记录且无法确定性重算时请省略，不要猜测/u);
   assert.equal(placeholder.includes(NO_RECORD_CLAUSE), false);
+  // 评审必修 1：旧尾巴「要点见对话中已有笔记/结论」断言的是**覆盖率**（这条内容的要点已在笔记里），
+  // 而证据只证得到「本 run 有过一次没被撤销的成功写入」⇒ 覆盖率证不到，整句删掉（不留条件式残骸）。
+  assert.equal(placeholder.includes(NOTE_TAIL), false,
+    `覆盖率断言不许留着（实测：${JSON.stringify(placeholder)}）`);
 });
 
 // —— 判据②：note_take 不在工具面上 ⇒ 提示里不得出现任何 note_*（改前零测试）——
@@ -178,8 +191,11 @@ test("②引擎拿不到工具面证据时不伪报知道（缺席即未知，�
   assert.match(substitute, new RegExp(`${NO_RECORD_CLAUSE}（原因：无笔记证据）`, "u"));
   assert.equal(substitute.includes(NOTE_TAIL), false);
   // 三条未知口径变体都在剥离清单里（合并折叠摘要时不许在标题里留半句广告语）。
-  assert.equal(ENGINE_RECOVERY_HINTS.length, 4, "默认广告语的可枚举集合：原句 + 三条未知口径变体");
+  assert.equal(ENGINE_RECOVERY_HINTS.length, 5,
+    "默认广告语的可枚举集合：原句 + 四条未知口径变体（无笔记工具 / 无笔记写入 / 笔记已撤销 / 无笔记证据）");
   assert.equal(ENGINE_RECOVERY_HINTS[0], DEFAULT_RECOVERY_HINT);
+  assert.ok(ENGINE_RECOVERY_HINTS.some((hint) => hint.includes(`（原因：${NOTE_RECALL_REASONS.revoked}）`)),
+    "「笔记已撤销」那一句也必须在剥离清单里，否则合并标题会留半句广告语");
 });
 
 // —— 取回命令（第 2 项交付物：能确定性重算就直接给命令）——
@@ -267,6 +283,46 @@ test("证据判定：工具面整族齐全**且**账本里有成功写入才算�
   const failed = conversation({ noteWrite: true });
   failed[4].content[0].is_error = true;
   assert.equal(hasNoteWriteEvidence(failed), false, "失败的 note_take 不能当「有笔记」的证据");
+
+  // —— 评审必修 1 的三条假证据：旧口径三条全过（都算「有笔记」），新口径三条全不过 ——
+  // ① 未配对：只有 tool_use，结果根本没回来（被截、被丢、协议上还不合法的情形都有）。
+  // 夹具第 5 条（下标 4）就是那条配对结果；砍掉它 ⇒ 只剩一个没有答复的 tool_use。
+  const unpaired = conversation({ noteWrite: true }).slice(0, 4);
+  assert.equal(hasNoteWriteEvidence(unpaired), false, "未配对的 note_take 不是「有笔记」的证据");
+  assert.deepEqual(resolveNoteRecall({ noteTools: NOTE_TOOLS, messages: unpaired }),
+    { available: false, reason: NOTE_RECALL_REASONS.emptyNotes, surfaceKnown: true },
+    "未配对要说「无笔记写入」：没有任何结果证实过写入了什么");
+  // ② 失败载荷：`is_error` 都没置，但载荷自报 `status:"invalid"`（`invalid()` 就是这么发的）。
+  const invalid = conversation({ noteWrite: true });
+  invalid[4].content[0].content = NOTE_WRITE_INVALID;
+  assert.equal(hasNoteWriteEvidence(invalid), false, '自报 `{status:"invalid"}` 的载荷不是成功写入');
+  assert.deepEqual(resolveNoteRecall({ noteTools: NOTE_TOOLS, messages: invalid }),
+    { available: false, reason: NOTE_RECALL_REASONS.emptyNotes, surfaceKnown: true },
+    "写失败 = 没写成 ⇒ 说「无笔记写入」，不是「已撤销」");
+  // ③ 写入后又 forget：墓碑已写，历史 current 不可作当前值 ⇒ 写过 ≠ 现在还能查。
+  const revoked = [
+    ...conversation({ noteWrite: true }),
+    { role: "assistant", content: [{ type: "tool_use", id: "note-2", name: "note_forget", input: { key: "k-1" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "note-2", content: NOTE_FORGET_OK }] },
+  ];
+  assert.equal(hasNoteWriteEvidence(revoked), false, "被 note_forget 撤销的写入不再是证据");
+  assert.deepEqual(resolveNoteRecall({ noteTools: NOTE_TOOLS, messages: revoked }),
+    { available: false, reason: NOTE_RECALL_REASONS.revoked, surfaceKnown: true },
+    "撤销要单列一格原因「笔记已撤销」：它既不是「没写过」也不是「查不到工具」");
+  // 撤销一条、另有一条还活着 ⇒ 仍可查（不能把「有过一次撤销」当成「整本都没了」）。
+  const partlyRevoked = [
+    ...revoked,
+    { role: "assistant", content: [{ type: "tool_use", id: "note-3", name: "note_take", input: { key: "k-2" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "note-3", content: JSON.stringify({ status: "found", action: "saved", key: "k-2" }) }] },
+  ];
+  assert.deepEqual(resolveNoteRecall({ noteTools: NOTE_TOOLS, messages: partlyRevoked }),
+    { available: true, reason: "", surfaceKnown: true }, "撤销是**按 key** 的，别把整本判死");
+  // 载荷不是 JSON（宿主自实现只回一句话）⇒ 引擎不知道，就说不知道，不许当成成功。
+  const opaque = conversation({ noteWrite: true });
+  opaque[4].content[0].content = "ok";
+  assert.equal(hasNoteWriteEvidence(opaque), false, "解不出的载荷不算证实成功（宁可少一句广告）");
+  assert.deepEqual(resolveNoteRecall({ noteTools: NOTE_TOOLS, messages: opaque }),
+    { available: false, reason: NOTE_RECALL_REASONS.unknown, surfaceKnown: true });
 
   // 三种未知口径各自的判定（原因文本本身就是模型可见文本）。
   assert.deepEqual(resolveNoteRecall({}), { available: false, reason: NOTE_RECALL_REASONS.unknown, surfaceKnown: false });

@@ -529,7 +529,9 @@ test("tool result TTL fold: placeholder replaces aged large results in later req
     content: [{
       type: "tool_use",
       id: `call-${n}`,
-      name: "scan",
+      // 工具名要真是 readFile：取回命令只认 readFile 的入参契约（#741 评审必修 2），
+      // 造一个 `scan` 名字再期待 `sed` 命令，证的就不是生产里那条路径了。
+      name: "readFile",
       input: { path: `src/f${n}.js`, offset: 0, limit: 100 },
     }],
     stopReason: "tool_use",
@@ -571,7 +573,7 @@ test("tool result TTL fold: placeholder replaces aged large results in later req
   // r3 请求：age=2 >= ttl=2 → 占位符在场
   const foldedViews = resultContentAt(2);
   assert.equal(foldedViews.length, 2);
-  assert.match(foldedViews[0], /【已折叠·TTL】scan path/);
+  assert.match(foldedViews[0], /【已折叠·TTL】readFile path/);
   // issue #741 判据②（集成面）：这个 run 的 `tools` 里没有 `note_*` ⇒ 占位符一个字也不许提笔记，
   // 并把「没有可复原的记录」连同原因说出来；取回原文改给一条可直接执行的命令。
   assert.doesNotMatch(foldedViews[0], /note_/u);

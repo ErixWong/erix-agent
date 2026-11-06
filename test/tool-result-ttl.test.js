@@ -15,6 +15,8 @@ const BIG = "x".repeat(20_000); // ~6600 估算 tokens，高于默认 4000 门�
 // 所以夹具**默认带一份笔记证据**（整族工具在面上 + 账本里一次成功的 `note_take` 写入），
 // 让它们继续跑在「有证据」口径上；条件式本身的判据在 test/compact/fold-note-honesty-741.test.js。
 const NOTE_TOOLS = ["note_take", "note_list", "note_read"];
+/** `note_take` 的成功载荷（唯一来源 `src/tools/notes.js` 的 `writeNote`）。 */
+const NOTE_WRITE_OK = JSON.stringify({ status: "found", action: "saved", key: "k-1", scope: "run" });
 
 /** 默认带笔记证据的折叠入口（要跑「无证据」口径请直接调 `foldToolResultsForRequest`）。 */
 function fold(messages, options = {}) {
@@ -51,8 +53,10 @@ function conversation({
     },
     ...(noteWrite
       ? [
-        { role: "assistant", content: [{ type: "tool_use", id: "note-1", name: "note_take", input: { text: "结论已记" } }] },
-        { role: "user", content: [{ type: "tool_result", tool_use_id: "note-1", content: "ok" }] },
+        // 载荷抄引擎自己的成功形状（`writeNote` 返 `{status:"found", action:"saved", key, …}`）：
+        // 证据门收紧后，纯文本 `"ok"` 属于「证实不了」，会让这些格子掉进「无证据」口径。
+        { role: "assistant", content: [{ type: "tool_use", id: "note-1", name: "note_take", input: { key: "k-1", content: "结论已记" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "note-1", content: NOTE_WRITE_OK }] },
       ]
       : []),
   ];

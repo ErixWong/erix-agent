@@ -39,6 +39,7 @@ export const ENGINE_RECOVERY_HINTS = Object.freeze([
   DEFAULT_RECOVERY_HINT,
   unverifiedRecoveryHint(NOTE_RECALL_REASONS.noSurface),
   unverifiedRecoveryHint(NOTE_RECALL_REASONS.emptyNotes),
+  unverifiedRecoveryHint(NOTE_RECALL_REASONS.revoked),
   unverifiedRecoveryHint(NOTE_RECALL_REASONS.unknown),
 ]);
 
