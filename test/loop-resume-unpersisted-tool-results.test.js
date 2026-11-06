@@ -1319,7 +1319,7 @@ test("#729 中段悬空（载体已带正文 + 同轮消息行）· 不给锚点
   assert.equal((await inner.load(RUN_ID)).flatMap((record) => record.messages ?? [])
     .filter((message) => blocksOf([message]).some((block) => block?.type === "tool_use"
       && block.id === "t1")).length, 1,
-  "整份账本里带 `t1` 的 assistant 必须恰好一条（修前 2 条 = 整轮正文拼了第二遍）");
+    "整份账本里带 `t1` 的 assistant 必须恰好一条（修前 2 条 = 整轮正文拼了第二遍）");
   assert.deepEqual(ledgerAggregates(await inner.load(RUN_ID)), [{ role: "user", ids: ["t1"] }],
     "账本形状必须保持「一条聚合 user 消息只带 t1」（桩不进账本）");
 
