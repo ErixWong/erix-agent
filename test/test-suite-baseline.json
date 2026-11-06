@@ -13,7 +13,7 @@
       "date": "2026-11-07",
       "env": "local",
       "node": "v22.23.2",
-      "commit": "8f1d32e + 随后的 docs/守卫两笔（fix-261107-09-snapshot-round-residue，基点 main=bea46bb）；六个计数取自这一棵树上现跑的 npm test（日志 /tmp/npmtest-final3.log）",
+      "commit": "feb85ac（fix-261107-09-snapshot-round-residue 的最终树：#735 切片 2 的实现 c87f591 + 用例 8f1d32e + 文档 e0c7275 + 守卫 df4dd87 + 本笔登记，基点 main=bea46bb）；六个计数取自这一棵树上现跑的 npm test（日志 /tmp/npmtest-final.log）",
       "branch": "fix-261107-09-snapshot-round-residue",
       "tests": 3610,
       "pass": 3597,
@@ -21,7 +21,7 @@
       "skipped": 13,
       "todo": 0,
       "cancelled": 0,
-      "why": "tests 3605 → **3610**（+5，全部是有意的增删）：新增 `test/loop-snapshot-round-residue-735.test.js` 5 格（issue #735 切片 2：① 旧格式账本（`test/fixtures/journal-0.22.0` 截到 round 1）的升级路径仍把崩溃轮正文喂给模型；双崩现场 resume → 引擎覆盖写快照 → 再 resume，并把两次恢复的成败与上下文与一棵「写回整段」的 `src/` 副本逐字对账；③ 快照正文位的非 null 条数与独立字节基线；④b 变异「删掉残余」⇒ ① 红 + 「只置空前缀」⇒ 逐字不变；④a 变异「写回整段」（副本引擎 + `node --test` 子进程真退出码）⇒ ③ 红），既有文件一格没增减（两处原先从 `snapshot.messages` 切前缀造崩溃现场的夹具只换了正文来源：`test/loop-invalid-arguments.test.js`、`test/loop-snapshot-write-side-735.test.js`）。`fail=0`；`skipped` 实测 13 = 12 条真上游/真 relay 闸门 + 1 条真上游多会话格，**与登记上限 15 无关**：本机一开始 `node_modules/typescript` 缺失 ⇒ 同一棵树先量到 `skipped 17`（4 条类型棘轮用例自证式跳过），`npm install --include=dev` 之后重跑才是这条 13 —— 记下来是为了下一次别把环境缺依赖当成用例坏了。六个数值字段逐字取自这棵树的 TAP 汇总行并经 `npm run check:test-summary -- --log /tmp/npmtest-final3.log` 复核。同片随动：`test/static-guards.test.js` 的 CHANGELOG 配对地板按守卫现报值 **14 → 15** 重取（守卫原文：「中文 15 条 / 英文 15 条 / 配对 15 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 14」⇒ 抬到它当场报的那个数，**不做相加**）。没删例、没跳过、没放宽断言。"
+      "why": "tests 3605 → **3610**（+5，全部是有意的增删）：新增 `test/loop-snapshot-round-residue-735.test.js` 5 格（issue #735 切片 2：① 旧格式账本（`test/fixtures/journal-0.22.0` 截到 round 1）的升级路径仍把崩溃轮正文喂给模型；双崩现场 resume → 引擎覆盖写快照 → 再 resume，并把两次恢复的成败与上下文与一棵「写回整段」的 `src/` 副本逐字对账；③ 快照正文位的非 null 条数与独立字节基线；④b 变异「删掉残余」⇒ ① 红 + 「只置空前缀」⇒ 逐字不变；④a 变异「写回整段」（副本引擎 + `node --test` 子进程真退出码）⇒ ③ 红），既有文件一格没增减（两处原先从 `snapshot.messages` 切前缀造崩溃现场的夹具只换了正文来源：`test/loop-invalid-arguments.test.js`、`test/loop-snapshot-write-side-735.test.js`）。`fail=0`；`skipped` 实测 13 = 12 条真上游/真 relay 闸门 + 1 条真上游多会话格，**与登记上限 15 无关**：本机一开始 `node_modules/typescript` 缺失 ⇒ 同一棵树先量到 `skipped 17`（4 条类型棘轮用例自证式跳过），`npm install --include=dev` 之后重跑才是这条 13 —— 记下来是为了下一次别把环境缺依赖当成用例坏了。六个数值字段逐字取自这棵树的 TAP 汇总行并经 `npm run check:test-summary -- --log /tmp/npmtest-final.log` 复核（TEST-SUMMARY-VERDICT ok）。同片随动：`test/static-guards.test.js` 的 CHANGELOG 配对地板按守卫现报值 **14 → 15** 重取（守卫原文：「中文 15 条 / 英文 15 条 / 配对 15 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 14」⇒ 抬到它当场报的那个数，**不做相加**）。没删例、没跳过、没放宽断言。"
     },
     {
       "date": "2026-11-07",
