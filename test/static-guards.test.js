@@ -4279,8 +4279,27 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *
  *     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 9 条 / 英文 9 条 / 配对 9 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 8（校准面 \#\# [Unreleased]）
  *     # 配对地板：实测 9 对 > 地板 8 对 ⇒ 可以抬地板到 9
+ * ⚠ **rebase 追记（本常量的最终来源）**：上面 #736 那条 diagnostic 是 rebase **之前**在基点 a08a315 的树上
+ * 量的 9 对，#739 那条是在 main 上量的 9 对 —— 两条各自都对，但**不能相加**。本分支 rebase 到 origin/main
+ * a177083 之后现跑守卫（`node --test --test-name-pattern="配对地板" test/static-guards.test.js`）：
+ *
+ *     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 10 条 / 英文 10 条 / 配对 10 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 9（校准面 \#\[Unreleased]）
+ *     # 配对地板：实测 10 对 > 地板 9 对 ⇒ 可以抬地板到 10
+ *     校准面（## [Unreleased]）上实测 10 对 ≠ 地板 9 对：地板必须恰等于校准面上的实测值（否则「掉一条就穿底」证不出来）。配对变多了 ⇒ 请抬地板到实测值
+ *
+ * ⇒ 地板 = **10**（同一面上 #713 / #421 / #714 / #715 / #729 / #724 / #721 / #735 / #739 / #736 各一对）。
+  *
+ * issue #736：`## [Unreleased] ### Fixed` 再新增一对（恢复的崩溃边界改从账本推，同一个 issue 引用集合 #736）
+ * ⇒ 面没挪、仍是 `## [Unreleased]`，同一面实测 **9 对**（#713 / #421 / #714 / #715 / #729 / #724 / #721 / #735 /
+ * #736 各一对中英）。照旧**先贴守卫自己打的 diagnostic、再动常量**（本笔在「#736 中英条目已进 `CHANGELOG.md`」的树上
+ * 现跑，三行均为守卫的标准输出原文；守卫读的是 `CHANGELOG.md` 而不是本文件 ⇒ 地板与本常量同 commit
+ * 提交后自指成立，复跑必得 9 对）：
+ *
+ *     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 9 条 / 英文 9 条 / 配对 9 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 8（校准面 \#\[Unreleased]）
+ *     # 配对地板：实测 9 对 > 地板 8 对 ⇒ 可以抬地板到 9
+ *     校准面（## [Unreleased]）上实测 9 对 ≠ 地板 8 对：地板必须恰等于校准面上的实测值（否则「掉一条就穿底」证不出来）。配对变多了 ⇒ 请抬地板到实测值
  */
-const CHANGELOG_PAIR_FLOOR = 9;
+const CHANGELOG_PAIR_FLOOR = 10;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

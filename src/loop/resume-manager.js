@@ -103,6 +103,113 @@ export function countResumeAnchor(records) {
 }
 
 /**
+ * issue #736：**崩溃边界必须从账本推，不从快照推**。
+ *
+ * 病根（#734 的后果放大器）：`crashSiteRound` 的判据来自 run snapshot，而 #734 那次失败的写
+ * **正是快照本身**（`checkpoint_before_tool` fail-closed ⇒ 最新可用快照是上一轮那份）⇒ 探测器跟
+ * 现场一起消失 ⇒ 既不裁锚点、也不结清尾部 ⇒ 账本里那条悬空 `tool_use` 落在**中段**，被 #421 的
+ * 「同页合并」纪律（`pendingMidSequenceToolUses` 的 `results.length === 0`）跳过 ⇒ 每次请求在任何
+ * 出网之前被本地 `validateMessages` 拒掉（真机一例：7 次同类 `run_end`，报错 index 从 685 漂到 693）。
+ *
+ * 所以边界必须与**快照的新鲜度/存在性无关**，只吃账本。判据（工单 #736 原文，别改写成第二套）：
+ *   最大下标 `i`，使 `ledgerEntries[i]` 是带 `tool_use` 的 assistant、其 id 不在
+ *   `settledToolResultIds`（#420 的权威口径）里，且 `i` **之后**的每一行要么带 `tool_result`、
+ *   要么是宿主预写的纯文本用户行、要么是引擎控制行。
+ *
+ * 三条实现取舍（都有理由，别顺手简化）：
+ *   ① **候选行要求「该条 assistant 的 `tool_use` 全部未结清」**（不是「有一个未结清就算」）。
+ *      部分结清（`assistant[X,Y]` + `user[result X]`）是 #421 的**中段**形状：它的出口是同页合并桩
+ *      （下一条 user 已经带着结果），不是尾部结清。按这种行裁切会把**已落账的那条结果行**挤进尾
+ *      队列，尾部结清再补一张同 id 的桩 ⇒ 同一个 id 两份结果 ⇒ 把可恢复现场变成不可恢复。
+ *   ② **其后行的归属沿用 `isEngineLedgerRow`**（由调用方经 `isEngineRow` 注入），本函数**不**新写
+ *      第二份配对逻辑（#394 的纪律）。带 `tool_result` 的行一律放行：它不会把悬空块从尾部挤走。
+ *      「引擎控制行 / 宿主预写行」共有的形状是「一条 `user` + 纯文本」，而**合法的消息序里
+ *      悬空 `tool_use` 之后不可能跟着这样一行**（`validateMessages` 当场拒），所以按这个形状放行
+ *      不会把「崩溃之后继续跑的正文」误算进崩溃现场。
+ *   ③ 归属**未知**（调用方没给 `isEngineRow`，或镜像条数对不上）时走宽松档：只按 ② 的形状放行，
+ *      引擎正文行（assistant）照旧判 false ⇒ 宁可判成「边界不成立」（= 修复前的行为），也不误裁。
+ *
+ * 边界成立之后**不做**任何新的消息页形状：调用方按 `i + 1` 切片 ⇒ 悬空块变成**尾部** ⇒ 走既有
+ * `answerPendingTailToolUses`（注入告示之前那一步）结清，宿主预写行照旧最后接回（#421 的候选 (b)
+ * 「插页」在有边界之后不需要）。
+ *
+ * @param {Array<{message?: any, round?: number}>} ledgerEntries `foldLedgerMessages(records)` 的输出
+ * @param {Set<any>} settledToolResultIds 账本里已有结果行的 `tool_use` id 集合（#420 口径）
+ * @param {(entry: any, index: number) => boolean|undefined} [isEngineRow] 这一行的**归属**：
+ *   `true` = 引擎行，`false` = 宿主行，`undefined` = 未知（取舍 ③）。判据本身是 `isEngineLedgerRow`。
+ * @returns {number|null} 最大下标 `i`；`null` = 边界不成立（正常收口，不结清也不裁切）
+ */
+export function deriveLedgerCrashBoundary(ledgerEntries, settledToolResultIds, isEngineRow) {
+  const entries = Array.isArray(ledgerEntries) ? ledgerEntries : [];
+  const settled = settledToolResultIds instanceof Set ? settledToolResultIds : new Set();
+  const toolUsesOf = (entry) => blocksFor(entry?.message?.content)
+    .filter((block) => block?.type === "tool_use");
+  // 取舍 ②：`i` 之后允许出现的行
+  // ——结果行 / 宿主预写行 / 引擎控制行，三者共有的特征是
+  // 「这一行不可能是崩溃**之前**的对话正文」。
+  const isPostCrashEntry = (entry, index) => {
+    const blocks = blocksFor(entry?.message?.content);
+    if (blocks.some((block) => block?.type === "tool_result")) return true;
+    if (typeof isEngineRow === "function" && isEngineRow(entry, index) === false) return true;
+    // 引擎控制行（#323 的 marker：
+    // `meta.source === "judge-control"`）——恢复告示 / 方向提示 / 扩轮指令。
+    // **不**用「user + 纯文本」那个形状当判据：宿主把预写行带上
+    // `kind:"message"`（`#425` 钉过的契约外
+    // 形状）时形状与告示逐字相同，按形状放行会推翻
+    // #425 那条「判引擎 ⇒ 零请求」的边界。
+    const message = entry?.message;
+    return message?.role === "user" && message?.meta?.source === "judge-control";
+  };
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const uses = toolUsesOf(entries[index]);
+    if (entries[index]?.message?.role !== "assistant" || uses.length === 0) continue;
+    // 取舍 ①：只要有一个 id 已在账本结清，这一行就不是尾部结清的料（那是 #421 的中段格子）。
+    if (uses.some((block) => settled.has(block?.id))) continue;
+    // 「最大下标」+ 取舍 ②：后缀里只要有一行是崩溃**之前**的正文，边界就不成立（更早的下标后缀更长，
+    // 同样不成立 ⇒ 直接返回 null，不必继续回溯）。
+    for (let tail = index + 1; tail < entries.length; tail += 1) {
+      if (!isPostCrashEntry(entries[tail], tail)) return null;
+    }
+    return index;
+  }
+  return null;
+}
+
+/**
+ * 给 {@link deriveLedgerCrashBoundary} 造**逐条**归属：`ledgerEntries[index]` 那一行是不是引擎写的。
+ *
+ * `foldLedgerMessages` 的输出只有 `{message, round}`（`dedupKey` 在行上，折叠后拿不到），而归属判别
+ * （#425 的口径）**必须先看键**——`…:engine:round:<n>:control:resume-notice` 与宿主预写行形状逐字相同，
+ * 只看形状会把引擎自己的告示判成宿主行。所以这里按 `foldLedgerMessages` **同一条**「`partOf` 分片不加
+ * 条目」的规则，把每条逻辑消息对应回它自己那一行，再问 `isEngineLedgerRow`。
+ *
+ * 条数对不上（调用方传的 rows 与折出 entries 的口径不一致）⇒ 返回 `undefined`，让边界走取舍 ③ 的
+ * 宽松档；这里**不**猜归属。
+ *
+ * @param {Array<object>} records `store.load()`（必要时先 `foldMessageRows`）的行序列
+ * @param {number} expected `ledgerEntries.length`
+ * @returns {((entry: any, index: number) => boolean)|undefined}
+ */
+function ledgerRowAttribution(records, expected) {
+  const rows = Array.isArray(records) ? records : [];
+  const flags = [];
+  /** @type {Map<string, number>} 与 `foldLedgerMessages` 同一个 key → 下标表（分片 key 指向「下一条」） */
+  const keyToIndex = new Map();
+  for (const record of rows) {
+    const key = rowKeyOf(record);
+    if (key !== "") keyToIndex.set(key, flags.length);
+    const messages = Array.isArray(record?.messages) ? record.messages : [];
+    const partOf = typeof record?.partOf === "string" ? record.partOf : "";
+    if (partOf !== "" && keyToIndex.get(partOf) !== undefined && messages.length === 1) continue;
+    for (let offset = 0; offset < messages.length; offset += 1) {
+      flags.push(isEngineLedgerRow(record));
+    }
+  }
+  if (flags.length !== expected) return undefined;
+  return (_entry, index) => flags[index];
+}
+
+/**
  * issue #421：把「上下文里那条聚合 `tool_result` user 消息」映射回**账本里承载它的那一行**的 key。
  *
  * 为什么需要：中段补桩要落成一条 `partOf` 指向**该聚合消息首片**的分片行（#430 的纪律：锚点只钉在
@@ -373,183 +480,215 @@ export async function restoreResume(ctx) {
         : typeof ctx.store.loadLatestCheckpoint === "function"
           ? ctx.store.loadLatestCheckpoint
           : undefined;
+      // issue #736：**崩溃边界从账本推**，在加载快照**之前**算，与快照的新鲜度/存在性彻底无关。
+      // 这里只交出下标 `i`（崩溃轮那条带未结清 `tool_use` 的 assistant），切片/结清全部复用既有机械。
+      const ledgerBoundary = deriveLedgerCrashBoundary(
+        ledgerEntries,
+        ledgerToolResultIds,
+        ledgerRowAttribution(records, ledgerEntries.length),
+      );
       if (loadLatestSnapshot !== undefined) {
         ctx.resumeRunSnapshot = await loadLatestSnapshot.call(ctx.store, ctx.runId);
-        // 工单 261021（第三刀·恢复只认账本）：崩溃现场的**正文一律来自账本**，快照只剩
-        // 「跑到一半的工具调用/状态」——改造前那套「拿 `snapshot.messages` 当上下文、再按锚点
-        // 把账本里『快照没见过的那段』拼回去」的算法整体删除。理由：写侧已改成「一条消息一成型
-        // 就落盘」（`orchestrator.js#appendMessageRowToTranscript`），于是本轮的 assistant 正文与
-        // 已完成的工具结果**已经在账本里**；快照那份正文副本此时必然**落后于**账本（它写于工具执行
-        // 之前），拿它当上下文就是把正文回滚，并把 `resumeTailMessages` 那套「对齐快照与账本」的
-        // 匹配逻辑全部作废。锚点仍在（现在是**恢复时现算**的 `countResumeAnchor(records)`，issue #425），
-        // 口径是**纯账本口径**：崩溃时刻账本里已落盘的逻辑消息条数（见下面 `ledgerMessages` 与 `anchor`）。
-        const crashToolUses = ctx.resumeRunSnapshot?.pendingToolUses
-          ?? (ctx.resumeRunSnapshot?.pendingToolUse ? [ctx.resumeRunSnapshot.pendingToolUse] : []);
-        const unfinishedToolUses = crashToolUses.filter((toolUse) => (
-          toolUse?.id !== undefined && !ledgerToolResultIds.has(toolUse.id)
-        ));
-        // 「崩溃现场」的判据：快照里还有账本没结清的在飞工具/半截正文。没有（正常收口后追问）
-        // ⇒ 上下文就是完整账本，一条快照正文都不需要。
-        const crashSiteRound = unfinishedToolUses.length > 0
-          || (ctx.resumeRunSnapshot?.toolResults ?? []).some((entry) => (
-            entry?.toolResult?.tool_use_id !== undefined
-            && !ledgerToolResultIds.has(entry.toolResult.tool_use_id)
-          ))
-          || (typeof ctx.resumeRunSnapshot?.partialText === "string"
-            && ctx.resumeRunSnapshot.partialText.length > 0);
-        if (crashSiteRound) {
-          // 工单 261021（第三刀）·issue #425 ·锚点的**现算**口径：`persistedTranscriptLength` 过去
-          // 读的是快照里那份**采样**（`saveRunSnapshot` 写出的那一刻 write === read），而 partialPersistence
-          // 的定时器在流式正文成型之前就写了快照，之后工具结果行 / 终稿 assistant 行还会继续落盘 ⇒
-          // 恢复时锚点比账本少，`slice(0, anchor)` 把**已经落盘的**正文当成尾队列，终稿正文被喂两遍
-          // （实测 provider 上下文 4 条 vs 应有 3 条）。现在一律从账本现算：
-          // `countResumeAnchor(records)` = 去掉尾部宿主追问行之后折出来的逻辑消息条数。
-          // 于是「它之内的正文就是崩溃现场（含本轮已落盘的 assistant 正文与已完成的工具结果），
-          // 它之外的行是崩溃**之后**由宿主追加的（`appendUserTurn` 的 `:input:` 行等），
-          // 必须延后到补跑结果之后再接回」。
-          const anchor = countResumeAnchor(records);
-          ctx.messages = ledgerEntries.slice(0, anchor).map((entry) => cloneState(entry.message));
-          for (const [index, message] of ctx.messages.entries()) {
-            ctx.messageRounds.set(message, ledgerEntries[index].round);
-          }
-          ctx.resumeTailMessages = ledgerEntries.slice(anchor).map((entry) => ({
-            message: cloneState(entry.message),
-            round: entry.round,
-          }));
-          // **升级路径（不是旧逻辑的残留）**：改造前写的账本里，崩溃那一轮的正文**只在快照里**
-          // （旧写侧把整轮正文留到轮末才写，而轮行因崩溃 never landed）。对这类旧账本，快照正文副本
-          // 仍是它们唯一的正文来源 ⇒ 只在「账本在锚点之后一条都没有」时才拿快照里锚点之后的那段补全。
-          // 新账本（逐条入账）永远不满足这个条件：崩溃轮的 assistant 正文/已完成的结果已在锚点之内，
-          // 账本要么相等要么领先于快照 ⇒ 一份快照正文也不会多喂。
-          const snapshotBody = Array.isArray(ctx.resumeRunSnapshot.messages)
-            ? ctx.resumeRunSnapshot.messages : [];
-          if (ledgerMessages.length === anchor && snapshotBody.length > anchor) {
-            for (const [offset, message] of snapshotBody.slice(anchor).entries()) {
-              const cloned = cloneState(message);
-              ctx.messages.push(cloned);
-              ctx.messageRounds.set(cloned, ctx.resumeRunSnapshot.round);
-            }
-          }
-          // `resumeTranscriptStart` = 锚点（= 已落盘正文的条数）：下面那条 `…:resume` 行只写
-          // **锚点之后**的正文（升级补全的那段 + 本次补跑跑出来的结果），已落盘的正文一行也不会重抄。
-          ctx.resumeTranscriptStart = anchor;
-          // 工单 261021（第三刀）：**补跑出来的工具结果也走「一条消息一成型就落盘」**——它们接在
-          // 崩溃轮已落盘的那条聚合消息后面（`partOf` 指认它的首片行），于是下一次恢复折出来的仍是
-          // 一条合法的 tool_use/tool_result 配对。两个信息只能从账本拿：本轮下一个可用 `seq`、以及
-          // 该轮首片行的 dedupKey（无载体行时消息行原样留在 `load()` 输出里，所以两者都看得见）。
-          const crashRound = ctx.resumeRunSnapshot.round;
-          // issue #424（守卫事实）：崩溃轮的正文里**是否已有 assistant 行**——判据是**已折叠的账本条目**
-          // （`ledgerEntries`，按轮号看），不是 `ctx.messages`：升级路径（旧账本 + 快照补全）会把崩溃轮的
-          // assistant 正文从快照补进内存，账本里却没有那一行。本函数只把事实交出去，
-          // 写不写由写侧决定（`orchestrator.js#journalResumeUnpersistedToolResults`）。
-          ctx.resumeCrashRoundAssistantPersisted = ledgerEntries.some((entry) => (
-            entry.round === crashRound && entry.message?.role === "assistant"
-          ));
-          // 两个只能从账本拿的信息：**本轮下一个可用的 `seq`**（否则重跑/续跑会在同 `(round, seq)`
-          // 上携不同正文 ⇒ 去重冲突），以及**该轮首片行的 dedupKey**（无载体行时消息行原样留在
-          // `load()` 输出里，所以两者都看得见）。seq 的地板取「该轮已有正文的条数」：折叠过的轮里
-          // 消息行已被吸进载体、`seq` 看不见，宁可跳号也不能重号（跳号只是空号，重号是冲突）。
-          const seqSeed = nextMessageSeqByRound(records);
-          for (const record of records) {
-            if (!Number.isSafeInteger(record?.round)) continue;
-            const messageCount = (record.messages ?? []).length;
-            if (messageCount === 0) continue;
-            seqSeed.set(record.round, Math.max(seqSeed.get(record.round) ?? 0, messageCount));
-          }
-          for (const [round, nextSeq] of seqSeed) {
-            ctx.messageSeqByRound.set(round, Math.max(ctx.messageSeqByRound.get(round) ?? 0, nextSeq));
-          }
-          ctx.resumeToolResultRowKey = records.reduce((found, record) => (
-            record?.round === crashRound
-            && record?.kind === MESSAGE_ROW_KIND
-            && Number.isSafeInteger(record.seq)
-            && typeof record.partOf !== "string"
-            && (record.messages ?? []).some((message) => blocksFor(message?.content)
-              .some((block) => block?.type === "tool_result"))
-              ? rowKeyOf(record) : found
-          ), undefined);
-          // 崩溃现场的轮号：账本里本轮的行可能已落（逐条入账），故取两者的较大值，绝不回退轮号。
-          ctx.rounds = Math.max(ctx.rounds, ctx.resumeRunSnapshot.round);
-          const partialText = ctx.resumeRunSnapshot.partialText;
-          const partialRound = ctx.resumeRunSnapshot.partialRound;
-          // 半截正文只补**账本里还没有的那一段**：写侧已在本轮正文一成型就落盘，所以
-          // 「快照里带 partialText 而本轮 assistant 行已落」是常见路径（工具执行期崩溃）；
-          // 再补一次就是把同一份正文喂给模型两遍。判据：崩溃轮的 assistant 行已在锚点之内 ⇒ 不补。
-          // ⚠ 这里必须读**轮号本身**（`ledgerEntries`）而不是拿克隆后的 `ctx.messages` 去查轮号表：
-          // `ctx.messages` 是 `cloneState` 的副本，身份对不上，那种写法永远返回 false
-          // ⇒ partialText 会被再喂一遗（实测改造前靠「上下文整体取自快照正文」逗着，不暴露这个问题）。
-          const crashRoundAssistantPersisted = ledgerEntries
-            .slice(0, anchor)
-            .some((entry) => entry.message?.role === "assistant"
-              && entry.round === ctx.resumeRunSnapshot.round);
-          if (typeof partialText === "string" && partialText.length > 0
-            && Number.isSafeInteger(partialRound)
-            && partialRound === ctx.resumeRunSnapshot.round
-            && !crashRoundAssistantPersisted) {
-            const partialMessage = {
-              role: "assistant",
-              content: [{ type: "text", text: partialText }],
-            };
-            ctx.messages.push(partialMessage);
-            ctx.messageRounds.set(partialMessage, partialRound);
-          }
-          for (const id of ctx.resumeRunSnapshot.executedToolIds ?? []) {
-            ctx.resumeExecutedToolIds.add(id);
-          }
-          ctx.judgeInterceptCount = ctx.resumeExecutedToolIds.size;
-          for (const entry of ctx.resumeRunSnapshot.toolResults ?? []) {
-            if (entry?.toolUseId !== undefined && entry.toolResult !== undefined) {
-              ctx.resumeRunSnapshotResults.set(entry.toolUseId, entry.toolResult);
-            }
-          }
-          // 崩溃前已归档的全量输出回填引擎缓冲，保持证据的字节保真。
-          for (const output of ctx.resumeRunSnapshot.toolOutputs ?? []) {
-            if (typeof output?.content === "string" && output.content.length > 0) {
-              ctx.archivedOutputs.push({
-                toolUseId: output.toolUseId,
-                name: output.name,
-                round: ctx.resumeRunSnapshot.round,
-                content: output.content,
-              });
-            }
-          }
-          pendingTail = pendingTailToolUses(ctx.messages);
-          // 崩溃前已产出、但**没来得及落盘**的结果：账本里没有 ⇒ 从快照接回来。接回的位置很讲究：
-          // 它们属于崩溃那一轮的那条聚合消息，必须**合进**账本里已落盘的那条（否则 assistant 的
-          // tool_use 与紧随其后的 tool_result 条数对不上，`validateMessages` 当场报 invalid_messages）。
-          // issue #420：判据是账本（`ledgerToolResultIds`）不是上下文
-          // （`ctx.messages`）：升级路径可能已把结果补进上下文，
-          // 账本里却仍没有那一行（合并自己按 id 去重）。
-          const replayResults = [...ctx.resumeRunSnapshotResults.values()]
-            .filter((toolResult) => !ledgerToolResultIds.has(toolResult.tool_use_id));
-          if (replayResults.length > 0) {
-            if (mergeToolResultsIntoMessages(ctx.messages, replayResults) === false) {
-              const replayMessage = { role: "user", content: replayResults };
-              ctx.messages.push(replayMessage);
-              ctx.messageRounds.set(replayMessage, ctx.resumeRunSnapshot.round);
-            }
-            // issue #420：**真实交接**（修前是死字段，注释承诺的入账
-            // 全仓无读取方）。`restoreResume` 的 resume 分支只读 transcript 账本；
-            // 账本写入一律在 orchestrator（`appendMessageRowToTranscript` / `persist`），
-            // 失败语义与 `seq` 计数器只有一处。写入口在 orchestrator 的
-            // `journalResumeUnpersistedToolResults`：补跑段之前逐条写成消息行。
-            ctx.resumeUnpersistedToolResults = replayResults;
-          }
-          const pendingTools = ctx.resumeRunSnapshot.pendingToolUses
-            ?? (ctx.resumeRunSnapshot.pendingToolUse
-              ? [ctx.resumeRunSnapshot.pendingToolUse]
-              : []);
-          ctx.resumePendingTools = pendingTools.filter((pendingTool) => (
-            !ctx.resumeRunSnapshot.executedToolIds?.includes(pendingTool.id)
-            && !ctx.resumeRunSnapshotResults.has(pendingTool.id)
-            // 账本已经结清的结果不再补跑（逐条入账后，这是「已落盘」的权威口径）。
-            && !ledgerToolResultIds.has(pendingTool.id)
-          ));
-        }
       } else {
-        // issue #78 验收修正：resume 想消费 run snapshot 但 store 无任何 loader——
+        // issue #78
+        // 验收修正：resume
+        // 想消费 run snapshot 但 store 无任何 loader——
         // 单条去重诊断（loadLatestCheckpoint 旧名也缺才走到这里），跳过崩溃现场恢复。
+        // ⚠ 本分支**不再**拦住上面那条账本侧边界：没有快照时，账本仍是唯一的崩溃现场来源（#736）。
         ctx.notifyCapabilitySkipped?.("loadLatestRunSnapshot");
+      }
+      // 工单 261021（第三刀·恢复只认账本）：崩溃现场的**正文一律来自账本**，快照只剩
+      // 「跑到一半的工具调用/状态」——改造前那套「拿 `snapshot.messages` 当上下文、再按锚点
+      // 把账本里『快照没见过的那段』拼回去」的算法整体删除。理由：写侧已改成「一条消息一成型
+      // 就落盘」（`orchestrator.js#appendMessageRowToTranscript`
+      // ），于是本轮的 assistant 正文与
+      // 已完成的工具结果**已经在账本里**；快照那份正文副本此时必然**落后于**账本（它写于工具执行
+      // 之前），拿它当上下文就是把正文回滚，并把
+      // `resumeTailMessages` 那套「对齐快照与账本」的
+      // 匹配逻辑全部作废。锚点仍在（现在是
+      // **恢复时现算**的 `countResumeAnchor(records)`，issue #425），
+      // 口径是**纯账本口径**：崩溃时刻账本里已落盘的逻辑消息条数（见下面
+      // `ledgerMessages` 与 `anchor`）。
+      const crashToolUses = ctx.resumeRunSnapshot?.pendingToolUses
+        ?? (ctx.resumeRunSnapshot?.pendingToolUse ? [ctx.resumeRunSnapshot.pendingToolUse] : []);
+      const unfinishedToolUses = crashToolUses.filter((toolUse) => (
+        toolUse?.id !== undefined && !ledgerToolResultIds.has(toolUse.id)
+      ));
+      // 「崩溃现场」的判据：快照里还有账本没结清的在飞工具/半截正文。没有（正常收口后追问）
+      // ⇒ 上下文就是完整账本，一条快照正文都不需要。
+      const crashSiteRound = unfinishedToolUses.length > 0
+        || (ctx.resumeRunSnapshot?.toolResults ?? []).some((entry) => (
+          entry?.toolResult?.tool_use_id !== undefined
+          && !ledgerToolResultIds.has(entry.toolResult.tool_use_id)
+        ))
+        || (typeof ctx.resumeRunSnapshot?.partialText === "string"
+          && ctx.resumeRunSnapshot.partialText.length > 0);
+      // issue #736：快照没认出来（那份快照本身就是写失败的那次，#734）不等于没有崩溃现场——
+      // 账本边界成立就是崩溃现场。两者取**或**；快照那条路保留原样（B 集合的补跑集合同样靠它）。
+      if (crashSiteRound || ledgerBoundary !== null) {
+        // 工单 261021（第三刀）·issue #425 ·锚点的**现算**口径：`persistedTranscriptLength` 过去
+        // 读的是快照里那份**采样**（`saveRunSnapshot` 写出的那一刻 write === read），而 partialPersistence
+        // 的定时器在流式正文成型之前就写了快照，之后工具结果行 / 终稿 assistant 行还会继续落盘 ⇒
+        // 恢复时锚点比账本少，`slice(0, anchor)` 把**已经落盘的**正文当成尾队列，终稿正文被喂两遍
+        // （实测 provider 上下文 4 条 vs 应有 3 条）。现在一律从账本现算：
+        // `countResumeAnchor(records)` = 去掉尾部宿主追问行之后折出来的逻辑消息条数。
+        // 于是「它之内的正文就是崩溃现场（含本轮已落盘的 assistant 正文与已完成的工具结果），
+        // 它之外的行是崩溃**之后**由宿主追加的（`appendUserTurn` 的 `:input:` 行等），
+        // 必须延后到补跑结果之后再接回」。
+        // issue #736：账本边界也算一个候选锚点，两者取**较早**的那个（`Math.min`）。
+        // 为什么不是「边界成立就用边界」：#425 的锚点还兜着「尾部宿主行不算进现场」与「中间夹着的
+        // 历史追问要算」两条纪律，而边界只看「崩溃行之后是否全是宿主/控制行」；取较早者只会把
+        // 现场切得**更小**（悬空块仍在尾部），不会把已落盘正文挤进尾队列（那才是 #425 的现场）。
+        const snapshotAnchor = countResumeAnchor(records);
+        const anchor = ledgerBoundary === null
+          ? snapshotAnchor
+          : Math.min(snapshotAnchor, ledgerBoundary + 1);
+        // issue #736：这一段现在也可能**没有快照**支撑（陈旧快照没带上那次在飞调用，
+        // 甚至 store 里根本没有快照）⇒ 快照读点一律走 `snapshot`（缺席 = 空对象）；
+        // 崩溃轮轮号在快照没给时退回**边界那一行自己的轮号**（`ledgerEntries` 的轮号，
+        // 与 #425 同一个账本口径）。
+        const snapshot = ctx.resumeRunSnapshot ?? {};
+        const crashRound = Number.isSafeInteger(snapshot.round)
+          ? snapshot.round
+          : ledgerBoundary === null
+            ? snapshot.round
+            : ledgerEntries[ledgerBoundary]?.round;
+        ctx.messages = ledgerEntries.slice(0, anchor).map((entry) => cloneState(entry.message));
+        for (const [index, message] of ctx.messages.entries()) {
+          ctx.messageRounds.set(message, ledgerEntries[index].round);
+        }
+        ctx.resumeTailMessages = ledgerEntries.slice(anchor).map((entry) => ({
+          message: cloneState(entry.message),
+          round: entry.round,
+        }));
+        // **升级路径（不是旧逻辑的残留）**：改造前写的账本里，崩溃那一轮的正文**只在快照里**
+        // （旧写侧把整轮正文留到轮末才写，而轮行因崩溃 never landed）。对这类旧账本，快照正文副本
+        // 仍是它们唯一的正文来源 ⇒ 只在「账本在锚点之后一条都没有」时才拿快照里锚点之后的那段补全。
+        // 新账本（逐条入账）永远不满足这个条件：崩溃轮的 assistant 正文/已完成的结果已在锚点之内，
+        // 账本要么相等要么领先于快照 ⇒ 一份快照正文也不会多喂。
+        const snapshotBody = Array.isArray(snapshot.messages)
+          ? snapshot.messages : [];
+        if (ledgerMessages.length === anchor && snapshotBody.length > anchor) {
+          for (const [offset, message] of snapshotBody.slice(anchor).entries()) {
+            const cloned = cloneState(message);
+            ctx.messages.push(cloned);
+            ctx.messageRounds.set(cloned, crashRound);
+          }
+        }
+        // `resumeTranscriptStart` = 锚点（= 已落盘正文的条数）：下面那条 `…:resume` 行只写
+        // **锚点之后**的正文（升级补全的那段 + 本次补跑跑出来的结果），已落盘的正文一行也不会重抄。
+        ctx.resumeTranscriptStart = anchor;
+        // 工单 261021（第三刀）：**补跑出来的工具结果也走「一条消息一成型就落盘」**——它们接在
+        // 崩溃轮已落盘的那条聚合消息后面（`partOf` 指认它的首片行），于是下一次恢复折出来的仍是
+        // 一条合法的 tool_use/tool_result 配对。两个信息只能从账本拿：本轮下一个可用 `seq`、以及
+        // 该轮首片行的 dedupKey（无载体行时消息行原样留在 `load()` 输出里，所以两者都看得见）。
+        // issue #424（守卫事实）：崩溃轮的正文里**是否已有 assistant 行**——判据是**已折叠的账本条目**
+        // （`ledgerEntries`，按轮号看），不是 `ctx.messages`：升级路径（旧账本 + 快照补全）会把崩溃轮的
+        // assistant 正文从快照补进内存，账本里却没有那一行。本函数只把事实交出去，
+        // 写不写由写侧决定（`orchestrator.js#journalResumeUnpersistedToolResults`）。
+        ctx.resumeCrashRoundAssistantPersisted = ledgerEntries.some((entry) => (
+          entry.round === crashRound && entry.message?.role === "assistant"
+        ));
+        // 两个只能从账本拿的信息：**本轮下一个可用的 `seq`**（否则重跑/续跑会在同 `(round, seq)`
+        // 上携不同正文 ⇒ 去重冲突），以及**该轮首片行的 dedupKey**（无载体行时消息行原样留在
+        // `load()` 输出里，所以两者都看得见）。seq 的地板取「该轮已有正文的条数」：折叠过的轮里
+        // 消息行已被吸进载体、`seq` 看不见，宁可跳号也不能重号（跳号只是空号，重号是冲突）。
+        const seqSeed = nextMessageSeqByRound(records);
+        for (const record of records) {
+          if (!Number.isSafeInteger(record?.round)) continue;
+          const messageCount = (record.messages ?? []).length;
+          if (messageCount === 0) continue;
+          seqSeed.set(record.round, Math.max(seqSeed.get(record.round) ?? 0, messageCount));
+        }
+        for (const [round, nextSeq] of seqSeed) {
+          ctx.messageSeqByRound.set(round, Math.max(ctx.messageSeqByRound.get(round) ?? 0, nextSeq));
+        }
+        ctx.resumeToolResultRowKey = records.reduce((found, record) => (
+          record?.round === crashRound
+          && record?.kind === MESSAGE_ROW_KIND
+          && Number.isSafeInteger(record.seq)
+          && typeof record.partOf !== "string"
+          && (record.messages ?? []).some((message) => blocksFor(message?.content)
+            .some((block) => block?.type === "tool_result"))
+            ? rowKeyOf(record) : found
+        ), undefined);
+        // 崩溃现场的轮号：账本里本轮的行可能已落（逐条入账），故取两者的较大值，绝不回退轮号。
+        ctx.rounds = Math.max(ctx.rounds, crashRound);
+        const partialText = snapshot.partialText;
+        const partialRound = snapshot.partialRound;
+        // 半截正文只补**账本里还没有的那一段**：写侧已在本轮正文一成型就落盘，所以
+        // 「快照里带 partialText 而本轮 assistant 行已落」是常见路径（工具执行期崩溃）；
+        // 再补一次就是把同一份正文喂给模型两遍。判据：崩溃轮的 assistant 行已在锚点之内 ⇒ 不补。
+        // ⚠ 这里必须读**轮号本身**（`ledgerEntries`）而不是拿克隆后的 `ctx.messages` 去查轮号表：
+        // `ctx.messages` 是 `cloneState` 的副本，身份对不上，那种写法永远返回 false
+        // ⇒ partialText 会被再喂一遗（实测改造前靠「上下文整体取自快照正文」逗着，不暴露这个问题）。
+        const crashRoundAssistantPersisted = ledgerEntries
+          .slice(0, anchor)
+          .some((entry) => entry.message?.role === "assistant"
+            && entry.round === crashRound);
+        if (typeof partialText === "string" && partialText.length > 0
+          && Number.isSafeInteger(partialRound)
+          && partialRound === crashRound
+          && !crashRoundAssistantPersisted) {
+          const partialMessage = {
+            role: "assistant",
+            content: [{ type: "text", text: partialText }],
+          };
+          ctx.messages.push(partialMessage);
+          ctx.messageRounds.set(partialMessage, partialRound);
+        }
+        for (const id of snapshot.executedToolIds ?? []) {
+          ctx.resumeExecutedToolIds.add(id);
+        }
+        ctx.judgeInterceptCount = ctx.resumeExecutedToolIds.size;
+        for (const entry of snapshot.toolResults ?? []) {
+          if (entry?.toolUseId !== undefined && entry.toolResult !== undefined) {
+            ctx.resumeRunSnapshotResults.set(entry.toolUseId, entry.toolResult);
+          }
+        }
+        // 崩溃前已归档的全量输出回填引擎缓冲，保持证据的字节保真。
+        for (const output of snapshot.toolOutputs ?? []) {
+          if (typeof output?.content === "string" && output.content.length > 0) {
+            ctx.archivedOutputs.push({
+              toolUseId: output.toolUseId,
+              name: output.name,
+              round: crashRound,
+              content: output.content,
+            });
+          }
+        }
+        pendingTail = pendingTailToolUses(ctx.messages);
+        // 崩溃前已产出、但**没来得及落盘**的结果：账本里没有 ⇒ 从快照接回来。接回的位置很讲究：
+        // 它们属于崩溃那一轮的那条聚合消息，必须**合进**账本里已落盘的那条（否则 assistant 的
+        // tool_use 与紧随其后的 tool_result 条数对不上，`validateMessages` 当场报 invalid_messages）。
+        // issue #420：判据是账本（`ledgerToolResultIds`）不是上下文
+        // （`ctx.messages`）：升级路径可能已把结果补进上下文，
+        // 账本里却仍没有那一行（合并自己按 id 去重）。
+        const replayResults = [...ctx.resumeRunSnapshotResults.values()]
+          .filter((toolResult) => !ledgerToolResultIds.has(toolResult.tool_use_id));
+        if (replayResults.length > 0) {
+          if (mergeToolResultsIntoMessages(ctx.messages, replayResults) === false) {
+            const replayMessage = { role: "user", content: replayResults };
+            ctx.messages.push(replayMessage);
+            ctx.messageRounds.set(replayMessage, crashRound);
+          }
+          // issue #420：**真实交接**（修前是死字段，注释承诺的入账
+          // 全仓无读取方）。`restoreResume` 的 resume 分支只读 transcript 账本；
+          // 账本写入一律在 orchestrator（`appendMessageRowToTranscript` / `persist`），
+          // 失败语义与 `seq` 计数器只有一处。写入口在 orchestrator 的
+          // `journalResumeUnpersistedToolResults`：补跑段之前逐条写成消息行。
+          ctx.resumeUnpersistedToolResults = replayResults;
+        }
+        const pendingTools = snapshot.pendingToolUses
+          ?? (snapshot.pendingToolUse
+            ? [snapshot.pendingToolUse]
+            : []);
+        ctx.resumePendingTools = pendingTools.filter((pendingTool) => (
+          !snapshot.executedToolIds?.includes(pendingTool.id)
+          && !ctx.resumeRunSnapshotResults.has(pendingTool.id)
+          // 账本已经结清的结果不再补跑（逐条入账后，这是「已落盘」的权威口径）。
+          && !ledgerToolResultIds.has(pendingTool.id)
+        ));
       }
       // ── issue #421：**中段**悬空 `tool_use` 的读侧兜底 ────────────────────────────────────
       // 位置：上下文重建完（含 A 集合的内存合并）之后、**任何模型请求之前**、任何裁剪之前（裁剪只动

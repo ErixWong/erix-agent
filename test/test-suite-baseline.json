@@ -3,12 +3,26 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3541,
+    "tests": 3555,
     "fail": 0,
     "maxSkipped": 15
   },
   "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
   "observations": [
+    {
+      "date": "2026-11-07",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "778f973（rebase 到 origin/main a177083 之后的本分支终树：#736 实现 + 14 条新用例 + M19/M20/M21 都在树里）",
+      "branch": "fix-261107-04-ledger-crash-boundary",
+      "tests": 3555,
+      "pass": 3542,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "#736 rebase 到 origin/main a177083（#739 已合，主干登记值 3541）之后的终测重登：**登记值作废重来** —— rebase 前本分支曾登 3462（commit ac64662 的树）与 3464（commit 261821f 的树），两者都量在基点 a08a315 的树上，与主干的 3541 不可加和；rebase 时那两笔登记 commit 被**丢弃**（内容与主干同一格冲突、且数字已失效，不是被合并进来），所以本条是本分支唯一的现行值。3541 + 14 = 3555，与本刀新增用例数逐字对上：`test/loop-ledger-crash-boundary.test.js` 6 条（`deriveLedgerCrashBoundary` 这条纯判据本身：宿主 `:input:` 追问 ⇒ 返回崩溃行下标、尾队列多行不移动边界、引擎控制行夹在中间仍放行、末轮纯文本 end_turn ⇒ null、其后有引擎 toolResult 行 ⇒ null、崩溃行之后混进崩溃前的引擎正文行 ⇒ null / 换成宿主归属 ⇒ 立刻成立 / 多条未结清取最大下标、部分结清 ⇒ null、归属未知的宽松档）+ `test/loop-resume-ledger-crash-boundary.test.js` 8 条（陈旧快照 + 宿主预写行盖住崩溃现场 ⇒ 修前 invalid_messages、修后走 `answerPendingTailToolUses` 且桩紧跟那条 assistant、宿主追问在最后一条；告示不得写 `RESUME_NOTICE_NO_PENDING` 且必须列出未结清的 id；store 连快照读点都没有；读点在但什么都读不到；正常收口 ⇒ 不注入桩不裁切、告示走 NO_PENDING；崩溃现场同时被快照认出 ⇒ 补跑与桩互斥；**评审补格**：崩溃行带两个 tool_use（t1 已入账、t2 待补跑）⇒ t2 必须是补跑的真结果、不许被中段桩顶掉；钉住现状：恢复成功后再恢复一次仍 invalid_messages —— 落账顺序归下一单）。六个计数逐字取自在**本棵已提交树**（commit 778f973，分支 fix-261107-04-ledger-crash-boundary，基点 = origin/main a177083）上跑的 `npm test` TAP 汇总（日志 /tmp/wt736-r3/FINAL-rebase-test.log：`# tests 3555` / `# pass 3542` / `# fail 0` / `# skipped 13` / `# todo 0` / `# cancelled 0`），并经 `npm run check:test-summary -- --log` 同一份日志复核（VERDICT ok，HINT「可抬到 3555，+14」）⇒ 非手抄。fail=0；skipped 13 与主干同值（12 条真上游/真 relay 门禁 + 1 条真上游多会话格），上限 15 不动。没删例、没跳过、没放宽断言。反向证三发已进常驻变异表：M19（识别源退回只认快照 ⇒ 判据 1/4 红）、M20（去掉后缀归属那一半 ⇒ 纯判据 2 格 + `#425` 那条红）、M21（去掉中段桩排除集的 B 集合那一格 ⇒ 只有评审补格那条红：`t2` 的真结果被「结果没落盘」的桩顶掉，而 id 集合与本地校验器都照样过）；`node scripts/mutation-sample-check.mjs --run test/mutation-samples.md` 21 条逐条「变异 → 红在该报的断言上 → 还原 → 绿」EXIT=0。"
+    },
     {
       "date": "2026-11-07",
       "env": "local",
