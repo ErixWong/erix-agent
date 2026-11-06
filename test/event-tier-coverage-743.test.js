@@ -21,17 +21,27 @@
 //   T1 发射处 ⊆ `EVENT_TIERS`（缺哪个点名哪个）。
 //   T2 表里没有「没人发的键」：`Object.keys(EVENT_TIERS)` \ 发射处 == 登记过的宿主侧拼写集合，
 //      且登记的每一条都**不是**引擎发射名（否则就该是引擎名，别名是撒谎）。
-//   T5 分类结果被钉死（工单判据 2）：`tool_call_delta` / `reasoning_delta` / `assistant_delta`
-//      ⇒ `stream`；`tool_use` / `tool_result` / `round_end` / `usage` / `judge` / `compaction`
-//      ⇒ `fact`；`derived` 恰好是 `recovering` / `recovered` / `tool_output_aggregate` 三条
-//      （改档必须是**显式**改这里，不许悄悄挪）。
+//   T5 分类结果被钉死（工单判据 2 + 评审必修 2）：`tool_call_delta` / `reasoning_delta` /
+//      `assistant_delta` ⇒ `stream`；`tool_use` / `tool_result` / `round_end` / `usage` / `judge` /
+//      `compaction` ⇒ `fact`；`recovering` / `recovered` / `tool_output_aggregate` 也被钉回 `fact`，
+//      且 `derived` 当前是**空集**（改档必须是**显式**改这里 + 写证据，不许悄悄挪）。
 //   T6 别名与通道的现验：`assistant_delta` / `tool_call_delta` 在本仓**从不被发出**（全仓 grep 零命中），
 //      `judge` 走的是 `onJudge` 通道且那条记录没有 `type` 字段 ⇒ 三条都是宿主侧拼写，档位与被替名字一致。
 //   T7 终态名单也从代码真值现推：`markRunState(...)` 的**写点字面量**（含三元与 `const state = …` 的
-//      初始化式）抽出来必须恰好等于 `RUN_TERMINAL_STATUSES ∪ {"running"}`，且 `running` 不在终态里。
-//   T8 清理谓词的失败方向：档位未知 / `fact` / 非终态 / 状态缺失 / 没过窗口 / 数值缺失 ⇒ 一律不可删。
+//      初始化式）抽出来必须恰好等于 `RUN_TERMINAL_STATUSES ∪ {"running"}`，且 `running` 不在终态里；
+//      清理谓词用的**安全子集**另推一次：它必须等于 `finish()`（`src/loop/termination.js`）里写的那三个，
+//      而 `fail()` 写的 `failed` / `aborted` 必须在它外面（评审必修 1）。
+//   T8 清理谓词的失败方向（评审必修 1 与 5）：档位未知 / `fact` / 降回 fact 的三条 / 非安全终态（
+//      `failed`、`aborted`、`running`）/ 状态缺失 / **没给落盘证据** / 证据非字面 `true` / 持久化失败 /
+//      **负窗口** / 非有限数值 / 刚好到点 ⇒ 一律不可删。
 //   T9 契约中英两份的分级表**逐行**等于本表，且中英两侧的行集合彼此相等（「中英逐处对齐」在这一张表上
 //      是机器判据，不是承诺）。
+//   T10 枚举范围写清（评审必修 3）：`persistence_error` 在源码里带 `type` 字面量但**不是**六族发射点
+//      的产出（它走 `diagnostics.error` / `onPersistenceError`），因此不在表里；模块头与两份契约都得
+//      字面写到这条边界。
+//   T11 新增一个**发射原语**时必须红（评审建议项）：把树上所有「带 `{ type:` 实参的被调名」扫一遍，
+//      既不在登记族里、也不在「看着像但不是」清单里的名字 ⇒ 红；两张清单里登记过的名字从树上消失也红
+//      （否则清单会烂掉，而烂掉的守卫比没有守卫更让人安心）。
 //
 // 零 LLM、零写盘、不碰真实 `~/.erix`：只读 `src/` 的源码文本与两份契约文档。
 
@@ -48,6 +58,7 @@ import {
   EVENT_TIER_STREAM,
   EVENT_TIER_VALUES,
   HOST_SIDE_EVENT_TYPE_NAMES,
+  RUN_CLEANUP_SAFE_STATUSES,
   RUN_TERMINAL_STATUSES,
   canonicalEventTypeName,
   eventTierOf,
@@ -496,18 +507,32 @@ test("T2 表里没有「没人发的键」：多出来的键必须是登记过�
 
 // ───────────────────────────── T5 分类结果被钉死 ─────────────────────────────
 
-test("T5 分类结果钉住（工单判据 2）：三条 stream、六条 fact、三条 derived，值域只有三档", () => {
+test("T5 分类结果钉住（工单判据 2 + 评审必修 2）：三条 stream、工单点名的六条 fact、被降回 fact 的三条，`derived` 当前是空集", () => {
   for (const name of ["tool_call_delta", "reasoning_delta", "assistant_delta", "delta", "tool_call"]) {
     assert.equal(eventTierOf(name), EVENT_TIER_STREAM, `${name} 必须是 stream（工单现网量的打字机碎片）`);
   }
   for (const name of ["tool_use", "tool_result", "round_end", "usage", "judge", "compaction"]) {
     assert.equal(eventTierOf(name), EVENT_TIER_FACT, `${name} 必须是 fact（成型入参 / 结果 / 轮界 / 裁决的唯一副本）`);
   }
+  // 评审必修 2：这三条曾被判成 derived，本仓证不出「别处有一份能读到的 durable 副本」⇒ 降回 fact。
+  // 降级的现验依据（行号是在 rebase 到 a177083 之后的树上现扫的）：
+  //   · `recovering` @ src/loop/provider-runner.js 的重试分支——**先发这条再 `await waitForRetry(delay)`**，
+  //     等待中被中止就没有下一次 `attempt`，那两个数没第二份；
+  //   · `recovered` @ 同文件 provider 成功返回之后——它是**重试**成功通知（不是 resume 通知），
+  //     账本里那条 assistant 消息不记「它是第几次尝试成的」；
+  //   · `tool_output_aggregate` @ src/loop/run-snapshot-executor.js 的 `emitAggregate`——载荷是
+  //     `action`/`reason`/`budgetTokens`/`inlineTokens`/`costTokens`/`projectedTokens`/`contentLength`
+  //     这些**判定字段**，transcript 与归档存的是内容字节，判定数字哪儿都没有。
+  for (const name of ["recovering", "recovered", "tool_output_aggregate"]) {
+    assert.equal(eventTierOf(name), EVENT_TIER_FACT, `${name} 必须是 fact：删了就丢「引擎当时怎么判的」那份唯一记录`);
+  }
   const derived = Object.keys(EVENT_TIERS).filter((name) => EVENT_TIERS[name] === EVENT_TIER_DERIVED).sort();
   assert.deepEqual(
     derived,
-    ["recovered", "recovering", "tool_output_aggregate"],
-    "`derived` 的门槛是「同一件事在别处还有一份能读到的 durable 副本」；改档必须显式改这条断言并写理由",
+    [],
+    "本表当前不许有 `derived` 格子。要新增一格必须同时证两件事：同一件事在别处有一份**能读到**的 durable 副本、"
+      + "且本事件不带那份副本里没有的字段（评审必修 2 就是因为这三条没证住）。新增时把证据写进表注释 + 契约那一节，"
+      + "并把名字加进本断言——三者一起改，否则本条红",
   );
   // 值域与不可变性：档位拼错（`streem`）在载入期就 throw，这里再钉一次「表里没有第四档」。
   for (const tier of Object.values(EVENT_TIERS)) {
@@ -606,7 +631,7 @@ function branchLiterals(text) {
  * @param {Array<{path: string, source: string}>} files
  * @returns {Map<string, string[]>} 状态名 → 写点位置
  */
-function markedRunStatuses(files) {
+function markedRunStatuses(files, { requireDefinitions = true } = {}) {
   const found = new Map();
   let definitions = 0;
   let writeSites = 0;
@@ -644,7 +669,10 @@ function markedRunStatuses(files) {
     }
   }
   assert.ok(writeSites > 0, "一个 `markRunState` **写点**都没读到（只读到定义也算没读到）—— 终态名单的真值丢了，判据不许在空集上变绿");
-  assert.ok(definitions > 0, "一个 `markRunState` 定义都没读到 —— store 的形状改了，本抽取器的「定义 vs 写点」区分要重新核");
+  // 「必须也读到定义」这条只在扫全树时有意义（定义在 store 里）；按函数体切片调用时关掉它。
+  if (requireDefinitions) {
+    assert.ok(definitions > 0, "一个 `markRunState` 定义都没读到 —— store 的形状改了，本抽取器的「定义 vs 写点」区分要重新核");
+  }
   assert.ok(found.size > 0, "写点里抽不到任何状态名 —— 判据不许在空集上变绿");
   return found;
 }
@@ -660,24 +688,172 @@ test("T7 终态名单从 `markRunState` 写点现推：等于名单 ∪ {running
   );
   assert.ok(!RUN_TERMINAL_STATUSES.includes("running"), "`running` 必须是**非**终态：在飞与崩在半路的 run 都不许被清理");
   assert.ok(!RUN_TERMINAL_STATUSES.includes("persistence_failed"), "`persistence_failed` 是 termination.reason，不是 markRunState 的状态名");
+
+  // 评审必修 1：「已终」与「有成型结果保证」不是同一件事，所以清理谓词读的是**子集**。子集的真值
+  // 不抄名单，从写点现推：`finish()`（`src/loop/termination.js`）里那个 `markRunState(state)` 写的
+  // 三个名，就是安全名单该有的一切；`fail()` 在另一份文件里写的 `failed` / `aborted` 必须在外面。
+  assert.ok(
+    RUN_CLEANUP_SAFE_STATUSES.length > 0 && RUN_CLEANUP_SAFE_STATUSES.length < RUN_TERMINAL_STATUSES.length,
+    `安全名单 ${RUN_CLEANUP_SAFE_STATUSES.length} 格 / 终态名单 ${RUN_TERMINAL_STATUSES.length} 格：必须是非空**真子集**（写超了就是「failed 也放行」，写空了就是「永远删不掉」）`,
+  );
+  for (const status of RUN_CLEANUP_SAFE_STATUSES) {
+    assert.ok(RUN_TERMINAL_STATUSES.includes(status), `${status} 不在终态名单里 —— 安全名单只能是它的子集`);
+  }
+  const terminationSource = readFileSync(join(SRC_DIR, "loop", "termination.js"), "utf8");
+  const finishBody = functionBody(terminationSource, "finish");
+  const finishWrites = new Set(markedRunStatuses([{ path: "src/loop/termination.js", source: finishBody }], { requireDefinitions: false }).keys());
+  assert.deepEqual(
+    [...RUN_CLEANUP_SAFE_STATUSES].sort(),
+    [...finishWrites].sort(),
+    "清理谓词认的终态必须逐字等于 `finish()`（正常收尾路径）写的那几个；多一个就是在拿终态当「成型副本已落盘」的证据",
+  );
+  const orchestratorSource = readFileSync(join(SRC_DIR, "loop", "orchestrator.js"), "utf8");
+  const failWrites = new Set(markedRunStatuses([{ path: "src/loop/orchestrator.js", source: orchestratorSource }], { requireDefinitions: false }).keys());
+  for (const status of ["failed", "aborted"]) {
+    assert.ok(failWrites.has(status), `抛错路径里读不到 \`markRunState("${status}")\` —— 本条用例的前提（它是 throw 写的）要重新核`);
+    assert.ok(
+      !RUN_CLEANUP_SAFE_STATUSES.includes(status),
+      `${status} 是 throw 路径写的：provider 可能已经流出碎片但根本没拿到成型正文 ⇒ 必须不在安全名单里`,
+    );
+  }
 });
+
+/** 抽 `const <name> = async (…) => {…}` / `function <name>(…) {…}` 的函数体（括号配平）。 */
+function functionBody(source, name) {
+  const masked = codeOnly(source);
+  const declaration = new RegExp(`(?:const|function)\\s+${name}\\b`, "u").exec(masked);
+  assert.ok(declaration, `找不到 \`${name}\` 的定义 —— 写点分布变了，本条用例的推法要重新核`);
+  const brace = masked.indexOf("{", declaration.index);
+  assert.notEqual(brace, -1, `${name} 的定义里找不到函数体开头`);
+  const close = closingBrace(masked, brace);
+  assert.notEqual(close, -1, `${name} 的函数体括号配不上`);
+  return source.slice(brace, close + 1);
+}
+
+/** 从 `{` 起到配对 `}` 的下标（字符串已在 masked 里归一）。 */
+function closingBrace(masked, openIndex) {
+  let depth = 0;
+  for (let index = openIndex; index < masked.length; index += 1) {
+    if (masked[index] === "{") depth += 1;
+    else if (masked[index] === "}") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
 
 // ───────────────────────────── T8 清理谓词的失败方向 ─────────────────────────────
 
-test("T8 清理谓词 fail-closed：只有「stream ∧ 终态 ∧ 过了窗口」三条同时成立才可删", () => {
-  const terminal = "succeeded";
-  assert.equal(streamCleanupEligible({ type: "delta", runStatus: terminal, ageMs: 10, retentionMs: 1 }), true);
-  assert.equal(streamCleanupEligible({ type: "assistant_delta", runStatus: terminal, ageMs: 10, retentionMs: 1 }), true);
-  assert.equal(streamCleanupEligible({ type: "tool_use", runStatus: terminal, ageMs: 10, retentionMs: 1 }), false, "fact 永不可删");
-  assert.equal(streamCleanupEligible({ type: "recovering", runStatus: terminal, ageMs: 10, retentionMs: 1 }), false, "derived 由宿主自己处置，谓词不替它删");
-  assert.equal(streamCleanupEligible({ type: "brand_new_event", runStatus: terminal, ageMs: 10, retentionMs: 1 }), false, "未知类型不许删");
-  assert.equal(streamCleanupEligible({ type: "delta", runStatus: "running", ageMs: 10, retentionMs: 1 }), false, "在飞的 run 不许删");
-  assert.equal(streamCleanupEligible({ type: "delta", ageMs: 10, retentionMs: 1 }), false, "读不到终态就不许删（崩在半路 / store 没有 markRunState）");
-  assert.equal(streamCleanupEligible({ type: "delta", runStatus: terminal, ageMs: 1, retentionMs: 10 }), false, "没过保留窗口");
-  assert.equal(streamCleanupEligible({ type: "delta", runStatus: terminal, ageMs: 10 }), false, "窗口没给 ⇒ 不判");
-  assert.equal(streamCleanupEligible(), false);
-  for (const status of RUN_TERMINAL_STATUSES) {
-    assert.equal(streamCleanupEligible({ type: "delta", runStatus: status, ageMs: 10, retentionMs: 1 }), true, `${status} 是终态`);
+test("T8 清理谓词 fail-closed：档位、安全终态、落盘证据、窗口四条同时成立才可删（评审必修 1 与 5）", () => {
+  const evidence = { assembledCopyPersisted: true };
+  const all = { type: "delta", runStatus: "succeeded", ageMs: 10, retentionMs: 1, ...evidence };
+  assert.equal(streamCleanupEligible(all), true, "四条全成立 ⇒ 可删");
+  assert.equal(streamCleanupEligible({ ...all, type: "assistant_delta" }), true, "宿主拼写走同一条通道");
+
+  // ① 档位：fact 与降回 fact 的三条永不可删；未知类型不可删。
+  for (const type of ["tool_use", "tool_result", "recovering", "recovered", "tool_output_aggregate", "brand_new_event"]) {
+    assert.equal(streamCleanupEligible({ ...all, type }), false, `${type} 不许删（不是 stream 档）`);
+  }
+
+  // ② 终态不够：安全名单里三个逐个放行，throw 路径那两个与 running 逐个拒。
+  for (const status of RUN_CLEANUP_SAFE_STATUSES) {
+    assert.equal(streamCleanupEligible({ ...all, runStatus: status }), true, `${status} 是 finish() 写的，有成型结果`);
+  }
+  for (const status of ["failed", "aborted"]) {
+    assert.equal(streamCleanupEligible({ ...all, runStatus: status }), false, `${status} 是 fail() 写的：碎片可能是本轮唯一的字节 ⇒ 评审必修 1`);
+  }
+  assert.equal(streamCleanupEligible({ ...all, runStatus: "running" }), false, "在飞的 run 不许删");
+  assert.equal(streamCleanupEligible({ ...all, runStatus: undefined }), false, "读不到终态就不许删（崩在半路 / store 没有 markRunState）");
+  assert.equal(streamCleanupEligible({ ...all, runStatus: "cancelled" }), false, "宿主列值不是本仓终态，不认");
+
+  // ③ 持久化证据：缺、false、非字面真值一律拒；本 run 持久化失败一律拒。
+  assert.equal(streamCleanupEligible({ ...all, assembledCopyPersisted: undefined }), false, "没给证据 ⇒ 不判可删");
+  assert.equal(streamCleanupEligible({ ...all, assembledCopyPersisted: false }), false, "无持久化模式 / 副本不可读 ⇒ 不删");
+  for (const truthy of ["yes", 1, {}]) {
+    assert.equal(streamCleanupEligible({ ...all, assembledCopyPersisted: truthy }), false, `证据只认字面 true（收到 ${JSON.stringify(truthy)}）`);
+  }
+  assert.equal(streamCleanupEligible({ ...all, persistenceFailed: true }), false, "该 run 的持久化报过失败 ⇒ 即使已终也保留（评审必修 1）");
+
+  // ④ 窗口：负数一律拒（`ageMs > -1` 会把每一行立刻变成可删）；非有限拒；边界不越。
+  for (const retentionMs of [-1, -0.001, Number.NEGATIVE_INFINITY]) {
+    assert.equal(streamCleanupEligible({ ...all, ageMs: 0, retentionMs }), false, `负窗口 ${retentionMs} 不许放行`);
+  }
+  for (const retentionMs of [Number.NaN, Number.POSITIVE_INFINITY, "1"]) {
+    assert.equal(streamCleanupEligible({ ...all, retentionMs }), false, `非法窗口 ${String(retentionMs)} 不许放行`);
+  }
+  for (const ageMs of [Number.NaN, Number.POSITIVE_INFINITY, "10"]) {
+    assert.equal(streamCleanupEligible({ ...all, ageMs }), false, `非法年龄 ${String(ageMs)} 不许放行`);
+  }
+  assert.equal(streamCleanupEligible({ ...all, ageMs: 1, retentionMs: 1 }), false, "刚好到点不算过期（严格大于）");
+  assert.equal(streamCleanupEligible({ ...all, ageMs: 1, retentionMs: 10 }), false, "没过保留窗口");
+  assert.equal(streamCleanupEligible({ ...all, retentionMs: undefined }), false, "窗口没给 ⇒ 不判");
+  assert.equal(streamCleanupEligible(), false, "空参 ⇒ 不判");
+});
+
+// ───────────────────── T10 枚举范围：诊断错误通道明确不覆盖 ─────────────────────
+
+test("T10 枚举范围写清（评审必修 3）：`persistence_error` 走诊断错误通道，不在表里且被显式说明", () => {
+  const sources = sourceFiles();
+  // 1) 它真的在源码里带 `type` 字面量（宽口径扫会撞到，所以必须点名它为什么不算）。
+  const holder = sources.filter((file) => file.source.includes('type: "persistence_error"'));
+  assert.ok(holder.length > 0, "源码里再也找不到 `type: \"persistence_error\"` —— 本条用例与表头那段都要重新核");
+  // 2) 它不是六族发射点的产出（走的是 diagnostics.error / onPersistenceError，由 error-ledger 记账）。
+  const emitted = emissionsOrFail(REAL_FILES, ASSEMBLY_HELPER_SOURCE, "T10").names;
+  assert.ok(!emitted.has("persistence_error"), "`persistence_error` 若真的开始经 emitEvent/onEvent 发出，它就必须进分级表（那时本条红是对的）");
+  // 3) 它不在表里 ⇒ 宿主查表得 undefined ⇒ 「不知道就不许删」，落在安全一侧。
+  assert.ok(!("persistence_error" in EVENT_TIERS), "`persistence_error` 不在发射面上就不该在表里（在表里就得被分级）");
+  assert.equal(eventTierOf("persistence_error"), undefined);
+  // 4) 这条边界不是口头说的：模块头与两份契约都得字面写到它。
+  const moduleHeader = readFileSync(join(SRC_DIR, "loop", "event-tiers.js"), "utf8");
+  assert.match(moduleHeader, /persistence_error/u, "模块头必须写明这条枚举边界");
+  for (const [label, doc] of [["EN", EN_DOC], ["CN", CN_DOC]]) {
+    assert.match(readFileSync(doc, "utf8"), /persistence_error/u, `${label} 契约必须写明诊断错误通道不在分级面上`);
+  }
+});
+
+// ───────────────────────── T11 新增发射原语必须红 ────────────────────────
+
+/**
+ * 带 `{ type: … }` 实参的**非发射点**调用（每条都得写为什么不是事件，且必须仍在树里）。
+ * 这份清单与 `EMISSION_FAMILIES` 是对偶：族登记的是「哪些名字是发射口」，这里登记的是
+ * 「哪些名字看起来像但不是」。两者都被钉住 ⇒ 新增一个真正的发射原语（新 callee）两边都不认 ⇒ 红。
+ */
+const LOOKALIKE_NON_EMITTERS = Object.freeze({
+  "content.push": "消息 content block 的构造点（`type` 是块类型 `text` / `tool_result` / `thinking`，不是事件名）",
+  "parts.push": "同上，多模态 parts 的块类型",
+  "streamCleanupEligible": "分级表自己的谓词，入参对象里带 `type` 字段",
+  "Object.freeze": "冻结表与名单，入参是对象不是事件",
+});
+
+test("T11 新增一个发射原语时必须红（评审建议项）：带 `{ type:` 实参的被调名只能来自登记过的族", () => {
+  const families = new Set(EMISSION_FAMILIES.map((family) => family.callee.replace("?.", "")));
+  const seen = new Map();
+  for (const { path, source } of sourceFiles()) {
+    const masked = codeOnly(source);
+    for (const match of masked.matchAll(/\b([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)\s*\(\s*\{\s*(?:\.\.\.[\w$]+\s*,\s*)?type\s*:/gu)) {
+      if (!seen.has(match[1])) seen.set(match[1], `${path}`);
+    }
+  }
+  assert.ok(seen.size > 0, "一个带 `{ type:` 实参的调用都没读到 —— 扫描面塌了，判据不许在空集上变绿");
+  const strangers = [...seen.entries()].filter(([callee]) => !families.has(callee) && !(callee in LOOKALIKE_NON_EMITTERS));
+  assert.deepEqual(
+    strangers.map(([callee, where]) => `${callee} @ ${where}`),
+    [],
+    "出现了不认识的被调名：要么它是一族**新的发射原语**（那就必须登记进 EMISSION_FAMILIES，否则 T1–T4 会在空面上空转），"
+      + "要么它确定不是发射点（那就登记进 LOOKALIKE_NON_EMITTERS 并写明为什么）",
+  );
+  // 两张清单都不许烂掉：登记过的名字若从树上消失，说明世界变了，这份登记得重新核。
+  for (const [callee, why] of Object.entries(LOOKALIKE_NON_EMITTERS)) {
+    assert.ok(seen.has(callee), `「看着像但不是发射点」清单里的 \`${callee}\`（${why}）从树上消失了 —— 本清单要重新核`);
+  }
+  for (const family of EMISSION_FAMILIES) {
+    const bare = family.callee.replace("?.", "");
+    // 六族里有几族天然不带 `{ type:` 字面量实参（直调 `onEvent?.(` 带可选链、`dispatchAttemptEvent`
+    // 递的是变量），它们由 T3 的合成样本与 T4 的真树调用点计数钉住，这里只钉能扫到字面量的那几族。
+    if (["emitEvent", "queueEvent"].includes(bare)) {
+      assert.ok(seen.has(bare), `发射族 \`${family.callee}\`（${family.note}）在树上再也扫不到字面量实参 —— 抽取规则要重新核`);
+    }
   }
 });
 

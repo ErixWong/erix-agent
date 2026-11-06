@@ -100,7 +100,8 @@ export { parseReflectionDecision } from "./loop/reflection.js";
 // issue #743：事件分级表（宿主清理 `run_events` 那一类表时的唯一分流依据）。`fact` / `stream` /
 // `derived` 三档的定义、逐类理由与「删完回放退化成什么形状」在 `docs/host-consumer-contract.md`
 // 的「Event tier table and the cleanup predicate」一节；这里导出的是那份判据的**机器可读面**。
-// `streamCleanupEligible` 是那条判据的可执行形态（档位 + 终态 + 保留窗口），契约与代码同一份。
+// `streamCleanupEligible` 是那条判据的可执行形态（档位 + 有成型结果保证的终态 + 宿主给得出的
+// 落盘证据 + 保留窗口；任何一条缺或非法都不删），契约与代码同一份。
 export {
   EVENT_TIERS,
   EVENT_TIER_VALUES,
@@ -109,6 +110,7 @@ export {
   EVENT_TIER_DERIVED,
   HOST_SIDE_EVENT_TYPE_NAMES,
   RUN_TERMINAL_STATUSES,
+  RUN_CLEANUP_SAFE_STATUSES,
   eventTierOf,
   canonicalEventTypeName,
   streamCleanupEligible,
