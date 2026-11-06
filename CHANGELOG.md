@@ -474,7 +474,7 @@
   that counterexample permanently and sample **M20** keeps it biting in CI. `fold-llm` writes
   `compactedSummary`; a strategy whose text never entered the context (`sliding-window` journals, never
   prepends), a merged reconstruction (`fold-statistical`'s second fold), and anything a later layer rewrote
-  **or deep-copied** (`safeTruncateMessages` opens with `cloneState`, `budget.js:179-180`, which is
+  **or deep-copied** (`safeTruncateMessages` opens with `cloneState` at `src/loop/budget.js:179-180`, which is
   `structuredClone` — identity cannot survive it) write **no key**, and resume then takes the compatibility
   path and reports 不可判定 — the repository's "no fact, no key" rule, and the reason the cell cannot
   become a second projection.
@@ -508,8 +508,8 @@
   引擎会把**那个正文块**当成「当年 fed 的摘要」记进账。`#738-G` / `#738-G2` 把这个反例常驻钉住，样本 **M20**
   让它在 CI 里继续咬人。`fold-llm` 写得出的就是 `compactedSummary`；文本从没进过上下文的策略
   （`sliding-window` 只落账不 prepend）、合并重建出来的那一折（`fold-statistical` 第二折），以及被后面的层
-  **改写过或被深拷贝重建过**的形状（`safeTruncateMessages` 起手就 `cloneState`，`budget.js:179-180`，
-  那就是 `structuredClone`——身份过不去），**一律不写这个键**，续跑于是走兼容路径并如实报「不可判定」——
+  **改写过或被深拷贝重建过**的形状（`safeTruncateMessages` 起手就 `cloneState`，那是 `structuredClone`，
+  位置在 `src/loop/budget.js:179-180`——身份过不去），**一律不写这个键**，续跑于是走兼容路径并如实报「不可判定」——
   本仓的「无事实不写键」口径，也是这一格不会退化成第二份投影的原因。`.text` 与 `.summary` 的语义与**每一个**既有读者一字未动（摘要复用读
   `.summary`、`ledgerPreviousSummary` 读 `.text`，本轮都不碰）。续跑侧 `pickFoldSummaryReplay` 有这一格就
   **原样**回放——不 `trim()`、不剥正文，而这两刀正是毁掉字节一致性的那两刀；没有这一格就完全走今天的兼容路径，
