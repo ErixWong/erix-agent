@@ -719,8 +719,14 @@ of that day were deleted in the **0.6.0** breaking window (commit `a8cd193`; 0.5
 was the last release that carried them), and `createFileTools` came back in
 **0.18.0** as the canonical implementation named above. The jail never came back —
 per ADR-009 the library provides no security boundary. Model-facing retrieval
-is note-first: use `note_list` followed by `note_read`; there is no transcript
-transcript retrieval API; recall adapters were retired in 0.8.0.
+is note-first **when there are notes to point at**: use `note_list` followed by
+`note_read`; there is no transcript transcript retrieval API; recall adapters
+were retired in 0.8.0. Since issue #741 the engine says so only on evidence (the
+note family on the tool surface plus a successful `note_take` in the visible
+ledger); otherwise the fold substitute and the TTL placeholder state that no
+recoverable decision record exists, with the reason, and the model-visible text
+drops every `note_*` mention. Note availability stays host configuration — the
+engine writes no notes.
 
 ## 4. Source layout
 

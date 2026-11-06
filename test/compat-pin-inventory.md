@@ -454,6 +454,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/tool-fact-success-parity.test.js` | 1 | `onToolResult`×1 | MIGRATE · NOT-OPTION-SURFACE（非 runToolLoop 选项面，无规位） |
 | `test/loop-deliverables-gap-436.test.js` | 7 | `deliverables`×7 | COMPAT-PIN |
 | `test/compact/fold-llm-degrade-469.test.js` | 1 | `onEvent`×1 | COMPAT-PIN |
+| `test/compact/fold-note-honesty-741.test.js` | 0 | `onEvent`×2 | MIGRATE · NOT-OPTION-SURFACE（人手裁决 #741：两处 `onEvent` 都写在 `capabilities.hooks` 规位里，槽位名本身就是新家 ⇒ 扁平写点实测 0，无待迁项） |
 
 > **人手裁决（#661 收尾）：`test/compact/fold-llm-degrade-469.test.js` = `COMPAT-PIN`。**
 > 这一格的 `onEvent` 写点在第 3 格「折叠结果状态」里：它用 `createCompactionStat({ compacted: true,
@@ -481,11 +482,11 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `MIGRATE · S7b`（已迁完 95 点，剩 0；迁移前 24 文件 / 124 点，明细见 S7b 清单） | 17 | 0 |
 | `MIGRATE · S7c`（**本刀已迁完 90 点中的 87**；另 3 点重分类，见下条） | 17 | 0 |
 | `MIGRATE · 含 COMPAT-PIN 格`（迁搭台写点，**逐格**跳过选项面断言） | 3 | 38 |
-| `MIGRATE · NOT-OPTION-SURFACE`（重分类：不是 `runToolLoop` 选项面，**没有规位**） | 9 | 31 |
+| `MIGRATE · NOT-OPTION-SURFACE`（重分类：不是 `runToolLoop` 选项面，**没有规位**） | 10 | 31 |  <!-- #741：`test/compact/fold-note-honesty-741.test.js` 并入本类（文件数 9→10，写点 0→0）：它的 `onEvent` 落在 `capabilities.hooks` 规位里，扁平写点实测 0 -->
 | `COMPAT-PIN` | 13 | 81 |  <!-- #436 又新增 7 点（`test/loop-deliverables-gap-436.test.js`）；小结按 --verify 打印的 AST 真值对齐 -->  <!-- #519 新增 4 点：`test/loop-direct-route-conflict-519.test.js`；小结由 --verify 打印的 AST 真值（逐点归片 73）对齐 -->
 | `OWNED-BY-S5` | 5 | 13 |
 | `OWNED-BY-S6` | 5 | 21 |
-| **合计（现在实测）** | **67** | **184** |
+| **合计（现在实测）** | **68** | **184** |
 
 脚注：
 
@@ -866,6 +867,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/compact/fold-llm-fail-661.test.js` | 2 | `resume`×1, `strategy`×1 |
 | `test/examples/erix-run-resume.test.js` | 19 | `resume`×17, `tools`×2 |
 | `test/guide-removal-gate.test.js` | 4 | `tools`×4 |
+| `test/compact/fold-note-honesty-741.test.js` | 0 | |
 | `test/project-instructions-716.test.js` | 4 | `prompt`×2, `session`×2 |
 | `test/loop-snapshot-write-side-735.test.js` | 3 | `tools`×2, `resume`×1 |
 | `test/loop-resume-ledger-crash-boundary.test.js` | 15 | `completion`×3, `resume`×3, `stallDetection`×3, `tools`×3, `wrapup`×3 |

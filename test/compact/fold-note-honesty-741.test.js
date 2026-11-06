@@ -287,11 +287,14 @@ test("③归档夹断丢掉原文 ⇒ droppedMessages/droppedBytes 进 compactio
     provider,
     executeTool: async ({ id }) => `payload for ${id} ${"z".repeat(4_000)}`,
     maxRounds: 2,
-    completion: false,
-    reflection: false,
     // `maxFoldedPayloadBytes` 压到 600 B ⇒ 归档必然装不下本次被折负载 ⇒ 一定发生夹断。
-    config: { folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm", maxFoldedPayloadBytes: 600 } } },
-    onEvent: (event) => events.push(event),
+    // 规位拼写（#498/#521 的口径）：`completion` / `reflection` 走 `config.run`，回调走
+    // `capabilities.hooks` ⇒ 本文件不在 `test/compat-pin-inventory.md` 里留新的兼容钉子。
+    config: {
+      run: { completion: false, reflection: false },
+      folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm", maxFoldedPayloadBytes: 600 } },
+    },
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
     store,
     runId: "741-archive-drop",
     seed: `start ${"y".repeat(900)}`,
@@ -336,11 +339,12 @@ test("③归档没有丢弃 ⇒ 不写 foldArchive 键（无事实不写键，�
     provider,
     executeTool: async ({ id }) => `payload for ${id} ${"z".repeat(400)}`,
     maxRounds: 2,
-    completion: false,
-    reflection: false,
     // 默认归档上限（256 KiB）⇒ 这一折什么都没丢。
-    config: { folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm" } } },
-    onEvent: (event) => events.push(event),
+    config: {
+      run: { completion: false, reflection: false },
+      folding: { context: { budgetTokens: 300, keepRounds: 0, strategy: "fold-llm" } },
+    },
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
     store,
     runId: "741-archive-keep",
     seed: `start ${"y".repeat(300)}`,
