@@ -6,14 +6,16 @@
 //      chat 与 repl 走同一个函数 ⇒ 这里一次覆盖两条边；
 //   3. stderr 留痕行两条分支（已注入 / 未发现），路径与字节数对得上；
 //   4. `--no-agents` 旗标在 chat 与 repl 两侧都被认；
-//   5. 装配级：`runChat` 真把内容拼进 `config.input.system`（不是只算了个返回值）。
+//   5. 装配级：`runChat` 真把内容拼进 `config.input.system`（不是只算了个返回值）；
+//   6. issue #721：上限抬到 64 KiB（预算闸说合法的正文装得下）+ 截断时**注入正文里**出现声明
+//      （全文 / 本次注入 / 丢弃三个字节数 + 被丢弃的小节名），以及「注入上限 ⇄ 字节预算闸」的交叉对账。
 //
 // 红线：约定文件原文**不进断言**（里面可能有 token / 内网地址），一律用唯一哨兵字符串。
 // 临时目录一律 `makeTmp()`（`scripts/test-hygiene-check.mjs` 规则 B）；`home` / `cwd` 全注入，
 // 不触达真实 `~/.erix`。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { parseChatArgs, runChat } from "../bin/cli.js";
@@ -370,4 +372,215 @@ test("#716 装配级：runChat --no-agents ⇒ 无哨兵、无留痕行（静默
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// 6. 注入上限与模型可见声明（issue #721）
+// ---------------------------------------------------------------------------
+//
+// 缺陷本体（issue #721 的现测，不是审美）：注入上限曾是 32 KiB，而**字节预算闸**
+// （`scripts/agents-directive-scan.mjs` 的 `LENGTH_BUDGETS`）给本仓这一页允许到 33,792 字节，
+// 全局那一页允许到 30,720 字节（`pi-tools:scripts/check-agents-budget.sh`）。于是「预算闸判合法
+// 的正文，注入面装不下」：热层 AGENTS.md（实测 32,698 字节）再长 71 字节就**静默**切尾，预算闸
+// 一路绿——两道闸互不知情。裁决（2026-11-06）：上限抬到 64 KiB，且**截断必须对模型可见**。
+//
+// 为什么可见性不是点缀：`--no-todo` 的三条断言曾在 112,464 字节的 AGENTS.md 下绿了几个月，只因
+// `todo_add` 正好落在旧截断线之外（`test/integration/no-todo-switch.test.js` 收了那次账）。被测量
+// 对象不能随「切在哪个字节」而变，所以截断后果必须写进**注入正文**，不是只写 stderr——无人值守侧
+// 没人在场看 stderr。
+//
+// 夹具纪律照旧：一律合成正文 + 哨兵，绝不粘本仓 AGENTS.md 的真句子；临时目录一律 `makeTmp()`。
+
+/** 尾哨兵：只出现在合成文件的**末尾** ⇒「它在不在注入正文里」就是「有没有被切尾」的判据。 */
+const TAIL_SENTINEL_721 = "SENTINEL-721-TAIL-DO-NOT-TRUNCATE";
+
+/** 合成夹具里注定被丢弃的两个小节名（断言只点名它们，不粘真文件正文）。 */
+const DROPPED_SECTION_ONE = "SECTION-721-DROPPED-BETA";
+const DROPPED_SECTION_TWO = "SECTION-721-DROPPED-GAMMA";
+
+/** 注入段里那句声明的段落头（`bin/system-prompt.js` 的模型可见声明）。 */
+const DECLARATION_MARKER = "[项目约定已截断]";
+
+/**
+ * 造一份**恰好 `bytes` 字节**的合成正文（填充段纯 ASCII ⇒ 字节算术可现核；标题带中文，所以
+ * 头尾一律用 `Buffer.byteLength` 折算，不拿字符数冒充字节数）。
+ *
+ * @param {number} bytes 目标字节数
+ * @param {string} [tail] 末尾小节的哨兵名
+ * @returns {string}
+ */
+function syntheticBody(bytes, tail = TAIL_SENTINEL_721) {
+  const head = `# 项目约定（合成夹具，不是本仓真文件）\n${SENTINEL}\n`;
+  const tailBlock = `\n# ${tail}\n`;
+  const filler = bytes - Buffer.byteLength(head, "utf8") - Buffer.byteLength(tailBlock, "utf8");
+  assert.ok(filler > 0, `夹具太小：${bytes} 字节装不下头尾两段`);
+  return head + "x".repeat(filler) + tailBlock;
+}
+
+/**
+ * 带三个小节的合成正文（纯 ASCII 小节名，便于逐字断言「谁被丢了」）。
+ *
+ * @param {number} [fillerBytes] 每个小节的填充字节数
+ * @returns {string}
+ */
+function sectionedBody(fillerBytes = 400) {
+  const section = (/** @type {string} */ name) => `\n## ${name}\n${"y".repeat(fillerBytes)}\n`;
+  return `# 项目约定（合成夹具）\n${SENTINEL}\n`
+    + section("SECTION-721-KEPT-ALPHA")
+    + section(DROPPED_SECTION_ONE)
+    + section(DROPPED_SECTION_TWO);
+}
+
+/**
+ * 从预算闸自己的源码里现读它给某份指令页允许的字节数。
+ *
+ * 为什么现读而不是抄一个数：本单修的正是「两道闸互不知情」，测试里再手抄一份预算就是把第三个副本
+ * 塞进来。（不能 `import` 那份脚本：它**被 import 时也会跑一遍 CLI**，会把测试进程的诊断搅乱。）
+ *
+ * @param {string} file 预算表里的键（如 `AGENTS.md`）
+ * @returns {number}
+ */
+function budgetGateAllowance(file) {
+  const text = readFileSync(new URL("../scripts/agents-directive-scan.mjs", import.meta.url), "utf8");
+  const block = text.match(/export const LENGTH_BUDGETS = Object\.freeze\(\{([\s\S]*?)\n\}\);/u);
+  assert.ok(block !== null, "预算闸的 LENGTH_BUDGETS 读不到 ⇒ 这道交叉对账在空跑");
+  const entry = String(block[1]).match(new RegExp(`"${file}":\\s*(\\d+)`, "u"));
+  assert.ok(entry !== null, `预算闸的 LENGTH_BUDGETS 里没有 "${file}" 这一格 ⇒ 交叉对账在空跑`);
+  return Number(entry[1]);
+}
+
+test("#721 上限 64 KiB：预算闸允许的单页正文（33,792 字节）必须整份注入，不得切尾", async () => {
+  const dir = await makeTmp("erix-721-limit-");
+  try {
+    // 33,792 = 预算闸给本仓这一页允许的上限：它**大于旧上限 32,768**、小于新上限 65,536，
+    // 正是「预算闸说合法、注入面装不下」的那一段（issue #721 缺陷本体）。
+    const allowance = budgetGateAllowance(PROJECT_INSTRUCTIONS_FILENAME);
+    assert.equal(allowance, 33792, "预算闸那一格是现读的：漂了就红，别手改本用例");
+    assert.ok(allowance > 32 * 1024, "夹具必须落在旧上限之上，否则这一例考不到上限本身");
+    const body = syntheticBody(allowance);
+    assert.equal(Buffer.byteLength(body, "utf8"), allowance, "夹具字节数必须逐字等于预算闸的允许值");
+    writeAgents(dir, body);
+
+    assert.equal(PROJECT_INSTRUCTIONS_MAX_BYTES, 64 * 1024, "缺省上限就是 64 KiB = 65,536 字节");
+    const discovery = discoverProjectInstructions({ cwd: dir });
+    assert.equal(discovery.limit, PROJECT_INSTRUCTIONS_MAX_BYTES);
+    assert.equal(discovery.truncated, false, "预算闸说合法的正文，注入面必须装得下");
+    assert.equal(discovery.files[0].bytes, allowance);
+    assert.equal(discovery.totalBytes, allowance);
+    assert.deepEqual(discovery.droppedSections, [], "没截断就没有丢弃的小节");
+    const section = buildProjectInstructionsSection(discovery);
+    assert.ok(section.includes(TAIL_SENTINEL_721), "尾哨兵不在场 = 被切了尾");
+    assert.ok(section.trimEnd().endsWith(TAIL_SENTINEL_721), "整份注入 ⇒ 文件最后一行也在提示末尾");
+    assert.ok(!section.includes(DECLARATION_MARKER), "没截断就别往提示词里塞声明");
+
+    // 反向证（这一例不是恒真格）：同一份文件在旧上限下**确实**被切尾 ⇒ 判据考的就是上限本身。
+    const legacy = discoverProjectInstructions({ cwd: dir, maxBytes: 32 * 1024 });
+    assert.equal(legacy.truncated, true, "反向证失败：旧上限下这份本该被切尾");
+    const legacySection = buildProjectInstructionsSection(legacy);
+    const legacyAt = legacySection.indexOf(DECLARATION_MARKER);
+    assert.ok(legacyAt !== -1, "旧上限下也会被切尾 ⇒ 那半巧合今天不会重现：截断必然留下声明");
+    assert.ok(!legacySection.slice(0, legacyAt).includes(TAIL_SENTINEL_721),
+      "反向证：旧上限下尾哨兵不在正文里（那正是「静默切尾」的形状）");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#721 截断时注入正文里出现声明：三个字节数 + 被丢弃的小节名都在提示词内，不是只在 stderr", async () => {
+  const dir = await makeTmp("erix-721-declaration-");
+  try {
+    const body = sectionedBody();
+    const filePath = writeAgents(dir, body);
+    const bodyBytes = Buffer.byteLength(body, "utf8");
+    // 把上限切在第一个小节之后：后两个小节整段落在丢弃侧（名字纯 ASCII ⇒ 字符下标即字节下标）。
+    const cutIndex = body.indexOf(`## ${DROPPED_SECTION_ONE}`);
+    assert.ok(cutIndex > 0, "夹具自证：小节标题找不到 ⇒ 本用例在空跑");
+    const limit = Buffer.byteLength(body.slice(0, cutIndex), "utf8") - 1;
+
+    const discovery = discoverProjectInstructions({ cwd: dir, maxBytes: limit });
+    assert.equal(discovery.truncated, true, "夹具自证：这份夹具在该上限下必须真的被截断");
+    assert.deepEqual(discovery.droppedSections, [DROPPED_SECTION_ONE, DROPPED_SECTION_TWO],
+      "发现层要报出被丢弃的小节名（顺序 = 文件里的出现顺序）");
+
+    // 判据一：声明在**注入正文**里（`buildProjectInstructionsSection` 的输出直接进 system）。
+    const section = buildProjectInstructionsSection(discovery);
+    const at = section.indexOf(DECLARATION_MARKER);
+    assert.ok(at !== -1, `${DECLARATION_MARKER} 必须出现在注入正文里（删掉它 = 回到静默截断）`);
+    const injectedBody = section.slice(0, at);
+    const declaration = section.slice(at);
+
+    // 判据二：三个字节数逐字在声明里，且与**磁盘事实 / 注入正文**独立量出的数一致。
+    const numbers = [...declaration.matchAll(/全文 (\d+) 字节，本次只注入 (\d+) 字节，丢弃 (\d+) 字节/gu)];
+    assert.equal(numbers.length, 1, `声明里必须给出「全文 / 本次注入 / 丢弃」三个字节数：${declaration}`);
+    const statedTotal = Number(numbers[0][1]);
+    const statedInjected = Number(numbers[0][2]);
+    const statedDropped = Number(numbers[0][3]);
+    assert.equal(statedTotal, statSync(filePath).size, "全文字节数必须是磁盘上的真大小");
+    assert.equal(statedTotal, bodyBytes, "全文字节数必须是夹具写下去的字节数");
+    assert.equal(statedInjected, Buffer.byteLength(discovery.files[0].content, "utf8"),
+      "声明里的注入字节数必须等于真正进提示词的正文长度");
+    assert.equal(statedDropped, statedTotal - statedInjected, "三个数的算术必须闭合（不许各报一套）");
+    assert.ok(statedInjected <= limit, "注入字节数不许越过本次生效的上限");
+    assert.ok(statedDropped > 0, "报「丢弃 0 字节」就是没说谎但也没说事");
+
+    // 判据三：被丢弃的小节名在**声明之后**，且不在声明之前（否则是正文里本来就有的假阳性）。
+    for (const name of [DROPPED_SECTION_ONE, DROPPED_SECTION_TWO]) {
+      assert.ok(declaration.includes(name), `声明要点名被丢弃的小节 ${name}`);
+      assert.ok(!injectedBody.includes(name), `${name} 没被注入，它只能出现在声明里`);
+    }
+    assert.ok(injectedBody.includes("SECTION-721-KEPT-ALPHA"), "截断点之前的小节必须真的在场");
+    assert.match(declaration, /不要猜测它们的内容/u, "声明要让模型知道「没看见的别猜」");
+
+    // 判据四：这条声明走的是**模型可见**通道（chat / repl 的 system 提示），不是 stderr 的复制品。
+    const assembled = buildCliSystemPrompt({ cwd: dir, maxBytes: limit });
+    assert.ok(assembled.systemPrompt.includes(DECLARATION_MARKER), "声明必须在交给模型的 system 里");
+    assert.ok(assembled.systemPrompt.includes(DROPPED_SECTION_ONE));
+    const off = buildCliSystemPrompt({ cwd: dir, maxBytes: limit, agents: false });
+    assert.ok(!off.systemPrompt.includes(DECLARATION_MARKER), "--no-agents 时连声明一起关掉（零注入）");
+
+    // 判据五：stderr 留痕行同步带上截断事实（同一份事实，两处不许各说一套）。
+    assert.match(String(assembled.notice), /已截断/u);
+    assert.match(String(assembled.notice), new RegExp(`全文 ${statedTotal} 字节`, "u"));
+    assert.match(String(assembled.notice), new RegExp(`丢弃 ${statedDropped} 字节`, "u"));
+    assert.ok(String(assembled.notice).includes(DROPPED_SECTION_ONE));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#721 今天两页实测合计（63,197 字节）在上限内 ⇒ truncated=false（抬完之后不再切尾）", async () => {
+  const dir = await makeTmp("erix-721-two-pages-");
+  try {
+    // issue #721 的现测两页：全局页 30,499（`pi-tools:GLOBAL_AGENTS.md`）+ 本仓页 32,698。
+    const globalPageToday = 30499;
+    const repoPageToday = 32698;
+    const both = globalPageToday + repoPageToday;
+    assert.equal(both, 63197, "夹具形状必须就是裁决里那天的两页合计");
+    assert.ok(both <= PROJECT_INSTRUCTIONS_MAX_BYTES, "今天的两页必须装得进新上限");
+
+    writeAgents(dir, syntheticBody(both));
+    const discovery = discoverProjectInstructions({ cwd: dir });
+    assert.equal(discovery.truncated, false, "两页合计的形状在新上限下必须整份装下");
+    assert.equal(discovery.totalBytes, both);
+    assert.ok(buildProjectInstructionsSection(discovery).includes(TAIL_SENTINEL_721));
+
+    // 反向证：旧上限装不下这份形状 ⇒ 这一例在旧值下是红的，不是恒真格。
+    assert.equal(discoverProjectInstructions({ cwd: dir, maxBytes: 32 * 1024 }).truncated, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("#721 两道闸互相知道：预算闸允许的最坏两页组合装得进注入上限（旧上限装不下 = 缺陷本体）", () => {
+  // 全局页那一格在**外仓**（`pi-tools:scripts/check-agents-budget.sh` 的 `BUDGET_BYTES`，
+  // 注释逐字写着「预算 30 KB = 30*1024 = 30720 字节」）；干净检出里没有那份脚本，所以现抄并点名坐标。
+  const globalPageAllowance = 30720;
+  const repoPageAllowance = budgetGateAllowance(PROJECT_INSTRUCTIONS_FILENAME);
+  const worstCase = globalPageAllowance + repoPageAllowance;
+  assert.equal(worstCase, 64512, "裁决里的算术：30,720 + 33,792 = 64,512 字节");
+  assert.ok(PROJECT_INSTRUCTIONS_MAX_BYTES >= worstCase,
+    `注入上限 ${PROJECT_INSTRUCTIONS_MAX_BYTES} 装不下预算闸允许的最坏组合 ${worstCase}：`
+    + "预算闸说合法的正文注入面装不下 = issue #721 的缺陷本体回来了");
+  assert.equal(PROJECT_INSTRUCTIONS_MAX_BYTES - worstCase, 1024, "余量就是裁决里写的那 1,024 字节");
+  assert.ok(32 * 1024 < worstCase, "反向证：旧上限本来就装不下这个组合 ⇒ 本判据不是恒真格");
 });

@@ -27,12 +27,66 @@ const MCP_PROXY_NOTICE = `
 
 MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=search query=关键词 查找工具；action=call server=... tool=... args=... 调用工具。`;
 
+/** 截断声明的段落头（注入正文里的那个标记；测试认它，改文案时别动这个形状）。 */
+const TRUNCATED_MARKER = "[项目约定已截断]";
+
+/** 截断声明里最多点名几个被丢弃的小节名（再多就把声明本身撑成新的预算大头；总数仍如实报）。 */
+const DROPPED_SECTION_NAME_LIMIT = 12;
+
 /** 2026-09-20 基准实测：模型闷头调工具、计划不可见导致 judge 难判方向 ⇒ 每轮先声明计划。 */
 const PLAN_DIRECTIVE = "\n\n每轮开始先用一句话（≤30字）说明当前计划，再调用工具。";
 
 /**
+ * 截断声明与 stderr 留痕行共用的「截断事实」短语（issue #721）——三个字节数 + 被丢弃的小节名。
+ *
+ * 只写一份的原因：模型看见的那句与人看见的那句必须同源，否则两者会漂开（那正是本单在修的病的形状：
+ * 信息在 `discoverProjectInstructions()` 里一直有，只是从没交给模型）。
+ *
+ * 名单只点名前 {@link DROPPED_SECTION_NAME_LIMIT} 个：一份被切了一半的大文件可能有几百个小节，
+ * 把名单全拼上去会把「声明」本身撑成新的预算大头。总数始细报出，不假装「就是这些」。
+ *
+ * @param {import("../src/project-instructions.js").ProjectInstructionFile} file 被截断的那份文件
+ * @returns {string} 「全文 / 本次注入 / 丢弃」三个字节数 + 被丢弃的小节名
+ */
+function formatTruncationFacts(file) {
+  const droppedBytes = file.originalBytes - file.bytes;
+  const listed = file.droppedSections.slice(0, DROPPED_SECTION_NAME_LIMIT);
+  const facts = `全文 ${file.originalBytes} 字节，本次只注入 ${file.bytes} 字节，丢弃 ${droppedBytes} 字节`;
+  if (file.droppedSections.length === 0) {
+    // 没有可点名的标题（文件不用 `#` 分节，或截断点正落在某个标题行中间）：如实说「点名不了」。
+    return `${facts}，被丢弃的部分里没有可点名的 Markdown 小节标题`;
+  }
+  const names = listed.map((title) => `「${title}」`).join("、");
+  const more = file.droppedSections.length > listed.length
+    ? ` 等，共 ${file.droppedSections.length} 个`
+    : `（共 ${file.droppedSections.length} 个）`;
+  return `${facts}，被丢弃的小节：${names}${more}`;
+}
+
+/**
+ * 模型可见的截断声明（issue #721 的那「必须可见」）。未截断 ⇒ 空串（提示词一个字节都不许多）。
+ *
+ * 为什么在**注入正文里**而非只上 stderr：留痕行只有人在场时才看得见，而这条边的常态是无人值守；
+ * 已有事故——`--no-todo` 的三条断言在 112,464 字节的 `AGENTS.md` 下绿了几个月，只因 `todo_add`
+ * 正好落在旧 32 KiB 截断线之外（见 `test/integration/no-todo-switch.test.js` 的账）。被测量对象
+ * 不能随「切在哪个字节」而变 ⇒ 模型必须能看见「你拿到的不是全文、丢了哪些小节」。
+ *
+ * @param {import("../src/project-instructions.js").ProjectInstructionFile} file
+ * @returns {string}
+ */
+function buildTruncationDeclaration(file) {
+  if (!file.truncated) return "";
+  return `\n\n${TRUNCATED_MARKER} ${formatTruncationFacts(file)}。`
+    + "上面那行之后的小节不在本提示里，需要时请直接读取该文件，不要猜测它们的内容。";
+}
+
+/**
  * 项目约定段（拼在系统提示最末）。空文件（0 字节）⇒ 空串：**提示词一个字节都不许多**
  * （「已注入 0 字节」这件事由 stderr 留痕行说，不靠往提示词里塞一句废话）。
+ *
+ * 末那句 `buildTruncationDeclaration()` 就是 issue #721 的「截断必须对模型可见」：它拼在注入正文
+ * 里（不只在 stderr），删掉那一行 ⇒ `test/project-instructions-716.test.js` 里那条声明用例会红
+ * （常驻变异复证，不允许出现「截断了但没人报错」的绿）。
  *
  * @param {import("../src/project-instructions.js").ProjectInstructionsDiscovery} discovery
  * @returns {string}
@@ -43,7 +97,8 @@ export function buildProjectInstructionsSection(discovery) {
   return injected
     .map((file) => "\n\n[项目约定] 以下内容来自项目根目录的 "
       + `${PROJECT_INSTRUCTIONS_FILENAME}（${file.path}）；与上文冲突时以项目约定为准。`
-      + `\n\n${file.content}`)
+      + `\n\n${file.content}`
+      + buildTruncationDeclaration(file))
     .join("");
 }
 
@@ -51,6 +106,9 @@ export function buildProjectInstructionsSection(discovery) {
  * stderr 留痕行。两条分支逐字固定（验收判据就钉在这两行上）：
  *   · 注入了：`[项目约定] 已注入 <n> 个文件 / <字节数> 字节 (<路径列表>)`
  *   · 一个都没有：`[项目约定] 未发现 AGENTS.md`
+ *
+ * 截断时额外附上与注入声明**同源**的截断事实（全文字节 / 丢弃字节 / 被丢弃的小节名，issue #721）：
+ * 旧形状只说「已截断」，不说丢了多大一块、丢了什么，人在 stderr 里也查不到后果。
  *
  * @param {import("../src/project-instructions.js").ProjectInstructionsDiscovery} discovery
  * @returns {string}
@@ -66,7 +124,11 @@ export function formatProjectInstructionsNotice(discovery) {
   }
   const paths = discovery.files.map((file) => file.path).join(", ");
   const base = `[项目约定] 已注入 ${discovery.files.length} 个文件 / ${discovery.totalBytes} 字节 (${paths})`;
-  return discovery.truncated ? `${base}（超过 ${discovery.limit} 字节上限，已截断）` : base;
+  if (!discovery.truncated) return base;
+  // 与注入段里那句 `[项目约定已截断]` 同一个派生器：两处不能各说一套（issue #721）。
+  const truncatedFile = discovery.files.find((file) => file.truncated);
+  const facts = truncatedFile === undefined ? "" : `：${formatTruncationFacts(truncatedFile)}`;
+  return `${base}（超过 ${discovery.limit} 字节上限，已截断${facts}）`;
 }
 
 /**

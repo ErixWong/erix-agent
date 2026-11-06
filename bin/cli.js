@@ -129,7 +129,8 @@ const HELP_TEXT = `用法：
   --no-notes            不装配 notes 工厂（note_* 工具不再可用），保留其他 skill
   --no-todo             彻底关闭 todo：内置 todo_* 四工具不注册、系统提示不含 todo、用户级 todo skill 一并排除
   --no-agents           不注入项目约定：默认读 <cwd>/AGENTS.md 并拼进系统提示（**只读这一层**，
-                      不向上找父目录、不读 home），超过 32 KiB 截断；stderr 会打一行留痕
+                      不向上找父目录、不读 home），超过 64 KiB 截断；截断时注入段里会追一句模型可见的
+                      声明（全文字节 / 本次注入字节 / 被丢弃的小节名），stderr 另打一行留痕
   --delegate            注册 delegate 工具（派生一个同进程子 run；**默认关闭**，issue #617）。
                       它是一个可运行的示例与验证器，不是 CLI 的新默认能力：子 run 是嵌套的真
                       runToolLoop（v1 不做子进程/守护进程），工具集**不含 delegate**（不递归派生），
