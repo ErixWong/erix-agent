@@ -67,26 +67,30 @@ test("261021 golden: 恢复告示的豁免面恰是「crash-resume 的 1 行 + 1
 // 其余轮各 1 个 `usage`；合计 8 个键（single-run 5 条轮 × `usage` + 3 个 `engineUsage`）与
 // 7 个键（crash-resume 5 × `usage` + 2 个 `engineUsage`）。上一版标题写的「带引擎开销的 4 条」是
 // 自述与实现不符（评审点名），本版按实测改成逐条明细。
-test("261021 golden: 新增分账键的豁免面逐条钉住「哪一轮剥了哪几个键」（issue #438）", () => {
+//
+// issue #742 切片 A 把**第三个**新增键 `runStateMeta` 接在同一条豁免通道上 ⇒ 本豁免面按实测长大：
+// 每一条引擎轮记录都多剥一个 `runStateMeta`（single-run +5 ⇒ 13 个键；crash-resume +5 ⇒ 12 个键）。
+// 逐条明细仍然是逐条明细：「哪一轮剥了哪几个键」一个也没合并。
+test("261021 golden: 新增键（分账键 #438 + 体积账 #742）的豁免面逐条钉住「哪一轮剥了哪几个键」", () => {
   assert.deepEqual(additiveUsageCensus, [
     {
       name: "single-run",
       detail: [
-        { round: 1, keys: ["usage"] },
-        { round: 2, keys: ["usage", "engineUsage"] },
-        { round: 3, keys: ["usage"] },
-        { round: 4, keys: ["usage", "engineUsage"] },
-        { round: 5, keys: ["usage", "engineUsage"] },
+        { round: 1, keys: ["usage", "runStateMeta"] },
+        { round: 2, keys: ["usage", "engineUsage", "runStateMeta"] },
+        { round: 3, keys: ["usage", "runStateMeta"] },
+        { round: 4, keys: ["usage", "engineUsage", "runStateMeta"] },
+        { round: 5, keys: ["usage", "engineUsage", "runStateMeta"] },
       ],
     },
     {
       name: "crash-resume",
       detail: [
-        { round: 1, keys: ["usage"] },
-        { round: 2, keys: ["usage", "engineUsage"] },
-        { round: 3, keys: ["usage"] },
-        { round: 4, keys: ["usage"] },
-        { round: 5, keys: ["usage", "engineUsage"] },
+        { round: 1, keys: ["usage", "runStateMeta"] },
+        { round: 2, keys: ["usage", "engineUsage", "runStateMeta"] },
+        { round: 3, keys: ["usage", "runStateMeta"] },
+        { round: 4, keys: ["usage", "runStateMeta"] },
+        { round: 5, keys: ["usage", "engineUsage", "runStateMeta"] },
       ],
     },
   ]);

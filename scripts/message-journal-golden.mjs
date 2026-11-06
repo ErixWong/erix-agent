@@ -254,6 +254,18 @@ export const resumeNoticeCensus = [];
  */
 const ADDITIVE_USAGE_KEYS = ["usage", "engineUsage"];
 
+/**
+ * issue #742 切片 A：轮记录上又一个**新增**键——`runStateMeta`（那份 run-state 副本的体积账
+ * `{ bytes, capBytes, truncated }`）。基线 `2ca60bc` 上同样不可能产出它，所以走与 #438 **同一条**
+ * 豁免通道：只对「看得出是引擎轮记录」的行剥（`looksLikeEngineRoundRecord`），剥什么由下面的
+ * census 逐条钉住。**它不是宿主写的**：宿主的 store 自己往行上放的 `runStateMeta` 不会被剥
+ * （准入判据不过）⇒ 与基线夹具对不上 ⇒ 当场红。
+ */
+const ADDITIVE_RUN_STATE_META_KEYS = ["runStateMeta"];
+
+/** 一条豁免通道、两份名单：#438 的分账键 + #742 的体积账（各自的语义由各自的注释负责）。 */
+const ADDITIVE_ROUND_RECORD_KEYS = [...ADDITIVE_USAGE_KEYS, ...ADDITIVE_RUN_STATE_META_KEYS];
+
 /** 引擎轮记录的身份形态（`<runId>:engine:round:<n>`，含 `:seed` / `:control:*` 这些后缀行）。 */
 const ENGINE_ROUND_ROW = /:engine:round:\d+(?::|$)/u;
 
@@ -285,7 +297,7 @@ function stripAdditiveUsageKeys(scenario) {
   for (const record of scenario.records) {
     if (record === null || typeof record !== "object") continue;
     if (!looksLikeEngineRoundRecord(record)) continue;
-    const keys = ADDITIVE_USAGE_KEYS.filter((key) => Object.hasOwn(record, key));
+    const keys = ADDITIVE_ROUND_RECORD_KEYS.filter((key) => Object.hasOwn(record, key));
     if (keys.length === 0) continue;
     for (const key of keys) delete record[key];
     detail.push({ round: record.round, keys });
