@@ -16,6 +16,135 @@ import { estimateTokens } from "../tokens.js";
 export const TOOL_RESULT_TTL_DEFAULT = 2;
 export const TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT = 4000;
 
+// ---------------------------------------------------------------------------
+// issue #741 —— 笔记断言的**条件式**出口（prompt 级修复，不是机制级）
+//
+// 病根：TTL 降级占位符与折叠替代物的广告语都**无条件**断言「要点见已有笔记 / 先用 note_list 查」，
+// 而引擎既不写笔记（机制级缺口），也不知道宿主到底有没有装配 `note_*`（配置级缺口）。
+// 生产证据（run b3eeba0f）：折叠后整场 `note_*` 调用 = 0，模型改用 cat/grep/sed 取回原文。
+// 于是那句话同时犯两错：① 指一条不存在的道路；② 把「我不知道有没有记录」伪报成「有记录」。
+//
+// 本模块只做**引擎真能核实**的两件事，且只用来决定措辞，不引入任何写笔记的机制：
+//   · 工具面：宿主传进来的 `tools` 里有没有完整的 `note_take`/`note_list`/`note_read`；
+//   · 账本：可见消息里有没有一次**成功**的 `note_take` 写入（有 tool_use 且配对 tool_result 未报错）。
+// 拿不到证据 ⇒ 走显式未知口径（「无可复原的决策记录」+ 原因），**不许**伪报知道。
+//
+// ⚠ 与 `src/loop/orchestrator.js` 里「引擎不认识 notes」那条注释的边界：那条约束的是**诊断投影**
+// 不许解析笔记载荷。这里只做**工具名/调用是否发生**的只读判定（不解析笔记内容、不读宿主存储），
+// 目的是让模型可见文本不再撒谎 —— 属于 prompt 级，不是把笔记机制搬进引擎。
+// ---------------------------------------------------------------------------
+
+/** 笔记召回这条路需要的工具；**缺任何一个**都不给 `note_*` 指引（整族全有或全无）。 */
+export const NOTE_RECALL_TOOL_NAMES = Object.freeze(["note_take", "note_list", "note_read"]);
+
+/** 三种「没有笔记可指」的原因；字符串本身就是模型可见文本，改动 = 改模型看到的句子。 */
+export const NOTE_RECALL_REASONS = Object.freeze({
+  /** 工具面上没有完整的笔记工具族 ⇒ 连路都不存在。 */
+  noSurface: "宿主未把笔记工具放进本 run 的工具面",
+  /** 工具有，但可见账本里一次成功写入都没有 ⇒ 路在，格子是空的。 */
+  emptyNotes: "可见账本里没有任何笔记写入记录",
+  /** 调用方没给工具面/账本证据 ⇒ 引擎确实不知道。 */
+  unknown: "引擎没有笔记可用性的证据",
+});
+
+/** 从宿主给的 `tools` 里挑出笔记工具名（不做前缀猜测，只认这三个确定名）。 */
+export function noteToolNamesOnSurface(tools) {
+  const found = new Set();
+  for (const tool of Array.isArray(tools) ? tools : []) {
+    const name = typeof tool?.name === "string" ? tool.name : "";
+    if (NOTE_RECALL_TOOL_NAMES.includes(name)) found.add(name);
+  }
+  return [...found];
+}
+
+/** 可见账本里是否有过**成功**的 `note_take` 写入（配对的 tool_result 缺席视为未报错：折叠只截内容不删行）。 */
+export function hasNoteWriteEvidence(messages) {
+  const errored = new Set();
+  for (const message of Array.isArray(messages) ? messages : []) {
+    for (const block of message?.content ?? []) {
+      if (block?.type === "tool_result" && block.is_error === true) errored.add(block.tool_use_id);
+    }
+  }
+  for (const message of Array.isArray(messages) ? messages : []) {
+    for (const block of message?.content ?? []) {
+      if (block?.type === "tool_use" && block.name === "note_take" && !errored.has(block.id)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 笔记可用性判定（纯函数，无副作用）。`available: true` 的唯一条件是「整族工具在面上 **且**
+ * 账本里有成功写入」—— 两者都是引擎看得见的事实，不是推断。
+ *
+ * @param {{ noteTools?: string[], messages?: Array<object> }} [evidence]
+ * @returns {{ available: boolean, reason: string, surfaceKnown: boolean }}
+ */
+export function resolveNoteRecall({ noteTools, messages } = {}) {
+  if (!Array.isArray(noteTools)) return { available: false, reason: NOTE_RECALL_REASONS.unknown, surfaceKnown: false };
+  if (!NOTE_RECALL_TOOL_NAMES.every((name) => noteTools.includes(name))) {
+    return { available: false, reason: NOTE_RECALL_REASONS.noSurface, surfaceKnown: true };
+  }
+  if (!hasNoteWriteEvidence(messages)) return { available: false, reason: NOTE_RECALL_REASONS.emptyNotes, surfaceKnown: true };
+  return { available: true, reason: "", surfaceKnown: true };
+}
+
+/** 显式未知口径那半句；`reason` 传的就是文本本体（`NOTE_RECALL_REASONS` 的值），空/缺席回退「无证据」。 */
+export function unverifiedRecallClause(reason) {
+  const text = typeof reason === "string" && reason.trim() !== ""
+    ? reason
+    : NOTE_RECALL_REASONS.unknown;
+  return `本区间无可复原的决策记录（原因：${text}）`;
+}
+
+/** 有笔记证据时的取回指引（沿用 #224/#241 的口径：值没记下来就省略，别猜）。 */
+const NOTE_RECALL_HINT = "后续需要时先用 note_list 查找，再用 note_read 读取；未记录且无法确定性重算时请省略，不要猜测";
+
+/**
+ * 无证据时的取回指引：能给出一条**可直接执行**的重读命令就给（生产里模型本来就在跑 cat/grep/sed），
+ * 否则退回「重读源文件」。两种都保留「不要猜测」半句 —— 修的是「有没有记录」，不是放松反幻觉约束。
+ */
+function unverifiedRetrievalHint(retrievalCommand, reason) {
+  // 命令本身另起一行（`取回: …`），那行整行可直接粘进 exec；句子里只留指向，不塞第二份命令。
+  const lead = retrievalCommand === undefined
+    ? "需要原文请重读源文件（路径见本条工具调用）"
+    : "需要原文请执行下方「取回」行那一条命令";
+  return `${lead}；${unverifiedRecallClause(reason)}；未记录且无法确定性重算时请省略，不要猜测`;
+}
+
+/** 有证据时才出现的那半句尾巴（无证据时说「已有笔记」就是假知识）。 */
+const NOTE_RECALL_TAIL = "；要点见对话中已有笔记/结论";
+
+/** 入参没给 limit 时的重读窗口（行数）；比 readFile 的默认 200 窄，宁小不许谎称是全文。 */
+const RETRIEVAL_WINDOW_LINES = 120;
+
+/** 单引号包住，内部的 `'` 按 shell 规则转义（路径里有空格/引号也不破功）。 */
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * 从**配对的 tool_use 入参**里拼一条可执行的原文取回命令（issue #741）。
+ *
+ * 字段来源已核实：`src/tools/file-tools.js` 的 readFile 读 `input.path` / `input.offset`（0 基行号）
+ * / `input.limit`（行数），与 `summarizeToolCall` 读的是同一组键。exec 类调用不在此列 ——
+ * 它自己的 command 已经在标题行里，本来就可重跑。
+ *
+ * @returns {string|undefined} 形如 `sed -n '1,120p' 'src/x.js'`；入参里没有路径时 undefined
+ */
+export function retrievalCommandFor(name, input) {
+  const params = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+  if (params.command !== undefined || /^(exec|bash|sh|run|command)/i.test(String(name ?? ""))) return undefined;
+  const filePath = typeof params.path === "string"
+    ? params.path
+    : typeof params.file === "string" ? params.file : "";
+  if (filePath === "") return undefined;
+  const offset = Number.isSafeInteger(params.offset) && params.offset > 0 ? params.offset : 0;
+  const limit = Number.isSafeInteger(params.limit) && params.limit > 0 ? params.limit : RETRIEVAL_WINDOW_LINES;
+  const from = offset + 1;
+  return `sed -n '${from},${from + limit - 1}p' ${shellQuote(filePath)}`;
+}
+
 // note/todo 是轻量状态读数，折叠净收益为负，永不折叠。
 const NEVER_FOLD_NAME = /^(note_|todo_)/i;
 // 占位符里允许出现的原文/入参片段上限（防「换皮重发」）。
@@ -26,6 +155,10 @@ const PLACEHOLDER_CHAR_LIMIT = 600;
 // 预警轮提示文案（单行，追加在原文末尾）。
 const TTL_WARNING_LINE =
   "【TTL 预警】此结果下一轮将折叠为句柄；若后续仍需，请现在用 note_take 记录要点";
+// issue #741：笔记工具不在面上时，这句在指挥模型去调一个**不存在的工具**。
+// 替代文案里不许出现任何 `note_*`（判据②的字面要求）。
+const TTL_WARNING_LINE_NO_NOTES =
+  "【TTL 预警】此结果下一轮将折叠为句柄；若后续仍需原文，请现在重读源文件";
 
 function compactSnippet(value, limit = SNIPPET_LIMIT) {
   const text = String(value ?? "").replace(/\s+/g, " ").trim();
@@ -135,13 +268,15 @@ export function extractContentDigest(content, { maxEntries = 12 } = {}) {
 
 // 折叠占位符：标题行 + 可选 digest 行 + 可选 JSON 骨架行，总量控制在 ~600 字符内
 // （digest 不足 maxEntries 条就多少放多少；超限时从尾向前裁剪 digest 条目）。
-function buildFoldPlaceholder({ inputSummary, tokens, round, hint, text, skeleton }) {
+function buildFoldPlaceholder({ inputSummary, tokens, round, hint, text, skeleton, noteTail, retrievalCommand }) {
   const header = `【已折叠·TTL】${inputSummary}`
     + `（约 ${tokens} tokens，r${round} 读取）— ${hint}`
-    + `；要点见对话中已有笔记/结论`;
+    + noteTail;
   let entries = collectDigestEntries(text, 12);
   for (;;) {
     const lines = [header];
+    // 取回命令单独一行：整行就是一条能直接粘进 exec 的命令，不必从长句里抠。
+    if (retrievalCommand !== undefined) lines.push(`取回: ${retrievalCommand}`);
     if (entries.length > 0) lines.push(`导航: ${entries.join(" | ")}`);
     if (skeleton !== undefined) lines.push(skeleton);
     const rendered = lines.join("\n");
@@ -179,8 +314,11 @@ function jsonSkeleton(content) {
   return parts.length === 0 ? undefined : `骨架: ${parts.join(" · ")}`;
 }
 
-function defaultRetrievalHint() {
-  return "后续需要时先用 note_list 查找，再用 note_read 读取；未记录且无法确定性重算时请省略，不要猜测";
+function defaultRetrievalHint({ recall, retrievalCommand }) {
+  // issue #741：断言前先问证据。`recall.available` 为假时**一句笔记都不提**，
+  // 并把「没有可复原的记录」连同原因明说 —— 而不是指一条可能不存在的 note_* 路。
+  if (recall?.available !== true) return unverifiedRetrievalHint(retrievalCommand, recall?.reason);
+  return NOTE_RECALL_HINT;
 }
 
 function shouldNeverFold(block, toolName) {
@@ -214,6 +352,9 @@ function readRoundMarker(block) {
  * @param {number} [options.ttl=2] 存活轮数：currentRound - 创建轮 >= ttl 时折叠（创建轮读 `erix.round`，旧记录回退顶层 `erixRound`）
  * @param {number} [options.minTokens=4000] 低于此估算 tokens 的结果永不折叠
  * @param {(info:object)=>string} [options.retrievalHint] 自定义取回提示文本生成
+ * @param {string[]} [options.noteTools] 本 run 工具面上的笔记工具名（宿主 `tools` 里 `note_*` 那几个）。
+ *   **缺席即未知**：issue #741 之后缺省不再是「有笔记」而是「没证据」⇒ 占位符走显式未知口径。
+ *   账本证据（本函数拿到的 `messages`）始终会扫，调用方想关掉只能不传 `noteTools`。
  * @param {{foldedCount?: number, warnedCount?: number, tokensBefore?: number, tokensAfter?: number, degradations?: object[]}} [options.stats]
  *   可选的可变统计出参；只报告实际折叠/预警，不改变请求视图语义。
  *   `degradations`（issue #326 wo-C，additive，**只在真的折叠时出现**）：逐条降级事实，供引擎入账「这条工具结果被降级成了什么」
@@ -226,6 +367,7 @@ export function foldToolResultsForRequest(messages, {
   ttl = TOOL_RESULT_TTL_DEFAULT,
   minTokens = TOOL_RESULT_FOLD_MIN_TOKENS_DEFAULT,
   retrievalHint,
+  noteTools,
   stats,
 } = {}) {
   const report = stats !== null && typeof stats === "object" && !Array.isArray(stats)
@@ -241,6 +383,10 @@ export function foldToolResultsForRequest(messages, {
   if (!Number.isFinite(currentRound) || !Number.isFinite(ttl) || !Number.isFinite(minTokens)) {
     return messages;
   }
+  // issue #741：一次算定笔记可用性（同一份视图里每个占位符共用同一个判定）。
+  const noteRecall = resolveNoteRecall({ noteTools, messages });
+  const warningLine = noteRecall.available ? TTL_WARNING_LINE : TTL_WARNING_LINE_NO_NOTES;
+  const noteTail = noteRecall.available ? NOTE_RECALL_TAIL : "";
   // ttl=0 / minTokens<=0 = 关闭，no-op（保持引用不变，调用方零成本）。
   if (ttl <= 0 || minTokens <= 0) return messages;
 
@@ -285,7 +431,7 @@ export function foldToolResultsForRequest(messages, {
         if (age === ttl - 1 && age >= 1) {
           if (estimateTokens(text) >= minTokens) {
             if (nextContent === undefined) nextContent = content.slice();
-            nextContent[index] = { ...block, content: `${text}\n${TTL_WARNING_LINE}` };
+            nextContent[index] = { ...block, content: `${text}\n${warningLine}` };
             changedCount += 1;
             if (report !== undefined) report.warnedCount += 1;
           }
@@ -297,13 +443,17 @@ export function foldToolResultsForRequest(messages, {
       if (tokens < minTokens) continue;
 
       const inputSummary = summarizeToolCall(call.name, call.input);
+      // 能确定性重算的（入参里有路径）就直接给一条可执行命令；exec 类返回 undefined。
+      const retrievalCommand = retrievalCommandFor(call.name, call.input);
       const hint = typeof retrievalHint === "function"
-        ? retrievalHint({ name: toolName, inputSummary, tokens, round: createdRound })
+        ? retrievalHint({ name: toolName, inputSummary, tokens, round: createdRound, noteRecall: noteRecall })
         : defaultRetrievalHint({
           name: toolName,
           inputSummary,
           tokens,
           round: createdRound,
+          recall: noteRecall,
+          retrievalCommand,
         });
       const contentSummary = buildFoldPlaceholder({
         inputSummary,
@@ -312,6 +462,8 @@ export function foldToolResultsForRequest(messages, {
         hint,
         text,
         skeleton: jsonSkeleton(text),
+        noteTail,
+        ...(noteRecall.available ? {} : { retrievalCommand }),
       });
 
       if (nextContent === undefined) nextContent = content.slice();
@@ -335,6 +487,9 @@ export function foldToolResultsForRequest(messages, {
           chars: text.length,
           contentFingerprint: `sha256:${createHash("sha256").update(text, "utf8").digest("hex").slice(0, 24)}`,
           placeholder: contentSummary,
+          // issue #741（additive，**只在真有值时出现**）：宿主能拿到同一条取回命令，不必解析占位符。
+          ...(retrievalCommand === undefined ? {} : { retrievalCommand }),
+          noteRecall: { available: noteRecall.available, reason: noteRecall.reason },
         });
       }
     }

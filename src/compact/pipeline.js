@@ -194,6 +194,11 @@ export function createCompactionStat({
   // 「被裁过多少」。只存小字段：摘要正文本身走轮记录 
   // `foldedFacts`，不进这里（#460 尺蠖）。
   foldSummary,
+  // issue #741（additive）：**归档夹断**丢掉的原文计数。`buildFoldedRecordArchive` 一直在算
+  // `droppedMessages` / `droppedBytes`，但这两个数此前只躺在轮记录的 `foldedPayloadMeta` 里，
+  // 既不进 `compaction` 事件也不进模型可见文本 ⇒ 「原文被丢了」这件事完整静默。
+  // 同一个键同时走事件 / `compactionStats` / `state.json`（下面 `normalizeCompactionStats` 会重建它）。
+  foldArchive,
 } = {}) {
   const stat = {
     compacted: compacted === true,
@@ -273,6 +278,25 @@ export function createCompactionStat({
     };
     if (Object.keys(projected).length > 0) stat.foldSummary = projected;
   }
+  // issue #741：归档丢弃量（additive，**只在真丢了东西时出现这个键**，口径同 `foldSummary`）。
+  // 不投影 `messages`/`bytes`：那两个是归档本体尺寸，`foldedPayloadMeta` 已有完整一份。
+  if (foldArchive !== null && typeof foldArchive === "object") {
+    const projectedArchive = {
+      ...(Number.isSafeInteger(foldArchive.droppedMessages) && foldArchive.droppedMessages > 0
+        ? { droppedMessages: foldArchive.droppedMessages }
+        : {}),
+      ...(Number.isSafeInteger(foldArchive.droppedBytes) && foldArchive.droppedBytes > 0
+        ? { droppedBytes: foldArchive.droppedBytes }
+        : {}),
+      ...(Number.isSafeInteger(foldArchive.capBytes) && foldArchive.capBytes > 0
+        ? { capBytes: foldArchive.capBytes }
+        : {}),
+      ...(Number.isSafeInteger(foldArchive.dedupedMessages) && foldArchive.dedupedMessages > 0
+        ? { dedupedMessages: foldArchive.dedupedMessages }
+        : {}),
+    };
+    if (Object.keys(projectedArchive).length > 0) stat.foldArchive = projectedArchive;
+  }
   return stat;
 }
 
@@ -297,6 +321,8 @@ export function normalizeCompactionStats(value, limit = COMPACTION_STATS_STATE_L
     // issue #464 A：`strategyName` 同样要过这道重建——runState / `state.json` 里那份是从上一份
     // 归一化副本再推导的，不在此列就会丢键，于是「事件里有、state 里没」与契约声称相反。
     strategyName: entry?.strategyName,
+    // issue #741：`foldArchive` 同样要过这道重建，否则「`compaction` 事件里有、`state.json` 里没」。
+    foldArchive: entry?.foldArchive,
     // issue #469-④：同样要过这道重建，否则「`compaction` 事件里有、
     // state 里没」。
     foldSummary: entry?.foldSummary,

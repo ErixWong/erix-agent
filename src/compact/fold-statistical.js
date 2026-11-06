@@ -11,8 +11,10 @@ import {
   cloneFoldPayload,
   collectTtlFoldStubs,
   DEFAULT_RECOVERY_HINT,
+  ENGINE_RECOVERY_HINTS,
   FOLD_STUB_LINE_PATTERN,
   foldOptions,
+  noteRecallFromMessages,
   optionValue,
   roundRangeForIndexes,
   resolveFoldStubs,
@@ -688,12 +690,14 @@ const FOLD_TITLE_INTERVAL_SENTENCES = [
  * `- 第 8–8 轮 · 工具足迹：无。需要原文请重读文件或查看持久笔记；关键值应当已落盘`）。
  *
  * 两把尺子都量：调用方给的 `recoveryHint`（`resolveRecoveryHint` 可能换成宿主自定义句）与
- * `DEFAULT_RECOVERY_HINT`（块可能是在默认提示下渲染的，而本次合并用的是自定义句）。
+ * 引擎自己可能渲染的默认句（`ENGINE_RECOVERY_HINTS`：有笔记证据那一句 + issue #741 的三条
+ * 未知口径变体。只剔 `DEFAULT_RECOVERY_HINT` 一句的话，块在未知口径下渲染、本次用自定义句合并
+ * ⇒ 合并标题里会留下整段未识别的默认句）。
  */
 function recoveryHintIndex(text, recoveryHint) {
   const value = String(text ?? "");
   let best = -1;
-  for (const hint of [recoveryHint, DEFAULT_RECOVERY_HINT]) {
+  for (const hint of [recoveryHint, ...ENGINE_RECOVERY_HINTS]) {
     if (typeof hint !== "string") continue;
     const needle = hint.trim();
     // 退化提示（一两个字符）会把 title 削得莫名其妙 ⇒ 不认它。
@@ -1203,7 +1207,10 @@ export function summarizeFoldedPayload(foldedPayload, options = {}) {
     inventory: toolCallInventory(payload),
     stubs,
     ...(options.navigationRecord === undefined ? {} : { navigationRecord: options.navigationRecord }),
-    recoveryHint: resolveRecoveryHint(options.recoveryHint),
+    recoveryHint: resolveRecoveryHint(
+      options.recoveryHint,
+      noteRecallFromMessages(payload, options.noteTools),
+    ),
     ...(options.anchors === undefined ? {} : { anchors: options.anchors }),
   });
 }
@@ -1256,6 +1263,8 @@ export function createFoldStatisticalStrategy(options = {}) {
         folded,
         retained,
         roundRange,
+        // issue #741：证据（工具面 + 账本）。`noteTools` 缺席 ⇒ 未知口径，不伪报「有笔记」。
+        noteTools: settings.noteTools,
       });
       // issue #564 缺口 1：TTL 句柄（`【已折叠·TTL】…` 首行）从被折负载里自己收，
       // 不依赖宿主传 `stubFor`（真机形态一个钩子都不给）。宿主显式 stub 接在后面。
