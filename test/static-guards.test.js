@@ -224,13 +224,25 @@ const RETIRED_ADAPTER_METHODS = Object.freeze([
 
 /**
  * 现役 TranscriptStore 的 API（事故里「有 recall 没有」的那一份名单，抄自 CHANGELOG 的 #257 条目）。
- * 用途只有两个：① 证明本规则的匹配器**不会误报现役名**；② 名单本身要能在 src/ 里查到，
- * 免得这份「反误报样本」自己腐化成编造。
  *
- * issue #739 补上三个漏项（#730 记账）：`loadRawRows`（#714 原始行读口，内置两个 store 都实现：
- * `src/store/memory.js` / `src/store/file.js`）、`loadByDedupKey` 与 `loadMaxRound`（#157 成对快路径
- * 探针：内置 store 不实现，但引擎侧 `src/store/append-user-turn.js` 探测并调它们，所它们是现役 API）。
- * 漏项本身不咬人（本名单只是反误报样本），但名单会腐化，所以补全并把出处写进注释。
+ * **它是什么**：一份**反误报样本**，不是「完整 API 真值」。它只被两条断言用：
+ * ① 证明退役名的匹配器**不会误报现役名**；② 名单本身要还能在 `src/` 里查到，免得这份样本自己腐化成编造。
+ * 第二条只验「名单里每个名字在源码里存在」，**不验完整性** ⇒ 未来新增一个方法而忘了登记，
+ * 本规则不会红（这是已知代价，不是 bug；要「漏项就红」得去抽真值，而那需要另一套机制）。
+ *
+ * **面内两种名字不同范围**（issue #739 独立评审点名要写清）：
+ * · `appendRound`/`load`/`markRunState`/`saveRunState`/`saveRunSnapshot`/`loadLatestRunSnapshot`/
+ * `loadRunState`/`loadRunStateStatus`/`saveCheckpoint`/`appendCheckpoint`/`loadLatestCheckpoint`/
+ * `loadRawRows` —— 这些是**内置 store 真返回的成员**（`src/store/memory.js` / `src/store/file.js`；
+ * `saveCheckpoint`/`appendCheckpoint`/`loadLatestCheckpoint` 是 issue #78 保留的 deprecated 别名），
+ * 宿主适配器如果装的是内置 store，`store.loadRawRows(...)` 这样的调用是现役的。
+ * · `loadByDedupKey`/`loadMaxRound` —— 这两个**不是**内置 store 返回对象的成员（内置 store 不实现），
+ * 它们是 #157 那对成对可选快路径探针：引擎侧 `src/store/append-user-turn.js` **探测并调用**它们
+ * （声明在 `src/store/message-rows.js` 的宿主面 JSDoc 里）。列在本名单里只因为「`.loadByDedupKey(`
+ * 这种写法在现役代码里合法」，不表示某个内置 store 导出这个名字。
+ *
+ * issue #739 补上这三个漏项（#730 记过账）。漏项本身不咬人（上面说了它不验完整性），但名单会腐化，
+ * 所以补全并把每一格的**范围**写在这。
  */
 const CURRENT_STORE_API = Object.freeze([
   "appendRound", "load", "markRunState", "saveRunState", "saveRunSnapshot", "loadLatestRunSnapshot",
