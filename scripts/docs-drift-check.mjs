@@ -8478,8 +8478,13 @@ const SELF_TEST_CASES = [
   {
     label: "#391 R4：README_cn 的 repl usage 行凭空多写一个旗标 ⇒ 红（双向：多也红）",
     // 靶点取 repl 行**末尾**（`[--require-deliverable [<path>]]` 在 chat 行里也出现一次，裸 replace 会打到 chat 上；
-    // issue #617 P2 给 repl 行末尾补了 delegate 三件套，靶点随之移到新的行尾）
-    overlay: { [README_CN]: (t) => t.replace("[--delegate-timeout-ms <n>]\nerix skills", "[--delegate-timeout-ms <n>] [--zzz-flag]\nerix skills", 1) },
+    // issue #617 P2 给 repl 行末尾补了 delegate 三件套，靶点随之移到新的行尾）。
+    // issue #716 / #719：repl 行末尾又多了 `[--no-agents]`，旧靶串（`… [--delegate-timeout-ms <n>]\nerix skills`）
+    // 不再连续 ⇒ 变异落不上 ⇒ 按 #210 R2「落不上算失败」报红。这是**文字合法变更后的正当跟随**（改的是锚点，
+    // 不是判据）。本轮把锚点从「一串旗标的逐字片段」换成**行边界**：插在 `\nerix skills` 之前 = 插在 repl usage
+    // 行的末尾，从此 repl 行再增删旗标也不会让这一枪脱靶；万一 repl 行不再紧邻 `erix skills`，它会打到别的行上
+    // 并因「多出 --zzz-flag」的期望不匹配而**报红**（失靶失响，不是静默变绿）。
+    overlay: { [README_CN]: (t) => t.replace("\nerix skills", " [--zzz-flag]\nerix skills", 1) },
     expect: [/cli-flags: README_cn\.md 的 `erix repl` usage 行多出 旗标 --zzz-flag/],
     expectFiles: [README_CN],
   },

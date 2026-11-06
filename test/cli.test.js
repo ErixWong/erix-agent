@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import { DEFAULT_REFLECTION_MIN_ROUNDS } from "../src/index.js";
 import {
@@ -129,7 +129,12 @@ test("CLI fake-provider golden keeps model-visible prompt, stub, and notice stab
   // issue #185：fixture 里记录的 dir 是钉死的 /tmp/erix-cli-golden，只作为比较占位；
   // 实际落盘改从 os.tmpdir() 取（前缀不复用 fixture 目录名，避免字符串前缀互相命中）。
   const dir = await makeTmp("erix-golden-run-");
-  const goldenDirs = [dir, fixture.input.dir];
+  // issue #716：项目约定注入默认开，而 `cwd` 缺省会取**进程目录**——在本仓里跑 `npm test` 时那就是
+  // 仓库根，它有一份 107 KiB 的 AGENTS.md ⇒ 系统提示会被注入，这份「0.31.0 缺省提示词」golden 当场失真。
+  // 所以给一个**空**临时目录当 cwd：这条用例的语义因此是「**没有**项目约定文件时，提示词逐字节不变」，
+  // 注入侧由 test/project-instructions-716.test.js 钉住（两条互补，不是二选一）。
+  const cwd = await makeTmp("erix-golden-cwd-");
+  const goldenDirs = [dir, cwd, fixture.input.dir];
   const notesDir = join(dir, "notes");
   const mcpConfigPath = await writeEmptyMcpConfig(dir);
   const provider = createFakeProvider([
@@ -145,6 +150,7 @@ test("CLI fake-provider golden keeps model-visible prompt, stub, and notice stab
   try {
     const result = await runChat({
       ...fixture.input,
+      cwd,
       dir,
       provider,
       configPath: mcpConfigPath,
@@ -161,13 +167,14 @@ test("CLI fake-provider golden keeps model-visible prompt, stub, and notice stab
       output: result.finalText,
     };
     assert.deepEqual(
-      normalizeGoldenEnvironment(actualModelVisible, resolve(process.cwd()), fixtureCwd, goldenDirs),
-      normalizeGoldenEnvironment(fixture.modelVisible, resolve(process.cwd()), fixtureCwd, goldenDirs),
+      normalizeGoldenEnvironment(actualModelVisible, cwd, fixtureCwd, goldenDirs),
+      normalizeGoldenEnvironment(fixture.modelVisible, cwd, fixtureCwd, goldenDirs),
     );
     assert.match(fixture.modelVisible.system, /\[工具输出归档\]/u);
     assert.match(fixture.modelVisible.output, /^stub=/u);
   } finally {
     await rm(dir, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true });
   }
 });
 

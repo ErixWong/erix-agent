@@ -180,6 +180,7 @@ src/
   run-state.js                     Bounded deterministic and semantic run state
   tokens.js                        Conservative token estimation
   tool-fact.js                     Tool-result fact contract: single builder + owner constant
+  project-instructions.js          Project instruction discovery: <cwd>/AGENTS.md only (no parent walk), bounded, truncated flag (issue #716)
   loop/                            # orchestration core
     orchestrator.js                runToolLoop main loop
     option-normalization.js        runToolLoop option whitelist, unknown-key suggestion, merge
@@ -831,8 +832,8 @@ headless runtime's product interface.
 ```text
 erix --version, -v
 erix --help, -h
-erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes] [--no-todo] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>]
-erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>]
+erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes] [--no-todo] [--no-agents] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>]
+erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--no-agents]
 erix skills [--skills-dir <path>]
 erix mcp [--config <path>]
 ```

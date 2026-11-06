@@ -742,7 +742,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/compaction-strategy-name.test.js` | 10 | `strategy`×8, `completion`×2 |
 | `test/loop-termination.test.js` | 12 | `completion`×6, `stallDetection`×5, `reflection`×1 |
 | `test/cli-idle-retry.test.js` | 11 | `retry`×5, `prompt`×3, `session`×3 |
-| `test/integration/no-todo-switch.test.js` | 11 | `prompt`×5, `session`×5, `tools`×1 |
+| `test/integration/no-todo-switch.test.js` | 15 | `prompt`×7, `session`×7, `tools`×1 |
 | `test/loop-final-guard.test.js` | 11 | `completion`×7, `reflection`×4 |
 | `test/cli-idle.test.js` | 10 | `prompt`×5, `session`×5 |
 | `test/compact/resume-fold-trim.test.js` | 9 | `strategy`×5, `resume`×3, `completion`×1 |
@@ -866,6 +866,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/compact/fold-llm-fail-661.test.js` | 2 | `resume`×1, `strategy`×1 |
 | `test/examples/erix-run-resume.test.js` | 19 | `resume`×17, `tools`×2 |
 | `test/guide-removal-gate.test.js` | 4 | `tools`×4 |
+| `test/project-instructions-716.test.js` | 4 | `prompt`×2, `session`×2 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 

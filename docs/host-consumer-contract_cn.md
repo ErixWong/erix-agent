@@ -1830,7 +1830,7 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 | 可选 run-state | `saveRunState`、`loadRunState`、`markRunState` | 跳过 run-state 持久化；run 正常跑完 |
 | 宿主面向的可选终态读取 | `loadRunStateStatus` | 引擎不调用、不校验；缺失不会发出 capability 降级事件 |
 | 可选预写快路径探针（issue #157） | `loadByDedupKey`、`loadMaxRound` | `appendUserTurn` 回退全量 `load`（成对生效：只实现其一等同全不实现） |
-| 可选原始行锚点探针（issue #714） | `loadRawRows` | 中段补桩只在 `load()` 的**折叠后**行上找锚点，于是已完成轮的首片行寻址不到：那些桩只修本次上下文，引擎如实报 `resume_journal_skipped`，而不是写一行会落进错消息的分片。**不发** `persistence_capability_degraded`——缺席由既有 `resume_journal_skipped` 通道按次恢复如实上报 |
+| 可选原始行锚点探针（issue #714） | `loadRawRows` | 中段补桩只在 `load()` 的**折叠后**行上找锚点，于是已完成轮的首片行寻址不到：那些桩只修本次上下文，引擎如实报 `resume_journal_skipped`，而不是写一行会落进错消息的分片。该轮载体**已带正文**时（issue #729）同样退回这一降级。**不发** `persistence_capability_degraded`——缺席由既有 `resume_journal_skipped` 通道按次恢复如实上报 |
 
 `loadRunStateStatus` 解析为终态**字符串**——`(runId: string) => Promise<string | undefined>`，
 该 run 未记录终态时返回 `undefined`——不是状态记录对象（与 `src/store/memory.js` /
@@ -1845,8 +1845,10 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 #### 可选原始行锚点探针（issue #714）
 
 `loadRawRows(runId) => Promise<RoundRecord[]>` 交出 **`load()` 读到的、尚未折叠的行**：
-同一批行、同一落盘顺序、同一内容——它**不**跑 `foldMessageRows`。它只是读口：不新增写路径，
-也不改变 `load()` 返回的形状。
+同一批行、同一落盘顺序、同一内容——它**不**跑 `foldMessageRows`。它与 `load()` 是**同一条读路径**
+（含尾部修复）：`loadRecords` 第一句就是 `repairTranscriptTail(path)`（`src/store/file.js`），
+以 `r+` 打开文件并把写了一半的尾行隔离/截断 ⇒ **一次读是可能改动盘上字节的**。它不做的两件事是：
+不新增写 API、不改变 `load()` 返回的形状。
 
 为什么要它。账本中段悬空的 `tool_use` 在恢复时由「每个未结清 id 一张桩 `tool_result`」补齐，
 桩落成一条**分片行**，`partOf` 指向那条聚合消息的**首片**（issue #430 的锚点纪律）。
@@ -1865,6 +1867,17 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 - **提供 ⇒ 闭合账本**：桩以分片行落账（`partOf` → 首片），该轮的 `seq` 地板取自原始行，
   已完成轮已有的 `seq` 永不被重用。下一次 `load()` 之后，聚合消息带着那张桩，
   `validateMessages(foldLedgerMessages(load()))` 通过——折叠形状留下的 `invalid_messages` 消失。
+- **该轮载体已带正文 ⇒ 不给锚点（issue #729）**：宿主把**折好的轮载体**（带 `messages` 那行）与
+  那一轮的**原始消息行**两份都留时（就是本文后面「折叠是公共 API，引擎兜了一层」（issue #401）
+  那节说的「两份都留」形状），探针**确实**找得到首片行，
+  但**不得**用它。在那里写桩会让折出来的正文与载体现有正文不等 ⇒ `foldMessageRows` 的 R3 守卫
+  不再命中 ⇒ 整轮正文再拼一遍（实测 3 条变 5 条，第二次恢复死在 `invalid_messages`）。所以引擎对
+  **已有带正文载体行**（`isRoundCarrier` 同形且 `messages.length > 0`）的轮次一律不给锚点，逐字
+  退回「探针缺席」那条降级：桩只修本次上下文，并发一条 `resume_journal_skipped`。
+  降级是**有意的答案**——一份翻倍的账比一份还开着的账更坏。
+- **候选行的 `round` 必须严格相等（issue #729）**：`round` 不是整数的行从来不是折叠目标，把桩锚在
+  它上面只会让桩落成孤儿 `user` 消息（`user tool_result has no matching assistant tool_use`，另一种
+  `invalid_messages`）。所以 `round` 不是安全整数的行永不当锚点。
 - 内置两个 store 都实现（`createMemoryTranscriptStore`、`createFileTranscriptStore`）；
   宿主最小实现可以不提供。
 

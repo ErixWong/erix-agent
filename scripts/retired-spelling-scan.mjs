@@ -356,7 +356,14 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 计到 1 处 use：`runId`——契约这里的 `runId` 是 **store 方法的入参**，与 `config.run.runId` 同名异义（它就在
   // `AMBIGUOUS_KEYS` 里，不进「退役拼写」判据，但计入本钉子的 uses）。同 #565 / #637 的先例：契约要能拄签名，
   // 不因躲钉子而改写法；数取自扫描器自己报的 `uses=443`。
-  "docs/host-consumer-contract.md": 443,
+  // 443 → 444（issue #729）：`loadRawRows` 那节新增两条边界（该轮载体已带正文 ⇒ 不给锚点 / 候选行 `round`
+  // 必须严格相等），其中「孤儿 `user` 消息」那句必须写出真实判词 `user tool_result has no matching assistant
+  // tool_use`——`user` 是消息角色，同名异义（`AMBIGUOUS_KEYS`），不进退役判据但计入本钉子的 uses。
+  // 同 #637 / #714 的先例：不为了躲钉子把判词改写成模糊说法。数取自扫描器自己报的（`--strict` 的 ✗ 行原文）：
+  //
+  //     ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=443  uses=444
+  //     ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=552  uses=553
+  "docs/host-consumer-contract.md": 444,
   // 565（片A，切版前补 #569/#568 文档）：CN 契约新增「折叠触发比例与会话续接块」一节，其中 provider 回调的
   // 真实键名 `runId`（`({runId, state, previous}) → {text, version}`）是一次同名异义命中——契约必须写出这个键名，
   // 所以**不为了躲钉子而改写成模糊说法**，按判据把钉子登记成扫描器报的值。EN 侧同一句已把 `context` 写成全路径
@@ -366,7 +373,9 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 549 → 550（issue #637）：同上一句的中文侧（`maxTokens` 一次），数取自扫描器自己报的 `uses=550`。
   // 551 → 552（issue #714，PR #723）：同 EN 侧那一句的中文侧（`store.loadRawRows(runId)` / `store.load(runId)`
   // 的入参名，同名异义），新增区间内扫描器计到 1 处 use；数取自它自己报的 `uses=552`。
-  "docs/host-consumer-contract_cn.md": 552,
+  // 552 → 553（issue #729）：同 EN 侧那一句的中文侧（`user tool_result has no matching assistant tool_use`
+  // 里的 `user`，消息角色，同名异义）；数取自扫描器自己报的 `uses=553`（✗ 行原文见上面 EN 那一格）。
+  "docs/host-consumer-contract_cn.md": 553,
 });
 
 /**
@@ -380,11 +389,18 @@ const CONTRACT_BODY_PINS = Object.freeze({
  * 登记两个文件（中英各一）：漏登一份就是 `UNPINNED`（有命中却没钉），写错路径就是 `DEAD-PIN`，
  * 两条都在红集合里。
  *
+ * 最近一次重登记（issue #716 / #719）：78→79 / 63→64。新增的那 1 处 `cwd`（`canonical:
+ * config.run.cwd`，`ambiguous: true`）来自两份 README 里新写的 `<cwd>/AGENTS.md` 那句——
+ * **同名异义**：那里的 `cwd` 指「当前工作目录」，不是退役的扁平选项键。按 #565 / #637 先例
+ * （main 上 `104c1f9` 那一笔：`loadRawRows` 签名里的 `runId` 是 store 入参，同样登记而不是改写法）
+ * **登记**，**不改写法**：把「`<cwd>/AGENTS.md`」改写成「项目根目录的 AGENTS.md」只是把扫描器的
+ * 一个假阳性搬到散文里，而那句要表达的正是「根就是 cwd」——改完反而说不清根是怎么来的。
+ *
  * @type {Readonly<Record<string, number>>}
  */
 const ROOT_DOC_BODY_PINS = Object.freeze({
-  "README.md": 78,
-  "README_cn.md": 63,
+  "README.md": 79,
+  "README_cn.md": 64,
 });
 
 /** 分类 → 钉子表。现状类没有钉子（它必须为 0）。 */
