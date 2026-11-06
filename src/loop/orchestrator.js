@@ -2880,22 +2880,47 @@ export async function runToolLoop(options) {
           : [snapshotPendingToolUse];
       return await persist(method, runId, {
         round,
-        status,
+        // issue #735 切片 1（写侧去冗余）：本格曾写 4 个零读者字段，现按**实跑复核**的口径分两档处
+        // 理（完整取证见 CHANGELOG 与工单评论）：
+        //
+        // **已停写（三面零读者，复核成立）**
+        // - `toolUse`：与 `pendingToolUse` 是同一次 `cloneState` 的**同址重复拷贝**（改造前两者逐字
+        //   相同），全仓无一个读侧取 `snapshot.toolUse`；恢复侧只走 `pendingToolUse` /
+        //   `pendingToolUses` 的 fallback（`src/loop/resume-manager.js`）⇒ **`pendingToolUse` 原样保留**。
+        // - `ts`：读侧处理的 `ts` 是**账本行**的 `ts`（`src/store/message-rows.js` 与
+        //   `resume-manager.js` 的 `record.ts`），不是快照这一格；快照级 `snapshot.ts` 零读者。
+        //
+        // **继续写出（工单说零读者，实跑复核**不是**，本切片不动它们）**
+        // - `status`：`test/` 下有 5 处真读者，且不是同一类噪声——`test/loop-persistence-phase.test.js`
+        //   把 `snapshot.status` 当**分辨是哪个调用点写下这条快照**的唯一指纹（#178 两通道分类的
+        //   守门用例全部钉在它上面）；`test/loop-invalid-arguments.test.js` 拿
+        //   `entry.status === "rejected"` 从真实写入里**造崩溃现场夹具**；`test/loop-v020-rc.test.js`
+        //   与 `test/persistence-diagnostics.test.js` 拿 `status === "executed"` 当注入失败的开关。
+        //   （`src/`+`bin/` 确实零读者：`src/store/file.js` 的 `persisted.status` 读的是
+        //   `<runId>.status.json` **另一个产物**。）
+        // - `compactionStats`：`test/compaction-observability.test.js` 从 `loadLatestCheckpoint()`
+        //   读它，断言「层详情透过 result / state / archive / **checkpoint** / events 五面露出」。
+        //   （`src/` 侧的恢复口径确实走 run-state 的 `deterministic.compactionStats`。）
+        //
+        // 处置口径：本切片只动**真零读者**的两格，不按「先停写再改用例来迁就实现」推进（工单
+        // 自己定的纪律）。`status` / `compactionStats` 要不要停，得先把上面那些用例的指纹换成
+        // 别的可用信号（属读侧/测试侧改造），留给后续切片。历史旧快照里这 4 格的存在仍然被读侧
+        // 容忍（未删任何 `?? ` fallback）；入参 `status` 保留（7 个调用点仍在传，签名不动）。
+        // `persistedTranscriptLength` 与 `messages` 属切片 2，本切片原样写出。
         pendingToolUse: cloneState(snapshotPendingToolUse),
-        toolUse: cloneState(snapshotPendingToolUse),
         pendingToolUses: cloneState(snapshotPendingToolUses),
         messages: cloneState(messagesOverride ?? messages),
         persistedTranscriptLength: runLoopState.persistedTranscriptLength,
         executedToolIds: [...executedToolIds],
+        status,
+        compactionStats: cloneState(compactionStats),
         toolResults: toolResults.map((toolResult) => ({
           toolUseId: toolResult.tool_use_id,
           toolResult: cloneState(toolResult),
         })),
         // 本 round 已归档的全量输出随 run snapshot 落盘，保证崩溃恢复后证据仍可核验
         toolOutputs: cloneState(archivedOutputs.filter((entry) => entry.round === round)),
-        compactionStats: cloneState(compactionStats),
         ...(partialText === undefined ? {} : { partialText, partialRound }),
-        ts: new Date().toISOString(),
       });
     } catch (error) {
       if (persistenceInfoFor(error) !== undefined) {
