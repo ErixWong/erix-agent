@@ -21,14 +21,29 @@ import path from "node:path";
 export const PROJECT_INSTRUCTIONS_FILENAME = "AGENTS.md";
 
 /**
- * 注入总字节上限（32 KiB）。超限**截断**并在返回值里报 `truncated: true`——不静默丢。
+ * 注入总字节上限（64 KiB = 65,536 字节）。超限**截断**并在返回值里报 `truncated: true`——不静默丢。
  *
  * 为什么要有上限：这段内容拼进 system，被 `markStablePrefix` 打上 `cacheBoundary` 后**常驻**
- * 每一轮请求（折叠只动 `messages`、不动 `mainSystem`）。一份 100 KiB 的约定文件会把上下文预算
- * 吃掉一大块——本仓自己的 `AGENTS.md` 就是 107 KiB，取 32 KiB 是「够读完一份正经约定」与
- * 「不把预算吃光」之间的折中。
+ * 每一轮请求（折叠只动 `messages`、不动 `mainSystem`）。一份超大约定文件会把上下文预算吃掉一大块：
+ * 本仓自己的 `AGENTS.md` 瘦身前是 112,464 字节，issue #726 之后实测 **32,698 字节**。
+ *
+ * 为什么是 64 KiB（issue #721 的裁决，两个加数都可现查，不是感觉）：
+ *   预算闸允许的两页上限之和 = 全局页 30,720 字节（`pi-tools:scripts/check-agents-budget.sh`）
+ *                            + 本仓页 33,792 字节（`scripts/agents-directive-scan.mjs` 的 `LENGTH_BUDGETS`）
+ *                            = **64,512 字节 ≤ 65,536 字节**，余量 **1,024 字节**。
+ *   今天两页实测合计 63,197 字节（全局 30,499 + 本仓 32,698）⇒ 抬完之后当前**全装得下，不再切尾**；
+ *   上限仍要留，因为预算闸还会继续放长。
+ *
+ * 旧值 32 KiB 为什么是缺陷（缺陷本体，不是审美）：它比预算闸**单页**允许的上限 33,792 字节还小，
+ * 于是「预算闸判合法的正文，注入面装不下」——本仓热层离旧上限只剩 70 字节，再长 71 字节就静默切尾，
+ * 而预算闸一路绿：两道闸互相不知道。今天它俩的关系由 `test/project-instructions-716.test.js` 里
+ * 那条「预算闸 ⇄ 注入上限」的用例钉住，不再靠人记得。
+ *
+ * 代价要如实说：`cacheBoundary` 之后这些字节每轮重发，模型侧没有前缀缓存时**全额重付**——按 issue #721
+ * 实测的 3.4 字节/token 折算，满额 65,536 字节 ≈ 19,275 tokens/轮。所以上限抬高必须与「截断对模型
+ * 可见」同片到账（`bin/system-prompt.js` 的 `buildProjectInstructionsSection`），见 issue #721。
  */
-export const PROJECT_INSTRUCTIONS_MAX_BYTES = 32 * 1024;
+export const PROJECT_INSTRUCTIONS_MAX_BYTES = 64 * 1024;
 
 /**
  * 按 UTF-8 码点边界截断：半个多字节字符会变成 U+FFFD 进模型视野（那不是截断，是伪造内容）。
@@ -54,12 +69,36 @@ function truncateToUtf8Boundary(buffer, limit) {
 }
 
 /**
+ * 从「截断点之后被丢弃的那半段」里抽出 **Markdown 小节标题**（`#` 一到六级）。
+ *
+ * 为什么在 `src/` 算而不是在 `bin/` 算：全文只有这里拿得到（`content` 是截断后的），而「丢了哪些
+ * 小节」正是 `bin/system-prompt.js` 要交给模型的那句话的内容。这是**只读事实**，不是截断策略：
+ * 本单**不改**「按小节边界切」那半边（issue #721 裁决明确砍掉），切在哪就是哪，这里只负责把后果报名。
+ *
+ * 口径要如实：名单只保证「**完整落在丢弃段里**的标题」。截断点落在某行标题中间时，那半行的残段
+ * 不构成一行标题 ⇒ 它不进名单（那种小节的前半截已随正文注入，本来就没全丢）。
+ *
+ * @param {Buffer} dropped 截断点之后的原始字节（已由 `truncateToUtf8Boundary` 对齐到码点边界）
+ * @returns {string[]} 按出现顺序的小节标题（未截断时为空数组）
+ */
+function droppedSectionTitles(dropped) {
+  if (dropped.length === 0) return [];
+  const titles = [];
+  for (const match of dropped.toString("utf8").matchAll(/^#{1,6}[ \t]+(\S[^\n]*)$/gmu)) {
+    const title = (match[1] ?? "").trim();
+    if (title !== "") titles.push(title);
+  }
+  return titles;
+}
+
+/**
  * @typedef {object} ProjectInstructionFile
  * @property {string} path 绝对路径（= `path.resolve(cwd)` + 文件名）
  * @property {string} content 注入的正文（已按上限截断）
  * @property {number} bytes 注入的字节数（截断后；`content` 的 UTF-8 长度）
  * @property {number} originalBytes 磁盘上的原始字节数
  * @property {boolean} truncated 这个文件是否被截断过
+ * @property {string[]} droppedSections 因截断而未进入注入的小节标题（未截断时为空数组，issue #721）
  */
 
 /**
@@ -69,6 +108,7 @@ function truncateToUtf8Boundary(buffer, limit) {
  * @property {number} originalBytes 原文总字节数
  * @property {boolean} truncated 是否有文件被截断
  * @property {number} limit 本次生效的字节上限（调用方可能覆盖缺省常量）
+ * @property {string[]} droppedSections 被截断丢弃的小节标题（按出现顺序；未截断时为空数组）
  * @property {{ path: string, code: string }[]} skipped 存在但读不了的文件（不进 `files`、不算注入）
  */
 
@@ -109,7 +149,15 @@ function errorCode(error) {
 
 /** @returns {ProjectInstructionsDiscovery} */
 function emptyDiscovery(limit = PROJECT_INSTRUCTIONS_MAX_BYTES) {
-  return { files: [], totalBytes: 0, originalBytes: 0, truncated: false, limit, skipped: [] };
+  return {
+    files: [],
+    totalBytes: 0,
+    originalBytes: 0,
+    truncated: false,
+    limit,
+    droppedSections: [],
+    skipped: [],
+  };
 }
 
 /**
@@ -160,6 +208,7 @@ export function discoverProjectInstructions({ cwd, maxBytes = PROJECT_INSTRUCTIO
 
   const injected = truncateToUtf8Boundary(buffer, limit);
   const truncated = injected.length < buffer.length;
+  const droppedSections = droppedSectionTitles(buffer.subarray(injected.length));
   return {
     files: [{
       path: filePath,
@@ -167,11 +216,13 @@ export function discoverProjectInstructions({ cwd, maxBytes = PROJECT_INSTRUCTIO
       bytes: injected.length,
       originalBytes: buffer.length,
       truncated,
+      droppedSections,
     }],
     totalBytes: injected.length,
     originalBytes: buffer.length,
     truncated,
     limit,
+    droppedSections,
     skipped: [],
   };
 }
