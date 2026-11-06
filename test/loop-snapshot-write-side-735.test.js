@@ -1,13 +1,16 @@
 // issue #735 切片 1 ·**run snapshot 写侧字段面**的常驻用例。
 //
 // 这一格测的是「引擎往 `saveRunSnapshot` 交的那份 payload 里**有哪些格**」，不是恢复行为。
-// 停写零读者字段的动机是写侧去冗余（同址重复拷贝 / 全仓无人读的格），而它的**唯一可观察面**
+// 停写零读者字段的动机是写侧去冗余（重复的等值副本 / 全仓无人读的格），而它的**唯一可观察面**
 // 就是这里——没有本文件，「停写」这件事与「手滑把格名写错一位」在测试里不可区分。
 //
 // ⚠ 口径与工单的差异（工单说 4 格零读者，实跑复核只有 2 格成立；不要「顺手」把另两格加进
-//   ABSENT 里，那会红 10 个既有守门用例）：
-//   · 已停写：`toolUse`（与 `pendingToolUse` 同一次 `cloneState` 的重复拷贝，全仓零读者）、
-//     `ts`（读侧那个 `ts` 是**账本行**的 `record.ts`，不是快照这一格）。
+//   ABSENT 里——四格全停时全套 `node --test` 会红一批既有守门用例，本文件不估精确例数，因为
+//   那个数属于「另两格也停」的那个切片，不属于这里）：
+//   · 已停写：`toolUse`（它与 `pendingToolUse` 是**两次独立 `cloneState()` 仍同一个源值**，内容等值
+//     但不同址；全仓无属性访问面读它）、`ts`（读侧那个 `ts` 是**账本行 / 消息行**的，不是快照这一格）。
+//     ⇒ 零读者的证据是**面**而不是名字：恢复侧读快照对象那一层只出现 `round` / `pendingToolUse(s)` /
+//     `toolResults` / `toolOutputs` / `executedToolIds` / `partialText(Round)` / `messages`，里面没这两格。
 //   · 仍写出：`status`（`test/loop-persistence-phase.test.js` 拿它当分辨调用点的唯一指纹、
 //     `test/loop-invalid-arguments.test.js` 拿 `status === "rejected"` 造崩溃现场夹具、
 //     `test/loop-v020-rc.test.js` / `test/persistence-diagnostics.test.js` 拿
@@ -15,13 +18,21 @@
 //     （`test/compaction-observability.test.js` 从 `loadLatestCheckpoint()` 读它）。
 //   另两格要停，得先给上面那些用例换指纹 —— 留给后续切片。
 //
+// ⚠ 本文件**不声称字节级**语义，除了那一条名字里写明「file store」的用例：过 memory store + 
+//   `deepEqual` 的那条证的只是**对象结构等值**（`assert/strict` 的对象比较本来就不看键序）。
+//   字节与键序由两条专用用例钉：file store 旧档字节往返、以及保留格的键序对账。
+//
 // `persistedTranscriptLength` 与 `messages` 属切片 2（前者有 3 处真读者当截账本夹具的 anchor），
 // 本切片原样写出，所以在 PRESENT 里。
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
+import { createFileTranscriptStore, safeRunId } from "../src/store/file.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
+import { makeTmp } from "./helpers/tmp.js";
 import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
@@ -95,7 +106,7 @@ test("#735 切片 1：写侧 payload 不再带 toolUse / ts 这两格零读者�
   }
 });
 
-test("#735 切片 1：有读者的格照旧写出（含与 toolUse 同址的 pendingToolUse）", async () => {
+test("#735 切片 1：有读者的格照旧写出（含与停写的 toolUse 同源的 pendingToolUse）", async () => {
   const { payloads } = await captureWriteSidePayloads();
   const payload = fullestPayload(payloads);
 
@@ -120,7 +131,8 @@ test("#735 切片 1：有读者的格照旧写出（含与 toolUse 同址的 pen
     );
   }
 
-  // `toolUse` 从前是 `pendingToolUse` 的**同址重复拷贝**：停写的正当理由是「无人读它」，
+  // `toolUse` 从前与 `pendingToolUse` 是从**同一个源值各自 clone 一份**（两次 `cloneState()` 调用，
+  // 内容等值但不同址）：停写的正当理由是「无人读它」，
   // 不是「它没值」。所以 `pendingToolUse` 必须仍是那份带 replay 声明的真值。
   const withPending = payloads.find((entry) => entry.pendingToolUse?.id === TOOL_BLOCK.id);
   assert.ok(withPending, "必须有一条快照带着在飞的 tool_use.id");
@@ -151,7 +163,7 @@ test("#735 切片 1：`status` 这格仍如实分辨调用点（本切片没动�
 
 // ── 历史旧快照兼容 + 新形状可读：停写不等于读侧停止容忍──────────────────────
 
-test("#735 切片 1：带着 toolUse / ts 的**旧**快照仍逐字可读（旧档不因新写侧形状而删格）", async () => {
+test("#735 切片 1：带着 toolUse / ts 的**旧**快照过内存 store 仍结构等值读回（对象值面，不是字节面）", async () => {
   const store = createMemoryTranscriptStore();
   // 一份 0.31 之前落盘的旧快照：那 4 格全在，外加恢复侧真正要的格。
   const legacySnapshot = {
@@ -171,10 +183,67 @@ test("#735 切片 1：带着 toolUse / ts 的**旧**快照仍逐字可读（旧�
   await store.saveRunSnapshot("legacy-snapshot-735", legacySnapshot);
 
   const loaded = await store.loadLatestRunSnapshot("legacy-snapshot-735");
-  assert.deepEqual(loaded, legacySnapshot, "store 层对旧快照必须逐字透传（不因新写侧形状而删格）");
+  // ⚠ 本例走的是 **memory store + deepEqual** ⇒ 它证的是**对象结构等值**（`assert/strict` 的对象比较
+  // 本来就不看键序），不是落盘字节。字节面由下面那条 file store 用例钉。
+  assert.deepEqual(loaded, legacySnapshot, "store 层对旧快照必须原样透传（不因新写侧形状而删格）");
   // 旧档的那两格还在 ⇒ 任何拿 `snapshot.toolUse` 兜底的宿主/旧读侧继续拿到它们，不被逆期改写。
   assert.deepEqual(loaded.toolUse, { ...TOOL_BLOCK, replay: "unsafe" });
   assert.equal(loaded.ts, "2026-01-01T00:00:00.000Z");
+});
+
+test("#735 切片 1：file store 上手写的旧档字节仍原样读回（真落盘面：那两格不被改写也不被删）", async () => {
+  // 这一条才托得起「旧档字节仍然可读」那句话：直接把手写的**旧形状 JSON** 落在 file store 的
+  // 快照路径上（模拟 0.31 之前落盘的那堆字节），再让读侧去读它。
+  const dir = await makeTmp("snap735-legacy-");
+  const store = createFileTranscriptStore({ dir });
+  const legacySnapshot = {
+    round: 1,
+    status: "executed",
+    pendingToolUse: { ...TOOL_BLOCK, replay: "unsafe" },
+    toolUse: { ...TOOL_BLOCK, replay: "unsafe" },
+    pendingToolUses: [{ ...TOOL_BLOCK, replay: "unsafe" }],
+    messages: [],
+    persistedTranscriptLength: 2,
+    executedToolIds: [TOOL_BLOCK.id],
+    toolResults: [],
+    toolOutputs: [],
+    compactionStats: [{ compacted: false, foldedRounds: 0 }],
+    ts: "2026-01-01T00:00:00.000Z",
+  };
+  const raw = `${JSON.stringify(legacySnapshot)}\n`;
+  const target = join(dir, `${safeRunId("legacy-file-735")}.snapshot.json`);
+  await writeFile(target, raw, "utf8");
+
+  const loaded = await store.loadLatestRunSnapshot("legacy-file-735");
+  assert.deepEqual(loaded, legacySnapshot, "旧档过 file store 必须原样读回");
+  assert.ok(loaded.toolUse !== undefined && loaded.ts !== undefined,
+    "已停写的两格在**旧档**里必须还在（停写只影响新写，不影响旧档）");
+  // 字节面：读侧不许改写盘上的旧档（这条是上面那条 deepEqual 给不了的）。
+  assert.equal(await readFile(target, "utf8"), raw, "旧档文件字节必须不被读侧改写");
+});
+
+test("#735 切片 1：保留格的**键序**不动（file store 直接 stringify ⇒ 键序是宿主可见的落盘字节）", async () => {
+  // 本片在 payload 上的净改动应当是「只删两行」。基点的键序（减去停写的 `toolUse` / `ts`）逐位对账；
+  // 把 `status` 或 `compactionStats` 换个位置就会在这里红。
+  const { payloads } = await captureWriteSidePayloads();
+  const expectedOrder = [
+    "round",
+    "status",
+    "pendingToolUse",
+    "pendingToolUses",
+    "messages",
+    "persistedTranscriptLength",
+    "executedToolIds",
+    "toolResults",
+    "toolOutputs",
+    "compactionStats",
+  ];
+  for (const payload of payloads) {
+    const keys = Object.keys(payload).filter((key) => key !== "partialText" && key !== "partialRound");
+    assert.deepEqual(keys, expectedOrder,
+      `写侧键序必须等于「基点键序 minus toolUse/ts」（基点 src/loop/orchestrator.js:2882-2899），实测 ${JSON.stringify(keys)}`);
+    assert.ok(!keys.includes("toolUse") && !keys.includes("ts"));
+  }
 });
 
 test("#735 切片 1：引擎亲笔写下的**新形状**崩溃现场（已无 toolUse / ts）照样能被 resume 消费", async () => {

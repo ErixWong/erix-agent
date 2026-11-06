@@ -217,60 +217,101 @@
   `erix chat --help` 打的那份）的 `--no-agents` 那一格同步写成 64 KiB 并点出有这句声明；repl 的帮助
   仍只列旗标不写字节上限，与改动前一致。
 - **The run snapshot stops writing two cells nobody reads (issue #735, slice 1).** `persistRunSnapshot`
-  built one payload with four cells whose reader count, re-measured by running the greps rather than
-  trusting the ticket, is zero on two of them: `toolUse` was a **second copy of the same `cloneState()`
-  call** as `pendingToolUse` (one write, two names, byte-for-byte identical — `grep -rn "snapshot.toolUse\b"`
-  over `src/` `bin/` `test/` answers zero, and the recovery path reads `pendingToolUses` with a
-  `pendingToolUse` fallback, `src/loop/resume-manager.js`, so `pendingToolUse` stays written and
-  untouched), and `ts` was a fresh `new Date().toISOString()` per write that **nothing** consumes — the
-  `ts` the read side does handle is the **ledger row's** `ts` (`src/store/message-rows.js`, and the row
-  object loaded by `src/loop/resume-manager.js`), a different artifact on a different surface. Read-side tolerance
-  for **old** snapshots is unchanged: no `?? ` fallback was deleted, so a snapshot written before this
-  change keeps every cell it carried (one case asserts an old snapshot round-trips byte-for-byte through
-  `loadLatestRunSnapshot`, `toolUse` and `ts` included), and the crash-site resume now demonstrably runs
-  on the engine's **own** new-shape snapshot — it replays the in-flight call from `pendingToolUses`, so
-  the replay chain provably never touched `toolUse`. The `status` argument stays in the signature: all
-  seven call sites still pass it. **The other two cells the ticket listed are not stopped, because they
-  do have readers** — that part of the ticket's premise did not survive measurement: `status` is read at
-  five `test/` sites (`test/loop-persistence-phase.test.js` uses `snapshot.status` as the **only**
-  fingerprint of which call site produced a given write — every #178 two-channel classification guard is
-  pinned to it; `test/loop-invalid-arguments.test.js` builds its crash fixture by selecting
-  `entry.status === "rejected"` out of real writes; `test/loop-v020-rc.test.js` and
-  `test/persistence-diagnostics.test.js` use `status === "executed"` as the switch that injects a failing
-  write), and `compactionStats` is read by `test/compaction-observability.test.js` through
-  `loadLatestCheckpoint()` to assert layer details surface through result / state / archive /
-  **checkpoint** / events. Stopping all four measured **10 red cases**; stopping only the two that really
-  are unread measures 0, so this slice ships 2 of 4 and retires the other two only after those cases get
-  a usable replacement fingerprint (read-side/test-side work, next slice). On the `src/`+`bin/` face the
-  ticket was right: `src/store/file.js`'s `persisted.status` reads `<runId>.status.json`, a **different
-  artifact** (`statusPath`), not this cell. `persistedTranscriptLength` and `messages` belong to slice 2
-  and are written verbatim here. Five new cases in `test/loop-snapshot-write-side-735.test.js` pin the
-  write-side field face; three mutations land on them — re-adding `toolUse`, re-adding `ts`, and
-  misspelling `pendingToolUses` by one character each turn cases red (the #210 R2 convention).
+  built one payload with four candidate cells; after re-measuring instead of trusting the ticket, two of
+  them really have no reader. `toolUse` was a **second, independent `cloneState()` call over the same
+  source value** as `pendingToolUse` (`cloneState(snapshotPendingToolUse)` written twice — equal content,
+  **different objects**, not one call aliased under two names). Its zero-reader evidence is a surface, not
+  a name: enumerate the fields the recovery path actually reads off the snapshot object
+  (`grep -rn "resumeRunSnapshot\(?:\?\)\." src/`) and the set is `round` / `pendingToolUse(s)` /
+  `toolResults` / `toolOutputs` / `executedToolIds` / `partialText` / `partialRound` / `messages` — neither
+  cell is in it; and `grep -rn "\.toolUse\b" src/ bin/` on the base `f6c2566` returns exactly one line
+  (`src/loop/orchestrator.js:2853`), which is the trailing dot of a `...toolUse` **spread**, not a property
+  access, so the real property-access surface is empty. (A naive `grep -rn "snapshot\.toolUse\b"` returning
+  nothing proves nothing: that literal does not exist anywhere on the base tree — a vacuous grep is the
+  trap this repository keeps falling into.) A reader on a *different* surface must not be miscounted:
+  `event.toolUse` is the diagnostic-event payload, `toolUseId` is a result-entry key. Recovery reads
+  `pendingToolUses` with a `pendingToolUse` fallback (`src/loop/resume-manager.js:386-388,538-541`), so
+  `pendingToolUse` stays written and untouched. `ts` was a fresh `new Date().toISOString()` per write that
+  nothing reads off the snapshot either — the `ts` the read side does handle belongs to the **ledger /
+  message rows** (`src/store/message-rows.js:114-115,326-328`, plus the row object loaded by
+  `src/loop/resume-manager.js`), a different artifact on a different surface. Read-side tolerance for
+  **old** snapshots is unchanged — no `?? ` fallback was deleted, the store layer passes objects through
+  untouched — and this is now asserted on two levels: a memory-store case (structural equality, which is
+  what `assert/strict` object comparison actually checks: it ignores key order) and a **file-store case
+  that hand-writes the old-shaped JSON to `<runId>.snapshot.json` and compares the bytes on disk after
+  reading**, so `toolUse` / `ts` survive in archives written before this change. The crash-site resume runs
+  on the engine's **own** new-shape snapshot and replays the in-flight call from `pendingToolUses`, so the
+  replay chain provably never touched `toolUse`. **Key order is preserved on purpose**: `src/store/file.js:523`
+  serializes with `JSON.stringify(snapshot)`, so key order is host-visible on-disk bytes and the net change
+  in that object literal is **two deleted lines** — a new case pins the surviving cells' order against the
+  base order minus the two stopped cells. The `status` **argument** and the signature are untouched; counted
+  by hand, the function has **7 call sites** (2 in `src/loop/orchestrator.js`, 5 in
+  `src/loop/run-snapshot-executor.js`), of which **5 pass a status explicitly** (`pending` at the
+  partial-persistence timer and the pre-tool checkpoint, `rejected`, `executed`, `intercepted`) and **2 rely
+  on the signature default `"pending"`** (`src/loop/run-snapshot-executor.js:343` before a tool,
+  `:544` before an intercept). **The other two cells the ticket listed are not stopped, because they have
+  readers** — that part of the ticket's premise did not survive measurement: `status` is read at five
+  `test/` sites (`test/loop-persistence-phase.test.js` uses `snapshot.status` as the **only** fingerprint of
+  which call site produced a given write — every #178 two-channel classification guard is pinned to it;
+  `test/loop-invalid-arguments.test.js` builds its crash fixture by selecting `entry.status === "rejected"`
+  out of real writes; `test/loop-v020-rc.test.js` and `test/persistence-diagnostics.test.js` use
+  `status === "executed"` as the switch that injects a failing write), and `compactionStats` is read by
+  `test/compaction-observability.test.js` through `loadLatestCheckpoint()` to assert layer details surface
+  through result / state / archive / **checkpoint** / events. Stopping all four was measured on this
+  slice's own tree: **10 pre-existing guard cases go red, plus 3 cases added here that assert those cells
+  are still present** (log `/tmp/wt735-fix/four-cells-stop.log`, tree = this branch's tip with the two
+  cells also removed); stopping only the two that really are unread measures 0 red, so this slice ships 2
+  of 4 and retires the other two only after those cases get a usable replacement fingerprint (read-side /
+  test-side work, next slice). On the `src/`+`bin/` face the ticket was right: `src/store/file.js`'s
+  `persisted.status` reads `<runId>.status.json`, a **different artifact** (`statusPath`), not this cell.
+  `persistedTranscriptLength` and `messages` belong to slice 2 and are written unchanged here.
+  **Seven** new cases in `test/loop-snapshot-write-side-735.test.js` pin the write-side field face, the
+  old-archive tolerance on both store implementations, and the key order; four mutations land on them —
+  re-adding `toolUse`, re-adding `ts`, misspelling `pendingToolUses` by one character, and moving `status`
+  out of its base slot each turn cases red, and re-adding `toolUse` is now also the standing sample **M18**
+  that `check:mutation:run` re-runs in CI (the #210 R2 convention).
 - **run snapshot 停写两格没有人读的字段（issue #735，切片 1）。** `persistRunSnapshot` 构造的那份
-  payload 里有 4 格被说成零读者，**实跑 grep 复核**后只有 2 格成立：`toolUse` 是 `pendingToolUse`
-  **同一次 `cloneState()` 的第二份拷贝**（一次写、两个名字、逐字相同——`grep -rn "snapshot.toolUse\b"`
-  扫 `src/` `bin/` `test/` 答案是零，而恢复侧读的是 `pendingToolUses` 配 `pendingToolUse` fallback，
-  `src/loop/resume-manager.js`，所以 `pendingToolUse` 原样保留不动）；`ts` 是每次写现取的
-  `new Date().toISOString()`，**无人消费**——读侧确实处理的 `ts` 是**账本行**的 `ts`
-  （`src/store/message-rows.js` 与 `src/loop/resume-manager.js` 读进内存的那一行账本），那是另一个产物、另一张面。
-  对**历史旧快照**的读侧容忍度没变：一个 `?? ` fallback 都没删，改动前落盘的快照照旧带着它当初写的
-  每一格（有一例断言旧快照过 `loadLatestRunSnapshot` 逐字往返，`toolUse` 与 `ts` 都还在），而崩溃现场
-  恢复现在是在**引擎自己写下的新形状**快照上跑通的——它从 `pendingToolUses` 补跑那条在飞调用，于是
-  「补跑链路从没碰过 `toolUse`」是被证出来的，不是被断言出来的。`status` **入参**留在签名里：
-  7 个调用点照旧在传。**工单点的另外两格没停，因为它们有读者**——工单那半边的前提没活过实测：
-  `status` 在 `test/` 有 5 处读者（`test/loop-persistence-phase.test.js` 把 `snapshot.status` 当
-  「这条写是哪个调用点产生的」**唯一**指纹——#178 两通道分类的守门用例全钉在它上面；
-  `test/loop-invalid-arguments.test.js` 靠从真实写入里挑 `entry.status === "rejected"` **造崩溃现场
-  夹具**；`test/loop-v020-rc.test.js` 与 `test/persistence-diagnostics.test.js` 拿 `status === "executed"`
-  当注入失败写的开关），`compactionStats` 被 `test/compaction-observability.test.js` 从
-  `loadLatestCheckpoint()` 读走，用来断言层详情「透过 result / state / archive / **checkpoint** / events
-  五面露出」。四格全停实测**红 10 例**，只停真零读者的两格实测红 0 例 ⇒ 本片交 2/4，另两格要等那些
-  用例换到可用的新指纹（读侧/测试侧的活）再退役。在 `src/`+`bin/` 这一面工单是对的：
-  `src/store/file.js` 的 `persisted.status` 读的是 `<runId>.status.json`，**另一个产物**（`statusPath`），
-  不是快照这一格。`persistedTranscriptLength` 与 `messages` 属切片 2，本片原样写出。
-  `test/loop-snapshot-write-side-735.test.js` 新增 5 例钉住写侧字段面；三个变异都落上——把 `toolUse`
-  改回写出、把 `ts` 改回写出、把 `pendingToolUses` 的字段名改错一位，各自让用例红（#210 R2 口径）。
+  payload 里有 4 格候选冗余，**不按工单口径、改成自己重测**之后只有 2 格真的无人读：`toolUse` 与
+  `pendingToolUse` 是**对同一个源值各自调一次 `cloneState()`**（`cloneState(snapshotPendingToolUse)`
+  写了两遍）⇒ 内容等值但**是两个对象**，不是「一次调用换个名字」。它的零读者证据是**面**而不是名字：
+  把恢复侧真正从快照对象上读的字段穷举出来（`grep -rn "resumeRunSnapshot\(?:\?\)\." src/`），集合是
+  `round` / `pendingToolUse(s)` / `toolResults` / `toolOutputs` / `executedToolIds` / `partialText` /
+  `partialRound` / `messages`——这两格都不在里面；而 `grep -rn "\.toolUse\b" src/ bin/` 在基点 `f6c2566`
+  上只命中 1 行（`src/loop/orchestrator.js:2853`），那是 `...toolUse` **展开运算符的末尾点号**、不是属性
+  访问，所以真的属性访问面为空。（拿 `grep -rn "snapshot\.toolUse\b"` 零命中当证据是无效的：这个字面串
+  在基点树上本来一处都不存在——「恒零的 grep 当证据」正是本仓反复栽的那一格。）也别把**另一张面**上的
+  命中算成读者：`event.toolUse` 是诊断事件载荷，`toolUseId` 是结果条目的键。恢复侧读的是
+  `pendingToolUses` 配 `pendingToolUse` fallback（`src/loop/resume-manager.js:386-388,538-541`）
+  ⇒ `pendingToolUse` 原样保留不动。`ts` 是每次写现取的 `new Date().toISOString()`，快照这一层同样没人读
+  ——读侧确实处理的 `ts` 属于**账本行 / 消息行**（`src/store/message-rows.js:114-115,326-328`，以及
+  `src/loop/resume-manager.js` 读进内存的那一行），另一个产物、另一张面。对**历史旧快照**的读侧容忍度
+  没变：一个 `?? ` fallback 都没删，store 层照原样透传对象，而且这件事现在有两层断言：一层走 memory store
+  （**结构等值**——`assert/strict` 的对象比较本来就不看键序，所以说它是字节相等是夸大）；另一层是
+  **file store 用例**，把手写的新形状之前那一版 JSON 直接落到 `<runId>.snapshot.json` 上，读回之后再比
+  **盘上的字节**，于是改动前落的旧档里 `toolUse` / `ts` 仍在是被字节面钉住的。崩溃现场恢复跑在**引擎自己
+  写下的新形状**快照上，它从 `pendingToolUses` 补跑那条在飞调用，于是「补跑链路从没碰过 `toolUse`」是被
+  证出来的。**键序是刻意保持的**：`src/store/file.js:523` 直接 `JSON.stringify(snapshot)` ⇒ 键序就是宿主
+  可见的落盘字节，所以那个对象字面量的净改动就是**删两行**；新增一条用例把保留格的顺序对着「基点键序减去
+  停写两格」逐位钉住。`status` 的**入参**与签名都不动：手数一遍，这个函数有 **7 个调用点**
+  （`src/loop/orchestrator.js` 里 2 个、`src/loop/run-snapshot-executor.js` 里 5 个），其中 **5 个显式传状态**
+  （partialPersistence 定时器与工具前写点传 `pending`，另有 `rejected` / `executed` / `intercepted`），
+  **2 个靠签名的默认值 `"pending"`**（`src/loop/run-snapshot-executor.js:343` 工具前、`:544` 拦截前）。
+  **工单点的另外两格没停，因为它们有读者**——工单那半边的前提没活过实测：`status` 在 `test/` 有 5 处读者
+  （`test/loop-persistence-phase.test.js` 把 `snapshot.status` 当「这条写是哪个调用点产生的」**唯一**指纹
+  ——#178 两通道分类的守门用例全钉在它上面；`test/loop-invalid-arguments.test.js` 靠从真实写入里挑
+  `entry.status === "rejected"` **造崩溃现场夹具**；`test/loop-v020-rc.test.js` 与
+  `test/persistence-diagnostics.test.js` 拿 `status === "executed"` 当注入失败写的开关），
+  `compactionStats` 被 `test/compaction-observability.test.js` 从 `loadLatestCheckpoint()` 读走，用来断言
+  层详情「透过 result / state / archive / **checkpoint** / events 五面露出」。四格全停这一条在本切片自己的
+  树上量过：**既有守门用例红 10 条，另有本片新增的 3 条**（它们断言的正是这两格还在）也红
+  （日志 `/tmp/wt735-fix/four-cells-stop.log`，树 = 本分支 tip 再把这两格删掉）；只停真零读者的两格实测红
+  0 条 ⇒ 本片交 2/4，另两格要等那些用例换到可用的新指纹（读侧/测试侧的活）再退役。在 `src/`+`bin/`
+  这一面工单是对的：`src/store/file.js` 的 `persisted.status` 读的是 `<runId>.status.json`，**另一个产物**
+  （`statusPath`），不是快照这一格。`persistedTranscriptLength` 与 `messages` 属切片 2，本片原样写出。
+  `test/loop-snapshot-write-side-735.test.js` 新增 **7 条**用例，钉住写侧字段面、两种 store 上的旧档容忍度
+  与键序；四个变异都落上——把 `toolUse` 改回写出、把 `ts` 改回写出、把 `pendingToolUses` 的字段名改错
+  一位、把 `status` 移出它原来的位置，各自让用例红；其中「把 `toolUse` 改回写出」已升成常驻样本 **M18**，
+  由 `check:mutation:run` 在 CI 里逐条重跑（#210 R2 口径）。
 
 
 ## [0.31.0] - 2026-11-04
