@@ -65,14 +65,15 @@ import {
   resolveDelegationDir,
 } from "./delegation.js";
 import {
-  buildArchiveNotice,
-  buildCliToolsSystemPrompt,
   createCliTools,
   filterToolsByAllowlist,
   purgeInactiveNoteScopes,
   resolveExecCeiling,
   wrapExecuteTool,
 } from "./tools.js";
+// issue #716：系统提示装配（含项目约定注入）与 `erix chat` 共用同一条路——两条边不再各抄一份。
+// 唯一差别是 `planDirective`：chat 末尾那句「每轮先声明计划」repl 没有（0.31.0 的现状）。
+import { buildCliSystemPrompt } from "./system-prompt.js";
 import { formatGuardMetrics } from "./guard-metrics.js";
 
 const DEFAULT_MAX_ROUNDS = 32;
@@ -83,7 +84,7 @@ const NON_TTY_MESSAGE =
   'repl 需要交互式终端，单次对话请用：erix chat "<prompt>"';
 
 const REPL_HELP_TEXT = `REPL 用法：
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--tools <逗号分隔工具名>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--tools <逗号分隔工具名>] [--no-agents]
   --session <id>        会话 ID（默认按工作目录自动派生）。repl 里它是**命名**：新名字直接开新会话；
                       注意 chat 的 --session 是续跑入口，id 不存在会报错（issue #168）
   --dir <path>          Transcript 存档目录（默认：~/.erix/transcripts）
@@ -258,6 +259,15 @@ export function parseReplArgs(argv, cwd = process.cwd(), home = homedir()) {
       }
       seenOptions.add(argument);
       options.finalGuard = argument === "--final-guard";
+      continue;
+    }
+    // issue #716：项目约定（`<cwd>/AGENTS.md`）注入**默认开**，与 chat 同一个旗标、同一个缺省。
+    if (argument === "--no-agents") {
+      if (seenOptions.has(argument)) {
+        usageError(`参数重复：${argument}`);
+      }
+      seenOptions.add(argument);
+      options.noAgents = true;
       continue;
     }
     // issue #617 P2：与 chat 同一个旗标、同一个缺省（**默认关**）。
@@ -662,16 +672,17 @@ export async function runRepl(argv, io = {}) {
     );
   }
 
-  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt({
+  const { systemPrompt, notice: projectInstructionsNotice } = buildCliSystemPrompt({
+    cwd,
     todo: !todoDisabled,
     delegate: delegateEnabled,
-  })}`;
-  systemPrompt += buildArchiveNotice(archiveDir);
-  if (mcpProxy?.enabled) {
-    systemPrompt += `
-
-MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=search query=关键词 查找工具；action=call server=... tool=... args=... 调用工具。`;
-  }
+    archiveDir,
+    mcpEnabled: mcpProxy?.enabled === true,
+    planDirective: false,
+    agents: options.noAgents !== true,
+  });
+  // 注入的留痕行：会话存档与 transcript 都不落 system，不打印这一行就没人能证明注入真的发生了。
+  if (projectInstructionsNotice !== null) writeLine(errorOutput, projectInstructionsNotice);
 
   const rl = createInterface({
     input,

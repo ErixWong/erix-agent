@@ -58,14 +58,14 @@ import {
   warnBuiltinToolConflicts,
 } from "./skills.js";
 import {
-  buildArchiveNotice,
-  buildCliToolsSystemPrompt,
   createCliTools,
   filterToolsByAllowlist,
   purgeInactiveNoteScopes,
   resolveExecCeiling,
   wrapExecuteTool,
 } from "./tools.js";
+// issue #716：系统提示装配（含项目约定注入）与 repl 共用同一条路——两条边不再各抄一份。
+import { buildCliSystemPrompt } from "./system-prompt.js";
 import { resolveChatSessionSelection } from "./sessions.js";
 import {
   createCliDelegation,
@@ -81,8 +81,8 @@ const DEFAULT_MAX_ROUNDS = 64;
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes] [--no-todo] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--tools <逗号分隔工具名>]  （交互式模式）
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes] [--no-todo] [--no-agents] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--tools <逗号分隔工具名>] [--no-agents]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
   （无参数直接进入交互式模式，等同 erix repl）
@@ -128,6 +128,8 @@ const HELP_TEXT = `用法：
                       同样**必须与 --final-guard 同用**，且与其他交付物判据合计 ≤ 20 条
   --no-notes            不装配 notes 工厂（note_* 工具不再可用），保留其他 skill
   --no-todo             彻底关闭 todo：内置 todo_* 四工具不注册、系统提示不含 todo、用户级 todo skill 一并排除
+  --no-agents           不注入项目约定：默认读 <cwd>/AGENTS.md 并拼进系统提示（**只读这一层**，
+                      不向上找父目录、不读 home），超过 32 KiB 截断；stderr 会打一行留痕
   --delegate            注册 delegate 工具（派生一个同进程子 run；**默认关闭**，issue #617）。
                       它是一个可运行的示例与验证器，不是 CLI 的新默认能力：子 run 是嵌套的真
                       runToolLoop（v1 不做子进程/守护进程），工具集**不含 delegate**（不递归派生），
@@ -481,6 +483,16 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       }
       seenOptions.add(argument);
       options.noTodo = true;
+      continue;
+    }
+    // issue #716：项目约定（`<cwd>/AGENTS.md`）注入**默认开**，`--no-agents` 显式关掉
+    // （与 `--no-todo` / `--no-notes` 同一张 seenOptions 去重）。
+    if (argument === "--no-agents") {
+      if (seenOptions.has(argument)) {
+        usageError(`参数重复：${argument}`);
+      }
+      seenOptions.add(argument);
+      options.noAgents = true;
       continue;
     }
     // issue #617 P2：派生工具**默认关**，`--delegate` 显式开启（照 `--no-todo` 的先例：单个
@@ -1037,6 +1049,10 @@ async function runChatWithNotes({
   tools: toolsAllowlist,
   noNotes = false,
   noTodo = false,
+  // issue #716：项目约定（`<cwd>/AGENTS.md`）注入默认**开**，`--no-agents` 关掉。
+  // `noticeLog` 是留痕行的写出口（io 缝，不是旗标）：测试注入它来断言「注入真的发生了」。
+  noAgents = false,
+  noticeLog = (line) => console.error(line),
   // issue #617 P2：派生工具（**默认关**）与它的三个旋钮。
   // `delegationDir` / `delegateNotify` 是给测试与嵌入方留的口（不是新旗标）。
   delegate = false,
@@ -1272,19 +1288,19 @@ async function runChatWithNotes({
   });
   const onJudge = appendJudgeLogRecord;
 
-  let systemPrompt = `你是 erix 编码助手，工作目录 ${cwd}。${buildCliToolsSystemPrompt({
+  // issue #716：装配收进 `bin/system-prompt.js`（与 `erix repl` 同一份实现）。差别只有两处：
+  // chat 末尾多一句「每轮先声明计划」；项目约定注入默认开、`--no-agents` 关。
+  const { systemPrompt, notice: projectInstructionsNotice } = buildCliSystemPrompt({
+    cwd,
     todo: !todoDisabled,
     delegate: delegateEnabled,
-  })}`;
-  systemPrompt += buildArchiveNotice(archiveDir);
-  if (mcpProxy?.enabled) {
-    systemPrompt += `
-
-MCP 代理工具 mcp 可用：action=list 列出所有 MCP 工具；action=search query=关键词 查找工具；action=call server=... tool=... args=... 调用工具。`;
-  }
-  // 2026-09-20 基准实测：模型直接闷头调工具、计划不可见导致 judge 难判方向——
-  // 每轮先一句话声明计划再动手。
-  systemPrompt += "\n\n每轮开始先用一句话（≤30字）说明当前计划，再调用工具。";
+    archiveDir,
+    mcpEnabled: mcpProxy?.enabled === true,
+    planDirective: true,
+    agents: noAgents !== true,
+  });
+  // 注入的留痕行：transcript 不落 system，不打印这一行就没人能证明注入真的发生了。
+  if (projectInstructionsNotice !== null) noticeLog(projectInstructionsNotice);
 
   // issue #498 S5：这一块按**规位**书写（数据 ⇒ `config.*`、宿主回调 ⇒ `capabilities.hooks.*`、
   // 交付物判据 ⇒ `capabilities.checks.deliverables`、壳内端口 ⇒ `capabilities.ports.*`）。

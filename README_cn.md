@@ -131,6 +131,7 @@ src/
   run-state.js                     有界的确定性与语义运行状态
   tokens.js                        保守的 token 估算
   tool-fact.js                     工具事实契约面（单一构造器 + 字段归属常量）
+  project-instructions.js          项目约定发现：只读 <cwd>/AGENTS.md（不上溯父目录），有字节上限与截断标记（issue #716）
   loop/                            # 编排核心
     orchestrator.js                runToolLoop 主循环
     option-normalization.js        runToolLoop 选项白名单、未知键建议与选项合并
@@ -554,8 +555,8 @@ onEvent
 ```text
 erix --version, -v
 erix --help, -h
-erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes] [--no-todo] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>]
-erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>]
+erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes] [--no-todo] [--no-agents] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>]
+erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--no-agents]
 erix skills [--skills-dir <path>]
 erix mcp [--config <path>]
 ```
