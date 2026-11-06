@@ -87,7 +87,7 @@ that gate owns. Do not skip the third column: every trap it names has bitten thi
 | `npm run check:agents-directives` | this page: status claims, expiring measurements, bare coordinates, **the byte budget** | editing `AGENTS.md`/`AGENTS_cn.md` ⇒ read `docs/maintenance/command-reference.md#check-agents-directives` |
 | `npm run types:build` | generates the published `src/**/*.d.ts` | touching a host-facing signature ⇒ read `docs/maintenance/command-reference.md#type-surface` |
 | `npm run check:types-build` | the declarations still generate and carry the entry symbols | same ⇒ read `docs/maintenance/command-reference.md#type-surface` |
-| `npm run check:types` | the `--checkJs` error-count ratchet | touching `src/` ⇒ read `docs/maintenance/command-reference.md#type-ratchets` |
+| `npm run check:types` | the `--checkJs` error-count ratchet (`--with-tools`: baseline **138** / 28 files) | touching `src/` ⇒ read `docs/maintenance/command-reference.md#type-ratchets` |
 | `npm run check:mutation` | the committed mutation-sample table against the tree | editing `test/mutation-samples.md` ⇒ read `docs/maintenance/command-reference.md#check-mutation` |
 | `npm run check:mutation:run` | the samples actually bite (mutate → red → restore → green) | same ⇒ read `docs/maintenance/command-reference.md#check-mutation` |
 | `npm run check:exports` | who consumes each exported name — **no gate, no judgement**; three entries incl. `test/contract/`, plus an `internal-only` tier (`scripts/export-consumer-check.mjs`) | removing an export ⇒ read `docs/maintenance/command-reference.md#check-exports` |
