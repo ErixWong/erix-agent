@@ -34,7 +34,7 @@ import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { appendUserTurn } from "../src/store/append-user-turn.js";
-import { PENDING_TOOL_RESULT_TEXT } from "../src/loop/pending-tool-result.js";
+import { PENDING_TOOL_RESULT_TEXT, UNPERSISTED_TOOL_RESULT_TEXT } from "../src/loop/pending-tool-result.js";
 import {
   RESUME_NOTICE_NO_PENDING,
   RESUME_NOTICE_PENDING_HEADER,
@@ -392,4 +392,76 @@ test("#736 判据 3：崩溃现场同时被快照认出 ⇒ 补跑（B 集合）
     "补跑已经产出真结果 ⇒ 尾部结清必须是空操作（桩不得再占同一个 id）");
   assert.ok(blocksOf(sent.slice(-1)).some((block) => block?.type === "text"
     && String(block.text).includes("怎么样了？")));
+});
+
+// 评审（#736 独立评审）留下的唯一缺口：既有「同时被快照认出」那格只有**单个** `tool_use`，
+// 而 `resume-manager.js` 里 `midSequenceSettledIds` 那格过滤（把「本进程马上要产出真结果」的
+// A/B 两批并进已结清集合）在单调用形状下**删掉也不会红**——实测删掉后 id 数照样是 2、
+// `validateMessages` 照样过，只是 `t2` 的**真**结果被一张中段桩顶掉（模型被告知「结果没落盘、
+// 结局未知」，而引擎刚刚真的跑出来了）。这一格钉的就是那个顶替：断言面不能只数 id。
+test("#736 评审补格：崩溃行带**两个** tool_use（`t1` 已入账、`t2` 待补跑）⇒ `t2` 必须是补跑的真结果，不许被中段桩顶掉", async () => {
+  const RUN_ID = "b736-two-calls-one-settled";
+  const store = createMemoryTranscriptStore();
+  await store.appendRound(RUN_ID, {
+    round: 0, roundKey: `${RUN_ID}:round:0`, dedupKey: `${RUN_ID}:engine:round:0:seed`,
+    messages: [userText("任务")], ts: new Date().toISOString(),
+  });
+  await store.appendRound(RUN_ID, {
+    round: 1, roundKey: `${RUN_ID}:round:1`, dedupKey: `${RUN_ID}:engine:round:1`,
+    messages: [], ts: new Date().toISOString(),
+  });
+  // 崩溃行：一条聚合 assistant 带**两个** tool_use
+  await store.appendRound(RUN_ID, {
+    round: 1, kind: "message", seq: 0, dedupKey: `${RUN_ID}:msg:1:0`,
+    messages: [{ role: "assistant", content: [text("一次发两个"), toolUse("t1"), toolUse("t2")] }],
+    ts: new Date().toISOString(),
+  });
+  // `t1` 的结果已入账，`t2` 的永远不会来（崩溃在 `t2` 执行之前）
+  await store.appendRound(RUN_ID, {
+    round: 1, kind: "message", seq: 1, dedupKey: `${RUN_ID}:msg:1:1`,
+    messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "out-t1" }] }],
+    ts: new Date().toISOString(),
+  });
+  // 快照认得出在飞的 `t2` ⇒ `crashSiteRound` 为真 ⇒ B 集合 = [t2]
+  await store.saveRunSnapshot(RUN_ID, {
+    ...staleSnapshot(RUN_ID),
+    pendingToolUse: toolUse("t2"),
+    pendingToolUses: [toolUse("t2")],
+  });
+
+  const executed = [];
+  const { provider, outcome } = await resumeOnce({
+    store,
+    runId: RUN_ID,
+    executeTool: async ({ id }) => {
+      executed.push(String(id));
+      return `replayed-${String(id)}`;
+    },
+  });
+  assert.ok(outcome.ok, JSON.stringify(outcome));
+  assert.deepEqual(executed, ["t2"], "只有未结清的 `t2` 进补跑段（`t1` 已结清，不得重跑）");
+
+  const sent = provider.requests[0].messages;
+  const ids = blocksOf(sent).filter((block) => block?.type === "tool_result").map((block) => block.tool_use_id);
+  assert.deepEqual(ids, ["t1", "t2"],
+    `每个 id 恰好一个结果（不许出现重复 id 的 tool_result），实际：${JSON.stringify(ids)}`);
+
+  // 同页合并（#421 纪律）：两个结果并排落在**紧随**那条双 `tool_use` assistant 的那条 user 页上
+  const assistantIndex = sent.findIndex((message) => message?.role === "assistant"
+    && blocksOf([message]).filter((block) => block?.type === "tool_use").length === 2);
+  assert.ok(assistantIndex >= 0);
+  assert.deepEqual(blocksOf(sent.slice(assistantIndex + 1, assistantIndex + 2))
+    .filter((block) => block?.type === "tool_result")
+    .map((block) => block.tool_use_id), ["t1", "t2"],
+    "两个结果必须在同一条聚合 user 消息里、且紧跟那条 assistant");
+
+  assert.equal(String(resultsFor(sent, "t1")[0].content), "out-t1",
+    "`t1` 的必须是**账本里那条**真结果，没被桩顶掉");
+  assert.equal(String(resultsFor(sent, "t2")[0].content), "replayed-t2",
+    "`t2` 的必须是补跑产出的**真**结果 —— 这是本格的全部要点：删掉 `midSequenceSettledIds` 里"
+    + "「马上要产出真结果」那一格过滤时，id 数照样对、校验器照样过，只有这条会红（桩顶掉了真结果）");
+  assert.ok(!String(JSON.stringify(sent)).includes(UNPERSISTED_TOOL_RESULT_TEXT),
+    "上下文里不许出现**中段**桩（「执行过但结果没落盘」）—— 结果刚刚被跑出来了");
+  assert.ok(!String(JSON.stringify(sent)).includes(PENDING_TOOL_RESULT_TEXT),
+    "上下文里也不许出现**尾部**桩（「从未执行」）");
 });

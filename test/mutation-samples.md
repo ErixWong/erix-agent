@@ -73,8 +73,9 @@
 | M18 | #735 run snapshot 的**写侧字段面**：零读者的 `toolUse` 不许回到 payload（把这一格改回写出 ⇒ 「断言它缺省」那格红；同时 `pendingToolUse` 消失，恢复侧拿不到在飞调用） | `src/loop/orchestrator.js` | 2922 | `4bb8ac6de4c7` | 1 | `        pendingToolUse: cloneState(snapshotPendingToolUse),` | `        toolUse: cloneState(snapshotPendingToolUse),` | `test/loop-snapshot-write-side-735.test.js` | `不再带 toolUse / ts 这两格零读者字段` |
 | M19 | #736 崩溃现场的**识别源**：边界必须能从账本推出，不许退回「只认快照」（退回 ⇒ #734 那次写失败的正是快照本身，悬空 `tool_use` 落回中段，每次请求在出网前被本地校验器拒掉） | `src/loop/resume-manager.js` | 528 | `b222bba7fc79` | 1 | `      if (crashSiteRound \|\| ledgerBoundary !== null) {` | `      if (crashSiteRound) {` | `test/loop-resume-ledger-crash-boundary.test.js` | `夹具：陈旧快照 + 宿主预写行盖住崩溃现场` |
 | M20 | #736 边界的**后半归属判据**：崩溃行之后只许出现结果行 / 宿主预写行 / 引擎控制行（去掉这一半 ⇒ 崩溃前已落盘的引擎正文也被当成尾队列，#425 那条「尾行判引擎 ⇒ 零请求」的边界一起被推翻） | `src/loop/resume-manager.js` | 171 | `e8692e686616` | 1 | `      if (!isPostCrashEntry(entries[tail], tail)) return null;` | `      if (false) return null;` | `test/loop-ledger-crash-boundary.test.js` | `边界：崩溃行之后混进崩溃` |
+| M21 | #736 中段桩的**排除集**：马上要补跑出真结果的 id 不许再被桩占（去掉 B 集合那一格 ⇒ `t2` 的真结果被「结果没落盘、结局未知」的桩**顶掉**：id 数照样对、本地校验器照样过，只有这条会红 ⇒ 断言面不能只数 id） | `src/loop/resume-manager.js` | 705 | `c0700f4d6e7c` | 1 | `      for (const pendingTool of ctx.resumePendingTools) {` | `      for (const pendingTool of []) {` | `test/loop-resume-ledger-crash-boundary.test.js` | `评审补格：崩溃行带` |
 
-**合计 20 条样本 / 10 个目标文件 / 16 个捕获者**
+**合计 21 条样本 / 10 个目标文件 / 16 个捕获者**
 
 > 单元格里的 `\|` 是**转义的竖线**：markdown 表格里写不出裸 `|`（会把整行拆成多列），所以 M6 锚点里的
 > `||` 存成 `\|\|`，脚本读的时候还原成 `||`。这条转义回环由 `--self-test` 的第 ㉒ 例钉住（不转义 ⇒
