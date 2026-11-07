@@ -1291,6 +1291,49 @@
   对着没动的 **138**），于是 `AGENTS.md` / `AGENTS_cn.md` 改成 27 与 29，而基线常量与 `--checkJs`/`--strict`
   的语义一个字都没碰（issue #730）。
 
+- **`erix_run`'s steer channel never reached the inner run on the production path: the default `runJob` wrapper
+  dropped the hook (issue #753, C2 follow-up).** `start()` hands the turn-boundary hook to `runJob` in its
+  **second** argument (`steerHookDeps(job)` → `opts.nextUserTurn`), and `createAsyncRuntime`'s **default** `runJob`
+  — the one used whenever no `runJob` is injected, which is exactly what production is: `erix-run.ts` builds its
+  runtime with only `registry / sendRegistry / sessionHandles / notify` — translated `opts` into `runErixRun`'s
+  deps by forwarding four optional keys, `runId` / `resumeTarget` / `signal` / `onProgress`. `nextUserTurn` was not
+  among them, so `runErixRun`'s own `typeof deps.nextUserTurn === "function"` guard never fired and the engine never
+  saw a hook. The breakage was silent **by construction**: `action:"steer"` returned `steerPending: 1`, nothing
+  errored, the artifacts were complete, and the terminal view still reported the queue — the real-upstream run ended
+  with `steerPending: 1` while the product said `STEER-ACK: NONE`. The forwarding now has the same shape as its
+  neighbours (`...(opts.nextUserTurn === undefined ? {} : { nextUserTurn: opts.nextUserTurn })`): not passed ⇒ no
+  extra key, so the synchronous face still installs no hook at all. **Why the all-green existing suite missed it**:
+  every cell of `test/examples/erix-run-steer.test.js` injected a fake `runJob`, pinning only `start() → runJob`,
+  while the cells that exercise the real `runToolLoop` call `core.runErixRun` directly and never enter this wrapper
+  ⇒ the production seam `default runJob → runErixRun` had no coverage at all. The new guard injects **no** `runJob`
+  and goes offline through seams core already owns (`loadLib` / `loadSlot` / `createProvider` / `createAssembly` /
+  `createStore`), asserting on facts rather than on "the hook was called": `steerPending` returns 1 → 0, and the
+  steered sentence shows up as a `role:"user"` turn inside the request the fake provider received. Reverse proof on
+  that cell: delete the forwarding line ⇒ red **on the `steerPending` assertion** (reported `实际=1`), with the
+  sentence absent from every request and `diagnostics.steer` never created at all; put it back ⇒ green, terminal
+  `diagnostics.steer = {offered:3, injected:1, rejected:0, lastRound:2}`. **Optional-key reconciliation** (checked
+  key by key, written into the report): `start()` puts five keys on that second argument (`signal` / `onProgress` /
+  `runId` / `resumeTarget` / `nextUserTurn`) and `sync()` puts three (`signal` / `onProgress` / `runId: undefined`)
+  — after this fix the wrapper forwards every one of them, and `nextUserTurn` was the only one it dropped.
+- **`erix_run` 的 steer 通道在生产路径上从没到过内层 run：默认 `runJob` 包装层把钩子丢掉了（issue #753，C2 后续）。**
+  `start()` 把轮边界转向钩子放在 `runJob` 的**第二个参数**上（`steerHookDeps(job)` ⇒ `opts.nextUserTurn`），而
+  `createAsyncRuntime` 的**默认** `runJob`（没注入 `runJob` 时用的就是它，而 `erix-run.ts` 建生产 runtime 时只传
+  `registry / sendRegistry / sessionHandles / notify`，所以生产用的正是它）把 `opts` 翻译成 `runErixRun` 的 deps 时
+  只转了 `runId` / `resumeTarget` / `signal` / `onProgress` 四个可选键——`nextUserTurn` 不在里面。于是
+  `runErixRun` 那句 `typeof deps.nextUserTurn === "function"` 永远不成立，引擎那一侧从没见过钩子。这个坏法是**构造出来的沉默**：
+  `action:"steer"` 返回 `steerPending: 1`、不报错、产物不缺、终局视图还报着那个队列——真上游那一跑以
+  `steerPending: 1` 收场，产物里写的是 `STEER-ACK: NONE`。现在那一行的转发形状与旁边的可选键逐字一致
+  （`...(opts.nextUserTurn === undefined ? {} : { nextUserTurn: opts.nextUserTurn })`）：没递就**不多一个键**，
+  同步面照旧一个钩子也不装。**为什么全绿的既有用例抓不到它**：`test/examples/erix-run-steer.test.js` 每一格都注入了假
+  `runJob`，钉的是 `start() → runJob` 那一段；而跑真 `runToolLoop` 的那几格直接调 `core.runErixRun`，**不经过这层包装**
+  ⇒ 生产接缝 `默认 runJob → runErixRun` 一格覆盖都没有。新加的守网**不注入 `runJob`**，只经 core 已有的离线缝
+  （`loadLib` / `loadSlot` / `createProvider` / `createAssembly` / `createStore`），断言落在事实上而不是「钩子被调过」：
+  `steerPending` 从 1 回到 0，且那句话以 `role:"user"` 轮的身份出现在假 provider 收到的请求里。反向证：删掉那行转发
+  ⇒ 红在 `steerPending` 那一断言（报「实际=1」），同时那句话在任何一次请求里都找不到、`diagnostics.steer` 根本不生成；
+  加回来 ⇒ 绿，终局 `diagnostics.steer = {offered:3, injected:1, rejected:0, lastRound:2}`。**可选键对账**（逐字核过写进报告）：
+  `start()` 往第二参放五个键（`signal` / `onProgress` / `runId` / `resumeTarget` / `nextUserTurn`），`sync()` 放三个
+  （`signal` / `onProgress` / `runId: undefined`）——修完之后默认包装层把它们**全部**转发，之前漏的就是 `nextUserTurn` 这一个。
+
 ## [0.31.0] - 2026-11-04
 
 ### Breaking

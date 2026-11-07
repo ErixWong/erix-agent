@@ -428,6 +428,7 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | 队列长度 | `steerPending` **恒在场**（没 steer 时是 `0`，不是缺键），入队 +1、被取走 -1 | `jobView` ⇒ `action:"status"`/`"result"` 与盘上 `status.json`（两面同形） |
 | 注入账目 | `diagnostics.steer = {offered, injected, rejected, lastRound}`（引擎的账，本层只**原样透传**） | 同步终局载荷与异步三面**同形**；文本面也有（`steer=offered:…` / `steer：offered=…`） |
 | 进度旁证 | 入队与取走各打一行进度（从 `progressTail` 看得出「那句真被取走了」） | `job.progress` |
+| **送进内层的接缝** | `start()` 把钩子放在 `runJob` 的**第二个参数**上（`steerHookDeps(job)` ⇒ `opts.nextUserTurn`），而 `createAsyncRuntime` 的**默认** `runJob`（没注入时用的就是它，生产也是它）必须把这个键**照其余可选键同形转发**给 `runErixRun` 的 deps：漏一个键 = 整条 steer 通道默默失效 | `erix-run-jobs.js` 的默认包装层；守网是 `test/examples/erix-run-steer.test.js` 里那格**不注入 `runJob`**、只经 core 已有 deps 缝跑真 `runToolLoop` 的用例（见下面「生产接缝」） |
 
 #### 拒绝面：三种收不到，全都不谎称已投递
 
@@ -451,6 +452,25 @@ pi --extension ./examples/pi-extension/erix-run.ts
   `test/examples/erix-run-steer.test.js` 把账本行与事件序列逐字比了一遍）。
 - **不新增 `bin/` 依赖**（「边界：不得依赖 `bin/`」那一节仍然成立）：新能力走的是 `src/` 公共面已有的
   `capabilities.hooks.nextUserTurn`，本层没加 `config.*` 叶，也没加超时旋钮（钩子是同步的）。
+
+#### 生产接缝：默认 `runJob` 必须逐键转发 `nextUserTurn`（#753 C2 的落地缺陷）
+
+钩子不是直接交给引擎的，它是 `runJob` **第二个参数**上的一个键。所以中间多了一层翻译：
+`createAsyncRuntime` 没被注入 `runJob` 时，自己拿 `runErixRun` 包了一层，把 `opts` 翻成 core 的 deps。
+**生产走的就是这一层**（`erix-run.ts` 建 runtime 只传 `registry / sendRegistry / sessionHandles / notify`），
+而这层最初只转 `runId` / `resumeTarget` / `signal` / `onProgress` —— `nextUserTurn` 被丢在包装层里。
+它的坏法是沉默的：`act({action:"steer"})` 回 `steerPending:1`、零报错、产物不缺、终局视图还报着队列，
+而内层 run 一次也没被问过（真上游实测：终局 `steerPending:1`，产物写 `STEER-ACK: NONE`）。
+
+**为什么既有用例抓不到它**：每一格都注入了假 `runJob`（钉的是 `start() → runJob`），而跑真 `runToolLoop` 的那几格
+直接调 `core.runErixRun`，**不经过这层包装** ⇒ 生产接缝 `默认 runJob → runErixRun` 零覆盖。
+守网因此只有一种写法有效：**不注入 `runJob`**，只经 core 已有的离线缝（`loadLib` / `loadSlot` /
+`createProvider` / `createAssembly` / `createStore`），而且断言要落在**事实**上（`steerPending` 从 1 回到 0、
+那句话真的作为 `role:"user"` 轮出现在假 provider 收到的请求里），不能只验「钩子被调过」。
+反向证：删掉那行转发 ⇒ 红在 `steerPending` 断言（报「实际=1」）；加回 ⇒ 绿，终局 `diagnostics.steer`
+报 `offered/injected/rejected/lastRound` 四个数。**可选键对账**：`start()` 放五个键
+（`signal` / `onProgress` / `runId` / `resumeTarget` / `nextUserTurn`）、`sync()` 放三个
+（`signal` / `onProgress` / `runId: undefined`），默认包装层现在**逐个都转**；漏的只有 `nextUserTurn`。
 
 ### 5. `timeoutMs` 定时器归 run 级（不在 `execute()` 里）
 
