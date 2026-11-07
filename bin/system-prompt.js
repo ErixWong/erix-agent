@@ -22,7 +22,7 @@ import {
 } from "../src/project-instructions.js";
 // issue #746：笔记可用性的判定住在 `src/`（#741 的证据原点）。方向是 **bin ← src**（AGENTS.md §1
 // 允许的那一侧）：`bin/` 可以 import `src/`，`src/` 永远不许反过来 import `bin/`。
-import { hasNoteToolSurface, noteRecallHint } from "../src/loop/note-prompt-hint.js";
+import { hasNoteToolSurface } from "../src/loop/note-prompt-hint.js";
 import { noteToolNamesOnSurface } from "../src/loop/tool-result-ttl.js";
 import { buildArchiveNotice, buildCliToolsSystemPrompt } from "./tools.js";
 
