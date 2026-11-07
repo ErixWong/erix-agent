@@ -10,6 +10,7 @@ import { estimateMessageTokens } from "../src/tokens.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createModelConfigResolver } from "../src/config/static.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { journalSnapshotBodyRows } from "./helpers/journal-crash-body.js";
 
 function toolResponse(id = "tool-1", name = "work", input = {}) {
   return {
@@ -539,6 +540,10 @@ test("checkpoints before tools and resumes without replaying an executed tool", 
       },
     }],
   });
+  // issue #754 裁决 2：夹具原本是 pre-261021 形状（那条带 `tool_use` 的 assistant **只在** `checkpoint.messages`
+  // 里，账本只有一条 round 0）。恢复现在只从账本重建 ⇒ 把那条正文写成账本消息行。结果照旧**不落账**
+  // （`aggregates: "drop"`）——「没入账、从快照复放」正是本格要断的东西（`metadata.resultSources === "replayed"`）。
+  await journalSnapshotBodyRows(resumeStore, "resume-checkpoint", { aggregates: "drop" });
   let executions = 0;
   const resumedProvider = createFakeProvider([
     { content: [{ type: "text", text: "resumed" }], stopReason: "end_turn" },

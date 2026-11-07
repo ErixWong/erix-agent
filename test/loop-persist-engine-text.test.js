@@ -25,6 +25,7 @@ import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { makeTmp } from "./helpers/tmp.js";
+import { journalSnapshotBodyRows } from "./helpers/journal-crash-body.js";
 
 const text = (value) => ({ type: "text", text: value });
 const toolUse = (id) => ({ type: "tool_use", id, name: "work", input: { step: id } });
@@ -313,6 +314,11 @@ test("#326 续（方向提示·resume flush）：store.load() 全部行里**恰�
       toolResult: { type: "tool_result", tool_use_id: "a", content: "done-a" },
     }],
   });
+
+  // issue #754 裁决 2：夹具是 pre-261021 形状（崩溃轮那条 assistant 只在快照的 `messages` 里）⇒ 把正文
+  // 写成账本消息行；`a` 的结果**不落账**（本格要的是「从快照复放 + 补跑 b」这条活路径，而本格断的是
+  // 「带 marker 的行恰有一条」，是**条数**判据，与正文/告示指纹无关）。
+  await journalSnapshotBodyRows(store, runId, { aggregates: "drop" });
 
   // `executedToolIds: ["a"]` 给 `judgeInterceptCount` 播种（resume-manager），于是补跑 b 时
   // intercept 立刻开审 ⇒ 提示在 resume 补跑段入队，由 resume 路径的 flush 点发出。
