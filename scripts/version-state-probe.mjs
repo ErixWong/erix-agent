@@ -442,6 +442,36 @@ function buildSelfTestSeed(hostSrc) {
     fail(`宿主树 ${hostSrc} 的 CHANGELOG 里只有 ${next} 这一个已发布段 ⇒ 合成种子没有「上一版」这个基准`,
       "SEED_UNREADABLE");
   }
+  // ── issue #731 C7：让「摘掉高于本版的段」这一格**不是空转** ──────────────────────────────
+  // 配方第 3 步在今天这棵树上恰好无事可做：`next` 就是最高的**已发布**段，比它高的段一个都没有
+  // ⇒ `dropSectionsAbove` 实测返回空数组，那三十行代码在主分支上从来没真的执行过，坏了也没人红。
+  // 所以这里先往种子里插一段**更高的未发布段**，再让**真函数**去摘它：一次跑同时钉住两件事——
+  //   · 摘得掉（更高段确实进了摘除清单）；
+  //   · 只摘它（摘完之后与插入前**逐字节**一致，没有顺手多删一行）。
+  // 这一段跑在 `assert` 那套记账之前（种子在所有宿主之前建，`problems` 还在 TDZ），所以失败走 `fail()`：
+  // 种子建不出来，后面每一例都无从跑起，比记一条问题更诚实。
+  const seedChangelog = path.join(seed, "CHANGELOG.md");
+  const beforeInjection = readFileSync(seedChangelog, "utf8");
+  const canary = `${Number(next.split(".")[0]) + 1}.0.0`;   // 一定高于 `next`（主版本号 +1）
+  const seedLines = beforeInjection.split("\n");
+  const topAt = seedLines.findIndex((line) => /^##\s/u.test(line));
+  if (topAt === -1) {
+    fail(`${seedChangelog} 里找不到任何 \`## \` 标题 ⇒ C7 那一段更高的未发布段无处可插（配方第 3 步只能空转）`,
+      "SEED_UNREADABLE");
+  }
+  seedLines.splice(topAt, 0, `## [${canary}]（未发布 / unpublished）`, "", "- 自测插进来的更高一段（issue #731 C7），必须被整段摘掉", "");
+  writeFileSync(seedChangelog, seedLines.join("\n"), "utf8");
+  const droppedCanary = dropSectionsAbove(seed, next);
+  const afterDrop = readFileSync(seedChangelog, "utf8");
+  if (!droppedCanary.includes(canary) || afterDrop !== beforeInjection) {
+    fail(`自测插进去的更高段没被摘干净（canary=${canary}，实测摘除清单 ${JSON.stringify(droppedCanary)}，`
+      + `摘完之后${afterDrop === beforeInjection ? "与插入前一致" : "与插入前**不**一致"}）`
+      + " ⇒ 配方第 3 步（`dropSectionsAbove`）坏了：它今天在主分支上是空转，坏掉也从来没人红",
+      "SEED_UNREADABLE");
+  }
+  console.log(`         [C7] 先塞一段更高的未发布段 ${canary} 再让真函数摘：摘除清单 ${JSON.stringify(droppedCanary)} · `
+    + "摘完之后与塞之前逐字节一致 ⇒ 这一格不是空转");
+
   const dropped = dropSectionsAbove(seed, next);
   setVersion(seed, next);
   stampReleaseState(seed, { published: previous, date: null });
