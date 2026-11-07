@@ -386,9 +386,9 @@
   steered at all (that tool call is blocking, so nobody can hand it a steer), which is now stated in the tool
   description, the schema and both READMEs. No new `bin/` dependency (the "must not depend on bin/" boundary
   holds: the capability comes from `src/`'s public `capabilities.hooks.nextUserTurn`), no `config.*` leaf, no
-  timeout knob (the hook is synchronous). Six new tests in `test/examples/erix-run-steer.test.js` (TAP total
-  3057 → 3063, booked in `test/test-suite-baseline.json`); the no-steer cell diffs the two runs' ledger rows and
-  event sequences byte for byte.
+  timeout knob (the hook is synchronous). Six new tests in `test/examples/erix-run-steer.test.js` (registered TAP
+  total 3670 → measured 3683, booked in `test/test-suite-baseline.json`); the no-steer cell diffs the two runs'
+  ledger rows and event sequences byte for byte.
 - **`erix_run` 能在轮边界转向一个还在跑的后台 run：`action:"steer"`（issue #753，C2 扩展面切片）。** C1 开的
   槽位现在接到工具上了：`erix_run(action:"steer", runId, message)` 把那句话 push 进该 job 的**内存 FIFO 收件箱**，
   内层 `runToolLoop` **每个轮边界只取一条**（其余等下一个边界；队列空时钩子回 `null`）。`runErixRun` 现在把
@@ -410,7 +410,7 @@
   **父会话**的投递口——投递对象、时机、账目都不同。同步（非 `async`）那一路根本没法 steer（那次工具调用正阻塞着，
   没人能递给它），这件事现在写进了工具描述、schema 与两份 README。**没新增 `bin/` 依赖**（「不得依赖 `bin/`」那条
   边界仍成立：能力来自 `src/` 公共面已有的 `capabilities.hooks.nextUserTurn`），没加 `config.*` 叶，没加超时旋钮
-  （钩子是同步的）。`test/examples/erix-run-steer.test.js` 新增六条用例（TAP 总数 3057 → 3063，已登记进
+  （钩子是同步的）。`test/examples/erix-run-steer.test.js` 新增六条用例（登记的 TAP 总数 3670 → 实测 3683，已登记进
   `test/test-suite-baseline.json`）；没 steer 那一格把两个 run 的账本行与事件序列逐字比了一遍。
 
 
