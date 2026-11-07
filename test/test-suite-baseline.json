@@ -3,12 +3,26 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3618,
+    "tests": 3619,
     "fail": 0,
     "maxSkipped": 15
   },
   "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
   "observations": [
+    {
+      "date": "2026-11-07",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "d68a0b0（CHANGELOG 中英先记第 5 轮要补的三个洞）+ 本笔登记（同一提交带 `test/docs-no-overclaim-735.test.js` 的三处修补）；分支 fix-261107-09-snapshot-round-residue，基点 main=bea46bb；六个计数取自这一棵树上现跑的 npm test（日志 /tmp/gate-r5-test.log）",
+      "branch": "fix-261107-09-snapshot-round-residue",
+      "tests": 3619,
+      "pass": 3606,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests 3618 → **3619**（+1，有意的增加；没删例、没新增 skip、没放宽断言，`src/` `bin/` `docs/` 一行未动）：第 5 轮评审三条 BLOCK 全是守卫自己的洞，`test/docs-no-overclaim-735.test.js` 新增 **G7 三个洞的自证**（meta 句不算事实句 / 整句假主张包进反引号照扫 / 每一处命中各自取句窗判豁免），并把三处判定本身改掉：① G2 的「在场」改为**逐命中取句窗 + 排除谈守卫自己的 meta 句**（`META_MARKER`：判据 / 禁语 / 必须逐字留着 / 肯定式 / 条件禁 / is banned / restat… —— 第 4 轮的形状是同一条目里描述守卫的那句逐字复述了判据要求的句子 ⇒ 事实句被改写后 G2 仍全绿，即自证循环）；② `stripInlineCode` 从「剥掉所有行内代码」收窄成**术语级**（片段不含句读且 ≤ 60 字符才算引用，否则留在扫描面）；③ `scan()` 由非全局 `match` 改成 `matchAll` **全局**，`realHits()` 逐命中取句窗、逐命中判「撤回标记」豁免（顺带把 `retract\\w*` 补进撤回标记，并给禁语加了「提及 vs 使用」的 meta 句豁免，替换掉第 4 轮那把大刀）。对照实证：同一处变异（把 CHANGELOG 事实句「`anchor` 是……这个**标量**，不是……位图」改写成「这个值」）在**第 4 轮那份守卫**上是 `7 pass / 0 fail`，在第 5 轮的守卫上是 `not ok 3 · G2` 红。RED 三条（全部 `cp` 备份 + `md5sum` 还原后复绿 8/8）：① 事实句改写成「这个值」⇒ `not ok 3 - G2` 缺 `scalar-not-bitmap`；②a 整句假主张包进反引号 ⇒ `not ok 2 · G1` + `not ok 4 · G3`，命中 `cn-prefix-already-journaled` / `cn-anchor-cap` / `cn-quantified-prefix-all`；②b 只引一个术语 `按构造` ⇒ `exit=0`（引用仍算引用）；③ 已撤回那句之后追加「恢复锚点封顶仍然成立。」⇒ `not ok 2 · G1` 命中 `cn-anchor-cap`（第 4 轮只取首命中，这一处被遮蔽 ⇒ 绿）。`fail=0`；`skipped=13`（≤ maxSkipped 15，成员与上一笔逐字同：4 条类型棘轮自证 + 9 条真上游 / 网络门）；`todo=0`、`cancelled=0`；tests = pass + fail + skipped = 3619。"
+    },
     {
       "date": "2026-11-07",
       "env": "local",
