@@ -6,6 +6,96 @@
 ### Breaking
 
 ### Changed
+- **The real-upstream tool-fact e2e got a new observation face for its "the engine never rewrites history"
+  claim (issue #760, tests only — no behaviour change).** `examples/tool-fact-e2e.test.mjs` judged that claim
+  on the run snapshot's `messages` cell, which used to be `cloneState(messages)` — a verbatim copy of the
+  engine's in-memory context. Since the round-residue write side that cell no longer carries the restored
+  prefix, so on a resumed run every snapshot (6-8 of them) was missing the legacy `tool_result` slot and
+  `F9b` red on "探针没盖上要判的那一段" while every other cell stayed green: the judgement had gone blind,
+  the engine had not regressed. The in-memory half now reads the **store read boundary** of the very store
+  instance the engine uses: each restored `tool_result` block is instrumented in place (object identity
+  preserved, JSON bytes unchanged) and frozen at the boundary, so reads are counted, **plain assignment of an
+  existing key** is swallowed and booked by the accessor setter, while **adding / deleting / redefining a key throws on the
+  spot** (`Object.freeze`) — the three booking slots are a backstop, not the primary mechanism. `F9b` then requires **zero in-place rewrites** *and* a presence fact (the block was seen at the
+  boundary and really read, identity key included) — without the presence half, "zero rewrites" stays green
+  while the probe watches nothing, which is the same class of false green. A literal `new Proxy(block)` is
+  **not** installable at this boundary: the engine runs `cloneState(ctx.messages)` = `structuredClone` on
+  every provider attempt (`src/loop/provider-runner.js:242` → `src/loop/budget.js:12`), and `structuredClone`
+  throws `DataCloneError` on any Proxy, so the probe would kill the run before the judgement — pinned by an
+  `assert.throws` inside `F9b`. What the accessor face alone does **not** catch (the earlier wording "covered
+  by the key set + verbatim JSON" was wrong — that only holds for keys that already exist at the boundary): a
+  key **added and then removed before the probe is read** — that slot never had an accessor to trap it, and the
+  final key set and the verbatim JSON both come back identical, so a rewrite that really happened leaves zero
+  trace. `Object.freeze` on the restored blocks and their nested objects (that class only, not the whole
+  message graph) closes it. **By mechanism, not by wishful labelling (round-2 review caught the first wording
+  as out of step with the code)**: the accessor setter only ever accounts for **plain assignment of a key that
+  already exists** (`b.duration = 9999`) — it does not throw because the key is an accessor by then and
+  `Object.freeze` does not change an accessor's `[[Set]]` semantics, so the write is swallowed and booked;
+  whereas **adding a key, deleting a key and `defineProperty`-overwriting a probed slot throw directly from
+  `freeze`** (not extensible / not configurable). Consequence stated plainly: `addedKeys` / `lostKeys` /
+  `replacedKeys` are structurally **empty in the frozen world** — those three assertions are backstops for a
+  world where the freeze did not land, not evidence that the engine behaved. Both mechanisms are kept because
+  each covers the other's blind spot: freeze alone would turn an ordinary existing-key assignment into a crash
+  with no record of *which* key and *from what to what*, and would also lose the read counters the presence
+  assertion feeds on; accessors alone leave the add-then-delete transient at zero trace. The transient now
+  throws at the "add", never reaching the "delete". Both halves of that claim are measured: freezing does not disturb the engine
+  (real upstream 3/3 green — legitimate rewrites happen on `cloneState()` copies, which the freeze never
+  reaches), and the transient mutation (`block.erix = {}; delete block.erix;` on the restore path) dies with
+  `TypeError: Cannot add property erix, object is not extensible` at `src/loop/resume-manager.js:414`. `F9b`
+  keeps permanent versions of both (the observed blocks must be frozen; a transient add-then-delete on one must
+  throw), so the closed hole cannot quietly reopen.
+  Round 2 closed a second self-deception: `target` could be **impersonated by any other frozen object** —
+  `Object.isFrozen` / `Object.isExtensible` pass for every frozen object, so they never proved "this *is* the
+  observed block" (reviewer's adjacent negative control: swap `target` for `Object.freeze({})` and the real
+  upstream suite stayed 3/3 green; the earlier `target: undefined` red came from the *transient* matcher, not
+  from an identity assertion). The record now carries its identity and its origin (**which store read face** returned
+  *this* object — provenance is face-level, **not** one entry per call) and `F9b` cross-checks them; a new always-run, offline cell pins five
+  negative controls, each of which must redden **on the assertion that owns it** (tagged `[identity]` /
+  `[origin]` / `[presence]` / `[frozen]` / `[transient]`), including the reviewer's frozen-empty-object
+  impostor, `target: undefined`, a same-shape stand-in that this face never returned, a face the engine does
+  not walk, and a wholly idle probe — plus a reverse confirmation that the freeze/transient pair cannot smell
+  an impostor, so identity must not be delegated to it. Reverse proof: injecting `block.erix = {}` on the restore
+  path reddens `F9b` naming `erix`; removing it greens the suite 3/3. The write side itself is untouched and `F9b` now asserts
+  the residue shape as a fact (snapshots exist, the legacy slot is absent from them, `null` residue slots
+  are present), so a later revert of the write side is caught here instead of silently un-blinding the probe.
+
+- **真上游工具事实 e2e 的「引擎不回写历史」这一判换了观察面（issue #760，纯测试改动，行为不变）**。原先它读 run
+  snapshot 的 `messages` 那一格（曾经是引擎内存上下文的逐字副本）；写侧改成轮残余之后那一格不再带恢复进来的
+  正文，恢复那次每一份快照都取不到旧块 ⇒ `F9b` 红在「探针没盖上要判的那一段」，而其余格子全绿——**瞎的是探针，
+  不是引擎**。内存半边现在改在**引擎真正使用的那个 store 实例的读边界**上判：恢复出来的每个 `tool_result` 块
+  就地换 accessor 并**冻结**（对象身份不变、JSON 字节不变）：读被计数，**已有键的普通赋值**被 setter 吞下来记账（不抛），
+  **加新键 / 删已有键 / `defineProperty` 覆盖**被 `Object.freeze` **当场挡下**（抛 `TypeError`）；`F9b` 因此同时
+  要求「**零次就地改写**」和一条**在场断言**（这块确实穿过读边界且真被读过）——少了在场那一半，探针空转时
+  「零次改写」照样绿，正是本片要防的那类假绿。这里**装不上**字面的 `new Proxy(块)`：引擎每次请求都
+  `cloneState(ctx.messages)`（= `structuredClone`，见 `src/loop/provider-runner.js:242` →
+  `src/loop/budget.js:12`），而 `structuredClone` 对任何 Proxy 抛 `DataCloneError`，装了就是探针先打死被测——
+  这一条由 `F9b` 里的 `assert.throws` 钉住。反向证：在恢复路径上临时补一次 `block.erix = {}` ⇒ `F9b` 红并点名
+  `erix`；撤掉 ⇒ 3/3 绿。写侧一个字节没动，且 `F9b` 现在把那个残余形状本身钉成事实（快照在场、旧块不在其中、
+  残余空位在场），这样将来谁把写侧改回去也会在这里红，而不是让探针悄悄复明。accessor 面**自己**兜不住的一类
+  （原先登记的「键集合 + 逐字 JSON 兜住」说法是**错的**，那只对边界上已有的键成立）：**新增一个键、又在收针前
+  删掉**的瞬态——那一格在边界上本没有 accessor 可拦，终态键集合与逐字 JSON 都回到原样 ⇒ 一次真发生过的就地写入
+  零痕迹。`Object.freeze`（只冻恢复出来的 `tool_result` 旧块及其嵌套对象，不冻整张消息图）把这一类关掉：accessor
+  先装 ⇒ 已有键的赋值仍走 setter 照记；**加键 / 删键在严格模式下当场抛** ⇒ 瞬态抛在「加」那一下，不给「删回来」的
+  机会。**按实际机制重写（二轮评审指出上一版措辞与代码行为不符）**：accessor setter 只记一类——**已有键的
+  普通赋值**（`b.duration = 9999` 这类），它**不抛**，因为键那时已是 accessor，而 `Object.freeze` 不改变 accessor
+  的 `[[Set]]` 语义 ⇒ 写入被吞下来记账；而**加新键 / 删已有键 / `defineProperty` 覆盖探针格子这三类是 freeze
+  当场抛**（不可扩展 / 不可重定义），不是 setter 记下的。后果直说：在冻住的世界里 `addedKeys`/`lostKeys`/
+  `replacedKeys` **结构性恒空**，那三条断言是「没冻上」时的兜底，不是「引擎很规矩」的证据。两类机制都留着，
+  因为各挡各的盲区：只 freeze ⇒ 一次普通的已有键赋值退化成一崩了之，拿不到「改了哪个键、从什么改成什么」的
+  现场，连读次数（在场断言的依据）也没了；只 accessor ⇒ 加了又删的瞬态零痕迹。两半都实测过：冻上之后引擎不受打扰（真上游 3/3 绿——合法改写发生在 `cloneState()` 的副本上，冻不到），
+  而瞬态变异（恢复路径上 `block.erix = {}; delete block.erix;`）当场 `TypeError: Cannot add property erix,
+  object is not extensible`（栈顶 `src/loop/resume-manager.js:414`）。`F9b` 里留了这两条**常驻**判据（观察到的块
+  必须是冻住的；在它上面加了又删必须抛），关掉的洞不会再悄悄张开。
+  二轮还关掉第二个「自己糊弄自己」：`target` 可以被**另一个已冻结的空对象冒充**——`Object.isFrozen` /
+  `Object.isExtensible` 对任何冻结对象都通过，它们从不证明「这就是被观察的那一块」（评审的紧邻负控：把
+  `target` 换成 `Object.freeze({})` ⇒ 真上游仍 3/3 绿；上一版 `target: undefined` 之所以红，是**瞬态匹配器**
+  顺手抓到的，不是身份判据判的）。观察记录现在自带身份与来源（**哪张读口**返回过**这个**对象——来源只记到**读口级**，
+  **不是**每次调用一个号），
+  `F9b` 逐条核对；并新增一条**不联网、不花钱、始终跑**的格子固化五个负控，每个都必须红在**该它红的那条断言**上
+  （标签 `[身份]` / `[来源]` / `[在场]` / `[冻结]` / `[瞬态]` 进断言文案并逐条核对）：冻结空对象冒充、
+  `target: undefined`、逐字同形但这张读口没返回过的替身、挂到引擎不走的读口、整个观察面空转；再加一条反向确认
+  ——冻结/瞬态那两条**认不出冒充者**，所以身份不许外包给它们。
+
 
 - **The shipped `TranscriptStore` contract suite now enforces its own optionality (issue #739).** The suite's
   header said run snapshot and run-state are optional capabilities and `src/assembly-validators.js` agreed
