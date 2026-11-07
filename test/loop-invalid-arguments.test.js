@@ -251,6 +251,10 @@ async function seedCrashSite({ snapshot, transcript }) {
   assert.ok(Number.isSafeInteger(anchor) && anchor >= 2,
     `快照锚点必须已含 seed 与 assistant 正文（实测 ${anchor}）`);
   const store = createMemoryTranscriptStore();
+  // 完整性前置（独立评审 nit）：下一行就按 `anchor` 切，所以上面那条 `>= 2` 不够——账本比锚点短
+  // 会无声造出一个「缺正文」的短账本现场（另一处同类夹具已有同样一条）。
+  assert.ok(transcript.length >= anchor,
+    `账本正文必须至少多到锚点（否则造不出「已落盘到锚点」的现场）：实测 ${transcript.length} vs 锚点 ${anchor}`);
   await store.appendRound("resume-rejected", { round: 0, messages: structuredClone(transcript.slice(0, 1)) });
   await store.appendRound("resume-rejected", {
     round: 1,
