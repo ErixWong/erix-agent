@@ -79,6 +79,8 @@ const { createFakeProvider } = await import(
   pathToFileURL(join(ENGINE_ROOT, "test/helpers/fake-provider.js")).href);
 const { runDirect } = await import(
   pathToFileURL(join(ENGINE_ROOT, "test/helpers/run-direct.js")).href);
+const { RESUME_NOTICE_TAG, RESUME_NOTICE_LEGACY_SNAPSHOT_DROPPED_HEADER } = await import(
+  pathToFileURL(join(ENGINE_ROOT, "src/loop/resume-notice.js")).href);
 
 const FIXTURE_DIR = join(HERE, "fixtures", "journal-0.22.0");
 const FIX_RUN_ID = "work-c7d61121-mvi9c4fj-77f54351";
@@ -147,30 +149,52 @@ async function resumeOnce(store, script, extra = {}) {
   }
 }
 
-/** ① 的判据：崩溃轮的 assistant 正文与它那条已成型的结果，必须恰 1 份地出现在模型上下文里。 */
-function assertCrashRoundBodyFed(provider) {
-  assert.equal(provider.requests.length, 1, "恢复必须真的发过一次模型请求");
-  const sent = provider.requests[0].messages;
-  assert.equal(countMarker(sent), 1,
-    `崩溃轮的 assistant 正文必须恰 1 份地喂给模型（实测 ${countMarker(sent)} 份）`);
-  assert.equal(resultsFor(sent, RESIDUE_RESULT_ID).length, 1, "崩溃轮那条已成型的结果必须恰 1 份");
+/**
+ * #754 裁决 2 之后的判据（旧断言是「恰 1 份地喂进来」）：pre-261021 档案的恢复**一份快照正文也
+ * 不喂** ⇒ 那段只在快照里的崩溃轮正文（`CRASH_ROUND_MARKER`）在**每一次**模型请求里都是 0 份。
+ */
+function assertCrashRoundBodyNotFed(provider, label = "恢复路径") {
+  const total = provider.requests.reduce((sum, request) => sum + countMarker(request.messages), 0);
+  assert.equal(total, 0,
+    `${label}：只存在于快照的崩溃轮正文一份也不许进上下文（实测 ${total} 份）`);
+}
+
+/** 从账本里取恢复告示的正文（`:control:resume-notice` 行；它在第一次请求之前就入账）。 */
+async function noticeTexts(store) {
+  const rows = await store.load(FIX_RUN_ID);
+  return rows
+    .flatMap((row) => (Array.isArray(row?.messages) ? row.messages : []))
+    .flatMap((message) => (Array.isArray(message?.content) ? message.content : []))
+    .filter((block) => block?.type === "text" && String(block.text).includes(RESUME_NOTICE_TAG))
+    .map((block) => String(block.text));
 }
 
 // ── ① 旧格式升级路径 ─────────────────────────────────────────────────────────
 
-test("#735 切片 2 · ① 旧格式账本（崩溃轮正文只在快照里）：升级路径仍把它喂给模型", async () => {
+test("#754 裁决 2 · ① 旧格式账本（崩溃轮正文只在快照里）：该恢复路径已关掉，一份正文也不喂", async () => {
   assert.equal(ANCHOR, 3, `夹具现场：锚点应是 round 0+1 的 3 条正文（实测 ${ANCHOR}）`);
   assert.ok(fixtureSnapshot.messages.length > ANCHOR,
     "夹具快照必须带着锚点之后的残余（否则本用例的现场不存在）");
   assert.deepEqual(fixtureRows.filter((row) => row.kind === "message"), [],
     "前置：夹具是旧格式账本（没有 0.23.0 的逐条消息行）");
 
-  const resumed = await resumeOnce(
-    await seedFixtureScene(createMemoryTranscriptStore()),
-    [endTurn("续跑完成"), endTurn("兜底")],
-  );
-  assert.equal(resumed.ok, true, `续跑必须成功（实测：${String(resumed.error)}）`);
-  assertCrashRoundBodyFed(resumed.provider);
+  const store = await seedFixtureScene(createMemoryTranscriptStore());
+  const resumed = await resumeOnce(store, [endTurn("续跑完成"), endTurn("兜底")]);
+  // 关掉之后的**实测形状**（不是「成功」）：崩溃轮那条已成型的结果仍由快照的 `toolResults` 接回
+  // （`src/loop/resume-manager.js:660` → `:683`，判据只看账本里有没有那个 id），而带它 `tool_use`
+  // 的那条 assistant 现在不再从快照喂进来 ⇒ 孤儿 `tool_result`，被配对校验当场拒掉
+  // （`src/messages/rounds.js:118`）。裁决 2 是「pre-261021 不再支持恢复」⇒ 不为变绿而恢复喂正文。
+  assert.equal(resumed.ok, false,
+    `关掉之后：旧格式恢复不再被喂正文（实测：${String(resumed.error)}）`);
+  assert.match(String(resumed.error), /invalid_messages/u, `实测：${String(resumed.error)}`);
+  assert.match(String(resumed.error),
+    /Invalid message at index 3: user tool_result has no matching assistant tool_use/u,
+    `孤儿 tool_result 的实测形状（原样记录，不许为了让旧断言过而恢复喂正文）：${String(resumed.error)}`);
+  assert.equal(resumed.provider.requests.length, 0,
+    "关掉之后：一次模型请求也没发出 ⇒ 那段旧正文从未进过上下文");
+  assertCrashRoundBodyNotFed(resumed.provider);
+  assert.equal(resultsFor(resumed.provider.requests.at(-1)?.messages ?? [], RESIDUE_RESULT_ID).length, 0,
+    "快照正文那条通道上也不会再出现崩溃轮的结果块");
 });
 
 /**
@@ -243,23 +267,32 @@ async function runDoubleCrashScene(engineRoot) {
   };
 }
 
-test("#735 切片 2 · 双崩现场（resume → 覆盖写快照 → 再 resume）：新快照只带残余，且行为与「写回整段」逐字相同", async (t) => {
+test("#754 裁决 2 · 双崩现场在关掉之后不再发生：旧档案第一次恢复就失败，两跳都不喂旧正文", async (t) => {
   const scene = await runDoubleCrashScene(ENGINE_ROOT);
-  assert.ok(scene.crashed, "前置：第二跳必须真的崩在「新快照已写、正文行未写」那一刻");
-  assert.ok(scene.latestRound > fixtureSnapshot.round,
-    `前置：引擎必须已覆盖写过新的一轮（实测 round=${scene.latestRound}）`);
-  // ③ 在这个现场也成立：锚点之前（旧格式账本里那 `ANCHOR` 条）被置 null，非 null 只剩本轮残余。
-  const messages = scene.latestMessages ?? [];
-  assert.ok(messages.length > fixtureSnapshot.messages.length,
-    `索引空间必须仍是「整段正文」那个长度（读侧的绝对下标才不动）：实测 ${messages.length}`);
-  assert.ok(messages.slice(0, ANCHOR).every((message) => message === null),
-    `锚点之前那 ${ANCHOR} 格必须是 null（它们本来就在账本里，读侧不会要）`);
-  assert.ok(bodyCountOf(messages) > 0 && bodyCountOf(messages) <= messages.length - ANCHOR,
-    `覆盖写的新快照只带锚点之后的残余（非 null ${bodyCountOf(messages)} 条 / 全长 ${messages.length} 格）`);
+  // 实测（关掉之后）：恢复不再从快照补崩溃轮正文 ⇒ 续跑**复用**崩溃轮的轮号（第 2 轮），引擎亲笔
+  // 快照也停在第 2 轮 ⇒ 这个现场那台注入器（判据 `> fixtureSnapshot.round`）永不武装 ⇒ 双崩链不再
+  // 发生。快照正文的残余形状由 ③ 的真跑用例钉（写侧未动）。
+  assert.equal(scene.crashed, false,
+    "关掉之后：双崩注入器不再武装（第一跳在请求前就失败，引擎没机会覆盖写快照）");
+  assert.equal(scene.latestRound, fixtureSnapshot.round,
+    `引擎亲笔快照仍停在夹具那一轮（实测 round=${scene.latestRound}）`);
+  // 实测形状：pre-261021 档案**第一次恢复就失败**（孤儿 `tool_result`，与 ① 同一个形状），第二跳
+  // 是同一次失败的重复现场（多一条告示 ⇒ 下标从 3 移到 4）——这就是裁决 2「不再支持恢复」的形状。
+  assert.equal(scene.first.ok, false, `第一跳必须失败（实测：${String(scene.first.error)}）`);
+  assert.match(String(scene.first.error),
+    /Invalid message at index 3: user tool_result has no matching assistant tool_use/u,
+    `实测：${String(scene.first.error)}`);
+  assert.equal(scene.second.ok, false,
+    `第二跳仍以同一形状失败（实测：${String(scene.second.error)}）`);
+  assert.match(String(scene.second.error),
+    /Invalid message at index 4: user tool_result has no matching assistant tool_use/u,
+    `第二跳的实测形状（旧缺陷那条「悬空 tool_use」已不存在）：${String(scene.second.error)}`);
+  assertCrashRoundBodyNotFed(scene.first, "双崩第一跳");
+  assertCrashRoundBodyNotFed(scene.second, "双崩第二跳");
 
   // 行为对账：与「写回整段」的基点写法（副本引擎）比，两次恢复的成败与**喂给模型的上下文**必须逐字相同。
-  // 这个现场在基点上本来就以 `invalid_messages` 收场（#424 那一族的既有限制，非本片引入）——
-  // 本片要的正是「一模一样」，所以这里不写「必须成功」，而是与副本引擎的实测输出逐字对账。
+  // #754 之后这条对账反而更硬：读侧只在「数条数」时碰一次 `snapshot.messages` ⇒ 写侧写残余还是写
+  // 整段都不再改变恢复行为 ⇒ 两棵同结果就是「读侧已不依赖快照正文」的证据。
   if (insideMutationRun) {
     t.skip("变异子进程里不再递归跑对账");
     return;
@@ -357,31 +390,41 @@ test("#735 切片 2 · ③ 快照里不再有锚点之前那段前缀（非 null
 
 // ── ④b 变异「删掉残余」（载荷面）：① 必须红；「只拿掉前缀」必须不红 ──────────────
 
-test("#735 切片 2 · ④b 变异「删掉残余」⇒ ① 红；只拿掉锚点之前的前缀 ⇒ 逐字不变", async () => {
-  // 变异一：把读侧真正要的那段 `slice(anchor)` 从快照正文里删掉。
+test("#735 切片 2 · ④b 变异「删掉残余」⇒ 失败形状不变但告示不再报 N；只拿掉锚点之前的前缀 ⇒ 逐字不变", async () => {
+  // #754 改判后的两个判据（旧写法钉的是「① 少了喂进来的那段正文」，那个读取点已被关掉）：
+  //   变异一（把 `slice(anchor)` 那段残余从快照正文里删掉）：恢复的失败形状**不变**（孤儿
+  //     `tool_result` 来自快照的 `toolResults`，与正文无关），但**告示不再报「丢了 N 条」**——
+  //     读侧对快照正文剩下的唯一读取点就是那次计数，它红才算钉住因果；
+  //   变异二（只把锚点之前那段置 null）：与未变异的现场逐字同形（失败形状 + 告示文本），
+  //     这才是「null 占位仍被尊重、下标空间不位移」的判据。
   const dropped = await seedFixtureScene(createMemoryTranscriptStore(), (snapshot, anchor) => {
     snapshot.messages = snapshot.messages.slice(0, anchor);
   });
   const mutated = await resumeOnce(dropped, [endTurn("续跑完成"), endTurn("兜底")]);
-  assert.equal(mutated.ok, false, `删掉残余必须红（实测 ok=${mutated.ok}）`);
+  assert.equal(mutated.ok, false, `删掉残余后仍须以同一形状失败（实测 ok=${mutated.ok}）`);
   assert.match(mutated.error, /invalid_messages/u, `实测错误：${String(mutated.error)}`);
   assert.match(mutated.error, /tool_result has no matching assistant tool_use/u,
-    "红的原因必须是崩溃轮的 assistant 正文没了（判据在 `src/messages/rounds.js`）");
+    `失败原因仍是那条孤儿结果（判据在 src/messages/rounds.js:118，与快照正文无关）：${String(mutated.error)}`);
   assert.equal(mutated.provider.requests.length, 0, "红在第一次模型请求之前：0 次请求");
+  const droppedNotices = await noticeTexts(dropped);
+  assert.equal(droppedNotices.length, 1, `删掉残余后仍恰一条恢复告示（实测 ${droppedNotices.length}）`);
+  assert.ok(!droppedNotices[0].includes(RESUME_NOTICE_LEGACY_SNAPSHOT_DROPPED_HEADER),
+    `残余被删 ⇒ 数不出条数 ⇒ 告示不再报「丢了 N 条」（否则静默），实测：${droppedNotices[0]}`);
 
-  // 变异二（同一现场的对照组）：**只**把锚点之前的前缀置 null ⇒ 恢复必须逐字不变。
+  // 变异二（同一现场的对照组）：**只**把锚点之前的前缀置 null ⇒ 必须与未变异的现场逐字相同。
   const elided = await seedFixtureScene(createMemoryTranscriptStore(), (snapshot, anchor) => {
     snapshot.messages = snapshot.messages.map((message, index) => (index < anchor ? null : message));
   });
   const stillGreen = await resumeOnce(elided, [endTurn("续跑完成"), endTurn("兜底")]);
-  assert.equal(stillGreen.ok, true, `前缀置 null 不得改变恢复（实测：${String(stillGreen.error)}）`);
-  assertCrashRoundBodyFed(stillGreen.provider);
-  const baseline = await resumeOnce(
-    await seedFixtureScene(createMemoryTranscriptStore()),
-    [endTurn("续跑完成"), endTurn("兜底")],
-  );
-  assert.deepEqual(stillGreen.provider.requests[0].messages, baseline.provider.requests[0].messages,
-    "前缀置 null 之后喂给模型的上下文必须与整段基线**逐字**相同（前缀是死重的正面证明）");
+  const baselineStore = await seedFixtureScene(createMemoryTranscriptStore());
+  const baseline = await resumeOnce(baselineStore, [endTurn("续跑完成"), endTurn("兜底")]);
+  assert.equal(stillGreen.ok, baseline.ok,
+    `前缀置 null 不得改变恢复（实测 ok=${String(stillGreen.ok)} vs ${String(baseline.ok)}）`);
+  assert.equal(String(stillGreen.error), String(baseline.error),
+    `失败形状必须与未变异现场逐字相同（实测：${String(stillGreen.error)}）`);
+  assert.deepEqual(await noticeTexts(elided), await noticeTexts(baselineStore),
+    "告示文本必须逐字相同（丢的条数仍按锚点之后的槽位数算，null 占位不位移）");
+  assertCrashRoundBodyNotFed(stillGreen.provider, "前缀置 null 的现场");
 });
 
 // ── ④a 变异「写回整段」：靶子是 `src/` 的副本（issue #411 的纪律：仓内 `src/` 全程只读）──
@@ -517,30 +560,39 @@ async function runTwoHopScene(engineRoot) {
   };
 }
 
-test("#735 切片2 · 两跳恢复记录当前行为（主干既有缺陷，修好见 #754）", async (t) => {
+test("#754 裁决 2 · 两跳恢复（关掉之后）：旧档案两跳都以孤儿 tool_result 失败、旧正文一份不喂", async (t) => {
   const scene = await runTwoHopScene(ENGINE_ROOT);
-  assert.ok(scene.crashed, "前置：必须真的崩在「新快照已写、再下一条正文行未落」那一刻");
-  assert.ok(scene.latestRound > fixtureSnapshot.round,
-    `前置：引擎必须已覆盖写过新快照（实测 round=${scene.latestRound}）`);
-  // 第一跳按构造就是被注入的崩溃打断的（persistence_failed），但它**崩溃前**已经发过一次请求，
-  // 而那一次请求里带着那段只在内存里的旧正文 ⇒ 这条链的现场确实成立。
-  assert.match(String(scene.first.error), /persistence_failed/u,
-    `前置：第一跳必须是被注入的落盘崩溃打断的（实测：${String(scene.first.error)}）`);
-  assert.equal(countMarker(scene.first.requests[0]?.messages ?? []), 1,
-    "前置：第一跳确实把那段只在内存里的旧正文喂给了模型（否则下面记录的不是这条链）");
-  // 锚点涨长的那笔账（#754 的根因）：本次现场从 ANCHOR 涨到 anchorAfter。
+  // 前置：双崩注入器（判据 `snapshotRound > fixtureSnapshot.round`）在关掉之后永不武装——旧正文
+  // 不再被喂进上下文 ⇒ 第一次恢复就在请求前失败 ⇒ 引擎根本没机会覆盖写快照。
+  assert.equal(scene.crashed, false,
+    "关掉之后：那条「新快照已写、再下一条正文行未落」的双崩链不再发生");
+  assert.equal(scene.latestRound, fixtureSnapshot.round,
+    `引擎没有机会覆盖写快照（实测 round=${scene.latestRound}）`);
+  assert.equal(scene.first.ok, false,
+    `第一跳就失败（旧行为：被注入的落盘崩溃打断，实测：${String(scene.first.error)}）`);
+  assert.match(String(scene.first.error),
+    /Invalid message at index 3: user tool_result has no matching assistant tool_use/u,
+    `实测：${String(scene.first.error)}`);
+  assertCrashRoundBodyNotFed(scene.first, "两跳第一跳");
+  // 锚点仍会涨（实测 ANCHOR → anchorAfter），但涨的是两次失败各留的那条 `:control:resume-notice` 行，
+  // 不再是「喂进内存却没入账的旧正文」 ⇒ #754 的根因那笔账从此不再存在。
   assert.ok(scene.anchorAfter > ANCHOR,
-    `前置：第二跳的锚点必须已因第一跳的入账而涨长（实测 ${ANCHOR} → ${scene.anchorAfter}）`);
+    `锚点只因告示行涨长（实测 ${ANCHOR} → ${scene.anchorAfter}）`);
 
-  // ↓↓↓ 当前行为（characterization）。#754 修好后这四条要改成断言**正确**行为。
+  // ↓↓↓ 关掉之后的实测行为（旧的四条「当前行为」逐条翻面）。
   assert.equal(scene.second.ok, false,
-    `当前行为：第二跳失败（修好 #754 后这条应翻成 assert(second.ok === true)）。实测：${String(scene.second.error)}`);
-  assert.match(String(scene.second.error), /invalid_messages/u,
-    "当前行为：失败方式是上下文配对不成立（旧正文落在 slice(anchor) 起点之前）");
+    `第二跳仍以孤儿 tool_result 失败（旧缺陷的悬空 tool_use 已不存在，实测：${String(scene.second.error)}）`);
+  assert.doesNotMatch(String(scene.second.error ?? ""),
+    /assistant tool_use has no immediately following user tool_result/u,
+    "闸门喂进去的那段旧正文没了 ⇒ 旧的悬空 tool_use 形状不再出现");
+  assert.match(String(scene.second.error),
+    /Invalid message at index 4: user tool_result has no matching assistant tool_use/u,
+    `实测：${String(scene.second.error)}`);
   assert.equal(scene.second.requests.length, 0,
-    "当前行为：第二跳一次模型请求都没发出（修好后应为 1 次，且上下文里带着那段旧正文）");
-  assert.equal(countMarker(scene.latestMessages), 0,
-    `当前行为：那段只在内存里的旧正文在新快照里已被前缀规则省掉（实测 ${countMarker(scene.latestMessages)} 份）`);
+    `第二跳 0 次请求（实测 ${scene.second.requests.length} 次）`);
+  assertCrashRoundBodyNotFed(scene.second, "两跳第二跳");
+  assert.equal(countMarker(scene.latestMessages), 1,
+    `写侧未动：夹具快照仍是原样（实测 ${countMarker(scene.latestMessages)} 份）`);
   // ↑↑↑
 
   // 与「写回整段」（= 主干写法）逐字对账：同一个第二跳 ⇒ 上面记录的行为不是本片引入的。
@@ -559,8 +611,45 @@ test("#735 切片2 · 两跳恢复记录当前行为（主干既有缺陷，修�
       "两棵的锚点必须同口径（根因在读侧，与写侧写什么无关）");
     assert.equal(baseline.second.error, scene.second.error,
       `与主干写法同一个错（既有缺陷，另开单修读侧）：${String(scene.second.error)}`);
-    t.diagnostic(`两跳第二跳两棵同结果（既有缺陷 #754）：${String(scene.second.error)}`);
+    t.diagnostic(`两跳第二跳两棵同结果（#754 关掉之后：第二跳 ok=${String(scene.second.ok)}、error=${String(scene.second.error ?? "无")}）`);
   } finally {
     rmSync(wholeRoot, { recursive: true, force: true });
   }
+});
+
+// ── #754 裁决 2：关掉不许静默 ────────────────────────────────────────────────
+
+test("#754 裁决 2 · 关掉旧格式恢复不许静默：旧账本的恢复告示说出丢了 N 条，新账本一声不出", async () => {
+  // N = 被删那个闸门原本会喂的条数（快照里锚点之后那几段正文）。
+  const dropped = fixtureSnapshot.messages.slice(ANCHOR)
+    .filter((message) => message !== null && message !== undefined).length;
+  assert.equal(dropped, 2, `夹具现场：锚点之后应剩 2 条（实测 ${dropped}）`);
+
+  // 旧账本（pre-261021：崩溃轮正文只在快照里）⇒ 必须出声，且把 N 说出来。
+  const legacyStore = await seedFixtureScene(createMemoryTranscriptStore());
+  await resumeOnce(legacyStore, [endTurn("续跑完成"), endTurn("兜底")]);
+  const legacyNotices = await noticeTexts(legacyStore);
+  assert.equal(legacyNotices.length, 1, `旧账本恰一条恢复告示（实测 ${legacyNotices.length}）`);
+  assert.ok(legacyNotices[0].includes(RESUME_NOTICE_LEGACY_SNAPSHOT_DROPPED_HEADER),
+    `旧账本的告示必须说出丢了正文，实测：${legacyNotices[0]}`);
+  assert.ok(legacyNotices[0].includes(`（共 ${String(dropped)} 条，该格式已不再支持恢复）`),
+    `告示必须带上条数 N，实测：${legacyNotices[0]}`);
+
+  // 新账本（≥ 261021：崩溃轮自己已入账 ⇒ 原条件 `ledgerMessages.length === anchor` 不成立）
+  // ⇒ 一份正文也没丢 ⇒ 一声不出。
+  const freshStore = await createMemoryTranscriptStore();
+  for (const row of [...ledgerRows, ...fixtureRows.filter((row) => row.round === 2)]) {
+    await freshStore.appendRound(FIX_RUN_ID, structuredClone(row));
+  }
+  await freshStore.saveRunSnapshot(FIX_RUN_ID, structuredClone(fixtureSnapshot));
+  const freshLedger = (await foldLedgerMessages(await freshStore.load(FIX_RUN_ID)))
+    .filter((entry) => entry?.message != null).length;
+  assert.ok(freshLedger > ANCHOR,
+    `前置：新账本在锚点之后必须有正文（实测 ${freshLedger} > ${ANCHOR}）`);
+  const fresh = await resumeOnce(freshStore, [endTurn("新账本续跑完成"), endTurn("兜底")]);
+  assert.equal(fresh.ok, true, `新账本恢复必须成功（实测：${String(fresh.error)}）`);
+  const freshNotices = await noticeTexts(freshStore);
+  assert.equal(freshNotices.length, 1, `新账本恰一条恢复告示（实测 ${freshNotices.length}）`);
+  assert.ok(!freshNotices[0].includes(RESUME_NOTICE_LEGACY_SNAPSHOT_DROPPED_HEADER),
+    `新账本一声不出（不丢正文却报「丢了 N 条」就是假消息），实测：${freshNotices[0]}`);
 });
