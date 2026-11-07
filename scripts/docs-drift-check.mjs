@@ -7716,6 +7716,21 @@ const FORCED_FINAL_ONE_LEG_MISSING = Object.freeze({
   ].join("\n"),
 });
 
+/** #772：标记区定点豁免的反向证共用的探针——现读 CN 契约标记区里的**第一条**裸行号引用，
+ *  用例把它原样拄到标记区**外**。表里的行号会随实现漂移，所以靶子跟着用例走而不是跟着某句活
+ *  文档走（#621 口径）：抽不到 → 变异打不上 → 「变异没落上」判据报红，不会假绿。 */
+const CELL_AXES_PROBE_REF = (() => {
+  const lines = textOf(CONTRACT_CN).split("\n");
+  const b = lines.findIndex((l) => l.includes(CELL_AXES_MARK_BEGIN));
+  const e = lines.findIndex((l) => l.includes(CELL_AXES_MARK_END));
+  if (b < 0 || e <= b) return null;
+  for (let i = b + 1; i < e; i += 1) {
+    const m = lines[i].match(/src\/[A-Za-z0-9_./-]+\.js:\d+(?:-\d+)?/);
+    if (m) return m[0];
+  }
+  return null;
+})();
+
 const SELF_TEST_CASES = [
   // —— pkg-block / exports：#210 报的四种破坏，**前两种修前是绿的** ——
   {
@@ -8288,6 +8303,32 @@ const SELF_TEST_CASES = [
     overlay: { [AGENTS_EN]: mentionInProse("自测探针（#286）：这里临时多写一处合法裸行号引用 `src/loop/termination.js:12`。") },
     expect: [ratchetOverBaseline(BARE_LINE_REF_BASELINE + 1, BARE_LINE_REF_BASELINE), /AGENTS\.md 1/],
     expectFiles: [AGENTS_EN],
+  },
+  // —— #772 两轴载荷表的「标记区定点豁免」：豁免只认标记区，且绑 G4 的逐条机器复核 ——
+  {
+    label: `#772 豁免只管标记区内：把表里同一条裸行号 \`${CELL_AXES_PROBE_REF}\` 原样拄到标记区**外** → 红（区外照旧逐条计数）`,
+    overlay: { [CONTRACT_CN]: (t) => (CELL_AXES_PROBE_REF === null ? t
+      : t.replace(CELL_AXES_MARK_BEGIN,
+        `自测探针（#772）：表里那条 \`${CELL_AXES_PROBE_REF}\` 被原样拄到标记区外 ⇒ 它不再被定点豁免。\n${CELL_AXES_MARK_BEGIN}`)) },
+    expect: [ratchetOverBaseline(BARE_LINE_REF_BASELINE + 1, BARE_LINE_REF_BASELINE), /host-consumer-contract_cn\.md \d+/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: `#772 豁免绑机器复核：把 ${CELL_AXES_GUARD_TEST} 整份清空（等价于被改名/移除）→ 豁免失效、闸回红并点名`,
+    overlay: { [CELL_AXES_GUARD_TEST]: () => "" },
+    expect: [/bare-lines: 标记区定点豁免的机器复核不在场/, /G4 那条 test 不在场（被改名或删除）/,
+      /裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*\d+\*\* 处，超过棘轮基线 \*\*\d+\*\*/],
+  },
+  {
+    label: "#772 豁免不是「行号在范围内就行」的免检通道：把 G4 的键名判据削弱成只查行号存在 → 豁免失效、闸回红",
+    overlay: { [CELL_AXES_GUARD_TEST]: (t) => t.replace("G4_KEY_NAME_CHECK(line, row.key)", "lineNumber >= 1") },
+    expect: [/bare-lines: 标记区定点豁免的机器复核不在场/, /assert\.ok\(G4_KEY_NAME_CHECK/,
+      /裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*\d+\*\* 处，超过棘轮基线 \*\*\d+\*\*/],
+  },
+  {
+    label: `#772 对照：给 ${CELL_AXES_GUARD_TEST} 只加一行尾注释（键名判据没动）→ 必须 0 错（证明绑定的不是恒红）`,
+    overlay: { [CELL_AXES_GUARD_TEST]: (t) => `${t}\n// self-test 复原探针（#772）：只加一行注释，G4 的键名判据没动。\n` },
+    expectGreen: true,
   },
   {
     label: `#286 棘轮下限：把 BARE_LINE_REF_BASELINE 调到 ${BARE_LINE_REF_BASELINE - 1} → 必须红（证明这个数真是锁，不是装饰）`,

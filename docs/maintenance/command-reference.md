@@ -92,13 +92,31 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   50 unique keys in total; before that 130 came from PR #451 turning the contract's two bare ranges pointing at the
   end-turn wrap-up block into a symbol anchor).
   The number
-  is reproducible with `node scripts/docs-drift-check.mjs --verbose`: 10 unique ranges minus 4 declaratively exempted
+  is reproducible with `node scripts/docs-drift-check.mjs --verbose`, which prints the whole breakdown (occurrences /
+  unique ranges / declaratively exempted / **marked-region exempted** ⇒ effective measured); as of issue #772 that
+  line reads 97 occurrences, 82 unique ranges, 4 declaratively exempted
   example / host-repo paths (`BARE_LINE_EXEMPTIONS`: the entry names one document + one placeholder path, **and** that path plus a
   declaration word must both appear on the referencing line — a leftover "for example" elsewhere is not a declaration; an entry
   nobody uses goes red; and the register carries its own config check, so a declaration pattern that can match the empty
   string (or carries a `g` flag, making `.test()` stateful) is itself an error — same dual-condition family as #286's
   `test/static-guards.test.js`). An out-of-range line number is an
-  error, not an observation. Scope is the document set a host actually reads: the two READMEs, both AGENTS files, both
+  error, not an observation.
+  *Marked-region pinpoint exemption* (issue #772): the two-axis payload table in both contract files — everything
+  **between** the `<!-- erix:snapshot-cell-axes:begin -->` / `<!-- erix:snapshot-cell-axes:end -->` markers that is a
+  `|`-prefixed table row — is exempt from this ratchet, and the exemption is **conditional on a machine check**: it
+  holds only while `test/contract-snapshot-cell-axes-767.test.js` carries the `G4` case that reconciles every
+  `file:line` in that table (file present + line inside the file + that line really mentions the cell's payload key).
+  The binding is `G4_KEY_NAME_CHECK`'s **definition (both parameters actually used) plus its call inside
+  `assert.ok(...)`** — not the case title and not a comment: rename or delete that test file, or weaken the key-name
+  check into "the line number exists", and the exemption lapses, with the gate red twice over (the table's refs get
+  counted again **and** a message names which half of the guard is gone). Nothing else is relaxed: a reference that
+  also appears outside the markers is never exempt, the out-of-range / missing-target / reversed-range checks still
+  run on exempted references, and the exempted count is printed in the `--verbose` breakdown instead of silently
+  disappearing. `--self-test` carries the four reverse proofs (same reference copied outside the markers → red; the
+  guard test emptied → red; the key-name check weakened → red; a comment-only change → green). The floor stayed at 6:
+  the exemption accounts for the table's 72 keys, while the 4 bare line numbers the notes *under* the table had
+  acquired were turned into symbol anchors (`residueStart` / `restoreResume`) rather than asking to raise the floor.
+  Scope is the document set a host actually reads: the two READMEs, both AGENTS files, both
   contract files, both architecture docs, both chart docs, both requirements docs, `examples/pi-extension/README.md`,
   the maintenance ledger pair (`docs/maintenance/symbol-anchor-ledger.md` / `docs/maintenance/symbol-anchor-ledger_cn.md`),
   plus **every** `docs/host-upgrade-guide*.md` (discovered from the directory, so a new guide is
