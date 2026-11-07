@@ -114,7 +114,15 @@ export const PREFLIGHT_STEPS = Object.freeze([
   { id: "changelog", label: "check:changelog", argv: ["npm", "run", "check:changelog"] },
   // issue #715：这一格是**内联判据**（`probe` 非空 ⇒ 走 `PREFLIGHT_PROBES`，不 spawn 子进程）。它读的是
   // 两棵树里的文件（`package.json` + `CHANGELOG.md`），最便宜，而且与第 1 步同一主题，所以紧跟其后。
-  { id: "changelog-unreleased", label: "CHANGELOG [Unreleased] 漏搬（内联判据）", probe: "unreleasedCarry" },
+  // `docCommand`：这一格在两份 AGENTS 的 §4 清单里打印的那一列命令。内联判据步骤**没有 `argv`**，
+  // 那一列就无从推导，所以必须显式声明——`reconcilePreflightChecklist` 拿它逐格对账中英两份清单，
+  // 新加一步（无论 spawn 还是 probe）忘了声明就当场红（issue #731 T7）。
+  {
+    id: "changelog-unreleased",
+    label: "CHANGELOG [Unreleased] 漏搬（内联判据）",
+    probe: "unreleasedCarry",
+    docCommand: "CHANGELOG [Unreleased] carry",
+  },
   { id: "docs", label: "check:docs", argv: ["npm", "run", "check:docs"] },
   { id: "docs-strict", label: "check:docs:strict", argv: ["npm", "run", "check:docs:strict"] },
   {
@@ -127,6 +135,95 @@ export const PREFLIGHT_STEPS = Object.freeze([
   { id: "release", label: "check:release", argv: ["npm", "run", "check:release"] },
   { id: "host-consumers", label: "check:host-consumers -- --hosts …", argv: ["npm", "run", "check:host-consumers"], gate: "hosts" },
 ]);
+
+/**
+ * AGENTS §4 前置清单那一行的形状：`#   [i/N] <命令列>····<说明>`（在 ```bash 围栏里，`#` 是注释符）。
+ * 命令列与说明之间用**两个以上空格**对齐分隔——两份 AGENTS 的这七行都这么排。
+ */
+const PREFLIGHT_CHECKLIST_ROW_RE = /^#\s+\[(\d+)\/(\d+)\]\s+(.+)$/u;
+
+/**
+ * 这一步在**两份 AGENTS 清单里必须出现的那一列命令**——唯一来源是这一步自己的定义，不是文档抄件。
+ *
+ * 推导规则（全机械，不引入第二份名单）：
+ *   · `env` 里的键值对写成 `K=V` 前缀（第 5 步 ⇒ `ERIX_E2E_REAL=1 check:release:real`）；
+ *   · 有 `argv` 的 spawn 步骤取 npm script 名（`argv[2]`）；`gate: "hosts"` 的补上 ` -- --hosts …`；
+ *   · 内联判据步骤（没有 `argv`）只能显式声明 `docCommand`——**没有默认值**，缺了就红（fail-closed）。
+ *
+ * @param {{id: string, argv?: string[], env?: Record<string, string>, gate?: string, docCommand?: string}} step
+ * @returns {string|null} 期望的那一列；`null` = 这一步无法推导（缺 `docCommand`），由调用方判红
+ */
+export function preflightDocCommand(step) {
+  const prefix = step.env ? Object.entries(step.env).map(([k, v]) => `${k}=${v}`).join(" ") : "";
+  const base = step.argv ? step.argv[2] : step.docCommand;
+  if (!base) return null;
+  const suffix = step.gate === "hosts" ? " -- --hosts …" : "";
+  return `${prefix ? `${prefix} ` : ""}${base}${suffix}`;
+}
+
+/**
+ * issue #731 T7：**中英两份 AGENTS 的手工清单 × `PREFLIGHT_STEPS` 的对账**（返回问题清单，空 = 一致）。
+ *
+ * 病根：AGENTS §4 那七行 `[1/7]…[7/7]` 是人手维护的，而运行期打印的 `[i/N]` 由 `PREFLIGHT_STEPS.length`
+ * 现算——**运行期那一侧有人钉（`test/release-day.test.js` 认 `[2/7]`），文档这一侧没有**，于是「文档说 7 步、
+ * 实际 8 步」可以一路绿着进主干。这一格把文档那一侧也接上同一个真值：
+ *   · 行数必须等于 `PREFLIGHT_STEPS.length`（加一步而文档没加行 ⇒ 红；删一行 ⇒ 红）；
+ *   · 每行的分子必须是 `1..N` 连续（不许跳号）、分母必须等于步数（`[2/8]` 这种漂了的分母当场红）；
+ *   · 每行的**命令列**必须逐字等于 `preflightDocCommand(step)`（改名 ⇒ 红；换顺序 ⇒ 红）；
+ *   · 一个 `[i/N]` 行都找不到 ⇒ 也红（清单被删/形状改了不算绿，那是「读不出」）。
+ * 中英两份都要扫：两侧的命令列是**同一份英文命令**（清单在 CN 文档里也不翻译命令），所以同一套期望值复用。
+ *
+ * @param {string} docText 一份文档的全文
+ * @param {{steps?: Array<object>, doc?: string}} [options] `steps` 只给自测用（模拟「主干加了一步」）
+ * @returns {string[]} 问题清单（人读；空数组 = 对得上）
+ */
+export function reconcilePreflightChecklist(docText, { steps = PREFLIGHT_STEPS, doc = "AGENTS" } = {}) {
+  const rows = [];
+  String(docText).split("\n").forEach((line, i) => {
+    const m = PREFLIGHT_CHECKLIST_ROW_RE.exec(line);
+    if (!m) return;
+    rows.push({
+      line: i + 1,
+      ordinal: Number(m[1]),
+      total: Number(m[2]),
+      command: m[3].split(/\s{2,}/u)[0].trim(),
+    });
+  });
+  if (!rows.length) {
+    return [`${doc}: 找不到任何 \`#   [i/N] <命令>\` 形状的 preflight 清单行——`
+      + "清单被删了或换了形状（对账失去对象），这不算绿"];
+  }
+  const problems = [];
+  if (rows.length !== steps.length) {
+    problems.push(`${doc}: 清单列了 ${rows.length} 步，而 PREFLIGHT_STEPS 有 ${steps.length} 步——`
+      + `第 ${Math.min(rows.length, steps.length) + 1} 边缺一行（加/删一步要同时改中英两份文档）`);
+  }
+  rows.forEach((row, index) => {
+    if (row.ordinal !== index + 1) {
+      problems.push(`${doc}:${row.line} 的序号是 [${row.ordinal}/...]，按行序应为 [${index + 1}/...]（不许跳号或换顺序）`);
+    }
+    if (row.total !== steps.length) {
+      problems.push(`${doc}:${row.line} 的分母是 /${row.total}，而 PREFLIGHT_STEPS.length = ${steps.length}`
+        + "（分母由步数现算，抄来的那个数一漂就没人管）");
+    }
+    const step = steps[index];
+    if (!step) {
+      problems.push(`${doc}:${row.line} 多出一步（第 ${index + 1} 步在 PREFLIGHT_STEPS 里不存在）：${row.command}`);
+      return;
+    }
+    const expected = preflightDocCommand(step);
+    if (expected === null) {
+      problems.push(`${doc}: 第 ${index + 1} 步（id=${step.id}）既没有 argv 也没有 docCommand ⇒ `
+        + "AGENTS 清单那一列无从推导（内联判据步骤必须显式声明 docCommand）");
+      return;
+    }
+    if (row.command !== expected) {
+      problems.push(`${doc}:${row.line} 的命令列是 ${JSON.stringify(row.command)}，`
+        + `而 PREFLIGHT_STEPS 第 ${index + 1} 步（id=${step.id}）要求 ${JSON.stringify(expected)}`);
+    }
+  });
+  return problems;
+}
 
 /** publish 阶段的操作单（照 AGENTS §4 的坑逐条写死；每一条都是踩过的）。 */
 export const PUBLISH_NOTES = Object.freeze([

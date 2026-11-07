@@ -17,6 +17,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { makeTmp } from "./helpers/tmp.js";
+// issue #731 T7：中英 AGENTS 的手工清单要与**脚本自己的**步骤表对账，所以真值从脚本现读（不抄）。
+import { PREFLIGHT_STEPS, preflightDocCommand, reconcilePreflightChecklist } from "../scripts/release-day.mjs";
 
 const ROOT = dirname(fileURLToPath(new URL(".", import.meta.url)));
 const SCRIPT = fileURLToPath(new URL("../scripts/release-day.mjs", import.meta.url));
@@ -127,6 +129,99 @@ test("preflight 第 2 步（issue #715）：`[Unreleased]` 漏搬三态——红
   const green = run(["# Changelog", "", "## [Unreleased]", "", heading, "", "- older", ""].join("\n"), ["--hosts", tree]);
   assert.equal(green.status, 0, `版本节已开 + \`[Unreleased]\` 空必须 exit 0：\n${green.stdout}\n${green.stderr}`);
   assert.match(green.stdout, /\[2\/7\][^\n]*→ 绿/u, "第 2 步要报绿");
+});
+
+
+/** 只替换**恰好一处**（同 `test/static-guards.test.js` 的 `replaceExactlyOnce` 口径：变异没落上就是白证）。 */
+function replaceOnce(text, from, to, what) {
+  const hits = text.split(from).length - 1;
+  assert.equal(hits, 1, `夹具里 ${what} 应当恰好出现一次，实测 ${hits} 次：${JSON.stringify(from.slice(0, 40))}`);
+  const out = text.split(from).join(to);
+  assert.notEqual(out, text, `变异没落上：${what}`);
+  return out;
+}
+
+test("AGENTS §4 的 preflight 清单与 PREFLIGHT_STEPS 逐格对账（中英两份都扫；issue #731 T7）", () => {
+  // ── 正证：两份文档现读的文本，逐格等于脚本推出来的那一套 ──
+  const texts = {};
+  for (const doc of ["AGENTS.md", "AGENTS_cn.md"]) {
+    const text = readFileSync(join(ROOT, doc), "utf8");
+    texts[doc] = text;
+    assert.deepEqual(reconcilePreflightChecklist(text, { doc }), [],
+      `${doc} §4 的 [i/N] 清单与 PREFLIGHT_STEPS 对不上（真值 = scripts/release-day.mjs 现读，不抄）`);
+  }
+  // 正证的靶子不能是空的：面必须是 PREFLIGHT_STEPS 的全长（否则「对得上」可以是「两边都没扫到东西」）。
+  assert.ok(PREFLIGHT_STEPS.length >= 5,
+    `PREFLIGHT_STEPS 只剩 ${PREFLIGHT_STEPS.length} 步：这一格的对账面退化`);
+  assert.deepEqual(PREFLIGHT_STEPS.map(preflightDocCommand).filter((c) => c === null), [],
+    "有步骤既推不出命令列也没声明 docCommand ⇒ 清单对账对它空转（内联判据步骤必须显式声明）");
+
+  /** 把步骤表写成清单正文（反向证里「文档已经跟上、只有脚本没声明」那种形态要用到）。 */
+  const rowsToChecklistRows = (steps, total) => steps
+    .map((step, i) => `#   [${i + 1}/${total}] ${preflightDocCommand(step)}                说明`)
+    .join("\n");
+
+  // ── 反向证：每格单独关一次 ⇒ 必须红（把文档里的数字改错 / 命令那侧变了而文档没跟上，两个方向都要咬） ──
+  const cases = [
+    {
+      name: "分母抄错（[2/7] → [2/8]）",
+      text: replaceOnce(texts["AGENTS.md"], "[2/7]", "[2/8]", "分母"),
+      expect: /分母是 \/8/u,
+    },
+    {
+      name: "文档少一行（删掉 [4/7] 那一行）",
+      text: replaceOnce(texts["AGENTS.md"], "#   [4/7] check:docs:strict", "#   [4/7] ~~", "第 4 行")
+        .replace(/^#   \[4\/7\].*$/mu, ""),
+      expect: /清单列了 6 步，而 PREFLIGHT_STEPS 有 7 步/u,
+    },
+    {
+      name: "步骤改名（check:docs:strict → check:docs-strict）",
+      text: replaceOnce(texts["AGENTS.md"], "[4/7] check:docs:strict", "[4/7] check:docs-strict", "第 4 步命令"),
+      expect: /命令列是.*check:docs-strict.*要求.*check:docs:strict/u,
+    },
+    {
+      name: "序号跳号（[3/7] → [9/7]）",
+      text: replaceOnce(texts["AGENTS_cn.md"], "[3/7] check:docs", "[9/7] check:docs", "第 3 步序号"),
+      expect: /按行序应为 \[3\//u,
+    },
+    {
+      name: "命令那侧加了一步，文档没跟上（真值变了 ⇒ 两份文档都得红）",
+      steps: [...PREFLIGHT_STEPS, { id: "new-gate", label: "check:new-gate", argv: ["npm", "run", "check:new-gate"] }],
+      expect: /PREFLIGHT_STEPS 有 8 步/u,
+    },
+    {
+      name: "新加的内联判据步骤忘了声明 docCommand（那一列无从推导）",
+      // 文档那一侧**已经老老实实加了第 8 行**（分母也刷成 /8）——所以这一格不能靠「行数不对」红，
+      // 必须红在「脚本没声明这一列该怎么推导」上。
+      text: `${rowsToChecklistRows(PREFLIGHT_STEPS, 8)}\n#   [8/8] probe-no-doc                新加的内联判据`,
+      steps: [...PREFLIGHT_STEPS, { id: "probe-no-doc", label: "某内联判据", probe: "x" }],
+      expect: /既没有 argv 也没有 docCommand/u,
+      bothDocs: false,
+    },
+    {
+      name: "整段清单被删（对账失去对象 ⇒ 红，不是「没有差异」）",
+      text: texts["AGENTS.md"].replace(/^#   \[\d\/\d+\].*$/gmu, ""),
+      expect: /找不到任何/u,
+    },
+  ];
+  for (const c of cases) {
+    const docs = c.text ? ["AGENTS.md", "AGENTS_cn.md"] : ["AGENTS.md"];
+    for (const doc of docs) {
+      // 「命令那侧变了」这一格要**两份都红**；其余格只在被变异的那份上判红。
+      if (!c.text && doc !== "AGENTS.md") continue;
+      if (c.bothDocs === false && c.text && doc !== "AGENTS.md") continue;
+      const mutated = c.text ?? texts[doc];
+      const problems = reconcilePreflightChecklist(mutated, { doc, ...(c.steps ? { steps: c.steps } : {}) });
+      assert.ok(problems.length > 0, `反向证「${c.name}」没红：${doc} 的问题清单是空的（这一格恒绿）`);
+      assert.match(problems.join("\n"), c.expect,
+        `反向证「${c.name}」红了，但红因不对（应当点名原因）：\n${problems.join("\n")}`);
+    }
+    if (c.steps && c.bothDocs !== false) {
+      // 「命令那侧变了」：CN 那份也必须红（中英两份都要扫，不许只钉 EN）
+      const cn = reconcilePreflightChecklist(texts["AGENTS_cn.md"], { doc: "AGENTS_cn.md", steps: c.steps });
+      assert.match(cn.join("\n"), c.expect, `反向证「${c.name}」在 CN 那侧没红：${cn.join(" / ") || "（空）"}`);
+    }
+  }
 });
 
 test("npm script、中英 AGENTS 与 CI 三处接线（成对，且说明里不抄判据条数）", () => {
