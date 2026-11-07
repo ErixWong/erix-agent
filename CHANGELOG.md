@@ -5,6 +5,47 @@
 
 ### Breaking
 
+- **Archives written before 261021 are no longer resumable (issue #754, verdict 2).** The one place that still
+  read the run snapshot's `messages` cell on the resume path was the pre-261021 upgrade gate in
+  `src/loop/resume-manager.js`: when the ledger had nothing after the resume anchor while the snapshot was
+  longer, it appended `snapshot.messages.slice(anchor)` to the rebuilt context. That gate served dead
+  archives and was itself broken — the anchor is a **scalar** (folded logical-message count), not a bitmap of
+  which snapshot slots were journaled, so after the first resumed hop journaled its own rows, the second hop
+  moved the anchor past that body and the run died **before its first provider request** with
+  ``invalid_messages`` (0 requests; reproduced on `test/fixtures/journal-0.22.0/`, both write-side shapes
+  byte-identical). Two cuts landed together, because dropping one without the other feeds half of a round
+  from the very source this change retires: (1) no resume context is ever taken from `snapshot.messages`
+  again — the only surviving read of that cell is a **count probe** (`ledgerMessages.length === anchor &&
+  snapshotBody.length > anchor`, non-null slots only) used for nothing but signalling; (2) on that same
+  legacy branch, a snapshot `tool_result` whose `tool_use` is no longer in the rebuilt context is not fed
+  either — otherwise the surviving result is an orphan and `validateMessages` rejects it at
+  `src/messages/rounds.js` (the #421 / #730 fallback only answers the opposite direction, a dangling
+  `tool_use`). The observable outcome is an **explicit degraded rebuild**: the legacy run resumes from the
+  ledger alone, makes its request, and the engine's resume notice (`…:control:resume-notice:<fp>`, model
+  context **and** ledger) says `本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 N 条，该格式已不再支持恢复）`.
+  Nothing is silent and nothing is new on the event surface: no new event type, no new
+  `resume_journal_skipped` reason, and `crash_round_assistant_not_in_ledger` (#424) still fires with the same
+  `count`. The write side is untouched — snapshots keep carrying the round residue at unchanged absolute
+  indices. New-format (per-message journaled) archives change by **zero bytes**; hosts that still need one of
+  those dead pre-261021 runs must accept the shortened context or read the archive themselves.
+- **261021 之前写下的档案不再支持恢复（issue #754，裁决 2）。** 恢复路径上最后一个读 run snapshot 那一格
+  `messages` 的地方，是 `src/loop/resume-manager.js` 里的 pre-261021 升级闸门：账本在恢复锚点之后一条都没有、
+  而快照更长时，它把 `snapshot.messages.slice(anchor)` 接进重建出来的上下文。它服务的是死档案，而它**自己就是
+  坏的**——锚点是一个**标量**（折叠后的逻辑消息条数），不是「快照哪些下标已入账」的位图，所以第一跳续跑一入账，
+  第二跳的锚点就越过那段正文，run 在**发出任何模型请求之前**就 `invalid_messages`（0 次请求；夹具
+  `test/fixtures/journal-0.22.0/` 实测，两种写侧形状逐字同结果）。两刀同批落地，因为只丢一半就是从一个刚被
+  宣布不支持的来源喂半轮：（1）恢复上下文**再也不从** `snapshot.messages` 取正文——这一格剩下的唯一读点是一个
+  **条数探针**（`ledgerMessages.length === anchor && snapshotBody.length > anchor`，只数非 null 格），除了出声
+  不作他用；（2）同一条旧格式分支上，「上下文里已没有配对 `tool_use`」的快照 `tool_result` 也不再喂——否则活下来的
+  那条就是孤儿结果，`src/messages/rounds.js` 的消息校验当场拒掉（#421 / #730 的兜底只管反方向：悬空的
+  `tool_use` 补桩）。可观察结局是**明示降级为从账本重建**：旧档案照旧起来、照旧发出请求，而引擎的恢复告示
+  （`…:control:resume-notice:<fp>`，既进模型上下文也进账本）写明
+  `本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 N 条，该格式已不再支持恢复）`。
+  没有静默，事件面也没有新东西：不新增事件类型、不给 `resume_journal_skipped` 加新 `reason`，
+  `crash_round_assistant_not_in_ledger`（#424）照旧发、`count` 同值。写侧一字未动——快照仍写「本轮残余」，
+  绝对下标不变。新格式（逐条入账）的档案**一个字节都不变**；确实还要复活某个 pre-261021 死档案的宿主，要么接受
+  变短的上下文，要么自己读那份档案。
+
 ### Changed
 - **The real-upstream tool-fact e2e got a new observation face for its "the engine never rewrites history"
   claim (issue #760, tests only — no behaviour change).** `examples/tool-fact-e2e.test.mjs` judged that claim

@@ -4448,7 +4448,16 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 //
 // ⇒ 地板 = **23**（#753 C2 在 `### Added` 加的那对中英；本支自己那笔旧登记（旧树 18→19）在 rebase 时让位给主干，
 // 不在旧值上做加法）。
-const CHANGELOG_PAIR_FLOOR = 23;
+//
+// 2026-11-08 第八次重取（issue #754 裁决 2，`fix-261108-01-close-legacy-upgrade-gate`（基点 `762ef52`）上现跑，
+// 动常量之前 `node --test --test-name-pattern "中英配对地板" test/static-guards.test.js` 的守卫现报原文）：
+//
+//     校准面（## [Unreleased]）上实测 24 对 ≠ 地板 23 对：地板必须恰等于校准面上的实测值（否则「掉一条就穿底」证不出来）。配对变多了 ⇒ 请抬地板到实测值
+//     24 !== 23
+//
+// ⇒ 地板 = **24**（#754 在 `### Breaking` 加的那对中英：pre-261021 档案不再支持恢复）。同样只做「守卫在这棵
+// 树上打印的数」这一次读数，不在旧值上做加法。
+const CHANGELOG_PAIR_FLOOR = 24;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
