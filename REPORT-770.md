@@ -111,3 +111,37 @@ $ node --test test/loop-snapshot-write-side-735.test.js test/loop-snapshot-round
     test/loop-v020-rc.test.js test/persistence-diagnostics.test.js test/compaction-observability.test.js
 # tests 68 / # pass 68 / # fail 0        → NODE_EXIT=0
 ```
+
+## 步骤 4 — 契约与锚点同步（**部分收口：767 闸仍红，红话贴在下面**）
+
+已做的三件事：
+1. `src/loop/orchestrator.js:3029` / `:3038` 写出两行注释，内容就是「为什么这里没有写点」（`// ⇒ \`status\` 停写的理由：…` / `// ⇒ \`compactionStats\` 停写的理由：…`），各自在全文件唯一命中。
+2. `scripts/cell-axes-anchors.mjs`：这两格的 `write` 轴条目改成 `kind: "comment"` 并钉上面那两行注释（重算行号 `[3029]` / `[3038, 6185]`——`6185` 是轮记录那处真写点，同轴另一条登记条目**保留**）；`CELL_AXES_REQUIRED_CELLS` 与条目总数（39）**未动**；另外把 `round|write` 的 `prev` 从 `^ +return await persist\(method, runId, \{$` 改成 `^ +return await persistClassified\(method, status, runId, \{$`（步骤 2 的显式分类改造成的真实行形变化，不改就会「锚点命中 0 行」）。
+3. 两份契约表的**明细表**里这两格 write 判据改 `stopped`，并把两轴列里的 `src/loop/orchestrator.js:N` 引用按锚点重算值重排（EN 与 CN 同一形状）。
+
+仍未收口的部分（闸自报，我没有手调判据）：
+
+```
+$ node --test test/contract-snapshot-cell-axes-767.test.js
+# pass 8 / # fail 7
+not ok 3  - G2 写轴对真载荷：声明 written/residue ⇒ 键必须在场，声明 stopped ⇒ 键必须缺席
+not ok 8  - G4 表里每条 file:line 都复核（+ 两轴引用必须等于登记锚点重算的行号）
+not ok 9  - G4-R1 反向证（写点换成同键名注释行 ⇒ 必红）
+not ok 11 - G4-R3 反向证（表里多/少一条登记引用 ⇒ 必红）
+not ok 12 - G4-R4 反向证（锚点种类是硬判据 ⇒ 必红）
+not ok 13 - G4-R5 反向证（成对删登记条目与两份表引用 ⇒ 必红）
+not ok 14 - G4-R6 特征用例（锚点改成同键名另一处真写入 + 两份引文同步改口 ⇒ 现在不红）
+```
+
+判读：`G4-R2`（锚点歧义）已经由红转绿，说明 `kind:"comment"` + 唯一命中这一步是对的；剩下的红集中在**两份表的引用集合与锚点重算值不完全等值**（两份 doc 里各有第二张「摘要表」也带同一批 `orchestrator.js:N` 引用，我按等值规则只重排了带引文的那张表；`G2` 也指向同一处口径没对齐）。修法是把两张表的引用一起纳入重排，或把摘要表的引用列改成不带具体行号的写法——两者都要按闸自报的「多一条/少一条」清单逐条对，不能手调地板。这一轮预算用尽，未继续。
+
+## 步骤 5 — CHANGELOG 中英成对
+
+`CHANGELOG.md` / `CHANGELOG_cn.md` 各一条，都挂在 `## [0.39.0]` 的 Changed 段首条；内容成对，都写明「键存在性是宿主可见面（`src/store/file.js:523` 直接 stringify）」「先改指向再停写」「停写后的键序」「旧档逐字读回」与机器缺席断言的位置。
+
+## 未验证
+
+- `test/contract-snapshot-cell-axes-767.test.js` 7 条红（见上），所以**契约文档/锚点/表三方尚未互相自洽**；`docs/host-consumer-contract*.md` 里两格下方的**正文段**（解释「继续写出」的那两段、以及 `compactionStats` 快照与轮记录同一表达式那段）**尚未按停写改写**，行号也未逐条复核——只有表里的两轴列被机器重排过。
+- `npm run check:docs`、`:strict`、`:docs-spelling`、`:syntax`、`:agents-directives`、`node scripts/docs-drift-check.mjs --self-test`（约 7 分钟）与三档类型闸：**未跑**（预算用尽），因此两份 doc 的行号漂移会不会被这些闸抓住，未知。`BARE_LINE_REF_BASELINE` 未动。
+- 全套 `npm test` 未跑（工单规定）；`test/test-suite-baseline.json` 未动：用例数**没有增删**（我只改了既有用例的断言指向，新增的 1 条 `callSiteOf()` 是 helper 不是用例；写侧文件里两条用例被改名但计数不变）。
+- 除 `test/`、`docs/host-consumer-contract*`、`scripts/cell-axes-anchors.mjs`、`src/loop/orchestrator.js`、两份 CHANGELOG、`REPORT-770.md` 之外没有别的写入；未 rebase、未 push、未开 PR，未碰 `/home/eric/wt-770w` 与其它 `~/wt-*`。
