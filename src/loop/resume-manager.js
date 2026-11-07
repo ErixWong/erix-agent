@@ -3,7 +3,7 @@ import { blocksFor, mergeToolResultsIntoMessages } from "./messages.js";
 import { MESSAGE_ROW_KIND, isRoundCarrier, nextMessageSeqByRound, foldLedgerMessages, foldMessageRows } from "../store/message-rows.js";
 import { extractL0Facts } from "../reflection/l0.js";
 import { buildTimeline } from "../reflection/judge.js";
-import { pendingTailToolUses, answerPendingMidSequenceToolUses } from "./pending-tool-result.js";
+import { pendingTailToolUses, answerPendingMidSequenceToolUses, RESUME_JOURNAL_SKIP_DETAIL_PROBE_ABSENT, RESUME_JOURNAL_SKIP_DETAIL_ROUND_CARRIER_HAS_BODY, RESUME_JOURNAL_SKIP_DETAIL_ROW_NOT_IN_LEDGER } from "./pending-tool-result.js";
 import { planResumeNotice } from "./resume-notice.js";
 import { injectFoldSummaryIntoHead, planFoldedHistoryTrim } from "../compact/resume-fold-trim.js";
 import { validateRunState } from "../run-state.js";
@@ -287,6 +287,23 @@ function roundHasBodyCarrier(rows, round) {
   return (Array.isArray(rows) ? rows : []).some((row) => (
     Array.isArray(row?.messages) && row.messages.length > 0 && isRoundCarrier(row, round)
   ));
+}
+
+/**
+ * 桩拿不到锚点时，把「**哪一种**拿不到」写成宿主可读的 `detail`（issue #730）。
+ *
+ * 修前这三件完全不同的事共用一个 `reason`：① 宿主没提供 `loadRawRows`（补上探针下一次就闭合）；
+ * ② 该轮载体已带正文（#729，**有行也不给用**，补探针也闭合不了）；③ 探针给了、轮也干净，账本里
+ * 确实没有那条首片行。只读 reason 的宿主会把 ① 当成 ③ 而不去补探针。判据与 `firstSliceRowKeyOf`
+ * **同源**（同一个 `rows`、同一个 `round`、同一个 `roundHasBodyCarrier`），不另写一套。
+ *
+ * @param {{probeAvailable: boolean, rows: object[], round: any}} input
+ * @returns {string}
+ */
+function midSequenceAnchorMissDetail({ probeAvailable, rows, round }) {
+  if (!probeAvailable) return RESUME_JOURNAL_SKIP_DETAIL_PROBE_ABSENT;
+  if (roundHasBodyCarrier(rows, round)) return RESUME_JOURNAL_SKIP_DETAIL_ROUND_CARRIER_HAS_BODY;
+  return RESUME_JOURNAL_SKIP_DETAIL_ROW_NOT_IN_LEDGER;
 }
 
 export async function restoreResume(ctx) {
@@ -693,17 +710,23 @@ export async function restoreResume(ctx) {
       // ── issue #421：**中段**悬空 `tool_use` 的读侧兜底 ────────────────────────────────────
       // 位置：上下文重建完（含 A 集合的内存合并）之后、**任何模型请求之前**、任何裁剪之前（裁剪只动
       // 上下文，不动账本；桩要跟着它所属的那条聚合消息走）。
-      // 判据是**账本**（`ledgerToolResultIds`，#420 口径），再并上**本进程马上要产出真结果**的两批：
-      // A 集合（结果已成型、只差入账）与 B 集合（补跑段会重跑并接回同一条聚合消息）。这两批必须排除：
-      // 它们的真结果会并进那条聚合消息，而桩已占了同一个 `tool_use_id` ⇒ 同一条消息里出现两个同 id 的
-      // `tool_result` ⇒ id 集合对不上（补桩反而把可恢复的现场变成不可恢复）。这不是放宽判据：
-      // 能配上对的不得出现桩行。
-      const midSequenceSettledIds = new Set(ledgerToolResultIds);
+      // 判据是**账本**，但**逐对**判（issue #730 第 1 格）：「这一对」= 那条 assistant 与它紧接的聚合
+      // 消息，而`pendingMidSequenceToolUses` 的 `missing` 算的就是「这一对的聚合消息里没该 id 的结果块」
+      // ——与 `validateMessages`（`src/messages/rounds.js`）同粒度。修前这里并的是**全 run** 的
+      // `ledgerToolResultIds`：同一个 `tool_use_id` 在**别的轮**结清过（provider 不保证 id run 内唯一，
+      // issue #284）就被当成这一对也结清了 ⇒ 桩被抑制、这一对永不闭合 ⇒ 每次请求出网前本地拒掉，
+      // 这个 runId 永久起不来。幂等不受影响：桩落的那一页就是这条聚合消息，下一次恢复时 `missing`
+      // 自己就不带它了（#714 那三条「三次恢复」用例钉着）。
+      // 剩下的排除集只有「**本进程马上要产出真结果**」的两批：A 集合（结果已成型、只差入账）与
+      // B 集合（补跑段会重跑并接回同一条聚合消息）。这两批与「哪一对」无关，必须一律排除：它们的真
+      // 结果会并进那条聚合消息，而桩已占了同一个 `tool_use_id` ⇒ 同一条消息里两个同 id 的结果 ⇒ id
+      // 集合对不上（补桩反而把可恢复的现场变成不可恢复）。这不是放宽判据：能配上对的不得出现桩行。
+      const midSequenceInFlightIds = new Set();
       for (const toolResult of ctx.resumeUnpersistedToolResults) {
-        if (toolResult?.tool_use_id !== undefined) midSequenceSettledIds.add(toolResult.tool_use_id);
+        if (toolResult?.tool_use_id !== undefined) midSequenceInFlightIds.add(toolResult.tool_use_id);
       }
       for (const pendingTool of ctx.resumePendingTools) {
-        if (pendingTool?.id !== undefined) midSequenceSettledIds.add(pendingTool.id);
+        if (pendingTool?.id !== undefined) midSequenceInFlightIds.add(pendingTool.id);
       }
       // 入账由 orchestrator（`journalResumeMidSequenceToolResults`）用 `partOf` 指向**首片**完成；
       // 这里只交出「补了哪几张、该写向哪一行」。锚点在**落盘行**上找，不是引擎再折一遍的 `records`：
@@ -711,19 +734,35 @@ export async function restoreResume(ctx) {
       // issue #714：可选原始行读口 `loadRawRows` 交出 `load()` 的**未折叠输入**。内置两个 store 的
       // `load()` 都折叠，**已完成轮**的首片行只剩在原始行里 ⇒ 没有它那一格永远拿不到锚点；提供它时
       // 账本才闭合。缺这个读口 ⇒ 逐字退回修前口径（只修内存 + `resume_journal_skipped`），不抛错。
-      const anchorRows = typeof ctx.store.loadRawRows === "function"
+      const anchorProbeAvailable = typeof ctx.store.loadRawRows === "function";
+      const anchorRows = anchorProbeAvailable
         ? await ctx.store.loadRawRows(ctx.runId)
         : loadedRecords;
+      // issue #730：「引擎放弃了这一格」的成因（普查判悬空而合并拒了 / 非目标形状）从这里交出去，
+      // 发事件一律在 orchestrator（事件面只有一处）。本模块不持有 `onEvent`。
+      const midSequenceAbandons = [];
       const midSequenceStubs = await answerPendingMidSequenceToolUses(ctx.messages, {
-        settledIds: midSequenceSettledIds,
+        pendingResultIds: midSequenceInFlightIds,
         roundOf: (message) => ctx.messageRounds.get(message),
         anchorOf: (message) => firstSliceRowKeyOf(
           anchorRows,
           message,
           ctx.messageRounds.get(message),
         ),
+        onAbandon: (entry) => { midSequenceAbandons.push(entry); },
       });
+      // 找不到锚点的桩：把「**哪一种**找不到」也写成事实（issue #730：同一个 reason 下原来混着两件事，
+      // 宿主读不出「补上 `loadRawRows` 就能闭合」那一格）。只对真要入账而锚点缺失的桩算。
+      for (const stub of midSequenceStubs) {
+        if (typeof stub?.partOf === "string" && stub.partOf !== "") continue;
+        stub.anchorMissDetail = midSequenceAnchorMissDetail({
+          probeAvailable: anchorProbeAvailable,
+          rows: anchorRows,
+          round: stub.round,
+        });
+      }
       ctx.resumeMidSequenceToolResults = midSequenceStubs;
+      ctx.resumeMidSequenceAbandons = midSequenceAbandons;
       // 真要落账的那几张桩：把所属轮的 `seq` 地板抬到「落盘行里最大 `seq` + 1」。本单是第一个往
       // **已完成轮**写消息行的调用点，而那种轮的消息行在折叠后的行里已被吸进载体 ⇒ 崩溃现场那一段的
       // 「按正文条数」地板会算小，分片行重号 ⇒ `dedup_payload_conflict`（既不覆盖也不静默丢弃，整 run

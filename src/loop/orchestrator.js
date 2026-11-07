@@ -33,6 +33,11 @@ import {
   answerPendingTailToolUses as settlePendingTailToolUses,
   pendingTailToolUses,
   pendingTailToolUsesAreAnswerable,
+  // issue #730：「引擎放弃兜底」的成因码只在 `pending-tool-result.js` 里定义一份（事件在这里发，
+  // 码在那一份里），中英两份契约的成因表与它们是双向对账的（`test/loop-resume-abandon-signals-730.test.js`）。
+  MID_SEQUENCE_ABANDON_ROW_WRITE_REFUSED,
+  RESUME_JOURNAL_SKIP_DETAIL_APPEND_SKIPPED,
+  RESUME_JOURNAL_SKIP_DETAIL_ROUND_NOT_SAFE_INTEGER,
 } from "./pending-tool-result.js";
 import { MESSAGE_ROW_KIND } from "../store/message-rows.js";
 // issue #568：会话续接块（受预算约束 / 请求尾部 / 计入本地估算 / 骨架三段不降采样）。
@@ -469,6 +474,12 @@ function mergeFoldedRoundRanges(first, second) {
  * @property {string} [parentRunId] issue #617（P0，additive）：子 run 的发起者关联，只镜像不解释；
  *   宿主没给 `parentRunId` 时该字段缺省（不写假值）。
  * @property {string} [detail] One-shot capability diagnostic text (persistence_capability_degraded, model_metadata_missing, compaction_strategy_fallback).
+ *   issue #730（additive）：`resume_journal_skipped` 也用它把同一 `reason` 下的分支分细（**缺席就不带
+ *   那个键** ⇒ 既有事件形状不变，是纯加法）：`anchor_probe_absent` / `round_carrier_has_body` /
+ *   `aggregate_row_not_in_ledger`（同一个 `mid_sequence_aggregate_row_not_in_ledger` 下三件不同的事，
+ *   只有第一种是「宿主补上 `loadRawRows` 就能闭合」）、`aggregate_carries_foreign_result_ids`、
+ *   `next_message_is_not_user` / `aggregate_has_no_tool_result`、`round_not_safe_integer` /
+ *   `append_row_not_persisted`。
  * @property {string} [toolUseId] Tool invocation requiring host replay decision.
  * @property {string} [toolName] Tool name requiring host replay decision.
  * @property {boolean} [requiresHostDecision] Whether the host must decide whether to retry.
@@ -486,6 +497,12 @@ function mergeFoldedRoundRanges(first, second) {
  *   载荷与 `compaction_deferred` 同形：`{ type, runId?, parentRunId?, round, reason, detail }`
  *   （`parentRunId` 是 issue #617 的加法字段）。**不注入 ≠ 错误**：事件只记账，
  *   run 的终局、轮数与消息流都不因它改变。
+ *   issue #730（additive）：`resume_journal_skipped` 也用这个字段说清**哪一种放弃**，闭集五个取值
+ *   （逐字取自发射处；中英两份契约「中段补桩的放弃路径」那张表与它双向对账，守卫是
+ *   `test/loop-resume-abandon-signals-730.test.js`）：`crash_round_assistant_not_in_ledger`（#424）、
+ *   `mid_sequence_aggregate_row_not_in_ledger`（#714/#729）、`mid_sequence_merge_refused`、
+ *   `mid_sequence_shape_not_supported`、`mid_sequence_stub_row_write_refused`。**本单没新增事件类型**：
+ *   这五个都骑在 `resume_journal_skipped`（#743 分级表里的 `fact`，不可删）上。
  * @property {number} [count] issue #424（additive）：被跳过/涉及的消息条数（`resume_journal_skipped` 用它报 A 集合大小）
  * @property {Array<{path: string, key: string}>} [conflicts] issue #497（S2，additive）：`config_override_conflict`
  *   的载荷——冲突叶子的 schema 路径（`"run.maxRounds"`）与顶层键名，**只带路径与键名**（值可能是
@@ -2154,6 +2171,12 @@ export async function runToolLoop(options) {
   // （`appendMessageRowToTranscript` / `persist`），写入口是 `journalResumeMidSequenceToolResults`。
   /** @type {Array<{toolResult: object, round: any, partOf: any}>} */
   let resumeMidSequenceToolResults = [];
+  // issue #730（**放弃兜底要可观测**）：`restoreResume` 普查到「悬空而引擎补不出合法桩」的每一格从这里
+  // 交出来，成因写在 `reason` / `detail` 里。同一个先例（局部变量 + 一对访问器）：事实由
+  // `restoreResume` 算，发事件一律在本文件（事件面只有一处）。修前三格都是**静默**放弃：宿主只读到
+  // 下一次请求出网前的 `invalid_messages`（0 次 HTTP），读不出「引擎放弃了这个 run」。
+  /** @type {Array<{reason: string, detail?: string, round: any}>} */
+  let resumeMidSequenceAbandons = [];
   // issue #424（守卫）：崩溃轮的正文里**是否已有 assistant 行**（`restoreResume` 在已折叠的账本条目上算好
   // 交过来）。`false` = 升级路径（崩溃轮的 assistant 正文只在快照里）⇒ A 集合整段不入账，退回修前的
   // 「只进内存」语义。`undefined` = 本次不是崩溃现场恢复（没有 A 集合，走不到守卫）。
@@ -2262,6 +2285,12 @@ export async function runToolLoop(options) {
     },
     set resumeMidSequenceToolResults(value) {
       resumeMidSequenceToolResults = Array.isArray(value) ? value : [];
+    },
+    get resumeMidSequenceAbandons() {
+      return resumeMidSequenceAbandons;
+    },
+    set resumeMidSequenceAbandons(value) {
+      resumeMidSequenceAbandons = Array.isArray(value) ? value : [];
     },
     get resumeCrashRoundAssistantPersisted() {
       return resumeCrashRoundAssistantPersisted;
@@ -3142,29 +3171,85 @@ export async function runToolLoop(options) {
   // 锚点缺失（升级前的旧账本：正文在轮载体行里、根本没有消息行）⇒ **不入账**，只留内存里的桩。
   // 那种账本上新写消息行会被折叠层拼到载体行后面（桩变成**另一条** user 消息 ⇒ 孤立 `tool_result`），
   // 比今天更坏。走既有 `onEvent` 通道报一声，宿主可以据此知道「下次恢复还得再补一次」。
+  //
+  // issue #730（**四条放弃路径都要出声**）：这个函数是「引擎放弃兜底」的集中出口，现在逐条报：
+  //   ① 普查判悬空、而同页合并拒了（聚合消息串了味）与 ② 非目标形状（紧接的不是 user / 一条结果
+  //      都没有）——两者都在 `restoreResume` 里定了成因，经 `resumeMidSequenceAbandons` 交过来；
+  //      它们**一张桩都不产出** ⇒ 必须排在下句早退**之前**，否则无声消失。
+  //   ③ 锚点缺失（既有那条）——现在额外带一个 `detail` 说清是哪一种（探针缺席 / 载体已带正文 /
+  //      账本真没那一行），这三件事对宿主完全不同：只有第一种补上探针就能闭合。
+  //   ④ 有锚点、该落账，而 `appendMessageRowToTranscript` 返回 `undefined`（轮号不是安全整数，或
+  //      写被返回 `false`）——修前这里一声不响，账本里没那一行而宿主以为已闭合。
+  /** 同一条 `resume_journal_skipped` 的形状只在这里拼一次（`detail` 缺席时**不带**那个键）。 */
+  const emitResumeJournalSkip = ({ round, reason, count, detail }) => emitEvent({
+    type: "resume_journal_skipped",
+    runId,
+    ...(parentRunId === undefined ? {} : { parentRunId }),
+    round,
+    reason,
+    count,
+    ...(detail === undefined || detail === null ? {} : { detail }),
+  });
+
+  /** 同一批成因按 `(reason, detail)` 归并成**一条**事件（数量在 `count`，轮号取第一条）。 */
+  const groupResumeJournalSkips = (entries) => {
+    /** @type {Map<string, {reason: any, detail: any, round: any, count: number}>} */
+    const groups = new Map();
+    for (const entry of Array.isArray(entries) ? entries : []) {
+      const key = `${String(entry?.reason)}\u0000${String(entry?.detail)}`;
+      const found = groups.get(key);
+      if (found !== undefined) {
+        found.count += 1;
+        continue;
+      }
+      groups.set(key, { reason: entry?.reason, detail: entry?.detail, round: entry?.round, count: 1 });
+    }
+    return [...groups.values()];
+  };
+
   const journalResumeMidSequenceToolResults = async () => {
     const stubs = resumeMidSequenceToolResults;
-    if (!Array.isArray(stubs) || stubs.length === 0) return;
     // 一次性交接（与 A 集合同一条纪律）：guard 补跑桥会回到主循环，这批不得被第二次入账。
     resumeMidSequenceToolResults = [];
+    const abandons = resumeMidSequenceAbandons;
+    resumeMidSequenceAbandons = [];
+    // ①② 放弃兜底的成因：它们在下面的早退**之前**就要发完（一张桩都没有的放弃才是今天听不见的那些）。
+    for (const group of groupResumeJournalSkips(abandons)) {
+      emitResumeJournalSkip({ round: group.round, reason: group.reason, count: group.count, detail: group.detail });
+    }
+    if (!Array.isArray(stubs) || stubs.length === 0) return;
     const unanchored = stubs.filter((stub) => typeof stub?.partOf !== "string" || stub.partOf === "");
     if (unanchored.length > 0) {
-      emitEvent({
-        type: "resume_journal_skipped",
-        runId,
-        ...(parentRunId === undefined ? {} : { parentRunId }),
-        round: unanchored[0]?.round,
+      // ③ 同一个成因码下的几种详情（`anchorMissDetail` 由 `restoreResume` 在落盘行上算好）。
+      for (const group of groupResumeJournalSkips(unanchored.map((stub) => ({
         reason: "mid_sequence_aggregate_row_not_in_ledger",
-        count: unanchored.length,
-      });
+        detail: stub?.anchorMissDetail,
+        round: stub?.round,
+      })))) {
+        emitResumeJournalSkip({ round: group.round, reason: group.reason, count: group.count, detail: group.detail });
+      }
     }
+    const writeRefused = [];
     for (const stub of stubs) {
       if (typeof stub?.partOf !== "string" || stub.partOf === "") continue;
-      await appendMessageRowToTranscript(
+      const persistedRowKey = await appendMessageRowToTranscript(
         { role: "user", content: [stub.toolResult] },
         stub.round,
         { partOf: stub.partOf },
       );
+      // ④ 写被拒（返回 `undefined`）不是「无事发生」：那张桩只活在本次上下文里，下一次恢复还得再补。
+      if (persistedRowKey === undefined) {
+        writeRefused.push({
+          reason: MID_SEQUENCE_ABANDON_ROW_WRITE_REFUSED,
+          detail: Number.isSafeInteger(stub.round)
+            ? RESUME_JOURNAL_SKIP_DETAIL_APPEND_SKIPPED
+            : RESUME_JOURNAL_SKIP_DETAIL_ROUND_NOT_SAFE_INTEGER,
+          round: stub.round,
+        });
+      }
+    }
+    for (const group of groupResumeJournalSkips(writeRefused)) {
+      emitResumeJournalSkip({ round: group.round, reason: group.reason, count: group.count, detail: group.detail });
     }
   };
 
