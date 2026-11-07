@@ -750,9 +750,12 @@ and the run-snapshot per-output stub (`src/loop/run-snapshot-executor.js`, same 
 aggregate stub), plus three `bin/` sites: the guard's run-state summary and its revise pointer
 (`bin/final-guard.js`), and the fold-stub suffix plus the recovery hint
 (`bin/final-guard-support.js` and `bin/final-guard.js`'s `buildCaptureRecoveryHint`), plus the
-three child-run sites in `bin/delegation.js` (its system prompt, fold stub and recovery hint),
-which share the **child's own tool surface** with the parent-side derivation — the single source
-of truth review round 2 asked for. The evidence here is an **assembly fact plus the ledger**, never the `--no-notes` flag: a `--tools`
+two child-run sites in `bin/delegation.js` (its fold stub and recovery hint), which share the
+**child's own tool surface** with the parent-side derivation — the single source of truth review
+round 2 asked for. The child's system prompt is not in this class: it is the child-side twin of
+capability-statement item 1 below, on the tool-surface gate alone, and its surface fact is the
+**child's own name list** (round 3, must-fix ①: `notes` is derived from `toolNames` instead of
+being handed in separately by the caller). The evidence here is an **assembly fact plus the ledger**, never the `--no-notes` flag: a `--tools`
 allowlist strips the family just as well, and reading only the flag misses that.
 
 **Capability statements — deliberately on the tool-surface gate only, never on the ledger gate**
@@ -760,18 +763,29 @@ allowlist strips the family just as well, and reading only the flag misses that.
 
 1. The `[Your situation]` paragraph and the "exact values must come from" bullet of the CLI
    system prompt (`bin/system-prompt.js`), and the archive notice (`bin/tools.js`), all derived
-   from the assembled tool surface through `notesOnToolSurface`. Three reasons: (a) they are assembled **before the run
+   from the assembled tool surface through `notesOnToolSurface`; `bin/delegation.js`'s child-run
+   prompt is the **child-side twin of the same site**, derived through `notesOnToolNames` (the
+   name-list side of the same `hasNoteToolSurface` truth). Four reasons: (a) they are assembled **before the run
    starts** (once for `chat`, once at REPL session start), where there is no ledger to consult —
    scoring them against the four #741 states could only ever land on "no note writes", which
    reports "not known" as "this run recorded nothing": the mirror image of the error #746 fixed
    on the guard side; (b) the sentences are **capability claims** ("this session ships `note_*`;
    look before you re-read"), whose truth depends only on the assembly fact, which *is* gated —
-   rewriting them as existence claims ("the notes you recorded", "the notes contain") would be
-   the lie; (c) forcing the ledger gate in would mean plumbing `messages` into the assembly layer
+   and the action sentences are no exception: they are a **conditional workflow** whose trigger is
+   the model's own state ("you need an early detail and cannot recall it"), not a claim that the
+   note is there; rewriting them as existence claims ("the notes you recorded", "the notes
+   contain") would be the lie; (c) forcing the ledger gate in would mean plumbing `messages` into the assembly layer
    (`chat` has no history; the REPL would have to re-assemble per round) and would buy exactly one
-   new falsehood: "the family is present, but this run could never have written anything".
+   new falsehood: "the family is present, but this run could never have written anything";
+   (d) the default rendering is pinned **byte-for-byte by goldens**
+   (`buildCliToolsSystemPrompt() === CLI_TOOLS_SYSTEM_PROMPT`, `test/fixtures/cli-golden.json`,
+   plus the host-side "default list line is byte-identical" assertion in `examples/pi-extension`):
+   wiring the ledger gate necessarily rewrites that default, so demanding the four #741 states
+   here pays a golden re-bake and still buys back the falsehood in (a).
    **Reverse guard:** if an existence claim shows up in those paragraphs,
-   `test/prompt-note-coverage-746.test.js` goes red.
+   `test/prompt-note-coverage-746.test.js` goes red — and its probe now passes an `archiveDir`,
+   so the archive-notice branch is inside the scanned text (round 2's probe did not, which is how
+   an existence-claim mutation there slipped through).
 2. The read-only tool whitelist text in `src/loop/run-snapshot-executor.js`, where `note_list`
    names a *permitted* tool (#195) — a capability statement, not a retrieval instruction; the
    evidence gate would false-positive there.
