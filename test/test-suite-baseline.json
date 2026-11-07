@@ -731,6 +731,23 @@
       "todo": 0,
       "cancelled": 0,
       "why": "issue #735 切片 2 **第 7 轮**：把守卫的 meta 排除从**词表**升级成**提及 vs 使用**的判别，`test/docs-no-overclaim-735.test.js` 8 格 → **10 格**，`src/` `bin/` `docs/` `CHANGELOG.md` 一字未动（`git diff --stat 1563d40..HEAD` 只有这一个测试文件）。**+2 = 「提及/使用判据」那两格**：`G8`（四条 RED/GREEN，每条配一份退化实现：不判引号 / 整句级豁免 / 引号内一律豁免 / 只认词表；另钉「现树上至少一处只有结构认得出、词表漏掉的引用命中」——现测四面 10 处术语级引号命中，其中 7 处词表认不出来）与 `G9`（**已知缺口 characterization**：不带引号也不点名守卫机制的复述句判为在场、短术语包进引号的假主张判为提及——零 LLM 只读字节的口径下这两处没有结构信号，处置是登记而非修复）。判定面本身：新增 `QUOTE_PAIRS`/`quoteSpansOf`/`quotedTermSpanWrapping` 与 `mentionReason()`，G1 禁语豁免、G3 量词断言（从裸扫改走 `realHits`）、G2 的「在场」共用这一个判别；`META_MARKER` 退成兜底层。RED/GREEN 全部 `cp` 备份 + `md5sum -c` 还原、零 `git checkout`（**上一轮被打断时守卫文件里留了一次没还原的 `sed` 变异，这一轮每步都当场校 md5**）：a) 把 `必须逐字留着|肯定式` 从 `META_MARKER` 摘掉 ⇒ `not ok 8 · G7`（文件 536 行：纯词表口径下 CHANGELOG.md:717 那句自我描述被当成事实句在场）+ `not ok 10 · G9`（692 行：兜底层失效），而生产路径的 G7 断言仍绿 = 洞由结构层独立封着；b) **新造一种不含任何自我指涉词的引号引用式自我描述**（替掉 CHANGELOG.md:730 那句散文断言）⇒ `not ok 3 · G2` 点名 `cn·CHANGELOG 缺 scalar-not-bitmap`（本轮的交付证明；同一处变异喂「弄瞎结构层」的退化实现 ⇒ G2 **绿** = 第 6 轮那记假绿）；c) 同一份文档把诚实句用散文写在引号外 ⇒ 10/10 全绿；d) 引用（717）与断言（730）同时在场时**只删引用** ⇒ 全绿，**只改写掉断言** ⇒ `not ok 3 · G2` 红 = 只剩提及不算数。另三条（同法还原）：把结构层弄瞎（`QUOTE_PAIRS = []`）⇒ G8/G9 红；往中/英条目各插一句**整句包进引号**的假主张 ⇒ `not ok 2 · G1`（中：`cn-prefix-already-journaled` / `cn-anchor-cap`；英：`en-by-construction` / `en-never-loses` / `en-prefix-already-journaled`）+ `not ok 4 · G3`，而「引号内一律豁免」的退化实现把这三条全变成绿（假绿）；只引一个术语「按构造」⇒ 新守卫全绿、弄瞎结构层那份 `not ok 2 · G1` 命中 `cn-by-construction`（那是假红）。抬值依据：本次 TAP 汇总 `tests=3659 pass=3646 fail=0 skipped=13 todo=0 cancelled=0`（日志 /tmp/r7/npm-test.log，自洽 3646+0+0+13+0=3659），脚本自打 `HINT 登记值可抬到 3659（当前登记值 3657，本次实测 3659，+2）` ⇒ 非手抄；同一份日志复核 `TEST-SUMMARY-VERDICT ok`。对账：main 自己那棵树现登 3643（上一笔在 `47b69bf` 上量得，本轮未重取——本轮没动任何主干文件），本支增量由 +14 变成 **+16** ⇒ 3643 + 16 = 3659。**当场 `git rev-list --count 47b69bf..HEAD` = 27 笔**（在 `8875490` 上量得；本条 JSON-only 观察自己那一笔落在它之后是 28——上一笔写的 25 是当时那棵树的数，别再沿用）。fail=0；skipped 13（≤ maxSkipped 15，成员未变，没有放宽上限）。"
+    },
+    {
+      "date": "2026-11-07",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "af30d58（被测量那一棵树的内容；登记这笔提交在它之后，只改这个 JSON 与 static-guards 的配对地板）",
+      "branch": "fix-261107-11-snapshot-round-residue",
+      "mergeBase": "fe81810",
+      "mainSha": "fe81810",
+      "headSha": "af30d58",
+      "tests": 3659,
+      "pass": 3646,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "issue #735 切片 2 **重放到 main `fe81810`（#710，PR #757，12:37 由并行会话合入）之后**现测。**数值没变（3659）——因为 #710 那一支加的是文档与注释，测试用例 +0**；变的是**派生地板**：`CHANGELOG_PAIR_FLOOR` 在 `## [Unreleased]` 上现报「实测 **17** 对 ≠ 地板 16 对」⇒ 抬到 17。**两侧各自测到的都是 16**（#710 在 `e10539f` 里把 15→16，本支也在同一格上 15→16），合并树才是 17 —— 与 #741/#742 各测 12、合并树报 13 完全同型，**再次证明派生地板只能现测、不能相加**。**上两笔观察条目的 `mainSha` 是 `47b69bf`（rebase 前的历史坐标），按「历史值只作历史」的规矩保留不改**，当前真相以本条为准。"
     }
   ]
 }
