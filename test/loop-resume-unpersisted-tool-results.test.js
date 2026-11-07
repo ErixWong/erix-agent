@@ -520,6 +520,88 @@ test("#424 升级路径 · 崩溃轮的 assistant 正文只在快照里 ⇒ A �
   assert.equal(deadProvider.requests.length, 0, "红在第一次模型请求之前：0 次请求");
 });
 
+// ── issue #754 裁决 2 · **第三刀（同源同去留补完）**的验收面 ──────────────────────────────────
+// 判据 1 禁的是 `invalid_messages` 这个**结局**，不是某一个夹具形状。第二刀卡住了「快照里的**结果**呷进
+// 上下文」那一个口子，但**在飞的调用**（`snapshot.pendingToolUses`）与崩溃轮正文同批、同来源：旧档案若在
+// 崩溃轮留有「执行了、结果没落盘」的调用，复放它 ⇒ 结果被写进一个已经没有配对 `assistant` 的上下文 ⇒
+// **同一个结局**（`invalid_messages`、0 次请求），只是换了一格夹具。第三刀用同一把尺子卡住那另一个口子
+// （`src/loop/resume-manager.js` 里 `resumePendingTools` 上那道 `toolUseInRebuiltContext`）。
+// 本格钉四件事：恢复**起得来**、**真的发出请求**、`invalid_messages` **不出现**、告示**照旧出声**；
+// 并钉两条例外不许被顺手改掉：A 集合仍整段交给 #424 守卫（事件面一字不动）、那一轮的副作用**彻底不再补**。
+test("#754 裁决 2 · 第三刀不变式 · 旧档案崩溃轮留有未入账的在飞调用 ⇒ 恢复仍起得来、发出请求、不出 invalid_messages、告示照旧出声", async () => {
+  const inner = createMemoryTranscriptStore();
+  const roundOneMessages = [
+    { role: "user", content: [text("任务")] },
+    { role: "assistant", content: [text("第一轮答复")] },
+  ];
+  await inner.appendRound(RUN_ID, {
+    round: 1,
+    roundKey: `${RUN_ID}:round:1`,
+    dedupKey: `${RUN_ID}:engine:round:1`,
+    messages: roundOneMessages,
+    summary: "missing",
+    ts: new Date().toISOString(),
+  });
+  // 崩溃轮（round 2）：`t1` **执行了但结果没落盘**（结果只在快照的 `toolResults` 里 = A 集合），
+  // `t2` **还在飞**（只在 `pendingToolUses` 里，没有结果）。两者所属的那条 assistant 只在快照正文里
+  // ⇒ 账本折出 2 条、锚点 2、快照 3 条 ⇒ 条数探针 = 1 ⇒ 这是**旧格式（pre-261021）档案**。
+  await inner.saveRunSnapshot(RUN_ID, {
+    round: 2,
+    messages: [...roundOneMessages, {
+      role: "assistant",
+      content: [text("第二轮"), toolUse("t1"), toolUse("t2")],
+    }],
+    persistedTranscriptLength: roundOneMessages.length,
+    pendingToolUses: [toolUse("t1"), toolUse("t2")],
+    executedToolIds: ["t1"],
+    toolResults: [{ toolUseId: "t1", toolResult: toolResultBlock("t1") }],
+    toolOutputs: [],
+    compactionStats: [],
+    ts: new Date().toISOString(),
+  });
+
+  const events = [];
+  const executed = [];
+  const provider = createFakeProvider([endTurn("续接完成")]);
+  const resumed = await runLoop({
+    store: inner,
+    provider,
+    executeTool: async ({ id }) => {
+      executed.push(id);
+      return `replayed-${String(id)}`;
+    },
+    capabilities: { hooks: { onEvent: (event) => events.push(event) } },
+  });
+
+  // ① 起得来，且**不是因为**运气：错误原文一并贴进断言消息，红的时候直接看得见是哪一种结局。
+  assert.equal(resumed.ok, true,
+    `旧档案 + 未入账的在飞调用必须起得来（裁决 2 禁的是 \`invalid_messages\` 这个结局；实测：\`${String(resumed.error)}\`）`);
+  assert.doesNotMatch(String(resumed.error ?? ""), /invalid_messages/u,
+    "同一个 runId 不许永久起不来：复放出来的结果不许在没有配对 assistant 的上下文里落下孤儿");
+  // ② 真的发了请求（不是 0 次请求那种「本地就拒了」）。
+  assert.equal(provider.requests.length, 1, "必须真的发出过一次模型请求（`invalid_messages` 的形态是 0 次请求）");
+  // ③ 崩那一轮的两批东西一条都不喂：`t1` 的结果（A 集合，正文已不支持）、`t2` 的复放结果（第三刀）。
+  for (const id of ["t1", "t2"]) {
+    assert.equal(resultsFor(provider.requests[0].messages, id).length, 0,
+      `${id} 的结果一条也不许进上下文（它所属的 assistant 只在已不支持的来源里 ⇒ 喂进去就是孤儿结果）`);
+  }
+  // ④ 出声：递给模型的末条告示必须带那句弃用说明与条数（快照 3 格 - 锚点 2 = 1）。
+  assert.match(JSON.stringify(provider.requests[0].messages.at(-1)),
+    /本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 1 条/u,
+    "不许静默：丢了正文必须在递给模型的告示里出声并带条数");
+  // ⑤ 代价（认下来）：那一轮的副作用**彻底不再补** —— `t1` 没结果可接、`t2` 不再重跑。
+  assert.deepEqual(executed, [],
+    "旧档案里那一轮的在飞调用**不再补跑**（裁决 2 认下来的代价；`legacySnapshotBodyDropped === 0` 的新格式档案照旧补跑）");
+  // ⑥ 事件面一字不动：A 集合仍**整段**交给 #424 守卫 ⇒ 仍恰一条 `resume_journal_skipped`、`count` 仍是 A 集合大小。
+  const skipped = events.filter((event) => event?.type === "resume_journal_skipped");
+  assert.deepEqual(skipped.map((event) => ({
+    round: event.round, reason: event.reason, count: event.count,
+  })), [{ round: 2, reason: "crash_round_assistant_not_in_ledger", count: 1 }],
+    "第三刀不许动 #424 的事件面：`ctx.resumeUnpersistedToolResults` 仍拿全量，事件照旧按 A 集合大小报");
+  assert.deepEqual(ledgerResults(await inner.load(RUN_ID)), [],
+    "守卫照旧让 A 集合整段不入账 ⇒ 账本里仍一条 `tool_result` 行都没有");
+});
+
 test("#424 守卫精度 · 新账本（崩溃轮 assistant 已落盘）照旧入账，不发跳过事件", async () => {
   const inner = createMemoryTranscriptStore();
   await crashWithUnpersistedResult(inner);

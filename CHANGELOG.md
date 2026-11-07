@@ -20,7 +20,12 @@
   legacy branch, a snapshot `tool_result` whose `tool_use` is no longer in the rebuilt context is not fed
   either — otherwise the surviving result is an orphan and `validateMessages` rejects it at
   `src/messages/rounds.js` (the #421 / #730 fallback only answers the opposite direction, a dangling
-  `tool_use`). The observable outcome is an **explicit degraded rebuild**: the legacy run resumes from the
+  `tool_use`); (3) on that same branch, an in-flight call from `snapshot.pendingToolUses` whose `tool_use`
+  is no longer in the rebuilt context is **not replayed** either — the pending list came from that same
+  retired source in the same batch as the crash-round body, so replaying it writes a result into a context
+  with no matching `assistant` and reproduces the very same `invalid_messages` outcome through a second
+  door. **The accepted cost:** whatever that crash round had still running is never made up — not
+  re-executed, and no result to pick up; the notice sentence is the only trace it ever leaves. The observable outcome is an **explicit degraded rebuild**: the legacy run resumes from the
   ledger alone, makes its request, and the engine's resume notice (`…:control:resume-notice:<fp>`, model
   context **and** ledger) says `本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 N 条，该格式已不再支持恢复）`.
   Nothing is silent and nothing is new on the event surface: no new event type, no new
@@ -38,7 +43,10 @@
   **条数探针**（`ledgerMessages.length === anchor && snapshotBody.length > anchor`，只数非 null 格），除了出声
   不作他用；（2）同一条旧格式分支上，「上下文里已没有配对 `tool_use`」的快照 `tool_result` 也不再喂——否则活下来的
   那条就是孤儿结果，`src/messages/rounds.js` 的消息校验当场拒掉（#421 / #730 的兜底只管反方向：悬空的
-  `tool_use` 补桩）。可观察结局是**明示降级为从账本重建**：旧档案照旧起来、照旧发出请求，而引擎的恢复告示
+  `tool_use` 补桩）；（3）同一条分支上，`snapshot.pendingToolUses` 里「上下文已无配对 `tool_use`」的在飞调用
+  **也不再补跑**——那份在飞清单与崩溃轮正文同批、同来源，补跑它等于把结果写进一条已经没有配对 `assistant` 的
+  上下文，同一个 `invalid_messages` 结局从第二个门再来一遍。**认下来的代价**：崩溃那一轮里还在跑的东西
+  从此彻底不补——既不会重跑，也没有结果可接，只在告示那句弃用说明里留一个痕迹。可观察结局是**明示降级为从账本重建**：旧档案照旧起来、照旧发出请求，而引擎的恢复告示
   （`…:control:resume-notice:<fp>`，既进模型上下文也进账本）写明
   `本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 N 条，该格式已不再支持恢复）`。
   没有静默，事件面也没有新东西：不新增事件类型、不给 `resume_journal_skipped` 加新 `reason`，

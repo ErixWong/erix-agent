@@ -695,9 +695,19 @@ export async function restoreResume(ctx) {
         // ⚠ 这不改**交出去**的那批：下面 `ctx.resumeUnpersistedToolResults` 仍拿全量 ⇒ orchestrator 的
         // #424 守卫与 `resume_journal_skipped`（`crash_round_assistant_not_in_ledger`）事件面一字不动。
         // 新格式账本（`legacySnapshotBodyDropped === 0`）这条路逐字不变。
-        const replayResults = legacySnapshotBodyDropped === 0 ? replayResultsAll : replayResultsAll
-          .filter((toolResult) => ctx.messages.some((message) => blocksFor(message?.content)
-            .some((block) => block?.type === "tool_use" && block.id === toolResult?.tool_use_id)));
+        //
+        // **同一把尺子用三次**（issue #754 裁决 2 的普适形式：禁的是 `invalid_messages` 这个**结局**，
+        // 不是某一个夹具形状）：「上下文里还有没有那条 `tool_use`」是同一个判据，它同时管住
+        // **两个方吐**：结果往上下文里**呷**（第二刀）与在飞的调用往上下文里**写结果**（第三刀，见下方
+        // `resumePendingTools`）。只卡前者，旧档案里「执行了但结果没落盘」那一类仍会从后者吐出一张
+        // 无主的 `tool_result` ⇒ 同一个 `invalid_messages`（0 次请求），只是换了一格夹具。
+        const toolUseInRebuiltContext = (id) => (id === undefined
+          ? false
+          : ctx.messages.some((message) => blocksFor(message?.content)
+            .some((block) => block?.type === "tool_use" && block.id === id)));
+        const replayResults = legacySnapshotBodyDropped === 0
+          ? replayResultsAll
+          : replayResultsAll.filter((toolResult) => toolUseInRebuiltContext(toolResult?.tool_use_id));
         if (replayResultsAll.length > 0) {
           if (replayResults.length > 0
             && mergeToolResultsIntoMessages(ctx.messages, replayResults) === false) {
@@ -716,11 +726,21 @@ export async function restoreResume(ctx) {
           ?? (snapshot.pendingToolUse
             ? [snapshot.pendingToolUse]
             : []);
+        // **第三刀（同源同去留补完，issue #754 裁决 2）**：旧格式分支上，「上下文里已没有那条 `tool_use`」
+        // 的在飞调用**也不补跑**。为什么必须同时卡：B 集合里那批 `tool_use` 本身也来自刚被宣布不支持的那个
+        // 来源（`snapshot.pendingToolUses` 与崩溃轮正文同批）；补跑它 ⇒ orchestrator 把结果写回一个已经没有
+        // 配对 `assistant` 的上下文 ⇒ 同一个 `invalid_messages`（0 次请求），只是把第二刀卡住的孤儿结果换成了
+        // 「复放出来的孤儿结果」。**代价（认下来）**：崩溃那一轮的副作用**从此彻底不再补**——旧档案里那
+        // 一轮里「执行了但结果没落盘」的调用，既不会重跑、也没有结果可接，只能从告示里那句弃用说明知道它
+        // 存在过。新格式（`legacySnapshotBodyDropped === 0`）这一刀**不参与**：那里 `tool_use` 在账本里，
+        // 复照常跑，逐字不变。A 集合（`ctx.resumeUnpersistedToolResults`）仍拿全量 ⇒ #424 守卫与
+        // `crash_round_assistant_not_in_ledger` 事件面一字不动。
         ctx.resumePendingTools = pendingTools.filter((pendingTool) => (
           !snapshot.executedToolIds?.includes(pendingTool.id)
           && !ctx.resumeRunSnapshotResults.has(pendingTool.id)
           // 账本已经结清的结果不再补跑（逐条入账后，这是「已落盘」的权威口径）。
           && !ledgerToolResultIds.has(pendingTool.id)
+          && (legacySnapshotBodyDropped === 0 || toolUseInRebuiltContext(pendingTool.id))
         ));
       }
       // ── issue #421：**中段**悬空 `tool_use` 的读侧兜底 ────────────────────────────────────
