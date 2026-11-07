@@ -4,6 +4,20 @@ import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
 import { normalizedLabel } from "../src/text/label.js";
+// issue #746（B2/B3）：这两处的「先 note_list 再 note_read」以前是无条件的，而 guard 手里**本来就握着
+// 账本**（`store.load(runId)`）——它比谁都清楚本场有没有笔记可查，却依旧照谱宣科。现在接 #741 的
+// 同一口径（证据住在 `src/`：`bin → src` 是 AGENTS.md §1 允许的方向；`src/` 永不 import `bin/`）。
+import { noteRecallHint } from "../src/loop/note-prompt-hint.js";
+
+/**
+ * guard 侧的取回指引（issue #746）：把「笔记工具面 + 可见账本」交给 `src/` 的派生器，拿回一句真话。
+ *
+ * @param {{ noteTools?: readonly string[], messages?: readonly unknown[] }} [evidence]
+ * @returns {string} 拼在提示文本里的从句（无证据 ⇒ 「重读 + 原因」，不出现 `note_*`）
+ */
+export function guardRecallClause(evidence = {}) {
+  return noteRecallHint(evidence).clause;
+}
 
 const LABEL_PATTERN = /^\s*([^:=\s][^:=\s]{0,80}?)\s*=\s*(.*?)\s*$/u;
 
@@ -31,7 +45,7 @@ async function legacyArchivedOutput(block) {
   }
 }
 
-async function captureStubForResult(block) {
+async function captureStubForResult(block, evidence) {
   let output = blockContentText(block?.content);
   if (block?.artifact !== undefined && output.length === 0) {
     const legacy = await legacyArchivedOutput(block);
@@ -41,12 +55,14 @@ async function captureStubForResult(block) {
     if (typeof legacy === "string") output = legacy;
   }
   const candidates = candidateLines(output);
+  // issue #746（B3）：后缀从证据里取，不再硬写「先 note_list 查找，再 note_read 读取」——没有笔记可查时
+  // 那句既指了不存在的道路，又把「我不知道有没有记录」伪报成「有记录」。无证据那一份同时带原因。
+  const suffix = guardRecallSuffix(evidence);
   if (candidates.length > 0) {
     const lines = candidates
       .slice(0, 3)
       .map(({ label, value }) => `${label}=${value}`);
     const prefix = "[已折叠] 值：";
-    const suffix = "；后续先 note_list 查找，再 note_read 读取；未记录且无法确定性重算时省略对应 findings 声明";
     let result = `${prefix}${lines.join("；")}${suffix}`;
     if (Array.from(result).length > 200) {
       const available = Math.max(0, 200 - Array.from(`${prefix}${suffix}`).length - 1);
@@ -55,17 +71,40 @@ async function captureStubForResult(block) {
     }
     return Array.from(result).slice(0, 200).join("");
   }
-  return "[已折叠] 后续先 note_list 查找，再 note_read 读取；未记录且无法确定性重算时省略对应 findings 声明".slice(0, 200);
+  return `[已折叠]${suffix}`.slice(0, 200);
 }
 
-export async function buildCaptureStub(message) {
+/**
+ * 折叠桩的后缀（200 字码点预算内）。两格都以「省略 findings」收尾，区别只在取回动作指哪里：
+ * 有证据 ⇒ note-first；无证据 ⇒ 重读 + 一句「本场无可复原的笔记记录」（不伪报「有记录」）。
+ *
+ * ⚠ 本处的无证据分支**不**拄 `noteRecallHint().clause` 的全文：那个 `clause` 带 #741 的完整原因子
+ * （「本场没装配笔记工具（宿主没给整族 `note_*` 工具）；…」，近 50 字），拄进来会把 200 码点的桩顶到
+ * 上限、并在 `budgetTokens` 很紧的折叠场景里直接撞 `invalid_budget`（memento S1/S2 实测）。
+ * 「完整原因」在 #741 那条 TTL 占位符里已经有；桩这只需说清「没记录 + 走重读」这一件事。
+ */
+function guardRecallSuffix(evidence) {
+  const hint = noteRecallHint(evidence);
+  // 受预算约束：这里取 **短版**（`shortClause`）——完整原因全文在 #741 的 TTL 占位符里已经有。
+  const clause = hint.available ? hint.shortClause : hint.shortClause;
+  return hint.available
+    ? `；后续${clause}；若未记录且无法确定性重算，请省略对应 findings 声明`
+    : `；后续${clause}；若无法确定性重算，请省略对应 findings 声明`;
+}
+
+/**
+ * @param {unknown} message 待折叠的那条消息
+ * @param {{ noteTools?: readonly string[], messages?: readonly unknown[] }} [evidence]
+ *   issue #746：**宿主传给引擎的真工具面** + 可见账本。没给 = 不知道 ⇒ 走无证据那一份（fail-closed）。
+ */
+export async function buildCaptureStub(message, evidence = {}) {
   // ADR-016：折叠值锚点对全部 tool_result 生效（不再区分可重放）
   const results = Array.isArray(message?.content)
     ? message.content.filter((block) => block?.type === "tool_result")
     : [];
   const stubs = [];
   for (const result of results) {
-    stubs.push(await captureStubForResult(result));
+    stubs.push(await captureStubForResult(result, evidence));
   }
   return [...new Set(stubs)].join("\n");
 }

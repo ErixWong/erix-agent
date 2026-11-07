@@ -61,12 +61,28 @@ export function rereadClause(command) {
 }
 
 /**
+ * 同一句话的**短版**（issue #746）：语义与 `clause` 同（无证据 ⇒ 重读 + 不伪报有记录），但砍掉 #741
+ * 那句完整原因。用在两个**受 `budgetTokens` 预算约束的受保护消息**里（折叠桩、折叠恢复提示）：
+ * 那里多出的几十字会直接把 run 顶到 `invalid_budget`（memento S1/S2 实测过）。完整原因在 #741 的
+ * TTL 占位符里已经有，不在这两处重复。
+ *
+ * @param {string | undefined} command
+ * @returns {string}
+ */
+export function rereadClauseShort(command) {
+  return command === undefined
+    ? "请重读源文件（本场无可复原的笔记记录）"
+    : `请重读源文件，或直接执行：${command}`;
+}
+
+/**
  * @typedef {object} NoteRecallHint
  * @property {string} gate `NOTE_HINT_GATES` 之一——测试断言走的是哪一格
  * @property {boolean} available 笔记这条路现在能不能查（= 证据门是否成立）
  * @property {string} reason 不能查时的原因文本（`NOTE_RECALL_REASONS` 的值；能查时是空串）
  * @property {string | undefined} command `retrievalCommandFor` 给出的那条命令（拼不出就 undefined）
  * @property {string} clause 取回指引那半句（调用方把它拼进自己那条文案）
+ * @property {string} [shortClause] 同一句的短版（仅供**受预算约束的受保护消息**用；有证据时与 `clause` 同）
  */
 
 /**
@@ -100,6 +116,7 @@ export function noteRecallHint({ noteTools, messages, toolName, toolInput } = {}
       clause: command === undefined
         ? NOTE_RECALL_CLAUSE
         : `${NOTE_RECALL_CLAUSE}；需要原文也可直接执行：${command}`,
+      shortClause: NOTE_RECALL_CLAUSE,
     };
   }
   const reason = typeof recall.reason === "string" && recall.reason !== ""
@@ -111,5 +128,7 @@ export function noteRecallHint({ noteTools, messages, toolName, toolInput } = {}
     reason,
     command,
     clause: `${rereadClause(command)}；${unverifiedRecallClause(reason)}`,
+    // 受预算约束的受保护消息用这一份（同一个判据，同一侧口径，只是不重复原因全文）。
+    shortClause: rereadClauseShort(command),
   };
 }

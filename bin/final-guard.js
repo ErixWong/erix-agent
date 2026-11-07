@@ -8,6 +8,8 @@ import {
   readCaptureManifests,
 } from "./final-guard-support.js";
 import { normalizedLabel } from "../src/text/label.js";
+// issue #746（B2）：取回指引从证据里取，不再硬写「先用 note_list 查找，再用 note_read 读取」。
+import { noteRecallHint } from "../src/loop/note-prompt-hint.js";
 // #391 R2：交付物判据的条数上限只有一份真值（引擎侧）；宿主侧前置挡直接引用它。
 import { DELIVERABLES_LIMIT as ENGINE_DELIVERABLES_LIMIT } from "../src/loop/deliverables.js";
 
@@ -18,7 +20,7 @@ export { PLACEHOLDER_MARKERS, createContentDeliverableChecks } from "./final-gua
 function warningMessage(message) {
   return `finalGuard warning: ${message}`;
 }
-export async function buildCaptureRecoveryHint({ archiveDir, foldedPayload, store, runId } = {}) {
+export async function buildCaptureRecoveryHint({ archiveDir, foldedPayload, store, runId, noteTools } = {}) {
   let records = [];
   if (store && typeof store.load === "function") {
     try {
@@ -34,7 +36,10 @@ export async function buildCaptureRecoveryHint({ archiveDir, foldedPayload, stor
   const archivedOutputs = transcriptCaptures.length > 0
     ? new Set(transcriptCaptures.map((capture) => capture.artifact?.digest)).size
     : legacyManifests.length;
-  return `[本 run 状态] 已折叠 ${countFoldedOutputs(foldedPayload)} 条早期输出；其中 ${archivedOutputs} 条输出已归档。需要精确值时先用 note_list 查找，再用 note_read 读取；若未记录且无法确定性重算，请省略对应 findings 声明。${captureIndex(transcriptCaptures.length > 0 ? transcriptCaptures : legacyManifests.map((manifest) => ({ display: manifest.display ?? manifest.archivePath, command: manifest.command })))}`;
+  // issue #746（B2 第一处）：这句「[本 run 状态]」里的取回指引以前是无条件的，而 `--no-notes` 时
+  // `note_list` / `note_read` 根本不在场上。指引现在从工具面证据里取（账本证据由调用方递）。
+  const recall = noteRecallHint({ noteTools, messages: records.flatMap((record) => record?.messages ?? []) }).shortClause;
+  return `[本 run 状态] 已折叠 ${countFoldedOutputs(foldedPayload)} 条早期输出；其中 ${archivedOutputs} 条输出已归档。需要精确值时${recall}；若无可复原的决策记录且无法确定性重算，请省略对应 findings 声明。${captureIndex(transcriptCaptures.length > 0 ? transcriptCaptures : legacyManifests.map((manifest) => ({ display: manifest.display ?? manifest.archivePath, command: manifest.command })))}`;
 }
 function countFoldedOutputs(foldedPayload) {
   if (!Array.isArray(foldedPayload)) return 0;
@@ -61,13 +66,15 @@ function captureIndex(captures) {
     ? ""
     : `\n捕获目录视图（最多 10 条）：\n${visible.join("\n")}`;
 }
-function capturePointer(capture) {
-  // ADR-016：capture 无自动笔记 key；指针必须指向可执行的 note-first 动作，
-  // 不借用来源文本让模型去文件系统盲目搜索。
+function capturePointer(capture, recallClause) {
+  // ADR-016：capture 无自动笔记 key；指针必须指向可执行的取回动作，不借用来源文本让模型去文件系统盲目搜索。
+  // issue #746（B2 第二处）：那个「可执行动作」现在由证据决定——有笔记证据才指 note-first，
+  // 没证据就指重读（旧文无条件指 note-first，`--no-notes` 下那是一个不存在的动作）。
   const target = capture?.display
     ?? (capture?.archivePath ? path.basename(String(capture.archivePath)) : "");
-  if (!target) return "没有可执行取回指针；若未记录且无法确定性重算，请省略对应 findings 声明";
-  return `归档输出 ${target}（先用 note_list 查找，再用 note_read 读取；若未记录且无法确定性重算，请省略对应 findings 声明）`;
+  const recall = recallClause ?? noteRecallHint({}).clause;
+  if (!target) return `没有可执行取回指针（原因：${recall}）；若无可复原的决策记录且无法确定性重算，请省略对应 findings 声明`;
+  return `归档输出 ${target}（需要时${recall}；若无可复原的决策记录且无法确定性重算，请省略对应 findings 声明）`;
 }
 /**
  * Build the deterministic CLI-side provenance gate for one run.
@@ -82,11 +89,25 @@ export function createFinalGuard({
   onWarning = (message) => console.warn(warningMessage(message)),
   runId,
   store,
+  noteTools,
 } = {}) {
   return async function finalGuard({
     findings,
   } = {}) {
     const inspected = await inspectRun({ archiveDir, store, runId });
+    // issue #746（B2）：guard 打回文案里那条取回指针，两条证据**它都拿得到**——工具面是宿主传进来的
+    // `noteTools`，账本是它本来就为 `inspectRun` 读过的那份记录。以前它手里握着账本却照旧硬写
+    // 「先用 note_list 查找，再用 note_read 读取」，等于向一个可能没装笔记、或压根没写过的 run
+    // 保证「笔记里有」。无证据那一份改走重读（并说明原因），不再向模型指一条不存在的道路。
+    let ledgerMessages = [];
+    if (store && typeof store.load === "function") {
+      try {
+        ledgerMessages = (await store.load(runId)).flatMap((record) => record?.messages ?? []);
+      } catch {
+        ledgerMessages = [];
+      }
+    }
+    const recallClause = noteRecallHint({ noteTools, messages: ledgerMessages }).clause;
     for (const warning of inspected.warnings) onWarning(warning);
     if (inspected.readableArtifacts === 0) {
       return { action: "skip", reason: "no_capture_evidence" };
@@ -111,7 +132,7 @@ export function createFinalGuard({
     if (declarations.length === 0) {
       const labels = [...knownLabels.keys()].slice(0, 10).join("、");
       return revise(
-        `终稿信封没有声明 findings 关键值，但本 run 的归档输出里有 ${inspected.captures.length} 条可核验捕获值（可用 label：${labels}）。请在结束信封的 findings 中声明结论用到的值（label→精确值，逐字取自归档原文）；guard 只读 findings，不解析终稿散文——若结论确实不依赖任何归档值，本次运行在重试耗尽后将以 unverified 收尾（fail-closed）。${capturePointer(inspected.captures[0])}`,
+        `终稿信封没有声明 findings 关键值，但本 run 的归档输出里有 ${inspected.captures.length} 条可核验捕获值（可用 label：${labels}）。请在结束信封的 findings 中声明结论用到的值（label→精确值，逐字取自归档原文）；guard 只读 findings，不解析终稿散文——若结论确实不依赖任何归档值，本次运行在重试耗尽后将以 unverified 收尾（fail-closed）。${capturePointer(inspected.captures[0], recallClause)}`,
       );
     }
     for (const { label, value } of declarations) {
@@ -127,7 +148,7 @@ export function createFinalGuard({
       if (matched.length === 0) {
         const observed = [...new Set(captures.map((capture) => capture.value))].slice(0, 5);
         return revise(
-          `终稿 findings 声明的 ${label}=${value} 与归档捕获值不符（捕获值：${observed.join(" | ")}）。${capturePointer(captures[0])}；不得重跑命令；若确认无法恢复，请明确说明不可恢复。`,
+          `终稿 findings 声明的 ${label}=${value} 与归档捕获值不符（捕获值：${observed.join(" | ")}）。${capturePointer(captures[0], recallClause)}；不得重跑命令；若确认无法恢复，请明确说明不可恢复。`,
         );
       }
     }

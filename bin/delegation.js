@@ -284,9 +284,11 @@ export function createCliDelegation({
           foldedPayload,
           store: assembly.store,
           runId,
+          // issue #746（B2/B3）：子 run 的取回指引跟**子的工具面**走（父的 `--tools` 可能把笔记滤掉）。
+          noteTools: noteToolSurface(childTools),
         })
         : undefined,
-      ({ content }) => buildCaptureStub({ content }),
+      ({ content }) => buildCaptureStub({ content }, { noteTools: noteToolSurface(childTools) }),
     );
     const { data: compactionData, hooks: compactionHooks } = splitCompactionContext(compaction);
 

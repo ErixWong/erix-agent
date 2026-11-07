@@ -40,6 +40,16 @@ export function notesOnToolSurface(tools) {
   return hasNoteToolSurface(noteToolNamesOnSurface(tools));
 }
 
+/**
+ * 同一件事的名字口径（issue #746 B2/B3 递给 `src/` 派生器的那个数组）。
+ *
+ * @param {Array<{ name?: unknown }> | undefined} tools
+ * @returns {string[]}
+ */
+export function noteToolSurface(tools) {
+  return noteToolNamesOnSurface(tools);
+}
+
 /** MCP 代理工具的说明段（chat / repl 共用，逐字节保持 0.31.0 的文案）。 */
 const MCP_PROXY_NOTICE = `
 

@@ -73,7 +73,7 @@ import {
 } from "./tools.js";
 // issue #716：系统提示装配（含项目约定注入）与 `erix chat` 共用同一条路——两条边不再各抄一份。
 // 唯一差别是 `planDirective`：chat 末尾那句「每轮先声明计划」repl 没有（0.31.0 的现状）。
-import { buildCliSystemPrompt } from "./system-prompt.js";
+import { buildCliSystemPrompt, noteToolSurface } from "./system-prompt.js";
 import { formatGuardMetrics } from "./guard-metrics.js";
 
 const DEFAULT_MAX_ROUNDS = 32;
@@ -881,9 +881,10 @@ export async function runRepl(argv, io = {}) {
             foldedPayload,
             store,
             runId: options.session,
+            noteTools: noteToolSurface(replPromptToolSurface()),
           })
           : undefined,
-        ({ content }) => buildCaptureStub({ content }),
+        ({ content }) => buildCaptureStub({ content }, { noteTools: noteToolSurface(replPromptToolSurface()) }),
       );
       const tools = [...cliTools.tools, ...skillTools.tools];
       if (mcpProxy?.enabled) {
