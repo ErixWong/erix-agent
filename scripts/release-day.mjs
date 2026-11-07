@@ -70,6 +70,17 @@
 //   npm run release:day -- --all --dry                # 什么都不改、什么都不发、不写盘
 //   npm run release:day -- --self-test                # 离线反向证（合成树 / 假 runner，不联网、不装包）
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+// issue #731 N4/N3：CHANGELOG 的「版本节标题 / 段首日期 / bullet」三条口径是**共享**的，不是各抄一份。
+// 日期正则此前是两侧字面拷贝，标题正则已经分叉（这里 `^##\s*\[`，`docs-drift-check` 那边字面单空格）
+// ⇒ `##  [0.31.0]`（双空格）两个读者两个答案。口径与理由住在 `scripts/changelog-heading.mjs` 里。
+import {
+  CHANGELOG_DATED_HEADING_SUFFIX,
+  CHANGELOG_UNRELEASED_HEADING,
+  changelogHeadingIsDated,
+  changelogVersionHeadingRe,
+  isChangelogBulletLine,
+  matchChangelogVersionHeading,
+} from "./changelog-heading.mjs";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -343,14 +354,18 @@ function cmdline(argv, env = {}) {
 // 行首 `- `；顶部节被改名 ⇒ 红并点名「找不到版本节」，不许静默绿），段首「带不带发布日期」复用
 // `docs-drift-check.mjs` 的 `changelogSections()` 那一条正则。版本号从 `package.json` 现读，**不写死**。
 
-/** 顶部版本节标题（与 `test/static-guards.test.js` 的 `CHANGELOG_VERSION_HEADING` 同一字面）。 */
-export const UNRELEASED_HEADING = "## [Unreleased]";
+/** 顶部版本节标题（唯一来源：`scripts/changelog-heading.mjs`；`test/static-guards.test.js` 读同一份）。 */
+export const UNRELEASED_HEADING = CHANGELOG_UNRELEASED_HEADING;
 
 /** 判词里每条 bullet 的前若干字（issue #715 的判据要求：逐条列前 60 字）。 */
 const BULLET_PREVIEW = 60;
 
-/** 段首那一行「带发布日期」的口径——与 `docs-drift-check.mjs` 的 `changelogSections()` 同一条正则。 */
-const DATED_HEADING_SUFFIX = /^\s*[-—]\s*(\d{4}-\d{2}-\d{2})/u;
+/**
+ * 段首那一行「带发布日期」的口径——与 `docs-drift-check.mjs` 的 `changelogSections()` **同一条正则**
+ * （issue #731 N4：那一侧历史上是**字面拷贝**而非 import；现在两侧都从 `scripts/changelog-heading.mjs`
+ * 现读，抄件的入口被封掉——字面回到调用方就让自测 ⑯c 红，别在注释里再抄一遍正则。）
+ */
+const DATED_HEADING_SUFFIX = CHANGELOG_DATED_HEADING_SUFFIX;
 
 /** 一条 bullet 的前 `BULLET_PREVIEW` 字（超长才加省略号）。 */
 function bulletPreview(text) {
@@ -408,13 +423,19 @@ export function probeUnreleasedCarry({ root = DEFAULT_ROOT } = {}) {
   const topTo = sectionEnd(top);
   /** @type {Array<{line: number, text: string}>} */
   const bullets = [];
-  for (let i = top + 1; i < topTo; i += 1) if (lines[i].startsWith("- ")) bullets.push({ line: i + 1, text: lines[i] });
+  // bullet 的行级口径 = 共享谓词（issue #731 N3：`test/static-guards.test.js` 的三处同一份）。
+  for (let i = top + 1; i < topTo; i += 1) if (isChangelogBulletLine(lines[i])) bullets.push({ line: i + 1, text: lines[i] });
 
-  const escaped = version.replace(/\./gu, "\\.");
-  const sectionAt = lines.findIndex((line) => new RegExp(`^##\\s*\\[${escaped}\\]`, "u").test(line));
+  // **标题口径 = 共享的那一条**（`##` + 恰好一个空格 + `[`）。此前这里是 `^##\s*\[<版本>\]`（容忍多空格），
+  // 而 `docs-drift-check.mjs` 的字面单空格 ⇒ `##  [0.31.0]（未发布）` 两边给不同答案（issue #731 N4）。
+  // 现在歪缩进的标题在**这一格**也算「还没有本版的版本节」⇒ 走下面的 (a)「还没切版」未判定，
+  // 判词给出「插入 `## [<版本>]（未发布 / unpublished）`」的动作；这与 `check:docs` 那一侧的读数一致。
+  const sectionAt = lines.findIndex((line) => changelogVersionHeadingRe(version).test(line));
   const sectionHeading = sectionAt === -1 ? null : lines[sectionAt];
-  const suffix = sectionHeading === null ? "" : (/^##\s*\[\d+\.\d+\.\d+\](.*)$/u.exec(sectionHeading) ?? ["", ""])[1];
-  const dated = DATED_HEADING_SUFFIX.test(suffix);
+  const suffix = sectionHeading === null
+    ? ""
+    : (matchChangelogVersionHeading(sectionHeading)?.suffix ?? "");
+  const dated = changelogHeadingIsDated(suffix);
 
   // (a) 还没切版：package.json 那一版在 CHANGELOG 里没有段
   if (sectionAt === -1) {
@@ -431,7 +452,15 @@ export function probeUnreleasedCarry({ root = DEFAULT_ROOT } = {}) {
       `${version} 的版本节在第 ${sectionAt + 1} 行，\`${UNRELEASED_HEADING}\` 里 0 条待入账条目`);
   }
 
-  // (b) 版本节已开、但段首带发布日期 ⇒ 那一版已经发布，`[Unreleased]` 里这些条目属于下一版
+  // (b) 版本节已开、但段首带发布日期 ⇒ 那一版已经发布，`[Unreleased]` 里这些条目属于下一版。
+  //
+  // ⚠ **这一格只是消费者，等价前提住在另一道闸**（issue #731 N2）：本格把「段首带发布日期」当成
+  //   「那一版已发布」，这条等价**不在这里成立**，它成立在 `check:docs` 的那一半——
+  //   `scripts/docs-drift-check.mjs` §17b（issue #697 判据 1）：「正在准备的那一段（版本序最高的版本段）
+  //   标了未发布就不许带发布日期 ⇒ 红」。那道闸在，「带日期的段」与「在飞的段」才是两个不相交的集合。
+  //   后果要写死：那条不变量哪天被放宽（例如允许未发布段带日期、或把「最高段」的口径改掉），
+  //   本格就会把**带日期的在飞段永远判成未判定**——未判定不是绿，但也不再有人红，等于这一格静默失效。
+  //   所以：动 §17b 之前先动这里（自测 ⑯d 会当场指出这条依赖已经断）。
   if (dated) {
     return finding(
       VERDICT.NOT_JUDGED,
@@ -440,6 +469,9 @@ export function probeUnreleasedCarry({ root = DEFAULT_ROOT } = {}) {
       [
         `动作：把 \`package.json\` 的 version 升到下一版，再在 \`${UNRELEASED_HEADING}\` 与条目之间插入 \`## [<新版本>]（未发布 / unpublished）\`（形状见 4963293）；切完再跑本步。`,
         "     这一条不是「`[Unreleased]` 非空即红」：preflight 可能跑在切版之前，那时 `[Unreleased]` 里本来就该有待入账条目。",
+        "     凭什么「带发布日期」就等于「已发布」：`check:docs` 的 §17b（issue #697 判据 1）钉着"
+        + "「正在准备的那一段标了未发布就不许带发布日期 ⇒ 红」——本格**消费**那条不变量，自己不复述它；"
+        + "它一旦被放宽，这一格会把带日期的在飞段永远判成未判定（自测 ⑯d 钉住这条依赖）。",
       ],
     );
   }
@@ -1845,6 +1877,152 @@ function selfTestUnjudgedConclusion(checker) {
   }
 }
 
+/**
+ * ⑯ issue #731 N4 / N3 / N2：CHANGELOG 的三条口径收敛到 `scripts/changelog-heading.mjs` 之后，
+ * 把**选定的那一侧**钉住，并把「不许再抄一份」钉成机器判据。
+ *
+ * 为什么这些用例长这样：`release-day.mjs`（preflight 第 2 步）与 `docs-drift-check.mjs`（`check:docs` 的
+ * §17 / §17b）读的是同一棵树，此前对同一行给两个答案。用例不证明「哪个更对」，它证明**只有一个答案**，
+ * 并且把三个已知不对称（星号 bullet、围栏里的 `- x`、歪缩进标题）钉成显式决定而不是巧合。
+ */
+function selfTestChangelogCaliber(checker) {
+  const { expect } = checker;
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  /** 读一份脚本源码（跨文件钉子用；读不到就算红，不许静默跳过）。 */
+  const readSource = (name) => {
+    try {
+      return readFileSync(path.join(here, name), "utf8");
+    } catch {
+      return null;
+    }
+  };
+
+  // ⑯a **标题口径 = 严格单空格**：`##  [0.31.0]`（两个空格）在两个读者手里都**不是**版本节。
+  //    旧行为：这一格用 `^##\s*\[`（容忍），`check:docs` 用字面单空格 ⇒ 同一行两个答案。
+  {
+    const skewed = "##  [0.31.0]（未发布 / unpublished）";
+    expect(matchChangelogVersionHeading(skewed) === null,
+      "⑯a 共享谓词把 `##  [x]`（双空格）判成**不是**版本节（严格单空格口径）",
+      `⑯a 谓词把歪缩进的标题当成了版本节：${JSON.stringify(matchChangelogVersionHeading(skewed))}`);
+    const changelog = ["# Changelog", "", "## [Unreleased]", "", "- 一条还没搬的条目（issue #900）", "", skewed, "", "- older", ""].join("\n");
+    const found = probeUnreleasedCarry({
+      root: (() => {
+        const t = mkdtempSync(path.join(os.tmpdir(), "erix-release-day-caliber-"));
+        writeFileSync(path.join(t, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
+        writeFileSync(path.join(t, "CHANGELOG.md"), changelog, "utf8");
+        return t;
+      })(),
+    });
+    expect(found.verdict === VERDICT.NOT_JUDGED && /还没切版/u.test(found.why),
+      `⑯a 只有歪缩进版本节的树 ⇒ 这一格答「还没切版」的**未判定**（不是绿，也不是把歪行当版本节）（why=${found.why}）`,
+      `⑯a 裁决是 ${found.verdict}：${found.why}`);
+    expect(/插入|补一行/u.test(found.lines.join("\n")),
+      "⑯a 判词给出动作（插入正确缩进的版本节），不是只说一句「找不到」",
+      `⑯a 没给动作：${found.lines.join(" | ")}`);
+  }
+
+  // ⑯b **bullet 口径的两个已知不对称**钉成显式决定：`* 星号` 不算、围栏里的 `- x` 算。
+  //    两侧本来一致，但没有钉子；今天有人「顺手放松成也认 `*`」，配对地板与这一格会一起挪而没人察觉。
+  {
+    expect(isChangelogBulletLine("- 普通条目") && !isChangelogBulletLine("* 星号条目（issue #900）"),
+      "⑯b bullet 谓词：行首 `- ` 算，行首 `* ` **不**算（不对称是**选定**的，不是巧合）",
+      "⑯b 谓词的星号口径变了 ⇒ 配对地板与 preflight 的读数会一起挪，先来看这条钉子");
+    const starOnly = ["# Changelog", "", "## [Unreleased]", "", "* 星号条目（issue #900）", "* 第二条", "",
+      "## [0.31.0]（未发布 / unpublished）", "", "- older", ""].join("\n");
+    const treeStar = mkdtempSync(path.join(os.tmpdir(), "erix-release-day-star-"));
+    try {
+      writeFileSync(path.join(treeStar, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
+      writeFileSync(path.join(treeStar, "CHANGELOG.md"), starOnly, "utf8");
+      const found = probeUnreleasedCarry({ root: treeStar });
+      expect(found.verdict === VERDICT.PASS,
+        "⑯b 顶部只有星号条目 ⇒ 这一格**绿**（「不算 bullet」的已知后果被钉住，改动它必须显式）",
+        `⑯b 裁决是 ${found.verdict}：${found.why}`);
+    } finally {
+      rmSync(treeStar, { recursive: true, force: true });
+    }
+    const fenced = ["# Changelog", "", "## [Unreleased]", "", "```md", "- 围栏里的示例（issue #900）", "```", "",
+      "## [0.31.0]（未发布 / unpublished）", "", "- older", ""].join("\n");
+    const treeFenced = mkdtempSync(path.join(os.tmpdir(), "erix-release-day-fence-"));
+    try {
+      writeFileSync(path.join(treeFenced, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
+      writeFileSync(path.join(treeFenced, "CHANGELOG.md"), fenced, "utf8");
+      const found = probeUnreleasedCarry({ root: treeFenced });
+      expect(found.verdict === VERDICT.FAIL && /1 条未入账条目停在/u.test(found.why),
+        `⑯b 围栏代码块里的 \`- x\` **算**一条（假红的那一半也被钉住，不许偷偷改）（why=${found.why}）`,
+        `⑯b 裁决是 ${found.verdict}：${found.why}`);
+    } finally {
+      rmSync(treeFenced, { recursive: true, force: true });
+    }
+  }
+
+  // ⑯c **反抄件钉子**：三个调用方的源码里不再有这三条口径的字面拷贝，且都从共享模块 import。
+  //    （只靠注释「复用某某」拦不住下一次复制粘贴；这条一红就说明有人又抄了一份回去。）
+  {
+    // 被禁的字面要**拼出来**：写成一个整串，这一行自己就含那个字面，钉子会把自己判红。
+    const HEADING_TOLERANT = ["^", "##", "\\s*", "\\["].join("");   // 曾经写在 release-day 里的那份（容忍多空格）
+    const HEADING_STRICT = ["^", "##", " [(", "\\d"].join("");      // 曾经写在 docs-drift-check 里的那份（字面单空格）
+    const DATED_CLASS = ["[-", "—", "]"].join("");                  // 段首日期正则里的那个破折号字符类
+    const BULLET_CALL = ["starts", "With", '("- ")'].join("");      // 调用方自己写的 bullet 判断
+    /** 各调用方源码里不许再出现的字面（出现 = 有人把口径又抄回调用方）。 */
+    const FORBIDDEN = {
+      "release-day.mjs": [HEADING_TOLERANT, DATED_CLASS],
+      "docs-drift-check.mjs": [HEADING_STRICT, DATED_CLASS],
+      "test/static-guards.test.js": [BULLET_CALL],
+    };
+    const offenders = [];
+    for (const [name, needles] of Object.entries(FORBIDDEN)) {
+      const file = name.startsWith("test/") ? path.join(here, "..", name) : path.join(here, name);
+      let source = null;
+      try {
+        source = readFileSync(file, "utf8");
+      } catch {
+        source = null;
+      }
+      if (source === null) { offenders.push(`${name}（读不到源码 ⇒ 这条钉子无法工作）`); continue; }
+      // 注释里复述口径是允许的（而且必要），只判**代码行**；剔除整行注释与 jsdoc 续行。
+      const code = source.split("\n").filter((line) => !/^\s*(\/\/|\*|\/\*)/u.test(line)).join("\n");
+      if (!source.includes("changelog-heading.mjs")) offenders.push(`${name} 没有 import \`changelog-heading.mjs\``);
+      for (const needle of needles) if (code.includes(needle)) offenders.push(`${name}: 代码里又出现了 ${needle}`);
+    }
+    expect(offenders.length === 0,
+      "⑯c 三个调用方（release-day / docs-drift-check / static-guards）都 import 共享口径，且代码里没有字面拷贝"
+      + "（标题 / 段首日期 / bullet 三条只住一份）",
+      `⑯c 口径又被抄回调用方：${offenders.join(" / ")}`);
+    const drift = readSource("docs-drift-check.mjs") ?? "";
+    expect(/UNPUBLISHED_MARK_RE/u.test(drift) && /\bs\.dated\b/u.test(drift),
+      "⑯c `docs-drift-check.mjs` §17b 那条不变量（未发布段不许带日期）还在 —— 本文件的 dated 分支在**消费**它（issue #731 N2）",
+      "⑯c §17b 的「未发布段不许带发布日期」看起来被放宽或改名了：`release-day.mjs` 里「段首带日期 ⇒ 那一版已发布」"
+      + "的前提随之失效（它会把带日期的在飞段永远判成未判定），两处必须一起改");
+  }
+
+  // ⑯d **N2 端到端**：带日期 + `package.json` 同版 + `[Unreleased]` 非空 ⇒ **未判定**，且判词讲清理由与依赖
+  {
+    const changelog = ["# Changelog", "", "## [Unreleased]", "", "- 一条下一版的条目（issue #900）", "",
+      "## [0.31.0] - 2026-11-04", "", "- 已发布的条目", ""].join("\n");
+    const tree = mkdtempSync(path.join(os.tmpdir(), "erix-release-day-dated-"));
+    try {
+      writeFileSync(path.join(tree, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
+      writeFileSync(path.join(tree, "CHANGELOG.md"), changelog, "utf8");
+      const found = probeUnreleasedCarry({ root: tree });
+      expect(found.verdict === VERDICT.NOT_JUDGED,
+        `⑯d 本版节段首带日期（= 已发布）而顶部节非空 ⇒ **未判定**（不是红，也不是绿）（verdict=${found.verdict}）`,
+        `⑯d 裁决是 ${found.verdict}：${found.why}`);
+      expect(/段首带发布日期/u.test(found.why) && /已发布/u.test(found.why),
+        `⑯d 判词说清了「为什么带日期就算已发布」（why=${found.why}）`,
+        "⑯d 判词只下了结论没给理由");
+      const lines = found.lines.join("\n");
+      expect(/#697/u.test(lines) && /§17b/u.test(lines),
+        "⑯d 判词点名了这条前提的**出处**（`check:docs` 的 §17b / issue #697）——本格只是消费者（issue #731 N2）",
+        `⑯d 判词没交代依赖住在哪：${lines}`);
+      expect(/升到下一版/u.test(lines),
+        "⑯d 动作是「切下一版」而不是「把这一版的日期删掉」（后者会把已发布段伪装成在飞段）",
+        `⑯d 动作不对：${lines}`);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  }
+}
+
 function runSelfTest() {
   const checker = makeChecker();
   const { expect } = checker;
@@ -1919,6 +2097,9 @@ function runSelfTest() {
 
   // ⑮ issue #731 N1：`--all` 的未判定结语**按步骤 id 分叉**（第 2 步未判定 ⇒ 先切版，不是开闸）
   selfTestUnjudgedConclusion(checker);
+
+  // ⑯ issue #731 N4/N3/N2：CHANGELOG 三条口径（标题 / bullet / 段首日期）在**两个读者**手里必须是同一个答案
+  selfTestChangelogCaliber(checker);
 
   // ③ 回写失败 ⇒ 非零 + 状态文件留下 + 重跑从 writeback 续（不重复发布）
   {
