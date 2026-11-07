@@ -3,12 +3,26 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3695,
+    "tests": 3697,
     "fail": 0,
     "maxSkipped": 15
   },
   "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
   "observations": [
+    {
+      "date": "2026-11-08",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "本笔登记（分支 `fix-261108-05-rule3-subshell-mask-worker`，基点 `8990947`；本片只改 `test/static-guards.test.js` + `CHANGELOG.md`，外加一处对未跟踪评审产物的就地声明）。六个数取自这一棵树上现跑的 `npm test`（日志 /tmp/npmtest-775b.log，`check:test-summary` 从 `:23587` 读到汇总）；基点那一侧的 3696 在 `git worktree add --detach /home/eric/wt-775w-base 8990947` 上单独现跑取得（日志 /tmp/npmtest-base.log）",
+      "branch": "fix-261108-05-rule3-subshell-mask-worker",
+      "tests": 3697,
+      "pass": 3684,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests 地板 3695 → **3697**，两段都是现测不是加法猜的：① 基点 `8990947` 自己现跑是 **3696 / pass 3683 / fail 0 / skipped 13**——登记值 3695 比它低 1，那 1 格是 #773 那一片（`23294d5` 新增「规则 3 的一行串多条命令」那格）只抬了配对地板、没抬 TAP 地板留下的余量（`check:test-summary` 当时只打 HINT，不红）；② 本片新增 **1** 格，在 `test/static-guards.test.js`（单跑该文件自打 `# tests 58`，改前同一棵树是 57）。⇒ 3696 + 1 = 3697。新增那一格是 issue #775 的两条 mandatory 假绿（`$(erix …)` 里的旗标不进面 + 等长抹平让否定词跳段免计下一段），先 RED：两条各自被单独隔出来后守卫现报 `unknown=[]` 与 `{flag:--bogus-775-mask, status:negated}`，修后同坐标转绿。既有格子一格没增减、没 skip、没放宽断言；`fail=0`；`skipped` 实测 13 与基点逐字同值（12 条真上游 / 真 relay 门禁 + 1 条多会话格）⇒ `maxSkipped` 15 不动。另有两件与本数无关但同片发生的事：配对地板同片 24 → 25（守卫在本树现报，见 `CHANGELOG_PAIR_FLOOR` 旁那段输出原文）；未跟踪的评审产物 `REVIEW-775.md` 里 `docs/tasks/` 引用补了「整目录本机不入库 / untracked」就地声明——不补它 `check:docs` 就红，而 `test/docs-anchor-ratchet.test.js` 是跑真 `docs-drift-check --verbose` 的，于是全量会在它上面红 2 格（登记前实测过一次：fail 2，与本片改动无关，是那件产物的卫生问题）。"
+    },
     {
           "date": "2026-11-07",
           "env": "local",
