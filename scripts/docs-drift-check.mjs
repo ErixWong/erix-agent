@@ -2582,8 +2582,11 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  现值 = 我自己那条 note 打出来的唯一 (符号, 文件) 组数 / 处数（跑 `--verbose` 现读，本文不抄）。
  *  历史（每一次抬高下限的链项：哪次合并、引了哪些符号、在哪棵树上量的）**不在本文件**：
  *  issue #644 ③ 把它整条搬到了 `docs/maintenance/symbol-anchor-ledger.md`（历史类文档，正文有命中数钉子）。
+ *  抬底记录（issue #772，代号 261107-21）：把两轴载荷表**下**口径段的 4 处裸行号按 #286 首选修法改成符号锚点
+ *  （`residueStart`（`src/loop/orchestrator.js`） 是新增的那一组），note 自己报「实测 238 组 > 下限 237 组
+ *  … 请把 SYMBOL_ANCHOR_MIN_UNIQUE 升到 238」⇒ 按它现报的数抬，不在旧值上做加法。
  *  这里只留判据与写法：`const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 必须保持一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 237;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 238;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {
