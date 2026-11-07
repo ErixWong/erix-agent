@@ -120,7 +120,7 @@ scripts/          # 实验脚本和结果
 - `repository.url` 使用 `git+https://...` 格式（或运行 `npm pkg fix`）。
 - 类型面（issue #213）：顶层 `types` 指向 `./src/index.d.ts`，`exports["."]` 与 `exports["./tools"]` 各带一个匹配的 `types`
   条件；`exports["./contract-tests"]` **刻意不带** `types`（其目标在 `test/` 下，不在声明依赖图里）。
-  因此干净检出里一个 `.d.ts` 都没有——装包后应列出 **88** 个 `.d.ts`；**这个数由 `npm run check:pack-links`
+  因此干净检出里一个 `.d.ts` 都没有——装包后应列出 **89** 个 `.d.ts`；**这个数由 `npm run check:pack-links`
   与 tarball 内容对账——不许手抄进这两份口径文件。** `npm run check:types-build` 是「还能不能生成」的门禁。
   哪一刀把哪个模块接进了声明依赖图、以及此前每一个数，都是历史：
   `docs/maintenance/command-reference_cn.md#type-surface`。
