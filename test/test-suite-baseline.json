@@ -3,12 +3,26 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3695,
+    "tests": 3701,
     "fail": 0,
     "maxSkipped": 15
   },
   "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
   "observations": [
+    {
+      "date": "2026-11-08",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "a75258d（分支 fix-261108-01-close-legacy-upgrade-gate 的最终树，#754 裁决 2；被量的六个数就取自这一棵已提交树，日志 /tmp/754-a75258d-npmtest.txt，并经 `npm run check:test-summary -- --log` 同一份日志复核 = TEST-SUMMARY-VERDICT ok + HINT「可抬到 3701」）；基点对照值 3695 取自另一棵 detached 树 /home/eric/wt-754-base = `762ef52`（日志 /tmp/754-base-npmtest.txt）",
+      "branch": "fix-261108-01-close-legacy-upgrade-gate",
+      "tests": 3701,
+      "pass": 3686,
+      "fail": 0,
+      "skipped": 15,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests 3695 → **3701**（+6，全部有意的增删，逐格有名有姓，不做加法猜）。算术按**用例名单逐条比**闭合（两份全量日志 `ok/not ok` 名单排序后 comm）：分支净出现 9 条新名单、消失 3 条，`3695 + 9 − 3 = 3701`。消失的那 3 条**不是删覆盖**，是 `test/loop-snapshot-round-residue-735.test.js` 里三条从「记录当前行为」翻成「断言弃用」的**改名**（`① 升级路径仍把它喂给模型` → `① …不再支持恢复：一条也不喂`；`④b 变异「删掉残余」` → `④b 载荷面三种写法都不再决定喂入的正文`；`⑥ 两跳恢复记录当前行为（主干既有缺陷，修好见 #754）` → `⑥ 两跳恢复断言弃用`）⇒ 真正新增 **5 格**，逐文件实测对得上：`test/loop-resume-unpersisted-tool-results.test.js` 25 → 29（+4：`#754 第一必修 · partialText 与快照正文同去留`、`#754 第一必修的另一半 · 探针 = 0 ⇒ partialText 照旧喂`、`#754 第二必修 · 不许对模型说「没有未结清」`、`#754 裁决 2 · 第三刀验收格（非普适不变式）`），`test/loop-snapshot-round-residue-735.test.js` 6 → 7（+1：`#754 判据 2 · 出声只在旧格式`）。**第 6 格是 `test/helpers/journal-crash-body.js` 这个文件本身**：它没有 `test()`，但 `node --test` 把 `test/` 下每个被加载的文件算成 1 格 ⇒ 「凭空多 1」的源头在这里，下次看到 +1 先查有没有新增非用例文件，别去动用例。`fail=0`（登记之前同一棵树是 fail 2：readFile 容量那两格，因本次给 `resume-manager.js` 加的中文注释把它推成全树最小；处置是压注释而**不降**公开承诺，最终树上两格绿、全树最小仍是 `src/loop/pending-tool-result.js`）。⚠ **`skipped` 这一格必须按环境读**：本次同一棵分支树裸装 devDeps 时量到 20、装齐 `npm install --include=dev` 之后是 **15**——差的那 4 条是 `#417/#653` 的 strict 棘轮自证格在缺 `typescript` 时按环境跳过（本文件 084668c 那条早就记过同一个坑）。基点 `762ef52` 装齐 devDeps 现测 `skipped 13`（与历史 local 值同），本分支 15 = 13 + 本片**两条具名 skip**（`test/loop-resume.test.js:644`、`test/loop-resume-abandon-signals-730.test.js:321` 格2③，第二类因果耦合，归 #776；同批第三格 `loop-resume.test.js:543` 已被独立评审用新格式夹具救回、不再是 skip）。**`maxSkipped` 暂不动（15）**：本机口径 15 恰好贴平，但 CI 按历史口径比 local 多 2 条装载器 skip ⇒ CI 侧预计 17 > 15；上限取「已量到的最大环境」，所以那一格的抬升**留到 CI 读数到手**并附 run 号，这里不把 `local + 2` 的推定当已测事实。没删例、没放宽断言、契约两份一字未动（评审 BLOCKING 3/4 归隔壁与 station 侧）。"
+    },
     {
           "date": "2026-11-07",
           "env": "local",
