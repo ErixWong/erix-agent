@@ -528,6 +528,78 @@
 
 ### Fixed
 
+- **The CLI-flag guard had two false greens of its own: an `erix` flag inside `$( … )` never entered the face,
+  and the same-length blanking let a negation word exempt the *next* segment's flag (issue #775).** Both came
+  in with issue #773's segment cut, and both are pinned RED-first. (1) `$(erix chat --bogus)` was invisible:
+  the line gate `ERIX_COMMAND_RE` wants the command word after `[\s`$>"'|]`, which carries no `(`, so a `.md`
+  line whose only `erix` sits inside a command substitution was dropped before a single flag in it was looked
+  up - while `commandSegmentSubject`'s comment claimed to peel `$(` and its noise-stripper stopped at the `$`,
+  so `$(npm …)` never yielded a subject either. The gate class gained `(` and the stripper now peels `$(` /
+  `${` / `(` (and the spaces after them) before the noise pass, so command substitution is read as the command
+  line it is: the fake flag in `$(erix chat --bogus)` goes red and names that line, while
+  `$(npm i -g erix-agent --prefer-online)` leaves the face because its **subject is npm** - the reverse proof
+  checks that this is not the whole line going unread, by requiring the `--session` in the neighbouring
+  `$( … )` to still land in the face as `accepted`. (2) The blanking replaces each dropped segment **and its
+  separator** with same-length spaces, so in `erix --version; not; --bogus-mask` both `;` became spaces and the
+  24-character negation look-back reached the `not` of the **previous** sentence: the trailing flag was booked
+  `negated` instead of going red. The blanking stays - equal length is what keeps line numbers, quoted excerpts
+  and the look-back offset valid; what changed is **what the look-back reads**. `flagMentions` now hands the
+  *original* line to `isNegatedMention` at the same index (no coordinate conversion needed), where the `;` is
+  still there and `NEGATION_TAIL_RE` cannot end on it - which is exactly the issue #773 contract "a tail behind
+  a `;` with no subject keeps counting". Reading the blanked view is pinned as the trap itself, so whoever moves
+  the look-back back onto the view reddens on that assertion. Scan-face coverage did not move, and that is
+  diffed rather than eyeballed: **83 flag mentions before the fix, 83 after**, compared as
+  (file, line, flag, status) tuples - `lost=0, added=0`.
+- **命令行旗标守卫自己留了两条假绿：`$( … )` 里的 erix 旗标根本没进面，而等长抹平让否定词免计了下一段的
+  旗标（issue #775）。** 两条都是 issue #773 那片切段带进来的，两条都先 RED 后修。（1）`$(erix chat --bogus)`
+  是看不见的：行闸门 `ERIX_COMMAND_RE` 要求命令词前面是 `[\s`$>"'|]`，里面没有 `(`，于是一条只把 `erix`
+  写在命令替换里的 `.md` 行，在任何旗标被去查之前就丢了——而 `commandSegmentSubject` 的注释一直声称剥 `$(`，
+  它的剥噪正则却停在 `$` 上，`$(npm …)` 的段主语照样认不出来。现在闸门的字符类补了 `(`，剥噪也在剥噪 pass
+  之前先剥 `$(` / `${` / `(`（以及它们后面的空格），命令替换因此被当成它本来就是的那条命令行：
+  `$(erix chat --bogus)` 里的假旗标会红并点名那一行，而 `$(npm i -g erix-agent --prefer-online)` 不计入是因为
+  **它的主语是 npm**——反向证拿隔壁 `$( … )` 里的 `--session` 仍以 `accepted` 进面，来证「不红」不是来自整行
+  没扫到。（2）抹平是把不计入的段**连分隔符一起**换成等长空白，所以 `erix --version; not; --bogus-mask` 里那
+  两根 `;` 成了空格，24 字符的否定句回看窗口拿到了**上一句**的 `not`：尾部那个真该红的旗标被记成 `negated`。
+  抹平保留——等长正是行号、命中摘录与回看偏移仍然成立的前提——改的是**回看读什么**：`flagMentions` 现在把
+  *原文*行以同一坐标交给 `isNegatedMention`（不需要任何下标换算），那里 `;` 还在，而 `NEGATION_TAIL_RE`
+  收尾收不到它上——那正是 issue #773 的约定「`;` 后面没有主语的尾巴照计」。拿抹平后的视图去判否定句这个
+  **坑本身**也被钉住，谁把回看改回视图就在自己那条断言上红。扫描面覆盖没动，而且是比出来的不是看出来的：
+  **修前 83 次提及、修后 83 次**，按（文件、行、旗标、状态）逐元组对比——`lost=0、added=0`。
+
+- **The CLI-flag guard now asks "whose command line is this segment" before it looks a flag up (issue #773).**
+  Rule 3 of `test/static-guards.test.js` gated on the **whole line**, so
+  `npm i -g erix-agent --prefer-online && erix --version` entered the scan face through its `erix` tail and
+  then had the **npm** flag `--prefer-online` looked up in the erix accepted set. The face is now cut into
+  segments at `&&`, `||` and `;` (a newline already ends one, since the scan reads one line at a time) and
+  every segment is judged alone: a segment's flags leave the face **only** when it carries no `erix` command
+  word **and** its leading subject is a command registered in `NON_ERIX_COMMAND_SUBJECTS` (read after peeling
+  quotes, `$(`, `VAR=value`, `sudo` / `env` / `time` wrappers, path prefixes, and a label shorter than 49
+  characters that ends in a colon). Neither condition alone would do: a segment holding `npx erix --x` keeps
+  counting because erix wins inside a segment, and the tail of a prose sentence behind a `;` has no subject at
+  all, so it keeps counting too - the four live flags hung off a `;` in `docs/host-upgrade-guide-v030.md` are
+  the pinned sample of that. An unrecognizable subject therefore stays in the face (biased strict), a single
+  `|` is **not** a separator because markdown table rows use it, and a dropped segment is blanked with
+  **same-length** spaces so line numbers, the negation look-back window and the quoted excerpt keep exactly
+  the coordinates they had before the cut. It is machine-checked rather than exempted: every registered name
+  is asked through `<cmd> i -g erix-agent --probe-773-flag && erix --version` and must really stop its own
+  segment from counting, and both directions run end to end through `flagMentions` on throwaway files under the
+  untracked `docs/tasks/` (never committed) - an invented flag in the npm segment stays green while the `--version` on the same line still
+  lands in the face, an invented flag in the erix segment goes red and names that very line. Coverage of the
+  scan face did not move: 83 flag mentions before the cut, 83 after.
+- **命令行旗标守卫现在先问「这一段是谁家的命令行」，再去查旗标（issue #773）。** 规则 3 原来只按**整行**问，
+  于是 `npm i -g erix-agent --prefer-online && erix --version` 因为尾巴上有 `erix --version` 就整行进扫描面，
+  再把 **npm 的** `--prefer-online` 拿去 erix 的接受集合里查。现在一行先按 `&&`、`||`、`;` 切段（换行本来就
+  分段：扫描本来就是一行一次），每段单独判：**这一段没有 erix 命令词、且段首主语是登记在
+  `NON_ERIX_COMMAND_SUBJECTS` 里的命令**（读主语之前先剥掉引号、`$(`、`VAR=值`、`sudo` / `env` / `time` 包装、
+  路径前缀，以及冒号前不超过 48 个字符的短标签）⇒ 这一段的旗标不计入面。两个条件缺一不可：`npx erix --x`
+  这种段内有 erix 命令词的仍然计（erix 赢），而散文句子里 `;` 后面的尾巴根本没有主语，也仍然计——
+  `docs/host-upgrade-guide-v030.md` 里用 `;` 串着的 4 个现役旗标就是钉住的样本。认不出主语的段照旧计入（偏严）；
+  单个 `|` **不**当分隔符，因为 markdown 表格行也用它；不计入的段用**等长空白**抹平，所以行号、否定句回看窗口、
+  命中摘录的坐标与切段前逐字符相同。它是机器复核、不是豁免：名单里每个名字都被
+  `<cmd> i -g erix-agent --probe-773-flag && erix --version` 问过一遍，必须真的让自己那一段停止计数；两个方向都
+  通过 `flagMentions` 端到端跑在本机不入库的 `docs/tasks/` 临时文件上——旗标塞在 npm 段不红、且同一行的 `--version` 仍在面里，
+  塞在 erix 段必红并点名那一行。扫描面覆盖一字未动：切段前 83 次提及，切段后 83 次。
+
 - **The resume crash boundary is derived from the ledger, not from the run snapshot (issue #736).**
   `crashSiteRound` — the predicate deciding whether a resume faces a crash site or a normally closed run —
   read only the run snapshot, while #734 had just established that the write which failed **is the snapshot
