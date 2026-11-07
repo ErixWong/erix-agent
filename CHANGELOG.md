@@ -4,6 +4,32 @@
 ## [Unreleased]
 
 ### Breaking
+- **Pre-261021 archives are no longer resumable: the snapshot-body upgrade path is closed (issue #754, ruling 2 = Y,
+  branch `fix-261108-02-legacy-gate-erix`).** `restoreResume` used to patch a crashed round's context back together from
+  `snapshot.messages` whenever the ledger held nothing after the resume anchor — for archives written before the per-message
+  journal (工单 261021) that copy was the only body source left. It is closed: the resume path **no longer feeds a single
+  message from `snapshot.messages`**, while the write side keeps writing the round residue, byte for byte as before.
+  Measured consequence on the 0.22.0 fixture (anchor 3, snapshot body 5 slots): such an archive now fails on its **first**
+  resume with `invalid_messages: Invalid message at index 3: user tool_result has no matching assistant tool_use` — the
+  already-formed `tool_result` is still recovered from `snapshot.toolResults` (`src/loop/resume-manager.js:660` → `:683`,
+  whose filter only knows "is that id already booked in the ledger") while the assistant carrying its `tool_use` is no longer
+  fed, so `validateMessages` (`src/messages/rounds.js:118`) rejects the context before the first provider attempt: the host
+  gets a loud failure instead of a silently shortened history. Closing it is not silent either — the existing resume notice
+  (`:control:resume-notice`, **no** new event type and **no** new `resume_journal_skipped` reason) now carries
+  「本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 N 条，该格式已不再支持恢复）。」，and only on archives
+  that really lost body (a post-261021 ledger says nothing).
+- **pre-261021 的档案不再支持恢复：快照正文的升级路径已正式关掉（issue #754，裁决 2 = 乙，分支
+  `fix-261108-02-legacy-gate-erix`）。** `restoreResume` 过去会在「账本在恢复锚点之后一条都没有」时，拿
+  `snapshot.messages` 把崩溃轮的上下文补回来——对逐条入账（工单 261021）之前写的档案，那份副本是仅剩的正文来源。
+  现在这条路关掉：恢复路径**一份 `snapshot.messages` 也不喂**，写侧照旧写「本轮残余」。0.22.0 夹具上的实测后果（锚点 3、
+  快照正文 5 格）：这类档案现在**第一次恢复就失败**，报
+  `invalid_messages: Invalid message at index 3: user tool_result has no matching assistant tool_use`——那条已成型的
+  `tool_result` 仍从 `snapshot.toolResults` 接回（`src/loop/resume-manager.js:660` → `:683`，它的筛子只认「这个 id 进账本了
+  没有」），而带它 `tool_use` 的 assistant 不再被喂 ⇒ `validateMessages`（`src/messages/rounds.js:118`）在第一次请求之前
+  就拒掉这份上下文：宿主拿到的是响亮的失败，不是一段默默变短的历史。关掉也不静默——既有的恢复告示
+  （`:control:resume-notice`，**不**新增事件类型、也**不**给 `resume_journal_skipped` 新增 reason）现在会带一句
+  「本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 N 条，该格式已不再支持恢复）。」，且只在真丢了正文的
+  档案上出声（261021 之后的账本一声不出）。
 
 ### Changed
 - **The real-upstream tool-fact e2e got a new observation face for its "the engine never rewrites history"
