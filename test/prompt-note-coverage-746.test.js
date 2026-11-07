@@ -177,13 +177,14 @@ test("G4 唯一豁免：只读工具白名单那句是能力陈述（#195），�
     ["src/loop/aggregate-budget.js", 0],
     ["src/reflection/governor.js", 0],
     // 门本体：整族名单 + 那句 note-first 指引，各一处。
-    ["src/loop/note-prompt-hint.js", 2],
+    ["src/loop/note-prompt-hint.js", 4],
     ["src/loop/tool-result-ttl.js", 9],
     ["src/loop/orchestrator.js", 0],
     // `bin/tools.js`：工具清单行的短语表（描述工具本身）+ 有笔记面那一份处境段与数值 bullet。
     ["bin/tools.js", 10],
     ["bin/system-prompt.js", 0],
     ["bin/final-guard.js", 0],
+    // B3 本文件里**零**个 `note_*` 字面：后缀整句都从 `src/` 的派生器取（口径漂不了）。
     ["bin/final-guard-support.js", 0],
   ]);
   for (const [file, expected] of EXPECTED) {

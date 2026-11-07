@@ -302,3 +302,55 @@ test("S2 真跑：整族在面上**且**账本有成功写入 ⇒ 才给 note_li
   assert.match(stub, /先用 note_list 查找记录，再用 note_read 读取/u);
   assert.equal(/无可复原的决策记录/u.test(stub), false, "有证据 ⇒ 不该出现未知口径");
 });
+
+// ─────── B2 / B3：guard 侧（`bin/final-guard.js` / `bin/final-guard-support.js`）的三格 ───────
+// 这一族**拿不拿得到账本**决定了它该说哪一种话，所以三格都打：有写入 / 面上有但账本没递到 / 无工具面。
+
+const { buildCaptureStub } = await import("../bin/final-guard-support.js");
+const { buildCaptureRecoveryHint } = await import("../bin/final-guard.js");
+
+const foldedMessage = {
+  role: "user",
+  content: [{ type: "tool_result", tool_use_id: "c1", content: "nonce=gold-4173\n" }],
+};
+
+test("B3 折叠桩：无笔记工具面 ⇒ 后缀不提 note_*；有整族但账本没递到 ⇒ 只说条件式；有写入 ⇒ note-first", async () => {
+  const noSurface = await buildCaptureStub(foldedMessage, { noteTools: [], messages: ledger({ noteWrite: true }) });
+  assert.equal(/note_/u.test(noSurface), false, `无工具面 ⇒ 不许指不存在的工具（现文：${noSurface}）`);
+  assert.match(noSurface, /重读源文件/u);
+  // 原因**全文**在 #741 的 TTL 占位符里；折叠桩是受预算保护的受保护消息，这里只要求它如实说
+  // 「没有可复原的记录」，四格原因由上面 `noteRecallHint` 那几格直接断言（同一口径，两种长度）。
+  assert.match(noSurface, /无可复原的笔记记录/u, "无证据那一份不许把「不知道」省成「有记录」");
+
+  // 面上有整族、但折叠钩子**没有账本可看**（`messages` 缺席）⇒ 条件式，不许伪报「有记录」。
+  assert.equal(hasNoteToolSurface(NOTE_TOOLS), true);
+  const surfaceOnly = noteRecallHint({ noteTools: NOTE_TOOLS });
+  assert.equal(surfaceOnly.gate, NOTE_HINT_GATES.notesAvailable);
+  assert.match(surfaceOnly.shortClause, /如本 run 写过笔记/u);
+  assert.match(surfaceOnly.shortClause, /重读源文件/u);
+  assert.equal(/已记录|要点见|已在笔记/u.test(surfaceOnly.shortClause), false, "账本缺席时不许伪报有记录");
+
+  const evidenced = await buildCaptureStub(foldedMessage, {
+    noteTools: NOTE_TOOLS,
+    messages: ledger({ noteWrite: true }),
+  });
+  assert.match(evidenced, /note_list[\s\S]*note_read/u);
+});
+
+test("B2 guard 的 run 状态摘要：三格同一口径（无工具面 / 有面无写入 / 有写入）", async () => {
+  const store = { load: async () => [{ round: 1, messages: ledger({ noteWrite: true }) }] };
+  const emptyStore = { load: async () => [{ round: 1, messages: ledger() }] };
+  const withNotes = await buildCaptureRecoveryHint({
+    foldedPayload: [foldedMessage], store, runId: "r", noteTools: NOTE_TOOLS,
+  });
+  assert.match(withNotes, /note_list[\s\S]*note_read/u);
+  const noWrite = await buildCaptureRecoveryHint({
+    foldedPayload: [foldedMessage], store: emptyStore, runId: "r", noteTools: NOTE_TOOLS,
+  });
+  assert.equal(/note_/u.test(noWrite), false, `有工具面但账本无写入 ⇒ 不伪报（现文：${noWrite}）`);
+  const noSurface = await buildCaptureRecoveryHint({
+    foldedPayload: [foldedMessage], store, runId: "r", noteTools: [],
+  });
+  assert.equal(/note_/u.test(noSurface), false, `无工具面 ⇒ 不指不存在的工具（现文：${noSurface}）`);
+  assert.match(noSurface, /重读/u);
+});
