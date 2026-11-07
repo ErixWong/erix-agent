@@ -348,11 +348,15 @@ const NON_ERIX_COMMAND_SUBJECTS = Object.freeze([
 
 /**
  * 段首主语：剥掉 shell 噪声（`$(` / 引号 / 反引号 / `VAR=值` 赋值前缀 / `sudo`·`env`·`time` 包装 /
- * `./` 与 `/usr/bin/` 路径前缀）之后的第一个词。只认 `NON_ERIX_COMMAND_SUBJECTS`，认不出返回 null
+ * `./` 与 `/usr/bin/` 路径前缀）之后的第一个词；段首还允许一段**短标签**（`Install:` / `复现：` 这种，
+ * 冒号前不超过 48 个字符）——文档与工单里的命令常常挂在标签后面，不剥标签就认不出主语
+ * （实测：`Probe A: npm i -g erix-agent --bogus-npm-flag && erix --version` 一开始仍咬红）。
+ * 只认 `NON_ERIX_COMMAND_SUBJECTS`，认不出返回 null
  * （null = 「不能断定这是别家的命令行」⇒ 照旧计入，偏严）。
  */
 function commandSegmentSubject(segment) {
   let s = segment.replace(/^[^\w$./-]+/, "");
+  s = s.replace(/^[^:：]{0,48}?[:：]\s*(?=[\w$./(-])/u, "");
   for (let i = 0; i < 3; i += 1) {
     const before = s;
     s = s.replace(/^[A-Za-z_][A-Za-z0-9_]*=[^\s]*\s+/, "");
@@ -841,6 +845,99 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
         1,
         "同样的 argv 行换成 examples/ 路径必须仍红——否则放宽长到了目录外",
       );
+    } finally {
+      for (const rel of written) {
+        try { rmSync(resolve(ROOT, rel), { force: true }); } catch { /* 探针没落盘，不用清理 */ }
+      }
+      if (dirWasAbsent) { try { rmdirSync(dirAbs); } catch { /* 里面有本机档案，不归本探针管 */ } }
+    }
+  });
+
+  it("规则 3 的一行串多条命令：段主语是别家 CLI 的段不计入旗标面，erix 段与无主语散文尾巴照计（issue #773，自带反向证）", () => {
+    // 名单形状与「登记就等于接上判据」：每个名字都得真的让它那一段不计数，否则这张表是装饰。
+    assert.ok(NON_ERIX_COMMAND_SUBJECTS.length >= 8, `别家主语名单只剩 ${NON_ERIX_COMMAND_SUBJECTS.length} 条：口径退化`);
+    assert.ok(!NON_ERIX_COMMAND_SUBJECTS.includes("erix"), "erix 自己不许进别家主语名单（进了就是把判据改宽到看不见东西）");
+    for (const cmd of NON_ERIX_COMMAND_SUBJECTS) {
+      assert.match(cmd, /^[a-z][a-z0-9._-]*$/u, `段主语必须是裸命令词（小写、无空格无斜杠），否则段首永远匹配不上：${cmd}`);
+      assert.ok(
+        !erixCommandFlags(`${cmd} i -g erix-agent --probe-773-flag && erix --version`).includes("--probe-773-flag"),
+        `${cmd} 段里的旗标仍被算成挂在 erix 命令行上：名单里的名字没接上判据`,
+      );
+    }
+    // 等长抹平：下标不动是「行号/否定窗口/命中摘录不用改」的前提，长度一旦变了那个前提就假了
+    const shapeLine = "cd /tmp && npm i -g erix-agent --prefer-online || erix chat --session abc; echo done";
+    assert.equal(erixCommandView(shapeLine).length, shapeLine.length, "抹平段必须等长，否则行内下标全部错位");
+    assert.equal(commandSegmentSubject("npm i -g erix-agent --prefer-online"), "npm");
+    assert.equal(commandSegmentSubject("复现：npm i -g erix-agent --prefer-online"), "npm", "段首短标签后接的命令也要认得出主语");
+    assert.equal(commandSegmentSubject("sudo env FOO=1 ./node_modules/.bin/tsc --checkJs"), "tsc", "sudo/env/赋值/路径前缀都要剥得掉");
+    assert.equal(commandSegmentSubject("erix chat --session x"), null, "erix 自己不算别家主语");
+    assert.equal(commandSegmentSubject("那些尾巴没有主语 --judge-log"), null, "认不出主语的段返回 null（照旧计入，偏严）");
+    assert.equal(commandSegmentSubject("const argv = [\"rg\", \"--include\"]"), null, "JS 行首是变量名：认不出 ⇒ 照旧计（#457 那一族口径不动）");
+
+    // 反向证 A（不红的方向）与 B（必红的方向）同形：都是「一行两条命令、行里确实有旗标」，
+    // 只差在不存在的旗标塞在 npm 段还是 erix 段——不许拿「整行没有旗标」当对照组。
+    assert.deepEqual(
+      erixCommandFlags("npm i -g erix-agent --bogus-npm-probe-773 && erix --version"),
+      ["--version"],
+      "npm 段里那个不存在的旗标不该被拿去 erix 的接受集合里查（同行的 erix 旗标必须仍计入，否则是「整行被跳过」那种假绿）",
+    );
+    assert.deepEqual(
+      erixCommandFlags("npm i -g erix-agent --prefer-online && erix chat --bogus-erix-probe-773"),
+      ["--bogus-erix-probe-773"],
+      "erix 段里的旗标必须照旧抓得到，否则分段就是把判据改永真",
+    );
+    // 不是「只认最后一段」：erix 在前、别家在后时，erix 段的旗标仍要抓，别家段仍不计
+    assert.deepEqual(
+      erixCommandFlags("erix chat --bogus-erix-probe-773 && npm ci --bogus-npm-probe-773"),
+      ["--bogus-erix-probe-773"],
+    );
+    // 两个极端都不是：没分隔符时与改前一字不差；「用 npx 跑 erix」时 erix 赢
+    assert.deepEqual(erixCommandFlags("erix chat --bogus-erix-probe-773"), ["--bogus-erix-probe-773"]);
+    assert.deepEqual(
+      erixCommandFlags("npx erix --bogus-erix-probe-773 && npm i -g x --prefer-online"),
+      ["--bogus-erix-probe-773"],
+      "段内有 erix 命令词时 erix 赢：否则 `npx erix --x` 这类真旗标会被静默放掉",
+    );
+
+    // 不退化正证：本树那句用 `;` 串了 4 个现役旗标的散文尾巴仍然全计。
+    // 只按「这一段不是 erix」切就会把这 4 个砍掉——那就是把判据改窄到看不见东西。
+    const proseLine = readLines(resolve(ROOT, "docs/host-upgrade-guide-v030.md"))
+      .find((l) => l.includes("--max-rounds") && l.includes("--judge-log"));
+    assert.ok(proseLine, "docs/host-upgrade-guide-v030.md 的 CLI controls 行找不到了：这条反向证要换落点");
+    assert.deepEqual(
+      erixCommandFlags(proseLine),
+      ["--max-rounds", "--reflection", "--final-guard", "--no-final-guard", "--judge-log"],
+      "散文里的 `;` 不是命令分隔符：认不出别家主语的段必须照旧计入",
+    );
+
+    // 端到端反向证：真落两个文件进被扫描面（docs/tasks/ 整目录不入库，用完即删，与 #286/#457 同一形状）
+    const dirAbs = resolve(ROOT, "docs/tasks");
+    const dirWasAbsent = !existsSync(dirAbs);
+    const written = [];
+    const probe = (name, body) => {
+      const rel = `docs/tasks/${name}`;
+      writeFileSync(resolve(ROOT, rel), body, "utf8");
+      written.push(rel);
+      return flagMentions({ rel, abs: resolve(ROOT, rel) }, accepted, retired);
+    };
+    try {
+      mkdirSync(dirAbs, { recursive: true });
+      // ① 不存在的旗标塞在 npm 段 ⇒ 不红；但同一行的 erix 旗标进了面（证明不靠「整行没旗标」侥幸）
+      const foreign = probe("261108-03-foreign-segment.md",
+        "# 随手记\n\nnpm i -g erix-agent --bogus-npm-probe-773 && erix --version\n");
+      assert.deepEqual(foreign.unknown.map((u) => u.flag), [], `npm 段的旗标不该咬红：${JSON.stringify(foreign.unknown)}`);
+      assert.ok(
+        foreign.mentioned.some((m) => m.flag === "--version" && m.line === 3 && m.status === "accepted"),
+        `同一行的 erix 段没进扫描面，那「不红」就是假绿：${JSON.stringify(foreign.mentioned)}`,
+      );
+      assert.ok(!foreign.mentioned.some((m) => m.flag === "--bogus-npm-probe-773"), "不计入也不许变成静默吞掉：它应当根本不在 erix 命令行上");
+      // ② 不存在的旗标塞在 erix 段 ⇒ 必红，且点名到那一行
+      const own = probe("261108-03-erix-segment.md",
+        "# 随手记\n\nnpm i -g erix-agent --prefer-online && erix chat --bogus-erix-probe-773\n");
+      assert.equal(own.unknown.length, 1, JSON.stringify(own.unknown));
+      assert.equal(own.unknown[0].flag, "--bogus-erix-probe-773");
+      assert.equal(own.unknown[0].line, 3, "报错必须点名到那一行");
+      assert.match(own.unknown[0].text, /erix chat --bogus-erix-probe-773/u);
     } finally {
       for (const rel of written) {
         try { rmSync(resolve(ROOT, rel), { force: true }); } catch { /* 探针没落盘，不用清理 */ }
@@ -4533,7 +4630,16 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 //
 // ⇒ 地板 = **23**（#753 C2 在 `### Added` 加的那对中英；本支自己那笔旧登记（旧树 18→19）在 rebase 时让位给主干，
 // 不在旧值上做加法）。
-const CHANGELOG_PAIR_FLOOR = 23;
+//
+// 2026-11-08 第八次重取（issue #773，本树 `fix-261108-03-cli-flag-face-erix` 基点 main `762ef52`）：
+// 本单在 `## [Unreleased] ### Fixed` 加了一对中英（规则 3 的旗标面收窄到「段主语」）。动常量之前
+// `node --test test/static-guards.test.js` 的标准输出原文（本树现跑）：
+//
+//     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 24 条 / 英文 24 条 / 配对 24 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 23（校准面 \#\# [Unreleased]）
+//     # 配对地板：实测 24 对 > 地板 23 对 ⇒ 可以抬地板到 24
+//
+// ⇒ 地板 = **24**（取本树守卫自己报的数，不做加法；并行会话在另一棵树上改同一格时，以合并树现测为准）。
+const CHANGELOG_PAIR_FLOOR = 24;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
