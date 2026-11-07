@@ -15,6 +15,7 @@
 //      把注入点挪到 `roundStart` 之后本格必须变红）。
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 
 import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
@@ -48,11 +49,12 @@ const eventShape = (events) => events.map((event) => ({
   type: event?.type,
   ...(event?.round === undefined ? {} : { round: event.round }),
 }));
-/** 账本的可比形态：把**非行为性**的两个字段归一（每个 run 必然不同的时钟 `ts`
- * 与随机 `toolCallKey`），其余逐字留——这两个之外的任何差异都是行为差异。 */
+/** 账本的可比形态：把**非行为性**的字段归一（每个 run 必然不同的时钟 `ts`、随机 `toolCallKey`，
+ * 以及受时钟粒度摆动的 `durationMs`），其余逐字留——这三个之外的任何差异都是行为差异。 */
 const ledgerShape = (rows) => JSON.parse(JSON.stringify(rows)
   .replace(/"ts":"[^"]*"/g, String.raw`"ts":"<ts>"`)
-  .replace(/"toolCallKey":"[^"]*"/g, String.raw`"toolCallKey":"<key>"`));
+  .replace(/"toolCallKey":"[^"]*"/g, String.raw`"toolCallKey":"<key>"`)
+  .replace(/"durationMs":-?\d+/g, String.raw`"durationMs":0`));
 
 // ── T1：注入的那条落进下一轮的轮记录（行形状是判据）────────────────────────────────
 test("#753-C1 注入的那条落进下一轮的轮记录：带 seq 的 kind:\"message\" 行，不是 :control: 行", async () => {
@@ -446,4 +448,18 @@ test("#753-C1 注入的那条不进本轮的输出窗口（roundStart 之后 ⇒
   const rawRows = await store.loadRawRows("753-t9");
   assert.equal(countIn(messagesOf(rawRows.filter((row) => row.kind === "message")), marker), 1);
   assert.equal(countIn(result.messages, marker), 1);
+});
+
+// ── T11. 位置即契约（反向证明的机械面）：注入点必须在「圈顶中止检查之后、轮切片之前」之间
+test("T11 注入点的源码头：`await injectHostSteerTurn(round)` 在 `throwIfAborted(signal)` 之后、`const roundStart = messages.length` 之前", () => {
+  // 为什么需要这一格：把调用挪到 `roundStart` 之后时，**行为面是等价的**（那两行之间没有任何读取者，
+  // 实测 10 格全绿）——「注入必须落在轮边界」因此不能只靠行为测试钉，必须直接钉源码顺序。
+  // 反向证明两层：① 把调用挪出这两行之间 ⇒ 本格红；② 把它挪进轮内（provider 调用之后）⇒ T1/T2/T5 行为红。
+  const source = readFileSync(new URL("../src/loop/orchestrator.js", import.meta.url), "utf8");
+  const call = source.indexOf("await injectHostSteerTurn(round);");
+  assert.notEqual(call, -1, "注入调用必须还在主循环里");
+  const abort = source.lastIndexOf("throwIfAborted(signal);", call);
+  const roundStart = source.indexOf("const roundStart = messages.length;", call);
+  assert.ok(abort !== -1 && abort < call, "注入点必须在圈顶中止检查之后（中止之后还要注入 = 已经决定不跑了还问宿主）");
+  assert.ok(roundStart !== -1 && call < roundStart, "注入点必须在轮切片开窗之前（轮边界的另一半）");
 });
