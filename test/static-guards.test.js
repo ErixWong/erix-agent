@@ -42,6 +42,16 @@ import {
   upstreamFields,
 } from "../fixtures/config-shape.mjs";
 import { createScriptedUpstream, jsonResponse } from "../fixtures/upstream.mjs";
+// issue #731 N3/N4：CHANGELOG 的 bullet / 版本节标题 / 段首日期三条口径与 `scripts/release-day.mjs`、
+// `scripts/docs-drift-check.mjs` **共享一份**（此前三处各写一遍「行首那个前缀」的判断，标题正则还两侧分叉过）。
+// 共享的是**行级谓词**，不是整棵解析器：本文件的扫描面与小节语义（`resolveChangelogScanSurface` +
+// 按 `### ` 切小节 + 配对单位）与那两个调用方本就不同，压成一个函数会改动判据实现并连带挪地板实测值。
+import { probeUnreleasedCarry } from "../scripts/release-day.mjs";
+import {
+  CHANGELOG_UNRELEASED_HEADING,
+  CHANGELOG_VERSION_HEADING_RE,
+  isChangelogBulletLine,
+} from "../scripts/changelog-heading.mjs";
 // #546（规则 7）：白名单与 config schema 是**真值**，不另拄一张名单。
 import { CONFIG_SURFACE_OPTION_NAMES, configPathForOption } from "../src/loop/config-namespace.js";
 import { RUN_TOOL_LOOP_OPTION_NAMES } from "../src/loop/option-normalization.js";
@@ -2894,7 +2904,8 @@ describe("静态守卫：scripts 里 runToolLoop 的顶层选项名必须来自�
 //   · 空集合不参与 R4（两条都没引用的 bullet 天然「同集合」，那是没有信息，不是重复）。
 
 const CHANGELOG_REL = "CHANGELOG.md";
-const CHANGELOG_VERSION_HEADING = "## [Unreleased]";
+/** 顶部版本节标题（唯一来源：`scripts/changelog-heading.mjs`；`release-day.mjs` 的 `UNRELEASED_HEADING` 是同一份字面）。 */
+const CHANGELOG_VERSION_HEADING = CHANGELOG_UNRELEASED_HEADING;
 /** 版本节里必须出现、且必须按这个相对顺序出现的小节（其余小节名不硬编码：KaC 允许 `Added` 之类插在中间）。 */
 const CHANGELOG_REQUIRED_SUBSECTIONS = Object.freeze(["Breaking", "Changed", "Fixed"]);
 /**
@@ -2969,7 +2980,7 @@ const sameSet = (a, b) => a.size === b.size && [...a].every((x) => b.has(x));
 /** 一节里的 bullet 条数（`- ` 行数；与下面 bullet 解析的单位一致，这里只数不解析）。 */
 function countSectionBullets(lines, from, to) {
   let count = 0;
-  for (let i = from; i < to; i += 1) if (lines[i].startsWith("- ")) count += 1;
+  for (let i = from; i < to; i += 1) if (isChangelogBulletLine(lines[i])) count += 1;
   return count;
 }
 
@@ -3132,7 +3143,7 @@ function collectChangelogProblems(text, heading = CHANGELOG_VERSION_HEADING) {
     const line = lines[i];
     if (line.trim() === "") { prevKind = "blank"; continue; }
     if (/^#{1,6} /.test(line)) { prevKind = "heading"; continue; }
-    if (line.startsWith("- ")) { prevKind = "bullet"; continue; }
+    if (isChangelogBulletLine(line)) { prevKind = "bullet"; continue; }
     if (/^[ \t]/.test(line)) { prevKind = "continuation"; continue; }
     // 非缩进、非 bullet、非标题：紧跟在 bullet 正文后面 ⇒ 合法的「惰性续行」（Markdown 允许）
     if (prevKind === "bullet" || prevKind === "continuation") { prevKind = "continuation"; continue; }
@@ -3146,12 +3157,12 @@ function collectChangelogProblems(text, heading = CHANGELOG_VERSION_HEADING) {
   // ── bullet 解析（整条：`- ` 行 + 后续非空、非 bullet、非标题的行） ──
   for (const section of problems.subsections) {
     for (let i = section.from; i < section.to; i += 1) {
-      if (!lines[i].startsWith("- ")) continue;
+      if (!isChangelogBulletLine(lines[i])) continue;
       const body = [lines[i]];
       let j = i + 1;
       while (j < section.to) {
         const line = lines[j];
-        if (line.startsWith("- ") || /^#{1,6} /.test(line) || line.trim() === "") break;
+        if (isChangelogBulletLine(line) || /^#{1,6} /.test(line) || line.trim() === "") break;
         body.push(line);
         j += 1;
       }
@@ -3412,14 +3423,14 @@ function firstChangelogBulletBelowSurface(text, heading = CHANGELOG_VERSION_HEAD
   const lines = text.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
   const resolved = resolveChangelogScanSurface(lines, heading);
   assert.equal(resolved.ok, true, `派生靶子失败：找不到扫描面（${resolved.ok ? "" : resolved.reason}）`);
-  const start = lines.findIndex((line, i) => i >= resolved.surface.to && line.startsWith("- "));
+  const start = lines.findIndex((line, i) => i >= resolved.surface.to && isChangelogBulletLine(line));
   assert.notEqual(start, -1,
     "派生靶子失败：扫描面下面没有任何 bullet——这一格没有靶子就会静默恒绿，所以直接判失败");
   const body = [lines[start]];
   let j = start + 1;
   while (j < lines.length) {
     const line = lines[j];
-    if (line.startsWith("- ") || /^#{1,6} /.test(line) || line.trim() === "") break;
+    if (isChangelogBulletLine(line) || /^#{1,6} /.test(line) || line.trim() === "") break;
     body.push(line);
     j += 1;
   }
@@ -4414,24 +4425,21 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 // `## [Unreleased]` 上**现报**「实测 17 对 ≠ 地板 16 对」⇒ 抬到 **17**。
 // ⚠ 这不是「16 + 本单一对」：#710 那一对（`e10539f` 自登记中英一对）与本片那一对**都**在同一个校准面上，
 // 两边各自测到的都是 16，合并树才是 17 —— 与 #741/#742 各测 12、合并树报 13 完全同型 ⇒ 必须现测。
-// 2026-11-07 第三次重取（本支 rebase 到 main `b23f782`（#735 slice2 已合，PR #758）之后）：守卫在
-// `## [Unreleased]` 上**现报**两行（动常量之前 `node --test test/static-guards.test.js` 的标准输出原文，
-// 不是从 17 加法算出来的）：
+// 2026-11-08 第四次重取（本支 merge 到 main `aec7cf9`（#753/#735 slice2 已合）之后，issue #731 收尾）：
+// 合并树把两侧各自登记的条目并到一起 ⇒ 这个数**只能**在本树现跑守卫取，不许把 18 + 18 或 18 + 1 相加。
+// 动常量之前 `node --test test/static-guards.test.js --test-name-pattern "配对地板"` 的标准输出原文（合并树上跑）：
 //
-//     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 18 条 / 英文 18 条 / 配对 18 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 17（校准面 \#\# [Unreleased]）
-//     # 配对地板：实测 18 对 > 地板 17 对 ⇒ 可以抬地板到 18
+//     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 19 条 / 英文 19 条 / 配对 19 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 18（校准面 \#\# [Unreleased]）
+//     # 配对地板：实测 19 对 > 地板 18 对 ⇒ 可以抬地板到 19
 //
-// ⇒ 地板 = **18**。同型陷阱第三次：#753 那一对与 #735 slice2 那一对各自在自己树上报的都是 17，
-// 合并树才是 18 ⇒ 谁也不许做加法。本支那笔旧登记（旧树 15→16、以及中转的 16→17）在 rebase 时让位给主干。
-// 2026-11-07 第五次重取（issue #730 收尾，**由主会话在合并树上做**）：本支并入 main `6ee851e`
-// （PR #761）之后，守卫在 `## [Unreleased]` 上**现报**：
+// 2026-11-07 第六次重取（issue #731 收尾，**由主会话在合并树上做**）：本支并入 main `d395d79`
+// （PR #762 / issue #730）之后，守卫在 `## [Unreleased]` 上**现报**：
 //
-//     # 配对地板：实测 21 对 > 地板 20 对 ⇒ 可以抬地板到 21
+//     # 配对地板：实测 22 对 > 地板 21 对 ⇒ 可以抬地板到 22
 //
-// ⇒ 地板 = **21**。口径照 #730 上一任写的规矩：**不许做加法**，只取守卫在这个树上自己打印的数；
-// 今晚这一格已被重取五次（15→…→19→20→21），因为并行会话在同一块上各自测各自的数 —— 下一任
-// rebase/merge 之后照旧重跑重取。
-const CHANGELOG_PAIR_FLOOR = 21;
+// ⇒ 地板 = **22**。口径同上一任：不许做加法，只取守卫在这棵树自己打印的数；今晚这一格已重取六次
+// （15→…→19→20→21→22），根因是并行会话在同一块上各自测各自的数 —— 只有合并树上的现测是真值。
+const CHANGELOG_PAIR_FLOOR = 22;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
@@ -4444,12 +4452,12 @@ const CHANGELOG_PAIR_FLOOR = 21;
 function parseChangelogSectionBullets(lines, from, to) {
   const bullets = [];
   for (let i = from; i < to; i += 1) {
-    if (!lines[i].startsWith("- ")) continue;
+    if (!isChangelogBulletLine(lines[i])) continue;
     const body = [lines[i]];
     let j = i + 1;
     while (j < to) {
       const line = lines[j];
-      if (line.startsWith("- ") || /^#{1,6} /.test(line) || line.trim() === "") break;
+      if (isChangelogBulletLine(line) || /^#{1,6} /.test(line) || line.trim() === "") break;
       body.push(line);
       j += 1;
     }
@@ -4514,6 +4522,74 @@ function collectChangelogPairingProblems(text, heading = CHANGELOG_VERSION_HEADI
   problems.unpairedEn = problems.en.filter((enBullet) => !usedEn.has(enBullet.line));
   return problems;
 }
+
+// ── issue #731 N3/N4：三个读者的**交叉对账** ─────────────────────────────────────────
+//
+// bullet / 版本节标题 / 段首日期这三条口径此前在三个读者手里各有字面（本文件两处判据实现、
+// `scripts/release-day.mjs` 的 preflight 第 2 步、`scripts/docs-drift-check.mjs` 的 `changelogSections()`），
+// 日期那条是字面拷贝、标题那条**已经分叉**（一侧容忍多空格、一侧字面单空格）⇒ 同一棵树一人一个答案。
+//
+// 收口方式：**共享行级谓词**（`scripts/changelog-heading.mjs`）+ 下面这一格交叉对账。
+// 为什么不是「只共享一个完整解析器」：三个读者的**扫描面与解析单位本就不同**——本文件规则 8 按
+// `resolveChangelogScanSurface()` 选节、再按 `### ` 切小节、配对地板还要「bullet + 续行」这个单位；
+// `release-day` 扫 `[Unreleased]` 整节只数条数；`docs-drift-check` 只要标题与段首日期。压成一个函数
+// 等于改动**判据实现**（规则 8 的 14 格与配对地板都在它上面），换回来的收益只有「少两份代码」。
+// 分叉真正发生在**行级规则**上，所以同源就做到这一层；这一格再补一道「同一棵树同一结论」的对账，
+// 保证将来谁把谓词改回本地字面（或给一侧加 `*` 支持）都会当场红。
+describe("静态守卫：CHANGELOG 三条口径与两个消费者的交叉对账（issue #731 N3/N4）", () => {
+  /** 一棵合成树里同时埋着四种形状：`- ` 算、`* ` 不算、围栏里的 `- x` **算**、缩进行不算。 */
+  const SKEW_TEXT = [
+    "# Changelog",
+    "",
+    CHANGELOG_VERSION_HEADING,
+    "",
+    "- a plain dash entry (issue #900)",
+    "* a star entry nobody counts (issue #900)",
+    "```md",
+    "- a fenced sample that **does** count",
+    "```",
+    "  - an indented continuation line",
+    "",
+    "## [0.31.0]（未发布 / unpublished）",
+    "",
+    "### Breaking",
+    "",
+    "- older",
+    "",
+  ].join("\n");
+
+  it("同一棵合成树：本文件的 bullet 数 == release-day 漏搬格数出来的条数（不对称两侧一致）", async () => {
+    const lines = SKEW_TEXT.split("\n");
+    const picked = resolveChangelogScanSurface(lines);
+    assert.equal(picked.ok, true, `合成树的扫描面选取失败：${picked.reason}`);
+    const mine = countSectionBullets(lines, picked.surface.from, picked.surface.to);
+
+    // 临时目录走 makeTmp（卫生门禁的口径：父目录探针 + 用例结束后的清理都在它里面），不用裸 mkdtempSync。
+    const tree = await makeTmp("erix-731-cross-");
+    let theirs = null;
+    let why = "";
+    try {
+      writeFileSync(join(tree, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
+      writeFileSync(join(tree, "CHANGELOG.md"), SKEW_TEXT, "utf8");
+      const found = probeUnreleasedCarry({ root: tree });
+      why = found.why;
+      const m = /(\d+) 条未入账条目停在/u.exec(found.why);
+      theirs = m ? Number(m[1]) : null;
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+    // 2 = 只有 `- ` 行与围栏里的 `- x` 算数；`* ` 与缩进行都不算。口径一变这个数就会动。
+    assert.equal(mine, 2, `本文件数出来 ${mine} 条（应当 2：星号与缩进不算、围栏里的算）：口径被动过`);
+    assert.equal(theirs, 2, `release-day 的漏搬格数出 ${theirs} 条（应当 2）——两个读者对同一棵树两个答案：${why}`);
+  });
+
+  it("标题口径两侧同一：`##  [x]`（双空格）在共享正则下**不是**版本节（此前两个读者一人一个答案）", () => {
+    assert.ok(CHANGELOG_VERSION_HEADING_RE.test("## [0.31.0]（未发布 / unpublished）"),
+      "正常形状必须是版本节（口径不能被改严到误伤 `--sync` 写出来的形状）");
+    assert.equal(CHANGELOG_VERSION_HEADING_RE.test("##  [0.31.0]（未发布 / unpublished）"), false,
+      "`##  [x]`（两个空格）必须是**同一个答案**：本文件与 `release-day`、`docs-drift-check` 现在共用一条正则");
+  });
+});
 
 describe("静态守卫：CHANGELOG 未发布节的中英配对地板（issue #563，规则 8 的同族补丁）", () => {
   it("每一条中文条目都要有英文对应：配对数 >= 地板（只能升不能降）且无对应条数 = 0", (t) => {

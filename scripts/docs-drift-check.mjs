@@ -210,6 +210,10 @@ import {
 } from "./export-consumer-check.mjs";
 // 逐名表的**读法**（几格 / 第一格长什么样 / 入口列认哪几种写法 / 版本号从哪来）住在共享模块里：
 // `scripts/host-consumer-probe.mjs` 的覆盖判据读的是同一张表，各读各的 = 两条会各自漂移的真相。
+// issue #731 N4：CHANGELOG 的「版本节标题 / 段首日期」口径与 `scripts/release-day.mjs` **共享一份**
+// （此前这里是 `^## \[(\d+\.\d+\.\d+)\](.*)$` + 日期正则的**字面拷贝**，而 release-day 那一侧容忍多空格
+// ⇒ `##  [0.31.0]` 两个读者两个答案）。口径与「为什么取严格单空格」的理由住在 `scripts/changelog-heading.mjs`。
+import { CHANGELOG_DATED_HEADING_SUFFIX, changelogHeadingIsDated, matchChangelogVersionHeading } from "./changelog-heading.mjs";
 import {
   BUNDLE_GUIDE_CN,
   BUNDLE_GUIDE_DOCS,
@@ -5894,12 +5898,12 @@ function changelogSections() {
   if (!rec) return null;
   const out = [];
   rec.lines.forEach((line, i) => {
-    const m = line.match(/^## \[(\d+\.\d+\.\d+)\](.*)$/);
-    if (!m) return;
-    const dateMatch = m[2].match(/^\s*[-—]\s*(\d{4}-\d{2}-\d{2})/);
-    const dated = Boolean(dateMatch);
+    const head = matchChangelogVersionHeading(line);
+    if (!head) return;
+    const dateMatch = CHANGELOG_DATED_HEADING_SUFFIX.exec(head.suffix);
+    const dated = changelogHeadingIsDated(head.suffix);
     // `date`（issue #697）：段首的发布日期字面量，没有就是 null——日期判据（§17b）拿它当被对账的那一侧。
-    out.push({ version: m[1], line: i + 1, heading: line.trim(), dated, date: dateMatch ? dateMatch[1] : null });
+    out.push({ version: head.version, line: i + 1, heading: line.trim(), dated, date: dateMatch ? dateMatch[1] : null });
   });
   // 正文按「本段标题到下一个版本标题」切
   out.forEach((s, i) => {

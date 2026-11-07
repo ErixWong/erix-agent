@@ -97,6 +97,32 @@
   ——冻结/瞬态那两条**认不出冒充者**，所以身份不许外包给它们。
 
 
+- **Numbers that live in prose now get printed by the command that owns them (issue #731).** Four places said
+  something the code had already outgrown: the release-day `--all` closing line promised "open the gate" even when
+  the step that stayed unjudged was `changelog-unreleased`, which has **no** gate — it waits for a version cut; the
+  hand-maintained `[i/N]` preflight checklist in both AGENTS files had nothing reconciling it against
+  `PREFLIGHT_STEPS`, so "docs say 7 steps, code has 8" could sit green; the probe's self-test case count was a
+  hand-copied 13 where the command printed 15; and the CHANGELOG rules for a version heading, a dated heading and a
+  bullet were written four times over, two of those copies already disagreeing on `##  [0.31.0]` (two spaces). Now
+  `--all` forks its conclusion on which step ids went unjudged, both AGENTS checklists are reconciled row by row
+  against the step table, the case count is a named constant calibrated by an equality assert against what the
+  command prints, and all three line-level rules live in `scripts/changelog-heading.mjs` — with a test that reads
+  the same synthetic tree through all three consumers and names which side moved if they disagree. To keep the injection
+  headroom that #721 pinned (worst two-page combination 30,720 + 33,792 = 64,512 of a 65,536 ceiling), the explanatory
+  material about these gates was **moved to the cold layer** (`docs/maintenance/command-reference.md#release-day`, the same
+  landing spot #726/#727 used) instead of raising `LENGTH_BUDGETS`: one 512-byte notch would have left 512 bytes of
+  headroom, and the next sentence added anywhere would push the combination past 64 KiB — the very defect #721 removed.
+- **散文里抄来的数，现在由拥有它的那条命令打印出来（issue #731）。** 四处文字已经被代码甩下：发版日 `--all`
+  的结语硬写「把闸开起来再发」，而未判定那一格偏偏是 `changelog-unreleased`——它**没有闸可开**，等的是切版；
+  两份 AGENTS 里手工维护的 `[i/N]` 清单与 `PREFLIGHT_STEPS` 之间没有任何对账，于是「文档写 7 步、代码 8 步」可以一路
+  绿；探针自测的例数是手抄的 13，而命令打出来的是 15；CHANGELOG 的「版本节标题 / 段首日期 / bullet」三条口径写了四份，
+  其中两份对 `##  [0.31.0]`（两个空格）已经给出不同答案。现在：`--all` 的结语按未判定的步骤 id 分叉，两份 AGENTS 清单
+  逐格与步骤表对账，例数变成由命令打印值做等号校准的具名常量，三条行级口径收进 `scripts/changelog-heading.mjs`——
+  并配一格「同一棵合成树过三个读者」的交叉对账，谁挪了口径就点名谁。为守 #721 钉住的注入余量（最坏两页组合 30,720 + 33,792 =
+  64,512，上限 65,536），这些闸的说明性材料是**搬进冷层**（`docs/maintenance/command-reference_cn.md#release-day`，与 #726/#727
+  同一个落点），**不是抬 `LENGTH_BUDGETS`**：抬一档（512 字节）就只剩 512 字节余量，下一次任何人加一句都会把组合推过 64 KiB——
+  那正是 #721 刚修掉的缺陷。
+
 - **The shipped `TranscriptStore` contract suite now enforces its own optionality (issue #739).** The suite's
   header said run snapshot and run-state are optional capabilities and `src/assembly-validators.js` agreed
   (`OPTIONAL_TRANSCRIPT_STORE_METHODS`), but the suite body called `store.saveRunSnapshot` / `store.saveRunState`
