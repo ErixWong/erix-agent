@@ -100,6 +100,274 @@ function collectKeys(value, acc = new Set()) {
   return acc;
 }
 
+// ---------------------------------------------------------------------------
+// store 读边界的**就地**观察面（#760：#735 切片 2 之后，run snapshot 的 `messages` 只剩轮残余，
+// 拿它当「引擎内存里有没有改写宿主传进来的旧块」的观察面就瞎了）。
+//
+// 拦的是包装 store 的**读面**（`load` / `loadRawRows` / `loadLatestRunSnapshot` / `loadLatestCheckpoint`）：
+// 对返回结构里每一个 `tool_result` 块（连同它自己的嵌套对象）**逐格换成 accessor**：
+// 读 → 计数（=「探针真的盖上过这个对象」的在场证据）；**已有键的普通赋值** → setter 吞下来记账（不抛）；
+// **加新键 / 删已有键 / `defineProperty` 覆盖** → 被 `Object.freeze` 当场挡下（严格模式 `TypeError`，根本走不到记账）。
+// ⇒ `addedKeys` / `lostKeys` / `replacedKeys` 三个格子在冻住的世界里**结构性恒空**，它们是兜底，不是主机制。
+// **对象身份不变**（还是引擎要拿去用的那一个）⇒ 引擎改它我们看得见，不改就一条都不记。
+//
+// 为什么不是字面的 `new Proxy(块)`（本单原本的形状，实测装不上）：引擎每次请求都做
+// `cloneState(ctx.messages)`（`src/loop/provider-runner.js:242` → `src/loop/budget.js:12` 就是
+// `structuredClone`），而 `structuredClone` 对**任何** Proxy 一律抛 `DataCloneError`（Node 22 实测；
+// 恢复进来的旧块就在 `ctx.messages` 里）⇒ 给块套 Proxy，第一次请求就死在探针自己手里，
+// F9b 会红成「run 没收尾」而不是判据红。accessor 换格不动 `Object.keys` / 键序 / 可枚举性 /
+// JSON 字节，`structuredClone` 照读通过 ⇒ 它是这里唯一不改变引擎行为的就地观察面。
+// 观察面的**准确**边界（#760 两轮评审修正）。这句原来登记错过两次：先写成「键集合 + 逐字 JSON 兜住」
+// （错：只对边界上已有的键成立），再写成「新增 / 删除 / defineProperty 都由 accessor 记账」（也错：
+// 那三类是 **freeze 直接抛**，不是 setter 记下的 ⇒ 措辞与代码行为不符）。按**实际机制**分类：
+//
+// 机制 A：**accessor setter 记账**（不抛，被吞下来记下）
+//   抓的只有一类：**已有键的普通赋值**（`b.duration = 9999`、`b.success = false`，含改回同一个值）→
+//   `writes[]`。为什么这类**不抛**：键在冻结前已被换成 accessor，而 `Object.freeze` 不改变 accessor
+//   的语义（它只把属性标成不可重定义、对象标成不可扩展），赋值于是走 `[[Set]]` 命中 setter ⇒
+//   既不被 freeze 拒、也不静默，而是**留下账**。
+//
+// 机制 B：**`Object.freeze` 当场抛**（严格模式下 TypeError，根本走不到记账）
+//   抓三类：② **新增键**（对象不可扩展）、③ **删已有键**（属性不可配置）、④ **`defineProperty`
+//   覆盖探针的格子**（同上）。⇒ 这三类在冻结的世界里**不会**留下 `addedKeys`/`lostKeys`/`replacedKeys`
+//   记录，而是**当场打断 run**；下面 F9b 的 `lostKeys`/`replacedKeys`/`addedKeys` 三条因此是**兜底**
+//   （只有「没冻上」的世界才会用到它们），别把「它们恒空」读成「引擎很规矩」。
+//   B 顺带关掉 accessor 面自己抓不住的那一类：**新增一个键、又在收针前删掉的瞬态** —— 那一格在边界上
+//   本来没有 accessor 可拦，终态键集合与逐字 JSON 都回到原样 ⇒ 一次真发生过的写入零痕迹；现在它
+//   **抛在「加」那一下**，根本不给你「删回来」的机会。
+//
+// 为什么**两类机制都得留着**（各自漏掉什么）：
+//   · 只 freeze（不装 accessor）：已有键的赋值**静默成功**（setter 不存在 ⇒ 直接写 own value 的
+//     语义被 freeze 拒？不会 —— 冻的是**可写性**之外的东西吗？会抛，但抛的是 `duration` 这种**引擎
+//     可能合法做的普通赋值**，判据就退化成「引擎只要动一下就崩」，拿不到「改了哪个键、从什么改成什么」
+//     的现场；而且探针也记不到读次数 ⇒ 在场断言失去依据）。
+//   · 只 accessor（不 freeze）：②③④ 只在**活到收针**时才看得见 ⇒ 「加了又删」零痕迹。
+//
+// 实验结论（两条都实测过才留下 freeze）：
+//   · 不打断引擎合法行为：`ERIX_E2E_REAL=1 node --test examples/tool-fact-e2e.test.mjs` 3/3 绿
+//     （日志 /tmp/f9b/freeze-1.log）——引擎的合法改写发生在 `cloneState()` 之后的副本上，冻不到。
+//   · 瞬态真被拦：临时在 `src/loop/resume-manager.js` 的恢复处写 `b.erix = {}; delete b.erix;`
+//     ⇒ 当场 `TypeError: Cannot add property erix, object is not extensible`（栈顶
+//     `resume-manager.js:414`），`fail 1`（日志 /tmp/f9b/freeze-transient-red.log）。
+//   同一件事在本格里有**常驻**判据（下面 F9b 的「冻着 ⇒ 瞬态加键当场抛」两条），不依赖临时变异。
+// ---------------------------------------------------------------------------
+
+function safeJson(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "<unreadable>";
+  }
+}
+
+/**
+ * 给一个 store 装上读边界就地观察面。
+ * @param {object} store 真 store（内置文件 store）
+ * @returns {{ store: object, snapshots: object[], observations: () => object[] }}
+ */
+function createBoundaryProbe(store) {
+  const observations = [];
+  const stateOf = new WeakMap();
+  const snapshots = [];
+  // 身份账（#760 二轮必修1）：**谁**在**哪一次**读口调用里返回过**哪个对象**。
+  // 只靠 `Object.isFrozen(target)` / `isExtensible(target)` 判不了「这就是被观察的那一块」——
+  // 随便一个冻结的空对象都能过（评审的紧邻负控：把 target 换成 `Object.freeze({})`，真上游仍 3/3 绿）。
+  // 于是这里记下读口真正返回过的对象身份，断言拿去核对 ⇒ 冒充者过不了。
+  const faceCalls = new Map();
+  const producedBy = new Map();
+
+  // 递归保护必须是**探针自己的**（`stateOf` 已装 / `inFlight` 在装），不能借用 `scan` 的 `walking`：
+  // `scan` 会先 `walking.add(块)` 再来叫 `instrument`，借用同一张表时每个 `tool_result` 块都会被
+  // 当成「已访问」直接返回 ⇒ 观察面静默空转（本函数第一版就是这么 0 观察的，靠在场断言当场红）。
+  const inFlight = new WeakSet();
+  const instrument = (value, path) => {
+    if (value === null || typeof value !== "object" || inFlight.has(value)) return;
+    inFlight.add(value);
+    let state = stateOf.get(value);
+    if (state === undefined) {
+      // 先取逐字事实与身份标记（此时还没装 accessor ⇒ 不混进探针自己的读）
+      const own = (key) => Object.getOwnPropertyDescriptor(value, key)?.value;
+      state = {
+        path,
+        face: String(path).split("#")[0],
+        target: value,
+        identity: { type: own("type"), tool_use_id: own("tool_use_id") },
+        boundaryKeys: Object.keys(value),
+        boundaryJson: safeJson(value),
+        reads: new Map(),
+        writes: [],
+        getters: new Map(),
+      };
+      stateOf.set(value, state);
+      observations.push(state);
+    }
+    const isNew = !Object.isFrozen(value);
+    for (const key of Object.keys(value)) {
+      const desc = Object.getOwnPropertyDescriptor(value, key);
+      // 只换「可配置的数据格」；已经是探针的 accessor（幂等：同一个块被读两次）就跳过
+      if (desc === undefined || !("value" in desc) || !desc.configurable) continue;
+      let current = desc.value;
+      const getter = () => {
+        state.reads.set(key, (state.reads.get(key) ?? 0) + 1);
+        return current;
+      };
+      const setter = (next) => {
+        state.writes.push({ key, before: current, after: next });
+        current = next;
+        instrument(next, `${path}.${key}`);
+      };
+      Object.defineProperty(value, key, {
+        configurable: true, enumerable: desc.enumerable, get: getter, set: setter,
+      });
+      state.getters.set(key, getter);
+      instrument(desc.value, `${path}.${key}`);
+    }
+    // [#760 实验] 边界那一刻就在的对象**冻起来**（只冻 `tool_result` 旧块与其嵌套对象，不冻消息图）：
+    // accessor 已先装好 ⇒ 已有键的赋值仍走 setter（照记不误），而**加新键 / 删键在严格模式下当场抛**
+    // ⇒ 「加了又删」的瞬态也跑不掉。引擎合法的改写发生在 `cloneState()` 之后的副本上，理论上不受影响；
+    // 真受影响就说明引擎确实就地改了边界上那一块（那本身就是要判的事实）。
+    if (isNew) Object.freeze(value);
+  };
+
+  /** 只给 `tool_result` 块（本单要判的那一类宿主对象）装探针；整张返回结构走一遍。 */
+  const scan = (value, path, walking) => {
+    if (value === null || typeof value !== "object" || walking.has(value)) return;
+    walking.add(value);
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => scan(item, `${path}[${index}]`, walking));
+      return;
+    }
+    if (value.type === "tool_result") instrument(value, path, walking);
+    for (const key of Object.keys(value)) scan(value[key], `${path}.${key}`, walking);
+  };
+
+  /** 收针：先把事实取出来（此后探针自己的读不再参与判定），再交给断言。 */
+  const freeze = (state) => {
+    const keysNow = Object.keys(state.target);
+    const frozen = {
+      face: state.face,
+      // `target` 与 `isFrozen` 必须是**真对象引用 / 现测事实**：#760 的第一版漏了 `target`，
+      // 于是 `Object.isFrozen(o.target)` 读的是 `Object.isFrozen(undefined)` === **true**（非对象一律算
+      // 冻结），瞬态那条断言当场变成空转——正是本单要防的「判据自己糊弄自己」。
+      target: state.target,
+      isFrozen: Object.isFrozen(state.target),
+      path: state.path,
+      identity: { ...state.identity },
+      boundaryKeys: [...state.boundaryKeys],
+      boundaryJson: state.boundaryJson,
+      readsTotal: [...state.reads.values()].reduce((total, n) => total + n, 0),
+      readKeys: [...state.reads.keys()].sort(),
+      writes: state.writes.map((write) => ({
+        key: write.key, before: safeJson(write.before), after: safeJson(write.after),
+      })),
+      keysNow,
+      jsonNow: safeJson(state.target),
+      lostKeys: state.boundaryKeys.filter((key) => !keysNow.includes(key)),
+      addedKeys: keysNow.filter((key) => !state.boundaryKeys.includes(key)),
+      replacedKeys: keysNow.filter((key) => {
+        if (!state.boundaryKeys.includes(key)) return false;
+        const desc = Object.getOwnPropertyDescriptor(state.target, key);
+        return desc === undefined || !("get" in desc) || desc.get !== state.getters.get(key);
+      }),
+    };
+    return frozen;
+  };
+
+  const READ_FACES = ["load", "loadRawRows", "loadLatestRunSnapshot", "loadLatestCheckpoint"];
+  const SNAPSHOT_FACES = ["saveRunSnapshot", "saveCheckpoint", "appendCheckpoint"];
+  const probed = {};
+  for (const [name, method] of Object.entries(store)) {
+    if (typeof method !== "function") {
+      probed[name] = method;
+      continue;
+    }
+    probed[name] = async (...args) => {
+      const result = await method.apply(store, args);
+      if (READ_FACES.includes(name)) {
+        faceCalls.set(name, (faceCalls.get(name) ?? 0) + 1);
+        // 把**这一次调用返回过的每一个对象**都登记成「来自这个读口」——身份核对要用
+        const seen = new Set();
+        const note = (node) => {
+          if (node === null || typeof node !== "object" || seen.has(node)) return;
+          seen.add(node);
+          if (!producedBy.has(node)) producedBy.set(node, name);
+          for (const v of Object.values(node)) note(v);
+        };
+        note(result);
+        scan(result, `${name}#${observations.length}`, new Set());
+      }
+      if (SNAPSHOT_FACES.includes(name)) snapshots.push(args[1]);
+      return result;
+    };
+  }
+
+  return {
+    store: probed,
+    snapshots,
+    /** 收针后的全部观察事实（只含 `tool_result` 块）。 */
+    observations: () => observations.map(freeze),
+    /** 每个读口被调了几次（0 ⇒ 引擎根本不走这一张，观察面就是挂空）。 */
+    faceCalls: () => Object.fromEntries(faceCalls),
+    /** `target` 是不是**这个读口**真的返回过的对象（身份核对，冒充者返回 false）。 */
+    wasProducedBy: (target, face) => producedBy.get(target) === face,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 观察记录的**身份 / 在场 / 来源**判据（#760 二轮必修1）。每条都带 `[标签]` 前缀，为的是让
+// 「红在哪条断言上」可核对：负控必须红在**它该红的那一条**上，红错地方算没修。
+//   `[在场]` 观察面根本没盖到 / 引擎不走这张读口
+//   `[身份]` target 不是被观察的那一块（空对象冒充、`undefined`、被换掉的替身）
+//   `[来源]` 记录声称的读口不是真的产出过这个对象的那一张
+//   `[冻结]` / `[瞬态]` 见上面的 freeze 机制注释
+// ---------------------------------------------------------------------------
+const OBS_TAG = { present: "[在场]", identity: "[身份]", origin: "[来源]", frozen: "[冻结]", transient: "[瞬态]" };
+
+/** 观察面确实盖到了要判的那一块（空观察 ⇒ 后面「零次改写」不算证据）。 */
+function assertObservationsPresent(observed, expectId) {
+  assert.ok(observed.length > 0,
+    `${OBS_TAG.present} 旧块 ${expectId} 没穿过 store 读边界（观察面没盖上要判的那一段；红的是探针，不是引擎）`);
+}
+
+/** 一条观察记录必须是**那块东西本身**、由**声称的那张读口**产出、且被真读过。 */
+function assertLiveObservation(o, probe, expectId) {
+  assert.equal(o.identity?.tool_use_id, expectId,
+    `${OBS_TAG.identity} 观察记录声称的不是旧块 ${expectId}：${JSON.stringify(o.identity)}`);
+  assert.equal(o.identity?.type, "tool_result",
+    `${OBS_TAG.identity} 观察记录声称的不是 tool_result 块：${JSON.stringify(o.identity)}`);
+  // target **必须就是**那一块（评审负控要打的地方：`Object.freeze({})` 与 `undefined` 都在这条红。
+  // `Object.isFrozen` / `isExtensible` 判不了身份——任何冻结对象都过——所以它们不许当身份判据用。）
+  assert.ok(o.target !== null && typeof o.target === "object",
+    `${OBS_TAG.identity} 观察记录里的 target 不是对象（读到的可能是 undefined，`
+    + `于是 isFrozen/isExtensible 全都恒真 ⇒ 判据空转）：typeof=${typeof o.target}`);
+  assert.equal(o.target.tool_use_id, o.identity.tool_use_id,
+    `${OBS_TAG.identity} target 不是被观察的那一块（冒充者：一个已冻结的空对象也能过 isFrozen，`
+    + `但它没有 tool_use_id）：target 键集合=${JSON.stringify(Object.keys(o.target))} 记录=${o.path}`);
+  assert.equal(o.target.type, o.identity.type,
+    `${OBS_TAG.identity} target 的类型与记录不符（替身对象）：${o.path}`);
+  // 来源核对：这个对象确实是**这张读口**返回过的
+  assert.ok(probe.wasProducedBy(o.target, o.face),
+    `${OBS_TAG.origin} 记录声称来自读口 ${o.face}，但那张读口没返回过这个对象`
+    + `（读口被调次数=${JSON.stringify(probe.faceCalls())}）⇒ 观察面可能挂在引擎不走的读口上：${o.path}`);
+  assert.ok((probe.faceCalls()[o.face] ?? 0) > 0,
+    `${OBS_TAG.present} 读口 ${o.face} 一次都没被调用过（观察面空转）：${o.path}`);
+  assert.ok(o.readsTotal > 0,
+    `${OBS_TAG.present} 探针盖到了旧块却没人读它（空转 ⇒ 「零次就地改写」不算证据）：${o.path}`);
+  assert.ok(o.readKeys.includes("tool_use_id"),
+    `${OBS_TAG.present} 旧块被读的方式不像被引擎消费（没读过身份键 tool_use_id）：readKeys=${JSON.stringify(o.readKeys)}`);
+}
+
+/** 冻结事实与「加了又删当场抛」——身份先核对过，才谈得上「这一块冻着」。 */
+function assertObservationFrozenHard(o) {
+  assert.equal(Object.isFrozen(o.target), true,
+    `${OBS_TAG.frozen} 这一块在边界上没被冻住（「加了又删」又会变成零痕迹）：${o.path}`);
+  assert.throws(() => {
+    o.target.erix = { toolCallKey: "tc_transient" };
+    delete o.target.erix;
+  }, (error) => error?.name === "TypeError" && /not extensible|read only|cannot delete/u.test(error.message),
+    `${OBS_TAG.transient} 在这块上加了又删竟然没抛 ⇒ 冻结没落上（登记过的零痕迹缺口会重新打开）：${o.path}`);
+}
+
 /** 项目素材：两次工具调用都要真有活干（一个命中、一个纯文本返回） */
 async function makeProject(dir) {
   await writeFile(join(dir, "a.txt"), "第一行 needle 在这里\n第二行 没有\n第三行 又有一个 needle\n", "utf8");
@@ -216,6 +484,66 @@ test("断言集自身的不变量：允许键集合与退役名单没被偷偷�
   assert.deepEqual([...RETIRED].sort(),
     ["duration", "erixRound", "executionStatus", "success"],
     `退役名单应与 TOOL_RESULT_CONTRACT.legacy.aliases 一致，实际 ${RETIRED.join(",")}`);
+});
+
+// #760 二轮必修1：**身份判据必须自己有牙齿**，而且是负控自证（不联网、不花钱、始终跑）。
+//
+// 评审的紧邻负控：把观察快照里的 `target` 换成**另一个已冻结的空对象** ⇒ 真上游 e2e 仍 3/3 绿。
+// 根因：`Object.isFrozen(x)` / `Object.isExtensible(x)` 对**任何**冻结对象都通过，它们不证明
+// 「这就是被观察的那一块」。上一版 `target: undefined` 之所以红，是后面的**瞬态匹配器**顺手抓到的，
+// 不是身份判据判的 ⇒ 那条断言当时没有独立的牙齿。这里把负控固化成常驻格：每种空转都必须红在
+// **该它红的那条断言名**上（红错地方算没修），于是标签 `[身份]` / `[来源]` / `[在场]` / `[冻结]` /
+// `[瞬态]` 都进断言文案并被逐条核对。
+test("观察记录的身份/来源/在场判据自带牙齿（负控固化，始终跑，不联网）", async () => {
+  const legacy = {
+    type: "tool_result", tool_use_id: "legacy-1", content: "旧版本落盘的读取结果",
+    erixRound: 0, duration: 1234, success: true, executionStatus: "ok", artifactStatus: "ok",
+  };
+  // 假 store：引擎走 `load`，**不走** `loadLatestRunSnapshot` / `loadLatestCheckpoint`
+  const probe = createBoundaryProbe({
+    async load() {
+      return { records: [{ round: 1, messages: [{ role: "user", content: [{ ...legacy }] }] }] };
+    },
+    async loadLatestRunSnapshot() { return null; },
+    async loadLatestCheckpoint() { return null; },
+  });
+  await probe.store.load();
+  const observed = probe.observations().filter((o) => o.identity.tool_use_id === "legacy-1");
+  // 夹具自证：观察面在夹具上确实盖到了（否则下面的负控全是空转）
+  assert.ok(observed.length > 0, "夹具没造出观察记录 ⇒ 这一格自己空转");
+  const o = observed[0];
+  assertLiveObservation(o, probe, "legacy-1");
+  assertObservationsPresent(observed, "legacy-1");
+  assertObservationFrozenHard(o);
+
+  const thrownTag = (fn) => {
+    let error;
+    try { fn(); } catch (caught) { error = caught; }
+    assert.ok(error, "负控竟然没红 ⇒ 判据没牙齿（这正是评审抓的那类空转）");
+    return String(error.message ?? "");
+  };
+  // ① 评审的紧邻负控：`target` 换成**另一个已冻结的空对象** ⇒ 必须红在 `[身份]`
+  const impostor = thrownTag(() => assertLiveObservation({ ...o, target: Object.freeze({}) }, probe, "legacy-1"));
+  assert.ok(impostor.startsWith(OBS_TAG.identity),
+    `冻结空对象冒充 target 时红错了断言（应红在 ${OBS_TAG.identity}）：${impostor.split("\n")[0]}`);
+  // ② `target: undefined`（上一版真实踩过的空转）⇒ 也必须红在 `[身份]`，不许靠瞬态匹配器顺手抓
+  const undef = thrownTag(() => assertLiveObservation({ ...o, target: undefined }, probe, "legacy-1"));
+  assert.ok(undef.startsWith(OBS_TAG.identity),
+    `target=undefined 时红错了断言（应红在 ${OBS_TAG.identity}，而不是被别的匹配器抓到）：${undef.split("\n")[0]}`);
+  // ③ 逐字同形的**替身**（但不是这张读口返回过的）⇒ 红在 `[来源]`
+  const standIn = thrownTag(() => assertLiveObservation({ ...o, target: Object.freeze({ ...legacy }) }, probe, "legacy-1"));
+  assert.ok(standIn.startsWith(OBS_TAG.origin),
+    `替身对象应当红在 ${OBS_TAG.origin}（身份字段对得上，只有来源账能抓它）：${standIn.split("\n")[0]}`);
+  // ④ 观察面挂到**引擎不走的读口**：记录声称的读口没产出过它 ⇒ 红在 `[来源]`
+  const wrongFace = thrownTag(() => assertLiveObservation({ ...o, face: "loadLatestCheckpoint" }, probe, "legacy-1"));
+  assert.ok(wrongFace.startsWith(OBS_TAG.origin),
+    `读口挂错应当红在 ${OBS_TAG.origin}：${wrongFace.split("\n")[0]}`);
+  // ⑤ 整个观察面空转（引擎不走被包的那张读口 ⇒ 零记录）⇒ 红在 `[在场]`
+  const absent = thrownTag(() => assertObservationsPresent([], "legacy-1"));
+  assert.ok(absent.startsWith(OBS_TAG.present), `零观察应当红在 ${OBS_TAG.present}：${absent.split("\n")[0]}`);
+  // ⑥ 反向确认「冻结/瞬态那两条对冒充者无牙」——所以身份判据不许外包给它们
+  assert.doesNotThrow(() => assertObservationFrozenHard({ ...o, target: Object.freeze({}) }),
+    "冻结/瞬态判据竟然能认出冒充者（那身份判据就可以省了；实测它认不出，别把它当身份用）");
 });
 
 // 本片（0.28 发版清单 [1/5] 红）的结构性修法：**不联网**的前置格。
@@ -485,18 +813,17 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
     await mkdir(dirC, { recursive: true });
     await makeProject(dirC);
     const storeC = createFileTranscriptStore({ dir: join(root, "store-c") });
-    // 探针：resume 期间引擎每写一次 run snapshot 就留一份副本。快照的 `messages` 是
-    // `cloneState(messages)`——即**引擎内存里那份上下文**的逐字快照 ⇒ 拿它判「引擎有没有在内存里
-    // 给宿主传进来的旧块补 `erix`」。光看 `store.load()` 不够：那是磁盘，就地改内存对象而不再落盘
-    // 的坏法不会在磁盘上留下痕迹（本单要防的 (a) 正是那一种）。
-    const snapshotPayloads = [];
-    const storeCProbed = {
-      ...storeC,
-      async saveRunSnapshot(runId, snapshot) {
-        snapshotPayloads.push(snapshot);
-        return storeC.saveRunSnapshot(runId, snapshot);
-      },
-    };
+    // 观察面（#760）：**store 读边界就地探针**。原来的探针取 run snapshot 的 `messages`
+    // （曾= `cloneState(messages)`，引擎内存上下文的逐字副本），而 #735 切片 2 把那一格改成
+    // **轮残余**（`orchestrator.js#persistRunSnapshot` 的 `residueStart` 之前写成 `null`）⇒ 恢复
+    // 进来的旧块恒在残余之前 ⇒ 快照面**取不到** `legacy-1`（真机实测：resume 期 4 份快照全部缺席，
+    // F9b 红在「探针没盖上要判的那一段」）。只读 `store.load()` 也不够：那是磁盘，就地改内存
+    // 而不再落盘的坏法不会在磁盘上留痕迹。⇒ 观察面装在 `createBoundaryProbe(storeC)`：它包住
+    // 引擎用的那一个 store 实例的读面，对恢复出来的每个 `tool_result` 块**就地**记账（身份不变），
+    // 顺带代收写侧的 snapshot payload（写侧形状本身**不动**，见 F9b 的「写侧形状现状」三条）。
+    const boundary = createBoundaryProbe(storeC);
+    const storeCProbed = boundary.store;
+    const snapshotPayloads = boundary.snapshots;
     const runIdC = RUN_ID_C;
     const legacyBlock = {
       type: "tool_result",
@@ -571,6 +898,7 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
     }, `新块=${freshC.length}，↑${outC?.usage?.input_tokens}/↓${outC?.usage?.output_tokens}`);
 
     check("F9b 引擎不回写历史：旧块的退役名与宿主摊平键原样保留（只读不回写）", () => {
+      // ---- 磁盘半边（原样不动）----
       assert.ok(legacy, "旧块没被带回上下文");
       assert.equal(legacy.erixRound, 0);
       assert.equal(legacy.duration, 1234);
@@ -578,19 +906,54 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
       assert.equal(legacy.executionStatus, "ok");
       assert.equal(legacy.artifactStatus, "ok");
       assert.equal(legacy.erix, undefined, "旧块不该被补上 erix 命名空间");
-      // 磁盘之外的另一半：引擎**内存里**那份上下文也不许改写宿主传进来的旧块。
-      // 探针取的是 run snapshot 的 `messages`（= `cloneState(messages)`），即引擎内存上下文的逐字副本
-      // ⇒ 这一条才真的钉住「宿主对象不被就地改写」；只读 `store.load()` 的话，改内存不落盘的坏法看不见。
-      assert.ok(snapshotPayloads.length > 0, "resume 期间没写任何 run snapshot（探针空转，判据落空）");
-      const seenInMemory = snapshotPayloads.flatMap((payload) => blocksOf(payload?.messages, "tool_result"))
+      // ---- 写侧形状现状（#735 切片 2）：快照仍在写，但 `messages` 只剩轮残余，它**不再是**内存
+      // 半边的观察面。这三条钉的就是「不许回退写侧形状」：哪天写侧又交整段正文，第二、三条会红
+      // 并让人先去看 `test/loop-snapshot-round-residue-735.test.js`，而不是顺手把下面删成「有就查」。
+      assert.ok(snapshotPayloads.length > 0, "resume 期间没写任何 run snapshot（写侧探针空转，判据落空）");
+      const legacyInSnapshots = snapshotPayloads
+        .flatMap((payload) => blocksOf(payload?.messages, "tool_result"))
         .filter((block) => block?.tool_use_id === "legacy-1");
-      assert.ok(seenInMemory.length > 0, "引擎内存上下文里没见过旧块（探针没盖上要判的那一段）");
-      for (const block of seenInMemory) {
-        assert.deepEqual(Object.keys(block).sort(), Object.keys(legacyBlock).sort(),
+      assert.deepEqual(legacyInSnapshots.map((block) => Object.keys(block).sort()), [],
+        "#735 切片 2 的写侧形状变了：快照 `messages` 又把恢复进来的正文带回来了。内存半边的观察面在 store"
+        + " 读边界（`createBoundaryProbe`），这一格红了先对齐 test/loop-snapshot-round-residue-735.test.js 再动这里");
+      assert.ok(snapshotPayloads.some((payload) => (payload?.messages ?? []).includes(null)),
+        "快照 `messages` 里一个残余空位也没有（同上：写侧的轮残余没落地）");
+      // ---- 内存半边：引擎**内存里**那份上下文也不许改写宿主传进来的旧块（就地改写不落盘，磁盘面看不见）----
+      const observed = boundary.observations().filter((o) => o.identity.tool_use_id === "legacy-1");
+      // 在场断言（**不是**「有就查」）：探针必须真的在读边界盖上过旧块，并且它被**读过**。
+      // 少了这一条，「零次就地改写」在观察面空转时照样绿——那正是本片要防的那一类假绿。
+      assertObservationsPresent(observed, "legacy-1");
+      // 身份 / 在场 / 来源 三条一起过（#760 二轮必修1）：`target` 必须是**那块东西本身**、
+      // 由**声称的那张读口**产出、且真被读过。光看 `isFrozen`/`isExtensible` 判不出身份——
+      // 评审的紧邻负控：把 target 换成 `Object.freeze({})` 仍 3/3 绿。下面那条负控已固化成常驻格。
+      for (const o of observed) assertLiveObservation(o, boundary, "legacy-1");
+      for (const o of observed) {
+        assert.deepEqual(o.writes, [], `引擎在内存里就地改写了宿主的旧块（set 面）：${JSON.stringify(o.writes)}`);
+        assert.deepEqual(o.lostKeys, [], `引擎在内存里删掉了宿主的旧键（deleteProperty 面）：${o.lostKeys.join(",")}`);
+        assert.deepEqual(o.addedKeys, [], `引擎在内存里给旧块补了新顶层键（就地补 erix 落在这格）：${o.addedKeys.join(",")}`);
+        assert.deepEqual(o.replacedKeys, [], `引擎用 defineProperty 覆盖了探针的格子：${o.replacedKeys.join(",")}`);
+        assert.deepEqual(o.keysNow.sort(), Object.keys(legacyBlock).sort(),
           "引擎在内存里改了旧块的键集合（就地改写宿主对象）");
-        assert.equal(block.erix, undefined, "引擎在内存里给旧块补了 erix（就地改写宿主对象）");
+        assert.equal(o.jsonNow, o.boundaryJson,
+          `引擎就地改了旧块的内容：边界=${o.boundaryJson} 现在=${o.jsonNow}`);
+        // 探针自己是透明的：换 accessor 之后边界看到的字节仍等于宿主写进去的那一份（否则「零改写」
+        // 可能是探针把对象换成了引擎不在乎的另一种形状换来的）。
+        assert.equal(o.boundaryJson, safeJson(legacyBlock),
+          `探针/store 在边界上改了旧块的形状：边界=${o.boundaryJson} 宿主写入=${safeJson(legacyBlock)}`);
       }
-    }, `旧块仍带退役名=${RETIRED.filter((r) => Object.hasOwn(legacy ?? {}, r)).join(",")}，快照探针=${snapshotPayloads.length} 份`);
+      // 瞬态那一类（**新增一个键又在收针前删掉**）由冻结关掉：边界那一刻就在的块是不可扩展的，
+      // 严格模式下「加键」当场抛 ⇒ 不给「删回来」的机会。这两条是**常驻**判据，不靠临时变异。
+      for (const o of observed) assertObservationFrozenHard(o);
+      // 为什么观察面不是字面的 `new Proxy(块)`（本单原本的形状，实测装不上）：引擎每次请求都
+      // `cloneState(ctx.messages)`（`provider-runner.js:242` → `budget.js:12` = `structuredClone`），
+      // 而它对**任何** Proxy 抛 `DataCloneError` ⇒ 给恢复进来的块套 Proxy，第一次请求就死在探针
+      // 自己手里（F9b 会红成「run 没收尾」，而不是判据红）。钉住它，免得下一个人顺手换回 Proxy。
+      assert.throws(() => structuredClone(new Proxy({ a: 1 }, {})),
+        (error) => error?.name === "DataCloneError",
+        "structuredClone 竟然能克隆 Proxy 了 ⇒ 引擎的 cloneState 大概也换了 ⇒ 观察面可以重新评估 Proxy 面");
+    }, `旧块仍带退役名=${RETIRED.filter((r) => Object.hasOwn(legacy ?? {}, r)).join(",")}，`
+      + `边界探针=${boundary.observations().length} 块（旧块 ${boundary.observations().filter((o) => o.identity.tool_use_id === "legacy-1").length} 份，`
+      + `快照 ${snapshotPayloads.length} 份只做写侧形状判据）`);
 
     check("F9c 一代读窗口：TTL 仍按旧块 erixRound 算年龄并折叠（年龄来源没断）", () => {
       const stats = {};

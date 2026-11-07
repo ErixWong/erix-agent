@@ -6,6 +6,96 @@
 ### Breaking
 
 ### Changed
+- **The real-upstream tool-fact e2e got a new observation face for its "the engine never rewrites history"
+  claim (issue #760, tests only — no behaviour change).** `examples/tool-fact-e2e.test.mjs` judged that claim
+  on the run snapshot's `messages` cell, which used to be `cloneState(messages)` — a verbatim copy of the
+  engine's in-memory context. Since the round-residue write side that cell no longer carries the restored
+  prefix, so on a resumed run every snapshot (6-8 of them) was missing the legacy `tool_result` slot and
+  `F9b` red on "探针没盖上要判的那一段" while every other cell stayed green: the judgement had gone blind,
+  the engine had not regressed. The in-memory half now reads the **store read boundary** of the very store
+  instance the engine uses: each restored `tool_result` block is instrumented in place (object identity
+  preserved, JSON bytes unchanged) and frozen at the boundary, so reads are counted, **plain assignment of an
+  existing key** is swallowed and booked by the accessor setter, while **adding / deleting / redefining a key throws on the
+  spot** (`Object.freeze`) — the three booking slots are a backstop, not the primary mechanism. `F9b` then requires **zero in-place rewrites** *and* a presence fact (the block was seen at the
+  boundary and really read, identity key included) — without the presence half, "zero rewrites" stays green
+  while the probe watches nothing, which is the same class of false green. A literal `new Proxy(block)` is
+  **not** installable at this boundary: the engine runs `cloneState(ctx.messages)` = `structuredClone` on
+  every provider attempt (`src/loop/provider-runner.js:242` → `src/loop/budget.js:12`), and `structuredClone`
+  throws `DataCloneError` on any Proxy, so the probe would kill the run before the judgement — pinned by an
+  `assert.throws` inside `F9b`. What the accessor face alone does **not** catch (the earlier wording "covered
+  by the key set + verbatim JSON" was wrong — that only holds for keys that already exist at the boundary): a
+  key **added and then removed before the probe is read** — that slot never had an accessor to trap it, and the
+  final key set and the verbatim JSON both come back identical, so a rewrite that really happened leaves zero
+  trace. `Object.freeze` on the restored blocks and their nested objects (that class only, not the whole
+  message graph) closes it. **By mechanism, not by wishful labelling (round-2 review caught the first wording
+  as out of step with the code)**: the accessor setter only ever accounts for **plain assignment of a key that
+  already exists** (`b.duration = 9999`) — it does not throw because the key is an accessor by then and
+  `Object.freeze` does not change an accessor's `[[Set]]` semantics, so the write is swallowed and booked;
+  whereas **adding a key, deleting a key and `defineProperty`-overwriting a probed slot throw directly from
+  `freeze`** (not extensible / not configurable). Consequence stated plainly: `addedKeys` / `lostKeys` /
+  `replacedKeys` are structurally **empty in the frozen world** — those three assertions are backstops for a
+  world where the freeze did not land, not evidence that the engine behaved. Both mechanisms are kept because
+  each covers the other's blind spot: freeze alone would turn an ordinary existing-key assignment into a crash
+  with no record of *which* key and *from what to what*, and would also lose the read counters the presence
+  assertion feeds on; accessors alone leave the add-then-delete transient at zero trace. The transient now
+  throws at the "add", never reaching the "delete". Both halves of that claim are measured: freezing does not disturb the engine
+  (real upstream 3/3 green — legitimate rewrites happen on `cloneState()` copies, which the freeze never
+  reaches), and the transient mutation (`block.erix = {}; delete block.erix;` on the restore path) dies with
+  `TypeError: Cannot add property erix, object is not extensible` at `src/loop/resume-manager.js:414`. `F9b`
+  keeps permanent versions of both (the observed blocks must be frozen; a transient add-then-delete on one must
+  throw), so the closed hole cannot quietly reopen.
+  Round 2 closed a second self-deception: `target` could be **impersonated by any other frozen object** —
+  `Object.isFrozen` / `Object.isExtensible` pass for every frozen object, so they never proved "this *is* the
+  observed block" (reviewer's adjacent negative control: swap `target` for `Object.freeze({})` and the real
+  upstream suite stayed 3/3 green; the earlier `target: undefined` red came from the *transient* matcher, not
+  from an identity assertion). The record now carries its identity and its origin (**which store read face** returned
+  *this* object — provenance is face-level, **not** one entry per call) and `F9b` cross-checks them; a new always-run, offline cell pins five
+  negative controls, each of which must redden **on the assertion that owns it** (tagged `[identity]` /
+  `[origin]` / `[presence]` / `[frozen]` / `[transient]`), including the reviewer's frozen-empty-object
+  impostor, `target: undefined`, a same-shape stand-in that this face never returned, a face the engine does
+  not walk, and a wholly idle probe — plus a reverse confirmation that the freeze/transient pair cannot smell
+  an impostor, so identity must not be delegated to it. Reverse proof: injecting `block.erix = {}` on the restore
+  path reddens `F9b` naming `erix`; removing it greens the suite 3/3. The write side itself is untouched and `F9b` now asserts
+  the residue shape as a fact (snapshots exist, the legacy slot is absent from them, `null` residue slots
+  are present), so a later revert of the write side is caught here instead of silently un-blinding the probe.
+
+- **真上游工具事实 e2e 的「引擎不回写历史」这一判换了观察面（issue #760，纯测试改动，行为不变）**。原先它读 run
+  snapshot 的 `messages` 那一格（曾经是引擎内存上下文的逐字副本）；写侧改成轮残余之后那一格不再带恢复进来的
+  正文，恢复那次每一份快照都取不到旧块 ⇒ `F9b` 红在「探针没盖上要判的那一段」，而其余格子全绿——**瞎的是探针，
+  不是引擎**。内存半边现在改在**引擎真正使用的那个 store 实例的读边界**上判：恢复出来的每个 `tool_result` 块
+  就地换 accessor 并**冻结**（对象身份不变、JSON 字节不变）：读被计数，**已有键的普通赋值**被 setter 吞下来记账（不抛），
+  **加新键 / 删已有键 / `defineProperty` 覆盖**被 `Object.freeze` **当场挡下**（抛 `TypeError`）；`F9b` 因此同时
+  要求「**零次就地改写**」和一条**在场断言**（这块确实穿过读边界且真被读过）——少了在场那一半，探针空转时
+  「零次改写」照样绿，正是本片要防的那类假绿。这里**装不上**字面的 `new Proxy(块)`：引擎每次请求都
+  `cloneState(ctx.messages)`（= `structuredClone`，见 `src/loop/provider-runner.js:242` →
+  `src/loop/budget.js:12`），而 `structuredClone` 对任何 Proxy 抛 `DataCloneError`，装了就是探针先打死被测——
+  这一条由 `F9b` 里的 `assert.throws` 钉住。反向证：在恢复路径上临时补一次 `block.erix = {}` ⇒ `F9b` 红并点名
+  `erix`；撤掉 ⇒ 3/3 绿。写侧一个字节没动，且 `F9b` 现在把那个残余形状本身钉成事实（快照在场、旧块不在其中、
+  残余空位在场），这样将来谁把写侧改回去也会在这里红，而不是让探针悄悄复明。accessor 面**自己**兜不住的一类
+  （原先登记的「键集合 + 逐字 JSON 兜住」说法是**错的**，那只对边界上已有的键成立）：**新增一个键、又在收针前
+  删掉**的瞬态——那一格在边界上本没有 accessor 可拦，终态键集合与逐字 JSON 都回到原样 ⇒ 一次真发生过的就地写入
+  零痕迹。`Object.freeze`（只冻恢复出来的 `tool_result` 旧块及其嵌套对象，不冻整张消息图）把这一类关掉：accessor
+  先装 ⇒ 已有键的赋值仍走 setter 照记；**加键 / 删键在严格模式下当场抛** ⇒ 瞬态抛在「加」那一下，不给「删回来」的
+  机会。**按实际机制重写（二轮评审指出上一版措辞与代码行为不符）**：accessor setter 只记一类——**已有键的
+  普通赋值**（`b.duration = 9999` 这类），它**不抛**，因为键那时已是 accessor，而 `Object.freeze` 不改变 accessor
+  的 `[[Set]]` 语义 ⇒ 写入被吞下来记账；而**加新键 / 删已有键 / `defineProperty` 覆盖探针格子这三类是 freeze
+  当场抛**（不可扩展 / 不可重定义），不是 setter 记下的。后果直说：在冻住的世界里 `addedKeys`/`lostKeys`/
+  `replacedKeys` **结构性恒空**，那三条断言是「没冻上」时的兜底，不是「引擎很规矩」的证据。两类机制都留着，
+  因为各挡各的盲区：只 freeze ⇒ 一次普通的已有键赋值退化成一崩了之，拿不到「改了哪个键、从什么改成什么」的
+  现场，连读次数（在场断言的依据）也没了；只 accessor ⇒ 加了又删的瞬态零痕迹。两半都实测过：冻上之后引擎不受打扰（真上游 3/3 绿——合法改写发生在 `cloneState()` 的副本上，冻不到），
+  而瞬态变异（恢复路径上 `block.erix = {}; delete block.erix;`）当场 `TypeError: Cannot add property erix,
+  object is not extensible`（栈顶 `src/loop/resume-manager.js:414`）。`F9b` 里留了这两条**常驻**判据（观察到的块
+  必须是冻住的；在它上面加了又删必须抛），关掉的洞不会再悄悄张开。
+  二轮还关掉第二个「自己糊弄自己」：`target` 可以被**另一个已冻结的空对象冒充**——`Object.isFrozen` /
+  `Object.isExtensible` 对任何冻结对象都通过，它们从不证明「这就是被观察的那一块」（评审的紧邻负控：把
+  `target` 换成 `Object.freeze({})` ⇒ 真上游仍 3/3 绿；上一版 `target: undefined` 之所以红，是**瞬态匹配器**
+  顺手抓到的，不是身份判据判的）。观察记录现在自带身份与来源（**哪张读口**返回过**这个**对象——来源只记到**读口级**，
+  **不是**每次调用一个号），
+  `F9b` 逐条核对；并新增一条**不联网、不花钱、始终跑**的格子固化五个负控，每个都必须红在**该它红的那条断言**上
+  （标签 `[身份]` / `[来源]` / `[在场]` / `[冻结]` / `[瞬态]` 进断言文案并逐条核对）：冻结空对象冒充、
+  `target: undefined`、逐字同形但这张读口没返回过的替身、挂到引擎不走的读口、整个观察面空转；再加一条反向确认
+  ——冻结/瞬态那两条**认不出冒充者**，所以身份不许外包给它们。
+
 
 - **Numbers that live in prose now get printed by the command that owns them (issue #731).** Four places said
   something the code had already outgrown: the release-day `--all` closing line promised "open the gate" even when
@@ -973,6 +1063,98 @@
   **派生**那一格的（判据 4：页面必须逐字照抄标记的条款），只改文档会让同一个错目标被继续派生出来——而已发布的
   `0.31.0` 指南里印的就是那句错话。标记现在与页面同一条 `no in-tree replacement`（只动注释文字：`removed in 0.31`
   那枚版本记号没动、函数签名与实现没动、R4 收这个条款形状、一个导出都没加）。
+
+- **The resume fallback could abandon a run in four different ways and told the host about only one
+  of them (issue #730).** All four paths mean the same thing to a host — "this `runId` still needs
+  manual repair" — while only the missing-anchor path emitted `resume_journal_skipped`. The rest
+  surfaced as `invalid_messages` in front of the first outbound request (0 HTTP calls,
+  `termination: failed`, the run never boots again), indistinguishable from "the fallback worked".
+  Four cells, in the order the ticket lists them: **the merge that refused to speak** (the census says
+  an id is unsettled, `mergeToolResultsIntoAssistantNextMessage` returns `false` because that
+  aggregated message already carries a result from a different call, and the loop `continue`d) and
+  **the two shapes that never reached the census at all** (two adjacent assistants, or the following
+  `user` message holding no `tool_result` — both need a page inserted, which issue #421 deliberately
+  excluded) now report `mid_sequence_merge_refused` and `mid_sequence_shape_not_supported`; **the
+  write that was refused** (`appendMessageRowToTranscript` returns `undefined` for a round number that
+  is not a safe integer, e.g. a run snapshot carrying round residue) is no longer "nothing happened" —
+  that stub lives only in this run's context, and `mid_sequence_stub_row_write_refused` says so. One
+  more overload was split rather than renamed: `mid_sequence_aggregate_row_not_in_ledger` covered
+  three different situations, of which only one is fixable by the host, so it now carries `detail` =
+  `anchor_probe_absent` (add `loadRawRows` and the next resume closes the ledger) /
+  `round_carrier_has_body` (issue #729: a row exists and must not be used — the probe would not help)
+  / `aggregate_row_not_in_ledger`. **No event type was added** — every one of these rides on
+  `resume_journal_skipped`, the `fact` tier of the issue #743 grading table (never deletable), and an
+  event without a `detail` keeps its old shape byte-for-byte because the engine omits the key rather
+  than writing a placeholder. The fifth cell is the one that was silently **breaking** runs rather than
+  reporting them: the mid-sequence stub criterion excluded any `tool_use_id` the ledger had ever seen
+  (a whole-run id set), while `validateMessages` compares id sets **per pair** — so a provider that
+  reuses an id in a later round (issue #284 measured that ids are not unique within a run) had its
+  stub suppressed and that pair never closed. It is now pair-local, which is also what keeps idempotency:
+  the page a stub lands on *is* that aggregated message, so the next resume's own criterion stops
+  asking. Behaviour did not move for the four abandonment cells (they still fail or still degrade
+  exactly as before — nothing was loosened to make a test pass), no `executionStatus` value was added,
+  `termination.reason` and the decision tables are untouched, and a *successful* repair emits nothing:
+  a repair must not share a signal with an abandonment. New
+  `test/loop-resume-abandon-signals-730.test.js` (7 cases) plus the reverse proofs in
+  `/tmp/report-730.md`: each cell reddens when the emission code is removed, and the closed set of
+  causes is reconciled against both contract documents in both directions.
+- **`readFile`'s own line-capacity promise went stale with this ticket, and the ratchet caught it: the
+  `fewest` tier moved 3,850 → 3,750 lines.** The 156 lines of注释 this ticket added to
+  `src/loop/pending-tool-result.js` pushed its average line width to 69.13 bytes, making it the whole-tree
+  minimum at **3,792** lines and dethroning `src/loop/option-normalization.js` (3,854). The floor is a
+  universal claim — it must be the true whole-tree minimum — and 3,792 no longer lives in the
+  `[3,850, 3,900)` band, so per the #537 promise granularity both tiers in the model-visible description
+  (`fewest ≥ …` and `no file in those three trees reads fewer than …`) moved to **3,750**, with that tier's
+  bytes/line going `68.0` → `69.1`. The role-anchor row in `test/tools/file-tools.test.js` was re-measured
+  with **that test's own** `measureReadLineCapacity` and its own `CJK_CHAR` (not a hand-written second
+  measurement — the lesson of #714) and the per-field old→new values are recorded in the row's own
+  "第 N 刷" history comment. The other four roles were re-measured too and **not** re-pinned, per #543's
+  "only when the role changes or a tier is crossed": `densest` 4,384 / CJK 36.6% (recorded 4,364 / 37.0%),
+  `median` 6,212 and `most` 9,407 (byte-identical), `self` 4,676 (recorded 4,678). Same sweep fixed the
+  directive-face claims `check:types` names by itself: the "files carrying errors" counts read
+  **27** (package root, 101 errors measured against the untouched `BASELINE_ROOT = 103`) and **29**
+  (`--with-tools`, 136 errors measured against the untouched **138**), so `AGENTS.md` / `AGENTS_cn.md` now
+  say 27 and 29 while every baseline constant and the `--checkJs`/`--strict` semantics stay where they were
+  (issue #730).
+
+- **恢复兜底有四种「放弃」走法，而宿主只听得见其中一种（issue #730）。** 四条路对宿主意味着同一件事
+  ——「这个 run 还得人工修」——可修前只有「锚点缺失」那一条会发 `resume_journal_skipped`。其余都只表现为
+  第一次模型请求出网前的 `invalid_messages`（0 次 HTTP、`termination: failed`、这个 runId 从此起不来），
+  与「兜底成功了」根本分不开。按工单列的顺序五格：**合并自己拒了**（普查说这个 id 没结清，而
+  `mergeToolResultsIntoAssistantNextMessage` 因为那条聚合消息已带着**别的单**的结果而返回 `false`，
+  循环当场 `continue`）、**根本没进判据的那两种形状**（相邻两条 assistant，或紧跟的 `user` 一条
+  `tool_result` 都没有——两者都要**插页**，而 issue #421 刻意把插页排除在职责外）现在分别报
+  `mid_sequence_merge_refused` 与 `mid_sequence_shape_not_supported`；**写被拒**那一格
+  （`appendMessageRowToTranscript` 对不是安全整数的轮号 `return undefined`，例如一份带着轮号残留的 run
+  snapshot）不再是「无事发生」——那张桩只活在本次上下文里，`mid_sequence_stub_row_write_refused` 把这件
+  事说出来。还有一处语义重叠是**拆开**而不是改名：`mid_sequence_aggregate_row_not_in_ledger` 原本盖着
+  三件不同的事，其中只有一件宿主能自己修好，于是它现在带 `detail` = `anchor_probe_absent`（补上
+  `loadRawRows`，下一次恢复账本就闭合）/ `round_carrier_has_body`（issue #729：行在而不许用，补探针也
+  没用）/ `aggregate_row_not_in_ledger`。**没有新增任何事件类型**：这些成因全部骑在
+  `resume_journal_skipped`（issue #743 分级表里的 `fact`，不可删档）上，而没带 `detail` 的既有事件形状
+  逐字不变——引擎是不写那个键，不是拿占位值填一个。第五格修的从来不是「看不见」而是**一直在把 run 弄坏**：
+  中段补桩的排除集是「账本里见过的全部 id」（一个全 run 的集合），而 `validateMessages` 是**逐对**比 id
+  集合 —— 于是同一个 `tool_use_id` 在后面的轮里被复用（issue #284 实测过 id 不保证 run 内唯一）就把这一对
+  的桩抑制掉、这一对永不闭合。现在判据是**逐对**的，而幂等也正是这条判据保住的：桩落的那一页**就是**那条
+  聚合消息，下一次恢复判据自己就不再问它。四条放弃路径的**行为一点没动**（该失败的照样失败、该降级的照样
+  降级，没有任何既有断言为了变绿被放宽），没新增 `executionStatus` 取值，`termination.reason` 与判定表都没
+  碰，而**成功**兜底仍旧一声不发：修好了不该与放弃了共用一个信号面。新增
+  `test/loop-resume-abandon-signals-730.test.js`（7 条）与 `/tmp/report-730.md` 里的反向证：把每一格的发射
+  代码拿掉，对应用例必须红；成因闭集与中英两份契约是**双向**对账的。
+
+- **本单自己把 `readFile` 那份「一次能装多少行」的承诺弄过期了，棘轮抓住了它：`fewest` 档从 3,850 行降到
+  3,750 行。** 本单给 `src/loop/pending-tool-result.js` 加的 156 行中文注释把它的均行字节抬到 69.13，
+  它于是以 **3,792** 行取代 `src/loop/option-normalization.js`（3,854）成为全树「一次装得最少」的那一个。
+  floor 是**全称命题**，只能钉全树真最小值，而 3,792 已经不在 `[3,850, 3,900)` 这一档里 ⇒ 按 #537 的承诺
+  粒度换档：模型可见文案里两处档位（`fewest ≥ …` 与 `no file in those three trees reads fewer than …`）
+  一起改成 **3,750**，那一档的均行字节 `68.0` → `69.1`。角色锚点那一行用**该测试自己的**
+  `measureReadLineCapacity` 与它自己的 `CJK_CHAR` 重取（不是另写一份度量——#714 手写数把锚点写歪的教训），
+  逐字段旧值→新值记在该行既有的「第 N 刷」历史注里。其余四个角色一并复测、**一个都没刷**（#543「换人才刷，
+  没跨档就不动」）：`densest` 4,384 / CJK 36.6%（记录 4,364 / 37.0%）、`median` 6,212、`most` 9,407（逐字
+  未动）、`self` 4,676（记录 4,678）。同一次收尾也修了 `check:types` 自己点名的指令面声称：「带错文件数」
+  现测是**包根 27 个**（101 个错，对着没动的 `BASELINE_ROOT = 103`）与 **`--with-tools` 29 个**（136 个错，
+  对着没动的 **138**），于是 `AGENTS.md` / `AGENTS_cn.md` 改成 27 与 29，而基线常量与 `--checkJs`/`--strict`
+  的语义一个字都没碰（issue #730）。
 
 ## [0.31.0] - 2026-11-04
 
