@@ -540,13 +540,18 @@ test("per-tool replay policy replays safe pending tools", async () => {
   assert.equal(replayedResult.content, "replayed safely");
 });
 
-test(
-  "per-tool replay policy interrupts unsafe tools and exposes saved partial output",
-  {
-    skip:
-      "#754 裁决 2 关掉了 pre-261021 升级闸门，本格的现场只有那条闸门造得出（第二类因果耦合）；follow-up #776",
-  },
-  async () => {
+test("per-tool replay policy interrupts unsafe tools and exposes saved partial output", async () => {
+  // issue #754 裁决 2 曾把这格**具名跳过**（当时判它「第二类因果耦合」）。独立评审
+  // （`/home/eric/wt-754-review/review-754.md`，快照 `f1a2468`）驳回了这个判断，主 session 复核后下达修令：
+  // **按工具复放策略这套机制本身不依赖那条闸门**，依赖的只是夹具的旧形状。现在的形状是新写侧真会产出的：
+  //   · 崩溃轮的 assistant（带 `tool_use`）**入账**（`journalSnapshotBodyRows(…, { aggregates: "drop" })`）
+  //     ⇒ 条数探针 = 0 ⇒ 这条走的是**新格式**分支，与退役闸门无关；
+  //   · 那条只含 `tool_result` 的聚合**不落账**（结果确实没来得及入账 = 新格式下的真状态）；
+  //   · 「已捕获的 partial 输出」搬回它现在的家 `snapshot.toolOutputs`（写侧 `archivedOutputs`；桩文的取值处
+  //     是 `src/loop/orchestrator.js` 里 `partialOutput = [archivedOutputs…, existingToolResult…]`）
+  //     ⇒ 断言那三条 regex（`was not replayed` / `captured output before interruption`
+  //     / `partial response already persisted`）**一字未改**，只是被引到的正文换了它该住的那一格。
+  // 语义照旧：不安全工具**不执行**、结果以 `interrupted` 保留、宿主决策事件照发。
   // issue #754 裁决 2：**具名跳过**（`t.skip`，断言一条没删、一条没放宽，全部留在原地）。
   // **第二类因果耦合**：本格要的现场是「那条 `tool_result` **在上下文里、但不在账本里**」，而新写侧
   // （逐条入账）没有这种状态的自然来源 —— 只有那条 pre-261021 升级闸门造得出来，裁决 2 把它关掉了。
@@ -586,20 +591,16 @@ test(
     toolOutputs: [{
       toolUseId: "unsafe-call",
       name: "unsafe_work",
-      content: "captured output before interruption",
+      // 旧夹具里这句住在「在上下文里、但不在账本里」的那条聚合消息里；新写侧没有那种状态，而
+      // 「已捕获的 partial 输出」只有一个家 —— `toolOutputs`（桩文从这里取）。两句都在，断言不动。
+      content: "captured output before interruption\n\npartial response already persisted",
     }],
   });
-  // issue #754 裁决 2：**这一格故意不加夹具垫片**（第二类，停手交主 session 判）。
-  // 本格要的现场是「那条 `tool_result` **在上下文里、但不在账本里**」——只有被关掉的那条升级闸门能造出
-  // 这种状态。三种新格式写法都不行，逐条实测过：
-  //   · 把结果写成账本消息行 ⇒ `#421` 认为这条 `tool_use` 已结清 ⇒ **不补那张「没重跑」的桩**，
-  //     实测 `interruptedResult.erix` 是 `undefined`（断言 `=== "interrupted"` 红）；
-  //   · 把结果放进快照的 `toolResults` 格（= A 集合）⇒ 复放策略照 `snapshotResults` 直接**复放**它，
-  //     结局同样是「已结清」，桩不生成；
-  //   · 什么都不写（只把 assistant 入账）⇒ 桩生成了，可桩文里引不到快照那条聚合里的
-  //     `partial response already persisted`（实测桩文只剩 `The previous execution was interrupted …`
-  //     + `toolOutputs` 里的 `captured output before interruption`），断言 `match(/partial response already persisted/)` 红。
-  // 三条里任何一条要绿都得动**断言**或动复放语义，那不是夹具形状问题 ⇒ 一字未动，等裁决。
+  // 崩溃轮的 assistant 入账、结果那条聚合**不落账** ⇒ 新格式现场（条数探针 = 0）。
+  await journalSnapshotBodyRows(store, runId, { aggregates: "drop" });
+  // 为什么必须 `aggregates: "drop"`（而不是缺省的 `"rows"`）：把那条聚合结果也写成账本行，就等于宣称这条
+  // `tool_use` **已结清** ⇒ 复放策略不再标 `interrupted`（实测 `interruptedResult.erix` 变 `undefined`）。
+  // 那是**语义**变化，不是形状变化 —— 本格的现场恰恰是「结果没来得及入账」。
 
   
 
