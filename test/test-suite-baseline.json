@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3671,
+    "tests": 3679,
     "fail": 0,
     "maxSkipped": 15
   },
@@ -779,6 +779,23 @@
       "todo": 0,
       "cancelled": 0,
       "why": "issue #760（#735 切片2 的下游：真上游 e2e `F9b` 的观察面搬家）。**+1 格来自 `a391c52` 新增的那条常驻负控格**：它不联网，所以**关掉 `ERIX_E2E_REAL` 也进 `npm test`**（离线跑该文件是 4 tests / 3 pass / 1 skip）。前序 3670 = 主干 `aec7cf9`（#753 宿主轮边界注入口，PR #759）之后主会话现测的同值。**为什么加格**：第 2 轮 copilot 复验用「把 `target` 换成另一个已冻结的空对象」这个紧邻负控证明新的 `isFrozen`/`isExtensible` 断言**仍可空转**，且上一次 `target: undefined` 那次红是**瞬态匹配器顺手抓的、不是该它红的那条**（红过一次 ≠ 红在该红的那条上）⇒ 处置是把五种负控**固化成常驻格**并给每条断言**打标签**（`[在场]/[身份]/[来源]/[冻结]/[瞬态]`，用 `thrownTag()` 断言 `error.message` 以指定标签开头）。**抬登记是人的动作**：这一格是有意新增的覆盖，不是漂移，也不是为了对上数字改测试。"
+    },
+    {
+      "date": "2026-11-07",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "094ed32（被测量那一棵树的内容；登记这笔提交在它之后，只改这个 JSON）",
+      "branch": "fix-261107-13-abandon-signals",
+      "mergeBase": "",
+      "mainSha": "6ee851e",
+      "headSha": "094ed32",
+      "tests": 3679,
+      "pass": 3666,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "issue #730（中段补桩的判据收窄 + 四条放弃路径出声）。**+8 格来自新增常驻文件 `test/loop-resume-abandon-signals-730.test.js`**：四条放弃路径各一条端到端（格1 收窄后仍补桩且不发事件 / 格2① 同页合并被拒 / 格2② 两种非目标形状 / 格2③ 有锚点而写被拒）+ 锚点 detail 两格（`anchor_probe_absent` 与 `round_carrier_has_body`）+ 成因闭集与中英两份契约的双向对账一格 + 归并口径一格；全部离线，关掉 `ERIX_E2E_REAL` 也进 `npm test`。前序 3671 = 主干 `6ee851e`（PR #761）之后的登记值。**抬登记是人的动作**（本表**没有 `--sync`**，脚本源码第 29 行明写）：这是有意新增的覆盖，不是漂移，也不是为了对上数字改测试。⚠ 并行会话在同一块上各自重登（今晚 3670→3671→…），**只有合并树上的现测才是真值**；下一任 merge 后照旧重跑重取。"
     }
   ]
 }
