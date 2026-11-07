@@ -23,9 +23,8 @@
 
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import os from "node:os";
 import { before, describe, it } from "node:test";
 
 import {
@@ -4555,13 +4554,14 @@ describe("静态守卫：CHANGELOG 三条口径与两个消费者的交叉对账
     "",
   ].join("\n");
 
-  it("同一棵合成树：本文件的 bullet 数 == release-day 漏搬格数出来的条数（不对称两侧一致）", () => {
+  it("同一棵合成树：本文件的 bullet 数 == release-day 漏搬格数出来的条数（不对称两侧一致）", async () => {
     const lines = SKEW_TEXT.split("\n");
     const picked = resolveChangelogScanSurface(lines);
     assert.equal(picked.ok, true, `合成树的扫描面选取失败：${picked.reason}`);
     const mine = countSectionBullets(lines, picked.surface.from, picked.surface.to);
 
-    const tree = mkdtempSync(join(os.tmpdir(), "erix-731-cross-"));
+    // 临时目录走 makeTmp（卫生门禁的口径：父目录探针 + 用例结束后的清理都在它里面），不用裸 mkdtempSync。
+    const tree = await makeTmp("erix-731-cross-");
     let theirs = null;
     let why = "";
     try {
