@@ -2281,19 +2281,22 @@ probe section below).
 `saveRunSnapshot` receives a payload whose `messages` cell is an array with
 **one slot per transcript message, in the transcript's own index space**, but
 only the slots from the current round's start onward carry a body; every slot
-before them is `null`. Which slots may be elided is capped, and the cap is what
-makes the elision safe: the engine nulls slots strictly below **this run's own
-resume anchor** (a run that never resumed: below `min(round start, messages it
-journaled itself)`). Every slot below that anchor is in the ledger by
-construction — the anchor *is* the number of message rows the ledger holds — so
-the engine never has to track, per slot, whether a body reached disk. That cap
-matters: on a resumed run the journaled counter is seeded from `messages.length`,
-which counts the bodies the upgrade branch copied out of the old snapshot into
-memory without journalling them (issue #424's `resume_journal_skipped` guard), so
-without the anchor cap those memory-only bodies would be nulled out and lost.
-The only reader of this cell — the resume path's upgrade branch for ledgers
-written before per-message journaling — slices `messages.slice(anchor)`, so it
-never reads a slot that was elided. Nothing
+before them is `null`. What the elision guarantees is narrow and it is worth
+stating precisely: the engine nulls slots below `min(round start, messages this
+process journaled itself)`, and the only reader of this cell — the resume path's
+upgrade branch for ledgers written before per-message journaling — slices
+`messages.slice(anchor)` with `anchor` at least that far out, so **the reader
+never reads a slot that was elided**. That is a statement about the *reader*, not
+a promise that every body survives: on a resumed run the journaled counter is
+seeded from `messages.length`, which counts bodies the upgrade branch copied out
+of the old snapshot into memory without journalling them (issue #424's
+`resume_journal_skipped` guard), and `anchor` is a scalar (folded message count),
+not a per-slot bitmap — so a body that lives only in memory can fall behind the
+slice start of a *later* resume. Measured side by side, a run written with the
+whole transcript and one written with residue fail that later resume **identically**
+(same `invalid_messages`, zero model requests): reading elision is not what loses
+it. That pre-existing read-side defect is issue #754; this cell's contract stays
+"opaque resume state, do not read bodies out of it" either way. Nothing
 about the cell's shape moved: the key name, its position among the payload keys
 (the file store `JSON.stringify`s the payload, so key order is host-visible
 bytes) and `Array.isArray(messages) ? messages : []` tolerance for older
@@ -2303,19 +2306,23 @@ carries the whole transcript there and is still read unchanged.
 Hosts must therefore treat this cell as **opaque resume state owned by the
 engine**: count slots, don't read bodies out of it. A host that wants the
 transcript reads the ledger (`load`), which is the authority for message text
-(issue 261021 slice 3). What the change buys is payload size, and how much it
-buys depends on the run's shape (fake-provider scene, one tool call plus an 8 KiB
-result per round, `JSON.stringify(snapshot).length`, 39 snapshot writes each):
-a fresh run of 20 rounds went from `2055794` bytes (1.96 MiB) written in total
-down to `361996` (0.35 MiB), with the last write `104747` → `18165` bytes and the
-`messages` cell alone `1796766` → `102968` (−94.3%); a run that resumed at round
-10 and then ran 20 more went from `3935966` down to `365149` (−90.7%). **The
-floor is a resumed run with a small anchor**: capping at the anchor is
-deliberately conservative, so a run that resumed with only 3 journaled messages
-saved `2114738` → `2088374` bytes (−1.2%) — essentially nothing. Hosts that budget
-payload size must therefore plan for the typical case but not assume it: a
-resumed run can stay close to the pre-change size. That cell was the bulk of the
-2 MiB host-side limit reported in issue #734.
+(issue 261021 slice 3). What the change buys is payload size, measured as
+`JSON.stringify(snapshot).length` on fake-provider scenes (one tool call per
+round), old vs new engine, and it depends on the run's shape:
+
+| shape | total written | peak single write |
+| --- | --- | --- |
+| fresh run, 20 rounds × 8 KiB result (39 writes) | `2055794` (1.96 MiB) → `361996` (0.35 MiB), −82.4% | `104747` → `18165` |
+| same, `messages` cell alone | `1796766` → `102968`, −94.3% | — |
+| resumed from an old-format ledger (anchor 3), then 20 rounds × 8 KiB | `2114738` → `526506`, −75.1% | `106246` → `22589` |
+| resumed at round 10 of a new-format run, then 20 rounds × 8 KiB | `3935966` → `365149`, −90.7% | `152824` → `18241` |
+| floor: old-format resume, 3 rounds × **512 KiB** result | `1644512` → `1623250`, −1.3% | `545486` → `538510` |
+
+Read the floor honestly: this cell stops re-serializing the *prefix*; the current
+round's own bulk (its `toolResults` / `toolOutputs` cells, which this change does
+not own) is still written every time, so a run whose rounds are few but fat saves
+almost nothing. What it does remove is the growth with round count — the shape
+that produced the 2 MiB host-side ceiling reported in issue #734.
 
 #### Optional raw-row anchor probe (issue #714)
 
