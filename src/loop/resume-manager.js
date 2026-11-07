@@ -542,6 +542,9 @@ export async function restoreResume(ctx) {
           && ctx.resumeRunSnapshot.partialText.length > 0);
       // issue #736：快照没认出来（那份快照本身就是写失败的那次，#734）不等于没有崩溃现场——
       // 账本边界成立就是崩溃现场。两者取**或**；快照那条路保留原样（B 集合的补跑集合同样靠它）。
+      // issue #754（裁决 2）：旧格式（pre-261021）档案里「只在快照里」的那段崩溃轮正文，现在一条
+      // 也不喂；这个局部只数「丢了几条」，交给下面那条恢复告示出声用（判据 2：禁止静默）。
+      let legacySnapshotBodyDropped = 0;
       if (crashSiteRound || ledgerBoundary !== null) {
         // 工单 261021（第三刀）·issue #425 ·锚点的**现算**口径：`persistedTranscriptLength` 过去
         // 读的是快照里那份**采样**（`saveRunSnapshot` 写出的那一刻 write === read），而 partialPersistence
@@ -578,22 +581,22 @@ export async function restoreResume(ctx) {
           message: cloneState(entry.message),
           round: entry.round,
         }));
-        // **升级路径（不是旧逻辑的残留）**：改造前写的账本里，崩溃那一轮的正文**只在快照里**
-        // （旧写侧把整轮正文留到轮末才写，而轮行因崩溃 never landed）。对这类旧账本，快照正文副本
-        // 仍是它们唯一的正文来源 ⇒ 只在「账本在锚点之后一条都没有」时才拿快照里锚点之后的那段补全。
-        // 新账本（逐条入账）永远不满足这个条件：崩溃轮的 assistant 正文/已完成的结果已在锚点之内，
-        // 账本要么相等要么领先于快照 ⇒ 一份快照正文也不会多喂。
-        const snapshotBody = Array.isArray(snapshot.messages)
-          ? snapshot.messages : [];
-        if (ledgerMessages.length === anchor && snapshotBody.length > anchor) {
-          for (const [offset, message] of snapshotBody.slice(anchor).entries()) {
-            const cloned = cloneState(message);
-            ctx.messages.push(cloned);
-            ctx.messageRounds.set(cloned, crashRound);
-          }
-        }
+        // **pre-261021 的档案不再支持恢复（issue #754 裁决 2）**：这里原本是一条「升级路径」——改造前
+        // 写的账本里崩溃那一轮的正文**只在快照里**（旧写侧把整轮正文留到轮末才写，而轮行因崩溃 never
+        // landed），于是当「账本在锚点之后一条都没有」时，把 `snapshot.messages.slice(anchor)` 补进上下文。
+        // 它服务的是死档案，而它**自己就是坏的**（现测，非推测）：`anchor` 是一个**标量**（折叠后的逻辑
+        // 消息条数），不是「快照哪些下标已入账」的位图 ⇒ 第一次恢复续跑一入账，第二跳的锚点就涨过那段
+        // 正文 ⇒ 第二次恢复在**发出任何模型请求之前**就 `invalid_messages`（常驻用例：
+        // `test/loop-snapshot-round-residue-735.test.js` 的两跳那条，两棵写侧写法逐字同结果）。
+        // ⇒ 这条通道**正式关掉**：恢复上下文一律只由账本重建，**一条正文也不从快照 `messages` 喂**
+        // （写侧不动，快照照旧写「本轮残余」）。剩下的那一处读点只量**条数**，**只用于出声**（#754 判据 2
+        // 「禁止把残缺上下文静默喂下去」），**不再**用于喂正文；触发判据沿用被删掉那个 `if` 的条件。
+        const snapshotBody = Array.isArray(snapshot.messages) ? snapshot.messages : [];
+        legacySnapshotBodyDropped = ledgerMessages.length === anchor && snapshotBody.length > anchor
+          ? snapshotBody.slice(anchor).filter((message) => message !== null && message !== undefined).length
+          : 0;
         // `resumeTranscriptStart` = 锚点（= 已落盘正文的条数）：下面那条 `…:resume` 行只写
-        // **锚点之后**的正文（升级补全的那段 + 本次补跑跑出来的结果），已落盘的正文一行也不会重抄。
+        // **锚点之后**的正文（本次补跑跑出来的结果），已落盘的正文一行也不会重抄。
         ctx.resumeTranscriptStart = anchor;
         // 工单 261021（第三刀）：**补跑出来的工具结果也走「一条消息一成型就落盘」**——它们接在
         // 崩溃轮已落盘的那条聚合消息后面（`partOf` 指认它的首片行），于是下一次恢复折出来的仍是
@@ -831,7 +834,9 @@ export async function restoreResume(ctx) {
         ctx.messages = trimmedMessages;
       }
       // issue #404：恢复运行要告诉模型这是复活赛（拼装/幂等见 `src/loop/resume-notice.js`）。
-      ctx.resumeNotice = planResumeNotice(ctx, records, pendingTail);
+      // issue #754（裁决 2）：第 4 个实参是「本次丢弃了几条只在快照里的旧格式正文」——它只让告示
+      // **多一句弃用说明**（0 时一个字都不多），不参与任何判据。
+      ctx.resumeNotice = planResumeNotice(ctx, records, pendingTail, legacySnapshotBodyDropped);
     } catch (error) {
       const fail = ctx.fail;
       await fail(error);

@@ -13,6 +13,10 @@
  *   3. 账本记录过写过哪些文件 / 最近调过哪些工具（`runState.deterministic.filesWritten` 与
  *      `governorState.timeline`），以及「动手前先勘验、别直接重发有副作用的调用」这条纪律。
  *
+ * issue #754（裁决 2）加了**第四件**（只在真丢了正文时出现）：旧格式（pre-261021）档案里那些
+ * **只存在于 run snapshot** 的崩溃轮正文已被丢弃、该格式不再支持恢复——那是「不许静默」要求的
+ * 落点，不新增事件类型，也不给 `resume_journal_skipped` 加新 `reason`。
+ *
  * 三条设计约束（都是今晚踩过的坑）：
  *   - **只在真恢复时注入**：本模块只被 `restoreResume`（`src/loop/resume-manager.js`）在
  *     `resume: true` 的账本分支里调用一次；非 resume 的首次运行拿不到告示 ⇒ `messages` 与今天
@@ -38,6 +42,15 @@ export const RESUME_NOTICE_PENDING_HEADER = "崩溃时这些 tool_use 还没有�
 
 /** 尾部已结清时的替代句（仍然注入——「这是恢复」本身就是要告知的事实）。 */
 export const RESUME_NOTICE_NO_PENDING = "崩溃时尾部没有未结清的 tool_use（上一次请求与结果已成对落账）";
+
+/**
+ * issue #754（裁决 2）弃用说明的开头（后面拼「（共 N 条，该格式已不再支持恢复）」）。
+ *
+ * 旧格式（pre-261021）账本里崩溃那一轮的正文**只在 run snapshot 里**，而那条升级路径自己就是坏的
+ * （第二次恢复必失败）⇒ 引擎现在**不再**从快照 `messages` 喂正文。这一句就是「不许静默」那个要求
+ * 的落点：丢了正文必须**出声**（不新增事件类型、不给 `resume_journal_skipped` 加新 `reason`）。
+ */
+export const RESUME_NOTICE_LEGACY_DEPRECATION = "本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文";
 
 /** 第三条内容要求的开头：动手前先勘验、别重发有副作用的调用。 */
 export const RESUME_NOTICE_VERIFY_HEADER = "动手前先勘验";
@@ -92,6 +105,16 @@ function pendingLine(pendingToolUses) {
 }
 
 /**
+ * issue #754（裁决 2）：旧格式档案丢了只在快照里的崩溃轮正文 ⇒ 告示里多一句弃用说明。
+ * 条数为 0（新格式账本、或快照不比锚点长）⇒ **一个字节都不多**。
+ * @param {number} count 被丢弃的正文体条数（只数非 null 的格子）
+ * @returns {string}
+ */
+function legacyDeprecationLine(count) {
+  return `${RESUME_NOTICE_LEGACY_DEPRECATION}（共 ${count} 条，该格式已不再支持恢复）；` + "上下文只从账本重建，不会重新出现在这里。";
+}
+
+/**
  * 账本里的现场事实：写过哪些文件、最近调过哪些工具。两段都可能为空 ⇒ 整段缺席。
  * @param {string[]} files 去重后的路径
  * @param {string[]} calls 最近调过的工具（`name(arg)`）
@@ -139,9 +162,11 @@ export function recentToolCalls(timeline) {
  *   stopReason?: string,
  *   pendingToolUses?: any[],
  *   filesWritten?: string[],
- *   toolCalls?: string[]
+ *   toolCalls?: string[],
+ *   legacySnapshotBodyCount?: number
  * }} facts 全部来自既有事实：轮号（`runLoopState.rounds`）、`runState.deterministic.termination.reason`、
- *   `pendingTrailingToolUses(messages)`、`runState.deterministic.filesWritten`、`governorState.timeline`。
+ *   `pendingTrailingToolUses(messages)`、`runState.deterministic.filesWritten`、`governorState.timeline`，
+ *   外加 issue #754 那个「只在快照里、本次不再喂」的正文条数（只用于出声，不是新事实）。
  * @returns {{ text: string, slot: string } | undefined} 轮号不合法时返回 `undefined`（造不出「停在第 N 轮」）
  */
 export function buildResumeNotice(facts = {}) {
@@ -160,9 +185,15 @@ export function buildResumeNotice(facts = {}) {
     .filter((path) => typeof path === "string" && path !== ""))];
   const calls = (Array.isArray(facts.toolCalls) ? facts.toolCalls : [])
     .filter((call) => typeof call === "string" && call !== "");
+  // issue #754：只在**真的丢了正文**时多那一句（判据：条数 > 0）。
+  const legacySnapshotBodyCount = Number.isSafeInteger(facts.legacySnapshotBodyCount)
+    && facts.legacySnapshotBodyCount > 0
+    ? facts.legacySnapshotBodyCount
+    : 0;
 
   const lines = [
     `${RESUME_NOTICE_TAG}这是一次崩溃后的恢复运行，不是连续会话：上一段停在第 ${round} 轮；${reasonText}。`,
+    legacySnapshotBodyCount === 0 ? "" : legacyDeprecationLine(legacySnapshotBodyCount),
     pendingToolUses.length > 0 ? pendingLine(pendingToolUses) : `${RESUME_NOTICE_NO_PENDING}。`,
     ledgerLine(files, calls),
     `${RESUME_NOTICE_VERIFY_HEADER}：账本记的是「当时」，盘上现在可能已被别的进程改过。`
@@ -192,9 +223,11 @@ export function buildResumeNotice(facts = {}) {
  * @param {any} ctx `restoreResume` 的入参（只读上面那四个字段）
  * @param {any[]} records `store.load()` 的原始记录（幂等查账用；不折叠也能查：`:control:` 行不被折叠）
  * @param {any[]} pendingToolUses 崩溃现场的未结清 `tool_use`（**补跑之前**取自 `pendingTrailingToolUses`）
+ * @param {number} [legacySnapshotBodyCount] issue #754：本次丢弃的「只在快照里」的旧格式正文条数
+ *   （缺省/0 ⇒ 告示与今天逐字一致）
  * @returns {{ text: string, slot: string, round: number } | undefined}
  */
-export function planResumeNotice(ctx, records, pendingToolUses) {
+export function planResumeNotice(ctx, records, pendingToolUses, legacySnapshotBodyCount = 0) {
   const round = ctx?.rounds;
   const notice = buildResumeNotice({
     round,
@@ -202,6 +235,7 @@ export function planResumeNotice(ctx, records, pendingToolUses) {
     pendingToolUses,
     filesWritten: (ctx?.governorState?.filesWritten ?? []).map((entry) => entry?.path),
     toolCalls: recentToolCalls(ctx?.governorState?.timeline),
+    legacySnapshotBodyCount,
   });
   if (notice === undefined) return undefined;
   const dedupKey = `${String(ctx?.runId)}:engine:round:${String(round)}:control:${notice.slot}`;
