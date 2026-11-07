@@ -311,8 +311,14 @@ function deriveRetiredFlags(accepted) {
  *   - **段**（issue #773 补的第三层，见下面 `erixCommandView`）：上面两条问的都是「整行」，而一行
  *     可以串好几条命令，所以整行有 erix 词**不等于**这一行里的旗标都挂在 erix 上。
  * 代价如实写进报告：不挂在 erix 命令行上的 erix 旗标（例如只在散文里提一句）本规则看不见。
+ *
+ * 前界字符类里为何带一个 `(`（issue #775 假绿一）：`$(erix chat --x)` / `(erix chat --x)` 也是命令行，
+ * 而剥噪只发生在**段主语**那一层（`commandSegmentSubject`），救不了行闸门——少一个 `(`，整行在
+ * `if (isDoc && !erixLine) return;` 处就被丢掉，括号里挂什么假旗标都不会被问第二次。
+ * 代价（偏严）：`(erix` 写在散文里也算命令词，但那一行还得真的挂着 `--旗标` 才会命中。
+ * `erix` 后紧跟 `)`（如 `(erix)`）仍**不**算命令词：那个形状只能靠「段首认不出主语 ⇒ 照计」兜底。
  */
-const ERIX_COMMAND_RE = /(^|[\s`$>"'|])erix(\s|$|[`"'])/i;
+const ERIX_COMMAND_RE = /(^|[\s`$>"'|(])erix(\s|$|[`"'])/i;
 const ARGV_CONTEXT_RE = /\b(argv|args|spawnSync|spawn\(|execFile|execFileSync|runCli|command|push)\b/;
 
 /**
@@ -355,7 +361,11 @@ const NON_ERIX_COMMAND_SUBJECTS = Object.freeze([
  * （null = 「不能断定这是别家的命令行」⇒ 照旧计入，偏严）。
  */
 function commandSegmentSubject(segment) {
-  let s = segment.replace(/^[^\w$./-]+/, "");
+  // `$(` / `${` / `(` 是命令替换与子 shell 的开头：它们不是「剥噪正则」能剥的东西——
+  // 下面那条 `^[^\w$./-]+` 会**停在 `$` 上**（`$` 本身在字符类里），于是 `$(npm …)` 的段主语永远
+  // 认不出来（issue #775：注释一直声称剥 `$(`，实际剥不动）。
+  let s = segment.replace(/^\s*(?:\$\{|\$\(|\()\s*/, "");
+  s = s.replace(/^[^\w$./-]+/, "");
   s = s.replace(/^[^:：]{0,48}?[:：]\s*(?=[\w$./(-])/u, "");
   for (let i = 0; i < 3; i += 1) {
     const before = s;
@@ -377,8 +387,9 @@ function erixSegmentVerdict(segment) {
 }
 
 /**
- * 只看「算 erix 的段」的同一行视图：不计入的段替换成**等长空白**。
- * 保留字符下标 ⇒ 行号、否定句回看窗口、命中摘录这三处口径都不用跟着改。
+ * 只看「算 erix 的段」的同一行视图：不计入的段替换成**等长空白**（分隔符也一起抹掉）。
+ * 保留字符下标 ⇒ 行号与命中摘录这两处口径不用跟着改，否定句回看也能直接拿同一坐标去问**原文**。
+ * ⚠ 不要把回看改读这个视图：抹平后的 `;` 是空格，上一句的否定词会贴上下一段的旗标（issue #775）。
  */
 function erixCommandView(line) {
   const sep = /&&|\|\||;/g;
@@ -408,6 +419,8 @@ function erixCommandFlags(line) {
  * （中文：没有/不存在/并非/不是/不再有/不含/无；英文整词：no/not/never/without）。
  * 故意只往回看、不往后看：「用 --x 而不是 --y」这类句子中后面的 --y 才是真实意图的反面，
  * 而它前面没有否定词→依旧计红，方向是**偏严**。
+ * ⚠ 调用方必须递**原文行**，不能递 `erixCommandView` 抹平后的视图（issue #775：那里的 `;` 已被
+ * 抹成空格，否定词会跨段免计下一段里本该红的旗标）。等长 ⇒ 下标不需要换算。
  */
 const NEGATION_TAIL_RE = /(?:没有|不存在|并非|不是|不再有|不含|无|(?:^|[\s,，。;；:!?])(?:no|not|never|without))\s*$/u;
 
@@ -438,12 +451,17 @@ function flagMentions({ rel, abs }, accepted, retired) {
     if (!erixLine && !(isDoc || !isDoc)) return;
     if (!isDoc && !erixLine && !ARGV_CONTEXT_RE.test(line)) return;
     if (isDoc && !erixLine) return;
-    // issue #773：一行可以串好几条命令，先把它收成「只看算 erix 的段」；下标不变，
-    // 所以否定句窗口、行号、命中摘录的口径与切段前逐字符一致。
+    // issue #773：一行可以串好几条命令，先把它收成「只看算 erix 的段」；视图与原文**等长**，
+    // 所以行号与命中摘录的口径与切段前逐字符一致，下标也不需要换算。
+    // ⚠ 视图只回答「哪些旗标存在」这一件事；**否定句必须拿原文判**（issue #775 假绿二）：
+    // 抹平时连分隔符 `&&` / `||` / `;` 一起换成空格，于是 `erix --version; not; --bogus-mask` 里那根
+    // `;` 没了，回看窗口把**上一句**的 `not` 接到下一段的旗标上 ⇒ 真该红的旗标被记成 negated 免计。
+    // 原文里 `;` 还在，而 `;` 不是空白、接不进 `NEGATION_TAIL_RE` 的收尾——那正是「`;` 后面的尾巴照计」。
+    // 下标不用换算：视图与原文等长（长度不变是本仓「坐标不用改」的前提）。
     const commandView = erixCommandView(line);
     for (const m of commandView.matchAll(/(^|[\s"'`=])((?:--)[A-Za-z][A-Za-z0-9-]{1,})/g)) {
       const flag = m[2];
-      if (isNegatedMention(commandView, m.index + m[1].length)) {
+      if (isNegatedMention(line, m.index + m[1].length)) {
         mentioned.push({ flag, rel, line: index + 1, status: "negated" });
         continue;
       }
@@ -938,6 +956,147 @@ describe("静态守卫：真配置形状与退役名（issue #257 T3）", () => 
       assert.equal(own.unknown[0].flag, "--bogus-erix-probe-773");
       assert.equal(own.unknown[0].line, 3, "报错必须点名到那一行");
       assert.match(own.unknown[0].text, /erix chat --bogus-erix-probe-773/u);
+    } finally {
+      for (const rel of written) {
+        try { rmSync(resolve(ROOT, rel), { force: true }); } catch { /* 探针没落盘，不用清理 */ }
+      }
+      if (dirWasAbsent) { try { rmdirSync(dirAbs); } catch { /* 里面有本机档案，不归本探针管 */ } }
+    }
+  });
+
+  /**
+   * issue #775（#773 那一片留下的两条 mandatory 假绿）。两条都是**判据自己看不见东西**，不是文档写错，
+   * 所以两边都按「判据 + 同形反向证」钉住，且都端到端过 `flagMentions`（纯函数只能证一半）。
+   *
+   * 假绿一（子 shell / 命令替换）：`$(erix chat --x)` 里的 `erix` 死在**行闸门**上——`ERIX_COMMAND_RE`
+   * 的前界字符类是 `[\s`$>"'|]`，里面没有 `(`，于是文档那一行在 `if (isDoc && !erixLine) return;` 处
+   * 直接返回：括号里挂什么假旗标都不会被问第二次。而 `commandSegmentSubject` 的注释一直声称
+   * 「剥掉 shell 噪声（`$(` / …）」，实际它的剥噪正则 `^[^\w$./-]+` 停在 `$` 上，`$(npm …)` 的段主语
+   * 照样认不出来——声称与实现对不上。两条一起补：字符类加 `(`，剥噪先剥 `$(` / `${` / `(`。
+   *
+   * 假绿二（等长抹平 × 否定句回看）：不计入的段**连分隔符本身**都被换成等长空白，于是
+   * `erix --version; not; --bogus-mask` 里那两根 `;` 在视图里成了空格，否定句回看（只看旗标前 24 字符）
+   * 把**上一句**的 `not` 接到了下一段的旗标上 ⇒ 本该红的旗标被记成 `negated` 免计。抹平本身没错
+   * （等长才谈得上「行号/摘录/窗口坐标不用改」），错的是**拿抹平后的视图去判否定句**：回看读**原文**，
+   * 原文里 `;` 还在，`;` 不是空白、也接不进 `NEGATION_TAIL_RE` 的收尾——那正是「`;` 后面的尾巴照计」的约定。
+   */
+  it("规则 3 的 $() 与否定句回看：命令替换里的 erix 旗标照计，等长抹平不许让否定词跨段免计（issue #775，自带反向证）", () => {
+    // ── 假绿一：根因在行闸门，先把闸门本身问一遍（不然后面全是间接证据）──────────────
+    assert.ok(
+      ERIX_COMMAND_RE.test("$(erix chat --session x)"),
+      "$() 里的 erix 命令词没被行闸门认出：整行不进扫描面，括号里写错/写退役的旗标一律免检",
+    );
+    assert.ok(ERIX_COMMAND_RE.test("run (erix chat --session x)"), "子 shell 括号里的 erix 同样是命令词");
+    // 同形对照：括号里是别家命令时不许松进来（`erix-agent` 的 `erix` 后面跟 `-`，不是命令词）
+    assert.ok(
+      !ERIX_COMMAND_RE.test("$(npm i -g erix-agent --prefer-online)"),
+      "闸门补 `(` 不能松到把「装 erix-agent」那一串拉进面：包名里的 erix 不是命令词",
+    );
+
+    // 注释声称剥 `$(`，这里就按声称问它（剥不掉就是把别家命令替换里的旗标算成挂在 erix 上）
+    assert.equal(
+      commandSegmentSubject("$(npm i -g erix-agent --prefer-online)"), "npm",
+      "剥噪正则停在 `$` 上：`$(npm …)` 的段主语认不出来 ⇒ 别家旗标照计（假红），且声称与实现不符",
+    );
+    assert.equal(commandSegmentSubject("${npm view erix-agent version}"), "npm", "`${…}` 同形");
+    assert.equal(commandSegmentSubject("( npm ci --prefer-online )"), "npm", "子 shell 括号 + 括号后空格也要剥");
+    assert.equal(commandSegmentSubject("$(erix chat --session x)"), null, "erix 自己永远不是别家主语");
+
+    // 旗标面这一层：判据与反向证只差在括号里是谁家的命令
+    assert.deepEqual(
+      erixCommandFlags("$(erix chat --bogus-775-probe)"), ["--bogus-775-probe"],
+      "命令替换里的 erix 旗标必须进面：被抹掉的该是别家段，不是这一段",
+    );
+    assert.deepEqual(
+      erixCommandFlags("$(npm i -g erix-agent --bogus-775-probe) && erix --version"), ["--version"],
+      "别家命令替换里的旗标不计入，同一行的 erix 段照计——「不红」不许来自整行被跳过",
+    );
+    assert.deepEqual(
+      erixCommandFlags("erix --version && $(rg --files --bogus-775-probe)"), ["--version"],
+      "erix 在前、命令替换在后时同样只计 erix 段",
+    );
+
+    // ── 假绿二：否定句回看读的是原文，视图只是「哪些旗标存在」的那一层 ──────────────
+    const maskLine = "erix --version; not; --bogus-775-mask";
+    const view = erixCommandView(maskLine);
+    assert.equal(view.length, maskLine.length, "视图必须与原文等长——「下标不动」正是回看能改读原文的前提");
+    const maskAt = view.indexOf("--bogus-775-mask");
+    assert.ok(maskAt > 0, "尾段旗标必须先在视图里看得见，否则下面的判据是在跟空气比");
+    assert.equal(
+      negationProbe(maskLine, "--bogus-775-mask"), false,
+      "原文里 `not` 与旗标之间隔着一根 `;`：那不是同一个句子里的否定，照计（偏严）",
+    );
+    assert.equal(
+      isNegatedMention(maskLine, maskAt), false,
+      "同一坐标换读原文就不是否定句：视图与原文等长，下标可以逐字符复用",
+    );
+    // 把**坑本身**钉在视图上：谁哪天改回「拿视图判否定句」，这条会红并说明为什么读原文
+    assert.match(
+      view, /not\s+--bogus-775-mask/u,
+      "视图形状变了（分隔符不再被抹成空格？）：等长前提与这条坑的证据都要重核，别顺手把回看挪回视图",
+    );
+    // 修法没把否定句判据改死：同一句里的否定仍须免计（否则假绿只是换成了假红）
+    assert.equal(
+      negationProbe("`erix chat -r` 里**没有** `--resume` 这个旗标", "--resume"), true,
+      "补了 `(` 之后中文否定句还要认得出：README_cn.md 那批「没有 `--resume` 这个旗标」会变成天天误报",
+    );
+    assert.equal(
+      negationProbe("$(erix chat -r) has no `--resume` flag", "--resume"), true,
+      "命令替换开头的英文否定句同样免计：两条修法互不抵消",
+    );
+
+    // ── 端到端：真落文件走 `flagMentions`（工单给的两条判据就是这一层的形状）──────────
+    const dirAbs = resolve(ROOT, "docs/tasks");
+    const dirWasAbsent = !existsSync(dirAbs);
+    const written = [];
+    const probe = (name, body) => {
+      const rel = `docs/tasks/${name}`;
+      writeFileSync(resolve(ROOT, rel), body, "utf8");
+      written.push(rel);
+      return flagMentions({ rel, abs: resolve(ROOT, rel) }, accepted, retired);
+    };
+    const shape = (scan) => scan.unknown.map((u) => `${u.flag}@${u.line}`);
+    try {
+      mkdirSync(dirAbs, { recursive: true });
+      // 判据一（工单原样：第 3 行 `$(erix chat --bogus3)`）
+      const sub = probe("261108-775-subshell.md", "# 随手记\n\n$(erix chat --bogus-775-probe)\n");
+      assert.deepEqual(
+        shape(sub), ["--bogus-775-probe@3"],
+        `命令替换里的假旗标必须咬红并点名第 3 行：${JSON.stringify(sub.mentioned)}`,
+      );
+      // 同形反向证：括号里挂现役旗标不红，但**必须真的在面里**（不许靠「整行没扫到」侥幸）
+      const okSub = probe("261108-775-subshell-ok.md",
+        "# 随手记\n\n$(npm i -g erix-agent --prefer-online) && $(erix chat --session abc)\n");
+      assert.deepEqual(shape(okSub), [], JSON.stringify(okSub.unknown));
+      assert.ok(
+        okSub.mentioned.some((m) => m.flag === "--session" && m.status === "accepted" && m.line === 3),
+        `erix 那一段的现役旗标必须进面：${JSON.stringify(okSub.mentioned)}`,
+      );
+      assert.ok(
+        !okSub.mentioned.some((m) => m.flag === "--prefer-online"),
+        "npm 的命令替换不计入——但它必须是因为「主语是 npm」被切掉，而不是因为整行没扫到",
+      );
+      // 判据二（工单原样：`erix --version; not; --bogus-mask-775`）
+      const mask = probe("261108-775-mask.md", "# 随手记\n\nerix --version; not; --bogus-775-mask\n");
+      assert.deepEqual(
+        shape(mask), ["--bogus-775-mask@3"],
+        "上一句的否定词不许跨过 `;` 免计下一段的旗标：" + JSON.stringify(mask.mentioned),
+      );
+      assert.ok(
+        mask.mentioned.some((m) => m.flag === "--version" && m.status === "accepted"),
+        `同一行的 erix 段必须在面里（否则「只有尾旗标红」是侥幸）：${JSON.stringify(mask.mentioned)}`,
+      );
+      assert.ok(
+        !mask.mentioned.some((m) => m.status === "negated"),
+        `把真旗标记成 negated 就是本轮要修的假绿：${JSON.stringify(mask.mentioned)}`,
+      );
+      // 同形反向证：否定词与旗标之间**没有** `;` 时仍须免计
+      const real = probe("261108-775-negation.md", "# 随手记\n\n`erix chat -r` 里**没有** `--resume` 这个旗标\n");
+      assert.deepEqual(shape(real), [], JSON.stringify(real.unknown));
+      assert.ok(
+        real.mentioned.some((m) => m.flag === "--resume" && m.status === "negated" && m.line === 3),
+        `同句内的否定必须仍记成 negated：${JSON.stringify(real.mentioned)}`,
+      );
     } finally {
       for (const rel of written) {
         try { rmSync(resolve(ROOT, rel), { force: true }); } catch { /* 探针没落盘，不用清理 */ }
@@ -4639,7 +4798,16 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 //     # 配对地板：实测 24 对 > 地板 23 对 ⇒ 可以抬地板到 24
 //
 // ⇒ 地板 = **24**（取本树守卫自己报的数，不做加法；并行会话在另一棵树上改同一格时，以合并树现测为准）。
-const CHANGELOG_PAIR_FLOOR = 24;
+//
+// 2026-11-08 第九次重取（issue #775，本树 `fix-261108-05-rule3-subshell-mask-worker` 基点 `8990947`）：
+// 本单在 `## [Unreleased] ### Fixed` 加了一对中英（规则 3 的两条 mandatory 假绿：`$()` 里的 erix 旗标 +
+// 等长抹平让否定词跳段免计）。动常量之前 `node --test test/static-guards.test.js` 的标准输出原文（本树现跑）：
+//
+//     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 25 条 / 英文 25 条 / 配对 25 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 24（校准面 \#\# [Unreleased]）
+//     # 配对地板：实测 25 对 > 地板 24 对 ⇒ 可以抬地板到 25
+//
+// ⇒ 地板 = **25**（仍是本树守卫自己报的数，不做加法；本单没删例、没 skip，只新增 1 格）。
+const CHANGELOG_PAIR_FLOOR = 25;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
