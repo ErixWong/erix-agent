@@ -63,6 +63,48 @@
   本片之前冻结的 store 会红在调用计数那格，那是 false-red）。`transcriptStoreContract` 新增可选第三参
   `optionalCapabilities`，契约里两参调用写法照旧可用。契约的 `transcript-store.js` 清单行改为现取数
   （基点实测 27 条 vs 原登记的 22 条——本片之前就已失真——加上收尾用例是 28 条）。
+- **No remaining prompt site tells the model to look up notes unless there are notes to look up
+  (issue #746, branch `fix-261107-10-prompt-note-evidence`).** #741 gated exactly two sites and its own
+  entry says so; the other model-visible strings kept issuing the same unconditional order — "first
+  `note_list`, then `note_read`" — under `--no-notes` / `ERIX_NO_NOTES=1`, where those tools are not on
+  the surface at all, and even with notes assembled they reported "I do not know whether anything was
+  recorded" as "there is something to read". Six sites, plus one face the issue's coordinates did not
+  cover (see the report's "实际范围比 issue 登记的宽" section): the aggregate-limit stub
+  (`src/loop/aggregate-budget.js`), the run-snapshot per-output stub and the aggregate archive stub
+  (`src/loop/run-snapshot-executor.js`), the memory-loss nudge (`src/reflection/governor.js`), the CLI
+  system prompt's `[你的处境]` paragraph + its "exact values must come from" bullet + the archive notice
+  (`bin/tools.js`), the guard's run-state summary and its revise pointer (`bin/final-guard.js`), and the
+  fold-stub suffix (`bin/final-guard-support.js`). **One derivation, not two:** all of them read the same
+  `noteRecallHint()` in the new `src/loop/note-prompt-hint.js`, which only ever asks #741's
+  `resolveNoteRecall` / `retrievalCommandFor` — `bin/` imports `src/` (the allowed direction), and the
+  one site whose wording the guard test checks for `resolveNoteRecall` by name is `bin/`-free by design:
+  `bin/system-prompt.js` derives the surface fact via `hasNoteToolSurface(noteToolNamesOnSurface(tools))`,
+  and `bin/tools.js` only receives a boolean. No site hand-builds `sed`; a command appears only when
+  `retrievalCommandFor` returns one. **Evidence differs by layer, and is stated per layer:** a prompt
+  assembled before the run has only the **assembled tool surface** (which is why the `bin/`-side fact is
+  the real tool list after `--no-notes` *and* `--tools` filtering, not the flag), a mid-run stub has the
+  surface plus the visible ledger it is handed, and the guard has both because it already loads the
+  records. Absent evidence stays **unknown ⇒ no `note_*`**, never "assume notes exist". The memory-loss
+  nudge is the **low-risk tier** the issue named: it commands no tool, so its wording went conditional
+  ("if this run has notes …", plus a re-read fallback) and it deliberately did **not** get the
+  whole-family gate. Default paths are byte-identical (the CLI prompt golden and the archive notice were
+  re-checked verbatim); the changed behaviour shows up only where notes are absent or unwritten.
+  `test/prompt-note-evidence-746.test.js` asserts the four no-evidence states and the valid-evidence
+  state **per site** on boundary behaviour (is there a `note_*`, is there a re-read, is the command
+  exactly the one `retrievalCommandFor` gave) rather than locking whole strings, and includes two real
+  runs proving the run-snapshot stub follows the host's tool surface. Three existing suites
+  (`test/output-hygiene.test.js`, `test/notes-final-guard.test.js`,
+  `test/integration/memento-scenario.test.js`) asserted the old unconditional sentence and were moved to
+  boundary assertions — with the evidence-present branch still pinned where the fixture supplies the
+  evidence. ⚠ The fold stub and the fold recovery hint are **budget-protected messages**: the first
+  version pasted #741's full reason sentence in and `memento` S1/S2 died on `invalid_budget`, so those
+  two sites use the same gate's short wording (`shortClause`) and the full reason stays in the TTL
+  placeholder. The architecture docs' "coverage is exactly those two entry points" (and its Chinese twin)
+  is now the gated roster, and `test/prompt-note-coverage-746.test.js` reddens if the wording slides back
+  into the unqualified universal, if a site stops importing the gate, if the governor grows a hardcoded
+  `note_list`, if the per-file `note_*` literal table moves without a docs change, or if `src/` starts
+  importing `bin/` — reverse-proved by reverting each of those (each produced exit 1).
+
 - **The fold substitute and the TTL placeholder no longer assert that notes exist (issue #741, branch
   `fix-261107-02`).** Both model-visible strings used to claim a retrieval path unconditionally: the fold
   summary's closing line said “re-read the file or look at the durable notes”, and the TTL placeholder said
@@ -85,7 +127,9 @@
   essentials were recorded; what survives is the conditional lookup guidance. Without either fact the
   text says `无可复原的决策记录（原因：…）` (“no recoverable decision record”, naming the reason: no note
   tools on the surface / no note writes / notes revoked / no evidence at all) and stops mentioning
-  `note_*` anywhere —
+  `note_*` in **those two strings** — (“anywhere” is scoped on purpose: at the time of #741 the gate
+  covered exactly these two sites, and issue #746 is the slice that extended it; the phrase must not be
+  read as a product-wide claim, and the two architecture docs now carry the roster of gated sites) —
   including the warning line, which now says “re-read the source file” instead of ordering a call to a tool
   that is not there. The anti-hallucination clause (“omit what was not recorded … do not guess”) stays in
   both branches; absent evidence now means **unknown**, never “assume notes exist”. Where re-reading is
@@ -107,6 +151,36 @@
   so every existing consumer sees the previous shape byte-for-byte. Out of scope per the issue's decision
   comment: mandatory “conclusions / ruled-out paths” sections in the substitute, a hard “call `note_take`
   first” instruction, and any engine-side auto-note mechanism — the engine still writes nothing.
+- **其余提示位不再无条件教模型去查笔记（issue #746，分支 `fix-261107-10-prompt-note-evidence`）。**
+  #741 只接了两处，它自己那条也这么写；其余模型可见文本仍旧照发同一条命令——「先用 `note_list` 查找，
+  再用 `note_read` 读取」——而 `--no-notes` / `ERIX_NO_NOTES=1` 下这些工具根本不在场上；即便装了笔记，
+  那句也把「我不知道有没有记录」报成了「有记录可查」。工单点名的六处，外加它坐标没覆盖到的一面（见工作
+  报告「实际范围比 issue 登记的宽」一节）：聚合超限桩（`src/loop/aggregate-budget.js`）、run snapshot 的
+  逐条超限桩与聚合归档桩（`src/loop/run-snapshot-executor.js`）、memory-loss 提醒
+  （`src/reflection/governor.js`）、CLI 系统提示的「你的处境」段 + 「具体数值必须来自…」那条 bullet +
+  归档提示（`bin/tools.js`）、guard 的 run 状态摘要与打回指针（`bin/final-guard.js`）、折叠桩后缀
+  （`bin/final-guard-support.js`）。**口径只有一套**：它们全部读新模块
+  `src/loop/note-prompt-hint.js` 里的同一个 `noteRecallHint()`，而那个函数只问 #741 的
+  `resolveNoteRecall` / `retrievalCommandFor`——方向是 `bin/` import `src/`（AGENTS.md §1 允许的那一侧）；
+  `bin/system-prompt.js` 用 `hasNoteToolSurface(noteToolNamesOnSurface(tools))` 现推工具面事实，
+  `bin/tools.js` 只收一个布尔，所以 `grep resolveNoteRecall bin/*.js` 为 0 是设计而非漏接。没有任何一处
+  自己拼 `sed`：命令只在 `retrievalCommandFor` 真给出时才出现。**证据按层给，且逐层写清**：run 开始前
+  组装的提示只有**装配后的工具面**（所以 `bin/` 侧取的是过了 `--no-notes` **和** `--tools` 过滤之后的真
+  名单，不是旗标）；轮内的桩拿到工具面 + 递到手的可见账本；guard 两条都有，因为它本来就 `store.load`
+  了记录。拿不到证据仍是**未知 ⇒ 不提 `note_*`**，绝不「假设笔记在」。memory-loss 提醒是工单点名的
+  **低风险档**：它不命令调用工具，所以只把措辞改成条件式（「如本 run 有笔记…」+ 重读退路），**没有**套
+  整族证据门。缺省路径逐字节不变（CLI 提示 golden 与归档提示都逐字复验过），只有「没笔记 / 没写过」
+  这两种场境才看得见变化。`test/prompt-note-evidence-746.test.js` **逐处**在四种无证据输入与一种有效
+  证据输入下断言**边界行为**（有没有 `note_*`、有没有重读、命令是不是 `retrievalCommandFor` 给的那一条），
+  不锁整段原文，并含两条真跑证明逐条超限桩跟着宿主的工具面走。三个既有套件（`test/output-hygiene.test.js`、
+  `test/notes-final-guard.test.js`、`test/integration/memento-scenario.test.js`）钉的是旧的无条件原句，
+  已改成边界断言——有证据那一支在夹具提供证据处仍然钉住。⚠ 折叠桩与折叠恢复提示是**受 `budgetTokens`
+  预算保护的受保护消息**：第一版把 #741 的完整原因整句贴进去，`memento` S1/S2 直接死在 `invalid_budget`，
+  所以这两处用同一道门的短版措辞（`shortClause`），完整原因仍留在 TTL 占位符里。两份架构文档那句
+  「覆盖面就是这两处，不多」（中英各一）已换成实际接门清单，`test/prompt-note-coverage-746.test.js`
+  会在下列情况变红：措辞退回无范围全称、某处不再 import 那道门、governor 里长出硬编码 `note_list`、
+  逐文件 `note_*` 字面表动了却没改文档、或 `src/` 反过来 import `bin/`——五条都做了反向实测（各自 exit 1）。
+
 - **折叠替代物与 TTL 降级占位符不再断言「有笔记」（issue #741，分支 `fix-261107-02`）。** 两处模型可见文本
   从前都无条件宣称有一条取回路：折叠替代物的末句是「需要原文请重读文件或查看持久笔记」，TTL 占位符是
   「后续需要时先用 `note_list` 查找，再用 `note_read` 读取…；要点见对话中已有笔记/结论」，预警轮还叫模型去
@@ -121,8 +195,8 @@
   ——「要点见对话中已有笔记/结论」**整句删掉**，连有证据那一支都不留：一次成功写入只证明「有一条笔记」，
   从不证明「这条被折内容的要点被记下来了」；留下的是条件式检索指导（先 `note_list` 再 `note_read`）。
   缺任一事实就说
-  「无可复原的决策记录（原因：…）」（无笔记工具 / 无笔记写入 / 笔记已撤销 / 无笔记证据），且全文一个字也不提
-  `note_*`
+  「无可复原的决策记录（原因：…）」（无笔记工具 / 无笔记写入 / 笔记已撤销 / 无笔记证据），且**这两处**的文本一个字也不提
+  `note_*`（「全文」是就 #741 当时接门的这两处说的，不是产品级断言；#746 那一刀才把门扩开，接了门的清单在两份架构文档里）
   ——预警行也算：它改成「请现在重读源文件」，不再指挥模型去调一个不在场上的工具。反幻觉那半句（「未记录…
   不要猜测」）两种口径都留着；证据缺席现在是**未知**，不再是「默认有笔记」。能确定性重算的（配对 `tool_use`
   是 `readFile` 调用并带 `path`/`offset`/`limit`——`sed` 能逐字翻译的那份入参契约——才给一条能跑的命令，

@@ -53,10 +53,17 @@ import { transcriptPath } from "../src/store/file.js";
 import { createCliAssemblyRoot } from "./assembly-root.js";
 import { buildCompactionContext, resolveCompactionBudget, splitCompactionContext } from "./config.js";
 import { buildCaptureRecoveryHint, buildCaptureStub } from "./final-guard.js";
+// issue #746（评审必修 2 → 第 3 轮必修①）：子的提示词必须跟**子的真工具面**，口径与父侧同一份。
+// `notesOnToolSurface`（工具对象）与 `notesOnToolNames`（名字名单）是同一把尺的两张入口，
+// 真值都在 `src/loop/note-prompt-hint.js` 的 `hasNoteToolSurface`（整族全有或全无）。
+// ⚠ 这一行本来就是**漏掉的**：`noteToolSurface` 在本文件被调用却从未 import，子 run 一折叠就
+// `ReferenceError`（守卫与用例见 `test/prompt-note-delegate-ledger-746.test.js`）。
+import { noteToolSurface, notesOnToolNames } from "./system-prompt.js";
 import {
   buildArchiveNotice,
   buildCliToolsSystemPrompt,
   CLI_TOOL_NAMES_FULL,
+  CLI_TOOL_PROMPT_PHRASES,
   createCliTools,
   filterToolsByAllowlist,
   wrapExecuteTool,
@@ -116,23 +123,46 @@ export function resolveDelegationDir(explicit) {
 /**
  * 子 run 的 system prompt：与父同一套装配，但 `delegate: false`（v1 不递归派生）。
  *
- * @param {{ cwd: string, todo?: boolean, archiveDir?: string, toolNames?: string[] }} options
- * @param {string[]} [options.toolNames] 子 run **实际**拿到的工具名（issue #630 S1）。给了它，
- *   清单行只列这些名字（父的 `--tools` 白名单已把子工具面收窄时，提示词必须同一侧——
- *   否则就是「提示词说有、工具面没有」的缝，模型会反复调一个不存在的工具）。
- *   不给（缺省）= 旧行为：列 todo+delegate:false 的完整注册面，逐字节不变。
+ * @param {{ cwd: string, todo?: boolean, archiveDir?: string, toolNames?: string[], notes?: boolean }} options
+ * @param {string[]} [options.toolNames] 子 run **实际**拿到的工具名（issue #630 S1；第 3 轮起它同时是
+ *   这一位**唯一**的工具面事实）。给了它，两件事都从这份名单现推：
+ *   ① 清单行只列其中**有清单文案**的那些名字（父的 `--tools` 白名单已把子工具面收窄时，提示词必须
+ *   同一侧——否则就是「提示词说有、工具面没有」的缝，模型会反复调一个不存在的工具）；
+ *   ② `notes`（整族 `note_*` 在不在面上）。第 2 轮以前 `notes` 缺省写死「有」，于是
+ *   `buildChildSystemPrompt({ toolNames: ["readFile"] })` 仍命令模型去调三个场上不存在的工具——
+ *   集成用例当时能过，只是因为调用方另外显式传了 `notes`，不是这一位自己推得出来。
+ *   不给（缺省）= 旧行为：列 todo+delegate:false 的完整注册面，`notes` 按缺省装配面（有整族笔记），
+ *   逐字节不变（golden 钉着）。
+ * @param {boolean} [options.notes] 整族 `note_*` 在不在子的工具面上（issue #746，评审必修 2）。
+ *   **显式传它 = 覆盖上面那条推导**（调用方手上有比名字名单更全的事实时才用，例如装配后的工具对象）。
+ *   缺省时从 `toolNames` 现推（`notesOnToolNames` ⇒ `src/` 的整族口径 `hasNoteToolSurface`，全有或全无），
+ *   两个都不给才落回「有」——那是缺省装配面的事实，不是假设。
+ *   口径不许自己拼：`--tools` 白名单、`--no-notes`、子面收窄三条路都能让整族消失，只看旗标会漏。
  * @returns {string}
  */
-export function buildChildSystemPrompt({ cwd, todo = true, archiveDir, toolNames } = {}) {
+export function buildChildSystemPrompt({ cwd, todo = true, archiveDir, toolNames, notes } = {}) {
+  // issue #746 第 3 轮（评审必修①）：`toolNames` 是**一份**事实，不是两份。
+  // 名单在场就从它现推 `notes`（窄名单 ⇒ 一个 `note_*` 都不出现），缺席才落回缺省装配面的「有」。
+  const surfaceNames = Array.isArray(toolNames) ? toolNames : undefined;
+  const hasNotes = notes !== undefined
+    ? notes !== false
+    : (surfaceNames === undefined ? true : notesOnToolNames(surfaceNames));
+  // ⚠ 清单行只列**有清单文案**的那些名字：`note_*` 从来不在 CLI 注册面里（它们由笔记工厂装配，
+  // 父侧清单行同样不列它们），把它们塞进 `names` 会让 `assertPromptPhraseTableMatches` 当场抛
+  // 「注册面上的工具没有清单文案」——白名单里点名了笔记工具的子 run 会直接 `failed`。
+  const listNames = surfaceNames
+    ?.filter((name) => CLI_TOOL_PROMPT_PHRASES[name] !== undefined)
+    ?? undefined;
   return `你是 erix 的子 run（父 run 派生的一次性任务执行者），工作目录 ${cwd}。`
     + buildCliToolsSystemPrompt({
       todo,
       delegate: false,
+      notes: hasNotes,
       // `names` 收窄清单行时 `fullNames` 必须显式给全量注册面：短语表是静态表，
       // 拿收窄后的名单当「陈旧」基准会把没被选中的工具短语误报成手抄残留。
-      ...(toolNames === undefined ? {} : { names: toolNames, fullNames: CLI_TOOL_NAMES_FULL }),
+      ...(listNames === undefined ? {} : { names: listNames, fullNames: CLI_TOOL_NAMES_FULL }),
     })
-    + buildArchiveNotice(archiveDir)
+    + buildArchiveNotice(archiveDir, { notes: hasNotes })
     + "\n\n每轮开始先用一句话（≤30字）说明当前计划，再调用工具。";
 }
 
@@ -284,9 +314,11 @@ export function createCliDelegation({
           foldedPayload,
           store: assembly.store,
           runId,
+          // issue #746（B2/B3）：子 run 的取回指引跟**子的工具面**走（父的 `--tools` 可能把笔记滤掉）。
+          noteTools: noteToolSurface(childTools),
         })
         : undefined,
-      ({ content }) => buildCaptureStub({ content }),
+      ({ content }) => buildCaptureStub({ content }, { noteTools: noteToolSurface(childTools) }),
     );
     const { data: compactionData, hooks: compactionHooks } = splitCompactionContext(compaction);
 
@@ -294,15 +326,29 @@ export function createCliDelegation({
      * 子 run 的系统提示（issue #630 S1）：提示词与工具面必须同一侧。白名单收窄了工具集时，
      * 清单行也只列收窄后的名字（`toolNames`），todo 那一句跟着「todo 工具还在不在」走；
      * allowlist 缺省时**不传** `toolNames` ⇒ 旧提示词逐字不变。
+     *
+     * issue #746（第 2 轮必修 2 → 第 3 轮必修①）：`notes` **不再单独递**。第 2 轮这里另算了一次
+     * `notesOnToolSurface(childTools)` 再递进去，于是「清单行用哪份面」与「处境段用哪份面」是
+     * **两份输入**：调用方漏一份，builder 就默默回到「有笔记」，而集成用例照旧绿（它只断言结果，
+     * 看不见哪份输入被漏）。现在只递**一份**名单（`childToolNames` = 子装配后的真工具面），
+     * 清单行与 `notes` 都在 `buildChildSystemPrompt` 里从它现推：一个事实源，两个投影。
+     * 子侧折叠桩 / 恢复提示仍走 `noteToolSurface(childTools)`，那是同一份面的工具对象那一侧。
+     *
+     * ⚠ 这里递的是**未过滤**的 `childToolNames`（含 `note_*`）：「哪些名字进清单行」是提示词
+     * 自己的事（`buildChildSystemPrompt` 里按短语表筛）——把筛名单放到调用方，就会连被筛掉的
+     * 笔记工具一起递没，`notes` 当场推成 false（笔记工具真的在场时反而说「本场没装配笔记工具」）。
+     * 短语表核对（`assertPromptPhraseTableMatches`）只吃有清单文案的名字，否则当场抛错 ⇒ 子 run `failed`。
      */
-    const childPromptOptions = toolAllowlist === undefined || toolAllowlist === null
-      ? { cwd: root, todo: todoEnabled, archiveDir: assembly.archiveDir }
-      : {
-        cwd: root,
-        todo: todoEnabled && childToolNames.some((name) => name.startsWith("todo_")),
-        archiveDir: assembly.archiveDir,
-        toolNames: childToolNames,
-      };
+    const childPromptOptions = {
+      cwd: root,
+      archiveDir: assembly.archiveDir,
+      ...(toolAllowlist === undefined || toolAllowlist === null
+        ? { todo: todoEnabled }
+        : {
+          todo: todoEnabled && childToolNames.some((name) => name.startsWith("todo_")),
+          toolNames: childToolNames,
+        }),
+    };
 
     // `deadlineMs` 是**时长**（库的 `runChild` 契约，名册里 `deadlineAt = now + deadlineMs`），
     // 引擎读的 `config.timing.deadlineMs` 是**绝对时刻**——这里换一次，不在别处再换。

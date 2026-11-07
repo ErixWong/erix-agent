@@ -4,6 +4,20 @@ import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
 import { normalizedLabel } from "../src/text/label.js";
+// issue #746（B2/B3）：这两处的「先 note_list 再 note_read」以前是无条件的，而 guard 手里**本来就握着
+// 账本**（`store.load(runId)`）——它比谁都清楚本场有没有笔记可查，却依旧照谱宣科。现在接 #741 的
+// 同一口径（证据住在 `src/`：`bin → src` 是 AGENTS.md §1 允许的方向；`src/` 永不 import `bin/`）。
+import { noteRecallHint } from "../src/loop/note-prompt-hint.js";
+
+/**
+ * guard 侧的取回指引（issue #746）：把「笔记工具面 + 可见账本」交给 `src/` 的派生器，拿回一句真话。
+ *
+ * @param {{ noteTools?: readonly string[], messages?: readonly unknown[] }} [evidence]
+ * @returns {string} 拼在提示文本里的从句（无证据 ⇒ 「重读 + 原因」，不出现 `note_*`）
+ */
+export function guardRecallClause(evidence = {}) {
+  return noteRecallHint(evidence).clause;
+}
 
 const LABEL_PATTERN = /^\s*([^:=\s][^:=\s]{0,80}?)\s*=\s*(.*?)\s*$/u;
 
@@ -31,7 +45,7 @@ async function legacyArchivedOutput(block) {
   }
 }
 
-async function captureStubForResult(block) {
+async function captureStubForResult(block, evidence) {
   let output = blockContentText(block?.content);
   if (block?.artifact !== undefined && output.length === 0) {
     const legacy = await legacyArchivedOutput(block);
@@ -41,12 +55,14 @@ async function captureStubForResult(block) {
     if (typeof legacy === "string") output = legacy;
   }
   const candidates = candidateLines(output);
+  // issue #746（B3）：后缀从证据里取，不再硬写「先 note_list 查找，再 note_read 读取」——没有笔记可查时
+  // 那句既指了不存在的道路，又把「我不知道有没有记录」伪报成「有记录」。无证据那一份同时带原因。
+  const suffix = guardRecallSuffix(evidence);
   if (candidates.length > 0) {
     const lines = candidates
       .slice(0, 3)
       .map(({ label, value }) => `${label}=${value}`);
     const prefix = "[已折叠] 值：";
-    const suffix = "；后续先 note_list 查找，再 note_read 读取；未记录且无法确定性重算时省略对应 findings 声明";
     let result = `${prefix}${lines.join("；")}${suffix}`;
     if (Array.from(result).length > 200) {
       const available = Math.max(0, 200 - Array.from(`${prefix}${suffix}`).length - 1);
@@ -55,17 +71,42 @@ async function captureStubForResult(block) {
     }
     return Array.from(result).slice(0, 200).join("");
   }
-  return "[已折叠] 后续先 note_list 查找，再 note_read 读取；未记录且无法确定性重算时省略对应 findings 声明".slice(0, 200);
+  return `[已折叠]${suffix}`.slice(0, 200);
 }
 
-export async function buildCaptureStub(message) {
+/**
+ * 折叠桩的后缀（200 字码点预算内）。两格都以「省略 findings」收尾，区别只在取回动作指哪里：
+ * 有证据 ⇒ note-first；无证据 ⇒ 重读 + 一句「本场无可复原的笔记记录」（不伪报「有记录」）。
+ *
+ * ⚠ 本处的无证据分支**不**拄 `noteRecallHint().clause` 的全文：那个 `clause` 带 #741 的完整原因子
+ * （「本场没装配笔记工具（宿主没给整族 `note_*` 工具）；…」，近 50 字），拄进来会把 200 码点的桩顶到
+ * 上限、并在 `budgetTokens` 很紧的折叠场景里直接撞 `invalid_budget`（memento S1/S2 实测）。
+ * 「完整原因」在 #741 那条 TTL 占位符里已经有；桩这只需说清「没记录 + 走重读」这一件事。
+ */
+function guardRecallSuffix(evidence) {
+  // 受预算约束：这里取 **短版**（`shortClause`）——完整原因全文在 #741 的 TTL 占位符里已经有。
+  // 三格（有写入 / 面上有但账本没递到 / 无证据）拼的是同一个模板，措辞全在 `src/` 那一侧：
+  // 本文件里**一个 `note_*` 字面都没有**（守卫 G4 按现值钉着），于是口径不可能在这里独自漂掉。
+  // 尾部只有一句，**不按格子分叉**：「有没有可复原的记录」全部由 `shortClause` 那一侧决定
+  // （无证据那一格它本身就写着「本场无可复原的笔记记录」）。在这里再分叉一次就是第二把尺——
+  // 实测会把同一句话写两遍，而这条桩是 200 码点 + `budgetTokens` 双预算的受保护消息（memento S2
+  // 就是这样死在 `invalid_budget` 上的）。
+  return `；后续${noteRecallHint(evidence).shortClause}；若无法确定性重算，请省略对应 findings 声明`;
+}
+
+/**
+ * @param {unknown} message 待折叠的那条消息
+ * @param {{ noteTools?: readonly string[], messages?: readonly unknown[] }} [evidence]
+ *   issue #746：**宿主传给引擎的真工具面** + 可见账本。没给 = 不知道 ⇒ 走无证据那一份（fail-closed）。
+ */
+export async function buildCaptureStub(message, evidence = {}) {
   // ADR-016：折叠值锚点对全部 tool_result 生效（不再区分可重放）
   const results = Array.isArray(message?.content)
     ? message.content.filter((block) => block?.type === "tool_result")
     : [];
   const stubs = [];
   for (const result of results) {
-    stubs.push(await captureStubForResult(result));
+    stubs.push(await captureStubForResult(result, evidence));
   }
   return [...new Set(stubs)].join("\n");
 }
@@ -229,20 +270,48 @@ export function collectTranscriptCaptures(records) {
   return { captures, warnings, readable };
 }
 
+/**
+ * 读一个 run 的账本，**三态**（issue #746，评审必修 3）。
+ *
+ * 旧的形状是「没 store ⇒ `[]`；`store.load()` 抛 ⇒ `[]`」，于是「账本读不出来」与「读到了、里面真的
+ * 没记过笔记」在下游完全同形；而后者是一条**断言**（`resolveNoteRecall` 会给出原因「无笔记写入」）。
+ * 磁盘坏 / store 没接 / 路径被删时，宿主就向模型断言「本场没记过笔记，走重读」——与 #741 原本要修的
+ * 「把『不知道』伪报成『有记录』」同罪，只是方向相反。
+ *
+ * 现在：读到 ⇒ `messages` 是展平后的消息（可以是空数组 = **已知**的空账本）；没 store / 读失败 ⇒
+ * `messages` 是 `undefined`（= `noteRecallHint` 的「账本缺席」条件档）且 `unreadable` 为真。
+ * 捕获目录那一侧仍然拿 `records`（读失败就是没捕获，那是事实，不是未知）——两个问题不拼成一份事实。
+ *
+ * @param {{load?: Function} | undefined} store
+ * @param {string | undefined} runId
+ * @returns {Promise<{records: unknown[], messages: unknown[] | undefined, unreadable: boolean, error?: string}>}
+ */
+export async function readLedger(store, runId) {
+  if (!store || typeof store.load !== "function") {
+    return { records: [], messages: undefined, unreadable: true, error: "本层没有 store 端口（没拿到账本可读）" };
+  }
+  try {
+    const loaded = await store.load(runId);
+    const records = Array.isArray(loaded) ? loaded : [];
+    return { records, messages: records.flatMap((record) => record?.messages ?? []), unreadable: false };
+  } catch (error) {
+    return { records: [], messages: undefined, unreadable: true, error: error?.message ?? String(error) };
+  }
+}
+
 export async function inspectRun({ archiveDir, store, runId }) {
   const captures = [];
   const warnings = [];
   let readableArtifacts = 0;
   const seenEvidence = new Set();
 
-  // 主证据源：transcript（toolOutputs 字节保真）
-  let records = [];
-  if (store && typeof store.load === "function") {
-    try {
-      records = await store.load(runId);
-    } catch (error) {
-      warnings.push(`transcript 读取失败: ${error?.message ?? String(error)}`);
-    }
+  // 主证据源：transcript（toolOutputs 字节保真）。这一份记录**同时**是取回指引的账本证据，所以它必须
+  // 是三态的（读到 / 读到空 / 读不出来）：以前两个失败分支都折成 `[]`，「读不出来」就在下游被当成
+  // **已知**的「没写过笔记」——三态口径见 `readLedger`。同一层不读第二遍：guard 复用这里返回的 `ledger`。
+  const ledger = await readLedger(store, runId);
+  const records = ledger.records;
+  if (ledger.unreadable && typeof store?.load === "function") {
+    warnings.push(`transcript 读取失败: ${ledger.error}`);
   }
   const collected = collectTranscriptCaptures(records);
   warnings.push(...collected.warnings);
@@ -292,6 +361,7 @@ export async function inspectRun({ archiveDir, store, runId }) {
     captures,
     warnings,
     readableArtifacts,
+    ledger,
   };
 }
 

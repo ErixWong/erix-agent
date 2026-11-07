@@ -65,7 +65,7 @@ import {
   wrapExecuteTool,
 } from "./tools.js";
 // issue #716：系统提示装配（含项目约定注入）与 repl 共用同一条路——两条边不再各抄一份。
-import { buildCliSystemPrompt } from "./system-prompt.js";
+import { buildCliSystemPrompt, noteToolSurface } from "./system-prompt.js";
 import { resolveChatSessionSelection } from "./sessions.js";
 import {
   createCliDelegation,
@@ -360,6 +360,7 @@ function resolveFinalGuard(
   notesDir,
   notesStore,
   store,
+  noteTools,
 ) {
   if (typeof finalGuard === "function") return finalGuard;
   if (
@@ -372,6 +373,7 @@ function resolveFinalGuard(
     notesDir,
     notesStore,
     store,
+    noteTools,
   });
 }
 
@@ -1251,9 +1253,10 @@ async function runChatWithNotes({
         foldedPayload,
         store,
         runId,
+        noteTools: noteToolSurface(tools.tools),
       })
       : undefined,
-    ({ content }) => buildCaptureStub({ content }),
+    ({ content }) => buildCaptureStub({ content }, { noteTools: noteToolSurface(tools.tools) }),
   );
   const context = baseContext;
   // issue #433 fix 1：判死之后从账本续跑的重试账本（预算 + 次数双闸；记账见 bin/idle.js）。
@@ -1271,6 +1274,9 @@ async function runChatWithNotes({
     notesDir,
     notesStore,
     store,
+    // issue #746（B2）：guard 打回文案里的取回指针要知道笔记工具在不在场上。`tools` 是过了
+    // `--no-notes` / `ERIX_NO_NOTES` / `--tools` 之后的真面。
+    noteToolSurface(tools.tools),
   );
   // judge 决策日志默认跟随 run 归档（与工具捕获同目录）；--judge-log / ERIX_JUDGE_LOG 可覆盖。
   // issue #165：注入路径与默认路径共用下面同一个写入器 appendJudgeLogRecord，两类记录
@@ -1299,6 +1305,9 @@ async function runChatWithNotes({
     mcpEnabled: mcpProxy?.enabled === true,
     planDirective: true,
     agents: noAgents !== true,
+    // issue #746（B1）：`tools` 是 `--no-notes` / `ERIX_NO_NOTES` / `--tools` 都过了一遍的**真工具面**。
+    // 提示词里那些 `note_take` / `note_list` / `note_read` 指令从此看它脸色：不在面上就一句不提。
+    tools: tools.tools,
   });
   // 注入的留痕行：transcript 不落 system，不打印这一行就没人能证明注入真的发生了。
   if (projectInstructionsNotice !== null) noticeLog(projectInstructionsNotice);

@@ -73,7 +73,7 @@ import {
 } from "./tools.js";
 // issue #716：系统提示装配（含项目约定注入）与 `erix chat` 共用同一条路——两条边不再各抄一份。
 // 唯一差别是 `planDirective`：chat 末尾那句「每轮先声明计划」repl 没有（0.31.0 的现状）。
-import { buildCliSystemPrompt } from "./system-prompt.js";
+import { buildCliSystemPrompt, noteToolSurface } from "./system-prompt.js";
 import { formatGuardMetrics } from "./guard-metrics.js";
 
 const DEFAULT_MAX_ROUNDS = 32;
@@ -672,6 +672,25 @@ export async function runRepl(argv, io = {}) {
     );
   }
 
+  /**
+   * issue #746（B1）：提示词里那份「笔记工具面在不在」的事实，从**本轮真的会送给模型的工具面**现推。
+   * 与 `visibleTools`（每轮run 的工具面）同一口径：allowlist 滤掉了 `note_*` 就不能再叫模型去调它。
+   * 没 allowlist 时是全量（cliTools + skillTools + notes + mcp），与旧行为逐字一致。
+   *
+   * @returns {Array<{ name?: unknown }>}
+   */
+  function replPromptToolSurface() {
+    const all = [
+      ...cliTools.tools,
+      ...skillTools.tools,
+      ...(notesAssembler?.definitions ?? []),
+    ];
+    if (mcpProxy?.enabled) all.push(mcpProxy.schema);
+    return toolsAllowlistNames === undefined
+      ? all
+      : all.filter((tool) => toolsAllowlistNames.has(tool.name));
+  }
+
   const { systemPrompt, notice: projectInstructionsNotice } = buildCliSystemPrompt({
     cwd,
     todo: !todoDisabled,
@@ -680,6 +699,9 @@ export async function runRepl(argv, io = {}) {
     mcpEnabled: mcpProxy?.enabled === true,
     planDirective: false,
     agents: options.noAgents !== true,
+    // issue #746（B1）：提示词里的笔记指引必须跟着**本次真的交给模型的工具面**走。
+    // `toolsAllowlistNames` 在场就是 `--tools` 滤过的结果（笔记工具可能被滤掉），不在场就是全量。
+    tools: replPromptToolSurface(),
   });
   // 注入的留痕行：会话存档与 transcript 都不落 system，不打印这一行就没人能证明注入真的发生了。
   if (projectInstructionsNotice !== null) writeLine(errorOutput, projectInstructionsNotice);
@@ -859,9 +881,10 @@ export async function runRepl(argv, io = {}) {
             foldedPayload,
             store,
             runId: options.session,
+            noteTools: noteToolSurface(replPromptToolSurface()),
           })
           : undefined,
-        ({ content }) => buildCaptureStub({ content }),
+        ({ content }) => buildCaptureStub({ content }, { noteTools: noteToolSurface(replPromptToolSurface()) }),
       );
       const tools = [...cliTools.tools, ...skillTools.tools];
       if (mcpProxy?.enabled) {
@@ -915,6 +938,10 @@ export async function runRepl(argv, io = {}) {
           notesStore,
           archiveDir,
           store,
+          // issue #746（必修 4）：guard 的打回指针与**同一轮**的折叠桩 / 恢复提示必须拿同一份笔记工具面，
+          // 否则同一个 REPL 会话里两条取回指引会各说一套（上面两个钩子早就在用这一份了）。
+          // 口径仍是 `replPromptToolSurface()`：过了 `ERIX_NO_NOTES` 与 `--tools` 之后的真面。
+          noteTools: noteToolSurface(replPromptToolSurface()),
         })
         : undefined;
       const loopOptions = {

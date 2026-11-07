@@ -4336,6 +4336,10 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *
  * ⇒ 地板 = **14**。本分支一共重取过四次（10→11 在 da35840、11→12 在 aa94463、12→13 在 a415878、
  * 13→14 在 fd07d27），每一次都是重跑守卫取值；抄上一个数、或把两边相加，都是伪造。
+ *
+ * ⚠ **issue #746 追记（第五次重取）**：本支在 `## [Unreleased]` 的中英各加一条（提示位接证据门）。
+ * 同一行命令重跑，守卫现报：中文 15 条 / 英文 15 条 / 配对 15 对 / 无对应 0 条 ⇒ 地板 14 → **15**。
+ * 又是一次「不能相加」的活例：#746 自己那对在中英各一条 = 一对，不是两条。
   *
  * issue #736：`## [Unreleased] ### Fixed` 再新增一对（恢复的崩溃边界改从账本推，同一个 issue 引用集合 #736）
  * ⇒ 面没挪、仍是 `## [Unreleased]`，同一面实测 **9 对**（#713 / #421 / #714 / #715 / #729 / #724 / #721 / #735 /
@@ -4394,7 +4398,7 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *     # 配对地板：实测 13 对 > 地板 12 对 ⇒ 可以抬地板到 13
  *         —— 红的时候红在 assert.equal(problems.pairs.length, CHANGELOG_PAIR_FLOOR)，报的是 13 !== 12
  */
-const CHANGELOG_PAIR_FLOOR = 14;
+const CHANGELOG_PAIR_FLOOR = 15;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

@@ -2862,7 +2862,7 @@ CLI 映射在 `exitCodeForVerification`（`bin/cli.js`）：
 | `verification.status` | 含义 | 实际会看到的 `verification.reason` | CLI 退出码 |
 |---|---|---|---|
 | `verified` | 已配置的 guard 接受了一份终答 | —（无 reason 字段） | `0` |
-| `skipped` | 什么都没查——**不是**「答案对」的主张，不得改写成 `verified` | `no_final_guard`（`src/loop/orchestrator.js`）；CLI guard 的 `no_capture_evidence`（`bin/final-guard.js:92`）/ `no_extractable_candidates`（`bin/final-guard.js:95`） | `4` |
+| `skipped` | 什么都没查——**不是**「答案对」的主张，不得改写成 `verified` | `no_final_guard`（`src/loop/orchestrator.js`）；CLI guard 的 `no_capture_evidence`（`bin/final-guard.js`）/ `no_extractable_candidates`（`bin/final-guard.js`） | `4` |
 | `unverified` | 核验执行了但未通过 | `non_continuable`（`src/loop/orchestrator.js`）、`max_retries`（`3547-3551`） | `2` |
 | `error` | guard 抛错、返回非法裁决或超时（对可用性 fail-open，但永远不会变 `verified`） | `timeout` 或 `error`——两者都由 `errorReason`（`src/loop/termination.js`）决出 | `3` |
 
@@ -4398,11 +4398,18 @@ recall 适配器已在 0.8.0 契约中退役。issue #741 之后，引擎只在*
 工具面上，**且**可见账本里有一条**现在还能查**的 `note_take` 写入——它要与那个 `tool_use_id`
 **配对**、载荷能证实成功（就是 `writeNote` 写的 `{status:"found", …}`），并且没有被后续一条
 成功的同 key `note_forget` 撤销。未配对的调用、自报 `{status:"invalid"}` 的载荷、引擎解不出
-的载荷、被撤销的笔记，都不算证据。缺任一事实时，折叠替代物与 TTL 占位符说的是「无可复原的
+的载荷、被撤销的笔记，都不算证据。缺任一事实时，**每一个接了门的提示位**说的都是「无可复原的
 决策记录（原因：…）」，且一个字也不提 `note_*`；原因是四格诚实口径之一：无笔记工具 /
 无笔记写入 / 笔记已撤销 / 无笔记证据。有证据那一句也仍是**条件式**检索指导（「先用
 `note_list` 查找，再用 `note_read` 读取」），它不声称这条被折内容的要点已被记进笔记——
 那是任何账本事实都证不到的覆盖率。笔记可用性是宿主的配置面，引擎自己一个字节的笔记都不写。
+**哪些提示位接了门（issue #746 把 #741 的门扩过去）：**折叠替代物与 TTL 占位符、聚合超限桩与
+run snapshot 的逐条超限桩（`src/loop/aggregate-budget.js`、`src/loop/run-snapshot-executor.js`），
+以及 `bin/` 侧四处模型可见文本——系统提示的处境段与「具体数值来源」bullet、归档提示、guard 的
+run 状态摘要与打回指针、折叠桩后缀。`bin/` 侧那条工具面事实取的是**装配后的真工具面**
+（`--tools` 白名单同样能把整族滤掉），不是只看 `--no-notes` 旗标；它由宿主传进来，库自己不猜。
+memory-loss 提醒是低风险档：那里没有命令调用任何工具，只要求措辞条件式，**不**套整族证据门。
+可执行的取回命令依旧只有 `retrievalCommandFor` 现推的那一条，任何一处都不自己拼 `sed`。
 
 旧的或较大的工具结果只会在 provider request view 中折叠。`toolResultTtl`
 默认为 `2` 轮（`0` 表示禁用），`toolResultFoldMinTokens` 默认为估算的
