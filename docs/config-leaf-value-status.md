@@ -271,7 +271,7 @@ Rows = leaves (`init` / `call` comes from `CONFIG_LEAF_BINDING`), columns = the 
 | `config.folding.context` | `0.5` | V | assembly-validators.js assertSemanticOptionValues | TypeError: context must be an object |
 | `config.folding.context` | `true` | V | assembly-validators.js assertSemanticOptionValues | TypeError: context must be an object |
 | `config.folding.context` | `[]` | V | assembly-validators.js assertSemanticOptionValues | TypeError: context must be an object |
-| `config.folding.toolResultFoldMinTokens` | `0.5` | A | requests[1].messages[2].content[0].content | requests[1].messages[2].content[0].content: "tool-output" → "tool-output\n【TTL 预警】此结果下一轮将折叠为句柄；若后续仍需，请现在用 note_take 记录要点" |
+| `config.folding.toolResultFoldMinTokens` | `0.5` | A | requests[1].messages[2].content[0].content | requests[1].messages[2].content[0].content: "tool-output" → "tool-output\n【TTL 预警】此结果下一轮将折叠为句柄；若后续仍需原文，请现在重读源文件" |
 | `config.guard.finalGuardExtend` | `"8"` | S | orchestrator.js runToolLoop | TypeError: finalGuardExtend must be a boolean |
 | `config.guard.finalGuardExtend` | `"bogus"` | S | orchestrator.js runToolLoop | TypeError: finalGuardExtend must be a boolean |
 | `config.guard.finalGuardExtend` | `-1` | S | orchestrator.js runToolLoop | TypeError: finalGuardExtend must be a boolean |
