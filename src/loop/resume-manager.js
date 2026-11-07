@@ -581,16 +581,12 @@ export async function restoreResume(ctx) {
           message: cloneState(entry.message),
           round: entry.round,
         }));
-        // **pre-261021 的档案不再支持恢复（issue #754 裁决 2）**：这里原本是一条「升级路径」——改造前
-        // 写的账本里崩溃那一轮的正文**只在快照里**（旧写侧把整轮正文留到轮末才写，而轮行因崩溃 never
-        // landed），于是当「账本在锚点之后一条都没有」时，把 `snapshot.messages.slice(anchor)` 补进上下文。
-        // 它服务的是死档案，而它**自己就是坏的**（现测，非推测）：`anchor` 是一个**标量**（折叠后的逻辑
-        // 消息条数），不是「快照哪些下标已入账」的位图 ⇒ 第一次恢复续跑一入账，第二跳的锚点就涨过那段
-        // 正文 ⇒ 第二次恢复在**发出任何模型请求之前**就 `invalid_messages`（常驻用例：
-        // `test/loop-snapshot-round-residue-735.test.js` 的两跳那条，两棵写侧写法逐字同结果）。
-        // ⇒ 这条通道**正式关掉**：恢复上下文一律只由账本重建，**一条正文也不从快照 `messages` 喂**
-        // （写侧不动，快照照旧写「本轮残余」）。剩下的那一处读点只量**条数**，**只用于出声**（#754 判据 2
-        // 「禁止把残缺上下文静默喂下去」），**不再**用于喂正文；触发判据沿用被删掉那个 `if` 的条件。
+        // **pre-261021 的档案不再支持恢复（issue #754 裁决 2）**：这里原先是一条升级路径，把
+        // `snapshot.messages.slice(anchor)` 补进上下文；它自己就是坏的 —— `anchor` 是**标量**（折叠后的
+        // 逻辑消息条数），不是「快照哪些下标已入账」的位图 ⇒ 第二跳越过后那段正文就在起点之前 ⇒ 第二次
+        // 恢复在**任何请求之前**就 `invalid_messages`。**已关掉**：上下文只由账本重建，一条正文也不从快照喂。
+        // 剩下的读点只量**条数**、只用于**出声**（判据 2「禁止静默喂残缺上下文」），判据沿用被删那个 `if`。
+        // 完整因果与实测：CHANGELOG 的 `#754` 条目 + `test/loop-snapshot-round-residue-735.test.js`（两跳）。
         const snapshotBody = Array.isArray(snapshot.messages) ? snapshot.messages : [];
         legacySnapshotBodyDropped = ledgerMessages.length === anchor && snapshotBody.length > anchor
           ? snapshotBody.slice(anchor).filter((message) => message !== null && message !== undefined).length
@@ -686,21 +682,12 @@ export async function restoreResume(ctx) {
         // 账本里却仍没有那一行（合并自己按 id 去重）。
         const replayResultsAll = [...ctx.resumeRunSnapshotResults.values()]
           .filter((toolResult) => !ledgerToolResultIds.has(toolResult.tool_use_id));
-        // **同源同去留（issue #754 裁决 2）**：旧格式档案里，崩溃轮的**正文**与那一轮的**结果**来自
-        // 同一个刚被宣布不支持的来源（run snapshot）。只丢正文、留下结果 = 从同一个来源喂半截 ⇒ 结果在
-        // 上下文里找不到配对的 `tool_use` ⇒ 孤儿 `tool_result` ⇒ `validateMessages` 在第一次请求之前就
-        // `invalid_messages`（实测：`Invalid message at index 3: user tool_result has no matching assistant
-        // tool_use`）。而 **#421/#730 只兜反方向**（悬空 `tool_use` 补桩，`answerPendingMidSequenceToolUses`），
-        // 不兜孤儿结果。⇒ 旧格式分支上，「上下文里已没有对应 `tool_use`」的那批结果也**不喂**进上下文。
-        // ⚠ 这不改**交出去**的那批：下面 `ctx.resumeUnpersistedToolResults` 仍拿全量 ⇒ orchestrator 的
-        // #424 守卫与 `resume_journal_skipped`（`crash_round_assistant_not_in_ledger`）事件面一字不动。
-        // 新格式账本（`legacySnapshotBodyDropped === 0`）这条路逐字不变。
-        //
-        // **同一把尺子用三次**（issue #754 裁决 2 的普适形式：禁的是 `invalid_messages` 这个**结局**，
-        // 不是某一个夹具形状）：「上下文里还有没有那条 `tool_use`」是同一个判据，它同时管住
-        // **两个方吐**：结果往上下文里**呷**（第二刀）与在飞的调用往上下文里**写结果**（第三刀，见下方
-        // `resumePendingTools`）。只卡前者，旧档案里「执行了但结果没落盘」那一类仍会从后者吐出一张
-        // 无主的 `tool_result` ⇒ 同一个 `invalid_messages`（0 次请求），只是换了一格夹具。
+        // **同源同去留（issue #754 裁决 2，第二刀）**：崩溃轮的正文与那一轮的结果同来自那个刚被宣布不支持
+        // 的来源。只丢正文、留下结果 = 喂半截 ⇒ 孤儿 `tool_result` ⇒ 任何请求之前就 `invalid_messages`
+        // （#421/#730 只兜反方向：给悬空 `tool_use` 补桩，不兜孤儿结果）。
+        // ⚠ 下面 `ctx.resumeUnpersistedToolResults` 仍拿**全量** ⇒ #424 守卫与
+        // `resume_journal_skipped(crash_round_assistant_not_in_ledger)` 一字不动；新格式（探针 = 0）逐字不变。
+        // **同一把尺子用两次**（第三刀见下面 `resumePendingTools`）：判据 1 禁的是 `invalid_messages` 这个**结局**。
         const toolUseInRebuiltContext = (id) => (id === undefined
           ? false
           : ctx.messages.some((message) => blocksFor(message?.content)
@@ -726,15 +713,12 @@ export async function restoreResume(ctx) {
           ?? (snapshot.pendingToolUse
             ? [snapshot.pendingToolUse]
             : []);
-        // **第三刀（同源同去留补完，issue #754 裁决 2）**：旧格式分支上，「上下文里已没有那条 `tool_use`」
-        // 的在飞调用**也不补跑**。为什么必须同时卡：B 集合里那批 `tool_use` 本身也来自刚被宣布不支持的那个
-        // 来源（`snapshot.pendingToolUses` 与崩溃轮正文同批）；补跑它 ⇒ orchestrator 把结果写回一个已经没有
-        // 配对 `assistant` 的上下文 ⇒ 同一个 `invalid_messages`（0 次请求），只是把第二刀卡住的孤儿结果换成了
-        // 「复放出来的孤儿结果」。**代价（认下来）**：崩溃那一轮的副作用**从此彻底不再补**——旧档案里那
-        // 一轮里「执行了但结果没落盘」的调用，既不会重跑、也没有结果可接，只能从告示里那句弃用说明知道它
-        // 存在过。新格式（`legacySnapshotBodyDropped === 0`）这一刀**不参与**：那里 `tool_use` 在账本里，
-        // 复照常跑，逐字不变。A 集合（`ctx.resumeUnpersistedToolResults`）仍拿全量 ⇒ #424 守卫与
-        // `crash_round_assistant_not_in_ledger` 事件面一字不动。
+        // **第三刀（同源同去留补完，issue #754 裁决 2）**：`snapshot.pendingToolUses` 与崩溃轮正文同批同
+        // 来源 ⇒ 旧格式分支上「上下文里已无配对 `tool_use`」的在飞调用**也不补跑**（补跑就是把结果写进一条
+        // 没有配对 `assistant` 的上下文 ⇒ 同一个 `invalid_messages`，0 次请求）。
+        // **代价（认下来）**：那一轮的副作用从此彻底不补 —— 不重跑、也无结果可接，只在告示那句弃用说明里留痕。
+        // 新格式（探针 = 0）不参与本条；A 集合仍拿全量 ⇒ #424 守卫与事件面一字不动（验收面：
+        // `test/loop-resume-unpersisted-tool-results.test.js` 的「第三刀不变式」格，带反向证）。
         ctx.resumePendingTools = pendingTools.filter((pendingTool) => (
           !snapshot.executedToolIds?.includes(pendingTool.id)
           && !ctx.resumeRunSnapshotResults.has(pendingTool.id)
