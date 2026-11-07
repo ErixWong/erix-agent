@@ -308,10 +308,92 @@ function deriveRetiredFlags(accepted) {
  *     别家 CLI（npm/tsc/rg/node/pi/gh）的旗标行没有这个词，**结构上就不可能**被误报。
  *   - examples 代码：只有把旗标真的传给被调程序的那行才算——需要出现 argv/args/spawn/execFile/
  *     push("…--…") 之类的 argv 上下文，**或**该行同时提到 erix。
+ *   - **段**（issue #773 补的第三层，见下面 `erixCommandView`）：上面两条问的都是「整行」，而一行
+ *     可以串好几条命令，所以整行有 erix 词**不等于**这一行里的旗标都挂在 erix 上。
  * 代价如实写进报告：不挂在 erix 命令行上的 erix 旗标（例如只在散文里提一句）本规则看不见。
  */
 const ERIX_COMMAND_RE = /(^|[\s`$>"'|])erix(\s|$|[`"'])/i;
 const ARGV_CONTEXT_RE = /\b(argv|args|spawnSync|spawn\(|execFile|execFileSync|runCli|command|push)\b/;
+
+/**
+ * 「一行串了好几条命令」时的**段主语**口径（issue #773）。
+ *
+ * 病根：上面两条判据问的都是「整行」，于是 `npm i -g erix-agent --prefer-online && erix --version`
+ * 这一行因为尾巴上有 `erix --version` 就整行进扫描面，**npm 那一段**的 `--prefer-online` 也被拿去
+ * erix 的接受集合里查——`--prefer-online` 是 npm 的旗标，erix 命令行上从来没有它，main 因此红着
+ * （实测落点：`docs/delivery/031-release-operator-sheet.md`）。判据原来不区分「这一行里是谁家的命令行」。
+ *
+ * 收窄只发生在**段**这一层，其余判据（扫描面闸门、否定句、退役名单、本机档案类、草稿目录类）一字未动：
+ * 把一行按 shell 命令分隔符 `&&` / `||` / `;` 切段（换行天然分段：扫描本来就是一行一次），
+ * 每一段单独判——**这一段没有 erix 命令词、且段首主语是已知别家 CLI** ⇒ 这一段的旗标不计入面。
+ * 两道条件缺一不可（与 `NON_ERIX_FLAG_DIRS` 同一思路），理由是实测的两个反例：
+ *   - 只按「这一段不是 erix」切会砍掉散文：本树 `docs/host-upgrade-guide-v030.md` 的 CLI controls
+ *     表格里，一句 `;` 后面连着写了 4 个现役旗标（`--reflection`/`--final-guard`/`--no-final-guard`/
+ *     `--judge-log`），那些尾巴**没有主语**。「认不出别家主语就照旧计」把它们留下（偏严）。
+ *   - 只按「段里有别家工具词」切会放过 `npx erix --x`：段内有 erix 命令词时 **erix 赢**。
+ *
+ * 已知代价（三条都偏严或本就先亏，逐条写进报告）：
+ *   - 段首是 JS 函数名/变量的代码行认不出主语（`execFileSync("npm", ["--x"])` 仍算 erix 旗标）。
+ *   - `node bin/cli.js --x` 这种「用 node 跑 erix」的段会被当成 node 段（本树实测零命中受影响）。
+ *   - 引号里含 `;` 的命令串会被切开；单个 `|` **不切**——markdown 表格行也用它，切了会把表格里的
+ *     真 erix 旗标一起抹掉，那是放宽而不是收窄。
+ */
+const NON_ERIX_COMMAND_SUBJECTS = Object.freeze([
+  "npm", "npx", "pnpm", "yarn", "bun", "deno",          // 包管理/JS 运行时：装 erix 那一串最常混进来
+  "node", "tsc", "pi",                                     // 跑脚本的运行时与本仓另一个 CLI
+  "curl", "wget", "jq",                                    // 取物与加工
+  "git", "gh", "docker", "make", "brew", "apt", "pip", "pip3", "cargo", "go",
+  "rg", "grep", "head", "tail", "sed", "awk", "xargs",   // 管道尾巴上的加工工具
+]);
+
+/**
+ * 段首主语：剥掉 shell 噪声（`$(` / 引号 / 反引号 / `VAR=值` 赋值前缀 / `sudo`·`env`·`time` 包装 /
+ * `./` 与 `/usr/bin/` 路径前缀）之后的第一个词。只认 `NON_ERIX_COMMAND_SUBJECTS`，认不出返回 null
+ * （null = 「不能断定这是别家的命令行」⇒ 照旧计入，偏严）。
+ */
+function commandSegmentSubject(segment) {
+  let s = segment.replace(/^[^\w$./-]+/, "");
+  for (let i = 0; i < 3; i += 1) {
+    const before = s;
+    s = s.replace(/^[A-Za-z_][A-Za-z0-9_]*=[^\s]*\s+/, "");
+    s = s.replace(/^(?:sudo|env|time)\s+/, "");
+    s = s.replace(/^(?:\.?\/|[^/\s]+\/)+(?=[A-Za-z._-])/, "");
+    if (s === before) break;
+  }
+  const word = /^([A-Za-z][A-Za-z0-9._-]*)/.exec(s)?.[1].toLowerCase();
+  return word && NON_ERIX_COMMAND_SUBJECTS.includes(word) ? word : null;
+}
+
+/** 纯函数口径（反向证直接拿它问）：这一段的旗标算不算「挂在 erix 命令行上」。 */
+function erixSegmentVerdict(segment) {
+  if (ERIX_COMMAND_RE.test(segment)) return { counted: true, why: "这一段里有 erix 命令词：erix 赢" };
+  const subject = commandSegmentSubject(segment);
+  if (subject === null) return { counted: true, why: "段首认不出别家 CLI 主语 ⇒ 沿用旧口径照计（偏严）" };
+  return { counted: false, why: `这一段的主语是 ${subject}，不是 erix` };
+}
+
+/**
+ * 只看「算 erix 的段」的同一行视图：不计入的段替换成**等长空白**。
+ * 保留字符下标 ⇒ 行号、否定句回看窗口、命中摘录这三处口径都不用跟着改。
+ */
+function erixCommandView(line) {
+  const sep = /&&|\|\||;/g;
+  let out = "";
+  let last = 0;
+  for (let m = sep.exec(line); m !== null; m = sep.exec(line)) {
+    const seg = line.slice(last, m.index);
+    out += erixSegmentVerdict(seg).counted ? seg : " ".repeat(seg.length);
+    out += " ".repeat(m[0].length);
+    last = m.index + m[0].length;
+  }
+  const tail = line.slice(last);
+  return out + (erixSegmentVerdict(tail).counted ? tail : " ".repeat(tail.length));
+}
+
+/** 测试用：把「这一行里哪些旗标算挂在 erix 命令行上」直接问出来（反向证不必落临时文件）。 */
+function erixCommandFlags(line) {
+  return [...erixCommandView(line).matchAll(/(^|[\s"'`=])((?:--)[A-Za-z][A-Za-z0-9-]{1,})/g)].map((m) => m[2]);
+}
 
 /**
  * 否定句里的旗标**不是**「声称 erix 接受这个旗标」。实测误报就是这一类：
@@ -352,9 +434,12 @@ function flagMentions({ rel, abs }, accepted, retired) {
     if (!erixLine && !(isDoc || !isDoc)) return;
     if (!isDoc && !erixLine && !ARGV_CONTEXT_RE.test(line)) return;
     if (isDoc && !erixLine) return;
-    for (const m of line.matchAll(/(^|[\s"'`=])((?:--)[A-Za-z][A-Za-z0-9-]{1,})/g)) {
+    // issue #773：一行可以串好几条命令，先把它收成「只看算 erix 的段」；下标不变，
+    // 所以否定句窗口、行号、命中摘录的口径与切段前逐字符一致。
+    const commandView = erixCommandView(line);
+    for (const m of commandView.matchAll(/(^|[\s"'`=])((?:--)[A-Za-z][A-Za-z0-9-]{1,})/g)) {
       const flag = m[2];
-      if (isNegatedMention(line, m.index + m[1].length)) {
+      if (isNegatedMention(commandView, m.index + m[1].length)) {
         mentioned.push({ flag, rel, line: index + 1, status: "negated" });
         continue;
       }
