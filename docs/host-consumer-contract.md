@@ -5853,6 +5853,39 @@ visible marker, and the shortfall is stated in the block itself rather than left
   not a user query — and when only the block is left, the existing `abandoned_fold` path supplies the turn
   (issue #589).
 
+## Host steer at the turn boundary — `capabilities.hooks.nextUserTurn` (issue #753 C1)
+
+- **The slot.** `capabilities.hooks.nextUserTurn` is a **synchronous** function called as
+  `({ runId, state, round }) => string | null | undefined`. A `hooks` group value must be a function —
+  the `capabilities` schema (`src/loop/capabilities-namespace.js`) rejects anything else with the usual
+  unknown/conflict accounting, so a string typed straight into the slot is an error, not a silent steer.
+  A returned value must be a string, `null`, or `undefined`.
+- **When the host is asked.** Once per turn boundary, in the main loop of `runToolLoop`
+  (`src/loop/orchestrator.js`) **after** the top-of-loop `throwIfAborted(signal)` and **before** the round
+  slice opens (`const roundStart = messages.length`). That position is the whole contract: an aborted run is
+  never asked (abort wins, the `#282` ordering), and the returned text is appended as a **real**
+  `role: "user"` turn before the round is built. It therefore reaches the provider as an ordinary user turn,
+  is journalled as an ordinary `kind: "message"` row **with a `seq`** (readable through `store.load()`), and
+  needs no separate `:control:` row. `round` is the boundary being asked about; the text is consumed by the
+  round that starts next, whose `round_start` carries `round + 1`.
+- **`null` / `undefined` ⇒ verbatim zero behaviour change.** No row, no event, no ledger difference: a unit
+  cell diffs the full ledger rows and the full event sequence of a run with the hook answering `null`
+  against a run that never passed the hook, byte for byte (clock / `toolCallKey` / `durationMs` aside).
+- **A throw or a non-string answer is never fatal.** It is counted in `diagnostics.steer.rejected` and
+  reported through `reportObserverError(..., { channel: "nextUserTurn" })` — the same accounting as a
+  `finalGuard` verification failure (count + degrade): the run's `termination`, `verification` and ledger are
+  untouched, and nothing is injected for that boundary.
+- **Terminal diagnostics.** A run that used the hook returns
+  `result.diagnostics.steer = { offered, injected, rejected, lastRound }` (`offered` = boundaries asked,
+  `lastRound` = last boundary that injected or was rejected). A run that never passed the hook gets **no**
+  `diagnostics.steer` key — the field is additive and non-users see the old shape.
+- **Event.** `host_steer_injected` (tier `fact`) on success, carrying `round` and `chars`; declines are
+  silent by design, which is why the counters above are the only "hook installed but declined" evidence.
+- **Out of scope for C1 (deliberately).** No `config.*` leaf, no timeout knob (the hook is synchronous — a
+  slow hook is the host's problem, not the engine's), no consumption point on stop paths (the `followUp`
+  semantics are a later slice), no `TranscriptStore` contract change, and nothing in
+  `examples/pi-extension` (the extension surface belongs to the C2 slice).
+
 ## Store fidelity requirements
 
 A host `TranscriptStore` must preserve the complete `RoundRecord` and complete

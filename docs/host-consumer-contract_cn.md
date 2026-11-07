@@ -4588,6 +4588,34 @@ navigation digest，并在适用时包含 JSON skeleton；配对的 `tool_use` �
 - `ensureUserTurnView` (`src/loop/request-user-view.js`) 不会把块复制成一条用户查询——快照不是查询——
   只剩块时由既有的 `abandoned_fold` 路径带回这一轮（issue #589）。
 
+## 轮边界的主机转向——`capabilities.hooks.nextUserTurn`（issue #753 C1）
+
+- **槽位。** `capabilities.hooks.nextUserTurn` 是一个**同步**函数，调用形式为
+  `({ runId, state, round }) => string | null | undefined`。`hooks` 组的值必须是函数——`capabilities`
+  名字空间（`src/loop/capabilities-namespace.js`）对非函数一律走常规的未知/冲突账目，所以往这一格里填个
+  字符串是**报错**，不是默默转向。返回值必须是字符串、`null` 或 `undefined`。
+- **什么时候问宿主。** 每个轮边界一次，位置在 `runToolLoop`（`src/loop/orchestrator.js`）主循环里
+  圈顶 `throwIfAborted(signal)` **之后**、轮切片（`const roundStart = messages.length`）开窗**之前**。
+  这个位置就是契约的全部：已中止的 run 不再被问（中止优先，沿用 `#282` 口径），而宿主还回来的文本会在轮
+  构建之前被追加为一条**真的** `role: "user"` 轮。因此它以普通用户轮的身份到模型那里，也以普通
+  `kind: "message"` 行的身份进档案（**带 `seq`**，`store.load()` 读得到正文），不需要另开一行 `:control:`。
+  `round` 是被问的那个边界；正文由紧接着开启的那一轮消费，那一轮的 `round_start` 带的是 `round + 1`。
+- **`null` / `undefined` ⇒ 逐字零行为变化。** 无行、无事件、账本零差异：单测把「钩子回 `null` 的 run」与
+  「从没传过钩子的 run」的全量档案行与全量事件序列逐字比一遍（除时钟 `ts`、随机 `toolCallKey` 与时钟粒度
+  的 `durationMs`）。
+- **抛错 / 返回非字符串永不致命。** 记进 `diagnostics.steer.rejected`，并走
+  `reportObserverError(..., { channel: "nextUserTurn" })`——口径同 `finalGuard` 校验失败（计数 + 降级）：
+  run 的 `termination`、`verification` 与账本一毫不动，该边界就是不注入。
+- **终局诊断。** 用了钩子的 run 返回
+  `result.diagnostics.steer = { offered, injected, rejected, lastRound }`（`offered` = 被问的边界数，
+  `lastRound` = 最后一次发生注入或被拒的边界）。**从没传钩子的 run 不会多出 `diagnostics.steer` 这个键**
+  ——它是 additive 字段，不用的人看到的样子和以前逐字一致。
+- **事件。** 注入成功发 `host_steer_injected`（档位 `fact`），带 `round` 与 `chars`；回绝是设计上静默的，
+  所以上面那几个计数是「钩子装了但回了 null」的唯一凭据。
+- **C1 刻意不做。** 不新增 `config.*` 叶、不加超时旋钮（钩子是同步的——慢钩子是宿主的事，不是引擎的事）、
+  不在停机点消费（`followUp` 语义是后续切片）、不改 `TranscriptStore` 契约，`examples/pi-extension` 也
+  不动（扩展面属 C2）。
+
 ## Store 保真要求
 
 宿主 `TranscriptStore` **必须保留完整的 `RoundRecord` 与完整 message 对象**，包括宿主不认识
