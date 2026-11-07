@@ -24,14 +24,15 @@
 - 没跑 `check:exports` / `types:build` / schema 类闸（本轮没动公共面与类型）
 - 没动 `test/test-suite-baseline.json`（TAP 基线留给主会话在合并树现取）
 - 没为「已知限度」加启发式（按派单：只登记 + 特征用例，不追打）
-- 没 rebase / push / 开 PR；没碰对照树
+- 没碰对照树；`REVIEW-779.txt`（评审塞进工作树的验收报告）只读、未改、也未 commit。
 
 ## M-A：锚点「种类」成为硬判据（已关）
 
 - `scripts/cell-axes-anchors.mjs`：39 条登记每条加 `kind: "code" | "comment"`。`comment` 共 **3** 条（`toolUse`+`write`、`ts`+`write` 的「解释为什么没有写点」那句注释，以及 resume 侧「不要相信快照里的 `persistedTranscriptLength`」那条）；其余 **36** 条 `code`。
 - 判据只有一份：`anchorKindError()` 住在 `scripts/cell-axes-anchors.mjs`，**闸（`checkCellAxesAnchorTable`）与契约测试都 import 它**，两处不再各写一遍。规则：`kind=code` 而锚点唯一命中那行是注释行（`^\s*(\/\/|\/\*|\*)`）⇒ 红；`kind=comment` 而命中的不是注释行 ⇒ 红；`kind` 缺失或不在 `code|comment` ⇒ `parseCellAxesAnchorTable()` 拒绝发豁免。
 - 报错点名「哪一格哪一轴 + 命中行号 + 命中那一行原文」（原文见下面的闸报错）。
-- 提交：`59e80cf`（判据）、`85c93d0`（测试）；`/tmp/779r4-m-a.diff`（48377 字节，与 `/tmp/779r4-wip.diff` 同一份快照）。
+- 提交：`59e80cf`（判据）、`85c93d0`（测试）、`c0fb86b`（自测靶子 + 地板报错次序 + 文档）。
+  `/tmp/779r4-m-a.diff`（48377 字节）、`/tmp/779r4-m-b.diff`（16079 字节）。
 
 ## M-B：独立的「必须存在的格子」真值（已关）
 
@@ -39,6 +40,14 @@
 - 判据 `checkCellAxesCoverage()`（同一份，闸与测试共同 import）：每一格必须在 ① 人审清单 ② `CELL_AXES_ANCHORS` 登记 ③ EN 表 ④ CN 表四处**各自**在场，引用是**逐槽计数**而不是「提过一次」；缺任一处 ⇒ 红并点名「缺哪一格、缺在哪一份」。
 - 地板改成**由清单算出**：`CELL_AXES_ANCHOR_FLOORS = { entries: CELL_AXES_REQUIRED_CELLS.length, groups: new Set(CELL_AXES_REQUIRED_CELLS.map(c => `${c.key}|${c.axis}`)).size }` ⇒ 现报 **39 / 27**；注释里写明「只许随清单涨，不许手调」，旧的独立手填数 **30 / 25** 不再存在。
 - `/tmp/779r4-m-b.diff`（16079 字节）。
+- 一个连带改动（不改判据、只改报错次序）：地板以前是「前提不在场」，一踩就把豁免整块抹掉并**抢走**「哪一格
+  哪一轴没登记」那句；地板等于出厂条数之后（39）这变成常态，所以 `parseCellAxesAnchorTable()` 把地板降成
+  `floorWhy`，闸把它当**额外一条红**印出来（同 parity 的处理），豁免照旧不给、棘轮照旧计数。实测变异（删
+  `status` 写点那一条登记）现在的四行报错：
+  `✗ bare-lines: 裸行号引用（唯一 (文档,目标文件,行区间)）实测 **8** 处，超过棘轮基线 **6** 处——…`
+  `✗ cell-axes-anchors: 锚点登记表只剩 38 条（下限 39，由人审清单 `CELL_AXES_REQUIRED_CELLS` 算出）⇒ 表不再逐格钉，豁免不能给`
+  `✗ cell-axes-anchors: en：docs/host-consumer-contract.md 表里 `status` 的 write 列引了 src/loop/orchestrator.js:3026，但这一格这一轴**没有登记锚点** ⇒ 那条行号没有基准可对，也不再被豁免（回到裸行号棘轮计数）；…`
+  `✗ bare-lines: 标记区定点豁免的机器复核不在场 —— 闸自己按登记锚点重算不过（共 4 条）：…`
 
 ## 已知限度（登记，不堵）
 
@@ -51,9 +60,23 @@
 
 ## self-test（主判据）
 
-- `node scripts/docs-drift-check.mjs --self-test` → **exit 0**，**219 例**全绿（见下方实测轮次原文）。
-- 例数：本轮前（基点 `5e819a4` 的脚本）数组里 **212** 条 `label:`、实跑 **213** 例；本轮 **+6** 例（M-A 红 ×3、M-B 红 ×2、已知限度绿控 ×1）⇒ 现 **218** 条 `label:`、实跑 **219** 例。`#772` 一族由 **13**（9 红 + 4 绿控）涨到 **19**（14 红 + 5 绿控），文档那句声称已同步改。
-- 第一轮实测 **1/219 失败**（不是判据错，是变异靶子过期）：`#772 R3 「删锚点躲过去」不成立` 的变异按 `key: "status", axis: "write"` 过滤行，而 M-B 的人审清单里也有 `status`+write 那一格 ⇒ 命中 2 行、变异放弃、判「变异没落上」。修法：过滤再加 `&& l.includes("anchor:")`，只挑登记表那一条。第二轮见下。
+- `node scripts/docs-drift-check.mjs --self-test` → **exit 0**，**219 例**全绿（实测原文见下面「实测轮次」）。
+- 例数：本轮前（基点 `5e819a4` 的脚本）数组里 **212** 条 `label:`、实跑 **213** 例；本轮 **+6** 例（M-A 红 ×3、M-B 红 ×2、已知限度绿控 ×1）⇒ 现 **218** 条 `label:`、实跑 **219** 例。
+  （条数与实跑数差 1：`#280` 那一例带三个树形变体，各自算一例。）
+- `#772` 一族由 **13**（9 红 + 4 绿控）涨到 **19**（14 红 + 5 绿控），`command-reference.md` 里那句声称同步改了。
+- 实测轮次（每轮 ~7–8 分钟，共 4 轮；前两轮各自只挂在**一处**，都不是判据错）：
+  1. `失败 — 1/219` — `#772 R3 「删锚点躲过去」` 的变异按 `key: "status", axis: "write"` 过滤行，而 M-B 的人审清单里
+     也有 `status`+write 那一格 ⇒ 命中 2 行、变异放弃、“变异没落上”。修：过滤再加 `&& l.includes("anchor:")`。
+  2. `失败 — 1/219` — 同一例：变异落上了，但地板（= 39）把「哪一格没登记」那句抢走了（地板以前是「前提不在场」
+     就把豁免整块抹掉）。修：地板降为 `floorWhy` 额外一条红（上面 M-B 那节）。
+  3. `失败 — 1/219` — `#772 R4 M-B` 例自身的期望过期：地板那句现在多了「由人审清单算出」后缀（旧正则要求右括号
+     紧跟数字），而且**成对删除本来就不进裸行号棘轮**（没多出没缺），不该再要求那条红。修：期望改成
+     地板 + 覆盖面逐槽点名（`en 表（docs/host-consumer-contract.md）` / `cn 表（…_cn.md）`）。
+  4. 结果：【待填】
+
+## 两条 mandatory 的评审变异复现（真树实跑）
+
+【待填：M-A 与 M-B 各自在 `check:docs` 与 `node --test test/contract-snapshot-cell-axes-767.test.js` 上的 exit 与报错行】
 
 ## 闸门结果（派单点名的那些，逐条实测）
 
