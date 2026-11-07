@@ -1117,10 +1117,10 @@ export const FILE_TOOL_DEFINITIONS = [
     //   `measured minimum N`。本轮描述净删 25 字节 / 增 27 字节（同一个句子），`self` 角色行同片复测。
     // ⚠ 2026-11-07 第十三刷（issue #730，**换人 + 跨档两件事同时发生**）：本单给
     //   `src/loop/pending-tool-result.js` 加了 156 行（中段普查与四条放弃成因的中文注释），它的均行字节
-    //   66.7 → **69.1257** ⇒ 它取代 `src/loop/option-normalization.js`（本轮实测 3,854）成为全树真最小值。
-    //   实测最小值 3,792 已经**不在** [3,850, 3,900) 这一档里 ⇒ 按 #537 的换算式换档：两个档位数字
-    //   `fewest ≥ 3,850` 与 `reads fewer than 3,850` 一起改成 **3,750**，fewest 那一档的均行字节
-    //   `68.0` → **69.1**（三处都是同位数替换 ⇒ 对本文件字节中性，`self` 那一行不用重测）。
+    //   66.7 → **69.9613** ⇒ 它取代 `src/loop/option-normalization.js`（本轮实测 3,854）成为全树真最小值。
+    //   实测最小值 3,746 已经**不在** [3,750, 3,800) 这一档里 ⇒ 按 #537 的换算式换档：两个档位数字
+    //   `fewest ≥ 3,850` 与 `reads fewer than 3,850` 一起改成 **3,700**，fewest 那一档的均行字节
+    //   `68.0` → **70.0**（三处都是同位数替换 ⇒ 对本文件字节中性，`self` 那一行不用重测）。
     //   其余四个角色当场复测过，**一个都没刷**（#543：换人才刷，没跨档就不动）：`densest`
     //   `src/loop/state-view.js` 4,384（记录 4,364，+0.46%）、CJK 36.6%（记录 37.0%）、`median`
     //   `src/store/file.js` 6,212（逐字未动）、`most` `src/loop/abort.js` 9,407（逐字未动）、`self`
@@ -1131,8 +1131,8 @@ export const FILE_TOOL_DEFINITIONS = [
       + "One call returns at most `max_bytes` UTF-8 bytes (default 262144 = 256KB) — the budget is counted in BYTES, so how many "
       + "lines fit is `max_bytes ÷ average bytes per line`: divide the file's byte size by its line count (e.g. `wc -c` ÷ `wc -l`) "
       + "and fold that for the file in hand, instead of assuming a line count. Measured that way on this repo's own `.js` sources "
-      + "under `src/`, `bin/` and `examples/` at the default budget (this codebase, not your tree) \u2014 fewest \u2265 3,750 lines "
-      + "(69.1 bytes/line, the widest lines; the whole-tree minimum rounded down to the nearest 50, so no file in those three trees reads fewer than 3,750 lines), "
+      + "under `src/`, `bin/` and `examples/` at the default budget (this codebase, not your tree) \u2014 fewest \u2265 3,700 lines "
+      + "(70.0 bytes/line, the widest lines; the whole-tree minimum rounded down to the nearest 50, so no file in those three trees reads fewer than 3,700 lines), "
       + "median 6,212 (42.2), most 9,407 (27.9). "
       + "The floor is a whole-tree minimum rounded down to a multiple of 50 (a promise, not a per-file estimate); median and most come from a fixed sample of those sources and describe that sample, not every file here. "
       + "Wide lines cut this proportionally and CJK cuts hardest (3 UTF-8 bytes per character): "

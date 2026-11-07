@@ -2175,7 +2175,7 @@ export async function runToolLoop(options) {
   // （= 它所属那条聚合消息**首片**行的 key，`undefined` = 账本里找不到可接的锚点 ⇒ 只留内存）。
   // 同一个先例（普通局部变量 + 一对访问器）：`restoreResume` 只读账本，写一律在本文件
   // （`appendMessageRowToTranscript` / `persist`），写入口是 `journalResumeMidSequenceToolResults`。
-  /** @type {Array<{toolResult: object, round: any, partOf: any}>} */
+  /** @type {Array<{toolResult: object, round: any, partOf: any, anchorMissDetail?: string}>} */
   let resumeMidSequenceToolResults = [];
   // issue #730（**放弃兜底要可观测**）：`restoreResume` 普查到「悬空而引擎补不出合法桩」的每一格从这里
   // 交出来，成因写在 `reason` / `detail` 里。同一个先例（局部变量 + 一对访问器）：事实由
@@ -3268,6 +3268,7 @@ export async function runToolLoop(options) {
   //   ④ 有锚点、该落账，而 `appendMessageRowToTranscript` 返回 `undefined`（轮号不是安全整数，或
   //      写被返回 `false`）——修前这里一声不响，账本里没那一行而宿主以为已闭合。
   /** 同一条 `resume_journal_skipped` 的形状只在这里拼一次（`detail` 缺席时**不带**那个键）。 */
+  /** @param {{round: any, reason: string, count?: number, detail?: string}} skip */
   const emitResumeJournalSkip = ({ round, reason, count, detail }) => emitEvent({
     type: "resume_journal_skipped",
     runId,

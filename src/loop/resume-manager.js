@@ -740,6 +740,7 @@ export async function restoreResume(ctx) {
         : loadedRecords;
       // issue #730：「引擎放弃了这一格」的成因（普查判悬空而合并拒了 / 非目标形状）从这里交出去，
       // 发事件一律在 orchestrator（事件面只有一处）。本模块不持有 `onEvent`。
+      /** @type {Array<{reason: string, detail: string|undefined, round: any, toolUseIds: any[], assistantIndex: number}>} */
       const midSequenceAbandons = [];
       const midSequenceStubs = await answerPendingMidSequenceToolUses(ctx.messages, {
         pendingResultIds: midSequenceInFlightIds,

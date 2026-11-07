@@ -209,8 +209,10 @@ export const RESUME_JOURNAL_SKIP_DETAIL_APPEND_SKIPPED = "append_row_not_persist
  *     `tool_result` 都没有）。修前它们从不出现在任何返回值里 ⇒ 引擎放弃了这一格而无人知道。
  *
  * @param {any[]} messages
- * @returns {{answerable: Array<{assistantIndex: number, resultIndex: number, missing: object[]}>,
- *            unanswerable: Array<{assistantIndex: number, detail: string, unsettled: object[]}>}}
+ * @returns {{answerable: Array<{assistantIndex: number, resultIndex: number, missing: any[]}>,
+ *            unanswerable: Array<{assistantIndex: number, detail: string, unsettled: any[]}>}}
+ *   两块数组装的是消息里**原样的** `tool_use` 块（消息面是 `any[]`，这里不重述它的形状；写成
+ *   `object[]` 会让 strict 下每一次 `block.id` 都成错——那些 id 正是调用方要报给宿主的东西）。
  */
 function scanMidSequence(messages) {
   const list = Array.isArray(messages) ? messages : [];
@@ -256,7 +258,7 @@ function scanMidSequence(messages) {
  * 只读、不结清、不碰 `messages`。
  *
  * @param {any[]} messages canonical 消息数组
- * @returns {Array<{assistantIndex: number, resultIndex: number, missing: object[]}>}
+ * @returns {Array<{assistantIndex: number, resultIndex: number, missing: any[]}>}
  *   `missing` = 该 assistant 里「紧跟的 user 消息没有对应 `tool_result`」的 `tool_use` 块
  */
 export function pendingMidSequenceToolUses(messages) {
@@ -274,7 +276,7 @@ export function pendingMidSequenceToolUses(messages) {
  * @param {any[]} messages canonical 消息数组（就地合并，消息对象身份不变 ⇒ 轮号表仍然查得到）
  * @param {{
  *   pendingResultIds?: Set<any>,
- *   onStub?: (entry: {toolResult: object, target: object, round: any, partOf: any}, context: {assistantIndex: number}) => any,
+ *   onStub?: (entry: {toolResult: object, target: object, round: any, partOf: any, anchorMissDetail?: string}, context: {assistantIndex: number}) => any,
  *   onAbandon?: (entry: {reason: string, detail: string|undefined, round: any, toolUseIds: any[], assistantIndex: number}) => any,
  *   roundOf?: (message: any) => any,
  *   anchorOf?: (message: any) => any,
@@ -286,8 +288,10 @@ export function pendingMidSequenceToolUses(messages) {
  *   `onAbandon` = **放弃这一格**的回调（issue #730：普查判它悬空，而引擎补不出合法桩）。本模块只
  *   交出事实，发事件归调用方（事件面一直在 orchestrator）；
  *   `roundOf` / `anchorOf` 由调用方提供：本模块不认识轮号表，也不认识落盘行。
- * @returns {Promise<Array<{toolResult: object, target: object, round: any, partOf: any}>>}
- *   本次真的补进去的桩（空数组 = 没有可补的，或补不出合法结果）
+ * @returns {Promise<Array<{toolResult: object, target: object, round: any, partOf: any, anchorMissDetail?: string}>>}
+ *   本次真的补进去的桩（空数组 = 没有可补的，或补不出合法结果）。
+ *   `anchorMissDetail` 是**调用方事后补上的注记**（issue #730：`partOf` 为空时「为什么接不上」的细分成因，
+ *   取值见 `RESUME_JOURNAL_SKIP_DETAIL_*`）——本模块算不出它（锚点探针对本模块不可见），所以它是可选的。
  */
 export async function answerPendingMidSequenceToolUses(messages, options = {}) {
   const census = scanMidSequence(messages);

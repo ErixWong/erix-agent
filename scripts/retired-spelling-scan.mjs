@@ -408,7 +408,13 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 改成描述说法。数取自扫描器现报的 ✗ 行原文：
   //
   //     ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=566  uses=568
-  "docs/host-consumer-contract_cn.md": 568,
+  // 568 → **571**（issue #730，合并树上由扫描器现报）：中英成对新增的那一节里，同名异义命中多 3 处
+  // （`config.loadRawRows` 是命名空间叶子、`reason: "end_turn"` 与 `role: "assistant"` 各一个）。
+  // ⚠ **不是 568 + 3 加出来的，也不是本支单边的 569**：main（#753 C1）刚把同一句钉到 568，而本支在自己
+  // 树上测的是 569 ⇒ 合并树既不等于 568 也不等于 569。数只取扫描器现报那一行：
+  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=568  uses=571
+  // （与 #753 / #714 / #729 同一条先例：契约要能写出真实签名与真实角色名，不为躲钉子改成描述说法。）
+  "docs/host-consumer-contract_cn.md": 571,
 });
 
 /**
