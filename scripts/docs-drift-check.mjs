@@ -212,14 +212,20 @@ import {
 // issue #772 R3：两轴载荷表的锚点登记表（14 格 × 两轴，39 条）住在 `scripts/cell-axes-anchors.mjs`，
 // 闸与 `test/contract-snapshot-cell-axes-767.test.js` **import 同一份**——豁免是闸发的，锚点也必须住在
 // 闸够得着的地方（R2 把它放在测试里 ⇒ 只有 `node --test` 会重算行号、`npm run check:docs` 看不见）。
+// issue #772 R4：同一份里还多了两条硬判据——`anchorKindError()`（锚点「种类」：代码行 vs 注释行，M-A）
+// 与 `checkCellAxesCoverage()` + `CELL_AXES_REQUIRED_CELLS()`（与登记表无关的覆盖面人审清单，M-B）：
+// 两边都只 import、不再自己写一遍口径。
 import {
   CELL_AXES_ANCHORS as CELL_AXES_ANCHORS_SHIPPED,
   CELL_AXES_ANCHOR_MODULE,
   CELL_AXES_ANCHOR_FLOORS,
+  CELL_AXES_REQUIRED_CELLS,
   anchorGroupKey as cellAxesAnchorGroupKey,
   anchorHitLines as cellAxesAnchorHitLines,
+  anchorKindError as cellAxesAnchorKindError,
   anchorLinesEqual as cellAxesAnchorLinesEqual,
   anchorTableShape as cellAxesAnchorTableShape,
+  checkCellAxesCoverage as cellAxesCheckCoverage,
   parseCellAxesAnchorTable as cellAxesParseAnchorTable,
 } from "./cell-axes-anchors.mjs";
 // 逐名表的**读法**（几格 / 第一格长什么样 / 入口列认哪几种写法 / 版本号从哪来）住在共享模块里：
@@ -3021,8 +3027,12 @@ function cellAxesAnchorTable() {
  * **逐组**豁免判定（#772 R3 的核心：闸自己当场重算，不 spawn 测试、也不读测试算出来的结果）。
  * 表里每一组 `格名|轴|同名第几行|文件` 的引用都要过三关，全过才免进棘轮：
  *   ① 这一格这一轴**有**登记锚点（没有 ⇒ 那条行号没有基准 ⇒ 红，并且**不再被豁免** ⇒ 回棘轮计数）；
- *   ② 锚点在源码里**唯一命中**（0 命中 = 锚点失效；>1 = 锚点歧义，歧义锚点不配当基准）；
- *   ③ 表里写的行号与重算结果**等值**（漂一行就红，并打印「表写 :NNNN / 锚点实际 :MMMM / 那一行原文」）。
+ *   ② 锚点在源码里**唯一命中**（0 命中 = 锚点失效；>1 = 锚点歧义，歧义锚点不配当基准），
+ *      且命中的那一行**种类相符**（#772 R4 M-A：`kind: "code"` 必须是真代码行、`kind: "comment"`
+ *      必须是注释行——判据是共享的 `anchorKindError()`，与测试那一份是同一个函数）；
+ *   ③ 表里写的行号与重算结果**等值**（漂一行就红，并打印「表写 :NNNN / 锚点实际 :MMMM / 那一行原文」）；
+ *   ④ 覆盖面：人审清单 `CELL_AXES_REQUIRED_CELLS` 里每一格都要在登记 + EN 表 + CN 表各自在场
+ *      （#772 R4 M-B，判据是共享的 `checkCellAxesCoverage()`）——光「剩下的那些自洽」不算过。
  * 中英两侧任一侧不合格 ⇒ 这一组两侧都不豁免（同一份真值不许一侧对一侧错）。
  * @returns {{why?:string, okGroups:Set<string>, refGroup:Map<string,string>, errors:string[],
  *            entries:number, groups:number}}
@@ -3050,6 +3060,13 @@ function cellAxesRegionExemption() {
         ? `锚点 0 命中（正则 ${entry.anchor}）⇒ 锚点已失效，表里那些行号没有基准`
         : `锚点歧义（正则 ${entry.anchor}）命中 ${hits.length} 行：${hits.map((n) => `:${n}`).join(" ")} ⇒ 歧义锚点不配当基准`);
       continue;
+    }
+    // #772 R4 M-A：种类判据（与测试共用 `anchorKindError()`）。指到注释行上的「代码锚点」即使
+    // 两份契约表的引文同步改口、行号自洽，也照样红；错误文本直接进 `errors`（不只靠「没锚点」转发）。
+    const kindError = cellAxesAnchorKindError(entry, lines, hits[0]);
+    if (kindError !== null) {
+      errors.push(`cell-axes-anchors: ${kindError}`);
+      failed.set(gk, kindError);
     }
     // 同一格同一轴可以有多条锚点（例：快照侧 + 轮记录侧各一条）——它们命中同一组引用，所以取**并集**；
     // 但**每一条**都必须各自唯一命中，任一条歧义/失效都记进 failed（歧义锚点不配当基准）。
@@ -3088,6 +3105,19 @@ function cellAxesRegionExemption() {
       }
     }
   }
+  // ④ 覆盖面真值（#772 R4 M-B）：拿那份与登记表无关的人审清单问四处（清单/登记/EN 表/CN 表）。
+  // 「成对删掉登记条目 + 两份表里的对应行」在 ①②③ 下全自洽（剩下的那些仍等值），只有这一条看得见。
+  const coverage = cellAxesCheckCoverage({
+    anchors: table.entries,
+    refsByDoc: refsByDoc
+      .filter(([, refs]) => refs !== null)
+      .map(([doc, refs]) => ({ side: doc === CONTRACT_EN ? "en" : "cn", doc, refs })),
+  });
+  if (coverage.required !== CELL_AXES_REQUIRED_CELLS.length) {
+    errors.push(`cell-axes-anchors: 闸手里的人审清单是 ${CELL_AXES_REQUIRED_CELLS.length} 格，`
+      + "而共享判据用的是 " + coverage.required + " 格 ⇒ 判据与登记不同源（import 被接掉了）");
+  }
+  for (const error of coverage.errors) errors.push(`cell-axes-anchors: ${error}`);
   // 登记了却没人在表里引 = 后门（同 `BARE_LINE_EXEMPTIONS` / `CELL_AXES_CALIBER_LINES` 的口径）
   for (const gk of recomputed.keys()) {
     if (referenced.has(gk)) continue;

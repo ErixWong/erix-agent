@@ -38,10 +38,13 @@ import {
   CELL_AXES_ANCHORS as CELL_AXES_ANCHORS_SHARED,
   CELL_AXES_ANCHOR_FLOORS,
   CELL_AXES_ANCHOR_MODULE,
+  CELL_AXES_REQUIRED_CELLS,
   anchorGroupKey,
   anchorHitLines,
+  anchorKindError,
   anchorLinesEqual,
   anchorTableShape,
+  checkCellAxesCoverage,
 } from "../scripts/cell-axes-anchors.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -653,6 +656,10 @@ function G4_ANCHOR_GROUPS(anchors, linesOf) {
       continue;
     }
     const gk = G4_GROUP_KEY(entry.key, entry.axis, entry.row ?? 0, entry.path);
+    // #772 R4 M-A：「种类」也是硬判据，而且走的是与闸**同一个** `anchorKindError()`（两边不许各写一份）。
+    // 行号等值对账本身看不见「锚点指到一条只是提到键名的注释 + 两份表引文同步改口」那种形状。
+    const kindError = anchorKindError(entry, linesOf(entry.path), hits[0]);
+    if (kindError !== null) errors.push(kindError);
     groups.set(gk, new Set([...(groups.get(gk) ?? []), ...hits]));
   }
   return { groups, errors };
