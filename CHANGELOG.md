@@ -512,6 +512,27 @@
   is round residue” in `docs/host-consumer-contract.md` (and the CN twin). Two pre-existing cases built their
   crash fixture with `snapshot.messages.slice(0, anchor)`; they now take that prefix from the ledger
   (`foldLedgerMessages(store.load(runId))`) — the same text, from the side that actually owns it.
+  **The retracted wording now has a machine guard (third round of this slice).** After the EN half of the
+  contract was rewritten, the CN half **still carried the retracted “anchor cap” paragraph** — the new text had
+  been spliced into the **middle** of the old one, so the two halves were not saying the same thing, and
+  `npm run check:docs` / `check:docs:strict` were **green across that drift**: its EN/CN half compares
+  **heading skeletons** plus the registered anchors, **not prose** (the same hole #511 / #553 / #668 / #743
+  each closed for their own class). This slice closes it here: `test/docs-no-overclaim-735.test.js` scans
+  **only this section** (scanning the whole file would misfire — `by construction` has two legitimate uses
+  elsewhere in the EN contract) and bans the refuted sentence families. The honest wording must also **stay**
+  (“the reader never reads a slot that was elided”, the explicit “not a promise that every body survives”,
+  `#754`, “measured side by side”) — otherwise deleting the paragraph would also count as compliance. It then
+  reconciles the two halves' **issue-reference sets** and the byte-account table's **number sequences**
+  verbatim (that is exactly the shape this round drifted), and finally proves its own bite against the
+  **pre-retraction** text, verbatim from `97daf82` / `ee2fbfa` — a pattern that hits nothing is a dead entry
+  and goes red (#210 R2). The “anchor cap” family is banned **conditionally**, against the code truth:
+  `resumeTranscriptAnchor` is gone from `src/loop/orchestrator.js`, so the contract naming its cap is an empty
+  promise; if the mechanism ever lands again, that family unlocks by itself and the case says the byte account
+  must be re-measured. Reverse proof, one pass per language half (`cp` backup + `md5sum` restore, zero
+  `git checkout`): re-inserting the old paragraph into **EN** ⇒ `not ok … G1` naming 5 patterns
+  (`by construction`, `Nothing can lose`, `Every slot below that anchor is in the ledger`, `resume anchor`,
+  `the cap is what makes the elision safe`); into **CN** ⇒ 5 patterns (`按构造`, `就不会丢`, `锚点之前每一格`,
+  `恢复锚点`, `封顶正是`); after restoring both ⇒ green.
 - **The run snapshot stops writing two cells nobody reads (issue #735, slice 1).** `persistRunSnapshot`
   built one payload with four candidate cells; after re-measuring instead of trusting the ticket, two of
   them really have no reader. `toolUse` was a **second, independent `cloneState()` call over the same
@@ -608,7 +629,20 @@
   `snapshot.messages` 里读正文这件事不再被支持 —— 见 `docs/host-consumer-contract.md`（与中文对页）
   新增的「run snapshot 的 `messages` 这一格是轮残余」。两处原先拿 `snapshot.messages.slice(0, anchor)` 造
   崩溃现场的既有用例，现在改从**账本**取那段前缀（`foldLedgerMessages(store.load(runId))`）—— 同一段正文，
-  换成真正拥有它的那一侧。
+  换成真正拥有它的那一侧。**第三轮：被推翻的措辞现在有了机器守卫。** EN 那一半改写之后，中文那一半**还留着被撤回的
+  「锚点封顶」旧段**——新段被插进了旧段的**中间**，两份说的不是同一句话，而 `npm run check:docs` /
+  `check:docs:strict` 在这段漂移上**全绿**：它那半中英对账比的是**标题骨架**与登记过的锚点，**不比散文**
+  （同一个缺口 #511 / #553 / #668 / #743 各自替自己那一族补过）。现在本刀把它堵上：`test/docs-no-overclaim-735.test.js`
+  **只扫这一节**（整篇扫会误伤——`by construction` 在 EN 契约别处还有两处合法用法），禁掉被推翻的那几族句式；
+  同时要求诚实那句**必须在场**（「读者永远读不到被省掉的格子」、那句显式的「不是『每一段正文都还在』的承诺」、
+  `#754`、「并排实测」）——否则「把整段删掉」也算合规；再把两侧的 **issue 引用集合**与字节账表的**数字序列**逐字对账
+  （本轮踩的就是这一形）；最后拿**撤回前**的原文（逐字取自 `97daf82` / `ee2fbfa`）自证每条禁语都真咬得住——
+  咬不住就是死条目 ⇒ 红（#210 R2）。「锚点封顶」那一族是**条件禁**，对面是代码真值：`resumeTranscriptAnchor`
+  已从 `src/loop/orchestrator.js` 消失，契约再提它就是空头承诺；机制哪天落回来，这一族自动解禁，用例会提醒重测字节账。
+  反证中英各一遍（`cp` 备份 + `md5sum` 还原，零 `git checkout`）：把旧段塞回 **EN** ⇒ `not ok … G1` 点名 5 条
+  （`by construction`、`Nothing can lose`、`Every slot below that anchor is in the ledger`、`resume anchor`、
+  `the cap is what makes the elision safe`）；塞回 **CN** ⇒ 5 条（`按构造`、`就不会丢`、`锚点之前每一格`、
+  `恢复锚点`、`封顶正是`）；还原 ⇒ 绿。
 - **run snapshot 停写两格没有人读的字段（issue #735，切片 1）。** `persistRunSnapshot` 构造的那份
   payload 里有 4 格候选冗余，**不按工单口径、改成自己重测**之后只有 2 格真的无人读：`toolUse` 与
   `pendingToolUse` 是**对同一个源值各自调一次 `cloneState()`**（`cloneState(snapshotPendingToolUse)`

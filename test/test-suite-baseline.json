@@ -3,12 +3,26 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3611,
+    "tests": 3616,
     "fail": 0,
     "maxSkipped": 15
   },
   "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
   "observations": [
+    {
+      "date": "2026-11-07",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "本笔登记 + 同片三改动（`6a0a27d` 中文契约删旧段 / `d85a6dd` 文件头不变量改实测口径 / `7312487` 新增 `test/docs-no-overclaim-735.test.js`）；分支 fix-261107-09-snapshot-round-residue，基点 main=bea46bb；六个计数取自这一棵树上现跑的 npm test（日志 /tmp/npmtest-final-r3.log）",
+      "branch": "fix-261107-09-snapshot-round-residue",
+      "tests": 3616,
+      "pass": 3603,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests 3611 → **3616**（+5，全部有意的增加）：新增 `test/docs-no-overclaim-735.test.js` 5 格（G0 扫描面在场 / G1 禁语零命中 / G2 诚实表述必须在场 / G3 中英对齐机器判据 / G4 反向证）。病根：本刀要删的「契约里已撤回的 A1 旧段」在中文那份**漂了**（EN 已改，CN 的新段被插进旧段中间），而 `check:docs` / `check:docs:strict` 在这段漂移上全绿——中英对账只比标题骶架与登记锚点，不比散文（同族 #511 / #553 / #668 / #743）。守卫只扫那一节，禁语族分两类：「按构造 / 不会丢信息」无条件禁（探针证明与封顶在不在无关），「恢复锚点封顶」条件禁（对面是代码真值 `resumeTranscriptAnchor`，已从 `src/loop/orchestrator.js` 消失）。反向证中英各贴一次 RED（旧段塞回 EN ⇒ G1 点名 5 条；塞回 CN ⇒ 5 条；`cp`+`md5sum` 还原 ⇒ 绿），另有 G4 在测试内部用逐字取自 `97daf82` / `ee2fbfa` 的旧文案自证禁语表不是死条目。`fail=0`；`skipped=13`（≤ maxSkipped 15，成员与上一笔逐字同：4 条类型棘轮自证 + 9 条真上游 / 网络门）；`todo=0`、`cancelled=0`；tests = pass + fail + skipped = 3616。没删例、没跳过、没放宽断言；`src/` 零改动。"
+    },
     {
       "date": "2026-11-07",
       "env": "local",
