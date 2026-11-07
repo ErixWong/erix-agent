@@ -418,24 +418,19 @@ test("#735 切片 2 · ④a 变异「写回整段」（副本引擎）⇒ ③ �
     "仓内写侧必须仍是轮残余（变异只发生在副本上）");
 });
 
-// ── ⑤ 两跳恢复的往返（独立评审点出的真缺口；形状本身可能是**主干既有缺陷**）──────────
+// ── ⑤ 两跳恢复：记录**当前行为**（主干既有缺陷，修法与爆炸半径见 issue #754）────────
 //
-// **为什么这条可能是主干既有缺陷，而不是本片的写侧问题**：读侧取正文用的是
-// `snapshot.messages.slice(anchor)`，而第二跳的 `anchor` 是**现算**的（`countResumeAnchor(records)`）——
-// 第一跳续跑时又入账了新消息 ⇒ 锚点变长（夹具实测：第一跳前 3、第一跳后 5）。那段「只在内存里」
-// 的旧正文下标落在**新锚点之前**（实测 3、4 < 5）⇒ **无论写侧置不置 `null`、保不保留，切片都会
-// 把它跳过** ⇒ 第二跳拿不到它，报 `invalid_messages`。实测两棵（写整段的基点副本 / 本片的残余）
-// 第二跳的成败与错误**逐字相同**，所以这条判据在**基点上也是红的**：修它要动的是读侧的切片下标语义
-// （另开单），不是写侧怎么省字节。本文件因此把它写成「与基点逐字对账 + 载荷面钉住不许更糟」，
-// 而不是「必须成功」；等读侧那一刀落地后，把下面的对账换成 `assert.equal(second.ok, true)` 即可。
-
-/**
- * 旧账本 + 旧快照 → 恢复 → **引擎亲笔写一条新快照** → 再恢复。
- * 与用例 2 的差别只在崩溃时刻：这里崩在「新快照已写、新一轮的正文行一条都没落」那一刻，
- * 于是账本**还停在原锚点**（3 条），而升级路径从快照补进内存的那段旧正文（下标 3、4）
- * **始终只在内存里**（#424 的 `resume_journal_skipped` 守卫：旧格式崩溃轮的 assistant 没落账
- * ⇒ 结果行也不补写）。第二次恢复要读的就是它 ⇒ 快照若把这些格子置 `null`，信息就真丢了。
- */
+// 场景：旧格式账本 + 旧快照 → 恢复（引擎亲笔覆盖写新快照）→ 再恢复。要盯的是那段「只在内存里」
+// 的旧正文（升级路径从快照补进 `ctx.messages`，却被 #424 的 `resume_journal_skipped` 守卫故意留在
+// 账本之外）在第二跳还取不取得到。**实测：取不到，而且与写侧怎么写无关**：
+//   · 读侧的 `anchor = countResumeAnchor(records)` 是一个**标量**（折叠后的逻辑消息条数），不是
+//     「快照里哪些下标已入账」的位图；第一跳续跑又入账了新消息 ⇒ 第二跳的锚点从 **3 涨到 5**；
+//   · 那段旧正文的下标落在**新锚点之前** ⇒ 无论写侧写整段、写残余、还是按锚点封顶，切片都会把它
+//     跳过 ⇒ 第二跳 `invalid_messages`、0 次模型请求；
+//   · 并排实测（本分支 vs 主干 `bea46bb` 的「写回整段」写法，见下面与副本引擎的逐字对账）两棵
+//     **逐字同结果** ⇒ 这是主干既有缺陷，**不是切片 2 引入的损失**。
+// **`#754` 落地之后这条要翻成断言正确行为**（第二跳真发出模型请求、旧正文恰 1 份地在上下文里、
+// 不出现 `invalid_messages`）——它**不是**「切片 2 的已知损失」，别在下面写成豁免条款。
 async function runTwoHopScene(engineRoot) {
   const { runToolLoop } = await import(pathToFileURL(join(engineRoot, "src/loop/orchestrator.js")).href);
   const { createMemoryTranscriptStore: createStore } = await import(
@@ -504,51 +499,49 @@ async function runTwoHopScene(engineRoot) {
   };
 }
 
-test("#735 切片2 · 两跳恢复：只在内存里的旧正文必须还取得到（RED 判据）", async (t) => {
+test("#735 切片2 · 两跳恢复记录当前行为（主干既有缺陷，修好见 #754）", async (t) => {
   const scene = await runTwoHopScene(ENGINE_ROOT);
-  assert.ok(scene.crashed, "前置：必须真的崩在「新快照已写、该轮正文行未落」那一刻");
+  assert.ok(scene.crashed, "前置：必须真的崩在「新快照已写、再下一条正文行未落」那一刻");
   assert.ok(scene.latestRound > fixtureSnapshot.round,
     `前置：引擎必须已覆盖写过新快照（实测 round=${scene.latestRound}）`);
-  // 现场成立的那三条（评审第 1 节的复现条件）：
-  //   账本在恢复后只多出发 A 集合的结果行（旧正文一条都没入账），升级补进来的旧正文仍在
-  //   `[ANCHOR, 锚点)` 这段只在内存里的下标上，而引擎新快照的 `persistedTranscriptLength`
-  //   在恢复时被 seed 成 `ctx.messages.length` ⇒ **比真锚点大**（夹具实测 ptl=5 / ANCHOR=3）。
-  const messages = scene.latestMessages ?? [];
-  assert.ok(messages.length > ANCHOR, `前置：新快照必须还带着整段索引空间（实测 ${messages.length} 格）`);
-  assert.ok(messages.slice(0, ANCHOR).every((message) => message === null),
-    `锚点之前那 ${ANCHOR} 格照旧可以省（实测 null 起 ${messages.slice(0, ANCHOR).filter((m) => m === null).length} 格）`);
-  // **评审点名的那条判据**：锚点之后（含只在内存里的那段旧正文）一格都不许省。
-  for (const index of rangeOf(ANCHOR, messages.length)) {
-    assert.notEqual(messages[index], null,
-      `下标 ${index}（>= 本次恢复锚点 ${ANCHOR}）不许是 null——那段旧正文只在内存里，账本没有，`
-      + `省掉就是真丢（实测整格 ${JSON.stringify(messages.slice(0, Math.min(messages.length, 8)))}）`);
-  }
-  assert.equal(countMarker(messages), 1,
-    `只在内存里的那段旧正文必须原样留在新快照里（实测 ${countMarker(messages)} 份）`);
+  // 第一跳按构造就是被注入的崩溃打断的（persistence_failed），但它**崩溃前**已经发过一次请求，
+  // 而那一次请求里带着那段只在内存里的旧正文 ⇒ 这条链的现场确实成立。
+  assert.match(String(scene.first.error), /persistence_failed/u,
+    `前置：第一跳必须是被注入的落盘崩溃打断的（实测：${String(scene.first.error)}）`);
+  assert.equal(countMarker(scene.first.requests[0]?.messages ?? []), 1,
+    "前置：第一跳确实把那段只在内存里的旧正文喂给了模型（否则下面记录的不是这条链）");
+  // 锚点涨长的那笔账（#754 的根因）：本次现场从 ANCHOR 涨到 anchorAfter。
+  assert.ok(scene.anchorAfter > ANCHOR,
+    `前置：第二跳的锚点必须已因第一跳的入账而涨长（实测 ${ANCHOR} → ${scene.anchorAfter}）`);
 
-  // 第二跳的行为对账：与「写回整段」的基点写法逐字相同（含成败与上下文）。
-  // 这条夹具现场的第二跳在基点上本来就以 `invalid_messages` 收场（#424 那一族的既有限制：
-  // 账本里只有结果行、没有那段 assistant 正文 ⇒ 升级分支的门 `ledgerMessages.length === anchor`
-  // 关着，任何快照形状都喂不到它）——所以这里钉的是**不许因为省前缀而更糟**，而不是「必须成功」。
+  // ↓↓↓ 当前行为（characterization）。#754 修好后这四条要改成断言**正确**行为。
+  assert.equal(scene.second.ok, false,
+    `当前行为：第二跳失败（修好 #754 后这条应翻成 assert(second.ok === true)）。实测：${String(scene.second.error)}`);
+  assert.match(String(scene.second.error), /invalid_messages/u,
+    "当前行为：失败方式是上下文配对不成立（旧正文落在 slice(anchor) 起点之前）");
+  assert.equal(scene.second.requests.length, 0,
+    "当前行为：第二跳一次模型请求都没发出（修好后应为 1 次，且上下文里带着那段旧正文）");
+  assert.equal(countMarker(scene.latestMessages), 0,
+    `当前行为：那段只在内存里的旧正文在新快照里已被前缀规则省掉（实测 ${countMarker(scene.latestMessages)} 份）`);
+  // ↑↑↑
+
+  // 与「写回整段」（= 主干写法）逐字对账：同一个第二跳 ⇒ 上面记录的行为不是本片引入的。
   if (insideMutationRun) {
     t.skip("变异子进程里不再递归跑对账");
     return;
   }
-  // 工单/评审要的那条判据的形状（读侧修好后改成直接断言这两条）：
-  //   assert.equal(scene.second.ok, true);
-  //   assert.equal(countMarker(scene.second.requests[0].messages), 1);
   const wholeRoot = await mutateEngine("two-hop-baseline",
     "messages: snapshotTranscriptResidue,",
     "messages: cloneState(transcriptForSnapshot),");
   try {
     const baseline = await runTwoHopScene(wholeRoot);
     assert.deepEqual(scene.second, baseline.second,
-      "第二跳的成败与上下文必须与「写回整段」逐字相同（省前缀不许让恢复更糟）");
-    assert.equal(messages.length, (baseline.latestMessages ?? []).length,
-      "残余化不许改数组长度（读侧的绝对下标空间就是它的契约）");
-    t.diagnostic(`两跳第二跳两边同红（既有缺陷，非本片引入）：${String(scene.second.error)}`);
+      "第二跳的成败与上下文必须与「写回整段」逐字相同（同一缺陷，两侧同结果）");
+    assert.equal(scene.anchorAfter, baseline.anchorAfter,
+      "两棵的锚点必须同口径（根因在读侧，与写侧写什么无关）");
     assert.equal(baseline.second.error, scene.second.error,
-      `基线第二跳的错必须与这里同一个（两边同一个既有缺口，不是本片引入）：${String(scene.second.error)}`);
+      `与主干写法同一个错（既有缺陷，另开单修读侧）：${String(scene.second.error)}`);
+    t.diagnostic(`两跳第二跳两棵同结果（既有缺陷 #754）：${String(scene.second.error)}`);
   } finally {
     rmSync(wholeRoot, { recursive: true, force: true });
   }
