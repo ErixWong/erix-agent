@@ -1988,11 +1988,20 @@ function selfTestChangelogCaliber(checker) {
       "⑯c 三个调用方（release-day / docs-drift-check / static-guards）都 import 共享口径，且代码里没有字面拷贝"
       + "（标题 / 段首日期 / bullet 三条只住一份）",
       `⑯c 口径又被抄回调用方：${offenders.join(" / ")}`);
+    // **跨闸依赖的钉子**（issue #731 N2）：这一格「段首带日期 ⇒ 那一版已发布」不成立在自己身上，
+    // 它成立在 `check:docs` 的 §17b 判据 1（issue #697）。那条一被放宽，这一格就把**带日期的在飞段**
+    // 永远判成未判定：不再红，也不再有人管。所以钉的是**那一行本身**——短路成 `false && …` 也算被放宽。
     const drift = readSource("docs-drift-check.mjs") ?? "";
-    expect(/UNPUBLISHED_MARK_RE/u.test(drift) && /\bs\.dated\b/u.test(drift),
-      "⑯c `docs-drift-check.mjs` §17b 那条不变量（未发布段不许带日期）还在 —— 本文件的 dated 分支在**消费**它（issue #731 N2）",
-      "⑯c §17b 的「未发布段不许带发布日期」看起来被放宽或改名了：`release-day.mjs` 里「段首带日期 ⇒ 那一版已发布」"
-      + "的前提随之失效（它会把带日期的在飞段永远判成未判定），两处必须一起改");
+    const guardLine = (drift.split("\n").find((line) => /\btop\.dated\b/u.test(line)
+      && /hasUnpublishedMark\(/u.test(line)) ?? "").trim();
+    expect(/function collectChangelogDateErrors\b/u.test(drift)
+      && guardLine !== "" && !/\bfalse\b/u.test(guardLine),
+      `⑯c \`docs-drift-check.mjs\` 的 §17b 判据 1（正在准备的那一段标了未发布就不许带发布日期，issue #697）还在`
+      + `（实测那一行：${guardLine.slice(0, 66)}）—— 本文件的 dated 分支在**消费**它（issue #731 N2）`,
+      `⑯c §17b 判据 1 被放宽、短路或删掉了（实测那一行：`
+      + `${guardLine.slice(0, 66) || "找不到同时含 top.dated 与 hasUnpublishedMark 的行"}）：`
+      + "本文件里「段首带日期 ⇒ 那一版已发布」的前提随之失效（它会把带日期的**在飞**段永远判成未判定："
+      + "不再红，也不再有人管）。放宽那条之前先改这里，两处一起改");
   }
 
   // ⑯d **N2 端到端**：带日期 + `package.json` 同版 + `[Unreleased]` 非空 ⇒ **未判定**，且判词讲清理由与依赖
