@@ -142,7 +142,7 @@ not ok 14 - G4-R6 特征用例（锚点改成同键名另一处真写入 + 两�
 ## 未验证
 
 - `test/contract-snapshot-cell-axes-767.test.js` 7 条红（见上），所以**契约文档/锚点/表三方尚未互相自洽**；`docs/host-consumer-contract*.md` 里两格下方的**正文段**（解释「继续写出」的那两段、以及 `compactionStats` 快照与轮记录同一表达式那段）**尚未按停写改写**，行号也未逐条复核——只有表里的两轴列被机器重排过。
-- `npm run check:docs`、`:strict`、`:docs-spelling`、`:syntax`、`:agents-directives`、`node scripts/docs-drift-check.mjs --self-test`（约 7 分钟）与三档类型闸：**未跑**（预算用尽），因此两份 doc 的行号漂移会不会被这些闸抓住，未知。`BARE_LINE_REF_BASELINE` 未动。
+- 文档闸与类型闸**已全绿**（见下面「闸（最终一轮实测）」）；**唯一仍红的是 `docs-drift-check.mjs --self-test`（5/219）**，根因与两条出路记在本报告最后一节。`BARE_LINE_REF_BASELINE` 未动，`test/test-suite-baseline.json` 未动。
 - 全套 `npm test` 未跑（工单规定）；`test/test-suite-baseline.json` 未动：用例数**没有增删**（我只改了既有用例的断言指向，新增的 1 条 `callSiteOf()` 是 helper 不是用例；写侧文件里两条用例被改名但计数不变）。
 - 除 `test/`、`docs/host-consumer-contract*`、`scripts/cell-axes-anchors.mjs`、`src/loop/orchestrator.js`、两份 CHANGELOG、`REPORT-770.md` 之外没有别的写入；未 rebase、未 push、未开 PR，未碰 `/home/eric/wt-770w` 与其它 `~/wt-*`。
 
@@ -171,3 +171,17 @@ find src -name '*.d.ts' -delete && npm run check:types        # OK 99 错 / 26 �
 npm run check:types:strict                                    # 1875 < 基线 1877（未抬基线，未下调）
 npm run types:build                                           # OK，89 个 .d.ts
 ```
+
+## `node scripts/docs-drift-check.mjs --self-test` — **5/219 未达预期（红）**
+
+跑完约 8 分钟，退出码 1：`docs-drift-check --self-test: 失败 — 5/219 例未达预期`。5 条全部落在 `#772` 的 cell-axes 标记区豁免族，**根因是这套 self-test 的 fixture 把 #770 之前的形状写死了**（不是判据松了）：
+
+| 失败用例 | fixture 里写死的旧形状 | #770 之后 |
+| --- | --- | --- |
+| 把 `status` 写点锚点削弱成键名本身 | `replaceUnique('"^ {8}status,$"', '"status"')`（`scripts/docs-drift-check.mjs:8725`） | `status` 写轴锚点已是 `^ {8}// ⇒ \`status\` 停写的理由：` ⇒ 变异**落不上去**，按脚本自己的规矩「变异没落上去也算失败」 |
+| R3「删锚点躲过去」 | 删的行按 `key:"status" && axis:"write" && anchor:` 定位（`:8740`） | 该条现在是 comment 条目，删掉后红话的组成与预期正则不再逐条对应 |
+| R2 现场：把 CN 表 `:6185` 换成同键名注释行 `:3036` | `CELL_AXES_DISTRACTOR_LINE = 3036`（`:8547`） | 干扰注释行随注释块重写漂到 3040 ⇒ 变异没落上 |
+| R4 M-A 反方向（`toolUse` comment→code） | 期望红话只有 cell-axes 两条 | 额外多出 `bare-lines: 标记区裸行号实测 **8** 处 > 基线 **6** 处`（`:8805` 的 expectedNot 不含它） |
+| R4 已知限度（特征用例） | 期望红话集合（`:8846`） | 同上，实测 **10** 处 > 6 |
+
+后两条的多出来的计数来自本单在标记区**新增的一条引用**（`compactionStats` 写轴现在引 `:3038` 注释 + `:6185` 轮记录两条，HEAD 只有 1 条），变异把豁免打掉后，区外裸行号计数从 6 涨到 8/10，触到 `BARE_LINE_REF_BASELINE` 那条棘轮。两条出路：① 让写轴只引 1 条（同时把轮记录那条锚点登记撤掉，等于少登记一个真写点）；② 把该区允许值按闸自报值抬到 8——但那是 `BARE_LINE_REF_BASELINE` 一族，工单明令**不许动**，本单没动。两者都要连带改 767 闸的 R5 victims fixture（它按 `compactionStats|write` 命中 6185 选受害者），预算内没有继续，留作下一片。
