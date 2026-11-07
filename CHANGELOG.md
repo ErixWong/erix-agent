@@ -26,14 +26,34 @@
   key **added and then removed before the probe is read** — that slot never had an accessor to trap it, and the
   final key set and the verbatim JSON both come back identical, so a rewrite that really happened leaves zero
   trace. `Object.freeze` on the restored blocks and their nested objects (that class only, not the whole
-  message graph) closes it: accessors go on first, so an existing key's assignment still runs the setter, while
-  **adding a key / deleting one throws immediately in strict mode** — the transient case throws at the "add",
-  never reaching the "delete". Both halves of that claim are measured: freezing does not disturb the engine
+  message graph) closes it. **By mechanism, not by wishful labelling (round-2 review caught the first wording
+  as out of step with the code)**: the accessor setter only ever accounts for **plain assignment of a key that
+  already exists** (`b.duration = 9999`) — it does not throw because the key is an accessor by then and
+  `Object.freeze` does not change an accessor's `[[Set]]` semantics, so the write is swallowed and booked;
+  whereas **adding a key, deleting a key and `defineProperty`-overwriting a probed slot throw directly from
+  `freeze`** (not extensible / not configurable). Consequence stated plainly: `addedKeys` / `lostKeys` /
+  `replacedKeys` are structurally **empty in the frozen world** — those three assertions are backstops for a
+  world where the freeze did not land, not evidence that the engine behaved. Both mechanisms are kept because
+  each covers the other's blind spot: freeze alone would turn an ordinary existing-key assignment into a crash
+  with no record of *which* key and *from what to what*, and would also lose the read counters the presence
+  assertion feeds on; accessors alone leave the add-then-delete transient at zero trace. The transient now
+  throws at the "add", never reaching the "delete". Both halves of that claim are measured: freezing does not disturb the engine
   (real upstream 3/3 green — legitimate rewrites happen on `cloneState()` copies, which the freeze never
   reaches), and the transient mutation (`block.erix = {}; delete block.erix;` on the restore path) dies with
   `TypeError: Cannot add property erix, object is not extensible` at `src/loop/resume-manager.js:414`. `F9b`
   keeps permanent versions of both (the observed blocks must be frozen; a transient add-then-delete on one must
-  throw), so the closed hole cannot quietly reopen. Reverse proof: injecting `block.erix = {}` on the restore
+  throw), so the closed hole cannot quietly reopen.
+  Round 2 closed a second self-deception: `target` could be **impersonated by any other frozen object** —
+  `Object.isFrozen` / `Object.isExtensible` pass for every frozen object, so they never proved "this *is* the
+  observed block" (reviewer's adjacent negative control: swap `target` for `Object.freeze({})` and the real
+  upstream suite stayed 3/3 green; the earlier `target: undefined` red came from the *transient* matcher, not
+  from an identity assertion). The record now carries its identity and its origin (which store read face, in
+  which call, returned *this* object) and `F9b` cross-checks them; a new always-run, offline cell pins five
+  negative controls, each of which must redden **on the assertion that owns it** (tagged `[identity]` /
+  `[origin]` / `[presence]` / `[frozen]` / `[transient]`), including the reviewer's frozen-empty-object
+  impostor, `target: undefined`, a same-shape stand-in that this face never returned, a face the engine does
+  not walk, and a wholly idle probe — plus a reverse confirmation that the freeze/transient pair cannot smell
+  an impostor, so identity must not be delegated to it. Reverse proof: injecting `block.erix = {}` on the restore
   path reddens `F9b` naming `erix`; removing it greens the suite 3/3. The write side itself is untouched and `F9b` now asserts
   the residue shape as a fact (snapshots exist, the legacy slot is absent from them, `null` residue slots
   are present), so a later revert of the write side is caught here instead of silently un-blinding the probe.
@@ -54,10 +74,24 @@
   删掉**的瞬态——那一格在边界上本没有 accessor 可拦，终态键集合与逐字 JSON 都回到原样 ⇒ 一次真发生过的就地写入
   零痕迹。`Object.freeze`（只冻恢复出来的 `tool_result` 旧块及其嵌套对象，不冻整张消息图）把这一类关掉：accessor
   先装 ⇒ 已有键的赋值仍走 setter 照记；**加键 / 删键在严格模式下当场抛** ⇒ 瞬态抛在「加」那一下，不给「删回来」的
-  机会。两半都实测过：冻上之后引擎不受打扰（真上游 3/3 绿——合法改写发生在 `cloneState()` 的副本上，冻不到），
+  机会。**按实际机制重写（二轮评审指出上一版措辞与代码行为不符）**：accessor setter 只记一类——**已有键的
+  普通赋值**（`b.duration = 9999` 这类），它**不抛**，因为键那时已是 accessor，而 `Object.freeze` 不改变 accessor
+  的 `[[Set]]` 语义 ⇒ 写入被吞下来记账；而**加新键 / 删已有键 / `defineProperty` 覆盖探针格子这三类是 freeze
+  当场抛**（不可扩展 / 不可重定义），不是 setter 记下的。后果直说：在冻住的世界里 `addedKeys`/`lostKeys`/
+  `replacedKeys` **结构性恒空**，那三条断言是「没冻上」时的兜底，不是「引擎很规矩」的证据。两类机制都留着，
+  因为各挡各的盲区：只 freeze ⇒ 一次普通的已有键赋值退化成一崩了之，拿不到「改了哪个键、从什么改成什么」的
+  现场，连读次数（在场断言的依据）也没了；只 accessor ⇒ 加了又删的瞬态零痕迹。两半都实测过：冻上之后引擎不受打扰（真上游 3/3 绿——合法改写发生在 `cloneState()` 的副本上，冻不到），
   而瞬态变异（恢复路径上 `block.erix = {}; delete block.erix;`）当场 `TypeError: Cannot add property erix,
   object is not extensible`（栈顶 `src/loop/resume-manager.js:414`）。`F9b` 里留了这两条**常驻**判据（观察到的块
   必须是冻住的；在它上面加了又删必须抛），关掉的洞不会再悄悄张开。
+  二轮还关掉第二个「自己糊弄自己」：`target` 可以被**另一个已冻结的空对象冒充**——`Object.isFrozen` /
+  `Object.isExtensible` 对任何冻结对象都通过，它们从不证明「这就是被观察的那一块」（评审的紧邻负控：把
+  `target` 换成 `Object.freeze({})` ⇒ 真上游仍 3/3 绿；上一版 `target: undefined` 之所以红，是**瞬态匹配器**
+  顺手抓到的，不是身份判据判的）。观察记录现在自带身份与来源（哪张读口、哪一次调用返回过**这个**对象），
+  `F9b` 逐条核对；并新增一条**不联网、不花钱、始终跑**的格子固化五个负控，每个都必须红在**该它红的那条断言**上
+  （标签 `[身份]` / `[来源]` / `[在场]` / `[冻结]` / `[瞬态]` 进断言文案并逐条核对）：冻结空对象冒充、
+  `target: undefined`、逐字同形但这张读口没返回过的替身、挂到引擎不走的读口、整个观察面空转；再加一条反向确认
+  ——冻结/瞬态那两条**认不出冒充者**，所以身份不许外包给它们。
 
 
 - **The shipped `TranscriptStore` contract suite now enforces its own optionality (issue #739).** The suite's

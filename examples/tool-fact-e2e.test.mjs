@@ -167,6 +167,12 @@ function createBoundaryProbe(store) {
   const observations = [];
   const stateOf = new WeakMap();
   const snapshots = [];
+  // 身份账（#760 二轮必修1）：**谁**在**哪一次**读口调用里返回过**哪个对象**。
+  // 只靠 `Object.isFrozen(target)` / `isExtensible(target)` 判不了「这就是被观察的那一块」——
+  // 随便一个冻结的空对象都能过（评审的紧邻负控：把 target 换成 `Object.freeze({})`，真上游仍 3/3 绿）。
+  // 于是这里记下读口真正返回过的对象身份，断言拿去核对 ⇒ 冒充者过不了。
+  const faceCalls = new Map();
+  const producedBy = new Map();
 
   // 递归保护必须是**探针自己的**（`stateOf` 已装 / `inFlight` 在装），不能借用 `scan` 的 `walking`：
   // `scan` 会先 `walking.add(块)` 再来叫 `instrument`，借用同一张表时每个 `tool_result` 块都会被
@@ -181,6 +187,7 @@ function createBoundaryProbe(store) {
       const own = (key) => Object.getOwnPropertyDescriptor(value, key)?.value;
       state = {
         path,
+        face: String(path).split("#")[0],
         target: value,
         identity: { type: own("type"), tool_use_id: own("tool_use_id") },
         boundaryKeys: Object.keys(value),
@@ -236,6 +243,7 @@ function createBoundaryProbe(store) {
   const freeze = (state) => {
     const keysNow = Object.keys(state.target);
     const frozen = {
+      face: state.face,
       // `target` 与 `isFrozen` 必须是**真对象引用 / 现测事实**：#760 的第一版漏了 `target`，
       // 于是 `Object.isFrozen(o.target)` 读的是 `Object.isFrozen(undefined)` === **true**（非对象一律算
       // 冻结），瞬态那条断言当场变成空转——正是本单要防的「判据自己糊弄自己」。
@@ -273,7 +281,19 @@ function createBoundaryProbe(store) {
     }
     probed[name] = async (...args) => {
       const result = await method.apply(store, args);
-      if (READ_FACES.includes(name)) scan(result, `${name}#${observations.length}`, new Set());
+      if (READ_FACES.includes(name)) {
+        faceCalls.set(name, (faceCalls.get(name) ?? 0) + 1);
+        // 把**这一次调用返回过的每一个对象**都登记成「来自这个读口」——身份核对要用
+        const seen = new Set();
+        const note = (node) => {
+          if (node === null || typeof node !== "object" || seen.has(node)) return;
+          seen.add(node);
+          if (!producedBy.has(node)) producedBy.set(node, name);
+          for (const v of Object.values(node)) note(v);
+        };
+        note(result);
+        scan(result, `${name}#${observations.length}`, new Set());
+      }
       if (SNAPSHOT_FACES.includes(name)) snapshots.push(args[1]);
       return result;
     };
@@ -284,7 +304,66 @@ function createBoundaryProbe(store) {
     snapshots,
     /** 收针后的全部观察事实（只含 `tool_result` 块）。 */
     observations: () => observations.map(freeze),
+    /** 每个读口被调了几次（0 ⇒ 引擎根本不走这一张，观察面就是挂空）。 */
+    faceCalls: () => Object.fromEntries(faceCalls),
+    /** `target` 是不是**这个读口**真的返回过的对象（身份核对，冒充者返回 false）。 */
+    wasProducedBy: (target, face) => producedBy.get(target) === face,
   };
+}
+
+// ---------------------------------------------------------------------------
+// 观察记录的**身份 / 在场 / 来源**判据（#760 二轮必修1）。每条都带 `[标签]` 前缀，为的是让
+// 「红在哪条断言上」可核对：负控必须红在**它该红的那一条**上，红错地方算没修。
+//   `[在场]` 观察面根本没盖到 / 引擎不走这张读口
+//   `[身份]` target 不是被观察的那一块（空对象冒充、`undefined`、被换掉的替身）
+//   `[来源]` 记录声称的读口不是真的产出过这个对象的那一张
+//   `[冻结]` / `[瞬态]` 见上面的 freeze 机制注释
+// ---------------------------------------------------------------------------
+const OBS_TAG = { present: "[在场]", identity: "[身份]", origin: "[来源]", frozen: "[冻结]", transient: "[瞬态]" };
+
+/** 观察面确实盖到了要判的那一块（空观察 ⇒ 后面「零次改写」不算证据）。 */
+function assertObservationsPresent(observed, expectId) {
+  assert.ok(observed.length > 0,
+    `${OBS_TAG.present} 旧块 ${expectId} 没穿过 store 读边界（观察面没盖上要判的那一段；红的是探针，不是引擎）`);
+}
+
+/** 一条观察记录必须是**那块东西本身**、由**声称的那张读口**产出、且被真读过。 */
+function assertLiveObservation(o, probe, expectId) {
+  assert.equal(o.identity?.tool_use_id, expectId,
+    `${OBS_TAG.identity} 观察记录声称的不是旧块 ${expectId}：${JSON.stringify(o.identity)}`);
+  assert.equal(o.identity?.type, "tool_result",
+    `${OBS_TAG.identity} 观察记录声称的不是 tool_result 块：${JSON.stringify(o.identity)}`);
+  // target **必须就是**那一块（评审负控要打的地方：`Object.freeze({})` 与 `undefined` 都在这条红。
+  // `Object.isFrozen` / `isExtensible` 判不了身份——任何冻结对象都过——所以它们不许当身份判据用。）
+  assert.ok(o.target !== null && typeof o.target === "object",
+    `${OBS_TAG.identity} 观察记录里的 target 不是对象（读到的可能是 undefined，`
+    + `于是 isFrozen/isExtensible 全都恒真 ⇒ 判据空转）：typeof=${typeof o.target}`);
+  assert.equal(o.target.tool_use_id, o.identity.tool_use_id,
+    `${OBS_TAG.identity} target 不是被观察的那一块（冒充者：一个已冻结的空对象也能过 isFrozen，`
+    + `但它没有 tool_use_id）：target 键集合=${JSON.stringify(Object.keys(o.target))} 记录=${o.path}`);
+  assert.equal(o.target.type, o.identity.type,
+    `${OBS_TAG.identity} target 的类型与记录不符（替身对象）：${o.path}`);
+  // 来源核对：这个对象确实是**这张读口**返回过的
+  assert.ok(probe.wasProducedBy(o.target, o.face),
+    `${OBS_TAG.origin} 记录声称来自读口 ${o.face}，但那张读口没返回过这个对象`
+    + `（读口被调次数=${JSON.stringify(probe.faceCalls())}）⇒ 观察面可能挂在引擎不走的读口上：${o.path}`);
+  assert.ok((probe.faceCalls()[o.face] ?? 0) > 0,
+    `${OBS_TAG.present} 读口 ${o.face} 一次都没被调用过（观察面空转）：${o.path}`);
+  assert.ok(o.readsTotal > 0,
+    `${OBS_TAG.present} 探针盖到了旧块却没人读它（空转 ⇒ 「零次就地改写」不算证据）：${o.path}`);
+  assert.ok(o.readKeys.includes("tool_use_id"),
+    `${OBS_TAG.present} 旧块被读的方式不像被引擎消费（没读过身份键 tool_use_id）：readKeys=${JSON.stringify(o.readKeys)}`);
+}
+
+/** 冻结事实与「加了又删当场抛」——身份先核对过，才谈得上「这一块冻着」。 */
+function assertObservationFrozenHard(o) {
+  assert.equal(Object.isFrozen(o.target), true,
+    `${OBS_TAG.frozen} 这一块在边界上没被冻住（「加了又删」又会变成零痕迹）：${o.path}`);
+  assert.throws(() => {
+    o.target.erix = { toolCallKey: "tc_transient" };
+    delete o.target.erix;
+  }, (error) => error?.name === "TypeError" && /not extensible|read only|cannot delete/u.test(error.message),
+    `${OBS_TAG.transient} 在这块上加了又删竟然没抛 ⇒ 冻结没落上（登记过的零痕迹缺口会重新打开）：${o.path}`);
 }
 
 /** 项目素材：两次工具调用都要真有活干（一个命中、一个纯文本返回） */
@@ -403,6 +482,66 @@ test("断言集自身的不变量：允许键集合与退役名单没被偷偷�
   assert.deepEqual([...RETIRED].sort(),
     ["duration", "erixRound", "executionStatus", "success"],
     `退役名单应与 TOOL_RESULT_CONTRACT.legacy.aliases 一致，实际 ${RETIRED.join(",")}`);
+});
+
+// #760 二轮必修1：**身份判据必须自己有牙齿**，而且是负控自证（不联网、不花钱、始终跑）。
+//
+// 评审的紧邻负控：把观察快照里的 `target` 换成**另一个已冻结的空对象** ⇒ 真上游 e2e 仍 3/3 绿。
+// 根因：`Object.isFrozen(x)` / `Object.isExtensible(x)` 对**任何**冻结对象都通过，它们不证明
+// 「这就是被观察的那一块」。上一版 `target: undefined` 之所以红，是后面的**瞬态匹配器**顺手抓到的，
+// 不是身份判据判的 ⇒ 那条断言当时没有独立的牙齿。这里把负控固化成常驻格：每种空转都必须红在
+// **该它红的那条断言名**上（红错地方算没修），于是标签 `[身份]` / `[来源]` / `[在场]` / `[冻结]` /
+// `[瞬态]` 都进断言文案并被逐条核对。
+test("观察记录的身份/来源/在场判据自带牙齿（负控固化，始终跑，不联网）", async () => {
+  const legacy = {
+    type: "tool_result", tool_use_id: "legacy-1", content: "旧版本落盘的读取结果",
+    erixRound: 0, duration: 1234, success: true, executionStatus: "ok", artifactStatus: "ok",
+  };
+  // 假 store：引擎走 `load`，**不走** `loadLatestRunSnapshot` / `loadLatestCheckpoint`
+  const probe = createBoundaryProbe({
+    async load() {
+      return { records: [{ round: 1, messages: [{ role: "user", content: [{ ...legacy }] }] }] };
+    },
+    async loadLatestRunSnapshot() { return null; },
+    async loadLatestCheckpoint() { return null; },
+  });
+  await probe.store.load();
+  const observed = probe.observations().filter((o) => o.identity.tool_use_id === "legacy-1");
+  // 夹具自证：观察面在夹具上确实盖到了（否则下面的负控全是空转）
+  assert.ok(observed.length > 0, "夹具没造出观察记录 ⇒ 这一格自己空转");
+  const o = observed[0];
+  assertLiveObservation(o, probe, "legacy-1");
+  assertObservationsPresent(observed, "legacy-1");
+  assertObservationFrozenHard(o);
+
+  const thrownTag = (fn) => {
+    let error;
+    try { fn(); } catch (caught) { error = caught; }
+    assert.ok(error, "负控竟然没红 ⇒ 判据没牙齿（这正是评审抓的那类空转）");
+    return String(error.message ?? "");
+  };
+  // ① 评审的紧邻负控：`target` 换成**另一个已冻结的空对象** ⇒ 必须红在 `[身份]`
+  const impostor = thrownTag(() => assertLiveObservation({ ...o, target: Object.freeze({}) }, probe, "legacy-1"));
+  assert.ok(impostor.startsWith(OBS_TAG.identity),
+    `冻结空对象冒充 target 时红错了断言（应红在 ${OBS_TAG.identity}）：${impostor.split("\n")[0]}`);
+  // ② `target: undefined`（上一版真实踩过的空转）⇒ 也必须红在 `[身份]`，不许靠瞬态匹配器顺手抓
+  const undef = thrownTag(() => assertLiveObservation({ ...o, target: undefined }, probe, "legacy-1"));
+  assert.ok(undef.startsWith(OBS_TAG.identity),
+    `target=undefined 时红错了断言（应红在 ${OBS_TAG.identity}，而不是被别的匹配器抓到）：${undef.split("\n")[0]}`);
+  // ③ 逐字同形的**替身**（但不是这张读口返回过的）⇒ 红在 `[来源]`
+  const standIn = thrownTag(() => assertLiveObservation({ ...o, target: Object.freeze({ ...legacy }) }, probe, "legacy-1"));
+  assert.ok(standIn.startsWith(OBS_TAG.origin),
+    `替身对象应当红在 ${OBS_TAG.origin}（身份字段对得上，只有来源账能抓它）：${standIn.split("\n")[0]}`);
+  // ④ 观察面挂到**引擎不走的读口**：记录声称的读口没产出过它 ⇒ 红在 `[来源]`
+  const wrongFace = thrownTag(() => assertLiveObservation({ ...o, face: "loadLatestCheckpoint" }, probe, "legacy-1"));
+  assert.ok(wrongFace.startsWith(OBS_TAG.origin),
+    `读口挂错应当红在 ${OBS_TAG.origin}：${wrongFace.split("\n")[0]}`);
+  // ⑤ 整个观察面空转（引擎不走被包的那张读口 ⇒ 零记录）⇒ 红在 `[在场]`
+  const absent = thrownTag(() => assertObservationsPresent([], "legacy-1"));
+  assert.ok(absent.startsWith(OBS_TAG.present), `零观察应当红在 ${OBS_TAG.present}：${absent.split("\n")[0]}`);
+  // ⑥ 反向确认「冻结/瞬态那两条对冒充者无牙」——所以身份判据不许外包给它们
+  assert.doesNotThrow(() => assertObservationFrozenHard({ ...o, target: Object.freeze({}) }),
+    "冻结/瞬态判据竟然能认出冒充者（那身份判据就可以省了；实测它认不出，别把它当身份用）");
 });
 
 // 本片（0.28 发版清单 [1/5] 红）的结构性修法：**不联网**的前置格。
@@ -781,13 +920,11 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
       const observed = boundary.observations().filter((o) => o.identity.tool_use_id === "legacy-1");
       // 在场断言（**不是**「有就查」）：探针必须真的在读边界盖上过旧块，并且它被**读过**。
       // 少了这一条，「零次就地改写」在观察面空转时照样绿——那正是本片要防的那一类假绿。
-      assert.ok(observed.length > 0,
-        "旧块没穿过 store 读边界（观察面没盖上要判的那一段；这一条红说的是探针，不是引擎改写了）");
-      const touched = observed.filter((o) => o.readsTotal > 0);
-      assert.ok(touched.length > 0,
-        `探针盖到了旧块却没人读它（观察面空转 ⇒ 下面「零次就地改写」不算证据）：${JSON.stringify(observed.map((o) => o.path))}`);
-      assert.ok(touched.every((o) => o.readKeys.includes("tool_use_id")),
-        `旧块被读的方式不像被引擎消费（没读过身份键 tool_use_id）：readKeys=${JSON.stringify(touched.map((o) => o.readKeys))}`);
+      assertObservationsPresent(observed, "legacy-1");
+      // 身份 / 在场 / 来源 三条一起过（#760 二轮必修1）：`target` 必须是**那块东西本身**、
+      // 由**声称的那张读口**产出、且真被读过。光看 `isFrozen`/`isExtensible` 判不出身份——
+      // 评审的紧邻负控：把 target 换成 `Object.freeze({})` 仍 3/3 绿。下面那条负控已固化成常驻格。
+      for (const o of observed) assertLiveObservation(o, boundary, "legacy-1");
       for (const o of observed) {
         assert.deepEqual(o.writes, [], `引擎在内存里就地改写了宿主的旧块（set 面）：${JSON.stringify(o.writes)}`);
         assert.deepEqual(o.lostKeys, [], `引擎在内存里删掉了宿主的旧键（deleteProperty 面）：${o.lostKeys.join(",")}`);
@@ -804,16 +941,7 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
       }
       // 瞬态那一类（**新增一个键又在收针前删掉**）由冻结关掉：边界那一刻就在的块是不可扩展的，
       // 严格模式下「加键」当场抛 ⇒ 不给「删回来」的机会。这两条是**常驻**判据，不靠临时变异。
-      for (const o of observed) {
-        assert.equal(o.isFrozen, true, `旧块在边界上没被冻住（瞬态加键又会变成零痕迹）：${o.path}`);
-        assert.equal(Object.isExtensible(o.target), false,
-          `探针快照里的 target 不是那个真对象（isFrozen 会读成空转）：${o.path}`);
-        assert.throws(() => {
-          o.target.erix = { toolCallKey: "tc_transient" };
-          delete o.target.erix;
-        }, (error) => error?.name === "TypeError" && /not extensible|read only|cannot delete/u.test(error.message),
-          `在冻住的旧块上加了又删竟然没抛 ⇒ 冻结没落上（本单登记过的零痕迹缺口会重新打开）：${o.path}`);
-      }
+      for (const o of observed) assertObservationFrozenHard(o);
       // 为什么观察面不是字面的 `new Proxy(块)`（本单原本的形状，实测装不上）：引擎每次请求都
       // `cloneState(ctx.messages)`（`provider-runner.js:242` → `budget.js:12` = `structuredClone`），
       // 而它对**任何** Proxy 抛 `DataCloneError` ⇒ 给恢复进来的块套 Proxy，第一次请求就死在探针
