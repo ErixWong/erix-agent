@@ -14,6 +14,21 @@
 // 留痕行（`notice`）是**交付物**，不是点缀：transcript 不落 `system`（盘上真产物
 // `<runId>.jsonl` 第 0 轮 seed 行只有 user 消息），所以「注入真的发生了」在盘上零痕迹。
 // 不打印这一行，就没有任何人能给它作证。调用方负责把它写进 stderr（chat / repl 各一处）。
+//
+// ── issue #746 评审第 2 轮：这一位是**能力陈述**，刻意只接工具面门、不接账本证据门 ──
+// 本节（`buildCliToolsSystemPrompt` 的「你的处境」段 + 「具体数值来源」bullet + `buildArchiveNotice`）
+// 只问「整族 `note_*` 在不在注册面上」（`notesOnToolSurface` ⇒ `hasNoteToolSurface`），**不**问
+// 「这个 run 写过笔记没有」。三条理由（两份架构文档的覆盖面段逐条同步，守卫 `G1b` 钉同步）：
+//   1. 装配发生在 **run 开始之前**（chat 一次、REPL 会话启动一次），那一层没有账本可拿。拿 #741
+//      的四格判它，它只能落在「无笔记写入」那一格——那是把「不知道」伪报成「本场没写过」，恰好是
+//      本轮在 guard 那一侧刚修掉的同一个错的镜像（见 `bin/final-guard-support.js` 的 `readLedger`）。
+//   2. 这些句子是能力陈述（「本场装配了 `note_*`，需要时先查」），真值只依赖装配事实，而那已接门。
+//   3. 硬接证据门就要给装配层灌 `messages`（chat 无历史、REPL 得逐轮重装配），换来的只有
+//      「整族在场却永远说没写过」这一种新谎。
+// **红线（`test/prompt-note-coverage-746.test.js` 的 `G1c` 反向守卫）**：这一位永远不许出现**存在
+// 断言**（「你已记录的笔记」「笔记里有」「the notes you recorded」这类）——那些句子的真值需要账本，
+// 而这里拿不到。要写存在断言，请把它搬到拿得到 `messages` 的取回指引那三处（guard 摘要 / 打回指针 /
+// 折叠桩与恢复提示）。
 
 import {
   discoverProjectInstructions,

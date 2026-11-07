@@ -731,31 +731,65 @@ successful `note_take` in the visible ledger — paired with a result for that
 `tool_use_id`, its payload confirming success, and not later revoked by a successful
 `note_forget`); otherwise those two places state that no recoverable decision record
 exists, with the reason (one of: no note tools, no note write, notes revoked, no note
-evidence), and **their** text drops every `note_*` mention. **Coverage, as of issue
-#746, is exactly the entry points listed below — nothing more** (the sentence this
-paragraph used to carry, “coverage is exactly those two entry points”, became false with
-#746; `test/prompt-note-coverage-746.test.js` reddens any wording that slides back into the
-unqualified universal). They are: #741’s fold substitute and TTL placeholder, plus #746’s
-aggregate-limit stub (`src/loop/aggregate-budget.js`) and the run-snapshot per-output stub
-(`src/loop/run-snapshot-executor.js`, same wording as the aggregate stub), plus four
-model-visible `bin/` sites — the `[Your situation]` paragraph and the “exact values must come
-from” bullet of the CLI system prompt, and the archive notice (`bin/tools.js`, fed by
-`bin/system-prompt.js` with the **assembled** tool surface), the guard’s run-state summary and
-its revise pointer (`bin/final-guard.js`), and the fold-stub suffix
-(`bin/final-guard-support.js`). The memory-loss nudge (`src/reflection/governor.js`) is the
-**low-risk tier**: it never commands a tool call, so #746 only makes its wording conditional
-(“if this run has notes …”) and keeps a re-read fallback — it deliberately does **not** get
-the whole-family evidence gate. The `bin/`-side evidence is an **assembly fact** (whether the
-whole `note_*` family sits on the real tool surface), not the `--no-notes` flag: a `--tools`
-allowlist strips the family just as well, and reading only the flag misses that. One site
-deliberately stays out of scope: the read-only tool whitelist text in
-`src/loop/run-snapshot-executor.js` names `note_list` as a *permitted* tool (#195), which is a
-capability statement, not a retrieval instruction. The evidence-backed sentence is
-conditional retrieval guidance; it never claims this result's key points are already
-recorded. Note availability stays host configuration — the
-engine writes no notes.
+evidence), and **their** text drops every `note_*` mention. **Coverage, as of issue #746 is a registered roster, not a claim that every prompt site is
+clean** (the sentence this paragraph used to carry, "coverage is exactly those two entry points",
+became false with #746; `test/prompt-note-coverage-746.test.js` reddens any wording that slides
+back into the unqualified universal, and it reddens a roster that over-claims). Two gates of
+different strength are in play and must not be merged: the **tool-surface gate** (is the whole
+`note_*` family on the assembled surface?) and the **ledger-evidence gate** (that, *plus* a
+`note_take` write in the visible ledger that still resolves right now).
 
-One further site is **known to be still unconditional and is NOT in the list above**: the host-side `examples/pi-extension/erix-run-core.js` (`buildSystemPrompt` calls `buildCliToolsSystemPrompt` without `notes`), whose inner run may pass `notes: false` — so that prompt can still name `note_*` tools that are not on the surface. The list above is the list of **gated** sites, not a claim that every prompt site is clean; the coordinate and the one-line fix are recorded in the issue #746 work report.
+**On the full evidence gate (surface + ledger)** — these are retrieval instructions; they say
+"where to fetch it now": #741's fold substitute (`src/loop/fold-stub.js`) and TTL placeholder
+(`src/loop/tool-result-ttl.js`), plus #746's aggregate-limit stub (`src/loop/aggregate-budget.js`)
+and the run-snapshot per-output stub (`src/loop/run-snapshot-executor.js`, same wording as the
+aggregate stub), plus three `bin/` sites: the guard's run-state summary and its revise pointer
+(`bin/final-guard.js`), and the fold-stub suffix plus the recovery hint
+(`bin/final-guard-support.js` and `bin/final-guard.js`'s `buildCaptureRecoveryHint`), plus the
+three child-run sites in `bin/delegation.js` (its system prompt, fold stub and recovery hint),
+which share the **child's own tool surface** with the parent-side derivation — the single source
+of truth review round 2 asked for. The evidence here is an **assembly fact plus the ledger**, never the `--no-notes` flag: a `--tools`
+allowlist strips the family just as well, and reading only the flag misses that.
+
+**Capability statements — deliberately on the tool-surface gate only, never on the ledger gate**
+(each carries its reason; this is a judgement, not a to-do list):
+
+1. The `[Your situation]` paragraph and the "exact values must come from" bullet of the CLI
+   system prompt (`bin/system-prompt.js`), and the archive notice (`bin/tools.js`), all derived
+   from the assembled tool surface through `notesOnToolSurface`. Three reasons: (a) they are assembled **before the run
+   starts** (once for `chat`, once at REPL session start), where there is no ledger to consult —
+   scoring them against the four #741 states could only ever land on "no note writes", which
+   reports "not known" as "this run recorded nothing": the mirror image of the error #746 fixed
+   on the guard side; (b) the sentences are **capability claims** ("this session ships `note_*`;
+   look before you re-read"), whose truth depends only on the assembly fact, which *is* gated —
+   rewriting them as existence claims ("the notes you recorded", "the notes contain") would be
+   the lie; (c) forcing the ledger gate in would mean plumbing `messages` into the assembly layer
+   (`chat` has no history; the REPL would have to re-assemble per round) and would buy exactly one
+   new falsehood: "the family is present, but this run could never have written anything".
+   **Reverse guard:** if an existence claim shows up in those paragraphs,
+   `test/prompt-note-coverage-746.test.js` goes red.
+2. The read-only tool whitelist text in `src/loop/run-snapshot-executor.js`, where `note_list`
+   names a *permitted* tool (#195) — a capability statement, not a retrieval instruction; the
+   evidence gate would false-positive there.
+3. The memory-loss nudge (`src/reflection/governor.js`) is the **low-risk tier**: it never
+   commands a tool call, so #746 only made its wording conditional ("if this run has notes …") and
+   kept a re-read fallback. It runs inside the engine and could reach the context, but its job is
+   "you may have lost something", not "the notes definitely contain it"; the whole-family gate
+   would turn a nudge into noise.
+4. `examples/pi-extension/erix-run-core.js`'s `buildSystemPrompt` is the host-side twin of item 1,
+   but it **is not yet on the tool-surface gate** — see the paragraph below.
+
+The evidence-backed sentence is conditional retrieval guidance; it never claims this result's key
+points are already recorded. Note availability stays host configuration — the engine writes no
+notes.
+
+The roster above is registered, not a claim of universal cleanliness: item 4, the host site
+(`examples/pi-extension/erix-run-core.js`, whose `buildSystemPrompt` calls
+`buildCliToolsSystemPrompt` without `notes`), is **known to be still unconditional** — its inner
+run may pass `notes: false`, so that prompt can still name `note_*` tools that are not on the
+surface. The fix is one line (derive `notes` from the inner tool surface), but that host lives
+outside the `src/` and `bin/` surfaces this branch touches, so #746 left it alone; the coordinate
+and the consequence are recorded in the issue #746 work report.
 
 ## 4. Source layout
 

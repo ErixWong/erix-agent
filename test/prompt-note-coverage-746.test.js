@@ -14,6 +14,9 @@
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+
+// 反向守卫要读**装配后**的那段文本，所以现取 CLI 提示词的装配函数（bin -> src 的方向合法）。
+const cliPromptModule = await import("../bin/system-prompt.js");
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -67,6 +70,28 @@ const GATED_SITES = [
     gate: "hasNotes ? CLI_TOOLS_SYSTEM_PROMPT_SITUATION_NOTES",
     why: "B1 的系统提示「你的处境」段 / 「具体数值来源」bullet / 归档提示：三处都走 `notes` 分支",
   },
+  {
+    // 评审必修 2（第 2 轮）：子的提示词以前恒按「有笔记」装配，而子的折叠桩早已从子工具面现推。
+    file: "bin/delegation.js",
+    docNames: ["bin/delegation.js"],
+    gate: "notesOnToolSurface(childTools)",
+    why: "子 run 的系统提示 + 子的折叠桩 / 恢复提示：同一个事实源（子的真工具面）",
+  },
+];
+
+/**
+ * **刻意只接工具面门、不接账本证据门**的位点（第 2 轮的改判登记，逐条带理由）。
+ * 它们不是「暂时没做」：接了证据门反而会说出新的谎。文档两份都必须逐条点名并给出理由。
+ */
+const CAPABILITY_STATEMENT_SITES = [
+  {
+    file: "bin/system-prompt.js",
+    alsoNames: ["bin/tools.js"],
+    reason: "装配发生在 run 开始之前，那一层没有账本可拿",
+  },
+  { file: "src/loop/run-snapshot-executor.js", alsoNames: [], reason: "#195 的只读白名单是能力面陈述" },
+  { file: "src/reflection/governor.js", alsoNames: [], reason: "低风险档：提醒不是存在断言" },
+  { file: "examples/pi-extension/erix-run-core.js", alsoNames: [], reason: "宿主同位点，且仍未接工具面门（已知缺陷）" },
 ];
 
 /**
@@ -128,7 +153,7 @@ test("G1 覆盖面表述：两份架构文档都必须带限定并逐处点名�
 
   // ② 必须点名 #746，并给出「只有这些」的限定（不是含糊的「更多处」）。
   assert.match(cn, /覆盖面到 issue #746 为止是下面这些入口，且只有这些/u, "cn：限定表述本体不在");
-  assert.match(en, /Coverage, as of issue\s*\n?\s*#746, is exactly the entry points listed below/u, "en: qualifier missing");
+  assert.match(en, /Coverage, as of issue\s*\n?\s*#746 is a registered roster/u, "en: qualifier missing");
 
   // ③ 逐处点名：文档漏列任一真接了门的入口 ⇒ 红（这正是「照着文档写漏第八处」的形状）。
   for (const site of GATED_SITES) {
@@ -139,12 +164,48 @@ test("G1 覆盖面表述：两份架构文档都必须带限定并逐处点名�
   }
   assert.ok(cn.includes(`\`${LOW_RISK_SITE.file}\``), "cn：低风险档也必须点名，并写明它**不**套门");
   assert.ok(en.includes(`\`${LOW_RISK_SITE.file}\``), "en: the low-risk tier must be named too");
-  assert.match(cn, /不套整族证据门/u, "cn：低风险档「不套门」这个差别本身要被写下来，否则下一个人会补上");
-  assert.match(en, /does \*\*not\*\*\s*\n?\s*get\s*\n?\s*the whole-family evidence gate/u, "en: low-risk distinction missing");
+  assert.match(cn, /低风险档/u, "cn：低风险档这一档本身要被写下来，否则下一个人会把它并进整族门");
+  assert.match(en, /low-risk tier/u, "en: the low-risk tier must be named");
 
   // ④ 证据口径也要在文档里（`bin/` 侧看**装配事实**而不是 `--no-notes` 旗标——这条是今晚的新发现）。
   assert.match(cn, /装配后的真工具面/u);
-  assert.match(en, /\*\*assembled\*\* tool surface/u);
+  assert.match(en, /assembled tool surface/u);
+});
+
+test("G1b 改判登记：刻意不接账本证据门的位点必须两份点名（漏一条 ⇒ 红）", () => {
+  const en = readFileSync(DOC_EN, "utf8");
+  const cn = readFileSync(DOC_CN, "utf8");
+  assert.match(cn, /刻意只接工具面门、不接账本证据门的能力陈述/u, "cn：这一类的标题不在，等于把改判说成漏做");
+  assert.match(en, /Capability statements[\s\S]{0,80}never on the ledger gate/u, "en: the reclassification heading is missing");
+  assert.match(cn, /\*\*工具面门\*\*[\s\S]{0,120}\*\*账本证据门\*\*/u, "cn：两道门的区分必须写下来（否则第 2 轮的改判读起来像偷懒）");
+  assert.match(en, /\*\*tool-surface\s*\n?gate\*\*[\s\S]{0,160}\*\*ledger-evidence\s*\n?gate\*\*/u, "en: the two-gate distinction is missing");
+  for (const site of CAPABILITY_STATEMENT_SITES) {
+    assert.ok(cn.includes(`\`${site.file}\``), `cn：改判清单漏点名 ${site.file}`);
+    assert.ok(en.includes(`\`${site.file}\``), `en: the reclassified roster omits ${site.file}`);
+    for (const extra of site.alsoNames) {
+      assert.ok(cn.includes(`\`${extra}\``) && en.includes(`\`${extra}\``), `改判清单漏点名伴随位点 ${extra}`);
+    }
+  }
+  // 理由必须真的写在文档里（只有文件名 = 下一个人会把它当漏做补上）。
+  assert.match(cn, /把「不知道」伪报成「本场没写过」/u);
+  assert.match(en, /reports "not known" as "this run recorded nothing"/u);
+});
+
+test("G1c 反向守卫：CLI 系统提示 / 归档提示里不许出现**存在断言**（改判的代价由这一条付）", () => {
+  // 登记为「能力陈述」的代价是：这一段永远不许说「你已经记过的笔记 / 笔记里有」。
+  // 那类句子一旦回来，它就从能力陈述滑成存在断言，而这一位**没有**账本证据 ⇒ 又是一次伪报。
+  const prompt = String(cliPromptModule.buildCliSystemPrompt({ cwd: ROOT, suppressInstructions: true }).systemPrompt ?? "");
+  const EXISTENCE_CLAIM = /(你已记录|你已经记录|已记录的笔记|笔记里有|笔记中已|笔记里存在|已经记下|记录过的笔记|the notes you (recorded|took)|notes contain|your recorded notes|you have already recorded|already recorded notes)/u;
+  assert.equal(
+    EXISTENCE_CLAIM.test(prompt),
+    false,
+    `CLI 系统提示里出现了存在断言（这一位刻意不接账本证据门，于是它没有资格断言「记过什么」）：\n${prompt.slice(0, 600)}`,
+  );
+  // 自证：这条判据不是恒绿——把存在断言塞进去必须红。
+  assert.ok(
+    EXISTENCE_CLAIM.test('需要精确值时先查笔记：本场装配了 note_*，你已记录的笔记里有它的精确值。'),
+    "反向守卫自证失败：存在断言的样式根本匹配不到，等于没有守卫",
+  );
 });
 
 test("G2 每处真接了门：源码里必须有该入口「接上证据门」的唯一标识符", () => {
