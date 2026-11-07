@@ -1899,7 +1899,7 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 两轴取一个表外的取值、或中英两份的轴不一致 ⇒ 红。
 
 <!-- erix:snapshot-cell-axes:begin -->
-| 格（payload 键） | write | read | 权威源（仅双写格） | 交接条件（仅双写格） | 今天的写点 | 今天的读者 |
+| 格（payload 键） | write | read | 权威源（仅双写格） | 交接条件（仅双写格） | 今天的写点（已停写的格＝钉住「为什么停写」那行） | 今天的读者 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `round` | written | source | — | — | `src/loop/orchestrator.js:2986` | `src/loop/resume-manager.js:568`、`src/loop/orchestrator.js:3215` |
 | `status` | written | not-source | — | — | `src/loop/orchestrator.js:3026` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:87`、`test/persistence-diagnostics.test.js:171`、`test/loop-invalid-arguments.test.js:235`、`test/loop-v020-rc.test.js:479`、`test/loop-v020-rc.test.js:605` |

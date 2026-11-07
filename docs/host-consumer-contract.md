@@ -2347,7 +2347,7 @@ must not be copied over. The table is itself read as data by that test: a missin
 vocabulary, or a CN/EN axis mismatch all go red.
 
 <!-- erix:snapshot-cell-axes:begin -->
-| Cell (payload key) | write | read | Authority (double-written cells only) | Handoff condition (double-written cells only) | Today's write site | Today's readers |
+| Cell (payload key) | write | read | Authority (double-written cells only) | Handoff condition (double-written cells only) | Today's write site — or, for a cell that no longer writes, the line that documents the stop | Today's readers |
 | --- | --- | --- | --- | --- | --- | --- |
 | `round` | written | source | — | — | `src/loop/orchestrator.js:2986` | `src/loop/resume-manager.js:568`, `src/loop/orchestrator.js:3215` |
 | `status` | written | not-source | — | — | `src/loop/orchestrator.js:3026` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:87`, `test/persistence-diagnostics.test.js:171`, `test/loop-invalid-arguments.test.js:235`, `test/loop-v020-rc.test.js:479`, `test/loop-v020-rc.test.js:605` |

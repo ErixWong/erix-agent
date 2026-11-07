@@ -105,17 +105,38 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   **between** the `<!-- erix:snapshot-cell-axes:begin -->` / `<!-- erix:snapshot-cell-axes:end -->` markers that is a
   `|`-prefixed table row — is exempt from this ratchet, and the exemption is **conditional on a machine check**: it
   holds only while `test/contract-snapshot-cell-axes-767.test.js` carries the `G4` case that reconciles every
-  `file:line` in that table (file present + line inside the file + that line really mentions the cell's payload key).
-  The binding is `G4_KEY_NAME_CHECK`'s **definition (both parameters actually used) plus its call inside
-  `assert.ok(...)`** — not the case title and not a comment: rename or delete that test file, or weaken the key-name
-  check into "the line number exists", and the exemption lapses, with the gate red twice over (the table's refs get
-  counted again **and** a message names which half of the guard is gone). Nothing else is relaxed: a reference that
+  `file:line` in that table **against a registered anchor**: the test registers one anchor per cell **and per axis**
+  (`{ key, axis, path, anchor }`, 39 entries between the `G4-ANCHORS:BEGIN/END` sentinels), an anchor is a **code
+  shape** — the payload-assignment line, the guard's `if`, the return site — never the key name, it must hit the
+  target file **exactly once** (0 hits or >1 are both red: an ambiguous anchor is not a baseline), and the cell's
+  `path:line` must equal that line **character for character**, otherwise the failure prints "the table says :N / the
+  anchor says :M" and quotes both lines. The gate does not take the test's word for it either: it extracts that
+  registry literal itself (an array literal — a runtime function call is not enough) and re-derives the line numbers
+  **in its own process**, then reconciles each contract file against **that file's own** line numbers, so one cell is
+  checked twice with different answers (EN and CN differ). That is what issue #772 R2 changed: the binding used to be
+  `G4_KEY_NAME_CHECK` — "does that line mention the cell's key" — and the review's site visit showed a reference to a
+  **comment** that merely mentioned `compactionStats` (`orchestrator.js:3015`, which explains a checkpoint test)
+  passing while the real write site is `:3038`. The binding is still code shapes rather than a case title or a
+  comment: `G4_ANCHOR_LINE_CHECK`'s definition with both parameters used, plus `G4_ANCHOR_EQ_CHECK`'s call inside
+  `assert.ok(...)`. Rename or delete that test file, weaken either check, or replace the registry with something the
+  gate cannot re-run, and the exemption lapses — with the gate red twice over (the table's refs get counted again
+  **and** a message names which half of the guard is gone). Nothing else is relaxed: a reference that
   also appears outside the markers is never exempt, the out-of-range / missing-target / reversed-range checks still
   run on exempted references, and the exempted count is printed in the `--verbose` breakdown instead of silently
-  disappearing. `--self-test` carries the four reverse proofs (same reference copied outside the markers → red; the
-  guard test emptied → red; the key-name check weakened → red; a comment-only change → green). The floor stayed at 6:
-  the exemption accounts for the table's 72 keys, while the 4 bare line numbers the notes *under* the table had
-  acquired were turned into symbol anchors (`residueStart` / `restoreResume`) rather than asking to raise the floor.
+  disappearing. `--self-test` carries 12 cases in this family (9 red + 3 green controls): a reference copied outside
+  the markers → red; the guard test emptied → red; the key-name check weakened → red; the equality check replaced by
+  `true` → red; the registry turned into a function call → red; an anchor widened into a key-name prefix → red with
+  "ambiguous" and both hit lines; a table cell pointed at that comment line → red with "the table says :N / the
+  anchor says :M" plus both lines; comment-only edits → green. The floor stayed at 6: the exemption accounts
+  for the table's 72 keys, while the bare line numbers the notes *under* the table had acquired were turned into
+  symbol anchors (`residueStart` / `restoreResume`) rather than asking to raise the floor.
+  *The region holds only the table* (issue #772 R2): every line strictly between the two markers must be a
+  `|`-prefixed table row, a marker line, blank, or a **registered** caliber line (`CELL_AXES_CALIBER_LINES`, matched
+  as whole trimmed text — and an entry nobody uses is itself red, the same no-back-door rule as the declarative
+  exemptions above). Without this the exemption had no **positive** invariant: sliding `begin` three lines up drops a
+  paragraph of ordinary prose into the exempted region and nothing reports it, and prose is exactly what grows next
+  to a table. A cap on the number of exempted references was rejected on purpose — the next row added to the table
+  would only raise it.
   Scope is the document set a host actually reads: the two READMEs, both AGENTS files, both
   contract files, both architecture docs, both chart docs, both requirements docs, `examples/pi-extension/README.md`,
   the maintenance ledger pair (`docs/maintenance/symbol-anchor-ledger.md` / `docs/maintenance/symbol-anchor-ledger_cn.md`),

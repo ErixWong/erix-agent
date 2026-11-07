@@ -2856,6 +2856,57 @@ function cellAxesRegion(rec) {
 }
 
 /**
+ * #772 R2 M2 的**正向**不变量（评审 follow-up 第 1 条）：「标记区定点豁免」只免那一**张表**，
+ * 而它原来只靠「豁免只认 `|` 开头的行」兼容——把 `begin` 往上搬，一大段无关正文就落进标记区里，
+ * 没人报红（将来它们只要被改写成表格形状就能蹭进豁免的地盘）。于是钉死：
+ *   区域内每一行要么以 `|` 开头（表格行），要么是标记行 / 空行 / 下面登记过的**口径行**；
+ *   出现普通正文行 ⇒ 红。登记的口径行用不上同样红（同 `BARE_LINE_EXEMPTIONS`：登记了没人用 = 后门）。
+ * 不用「豁免条数上限」那种数值禁——下一次加格子就会把它抬掉。
+ */
+const CELL_AXES_CALIBER_LINES = {
+  [CONTRACT_EN]: [],
+  [CONTRACT_CN]: [],
+};
+const CELL_AXES_MARK_LINE = /^<!--[\s\S]*-->$/u;
+
+function cellAxesRegionContentErrors() {
+  const out = [];
+  const notes = [];
+  let tableRows = 0;
+  let allowed = 0;
+  for (const doc of CELL_AXES_DOCS) {
+    const rec = fileRecord(doc);
+    const region = cellAxesRegion(rec);
+    if (region === null) continue;
+    const registered = CELL_AXES_CALIBER_LINES[doc] ?? [];
+    const used = new Set();
+    rec.lines.slice(region.begin + 1, region.end).forEach((line, offset) => {
+      const at = region.begin + 1 + offset + 1;          // 1 基行号
+      const trimmed = line.trim();
+      if (trimmed === "") { allowed += 1; return; }
+      if (line.trimStart().startsWith("|")) { tableRows += 1; return; }
+      if (CELL_AXES_MARK_LINE.test(trimmed)) { allowed += 1; return; }
+      const hit = registered.find((entry) => entry === trimmed);
+      if (hit !== undefined) { used.add(hit); allowed += 1; return; }
+      out.push(`cell-axes-region: ${doc}:${at} 是标记区里的**普通正文行**——标记区只许包住两轴载荷表本身`
+        + `（` + `|` + ` 开头的表格行 / 标记行 / 空行 / 已登记口径行）：这一行不是（原文：${trimmed.slice(0, 90)}）。`
+        + `最常见的形状是把 \`${CELL_AXES_MARK_BEGIN}\` 往上搬——那一搬就把无关正文算进了「标记区定点豁免」`
+        + `的范围（#772 R2 M2：把标记行挪回表格上方，或把这段话移到标记区外）`);
+    });
+    for (const entry of registered) {
+      if (!used.has(entry)) {
+        out.push(`cell-axes-region: ${doc} 在 CELL_AXES_CALIBER_LINES 里登记的口径行没有一行真正用到——`
+          + `留着就是给未来的正文开后门（要么把那句话放回区域内，要么删登记）：${entry.slice(0, 60)}`);
+      }
+    }
+  }
+  cellAxesRegionContentErrors.notes = [`cell-axes-region: 两轴载荷表标记区内容不变量（#772 R2 M2）：`
+    + `${CELL_AXES_DOCS.length} 份文档的标记区内表格行 ${tableRows} 行 / 其他允许形状 ${allowed} 行 `
+    + `（登记口径行共 ${CELL_AXES_DOCS.reduce((n, d) => n + (CELL_AXES_CALIBER_LINES[d]?.length ?? 0), 0)} 条）⇒ 破口 ${out.length} 处`];
+  return out;
+}
+
+/**
  * 抽锚点登记表（只认哨兵之间的数组字面量）。返回 `{ entries }` 或 `{ why }`（why = 拿不到豁免的原因）。
  * 为什么不用 `import`：`--self-test` 的覆盖层只改**文本**，跑不到新版本的模块；抽文本才能连内存副本一起校。
  */
@@ -7568,6 +7619,8 @@ function collectAllDrift() {
   const out = [...collectAnchorErrors(), ...checkPkgBlocks().errors, ...collectPathErrors(),
     ...collectMarkerLiteralErrors(), ...collectBaselineClaimErrors(),
     ...collectSymbolAnchorErrors(), ...collectBareLineRefErrors(), ...collectRefScanCoverageErrors(),
+    // #772 R2 M2：标记区内容的正向不变量（只许包住那张表）
+    ...cellAxesRegionContentErrors(),
     // #635 ① / #644 ③：份数声称的机器对账 + 指令面指着账本的那句指针
     ...collectRefScanCountClaimErrors(), ...collectLedgerPointerErrors(),
     ...collectCliFlagErrors(),
@@ -7613,6 +7666,9 @@ for (const e of collectSymbolAnchorErrors()) err(e);
 for (const n of collectSymbolAnchorErrors.notes ?? []) note(n);
 for (const e of collectBareLineRefErrors()) err(e);
 for (const n of collectBareLineRefErrors.notes ?? []) note(n);
+// #772 R2 M2：标记区里只许包住两轴载荷表本身（begin 上移包住正文 ⇒ 红）
+for (const e of cellAxesRegionContentErrors()) err(e);
+for (const n of cellAxesRegionContentErrors.notes ?? []) note(n);
 for (const e of collectCliFlagErrors()) err(e);
 for (const n of collectCliFlagErrors.notes ?? []) note(n);
 // #668 ①：压缩策略默认值（库层 / CLI 层分开对账）
@@ -7918,6 +7974,14 @@ const CELL_AXES_DRIFT_PROBE = (() => {
   }
   return null;
 })();
+/** #772 R2 M2 突变：把两轴表的 begin 标记整行往上搬 n 行 —— 原本在表格上方的 n 行正文落进标记区。 */
+const liftCellAxesBegin = (linesUp) => (text) => {
+  const lines = text.split("\n");
+  const at = lines.findIndex((l) => l.includes(CELL_AXES_MARK_BEGIN));
+  if (at < linesUp) return text;
+  return [...lines.slice(0, at - linesUp), lines[at], ...lines.slice(at - linesUp, at), ...lines.slice(at + 1)].join("\n");
+};
+
 const CELL_AXES_DISTRACTOR_LINE = (() => {
   const lines = textOf("src/loop/orchestrator.js").split("\n");
   const hits = lines.map((l, i) => (/^ +\/\/ - `compactionStats`：/u.test(l) ? i + 1 : 0)).filter((n) => n > 0);
@@ -8555,6 +8619,26 @@ const SELF_TEST_CASES = [
     label: "#772 R2 对照：原样的锚点表与两份表必须在闸自己手里重算得动（必须 0 错，证明上面四例不是恒红）",
     overlay: { [CELL_AXES_GUARD_TEST]: (t) => `${t}\n// self-test 复原探针（#772 R2）：只加一行尾注释，锚点表与等值判据都没动。\n` },
     expectGreen: true,
+  },
+  // --- #772 R2 M2：标记区内容的正向不变量（评审 follow-up 第 1 条）---
+  {
+    label: "#772 R2 M2 正向不变量：把 begin 标记上移 3 行（让标记区包住表格上方的正文）→ 红，并点名第一处正文行",
+    overlay: { [CONTRACT_CN]: liftCellAxesBegin(3) },
+    expect: [/cell-axes-region/, /普通正文行/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#772 R2 M2 对照：标记区内加一个空行（允许形状，不是正文）→ 必须 0 错",
+    overlay: { [CONTRACT_CN]: (text) => text.replace(`${CELL_AXES_MARK_BEGIN}\n`, `${CELL_AXES_MARK_BEGIN}\n\n`) },
+    expectGreen: true,
+  },
+  {
+    label: "#772 R2 M2 登记表自己的后门：往 CELL_AXES_CALIBER_LINES 塞一条区域内没有的口径行 → 红（登记了没人用）",
+    overlay: {
+      "scripts/docs-drift-check.mjs": (t) => t.replace("  [CONTRACT_EN]: [],",
+        "  [CONTRACT_EN]: [\"自测探针（#772 R2 M2）：标记区里根本没有这行\"],"),
+    },
+    expect: [/cell-axes-region/, /后门/],
   },
   {
     label: `#286 棘轮下限：把 BARE_LINE_REF_BASELINE 调到 ${BARE_LINE_REF_BASELINE - 1} → 必须红（证明这个数真是锁，不是装饰）`,
