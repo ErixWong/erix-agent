@@ -684,10 +684,23 @@ export async function restoreResume(ctx) {
         // issue #420：判据是账本（`ledgerToolResultIds`）不是上下文
         // （`ctx.messages`）：升级路径可能已把结果补进上下文，
         // 账本里却仍没有那一行（合并自己按 id 去重）。
-        const replayResults = [...ctx.resumeRunSnapshotResults.values()]
+        const replayResultsAll = [...ctx.resumeRunSnapshotResults.values()]
           .filter((toolResult) => !ledgerToolResultIds.has(toolResult.tool_use_id));
-        if (replayResults.length > 0) {
-          if (mergeToolResultsIntoMessages(ctx.messages, replayResults) === false) {
+        // **同源同去留（issue #754 裁决 2）**：旧格式档案里，崩溃轮的**正文**与那一轮的**结果**来自
+        // 同一个刚被宣布不支持的来源（run snapshot）。只丢正文、留下结果 = 从同一个来源喂半截 ⇒ 结果在
+        // 上下文里找不到配对的 `tool_use` ⇒ 孤儿 `tool_result` ⇒ `validateMessages` 在第一次请求之前就
+        // `invalid_messages`（实测：`Invalid message at index 3: user tool_result has no matching assistant
+        // tool_use`）。而 **#421/#730 只兜反方向**（悬空 `tool_use` 补桩，`answerPendingMidSequenceToolUses`），
+        // 不兜孤儿结果。⇒ 旧格式分支上，「上下文里已没有对应 `tool_use`」的那批结果也**不喂**进上下文。
+        // ⚠ 这不改**交出去**的那批：下面 `ctx.resumeUnpersistedToolResults` 仍拿全量 ⇒ orchestrator 的
+        // #424 守卫与 `resume_journal_skipped`（`crash_round_assistant_not_in_ledger`）事件面一字不动。
+        // 新格式账本（`legacySnapshotBodyDropped === 0`）这条路逐字不变。
+        const replayResults = legacySnapshotBodyDropped === 0 ? replayResultsAll : replayResultsAll
+          .filter((toolResult) => ctx.messages.some((message) => blocksFor(message?.content)
+            .some((block) => block?.type === "tool_use" && block.id === toolResult?.tool_use_id)));
+        if (replayResultsAll.length > 0) {
+          if (replayResults.length > 0
+            && mergeToolResultsIntoMessages(ctx.messages, replayResults) === false) {
             const replayMessage = { role: "user", content: replayResults };
             ctx.messages.push(replayMessage);
             ctx.messageRounds.set(replayMessage, crashRound);
@@ -697,7 +710,7 @@ export async function restoreResume(ctx) {
           // 账本写入一律在 orchestrator（`appendMessageRowToTranscript` / `persist`），
           // 失败语义与 `seq` 计数器只有一处。写入口在 orchestrator 的
           // `journalResumeUnpersistedToolResults`：补跑段之前逐条写成消息行。
-          ctx.resumeUnpersistedToolResults = replayResults;
+          ctx.resumeUnpersistedToolResults = replayResultsAll;
         }
         const pendingTools = snapshot.pendingToolUses
           ?? (snapshot.pendingToolUse
