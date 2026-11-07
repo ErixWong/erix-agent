@@ -578,30 +578,29 @@ export async function restoreResume(ctx) {
           message: cloneState(entry.message),
           round: entry.round,
         }));
-        // **升级路径（不是旧逻辑的残留）**：改造前写的账本里，崩溃那一轮的正文**只在快照里**
-        // （旧写侧把整轮正文留到轮末才写，而轮行因崩溃 never landed）。对这类旧账本，快照正文副本
-        // 仍是它们唯一的正文来源 ⇒ 只在「账本在锚点之后一条都没有」时才拿快照里锚点之后的那段补全。
-        // 新账本（逐条入账）永远不满足这个条件：崩溃轮的 assistant 正文/已完成的结果已在锚点之内，
-        // 账本要么相等要么领先于快照 ⇒ 一份快照正文也不会多喂。
-        const snapshotBody = Array.isArray(snapshot.messages)
-          ? snapshot.messages : [];
-        if (ledgerMessages.length === anchor && snapshotBody.length > anchor) {
-          for (const [offset, message] of snapshotBody.slice(anchor).entries()) {
-            const cloned = cloneState(message);
-            ctx.messages.push(cloned);
-            ctx.messageRounds.set(cloned, crashRound);
-          }
-        }
+        // issue #754 裁决 2（2026-11-08 拍板 **Y：pre-261021 档案不再支持恢复**）：改造前写的旧账本里，
+        // 崩溃那一轮的正文**只在快照里**（旧写侧把整轮正文留到轮末才写，而轮行因崩溃 never landed），
+        // 这条「拿快照正文补全上下文」的升级路径过去为此保留。今天实测它本身就是坏的：补进来的
+        // assistant 落不进账本 ⇒ 第二次恢复必带悬空 `tool_use`（`invalid_messages`），而它服务的又是
+        // 死档案 ⇒ 正式关掉：**恢复路径一份快照正文也不喂**（写侧照旧写「本轮残余」，本片不动写侧）。
+        // 关掉不许静默 ⇒ 原条件只留着**数条数**，交给恢复告示出声（`src/loop/resume-notice.js` 的
+        // `:control:resume-notice` 通道）；不新增事件类型，也不给 `resume_journal_skipped` 新增 reason。
+        const snapshotBody = Array.isArray(snapshot.messages) ? snapshot.messages : [];
+        ctx.resumeLegacySnapshotBodyDropped =
+          ledgerMessages.length === anchor && snapshotBody.length > anchor
+            ? snapshotBody.length - anchor
+            : 0;
         // `resumeTranscriptStart` = 锚点（= 已落盘正文的条数）：下面那条 `…:resume` 行只写
-        // **锚点之后**的正文（升级补全的那段 + 本次补跑跑出来的结果），已落盘的正文一行也不会重抄。
+        // **锚点之后**的正文（本次补跑跑出来的结果），已落盘的正文一行也不会重抄。
         ctx.resumeTranscriptStart = anchor;
         // 工单 261021（第三刀）：**补跑出来的工具结果也走「一条消息一成型就落盘」**——它们接在
         // 崩溃轮已落盘的那条聚合消息后面（`partOf` 指认它的首片行），于是下一次恢复折出来的仍是
         // 一条合法的 tool_use/tool_result 配对。两个信息只能从账本拿：本轮下一个可用 `seq`、以及
         // 该轮首片行的 dedupKey（无载体行时消息行原样留在 `load()` 输出里，所以两者都看得见）。
         // issue #424（守卫事实）：崩溃轮的正文里**是否已有 assistant 行**——判据是**已折叠的账本条目**
-        // （`ledgerEntries`，按轮号看），不是 `ctx.messages`：升级路径（旧账本 + 快照补全）会把崩溃轮的
-        // assistant 正文从快照补进内存，账本里却没有那一行。本函数只把事实交出去，
+        // （`ledgerEntries`，按轮号看），不是 `ctx.messages`：内存正文与账本正文**不同源**——#754 之前那条
+        // 「旧账本 + 快照补全」的升级路径会把崩溃轮的 assistant 正文补进内存而账本里没有那一行（那条
+        // 路径已于 #754 关掉，判据仍只认账本，不跟着改）。本函数只把事实交出去，
         // 写不写由写侧决定（`orchestrator.js#journalResumeUnpersistedToolResults`）。
         ctx.resumeCrashRoundAssistantPersisted = ledgerEntries.some((entry) => (
           entry.round === crashRound && entry.message?.role === "assistant"
@@ -679,8 +678,8 @@ export async function restoreResume(ctx) {
         // 它们属于崩溃那一轮的那条聚合消息，必须**合进**账本里已落盘的那条（否则 assistant 的
         // tool_use 与紧随其后的 tool_result 条数对不上，`validateMessages` 当场报 invalid_messages）。
         // issue #420：判据是账本（`ledgerToolResultIds`）不是上下文
-        // （`ctx.messages`）：升级路径可能已把结果补进上下文，
-        // 账本里却仍没有那一行（合并自己按 id 去重）。
+        // （`ctx.messages`）：旧格式档案里快照可能带着结果、账本却仍没有那一行（#754 关掉快照
+        // 正文补全后依旧如此：这里读的是快照的 `toolResults`，不是 `snapshot.messages`）。
         const replayResults = [...ctx.resumeRunSnapshotResults.values()]
           .filter((toolResult) => !ledgerToolResultIds.has(toolResult.tool_use_id));
         if (replayResults.length > 0) {

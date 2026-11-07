@@ -42,6 +42,17 @@ export const RESUME_NOTICE_NO_PENDING = "崩溃时尾部没有未结清的 tool_
 /** 第三条内容要求的开头：动手前先勘验、别重发有副作用的调用。 */
 export const RESUME_NOTICE_VERIFY_HEADER = "动手前先勘验";
 
+/**
+ * issue #754 裁决 2（关掉 pre-261021 档案的恢复）：**关掉不许静默**。
+ * 旧账本（崩溃轮正文只在快照里）的恢复现在不再从快照喂正文 ⇒ 那几段崩溃轮正文本次恢复直接丢弃，
+ * 这里把它们数出来告知模型与宿主（完整句式：`本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮
+ * 正文（共 N 条，该格式已不再支持恢复）。`）。条数来自 `resume-manager.js` 的
+ * `ctx.resumeLegacySnapshotBodyDropped`（= 被删那个闸门原本的触发条件），**只为出声**；条数为 0
+ * （新账本）时整行缺席。不新增事件类型，也不给 `resume_journal_skipped` 新增 reason。
+ */
+export const RESUME_NOTICE_LEGACY_SNAPSHOT_DROPPED_HEADER =
+  "本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文";
+
 /** 入账槽位名（`:control:<slot>` 的 `slot` 前缀；后缀是内容指纹，见 `buildResumeNotice`）。 */
 export const RESUME_NOTICE_SLOT = "resume-notice";
 
@@ -139,9 +150,12 @@ export function recentToolCalls(timeline) {
  *   stopReason?: string,
  *   pendingToolUses?: any[],
  *   filesWritten?: string[],
- *   toolCalls?: string[]
+ *   toolCalls?: string[],
+ *   legacySnapshotBodyDropped?: number
  * }} facts 全部来自既有事实：轮号（`runLoopState.rounds`）、`runState.deterministic.termination.reason`、
- *   `pendingTrailingToolUses(messages)`、`runState.deterministic.filesWritten`、`governorState.timeline`。
+ *   `pendingTrailingToolUses(messages)`、`runState.deterministic.filesWritten`、`governorState.timeline`，
+ *   以及 #754 的「本次从 pre-261021 快照丢弃的崩溃轮正文条数」（唯一不是账本现场的新格：它是
+ *   读侧刚做的一次取舍，不喂进上下文 ⇒ 不告诉模型就是静默丢数据）。
  * @returns {{ text: string, slot: string } | undefined} 轮号不合法时返回 `undefined`（造不出「停在第 N 轮」）
  */
 export function buildResumeNotice(facts = {}) {
@@ -160,9 +174,17 @@ export function buildResumeNotice(facts = {}) {
     .filter((path) => typeof path === "string" && path !== ""))];
   const calls = (Array.isArray(facts.toolCalls) ? facts.toolCalls : [])
     .filter((call) => typeof call === "string" && call !== "");
+  // #754：关掉旧格式升级路径 ⇒ 只在这里出声（新账本恒为 0 ⇒ 整行缺席，既有断言的行数不变）。
+  const legacyDropped = Number.isSafeInteger(facts.legacySnapshotBodyDropped)
+    && facts.legacySnapshotBodyDropped > 0
+    ? facts.legacySnapshotBodyDropped
+    : 0;
 
   const lines = [
     `${RESUME_NOTICE_TAG}这是一次崩溃后的恢复运行，不是连续会话：上一段停在第 ${round} 轮；${reasonText}。`,
+    legacyDropped > 0
+      ? `${RESUME_NOTICE_LEGACY_SNAPSHOT_DROPPED_HEADER}（共 ${String(legacyDropped)} 条，该格式已不再支持恢复）。`
+      : "",
     pendingToolUses.length > 0 ? pendingLine(pendingToolUses) : `${RESUME_NOTICE_NO_PENDING}。`,
     ledgerLine(files, calls),
     `${RESUME_NOTICE_VERIFY_HEADER}：账本记的是「当时」，盘上现在可能已被别的进程改过。`
@@ -202,6 +224,7 @@ export function planResumeNotice(ctx, records, pendingToolUses) {
     pendingToolUses,
     filesWritten: (ctx?.governorState?.filesWritten ?? []).map((entry) => entry?.path),
     toolCalls: recentToolCalls(ctx?.governorState?.timeline),
+    legacySnapshotBodyDropped: ctx?.resumeLegacySnapshotBodyDropped,
   });
   if (notice === undefined) return undefined;
   const dedupKey = `${String(ctx?.runId)}:engine:round:${String(round)}:control:${notice.slot}`;
