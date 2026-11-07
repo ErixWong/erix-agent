@@ -21,7 +21,8 @@
 //   · 判据 2（本文件第三条）：正常收口（末轮纯文本 `end_turn` + 宿主追问）⇒ 边界不成立 ⇒
 //     不结清、不裁切、告示仍走 `RESUME_NOTICE_NO_PENDING` 那一支。
 //   · 判据 3（本文件第四条）：崩溃现场同时被快照认出时，补跑（B 集合）的 id 与桩的 id 照旧互斥
-//     （`resume-manager.js` 的 `midSequenceSettledIds` 那格）⇒ 同一条聚合消息里只有一个同 id 结果。
+//     （`resume-manager.js` 的 `midSequenceInFlightIds` 那格，issue #730 之前叫 `midSequenceSettledIds`）
+//     ⇒ 同一条聚合消息里只有一个同 id 结果。
 //
 // ⚠ 桩的**文案**：工单正文写的是 `UNPERSISTED_TOOL_RESULT_TEXT`（#421 中段那条「执行过但结果没落盘」），
 // 而本单规定的出口是既有的**尾部**结清 `answerPendingTailToolUses`（注入告示之前那一步），它写的是
@@ -395,7 +396,7 @@ test("#736 判据 3：崩溃现场同时被快照认出 ⇒ 补跑（B 集合）
 });
 
 // 评审（#736 独立评审）留下的唯一缺口：既有「同时被快照认出」那格只有**单个** `tool_use`，
-// 而 `resume-manager.js` 里 `midSequenceSettledIds` 那格过滤（把「本进程马上要产出真结果」的
+// 而 `resume-manager.js` 里 `midSequenceInFlightIds` 那格过滤（把「本进程马上要产出真结果」的
 // A/B 两批并进已结清集合）在单调用形状下**删掉也不会红**——实测删掉后 id 数照样是 2、
 // `validateMessages` 照样过，只是 `t2` 的**真**结果被一张中段桩顶掉（模型被告知「结果没落盘、
 // 结局未知」，而引擎刚刚真的跑出来了）。这一格钉的就是那个顶替：断言面不能只数 id。
@@ -458,7 +459,7 @@ test("#736 评审补格：崩溃行带**两个** tool_use（`t1` 已入账、`t2
   assert.equal(String(resultsFor(sent, "t1")[0].content), "out-t1",
     "`t1` 的必须是**账本里那条**真结果，没被桩顶掉");
   assert.equal(String(resultsFor(sent, "t2")[0].content), "replayed-t2",
-    "`t2` 的必须是补跑产出的**真**结果 —— 这是本格的全部要点：删掉 `midSequenceSettledIds` 里"
+    "`t2` 的必须是补跑产出的**真**结果 —— 这是本格的全部要点：删掉 `midSequenceInFlightIds` 里"
     + "「马上要产出真结果」那一格过滤时，id 数照样对、校验器照样过，只有这条会红（桩顶掉了真结果）");
   assert.ok(!String(JSON.stringify(sent)).includes(UNPERSISTED_TOOL_RESULT_TEXT),
     "上下文里不许出现**中段**桩（「执行过但结果没落盘」）—— 结果刚刚被跑出来了");

@@ -1101,7 +1101,9 @@ test("#421/#714 中段悬空（已完成轮形状）· 首片行经可选原始�
   // `Invalid message at index 2: tool_result ids do not match assistant tool_use ids`。
   validateMessages(foldLedgerMessages(await inner.load(RUN_ID)).map((entry) => entry.message));
 
-  // 第二次恢复：账本已认它 ⇒ 上下文仍只有一张桩、账本不再多写一行（幂等靠 `settledIds`，不新增去重键）。
+  // 第二次恢复：账本已认它 ⇒ 上下文仍只有一张桩、账本不再多写一行。幂等**不靠**额外的 id 集合，
+  // 也不新增去重键：桩落的那一页就是那条聚合消息，折回来之后 `pendingMidSequenceToolUses` 的
+  // 逐对讲据自己就不再问它（issue #730 把排除集从全 run 收窄成逐对，幂等这条一个字没动）。
   const second = recordRoundWrites(inner);
   const secondProvider = createFakeProvider([endTurn("第二次续接完成")]);
   const again = await runLoop({ store: second.store, provider: secondProvider, executeTool: async () => "unused" });
