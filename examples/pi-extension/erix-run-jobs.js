@@ -708,7 +708,7 @@ export function handleOf(job) {
  *
  * @param {{
  *   home?:string, env?:NodeJS.ProcessEnv, now?:()=>number,
- *   runJob?:(params:object, opts:{signal:AbortSignal, onProgress?:(line:string)=>void, runId:string, resumeTarget?:object, nextUserTurn?:()=>string|null})=>Promise<any>,
+ *   runJob?:(params:object, opts:{signal:AbortSignal, onProgress?:(line:string)=>void, runId:string, resumeTarget?:object})=>Promise<any>,
  *   notify?:(job:object, content:string, opts:{triggersTurn:boolean, outcome:string, session?:object})=>unknown,
  *     // 返回值就是投递事实（见 `deliveryOf`）：`false` / `{delivery:"failed", error}` ⇒ failed；
  *     // `DELIVERY_VALUES` 里的字符串（或 `{delivery}`）⇒ 原样记账；其余真值 / `undefined` ⇒ sent。
@@ -745,13 +745,6 @@ export function createAsyncRuntime(options = {}) {
     ...(opts.resumeTarget === undefined ? {} : { resumeTarget: opts.resumeTarget }),
     signal: opts.signal,
     ...(opts.onProgress === undefined ? {} : { onProgress: opts.onProgress }),
-    // issue #753 C2 的落地缺陷（本行是本片的正题）：`start()` 把转向钩子放在**第二个参数**上
-    // （`...steerHookDeps(job)` ⇒ `opts.nextUserTurn`），而这层默认包装是**生产路径**——
-    // `erix-run.ts` 建 runtime 时既没传 `runJob` 也没传 `deps`，用的就是它。以前这里只转
-    // runId / resumeTarget / signal / onProgress 四个键 ⇒ 钩子在 `runErixRun` 里永远看不见：
-    // steer 被接受、`steerPending` 涨、零报错，但内层 run 一次也没被问（沉默成功族）。
-    // 形状与其余可选键逐字一致：**没递就不多一个键**（口径同 `resumeTarget` / `onProgress`）。
-    ...(opts.nextUserTurn === undefined ? {} : { nextUserTurn: opts.nextUserTurn }),
   }));
   /** 完成通知的投递口（生产接 parent-wake；单测收集调用次数） */
   const notify = options.notify ?? (() => true);
