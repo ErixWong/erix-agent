@@ -42,8 +42,10 @@ import {
   anchorGroupKey,
   anchorHitLines,
   anchorKindError,
+  anchorLineIsComment,
   anchorLinesEqual,
   anchorTableShape,
+  cellAxesRequiredSlotKey,
   checkCellAxesCoverage,
 } from "../scripts/cell-axes-anchors.mjs";
 
@@ -882,6 +884,208 @@ test("G4-R3 反向证：表里多一条没登记的引用 / 少一条已登记�
     : r));
   const droppedVerdict = G4_SIDE_RECONCILE({ side: "en", rows: dropped, groups, linesOf: G4_LINES_OF });
   assert.ok(droppedVerdict.errors.some((e) => e.includes("已经不再引它")), JSON.stringify(droppedVerdict.errors));
+});
+
+test("G4-R4 反向证：锚点登记的「种类」是硬判据 ⇒ 代码锚点指到注释行必红，注释锚点指到代码行也必红（M-A）", () => {
+  // 出厂表的种类事实：39 条全带合法 kind，且只有三格钉的是注释（两格 stopped 的「为什么没有写点」
+  // + `persistedTranscriptLength` 读侧那句「不能信快照里的它」）。种类写错 ⇒ 下面那条判据当场红。
+  assert.ok(
+    CELL_AXES_ANCHORS.length === CELL_AXES_REQUIRED_CELLS.length,
+    `登记 ${CELL_AXES_ANCHORS.length} 条与人审清单 ${CELL_AXES_REQUIRED_CELLS.length} 格不同数 ⇒ 先对齐两份真值`,
+  );
+  const commentEntries = CELL_AXES_ANCHORS.filter((entry) => entry.kind === "comment");
+  assert.deepEqual(
+    commentEntries.map((entry) => `${entry.key}|${entry.axis}`).sort(),
+    ["persistedTranscriptLength|read", "toolUse|write", "ts|write"],
+    "注释锚点只许这三条；新增注释锚点必须同批改这里（种类是登记事实，不是机器猜出来的）",
+  );
+  assert.ok(
+    CELL_AXES_ANCHORS.every((entry) => entry.kind === "code" || entry.kind === "comment"),
+    "每条锚点都必须带 kind（code / comment），闸的 parseCellAxesAnchorTable() 也按这个把关",
+  );
+  // 原表：种类全部相符（与闸共用同一个 anchorKindError）
+  assert.deepEqual(G4_ANCHOR_GROUPS(CELL_AXES_ANCHORS, G4_LINES_OF).errors, [], "原表的种类判据必须 0 错");
+
+  // ① 评审 M-A 的变异本体：把 `compactionStats` 的快照写点锚点改成「只是提到键名的那句注释」，
+  //    并把**两份表**里那一格写点的行号**同步改口**到那一行 ⇒ 行号等值对账全自洽（旧行为：两道闸都绿），
+  //    现在必须被种类判据拦下，且红话里点名「哪一格哪一轴 + 命中行号 + 那一行原文」。
+  const path = G4_DISTRACTOR_PROBE.path;
+  const groups = G4_ANCHOR_GROUPS(CELL_AXES_ANCHORS, G4_LINES_OF).groups;
+  const snapshotAnchor = CELL_AXES_ANCHORS.find(
+    (entry) => entry.key === G4_DISTRACTOR_PROBE.key && entry.axis === "write" && entry.path === path && entry.kind === "code",
+  );
+  assert.ok(snapshotAnchor !== undefined, "需要 compactionStats 的快照写点锚点（kind=code）在场");
+  const [realWrite] = G4_ANCHOR_LINE_CHECK(G4_LINES_OF(path), snapshotAnchor);
+  const distractor = G4_LINES_OF(path)
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => new RegExp(G4_DISTRACTOR_PROBE.anchor, "u").test(line));
+  assert.ok(distractor.length === 1, `干扰行（注释行）必须唯一，实际 ${distractor.length} 行`);
+  const commentLine = distractor[0].index + 1;
+  assert.ok(anchorLineIsComment(G4_LINES_OF(path)[commentLine - 1]), "干扰行必须真的是注释行，否则本例空转");
+  assert.notEqual(commentLine, realWrite, "干扰行与真写点必须不是同一行");
+
+  const kindMutatedAnchors = CELL_AXES_ANCHORS.map((entry) => (
+    entry === snapshotAnchor ? { ...entry, prev: undefined, anchor: G4_DISTRACTOR_PROBE.anchor } : entry
+  ));
+  const mutatedGroups = G4_ANCHOR_GROUPS(kindMutatedAnchors, G4_LINES_OF);
+  const kindErrors = mutatedGroups.errors.filter((text) => text.includes("锚点种类不符"));
+  assert.ok(kindErrors.length === 1, `必须恰好一条种类红，实际 ${kindErrors.length} 条：${JSON.stringify(mutatedGroups.errors)}`);
+  assert.match(kindErrors[0], /compactionStats/u);
+  assert.match(kindErrors[0], /write 轴/u);
+  assert.match(kindErrors[0], new RegExp(`:${commentLine} 那一行`, "u"));
+  assert.ok(kindErrors[0].includes(G4_LINES_OF(path)[commentLine - 1].trim().slice(0, 40)), "红话必须带上命中那一行的原文");
+
+  // 关键一步：两份表的引文**同步改口**到那一行 ⇒ 等值对账这一侧全绿（= 评审说的「旧行为两道闸都绿」），
+  // 于是「红」只能来自种类判据。
+  for (const { rows, side } of tables.values()) {
+    const synced = rows.map((row) => (row.key === G4_DISTRACTOR_PROBE.key
+      ? { ...row, writeSite: row.writeSite.replace(`${path}:${realWrite}`, `${path}:${commentLine}`) } : row));
+    assert.notDeepEqual(synced, rows, `${side}：同步改口没落上`);
+    const eqOnly = G4_SIDE_RECONCILE({ side, rows: synced, groups: mutatedGroups.groups, linesOf: G4_LINES_OF });
+    assert.deepEqual(eqOnly.errors, [], `${side}：引文同步改口后等值对账必须自洽（不然本例测不到「只有种类看得见」）`);
+  }
+
+  // ② 另一个方向：kind=comment 的锚点被换成真代码行 ⇒ 同样红
+  const commentEntry = commentEntries.find((entry) => entry.key === "toolUse" && entry.axis === "write");
+  assert.ok(commentEntry !== undefined, "需要 toolUse 的注释锚点（kind=comment）在场");
+  const [stoppedCommentLine] = G4_ANCHOR_LINE_CHECK(G4_LINES_OF(commentEntry.path), commentEntry);
+  const flipped = CELL_AXES_ANCHORS.map((entry) => (entry === commentEntry
+    // 拿同一文件里一条真代码行当锚点（写入位置那一形状），种类却没跟着改
+    ? { ...entry, anchor: snapshotAnchor.anchor } : entry));
+  const flipErrors = G4_ANCHOR_GROUPS(flipped, G4_LINES_OF).errors;
+  assert.ok(flipErrors.some((text) => text.includes("锚点种类不符") && text.includes("kind=comment")),
+    JSON.stringify(flipErrors));
+  assert.ok(stoppedCommentLine !== undefined, "注释锚点必须唯一命中（本例前提）");
+
+  // ③ 恢复证：原表 0 错
+  assert.deepEqual(G4_ANCHOR_GROUPS(CELL_AXES_ANCHORS, G4_LINES_OF).errors, [], "原锚点表必须 0 错（恢复证）");
+});
+
+test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 ⇒ 覆盖面真值必红并点名缺哪一格在哪一份（M-B）", () => {
+  const refsOf = ({ side, rows }) => {
+    const out = new Map();
+    const perKey = new Map();
+    for (const row of rows) {
+      const rowIndex = perKey.get(row.key) ?? 0;
+      perKey.set(row.key, rowIndex + 1);
+      for (const [axis, cell] of [["write", row.writeSite], ["read", row.readers]]) {
+        for (const citation of cell.match(CITATION) ?? []) {
+          const [rel, lineText] = citation.split(":");
+          if (!/^src\//u.test(rel) && !/^bin\//u.test(rel)) continue;
+          const gk = G4_GROUP_KEY(row.key, axis, rowIndex, rel);
+          out.set(gk, new Set([...(out.get(gk) ?? []), Number(lineText)]));
+        }
+      }
+    }
+    return { side, doc: `contract-snapshot-cell-axes(${side})`, refs: out };
+  };
+  const refsByDoc = [...tables.values()].map(({ rows, side }) => refsOf({ side, rows }));
+
+  // ① 正向：出厂的登记 + 两份表必须把 39 格全覆盖（清单 → 登记 → EN → CN 四处）
+  const clean = checkCellAxesCoverage({ anchors: CELL_AXES_ANCHORS, refsByDoc });
+  assert.deepEqual(clean.errors, [], JSON.stringify(clean.errors));
+  assert.equal(clean.slots, new Set(CELL_AXES_REQUIRED_CELLS.map((cell) => cellAxesRequiredSlotKey(cell))).size,
+    "清单去重后的槽位数必须与判据报出的一致");
+  // 地板是由清单算出来的，不是手填数（#772 R4 M-B）
+  assert.equal(CELL_AXES_ANCHOR_FLOORS.entries, CELL_AXES_REQUIRED_CELLS.length,
+    "entries 地板必须是清单条数算出来的（手填数会留出削薄余量）");
+  assert.equal(CELL_AXES_ANCHOR_FLOORS.groups,
+    new Set(CELL_AXES_REQUIRED_CELLS.map((cell) => `${cell.key}|${cell.axis}`)).size,
+    "groups 地板必须是清单里 key|axis 去重数算出来的");
+
+  // ② 评审 M-B 的变异：从 8 个双锚点组各删一条登记，并同步删掉两表对应引用 ⇒ 剩下的全自洽
+  const victims = [
+    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6181 },
+    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6161 },
+    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 699 },
+    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 700 },
+    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 704 },
+    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 661 },
+    { key: "persistedTranscriptLength", axis: "read", path: "src/loop/resume-manager.js", at: 16 },
+    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 634 },
+  ];
+  const droppedKeys = new Set();
+  const mutatedAnchors = [...CELL_AXES_ANCHORS];
+  const mutatedRows = new Map([...tables.values()].map(({ side, rows }) => [side, rows.map((row) => ({ ...row }))]));
+  const quote = (text) => text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  for (const victim of victims) {
+    const index = mutatedAnchors.findIndex((entry) => entry.key === victim.key && entry.axis === victim.axis
+      && entry.path === victim.path && G4_ANCHOR_LINE_CHECK(G4_LINES_OF(entry.path), entry).includes(victim.at));
+    assert.ok(index >= 0, `需要 \`${victim.key}\` 的 ${victim.axis} 锚点（命中 ${victim.path}:${victim.at}）在场才能删`);
+    const [removedEntry] = mutatedAnchors.splice(index, 1);
+    droppedKeys.add(G4_GROUP_KEY(removedEntry.key, removedEntry.axis, removedEntry.row ?? 0, removedEntry.path));
+    // 同步从两份表的对应单元格里抹掉这一条 `path:line`（连它旁边的分隔符一起吃掉）
+    const field = removedEntry.axis === "write" ? "writeSite" : "readers";
+    const citation = `${victim.path}:${victim.at}`;
+    for (const [side, rows] of mutatedRows) {
+      let removed = 0;
+      for (const row of rows) {
+        if (row.key !== removedEntry.key || !row[field].includes(citation)) continue;
+        row[field] = row[field].replace(new RegExp(`\\s*[,、；]?\\s*\`?${quote(citation)}\`?\\s*[,、；]?\\s*`, "u"), " ").trim();
+        removed += 1;
+      }
+      assert.equal(removed, 1, `${side}：${citation} 应当只在一条单元格里出现一次（变异没落上）`);
+      assert.ok(!rows.some((row) => row[field].includes(citation)), `${side}：${citation} 没被删干净`);
+    }
+  }
+  assert.equal(mutatedAnchors.length, CELL_AXES_ANCHORS.length - 8, "变异应当只删 8 条登记");
+  const mutatedGroups = G4_ANCHOR_GROUPS(mutatedAnchors, G4_LINES_OF);
+  assert.deepEqual(mutatedGroups.errors, [], "剩下的那些锚点必须各自仍成立（变异是削薄，不是打坏）");
+  for (const [side, rows] of mutatedRows) {
+    const still = G4_SIDE_RECONCILE({ side, rows, groups: mutatedGroups.groups, linesOf: G4_LINES_OF });
+    assert.deepEqual(still.errors, [], `${side}：成对删除后「剩下的自洽」必须成立（这正是旧判据看不见削薄的原因）`);
+  }
+  // 但覆盖面真值看得见：登记那一侧 + EN + CN 每一处都要报出缺的那一格
+  const after = checkCellAxesCoverage({ anchors: mutatedAnchors, refsByDoc: [...mutatedRows.entries()].map(([side, rows]) => refsOf({ side, rows })) });
+  assert.ok(after.errors.length > 0, "成对删掉 8 格之后覆盖面判据仍然全绿 ⇒ M-B 没关掉");
+  assert.ok(after.errors.some((text) => text.includes("CELL_AXES_REQUIRED_CELLS")), JSON.stringify(after.errors.slice(0, 3)));
+  for (const gk of droppedKeys) {
+    const [key] = gk.split("|");
+    assert.ok(after.errors.some((text) => text.includes(`\`${key}\``)), `红话必须点名缺的格子 \`${key}\`：${JSON.stringify(after.errors.slice(0, 3))}`);
+  }
+  assert.ok(
+    after.errors.some((text) => text.includes("en 表")) && after.errors.some((text) => text.includes("cn 表")),
+    "红话必须点名缺在哪一份（EN / CN）");
+  // 地板也不再是手填数：削到 31 条必须低于由清单算出的 39
+  assert.ok(mutatedAnchors.length < CELL_AXES_ANCHOR_FLOORS.entries,
+    `削到 ${mutatedAnchors.length} 条必须低于地板 ${CELL_AXES_ANCHOR_FLOORS.entries}（地板由清单算出）`);
+  // ③ 恢复证
+  assert.deepEqual(checkCellAxesCoverage({ anchors: CELL_AXES_ANCHORS, refsByDoc }).errors, [], "原样必须 0 错（恢复证）");
+  // 削薄是「无声」的那一种：格名与组数看起来一个没少（评审量出来的 31 条 / 27 组 / 14 格），
+  // 只有条目数与两份表的引用条数透露了它 ⇒ 拿组数当哨兵不够，要拿人审清单逐格问。
+  const before = anchorTableShape(CELL_AXES_ANCHORS);
+  const afterShape = anchorTableShape(mutatedAnchors);
+  assert.equal(afterShape.entries, before.entries - 8, `应剩 ${before.entries - 8} 条，实际 ${afterShape.entries}`);
+  assert.equal(afterShape.groups, before.groups, "组数不该变（无声削薄的典型形状）");
+  assert.equal(afterShape.cells, before.cells, "格名数不该变（无声削薄的典型形状）");
+});
+
+test("G4-R6 特征用例（已知限度，见 command-reference）：锚点改成「同一键名的另一处真写入」+ 两份引文同步改口 ⇒ 现在不红", () => {
+  // 这条不是「修好了」，是把当前的**宽容**钉成契约：机器能证「这一行存在、唯一命中、种类相符、
+  // 两份表与它等值、格子没被削薄」，证不了「这一行讲的是不是这一格这件事」。
+  // 已知限度登记在 docs/maintenance/command-reference.md（#772 R4）；不要再加启发式去堵它。
+  const path = "src/loop/orchestrator.js";
+  const snapshotAnchor = CELL_AXES_ANCHORS.find(
+    (entry) => entry.key === "compactionStats" && entry.axis === "write" && entry.path === path && entry.kind === "code",
+  );
+  const roundAnchor = CELL_AXES_ANCHORS.find(
+    (entry) => entry.key === "compactionStats" && entry.axis === "write" && entry.path === path && entry !== snapshotAnchor,
+  );
+  assert.ok(snapshotAnchor !== undefined && roundAnchor !== undefined, "需要 compactionStats 的两条写点锚点在场");
+  const [snapshotLine] = G4_ANCHOR_LINE_CHECK(G4_LINES_OF(path), snapshotAnchor);
+  const [roundLine] = G4_ANCHOR_LINE_CHECK(G4_LINES_OF(path), roundAnchor);
+  assert.notEqual(snapshotLine, roundLine, "两处写入必须是不同行，否则本例空转");
+  assert.ok(!anchorLineIsComment(G4_LINES_OF(path)[roundLine - 1]), "轮记录那一处必须是真代码行（kind 仍相符）");
+
+  const swapped = CELL_AXES_ANCHORS.map((entry) => (entry === snapshotAnchor ? { ...entry, anchor: roundAnchor.anchor } : entry));
+  const { groups, errors } = G4_ANCHOR_GROUPS(swapped, G4_LINES_OF);
+  assert.deepEqual(errors, [], "种类/唯一命中在这一形上仍然成立（前提）");
+  for (const { rows, side } of tables.values()) {
+    const synced = rows.map((row) => (row.key === "compactionStats"
+      ? { ...row, writeSite: row.writeSite.replace(`${path}:${snapshotLine}`, `${path}:${roundLine}`) } : row));
+    const verdict = G4_SIDE_RECONCILE({ side, rows: synced, groups, linesOf: G4_LINES_OF });
+    assert.deepEqual(verdict.errors, [], `${side}：这个已知限度形状现在必须**不红**（钉成契约；若哪天改判据让它红，记得同步改这条用例与文档）`);
+  }
 });
 
 test("G6 表里被引为读点的恢复侧行号，必须是剥完源码里真存在的读点（读轴与源码互相对账）", () => {
