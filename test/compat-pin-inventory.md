@@ -873,6 +873,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-resume-ledger-crash-boundary.test.js` | 15 | `completion`×3, `resume`×3, `stallDetection`×3, `tools`×3, `wrapup`×3 |
 | `test/compact/fold-fed-summary-738.test.js` | 6 | `completion`×2, `reflection`×2, `resume`×2 |
 | `test/run-state-meta-742.test.js` | 1 | `tools`×1 |
+| `test/loop-snapshot-round-residue-735.test.js` | 19 | `completion`×4, `stallDetection`×4, `tools`×4, `wrapup`×4, `resume`×3 |
 | `test/prompt-note-evidence-746.test.js` | 3 | `tools`×2, `completion`×1 |
 | `test/prompt-note-coverage-746.test.js` | 1 | `tools`×1 |
 

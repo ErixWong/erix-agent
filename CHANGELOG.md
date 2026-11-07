@@ -547,6 +547,85 @@
   有一例红——那是常驻变异复证，不是愿景。CLI 帮助文本（`bin/cli.js`，即 `erix --help` /
   `erix chat --help` 打的那份）的 `--no-agents` 那一格同步写成 64 KiB 并点出有这句声明；repl 的帮助
   仍只列旗标不写字节上限，与改动前一致。
+- **The run snapshot's `messages` cell now carries round residue, not the whole transcript (issue #735, slice 2).**
+  `persistRunSnapshot` wrote `cloneState(messagesOverride ?? messages)` — every snapshot re-serialized the
+  session from the seed message to now, and that single cell is the bulk of the 2 MiB host-side ceiling
+  #734 reported. Measured on a 20-round run (fake provider, 8 KiB tool output per round, 39 snapshot
+  writes): **2 055 794 bytes (1.96 MiB) → 361 996 bytes (0.35 MiB)** total, last write
+  **104 747 → 18 165 bytes**, the `messages` cell alone **1 796 766 → 102 968 bytes (−94.3%)**. Shape matters: a run resuming at round 10 that then ran 20 more went **3 935 966 → 365 149
+  (−90.7%)**, and one resuming from an old-format ledger (anchor 3) then running 20 more went **2 114 738 →
+  526 506 (−75.1%)**. The floor is a run with few but fat rounds — old-format resume, 3 rounds × 512 KiB
+  results — where the current round's own `toolResults` / `toolOutputs` cells dominate and this change saved
+  only **1 644 512 → 1 623 250 (−1.3%)**; what this removes is growth with round count, not a fat round. The cell stays an array **in the transcript's own index space**: slots before
+  the residue hold `null`, so the payload's key order, the cell's position, and the reader's absolute
+  `snapshot.messages.slice(anchor)` all keep working with **zero read-side changes** — that index alignment
+  is the design, not an accident: a shorter array would shift the anchor's absolute index and the very same
+  fixture scene turns red (`invalid_messages`, 0 model requests) when the residue is truncated instead of
+  nulled. **The two-hop case is a pre-existing read-side defect, not a loss introduced here (issue #754)**:
+  running the same scene (old-format ledger + old snapshot → resume → engine overwrites the snapshot → resume
+  again) side by side on `main` and on this branch gives **verbatim identical** second hops — same
+  `invalid_messages`, same `anchor` growth 3 → 5, zero model requests, the memory-only body unreachable —
+  because `anchor` is a scalar folded message count rather than a per-slot journaling bitmap. An "anchor cap"
+  variant of this change was implemented, measured, and **reverted** for exactly that reason: it bought no
+  correctness and no bound. **The invariant the write side depends on**, stated in the code comment at the write point and
+  proved on both sides: **the nulled slots stay at or below the anchor the resume path recomputes, and that
+  reader only ever slices `messages.slice(anchor)` — so it never reads a nulled slot.** That is a claim about
+  the *reader*, not a promise that every body survives across resumes (see below).
+  `persistedTranscriptLength` only advances on a journaling call this process itself saw succeed (both call
+  sites are guarded by `if (persisted)`), and `countResumeAnchor(records)` counts the same append-only ledger
+  at a later instant, so the first term bounds the second; the round-start term covers the one case memory
+  runs ahead of the ledger — a resumed run whose crash-round body was completed from the snapshot and
+  deliberately left un-journaled (#424's guard), which sits *after* the anchor, and what the
+  `min(..., persistedTranscriptLength)` term does is **keep that slot from being nulled** — a write-side fact;
+  **whether the reader can reach it again is a different question, and the answer is no: that is issue #754**
+  (see below). A fourth-round review caught one more layer: the guard scanned the contract but **not this
+  file**, which is the surface hosts actually read. `test/docs-no-overclaim-735.test.js` now scans the contract
+  section **plus the two `#735` slice-2 entries here**, and closes three holes: an **affirmative criterion**
+  (the honest sentence and the "`anchor` is a scalar, not a per-slot bitmap" half must stay verbatim — a synonym
+  rewrite dodges a ban list but cannot dodge those two), a **quantifier ban** (no universal quantifier over
+  `every slot` landing on the `ledger`),
+  and the cap family's code-truth test is now a **structural code shape** (`resumeTranscriptAnchor:` /
+  assignment / property read / accessor, comments stripped first) — **a comment no longer unlocks it**. A
+  cap-family hit inside a sentence carrying a retraction marker (撤回 / reverted) is excused as history, the
+  reading `check:docs` #668 and static-guard rule 5 already use. The fifth round closes three holes in **the guard
+  itself** (content, EN/CN wording and scope already passed review; only `test/docs-no-overclaim-735.test.js`
+  changes): **presence in G2 is no longer fed by the guard's own prose** — a sentence talking about the guard, its
+  bans, or "must stay verbatim" cannot stand in for the fact sentence it quotes (that was a self-proving loop);
+  **the inline-code exemption is narrowed to terminology** — a backticked span counts as a quotation only when it
+  is short and carries no sentence punctuation, so a whole false claim wrapped in backticks is still scanned; and
+  **banned-phrase matching is global now**, every hit getting its own sentence window and its own retraction-marker
+  check, so one retracted historical sentence can no longer shield a live claim written after it. Pinning it is the
+  double-crash case (old-format fixture
+  ledger → resume → engine overwrites the snapshot → resume again), which compares its two outcomes
+  byte-for-byte against a **copy of `src/` writing the whole transcript** (issue #411's discipline: the
+  in-repo `src/` is never edited by a mutation probe). The fixture scene is `test/fixtures/journal-0.22.0/`
+  truncated after round 1, so the crash round's body really only exists in the snapshot, and the anchor is
+  recomputed with the reader's own `foldLedgerMessages`, not a hand-copied constant. ⚠ **Host-visible**:
+  reading bodies out of `snapshot.messages` is no longer supported — see “The run snapshot's `messages` cell
+  is round residue” in `docs/host-consumer-contract.md` (and the CN twin). Two pre-existing cases built their
+  crash fixture with `snapshot.messages.slice(0, anchor)`; they now take that prefix from the ledger
+  (`foldLedgerMessages(store.load(runId))`) — the same text, from the side that actually owns it.
+  **The retracted wording now has a machine guard (third round of this slice).** After the EN half of the
+  contract was rewritten, the CN half **still carried the retracted “anchor cap” paragraph** — the new text had
+  been spliced into the **middle** of the old one, so the two halves were not saying the same thing, and
+  `npm run check:docs` / `check:docs:strict` were **green across that drift**: its EN/CN half compares
+  **heading skeletons** plus the registered anchors, **not prose** (the same hole #511 / #553 / #668 / #743
+  each closed for their own class). This slice closes it here: `test/docs-no-overclaim-735.test.js` scans
+  **only this section** (scanning the whole file would misfire — `by construction` has two legitimate uses
+  elsewhere in the EN contract) and bans the refuted sentence families. The honest wording must also **stay**
+  (“the reader never reads a slot that was elided”, the explicit “not a promise that every body survives”,
+  `#754`, “measured side by side”) — otherwise deleting the paragraph would also count as compliance. It then
+  reconciles the two halves' **issue-reference sets** and the byte-account table's **number sequences**
+  verbatim (that is exactly the shape this round drifted), and finally proves its own bite against the
+  **pre-retraction** text, verbatim from `97daf82` / `ee2fbfa` — a pattern that hits nothing is a dead entry
+  and goes red (#210 R2). The “anchor cap” family is banned **conditionally**, against the code truth:
+  `resumeTranscriptAnchor` is gone from `src/loop/orchestrator.js`, so the contract naming its cap is an empty
+  promise; if the mechanism ever lands again, that family unlocks by itself and the case says the byte account
+  must be re-measured. Reverse proof, one pass per language half (`cp` backup + `md5sum` restore, zero
+  `git checkout`): re-inserting the old paragraph into **EN** ⇒ `not ok … G1` naming 5 patterns
+  (`by construction`, `Nothing can lose`, `Every slot below that anchor is in the ledger`, `resume anchor`,
+  `the cap is what makes the elision safe`); into **CN** ⇒ 5 patterns (`按构造`, `就不会丢`, `锚点之前每一格`,
+  `恢复锚点`, `封顶正是`); after restoring both ⇒ green.
 - **The run snapshot stops writing two cells nobody reads (issue #735, slice 1).** `persistRunSnapshot`
   built one payload with four candidate cells; after re-measuring instead of trusting the ticket, two of
   them really have no reader. `toolUse` was a **second, independent `cloneState()` call over the same
@@ -612,6 +691,64 @@
   re-adding `toolUse`, re-adding `ts`, misspelling `pendingToolUses` by one character, and moving `status`
   out of its base slot each turn cases red, and re-adding `toolUse` is now also the standing sample **M18**
   that `check:mutation:run` re-runs in CI (the #210 R2 convention).
+- **run snapshot 的 `messages` 这一格从此只交「轮残余」，不再是整段正文（issue #735，切片 2）。**
+  `persistRunSnapshot` 原来写的是 `cloneState(messagesOverride ?? messages)` —— 每写一次快照就把「从种子
+  到当前轮」的全文重抄一遍，而 #734 报的宿主 2 MiB 上限，大头就是这一格。夹具驱动的 20 轮真跑
+  （fake provider、每轮 8 KiB 工具输出、39 次快照写）实测：**累计 2 055 794 字节（1.96 MiB）→ 361 996
+  字节（0.35 MiB）**，末次写 **104 747 → 18 165 字节**，只算 `messages` 这一格 **1 796 766 → 102 968 字节
+  （−94.3%）**。省多少跟 run 的形状有关：第 10 轮恢复后再跑 20 轮 **3 935 966 → 365 149（−90.7%）**；从旧格式账本
+  （锚点 3）恢复后再跑 20 轮 **2 114 738 → 526 506（−75.1%）**。底线是「轮少而单轮肥」：旧格式恢复后跑
+  3 轮 × 512 KiB 结果，那里本轮自己的 `toolResults` / `toolOutputs` 两格才是大头，这一片只省
+  **1 644 512 → 1 623 250（−1.3%)**——它去掉的是**随轮数增长**那一项，不是一轮本身的体量。这一格**仍是数组，且仍在正文自己的下标空间里**：
+  残余之前的格子写 `null`，于是 payload 键序、这格在键序里的位置、以及读侧那个绝对下标的
+  `snapshot.messages.slice(anchor)` 全部**零改动**继续成立 —— 这个下标对齐是设计而不是巧合：换成更短的
+  数组就会挪掉 `anchor` 的绝对下标，同一个夹具现场把残余**截掉**而不是置 null，当场红
+  （`invalid_messages`，0 次模型请求）。**写侧依赖的不变量**（原话写在写点注释里，两侧都证）：
+  **被置 `null` 的格子不会越过恢复侧现算的那个 anchor，而那个读者只切 `messages.slice(anchor)` ⇒
+  它永远读不到被置 null 的格子。**这是**关于读者**的陈述，**不是**「每段正文都能跨恢复活下来」的承诺
+  （见下面那条）。
+  `persistedTranscriptLength` 只在**本进程亲手落盘成功**时才 +1（两处写点都带 `if (persisted)` 守卫），
+  而 `countResumeAnchor(records)` 量的是同一本只追加的账在更晚时刻的条数 ⇒ 第一项界住第二项；第二项
+  「本轮起点」管的是内存跑在账本之前那唯一一种情形——恢复时从快照补进内存、却被 #424 的守卫
+  故意留在账本之外的崩溃轮正文，它排在锚点**之后**，`min(..., persistedTranscriptLength)` 那一项做的只是
+  **使它不被置 `null`**（写侧没擦它）；**读侧仍然取不到它** —— 这是两件事，后者归 **#754**（见下面那条）。
+  第 4 轮评审又抽出一层：守卫只扫契约，**CHANGELOG 自己漏了**（宿主读的就是 release notes）。
+  现在 `test/docs-no-overclaim-735.test.js` 的扫描面 = 契约那一节 **+ 本文件里点名切片 2 的中英两条条目**，
+  并补三个洞：**肯定式判据**（必须逐字留着「读者永远读不到」与「`anchor` 是标量、不是逐格位图」那两句，
+  同义改写绕得开禁语，绕不开这两句）、**量词型断言禁令**（不许出现「`每一格` / `所有格子` / `都` 落在
+  `账本` / `入账` 上」这类全覆盖断言，EN 同一族），以及把「封顶族在不在」的判据从「文里提个名字」改成**真实代码形状**
+  （`resumeTranscriptAnchor:` / 赋值 / 点取 / 访问器，判前先剥注释）—— **一句注释解不开这道闸**。
+  封顶族的命中若落在带「撤回 / reverted」标记的那一句里，按历史叙事豁免（与 #668、static-guards 第 5 条同口径）。
+  第 5 轮补的是**守卫自己的三个洞**（内容 / 中英措辞 / 范围都已过审，只动 `test/docs-no-overclaim-735.test.js`）：
+  **G2 的「在场」不再被守卫自己的说明文字喂饱** —— 谈「守卫 / 判据 / 禁语 / 必须逐字留着」的那一句不算满足在场，
+  否则同一条目里复述判据的那句就顶替了它引用的事实句（自证循环）；**行内代码的豁免收窄成术语级** —— 反引号里的
+  片段只在**不含句读且长度 ≤ 60** 时按引用剥掉，整句假主张包进反引号照样扫；**禁语扫描改成全局匹配**，每条命中
+  各自取句窗、各自判「撤回标记」豁免 ⇒ 一句已撤回的历史叙事遮蔽不了它后面那句**未撤回**的断言。
+  **两跳那条链是主干既有的读侧缺陷，不是本片引入的损失（issue #754）**：同一套场景（旧账本+旧快照 →
+  resume → 引擎亲笔覆盖写快照 → 再 resume）在主干与本支并排跑，第二跳**逐字同结果**——同一个
+  `invalid_messages`、锚点同样从 3 涨到 5、同样 0 次模型请求、那段只在内存里的正文同样取不到——因为
+  `anchor` 是「折叠后的消息条数」这个**标量**，不是「哪些下标已入账」的位图。为此实现并实测过一个
+  「锚点封顶」版本，**已撤回**：它既不换来正确性，也不换来上界。钉住它的用例是那条双崩链（旧格式夹具账本 → resume → 引擎亲笔覆盖写快照 → 再 resume），
+  它把两次恢复的结果与一棵**写整段的 `src/` 副本**逐字对账（issue #411 的纪律：变异只发生在副本上，
+  仓内 `src/` 全程只读）。夹具现场是 `test/fixtures/journal-0.22.0/` 截到 round 1 ⇒ 崩溃轮正文真的只在
+  快照里；锚点用读侧自己的 `foldLedgerMessages` 现算，不是抄来的常数。⚠ **宿主可见**：从
+  `snapshot.messages` 里读正文这件事不再被支持 —— 见 `docs/host-consumer-contract.md`（与中文对页）
+  新增的「run snapshot 的 `messages` 这一格是轮残余」。两处原先拿 `snapshot.messages.slice(0, anchor)` 造
+  崩溃现场的既有用例，现在改从**账本**取那段前缀（`foldLedgerMessages(store.load(runId))`）—— 同一段正文，
+  换成真正拥有它的那一侧。**第三轮：被推翻的措辞现在有了机器守卫。** EN 那一半改写之后，中文那一半**还留着被撤回的
+  「锚点封顶」旧段**——新段被插进了旧段的**中间**，两份说的不是同一句话，而 `npm run check:docs` /
+  `check:docs:strict` 在这段漂移上**全绿**：它那半中英对账比的是**标题骨架**与登记过的锚点，**不比散文**
+  （同一个缺口 #511 / #553 / #668 / #743 各自替自己那一族补过）。现在本刀把它堵上：`test/docs-no-overclaim-735.test.js`
+  **只扫这一节**（整篇扫会误伤——`by construction` 在 EN 契约别处还有两处合法用法），禁掉被推翻的那几族句式；
+  同时要求诚实那句**必须在场**（「读者永远读不到被省掉的格子」、那句显式的「不是『每一段正文都还在』的承诺」、
+  `#754`、「并排实测」）——否则「把整段删掉」也算合规；再把两侧的 **issue 引用集合**与字节账表的**数字序列**逐字对账
+  （本轮踩的就是这一形）；最后拿**撤回前**的原文（逐字取自 `97daf82` / `ee2fbfa`）自证每条禁语都真咬得住——
+  咬不住就是死条目 ⇒ 红（#210 R2）。「锚点封顶」那一族是**条件禁**，对面是代码真值：`resumeTranscriptAnchor`
+  已从 `src/loop/orchestrator.js` 消失，契约再提它就是空头承诺；机制哪天落回来，这一族自动解禁，用例会提醒重测字节账。
+  反证中英各一遍（`cp` 备份 + `md5sum` 还原，零 `git checkout`）：把旧段塞回 **EN** ⇒ `not ok … G1` 点名 5 条
+  （`by construction`、`Nothing can lose`、`Every slot below that anchor is in the ledger`、`resume anchor`、
+  `the cap is what makes the elision safe`）；塞回 **CN** ⇒ 5 条（`按构造`、`就不会丢`、`锚点之前每一格`、
+  `恢复锚点`、`封顶正是`）；还原 ⇒ 绿。
 - **run snapshot 停写两格没有人读的字段（issue #735，切片 1）。** `persistRunSnapshot` 构造的那份
   payload 里有 4 格候选冗余，**不按工单口径、改成自己重测**之后只有 2 格真的无人读：`toolUse` 与
   `pendingToolUse` 是**对同一个源值各自调一次 `cloneState()`**（`cloneState(snapshotPendingToolUse)`
@@ -736,6 +873,50 @@
   没有精确保存值时它拒绝报 `equal`（报 `differ` 同样是谎）。反向证（工单判据 4）：把旧路径优先级**字面**反转
   （优先 `.text`，剥空之后不回头），`#462 规划器：裁掉水位线以下的轮` 先在 `plan.applied === true` 上红，
   退出码 1。不在本切片：收紧读侧优先级——那是第二步，要等 `byteEqual` 在现网稳定为 `equal`。
+- **The 0.31.0 guide told hosts to import a name no entry has ever exported (issue #710).** The row for
+  `serializeFoldedMessages` in both halves of the guide carried the migration clause naming
+  `serializeFoldedMessagesWithMeta` while the entry column said `.` — but that name is on neither entry:
+  not in the published `erix-agent@0.31.0` tarball, not in `0.30.0` either (both were unpacked and
+  `import`-probed over both entries, and `package.json` exports only `.` / `./tools` /
+  `./contract-tests`, so there is no deep path to reach it). It is the internal serializer in
+  `src/compact/provider-summarizer.js`, called by `createProviderSummarizer` itself; the wrapper this
+  row deletes (`serializeFoldedMessages`) was only its `.text` projection. A host that trusted the row
+  got `SyntaxError: ... does not provide an export named ...` at module load — the guide's own
+  description of what a missing name does, printed about the name the guide told it to import. Three
+  gates look at this page and none of them looked that direction: `guide-removal-gate` checks the
+  deletion direction only (a name the page claims is gone must really be absent from its entry),
+  `bundle-table` checks the row set against the live candidate set, and `check:exports:deprecated` R4
+  accepts any `migrate to X` whose `X` is declared **in-tree** — which that serializer is. The ruling
+  is **docs, not exports**: that cell now reads `no in-tree replacement`, naming `createProviderSummarizer`
+  as the place the fold is rendered now (it calls the serializer itself and returns summary text) and
+  telling a host that rendered the fold by hand to keep its own renderer, and §1 of both halves now
+  states that the 0.30.0 page wrote that same unimportable target for that same name. **Nothing was
+  exported**: the serializer stays internal — promoting it would be an Added on the public face, which
+  is a different decision than correcting a page. **The marker itself was corrected in the same
+  commit**, because it is where that sentence lives: `check:docs` derives the cell from the
+  `@deprecated` block in `src/compact/provider-summarizer.js` (rule 4: the page must copy the marker
+  clause verbatim), so leaving the marker alone would keep re-deriving the same wrong target — and the
+  published `0.31.0` guide already prints it. The marker now carries the same `no in-tree replacement`
+  clause as the page (comment text only: `removed in 0.31` untouched, signature/implementation untouched,
+  `R4` accepts this clause shape, no export added).
+- **0.31.0 指南让宿主去 import 一个任何入口从没导出过的名字（issue #710）。** 中英两份指南里
+  `serializeFoldedMessages` 那一行的迁移条款格都指向 `serializeFoldedMessagesWithMeta`，而入口格写着 `.`——
+  可这个名字两个入口上都没有：已发布的 `erix-agent@0.31.0` 没有，`0.30.0` 也没有（两个 tarball 都解开在两个
+  入口上 `import` 实测过，而 `package.json` 的 exports 只有 `.` / `./tools` / `./contract-tests`，没有深路径
+  可绕）。它是 `src/compact/provider-summarizer.js` 里的内部序列化器，由 `createProviderSummarizer` 自己调用；
+  这一行删掉的那个薄包装（`serializeFoldedMessages`）只是它的 `.text` 投影。相信那一行的宿主在模块加载期就撞
+  `SyntaxError: ... does not provide an export named ...`——正是指南自己写的「缺一个名字会怎样」，只不过撞的是
+  指南让它去 import 的那个名字。三道闸都在看这一页，却没有一道看这个方向：`guide-removal-gate` 只查删除方向
+  （页面上说没了的名字必须在它登记的入口上真的没了），`bundle-table` 只把行集合与现算候选集对账，
+  `check:exports:deprecated` 的 R4 只要求 `migrate to X` 的 `X` 在**仓内声明过**——那个序列化器恰好是。
+  维护者的裁决是**改文档、不导出**：那一格现在写 `no in-tree replacement`，点名折叠体的渲染现在住在
+  `createProviderSummarizer` 里（它自己调序列化器、返回摘要文本），并告诉过去自己渲染折叠体的宿主保留自己的
+  渲染器；两份指南的 §1 各补一句，指认 0.30.0 那一页对同一个名字写了同一个不可 import 的目标。**一个导出都没加**：
+  序列化器继续留在内部——把它提上公共面是一个 Added，是另一个决定，不是改一页文档。**同一笔提交里把标记自己也改了**，
+  因为那句话就住在标记里：`check:docs` 的那道判据是从 `src/compact/provider-summarizer.js` 的 `@deprecated` 块
+  **派生**那一格的（判据 4：页面必须逐字照抄标记的条款），只改文档会让同一个错目标被继续派生出来——而已发布的
+  `0.31.0` 指南里印的就是那句错话。标记现在与页面同一条 `no in-tree replacement`（只动注释文字：`removed in 0.31`
+  那枚版本记号没动、函数签名与实现没动、R4 收这个条款形状、一个导出都没加）。
 
 ## [0.31.0] - 2026-11-04
 

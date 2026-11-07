@@ -4397,8 +4397,24 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
  *     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 13 条 / 英文 13 条 / 配对 13 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 12（校准面 ## [Unreleased]）
  *     # 配对地板：实测 13 对 > 地板 12 对 ⇒ 可以抬地板到 13
  *         —— 红的时候红在 assert.equal(problems.pairs.length, CHANGELOG_PAIR_FLOOR)，报的是 13 !== 12
+ *
+ * issue #710（`fix-261107-12`，基点 main `2f9218b`）：`## [Unreleased] ### Fixed` 新增一对（0.31.0 指南里
+ * `serializeFoldedMessages` 那一格的迁移条款改成 `no in-tree replacement`，中英各一处 + 两份 §1 各一句）
+ * ⇒ 面没挪、仍是 `## [Unreleased]`。本常量没有 `--sync`，取值只能是在本树现跑守卫拿它的 diagnostic：
+ * 下面两行是**动常量之前** `node --test --test-name-pattern="配对地板" test/static-guards.test.js` 的标准输出原文
+ *（不是从旧常量加法算出来的，也不是手抄）：
+ *
+ *     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 16 条 / 英文 16 条 / 配对 16 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 15（校准面 \#\# [Unreleased]）
+ *     # 配对地板：实测 16 对 > 地板 15 对 ⇒ 可以抬地板到 16
+ *         —— 红的时候红在 assert.equal(problems.pairs.length, CHANGELOG_PAIR_FLOOR)，报的是 16 !== 15
+ *
+ * ⇒ 地板 = **16**（在本树现跑守卫的实测值；下一任 rebase 后照旧重跑重取，不做加法）。
  */
-const CHANGELOG_PAIR_FLOOR = 15;
+// 2026-11-07 第二次重取（本支重放到 main `fe81810`（#710 已合，PR #757）之后）：守卫在
+// `## [Unreleased]` 上**现报**「实测 17 对 ≠ 地板 16 对」⇒ 抬到 **17**。
+// ⚠ 这不是「16 + 本单一对」：#710 那一对（`e10539f` 自登记中英一对）与本片那一对**都**在同一个校准面上，
+// 两边各自测到的都是 16，合并树才是 17 —— 与 #741/#742 各测 12、合并树报 13 完全同型 ⇒ 必须现测。
+const CHANGELOG_PAIR_FLOOR = 17;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

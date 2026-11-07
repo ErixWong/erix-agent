@@ -67,9 +67,10 @@ function roundRangeLabel(roundRange) {
  * @param {object[]} messages
  * @param {{from?: number, to?: number}|undefined} roundRange
  * @param {{ maxTokens?: number }} [options]
- * @deprecated issue #429: removed in 0.31 — migrate to
- *   `serializeFoldedMessagesWithMeta` (same text under `.text`, plus the
- *   `dropped` / `total` / `bounded` accounting this thin wrapper throws away).
+ * @deprecated issue #429: removed in 0.31 — no in-tree replacement — the fold
+ *   is rendered inside `createProviderSummarizer` now (it calls the serializer
+ *   itself and returns summary text); `serializeFoldedMessagesWithMeta` is the
+ *   internal serializer, not exported from any entry — do not import it.
  */
 export function serializeFoldedMessages(messages, roundRange, options = {}) {
   return serializeFoldedMessagesWithMeta(messages, roundRange, options).text;

@@ -25,6 +25,9 @@
 如果你在 0.30.0 上、且从没 import 过这 16 个名字里的任何一个，升级就是一个版本号。如果你 import 过其中一个，
 请**先**迁移**再**升级：ESM 里 import 一个不存在的名字在模块加载期就失败，「先升级、后迁移」不是降级，是起不来。
 
+同一页还有一条从来不可 import 的迁移条款：`serializeFoldedMessages` 那一行点名了 `serializeFoldedMessagesWithMeta`，
+而 0.30.0 与 0.31.0 的任何入口都没导出过这个序列化器，所以宿主该跟的是 §2 里那个名字现在这一格，不是 0.30.0 的写法。
+
 ## 2. 被删掉的十六个名字
 
 | Name | What it did | Migration clause | Entry | Definition |
@@ -42,7 +45,7 @@
 | `parseSummary` | 同一个内联摘要解析器的更短拼写 | migrate to `parseL1Summary` —— 同一个函数的旧名 | `.` | `parseSummary` (`src/reflection/l0.js`) |
 | `removeRecord` | 从花名册目录里删掉一条记录文件 | no in-tree replacement —— `reconcile` 只重写状态、不删文件；别把归档逻辑建在这个原语上 | `./tools` | `removeRecord` (`src/tools/delegation/roster.js`) |
 | `resolveFileReadMaxBytes` | 从环境变量解析单次读取的字节上限 | no in-tree replacement —— 上限在 `createFileTools` 内部解析，没有单独的公共入口 | `./tools` | `resolveFileReadMaxBytes` (`src/tools/file-tools.js`) |
-| `serializeFoldedMessages` | 把折叠历史渲染成摘要器读的那段文本 | migrate to `serializeFoldedMessagesWithMeta` —— 同样的文本在 `.text` 上，另加这层薄包装丢掉的 `dropped` / `total` / `bounded` 账 | `.` | `serializeFoldedMessages` (`src/compact/provider-summarizer.js`) |
+| `serializeFoldedMessages` | 把折叠历史渲染成摘要器读的那段文本 | no in-tree replacement —— 折叠体的渲染现在在 `createProviderSummarizer` 内部完成（它自己调序列化器，返回摘要文本）；过去自己渲染折叠体的宿主保留自己的渲染器。`serializeFoldedMessagesWithMeta` 是内部序列化器，任何入口都没导出——别去 import 它 | `.` | `serializeFoldedMessages` (`src/compact/provider-summarizer.js`) |
 | `setNotesClock` | 替换 notes 工具给记录盖时间戳用的时钟 | no in-tree replacement —— 公共面上没有受支持的时钟注入口（只有 notes 测试驱动过这个钩子） | `./tools` | `setNotesClock` (`src/tools/notes.js`) |
 
 其中六个是一行别名（`estimateMessagesTokens`、`extractL0`、`extractL0Fact`、`MESSAGE_OVERHEAD_TOKENS`、
