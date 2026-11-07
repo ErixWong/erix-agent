@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3605,
+    "tests": 3625,
     "fail": 0,
     "maxSkipped": 15
   },
@@ -627,6 +627,22 @@
       "todo": 0,
       "cancelled": 0,
       "why": "issue #743 **第四轮**（同一条错的第二现场：README 模块地图那一行也作无范围限定的全称）rebase 到 `origin/main fd07d27`（#742 已合）之后现测。主干自己那棵树现登 3590（rebase 后树里的登记值就是它），分支在 fd07d27 之上的增量为 **+15**：`+11` = `test/event-tier-coverage-743.test.js` 的 T1–T11（分级表覆盖、清理谓词四条与边界输入、终态/安全子集实推、derived 空集、诊断通道边界、发射原语边界），`+1` = T12（范围限定守卫：契约开场两处 + 两份 README 模块地图，本轮从只钉契约扩成同时钉 README），`+3` = `test/doc-examples.js` 新写的契约 JS 围栏 L1/L2/L3 三层验证。3590 + 15 = 3605，与本次 TAP 汇总行逐字相等（日志 /tmp/743-r4-test.log，跑前工作树只剩本轮那三处未提交改动、跑后一字未动），经同一份日志复核为 `TEST-SUMMARY-VERDICT ok`；抬值前脚本自己打 `HINT 登记值可抬到 3605（当前登记值 3590，本次实测 3605，+15）` ⇒ 非手抄。**登记值不是在 3580 上加出来的**：本轮 rebase 之后主干读数已经是 3590，分支增量重算 = 15。fail=0；skipped 13 不变（没动任何 skip 判据；历史曾出现 test/version-state-probe-703.test.js 日期敏感跳过，本轮未复现），maxSkipped 上限 15 不动（13 ≤ 15，没有放宽）。"
+    },
+    {
+      "date": "2026-11-07",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "765794c（被测量那一棵树的内容；登记这笔提交在它之后，只改这个 JSON）",
+      "branch": "fix-261107-10-prompt-note-evidence",
+      "mergeBase": "bea46bb",
+      "mainSha": "bea46bb",
+      "tests": 3625,
+      "pass": 3612,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "issue #746（提示位接 #741 的证据门）。抬值 **+20 全部来自本轮新增的两个测试文件**，与主干无关：`test/prompt-note-evidence-746.test.js` 15 条（聚合桩/逐条超限桩/guard 摘要/guard 指针/折叠桩/CLI 系统提示/归档提示 × 四种无证据输入 + 有效证据输入；含两条真跑证明逐条超限桩跟着宿主工具面走；含 retrievalCommandFor 拼不出命令时一个 sed 也不许多出来），`test/prompt-note-coverage-746.test.js` 5 条（覆盖面表述 G1、每处真接了门 G2、governor 反向钉 G3、逐文件 `note_*` 字面表 G4、`src/` 不 import `bin/` G5）。3605 + 20 = 3625，与本次 TAP 汇总行逐字相等（日志 /tmp/746-final-test2.log，跑前工作树只剩这个 JSON 未改，跑后一字未动），脚本自己打 `HINT 登记值可抬到 3625（当前登记值 3605，本次实测 3625，+20）` ⇒ 非手抄。⚠ **第一次跑出来是 skipped 17 / SKIPPED_OVER 红**：本工作树 `node_modules` 缺 `typescript`（devDependency），`test/types-strict*.test.js` 四条按环境跳过（13 + 4 = 17 > 上限 15）。处置是**补装依赖**（`npm install --include=dev`，3 个包）而不是抬上限——跳过是环境缺件，不是用例被放宽；补装后 skipped 回到 13，上限 15 一格未动。fail=0，todo=0，cancelled=0。"
     }
   ]
 }
