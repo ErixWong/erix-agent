@@ -137,7 +137,7 @@ not ok 14 - G4-R6 特征用例（锚点改成同键名另一处真写入 + 两�
 
 ## 步骤 5 — CHANGELOG 中英成对
 
-`CHANGELOG.md` / `CHANGELOG_cn.md` 各一条，都挂在 `## [0.39.0]` 的 Changed 段首条；内容成对，都写明「键存在性是宿主可见面（`src/store/file.js:523` 直接 stringify）」「先改指向再停写」「停写后的键序」「旧档逐字读回」与机器缺席断言的位置。
+本仓的中英成对约定是**同一个 `CHANGELOG.md` 里英文 bullet 紧跟中文镜像 bullet**（没有中文单文件版，配对由 `scripts/check-changelog-pairs.mjs` 校）；已在 `## [Unreleased]` 的 `### Changed` 段首条插入成对两条；内容成对，都写明「键存在性是宿主可见面（`src/store/file.js:523` 直接 stringify）」「先改指向再停写」「停写后的键序」「旧档逐字读回」与机器缺席断言的位置。
 
 ## 未验证
 
@@ -145,3 +145,29 @@ not ok 14 - G4-R6 特征用例（锚点改成同键名另一处真写入 + 两�
 - `npm run check:docs`、`:strict`、`:docs-spelling`、`:syntax`、`:agents-directives`、`node scripts/docs-drift-check.mjs --self-test`（约 7 分钟）与三档类型闸：**未跑**（预算用尽），因此两份 doc 的行号漂移会不会被这些闸抓住，未知。`BARE_LINE_REF_BASELINE` 未动。
 - 全套 `npm test` 未跑（工单规定）；`test/test-suite-baseline.json` 未动：用例数**没有增删**（我只改了既有用例的断言指向，新增的 1 条 `callSiteOf()` 是 helper 不是用例；写侧文件里两条用例被改名但计数不变）。
 - 除 `test/`、`docs/host-consumer-contract*`、`scripts/cell-axes-anchors.mjs`、`src/loop/orchestrator.js`、两份 CHANGELOG、`REPORT-770.md` 之外没有别的写入；未 rebase、未 push、未开 PR，未碰 `/home/eric/wt-770w` 与其它 `~/wt-*`。
+
+## 步骤 4 收口（契约/锚点/注释三方对齐）——已全绿
+
+按闸自报值逐条对齐，**没有手调判据**；改判据文件的两处是「fixture 与树上真值重同步」，不是放宽：
+
+1. 两份契约表（EN + CN）里 `status` / `compactionStats` 的 **write 轴判据改 `stopped`**，引文改成锚点重算行：`src/loop/orchestrator.js:3029`（status 的解释注释）与 `src/loop/orchestrator.js:3038` + `:6185`（compactionStats 的解释注释 + 轮记录那处真写点）。
+2. 全仓文档里 `src/loop/orchestrator.js:N` 的引用按闸自报的「表写 X / 锚点实际 Y」成对表整体重排（2986→3004、3215→3239、3026→3029、6161→6185、6181→6205 等 16 对）；测试侧引用按「该行必须提到键名」重指（`test/loop-persistence-phase.test.js:87→118`、`test/loop-v020-rc.test.js:605→611`、`test/loop-snapshot-write-side-735.test.js:108→107`）。
+3. `scripts/cell-axes-anchors.mjs`：两格 write 条目 `kind: "comment"` 钉解释注释（`CELL_AXES_REQUIRED_CELLS` 两条**保留**，条目总数仍 39）；`round|write` 的 `prev` 改成 `persistClassified(...)` 那一行（步骤 2 的真实行形变化）。
+4. `test/contract-snapshot-cell-axes-767.test.js` 的**反向证 fixture** 与树上真值重同步（三处，均为硬编码行形/种类事实）：注释锚点白名单加 `status|write`、`compactionStats|write`（3→5 条，判据本身不变）；G4-R5 的 victims 行号 6181→6205、6161→6185；G4-R6 取「命中唯一且是真代码行」的那条当轮记录锚点，并让换形时的 `kind` 一起换（#770 之后快照那一格是 comment 锚点，不换 kind 就会被种类判据当场认出——那是新增的严格面）。
+5. `test/static-guards.test.js` 的 `CHANGELOG_PAIR_FLOOR` 27 → **28**（闸自报「实测 28 对 ⇒ 可以抬地板到 28」，只按自报值抬，未降）。
+
+## 闸（最终一轮实测）
+
+```
+node --test test/contract-snapshot-cell-axes-767.test.js      # pass 15 / fail 0
+node --test test/static-guards.test.js                        # pass 58 / fail 0
+node --test <8 个行为/恢复/压缩/写侧用例文件>                  # pass 68 / fail 0
+npm run check:docs                                            # exit 0（docs-sync-check OK，115 节对齐）
+npm run check:docs:strict                                     # exit 0
+npm run check:docs-spelling                                   # exit 0
+npm run check:syntax                                          # exit 0（494 个文件）
+npm run check:agents-directives                               # exit 0
+find src -name '*.d.ts' -delete && npm run check:types        # OK 99 错 / 26 文件 == 基线 99（未抬）
+npm run check:types:strict                                    # 1875 < 基线 1877（未抬基线，未下调）
+npm run types:build                                           # OK，89 个 .d.ts
+```
