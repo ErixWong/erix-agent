@@ -540,7 +540,19 @@ test("per-tool replay policy replays safe pending tools", async () => {
   assert.equal(replayedResult.content, "replayed safely");
 });
 
-test("per-tool replay policy interrupts unsafe tools and exposes saved partial output", async () => {
+test(
+  "per-tool replay policy interrupts unsafe tools and exposes saved partial output",
+  {
+    skip:
+      "#754 裁决 2 关掉了 pre-261021 升级闸门，本格的现场只有那条闸门造得出（第二类因果耦合）；follow-up #776",
+  },
+  async () => {
+  // issue #754 裁决 2：**具名跳过**（`t.skip`，断言一条没删、一条没放宽，全部留在原地）。
+  // **第二类因果耦合**：本格要的现场是「那条 `tool_result` **在上下文里、但不在账本里**」，而新写侧
+  // （逐条入账）没有这种状态的自然来源 —— 只有那条 pre-261021 升级闸门造得出来，裁决 2 把它关掉了。
+  // 三种新格式写法逐条实测过（结果写成账本行 ⇒ `#421` 判已结清、不补「没重跑」的桩；放进快照
+  // `toolResults` 格 ⇒ 复放策略照 `snapshotResults` 直接复放、同样结清；什么都不写 ⇒ 桩生成了，但桩文里
+  // 引不到只在快照里的那句 partial）。坐标与实测在 `/tmp/report-754*.md`。follow-up：#776。
   const store = createMemoryTranscriptStore();
   const runId = "resume-unsafe-tool";
   const toolUse = {
@@ -641,7 +653,19 @@ test("per-tool replay policy interrupts unsafe tools and exposes saved partial o
   assert.match(modelResult.content, /partial response already persisted/u);
 });
 
-test("升级前记录被中断重放时，不得把过期 attempt 的成败留给 judge 的回退链（PR #288 审阅）", async () => {
+test(
+  "升级前记录被中断重放时，不得把过期 attempt 的成败留给 judge 的回退链（PR #288 审阅）",
+  {
+    skip:
+      "#754 裁决 2 关掉了 pre-261021 升级闸门，本格的现场只有那条闸门造得出（第二类因果耦合）；follow-up #776",
+  },
+  async () => {
+  // issue #754 裁决 2：**具名跳过**（`t.skip`，断言一条没删、一条没放宽，全部留在原地）。
+  // **第二类因果耦合**：本格要的现场是「那条 `tool_result` **在上下文里、但不在账本里**」，而新写侧
+  // （逐条入账）没有这种状态的自然来源 —— 只有那条 pre-261021 升级闸门造得出来，裁决 2 把它关掉了。
+  // 三种新格式写法逐条实测过（结果写成账本行 ⇒ `#421` 判已结清、不补「没重跑」的桩；放进快照
+  // `toolResults` 格 ⇒ 复放策略照 `snapshotResults` 直接复放、同样结清；什么都不写 ⇒ 桩生成了，但桩文里
+  // 引不到只在快照里的那句 partial）。坐标与实测在 `/tmp/report-754*.md`。follow-up：#776。
   const store = createMemoryTranscriptStore();
   const runId = "resume-legacy-keys";
   const toolUse = { type: "tool_use", id: "legacy-call", name: "unsafe_work", input: {} };
@@ -832,6 +856,10 @@ test("does not merge a tool result whose id belongs to another assistant call", 
       toolResult: { type: "tool_result", tool_use_id: "a", content: "done-a" },
     }],
   });
+  // issue #754 裁决 2：夹具原本是 pre-261021 形状（那条 assistant 与那条**串了味**的聚合结果都只在
+  // `checkpoint.messages` 里）。恢复现在只从账本重建 ⇒ 本格要断的「串味的结果不被并进 ⇒ `invalid_messages`」
+  // 必须让那段正文**在账本里**（这一格断的是配对判据本身，与那条被关掉的闸门无关）。断言一字未改。
+  await journalSnapshotBodyRows(store, runId);
 
   await assert.rejects(
     runToolLoop({

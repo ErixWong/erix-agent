@@ -318,7 +318,20 @@ async function snapshotRoundResidueScene(inner) {
   return inner;
 }
 
-test("格2③ 有锚点而写被拒（轮号非安全整数）⇒ 发 reason=mid_sequence_stub_row_write_refused，且那一行真的没落盘", async () => {
+test(
+  "格2③ 有锚点而写被拒（轮号非安全整数）⇒ 发 reason=mid_sequence_stub_row_write_refused，且那一行真的没落盘",
+  {
+    skip:
+      "#754 裁决 2 关掉了 pre-261021 升级闸门，本格的现场只有那条闸门造得出（第二类因果耦合）；follow-up #776",
+  },
+  async () => {
+    // issue #754 裁决 2：**具名跳过**（`{ skip }`，断言一条没删、一条没放宽，全部留在原地）。
+    // **第二类因果耦合**的坐实坐标：本格那两张桩里，第二对中段悬空（`assistant(又跑了一刀, t1, t9)` +
+    // 它的聚合结果）原本**只写在 `snapshot.messages` 里**，靠那条 pre-261021 升级闸门补进上下文，
+    // 「两张桩」与「写被拒」这两条判据才同时成立。把这一对改写成账本消息行之后：`src/store/message-rows.js:282`
+    // 是 `Number.isSafeInteger(record?.round) ? record.round : 0` ⇒ 行上的轮号被认成 0，写**不再被拒**，
+    // `mid_sequence_stub_row_write_refused` 事件实测变成 `[]`（试过并回退，见 `e0597df` 的 commit message）。
+    // ⇒ 「写被拒」这个事件本身依附于那条闸门，不是夹具形状问题。follow-up：#776。
   const inner = createMemoryTranscriptStore();
   await snapshotRoundResidueScene(inner);
 
