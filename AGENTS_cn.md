@@ -150,8 +150,8 @@ npm run release:day -- --stage preflight --hosts <宿主仓目录>
 #   [7/7] check:host-consumers -- --hosts …     宿主侧探针：每一处命中都必须已被升级指南覆盖
 ```
 
-那些 `[i/N]` 行是手工维护的清单，但**不是自由文字**：`test/release-day.test.js` 会逐格把它们与 `scripts/release-day.mjs` 里的 `PREFLIGHT_STEPS` 对账（行数、序号、分母、命令列），只在那一侧加了一步而没在**两份** AGENTS 里补行、或改了 script 名而没改那一列，这一格就红（issue #731）。它按顺序跑，**任一红就停在那一步并点名第几步**。不带 `ERIX_E2E_REAL=1` 时真上游那一步**什么都不跑**——那**不是**通过，
-命令会明说「未判定」并 exit 2 而不是 0，于是「真上游那一半没做」再也不可能看起来像一次绿的发布。
+那些 `[i/N]` 行与 `PREFLIGHT_STEPS` 逐格机器对账（issue #731）——见 `docs/maintenance/command-reference_cn.md#release-day`。它按顺序跑，任一红就停。不带 `ERIX_E2E_REAL=1` 时真上游那一步**什么都不跑**——那**不是**通过，
+命令会明说「未判定」并 exit 2 而不是 0。
 
 - **`[Unreleased]` 搬运**（issue #715）是上面清单的第 2 步，它答**三态**（红 / 未判定 / 绿）。哪一态是哪种、为什么 `--sync` 搬不动那些条目、以及它打印的可执行动作，都在 `docs/maintenance/command-reference_cn.md#release-day` —— 开版本节或挪标题行之前先读它。
 
