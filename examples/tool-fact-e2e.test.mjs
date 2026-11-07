@@ -490,6 +490,11 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
     // 给宿主传进来的旧块补 `erix`」。光看 `store.load()` 不够：那是磁盘，就地改内存对象而不再落盘
     // 的坏法不会在磁盘上留下痕迹（本单要防的 (a) 正是那一种）。
     const snapshotPayloads = [];
+    // **已知（#735 切片 2 之后本探针失去观察面；修法见下面的 F9b）**：快照的 `messages` 自切片 2 起
+    // 只交**轮残余**（`orchestrator.js#persistRunSnapshot` 的 `residueStart` 之前的格子写成 `null`），
+    // 而恢复进来的旧块恒在残余之前 ⇒ `snapshotPayloads` 里**取不到** `legacy-1`
+    // （离线同形状实测：resume 期两份快照 `messages.length=7`、`null=6`、旧块在场=false）
+    // ⇒ 下面 F9b 那句「引擎内存里不许就地改写」的观察面必须搬到 **store 读边界**（`storeCProbed`）。
     const storeCProbed = {
       ...storeC,
       async saveRunSnapshot(runId, snapshot) {
