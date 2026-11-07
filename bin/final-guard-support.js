@@ -84,12 +84,14 @@ async function captureStubForResult(block, evidence) {
  * 「完整原因」在 #741 那条 TTL 占位符里已经有；桩这只需说清「没记录 + 走重读」这一件事。
  */
 function guardRecallSuffix(evidence) {
-  const hint = noteRecallHint(evidence);
   // 受预算约束：这里取 **短版**（`shortClause`）——完整原因全文在 #741 的 TTL 占位符里已经有。
-  const clause = hint.available ? hint.shortClause : hint.shortClause;
-  return hint.available
-    ? `；后续${clause}；若未记录且无法确定性重算，请省略对应 findings 声明`
-    : `；后续${clause}；若无法确定性重算，请省略对应 findings 声明`;
+  // 三格（有写入 / 面上有但账本没递到 / 无证据）拼的是同一个模板，措辞全在 `src/` 那一侧：
+  // 本文件里**一个 `note_*` 字面都没有**（守卫 G4 按现值钉着），于是口径不可能在这里独自漂掉。
+  // 尾部只有一句，**不按格子分叉**：「有没有可复原的记录」全部由 `shortClause` 那一侧决定
+  // （无证据那一格它本身就写着「本场无可复原的笔记记录」）。在这里再分叉一次就是第二把尺——
+  // 实测会把同一句话写两遍，而这条桩是 200 码点 + `budgetTokens` 双预算的受保护消息（memento S2
+  // 就是这样死在 `invalid_budget` 上的）。
+  return `；后续${noteRecallHint(evidence).shortClause}；若无法确定性重算，请省略对应 findings 声明`;
 }
 
 /**

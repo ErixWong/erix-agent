@@ -27,13 +27,28 @@ import {
  */
 export const NOTE_RECALL_CLAUSE = "先用 note_list 查找记录，再用 note_read 读取";
 
-/** 证据门的三个出口（写进返回值只为了让测试能断言「走的是哪一格」，而不是整段原文比对）。 */
+/** 证据门的出口（写进返回值只为了让测试能断言「走的是哪一格」，而不是整段原文比对）。 */
 export const NOTE_HINT_GATES = Object.freeze({
   /** 工具面 + 账本两条都成立 ⇒ 给 note_* 指引。 */
   noteEvidence: "note-evidence",
+  /**
+   * 工具面成立、但**这一层根本拿不到账本** ⇒ 只能给条件式（「如本 run 写过笔记…」+ 重读退路）。
+   * 这一格是为 #746 新加的，而它**不是**把 #741 放松：见 `noteRecallHint` 的注释——那一层里没有
+   * 「有没有写入」这个事实可拿，硬套四格会把「不知道」伪报成「没写过」（与旧文伪报「有记录」同罪）。
+   */
+  notesAvailable: "notes-available",
   /** 拿不到证据（无笔记工具 / 无笔记写入 / 已撤销 / 无笔记证据）⇒ 只给重读。 */
   noEvidence: "no-evidence",
 });
+
+/**
+ * 有笔记工具但拿不到账本时的条件式指引。
+ *
+ * 它与 `NOTE_RECALL_CLAUSE` 的分别是**有意的**：那一句是「先查再用」的动作指令，在有账本的层里
+ * 它背后站着「确实有一条还能查的写入」这个事实；本格的处境是没有那个事实可拿，所以话必须停在
+ * 「如果写过就查」，并同时给重读退路——既不承诺有记录，也不否认有记录。
+ */
+export const NOTE_CONDITIONAL_CLAUSE = "如本 run 写过笔记，先用 note_list 查找记录、再用 note_read 读取；没写过就只能重读源文件";
 
 /**
  * 整族笔记工具在不在给定名单上。**名单本身不复制**：唯一真值是
@@ -105,8 +120,25 @@ export function rereadClauseShort(command) {
  * @returns {NoteRecallHint}
  */
 export function noteRecallHint({ noteTools, messages, toolName, toolInput } = {}) {
-  const recall = resolveNoteRecall({ noteTools, messages });
   const command = retrievalCommandFor(toolName, toolInput);
+  // **账本缺席 ≠ 账本为空**（#746 的新认识，也是本模块唯一一处「不直接照抄 #741 四格」的地方）：
+  // 系统提示是 run 开始前拼的、`bin/` 的折叠桩钩子只拿到待折叠的那一条消息，这两层里「没有写入」
+  // 不是事实，是**没人在这一层把账本递过来**。硬按四格判 ⇒ 整族在场上也永远走「无笔记写入」，
+  // 于是把「我不知道」伪报成「这条 run 没记过笔记」——与旧文把「不知道」伪报成「有记录」同一个形状，
+  // 只是方向相反。所以本格只说条件式，并把「能不能查」如实地报成 false。
+  if (hasNoteToolSurface(noteTools) && messages === undefined) {
+    return {
+      gate: NOTE_HINT_GATES.notesAvailable,
+      available: false,
+      reason: "",
+      command,
+      clause: command === undefined
+        ? NOTE_CONDITIONAL_CLAUSE
+        : `${NOTE_CONDITIONAL_CLAUSE}；需要原文也可直接执行：${command}`,
+      shortClause: NOTE_CONDITIONAL_CLAUSE,
+    };
+  }
+  const recall = resolveNoteRecall({ noteTools, messages: messages ?? [] });
   if (recall.available) {
     return {
       gate: NOTE_HINT_GATES.noteEvidence,
