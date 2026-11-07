@@ -53,10 +53,15 @@ import { transcriptPath } from "../src/store/file.js";
 import { createCliAssemblyRoot } from "./assembly-root.js";
 import { buildCompactionContext, resolveCompactionBudget, splitCompactionContext } from "./config.js";
 import { buildCaptureRecoveryHint, buildCaptureStub } from "./final-guard.js";
+// issue #746（评审必修 2）：子的提示词必须跟**子的真工具面**，口径与父侧同一份（`notesOnToolSurface`）。
+// ⚠ 这一行本来就是**漏掉的**：`noteToolSurface` 在本文件被调用却从未 import，子 run 一折叠就
+// `ReferenceError`（守卫与用例见 `test/prompt-note-delegate-ledger-746.test.js`）。
+import { noteToolSurface, notesOnToolSurface } from "./system-prompt.js";
 import {
   buildArchiveNotice,
   buildCliToolsSystemPrompt,
   CLI_TOOL_NAMES_FULL,
+  CLI_TOOL_PROMPT_PHRASES,
   createCliTools,
   filterToolsByAllowlist,
   wrapExecuteTool,
@@ -116,23 +121,31 @@ export function resolveDelegationDir(explicit) {
 /**
  * 子 run 的 system prompt：与父同一套装配，但 `delegate: false`（v1 不递归派生）。
  *
- * @param {{ cwd: string, todo?: boolean, archiveDir?: string, toolNames?: string[] }} options
+ * @param {{ cwd: string, todo?: boolean, archiveDir?: string, toolNames?: string[], notes?: boolean }} options
  * @param {string[]} [options.toolNames] 子 run **实际**拿到的工具名（issue #630 S1）。给了它，
  *   清单行只列这些名字（父的 `--tools` 白名单已把子工具面收窄时，提示词必须同一侧——
  *   否则就是「提示词说有、工具面没有」的缝，模型会反复调一个不存在的工具）。
  *   不给（缺省）= 旧行为：列 todo+delegate:false 的完整注册面，逐字节不变。
+ * @param {boolean} [options.notes] 整族 `note_*` 在不在子的工具面上（issue #746，评审必修 2）。
+ *   以前这一位**从来没人传**，于是 builder 拿缺省 `true`：`--tools readFile` 把笔记工具从子工具面
+ *   滤掉了，子的提示词仍在命令模型「立刻 note_take / 先 note_list 再 note_read」——那三个工具
+ *   根本不在面上（与 #630 S1 刚修过的「清单行说有、工具面没有」同一条缝，只是本单这一句在
+ *   「你的处境」段里，清单行守卫看不见）。不给（缺省）= 旧行为：缺省装配面确实带着整族笔记工具，
+ *   逐字节不变。调用方必须从**装配后的真子工具面**现推（`notesOnToolSurface(childTools)`），
+ *   不许自己判断「有没有 --no-notes」。
  * @returns {string}
  */
-export function buildChildSystemPrompt({ cwd, todo = true, archiveDir, toolNames } = {}) {
+export function buildChildSystemPrompt({ cwd, todo = true, archiveDir, toolNames, notes } = {}) {
   return `你是 erix 的子 run（父 run 派生的一次性任务执行者），工作目录 ${cwd}。`
     + buildCliToolsSystemPrompt({
       todo,
       delegate: false,
+      notes: notes !== false,
       // `names` 收窄清单行时 `fullNames` 必须显式给全量注册面：短语表是静态表，
       // 拿收窄后的名单当「陈旧」基准会把没被选中的工具短语误报成手抄残留。
       ...(toolNames === undefined ? {} : { names: toolNames, fullNames: CLI_TOOL_NAMES_FULL }),
     })
-    + buildArchiveNotice(archiveDir)
+    + buildArchiveNotice(archiveDir, { notes: notes !== false })
     + "\n\n每轮开始先用一句话（≤30字）说明当前计划，再调用工具。";
 }
 
@@ -296,15 +309,29 @@ export function createCliDelegation({
      * 子 run 的系统提示（issue #630 S1）：提示词与工具面必须同一侧。白名单收窄了工具集时，
      * 清单行也只列收窄后的名字（`toolNames`），todo 那一句跟着「todo 工具还在不在」走；
      * allowlist 缺省时**不传** `toolNames` ⇒ 旧提示词逐字不变。
+     *
+     * issue #746（评审必修 2）：`notes` 从**子的工具面事实**现推，两个分支都给（不只给白名单分支）：
+     * 子的笔记工具只可能从 `--tools` 这一条路消失，但「从真面里推」而不是「拿缺省值当存在」才是
+     * 本单定的口径；`childTools` 不在场 ⇒ 提示词里一个 `note_*` 都不出现。与子侧折叠桩/恢复提示
+     * 同一个事实源（下面 `noteToolSurface(childTools)`），不留两个真相。
+     *
+     * ⚠ `toolNames` 只递**有清单文案的那些名字**（`childPromptToolNames`）：`note_*` 从来不在 CLI
+     * 注册面里（它们由笔记工厂装配，父侧清单行同样不列它们），把它们塞进 `names` 会让
+     * `assertPromptPhraseTableMatches` 当场抛「注册面上的工具没有清单文案」——白名单里点名了笔记工具
+     * 的子 run 会直接 `failed`（本单在同一处顺手拆掉的旧坑，钉子在同名的新用例里）。
      */
-    const childPromptOptions = toolAllowlist === undefined || toolAllowlist === null
-      ? { cwd: root, todo: todoEnabled, archiveDir: assembly.archiveDir }
-      : {
-        cwd: root,
-        todo: todoEnabled && childToolNames.some((name) => name.startsWith("todo_")),
-        archiveDir: assembly.archiveDir,
-        toolNames: childToolNames,
-      };
+    const childPromptToolNames = childToolNames.filter((name) => CLI_TOOL_PROMPT_PHRASES[name] !== undefined);
+    const childPromptOptions = {
+      cwd: root,
+      archiveDir: assembly.archiveDir,
+      notes: notesOnToolSurface(childTools),
+      ...(toolAllowlist === undefined || toolAllowlist === null
+        ? { todo: todoEnabled }
+        : {
+          todo: todoEnabled && childToolNames.some((name) => name.startsWith("todo_")),
+          toolNames: childPromptToolNames,
+        }),
+    };
 
     // `deadlineMs` 是**时长**（库的 `runChild` 契约，名册里 `deadlineAt = now + deadlineMs`），
     // 引擎读的 `config.timing.deadlineMs` 是**绝对时刻**——这里换一次，不在别处再换。
