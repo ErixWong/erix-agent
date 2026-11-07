@@ -688,10 +688,10 @@ export async function restoreResume(ctx) {
         // ⚠ 下面 `ctx.resumeUnpersistedToolResults` 仍拿**全量** ⇒ #424 守卫与
         // `resume_journal_skipped(crash_round_assistant_not_in_ledger)` 一字不动；新格式（探针 = 0）逐字不变。
         // **同一把尺子用两次**（第三刀见下面 `resumePendingTools`）：判据 1 禁的是 `invalid_messages` 这个**结局**。
-        const toolUseInRebuiltContext = (id) => (id === undefined
+        const toolUseInRebuiltContext = (/** @type {unknown} */ id) => (id === undefined
           ? false
-          : ctx.messages.some((message) => blocksFor(message?.content)
-            .some((block) => block?.type === "tool_use" && block.id === id)));
+          : ctx.messages.some((/** @type {any} */ message) => blocksFor(message?.content)
+            .some((/** @type {any} */ block) => block?.type === "tool_use" && block.id === id)));
         const replayResults = legacySnapshotBodyDropped === 0
           ? replayResultsAll
           : replayResultsAll.filter((toolResult) => toolUseInRebuiltContext(toolResult?.tool_use_id));

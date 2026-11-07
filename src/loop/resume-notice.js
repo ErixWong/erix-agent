@@ -186,10 +186,11 @@ export function buildResumeNotice(facts = {}) {
   const calls = (Array.isArray(facts.toolCalls) ? facts.toolCalls : [])
     .filter((call) => typeof call === "string" && call !== "");
   // issue #754：只在**真的丢了正文**时多那一句（判据：条数 > 0）。
-  const legacySnapshotBodyCount = Number.isSafeInteger(facts.legacySnapshotBodyCount)
-    && facts.legacySnapshotBodyCount > 0
-    ? facts.legacySnapshotBodyCount
-    : 0;
+  // `typeof … === "number"` 不是凑数的：`Number.isSafeInteger()` 本身不是类型守卫，少了这一步
+  // `declared > 0` 就是 `possibly 'undefined'`（strict 棘轮当场数到）。
+  const declared = facts.legacySnapshotBodyCount;
+  const legacySnapshotBodyCount = typeof declared === "number"
+    && Number.isSafeInteger(declared) && declared > 0 ? declared : 0;
 
   const lines = [
     `${RESUME_NOTICE_TAG}这是一次崩溃后的恢复运行，不是连续会话：上一段停在第 ${round} 轮；${reasonText}。`,
