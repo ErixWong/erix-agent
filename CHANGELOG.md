@@ -528,6 +528,40 @@
 
 ### Fixed
 
+- **The CLI-flag guard now asks "whose command line is this segment" before it looks a flag up (issue #773).**
+  Rule 3 of `test/static-guards.test.js` gated on the **whole line**, so
+  `npm i -g erix-agent --prefer-online && erix --version` entered the scan face through its `erix` tail and
+  then had the **npm** flag `--prefer-online` looked up in the erix accepted set. The face is now cut into
+  segments at `&&`, `||` and `;` (a newline already ends one, since the scan reads one line at a time) and
+  every segment is judged alone: a segment's flags leave the face **only** when it carries no `erix` command
+  word **and** its leading subject is a command registered in `NON_ERIX_COMMAND_SUBJECTS` (read after peeling
+  quotes, `$(`, `VAR=value`, `sudo` / `env` / `time` wrappers, path prefixes, and a label shorter than 49
+  characters that ends in a colon). Neither condition alone would do: a segment holding `npx erix --x` keeps
+  counting because erix wins inside a segment, and the tail of a prose sentence behind a `;` has no subject at
+  all, so it keeps counting too - the four live flags hung off a `;` in `docs/host-upgrade-guide-v030.md` are
+  the pinned sample of that. An unrecognizable subject therefore stays in the face (biased strict), a single
+  `|` is **not** a separator because markdown table rows use it, and a dropped segment is blanked with
+  **same-length** spaces so line numbers, the negation look-back window and the quoted excerpt keep exactly
+  the coordinates they had before the cut. It is machine-checked rather than exempted: every registered name
+  is asked through `<cmd> i -g erix-agent --probe-773-flag && erix --version` and must really stop its own
+  segment from counting, and both directions run end to end through `flagMentions` on throwaway files under the
+  untracked `docs/tasks/` (never committed) - an invented flag in the npm segment stays green while the `--version` on the same line still
+  lands in the face, an invented flag in the erix segment goes red and names that very line. Coverage of the
+  scan face did not move: 83 flag mentions before the cut, 83 after.
+- **命令行旗标守卫现在先问「这一段是谁家的命令行」，再去查旗标（issue #773）。** 规则 3 原来只按**整行**问，
+  于是 `npm i -g erix-agent --prefer-online && erix --version` 因为尾巴上有 `erix --version` 就整行进扫描面，
+  再把 **npm 的** `--prefer-online` 拿去 erix 的接受集合里查。现在一行先按 `&&`、`||`、`;` 切段（换行本来就
+  分段：扫描本来就是一行一次），每段单独判：**这一段没有 erix 命令词、且段首主语是登记在
+  `NON_ERIX_COMMAND_SUBJECTS` 里的命令**（读主语之前先剥掉引号、`$(`、`VAR=值`、`sudo` / `env` / `time` 包装、
+  路径前缀，以及冒号前不超过 48 个字符的短标签）⇒ 这一段的旗标不计入面。两个条件缺一不可：`npx erix --x`
+  这种段内有 erix 命令词的仍然计（erix 赢），而散文句子里 `;` 后面的尾巴根本没有主语，也仍然计——
+  `docs/host-upgrade-guide-v030.md` 里用 `;` 串着的 4 个现役旗标就是钉住的样本。认不出主语的段照旧计入（偏严）；
+  单个 `|` **不**当分隔符，因为 markdown 表格行也用它；不计入的段用**等长空白**抹平，所以行号、否定句回看窗口、
+  命中摘录的坐标与切段前逐字符相同。它是机器复核、不是豁免：名单里每个名字都被
+  `<cmd> i -g erix-agent --probe-773-flag && erix --version` 问过一遍，必须真的让自己那一段停止计数；两个方向都
+  通过 `flagMentions` 端到端跑在本机不入库的 `docs/tasks/` 临时文件上——旗标塞在 npm 段不红、且同一行的 `--version` 仍在面里，
+  塞在 erix 段必红并点名那一行。扫描面覆盖一字未动：切段前 83 次提及，切段后 83 次。
+
 - **The resume crash boundary is derived from the ledger, not from the run snapshot (issue #736).**
   `crashSiteRound` — the predicate deciding whether a resume faces a crash site or a normally closed run —
   read only the run snapshot, while #734 had just established that the write which failed **is the snapshot
