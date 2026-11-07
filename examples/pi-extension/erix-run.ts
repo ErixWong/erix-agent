@@ -72,8 +72,9 @@ const PROGRESS_WINDOW = 12;
 const PROGRESS_THROTTLE_MS = 150;
 /** 完成通知的消息类型（pi 用它挑 renderer；本扩展没注册 renderer，按普通消息显示）。 */
 const NOTIFY_CUSTOM_TYPE = "erix-run-notify";
-/** `action` 的取值（R2：同一个工具加参数，不另注册工具——理由见 README「为什么是一个工具」）。 */
-export const ACTIONS = ["status", "result", "list", "cancel"] as const;
+/** `action` 的取值（R2：同一个工具加参数，不另注册工具——理由见 README「为什么是一个工具」）。
+ * issue #753 C2 加了 `steer`：往**还活着的后台 run** 的内存收件箱里投一句话（需 `message`）。 */
+export const ACTIONS = ["status", "result", "list", "cancel", "steer"] as const;
 
 const parameters = Type.Object({
   task: Type.Optional(Type.String({
@@ -245,12 +246,23 @@ const parameters = Type.Object({
     StringEnum([...ACTIONS], {
       description:
         "查询/控制已派工的 run：status=当前状态与终局四件套；result=完整终局（四件套 + artifacts + diagnostics）；"
-        + "list=本进程已知 run 的摘要表；cancel=把 signal 打进内层 run、终局记成 aborted。"
-        + "status/result/cancel 要带 runId（list 不用）。",
+        + "list=本进程已知 run 的摘要表；cancel=把 signal 打进内层 run、终局记成 aborted；"
+        + "steer=往那个 run 的**内存收件箱**投一句话，它在下一个轮边界被内层 run 当成一条真的用户轮读进去（issue #753 C2，需 message）。"
+        + "status/result/cancel/steer 要带 runId（list 不用）。"
+        + "⚠ steer 只投得进 **async:true 且还在跑** 的 run：同步 run 正阻塞着那次工具调用（没人能并发发 steer）；"
+        + "只在盘上的 run（进程重启后）与已结束的 run 都会被当场拒（steer_unavailable），不会谎称已投递。",
     }),
   ),
   runId: Type.Optional(Type.String({
     description: 'action 要操作的 run id（就是 async:true 返回的句柄里的 runId）。',
+  })),
+  // —— issue #753 C2：轮边界转向的正文 ——
+  message: Type.Optional(Type.String({
+    description:
+      '只在 action:"steer" 时有意义：要注入给**内层 run** 的那一句话（非空字符串，只含空白算坏参数）。\n'
+      + '它是内层 run 的一个轮边界上追加的一条真 role:"user" 轮，不是给父会话的消息。\n'
+      + '多条 steer 按 FIFO 每个轮边界只消费一条；没消费完的条数看 jobView/status.json 的 steerPending，'
+      + '注入账目看终局的 diagnostics.steer（offered/injected/rejected/lastRound）。',
   })),
   // —— issue #207 R2：从**盘上账本**续跑 ——
   resume: Type.Optional(Type.String({
@@ -371,6 +383,8 @@ export const erixRunTool = defineTool({
     + "传 resume=<handle>（+ 原 cwd）就接着那份账本跑。"
     + "async:true 时立即返回句柄 {runId,status,cwd,model,maxRounds,sessionDir,statusPath}（主会话不阻塞），"
     + "之后用 action:\"status\"/\"result\"/\"list\"/\"cancel\" 查与控；完成时终局摘要会作为通知回到本会话。"
+    + "派工之后还可以用 action:\"steer\" + message 往那个后台 run 投一句话（issue #753 C2）：它会在内层 run 的下一个轮边界"
+    + "被追加成一条真的用户轮；一次只消费一条，其余排队（steerPending）。同步调用没有这个通道（那次工具调用正阻塞着）。"
     + "每次调用都是一次完整多轮 run，成本不低。",
   promptSnippet: "把自包含的编码子任务交给内嵌 erix-agent 多轮执行（绝对 cwd；async:true 派工即返回）",
   promptGuidelines: [
@@ -386,6 +400,9 @@ export const erixRunTool = defineTool({
     // #276：异步终局视图（status/result/status.json）与同步返回同形（含 diagnostics），所以上面那条
     // 「ok:false 先读 termination.errorCode / diagnostics」在异步面同样成立——别拿「那是同步面的字段」当借口。
     "erix_run 的异步终局视图与同步返回同形（syncOnlyFields 为空）：action:\"status\"/\"result\" 与 <sessionDir>/outputs/<runId>/status.json 都带 diagnostics（含 notesLifecycle），/reload 后从盘上读也一样。",
+    // issue #753 C2：steer 的两个常见误用（对着同步 run 发 steer / 把 steer 当成父会话的消息）写在描述里，
+    // 这里只留一条可执行的指引：投不进就当场拒，别重试成习惯。
+    "要给 erix_run 的后台 run 补充信息用 action:\"steer\"（runId + message）：它注入的是**内层 run** 的下一个轮边界；只有 async:true 且还在跑的 run 收得到，同步 run / 只在盘上的 run / 已结束的 run 会被当场拒（steer_unavailable），此时改用 resume 或重跑，别反复重发。",
   ],
   parameters,
   outputSchema: payloadSchema,

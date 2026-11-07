@@ -4439,7 +4439,16 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 //
 // ⇒ 地板 = **22**。口径同上一任：不许做加法，只取守卫在这棵树自己打印的数；今晚这一格已重取六次
 // （15→…→19→20→21→22），根因是并行会话在同一块上各自测各自的数 —— 只有合并树上的现测是真值。
-const CHANGELOG_PAIR_FLOOR = 22;
+//
+// 2026-11-07 第七次重取（issue #753 C2，`feat-261107-15-erix-run-steer-action` rebase 到 main `40a518d`（#763 已合）之后，
+// **同样在合并后的树上现跑**）：守卫现报（动常量之前 `node --test test/static-guards.test.js` 的标准输出原文）：
+//
+//     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 23 条 / 英文 23 条 / 配对 23 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 22（校准面 \#\# [Unreleased]）
+//     # 配对地板：实测 23 对 > 地板 22 对 ⇒ 可以抬地板到 23
+//
+// ⇒ 地板 = **23**（#753 C2 在 `### Added` 加的那对中英；本支自己那笔旧登记（旧树 18→19）在 rebase 时让位给主干，
+// 不在旧值上做加法）。
+const CHANGELOG_PAIR_FLOOR = 23;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

@@ -110,6 +110,23 @@ export const NOTIFY_RETRY_DELAYS_MS = Object.freeze([5_000, 10_000, 30_000]);
 export const DELIVERY_VALUES = Object.freeze(["sent", "deduped", "failed", "orphaned", "no-owner"]);
 
 /**
+ * issue #753 C2：`action:"steer"` **被拒**时的错误码（判据 3「拒绝面必须诚实」）。
+ *
+ * 两种拒绝理由共用这一个码（口径同 `cancel` 的「只存在于盘上」），差别在 `reason`：
+ *
+ * | `reason` | 事实 | 为什么投不进去 |
+ * |---|---|---|
+ * | `disk-only` | 只在盘上有它（`lookup` 的 `source:"disk"`） | 收件箱与内层 run 都在**内存**里；进程重启后既没有队列也没有会去读队列的钩子，也不会「等续跑后再消费」 |
+ * | `settled` | job 已结算（`status` 不在 `ACTIVE_JOB_STATUSES` 里） | 已结束的 run **没有下一个轮边界**，引擎再也不会问一次 `nextUserTurn` |
+ *
+ * 两者都返回 `steered:false` + 当时的 `steerPending`，**绝不**报成「已投递」。
+ */
+export const STEER_UNAVAILABLE_CODE = "steer_unavailable";
+
+/** `steer` 正文进进度通道时的预览宽度（与 `preview` 同族：只截显示，不截入队正文）。 */
+const STEER_PROGRESS_PREVIEW_CHARS = 80;
+
+/**
  * 投递诊断在**那句人话**里的 marker（issue #665）：`delivery: <解释>`。
  *
  * 为什么是一个 marker 而不是「随便拼一段中文」：调用方（模型 / 读 `status.json` 的会话）要能一眼
@@ -596,6 +613,12 @@ export function jobView(job, { now = () => Date.now() } = {}) {
     // 恒在场：没尝试过 / 投成功（`sent` 不贴噪音）时是 `null`。
     deliveryNote: job.deliveryNote ?? null,
     deduped: job.deduped ?? 0,
+    // issue #753 C2：**转向收件箱的队列长度**（可观测面，判据 4）。恒在场（没 steer 时是 `0` 而不是
+    // 缺键），与 `delivery` 同族：`status.json` 的内容就是这个函数的返回 ⇒ 盘上那一份与
+    // `action:"status"` / `"result"` 的视图**同形**，不必自己数。它是**内存队列**的当下长度
+    // （入队 +1、被内层 run 取走一条 -1），不是「注入成功了几条」——后者是引擎的账，
+    // 在 `diagnostics.steer.injected`（只在终局之后才有）。
+    steerPending: Number.isSafeInteger(job.steerInbox?.length) ? job.steerInbox.length : 0,
     // —— 异步面独有：**续跑坐标**（issue #659 第 6 格）。与 `delivery` 同族：只读 `status.json` 的
     //    别的会话不必从 `diagnostics.resume` 里挖，也不必自己去拼 `<sessionDir>/<runId>.jsonl`。
     //    取值与 `resumable` **同源**（都是 core 的 `resumeFactsOf` 经 `buildSuccessPayload` 落到
@@ -603,6 +626,59 @@ export function jobView(job, { now = () => Date.now() } = {}) {
     //    终局后与 `resumable` 一起出现，不可能一个说能续、一个说没坐标。
     resume: job.payload?.diagnostics?.resume ?? null,
   };
+}
+
+/**
+ * issue #753 C2：**转向收件箱 → 引擎轮边界槽位**的接线（判据 2）。
+ *
+ * 引擎那一侧（C1，已在 main）：`capabilities.hooks.nextUserTurn` 是**同步**槽位，每个轮边界问一次
+ * （位置在 `throwIfAborted(signal)` 之后、轮切片开窗之前），回的字符串会被追加成一条**真的**
+ * `role:"user"` 轮进下一轮记录，`null` / `undefined` ⇒ 零行、零事件、账本逐字不变（`docs/host-consumer-contract.md`
+ * 的「轮边界的主机转向」一节）。契约要点在本层的落点：
+ *
+ * - **每次只交队首一条**：其余留在队列里等下一个轮边界（判据 2 的 FIFO），队列空时回 `null`。
+ * - **同步**：钩子里只有 `Array.shift` 与一次 push，没有任何 await / IO —— 慢钩子是宿主的事（契约明说）。
+ * - **装配时机**：引擎在 `runToolLoop` 入口一次性捕获这个钩子（`src/loop/orchestrator.js` 的
+ *   `capabilityHooks.nextUserTurn`），所以钩子必须在**装配时**就在位。本层的判据是「该 job 真有收件箱
+ *   才装」（见 `steerHookDeps`）：**同步面没有收件箱 ⇒ 一个钩子都不装**，options 对象逐字不多一个字节。
+ *   异步面装了钩子但**没人 steer** 时，钩子每轮回 `null` ⇒ 引擎那一侧的账是「问了 N 次、注入 0 次」，
+ *   账本与事件序列与不装钩子的 run 逐字一致（C1 契约的硬保证，本层测试钉住事件面）。
+ *
+ * @param {object} job 带 `steerInbox` 的 job
+ * @returns {() => string|null} 引擎的 `capabilities.hooks.nextUserTurn`
+ */
+export function createSteerHook(job) {
+  return function nextUserTurn() {
+    const inbox = job?.steerInbox;
+    const text = Array.isArray(inbox) && inbox.length > 0 ? inbox.shift() : undefined;
+    if (typeof text !== "string" || text === "") {
+      // 队列空：回 `null` 而不是 `undefined` —— 两者引擎都当「本轮无事」，但显式的 `null` 让
+      // 「钩子装了、这次没东西」在测试与阅读时是一个**说得出的决定**。
+      return null;
+    }
+    job.steerInjected = (job.steerInjected ?? 0) + 1;
+    // 进度通道是**旁证**（真正的账在引擎的 `diagnostics.steer` 里）：让人从 status.json 的
+    // progressTail 看得出「那句 steer 真的被取走了」。同 `onProgress` 的 400 条上限。
+    if (Array.isArray(job.progress)) {
+      job.progress.push(`steer 已交给内层 run（队列还剩 ${inbox.length} 条）：${text.slice(0, STEER_PROGRESS_PREVIEW_CHARS)}`);
+      if (job.progress.length > 400) job.progress.splice(0, job.progress.length - 400);
+    }
+    return text;
+  };
+}
+
+/**
+ * 该 job 要不要给内层 run 装转向钩子（判据 2 的闸门）：**只有真有收件箱的 job 才装**。
+ *
+ * 收件箱只在 `start()`（异步派工）里建，所以这条闸门同时是「同步面不能 steer」的实现事实：
+ * 同步面根本没有 job 对象 ⇒ 没有 `nextUserTurn` ⇒ `capabilities.hooks` 里连这个键都没有。
+ *
+ * @param {object|undefined} job
+ * @returns {Record<string, unknown>} 要并给 `runJob` 的 deps（不装时是**空对象**）
+ */
+export function steerHookDeps(job) {
+  if (job === undefined || !Array.isArray(job.steerInbox)) return {};
+  return { nextUserTurn: createSteerHook(job) };
 }
 
 /**
@@ -910,6 +986,12 @@ export function createAsyncRuntime(options = {}) {
       persistence: sessionDir === undefined ? undefined : artifactPaths({ sessionDir, runId }),
       controller: new AbortController(),
       timedOut: false,
+      // issue #753 C2：**转向收件箱**（内存 FIFO）。`action:"steer"` 往里 push，内层 run 在每个轮
+      // 边界经 `createSteerHook` 取走队首一条。与 `controller` / `progress` 同族：**只在内存里**，
+      // 不跨进程重启（所以「只在盘上的 job」不接受 steer），也不进 `handleOf` 的句柄形状。
+      // 队列长度是 `jobView.steerPending` 的来源（同一份事实，不另记第二个数）。
+      steerInbox: [],
+      steerCount: 0,
     };
     job.statusPath = statusFilePath({ sessionDir: job.sessionDir, runId });
     registry.set(runId, job);
@@ -953,6 +1035,10 @@ export function createAsyncRuntime(options = {}) {
         onProgress,
         runId,
         ...(resumeTarget === undefined ? {} : { resumeTarget }),
+        // issue #753 C2：轮边界转向钩子。闸门在 `steerHookDeps`（**有收件箱才装**）：异步 job 一定装
+        // （引擎在 runToolLoop 入口一次性捕获钩子，晚装等于装不上），没人 steer 时每轮回 `null` ⇒
+        // 引擎那一侧零行为变化。同步面走 `sync()`，压根不经过这里 ⇒ 一个钩子也不装。
+        ...steerHookDeps(job),
       }))
       .then(
         (payload) => settle(job, payload),
@@ -1025,9 +1111,73 @@ export function createAsyncRuntime(options = {}) {
     if (runId === "") {
       return { kind: "error", code: "bad_params", message: `action:${action} 需要 runId（list 不需要）` };
     }
+    // 判据 1：`steer` 的正文坏参数**当场** `bad_params`（`act` 是同步的）。绝不能把它派到后台变成
+    // 一条 `job.payload` —— 那会让同一个坏参数在同步/异步两条路上给出两种形状。
+    let steerMessage;
+    if (action === "steer") {
+      const raw = rawParams?.message;
+      steerMessage = typeof raw === "string" ? raw.trim() : "";
+      if (steerMessage === "") {
+        return {
+          kind: "error",
+          code: "bad_params",
+          message: 'action:"steer" 需要 message（非空字符串）：那是要注入内层 run 的用户轮正文（只含空白的串同样算坏参数）',
+        };
+      }
+    }
     const found = lookup(runId);
     if (found.source === "missing") {
       return { kind: "unknown-run", runId, message: `没有找到 run ${runId}（内存注册表与已知 sessionDir 下的 status.json 都查过；进程重启或没传 sessionDir 时内存表不跨重启）` };
+    }
+    // 判据 3：**拒绝面必须诚实**。只有内存注册表命中的、还没结算的 job 才有人去读它的收件箱；
+    // 两种拒绝都返回 `steer_unavailable` + 理由 + 当时的 `steerPending`，**不许**谎称已投递。
+    if (action === "steer") {
+      const job = found.job;
+      if (job === undefined) {
+        return {
+          kind: "steer",
+          steered: false,
+          code: STEER_UNAVAILABLE_CODE,
+          reason: "disk-only",
+          runId,
+          steerPending: Number.isSafeInteger(found.view?.steerPending) ? found.view.steerPending : 0,
+          view: found.view,
+          message: `run ${runId} 只存在于盘上（内存注册表里没有它——进程重启过）：steer 投不进去。`
+            + "收件箱和内层 run 都在内存里，盘上没有可投的队列，也不会有人等续跑之后再去消费它。"
+            + "（口径同 action:\"cancel\" 的「只存在于盘上」）。要接着跑请用 resume:<status.json 路径>。",
+        };
+      }
+      if (!ACTIVE_JOB_STATUSES.includes(job.status)) {
+        return {
+          kind: "steer",
+          steered: false,
+          code: STEER_UNAVAILABLE_CODE,
+          reason: "settled",
+          runId,
+          steerPending: Number.isSafeInteger(job.steerInbox?.length) ? job.steerInbox.length : 0,
+          view: jobView(job, { now }),
+          message: `run ${runId} 已经结束（status=${job.status}）：已结束的 run 没有下一个轮边界，`
+            + "引擎再也不会问一次 nextUserTurn ⇒ 这句话不会被注入（不是「已投递」）。",
+        };
+      }
+      if (job.steerInbox === undefined) job.steerInbox = [];
+      job.steerInbox.push(steerMessage);
+      job.steerCount = (job.steerCount ?? 0) + 1;
+      job.lastSteerAt = now();
+      job.progress.push(`steer 入队（队列 ${job.steerInbox.length} 条）：${steerMessage.slice(0, STEER_PROGRESS_PREVIEW_CHARS)}`);
+      // 队列长度是**当下事实**：立刻落盘，否则只读 status.json 的会话看到的还是旧值。
+      persistStatus(job);
+      return {
+        kind: "steer",
+        steered: true,
+        runId,
+        position: job.steerInbox.length,
+        steerPending: job.steerInbox.length,
+        view: jobView(job, { now }),
+        message: `已进 run ${runId} 的内存收件箱（当前队列 ${job.steerInbox.length} 条）：内层 run 会在`
+          + "下一个轮边界取走队首那一条，作为一条真的 role:\"user\" 轮读进去，其余的等下一个边界。"
+          + "注入账目看终局的 diagnostics.steer（offered/injected/rejected/lastRound）。",
+      };
     }
     if (action === "cancel") {
       const job = found.job;

@@ -1561,7 +1561,7 @@ export function buildLoopOptions(input) {
   const {
     params, slot, provider, tools, store, signal, runId,
     system, onEvent, onObserverError, onPersistenceError, onJudge, diagnostics,
-    reflection, finalGuard, deliverables,
+    reflection, finalGuard, deliverables, nextUserTurn,
   } = input;
 
   // #498 S6：`reflection` 是「一块数据 + 一个回调」的复合旋钮，按判据一分为二：
@@ -1588,6 +1588,12 @@ export function buildLoopOptions(input) {
   // #314 R1 / #498 S4b：`finalGuard` 的值必须是函数 ⇒ 按判据它是行为载体，规位在能力面。
   if (finalGuard !== undefined) hooks.finalGuard = finalGuard;
   if (onReflection !== undefined) hooks.onReflection = onReflection;
+  // issue #753 C2：轮边界转向钩子（引擎面 C1 的槽位 `capabilities.hooks.nextUserTurn`）。
+  // **只有调用方递了才装**（判据 2「没人 steer ⇒ 一个钩子都不装」）：没这个键时引擎的
+  // `steerMetrics` 是 `undefined` ⇒ 既不数 `offered` 也不发 `diagnostics.steer`，options 对象
+  // 逐字不多一个字节（同 `finalGuard` 的「默认路径不回归」约束）。回调是**行为载体**，
+  // 按 #498 S6 的划分规位在能力面，不新增 `config.*` 叶（C1 也刻意没加）。
+  if (nextUserTurn !== undefined) hooks.nextUserTurn = nextUserTurn;
 
   /** @type {Record<string, unknown>} */
   const config = {
@@ -2125,6 +2131,14 @@ function buildDiagnostics(input, source) {
       source: "host finalGuard wrapper (erix-run-final-guard.js)",
     },
   };
+  // issue #753 C2：内层 run 的**转向账目原样透传**（引擎 C1 的 `result.diagnostics.steer` =
+  // `{offered,injected,rejected,lastRound}`）。判据：只有**装了钩子**的 run 才有这一格，没装的人
+  // 看到的形状逐字不变（additive）。透传而不重算：`offered` 是引擎问了几次轮边界，本层数不出来。
+  // 走 `diagnostics` 而不是顶层字段：异步面的 `jobView` 整块投 `diagnostics` ⇒ 同步面与
+  // `action:"status"`/`"result"`/`status.json` 自动同形（判据 4）。
+  if (source?.diagnostics?.steer !== undefined && typeof source.diagnostics.steer === "object") {
+    diagnostics.steer = { ...source.diagnostics.steer };
+  }
   if (typeof source?.termination?.errorCode === "string") {
     diagnostics.errorCode = source.termination.errorCode;
   }
@@ -2169,6 +2183,9 @@ export async function runErixRun(rawParams = {}, deps = {}) {
   const now = deps.now ?? (() => Date.now());
   const startedAt = now();
   const onProgress = deps.onProgress;
+  // issue #753 C2：轮边界转向钩子（由 `erix-run-jobs.js` 在**异步派工**时递进来）。
+  // 只认函数：没递（同步面 / 没收件箱）就是 `undefined`，`buildLoopOptions` 连那个键都不写。
+  const nextUserTurn = typeof deps.nextUserTurn === "function" ? deps.nextUserTurn : undefined;
 
   const observerErrors = [];
   const metadataEvents = [];
@@ -2539,6 +2556,10 @@ export async function runErixRun(rawParams = {}, deps = {}) {
         }),
       // #314 R1：没开启时这个键不存在（不是 `undefined`），以免被当成「传了但空」。
       ...(finalGuardVerify === undefined ? {} : { finalGuard: finalGuardVerify }),
+      // issue #753 C2：钩子只在**递了**时往下传（不递 ⇒ `buildLoopOptions` 不写 `hooks.nextUserTurn`，
+      // 装配出来的 options 与改前逐字一致）。引擎在 `runToolLoop` 入口一次性捕获它，所以必须在
+      // 装配时就在位（这也是钩子归 jobs 层长期持有、而不是「steer 到达时才装」的原因）。
+      ...(nextUserTurn === undefined ? {} : { nextUserTurn }),
       // #391 R5/R1：交付物判据（默认关）。判据本体来自 `bin/final-guard.js` 的两个工厂
       // （`createDeliverableChecks` = 布尔那条，`createNamedDeliverableChecks` = 命名清单那条）
       // ——**复用 CLI 那一份**，本层不手抄第二份口径；宿主面只给命名开关 / 命名路径，
@@ -2726,6 +2747,15 @@ export function formatPayloadForModel(payload, { limit = 20_000 } = {}) {
     lines.push(`  ↳ ${summarizeFinalGuard(diagnostics.finalGuard)}`
       + ` ｜ verification=${payload?.verification?.status ?? "n/a"}`
       + `${payload?.verification?.reason ? `/${payload.verification.reason}` : ""}`);
+    // issue #753 C2：转向账目（只有装了钩子的 run 才有这一行）。口径：`injected` 是真进了内层 run
+    // 消息历史条数（不是「发了几条」），`rejected` 是抛错/返回非字符串（降级不致命）。
+    if (diagnostics.steer !== undefined && diagnostics.steer !== null) {
+      lines.push(`  ↳ steer：offered=${diagnostics.steer.offered ?? 0}`
+        + ` injected=${diagnostics.steer.injected ?? 0}`
+        + ` rejected=${diagnostics.steer.rejected ?? 0}`
+        + ` lastRound=${diagnostics.steer.lastRound ?? "-"}`
+        + `（来自内层 capabilities.hooks.nextUserTurn；injected 是真被当成一条 role:"user" 轮读进去的条数）`);
+    }
     for (const failure of diagnostics.notesLifecycle?.errors ?? []) {
       lines.push(`  ↳ notes 收尾失败（${failure?.operation ?? "?"}）：${failure?.message ?? ""}（不影响终局）`);
     }

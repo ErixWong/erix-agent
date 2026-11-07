@@ -42,6 +42,14 @@ function diagnosticsLineOf(diagnostics) {
     + (diagnostics.errorCode ? ` errorCode=${diagnostics.errorCode}` : "")
     + (diagnostics.notesLifecycle
       ? ` notesClosed=${diagnostics.notesLifecycle.completed ?? 0}/errors=${diagnostics.notesLifecycle.errors?.length ?? 0}`
+      : "")
+    // issue #753 C2：转向账目（判据 4：异步文本面与同步面的 `[diagnostics]` 行同形）。
+    // **没装钩子的 run 没有这一格** ⇒ 这一段也不出现（不把「没开」渲染成「0 次注入」这种假事实）。
+    + (diagnostics.steer
+      ? ` steer=offered:${diagnostics.steer.offered ?? 0}`
+        + `/injected:${diagnostics.steer.injected ?? 0}`
+        + `/rejected:${diagnostics.steer.rejected ?? 0}`
+        + `/lastRound:${diagnostics.steer.lastRound ?? "-"}`
       : "");
 }
 
@@ -170,6 +178,7 @@ export function formatCrashResult(message) {
  * **按 `kind` 组装**：`details` 只放该 kind 的那几个字段（不是整个 `outcome`）——
  * `started` → `{kind, handle}`；`status`/`result` → `{kind, source, view}`；
  * `list` → `{kind, jobs, active}`；`cancel` → `{kind, cancelled, view[, message]}`；
+ * `steer` → `{kind, steered, runId, steerPending[, code, reason, position, view]}`（issue #753 C2）；
  * `unknown-run` → `{kind, runId, message}`；`error` → `{kind, code, message}`；
  * `crashed` → 与 `formatCrashResult` 同一个小对象。
  *
@@ -197,8 +206,9 @@ export function formatAsyncResult(outcome) {
       handle.sessionDir === null || handle.sessionDir === undefined
         ? "sessionDir=（未落盘：查不到跨 /reload 的状态）"
         : `status.json=${handle.statusPath}`,
-      "查进度/取终局：erix_run(action:\"status\"|\"result\", runId=…)；取消：action:\"cancel\"。"
-      + "后台 run 与 pi 同进程，pi 退出或 /reload 会杀掉它。",
+      "查进度/取终局：erix_run(action:\"status\"|\"result\", runId=…)；取消：action:\"cancel\"；"
+      + "转向：action:\"steer\", runId=…, message=…（只投得进**还活着的后台 run**，同步 run 正阻塞着 ⇒ 没这个通道）。",
+      "后台 run 与 pi 同进程，pi 退出或 /reload 会杀掉它。",
     );
   } else if (kind === "list") {
     const jobs = Array.isArray(outcome?.jobs) ? outcome.jobs : [];
@@ -218,6 +228,26 @@ export function formatAsyncResult(outcome) {
     lines.push(cancelled
       ? `已请求取消 run ${view?.runId}：signal 已打进内层 run，终局记成 aborted。`
       : `run ${view?.runId} 无需取消（当前状态 ${view?.status}）。${outcome?.message ?? ""}`);
+  } else if (kind === "steer") {
+    // issue #753 C2：`action:"steer"` 的结果。**投成与投拒都要把当下的队列长度报出来**：
+    // 拒了一面要看得见 `steer_unavailable` + 理由，投成的一面要看得见「排在第几条」。
+    const steered = outcome?.steered === true;
+    isError = !steered;
+    details = {
+      kind,
+      steered,
+      runId: outcome?.runId ?? view?.runId,
+      steerPending: outcome?.steerPending ?? view?.steerPending ?? 0,
+      message: outcome?.message ?? "",
+    };
+    if (outcome?.code !== undefined) details.code = outcome.code;
+    if (outcome?.reason !== undefined) details.reason = outcome.reason;
+    if (Number.isSafeInteger(outcome?.position)) details.position = outcome.position;
+    if (view !== undefined) details.view = view;
+    lines.push(steered
+      ? `已投进 run ${details.runId} 的转向收件箱（steerPending=${details.steerPending}，本条排第 ${outcome?.position ?? details.steerPending}）：`
+        + "内层 run 会在下一个轮边界取走队首那一条（一次只消费一条）；注入账目看终局的 diagnostics.steer。"
+      : `steer 没投进去（${outcome?.code ?? "steer_unavailable"}/${outcome?.reason ?? "?"}）：${outcome?.message ?? ""}`);
   } else if (kind === "unknown-run" || kind === "error") {
     isError = true;
     const runId = kind === "unknown-run" ? outcome?.runId : undefined;
@@ -243,7 +273,11 @@ export function formatAsyncResult(outcome) {
       + (view?.resumable === true
         ? ` resume=${JSON.stringify(view?.diagnostics?.resume?.handle ?? "")} cwd=${JSON.stringify(view?.cwd ?? "")}`
         : `（${view?.diagnostics?.resume?.reason ?? "没有可续跑的账本"}）`),
-      `cwd=${view?.cwd ?? "?"} sessionDir=${view?.sessionDir ?? "none"} statusPath=${view?.statusPath ?? "none"}`,
+      `cwd=${view?.cwd ?? "?"} sessionDir=${view?.sessionDir ?? "none"} statusPath=${view?.statusPath ?? "none"}`
+      // issue #753 C2 判据 4：**收件箱队列长度进文本面**。它是内存队列的当下长度（入队 +1、被内层
+      // run 取走一条 -1）；注入账目在下一行的 `diagnostics.steer` 里。两个数同框才是完整事实：
+      // 「还堆着 3 条」与「已经读到 1 条」不是一回事。
+      + ` steerPending=${view?.steerPending ?? 0}`,
     );
     // #665：**投递诊断进文本面**。以前投递事实只落在盘上（`delivery` / `notifyError` / `notifyRetries`），
     // 会话面完全静默 —— 投失败、owner 会话已不在、派工时没会话身份，调用方看到的都只是「`resumable=true`
