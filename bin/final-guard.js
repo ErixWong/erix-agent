@@ -6,6 +6,7 @@ import {
   collectTranscriptCaptures,
   inspectRun,
   readCaptureManifests,
+  readLedger,
 } from "./final-guard-support.js";
 import { normalizedLabel } from "../src/text/label.js";
 // issue #746（B2）：取回指引从证据里取，不再硬写「先用 note_list 查找，再用 note_read 读取」。
@@ -20,15 +21,13 @@ export { PLACEHOLDER_MARKERS, createContentDeliverableChecks } from "./final-gua
 function warningMessage(message) {
   return `finalGuard warning: ${message}`;
 }
+
 export async function buildCaptureRecoveryHint({ archiveDir, foldedPayload, store, runId, noteTools } = {}) {
-  let records = [];
-  if (store && typeof store.load === "function") {
-    try {
-      records = await store.load(runId);
-    } catch {
-      records = [];
-    }
-  }
+  // issue #746（B2 第一处 + 必修 3）：这句「[本 run 状态]」里的取回指引以前是无条件的，而 `--no-notes` 时
+  // `note_list` / `note_read` 根本不在场上。指引现在从工具面证据里取；账本走 `readLedger` 的**三态**
+  // （读到 / 读到空 / 读不出来），读不出来时退成条件档，而不是伪装成「无笔记写入」那条断言。
+  const ledger = await readLedger(store, runId);
+  const records = ledger.records;
   const { captures: transcriptCaptures } = collectTranscriptCaptures(records);
   const loaded = await readCaptureManifests(archiveDir);
   const legacyManifests = loaded.manifests
@@ -36,9 +35,7 @@ export async function buildCaptureRecoveryHint({ archiveDir, foldedPayload, stor
   const archivedOutputs = transcriptCaptures.length > 0
     ? new Set(transcriptCaptures.map((capture) => capture.artifact?.digest)).size
     : legacyManifests.length;
-  // issue #746（B2 第一处）：这句「[本 run 状态]」里的取回指引以前是无条件的，而 `--no-notes` 时
-  // `note_list` / `note_read` 根本不在场上。指引现在从工具面证据里取（账本证据由调用方递）。
-  const recall = noteRecallHint({ noteTools, messages: records.flatMap((record) => record?.messages ?? []) }).shortClause;
+  const recall = noteRecallHint({ noteTools, messages: ledger.messages }).shortClause;
   return `[本 run 状态] 已折叠 ${countFoldedOutputs(foldedPayload)} 条早期输出；其中 ${archivedOutputs} 条输出已归档。需要精确值时${recall}；若无可复原的决策记录且无法确定性重算，请省略对应 findings 声明。${captureIndex(transcriptCaptures.length > 0 ? transcriptCaptures : legacyManifests.map((manifest) => ({ display: manifest.display ?? manifest.archivePath, command: manifest.command })))}`;
 }
 function countFoldedOutputs(foldedPayload) {
@@ -95,19 +92,14 @@ export function createFinalGuard({
     findings,
   } = {}) {
     const inspected = await inspectRun({ archiveDir, store, runId });
-    // issue #746（B2）：guard 打回文案里那条取回指针，两条证据**它都拿得到**——工具面是宿主传进来的
-    // `noteTools`，账本是它本来就为 `inspectRun` 读过的那份记录。以前它手里握着账本却照旧硬写
-    // 「先用 note_list 查找，再用 note_read 读取」，等于向一个可能没装笔记、或压根没写过的 run
-    // 保证「笔记里有」。无证据那一份改走重读（并说明原因），不再向模型指一条不存在的道路。
-    let ledgerMessages = [];
-    if (store && typeof store.load === "function") {
-      try {
-        ledgerMessages = (await store.load(runId)).flatMap((record) => record?.messages ?? []);
-      } catch {
-        ledgerMessages = [];
-      }
-    }
-    const recallClause = noteRecallHint({ noteTools, messages: ledgerMessages }).clause;
+    // issue #746（B2 + 必修 3）：guard 打回文案里那条取回指针，两条证据**它都拿得到**——工具面是宿主
+    // 传进来的 `noteTools`，账本就是 `inspectRun` 为核验而读过的那一份（不第二次 `store.load`：同一个
+    // 问题拿两份可能不一致的事实，不如复用已读到的那份）。以前它手里握着账本却照旧硬写「先用 note_list
+    // 查找，再用 note_read 读取」；而「读不出来」又被折成空账本，于是同一个 guard 对「没写过」与「不知道」
+    // 给同一句断言。现在三格各自分开：读到且有写入 / 读到但为空 / 读不出来（条件式，并由 `inspectRun`
+    // 的 warning 留痕「transcript 读取失败」）。
+    const ledger = inspected.ledger ?? { messages: undefined, readable: false };
+    const recallClause = noteRecallHint({ noteTools, messages: ledger.messages }).clause;
     for (const warning of inspected.warnings) onWarning(warning);
     if (inspected.readableArtifacts === 0) {
       return { action: "skip", reason: "no_capture_evidence" };

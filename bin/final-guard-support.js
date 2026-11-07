@@ -270,20 +270,48 @@ export function collectTranscriptCaptures(records) {
   return { captures, warnings, readable };
 }
 
+/**
+ * 读一个 run 的账本，**三态**（issue #746，评审必修 3）。
+ *
+ * 旧的形状是「没 store ⇒ `[]`；`store.load()` 抛 ⇒ `[]`」，于是「账本读不出来」与「读到了、里面真的
+ * 没记过笔记」在下游完全同形；而后者是一条**断言**（`resolveNoteRecall` 会给出原因「无笔记写入」）。
+ * 磁盘坏 / store 没接 / 路径被删时，宿主就向模型断言「本场没记过笔记，走重读」——与 #741 原本要修的
+ * 「把『不知道』伪报成『有记录』」同罪，只是方向相反。
+ *
+ * 现在：读到 ⇒ `messages` 是展平后的消息（可以是空数组 = **已知**的空账本）；没 store / 读失败 ⇒
+ * `messages` 是 `undefined`（= `noteRecallHint` 的「账本缺席」条件档）且 `unreadable` 为真。
+ * 捕获目录那一侧仍然拿 `records`（读失败就是没捕获，那是事实，不是未知）——两个问题不拼成一份事实。
+ *
+ * @param {{load?: Function} | undefined} store
+ * @param {string | undefined} runId
+ * @returns {Promise<{records: unknown[], messages: unknown[] | undefined, unreadable: boolean, error?: string}>}
+ */
+export async function readLedger(store, runId) {
+  if (!store || typeof store.load !== "function") {
+    return { records: [], messages: undefined, unreadable: true, error: "本层没有 store 端口（没拿到账本可读）" };
+  }
+  try {
+    const loaded = await store.load(runId);
+    const records = Array.isArray(loaded) ? loaded : [];
+    return { records, messages: records.flatMap((record) => record?.messages ?? []), unreadable: false };
+  } catch (error) {
+    return { records: [], messages: undefined, unreadable: true, error: error?.message ?? String(error) };
+  }
+}
+
 export async function inspectRun({ archiveDir, store, runId }) {
   const captures = [];
   const warnings = [];
   let readableArtifacts = 0;
   const seenEvidence = new Set();
 
-  // 主证据源：transcript（toolOutputs 字节保真）
-  let records = [];
-  if (store && typeof store.load === "function") {
-    try {
-      records = await store.load(runId);
-    } catch (error) {
-      warnings.push(`transcript 读取失败: ${error?.message ?? String(error)}`);
-    }
+  // 主证据源：transcript（toolOutputs 字节保真）。这一份记录**同时**是取回指引的账本证据，所以它必须
+  // 是三态的（读到 / 读到空 / 读不出来）：以前两个失败分支都折成 `[]`，「读不出来」就在下游被当成
+  // **已知**的「没写过笔记」——三态口径见 `readLedger`。同一层不读第二遍：guard 复用这里返回的 `ledger`。
+  const ledger = await readLedger(store, runId);
+  const records = ledger.records;
+  if (ledger.unreadable && typeof store?.load === "function") {
+    warnings.push(`transcript 读取失败: ${ledger.error}`);
   }
   const collected = collectTranscriptCaptures(records);
   warnings.push(...collected.warnings);
@@ -333,6 +361,7 @@ export async function inspectRun({ archiveDir, store, runId }) {
     captures,
     warnings,
     readableArtifacts,
+    ledger,
   };
 }
 

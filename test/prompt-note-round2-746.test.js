@@ -14,10 +14,13 @@
 //
 // 环境纪律：零真实 LLM、全部临时目录、不碰真实 `~/.erix`。
 import assert from "node:assert/strict";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import { buildChildSystemPrompt, createCliDelegation } from "../bin/delegation.js";
+import { buildCaptureRecoveryHint, createFinalGuard } from "../bin/final-guard.js";
 import { readRecord } from "../src/tools/delegation/roster.js";
 import { makeTmp } from "./helpers/tmp.js";
 
@@ -179,4 +182,102 @@ test("必修 2d：子侧折叠桩不再撞 ReferenceError（noteToolSurface 必�
     "completed",
     `子 run 必须正常收尾（旧形状：子侧折叠桩里 noteToolSurface 未 import ⇒ ReferenceError ⇒ ${record.state} / ${record.errorMessage ?? ""}）`,
   );
+});
+
+// ────────────── 必修 3：guard 不许把「账本读不出来」伪装成空账本 ──────────────
+
+const NOTE_TOOLS = ["note_take", "note_list", "note_read"];
+
+/** 一条能抽出可核验值的捕获（guard 的 `inspectRun` 需要它才走 revise 分支）。 */
+function captureRecord(messages = []) {
+  return {
+    round: 1,
+    toolOutputs: [{ toolUseId: "c1", name: "exec", content: "nonce=gold-4173\n" }],
+    messages: [
+      { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "exec", input: { command: "printf x" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "nonce=gold-4173\n" }] },
+      ...messages,
+    ],
+  };
+}
+
+test("必修 3a：store.load 抛错 / 没有 store ⇒ 条件式；读到且确实为空 ⇒ 才说「没写过」", async () => {
+  const throwing = { load: async () => { throw new Error("EIO: disk gone"); } };
+  const emptyButReadable = { load: async () => [{ round: 1, messages: [] }] };
+
+  const hintUnknown = await buildCaptureRecoveryHint({
+    foldedPayload: [], store: throwing, runId: "r", noteTools: NOTE_TOOLS,
+  });
+  assert.match(hintUnknown, /如本 run 写过笔记/u, `账本读不出来 ⇒ 只能说条件式（现文：${hintUnknown}）`);
+  assert.equal(
+    /无笔记写入/u.test(hintUnknown),
+    false,
+    `读失败不许被伪装成「本场没写过笔记」这条断言（现文：${hintUnknown}）`,
+  );
+
+  const hintNoStore = await buildCaptureRecoveryHint({
+    foldedPayload: [], runId: "r", noteTools: NOTE_TOOLS,
+  });
+  assert.match(hintNoStore, /如本 run 写过笔记/u, "本层没有 store 端口 = 不知道，同样走条件档");
+
+  const hintEmpty = await buildCaptureRecoveryHint({
+    foldedPayload: [], store: emptyButReadable, runId: "r", noteTools: NOTE_TOOLS,
+  });
+  assert.equal(
+    /如本 run 写过笔记/u.test(hintEmpty),
+    false,
+    `读成功且账本确实为空 ⇒ 这才是「没写过」，不该再退成条件式（现文：${hintEmpty}）`,
+  );
+  assert.match(hintEmpty, /重读源文件/u);
+});
+
+test("必修 3b：guard 的打回指针同样分「读不出来 / 读到空」，且读失败要留痕", async () => {
+  // 捕获从 legacy manifest 来（与账本无关），这样「账本读不出来」与「有捕获可核」能同时成立——
+  // 否则 store 一挂就 `readableArtifacts: 0` ⇒ skip，指针那一句根本到不了模型眼前。
+  const archiveDir = await makeTmp("erix-746-r2-manifest-");
+  const { writeFile } = await import("node:fs/promises");
+  const body = "nonce=gold-4173\n";
+  const digest = (await import("node:crypto")).createHash("sha256").update(body, "utf8").digest("hex");
+  await writeFile(join(archiveDir, "cap.txt"), body, "utf8");
+  await writeFile(join(archiveDir, "cap.meta.json"), JSON.stringify({
+    kind: "erix.tool-capture",
+    schemaVersion: 1,
+    truncated: false,
+    digest,
+    archivePath: join(archiveDir, "cap.txt"),
+    locator: { lineStart: 1, lineEnd: 1 },
+  }), "utf8");
+
+  const noteWrite = [
+    { role: "assistant", content: [{ type: "tool_use", id: "n1", name: "note_take", input: { key: "k-1", content: "nonce=gold-4173" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "n1", content: '{"status":"found","action":"saved","key":"k-1","scope":"run"}' }] },
+  ];
+  const reviseOf = async (store, warnings = []) => createFinalGuard({
+    archiveDir, store, runId: "guard-run", noteTools: NOTE_TOOLS, onWarning: (line) => warnings.push(line),
+  })({ finalText: "随便写" });
+
+  // ① 读得到 + 有写入 ⇒ note-first。
+  const knownWarnings = [];
+  const known = await reviseOf({ load: async () => [captureRecord(noteWrite)] }, knownWarnings);
+  assert.equal(known.action, "revise", `有捕获无声明 ⇒ 打回（现文：${JSON.stringify(known)}）`);
+  assert.match(known.message, /note_list[\s\S]*note_read/u, "读得到且有写入 ⇒ note-first 指针");
+
+  // ② 同样的捕获，但账本**读不出来** ⇒ 条件式 + 留痕（不许断言「本场没记过笔记」）。
+  const unknownWarnings = [];
+  const unknown = await reviseOf({ load: async () => { throw new Error("EIO: 盘挂了"); } }, unknownWarnings);
+  assert.match(
+    unknown.message,
+    /如本 run 写过笔记/u,
+    `账本读不出来 ⇒ 指针只说条件式（现文：${unknown.message}）`,
+  );
+  assert.equal(/无笔记写入/u.test(unknown.message), false, "指针不许把读失败伪装成「没写过」");
+  assert.ok(
+    unknownWarnings.some((line) => /transcript 读取失败/u.test(line)),
+    `读失败必须留痕，不许静默降级（warnings：${JSON.stringify(unknownWarnings)}）`,
+  );
+
+  // ③ 读得到、确实一条笔记都没写过 ⇒ 这才是「无证据」（重读 + 原因）。
+  const emptyLedger = await reviseOf({ load: async () => [captureRecord()] });
+  assert.equal(/note_/u.test(emptyLedger.message), false, `读到空账本 ⇒ 无证据那一份（现文：${emptyLedger.message}）`);
+  assert.match(emptyLedger.message, /重读源文件/u);
 });
