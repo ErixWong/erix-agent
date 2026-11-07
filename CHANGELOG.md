@@ -14,15 +14,27 @@
   `F9b` red on "探针没盖上要判的那一段" while every other cell stayed green: the judgement had gone blind,
   the engine had not regressed. The in-memory half now reads the **store read boundary** of the very store
   instance the engine uses: each restored `tool_result` block is instrumented in place (object identity
-  preserved, JSON bytes unchanged), so reads are counted and every in-place set / added key / deleted key is
-  recorded. `F9b` then requires **zero in-place rewrites** *and* a presence fact (the block was seen at the
+  preserved, JSON bytes unchanged) and frozen at the boundary, so reads are counted and every in-place set /
+  added key / deleted key is recorded. `F9b` then requires **zero in-place rewrites** *and* a presence fact (the block was seen at the
   boundary and really read, identity key included) — without the presence half, "zero rewrites" stays green
   while the probe watches nothing, which is the same class of false green. A literal `new Proxy(block)` is
   **not** installable at this boundary: the engine runs `cloneState(ctx.messages)` = `structuredClone` on
   every provider attempt (`src/loop/provider-runner.js:242` → `src/loop/budget.js:12`), and `structuredClone`
   throws `DataCloneError` on any Proxy, so the probe would kill the run before the judgement — pinned by an
-  `assert.throws` inside `F9b`. Reverse proof: injecting `block.erix = {}` on the restore path reddens `F9b`
-  naming `erix`; removing it greens the suite 3/3. The write side itself is untouched and `F9b` now asserts
+  `assert.throws` inside `F9b`. What the accessor face alone does **not** catch (the earlier wording "covered
+  by the key set + verbatim JSON" was wrong — that only holds for keys that already exist at the boundary): a
+  key **added and then removed before the probe is read** — that slot never had an accessor to trap it, and the
+  final key set and the verbatim JSON both come back identical, so a rewrite that really happened leaves zero
+  trace. `Object.freeze` on the restored blocks and their nested objects (that class only, not the whole
+  message graph) closes it: accessors go on first, so an existing key's assignment still runs the setter, while
+  **adding a key / deleting one throws immediately in strict mode** — the transient case throws at the "add",
+  never reaching the "delete". Both halves of that claim are measured: freezing does not disturb the engine
+  (real upstream 3/3 green — legitimate rewrites happen on `cloneState()` copies, which the freeze never
+  reaches), and the transient mutation (`block.erix = {}; delete block.erix;` on the restore path) dies with
+  `TypeError: Cannot add property erix, object is not extensible` at `src/loop/resume-manager.js:414`. `F9b`
+  keeps permanent versions of both (the observed blocks must be frozen; a transient add-then-delete on one must
+  throw), so the closed hole cannot quietly reopen. Reverse proof: injecting `block.erix = {}` on the restore
+  path reddens `F9b` naming `erix`; removing it greens the suite 3/3. The write side itself is untouched and `F9b` now asserts
   the residue shape as a fact (snapshots exist, the legacy slot is absent from them, `null` residue slots
   are present), so a later revert of the write side is caught here instead of silently un-blinding the probe.
 
@@ -37,7 +49,15 @@
   `src/loop/budget.js:12`），而 `structuredClone` 对任何 Proxy 抛 `DataCloneError`，装了就是探针先打死被测——
   这一条由 `F9b` 里的 `assert.throws` 钉住。反向证：在恢复路径上临时补一次 `block.erix = {}` ⇒ `F9b` 红并点名
   `erix`；撤掉 ⇒ 3/3 绿。写侧一个字节没动，且 `F9b` 现在把那个残余形状本身钉成事实（快照在场、旧块不在其中、
-  残余空位在场），这样将来谁把写侧改回去也会在这里红，而不是让探针悄悄复明。
+  残余空位在场），这样将来谁把写侧改回去也会在这里红，而不是让探针悄悄复明。accessor 面**自己**兜不住的一类
+  （原先登记的「键集合 + 逐字 JSON 兜住」说法是**错的**，那只对边界上已有的键成立）：**新增一个键、又在收针前
+  删掉**的瞬态——那一格在边界上本没有 accessor 可拦，终态键集合与逐字 JSON 都回到原样 ⇒ 一次真发生过的就地写入
+  零痕迹。`Object.freeze`（只冻恢复出来的 `tool_result` 旧块及其嵌套对象，不冻整张消息图）把这一类关掉：accessor
+  先装 ⇒ 已有键的赋值仍走 setter 照记；**加键 / 删键在严格模式下当场抛** ⇒ 瞬态抛在「加」那一下，不给「删回来」的
+  机会。两半都实测过：冻上之后引擎不受打扰（真上游 3/3 绿——合法改写发生在 `cloneState()` 的副本上，冻不到），
+  而瞬态变异（恢复路径上 `block.erix = {}; delete block.erix;`）当场 `TypeError: Cannot add property erix,
+  object is not extensible`（栈顶 `src/loop/resume-manager.js:414`）。`F9b` 里留了这两条**常驻**判据（观察到的块
+  必须是冻住的；在它上面加了又删必须抛），关掉的洞不会再悄悄张开。
 
 
 - **The shipped `TranscriptStore` contract suite now enforces its own optionality (issue #739).** The suite's

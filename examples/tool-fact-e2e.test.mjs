@@ -115,14 +115,24 @@ function collectKeys(value, acc = new Set()) {
 // 恢复进来的旧块就在 `ctx.messages` 里）⇒ 给块套 Proxy，第一次请求就死在探针自己手里，
 // F9b 会红成「run 没收尾」而不是判据红。accessor 换格不动 `Object.keys` / 键序 / 可枚举性 /
 // JSON 字节，`structuredClone` 照读通过 ⇒ 它是这里唯一不改变引擎行为的就地观察面。
-// 观察面的**准确**边界（#760 评审修正——原话「键集合 + 逐字 JSON 兜住」是**错的**，只对已有键成立）：
-//   抓得住：① 边界上**已有键**被就地赋值（含改回同一个值）→ `writes`；② 新增键且**收针时还在**
-//   → `addedKeys`；③ 删掉已有键且**收针时已没** → `lostKeys`；④ `defineProperty` 覆盖探针的格子
-//   → `replacedKeys`。第 ①③④ 与「已有键」有关，第 ② 只在键活到收针时才成立。
-//   抓不住：**新增一个键、又在收针前删掉**的瞬态。新键在边界上本来就不存在 ⇒ 那一格没有 accessor
-//   可拦；终态键集合比回来一模一样、逐字 JSON 也一模一样 ⇒ **一次真实发生过的就地写入零痕迹**。
-//   这不是理论顾虑而是本单的已知缺口：唯一的硬拦法是把边界上那一块 `Object.freeze` 掉（严格模式下
-//   加键当场抛，瞬态跑不掉），见下面的 freeze 实验与其结论。
+// 观察面的**准确**边界（#760 评审修正——原先登记的「键集合 + 逐字 JSON 兜住」是**错的**，那只对
+// 边界上已有的键成立）。accessor 面自己抓得住的四类：
+//   ① 已有键被就地赋值（含改回同一个值）→ `writes`；② 新增键且**活到收针** → `addedKeys`；
+//   ③ 删掉已有键且收针时已没 → `lostKeys`；④ `defineProperty` 覆盖探针的格子 → `replacedKeys`。
+// accessor 面自己**抓不住**的一类：新增一个键、又在收针前删掉的**瞬态**——那一格在边界上本来没有
+// accessor 可拦，终态键集合与逐字 JSON 都回到原样 ⇒ 一次真实发生过的就地写入零痕迹。
+//
+// 这一类由 `Object.freeze` 关掉（#760 评审给的更硬一条，实验先做后留）：边界那一刻就在的
+// `tool_result` 旧块**与其嵌套对象**被冻住（只冻这一类，不冻整个消息图）。accessor 先装、freeze 后上
+// ⇒ 已有键的赋值仍走 setter（照记不误，①②③④ 全在），而**加新键 / 删键在严格模式下当场抛**
+// ⇒ 瞬态（加了又删）跑不掉：抛在「加」的那一下，根本不给你「删回来」的机会。
+// 实验结论（两条都必须成立才留下 freeze）：
+//   · 不打断引擎合法行为：`ERIX_E2E_REAL=1 node --test examples/tool-fact-e2e.test.mjs` 3/3 绿
+//     （日志 /tmp/f9b/freeze-1.log）——引擎的合法改写发生在 `cloneState()` 之后的副本上，冻不到。
+//   · 瞬态真被拦：临时在 `src/loop/resume-manager.js` 的恢复处写 `b.erix = {}; delete b.erix;`
+//     ⇒ 当场 `TypeError: Cannot add property erix, object is not extensible`（栈顶
+//     `resume-manager.js:414`），`fail 1`（日志 /tmp/f9b/freeze-transient-red.log）。
+//   同一件事在本格里有**常驻**判据（下面 F9b 的「冻着 ⇒ 瞬态加键当场抛」两条），不依赖临时变异。
 // ---------------------------------------------------------------------------
 
 function safeJson(value) {
@@ -167,6 +177,7 @@ function createBoundaryProbe(store) {
       stateOf.set(value, state);
       observations.push(state);
     }
+    const isNew = !Object.isFrozen(value);
     for (const key of Object.keys(value)) {
       const desc = Object.getOwnPropertyDescriptor(value, key);
       // 只换「可配置的数据格」；已经是探针的 accessor（幂等：同一个块被读两次）就跳过
@@ -187,6 +198,11 @@ function createBoundaryProbe(store) {
       state.getters.set(key, getter);
       instrument(desc.value, `${path}.${key}`);
     }
+    // [#760 实验] 边界那一刻就在的对象**冻起来**（只冻 `tool_result` 旧块与其嵌套对象，不冻消息图）：
+    // accessor 已先装好 ⇒ 已有键的赋值仍走 setter（照记不误），而**加新键 / 删键在严格模式下当场抛**
+    // ⇒ 「加了又删」的瞬态也跑不掉。引擎合法的改写发生在 `cloneState()` 之后的副本上，理论上不受影响；
+    // 真受影响就说明引擎确实就地改了边界上那一块（那本身就是要判的事实）。
+    if (isNew) Object.freeze(value);
   };
 
   /** 只给 `tool_result` 块（本单要判的那一类宿主对象）装探针；整张返回结构走一遍。 */
@@ -205,6 +221,11 @@ function createBoundaryProbe(store) {
   const freeze = (state) => {
     const keysNow = Object.keys(state.target);
     const frozen = {
+      // `target` 与 `isFrozen` 必须是**真对象引用 / 现测事实**：#760 的第一版漏了 `target`，
+      // 于是 `Object.isFrozen(o.target)` 读的是 `Object.isFrozen(undefined)` === **true**（非对象一律算
+      // 冻结），瞬态那条断言当场变成空转——正是本单要防的「判据自己糊弄自己」。
+      target: state.target,
+      isFrozen: Object.isFrozen(state.target),
       path: state.path,
       identity: { ...state.identity },
       boundaryKeys: [...state.boundaryKeys],
@@ -765,6 +786,18 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
         // 可能是探针把对象换成了引擎不在乎的另一种形状换来的）。
         assert.equal(o.boundaryJson, safeJson(legacyBlock),
           `探针/store 在边界上改了旧块的形状：边界=${o.boundaryJson} 宿主写入=${safeJson(legacyBlock)}`);
+      }
+      // 瞬态那一类（**新增一个键又在收针前删掉**）由冻结关掉：边界那一刻就在的块是不可扩展的，
+      // 严格模式下「加键」当场抛 ⇒ 不给「删回来」的机会。这两条是**常驻**判据，不靠临时变异。
+      for (const o of observed) {
+        assert.equal(o.isFrozen, true, `旧块在边界上没被冻住（瞬态加键又会变成零痕迹）：${o.path}`);
+        assert.equal(Object.isExtensible(o.target), false,
+          `探针快照里的 target 不是那个真对象（isFrozen 会读成空转）：${o.path}`);
+        assert.throws(() => {
+          o.target.erix = { toolCallKey: "tc_transient" };
+          delete o.target.erix;
+        }, (error) => error?.name === "TypeError" && /not extensible|read only|cannot delete/u.test(error.message),
+          `在冻住的旧块上加了又删竟然没抛 ⇒ 冻结没落上（本单登记过的零痕迹缺口会重新打开）：${o.path}`);
       }
       // 为什么观察面不是字面的 `new Proxy(块)`（本单原本的形状，实测装不上）：引擎每次请求都
       // `cloneState(ctx.messages)`（`provider-runner.js:242` → `budget.js:12` = `structuredClone`），
