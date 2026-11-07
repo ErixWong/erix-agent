@@ -401,9 +401,14 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 564 → 566（独立评审 #743 必修 1 与 2 之后）：CN 那一节新写了「只有这一档是判据可能删的」与
   // 「`type ∈ stream ∧ … ∧ 成型副本确实落盘 ∧ …`」这两句（档位名在代码围栏与行内代码里各算一次同名异义）。
   // 数取自扫描器现报：`docs/host-consumer-contract_cn.md [contract] verdict=SUSPECT(raised) pin=564 uses=566`。
-  // 566 → 569（issue #730，与上面英文同一刀）：成对新增的那一节，同名异义命中同样 3 处。
-  // 数取自扫描器现报：`docs/host-consumer-contract_cn.md [contract] verdict=SUSPECT(raised) pin=566 uses=569`。
-  "docs/host-consumer-contract_cn.md": 569,
+  // 566 → 568（issue #753 C1）：CN 契约新增的「宿主在轮边界塞进一条真用户轮」那一节必须拄两处**同名异义**：
+  // 钩子的调用形式写的是 `({ runId, state, round }) => string | null | undefined`（`runId` 是**宿主/引擎传的上下文
+  // 字段**，与 `config.run.runId` 同名异义），以及那条注入行的角色 `role: "user"`（消息角色，与
+  // `config.metadata.user` 同名异义）。同 #714 / #729 的先例：契约要能写出真实签名与真实角色名，不为了躲钉子
+  // 改成描述说法。数取自扫描器现报的 ✗ 行原文：
+  //
+  //     ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=566  uses=568
+  "docs/host-consumer-contract_cn.md": 568,
 });
 
 /**

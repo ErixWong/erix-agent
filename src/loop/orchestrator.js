@@ -463,7 +463,7 @@ function mergeFoldedRoundRanges(first, second) {
  * "the additive table is a subset of the union" does not imply "the emitters are a subset".
  *
  * @typedef {object} LoopEvent
- * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"run_outcome"} type
+ * @property {"round_start"|"attempt"|"recovering"|"recovered"|"usage"|"tool_use"|"tool_result"|"tool_output_aggregate"|"tool_replay_decision_required"|"round_end"|"compaction"|"compaction_deferred"|"continuity_injection_skipped"|"continuity_written"|"continuity_write_failed"|"final_guard"|"final_guard_extend"|"forced_final"|"persistence_capability_degraded"|"model_metadata_missing"|"resume_journal_skipped"|"compaction_strategy_fallback"|"config_override_conflict"|"context_unknown_option"|"budget_below_working_set"|"user_turn_guard_unrecoverable"|"host_steer_injected"|"run_outcome"} type
  * @property {number} [round]
  * @property {number} [attempt] 1-based provider attempt within the round.
  * @property {number} [maxAttempts] Retry count plus the initial attempt.
@@ -504,6 +504,7 @@ function mergeFoldedRoundRanges(first, second) {
  *   `mid_sequence_shape_not_supported`、`mid_sequence_stub_row_write_refused`。**本单没新增事件类型**：
  *   这五个都骑在 `resume_journal_skipped`（#743 分级表里的 `fact`，不可删）上。
  * @property {number} [count] issue #424（additive）：被跳过/涉及的消息条数（`resume_journal_skipped` 用它报 A 集合大小）
+ * @property {number} [chars] issue #753 C1（additive）：`host_steer_injected` 报注入那条 user 轮的正文字符数（契约钉了它，所以有消费确认测试）
  * @property {Array<{path: string, key: string}>} [conflicts] issue #497（S2，additive）：`config_override_conflict`
  *   的载荷——冲突叶子的 schema 路径（`"run.maxRounds"`）与顶层键名，**只带路径与键名**（值可能是
  *   函数/大对象，不进事件）。两个来源都算：`config.*` vs 同名扁平键、调用级 `config` vs 装配口
@@ -874,6 +875,11 @@ export async function runToolLoop(options) {
   // with the `context` shell), so it arrives on the `slots` side channel — no top-level flat alias
   // was invented for it (0.28 的方向：回调收 `capabilities.hooks.*`).
   const continuityProvider = capabilityHooks.continuityProvider;
+  // issue #753 C1: the host-steer turn hook. Same shape of arrival as the one above (a **nested-slot**
+  // capability leaf, `capabilities.hooks.nextUserTurn`, no top-level flat alias), but a different
+  // family: this one's **return value becomes a message the model reads**. Consumer:
+  // `injectHostSteerTurn` below, called once per round at the round boundary.
+  const nextUserTurnHook = capabilityHooks.nextUserTurn;
   // issue #598 —— 续接块**默认写者**的开关（`config.continuity.handoff`，默认 `"off"`）。
   // 它是 init 叶、没有顶层扁平别名（S3 之后的形状），展开相把它写回 `effectiveOptions.handoff`。
   // ⚠ 叶名是名词 `handoff`（交接块），不是动词 `write`：后者会让退役拼写扫描器把文档里每一句
@@ -2521,6 +2527,17 @@ export async function runToolLoop(options) {
       ? {}
       : { deliverables_checked: 0, deliverables_failed: 0 }),
   };
+  // issue #753 C1（新键，纯加法）：宿主 steer 的**计数账**（`diagnostics.steer`）。
+  // **不传钩子 ⇒ 整个对象是 `undefined`**，`finish` 因此一个键都不加 ⇒ 「不传钩子 = 逐字零行为变化」
+  // 连结果对象的形状都包括在内（判据见 `.steer-753-contract.md` / `docs/host-consumer-contract.md`）。
+  // 传了钩子 ⇒ 四个计数恒在：`offered` 是本 run 给了钩子几次机会（= 进圈的轮数），
+  // `injected` 是真注入成功的次数，`rejected` 是钩子抛错 / 返回非字符串的次数（**降级不致命**，
+  // 口径同 `finalGuard` 失败：只计数、只走 `reportObserverError`，绝不改终局），
+  // `lastRound` 是最后一次注入落到的轮号（从未注入 ⇒ `null`）。
+  /** @type {{ offered: number, injected: number, rejected: number, lastRound: number|null }|undefined} */
+  const steerMetrics = typeof nextUserTurnHook === "function"
+    ? { offered: 0, injected: 0, rejected: 0, lastRound: null }
+    : undefined;
   // `hadToolUse` 已迁入 `runLoopState`（刀5-B）：初值仍在本行原来声明处现算（求值点/副作用不变），
   // 之前没有任何语句读它，所以只是把存储位置换成状态对象的一格。
   runLoopState.hadToolUse = hasToolUseInMessages(messages);
@@ -3090,6 +3107,76 @@ export async function runToolLoop(options) {
     // 分片只往已有那条逻辑消息里加 block，不新增消息 ⇒ 锥点计数不变。
     if (partOf === "") runLoopState.persistedTranscriptLength += 1;
     return dedupKey;
+  };
+
+  // ── issue #753 C1：宿主的**轮边界注入口** ──────────────────────────────────────────────
+  // 病根（#753 正文现验）：`task` 起跑给死之后宿主**零注入口**，跑偏了只能弃单——引擎内部早就有
+  // 「在安全点注入一条 user 文本」的机器件（judge nudge / 扩轮提示 / finalGuard revise / 强制收尾），
+  // 能力面却没有一个「宿主把文本递进来」的槽位。本闭包就是把那台机器件**对宿主开的入口**。
+  //
+  // 与引擎自产控制文本的两点差别（判据，不是风格）：
+  //   · 它是 `role:"user"` 的**真用户轮**（`meta.source === "host-steer"`），不是
+  //     `judge-control` 控制文本 ⇒ 天然满足 `isRealUserTurn`（`src/loop/request-user-view.js`，#292），
+  //     折叠层因此有义务在请求视图里把它留住；
+  //   · 它走 `appendMessageRowToTranscript` 的 **`kind:"message"` + `seq` 消息行**，所以它折进本轮
+  //     轮记录、`store.load()` 读得到正文、resume 重放同 `(round, seq)` = 同 dedupKey = 幂等跳过；
+  //     **不需要**另开一条 `:control:` 行（那是「轮记录落盘之后才产生的文本」的待遇）。
+  //
+  // 失败口径（`finalGuard` 失败的同族，见 `src/loop/termination.js` 的 guard error 分支）：
+  // 钩子抛错 / 返回非字符串 ⇒ 记一笔 + `reportObserverError(..., { channel: "nextUserTurn" })` +
+  // 本轮跳过，**绝不改终局**。返回 `null` / `undefined` / 空串 ⇒ 本轮无事，零事件零账本变化。
+  // 钩子是**同步**的：引擎不等它（没有超时 ⇒ 也就不需要 `config.*` 新叶）。
+  const HOST_STEER_SOURCE = "host-steer";
+  const injectHostSteerTurn = async (roundNumber) => {
+    if (typeof nextUserTurnHook !== "function" || steerMetrics === undefined) return false;
+    steerMetrics.offered += 1;
+    /** @type {unknown} */
+    let offered;
+    let rejected = false;
+    try {
+      offered = nextUserTurnHook({
+        runId,
+        round: roundNumber,
+        rounds: runLoopState.rounds,
+        usage: { ...runLoopState.usage },
+      });
+    } catch (error) {
+      rejected = true;
+      reportObserverError(error, { channel: "nextUserTurn", round: roundNumber });
+    }
+    if (!rejected && offered !== null && offered !== undefined && typeof offered !== "string") {
+      rejected = true;
+      reportObserverError(
+        new TypeError(
+          "capabilities.hooks.nextUserTurn must return a string, null or undefined"
+          + ` (got ${typeof offered})`,
+        ),
+        { channel: "nextUserTurn", round: roundNumber, returned: typeof offered },
+      );
+    }
+    if (rejected) {
+      steerMetrics.rejected += 1;
+      return false;
+    }
+    // `null` / `undefined` / 空串：本轮无事。**空串不注入**——注入一条空 user 消息是把噪声
+    // 塞进请求视图，而它既不是「宿主递进来的话」也过不了「有内容」的常识；也不记 observer error
+    // （钩子返回的是一个合法的字符串，只是没话可说），所以它既不算 injected 也不算 rejected。
+    if (typeof offered !== "string" || offered === "") return false;
+    const steerMessage = {
+      role: "user",
+      meta: { source: HOST_STEER_SOURCE },
+      content: [{ type: "text", text: offered }],
+    };
+    messages.push(steerMessage);
+    messageRounds.set(steerMessage, roundNumber);
+    // 入账与其余正文同一条写侧：失败语义（`persist` 的持久化账本）与 `seq` 计数器只有一处。
+    await appendMessageRowToTranscript(steerMessage, roundNumber);
+    // `injected` 记的是「模型看得见」这一事实（消息已进 `messages`），不是「盘上那一行写成了」：
+    // 存储故障走的是持久化那条既有终局路（与所有正文行同口径），不在本计数里降级。
+    steerMetrics.injected += 1;
+    steerMetrics.lastRound = roundNumber;
+    emitEvent({ type: "host_steer_injected", round: roundNumber, chars: offered.length });
+    return true;
   };
 
   // issue #420（A 集合入账）：把 `restoreResume` 交回来的那批「崩溃前已执行完、结果已成型、账本里没有
@@ -3856,8 +3943,24 @@ export async function runToolLoop(options) {
   const {
     callFinalGuard,
     forceFinalIfNeeded,
-    finish,
+    finish: finishTermination,
   } = terminationManager;
+  // issue #753 C1（新键，纯加法）：终局面挂上 `diagnostics.steer` 的计数。
+  // 为什么在此包装而不改 `makeResult`：`steerMetrics` 是本文件的局部账（注入点在这里），而
+  // `termination.js` 的 ctx  typedef 是宿主面的形状声明，为一个新键去扩它等于把计数账塞进
+  // guard 那一组的老问题（#392 用 deepEqual 钉死过 `Object.keys(metrics)` 的形状漂移）。
+  // 不传钩子 ⇒ `steerMetrics === undefined` ⇒ 这个包装是纯透传，终局对象逐字节不变。
+  const finish = async (reason, detail, error) => {
+    const result = await finishTermination(reason, detail, error);
+    if (steerMetrics !== undefined && result !== undefined && result !== null) {
+      // 写这一格走一个 `Record<string, any>` 别名：终局对象的形状声明里没有 `diagnostics`（扩它要动
+      // `termination.js` 的宿主面 typedef），而**返回值本身保持原类型**——在这里 cast 返回值会让
+      // 10 个消费点一起报 TS2740（当场量到过）。
+      const additive = /** @type {Record<string, any>} */ (result);
+      additive.diagnostics = { steer: { ...steerMetrics } };
+    }
+    return result;
+  };
 
   // issue #326（B1）：跑一次强制收尾，并把**它新产生的那几条消息**当场入账。
   // `forceFinalIfNeeded`（src/loop/termination.js）往 `ctx.messages` 里 push 两条：【强制收尾】指令
@@ -5439,6 +5542,15 @@ export async function runToolLoop(options) {
           + ` repeatStreak=${belowRepeatStreak}`,
       );
     }
+    // issue #753 C1：宿主 steer 的**消费点**（每轮至多一条）。位置的两半都是判据：
+    //   · 圈顶 `throwIfAborted(signal)` **之后** ⇒ 已中止的 run 不再注入（中止优先，#282 口径）；
+    //   · `const roundStart = messages.length` **之前** ⇒ 这条真用户轮不在 `messages.slice(roundStart)`
+    //     那一段里，于是它**不是本轮的输出**：不进本轮的 L0 事实 / 轮摘要 / judge 时间线
+    //     （`currentRoundMessages` 与 `buildTimeline(messages, roundStart)` 都从 roundStart 起算），
+    //     而它自己那条 `seq` 消息行按 `round` 折进**本轮**的轮记录（= 宿主那句话落在下一轮的账里）。
+    // 放在 `compactBeforeRound` **之后**：折叠决策看的是本轮开始前的工作集，「宿主递一句话」不该
+    // 改写上一轮的折叠账；它到**下一次**折叠才可见。
+    await injectHostSteerTurn(round);
     const roundStart = messages.length;
     // issue #735 切片 2：把圈顶起点留给写侧（`persistRunSnapshot` 在闭包里看不到 `roundStart`，
     // 它定义在圈外）。每轮进圈重取一次，与 `roundStart` 同源同值。

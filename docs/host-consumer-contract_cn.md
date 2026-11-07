@@ -2852,6 +2852,7 @@ judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log
 | `compaction_deferred` 事件 | `onEvent`，每推迟一发压缩一条 | **additive（issue #588）。** `{ type: "compaction_deferred", runId?, round, reason: "pending_tool_use", detail: string }`——续写（`max_tokens` continuation）循环里那一发压缩被跳过时发出，原因是请求尾部是一条 `tool_result` 还没回来的 assistant `tool_use`（`pendingTailToolUses` (`src/loop/pending-tool-result.js`)）。既不结清、也不放宽配对规则；下一轮开圈的压缩面对的就是跑完的轮。终止语义一个字没动。 |
 | `continuity_injection_skipped` 事件 | `onEvent`，续接块每有一轮没能落位发一条 | **additive（issue #568）。** `{ type: "continuity_injection_skipped", runId?, round, reason, detail: string }`——这一轮的请求里没有注入续接块（例如 `reason: "pending_tool_use"`：在那个位置插入会破坏 `tool_use`/`tool_result` 配对）。跳过是上报出来的，而不是拿机械文本顶上去。 |
 | `user_turn_guard_unrecoverable` 事件 | `onEvent`，每个退到守卫最后一格的请求视图一条（也就是每次 provider attempt 一条） | **additive（issue #296）。** `{ type: "user_turn_guard_unrecoverable", runId?, parentRunId?, round, channel: "chat" \| "chatStream", reason: "empty_view" \| "no_user_turn" \| "invalid_view", detail: string }`——请求视图的 user 轮不变量退完了所有退让格：`ensureUserTurnView` (`src/loop/request-user-view.js`) 在请求视图里找不到可用的 user 轮，**并且**未折叠的源视图里也没有可回补的 user 轮，于是这个请求**原样发出**——引擎既不伪造一条 user 轮，也不抛错。要求 user query 的上游会回 `400`；本事件在**那个请求发出之前**就到，因此它是「失败」与「原因」之间的 join 键（#296 之前这一格被滤掉，对外完全无痕）。`reason` 是子原因：`empty_view`（视图空了）、`no_user_turn`（非空但没有真 user 轮——纯 `tool_result` 载体不算）、`invalid_view`（有 user 轮但 `tool_use`/`tool_result` 配对非法）。`detail` 首句是宿主可直接断言的固定原文。另外两个守卫动作（`preserved_latest_user_turn` / `abandoned_fold`）照旧落进 `compactionStats.userTurnGuard`、永不发本事件；本事件**刻意不写进** `compactionStats`——它可能在一轮**完全没有压缩**时触发，写进去会让「这一轮到底有没有折叠」不可判读。 |
+| `host_steer_injected` 事件 | `onEvent`，轮边界注入成功一次一条 | **additive（issue #753 C1）。** `{ type: "host_steer_injected", runId?, parentRunId?, round: number, chars: number }`——`capabilities.hooks.nextUserTurn` 回了非空字符串，引擎把它当成**轮边界**上的一条真 `role: "user"` 轮追加：在 `throwIfAborted(signal)` 之后、轮切片（`const roundStart = messages.length`）开窗之前。这个位置就是契约本身：注入那条落进**下一轮**的轮记录，因此不需要另开一行 `:control:`，resume 后也当作普通 user 轮读得到（`store.load()` 读得到正文；账本行是带 `seq` 的 `kind: "message"`，不是 `:control:` 行）。`round` 是被问的那个轮边界（正文由紧接着开启的那一轮消费，那一轮的 `round_start` 带的是 `round + 1`）；`chars` 是注入文本的长度。档位 `fact`——见事件分级表。静默回绝是设计：`null` / `undefined` ⇒ 无事件、无行、账本逐字不变；抛错或返回非字符串记进 `diagnostics.steer.rejected`，并走 `reportObserverError(..., { channel: "nextUserTurn" })`，口径同 `finalGuard` 校验失败——**绝不**改终局。 |
 | `run_outcome` 事件 | `onEvent`，一次 run 恰好一条——judge 从未运行的 run 同样发 | `{ type: "run_outcome", runId?, model?, judgeModel?, rounds, judgeRecordCount, termination, verification }`。成功路径在持久化落地后发，抛错路径在 `fail()` 里发；去重门保证一个 run 恰好一条。`termination` / `verification` 是 `runToolLoop` 返回值（或 `fail()` 构造出的终局）的副本。 |
 
 **事件在本文档里住哪张表（issue #641）。** 上面那张表是**加法**事件表：只列本契约已经存在之后新增的事件，
@@ -4623,6 +4624,34 @@ navigation digest，并在适用时包含 JSON skeleton；配对的 `tool_use` �
 - `ensureUserTurnView` (`src/loop/request-user-view.js`) 不会把块复制成一条用户查询——快照不是查询——
   只剩块时由既有的 `abandoned_fold` 路径带回这一轮（issue #589）。
 
+## 轮边界的主机转向——`capabilities.hooks.nextUserTurn`（issue #753 C1）
+
+- **槽位。** `capabilities.hooks.nextUserTurn` 是一个**同步**函数，调用形式为
+  `({ runId, state, round }) => string | null | undefined`。`hooks` 组的值必须是函数——`capabilities`
+  名字空间（`src/loop/capabilities-namespace.js`）对非函数一律走常规的未知/冲突账目，所以往这一格里填个
+  字符串是**报错**，不是默默转向。返回值必须是字符串、`null` 或 `undefined`。
+- **什么时候问宿主。** 每个轮边界一次，位置在 `runToolLoop`（`src/loop/orchestrator.js`）主循环里
+  圈顶 `throwIfAborted(signal)` **之后**、轮切片（`const roundStart = messages.length`）开窗**之前**。
+  这个位置就是契约的全部：已中止的 run 不再被问（中止优先，沿用 `#282` 口径），而宿主还回来的文本会在轮
+  构建之前被追加为一条**真的** `role: "user"` 轮。因此它以普通用户轮的身份到模型那里，也以普通
+  `kind: "message"` 行的身份进档案（**带 `seq`**，`store.load()` 读得到正文），不需要另开一行 `:control:`。
+  `round` 是被问的那个边界；正文由紧接着开启的那一轮消费，那一轮的 `round_start` 带的是 `round + 1`。
+- **`null` / `undefined` ⇒ 逐字零行为变化。** 无行、无事件、账本零差异：单测把「钩子回 `null` 的 run」与
+  「从没传过钩子的 run」的全量档案行与全量事件序列逐字比一遍（除时钟 `ts`、随机 `toolCallKey` 与时钟粒度
+  的 `durationMs`）。
+- **抛错 / 返回非字符串永不致命。** 记进 `diagnostics.steer.rejected`，并走
+  `reportObserverError(..., { channel: "nextUserTurn" })`——口径同 `finalGuard` 校验失败（计数 + 降级）：
+  run 的 `termination`、`verification` 与账本一毫不动，该边界就是不注入。
+- **终局诊断。** 用了钩子的 run 返回
+  `result.diagnostics.steer = { offered, injected, rejected, lastRound }`（`offered` = 被问的边界数，
+  `lastRound` = 最后一次发生注入或被拒的边界）。**从没传钩子的 run 不会多出 `diagnostics.steer` 这个键**
+  ——它是 additive 字段，不用的人看到的样子和以前逐字一致。
+- **事件。** 注入成功发 `host_steer_injected`（档位 `fact`），带 `round` 与 `chars`；回绝是设计上静默的，
+  所以上面那几个计数是「钩子装了但回了 null」的唯一凭据。
+- **C1 刻意不做。** 不新增 `config.*` 叶、不加超时旋钮（钩子是同步的——慢钩子是宿主的事，不是引擎的事）、
+  不在停机点消费（`followUp` 语义是后续切片）、不改 `TranscriptStore` 契约，`examples/pi-extension` 也
+  不动（扩展面属 C2）。
+
 ## Store 保真要求
 
 宿主 `TranscriptStore` **必须保留完整的 `RoundRecord` 与完整 message 对象**，包括宿主不认识
@@ -5019,6 +5048,7 @@ T1 承诺的双写期到一个 minor 为止，本刀就是结束它的那一刀�
 | `config_override_conflict` | `fact` | 不可删 | 同上。 |
 | `context_unknown_option` | `fact` | 不可删 | 同上。 |
 | `user_turn_guard_unrecoverable` | `fact` | 不可删 | 同上。 |
+| `host_steer_injected` | `fact` | 不可删 | issue #753（C1）：轮边界注入成功一条，带 `round` 与 `chars`。注入那条的正文在账本里是 durable 的，但「这一条是宿主转向、注入在第 N 轮」只在这里——宿主没看到注入时，本事件也是「钩子回了 null」与「根本没人装钩子」的分开凭据。 |
 | `tool_output_aggregate` | `fact` | 不可删 | 聚合**判定**（`action`、`reason`、`budgetTokens`、`inlineTokens`、`costTokens`、`projectedTokens`、`contentLength`）。transcript 与归档只留字节，不留这些数 —— 见上面那段降级说明。 |
 | `recovering` | `fact` | 不可删 | 在退避等待**之前**发出；等待中被中止就没有下一次 `attempt` 可供重算。 |
 | `recovered` | `fact` | 不可删 | 这是**重试**成功告知（不是续跑）。没有任何 durable 处记着「答案是第几次尝试成的」。 |

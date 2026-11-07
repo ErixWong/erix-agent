@@ -455,6 +455,26 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-deliverables-gap-436.test.js` | 7 | `deliverables`×7 | COMPAT-PIN |
 | `test/compact/fold-llm-degrade-469.test.js` | 1 | `onEvent`×1 | COMPAT-PIN |
 | `test/compact/fold-note-honesty-741.test.js` | 0 | `onEvent`×2 | MIGRATE · NOT-OPTION-SURFACE（人手裁决 #741：两处 `onEvent` 都写在 `capabilities.hooks` 规位里，槽位名本身就是新家 ⇒ 扁平写点实测 0，无待迁项） |
+| `test/loop-host-steer-turn-753.test.js` | 8 | `onEvent`×6, `onObserverError`×2 | MIGRATE · S7c（8）（#753 C1 落树于 S7c 关闭之后：8 点全是顶层扁平回调搭台，重新排队迁 `capabilities.hooks`） |
+
+> **人手裁决（#753 C1）：`test/loop-host-steer-turn-753.test.js` = `MIGRATE · S7c（8）`。**先记一句事实：
+> 本片的**新能力面写点**（`capabilities.hooks.nextUserTurn`）一子都不在本表里——AST 抽到的 8 点全是
+> **顶层扁平回调** `onEvent`×6 + `onObserverError`×2，只是用来拿事件与观察者错误报告的搭台。
+> 为什么不是另外三类：
+> · **不是 `COMPAT-PIN`**：那一类的五条机器记号在本文件**一处都没有**（现跑 `grep -c` 逐条 0：
+>   `config_override_conflict` / `unknown capabilities` / `is not accepted` / 函数值报错文案 /
+>   选项闸报错文案 / 名单导出名），断言读的是「宿主在轮边界被问一次、还回来的文本变成一条真
+>   `role: "user"` 轮」，所以也不是「含该面钉子」那一类。
+> · **不是 `NOT-OPTION-SURFACE`**：那两条回调就写在 `runToolLoop(...)` 的**顶层**（接受面见
+>   `RUN_TOOL_LOOP_OPTION_NAMES` 里的 `"onEvent"`，`src/loop/option-normalization.js`），而它们的规范之家就是
+>   `CAPABILITY_HOOK_NAMES`（`src/loop/capabilities-namespace.js`）的 `hooks` 规位（那个文件顶部注释逐字：
+>   「它们在**顶层**一直可用，现在只是多了一个规范之家」）——**有规位可迁**，不满足 #741 那一格
+>   「槽位名本身就是新家 ⇒ 扁平写点实测 0」的重分类前提。
+> · **不是 `OWNED-BY-S5` / `OWNED-BY-S6`**：那两张清单在 #498 定稿时已冻结（S5 那 5 个选项装配断言文件 /
+>   S6 那 5 个 `test/examples/*` 装配形状文件），本文件不在其内，也不碰 `buildLoopOptions`。
+> 为什么归进 `S7c（8）` 而不是另开一类：归片词表只认 S7a/S7b/S7c 与那四类（`--verify` 拿它对账），
+> 自造一类只能停在 TODO 形（而 TODO 已被本行人手裁决排掉）；选 S7c 是因为那三片里只它管「搭台写点」，
+> 而 S7c 本身已关闭 ⇒ 这 8 点是**重新排队**，不是「已迁」；同一口径已写进分派小结那一行的类名。
 
 > **人手裁决（#661 收尾）：`test/compact/fold-llm-degrade-469.test.js` = `COMPAT-PIN`。**
 > 这一格的 `onEvent` 写点在第 3 格「折叠结果状态」里：它用 `createCompactionStat({ compacted: true,
@@ -480,13 +500,13 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `MIGRATE · S7a`（已迁完：**迁移前** 37 个写点，现在 **0**） | 7 | 0（迁移前 37，已不在树里） |
 | `MIGRATE · S7a 遗留`（3 个 `finalGuard`；**已补进下行 S7c 的 90**，本行不重复计） | 3（⊂ 上行的 7） | 0（已计入 S7c） |
 | `MIGRATE · S7b`（已迁完 95 点，剩 0；迁移前 24 文件 / 124 点，明细见 S7b 清单） | 17 | 0 |
-| `MIGRATE · S7c`（**本刀已迁完 90 点中的 87**；另 3 点重分类，见下条） | 17 | 0 |
+| `MIGRATE · S7c`（**本刀已迁完 90 点中的 87**；另 3 点重分类，见下条；#753 C1 又在 S7c 关闭之后落树 8 点搭台 ⇒ **重新排队**，口径见主表那一行的人手裁决） | 17 | 8 |
 | `MIGRATE · 含 COMPAT-PIN 格`（迁搭台写点，**逐格**跳过选项面断言） | 3 | 38 |
 | `MIGRATE · NOT-OPTION-SURFACE`（重分类：不是 `runToolLoop` 选项面，**没有规位**） | 10 | 31 |  <!-- #741：`test/compact/fold-note-honesty-741.test.js` 并入本类（文件数 9→10，写点 0→0）：它的 `onEvent` 落在 `capabilities.hooks` 规位里，扁平写点实测 0 -->
 | `COMPAT-PIN` | 13 | 81 |  <!-- #436 又新增 7 点（`test/loop-deliverables-gap-436.test.js`）；小结按 --verify 打印的 AST 真值对齐 -->  <!-- #519 新增 4 点：`test/loop-direct-route-conflict-519.test.js`；小结由 --verify 打印的 AST 真值（逐点归片 73）对齐 -->
 | `OWNED-BY-S5` | 5 | 13 |
 | `OWNED-BY-S6` | 5 | 21 |
-| **合计（现在实测）** | **68** | **184** |
+| **合计（现在实测）** | **69** | **192** |
 
 脚注：
 
@@ -875,6 +895,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/run-state-meta-742.test.js` | 1 | `tools`×1 |
 | `test/loop-snapshot-round-residue-735.test.js` | 19 | `completion`×4, `stallDetection`×4, `tools`×4, `wrapup`×4, `resume`×3 |
 | `test/prompt-note-evidence-746.test.js` | 3 | `tools`×2, `completion`×1 |
+| `test/loop-host-steer-turn-753.test.js` | 6 | `onEvent`×6, `onObserverError`×2, `completion`×1, `reflection`×1, `resume`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/prompt-note-coverage-746.test.js` | 1 | `tools`×1 |
 | `test/loop-resume-abandon-signals-730.test.js` | 5 | `completion`×1, `resume`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 

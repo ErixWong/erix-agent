@@ -3,12 +3,26 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3659,
+    "tests": 3670,
     "fail": 0,
     "maxSkipped": 15
   },
   "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
   "observations": [
+    {
+      "date": "2026-11-07",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "本笔登记（分支 feat-261107-11-host-steer-turn；被量的树 = `origin/main b23f782` + 本片前 11 笔；六个计数取自这一棵树上现跑的 `npm test`，日志 /tmp/f-npmtest.log）",
+      "branch": "feat-261107-11-host-steer-turn",
+      "tests": 3670,
+      "pass": 3657,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests 3659 → **3670**（+11，全部有意新增）：`test/loop-host-steer-turn-753.test.js` 11 格（注入那条是带 `seq` 的 `kind:\"message\"` 行且不是 `:control:` 行 / 注入正文出现在 provider 请求里 / 落进下一轮的轮记录 / 回 `null` 与不传钩子的 run 账本+事件序列逐字一致 / 抛错不改终局且计进 `diagnostics.steer.rejected` / 返回非字符串同口径 / `host_steer_injected.round` 以同轮 `round_start`+`round_end` 为锚 / 不进本轮输出窗口 / resume 后仍读得到且同 `dedupKey` 不重复入账 / 折叠后仍在请求视图（最新轮、早期轮两格）/ 注入点源码顺序守卫）。既有文件一格没增减，没删例、没 skip、没放宽断言。算术自证：基点 `b23f782` 登记 3659 + 本片 11 = 3670，与本片新增用例数逐字对上。`pass` 3657 是**登记之后**同一棵树上的数：登记之前现跑是 fail 3（配对地板那一格 + #417 两档棘轮那两格——四档常量、配对地板与变异表都取完现测才绿），三格在同一笔提交里随登记一起转绿，所以本行不留 fail 3 那份中间态。`fail=0`；`skipped` 实测 13 与基点同值 ⇒ `maxSkipped` 15 不动。**rebase 途中丢掉的那笔旧登记（旧树 3605→3616）不重复计**：它与主干 #735 slice2 的登记撞在同一格，按「各自数过、不做加法」让位给主干，再在最终树重取本值。"
+    },
     {
       "date": "2026-11-07",
       "env": "local",
