@@ -88,8 +88,8 @@ import { tagValidationRoute } from "../assembly-validators.js";
 import { normalizeDeliverables } from "./deliverables.js";
 
 /**
- * The canonical list of the **17 host callbacks** (issue #498 S4a; 12 since S4b, 16 since S4c,
- * 17 since issue #568 added `continuityProvider`).
+ * The canonical list of the **18 host callbacks** (issue #498 S4a; 12 since S4b, 16 since S4c,
+ * 17 since issue #568 added `continuityProvider`, 18 since issue #753 C1 added `nextUserTurn`).
  *
  * 顺序 = 报错文案里的枚举顺序，也 = 文档里那张表的行序。八条观察者通道来自 0.27.0 的
  * `config.observers`（本版整组删除），三条出口（`onEvent` / `onObserverError` /
@@ -136,6 +136,14 @@ export const CAPABILITY_HOOK_NAMES = Object.freeze([
   // `config.folding.context.continuityMaxTokens` it belongs to. Consumer: `refreshContinuity` in
   // `src/loop/orchestrator.js`.
   "continuityProvider",
+  // issue #753 C1: the host's **only** way to hand text into a run that is already running. It is a
+  // **nested-slot** leaf like `continuityProvider` (no top-level flat alias — the 0.28 direction is
+  // "callbacks live in `capabilities.hooks.*`"), and unlike the nine `on*` observers **its return
+  // value enters the copy the model sees** (same family as `finalGuard` / `stubFor`). Signature:
+  // `nextUserTurn({runId, round, rounds, usage}) => string | null | undefined`, **synchronous**.
+  // Consumer: `injectHostSteerTurn` in `src/loop/orchestrator.js`, called once per round at the
+  // round boundary (after the top-of-loop `throwIfAborted`, before `roundStart`) — see that file.
+  "nextUserTurn",
 ]);
 
 /**
@@ -296,6 +304,21 @@ export const CAPABILITY_SLOT_DESTINATIONS = Object.freeze({
   "hooks.continuityProvider": Object.freeze({
     path: Object.freeze(["context", "continuityProvider"]),
     conflictPath: "hooks.continuityProvider",
+    legacyShell: false,
+  }),
+  // issue #753 C1: the host-steer turn hook. It has **no legacy home** either (there was no host
+  // injection point before this slice — that absence is the issue), so this is again a container
+  // member slot, not a move, and the top-level allowlist does not grow. Its shell is `reflection`
+  // — the loop-continuation shell (`config.run.reflection`), which is what the round-boundary
+  // decision belongs to — and it is marked `legacyShell: false` for the same reason as above: the
+  // shell spelling never existed, so the mixed-shell hint must not claim it did. The engine reads
+  // the value from the `slots` side channel (`capabilityHooks.nextUserTurn` in
+  // `src/loop/orchestrator.js`), **not** from `reflection.nextUserTurn`; the path is registered so
+  // a host that writes it into the shell gets one `config_override_conflict` naming
+  // `hooks.nextUserTurn` instead of a silent second source of truth.
+  "hooks.nextUserTurn": Object.freeze({
+    path: Object.freeze(["reflection", "nextUserTurn"]),
+    conflictPath: "hooks.nextUserTurn",
     legacyShell: false,
   }),
 });

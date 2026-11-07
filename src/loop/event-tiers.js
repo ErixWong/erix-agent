@@ -93,6 +93,12 @@ export const EVENT_TIERS = Object.freeze({
   // ── 轮结构与事实（删了就丢历史）──────────────────────────────────────────────
   round_start: EVENT_TIER_FACT,
   round_end: EVENT_TIER_FACT,
+  // issue #753 C1（新格）：宿主经 `capabilities.hooks.nextUserTurn` 递进来的那句话**已被引擎收下**。
+  // 为什么是 `fact` 而不是 `derived`：它就是契约里那条**消费确认**（「宿主按事件收账，run 崩了
+  // 由宿主决定是否重投」）——账本里那条 user 消息行只有「盘上有这句话」这一个事实，而
+  // 「钩子在第几轮被调用、引擎当时真把它接进了请求」与「递了多少字」（`chars`）没有第二份副本；
+  // 删了它，宿主就没法区分「我提供了但引擎没消费」与「消费了后来崩了」，只能重投 ⇒ 重复注入。
+  host_steer_injected: EVENT_TIER_FACT,
   attempt: EVENT_TIER_FACT,
   usage: EVENT_TIER_FACT,
   tool_use: EVENT_TIER_FACT,
