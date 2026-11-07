@@ -5,10 +5,24 @@
   "expect": {
     "tests": 3703,
     "fail": 0,
-    "maxSkipped": 15
+    "maxSkipped": 17
   },
   "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
   "observations": [
+    {
+      "date": "2026-11-08",
+      "env": "ci",
+      "node": "CI 矩阵 `node 22`（Actions 日志里没打印小版本，不硬写）",
+      "commit": "70df906（分支 fix-261108-01-close-legacy-upgrade-gate 的合并提交；PR #778）",
+      "branch": "fix-261108-01-close-legacy-upgrade-gate",
+      "tests": 3703,
+      "pass": 3686,
+      "fail": 0,
+      "skipped": 17,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "**抬 `maxSkipped` 15 → 17**，理由是 CI 现测：Actions run `42413313223`（PR #778，job `node 22`，2m22s）`TEST-SUMMARY tests=3703 pass=3686 fail=0 skipped=17` ⇒ `TEST-SUMMARY-VERDICT red codes=SKIPPED_OVER`。同片把「同格双改」那笔登记里留的钩子兑现：上一笔写的是「CI 侧预计 17 > 15，等读数到手再抬并附 run 号，不把 local+2 当已测事实」——现在 17 是 CI 打出来的，不再是推定。差的 2 格正是本文件 `skipCeilingWhy` 说的那两条装载器用例（CI 镜像没装 `@earendil-works/pi-coding-agent`，按环境跳过）：local 15 → CI 17，`tests`/`fail` 两侧逐字相同，`pass` 3686 = 3688 − 2（多跳的两格从 pass 挪到 skipped）。`tests` 3703 两侧同值 ⇒ 上一笔的登记不用动。`Test suite` 那一步本身 success，红只在汇总对账步，不是有用例挂。"
+    },
     {
       "date": "2026-11-08",
       "env": "local",
