@@ -552,19 +552,25 @@
   session from the seed message to now, and that single cell is the bulk of the 2 MiB host-side ceiling
   #734 reported. Measured on a 20-round run (fake provider, 8 KiB tool output per round, 39 snapshot
   writes): **2 055 794 bytes (1.96 MiB) → 361 996 bytes (0.35 MiB)** total, last write
-  **104 747 → 18 165 bytes**, the `messages` cell alone **1 796 766 → 102 968 bytes (−94.3%)**. How much is
-  saved depends on the run's shape: a run resuming at round 10 that then ran 20 more went
-  **3 935 966 → 365 149 (−90.7%)**, while one resuming with only 3 journaled messages — the floor the anchor
-  cap below forces — saved **2 114 738 → 2 088 374 (−1.2%)**, i.e. almost nothing. The cell stays an array **in the transcript's own index space**: slots before
+  **104 747 → 18 165 bytes**, the `messages` cell alone **1 796 766 → 102 968 bytes (−94.3%)**. Shape matters: a run resuming at round 10 that then ran 20 more went **3 935 966 → 365 149
+  (−90.7%)**, and one resuming from an old-format ledger (anchor 3) then running 20 more went **2 114 738 →
+  526 506 (−75.1%)**. The floor is a run with few but fat rounds — old-format resume, 3 rounds × 512 KiB
+  results — where the current round's own `toolResults` / `toolOutputs` cells dominate and this change saved
+  only **1 644 512 → 1 623 250 (−1.3%)**; what this removes is growth with round count, not a fat round. The cell stays an array **in the transcript's own index space**: slots before
   the residue hold `null`, so the payload's key order, the cell's position, and the reader's absolute
   `snapshot.messages.slice(anchor)` all keep working with **zero read-side changes** — that index alignment
   is the design, not an accident: a shorter array would shift the anchor's absolute index and the very same
   fixture scene turns red (`invalid_messages`, 0 model requests) when the residue is truncated instead of
-  nulled. **The invariant the write side depends on**, stated in the code comment at the write point and
-  proved on both sides: **every nulled slot sits strictly below this run's own resume anchor** (a run that
-  never resumed: below `min(round start, persistedTranscriptLength)`), and every slot below that anchor is in
-  the ledger by construction — the anchor *is* the ledger's message count — so there is no per-slot tracking
-  to get wrong.
+  nulled. **The two-hop case is a pre-existing read-side defect, not a loss introduced here (issue #754)**:
+  running the same scene (old-format ledger + old snapshot → resume → engine overwrites the snapshot → resume
+  again) side by side on `main` and on this branch gives **verbatim identical** second hops — same
+  `invalid_messages`, same `anchor` growth 3 → 5, zero model requests, the memory-only body unreachable —
+  because `anchor` is a scalar folded message count rather than a per-slot journaling bitmap. An "anchor cap"
+  variant of this change was implemented, measured, and **reverted** for exactly that reason: it bought no
+  correctness and no bound. **The invariant the write side depends on**, stated in the code comment at the write point and
+  proved on both sides: **the nulled slots stay at or below the anchor the resume path recomputes, and that
+  reader only ever slices `messages.slice(anchor)` — so it never reads a nulled slot.** That is a claim about
+  the *reader*, not a promise that every body survives across resumes (see below).
   `persistedTranscriptLength` only advances on a journaling call this process itself saw succeed (both call
   sites are guarded by `if (persisted)`), and `countResumeAnchor(records)` counts the same append-only ledger
   at a later instant, so the first term bounds the second; the round-start term covers the one case memory
@@ -650,21 +656,26 @@
   到当前轮」的全文重抄一遍，而 #734 报的宿主 2 MiB 上限，大头就是这一格。夹具驱动的 20 轮真跑
   （fake provider、每轮 8 KiB 工具输出、39 次快照写）实测：**累计 2 055 794 字节（1.96 MiB）→ 361 996
   字节（0.35 MiB）**，末次写 **104 747 → 18 165 字节**，只算 `messages` 这一格 **1 796 766 → 102 968 字节
-  （−94.3%）**。省多少跟 run 的形状有关：第 10 轮恢复后再跑 20 轮 **3 935 966 → 365 149（−90.7%）**；而恢复时
-  账本只有 3 条正文的 run——正是下面那个锚点封顶逼出来的底线——只省 **2 114 738 → 2 088 374（−1.2%）**，
-  几乎一字节都不省。这一格**仍是数组，且仍在正文自己的下标空间里**：
+  （−94.3%）**。省多少跟 run 的形状有关：第 10 轮恢复后再跑 20 轮 **3 935 966 → 365 149（−90.7%）**；从旧格式账本
+  （锚点 3）恢复后再跑 20 轮 **2 114 738 → 526 506（−75.1%）**。底线是「轮少而单轮肥」：旧格式恢复后跑
+  3 轮 × 512 KiB 结果，那里本轮自己的 `toolResults` / `toolOutputs` 两格才是大头，这一片只省
+  **1 644 512 → 1 623 250（−1.3%)**——它去掉的是**随轮数增长**那一项，不是一轮本身的体量。这一格**仍是数组，且仍在正文自己的下标空间里**：
   残余之前的格子写 `null`，于是 payload 键序、这格在键序里的位置、以及读侧那个绝对下标的
   `snapshot.messages.slice(anchor)` 全部**零改动**继续成立 —— 这个下标对齐是设计而不是巧合：换成更短的
   数组就会挪掉 `anchor` 的绝对下标，同一个夹具现场把残余**截掉**而不是置 null，当场红
   （`invalid_messages`，0 次模型请求）。**写侧依赖的不变量**（原话写在写点注释里，两侧都证）：
-  **被置 `null` 的下标严格小于「本次 run 自己的恢复锚点」**（没恢复过的 run：小于
-  `min(本轮起点, persistedTranscriptLength)`），而锚点之前每一格按构造都在账本里——锚点的定义就是账本
-  正文条数——所以**没有「逐格追踪」这种东西可以出错**。
+  **被置 `null` 的格子不会越过恢复侧现算的那个 anchor，而那个读者只切 `messages.slice(anchor)` ⇒
+  它永远读不到被置 null 的格子。**这是**关于读者**的陈述，**不是**「每段正文都能跨恢复活下来」的承诺
+  （见下面那条）。
   `persistedTranscriptLength` 只在**本进程亲手落盘成功**时才 +1（两处写点都带 `if (persisted)` 守卫），
   而 `countResumeAnchor(records)` 量的是同一本只追加的账在更晚时刻的条数 ⇒ 第一项界住第二项；第二项
   「本轮起点」管的是内存跑在账本之前那唯一一种情形——恢复时从快照补进内存、却被 #424 的守卫
   故意留在账本之外的崩溃轮正文，它排在锚点**之后**，正是 `min(..., persistedTranscriptLength)` 那一项
-  把它留住。钉住它的用例是那条双崩链（旧格式夹具账本 → resume → 引擎亲笔覆盖写快照 → 再 resume），
+  把它留住。**两跳那条链是主干既有的读侧缺陷，不是本片引入的损失（issue #754）**：同一套场景（旧账本+旧快照 →
+  resume → 引擎亲笔覆盖写快照 → 再 resume）在主干与本支并排跑，第二跳**逐字同结果**——同一个
+  `invalid_messages`、锚点同样从 3 涨到 5、同样 0 次模型请求、那段只在内存里的正文同样取不到——因为
+  `anchor` 是「折叠后的消息条数」这个**标量**，不是「哪些下标已入账」的位图。为此实现并实测过一个
+  「锚点封顶」版本，**已撤回**：它既不换来正确性，也不换来上界。钉住它的用例是那条双崩链（旧格式夹具账本 → resume → 引擎亲笔覆盖写快照 → 再 resume），
   它把两次恢复的结果与一棵**写整段的 `src/` 副本**逐字对账（issue #411 的纪律：变异只发生在副本上，
   仓内 `src/` 全程只读）。夹具现场是 `test/fixtures/journal-0.22.0/` 截到 round 1 ⇒ 崩溃轮正文真的只在
   快照里；锚点用读侧自己的 `foldLedgerMessages` 现算，不是抄来的常数。⚠ **宿主可见**：从

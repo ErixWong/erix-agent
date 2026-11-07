@@ -3,12 +3,26 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3610,
+    "tests": 3611,
     "fail": 0,
     "maxSkipped": 15
   },
   "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
   "observations": [
+    {
+      "date": "2026-11-07",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "d416574 + 本笔登记（fix-261107-09-snapshot-round-residue；#735 切片 2 实现 c87f591 / 用例 8f1d32e / 文档 e0c7275 / 守卫 df4dd87 / 登记 feb85ac+e18851d / 锚点封顶 91951fe+1493cb9 / 夹具前置 fcbd8b3 / 字节账文档 97daf82 / 撤回封顶 6d98ac7 / 契约收窄 ee2fbfa / 两跳判据 d416574，基点 main=bea46bb）；六个计数取自最终树现跑的 npm test（日志 /tmp/npmtest-final3.log）",
+      "branch": "fix-261107-09-snapshot-round-residue",
+      "tests": 3611,
+      "pass": 3598,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests 3610 → **3611**（+1，有意的增加）：`test/loop-snapshot-round-residue-735.test.js` 加第 6 格「两跳恢复记录**当前行为**（主干既有缺陷，修好见 #754）」。独立评审的 BLOCK 打的就是这条链（旧格式账本+旧快照 → resume → 引擎亲笔覆盖写快照 → 再恢复，那段只在内存里的旧正文取不到）；独立探针在主干 bea46bb 与本支并排跑证明两棵第二跳**逐字同结果**（同一个 invalid_messages、锚点同样 3→5、同样 0 次模型请求、旧正文同样取不到）⇒ 归 **#754**（读侧切片下标语义，anchor 是标量不是逐格位图），用例按当前行为写死并注明「#754 落地后翻成断言正确行为」。同一段工作里还实现并**实测撤回**了写侧的「恢复锚点封顶」（91951fe → 6d98ac7：既不换来正确性也不换来上界），撤回后重测的三档字节账已写进中英契约与 CHANGELOG。`fail=0`；`skipped=13`（≤ maxSkipped 15，成员与上一笔逐字同：4 条类型棘轮自证 + 9 条真上游/网络门）；`todo=0`、`cancelled=0`；tests = pass + fail + skipped = 3611。"
+    },
     {
       "date": "2026-11-07",
       "env": "local",
