@@ -1038,6 +1038,98 @@
   `0.31.0` 指南里印的就是那句错话。标记现在与页面同一条 `no in-tree replacement`（只动注释文字：`removed in 0.31`
   那枚版本记号没动、函数签名与实现没动、R4 收这个条款形状、一个导出都没加）。
 
+- **The resume fallback could abandon a run in four different ways and told the host about only one
+  of them (issue #730).** All four paths mean the same thing to a host — "this `runId` still needs
+  manual repair" — while only the missing-anchor path emitted `resume_journal_skipped`. The rest
+  surfaced as `invalid_messages` in front of the first outbound request (0 HTTP calls,
+  `termination: failed`, the run never boots again), indistinguishable from "the fallback worked".
+  Four cells, in the order the ticket lists them: **the merge that refused to speak** (the census says
+  an id is unsettled, `mergeToolResultsIntoAssistantNextMessage` returns `false` because that
+  aggregated message already carries a result from a different call, and the loop `continue`d) and
+  **the two shapes that never reached the census at all** (two adjacent assistants, or the following
+  `user` message holding no `tool_result` — both need a page inserted, which issue #421 deliberately
+  excluded) now report `mid_sequence_merge_refused` and `mid_sequence_shape_not_supported`; **the
+  write that was refused** (`appendMessageRowToTranscript` returns `undefined` for a round number that
+  is not a safe integer, e.g. a run snapshot carrying round residue) is no longer "nothing happened" —
+  that stub lives only in this run's context, and `mid_sequence_stub_row_write_refused` says so. One
+  more overload was split rather than renamed: `mid_sequence_aggregate_row_not_in_ledger` covered
+  three different situations, of which only one is fixable by the host, so it now carries `detail` =
+  `anchor_probe_absent` (add `loadRawRows` and the next resume closes the ledger) /
+  `round_carrier_has_body` (issue #729: a row exists and must not be used — the probe would not help)
+  / `aggregate_row_not_in_ledger`. **No event type was added** — every one of these rides on
+  `resume_journal_skipped`, the `fact` tier of the issue #743 grading table (never deletable), and an
+  event without a `detail` keeps its old shape byte-for-byte because the engine omits the key rather
+  than writing a placeholder. The fifth cell is the one that was silently **breaking** runs rather than
+  reporting them: the mid-sequence stub criterion excluded any `tool_use_id` the ledger had ever seen
+  (a whole-run id set), while `validateMessages` compares id sets **per pair** — so a provider that
+  reuses an id in a later round (issue #284 measured that ids are not unique within a run) had its
+  stub suppressed and that pair never closed. It is now pair-local, which is also what keeps idempotency:
+  the page a stub lands on *is* that aggregated message, so the next resume's own criterion stops
+  asking. Behaviour did not move for the four abandonment cells (they still fail or still degrade
+  exactly as before — nothing was loosened to make a test pass), no `executionStatus` value was added,
+  `termination.reason` and the decision tables are untouched, and a *successful* repair emits nothing:
+  a repair must not share a signal with an abandonment. New
+  `test/loop-resume-abandon-signals-730.test.js` (7 cases) plus the reverse proofs in
+  `/tmp/report-730.md`: each cell reddens when the emission code is removed, and the closed set of
+  causes is reconciled against both contract documents in both directions.
+- **`readFile`'s own line-capacity promise went stale with this ticket, and the ratchet caught it: the
+  `fewest` tier moved 3,850 → 3,750 lines.** The 156 lines of注释 this ticket added to
+  `src/loop/pending-tool-result.js` pushed its average line width to 69.13 bytes, making it the whole-tree
+  minimum at **3,792** lines and dethroning `src/loop/option-normalization.js` (3,854). The floor is a
+  universal claim — it must be the true whole-tree minimum — and 3,792 no longer lives in the
+  `[3,850, 3,900)` band, so per the #537 promise granularity both tiers in the model-visible description
+  (`fewest ≥ …` and `no file in those three trees reads fewer than …`) moved to **3,750**, with that tier's
+  bytes/line going `68.0` → `69.1`. The role-anchor row in `test/tools/file-tools.test.js` was re-measured
+  with **that test's own** `measureReadLineCapacity` and its own `CJK_CHAR` (not a hand-written second
+  measurement — the lesson of #714) and the per-field old→new values are recorded in the row's own
+  "第 N 刷" history comment. The other four roles were re-measured too and **not** re-pinned, per #543's
+  "only when the role changes or a tier is crossed": `densest` 4,384 / CJK 36.6% (recorded 4,364 / 37.0%),
+  `median` 6,212 and `most` 9,407 (byte-identical), `self` 4,676 (recorded 4,678). Same sweep fixed the
+  directive-face claims `check:types` names by itself: the "files carrying errors" counts read
+  **27** (package root, 101 errors measured against the untouched `BASELINE_ROOT = 103`) and **29**
+  (`--with-tools`, 136 errors measured against the untouched **138**), so `AGENTS.md` / `AGENTS_cn.md` now
+  say 27 and 29 while every baseline constant and the `--checkJs`/`--strict` semantics stay where they were
+  (issue #730).
+
+- **恢复兜底有四种「放弃」走法，而宿主只听得见其中一种（issue #730）。** 四条路对宿主意味着同一件事
+  ——「这个 run 还得人工修」——可修前只有「锚点缺失」那一条会发 `resume_journal_skipped`。其余都只表现为
+  第一次模型请求出网前的 `invalid_messages`（0 次 HTTP、`termination: failed`、这个 runId 从此起不来），
+  与「兜底成功了」根本分不开。按工单列的顺序五格：**合并自己拒了**（普查说这个 id 没结清，而
+  `mergeToolResultsIntoAssistantNextMessage` 因为那条聚合消息已带着**别的单**的结果而返回 `false`，
+  循环当场 `continue`）、**根本没进判据的那两种形状**（相邻两条 assistant，或紧跟的 `user` 一条
+  `tool_result` 都没有——两者都要**插页**，而 issue #421 刻意把插页排除在职责外）现在分别报
+  `mid_sequence_merge_refused` 与 `mid_sequence_shape_not_supported`；**写被拒**那一格
+  （`appendMessageRowToTranscript` 对不是安全整数的轮号 `return undefined`，例如一份带着轮号残留的 run
+  snapshot）不再是「无事发生」——那张桩只活在本次上下文里，`mid_sequence_stub_row_write_refused` 把这件
+  事说出来。还有一处语义重叠是**拆开**而不是改名：`mid_sequence_aggregate_row_not_in_ledger` 原本盖着
+  三件不同的事，其中只有一件宿主能自己修好，于是它现在带 `detail` = `anchor_probe_absent`（补上
+  `loadRawRows`，下一次恢复账本就闭合）/ `round_carrier_has_body`（issue #729：行在而不许用，补探针也
+  没用）/ `aggregate_row_not_in_ledger`。**没有新增任何事件类型**：这些成因全部骑在
+  `resume_journal_skipped`（issue #743 分级表里的 `fact`，不可删档）上，而没带 `detail` 的既有事件形状
+  逐字不变——引擎是不写那个键，不是拿占位值填一个。第五格修的从来不是「看不见」而是**一直在把 run 弄坏**：
+  中段补桩的排除集是「账本里见过的全部 id」（一个全 run 的集合），而 `validateMessages` 是**逐对**比 id
+  集合 —— 于是同一个 `tool_use_id` 在后面的轮里被复用（issue #284 实测过 id 不保证 run 内唯一）就把这一对
+  的桩抑制掉、这一对永不闭合。现在判据是**逐对**的，而幂等也正是这条判据保住的：桩落的那一页**就是**那条
+  聚合消息，下一次恢复判据自己就不再问它。四条放弃路径的**行为一点没动**（该失败的照样失败、该降级的照样
+  降级，没有任何既有断言为了变绿被放宽），没新增 `executionStatus` 取值，`termination.reason` 与判定表都没
+  碰，而**成功**兜底仍旧一声不发：修好了不该与放弃了共用一个信号面。新增
+  `test/loop-resume-abandon-signals-730.test.js`（7 条）与 `/tmp/report-730.md` 里的反向证：把每一格的发射
+  代码拿掉，对应用例必须红；成因闭集与中英两份契约是**双向**对账的。
+
+- **本单自己把 `readFile` 那份「一次能装多少行」的承诺弄过期了，棘轮抓住了它：`fewest` 档从 3,850 行降到
+  3,750 行。** 本单给 `src/loop/pending-tool-result.js` 加的 156 行中文注释把它的均行字节抬到 69.13，
+  它于是以 **3,792** 行取代 `src/loop/option-normalization.js`（3,854）成为全树「一次装得最少」的那一个。
+  floor 是**全称命题**，只能钉全树真最小值，而 3,792 已经不在 `[3,850, 3,900)` 这一档里 ⇒ 按 #537 的承诺
+  粒度换档：模型可见文案里两处档位（`fewest ≥ …` 与 `no file in those three trees reads fewer than …`）
+  一起改成 **3,750**，那一档的均行字节 `68.0` → `69.1`。角色锚点那一行用**该测试自己的**
+  `measureReadLineCapacity` 与它自己的 `CJK_CHAR` 重取（不是另写一份度量——#714 手写数把锚点写歪的教训），
+  逐字段旧值→新值记在该行既有的「第 N 刷」历史注里。其余四个角色一并复测、**一个都没刷**（#543「换人才刷，
+  没跨档就不动」）：`densest` 4,384 / CJK 36.6%（记录 4,364 / 37.0%）、`median` 6,212、`most` 9,407（逐字
+  未动）、`self` 4,676（记录 4,678）。同一次收尾也修了 `check:types` 自己点名的指令面声称：「带错文件数」
+  现测是**包根 27 个**（101 个错，对着没动的 `BASELINE_ROOT = 103`）与 **`--with-tools` 29 个**（136 个错，
+  对着没动的 **138**），于是 `AGENTS.md` / `AGENTS_cn.md` 改成 27 与 29，而基线常量与 `--checkJs`/`--strict`
+  的语义一个字都没碰（issue #730）。
+
 ## [0.31.0] - 2026-11-04
 
 ### Breaking

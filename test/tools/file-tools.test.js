@@ -651,7 +651,26 @@ const READ_LINE_CAPACITY_ROLES = [
   // 2026-10-29 第十二刷（issue #550）：`option-normalization.js` 加了一行 session 派生折叠 +
   // 一个 import 符号（+238 B / +1 行），bytes 越过 ±2% ⇒ 按 #543 机制复测这一行（描述只改 67.2→68.0
   // 那个平均行字节数，档位 3,850 不变：实测容量 3,853 仍在 [3850, 3899) 里）。
-  { role: "fewest", file: "src/loop/option-normalization.js", recorded: { bytes: 37_079, lines: 545, bytesPerLine: 68.0349, capacity: 3_853, cjkShare: 0.1702 } },
+  // 2026-11-07 第十三刷（issue #730，**换人 + 跨档同时发生**）：本单给 `src/loop/pending-tool-result.js`
+  //   加了 156 行（中段普查与四条放弃成因的中文注释），它从「全树第 N」一举压成**全树一次装得最少**的那一个，
+  //   取代 `src/loop/option-normalization.js`。逐字段旧值 → 新值（全部由**本测试自己的** `measureReadLineCapacity`
+  //   与它自己的 `CJK_CHAR` 当场量得，不是另写一份度量，#714 那次手写数把锚点写歪的教训）：
+  //     · file          `src/loop/option-normalization.js` → `src/loop/pending-tool-result.js`
+  //     · bytes         37,079 → **25,326**
+  //     · lines         545 → **362**
+  //     · bytesPerLine  68.0349 → **69.9613**
+  //     · capacity      3,853 → **3,746**
+  //     · cjkShare      0.1702 → **0.38735**（继任者是中文注释重的文件，不是英文那一个）
+  //   3,746 不在 [3,750, 3,800) 这一档里 ⇒ 按 #537 的承诺粒度换档：描述里 `fewest ≥ 3,850` 与
+  //   `reads fewer than 3,850` 两处一起改成 **3,700**（守卫原话：「全树实测最小值是 3,746 行……把描述里的
+  //   档位改成 3,700」），fewest 那一档的均行字节 `68.0` → **70.0**（同位数
+  //   替换 ⇒ 对 `src/tools/file-tools.js` 字节中性，`self` 那一行不用重测）。旧任 option-normalization.js
+  //   当场实测 3,854（记录 3,853，+0.03%）——它不再占任何角色，但仍在固定样本清单里。
+  //   ⚠ 其余四个角色**一并复测了一个都没刷**（#543：换人才刷，没跨档就不动）：`densest`
+  //   `src/loop/state-view.js` 4,384 行 / CJK 36.6%（记录 4,364 / 37.0%，+0.46% 与 -0.4pt 都在容差里）；
+  //   `median` `src/store/file.js` 6,212（与记录逐字相同）；`most` `src/loop/abort.js` 9,407（逐字相同）；
+  //   `self` `src/tools/file-tools.js` 4,676（记录 4,678，-0.04%）。
+  { role: "fewest", file: "src/loop/pending-tool-result.js", recorded: { bytes: 25_326, lines: 362, bytesPerLine: 69.9613, capacity: 3_746, cjkShare: 0.38735 } },
   // CJK 字节占比最高的那一个（2026-10-13 到 2026-10-31 一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
   // 2026-10-31 第一刷（issue #246 第一刀）：这个文件第一次被真实接线（`orchestrator.js` 的
   // `runSnapshotContext` 转发面），文件头注释里「本单不接线」那句改成接线事实（+14 B，**行数不变**）。
