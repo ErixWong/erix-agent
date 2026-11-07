@@ -100,6 +100,151 @@ function collectKeys(value, acc = new Set()) {
   return acc;
 }
 
+// ---------------------------------------------------------------------------
+// store 读边界的**就地**观察面（#759：#735 切片 2 之后，run snapshot 的 `messages` 只剩轮残余，
+// 拿它当「引擎内存里有没有改写宿主传进来的旧块」的观察面就瞎了）。
+//
+// 拦的是包装 store 的**读面**（`load` / `loadRawRows` / `loadLatestRunSnapshot` / `loadLatestCheckpoint`）：
+// 对返回结构里每一个 `tool_result` 块（连同它自己的嵌套对象）**逐格换成 accessor**：
+// 读 → 计数（=「探针真的盖上过这个对象」的在场证据），写 / 新增键 / 删键 → 记账。
+// **对象身份不变**（还是引擎要拿去用的那一个）⇒ 引擎改它我们看得见，不改就一条都不记。
+//
+// 为什么不是字面的 `new Proxy(块)`（本单原本的形状，实测装不上）：引擎每次请求都做
+// `cloneState(ctx.messages)`（`src/loop/provider-runner.js:242` → `src/loop/budget.js:12` 就是
+// `structuredClone`），而 `structuredClone` 对**任何** Proxy 一律抛 `DataCloneError`（Node 22 实测；
+// 恢复进来的旧块就在 `ctx.messages` 里）⇒ 给块套 Proxy，第一次请求就死在探针自己手里，
+// F9b 会红成「run 没收尾」而不是判据红。accessor 换格不动 `Object.keys` / 键序 / 可枚举性 /
+// JSON 字节，`structuredClone` 照读通过 ⇒ 它是这里唯一不改变引擎行为的就地观察面。
+// 代价照实说：accessor 面抓不到「**先加后删**」的瞬态改写（Proxy 能），但那一格在 run 结束后
+// 无论哪个面都看不见（引擎自己那份也是终态），而它会被下面的「逐字未变」+「键集合」两条兼住。
+// ---------------------------------------------------------------------------
+
+function safeJson(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "<unreadable>";
+  }
+}
+
+/**
+ * 给一个 store 装上读边界就地观察面。
+ * @param {object} store 真 store（内置文件 store）
+ * @returns {{ store: object, snapshots: object[], observations: () => object[] }}
+ */
+function createBoundaryProbe(store) {
+  const observations = [];
+  const stateOf = new WeakMap();
+  const snapshots = [];
+
+  // 递归保护必须是**探针自己的**（`stateOf` 已装 / `inFlight` 在装），不能借用 `scan` 的 `walking`：
+  // `scan` 会先 `walking.add(块)` 再来叫 `instrument`，借用同一张表时每个 `tool_result` 块都会被
+  // 当成「已访问」直接返回 ⇒ 观察面静默空转（本函数第一版就是这么 0 观察的，靠在场断言当场红）。
+  const inFlight = new WeakSet();
+  const instrument = (value, path) => {
+    if (value === null || typeof value !== "object" || inFlight.has(value)) return;
+    inFlight.add(value);
+    let state = stateOf.get(value);
+    if (state === undefined) {
+      // 先取逐字事实与身份标记（此时还没装 accessor ⇒ 不混进探针自己的读）
+      const own = (key) => Object.getOwnPropertyDescriptor(value, key)?.value;
+      state = {
+        path,
+        target: value,
+        identity: { type: own("type"), tool_use_id: own("tool_use_id") },
+        boundaryKeys: Object.keys(value),
+        boundaryJson: safeJson(value),
+        reads: new Map(),
+        writes: [],
+        getters: new Map(),
+      };
+      stateOf.set(value, state);
+      observations.push(state);
+    }
+    for (const key of Object.keys(value)) {
+      const desc = Object.getOwnPropertyDescriptor(value, key);
+      // 只换「可配置的数据格」；已经是探针的 accessor（幂等：同一个块被读两次）就跳过
+      if (desc === undefined || !("value" in desc) || !desc.configurable) continue;
+      let current = desc.value;
+      const getter = () => {
+        state.reads.set(key, (state.reads.get(key) ?? 0) + 1);
+        return current;
+      };
+      const setter = (next) => {
+        state.writes.push({ key, before: current, after: next });
+        current = next;
+        instrument(next, `${path}.${key}`);
+      };
+      Object.defineProperty(value, key, {
+        configurable: true, enumerable: desc.enumerable, get: getter, set: setter,
+      });
+      state.getters.set(key, getter);
+      instrument(desc.value, `${path}.${key}`);
+    }
+  };
+
+  /** 只给 `tool_result` 块（本单要判的那一类宿主对象）装探针；整张返回结构走一遍。 */
+  const scan = (value, path, walking) => {
+    if (value === null || typeof value !== "object" || walking.has(value)) return;
+    walking.add(value);
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => scan(item, `${path}[${index}]`, walking));
+      return;
+    }
+    if (value.type === "tool_result") instrument(value, path, walking);
+    for (const key of Object.keys(value)) scan(value[key], `${path}.${key}`, walking);
+  };
+
+  /** 收针：先把事实取出来（此后探针自己的读不再参与判定），再交给断言。 */
+  const freeze = (state) => {
+    const keysNow = Object.keys(state.target);
+    const frozen = {
+      path: state.path,
+      identity: { ...state.identity },
+      boundaryKeys: [...state.boundaryKeys],
+      boundaryJson: state.boundaryJson,
+      readsTotal: [...state.reads.values()].reduce((total, n) => total + n, 0),
+      readKeys: [...state.reads.keys()].sort(),
+      writes: state.writes.map((write) => ({
+        key: write.key, before: safeJson(write.before), after: safeJson(write.after),
+      })),
+      keysNow,
+      jsonNow: safeJson(state.target),
+      lostKeys: state.boundaryKeys.filter((key) => !keysNow.includes(key)),
+      addedKeys: keysNow.filter((key) => !state.boundaryKeys.includes(key)),
+      replacedKeys: keysNow.filter((key) => {
+        if (!state.boundaryKeys.includes(key)) return false;
+        const desc = Object.getOwnPropertyDescriptor(state.target, key);
+        return desc === undefined || !("get" in desc) || desc.get !== state.getters.get(key);
+      }),
+    };
+    return frozen;
+  };
+
+  const READ_FACES = ["load", "loadRawRows", "loadLatestRunSnapshot", "loadLatestCheckpoint"];
+  const SNAPSHOT_FACES = ["saveRunSnapshot", "saveCheckpoint", "appendCheckpoint"];
+  const probed = {};
+  for (const [name, method] of Object.entries(store)) {
+    if (typeof method !== "function") {
+      probed[name] = method;
+      continue;
+    }
+    probed[name] = async (...args) => {
+      const result = await method.apply(store, args);
+      if (READ_FACES.includes(name)) scan(result, `${name}#${observations.length}`, new Set());
+      if (SNAPSHOT_FACES.includes(name)) snapshots.push(args[1]);
+      return result;
+    };
+  }
+
+  return {
+    store: probed,
+    snapshots,
+    /** 收针后的全部观察事实（只含 `tool_result` 块）。 */
+    observations: () => observations.map(freeze),
+  };
+}
+
 /** 项目素材：两次工具调用都要真有活干（一个命中、一个纯文本返回） */
 async function makeProject(dir) {
   await writeFile(join(dir, "a.txt"), "第一行 needle 在这里\n第二行 没有\n第三行 又有一个 needle\n", "utf8");
@@ -485,23 +630,17 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
     await mkdir(dirC, { recursive: true });
     await makeProject(dirC);
     const storeC = createFileTranscriptStore({ dir: join(root, "store-c") });
-    // 探针：resume 期间引擎每写一次 run snapshot 就留一份副本。快照的 `messages` 是
-    // `cloneState(messages)`——即**引擎内存里那份上下文**的逐字快照 ⇒ 拿它判「引擎有没有在内存里
-    // 给宿主传进来的旧块补 `erix`」。光看 `store.load()` 不够：那是磁盘，就地改内存对象而不再落盘
-    // 的坏法不会在磁盘上留下痕迹（本单要防的 (a) 正是那一种）。
-    const snapshotPayloads = [];
-    // **已知（#735 切片 2 之后本探针失去观察面；修法见下面的 F9b）**：快照的 `messages` 自切片 2 起
-    // 只交**轮残余**（`orchestrator.js#persistRunSnapshot` 的 `residueStart` 之前的格子写成 `null`），
-    // 而恢复进来的旧块恒在残余之前 ⇒ `snapshotPayloads` 里**取不到** `legacy-1`
-    // （离线同形状实测：resume 期两份快照 `messages.length=7`、`null=6`、旧块在场=false）
-    // ⇒ 下面 F9b 那句「引擎内存里不许就地改写」的观察面必须搬到 **store 读边界**（`storeCProbed`）。
-    const storeCProbed = {
-      ...storeC,
-      async saveRunSnapshot(runId, snapshot) {
-        snapshotPayloads.push(snapshot);
-        return storeC.saveRunSnapshot(runId, snapshot);
-      },
-    };
+    // 观察面（#759）：**store 读边界就地探针**。原来的探针取 run snapshot 的 `messages`
+    // （曾= `cloneState(messages)`，引擎内存上下文的逐字副本），而 #735 切片 2 把那一格改成
+    // **轮残余**（`orchestrator.js#persistRunSnapshot` 的 `residueStart` 之前写成 `null`）⇒ 恢复
+    // 进来的旧块恒在残余之前 ⇒ 快照面**取不到** `legacy-1`（真机实测：resume 期 4 份快照全部缺席，
+    // F9b 红在「探针没盖上要判的那一段」）。只读 `store.load()` 也不够：那是磁盘，就地改内存
+    // 而不再落盘的坏法不会在磁盘上留痕迹。⇒ 观察面装在 `createBoundaryProbe(storeC)`：它包住
+    // 引擎用的那一个 store 实例的读面，对恢复出来的每个 `tool_result` 块**就地**记账（身份不变），
+    // 顺带代收写侧的 snapshot payload（写侧形状本身**不动**，见 F9b 的「写侧形状现状」三条）。
+    const boundary = createBoundaryProbe(storeC);
+    const storeCProbed = boundary.store;
+    const snapshotPayloads = boundary.snapshots;
     const runIdC = RUN_ID_C;
     const legacyBlock = {
       type: "tool_result",
@@ -576,6 +715,7 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
     }, `新块=${freshC.length}，↑${outC?.usage?.input_tokens}/↓${outC?.usage?.output_tokens}`);
 
     check("F9b 引擎不回写历史：旧块的退役名与宿主摊平键原样保留（只读不回写）", () => {
+      // ---- 磁盘半边（原样不动）----
       assert.ok(legacy, "旧块没被带回上下文");
       assert.equal(legacy.erixRound, 0);
       assert.equal(legacy.duration, 1234);
@@ -583,19 +723,53 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
       assert.equal(legacy.executionStatus, "ok");
       assert.equal(legacy.artifactStatus, "ok");
       assert.equal(legacy.erix, undefined, "旧块不该被补上 erix 命名空间");
-      // 磁盘之外的另一半：引擎**内存里**那份上下文也不许改写宿主传进来的旧块。
-      // 探针取的是 run snapshot 的 `messages`（= `cloneState(messages)`），即引擎内存上下文的逐字副本
-      // ⇒ 这一条才真的钉住「宿主对象不被就地改写」；只读 `store.load()` 的话，改内存不落盘的坏法看不见。
-      assert.ok(snapshotPayloads.length > 0, "resume 期间没写任何 run snapshot（探针空转，判据落空）");
-      const seenInMemory = snapshotPayloads.flatMap((payload) => blocksOf(payload?.messages, "tool_result"))
+      // ---- 写侧形状现状（#735 切片 2）：快照仍在写，但 `messages` 只剩轮残余，它**不再是**内存
+      // 半边的观察面。这三条钉的就是「不许回退写侧形状」：哪天写侧又交整段正文，第二、三条会红
+      // 并让人先去看 `test/loop-snapshot-round-residue-735.test.js`，而不是顺手把下面删成「有就查」。
+      assert.ok(snapshotPayloads.length > 0, "resume 期间没写任何 run snapshot（写侧探针空转，判据落空）");
+      const legacyInSnapshots = snapshotPayloads
+        .flatMap((payload) => blocksOf(payload?.messages, "tool_result"))
         .filter((block) => block?.tool_use_id === "legacy-1");
-      assert.ok(seenInMemory.length > 0, "引擎内存上下文里没见过旧块（探针没盖上要判的那一段）");
-      for (const block of seenInMemory) {
-        assert.deepEqual(Object.keys(block).sort(), Object.keys(legacyBlock).sort(),
+      assert.deepEqual(legacyInSnapshots.map((block) => Object.keys(block).sort()), [],
+        "#735 切片 2 的写侧形状变了：快照 `messages` 又把恢复进来的正文带回来了。内存半边的观察面在 store"
+        + " 读边界（`createBoundaryProbe`），这一格红了先对齐 test/loop-snapshot-round-residue-735.test.js 再动这里");
+      assert.ok(snapshotPayloads.some((payload) => (payload?.messages ?? []).includes(null)),
+        "快照 `messages` 里一个残余空位也没有（同上：写侧的轮残余没落地）");
+      // ---- 内存半边：引擎**内存里**那份上下文也不许改写宿主传进来的旧块（就地改写不落盘，磁盘面看不见）----
+      const observed = boundary.observations().filter((o) => o.identity.tool_use_id === "legacy-1");
+      // 在场断言（**不是**「有就查」）：探针必须真的在读边界盖上过旧块，并且它被**读过**。
+      // 少了这一条，「零次就地改写」在观察面空转时照样绿——那正是本片要防的那一类假绿。
+      assert.ok(observed.length > 0,
+        "旧块没穿过 store 读边界（观察面没盖上要判的那一段；这一条红说的是探针，不是引擎改写了）");
+      const touched = observed.filter((o) => o.readsTotal > 0);
+      assert.ok(touched.length > 0,
+        `探针盖到了旧块却没人读它（观察面空转 ⇒ 下面「零次就地改写」不算证据）：${JSON.stringify(observed.map((o) => o.path))}`);
+      assert.ok(touched.every((o) => o.readKeys.includes("tool_use_id")),
+        `旧块被读的方式不像被引擎消费（没读过身份键 tool_use_id）：readKeys=${JSON.stringify(touched.map((o) => o.readKeys))}`);
+      for (const o of observed) {
+        assert.deepEqual(o.writes, [], `引擎在内存里就地改写了宿主的旧块（set 面）：${JSON.stringify(o.writes)}`);
+        assert.deepEqual(o.lostKeys, [], `引擎在内存里删掉了宿主的旧键（deleteProperty 面）：${o.lostKeys.join(",")}`);
+        assert.deepEqual(o.addedKeys, [], `引擎在内存里给旧块补了新顶层键（就地补 erix 落在这格）：${o.addedKeys.join(",")}`);
+        assert.deepEqual(o.replacedKeys, [], `引擎用 defineProperty 覆盖了探针的格子：${o.replacedKeys.join(",")}`);
+        assert.deepEqual(o.keysNow.sort(), Object.keys(legacyBlock).sort(),
           "引擎在内存里改了旧块的键集合（就地改写宿主对象）");
-        assert.equal(block.erix, undefined, "引擎在内存里给旧块补了 erix（就地改写宿主对象）");
+        assert.equal(o.jsonNow, o.boundaryJson,
+          `引擎就地改了旧块的内容：边界=${o.boundaryJson} 现在=${o.jsonNow}`);
+        // 探针自己是透明的：换 accessor 之后边界看到的字节仍等于宿主写进去的那一份（否则「零改写」
+        // 可能是探针把对象换成了引擎不在乎的另一种形状换来的）。
+        assert.equal(o.boundaryJson, safeJson(legacyBlock),
+          `探针/store 在边界上改了旧块的形状：边界=${o.boundaryJson} 宿主写入=${safeJson(legacyBlock)}`);
       }
-    }, `旧块仍带退役名=${RETIRED.filter((r) => Object.hasOwn(legacy ?? {}, r)).join(",")}，快照探针=${snapshotPayloads.length} 份`);
+      // 为什么观察面不是字面的 `new Proxy(块)`（本单原本的形状，实测装不上）：引擎每次请求都
+      // `cloneState(ctx.messages)`（`provider-runner.js:242` → `budget.js:12` = `structuredClone`），
+      // 而它对**任何** Proxy 抛 `DataCloneError` ⇒ 给恢复进来的块套 Proxy，第一次请求就死在探针
+      // 自己手里（F9b 会红成「run 没收尾」，而不是判据红）。钉住它，免得下一个人顺手换回 Proxy。
+      assert.throws(() => structuredClone(new Proxy({ a: 1 }, {})),
+        (error) => error?.name === "DataCloneError",
+        "structuredClone 竟然能克隆 Proxy 了 ⇒ 引擎的 cloneState 大概也换了 ⇒ 观察面可以重新评估 Proxy 面");
+    }, `旧块仍带退役名=${RETIRED.filter((r) => Object.hasOwn(legacy ?? {}, r)).join(",")}，`
+      + `边界探针=${boundary.observations().length} 块（旧块 ${boundary.observations().filter((o) => o.identity.tool_use_id === "legacy-1").length} 份，`
+      + `快照 ${snapshotPayloads.length} 份只做写侧形状判据）`);
 
     check("F9c 一代读窗口：TTL 仍按旧块 erixRound 算年龄并折叠（年龄来源没断）", () => {
       const stats = {};

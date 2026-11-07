@@ -6,6 +6,39 @@
 ### Breaking
 
 ### Changed
+- **The real-upstream tool-fact e2e got a new observation face for its "the engine never rewrites history"
+  claim (issue #759, tests only — no behaviour change).** `examples/tool-fact-e2e.test.mjs` judged that claim
+  on the run snapshot's `messages` cell, which used to be `cloneState(messages)` — a verbatim copy of the
+  engine's in-memory context. Since the round-residue write side that cell no longer carries the restored
+  prefix, so on a resumed run every snapshot (6-8 of them) was missing the legacy `tool_result` slot and
+  `F9b` red on "探针没盖上要判的那一段" while every other cell stayed green: the judgement had gone blind,
+  the engine had not regressed. The in-memory half now reads the **store read boundary** of the very store
+  instance the engine uses: each restored `tool_result` block is instrumented in place (object identity
+  preserved, JSON bytes unchanged), so reads are counted and every in-place set / added key / deleted key is
+  recorded. `F9b` then requires **zero in-place rewrites** *and* a presence fact (the block was seen at the
+  boundary and really read, identity key included) — without the presence half, "zero rewrites" stays green
+  while the probe watches nothing, which is the same class of false green. A literal `new Proxy(block)` is
+  **not** installable at this boundary: the engine runs `cloneState(ctx.messages)` = `structuredClone` on
+  every provider attempt (`src/loop/provider-runner.js:242` → `src/loop/budget.js:12`), and `structuredClone`
+  throws `DataCloneError` on any Proxy, so the probe would kill the run before the judgement — pinned by an
+  `assert.throws` inside `F9b`. Reverse proof: injecting `block.erix = {}` on the restore path reddens `F9b`
+  naming `erix`; removing it greens the suite 3/3. The write side itself is untouched and `F9b` now asserts
+  the residue shape as a fact (snapshots exist, the legacy slot is absent from them, `null` residue slots
+  are present), so a later revert of the write side is caught here instead of silently un-blinding the probe.
+
+- **真上游工具事实 e2e 的「引擎不回写历史」这一判换了观察面（issue #759，纯测试改动，行为不变）**。原先它读 run
+  snapshot 的 `messages` 那一格（曾经是引擎内存上下文的逐字副本）；写侧改成轮残余之后那一格不再带恢复进来的
+  正文，恢复那次每一份快照都取不到旧块 ⇒ `F9b` 红在「探针没盖上要判的那一段」，而其余格子全绿——**瞎的是探针，
+  不是引擎**。内存半边现在改在**引擎真正使用的那个 store 实例的读边界**上判：恢复出来的每个 `tool_result` 块
+  就地换 accessor（对象身份不变、JSON 字节不变），读被计数、就地赋值 / 新增键 / 删键全部记账；`F9b` 因此同时
+  要求「**零次就地改写**」和一条**在场断言**（这块确实穿过读边界且真被读过）——少了在场那一半，探针空转时
+  「零次改写」照样绿，正是本片要防的那类假绿。这里**装不上**字面的 `new Proxy(块)`：引擎每次请求都
+  `cloneState(ctx.messages)`（= `structuredClone`，见 `src/loop/provider-runner.js:242` →
+  `src/loop/budget.js:12`），而 `structuredClone` 对任何 Proxy 抛 `DataCloneError`，装了就是探针先打死被测——
+  这一条由 `F9b` 里的 `assert.throws` 钉住。反向证：在恢复路径上临时补一次 `block.erix = {}` ⇒ `F9b` 红并点名
+  `erix`；撤掉 ⇒ 3/3 绿。写侧一个字节没动，且 `F9b` 现在把那个残余形状本身钉成事实（快照在场、旧块不在其中、
+  残余空位在场），这样将来谁把写侧改回去也会在这里红，而不是让探针悄悄复明。
+
 
 - **The shipped `TranscriptStore` contract suite now enforces its own optionality (issue #739).** The suite's
   header said run snapshot and run-state are optional capabilities and `src/assembly-validators.js` agreed
