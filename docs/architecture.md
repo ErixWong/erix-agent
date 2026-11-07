@@ -740,8 +740,12 @@ different strength are in play and must not be merged: the **tool-surface gate**
 `note_take` write in the visible ledger that still resolves right now).
 
 **On the full evidence gate (surface + ledger)** — these are retrieval instructions; they say
-"where to fetch it now": #741's fold substitute (`src/loop/fold-stub.js`) and TTL placeholder
-(`src/loop/tool-result-ttl.js`), plus #746's aggregate-limit stub (`src/loop/aggregate-budget.js`)
+"where to fetch it now": #741's TTL placeholder — `foldToolResultsForRequest` in
+`src/loop/tool-result-ttl.js`, which resolves the recall verdict once per request view — and
+#741's fold substitute, whose advertising sentence is decided by `resolveFoldRecoveryHint` →
+`noteRecallFromMessages` in `src/compact/helpers.js` while the mechanical substitute itself is
+rendered by `src/compact/fold-statistical.js` and `src/compact/fold-llm.js` (that file's own
+comment at line 352 calls it 机械替代物). Plus #746's aggregate-limit stub (`src/loop/aggregate-budget.js`)
 and the run-snapshot per-output stub (`src/loop/run-snapshot-executor.js`, same wording as the
 aggregate stub), plus three `bin/` sites: the guard's run-state summary and its revise pointer
 (`bin/final-guard.js`), and the fold-stub suffix plus the recovery hint
