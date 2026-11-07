@@ -54,8 +54,16 @@ const CELL_KEYS = [
   "messages",
   "persistedTranscriptLength",
   "compactionStats",
+  // S1r 补的 4 格：前两格是**条件写入**（「载荷里必须在场的键」那种清单天然看不见它们），
+  // 后两格是**已停写**（机器缺席断言见 test/loop-snapshot-write-side-735.test.js 判据 1）。
+  "partialText",
+  "partialRound",
+  "toolUse",
+  "ts",
 ];
-const WRITE_VOCAB = new Set(["written", "residue", "stopped"]);
+const WRITE_VOCAB = new Set(["written", "written(conditional)", "residue", "stopped"]);
+/** 条件写入轴值：那一格只在写明的条件成立时才进载荷（写点 `src/loop/orchestrator.js:3039`）。 */
+const CONDITIONAL_WRITE = "written(conditional)";
 /** 一个键名底下是两个东西 ⇒ `persistedTranscriptLength` 必须**恰好两行**（盘上格 / 进程内计数器）。 */
 const SPLIT_ROWS = { persistedTranscriptLength: 2 };
 
@@ -146,7 +154,7 @@ test("G1 载荷表自洽：10 格齐全、两轴取值合法、无空值", () =>
     for (const row of rows) {
       assert.ok(
         WRITE_VOCAB.has(row.write),
-        `${side}：\`${row.key}\` 的 write 轴取值 "${row.write}" 不在 written|residue|stopped 里`,
+        `${side}：\`${row.key}\` 的 write 轴取值 "${row.write}" 不在 written|written(conditional)|residue|stopped 里`,
       );
       assert.ok(
         readAxisHead(row.read) !== null,
@@ -232,7 +240,19 @@ async function capturePayloads() {
 test("G2 写轴对真载荷：声明 written/residue ⇒ 键必须在场，声明 stopped ⇒ 键必须缺席", async () => {
   const { payloads } = await capturePayloads();
   const rows = tables.get("cn").rows;
+  assert.ok(
+    rows.some((row) => row.write === "stopped"),
+    "表里必须至少有一格 `write: stopped`，否则本用例的 stopped 分支是空转（#767 S1r 缺陷 2）",
+  );
+  assert.ok(
+    rows.some((row) => row.write === CONDITIONAL_WRITE),
+    "表里必须至少有一格 `write: written(conditional)`，否则条件写入没人复核（#767 S1r 缺陷 1）",
+  );
   for (const row of rows) {
+    if (row.write === CONDITIONAL_WRITE) {
+      // 条件写入不能按「每条载荷都必须在场」判 ⇒ 交给 G2c 按两种现场双向判。
+      continue;
+    }
     if (row.write === "stopped") {
       for (const payload of payloads) {
         assert.ok(
@@ -250,6 +270,111 @@ test("G2 写轴对真载荷：声明 written/residue ⇒ 键必须在场，声�
     }
   }
 });
+
+// ── G2c 条件写入格：两种现场双向判（#767 S1r 缺陷 1）──────────────────────────
+
+/** 流式夹具：`deltas` 非空 ⇒ 本轮真有半截正文；为空 ⇒ 其余配置完全相同但一句正文都没吐。 */
+function createPartialStreamProvider({ deltas, turns }) {
+  let index = 0;
+  const respond = async (request, streaming) => {
+    const step = turns[Math.min(index, turns.length - 1)];
+    index += 1;
+    if (streaming) {
+      for (const chunk of deltas) request.onDelta(chunk);
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    }
+    return { content: step.content, stopReason: step.stopReason };
+  };
+  return {
+    protocol: "fake",
+    model: "fake-model",
+    async chat(request) { return respond(request, false); },
+    async chatStream(request) { return respond(request, true); },
+  };
+}
+
+async function capturePartialRun(deltas, runId) {
+  const store = createMemoryTranscriptStore();
+  const payloads = [];
+  const saveRunSnapshot = store.saveRunSnapshot.bind(store);
+  store.saveRunSnapshot = async (id, snapshot) => {
+    payloads.push(structuredClone(snapshot));
+    return saveRunSnapshot(id, snapshot);
+  };
+  const result = await runDirect({
+    provider: createPartialStreamProvider({
+      deltas,
+      turns: deltas.length > 0
+        ? [
+          { content: [{ type: "text", text: "我先读一下 a.txt。" }, TOOL_BLOCK], stopReason: "tool_use" },
+          { content: [{ type: "text", text: "读完了" }], stopReason: "end_turn" },
+        ]
+        : [
+          { content: [TOOL_BLOCK], stopReason: "tool_use" },
+          { content: [{ type: "text", text: "读完了" }], stopReason: "end_turn" },
+        ],
+    }),
+    tools: [READ_FILE_SCHEMA],
+    executeTool: async () => ({ content: "a.txt 的内容" }),
+    store,
+    runId,
+    maxRounds: 4,
+    initialUserMessage: "读一下 a.txt",
+    stream: true,
+    partialPersistence: { intervalMs: 40 },
+  });
+  assert.equal(result.finalText, "读完了", `${runId} 必须正常收口（否则现场是个 failed 的 run）`);
+  assert.ok(payloads.length > 0, `${runId} 必须真的写过 run snapshot`);
+  return payloads;
+}
+
+let partialScenes = null;
+async function capturePartialScenes() {
+  if (partialScenes !== null) return partialScenes;
+  partialScenes = {
+    withText: await capturePartialRun(["我先", "读一下 a.txt。"], "contract-snapshot-axes-767-partial"),
+    withoutText: await capturePartialRun([], "contract-snapshot-axes-767-no-partial"),
+  };
+  return partialScenes;
+}
+
+test("G2c 条件写入格：有半截正文 ⇒ 该格必须在场；没有半截正文 ⇒ 整格缺席（不许写 undefined）", async () => {
+  const keys = tables.get("cn").rows
+    .filter((row) => row.write === CONDITIONAL_WRITE)
+    .map((row) => row.key);
+  assert.deepEqual(keys, ["partialText", "partialRound"], "条件写入格只有这两格，多一格少一格都要先回表看");
+  const { withText, withoutText } = await capturePartialScenes();
+  const present = withText.filter((payload) => Object.hasOwn(payload, "partialText"));
+  assert.ok(present.length > 0, "有半截正文的现场里没有任何载荷带 partialText ⇒ 条件分支从没进过（空转）");
+  assert.ok(
+    withText.some((payload) => !Object.hasOwn(payload, "partialText")),
+    "同一现场里轮末那条完整载荷也该整格缺席 ⇒ 条件假时是**整格不写**，不是写 undefined",
+  );
+  assert.ok(
+    withoutText.every((payload) => !Object.hasOwn(payload, "partialText") && !Object.hasOwn(payload, "partialRound")),
+    `没有半截正文的现场里仍有载荷写了该格（keys：${JSON.stringify(Object.keys(withoutText[0]))}）`,
+  );
+  for (const payload of withText) {
+    // 同生同灭：只写一半 ⇒ 恢复侧读到 undefined 轮号或 undefined 正文，都是坏现场。
+    assert.equal(
+      Object.hasOwn(payload, "partialText"),
+      Object.hasOwn(payload, "partialRound"),
+      `两格必须同生同灭（keys：${JSON.stringify(Object.keys(payload))}）`,
+    );
+    for (const key of keys) {
+      if (!Object.hasOwn(payload, key)) continue;
+      assert.notEqual(payload[key], undefined, `\`${key}\` 在场时取值不能是 undefined（写 undefined ≠ 整格缺席）`);
+    }
+  }
+  for (const payload of present) {
+    assert.equal(typeof payload.partialText, "string");
+    assert.ok(payload.partialText.length > 0, "在场的 partialText 必须是非空正文");
+    assert.ok(Number.isSafeInteger(payload.partialRound), "partialRound 必须是安全整数");
+    assert.equal(payload.partialRound, payload.round, "partialRound 必须等于该条载荷的 round");
+    assert.match(payload.partialText, /我先读一下/);
+  }
+});
+
 
 // ── G3 读轴对真源码（B2：剥注释与字符串）───────────────────────────────────────
 
