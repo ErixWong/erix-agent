@@ -1917,6 +1917,42 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 
 桩正文、它的唯一构造点、`executionStatus` 闭集与尾部那条路都不因这个探针而变。
 
+#### 中段补桩的四条放弃路径（issue #730）
+
+恢复兜底有四条**放弃**路径：引擎知道「这一轮的某个 `tool_use` 账本里没结果」，而它**补不出**（或
+没写成）那张合法 `tool_result`。修前只有「锚点缺失」那一条会出声，宿主只读到下一次模型请求出网
+前的 `invalid_messages`（0 次 HTTP、`termination: failed`、这个 `runId` 永久起不来），**分不清**
+「兜底成功了」与「兜底放弃了、这一轮仍需人工修」。现在四条全部走既有 `onEvent` 通道上的
+`resume_journal_skipped`（issue #743 分级表里的 `fact`，不可删）：**没有新增事件类型**，
+`reason` 说清是哪一条，可选的 `detail` 把同一 `reason` 下的分支分细。
+
+**没带 `detail` 的既有事件形状逐字不变**（该字段缺席时引擎不带那个键）⇒ 纯加法。
+
+| 码 | 种类 | 挂在哪条 `reason` | 含义 / 宿主读得到什么 |
+| --- | --- | --- | --- |
+| `crash_round_assistant_not_in_ledger` | reason | （事件自身）| 崩溃轮的 `assistant` 正文不在账本里（issue #424 的升级路径守卫）⇒ 那批结果整段不入账，仍靠快照兜住 |
+| `mid_sequence_aggregate_row_not_in_ledger` | reason | （事件自身）| 桩找不到锚点 ⇒ 只修本次上下文，账本一行不写。三种成因靠 `detail` 分开（见下三行）|
+| `mid_sequence_merge_refused` | reason | （事件自身）| 普查判它缺结果，而同页合并自己拒了 ⇒ 这一格**补不出**合法桩，run 仍旧 `invalid_messages`；行为没变，只是不再无声 |
+| `mid_sequence_shape_not_supported` | reason | （事件自身）| 悬空是真的悬空，但形状不是同页合并那一种（需要插页）⇒ 引擎不发明形状（issue #421 纪律 ④），具体哪一种看 `detail` |
+| `mid_sequence_stub_row_write_refused` | reason | （事件自身）| 锚点找到了、该落账，而写侧返回「没落盘」⇒ 那张桩只活在本次上下文里，下一次恢复还得再补 |
+| `anchor_probe_absent` | detail | `mid_sequence_aggregate_row_not_in_ledger` | store 没提供 `loadRawRows` ⇒ **补上这个探针，下一次恢复账本就闭合**（这是四种里唯一宿主能自己修好的一种）|
+| `round_carrier_has_body` | detail | `mid_sequence_aggregate_row_not_in_ledger` | 该轮载体已带正文（issue #729 的「两份都留」）⇒ 有行也不给用；补探针也闭合不了，因为写进去会把整轮正文拼第二遍 |
+| `aggregate_row_not_in_ledger` | detail | `mid_sequence_aggregate_row_not_in_ledger` | 探针给了、轮也干净，而账本里确实没有那条首片行（例如它的 `round` 不是安全整数，issue #729）⇒ 这一轮的正文本来就不以消息行存在 |
+| `aggregate_carries_foreign_result_ids` | detail | `mid_sequence_merge_refused` | 那条聚合消息里已有**不属于这一单**的 `tool_result` ⇒ 合并的 id 守卫不让在同一页继续加工 |
+| `next_message_is_not_user` | detail | `mid_sequence_shape_not_supported` | 紧接的那条消息不是 `user`（相邻两条 assistant 各带一单）⇒ 要在两条之间插页 |
+| `aggregate_has_no_tool_result` | detail | `mid_sequence_shape_not_supported` | 紧接的 `user` 一条 `tool_result` 都没有 ⇒ 同样要插页（`validateMessages` 会以另一句如实报错）|
+| `round_not_safe_integer` | detail | `mid_sequence_stub_row_write_refused` | 这张桩所属轮的轮号不是安全整数（轮号来自一份轮号残留的 run snapshot）⇒ 写侧直接退回，一行都不写 |
+| `append_row_not_persisted` | detail | `mid_sequence_stub_row_write_refused` | 轮号合法，而 `appendRound` 那一写没落地 ⇒ 与上一条同为「账本里没那一行」，区别只在为什么 |
+
+事件载荷：`{type, runId, parentRunId?, round, reason, count, detail?}`——`count` 是这次放弃涉及几张
+`tool_use`（或几张桩），同一 `(reason, detail)` 的成因归并成**一条**事件。这张表是宿主可读面：
+`test/loop-resume-abandon-signals-730.test.js` 拿源码里的成因闭集与中英两份契约**双向**对账（源码
+有而表里没有 ⇒ 红；表里有而源码不发 ⇒ 也红），四条放弃路径各有一条端到端用例钉住（反向证：把
+新增的发射代码拿掉，对应用例必须红）。格 1 那一格（判据粒度）是另一件事：**别的轮**结清过同一个
+`tool_use_id` 不再抑制**本对**的桩（provider 的 id 不保证 run 内唯一，issue #284），那种现场修前
+永久 `invalid_messages`，修后能补桩、能落账、能起来 ⇒ 它**不发**任何放弃事件（成功兜底不许与放弃
+混在同一个信号面上）。
+
 ### 工具重放策略（issue #139）
 
 工具 schema 可以在每个规范 `tools` 定义上声明 `replay: "safe" | "unsafe"`；省略即

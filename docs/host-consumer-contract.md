@@ -2386,6 +2386,51 @@ Semantics, stated as a contract:
 The stub body, its single definition point, the `executionStatus` closed set and
 the tail path are untouched by this probe.
 
+#### The four mid-sequence abandonment paths (issue #730)
+
+The resume fallback has four paths on which it **gives up**: the engine knows a
+`tool_use` of that round has no result in the ledger, and it cannot produce (or
+cannot write) a legal `tool_result` for it. Before issue #730 only the missing
+anchor spoke: a host read `invalid_messages` in front of the first outbound
+request (0 HTTP calls, `termination: failed`, that `runId` never boots again) and
+could **not tell** "the fallback worked" from "the fallback gave up and this run
+still needs manual repair". All four now report on the existing
+`resume_journal_skipped` channel (the `fact` tier of the issue #743 grading
+table, never deletable). **No event type was added**: `reason` says which path,
+and the optional `detail` splits the causes underneath one `reason`. Events
+whose shape predates this issue stay byte-identical — when there is no
+`detail`, the engine omits that key, so this is a pure addition.
+
+| Code | Kind | Rides on | What the host can read out of it |
+| --- | --- | --- | --- |
+| `crash_round_assistant_not_in_ledger` | reason | (the event itself) | The crash round's `assistant` body is not in the ledger (the issue #424 upgrade-path guard) ⇒ that batch is never journaled and still rides on the snapshot |
+| `mid_sequence_aggregate_row_not_in_ledger` | reason | (the event itself) | No anchor for the stub ⇒ it repairs this run's context only and writes no row. Three different causes share it; `detail` splits them (next three rows) |
+| `mid_sequence_merge_refused` | reason | (the event itself) | The census says this id is unsettled, and the same-page merge refused it ⇒ no legal stub can be built and the run still dies on `invalid_messages`; behaviour unchanged, it is only no longer silent |
+| `mid_sequence_shape_not_supported` | reason | (the event itself) | Dangling for real, but the shape is not the same-page kind (a page would have to be inserted) ⇒ the engine invents no shape (issue #421 discipline ④); `detail` says which shape |
+| `mid_sequence_stub_row_write_refused` | reason | (the event itself) | An anchor was found and the row should have been written, but the write came back "not persisted" ⇒ that stub lives only in this run's context and the next resume has to re-add it |
+| `anchor_probe_absent` | detail | `mid_sequence_aggregate_row_not_in_ledger` | The store does not provide `loadRawRows` ⇒ **add that probe and the next resume closes the ledger**: the only one of these four a host can fix by itself |
+| `round_carrier_has_body` | detail | `mid_sequence_aggregate_row_not_in_ledger` | That round's carrier row already carries its body (issue #729's "both copies") ⇒ a row exists and must not be used; adding the probe does not close it, because writing there appends the round body a second time |
+| `aggregate_row_not_in_ledger` | detail | `mid_sequence_aggregate_row_not_in_ledger` | The probe was provided and the round is clean, yet no first-slice row matches (e.g. its `round` is not a safe integer, issue #729) ⇒ that body never existed as message rows |
+| `aggregate_carries_foreign_result_ids` | detail | `mid_sequence_merge_refused` | That aggregated message already carries a `tool_result` **from a different call** ⇒ the merge's id guard stops it from extending a message that is already mixed |
+| `next_message_is_not_user` | detail | `mid_sequence_shape_not_supported` | The message right after that assistant is not a `user` message (two adjacent assistants, one order each) ⇒ a page would have to be inserted between them |
+| `aggregate_has_no_tool_result` | detail | `mid_sequence_shape_not_supported` | The following `user` message holds no `tool_result` at all ⇒ insertion again (`validateMessages` reports it with a different sentence) |
+| `round_not_safe_integer` | detail | `mid_sequence_stub_row_write_refused` | The round the stub belongs to is not a safe integer (its round came from a run snapshot with round residue) ⇒ the write returns "not persisted" and no row is written |
+| `append_row_not_persisted` | detail | `mid_sequence_stub_row_write_refused` | The round number is legal while the `appendRound` write itself did not land ⇒ same "no row in the ledger" as above, different why |
+
+Payload: `{type, runId, parentRunId?, round, reason, count, detail?}` — `count` is
+how many `tool_use` blocks (or stubs) this abandonment covers, and causes sharing
+one `(reason, detail)` are collapsed into **one** event. This table is a
+host-readable surface: `test/loop-resume-abandon-signals-730.test.js` reconciles
+the closed set in the source with both contract documents **in both directions**
+(source has it, table does not ⇒ red; table has it, source never emits it ⇒ red),
+and each of the four paths is pinned by its own end-to-end case (reverse proof:
+remove the emission code and that case must go red). The fifth cell of the issue
+is a different matter: an id settled in **another** round no longer suppresses
+this pair's stub (provider `tool_use_id`s are not unique within a run, issue
+#284), so that scene recovers instead of dying forever — and it emits **no**
+abandonment event, because a successful repair must not share a signal with an
+abandonment.
+
 ### Tool replay policy (issue #139)
 
 Tool schemas may declare `replay: "safe" | "unsafe"` on each canonical
