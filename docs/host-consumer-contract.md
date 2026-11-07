@@ -2370,17 +2370,16 @@ vocabulary, or a CN/EN axis mismatch all go red.
 only draw boundaries; they do not change any axis value above:
 
 - `messages`: since issue #735 slice 2 the write side hands over round residue only, and the residue start is the
-  minimum of "this round's start / that in-process counter / the current length" (the `residueStart` expression at
-  `src/loop/orchestrator.js:2975`). The only reader left on the read side is the upgrade path for ledgers written
+  minimum of "this round's start / that in-process counter / the current length" (`residueStart` (`src/loop/orchestrator.js`)). The only reader left on the read side is the upgrade path for ledgers written
   before per-message journaling ⇒ its `read` value can only be `fallback(old-format ledger only)`. Whether that
   older body can be retrieved on a *later* resume is issue #754's scope, not this axis.
 - `toolOutputs`: the snapshot copy and the round-record copy come from one source, but **two different consumers
   read them** — the resume backfill reads the snapshot, the final guard reads the round record. So "the guard still
   trusts this evidence" is no reason to keep the snapshot copy, and the converse holds too.
 - `persistedTranscriptLength`: **one key name, two different things.** The on-disk cell is a sample taken the moment
-  the snapshot was written; the resume side explicitly distrusts it and recomputes the value at
-  `src/loop/resume-manager.js:430`. The in-process counter, on the other hand, is live: the residue start bounds
-  itself with it (`src/loop/orchestrator.js:2975`). The two test fixtures that read the on-disk value as their
+  the snapshot was written; the resume side explicitly distrusts it and recomputes the value in
+  `restoreResume` (`src/loop/resume-manager.js`). The in-process counter, on the other hand, is live: the residue start
+  bounds itself with it (`residueStart` (`src/loop/orchestrator.js`)). The two test fixtures that read the on-disk value as their
   truncation anchor are `test/loop-invalid-arguments.test.js:250` and `test/loop-resume-anchor.test.js:152` ⇒ to
   retire the on-disk cell, move those two first instead of bending an assertion to fit the implementation.
 

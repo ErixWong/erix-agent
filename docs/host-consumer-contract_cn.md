@@ -1921,14 +1921,14 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 `—` = 该格不双写，没有权威源/交接条件可谈。表下三条口径只划边界，不改变上面的轴值：
 
 - `messages`：写侧从 issue #735 切片 2 起只交轮残余，残余起点由「本轮起点 / 那个进程内计数器 / 当前
-  长度」三者取小（`src/loop/orchestrator.js:2975` 所在的 `residueStart`）；读侧只剩「逐条入账之前写的
+  长度」三者取小，即 `residueStart`（`src/loop/orchestrator.js`）；读侧只剩「逐条入账之前写的
   旧账本」那条升级路径还会切这格 ⇒ `read` 只能是 `fallback(仅旧格式账本)`。那段旧正文在下一次恢复时
   取不到，是 issue #754 的范围，与这格的轴值无关。
 - `toolOutputs`：快照那份与轮记录那份是同源两写，但**读它们的是两个不同的消费者**——恢复回填读快照，
   终稿 guard 只读轮记录。所以「guard 还认这份证据」不构成保留快照那格的理由，反之亦然。
 - `persistedTranscriptLength`：**一个键名底下是两个东西**。盘上那格是「写快照那一刻」的采样，恢复侧
-  明确不信它并在 `src/loop/resume-manager.js:430` 现算覆盖；进程内那个计数器却是活的，残余起点靠它夹上界
-  （`src/loop/orchestrator.js:2975`）。测试侧拿盘上值当夹具锚点的两处是 `test/loop-invalid-arguments.test.js:250`
+  明确不信它并在 `restoreResume`（`src/loop/resume-manager.js`）里现算覆盖；进程内那个计数器却是活的，残余起点
+  靠它夹上界（`residueStart`（`src/loop/orchestrator.js`））。测试侧拿盘上值当夹具锚点的两处是 `test/loop-invalid-arguments.test.js:250`
   与 `test/loop-resume-anchor.test.js:152` ⇒ 真要停写盘上那格，先迁这两处，别改断言迁就实现。
 
 #### 可选原始行锚点探针（issue #714）

@@ -2806,6 +2806,50 @@ function bareLineExemptionEntryErrors() {
   return out;
 }
 
+/**
+ * 标记区定点豁免（issue #772）：两轴载荷表（`docs/host-consumer-contract*.md` 里
+ * `<!-- erix:snapshot-cell-axes:begin|end -->` 之间那 14 格）每格都**必须**写 `file:line` 的写点与读者，
+ * 这一段天生是「裸行号密度最高、但已被机器逐条复核」的形状。三条口径，缺一不可：
+ *   ① **位置**：只认那对 begin/end 标记**之间**、且以 `|` 开头的表格行；标记区外的裸行号照旧逐条计数，
+ *      同一个 (文档, 目标文件, 行区间) 只要还在区外出现过一次就**不**豁免（`regionOutside`）。
+ *   ② **机器复核**：豁免只在 `test/contract-snapshot-cell-axes-767.test.js` 的 `G4` 真在场时生效——
+ *      绑的是 `G4_KEY_NAME_CHECK` 的**定义（两个参数都真被用到）+ 断言里的调用**，不是它的标题或注释；
+ *      那个测试文件被改名/删除，或键名判据被削弱成「行号存在就行」⇒ 判据不在场 ⇒ 豁免自动失效、闸回红。
+ *   ③ **不静默**：豁免数进 `--verbose` 的分解；判据不在场时另发一条点名错误，而不是静默少算。
+ *  越界 / 不存在 / 反向区间照旧逐条查——豁免只免「计入棘轮」这一档，未免「行号复核」那一档。 */
+const CELL_AXES_MARK_BEGIN = "<!-- erix:snapshot-cell-axes:begin -->";
+const CELL_AXES_MARK_END = "<!-- erix:snapshot-cell-axes:end -->";
+const CELL_AXES_GUARD_TEST = "test/contract-snapshot-cell-axes-767.test.js";
+const CELL_AXES_GUARD_LABEL = /(?:^|\n)[ \t]*test\(\s*["`]G4\b/;
+const CELL_AXES_GUARD_DEF = /const\s+G4_KEY_NAME_CHECK\s*=\s*\(\s*([A-Za-z0-9_$]+)\s*,\s*([A-Za-z0-9_$]+)\s*\)\s*=>(?=[\s\S]{0,400}?\b\1\b)(?=[\s\S]{0,400}?\b\2\b)[\s\S]{0,400}?\S/;
+const CELL_AXES_GUARD_CALL = /assert\.ok\(\s*G4_KEY_NAME_CHECK\s*\(/;
+
+/** 标记区在这份文档里的行区间（0 基，不含标记行本身）；没有成对标记 → null。 */
+function cellAxesRegion(rec) {
+  if (!rec) return null;
+  let begin = -1;
+  let end = -1;
+  rec.lines.forEach((line, i) => {
+    if (begin < 0 && line.includes(CELL_AXES_MARK_BEGIN)) begin = i;
+    else if (begin >= 0 && end < 0 && line.includes(CELL_AXES_MARK_END)) end = i;
+  });
+  return begin >= 0 && end > begin ? { begin, end } : null;
+}
+
+/** 纯函数判据（反向证直接拿它问，不必改盘）：`G4` 的逐条复核是否真在场。传入 null = 那个文件不在场。 */
+function cellAxesGuardVerdict(text) {
+  if (text === null || text === undefined) {
+    return { ok: false, why: `${CELL_AXES_GUARD_TEST} 不在场（被改名或删除 ⇒ 表里那些 file:line 没人逐条复核）` };
+  }
+  if (!CELL_AXES_GUARD_LABEL.test(text)) return { ok: false, why: "G4 那条 test 不在场（被改名或删除）" };
+  if (!CELL_AXES_GUARD_DEF.test(text)) {
+    return { ok: false, why: "G4 的键名判据 `G4_KEY_NAME_CHECK` 的定义不在场，或它的两个参数没有真被用到"
+      + "（只查行号存在 = 免检通道，不配拿豁免）" };
+  }
+  if (!CELL_AXES_GUARD_CALL.test(text)) return { ok: false, why: "G4 没把键名判据用在断言里（`assert.ok(G4_KEY_NAME_CHECK(…))` 不在场）" };
+  return { ok: true };
+}
+
 /** 裸行号一侧的外仓前缀（工单 261021-03 B1）：`BARE_LINE_RE` 不带首部边界，所以
  *  `pi-subagents:src/runs/background/async-execution.js:4` 里的 `src/…:4` 会被抽到。回看匹配点之前的
  *  那几个字符就能判「它是不是带了仓名前缀」。边界用 `[^\w./-]`（反引号 / 括号 / 中文标点都是），
@@ -2819,10 +2863,18 @@ function collectBareLineRefErrors() {
   const unique = new Map();   // `${doc}|${target}|${from}-${to}` → { doc, line, target, from, to }
   const exemptHits = new Set();
   const extPrefixed = new Set();   // 带已知外仓前缀的外仓行号（不计棘轮、不查存在性）
+  // issue #772 标记区定点豁免：regionHits 记「在标记区内出现过的唯一键」，regionOutside 记「同一唯一键在
+  // 标记区外也出现过」——两边都出现过的键**不**豁免（豁免只认纯区内的引用，区外照旧逐条计数）。
+  const regionHits = new Set();
+  const regionOutside = new Set();
+  const regionGuard = cellAxesGuardVerdict(fileRecord(CELL_AXES_GUARD_TEST)?.text ?? null);
+  let regionMarked = false;
   let occurrences = 0;
   for (const rel of docs) {
     const rec = fileRecord(rel);
     if (!rec) continue;
+    const region = cellAxesRegion(rec);
+    if (region) regionMarked = true;
     rec.lines.forEach((line, i) => {
       BARE_LINE_RE.lastIndex = 0;
       for (const m of line.matchAll(BARE_LINE_RE)) {
@@ -2843,7 +2895,9 @@ function collectBareLineRefErrors() {
         const key = `${rel}|${target}|${from}-${to}`;
         if (!unique.has(key)) unique.set(key, { doc: rel, line: i + 1, target, from, to });
         const v = bareLineExemptionVerdict({ doc: rel, target, lineText: line });
-        if (v.exempt) exemptHits.add(`${rel}|${target}`);
+        if (v.exempt) { exemptHits.add(`${rel}|${target}`); continue; }
+        const inRegion = region !== null && i > region.begin && i < region.end && line.trimStart().startsWith("|");
+        if (inRegion && regionGuard.ok) regionHits.add(key); else regionOutside.add(key);
       }
     });
   }
@@ -2886,7 +2940,9 @@ function collectBareLineRefErrors() {
     out.push("bare-lines: 从 scripts/docs-drift-check.mjs 自己的文本里抽不到 `const BARE_LINE_REF_BASELINE = <数字>;`——"
       + "棘轮常量被删或改了写法，棘轮失效（#164 口径：抽不到真值就报错，不许静默放行）");
   }
-  const measured = unique.size - exemptHits.size;
+  let regionExempt = 0;
+  for (const key of regionHits) if (!regionOutside.has(key)) regionExempt += 1;
+  const measured = unique.size - exemptHits.size - regionExempt;
   const docsSeen = {};
   for (const u of unique.values()) docsSeen[u.doc] = (docsSeen[u.doc] ?? 0) + 1;
   if (baseline !== null && measured > baseline) {
@@ -2894,8 +2950,13 @@ function collectBareLineRefErrors() {
   } else if (baseline !== null && measured < baseline) {
     notes.push(`bare-lines: 实测 ${measured} 处 < 基线 ${baseline} 处——存量在变少，请把 BARE_LINE_REF_BASELINE 降到 ${measured}（降基线要写理由，棘轮不许空转）`);
   }
-  notes.push(`bare-lines: 覆盖面 ${docs.length} 份文档里裸行号引用 ${occurrences} 次出现 / 唯一 (文档,目标文件,行区间) ${unique.size} 处，` + `其中声明式豁免 ${exemptHits.size} 处（${BARE_LINE_EXEMPTIONS.length} 条条目）⇒ 棘轮口径实测 **${measured}** vs 基线 ${baseline}`
+  notes.push(`bare-lines: 覆盖面 ${docs.length} 份文档里裸行号引用 ${occurrences} 次出现 / 唯一 (文档,目标文件,行区间) ${unique.size} 处，` + `其中声明式豁免 ${exemptHits.size} 处（${BARE_LINE_EXEMPTIONS.length} 条条目）、标记区定点豁免 ${regionExempt} 处（机器复核在场=${regionGuard.ok ? "是" : "否"}，绑 ${CELL_AXES_GUARD_TEST} 的 G4）⇒ 棘轮口径实测 **${measured}** vs 基线 ${baseline}`
     + `；另有带已知外部仓前缀的外仓行号 ${extPrefixed.size} 处（文档|仓名 去重，既不计棘轮也不查存在性，见 EXTERNAL_REPO_PREFIXES）`);
+  if (!regionGuard.ok && regionMarked) {
+    out.push(`bare-lines: 标记区定点豁免的机器复核不在场 —— ${regionGuard.why}；豁免只在 ${CELL_AXES_GUARD_TEST} 的 G4`
+      + ` 逐条复核（文件在场 + 行号在范围 + 那一行确实提到这格的键名）真生效时才给 ⇒ 标记区内的裸行号全部照旧计入棘轮`
+      + `（登记与 span 规则见 docs/maintenance/command-reference.md#docs-anchors，issue #772）`);
+  }
   collectBareLineRefErrors.notes = notes;
   return out;
 }

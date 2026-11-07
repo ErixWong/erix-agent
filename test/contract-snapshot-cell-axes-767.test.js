@@ -549,6 +549,16 @@ test("G3-C 真实文件上的反例：注释里那句 snapshot.messages 不算�
   assert.ok(cited.length > 0);
 });
 
+/**
+ * G4 的「那一行确实提到这格的键名」判据。那不只是本测试里的一个小函数：
+ * `scripts/docs-drift-check.mjs` 对两轴载荷表那个标记区给的**定点豁免**（issue #772）绑的就是它的
+ * **定义与调用**——定义被删、两个参数不再被用、或断言不再调它（退化成「行号存在就行」）
+ * ⇒ 豁免自动失效，`npm run check:docs` 立即回红（登记见 docs/maintenance/command-reference.md#docs-anchors）。 */
+const G4_KEY_NAME_CHECK = (lineText, key) => {
+  const mention = new RegExp(`(?:^|[^A-Za-z0-9_$])${key}(?:[^A-Za-z0-9_$]|$)`, "u");
+  return mention.test(lineText);
+};
+
 test("G4 表里每条 file:line 都复核：文件在场 + 行号在范围内 + 该行确实提到这格的键名", () => {
   const lineCache = new Map();
   const linesOf = (rel) => {
@@ -571,9 +581,8 @@ test("G4 表里每条 file:line 都复核：文件在场 + 行号在范围内 + 
           `${side}：\`${row.key}\` 引用 ${citation} 的行号越界（${rel} 只有 ${fileLines.length} 行）`,
         );
         const line = fileLines[lineNumber - 1];
-        const mention = new RegExp(`(?:^|[^A-Za-z0-9_$])${row.key}(?:[^A-Za-z0-9_$]|$)`, "u");
         assert.ok(
-          mention.test(line),
+          G4_KEY_NAME_CHECK(line, row.key),
           `${side}：\`${row.key}\` 引用 ${citation}，但那一行没提到这个键名：${line.trim()}`,
         );
         checked += 1;
