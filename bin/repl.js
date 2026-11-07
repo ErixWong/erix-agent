@@ -938,6 +938,10 @@ export async function runRepl(argv, io = {}) {
           notesStore,
           archiveDir,
           store,
+          // issue #746（必修 4）：guard 的打回指针与**同一轮**的折叠桩 / 恢复提示必须拿同一份笔记工具面，
+          // 否则同一个 REPL 会话里两条取回指引会各说一套（上面两个钩子早就在用这一份了）。
+          // 口径仍是 `replPromptToolSurface()`：过了 `ERIX_NO_NOTES` 与 `--tools` 之后的真面。
+          noteTools: noteToolSurface(replPromptToolSurface()),
         })
         : undefined;
       const loopOptions = {

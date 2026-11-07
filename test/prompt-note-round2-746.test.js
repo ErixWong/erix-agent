@@ -21,6 +21,7 @@ import test from "node:test";
 
 import { buildChildSystemPrompt, createCliDelegation } from "../bin/delegation.js";
 import { buildCaptureRecoveryHint, createFinalGuard } from "../bin/final-guard.js";
+import { runRepl } from "../bin/repl.js";
 import { readRecord } from "../src/tools/delegation/roster.js";
 import { makeTmp } from "./helpers/tmp.js";
 
@@ -280,4 +281,101 @@ test("必修 3b：guard 的打回指针同样分「读不出来 / 读到空」�
   const emptyLedger = await reviseOf({ load: async () => [captureRecord()] });
   assert.equal(/note_/u.test(emptyLedger.message), false, `读到空账本 ⇒ 无证据那一份（现文：${emptyLedger.message}）`);
   assert.match(emptyLedger.message, /重读源文件/u);
+});
+
+// ────────── 必修 4：同一个 REPL 会话里，折叠钩子与 final guard 拿同一份工具面 ──────────
+
+/**
+ * 跑一轮 `runRepl`，把每样**宿主递给引擎的事实**抓下来：
+ * 工具面（`loopOptions.tools`）、折叠桩后缀、final guard 的打回指针。
+ */
+async function runReplProbe({ tag, toolsFlag, noteWrite = false }) {
+  const home = await makeTmp(`erix-746-r2-${tag}-`);
+  const mcpConfigPath = join(home, "mcp.json");
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(mcpConfigPath, JSON.stringify({ mcpServers: {} }), "utf8");
+
+  const records = [{
+    round: 1,
+    toolOutputs: [{ toolUseId: "c1", name: "exec", content: "nonce=gold-4173\n" }],
+    messages: [
+      { role: "assistant", content: [{ type: "tool_use", id: "c1", name: "exec", input: { command: "printf x" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "c1", content: "nonce=gold-4173\n" }] },
+      ...(noteWrite ? [
+        { role: "assistant", content: [{ type: "tool_use", id: "n1", name: "note_take", input: { key: "k-1", content: "nonce=gold-4173" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "n1", content: '{"status":"found","action":"saved","key":"k-1","scope":"run"}' }] },
+      ] : []),
+    ],
+  }];
+  const store = {
+    load: async () => records,
+    appendRound: async () => {},
+    completeRun: async () => {},
+  };
+  const { createCliAssemblyRoot } = await import("../bin/assembly-root.js");
+  const assemblyRoot = createCliAssemblyRoot({ dir: home, runId: "repl-746", cwd: home, notesDir: join(home, "notes") });
+  assemblyRoot.store = store;
+
+  const input = new PassThrough();
+  input.isTTY = true;
+  const output = new PassThrough();
+  let captured;
+  const run = runRepl(
+    ["--session", "repl-746", "--dir", home, "--final-guard", "--config", mcpConfigPath, ...toolsFlag],
+    {
+      input,
+      output,
+      sessionDir: home,
+      home,
+      notesDir: join(home, "notes"),
+      assemblyRoot,
+      config: { model: "fake-model", maxOutputTokens: 1000 },
+      providerFactory: () => ({}),
+      loop: async (options) => {
+        captured = options;
+        return {
+          finalText: "done",
+          messages: [],
+          rounds: 1,
+          usage: { input_tokens: 0, output_tokens: 0 },
+          compactionStats: [],
+        };
+      },
+    },
+  );
+  input.end("hi\n/exit\n");
+  await run;
+  return {
+    captured,
+    toolNames: (captured.tools ?? []).map((tool) => tool.name),
+    stub: await captured.capabilities.hooks.stubFor(
+      { content: [{ type: "tool_result", tool_use_id: "c1", content: "nonce=gold-4173\n" }] },
+      { round: 2 },
+    ),
+    guard: captured.capabilities.hooks.finalGuard,
+  };
+}
+
+test("必修 4：--tools 滤掉笔记 ⇒ 同一个会话里折叠桩与 final guard 一起闭嘴（同一份工具面）", async () => {
+  const seen = await runReplProbe({ tag: "repl-filtered", toolsFlag: ["--tools", "readFile,exec"] });
+  assert.equal(seen.toolNames.includes("note_take"), false, "前提：这一轮真把笔记工具滤掉了");
+  assert.equal(/note_/u.test(seen.stub), false, `折叠桩不提笔记（现文：${seen.stub}）`);
+  const verdict = await seen.guard({ finalText: "随便写" });
+  assert.equal(verdict.action, "revise", `有捕获无声明 ⇒ 打回（现文：${JSON.stringify(verdict)}）`);
+  assert.equal(
+    /note_/u.test(verdict.message),
+    false,
+    `同一会话的打回指针也不许提笔记——它必须和折叠桩用同一份工具面（现文：${verdict.message}）`,
+  );
+});
+
+test("必修 4 反向：工具面留着笔记且账本有写入 ⇒ 折叠桩与 final guard **都**给 note-first", async () => {
+  const seen = await runReplProbe({
+    tag: "repl-notes",
+    toolsFlag: ["--tools", "readFile,exec,note_take,note_list,note_read,note_forget"],
+    noteWrite: true,
+  });
+  assert.match(seen.stub, /note_list[\s\S]*note_read/u, `折叠桩应给 note-first（现文：${seen.stub}）`);
+  const verdict = await seen.guard({ finalText: "随便写" });
+  assert.match(verdict.message, /note_list[\s\S]*note_read/u, `final guard 应给同一句（现文：${verdict.message}）`);
 });
