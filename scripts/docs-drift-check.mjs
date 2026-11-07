@@ -8806,15 +8806,19 @@ const SELF_TEST_CASES = [
       /锚点表里有 `kind` 不合法的条目|bare-lines: 标记区定点豁免的机器复核不在场/],
   },
   {
-    label: "#772 R4 M-B：从每个双锚点组各删一条登记，并把两份表里的对应引用**成对**删掉 ⇒ 剩下的全自洽，但由人审清单算出的地板接不住 ⇒ 红",
+    label: "#772 R4 M-B：从每个双锚点组各删一条登记，并把两份表里的对应引用**成对**删掉 ⇒ 剩下的全自洽（旧行为：两道闸全绿），但地板由人审清单算出 ⇒ 红，并点名缺的那一格缺在哪一份",
     overlay: {
       [CELL_AXES_ANCHOR_MODULE]: dropCellAxesAnchorEntries,
       [CONTRACT_EN]: dropCellAxesCitations,
       [CONTRACT_CN]: dropCellAxesCitations,
     },
-    expect: [/锚点登记表只剩 \d+ 条（下限 \d+）/,
-      /bare-lines: 标记区定点豁免的机器复核不在场/,
-      /裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*\d+\*\* 处，超过棘轮基线 \*\*\d+\*\*/],
+    // 本例的要点就是「剩下的那些仍然自洽」⇒ 引用与登记成对消失，裸行号棘轮**看不见**它（没多出没缺），
+    // 所以这里不要求棘轮那条红；要求的是地板（现由 `CELL_AXES_REQUIRED_CELLS.length` 算出）与
+    // 覆盖面真值逐槽点名「缺哪一格、缺在哪一份」。地板那句已带「由人审清单算出」的后缀，所以括号不闭合。
+    expect: [/锚点登记表只剩 \d+ 条（下限 \d+/,
+      /覆盖面真值：.*在 `scripts\/cell-axes-anchors\.mjs` 里只有 1 条登记锚点/,
+      /人审清单要求 2 处/, /en 表（docs\/host-consumer-contract\.md）/, /cn 表（docs\/host-consumer-contract_cn\.md）/,
+      /bare-lines: 标记区定点豁免的机器复核不在场/],
   },
   {
     label: "#772 R4 M-B：只删两份表里的引用（登记留着）⇒ 覆盖面真值必红，并点名缺的那一格缺在哪一份（EN / CN）",
