@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3709,
+    "tests": 3712,
     "fail": 0,
     "maxSkipped": 15
   },
@@ -841,6 +841,23 @@
       "todo": 0,
       "cancelled": 0,
       "why": "合并树现测（`npm test`，系统 node 22 / TAP）：本批把 #767 S1/S1r 两轴表、#772 标记区豁免、R2 锚点等值对账、R3 锚点模块全部带进来 ⇒ 覆盖从 main 的 3697 涨到 3709（+12 格：契约表守卫 10 格 + R3 两格）。本次实测 fail=1 的那一格是配对地板自己：常量当时还是 25，守卫报「实测 27 对 > 地板 25 对 ⇒ 可以抬地板到 27」，同一笔改动把地板改成 27；改后 `node --test test/static-guards.test.js` 58/58、全套 fail=0（随后重跑复验）。"
+    },
+    {
+      "date": "2026-11-08",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "57161ee（被测量那一棵树的内容；其后一笔 fcbecd3 只改报告 md，不动用例数）",
+      "branch": "fix-261108-09-cell-axes-kind-required-erix",
+      "mergeBase": "ffba58a",
+      "mainSha": "ffba58a",
+      "headSha": "57161ee",
+      "tests": 3712,
+      "pass": 3699,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "R4（锚点加 kind + 独立覆盖面清单 CELL_AXES_REQUIRED_CELLS）在合并树现测：`npm test` 原话 `# tests 3712 / # pass 3699 / # fail 0 / # skipped 13`（系统 node 22 / TAP），对账 `TEST-SUMMARY-VERDICT ok` + `TEST-SUMMARY-HINT 登记值可抬到 3712（当前登记值 3709，+3）`——+3 就是 R4 新增的 `G4-R4`/`G4-R5`/`G4-R6` 三格（契约测试文件顶层 12 → 15）。抬取用守卫自己报的数，不做加法。"
     }
   ]
 }
