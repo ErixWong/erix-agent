@@ -7,7 +7,7 @@
 
 ### Changed
 - **The real-upstream tool-fact e2e got a new observation face for its "the engine never rewrites history"
-  claim (issue #759, tests only — no behaviour change).** `examples/tool-fact-e2e.test.mjs` judged that claim
+  claim (issue #760, tests only — no behaviour change).** `examples/tool-fact-e2e.test.mjs` judged that claim
   on the run snapshot's `messages` cell, which used to be `cloneState(messages)` — a verbatim copy of the
   engine's in-memory context. Since the round-residue write side that cell no longer carries the restored
   prefix, so on a resumed run every snapshot (6-8 of them) was missing the legacy `tool_result` slot and
@@ -26,7 +26,7 @@
   the residue shape as a fact (snapshots exist, the legacy slot is absent from them, `null` residue slots
   are present), so a later revert of the write side is caught here instead of silently un-blinding the probe.
 
-- **真上游工具事实 e2e 的「引擎不回写历史」这一判换了观察面（issue #759，纯测试改动，行为不变）**。原先它读 run
+- **真上游工具事实 e2e 的「引擎不回写历史」这一判换了观察面（issue #760，纯测试改动，行为不变）**。原先它读 run
   snapshot 的 `messages` 那一格（曾经是引擎内存上下文的逐字副本）；写侧改成轮残余之后那一格不再带恢复进来的
   正文，恢复那次每一份快照都取不到旧块 ⇒ `F9b` 红在「探针没盖上要判的那一段」，而其余格子全绿——**瞎的是探针，
   不是引擎**。内存半边现在改在**引擎真正使用的那个 store 实例的读边界**上判：恢复出来的每个 `tool_result` 块

@@ -101,7 +101,7 @@ function collectKeys(value, acc = new Set()) {
 }
 
 // ---------------------------------------------------------------------------
-// store 读边界的**就地**观察面（#759：#735 切片 2 之后，run snapshot 的 `messages` 只剩轮残余，
+// store 读边界的**就地**观察面（#760：#735 切片 2 之后，run snapshot 的 `messages` 只剩轮残余，
 // 拿它当「引擎内存里有没有改写宿主传进来的旧块」的观察面就瞎了）。
 //
 // 拦的是包装 store 的**读面**（`load` / `loadRawRows` / `loadLatestRunSnapshot` / `loadLatestCheckpoint`）：
@@ -630,7 +630,7 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
     await mkdir(dirC, { recursive: true });
     await makeProject(dirC);
     const storeC = createFileTranscriptStore({ dir: join(root, "store-c") });
-    // 观察面（#759）：**store 读边界就地探针**。原来的探针取 run snapshot 的 `messages`
+    // 观察面（#760）：**store 读边界就地探针**。原来的探针取 run snapshot 的 `messages`
     // （曾= `cloneState(messages)`，引擎内存上下文的逐字副本），而 #735 切片 2 把那一格改成
     // **轮残余**（`orchestrator.js#persistRunSnapshot` 的 `residueStart` 之前写成 `null`）⇒ 恢复
     // 进来的旧块恒在残余之前 ⇒ 快照面**取不到** `legacy-1`（真机实测：resume 期 4 份快照全部缺席，
