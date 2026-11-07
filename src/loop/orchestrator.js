@@ -1069,7 +1069,7 @@ export async function runToolLoop(options) {
   //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
   // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值）——原 :1264 那行
   //   `@type {Record<string, any>|undefined}` 注解随字段逐字搬走（它存不存在的理由见下面格子上的注解）。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], persistedTranscriptLength: number, resumeToolResultRowKey: string|undefined, resumeTranscriptStart: number|undefined, resumeTranscriptAnchor: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, aggregateBudgetHit: boolean, lastToolCall: { summary: string, streak?: number }|undefined, budgetBelowWorkingSetStreak: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number>, usage: { input_tokens: number, output_tokens: number, cacheRead?: number, cacheWrite?: number }, latestApiInputTokens: number|undefined, latestApiEstimatedTokens: number|undefined, finalText: string, declaredFindings: any, roundStopReason: string|undefined, roundEventDeltas: any[] }} */
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], persistedTranscriptLength: number, resumeToolResultRowKey: string|undefined, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, aggregateBudgetHit: boolean, lastToolCall: { summary: string, streak?: number }|undefined, budgetBelowWorkingSetStreak: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number>, usage: { input_tokens: number, output_tokens: number, cacheRead?: number, cacheWrite?: number }, latestApiInputTokens: number|undefined, latestApiEstimatedTokens: number|undefined, finalText: string, declaredFindings: any, roundStopReason: string|undefined, roundEventDeltas: any[] }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -1092,12 +1092,6 @@ export async function runToolLoop(options) {
     messageSeqByRound: new Map(),
     // 【C resume 尾队列（续）】无初值格子：原 `let X;` 的初值就是 undefined，逐字保住。
     resumeTranscriptStart: undefined,
-    // issue #735 切片 2（写侧）：**本次恢复的锚点**（= 恢复那一刻账本里的正文条数），由
-    // `resume-manager.js` 与 `resumeTranscriptStart` 同处、同源、同值写入，只是**不会被消费掉**
-    // （`resumeTranscriptStart` 在 `…:resume` 行落盘后被清成 `undefined`，见 :5259）。非恢复 run 恒
-    // `undefined`。写侧据此把「可以置 `null` 的前缀」严格限制在**当年那个锚点之前**：那里每一格
-    // 天然在账本里（锚点的定义就是账本正文条数），无需逐格追踪是否真已入账。
-    resumeTranscriptAnchor: undefined,
     // issue #735 切片 2：本轮正文在 `messages` 里的起点（圈顶 `messages.length` 的副本）。
     // 只服务写侧：`persistRunSnapshot` 据此把「账本里早就有」的前缀从快照 `messages` 里省掉。
     roundMessageStart: undefined,
@@ -2312,13 +2306,6 @@ export async function runToolLoop(options) {
     set resumeTranscriptStart(value) {
       runLoopState.resumeTranscriptStart = value;
     },
-    // issue #735 切片 2：`resumeTranscriptStart` 的「不被消费」副本，只服务写侧的前缀判据。
-    get resumeTranscriptAnchor() {
-      return runLoopState.resumeTranscriptAnchor;
-    },
-    set resumeTranscriptAnchor(value) {
-      runLoopState.resumeTranscriptAnchor = value;
-    },
     get persistedTranscriptLength() {
       return runLoopState.persistedTranscriptLength;
     },
@@ -2911,40 +2898,35 @@ export async function runToolLoop(options) {
       // **写什么**：`messages[index]` 仍是**同一绝对下标**上的那一格（索引空间不变，不落盘的格子置
       // `null`），于是读侧的 `snapshot.messages.slice(anchor)` 一行不用改就能拿到同样的那一段。
       //
-      // **依赖的不变量（不成立就会丢信息，所以写出来）**：
-      //   **被置 `null` 的下标严格小于「本次恢复的锚点」**（非恢复 run 则小于
-      //   `min(本轮起点, persistedTranscriptLength)`）。而**锚点之前每一格都在账本里**，因为
-      //   锚点的定义就是「账本里已落盘的正文条数」（`resume-manager.js#countResumeAnchor`）
-      //   ⇒ **不需要逐格追踪哪些格子已入账**。读侧又只消费 `messages.slice(anchor)`（同一个
-      //   下标空间）⇒ 它永远读不到被置 `null` 的那一段。
+      // **写侧依赖的那一件事（实测口径，不是承诺）**：
+      //   `residueStart <= 本次恢复现场算出的 anchor`，且 `residueStart <= 本轮正文起点`；读侧只切
+      //   `snapshot.messages.slice(anchor)` ⇒ **它永远读不到被置 `null` 的那段格子**。取
+      //   `residueStart = min(本轮起点 roundMessageStart, persistedTranscriptLength, 长度)`：
+      //   1. `persistedTranscriptLength` 只累加**本进程亲手落盘成功**的逻辑消息（两处写点都带
+      //      `if (persisted)` 守卫），而恢复侧的锚点 `countResumeAnchor(records)` 量的就是这本账在
+      //      更晚时刻的折叠条数（账本只追加，不重写）⇒ 前者 <= 后者。
+      //   2. 「本轮起点」之前的正文都是上一轮（及更早）的，逐条入账（工单 261021 第二刀）+ #326 的
+      //      引擎补充行已经把它们写进账本 ⇒ 它们 <= 锚点；折叠（compaction）只把内存里的那段变短，
+      //      账本不缩 ⇒ 锚点只会更靠后。
       //
-      //   取 `residueStart = min(长度, 本轮起点 roundMessageStart, persistedTranscriptLength,
-      //   resumeTranscriptAnchor)`，四项各自的扣法：
-      //   1. `resumeTranscriptAnchor`（**本片真正的门**）：恢复过的 run，前缀最多只省到当年那个
-      //      锚点。为什么必须单独有这一项：恢复时 `ctx.persistedTranscriptLength` 被 seed 成
-      //      `ctx.messages.length`（`resume-manager.js:413`），而升级路径（#424 的
-      //      `resume_journal_skipped` 守卫）刚从快照补进内存的那段旧正文**一条都没入账**，于是
-      //      `persistedTranscriptLength` 会比**真锚点**大（夹具现场实测 ptl=5 / 账本 3）——只拿它
-      //      当上界就会把那段只在内存里的正文置 `null`（独立评审报的那个 bug）。
-      //   2. `本轮起点`：只约束「别清掉本轮」（本轮正文可能一条都没落盘）。
-      //   3. `persistedTranscriptLength`：只约束「别清掉本进程写过的那段」；它在恢复现场上会
-      //      **多算**（见项 1），所以它不能单独当上界，只能当另外两项之外的一个补充上界。
-      //
-      //   **代价（故意保守，宿主可见）**：恢复过的 run 前缀省得更少，甚至**完全不省**（锚点=0
-      //   的新 run 除外）。字节账里「典型 / 最坏」两档分开报。
-      //   反向证明（常驻用例）：`test/loop-snapshot-round-residue-735.test.js`——尤其「跨两次
-      //   恢复的往返」那一格（只在内存里的旧正文必须活过新快照的覆盖）。
+      //   **这里只证到「读者永不读到」，没证「信息一定还在」**（两个是不同的命题）。只有一个已知
+      //   例外，而它**不是本片引入的**：恢复时从快照补进内存、却被 #424 的守卫故意留在账本之外的那段
+      //   旧正文，在**下一次恢复**时会落在 `slice(anchor)` 起点之前——因为 `anchor` 是标量（折叠后的
+      //   逻辑消息条数），不是「快照哪些下标已入账」的位图，而它会在第一跳后续跑中从 3 涨到 5
+      //   （夹具实测）。⇒ 写侧无论怎么写（整段 / 残余 / 按锚点封顶）都取不回它：两棵树并排跑同一套
+      //   两跳场景交出**逐字相同**的结果（都是 `invalid_messages`、都是 0 次模型请求、旧正文都取不到）。
+      //   那是**读侧切片下标语义**的缺陷，已开 **issue #754** 承接（常驻用例：本文件的
+      //   「两跳恢复记录当前行为」）。所以：**不要拿「按构造不会丢信息」这句跨恢复的话来为写侧背书**。
+      //   反向证明（常驻用例）：`test/loop-snapshot-round-residue-735.test.js`。
       //
       // **不许动的面**：键名/键序/这一格的位置逐字不变（`src/store/file.js` 直接 `JSON.stringify`）；
       // 读侧的 `Array.isArray(snapshot.messages) ? … : []` 容忍面原样保留（旧快照仍是整段正文，照旧
-      // 能被读）；#424 的 `resume_journal_skipped` 跳过路径与它的守卫用例逐字不动（本片只改
-      // 「哪些格子可以省」，不改「要不要补写结果行」）；`store/` 层逐字透传；不新增错误码。
+      // 能被读）；`store/` 层逐字透传；不新增错误码。
       const transcriptForSnapshot = messagesOverride ?? messages;
       const residueStart = Math.max(0, Math.min(
         transcriptForSnapshot.length,
         runLoopState.roundMessageStart ?? transcriptForSnapshot.length,
         runLoopState.persistedTranscriptLength ?? 0,
-        runLoopState.resumeTranscriptAnchor ?? transcriptForSnapshot.length,
       ));
       const snapshotTranscriptResidue = transcriptForSnapshot.map((message, index) => (
         index < residueStart ? null : cloneState(message)

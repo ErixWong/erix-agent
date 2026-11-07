@@ -578,12 +578,6 @@ export async function restoreResume(ctx) {
         // `resumeTranscriptStart` = 锚点（= 已落盘正文的条数）：下面那条 `…:resume` 行只写
         // **锚点之后**的正文（升级补全的那段 + 本次补跑跑出来的结果），已落盘的正文一行也不会重抄。
         ctx.resumeTranscriptStart = anchor;
-        // issue #735 切片 2（写侧的前缀判据）：同一个锚点再存一份**不会被消费**的副本。
-        // 为什么不能直接用 `resumeTranscriptStart` / `persistedTranscriptLength`：前者在下面
-        // `…:resume` 行落盘后就被清成 `undefined`；后者此刻已被 seed 成 `ctx.messages.length`（:413），
-        // 把这段**只在内存里、账本没有**的升级正文也算进去了 ⇒ 拿它当前缀上界会吃掉这段正文
-        //（常驻用例「跨两次恢复的往返」钉住）。非恢复 run 不经过这里，写侧那一项保持 `undefined`。
-        ctx.resumeTranscriptAnchor = anchor;
         // 工单 261021（第三刀）：**补跑出来的工具结果也走「一条消息一成型就落盘」**——它们接在
         // 崩溃轮已落盘的那条聚合消息后面（`partOf` 指认它的首片行），于是下一次恢复折出来的仍是
         // 一条合法的 tool_use/tool_result 配对。两个信息只能从账本拿：本轮下一个可用 `seq`、以及
