@@ -1882,13 +1882,16 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 成立条件与代价完全不同。把两件事压进一个词，就会得到「零读者 ⇒ 可以退役」这类跨轴推论。本表因此
 **禁用「退役」这个单标签**，每格给两条互相独立的轴：
 
-- `write` 轴：`written`（照写）/ `residue`（只写本轮起点之后的格子，之前的格子置 `null`）/ `stopped`（已停写）。
+- `write` 轴：`written`（照写）/ `written(conditional)`（条件成立才写那一格，条件写在权威源/交接条件列；这是**语言中立的轴值 token**，中英两份字面完全相同）/ `residue`（只写本轮起点之后的格子，之前的格子置 `null`）/ `stopped`（已停写）。
 - `read` 轴：`source`（恢复侧的第一顺位来源）/ `fallback(条件)`（只在写明的条件成立时补一次）/ `not-source`（恢复侧根本不读这一格）。
 
 `read` 轴的口径**只量恢复侧**（`src/loop/resume-manager.js` 里对快照对象那一层的属性读取），因为「引擎
 不读」与「没人碰这一格」不是一回事：`status` 与 `compactionStats` 引擎零读者，却各有测试把它们的形状当
-指纹钉住（写在读者列里）⇒ 要停写先给那些用例换指纹。两轴**互不蕴含**：今天表内 10 格无一 `stopped`；
-issue #735 切片 1 停写的 `toolUse` / `ts` 两格既不在载荷里也不在本表内。
+指纹钉住（写在读者列里）⇒ 要停写先给那些用例换指纹。两轴**互不蕴含**：本表 15 行 / 14 个格名，其中
+`toolUse` 与 `ts` 两格是 `write: stopped`（#735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js`），
+`partialText` 与 `partialRound` 两格是 `write: written(conditional)`（条件写入，见下表）。这两类形态是「grep
+载荷里必须在场的键」那种清单**天然看不见**的：停写的键根本不在场、条件写入的键只在一半的现场在场——
+上一片的 10 格清单就是这么漏掉它们的，所以本表要连它们一起钉。
 
 行号一律是在基点 `40a518d` 上现取的（`rg` 现扫），每条 `file:line` 都被
 `test/contract-snapshot-cell-axes-767.test.js` 逐条复核：文件在场、行号落在范围内、那一行确实提到这格的
@@ -1908,6 +1911,10 @@ issue #735 切片 1 停写的 `toolUse` / `ts` 两格既不在载荷里也不在
 | `messages` | residue | fallback(仅旧格式账本) | 账本（`load()`）是正文的权威来源 | 恢复侧那条旧格式升级路径 `src/loop/resume-manager.js:586` 被移除之后才可转 `not-source`；**今天不许写 `not-source`** | `src/loop/orchestrator.js:3029` | `src/loop/resume-manager.js:586`（条件：账本在锚点之后一条都没有） |
 | `persistedTranscriptLength`（盘上那格） | written | not-source | 恢复锚点在账本上现算 | 引擎侧读者为零 ⇒ 这是表内今天唯一「读侧条件已满足」的格；停写仍要先迁测试侧拿它当截账本夹具锚点的两处（见下方口径） | `src/loop/orchestrator.js:3030` | 恢复侧不信它：`src/loop/resume-manager.js:16`（注释明写不能信快照里的值）与 `src/loop/resume-manager.js:430`（就地用账本长度覆盖） |
 | `persistedTranscriptLength`（进程内计数器） | written | source | —（同一变量的进程内形态不落盘，它才是写侧的现值） | **不许停**：它是 `messages` 残余起点的夹值之一 | `src/loop/orchestrator.js:3030` | `src/loop/orchestrator.js:2975` |
+| `partialText` | written(conditional) | source | — | 条件＝本轮已有半截正文（写点 `src/loop/orchestrator.js` 的 `partialText === undefined` 夹子）：现场有半截正文 ⇒ 这一格必在；没有 ⇒ 整格缺席（不是写 `undefined`） | `src/loop/orchestrator.js:3039` | `src/loop/resume-manager.js:634`、`src/loop/resume-manager.js:646`、`src/loop/resume-manager.js:541` |
+| `partialRound` | written(conditional) | source | — | 与 `partialText` **同一条写入语句、同一个条件** ⇒ 两格同生同灭，缺一即坏 | `src/loop/orchestrator.js:3039` | `src/loop/resume-manager.js:635`、`src/loop/resume-manager.js:647` |
+| `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:104-113` | `src/loop/orchestrator.js:2997` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:531`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
+| `ts` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:104-113` | `src/loop/orchestrator.js:3004` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**那格的 `record.ts` `src/loop/resume-manager.js:460` |
 | `compactionStats` | written | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:346`）与轮记录 `src/loop/orchestrator.js:6161` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:73` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3038`（快照）与 `src/loop/orchestrator.js:6161`（轮记录） | 恢复走 run-state `src/loop/resume-manager.js:346`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
 
