@@ -3559,6 +3559,7 @@ it saw before.
 | `compaction_deferred` event | `onEvent`, one per deferred compaction | **Additive (issue #588).** `{ type: "compaction_deferred", runId?, round, reason: "pending_tool_use", detail: string }` — emitted when the compaction inside a `max_tokens` continuation is skipped because the request tail is an assistant `tool_use` whose `tool_result` has not arrived (`pendingTailToolUses` (`src/loop/pending-tool-result.js`)). Nothing is settled and no pairing rule is loosened; the next round's compaction sees the completed round. No termination semantic changes. |
 | `continuity_injection_skipped` event | `onEvent`, one per round where the continuity block could not be placed | **Additive (issue #568).** `{ type: "continuity_injection_skipped", runId?, round, reason, detail: string }` — the block was not injected into that request (e.g. `reason: "pending_tool_use"`, where inserting it would break `tool_use`/`tool_result` pairing). A skip is reported instead of substituting machine text. |
 | `user_turn_guard_unrecoverable` event | `onEvent`, one per request view that reaches the guard's last resort (i.e. per provider attempt) | **Additive (issue #296).** `{ type: "user_turn_guard_unrecoverable", runId?, parentRunId?, round, channel: "chat" \| "chatStream", reason: "empty_view" \| "no_user_turn" \| "invalid_view", detail: string }` — the request-view user-turn invariant ran out of fallbacks: `ensureUserTurnView` (`src/loop/request-user-view.js`) found no usable user turn in the request view **and** no donatable user turn in the unfolded source, so the request is sent **unchanged** — the engine neither fabricates a user turn nor throws. An upstream that requires a user query answers `400`; this event is emitted **before** that request goes out, so it is the join key between the failure and its cause (until #296 the case was filtered out and left no trace anywhere). `reason` names the sub-case: `empty_view` (nothing left in the view), `no_user_turn` (non-empty, no real user turn — a pure `tool_result` carrier does not count), `invalid_view` (a user turn exists but the `tool_use`/`tool_result` pairing is illegal). The first sentence of `detail` is fixed text hosts can assert on. The two other guard actions (`preserved_latest_user_turn` / `abandoned_fold`) keep landing in `compactionStats.userTurnGuard` and never emit this event; this one is deliberately **not** written into `compactionStats`, because it can fire in a round that compacted nothing and would make "did this round compact" unreadable. |
+| `host_steer_injected` event | `onEvent`, one per successful turn-boundary injection | **Additive (issue #753 C1).** `{ type: "host_steer_injected", runId?, parentRunId?, round: number, chars: number }` — `capabilities.hooks.nextUserTurn` answered with a non-empty string and the engine appended it as a real `role: "user"` turn **at the turn boundary**: after `throwIfAborted(signal)`, before the round slice (`const roundStart = messages.length`) opens. That placement is the whole contract: the injected turn sits inside the **next** round's record, so it needs no `:control:` line and a resume reads it as an ordinary user turn (`store.load()` shows its prose; the row is `kind: "message"` with a `seq`, never a `:control:` line). `round` is the boundary the hook was asked about (the text is consumed by the round that starts next, whose `round_start` carries `round + 1`); `chars` is the length of the injected text. Tier `fact` — see the event tier table. Declines are silent by design (`null` / `undefined` ⇒ no event, no row, byte-identical ledger); a throw or a non-string answer is counted in `diagnostics.steer.rejected` and reported through `reportObserverError(..., { channel: "nextUserTurn" })`, the same accounting as a `finalGuard` verification failure — **never** a different terminal state. |
 | `run_outcome` event | `onEvent`, exactly once per run — including runs where the judge never ran | `{ type: "run_outcome", runId?, model?, judgeModel?, rounds, judgeRecordCount, termination, verification }`. Emitted on the success path after persistence settles, and on the throwing path from `fail()`; a latch guarantees exactly one per run. `termination` / `verification` are copies of what `runToolLoop` returned (or what `fail()` built). |
 
 **Where an event lives in this document (issue #641).** The table above is the **additive** event
@@ -5852,6 +5853,39 @@ visible marker, and the shortfall is stated in the block itself rather than left
   not a user query — and when only the block is left, the existing `abandoned_fold` path supplies the turn
   (issue #589).
 
+## Host steer at the turn boundary — `capabilities.hooks.nextUserTurn` (issue #753 C1)
+
+- **The slot.** `capabilities.hooks.nextUserTurn` is a **synchronous** function called as
+  `({ runId, state, round }) => string | null | undefined`. A `hooks` group value must be a function —
+  the `capabilities` schema (`src/loop/capabilities-namespace.js`) rejects anything else with the usual
+  unknown/conflict accounting, so a string typed straight into the slot is an error, not a silent steer.
+  A returned value must be a string, `null`, or `undefined`.
+- **When the host is asked.** Once per turn boundary, in the main loop of `runToolLoop`
+  (`src/loop/orchestrator.js`) **after** the top-of-loop `throwIfAborted(signal)` and **before** the round
+  slice opens (`const roundStart = messages.length`). That position is the whole contract: an aborted run is
+  never asked (abort wins, the `#282` ordering), and the returned text is appended as a **real**
+  `role: "user"` turn before the round is built. It therefore reaches the provider as an ordinary user turn,
+  is journalled as an ordinary `kind: "message"` row **with a `seq`** (readable through `store.load()`), and
+  needs no separate `:control:` row. `round` is the boundary being asked about; the text is consumed by the
+  round that starts next, whose `round_start` carries `round + 1`.
+- **`null` / `undefined` ⇒ verbatim zero behaviour change.** No row, no event, no ledger difference: a unit
+  cell diffs the full ledger rows and the full event sequence of a run with the hook answering `null`
+  against a run that never passed the hook, byte for byte (clock / `toolCallKey` / `durationMs` aside).
+- **A throw or a non-string answer is never fatal.** It is counted in `diagnostics.steer.rejected` and
+  reported through `reportObserverError(..., { channel: "nextUserTurn" })` — the same accounting as a
+  `finalGuard` verification failure (count + degrade): the run's `termination`, `verification` and ledger are
+  untouched, and nothing is injected for that boundary.
+- **Terminal diagnostics.** A run that used the hook returns
+  `result.diagnostics.steer = { offered, injected, rejected, lastRound }` (`offered` = boundaries asked,
+  `lastRound` = last boundary that injected or was rejected). A run that never passed the hook gets **no**
+  `diagnostics.steer` key — the field is additive and non-users see the old shape.
+- **Event.** `host_steer_injected` (tier `fact`) on success, carrying `round` and `chars`; declines are
+  silent by design, which is why the counters above are the only "hook installed but declined" evidence.
+- **Out of scope for C1 (deliberately).** No `config.*` leaf, no timeout knob (the hook is synchronous — a
+  slow hook is the host's problem, not the engine's), no consumption point on stop paths (the `followUp`
+  semantics are a later slice), no `TranscriptStore` contract change, and nothing in
+  `examples/pi-extension` (the extension surface belongs to the C2 slice).
+
 ## Store fidelity requirements
 
 A host `TranscriptStore` must preserve the complete `RoundRecord` and complete
@@ -6358,6 +6392,7 @@ at the emission site, and two of them were wrong in the first draft of this sect
 | `config_override_conflict` | `fact` | no | Same. |
 | `context_unknown_option` | `fact` | no | Same. |
 | `user_turn_guard_unrecoverable` | `fact` | no | Same. |
+| `host_steer_injected` | `fact` | no | issue #753（C1）: one per successful turn-boundary steer injection, carrying `round` and `chars`. The injected turn's prose is durable in the transcript, but "this user turn was host-steered, in round N" exists only here — and a host that never sees an injection cannot tell "declined" from "hook missing". |
 | `tool_output_aggregate` | `fact` | no | The aggregation **decision** (`action`, `reason`, `budgetTokens`, `inlineTokens`, `costTokens`, `projectedTokens`, `contentLength`). The transcript/archive keep the bytes, not these numbers — see the demotion note above. |
 | `recovering` | `fact` | no | Emitted before the retry backoff waits; aborted during the wait and no later `attempt` exists to reconstruct it from. |
 | `recovered` | `fact` | no | A **retry**-success notification (not resume). Nothing durable records “this answer was attempt N”. |

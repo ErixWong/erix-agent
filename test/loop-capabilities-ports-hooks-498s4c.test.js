@@ -219,7 +219,7 @@ function extendingRun(extra = {}, reflectionExtra = {}) {
 }
 
 // ================================================================ C1. 账目 + 不发明扁平别名
-test("C1 账目：白名单被四个面恰好切一遍，10 个新叶子一律是嵌套槽（没有新顶层选项）", () => {
+test("C1 账目：白名单被四个面恰好切一遍，11 个新叶子一律是嵌套槽（没有新顶层选项）", () => {
   // #498 S3：四个字面总数（顶层 / 配置面 / 能力面 / 容器）全部删掉，改成集合等式。
   const { configPlane, capability, topLevelSurface, containers } = optionHomeBuckets(RUN_TOOL_LOOP_OPTION_NAMES);
   const partition = [...configPlane, ...capability, ...topLevelSurface, ...containers];
@@ -229,11 +229,11 @@ test("C1 账目：白名单被四个面恰好切一遍，10 个新叶子一律�
 
   // 能力面 schema 的三组与成员数（本刀的判据面）。
   assert.deepEqual([...CAPABILITIES_NAMESPACE_GROUPS], ["hooks", "checks", "ports"]);
-  assert.equal(CAPABILITY_HOOK_NAMES.length, 17, "hooks 的回调 12 → 16 → 17（#568 的 continuityProvider）");
+  assert.equal(CAPABILITY_HOOK_NAMES.length, 18, "hooks 的回调 12 → 16 → 17（#568 的 continuityProvider）→ 18（#753 C1 的 nextUserTurn）");
   assert.deepEqual([...CAPABILITY_POLYMORPHIC_HOOK_NAMES], ["protectedMessage", "recoveryHint"]);
   assert.deepEqual([...CAPABILITY_PORT_SLOT_NAMES], ["sleepImpl", "judgeProvider", "strategy"]);
-  assert.equal(CAPABILITIES_NAMESPACE_SCHEMA.hooks.length, 19, "hooks 接受 17 + 2 = 19 个叶子");
-  assert.equal(CAPABILITIES_SLOT_LEAF_NAMES.length, 10, "10 个嵌套槽叶子（#498 S4c 的 9 个 + #568 的 continuityProvider）");
+  assert.equal(CAPABILITIES_NAMESPACE_SCHEMA.hooks.length, 20, "hooks 接受 18 + 2 = 20 个叶子");
+  assert.equal(CAPABILITIES_SLOT_LEAF_NAMES.length, 11, "11 个嵌套槽叶子（#498 S4c 的 9 个 + #568 的 continuityProvider + #753 C1 的 nextUserTurn）");
   assert.equal(CAPABILITIES_SURFACE_OPTION_NAMES.length, 13, "扁平叶子仍是 13（别名表 13 条）");
   assert.equal(CAPABILITIES_ALIAS_PATHS.size, 13);
 
@@ -248,11 +248,12 @@ test("C1 账目：白名单被四个面恰好切一遍，10 个新叶子一律�
       `${CAPABILITIES_NAMESPACE_GROUPS.find((group) => CAPABILITIES_NAMESPACE_SCHEMA[group].includes(leaf))}.${leaf}`
     ]?.conflictPath, "string", `${leaf} 必须登记去向（含冲突事件的 path）`);
   }
-  // 去向表就是那 10 条，不多不少（多一条就是死条目，`capabilitiesSchemaSelfCheck` 也核这一条）。
+  // 去向表就是那 11 条，不多不少（多一条就是死条目，`capabilitiesSchemaSelfCheck` 也核这一条）。
   assert.deepEqual(
     Object.keys(CAPABILITY_SLOT_DESTINATIONS).sort(),
     [
       "hooks.continuityProvider",
+      "hooks.nextUserTurn",
       "hooks.onAfterFold",
       "hooks.onBeforeFold",
       "hooks.onReflection",
