@@ -106,9 +106,15 @@ test("pi 装载器能加载 erix-run.ts 并注册 erix_run（离线，不触网�
   // #234：异步与查询参数面
   assert.equal(schema.properties.async.type, "boolean", "async 必须是布尔（缺省 false = 同步语义）");
   assert.equal(schema.properties.quiet.type, "boolean");
-  assert.deepEqual(schema.properties.action.enum, ["status", "result", "list", "cancel"]);
+  // issue #753 C2：`action` 加 `steer`（往**还活着的后台 run** 的内存收件箱投一句话），
+  // `message` 是它的正文。enum 是这份 schema 的 golden，新增一个取值就要在这里登记一次。
+  assert.deepEqual(schema.properties.action.enum, ["status", "result", "list", "cancel", "steer"]);
   assert.equal(schema.properties.runId.type, "string");
-  for (const key of ["async", "quiet", "action", "runId"]) {
+  assert.equal(schema.properties.message.type, "string", "message 是 steer 的正文（字符串）");
+  // 拒绝面与「同步 run 发不了 steer」这两条必须写给模型看，否则它会对着同步 run 反复发 steer。
+  assert.match(schema.properties.action.description, /steer_unavailable/u);
+  assert.match(schema.properties.message.description, /轮边界/u);
+  for (const key of ["async", "quiet", "action", "runId", "message"]) {
     assert.equal(schema.properties[key].description.length > 20, true, `${key} 要给模型看得见的说明`);
   }
   // #207 R2：续跑参数面。描述里必须把「三种坐标 + 不静默起新 run」写给模型看——
