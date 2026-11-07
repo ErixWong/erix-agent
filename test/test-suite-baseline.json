@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3697,
+    "tests": 3712,
     "fail": 0,
     "maxSkipped": 15
   },
@@ -24,18 +24,18 @@
       "why": "tests 地板 3695 → **3697**，两段都是现测不是加法猜的：① 基点 `8990947` 自己现跑是 **3696 / pass 3683 / fail 0 / skipped 13**——登记值 3695 比它低 1，那 1 格是 #773 那一片（`23294d5` 新增「规则 3 的一行串多条命令」那格）只抬了配对地板、没抬 TAP 地板留下的余量（`check:test-summary` 当时只打 HINT，不红）；② 本片新增 **1** 格，在 `test/static-guards.test.js`（单跑该文件自打 `# tests 58`，改前同一棵树是 57）。⇒ 3696 + 1 = 3697。新增那一格是 issue #775 的两条 mandatory 假绿（`$(erix …)` 里的旗标不进面 + 等长抹平让否定词跳段免计下一段），先 RED：两条各自被单独隔出来后守卫现报 `unknown=[]` 与 `{flag:--bogus-775-mask, status:negated}`，修后同坐标转绿。既有格子一格没增减、没 skip、没放宽断言；`fail=0`；`skipped` 实测 13 与基点逐字同值（12 条真上游 / 真 relay 门禁 + 1 条多会话格）⇒ `maxSkipped` 15 不动。另有两件与本数无关但同片发生的事：配对地板同片 24 → 25（守卫在本树现报，见 `CHANGELOG_PAIR_FLOOR` 旁那段输出原文）；未跟踪的评审产物 `REVIEW-775.md` 里 `docs/tasks/` 引用补了「整目录本机不入库 / untracked」就地声明——不补它 `check:docs` 就红，而 `test/docs-anchor-ratchet.test.js` 是跑真 `docs-drift-check --verbose` 的，于是全量会在它上面红 2 格（登记前实测过一次：fail 2，与本片改动无关，是那件产物的卫生问题）。"
     },
     {
-          "date": "2026-11-07",
-          "env": "local",
-          "node": "v22.23.2",
-          "commit": "本笔登记（分支 feat-261107-15-erix-run-steer-action；被量的树 = `origin/main 40a518d` + 本片前 4 笔；六个数取自这一棵树上现跑的 `npm test`，日志 /tmp/c2-npmtest2.log；主干那一侧的 3682 在 `git worktree add --detach /home/eric/wt-753-c2base origin/main` 上单独现跑取得，日志 /tmp/c2base-npmtest.log）",
-          "branch": "feat-261107-15-erix-run-steer-action",
-          "tests": 3695,
-          "pass": 3682,
-          "fail": 0,
-          "skipped": 13,
-          "todo": 0,
-          "cancelled": 0,
-          "why": "tests 地板 3679 → **3695**。算术自证（两段都是现测，不是加法猜的）：① `origin/main 40a518d` 自己现跑是 **3682 / pass 3669 / fail 0 / skipped 13**（登记地板 3679 留了 3 格余量没抬，`check:test-summary` 的 `TEST-SUMMARY-HINT` 会提示可抬到 3682）；② 本片新增 **13** 格，全在`test/examples/erix-run-steer.test.js`（单跑该文件自打 `# tests 13`；把该文件搬离后全量自打 3682 ⇒ 3682 + 13 = 3695）。13 格分别是：真 `runToolLoop` 下轮边界被问且队首真进内层 `messages`、FIFO 每轮一条、空队列回 `null`、没 steer 就不装钩子且「恒回 null 的钩子」与「从不装钩子」两个 run 的账本行与事件序列逐字全等、钩子晚装永不被问、只在盘上的 job 被拒（`reason:\"disk-only\"`）、已结算的 job 被拒（`reason:\"settled\"`，队列一字节不动）、`steerPending` 进 `jobView`/`status`/`result`/`status.json` 四面同形、引擎 `diagnostics.steer` 在同步面不出现而在异步终局出现、`bad_params` 五种（缺 runId / 缺 message / 空串 / 非字符串 / 未知 runId）。`fail=0`；`skipped` 实测 13 与主干同值（12 条真上游/真 relay 门禁 + 1 条多会话格）⇒ `maxSkipped` 15 不动。**登记之前**同一棵树现跑是 fail 1（配对地板那一格：守卫现报 23 对 ≠ 旧常量 22），同一笔提交里随登记一起转绿，所以本行不留那份中间态；`pass` 3682 是登记之后同一棵树的数。没删例、没 skip、没放宽断言（逐字全等那格只归一时钟 `ts`、随机 `toolCallKey` 与时钟粒度 `durationMs`）。"
+      "date": "2026-11-07",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "本笔登记（分支 feat-261107-15-erix-run-steer-action；被量的树 = `origin/main 40a518d` + 本片前 4 笔；六个数取自这一棵树上现跑的 `npm test`，日志 /tmp/c2-npmtest2.log；主干那一侧的 3682 在 `git worktree add --detach /home/eric/wt-753-c2base origin/main` 上单独现跑取得，日志 /tmp/c2base-npmtest.log）",
+      "branch": "feat-261107-15-erix-run-steer-action",
+      "tests": 3695,
+      "pass": 3682,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "tests 地板 3679 → **3695**。算术自证（两段都是现测，不是加法猜的）：① `origin/main 40a518d` 自己现跑是 **3682 / pass 3669 / fail 0 / skipped 13**（登记地板 3679 留了 3 格余量没抬，`check:test-summary` 的 `TEST-SUMMARY-HINT` 会提示可抬到 3682）；② 本片新增 **13** 格，全在`test/examples/erix-run-steer.test.js`（单跑该文件自打 `# tests 13`；把该文件搬离后全量自打 3682 ⇒ 3682 + 13 = 3695）。13 格分别是：真 `runToolLoop` 下轮边界被问且队首真进内层 `messages`、FIFO 每轮一条、空队列回 `null`、没 steer 就不装钩子且「恒回 null 的钩子」与「从不装钩子」两个 run 的账本行与事件序列逐字全等、钩子晚装永不被问、只在盘上的 job 被拒（`reason:\"disk-only\"`）、已结算的 job 被拒（`reason:\"settled\"`，队列一字节不动）、`steerPending` 进 `jobView`/`status`/`result`/`status.json` 四面同形、引擎 `diagnostics.steer` 在同步面不出现而在异步终局出现、`bad_params` 五种（缺 runId / 缺 message / 空串 / 非字符串 / 未知 runId）。`fail=0`；`skipped` 实测 13 与主干同值（12 条真上游/真 relay 门禁 + 1 条多会话格）⇒ `maxSkipped` 15 不动。**登记之前**同一棵树现跑是 fail 1（配对地板那一格：守卫现报 23 对 ≠ 旧常量 22），同一笔提交里随登记一起转绿，所以本行不留那份中间态；`pass` 3682 是登记之后同一棵树的数。没删例、没 skip、没放宽断言（逐字全等那格只归一时钟 `ts`、随机 `toolCallKey` 与时钟粒度 `durationMs`）。"
     },
     {
       "date": "2026-11-07",
@@ -824,6 +824,40 @@
       "todo": 0,
       "cancelled": 0,
       "why": "issue #730（中段补桩的判据收窄 + 四条放弃路径出声）。**+8 格来自新增常驻文件 `test/loop-resume-abandon-signals-730.test.js`**：四条放弃路径各一条端到端（格1 收窄后仍补桩且不发事件 / 格2① 同页合并被拒 / 格2② 两种非目标形状 / 格2③ 有锚点而写被拒）+ 锚点 detail 两格（`anchor_probe_absent` 与 `round_carrier_has_body`）+ 成因闭集与中英两份契约的双向对账一格 + 归并口径一格；全部离线，关掉 `ERIX_E2E_REAL` 也进 `npm test`。前序 3671 = 主干 `6ee851e`（PR #761）之后的登记值。**抬登记是人的动作**（本表**没有 `--sync`**，脚本源码第 29 行明写）：这是有意新增的覆盖，不是漂移，也不是为了对上数字改测试。⚠ 并行会话在同一块上各自重登（今晚 3670→3671→…），**只有合并树上的现测才是真值**；下一任 merge 后照旧重跑重取。"
+    },
+    {
+      "date": "2026-11-08",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "15fa23e（被测量那一棵树的内容；登记这笔提交在它之后，只改这个 JSON 与配对地板）",
+      "branch": "fix-261108-07-cell-axes-r3-erix",
+      "mergeBase": "ffba58a",
+      "mainSha": "ffba58a",
+      "headSha": "15fa23e",
+      "tests": 3709,
+      "pass": 3695,
+      "fail": 1,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "合并树现测（`npm test`，系统 node 22 / TAP）：本批把 #767 S1/S1r 两轴表、#772 标记区豁免、R2 锚点等值对账、R3 锚点模块全部带进来 ⇒ 覆盖从 main 的 3697 涨到 3709（+12 格：契约表守卫 10 格 + R3 两格）。本次实测 fail=1 的那一格是配对地板自己：常量当时还是 25，守卫报「实测 27 对 > 地板 25 对 ⇒ 可以抬地板到 27」，同一笔改动把地板改成 27；改后 `node --test test/static-guards.test.js` 58/58、全套 fail=0（随后重跑复验）。"
+    },
+    {
+      "date": "2026-11-08",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "57161ee（被测量那一棵树的内容；其后一笔 fcbecd3 只改报告 md，不动用例数）",
+      "branch": "fix-261108-09-cell-axes-kind-required-erix",
+      "mergeBase": "ffba58a",
+      "mainSha": "ffba58a",
+      "headSha": "57161ee",
+      "tests": 3712,
+      "pass": 3699,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "R4（锚点加 kind + 独立覆盖面清单 CELL_AXES_REQUIRED_CELLS）在合并树现测：`npm test` 原话 `# tests 3712 / # pass 3699 / # fail 0 / # skipped 13`（系统 node 22 / TAP），对账 `TEST-SUMMARY-VERDICT ok` + `TEST-SUMMARY-HINT 登记值可抬到 3712（当前登记值 3709，+3）`——+3 就是 R4 新增的 `G4-R4`/`G4-R5`/`G4-R6` 三格（契约测试文件顶层 12 → 15）。抬取用守卫自己报的数，不做加法。"
     }
   ]
 }
