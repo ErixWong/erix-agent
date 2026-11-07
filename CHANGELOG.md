@@ -357,6 +357,61 @@
   两份契约的两张表与 `LoopEvent` 联合），用了钩子的 run 返回
   `diagnostics.steer = { offered, injected, rejected, lastRound }`，从没传钩子的 run 不会多出这个键。C1 不新增
   `config.*` 叶、不加超时旋钮、不在停机点消费、不改 store 契约；`examples/pi-extension`（C2 切片）没动。
+- **`erix_run` can steer a running background run at the turn boundary: `action:"steer"` (issue #753, C2
+  extension slice).** The slot C1 opened is now wired to the tool: `erix_run(action:"steer", runId, message)`
+  pushes the text into that job's **in-memory FIFO inbox**, and the inner `runToolLoop` picks up **one entry per
+  turn boundary** (the rest wait for the next boundary; an empty queue answers `null`). `runErixRun` now passes
+  `deps.nextUserTurn` down to `capabilities.hooks.nextUserTurn` — and the gate is "there is an inbox": the
+  **synchronous path installs nothing at all** (`options.capabilities.hooks` carries no such key and the payload
+  gains no `diagnostics.steer` key), which is what the task booked as "nobody steered ⇒ not a single hook
+  installed". A background job carries the hook from the moment it is created, because the engine captures the
+  hook once at `runToolLoop` entry — measured, not assumed: a hook attached after the run had started was never
+  consulted (`offered` stayed `0`, `injected` stayed `0`) while the same queue handed in at creation was picked
+  up on round 1. The rejection surface is honest: a job that exists **only on disk** (after a restart) answers
+  `steer_unavailable` / `reason:"disk-only"` (same wording discipline as `cancel`'s "only on disk"), a **settled**
+  run answers `reason:"settled"` and says outright that a finished run has **no next turn boundary**, and neither
+  pretends the text was delivered — the queue is not touched (`steerPending` unchanged) and the tool result is
+  `isError`. A bad `runId` / `message` (missing, non-string, empty or whitespace-only) is now a **synchronous
+  `bad_params`** rather than a background `failed` payload: `runErixRun` gained a `validate` hook that runs
+  before the job is registered or `status.json` is written, because the same bad parameter must not answer with
+  two shapes on two paths. Observability: `steerPending` (queue length) sits on `jobView` and on the `status.json`
+  the reaper writes — **always present**, `0` rather than a missing key, and `action:"status"` / `"result"` return
+  the same object the disk does — and the engine's `diagnostics.steer = {offered,injected,rejected,lastRound}` is
+  passed through **verbatim** on the sync payload, `action:"status"`, `action:"result"` and `status.json`, plus a
+  line on each text surface (`steer=offered:…` / `steer：offered=…`) and progress lines for enqueue and hand-off
+  so `progressTail` shows "it really was taken". ⚠ **Disambiguation, because both sides say "steer"**:
+  `action:"steer"` injects into the **inner run**, while `deliverAs:"steer"` in
+  `examples/pi-extension/erix-run-parent-wake.js` is pi's delivery slot for waking the **parent session** —
+  different receiver, different moment, different accounting. The synchronous (non-`async`) path cannot be
+  steered at all (that tool call is blocking, so nobody can hand it a steer), which is now stated in the tool
+  description, the schema and both READMEs. No new `bin/` dependency (the "must not depend on bin/" boundary
+  holds: the capability comes from `src/`'s public `capabilities.hooks.nextUserTurn`), no `config.*` leaf, no
+  timeout knob (the hook is synchronous). Six new tests in `test/examples/erix-run-steer.test.js` (TAP total
+  3057 → 3063, booked in `test/test-suite-baseline.json`); the no-steer cell diffs the two runs' ledger rows and
+  event sequences byte for byte.
+- **`erix_run` 能在轮边界转向一个还在跑的后台 run：`action:"steer"`（issue #753，C2 扩展面切片）。** C1 开的
+  槽位现在接到工具上了：`erix_run(action:"steer", runId, message)` 把那句话 push 进该 job 的**内存 FIFO 收件箱**，
+  内层 `runToolLoop` **每个轮边界只取一条**（其余等下一个边界；队列空时钩子回 `null`）。`runErixRun` 现在把
+  `deps.nextUserTurn` 下发到 `capabilities.hooks.nextUserTurn`，而闸门是「那个 job 真有收件箱」：**同步面一个
+  钩子都不装**（`options.capabilities.hooks` 里连那个键都没有，终局也不会多出 `diagnostics.steer`），这正是任务里
+  钉的「没人 steer ⇒ 一个钩子都不装」。后台 job 一出生就带着钩子，因为引擎在 `runToolLoop` 入口一次性捕获它——
+  这是实测不是推定：等 run 开跑之后才装的钩子从来没被问（`offered` 一直 `0`、`injected` 一直 `0`），而同一队列在
+  创建时递进去就能在第 1 轮被取走。拒绝面是诚实的：只在**盘上**的 job（进程重启后）回 `steer_unavailable` /
+  `reason:"disk-only"`（口径同 `cancel` 的「只存在于盘上」），**已结束**的回 `reason:"settled"` 并直说已结束的 run
+  **没有下一个轮边界**；两者都不谎称已投递——队列一个字节没动（`steerPending` 不变），工具结果是 `isError`。
+  `runId` / `message` 坏（缺字、非字符串、空串或只含空白）现在是**同步 `bad_params`**，不再是后台一条 `failed`
+  载荷：`runErixRun` 多了一个 `validate` 钩子，在 job 登记与 `status.json` 落盘**之前**跑——因为同一个坏参数不许在
+  两条路上给出两种形状。可观测面：`steerPending`（队列长度）在 `jobView` 与回收器写的 `status.json` 上**恒在场**
+  （没 steer 时是 `0` 而不是缺键），`action:"status"`/`"result"` 与盘上是同一个对象；引擎的
+  `diagnostics.steer = {offered,injected,rejected,lastRound}` 被**原样透传**到同步终局、`action:"status"`、
+  `action:"result"` 与 `status.json` 四面，文本面也各有一行（`steer=offered:…` / `steer：offered=…`），入队与交队
+  各打一行进度，从 `progressTail` 就能看出「那句真被取走了」。⚠ **消歧，因为两边都叫 steer**：`action:"steer"`
+  注入的是**内层 run**，而 `examples/pi-extension/erix-run-parent-wake.js` 里的 `deliverAs:"steer"` 是 pi 用来唤醒
+  **父会话**的投递口——投递对象、时机、账目都不同。同步（非 `async`）那一路根本没法 steer（那次工具调用正阻塞着，
+  没人能递给它），这件事现在写进了工具描述、schema 与两份 README。**没新增 `bin/` 依赖**（「不得依赖 `bin/`」那条
+  边界仍成立：能力来自 `src/` 公共面已有的 `capabilities.hooks.nextUserTurn`），没加 `config.*` 叶，没加超时旋钮
+  （钩子是同步的）。`test/examples/erix-run-steer.test.js` 新增六条用例（TAP 总数 3057 → 3063，已登记进
+  `test/test-suite-baseline.json`）；没 steer 那一格把两个 run 的账本行与事件序列逐字比了一遍。
 
 
 

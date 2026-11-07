@@ -97,7 +97,8 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | `judgeDoneAdvisory` | | **`false`** | **引擎 `reflection.judgeDoneAdvisory` 的透传口（#322）。** `true` = 中途治理（judge）判定「目标已达成」时，把它那句评审意见作为**一条普通用户文本消息**在下一个安全点递给内层模型（于是模型能知道「为什么说它已经做完了」）。**那是软提示，不是硬停止**：不打断当前轮、不拦工具调用、不提前收尾，`termination.reason` 也不因它改变（模型收到后继续干活是允许的）。只认真布尔：`"true"` / `1` 归 `bad_params`；**没传就不下发**（引擎缺省 `false`，本层不替它造默认值）。与三个扩轮参数同一条 judge 闸门，没生效时 `diagnostics.reflection.judgeDoneAdvisory` 会写清（见下方 ⚠） |
 | `async` | | `false` | **#234：`true` = 派工即返回句柄**（主会话不阻塞），内层 run 在同进程后台跑，终局经通知回到本会话。缺省 `false` = 原有同步语义逐字不变。句柄形状：`{runId, status:"running", cwd, model, maxRounds, timeoutMs, sessionDir, statusPath, quiet}` |
 | `quiet` | | `false` | 只在 `async:true` 时有意义：**成功的完成不唤醒**父会话（只落 `status.json`），失败 / 中止仍然唤醒。一次派一批切片时用它免得把主会话打断成筛子 |
-| `action` | | — | `status`（当前状态 + 终局四件套）\| `result`（完整终局：四件套 + `artifacts` + **终稿正文 `finalText`**，#261）\| `list`（本进程已知 run 的摘要表）\| `cancel`（把 `signal` 打进内层，终局记成 `aborted`）。`status`/`result`/`cancel` 要带 `runId` |
+| `action` | | — | `status`（当前状态 + 终局四件套）\| `result`（完整终局：四件套 + `artifacts` + **终稿正文 `finalText`**，#261）\| `list`（本进程已知 run 的摘要表）\| `cancel`（把 `signal` 打进内层，终局记成 `aborted`）。`status`/`result`/`cancel`/`steer` 要带 `runId`（`list` 不用）|
+| `message` | | — | 只在 `action:"steer"` 时有意义：要注入给**内层 run** 的那句话（非空字符串；缺它或只含空白 ⇒ 当场 `bad_params`）。见「轮边界转向」（issue #753 C2）|
 | `runId` | | — | `action` 要操作的 run id（就是 `async:true` 返回句柄里的 `runId`）|
 | `resume` | | — | **#207 R2：从一个已有 run 的账本接着跑**（不传 = 起一次全新 run）。三种坐标只认这三种：① `status.json` 的绝对路径（自带 `runId`/`sessionDir`/`cwd` ⇒ 最省事）；② transcript 的绝对路径（就是终局 `diagnostics.resume.handle` 给的那个值）；③ `runId` 字符串（**必须**同时给 `sessionDir`）。②③ 不带工作目录 ⇒ 还要传 `cwd`（① 可以省）。坐标不成立一律**明确报错**（`resume_not_found` / `bad_params`），**不会静默起新 run**。详见下面「续跑 resume」 |
 
@@ -400,6 +401,56 @@ pi --extension ./examples/pi-extension/erix-run.ts
 
 `jobView.deliveryNote` 与 `delivery` 同族**恒在场**（没尝试过 / 投成功时是 `null`，不是缺键），
 所以只读 `status.json` 的会话读到的也是同一句人话。`notifyRetryAt` 仍不在此列（那是「排了档才有」的瞬态键）。
+
+### 4b. 轮边界转向：`action:"steer"`（issue #753 C2）
+
+派工之后还可以**往那个还在跑的后台 run 里补一句话**：`erix_run(action:"steer", runId, message)`。
+它是引擎面 C1 那个轮边界槽位（`capabilities.hooks.nextUserTurn`，见
+`docs/host-consumer-contract.md` 的「轮边界的主机转向」一节）在扩展面上的入口。
+
+**它注入的是内层 run，不是父会话。** 一句话讲完两个同名但不同命的东西：
+
+| | 名字 | 谁收 | 机制 |
+|---|---|---|---|
+| 本节 | `action:"steer"`（`erix_run` 的 `action` 取值） | **内层 run**（那个后台 job 里的 `runToolLoop`） | push 进 job 的内存收件箱，引擎在轮边界取走队首一条，追加成一条真的 `role:"user"` 轮 |
+| [`erix-run-parent-wake.js`](erix-run-parent-wake.js) | `deliverAs:"steer"`（pi 的 `sendUserMessage` 选项） | **父会话**（派工的那个 pi 会话本身） | 父会话正忙时把「该醒了」那句排进它的队列（完成通知的投递口） |
+
+两者除了名字没有交集：投递对象不同、时机不同、账也不同。用错一个就会把「要内层改思路」
+说成「要叫醒父会话」。
+
+#### 行为（逐条都是可测的）
+
+| 格子 | 事实 | 落点 |
+|---|---|---|
+| 入队 | `message` 被 push 进该 job 的**内存 FIFO 队列** | `act()` 的 `steer` 分支（`erix-run-jobs.js`） |
+| 消费 | 每个轮边界只交**队首一条**，其余等下一个边界；队列空时钩子回 `null` | `createSteerHook(job)` |
+| 入历史的形状 | 被取走的那条以**普通用户轮**的身份进内层 run 的历史（带 `seq` 的 `kind:"message"` 行，不是 `:control:` 行），resume 也读得到 | 引擎 C1 |
+| 队列长度 | `steerPending` **恒在场**（没 steer 时是 `0`，不是缺键），入队 +1、被取走 -1 | `jobView` ⇒ `action:"status"`/`"result"` 与盘上 `status.json`（两面同形） |
+| 注入账目 | `diagnostics.steer = {offered, injected, rejected, lastRound}`（引擎的账，本层只**原样透传**） | 同步终局载荷与异步三面**同形**；文本面也有（`steer=offered:…` / `steer：offered=…`） |
+| 进度旁证 | 入队与取走各打一行进度（从 `progressTail` 看得出「那句真被取走了」） | `job.progress` |
+
+#### 拒绝面：三种收不到，全都不谎称已投递
+
+| 情形 | 回报 | 理由文案 |
+|---|---|---|
+| **同步（非 `async`）的 run** | 没有这个通道（schema/描述里就写了） | 那次工具调用正阻塞着，没人能并发给它发 steer；闸门是「有收件箱才装钩子」，同步面连 job 都没有 |
+| 只在盘上的 run（进程重启后） | `steer_unavailable` / `reason:"disk-only"` | 收件箱与内层 run 都在内存里，盘上没有可投的队列（口径同 `cancel` 的「只存在于盘上」）；要接着跑用 `resume:<status.json 路径>` |
+| 已结束的 run（`completed`/`failed`/`aborted`） | `steer_unavailable` / `reason:"settled"` | 已结束的 run **没有下一个轮边界**，引擎再也不会问一次 `nextUserTurn` |
+
+三种都是**当场返回**，队列一个字节也不会动（`steerPending` 不变）；投不进去时工具结果是 `isError`。
+参数坏（缺 `runId` / 缺 `message` / `message` 是空串或只含空白）也是当场 `bad_params`，**不会**变成
+后台一条错误载荷（同一个坏参数不许在同步/异步两条路上给出两种形状）。
+
+#### 零行为变化（为什么没 steer 的 run 不会被动到）
+
+- **同步面：一个钩子都不装。** `runErixRun` 只认 `deps.nextUserTurn` 是函数才往
+  `capabilities.hooks.nextUserTurn` 写（与 `finalGuard` 的「默认路径不回归」同一条约束）：不递 ⇒
+  装配出来的 options 逐字不多一个字节，终局里也**不会有** `diagnostics.steer` 这个键。
+- 后台 job 一出生就带着钩子（引擎在 `runToolLoop` 入口一次性捕获它，晚装等于装不上），
+  没人 steer 时每轮回 `null` ⇒ 无行、无事件、账本与不装钩子的 run 逐字一致（引擎 C1 的硬保证，
+  `test/examples/erix-run-steer.test.js` 把账本行与事件序列逐字比了一遍）。
+- **不新增 `bin/` 依赖**（「边界：不得依赖 `bin/`」那一节仍然成立）：新能力走的是 `src/` 公共面已有的
+  `capabilities.hooks.nextUserTurn`，本层没加 `config.*` 叶，也没加超时旋钮（钩子是同步的）。
 
 ### 5. `timeoutMs` 定时器归 run 级（不在 `execute()` 里）
 
@@ -947,6 +998,12 @@ node --test test/examples/*.test.js                                   # 离线�
 ERIX_PI_SMOKE=1 node --test test/examples/erix-run-core.smoke.test.js   # 真机冒烟（一次真调用）
 ```
 
+- **异步 steer 的投/拒/账（issue #753 C2）**：`test/examples/erix-run-steer.test.js` 钉住上节「行为」与
+  「拒绝面」两张表的每一格：真 `runToolLoop` 下轮边界真的被问、队首那条真的进内层 run 的 `messages`、
+  多条按 FIFO 每轮一条、队列空后回 `null`；**没 steer ⇒ 不装钩子**（`options.capabilities.hooks` 里连那个键
+  都没有，且「装了但始终回 `null`」与「从不装」两个 run 的账本行与事件序列逐字全等）；`disk-only` 与
+  `settled` 两面被拒且 `steerPending` 不变；`steerPending` 与 `diagnostics.steer` 在 `status`/`result`/
+  `status.json`/同步载荷四面同形；`bad_params`（缺 `runId` / 缺 `message` / 空串 / 只含空白 / 非字符串）。
 - 冒烟默认跳过（`npm test` 必须离线可重复）；`ERIX_PI_SMOKE=1` 才打真 relay，用 `~/.erix/config.json`
   真配置、在 `mkdtemp` 的临时目录里修一个注入的小 bug，断言「`node check.js` 打印 OK + 载荷形状正确 +
   `model_metadata_missing` 不出现」；它同时跑一次 `sessionDir` 落盘，断言 `artifacts` 里的路径真在盘上。
