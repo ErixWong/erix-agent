@@ -188,7 +188,8 @@ export function recentToolCalls(timeline) {
  *   pendingToolUses?: any[],
  *   filesWritten?: string[],
  *   toolCalls?: string[],
- *   legacySnapshotBodyCount?: number
+ *   legacySnapshotBodyCount?: number,
+ *   legacyPendingDropped?: Array<{ id?: unknown, name?: unknown }>
  * }} facts 全部来自既有事实：轮号（`runLoopState.rounds`）、`runState.deterministic.termination.reason`、
  *   `pendingTrailingToolUses(messages)`、`runState.deterministic.filesWritten`、`governorState.timeline`，
  *   外加 issue #754 那个「只在快照里、本次不再喂」的正文条数（只用于出声，不是新事实）。
@@ -219,7 +220,7 @@ export function buildResumeNotice(facts = {}) {
   // 第三刀放弃补跑的那批在飞调用（同一条闸门锁定的分支）——它们是**未结清**的，所以只要非空，
   // 下面那句「尾部没有未结清的 tool_use」就**不许**出现。
   const legacyPendingDropped = (Array.isArray(facts.legacyPendingDropped) ? facts.legacyPendingDropped : [])
-    .filter((entry) => entry?.id !== undefined && entry?.id !== null);
+    .filter((/** @type {{ id?: unknown }} */ entry) => entry?.id !== undefined && entry?.id !== null);
 
   const lines = [
     `${RESUME_NOTICE_TAG}这是一次崩溃后的恢复运行，不是连续会话：上一段停在第 ${round} 轮；${reasonText}。`,
