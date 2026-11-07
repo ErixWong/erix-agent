@@ -3,12 +3,26 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3679,
+    "tests": 3695,
     "fail": 0,
     "maxSkipped": 15
   },
   "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
   "observations": [
+    {
+          "date": "2026-11-07",
+          "env": "local",
+          "node": "v22.23.2",
+          "commit": "本笔登记（分支 feat-261107-15-erix-run-steer-action；被量的树 = `origin/main 40a518d` + 本片前 4 笔；六个数取自这一棵树上现跑的 `npm test`，日志 /tmp/c2-npmtest2.log；主干那一侧的 3682 在 `git worktree add --detach /home/eric/wt-753-c2base origin/main` 上单独现跑取得，日志 /tmp/c2base-npmtest.log）",
+          "branch": "feat-261107-15-erix-run-steer-action",
+          "tests": 3695,
+          "pass": 3682,
+          "fail": 0,
+          "skipped": 13,
+          "todo": 0,
+          "cancelled": 0,
+          "why": "tests 地板 3679 → **3695**。算术自证（两段都是现测，不是加法猜的）：① `origin/main 40a518d` 自己现跑是 **3682 / pass 3669 / fail 0 / skipped 13**（登记地板 3679 留了 3 格余量没抬，`check:test-summary` 的 `TEST-SUMMARY-HINT` 会提示可抬到 3682）；② 本片新增 **13** 格，全在`test/examples/erix-run-steer.test.js`（单跑该文件自打 `# tests 13`；把该文件搬离后全量自打 3682 ⇒ 3682 + 13 = 3695）。13 格分别是：真 `runToolLoop` 下轮边界被问且队首真进内层 `messages`、FIFO 每轮一条、空队列回 `null`、没 steer 就不装钩子且「恒回 null 的钩子」与「从不装钩子」两个 run 的账本行与事件序列逐字全等、钩子晚装永不被问、只在盘上的 job 被拒（`reason:\"disk-only\"`）、已结算的 job 被拒（`reason:\"settled\"`，队列一字节不动）、`steerPending` 进 `jobView`/`status`/`result`/`status.json` 四面同形、引擎 `diagnostics.steer` 在同步面不出现而在异步终局出现、`bad_params` 五种（缺 runId / 缺 message / 空串 / 非字符串 / 未知 runId）。`fail=0`；`skipped` 实测 13 与主干同值（12 条真上游/真 relay 门禁 + 1 条多会话格）⇒ `maxSkipped` 15 不动。**登记之前**同一棵树现跑是 fail 1（配对地板那一格：守卫现报 23 对 ≠ 旧常量 22），同一笔提交里随登记一起转绿，所以本行不留那份中间态；`pass` 3682 是登记之后同一棵树的数。没删例、没 skip、没放宽断言（逐字全等那格只归一时钟 `ts`、随机 `toolCallKey` 与时钟粒度 `durationMs`）。"
+    },
     {
       "date": "2026-11-07",
       "env": "local",

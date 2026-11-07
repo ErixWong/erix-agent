@@ -898,6 +898,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-host-steer-turn-753.test.js` | 6 | `onEvent`×6, `onObserverError`×2, `completion`×1, `reflection`×1, `resume`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/prompt-note-coverage-746.test.js` | 1 | `tools`×1 |
 | `test/loop-resume-abandon-signals-730.test.js` | 5 | `completion`×1, `resume`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
+| `test/examples/erix-run-steer.test.js` | 3 | `tools`×2, `strategy`×1 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 
