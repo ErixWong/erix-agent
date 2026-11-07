@@ -34,6 +34,10 @@ If you are on 0.30.0 and never imported any of the sixteen names, upgrading is a
 you did import one, migrate **before** you upgrade: an ESM import of a missing name fails at module
 load, so "upgrade first, migrate later" does not degrade — it fails to start.
 
+That page also carried one migration clause that was never importable: for `serializeFoldedMessages`
+it named `serializeFoldedMessagesWithMeta`, a serializer no entry of 0.30.0 or 0.31.0 has ever
+exported, so the row for that name in §2 — not the 0.30.0 wording — is what a host should follow.
+
 ## 2. The sixteen removed names
 
 | Name | What it did | Migration clause | Entry | Definition |
@@ -51,7 +55,7 @@ load, so "upgrade first, migrate later" does not degrade — it fails to start.
 | `parseSummary` | shorter spelling of the same inline-summary parser | migrate to `parseL1Summary` — the same function under an older name | `.` | `parseSummary` (`src/reflection/l0.js`) |
 | `removeRecord` | deleted one roster record file from a roster directory | no in-tree replacement — `reconcile` only rewrites state and deletes no file; do not build your archive logic on this primitive | `./tools` | `removeRecord` (`src/tools/delegation/roster.js`) |
 | `resolveFileReadMaxBytes` | resolved the single-read byte cap from the environment | no in-tree replacement — the limit is resolved inside `createFileTools`, and there is no separate public entry for it | `./tools` | `resolveFileReadMaxBytes` (`src/tools/file-tools.js`) |
-| `serializeFoldedMessages` | rendered the folded-history payload into the text a summarizer reads | migrate to `serializeFoldedMessagesWithMeta` — same text under `.text`, plus the `dropped` / `total` / `bounded` accounting this thin wrapper threw away | `.` | `serializeFoldedMessages` (`src/compact/provider-summarizer.js`) |
+| `serializeFoldedMessages` | rendered the folded-history payload into the text a summarizer reads | no in-tree replacement — the fold is rendered inside `createProviderSummarizer` now (it calls the serializer itself and returns summary text); a host that rendered the fold by hand keeps its own renderer. `serializeFoldedMessagesWithMeta` is the internal serializer, not exported from any entry — do not import it | `.` | `serializeFoldedMessages` (`src/compact/provider-summarizer.js`) |
 | `setNotesClock` | swapped the clock the notes tools stamp records with | no in-tree replacement — there is no supported clock-injection seam on the public surface (only the notes tests drove this hook) | `./tools` | `setNotesClock` (`src/tools/notes.js`) |
 
 Six of these are one-line aliases (`estimateMessagesTokens`, `extractL0`, `extractL0Fact`,

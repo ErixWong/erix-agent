@@ -736,6 +736,50 @@
   没有精确保存值时它拒绝报 `equal`（报 `differ` 同样是谎）。反向证（工单判据 4）：把旧路径优先级**字面**反转
   （优先 `.text`，剥空之后不回头），`#462 规划器：裁掉水位线以下的轮` 先在 `plan.applied === true` 上红，
   退出码 1。不在本切片：收紧读侧优先级——那是第二步，要等 `byteEqual` 在现网稳定为 `equal`。
+- **The 0.31.0 guide told hosts to import a name no entry has ever exported (issue #710).** The row for
+  `serializeFoldedMessages` in both halves of the guide carried the migration clause naming
+  `serializeFoldedMessagesWithMeta` while the entry column said `.` — but that name is on neither entry:
+  not in the published `erix-agent@0.31.0` tarball, not in `0.30.0` either (both were unpacked and
+  `import`-probed over both entries, and `package.json` exports only `.` / `./tools` /
+  `./contract-tests`, so there is no deep path to reach it). It is the internal serializer in
+  `src/compact/provider-summarizer.js`, called by `createProviderSummarizer` itself; the wrapper this
+  row deletes (`serializeFoldedMessages`) was only its `.text` projection. A host that trusted the row
+  got `SyntaxError: ... does not provide an export named ...` at module load — the guide's own
+  description of what a missing name does, printed about the name the guide told it to import. Three
+  gates look at this page and none of them looked that direction: `guide-removal-gate` checks the
+  deletion direction only (a name the page claims is gone must really be absent from its entry),
+  `bundle-table` checks the row set against the live candidate set, and `check:exports:deprecated` R4
+  accepts any `migrate to X` whose `X` is declared **in-tree** — which that serializer is. The ruling
+  is **docs, not exports**: that cell now reads `no in-tree replacement`, naming `createProviderSummarizer`
+  as the place the fold is rendered now (it calls the serializer itself and returns summary text) and
+  telling a host that rendered the fold by hand to keep its own renderer, and §1 of both halves now
+  states that the 0.30.0 page wrote that same unimportable target for that same name. **Nothing was
+  exported**: the serializer stays internal — promoting it would be an Added on the public face, which
+  is a different decision than correcting a page. **The marker itself was corrected in the same
+  commit**, because it is where that sentence lives: `check:docs` derives the cell from the
+  `@deprecated` block in `src/compact/provider-summarizer.js` (rule 4: the page must copy the marker
+  clause verbatim), so leaving the marker alone would keep re-deriving the same wrong target — and the
+  published `0.31.0` guide already prints it. The marker now carries the same `no in-tree replacement`
+  clause as the page (comment text only: `removed in 0.31` untouched, signature/implementation untouched,
+  `R4` accepts this clause shape, no export added).
+- **0.31.0 指南让宿主去 import 一个任何入口从没导出过的名字（issue #710）。** 中英两份指南里
+  `serializeFoldedMessages` 那一行的迁移条款格都指向 `serializeFoldedMessagesWithMeta`，而入口格写着 `.`——
+  可这个名字两个入口上都没有：已发布的 `erix-agent@0.31.0` 没有，`0.30.0` 也没有（两个 tarball 都解开在两个
+  入口上 `import` 实测过，而 `package.json` 的 exports 只有 `.` / `./tools` / `./contract-tests`，没有深路径
+  可绕）。它是 `src/compact/provider-summarizer.js` 里的内部序列化器，由 `createProviderSummarizer` 自己调用；
+  这一行删掉的那个薄包装（`serializeFoldedMessages`）只是它的 `.text` 投影。相信那一行的宿主在模块加载期就撞
+  `SyntaxError: ... does not provide an export named ...`——正是指南自己写的「缺一个名字会怎样」，只不过撞的是
+  指南让它去 import 的那个名字。三道闸都在看这一页，却没有一道看这个方向：`guide-removal-gate` 只查删除方向
+  （页面上说没了的名字必须在它登记的入口上真的没了），`bundle-table` 只把行集合与现算候选集对账，
+  `check:exports:deprecated` 的 R4 只要求 `migrate to X` 的 `X` 在**仓内声明过**——那个序列化器恰好是。
+  维护者的裁决是**改文档、不导出**：那一格现在写 `no in-tree replacement`，点名折叠体的渲染现在住在
+  `createProviderSummarizer` 里（它自己调序列化器、返回摘要文本），并告诉过去自己渲染折叠体的宿主保留自己的
+  渲染器；两份指南的 §1 各补一句，指认 0.30.0 那一页对同一个名字写了同一个不可 import 的目标。**一个导出都没加**：
+  序列化器继续留在内部——把它提上公共面是一个 Added，是另一个决定，不是改一页文档。**同一笔提交里把标记自己也改了**，
+  因为那句话就住在标记里：`check:docs` 的那道判据是从 `src/compact/provider-summarizer.js` 的 `@deprecated` 块
+  **派生**那一格的（判据 4：页面必须逐字照抄标记的条款），只改文档会让同一个错目标被继续派生出来——而已发布的
+  `0.31.0` 指南里印的就是那句错话。标记现在与页面同一条 `no in-tree replacement`（只动注释文字：`removed in 0.31`
+  那枚版本记号没动、函数签名与实现没动、R4 收这个条款形状、一个导出都没加）。
 
 ## [0.31.0] - 2026-11-04
 
