@@ -1914,7 +1914,7 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 | `partialText` | written(conditional) | source | — | 条件＝本轮已有半截正文（写点 `src/loop/orchestrator.js` 的 `partialText === undefined` 夹子）：现场有半截正文 ⇒ 这一格必在；没有 ⇒ 整格缺席（不是写 `undefined`） | `src/loop/orchestrator.js:3039` | `src/loop/resume-manager.js:541`、`src/loop/resume-manager.js:634` |
 | `partialRound` | written(conditional) | source | — | 与 `partialText` **同一条写入语句、同一个条件** ⇒ 两格同生同灭，缺一即坏 | `src/loop/orchestrator.js:3039` | `src/loop/resume-manager.js:635` |
 | `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:108-118` | `src/loop/orchestrator.js:2997` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:531`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
-| `ts` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:108-118` | `src/loop/orchestrator.js:3004` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**那格的 `record.ts` `src/loop/resume-manager.js:460` |
+| `ts` | stopped | not-source | 账本行 / 消息行自己的那个 `ts` | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:108-118` | `src/loop/orchestrator.js:3004` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**（同一个键名的另一个产物，不是这格）`src/loop/resume-manager.js:460` |
 | `compactionStats` | written | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:346`）与轮记录 `src/loop/orchestrator.js:6161` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:73` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3038`（快照）与 `src/loop/orchestrator.js:6161`（轮记录） | 恢复走 run-state `src/loop/resume-manager.js:346`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
 
