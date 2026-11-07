@@ -552,6 +552,55 @@ export function runPreflight({ root = DEFAULT_ROOT, hosts = [], deps = defaultDe
   return { verdict: VERDICT.PASS, steps };
 }
 
+/**
+ * 某一步判「未判定」时**人该做的那一件事**（`--all` 的结语与 preflight 的收尾读它，issue #731 N1）。
+ *
+ * 为什么必须逐步登记而不是一句话写死：未判定有**两种**，动作互为反面——
+ *   · `open-gate`：闸门关着 ⇒ 那一步**一步都没跑**，人开个开关（环境变量 / `--hosts`）就有判定；
+ *   · `cut-version`：这一格读的是树上的**事实**（`package.json` + `CHANGELOG.md`），**没有任何开关能造出判定**，
+ *     缺的那件事只有人做得到：**切版**。第 2 步（`changelog-unreleased`，issue #715）就是这一类。
+ * 把两类压成一句「把闸开起来再发（`ERIX_E2E_REAL=1` / `--hosts …`）」就是 N1 记的那笔谎：
+ * 第 2 步未判定时照着做的人会原地打转（没有这样一个闸可开）。逐格那两行动作本来就打出来了，
+ * 所以这是「结语与实况不符」，不是「人无从得知」——修它就要修结语本身。
+ *
+ * 新加一步**必须**在这里登记，否则 `--self-test` 里那条覆盖钉子当场红（不许出现「未判定但没动作」的步骤）。
+ */
+export const UNJUDGED_ACTIONS = Object.freeze({
+  "changelog-unreleased": {
+    kind: "cut-version",
+    action: "**先切版**（bump `package.json` 到要发的那一版 + 开 `## [<版本>]（未发布 / unpublished）`，"
+      + "把标题行插到条目之前），再重跑本命令——这一格**没有闸可开**",
+  },
+  "release-real": { kind: "open-gate", action: "把闸开起来再发（`ERIX_E2E_REAL=1 npm run check:release:real`）" },
+  "host-consumers": { kind: "open-gate", action: "把宿主仓目录带上再发（`--hosts <宿主仓目录> …`）" },
+});
+
+/**
+ * preflight 未判定时 `--all` 的结语（**按未判定的步骤 id 分叉**；issue #731 N1）。
+ *
+ * 头一句只说「这一趟缺的是哪一种动作」：只要含 `cut-version` 那一类，头一句就是**先切版**，
+ * 绝不出现「把闸开起来再发」——因为那一类没有闸可开；全是 `open-gate` 时才说开闸。
+ *
+ * @param {Array<{id: string, verdict?: string}>} steps `runPreflight` 返回的 steps（含未判定的那些）
+ * @returns {{head: string, lines: string[]}} 一行头 + 逐格动作（缺登记的动作时那一行自己承认没登记）
+ */
+export function unjudgedConclusion(steps = []) {
+  const unjudged = steps.filter((step) => step.verdict === VERDICT.NOT_JUDGED);
+  const ids = unjudged.map((step) => step.id);
+  const entries = unjudged.map((step) => ({ id: step.id, ...UNJUDGED_ACTIONS[step.id] }));
+  const needsVersionCut = entries.some((entry) => entry.kind === "cut-version");
+  const needsGate = entries.some((entry) => entry.kind === "open-gate");
+  const head = `--all → preflight **未判定**（不是绿；没跑的格子：${ids.join(", ") || "（空）"}）——`
+    + (needsVersionCut && needsGate ? "先补事实（切版）**并把**闸开起来，两件事都做完再发"
+      : needsVersionCut ? "这一类**没有闸可开**：先把版切了再发"
+        : needsGate ? "把闸开起来再发"
+          // 未判定却一个格子都没列出来 ⇒ 结构变了，宁可说不清，也不许回到那句会被误读成「开闸就行」的旧文案
+          : "缺的那一步没有登记动作（见下面逐格）");
+  const lines = entries.map((entry) => `     · ${entry.id}：${entry.action
+    ?? "（UNJUDGED_ACTIONS 里没有这一格 ⇒ 结语给不出动作，请补登记，别照旧文案猜）"}`);
+  return { head, lines };
+}
+
 // ─────────────────────────────── publish ───────────────────────────────
 
 /**
@@ -1016,7 +1065,11 @@ export function runAll({
     return EXIT.RED;
   }
   if (preflight.verdict === VERDICT.NOT_JUDGED) {
-    log("--all → preflight **未判定**（不是绿）：把闸开起来再发（`ERIX_E2E_REAL=1` / `--hosts <宿主仓目录>`）");
+    // 结语按**未判定的步骤 id** 分叉（issue #731 N1）：第 2 步（`changelog-unreleased`）判未判定时
+    // 没有任何闸可开——必须切版。硬写「把闸开起来再发」在那一格上是空话。
+    const conclusion = unjudgedConclusion(preflight.steps);
+    log(conclusion.head);
+    for (const line of conclusion.lines) log(line);
     return EXIT.NOT_JUDGED;
   }
 
@@ -1708,6 +1761,90 @@ function selfTestUnreleasedCarry(checker) {
   }
 }
 
+/**
+ * ⑮ issue #731 N1：`--all` 在 preflight 未判定时的结语。
+ *
+ * 旧文案是一句硬写的「把闸开起来再发（`ERIX_E2E_REAL=1` / `--hosts …`）」——对第 5/7 步是对的，
+ * 对第 2 步（`changelog-unreleased`）是空话：那一格判未判定是因为**还没切版**，没有任何开关能造出判定。
+ * 这一族把「按 id 分叉」钉成判据：含第 2 步 ⇒ 文案是「先切版」且**不许**出现「把闸开起来再发」。
+ */
+function selfTestUnjudgedConclusion(checker) {
+  const { expect } = checker;
+  const un = (...ids) => ids.map((id) => ({ id, verdict: VERDICT.NOT_JUDGED }));
+
+  // ⑮a 含 `changelog-unreleased` ⇒ 结语文案是「先切版」，且不出现「把闸开起来再发」
+  {
+    const { head, lines } = unjudgedConclusion(un("changelog-unreleased"));
+    expect(/先切版|先把版切了/u.test(head) && !/把闸开起来再发/u.test(head),
+      `⑮a 只有第 2 步未判定 ⇒ 结语是「先切版」而不是「把闸开起来」（head=${head}）`,
+      `⑮a 结语还在教人去找一个不存在的闸：${head}`);
+    expect(/没有闸可开/u.test(lines.join("\n")),
+      "⑮a 逐格动作点名「这一格没有闸可开」（缺的是切版这个事实，不是开关）",
+      `⑮a 逐格动作没写清：${lines.join(" | ")}`);
+  }
+
+  // ⑮b 只有闸门类未判定 ⇒ 说开闸，**不**提切版（分叉不是恒说切版）
+  {
+    const { head, lines } = unjudgedConclusion(un("release-real", "host-consumers"));
+    expect(/把闸开起来再发/u.test(head) && !/先把版切了/u.test(head),
+      `⑮b 只有闸门类格子未判定 ⇒ 结语是「把闸开起来再发」（head=${head}）`,
+      `⑮b 闸门类格子的结语串了切版那一句：${head}`);
+    expect(/ERIX_E2E_REAL/u.test(lines.join("\n")) && /--hosts/u.test(lines.join("\n")),
+      "⑮b 逐格动作各自点名自己的开关（`ERIX_E2E_REAL` 与 `--hosts` 都要点名）",
+      `⑮b 逐格动作缺开关名：${lines.join(" | ")}`);
+  }
+
+  // ⑮c 两类同时缺 ⇒ 两句都在（不许只报其中一种，也不许合并成一句含糊的「把闸开起来」）
+  {
+    const { head } = unjudgedConclusion(un("changelog-unreleased", "release-real"));
+    expect(/切版/u.test(head) && /闸开起来/u.test(head),
+      `⑮c 两类都缺 ⇒ 结语同时点名两件事（head=${head}）`,
+      `⑮c 结语漏了一半：${head}`);
+  }
+
+  // ⑮d 覆盖钉子：**每个可能答「未判定」的步骤**都必须登记动作（新加一步漏登记 ⇒ 红）
+  {
+    const missing = PREFLIGHT_STEPS
+      .filter((step) => (step.gate || step.probe) && !UNJUDGED_ACTIONS[step.id])
+      .map((step) => step.id);
+    expect(missing.length === 0,
+      `⑮d PREFLIGHT_STEPS 里可能判未判定的步骤（gate/probe 非空）都在 UNJUDGED_ACTIONS 里有动作`
+      + `（已登记 ${Object.keys(UNJUDGED_ACTIONS).length} 格）`,
+      `⑮d 这些步骤可能答未判定却没登记动作，结语会对它们说不出话：${missing.join(", ")}`);
+  }
+
+  // ⑮e 端到端：runAll 跑在「还没切版」的宿主上 ⇒ **打出来的**那句结语就是「先切版」（不是恒绿的函数）
+  {
+    const tree = mkdtempSync(path.join(os.tmpdir(), "erix-release-day-unjudged-"));
+    try {
+      writeFixtureTree(tree);
+      writeFileSync(path.join(tree, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
+      // 0.31.0 的段**不存在**（只有已发布的 0.30.0）⇒ 第 2 步答「还没切版」（未判定），其余格子全绿。
+      writeFileSync(path.join(tree, "CHANGELOG.md"),
+        "# Changelog\n\n## [Unreleased]\n\n- 一条还停在 `[Unreleased]` 的条目\n\n## [0.30.0] - 2026-11-03\n\n- older\n",
+        "utf8");
+      const logged = [];
+      const deps = {
+        ...fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_REAL: "1" } }),
+        log(...args) { logged.push(args.join(" ")); },
+      };
+      const status = runAll({ root: tree, deps, stateFile: path.join(tree, "state.json"), dry: true, hosts: [tree] });
+      const body = logged.join("\n");
+      expect(status === EXIT.NOT_JUDGED,
+        `⑮e 「还没切版」的宿主上 \`--all\` 未判定（exit 2），实测 exit ${status}`,
+        `⑮e 退出码是 ${status}（应当 2）：${body.slice(-400)}`);
+      expect(/未判定/u.test(body) && /先切版|先把版切了/u.test(body) && !/把闸开起来再发/u.test(body),
+        "⑮e runAll 真把「先切版」那句结语打出来了（结语函数不是死代码）",
+        `⑮e 打出来的结语：${body.split("\n").filter((l) => /未判定|切版|闸开起来/u.test(l)).join(" / ") || "（一句都没打）"}`);
+      expect(/changelog-unreleased/u.test(body),
+        "⑮e 结语逐格点名了是哪一步没跑（不许只说一句总括）",
+        `⑮e 没点名步骤 id：${body.slice(-400)}`);
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  }
+}
+
 function runSelfTest() {
   const checker = makeChecker();
   const { expect } = checker;
@@ -1779,6 +1916,9 @@ function runSelfTest() {
 
   // ⑭ issue #715：`## [Unreleased]` 的漏搬格（三态 + 三条反向证）
   selfTestUnreleasedCarry(checker);
+
+  // ⑮ issue #731 N1：`--all` 的未判定结语**按步骤 id 分叉**（第 2 步未判定 ⇒ 先切版，不是开闸）
+  selfTestUnjudgedConclusion(checker);
 
   // ③ 回写失败 ⇒ 非零 + 状态文件留下 + 重跑从 writeback 续（不重复发布）
   {
