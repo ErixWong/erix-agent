@@ -1092,6 +1092,9 @@ export async function runToolLoop(options) {
     messageSeqByRound: new Map(),
     // 【C resume 尾队列（续）】无初值格子：原 `let X;` 的初值就是 undefined，逐字保住。
     resumeTranscriptStart: undefined,
+    // issue #735 切片 2：本轮正文在 `messages` 里的起点（圈顶 `messages.length` 的副本）。
+    // 只服务写侧：`persistRunSnapshot` 据此把「账本里早就有」的前缀从快照 `messages` 里省掉。
+    roundMessageStart: undefined,
     lastPersistenceFailure: undefined,
     // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值 → undefined）。
     // 下面这行注解是原 :1264 那行**逐字搬过来的**（issue #177 刀1 加的，只为喂给 `--checkJs`（#214
@@ -2889,6 +2892,45 @@ export async function runToolLoop(options) {
     }
     try {
       const snapshotPendingToolUse = withReplayDeclaration(pendingToolUse);
+      // issue #735 切片 2（写侧只交轮残余）：本格以前写的是**整段会话正文**的副本，而 #734 实测
+      // 宿主侧 2 MiB 超限的大头就是它（每轮都重写一遍从种子到现在的全文）。
+      //
+      // **写什么**：`messages[index]` 仍是**同一绝对下标**上的那一格（索引空间不变，不落盘的格子置
+      // `null`），于是读侧的 `snapshot.messages.slice(anchor)` 一行不用改就能拿到同样的那一段。
+      //
+      // **写侧依赖的那一件事（实测口径，不是承诺）**：
+      //   `residueStart <= 本次恢复现场算出的 anchor`，且 `residueStart <= 本轮正文起点`；读侧只切
+      //   `snapshot.messages.slice(anchor)` ⇒ **它永远读不到被置 `null` 的那段格子**。取
+      //   `residueStart = min(本轮起点 roundMessageStart, persistedTranscriptLength, 长度)`：
+      //   1. `persistedTranscriptLength` 只累加**本进程亲手落盘成功**的逻辑消息（两处写点都带
+      //      `if (persisted)` 守卫），而恢复侧的锚点 `countResumeAnchor(records)` 量的就是这本账在
+      //      更晚时刻的折叠条数（账本只追加，不重写）⇒ 前者 <= 后者。
+      //   2. 「本轮起点」之前的正文都是上一轮（及更早）的，逐条入账（工单 261021 第二刀）+ #326 的
+      //      引擎补充行已经把它们写进账本 ⇒ 它们 <= 锚点；折叠（compaction）只把内存里的那段变短，
+      //      账本不缩 ⇒ 锚点只会更靠后。
+      //
+      //   **这里只证到「读者永不读到」，没证「信息一定还在」**（两个是不同的命题）。只有一个已知
+      //   例外，而它**不是本片引入的**：恢复时从快照补进内存、却被 #424 的守卫故意留在账本之外的那段
+      //   旧正文，在**下一次恢复**时会落在 `slice(anchor)` 起点之前——因为 `anchor` 是标量（折叠后的
+      //   逻辑消息条数），不是「快照哪些下标已入账」的位图，而它会在第一跳后续跑中从 3 涨到 5
+      //   （夹具实测）。⇒ 写侧无论怎么写（整段 / 残余 / 按锚点封顶）都取不回它：两棵树并排跑同一套
+      //   两跳场景交出**逐字相同**的结果（都是 `invalid_messages`、都是 0 次模型请求、旧正文都取不到）。
+      //   那是**读侧切片下标语义**的缺陷，已开 **issue #754** 承接（常驻用例：本文件的
+      //   「两跳恢复记录当前行为」）。所以：**不要拿「按构造不会丢信息」这句跨恢复的话来为写侧背书**。
+      //   反向证明（常驻用例）：`test/loop-snapshot-round-residue-735.test.js`。
+      //
+      // **不许动的面**：键名/键序/这一格的位置逐字不变（`src/store/file.js` 直接 `JSON.stringify`）；
+      // 读侧的 `Array.isArray(snapshot.messages) ? … : []` 容忍面原样保留（旧快照仍是整段正文，照旧
+      // 能被读）；`store/` 层逐字透传；不新增错误码。
+      const transcriptForSnapshot = messagesOverride ?? messages;
+      const residueStart = Math.max(0, Math.min(
+        transcriptForSnapshot.length,
+        runLoopState.roundMessageStart ?? transcriptForSnapshot.length,
+        runLoopState.persistedTranscriptLength ?? 0,
+      ));
+      const snapshotTranscriptResidue = transcriptForSnapshot.map((message, index) => (
+        index < residueStart ? null : cloneState(message)
+      ));
       const snapshotPendingToolUses = pendingToolUses.length > 0
         ? pendingToolUses.map(withReplayDeclaration)
         : pendingToolUse === undefined
@@ -2933,11 +2975,12 @@ export async function runToolLoop(options) {
         // 历史旧快照里这 4 格的存在仍然被读侧容忍（未删任何 `?? ` fallback，store 层逐字透传）。
         // 入参 `status` 与签名不动：全仓 7 个调用点（本文件 2 个 + `src/loop/run-snapshot-executor.js` 5 个），
         // 其中 5 个显式传状态（`pending` / `rejected` / `executed` / `intercepted`），两个靠默认值。
-        // `persistedTranscriptLength` 与 `messages` 属切片 2，本切片原样写出。
+        // `persistedTranscriptLength` 仍是旧口径（有测试侧真读者当截账本夹具的锚点）；`messages` 已于
+        // 切片 2 改成「轮残余」（见上面 `snapshotTranscriptResidue` 那段），两格本身的位置都不动。
         status,
         pendingToolUse: cloneState(snapshotPendingToolUse),
         pendingToolUses: cloneState(snapshotPendingToolUses),
-        messages: cloneState(messagesOverride ?? messages),
+        messages: snapshotTranscriptResidue,
         persistedTranscriptLength: runLoopState.persistedTranscriptLength,
         executedToolIds: [...executedToolIds],
         toolResults: toolResults.map((toolResult) => ({
@@ -5312,6 +5355,9 @@ export async function runToolLoop(options) {
       );
     }
     const roundStart = messages.length;
+    // issue #735 切片 2：把圈顶起点留给写侧（`persistRunSnapshot` 在闭包里看不到 `roundStart`，
+    // 它定义在圈外）。每轮进圈重取一次，与 `roundStart` 同源同值。
+    runLoopState.roundMessageStart = roundStart;
     // 工单 261021 写侧：轮末才入账的引擎控制文本（方向提示 / 达成 advisory）在此暂存，
     // 在本轮轮记录落盘**之后**写成 `…:control:` 行（不带 `seq`，折叠层原样透传）：
     // 它们的 `messages.push` 位置不动（模型下一轮照旧看得见），只是档案行改排在轮行后面，
