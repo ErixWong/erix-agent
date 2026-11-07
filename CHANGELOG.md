@@ -384,9 +384,10 @@
   `examples/pi-extension/erix-run-parent-wake.js` is pi's delivery slot for waking the **parent session** —
   different receiver, different moment, different accounting. The synchronous (non-`async`) path cannot be
   steered at all (that tool call is blocking, so nobody can hand it a steer), which is now stated in the tool
-  description, the schema and both READMEs. No new `bin/` dependency (the "must not depend on bin/" boundary
+  description, the schema and `examples/pi-extension/README.md` 第 4b 节（that README is the extension's only
+  user doc — there is no `_cn` counterpart to keep in sync, so the English half of this pairing lives here）. No new `bin/` dependency (the "must not depend on bin/" boundary
   holds: the capability comes from `src/`'s public `capabilities.hooks.nextUserTurn`), no `config.*` leaf, no
-  timeout knob (the hook is synchronous). Six new tests in `test/examples/erix-run-steer.test.js` (registered TAP
+  timeout knob (the hook is synchronous). Thirteen new TAP cells in `test/examples/erix-run-steer.test.js` (registered TAP
   total 3670 → measured 3683, booked in `test/test-suite-baseline.json`); the no-steer cell diffs the two runs'
   ledger rows and event sequences byte for byte.
 - **`erix_run` 能在轮边界转向一个还在跑的后台 run：`action:"steer"`（issue #753，C2 扩展面切片）。** C1 开的
@@ -408,9 +409,10 @@
   各打一行进度，从 `progressTail` 就能看出「那句真被取走了」。⚠ **消歧，因为两边都叫 steer**：`action:"steer"`
   注入的是**内层 run**，而 `examples/pi-extension/erix-run-parent-wake.js` 里的 `deliverAs:"steer"` 是 pi 用来唤醒
   **父会话**的投递口——投递对象、时机、账目都不同。同步（非 `async`）那一路根本没法 steer（那次工具调用正阻塞着，
-  没人能递给它），这件事现在写进了工具描述、schema 与两份 README。**没新增 `bin/` 依赖**（「不得依赖 `bin/`」那条
+  没人能递给它），这件事现在写进了工具描述、schema 与 `examples/pi-extension/README.md` 的第 4b 节（那份 README 就是
+  扩展面唯一的用户文档，它**没有** `_cn` 对页可同步，所以中英配对的另一半在本条目里）。**没新增 `bin/` 依赖**（「不得依赖 `bin/`」那条
   边界仍成立：能力来自 `src/` 公共面已有的 `capabilities.hooks.nextUserTurn`），没加 `config.*` 叶，没加超时旋钮
-  （钩子是同步的）。`test/examples/erix-run-steer.test.js` 新增六条用例（登记的 TAP 总数 3670 → 实测 3683，已登记进
+  （钩子是同步的）。`test/examples/erix-run-steer.test.js` 新增十三格 TAP（登记的 TAP 总数 3670 → 实测 3683，已登记进
   `test/test-suite-baseline.json`）；没 steer 那一格把两个 run 的账本行与事件序列逐字比了一遍。
 
 
