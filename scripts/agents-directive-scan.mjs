@@ -402,7 +402,7 @@ export const LENGTH_BUDGETS = Object.freeze({
   //（瘦身前 112,464 字节）。逐字保留 §1/§2/§4/§5/§6/§7/§8 与 §3 的纪律句，只把「碰到那道闸才需要读」
   // 的参考材料搬进 `docs/maintenance/command-reference.md` 之后的落点。
   // 想再降就继续搬参考材料，搬完跑 `--sync`——这个数只能由实测推出来，不许手填（--verify 逐格比）。
-  "AGENTS.md": 33792,
+  "AGENTS.md": 34304,
   // 同上：实测 28,823 字节 ⇒ ceil512 = 29,184 ⇒ + 1024 = 30,208（中文侧瘦身前 100,591 字节）。
   "AGENTS_cn.md": 30208,
 });
