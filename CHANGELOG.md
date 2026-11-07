@@ -504,7 +504,16 @@
   deliberately left un-journaled (#424's guard), which sits *after* the anchor, and what the
   `min(..., persistedTranscriptLength)` term does is **keep that slot from being nulled** — a write-side fact;
   **whether the reader can reach it again is a different question, and the answer is no: that is issue #754**
-  (see below). Pinning it is the double-crash case (old-format fixture
+  (see below). A fourth-round review caught one more layer: the guard scanned the contract but **not this
+  file**, which is the surface hosts actually read. `test/docs-no-overclaim-735.test.js` now scans the contract
+  section **plus the two `#735` slice-2 entries here**, and closes three holes: an **affirmative criterion**
+  (the honest sentence and the "`anchor` is a scalar, not a per-slot bitmap" half must stay verbatim — a synonym
+  rewrite dodges a ban list but cannot dodge those two), a **quantifier ban** (no universal quantifier over
+  `every slot` landing on the `ledger`),
+  and the cap family's code-truth test is now a **structural code shape** (`resumeTranscriptAnchor:` /
+  assignment / property read / accessor, comments stripped first) — **a comment no longer unlocks it**. A
+  cap-family hit inside a sentence carrying a retraction marker (撤回 / reverted) is excused as history, the
+  reading `check:docs` #668 and static-guard rule 5 already use. Pinning it is the double-crash case (old-format fixture
   ledger → resume → engine overwrites the snapshot → resume again), which compares its two outcomes
   byte-for-byte against a **copy of `src/` writing the whole transcript** (issue #411's discipline: the
   in-repo `src/` is never edited by a mutation probe). The fixture scene is `test/fixtures/journal-0.22.0/`
@@ -621,6 +630,13 @@
   「本轮起点」管的是内存跑在账本之前那唯一一种情形——恢复时从快照补进内存、却被 #424 的守卫
   故意留在账本之外的崩溃轮正文，它排在锚点**之后**，`min(..., persistedTranscriptLength)` 那一项做的只是
   **使它不被置 `null`**（写侧没擦它）；**读侧仍然取不到它** —— 这是两件事，后者归 **#754**（见下面那条）。
+  第 4 轮评审又抽出一层：守卫只扫契约，**CHANGELOG 自己漏了**（宿主读的就是 release notes）。
+  现在 `test/docs-no-overclaim-735.test.js` 的扫描面 = 契约那一节 **+ 本文件里点名切片 2 的中英两条条目**，
+  并补三个洞：**肯定式判据**（必须逐字留着「读者永远读不到」与「`anchor` 是标量、不是逐格位图」那两句，
+  同义改写绕得开禁语，绕不开这两句）、**量词型断言禁令**（不许出现「`每一格` / `所有格子` / `都` 落在
+  `账本` / `入账` 上」这类全覆盖断言，EN 同一族），以及把「封顶族在不在」的判据从「文里提个名字」改成**真实代码形状**
+  （`resumeTranscriptAnchor:` / 赋值 / 点取 / 访问器，判前先剥注释）—— **一句注释解不开这道闸**。
+  封顶族的命中若落在带「撤回 / reverted」标记的那一句里，按历史叙事豁免（与 #668、static-guards 第 5 条同口径）。
   **两跳那条链是主干既有的读侧缺陷，不是本片引入的损失（issue #754）**：同一套场景（旧账本+旧快照 →
   resume → 引擎亲笔覆盖写快照 → 再 resume）在主干与本支并排跑，第二跳**逐字同结果**——同一个
   `invalid_messages`、锚点同样从 3 涨到 5、同样 0 次模型请求、那段只在内存里的正文同样取不到——因为
