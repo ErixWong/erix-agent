@@ -106,7 +106,9 @@ function collectKeys(value, acc = new Set()) {
 //
 // 拦的是包装 store 的**读面**（`load` / `loadRawRows` / `loadLatestRunSnapshot` / `loadLatestCheckpoint`）：
 // 对返回结构里每一个 `tool_result` 块（连同它自己的嵌套对象）**逐格换成 accessor**：
-// 读 → 计数（=「探针真的盖上过这个对象」的在场证据），写 / 新增键 / 删键 → 记账。
+// 读 → 计数（=「探针真的盖上过这个对象」的在场证据）；**已有键的普通赋值** → setter 吞下来记账（不抛）；
+// **加新键 / 删已有键 / `defineProperty` 覆盖** → 被 `Object.freeze` 当场挡下（严格模式 `TypeError`，根本走不到记账）。
+// ⇒ `addedKeys` / `lostKeys` / `replacedKeys` 三个格子在冻住的世界里**结构性恒空**，它们是兜底，不是主机制。
 // **对象身份不变**（还是引擎要拿去用的那一个）⇒ 引擎改它我们看得见，不改就一条都不记。
 //
 // 为什么不是字面的 `new Proxy(块)`（本单原本的形状，实测装不上）：引擎每次请求都做

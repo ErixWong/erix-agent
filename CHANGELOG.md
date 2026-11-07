@@ -14,8 +14,9 @@
   `F9b` red on "探针没盖上要判的那一段" while every other cell stayed green: the judgement had gone blind,
   the engine had not regressed. The in-memory half now reads the **store read boundary** of the very store
   instance the engine uses: each restored `tool_result` block is instrumented in place (object identity
-  preserved, JSON bytes unchanged) and frozen at the boundary, so reads are counted and every in-place set /
-  added key / deleted key is recorded. `F9b` then requires **zero in-place rewrites** *and* a presence fact (the block was seen at the
+  preserved, JSON bytes unchanged) and frozen at the boundary, so reads are counted, **plain assignment of an
+  existing key** is swallowed and booked by the accessor setter, while **adding / deleting / redefining a key throws on the
+  spot** (`Object.freeze`) — the three booking slots are a backstop, not the primary mechanism. `F9b` then requires **zero in-place rewrites** *and* a presence fact (the block was seen at the
   boundary and really read, identity key included) — without the presence half, "zero rewrites" stays green
   while the probe watches nothing, which is the same class of false green. A literal `new Proxy(block)` is
   **not** installable at this boundary: the engine runs `cloneState(ctx.messages)` = `structuredClone` on
@@ -47,8 +48,8 @@
   `Object.isFrozen` / `Object.isExtensible` pass for every frozen object, so they never proved "this *is* the
   observed block" (reviewer's adjacent negative control: swap `target` for `Object.freeze({})` and the real
   upstream suite stayed 3/3 green; the earlier `target: undefined` red came from the *transient* matcher, not
-  from an identity assertion). The record now carries its identity and its origin (which store read face, in
-  which call, returned *this* object) and `F9b` cross-checks them; a new always-run, offline cell pins five
+  from an identity assertion). The record now carries its identity and its origin (**which store read face** returned
+  *this* object — provenance is face-level, **not** one entry per call) and `F9b` cross-checks them; a new always-run, offline cell pins five
   negative controls, each of which must redden **on the assertion that owns it** (tagged `[identity]` /
   `[origin]` / `[presence]` / `[frozen]` / `[transient]`), including the reviewer's frozen-empty-object
   impostor, `target: undefined`, a same-shape stand-in that this face never returned, a face the engine does
@@ -62,7 +63,8 @@
   snapshot 的 `messages` 那一格（曾经是引擎内存上下文的逐字副本）；写侧改成轮残余之后那一格不再带恢复进来的
   正文，恢复那次每一份快照都取不到旧块 ⇒ `F9b` 红在「探针没盖上要判的那一段」，而其余格子全绿——**瞎的是探针，
   不是引擎**。内存半边现在改在**引擎真正使用的那个 store 实例的读边界**上判：恢复出来的每个 `tool_result` 块
-  就地换 accessor（对象身份不变、JSON 字节不变），读被计数、就地赋值 / 新增键 / 删键全部记账；`F9b` 因此同时
+  就地换 accessor 并**冻结**（对象身份不变、JSON 字节不变）：读被计数，**已有键的普通赋值**被 setter 吞下来记账（不抛），
+  **加新键 / 删已有键 / `defineProperty` 覆盖**被 `Object.freeze` **当场挡下**（抛 `TypeError`）；`F9b` 因此同时
   要求「**零次就地改写**」和一条**在场断言**（这块确实穿过读边界且真被读过）——少了在场那一半，探针空转时
   「零次改写」照样绿，正是本片要防的那类假绿。这里**装不上**字面的 `new Proxy(块)`：引擎每次请求都
   `cloneState(ctx.messages)`（= `structuredClone`，见 `src/loop/provider-runner.js:242` →
@@ -87,7 +89,8 @@
   二轮还关掉第二个「自己糊弄自己」：`target` 可以被**另一个已冻结的空对象冒充**——`Object.isFrozen` /
   `Object.isExtensible` 对任何冻结对象都通过，它们从不证明「这就是被观察的那一块」（评审的紧邻负控：把
   `target` 换成 `Object.freeze({})` ⇒ 真上游仍 3/3 绿；上一版 `target: undefined` 之所以红，是**瞬态匹配器**
-  顺手抓到的，不是身份判据判的）。观察记录现在自带身份与来源（哪张读口、哪一次调用返回过**这个**对象），
+  顺手抓到的，不是身份判据判的）。观察记录现在自带身份与来源（**哪张读口**返回过**这个**对象——来源只记到**读口级**，
+  **不是**每次调用一个号），
   `F9b` 逐条核对；并新增一条**不联网、不花钱、始终跑**的格子固化五个负控，每个都必须红在**该它红的那条断言**上
   （标签 `[身份]` / `[来源]` / `[在场]` / `[冻结]` / `[瞬态]` 进断言文案并逐条核对）：冻结空对象冒充、
   `target: undefined`、逐字同形但这张读口没返回过的替身、挂到引擎不走的读口、整个观察面空转；再加一条反向确认
