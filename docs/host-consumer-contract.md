@@ -2341,9 +2341,12 @@ fingerprint (listed in the reader column) ⇒ stopping those writes means replac
 axes do not imply each other: the table has 15 rows / 14 cell names, and two of them are `write: stopped` (`toolUse` / `ts`, stopped by issue #735 slice 1, machine absence assertion in `test/loop-snapshot-write-side-735.test.js`) while two more are `write: written(conditional)` (`partialText` / `partialRound`, conditional write; see below). Both shapes are precisely what a "keys that must be present in the payload" checklist is **structurally blind to**: a stopped key is never there, and a conditional key is there in only half of the scenes -- that is how the previous slice's 10-key list lost them, so this table has to pin them as well.
 
 Every line number below was taken with a fresh scan on the base commit `40a518d`, and
-`test/contract-snapshot-cell-axes-767.test.js` re-checks each `file:line` citation: the file is present, the line
-number is in range, and that line really names the cell's key. The 0.31.0-era line numbers quoted in issue #767
-must not be copied over. The table is itself read as data by that test: a missing row, an axis value outside the
+`test/contract-snapshot-cell-axes-767.test.js` **and** `npm run check:docs` re-check every `file:line` citation
+from a registered anchor: `scripts/cell-axes-anchors.mjs` pins one code shape per cell and per axis (the
+assignment line, the guard, the return site — never the key name), each anchor must hit its file exactly once,
+and the line number written below must equal what the anchor re-derives (issue #772 R3: the gate recomputes it
+itself, so a citation that drifted onto a comment that merely mentions the key name goes red in the docs gate,
+not only in the test). The 0.31.0-era line numbers quoted in issue #767 must not be copied over. The table is itself read as data by that test: a missing row, an axis value outside the
 vocabulary, or a CN/EN axis mismatch all go red.
 
 <!-- erix:snapshot-cell-axes:begin -->
