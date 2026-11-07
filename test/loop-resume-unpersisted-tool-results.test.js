@@ -349,7 +349,9 @@ test("#420 边界 · 零结果行 + 还有待补跑工具：A 集合首片当锚
 // 退回 #420 之前「只进内存、由快照兜住」的语义 ⇒ 账本内容与修前逐字一致。
 //
 // 三态自证（本用例一次跑完）：
-//   ① 加守卫 ⇒ 绿：账本里一条结果行都没有、发一条 `resume_journal_skipped`、二次恢复成功；
+//   ① 加守卫 ⇒ 绿：账本里一条结果行都没有、发一条 `resume_journal_skipped`、二次恢复成功
+//     （⚠ issue #754 裁决 2 之后，「成功」的来源换了：那条把崩溃轮正文从快照补进内存的升级路径已被
+//      **正式关掉**，二次恢复只从账本重建、并靠恢复告示明示「丢了 N 条」；守卫本身一字未动）；
 //   ② 去掉守卫 ⇒ 红：把守卫去掉时**真实会写**的那两行（实测原样，见下面 `msg:2:0` / `msg:2:1`）
 //      补回账本 ⇒ 同一个二次恢复当场 `invalid_messages`、0 请求（这就是 RED 的机理）；
 //   ③ 修前语义（完全不写）⇒ 也绿：①的账本必须与「只进内存」逐字一致（没有 round 2 正文行）。
@@ -461,16 +463,20 @@ test("#424 升级路径 · 崩溃轮的 assistant 正文只在快照里 ⇒ A �
     "事件必须点名轮号、跳过原因与 A 集合大小（宿主据此知道这批结果没入账）",
   );
 
-  // 二次恢复：上下文仍由快照补全（与 #420 之前同一路径）⇒ 必须能起来，结果不丢不翻倍。
+  // 二次恢复（issue #754 裁决 2 之后）：**pre-261021 的档案不再支持恢复** —— 那条「从快照补正文」的
+  // 升级路径已被关掉，上下文只从账本重建。结局仍然是**起得来**（守卫的初衷没变），但喂进去的东西变了：
+  // 崩溃轮那条 assistant 与它那一轮的两条结果**一条都不喂**（同源同去留），换成恢复告示里一句弃用说明。
   const provider = createFakeProvider([endTurn("第二次续接完成")]);
   const second = await runLoop({ store: inner, provider, executeTool: async () => "unused" });
-  assert.equal(second.ok, true, `二次恢复必须成功（实测：\`${String(second.error)}\`）`);
-  assert.equal(provider.requests.length, 1, "二次恢复必须真的发过一次模型请求（修前修后同一条路径）");
+  assert.equal(second.ok, true, `二次恢复必须成功（弃用结局 = 明示降级重建，不是 invalid_messages；实测：\`${String(second.error)}\`）`);
+  assert.equal(provider.requests.length, 1, "二次恢复必须真的发过一次模型请求");
   for (const id of ["t1", "t2"]) {
-    const blocks = resultsFor(provider.requests[0].messages, id);
-    assert.equal(blocks.length, 1, `${id} 的结果在上下文里必须恰好一份`);
-    assert.equal(blocks[0].content, `out-${id}`, `${id} 的内容必须逐字相同`);
+    assert.equal(resultsFor(provider.requests[0].messages, id).length, 0,
+      `${id} 的结果一条也不许进上下文（它的 assistant 只在那个已不支持的来源里 ⇒ 喂进去就是孤儿结果）`);
   }
+  const noticeText = JSON.stringify(provider.requests[0].messages.at(-1));
+  assert.match(noticeText, /本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 1 条/u,
+    `禁止静默：丢正文必须在递给模型的告示里出声并带条数（快照 3 格 - 锚点 2 = 1），实测 ${noticeText.slice(0, 200)}`);
 
   // ── ② 去掉守卫 ⇒ 红（把守卫去掉时**真实会写**的那两行补回账本，实测原样）──────────────
   // 两行的 dedupKey / seq / partOf 来自实测（`<runId>:msg:2:0` 首片无 `partOf`，`msg:2:1` 接在它后面），
