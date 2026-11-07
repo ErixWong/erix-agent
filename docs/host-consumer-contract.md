@@ -3618,7 +3618,7 @@ configured, a `verified` verdict is not available to them, because a guard
 | `verification.status` | Meaning | `verification.reason` seen in practice | CLI exit code |
 |---|---|---|---|
 | `verified` | the configured guard accepted this final answer | — (no reason field) | `0` |
-| `skipped` | nothing was checked — **not** a claim of correctness | `no_final_guard` (`src/loop/orchestrator.js`); CLI guard `no_capture_evidence` (`bin/final-guard.js:92`) / `no_extractable_candidates` (`bin/final-guard.js:95`) | `4` |
+| `skipped` | nothing was checked — **not** a claim of correctness | `no_final_guard` (`src/loop/orchestrator.js`); CLI guard `no_capture_evidence` (`bin/final-guard.js`) / `no_extractable_candidates` (`bin/final-guard.js`) | `4` |
 | `unverified` | the check ran and was not satisfied | `non_continuable` (`src/loop/orchestrator.js`), `max_retries` (`3547-3551`) | `2` |
 | `error` | the guard threw, decided invalidly, or timed out (fail-open for availability, never `verified`) | `timeout` or `error`, both resolved by `errorReason` (`src/loop/termination.js`) | `3` |
 
@@ -5599,12 +5599,22 @@ that is still readable — paired with a `tool_result` for that exact
 by `writeNote`), and not later revoked by a successful `note_forget` for the
 same key. An unpaired call, a payload reporting `{status:"invalid"}`, a payload
 the engine cannot parse, or a revoked note is not evidence. Without both facts
-the fold substitute and the TTL placeholder say "no recoverable decision record
-(reason: …)" and never mention `note_*`; the reason is one of four honest
-buckets — no note tools, no note write, notes revoked, no note evidence. The
-evidence-backed wording stays conditional guidance ("look it up with
-`note_list`, then `note_read`"); it does not claim that this folded result's
-key points were recorded, which no ledger fact can prove. Note availability is
+every gated prompt site says "no recoverable decision record (reason: …)" and never
+mentions `note_*`; the reason is one of four honest buckets — no note tools, no note
+write, notes revoked, no note evidence. The evidence-backed wording stays conditional
+guidance ("look it up with `note_list`, then `note_read`"); it does not claim that this
+folded result's key points were recorded, which no ledger fact can prove.
+**Which sites are gated (issue #746 extended #741's gate):** the fold substitute and the
+TTL placeholder, the aggregate-limit stub and the run-snapshot per-output stub
+(`src/loop/aggregate-budget.js`, `src/loop/run-snapshot-executor.js`), and four
+model-visible `bin/` sites — the CLI system prompt's situation paragraph and its
+"exact values must come from" bullet, the archive notice, the guard's run-state summary
+and revise pointer, and the fold-stub suffix. For `bin/` the surface fact is the
+**assembled** tool list (a `--tools` allowlist strips the family too), not the
+`--no-notes` flag alone; hosts pass it in, the library never guesses. The memory-loss
+nudge is the low-risk tier and is only required to speak conditionally — no tool call is
+commanded there, so no whole-family gate is applied. A runnable retrieval command is still
+only ever the one `retrievalCommandFor` derived; nothing hand-builds `sed`. Note availability is
 host configuration, and the engine writes no notes of its own.
 
 Old or large tool results may be folded only in the provider request view.

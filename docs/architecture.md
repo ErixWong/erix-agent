@@ -731,13 +731,26 @@ successful `note_take` in the visible ledger — paired with a result for that
 `tool_use_id`, its payload confirming success, and not later revoked by a successful
 `note_forget`); otherwise those two places state that no recoverable decision record
 exists, with the reason (one of: no note tools, no note write, notes revoked, no note
-evidence), and **their** text drops every `note_*` mention. **Coverage is exactly those
-two entry points — nothing more.** The aggregate-limit stub
-(`src/loop/aggregate-budget.js`), the run-snapshot archive stubs
-(`src/loop/run-snapshot-executor.js`), the memory-loss nudge
-(`src/reflection/governor.js`) and the three CLI hint sites under `bin/` still point at
-`note_list` / `note_read` unconditionally; wiring those six to the same evidence gate is
-issue #746, not this one. The evidence-backed sentence is
+evidence), and **their** text drops every `note_*` mention. **Coverage, as of issue
+#746, is exactly the entry points listed below — nothing more** (the sentence this
+paragraph used to carry, “coverage is exactly those two entry points”, became false with
+#746; `test/prompt-note-coverage-746.test.js` reddens any wording that slides back into the
+unqualified universal). They are: #741’s fold substitute and TTL placeholder, plus #746’s
+aggregate-limit stub (`src/loop/aggregate-budget.js`) and the run-snapshot per-output stub
+(`src/loop/run-snapshot-executor.js`, same wording as the aggregate stub), plus four
+model-visible `bin/` sites — the `[Your situation]` paragraph and the “exact values must come
+from” bullet of the CLI system prompt, and the archive notice (`bin/tools.js`, fed by
+`bin/system-prompt.js` with the **assembled** tool surface), the guard’s run-state summary and
+its revise pointer (`bin/final-guard.js`), and the fold-stub suffix
+(`bin/final-guard-support.js`). The memory-loss nudge (`src/reflection/governor.js`) is the
+**low-risk tier**: it never commands a tool call, so #746 only makes its wording conditional
+(“if this run has notes …”) and keeps a re-read fallback — it deliberately does **not** get
+the whole-family evidence gate. The `bin/`-side evidence is an **assembly fact** (whether the
+whole `note_*` family sits on the real tool surface), not the `--no-notes` flag: a `--tools`
+allowlist strips the family just as well, and reading only the flag misses that. One site
+deliberately stays out of scope: the read-only tool whitelist text in
+`src/loop/run-snapshot-executor.js` names `note_list` as a *permitted* tool (#195), which is a
+capability statement, not a retrieval instruction. The evidence-backed sentence is
 conditional retrieval guidance; it never claims this result's key points are already
 recorded. Note availability stays host configuration — the
 engine writes no notes.
