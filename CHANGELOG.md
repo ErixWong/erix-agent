@@ -544,8 +544,8 @@
   **same-length** spaces so line numbers, the negation look-back window and the quoted excerpt keep exactly
   the coordinates they had before the cut. It is machine-checked rather than exempted: every registered name
   is asked through `<cmd> i -g erix-agent --probe-773-flag && erix --version` and must really stop its own
-  segment from counting, and both directions run end to end through `flagMentions` on throwaway files under
-  `docs/tasks/` - an invented flag in the npm segment stays green while the `--version` on the same line still
+  segment from counting, and both directions run end to end through `flagMentions` on throwaway files under the
+  untracked `docs/tasks/` (never committed) - an invented flag in the npm segment stays green while the `--version` on the same line still
   lands in the face, an invented flag in the erix segment goes red and names that very line. Coverage of the
   scan face did not move: 83 flag mentions before the cut, 83 after.
 - **命令行旗标守卫现在先问「这一段是谁家的命令行」，再去查旗标（issue #773）。** 规则 3 原来只按**整行**问，
@@ -559,7 +559,7 @@
   单个 `|` **不**当分隔符，因为 markdown 表格行也用它；不计入的段用**等长空白**抹平，所以行号、否定句回看窗口、
   命中摘录的坐标与切段前逐字符相同。它是机器复核、不是豁免：名单里每个名字都被
   `<cmd> i -g erix-agent --probe-773-flag && erix --version` 问过一遍，必须真的让自己那一段停止计数；两个方向都
-  通过 `flagMentions` 端到端跑在 `docs/tasks/` 的临时文件上——旗标塞在 npm 段不红、且同一行的 `--version` 仍在面里，
+  通过 `flagMentions` 端到端跑在本机不入库的 `docs/tasks/` 临时文件上——旗标塞在 npm 段不红、且同一行的 `--version` 仍在面里，
   塞在 erix 段必红并点名那一行。扫描面覆盖一字未动：切段前 83 次提及，切段后 83 次。
 
 - **The resume crash boundary is derived from the ledger, not from the run snapshot (issue #736).**
