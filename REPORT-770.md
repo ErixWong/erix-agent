@@ -87,3 +87,27 @@ $ node --test test/loop-persistence-phase.test.js test/loop-invalid-arguments.te
 ```
 
 同一批里 `test/contract-snapshot-cell-axes-767.test.js` 有 7 条红（G4 与 G4-R1..R6），**全部是行号漂移**，红话原文举例：`cn：`round` 引用 src/loop/orchestrator.js:2986，但那一行没提到这个键名：const transcriptForSnapshot = messagesOverride ?? messages;`——这一条判据钉的是「表里写的 `path:line` ⇄ 锚点现算行号等值」，我在 `src/loop/orchestrator.js` 里加了注释行把它往下推了，属步骤 4 的同步范围，不在这里硬扛。
+
+## 步骤 3 — 停止写入（两格从快照 payload 移除）
+
+- `src/loop/orchestrator.js`：快照 payload 里删掉 `status,` 与 `compactionStats: cloneState(compactionStats),` 两行；
+  同段注释重写成「四格全部停写 + 为什么这里没有写点」（`⇒ \`status\` 停写的理由：` / `⇒ \`compactionStats\` 停写的理由：`
+  两行就是步骤 4 锚点要钉的注释行）。轮记录那处 `compactionStats`（`src/loop/orchestrator.js` 的 `persistRound` 段）
+  **未动**，恢复侧的 `deterministic.compactionStats` **未动**。
+- `test/loop-snapshot-write-side-735.test.js` 翻转的机器断言（这是本单唯一的「键存在性」机器面）：
+  1. 判据 1「写侧 payload 不再带 …」：缺席清单 `["toolUse","ts"]` → `["toolUse","ts","status","compactionStats"]`；
+  2. 「有读者的格照旧写出」：保留格清单里摘掉 `status` / `compactionStats`（原来带着「工单说零读者、实跑复核不是」的注记）；
+  3. 「`status` 这格仍如实分辨调用点」→ 改成「`status` 停写之后调用点仍可分辨」：先断载荷里**没有** `status` 格，
+     再用 `executedToolIds`（成功执行的唯一证据）+ 与之配对的 `toolResults` 二分工具前/工具后；
+  4. 「保留格键序不动」：期望键序减去这两格，并加断 `status`/`compactionStats` 不在键序里；
+  5. 「入参 status 透传不动」→ 「入参 status 不再被回音进载荷」：新增两条 `!Object.hasOwn(written, ...)` + 剩余 8 格集合对账；
+  6. 「引擎亲笔新形状崩溃现场」：新形状缺席清单也扩到四格。
+- 实测新键序（引擎亲笔，8 格）：`round, pendingToolUse, pendingToolUses, messages, persistedTranscriptLength, executedToolIds, toolResults, toolOutputs`（+ 崩溃时才有的 `partialText/partialRound`）。
+- 一个踩过的坑：`erix.executionStatus` **只写在被拒/被拦/被中断**的结果上（`src/loop/run-snapshot-executor.js:330,721`、`src/loop/orchestrator.js:5378,5407`），成功执行没有这个标记 ⇒ 分辨「工具后」只能用 `executedToolIds`；第 3 条第一版拿它当必要条件是错的，已改。
+
+```
+$ node --test test/loop-snapshot-write-side-735.test.js test/loop-snapshot-round-residue-735.test.js \
+    test/run-snapshot-executor.test.js test/loop-persistence-phase.test.js test/loop-invalid-arguments.test.js \
+    test/loop-v020-rc.test.js test/persistence-diagnostics.test.js test/compaction-observability.test.js
+# tests 68 / # pass 68 / # fail 0        → NODE_EXIT=0
+```

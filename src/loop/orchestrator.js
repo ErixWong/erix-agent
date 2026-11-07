@@ -3002,11 +3002,13 @@ export async function runToolLoop(options) {
       // `checkpoint_after_tool` / `executed_uncommitted`，与通道 B（executor 调用点的显式声明）一致。
       return await persistClassified(method, status, runId, {
         round,
-        // issue #735 切片 1（写侧去冗余）：本格曾写 4 个候选冗余字段，现按**实跑复核**的口径分两档。
-        // **键序与基点逐字一致**（`src/store/file.js:523` 直接 `JSON.stringify(snapshot)` ⇒ 键序是宿主
-        // 可见的落盘字节），所以本片在本格上的净改动就是**删两行**，保留格的相对位置一律不动。
+        // issue #735 切片 1 + issue #770（写侧去冗余）：本格曾写 4 个候选冗余字段；#735 切片 1 按
+        // **实跑复核**只停掉当时真零读者的两格，#770 把剩下两格的读者/断言换成权威来源后把它们也停掉
+        // ⇒ **四格全部停写**。**键序与基点逐字一致**（`src/store/file.js:523` 直接 `JSON.stringify(snapshot)`
+        // ⇒ 键序是宿主可见的落盘字节），所以 #770 在本格上的净改动就是**再删两行**，保留格的相对
+        // 位置一律不动（机器缺席断言：`test/loop-snapshot-write-side-735.test.js` 判据 1）。
         //
-        // **已停写（两格）**
+        // **已停写（#735 切片 1 那两格，登记原样保留）**
         // - `toolUse`：它与 `pendingToolUse` 是**两次独立 `cloneState()` 调用仍同一个源值**
         //   （`cloneState(snapshotPendingToolUse)` 写两遍）⇒ 内容等值但**不同址**，不是同一对象的别名。
         //   零读者的证据不是名字而面：**恢复侧读快照对象那一层只出现 9 个字段** —— 穷举
@@ -3023,25 +3025,30 @@ export async function runToolLoop(options) {
         //   （`src/store/message-rows.js:114-115,326-328` 与 `src/loop/resume-manager.js:336` 的 `record.ts`），
         //   另一个产物、另一张面。
         //
-        // **继续写出（工单说零读者，实跑复核**不是**，本切片不动它们）**
-        // - `status`：`src/`+`bin/` 确实零读者（`src/store/file.js:587` 的 `persisted.status` 读的是
-        //   `<runId>.status.json` **另一个产物**），但 `test/` 有 5 处真读者：
-        //   `test/loop-persistence-phase.test.js:87` 拿它当**分辨哪个调用点写下这条快照**的唯一指纹
-        //   （#178 两通道分类守门全钉它上）、`test/loop-invalid-arguments.test.js:234` 拿
-        //   `entry.status === "rejected"` 从真实写入里**造崩溃现场夹具**、`test/loop-v020-rc.test.js:479,605`
-        //   与 `test/persistence-diagnostics.test.js:171` 拿 `status === "executed"` 当注入失败的开关。
-        // - `compactionStats`：`test/compaction-observability.test.js:76` 从 `loadLatestCheckpoint()` 读它，
-        //   断言层详情「透过 result / state / archive / **checkpoint** / events 五面露出」。
-        //   （`src/` 侧的恢复口径确实走 run-state 的 `deterministic.compactionStats`。）
+        // **已停写（#770 这两格——下面两行就是「为什么这里没有写点」）**
+        // ⇒ `status` 停写的理由：宿主面确实零读者（`src/store/file.js:587` 的 `persisted.status` 读的是
+        //   `<runId>.status.json` **另一个产物**），而它在 `src/` 里唯一的读者是分类通道对载荷的嗅探
+        //   （旧 `persist()` 的 `args.at(-1)?.status === "executed"`）——#770 先把那个读者搬成调用点**显式**
+        //   交进来的 `persistClassified(method, status, runId, …)`（见本文件上面那一段），测试侧原先拿
+        //   它当指纹的四处（#178 两通道守门、被拒崩溃夹具、两处注入失败的开关）也同批改读载荷里的
+        //   引擎事实（成功执行只进 `executedToolIds`，被拒/被拦才在结果条目上打
+        //   `toolResult.erix.executionStatus`），才在这里删行。
+        // - `compactionStats`：曾经被 `test/compaction-observability.test.js` 从 `loadLatestCheckpoint()`
+        //   读到（当时算「五面露出」里的 checkpoint 那一面），#770 把那一面改指落盘 run-state。
+        // ⇒ `compactionStats` 停写的理由：恢复侧读的是 run-state 的 `deterministic.compactionStats`
+        //   （`src/loop/resume-manager.js` 的 `ctx.compactionStats = deterministic.compactionStats`），
+        //   压缩观测的**落盘**出口是**轮记录**（本文件下面那处 `compactionStats.slice(compactionStatsStart)`），
+        //   run 返回值那一份走 `src/loop/termination.js` ⇒ 三本账都不依赖快照这一格。
         //
-        // 处置口径：本切片只动**真零读者**的两格，不按「先停写再改用例来迁就实现」推进。
-        // `status` / `compactionStats` 要停，得先把上面那些用例的指纹换成别的可用信号（读侧/测试侧的活）。
-        // 历史旧快照里这 4 格的存在仍然被读侧容忍（未删任何 `?? ` fallback，store 层逐字透传）。
+        // 处置口径：**先改指向、再停写**（#770 的顺序，反过来就是拿实现迁就测试）。上面那些读者与
+        // 断言全部换成权威来源并跑绿之后才删这两行。历史旧快照里这 4 格的存在仍然被读侧容忍
+        // （未删任何 `?? ` fallback，store 层逐字透传；旧档面由 `test/loop-snapshot-write-side-735.test.js`
+        // 的旧档用例钉）。
         // 入参 `status` 与签名不动：全仓 7 个调用点（本文件 2 个 + `src/loop/run-snapshot-executor.js` 5 个），
-        // 其中 5 个显式传状态（`pending` / `rejected` / `executed` / `intercepted`），两个靠默认值。
+        // 其中 5 个显式传状态（`pending` / `rejected` / `executed` / `intercepted`），两个靠默认值；
+        // 它现在只喂分类（`persistClassified`），不再落盘。
         // `persistedTranscriptLength` 仍是旧口径（有测试侧真读者当截账本夹具的锚点）；`messages` 已于
         // 切片 2 改成「轮残余」（见上面 `snapshotTranscriptResidue` 那段），两格本身的位置都不动。
-        status,
         pendingToolUse: cloneState(snapshotPendingToolUse),
         pendingToolUses: cloneState(snapshotPendingToolUses),
         messages: snapshotTranscriptResidue,
@@ -3053,7 +3060,6 @@ export async function runToolLoop(options) {
         })),
         // 本 round 已归档的全量输出随 run snapshot 落盘，保证崩溃恢复后证据仍可核验
         toolOutputs: cloneState(archivedOutputs.filter((entry) => entry.round === round)),
-        compactionStats: cloneState(compactionStats),
         ...(partialText === undefined ? {} : { partialText, partialRound }),
       });
     } catch (error) {
