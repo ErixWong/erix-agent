@@ -476,15 +476,21 @@
 - **The run snapshot's `messages` cell now carries round residue, not the whole transcript (issue #735, slice 2).**
   `persistRunSnapshot` wrote `cloneState(messagesOverride ?? messages)` — every snapshot re-serialized the
   session from the seed message to now, and that single cell is the bulk of the 2 MiB host-side ceiling
-  #734 reported. Measured on a fixture-driven 20-round run (fake provider, 8 KiB tool output per round,
-  39 snapshot writes): **1 981 515 bytes (1.89 MiB) → 354 949 bytes (0.34 MiB)** total, last write
-  **101 136 → 17 992 bytes**. The cell stays an array **in the transcript's own index space**: slots before
+  #734 reported. Measured on a 20-round run (fake provider, 8 KiB tool output per round, 39 snapshot
+  writes): **2 055 794 bytes (1.96 MiB) → 361 996 bytes (0.35 MiB)** total, last write
+  **104 747 → 18 165 bytes**, the `messages` cell alone **1 796 766 → 102 968 bytes (−94.3%)**. How much is
+  saved depends on the run's shape: a run resuming at round 10 that then ran 20 more went
+  **3 935 966 → 365 149 (−90.7%)**, while one resuming with only 3 journaled messages — the floor the anchor
+  cap below forces — saved **2 114 738 → 2 088 374 (−1.2%)**, i.e. almost nothing. The cell stays an array **in the transcript's own index space**: slots before
   the residue hold `null`, so the payload's key order, the cell's position, and the reader's absolute
   `snapshot.messages.slice(anchor)` all keep working with **zero read-side changes** — that index alignment
   is the design, not an accident: a shorter array would shift the anchor's absolute index and the very same
   fixture scene turns red (`invalid_messages`, 0 model requests) when the residue is truncated instead of
   nulled. **The invariant the write side depends on**, stated in the code comment at the write point and
-  proved on both sides: `residueStart = min(round start, persistedTranscriptLength, length) <= resume anchor`.
+  proved on both sides: **every nulled slot sits strictly below this run's own resume anchor** (a run that
+  never resumed: below `min(round start, persistedTranscriptLength)`), and every slot below that anchor is in
+  the ledger by construction — the anchor *is* the ledger's message count — so there is no per-slot tracking
+  to get wrong.
   `persistedTranscriptLength` only advances on a journaling call this process itself saw succeed (both call
   sites are guarded by `if (persisted)`), and `countResumeAnchor(records)` counts the same append-only ledger
   at a later instant, so the first term bounds the second; the round-start term covers the one case memory
@@ -568,13 +574,18 @@
 - **run snapshot 的 `messages` 这一格从此只交「轮残余」，不再是整段正文（issue #735，切片 2）。**
   `persistRunSnapshot` 原来写的是 `cloneState(messagesOverride ?? messages)` —— 每写一次快照就把「从种子
   到当前轮」的全文重抄一遍，而 #734 报的宿主 2 MiB 上限，大头就是这一格。夹具驱动的 20 轮真跑
-  （fake provider、每轮 8 KiB 工具输出、39 次快照写）实测：**累计 1 981 515 字节（1.89 MiB）→ 354 949
-  字节（0.34 MiB）**，末次写 **101 136 → 17 992 字节**。这一格**仍是数组，且仍在正文自己的下标空间里**：
+  （fake provider、每轮 8 KiB 工具输出、39 次快照写）实测：**累计 2 055 794 字节（1.96 MiB）→ 361 996
+  字节（0.35 MiB）**，末次写 **104 747 → 18 165 字节**，只算 `messages` 这一格 **1 796 766 → 102 968 字节
+  （−94.3%）**。省多少跟 run 的形状有关：第 10 轮恢复后再跑 20 轮 **3 935 966 → 365 149（−90.7%）**；而恢复时
+  账本只有 3 条正文的 run——正是下面那个锚点封顶逼出来的底线——只省 **2 114 738 → 2 088 374（−1.2%）**，
+  几乎一字节都不省。这一格**仍是数组，且仍在正文自己的下标空间里**：
   残余之前的格子写 `null`，于是 payload 键序、这格在键序里的位置、以及读侧那个绝对下标的
   `snapshot.messages.slice(anchor)` 全部**零改动**继续成立 —— 这个下标对齐是设计而不是巧合：换成更短的
   数组就会挪掉 `anchor` 的绝对下标，同一个夹具现场把残余**截掉**而不是置 null，当场红
   （`invalid_messages`，0 次模型请求）。**写侧依赖的不变量**（原话写在写点注释里，两侧都证）：
-  `residueStart = min(本轮起点, persistedTranscriptLength, 正文长度) <= 恢复现场的 anchor`。
+  **被置 `null` 的下标严格小于「本次 run 自己的恢复锚点」**（没恢复过的 run：小于
+  `min(本轮起点, persistedTranscriptLength)`），而锚点之前每一格按构造都在账本里——锚点的定义就是账本
+  正文条数——所以**没有「逐格追踪」这种东西可以出错**。
   `persistedTranscriptLength` 只在**本进程亲手落盘成功**时才 +1（两处写点都带 `if (persisted)` 守卫），
   而 `countResumeAnchor(records)` 量的是同一本只追加的账在更晚时刻的条数 ⇒ 第一项界住第二项；第二项
   「本轮起点」管的是内存跑在账本之前那唯一一种情形——恢复时从快照补进内存、却被 #424 的守卫

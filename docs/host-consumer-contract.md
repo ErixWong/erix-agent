@@ -2281,11 +2281,19 @@ probe section below).
 `saveRunSnapshot` receives a payload whose `messages` cell is an array with
 **one slot per transcript message, in the transcript's own index space**, but
 only the slots from the current round's start onward carry a body; every slot
-before them is `null`. The elided prefix is by construction already journaled
-(the engine journals each message as it forms, issue 261021 slice 2, plus the
-#326 engine rows), and the only reader of this cell — the resume path's
-upgrade branch for ledgers written before per-message journaling — slices
-`messages.slice(anchor)`, so it never reads a slot that was elided. Nothing
+before them is `null`. Which slots may be elided is capped, and the cap is what
+makes the elision safe: the engine nulls slots strictly below **this run's own
+resume anchor** (a run that never resumed: below `min(round start, messages it
+journaled itself)`). Every slot below that anchor is in the ledger by
+construction — the anchor *is* the number of message rows the ledger holds — so
+the engine never has to track, per slot, whether a body reached disk. That cap
+matters: on a resumed run the journaled counter is seeded from `messages.length`,
+which counts the bodies the upgrade branch copied out of the old snapshot into
+memory without journalling them (issue #424's `resume_journal_skipped` guard), so
+without the anchor cap those memory-only bodies would be nulled out and lost.
+The only reader of this cell — the resume path's upgrade branch for ledgers
+written before per-message journaling — slices `messages.slice(anchor)`, so it
+never reads a slot that was elided. Nothing
 about the cell's shape moved: the key name, its position among the payload keys
 (the file store `JSON.stringify`s the payload, so key order is host-visible
 bytes) and `Array.isArray(messages) ? messages : []` tolerance for older
@@ -2295,11 +2303,19 @@ carries the whole transcript there and is still read unchanged.
 Hosts must therefore treat this cell as **opaque resume state owned by the
 engine**: count slots, don't read bodies out of it. A host that wants the
 transcript reads the ledger (`load`), which is the authority for message text
-(issue 261021 slice 3). What the change buys is payload size: on a fixture-driven
-20-round run the payload written per snapshot went from `101136` bytes down to
-`17992` at the last write, and the total written across `39` snapshot writes
-from `1981515` bytes (1.89 MiB) down to `354949` bytes (0.34 MiB) — that cell
-was the bulk of the 2 MiB host-side limit reported in issue #734.
+(issue 261021 slice 3). What the change buys is payload size, and how much it
+buys depends on the run's shape (fake-provider scene, one tool call plus an 8 KiB
+result per round, `JSON.stringify(snapshot).length`, 39 snapshot writes each):
+a fresh run of 20 rounds went from `2055794` bytes (1.96 MiB) written in total
+down to `361996` (0.35 MiB), with the last write `104747` → `18165` bytes and the
+`messages` cell alone `1796766` → `102968` (−94.3%); a run that resumed at round
+10 and then ran 20 more went from `3935966` down to `365149` (−90.7%). **The
+floor is a resumed run with a small anchor**: capping at the anchor is
+deliberately conservative, so a run that resumed with only 3 journaled messages
+saved `2114738` → `2088374` bytes (−1.2%) — essentially nothing. Hosts that budget
+payload size must therefore plan for the typical case but not assume it: a
+resumed run can stay close to the pre-change size. That cell was the bulk of the
+2 MiB host-side limit reported in issue #734.
 
 #### Optional raw-row anchor probe (issue #714)
 
