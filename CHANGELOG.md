@@ -755,7 +755,13 @@
   telling a host that rendered the fold by hand to keep its own renderer, and §1 of both halves now
   states that the 0.30.0 page wrote that same unimportable target for that same name. **Nothing was
   exported**: the serializer stays internal — promoting it would be an Added on the public face, which
-  is a different decision than correcting a page.
+  is a different decision than correcting a page. **The marker itself was corrected in the same
+  commit**, because it is where that sentence lives: `check:docs` derives the cell from the
+  `@deprecated` block in `src/compact/provider-summarizer.js` (rule 4: the page must copy the marker
+  clause verbatim), so leaving the marker alone would keep re-deriving the same wrong target — and the
+  published `0.31.0` guide already prints it. The marker now carries the same `no in-tree replacement`
+  clause as the page (comment text only: `removed in 0.31` untouched, signature/implementation untouched,
+  `R4` accepts this clause shape, no export added).
 - **0.31.0 指南让宿主去 import 一个任何入口从没导出过的名字（issue #710）。** 中英两份指南里
   `serializeFoldedMessages` 那一行的迁移条款格都指向 `serializeFoldedMessagesWithMeta`，而入口格写着 `.`——
   可这个名字两个入口上都没有：已发布的 `erix-agent@0.31.0` 没有，`0.30.0` 也没有（两个 tarball 都解开在两个
@@ -769,7 +775,11 @@
   维护者的裁决是**改文档、不导出**：那一格现在写 `no in-tree replacement`，点名折叠体的渲染现在住在
   `createProviderSummarizer` 里（它自己调序列化器、返回摘要文本），并告诉过去自己渲染折叠体的宿主保留自己的
   渲染器；两份指南的 §1 各补一句，指认 0.30.0 那一页对同一个名字写了同一个不可 import 的目标。**一个导出都没加**：
-  序列化器继续留在内部——把它提上公共面是一个 Added，是另一个决定，不是改一页文档。
+  序列化器继续留在内部——把它提上公共面是一个 Added，是另一个决定，不是改一页文档。**同一笔提交里把标记自己也改了**，
+  因为那句话就住在标记里：`check:docs` 的那道判据是从 `src/compact/provider-summarizer.js` 的 `@deprecated` 块
+  **派生**那一格的（判据 4：页面必须逐字照抄标记的条款），只改文档会让同一个错目标被继续派生出来——而已发布的
+  `0.31.0` 指南里印的就是那句错话。标记现在与页面同一条 `no in-tree replacement`（只动注释文字：`removed in 0.31`
+  那枚版本记号没动、函数签名与实现没动、R4 收这个条款形状、一个导出都没加）。
 
 ## [0.31.0] - 2026-11-04
 
