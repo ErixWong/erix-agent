@@ -952,6 +952,25 @@
   `test/loop-resume-abandon-signals-730.test.js` (7 cases) plus the reverse proofs in
   `/tmp/report-730.md`: each cell reddens when the emission code is removed, and the closed set of
   causes is reconciled against both contract documents in both directions.
+- **`readFile`'s own line-capacity promise went stale with this ticket, and the ratchet caught it: the
+  `fewest` tier moved 3,850 → 3,750 lines.** The 156 lines of注释 this ticket added to
+  `src/loop/pending-tool-result.js` pushed its average line width to 69.13 bytes, making it the whole-tree
+  minimum at **3,792** lines and dethroning `src/loop/option-normalization.js` (3,854). The floor is a
+  universal claim — it must be the true whole-tree minimum — and 3,792 no longer lives in the
+  `[3,850, 3,900)` band, so per the #537 promise granularity both tiers in the model-visible description
+  (`fewest ≥ …` and `no file in those three trees reads fewer than …`) moved to **3,750**, with that tier's
+  bytes/line going `68.0` → `69.1`. The role-anchor row in `test/tools/file-tools.test.js` was re-measured
+  with **that test's own** `measureReadLineCapacity` and its own `CJK_CHAR` (not a hand-written second
+  measurement — the lesson of #714) and the per-field old→new values are recorded in the row's own
+  "第 N 刷" history comment. The other four roles were re-measured too and **not** re-pinned, per #543's
+  "only when the role changes or a tier is crossed": `densest` 4,384 / CJK 36.6% (recorded 4,364 / 37.0%),
+  `median` 6,212 and `most` 9,407 (byte-identical), `self` 4,676 (recorded 4,678). Same sweep fixed the
+  directive-face claims `check:types` names by itself: the "files carrying errors" counts read
+  **27** (package root, 101 errors measured against the untouched `BASELINE_ROOT = 103`) and **29**
+  (`--with-tools`, 136 errors measured against the untouched **138**), so `AGENTS.md` / `AGENTS_cn.md` now
+  say 27 and 29 while every baseline constant and the `--checkJs`/`--strict` semantics stay where they were
+  (issue #730).
+
 - **恢复兜底有四种「放弃」走法，而宿主只听得见其中一种（issue #730）。** 四条路对宿主意味着同一件事
   ——「这个 run 还得人工修」——可修前只有「锚点缺失」那一条会发 `resume_journal_skipped`。其余都只表现为
   第一次模型请求出网前的 `invalid_messages`（0 次 HTTP、`termination: failed`、这个 runId 从此起不来），
@@ -976,6 +995,20 @@
   碰，而**成功**兜底仍旧一声不发：修好了不该与放弃了共用一个信号面。新增
   `test/loop-resume-abandon-signals-730.test.js`（7 条）与 `/tmp/report-730.md` 里的反向证：把每一格的发射
   代码拿掉，对应用例必须红；成因闭集与中英两份契约是**双向**对账的。
+
+- **本单自己把 `readFile` 那份「一次能装多少行」的承诺弄过期了，棘轮抓住了它：`fewest` 档从 3,850 行降到
+  3,750 行。** 本单给 `src/loop/pending-tool-result.js` 加的 156 行中文注释把它的均行字节抬到 69.13，
+  它于是以 **3,792** 行取代 `src/loop/option-normalization.js`（3,854）成为全树「一次装得最少」的那一个。
+  floor 是**全称命题**，只能钉全树真最小值，而 3,792 已经不在 `[3,850, 3,900)` 这一档里 ⇒ 按 #537 的承诺
+  粒度换档：模型可见文案里两处档位（`fewest ≥ …` 与 `no file in those three trees reads fewer than …`）
+  一起改成 **3,750**，那一档的均行字节 `68.0` → `69.1`。角色锚点那一行用**该测试自己的**
+  `measureReadLineCapacity` 与它自己的 `CJK_CHAR` 重取（不是另写一份度量——#714 手写数把锚点写歪的教训），
+  逐字段旧值→新值记在该行既有的「第 N 刷」历史注里。其余四个角色一并复测、**一个都没刷**（#543「换人才刷，
+  没跨档就不动」）：`densest` 4,384 / CJK 36.6%（记录 4,364 / 37.0%）、`median` 6,212、`most` 9,407（逐字
+  未动）、`self` 4,676（记录 4,678）。同一次收尾也修了 `check:types` 自己点名的指令面声称：「带错文件数」
+  现测是**包根 27 个**（101 个错，对着没动的 `BASELINE_ROOT = 103`）与 **`--with-tools` 29 个**（136 个错，
+  对着没动的 **138**），于是 `AGENTS.md` / `AGENTS_cn.md` 改成 27 与 29，而基线常量与 `--checkJs`/`--strict`
+  的语义一个字都没碰（issue #730）。
 
 ## [0.31.0] - 2026-11-04
 

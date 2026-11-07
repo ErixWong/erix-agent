@@ -4422,7 +4422,7 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 //         —— 红的时候红在「校准面（## [Unreleased]）上实测 18 对 ≠ 地板 17 对」
 //
 // ⇒ 地板 = **18**（本树现跑守卫的实测值；下一任 rebase 后照旧重跑重取，不做加法）。
-const CHANGELOG_PAIR_FLOOR = 18;
+const CHANGELOG_PAIR_FLOOR = 19;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
