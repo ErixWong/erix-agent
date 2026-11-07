@@ -24,10 +24,21 @@
   is no longer in the rebuilt context is **not replayed** either — the pending list came from that same
   retired source in the same batch as the crash-round body, so replaying it writes a result into a context
   with no matching `assistant` and reproduces the very same `invalid_messages` outcome through a second
-  door. **The accepted cost:** whatever that crash round had still running is never made up — not
+  door. (4) on that same branch the crash round's `snapshot.partialText` is withheld as well — it is the
+  **second body exit** of that same retired channel (same write side, introduced in `1aceadf`, well before
+  261021), and feeding it while announcing "the context is rebuilt from the ledger only" would make that
+  sentence false; when the probe reads 0 (the shape the current write side produces) it is fed byte-for-byte
+  as before. **The accepted cost:** whatever that crash round had still running is never made up — not
   re-executed, and no result to pick up; the notice sentence is the only trace it ever leaves. The observable outcome is an **explicit degraded rebuild**: the legacy run resumes from the
   ledger alone, makes its request, and the engine's resume notice (`…:control:resume-notice:<fp>`, model
-  context **and** ledger) says `本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 N 条，该格式已不再支持恢复）`.
+  context **and** ledger) says `本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 N 条，该格式已不再支持恢复）`
+  — where N counts every snapshot body segment actually withheld (post-anchor `messages` slots **plus** a
+  suppressed `partialText`), plus a second sentence naming the calls the third door abandoned
+  (`本次恢复放弃补跑这些在飞调用…`), because the notice must not announce `崩溃时尾部没有未结清的 tool_use`
+  about calls this change chose to drop. Stated narrowly, that outcome covers crash scenes satisfying the
+  retired gate's own trigger condition whose snapshot array reports its length truthfully (the write side
+  never shortens it); a payload lying about its length still ends in `invalid_messages`, pinned as a mutation
+  case in `test/loop-snapshot-round-residue-735.test.js` (④b).
   Nothing is silent and nothing is new on the event surface: no new event type, no new
   `resume_journal_skipped` reason, and `crash_round_assistant_not_in_ledger` (#424) still fires with the same
   `count`. The write side is untouched — snapshots keep carrying the round residue at unchanged absolute
@@ -45,10 +56,18 @@
   那条就是孤儿结果，`src/messages/rounds.js` 的消息校验当场拒掉（#421 / #730 的兜底只管反方向：悬空的
   `tool_use` 补桩）；（3）同一条分支上，`snapshot.pendingToolUses` 里「上下文已无配对 `tool_use`」的在飞调用
   **也不再补跑**——那份在飞清单与崩溃轮正文同批、同来源，补跑它等于把结果写进一条已经没有配对 `assistant` 的
-  上下文，同一个 `invalid_messages` 结局从第二个门再来一遍。**认下来的代价**：崩溃那一轮里还在跑的东西
+  上下文，同一个 `invalid_messages` 结局从第二个门再来一遍；（4）同一条分支上崩溃轮的 `snapshot.partialText`
+  **也一并抑制**——它是那条退役通道上的**第二个正文出口**（同一写侧、引入于 `1aceadf`，早于 261021），一边喂它
+  一边说「上下文只从账本重建」就是让告示撒谎；探针为 0（现行写侧产出的形状）时它照旧喂，一个字节都不变。
+  **认下来的代价**：崩溃那一轮里还在跑的东西
   从此彻底不补——既不会重跑，也没有结果可接，只在告示那句弃用说明里留一个痕迹。可观察结局是**明示降级为从账本重建**：旧档案照旧起来、照旧发出请求，而引擎的恢复告示
   （`…:control:resume-notice:<fp>`，既进模型上下文也进账本）写明
-  `本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 N 条，该格式已不再支持恢复）`。
+  `本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 N 条，该格式已不再支持恢复）`——N 是**真数**：
+  锚点后 `messages` 的非空格子 **+** 被抑制的那段 `partialText`；第三刀放弃补跑时再多一句点名
+  （`本次恢复放弃补跑这些在飞调用…`），放弃了却对模型说「崩溃时尾部没有未结清的 tool_use」是主动陈述假事实。
+  这个结局**照窄的说**：它只对「满足被关掉那条闸门的原触发条件、且快照数组如实报告自己长度」的崩溃现场成立——
+  谎报长度的载荷仍以 `invalid_messages` 收场，那一形状在 `test/loop-snapshot-round-residue-735.test.js`（④b）
+  里当**变异体**钉着。
   没有静默，事件面也没有新东西：不新增事件类型、不给 `resume_journal_skipped` 加新 `reason`，
   `crash_round_assistant_not_in_ledger`（#424）照旧发、`count` 同值。写侧一字未动——快照仍写「本轮残余」，
   绝对下标不变。新格式（逐条入账）的档案**一个字节都不变**；确实还要复活某个 pre-261021 死档案的宿主，要么接受

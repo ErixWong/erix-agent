@@ -528,7 +528,10 @@ test("#424 升级路径 · 崩溃轮的 assistant 正文只在快照里 ⇒ A �
 // （`src/loop/resume-manager.js` 里 `resumePendingTools` 上那道 `toolUseInRebuiltContext`）。
 // 本格钉四件事：恢复**起得来**、**真的发出请求**、`invalid_messages` **不出现**、告示**照旧出声**；
 // 并钉两条例外不许被顺手改掉：A 集合仍整段交给 #424 守卫（事件面一字不动）、那一轮的副作用**彻底不再补**。
-test("#754 裁决 2 · 第三刀不变式 · 旧档案崩溃轮留有未入账的在飞调用 ⇒ 恢复仍起得来、发出请求、不出 invalid_messages、告示照旧出声", async () => {
+// ⚠ **这是验收格，不是普适不变式**：它只覆盖「满足旧闸门原触发条件、且快照数组长度没撒谎」那一类崩溃
+// 现场。`test/loop-snapshot-round-residue-735.test.js` 的 ④b 里那个把 `messages` 截到锚点的变异体
+// 仍以 `invalid_messages` 收场（那种载荷谎报长度，写侧从不这么写 ⇒ 它是变异体，不是宿主会遇到的现场）。
+test("#754 裁决 2 · 第三刀验收格（非普适不变式）· 旧档案崩溃轮留有未入账的在飞调用 ⇒ 起得来、发出请求、不出 invalid_messages、告示照旧出声", async () => {
   const inner = createMemoryTranscriptStore();
   const roundOneMessages = [
     { role: "user", content: [text("任务")] },
@@ -1777,4 +1780,137 @@ test("#421 回归钉：`mergeToolResultsIntoMessages` 的默认行为（尾部�
     "目标下标不是带 `tool_use` 的 assistant ⇒ `false`（不许瞎合）");
   assert.equal(mergeToolResultsIntoAssistantNextMessage(mid, 1, [toolResultBlock("t9")]), false,
     "要并进去的结果必须是这条 assistant 的 `tool_use` id ⇒ 否则 `false`");
+});
+
+// ── issue #754 裁决 2 · **第一必修**：快照的第二个正文出口 `partialText` 也要同源同去留 ──────────
+// 独立评审（快照 `f1a2468`）实测：只关掉 `snapshot.messages` 那条闸门时，`src/loop/resume-manager.js`
+// 里「本轮 assistant 未落账 ⇒ 把 `snapshot.partialText` 当 assistant 推上下文」那一条**没看探针**：
+// 旧格式下告示说「上下文只从账本重建，不会重新出现在这里」，provider 却真收到了那段快照正文。
+// 它不是改造后才有的字段（写侧 `src/loop/orchestrator.js`，引入于 `1aceadf`，早于 261021）⇒
+// 同一条闸门外它照旧喂、并且**不计数**。两格把它钉死：旧格式一并抑制且计入条数；探针 = 0 逐字不变。
+function legacyPartialScene() {
+  const inner = createMemoryTranscriptStore();
+  const seeded = [
+    { role: "user", content: [text("任务")] },
+    { role: "assistant", content: [text("第一轮答复")] },
+  ];
+  return { inner, seeded };
+}
+
+test("#754 第一必修 · 旧格式：`partialText` 与快照正文同去留 ⇒ 不喂，且计入告示那句「共 N 条」", async () => {
+  const { inner, seeded } = legacyPartialScene();
+  await inner.appendRound(RUN_ID, {
+    round: 1,
+    roundKey: `${RUN_ID}:round:1`,
+    dedupKey: `${RUN_ID}:engine:round:1`,
+    messages: seeded,
+    summary: "missing",
+    ts: new Date().toISOString(),
+  });
+  // 崩溃轮（round 2）：正文与半截正文**都只在快照里**（账本折出 2 条、锚点 2、快照 3 条 ⇒ 探针 = 1）。
+  await inner.saveRunSnapshot(RUN_ID, {
+    round: 2,
+    messages: [...seeded, { role: "assistant", content: [text("快照里的崩溃轮正文")] }],
+    partialText: "快照里的半截正文",
+    partialRound: 2,
+    persistedTranscriptLength: seeded.length,
+    pendingToolUses: [],
+    executedToolIds: [],
+    toolResults: [],
+    toolOutputs: [],
+    compactionStats: [],
+    ts: new Date().toISOString(),
+  });
+
+  const provider = createFakeProvider([endTurn("续接完成")]);
+  const resumed = await runLoop({ store: inner, provider, executeTool: async () => "unused" });
+  assert.equal(resumed.ok, true, `前置：恢复必须起得来（实测：\`${String(resumed.error)}\`）`);
+  const wire = JSON.stringify(provider.requests[0].messages);
+  assert.equal(wire.includes("快照里的崩溃轮正文"), false, "崩溃轮正文不喂（第一刀已关）");
+  assert.equal(wire.includes("快照里的半截正文"), false,
+    "同一条闸门下 `partialText` 也不喂 ⇒ 否则「上下文只从账本重建」这句话就是假的");
+  assert.match(JSON.stringify(provider.requests[0].messages.at(-1)),
+    /本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 2 条/u,
+    "「共 N 条」必须是真数：1 段快照正文 + 1 段被抑制的 `partialText` = 2");
+});
+
+test("#754 第一必修的另一半 · 探针 = 0（现行写侧形状）⇒ `partialText` 照旧喂，告示一个字都不多", async () => {
+  const { inner, seeded } = legacyPartialScene();
+  await inner.appendRound(RUN_ID, {
+    round: 1,
+    roundKey: `${RUN_ID}:round:1`,
+    dedupKey: `${RUN_ID}:engine:round:1`,
+    messages: seeded,
+    summary: "missing",
+    ts: new Date().toISOString(),
+  });
+  // 快照正文**不比锚点长**（长度 = 2 = 锚点）⇒ 探针 = 0，而 `partialText` 仍在：这就是 261021 之后
+  // 设计上存在的那条通道（本轮 assistant 尚未成型，半截正文只有快照有）。
+  await inner.saveRunSnapshot(RUN_ID, {
+    round: 2,
+    messages: [...seeded],
+    partialText: "快照里的半截正文",
+    partialRound: 2,
+    persistedTranscriptLength: seeded.length,
+    pendingToolUses: [],
+    executedToolIds: [],
+    toolResults: [],
+    toolOutputs: [],
+    compactionStats: [],
+    ts: new Date().toISOString(),
+  });
+
+  const provider = createFakeProvider([endTurn("续接完成")]);
+  const resumed = await runLoop({ store: inner, provider, executeTool: async () => "unused" });
+  assert.equal(resumed.ok, true, `前置：恢复必须起得来（实测：\`${String(resumed.error)}\`）`);
+  const wire = JSON.stringify(provider.requests[0].messages);
+  assert.equal(wire.includes("快照里的半截正文"), true,
+    "现行路径不动：探针 = 0 时半截正文照旧补进上下文（那是设计上存在的通道，不是旧格式残余）");
+  const noticeText = JSON.stringify(provider.requests.at(-1).messages.at(-1));
+  assert.equal(noticeText.includes("本次恢复丢弃了 pre-261021"), false,
+    "没丢正文就不许多说话：弃用句一个字都不出现");
+  assert.match(noticeText, /崩溃时尾部没有未结清的 tool_use/u,
+    "第二必修的反向半边：确实没有未结清时，那句 `NO_PENDING` 照旧出现");
+});
+
+test("#754 第二必修 · 放弃补跑在飞调用时，不许对模型说「没有未结清」，要逐条点名", async () => {
+  const inner = createMemoryTranscriptStore();
+  const seeded = [
+    { role: "user", content: [text("任务")] },
+    { role: "assistant", content: [text("第一轮答复")] },
+  ];
+  await inner.appendRound(RUN_ID, {
+    round: 1, roundKey: `${RUN_ID}:round:1`, dedupKey: `${RUN_ID}:engine:round:1`,
+    messages: seeded, summary: "missing", ts: new Date().toISOString(),
+  });
+  await inner.saveRunSnapshot(RUN_ID, {
+    round: 2,
+    messages: [...seeded, { role: "assistant", content: [text("第二轮"), toolUse("t9")] }],
+    persistedTranscriptLength: seeded.length,
+    pendingToolUses: [toolUse("t9")],
+    executedToolIds: [],
+    toolResults: [],
+    toolOutputs: [],
+    compactionStats: [],
+    ts: new Date().toISOString(),
+  });
+
+  const executed = [];
+  const provider = createFakeProvider([endTurn("续接完成")]);
+  const resumed = await runLoop({
+    store: inner,
+    provider,
+    executeTool: async ({ id }) => {
+      executed.push(id);
+      return `out-${String(id)}`;
+    },
+  });
+  assert.equal(resumed.ok, true, `前置：恢复必须起得来（实测：\`${String(resumed.error)}\`）`);
+  assert.deepEqual(executed, [], "前置：那一条确实没补跑");
+  const noticeText = JSON.stringify(provider.requests[0].messages.at(-1));
+  assert.equal(noticeText.includes("崩溃时尾部没有未结清的 tool_use"), false,
+    `放弃补跑 ≠ 没有未结清：那句「上一次请求与结果已成对落账」是主动陈述假事实，实测 ${noticeText.slice(0, 240)}`);
+  assert.match(noticeText, /放弃补跑这些在飞调用/u, "必须换成明示「放弃补跑」那一句");
+  assert.match(noticeText, /t9/u, "要点名到具体是哪条调用被放弃（宿主/模型都得知道丢了哪一次副作用）");
+  assert.match(noticeText, /共 1 条/u, "正文条数照旧为真（快照 3 格 - 锚点 2 = 1，本格无 partialText）");
 });

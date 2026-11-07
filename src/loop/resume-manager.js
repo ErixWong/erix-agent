@@ -545,6 +545,10 @@ export async function restoreResume(ctx) {
       // issue #754（裁决 2）：旧格式（pre-261021）档案里「只在快照里」的那段崩溃轮正文，现在一条
       // 也不喂；这个局部只数「丢了几条」，交给下面那条恢复告示出声用（判据 2：禁止静默）。
       let legacySnapshotBodyDropped = 0;
+  // 同一条闸门下的另两个吐口：被抑制的快照 `partialText`（0/1）与被放弃补跑的在飞调用（要进告示）。
+  let legacyPartialBodyDropped = 0;
+  /** @type {Array<{id?: unknown, name?: unknown}>} */
+  let legacyPendingDropped = [];
       if (crashSiteRound || ledgerBoundary !== null) {
         // 工单 261021（第三刀）·issue #425 ·锚点的**现算**口径：`persistedTranscriptLength` 过去
         // 读的是快照里那份**采样**（`saveRunSnapshot` 写出的那一刻 write === read），而 partialPersistence
@@ -642,10 +646,16 @@ export async function restoreResume(ctx) {
           .slice(0, anchor)
           .some((entry) => entry.message?.role === "assistant"
             && entry.round === crashRound);
-        if (typeof partialText === "string" && partialText.length > 0
+        // **同源同去留补完（issue #754 裁决 2，第一必修）**：`partialText` 与快照 `messages` 是同一条退役
+        // 通道上的两个正文出口（写侧 `src/loop/orchestrator.js` 同一批，引入于 `1aceadf`，早于 261021）。
+        // 旧格式分支上它**也不喂** —— 否则告示说「上下文只从账本重建」，上下文里却坐着快照正文。
+        // 探针 = 0（新格式：正文逐条入账，这一支通常根本不触发）**照旧喂**，一字不变。
+        const partialTextPending = typeof partialText === "string" && partialText.length > 0
           && Number.isSafeInteger(partialRound)
           && partialRound === crashRound
-          && !crashRoundAssistantPersisted) {
+          && !crashRoundAssistantPersisted;
+        if (partialTextPending && legacySnapshotBodyDropped > 0) legacyPartialBodyDropped = 1;
+        if (partialTextPending && legacySnapshotBodyDropped === 0) {
           const partialMessage = {
             role: "assistant",
             content: [{ type: "text", text: partialText }],
@@ -718,14 +728,23 @@ export async function restoreResume(ctx) {
         // 没有配对 `assistant` 的上下文 ⇒ 同一个 `invalid_messages`，0 次请求）。
         // **代价（认下来）**：那一轮的副作用从此彻底不补 —— 不重跑、也无结果可接，只在告示那句弃用说明里留痕。
         // 新格式（探针 = 0）不参与本条；A 集合仍拿全量 ⇒ #424 守卫与事件面一字不动（验收面：
-        // `test/loop-resume-unpersisted-tool-results.test.js` 的「第三刀不变式」格，带反向证）。
-        ctx.resumePendingTools = pendingTools.filter((pendingTool) => (
+        // `test/loop-resume-unpersisted-tool-results.test.js` 的「第三刀验收格」，带反向证；
+        // 它**不是**「旧档案恢复永不出 `invalid_messages`」的普适不变式，同一份文件 ④b 有反例形状）。
+        const replayablePending = pendingTools.filter((pendingTool) => (
           !snapshot.executedToolIds?.includes(pendingTool.id)
           && !ctx.resumeRunSnapshotResults.has(pendingTool.id)
           // 账本已经结清的结果不再补跑（逐条入账后，这是「已落盘」的权威口径）。
           && !ledgerToolResultIds.has(pendingTool.id)
-          && (legacySnapshotBodyDropped === 0 || toolUseInRebuiltContext(pendingTool.id))
         ));
+        // **同源同去留（issue #754 裁决 2 第三刀）**：旧格式分支上「上下文里已无配对 `tool_use`」的在飞
+        // 调用**也不补跑**（补跑就是把结果写进一条没有配对 `assistant` 的上下文 ⇒ `invalid_messages`）。
+        // **代价（认下来）**：那一轮的副作用从此彻底不补。**放弃补跑 ≠ 没有未结清** ⇒ 这批要交给告示
+        // （第二必修），否则模型读到 `RESUME_NOTICE_NO_PENDING` 那句「已成对落账」= 主动陈述假事实。
+        ctx.resumePendingTools = legacySnapshotBodyDropped === 0
+          ? replayablePending
+          : replayablePending.filter((pendingTool) => toolUseInRebuiltContext(pendingTool.id));
+        legacyPendingDropped = legacySnapshotBodyDropped === 0 ? []
+          : replayablePending.filter((pendingTool) => !toolUseInRebuiltContext(pendingTool.id));
       }
       // ── issue #421：**中段**悬空 `tool_use` 的读侧兜底 ────────────────────────────────────
       // 位置：上下文重建完（含 A 集合的内存合并）之后、**任何模型请求之前**、任何裁剪之前（裁剪只动
@@ -851,9 +870,11 @@ export async function restoreResume(ctx) {
         ctx.messages = trimmedMessages;
       }
       // issue #404：恢复运行要告诉模型这是复活赛（拼装/幂等见 `src/loop/resume-notice.js`）。
-      // issue #754（裁决 2）：第 4 个实参是「本次丢弃了几条只在快照里的旧格式正文」——它只让告示
-      // **多一句弃用说明**（0 时一个字都不多），不参与任何判据。
-      ctx.resumeNotice = planResumeNotice(ctx, records, pendingTail, legacySnapshotBodyDropped);
+      // issue #754（裁决 2）：第 4 个实参 =「丢弃了几段只在快照里的旧格式正文」（快照 `messages` 锚点后
+      // 的非空格子 + 被同一条闸门抑制的 `partialText`），第 5 个 =「放弃补跑的在飞调用」。两者只为告示
+      // **多出说明**（都为 0 时一个字都不多），不参与任何判据。
+      ctx.resumeNotice = planResumeNotice(ctx, records, pendingTail,
+        legacySnapshotBodyDropped + legacyPartialBodyDropped, legacyPendingDropped);
     } catch (error) {
       const fail = ctx.fail;
       await fail(error);
