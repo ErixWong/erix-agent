@@ -31,6 +31,19 @@ import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
+// issue #772 R3：14 格两轴的锚点登记表住在 `scripts/cell-axes-anchors.mjs`，**闸与这份测试 import 同一份**
+// （R2 之前表住在下面这个文件里、闸再用正则把它抽出来 ⇒ 豁免是闸发的、锚点却住在测试里，只有
+// `node --test` 会重算行号，`npm run check:docs` 看不见）。命中语义（唯一命中 / 等值 / 组键）也同源。
+import {
+  CELL_AXES_ANCHORS as CELL_AXES_ANCHORS_SHARED,
+  CELL_AXES_ANCHOR_FLOORS,
+  CELL_AXES_ANCHOR_MODULE,
+  anchorGroupKey,
+  anchorHitLines,
+  anchorLinesEqual,
+  anchorTableShape,
+} from "../scripts/cell-axes-anchors.mjs";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
 
@@ -586,74 +599,18 @@ const G4_KEY_NAME_CHECK = (lineText, key) => {
 // 这段数组是**两份机器共用的**：`scripts/docs-drift-check.mjs` 的 `cellAxesGuardVerdict()` 会把
 // 它原样抽出来自己再算一遍（标记区定点豁免的根据因此是「锚点等值对账」而不是词面）。所以：保持**数组
 // 字面量**与这两行哨兵注释，改成函数/表达式/多行拼合都会让闸抽不到 ⇒ 豁免失效、`npm run check:docs` 回红。
-// G4-ANCHORS:BEGIN
-const CELL_AXES_ANCHORS = [
-  // ── write 轴：今天把这一格写进载荷的那一句（已停写的两格 = 解释停写的那行证据）─────────
-  { key: "round", axis: "write", path: "src/loop/orchestrator.js", anchor: "^ {8}round,$", prev: "^ +return await persist\\(method, runId, \\{$" },
-  { key: "status", axis: "write", path: "src/loop/orchestrator.js", anchor: "^ {8}status,$" },
-  { key: "pendingToolUse", axis: "write", path: "src/loop/orchestrator.js", anchor: "^ {8}pendingToolUse: cloneState\\(snapshotPendingToolUse\\),$" },
-  { key: "pendingToolUses", axis: "write", path: "src/loop/orchestrator.js", anchor: "^ {8}pendingToolUses: cloneState\\(snapshotPendingToolUses\\),$" },
-  { key: "executedToolIds", axis: "write", path: "src/loop/orchestrator.js", anchor: "^ {8}executedToolIds: \\[\\.\\.\\.executedToolIds\\],$" },
-  { key: "toolResults", axis: "write", path: "src/loop/orchestrator.js", anchor: "^ {8}toolResults: toolResults\\.map\\(\\(toolResult\\) => \\(\\{$" },
-  { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", anchor: "^ {8}toolOutputs: cloneState\\(archivedOutputs\\.filter" },
-  { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", anchor: "^ {10}toolOutputs: archivedOutputs$" },
-  { key: "messages", axis: "write", path: "src/loop/orchestrator.js", anchor: "^ {8}messages: snapshotTranscriptResidue,$" },
-  { key: "persistedTranscriptLength", axis: "write", path: "src/loop/orchestrator.js", anchor: "^ {8}persistedTranscriptLength: runLoopState\\.persistedTranscriptLength,$" },
-  { key: "persistedTranscriptLength", axis: "write", row: 1, path: "src/loop/orchestrator.js", anchor: "^ {8}persistedTranscriptLength: runLoopState\\.persistedTranscriptLength,$" },
-  { key: "partialText", axis: "write", path: "src/loop/orchestrator.js", anchor: "^ {8}\\.\\.\\.\\(partialText === undefined \\? \\{\\} : \\{ partialText, partialRound \\}\\),$" },
-  { key: "partialRound", axis: "write", path: "src/loop/orchestrator.js", anchor: "^ {8}\\.\\.\\.\\(partialText === undefined \\? \\{\\} : \\{ partialText, partialRound \\}\\),$" },
-  { key: "toolUse", axis: "write", path: "src/loop/orchestrator.js", anchor: "里面\\*\\*没有\\*\\* `toolUse` 也没有 `ts`" },
-  { key: "ts", axis: "write", path: "src/loop/orchestrator.js", anchor: "^ +// - `ts`：同上口径，快照对象那一层没人读它" },
-  { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", anchor: "^ {8}compactionStats: cloneState\\(compactionStats\\),$" },
-  { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", anchor: "^ {8}\\? \\{ compactionStats: cloneState\\(compactionStats\\.slice\\(compactionStatsStart\\)\\) \\}$" },
-  // ── read 轴：恢复侧真读这一格的那一句（`status` 那一格的读者列只引测试指纹，无真读者）──────
-  { key: "round", axis: "read", path: "src/loop/resume-manager.js", anchor: "const crashRound = Number\\.isSafeInteger\\(snapshot\\.round\\)" },
-  { key: "round", axis: "read", path: "src/loop/orchestrator.js", anchor: "const crashRound = runLoopState\\.resumeRunSnapshot\\?\\.round;$" },
-  { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", anchor: "const crashToolUses = ctx\\.resumeRunSnapshot\\?\\.pendingToolUses$" },
-  { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", anchor: "const pendingTools = snapshot\\.pendingToolUses$" },
-  { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", anchor: "\\?\\? \\(ctx\\.resumeRunSnapshot\\?\\.pendingToolUse \\? \\[ctx\\.resumeRunSnapshot\\.pendingToolUse\\] : \\[\\]\\);$" },
-  { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", anchor: "^ +\\?\\? \\(snapshot\\.pendingToolUse$" },
-  { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", anchor: "for \\(const id of snapshot\\.executedToolIds \\?\\? \\[\\]\\) \\{$" },
-  { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", anchor: "!snapshot\\.executedToolIds\\?\\.includes\\(pendingTool\\.id\\)" },
-  { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", anchor: "\\|\\| \\(ctx\\.resumeRunSnapshot\\?\\.toolResults \\?\\? \\[\\]\\)\\.some\\(\\(entry\\) => \\($" },
-  { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", anchor: "for \\(const entry of snapshot\\.toolResults \\?\\? \\[\\]\\) \\{$" },
-  { key: "toolOutputs", axis: "read", path: "src/loop/resume-manager.js", anchor: "for \\(const output of snapshot\\.toolOutputs \\?\\? \\[\\]\\) \\{$" },
-  { key: "toolOutputs", axis: "read", path: "bin/final-guard-support.js", anchor: "\\(Array\\.isArray\\(record\\?\\.toolOutputs\\) \\? record\\.toolOutputs : \\[\\]\\)$" },
-  { key: "messages", axis: "read", path: "src/loop/resume-manager.js", anchor: "const snapshotBody = Array\\.isArray\\(snapshot\\.messages\\)" },
-  { key: "persistedTranscriptLength", axis: "read", path: "src/loop/resume-manager.js", anchor: "不能信快照里的 `persistedTranscriptLength`" },
-  { key: "persistedTranscriptLength", axis: "read", path: "src/loop/resume-manager.js", anchor: "^ +ctx\\.persistedTranscriptLength = ctx\\.messages\\.length;$" },
-  { key: "persistedTranscriptLength", axis: "read", row: 1, path: "src/loop/orchestrator.js", anchor: "^ +runLoopState\\.persistedTranscriptLength \\?\\? 0,$" },
-  { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", anchor: "\\|\\| \\(typeof ctx\\.resumeRunSnapshot\\?\\.partialText === \"string\"$" },
-  { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", anchor: "^ +const partialText = snapshot\\.partialText;$" },
-  { key: "partialRound", axis: "read", path: "src/loop/resume-manager.js", anchor: "^ +const partialRound = snapshot\\.partialRound;$" },
-  { key: "toolUse", axis: "read", path: "src/loop/resume-manager.js", anchor: "const unfinishedToolUses = crashToolUses\\.filter\\(\\(toolUse\\) => \\($" },
-  { key: "ts", axis: "read", path: "src/loop/resume-manager.js", anchor: "^ +record\\.ts,$" },
-  { key: "compactionStats", axis: "read", path: "src/loop/resume-manager.js", anchor: "^ +ctx\\.compactionStats = deterministic\\.compactionStats;$" },
-];
-// G4-ANCHORS:END
+/** 登记表本体在 `scripts/cell-axes-anchors.mjs`；这里只补一个 `path` 别名给下面那些判据用
+ *  （R2 的字段名叫 `path`，R3 按工单口径改名 `codePath`，别名让既有的判据不必整体改写）。 */
+const CELL_AXES_ANCHORS = CELL_AXES_ANCHORS_SHARED.map((entry) => ({ ...entry, path: entry.codePath }));
 
 /**
  * 锚点在目标文件里命中的行号（1 基）。两条约束都是判据的一部分：`anchor` 那一行必须命中，
  * 带了 `prev` 的还要邻行也命中（只靠本行消不了歧的那些，例：`round,`）。命中 0 次或多次都交给
  * 调用方判红——歧义锚点不配当基准。同样被 `cellAxesGuardVerdict()` 抽名（它自己重算时走同一条形状）。 */
-const G4_ANCHOR_LINE_CHECK = (fileLines, entry) => {
-  const hit = new RegExp(entry.anchor, "u");
-  const prev = entry.prev === undefined ? null : new RegExp(entry.prev, "u");
-  const hits = [];
-  fileLines.forEach((line, index) => {
-    if (!hit.test(line)) return;
-    if (prev !== null && !prev.test(fileLines[index - 1] ?? "")) return;
-    hits.push(index + 1);
-  });
-  return hits;
-};
-
+// 命中语义（anchor + 可选 prev 邻行）与闸**共用同一个函数**：两边算出的行号必须一模一样。
+const G4_ANCHOR_LINE_CHECK = (fileLines, entry) => anchorHitLines(fileLines, entry).hits ?? [];
 /** 表里写的行号集合与锚点重算的行号集合是否**等值**（多 / 少 / 换一条都是 false）。 */
-const G4_ANCHOR_EQ_CHECK = (citedLines, anchorLines) => {
-  const sort = (list) => [...list].sort((a, b) => a - b).join(",");
-  return citedLines.length === anchorLines.length && sort(citedLines) === sort(anchorLines);
-};
-
+const G4_ANCHOR_EQ_CHECK = (citedLines, anchorLines) => anchorLinesEqual(citedLines, anchorLines);
 /** 文件按行取（带缓存）：G4 与它的三条反向证共用，避免各自再读一遍盘。 */
 const G4_LINE_CACHE = new Map();
 function G4_LINES_OF(rel) {
@@ -665,7 +622,7 @@ function G4_LINES_OF(rel) {
 }
 
 /** 一格的第几行 + 哪个轴 + 哪个文件 ⇒ 一组引用的基准键。 */
-const G4_GROUP_KEY = (key, axis, rowIndex, path) => `${key}|${axis}|${rowIndex}|${path}`;
+const G4_GROUP_KEY = anchorGroupKey;
 
 /**
  * 把锚点登记表算成「组键 → 行号集合」，并把**唯一命中**判据的破口作为错误返回（不抛，
@@ -794,8 +751,8 @@ test("G4 表里每条 file:line 都复核：文件在场 + 行号在范围内 + 
     (entry) => G4_GROUP_KEY(entry.key, entry.axis, entry.row ?? 0, entry.path),
   ));
   assert.ok(
-    CELL_AXES_ANCHORS.length >= 30 && groupsSeen.size >= 25,
-    `锚点登记表只剩 ${CELL_AXES_ANCHORS.length} 条 / ${groupsSeen.size} 组（建单时是 39 条 / 37 组）——登记表被削薄了`,
+    CELL_AXES_ANCHORS.length >= CELL_AXES_ANCHOR_FLOORS.entries && groupsSeen.size >= CELL_AXES_ANCHOR_FLOORS.groups,
+    `锚点登记表只剩 ${CELL_AXES_ANCHORS.length} 条 / ${groupsSeen.size} 组（建单时 39 条 / 27 组，地板读 scripts/cell-axes-anchors.mjs 的 CELL_AXES_ANCHOR_FLOORS）——登记表被削薄了`,
   );
   const { groups, errors: anchorErrors } = G4_ANCHOR_GROUPS(CELL_AXES_ANCHORS, G4_LINES_OF);
   assert.deepEqual(anchorErrors, [], "锚点登记表自己就不成立（唯一命中判据）");

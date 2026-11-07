@@ -209,6 +209,19 @@ import {
   hostContractNames,
   resolveEntries as resolveExportEntries,
 } from "./export-consumer-check.mjs";
+// issue #772 R3：两轴载荷表的锚点登记表（14 格 × 两轴，39 条）住在 `scripts/cell-axes-anchors.mjs`，
+// 闸与 `test/contract-snapshot-cell-axes-767.test.js` **import 同一份**——豁免是闸发的，锚点也必须住在
+// 闸够得着的地方（R2 把它放在测试里 ⇒ 只有 `node --test` 会重算行号、`npm run check:docs` 看不见）。
+import {
+  CELL_AXES_ANCHORS as CELL_AXES_ANCHORS_SHIPPED,
+  CELL_AXES_ANCHOR_MODULE,
+  CELL_AXES_ANCHOR_FLOORS,
+  anchorGroupKey as cellAxesAnchorGroupKey,
+  anchorHitLines as cellAxesAnchorHitLines,
+  anchorLinesEqual as cellAxesAnchorLinesEqual,
+  anchorTableShape as cellAxesAnchorTableShape,
+  parseCellAxesAnchorTable as cellAxesParseAnchorTable,
+} from "./cell-axes-anchors.mjs";
 // 逐名表的**读法**（几格 / 第一格长什么样 / 入口列认哪几种写法 / 版本号从哪来）住在共享模块里：
 // `scripts/host-consumer-probe.mjs` 的覆盖判据读的是同一张表，各读各的 = 两条会各自漂移的真相。
 // issue #731 N4：CHANGELOG 的「版本节标题 / 段首日期」口径与 `scripts/release-day.mjs` **共享一份**
@@ -2816,30 +2829,22 @@ function bareLineExemptionEntryErrors() {
  * 这一段天生是「裸行号密度最高、但已被机器逐条复核」的形状。三条口径，缺一不可：
  *   ① **位置**：只认那对 begin/end 标记**之间**、且以 `|` 开头的表格行；标记区外的裸行号照旧逐条计数，
  *      同一个 (文档, 目标文件, 行区间) 只要还在区外出现过一次就**不**豁免（`regionOutside`）。
- *   ② **机器复核**：豁免只在 `test/contract-snapshot-cell-axes-767.test.js` 的 `G4` 真在场时生效。
- *      #772 R2 之后这一档不再是纯词面：闸自己把 `CELL_AXES_ANCHORS` 登记表**抽出来重算一遍**
- *      （每条锚点在目标文件里必须**唯一命中**，命中的行号必须与两份契约表里写的 `path:line`
- *      **逐字符等值**）——锚点歧义 / 失效 / 表里行号漂了 ⇒ 判据不在场 ⇒ 豁免自动失效、闸回红。
- *      同时还绑着两条判据函数的**定义与调用**（`G4_KEY_NAME_CHECK` 的词面那一档、
- *      `G4_ANCHOR_EQ_CHECK` 的等值那一档）：被改名、被削成「行号存在就行」都拿不到豁免。
+ *   ② **机器复核 = 闸自己重算**（#772 R3）：锚点表住在 `scripts/cell-axes-anchors.mjs`，闸与专用契约测试
+ *      **import 同一份**；闸拿登记锚点在源码里**当场**搜唯一命中行号，与两份契约表里写的 `path:line`
+ *      逐组等值对账。命中 0 或 >1（歧义）/ 表里行号漂了 / 这一格这一轴没登记锚点 ⇒ 这一组**不再被豁免**，
+ *      回到裸行号棘轮计数，并另发一条点名错误。闸不 spawn 测试（它是纯文档闸），也不读测试算出的结果。
  *   ③ **不静默**：豁免数进 `--verbose` 的分解；判据不在场时另发一条点名错误，而不是静默少算。
  *  越界 / 不存在 / 反向区间照旧逐条查——豁免只免「计入棘轮」这一档，未免「行号复核」那一档。 */
 const CELL_AXES_MARK_BEGIN = "<!-- erix:snapshot-cell-axes:begin -->";
 const CELL_AXES_MARK_END = "<!-- erix:snapshot-cell-axes:end -->";
 const CELL_AXES_GUARD_TEST = "test/contract-snapshot-cell-axes-767.test.js";
-const CELL_AXES_GUARD_LABEL = /(?:^|\n)[ \t]*test\(\s*["`]G4\b/;
-const CELL_AXES_GUARD_DEF = /const\s+G4_KEY_NAME_CHECK\s*=\s*\(\s*([A-Za-z0-9_$]+)\s*,\s*([A-Za-z0-9_$]+)\s*\)\s*=>(?=[\s\S]{0,400}?\b\1\b)(?=[\s\S]{0,400}?\b\2\b)[\s\S]{0,400}?\S/;
-const CELL_AXES_GUARD_CALL = /assert\.ok\(\s*G4_KEY_NAME_CHECK\s*\(/;
-// 锚点等值那一档：两条判据函数都必须「定义里两个参数真被用 + 在判据里被调」。只抽名字不算。
-const CELL_AXES_GUARD_LINE_DEF = /const\s+G4_ANCHOR_LINE_CHECK\s*=\s*\(\s*([A-Za-z0-9_$]+)\s*,\s*([A-Za-z0-9_$]+)\s*\)\s*=>(?=[\s\S]{0,600}?\b\1\b)(?=[\s\S]{0,600}?\b\2\b)[\s\S]{0,600}?\S/;
-const CELL_AXES_GUARD_LINE_USE = /(?:=\s*|!\s*|assert\.ok\(\s*)G4_ANCHOR_LINE_CHECK\s*\(/;
-const CELL_AXES_GUARD_EQ_DEF = /const\s+G4_ANCHOR_EQ_CHECK\s*=\s*\(\s*([A-Za-z0-9_$]+)\s*,\s*([A-Za-z0-9_$]+)\s*\)\s*=>(?=[\s\S]{0,400}?\b\1\b)(?=[\s\S]{0,400}?\b\2\b)[\s\S]{0,400}?\S/;
-const CELL_AXES_GUARD_EQ_USE = /(?:=\s*|!\s*|assert\.ok\(\s*)G4_ANCHOR_EQ_CHECK\s*\(/;
-/** 锚点登记表：哨兵之间的**数组字面量**（闸自己 `new Function` 跑出来，抽不到/跑不通 = 拿不到豁免）。 */
-const CELL_AXES_ANCHOR_BLOCK = /\/\/ G4-ANCHORS:BEGIN[^\n]*\n[\s\S]*?const CELL_AXES_ANCHORS = (\[[\s\S]*?\n\]);\n\/\/ G4-ANCHORS:END/;
-const CELL_AXES_ANCHOR_MIN_ENTRIES = 30;   // 建单时 39 条 / 37 组；削到三分之一以下就是被抖空了
-const CELL_AXES_ANCHOR_MIN_GROUPS = 25;
-/** 表里两轴列的仓内引用（与测试侧的 `CITATION` 同形，只取 src/ 与 bin/）。 */
+/** #772 R3：闸对测试文件只核它**真能核**的那一件事实——专用契约测试在场、且真的 import 了锚点模块
+ *  （= 两边读的是同一份登记表）。R2 那一族「正则认测试文件形状」的声称已经撤掉（`CELL_AXES_GUARD_LABEL`
+ *  /`_DEF`/`_CALL`/`_LINE_DEF`/`_LINE_USE`/`_EQ_DEF`/`_EQ_USE`）：实测把 G4 的键名判据削弱成只查行号
+ *  存在，那些形状照样在场、闸照样点头——它认的是**字形**而不是**判据**，正是 fail-open（self-test
+ *  第 1 条红就是它）。语义那一档改由闸**自己**按锚点重算（见 `cellAxesRegionExemption()`），
+ *  不再靠「猜测试长什么样」。 */
+const CELL_AXES_GUARD_IMPORT = /from\s+["'][^"']*scripts\/cell-axes-anchors\.mjs["']/u;/** 表里两轴列的仓内引用（与测试侧的 `CITATION` 同形，只取 src/ 与 bin/）。 */
 const CELL_AXES_SIDE_REF = /(?:src|bin)\/[A-Za-z0-9_./-]+\.js:[0-9]+/gu;
 const CELL_AXES_DOCS = [CONTRACT_EN, CONTRACT_CN];
 
@@ -2907,45 +2912,6 @@ function cellAxesRegionContentErrors() {
 }
 
 /**
- * 抽锚点登记表（只认哨兵之间的数组字面量）。返回 `{ entries }` 或 `{ why }`（why = 拿不到豁免的原因）。
- * 为什么不用 `import`：`--self-test` 的覆盖层只改**文本**，跑不到新版本的模块；抽文本才能连内存副本一起校。
- */
-function cellAxesAnchorRegistry(text) {
-  if (typeof text !== "string" || text.length === 0) return { why: `${CELL_AXES_GUARD_TEST} 里没有锚点登记表可抽` };
-  const m = CELL_AXES_ANCHOR_BLOCK.exec(text);
-  if (m === null) {
-    return { why: "抽不到 `// G4-ANCHORS:BEGIN … const CELL_AXES_ANCHORS = [ … ]; … // G4-ANCHORS:END` 这段数组字面量"
-      + "（哨兵被删、登记表被改成函数/表达式/多行拼合 ⇒ 闸无法自己重算行号）" };
-  }
-  let entries;
-  try {
-    entries = new Function(`"use strict"; return (${m[1]});`)();   // 字面量数组，不碰外围作用域
-  } catch (error) {
-    return { why: `锚点登记表跑不通（它必须是纯数组字面量）：${error.message}` };
-  }
-  if (!Array.isArray(entries)) return { why: "锚点登记表不是数组" };
-  if (entries.length < CELL_AXES_ANCHOR_MIN_ENTRIES) {
-    return { why: `锚点登记表只剩 ${entries.length} 条（下限 ${CELL_AXES_ANCHOR_MIN_ENTRIES}）⇒ 表不再逐格钉，豁免不能给` };
-  }
-  const bad = entries.filter((e) => !e || typeof e.key !== "string" || (e.axis !== "write" && e.axis !== "read")
-    || typeof e.path !== "string" || typeof e.anchor !== "string");
-  if (bad.length > 0) {
-    return { why: `${bad.length} 条锚点条目形状不合法（key/axis/path/anchor 缺一不可，axis 只许 write/read）：`
-      + JSON.stringify(bad[0] ?? null) };
-  }
-  try {
-    for (const e of entries) { new RegExp(e.anchor, "u"); if (e.prev !== undefined) new RegExp(e.prev, "u"); }
-  } catch (error) {
-    return { why: `锚点正则抽不出/编译不过：${error.message}` };
-  }
-  const groups = new Set(entries.map((e) => `${e.key}|${e.axis}|${e.row ?? 0}|${e.path}`));
-  if (groups.size < CELL_AXES_ANCHOR_MIN_GROUPS) {
-    return { why: `锚点登记表只剩 ${groups.size} 组（下限 ${CELL_AXES_ANCHOR_MIN_GROUPS}）⇒ 逐格钉不成立` };
-  }
-  return { entries };
-}
-
-/**
  * 一份契约标记区里的「两轴引用」索引：`格名|轴|同名第几行|文件` → Set(行号)。
  * 只抽 `src/` 与 `bin/` 那两档（测试侧指纹走词面 + 在场那一档，同测试口径）。标记区不在 → null。
  */
@@ -2976,102 +2942,139 @@ function cellAxesTableRefs(rec) {
 }
 
 /**
- * 闸**自己**重算一遍（issue #772 R2 M1）：不读测试那份结果、不比字串，而是拿登记表自已在目标文件里
- * 找唯一命中行，再与两份契约表逐字符对账。返回错误文本数组（空 = 这一档真在场且全对）。
+ * 闸这一侧的**前提**判据（#772 R3 收窄后只剩「在场」类，全部可核、没有一条靠猜形状）：
+ *   ① 专用契约测试在场，且真的 `import` 了锚点模块（两边同一份表，不是各存一份副本）；
+ *   ② 锚点模块在场、哨兵之间的数组字面量抽得出、跑不通/低于地板都算不在场；
+ *   ③ 两份契约里那对 begin/end 标记成对在场（只剩一半 = 「标记区」无界 = 后门）。
+ * 区域内每条引用是否真对得上锚点，由 `cellAxesRegionExemption()` 逐组当场重算，不在这里。
+ * @returns {{ok:boolean, why?:string, entries?:number, groups?:number}}
  */
-function cellAxesAnchorRecompute(entries) {
-  const out = [];
-  const groups = new Map();
-  for (const entry of entries) {
-    const rec = fileRecord(entry.path);
-    const where = `\`${entry.key}\` 的 ${entry.axis} 锚点（${entry.path}，正则 ${entry.anchor}）`;
-    if (!rec) { out.push(`锚点指向的文件不在场：${entry.path}（${where}）`); continue; }
-    let hits = [];
-    try {
-      const hit = new RegExp(entry.anchor, "u");
-      const prev = entry.prev === undefined ? null : new RegExp(entry.prev, "u");
-      rec.lines.forEach((line, index) => {
-        if (!hit.test(line)) return;
-        if (prev !== null && !prev.test(rec.lines[index - 1] ?? "")) return;
-        hits.push(index + 1);
-      });
-    } catch (error) {
-      out.push(`锚点正则跑不通（${where}）：${error.message}`);
-      continue;
-    }
-    if (hits.length !== 1) {
-      out.push(hits.length === 0
-        ? `锚点 0 命中（${where}）⇒ 锚点已失效，表里那些行号没有基准`
-        : `锚点歧义（${where}）命中 ${hits.length} 行：${hits.map((n) => `:${n}`).join(" ")} ⇒ 歧义锚点不配当基准`);
-      continue;
-    }
-    const gk = `${entry.key}|${entry.axis}|${entry.row ?? 0}|${entry.path}`;
-    groups.set(gk, new Set([...(groups.get(gk) ?? []), ...hits]));
+function cellAxesGuardVerdict() {
+  const guardText = fileRecord(CELL_AXES_GUARD_TEST)?.text ?? null;
+  if (guardText === null || guardText.trim() === "") {
+    return { ok: false, why: `${CELL_AXES_GUARD_TEST} 不在场或空了（被改名/删除/清空 ⇒ 那份逐格断言没人跑）` };
   }
-  const show = (path, set) => [...set].sort((a, b) => a - b).map((n) => `${path}:${n}`).join(" / ");
+  if (!CELL_AXES_GUARD_IMPORT.test(guardText)) {
+    return { ok: false, why: `${CELL_AXES_GUARD_TEST} 没有 import \`${CELL_AXES_ANCHOR_MODULE}\``
+      + ` ⇒ 测试读的表和闸读的不是同一份（#772 R3 的单一真值不成立）` };
+  }
+  const table = cellAxesAnchorTable();
+  if (table.why) return { ok: false, why: table.why };
   for (const doc of CELL_AXES_DOCS) {
-    const refs = cellAxesTableRefs(fileRecord(doc));
-    if (refs === null || refs.size === 0) { out.push(`${doc}：标记区读不出两轴引用 ⇒ 无从对账`); continue; }
+    const lines = fileRecord(doc)?.lines ?? [];
+    const b = lines.filter((l) => l.includes(CELL_AXES_MARK_BEGIN)).length;
+    const e = lines.filter((l) => l.includes(CELL_AXES_MARK_END)).length;
+    if (b === 0 || b !== e) {
+      return { ok: false, why: `${doc} 的标记对不在场或残缺（begin ${b} 处 / end ${e} 处）`
+        + ` ⇒ 「标记区」没有边界，定点豁免不能给` };
+    }
+  }
+  return { ok: true, entries: table.entries.length, groups: table.shape.groups };
+}
+
+/**
+ * 锚点表（#772 R3 单一真值）：住在 `scripts/cell-axes-anchors.mjs`，闸从它的**文本**里抽字面量
+ * （`--self-test` 的覆盖层只改文本、改不动已加载的模块），并与本文件 `import` 到的出厂表比形状——
+ * 两者不同形 = 有人把登记表改成运行期拼合/两份表各长各的。抽不到、跑不通、低于地板都拿不到豁免。
+ */
+function cellAxesAnchorTable() {
+  const parsed = cellAxesParseAnchorTable(fileRecord(CELL_AXES_ANCHOR_MODULE)?.text ?? null);
+  if (parsed.why) return { why: parsed.why };
+  const resolved = cellAxesAnchorTableShape(parsed.entries);
+  const shipped = cellAxesAnchorTableShape(CELL_AXES_ANCHORS_SHIPPED);
+  if (resolved.entries !== shipped.entries || resolved.groups !== shipped.groups || resolved.cells !== shipped.cells) {
+    return { why: `闸从 \`${CELL_AXES_ANCHOR_MODULE}\` 的文本里抽到 ${resolved.entries} 条 / ${resolved.groups} 组 / ${resolved.cells} 格，`
+      + `而 import 到的出厂表是 ${shipped.entries} 条 / ${shipped.groups} 组 / ${shipped.cells} 格`
+      + ` ⇒ 两份表不是同一份（哨兵之间必须是纯数组字面量）` };
+  }
+  return { entries: parsed.entries, shape: resolved };
+}
+
+/**
+ * **逐组**豁免判定（#772 R3 的核心：闸自己当场重算，不 spawn 测试、也不读测试算出来的结果）。
+ * 表里每一组 `格名|轴|同名第几行|文件` 的引用都要过三关，全过才免进棘轮：
+ *   ① 这一格这一轴**有**登记锚点（没有 ⇒ 那条行号没有基准 ⇒ 红，并且**不再被豁免** ⇒ 回棘轮计数）；
+ *   ② 锚点在源码里**唯一命中**（0 命中 = 锚点失效；>1 = 锚点歧义，歧义锚点不配当基准）；
+ *   ③ 表里写的行号与重算结果**等值**（漂一行就红，并打印「表写 :NNNN / 锚点实际 :MMMM / 那一行原文」）。
+ * 中英两侧任一侧不合格 ⇒ 这一组两侧都不豁免（同一份真值不许一侧对一侧错）。
+ * @returns {{why?:string, okGroups:Set<string>, refGroup:Map<string,string>, errors:string[],
+ *            entries:number, groups:number}}
+ */
+function cellAxesRegionExemption() {
+  const refGroup = new Map();     // `${doc}|${path}|${line}` → 组键
+  const errors = [];
+  const verdict = cellAxesGuardVerdict();
+  if (!verdict.ok) {
+    return { why: verdict.why, okGroups: new Set(), refGroup, errors, entries: 0, groups: 0 };
+  }
+  const table = cellAxesAnchorTable();
+  // ② 每条锚点在目标文件里当场重算（0 / >1 命中都记进 failed，歧义锚点不配当基准）
+  const recomputed = new Map();
+  const failed = new Map();
+  for (const entry of table.entries) {
+    const gk = cellAxesAnchorGroupKey(entry.key, entry.axis, entry.row ?? 0, entry.codePath);
+    const lines = fileRecord(entry.codePath)?.lines ?? null;
+    if (lines === null) { failed.set(gk, `锚点指向的文件不在场：${entry.codePath}`); continue; }
+    const { hits, error } = cellAxesAnchorHitLines(lines, entry);
+    if (error) { failed.set(gk, `锚点正则跑不通：${error}`); continue; }
+    if (hits.length !== 1) {
+      failed.set(gk, hits.length === 0
+        ? `锚点 0 命中（正则 ${entry.anchor}）⇒ 锚点已失效，表里那些行号没有基准`
+        : `锚点歧义（正则 ${entry.anchor}）命中 ${hits.length} 行：${hits.map((n) => `:${n}`).join(" ")} ⇒ 歧义锚点不配当基准`);
+      continue;
+    }
+    // 同一格同一轴可以有多条锚点（例：快照侧 + 轮记录侧各一条）——它们命中同一组引用，所以取**并集**；
+    // 但**每一条**都必须各自唯一命中，任一条歧义/失效都记进 failed（歧义锚点不配当基准）。
+    recomputed.set(gk, new Set([...(recomputed.get(gk) ?? []), ...hits]));
+  }
+  // ①③ 与两份契约表里写的 path:line 逐组等值对账
+  const show = (p, set) => [...set].sort((a, b) => a - b).map((n) => `${p}:${n}`).join(" / ");
+  const drifted = new Set();
+  const referenced = new Set();
+  const refsByDoc = CELL_AXES_DOCS.map((doc) => [doc, cellAxesTableRefs(fileRecord(doc))]);
+  for (const [doc, refs] of refsByDoc) {
+    if (refs === null) { errors.push(`cell-axes-anchors: ${doc}：标记区读不出两轴引用 ⇒ 无从对账`); continue; }
+    if (refs.size === 0) { errors.push(`cell-axes-anchors: ${doc}：标记区里一条两轴引用都没有 ⇒ 表被搬空了，无从对账`); continue; }
     const side = doc === CONTRACT_EN ? "en" : "cn";
     for (const [gk, cited] of refs) {
       const [key, axis, , path] = gk.split("|");
-      const anchorLines = groups.get(gk);
+      for (const n of cited) refGroup.set(`${doc}|${path}|${n}`, gk);
+      referenced.add(gk);
+      const anchorLines = recomputed.get(gk);
       if (anchorLines === undefined) {
-        out.push(`${side}：${doc} 表里 \`${key}\` 的 ${axis} 列引了 ${show(path, cited)}，但这一格这一轴没有登记锚点`
-          + ` ⇒ 那条行号没有基准可对（新增引用要同批在 ${CELL_AXES_GUARD_TEST} 登记）`);
+        errors.push(`cell-axes-anchors: ${side}：${doc} 表里 \`${key}\` 的 ${axis} 列引了 ${show(path, cited)}，`
+          + `但这一格这一轴**没有登记锚点**${failed.get(gk) ? `（${failed.get(gk)}）` : ""}`
+          + ` ⇒ 那条行号没有基准可对，也不再被豁免（回到裸行号棘轮计数）；`
+          + `新增引用要同批在 \`${CELL_AXES_ANCHOR_MODULE}\` 登记能区分这件事的源码形状`);
+        drifted.add(gk);
         continue;
       }
-      const eq = (a, b) => [...a].sort((x, y) => x - y).join(",") === [...b].sort((x, y) => x - y).join(",");
-      if (!eq(cited, anchorLines)) {
+      if (!cellAxesAnchorLinesEqual(cited, anchorLines)) {
         const target = fileRecord(path)?.lines ?? [];
-        out.push(`${side}：${doc} 表里 \`${key}\` 的 ${axis} 列与登记锚点不等值——表写 ${show(path, cited)}`
-          + ` / 锚点实际 ${show(path, anchorLines)}`
+        errors.push(`cell-axes-anchors: ${side}：${doc} 表里 \`${key}\` 的 ${axis} 列与登记锚点不等值——`
+          + `表写 ${show(path, cited)} / 锚点实际 ${show(path, anchorLines)}`
           + `（表里引的那一行原文：${[...cited].map((n) => (target[n - 1] ?? "<行号越界>").trim().slice(0, 90)).join(" ⧸ ")}`
           + `；锚点那一行原文：${[...anchorLines].map((n) => (target[n - 1] ?? "").trim().slice(0, 90)).join(" ⧸ ")}）`
-          + ` ⇒ 豁免的机器复核不成立`);
-      }
-    }
-    for (const gk of groups.keys()) {
-      if (!refs.has(gk)) {
-        const [key, axis, rowIndex, path] = gk.split("|");
-        out.push(`${side}：${doc} 表里 \`${key}\` 的 ${axis} 锚点（同名第 ${Number(rowIndex) + 1} 行，${path}）`
-          + `已经没人在表里引它 ⇒ 引用被删了而锚点还躺着，豁免不能给`);
+          + ` ⇒ 行号漂了（#772 R2 评审第 3 节那个形状：错引到同一键名的注释行，词面判据当年看不见）`);
+        drifted.add(gk);
       }
     }
   }
-  return out;
+  // 登记了却没人在表里引 = 后门（同 `BARE_LINE_EXEMPTIONS` / `CELL_AXES_CALIBER_LINES` 的口径）
+  for (const gk of recomputed.keys()) {
+    if (referenced.has(gk)) continue;
+    const [key, axis, rowIndex, path] = gk.split("|");
+    errors.push(`cell-axes-anchors: \`${CELL_AXES_ANCHOR_MODULE}\` 里 \`${key}\` 的 ${axis} 锚点（同名第 ${Number(rowIndex) + 1} 行，${path}）`
+      + `已经没人在表里引它 ⇒ 引用被删了而锚点还躺着，留着就是给未来的行号留后门`
+      + `（要么把引用放回表里，要么删掉这条登记）`);
+  }
+  const okGroups = new Set();
+  for (const gk of recomputed.keys()) {
+    if (failed.has(gk) || drifted.has(gk) || !referenced.has(gk)) continue;
+    okGroups.add(gk);
+  }
+  return { okGroups, refGroup, errors, entries: table.entries.length, groups: okGroups.size };
 }
-
-/** 纯函数判据（反向证直接拿它问，不必改盘）：`G4` 的逐条复核是否真在场。传入 null = 那个文件不在场。 */
-function cellAxesGuardVerdict(text) {
-  if (text === null || text === undefined) {
-    return { ok: false, why: `${CELL_AXES_GUARD_TEST} 不在场（被改名或删除 ⇒ 表里那些 file:line 没人逐条复核）` };
-  }
-  if (!CELL_AXES_GUARD_LABEL.test(text)) return { ok: false, why: "G4 那条 test 不在场（被改名或删除）" };
-  if (!CELL_AXES_GUARD_DEF.test(text)) {
-    return { ok: false, why: "G4 的键名判据 `G4_KEY_NAME_CHECK` 的定义不在场，或它的两个参数没有真被用到"
-      + "（只查行号存在 = 免检通道，不配拿豁免）" };
-  }
-  if (!CELL_AXES_GUARD_CALL.test(text)) return { ok: false, why: "G4 没把键名判据用在断言里（`assert.ok(G4_KEY_NAME_CHECK(…))` 不在场）" };
-  // ↓ #772 R2 M1：词面那一档之上再叠两档——等值判据真被调，以锚点表在**闸自己手里**重算得动。
-  if (!CELL_AXES_GUARD_LINE_DEF.test(text) || !CELL_AXES_GUARD_LINE_USE.test(text)) {
-    return { ok: false, why: "G4 的锚点命中判据 `G4_ANCHOR_LINE_CHECK` 不在场（定义、两个参数真被用、且被调用），"
-      + "没有它⇒「唯一命中」这条底线无人执行 ⇒ 不配拿豁免" };
-  }
-  if (!CELL_AXES_GUARD_EQ_DEF.test(text) || !CELL_AXES_GUARD_EQ_USE.test(text)) {
-    return { ok: false, why: "G4 的锚点等值判据 `G4_ANCHOR_EQ_CHECK` 不在场（定义 + 在判据里被调用）⇒ 表里的行号只是词面比对"
-      + "（#772 R2：豁免的根据必须是「按登记锚点重算行号并等值对账」，不是「那一行提到键名」）" };
-  }
-  const registry = cellAxesAnchorRegistry(text);
-  if (registry.why) return { ok: false, why: registry.why };
-  const drift = cellAxesAnchorRecompute(registry.entries);
-  if (drift.length > 0) {
-    return { ok: false, why: `锚点等值对账在闸这一侧自己重算也不过（共 ${drift.length} 条）：${drift.slice(0, 2).join("；")}`
-      + (drift.length > 2 ? " …" : "") };
-  }
-  return { ok: true, anchors: registry.entries.length };
-}
-
 /** 裸行号一侧的外仓前缀（工单 261021-03 B1）：`BARE_LINE_RE` 不带首部边界，所以
  *  `pi-subagents:src/runs/background/async-execution.js:4` 里的 `src/…:4` 会被抽到。回看匹配点之前的
  *  那几个字符就能判「它是不是带了仓名前缀」。边界用 `[^\w./-]`（反引号 / 括号 / 中文标点都是），
@@ -3089,7 +3092,7 @@ function collectBareLineRefErrors() {
   // 标记区外也出现过」——两边都出现过的键**不**豁免（豁免只认纯区内的引用，区外照旧逐条计数）。
   const regionHits = new Set();
   const regionOutside = new Set();
-  const regionGuard = cellAxesGuardVerdict(fileRecord(CELL_AXES_GUARD_TEST)?.text ?? null);
+  const regionEx = cellAxesRegionExemption();   // #772 R3：逐组当场重算，合格一组免一组
   let regionMarked = false;
   let occurrences = 0;
   for (const rel of docs) {
@@ -3119,8 +3122,10 @@ function collectBareLineRefErrors() {
         const v = bareLineExemptionVerdict({ doc: rel, target, lineText: line });
         if (v.exempt) { exemptHits.add(`${rel}|${target}`); continue; }
         const inRegion = region !== null && i > region.begin && i < region.end && line.trimStart().startsWith("|");
-        if (inRegion && regionGuard.ok) regionHits.add(key); else regionOutside.add(key);
-      }
+        // #772 R3：豁免是**逐组**给的——这一行的锚点必须在闸自己手里唯一命中、且与表里写的行号等值；
+        // 锚点被删 / 歧义 / 0 命中 / 行号漂了 ⇒ 只有这一条掉出豁免、回到棘轮计数（不必整张表一起没）。
+        const axesGroup = inRegion && to === null ? regionEx.refGroup.get(`${rel}|${target}|${from}`) : undefined;
+        if (axesGroup !== undefined && regionEx.okGroups.has(axesGroup)) regionHits.add(key); else regionOutside.add(key);      }
     });
   }
   // R3 越界必红（工单 #286 T-a：不是观察项）
@@ -3172,15 +3177,16 @@ function collectBareLineRefErrors() {
   } else if (baseline !== null && measured < baseline) {
     notes.push(`bare-lines: 实测 ${measured} 处 < 基线 ${baseline} 处——存量在变少，请把 BARE_LINE_REF_BASELINE 降到 ${measured}（降基线要写理由，棘轮不许空转）`);
   }
-  notes.push(`bare-lines: 覆盖面 ${docs.length} 份文档里裸行号引用 ${occurrences} 次出现 / 唯一 (文档,目标文件,行区间) ${unique.size} 处，` + `其中声明式豁免 ${exemptHits.size} 处（${BARE_LINE_EXEMPTIONS.length} 条条目）、标记区定点豁免 ${regionExempt} 处（机器复核在场=${regionGuard.ok ? "是" : "否"}，绑 ${CELL_AXES_GUARD_TEST} 的 G4）⇒ 棘轮口径实测 **${measured}** vs 基线 ${baseline}`
+  notes.push(`bare-lines: 覆盖面 ${docs.length} 份文档里裸行号引用 ${occurrences} 次出现 / 唯一 (文档,目标文件,行区间) ${unique.size} 处，` + `其中声明式豁免 ${exemptHits.size} 处（${BARE_LINE_EXEMPTIONS.length} 条条目）、标记区定点豁免 ${regionExempt} 处（#772 R3 逐组重算合格才免：锚点表 ${regionEx.entries} 条 / 合格 ${regionEx.groups} 组，表在 ${CELL_AXES_ANCHOR_MODULE}；前提判据在场=${regionEx.why === undefined ? "是" : "否"}）⇒ 棘轮口径实测 **${measured}** vs 基线 ${baseline}`
     + `；另有带已知外部仓前缀的外仓行号 ${extPrefixed.size} 处（文档|仓名 去重，既不计棘轮也不查存在性，见 EXTERNAL_REPO_PREFIXES）`);
-  if (!regionGuard.ok && regionMarked) {
-    out.push(`bare-lines: 标记区定点豁免的机器复核不在场 —— ${regionGuard.why}；豁免只在 ${CELL_AXES_GUARD_TEST} 的 G4`
-      + ` 逐条复核（按登记锚点重算行号，再与表里的 path:line 逐字符等值对账；#772 R2 之前只验「那一行提到键名」）`
-      + `真生效时才给 ⇒ 标记区内的裸行号全部照旧计入棘轮`
-      + `（登记与 span 规则见 docs/maintenance/command-reference.md#docs-anchors，issue #772）`);
-  }
-  collectBareLineRefErrors.notes = notes;
+  out.push(...regionEx.errors);   // #772 R3：闸自己重算出来的破口（歧义 / 0 命中 / 行号漂 / 没登记 / 登记了没人引）
+  if (regionMarked && (regionEx.why !== undefined || regionEx.errors.length > 0)) {
+    out.push(`bare-lines: 标记区定点豁免的机器复核不在场 —— ${regionEx.why ?? `闸自己按登记锚点重算不过（共 ${regionEx.errors.length} 条）：${regionEx.errors.slice(0, 2).join("；")}${regionEx.errors.length > 2 ? " …" : ""}`}`
+      + `；豁免的根据是 \`${CELL_AXES_ANCHOR_MODULE}\` 里的锚点在**闸自己手里**唯一命中、并与表里写的 path:line 逐组等值`
+      + `（#772 R3：闸自己当场重算，不 spawn 测试——它是纯文档闸；R2 那一档拿正则认 ${CELL_AXES_GUARD_TEST} 的测试文件形状，`
+      + `判据被削弱成只查行号存在它也认不出，所以撤了）`
+      + `⇒ 不合格的那几条照旧计入棘轮（--verbose 的分解里有逐组计数；登记与 span 规则见 docs/maintenance/command-reference.md#docs-anchors）`);
+  }  collectBareLineRefErrors.notes = notes;
   return out;
 }
 
