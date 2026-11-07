@@ -4428,11 +4428,15 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 // 两边各自测到的都是 16，合并树才是 17 —— 与 #741/#742 各测 12、合并树报 13 完全同型 ⇒ 必须现测。
 // 2026-11-08 第四次重取（本支 merge 到 main `aec7cf9`（#753/#735 slice2 已合）之后，issue #731 收尾）：
 // 合并树把两侧各自登记的条目并到一起 ⇒ 这个数**只能**在本树现跑守卫取，不许把 18 + 18 或 18 + 1 相加。
-// 动常量之前 `node --test test/static-guards.test.js --test-name-pattern "配对地板"` 的标准输出原文见本单交付报告。
+// 动常量之前 `node --test test/static-guards.test.js --test-name-pattern "配对地板"` 的标准输出原文（合并树上跑）：
+//
+//     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 19 条 / 英文 19 条 / 配对 19 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 18（校准面 \#\# [Unreleased]）
+//     # 配对地板：实测 19 对 > 地板 18 对 ⇒ 可以抬地板到 19
+//
 // ⚠ 同型陷阱第四次：主干那一对（#753）与 #731 那一对在各自树上报的都是 18，合并树才是现在的这个数。
 // ⚠ #731 那一票同时动了 bullet 的**行级谓词**（`isChangelogBulletLine`，见 `scripts/changelog-heading.mjs`）——
 //   抬地板前先确认这个数是**换了谓词之后**测出来的（换谓词前后一致 ⇒ 那次改动行为等价，没偷偷改判据）。
-const CHANGELOG_PAIR_FLOOR = 18;
+const CHANGELOG_PAIR_FLOOR = 19;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
