@@ -44,8 +44,8 @@
 //     **必须在装了 devDependencies 的环境里跑**（`tsc` 取不到时下面直接给指路报错，不堆栈）。
 //
 // 用法：
-//   npm run check:types                        # 默认：包根入口 src/index.js，非 strict 基线 103
-//   npm run check:types -- --with-tools        # 连 erix-agent/tools 入口一起卡，非 strict 基线 138
+//   npm run check:types                        # 默认：包根入口 src/index.js，非 strict 基线 96
+//   npm run check:types -- --with-tools        # 连 erix-agent/tools 入口一起卡，非 strict 基线 131
 //   npm run check:types:strict                 # strict 棘轮（issue #417）：同一张依赖图加 `--strict`，基线 `BASELINE_STRICT_ROOT`
 //   npm run check:types:strict -- --with-tools # strict 并集一档，基线 `BASELINE_STRICT_WITH_TOOLS`
 //   node scripts/type-check-ratchet.mjs --verbose                   # 额外打印每文件、每错误码分布
@@ -230,7 +230,13 @@ const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 //   与本刀无关。带错文件数仍是 **27 个**（`fold-llm.js` 没退出错误集合），可及 74 / 宿主不可及 29 = 103
 //   （`src/compact/fold-llm.js` 在公共半边：`src/index.js` 直接 `export … from` 它）。两档同笔下调，
 //   并集 142 → 138 是**同一次测量**里的同一个 −4。
-const BASELINE_ROOT = 103;
+// 下调记录：**103 → 96**（issue #753 C1，2026-11-07，本地 node v22.23.2；rebase 到 `origin/main 47b69bf` 之后在
+//   **最终树**上重取，值不变仍是 **96**）。**这一档 −7 不是本片还的债，是陈旧登记值**：同一次测量里把
+//   `origin/main` 用 `git archive` 摊到 /tmp/main746、单独跑同一把尺，逐字输出是
+//     check:types: OK — 实测 96 个 --checkJs 错误 / 26 个文件（包根入口），比基线 103 **少 7 个**。
+//   ⇒ 主干自己就量到 96（本片对非 strict 档**净增 0**），登记值 103 是 #661 时代留下、此后没人再测的数；
+//   按「棘轮只减不增」对齐到现测。带错文件数 **26** 未变。
+const BASELINE_ROOT = 96;
 
 // `--with-tools` 的基线：把第二个公共入口 `src/tools/index.js` 也喂给 tsc 后的并集。
 // 复现命令（逐字）：
@@ -251,7 +257,11 @@ const BASELINE_ROOT = 103;
 //   于是 261 → 185 的 76 个 = #249 的 75 个 + #177 欠下的那 1 个（教训：下调基线要**两档一起复测**）。为什么默认不带它：#214 正文给的口径就是 `src/index.js`，
 //   默认值必须与规格逐字一致；但它**是**真实盲区，所以这里留一条可随时收紧的通道（收紧=把默认入口加上并
 //   把基线换成当前实测值，属 #214 之后的收紧动作，不要拿它当「反正卡不住」的理由）。
-const BASELINE_WITH_TOOLS = 138;
+// 下调记录：**138 → 131**（issue #753 C1，2026-11-07，与 `BASELINE_ROOT` 同一次测量、同一笔提交；rebase 后在
+//   最终树上重取，值不变仍是 **131**）。主干那一侧的逐字输出（同一把尺、同一台机器）：
+//     check:types: OK — 实测 131 个 --checkJs 错误 / 28 个文件（含 ./tools 入口），比基线 138 **少 7 个**。
+//   ⇒ 与包根档同一个 −7（陈旧登记值，本片净增 0），带错文件数 **28** 未变。
+const BASELINE_WITH_TOOLS = 131;
 
 // ── strict 档基线（issue #417：把 #416 的「只观测」升级成棘轮）──────────────────────
 // 这两个常量是 strict 那一档的**唯一真值**。同一条 tsc 命令（入口 / target / module / `--skipLibCheck` 与非
@@ -278,9 +288,17 @@ const BASELINE_WITH_TOOLS = 138;
 // 的折叠 catch 把 `unpersisted` 的两次访问合并成一次 `any` 视图读（`copyErrorCarrier` 载体化之后多出来的
 // 那一次 `compactionError.unpersisted` 不再直接点属性），同一段里 `Property 'unpersisted' does not exist on
 // type '{}'` 由 2 个减到 1 个；两档在**同一次测量里**产出（1892 / 2122）。
-const BASELINE_STRICT_ROOT = 1892;
+// 下调记录：**1892 → 1872**（issue #753 C1，2026-11-07，rebase 到 `origin/main 47b69bf` 之后的**最终树**现测；
+//   四档同一次测量、同一笔提交）。**本片的账要说清**：主干那一侧同尺实测 **1868 / 72 文件**，本支
+//   **1872 / 72** ⇒ 本片**净增 +4**（`src/loop/orchestrator.js` 里 `nextUserTurnHook` 注入闭包与 `finish` 包装的
+//   隐式 any 参数，TS7006 一族），本轮不还、在这里点名；1872 仍比登记值 1892 低 **20**（那 24 个陈旧余量
+//   里 4 个被本片吃掉），按棘轮方向降到现测。带错文件数 **72** 未变（本片没让新文件进错误集合）。
+const BASELINE_STRICT_ROOT = 1872;
 // 2026-11-01 重测下调 2128 → 2124（−4 = `f55eb8f` 一行 `@returns` 补 `facts`；包根档同笔复测未动）
-const BASELINE_STRICT_WITH_TOOLS = 2122;
+// 下调记录：**2122 → 2085**（issue #753 C1，2026-11-07，与上三档同一次测量、同一笔提交）：主干那一侧并集
+//   档实测 **2081 / 78 文件**、本支 **2085 / 78**（同一个 +4，出处见 `BASELINE_STRICT_ROOT` 那条：TS7006 一族，
+//   本轮不还）；登记值 2122 里的余量是陈旧量，一并对齐到现测。
+const BASELINE_STRICT_WITH_TOOLS = 2085;
 
 const argv = process.argv.slice(2);
 const WITH_TOOLS = argv.includes("--with-tools");

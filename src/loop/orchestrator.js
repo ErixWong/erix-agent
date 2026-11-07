@@ -3866,11 +3866,13 @@ export async function runToolLoop(options) {
   // guard 那一组的老问题（#392 用 deepEqual 钉死过 `Object.keys(metrics)` 的形状漂移）。
   // 不传钩子 ⇒ `steerMetrics === undefined` ⇒ 这个包装是纯透传，终局对象逐字节不变。
   const finish = async (reason, detail, error) => {
-    const result = /** @type {Record<string, any>} */ (
-      await finishTermination(reason, detail, error)
-    );
+    const result = await finishTermination(reason, detail, error);
     if (steerMetrics !== undefined && result !== undefined && result !== null) {
-      result.diagnostics = { steer: { ...steerMetrics } };
+      // 写这一格走一个 `Record<string, any>` 别名：终局对象的形状声明里没有 `diagnostics`（扩它要动
+      // `termination.js` 的宿主面 typedef），而**返回值本身保持原类型**——在这里 cast 返回值会让
+      // 10 个消费点一起报 TS2740（当场量到过）。
+      const additive = /** @type {Record<string, any>} */ (result);
+      additive.diagnostics = { steer: { ...steerMetrics } };
     }
     return result;
   };
