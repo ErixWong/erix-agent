@@ -27,14 +27,15 @@
 
 逐字照抄工具返回里出现过的字面值（括号里是产生它的那条命令）：
 
-- `HEAD=840db57`、`BASE=762ef52`（`git rev-parse --short HEAD` / `git rev-parse --short HEAD~3`）
-- `762ef52 Merge pull request #771 from ErixWong/feat-261107-15-erix-run-steer-action`（`git log --oneline -1 HEAD~3`）
+- `HEAD=8de0d9f`、`BASE=762ef52`（`git rev-parse --short HEAD` / `git rev-parse --short HEAD~4`）
+- `762ef52 Merge pull request #771 from ErixWong/feat-261107-15-erix-run-steer-action`（`git log --oneline -1 HEAD~4`）
 - 本次三个提交（同一命令的输出）：`840db57 docs(#754 裁决2): CHANGELOG Breaking 中英各一条 + 执行报告 report-754-erix.md（实测形状、出声机制、邻近 7 条连带红点定位）`
   / `df1372d test(#754 裁决2): …` / `bb86b59 fix(#754 裁决2): …`
 - `ANCHOR 3 snap.round 2`（`node /tmp/probe-754b.mjs` 尾行；早先一轮 `node /tmp/probe-754.mjs` 还返过
   `snap.messages.length 5 nonNull 5 toolResults [ 'chatcmpl-tool-80778b291064178e' ]`）
 - 现场摘要（`node /tmp/probe-754b.mjs` 的 JSON，两跳与双崩两棵逐字同值；下面每行都是返回里的原行）：
-  - `"crashed": false,`
+  - ` "mode": "twohop",`（另一棵是 ` "mode": "double",`）
+  - ` "crashed": false,`
   - `"firstOk": false,`
   - `"firstError": "invalid_messages: Invalid message at index 3: user tool_result has no matching assistant tool_use",`
   - `"firstRequests": 0,`
@@ -49,9 +50,10 @@
 - 邻近 8 文件结果（同一轮 `node --test` 那 8 个文件）：`# tests 95` / `# pass 88` / `# fail 7`
 - 基点对照（`/tmp/base754`，`git archive HEAD~2 | tar -x` 后在副本里跑两个红点文件）：
   `# tests 51` / `# pass 51` / `# fail 0`
-- 告示行与文本（`node /tmp/probe-754.mjs`）：
-  `CONTROL work-c7d61121-mvi9c4fj-77f54351:engine:round:2:control:resume-notice:79d2df882e96f23a`，
-  其中含 `本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 2 条，该格式已不再支持恢复）。`
+- 告示文本（`node /tmp/probe-754.mjs 2>&1 | grep -o '本次恢复丢弃了[^\\]*。'` 的原样输出）：
+  `本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 2 条，该格式已不再支持恢复）。`
+  （入账行由 `node /tmp/probe-754.mjs | grep ^CONTROL` 给出：
+  `CONTROL work-c7d61121-mvi9c4fj-77f54351:engine:round:2:control:resume-notice:79d2df882e96f23a`）
 - 告示体积与指纹（`node -e … buildResumeNotice({round:2,…,legacySnapshotBodyDropped:2}) --input-type=module`）：
   `694 resume-notice:79d2df882e96f23a 5`
 
