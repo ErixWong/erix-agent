@@ -12,6 +12,11 @@
 // 守卫自己的两个洞（**同义改写绕得过** + **一句注释就能把「封顶族」解禁**）。本文件把这三件一起钉住。
 // 第 5 轮堵的是守卫自己的三个洞（meta 句自证 / 整句包反引号 / 只取首命中）。**第 6 轮**把 meta 名单里的
 // 裸词「判据」摘掉——它是本仓库正文里的通用词，不是指涉守卫自身的词（口径与两条反向证见 META_MARKER 与 G7）。
+// **第 7 轮**把「这条命中算不算在谈守卫自己」从**词表**升级成**提及 vs 使用**的判别：一把词表同时造两种错
+// （它漏掉同义改写的复述句 = 假绿，又误伤顺带带上一个自我指涉词的真话句 = 假红），而「复述判据」这件事
+// 其实有一个**结构信号**——**被引号整段包住的一个术语**。于是主判据换成 `mentionReason()`（G8 四条 RED/GREEN
+// 各带退化对照），词表退居兜底；剩下那半个（**既不带引号、也不点名守卫机制的复述**）结构上无从判别，
+// 登记成已知缺口并由 **G9** 钉住现状（那是 characterization，不是愿望）。
 //
 // 六条判据（口径：宁可窄而真）：
 //   G0 扫描面在场：两份契约的「#735 切片 2」那一节 + CHANGELOG 里点名 `#735` 切片 2 的**中英两条条目**
@@ -26,6 +31,13 @@
 //   G4 中英对齐是机器判据：契约那一节的 issue 引用集合两侧相等、字节账表的数字序列两侧逐字相等。
 //   G5 反向证：每条禁语都必须咬住**撤回前**的原文（逐字取自 `97daf82` / `ee2fbfa` 的删除行），
 //      咬不住 = 死条目 ⇒ 红（#210 R2「变异没落上就算失败」）；现树必须零命中。
+//   G7 第 5 / 6 轮的自证：三个洞（meta 句顶替事实句 / 整句包反引号 / 只取首命中）+ meta 词表口径，各带退化对照。
+//   G8 **提及 vs 使用**（第 7 轮）：命中被一段**术语级引号**整段包住 ⇒ 那是「提这个措辞」，既不算主张（G1/G3
+//      豁免），也不满足在场（G2）；整句包进引号是**抄一句主张** ⇒ 使用，照扫。四条 RED/GREEN 各带一条
+//      退化对照（不判引号 / 整句级豁免 / 引号内一律豁免 / 半个引号），并证现树上确有「只有结构这层认得出、
+//      词表漏掉」的命中 ⇒ 这一层不是空转。
+//   G9 **已知缺口（characterization）**：不带引号、也不点名守卫机制的复述句**判为使用**（算在场），
+//      短术语包进引号的假主张**判为提及**（不算主张）。钉的是现状，理由是「提及」在这里没有任何结构信号。
 //   G6 **代码真值是结构化的**：「恢复锚点封顶」那一族禁不禁，看的是 `resumeTranscriptAnchor` 有没有以
 //      **真实代码形状**出现（`resumeTranscriptAnchor:` / `= resumeTranscriptAnchor` / `state.resumeTranscriptAnchor` /
 //      `get resumeTranscriptAnchor(`），**注释里的名字不算**（判前先剥 `//` 与 `/* */`）。
@@ -78,6 +90,8 @@ function stripInlineCode(text) {
   return text.replace(/`([^`\n]*)`/gu, (whole, inner) =>
     (inner.length <= TERM_SPAN_MAX && !SENTENCE_PUNCT.test(inner) ? "" : whole));
 }
+/** 术语级片段（第 5 轮的尺子，第 7 轮的引号判别复用同一把）：不含句读且长度 ≤ `TERM_SPAN_MAX`。 */
+const isTermSpan = (inner) => inner.length <= TERM_SPAN_MAX && !SENTENCE_PUNCT.test(inner);
 /** 剥注释（只用于 G6 的代码真值）：块注释与行注释。字符串里含 `//` 时会被多剥一点 ⇒ 方向保守（照样算「不在」）。 */
 function stripComments(code) {
   return code.replace(/\/\*[\s\S]*?\*\//gu, "").replace(/(^|[^:])\/\/.*$/gmu, "$1");
@@ -175,6 +189,42 @@ const QUANTIFIED = [
  */
 const META_MARKER = /禁语|必须逐字留着|肯定式|本守卫|守卫自己|这条守卫|条件禁|无条件禁|自动解禁|那一族是|这一族是|\bG[0-9]\b|this\s+guard|the\s+guard\b|restat\w*|required\s+sentence|ban\s+list|\bfamily\b[^.]{0,20}\bbanned\b|is\s+banned\b/u;
 
+/**
+ * 「提及 vs 使用」的**结构**信号（第 7 轮的主判据）：成对的引号。
+ * 反引号也算——CHANGELOG 面的术语级反引号已被 `stripInlineCode` 剥掉，剩下的反引号片段是整句型（算使用），
+ * 所以这一条在 CHANGELOG 面只会更保守；契约面本来不剥行内代码，从此与 CHANGELOG 面同一口径。
+ * 直双引号/反引号不跨行（`\n` 之内必须闭合）。**未闭合的半个引号不算引用**（不许拿一个 `「` 当逃生门）。
+ * 单引号 `'` 故意不在表里：英文撇号会与它撞车（`that's`），造出的假 span 会把真主张吃掉。
+ */
+const QUOTE_PAIRS = [["「", "」"], ["『", "』"], ["“", "”"], ['"', '"'], ["`", "`"]];
+const quoteCache = new Map(); // 视图文本 → 引号片段；扫描面很小（几 KB），缓存只为多次判定时不重复扫
+function quoteSpansOf(text) {
+  const cached = quoteCache.get(text);
+  if (cached) return cached;
+  const spans = [];
+  for (const [open, close] of QUOTE_PAIRS) {
+    let from = 0;
+    for (;;) {
+      const s = text.indexOf(open, from);
+      if (s < 0) break;
+      const e = text.indexOf(close, s + open.length);
+      if (e < 0) break;                      // 没有闭合 ⇒ 这一种引号后面也无从配对
+      const inner = text.slice(s + open.length, e);
+      spans.push({ start: s, end: e + close.length, inner, termLevel: isTermSpan(inner) });
+      from = e + close.length;               // 不嵌套：闭引号之后才找下一段
+    }
+  }
+  if (quoteCache.size > 200) quoteCache.clear();
+  quoteCache.set(text, spans);
+  return spans;
+}
+/** 完整包住 [at, at+len) 的那段**术语级**引号（没有则 null）。命中跨过引号边界 ⇒ 不算被包住。 */
+function quotedTermSpanWrapping(text, at, len) {
+  return quoteSpansOf(text).find((s) => s.termLevel && s.start <= at && at + len <= s.end) ?? null;
+}
+/** 区间 [from, to) 里是否存在任何引号片段（退化实现「整句级豁免」用它，见 G8 的对照）。 */
+const hasAnyQuoteSpanInside = (text, from, to) => quoteSpansOf(text).some((s) => s.start >= from && s.end <= to);
+
 /** 肯定式判据（G2）：每面都必须留着的两句真话。 */
 const REQUIRED = [
   { id: "reader-never-reads", sides: ["en", "cn"],
@@ -239,23 +289,41 @@ const RETRACTABLE_FAMILIES = new Set(["cap"]);
 const STOPS = "。；;!?…：:";
 
 /** 命中所在的句子窗口（在中英混排的正文上按偏移取，不做整体切分，免得偏移错位）。 */
-function windowFor(flat, at, len) {
+function windowBounds(flat, at, len) {
   const isBoundary = (i) => STOPS.includes(flat[i] ?? "")
     || (flat[i] === "." && /\s/u.test(flat[i + 1] ?? ""));
   let s = at;
   while (s > 0 && !isBoundary(s - 1)) s -= 1;
   let e = Math.min(flat.length, at + len);
   while (e < flat.length && !isBoundary(e)) e += 1;
-  return flat.slice(s, Math.min(flat.length, e + 1));
+  return [s, Math.min(flat.length, e + 1)];
 }
+const windowFor = (flat, at, len) => flat.slice(...windowBounds(flat, at, len));
 
-/** 封顶族的命中若落在带撤回标记的句子里，就是历史叙事；其余一律算数。 */
+/**
+ * 一次命中是**提及**（在谈这个措辞）还是**使用**（主张这句话）。G1 禁语、G3 量词断言、G2 的「在场」
+ * 共用这一个判定——同一个短语被引号包住时，不能一面算引用、另一面算主张。
+ *   ① **结构**（第 7 轮的主判据）：命中被一段**术语级引号**整段包住 ⇒ 提及。尺子沿用第 5 轮那把
+ *      （`TERM_SPAN_MAX` + `SENTENCE_PUNCT`）：整句包进引号是把一句主张抄一遍 ⇒ **使用**，照扫。
+ *   ② **词表**（兜底）：同句点名守卫自身的机制（`META_MARKER`）⇒ 提及。词表换词就漏，故只作第二层；
+ *      它自己造的那两种错（漏 = 假绿、误伤 = 假红）在 G7 / G9 里各有反向证。
+ * 已知缺口（G9 钉住）：不带引号又不点名机制的复述句 ⇒ 这里判**使用**；短术语包进引号的假主张 ⇒ 判**提及**。
+ * 两者都是「没有结构信号 / 结构信号与主张相反」的那半个问题，不是这里的实现缺陷。
+ */
+function mentionReason(text, at, len, window) {
+  const span = quotedTermSpanWrapping(text, at, len);
+  if (span) return `术语级引用「${span.inner}」`;
+  if (META_MARKER.test(window)) return "同句在点名守卫自身的机制（词表兜底）";
+  return null;
+}
+const mentionAt = (text, at, len) => mentionReason(text, at, len, windowFor(text, at, len));
+
+/** 封顶族的命中若落在带撤回标记的句子里，就是历史叙事；其余一律算数。提及（引号内的术语 / 谈守卫自身）不算主张。 */
 function realHits(rows, view) {
   return rows.filter((row) => {
-    const window = windowFor(view[row.rule.where], row.index, row.text.length);
-    // **提及 vs 使用**：谈守卫自己的那一句（`禁语 / 判据 / 必须逐字留着 / is banned …`）是在**提**这个措辞，
-    // 不是主张它 —— 这是把第 4 轮那把「剥掉全部行内代码」的大刀换掉后的窄口径（见 stripInlineCode）。
-    if (META_MARKER.test(window)) return false;
+    const text = view[row.rule.where];
+    const window = windowFor(text, row.index, row.text.length);
+    if (mentionReason(text, row.index, row.text.length, window)) return false;
     // 历史叙事：只有**封顶族**能被一句带的「撤回 / reverted / retracted」放过；「按构造 / 不会丢信息」那族永不豁免。
     if (!RETRACTABLE_FAMILIES.has(row.rule.family)) return true;
     return !RETRACTION_MARKER.test(window);
@@ -279,12 +347,11 @@ function scan(rules, view) {
   return rows;
 }
 
-/** 肯定式判据的在场：至少要有一处命中落在**不是 meta 句**的句子里（见 META_MARKER）。 */
+/** 肯定式判据的在场：至少要有一处命中落在**使用**（不是提及）的位置上（见 `mentionReason` / G8）。 */
 function requiredPresent(rule, side, view) {
-  const where = rule[side].where;
-  const text = view[where];
+  const text = view[rule[side].where];
   return [...text.matchAll(withGlobal(rule[side].re))]
-    .some((m) => !META_MARKER.test(windowFor(text, m.index, m[0].length)));
+    .some((m) => !mentionAt(text, m.index, m[0].length));
 }
 
 // ── G0 扫描面在场（契约两节 + CHANGELOG 两条条目）─────────────────────────────
@@ -333,7 +400,7 @@ test("#735 切片2 · G2 每面都必须逐字留着「读者永不读到」与�
       assert.deepEqual(missing, [],
         `${surface.label}（${surface.file}）缺了必须留着的真话：${missing.join("、")}\n`
         + "禁语表只拦已知措辞；这两句不在场，就说明有人把窄口径改写成了别的说法（同义绕法）或整段删掉。\n"
-        + "注意：只出现在**谈守卫自己的句子**里（「必须逐字留着「…」」这类复述）不算在场 —— 那是自证循环。");
+        + "注意：只算**使用**——被引号整段包住的引用（「锚点封顶」这类术语级引用）与点名守卫自身的复述句都算**提及**，不算在场（见 G8 / `mentionReason`）—— 那是自证循环。");
     }
   }
 });
@@ -343,7 +410,9 @@ test("#735 切片2 · G2 每面都必须逐字留着「读者永不读到」与�
 test("#735 切片2 · G3 量词型断言（每一格/所有格子/都 + 账本/入账；every slot + ledger）⇒ 红", () => {
   for (const side of ["en", "cn"]) {
     for (const surface of [readContractSection(side), readChangelogEntry(side)]) {
-      const hits = scan(QUANTIFIED.filter((rule) => rule.side === side), views(surface.body));
+      // 与 G1 共用同一个「提及 vs 使用」判定（第 7 轮）：把量词断言**引**出来当证据不算主张，写上去才算。
+      const view = views(surface.body);
+      const hits = realHits(scan(QUANTIFIED.filter((rule) => rule.side === side), view), view);
       assert.deepEqual(hits.map((row) => row.rule.id), [],
         `${surface.label}（${surface.file}）出现了「全覆盖量词落在账本上」的断言：\n`
         + hits.map((row) => `  · ${row.rule.id} 命中「${row.text}」——${row.rule.why}`).join("\n")
@@ -493,4 +562,147 @@ test("#735 切片2 · G7 三个洞 + meta 名单口径的自证：meta 句不算
   assert.equal(live.length, 1,
     "第一处落在带「撤回」标记的句子（历史叙事，豁免），第二处未撤回 ⇒ 必须算数；实测算数 " + live.length + " 处");
   t.diagnostic("三洞自证 + 名单口径：meta 句不算在场（摘掉裸「判据」后仍封得住）/ 整句反引号照扫 / 每一处命中各自取句窗判豁免 / 提到「判据」的真话句不再被误判为不在场。");
+});
+
+// ── G8 提及 vs 使用：结构信号（引号）当主判据，词表退居兜底（第 7 轮）─────────────
+
+test("#735 切片2 · G8 提及 vs 使用：引号内的术语级命中不算主张也不算在场（四条 RED/GREEN，各带退化对照）", (t) => {
+  const scalar = REQUIRED.find((rule) => rule.id === "scalar-not-bitmap");
+  const cap = BANNED.find((rule) => rule.id === "cn-anchor-cap");
+  const quantifier = QUANTIFIED.find((rule) => rule.id === "cn-quantified-ledger-claim");
+  assert.ok(scalar && cap && quantifier, "对照夹具要用的三条判据必须都还在（少一条 ⇒ 下面全是空转，#210 R2）");
+  const flatOf = (text) => views(text).tight;
+  const cnBanned = () => BANNED.filter((rule) => rule.side === "cn");
+
+  // 三份**退化实现**：每份只坏在一处，而那些「坏处」正是本轮判据要排除的形状 —— 没有它们，下面的 GREEN
+  // 就成了恒真断言（#210 R2「变异没落上就算失败」）。
+  /** ① 只认词表（第 6 轮那份）：完全不判引号。 */
+  const presentWordListOnly = (text) => {
+    const flat = flatOf(text);
+    return [...flat.matchAll(withGlobal(scalar.cn.re))]
+      .some((m) => !META_MARKER.test(windowFor(flat, m.index, m[0].length)));
+  };
+  /** ② 整句级豁免：同一句里出现过引号 ⇒ 整句都当提及。 */
+  const presentWindowQuote = (text) => {
+    const flat = flatOf(text);
+    return [...flat.matchAll(withGlobal(scalar.cn.re))]
+      .some((m) => !hasAnyQuoteSpanInside(flat, ...windowBounds(flat, m.index, m[0].length)));
+  };
+  /** ③ 引号内一律豁免：不分术语级还是整句（第 5 轮洞②在引号轴上的翻版）。 */
+  const wrappedByAnyQuote = (text, at, len) => quoteSpansOf(text).some((s) => s.start <= at && at + len <= s.end);
+
+  // **RED/GREEN ①：引号内的复述 = 提及 ⇒ 不算在场**，而且这一条**词表根本够不着**（夹具里没有任何词表词）。
+  const quotedRestat = "下一节写着「`anchor` 是标量、不是逐格的位图」。";
+  assert.equal(META_MARKER.test(flatOf(quotedRestat)), false,
+    "夹具必须不带任何自我指涉词（否则「封得住」是词表给的，不是在证引号判别）");
+  assert.equal(presentWordListOnly(quotedRestat), true,
+    "RED：只认词表时这句被算成事实句 ⇒ 复述顶替了它引用的那句事实（自证循环还开着）");
+  assert.equal(requiredPresent(scalar, "cn", views(quotedRestat)), false,
+    "GREEN：结构这层认出「被引号整段包住的一个术语」⇒ 提及，不满足在场");
+
+  // **RED/GREEN ②：引号不许反向吃真话**——命中在引号外面就是使用，哪怕同一句里别处带着引号。
+  const factWithStrayQuote = "那条「读者永不读到」的口径之外，`anchor` 是标量、不是逐格的位图，这是实测的。";
+  assert.ok(hasAnyQuoteSpanInside(flatOf(factWithStrayQuote), 0, flatOf(factWithStrayQuote).length),
+    "夹具必须真的带着一段引号（否则这条对照没有对象）");
+  assert.equal(requiredPresent(scalar, "cn", views(factWithStrayQuote)), true,
+    "GREEN：命中落在引号外面 ⇒ 使用 ⇒ 算在场");
+  assert.equal(presentWindowQuote(factWithStrayQuote), false,
+    "RED：「同句有引号就整句豁免」会把这句真话判成不在场 = 假红（第 6 轮摘裸词「判据」修的是同一族错）");
+
+  // **RED/GREEN ③：整句包进引号是抄一句主张 = 使用 ⇒ 照扫**（第 5 轮洞②从反引号扩到引号，两侧都要成立）。
+  const quotedClaim = "辩护词只有一句：「被省掉的前缀都已入账，按锚点封顶保证跨恢复不会丢。」";
+  const flatClaim = flatOf(quotedClaim);
+  const rowsClaim = scan(cnBanned(), views(quotedClaim));
+  assert.ok(rowsClaim.length >= 1, "夹具必须真的被禁语咬住（否则下面两条对照是空的）");
+  assert.equal(realHits(rowsClaim, views(quotedClaim)).length, rowsClaim.length,
+    "GREEN：整句型引用不是术语级 ⇒ 一处都不许豁免");
+  assert.equal(rowsClaim.filter((row) => !wrappedByAnyQuote(flatClaim, row.index, row.text.length)).length, 0,
+    "RED：「引号内一律豁免」会把这句假主张整句吃掉 = 假绿");
+  const quotedFullFact = "上一节写着「`anchor` 是标量、不是逐格的位图，旧正文因此取不到。」";
+  assert.equal(requiredPresent(scalar, "cn", views(quotedFullFact)), true,
+    "GREEN（同一尺子的反向）：整句型引用就是把那句真话抄了一遍 ⇒ 读者读到了 ⇒ 算在场");
+
+  // **RED/GREEN ④：逐命中判，不整句判**——同一句里，引号里那处是提及，引号外那处是主张。
+  const mixed = "「锚点封顶」这四个字之外，恢复锚点封顶仍然成立。";
+  const viewMixed = views(mixed);
+  assert.equal(META_MARKER.test(viewMixed.tight), false, "夹具不许带词表词（否则豁免是词表给的）");
+  assert.equal(RETRACTION_MARKER.test(viewMixed.tight), false, "也不许带撤回标记（封顶族会被它豁免）");
+  const rowsMixed = scan([cap], viewMixed);
+  assert.equal(rowsMixed.length, 2, `同一句里两处命中都要看见（实测 ${rowsMixed.length}）`);
+  assert.equal(realHits(rowsMixed, viewMixed).length, 1,
+    "GREEN：引号内那处豁免、引号外那处算数；两处一起或一处都不算都是错的口径");
+  assert.equal(rowsMixed.filter((row) => !META_MARKER.test(windowFor(viewMixed.tight, row.index, row.text.length))).length, 2,
+    "RED：只认词表 ⇒ 两处都算主张（把引用当主张 = 假红）");
+  assert.equal(rowsMixed.filter((row) => !hasAnyQuoteSpanInside(viewMixed.tight, ...windowBounds(viewMixed.tight, row.index, row.text.length))).length, 0,
+    "RED：整句级豁免 ⇒ 两处都算提及（引号外那句主张被遮蔽 = 假绿）");
+
+  // 顺带把同一口径接到 G3（量词断言）：引出来当证据不算主张，写上去才算。
+  const quotedQuantifier = "上一版把它写成「每一格都在账本里」。";
+  assert.equal(realHits(scan([quantifier], views(quotedQuantifier)), views(quotedQuantifier)).length, 0,
+    "GREEN：被引号包住的量词断言是提及（CHANGELOG 里正是这样引 RED 证据的）");
+  assert.equal(scan([quantifier], views("每一格都在账本里。")).length, 1,
+    "RED 对照：同一句不引就是主张 ⇒ 必须咬住");
+
+  // **现树实证**：这一层不是只活在夹具里。四面里确有「被术语级引号包住」的命中，且其中至少一处词表认不出来。
+  let quotedMentions = 0;
+  let structureOnly = 0;
+  for (const side of ["en", "cn"]) {
+    for (const surface of [readContractSection(side), readChangelogEntry(side)]) {
+      const view = views(surface.body);
+      for (const rule of [...BANNED.filter((r) => r.side === side), ...REQUIRED.filter((r) => r.sides.includes(side))]) {
+        const spec = rule[side] ?? rule; // REQUIRED 的 re/where 挂在 rule[side] 上，BANNED 直接挂在 rule 上
+        const text = view[spec.where];
+        for (const m of text.matchAll(withGlobal(spec.re))) {
+          if (!quotedTermSpanWrapping(text, m.index, m[0].length)) continue;
+          quotedMentions += 1;
+          if (!META_MARKER.test(windowFor(text, m.index, m[0].length))) structureOnly += 1;
+        }
+      }
+    }
+  }
+  t.diagnostic(`现树四面里被术语级引号整段包住的命中 ${quotedMentions} 处，其中 ${structureOnly} 处词表认不出来`
+    + "（这些就是第 7 轮补上的那一族；旧口径把它们当主张 / 当在场）。");
+  assert.ok(structureOnly >= 1,
+    "现树上必须至少留一处「只有结构认得出、词表漏掉」的引用命中；它消失了说明扫描面被改窄或文档被洗过 ⇒"
+    + " 这一层只剩夹具能证，要么把那种命中请回来，要么在 CHANGELOG 里改口径并删掉这条断言");
+
+  t.diagnostic("四条 RED/GREEN：① 引号内的复述不算在场（词表够不着）② 引号不吃引号外的真话 ③ 整句包引号照扫（两侧同尺）④ 逐命中判（引号内提及 / 引号外主张）；量词判据同口径。");
+});
+
+// ── G9 已知缺口：没有结构信号的「提及」判不出来（characterization，钉现状）──────
+
+test("#735 切片2 · G9 已知缺口（characterization）：不带引号也不点名守卫的复述算在场；短术语包进引号的假主张算提及", (t) => {
+  const scalar = REQUIRED.find((rule) => rule.id === "scalar-not-bitmap");
+  const prefixClaim = BANNED.find((rule) => rule.id === "cn-prefix-already-journaled");
+  assert.ok(scalar && prefixClaim, "两条缺口都要用到的判据必须还在");
+
+  // **缺口①（假绿方向）**：复述既不带引号、也不点名守卫机制 ⇒ 结构上没有「提及」信号 ⇒ 按使用算 ⇒ 算在场。
+  // 为什么不做成「红」：判它不在场要的是语义（这句是复述还是主张），而本守卫的口径是**零 LLM、只读字节**；
+  // 硬要抓它只剩「再堆一张词表」，而词表正是第 6 / 7 轮实测会两头错的东西。读者在这一句里确实逐字读到了
+  // 那句真话，所以按「读者能不能读到」的口径算它合规也是**真话**——只是它挡不住偷懒的写法。
+  const unquotedRestat = "上一节还写着 anchor 是标量、不是逐格的位图，那是抄来的。";
+  const flatUnquoted = views(unquotedRestat).tight;
+  assert.ok(scalar.cn.re.test(flatUnquoted), "夹具必须真的命中肯定式判据（否则这条 characterization 是空的）");
+  assert.equal(META_MARKER.test(flatUnquoted), false, "夹具必须不带词表词——缺口①说的正是词表也漏的那一族");
+  assert.equal(requiredPresent(scalar, "cn", views(unquotedRestat)), true,
+    "现状：判为在场（已知缺口）。要翻这条断言，先拿出一个不是词表的判别信号");
+  // 词表这一层仍然兜住「点名守卫机制」的那一类复述 ⇒ 两层并存，第 7 轮没有把兜底拆掉。
+  const namesMachinery = "守卫要求正文里必须逐字留着 anchor 是标量、不是逐格的位图。";
+  assert.ok(/必须逐字留着/u.test(namesMachinery), "夹具必须真的点名守卫机制（否则下面那条是空转）");
+  assert.equal(requiredPresent(scalar, "cn", views(namesMachinery)), false,
+    "兜底层仍在：点名「必须逐字留着」的复述不算在场");
+
+  // **缺口②（假绿方向，禁语侧）**：短术语包进引号的假主张 ⇒ 判提及 ⇒ 不算主张。这与第 5 轮对反引号
+  // 已经接受的口径同一条（`按构造` 引出来当 RED 证据不算主张），代价是同一种躲法在引号轴上也照样有效。
+  const quotedFalseClaim = "正文里现在写「前缀已入账」。";
+  const rowsQuoted = scan([prefixClaim], views(quotedFalseClaim));
+  assert.equal(rowsQuoted.length, 1, `命中必须存在（实测 ${rowsQuoted.length}）——否则「豁免掉了什么」无从谈起`);
+  assert.equal(realHits(rowsQuoted, views(quotedFalseClaim)).length, 0,
+    "现状：引号内的短术语按提及豁免（已知缺口）；把整句写进引号就不再豁免，见 G8 的 RED/GREEN ③");
+  const unquotedSameClaim = "正文里现在写前缀已入账。";
+  assert.equal(realHits(scan([prefixClaim], views(unquotedSameClaim)), views(unquotedSameClaim)).length, 1,
+    "对照：同一句不包引号就算主张 ⇒ 上面那条豁免确实是引号给的，不是这条禁语咬不住");
+
+  t.diagnostic("两个缺口钉的是现状：① 无引号 + 不点名守卫的复述 ⇒ 算在场（结构上没有信号，词表也漏）；"
+    + "② 短术语包进引号的假主张 ⇒ 算提及而放过（与第 5 轮反引号同口径）。两者都不是本刀能零 LLM 判出来的那一类。");
 });
