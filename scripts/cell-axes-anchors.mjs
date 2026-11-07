@@ -338,7 +338,10 @@ export function checkCellAxesCoverage({ anchors = [], refsByDoc = [], required =
 /**
  * 从**文本**里抽登记表（`--self-test` 的覆盖层只改文本，跑不到新版本的模块）。
  * @param {string|null|undefined} text 模块文本（null = 文件不在场）
- * @returns {{entries: object[]}|{why: string}} 抽不到时 `why` = 拿不到豁免的原因
+ * @returns {{entries: object[], floorWhy?: string}|{why: string}} 抽不到时 `why` = 拿不到豁免的原因；
+ *   低于地板**不是**「抽不到」，而是带 `entries` 一起返回的 `floorWhy`——#772 R4 之后地板等于
+ *   `CELL_AXES_REQUIRED_CELLS.length`，于是「删掉一条登记」必然踩地板；如果把它做成前提失败直接返回，
+ *   「哪一格哪一轴没登记」那句就被抢走了（与闸里 parity 的处理同一个理由）。地板照旧是红。
  */
 export function parseCellAxesAnchorTable(text) {
   if (typeof text !== "string" || text.length === 0) {
@@ -371,10 +374,12 @@ export function parseCellAxesAnchorTable(text) {
   }
   const shape = anchorTableShape(entries);
   if (shape.entries < CELL_AXES_ANCHOR_FLOORS.entries) {
-    return { why: `锚点登记表只剩 ${shape.entries} 条（下限 ${CELL_AXES_ANCHOR_FLOORS.entries}）⇒ 表不再逐格钉，豁免不能给` };
+    return { entries, floorWhy: `锚点登记表只剩 ${shape.entries} 条（下限 ${CELL_AXES_ANCHOR_FLOORS.entries}，由人审清单`
+      + ` \`CELL_AXES_REQUIRED_CELLS\` 算出）⇒ 表不再逐格钉，豁免不能给` };
   }
   if (shape.groups < CELL_AXES_ANCHOR_FLOORS.groups) {
-    return { why: `锚点登记表只剩 ${shape.groups} 组（下限 ${CELL_AXES_ANCHOR_FLOORS.groups}）⇒ 逐格钉不成立` };
+    return { entries, floorWhy: `锚点登记表只剩 ${shape.groups} 组（下限 ${CELL_AXES_ANCHOR_FLOORS.groups}，同一份清单算出）`
+      + ` ⇒ 逐格钉不成立` };
   }
   return { entries };
 }

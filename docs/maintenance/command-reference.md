@@ -125,7 +125,7 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   the exemption is issued by the gate, and the gate could not recompute. What the gate still asserts about the
   test is only what it can verify: the file is present and non-empty, and it imports the anchor module (one
   table, two readers). What it no longer claims: anything about the test's internals — a regex cannot tell a
-  judgement from a weakened one. `--self-test` carries 13 cases in this family (9 red + 4 green controls): a
+  judgement from a weakened one. `--self-test` carries 19 cases in this family (14 red + 5 green controls): a
   reference copied outside the markers → red; the guard test emptied → red; the module import renamed inside the
   test → red; an anchor weakened to the bare key name → red, naming the ambiguity and its hit lines; the registry
   turned into a function call → red; **one anchor entry deleted** → that cell's reference is counted again, so the
@@ -137,6 +137,39 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   Comment-only edits → green. The floor stayed at 6: the exemption accounts for the table's 72 keys, while the
   bare line numbers the notes *under* the table had acquired were turned into symbol anchors (`residueStart` /
   `restoreResume`) rather than asking to raise the floor.
+  *Anchor kind* (issue #772 R4 M-A): every registry entry also carries `kind: "code" | "comment"` — `code` for a
+  write site or a reader, `comment` for the three entries whose whole point is a sentence inside a comment (`toolUse`
+  and `ts`, the stop-writing evidence, plus the resume side's "do not trust the snapshot's
+  `persistedTranscriptLength`"). The judgement is one shared function — `anchorKindError()` in
+  `scripts/cell-axes-anchors.mjs`, imported by the gate **and** by the contract test, so neither side owns a second
+  copy of the rule: a `code` anchor whose single hit is a comment line (`^\s*(\/\/|\/\*|\*)`) is red, a `comment`
+  anchor that lands on code is red, and the message names the cell, the axis, the hit line number and that line's
+  raw text. It closes the shape a line-number reconciliation cannot see: pointing the `compactionStats` write anchor
+  at `orchestrator.js:3015` (a comment that merely mentions the key) **while rewriting both contract tables'
+  citation to the same line** is self-consistent — equal numbers, file present, in range — and used to sit at exit 0
+  on both gates. `parseCellAxesAnchorTable()` also refuses the exemption when an entry's `kind` is missing or outside
+  `code / comment`.
+  *Coverage has a second, independent truth* (issue #772 R4 M-B): `CELL_AXES_REQUIRED_CELLS` is the human-reviewed
+  list of `(key, axis, codePath, row)` slots those two tables must cover — 39 slots over 14 cell names, written by
+  hand and never derived from the anchor registry (deriving it would stop being a second opinion). Every slot has to
+  be present in the registry **and** in each contract file, counted per slot rather than "mentioned once"; the shared
+  `checkCellAxesCoverage()` names the missing slot **and which file it is missing from**. The ratchet floors are now
+  derived from that list — `CELL_AXES_ANCHOR_FLOORS = { entries: CELL_AXES_REQUIRED_CELLS.length, groups: distinct
+  key|axis in the list }`, currently 39 / 27 — and must not be hand-tuned. That closes the silent thinning: deleting
+  one entry from each of the eight two-anchor groups **together with** the matching rows in both tables leaves 31
+  entries / 27 groups / 14 cells with every remaining citation still matching its anchor — which the old
+  hand-written floor (30 / 25) waved through.
+  *Known limit: semantics are not machine-checkable* (issue #772 R4, **registered, not patched**). Pointing
+  `compactionStats`' snapshot write anchor at a **different real line that mentions the same key name** —
+  `src/loop/orchestrator.js:3505` is `compactionStats,`, a payload pack, not the snapshot write site at `:3038` —
+  and rewriting both tables' citation to it in the same change stays green today. Everything a machine can ask is
+  answered: the file exists, the anchor hits exactly once, `kind: "code"` matches a code line, both tables equal the
+  recomputed numbers, and the coverage list is still satisfied. What no anchor can express is "*this* line is the
+  event *this* cell is about" — that is a reading judgement and stays with review. The leniency is pinned as a
+  contract rather than quietly hoped away: `--self-test` carries a green-control case for exactly that shape
+  (labelled 「#772 R4 已知限度（特征用例…）」), and `test/contract-snapshot-cell-axes-767.test.js` pins it as
+  `G4-R6 …（已知限度，见 command-reference）`. Do not add heuristics to close it — a heuristic that guesses which
+  event a line is about would itself be the thing nobody can review.
   *The region holds only the table* (issue #772 R2): every line strictly between the two markers must be a
   `|`-prefixed table row, a marker line, blank, or a **registered** caliber line (`CELL_AXES_CALIBER_LINES`, matched
   as whole trimmed text — and an entry nobody uses is itself red, the same no-back-door rule as the declarative

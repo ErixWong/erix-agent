@@ -3012,6 +3012,10 @@ function cellAxesAnchorTable() {
   const resolved = cellAxesAnchorTableShape(parsed.entries);
   const shipped = cellAxesAnchorTableShape(CELL_AXES_ANCHORS_SHIPPED);
   const out = { entries: parsed.entries, shape: resolved };
+  // #772 R4：地板（现由 `CELL_AXES_REQUIRED_CELLS` 算出，等于出厂条数）也**只是额外错误**，理由与下面的
+  // parity 同构：它不能当「前提不在场」直接返回，否则「删一条登记」那一例只会报地板，报不出「哪一格
+  // 哪一轴没登记 ⇒ 不再被豁免」——而地板本身仍是一条红。
+  if (parsed.floorWhy) out.floorWhy = parsed.floorWhy;
   // 与 `import` 进来的出厂表比形状：不同形 = 闸手里那份与真正加载的那份不是同一张表。
   // 它只是一条**额外错误**，不能当成「前提不在场」直接返回——否则「删一条锚点条目」那一例
   // 会被它提前抢走，真正该报的那句（「这一格这一轴没有登记锚点 ⇒ 不再被豁免」）就印不出来了。
@@ -3046,6 +3050,7 @@ function cellAxesRegionExemption() {
   }
   const table = cellAxesAnchorTable();
   if (table.parity) errors.push(`cell-axes-anchors: ${table.parity}`);
+  if (table.floorWhy) errors.push(`cell-axes-anchors: ${table.floorWhy}`);   // #772 R4：地板红，但不抢「哪一格」那句
   // ② 每条锚点在目标文件里当场重算（0 / >1 命中都记进 failed，歧义锚点不配当基准）
   const recomputed = new Map();
   const failed = new Map();
@@ -8052,6 +8057,69 @@ const CELL_AXES_DISTRACTOR_LINE = (() => {
   return hits.length === 1 ? hits[0] : null;
 })();
 
+/**
+ * #772 R4 M-A 的靶子（现读，不写死行号）：`compactionStats` 写点那一条 `kind: "code"` 锚点的
+ * **字面量原文**（拿它当替换靶）、它命中的真写点行号，与同一键名的那句**注释**行号。
+ * 拿不到靶子就返回 null ⇒ 下面那两条变异打不上 ⇒ 「变异没落上」判据报红，不会假绿。
+ */
+const CELL_AXES_R4_KIND_PROBE = (() => {
+  const entry = CELL_AXES_ANCHORS_SHIPPED.find((e) => e.key === "compactionStats" && e.axis === "write" && e.kind === "code");
+  if (entry === undefined) return null;
+  const lines = textOf(entry.codePath).split("\n");
+  const real = cellAxesAnchorHitLines(lines, entry).hits ?? [];
+  if (real.length !== 1 || CELL_AXES_DISTRACTOR_LINE === null) return null;
+  return { entry, literal: JSON.stringify(entry.anchor), realLine: real[0], commentLine: CELL_AXES_DISTRACTOR_LINE };
+})();
+
+/** 把两份契约里某条 `path:line` 同步改口到另一行（#772 R4：“两份引文同步改口”那个形状）。 */
+const syncCellAxesCitation = (from, to) => (text) => text.split(from).join(to);
+
+/**
+ * #772 R4 M-B 的靶子（现算）：每个**双锚点组**（同 key+axis+同名第几行+同文件上有两条登记）
+ * 里挑一条，连同它在两份表里的那条引用一起删 ⇒ 剩下的仍然自洽（旧行为：两道闸全绿）。
+ */
+const CELL_AXES_R4_PAIR_VICTIMS = (() => {
+  const bySlot = new Map();
+  for (const entry of CELL_AXES_ANCHORS_SHIPPED) {
+    const gk = cellAxesAnchorGroupKey(entry.key, entry.axis, entry.row ?? 0, entry.codePath);
+    bySlot.set(gk, [...(bySlot.get(gk) ?? []), entry]);
+  }
+  const out = [];
+  for (const [, list] of bySlot) {
+    if (list.length < 2) continue;
+    const entry = list[list.length - 1];
+    const hits = cellAxesAnchorHitLines(textOf(entry.codePath).split("\n"), entry).hits ?? [];
+    if (hits.length !== 1) continue;
+    out.push({ entry, literal: JSON.stringify(entry.anchor), citation: `${entry.codePath}:${hits[0]}` });
+  }
+  return out.length >= 4 ? out : null;
+})();
+
+/** #772 R4 M-B：把双锚点组里那 N 条登记从表里摸掉（每条靠自己的锚点字面量定位）。 */
+const dropCellAxesAnchorEntries = (text) => {
+  if (CELL_AXES_R4_PAIR_VICTIMS === null) return text;
+  let out = text;
+  for (const { literal, entry } of CELL_AXES_R4_PAIR_VICTIMS) {
+    const needle = `{ key: "${entry.key}", axis: "${entry.axis}"`;
+    const lines = out.split("\n");
+    const at = lines.findIndex((l) => l.includes(needle) && l.includes(literal));
+    if (at < 0) return text;
+    out = [...lines.slice(0, at), ...lines.slice(at + 1)].join("\n");
+  }
+  return out;
+};
+
+/** #772 R4 M-B：把双锚点组里那 N 条引用从一份表里摸掉（只动写/读两格，不碰别的散文）。 */
+const dropCellAxesCitations = (text) => {
+  if (CELL_AXES_R4_PAIR_VICTIMS === null) return text;
+  let out = text;
+  for (const { citation } of CELL_AXES_R4_PAIR_VICTIMS) {
+    if (!out.includes(citation)) return text;
+    out = out.split(`\`${citation}\``).join("").replace(/\s*[，,、]\s*(?=[（(])/gu, "");
+  }
+  return out;
+};
+
 const SELF_TEST_CASES = [
   // —— pkg-block / exports：#210 报的四种破坏，**前两种修前是绿的** ——
   {
@@ -8668,7 +8736,8 @@ const SELF_TEST_CASES = [
     overlay: {
       [CELL_AXES_ANCHOR_MODULE]: (t) => {
         const lines = t.split("\n");
-        const hit = lines.filter((l) => l.includes('key: "status", axis: "write"'));
+        // #772 R4：人审清单 `CELL_AXES_REQUIRED_CELLS` 里也有 `status`+write 那一格，所以只能挑带锚点的那一条
+        const hit = lines.filter((l) => l.includes('key: "status", axis: "write"') && l.includes("anchor:"));
         if (hit.length !== 1) return t;
         const at = lines.indexOf(hit[0]);
         return [...lines.slice(0, at), ...lines.slice(at + 1)].join("\n");
@@ -8700,6 +8769,69 @@ const SELF_TEST_CASES = [
   {
     label: "#772 R3 对照：原样的锚点表与两份表必须在闸自己手里重算得动（必须 0 错，证明上面几例不是恒红）",
     overlay: { [CELL_AXES_GUARD_TEST]: (t) => `${t}\n// self-test 复原探针（#772 R3）：只加一行尾注释，锚点表与两份契约都没动。\n` },
+    expectGreen: true,
+  },
+  // —— #772 R4：锚点「种类」（M-A）与覆盖面人审清单（M-B）——
+  {
+    label: `#772 R4 M-A：把 \`compactionStats\` 写点的 kind=code 锚点指到同一键名的那句注释（:${CELL_AXES_R4_KIND_PROBE?.commentLine ?? "?"}），并把 EN/CN 两份引文同步改口 ⇒ 行号自洽但**种类**红`,
+    overlay: {
+      [CELL_AXES_ANCHOR_MODULE]: (t) => (CELL_AXES_R4_KIND_PROBE === null ? t
+        : t.split(CELL_AXES_R4_KIND_PROBE.literal).join(JSON.stringify("^ {8}// - .*compactionStats.*："))),
+      [CONTRACT_EN]: (t) => (CELL_AXES_R4_KIND_PROBE === null ? t
+        : syncCellAxesCitation(`src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.realLine}`, `src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.commentLine}`)(t)),
+      [CONTRACT_CN]: (t) => (CELL_AXES_R4_KIND_PROBE === null ? t
+        : syncCellAxesCitation(`src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.realLine}`, `src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.commentLine}`)(t)),
+    },
+    expect: [/锚点种类不符/, /kind=code/, /是注释行/, /compactionStats/, /write 轴/,
+      /bare-lines: 标记区定点豁免的机器复核不在场/,
+      /裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*\d+\*\* 处，超过棘轮基线 \*\*\d+\*\*/],
+  },
+  {
+    label: "#772 R4 M-A 反方向：kind=comment 的锚点（`toolUse` 停写证据）被换成一句真代码 ⇒ 同样红（种类不许逆）",
+    overlay: {
+      [CELL_AXES_ANCHOR_MODULE]: (t) => {
+        const entry = CELL_AXES_ANCHORS_SHIPPED.find((e) => e.key === "toolUse" && e.axis === "write" && e.kind === "comment");
+        const codeEntry = CELL_AXES_ANCHORS_SHIPPED.find((e) => e.key === "status" && e.axis === "write");
+        if (entry === undefined || codeEntry === undefined) return t;
+        return t.split(JSON.stringify(entry.anchor)).join(JSON.stringify(codeEntry.anchor));
+      },
+    },
+    expect: [/锚点种类不符/, /kind=comment/, /不是注释行/, /`toolUse`/,
+      /bare-lines: 标记区定点豁免的机器复核不在场/],
+  },
+  {
+    label: "#772 R4 M-A 对照：把 kind 字段整列删掉（闸抽不出合法种类）⇒ 红；原样必须 0 错（见下一条）",
+    overlay: { [CELL_AXES_ANCHOR_MODULE]: (t) => t.replace(/ kind: "(?:code|comment)",/gu, "") },
+    expect: [/kind/,
+      /锚点表里有 `kind` 不合法的条目|bare-lines: 标记区定点豁免的机器复核不在场/],
+  },
+  {
+    label: "#772 R4 M-B：从每个双锚点组各删一条登记，并把两份表里的对应引用**成对**删掉 ⇒ 剩下的全自洽，但由人审清单算出的地板接不住 ⇒ 红",
+    overlay: {
+      [CELL_AXES_ANCHOR_MODULE]: dropCellAxesAnchorEntries,
+      [CONTRACT_EN]: dropCellAxesCitations,
+      [CONTRACT_CN]: dropCellAxesCitations,
+    },
+    expect: [/锚点登记表只剩 \d+ 条（下限 \d+）/,
+      /bare-lines: 标记区定点豁免的机器复核不在场/,
+      /裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*\d+\*\* 处，超过棘轮基线 \*\*\d+\*\*/],
+  },
+  {
+    label: "#772 R4 M-B：只删两份表里的引用（登记留着）⇒ 覆盖面真值必红，并点名缺的那一格缺在哪一份（EN / CN）",
+    overlay: { [CONTRACT_EN]: dropCellAxesCitations, [CONTRACT_CN]: dropCellAxesCitations },
+    expect: [/覆盖面真值/, /en 表/, /cn 表/, /人审清单要求/,
+      /bare-lines: 标记区定点豁免的机器复核不在场/],
+  },
+  {
+    label: "#772 R4 已知限度（特征用例，见 docs/maintenance/command-reference.md）：把写点锚点换到**同一键名的另一处真代码行** + 两份引文同步改口 ⇒ 机械上全绿（语义真值机器证不了，故本例断言它**不红**）",
+    overlay: {
+      [CELL_AXES_ANCHOR_MODULE]: (t) => (CELL_AXES_R4_KIND_PROBE === null ? t
+        : t.split(CELL_AXES_R4_KIND_PROBE.literal).join(JSON.stringify("^ {6}compactionStats,$"))),
+      [CONTRACT_EN]: (t) => (CELL_AXES_R4_KIND_PROBE === null ? t
+        : syncCellAxesCitation(`src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.realLine}`, "src/loop/orchestrator.js:3505")(t)),
+      [CONTRACT_CN]: (t) => (CELL_AXES_R4_KIND_PROBE === null ? t
+        : syncCellAxesCitation(`src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.realLine}`, "src/loop/orchestrator.js:3505")(t)),
+    },
     expectGreen: true,
   },
   // --- #772 R2 M2：标记区内容的正向不变量（评审 follow-up 第 1 条）---
