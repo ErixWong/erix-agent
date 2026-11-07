@@ -2,8 +2,8 @@
 //
 // 为什么这条要进 `npm test`：探针本体是**门禁的工具**，它自己坏了没人会发现——而它坏法恰好是
 // 「静默全绿」（合成树没建成、桩没落上、断言写歪）。本文件钉七件事：
-//   A. 探针自己的 `--self-test` 全绿并报条数：那 15 例全在**机械合成的宿主**上跑（切版前 / 切版后未发布 /
-//      发布回写后），并且钉住「切版前与切版后两棵宿主给出同一份读数」——**这一条就是「探针不再从宿主推
+//   A. 探针自己的 `--self-test` 全绿并报条数：那些例（条数见下面的 `SELF_TEST_CASE_FLOOR`，它由命令打印的
+//      那一份刷出来并被逐格对账）全在**机械合成的宿主**上跑（切版前 / 切版后未发布 / 发布回写后），并且钉住「切版前与切版后两棵宿主给出同一份读数」——**这一条就是「探针不再从宿主推
 //      当前版」的机器证据**（第二轮的缺口 B：第一版拿宿主当基准，宿主一切到下一版就有 2/4 条红）。
 //      issue #713 又往前推了一步：那几棵宿主的**版本面**（`package.json` 版本 + CHANGELOG 段面）也由
 //      `--self-test` 自己合成（合成种子），所以「要切的那一版」也不再从宿主推——本格额外钉住这一点：
@@ -47,16 +47,42 @@ const NOT_JUDGED_CODES = [
   "NEXT_ALREADY_PUBLISHED",
 ];
 
-test("A. 探针自己的 --self-test：合成宿主上 15 例全绿并报条数（切版前后两棵宿主同一份读数）", { timeout: 900000 }, async () => {
+/**
+ * 探针 `--self-test` 自己打印的**例数**（issue #731 T1）。这个数**只能**由
+ * `node scripts/version-state-probe.mjs --self-test` 打印出来，跑一次取一次；本文件不许留第二份抄件。
+ *
+ * 它原来长这样：注释写「现测 **13 例**」、断言是地板 `>= 13`，而命令早已打印 **15 例**——
+ * 两份抄件互相矛盾、谁也不红（同一个病：数字是抄的，没有闸看着）。现在它是一个**具名常量**，
+ * 用例标题、地板、以及下面那条「地板必须恰等于实测」的对账都读它，于是「改错数字」必红。
+ *
+ * **为什么地板不是等号**（先例：`test/static-guards.test.js` 的 `CHANGELOG_PAIR_FLOOR`，同一套两半）：
+ *   · 主判定是**地板** —— 它咬的是退化（删例 / 跳例 / 变异没落上而被静默跳过）。自测在合法 PR 里
+ *     多出一例是常态，拿等号当主判定会把「覆盖了更多」误报成回归；
+ *   · 但地板只有**恰等于实测**才谈得上「掉一格就穿底」，所以下面另钉一条等号（PAIR_FLOOR 的同一条纪律）。
+ *   两条缺一：只留地板 ⇒ 这格数字又成了没人对账的抄件；只留等号 ⇒ 真掉覆盖与合法加例混成同一个红因。
+ */
+const SELF_TEST_CASE_FLOOR = 15;
+
+test(`A. 探针自己的 --self-test：合成宿主上 ${SELF_TEST_CASE_FLOOR} 例全绿并报条数（切版前后两棵宿主同一份读数）`, { timeout: 900000 }, async () => {
   const out = await makeTmp("version-states-selftest-");
   // `--registry-base auto`：这一格必须**离线**跑得动（`npm` 被换成失败桩也要绿，实测见交付报告）。
   const r = runNode(PROBE, ["--self-test", "--registry-base", "auto", "--out", out], { timeout: 900000 });
   const body = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   assert.equal(r.status, 0, `--self-test 应当全绿，实测 exit ${r.status}：\n${body.slice(-6000)}`);
-  // 条数由命令自己打印；这里是**地板**（少一格 = 有一例被删/被跳过 ⇒ 红）。现测 13 例。
+  // 条数由命令自己打印；地板与「地板必须恰等于实测」那条对账各咬一半（理由见文件头 `SELF_TEST_CASE_FLOOR`）。
   const m = /--self-test: OK — (\d+) 例反向证/u.exec(body);
   assert.ok(m, `末行应当是「OK — N 例反向证」，实测末行：${body.trim().split("\n").slice(-3).join(" / ")}`);
-  assert.ok(Number(m[1]) >= 13, `例数地板 13，实测 ${m[1]}：有一格被删或没跑到`);
+  assert.ok(Number(m[1]) >= SELF_TEST_CASE_FLOOR,
+    `例数地板 ${SELF_TEST_CASE_FLOOR}，实测 ${m[1]}：有一格被删或没跑到`);
+  // 地板必须**恰等于**命令打印的那一份（与 `test/static-guards.test.js` 的 `CHANGELOG_PAIR_FLOOR`
+  // 「地板必须恰等于校准面上的实测值」同一条纪律，issue #731 T1）：不然「掉一格就穿底」证不出来，
+  // 而注释里那个「现测 N 例」就又变回一份没人对账的抄件（这里曾是 13，自测早已 15）。
+  assert.equal(Number(m[1]), SELF_TEST_CASE_FLOOR,
+    `探针自测实测 ${m[1]} 例 ≠ 本文件登记的地板 ${SELF_TEST_CASE_FLOOR} 例 ⇒ 这一格是**会红的对账**：`
+    + "地板只能由 `node scripts/version-state-probe.mjs --self-test` 打印的那个数刷，不许手填。"
+    + (Number(m[1]) > SELF_TEST_CASE_FLOOR
+      ? `自测合法长了例 ⇒ 把文件头的 SELF_TEST_CASE_FLOOR 常量抬到 ${m[1]}（用例标题与两条断言都读它，改一处就全跟上）。`
+      : "自测掉了例 ⇒ 先查是谁删的 / 哪一格没跑到，别改这里的数字换绿。"));
   assert.match(body, /合成宿主：切版前 \/ 切版后未发布 \/ 发布回写后/u, body.slice(-3000));
   // 三态与每一条反向证都必须在输出里**逐条点名**（不许「exit 0 就算绿」）。
   for (const line of [
