@@ -755,6 +755,8 @@ conditional retrieval guidance; it never claims this result's key points are alr
 recorded. Note availability stays host configuration — the
 engine writes no notes.
 
+One further site is **known to be still unconditional and is NOT in the list above**: the host-side `examples/pi-extension/erix-run-core.js` (`buildSystemPrompt` calls `buildCliToolsSystemPrompt` without `notes`), whose inner run may pass `notes: false` — so that prompt can still name `note_*` tools that are not on the surface. The list above is the list of **gated** sites, not a claim that every prompt site is clean; the coordinate and the one-line fix are recorded in the issue #746 work report.
+
 ## 4. Source layout
 
 ```text
