@@ -2816,9 +2816,12 @@ function bareLineExemptionEntryErrors() {
  * 这一段天生是「裸行号密度最高、但已被机器逐条复核」的形状。三条口径，缺一不可：
  *   ① **位置**：只认那对 begin/end 标记**之间**、且以 `|` 开头的表格行；标记区外的裸行号照旧逐条计数，
  *      同一个 (文档, 目标文件, 行区间) 只要还在区外出现过一次就**不**豁免（`regionOutside`）。
- *   ② **机器复核**：豁免只在 `test/contract-snapshot-cell-axes-767.test.js` 的 `G4` 真在场时生效——
- *      绑的是 `G4_KEY_NAME_CHECK` 的**定义（两个参数都真被用到）+ 断言里的调用**，不是它的标题或注释；
- *      那个测试文件被改名/删除，或键名判据被削弱成「行号存在就行」⇒ 判据不在场 ⇒ 豁免自动失效、闸回红。
+ *   ② **机器复核**：豁免只在 `test/contract-snapshot-cell-axes-767.test.js` 的 `G4` 真在场时生效。
+ *      #772 R2 之后这一档不再是纯词面：闸自己把 `CELL_AXES_ANCHORS` 登记表**抽出来重算一遍**
+ *      （每条锚点在目标文件里必须**唯一命中**，命中的行号必须与两份契约表里写的 `path:line`
+ *      **逐字符等值**）——锚点歧义 / 失效 / 表里行号漂了 ⇒ 判据不在场 ⇒ 豁免自动失效、闸回红。
+ *      同时还绑着两条判据函数的**定义与调用**（`G4_KEY_NAME_CHECK` 的词面那一档、
+ *      `G4_ANCHOR_EQ_CHECK` 的等值那一档）：被改名、被削成「行号存在就行」都拿不到豁免。
  *   ③ **不静默**：豁免数进 `--verbose` 的分解；判据不在场时另发一条点名错误，而不是静默少算。
  *  越界 / 不存在 / 反向区间照旧逐条查——豁免只免「计入棘轮」这一档，未免「行号复核」那一档。 */
 const CELL_AXES_MARK_BEGIN = "<!-- erix:snapshot-cell-axes:begin -->";
@@ -2827,6 +2830,18 @@ const CELL_AXES_GUARD_TEST = "test/contract-snapshot-cell-axes-767.test.js";
 const CELL_AXES_GUARD_LABEL = /(?:^|\n)[ \t]*test\(\s*["`]G4\b/;
 const CELL_AXES_GUARD_DEF = /const\s+G4_KEY_NAME_CHECK\s*=\s*\(\s*([A-Za-z0-9_$]+)\s*,\s*([A-Za-z0-9_$]+)\s*\)\s*=>(?=[\s\S]{0,400}?\b\1\b)(?=[\s\S]{0,400}?\b\2\b)[\s\S]{0,400}?\S/;
 const CELL_AXES_GUARD_CALL = /assert\.ok\(\s*G4_KEY_NAME_CHECK\s*\(/;
+// 锚点等值那一档：两条判据函数都必须「定义里两个参数真被用 + 在判据里被调」。只抽名字不算。
+const CELL_AXES_GUARD_LINE_DEF = /const\s+G4_ANCHOR_LINE_CHECK\s*=\s*\(\s*([A-Za-z0-9_$]+)\s*,\s*([A-Za-z0-9_$]+)\s*\)\s*=>(?=[\s\S]{0,600}?\b\1\b)(?=[\s\S]{0,600}?\b\2\b)[\s\S]{0,600}?\S/;
+const CELL_AXES_GUARD_LINE_USE = /(?:=\s*|!\s*|assert\.ok\(\s*)G4_ANCHOR_LINE_CHECK\s*\(/;
+const CELL_AXES_GUARD_EQ_DEF = /const\s+G4_ANCHOR_EQ_CHECK\s*=\s*\(\s*([A-Za-z0-9_$]+)\s*,\s*([A-Za-z0-9_$]+)\s*\)\s*=>(?=[\s\S]{0,400}?\b\1\b)(?=[\s\S]{0,400}?\b\2\b)[\s\S]{0,400}?\S/;
+const CELL_AXES_GUARD_EQ_USE = /(?:=\s*|!\s*|assert\.ok\(\s*)G4_ANCHOR_EQ_CHECK\s*\(/;
+/** 锚点登记表：哨兵之间的**数组字面量**（闸自己 `new Function` 跑出来，抽不到/跑不通 = 拿不到豁免）。 */
+const CELL_AXES_ANCHOR_BLOCK = /\/\/ G4-ANCHORS:BEGIN[^\n]*\n[\s\S]*?const CELL_AXES_ANCHORS = (\[[\s\S]*?\n\]);\n\/\/ G4-ANCHORS:END/;
+const CELL_AXES_ANCHOR_MIN_ENTRIES = 30;   // 建单时 39 条 / 37 组；削到三分之一以下就是被抖空了
+const CELL_AXES_ANCHOR_MIN_GROUPS = 25;
+/** 表里两轴列的仓内引用（与测试侧的 `CITATION` 同形，只取 src/ 与 bin/）。 */
+const CELL_AXES_SIDE_REF = /(?:src|bin)\/[A-Za-z0-9_./-]+\.js:[0-9]+/gu;
+const CELL_AXES_DOCS = [CONTRACT_EN, CONTRACT_CN];
 
 /** 标记区在这份文档里的行区间（0 基，不含标记行本身）；没有成对标记 → null。 */
 function cellAxesRegion(rec) {
@@ -2840,6 +2855,142 @@ function cellAxesRegion(rec) {
   return begin >= 0 && end > begin ? { begin, end } : null;
 }
 
+/**
+ * 抽锚点登记表（只认哨兵之间的数组字面量）。返回 `{ entries }` 或 `{ why }`（why = 拿不到豁免的原因）。
+ * 为什么不用 `import`：`--self-test` 的覆盖层只改**文本**，跑不到新版本的模块；抽文本才能连内存副本一起校。
+ */
+function cellAxesAnchorRegistry(text) {
+  if (typeof text !== "string" || text.length === 0) return { why: `${CELL_AXES_GUARD_TEST} 里没有锚点登记表可抽` };
+  const m = CELL_AXES_ANCHOR_BLOCK.exec(text);
+  if (m === null) {
+    return { why: "抽不到 `// G4-ANCHORS:BEGIN … const CELL_AXES_ANCHORS = [ … ]; … // G4-ANCHORS:END` 这段数组字面量"
+      + "（哨兵被删、登记表被改成函数/表达式/多行拼合 ⇒ 闸无法自己重算行号）" };
+  }
+  let entries;
+  try {
+    entries = new Function(`"use strict"; return (${m[1]});`)();   // 字面量数组，不碰外围作用域
+  } catch (error) {
+    return { why: `锚点登记表跑不通（它必须是纯数组字面量）：${error.message}` };
+  }
+  if (!Array.isArray(entries)) return { why: "锚点登记表不是数组" };
+  if (entries.length < CELL_AXES_ANCHOR_MIN_ENTRIES) {
+    return { why: `锚点登记表只剩 ${entries.length} 条（下限 ${CELL_AXES_ANCHOR_MIN_ENTRIES}）⇒ 表不再逐格钉，豁免不能给` };
+  }
+  const bad = entries.filter((e) => !e || typeof e.key !== "string" || (e.axis !== "write" && e.axis !== "read")
+    || typeof e.path !== "string" || typeof e.anchor !== "string");
+  if (bad.length > 0) {
+    return { why: `${bad.length} 条锚点条目形状不合法（key/axis/path/anchor 缺一不可，axis 只许 write/read）：`
+      + JSON.stringify(bad[0] ?? null) };
+  }
+  try {
+    for (const e of entries) { new RegExp(e.anchor, "u"); if (e.prev !== undefined) new RegExp(e.prev, "u"); }
+  } catch (error) {
+    return { why: `锚点正则抽不出/编译不过：${error.message}` };
+  }
+  const groups = new Set(entries.map((e) => `${e.key}|${e.axis}|${e.row ?? 0}|${e.path}`));
+  if (groups.size < CELL_AXES_ANCHOR_MIN_GROUPS) {
+    return { why: `锚点登记表只剩 ${groups.size} 组（下限 ${CELL_AXES_ANCHOR_MIN_GROUPS}）⇒ 逐格钉不成立` };
+  }
+  return { entries };
+}
+
+/**
+ * 一份契约标记区里的「两轴引用」索引：`格名|轴|同名第几行|文件` → Set(行号)。
+ * 只抽 `src/` 与 `bin/` 那两档（测试侧指纹走词面 + 在场那一档，同测试口径）。标记区不在 → null。
+ */
+function cellAxesTableRefs(rec) {
+  const region = cellAxesRegion(rec);
+  if (region === null) return null;
+  const rows = rec.lines.slice(region.begin + 1, region.end).filter((line) => line.trim().startsWith("|"));
+  const out = new Map();
+  const perKey = new Map();
+  for (const line of rows.slice(2)) {   // 去掉表头与分隔行
+    const cells = line.trim().replace(/^\|/u, "").replace(/\|$/u, "").split("|").map((c) => c.trim());
+    if (cells.length < 7) continue;     // 列数残缺由测试那侧（G1）管，这里不抢它的错
+    const key = ((cells[0] ?? "").match(/`([A-Za-z][A-Za-z0-9]*)`/u) ?? [])[1];
+    if (!key) continue;
+    const rowIndex = perKey.get(key) ?? 0;
+    perKey.set(key, rowIndex + 1);
+    for (const [axis, cell] of [["write", cells[5]], ["read", cells[6]]]) {
+      CELL_AXES_SIDE_REF.lastIndex = 0;
+      for (const ref of cell.match(CELL_AXES_SIDE_REF) ?? []) {
+        const [path, lineNumber] = ref.split(":");
+        const gk = `${key}|${axis}|${rowIndex}|${path}`;
+        if (!out.has(gk)) out.set(gk, new Set());
+        out.get(gk).add(Number(lineNumber));
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * 闸**自己**重算一遍（issue #772 R2 M1）：不读测试那份结果、不比字串，而是拿登记表自已在目标文件里
+ * 找唯一命中行，再与两份契约表逐字符对账。返回错误文本数组（空 = 这一档真在场且全对）。
+ */
+function cellAxesAnchorRecompute(entries) {
+  const out = [];
+  const groups = new Map();
+  for (const entry of entries) {
+    const rec = fileRecord(entry.path);
+    const where = `\`${entry.key}\` 的 ${entry.axis} 锚点（${entry.path}，正则 ${entry.anchor}）`;
+    if (!rec) { out.push(`锚点指向的文件不在场：${entry.path}（${where}）`); continue; }
+    let hits = [];
+    try {
+      const hit = new RegExp(entry.anchor, "u");
+      const prev = entry.prev === undefined ? null : new RegExp(entry.prev, "u");
+      rec.lines.forEach((line, index) => {
+        if (!hit.test(line)) return;
+        if (prev !== null && !prev.test(rec.lines[index - 1] ?? "")) return;
+        hits.push(index + 1);
+      });
+    } catch (error) {
+      out.push(`锚点正则跑不通（${where}）：${error.message}`);
+      continue;
+    }
+    if (hits.length !== 1) {
+      out.push(hits.length === 0
+        ? `锚点 0 命中（${where}）⇒ 锚点已失效，表里那些行号没有基准`
+        : `锚点歧义（${where}）命中 ${hits.length} 行：${hits.map((n) => `:${n}`).join(" ")} ⇒ 歧义锚点不配当基准`);
+      continue;
+    }
+    const gk = `${entry.key}|${entry.axis}|${entry.row ?? 0}|${entry.path}`;
+    groups.set(gk, new Set([...(groups.get(gk) ?? []), ...hits]));
+  }
+  const show = (path, set) => [...set].sort((a, b) => a - b).map((n) => `${path}:${n}`).join(" / ");
+  for (const doc of CELL_AXES_DOCS) {
+    const refs = cellAxesTableRefs(fileRecord(doc));
+    if (refs === null || refs.size === 0) { out.push(`${doc}：标记区读不出两轴引用 ⇒ 无从对账`); continue; }
+    const side = doc === CONTRACT_EN ? "en" : "cn";
+    for (const [gk, cited] of refs) {
+      const [key, axis, , path] = gk.split("|");
+      const anchorLines = groups.get(gk);
+      if (anchorLines === undefined) {
+        out.push(`${side}：${doc} 表里 \`${key}\` 的 ${axis} 列引了 ${show(path, cited)}，但这一格这一轴没有登记锚点`
+          + ` ⇒ 那条行号没有基准可对（新增引用要同批在 ${CELL_AXES_GUARD_TEST} 登记）`);
+        continue;
+      }
+      const eq = (a, b) => [...a].sort((x, y) => x - y).join(",") === [...b].sort((x, y) => x - y).join(",");
+      if (!eq(cited, anchorLines)) {
+        const target = fileRecord(path)?.lines ?? [];
+        out.push(`${side}：${doc} 表里 \`${key}\` 的 ${axis} 列与登记锚点不等值——表写 ${show(path, cited)}`
+          + ` / 锚点实际 ${show(path, anchorLines)}`
+          + `（表里引的那一行原文：${[...cited].map((n) => (target[n - 1] ?? "<行号越界>").trim().slice(0, 90)).join(" ⧸ ")}`
+          + `；锚点那一行原文：${[...anchorLines].map((n) => (target[n - 1] ?? "").trim().slice(0, 90)).join(" ⧸ ")}）`
+          + ` ⇒ 豁免的机器复核不成立`);
+      }
+    }
+    for (const gk of groups.keys()) {
+      if (!refs.has(gk)) {
+        const [key, axis, rowIndex, path] = gk.split("|");
+        out.push(`${side}：${doc} 表里 \`${key}\` 的 ${axis} 锚点（同名第 ${Number(rowIndex) + 1} 行，${path}）`
+          + `已经没人在表里引它 ⇒ 引用被删了而锚点还躺着，豁免不能给`);
+      }
+    }
+  }
+  return out;
+}
+
 /** 纯函数判据（反向证直接拿它问，不必改盘）：`G4` 的逐条复核是否真在场。传入 null = 那个文件不在场。 */
 function cellAxesGuardVerdict(text) {
   if (text === null || text === undefined) {
@@ -2851,7 +3002,23 @@ function cellAxesGuardVerdict(text) {
       + "（只查行号存在 = 免检通道，不配拿豁免）" };
   }
   if (!CELL_AXES_GUARD_CALL.test(text)) return { ok: false, why: "G4 没把键名判据用在断言里（`assert.ok(G4_KEY_NAME_CHECK(…))` 不在场）" };
-  return { ok: true };
+  // ↓ #772 R2 M1：词面那一档之上再叠两档——等值判据真被调，以锚点表在**闸自己手里**重算得动。
+  if (!CELL_AXES_GUARD_LINE_DEF.test(text) || !CELL_AXES_GUARD_LINE_USE.test(text)) {
+    return { ok: false, why: "G4 的锚点命中判据 `G4_ANCHOR_LINE_CHECK` 不在场（定义、两个参数真被用、且被调用），"
+      + "没有它⇒「唯一命中」这条底线无人执行 ⇒ 不配拿豁免" };
+  }
+  if (!CELL_AXES_GUARD_EQ_DEF.test(text) || !CELL_AXES_GUARD_EQ_USE.test(text)) {
+    return { ok: false, why: "G4 的锚点等值判据 `G4_ANCHOR_EQ_CHECK` 不在场（定义 + 在判据里被调用）⇒ 表里的行号只是词面比对"
+      + "（#772 R2：豁免的根据必须是「按登记锚点重算行号并等值对账」，不是「那一行提到键名」）" };
+  }
+  const registry = cellAxesAnchorRegistry(text);
+  if (registry.why) return { ok: false, why: registry.why };
+  const drift = cellAxesAnchorRecompute(registry.entries);
+  if (drift.length > 0) {
+    return { ok: false, why: `锚点等值对账在闸这一侧自己重算也不过（共 ${drift.length} 条）：${drift.slice(0, 2).join("；")}`
+      + (drift.length > 2 ? " …" : "") };
+  }
+  return { ok: true, anchors: registry.entries.length };
 }
 
 /** 裸行号一侧的外仓前缀（工单 261021-03 B1）：`BARE_LINE_RE` 不带首部边界，所以
@@ -2958,7 +3125,8 @@ function collectBareLineRefErrors() {
     + `；另有带已知外部仓前缀的外仓行号 ${extPrefixed.size} 处（文档|仓名 去重，既不计棘轮也不查存在性，见 EXTERNAL_REPO_PREFIXES）`);
   if (!regionGuard.ok && regionMarked) {
     out.push(`bare-lines: 标记区定点豁免的机器复核不在场 —— ${regionGuard.why}；豁免只在 ${CELL_AXES_GUARD_TEST} 的 G4`
-      + ` 逐条复核（文件在场 + 行号在范围 + 那一行确实提到这格的键名）真生效时才给 ⇒ 标记区内的裸行号全部照旧计入棘轮`
+      + ` 逐条复核（按登记锚点重算行号，再与表里的 path:line 逐字符等值对账；#772 R2 之前只验「那一行提到键名」）`
+      + `真生效时才给 ⇒ 标记区内的裸行号全部照旧计入棘轮`
       + `（登记与 span 规则见 docs/maintenance/command-reference.md#docs-anchors，issue #772）`);
   }
   collectBareLineRefErrors.notes = notes;
@@ -7735,6 +7903,27 @@ const CELL_AXES_PROBE_REF = (() => {
   return null;
 })();
 
+/** #772 R2：锚点一族反向证共用的两个探针——都从**现树现读**，不抄活文档里的行号（#621 口径）：
+ *  CN 表里 `compactionStats` 写点的第一条引用，与 orchestrator 里那句「讲测试拿它当指纹」的注释行。
+ *  抽不到 → 变异打不上 → 「变异没落上」判据报红，不会假绿。 */
+const CELL_AXES_DRIFT_PROBE = (() => {
+  const lines = textOf(CONTRACT_CN).split("\n");
+  const b = lines.findIndex((l) => l.includes(CELL_AXES_MARK_BEGIN));
+  const e = lines.findIndex((l, i) => i > b && l.includes(CELL_AXES_MARK_END));
+  if (b < 0 || e <= b) return null;
+  for (const line of lines.slice(b + 1, e)) {
+    if (!line.includes("`compactionStats`")) continue;
+    const m = line.match(/src\/loop\/orchestrator\.js:\d+/u);
+    if (m) return m[0];
+  }
+  return null;
+})();
+const CELL_AXES_DISTRACTOR_LINE = (() => {
+  const lines = textOf("src/loop/orchestrator.js").split("\n");
+  const hits = lines.map((l, i) => (/^ +\/\/ - `compactionStats`：/u.test(l) ? i + 1 : 0)).filter((n) => n > 0);
+  return hits.length === 1 ? hits[0] : null;
+})();
+
 const SELF_TEST_CASES = [
   // —— pkg-block / exports：#210 报的四种破坏，**前两种修前是绿的** ——
   {
@@ -8332,6 +8521,39 @@ const SELF_TEST_CASES = [
   {
     label: `#772 对照：给 ${CELL_AXES_GUARD_TEST} 只加一行尾注释（键名判据没动）→ 必须 0 错（证明绑定的不是恒红）`,
     overlay: { [CELL_AXES_GUARD_TEST]: (t) => `${t}\n// self-test 复原探针（#772）：只加一行注释，G4 的键名判据没动。\n` },
+    expectGreen: true,
+  },
+  // —— #772 R2 M1：豁免的根据从「词面」抬到「按登记锚点重算行号 + 等值对账」——
+  {
+    label: "#772 R2 等值那一档不许退成词面：把 G4 的等值判据换成恒真（`G4_ANCHOR_EQ_CHECK(…)` → `true`）→ 豁免失效、闸回红并点名",
+    overlay: { [CELL_AXES_GUARD_TEST]: (t) => t.replace("G4_ANCHOR_EQ_CHECK([...cited], [...anchorLines])", "true") },
+    expect: [/bare-lines: 标记区定点豁免的机器复核不在场/, /G4_ANCHOR_EQ_CHECK/,
+      /裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*\d+\*\* 处，超过棘轮基线 \*\*\d+\*\*/],
+  },
+  {
+    label: "#772 R2 锚点表必须是闸能自己重算的字面量：把它改成函数调用（抽不出数组）→ 豁免失效、闸回红",
+    overlay: { [CELL_AXES_GUARD_TEST]: (t) => t.replace(
+      /const CELL_AXES_ANCHORS = \[[\s\S]*?\n\];/u, "const CELL_AXES_ANCHORS = anchorTableAtRuntime();") },
+    expect: [/bare-lines: 标记区定点豁免的机器复核不在场/, /G4-ANCHORS:BEGIN|数组字面量/,
+      /裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*\d+\*\* 处，超过棘轮基线 \*\*\d+\*\*/],
+  },
+  {
+    label: "#772 R2 锚点不许是歧义的：把 `status` 的写点锚点放宽成键名前缀（命中两行）→ 红并点名「锚点歧义」",
+    overlay: { [CELL_AXES_GUARD_TEST]: (t) => t.replace('"^ {8}status,$"', '"^ {8}status"') },
+    expect: [/bare-lines: 标记区定点豁免的机器复核不在场/, /锚点歧义/, /`status`/,
+      /裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*\d+\*\* 处，超过棘轮基线 \*\*\d+\*\*/],
+  },
+  {
+    label: `#772 R2 评审第 3 节那个现场：把 CN 表 \`${CELL_AXES_DRIFT_PROBE}\` 换成同一键名的注释行 :${CELL_AXES_DISTRACTOR_LINE} ⇒ 闸自己重算锚点就发现行号漂了（词面判据当年看不见）`,
+    overlay: { [CONTRACT_CN]: (t) => (CELL_AXES_DRIFT_PROBE === null || CELL_AXES_DISTRACTOR_LINE === null ? t
+      : t.replace(CELL_AXES_DRIFT_PROBE, `src/loop/orchestrator.js:${CELL_AXES_DISTRACTOR_LINE}`)) },
+    expect: [/登记锚点不等值/, /表写 src\/loop\/orchestrator\.js:\d+/, /锚点实际 src\/loop\/orchestrator\.js:\d+/,
+      /那一行原文/, /bare-lines: 标记区定点豁免的机器复核不在场/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    label: "#772 R2 对照：原样的锚点表与两份表必须在闸自己手里重算得动（必须 0 错，证明上面四例不是恒红）",
+    overlay: { [CELL_AXES_GUARD_TEST]: (t) => `${t}\n// self-test 复原探针（#772 R2）：只加一行尾注释，锚点表与等值判据都没动。\n` },
     expectGreen: true,
   },
   {
