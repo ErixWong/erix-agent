@@ -13,9 +13,9 @@
 
 ## 步骤 1 — 读者与断言枚举（清单）
 
-（进行中）
 
-坐标口径：以下全部 `文件:行` 是在 commit `8f408b4`（基点 `855d6ff` + 本报告骨架）上现取的，命令 `grep -rn "compactionStats" src/ bin/ test/ examples/ docs/ scripts/` 与 `grep -rn "\.status\b" …`（纯 Node 的 grep 别名跳过 node_modules/dist；`examples/` 对这两个键**零命中**，实测：`grep -rn "compactionStats\|\.status\b" examples/ | wc -l` ⇒ 见下文）。
+
+坐标口径：以下全部 `文件:行` 是在 commit `8f408b4`（基点 `855d6ff` + 本报告骨架）上现取的，命令 `grep -rn "compactionStats" src/ bin/ test/ examples/ docs/ scripts/` 与 `grep -rn "\.status\b" …`（纯 Node 的 grep 别名跳过 node_modules/dist）。`examples/` 实测 `grep -rn "compactionStats\.\|\.status\b" examples/` 共 79 + 72 处命中，但**没有一处读快照那一格**：`examples/pi-extension/erix-run-core.js:1833` 明写 `COMPACTION_STATS_SOURCE = "runResult.compactionStats"`（读 run 返回值，且注释里专门说不是 `<runId>.state.json` 那份），`examples/` 里 `\.status` 全是 `verification.status` / `progress.status` / `<runId>.status.json`；唯一的快照现场 `examples/tool-fact-e2e.test.mjs:857-862` 是**手写 0.19 旧档**（`status: "done"`，引擎从不写这个值）⇒ 属旧档容忍，不是读者。
 
 ### 1.1 `status`（快照格 `snapshot.status`）的读者与断言
 
@@ -58,3 +58,32 @@
 **不是读者的命中**
 - `test/messages-identity.test.js:444` —— 断言的是 **run 返回值** 的键清单；`test/compaction-benefit-592.test.js:348` —— `decide()` 源码禁用字样守卫；`test/fixtures/message-journal-golden.json` 的 11 处 `"compactionStats": []` 嵌在**轮记录 / runState** 里（轮记录侧不停写 ⇒ 金样不动）；`test/fixtures/journal-0.22.0/*.snapshot.json`、`*.state.json` —— 旧档容忍。
 - `scripts/docs-drift-check.mjs:5442` —— 禁用拼写表里的词面，不是读者。
+（上表是**枚举**结果；下面步骤 2 逐条给出改法。）
+
+## 步骤 2 — 先把读者/断言改指向权威来源（写点未动，改完全绿）
+
+| 原证据（快照格） | 换成的权威来源 | 位置 |
+| --- | --- | --- |
+| `persist()` 从载荷嗅探 `args.at(-1)?.status`（`src/` 里唯一读者） | 调用点把状态**显式**交进分类：新增 `persistClassified(method, snapshotStatus, ...args)`，快照写点调用 `persistClassified(method, status, runId, {...})`；其余写（轮记录 / run-state）走 `persist()` 简写（那些方法的分类本来就不看状态） | `src/loop/orchestrator.js:1463-1490`（新函数 + 注释）、`:1530`（`persist` 简写）、`:3000-3003`（快照写点显式交状态） |
+| 测试拿 `snapshot.status` 分辨调用点 | 载荷自带的引擎事实：最后一条 `tool_result` 的 `erix.executionStatus`（`rejected` / `intercepted`）+「在飞的那条调用就是最后那条结果且该 id 在 `executedToolIds` 里」= 工具后那次写；其余 = pending（含定时器写） | `test/loop-persistence-phase.test.js` 新增 `callSiteOf()`（`:53-80`），探针 store 采集处由 `status: snapshot.status` 改为 `status: callSiteOf(snapshot)`（`:130`），`EXPECTED_BY_STATUS` → `EXPECTED_BY_CALL_SITE` |
+| `snapshots.find(e => e.status === "rejected")` 造崩溃夹具 | 同一条载荷里的 `toolResults[].toolResult.erix.executionStatus === "rejected"`（本用例下一行本来就在校验它） | `test/loop-invalid-arguments.test.js:235-242` |
+| `events.push(["checkpoint", snapshot.status])` + `deepEqual([["checkpoint","pending"],["tool"]])` | 载荷里的执行事实：`executedToolIds` 为空 ⇒ 工具执行前那次写；标记改名 `pre-execution` / `post-execution` | `test/loop-v020-rc.test.js:478-485`、`:504` |
+| 两处「拿 `status === "executed"` 当注入失败的开关」 | `snapshot.executedToolIds.length > 0`（工具真的执行过才会进这个集合） | `test/loop-v020-rc.test.js:609-613`、`test/persistence-diagnostics.test.js:170-173` |
+| `loadLatestCheckpoint().compactionStats` 这一面 | 落盘 run-state 的 `deterministic.compactionStats`（`store.loadRunState()`，恢复侧读的就是它）；轮记录那一面（`store.load()`）与 run 返回值那一面本来就在断言里，未动 | `test/compaction-observability.test.js:18`（用例名去掉 checkpoint 面）、`:75-82` |
+| 崩溃现场诊断打印里的 `entry.status` | `executedToolIds` 推出来的调用点标记 | `test/loop-snapshot-write-side-735.test.js:271-276` |
+
+写序实测（`/tmp/probe770.mjs`，与 `test/loop-persistence-phase.test.js` 同一场景：两个工具块 + blocking judge + 定时器）：
+`#0 pending(timer) → #1 pending(t1) → #2 executed(t1，executedToolIds=["t1"]、toolResultIds=["t1"]) → #3 pending(t2，仍带着 t1 的结果、executedToolIds=["t1"]) → #4 intercepted(t2，最后一条结果 executionStatus="intercepted") → #5 pending(timer,round2)`。
+⇒ `callSiteOf()` 第一次只比「`executedToolIds` 非空」时把 `#3` 误标成 executed（这就是那条 sweep 用例当时的红），改成比「在飞的调用 == 最后那条结果的 id」后与旧 `status` 逐条一致。
+
+**闸（步骤 2 之后，两格仍在写出）**：
+
+```
+$ node --test test/loop-persistence-phase.test.js test/loop-invalid-arguments.test.js \
+    test/loop-v020-rc.test.js test/persistence-diagnostics.test.js test/compaction-observability.test.js \
+    test/run-snapshot-executor.test.js test/loop-snapshot-write-side-735.test.js \
+    test/loop-snapshot-round-residue-735.test.js
+# tests 68 / # pass 68 / # fail 0        → NODE_EXIT=0
+```
+
+同一批里 `test/contract-snapshot-cell-axes-767.test.js` 有 7 条红（G4 与 G4-R1..R6），**全部是行号漂移**，红话原文举例：`cn：`round` 引用 src/loop/orchestrator.js:2986，但那一行没提到这个键名：const transcriptForSnapshot = messagesOverride ?? messages;`——这一条判据钉的是「表里写的 `path:line` ⇄ 锚点现算行号等值」，我在 `src/loop/orchestrator.js` 里加了注释行把它往下推了，属步骤 4 的同步范围，不在这里硬扛。

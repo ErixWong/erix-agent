@@ -1460,7 +1460,20 @@ export async function runToolLoop(options) {
       });
     }
   };
-  const persist = async (method, ...args) => {
+  // issue #770：`snapshotStatus` 是**快照写专用**的显式分类输入——调用点把自己的执行状态交进来。
+  // 为什么必须有它：以前这句是 `args.at(-1)?.status === "executed"`，也就是**读自己刚写进快照载荷的
+  // 那一格**（那是 `status` 在 `src/` 里唯一的读者）。把该格从载荷里停写后，工具后那次写会被降级
+  // 猜成 `checkpoint_before_tool` ⇒ 宿主可见的 `persistence_error.phase` / 抛出的
+  // `checkpoint_failed.phase` 都会跟着变。改成显式传入之后，猜测通道的取值口径与显式声明通道
+  // （`src/loop/run-snapshot-executor.js` 的 `assertSnapshotPersisted`）同源，行为逐字不变。
+  /**
+   * @param {string} method store 方法名
+   * @param {string | undefined} snapshotStatus 快照写点的调用点状态（`pending` / `executed` /
+   *   `intercepted` / `rejected`）；非快照写传 `undefined`（那些方法的分类本来就不看状态）
+   * @param {...any} args 交给 store 的原样参数
+   * @returns {Promise<boolean>}
+   */
+  const persistClassified = async (method, snapshotStatus, ...args) => {
     if (!persistenceRequired) return false;
     if (typeof store?.[method] !== "function") {
       notifyCapabilitySkipped(method);
@@ -1470,7 +1483,7 @@ export async function runToolLoop(options) {
       ? "transcript"
       : method === "saveRunState" || method === "markRunState"
         ? "run_state"
-        : args.at(-1)?.status === "executed"
+        : snapshotStatus === "executed"
           ? "checkpoint_after_tool"
           : "checkpoint_before_tool";
     const sideEffect = method === "appendRound"
@@ -1514,6 +1527,8 @@ export async function runToolLoop(options) {
       errorLedger,
     });
   };
+  /** `persistClassified()` 的非快照写简写（轮记录 / run-state 那些写的分类不看调用点状态）。 */
+  const persist = async (method, ...args) => persistClassified(method, undefined, ...args);
   const markRunState = async (state) => {
     await persist("markRunState", runId, state);
   };
@@ -2982,7 +2997,10 @@ export async function runToolLoop(options) {
         : pendingToolUse === undefined
           ? pendingToolUses
           : [snapshotPendingToolUse];
-      return await persist(method, runId, {
+      // issue #770：分类输入由调用点**显式**交进来（`persistClassified` 的第二个参数），不再靠
+      // 载荷里那一格 `status`（下面已停写）。工具后那次写的 `executed` 因此仍会被分类成
+      // `checkpoint_after_tool` / `executed_uncommitted`，与通道 B（executor 调用点的显式声明）一致。
+      return await persistClassified(method, status, runId, {
         round,
         // issue #735 切片 1（写侧去冗余）：本格曾写 4 个候选冗余字段，现按**实跑复核**的口径分两档。
         // **键序与基点逐字一致**（`src/store/file.js:523` 直接 `JSON.stringify(snapshot)` ⇒ 键序是宿主

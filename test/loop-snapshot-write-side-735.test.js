@@ -271,7 +271,7 @@ test("#735 切片 1：引擎亲笔写下的**新形状**崩溃现场（已无 to
     && (entry.executedToolIds?.length ?? 0) === 0
   ));
   assert.ok(crash, `现场必须有一条「在飞且未结清」的快照，实测 ${JSON.stringify(payloads.map((entry) => ({
-    status: entry.status,
+    callSite: (entry.executedToolIds?.length ?? 0) === 0 ? "pre-execution" : "post-execution",
     pending: entry.pendingToolUses?.length ?? 0,
     results: entry.toolResults?.length ?? 0,
   })))}`);

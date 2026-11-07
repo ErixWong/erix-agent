@@ -15,7 +15,7 @@ const layerIds = [
   "enforceSize",
 ];
 
-test("compactionStats exposes selected layer details through result, state, archive, checkpoint, and events", async () => {
+test("compactionStats exposes selected layer details through result, run-state, round record, and events", async () => {
   const provider = createFakeProvider([
     {
       content: [{ type: "tool_use", id: "first", name: "work", input: {} }],
@@ -72,8 +72,11 @@ test("compactionStats exposes selected layer details through result, state, arch
   assert.ok(records.some((record) => (
     record.compactionStats?.some((entry) => entry.layers.foldStatistical.triggered > 0)
   )));
-  const checkpoint = await store.loadLatestCheckpoint("compaction-observability");
-  assert.ok(checkpoint.compactionStats?.some((entry) => (
+  // issue #770：run snapshot 那一格的 `compactionStats` 已停写 ⇒ 这一面换成**权威来源**：
+  // 落盘的 run-state（`<runId>.state.json`）里那份 `deterministic.compactionStats`，
+  // 恢复侧读的就是它（`src/loop/resume-manager.js` 的 `ctx.compactionStats = deterministic.compactionStats`）。
+  const persistedState = await store.loadRunState("compaction-observability");
+  assert.ok(persistedState?.deterministic?.compactionStats?.some((entry) => (
     entry.layers.foldStatistical.triggered > 0
-  )));
+  )), "落盘 run-state 的 deterministic.compactionStats 必须带着层详情（恢复侧的权威出口）");
 });

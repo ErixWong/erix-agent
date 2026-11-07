@@ -108,7 +108,7 @@ export const CELL_AXES_ANCHOR_FLOORS = {
 
 // CELL-AXES-ANCHORS:BEGIN —— 哨兵之间必须是**数组字面量**（闸在 --self-test 里要能抽文本重算）
 export const CELL_AXES_ANCHORS = [
-  { key: "round", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}round,$", prev: "^ +return await persist\\(method, runId, \\{$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 round," },
+  { key: "round", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}round,$", prev: "^ +return await persistClassified\\(method, status, runId, \\{$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 round," },
   { key: "status", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}status,$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 status," },
   { key: "pendingToolUse", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}pendingToolUse: cloneState\\(snapshotPendingToolUse\\),$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 pendingToolUse: cloneState(snapshotPendingToolUse)," },
   { key: "pendingToolUses", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}pendingToolUses: cloneState\\(snapshotPendingToolUses\\),$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 pendingToolUses: cloneState(snapshotPendingToolUses)," },

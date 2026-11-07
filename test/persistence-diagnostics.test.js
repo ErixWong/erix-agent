@@ -168,7 +168,8 @@ test("snapshot failure before a tool reports not_started and skips execution", a
 test("snapshot failure after a tool reports executed_uncommitted and terminates", async () => {
   const store = fullStore();
   store.saveRunSnapshot = async (_runId, snapshot) => {
-    if (snapshot.status === "executed") throw new Error("snapshot unavailable");
+    // issue #770：注入点认「工具已执行」这个事实（载荷里的 `executedToolIds`），不再读已停写的 `status` 格。
+    if ((snapshot.executedToolIds?.length ?? 0) > 0) throw new Error("snapshot unavailable");
   };
   const events = [];
   let executions = 0;
