@@ -65,8 +65,17 @@ const ENTRY_HEAD = {
  */
 const spaced = (text) => text.replace(/\s+/gu, " ");
 const tight = (text) => text.replace(/[\s*]+/gu, "");
-/** CHANGELOG 面：先剥行内代码——被禁的句子在那份文件里常以「引用」出现（反引号），那不是作者的主张。 */
-const stripInlineCode = (text) => text.replace(/`[^`\n]*`/gu, "");
+/**
+ * CHANGELOG 面：**术语级**行内代码豁免。被禁的措辞常以「引用」形式出现在反引号里（RED 证据清单），
+ * 那不是作者的主张 ⇒ 剥掉。但整句假主张包进反引号不能免扫（第 5 轮评审抓的洞②）：只有
+ * **不含句读**（`。；;!?…` 或英文 `.` + 空格 / 句末 `.`）且**长度 ≤ 60** 的片段才当引用，其余**保留照扫**。
+ */
+const TERM_SPAN_MAX = 60;
+const SENTENCE_PUNCT = /[。；;!?…]|\.(\s|$)/u;
+function stripInlineCode(text) {
+  return text.replace(/`([^`\n]*)`/gu, (whole, inner) =>
+    (inner.length <= TERM_SPAN_MAX && !SENTENCE_PUNCT.test(inner) ? "" : whole));
+}
 /** 剥注释（只用于 G6 的代码真值）：块注释与行注释。字符串里含 `//` 时会被多剥一点 ⇒ 方向保守（照样算「不在」）。 */
 function stripComments(code) {
   return code.replace(/\/\*[\s\S]*?\*\//gu, "").replace(/(^|[^:])\/\/.*$/gmu, "$1");
@@ -149,6 +158,13 @@ const QUANTIFIED = [
     why: "「被省掉的那段前缀（按构造）就已经在账本里」——`c87f591` 时代那句同一主张的另一种语序" },
 ];
 
+/**
+ * 「谈守卫本身」的句子（第 5 轮评审抓的洞①）：CHANGELOG 里**描述这条守卫**的那句会**逐字复述**判据要求的
+ * 那句事实 ⇒ 「关于这句话的文字」顶替了「这句话本身」，G2 被守卫自己的说明喂饱（自证循环）。
+ * 含这些词的句子是 meta 句，**不算**满足在场。
+ */
+const META_MARKER = /判据|禁语|必须逐字留着|肯定式|本守卫|守卫自己|这条守卫|条件禁|无条件禁|自动解禁|那一族是|这一族是|\bG[0-9]\b|this\s+guard|the\s+guard\b|restat\w*|required\s+sentence|ban\s+list|\bfamily\b[^.]{0,20}\bbanned\b|is\s+banned\b/u;
+
 /** 肯定式判据（G2）：每面都必须留着的两句真话。 */
 const REQUIRED = [
   { id: "reader-never-reads", sides: ["en", "cn"],
@@ -208,7 +224,7 @@ function readChangelogEntry(side) {
  * `static-guards` 第 5 条的时态标记同一口径。豁免只按**句**算（窗口止于 `。；;!?` 与英文 `.` + 空格），
  * 把撤回标记写到别处不算；**且只对封顶族生效**——「按构造 / 不会丢信息 / 把它留住」那一族永不豁免。
  */
-const RETRACTION_MARKER = /撤回|撤了|已撤|revert\w*|no\s+bound|既不换来/u;
+const RETRACTION_MARKER = /撤回|撤了|已撤|revert\w*|retract\w*|no\s+bound|既不换来/u;
 const RETRACTABLE_FAMILIES = new Set(["cap"]);
 const STOPS = "。；;!?…：:";
 
@@ -226,19 +242,40 @@ function windowFor(flat, at, len) {
 /** 封顶族的命中若落在带撤回标记的句子里，就是历史叙事；其余一律算数。 */
 function realHits(rows, view) {
   return rows.filter((row) => {
+    const window = windowFor(view[row.rule.where], row.index, row.text.length);
+    // **提及 vs 使用**：谈守卫自己的那一句（`禁语 / 判据 / 必须逐字留着 / is banned …`）是在**提**这个措辞，
+    // 不是主张它 —— 这是把第 4 轮那把「剥掉全部行内代码」的大刀换掉后的窄口径（见 stripInlineCode）。
+    if (META_MARKER.test(window)) return false;
+    // 历史叙事：只有**封顶族**能被一句带的「撤回 / reverted / retracted」放过；「按构造 / 不会丢信息」那族永不豁免。
     if (!RETRACTABLE_FAMILIES.has(row.rule.family)) return true;
-    const flat = view[row.rule.where].replace(/\n/gu, " ");
-    const needle = String(row.hit?.[0] ?? "");
-    const at = flat.indexOf(needle);
-    if (at < 0) return true;
-    return !RETRACTION_MARKER.test(windowFor(flat, at, needle.length));
+    return !RETRACTION_MARKER.test(window);
   });
 }
 
 const applicableBanned = (cap) => BANNED.filter((rule) => rule.family === "always" || !cap);
-const scan = (rules, view) => rules
-  .map((rule) => ({ rule, hit: view[rule.where].match(rule.re) }))
-  .filter((row) => row.hit !== null);
+const withGlobal = (re) => new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`);
+
+/**
+ * 全局扫描（第 5 轮评审抓的洞③）：非全局的 `match` 只看**首命中** ⇒ 被撤回的那句之后再加一句未撤回的断言
+ * 就被遮蔽。这里每条规则的**每一处**命中各自成行（带偏移），豁免判定逐命中做。
+ */
+function scan(rules, view) {
+  const rows = [];
+  for (const rule of rules) {
+    for (const m of view[rule.where].matchAll(withGlobal(rule.re))) {
+      rows.push({ rule, text: m[0], index: m.index });
+    }
+  }
+  return rows;
+}
+
+/** 肯定式判据的在场：至少要有一处命中落在**不是 meta 句**的句子里（见 META_MARKER）。 */
+function requiredPresent(rule, side, view) {
+  const where = rule[side].where;
+  const text = view[where];
+  return [...text.matchAll(withGlobal(rule[side].re))]
+    .some((m) => !META_MARKER.test(windowFor(text, m.index, m[0].length)));
+}
 
 // ── G0 扫描面在场（契约两节 + CHANGELOG 两条条目）─────────────────────────────
 
@@ -268,7 +305,7 @@ test("#735 切片2 · G1 撤回过的句式不许写回契约或 CHANGELOG（中
       const hits = realHits(scan(banned.filter((rule) => rule.side === side), view), view);
       assert.deepEqual(hits.map((row) => row.rule.id), [],
         `${surface.label}（${surface.file}）里出现了被实测推翻并撤回的句式：\n`
-        + hits.map((row) => `  · ${row.rule.id} 命中「${String(row.hit?.[0])}」——${row.rule.why}`).join("\n")
+        + hits.map((row) => `  · ${row.rule.id} 命中「${row.text}」——${row.rule.why}`).join("\n")
         + "\n要么改回实测口径（只声明「读者永不读到」+「写侧没擦它 ≠ 读侧取到」），要么把机制落回代码并给出新的实测。");
     }
   }
@@ -281,11 +318,12 @@ test("#735 切片2 · G2 每面都必须逐字留着「读者永不读到」与�
     for (const surface of [readContractSection(side), readChangelogEntry(side)]) {
       const view = views(surface.body);
       const missing = REQUIRED.filter((rule) => rule.sides.includes(side))
-        .filter((rule) => !view[rule[side].where].match(rule[side].re))
+        .filter((rule) => !requiredPresent(rule, side, view))
         .map((rule) => `${rule.id}（${rule.why}）`);
       assert.deepEqual(missing, [],
         `${surface.label}（${surface.file}）缺了必须留着的真话：${missing.join("、")}\n`
-        + "禁语表只拦已知措辞；这两句不在场，就说明有人把窄口径改写成了别的说法（同义绕法）或整段删掉。");
+        + "禁语表只拦已知措辞；这两句不在场，就说明有人把窄口径改写成了别的说法（同义绕法）或整段删掉。\n"
+        + "注意：只出现在**谈守卫自己的句子**里（「必须逐字留着「…」」这类复述）不算在场 —— 那是自证循环。");
     }
   }
 });
@@ -298,7 +336,7 @@ test("#735 切片2 · G3 量词型断言（每一格/所有格子/都 + 账本/�
       const hits = scan(QUANTIFIED.filter((rule) => rule.side === side), views(surface.body));
       assert.deepEqual(hits.map((row) => row.rule.id), [],
         `${surface.label}（${surface.file}）出现了「全覆盖量词落在账本上」的断言：\n`
-        + hits.map((row) => `  · ${row.rule.id} 命中「${String(row.hit?.[0])}」——${row.rule.why}`).join("\n")
+        + hits.map((row) => `  · ${row.rule.id} 命中「${row.text}」——${row.rule.why}`).join("\n")
         + "\n今天没有这种资格：快照这格只声明「读者不会读到」，而「哪些下标真在账本里」需要逐格账，写侧没有（#754 的正身）。");
     }
   }
@@ -390,4 +428,36 @@ test("#735 切片2 · G6 封顶族只认**代码形状**：注释里写名字不
     assert.ok(CAP_SHAPES.some((s) => s.test(shape)), `形状没被识别：${shape.trim()}`);
   }
   t.diagnostic("三态实测：现树 = 不在场（封顶族禁）；只加注释 = 仍不在场（禁）；属性/赋值/访问器三种真实形状 = 在场（解禁 + diagnostic）。");
+});
+
+// ── G7 三个洞的自证（第 5 轮评审：守卫不能自己糊弄自己）───────────────────────
+
+test("#735 切片2 · G7 三个洞的自证：meta 句不算事实句 / 整句包进反引号照扫 / 每一处命中各自判豁免", (t) => {
+  const scalar = REQUIRED.find((rule) => rule.id === "scalar-not-bitmap");
+  assert.ok(scalar, "REQUIRED 里必须还留着 scalar-not-bitmap 这条肯定式判据");
+  // **洞①**：同一条目里「复述判据的 meta 句」不能顶替它引用的那句事实（第 4 轮的自证循环）。
+  const metaOnly = "肯定式判据：必须逐字留着「`anchor` 是标量、不是逐格的位图」这一句。";
+  const fact = "而 `anchor` 是一个**标量**（折叠后的消息条数）、不是逐格的位图 ⇒ 旧正文取不到。";
+  assert.equal(requiredPresent(scalar, "cn", views(metaOnly)), false,
+    "只剩「守卫说必须逐字留着 X」这一句时，X 不算在场 —— 关于这句话的文字不能顶替这句话本身");
+  assert.equal(requiredPresent(scalar, "cn", views(fact)), true,
+    "事实句自己在场时必须判为在场（豁免不能反向吃掉真话）");
+  // **洞②**：行内代码只豁免**术语级**片段，整句假主张包进反引号照样扫。
+  assert.equal(stripInlineCode("禁语表里 `按构造` 是引用。"), "禁语表里  是引用。",
+    "短术语片段（引用禁语本身作 RED 证据）仍按引用剥掉");
+  const wrapped = "说法：`被省掉的前缀都已入账，按锚点封顶保证跨恢复不会丢。`";
+  assert.match(stripInlineCode(wrapped), /不会丢/u, "整句假主张包进反引号必须留在扫描面上");
+  const wrappedHits = realHits(scan(BANNED.filter((rule) => rule.side === "cn"), views(stripInlineCode(wrapped))),
+    views(stripInlineCode(wrapped)));
+  assert.ok(wrappedHits.length >= 1, "整句假主张（包在反引号里）必须至少被一条禁语咬住");
+  t.diagnostic(`整句假主张包进反引号后咬住它的禁语：${wrappedHits.map((row) => row.rule.id).join(" / ")}`);
+  // **洞③**：全局扫描 + 逐命中豁免 —— 已撤回的那句遮蔽不了它后面那句未撤回的断言。
+  const body = "为此实现并实测过一个「恢复锚点封顶」版本，已撤回：它既不换来正确性。恢复锚点封顶仍然成立。\n";
+  const view = views(body);
+  const rows = scan(BANNED.filter((rule) => rule.id === "cn-anchor-cap"), view);
+  assert.equal(rows.length, 2, `两处命中都要被看见（只取首命中 = 后面的能被遮蔽；实测 ${rows.length} 处）`);
+  const live = realHits(rows, view);
+  assert.equal(live.length, 1,
+    "第一处落在带「撤回」标记的句子（历史叙事，豁免），第二处未撤回 ⇒ 必须算数；实测算数 " + live.length + " 处");
+  t.diagnostic("三洞自证：meta 句不算在场 / 整句反引号照扫 / 每一处命中各自取句窗判豁免。");
 });
