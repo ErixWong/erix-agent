@@ -501,8 +501,10 @@
   sites are guarded by `if (persisted)`), and `countResumeAnchor(records)` counts the same append-only ledger
   at a later instant, so the first term bounds the second; the round-start term covers the one case memory
   runs ahead of the ledger — a resumed run whose crash-round body was completed from the snapshot and
-  deliberately left un-journaled (#424's guard), which sits *after* the anchor and is exactly what the
-  `min(..., persistedTranscriptLength)` term keeps. Pinning it is the double-crash case (old-format fixture
+  deliberately left un-journaled (#424's guard), which sits *after* the anchor, and what the
+  `min(..., persistedTranscriptLength)` term does is **keep that slot from being nulled** — a write-side fact;
+  **whether the reader can reach it again is a different question, and the answer is no: that is issue #754**
+  (see below). Pinning it is the double-crash case (old-format fixture
   ledger → resume → engine overwrites the snapshot → resume again), which compares its two outcomes
   byte-for-byte against a **copy of `src/` writing the whole transcript** (issue #411's discipline: the
   in-repo `src/` is never edited by a mutation probe). The fixture scene is `test/fixtures/journal-0.22.0/`
@@ -617,8 +619,9 @@
   `persistedTranscriptLength` 只在**本进程亲手落盘成功**时才 +1（两处写点都带 `if (persisted)` 守卫），
   而 `countResumeAnchor(records)` 量的是同一本只追加的账在更晚时刻的条数 ⇒ 第一项界住第二项；第二项
   「本轮起点」管的是内存跑在账本之前那唯一一种情形——恢复时从快照补进内存、却被 #424 的守卫
-  故意留在账本之外的崩溃轮正文，它排在锚点**之后**，正是 `min(..., persistedTranscriptLength)` 那一项
-  把它留住。**两跳那条链是主干既有的读侧缺陷，不是本片引入的损失（issue #754）**：同一套场景（旧账本+旧快照 →
+  故意留在账本之外的崩溃轮正文，它排在锚点**之后**，`min(..., persistedTranscriptLength)` 那一项做的只是
+  **使它不被置 `null`**（写侧没擦它）；**读侧仍然取不到它** —— 这是两件事，后者归 **#754**（见下面那条）。
+  **两跳那条链是主干既有的读侧缺陷，不是本片引入的损失（issue #754）**：同一套场景（旧账本+旧快照 →
   resume → 引擎亲笔覆盖写快照 → 再 resume）在主干与本支并排跑，第二跳**逐字同结果**——同一个
   `invalid_messages`、锚点同样从 3 涨到 5、同样 0 次模型请求、那段只在内存里的正文同样取不到——因为
   `anchor` 是「折叠后的消息条数」这个**标量**，不是「哪些下标已入账」的位图。为此实现并实测过一个
