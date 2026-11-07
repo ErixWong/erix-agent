@@ -587,7 +587,15 @@
   and the cap family's code-truth test is now a **structural code shape** (`resumeTranscriptAnchor:` /
   assignment / property read / accessor, comments stripped first) — **a comment no longer unlocks it**. A
   cap-family hit inside a sentence carrying a retraction marker (撤回 / reverted) is excused as history, the
-  reading `check:docs` #668 and static-guard rule 5 already use. Pinning it is the double-crash case (old-format fixture
+  reading `check:docs` #668 and static-guard rule 5 already use. The fifth round closes three holes in **the guard
+  itself** (content, EN/CN wording and scope already passed review; only `test/docs-no-overclaim-735.test.js`
+  changes): **presence in G2 is no longer fed by the guard's own prose** — a sentence talking about the guard, its
+  bans, or "must stay verbatim" cannot stand in for the fact sentence it quotes (that was a self-proving loop);
+  **the inline-code exemption is narrowed to terminology** — a backticked span counts as a quotation only when it
+  is short and carries no sentence punctuation, so a whole false claim wrapped in backticks is still scanned; and
+  **banned-phrase matching is global now**, every hit getting its own sentence window and its own retraction-marker
+  check, so one retracted historical sentence can no longer shield a live claim written after it. Pinning it is the
+  double-crash case (old-format fixture
   ledger → resume → engine overwrites the snapshot → resume again), which compares its two outcomes
   byte-for-byte against a **copy of `src/` writing the whole transcript** (issue #411's discipline: the
   in-repo `src/` is never edited by a mutation probe). The fixture scene is `test/fixtures/journal-0.22.0/`
@@ -711,6 +719,11 @@
   `账本` / `入账` 上」这类全覆盖断言，EN 同一族），以及把「封顶族在不在」的判据从「文里提个名字」改成**真实代码形状**
   （`resumeTranscriptAnchor:` / 赋值 / 点取 / 访问器，判前先剥注释）—— **一句注释解不开这道闸**。
   封顶族的命中若落在带「撤回 / reverted」标记的那一句里，按历史叙事豁免（与 #668、static-guards 第 5 条同口径）。
+  第 5 轮补的是**守卫自己的三个洞**（内容 / 中英措辞 / 范围都已过审，只动 `test/docs-no-overclaim-735.test.js`）：
+  **G2 的「在场」不再被守卫自己的说明文字喂饱** —— 谈「守卫 / 判据 / 禁语 / 必须逐字留着」的那一句不算满足在场，
+  否则同一条目里复述判据的那句就顶替了它引用的事实句（自证循环）；**行内代码的豁免收窄成术语级** —— 反引号里的
+  片段只在**不含句读且长度 ≤ 60** 时按引用剥掉，整句假主张包进反引号照样扫；**禁语扫描改成全局匹配**，每条命中
+  各自取句窗、各自判「撤回标记」豁免 ⇒ 一句已撤回的历史叙事遮蔽不了它后面那句**未撤回**的断言。
   **两跳那条链是主干既有的读侧缺陷，不是本片引入的损失（issue #754）**：同一套场景（旧账本+旧快照 →
   resume → 引擎亲笔覆盖写快照 → 再 resume）在主干与本支并排跑，第二跳**逐字同结果**——同一个
   `invalid_messages`、锚点同样从 3 涨到 5、同样 0 次模型请求、那段只在内存里的正文同样取不到——因为
