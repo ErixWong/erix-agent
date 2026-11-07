@@ -3,7 +3,7 @@
   "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
   "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
   "expect": {
-    "tests": 3619,
+    "tests": 3657,
     "fail": 0,
     "maxSkipped": 15
   },
@@ -697,6 +697,23 @@
       "todo": 0,
       "cancelled": 0,
       "why": "issue #743 **第四轮**（同一条错的第二现场：README 模块地图那一行也作无范围限定的全称）rebase 到 `origin/main fd07d27`（#742 已合）之后现测。主干自己那棵树现登 3590（rebase 后树里的登记值就是它），分支在 fd07d27 之上的增量为 **+15**：`+11` = `test/event-tier-coverage-743.test.js` 的 T1–T11（分级表覆盖、清理谓词四条与边界输入、终态/安全子集实推、derived 空集、诊断通道边界、发射原语边界），`+1` = T12（范围限定守卫：契约开场两处 + 两份 README 模块地图，本轮从只钉契约扩成同时钉 README），`+3` = `test/doc-examples.js` 新写的契约 JS 围栏 L1/L2/L3 三层验证。3590 + 15 = 3605，与本次 TAP 汇总行逐字相等（日志 /tmp/743-r4-test.log，跑前工作树只剩本轮那三处未提交改动、跑后一字未动），经同一份日志复核为 `TEST-SUMMARY-VERDICT ok`；抬值前脚本自己打 `HINT 登记值可抬到 3605（当前登记值 3590，本次实测 3605，+15）` ⇒ 非手抄。**登记值不是在 3580 上加出来的**：本轮 rebase 之后主干读数已经是 3590，分支增量重算 = 15。fail=0；skipped 13 不变（没动任何 skip 判据；历史曾出现 test/version-state-probe-703.test.js 日期敏感跳过，本轮未复现），maxSkipped 上限 15 不动（13 ≤ 15，没有放宽）。"
+    },
+    {
+      "date": "2026-11-07",
+      "env": "local",
+      "node": "v22.23.2",
+      "commit": "1563d40（被测量那一棵树的内容；登记这笔提交在它之后，只改这个 JSON）",
+      "branch": "fix-261107-11-snapshot-round-residue",
+      "mergeBase": "47b69bf",
+      "mainSha": "47b69bf",
+      "headSha": "1563d40",
+      "tests": 3657,
+      "pass": 3644,
+      "fail": 0,
+      "skipped": 13,
+      "todo": 0,
+      "cancelled": 0,
+      "why": "issue #735 切片 2 重放到 main `47b69bf`（#746 已合，PR #756）之后现测。**这条分支的 22 笔 commit 是逐个 cherry-pick 过来的，不是 squash**——A1「恢复锚点封顶」那一笔加、一笔撤（`91951fe` → `6d98ac7`）都留在历史里，两跳用例与守卫的注释点名这两个 sha，squash 会让它们变成悬空坐标（旧支保留为 `keep-735-slice2-wip`，并已随本支一起推上去）。对账：本支相对自己旧基点 `bea46bb` 的增量 **+14**（`bea46bb` 现登 3605 → 旧支头 `2e1da8a` 现登 3619），main 自己那棵树现登 **3643**（#746 的增量 +38）；合并树实测 **3657 = 3643 + 14**，两侧增量都在、没有重复计数也没有丢格。+14 的来路 = 写侧残余用例 `loop-snapshot-round-residue-735.test.js`（含第 5 段两跳恢复判据，记的是**当前行为**，#754 修好后要翻成断言正确行为）与契约禁语守卫 `docs-no-overclaim-735.test.js`（G0–G7，第 5 轮补的三个洞各带反向证）。同片重取的另两处派生值在上一笔 `1563d40`：CHANGELOG 中英配对地板 15→16（守卫在 `## [Unreleased]` 上现报「实测 16 对 ≠ 地板 15 对」，取现报值而非相加）、变异样本表与兼容钉子附表 `--sync` 重锚。"
     }
   ]
 }
