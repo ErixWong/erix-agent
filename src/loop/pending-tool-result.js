@@ -203,19 +203,6 @@ export const RESUME_JOURNAL_SKIP_DETAIL_ROUND_NOT_SAFE_INTEGER = "round_not_safe
 export const RESUME_JOURNAL_SKIP_DETAIL_APPEND_SKIPPED = "append_row_not_persisted";
 
 /**
- * **中段**悬空 `tool_use` 的读侧判据（issue #421）：返回「紧跟的那条 user 消息没结清它」的每一组。
- *
- * 只认**同页合并**这一支（纪律 ④）：assistant 的下一条必须是一条**已经有 `tool_result`** 的 user
- * 消息，缺的 id 才补得进去。下一条不是 user / 没有任何 `tool_result`（那需要在中间插一条消息）⇒
- * 本函数不返回它，交由 `validateMessages` 如实报错。
- *
- * 只读、不结清、不碰 `messages`。
- *
- * @param {any[]} messages canonical 消息数组
- * @returns {Array<{assistantIndex: number, resultIndex: number, missing: object[]}>}
- *   `missing` = 该 assistant 里「紧跟的 user 消息没有对应 `tool_result`」的 `tool_use` 块
- */
-/**
  * 「普查」那一份实现（issue #730）：一趟扫描同时分出两类，**配对判据只有这一份**（纪律 ①）：
  *   · `answerable` = 可同页合并的那些组（`pendingMidSequenceToolUses` 的逐字返回值）；
  *   · `unanswerable` = 确实悬空、但形状不是同页合并那一种（紧接的不是 user / 紧接的 user 一条

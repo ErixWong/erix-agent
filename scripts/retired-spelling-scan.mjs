@@ -378,7 +378,13 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // （判据多了「落盘证据」这一条，那句旧措辞本身被换掉），上面那处同名异义因此**掉了一处** ——
   // 这是「契约改干净了」的方向，不是漏钉。数取自扫描器现报：
   // `docs/host-consumer-contract.md [contract] verdict=SUSPECT(dropped) pin=455 uses=454`。
-  "docs/host-consumer-contract.md": 454,
+  // 454 → 457（issue #730）：新增「中段补桩的四条放弃路径」一节，代码语境命中多 3 处，三处都是
+  // **同名异义**（`AMBIGUOUS_KEYS`，不进退役判据，但计入本钉子）：1 处 `runId`（"这个 runId 永久起不来"，
+  // store 语境）+ 2 处 `user`（detail 表 `next_message_is_not_user` / `aggregate_has_no_tool_result` 两行写的
+  // 就是「紧接的那条不是 user」）。为躲钉子把 `user` 换成中文说法会把 detail 名和它的含义拆开，所以
+  // 不改写法；数取自扫描器现报：`docs/host-consumer-contract.md [contract] verdict=SUSPECT(raised) pin=454 uses=457`
+  // （3 处逐条定位：EN :2395 `runId`、:2415/:2416 `user`；CN :1924 `runId`、:1942/:1943 `user`）。
+  "docs/host-consumer-contract.md": 457,
   // 565（片A，切版前补 #569/#568 文档）：CN 契约新增「折叠触发比例与会话续接块」一节，其中 provider 回调的
   // 真实键名 `runId`（`({runId, state, previous}) → {text, version}`）是一次同名异义命中——契约必须写出这个键名，
   // 所以**不为了躲钉子而改写成模糊说法**，按判据把钉子登记成扫描器报的值。EN 侧同一句已把 `context` 写成全路径
@@ -395,7 +401,9 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 564 → 566（独立评审 #743 必修 1 与 2 之后）：CN 那一节新写了「只有这一档是判据可能删的」与
   // 「`type ∈ stream ∧ … ∧ 成型副本确实落盘 ∧ …`」这两句（档位名在代码围栏与行内代码里各算一次同名异义）。
   // 数取自扫描器现报：`docs/host-consumer-contract_cn.md [contract] verdict=SUSPECT(raised) pin=564 uses=566`。
-  "docs/host-consumer-contract_cn.md": 566,
+  // 566 → 569（issue #730，与上面英文同一刀）：成对新增的那一节，同名异义命中同样 3 处。
+  // 数取自扫描器现报：`docs/host-consumer-contract_cn.md [contract] verdict=SUSPECT(raised) pin=566 uses=569`。
+  "docs/host-consumer-contract_cn.md": 569,
 });
 
 /**

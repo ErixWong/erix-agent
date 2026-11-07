@@ -876,6 +876,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-snapshot-round-residue-735.test.js` | 19 | `completion`×4, `stallDetection`×4, `tools`×4, `wrapup`×4, `resume`×3 |
 | `test/prompt-note-evidence-746.test.js` | 3 | `tools`×2, `completion`×1 |
 | `test/prompt-note-coverage-746.test.js` | 1 | `tools`×1 |
+| `test/loop-resume-abandon-signals-730.test.js` | 5 | `completion`×1, `resume`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 
