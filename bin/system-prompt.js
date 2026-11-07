@@ -17,18 +17,28 @@
 //
 // ── issue #746 评审第 2 轮：这一位是**能力陈述**，刻意只接工具面门、不接账本证据门 ──
 // 本节（`buildCliToolsSystemPrompt` 的「你的处境」段 + 「具体数值来源」bullet + `buildArchiveNotice`）
-// 只问「整族 `note_*` 在不在注册面上」（`notesOnToolSurface` ⇒ `hasNoteToolSurface`），**不**问
-// 「这个 run 写过笔记没有」。三条理由（两份架构文档的覆盖面段逐条同步，守卫 `G1b` 钉同步）：
+// 只问「整族 `note_*` 在不在注册面上」（`notesOnToolSurface` / 名单那一侧的 `notesOnToolNames` ⇒
+// 同一个 `hasNoteToolSurface`），**不**问「这个 run 写过笔记没有」。四条理由（两份架构文档的
+// 覆盖面段逐条同步，守卫 `G1b` 逐条钉同步 —— 第 3 轮之前 `reason` 只是个没被断言的字符串）：
 //   1. 装配发生在 **run 开始之前**（chat 一次、REPL 会话启动一次），那一层没有账本可拿。拿 #741
 //      的四格判它，它只能落在「无笔记写入」那一格——那是把「不知道」伪报成「本场没写过」，恰好是
 //      本轮在 guard 那一侧刚修掉的同一个错的镜像（见 `bin/final-guard-support.js` 的 `readLedger`）。
-//   2. 这些句子是能力陈述（「本场装配了 `note_*`，需要时先查」），真值只依赖装配事实，而那已接门。
+//   2. 这些句子是能力陈述（「本场装配了 `note_*`，需要时先查」），真值只依赖装配事实，而那已接门；
+//      那几条动作句也不是存在断言，而是**条件式工作流**——触发条件是「需要早期细节而想不起来时」
+//      这个模型自己的状态，不是「笔记里有它」。这一条不写下来，下一个读代码的人就会把它们
+//      误读成「已在断言笔记里有」，然后顺手把证据门接上。
 //   3. 硬接证据门就要给装配层灌 `messages`（chat 无历史、REPL 得逐轮重装配），换来的只有
 //      「整族在场却永远说没写过」这一种新谎。
+//   4. 缺省那一份文案是被**逐字节 golden** 钉住的（`buildCliToolsSystemPrompt() === CLI_TOOLS_SYSTEM_PROMPT`、
+//      `test/fixtures/cli-golden.json`，`examples/pi-extension` 另有一条「缺省清单行逐字节一致」断言）：
+//      接账本门必然重写缺省那一份 ⇒ 拿 #741 四格要求这一位，付的是重烤一批 golden，
+//      买回来的仍是第 1 条那句假话。
+// `bin/delegation.js` 里子 run 的那一份是同一位点的**子侧**（入口是 `notesOnToolNames`），定性相同。
 // **红线（`test/prompt-note-coverage-746.test.js` 的 `G1c` 反向守卫）**：这一位永远不许出现**存在
 // 断言**（「你已记录的笔记」「笔记里有」「the notes you recorded」这类）——那些句子的真值需要账本，
 // 而这里拿不到。要写存在断言，请把它搬到拿得到 `messages` 的取回指引那三处（guard 摘要 / 打回指针 /
-// 折叠桩与恢复提示）。
+// 折叠桩与恢复提示）。守卫的探针**带 `archiveDir`**：不带的话归档提示根本不在被扫的文本里，
+// 那一批文案就处于「看起来钉住了、其实没人看」的状态（第 2 轮实测：归档提示的变异 exit 0）。
 
 import {
   discoverProjectInstructions,
@@ -53,6 +63,23 @@ import { buildArchiveNotice, buildCliToolsSystemPrompt } from "./tools.js";
  */
 export function notesOnToolSurface(tools) {
   return hasNoteToolSurface(noteToolNamesOnSurface(tools));
+}
+
+/**
+ * 同一件事的**名单**口径（issue #746 第 3 轮，评审必修①）：手上只有工具**名字**名单时的那一侧。
+ *
+ * 为什么需要它而不是「叫调用方自己传 `notes`」：子 run 的提示词装配点手上拿的就是
+ * `childTools.map(t => t.name)` 那一份名单（清单行也要它）。如果 `notes` 只能靠调用方递，
+ * 那么「清单行」与「处境段」就是**从两份输入各自推**的——一份漏了就没人抬杠（第 2 轮评审
+ * 当场跑出的就是这个形状：`toolNames: ["readFile"]` 直接调仍出 `note_*`）。现在两侧同源。
+ *
+ * 口径仍是 `src/` 那一份（整族全有或全无），不在 `bin/` 里另写「名字里带 note 就算」。
+ *
+ * @param {string[] | undefined} toolNames 本次 run **实际**工具面的名字名单
+ * @returns {boolean}
+ */
+export function notesOnToolNames(toolNames) {
+  return hasNoteToolSurface((Array.isArray(toolNames) ? toolNames : []).map(String));
 }
 
 /**
