@@ -42,7 +42,8 @@ const DOCS = [
 const BEGIN = "<!-- erix:snapshot-cell-axes:begin -->";
 const END = "<!-- erix:snapshot-cell-axes:end -->";
 
-/** 契约必须列全的 10 格（issue #767 的清点面）。 */
+/** 契约必须列全的 14 个格名（issue #767 的清点面；表里是 **15 行**——一个键名
+ *  `persistedTranscriptLength` 底下是两个东西，占两行，见 `SPLIT_ROWS`）。 */
 const CELL_KEYS = [
   "round",
   "status",
@@ -133,7 +134,7 @@ const tables = new Map(DOCS.map((doc) => [doc.side, loadTable(doc)]));
 
 // ── G1 表自洽（漏格即红、两轴词表、无空值、中英一致）────────────────────────────
 
-test("G1 载荷表自洽：10 格齐全、两轴取值合法、无空值", () => {
+test("G1 载荷表自洽：14 格齐全、两轴取值合法、无空值", () => {
   for (const { side, rows } of tables.values()) {
     const counts = new Map();
     for (const row of rows) {
@@ -142,7 +143,7 @@ test("G1 载荷表自洽：10 格齐全、两轴取值合法、无空值", () =>
     assert.deepEqual(
       [...counts.keys()].sort(),
       [...CELL_KEYS].sort(),
-      `${side}：表里的格集合必须**恰好**是这 10 个（漏一格 = 集合缺项，多一格 = 多项）`,
+      `${side}：表里的格名集合必须**恰好**是这 14 个（漏一格 = 集合缺项，多一格 = 多项）`,
     );
     for (const [key, expected] of Object.entries(SPLIT_ROWS)) {
       assert.equal(
