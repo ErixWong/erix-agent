@@ -154,8 +154,12 @@ test("S2 folds a stub verbatim (no agent-side credential filter, #55) while reta
       .map((block) => block?.text)
       .find((text) => typeof text === "string" && text.includes("[已折叠]"));
     assert.equal(typeof foldedStub, "string");
-    // ADR-016：stub 值直接取自 tool_result 内容，后续恢复走 note-first 提示（零路径）
-    assert.match(foldedStub, /note_list|note_read/u);
+    // ADR-016：stub 值直接取自 tool_result 内容。**issue #746 之后**「后续恢复走 note-first」这句
+    // 不再是无条件承诺：本夹具的 `tools: cliTools.tools` 里一个 `note_*` 都没有（笔记工具住在 notes
+    // 工厂里，不在 CLI 面上），所以桩必须走重读那一支；有整族笔记工具 + 账本有写入时才给 note-first
+    // 指引（那一支由 `test/prompt-note-evidence-746.test.js` 逐格钉住，本处不再锁原文）。
+    assert.equal(/note_/u.test(foldedStub), false, `无笔记工具面 ⇒ 桩里不许出现 note_*（现文：${foldedStub}）`);
+    assert.match(foldedStub, /重读源文件/u);
     assert.match(foldedStub, new RegExp(safeValue));
     // issue #55：折叠锚点不再凭据过滤——凭据样式的值原样保留；
     // 防敏感信息到达上游 LLM 是 token hub（relay/LiteLLM 网关）的职责。

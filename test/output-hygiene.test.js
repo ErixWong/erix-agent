@@ -41,7 +41,15 @@ test("oversized tool result: context gets a stub and the record keeps full conte
     .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
     .find((block) => block?.type === "tool_result" && block.tool_use_id === "call-1");
   assert.match(String(stubResult?.content), /完整输出已由引擎归档/);
-  assert.match(String(stubResult?.content), /先用 note_list 查找记录，再用 note_read 读取/);
+  // issue #746（S2）：本夹具没给任何笔记工具（`runDirect` 的 `tools` 缺省），所以桩必须走**重读**
+  // 那一支，而不是硬写「先 note_list 再 note_read」。note-first 那一支由
+  // `test/prompt-note-evidence-746.test.js` 用真工具面 + 真账本钉住。
+  assert.equal(
+    /note_/u.test(String(stubResult?.content)),
+    false,
+    `无笔记工具面 ⇒ 逐条超限桩里不许出现 note_*（现文：${String(stubResult?.content)}）`,
+  );
+  assert.match(String(stubResult?.content), /重读源文件|只读方式复核/u);
   assert.doesNotMatch(String(stubResult?.content), new RegExp(BIG_TAIL));
 
   // 2. round record 带全量 toolOutputs（字节保真：尾部证据在档）
@@ -241,7 +249,9 @@ test("archive stub warns about side effects of the truncated command", async () 
   const stub = String(result.messages
     .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
     .find((block) => block?.type === "tool_result" && block.tool_use_id === "call-1")?.content);
-  assert.match(stub, /先用 note_list 查找记录，再用 note_read 读取/);
+  // issue #746（S2）：同上——本 run 面上没有笔记工具，桩必须说重读而不是命令去查不存在的工具。
+  assert.equal(/note_/u.test(stub), false, `无笔记工具面 ⇒ 桩里不许出现 note_*（现文：${stub}）`);
+  assert.match(stub, /重读源文件|只读方式复核/u);
   // issue #32：补副作用提示——不得仅凭截断输出判成败，也不得为重跑补全而重复副作用命令
   assert.match(stub, /若原命令有副作用，不要仅凭截断输出判断成败/);
   assert.match(stub, /也不要为补全输出重跑有副作用的命令/);

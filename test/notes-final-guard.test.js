@@ -167,14 +167,38 @@ test("final guard revises when captures exist but the envelope declares no findi
   await withNotes(async (directory) => {
     const records = [];
     await seedCapture(records, directory, "nonce=gold-4173\n", 1);
-    const guard = createFinalGuard({ store: storeOf(records) });
+    // issue #746（B2）：指针里那条取回动作现在**吃两条证据**（整族笔记工具在面上 + 账本里有一条还
+    // 能查的 `note_take` 写入）。本夹具原本只有一条 exec 捕获 ⇒ 面上即便给了整族笔记工具，也**不该**
+    // 再硬写「先用 note_list 查找，再用 note_read 读取」（旧行为：握着账本却伪报「笔记里有」）。
+    // 三格都在这一条里钉：无工具面 / 有工具面无写入 / 有工具面且有写入。
+    const withWrite = [...records, {
+      round: 9,
+      toolOutputs: [],
+      messages: [
+        { role: "assistant", content: [{ type: "tool_use", id: "n-1", name: "note_take", input: { key: "k-1", content: "nonce=gold-4173" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "n-1", content: '{"status":"found","action":"saved","key":"k-1","scope":"run"}' }] },
+      ],
+    }];
     // 有可核验捕获值却一条都不声明 → 不是"本任务没有可核验值"，打回逼它声明
+    const guard = createFinalGuard({
+      store: storeOf(withWrite),
+      noteTools: ["note_take", "note_list", "note_read"],
+    });
     const missing = await guard({ finalText: "随便写" });
     assert.equal(missing.action, "revise");
     assert.match(missing.message, /没有声明 findings/u);
     assert.match(missing.message, /nonce/u);
-    assert.match(missing.message, /note_list.*note_read/u);
+    assert.match(missing.message, /note_list.*note_read/u, "两条证据都成立 ⇒ 才给 note-first 指针");
     assert.match(missing.message, /省略对应 findings 声明/u);
+    const noWrite = await createFinalGuard({
+      store: storeOf(records),
+      noteTools: ["note_take", "note_list", "note_read"],
+    })({ finalText: "随便写" });
+    assert.equal(/note_/u.test(noWrite.message), false, `有工具面但账本无写入 ⇒ 指针不许伪报有记录（现文：${noWrite.message}）`);
+    assert.match(noWrite.message, /重读源文件/u);
+    const noSurface = await createFinalGuard({ store: storeOf(withWrite), noteTools: [] })({ finalText: "随便写" });
+    assert.equal(/note_/u.test(noSurface.message), false, `无笔记工具面 ⇒ 指针不许指不存在的工具（现文：${noSurface.message}）`);
+    assert.match(noSurface.message, /重读源文件/u);
     // 显式空 findings 同样不算声明
     const empty = await guard({ finalText: "x", findings: {} });
     assert.equal(empty.action, "revise");
