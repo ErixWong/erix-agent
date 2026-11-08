@@ -918,6 +918,30 @@ export function toolResultEnvelopeContract(label, getEntry) {
       executedToolIds: [],
       toolResults: [],
     });
+    // issue #754 裁决 2（2026-11-08）：夹具原本把崩溃轮那条 assistant **只**写在快照的 `messages` 里
+    // ——那是 pre-261021 的形状。恢复路径上那条「从快照补正文」的升级闸门已被关掉，现在上下文只从账本
+    // 重建；而「上下文里已没有配对 `tool_use`」的在飞调用也不再补跑（同源同去留）。所以本格要断的
+    // 「中断重放带身份键与 `interrupted`」要成立，那条 `tool_use` 必须在**账本**里 —— 写成 261021 之后
+    // 写侧的真形状（一条 `kind:"message"` 行）。**契约套件是随包发布的、宿主会跑** ⇒ 这里内联写行，
+    // 不 import 仓内 helper（`package.json` 的 `files` 只带 `test/contract/*.js`）。断言一字未改。
+    await store.appendRound(runId, {
+      round: 3,
+      roundKey: `${runId}:round:3`,
+      dedupKey: `${runId}:msg:3:0`,
+      kind: "message",
+      seq: 0,
+      messages: [{
+        role: "assistant",
+        content: [{
+          type: "tool_use",
+          id: "pending-1",
+          name: "exec",
+          input: { cmd: "rm -rf" },
+          erix: { toolCallKey: "tc_deadbeefcafe" },
+        }],
+      }],
+      ts: new Date().toISOString(),
+    });
 
     const events = [];
     await runToolLoop({

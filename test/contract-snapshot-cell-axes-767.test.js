@@ -998,12 +998,15 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
   const victims = [
     { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6205 },
     { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6185 },
-    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 699 },
-    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 700 },
-    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 704 },
-    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 661 },
+    // 行号取自 2026-11-08 `fix-261108-01`（#754）在**本树**现算的锚点命中行（`src/loop/resume-manager.js`
+    // 因本片的读侧改动整体下移 21 / 7 / 2 行 ⇒ 这里跟着重登一次；锚点本身一字未动，见
+    // `scripts/cell-axes-anchors.mjs`：登记表钉的是代码形状，不是行号）。
+    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 720 },
+    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 721 },
+    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 728 },
+    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 668 },
     { key: "persistedTranscriptLength", axis: "read", path: "src/loop/resume-manager.js", at: 16 },
-    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 634 },
+    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 636 },
   ];
   const droppedKeys = new Set();
   const mutatedAnchors = [...CELL_AXES_ANCHORS];

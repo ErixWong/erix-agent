@@ -5,6 +5,74 @@
 
 ### Breaking
 
+- **Archives written before 261021 are no longer resumable (issue #754, verdict 2).** The one place that still
+  read the run snapshot's `messages` cell on the resume path was the pre-261021 upgrade gate in
+  `src/loop/resume-manager.js`: when the ledger had nothing after the resume anchor while the snapshot was
+  longer, it appended `snapshot.messages.slice(anchor)` to the rebuilt context. That gate served dead
+  archives and was itself broken — the anchor is a **scalar** (folded logical-message count), not a bitmap of
+  which snapshot slots were journaled, so after the first resumed hop journaled its own rows, the second hop
+  moved the anchor past that body and the run died **before its first provider request** with
+  ``invalid_messages`` (0 requests; reproduced on `test/fixtures/journal-0.22.0/`, both write-side shapes
+  byte-identical). Two cuts landed together, because dropping one without the other feeds half of a round
+  from the very source this change retires: (1) no resume context is ever taken from `snapshot.messages`
+  again — the only surviving read of that cell is a **count probe** (`ledgerMessages.length === anchor &&
+  snapshotBody.length > anchor`, non-null slots only) used for nothing but signalling; (2) on that same
+  legacy branch, a snapshot `tool_result` whose `tool_use` is no longer in the rebuilt context is not fed
+  either — otherwise the surviving result is an orphan and `validateMessages` rejects it at
+  `src/messages/rounds.js` (the #421 / #730 fallback only answers the opposite direction, a dangling
+  `tool_use`); (3) on that same branch, an in-flight call from `snapshot.pendingToolUses` whose `tool_use`
+  is no longer in the rebuilt context is **not replayed** either — the pending list came from that same
+  retired source in the same batch as the crash-round body, so replaying it writes a result into a context
+  with no matching `assistant` and reproduces the very same `invalid_messages` outcome through a second
+  door. (4) on that same branch the crash round's `snapshot.partialText` is withheld as well — it is the
+  **second body exit** of that same retired channel (same write side, introduced in `1aceadf`, well before
+  261021), and feeding it while announcing "the context is rebuilt from the ledger only" would make that
+  sentence false; when the probe reads 0 (the shape the current write side produces) it is fed byte-for-byte
+  as before. **The accepted cost:** whatever that crash round had still running is never made up — not
+  re-executed, and no result to pick up; the notice sentence is the only trace it ever leaves. The observable outcome is an **explicit degraded rebuild**: the legacy run resumes from the
+  ledger alone, makes its request, and the engine's resume notice (`…:control:resume-notice:<fp>`, model
+  context **and** ledger) says `本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 N 条，该格式已不再支持恢复）`
+  — where N counts every snapshot body segment actually withheld (post-anchor `messages` slots **plus** a
+  suppressed `partialText`), plus a second sentence naming the calls the third door abandoned
+  (`本次恢复放弃补跑这些在飞调用…`), because the notice must not announce `崩溃时尾部没有未结清的 tool_use`
+  about calls this change chose to drop. Stated narrowly, that outcome covers crash scenes satisfying the
+  retired gate's own trigger condition whose snapshot array reports its length truthfully (the write side
+  never shortens it); a payload lying about its length still ends in `invalid_messages`, pinned as a mutation
+  case in `test/loop-snapshot-round-residue-735.test.js` (④b).
+  Nothing is silent and nothing is new on the event surface: no new event type, no new
+  `resume_journal_skipped` reason, and `crash_round_assistant_not_in_ledger` (#424) still fires with the same
+  `count`. The write side is untouched — snapshots keep carrying the round residue at unchanged absolute
+  indices. New-format (per-message journaled) archives change by **zero bytes**; hosts that still need one of
+  those dead pre-261021 runs must accept the shortened context or read the archive themselves.
+- **261021 之前写下的档案不再支持恢复（issue #754，裁决 2）。** 恢复路径上最后一个读 run snapshot 那一格
+  `messages` 的地方，是 `src/loop/resume-manager.js` 里的 pre-261021 升级闸门：账本在恢复锚点之后一条都没有、
+  而快照更长时，它把 `snapshot.messages.slice(anchor)` 接进重建出来的上下文。它服务的是死档案，而它**自己就是
+  坏的**——锚点是一个**标量**（折叠后的逻辑消息条数），不是「快照哪些下标已入账」的位图，所以第一跳续跑一入账，
+  第二跳的锚点就越过那段正文，run 在**发出任何模型请求之前**就 `invalid_messages`（0 次请求；夹具
+  `test/fixtures/journal-0.22.0/` 实测，两种写侧形状逐字同结果）。两刀同批落地，因为只丢一半就是从一个刚被
+  宣布不支持的来源喂半轮：（1）恢复上下文**再也不从** `snapshot.messages` 取正文——这一格剩下的唯一读点是一个
+  **条数探针**（`ledgerMessages.length === anchor && snapshotBody.length > anchor`，只数非 null 格），除了出声
+  不作他用；（2）同一条旧格式分支上，「上下文里已没有配对 `tool_use`」的快照 `tool_result` 也不再喂——否则活下来的
+  那条就是孤儿结果，`src/messages/rounds.js` 的消息校验当场拒掉（#421 / #730 的兜底只管反方向：悬空的
+  `tool_use` 补桩）；（3）同一条分支上，`snapshot.pendingToolUses` 里「上下文已无配对 `tool_use`」的在飞调用
+  **也不再补跑**——那份在飞清单与崩溃轮正文同批、同来源，补跑它等于把结果写进一条已经没有配对 `assistant` 的
+  上下文，同一个 `invalid_messages` 结局从第二个门再来一遍；（4）同一条分支上崩溃轮的 `snapshot.partialText`
+  **也一并抑制**——它是那条退役通道上的**第二个正文出口**（同一写侧、引入于 `1aceadf`，早于 261021），一边喂它
+  一边说「上下文只从账本重建」就是让告示撒谎；探针为 0（现行写侧产出的形状）时它照旧喂，一个字节都不变。
+  **认下来的代价**：崩溃那一轮里还在跑的东西
+  从此彻底不补——既不会重跑，也没有结果可接，只在告示那句弃用说明里留一个痕迹。可观察结局是**明示降级为从账本重建**：旧档案照旧起来、照旧发出请求，而引擎的恢复告示
+  （`…:control:resume-notice:<fp>`，既进模型上下文也进账本）写明
+  `本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 N 条，该格式已不再支持恢复）`——N 是**真数**：
+  锚点后 `messages` 的非空格子 **+** 被抑制的那段 `partialText`；第三刀放弃补跑时再多一句点名
+  （`本次恢复放弃补跑这些在飞调用…`），放弃了却对模型说「崩溃时尾部没有未结清的 tool_use」是主动陈述假事实。
+  这个结局**照窄的说**：它只对「满足被关掉那条闸门的原触发条件、且快照数组如实报告自己长度」的崩溃现场成立——
+  谎报长度的载荷仍以 `invalid_messages` 收场，那一形状在 `test/loop-snapshot-round-residue-735.test.js`（④b）
+  里当**变异体**钉着。
+  没有静默，事件面也没有新东西：不新增事件类型、不给 `resume_journal_skipped` 加新 `reason`，
+  `crash_round_assistant_not_in_ledger`（#424）照旧发、`count` 同值。写侧一字未动——快照仍写「本轮残余」，
+  绝对下标不变。新格式（逐条入账）的档案**一个字节都不变**；确实还要复活某个 pre-261021 死档案的宿主，要么接受
+  变短的上下文，要么自己读那份档案。
+
 ### Changed
 - **Changed (issue #770): the run snapshot stops writing `status` and `compactionStats`; key presence is host-visible, because `src/store/file.js:523` writes the snapshot with `JSON.stringify(snapshot)` - the key set and its order *are* the bytes on disk.** Neither cell had an engine reader left: the resume side reads `deterministic.compactionStats` from the run state, and the on-disk exit of the compaction log is the round record; the only reader of `status` inside `src/` was the classification channel sniffing it out of the payload, replaced by an explicit `persistClassified(method, status, runId, ...)` argument, so the `status` parameter and all 7 call sites stay as they were. Tests that used either cell as their fingerprint now read the authoritative source: call sites are told apart by `executedToolIds` (a successfully executed tool lands only there) and by `toolResult.erix.executionStatus`, which the engine writes only on rejected / intercepted / interrupted results; the checkpoint face of the compaction-observation case reads the persisted run state. The surviving key order is `round, pendingToolUse, pendingToolUses, messages, persistedTranscriptLength, executedToolIds, toolResults, toolOutputs` (plus `partialText` / `partialRound` on a crash); old archives that still carry the stopped keys are read back verbatim and no fallback was removed. Machine absence assertions live in `test/loop-snapshot-write-side-735.test.js`; the write axis of both contract tables records the two cells as `stopped`, pinned to the comments that explain why there is no write point.
 - **变更（issue #770）：run snapshot 停写 `status` 与 `compactionStats`；键的存在性是宿主可见面——`src/store/file.js:523` 用 `JSON.stringify(snapshot)` 落盘 ⇒ 键集与键序就是盘上字节。**两格在引擎侧已无读者：恢复侧读 run-state 的 `deterministic.compactionStats`，压缩统计的落盘出口是**轮记录**；`status` 在 `src/` 里唯一的读者是分类通道对载荷的嗅探，已换成调用点显式交进来的 `persistClassified(method, status, runId, ...)` 入参，`status` 形参与全仓 7 个调用点一律不动。原先拿这两格当指纹的用例改读**权威来源**：调用点靠 `executedToolIds`（成功执行只进这里）与 `toolResult.erix.executionStatus`（引擎只在被拒 / 被拦 / 被中断的结果上写它）分辨，压缩观测用例的 checkpoint 那一面改读落盘 run-state。停写后的键序是 `round, pendingToolUse, pendingToolUses, messages, persistedTranscriptLength, executedToolIds, toolResults, toolOutputs`（崩溃时多 `partialText` / `partialRound`）；仍带这两格的历史旧档照旧逐字读回，未删任何 `?? ` fallback。机器缺席断言在 `test/loop-snapshot-write-side-735.test.js`；两份契约表的写轴把这两格记成 `stopped`，锚点钉在解释「为什么这里没有写点」的注释上。

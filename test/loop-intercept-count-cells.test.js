@@ -4,6 +4,7 @@ import { runToolLoop } from "../src/loop/orchestrator.js";
 import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { journalSnapshotBodyRows } from "./helpers/journal-crash-body.js";
 
 // issue #177 刀5 **F-2** 的行为锚定测试（纯新增，不改任何既有断言语义）——M2 两格。
 //
@@ -100,6 +101,10 @@ test("F-2 judgeInterceptCount 经 restoreResume ctx：resume 播种已执行工�
       executedToolIds: ["a"],
       toolResults: [{ toolUseId: "a", toolResult: { type: "tool_result", tool_use_id: "a", content: "done-a" } }],
     });
+    // issue #754 裁决 2：夹具原本是 pre-261021 形状（崩溃轮那条 assistant 只在 `checkpoint.messages` 里）。
+    // 关掉那条升级闸门之后，「续接的第一次工具就被审计」要成立，那条 `tool_use` 必须在**账本**里
+    // （否则第三刀会把它连同结果一起丢掉 ⇒ 一次工具都不跑 ⇒ 0 次审计）。断言一字未动。
+    await journalSnapshotBodyRows(store, runId);
     const provider = createFakeProvider([
       { content: [{ type: "text", text: '{"done":true,"output":"收尾"}' }], stopReason: "end_turn" },
     ]);
