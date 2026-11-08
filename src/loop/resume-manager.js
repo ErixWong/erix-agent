@@ -23,7 +23,12 @@ import { validateRunState } from "../run-state.js";
  * 与**合法降级**的分界（两件事不能混）：
  *   · `typeof store.listRecoveryRows !== "function"` ⇒ 可选能力缺席，**维持**读空 + 回落快照（与写侧能力位
  *     跳过对称，登记在契约的能力分级表里）；
- *   · 方法在而调用 reject ⇒ 本码，**硬终止**：伪装成「没有恢复行」比失败更贵。
+ *   · 方法在而调用 reject ⇒ 本码，**硬终止**：伪装成「没有恢复行」比失败更贵；
+ *   · 方法在、调用也 resolve，但 resolve 出的**不是数组** ⇒ **同一个码**硬终止（issue #769 R5 M1）：契约里
+ *     能安静回落的只有**空数组**，`undefined` / `{}` / 字符串同样是坏形状的读通道而不是「没有」。
+ *     不另立新码——宿主侧处置（修 store 或换 `runId`）与 reject 那条完全相同，多一个码只会让契约多一格
+ *     同样的话；此时 `errorCode` 是 `"unknown"`（这类返回没有底层错误码可透出，仍走 `terminationErrorCodeForError`
+ *     的既有口径），根因细节留在 `cause.message` 里点名收到的形状）。
  *
  * 字段面（照 `checkpoint_failed` 那一族，取值不新造）：`operation` / `phase` / `sideEffect` 三件套齐全
  * ⇒ `fail`（`src/loop/orchestrator.js#persistenceInfoFor`）据此把终局定为 `persistence_failed` 并透出同名
@@ -64,18 +69,39 @@ function recoveryRowsUnreadableError(cause, runId) {
 }
 
 /**
- * 续跑期读恢复行：能力缺席 ⇒ `[]`（合法降级）；调用失败 ⇒ 抛 `recovery_rows_unreadable`。
+ * 「resolve 得动但形状不合」的返回值 ⇒ 一条**点名收到的形状**的根因错（喂给
+ * `recoveryRowsUnreadableError` 的 `cause`）；它自身不带 `code`，因此终局的 `errorCode` 是 `"unknown"`。
+ * @param {unknown} rows
+ * @returns {Error}
+ */
+function recoveryRowsShapeError(rows) {
+  const received = rows === null ? "null" : typeof rows;
+  return new TypeError(
+    `store.listRecoveryRows() resolved to ${received} instead of an array of recovery rows`,
+  );
+}
+
+/**
+ * 续跑期读恢复行：能力缺席 ⇒ `[]`（合法降级）；调用 reject **或 resolve 出非数组** ⇒ 抛
+ * `recovery_rows_unreadable`（同码，issue #769 R5 M1）。
  * @param {{ store: any, runId: string }} ctx
  * @returns {Promise<any[]>}
  */
 async function readRecoveryRowsOrRefuse(ctx) {
   if (typeof ctx.store?.listRecoveryRows !== "function") return [];
+  let rows;
   try {
-    const rows = await ctx.store.listRecoveryRows(ctx.runId);
-    return Array.isArray(rows) ? rows : [];
+    rows = await ctx.store.listRecoveryRows(ctx.runId);
   } catch (error) {
     throw recoveryRowsUnreadableError(error, ctx.runId);
   }
+  // issue #769 R5（M1）：**成功返回**一个非数组同样是坏形状的读通道 ⇒ 同码硬终止。契约里可以安静回落的
+  // 只有**空数组**（`docs/host-consumer-contract.md` 生命周期段），`undefined` / `{}` 都没把「有哪些行」说
+  // 清楚，和上一段修掉的「reject 被吞」同罪：把「读不到」判成「没有」⇒ 续跑重放已发生副作用的工具。
+  if (!Array.isArray(rows)) {
+    throw recoveryRowsUnreadableError(recoveryRowsShapeError(rows), ctx.runId);
+  }
+  return rows;
 }
 // issue #769：账本恢复行（`kind: "recovery"`）——快照 `executedToolIds` / `partialText` / `partialRound`
 // 三格的**首选来源**（行形状与事件键见 `src/store/recovery-rows.js`）；快照那三格从「唯一来源」退成兜底。

@@ -430,6 +430,41 @@ test("#769 R3（B）listRecoveryRows 拒绝 ⇒ 终局点名 recovery_rows_unrea
     "终止发生在第一次模型请求之前：回落快照的那条路会先发请求（所以本断言把「回落绿」钉死）");
 });
 
+test("#769 R5（M1）listRecoveryRows **resolve 出非数组**（undefined）⇒ 终局点名**同一个** recovery_rows_unreadable（不许吞成空集）", async () => {
+  const inner = await r3CrashScene(createMemoryTranscriptStore(), { snapshotExecutedToolIds: [] });
+  const store = {
+    ...inner,
+    // 不是抛错，而是「调用成功但返回坏形状」——上一段只封了 reject，非数组仍被 `: []` 吞成空集。
+    listRecoveryRows: async () => undefined,
+  };
+  /** @type {string[]} */
+  const executedCalls = [];
+  const provider = createFakeProvider([finalRound("resumed")]);
+  const thrown = await directError({
+    provider,
+    initialUserMessage: "start",
+    executeTool: async ({ input }) => { executedCalls.push(input.step); return "out"; },
+    config: { run: { completion: false } },
+    store,
+    runId: R3_CRASH_ID,
+    resume: true,
+  });
+  assert.ok(thrown !== null, "非数组返回值必须让 run 终止：修前它被吞成「没有恢复行」，同一个现场是**绿**的");
+  assert.equal(thrown.code, RECOVERY_ROWS_UNREADABLE,
+    `M1 的裁决是**同一个码**（不新增第二个码），实际 code=${String(thrown.code)} / message=${String(thrown.message).slice(0, 160)}`);
+  assert.equal(thrown.termination?.reason, "persistence_failed",
+    `终局 reason 与 reject 那格同轨，实际 ${JSON.stringify(thrown.termination)}`);
+  assert.equal(thrown.termination?.operation, "listRecoveryRows", "operation 仍点名那个坏形状的读口");
+  assert.equal(thrown.termination?.phase, "resume_recovery_rows", "phase 仍走读失败那一格（不是清盘格 recovery_rows_clear）");
+  assert.equal(thrown.termination?.sideEffect, "not_started", "同样发生在续跑期、本 run 尚未执行任何工具");
+  assert.equal(thrown.errorCode, "unknown",
+    `errorCode 是**根因**分类：非数组返回没有底层错误码可透出 ⇒ 按既有口径落 unknown（不编一个码），实际 ${String(thrown.errorCode)}`);
+  assert.match(String(thrown.cause?.message ?? ""), /resolved to undefined/,
+    `cause 要点名**收到的形状**，排障时才知道 store 坏了什么，实际 cause=${String(thrown.cause?.message)}`);
+  assert.deepEqual(executedCalls, [], "工具一次都没被执行 ⇒ 不是「吞成空集后照旧重放工具」那条老路");
+  assert.equal(provider.requests.length, 0, "终止在第一次模型请求之前：吞成空集会先回落快照再发请求");
+});
+
 test("#769 R3（B）负控制：store **没有** listRecoveryRows ⇒ 仍是合法降级，走快照回落且不发新错误码（三格各自值点名）", async () => {
   const inner = await r3CrashScene(createMemoryTranscriptStore(), { snapshotExecutedToolIds: ["t1"] });
   const store = { ...inner };
