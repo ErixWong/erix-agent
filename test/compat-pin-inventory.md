@@ -787,7 +787,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/capture-honesty.test.js` | 6 | `prompt`×3, `session`×3 |
 | `test/examples/erix-run-async.test.js` | 6 | `tools`×4, `context`×1, `strategy`×1 |
 | `test/loop-folded-facts-sliding-resume.test.js` | 5 | `completion`×1, `stallDetection`×1, `strategy`×1, `tools`×1, `wrapup`×1 |
-| `test/loop-persistence-phase.test.js` | 5 | `completion`×1, `partialPersistence`×1, `reflection`×1, `tools`×1, `wrapup`×1 |
+| `test/loop-persistence-phase.test.js` | 7 | `completion`×2, `wrapup`×2, `partialPersistence`×1, `reflection`×1, `tools`×1 |
 | `test/notes-final-guard.test.js` | 6 | `prompt`×3, `session`×3, `finalGuard`×2 |
 | `test/tool-fact-success-parity.test.js` | 2 | `onToolResult`×1, `outputHygiene`×1, `reflection`×1 |
 | `test/display/projection.test.js` | 4 | `wrapup`×2, `completion`×1, `reflection`×1 |
@@ -900,7 +900,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/prompt-note-coverage-746.test.js` | 1 | `tools`×1 |
 | `test/loop-resume-abandon-signals-730.test.js` | 5 | `completion`×1, `resume`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-steer.test.js` | 4 | `tools`×3, `strategy`×1 |
-| `test/store/ledger-recovery-rows-769.test.js` | 4 | `resume`×4, `onEvent`×2 |
+| `test/store/ledger-recovery-rows-769.test.js` | 6 | `resume`×6, `onEvent`×2 |
 | `test/contract-snapshot-cell-axes-767.test.js` | 3 | `tools`×2, `partialPersistence`×1 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）

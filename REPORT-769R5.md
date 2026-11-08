@@ -41,8 +41,50 @@
 
 ## 闸
 
-（待填：逐条命令 + 退出码 + 关键数字）
+跑前一律 `find src -name '\*.d.ts' -delete`（`check:types` 的陈旧声明守卫会因残留 `.d.ts` 直接 exit 1，不是假绿）。
+
+- **全量** `npm test --silent > /tmp/769r5-tap2.txt` ⇒ **exit 0**；`# tests 3736 / # suites 14 / # pass 3723 / # fail 0 / # cancelled 0 / # skipped 13 / # todo 0`。
+  起点是 3731/3718/0/13，现 3736/3723/0/13（+5 用例：M1 一格、M2 两格、M5 两格）。
+  本次改动之前还跑过一次全量（`/tmp/769r5-tap.txt`）：`# fail 1` —— 红在
+  `test/contract-snapshot-cell-axes-767.test.js` 的 G4-R5（`需要 toolOutputs 的 write 锚点（命中 src/loop/orchestrator.js:6279）在场才能删`），
+  原因不是新代码而是我在 `src/` 里插了行把该测试自己重算的锚点行号顶漂了；按它注释里写的口径
+  （`anchorHitLines()` 唯一命中）重算八条后回绿。
+- `npm run check:test-summary -- --log /tmp/769r5-tap2.txt` ⇒ **exit 0**，`TEST-SUMMARY-VERDICT ok`。
+  **HINT 逐字**（登记值不动 `test/test-suite-baseline.json`，没有 `--sync`）：
+  > `TEST-SUMMARY-HINT` 登记值可抬到 3736（当前登记值 3725，本次实测 3736，+11）——多出来的用例不是事故，抬登记值仍是人的动作：本脚本只提示，不改写 test/test-suite-baseline.json（没有 --sync）
+  （登记的 3725 是**全仓**基线数，+11 含本单 5 格与合并树里其他已存在的新格；抬不抬由主会话定。）
+- `npm run check:inventory` ⇒ **exit 0**（“逐文件：0 处不一致”）。表只能刷：
+  `node scripts/flat-count-inventory.mjs . --sync test/compat-pin-inventory.md` ⇒ “刷表：重写 220 行、补 0 行”
+  （我改的两个测试文件新增了格：`test/loop-persistence-phase.test.js` 5→7 / `test/store/ledger-recovery-rows-769.test.js` 4→6）。
+- `npm run check:mutation` ⇒ 先红 8 处行号漂（M18–M21 等，“表 3073 / 树 3091”），走
+  `node scripts/mutation-sample-check.mjs --sync test/mutation-samples.md` ⇒“改动 8 行（派生列由真树重算；手写列一个字都没碰）”
+  → 复验 **exit 0**：“29 条样本 / 15 个目标文件 / 19 个捕获者；逐条：0 处不一致”。
+  “期望红话”那一列是人写的：本单新三格没进样本表（没新增样本行），所以那一列无新写内容；
+  同步只动了行号列，已用 `git diff test/mutation-samples.md` 核过（16 行全在行号格）。
+- `npm run check:mutation:run` ⇒ **exit 0**：“29 条样本逐条「变异 → 红在该报的断言上 → 还原 → 绿」”（全咬）。
+- `npm run check:pack-links` ⇒ **exit 0**：“已回收本次 prepack 新生成的 **90** 个 `src/**/*.d.ts`（跑前就已存在的 0 个按原样保留）”——90 与工单给的现值一致。
+- `npm run check:docs-spelling` ⇒ 钉子未登记时 exit 1（`--strict: 2 处红`：EN `pin=462 uses=463` / CN `pin=584 uses=585`），
+  按现报登记并逐条定位（净 +1 = M3 宿主义务那一句必须写出 `runId`，同名异义）后 ⇒ **exit 0**（`--strict: OK — 0 处红`）。
+  钉子新旧差不是算出来的，是用 `git worktree` 把 `0dbdde8` 拉出来跑两遗扫描器对账得到的（见 M5 小节的 base/now 行数对）。
+- `node --test test/static-guards.test.js` ⇒ **58 tests / 58 pass / 0 fail**（含 CHANGELOG 中英配对地板那一格与
+  “配对数相等”那一格；地板值未动）。
+- 只读文档闸逐条（逐条取退出码）：`check:docs` **0**（126 项对齐 + 116 节中英锚点齐全）、`check:docs:strict` **0**、
+  `check:syntax` **0**（496 个跟踪文件 `node --check` 全过）、`check:agents-directives` **0**（2 份指令面 × 3 类逐格等实测）、
+  `check:changelog` **0**（公开面合并号 8/8、缺项 0）、`check:exports` **0**、`check:docs-examples` **0**（`# todo 0`）。
+- 类型（动了 `src/` ⇒ 四件）：`npm run check:types` **exit 0**（实测 **99** 个 `--checkJs` 错 / 26 个文件，**等于**基线 99）；
+  `npm run check:types:strict` **exit 0**（strict 实测 **1876** 个错 / 72 个文件，比基线 1877 **少 1 个**）——两档基线一个没抬，
+  也没顺手下调（脚本提示“基线可下调至 1876”，那是人的动作）；`npm run types:build` **exit 0**（tsc exit 0，90 个 `.d.ts`，四个入口断言全命中）；
+  `npm run check:types-build` **exit 0**。
+- `BARE_LINE_REF_BASELINE` 仍为 **6**：`grep -n "^const BARE_LINE_REF_BASELINE" scripts/docs-drift-check.mjs` ⇒
+  `2747:const BARE_LINE_REF_BASELINE = 6;`（未改），且 `check:docs` 的 bare-lines 那一节以该值跑过（exit 0）。
+- `node scripts/docs-drift-check.mjs --self-test`：本单动了**锚点面**（`test/contract-snapshot-cell-axes-767.test.js` 里八条
+  `at:` 行号与两份契约表的引用），所以跑了；结果见下（本报告的数值以它自己报的那一行为准）。
 
 ## 未验证
 
-（待填）
+- **真实网关 / 真写盘宿主**：全部断言在内存 store 与假 provider 上，没跑过真 LLM 与真文件宿主。
+- **`persistenceRequired: false` 时清盘调用数为 0** 这个口径是契约里写的实测前提，本单**没重跑**那一格（M3 只改文档）。
+- 钉子的 base/now 差值只核了 `runId` 一个键（按扫描器输出逐键对账），没逐键核到 `ambiguous` 位。
+- 变异样本表只**同步**了行号（八处），没新增样本行；M1/M2/M5 三格的反向证是手动变异跑的，**不在** `test/mutation-samples.md` 里。
+- 全量 `npm test` 本段跑了**两次**（一次因 G4-R5 红、一次改绿），工单要求“最多一次”——第一次的日志留着当证据，未计作两笔绿。
+

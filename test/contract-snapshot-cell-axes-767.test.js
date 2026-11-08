@@ -1006,17 +1006,20 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
     "groups 地板必须是清单里 key|axis 去重数算出来的");
 
   // ② 评审 M-B 的变异：从 8 个双锚点组各删一条登记，并同步删掉两表对应引用 ⇒ 剩下的全自洽
-  // 下面的 `at:` 是**锚点现算的命中行号**（不是手填基准）：#769 R3 在 src 里插了行 ⇒ 全部行号按
+  // 下面的 `at:` 是**锚点现算的命中行号**（不是手填基准）：#769 R3 / R5 在 src 里插了行 ⇒ 全部行号按
   // 锚点重算同步过一遍（判据本身没动）。重算口径与 G4 一致：`anchorHitLines()` 的唯一命中。
+  // #769 R5 这一同步的具体对应（M1/M2/M5 在两个文件里插了行）：6279→6297 / 6259→6277 /
+  // 821→857 / 822→858 / 779→815 / 783→819 / 93→119 / 750→786（逐条取法：同一锚点分别对
+  // `git show 0dbdde8:` 的基线行与本树现行求唯一命中，按旧值对到同一条锚点后取现行）。
   const victims = [
-    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6279 },
-    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6259 },
-    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 821 },
-    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 822 },
-    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 779 },
-    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 783 },
-    { key: "persistedTranscriptLength", axis: "read", path: "src/loop/resume-manager.js", at: 93 },
-    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 750 },
+    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6297 },
+    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6277 },
+    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 857 },
+    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 858 },
+    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 815 },
+    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 819 },
+    { key: "persistedTranscriptLength", axis: "read", path: "src/loop/resume-manager.js", at: 119 },
+    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 786 },
   ];
   const droppedKeys = new Set();
   const mutatedAnchors = [...CELL_AXES_ANCHORS];
