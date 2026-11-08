@@ -435,10 +435,10 @@ export async function restoreResume(ctx) {
       const ledgerExecutedToolIds = readExecutedToolIdRecoveryRows(recoveryRows);
       // 崩溃轮的半截正文同理：先问账本（`partial-text` 恢复行：一条一个事件、事件键 = 正文指纹）。
       // append-only ⇒ 历史轮的行永远在场，所以只有「那一轮的 assistant 正文**没**落账」的那些行才算崩溃
-      // 现场；正文已落账的是历史副本，不能把「正常收口后宿主追问」误判成崩溃轮。
+      // 现场；正文已落账的是历史副本，不能把「正常收口后宿主追问」误判成崩溃轮。下面两行的 `@type` 断言只服务 `--strict`：
+      // `foldLedgerMessages` 把 `message` 只写成 `object`（基线里那批 TS2339 就是它），本单不去改共享返回类型（那会牵动其它文件的计数）。
       const ledgerAssistantTextRounds = new Set(ledgerEntries
-        .filter((entry) => entry?.message?.role === "assistant"
-          && String(entry.message?.content ?? "").length > 0)
+        .filter((entry) => (/** @type {{role?:string, content?:unknown}} */ (entry?.message ?? {})).role === "assistant" && String((/** @type {{role?:string, content?:unknown}} */ (entry?.message ?? {})).content ?? "").length > 0)
         .map((entry) => entry.round));
       const ledgerPartialCrashRound = readPartialTextRecoveryRounds(recoveryRows)
         .filter((round) => !ledgerAssistantTextRounds.has(round))

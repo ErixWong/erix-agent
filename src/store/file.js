@@ -412,7 +412,7 @@ async function appendRecord(path, runId, record, dedupCaches) {
  *   loadLatestRunSnapshot: (runId:string) => Promise<object|undefined>,
  *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
  *   appendCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
- *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>
+ *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>, appendRecoveryRow: (runId:string, record:object) => Promise<boolean>, listRecoveryRows: (runId:string) => Promise<object[]>
  * }}
  */
 export function createFileTranscriptStore({ dir }) {

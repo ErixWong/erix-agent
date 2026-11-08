@@ -1125,6 +1125,12 @@ export const FILE_TOOL_DEFINITIONS = [
     //   `src/loop/state-view.js` 4,384（记录 4,364，+0.46%）、CJK 36.6%（记录 37.0%）、`median`
     //   `src/store/file.js` 6,212（逐字未动）、`most` `src/loop/abort.js` 9,407（逐字未动）、`self`
     //   本文件 4,676（记录 4,678，-0.04%）。逐字段旧值→新值与机制写在测试侧角色表那一条的历史注里。
+    // ⚠ 2026-11-08 第十四刷（issue #769 R2，**只动了 `median` 那一档**）：`median` 钉的那个文件
+    //   `src/store/file.js` 又被本单长了——恢复行独立通道（`recoveryRowsPath()` + 它自己那份 dedup 缓存
+    //   + `appendRecoveryRow()` / `listRecoveryRows()` 与二者的 `@returns` 类型声明）把它从 25,021 顶到
+    //   27,630 字节 / 593 → 636 行，均行字节 42.1939 → **43.4434** ⇒ 容量 6,212 → **6,034**（字节 +10.43%、
+    //   容量 −2.87%，都远超 ±2%）。描述那一档 `median 6,212 (42.2)` → `median 6,034 (43.4)`（**同位数
+    //   替换 ⇒ 对本文件字节中性**）；本行以上的历史注与其余四档逐字未动，`self` 那一行按新实测刷新。
     description: "Read a text file by line range. "
       + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` continues after line 200); default 0. "
       + "`limit` is a **line count**, default 200. "
@@ -1133,11 +1139,11 @@ export const FILE_TOOL_DEFINITIONS = [
       + "and fold that for the file in hand, instead of assuming a line count. Measured that way on this repo's own `.js` sources "
       + "under `src/`, `bin/` and `examples/` at the default budget (this codebase, not your tree) \u2014 fewest \u2265 3,700 lines "
       + "(70.0 bytes/line, the widest lines; the whole-tree minimum rounded down to the nearest 50, so no file in those three trees reads fewer than 3,700 lines), "
-      + "median 6,212 (42.2), most 9,407 (27.9). "
+      + "median 6,034 (43.4), most 9,407 (27.9). "
       + "The floor is a whole-tree minimum rounded down to a multiple of 50 (a promise, not a per-file estimate); median and most come from a fixed sample of those sources and describe that sample, not every file here. "
       + "Wide lines cut this proportionally and CJK cuts hardest (3 UTF-8 bytes per character): "
       + "the most CJK-dense file in that fixed sample (`src/loop/state-view.js`, 37% of its bytes are CJK) fits 4,387 and "
-      + "this tool's own source fits 4,678. "
+      + "this tool's own source fits 4,637. "
       + "Nothing outside this repo "
       + "was measured, so for CJK-heavy code elsewhere fold the formula rather than reusing these numbers. Either way the cap is "
       + "far more than a single `limit` will ask for, so it is rarely what stops you. "

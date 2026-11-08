@@ -42,14 +42,14 @@ function copyRecord(record) {
  *   loadLatestRunSnapshot: (runId:string) => Promise<object|undefined>,
  *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
  *   appendCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
- *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>
+ *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>, appendRecoveryRow: (runId:string, record:object) => Promise<boolean>, listRecoveryRows: (runId:string) => Promise<object[]>
  * }}
  */
 export function createMemoryTranscriptStore() {
   const transcripts = new Map();
   // issue #769：恢复行通道（与轮记录 `transcripts` **两份容器**，语义与 file store 的
-  // `<runId>.recovery.jsonl` 对齐：`load()` / `loadRawRows()` 永远看不到恢复行）。
-  const recoveryLedger = new Map();
+  // `<runId>.recovery.jsonl` 对齐：`load()` / `loadRawRows()` 永远看不到恢复行）。值类型写出来不是装饰：`rows.find((item) => …)` 的 `item` 要靠它推断，否则 `--strict` 报 TS7006。
+  const recoveryLedger = /** @type {Map<string, object[]>} */ (new Map());
   const runSnapshots = new Map();
   const runStates = new Map();
   const runStatuses = new Map();
