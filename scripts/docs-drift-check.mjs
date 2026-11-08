@@ -8132,14 +8132,20 @@ const syncCellAxesCitation = (from, to) => (text) => text.split(from).join(to);
 /**
  * #770 R2：M-A **反方向**那一例要「换进去的必须是一句真代码」。旧夹具拿 `status` 写点那条当“真代码”，
  * 而 #770 之后 `status` 写点自己就钉在「解释为什么这里没有写点」的注释行上 ⇒ 换进去的还是注释
- * ⇒ 种类轴没被逆 ⇒ 那一例只能报「行号不等值」，问不到它问的那件事。现在从出厂表里**现读**：
- * 取第一条 `kind: "code"` 且**唯一命中非注释行**的写点锚点。抽不到 ⇒ null ⇒ 变异打不上 ⇒ 报红。
+ * ⇒ 种类轴没被逆 ⇒ 那一例只能报「行号不等值」，问不到它问的那件事。现在从出厂表里**现读**候选。
+ * 唯一性必须按**闸实际会算法**算：本例只把 `anchor:` 的字面量换成候选，`kind` 与 `prev` 还是
+ * `toolUse` 那一条的（现网：`round` 的锚点自带 `prev`，单独拿它的正则去扫会命中 4 行 ⇒ 闸先报「锚点
+ * 歧义」就停了，种类判据根本轮不到出场）。所以这里把候选装进 `toolUse` 那条里重算：要求唯一命中、
+ * 且那一行不是注释。抽不到 ⇒ null ⇒ 变异打不上 ⇒ 「变异没落上」报红。
  */
 const CELL_AXES_R4_REVERSE_CODE_TARGET = (() => {
+  const victim = CELL_AXES_ANCHORS_SHIPPED.find((e) => e.key === "toolUse" && e.axis === "write" && e.kind === "comment");
+  if (victim === undefined) return null;
   for (const entry of CELL_AXES_ANCHORS_SHIPPED) {
     if (entry.axis !== "write" || entry.kind !== "code") continue;
+    if (entry.codePath !== victim.codePath) continue;   // 换过去后是用 victim 的 codePath 扫的
     const lines = textOf(entry.codePath).split("\n");
-    const hits = cellAxesAnchorHitLines(lines, entry).hits ?? [];
+    const hits = cellAxesAnchorHitLines(lines, { ...victim, anchor: entry.anchor }).hits ?? [];
     if (hits.length !== 1) continue;
     if (cellAxesAnchorLineIsComment(lines[hits[0] - 1])) continue;   // 必须是真代码行
     return { entry, literal: JSON.stringify(entry.anchor), line: hits[0] };
