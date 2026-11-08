@@ -2261,7 +2261,7 @@ run), never a multi-version checkpoint. The tiers are:
 | Host-facing optional terminal-status read | `loadRunStateStatus` | not used or validated by the engine; its absence does not emit a degraded-capability event |
 | Optional fast-path pre-write probes (issue #157) | `loadByDedupKey`, `loadMaxRound` | `appendUserTurn` falls back to full `load` (paired: implementing one without the other behaves exactly like implementing neither) |
 | Optional raw-row anchor probe (issue #714) | `loadRawRows` | mid-sequence `tool_result` stubs are anchored on `load()`'s **folded** rows only, so a finished round's first-slice row is unreachable: those stubs repair the run's context and the engine reports `resume_journal_skipped` instead of journaling a row that would land in the wrong message. The same degradation applies when that round's carrier already carries its body (issue #729). No `persistence_capability_degraded` event — the absence is reported per resume on the existing `resume_journal_skipped` channel. Since issue #765 it is also the **only** ledger source `appendUserTurn` can consult on the #157 fast path (its dangling-`tool_use` settling), so a host implementing the two #157 probes but not this one keeps pre-writing user turns over a still-open ledger, reported per call as `unsettledToolUses.reason = "ledger_probe_absent"` |
-| Optional ledger recovery rows (issue #769) | `appendRecoveryRow`, `listRecoveryRows`, `clearRecoveryRows` | recovery rows are neither written nor read nor cleared; the engine falls back to the snapshot cells `executedToolIds` / `partialText` / `partialRound` (a legal fallback, never the only source). Absence emits the usual one `persistence_capability_degraded` event per missing method — but a method that **exists and then rejects** is not absence: a failed `listRecoveryRows` ends the run with `recovery_rows_unreadable` |
+| Optional ledger recovery rows (issue #769) | `appendRecoveryRow`, `listRecoveryRows`, `clearRecoveryRows` | recovery rows are neither written nor read nor cleared; the engine falls back to the snapshot cells `executedToolIds` / `partialText` / `partialRound` (a legal fallback, never the only source). Absence is not an error, but **the event face is not one rule for the three**: a missing `appendRecoveryRow` (write side) or `clearRecoveryRows` (clear side) emits one `persistence_capability_degraded` event per method name, deduped for the whole run, while a missing `listRecoveryRows` (**read side**) is **silent** — the read helper returns no rows and reports nothing (`readRecoveryRowsOrRefuse` in `src/loop/resume-manager.js`), so a host has no event to listen for and must look up its own store for that method. That silence is the adjudication rather than an oversight: a store without the read method is hit by every resume, so one event per resume would re-report a static fact as noise. A method that **exists and then rejects** is not absence: a failed `listRecoveryRows` ends the run with `recovery_rows_unreadable` |
 | Optional ledger recovery-row clear (issue #769 R3) | `clearRecoveryRows` | a fresh (`resume !== true`) start leaves the previous run's recovery rows on disk; that is only safe when the host gives every new logical run a new `runId` (see the runId lifecycle in the recovery-row section below) |
 
 `loadRunStateStatus` resolves to the terminal status **string** —
@@ -2272,11 +2272,12 @@ source typedef in `src/store/memory.js` / `src/store/file.js`).
 When an optional method is absent, the engine emits **one**
 `persistence_capability_degraded` event per missing method (`{type, runId,
 method, detail}`) and skips the corresponding persistence for the whole run —
-no per-round log spam. `getToolMetadata` and `emit` remain optional. The two
-read-side probes (`loadRunStateStatus`, and `loadRawRows` from issue #714) are
-the exception: their absence emits no degraded-capability event, because the
-degradation is already reported on the channel that owns it (see the raw-row
-probe section below).
+no per-round log spam. `getToolMetadata` and `emit` remain optional. The read-side
+absences are the exception: `loadRunStateStatus`, `loadRawRows` (issue #714) and `listRecoveryRows`
+(issue #769) emit **no** degraded-capability event when they are missing. The first two because the
+degradation is already reported on the channel that owns it (see the raw-row probe section below);
+the third because the resume read simply falls back to the snapshot cells and says nothing (see the
+recovery-row section below, which also states why the read side stays quiet).
 
 #### The run snapshot's `messages` cell is round residue, not the transcript (issue #735 slice 2)
 
@@ -7481,7 +7482,16 @@ remove. All three are **optional**, and absence and failure are two different th
 
 - **Absent** (the method is not on the store) is a legal degradation: the engine skips that step and reads the
   snapshot cells (`executedToolIds` / `partialText` / `partialRound`), which stay legal fallbacks and are never the
-  only source.
+  only source. **How loudly it degrades depends on which side is missing** — a host must not expect one channel for
+  all three:
+  - a missing **write** method `appendRecoveryRow`, or a missing **clear** method `clearRecoveryRows`, emits one
+    `persistence_capability_degraded` event per method name (`{type, runId, method, detail}`, deduped for the whole
+    run like every other optional capability);
+  - a missing **read** method `listRecoveryRows` is **silent**: `readRecoveryRowsOrRefuse`
+    (`src/loop/resume-manager.js`) returns no rows and emits nothing, so there is no event to subscribe to — a host
+    that needs the answer checks whether its own store implements that method. Staying quiet is the adjudication,
+    not an oversight: every resume of a store without the method reaches this same branch, so an event there would
+    re-announce a static fact once per resume and turn the degradation face into noise.
 - **Present and rejecting** is not a degradation. A store that implements `listRecoveryRows` and rejects it (I/O
   error, unreadable line) ends the resume with the terminal error `recovery_rows_unreadable`: swallowing that read
   would drop the only evidence that a tool already ran and replay its side effect. An empty array means "this run has

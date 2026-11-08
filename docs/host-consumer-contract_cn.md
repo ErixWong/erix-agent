@@ -1831,7 +1831,7 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 | 宿主面向的可选终态读取 | `loadRunStateStatus` | 引擎不调用、不校验；缺失不会发出 capability 降级事件 |
 | 可选预写快路径探针（issue #157） | `loadByDedupKey`、`loadMaxRound` | `appendUserTurn` 回退全量 `load`（成对生效：只实现其一等同全不实现） |
 | 可选原始行锚点探针（issue #714） | `loadRawRows` | 中段补桩只在 `load()` 的**折叠后**行上找锚点，于是已完成轮的首片行寻址不到：那些桩只修本次上下文，引擎如实报 `resume_journal_skipped`，而不是写一行会落进错消息的分片。该轮载体**已带正文**时（issue #729）同样退回这一降级。**不发** `persistence_capability_degraded`——缺席由既有 `resume_journal_skipped` 通道按次恢复如实上报。issue #765 起，它还是 `appendUserTurn` 在 #157 快路径上**唯一**能读的账本来源（它那一笔悬空 `tool_use` 结清），所以只实现两根 #157 探针、没实现这根探针的宿主会继续在开着的账本上预写用户轮，每次调用以 `unsettledToolUses.reason = "ledger_probe_absent"` 如实报 |
-| 可选恢复行通道（issue #769） | `appendRecoveryRow`、`listRecoveryRows`、`clearRecoveryRows` | 恢复行既不写也不读也不清；引擎退回快照那三格 `executedToolIds` / `partialText` / `partialRound`（合法兜底，不是唯一来源）。缺席照旧按每个方法一条 `persistence_capability_degraded` —— 但**方法在、调用失败**不是缺席：`listRecoveryRows` 失败会让本次 run 以 `recovery_rows_unreadable` 收口 |
+| 可选恢复行通道（issue #769） | `appendRecoveryRow`、`listRecoveryRows`、`clearRecoveryRows` | 恢复行既不写也不读也不清；引擎退回快照那三格 `executedToolIds` / `partialText` / `partialRound`（合法兜底，不是唯一来源）。缺席不算错，但**事件面不是一条规则管三个**：缺 `appendRecoveryRow`（写侧）或缺 `clearRecoveryRows`（清盘侧）时，引擎按方法名各发一条 `persistence_capability_degraded`（整轮去重）；而缺 `listRecoveryRows`（**读侧**）是**静默**的 —— 读侧 helper 直接不返回行、也不报任何东西（`src/loop/resume-manager.js` 里的 `readRecoveryRowsOrRefuse`），所以宿主那里根本没有事件可听，要想知道就只能自己去查 store 有没有实现这个方法。那句静默是**裁决而不是忽略**：没实现读方法的 store 每次续跑都会命中这一格，每续跑一次发一条就把一个静态事实当成噪音重报。**方法在、调用失败**不是缺席：`listRecoveryRows` 失败会让本次 run 以 `recovery_rows_unreadable` 收口 |
 | 可选恢复行清除（issue #769 R3） | `clearRecoveryRows` | `resume !== true` 的新起会留下上一个 run 的恢复行；只有当宿主给每个新逻辑 run 换一个新 `runId` 时这才是安全的（见下面恢复行一节的 runId 生命周期） |
 
 `loadRunStateStatus` 解析为终态**字符串**——`(runId: string) => Promise<string | undefined>`，
@@ -1841,8 +1841,9 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 可选方法缺失时，引擎对每个缺失方法只发**一条**
 `persistence_capability_degraded` 事件（`{type, runId, method, detail}`），
 随后整轮 run 跳过对应持久化——不每轮刷屏。`getToolMetadata` 与 `emit` 仍是可选项。
-两个**读侧**探针（`loadRunStateStatus`，以及 issue #714 的 `loadRawRows`）是例外：
-它们缺席不发 capability 降级事件，因为降级本来就由管它的那条通道报（见下面那节）。
+**读侧**的缺席是例外：`loadRunStateStatus`、`loadRawRows`（issue #714）与 `listRecoveryRows`（issue #769）
+缺席时**不发** capability 降级事件。前两个是因为降级本来就由管它的那条通道报（见下面原始行探针那节）；
+第三个是因为续跑期的读侧直接回落快照那三格，而且一句话不说（见下面恢复行那一节，那里也写了读侧为何保持安静）。
 
 #### run snapshot 的 `messages` 这一格是「轮残余」，不是整段正文（issue #735 切片 2）
 
@@ -5882,6 +5883,13 @@ store 面：`appendRecoveryRow(runId, row)` → `true`（真落了一行）/ `fa
 
 - **方法缺席**（store 上根本没有这个方法）是合法降级：引擎跳过这一步，回落到快照那三格
   （`executedToolIds` / `partialText` / `partialRound`），那三格仍是合法兜底，且**不是唯一来源**。
+  但**它响多大声取决于缺的是哪一侧** —— 宿主不要假定三个方法走同一条通道：
+  - 缺**写侧**的 `appendRecoveryRow`，或缺**清盘侧**的 `clearRecoveryRows`：引擎按方法名各发一条
+    `persistence_capability_degraded`（`{type, runId, method, detail}`，与其余可选能力一样整轮去重）；
+  - 缺**读侧**的 `listRecoveryRows` 是**静默**的：`readRecoveryRowsOrRefuse`（`src/loop/resume-manager.js`）
+    不返回行也不报任何东西，所以下面根本没有事件可订阅 —— 需要这个答案的宿主，自己去查 store 有没有实现
+    这个方法。保持安静是**裁决而不是遗漏**：没实现读方法的 store 每次续跑都会走进同一个分支，在那里发一条
+    就是把一个静态事实每续跑一次重履一遍，把降级面变成了噪音。
 - **方法在、调用失败**不是降级。实现了 `listRecoveryRows` 却把它 reject（I/O 错、坏行）时，本次续跑以终局错误
   `recovery_rows_unreadable` 收口：把这次读吞掉就等于丢掉「工具已经执行」的唯一证据，进而重放它的副作用。
   只有空数组才是「这个 run 没有恢复行」，也只有它会安静回落。调用**成功**但 resolve 出的**不是数组**
