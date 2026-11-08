@@ -74,7 +74,7 @@
 
 - **原来问什么**：钉「为什么没有写点」的注释锚点被换成**一句真代码** ⇒ 种类对账必须红（`kind=comment` 而命中的不是注释行），并点名 `toolUse`。
 - **为什么 #770 之后问不到**：旧 overlay 拿 `key:"status" && axis:"write"` 那条登记当「一句真代码」；#770 之后 `status` 写点自己就是注释锚点 ⇒ 换进去的还是注释 ⇒ 种类没被逆 ⇒ 实测只剩「行号不等值」+ 计数红，`/锚点种类不符/`、`/kind=comment/`、`/不是注释行/` 三条全不在场。
-- **新靶子坐标**：换入方 = `scripts/cell-axes-anchors.mjs:111`（`round`|write，`kind: "code"`，锚点命中 `src/loop/orchestrator.js:3004`，真代码行），由 `CELL_AXES_R4_REVERSE_CODE_TARGET` 现读（表里第一条 `kind: "code"` 且唯一命中非注释行的写点锚点；`anchorLineIsComment` 判非注释）；被换方 = `scripts/cell-axes-anchors.mjs:124`（`toolUse`|write，注释锚点命中 `:3017`）。
+- **新靶子坐标**：被换方 = `scripts/cell-axes-anchors.mjs:124`（`toolUse`|write，`kind: "comment"`，锚点命中 `src/loop/orchestrator.js:3017` 那句注释）；换入方 = `scripts/cell-axes-anchors.mjs:113`（`pendingToolUse`|write，`kind: "code"`，装进 `toolUse` 那条后唯一命中 `src/loop/orchestrator.js:3052` 的真代码行 `pendingToolUse: cloneState(snapshotPendingToolUse),`）。靶子由 `CELL_AXES_R4_REVERSE_CODE_TARGET` 现读：把候选锚点装进 `toolUse` 那一条（`kind`/`prev`/`codePath` 都用 `toolUse` 的）再算命中，要求唯一且非注释。本轮第一轮跑出的真教训：表里第一条 `kind: "code"` 是 `round`（`:111`），它的锚点 `^ {8}round,$` **自带 `prev`**，单独扫会命中 4 行（`:2808 :3004 :5663 :6127`）⇒ 闸先报「锚点歧义」就停了，种类判据轮不到出场（`/tmp/770r2e-selftest-r1.log` 里那条 ✗ 就是它）；所以候选必须按闸的算法（带上被换条的 `prev`）现算，`round` 因此被跳过。
 - **仍在问同一件事的证据**：① R4（本轮新增）＝锚点与两份表引用**都不动**、只把登记的 `kind` 从 `"comment"` 改成 `"code"`（种类登记造假）⇒ 点名「锚点种类不符…`kind=code`…那一行**是注释行**」+ `toolUse` + 棘轮回红；② SA-W4（`anchorKindError` 短路成 `null`）⇒ 本例变红且缺 `/锚点种类不符/`（同族的 M-A 正向例也一起红，是预期的连带，不算把红改绿）。
 
 ### 例 5 —「已知限度」特征用例（放行证：机械上必须全绿）
@@ -94,3 +94,29 @@
 | W2 | 同文件 `if (anchorLines === undefined) {` 之后直接 `continue`（不再点名「没有登记锚点 ⇒ 不再被豁免」） | 例 2 ✗（缺 `/没有登记锚点/`） |
 | W3 | 同文件 `if (!cellAxesAnchorLinesEqual(cited, anchorLines)) {` → `if (false && …)`（等值对账短路） | 例 3 ✗（缺 `/登记锚点不等值/`） |
 | W4 | 同文件 `const kindError = cellAxesAnchorKindError(...)` → `const kindError = null`（种类对账不判） | 例 4 ✗（缺 `/锚点种类不符/`；M-A 正向例连带 ✗） |
+
+## 收口结果（判据 1：`--self-test` 回到 exit 0）
+
+| 轮 | 命令 | 结果（日志原文尾行） | 日志 |
+|---|---|---|---|
+| r1 | `node scripts/docs-drift-check.mjs --self-test`（改完 5 条靶子 + 加了 R1–R5 之后） | `docs-drift-check --self-test: 失败 — 1/224 例未达预期`，`SELFTEST_EXIT=1`：只剩例 4（M-A 反方向），原因是换进去的 `round` 锚点自带 `prev`，装进 `toolUse` 那条后命中 4 行 ⇒ 闸先报「锚点歧义」，种类判据没出场 | `/tmp/770r2e-selftest-r1.log` |
+| r2 | 同上（修完例 4 的候选筛选：唯一性按闸的算法现算） | **`docs-drift-check --self-test: OK — 223 例反向证/放行证全部按预期，对照组绿`，`SELFTEST_EXIT=0`** | `/tmp/770r2e-selftest-r2.log` |
+
+例数变化：`SELF_TEST_CASES` 从基线的 **218** 条涨到 **223** 条（本轮新增 5 条永久反向证 R1–R5；`node -e` 数 `label:` 条目 = 223，成功行打印的就是这个数，失败行分母是 `+1` 的对照组）。`MIN_SELF_TEST_CASES` 仍是 99，没动。5 条 ✗ 全部清零，**没有删除或跳过任何一条原例子**：`git diff 50e1d93..HEAD -- scripts/docs-drift-check.mjs` 里只有「靶子定位/换入形状」的改动与新增用例，`expect` 一律是点名具体红话的正则（见 `/tmp/770r2e-m1.diff`、`/tmp/770r2e-m2.diff`、合档 `/tmp/770r2e-m-all.diff`）。
+
+派生值一条没抬：`BARE_LINE_REF_BASELINE` 仍是 6（`grep -n '^const BARE_LINE_REF_BASELINE' scripts/docs-drift-check.mjs` 现读）；`CHANGELOG_PAIR_FLOOR`、`SYMBOL_ANCHOR_MIN_UNIQUE` 本轮一个字没改（闸门自报值没变：`check:docs` 与 `static-guards` 都绿，见下）。
+
+## 闸门（判据 4）
+
+| 命令 | 结果 |
+|---|---|
+| `node --test test/contract-snapshot-cell-axes-767.test.js test/loop-snapshot-write-side-735.test.js` | EXIT=0（`/tmp/770r2e-gate-contract.log`） |
+| `node --test test/static-guards.test.js` | EXIT=0，`# tests 58 / # pass 58 / # fail 0`（`/tmp/770r2e-gate-static-guards.log`） |
+| `npm run check:docs` | EXIT=0（`/tmp/770r2e-gate-docs.log`） |
+| `npm run check:docs:strict` | EXIT=0（`/tmp/770r2e-gate-docs-strict.log`） |
+| `npm run check:docs-spelling` | EXIT=0（`/tmp/770r2e-gate-spelling.log`） |
+| `npm run check:syntax` | EXIT=0（`/tmp/770r2e-gate-syntax.log`） |
+| `npm run check:agents-directives` | EXIT=0（`/tmp/770r2e-gate-agents.log`） |
+| `node scripts/docs-drift-check.mjs --self-test` | EXIT=0（r2，见上） |
+
+`src/` 没动（`git diff --name-only 50e1d93..HEAD` 只有 `scripts/docs-drift-check.mjs`、`docs/maintenance/command-reference.md`、`REPORT-770R2.md`），所以三档 typescript 棘轮按任务口径不必跑；`npm test` 全套与 `test/test-suite-baseline.json` 按任务口径没跑/没碰。
