@@ -404,7 +404,14 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 共 2 处，R2 旧面同一段只有 1 处 ⇒ 净 +1。同 #714 / #729 / #730 先例：契约要能写出真名，不为躲钉子改写法。
   // 数只取扫描器现报那一行：
   //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=462  uses=463
-  "docs/host-consumer-contract.md": 463,
+  // 463 → 465（issue #769 R6 文案修正②，净 +2）：能力表「Optional ledger recovery-row clear」那一行补上清盘的
+  // 两个前提，句子必须写出真旋钮名与代际标识（两处都是 `AMBIGUOUS_KEYS` 里的同名异义：持久化这个概念 /
+  // store 形参与 `config.run.*` 同名，不进退役判据但计入本钉子）。逐条定位：:2265 一行从 1 处（`runId`）
+  // 变成 3 处（`persistence` 一个 + `runId` 两个），同面其他行未动 ⇒ 净 +2。
+  // CN 侧同一刀同数（587 → 589，:1835）。
+  // 同 #714 / #729 / #730 / #769-R5 先例：不为了躲钉子把真名写成描述说法。数只取扫描器现报那一行：
+  //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=463  uses=465
+  "docs/host-consumer-contract.md": 465,
   // 565（片A，切版前补 #569/#568 文档）：CN 契约新增「折叠触发比例与会话续接块」一节，其中 provider 回调的
   // 真实键名 `runId`（`({runId, state, previous}) → {text, version}`）是一次同名异义命中——契约必须写出这个键名，
   // 所以**不为了躲钉子而改写成模糊说法**，按判据把钉子登记成扫描器报的值。EN 侧同一句已把 `context` 写成全路径
@@ -452,7 +459,24 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 而 :5839 / :5842 / :5846 三处是 R2 段落旧命中（base 的 :5821 / :5825）随改稿位移 ⇒ 该段 5 → 6，净 +1。
   // 数只取扫描器现报那一行：
   //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=584  uses=585
-  "docs/host-consumer-contract_cn.md": 585,
+  // 585 → 587（issue #769 R6 文案修正①，净 +2）：把「三者缺席 ⇒ 都报一条」拆成「写侧与清盘侧各一条 / 读侧静默」
+  // 时，能力表那一行与恢复行那一节都必须把**事件的真名字与事件字段面**写出来，两处同名异义命中
+  // （都在 `AMBIGUOUS_KEYS` 里：store 形参 / run 标识与文件名，不进退役拼写判据，但计入本钉子）。
+  // 逐条定位（本文档现行号，改稿后实测）：
+  //   · :5888 `runId` —— 新加的子项里事件字段面必须逐字写 `persistence_capability_degraded` 的载荷
+  //     `{type, runId, method, detail}`（不写成「带方法名的那条降级事件」）；
+  //   · :5889 `resume` —— 静默那一条要指回真实现处，写的是文件路径 `src/loop/resume-manager.js`（路径里的
+  //     `resume` 被扫描器计到）。
+  // 同段旧命中 (:5880 x2 / :5881 x1) 随改稿位移到 :5881 x2 / :5882 x1 ⇒ 该段 3 → 5，净 +2。
+  // EN 侧同一刀净 0（463 → 463，扫描器现报 verdict=ok）：EN 原本就在那两行写着这些真名，本次只是把它们搬进子项。
+  // 同 #714 / #729 / #730 / #769-R5 先例：契约要能写出真名与真字段面，不为躲钉子改成描述说法。
+  // 数只取扫描器现报那一行：
+  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=585  uses=587
+  // 587 → 589（issue #769 R6 文案修正②，净 +2）：同一刀的 CN 侧——能力表「可选恢复行清除」那一行补两个前提，
+  // 同样必须写出真名。逐条定位：:1835 一行从 1 处（`runId`）变成 3 处（`persistence` 一个 + `runId` 两个），
+  // 与 EN :2265 同数 ⇒ 中英成对。数只取扫描器现报那一行：
+  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=587  uses=589
+  "docs/host-consumer-contract_cn.md": 589,
 });
 
 /**
