@@ -6,7 +6,7 @@
 ## 取证边界
 
 - 工作树：只写 `/home/eric/wt-769e2`。`/home/eric/wt-769e`（上一段树）、`/home/eric/wt-769w`（对照）、`/home/eric/projects/erix-llm-kit`、`/home/eric/wt-75*`/`76*`/`77*` 全程未写。
-- 只读对照：为了把「主干现测」和「本树现测」分开，临时挂了 `git worktree add --detach /tmp/main-base-check e1bd9cf`（node_modules 是软链到本树），只用它跑 `check:types:strict` 与 tsc 对照；**收尾会 `git worktree remove`**（见「未验证」最后一条）。
+- 只读对照：为了把「主干现测」和「本树现测」分开，临时挂了 `git worktree add --detach /tmp/main-base-check e1bd9cf`（node_modules 是软链到本树），只用它跑 `check:types:strict` 与 tsc 对照，**收尾已 `git worktree remove`**（见「未验证」最后一条）。
 - 本段改动面：测试里的记录值/期望值（`test/tools/file-tools.test.js`）、`src/tools/file-tools.js` 的两处**同位数**数字与其历史注、`src/store/file.js` / `src/store/memory.js` / `src/loop/resume-manager.js` 的 **JSDoc 类型**（三处都刻意**行数中性**）、`scripts/retired-spelling-scan.mjs` 的两枚契约钉子、`test/mutation-samples.md` 的 `--sync` 派生列。**没有**动：`persist("appendRecoveryRow")` 的可选能力通道、store 三方法语义、`src/store/recovery-rows.js` 的行形状、任何谓词/判据常量（±2%、±1%、`CJK_DENSE_SAMPLE_FLOOR`、`LEGACY_*`、两档 strict 基线、`BARE_LINE_REF_BASELINE`、`test/test-suite-baseline.json` 全部一字未动）。
 - 为什么坚持「行数中性」：两轴表在 `docs/host-consumer-contract*.md` 里引用的是 `src/loop/resume-manager.js:<行号>` 这类**裸行号**（两份契约共 42 处引用，其中 30 处行号 > 439），`scripts/cell-axes-anchors.mjs` 的锚点是**文本锚**、行号在检查时重算 ⇒ 只要我在 resume-manager 里加一行，上一笔 `4070ff0` 刚对完的整批引用就要重刷。实测确认过：先按常规写法加 5 行 ⇒ G4 / G4-R1 / R3 / R4 / R5 / R6 / G6 **七条当场复红**；改成行数中性后这七条回到绿，且没碰任何引用。
 - 判据来源：下面每个数字都指回一条我真跑过的命令（日志留在 `/tmp/r2-full-3.log`、`/tmp/dd-v.log`、`/tmp/nt769e2.log` 是主会话给的上一段日志）。闸的判定只认退出码 + 点名到具体断言。
@@ -39,8 +39,9 @@
 
 跑闸前一律 `find src -name '*.d.ts' -delete`（`types:build` 之后没再删就跑 ratchet 会得到 `EXIT=1` 的「确需带着生成物跑」那条，我第一次就踩了）。
 
-- `npm test` → **EXIT 0**；`# tests 3725` / `# suites 14` / `# pass 3712` / **`# fail 0`** / `# cancelled 0` / `# skipped 13` / `# todo 0`（`/tmp/r2-full-3.log`；起点同命令是 `pass 3708 / fail 4`，`/tmp/r2-full-1.log`）。
-- `npm run check:test-summary -- --log /tmp/r2-full-3.log` → `TEST-SUMMARY tests=3725 pass=3712 fail=0 skipped=13 todo=0 cancelled=0` / `TEST-SUMMARY-EXPECTED tests=3717 fail=0 maxSkipped=16 registry=test/test-suite-baseline.json` / `TEST-SUMMARY-VERDICT ok` / **`TEST-SUMMARY-HINT 登记值可抬到 3725（当前登记值 3717，本次实测 3725，+8）——多出来的用例不是事故，抬登记值仍是人的动作：本脚本只提示，不改写 test/test-suite-baseline.json（没有 --sync）`**。`test/test-suite-baseline.json` 我**没动**（`git status` 里没有它）。
+- `npm test` → **EXIT 0**；`# tests 3725` / `# suites 14` / `# pass 3712` / **`# fail 0`** / `# cancelled 0` / `# skipped 13` / `# todo 0`（终态复跑在 `/tmp/r2-full-4.log`；起点同一命令是 `pass 3708 / fail 4`，`/tmp/r2-full-1.log`）。最后一笔只加了本报告，所以交棒前又跑了一遍全量：同一四个数（`3725 / 3712 / 0 / 13`）一字未变。
+- `check:exports` / `check:host-consumers` / `check:docs-examples` 终态复跑均 **EXIT 0**。
+- `npm run check:test-summary -- --log /tmp/r2-full-4.log` → `TEST-SUMMARY tests=3725 pass=3712 fail=0 skipped=13 todo=0 cancelled=0` / `TEST-SUMMARY-EXPECTED tests=3717 fail=0 maxSkipped=16 registry=test/test-suite-baseline.json` / `TEST-SUMMARY-VERDICT ok` / **`TEST-SUMMARY-HINT 登记值可抬到 3725（当前登记值 3717，本次实测 3725，+8）——多出来的用例不是事故，抬登记值仍是人的动作：本脚本只提示，不改写 test/test-suite-baseline.json（没有 --sync）`**。`test/test-suite-baseline.json` 我**没动**（`git status` 里没有它）。
 - 四个原红文件：`node --test test/tools/file-tools.test.js` → `64 tests / 64 pass / 0 fail`；`node --test test/type-check-strict-ratchet.test.js test/contract-snapshot-cell-axes-767.test.js test/docs-anchor-ratchet.test.js test/version-state-probe-703.test.js` → `36 tests / 36 pass / 0 fail`。
 - `node --test test/static-guards.test.js` → **EXIT 0**，`58 tests / 58 pass / 0 fail`。
 - `npm run check:inventory` → **EXIT 0**（`逐文件：0 处不一致`）。本段没新增测试文件，也不需 `--sync`。
@@ -58,4 +59,4 @@
 - **合并树上的 `test/test-suite-baseline.json` 现测**：登记 3717 vs 实测 3725（+8）留给主会话抬，我没 `--sync`。
 - **一处中英契约的说法与树不符，我没擅自改**：`docs/host-consumer-contract.md:7377-7378` 与 `_cn:5801-5802` 写「Store surface: `appendRecoveryRow(runId, row)` … `listRecoveryRows(runId)` … `clearRecoveryRows(runId)`. **All three** are optional / 三者都是可选能力」，但 `grep -rn "clearRecovery" src/ test/ scripts/` 在 src/test/scripts 下**零命中**（只有这两份文档命中）⇒ 树上只实现了两个方法。它不进任何闸（`check:docs` / `docs-drift-check` 的锚点不覆盖这句），所以本段是绿的；要不要补第三枚方法或把「三者」改成「两者」，属已验收架构面的裁决，我按「别改设计」留着。
 - `npm pack` / `check:release` 面没跑（本段没动版本号与打包面）。
-- `/tmp/main-base-check` 这个只读对照 worktree 需要在主会话侧 `git worktree remove` 清掉（我在最后一笔里删；若报告时它还在，就是被这条覆盖）。
+- `git worktree remove --force /tmp/main-base-check` 已跑（终态 `git worktree list | grep -c main-base-check` = **0**，`ls /tmp/main-base-check` 报 No such file）；只读对照面已收干净。
