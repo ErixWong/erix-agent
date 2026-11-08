@@ -3662,6 +3662,69 @@ Four things a host has to read correctly, because getting them wrong silently mi
   What a host must not do is take `record.usage` for the round's whole bill: it is the model's
   share of it, and only `result.usage` (on the success result) is a ready-made sum.
 
+## `reasoning_effort` is a provider string, and the four layers around it are separate (issue #785 P1)
+
+`reasoning_effort` is **provider-specific free text** in this package: the engine never validates the value
+and this repository keeps **no vendor value enum** (issue #788 is parked — adding one is not a fix, it is a
+claim about every backend). Four layers sit between what the host asked for and what the model actually
+did, and each one has a different owner, a different artifact, and a different strength of evidence.
+
+| Layer | Who owns it | Where the fact lives | What it proves |
+|---|---|---|---|
+| **1. request value** | the host | the option the host set (slot default / call-site value / `providerOptions` / `extraBody`) | that a value was asked for — nothing more |
+| **2. payload translation** | this package, one place | `applyProviderPayloadOptions` / `observeSentReasoningParams` (`src/providers/payload.js`) → `record.sentRequestParams` | what was **actually written into the request body** |
+| **3. provider usage** | the upstream | `normalizeOpenAIUsage` (`src/messages/openai-normalization.js`) → `response.usage.reasoningTokens` | that the upstream **reported** a reasoning-token count |
+| **4. sampled behaviour** | the serving stack | nothing in this repository | never provable from here |
+
+Layer 4 is not a gap in the ledger, it is a boundary the engine has already proven about itself (issue #419
+②: the forced-final ruling stands on the fact that a request the engine did send could not be read as
+evidence of what the sampler did). No new key changes that, and a host must not read any cell below as
+"the model did / did not think".
+
+**(2) What was really sent.** `record.sentRequestParams` is additive:
+`{ reasoningEffort: { hostValue, sentValue, source, translated? } }`. `hostValue` is the value the host
+supplied **pre-translation**; `sentValue` is the value in the body after payload translation and
+`extraBody`. The one translation this package performs is the GLM `none → low` rewrite (ADR-017), and the
+cell is required to keep both: on a GLM model `hostValue: "none"` / `sentValue: "low"` / `translated: true`
+— **the translated value is never written as the host value**. `source` names the channel the value came
+from, `request` > `slotDefault` > `providerOptions` > `extraBody` (the same precedence the payload assembly
+uses, so the cell cannot disagree with the body). **No fact, no key**: with no reasoning-related key
+anywhere the whole cell is absent — never `{}`, never `hostValue: undefined` written on purpose.
+**Boundary (contractual): only this package's own providers can produce the cell.** A host-authored provider
+serializes its own body, so the engine never sees that wire body and the cell is **absent**; absence means
+**"not observed"**, never "no reasoning parameter was sent".
+
+**(3) `reasoningTokens`, and why absence is not zero.** The canonical usage keeps its three keys
+byte-for-byte (`input_tokens` / `output_tokens` / `cacheRead`) and adds one optional key:
+`reasoningTokens` (number) — written **only when the upstream reports
+`completion_tokens_details.reasoning_tokens`**. A reported `0` is a measurement and stays a `0`
+(the 2026-11-08 probe measured exactly that on a `reasoning_effort: "none"` request); an **unreported**
+value produces **no key**, and no layer may substitute `0` for "not measured" — the two facts answer
+different questions and merging them is the silent-0 failure this cell exists to make visible. The Anthropic
+usage surface has no reasoning-token field at all (`usageFromResponse` (`src/messages/anthropic.js`) maps
+`input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens` and nothing
+else), so the Anthropic path does **not** grow the key: it is absent there by fact, not by omission.
+`record.usage` (the round ledger, issue #438) is unchanged: `reasoningTokens` rides on
+`record.response.usage` (the last response of the round), never into the ledger's four summed fields.
+
+**Two field families, and the shape difference is not negotiable.**
+
+| Family | Field shape | Measured behaviour |
+|---|---|---|
+| OpenAI-compatible | **scalar** `reasoning_effort` | an unrecognized scalar is answered with **HTTP 400**, and the error body lists that backend's accepted values (2026-11-08 probe, `"hight"` on `qwen3.8-flash-next`); `"none"` really takes effect there |
+| GLM (OpenAI family) | scalar, but a **subset with no `off`** | `none` is translated to `low` by layer 2 (ADR-017); the on-site model is currently unavailable — see that ADR's status note |
+| Anthropic | **object** shape (`thinking` / `reasoning`), not a scalar | its probe leg is **retired** (no endpoint available locally): documented, not acceptance-gated |
+
+Two phrasing rules, both of which were wrong in the wild once:
+
+- **That 400 error body is not a value domain.** It is what one backend said about one model at one moment
+  (`qwen3.8-flash-next`'s list is not the relay's list and never the package's). Copying it into a global
+  enum is what issue #788 declined to do.
+- **`GET /models` listing is not availability.** Measured 2026-11-08: `z-ai/glm-5.2` appeared in the
+  39-entry list and still answered **HTTP 404** `one_hub_error` ("Model … is not supported for current
+  token"). Availability is decided by token-level authorization, so "listed" may be cited as a gateway
+  fact but never as "this model works for this token".
+
 ## Judge record correlation and run outcome (issue #165)
 
 Judge decisions are consumed off `onJudge` (the CLI appends them to `judge.log`;
@@ -6818,6 +6881,7 @@ records must remain unchanged.
 | `messages` | model | The exact model-context slice, including `tool_use`/`tool_result` blocks and fold placeholders. Do not render it raw; the projection extracts displayable text and tool-call summaries from it. Since issue #335 this is also the **canonical source of the projected assistant body** (a message is persisted the moment it forms); `response.content` is only the legacy/host-written fallback. |
 | `messages[].meta` | model / engine | Preserve this object, including unknown keys. `meta.source` is an engine-reserved marker used by projection classification and judge visibility; do not reuse it for host-owned source information. |
 | `response` | model | Full provider response content (`text`, `reasoning`, `tool_use` blocks), `stopReason`, `usage`. Projected display text/blocks come from `messages`, not from here; only `stopReason`/`usage` are copied into the projection's `meta`. Its block shape is model-facing and may change. **Its `usage` is the last response of the round only** — the round's complete ledger is the sibling key `record.usage` (see "Usage accounting: the round ledger vs engine overhead (issue #438)"). |
+| `sentRequestParams` | model / forensics | **Additive (issue #785 P1).** What the engine actually wrote into the request body for the reasoning parameters of this round: `{ reasoningEffort: { hostValue, sentValue, source, translated? } }` — `hostValue` is what the host supplied **before** payload translation, `sentValue` the value that left the process (GLM `none → low`, ADR-017; the two differ and neither replaces the other), `source` the channel that supplied it (`request` / `slotDefault` / `providerOptions` / `extraBody`). Safe to render as a diagnostic caption; never render it as model content. **No fact, no key**: a round with no reasoning-related key carries no such cell, and a **host-authored provider never produces one** (the engine cannot see its wire body) — read absence as *not observed*, not as *not sent*. See "`reasoning_effort` is a provider string, and the four layers around it are separate (issue #785 P1)". |
 | `l0facts`, `runState`, `runStateMeta`, `compactionStats`, `judge`, `wrapup`, `toolOutputs`, `dedupKey`, `roundKey` | model / engine internals | Facts for the governor, resume, and diagnostics. Only `judge`/`wrapup`/`summary`/`stopReason`/`usage`/`toolUses`/`dedupKey` are copied into the projection's `meta` for optional labelling; the rest is not part of the display surface. **`runStateMeta` is additive (issue #742, first slice)**: `{ bytes, capBytes, truncated }` — the size account of the `runState` copy this round writes, shaped like the `foldedPayloadMeta` above because that cell is the precedent that made archive truncation visible in the first place. `bytes` is measured with the **one yardstick** the engine's own size clamp uses (`Buffer.byteLength(JSON.stringify(copy), "utf8")`), so it is byte-for-byte what is on disk, not an estimate; `capBytes` is the exported `RUN_STATE_MAX_SERIALIZED_BYTES`, never a copied literal. `truncated` is the **OR of two facts**: the copy exceeds `capBytes`, or the engine already stamped `runState.bounds.truncated` (`reason: "serialized_size"` / `omittedTools`). The second half is not decoration: the clamp runs **upstream** of the round record, so the copy that lands here sits *under* `capBytes` even on a round whose state was squeezed (measured: a compacted copy of 64 893 B against the 65 536 B cap, with `bounds.truncated: true`) — reading only the first half reports a genuinely clamped round as untruncated. The two facts stay separately readable (`bytes` and `bounds`), they are not merged into one number. **No fact, no key**: with no run-state copy to measure (host-shaped rows, an unserializable copy) the whole key is absent — hosts must read absence as *unknown*, never as `truncated: false`; the engine never writes `{bytes:0,truncated:false}` as a stand-in. Advisory only: no in-engine reader, no effect on resume or stop gates, and it **saves no byte** — every round still writes a full copy, so the ledger still grows linearly with the round count (that is a later slice of #742, not this one). |
 
 ### Stability promise
