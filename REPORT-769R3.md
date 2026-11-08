@@ -105,7 +105,7 @@ C4 字节口径改口（见 F3）；D 幂等格改成 run 层「第二条不同�
 
 | 闸 | 现报 |
 | --- | --- |
-| `npm test --silent > /tmp/r4-full-final.log` | **exit 0**；`tests 3731 / pass 3718 / fail 0 / skipped 13 / todo 0` |
+| `npm test --silent` | **exit 0**；`tests 3731 / pass 3718 / fail 0 / skipped 13 / todo 0` —— 终态 HEAD `8d3bfa6` 实跑，日志 `/tmp/r4-final2.log`；同一数字另在 `/tmp/r4-full-final.log`（`49d3c66`，代码尖端）实跑过一次 |
 | `npm run check:test-summary -- --log /tmp/r4-full-final.log` | `TEST-SUMMARY-VERDICT ok`（EXPECTED 3725/fail 0/maxSkipped 16）；**无 TESTS_DRIFT**；HINT 原文：「登记值可抬到 3731（当前登记值 3725，本次实测 3731，+6）——多出来的用例不是事故，抬登记值仍是人的动作：本脚本只提示，不改写 test/test-suite-baseline.json（没有 --sync）」⇒ `test/test-suite-baseline.json` **未动** |
 | `npm run check:inventory` | `逐文件：0 处不一致` |
 | `npm run check:mutation` / `--run` | `逐条：0 处不一致` / `OK — 29 条样本逐条「变异 → 红在该报的断言上 → 还原 → 绿」` |
