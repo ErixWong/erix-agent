@@ -562,9 +562,10 @@
   `status: "settled" | "refused"` and `reason` from four values (`ledger_probe_absent`, `round_not_safe_integer`,
   `round_carrier_has_body`, `tool_use_id_unusable`). The literals are spelled like the `resume_journal_skipped`
   table in `src/loop/resume-manager.js` on purpose (a host reading both reads one vocabulary) but the constants are
-  **local**: that table is a closed set owned by `docs/host-events.md` and pinned by
-  `test/loop-resume-abandon-signals-730.test.js`, and the probe case is renamed `ledger_probe_absent` because it is
-  not #730's anchor probe. The probe fast path (#157, which promises `store.load` is never called) reads the ledger
+  **local**: that table is the closed set of `detail` values the
+  contract publishes (`docs/host-consumer-contract.md`, the “Optional raw-row anchor probe (issue #714)” table, and
+  its Chinese twin), its four values are pinned literally by `test/loop-resume-abandon-signals-730.test.js`, and the
+  probe case is renamed `ledger_probe_absent` because it is not #730's anchor probe. The probe fast path (#157, which promises `store.load` is never called) reads the ledger
   through the third probe `loadRawRows` (#714) and **refuses rather than falling back to a full read** — a store
   with only `loadByDedupKey`/`loadMaxRound` gets `ledger_probe_absent` and must add that probe; that is the
   host-side follow-up for `erix-station`'s `PostgresTranscriptStore`, which implements the pair but not the third.
@@ -606,8 +607,9 @@
   `unsettledToolUses`，而且**只在该说话时出现**（没悬空时返回对象的键集合仍是 `{ key, dedupKey, round, written }`），
   `status` 取 `"settled" | "refused"`，`reason` 四条（`ledger_probe_absent` / `round_not_safe_integer` /
   `round_carrier_has_body` / `tool_use_id_unusable`）。字面值**故意**与 `src/loop/resume-manager.js` 的
-  `resume_journal_skipped` 表同形（宿主两处都读时读到同一套词），但常量是**本地的**：那张表是 `docs/host-events.md`
-  拥有的闭集，也被 `test/loop-resume-abandon-signals-730.test.js` 钉住；而探针那一格改名 `ledger_probe_absent`，
+  `resume_journal_skipped` 表同形（宿主两处都读时读到同一套词），但常量是**本地的**：那张表是契约里那张 `detail` 闭集表（英文
+  `docs/host-consumer-contract.md` 的「可选原始行锚点探针（issue #714）」小节，中文同一处），四个取值被
+  `test/loop-resume-abandon-signals-730.test.js` 逐字钉住；而探针那一格改名 `ledger_probe_absent`，
   因为它不是 #730 那根定锚探针。探针快路径（#157，它承诺全程不调 `store.load`）只能靠第三根探针 `loadRawRows`
   （#714）读账本，探针缺席就**拒写而不退回整本读**——只实现 `loadByDedupKey`/`loadMaxRound` 的 store 会拿到
   `ledger_probe_absent` 并且必须补上这根探针；那就是 `erix-station` 的 `PostgresTranscriptStore`（它实现了那对而

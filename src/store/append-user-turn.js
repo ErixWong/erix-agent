@@ -21,11 +21,13 @@ import { MESSAGE_ROW_KIND, isRoundCarrier, nextMessageSeqByRound } from "./messa
 // 刚写的这条（静默丢失，比什么都不做更糟）。幂等：`dedupKey = <key>:settle:<round>:<排序后的 id 列表>`
 // —— 不含时间戳 / messageId ⇒ 同一本账本反复预写只结清一次，快路径与全量路径写的行逐字相同。
 
-// 拒写成因。**故意不复用** `resume_journal_skipped` 那张表（`src/loop/resume-manager.js` + `docs/host-events.md`）：
-// 成因表与事件名都是闭集，`test/loop-resume-abandon-signals-730.test.js:117` 钉了「新成因必须先在 docs 出现」，
-// 而 store 层不发事件（它没有 onEvent，发了也没人听）⇒ 原因只能进返回值。字面值与那张表对齐是为了宿主读得懂，
-// 同名的 `anchor_probe_absent` 这里叫 `ledger_probe_absent` 是刻意的：探针不是 issue #730 那件东西，
-// 共用一个词会让读事件的人以为看到了同一件事。
+// 拒写成因。**故意不复用** `resume_journal_skipped` 的那张 `detail` 表（定义在 `src/loop/resume-manager.js`，
+// 宿主面在 `docs/host-consumer-contract.md:2473` 与中文同一处 `docs/host-consumer-contract_cn.md:1995`）：
+// 那张表是**事件载荷**的闭集，四个取值被 `test/loop-resume-abandon-signals-730.test.js` 逐字钉住（:397 钉
+// `anchor_probe_absent`、:402 钉 `round_carrier_has_body`），而它本窗归另一个 session ⇒ 本单不在那张表里加格。
+// store 层也不发事件（它没有 onEvent，发了也没人听）⇒ 原因只能进返回值。字面值与那张表对齐是为了宿主两处读到
+// 同一套词；同名的 `anchor_probe_absent` 这里叫 `ledger_probe_absent` 是刻意的：#730 那一格问的是「聚合消息的
+// 首片行找不找得到锥点」，本格问的是「这一路根本没有读账本的能力」——共用一个词会让读事件的人以为同一件事。
 const SETTLE_REFUSED_LEDGER_PROBE_ABSENT = "ledger_probe_absent";
 const SETTLE_REFUSED_ROUND_NOT_SAFE_INTEGER = "round_not_safe_integer";
 const SETTLE_REFUSED_ROUND_CARRIER_HAS_BODY = "round_carrier_has_body";
