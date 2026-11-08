@@ -2359,7 +2359,7 @@ vocabulary, or a CN/EN axis mismatch all go red.
 | Cell (payload key) | write | read | Authority (double-written cells only) | Handoff condition (double-written cells only) | Today's write site — or, for a cell that no longer writes, the line that documents the stop | Today's readers |
 | --- | --- | --- | --- | --- | --- | --- |
 | `round` | written | source | — | — | `src/loop/orchestrator.js:3004` | `src/loop/resume-manager.js:575`, `src/loop/orchestrator.js:3239` |
-| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3029` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:118`, `test/persistence-diagnostics.test.js:171`, `test/loop-invalid-arguments.test.js:235`, `() => { n += 1; return x; }`, `() => { n += 1; return x; }` |
+| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3029` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:118`, `test/persistence-diagnostics.test.js:171`, `test/loop-invalid-arguments.test.js:235`, `test/loop-v020-rc.test.js:480`, `test/loop-v020-rc.test.js:616` |
 | `pendingToolUses` | written | source | — | — | `src/loop/orchestrator.js:3053` | `src/loop/resume-manager.js:529`, `src/loop/resume-manager.js:720` |
 | `pendingToolUse` | written | fallback(pendingToolUses absent) | — | — | `src/loop/orchestrator.js:3052` | `src/loop/resume-manager.js:530`, `src/loop/resume-manager.js:721` |
 | `executedToolIds` | written | source | — | — | `src/loop/orchestrator.js:3056` | `src/loop/resume-manager.js:664`, `src/loop/resume-manager.js:728` |

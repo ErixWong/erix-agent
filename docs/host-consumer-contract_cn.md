@@ -1908,7 +1908,7 @@ issue #754（裁决 2）起它**作为恢复来源已被弃用**——恢复路�
 | 格（payload 键） | write | read | 权威源（仅双写格） | 交接条件（仅双写格） | 今天的写点（已停写的格＝钉住「为什么停写」那行） | 今天的读者 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `round` | written | source | — | — | `src/loop/orchestrator.js:3004` | `src/loop/resume-manager.js:575`、`src/loop/orchestrator.js:3239` |
-| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3029` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:171`、`test/loop-invalid-arguments.test.js:235`、`() => { n += 1; return x; }`、`() => { n += 1; return x; }` |
+| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3029` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:171`、`test/loop-invalid-arguments.test.js:235`、`test/loop-v020-rc.test.js:480`、`test/loop-v020-rc.test.js:616` |
 | `pendingToolUses` | written | source | — | — | `src/loop/orchestrator.js:3053` | `src/loop/resume-manager.js:529`、`src/loop/resume-manager.js:720` |
 | `pendingToolUse` | written | fallback(pendingToolUses 缺席) | — | — | `src/loop/orchestrator.js:3052` | `src/loop/resume-manager.js:530`、`src/loop/resume-manager.js:721` |
 | `executedToolIds` | written | source | — | — | `src/loop/orchestrator.js:3056` | `src/loop/resume-manager.js:664`、`src/loop/resume-manager.js:728` |
