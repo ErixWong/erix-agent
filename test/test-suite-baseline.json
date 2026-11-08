@@ -931,6 +931,23 @@
             "todo": 0,
             "cancelled": 0,
             "why": "issue #769 全链（R1 载体 → R5 三阻断修复）在**合入主干 1751f28（#792/#785 P1 + #765）之后**的合并树现测：npm test exit 0，# tests 3762 / pass 3749 / fail 0 / skipped 13（/tmp/nt769final3.log，跑前 find src -name '*.d.ts' -delete）。登记由主会话现测重取，未做任何跨分支加法：合主干时 test-suite-baseline.json 取的是主干版，本条是唯一真值。"
+        },
+        {
+            "date": "2026-11-08",
+            "env": "local",
+            "node": "v22.23.2",
+            "commit": "f86cc34",
+            "branch": "fix-261108-27-recovery-read-strict-erix",
+            "mergeBase": "4f9b908",
+            "mainSha": "4f9b908",
+            "headSha": "f86cc34",
+            "tests": 3762,
+            "pass": 3749,
+            "fail": 0,
+            "skipped": 13,
+            "todo": 0,
+            "cancelled": 0,
+            "why": "issue #769 最终树（合入主干 4f9b908 = #793/#785 续 + R7 四处文案修 fix-261109-01-capability-docs-audit）复测：npm test exit 0，# tests 3762 / pass 3749 / fail 0 / skipped 13（/tmp/nt769pr.log，跑前 find src -name '*.d.ts' -delete）。与上一条读数同值 ⇒ 合主干与文案修没有动格子数；expect.tests 不变。登记仍由主会话现测，未做跨分支加法。"
         }
     ]
 }
