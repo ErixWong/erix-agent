@@ -335,6 +335,8 @@
   已排除路径」必备段、「未记录 ⇒ 先 `note_take`」硬指令，以及任何引擎侧自动记笔记机制 —— 引擎仍然什么都不写。
 
 ### Added
+- **Added (issue #785 P1, task 261108-01): reasoning-token fidelity and an "what did we actually send" cell, both additive. (a) Canonical OpenAI usage gains the optional key `reasoningTokens` (number).** `normalizeOpenAIUsage` (`src/messages/openai-normalization.js`) used to build only `input_tokens` / `output_tokens` / `cacheRead`, so a value the upstream really reported at `completion_tokens_details.reasoning_tokens` was thrown away on the way in. The key is written **only when the upstream reports it** — an unreported value produces **no key**, and no layer may write `0` in place of "not measured" (the 2026-11-08 probe measured a real `0` on a `reasoning_effort:"none"` request, so "reported 0" and "not reported" are two different facts and merging them destroys the distinction). The three pre-existing canonical keys keep their meaning verbatim, the Anthropic usage surface has no reasoning-token field to map (`usageFromResponse` (`src/messages/anthropic.js`)) and therefore does not grow the key, and `record.usage` (the round ledger, issue #438) still sums the same four fields — the new key rides on `record.response.usage`, which reaches the transcript untouched. (b) `RoundRecord` gains `sentRequestParams`: `{ reasoningEffort: { hostValue, sentValue, source, translated? } }`, produced by `observeSentReasoningParams` (`src/providers/payload.js`) from the **assembled** payload, so `sentValue` is what left the process after the one translation this package owns (GLM `none → low`, ADR-017) and after `extraBody`, while `hostValue` keeps the host's own pre-translation value — on a GLM model the two differ (`"none"` / `"low"`) and neither stands in for the other. `source` names the supplying channel with the same precedence the payload assembly uses (`request` > `slotDefault` > `providerOptions` > `extraBody`), so the cell cannot disagree with the body. **No fact, no key**: with no reasoning-related key anywhere the cell is absent, never an empty object; and because the observation happens where the payload is assembled, a **host-authored provider never produces it** — the engine cannot see that provider's wire body, so absence means *not observed*, never *not sent*. This class exists because the same probe measured an **unknown top-level body key being swallowed with HTTP 200** (clean answer, usage still showing reasoning): the failure neither errors nor degrades, so the ledger is the only place it can be seen. Both cells are reverse-proved: letting `hostValue` read the translated payload turns 2 cases red, removing the noise guard turns 2 cases red (`test/reasoning-sent-params-785.test.js`), and writing a fabricated `0` turns 4 cases red (`test/messages/openai-normalization.test.js`). The four red lines stand untouched: no value-domain enum (issue #788 stays parked), no change to judge / fold-summary / forced-final semantics, no change to the GLM translation itself, no new per-run API.
+- **变更（issue #785 P1，工单 261108-01）：推理 token 保真 + 一格「实际发了什么」，两者都是纯加法。(a) 规范化 OpenAI usage 新增可选键 `reasoningTokens`（number）。** `normalizeOpenAIUsage`（`src/messages/openai-normalization.js`）过去只造 `input_tokens` / `output_tokens` / `cacheRead` 三个键，上游真回报在 `completion_tokens_details.reasoning_tokens` 的值**在进门这一步就被丢掉**。新键**只在上游回报时写入**——没回报就**没有这个键**，任何一层都不许用 `0` 顶替「没测」（2026-11-08 探针在 `reasoning_effort:"none"` 那一发实测到真值就是 0，所以「回报 0」与「没回报」是两个不同事实，并成一个数就把区别抹了）。既有三个规范键语义一字未改；Anthropic 的 usage 面没有推理 token 字段可映射（`usageFromResponse`（`src/messages/anthropic.js`）），因此那边**不**长这个键；`record.usage`（逐轮账，issue #438）仍只累加原来那四个字段——新键随 `record.response.usage` 走，原样进档案。**(b) `RoundRecord` 新增 `sentRequestParams`**：`{ reasoningEffort: { hostValue, sentValue, source, translated? } }`，由 `observeSentReasoningParams`（`src/providers/payload.js`）在**已装配好的**载荷上取值，所以 `sentValue` 是过了本包唯一那处翻译（GLM `none → low`，ADR-017）与 `extraBody` 之后真正出进程的值，而 `hostValue` 保留宿主给的、翻译前的原值——GLM 型号上两者不同（`"none"` / `"low"`），谁也不顶替谁。`source` 写供值通道，优先级与载荷装配同序（`request` > `slotDefault` > `providerOptions` > `extraBody`），所以这格不可能与 body 打架。**没事实就没键**：哪儿都没有 reasoning 相关键 ⇒ 整格缺席，绝不是空对象；又因为观测点就在装配点，**宿主自建 provider 永远交不出这格**——引擎看不见它的 wire body，缺席读作*未观测*，不是*没发*。这格存在的理由正是同一次探针实测到**顶层未知键被 HTTP 200 静默吞**（正文干净、usage 仍在推理）：它既不报错也不降级，账本是唯一看得见它的地方。两格都做了反向证：让 `hostValue` 去读已翻译的 payload ⇒ 2 格红，撤掉噪声闸 ⇒ 2 格红（`test/reasoning-sent-params-785.test.js`），凭空写 0 ⇒ 4 格红（`test/messages/openai-normalization.test.js`）。四条红线一格没动：不建值域枚举（#788 继续 parked）、不动 judge / 折叠摘要 / 强制收尾语义、不改 GLM 翻译本身、不加 per-run API。
 - **The run snapshot payload contract is now a two-axis table, and a test reads that table (issue #767, slice S1 — docs and tests only, no behaviour change).** "Retire" had been used for two different claims (the write side stops writing a cell; the read side stops relying on it), and the contract's cell-by-cell list carried it as one label, which is how "zero readers ⇒ it can be retired" got to look like an inference. Both contracts (CN and EN) now carry one row per payload key with two independent axes — `write: written|residue|stopped` and `read: source|fallback(condition)|not-source` — plus an *authority* and a *handoff condition* column for the double-written cells. All 10 payload keys are listed (`round`, `status`, `pendingToolUse`, `pendingToolUses`, `executedToolIds`, `toolResults`, `toolOutputs`, `messages`, `persistedTranscriptLength`, `compactionStats`), and `persistedTranscriptLength` occupies two rows because one key name covers two things: the on-disk cell (recomputed away by the resume path, so its read-side condition is met) and the in-process counter (a bound on the `messages` residue start, so it cannot go away). Three facts the table now states instead of implying: the final guard's evidence source is the **round record** (`bin/final-guard-support.js`), not the latest snapshot, so the guard is no reason to keep the snapshot's `toolOutputs`; `status` and `compactionStats` have zero engine readers **and** live test fingerprints, so `not-source` does not license stopping the write; `messages` can only be `fallback(old-format ledger only)` while the resume side's upgrade path exists. Every line number was re-taken on the base commit and `test/contract-snapshot-cell-axes-767.test.js` re-checks each citation (file present, line in range, that line names the key) — the 0.31.0-era numbers quoted in the issue would go red. The new file's 8 cases also run the two falsifications that did not exist before: a cell declared `stopped` is compared against the payload the engine actually handed to `saveRunSnapshot` (previously `test/loop-snapshot-write-side-735.test.js` *required* those keys to be present, so declaring one stopped could not fail anything), and a cell declared `read: not-source` is compared against a scan of `src/loop/resume-manager.js` with comments and string literals stripped (its own counterexample case proves the stripping works, because a comment in that file contains `snapshot.messages`). Mutations run and restored: `status` → `stopped` ⇒ the payload case red; delete one row ⇒ the self-consistency case red; `messages` → `not-source` ⇒ the read-axis cases red. ⚠ Derived numbers left for the merged tree: the bare-line-reference ratchet in `check:docs` measures 62 against its floor of 6 (the table cites line numbers on purpose), and the suite case total grows by 8.
 - **run snapshot 的契约载荷表现在是「每格两轴」，而且这张表被测试当数据读（issue #767，S1 片：只动文档与测试，行为不变）**。“退役”以前同时被用来指两件事（写侧不再写这格 / 读侧不再靠这格），而逐格清点表把它写成了一个标签——「零读者 ⇒ 可以退役」就是这么看起来像推论的。中英两份契约现在每个 payload 键一行，两条互相独立的轴 `write: written|residue|stopped` 与 `read: source|fallback(条件)|not-source`，双写格额外给「权威源」与「交接条件」两列。10 格全列（`round`、`status`、`pendingToolUse`、`pendingToolUses`、`executedToolIds`、`toolResults`、`toolOutputs`、`messages`、`persistedTranscriptLength`、`compactionStats`），其中 `persistedTranscriptLength` 占两行——一个键名底下是两个东西：盘上那格（恢复侧现算覆盖 ⇒ 读侧条件已满足）与进程内计数器（`messages` 残余上界之一 ⇒ 不能停）。表从此不再“暗含”而是写明三件事：终稿 guard 的证据源是**轮记录**（`bin/final-guard-support.js`）而不是最新快照，所以 guard 不是保留快照那格的理由；`status` 与 `compactionStats` 引擎零读者**同时**被测试当形状指纹钉住，所以 `not-source` 不等于可以停写；只要恢复侧那条旧格式升级路径还在，`messages` 就只能写 `fallback(仅旧格式账本)`。行号全部在基点上重取，`test/contract-snapshot-cell-axes-767.test.js` 逐条复核（文件在场 / 行号在范围内 / 那一行确实提到这格的键名）——照抄 issue 正文里那批 0.31.0 的行号会红。新文件 8 例同时跑了两件以前跑不红的证伪：标 `stopped` 的格要跟引擎亲手交给 `saveRunSnapshot` 的真实载荷对账（以前 `test/loop-snapshot-write-side-735.test.js` 反而**要求**这些格在场，标停写不可能红），标 `read: not-source` 的格要跟一份剔掉注释与字符串字面量的 `src/loop/resume-manager.js` 对账（剥逻辑自带反例用例，因为那个文件里有一句注释就带着 `snapshot.messages`）。变异实测跑完已还原：`status` → `stopped` ⇒ 写轴例红；删一行 ⇒ 自洽例红；`messages` → `not-source` ⇒ 读轴两例红。⚠ 留给合并树的派生数字：`check:docs` 的裸行号棘轮实测 62 / 基线 6（这张表就是故意写行号的），套件用例总数 +8。
 - **Host steer at the turn boundary: `capabilities.hooks.nextUserTurn` (issue #753, C1 engine slice).** The
@@ -535,6 +537,101 @@
   ⇒ 红、版本节被拿掉 ⇒ 红变未判定），变异没落上按失败算而不是按绿算。
 
 ### Fixed
+
+- **A host that pre-writes its next user turn no longer bricks the run it is resuming: `appendUserTurn` now
+  settles a dangling `tool_use` *before* its own `user[text]` row hits the ledger (issue #765).** The incident
+  shape: a crash leaves an `assistant[tool_use]` row whose id has **no `tool_result` anywhere in the ledger**,
+  the host calls `appendUserTurn` to queue its follow-up, and the engine's local validator then refuses the
+  folded ledger before anything goes on the wire (`invalid_messages: assistant tool_use has no immediately
+  following user tool_result`) — the runId is unrecoverable, and the brick is local, so upstream never saw a
+  request. Timing was the whole fix, and "let the host append a row afterwards" was never an option:
+  `foldMessageRows` re-attaches a round's message rows to that round's carrier in `seq` order
+  (`src/store/message-rows.js#attachRoundMessages`), so once the host's plain-text row is in the ledger
+  **(a)** any `user[tool_result]` appended after it folds **after** it — the wire order becomes
+  `assistant[TU] → user(text) → user(TR)`, a provider-side 400 — and **(b)** the tail criterion the engine's own
+  repairers use (`pendingTailToolUses` / `resumeMessagesWithUnpersistedToolResults`, both "the last message is an
+  assistant carrying `tool_use`") stops matching, so the engine no longer sees the dangling call at all.
+  Settling before the write makes the stub row the tail, so the folded order is right by construction. The row
+  reuses existing shapes instead of inventing a fourth one: the block comes from a new exported
+  `buildUnpersistedToolResultStub` in `src/loop/pending-tool-result.js` (the #421 stub, `UNPERSISTED_TOOL_RESULT_TEXT`
+  + `is_error: true`, whose unique-construction-site guard now guards a function rather than an inline literal),
+  and the row carries `kind: "message"` plus a **freshly measured** `seq` from `nextMessageSeqByRound` (a missing
+  `seq` degrades the fold's sort key to `undefined`, and `undefined < undefined` is false ⇒ several stub rows
+  would order by write order). It deliberately carries **no `roundKey`**: `isRoundCarrier` counts a row as a
+  carrier when it has no `dedupKey` and (no `seq` or a `roundKey`), so on a store that omits `seq` a friendly
+  `roundKey` would make this a *second* carrier and the #401 R3 guard would then drop the row we just wrote —
+  silently, which is worse than doing nothing. Idempotency: `dedupKey = <key>:settle:<round>:<sorted ids>`,
+  derived only from the ledger, so crash-replays and host retries settle exactly once and both code paths write
+  byte-identical rows. **Refusal is loud, not silent, and adds no event type**: the store layer has no `onEvent`,
+  so the reason rides on the return value — the result gains `unsettledToolUses`, only when there is something to
+  say (with nothing dangling the returned key set is still exactly `{ key, dedupKey, round, written }`), with
+  `status: "settled" | "refused"` and `reason` from four values (`ledger_probe_absent`, `round_not_safe_integer`,
+  `round_carrier_has_body`, `tool_use_id_unusable`). The literals are spelled like the `resume_journal_skipped`
+  table in `src/loop/resume-manager.js` on purpose (a host reading both reads one vocabulary) but the constants are
+  **local**: that table is the closed set of `detail` values the
+  contract publishes (`docs/host-consumer-contract.md`, the “Optional raw-row anchor probe (issue #714)” table, and
+  its Chinese twin), its four values are pinned literally by `test/loop-resume-abandon-signals-730.test.js`, and the
+  probe case is renamed `ledger_probe_absent` because it is not #730's anchor probe. The probe fast path (#157, which promises `store.load` is never called) reads the ledger
+  through the third probe `loadRawRows` (#714) and **refuses rather than falling back to a full read** — a store
+  with only `loadByDedupKey`/`loadMaxRound` gets `ledger_probe_absent` and must add that probe; that is the
+  host-side follow-up for `erix-station`'s `PostgresTranscriptStore`, which implements the pair but not the third.
+  Why refuse instead of writing anyway: for `round_carrier_has_body` the fold would attach our row to a live
+  carrier whose ordering depends on the least trustworthy `seq` cell (`resume-manager#roundHasBodyCarrier` says the
+  same thing for the same reason), and a refused settle is a *visible* degraded case while a mis-ordered row is a
+  400 later. The host's own row is always written — a missing probe is the host's problem, not the user's input.
+  Pinned by `test/store/append-user-turn-settle-765.test.js` (14 cells), whose **main criterion asserts the folded
+  order** (`assistant[TU] → user[TR] → user(text)` through `foldLedgerMessages`, plus `validateMessages` passing),
+  not "two rows were written"; the rest cover idempotency, the no-dangling byte-for-byte case, both refusals, the
+  probe-absent refusal (with the `store.load` call count pinned at `0`), malformed `tool_use` ids, a `partOf` shard
+  never counting as the tail, the row shape, and two end-to-end cells (the resume really reaches the provider with
+  the stub immediately after that assistant, and the engine's own tail settlement still works when the host did not
+  pre-write). Two old assertions moved because this fix is visible in the ledger, and neither one is weaker:
+  `test/repl.test.js`'s round sequence goes `[0,1,1,1,2]` → `[0,1,1,1,1,2]` **plus** a new assertion naming the
+  extra row (`repl-abort:settle:1:call-1:1`), and `test/tools/file-tools.test.js`'s `fewest` role row is
+  re-measured (25,326→25,939 B / 362→367 lines / capacity 3,746→3,708) — still inside the `[3,700, 3,750)` tier,
+  so the `readFile` description is untouched (#537: same tier, no re-brush). `docs/host-consumer-contract.md` and
+  its Chinese twin are **not** touched here (another session owns them in this window); the lines that need the new
+  return field are listed in the ticket report.
+- **宿主预写下一条用户轮不再把要恢复的那个 run 砖化：`appendUserTurn` 现在在**自己那条 `user[text]` 行落盘
+  之前**先结清悬空的 `tool_use`（issue #765）。** 事故形状：崩溃留下一条 `assistant[tool_use]` 行，它的 id 在
+  **整本账本里没有任何 `tool_result`**，宿主调 `appendUserTurn` 追一条问题，于是引擎的本地校验器在出网前就把折
+  出来的账本判死（`invalid_messages: assistant tool_use has no immediately following user tool_result`）——该
+  runId 永久不可恢复，而且砖是在本地出的，上游一个请求都没见过。时机就是本案全部，而「让宿主事后补一行」从来不是
+  选项：`foldMessageRows` 会把一轮的消息行按 `seq` 折回该轮载体（`src/store/message-rows.js#attachRoundMessages`），
+  所以宿主那条纯文本轮一落盘 ⇒ **(a)** 任何补在它后面的 `user[tool_result]` 在折叠视图里也排在它**后面**，出网顺序
+  成 `assistant[TU] → user(text) → user(TR)`（provider 直接 400），而且 **(b)** 引擎自家修复件的尾部判据
+  （`pendingTailToolUses` / `resumeMessagesWithUnpersistedToolResults`，都是「最后一条是带 `tool_use` 的
+  assistant」）同时失效，引擎再也看不见这笔悬空。写在前面则结清行自己就是尾行，折叠顺序天然正确。行形状复用已有
+  口径而不是再造第四件：块来自 `src/loop/pending-tool-result.js` 新增的导出函数 `buildUnpersistedToolResultStub`
+  （就是 #421 那张桩，`UNPERSISTED_TOOL_RESULT_TEXT` + `is_error: true`，它的「构造点唯一」判据现在守的是一个函数
+  而不是一个内联字面量），行带 `kind: "message"` 加 `nextMessageSeqByRound` **现取**的 `seq`（缺 `seq` 会把折叠的
+  排序键退化成 `undefined`，而 `undefined < undefined` 为假 ⇒ 多条结清行会按写序漂）。它**故意不带 `roundKey`**：
+  `isRoundCarrier` 的判据是「无 `dedupKey` 且（无 `seq` 或有 `roundKey`）」，所以在不写 `seq` 的 store 上多给一个好
+  心的 `roundKey` 会让这行变成**第二个载体**，#401 的 R3 守卫随即把它丢掉——静默丢失，比什么都不做更糟。幂等：
+  `dedupKey = <key>:settle:<round>:<排序后的 id>`，只由账本推出 ⇒ 崩溃重跑与宿主重试只结清一次，两条路径写的行逐字
+  相同。**拒写出声而不静默，也不新增事件类型**：store 层没有 `onEvent`，原因只能搭返回值——结果多一个
+  `unsettledToolUses`，而且**只在该说话时出现**（没悬空时返回对象的键集合仍是 `{ key, dedupKey, round, written }`），
+  `status` 取 `"settled" | "refused"`，`reason` 四条（`ledger_probe_absent` / `round_not_safe_integer` /
+  `round_carrier_has_body` / `tool_use_id_unusable`）。字面值**故意**与 `src/loop/resume-manager.js` 的
+  `resume_journal_skipped` 表同形（宿主两处都读时读到同一套词），但常量是**本地的**：那张表是契约里那张 `detail` 闭集表（英文
+  `docs/host-consumer-contract.md` 的「可选原始行锚点探针（issue #714）」小节，中文同一处），四个取值被
+  `test/loop-resume-abandon-signals-730.test.js` 逐字钉住；而探针那一格改名 `ledger_probe_absent`，
+  因为它不是 #730 那根定锚探针。探针快路径（#157，它承诺全程不调 `store.load`）只能靠第三根探针 `loadRawRows`
+  （#714）读账本，探针缺席就**拒写而不退回整本读**——只实现 `loadByDedupKey`/`loadMaxRound` 的 store 会拿到
+  `ledger_probe_absent` 并且必须补上这根探针；那就是 `erix-station` 的 `PostgresTranscriptStore`（它实现了那对而
+  没有第三根）的宿主侧后续。为什么不写而选择拒写：`round_carrier_has_body` 时折叠会把我们这行挂到活载体上，顺序
+  取决于最不可信的 `seq` 那一格（`resume-manager#roundHasBodyCarrier` 为同一件事给同一个理由），而拒写是一眼可见的
+  降级、排错位的行是晚一步的 400。宿主自己那条行照写：探针缺席是宿主的事，不是用户输入的事。
+  `test/store/append-user-turn-settle-765.test.js`（14 格）钉住本案：**主判据断的是折叠后的顺序**（过
+  `foldLedgerMessages` 断 `assistant[TU] → user[TR] → user(text)`，另加 `validateMessages` 必须过），不是「写了
+  两行」；其余是幂等、无悬空逐字不变、两条拒写、探针缺席拒写（并钉 `store.load` 调用次数 `0`）、id 不合法、
+  `partOf` 分片行不当尾行、行形状，以及两条端到端（恢复真的出网且桩紧跟那条 assistant；宿主没预写时引擎自家的尾部
+  结清仍工作）。两条旧断言因为本案在账本里可见而动了，但都不是放宽：`test/repl.test.js` 的逐轮号序列
+  `[0,1,1,1,2]` → `[0,1,1,1,1,2]`，**并新增**一条点名多出那行的断言（`repl-abort:settle:1:call-1:1`）；
+  `test/tools/file-tools.test.js` 的 `fewest` 角色行按自家度量重测（25,326→25,939 B / 362→367 行 / 容量
+  3,746→3,708）——仍在 `[3,700, 3,750)` 这一档里，所以 `readFile` 描述一个字没改（#537：同档不刷）。
+  `docs/host-consumer-contract.md` 与中文本文单**没动**（本窗口它归另一个 session）：需要补新返回字段的那几行写在
+  工单报告里。
 
 - **The CLI-flag guard had two false greens of its own: an `erix` flag inside `$( … )` never entered the face,
   and the same-length blanking let a negation word exempt the *next* segment's flag (issue #775).** Both came

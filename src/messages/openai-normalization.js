@@ -13,8 +13,13 @@ function hasOwn(value, key) {
 /**
  * Normalize OpenAI usage fields to canonical token names.
  *
+ * issue #785 P1（新增第四格，纯加法）：上游回报的推理 token 不再被丢掉。
+ * 口径钉死：`reasoningTokens` **只在上游真的回报时出现**——上游没回报 `completion_tokens_details.reasoning_tokens`
+ * 就没有这个键，**绝不写 0 充当「测到了，是 0」**（2026-11-08 真上游探针：`reasoning_effort:"none"` 那一发真值就是 0，
+ * 而「没回报」与「回报 0」是两个不同的事实，混成一个数就再也分不开）。原有三键的语义一字未改。
+ *
  * @param {object|undefined|null} usage
- * @returns {{input_tokens?:number, output_tokens?:number, cacheRead?:number}|undefined}
+ * @returns {{input_tokens?:number, output_tokens?:number, cacheRead?:number, reasoningTokens?:number}|undefined}
  */
 export function normalizeOpenAIUsage(usage) {
   if (usage == null) return undefined;
@@ -28,6 +33,12 @@ export function normalizeOpenAIUsage(usage) {
   }
   if (usage.prompt_tokens_details?.cached_tokens !== undefined) {
     normalized.cacheRead = usage.prompt_tokens_details.cached_tokens;
+  }
+  // 反向可证的判据在 test/messages/openai-normalization.test.js：把下面这行删掉 ⇒ 「回报了要有值」红；
+  // 把它改成「缺省填 0」⇒ 「不回报就不许出现该键」红。两个方向各只有一个写法能同时绿。
+  const reportedReasoningTokens = usage.completion_tokens_details?.reasoning_tokens;
+  if (typeof reportedReasoningTokens === "number" && Number.isFinite(reportedReasoningTokens)) {
+    normalized.reasoningTokens = reportedReasoningTokens;
   }
   return normalized;
 }

@@ -142,6 +142,80 @@ export function applyProviderPayloadOptions(
 }
 
 /**
+ * 实发值可观测（issue #785 P1 ②）：把「宿主给的值」与「最终写进请求体的值」分开记一笔。
+ *
+ * 背景（2026-11-08 真上游探针）：未知顶层键被上游 **200 静默吞**（正文干净但 usage 显示仍在推理），
+ * 未识别的标量值才会 HTTP 400 ⇒ 这类错误不报错，**只有落盘能看见**。而账本里原先没有任何请求参数格子，
+ * 「实际发出去的 effort 是多少、有没有被 payload 层翻译过」查不到。
+ *
+ * 口径：
+ * - `hostValue` = **宿主给的原值**（未翻译）。GLM 的 `none→low` 只动 `payload.reasoning_effort`，
+ *   绝不把翻译后的 `low` 写成 `hostValue`。
+ * - `sentValue` = 最终进入请求体的值（已过 payload 翻译与 `extraBody` 注入）。
+ * - `source` = 值来源通道：`request`（调用点覆盖）/ `slotDefault`（槽位默认）/
+ *   `providerOptions` / `extraBody`。优先级与 `applyProviderPayloadOptions` + `applyExtraBody` 一致：
+ *   request > slot 默认 > providerOptions > extraBody。
+ * - **无相关键 ⇒ 返回 `undefined`**（无值不产噪声），与 `runStateMeta` / `engineUsage` 同构：没事实就没键。
+ *
+ * 边界（写在这里，契约 `Which RoundRecord fields a host may render` 那格里也有一句）：**当前只有引擎自带的
+ * OpenAI provider**（`src/providers/openai.js`，`chat` 与 `chatStream` 两条路径）会交这笔账——它的 wire body
+ * 由本模块拼装，所以「最终发出去的值」在这里是可证的。**Anthropic provider 与宿主自建 provider 都不交**
+ * （前者的载荷走 `canonicalToAnthropicRequest`，本片没把观测点接过去；后者引擎根本看不见它的 body）
+ * ⇒ 两种情况下该格都缺席，而缺席读作**「未观测」，绝不是「没发」**。
+ *
+ * @param {{
+ *   payload?: Record<string, any>,
+ *   request?: Record<string, any>,
+ *   defaults?: Record<string, any>,
+ *   provider?: "openai" | "anthropic",
+ *   extraBody?: Record<string, unknown>,
+ * }} input `payload` 必须是**已应用 extraBody 之后**的最终载荷
+ * @returns {{reasoningEffort: {hostValue: any, sentValue: any, source: string, translated?: boolean}}|undefined}
+ */
+export function observeSentReasoningParams({ payload, request = {}, defaults = {}, provider = "openai", extraBody } = {}) {
+  const sentValue = payload?.reasoning_effort;
+
+  let hostValue;
+  let source;
+  const fromRequest = requestValue(request, defaults, "reasoning_effort");
+  if (fromRequest !== undefined && fromRequest !== null) {
+    hostValue = fromRequest;
+    source = hasOwn(request, "reasoning_effort")
+      && request.reasoning_effort !== undefined
+      && request.reasoning_effort !== null
+      ? "request"
+      : "slotDefault";
+  } else {
+    const extras = providerExtraOptions(
+      requestValue(request, defaults, "providerOptions", ["provider_options"]),
+      provider,
+    );
+    if (hasOwn(extras, "reasoning_effort") && extras.reasoning_effort !== undefined) {
+      hostValue = extras.reasoning_effort;
+      source = "providerOptions";
+    } else if (extraBody !== undefined && extraBody !== null
+      && hasOwn(extraBody, "reasoning_effort")
+      && extraBody.reasoning_effort !== undefined) {
+      hostValue = extraBody.reasoning_effort;
+      source = "extraBody";
+    }
+  }
+
+  if (hostValue === undefined && sentValue === undefined) return undefined;
+
+  /** @type {{hostValue: any, sentValue: any, source: string, translated?: boolean}} */
+  const entry = {
+    hostValue,
+    sentValue,
+    source: source ?? "unknown",
+  };
+  if (source !== undefined && hostValue !== sentValue) {
+    entry.translated = true;
+  }
+  return { reasoningEffort: entry };
+}
+
+/**
  * Resolve a provider's configured timeout while preserving the old default.
  *
  * @param {number|undefined} timeout

@@ -20,6 +20,7 @@ const HASHED_RUN_ID_PREFIX = "run-h-";
  *   navigationRecord?:object,
  *   foldedRoundRange?:{from:number,to:number},
  *   response?:{content:object[], stopReason?:string, usage?:object},
+ *   sentRequestParams?:{reasoningEffort:{hostValue:any,sentValue:any,source:string,translated?:boolean}},
  *   textPreview?:string,
  *   toolUses?:number,
  *   summary?:{action:string,note:string}|"missing",

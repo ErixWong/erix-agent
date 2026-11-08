@@ -1830,7 +1830,7 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 | 可选 run-state | `saveRunState`、`loadRunState`、`markRunState` | 跳过 run-state 持久化；run 正常跑完 |
 | 宿主面向的可选终态读取 | `loadRunStateStatus` | 引擎不调用、不校验；缺失不会发出 capability 降级事件 |
 | 可选预写快路径探针（issue #157） | `loadByDedupKey`、`loadMaxRound` | `appendUserTurn` 回退全量 `load`（成对生效：只实现其一等同全不实现） |
-| 可选原始行锚点探针（issue #714） | `loadRawRows` | 中段补桩只在 `load()` 的**折叠后**行上找锚点，于是已完成轮的首片行寻址不到：那些桩只修本次上下文，引擎如实报 `resume_journal_skipped`，而不是写一行会落进错消息的分片。该轮载体**已带正文**时（issue #729）同样退回这一降级。**不发** `persistence_capability_degraded`——缺席由既有 `resume_journal_skipped` 通道按次恢复如实上报 |
+| 可选原始行锚点探针（issue #714） | `loadRawRows` | 中段补桩只在 `load()` 的**折叠后**行上找锚点，于是已完成轮的首片行寻址不到：那些桩只修本次上下文，引擎如实报 `resume_journal_skipped`，而不是写一行会落进错消息的分片。该轮载体**已带正文**时（issue #729）同样退回这一降级。**不发** `persistence_capability_degraded`——缺席由既有 `resume_journal_skipped` 通道按次恢复如实上报。issue #765 起，它还是 `appendUserTurn` 在 #157 快路径上**唯一**能读的账本来源（它那一笔悬空 `tool_use` 结清），所以只实现两根 #157 探针、没实现这根探针的宿主会继续在开着的账本上预写用户轮，每次调用以 `unsettledToolUses.reason = "ledger_probe_absent"` 如实报 |
 | 可选恢复行通道（issue #769） | `appendRecoveryRow`、`listRecoveryRows`、`clearRecoveryRows` | 恢复行既不写也不读也不清；引擎退回快照那三格 `executedToolIds` / `partialText` / `partialRound`（合法兜底，不是唯一来源）。缺席照旧按每个方法一条 `persistence_capability_degraded` —— 但**方法在、调用失败**不是缺席：`listRecoveryRows` 失败会让本次 run 以 `recovery_rows_unreadable` 收口 |
 | 可选恢复行清除（issue #769 R3） | `clearRecoveryRows` | `resume !== true` 的新起会留下上一个 run 的恢复行；只有当宿主给每个新逻辑 run 换一个新 `runId` 时这才是安全的（见下面恢复行一节的 runId 生命周期） |
 
@@ -1942,6 +1942,10 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 （含尾部修复）：`loadRecords` 第一句就是 `repairTranscriptTail(path)`（`src/store/file.js`），
 以 `r+` 打开文件并把写了一半的尾行隔离/截断 ⇒ **一次读是可能改动盘上字节的**。它不做的两件事是：
 不新增写 API、不改变 `load()` 返回的形状。
+
+交出的行必须包含宿主自己写的 `"…:input:…"` 行与全部引擎消息行：中段锚点寻址与
+`appendUserTurn` 的悬空 `tool_use` 判据（issue #765）都是**尾部**判据，所以按 `kind` 过滤、
+或只交轮载体的探针会把真正决定它们的那一行藏起来——助手宁可拒写并点名，也不猜。
 
 为什么要它。账本中段悬空的 `tool_use` 在恢复时由「每个未结清 id 一张桩 `tool_result`」补齐，
 桩落成一条**分片行**，`partOf` 指向那条聚合消息的**首片**（issue #430 的锚点纪律）。
@@ -2458,7 +2462,10 @@ slot 拿预算元数据。一个确实需要换模型的 run 应当结束，随�
   store 为 `0`）。引擎从该最大 round 续起并把自身记录落在更后的 round；预写不得推
   进它。空 `load` 结果是种子路径：在 round `0` 预写该轮；内置 CLI 则在没有既有记录
   时不带 `resume` 地传 `initialMessages`/`initialUserMessage`，对引擎而言等价。
-- **dedupKey：** 命名空间为 `"<key>:input:<suffix>"`，每轮唯一。引擎自身行写在
+- **dedupKey：** 命名空间为 `"<key>:input:<suffix>"`，每轮唯一。`appendUserTurn` 可能先追写的
+  那条结清行（issue #765）用 `"<key>:settle:<round>:<tool_use id 排序后用 + 连接>"`——只由账本
+  推出，不含时间戳也不含 `messageId`，所以崩溃重跑与宿主重试只结清一次，两条读路径写的行逐字相同。
+  引擎自身行写在
   `"<runId>:engine:round:<n>"`、`"…:engine:round:0:seed"`（种子行）、`"…:msg:<round>:<seq>"`
   （**一条消息一行，每轮可多行**——见「档案行形状」一节）、`"…:resume"`、`"…:control:<slot>"`
   与事实行 `"…:fold:<fp>"` / `"…:ttl:<fp>"`（见下一条）下，
@@ -2583,11 +2590,25 @@ symbol 成员按 `JSON.stringify` 的同样取舍丢掉——最后这一条正�
 调用唯一）。它解析为 `{ key, dedupKey, round, written, record? }`——幂等检查命中时
 `written: false` 并附既有 `record`。内置 CLI 与 REPL 是参考消费者。
 
+issue #765 起，解析值可多带一个**可选**字段，只在账本里存在「没有任何对应 `tool_result` 的
+`tool_use`」时出现：`unsettledToolUses` = `{ status: "settled" | "refused", round, toolUseIds,
+dedupKey, written?, reason? }`。在追写调用方那一行**之前**，助手先落**一条结清行**，用引擎自己
+那张墓碑（`is_error: true`，由 `src/loop/pending-tool-result.js` 的 `buildUnpersistedToolResultStub`
+构造）答掉这些 id。时机就是本单全部：没有轮载体的行，折叠保持文件顺序，所「后补」的答话
+会落在调用方那条纯文本行**后面**，而出网顺序 `assistant[tool_use] → user(text) → user[tool_result]`
+在本地就被判死，一个请求都发不出去。`status: "refused"` 表示那一行**没写**，`reason` 点名成因
+（`ledger_probe_absent` / `round_not_safe_integer` / `round_carrier_has_body` / `tool_use_id_unusable`）；
+调用方那一行两种情况下都照写。这里不静默，而没悬空时一切如旧：返回键集仍恰好是
+`{ key, dedupKey, round, written, record? }`。
+
 `appendUserTurn` 另为数据库型宿主提供**成对可选快路径**（issue #157）：当 `store`
 同时实现 `loadByDedupKey(key, dedupKey)` 与 `loadMaxRound(key)` 时，助手先算出
 `dedupKey` 再点查 `loadByDedupKey`——命中立即返回（既不调 `loadMaxRound` 也不调
 `load`）；未命中才由 `loadMaxRound` 推导 `round` 后追加。快路径全程不调用
-`store.load`。只实现两个探针之一等同全不实现：上方全量 `load` 路径原样执行。
+`store.load`。在快路径上结清悬空的 `tool_use`（issue #765）时，它读的账本来自第三根探针
+`loadRawRows(key)`（issue #714），仍然全程不调 `load`，上面那句承诺不破；没有这根探针的宿主每次
+调用都会拿到 `unsettledToolUses.status = "refused"` 与 `reason: "ledger_probe_absent"`，直到它补上
+这根探针——它**不**退回整本 `load`。只实现两个探针之一等同全不实现：上方全量 `load` 路径原样执行。
 `loadByDedupKey` 点查必须按 `(record.dedupKey ?? record.roundKey) === dedupKey`
 匹配——与全量路径对 `load` 结果使用的判据相同——并返回完整既存记录（命中）或
 `null`/`undefined`（未命中）。`loadMaxRound(key)` 必须等价于对 `load` 结果取
@@ -2883,6 +2904,61 @@ issue #282 之后它收口在终局判定本身，而不是在每个调用点各
   行写的正是「本轮**模型**用量」），本轮的总账是 `record.usage`（模型桶）+ `record.engineUsage`
   （引擎桶）；后者在本轮没发起过引擎调用时**缺键**，宿主相加时按 0 读。要分清的是：`record.usage`
   是模型那一份、不是本轮总账——现成的「两桶之和」只有成功结果上的 `result.usage` 一个。
+
+## `reasoning_effort` 是 provider 自由字符串，它外面四层各自独立（issue #785 P1）
+
+在本包里 `reasoning_effort` 是 **provider 专属的自由文本**：引擎不校验取值，本仓库也**不建 vendor 值域枚举**
+（issue #788 已 parked——加枚举不是修，那是一句关于所有后端的断言）。宿主想要的东西与模型真做的事之间隔着
+四层，每层的 owner、载体、证据强度都不同。
+
+| 层 | owner | 事实落在哪 | 它证明什么 |
+|---|---|---|---|
+| **1. 请求值** | 宿主 | 宿主设的那个选项（槽位默认 / 调用点值 / `providerOptions` / `extraBody`） | 只证明「要过这个值」，到此为止 |
+| **2. payload 翻译** | 本包，且只有一处 | `applyProviderPayloadOptions` / `observeSentReasoningParams`（`src/providers/payload.js`）→ `record.sentRequestParams` | **实际写进请求体的**是哪个值 |
+| **3. provider 用量** | 上游 | `normalizeOpenAIUsage`（`src/messages/openai-normalization.js`）→ `response.usage.reasoningTokens` | 上游**回报过**推理 token 数 |
+| **4. 真实采样行为** | 服务栈 | 本仓库里没有任何格子 | 从这里永远证不了 |
+
+第 4 层不是账本的缺口，而是引擎已经对自己证过的一条边界（issue #419 ②：强制收尾那条终态裁定成立的根据，正是
+「引擎确实发出去的那个请求」读不出采样器做了什么）。新增任何格子都不改变这一点，宿主也不许把下面任何一格读成
+「模型想了 / 没想」。
+
+**（2）到底发了什么。** `record.sentRequestParams` 是纯加法：
+`{ reasoningEffort: { hostValue, sentValue, source, translated? } }`。`hostValue` 是宿主给的值，**取在翻译之前**；
+`sentValue` 是过了 payload 翻译与 `extraBody` 之后进了 body 的值。本包只做一处翻译，就是 GLM 的 `none → low`
+（ADR-017），而这格被要求**两个值都留**：GLM 型号上是 `hostValue: "none"` / `sentValue: "low"` /
+`translated: true`——**翻译后的值绝不冒充宿主输入值**。`source` 写值来自哪条通道，
+`request` > `slotDefault` > `providerOptions` > `extraBody`（与载荷装配的优先级同序，所以这格不可能与 body 打架）。
+**没事实就没键**：四个通道与 body 里都没有 reasoning 相关键 ⇒ 整格缺席——不是 `{}`，也不是故意写一个
+`hostValue: undefined`。**边界（契约级）：当前只有本包自带的 OpenAI provider 会交这格**（`chat` 与 `chatStream` 两条路径都接了，
+观测点就在载荷装配点）。**Anthropic provider 与宿主自建 provider 都不交**——前者的载荷由
+`canonicalToAnthropicRequest`（`src/messages/anthropic.js`）拼，本片没把观测点接过去；后者引擎根本看不见它的
+wire body ⇒ 两种情况下该格都**缺席**，而缺席的意思是**「未观测」，绝不是「没发 reasoning 参数」**。
+
+**（3）`reasoningTokens`，以及为什么「缺席」不等于 0。** 规范化 usage 的既有三键逐字不动
+（`input_tokens` / `output_tokens` / `cacheRead`），只加一个可选键 `reasoningTokens`（number）——
+**只有上游回报 `completion_tokens_details.reasoning_tokens` 时才写**。回报了 0 就是测到了，照写 0
+（2026-11-08 探针在 `reasoning_effort: "none"` 那一发实测到的真值就是 0）；**没回报**就**没有这个键**，
+任何一层都不许用 `0` 顶替「没测」——这是两个不同的问题，把它们并成一个数正是本格要暴露的「静默 0」失败模式。
+Anthropic 的 usage 面**根本没有**推理 token 字段（`usageFromResponse`（`src/messages/anthropic.js`）只映射
+`input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens`，别的没有），
+所以 Anthropic 路径**不**长出这个键：那里它是**事实性缺席**，不是漏写。`record.usage`（逐轮账，issue #438）
+一字未改：`reasoningTokens` 随 `record.response.usage`（本轮最后一发）走，**不进**轮账那四个累加字段。
+
+**两族字段形态，且形态差异不可商量。**
+
+| 族 | 字段形态 | 实测行为 |
+|---|---|---|
+| OpenAI 兼容 | **标量** `reasoning_effort` | 未识别的标量会被 **HTTP 400** 拒，错误体回吐**该后端自己**的合法值清单（2026-11-08 探针，`qwen3.8-flash-next` 上的 `"hight"`）；`"none"` 在那里真生效 |
+| GLM（OpenAI 族） | 标量，但是**没有 off 的子集** | `none` 由第 2 层翻译成 `low`（ADR-017）；现场型号当前不可用——见该 ADR 的 status note |
+| Anthropic | **对象形态**（`thinking` / `reasoning`），不是标量 | 它的探针腿**已退役**（本地无端点）：列为文档项，不作验收闸 |
+
+两条措辞纪律，两条都在现实里错过一次：
+
+- **那份 400 错误体不是值域。** 它只是「某个后端在某个时刻对某个型号」说的话
+  （`qwen3.8-flash-next` 的清单不是中继的清单，更不是本包的清单）。把它抄成全局枚举正是 issue #788 拒做的事。
+- **`GET /models` 列出 ≠ 可用。** 2026-11-08 实测：`z-ai/glm-5.2` 在 39 项清单里，仍然回 **HTTP 404**
+  `one_hub_error`（"Model … is not supported for current token"）。可用性由 token 级授权决定，
+  所以「在清单里」最多当一条网关事实引用，永远不能读成「这个 token 能用这个型号」。
 
 ## judge 记录关联字段与 run 级 outcome（issue #165）
 
@@ -5357,6 +5433,7 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 | `messages` | 模型 | 精确的模型上下文切片，含 `tool_use`/`tool_result` 块与折叠占位符。不要裸渲染；投影从中提取可展示文本与工具调用摘要。issue #335 起，投影里 assistant 条目的**正文正本也以这里为准**（消息一成型就落盘）；`response.content` 只是老账本与宿主手写行的回退。 |
 | `messages[].meta` | 模型 / 引擎 | 保留该对象及未知键。`meta.source` 是引擎保留标记，投影分类与 judge 可见性依赖它；不得复用它承载宿主自己的来源信息。 |
 | `response` | 模型 | 完整的 provider 响应内容（`text`、`reasoning`、`tool_use` 块）、`stopReason`、`usage`。投影展示的正文与块取自 `messages`，不再取自这里；只有 `stopReason`/`usage` 会被抄进投影的 `meta`。其块形状是模型面向的，可能变化。**它的 `usage` 只含本轮最后一发响应**——本轮的完整逐轮账是同级键 `record.usage`（见「用量分账：逐轮账 vs 引擎开销（issue #438）」）。 |
+| `sentRequestParams` | 模型 / 取证 | **纯加法（issue #785 P1）。**本轮 reasoning 相关参数**实际写进请求体**的值：`{ reasoningEffort: { hostValue, sentValue, source, translated? } }`——`hostValue` 是宿主给的值（**取在 payload 翻译之前**），`sentValue` 是真正发出进程的值（GLM `none → low`，ADR-017；两者可以不同，谁也不顶替谁），`source` 是供值通道（`request` / `slotDefault` / `providerOptions` / `extraBody`）。可以当诊断小标题渲染，绝不当模型正文渲染。**没事实就没键**：没有 reasoning 相关键的轮不带这格，而且**只有本包自带的 OpenAI provider 会交**：Anthropic provider 与宿主自建 provider 都交不出（前者本片没接观测点，后者引擎看不见它的 wire body）——缺席要读成*未观测*，不是*没发*。见「`reasoning_effort` 是 provider 自由字符串，它外面四层各自独立（issue #785 P1）」。 |
 | `l0facts`、`runState`、`runStateMeta`、`compactionStats`、`judge`、`wrapup`、`toolOutputs`、`dedupKey`、`roundKey` | 模型 / 引擎内部 | 给 governor、resume、诊断用的事实。只有 `judge`/`wrapup`/`summary`/`stopReason`/`usage`/`toolUses`/`dedupKey` 被拷进投影的 `meta` 供可选标注；其余不属于展示表面。**`runStateMeta` 是新增键（issue #742 第一刀）**：`{ bytes, capBytes, truncated }`——本轮写下的那份 `runState` 副本的体积账，形状照上面的 `foldedPayloadMeta`（先例就是靠 `capBytes` / `droppedBytes` 才把「归档被夹断」变成可见事实）。`bytes` 用的是与引擎自己的体积夹断**同一把尺**（`Buffer.byteLength(JSON.stringify(copy), "utf8")`），所以它与盘上那一行逐字节相等，不是估算；`capBytes` 取导出常量 `RUN_STATE_MAX_SERIALIZED_BYTES`，不复制字面量。`truncated` 是**两个事实取或**：副本超出 `capBytes`，或引擎已在 `runState.bounds.truncated` 上盖了章（`reason: "serialized_size"` / `omittedTools`）。后一半不是装饰：夹断发生在轮记录写点的**上游**，所以真被挤过的那一轮，落盘副本反而**在 `capBytes` 之内**（实测：夹断后的副本 64 893 B、上限 65 536 B，只差 643 B，同时 `bounds.truncated: true`）——只看前一半就会把真被夹断的轮报成「没截断」。两个事实仍可分开读（`bytes` 与 `bounds`），没有被揉成一个数。**没事实就没这一格**：没有可量的 run-state 副本（宿主自己构造的形状、序列化不了的副本）时整个键缺席——宿主必须把缺格读成「不知道」，不许读成 `truncated: false`；引擎永不写 `{bytes:0,truncated:false}` 充当替身。纯咨询：引擎内没有读者，不参与恢复与停门判据，而且**一个字节也不少**——每轮仍是一份全量副本，账本总量仍随轮数线性增长（那是 #742 后面的切片，不是这一片）。 |
 
 ### 稳定性承诺
