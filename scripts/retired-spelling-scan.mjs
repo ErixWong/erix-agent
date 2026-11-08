@@ -411,7 +411,14 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // CN 侧同一刀同数（587 → 589，:1835）。
   // 同 #714 / #729 / #730 / #769-R5 先例：不为了躲钉子把真名写成描述说法。数只取扫描器现报那一行：
   //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=463  uses=465
-  "docs/host-consumer-contract.md": 465,
+  // 465 → 463（issue #769 R7 文案修正②，净 −2）：能力表「Optional ledger recovery-row clear」那一行把**后果**
+  // 删掉了 —— 旧那一行用 `runId` 把后果展开了一遍（“reusing one `runId` is only safe …” + “moves to a new
+  // `runId`”，同行里还有一个指针式的 runId lifecycle），而结尾自称“this row points there instead of restating
+  // them” —— 同一行前半段已经复述过 ⇒ 这句话自相矛盾，就是“两处真相”本体。现在只留两个前提 + 一句指向（指针
+  // 那一个 `runId` 保留），展开的两处没了 ⇒ 本行 3 → 1。逐条定位：:2265 一行。生命周期段 :7516-7526（写全
+  // 后果的唯一落点）未动。CN 侧同一刀同数（589 → 587，:1835）。数只取扫描器现报那一行：
+  //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(dropped)  pin=465  uses=463
+  "docs/host-consumer-contract.md": 463,
   // 565（片A，切版前补 #569/#568 文档）：CN 契约新增「折叠触发比例与会话续接块」一节，其中 provider 回调的
   // 真实键名 `runId`（`({runId, state, previous}) → {text, version}`）是一次同名异义命中——契约必须写出这个键名，
   // 所以**不为了躲钉子而改写成模糊说法**，按判据把钉子登记成扫描器报的值。EN 侧同一句已把 `context` 写成全路径
@@ -476,7 +483,12 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 同样必须写出真名。逐条定位：:1835 一行从 1 处（`runId`）变成 3 处（`persistence` 一个 + `runId` 两个），
   // 与 EN :2265 同数 ⇒ 中英成对。数只取扫描器现报那一行：
   //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=587  uses=589
-  "docs/host-consumer-contract_cn.md": 589,
+  // 589 → 587（issue #769 R7 文案修正②，净 −2）：同一刀的 CN 侧——能力表「可选恢复行清除」那一行删掉用
+  // `runId` 展开后果的那两句（“复用同一个 `runId` 只对永不续跑的宿主才安全” + “都得换新 `runId`”），只留两个
+  // 前提 + 一句指向（指针那一个 `runId` 保留），与 EN :2265 同数 ⇒ 中英成对。逐条定位：:1835 一行；生命周期段
+  // :5910-5919 未动。数只取扫描器现报那一行：
+  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(dropped)  pin=589  uses=587
+  "docs/host-consumer-contract_cn.md": 587,
 });
 
 /**
