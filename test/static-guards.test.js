@@ -4889,7 +4889,15 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 // 两边各自登记的常量**都是 33**（现查：`git show origin/main:test/static-guards.test.js` 与 `git show 586d6e8:test/static-guards.test.js`
 // 两边常量行都是 `= 33`；守卫的规则本身就要求常量 == 自己树上的实测，所以上面两个 33 就是两边的各自读数），
 // 但 33 不是 34 的推导依据 —— 只取守卫在这棵合并树上的读数。无对应 0 条 ⇒ 中英两侧确实成对。
-const CHANGELOG_PAIR_FLOOR = 34;
+// 2026-11-09 第十五次重取（issue #769 R10，`readFile` 行数档位换人那一片在 `## [Unreleased] ### Changed` 里新增一对中英）：
+// 抬常量之前 `node --test --test-reporter=tap test/static-guards.test.js` 自己打印的两行（逐字，本树 58 格 57 pass / 1 fail）：
+//
+//     校准面（## [Unreleased]）上实测 35 对 ≠ 地板 34 对：地板必须恰等于校准面上的实测值（否则「提一条就穿底」证不出来）。配对变多了 ⇒ 请抬地板到实测值
+//     # 配对地板：判据面 = ## [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 35 条 / 英文 35 条 / 配对 35 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 34（校准面 ## [Unreleased]）
+//
+// ⇒ 地板 = **35**。⚠ **不是 34 + 1**：取的是守卫在这棵树上自报的读数（口径同 #765 / #769-R2 / #769-R9 四任）；
+// 无对应 0 条 ⇒ 本片那对中英确实成对（两侧 issue 引用集合相同）。无删例、无 skip、配对判据本身一字未动。
+const CHANGELOG_PAIR_FLOOR = 35;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

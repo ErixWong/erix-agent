@@ -552,6 +552,10 @@ test("中英契约文档引用的 readMoreLines marker 字面与源码产出同�
 // 任何人新增一个 `src/*.js` 都会红在本文件上，而本文件测的是 readFile 的额度事实。现在耦合方向是**单向**的：
 // 清单里的路径必须仍在盘上（删/改名样本文件 = 测过的数失效，必须红），盘上**多出**文件不算失效——
 // 描述里给的是「本仓口径的实测样本」，不是「本仓共有多少个 `.js`」（那个总数对读自己树的宿主也没意义）。
+// 2026-11-09（issue #769 R10，**本清单零改动**）：floor 从 `src/loop/pending-tool-result.js` 换到
+// `src/loop/resume-manager.js` 时先查了这一份：新 floor **本来就在下面 83 个路径里**（当场复算它**同时**是样本
+// floor 与全树 floor，两边都是 3,696 行），所既不往里加也不从里删（旧条目照 #275 的单向包含口径一律保留）。
+// 现算证据：`#453 floor census` 的 `pinnedSampleFewest` 与 `top5[0]` 本轮逐字相同（见 REPORT-769-r10.md）。
 const READ_LINE_CAPACITY_SAMPLE = [
   "src/assembly-validators.js", "src/assembly.js", "src/compact/anchors.js", "src/compact/budget.js",
   "src/compact/enforce-size.js", "src/compact/fold-fidelity.js", "src/compact/fold-llm.js", "src/compact/fold-statistical.js",
@@ -680,7 +684,31 @@ const READ_LINE_CAPACITY_ROLES = [
   //     · cjkShare 0.38735 → **0.39138**（新增的还是中文注释；`fewest` 这个角色在描述里没有占比那个数）
   //   其余四个角色本单一行没碰，当场复测：`densest` 4,384 / 36.6%（记录 4,364 / 37.0%，容差内）、
   //   `median` 6,212 与 `most` 9,407（与记录逐字相同）、`self` 4,652（记录 4,678，-0.56%，容差内）⇒ 都不刷。
-  { role: "fewest", file: "src/loop/pending-tool-result.js", recorded: { bytes: 25_939, lines: 367, bytesPerLine: 70.6785, capacity: 3_708, cjkShare: 0.39138 } },
+  // 2026-11-09 第十五刷（issue #769 R10，**换人 + 跨档同时发生**）：floor 从 `src/loop/pending-tool-result.js`
+  //   换到 `src/loop/resume-manager.js`——本单的恢复行独立通道与主干 `#754` 的 legacy 归档判据都写在这个文件里，
+  //   两批中文注释把它的均行字节从旧 floor 的 70.6785 抬到 **70.9154** ⇒ 一次能装的行数跌到 **3,696**，
+  //   比旧任（`pending-tool-result.js` 本树一字未动，实测 3,708 与记录逐字相同）更低 ⇒ 全称命题「没有文件比这
+  //   更少」的当事人变了。逐字段旧值 → 新值（**全部由本测试自己的** `measureReadLineCapacity` 在本树现算，
+  //   夹具 `/tmp/769w10-census.mjs` 把本文件的 `CJK_CHAR` / 度量函数 / 扫描面**原样抽出 eval**，不另抄一份口径：
+  //   #714 那次手写数把锚点写歪的教训）：
+  //     · file          `src/loop/pending-tool-result.js` → `src/loop/resume-manager.js`
+  //     · bytes         25,939 → **74,603**      · lines 367 → **1,052**
+  //     · bytesPerLine  70.6785 → **70.9154**    · capacity 3,708 → **3,696**
+  //     · cjkShare      0.39138 → **0.37370**（继任者的中文注释密，但整体占比低于离任者——`fewest` 这个角色
+  //       在描述里没有占比那个数，所以这一列只是「记录值不许静默过期」的漂移探针，#506）
+  //   3,696 不在 [3,700, 3,750) 这一档里 ⇒ 按 #537 的承诺粒度换档：描述里 `fewest ≥ 3,700` 与 `reads fewer than
+  //   3,700` 两处一起改成 **3,650**，fewest 那一档的均行字节 `70.0` → **70.9**（三处都是同位数替换 ⇒ 对
+  //   `src/tools/file-tools.js` 字节中性，`self` 那一行不用重测）；守卫修法逐字：「把描述里的档位改成 3650」。
+  //   ⚠ 判据一条都没放宽：`assertTierTight` 三条零容差未动、承诺没写高（3,650 ≤ 3,696 < 3,700）、没给描述补
+  //   `measured minimum N`（#543 有 `doesNotMatch` 钉着）、没删例也没 skip。
+  //   ⚠ 其余四个角色**一并复测了一个都不刷**（#543：换人才刷，没越界就不动）：`densest` `src/loop/state-view.js`
+  //   2,631 B / 44 行 / 4,384 / CJK 36.60%（记录 2,643 / 44 / 4,364 / 37.0% ⇒ −0.45% / 0% / +0.46% / −0.40pt，
+  //   全在容差里）；`median` `src/loop/error-ledger.js` 6,727 / 158 / 6,157 与 `most` `src/loop/abort.js`
+  //   1,031 / 37 / 9,407（与记录**逐字相同**）；`self` `src/tools/file-tools.js` 131,414 B / 2,312 行 ⇒ 4,611
+  //   （记录 130,123 / 2,302 / 4,637 ⇒ +0.99% / +0.43% / −0.56%，±2% 内；本单对描述只做同位数替换 ⇒ 字节中性）。
+  //   样本清单这一侧**零改动**：新 floor `src/loop/resume-manager.js` 本来就在 83 个写死样本里（当场实测它
+  //   **同时**是样本 floor，见下面 #453 那格的 `pinnedSampleFewest`），单向包含关系不需要动清单。
+  { role: "fewest", file: "src/loop/resume-manager.js", recorded: { bytes: 74_603, lines: 1_052, bytesPerLine: 70.9154, capacity: 3_696, cjkShare: 0.37370 } },
   // CJK 字节占比最高的那一个（2026-10-13 到 2026-10-31 一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
   // 2026-10-31 第一刷（issue #246 第一刀）：这个文件第一次被真实接线（`orchestrator.js` 的
   // `runSnapshotContext` 转发面），文件头注释里「本单不接线」那句改成接线事实（+14 B，**行数不变**）。
@@ -833,7 +861,14 @@ const READ_LINE_CAPACITY_ROLES = [
   //   （+1.81%，仍在 ±2% 内但只剩 0.19pp）/ 2,281 → **2,302** 行 / 均行字节 56.0346 → **56.5261** /
   //   容量 4,678 → **4,637**。按 #271「记录值不许静默过期」当场刷新，**容差常量一个都没动**。
   //   容量 4,637 仍低于样本中位 6,157 ⇒「CJK 按比例压低行数」那句仍成立。
-  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 130_123, lines: 2_302, bytesPerLine: 56.5261, capacity: 4_637, cjkShare: 0.28874 } },
+  // 2026-11-09 第十五刷配套（issue #769 R10）：本文件改了 `fewest` 那一档的两个档位数字与均行字节（都是同位数
+  //   ⇒ 对模型可见面字节中性），**但描述上方的历史注自己长了**（`src/tools/file-tools.js` + 7 行）⇒
+  //   按 #537 同一条先例（「改描述句就会改这个文件自己的字节数」，它当时把 `own source fits` 从 4,784 刷到 4,750）
+  //   当场重测这一行：130,123 → **133,104** 字节 / 2,302 → **2,324** 行 / 均行字节 56.5261 → **57.2737** /
+  //   容量 4,637 → **4,577** / CJK 占比 28.87% → **29.21%**（新增的还是中文注释，仍按本文件 `CJK_CHAR` 口径）。
+  //   描述那句 `this tool's own source fits` 随之 4,637 → **4,577**（**同位数替换**，刷完再测一次：逐字相同
+  //   ⇒ 已收敛，不再取第二轮）。容量 4,577 仍低于样本中位 6,157 ⇒「CJK 按比例压低行数」仍成立。
+  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 133_104, lines: 2_324, bytesPerLine: 57.2737, capacity: 4_577, cjkShare: 0.29212 } },
 ];
 
 const READ_LINE_CAPACITY_DIRS = ["src", "bin", "examples"];
