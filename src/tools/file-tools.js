@@ -1141,14 +1141,21 @@ export const FILE_TOOL_DEFINITIONS = [
     //   `median 6,034 (43.4)` → `median 6,157 (42.6)`（**同位数替换 ⇒ 对本文件字节中性**，`self` 不用重测）；
     //   `fewest`（`pending-tool-result.js` 3,746）/ `most`（`abort.js` 9,407）/ `densest`（`state-view.js` 4,384，
     //   记录 4,364，+0.46%）/ `self`（本文件 130,123 B / 2,302 行 ⇒ 4,637）当场复测逐字未越界 ⇒ 一列都没刷。
+    // ⚠ 2026-11-09 第十六刷（issue #769 R10，**floor 换人 + 跨档**）：本单与主干 `#754` 给
+    //   `src/loop/resume-manager.js` 的中文注释抬高了它的均行字节（本树实测 **70.9154**），它取代
+    //   `src/loop/pending-tool-result.js`（3,708）成为全树一次装得最少的那一个（**3,696**）⇒ 档位从
+    //   `[3,700, 3,750)` 掉到 `[3,650, 3,700)`：下面两个档位数字 `fewest \u2265 3,700` 与 `reads fewer than 3,700`
+    //   一起改成 **3,650**，fewest 那一档的均行字节 `70.0` → **70.9**（三处都是**同位数替换 ⇒ 对本文件字节
+    //   中性**，`self` 那一行不用重测）。承诺没写高（`assertTierTight`：3,650 ≤ 3,696 < 3,700，零容差一字未动）、
+    //   也没补 `measured minimum N`（#543：实测最小值是证据不是承诺）。逐字段旧值→新值写在测试侧角色表那一条。
     description: "Read a text file by line range. "
       + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` continues after line 200); default 0. "
       + "`limit` is a **line count**, default 200. "
       + "One call returns at most `max_bytes` UTF-8 bytes (default 262144 = 256KB) — the budget is counted in BYTES, so how many "
       + "lines fit is `max_bytes ÷ average bytes per line`: divide the file's byte size by its line count (e.g. `wc -c` ÷ `wc -l`) "
       + "and fold that for the file in hand, instead of assuming a line count. Measured that way on this repo's own `.js` sources "
-      + "under `src/`, `bin/` and `examples/` at the default budget (this codebase, not your tree) \u2014 fewest \u2265 3,700 lines "
-      + "(70.0 bytes/line, the widest lines; the whole-tree minimum rounded down to the nearest 50, so no file in those three trees reads fewer than 3,700 lines), "
+      + "under `src/`, `bin/` and `examples/` at the default budget (this codebase, not your tree) \u2014 fewest \u2265 3,650 lines "
+      + "(70.9 bytes/line, the widest lines; the whole-tree minimum rounded down to the nearest 50, so no file in those three trees reads fewer than 3,650 lines), "
       + "median 6,157 (42.6), most 9,407 (27.9). "
       + "The floor is a whole-tree minimum rounded down to a multiple of 50 (a promise, not a per-file estimate); median and most come from a fixed sample of those sources and describe that sample, not every file here. "
       + "Wide lines cut this proportionally and CJK cuts hardest (3 UTF-8 bytes per character): "
