@@ -2248,7 +2248,25 @@ export async function runToolLoop(options) {
   // 这句是那个语义的运行面：`resume !== true` ⇒ 先清恢复行（**只**清恢复行，轮记录账本历史不动）。
   // 走能力位：store 没实现 `clearRecoveryRows` ⇒ `persist` 发一条 `persistence_capability_degraded`
   // 并跳过（不抛），与其余可选能力同一口径。
-  if (resume !== true) await persist("clearRecoveryRows", runId);
+  //
+  // issue #769 R5（M2）：**能力缺席与调用失败是两回事**（与上面 `listRecoveryRows` 的 M1/B 同规则）：
+  //   · **方法缺席** = 宿主**从未承诺**过这项能力 ⇒ 降级合法（契约已要求这种宿主自己换新 `runId`），
+  //     走上面的能力位诊断；
+  //   · **方法在而调用失败** = 宿主**承诺了**，而这一次的「已清理」是**假话** ⇒ 不许静默继续：清盘没
+  //     成功而旧恢复行仍在场上，下一次续跑就会把**上一代**的 `tool-executed` 当本代证据（阻断 A 的脏读）。
+  // 因此失败必须走 `fail()`：那才是造 `termination` 的那条路（`reason: "persistence_failed"` +
+  // `operation: "clearRecoveryRows"` + `phase: "recovery_rows_clear"` + `sideEffect: "not_started"`）。
+  // 修前这一行在那个 `try`/`fail()` 之外：错误对象自己带着 `code`/`phase`，**termination 却缺失**。
+  if (resume !== true) {
+    try {
+      await persist("clearRecoveryRows", runId);
+    } catch (error) {
+      // `fail()` 必然抛出**带 termination 的**同一个错误（见 `annotateTermination`）；下面那行只是
+      // 「万一它哪天不抛了也不静默继续」的兜底，不是第二条出口。
+      await fail(error);
+      throw error;
+    }
+  }
   try {
     await restoreResume({
     resume,

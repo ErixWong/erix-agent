@@ -620,6 +620,58 @@ test("#769 R3（A/C1）store 没实现 clearRecoveryRows ⇒ 走能力位：一�
     "降级路径本身照常写恢复行（跳过的是清盘，不是写）");
 });
 
+test("#769 R5（M2）fresh start 清盘**抛错** ⇒ 终局硬终止：termination 在场且点名 persistence_failed + phase:recovery_rows_clear", async () => {
+  const inner = createMemoryTranscriptStore();
+  // 上一代留下的一条 tool-executed 行：清盘失败 ⇒ 它必须**仍在场上**，而那正是脏读的来源。
+  await inner.appendRecoveryRow("rec-clear-fail",
+    buildToolExecutedRecoveryRow({ runId: "rec-clear-fail", round: 1, toolUseId: "old-1" }));
+  let clearAttempts = 0;
+  const store = {
+    ...inner,
+    // 方法**在**（不是能力缺席那一格）但一调就错：宿主承诺了清盘，这次是假话。
+    clearRecoveryRows: async () => {
+      clearAttempts += 1;
+      throw Object.assign(new Error("simulated I/O failure while clearing recovery rows"), { code: "EIO" });
+    },
+  };
+  /** @type {any[]} */
+  const diagEvents = [];
+  /** @type {string[]} */
+  const executedCalls = [];
+  const provider = createFakeProvider([toolUseRound("call-1"), finalRound("done")]);
+  const thrown = await directError({
+    provider,
+    initialUserMessage: "start",
+    executeTool: async () => { executedCalls.push("call-1"); return "ok"; },
+    config: { run: { completion: false } },
+    store,
+    runId: "rec-clear-fail",
+    // #178 的持久化诊断走 `diagnostics.error` / `onPersistenceError`，**不**走 `onEvent`。
+    diagnostics: { error: (/** @type {any} */ event) => diagEvents.push(event) },
+  });
+  assert.ok(thrown !== null, "清盘失败必须让 run 终止（修前：错误确实报了，但终局那一格是缺的）");
+  assert.equal(thrown.code, "persistence_failed",
+    `错误对象自己的码，实际 code=${String(thrown.code)}`);
+  assert.equal(thrown.termination?.reason, "persistence_failed",
+    `M2 的裁决点：**termination 必须在场**（修前这一行在造 termination 的 try/fail() 之外，实际 ${JSON.stringify(thrown.termination)}）`);
+  assert.equal(thrown.termination?.operation, "clearRecoveryRows", "operation 点名坏掉的那个方法");
+  assert.equal(thrown.termination?.phase, "recovery_rows_clear", "phase 走清盘那一格（不与写侧 transcript / 读侧 resume_recovery_rows 混）");
+  assert.equal(thrown.termination?.sideEffect, "not_started", "fresh start 的第一次模型请求之前 ⇒ 本 run 不欠外部副作用");
+  assert.equal(thrown.errorCode, "EIO", "errorCode 是根因分类（底层那条错的 code）");
+  assert.equal(clearAttempts, 1, "清盘被真试过（本 run 默认 retry.attempts 缺席 ⇒ retryAttempts=0 ⇒ 恰好一次）");
+  assert.equal(provider.requests.length, 0, "终止在第一次模型请求之前 ⇒ run **没有**继续跑");
+  assert.deepEqual(executedCalls, [], "工具一次都没执行");
+  assert.deepEqual((await inner.listRecoveryRows("rec-clear-fail")).map((row) => row.toolUseId), ["old-1"],
+    "旧行确实还在场上（这就是为什么不能静默继续：下一次续跑会把上一代当本代证据）");
+  const clearErrors = diagEvents.filter((event) => event?.type === "persistence_error"
+    && event?.operation === "clearRecoveryRows");
+  assert.equal(clearErrors.length, 1,
+    `诊断面仍要恰好一条点名清盘的 #178 事件，实际 ${JSON.stringify(diagEvents.map((e) => e?.operation))}`);
+  assert.equal(clearErrors[0]?.phase, "recovery_rows_clear", "诊断事件与终局同 phase，宿主两通道对得上");
+  assert.equal(clearErrors[0]?.sideEffect, "not_started", "事件侧 sideEffect 与终局同格");
+  assert.equal(clearErrors[0]?.fatal, true, "清盘失败是 fatal 诊断（与其余账本侧写失败同口径）");
+});
+
 // ── 8) issue #769 R3（D）：跨通道**先后顺序**要有调用次序证据 ────────────────────
 
 test("#769 R3（D）跨通道顺序：tool-executed 恢复行的落盘调用**早于**写 tool_result 的那次 appendRound", async () => {

@@ -540,3 +540,84 @@ test("用例卫生：run 使用注入的临时 cwd 与内存 store，未改动�
     assert.equal(existsSync(erixHome), existedBefore, `real ~/.erix existence changed (${String(erixHome)})`);
   }
 });
+
+// ── issue #769 R5（M2）：phase 面缺的那一格 —— fresh start 的**清盘**写 ─────────────────
+// 上面四格走的都是快照写点（`checkpoint_before_tool` / `checkpoint_after_tool`）。清盘写
+// （`clearRecoveryRows`）既不是快照写也不是轮记录写：它分类到 `recovery_rows_clear`
+// （`src/loop/orchestrator.js#persistClassified`），而它坏掉的后果不是「少写一行」而是**上一代恢复行
+// 还在场上** ⇒ 必须硬终止（R5 M2 的裁决：方法**缺席** = 宿主从未承诺这项能力，方法**在而失败** =
+// 承诺了、而这一次「已清理」是假话）。本格把这条 phase 值同时钉在三个面上：`persistence_error` 事件、
+// 抛出的错误、`termination` 载荷。store 用最小面（快照写 + 轮记录 + 清盘），不借 `createProbeStore`
+// 的写序探针：那一格的判据是「哪条调用点写的」，本格只判定分类与终局。
+
+test("#769 R5（M2）phase 面补格：清盘写失败 ⇒ 事件 / 抛出 / termination 三处同为 clearRecoveryRows + recovery_rows_clear + not_started", async () => {
+  const cwd = await makeTmp("erix-769r5-clear-");
+  const injected = new Error("injected clearRecoveryRows failure");
+  injected.name = "InjectedClearFailure";
+  let clearCalls = 0;
+  let modelCalls = 0;
+  const store = {
+    async appendRound() {},
+    async load() { return []; },
+    async saveRunSnapshot() {},
+    async loadLatestRunSnapshot() { return undefined; },
+    async clearRecoveryRows() {
+      clearCalls += 1;
+      throw injected;
+    },
+  };
+  const provider = {
+    async chat() {
+      modelCalls += 1;
+      return { content: [{ type: "text", text: "clear phase" }], stopReason: "end_turn" };
+    },
+  };
+  /** @type {any[]} */
+  const events = [];
+  let thrown;
+  try {
+    await runDirect({
+      provider,
+      store,
+      runId: "clear-phase",
+      initialUserMessage: "work",
+      executeTool: async () => "ok",
+      config: {
+        metadata: { toolContext: { cwd } },
+        timing: { retry: { attempts: 0, backoffBaseMs: 0 } },
+      },
+      completion: false,
+      wrapup: false,
+      maxRounds: 3,
+      diagnostics: { error: (/** @type {any} */ event) => events.push(event) },
+    });
+  } catch (error) {
+    thrown = error;
+  }
+  assert.ok(thrown !== undefined, "清盘写失败必须让 run 抛出（不是记一条诊断就继续跑）");
+  assert.equal(clearCalls, 1, "retry.attempts=0 ⇒ 恰好一次尝试（不掺重试噪声）");
+  assert.equal(modelCalls, 0, "终止在**第一次模型请求之前** ⇒ run 没有继续跑（旧行在场时继续跑就是脏读）");
+  assert.equal(thrown.code, "persistence_failed", "清盘失败走 persistence_failed 出口");
+  assert.equal(thrown.cause, injected, "cause 就是注入的那个 store 错对象");
+  assert.equal(thrown.errorCode, "unknown", "根因无 code ⇒ errorCode=unknown（与上面各格同口径）");
+
+  const event = events.find((/** @type {any} */ e) => e?.operation === "clearRecoveryRows");
+  assert.ok(event !== undefined,
+    `必须有一条点名 clearRecoveryRows 的 persistence_error 事件，实际 ${JSON.stringify(events.map((e) => e?.operation))}`);
+  assert.equal(event.type, "persistence_error", "诊断事件类型不变（不为一格新造事件名）");
+  assert.equal(event.phase, "recovery_rows_clear", "phase 必须是清盘那一格（不是 transcript，也不是 checkpoint_*）");
+  assert.equal(event.sideEffect, "not_started", "失败在第一次模型请求之前 ⇒ 本 run 不欠外部副作用");
+  assert.deepEqual(thrownChannel(thrown), guessedChannel(event),
+    `通道 A/B 同值：A=${describeChannel(guessedChannel(event))} B=${describeChannel(thrownChannel(thrown))}`);
+  assert.equal(thrown.termination?.reason, "persistence_failed",
+    "R5 M2 的裁决点：**termination 必须在场**（修前清盘在造终局的路径之外，这一格是 undefined）");
+  assert.deepEqual(
+    {
+      operation: thrown.termination?.operation,
+      phase: thrown.termination?.phase,
+      sideEffect: thrown.termination?.sideEffect,
+    },
+    { operation: event.operation, phase: event.phase, sideEffect: event.sideEffect },
+    "termination 三值与事件三值同源（宿主在终局上看到的 == 诊断里看到的）",
+  );
+});
