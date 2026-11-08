@@ -9165,6 +9165,16 @@ const SELF_TEST_CASES = [
 
   // —— 返工 R1（评审阻断项）：符号锚点的**只增不减下限**。病根：裸行号棘轮的唯一键不含文档行号，
   // 所以「把符号锚点换成裸行号」这种**退化**在棘轮那一侧一字不变，没有下限就没人报警。
+  //
+  // 下面两例的**前提数字**（`CONST - 1` / `CONST` / `CONST + 1`）全部从 `SYMBOL_ANCHOR_MIN_UNIQUE` 现算，
+  // 不在这里拄字面量——这不是偷懒，是这两例成立的前提：**常量必须等于现测**。
+  //   · 现测 = `node scripts/docs-drift-check.mjs --verbose` 那条 note 报的数（#769 R8 在 `727af80` 上量：**243**）。
+  //   · 本例退化完的唯一组数 = 现测 - 1（同是量出来的：#769 R8 把下面两条 `replace` 原样落到两份契约上跑
+  //     `--verbose`，现报「唯一 (符号, 文件) 242 组」；同轮 `bare-lines` 现报「棘轮口径实测 **6** vs 基线 6」一字不变）。
+  // 于是常量陈旧的两种伤法都能被抱住：常量**高于**现测 ⇒ 下面那例「升到 CONST+1」不再红（由例 2 抱住）；常量**低于**
+  // 现测 ⇒ 退化到 CONST 组恰好等于下限、本例等的那条红根本不出现（由例 1 抱住，#769 R8 在 CI 上撞到的就是这个）。
+  // ⇒ 抬常量前先量一次；这两例红在**数字**上是在叫你去量，**不是**叫你把断言改松（`expect` 换成 `expectGreen`、
+  // 删例、加 skip、改成「任意红都算」都算把这条锁拆了）。
   {
     label: "#286 返工 R1：把中英契约的 `defaultSleep`（`src/loop/abort.js:16`）一起退化成裸行号 ⇒ 棘轮一字不变，只有符号下限红（"
       + (SYMBOL_ANCHOR_MIN_UNIQUE - 1) + " < " + SYMBOL_ANCHOR_MIN_UNIQUE + "）",
@@ -9179,6 +9189,8 @@ const SELF_TEST_CASES = [
       /棘轮的计数一字不变|裸行号棘轮的计数一字不变/],
   },
   {
+    // 同一对锁的另一侧（前提数字的算法见上面那段注）：变异目标 = **现测 + 1**（常量已抬到现测 243 ⇒ 这里就是 244），
+    // 期望仍是**必须红**：证的就是「这个数是脚本从自己文本里读出来的，不是注释里的装饰」。
     label: `#286 返工 R1 的另一侧：把 SYMBOL_ANCHOR_MIN_UNIQUE 升到 ${SYMBOL_ANCHOR_MIN_UNIQUE + 1}（实测仍是 ${SYMBOL_ANCHOR_MIN_UNIQUE}）⇒ 必须红，证明这个数是读出来的、不是装饰`,
     overlay: { "scripts/docs-drift-check.mjs": (t) => t.replace(`const SYMBOL_ANCHOR_MIN_UNIQUE = ${SYMBOL_ANCHOR_MIN_UNIQUE};`, `const SYMBOL_ANCHOR_MIN_UNIQUE = ${SYMBOL_ANCHOR_MIN_UNIQUE + 1};`) },
     expect: [new RegExp(`唯一 \\(符号, 文件\\) 只剩 ${SYMBOL_ANCHOR_MIN_UNIQUE} 组，低于下限 \\*\\*${SYMBOL_ANCHOR_MIN_UNIQUE + 1}\\*\\* 组`)],
