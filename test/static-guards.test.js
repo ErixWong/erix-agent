@@ -4815,7 +4815,16 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 // ⇒ 地板 = **27**（守卫自己报的数，不做加法；main 侧 #775 那两对与本批的中英对在合并树上一共 27 对）。
 // 同一次合并里 issue #772（代号 261107-21）也重取过一次同一格：它的树报「实测 25 对 > 地板 24 ⇒ 可以抬到 25」，
 // 与本树守卫现报值同号；**最终值仍以合并树现测为准**（本文件末尾那条「不许做加法」的口径照旧）。
-const CHANGELOG_PAIR_FLOOR = 27;
+// 2026-11-08 第十一次重取（issue #765，本树 `fix-261108-09-settle-before-useturn` 基点 `28ba2f1`）：
+// 本单在 `## [Unreleased] ### Fixed` 加了一对中英（宿主预写用户轮之前结清悬空 `tool_use`）。改常量之前
+// `node --test --test-name-pattern "配对地板" test/static-guards.test.js` 在本树的标准输出原文（逐字）：
+//
+//     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 28 条 / 英文 28 条 / 配对 28 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 27（校准面 \#\# [Unreleased]）
+//     # 配对地板：实测 28 对 > 地板 27 对 ⇒ 可以抬地板到 28
+//
+// ⇒ 地板 = **28**（上面两行是守卫自己打印的数，不是 27 + 1：本单只加了一对中英，两者同号是巧合而非算法；
+// 没删例、没 skip，也没动配对判据本身）。
+const CHANGELOG_PAIR_FLOOR = 28;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
