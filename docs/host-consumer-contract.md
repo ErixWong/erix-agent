@@ -7370,7 +7370,7 @@ nothing moved out of it (message bodies included). This new file only carries *r
   bodies**, so reading the ledger and the snapshot side by side cannot double a message body.
 - `dedupKey` is the **event key**, built by `buildRecoveryEventKey` in `recovery-rows.js`. Exact shape, sampled from
   the store test's own fixtures: a `tool-executed` row carries the bare `toolUseId` and nothing else
-  (`pendingToolUseIds: ["call-7f"], `toolUseId: "call-7f"`); a `partial-text` row carries `text`, a fingerprint of the text, in place of the
+  (`pendingToolUseIds: ["call-7f"]`, `toolUseId: "call-7f"`); a `partial-text` row carries `text`, a fingerprint of the text, in place of the
   discriminator. Re-appending the
   same event key with the same payload is skipped (`appendRecoveryRow` returns `false`); a different payload under the
   same key is rejected, not overwritten. A longer partial text is a *new* event, so nothing already written is rewritten.
