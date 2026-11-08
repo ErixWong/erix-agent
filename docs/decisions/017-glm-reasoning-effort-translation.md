@@ -7,7 +7,14 @@
 > same knob; the authoritative table is in `docs/host-consumer-contract.md`. The body below is left
 > **verbatim on purpose** — rewriting a decision record into today's spelling would forge history.
 
-> **Status note (2026-11-08)** — 本决议的现场模型 `glm-5.3-flash-awq` 对当前 token 已不可用（真上游实测 HTTP 404，网关 `one_hub_error`：Model … is not supported for current token；同族 `z-ai/glm-5.2` 虽在 `GET /models` 清单内仍 404 ⇒ 可用性由 token 级授权决定，不是型号下架）。因此本决议的行为断言**当前不可回放**：要修订或取代它，前置是先取得能跑 GLM 的凭证。另注：网关 404 响应的 `content-type` 是 `text/plain` 而正文是 JSON，错误体解析不能按 content-type 分流。
+> **Status note (2026-11-08)** — 本决议的现场模型 `glm-5.3-flash-awq` 对当前 token 已不可用（真上游实测 HTTP 404，网关 `one_hub_error`：Model … is not supported for current token；同族 `z-ai/glm-5.2` 虽在 `GET /models` 清单内仍 404 ⇒ 可用性由 token 级授权决定，不是型号下架）。因此本决议的行为断言**当前不可回放**：要修订或取代它，前置是先取得能跑 GLM 的凭证。**（此句已被下面 2026-11-09 那条更替：原型号按「已退出」处理，后继型号上已重放成功。）**另注：网关 404 响应的 `content-type` 是 `text/plain` 而正文是 JSON，错误体解析不能按 content-type 分流。
+
+> **Status note (2026-11-09) — 上一条的「不可回放」不成立：本决议已被正面重放。** 换一个 token（pi 侧 `erixai` provider 的 key，`https://api.ai.erix.vip/v1`）实测：
+>
+> 1. **原现场型号 `glm-5.3-flash-awq` 在两个不同 token 下都不可用，且都不在各自的 `GET /models` 清单里**（另一个 token 的清单 39 项、含 `z-ai/glm-5.2`；这个 35 项、含 `z-ai/glm-5.3-flash`）。⇒ 上一条把它归因成「token 级授权」不够：现在按**该型号已从 relay 退出**处理。网关那句 `Model … is not supported for current token` 是**通用文案**，不能用它区分「没授权」与「已下架」（两种情形逐字相同）。
+> 2. **后继型号 `z-ai/glm-5.3-flash` 能跑，本决议的行为被正面重放**：同一个 key **裸发** `reasoning_effort:"none"` ⇒ **HTTP 400** `Provider API error: Reasoning is mandatory for this endpoint and cannot be disabled.`；同值**走引擎**（`applyProviderPayloadOptions` 的 `none→low`）⇒ **HTTP 200**，轮记录留下 `hostValue:"none"` / `sentValue:"low"` / `translated:true`。⇒ 这层翻译的作用是**把 400 变成 200**，不是历史优化：**不许删**。
+> 3. 该型号自报的合法值清单是 `max|xhigh|high|medium|low|minimal|none`（**7 个**，与 qwen 那一族报的 8 个不同），而 `none` 属于**模式接受、政策拒绝**：枚举里有、政策上禁用。⇒ 把任何一份清单抄成全局值域仍不成立（#788 的裁决据此继续有效）。
+> 4. `minimal` / `high` / `max` 分别回报 `reasoning_tokens` = 10 / 11 / 38（**档位真的生效**），而 `low` 那一发回报 **0** ⇒ 「回报 0」与「没回报」的区分（#785 的 `reasoningTokens` 口径）在 GLM 路径上也成立。
 
 - Status: Accepted (2026-09-22), implemented in commit `6523ff7`
 - Related: judge/wrapup normalize callers of `reasoning_effort:"none"`; bench evidence in erix-bench REPORT.md (260928 glm run, judge degraded §4)

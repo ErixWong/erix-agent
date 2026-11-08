@@ -5,13 +5,20 @@
  * 背景：引擎恢复一个崩溃的 run 时，重建上下文、补跑未结清的 `tool_use`、然后继续——全程**不告诉
  * 模型中间断过一次**。模型以为自己连着在讲，于是把「引擎替它补跑/标注出来的结果」当成自己那次
  * 调用的输出，或者干脆重发一遍有副作用的调用（`git commit` / `npm publish` / `POST` / 覆盖写）。
- * 本模块造的就是那条告示：一条引擎控制消息，内容只有三件**既有事实**：
+ * 本模块造的就是那条告示：一条引擎控制消息，内容原本只有三件**既有事实**：
  *
  *   1. 这是崩溃后的恢复运行、上一段停在第 N 轮（停机原因若账本里有）；
  *   2. 崩溃时哪些 `tool_use` 还没有结果（判据 = `pendingTrailingToolUses`，`src/messages/rounds.js`；
  *      **不另写配对逻辑**，理由同 `src/loop/pending-tool-result.js` 的三条纪律）；
  *   3. 账本记录过写过哪些文件 / 最近调过哪些工具（`runState.deterministic.filesWritten` 与
  *      `governorState.timeline`），以及「动手前先勘验、别直接重发有副作用的调用」这条纪律。
+ *
+ * issue #754（裁决 2）加了**第四件与第五件**（都只在旧格式分支上出现）：
+ *   - 第四件：旧格式（pre-261021）档案里那些**只存在于 run snapshot** 的崩溃轮正文已被丢弃、
+ *     该格式不再支持恢复——那是「不许静默」要求的落点，不新增事件类型，也不给
+ *     `resume_journal_skipped` 加新 `reason`。
+ *   - 第五件：同一把闸门放弃补跑的**在飞调用**（逐条点名）。它存在时**不许**说
+ *     `RESUME_NOTICE_NO_PENDING`——那是一句主动的假陈述（#421 讨论里点名的就是这句）。
  *
  * 三条设计约束（都是今晚踩过的坑）：
  *   - **只在真恢复时注入**：本模块只被 `restoreResume`（`src/loop/resume-manager.js`）在
@@ -38,6 +45,21 @@ export const RESUME_NOTICE_PENDING_HEADER = "崩溃时这些 tool_use 还没有�
 
 /** 尾部已结清时的替代句（仍然注入——「这是恢复」本身就是要告知的事实）。 */
 export const RESUME_NOTICE_NO_PENDING = "崩溃时尾部没有未结清的 tool_use（上一次请求与结果已成对落账）";
+
+/**
+ * issue #754（裁决 2）弃用说明的开头（后面拼「（共 N 条，该格式已不再支持恢复）」）。
+ *
+ * 旧格式（pre-261021）账本里崩溃那一轮的正文**只在 run snapshot 里**，而那条升级路径自己就是坏的
+ * （第二次恢复必失败）⇒ 引擎现在**不再**从快照 `messages` 喂正文。这一句就是「不许静默」那个要求
+ * 的落点：丢了正文必须**出声**（不新增事件类型、不给 `resume_journal_skipped` 加新 `reason`）。
+ */
+export const RESUME_NOTICE_LEGACY_DEPRECATION = "本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文";
+
+/**
+ * issue #754（裁决 2 第二必修）：第三刀放弃补跑的在飞调用也要**逐条点名**。
+ * 不新造事实、不新增事件类型：这批 id 本来就在 `snapshot.pendingToolUses` 里，只是现在不进上下文了。
+ */
+export const RESUME_NOTICE_LEGACY_PENDING = "本次恢复放弃补跑这些在飞调用（旧格式档案，配对的 `tool_use` 已随快照正文一起不再可恢复）";
 
 /** 第三条内容要求的开头：动手前先勘验、别重发有副作用的调用。 */
 export const RESUME_NOTICE_VERIFY_HEADER = "动手前先勘验";
@@ -92,6 +114,32 @@ function pendingLine(pendingToolUses) {
 }
 
 /**
+ * issue #754（裁决 2）：旧格式档案丢了只在快照里的崩溃轮正文 ⇒ 告示里多一句弃用说明。
+ * 条数为 0（新格式账本、或快照不比锚点长）⇒ **一个字节都不多**。
+ * ⚠ 措辞必须**在它出现的那条分支里逐字为真**：这条只在「探针 > 0」时拼上，而那条分支里
+ * 崩溃轮正文与快照 `partialText` 都已抑制 ⇒ 上下文确实只剩账本重建的那批。
+ * @param {number} count 被丢弃的快照正文段数（快照 `messages` 锚点后的非空格子 + 被抑制的 `partialText`）
+ * @returns {string}
+ */
+function legacyDeprecationLine(count) {
+  return `${RESUME_NOTICE_LEGACY_DEPRECATION}（共 ${count} 条，该格式已不再支持恢复）；` + "上下文只从账本重建，不会重新出现在这里。";
+}
+
+/**
+ * issue #754（裁决 2 第二必修）：第三刀放弃补跑的在飞调用，**不得**让模型读到
+ * `RESUME_NOTICE_NO_PENDING`（那句是「上一次请求与结果已成对落账」= 主动陈述假事实）。
+ * @param {Array<{id?: unknown, name?: unknown}>} dropped 被放弃补跑的在飞调用
+ * @returns {string}
+ */
+function legacyPendingLine(dropped) {
+  const items = dropped.map((entry) => (typeof entry?.name === "string" && entry.name !== ""
+    ? `\`${String(entry.id)}\`(${entry.name})`
+    : `\`${String(entry.id)}\``)).slice(0, CALLS_LIMIT);
+  const tail = dropped.length > CALLS_LIMIT ? `…（共 ${dropped.length} 个）` : "";
+  return `${RESUME_NOTICE_LEGACY_PENDING}：${items.join("、")}${tail}。` + "它们的副作用没有重跑，也不会有结果。";
+}
+
+/**
  * 账本里的现场事实：写过哪些文件、最近调过哪些工具。两段都可能为空 ⇒ 整段缺席。
  * @param {string[]} files 去重后的路径
  * @param {string[]} calls 最近调过的工具（`name(arg)`）
@@ -139,9 +187,12 @@ export function recentToolCalls(timeline) {
  *   stopReason?: string,
  *   pendingToolUses?: any[],
  *   filesWritten?: string[],
- *   toolCalls?: string[]
+ *   toolCalls?: string[],
+ *   legacySnapshotBodyCount?: number,
+ *   legacyPendingDropped?: Array<{ id?: unknown, name?: unknown }>
  * }} facts 全部来自既有事实：轮号（`runLoopState.rounds`）、`runState.deterministic.termination.reason`、
- *   `pendingTrailingToolUses(messages)`、`runState.deterministic.filesWritten`、`governorState.timeline`。
+ *   `pendingTrailingToolUses(messages)`、`runState.deterministic.filesWritten`、`governorState.timeline`，
+ *   外加 issue #754 那个「只在快照里、本次不再喂」的正文条数（只用于出声，不是新事实）。
  * @returns {{ text: string, slot: string } | undefined} 轮号不合法时返回 `undefined`（造不出「停在第 N 轮」）
  */
 export function buildResumeNotice(facts = {}) {
@@ -160,10 +211,24 @@ export function buildResumeNotice(facts = {}) {
     .filter((path) => typeof path === "string" && path !== ""))];
   const calls = (Array.isArray(facts.toolCalls) ? facts.toolCalls : [])
     .filter((call) => typeof call === "string" && call !== "");
+  // issue #754：只在**真的丢了正文**时多那一句（判据：条数 > 0）。
+  // `typeof … === "number"` 不是凑数的：`Number.isSafeInteger()` 本身不是类型守卫，少了这一步
+  // `declared > 0` 就是 `possibly 'undefined'`（strict 棘轮当场数到）。
+  const declared = facts.legacySnapshotBodyCount;
+  const legacySnapshotBodyCount = typeof declared === "number"
+    && Number.isSafeInteger(declared) && declared > 0 ? declared : 0;
+  // 第三刀放弃补跑的那批在飞调用（同一条闸门锁定的分支）——它们是**未结清**的，所以只要非空，
+  // 下面那句「尾部没有未结清的 tool_use」就**不许**出现。
+  const legacyPendingDropped = (Array.isArray(facts.legacyPendingDropped) ? facts.legacyPendingDropped : [])
+    .filter((/** @type {{ id?: unknown }} */ entry) => entry?.id !== undefined && entry?.id !== null);
 
   const lines = [
     `${RESUME_NOTICE_TAG}这是一次崩溃后的恢复运行，不是连续会话：上一段停在第 ${round} 轮；${reasonText}。`,
-    pendingToolUses.length > 0 ? pendingLine(pendingToolUses) : `${RESUME_NOTICE_NO_PENDING}。`,
+    legacySnapshotBodyCount === 0 ? "" : legacyDeprecationLine(legacySnapshotBodyCount),
+    pendingToolUses.length > 0
+      ? pendingLine(pendingToolUses)
+      : legacyPendingDropped.length === 0 ? `${RESUME_NOTICE_NO_PENDING}。` : "",
+    legacyPendingDropped.length === 0 ? "" : legacyPendingLine(legacyPendingDropped),
     ledgerLine(files, calls),
     `${RESUME_NOTICE_VERIFY_HEADER}：账本记的是「当时」，盘上现在可能已被别的进程改过。`
       + "先 `ls` / `cat` / `git status` 之类核一眼，不要直接重发有副作用的调用"
@@ -192,9 +257,13 @@ export function buildResumeNotice(facts = {}) {
  * @param {any} ctx `restoreResume` 的入参（只读上面那四个字段）
  * @param {any[]} records `store.load()` 的原始记录（幂等查账用；不折叠也能查：`:control:` 行不被折叠）
  * @param {any[]} pendingToolUses 崩溃现场的未结清 `tool_use`（**补跑之前**取自 `pendingTrailingToolUses`）
+ * @param {number} [legacySnapshotBodyCount] issue #754：本次丢弃的「只在快照里」的旧格式正文段数
+ *   （缺省/0 ⇒ 告示与今天逐字一致）
+ * @param {Array<{id?: unknown, name?: unknown}>} [legacyPendingDropped] issue #754 第二必修：第三刀
+ *   放弃补跑的在飞调用。非空时那句 `RESUME_NOTICE_NO_PENDING` **不出现**，换成逐条点名的弃用句。
  * @returns {{ text: string, slot: string, round: number } | undefined}
  */
-export function planResumeNotice(ctx, records, pendingToolUses) {
+export function planResumeNotice(ctx, records, pendingToolUses, legacySnapshotBodyCount = 0, legacyPendingDropped = []) {
   const round = ctx?.rounds;
   const notice = buildResumeNotice({
     round,
@@ -202,6 +271,8 @@ export function planResumeNotice(ctx, records, pendingToolUses) {
     pendingToolUses,
     filesWritten: (ctx?.governorState?.filesWritten ?? []).map((entry) => entry?.path),
     toolCalls: recentToolCalls(ctx?.governorState?.timeline),
+    legacySnapshotBodyCount,
+    legacyPendingDropped,
   });
   if (notice === undefined) return undefined;
   const dedupKey = `${String(ctx?.runId)}:engine:round:${String(round)}:control:${notice.slot}`;

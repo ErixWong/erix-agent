@@ -4790,7 +4790,16 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 // ⇒ 地板 = **23**（#753 C2 在 `### Added` 加的那对中英；本支自己那笔旧登记（旧树 18→19）在 rebase 时让位给主干，
 // 不在旧值上做加法）。
 //
-// 2026-11-08 第八次重取（issue #773，本树 `fix-261108-03-cli-flag-face-erix` 基点 main `762ef52`）：
+// 2026-11-08 第八次重取（issue #754 裁决 2，`fix-261108-01-close-legacy-upgrade-gate`（基点 `762ef52`）上现跑，
+// 动常量之前 `node --test --test-name-pattern "中英配对地板" test/static-guards.test.js` 的守卫现报原文）：
+//
+//     校准面（## [Unreleased]）上实测 24 对 ≠ 地板 23 对：地板必须恰等于校准面上的实测值（否则「掉一条就穿底」证不出来）。配对变多了 ⇒ 请抬地板到实测值
+//     24 !== 23
+//
+// ⇒ 地板 = **24**（#754 在 `### Breaking` 加的那对中英：pre-261021 档案不再支持恢复）。同样只做「守卫在这棵
+// 树上打印的数」这一次读数，不在旧值上做加法。
+//
+// 2026-11-08 第九次重取（issue #773，本树 `fix-261108-03-cli-flag-face-erix` 基点 main `762ef52`）：
 // 本单在 `## [Unreleased] ### Fixed` 加了一对中英（规则 3 的旗标面收窄到「段主语」）。动常量之前
 // `node --test test/static-guards.test.js` 的标准输出原文（本树现跑）：
 //
@@ -4799,7 +4808,7 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 //
 // ⇒ 地板 = **24**（取本树守卫自己报的数，不做加法；并行会话在另一棵树上改同一格时，以合并树现测为准）。
 //
-// 2026-11-08 第九次重取（issue #775，本树 `fix-261108-05-rule3-subshell-mask-worker` 基点 `8990947`）：
+// 2026-11-08 第十次重取（issue #775，本树 `fix-261108-05-rule3-subshell-mask-worker` 基点 `8990947`）：
 // 本单在 `## [Unreleased] ### Fixed` 加了一对中英（规则 3 的两条 mandatory 假绿：`$()` 里的 erix 旗标 +
 // 等长抹平让否定词跳段免计）。动常量之前 `node --test test/static-guards.test.js` 的标准输出原文（本树现跑）：
 //
@@ -4816,6 +4825,13 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 // 同一次合并里 issue #772（代号 261107-21）也重取过一次同一格：它的树报「实测 25 对 > 地板 24 ⇒ 可以抬到 25」，
 // 与本树守卫现报值同号；**最终值仍以合并树现测为准**（本文件末尾那条「不许做加法」的口径照旧）。
 //
+// 2026-11-08 第十一次重取（**合并树**：本支 `6c24bff` + main `ffba58a`）——#754 的 `### Breaking` 那对与
+// #773 / #775 的两对 `### Fixed` 第一次同在一棵树。两侧各自在别的树上把同一格抬到 24 / 25 ⇒ 同格双改，
+// 按上面那条「并行会话改同一格时以合并树现测为准」处置：**不抄任何一边**，只取守卫在这棵合并树上打印的
+// 读数（`node --test --test-name-pattern "中英配对地板" test/static-guards.test.js`，原文抄在下面那条之后）。
+// 2026-11-08 第十二次重取（**合并树**：本支 `3df6d09` + main `28ba2f1`）——#754 那对 `### Breaking` 与隔壁 #767/#772
+// 那批中英第一次同在一棵树。两侧又各自在自己树上量到 26 / 27 ⇒ 同格第三次双改，处置同上：**不抄任何一边**，
+// 只取守卫在这棵合并树上打印的读数（`node --test --test-name-pattern "中英配对地板" test/static-guards.test.js`）。
 // 2026-11-08 再重取（issue #753 C2 落地缺陷的修复，分支 `fix-261107-20-steer-hook-forward` rebase 到 main `7181a1b`（#784 / issue #770 已合）之后，
 // **在合并后的树上现跑**）：动常量之前 `node --test test/static-guards.test.js` 的标准输出原文：
 //
@@ -4834,7 +4850,17 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 // 没删例、没 skip，也没动配对判据本身）。
 // 2026-11-08 第十二次重取（**合并树**：本支 `4176b31` + main `e1bd9cf`）——#765 那对中英条目与隔壁 #753/#769 一批
 // 第一次同在一棵树。处置同前：**不抄任何一边**，只取守卫在这棵合并树上打印的读数。
-const CHANGELOG_PAIR_FLOOR = 32;
+// 2026-11-08 第十三次重取（**合并树**：本支 `ac80b6f` merge main `4f9b908`）——本支 #754 那对 `### Breaking`
+// 与 main 这几日的 #779/#780/#783/#789/#792/#793 一批中英第一次同在一棵树。同格第 4 次双改，处置同上：
+// **不拄任何一边、不在旧值上做加法**。改常量之前 `node --test --test-name-pattern "配对地板" test/static-guards.test.js`
+// 在本树的标准输出原文（逐字）：
+//
+//     # 配对地板：判据面 = \#\# [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 33 条 / 英文 33 条 / 配对 33 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 32（校准面 \#\# [Unreleased]）
+//     # 配对地板：实测 33 对 > 地板 32 对 ⇒ 可以抬地板到 33
+//
+// ⇒ 地板 = **33**（守卫自己报的数；main 侧登记的 32 与本支自己的 28 都是别的树上的读数，本轮不用）。
+// 没删例、没 skip，也没动配对判据本身。
+const CHANGELOG_PAIR_FLOOR = 33;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
