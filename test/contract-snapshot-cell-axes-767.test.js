@@ -888,7 +888,8 @@ test("G4-R3 反向证：表里多一条没登记的引用 / 少一条已登记�
 
 test("G4-R4 反向证：锚点登记的「种类」是硬判据 ⇒ 代码锚点指到注释行必红，注释锚点指到代码行也必红（M-A）", () => {
   // 出厂表的种类事实：41 条全带合法 kind，且只有八条钉的是注释（#735 停写的两格「为什么没有写点」
-  // + #770 停写的 `status` / `compactionStats` 两格 + `persistedTranscriptLength` 读侧那句「不能信快照里的它」）。
+  // + #770 停写的 `status` / `compactionStats` 两格 + `persistedTranscriptLength` 读侧那句「不能信快照里的它」
+  // + #769 的三格读轴 `executedToolIds` / `partialRound` / `partialText` 的账本来源）。
   // 种类写错 ⇒ 下面那条判据当场红。
   assert.ok(
     CELL_AXES_ANCHORS.length === CELL_AXES_REQUIRED_CELLS.length,
@@ -909,7 +910,7 @@ test("G4-R4 反向证：锚点登记的「种类」是硬判据 ⇒ 代码锚点
       "toolUse|write",
       "ts|write",
     ],
-    "注释锚点只许这五条；新增注释锚点必须同批改这里（种类是登记事实，不是机器猜出来的）",
+    "注释锚点只许这八条（上面数组几条，这句话就写几条；新增注释锚点必须同批改这里，种类是登记事实，不是机器猜出来的）",
   );
   assert.ok(
     CELL_AXES_ANCHORS.every((entry) => entry.kind === "code" || entry.kind === "comment"),
@@ -993,7 +994,8 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
   };
   const refsByDoc = [...tables.values()].map(({ rows, side }) => refsOf({ side, rows }));
 
-  // ① 正向：出厂的登记 + 两份表必须把 39 格全覆盖（issue #769 现算仍是 39 条 / 27 组：三格的读轴换了来源，条目数没涨）（清单 → 登记 → EN → CN 四处）
+  // ① 正向：出厂的登记 + 两份表必须把这 34 个槽位全覆盖（R9 在合并树上现算：登记 41 条 / 组键 34 组 / `key|axis` 27 格，
+  //  三个数字都取 `CELL_AXES_ANCHORS` + `CELL_AXES_REQUIRED_CELLS` 现算，不是手填）（清单 → 登记 → EN → CN 四处）
   const clean = checkCellAxesCoverage({ anchors: CELL_AXES_ANCHORS, refsByDoc });
   assert.deepEqual(clean.errors, [], JSON.stringify(clean.errors));
   assert.equal(clean.slots, new Set(CELL_AXES_REQUIRED_CELLS.map((cell) => cellAxesRequiredSlotKey(cell))).size,
@@ -1008,18 +1010,22 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
   // ② 评审 M-B 的变异：从 8 个双锚点组各删一条登记，并同步删掉两表对应引用 ⇒ 剩下的全自洽
   // 下面的 `at:` 是**锚点现算的命中行号**（不是手填基准）：#769 R3 / R5 在 src 里插了行 ⇒ 全部行号按
   // 锚点重算同步过一遍（判据本身没动）。重算口径与 G4 一致：`anchorHitLines()` 的唯一命中。
-  // #769 R5 这一同步的具体对应（M1/M2/M5 在两个文件里插了行）：6279→6297 / 6259→6277 /
-  // 821→857 / 822→858 / 779→815 / 783→819 / 93→119 / 750→786（逐条取法：同一锚点分别对
-  // `git show 0dbdde8:` 的基线行与本树现行求唯一命中，按旧值对到同一条锚点后取现行）。
+  // #769 R5 那一次同步的对应（M1/M2/M5 在两个文件里插了行）：6279→6297 / 6259→6277 /
+  // 821→857 / 822→858 / 779→815 / 783→819 / 93→119 / 750→786。
+  // R9（合并 `origin/main = ad1ddd5`，含 #778 / #754）再同步一次：#754 改了 `resume-manager.js` 的读侧、
+  // #769 也在同两处插了行，于是**同一条锚点**的命中行又漂了一次。逐条取法与上面同一条：
+  // 先在合并前的本支 tip（`git show 586d6e8:`）上找「`at` == 旧值」的那条锚点，拿它的 `anchor` 正则
+  // 到合并后的本树求唯一命中（脚本 `/tmp/r9-remap-at.mjs`，现报：857→878 / 858→879 / 815→822 /
+  // 819→826 / 786→788；`6297` / `6277` / `119` 三条在合并树上是同一条锚点的现行命中，未变）。
   const victims = [
     { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6297 },
     { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6277 },
-    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 857 },
-    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 858 },
-    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 815 },
-    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 819 },
+    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 878 },
+    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 879 },
+    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 822 },
+    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 826 },
     { key: "persistedTranscriptLength", axis: "read", path: "src/loop/resume-manager.js", at: 119 },
-    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 786 },
+    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 788 },
   ];
   const droppedKeys = new Set();
   const mutatedAnchors = [...CELL_AXES_ANCHORS];
@@ -1063,13 +1069,14 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
   assert.ok(
     after.errors.some((text) => text.includes("en 表")) && after.errors.some((text) => text.includes("cn 表")),
     "红话必须点名缺在哪一份（EN / CN）");
-  // 地板也不再是手填数：削到 31 条必须低于由清单算出的 39
+  // 地板也不再是手填数：削到 33 条必须低于由清单算出的 41（两个数都取现算：41 − 8 = 33 / 清单条数）
   assert.ok(mutatedAnchors.length < CELL_AXES_ANCHOR_FLOORS.entries,
     `削到 ${mutatedAnchors.length} 条必须低于地板 ${CELL_AXES_ANCHOR_FLOORS.entries}（地板由清单算出）`);
   // ③ 恢复证
   assert.deepEqual(checkCellAxesCoverage({ anchors: CELL_AXES_ANCHORS, refsByDoc }).errors, [], "原样必须 0 错（恢复证）");
-  // 削薄是「无声」的那一种：格名与组数看起来一个没少（评审量出来的 31 条 / 27 组 / 14 格），
-  // 只有条目数与两份表的引用条数透露了它 ⇒ 拿组数当哨兵不够，要拿人审清单逐格问。
+  // 削薄是「无声」的那一种：格名与组数看起来一个没少（评审当年量出来的是 31 条 / 27 组 / 14 格；
+  // 本树同一变异现算（`anchorTableShape`）是 33 条 / 27 组 / 14 格 ⇒ 组数与格名数确实一条没少，见下面三条 assert）
+  // ⇒ 拿组数当哨兵不够，要拿人审清单逐格问。
   const before = anchorTableShape(CELL_AXES_ANCHORS);
   const afterShape = anchorTableShape(mutatedAnchors);
   assert.equal(afterShape.entries, before.entries - 8, `应剩 ${before.entries - 8} 条，实际 ${afterShape.entries}`);
