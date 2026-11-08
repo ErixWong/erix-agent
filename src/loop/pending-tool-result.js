@@ -266,6 +266,19 @@ export function pendingMidSequenceToolUses(messages) {
 }
 
 /**
+ * 造一张「执行过、结果没落盘」的 `tool_result` 桩 —— **全仓唯一构造点**（上面纪律 ③ 的家），正文只有限面那一句。
+ * 这次调用**跑过**、结果没进账本：wire 上「没产出可用结果」的唯一出口是 `is_error`（与尾部结清、续跑复放的
+ * `interrupted` 同口径）；**不写 `executionStatus`** —— 那是闭集 `intercepted / interrupted / rejected`（
+ * `src/tool-fact.js#TOOL_RESULT_CONTRACT`），加第四个值要动中英两份契约 + `test/contract/tool-result-envelope.js`。
+ * 导出只为让块形状只有一份：issue #765 把结清时机前移到宿主预写用户轮**之前**（`src/store/append-user-turn.js`），
+ * 那条结清行与本模块中段补桩造的是同一张桩，各自手搭块形状就是下一个 #394（两份事实）。
+ * @param {string} toolUseId 悬空那个 `tool_use` 的 id；非空字符串由调用方判（#421 纪律 ⑤「不发明第三种兜底」）
+ */
+export function buildUnpersistedToolResultStub(toolUseId) {
+  return buildToolResultFact({ toolUseId, content: UNPERSISTED_TOOL_RESULT_TEXT, isError: true });
+}
+
+/**
  * 结清**中段**悬空 `tool_use`（issue #421）：把每个缺失的结果桩**并进**它所属 assistant 紧接的那条
  * user 消息，并把「补了哪几张桩、该往账本哪一行写」交给调用方。
  *
@@ -322,15 +335,7 @@ export async function answerPendingMidSequenceToolUses(messages, options = {}) {
     const usable = group.missing.filter((block) => isUsableToolUseId(block)
       && !(inFlight !== undefined && inFlight.has(block.id)));
     if (usable.length === 0) continue;
-    const toolResults = usable.map((block) => buildToolResultFact({
-      toolUseId: block.id,
-      content: UNPERSISTED_TOOL_RESULT_TEXT,
-      // 这次调用**跑过**、但结果没落盘：wire 上「没产出可用结果」的唯一出口就是 `is_error`
-      // （与尾部结清、续跑复放的 `interrupted` 同一个口径）。**不写 `executionStatus`**：
-      // 那是闭集 `intercepted / interrupted / rejected`（`src/tool-fact.js#TOOL_RESULT_CONTRACT`），
-      // 为这一格新增第四个值要动中英两份契约 + `test/contract/tool-result-envelope.js`，另开单。
-      isError: true,
-    }));
+    const toolResults = usable.map((block) => buildUnpersistedToolResultStub(block.id));
     // 定位由调用方点名（`group.assistantIndex`），**不是**「从后往前找最后一条带 tool_use 的
     // assistant」（那是 `mergeToolResultsIntoMessages` 的尾部定位，中段场景会找错目标）。
     const merged = mergeToolResultsIntoAssistantNextMessage(messages, group.assistantIndex, toolResults);
