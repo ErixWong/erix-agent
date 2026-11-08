@@ -42,11 +42,14 @@ function copyRecord(record) {
  *   loadLatestRunSnapshot: (runId:string) => Promise<object|undefined>,
  *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
  *   appendCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
- *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>
+ *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>, appendRecoveryRow: (runId:string, record:object) => Promise<boolean>, listRecoveryRows: (runId:string) => Promise<object[]>, clearRecoveryRows: (runId:string) => Promise<boolean>
  * }}
  */
 export function createMemoryTranscriptStore() {
   const transcripts = new Map();
+  // issue #769：恢复行通道（与轮记录 `transcripts` **两份容器**，语义与 file store 的
+  // `<runId>.recovery.jsonl` 对齐：`load()` / `loadRawRows()` 永远看不到恢复行）。值类型写出来不是装饰：`rows.find((item) => …)` 的 `item` 要靠它推断，否则 `--strict` 报 TS7006。
+  const recoveryLedger = /** @type {Map<string, object[]>} */ (new Map());
   const runSnapshots = new Map();
   const runStates = new Map();
   const runStatuses = new Map();
@@ -81,6 +84,56 @@ export function createMemoryTranscriptStore() {
       }
       records.push(copyRecord(record));
       transcripts.set(runId, records);
+    },
+
+    /**
+     * issue #769（可选能力）：追加一条恢复行（`kind: "recovery"`，一条一个事件）到恢复行通道。
+     * 幂等与 `appendRound` 同口径（同键同 payload ⇒ 跳过并返回 `false`；同键异 payload ⇒ 抛冲突）。
+     * @param {string} runId @param {object} record @returns {Promise<boolean>}
+     */
+    async appendRecoveryRow(runId, record) {
+      const rows = recoveryLedger.get(runId) ?? [];
+      const key = recordKey(runId, record);
+      const existing = rows.find((item) => recordKey(runId, item) === key);
+      if (existing !== undefined) {
+        const incomingFingerprint = payloadFingerprint(record);
+        const existingFingerprint = payloadFingerprint(existing);
+        if (existingFingerprint !== incomingFingerprint) {
+          throw dedupConflictError({
+            runId,
+            key,
+            existing,
+            incoming: record,
+            existingFingerprint,
+            incomingFingerprint,
+          });
+        }
+        return false;
+      }
+      rows.push(copyRecord(record));
+      recoveryLedger.set(runId, rows);
+      return true;
+    },
+
+    /**
+     * issue #769（可选能力）：读回恢复行通道的全部行（落盘顺序）。没写过 ⇒ `[]`。
+     * @param {string} runId @returns {Promise<object[]>}
+     */
+    async listRecoveryRows(runId) {
+      return (recoveryLedger.get(runId) ?? []).map(copyRecord);
+    },
+
+    /**
+     * issue #769 R3（C1，并为阻断 A 提供代际边界；可选能力）：清掉该 runId 的恢复行容器。
+     * 与 file store 的「删 `<runId>.recovery.jsonl`」同语义：只动恢复行通道，`transcripts`（轮记录
+     * 账本）一条不少。引擎在 `resume !== true` 的 fresh start 调它（`src/loop/orchestrator.js`），
+     * 因为事件键里没有 run 代际 ⇒ 「这个容器/文件」就是代际边界。
+     * 幂等：本来没写过 ⇒ `false`，不抛；清掉了东西 ⇒ `true`。
+     *
+     * @param {string} runId @returns {Promise<boolean>}
+     */
+    async clearRecoveryRows(runId) {
+      return recoveryLedger.delete(runId);
     },
 
     async load(runId) {

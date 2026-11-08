@@ -5,8 +5,111 @@ import { extractL0Facts } from "../reflection/l0.js";
 import { buildTimeline } from "../reflection/judge.js";
 import { pendingTailToolUses, answerPendingMidSequenceToolUses, RESUME_JOURNAL_SKIP_DETAIL_PROBE_ABSENT, RESUME_JOURNAL_SKIP_DETAIL_ROUND_CARRIER_HAS_BODY, RESUME_JOURNAL_SKIP_DETAIL_ROW_NOT_IN_LEDGER } from "./pending-tool-result.js";
 import { planResumeNotice } from "./resume-notice.js";
+// issue #769 R3（B）：恢复行读失败要抛**宿主可见错误码**，因此需要 `KitError` 与根因分类函数
+// （字段面照 `checkpoint_failed` / `persistence_failed` 那一族，见 `recoveryRowsUnreadableError`）。
+import { KitError } from "../providers/errors.js";
+import { terminationErrorCodeForError } from "./termination.js";
 import { injectFoldSummaryIntoHead, planFoldedHistoryTrim } from "../compact/resume-fold-trim.js";
 import { validateRunState } from "../run-state.js";
+
+/**
+ * issue #769 R3（B）：恢复行**读失败**的宿主可见错误码。
+ *
+ * 为什么必须有它（而不是继续 `.catch(() => [])`）：`tool-executed` 恢复行已落、后置快照未落的那个窗口里，
+ * 恢复行是**唯一**的「这个 `tool_use` 真的执行过了」证据。把读失败吞成空集，等于把「执行过了」判成
+ * 「没执行」⇒ 续跑重放该工具、**重放它的外部副作用**。而吞错的几种常见成因（权限错、I/O 错、坏行——
+ * `src/store/file.js#readRecords` 对非 `ENOENT` 一律抛）全都是「读不到」，不是「没有」。
+ *
+ * 与**合法降级**的分界（两件事不能混）：
+ *   · `typeof store.listRecoveryRows !== "function"` ⇒ 可选能力缺席，**维持**读空 + 回落快照（与写侧能力位
+ *     跳过对称，登记在契约的能力分级表里）；
+ *   · 方法在而调用 reject ⇒ 本码，**硬终止**：伪装成「没有恢复行」比失败更贵；
+ *   · 方法在、调用也 resolve，但 resolve 出的**不是数组** ⇒ **同一个码**硬终止（issue #769 R5 M1）：契约里
+ *     能安静回落的只有**空数组**，`undefined` / `{}` / 字符串同样是坏形状的读通道而不是「没有」。
+ *     不另立新码——宿主侧处置（修 store 或换 `runId`）与 reject 那条完全相同，多一个码只会让契约多一格
+ *     同样的话；此时 `errorCode` 是 `"unknown"`（这类返回没有底层错误码可透出，仍走 `terminationErrorCodeForError`
+ *     的既有口径），根因细节留在 `cause.message` 里点名收到的形状）。
+ *
+ * 字段面（照 `checkpoint_failed` 那一族，取值不新造）：`operation` / `phase` / `sideEffect` 三件套齐全
+ * ⇒ `fail`（`src/loop/orchestrator.js#persistenceInfoFor`）据此把终局定为 `persistence_failed` 并透出同名
+ * 字段。`phase` 取 `"resume_recovery_rows"`（issue #769 R4：**按失败点分格**，取值风格沿用
+ * `checkpoint_after_tool` 那种「说清楚是哪一步坏了」）：写侧 `appendRecoveryRow` 失败仍在 `transcript`
+ * 那一格（同属账本侧只追加通道），而**读**失败与 fresh-start **清盘**失败（`recovery_rows_clear`，见
+ * `orchestrator.js#persistClassified`）各自一格 —— 三者排障现场不同，宿主只看 `phase` 就能分流。
+ * `sideEffect` 取 `"not_started"`：失败发生在**续跑期**，本次 run 还没执行过任何工具 ⇒ 没有「已发生的
+ * 外部副作用」可宣告（与 `not_started` 的既有含义一致：可以安全重放整个 run，不欠副作用）。
+ * `errorCode` 是**根因**分类（底层那条错的 `error.code`，取不到即 `"unknown"`），与两个既有出口同规则；
+ * 本码自身在 `code` 上。
+ */
+export const RECOVERY_ROWS_UNREADABLE = "recovery_rows_unreadable";
+
+/**
+ * 造 `recovery_rows_unreadable`（取值口径见 `RECOVERY_ROWS_UNREADABLE`）。
+ * @param {unknown} cause 底层失败（store 抛的那个错）
+ * @param {string} runId
+ */
+function recoveryRowsUnreadableError(cause, runId) {
+  const failure = new KitError(
+    RECOVERY_ROWS_UNREADABLE,
+    `Recovery rows could not be read for runId=${String(runId)}; refusing to treat an unreadable ` +
+      "recovery-row channel as \"no recovery rows\" (a swallowed read error here can replay a tool "
+      + "whose side effect already happened)",
+    { retryable: false, cause },
+  );
+  // **全部** additive 字段走 `Object.assign`（`operation` / `sideEffect` / `errorCode` 都没写进
+  // `KitError` 的 JSDoc，直接赋值会让 `--checkJs` / `--strict` 棘轮各多背一个 TS2339，#214「只减不增」；
+  // 同 `orchestrator.js#makePersistenceFailure` 的处理，那里那几条是既存债）。
+  // 不写 `@returns` 交叉类型：让 TS 自己从 `Object.assign` 推，推出来的就是真实形状。
+  return Object.assign(failure, {
+    operation: "listRecoveryRows",
+    phase: "resume_recovery_rows",
+    sideEffect: "not_started",
+    errorCode: terminationErrorCodeForError(cause),
+  });
+}
+
+/**
+ * 「resolve 得动但形状不合」的返回值 ⇒ 一条**点名收到的形状**的根因错（喂给
+ * `recoveryRowsUnreadableError` 的 `cause`）；它自身不带 `code`，因此终局的 `errorCode` 是 `"unknown"`。
+ * @param {unknown} rows
+ * @returns {Error}
+ */
+function recoveryRowsShapeError(rows) {
+  const received = rows === null ? "null" : typeof rows;
+  return new TypeError(
+    `store.listRecoveryRows() resolved to ${received} instead of an array of recovery rows`,
+  );
+}
+
+/**
+ * 续跑期读恢复行：能力缺席 ⇒ `[]`（合法降级）；调用 reject **或 resolve 出非数组** ⇒ 抛
+ * `recovery_rows_unreadable`（同码，issue #769 R5 M1）。
+ * @param {{ store: any, runId: string }} ctx
+ * @returns {Promise<any[]>}
+ */
+async function readRecoveryRowsOrRefuse(ctx) {
+  if (typeof ctx.store?.listRecoveryRows !== "function") return [];
+  let rows;
+  try {
+    rows = await ctx.store.listRecoveryRows(ctx.runId);
+  } catch (error) {
+    throw recoveryRowsUnreadableError(error, ctx.runId);
+  }
+  // issue #769 R5（M1）：**成功返回**一个非数组同样是坏形状的读通道 ⇒ 同码硬终止。契约里可以安静回落的
+  // 只有**空数组**（`docs/host-consumer-contract.md` 生命周期段），`undefined` / `{}` 都没把「有哪些行」说
+  // 清楚，和上一段修掉的「reject 被吞」同罪：把「读不到」判成「没有」⇒ 续跑重放已发生副作用的工具。
+  if (!Array.isArray(rows)) {
+    throw recoveryRowsUnreadableError(recoveryRowsShapeError(rows), ctx.runId);
+  }
+  return rows;
+}
+// issue #769：账本恢复行（`kind: "recovery"`）——快照 `executedToolIds` / `partialText` / `partialRound`
+// 三格的**首选来源**（行形状与事件键见 `src/store/recovery-rows.js`）；快照那三格从「唯一来源」退成兜底。
+import {
+  readExecutedToolIdRecoveryRows,
+  readPartialTextRecoveryRounds,
+  readPartialTextRecoveryRow,
+} from "../store/recovery-rows.js";
 
 const rowKeyOf = (record) => {
   const key = record?.dedupKey ?? record?.roundKey;
@@ -414,6 +517,41 @@ export async function restoreResume(ctx) {
         .flatMap((message) => blocksFor(message?.content))
         .filter((block) => block?.type === "tool_result")
         .map((block) => block.tool_use_id));
+      // issue #769 ── 账本侧的「工具**执行过没有**」，**首选**来源。
+      // 为什么不能靠上面的 `ledgerToolResultIds` 反推（语义红线，同 `src/store/recovery-rows.js` 文件头）：
+      // 执行发生在结果行落盘**之前** ⇒「没执行」与「执行了但结果行还没落 / 被宿主拒」在账本里形状相同。
+      // 所以这里读的是**显式携带 `toolUseId` 的 `tool-executed` 恢复行**，不是「结果行在不在」；
+      // 快照的 `executedToolIds` 格退成下面 `ctx.resumeExecutedToolIds` 里**并进来的兜底**，不再是唯一来源。
+      // issue #769：恢复行**不进** `records`（那是轮记录通道）——从它自己的读口取。store 没实现
+      // `listRecoveryRows` 时是空集，读侧就回落到快照兜底（与写侧的能力位跳过同一对口径）。
+      // issue #769 R3（B）：**能力缺席**与**读失败**是两件事。修前这里是 `.catch(() => [])`，把
+      // 「方法在、但读不动」（权限错 / I/O 错 / 坏行）也吞成「没有恢复行」，随后回落快照——而上面那段
+      // 语义红线正好说明为什么这样做最贵：`tool-executed` 已落、快照未落时恢复行是唯一执行证据。
+      // 现在：方法缺席 ⇒ `[]`（合法降级，回落快照）；调用 reject ⇒ 抛 `recovery_rows_unreadable`，
+      // 由本块的 `catch` → `ctx.fail` 收成终局（`reason: "persistence_failed"` + 同名字段）。
+      /** @type {any[]} */
+      const recoveryRows = await readRecoveryRowsOrRefuse(ctx);
+      // issue #769 R5（M5）：行**解析得动但形状不合**（缺 `dedupKey` / `round: NaN`）也不许静默丢。
+      // 丢掉 = 又一次「唯一证据被当没有」：那一行说的其实是「这个 `tool_use` 执行过了」，只是它坏了；
+      // 把它当「没这回事」会让续跑重放一个副作用已经发生的工具。所以走与 reject / 非数组**同一个码**
+      // （`recovery_rows_unreadable`），底层那条 `TypeError` 把**哪个字段不合**写在 `cause.message` 里。
+      /** @type {Set<string>} */
+      let ledgerExecutedToolIds;
+      try {
+        ledgerExecutedToolIds = readExecutedToolIdRecoveryRows(recoveryRows);
+      } catch (error) {
+        throw recoveryRowsUnreadableError(error, ctx.runId);
+      }
+      // 崩溃轮的半截正文同理：先问账本（`partial-text` 恢复行：一条一个事件、事件键 = 正文指纹）。
+      // append-only ⇒ 历史轮的行永远在场，所以只有「那一轮的 assistant 正文**没**落账」的那些行才算崩溃
+      // 现场；正文已落账的是历史副本，不能把「正常收口后宿主追问」误判成崩溃轮。下面两行的 `@type` 断言只服务 `--strict`：
+      // `foldLedgerMessages` 把 `message` 只写成 `object`（基线里那批 TS2339 就是它），本单不去改共享返回类型（那会牵动其它文件的计数）。
+      const ledgerAssistantTextRounds = new Set(ledgerEntries
+        .filter((entry) => (/** @type {{role?:string, content?:unknown}} */ (entry?.message ?? {})).role === "assistant" && String((/** @type {{role?:string, content?:unknown}} */ (entry?.message ?? {})).content ?? "").length > 0)
+        .map((entry) => entry.round));
+      const ledgerPartialCrashRound = readPartialTextRecoveryRounds(recoveryRows)
+        .filter((round) => !ledgerAssistantTextRounds.has(round))
+        .at(-1);
       const seedRecords = records.filter((record) => (record.round ?? 0) === 0);
       const seedMessages = seedRecords.flatMap((record) => record.messages ?? []);
       ctx.taskBriefSource = seedRecords.length > 0 ? seedMessages : [];
@@ -533,13 +671,18 @@ export async function restoreResume(ctx) {
       ));
       // 「崩溃现场」的判据：快照里还有账本没结清的在飞工具/半截正文。没有（正常收口后追问）
       // ⇒ 上下文就是完整账本，一条快照正文都不需要。
+      // issue #769：半截正文这一判据不再只看快照——账本里有「那一轮 assistant 正文未落账」的
+      // `partial-text` 恢复行同样算崩溃现场（`ledgerPartialCrashRound` 已经把正文已落账的历史行筛掉了）。
+      // 为什么需要它：写侧现在是「先落账本恢复行、再写快照」⇒「行落了、快照没落」是可达的，
+      // 只看快照会把那一轮当成正常收口（#767 停写快照后，快照那一侧的判据整块会空）。
       const crashSiteRound = unfinishedToolUses.length > 0
         || (ctx.resumeRunSnapshot?.toolResults ?? []).some((entry) => (
           entry?.toolResult?.tool_use_id !== undefined
           && !ledgerToolResultIds.has(entry.toolResult.tool_use_id)
         ))
         || (typeof ctx.resumeRunSnapshot?.partialText === "string"
-          && ctx.resumeRunSnapshot.partialText.length > 0);
+          && ctx.resumeRunSnapshot.partialText.length > 0)
+        || ledgerPartialCrashRound !== undefined;
       // issue #736：快照没认出来（那份快照本身就是写失败的那次，#734）不等于没有崩溃现场——
       // 账本边界成立就是崩溃现场。两者取**或**；快照那条路保留原样（B 集合的补跑集合同样靠它）。
       // issue #754（裁决 2）：旧格式（pre-261021）档案里「只在快照里」的那段崩溃轮正文，现在一条
@@ -572,10 +715,15 @@ export async function restoreResume(ctx) {
         // 崩溃轮轮号在快照没给时退回**边界那一行自己的轮号**（`ledgerEntries` 的轮号，
         // 与 #425 同一个账本口径）。
         const snapshot = ctx.resumeRunSnapshot ?? {};
+        // issue #769：快照没给轮号、账本边界也不成立时，崩溃轮退成「账本里最后一条
+        // **正文未落账的** `partial-text` 恢复行的那一轮」（`ledgerPartialCrashRound`）；
+        // 没有那种行时这个 `??` 不改变旧口径（仍是 `snapshot.round`）。
         const crashRound = Number.isSafeInteger(snapshot.round)
           ? snapshot.round
           : ledgerBoundary === null
-            ? snapshot.round
+            ? (Number.isSafeInteger(ledgerPartialCrashRound)
+              ? ledgerPartialCrashRound
+              : snapshot.round)
             : ledgerEntries[ledgerBoundary]?.round;
         ctx.messages = ledgerEntries.slice(0, anchor).map((entry) => cloneState(entry.message));
         for (const [index, message] of ctx.messages.entries()) {
@@ -633,8 +781,12 @@ export async function restoreResume(ctx) {
         ), undefined);
         // 崩溃现场的轮号：账本里本轮的行可能已落（逐条入账），故取两者的较大值，绝不回退轮号。
         ctx.rounds = Math.max(ctx.rounds, crashRound);
-        const partialText = snapshot.partialText;
-        const partialRound = snapshot.partialRound;
+        // issue #769：半截正文的**首选来源是账本**（`partial-text` 恢复行，一条一个事件）；
+        // 快照的 `partialText`/`partialRound` 两格退成兜底（账本里那一轮没有任何可用行才读它们）。
+        // 顺序就是口径：`ledgerPartial` 在场 ⇒ 两格都跟着账本走，不许出现「正文取账本、轮号取快照」的拼盘。
+        const ledgerPartial = readPartialTextRecoveryRow(recoveryRows, crashRound);
+        const partialText = ledgerPartial !== undefined ? ledgerPartial.text : snapshot.partialText;
+        const partialRound = ledgerPartial !== undefined ? ledgerPartial.round : snapshot.partialRound;
         // 半截正文只补**账本里还没有的那一段**：写侧已在本轮正文一成型就落盘，所以
         // 「快照里带 partialText 而本轮 assistant 行已落」是常见路径（工具执行期崩溃）；
         // 再补一次就是把同一份正文喂给模型两遍。判据：崩溃轮的 assistant 行已在锚点之内 ⇒ 不补。
@@ -660,6 +812,12 @@ export async function restoreResume(ctx) {
           };
           ctx.messages.push(partialMessage);
           ctx.messageRounds.set(partialMessage, partialRound);
+        }
+        // issue #769：「执行过没有」首选账本的 `tool-executed` 恢复行，快照那格是**并进来的兜底**
+        // （旧账本 / 升级路径没那种行时仍能工作）。两个来源取**并**而不是取快照：这个集合只能
+        // 把「执行过」说得更全，不能更窄——窄了就是把一个副作用已经发生的工具重新跑一遍。
+        for (const id of ledgerExecutedToolIds) {
+          ctx.resumeExecutedToolIds.add(id);
         }
         for (const id of snapshot.executedToolIds ?? []) {
           ctx.resumeExecutedToolIds.add(id);
@@ -725,7 +883,12 @@ export async function restoreResume(ctx) {
         // `tool_use`」的在飞调用**也不补跑**（补跑 = 把结果写进一条没有配对 `assistant` 的上下文）。
         // 验收面：`test/loop-resume-unpersisted-tool-results.test.js` 的「第三刀验收格」（带反向证）。
         const replayablePending = pendingTools.filter((/** @type {{ id?: unknown }} */ pendingTool) => (
-          !snapshot.executedToolIds?.includes(pendingTool.id)
+          // issue #769：改读 `ctx.resumeExecutedToolIds`（= 账本 `tool-executed` 恢复行 ∪ 快照那格），
+          // 不再只看 `snapshot.executedToolIds`：快照是 latest-only，而**恢复行不会被下一轮覆盖**——
+          // 「快照说它没执行、账本说它执行了」从此不再把同一副作用重新跑一遍。
+          // 与第三刀共存：旧格式档案（pre-261021，#754 已宣布不再支持）根本没有恢复行文件
+          // ⇒ `resumeExecutedToolIds` 回落到快照那格，本分支行为与第三刀一字不差。
+          !ctx.resumeExecutedToolIds.has(pendingTool.id)
           && !ctx.resumeRunSnapshotResults.has(pendingTool.id)
           // 账本已经结清的结果不再补跑（逐条入账后，这是「已落盘」的权威口径）。
           && !ledgerToolResultIds.has(pendingTool.id)

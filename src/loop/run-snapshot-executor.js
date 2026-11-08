@@ -505,6 +505,13 @@ export function createRunSnapshotExecutor(ctx) {
     }
     toolResults.push(toolResult);
     if (block.id !== undefined) ctx.executedToolIds.add(block.id);
+    // issue #769：同一个时刻往**账本**追加一条「这个 `tool_use` 执行过了」的恢复行，位置就在
+    // `executedToolIds.add` 之后、结果行与下面的 `status: "executed"` 快照写之前——这条事实必须在
+    // 「工具已执行、账本还没有结果行」那个窄窗口里就存在，否则崩溃后只能从「缺结果行」反推，
+    // 而「没执行」与「执行了但没入账」形状相同（语义红线，见 `src/store/recovery-rows.js` 文件头）。
+    // 它是**只追加**的：下一轮不会把它盖掉（快照那一格会），所以读侧能把它当首选来源。
+    // `?.`：执行器的 ctx 在单测里是手搓的；引擎自己注入处见 `orchestrator.js#appendToolExecutedRecoveryRow`。
+    await ctx.appendToolExecutedRecoveryRow?.(block.id, round);
     ctx.snapshotResults.set(block.id, toolResult);
     const persistRunSnapshotAfter = ctx.persistRunSnapshot;
     const postRunSnapshotPersisted = await persistRunSnapshotAfter({

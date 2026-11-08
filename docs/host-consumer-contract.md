@@ -2261,6 +2261,8 @@ run), never a multi-version checkpoint. The tiers are:
 | Host-facing optional terminal-status read | `loadRunStateStatus` | not used or validated by the engine; its absence does not emit a degraded-capability event |
 | Optional fast-path pre-write probes (issue #157) | `loadByDedupKey`, `loadMaxRound` | `appendUserTurn` falls back to full `load` (paired: implementing one without the other behaves exactly like implementing neither) |
 | Optional raw-row anchor probe (issue #714) | `loadRawRows` | mid-sequence `tool_result` stubs are anchored on `load()`'s **folded** rows only, so a finished round's first-slice row is unreachable: those stubs repair the run's context and the engine reports `resume_journal_skipped` instead of journaling a row that would land in the wrong message. The same degradation applies when that round's carrier already carries its body (issue #729). No `persistence_capability_degraded` event — the absence is reported per resume on the existing `resume_journal_skipped` channel. Since issue #765 it is also the **only** ledger source `appendUserTurn` can consult on the #157 fast path (its dangling-`tool_use` settling), so a host implementing the two #157 probes but not this one keeps pre-writing user turns over a still-open ledger, reported per call as `unsettledToolUses.reason = "ledger_probe_absent"` |
+| Optional ledger recovery rows (issue #769) | `appendRecoveryRow`, `listRecoveryRows`, `clearRecoveryRows` | recovery rows are neither written nor read nor cleared; the engine falls back to the snapshot cells `executedToolIds` / `partialText` / `partialRound` (a legal fallback, never the only source). Absence is not an error, but **the event face is not one rule for the three**: a missing `appendRecoveryRow` (write side) or `clearRecoveryRows` (clear side) emits one `persistence_capability_degraded` event per method name, deduped for the whole run, while a missing `listRecoveryRows` (**read side**) is **silent** — the read helper returns no rows and reports nothing (`readRecoveryRowsOrRefuse` in `src/loop/resume-manager.js`), so a host has no event to listen for and must look up its own store for that method. That silence is the adjudication rather than an oversight: a store without the read method is hit by every resume, so one event per resume would re-report a static fact as noise. A method that **exists and then rejects** is not absence: a failed `listRecoveryRows` ends the run with `recovery_rows_unreadable` |
+| Optional ledger recovery-row clear (issue #769 R3) | `clearRecoveryRows` | the fresh (`resume !== true`) start clears recovery rows **only when two things hold**: persistence is on (the `persistence` option is not `"none"`) **and** the store implements this method. What a missing condition costs, and what the host then owes, is written once in the **runId lifecycle** paragraph of the recovery-row section below — this row points there instead of restating it |
 
 `loadRunStateStatus` resolves to the terminal status **string** —
 `(runId: string) => Promise<string | undefined>`, with `undefined` when no
@@ -2270,11 +2272,12 @@ source typedef in `src/store/memory.js` / `src/store/file.js`).
 When an optional method is absent, the engine emits **one**
 `persistence_capability_degraded` event per missing method (`{type, runId,
 method, detail}`) and skips the corresponding persistence for the whole run —
-no per-round log spam. `getToolMetadata` and `emit` remain optional. The two
-read-side probes (`loadRunStateStatus`, and `loadRawRows` from issue #714) are
-the exception: their absence emits no degraded-capability event, because the
-degradation is already reported on the channel that owns it (see the raw-row
-probe section below).
+no per-round log spam. `getToolMetadata` and `emit` remain optional. The read-side
+absences are the exception: `loadRunStateStatus`, `loadRawRows` (issue #714) and `listRecoveryRows`
+(issue #769) emit **no** degraded-capability event when they are missing. The first two because the
+degradation is already reported on the channel that owns it (see the raw-row probe section below);
+the third because the resume read simply falls back to the snapshot cells and says nothing (see the
+recovery-row section below, which also states why the read side stays quiet).
 
 #### The run snapshot's `messages` cell is round residue, not the transcript (issue #735 slice 2)
 
@@ -2358,21 +2361,21 @@ vocabulary, or a CN/EN axis mismatch all go red.
 <!-- erix:snapshot-cell-axes:begin -->
 | Cell (payload key) | write | read | Authority (double-written cells only) | Handoff condition (double-written cells only) | Today's write site — or, for a cell that no longer writes, the line that documents the stop | Today's readers |
 | --- | --- | --- | --- | --- | --- | --- |
-| `round` | written | source | — | — | `src/loop/orchestrator.js:3004` | `src/loop/resume-manager.js:575`, `src/loop/orchestrator.js:3239` |
-| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3029` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:118`, `test/persistence-diagnostics.test.js:171`, `test/loop-invalid-arguments.test.js:235`, `test/loop-v020-rc.test.js:480`, `test/loop-v020-rc.test.js:616` |
-| `pendingToolUses` | written | source | — | — | `src/loop/orchestrator.js:3053` | `src/loop/resume-manager.js:529`, `src/loop/resume-manager.js:720` |
-| `pendingToolUse` | written | fallback(pendingToolUses absent) | — | — | `src/loop/orchestrator.js:3052` | `src/loop/resume-manager.js:530`, `src/loop/resume-manager.js:721` |
-| `executedToolIds` | written | source | — | — | `src/loop/orchestrator.js:3056` | `src/loop/resume-manager.js:664`, `src/loop/resume-manager.js:728` |
-| `toolResults` | written | source | — | — | `src/loop/orchestrator.js:3057` | `src/loop/resume-manager.js:537`, `src/loop/resume-manager.js:668` |
-| `toolOutputs` | written | source | The final-guard evidence source is **the round record**: `bin/final-guard-support.js:238` (stated in that file's own comment at `bin/final-guard-support.js:218`), which never reads the latest snapshot | The snapshot copy's only reader is the resume-side backfill `src/loop/resume-manager.js:674` ⇒ the two copies retire independently; migrate that backfill before the snapshot copy can be stopped | `src/loop/orchestrator.js:3062` (snapshot) and `src/loop/orchestrator.js:6205` (round record) | snapshot side `src/loop/resume-manager.js:674`; round-record side `bin/final-guard-support.js:238` |
-| `messages` | residue | fallback(old-format slot count only) | The ledger (`load()`) is the authority for message text | `not-source` is **still not writable today**: the branch that used to feed these bodies into the context is gone (issue #754 verdict 2), but the counting read `src/loop/resume-manager.js:593` is still there ⇒ the axis may only become `not-source` when that read goes away | `src/loop/orchestrator.js:3054` | `src/loop/resume-manager.js:593` (condition: the ledger holds nothing past the anchor; since issue #754 this cell is only **counted** here, never fed into the context) |
-| `persistedTranscriptLength` (on-disk cell) | written | not-source | The resume anchor is recomputed from the ledger | Zero engine readers ⇒ this is the only row whose read-side condition is met today; stopping the write still means moving the two test fixtures that use it as their truncation anchor (see the notes below) | `src/loop/orchestrator.js:3055` | The resume side does not trust it: `src/loop/resume-manager.js:16` (a comment that says so) and `src/loop/resume-manager.js:430` (overwritten with the recomputed length) |
-| `persistedTranscriptLength` (in-process counter) | written | source | — (the in-process form of the same variable is never persisted; it is the live write-side value) | **Must stay**: it is one of the two bounds on the `messages` residue start | `src/loop/orchestrator.js:3055` | `src/loop/orchestrator.js:2990` |
-| `partialText` | written(conditional) | source | — | Condition = the round really has a half-finished assistant text (the `partialText === undefined` clamp at the write site): a scene with partial text must carry this cell, a scene without it must leave the cell absent (not write `undefined`) | `src/loop/orchestrator.js:3063` | `src/loop/resume-manager.js:541`, `src/loop/resume-manager.js:636` |
-| `partialRound` | written(conditional) | source | — | **Same write statement and same condition as `partialText`** ⇒ the two cells appear together or not at all; one without the other is a bug | `src/loop/orchestrator.js:3063` | `src/loop/resume-manager.js:637` |
-| `toolUse` | stopped | not-source | — | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3017` | Zero readers at the snapshot layer; the same-named `toolUse` on the resume side is only a lambda parameter `src/loop/resume-manager.js:531`, while `toolUseId` and the diagnostic `event.toolUse` are two different things |
-| `ts` | stopped | not-source | the `ts` of the ledger row / message row | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3024` | Zero readers at the snapshot layer; the `ts` the resume side really reads is the **ledger row** copy (same key name, different artifact, not this cell) `src/loop/resume-manager.js:460` |
-| `compactionStats` | stopped | not-source | run-state (the resume path reads `deterministic.compactionStats`: `src/loop/resume-manager.js:346`) and the round record `src/loop/orchestrator.js:6185` | Both sides are alive: round-record side `test/compaction-observability.test.js:73` and snapshot side `test/compaction-observability.test.js:76` ⇒ dropping the snapshot copy means replacing the snapshot-side assertion first | `src/loop/orchestrator.js:3038`、`src/loop/orchestrator.js:6185` | The resume path goes through run-state `src/loop/resume-manager.js:346` and does not read the snapshot copy; its shape is pinned by `test/compaction-observability.test.js:76` |
+| `round` | written | source | — | — | `src/loop/orchestrator.js:3043` | `src/loop/resume-manager.js:721`, `src/loop/orchestrator.js:3278` |
+| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3068` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:118`, `test/persistence-diagnostics.test.js:171`, `test/loop-invalid-arguments.test.js:235`, `test/loop-v020-rc.test.js:480`, `test/loop-v020-rc.test.js:616` |
+| `pendingToolUses` | written | source | — | — | `src/loop/orchestrator.js:3092` | `src/loop/resume-manager.js:667`, `src/loop/resume-manager.js:878` |
+| `pendingToolUse` | written | fallback(pendingToolUses absent) | — | — | `src/loop/orchestrator.js:3091` | `src/loop/resume-manager.js:668`, `src/loop/resume-manager.js:879` |
+| `executedToolIds` | written | fallback(no `tool-executed` recovery row in the ledger) | For "this `tool_use` really executed", the authority is the ledger: an append-only recovery row (`kind: "recovery"`, `recoveryEvent: "tool-executed"`, `toolUseId`, `messages: []`) written by `src/store/recovery-rows.js` at the moment the executor returns — before the result row and before any later snapshot write (#769). The resume side **unions** those rows with this cell, so the set can only say "executed" more broadly, never narrower; the snapshot copy is latest-only and a later round overwrites it | This cell may become `not-source` only once every ledger the resume path can meet carries `tool-executed` rows — ledgers written before #769 do not, so it stays the fallback until those age out | `src/loop/orchestrator.js:3095` | `src/loop/resume-manager.js:822`, `src/store/recovery-rows.js:24` |
+| `toolResults` | written | source | — | — | `src/loop/orchestrator.js:3096` | `src/loop/resume-manager.js:679`, `src/loop/resume-manager.js:826` |
+| `toolOutputs` | written | source | The final-guard evidence source is **the round record**: `bin/final-guard-support.js:238` (stated in that file's own comment at `bin/final-guard-support.js:218`), which never reads the latest snapshot | The snapshot copy's only reader is the resume-side backfill `src/loop/resume-manager.js:832` ⇒ the two copies retire independently; migrate that backfill before the snapshot copy can be stopped | `src/loop/orchestrator.js:3101` (snapshot) and `src/loop/orchestrator.js:6297` (round record) | snapshot side `src/loop/resume-manager.js:832`; round-record side `bin/final-guard-support.js:238` |
+| `messages` | residue | fallback(old-format slot count only) | The ledger (`load()`) is the authority for message text | `not-source` is **still not writable today**: the branch that used to feed these bodies into the context is gone (issue #754 verdict 2), but the counting read `src/loop/resume-manager.js:741` is still there ⇒ the axis may only become `not-source` when that read goes away | `src/loop/orchestrator.js:3093` | `src/loop/resume-manager.js:741` (condition: the ledger holds nothing past the anchor; since issue #754 this cell is only **counted** here, never fed into the context) |
+| `persistedTranscriptLength` (on-disk cell) | written | not-source | The resume anchor is recomputed from the ledger | Zero engine readers ⇒ this is the only row whose read-side condition is met today; stopping the write still means moving the two test fixtures that use it as their truncation anchor (see the notes below) | `src/loop/orchestrator.js:3094` | The resume side does not trust it: `src/loop/resume-manager.js:119` (a comment that says so) and `src/loop/resume-manager.js:568` (overwritten with the recomputed length) |
+| `persistedTranscriptLength` (in-process counter) | written | source | — (the in-process form of the same variable is never persisted; it is the live write-side value) | **Must stay**: it is one of the two bounds on the `messages` residue start | `src/loop/orchestrator.js:3094` | `src/loop/orchestrator.js:3029` |
+| `partialText` | written(conditional) | fallback(no `partial-text` recovery row for the crash round) | The authority is the ledger: the `partial-text` recovery row of the crash round (#769) — one row per distinct half-finished text, event key = a fingerprint of the text, so a longer text is a **new** event and nothing ever rewrites a row that already landed. The resume side takes the text **and** its round from that same row | Condition = the round really has a half-finished assistant text (the `partialText === undefined` clamp at the write site): a scene with partial text must carry this cell, a scene without it must leave the cell absent (not write `undefined`) | `src/loop/orchestrator.js:3102` | `src/loop/resume-manager.js:683`, `src/loop/resume-manager.js:788`, `src/store/recovery-rows.js:24` |
+| `partialRound` | written(conditional) | fallback(no `partial-text` recovery row for the crash round) | Same row as `partialText`: the recovery row carries its own `round`, so the round number follows the text and never gets mixed with a snapshot round | **Same write statement and same condition as `partialText`** ⇒ the two cells appear together or not at all; one without the other is a bug | `src/loop/orchestrator.js:3102` | `src/loop/resume-manager.js:789`, `src/store/recovery-rows.js:24` |
+| `toolUse` | stopped | not-source | — | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3056` | Zero readers at the snapshot layer; the same-named `toolUse` on the resume side is only a lambda parameter `src/loop/resume-manager.js:669`, while `toolUseId` and the diagnostic `event.toolUse` are two different things |
+| `ts` | stopped | not-source | the `ts` of the ledger row / message row | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3063` | Zero readers at the snapshot layer; the `ts` the resume side really reads is the **ledger row** copy (same key name, different artifact, not this cell) `src/loop/resume-manager.js:598` |
+| `compactionStats` | stopped | not-source | run-state (the resume path reads `deterministic.compactionStats`: `src/loop/resume-manager.js:449`) and the round record `src/loop/orchestrator.js:6277` | Both sides are alive: round-record side `test/compaction-observability.test.js:73` and snapshot side `test/compaction-observability.test.js:76` ⇒ dropping the snapshot copy means replacing the snapshot-side assertion first | `src/loop/orchestrator.js:3077`、`src/loop/orchestrator.js:6277` | The resume path goes through run-state `src/loop/resume-manager.js:449` and does not read the snapshot copy; its shape is pinned by `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
 
 `—` = that cell is not double-written, so there is no authority or handoff condition to state. The three notes below
@@ -7463,3 +7466,116 @@ packaged engine (upstream-side, i.e. a pure drift sentinel).
 - Keep host-invented behaviour in host-owned tests. If a shipped suite disagrees
   with a host requirement, file it (issue tracker) rather than forking the
   suite: the fork loses the sentinel.
+
+
+## Ledger recovery rows — a second `.jsonl` per run (issue #769)
+
+The append-only ledger now writes **a second file per run**: `<dir>/<runId>.recovery.jsonl`, next to the existing
+`<dir>/<runId>.jsonl`. **The round-record file is byte-for-byte unchanged** — one line is still exactly one round, and
+nothing moved out of it (message bodies included). This new file only carries *recovery rows*:
+
+- `kind: "recovery"` — the discriminator a host filters on. Two events exist today:
+  `recoveryEvent: "tool-executed"` (carries `toolUseId`) and `recoveryEvent: "partial-text"` (carries `text`
+  itself: **the complete accumulated text as it stood at that moment — not truncated, not capped** — the
+  engine hands the whole string to the row, and there is **no** `textLength` field either, so a consumer that
+  wants a length counts the
+  string; the row deliberately carries no derived number).
+- One row = **one event**, never one row per round. `messages: []` always: a recovery row **never carries message
+  bodies**, so reading the ledger and the snapshot side by side cannot double a message body.
+- `dedupKey` is the **event key**, built by `buildRecoveryEventKey` in `recovery-rows.js`. Exact shape, sampled from
+  the store test's own fixtures: a `tool-executed` row carries the bare `toolUseId` and nothing else
+  (`pendingToolUseIds: ["call-7f"]`, `toolUseId: "call-7f"`); a `partial-text` row carries `text`, a fingerprint of the text, in place of the
+  discriminator. Re-appending the
+  same event key with the same payload is skipped (`appendRecoveryRow` returns `false`); a different payload under the
+  same key is rejected, not overwritten. A longer partial text is a *new* event, so nothing already written is rewritten.
+
+Write timing: the `tool-executed` row is appended **the moment the executor returns** — before the `tool_result` row
+lands, and therefore before any snapshot write of that round. That ordering is the whole point: *"`tool_use` with no
+`tool_result`" does not imply "the tool did not run"*, so "did it run" is carried explicitly by this row and is never
+inferred from the absence of another row.
+
+Store surface: `appendRecoveryRow(runId, row)` → `true` (appended) / `false` (deduped), `listRecoveryRows(runId)` →
+rows in append order, `clearRecoveryRows(runId)` → `true` when a file was removed / `false` when there was nothing to
+remove. All three are **optional**, and absence and failure are two different things:
+
+- **Absent** (the method is not on the store) is a legal degradation: the engine skips that step and reads the
+  snapshot cells (`executedToolIds` / `partialText` / `partialRound`), which stay legal fallbacks and are never the
+  only source. **How loudly it degrades depends on which side is missing** — a host must not expect one channel for
+  all three:
+  - a missing **write** method `appendRecoveryRow`, or a missing **clear** method `clearRecoveryRows`, emits one
+    `persistence_capability_degraded` event per method name (`{type, runId, method, detail}`, deduped for the whole
+    run like every other optional capability);
+  - a missing **read** method `listRecoveryRows` is **silent**: `readRecoveryRowsOrRefuse`
+    (`src/loop/resume-manager.js`) returns no rows and emits nothing, so there is no event to subscribe to — a host
+    that needs the answer checks whether its own store implements that method. Staying quiet is the adjudication,
+    not an oversight: every resume of a store without the method reaches this same branch, so an event there would
+    re-announce a static fact once per resume and turn the degradation face into noise.
+- **Present and rejecting** is not a degradation. A store that implements `listRecoveryRows` and rejects it (I/O
+  error, unreadable line) ends the resume with the terminal error `recovery_rows_unreadable`: swallowing that read
+  would drop the only evidence that a tool already ran and replay its side effect. An empty array means "this run has
+  no recovery rows" and is the only answer that falls back quietly. A store that **resolves** the call to a
+  **non-array** (`undefined`, `{}`, a string) is that same bad channel rather than an empty one: the engine raises
+  the **same** `recovery_rows_unreadable` with the same terminal fields — no second code — and its `errorCode` is
+  `unknown`, because a malformed return value carries no underlying error code; the shape actually received is named
+  in `cause`.
+  A row that **parses** but does not match the shape above is that same bad channel: a `tool-executed` row whose
+  `toolUseId`, `round` or `dedupKey` is missing or malformed ends the resume with the **same**
+  `recovery_rows_unreadable` (the offending field is named in `cause`) — the engine does **not** skip it, because
+  skipping repeats the very mistake this section exists to prevent: counting the only evidence of an execution as
+  "no evidence". Only an **unrecognised `recoveryEvent` name** is skipped (forward compatibility, see below).
+  Field face of that terminal error (same shape as the `checkpoint_failed` family): `reason: "persistence_failed"`,
+  `operation: "listRecoveryRows"`, `phase: "resume_recovery_rows"`, `sideEffect: "not_started"` — the failure happens
+  during a resume, before this process has executed anything, so replaying the whole run owes no external side effect
+  — plus `errorCode` with the root cause (`unknown` when the cause carries no code) and the cause chained as `cause`.
+  `phase` says **which step** failed and is deliberately split three ways, in the style of `checkpoint_after_tool`:
+  `transcript` (a recovery row could not be written), `resume_recovery_rows` (the rows could not be read here) and
+  `recovery_rows_clear` (the fresh-start clear failed). A host must not collapse those three into one bucket.
+
+**runId lifecycle.** `runId` names one **persisted run lineage**, not one logical run. A fresh start
+(`resume !== true`) that reuses a `runId` clears that lineage's recovery rows before the first round writes — and
+that clear is **conditional on two things**, both of which a host has to check rather than assume:
+
+- **persistence is on.** When `persistenceRequired === false` the write helper returns before it ever touches the
+  store (`persistClassified` in `src/loop/orchestrator.js`): nothing is cleared and **no** diagnostic is emitted, so
+  a host running with persistence off must not read "the clear happened" out of this paragraph.
+- **the store implements `clearRecoveryRows`.** Without that method the engine emits one
+  `persistence_capability_degraded` notice and carries on — the rows an earlier process wrote are **still on the
+  shelf**. The capability table above records that absence; the lifecycle claim below holds only where the method
+  exists.
+
+Where both hold, rows from an earlier process cannot be mistaken for evidence of this one. That clear removes
+recovery rows only: the round-record ledger keeps its history (append-only, its event keys carry the round), and the
+latest-only snapshot is not deleted — its next write overwrites it. **A clear that is attempted and fails is
+terminal**: a store that implements `clearRecoveryRows` and throws ends the fresh start with
+`reason: "persistence_failed"`, `operation: "clearRecoveryRows"`, `phase: "recovery_rows_clear"`,
+`sideEffect: "not_started"`. The reason for that asymmetry is a promise, not a stack trace: **absence** means the
+host never promised this capability (and this contract asks such a host to move to a new `runId`), while
+**presence plus failure** means the promise was made and "cleared" is now a lie — resuming later would read the
+previous lineage's `tool-executed` rows as evidence for this run.
+Host obligation, stated as a rule: a host that implements `appendRecoveryRow` / `listRecoveryRows` but **not**
+`clearRecoveryRows` must either give every new logical run a **new `runId`** or **never resume**. Wanting both
+reuse and resume means implementing the clear.
+
+**Unknown `kind`, and what a host must do.** This contract has **no** blanket "ignore what you do not recognise"
+promise — hosts are allowed to validate the ledger strictly. So the consequence is stated plainly: a host that throws on
+an unknown `kind`, or that assumes `<dir>` contains exactly one file per run, or that globs `*.jsonl` and feeds every
+line to a round-record parser, **will break on this slice**. A host that only reads `<runId>.jsonl` (or the folded
+`load()` / `loadRawRows()` API) is unaffected: recovery rows appear in neither place. To read the new file, filter by
+`kind === "recovery"` and ignore the rest.
+The engine's read side makes **one** forward-compatibility promise of its own, and it is engine-local rather than a
+host rule: an unrecognised `recoveryEvent` value is **ignored** when rows are read back
+(`readExecutedToolIdRecoveryRows` / `readPartialTextRecoveryRow` in `src/store/recovery-rows.js`), so a newer engine
+that starts writing a new event cannot break an older reader. A host that parses that file itself has to pick its
+own policy for unknown events — nothing here stops it from rejecting them, and the absence-of-promise above still
+applies to unknown `kind` values.
+
+Measured cost, this tree, one tool execution per round (`node --test test/store/ledger-recovery-rows-769.test.js`, the
+byte test prints these): `tool-executed` **226 B** + `partial-text` **256 B** = **482 B / round** for the carrier rows,
+and **234 B / round** for the single row the engine actually writes when `partialPersistence` is off. No write
+amplification is saved by this slice: the latest-only `.state.json` channel (`saveRunState`, two write sites in
+`src/loop/orchestrator.js`) stays exactly as big as it is, so any "we saved bytes" claim has to name that channel too.
+Two limits on how those figures may be quoted: **482 B** is a **sample measurement** whose `partial-text` row already
+contains a short sample body — the row carries the **whole accumulated text of that moment, untruncated**, so the
+real cost grows with that text (the byte test in that same file asserts that emptying `text` shrinks the line). And
+the per-round figure is per **distinct event**: `K` different `tool_use_id` prefixes in one round produce `K` rows,
+and there is **no cap today** — that growth is tracked as issue #791.

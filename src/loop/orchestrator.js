@@ -40,6 +40,8 @@ import {
   RESUME_JOURNAL_SKIP_DETAIL_ROUND_NOT_SAFE_INTEGER,
 } from "./pending-tool-result.js";
 import { MESSAGE_ROW_KIND } from "../store/message-rows.js";
+// issue #769：快照独有格的 append-only 恢复行载体（行形状与事件键的单一定义在 `src/store/recovery-rows.js`）。
+import { buildPartialTextRecoveryRow, buildToolExecutedRecoveryRow } from "../store/recovery-rows.js";
 // issue #568：会话续接块（受预算约束 / 请求尾部 / 计入本地估算 / 骨架三段不降采样）。
 // issue #598：同一个模块的末尾一段是**默认写者**（指令 / 解析 / store / 派生的 project-key）。
 // 渲染与预算只属上面那四个导出，本单一个字节的渲染逻辑都没动。
@@ -1481,7 +1483,16 @@ export async function runToolLoop(options) {
     }
     const phase = method === "appendRound"
       ? "transcript"
-      : method === "saveRunState" || method === "markRunState"
+      // issue #769：恢复行与轮记录同属账本侧的只追加通道 ⇒ phase 同走 `transcript`。它既不是快照写点
+      // 也不是 run-state 覆盖写，落到下面的 `checkpoint_before_tool` 会把宿主可见的
+      // `persistence_error.phase` 编错（那一列是契约面，不是内部诊断）。
+      // issue #769 R4：`clearRecoveryRows` **另开一格** —— 它发生在 fresh start，坏的是「清盘」这一步，
+      // 与「账本少写了一行」是两种排障现场；取值风格沿用下面 `checkpoint_after_tool` 那种「说在哪一步失败」。
+      : method === "appendRecoveryRow"
+        ? "transcript"
+        : method === "clearRecoveryRows"
+          ? "recovery_rows_clear"
+        : method === "saveRunState" || method === "markRunState"
         ? "run_state"
         : snapshotStatus === "executed"
           ? "checkpoint_after_tool"
@@ -2228,6 +2239,34 @@ export async function runToolLoop(options) {
   //   就会退回 TS2339（… on type 'never'）——本组唯一一行类型注解，一行也没删。
   const resumeExecutedToolIds = new Set();
   const resumeRunSnapshotResults = new Map();
+  // issue #769 R3（阻断 A）：**代际边界 = 恢复行通道的生命周期**。恢复行的事件键只有
+  // `runId + round + event + 判别子`（`src/store/recovery-rows.js#recoveryEventKey`），**没有** run 代际，
+  // 所以「同一个 `runId` 上第二次非续跑」如果不清盘，上一代留下的 `tool-executed` 会在下一次续跑时
+  // 进入恢复集合并参与过滤 pending 工具（`src/loop/resume-manager.js` 的 pending 过滤），
+  // 后果是**跳过那次执行本该发生的副作用**。契约（`docs/host-consumer-contract.md` / `_cn.md` 的
+  // 「Ledger recovery rows」）已写明 `runId` = 一条持久化 run lineage、新逻辑 run 必须换新 ID；
+  // 这句是那个语义的运行面：`resume !== true` ⇒ 先清恢复行（**只**清恢复行，轮记录账本历史不动）。
+  // 这一清**只在持久化开着时才会走到**：`persistence` 不是 `"none"` 时 `persistenceRequired` 才为真，而 `persistClassified` 第一行 `if (!persistenceRequired) return false;` 就先短路 ⇒ 持久化关着时既不碰 store、也不发任何诊断（宿主不能把「没收到诊断」读成「清过了」）。
+  // 走能力位：store 没实现 `clearRecoveryRows` ⇒ `persist` 发一条 `persistence_capability_degraded` 并跳过（不抛），与其余可选能力同一口径。
+  //
+  // issue #769 R5（M2）：**能力缺席与调用失败是两回事**（与上面 `listRecoveryRows` 的 M1/B 同规则）：
+  //   · **方法缺席** = 宿主**从未承诺**过这项能力 ⇒ 降级合法（契约已要求这种宿主自己换新 `runId`），
+  //     走上面的能力位诊断；
+  //   · **方法在而调用失败** = 宿主**承诺了**，而这一次的「已清理」是**假话** ⇒ 不许静默继续：清盘没
+  //     成功而旧恢复行仍在场上，下一次续跑就会把**上一代**的 `tool-executed` 当本代证据（阻断 A 的脏读）。
+  // 因此失败必须走 `fail()`：那才是造 `termination` 的那条路（`reason: "persistence_failed"` +
+  // `operation: "clearRecoveryRows"` + `phase: "recovery_rows_clear"` + `sideEffect: "not_started"`）。
+  // 修前这一行在那个 `try`/`fail()` 之外：错误对象自己带着 `code`/`phase`，**termination 却缺失**。
+  if (resume !== true) {
+    try {
+      await persist("clearRecoveryRows", runId);
+    } catch (error) {
+      // `fail()` 必然抛出**带 termination 的**同一个错误（见 `annotateTermination`）；下面那行只是
+      // 「万一它哪天不抛了也不静默继续」的兜底，不是第二条出口。
+      await fail(error);
+      throw error;
+    }
+  }
   try {
     await restoreResume({
     resume,
@@ -3390,6 +3429,49 @@ export async function runToolLoop(options) {
     return persisted;
   };
 
+  // ── issue #769：快照独有格的**恢复行写入口**（两种事件各一个）───────────────────────────
+  // 形状沿用上面 `appendEngineFactToTranscript` 那条先例：一条一个事件、`messages: []`（**不载正文**，
+  // 否则 `restoreResume` 的 `records.flatMap(record.messages)` 会把同一份正文恢复两遍）、
+  // `dedupKey` = 唯一事件键（同事件重放 = 同 key 同 payload = `appendRound` 幂等跳过；payload 指纹
+  // 不含顶层 `round`/`ts`，见 `src/store/transcript-dedup.js#PAYLOAD_VOLATILE_FIELDS`）。
+  // 不计入 `persistedTranscriptLength`：那个计数按「已落盘的**逻辑消息**条数」口径，空行加 0。
+  // 失败口径与任何其它账本 append 相同（`persist` 重试耗尽后抛持久化失败）——本切片不新增例外。
+  //
+  // **通道（第 2 段的换道裁决）：走 `store.appendRecoveryRow`，不再走 `appendRound`。**
+  // `appendRound` 是**轮记录通道**：行一进去就成了一条「轮记录」，而恢复行**不是一轮**——实测把 29 个
+  // 读轮记录的用例弄红了（`store.load()` 的行序/索引与 `messages`、聚合预算、`onRound` 观察器、
+  // 261021 golden 夹具、`interceptJudgeDecision` 那条「当轮记录带 judge 字段」……）。新通道与轮记录
+  // 同目录、同样 append-only、同样靠 `src/store/transcript-dedup.js` 幂等，但**不进** `load()` /
+  // `loadRawRows()`（实现：`src/store/file.js#recoveryRowsPath` 与 `src/store/memory.js`）。
+  // store 没实现 `appendRecoveryRow` 时走现成的能力位机制：`persistClassified` 开头那一问就会
+  // **跳过并上报一次** `persistence_capability_degraded`，**不抛**（同一方法只报一次）；那时快照那几格
+  // 仍是唯一来源——本切片不删快照写点，所以「store 不支持」不会比改前更差。
+  /**
+   * 「这个 `tool_use` 真的执行过了」——在**执行器刚返回的那一刻**落账，比结果行早。
+   * 为什么必须有它（语义红线）：「没有 `tool_result` 行」推不出「没执行」，两者形状相同；
+   * 而快照的 `executedToolIds` 是 latest-only，下一轮一写就把这条事实盖掉。
+   * @param {string|undefined} toolUseId @param {number} roundNumber @returns {Promise<boolean>}
+   */
+  const appendToolExecutedRecoveryRow = async (toolUseId, roundNumber) => {
+    if (typeof toolUseId !== "string" || toolUseId === "") return false;
+    if (!Number.isSafeInteger(roundNumber)) return false;
+    return persist("appendRecoveryRow", runId, buildToolExecutedRecoveryRow({
+      runId, round: roundNumber, toolUseId,
+    }));
+  };
+  /**
+   * 一段半截 assistant 正文（`stream: true` + `partialPersistence` 才会到这里）。事件键 = 正文指纹，
+   * 所以同一段正文重放幂等、正文变长就是新事件（append-only 只追加，从不改写已落的行）。
+   * @param {string} text @param {number} roundNumber @returns {Promise<boolean>}
+   */
+  const appendPartialTextRecoveryRow = async (text, roundNumber) => {
+    if (typeof text !== "string" || text === "") return false;
+    if (!Number.isSafeInteger(roundNumber)) return false;
+    return persist("appendRecoveryRow", runId, buildPartialTextRecoveryRow({
+      runId, round: roundNumber, text,
+    }));
+  };
+
   if (partialPersistenceConfig !== undefined && hasRunSnapshotStore) {
     const { intervalMs, minBytes } = partialPersistenceConfig;
     const maxTimerDelay = 2_147_483_647;
@@ -3409,6 +3491,10 @@ export async function runToolLoop(options) {
       attempt.dirty = false;
       const write = (async () => {
         try {
+          // issue #769：半截正文**先落账本恢复行、再写快照**。顺序有语义：恢复行是 append-only
+          // 的事件记录，快照是 latest-only 覆盖写；先落行者为「行落了、快照没落」留下可重放的现场
+          // （读侧因此可以把账本当首选，见 `resume-manager.js` 的 `readPartialTextRecoveryRow`）。
+          await appendPartialTextRecoveryRow(partialText, attempt.round);
           await persistRunSnapshot({
             round: attempt.round,
             status: "pending",
@@ -4082,6 +4168,12 @@ export async function runToolLoop(options) {
       runLoopState.aggregateBudgetHit = true;
     },
     executedToolIds,
+    // issue #769：工具**执行那一刻**往账本追加一条 `kind: "recovery"` / `recoveryEvent: "tool-executed"`
+    // 的恢复行（比结果行早，也比本轮任何后续快照写早）。它把「执行过没有」从「只能从 latest-only
+    // 快照推断」变成「账本里显式携带、按事件重放」，而 `executedToolIds` 那一格从此在恢复路径上
+    // 退成兜底。注入而不是在执行器里自己拼行：入账口径（引擎命名空间、`persist` 的失败与重试分类）
+    // 住在 orchestrator，与 `appendEngineMessagesToTranscript` / `appendEngineFactToTranscript` 同一先例。
+    appendToolExecutedRecoveryRow,
     snapshotResults,
     // 「没存上」账本（ADR-016）：聚合层 fail-closed 丢原文时必须留痕——
     // main 退役了 run-state 的 errors.archive 计数，账本是其继任通道

@@ -110,7 +110,7 @@ scripts/          # 实验脚本和结果
       但两半必须一起进。这三条为什么各自承重，见 `docs/maintenance/command-reference_cn.md#type-ratchets`。
 - 文档规则（issue #164）：改 `README*.md`、`docs/requirements*.md`、任何默认值或 `files`/`exports` 清单时，必须保持 `npm run check:docs` 绿。该检查从 `package.json` 与 `src/` 现读真值，所以文档不会悄悄漂移；「当前版本」这类句子的规定写法写在 `scripts/docs-drift-check.mjs` 的文件头注释里。中英成对文档必须同步（见 `AGENTS_cn.md`）。
 - 引用**另一个仓库**的文件时（工单 261021-03 B1）：写成 `<仓名>:<那个仓里的路径>`——例如 `touwaka:lib/agent/`、`pi-subagents:src/runs/background/async-execution.js:4`。带前缀的引用**不**在本仓里解析，它的行号也不计入下面的裸行号棘轮；仓名必须是 `scripts/docs-drift-check.mjs` 的 `EXTERNAL_REPO_PREFIXES` 里登记过的（未登记的名字红，登记了却没人引用也红）。**不带前缀的路径就是本仓内的路径，必须在这里解析得到**——这正是那个标记的全部意义：它标的是归属，不是一张免检票。
-- **锚点粒度与文档行号锚点**（issue #210 / #286）：本文只有四个数属于门禁、也只有它们是现值——`BASELINE_ROOT = 102`、符号锚点地板 `SYMBOL_ANCHOR_MIN_UNIQUE = 242`（只升：掉到地板以下就红，那是「锚点在退化」被抓住）、裸行号棘轮 `BARE_LINE_REF_BASELINE = 6`（只降）、以及锚点覆盖面地板 `REF_SCAN_DOCS_MINIMUM = 51`。文档不得依赖裸行号：指位置要写符号 + 它的文件（`` `符号`（`路径`） ``），不写 `路径:123`。原先挂在这一节后面的实测流水已整条搬到 `docs/maintenance/symbol-anchor-ledger_cn.md`——那是历史，不是现状，本文不再复述。哪些锚点是逐处级、区间判据、豁免登记表与逐条证明它们的自测，都在 `docs/maintenance/command-reference_cn.md#docs-anchors`——加锚点或搬锚点之前先读那一节。
+- **锚点粒度与文档行号锚点**（issue #210 / #286）：本文只有四个数属于门禁、也只有它们是现值——`BASELINE_ROOT = 102`、符号锚点地板 `SYMBOL_ANCHOR_MIN_UNIQUE = 243`（只升：掉到地板以下就红，那是「锚点在退化」被抓住）、裸行号棘轮 `BARE_LINE_REF_BASELINE = 6`（只降）、以及锚点覆盖面地板 `REF_SCAN_DOCS_MINIMUM = 51`。文档不得依赖裸行号：指位置要写符号 + 它的文件（`` `符号`（`路径`） ``），不写 `路径:123`。原先挂在这一节后面的实测流水已整条搬到 `docs/maintenance/symbol-anchor-ledger_cn.md`——那是历史，不是现状，本文不再复述。哪些锚点是逐处级、区间判据、豁免登记表与逐条证明它们的自测，都在 `docs/maintenance/command-reference_cn.md#docs-anchors`——加锚点或搬锚点之前先读那一节。
 
 ## 4. npm 发布指南（已根据 2026-08 政策验证）
 
@@ -120,7 +120,7 @@ scripts/          # 实验脚本和结果
 - `repository.url` 使用 `git+https://...` 格式（或运行 `npm pkg fix`）。
 - 类型面（issue #213）：顶层 `types` 指向 `./src/index.d.ts`，`exports["."]` 与 `exports["./tools"]` 各带一个匹配的 `types`
   条件；`exports["./contract-tests"]` **刻意不带** `types`（其目标在 `test/` 下，不在声明依赖图里）。
-  因此干净检出里一个 `.d.ts` 都没有——装包后应列出 **89** 个 `.d.ts`；**这个数由 `npm run check:pack-links`
+  因此干净检出里一个 `.d.ts` 都没有——装包后应列出 **90** 个 `.d.ts`；**这个数由 `npm run check:pack-links`
   与 tarball 内容对账——不许手抄进这两份口径文件。** `npm run check:types-build` 是「还能不能生成」的门禁。
   哪一刀把哪个模块接进了声明依赖图、以及此前每一个数，都是历史：
   `docs/maintenance/command-reference_cn.md#type-surface`。

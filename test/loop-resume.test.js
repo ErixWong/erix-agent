@@ -1476,9 +1476,12 @@ test("resume with a store lacking snapshot/run-state loaders degrades with one d
 
   const degraded = events.filter((event) => event.type === "persistence_capability_degraded");
   const methods = degraded.map((event) => event.method);
-  assert.equal(degraded.length, 2, `恰好两条诊断，实际：${methods.join(",")}`);
+  // issue #769：恢复行通道（`appendRecoveryRow`）也是可选能力 ⇒ 恢复跑执行工具时同样要发一条诊断，
+  // 否则宿主会以为恢复行已经落盘了。三格各自一条，不多不少。
+  assert.equal(degraded.length, 3, `恰好三条诊断，实际：${methods.join(",")}`);
   assert.ok(methods.includes("loadRunState"), "缺 loadRunState 必须诊断");
   assert.ok(methods.includes("loadLatestRunSnapshot"), "缺 loadLatestRunSnapshot 必须诊断");
+  assert.ok(methods.includes("appendRecoveryRow"), "缺 appendRecoveryRow 必须诊断（恢复行写不进账本要说出来）");
   for (const event of degraded) {
     assert.equal(event.runId, "resume-no-loaders");
     assert.match(event.detail, new RegExp(event.method));

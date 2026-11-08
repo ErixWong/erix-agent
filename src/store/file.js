@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { boundRunState } from "../run-state.js";
 import { foldMessageRows } from "./message-rows.js";
@@ -57,6 +57,21 @@ export function safeRunId(runId) {
  */
 export function transcriptPath(dir, runId) {
   return join(dir, `${safeRunId(runId)}.jsonl`);
+}
+
+/**
+ * issue #769：**恢复行通道**的落盘路径（`<dir>/<safeRunId(runId)>.recovery.jsonl`）。
+ *
+ * 为什么不挤在 transcript 同一份 `.jsonl` 里（设计裁决，契约里也写了）：`appendRound` 那条是
+ * **轮记录通道**，行进去就成了一条轮记录——读轮记录的每一处（`store.load()` 的行序与索引、
+ * final guard、聚合预算、`onRound` 观察器、261021 golden 夹具）都会读到它，实测弄红 29 例；
+ * 而恢复行**不是一轮**，它带的是「某个 `tool_use` 执行过了」/「某轮有一段半截正文」这种事件。
+ * ⇒ 同目录另开一份 append-only 文件：**轮记录通道的每一个读口零改动**，恢复行走自己的读口
+ * `listRecoveryRows()`。两者都是只追加、都不改写已落的行。
+ * @param {string} dir @param {string} runId @returns {string}
+ */
+export function recoveryRowsPath(dir, runId) {
+  return join(dir, `${safeRunId(runId)}.recovery.jsonl`);
 }
 
 function snapshotPath(dir, runId) {
@@ -398,7 +413,7 @@ async function appendRecord(path, runId, record, dedupCaches) {
  *   loadLatestRunSnapshot: (runId:string) => Promise<object|undefined>,
  *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
  *   appendCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
- *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>
+ *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>, appendRecoveryRow: (runId:string, record:object) => Promise<boolean>, listRecoveryRows: (runId:string) => Promise<object[]>, clearRecoveryRows: (runId:string) => Promise<boolean>
  * }}
  */
 export function createFileTranscriptStore({ dir }) {
@@ -407,6 +422,9 @@ export function createFileTranscriptStore({ dir }) {
   // keys 恒等于文件里全部记录的 key（与全量 parse 结果相同）→ 幂等语义逐字不变；
   // 新鲜度由 (size, mtimeMs) 戳校验，外部改动/跨实例写会因戳不一致触发流式重建。
   const dedupCaches = new Map();
+  // issue #769：恢复行通道的 dedup 缓存（与轮记录那份**分开**：两份文件各自的 key 集不得互相污染，
+  // 否则一个 `…:recovery:…` 键会被当成轮记录的 key 参与幂等判定）。
+  const recoveryDedupCaches = new Map();
   const loadRecords = async (runId) => {
     const path = transcriptPath(dir, runId);
     await repairTranscriptTail(path);
@@ -461,6 +479,63 @@ export function createFileTranscriptStore({ dir }) {
         // dedup 在 appendRecord 内修复尾部后判断（防无 LF 尾部绕过幂等）；issue #160：
         // 判定优先走进程内 key set 缓存（(size, mtimeMs) 校验），未命中才流式重建
         await appendRecord(transcriptPath(dir, runId), runId, record, dedupCaches);
+      });
+    },
+
+    /**
+     * issue #769（可选能力）：追加一条**恢复行**（`kind: "recovery"`，一条一个事件）到恢复行通道。
+     * 幂等与轮记录通道同口径（共用 `src/store/transcript-dedup.js`）：同事件键 + 同 payload ⇒
+     * 跳过并返回 `false`；同键异 payload ⇒ 抛 `TranscriptDedupConflictError`（既不覆盖也不静默丢）。
+     * @param {string} runId @param {object} record 恢复行（形状见 `src/store/recovery-rows.js`）
+     * @returns {Promise<boolean>} 真正落了一行才是 `true`
+     */
+    async appendRecoveryRow(runId, record) {
+      return await withAppendLock(runId, async () => {
+        await mkdir(dir, { recursive: true });
+        return await appendRecord(recoveryRowsPath(dir, runId), runId, record, recoveryDedupCaches);
+      });
+    },
+
+    /**
+     * issue #769（可选能力）：读回恢复行通道的全部行（落盘顺序）。文件不在场 ⇒ `[]`。
+     * @param {string} runId @returns {Promise<object[]>}
+     */
+    async listRecoveryRows(runId) {
+      /** @type {object[]} */
+      const rows = [];
+      for await (const row of readRecords(recoveryRowsPath(dir, runId))) rows.push(row);
+      return rows;
+    },
+
+    /**
+     * issue #769 R3（C1，并为阻断 A 提供代际边界；可选能力）：清掉该 run 的**恢复行通道**
+     * （删 `<runId>.recovery.jsonl`）。
+     *
+     * 为什么必需（不是“打扫”）：事件键只有 `runId + round + event + 判别子`（`src/store/recovery-rows.js`），
+     * **没有** run 代际 ⇒ 「这个文件」就是代际边界。引擎在 `resume !== true` 的 fresh start 调一次
+     * （`src/loop/orchestrator.js`），**且这一步只在持久化开着时才会走到**：`persistence` 不是 `"none"` 时 `persistenceRequired` 才为真，而 `persistClassified` 第一行 `if (!persistenceRequired) return false;` 就先短路 ⇒ 持久化关着时既不删文件也不发诊断。这一清之后，「同一 `runId` 上第二次非续跑」不会再把上一代的 `tool-executed`
+     * 当成新 run 的执行事实。**只清恢复行**：轮记录账本 `<runId>.jsonl` 的历史行不动（那是宿主
+     * 的账本，契约里写明了），快照则是 `saveRunSnapshot` 首次写入时自然覆盖。
+     *
+     * 与追写共用 `withAppendLock`：同一 `runId` 上「清」与「追加」不得交叉（交叉会把新行连文件一起删）。
+     * 幂等：文件不在场（含从无恢复行）⇒ `false`，**不抛**；真删了一个文件 ⇒ `true`。
+     * 同时抖掉该 run 的去重键缓存：文件已不在，旧键集不能再参与幂等判定。
+     *
+     * @param {string} runId @returns {Promise<boolean>} 真的删掉了文件才是 `true`
+     */
+    async clearRecoveryRows(runId) {
+      return await withAppendLock(runId, async () => {
+        let removed = false;
+        try {
+          await rm(recoveryRowsPath(dir, runId));
+          removed = true;
+        } catch (error) {
+          // strict 下 `catch` 的 `error` 是 `{}`，直读 `.code` 就 TS2339（issue #417 棘轮）：就地断言收窄。
+          // 写法沿用同文件 `readTranscriptTailLines` 的先例；**行为一字不变**，仍「非 ENOENT 就重新抛」。
+          if (/** @type {{ code?: string }} */ (error)?.code !== "ENOENT") throw error;
+        }
+        recoveryDedupCaches.delete(safeRunId(runId));
+        return removed;
       });
     },
 

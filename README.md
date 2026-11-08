@@ -251,6 +251,7 @@ src/
     notes-port.js                  Shared NotesStore port semantics (internal)
     append-user-turn.js            Pre-written user turn for the multi-turn resume contract
     message-rows.js                Read-side folding of `kind:"message"` rows back into round rows (internal)
+    recovery-rows.js               Append-only ledger recovery rows for the snapshot-only cells (internal)
     transcript-dedup.js            Shared appendRound dedup payload fingerprint (internal)
   config/
     api-key.js                     API-key materialization
@@ -809,8 +810,12 @@ Persistence failures use `onPersistenceError`. `onEvent` receives structured
 events including `round_start`, `round_end`, `tool_use`, `tool_result`,
 `attempt`, `recovering`, `recovered`, `delta`, `reasoning_delta`, `tool_call`,
 `usage`, `forced_final`, `final_guard`, and
-`persistence_capability_degraded` (one shot per missing optional store
-capability).
+`persistence_capability_degraded` (one shot per missing method name, deduped
+for the whole run — it fires when an optional store capability the engine would
+call is absent, the recovery-row **write** method `appendRecoveryRow` and
+**clear** method `clearRecoveryRows` among them; the recovery-row **read**
+method `listRecoveryRows` is **not** one of those — its absence is silent, so a
+host that needs that answer checks its own store for the method).
 
 All nine observer callbacks above are error-isolated (issue #173): a throw in any
 of them is reported through `onObserverError(error, {channel, runId?, …})` and

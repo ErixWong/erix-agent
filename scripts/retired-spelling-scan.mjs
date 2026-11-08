@@ -389,7 +389,44 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 不为了躲钉子把键名换成中文说法（那一格验的正是「返回体里没有 `reasoning_effort`」，键名清单就是证据）。
   // 数取自扫描器现报：`docs/host-consumer-contract.md [contract] verdict=SUSPECT(raised) pin=457 uses=458`
   // （命中定位：EN :3714 `model`）。
-  "docs/host-consumer-contract.md": 458,
+  // 458 → 466（**合并树现测**：本支 `fix-261108-27-recovery-read-strict-erix` + main `4f9b908`（#793 / #785 续））：
+  // ⚠ **不是 458 + 8 加出来的，也不是本支单边的 465**：main（#793）把同一句钉到 458，本支在旧主干上量到 465，
+  // 合并树两边都算不上。数只取扫描器在这棵合并树上现报那一行：
+  //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=458  uses=466
+  // 口径同 #714 / #729 / #730 / #753 / #769-R5：契约要能写出真实签名与真实角色名，不为了躲钉子改成描述说法。
+  // 466 → 464（**合并树现测 · R7 之后**：本支 `fix-261108-27-recovery-read-strict-erix` + main `4f9b908` + R7 文案修 `fix-261109-01-capability-docs-audit`）：
+  // R7 把能力表那一行「只留两个前提 + 一句指向」，删掉的展开后果里有同名异义命中 ⇒ EN 侧**降 2**。
+  // ⚠ 这不是 466 − 2 的算术结论，是扫描器在这棵树上现报的那一行：
+  //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(dropped)  pin=466  uses=464
+  // 钉子随文案走、不许反推：改文案 ⇒ 现测 ⇒ 重钉（口径同 #714 / #729 / #730 / #753 / #769-R5）。
+  "docs/host-consumer-contract.md": 464,
+  // 457 → 458（issue #769 R2，净 +1）：本单新增的「恢复行」那两节把**契约面写实的签名与叶名**都写了
+  // 进代码语境（同名异义，`AMBIGUOUS_KEYS`，不进退役判据但计入本钉子）：EN 新增行里的 6 处命中在
+  // :3740（`completion` × 2 与 `wrapup`）、:3744（`maxTokenContinuations` 与其内的 `maxTokens`）、
+  // :7391（`partialPersistence`），而同一刀删改的行带走了 5 处旧命中 ⇒ **净 +1**。
+  // 不改写法（同 #730 / #714 / #729 先例：为了躲钉子把真实签名改成描述说法，代价是契约读者拿不到签名）。
+  // 数只取扫描器现报那一行：`docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=457  uses=458`。
+  // 458 → 462（issue #769 R4，净 +4）：R4 只改了「恢复行」那一节的两处说明（F1 改口 + F4 字段面），
+  // 新增全是**同名异义**（`AMBIGUOUS_KEYS`，不进退役判据但计入本钉子）：`resume`（“ends the resume with …”、
+  // “during a resume …”、`phase: "resume_recovery_rows"` 的词面）与 `persistence`（`reason: "persistence_failed"`）。
+  // 逐条定位（本文档现行号）：7393 / 7396 / 7397 / 7398 / 7401 / 7405 / 7409 —— 扫描器按 use 计数，
+  // 行数多于命中数；数只取扫描器现报那一行：
+  //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=458  uses=462
+  // 462 → 463（issue #769 R5 M3，净 +1）：把生命周期段改成**有条件**时，宿主义务那一句必须写出
+  // 真实旋钮名：`a host that implements appendRecoveryRow / listRecoveryRows but not clearRecoveryRows must
+  // either give every new logical run a new runId or never resume`。`runId` 在 `AMBIGUOUS_KEYS` 里（store 方法
+  // 入参 / 代际标识，与 `config.run.runId` 同名异义），不进退役判据但计入本钉子。
+  // 逐条定位（本文档现行号）：:7431（R2 那句“move to a new runId”位移后的位置）与 :7435（本刀新增那一句）
+  // 共 2 处，R2 旧面同一段只有 1 处 ⇒ 净 +1。同 #714 / #729 / #730 先例：契约要能写出真名，不为躲钉子改写法。
+  // 数只取扫描器现报那一行：
+  //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=462  uses=463
+  // 463 → 465（issue #769 R6 文案修正②，净 +2）：能力表「Optional ledger recovery-row clear」那一行补上清盘的
+  // 两个前提，句子必须写出真旋钮名与代际标识（两处都是 `AMBIGUOUS_KEYS` 里的同名异义：持久化这个概念 /
+  // store 形参与 `config.run.*` 同名，不进退役判据但计入本钉子）。逐条定位：:2265 一行从 1 处（`runId`）
+  // 变成 3 处（`persistence` 一个 + `runId` 两个），同面其他行未动 ⇒ 净 +2。
+  // CN 侧同一刀同数（587 → 589，:1835）。
+  // 同 #714 / #729 / #730 / #769-R5 先例：不为了躲钉子把真名写成描述说法。数只取扫描器现报那一行：
+  //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=463  uses=465
   // 565（片A，切版前补 #569/#568 文档）：CN 契约新增「折叠触发比例与会话续接块」一节，其中 provider 回调的
   // 真实键名 `runId`（`({runId, state, previous}) → {text, version}`）是一次同名异义命中——契约必须写出这个键名，
   // 所以**不为了躲钉子而改写成模糊说法**，按判据把钉子登记成扫描器报的值。EN 侧同一句已把 `context` 写成全路径
@@ -421,7 +458,50 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // （与 #753 / #714 / #729 同一条先例：契约要能写出真实签名与真实角色名，不为躲钉子改成描述说法。）
   // 571 → 572（工单 261108-02，中英成对）：新增「响应从不回显本次档位」那一格，同样必须逐字列出返回体
   // 顶层键名，`model` 是一次同名异义命中。数取自扫描器现报：`pin=571 uses=572`（命中定位：CN :2946 `model`）。
-  "docs/host-consumer-contract_cn.md": 572,
+  // 572 → 590（**合并树现测**：同上，本支 + main `4f9b908`）：⚠ 不是 572 + 18，也不是本支单边的 589。
+  // 数只取扫描器在这棵合并树上现报那一行：
+  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=572  uses=590
+  // 590 → 588（**合并树现测 · R7 之后**：本支 `fix-261108-27-recovery-read-strict-erix` + main `4f9b908` + R7 文案修 `fix-261109-01-capability-docs-audit`）：
+  // R7 把能力表那一行「只留两个前提 + 一句指向」，删掉的展开后果里有同名异义命中 ⇒ CN 侧**降 2**。
+  // ⚠ 这不是 466 − 2 的算术结论，是扫描器在这棵树上现报的那一行：
+  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(dropped)  pin=590  uses=588
+  // 钉子随文案走、不许反推：改文案 ⇒ 现测 ⇒ 重钉（口径同 #714 / #729 / #730 / #753 / #769-R5）。
+  "docs/host-consumer-contract_cn.md": 588,
+  // 571 → 579（issue #769 R2，净 +8）：CN 新增的「恢复行」那两节里同名异义命中多 10 处，而同一刀删改
+  // 的行带走了 2 处旧命中 ⇒ 净 +8。逐条定位（行号是现树）：:2965 `maxTokenContinuations` 与其内的
+  // `maxTokens`；:5786 / :5793 / :5801 / :5802 / :5807 共 6 处 `runId`（store 方法入参名
+  // `appendRecoveryRow(runId, row)` / `listRecoveryRows(runId)` / `clearRecoveryRows(runId)`，与
+  // `config.run.runId` 同名异义）；:5811 `partialPersistence`（命名空间叶子）。同 #714 / #729 / #730 先例：
+  // 契约要能写出真实签名，不为了躲钉子改成描述说法。数只取扫描器现报那一行：
+  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=571  uses=579
+  // 579 → 584（issue #769 R4，净 +5）：同一刀的 CN 侧（F1 改口 + F4 字段面）。同名异义命中：
+  // `persistence`（`reason: "persistence_failed"`）与 `resume`（`phase: "resume_recovery_rows"`、（`resume !== true`））。
+  // 逐条定位（本文档现行号）：5811 / 5812 / 5815 / 5819（同一行可能含多次命中，故行数少于净增数）。
+  // 数只取扫描器现报那一行：
+  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=579  uses=584
+  // 584 → 585（issue #769 R5 M3，净 +1）：同一刀的 CN 侧——生命周期段改成有条件后，宿主义务那一句
+  // 也必须写出真名（「必须要么给每个新逻辑 run 换一个**新 `runId`**，要么**永不续跑**」）。
+  // 逐条定位（本文档现行号）：:5825 那一行现在含 3 处 `runId`（R2 那两处 + 本刀新增那一句），
+  // 而 :5839 / :5842 / :5846 三处是 R2 段落旧命中（base 的 :5821 / :5825）随改稿位移 ⇒ 该段 5 → 6，净 +1。
+  // 数只取扫描器现报那一行：
+  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=584  uses=585
+  // 585 → 587（issue #769 R6 文案修正①，净 +2）：把「三者缺席 ⇒ 都报一条」拆成「写侧与清盘侧各一条 / 读侧静默」
+  // 时，能力表那一行与恢复行那一节都必须把**事件的真名字与事件字段面**写出来，两处同名异义命中
+  // （都在 `AMBIGUOUS_KEYS` 里：store 形参 / run 标识与文件名，不进退役拼写判据，但计入本钉子）。
+  // 逐条定位（本文档现行号，改稿后实测）：
+  //   · :5888 `runId` —— 新加的子项里事件字段面必须逐字写 `persistence_capability_degraded` 的载荷
+  //     `{type, runId, method, detail}`（不写成「带方法名的那条降级事件」）；
+  //   · :5889 `resume` —— 静默那一条要指回真实现处，写的是文件路径 `src/loop/resume-manager.js`（路径里的
+  //     `resume` 被扫描器计到）。
+  // 同段旧命中 (:5880 x2 / :5881 x1) 随改稿位移到 :5881 x2 / :5882 x1 ⇒ 该段 3 → 5，净 +2。
+  // EN 侧同一刀净 0（463 → 463，扫描器现报 verdict=ok）：EN 原本就在那两行写着这些真名，本次只是把它们搬进子项。
+  // 同 #714 / #729 / #730 / #769-R5 先例：契约要能写出真名与真字段面，不为躲钉子改成描述说法。
+  // 数只取扫描器现报那一行：
+  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=585  uses=587
+  // 587 → 589（issue #769 R6 文案修正②，净 +2）：同一刀的 CN 侧——能力表「可选恢复行清除」那一行补两个前提，
+  // 同样必须写出真名。逐条定位：:1835 一行从 1 处（`runId`）变成 3 处（`persistence` 一个 + `runId` 两个），
+  // 与 EN :2265 同数 ⇒ 中英成对。数只取扫描器现报那一行：
+  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=587  uses=589
 });
 
 /**

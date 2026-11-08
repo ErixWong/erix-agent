@@ -1125,19 +1125,47 @@ export const FILE_TOOL_DEFINITIONS = [
     //   `src/loop/state-view.js` 4,384（记录 4,364，+0.46%）、CJK 36.6%（记录 37.0%）、`median`
     //   `src/store/file.js` 6,212（逐字未动）、`most` `src/loop/abort.js` 9,407（逐字未动）、`self`
     //   本文件 4,676（记录 4,678，-0.04%）。逐字段旧值→新值与机制写在测试侧角色表那一条的历史注里。
+    // ⚠ 2026-11-08 第十四刷（issue #769 R2，**只动了 `median` 那一档**）：`median` 钉的那个文件
+    //   `src/store/file.js` 又被本单长了——恢复行独立通道（`recoveryRowsPath()` + 它自己那份 dedup 缓存
+    //   + `appendRecoveryRow()` / `listRecoveryRows()` 与二者的 `@returns` 类型声明）把它从 25,021 顶到
+    //   27,630 字节 / 593 → 636 行，均行字节 42.1939 → **43.4434** ⇒ 容量 6,212 → **6,034**（字节 +10.43%、
+    //   容量 −2.87%，都远超 ±2%）。描述那一档 `median 6,212 (42.2)` → `median 6,034 (43.4)`（**同位数
+    //   替换 ⇒ 对本文件字节中性**）；本行以上的历史注与其余四档逐字未动，`self` 那一行按新实测刷新。
+    // ⚠ 2026-11-09 第十五刷（issue #769 R3，**`median` 那一档换人**）：同一个文件又被本单长了——
+    //   `clearRecoveryRows()` + 它的路径助手与类型声明把它从 27,630 顶到 29,368 字节 / 636 → 666 行
+    //   （均行字节 43.4434 → **44.0961** ⇒ 容量 6,034 → **5,944**），在 83 个写死样本里按容量排到第 **38/83**，
+    //   而样本中位仍是 **6,157**（`src/loop/error-ledger.js`）⇒ 两条 ±2% 断言（「描述声称的中位行数容量」对样本中位、
+    //   「median 档 == 那个文件当场实测」）的交集只剩 `[6,034, 6,063]`，再没有一个既是实测值又是档位值。
+    //   按 #730 先例把 `median` 角色交给当时真在中位的那一个：`src/loop/error-ledger.js`
+    //   6,727 B / 158 行 ⇒ 均行 42.5759 ⇒ 容量 **6,157**、CJK 29.567%。描述那一档
+    //   `median 6,034 (43.4)` → `median 6,157 (42.6)`（**同位数替换 ⇒ 对本文件字节中性**，`self` 不用重测）；
+    //   `fewest`（`pending-tool-result.js` 3,746）/ `most`（`abort.js` 9,407）/ `densest`（`state-view.js` 4,384，
+    //   记录 4,364，+0.46%）/ `self`（本文件 130,123 B / 2,302 行 ⇒ 4,637）当场复测逐字未越界 ⇒ 一列都没刷。
+    // ⚠ 2026-11-09 第十六刷（issue #769 R10，**floor 换人 + 跨档**）：本单与主干 `#754` 给
+    //   `src/loop/resume-manager.js` 的中文注释抬高了它的均行字节（本树实测 **70.9154**），它取代
+    //   `src/loop/pending-tool-result.js`（3,708）成为全树一次装得最少的那一个（**3,696**）⇒ 档位从
+    //   `[3,700, 3,750)` 掉到 `[3,650, 3,700)`：下面两个档位数字 `fewest \u2265 3,700` 与 `reads fewer than 3,700`
+    //   一起改成 **3,650**，fewest 那一档的均行字节 `70.0` → **70.9**（两处档位数字都是**同位数替换**）。
+    //   承诺没写高（`assertTierTight` 零容差一字未动：3,650 ≤ 实测 3,696 < 3,700）、也没补 `measured minimum N`
+    //   （#543：实测最小值是证据不是承诺）。⚠ **本注自己给本文件加了字节** ⇒ `self` 那一档按 #537 先例重测：
+    //   130,123 → 132,340 B / 2,302 → 2,319 行 ⇒ 均行 56.5261 → 57.0677 ⇒ 容量 **4,637 → 4,577**（下面那句
+    //   `own source fits` 同位数跟着刷；刷完再测一次 ⇒ 逐字相同 ⇒ 已收敛）。`densest` / `median` / `most`
+    //   本单一行没碰，当场复测未越界 ⇒ 一列没刷（`densest` 4,384 / CJK 36.6%：记录 4,364 / 37.0%，±容差内；
+    //   `median` 6,157 与 `most` 9,407 与记录**逐字相同**）。逐字段旧值→新值写在测试侧角色表那一条。承诺没写高（`assertTierTight`：3,650 ≤ 3,696 < 3,700，零容差一字未动）、
+    //   也没补 `measured minimum N`（#543：实测最小值是证据不是承诺）。逐字段旧值→新值写在测试侧角色表那一条。
     description: "Read a text file by line range. "
       + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` continues after line 200); default 0. "
       + "`limit` is a **line count**, default 200. "
       + "One call returns at most `max_bytes` UTF-8 bytes (default 262144 = 256KB) — the budget is counted in BYTES, so how many "
       + "lines fit is `max_bytes ÷ average bytes per line`: divide the file's byte size by its line count (e.g. `wc -c` ÷ `wc -l`) "
       + "and fold that for the file in hand, instead of assuming a line count. Measured that way on this repo's own `.js` sources "
-      + "under `src/`, `bin/` and `examples/` at the default budget (this codebase, not your tree) \u2014 fewest \u2265 3,700 lines "
-      + "(70.0 bytes/line, the widest lines; the whole-tree minimum rounded down to the nearest 50, so no file in those three trees reads fewer than 3,700 lines), "
-      + "median 6,212 (42.2), most 9,407 (27.9). "
+      + "under `src/`, `bin/` and `examples/` at the default budget (this codebase, not your tree) \u2014 fewest \u2265 3,650 lines "
+      + "(70.9 bytes/line, the widest lines; the whole-tree minimum rounded down to the nearest 50, so no file in those three trees reads fewer than 3,650 lines), "
+      + "median 6,157 (42.6), most 9,407 (27.9). "
       + "The floor is a whole-tree minimum rounded down to a multiple of 50 (a promise, not a per-file estimate); median and most come from a fixed sample of those sources and describe that sample, not every file here. "
       + "Wide lines cut this proportionally and CJK cuts hardest (3 UTF-8 bytes per character): "
       + "the most CJK-dense file in that fixed sample (`src/loop/state-view.js`, 37% of its bytes are CJK) fits 4,387 and "
-      + "this tool's own source fits 4,678. "
+      + "this tool's own source fits 4,577. "
       + "Nothing outside this repo "
       + "was measured, so for CJK-heavy code elsewhere fold the formula rather than reusing these numbers. Either way the cap is "
       + "far more than a single `limit` will ask for, so it is rarely what stops you. "
