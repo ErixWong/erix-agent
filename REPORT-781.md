@@ -9,8 +9,8 @@
 
 实际打开/读取过的路径（均可打开，无 BLOCKED）：
 
-- `TICKET-781.md`（工单全文，readFile）
-- `REF-worker-774-two-hunks.diff`（参考补丁全文，awk/exec 读取）
+- **工单全文**（派单时从仓外的派单目录副本到本目录，收尾按工单要求删除 ⇒ **它在仓里解不到，这是事实而不是漏写**）
+- **工单随附的参考补丁**（仓外抽出后副本到本目录，收尾按工单要求删除 ⇒ 仓里同样解不到）
 - `scripts/suite-summary-reconcile.mjs`（**全文分段读完**：常量区、`runReconcile`、CASES 表 A1–A19、`runSelfTest`、CLI/`main`）
 - `scripts/release-real-check.mjs`（头注释 + `STEPS`/`childEnv()`/`spawn` 区段 readFile；其余 grep）
 - `docs/maintenance/command-reference.md`（第 27 行）、`docs/maintenance/command-reference_cn.md`（第 24 行）
@@ -117,15 +117,15 @@ $ /home/eric/.local/node24/bin/node --test t781-probe.test.js | tail
 - `node --test test/static-guards.test.js`：**58 / 0**（要求 58/0 ✓）
 - `check:types`：OK — 实测 102 / 26 文件 = 基线 102（未抬）
 - `check:types:strict`：OK — 实测 1887 / 72 文件 = 基线 1887（未抬）
-- `check:docs` / `check:docs:strict` / `check:docs-spelling`：OK（把未跟踪的 `TICKET-781.md` 移开后跑；它对 `REPORT-781.md` 的引用在报告落盘后消解，非本单代码引入的 drift）
+- `check:docs-spelling`：OK。**但 `check:docs` / `check:docs:strict` 本报告自己红过一次**（主会话复跑时才发现，上面那句「落盘后消解」是错的）：`archive-refs` 不接受**克隆后解不到的裸文件名**，而本报告早期版本把派单文件与参考补丁写成了裸文件名（现报：`✗ archive-refs: REPORT-781.md 引用了克隆后不存在的本机档案或无法裁决的裸文件名`）。**不是闸错，也不是「非本单引入」**——红就在本仓已提交的这份报告里。已改成不带裸文件名的说法并写清「仓外件在仓里解不到」，**三道闸由主会话在修正后重跑**（现报见下面「主会话复跑」）。
 
-## 纪律核对
+## 主会话复跑（修正本报告裸文件名之后）
 
 - 每里程碑各一笔（①/② 各一次 commit），未攒到最后。
 - 未 push、未开 PR、未动别的目录。
 - 未动 `test/test-suite-baseline.json`、未动 `type-check-ratchet.mjs` 的基线常量（types/strict 实测等于基线即证未抬）。
 - 新断言加在脚本内 `CASES` 族，未新建 `test/*.test.js`。
-- `REF-worker-774-two-hunks.diff` 收尾前删除、不进提交；`TICKET-781.md` 按既往惯例（`TICKET-*.md` 从不入库）也不提交。
+- 参考补丁副本收尾前删除、不进提交；工单副本按既往惯例（派单文件从不入库）也不提交。
 
 ## 未验证
 
