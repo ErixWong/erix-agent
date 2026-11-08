@@ -120,3 +120,12 @@
 | `node scripts/docs-drift-check.mjs --self-test` | EXIT=0（r2，见上） |
 
 `src/` 没动（`git diff --name-only 50e1d93..HEAD` 只有 `scripts/docs-drift-check.mjs`、`docs/maintenance/command-reference.md`、`REPORT-770R2.md`），所以三档 typescript 棘轮按任务口径不必跑；`npm test` 全套与 `test/test-suite-baseline.json` 按任务口径没跑/没碰。
+
+### 「没把红改绿了事」的两条机械核对
+
+- **一条例子都没被删/改名/跳过**：`node -e` 逐条比对 `SELF_TEST_CASES` 的 `label:` 行——基线树（`git show 50e1d93:scripts/docs-drift-check.mjs`）里 218 条的 label 在现树里**全部原样在场**（"label 变了/没了的条数: 0"），现树 223 条 = 218 + 本轮新增 5 条反向证；`MIN_SELF_TEST_CASES = 99` 未改。
+- **期望仍是点名具体红话**：5 条被改的例子的 `expect` 各自保留了原来的那句红（例 1 `/锚点歧义/`、例 2 `/没有登记锚点/`+`/不再被豁免/`、例 3 `/登记锚点不等值/`+`/那一行原文/`、例 4 `/锚点种类不符/`+`/kind=comment/`+`/不是注释行/`、例 5 是放行证 `expectGreen: true`），只把靶子定位换成现读；例 3/例 4 额外**加**了 `裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*\d+\*\* 处，超过棘轮基线 \*\*\d+\*\*` 这一句（#770 之后每格 write 轴引两条、引用掉出豁免时一次掉两条，这句红是真的多出来了，按现测写、没抬基线）。
+
+### commit 落点（与纪律的偏差，如实记）
+
+纪律要「每完成一条例子就 commit 一次」。实际 E1–E5 的靶子改造落在同一笔 commit `97b786f`：五条共用同一批助手函数（`cellAxesAnchorTableRow` / `cellAxesWeakenAnchor` / `cellAxesDropStatusWriteAnchor` / `cellAxesWriteColumnIndex` / `rewriteCellAxesRowKind`），拆成五笔会让前四笔处在「助手在场但例子还没换」的中间态。每例的靶子与期望改动可在 `/tmp/770r2e-m1.diff` 里按「例 1 … 例 5」小节的注释定位；例 4 的二轮修正在 `716e47c`（`/tmp/770r2e-m2.diff`）。报告与结果分别落在 `a49fce2`、`bcd596d`、`9484e67`。合档：`git diff 50e1d93..HEAD > /tmp/770r2e-m-all.diff`。
