@@ -2246,8 +2246,8 @@ export async function runToolLoop(options) {
   // 后果是**跳过那次执行本该发生的副作用**。契约（`docs/host-consumer-contract.md` / `_cn.md` 的
   // 「Ledger recovery rows」）已写明 `runId` = 一条持久化 run lineage、新逻辑 run 必须换新 ID；
   // 这句是那个语义的运行面：`resume !== true` ⇒ 先清恢复行（**只**清恢复行，轮记录账本历史不动）。
-  // 走能力位：store 没实现 `clearRecoveryRows` ⇒ `persist` 发一条 `persistence_capability_degraded`
-  // 并跳过（不抛），与其余可选能力同一口径。
+  // 这一清**只在持久化开着时才会走到**：`persistence` 不是 `"none"` 时 `persistenceRequired` 才为真，而 `persistClassified` 第一行 `if (!persistenceRequired) return false;` 就先短路 ⇒ 持久化关着时既不碰 store、也不发任何诊断（宿主不能把「没收到诊断」读成「清过了」）。
+  // 走能力位：store 没实现 `clearRecoveryRows` ⇒ `persist` 发一条 `persistence_capability_degraded` 并跳过（不抛），与其余可选能力同一口径。
   //
   // issue #769 R5（M2）：**能力缺席与调用失败是两回事**（与上面 `listRecoveryRows` 的 M1/B 同规则）：
   //   · **方法缺席** = 宿主**从未承诺**过这项能力 ⇒ 降级合法（契约已要求这种宿主自己换新 `runId`），
