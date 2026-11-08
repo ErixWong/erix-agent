@@ -898,7 +898,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-host-steer-turn-753.test.js` | 6 | `onEvent`×6, `onObserverError`×2, `completion`×1, `reflection`×1, `resume`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/prompt-note-coverage-746.test.js` | 1 | `tools`×1 |
 | `test/loop-resume-abandon-signals-730.test.js` | 5 | `completion`×1, `resume`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
-| `test/examples/erix-run-steer.test.js` | 3 | `tools`×2, `strategy`×1 |
+| `test/examples/erix-run-steer.test.js` | 4 | `tools`×3, `strategy`×1 |
 | `test/contract-snapshot-cell-axes-767.test.js` | 3 | `tools`×2, `partialPersistence`×1 |
 | `test/store/append-user-turn-settle-765.test.js` | 15 | `completion`×3, `resume`×3, `stallDetection`×3, `tools`×3, `wrapup`×3 |
 

@@ -6,6 +6,8 @@
 ### Breaking
 
 ### Changed
+- **Changed (issue #770): the run snapshot stops writing `status` and `compactionStats`; key presence is host-visible, because `src/store/file.js:523` writes the snapshot with `JSON.stringify(snapshot)` - the key set and its order *are* the bytes on disk.** Neither cell had an engine reader left: the resume side reads `deterministic.compactionStats` from the run state, and the on-disk exit of the compaction log is the round record; the only reader of `status` inside `src/` was the classification channel sniffing it out of the payload, replaced by an explicit `persistClassified(method, status, runId, ...)` argument, so the `status` parameter and all 7 call sites stay as they were. Tests that used either cell as their fingerprint now read the authoritative source: call sites are told apart by `executedToolIds` (a successfully executed tool lands only there) and by `toolResult.erix.executionStatus`, which the engine writes only on rejected / intercepted / interrupted results; the checkpoint face of the compaction-observation case reads the persisted run state. The surviving key order is `round, pendingToolUse, pendingToolUses, messages, persistedTranscriptLength, executedToolIds, toolResults, toolOutputs` (plus `partialText` / `partialRound` on a crash); old archives that still carry the stopped keys are read back verbatim and no fallback was removed. Machine absence assertions live in `test/loop-snapshot-write-side-735.test.js`; the write axis of both contract tables records the two cells as `stopped`, pinned to the comments that explain why there is no write point.
+- **变更（issue #770）：run snapshot 停写 `status` 与 `compactionStats`；键的存在性是宿主可见面——`src/store/file.js:523` 用 `JSON.stringify(snapshot)` 落盘 ⇒ 键集与键序就是盘上字节。**两格在引擎侧已无读者：恢复侧读 run-state 的 `deterministic.compactionStats`，压缩统计的落盘出口是**轮记录**；`status` 在 `src/` 里唯一的读者是分类通道对载荷的嗅探，已换成调用点显式交进来的 `persistClassified(method, status, runId, ...)` 入参，`status` 形参与全仓 7 个调用点一律不动。原先拿这两格当指纹的用例改读**权威来源**：调用点靠 `executedToolIds`（成功执行只进这里）与 `toolResult.erix.executionStatus`（引擎只在被拒 / 被拦 / 被中断的结果上写它）分辨，压缩观测用例的 checkpoint 那一面改读落盘 run-state。停写后的键序是 `round, pendingToolUse, pendingToolUses, messages, persistedTranscriptLength, executedToolIds, toolResults, toolOutputs`（崩溃时多 `partialText` / `partialRound`）；仍带这两格的历史旧档照旧逐字读回，未删任何 `?? ` fallback。机器缺席断言在 `test/loop-snapshot-write-side-735.test.js`；两份契约表的写轴把这两格记成 `stopped`，锚点钉在解释「为什么这里没有写点」的注释上。
 - **The `check:docs` bare-line ratchet got one narrow, explicitly *conditional* exemption, so the two-axis payload table can keep citing `file:line` (issue #772 — gate and docs only, no behaviour change).** The table #767 added writes a write site and a reader into every cell, which pushed `bare-lines` to a measured 78 against the floor `BARE_LINE_REF_BASELINE = 6`; **the floor was not raised.** What is exempt is now defined by position *and* by a machine check, and both have to hold: **(a)** only the lines that sit **between** the `<!-- erix:snapshot-cell-axes:begin -->` / `<!-- erix:snapshot-cell-axes:end -->` markers in both contract files **and** are `|`-prefixed table rows — a bare line number outside those markers is counted line by line exactly as before, and a citation that also appears outside the markers is not exempt at all; **(b)** the exemption is granted only while `test/contract-snapshot-cell-axes-767.test.js` still carries its `G4` case, i.e. the one that reconciles every citation in the table (file present + line inside the file + that line really mentions the cell's payload key). What the gate binds is `G4_KEY_NAME_CHECK`'s **definition (both parameters actually used) plus its call inside `assert.ok(...)`** — not the case title and not a comment — so renaming or deleting that test file, or weakening the key-name check into "the line number exists", voids the exemption and the gate turns red again while naming which half of the guard is gone (an exemption that only needed the range to be valid would have been a free pass). Nothing else was relaxed: out-of-range / missing-target / reversed-range checks still run on the exempted references, and `--verbose` prints the exempt count inside the breakdown rather than quietly dropping it — today that line reads 97 occurrences / 82 unique ranges / 4 declaratively exempted / **72 marked-region exempted** ⇒ measured **6** vs floor 6. `--self-test` gained 4 reverse-proof cases (same reference copied outside the markers → red; guard test emptied → red; key-name check weakened → red; comment-only change → green). The 4 bare line numbers the notes *under* the table had picked up were converted into symbol anchors (`residueStart` / `restoreResume`) — the #286 preferred fix, not floor relief; the register lives in `docs/maintenance/command-reference.md#docs-anchors`.
 - **`check:docs` 的裸行号棘轮拿到一条很窄、且「写明有条件」的豁免，两轴载荷表因此可以继续写 `file:line`（issue #772 — 只动门禁与文档，行为不变）。#767 那张表每格都得写一个写点与一个读者，把 `bare-lines` 顶到实测 78 / 地板 `BARE_LINE_REF_BASELINE = 6`；**地板没抬。** 豁免的范围现在由「位置」与「机器复核」两件事共同定义，两者缺一不可：**(a)** 只豁免中英两份契约里 `<!-- erix:snapshot-cell-axes:begin -->` 与 `<!-- erix:snapshot-cell-axes:end -->` 这对标记**之间**、且以 `|` 开头的表格行 — 标记区**外**的裸行号照旧逐条计数，而同一条引用只要在区外还出现过一次就完全不豁免；**(b)** 只有当 `test/contract-snapshot-cell-axes-767.test.js` 仍带着 `G4` 那条用例时才给豁免，也就是逐条复核表里每条 `file:line` 的那一条（文件在场 + 行号在范围内 + 那一行确实提到这格的键名）。门禁绑的是 `G4_KEY_NAME_CHECK` 的**定义（两个参数都真被用到）加上它在 `assert.ok(…)` 里的调用**——不是用例标题、也不是注释——所以把那个测试文件改名或删除、或把键名判据削弱成「行号存在就行」，豁免立即失效、闸回红，并且会点名说清是哪一半判据没了（若只要求「行号在范围内就算过」，豁免就成了免检通道）。其余一律没放宽：越界 / 目标文件不存在 / 反向区间这三项对被豁免的引用照旧逐条查，而 `--verbose` 会把豁免数写进分解里而不是静默少算——今天那一行读作 出现 97 / 唯一 82 / 声明式豁免 4 / **标记区定点豁免 72** ⇒ 棘轮口径实测 **6** vs 地板 6。`--self-test` 新增 4 条反向证（同一条引用抄到标记区外 → 红；那个测试文件被清空 → 红；键名判据被削弱 → 红；只加一行注释 → 绿）。表**下**口径段自己带上的那 4 处裸行号按 #286 首选修法改成「符号 + 文件」锚点（`residueStart` / `restoreResume`），没有伸手要地板；登记写在 `docs/maintenance/command-reference.md#docs-anchors`。
 - **The real-upstream tool-fact e2e got a new observation face for its "the engine never rewrites history"
@@ -1383,6 +1385,49 @@
   现测是**包根 27 个**（101 个错，对着没动的 `BASELINE_ROOT = 103`）与 **`--with-tools` 29 个**（136 个错，
   对着没动的 **138**），于是 `AGENTS.md` / `AGENTS_cn.md` 改成 27 与 29，而基线常量与 `--checkJs`/`--strict`
   的语义一个字都没碰（issue #730）。
+
+- **`erix_run`'s steer channel never reached the inner run on the production path: the default `runJob` wrapper
+  dropped the hook (issue #753, C2 follow-up).** `start()` hands the turn-boundary hook to `runJob` in its
+  **second** argument (`steerHookDeps(job)` → `opts.nextUserTurn`), and `createAsyncRuntime`'s **default** `runJob`
+  — the one used whenever no `runJob` is injected, which is exactly what production is: `erix-run.ts` builds its
+  runtime with only `registry / sendRegistry / sessionHandles / notify` — translated `opts` into `runErixRun`'s
+  deps by forwarding four optional keys, `runId` / `resumeTarget` / `signal` / `onProgress`. `nextUserTurn` was not
+  among them, so `runErixRun`'s own `typeof deps.nextUserTurn === "function"` guard never fired and the engine never
+  saw a hook. The breakage was silent **by construction**: `action:"steer"` returned `steerPending: 1`, nothing
+  errored, the artifacts were complete, and the terminal view still reported the queue — the real-upstream run ended
+  with `steerPending: 1` while the product said `STEER-ACK: NONE`. The forwarding now has the same shape as its
+  neighbours (`...(opts.nextUserTurn === undefined ? {} : { nextUserTurn: opts.nextUserTurn })`): not passed ⇒ no
+  extra key, so the synchronous face still installs no hook at all. **Why the all-green existing suite missed it**:
+  every cell of `test/examples/erix-run-steer.test.js` injected a fake `runJob`, pinning only `start() → runJob`,
+  while the cells that exercise the real `runToolLoop` call `core.runErixRun` directly and never enter this wrapper
+  ⇒ the production seam `default runJob → runErixRun` had no coverage at all. The new guard injects **no** `runJob`
+  and goes offline through seams core already owns (`loadLib` / `loadSlot` / `createProvider` / `createAssembly` /
+  `createStore`), asserting on facts rather than on "the hook was called": `steerPending` returns 1 → 0, and the
+  steered sentence shows up as a `role:"user"` turn inside the request the fake provider received. Reverse proof on
+  that cell: delete the forwarding line ⇒ red **on the `steerPending` assertion** (reported `实际=1`), with the
+  sentence absent from every request and `diagnostics.steer` never created at all; put it back ⇒ green, terminal
+  `diagnostics.steer = {offered:3, injected:1, rejected:0, lastRound:2}`. **Optional-key reconciliation** (checked
+  key by key, written into the report): `start()` puts five keys on that second argument (`signal` / `onProgress` /
+  `runId` / `resumeTarget` / `nextUserTurn`) and `sync()` puts three (`signal` / `onProgress` / `runId: undefined`)
+  — after this fix the wrapper forwards every one of them, and `nextUserTurn` was the only one it dropped.
+- **`erix_run` 的 steer 通道在生产路径上从没到过内层 run：默认 `runJob` 包装层把钩子丢掉了（issue #753，C2 后续）。**
+  `start()` 把轮边界转向钩子放在 `runJob` 的**第二个参数**上（`steerHookDeps(job)` ⇒ `opts.nextUserTurn`），而
+  `createAsyncRuntime` 的**默认** `runJob`（没注入 `runJob` 时用的就是它，而 `erix-run.ts` 建生产 runtime 时只传
+  `registry / sendRegistry / sessionHandles / notify`，所以生产用的正是它）把 `opts` 翻译成 `runErixRun` 的 deps 时
+  只转了 `runId` / `resumeTarget` / `signal` / `onProgress` 四个可选键——`nextUserTurn` 不在里面。于是
+  `runErixRun` 那句 `typeof deps.nextUserTurn === "function"` 永远不成立，引擎那一侧从没见过钩子。这个坏法是**构造出来的沉默**：
+  `action:"steer"` 返回 `steerPending: 1`、不报错、产物不缺、终局视图还报着那个队列——真上游那一跑以
+  `steerPending: 1` 收场，产物里写的是 `STEER-ACK: NONE`。现在那一行的转发形状与旁边的可选键逐字一致
+  （`...(opts.nextUserTurn === undefined ? {} : { nextUserTurn: opts.nextUserTurn })`）：没递就**不多一个键**，
+  同步面照旧一个钩子也不装。**为什么全绿的既有用例抓不到它**：`test/examples/erix-run-steer.test.js` 每一格都注入了假
+  `runJob`，钉的是 `start() → runJob` 那一段；而跑真 `runToolLoop` 的那几格直接调 `core.runErixRun`，**不经过这层包装**
+  ⇒ 生产接缝 `默认 runJob → runErixRun` 一格覆盖都没有。新加的守网**不注入 `runJob`**，只经 core 已有的离线缝
+  （`loadLib` / `loadSlot` / `createProvider` / `createAssembly` / `createStore`），断言落在事实上而不是「钩子被调过」：
+  `steerPending` 从 1 回到 0，且那句话以 `role:"user"` 轮的身份出现在假 provider 收到的请求里。反向证：删掉那行转发
+  ⇒ 红在 `steerPending` 那一断言（报「实际=1」），同时那句话在任何一次请求里都找不到、`diagnostics.steer` 根本不生成；
+  加回来 ⇒ 绿，终局 `diagnostics.steer = {offered:3, injected:1, rejected:0, lastRound:2}`。**可选键对账**（逐字核过写进报告）：
+  `start()` 往第二参放五个键（`signal` / `onProgress` / `runId` / `resumeTarget` / `nextUserTurn`），`sync()` 放三个
+  （`signal` / `onProgress` / `runId: undefined`）——修完之后默认包装层把它们**全部**转发，之前漏的就是 `nextUserTurn` 这一个。
 
 ## [0.31.0] - 2026-11-04
 

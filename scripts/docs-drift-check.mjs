@@ -223,6 +223,7 @@ import {
   anchorGroupKey as cellAxesAnchorGroupKey,
   anchorHitLines as cellAxesAnchorHitLines,
   anchorKindError as cellAxesAnchorKindError,
+  anchorLineIsComment as cellAxesAnchorLineIsComment,
   anchorLinesEqual as cellAxesAnchorLinesEqual,
   anchorTableShape as cellAxesAnchorTableShape,
   checkCellAxesCoverage as cellAxesCheckCoverage,
@@ -8058,6 +8059,60 @@ const CELL_AXES_DISTRACTOR_LINE = (() => {
 })();
 
 /**
+ * #770 R2：从锚点模块的**文本**里定位 `CELL_AXES_ANCHORS` 登记表里某一条登记所在的行下标（现读，不写死
+ * 行号）。必须只在 `export const CELL_AXES_ANCHORS = [` **之后**找：#770 之后人审清单
+ * `CELL_AXES_REQUIRED_CELLS` 也带 `kind` / `anchor` 字段，于是「同一行含 `key: "status", axis: "write"`
+ * 且含 `anchor:`」在整份文件里有**两处**（清单一条 + 登记表一条）⇒ 旧夹具那种「整份文本里挑唯一一行」
+ * 的靶子从 #770 起一律打不上 ⇒ 由 harness 的「变异没落上」判据报红（#210 R2 口径）。
+ * @returns {number} 行下标；命中 0 处或不止一处 ⇒ -1（⇒ 变异原样返回 ⇒ 照旧报红）
+ */
+const cellAxesAnchorTableRow = (text, includes) => {
+  const lines = text.split("\n");
+  const from = lines.findIndex((l) => l.startsWith("export const CELL_AXES_ANCHORS = ["));
+  if (from < 0) return -1;
+  const hits = lines.map((l, i) => (i > from && includes(l) ? i : -1)).filter((i) => i >= 0);
+  return hits.length === 1 ? hits[0] : -1;
+};
+
+/** `status` 写点那一条登记（#770 之后是一条 `kind: "comment"` 锚点）在登记表里的行下标。 */
+const cellAxesStatusWriteAnchorRow = (text) => cellAxesAnchorTableRow(
+  text, (l) => l.includes('key: "status", axis: "write"') && l.includes("anchor:"));
+
+/**
+ * 把登记表里那一行的 `anchor:` 换成别的内容（转义交给 `JSON.stringify`）。那一行不在场或没改成 ⇒
+ * 原样返回文本 ⇒ 由「变异没落上」判据报红，而不是悄悄绿过去。
+ */
+const cellAxesWeakenAnchor = (text, anchor) => {
+  const at = cellAxesStatusWriteAnchorRow(text);
+  if (at < 0) return text;
+  const lines = text.split("\n");
+  const weakened = lines[at].replace(/anchor: "(?:[^"\\]|\\.)*"/u, () => `anchor: ${JSON.stringify(anchor)}`);
+  return weakened === lines[at] ? text : [...lines.slice(0, at), weakened, ...lines.slice(at + 1)].join("\n");
+};
+
+/** 删掉登记表里 `status` 写点那一条登记（整行删 = 「这一格这一轴的登记被摸掉」那个形状）。 */
+const cellAxesDropStatusWriteAnchor = (text) => {
+  const at = cellAxesStatusWriteAnchorRow(text);
+  if (at < 0) return text;
+  const lines = text.split("\n");
+  return [...lines.slice(0, at), ...lines.slice(at + 1)].join("\n");
+};
+
+/**
+ * 把登记表里 `${key}` 的 `${axis}` 那一行的 `kind:` 改成给定值：锚点与两份表的引用**都不动**，
+ * 只有种类登记被改口（「种类登记造假」那族反向证的靶子）。那一格不在场或没改成 ⇒ 原样返回
+ * ⇒ 由「变异没落上」判据报红。
+ */
+const rewriteCellAxesRowKind = (text, key, axis, kind) => {
+  const at = cellAxesAnchorTableRow(text,
+    (l) => l.includes(`key: "${key}", axis: "${axis}"`) && l.includes("kind:"));
+  if (at < 0) return text;
+  const lines = text.split("\n");
+  const rewritten = lines[at].replace(/kind: "(?:code|comment)"/u, () => `kind: ${JSON.stringify(kind)}`);
+  return rewritten === lines[at] ? text : [...lines.slice(0, at), rewritten, ...lines.slice(at + 1)].join("\n");
+};
+
+/**
  * #772 R4 M-A 的靶子（现读，不写死行号）：`compactionStats` 写点那一条 `kind: "code"` 锚点的
  * **字面量原文**（拿它当替换靶）、它命中的真写点行号，与同一键名的那句**注释**行号。
  * 拿不到靶子就返回 null ⇒ 下面那两条变异打不上 ⇒ 「变异没落上」判据报红，不会假绿。
@@ -8073,6 +8128,59 @@ const CELL_AXES_R4_KIND_PROBE = (() => {
 
 /** 把两份契约里某条 `path:line` 同步改口到另一行（#772 R4：“两份引文同步改口”那个形状）。 */
 const syncCellAxesCitation = (from, to) => (text) => text.split(from).join(to);
+
+/**
+ * #770 R2：M-A **反方向**那一例要「换进去的必须是一句真代码」。旧夹具拿 `status` 写点那条当“真代码”，
+ * 而 #770 之后 `status` 写点自己就钉在「解释为什么这里没有写点」的注释行上 ⇒ 换进去的还是注释
+ * ⇒ 种类轴没被逆 ⇒ 那一例只能报「行号不等值」，问不到它问的那件事。现在从出厂表里**现读**候选。
+ * 唯一性必须按**闸实际会算法**算：本例只把 `anchor:` 的字面量换成候选，`kind` 与 `prev` 还是
+ * `toolUse` 那一条的（现网：`round` 的锚点自带 `prev`，单独拿它的正则去扫会命中 4 行 ⇒ 闸先报「锚点
+ * 歧义」就停了，种类判据根本轮不到出场）。所以这里把候选装进 `toolUse` 那条里重算：要求唯一命中、
+ * 且那一行不是注释。抽不到 ⇒ null ⇒ 变异打不上 ⇒ 「变异没落上」报红。
+ */
+const CELL_AXES_R4_REVERSE_CODE_TARGET = (() => {
+  const victim = CELL_AXES_ANCHORS_SHIPPED.find((e) => e.key === "toolUse" && e.axis === "write" && e.kind === "comment");
+  if (victim === undefined) return null;
+  for (const entry of CELL_AXES_ANCHORS_SHIPPED) {
+    if (entry.axis !== "write" || entry.kind !== "code") continue;
+    if (entry.codePath !== victim.codePath) continue;   // 换过去后是用 victim 的 codePath 扫的
+    const lines = textOf(entry.codePath).split("\n");
+    const hits = cellAxesAnchorHitLines(lines, { ...victim, anchor: entry.anchor }).hits ?? [];
+    if (hits.length !== 1) continue;
+    if (cellAxesAnchorLineIsComment(lines[hits[0] - 1])) continue;   // 必须是真代码行
+    return { entry, literal: JSON.stringify(entry.anchor), line: hits[0] };
+  }
+  return null;
+})();
+
+/**
+ * #770 R2：M-A「已知限度」特征用例的靶子（现算，不抄行号）：同一键名在 `src/loop/orchestrator.js` 里的
+ * **另一处真代码行**。#770 之前夹具写死 `:3505`（那时它是快照载荷里的 `compactionStats,`），#770 把那格
+ * 停写删行后，同一形状只剩 **run-state 落盘**那一份——它是**另一件产物**，正是这一例要钉的形状：
+ * 锚点换到同键名的另一处真代码行 + 两份表同步改口 ⇒ 机械上全绿，而「快照这格的写点」这句话机器证不了。
+ * 命中 0 或 >1、或那一行是注释 ⇒ null ⇒ 变异打不上 ⇒ 「变异没落上」报红。
+ */
+const CELL_AXES_R4_SAME_NAME_CODE_LINE = (() => {
+  const anchor = "^ {6}compactionStats,$";
+  const lines = textOf("src/loop/orchestrator.js").split("\n");
+  const hits = lines.map((l, i) => (new RegExp(anchor, "u").test(l) ? i + 1 : 0)).filter((n) => n > 0);
+  if (hits.length !== 1 || cellAxesAnchorLineIsComment(lines[hits[0] - 1])) return null;
+  return { anchor, line: hits[0], citation: `src/loop/orchestrator.js:${hits[0]}` };
+})();
+
+/**
+ * #770 R2：两轴表「今天的写点」那一列的列号（从标记区的**表头行**现算，不写死列号）。
+ * 旧用例靠单元格里那句「（快照）」限定词认那一格，#770 之后它写的是「解释缺席的注释 + 快照轮记录」
+ * ⇒ 字样变了 ⇒ 定位不到 ⇒ 变异空跑。现在跟闸自己读表用同一列（`cellAxesTableRefs` 读 `cells[5]`）；
+ * 表头不在场或那一列改名 ⇒ -1 ⇒ 变异打不上 ⇒ 「变异没落上」报红。
+ */
+const cellAxesWriteColumnIndex = (lines) => {
+  const begin = lines.findIndex((l) => l.includes(CELL_AXES_MARK_BEGIN));
+  if (begin < 0) return -1;
+  const header = lines.slice(begin + 1).find((l) => l.trim().startsWith("|"));
+  if (header === undefined) return -1;
+  return header.split("|").findIndex((c) => c.includes("今天的写点") || c.includes("Today's write site"));
+};
 
 /**
  * #772 R4 M-B 的靶子（现算）：每个**双锚点组**（同 key+axis+同名第几行+同文件上有两条登记）
@@ -8720,9 +8828,22 @@ const SELF_TEST_CASES = [
     expectGreen: true,
   },
   {
+    // #770 R2：靶子坐标换了，问的事没换。旧靶子是锤在快照载荷里那行 `status,`（`"^ {8}status,$"`），
+    // 那一行已随 #770 停写消失；现在这一格的写轴登记本身就是一条 `kind: "comment"` 锚点（钉「这里为什么
+    // 没有写点」那句注释）。把它削弱成**键名词面**仍然应当 ⇒ 词面命中多处 ⇒ 锚点歧义 ⇒ 不再被豁免。
     label: "#772 豁免不是「行号在范围内就行」的免检通道：把 `status` 写点的锚点削弱成**键名本身**（词面判据就是这个形状）→ 闸自己重算当场发现锚点歧义、那条引用掉出豁免、棘轮回红",
-    overlay: { [CELL_AXES_ANCHOR_MODULE]: replaceUnique('"^ {8}status,$"', '"status"') },
+    overlay: { [CELL_AXES_ANCHOR_MODULE]: (t) => cellAxesWeakenAnchor(t, "status") },
     expect: [/cell-axes-anchors:/, /锚点歧义/, /`status`/, /bare-lines: 标记区定点豁免的机器复核不在场/,
+      /裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*\d+\*\* 处，超过棘轮基线 \*\*\d+\*\*/],
+  },
+  {
+    // #770 R2 反向证（例 1 的靶子诚实性）：把新靶子**还原成 #770 之前的旧形状**（钉回载荷里那行 `status,`）
+    // ⇒ 这一格今天已没有写点 ⇒ 锚点 0 命中 ⇒ 那条引用掉出豁免、棘轮回红，并点名 `status`。
+    // 它证的是：例 1 只换了靶子坐标，词面锁不配当基准这条判据一步没松。
+    label: "#770 R2 反向证（例 1）：把 `status` 写点锚点还原成 #770 之前的旧形状（`^ {8}status,$`）⇒ 这一格已无写点可钉 ⇒ 锚点 0 命中、那条引用不再被豁免、棘轮回红，并点名 `status`",
+    overlay: { [CELL_AXES_ANCHOR_MODULE]: (t) => cellAxesWeakenAnchor(t, "^ {8}status,$") },
+    expect: [/cell-axes-anchors:/, /锚点 0 命中/, /没有登记锚点/, /不再被豁免/, /`status`/,
+      /bare-lines: 标记区定点豁免的机器复核不在场/,
       /裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*\d+\*\* 处，超过棘轮基线 \*\*\d+\*\*/],
   },
   {
@@ -8733,37 +8854,67 @@ const SELF_TEST_CASES = [
   },
   {
     label: `#772 R3 「删锚点躲过去」不成立：删掉 ${CELL_AXES_ANCHOR_MODULE} 里 \`status\` 写点那一条登记 ⇒ 那条引用不再被豁免 ⇒ 回到棘轮计数 ⇒ 红`,
-    overlay: {
-      [CELL_AXES_ANCHOR_MODULE]: (t) => {
-        const lines = t.split("\n");
-        // #772 R4：人审清单 `CELL_AXES_REQUIRED_CELLS` 里也有 `status`+write 那一格，所以只能挑带锚点的那一条
-        const hit = lines.filter((l) => l.includes('key: "status", axis: "write"') && l.includes("anchor:"));
-        if (hit.length !== 1) return t;
-        const at = lines.indexOf(hit[0]);
-        return [...lines.slice(0, at), ...lines.slice(at + 1)].join("\n");
-      },
-    },
+    // #770 R2：定位改成「只在 `CELL_AXES_ANCHORS` 数组段里找 `status`+write 那一行」。#770 之后人审清单
+    // `CELL_AXES_REQUIRED_CELLS` 也带 anchor 字段，旧 needle（整份文件里挑同时含 key/axis/anchor 的唯一行）
+    // 会命中两处 ⇒ 变异一律打不上。问的事没换：删掉这一格这一轴的登记 ⇒ 引用失去基准 ⇒ 不再被豁免 ⇒ 回棘轮。
+    overlay: { [CELL_AXES_ANCHOR_MODULE]: cellAxesDropStatusWriteAnchor },
     expect: [/cell-axes-anchors:/, /没有登记锚点/, /不再被豁免/, /`status`/,
+      /裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*\d+\*\* 处，超过棘轮基线 \*\*\d+\*\*/],
+  },
+  {
+    // #770 R2 反向证（例 2）：登记那一行**留着**、只把它的锚点削弱成跑不通的正则 ⇒ 同样点名 `status`、
+    // 同样不再被豁免。它证的是：豁免要的是「能重算的锚点」，不是「表里有一行」——两者都能躲。
+    label: "#770 R2 反向证（例 2）：登记表里 `status` 写点那一条留着、只把锚点削弱成跑不通的正则 ⇒ 闸无法重算 ⇒ 同样点名 `status`、同样不再被豁免、棘轮回红",
+    overlay: { [CELL_AXES_ANCHOR_MODULE]: (t) => cellAxesWeakenAnchor(t, "^ {8}status(,$") },
+    expect: [/cell-axes-anchors:/, /锚点正则跑不通/, /没有登记锚点/, /不再被豁免/, /`status`/,
       /裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*\d+\*\* 处，超过棘轮基线 \*\*\d+\*\*/],
   },
   {
     label: `#772 R2 评审第 3 节那个现场：把 CN 表 \`${CELL_AXES_DRIFT_PROBE}\` 换成同一键名的注释行 :${CELL_AXES_DISTRACTOR_LINE} ⇒ 闸自己重算锚点就发现行号漂了（词面判据当年看不见）`,
     overlay: { [CONTRACT_CN]: (t) => {
       if (CELL_AXES_DRIFT_PROBE === null || CELL_AXES_DISTRACTOR_LINE === null) return t;
-      // 同一行里 \`${CELL_AXES_DRIFT_PROBE}\` 出现两次（读者描述列 + 写点列），裸 String.replace 会打到
+      // 同一行里 `${CELL_AXES_DRIFT_PROBE}` 出现两次（权威源列 + 写点列），裸 String.replace 会打到
       // 第一处 ⇒ R2 这一例正是这样空转的（改了但没红）。这里只打**写点那一格**。
+      // #770 R2：写点格的位置改成从表头现算（旧写法靠格子里那句「（快照）」认列，#770 之后那一格写的是
+      // 「解释缺席的注释 + 快照轮记录」，字样换了 ⇒ 定位不到 ⇒ 变异空跑）。列号与闸读表的列位同源。
       const lines = t.split("\n");
       const at = lines.findIndex((l) => l.includes("`compactionStats`") && l.includes(CELL_AXES_DRIFT_PROBE));
       if (at < 0) return t;
       const cells = lines[at].split("|");
-      const col = cells.findIndex((c) => c.includes(CELL_AXES_DRIFT_PROBE) && c.includes("（快照）"));
-      if (col < 0) return t;
+      const col = cellAxesWriteColumnIndex(lines);
+      if (col < 0 || col >= cells.length || !cells[col].includes(CELL_AXES_DRIFT_PROBE)) return t;
       cells[col] = cells[col].replace(CELL_AXES_DRIFT_PROBE, `src/loop/orchestrator.js:${CELL_AXES_DISTRACTOR_LINE}`);
       lines[at] = cells.join("|");
       return lines.join("\n");
     } },
+    // #770 R2：这一例现在还会多出一句**诚实的红**：这一格的 write 轴已不引 6185，钉「快照轮记录」的那条
+    // 引用不再被逐组豁免⇒ 裸行号棘轮回红（不抬基线，按现测写）。
     expect: [/登记锚点不等值/, /表写 src\/loop\/orchestrator\.js:\d+/, /锚点实际 src\/loop\/orchestrator\.js:\d+/,
-      /那一行原文/, /bare-lines: 标记区定点豁免的机器复核不在场/],
+      /那一行原文/, /bare-lines: 标记区定点豁免的机器复核不在场/,
+      /裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*\d+\*\* 处，超过棘轮基线 \*\*\d+\*\*/],
+    expectFiles: [CONTRACT_CN],
+  },
+  {
+    // #770 R2 反向证（例 3）：把 CN 那一格**还原成 #770 之前的旧形状**（只引一条写点）⇒ 必须红：
+    // 锚点重算是两条（解释注释 + 快照轮记录），表里只剩一条 ⇒ 不等值，并被覆盖面点名「cn 表只引了 1 处」。
+    // 它证的是：#770 新增的那第二条引用不是装饰，它真的在被对账。
+    label: "#770 R2 反向证（例 3）：把 CN 表 `compactionStats` 写点那一格还原成 #770 之前的单条引用形状（删掉锚点重算出的第二条）⇒ 不等值、覆盖面都红，并点名 `compactionStats`",
+    overlay: { [CONTRACT_CN]: (t) => {
+      if (CELL_AXES_R4_KIND_PROBE === null) return t;
+      const cited = `src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.realLine}`;
+      const lines = t.split("\n");
+      const at = lines.findIndex((l) => l.includes("`compactionStats`") && l.includes(cited));
+      const col = cellAxesWriteColumnIndex(lines);
+      if (at < 0 || col < 0) return t;
+      const cells = lines[at].split("|");
+      if (col >= cells.length || !cells[col].includes(`、\`${cited}\``)) return t;
+      cells[col] = cells[col].replace(`、\`${cited}\``, "");
+      lines[at] = cells.join("|");
+      return lines.join("\n");
+    } },
+    expect: [/登记锚点不等值/, /`compactionStats`/,
+      /覆盖面真值：.*cn 表（docs\/host-consumer-contract_cn\.md）里只引了 1 处/, /人审清单要求 2 处/,
+      /bare-lines: 标记区定点豁免的机器复核不在场/],
     expectFiles: [CONTRACT_CN],
   },
   {
@@ -8789,14 +8940,28 @@ const SELF_TEST_CASES = [
   {
     label: "#772 R4 M-A 反方向：kind=comment 的锚点（`toolUse` 停写证据）被换成一句真代码 ⇒ 同样红（种类不许逆）",
     overlay: {
+      // #770 R2：旧变异拿 `status` 写点锚点当“一句真代码”，而 #770 之后它自己也是注释锚点
+      // ⇒ 换进去的种类没逆 ⇒ 这一例当时只能报「行号不等值」，问不到它问的那件事。现在从出厂表里
+      // 现读一条 `kind: "code"` 且唯一命中非注释行的写点锚点当靶子（现读：表改了靶子跟着改）。
       [CELL_AXES_ANCHOR_MODULE]: (t) => {
         const entry = CELL_AXES_ANCHORS_SHIPPED.find((e) => e.key === "toolUse" && e.axis === "write" && e.kind === "comment");
-        const codeEntry = CELL_AXES_ANCHORS_SHIPPED.find((e) => e.key === "status" && e.axis === "write");
-        if (entry === undefined || codeEntry === undefined) return t;
-        return t.split(JSON.stringify(entry.anchor)).join(JSON.stringify(codeEntry.anchor));
+        if (entry === undefined || CELL_AXES_R4_REVERSE_CODE_TARGET === null) return t;
+        return t.split(JSON.stringify(entry.anchor)).join(CELL_AXES_R4_REVERSE_CODE_TARGET.literal);
       },
     },
+    // #770 R2：种类红的同时还多一句诚实的红：`toolUse` 的 write 轴引用从此对不上任何登记锚点
+    // ⇒ 那条引用掉出逐组豁免 ⇒ 裸行号棘轮回红（不抬基线，按现测写）。
     expect: [/锚点种类不符/, /kind=comment/, /不是注释行/, /`toolUse`/,
+      /bare-lines: 标记区定点豁免的机器复核不在场/,
+      /裸行号引用（唯一 \(文档,目标文件,行区间\)）实测 \*\*\d+\*\* 处，超过棘轮基线 \*\*\d+\*\*/],
+  },
+  {
+    // #770 R2 反向证（例 4）：不动锚点、只把种类登记造假——`toolUse` 写点明明钉的是注释行，却登记成
+    // `kind: "code"` ⇒ 必须红，并点名 `toolUse` 与「那一行是注释行」。它证的是：种类对账真的在比对
+    // 锚点命中行的**文字**，不是只看了几个字段。
+    label: "#770 R2 反向证（例 4）：`toolUse` 写点锚点不动、只把登记的 kind 从 comment 改成 code（种类登记造假）⇒ 同样红，并点名 `toolUse` 与「那一行是注释行」",
+    overlay: { [CELL_AXES_ANCHOR_MODULE]: (t) => rewriteCellAxesRowKind(t, "toolUse", "write", "code") },
+    expect: [/锚点种类不符/, /kind=code/, /是注释行/, /`toolUse`/,
       /bare-lines: 标记区定点豁免的机器复核不在场/],
   },
   {
@@ -8829,14 +8994,31 @@ const SELF_TEST_CASES = [
   {
     label: "#772 R4 已知限度（特征用例，见 docs/maintenance/command-reference.md）：把写点锚点换到**同一键名的另一处真代码行** + 两份引文同步改口 ⇒ 机械上全绿（语义真值机器证不了，故本例断言它**不红**）",
     overlay: {
-      [CELL_AXES_ANCHOR_MODULE]: (t) => (CELL_AXES_R4_KIND_PROBE === null ? t
-        : t.split(CELL_AXES_R4_KIND_PROBE.literal).join(JSON.stringify("^ {6}compactionStats,$"))),
-      [CONTRACT_EN]: (t) => (CELL_AXES_R4_KIND_PROBE === null ? t
-        : syncCellAxesCitation(`src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.realLine}`, "src/loop/orchestrator.js:3505")(t)),
-      [CONTRACT_CN]: (t) => (CELL_AXES_R4_KIND_PROBE === null ? t
-        : syncCellAxesCitation(`src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.realLine}`, "src/loop/orchestrator.js:3505")(t)),
+      // #770 R2：靶子行不再写死 :3505（那行已随快照写点被删）。现在现算「同一键名的另一处真代码行」：
+      // 只剩 run-state 落盘载荷里那一份 `compactionStats,`——它是**另一件产物**，恰好就是本例要钉的
+      // 「机器证不了语义」那个形状（锚点能唯一命中、kind=code 也对、两份表同步改口 ⇒ 机械上全绿）。
+      [CELL_AXES_ANCHOR_MODULE]: (t) => (CELL_AXES_R4_KIND_PROBE === null || CELL_AXES_R4_SAME_NAME_CODE_LINE === null ? t
+        : t.split(CELL_AXES_R4_KIND_PROBE.literal).join(JSON.stringify(CELL_AXES_R4_SAME_NAME_CODE_LINE.anchor))),
+      [CONTRACT_EN]: (t) => (CELL_AXES_R4_KIND_PROBE === null || CELL_AXES_R4_SAME_NAME_CODE_LINE === null ? t
+        : syncCellAxesCitation(`src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.realLine}`, CELL_AXES_R4_SAME_NAME_CODE_LINE.citation)(t)),
+      [CONTRACT_CN]: (t) => (CELL_AXES_R4_KIND_PROBE === null || CELL_AXES_R4_SAME_NAME_CODE_LINE === null ? t
+        : syncCellAxesCitation(`src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.realLine}`, CELL_AXES_R4_SAME_NAME_CODE_LINE.citation)(t)),
     },
     expectGreen: true,
+  },
+  {
+    // #770 R2 反向证（例 5）：上面那条特征用例的“同步改口”只做一半（只改 EN，CN 留着旧行号）⇒ 必须红，
+    // 并点名 cn 侧那行不等值。它证的是：例 5 的绿不是恒绿——它靠的是两份表真的同步，不是判据不在场。
+    label: "#770 R2 反向证（例 5）：已知限度那条锚点换同键名另一处真代码行后，只把 EN 一份表改口（CN 留着旧行号）⇒ 必须红，并点名 cn 表 `compactionStats` 的 write 列与锚点不等值",
+    overlay: {
+      [CELL_AXES_ANCHOR_MODULE]: (t) => (CELL_AXES_R4_KIND_PROBE === null || CELL_AXES_R4_SAME_NAME_CODE_LINE === null ? t
+        : t.split(CELL_AXES_R4_KIND_PROBE.literal).join(JSON.stringify(CELL_AXES_R4_SAME_NAME_CODE_LINE.anchor))),
+      [CONTRACT_EN]: (t) => (CELL_AXES_R4_KIND_PROBE === null || CELL_AXES_R4_SAME_NAME_CODE_LINE === null ? t
+        : syncCellAxesCitation(`src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.realLine}`, CELL_AXES_R4_SAME_NAME_CODE_LINE.citation)(t)),
+    },
+    expect: [/cn：docs\/host-consumer-contract_cn\.md 表里 `compactionStats` 的 write 列与登记锚点不等值/,
+      /表写 .*锚点实际/, /bare-lines: 标记区定点豁免的机器复核不在场/],
+    expectFiles: [CONTRACT_CN],
   },
   // --- #772 R2 M2：标记区内容的正向不变量（评审 follow-up 第 1 条）---
   {

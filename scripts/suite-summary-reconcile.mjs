@@ -75,6 +75,15 @@ export const CODES = Object.freeze({
   FAIL_NONZERO: "FAIL_NONZERO",
   SKIPPED_OVER: "SKIPPED_OVER",
   TAP_INCONSISTENT: "TAP_INCONSISTENT",
+  /**
+   * 日志读不出 TAP 汇总，但形状认得出来是 **spec reporter** 的汇总（`ℹ tests …`）。
+   *
+   * issue #774：Node 24 把 `node --test` 的**默认 reporter 换成了 spec**，于是同一棵树在两种 runner
+   * 下交回两种形状。本判据只读 TAP，所以 spec 日志一律**未判定**（`EXIT.UNREADABLE`）：既不许当绿
+   * （读不到就当没问题是最危险的假绿），也**不许报成回归**（拿 spec 的 `ℹ tests` 去比 TAP 登记值，
+   * runner 一换就满地 `TESTS_DRIFT`，那是判据自己的形状问题，不是用例掉了）。
+   */
+  NOT_TAP_LOG: "NOT_TAP_LOG",
 });
 
 /** 汇总块里认的键。顺序就是 node --test 的打印顺序（识别时不依赖顺序，只用来拼夹具）。 */
@@ -82,6 +91,13 @@ const SUMMARY_KEYS = ["tests", "suites", "pass", "fail", "cancelled", "skipped",
 
 /** 一行 TAP 汇总：`# tests 3265`。CI 日志每行带 `2026-…Z ` 时间戳前缀，所以只锚行尾。 */
 const SUMMARY_LINE_RE = /(?:^|\s)#\s*(tests|suites|pass|fail|cancelled|skipped|todo)\s+(\d+)\s*$/u;
+
+/**
+ * 一行 **spec reporter** 汇总：`ℹ tests 3265`（issue #774：Node 24 起 `node --test` 的默认形状）。
+ *
+ * 只用来把「读不出 TAP」这件事**说清楚**（未判定的原因 + 怎么重跑），**不参与判定**。
+ */
+const SPEC_SUMMARY_LINE_RE = /(?:^|\s)\u2139\s*(tests|suites|pass|fail|cancelled|skipped|todo)\s+(\d+)\s*$/u;
 
 /** ANSI 颜色（CI 日志的步骤头里有；TAP 正文没有，剥掉更稳）。 */
 const ANSI_RE = /\u001b\[[0-9;]*m/gu;
@@ -96,11 +112,29 @@ const ANSI_RE = /\u001b\[[0-9;]*m/gu;
  * @returns {{line: number, values: Record<string, number>}[]} 按出现顺序排列；`line` 是 1-based 起始行
  */
 export function parseSummaries(text) {
+  return parseSummaryRuns(text, SUMMARY_LINE_RE);
+}
+
+/**
+ * 认出 **spec reporter** 形状的汇总块（`ℹ tests …`）。
+ *
+ * issue #774：判据只认 TAP，但「读不出」有三种完全不同的原因（日志被截断 / 根本不是测试输出 /
+ * runner 的默认 reporter 不是 TAP），把它们混成一句 `NO_SUMMARY` 就会让人去查错方向。
+ *
+ * @param {string} text
+ * @returns {{line: number, values: Record<string, number>}[]}
+ */
+export function parseSpecSummaries(text) {
+  return parseSummaryRuns(text, SPEC_SUMMARY_LINE_RE);
+}
+
+/** 按行尾键值对把日志切成「一段一段」，只留四键齐全的段（TAP 与 spec 共用，只差那一行的前缀）。 */
+function parseSummaryRuns(text, lineRe) {
   const lines = String(text).replace(ANSI_RE, "").split("\n");
   const runs = [];
   let current = null;
   for (const [index, raw] of lines.entries()) {
-    const match = SUMMARY_LINE_RE.exec(raw);
+    const match = lineRe.exec(raw);
     if (!match) {
       if (current) {
         runs.push(current);
@@ -297,13 +331,27 @@ export function runReconcile({ logText, registry, pick = "last", source = "<memo
   const summaries = parseSummaries(logText);
   const summary = pickSummary(summaries, pick);
   if (!summary) {
+    // issue #774：读不出 TAP 时要把**原因**报出来。Node 24 起 `node --test` 的默认 reporter 是 spec，
+    // 那份日志里有完整的数字、却没有本判据认的形状 ⇒ 报「未判定 / 日志不是 TAP」，exit 2。
+    const spec = pickSummary(parseSpecSummaries(logText), pick);
     return {
       exit: EXIT.UNREADABLE,
-      lines: [
-        `${VERDICT_PREFIX} unreadable codes=NO_SUMMARY`,
-        "  · 日志里没有完整的 TAP 汇总块（需要同时出现 # tests / # pass / # fail / # skipped）"
-          + "——「没读到」不是「没问题」，先确认这份日志真的是 npm test 的输出",
-      ],
+      lines: spec
+        ? [
+          `${VERDICT_PREFIX} unreadable codes=NO_SUMMARY,${CODES.NOT_TAP_LOG}`,
+          "  · **日志不是 TAP**：认出的是 **spec reporter** 的汇总（`ℹ tests …`）——Node 24 起 `node --test` 的默认就是 spec，"
+            + "而本判据只读 TAP 的 `# tests` / `# pass` / `# fail` / `# skipped`",
+          `  · **未判定 ≠ 绿，也 ≠ 回归**：spec 那一侧现读到 tests=${spec.values.tests} pass=${spec.values.pass}`
+            + ` fail=${spec.values.fail} skipped=${spec.values.skipped}（source=${source}:${spec.line}），`
+            + "但拿它去比 TAP 登记值只会把「runner 换了默认 reporter」"
+            + "误报成掉用例 / 红用例",
+          "  · 重跑要钉住形状：`npm test`（本仓已钉 `--test-reporter=tap`）或 `node --test --test-reporter=tap …`，再把那份日志喂给本脚本",
+        ]
+        : [
+          `${VERDICT_PREFIX} unreadable codes=NO_SUMMARY`,
+          "  · 日志里没有完整的 TAP 汇总块（需要同时出现 # tests / # pass / # fail / # skipped），"
+            + "也没认出 spec reporter 的 `ℹ tests …`——「没读到」不是「没问题」，先确认这份日志真的是 npm test 的输出",
+        ],
       reds: [],
       summary: null,
     };
@@ -332,6 +380,17 @@ function tapLog(values, { preamble = ["TAP version 13", "ok 1 - 假用例"] } = 
 }
 
 const GOOD = { tests: 3265, suites: 11, pass: 3253, fail: 0, cancelled: 0, skipped: 12, todo: 0 };
+
+/**
+ * 造一份 **spec reporter** 的汇总（issue #774：Node 24 起 `node --test` 不指定 reporter 时交回的就是这份）。
+ *
+ * 数字与 `tapLog(GOOD)` 逐字相同，只差行首那个 `ℹ` —— A17 / A19 两例靠这个对照把「红方向是形状、
+ * 不是数字」钉住。
+ */
+function specLog(values) {
+  const body = SUMMARY_KEYS.filter((key) => values[key] !== undefined).map((key) => `\u2139 ${key} ${values[key]}`);
+  return ["✔ 假用例 (1.0ms)", ...body, "\u2139 duration_ms 1.0", ""].join("\n");
+}
 
 /** 一份形状正确的登记表（与真登记表同形状，但数字由夹具给定）。 */
 function registryOf(expect, observations = []) {
@@ -495,10 +554,44 @@ const CASES = [
     expectLines: [/^TEST-SUMMARY-VERDICT red codes=FAIL_NONZERO$/u, /✗ FAIL_NONZERO: fail 1 ≠ 登记值 0（\+1）/u],
     rejectLines: [/^TEST-SUMMARY-HINT/u],
   },
+  {
+    id: "A17",
+    label: "Node 24 的默认 reporter（spec）日志 ⇒ exit 2 报「未判定 / 日志不是 TAP」，**不许报成回归**（issue #774）",
+    log: specLog(GOOD),
+    registry: registryOf({ tests: 3265, fail: 0, maxSkipped: 12 }),
+    expectExit: 2,
+    expectLines: [
+      /^TEST-SUMMARY-VERDICT unreadable codes=NO_SUMMARY,NOT_TAP_LOG$/u,
+      /日志不是 TAP/u,
+      /未判定 ≠ 绿，也 ≠ 回归/u,
+      /--test-reporter=tap/u,
+    ],
+    // 形状读不出时，一个回归码都不许发（拿 spec 数字去比 TAP 登记值 = runner 一换就满地假红）。
+    rejectLines: [/✗ TESTS_DRIFT/u, /✗ FAIL_NONZERO/u, /✗ SKIPPED_OVER/u, /^TEST-SUMMARY-HINT/u, /^TEST-SUMMARY-VERDICT ok$/u],
+  },
+  {
+    id: "A18",
+    label: "spec 日志的数字与登记值逐字对得上 ⇒ 仍是 exit 2 未判定（不许「数字对得上就算绿」）",
+    log: specLog(GOOD),
+    registry: registryOf({ tests: GOOD.tests, fail: GOOD.fail, maxSkipped: GOOD.skipped }),
+    expectExit: 2,
+    expectLines: [/^TEST-SUMMARY-VERDICT unreadable codes=NO_SUMMARY,NOT_TAP_LOG$/u, /tests=3265 pass=3253 fail=0 skipped=12/u],
+    rejectLines: [/^TEST-SUMMARY tests=/u, /^TEST-SUMMARY-VERDICT ok$/u],
+  },
+  {
+    id: "A19",
+    label: "同一批数字、只把 `ℹ` 换成 `#` ⇒ 立刻可判（证明 A17 判的是形状，不是那些数）",
+    log: specLog(GOOD),
+    mutate: SUMMARY_KEYS.map((key) => ({ from: `\u2139 ${key} ${GOOD[key]}`, to: `# ${key} ${GOOD[key]}` })),
+    registry: registryOf({ tests: 3265, fail: 0, maxSkipped: 12 }),
+    expectExit: 0,
+    expectLines: [/^TEST-SUMMARY tests=3265 pass=3253 fail=0 skipped=12/u, /^TEST-SUMMARY-VERDICT ok$/u],
+    rejectLines: [/NOT_TAP_LOG/u],
+  },
 ];
 
 /** 用例数下限：删用例 / 整例跳过不算修好（与 test-hygiene-check 同一课）。 */
-const MIN_SELF_TEST_CASES = 16;
+const MIN_SELF_TEST_CASES = 19;
 
 /**
  * 接线自检：**真树**上的三件事（不落盘、只读）。

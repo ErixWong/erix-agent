@@ -232,8 +232,14 @@ async function rejectedCrashSnapshot(rawArguments) {
     runId: "resume-rejected",
   });
   assert.equal(executed, 0, "第一段跑：被拒的调用一次都不许执行（这一格的前提）");
-  const snapshot = snapshots.find((entry) => entry.status === "rejected");
-  assert.ok(snapshot, `引擎必须写下 status: "rejected" 的 run snapshot，实际状态：${JSON.stringify(snapshots.map((entry) => entry.status))}`);
+  // issue #770：`status` 那一格已从快照里停写 ⇒ 认「被拒那次写」改看引擎自己入账的**事实**：
+  // 被拒的调用会留下一条 `erix.executionStatus: "rejected"` 的 `tool_result`
+  // （`src/loop/run-snapshot-executor.js` 的 `rejectInvalidArguments`），而那正是本用例下面
+  // 要校验的东西——证据没丢，只是从「冗余副本」换到了「事实本体」。
+  const snapshot = snapshots.find((entry) => (
+    (entry.toolResults ?? []).some((item) => item.toolResult?.erix?.executionStatus === "rejected")
+  ));
+  assert.ok(snapshot, `引擎必须写下带被拒 tool_result 的 run snapshot，实测各条的执行状态：${JSON.stringify(snapshots.map((entry) => (entry.toolResults ?? []).map((item) => item.toolResult?.erix?.executionStatus ?? null)))}`);
   assert.equal(snapshot.pendingToolUses[0].erix.argumentsParseError.reason, "unparsable",
     "快照里的 pending 调用必须带着判词（否则这一格测的不是崩溃现场）");
   assert.equal(snapshot.toolResults[0].toolResult.erix.executionStatus, "rejected");
