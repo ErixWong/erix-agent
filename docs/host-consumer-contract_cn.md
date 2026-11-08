@@ -1857,7 +1857,10 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 契约都是「引擎自有的恢复状态，别从里面读正文」。
 这格的形状面什么都没动：键名、它在 payload 键序里的位置（file store 直接
 `JSON.stringify` ⇒ 键序就是宿主可见的落盘字节）、以及旧快照的 `Array.isArray(messages) ? messages : []`
-容忍面全部逐字不变；改动之前落盘的档案里这格仍是整段正文，也照旧原样被读。
+容忍面全部逐字不变。**动过的是引擎今天怎么对待「改动之前落盘的档案」**：那一格里仍是整段正文，但自
+issue #754（裁决 2）起它**作为恢复来源已被弃用**——恢复路径不再把它喂进上下文，只从账本重建，把丢掉的
+条数数出来，并在恢复告示里点名（`src/loop/resume-notice.js` 的 `RESUME_NOTICE_LEGACY_DEPRECATION`）。
+261021 之前写下的档案因此是**降级，不是报错**：run 照样恢复，只是崩溃轮那段只在内存里的正文回不来了。
 
 因此宿主必须把这格当成**引擎自有的恢复状态**：可以数格子，不要从里面读正文。要正文就读账本
 （`load`）——正文的权威来源是账本（工单 261021 第三刀）。这一片的收益是载荷大小，口径
@@ -1893,7 +1896,8 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 载荷里必须在场的键」那种清单**天然看不见**的：停写的键根本不在场、条件写入的键只在一半的现场在场——
 上一片的 10 格清单就是这么漏掉它们的，所以本表要连它们一起钉。
 
-行号一律是在基点 `40a518d` 上现取的（`rg` 现扫），每条 `file:line` 都被
+行号一律在 `adac4a3` 上现扫重取（首登是在基点 `40a518d` 上取的；read 列随 issue #754 对
+`src/loop/resume-manager.js` 的改动整体漂移过一次），每条 `file:line` 都被
 `test/contract-snapshot-cell-axes-767.test.js` 与 `npm run check:docs` 都按**登记锚点**逐条复核：
 `scripts/cell-axes-anchors.mjs` 给每一格每一轴钉一个源码形状（赋值那一行、那个 guard、返回那一处——不是键名），
 每条锚点必须在目标文件里唯一命中，下面写的行号必须等于锚点重算出来的行号（#772 R3：闸自己重算，所以「行号
@@ -1903,18 +1907,18 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 <!-- erix:snapshot-cell-axes:begin -->
 | 格（payload 键） | write | read | 权威源（仅双写格） | 交接条件（仅双写格） | 今天的写点（已停写的格＝钉住「为什么停写」那行） | 今天的读者 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `round` | written | source | — | — | `src/loop/orchestrator.js:3004` | `src/loop/resume-manager.js:568`、`src/loop/orchestrator.js:3239` |
-| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3029` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:171`、`test/loop-invalid-arguments.test.js:235`、`test/loop-v020-rc.test.js:479`、`test/loop-v020-rc.test.js:611` |
-| `pendingToolUses` | written | source | — | — | `src/loop/orchestrator.js:3053` | `src/loop/resume-manager.js:529`、`src/loop/resume-manager.js:699` |
-| `pendingToolUse` | written | fallback(pendingToolUses 缺席) | — | — | `src/loop/orchestrator.js:3052` | `src/loop/resume-manager.js:530`、`src/loop/resume-manager.js:700` |
-| `executedToolIds` | written | source | — | — | `src/loop/orchestrator.js:3056` | `src/loop/resume-manager.js:657`、`src/loop/resume-manager.js:704` |
-| `toolResults` | written | source | — | — | `src/loop/orchestrator.js:3057` | `src/loop/resume-manager.js:537`、`src/loop/resume-manager.js:661` |
-| `toolOutputs` | written | source | 终稿 guard 的证据源是**轮记录**：`bin/final-guard-support.js:238`（口径写在同文件 `bin/final-guard-support.js:218`），它从不读最新快照 | 快照那份的唯一读者是恢复侧回填 `src/loop/resume-manager.js:667` ⇒ 两格的停止条件彼此独立，先迁回填才可谈停写快照这格 | `src/loop/orchestrator.js:3062`（快照）与 `src/loop/orchestrator.js:6205`（轮记录） | 快照侧 `src/loop/resume-manager.js:667`；轮记录侧 `bin/final-guard-support.js:238` |
-| `messages` | residue | fallback(仅旧格式账本) | 账本（`load()`）是正文的权威来源 | 恢复侧那条旧格式升级路径 `src/loop/resume-manager.js:586` 被移除之后才可转 `not-source`；**今天不许写 `not-source`** | `src/loop/orchestrator.js:3054` | `src/loop/resume-manager.js:586`（条件：账本在锚点之后一条都没有） |
+| `round` | written | source | — | — | `src/loop/orchestrator.js:3004` | `src/loop/resume-manager.js:575`、`src/loop/orchestrator.js:3239` |
+| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3029` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:171`、`test/loop-invalid-arguments.test.js:235`、`() => { n += 1; return x; }`、`() => { n += 1; return x; }` |
+| `pendingToolUses` | written | source | — | — | `src/loop/orchestrator.js:3053` | `src/loop/resume-manager.js:529`、`src/loop/resume-manager.js:720` |
+| `pendingToolUse` | written | fallback(pendingToolUses 缺席) | — | — | `src/loop/orchestrator.js:3052` | `src/loop/resume-manager.js:530`、`src/loop/resume-manager.js:721` |
+| `executedToolIds` | written | source | — | — | `src/loop/orchestrator.js:3056` | `src/loop/resume-manager.js:664`、`src/loop/resume-manager.js:728` |
+| `toolResults` | written | source | — | — | `src/loop/orchestrator.js:3057` | `src/loop/resume-manager.js:537`、`src/loop/resume-manager.js:668` |
+| `toolOutputs` | written | source | 终稿 guard 的证据源是**轮记录**：`bin/final-guard-support.js:238`（口径写在同文件 `bin/final-guard-support.js:218`），它从不读最新快照 | 快照那份的唯一读者是恢复侧回填 `src/loop/resume-manager.js:674` ⇒ 两格的停止条件彼此独立，先迁回填才可谈停写快照这格 | `src/loop/orchestrator.js:3062`（快照）与 `src/loop/orchestrator.js:6205`（轮记录） | 快照侧 `src/loop/resume-manager.js:674`；轮记录侧 `bin/final-guard-support.js:238` |
+| `messages` | residue | fallback(仅旧格式，只数条数) | 账本（`load()`）是正文的权威来源 | `not-source` **今天仍不许写**：过去把这段正文喂进上下文的那条分支已经没了（issue #754 裁决 2），但只数条数的那个读点 `src/loop/resume-manager.js:593` 还在场 ⇒ 要等那个读点也没了才可转 `not-source` | `src/loop/orchestrator.js:3054` | `src/loop/resume-manager.js:593`（条件：账本在锚点之后一条都没有；自 issue #754 起这里只**数条数**，不再把它喂进上下文） |
 | `persistedTranscriptLength`（盘上那格） | written | not-source | 恢复锚点在账本上现算 | 引擎侧读者为零 ⇒ 这是表内今天唯一「读侧条件已满足」的格；停写仍要先迁测试侧拿它当截账本夹具锚点的两处（见下方口径） | `src/loop/orchestrator.js:3055` | 恢复侧不信它：`src/loop/resume-manager.js:16`（注释明写不能信快照里的值）与 `src/loop/resume-manager.js:430`（就地用账本长度覆盖） |
 | `persistedTranscriptLength`（进程内计数器） | written | source | —（同一变量的进程内形态不落盘，它才是写侧的现值） | **不许停**：它是 `messages` 残余起点的夹值之一 | `src/loop/orchestrator.js:3055` | `src/loop/orchestrator.js:2990` |
-| `partialText` | written(conditional) | source | — | 条件＝本轮已有半截正文（写点 `src/loop/orchestrator.js` 的 `partialText === undefined` 夹子）：现场有半截正文 ⇒ 这一格必在；没有 ⇒ 整格缺席（不是写 `undefined`） | `src/loop/orchestrator.js:3063` | `src/loop/resume-manager.js:541`、`src/loop/resume-manager.js:634` |
-| `partialRound` | written(conditional) | source | — | 与 `partialText` **同一条写入语句、同一个条件** ⇒ 两格同生同灭，缺一即坏 | `src/loop/orchestrator.js:3063` | `src/loop/resume-manager.js:635` |
+| `partialText` | written(conditional) | source | — | 条件＝本轮已有半截正文（写点 `src/loop/orchestrator.js` 的 `partialText === undefined` 夹子）：现场有半截正文 ⇒ 这一格必在；没有 ⇒ 整格缺席（不是写 `undefined`） | `src/loop/orchestrator.js:3063` | `src/loop/resume-manager.js:541`、`src/loop/resume-manager.js:636` |
+| `partialRound` | written(conditional) | source | — | 与 `partialText` **同一条写入语句、同一个条件** ⇒ 两格同生同灭，缺一即坏 | `src/loop/orchestrator.js:3063` | `src/loop/resume-manager.js:637` |
 | `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3017` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:531`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
 | `ts` | stopped | not-source | 账本行 / 消息行自己的那个 `ts` | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3024` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**（同一个键名的另一个产物，不是这格）`src/loop/resume-manager.js:460` |
 | `compactionStats` | stopped | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:346`）与轮记录 `src/loop/orchestrator.js:6185` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:73` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3038`、`src/loop/orchestrator.js:6185` | 恢复走 run-state `src/loop/resume-manager.js:346`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
@@ -1923,9 +1927,9 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 `—` = 该格不双写，没有权威源/交接条件可谈。表下三条口径只划边界，不改变上面的轴值：
 
 - `messages`：写侧从 issue #735 切片 2 起只交轮残余，残余起点由「本轮起点 / 那个进程内计数器 / 当前
-  长度」三者取小，即 `residueStart`（`src/loop/orchestrator.js`）；读侧只剩「逐条入账之前写的
-  旧账本」那条升级路径还会切这格 ⇒ `read` 只能是 `fallback(仅旧格式账本)`。那段旧正文在下一次恢复时
-  取不到，是 issue #754 的范围，与这格的轴值无关。
+  长度」三者取小，即 `residueStart`（`src/loop/orchestrator.js`）；读侧那条「逐条入账之前写的旧账本」
+  的升级路径已由 issue #754（裁决 2）**关掉** ⇒ 剩下的那一个读点只**数条数**，这就是 `read` 仍是
+  `fallback(仅旧格式，只数条数)` 而不是 `not-source` 的全部理由。
 - `toolOutputs`：快照那份与轮记录那份是同源两写，但**读它们的是两个不同的消费者**——恢复回填读快照，
   终稿 guard 只读轮记录。所以「guard 还认这份证据」不构成保留快照那格的理由，反之亦然。
 - `persistedTranscriptLength`：**一个键名底下是两个东西**。盘上那格是「写快照那一刻」的采样，恢复侧

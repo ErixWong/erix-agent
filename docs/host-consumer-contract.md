@@ -2300,8 +2300,13 @@ it. That pre-existing read-side defect is issue #754; this cell's contract stays
 about the cell's shape moved: the key name, its position among the payload keys
 (the file store `JSON.stringify`s the payload, so key order is host-visible
 bytes) and `Array.isArray(messages) ? messages : []` tolerance for older
-snapshots are all unchanged, and an archive written before this change still
-carries the whole transcript there and is still read unchanged.
+snapshots are all unchanged. What did move is **what the engine makes of an archive written before this
+change**: that cell still carries the whole transcript, but since issue #754 (verdict 2) it is
+**deprecated as a resume source** — the resume path no longer feeds it into the context, it rebuilds the
+context from the ledger only, counts how many slots it dropped, and says so out loud in the resume notice
+(`RESUME_NOTICE_LEGACY_DEPRECATION` in `src/loop/resume-notice.js`). An archive written before 261021 is
+therefore a **downgrade, not an error**: the run still resumes, only the crash round's memory-only bodies
+are gone from it.
 
 Hosts must therefore treat this cell as **opaque resume state owned by the
 engine**: count slots, don't read bodies out of it. A host that wants the
@@ -2340,7 +2345,8 @@ The `read` axis is measured **against the resume side only** (property reads of 
 fingerprint (listed in the reader column) ⇒ stopping those writes means replacing those fingerprints first. The two
 axes do not imply each other: the table has 15 rows / 14 cell names, and two of them are `write: stopped` (`toolUse` / `ts`, stopped by issue #735 slice 1, machine absence assertion in `test/loop-snapshot-write-side-735.test.js`) while two more are `write: written(conditional)` (`partialText` / `partialRound`, conditional write; see below). Both shapes are precisely what a "keys that must be present in the payload" checklist is **structurally blind to**: a stopped key is never there, and a conditional key is there in only half of the scenes -- that is how the previous slice's 10-key list lost them, so this table has to pin them as well.
 
-Every line number below was taken with a fresh scan on the base commit `40a518d`, and
+Every line number below was re-scanned on `adac4a3` (the first registration was taken on `40a518d`; the
+read column moved with issue #754's changes to `src/loop/resume-manager.js`), and
 `test/contract-snapshot-cell-axes-767.test.js` **and** `npm run check:docs` re-check every `file:line` citation
 from a registered anchor: `scripts/cell-axes-anchors.mjs` pins one code shape per cell and per axis (the
 assignment line, the guard, the return site — never the key name), each anchor must hit its file exactly once,
@@ -2352,18 +2358,18 @@ vocabulary, or a CN/EN axis mismatch all go red.
 <!-- erix:snapshot-cell-axes:begin -->
 | Cell (payload key) | write | read | Authority (double-written cells only) | Handoff condition (double-written cells only) | Today's write site — or, for a cell that no longer writes, the line that documents the stop | Today's readers |
 | --- | --- | --- | --- | --- | --- | --- |
-| `round` | written | source | — | — | `src/loop/orchestrator.js:3004` | `src/loop/resume-manager.js:568`, `src/loop/orchestrator.js:3239` |
-| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3029` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:118`, `test/persistence-diagnostics.test.js:171`, `test/loop-invalid-arguments.test.js:235`, `test/loop-v020-rc.test.js:479`, `test/loop-v020-rc.test.js:611` |
-| `pendingToolUses` | written | source | — | — | `src/loop/orchestrator.js:3053` | `src/loop/resume-manager.js:529`, `src/loop/resume-manager.js:699` |
-| `pendingToolUse` | written | fallback(pendingToolUses absent) | — | — | `src/loop/orchestrator.js:3052` | `src/loop/resume-manager.js:530`, `src/loop/resume-manager.js:700` |
-| `executedToolIds` | written | source | — | — | `src/loop/orchestrator.js:3056` | `src/loop/resume-manager.js:657`, `src/loop/resume-manager.js:704` |
-| `toolResults` | written | source | — | — | `src/loop/orchestrator.js:3057` | `src/loop/resume-manager.js:537`, `src/loop/resume-manager.js:661` |
-| `toolOutputs` | written | source | The final-guard evidence source is **the round record**: `bin/final-guard-support.js:238` (stated in that file's own comment at `bin/final-guard-support.js:218`), which never reads the latest snapshot | The snapshot copy's only reader is the resume-side backfill `src/loop/resume-manager.js:667` ⇒ the two copies retire independently; migrate that backfill before the snapshot copy can be stopped | `src/loop/orchestrator.js:3062` (snapshot) and `src/loop/orchestrator.js:6205` (round record) | snapshot side `src/loop/resume-manager.js:667`; round-record side `bin/final-guard-support.js:238` |
-| `messages` | residue | fallback(old-format ledger only) | The ledger (`load()`) is the authority for message text | This may only become `not-source` once the resume side's old-format upgrade path `src/loop/resume-manager.js:586` is removed; **writing `not-source` today is wrong** | `src/loop/orchestrator.js:3054` | `src/loop/resume-manager.js:586` (condition: the ledger holds nothing past the anchor) |
+| `round` | written | source | — | — | `src/loop/orchestrator.js:3004` | `src/loop/resume-manager.js:575`, `src/loop/orchestrator.js:3239` |
+| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3029` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:118`, `test/persistence-diagnostics.test.js:171`, `test/loop-invalid-arguments.test.js:235`, `() => { n += 1; return x; }`, `() => { n += 1; return x; }` |
+| `pendingToolUses` | written | source | — | — | `src/loop/orchestrator.js:3053` | `src/loop/resume-manager.js:529`, `src/loop/resume-manager.js:720` |
+| `pendingToolUse` | written | fallback(pendingToolUses absent) | — | — | `src/loop/orchestrator.js:3052` | `src/loop/resume-manager.js:530`, `src/loop/resume-manager.js:721` |
+| `executedToolIds` | written | source | — | — | `src/loop/orchestrator.js:3056` | `src/loop/resume-manager.js:664`, `src/loop/resume-manager.js:728` |
+| `toolResults` | written | source | — | — | `src/loop/orchestrator.js:3057` | `src/loop/resume-manager.js:537`, `src/loop/resume-manager.js:668` |
+| `toolOutputs` | written | source | The final-guard evidence source is **the round record**: `bin/final-guard-support.js:238` (stated in that file's own comment at `bin/final-guard-support.js:218`), which never reads the latest snapshot | The snapshot copy's only reader is the resume-side backfill `src/loop/resume-manager.js:674` ⇒ the two copies retire independently; migrate that backfill before the snapshot copy can be stopped | `src/loop/orchestrator.js:3062` (snapshot) and `src/loop/orchestrator.js:6205` (round record) | snapshot side `src/loop/resume-manager.js:674`; round-record side `bin/final-guard-support.js:238` |
+| `messages` | residue | fallback(old-format slot count only) | The ledger (`load()`) is the authority for message text | `not-source` is **still not writable today**: the branch that used to feed these bodies into the context is gone (issue #754 verdict 2), but the counting read `src/loop/resume-manager.js:593` is still there ⇒ the axis may only become `not-source` when that read goes away | `src/loop/orchestrator.js:3054` | `src/loop/resume-manager.js:593` (condition: the ledger holds nothing past the anchor; since issue #754 this cell is only **counted** here, never fed into the context) |
 | `persistedTranscriptLength` (on-disk cell) | written | not-source | The resume anchor is recomputed from the ledger | Zero engine readers ⇒ this is the only row whose read-side condition is met today; stopping the write still means moving the two test fixtures that use it as their truncation anchor (see the notes below) | `src/loop/orchestrator.js:3055` | The resume side does not trust it: `src/loop/resume-manager.js:16` (a comment that says so) and `src/loop/resume-manager.js:430` (overwritten with the recomputed length) |
 | `persistedTranscriptLength` (in-process counter) | written | source | — (the in-process form of the same variable is never persisted; it is the live write-side value) | **Must stay**: it is one of the two bounds on the `messages` residue start | `src/loop/orchestrator.js:3055` | `src/loop/orchestrator.js:2990` |
-| `partialText` | written(conditional) | source | — | Condition = the round really has a half-finished assistant text (the `partialText === undefined` clamp at the write site): a scene with partial text must carry this cell, a scene without it must leave the cell absent (not write `undefined`) | `src/loop/orchestrator.js:3063` | `src/loop/resume-manager.js:541`, `src/loop/resume-manager.js:634` |
-| `partialRound` | written(conditional) | source | — | **Same write statement and same condition as `partialText`** ⇒ the two cells appear together or not at all; one without the other is a bug | `src/loop/orchestrator.js:3063` | `src/loop/resume-manager.js:635` |
+| `partialText` | written(conditional) | source | — | Condition = the round really has a half-finished assistant text (the `partialText === undefined` clamp at the write site): a scene with partial text must carry this cell, a scene without it must leave the cell absent (not write `undefined`) | `src/loop/orchestrator.js:3063` | `src/loop/resume-manager.js:541`, `src/loop/resume-manager.js:636` |
+| `partialRound` | written(conditional) | source | — | **Same write statement and same condition as `partialText`** ⇒ the two cells appear together or not at all; one without the other is a bug | `src/loop/orchestrator.js:3063` | `src/loop/resume-manager.js:637` |
 | `toolUse` | stopped | not-source | — | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3017` | Zero readers at the snapshot layer; the same-named `toolUse` on the resume side is only a lambda parameter `src/loop/resume-manager.js:531`, while `toolUseId` and the diagnostic `event.toolUse` are two different things |
 | `ts` | stopped | not-source | the `ts` of the ledger row / message row | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3024` | Zero readers at the snapshot layer; the `ts` the resume side really reads is the **ledger row** copy (same key name, different artifact, not this cell) `src/loop/resume-manager.js:460` |
 | `compactionStats` | stopped | not-source | run-state (the resume path reads `deterministic.compactionStats`: `src/loop/resume-manager.js:346`) and the round record `src/loop/orchestrator.js:6185` | Both sides are alive: round-record side `test/compaction-observability.test.js:73` and snapshot side `test/compaction-observability.test.js:76` ⇒ dropping the snapshot copy means replacing the snapshot-side assertion first | `src/loop/orchestrator.js:3038`、`src/loop/orchestrator.js:6185` | The resume path goes through run-state `src/loop/resume-manager.js:346` and does not read the snapshot copy; its shape is pinned by `test/compaction-observability.test.js:76` |
@@ -2373,9 +2379,9 @@ vocabulary, or a CN/EN axis mismatch all go red.
 only draw boundaries; they do not change any axis value above:
 
 - `messages`: since issue #735 slice 2 the write side hands over round residue only, and the residue start is the
-  minimum of "this round's start / that in-process counter / the current length" (`residueStart` (`src/loop/orchestrator.js`)). The only reader left on the read side is the upgrade path for ledgers written
-  before per-message journaling ⇒ its `read` value can only be `fallback(old-format ledger only)`. Whether that
-  older body can be retrieved on a *later* resume is issue #754's scope, not this axis.
+  minimum of "this round's start / that in-process counter / the current length" (`residueStart` (`src/loop/orchestrator.js`)). The upgrade path that used to read this cell for ledgers written before per-message
+  journaling was **closed** by issue #754 (verdict 2) ⇒ the one read left only counts slots, which is why the
+  `read` value is still `fallback(old-format slot count only)` and not `not-source`.
 - `toolOutputs`: the snapshot copy and the round-record copy come from one source, but **two different consumers
   read them** — the resume backfill reads the snapshot, the final guard reads the round record. So "the guard still
   trusts this evidence" is no reason to keep the snapshot copy, and the converse holds too.
