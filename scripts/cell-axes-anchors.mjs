@@ -54,7 +54,7 @@ export const CELL_AXES_ANCHOR_MODULE = "scripts/cell-axes-anchors.mjs";
 export const CELL_AXES_REQUIRED_CELLS = [
   // ── 写入侧（快照对象那一层 + 轮记录侧）──
   { key: "round", axis: "write", codePath: "src/loop/orchestrator.js" },
-  { key: "status", axis: "write", codePath: "src/loop/orchestrator.js" },
+  { key: "status", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ {8}// ⇒ `status` 停写的理由：", note: "停写解释锚点：这里没有写点，钉解释「为什么这里没有写点」的那行注释（#770）" },
   { key: "pendingToolUse", axis: "write", codePath: "src/loop/orchestrator.js" },
   { key: "pendingToolUses", axis: "write", codePath: "src/loop/orchestrator.js" },
   { key: "executedToolIds", axis: "write", codePath: "src/loop/orchestrator.js" },
@@ -108,8 +108,8 @@ export const CELL_AXES_ANCHOR_FLOORS = {
 
 // CELL-AXES-ANCHORS:BEGIN —— 哨兵之间必须是**数组字面量**（闸在 --self-test 里要能抽文本重算）
 export const CELL_AXES_ANCHORS = [
-  { key: "round", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}round,$", prev: "^ +return await persist\\(method, runId, \\{$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 round," },
-  { key: "status", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}status,$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 status," },
+  { key: "round", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}round,$", prev: "^ +return await persistClassified\\(method, status, runId, \\{$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 round," },
+  { key: "status", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ {8}// ⇒ `status` 停写的理由：", note: "停写解释锚点：这里没有写点，钉解释「为什么这里没有写点」的那行注释（#770）" },
   { key: "pendingToolUse", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}pendingToolUse: cloneState\\(snapshotPendingToolUse\\),$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 pendingToolUse: cloneState(snapshotPendingToolUse)," },
   { key: "pendingToolUses", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}pendingToolUses: cloneState\\(snapshotPendingToolUses\\),$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 pendingToolUses: cloneState(snapshotPendingToolUses)," },
   { key: "executedToolIds", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}executedToolIds: \\[\\.\\.\\.executedToolIds\\],$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 executedToolIds: [...executedToolIds]," },
@@ -123,7 +123,7 @@ export const CELL_AXES_ANCHORS = [
   { key: "partialRound", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}\\.\\.\\.\\(partialText === undefined \\? \\{\\} : \\{ partialText, partialRound \\}\\),$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 ...(partialText === undefined ? {} : { partialText, partialRound })," },
   { key: "toolUse", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "里面\\*\\*没有\\*\\* `toolUse` 也没有 `ts`", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 //   `pendingToolUses` / `round` / `toolOutputs` / `toolResults`，里面**没" },
   { key: "ts", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ +// - `ts`：同上口径，快照对象那一层没人读它", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 // - `ts`：同上口径，快照对象那一层没人读它；读侧确实处理的 `ts` 是**账本行 / 消息行**的 `ts`" },
-  { key: "compactionStats", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}compactionStats: cloneState\\(compactionStats\\),$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 compactionStats: cloneState(compactionStats)," },
+  { key: "compactionStats", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ {8}// ⇒ `compactionStats` 停写的理由：", note: "停写解释锚点：快照这一格没有写点（钉解释注释）；同轴另一条登记的是轮记录那处真写点（#770）" },
   { key: "compactionStats", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}\\? \\{ compactionStats: cloneState\\(compactionStats\\.slice\\(compactionStatsStart\\)\\) \\}$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 ? { compactionStats: cloneState(compactionStats.slice(compactionStatsS" },
   { key: "round", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "const crashRound = Number\\.isSafeInteger\\(snapshot\\.round\\)", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 const crashRound = Number.isSafeInteger(snapshot.round)" },
   { key: "round", axis: "read", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "const crashRound = runLoopState\\.resumeRunSnapshot\\?\\.round;$", note: "停写/读取证据锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 const crashRound = runLoopState.resumeRunSnapshot?.round;" },

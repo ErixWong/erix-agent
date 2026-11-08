@@ -4,27 +4,26 @@
 // 停写零读者字段的动机是写侧去冗余（重复的等值副本 / 全仓无人读的格），而它的**唯一可观察面**
 // 就是这里——没有本文件，「停写」这件事与「手滑把格名写错一位」在测试里不可区分。
 //
-// ⚠ 口径与工单的差异（工单说 4 格零读者，实跑复核只有 2 格成立；不要「顺手」把另两格加进
-//   ABSENT 里——四格全停时全套 `node --test` 会红一批既有守门用例，本文件不估精确例数，因为
-//   那个数属于「另两格也停」的那个切片，不属于这里）：
-//   · 已停写：`toolUse`（它与 `pendingToolUse` 是**两次独立 `cloneState()` 仍同一个源值**，内容等值
+// ⚠ 口径演进（#735 切片 1 当时实跑复核只有 2 格成立，另两格有测试侧真读者；那批读者已在
+//   **issue #770** 里换了指纹 ⇒ 四格现在全部停写）：
+//   · 已停写（#735）：`toolUse`（它与 `pendingToolUse` 是**两次独立 `cloneState()` 仍同一个源值**，内容等值
 //     但不同址；全仓无属性访问面读它）、`ts`（读侧那个 `ts` 是**账本行 / 消息行**的，不是快照这一格）。
 //     ⇒ 零读者的证据是**面**而不是名字：恢复侧读快照对象那一层只出现 9 个字段 ——
 //     `grep -rnE "resumeRunSnapshot\??\." src/ | wc -l` 量得**按行计 31 处命中**（按匹配个数是 32：
 //     `src/loop/resume-manager.js:387` 一行上有两处 ⇒ 口径写清，不摆裸数字），字段穷举则是
 //     `grep -rhoE "resumeRunSnapshot\??\.[a-zA-Z]+" src/ | sed 's/.*\.//' | sort -u` 得
 //     `executedToolIds` / `messages` / `partialRound` / `partialText` / `pendingToolUse` / `pendingToolUses`
-//     / `round` / `toolOutputs` / `toolResults`，里面没停写的这两格。两条都是 **ERE**，且先在
+//     / `round` / `toolOutputs` / `toolResults`，里面没停写的这几格。两条都是 **ERE**，且先在
 //     一个已知会命中的样本上验过：`printf 'x = resumeRunSnapshot.round;\ny = ctx.resumeRunSnapshot?.messages;\n'`
 //     pipe 给 `grep -cE "resumeRunSnapshot\??\."` 答 2，而本文件前一版写的 BRE
-//     `grep -c "resumeRunSnapshot\(?:\?\)\."` 只答 1（静默漏掉可选链那一行），src/ 上是 5 行 vs 31 行
+//     `grep -c "resumeRunSnapshot\\(?:\\?\\)\."` 只答 1（静默漏掉可选链那一行），src/ 上是 5 行 vs 31 行
 //     ——少结果与空结果一样，不验模式就不能当证据。
-//   · 仍写出：`status`（`test/loop-persistence-phase.test.js` 拿它当分辨调用点的唯一指纹、
-//     `test/loop-invalid-arguments.test.js` 拿 `status === "rejected"` 造崩溃现场夹具、
-//     `test/loop-v020-rc.test.js` / `test/persistence-diagnostics.test.js` 拿
-//     `status === "executed"` 当注入失败的开关）、`compactionStats`
-//     （`test/compaction-observability.test.js` 从 `loadLatestCheckpoint()` 读它）。
-//   另两格要停，得先给上面那些用例换指纹 —— 留给后续切片。
+//   · 已停写（#770）：`status` 与 `compactionStats`。当时挡住它们的 5 处测试侧读者全部改指**权威来源**
+//     之后才动写侧：分辨调用点改看载荷自带的引擎事实（成功执行只进 `executedToolIds`，被拒 / 被拦
+//     才在结果条目上打 `toolResult.erix.executionStatus`），崩溃夹具与注入失败开关同理；
+//     `compactionStats` 的落盘面改读 run-state 的
+//     `deterministic.compactionStats` 与轮记录。引擎侧唯一的读者（分类通道对载荷的嗅探）也换成调用点
+//     显式声明（`persistClassified(method, status, …)`），入参 `status` 与全仓 7 个调用点一律不动。
 //
 // ⚠ 本文件**不声称字节往返**语义，除了那一条名字里写明「file store」的用例：过 memory store + 
 //   `deepEqual` 的那条证的只是**对象结构等值**（`assert/strict` 的对象比较本来就不看键序）。
@@ -105,10 +104,10 @@ function fullestPayload(payloads) {
 
 // ── 判据 1：写侧字段面（缺省格 + 保留格）─────────────────────────────────────────
 
-test("#735 切片 1：写侧 payload 不再带 toolUse / ts 这两格零读者字段", async () => {
+test("#735 切片 1 + #770：写侧 payload 不再带 toolUse / ts / status / compactionStats 这四格零读者字段", async () => {
   const { payloads } = await captureWriteSidePayloads();
   for (const payload of payloads) {
-    for (const stopped of ["toolUse", "ts"]) {
+    for (const stopped of ["toolUse", "ts", "status", "compactionStats"]) {
       assert.ok(
         !Object.hasOwn(payload, stopped),
         `\`${stopped}\` 已停写，不该出现在写侧 payload 里（实测 keys：${JSON.stringify(Object.keys(payload))}）`,
@@ -133,9 +132,6 @@ test("#735 切片 1：有读者的格照旧写出（含与停写的 toolUse 同�
     "executedToolIds",
     "toolResults",
     "toolOutputs",
-    // 工单说这两格也零读者，实跑复核不是（见文件顶注）⇒ 本切片继续写出。
-    "status",
-    "compactionStats",
   ]) {
     assert.ok(
       Object.hasOwn(payload, kept),
@@ -159,18 +155,22 @@ test("#735 切片 1：有读者的格照旧写出（含与停写的 toolUse 同�
   );
 });
 
-test("#735 切片 1：`status` 这格仍如实分辨调用点（本切片没动它，钉住既有指纹）", async () => {
+test("#770：`status` 这格停写之后，调用点仍只靠载荷里的引擎事实分辨（指纹没丢）", async () => {
   const { payloads } = await captureWriteSidePayloads();
-  // #178 的映射：工具前 pending / 工具后 executed。停写它会拆掉那批守门用例的指纹。
-  const statuses = payloads.map((entry) => entry.status);
-  assert.ok(
-    statuses.includes("pending"),
-    `写侧必须仍有 status:"pending"（工具前调用点），实测 ${JSON.stringify(statuses)}`,
-  );
-  assert.ok(
-    statuses.includes("executed"),
-    `写侧必须仍有 status:"executed"（工具后调用点），实测 ${JSON.stringify(statuses)}`,
-  );
+  // 格子本身必须彻底不在载荷里——哪怕调用点照旧把状态交了（那是 #178 的入参，不是盘上的格）。
+  assert.ok(payloads.every((entry) => !Object.hasOwn(entry, "status")),
+    `写侧不得再写出 status 格，实测 ${JSON.stringify(payloads.map((entry) => entry.status))}`);
+  // #178 的映射换成引擎事实后必须仍能二分：工具前 = 在飞调用未结清（无已执行 id、无 tool_result），
+  // 工具后 = 那条调用进了 `executedToolIds` 并且结果条目与它配对。（`erix.executionStatus` 只写在
+  // **被拒 / 被拦 / 被中断**的结果上，成功执行的那一份证据只有 `executedToolIds`。）
+  const pre = payloads.filter((entry) => (entry.pendingToolUses?.length ?? 0) > 0
+    && (entry.toolResults?.length ?? 0) === 0 && (entry.executedToolIds?.length ?? 0) === 0);
+  assert.ok(pre.length > 0, `必须仍有「工具前」调用点（旧 status:"pending"），实测 ${JSON.stringify(payloads.map((entry) => entry.executedToolIds))}`);
+  const post = payloads.filter((entry) => (entry.executedToolIds?.length ?? 0) > 0);
+  assert.ok(post.length > 0, `必须仍有「工具后」调用点（旧 status:"executed"），实测 ${JSON.stringify(payloads.map((entry) => entry.executedToolIds))}`);
+  assert.ok(post.every((entry) => (entry.toolResults ?? []).some((item) =>
+    entry.executedToolIds.includes(item.toolUseId))),
+    "工具后那几条必须能在 executedToolIds + 与之配对的 toolResults 里看出调用已结清");
 });
 
 // ── 历史旧快照兼容 + 新形状可读：停写不等于读侧停止容忍──────────────────────
@@ -236,12 +236,11 @@ test("#735 切片 1：file store 上手写的旧档过读取仍原样保留（�
 });
 
 test("#735 切片 1：保留格的**键序**不动（file store 直接 stringify ⇒ 键序是宿主可见的落盘字节）", async () => {
-  // 本片在 payload 上的净改动应当是「只删两行」。基点的键序（减去停写的 `toolUse` / `ts`）逐位对账；
-  // 把 `status` 或 `compactionStats` 换个位置就会在这里红。
+  // 两片在 payload 上的净改动应当是「只删四行」。基点的键序减去停写的 `toolUse` / `ts` /
+  // `status` / `compactionStats` 逐位对账；把任何保留格挪个位置就会在这里红。
   const { payloads } = await captureWriteSidePayloads();
   const expectedOrder = [
     "round",
-    "status",
     "pendingToolUse",
     "pendingToolUses",
     "messages",
@@ -249,17 +248,17 @@ test("#735 切片 1：保留格的**键序**不动（file store 直接 stringify
     "executedToolIds",
     "toolResults",
     "toolOutputs",
-    "compactionStats",
   ];
   for (const payload of payloads) {
     const keys = Object.keys(payload).filter((key) => key !== "partialText" && key !== "partialRound");
     assert.deepEqual(keys, expectedOrder,
-      `写侧键序必须等于「基点键序 minus toolUse/ts」（基点 src/loop/orchestrator.js:2882-2899），实测 ${JSON.stringify(keys)}`);
-    assert.ok(!keys.includes("toolUse") && !keys.includes("ts"));
+      `写侧键序必须等于「基点键序 minus #735 两格 minus #770 两格」（基点 src/loop/orchestrator.js:2882-2899），实测 ${JSON.stringify(keys)}`);
+    assert.ok(!keys.includes("toolUse") && !keys.includes("ts")
+      && !keys.includes("status") && !keys.includes("compactionStats"));
   }
 });
 
-test("#735 切片 1：引擎亲笔写下的**新形状**崩溃现场（已无 toolUse / ts）照样能被 resume 消费", async () => {
+test("#735 切片 1 + #770：引擎亲笔写下的**新形状**崩溃现场（已无那四格）照样能被 resume 消费", async () => {
   // 不手锤崩溃现场（手锤很容易造出「tool_result 没有配对 tool_use」这类非法上下文）：
   // 拿**引擎自己写下**的那条带在飞调用的快照当现场，它已经是新形状。
   const { payloads, transcript } = await captureWriteSidePayloads();
@@ -271,11 +270,11 @@ test("#735 切片 1：引擎亲笔写下的**新形状**崩溃现场（已无 to
     && (entry.executedToolIds?.length ?? 0) === 0
   ));
   assert.ok(crash, `现场必须有一条「在飞且未结清」的快照，实测 ${JSON.stringify(payloads.map((entry) => ({
-    status: entry.status,
+    callSite: (entry.executedToolIds?.length ?? 0) === 0 ? "pre-execution" : "post-execution",
     pending: entry.pendingToolUses?.length ?? 0,
     results: entry.toolResults?.length ?? 0,
   })))}`);
-  for (const stopped of ["toolUse", "ts"]) {
+  for (const stopped of ["toolUse", "ts", "status", "compactionStats"]) {
     assert.ok(!Object.hasOwn(crash, stopped), `现场快照应当是新形状（无 \`${stopped}\`）`);
   }
 

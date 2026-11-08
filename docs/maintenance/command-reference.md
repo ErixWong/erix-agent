@@ -161,7 +161,8 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   hand-written floor (30 / 25) waved through.
   *Known limit: semantics are not machine-checkable* (issue #772 R4, **registered, not patched**). Pointing
   `compactionStats`' snapshot write anchor at a **different real line that mentions the same key name** —
-  `src/loop/orchestrator.js:3505` is `compactionStats,`, a payload pack, not the snapshot write site at `:3038` —
+  `src/loop/orchestrator.js:3529` is `compactionStats,` too — but that one is the run-state persist payload,
+  a *different artifact* from the snapshot cell this row is about (whose stop-writing note sits at `:3038`) —
   and rewriting both tables' citation to it in the same change stays green today. Everything a machine can ask is
   answered: the file exists, the anchor hits exactly once, `kind: "code"` matches a code line, both tables equal the
   recomputed numbers, and the coverage list is still satisfied. What no anchor can express is "*this* line is the
