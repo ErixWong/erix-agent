@@ -887,7 +887,7 @@ test("G4-R3 反向证：表里多一条没登记的引用 / 少一条已登记�
 });
 
 test("G4-R4 反向证：锚点登记的「种类」是硬判据 ⇒ 代码锚点指到注释行必红，注释锚点指到代码行也必红（M-A）", () => {
-  // 出厂表的种类事实：39 条全带合法 kind，且只有五格钉的是注释（#735 停写的两格「为什么没有写点」
+  // 出厂表的种类事实：41 条全带合法 kind，且只有八条钉的是注释（#735 停写的两格「为什么没有写点」
   // + #770 停写的 `status` / `compactionStats` 两格 + `persistedTranscriptLength` 读侧那句「不能信快照里的它」）。
   // 种类写错 ⇒ 下面那条判据当场红。
   assert.ok(
@@ -897,7 +897,18 @@ test("G4-R4 反向证：锚点登记的「种类」是硬判据 ⇒ 代码锚点
   const commentEntries = CELL_AXES_ANCHORS.filter((entry) => entry.kind === "comment");
   assert.deepEqual(
     commentEntries.map((entry) => `${entry.key}|${entry.axis}`).sort(),
-    ["compactionStats|write", "persistedTranscriptLength|read", "status|write", "toolUse|write", "ts|write"],
+    [
+      "compactionStats|write",
+      // issue #769：三格读轴的**账本来源**钉在 `src/store/recovery-rows.js` 的格名注释上（那里是行形状的定义处，
+      // 没有「读这一格」的代码行可读；读轴的代码引用仍留在恢复侧真读点上，G6 那条判据据此仍然咬得住）。
+      "executedToolIds|read",
+      "partialRound|read",
+      "partialText|read",
+      "persistedTranscriptLength|read",
+      "status|write",
+      "toolUse|write",
+      "ts|write",
+    ],
     "注释锚点只许这五条；新增注释锚点必须同批改这里（种类是登记事实，不是机器猜出来的）",
   );
   assert.ok(
@@ -982,7 +993,7 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
   };
   const refsByDoc = [...tables.values()].map(({ rows, side }) => refsOf({ side, rows }));
 
-  // ① 正向：出厂的登记 + 两份表必须把 39 格全覆盖（清单 → 登记 → EN → CN 四处）
+  // ① 正向：出厂的登记 + 两份表必须把 39 格全覆盖（issue #769 现算仍是 39 条 / 27 组：三格的读轴换了来源，条目数没涨）（清单 → 登记 → EN → CN 四处）
   const clean = checkCellAxesCoverage({ anchors: CELL_AXES_ANCHORS, refsByDoc });
   assert.deepEqual(clean.errors, [], JSON.stringify(clean.errors));
   assert.equal(clean.slots, new Set(CELL_AXES_REQUIRED_CELLS.map((cell) => cellAxesRequiredSlotKey(cell))).size,
@@ -996,14 +1007,14 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
 
   // ② 评审 M-B 的变异：从 8 个双锚点组各删一条登记，并同步删掉两表对应引用 ⇒ 剩下的全自洽
   const victims = [
-    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6205 },
-    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6185 },
-    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 699 },
-    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 700 },
-    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 704 },
-    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 661 },
-    { key: "persistedTranscriptLength", axis: "read", path: "src/loop/resume-manager.js", at: 16 },
-    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 634 },
+    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6250 },
+    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6230 },
+    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 742 },
+    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 743 },
+    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 700 },
+    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 704 },
+    { key: "persistedTranscriptLength", axis: "read", path: "src/loop/resume-manager.js", at: 23 },
+    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 671 },
   ];
   const droppedKeys = new Set();
   const mutatedAnchors = [...CELL_AXES_ANCHORS];

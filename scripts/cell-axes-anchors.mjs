@@ -78,7 +78,7 @@ export const CELL_AXES_REQUIRED_CELLS = [
   { key: "pendingToolUse", axis: "read", codePath: "src/loop/resume-manager.js" },
   { key: "pendingToolUse", axis: "read", codePath: "src/loop/resume-manager.js" },
   { key: "executedToolIds", axis: "read", codePath: "src/loop/resume-manager.js" },
-  { key: "executedToolIds", axis: "read", codePath: "src/loop/resume-manager.js" },
+  // issue #769：读轴的**账本来源**（`tool-executed` 恢复行）——快照那一格从此是兜底，读者多一个。
   { key: "toolResults", axis: "read", codePath: "src/loop/resume-manager.js" },
   { key: "toolResults", axis: "read", codePath: "src/loop/resume-manager.js" },
   { key: "toolOutputs", axis: "read", codePath: "src/loop/resume-manager.js" },         // 快照侧回填
@@ -89,7 +89,13 @@ export const CELL_AXES_REQUIRED_CELLS = [
   { key: "persistedTranscriptLength", axis: "read", codePath: "src/loop/orchestrator.js", row: 1 },  // in-process 格的读者
   { key: "partialText", axis: "read", codePath: "src/loop/resume-manager.js" },
   { key: "partialText", axis: "read", codePath: "src/loop/resume-manager.js" },
+  // issue #769：半截正文的读轴多一个**账本来源**（`partial-text` 恢复行）；下面 `partialRound` 同理
+  // （两格仍共用同一条写语句，读侧也共用同一行 `ledgerPartial`）。
   { key: "partialRound", axis: "read", codePath: "src/loop/resume-manager.js" },
+  // issue #769：这三格的**账本来源**（`kind: "recovery"` 行）——契约读者列钉的是 src/store/recovery-rows.js 那一行格名注释。
+  { key: "executedToolIds", axis: "read", codePath: "src/store/recovery-rows.js" },
+  { key: "partialText", axis: "read", codePath: "src/store/recovery-rows.js" },
+  { key: "partialRound", axis: "read", codePath: "src/store/recovery-rows.js" },
   { key: "toolUse", axis: "read", codePath: "src/loop/resume-manager.js" },
   { key: "ts", axis: "read", codePath: "src/loop/resume-manager.js" },
   { key: "compactionStats", axis: "read", codePath: "src/loop/resume-manager.js" },
@@ -104,7 +110,7 @@ export const CELL_AXES_REQUIRED_CELLS = [
 export const CELL_AXES_ANCHOR_FLOORS = {
   entries: CELL_AXES_REQUIRED_CELLS.length,
   groups: new Set(CELL_AXES_REQUIRED_CELLS.map((cell) => `${cell.key}|${cell.axis}`)).size,
-};   // 现算：39 条 / 27 组（14 格），推导见上面的注释——只许随清单涨，不许手调
+};   // 现算：40 条 / 27 组（14 格），推导见上面的注释——只许随清单涨，不许手调
 
 // CELL-AXES-ANCHORS:BEGIN —— 哨兵之间必须是**数组字面量**（闸在 --self-test 里要能抽文本重算）
 export const CELL_AXES_ANCHORS = [
@@ -132,7 +138,6 @@ export const CELL_AXES_ANCHORS = [
   { key: "pendingToolUse", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "\\?\\? \\(ctx\\.resumeRunSnapshot\\?\\.pendingToolUse \\? \\[ctx\\.resumeRunSnapshot\\.pendingToolUse\\] : \\[\\]\\);$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 ?? (ctx.resumeRunSnapshot?.pendingToolUse ? [ctx.resumeRunSnapshot.pen" },
   { key: "pendingToolUse", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "^ +\\?\\? \\(snapshot\\.pendingToolUse$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 ?? (snapshot.pendingToolUse" },
   { key: "executedToolIds", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "for \\(const id of snapshot\\.executedToolIds \\?\\? \\[\\]\\) \\{$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 for (const id of snapshot.executedToolIds ?? []) {" },
-  { key: "executedToolIds", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "!snapshot\\.executedToolIds\\?\\.includes\\(pendingTool\\.id\\)", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 !snapshot.executedToolIds?.includes(pendingTool.id)" },
   { key: "toolResults", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "\\|\\| \\(ctx\\.resumeRunSnapshot\\?\\.toolResults \\?\\? \\[\\]\\)\\.some\\(\\(entry\\) => \\($", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 || (ctx.resumeRunSnapshot?.toolResults ?? []).some((entry) => (" },
   { key: "toolResults", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "for \\(const entry of snapshot\\.toolResults \\?\\? \\[\\]\\) \\{$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 for (const entry of snapshot.toolResults ?? []) {" },
   { key: "toolOutputs", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "for \\(const output of snapshot\\.toolOutputs \\?\\? \\[\\]\\) \\{$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 for (const output of snapshot.toolOutputs ?? []) {" },
@@ -142,8 +147,11 @@ export const CELL_AXES_ANCHORS = [
   { key: "persistedTranscriptLength", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "^ +ctx\\.persistedTranscriptLength = ctx\\.messages\\.length;$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 ctx.persistedTranscriptLength = ctx.messages.length;" },
   { key: "persistedTranscriptLength", axis: "read", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ +runLoopState\\.persistedTranscriptLength \\?\\? 0,$", row: 1, note: "停写/读取证据锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 runLoopState.persistedTranscriptLength ?? 0,（同名第 2 次出现）" },
   { key: "partialText", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "\\|\\| \\(typeof ctx\\.resumeRunSnapshot\\?\\.partialText === \"string\"$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 || (typeof ctx.resumeRunSnapshot?.partialText === \"string\"" },
-  { key: "partialText", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "^ +const partialText = snapshot\\.partialText;$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 const partialText = snapshot.partialText;" },
-  { key: "partialRound", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "^ +const partialRound = snapshot\\.partialRound;$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 const partialRound = snapshot.partialRound;" },
+  { key: "partialText", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "^ +const partialText = ledgerPartial !== undefined \\? ledgerPartial\\.text : snapshot\\.partialText;", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 const partialText = ledgerPartial !== undefined ? ledgerPartial.text : snapshot.partialText;（账本优先、快照兜底）" },
+  { key: "partialRound", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "^ +const partialRound = ledgerPartial !== undefined \\? ledgerPartial\\.round : snapshot\\.partialRound;", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 const partialRound = ledgerPartial !== undefined ? ledgerPartial.round : snapshot.partialRound;（轮号跟正文走，不许拼盘）" },
+  { key: "executedToolIds", axis: "read", kind: "comment", codePath: "src/store/recovery-rows.js", anchor: "快照侧对应的三格（", note: "账本来源锚点（issue #769）：钉的是 src/store/recovery-rows.js 里点名「快照侧 executedToolIds 这一格在恢复路径上退成兜底」的那行注释——账本恢复行（kind: recovery）才是这一格的首选来源，行形状与事件键就定义在这注释下面的模块里" },
+  { key: "partialText", axis: "read", kind: "comment", codePath: "src/store/recovery-rows.js", anchor: "快照侧对应的三格（", note: "账本来源锚点（issue #769）：钉的是 src/store/recovery-rows.js 里点名「快照侧 partialText 这一格在恢复路径上退成兜底」的那行注释——账本恢复行（kind: recovery）才是这一格的首选来源，行形状与事件键就定义在这注释下面的模块里" },
+  { key: "partialRound", axis: "read", kind: "comment", codePath: "src/store/recovery-rows.js", anchor: "快照侧对应的三格（", note: "账本来源锚点（issue #769）：钉的是 src/store/recovery-rows.js 里点名「快照侧 partialRound 这一格在恢复路径上退成兜底」的那行注释——账本恢复行（kind: recovery）才是这一格的首选来源，行形状与事件键就定义在这注释下面的模块里" },
   { key: "toolUse", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "const unfinishedToolUses = crashToolUses\\.filter\\(\\(toolUse\\) => \\($", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 const unfinishedToolUses = crashToolUses.filter((toolUse) => (" },
   { key: "ts", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "^ +record\\.ts,$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 record.ts," },
   { key: "compactionStats", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "^ +ctx\\.compactionStats = deterministic\\.compactionStats;$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 ctx.compactionStats = deterministic.compactionStats;" },

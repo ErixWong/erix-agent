@@ -251,6 +251,7 @@ src/
     notes-port.js                  Shared NotesStore port semantics (internal)
     append-user-turn.js            Pre-written user turn for the multi-turn resume contract
     message-rows.js                Read-side folding of `kind:"message"` rows back into round rows (internal)
+    recovery-rows.js               Append-only ledger recovery rows for the snapshot-only cells (internal)
     transcript-dedup.js            Shared appendRound dedup payload fingerprint (internal)
   config/
     api-key.js                     API-key materialization
