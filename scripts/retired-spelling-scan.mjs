@@ -390,7 +390,13 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // :7391（`partialPersistence`），而同一刀删改的行带走了 5 处旧命中 ⇒ **净 +1**。
   // 不改写法（同 #730 / #714 / #729 先例：为了躲钉子把真实签名改成描述说法，代价是契约读者拿不到签名）。
   // 数只取扫描器现报那一行：`docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=457  uses=458`。
-  "docs/host-consumer-contract.md": 458,
+  // 458 → 462（issue #769 R4，净 +4）：R4 只改了「恢复行」那一节的两处说明（F1 改口 + F4 字段面），
+  // 新增全是**同名异义**（`AMBIGUOUS_KEYS`，不进退役判据但计入本钉子）：`resume`（“ends the resume with …”、
+  // “during a resume …”、`phase: "resume_recovery_rows"` 的词面）与 `persistence`（`reason: "persistence_failed"`）。
+  // 逐条定位（本文档现行号）：7393 / 7396 / 7397 / 7398 / 7401 / 7405 / 7409 —— 扫描器按 use 计数，
+  // 行数多于命中数；数只取扫描器现报那一行：
+  //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=458  uses=462
+  "docs/host-consumer-contract.md": 462,
   // 565（片A，切版前补 #569/#568 文档）：CN 契约新增「折叠触发比例与会话续接块」一节，其中 provider 回调的
   // 真实键名 `runId`（`({runId, state, previous}) → {text, version}`）是一次同名异义命中——契约必须写出这个键名，
   // 所以**不为了躲钉子而改写成模糊说法**，按判据把钉子登记成扫描器报的值。EN 侧同一句已把 `context` 写成全路径
@@ -427,7 +433,12 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // `config.run.runId` 同名异义）；:5811 `partialPersistence`（命名空间叶子）。同 #714 / #729 / #730 先例：
   // 契约要能写出真实签名，不为了躲钉子改成描述说法。数只取扫描器现报那一行：
   //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=571  uses=579
-  "docs/host-consumer-contract_cn.md": 579,
+  // 579 → 584（issue #769 R4，净 +5）：同一刀的 CN 侧（F1 改口 + F4 字段面）。同名异义命中：
+  // `persistence`（`reason: "persistence_failed"`）与 `resume`（`phase: "resume_recovery_rows"`、（`resume !== true`））。
+  // 逐条定位（本文档现行号）：5811 / 5812 / 5815 / 5819（同一行可能含多次命中，故行数少于净增数）。
+  // 数只取扫描器现报那一行：
+  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=579  uses=584
+  "docs/host-consumer-contract_cn.md": 584,
 });
 
 /**
