@@ -83,7 +83,7 @@ scripts/          # 实验脚本和结果
 | `npm run check:agents-directives` | 本页：工单状态句、过期实测数、裸行号、**以及字节预算** | 改 `AGENTS.md`/`AGENTS_cn.md` ⇒ 先读 `docs/maintenance/command-reference_cn.md#check-agents-directives` |
 | `npm run types:build` | 生成随包发布的 `src/**/*.d.ts` | 动宿主可见签名 ⇒ 先读 `docs/maintenance/command-reference_cn.md#types-build` |
 | `npm run check:types-build` | 声明还生成得出来、且带公共符号 | 同上 ⇒ 先读 `docs/maintenance/command-reference_cn.md#types-build` |
-| `npm run check:types` | `--checkJs` 错误数棘轮（`--with-tools`：基线 **134** / 28 个文件） | 动 `src/` ⇒ 先读 `docs/maintenance/command-reference_cn.md#type-ratchets` |
+| `npm run check:types` | `--checkJs` 错误数棘轮（`--with-tools`：基线 **137** / 28 个文件） | 动 `src/` ⇒ 先读 `docs/maintenance/command-reference_cn.md#type-ratchets` |
 | `npm run check:mutation` | 常驻变异样本表与树对账 | 改 `test/mutation-samples.md` ⇒ 先读 `docs/maintenance/command-reference_cn.md#check-mutation` |
 | `npm run check:mutation:run` | 样本真的会被咬住（变异 → 红 → 还原 → 绿） | 同上 ⇒ 先读 `docs/maintenance/command-reference_cn.md#check-mutation` |
 | `npm run check:exports` | 每个导出名谁在用——**清点、不判定**；三个入口含 `test/contract/`，另有 `internal-only` 一档（`scripts/export-consumer-check.mjs`） | 删导出 ⇒ 先读 `docs/maintenance/command-reference_cn.md#check-exports` |
@@ -98,10 +98,10 @@ scripts/          # 实验脚本和结果
 - **门禁可复现口径**（issue #280）：`npm run check:docs` 与 `check:docs:strict` 在开发工作树里和在全新 clone 上都必须 exit 0。真正需要 `node_modules` 的那几道（`check:inventory`、三道 `tsc` 棘轮、`check:pack-links`、`check:release`）在裸检出里会以 `Cannot find module 'typescript'` 非零退出——那是「门禁跑不动」，绝不是回归。本地归档那一档按**声明**裁决，不按文件在不在。完整裁决在 `docs/maintenance/command-reference_cn.md#gate-reproducibility`。
 - 测试隔离规则：涉及 `~/.erix` 或 `~/.pi` 的测试必须注入 `home`/`cwd` 参数（skills/mcp/config 测试提供了先例），以免污染真实用户配置。
 - 类型面规则（issue #213）：`src/**/*.d.ts` 是**生成物、永不入库**（`.gitignore` 已覆盖）；`prepack` 钩子重新生成它们、且**只能往 stderr 打日志**；宿主可见签名要紧时，读生成的 `.d.ts`，不读源码注释。有两种 JSDoc 形状会**静默**把参数退化成 `any`——写之前先读 `docs/maintenance/command-reference_cn.md#type-surface`。
-- 类型棘轮（`check:types` / `check:types:strict`，issue #214 / #417）：`npm run check:types` **不追求清零**——99 个错（涉 26 个文件）是已接受的债，与 `scripts/type-check-ratchet.mjs` 里的 `BASELINE_ROOT = 99` 常量比较（也就是那条基线常量 **99**；两档是两次独立测量）：超过 ⇒ exit 1，等于 ⇒ 绿，低于 ⇒ 绿 + 提示「可下调至 N」，所以这个数只减不增。**先还哪一半**：99 个里有 26 个文件承载了这些错，逐文件计数与「是否宿主可及」都由 `--verbose` 逐条打印，本页不抄那份分解（抄来的半分解决定基线一动就过期）。本页仍然声称、且由 `npm run check:types` 现读对账的是文件数：其中 **26 个带错**。生成物在场时同一条命令会报**无 `.d.ts` = 99 个错**、而**声明在场 = 0 个错**，所以残留的 `src/**/*.d.ts` 是硬失败而不是假绿。`npm run check:types -- --with-tools` 把并集扩到 `./tools` 入口（基线 **134** / 28 个文件 = 99 + 19 + 16）；`check:types:strict` 是同一条命令追加 `--strict`、对着同一份脚本里它自己的那对基线，它阻塞，并且**两档必须在同一笔提交里一起测、一起降**。每文件的分布与逐条错误由命令自己打印（`--verbose`、`--show-errors N`）；逐轮流水账留在压低基线的那几笔提交里。
+- 类型棘轮（`check:types` / `check:types:strict`，issue #214 / #417）：`npm run check:types` **不追求清零**——102 个错（涉 26 个文件）是已接受的债，与 `scripts/type-check-ratchet.mjs` 里的 `BASELINE_ROOT = 102` 常量比较（也就是那条基线常量 **102**；两档是两次独立测量）：超过 ⇒ exit 1，等于 ⇒ 绿，低于 ⇒ 绿 + 提示「可下调至 N」，所以这个数只减不增。**先还哪一半**：102 个里有 26 个文件承载了这些错，逐文件计数与「是否宿主可及」都由 `--verbose` 逐条打印，本页不抄那份分解（抄来的半分解决定基线一动就过期）。本页仍然声称、且由 `npm run check:types` 现读对账的是文件数：其中 **26 个带错**。生成物在场时同一条命令会报**无 `.d.ts` = 102 个错**、而**声明在场 = 0 个错**，所以残留的 `src/**/*.d.ts` 是硬失败而不是假绿。`npm run check:types -- --with-tools` 把并集扩到 `./tools` 入口（基线 **137** / 28 个文件 = 102 + 19 + 16）；`check:types:strict` 是同一条命令追加 `--strict`、对着同一份脚本里它自己的那对基线，它阻塞，并且**两档必须在同一笔提交里一起测、一起降**。每文件的分布与逐条错误由命令自己打印（`--verbose`、`--show-errors N`）；逐轮流水账留在压低基线的那几笔提交里。
   - **新增文件必须首行开 `// @ts-check`。** 它是「愿意被检查」的声明，不是范围开关——范围是入口的 import 图。
   - **历史值就是历史值，常量是唯一真值**：此前那些读数（在各自的树上实测 142 / 185 / 218 / 226 / 261；`git archive` 对照树在同一条命令下逐字复现 142 / 185）是**历史值**，
-    按当时为真保留、绝不当现值用。现值就是常量那个：实测 99 个错（`BASELINE_ROOT = 99`，由 `npm run check:docs` 现读对账）。
+    按当时为真保留、绝不当现值用。现值就是常量那个：实测 102 个错（`BASELINE_ROOT = 102`，由 `npm run check:docs` 现读对账）。
   - ⚠ **跑棘轮之前先删掉生成物**：`find src -name '*.d.ts' -delete`。生成物在场时 `tsc` 解析 `./x.js` 会优先命中同目录的 `x.d.ts`，于是检查的是声明而不是实现。
   - **量数纪律（issue #653），对本文提到的每一道棘轮、每一张派生表都成立**：
     - **派生数与基线只在最终树上取。**
@@ -110,7 +110,7 @@ scripts/          # 实验脚本和结果
       但两半必须一起进。这三条为什么各自承重，见 `docs/maintenance/command-reference_cn.md#type-ratchets`。
 - 文档规则（issue #164）：改 `README*.md`、`docs/requirements*.md`、任何默认值或 `files`/`exports` 清单时，必须保持 `npm run check:docs` 绿。该检查从 `package.json` 与 `src/` 现读真值，所以文档不会悄悄漂移；「当前版本」这类句子的规定写法写在 `scripts/docs-drift-check.mjs` 的文件头注释里。中英成对文档必须同步（见 `AGENTS_cn.md`）。
 - 引用**另一个仓库**的文件时（工单 261021-03 B1）：写成 `<仓名>:<那个仓里的路径>`——例如 `touwaka:lib/agent/`、`pi-subagents:src/runs/background/async-execution.js:4`。带前缀的引用**不**在本仓里解析，它的行号也不计入下面的裸行号棘轮；仓名必须是 `scripts/docs-drift-check.mjs` 的 `EXTERNAL_REPO_PREFIXES` 里登记过的（未登记的名字红，登记了却没人引用也红）。**不带前缀的路径就是本仓内的路径，必须在这里解析得到**——这正是那个标记的全部意义：它标的是归属，不是一张免检票。
-- **锚点粒度与文档行号锚点**（issue #210 / #286）：本文只有四个数属于门禁、也只有它们是现值——`BASELINE_ROOT = 99`、符号锚点地板 `SYMBOL_ANCHOR_MIN_UNIQUE = 238`（只升：掉到地板以下就红，那是「锚点在退化」被抓住）、裸行号棘轮 `BARE_LINE_REF_BASELINE = 6`（只降）、以及锚点覆盖面地板 `REF_SCAN_DOCS_MINIMUM = 51`。文档不得依赖裸行号：指位置要写符号 + 它的文件（`` `符号`（`路径`） ``），不写 `路径:123`。原先挂在这一节后面的实测流水已整条搬到 `docs/maintenance/symbol-anchor-ledger_cn.md`——那是历史，不是现状，本文不再复述。哪些锚点是逐处级、区间判据、豁免登记表与逐条证明它们的自测，都在 `docs/maintenance/command-reference_cn.md#docs-anchors`——加锚点或搬锚点之前先读那一节。
+- **锚点粒度与文档行号锚点**（issue #210 / #286）：本文只有四个数属于门禁、也只有它们是现值——`BASELINE_ROOT = 102`、符号锚点地板 `SYMBOL_ANCHOR_MIN_UNIQUE = 238`（只升：掉到地板以下就红，那是「锚点在退化」被抓住）、裸行号棘轮 `BARE_LINE_REF_BASELINE = 6`（只降）、以及锚点覆盖面地板 `REF_SCAN_DOCS_MINIMUM = 51`。文档不得依赖裸行号：指位置要写符号 + 它的文件（`` `符号`（`路径`） ``），不写 `路径:123`。原先挂在这一节后面的实测流水已整条搬到 `docs/maintenance/symbol-anchor-ledger_cn.md`——那是历史，不是现状，本文不再复述。哪些锚点是逐处级、区间判据、豁免登记表与逐条证明它们的自测，都在 `docs/maintenance/command-reference_cn.md#docs-anchors`——加锚点或搬锚点之前先读那一节。
 
 ## 4. npm 发布指南（已根据 2026-08 政策验证）
 
