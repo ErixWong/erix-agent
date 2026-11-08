@@ -1830,7 +1830,7 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 | 可选 run-state | `saveRunState`、`loadRunState`、`markRunState` | 跳过 run-state 持久化；run 正常跑完 |
 | 宿主面向的可选终态读取 | `loadRunStateStatus` | 引擎不调用、不校验；缺失不会发出 capability 降级事件 |
 | 可选预写快路径探针（issue #157） | `loadByDedupKey`、`loadMaxRound` | `appendUserTurn` 回退全量 `load`（成对生效：只实现其一等同全不实现） |
-| 可选原始行锚点探针（issue #714） | `loadRawRows` | 中段补桩只在 `load()` 的**折叠后**行上找锚点，于是已完成轮的首片行寻址不到：那些桩只修本次上下文，引擎如实报 `resume_journal_skipped`，而不是写一行会落进错消息的分片。该轮载体**已带正文**时（issue #729）同样退回这一降级。**不发** `persistence_capability_degraded`——缺席由既有 `resume_journal_skipped` 通道按次恢复如实上报 |
+| 可选原始行锚点探针（issue #714） | `loadRawRows` | 中段补桩只在 `load()` 的**折叠后**行上找锚点，于是已完成轮的首片行寻址不到：那些桩只修本次上下文，引擎如实报 `resume_journal_skipped`，而不是写一行会落进错消息的分片。该轮载体**已带正文**时（issue #729）同样退回这一降级。**不发** `persistence_capability_degraded`——缺席由既有 `resume_journal_skipped` 通道按次恢复如实上报。issue #765 起，它还是 `appendUserTurn` 在 #157 快路径上**唯一**能读的账本来源（它那一笔悬空 `tool_use` 结清），所以只实现两根 #157 探针、没实现这根探针的宿主会继续在开着的账本上预写用户轮，每次调用以 `unsettledToolUses.reason = "ledger_probe_absent"` 如实报 |
 
 `loadRunStateStatus` 解析为终态**字符串**——`(runId: string) => Promise<string | undefined>`，
 该 run 未记录终态时返回 `undefined`——不是状态记录对象（与 `src/store/memory.js` /
@@ -1940,6 +1940,10 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 （含尾部修复）：`loadRecords` 第一句就是 `repairTranscriptTail(path)`（`src/store/file.js`），
 以 `r+` 打开文件并把写了一半的尾行隔离/截断 ⇒ **一次读是可能改动盘上字节的**。它不做的两件事是：
 不新增写 API、不改变 `load()` 返回的形状。
+
+交出的行必须包含宿主自己写的 `"…:input:…"` 行与全部引擎消息行：中段锚点寻址与
+`appendUserTurn` 的悬空 `tool_use` 判据（issue #765）都是**尾部**判据，所以按 `kind` 过滤、
+或只交轮载体的探针会把真正决定它们的那一行藏起来——助手宁可拒写并点名，也不猜。
 
 为什么要它。账本中段悬空的 `tool_use` 在恢复时由「每个未结清 id 一张桩 `tool_result`」补齐，
 桩落成一条**分片行**，`partOf` 指向那条聚合消息的**首片**（issue #430 的锚点纪律）。
@@ -2456,7 +2460,10 @@ slot 拿预算元数据。一个确实需要换模型的 run 应当结束，随�
   store 为 `0`）。引擎从该最大 round 续起并把自身记录落在更后的 round；预写不得推
   进它。空 `load` 结果是种子路径：在 round `0` 预写该轮；内置 CLI 则在没有既有记录
   时不带 `resume` 地传 `initialMessages`/`initialUserMessage`，对引擎而言等价。
-- **dedupKey：** 命名空间为 `"<key>:input:<suffix>"`，每轮唯一。引擎自身行写在
+- **dedupKey：** 命名空间为 `"<key>:input:<suffix>"`，每轮唯一。`appendUserTurn` 可能先追写的
+  那条结清行（issue #765）用 `"<key>:settle:<round>:<tool_use id 排序后用 + 连接>"`——只由账本
+  推出，不含时间戳也不含 `messageId`，所以崩溃重跑与宿主重试只结清一次，两条读路径写的行逐字相同。
+  引擎自身行写在
   `"<runId>:engine:round:<n>"`、`"…:engine:round:0:seed"`（种子行）、`"…:msg:<round>:<seq>"`
   （**一条消息一行，每轮可多行**——见「档案行形状」一节）、`"…:resume"`、`"…:control:<slot>"`
   与事实行 `"…:fold:<fp>"` / `"…:ttl:<fp>"`（见下一条）下，
@@ -2581,11 +2588,25 @@ symbol 成员按 `JSON.stringify` 的同样取舍丢掉——最后这一条正�
 调用唯一）。它解析为 `{ key, dedupKey, round, written, record? }`——幂等检查命中时
 `written: false` 并附既有 `record`。内置 CLI 与 REPL 是参考消费者。
 
+issue #765 起，解析值可多带一个**可选**字段，只在账本里存在「没有任何对应 `tool_result` 的
+`tool_use`」时出现：`unsettledToolUses` = `{ status: "settled" | "refused", round, toolUseIds,
+dedupKey, written?, reason? }`。在追写调用方那一行**之前**，助手先落**一条结清行**，用引擎自己
+那张墓碑（`is_error: true`，由 `src/loop/pending-tool-result.js` 的 `buildUnpersistedToolResultStub`
+构造）答掉这些 id。时机就是本单全部：没有轮载体的行，折叠保持文件顺序，所「后补」的答话
+会落在调用方那条纯文本行**后面**，而出网顺序 `assistant[tool_use] → user(text) → user[tool_result]`
+在本地就被判死，一个请求都发不出去。`status: "refused"` 表示那一行**没写**，`reason` 点名成因
+（`ledger_probe_absent` / `round_not_safe_integer` / `round_carrier_has_body` / `tool_use_id_unusable`）；
+调用方那一行两种情况下都照写。这里不静默，而没悬空时一切如旧：返回键集仍恰好是
+`{ key, dedupKey, round, written, record? }`。
+
 `appendUserTurn` 另为数据库型宿主提供**成对可选快路径**（issue #157）：当 `store`
 同时实现 `loadByDedupKey(key, dedupKey)` 与 `loadMaxRound(key)` 时，助手先算出
 `dedupKey` 再点查 `loadByDedupKey`——命中立即返回（既不调 `loadMaxRound` 也不调
 `load`）；未命中才由 `loadMaxRound` 推导 `round` 后追加。快路径全程不调用
-`store.load`。只实现两个探针之一等同全不实现：上方全量 `load` 路径原样执行。
+`store.load`。在快路径上结清悬空的 `tool_use`（issue #765）时，它读的账本来自第三根探针
+`loadRawRows(key)`（issue #714），仍然全程不调 `load`，上面那句承诺不破；没有这根探针的宿主每次
+调用都会拿到 `unsettledToolUses.status = "refused"` 与 `reason: "ledger_probe_absent"`，直到它补上
+这根探针——它**不**退回整本 `load`。只实现两个探针之一等同全不实现：上方全量 `load` 路径原样执行。
 `loadByDedupKey` 点查必须按 `(record.dedupKey ?? record.roundKey) === dedupKey`
 匹配——与全量路径对 `load` 结果使用的判据相同——并返回完整既存记录（命中）或
 `null`/`undefined`（未命中）。`loadMaxRound(key)` 必须等价于对 `load` 结果取
