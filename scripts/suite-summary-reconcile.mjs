@@ -62,6 +62,17 @@ export const SUMMARY_PREFIX = "TEST-SUMMARY";
 export const EXPECTED_PREFIX = "TEST-SUMMARY-EXPECTED";
 export const OBSERVATION_PREFIX = "TEST-SUMMARY-OBSERVATION";
 export const VERDICT_PREFIX = "TEST-SUMMARY-VERDICT";
+/**
+ * spec reporter 汇总的**观测行**前缀（issue #781，#774 的后续）：**只报数、不判定**。
+ *
+ * 它与判定行的关系（措辞要字面成立，别写成「故意不以 `TEST-SUMMARY` 开头」——`TEST-SUMMARY-SPEC`
+ * 本身就以它开头，那是假话）：判定面只认两个后缀 `VERDICT` / `EXPECTED`（上面 `VERDICT_PREFIX` /
+ * `EXPECTED_PREFIX`）。观测行的用意是让 `grep '^TEST-SUMMARY-VERDICT'` 的读者**只**看得到真的判定行，
+ * 不会把一次「读到 spec 但未判定」读成一次判定——所以它**不带** `VERDICT` / `EXPECTED` 这两个后缀。
+ * 这条不是文案偏好：自检里有一格断言「喂 spec 日志时 `^TEST-SUMMARY-VERDICT` 仍只数到未判定那一条」，
+ * 把观测行的前缀临时改成 `TEST-SUMMARY-VERDICT` 就会把那一格打红（见 A20 / `formatSpecObservedLine`）。
+ */
+export const SPEC_OBSERVED_PREFIX = "TEST-SUMMARY-SPEC";
 /** 棘轮提示行（绿且实测**高于**登记值时打一行；不是判定，也不是错误）。 */
 export const HINT_PREFIX = "TEST-SUMMARY-HINT";
 
@@ -281,6 +292,23 @@ export function formatExpectedLine(expect, registryPath) {
 }
 
 /**
+ * spec reporter 汇总的**观测行**（issue #781）：把读到的数字报出来，**不参与判定**——它不喂给
+ * `reconcile`、不拿它比登记值、也不改退出码（spec 日志仍是 `EXIT.UNREADABLE`，判不了就是判不了）。
+ *
+ * 前缀为何是 `TEST-SUMMARY-SPEC` 而不占用判定后缀 `VERDICT` / `EXPECTED`：见 `SPEC_OBSERVED_PREFIX` 的
+ * 措辞纪律。数字与 `formatSummaryLine` 用同样的 `tests=… pass=… fail=… skipped=…` 拼法，但**少了**
+ * `todo` / `cancelled` 与判定语义——这一格只回答「spec 那一侧现读到多少」，不回答「对不对得上登记值」。
+ *
+ * @param {Record<string, number>} values spec 汇总值
+ * @param {string} source `<日志路径>:<行号>`
+ * @returns {string}
+ */
+export function formatSpecObservedLine(values, source) {
+  return `${SPEC_OBSERVED_PREFIX} tests=${values.tests} pass=${values.pass} fail=${values.fail}`
+    + ` skipped=${values.skipped} source=${source}`;
+}
+
+/**
  * 棘轮提示：实测 `tests` **高于**登记值时给一行「登记值可抬到 N」（照 `check:types` 的「基线可下调至 N」句式）。
  *
  * 降/抬都是**人**的动作：本脚本只提示，不改写登记表（没有 `--sync`）。没有东西可提示 ⇒ 空数组。
@@ -346,6 +374,10 @@ export function runReconcile({ logText, registry, pick = "last", source = "<memo
             + "但拿它去比 TAP 登记值只会把「runner 换了默认 reporter」"
             + "误报成掉用例 / 红用例",
           "  · 重跑要钉住形状：`npm test`（本仓已钉 `--test-reporter=tap`）或 `node --test --test-reporter=tap …`，再把那份日志喂给本脚本",
+          // #781：在这条「未判定」的路上**额外**多报一行「只报数、不判定」的观测行——把 spec 那一侧
+          // 现读到的数字单列成可 grep 的一格。它是**观测**，不是判定：不改退出码（仍 exit 2），也不拿
+          // 这些数字去比登记值。放在数组末尾，免得挪动 lines[0]/lines[1]（$GITHUB_STEP_SUMMARY 取这两格）。
+          formatSpecObservedLine(spec.values, `${source}:${spec.line}`),
         ]
         : [
           `${VERDICT_PREFIX} unreadable codes=NO_SUMMARY`,
@@ -588,10 +620,45 @@ const CASES = [
     expectLines: [/^TEST-SUMMARY tests=3265 pass=3253 fail=0 skipped=12/u, /^TEST-SUMMARY-VERDICT ok$/u],
     rejectLines: [/NOT_TAP_LOG/u],
   },
+  {
+    id: "A20",
+    label: "spec 日志 ⇒ 额外多一行「只报数、不判定」的 TEST-SUMMARY-SPEC 观测行，且 ^TEST-SUMMARY-VERDICT 仍只有未判定那一条（#781：观测行不得占用判定后缀）",
+    log: specLog(GOOD),
+    registry: registryOf({ tests: 3265, fail: 0, maxSkipped: 12 }),
+    expectExit: 2,
+    expectLines: [
+      /^TEST-SUMMARY-SPEC tests=3265 pass=3253 fail=0 skipped=12 source=<memory>:\d+$/u,
+      /^TEST-SUMMARY-VERDICT unreadable codes=NO_SUMMARY,NOT_TAP_LOG$/u,
+    ],
+    // 「判定行只有一条」的可验写法：拒绝任何**不是**「未判定 NO_SUMMARY,NOT_TAP_LOG」的 ^TEST-SUMMARY-VERDICT 行。
+    // 把 SPEC_OBSERVED_PREFIX 临时改成 TEST-SUMMARY-VERDICT ⇒ 观测行变成第二条判定行 ⇒ 这一格红（反向证：
+    // 它真的在管前缀，不是恒绿）。
+    rejectLines: [/^TEST-SUMMARY-VERDICT (?!unreadable codes=NO_SUMMARY,NOT_TAP_LOG$)/u],
+  },
+  {
+    id: "A21",
+    label: "真 TAP 日志 ⇒ 不出现 TEST-SUMMARY-SPEC 观测行（它只属于「读不出 TAP」那条路，#781）",
+    log: tapLog(GOOD),
+    registry: registryOf({ tests: 3265, fail: 0, maxSkipped: 12 }),
+    expectExit: 0,
+    expectLines: [/^TEST-SUMMARY-VERDICT ok$/u],
+    rejectLines: [/^TEST-SUMMARY-SPEC/u],
+  },
+  {
+    id: "A22",
+    label: "反向证专格：spec 日志的「^TEST-SUMMARY-VERDICT 只有一条」单独拿 rejectLines 顶住——把观测前缀改成 TEST-SUMMARY-VERDICT 时，红就红在这一格（证它真在管前缀、不是恒绿，#781）",
+    log: specLog(GOOD),
+    registry: registryOf({ tests: 3265, fail: 0, maxSkipped: 12 }),
+    expectExit: 2,
+    // 只要求「未判定」判定行在（保证这一例真的走 spec 路径；该行由 VERDICT_PREFIX 拼，与观测前缀无关，
+    // 所以改观测前缀时 expectLines 仍绿），对「第二条判定行」用 rejectLines 拒绝。
+    expectLines: [/^TEST-SUMMARY-VERDICT unreadable codes=NO_SUMMARY,NOT_TAP_LOG$/u],
+    rejectLines: [/^TEST-SUMMARY-VERDICT (?!unreadable codes=NO_SUMMARY,NOT_TAP_LOG$)/u],
+  },
 ];
 
 /** 用例数下限：删用例 / 整例跳过不算修好（与 test-hygiene-check 同一课）。 */
-const MIN_SELF_TEST_CASES = 19;
+const MIN_SELF_TEST_CASES = 22;
 
 /**
  * 接线自检：**真树**上的三件事（不落盘、只读）。
