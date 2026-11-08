@@ -7352,3 +7352,42 @@ packaged engine (upstream-side, i.e. a pure drift sentinel).
 - Keep host-invented behaviour in host-owned tests. If a shipped suite disagrees
   with a host requirement, file it (issue tracker) rather than forking the
   suite: the fork loses the sentinel.
+
+
+## Ledger recovery rows — a second `.jsonl` per run (issue #769)
+
+The append-only ledger now writes **a second file per run**: `<dir>/<runId>.recovery.jsonl`, next to the existing
+`<dir>/<runId>.jsonl`. **The round-record file is byte-for-byte unchanged** — one line is still exactly one round, and
+nothing moved out of it (message bodies included). This new file only carries *recovery rows*:
+
+- `kind: "recovery"` — the discriminator a host filters on. Two events exist today:
+  `recoveryEvent: "tool-executed"` (carries `toolUseId`) and `recoveryEvent: "partial-text"` (carries `text` plus
+  `textLength`).
+- One row = **one event**, never one row per round. `messages: []` always: a recovery row **never carries message
+  bodies**, so reading the ledger and the snapshot side by side cannot double a message body.
+- `dedupKey` is the **event key** (`<runId>:<namespace>:round:<n>:recovery:<event>[:<discriminator>]`). Re-appending the
+  same event key with the same payload is skipped (`appendRecoveryRow` returns `false`); a different payload under the
+  same key is rejected, not overwritten. A longer partial text is a *new* event, so nothing already written is rewritten.
+
+Write timing: the `tool-executed` row is appended **the moment the executor returns** — before the `tool_result` row
+lands, and therefore before any snapshot write of that round. That ordering is the whole point: *"`tool_use` with no
+`tool_result`" does not imply "the tool did not run"*, so "did it run" is carried explicitly by this row and is never
+inferred from the absence of another row.
+
+Store surface: `appendRecoveryRow(runId, row)` → `true` (appended) / `false` (deduped), `listRecoveryRows(runId)` →
+rows in append order, `clearRecoveryRows(runId)`. All three are **optional**: a store that does not implement them is
+not an error — the engine then reads nothing and falls back to the snapshot cells
+(`executedToolIds` / `partialText` / `partialRound`), which stay legal fallbacks and are never the only source.
+
+**Unknown `kind`, and what a host must do.** This contract has **no** blanket "ignore what you do not recognise"
+promise — hosts are allowed to validate the ledger strictly. So the consequence is stated plainly: a host that throws on
+an unknown `kind`, or that assumes `<dir>` contains exactly one file per run, or that globs `*.jsonl` and feeds every
+line to a round-record parser, **will break on this slice**. A host that only reads `<runId>.jsonl` (or the folded
+`load()` / `loadRawRows()` API) is unaffected: recovery rows appear in neither place. To read the new file, filter by
+`kind === "recovery"` and ignore the rest.
+
+Measured cost, this tree, one tool execution per round (`node --test test/store/ledger-recovery-rows-769.test.js`, the
+byte test prints these): `tool-executed` **226 B** + `partial-text` **256 B** = **482 B / round** for the carrier rows,
+and **234 B / round** for the single row the engine actually writes when `partialPersistence` is off. No write
+amplification is saved by this slice: the latest-only `.state.json` channel (`saveRunState`, two write sites in
+`src/loop/orchestrator.js`) stays exactly as big as it is, so any "we saved bytes" claim has to name that channel too.

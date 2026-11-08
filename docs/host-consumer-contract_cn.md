@@ -5779,3 +5779,35 @@ table-driven 各跑一遍。它们共用**同一份**端口语义实现（`src/s
   注册，换来的是接住「上游重命名了我忘记 grep 的东西」这一类事故。
 - 宿主自己发明的行为留在宿主所有的测试里。如果某个随包套件与一条宿主需求冲突，提 issue
   反馈，而不是 fork 套件：fork 掉就丢掉了哨兵。
+
+
+## 恢复行 —— 每本 run 多出的一份 `.jsonl`（issue #769）
+
+append-only 账本现在**每本 run 多写一个文件**：`<dir>/<runId>.recovery.jsonl`，与既有的 `<dir>/<runId>.jsonl` 并列。
+**轮记录那份一个字节都没变**——仍然是一行恰好一轮，正文也还在原处，没有任何东西从它里面搬走。新文件只装**恢复行**：
+
+- `kind: "recovery"` —— 宿主就按这个字段筛。今天有两种事件：`recoveryEvent: "tool-executed"`（带 `toolUseId`）
+  与 `recoveryEvent: "partial-text"`（带 `text` 与 `textLength`）。
+- 一条一行 = **一个事件**，不是一轮一行。`messages` 恒为 `[]`：恢复行**从不载正文**，所以「账本 + 快照」并排读也
+  不会把同一份正文数出两遍。
+- `dedupKey` 就是**事件键**（`<runId>:<命名空间>:round:<n>:recovery:<事件>[:<判别字段>]`）。同一事件键 + 同一 payload
+  重放会被跳过（`appendRecoveryRow` 返回 `false`）；同键不同 payload 是**拒绝**，不是覆盖。正文变长算**新事件**，
+  已经落盘的行永远不被改写。
+
+写入时机：`tool-executed` 行在**执行器返回的那一刻**追加 —— 比 `tool_result` 行落盘更早，因此也比本轮任何快照写更早。
+这正是它的存在理由：**「有 `tool_use` 但没有 `tool_result`」推不出「工具没执行」**，所以「执行过没有」由这一行
+**显式携带**，绝不靠「另一行在不在」去猜。
+
+store 面：`appendRecoveryRow(runId, row)` → `true`（真落了一行）/ `false`（被去重跳过），`listRecoveryRows(runId)` →
+按追加顺序返回，`clearRecoveryRows(runId)`。三者都是**可选能力**：store 没实现不算错 —— 引擎读不到就回落到快照那三格
+（`executedToolIds` / `partialText` / `partialRound`），那三格仍是合法兜底，且**不是唯一来源**。
+
+**不认识的 `kind` 会怎样 —— 宿主必须做什么。** 本契约**没有**「不认识就忽略」这句总承诺（宿主有权严格校验账本）。
+所以后果直接写出来：对未知 `kind` 抛错的宿主、假设一个 run 在 `<dir>` 里**只有一个文件**的宿主、或者 glob `*.jsonl`
+把每一行都塞进轮记录解析器的宿主，**在本切片会坏**。只读 `<runId>.jsonl`（或折叠后的 `load()` / `loadRawRows()`）的宿主
+不受影响：恢复行在这两处都不出现。要读新文件，就按 `kind === "recovery"` 筛，其余忽略。
+
+实测成本（本树，一轮一次工具执行；`node --test test/store/ledger-recovery-rows-769.test.js` 的字节用例会打印）：
+载体行 `tool-executed` **226 B** + `partial-text` **256 B** = **482 B / 轮**；而引擎在 `partialPersistence` 关闭时
+真跑的那一条是 **234 B / 轮**。本切片**没有省下写放大**：latest-only 的 `.state.json` 通道（`saveRunState`，
+`src/loop/orchestrator.js` 两处写点）该多大还多大，所以任何「省了字节」的说法都必须把那条通道一起报出来。

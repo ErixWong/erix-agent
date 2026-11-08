@@ -426,7 +426,13 @@ export async function restoreResume(ctx) {
       // 执行发生在结果行落盘**之前** ⇒「没执行」与「执行了但结果行还没落 / 被宿主拒」在账本里形状相同。
       // 所以这里读的是**显式携带 `toolUseId` 的 `tool-executed` 恢复行**，不是「结果行在不在」；
       // 快照的 `executedToolIds` 格退成下面 `ctx.resumeExecutedToolIds` 里**并进来的兜底**，不再是唯一来源。
-      const ledgerExecutedToolIds = readExecutedToolIdRecoveryRows(records);
+      // issue #769：恢复行**不进** `records`（那是轮记录通道）——从它自己的读口取。store 没实现
+      // `listRecoveryRows` 时是空集，读侧就回落到快照兜底（与写侧的能力位跳过同一对口径）。
+      /** @type {any[]} */
+      const recoveryRows = typeof ctx.store.listRecoveryRows === "function"
+        ? await ctx.store.listRecoveryRows(ctx.runId).catch(() => [])
+        : [];
+      const ledgerExecutedToolIds = readExecutedToolIdRecoveryRows(recoveryRows);
       // 崩溃轮的半截正文同理：先问账本（`partial-text` 恢复行：一条一个事件、事件键 = 正文指纹）。
       // append-only ⇒ 历史轮的行永远在场，所以只有「那一轮的 assistant 正文**没**落账」的那些行才算崩溃
       // 现场；正文已落账的是历史副本，不能把「正常收口后宿主追问」误判成崩溃轮。
@@ -434,7 +440,7 @@ export async function restoreResume(ctx) {
         .filter((entry) => entry?.message?.role === "assistant"
           && String(entry.message?.content ?? "").length > 0)
         .map((entry) => entry.round));
-      const ledgerPartialCrashRound = readPartialTextRecoveryRounds(records)
+      const ledgerPartialCrashRound = readPartialTextRecoveryRounds(recoveryRows)
         .filter((round) => !ledgerAssistantTextRounds.has(round))
         .at(-1);
       const seedRecords = records.filter((record) => (record.round ?? 0) === 0);
@@ -667,7 +673,7 @@ export async function restoreResume(ctx) {
         // issue #769：半截正文的**首选来源是账本**（`partial-text` 恢复行，一条一个事件）；
         // 快照的 `partialText`/`partialRound` 两格退成兜底（账本里那一轮没有任何可用行才读它们）。
         // 顺序就是口径：`ledgerPartial` 在场 ⇒ 两格都跟着账本走，不许出现「正文取账本、轮号取快照」的拼盘。
-        const ledgerPartial = readPartialTextRecoveryRow(records, crashRound);
+        const ledgerPartial = readPartialTextRecoveryRow(recoveryRows, crashRound);
         const partialText = ledgerPartial !== undefined ? ledgerPartial.text : snapshot.partialText;
         const partialRound = ledgerPartial !== undefined ? ledgerPartial.round : snapshot.partialRound;
         // 半截正文只补**账本里还没有的那一段**：写侧已在本轮正文一成型就落盘，所以

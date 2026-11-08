@@ -1483,7 +1483,12 @@ export async function runToolLoop(options) {
     }
     const phase = method === "appendRound"
       ? "transcript"
-      : method === "saveRunState" || method === "markRunState"
+      // issue #769：恢复行与轮记录同属账本侧的只追加通道 ⇒ phase 同走 `transcript`。它既不是快照写点
+      // 也不是 run-state 覆盖写，落到下面的 `checkpoint_before_tool` 会把宿主可见的
+      // `persistence_error.phase` 编错（那一列是契约面，不是内部诊断）。
+      : method === "appendRecoveryRow"
+        ? "transcript"
+        : method === "saveRunState" || method === "markRunState"
         ? "run_state"
         : snapshotStatus === "executed"
           ? "checkpoint_after_tool"
@@ -3399,6 +3404,16 @@ export async function runToolLoop(options) {
   // 不含顶层 `round`/`ts`，见 `src/store/transcript-dedup.js#PAYLOAD_VOLATILE_FIELDS`）。
   // 不计入 `persistedTranscriptLength`：那个计数按「已落盘的**逻辑消息**条数」口径，空行加 0。
   // 失败口径与任何其它账本 append 相同（`persist` 重试耗尽后抛持久化失败）——本切片不新增例外。
+  //
+  // **通道（第 2 段的换道裁决）：走 `store.appendRecoveryRow`，不再走 `appendRound`。**
+  // `appendRound` 是**轮记录通道**：行一进去就成了一条「轮记录」，而恢复行**不是一轮**——实测把 29 个
+  // 读轮记录的用例弄红了（`store.load()` 的行序/索引与 `messages`、聚合预算、`onRound` 观察器、
+  // 261021 golden 夹具、`interceptJudgeDecision` 那条「当轮记录带 judge 字段」……）。新通道与轮记录
+  // 同目录、同样 append-only、同样靠 `src/store/transcript-dedup.js` 幂等，但**不进** `load()` /
+  // `loadRawRows()`（实现：`src/store/file.js#recoveryRowsPath` 与 `src/store/memory.js`）。
+  // store 没实现 `appendRecoveryRow` 时走现成的能力位机制：`persistClassified` 开头那一问就会
+  // **跳过并上报一次** `persistence_capability_degraded`，**不抛**（同一方法只报一次）；那时快照那几格
+  // 仍是唯一来源——本切片不删快照写点，所以「store 不支持」不会比改前更差。
   /**
    * 「这个 `tool_use` 真的执行过了」——在**执行器刚返回的那一刻**落账，比结果行早。
    * 为什么必须有它（语义红线）：「没有 `tool_result` 行」推不出「没执行」，两者形状相同；
@@ -3408,7 +3423,7 @@ export async function runToolLoop(options) {
   const appendToolExecutedRecoveryRow = async (toolUseId, roundNumber) => {
     if (typeof toolUseId !== "string" || toolUseId === "") return false;
     if (!Number.isSafeInteger(roundNumber)) return false;
-    return persist("appendRound", runId, buildToolExecutedRecoveryRow({
+    return persist("appendRecoveryRow", runId, buildToolExecutedRecoveryRow({
       runId, round: roundNumber, toolUseId,
     }));
   };
@@ -3420,7 +3435,7 @@ export async function runToolLoop(options) {
   const appendPartialTextRecoveryRow = async (text, roundNumber) => {
     if (typeof text !== "string" || text === "") return false;
     if (!Number.isSafeInteger(roundNumber)) return false;
-    return persist("appendRound", runId, buildPartialTextRecoveryRow({
+    return persist("appendRecoveryRow", runId, buildPartialTextRecoveryRow({
       runId, round: roundNumber, text,
     }));
   };
