@@ -82,7 +82,8 @@
 | M26 | #741 TTL 的取回指引必须由笔记证据决定（把证据分支写死成「有笔记」= 评审必修 1 的缺陷字面） | `src/loop/tool-result-ttl.js` | 497 | `a135a49fb2c7` | 1 | `  if (recall?.available !== true) return unverifiedRetrievalHint(retrievalCommand, recall?.reason);` | `  if (false) return unverifiedRetrievalHint(retrievalCommand, recall?.reason);` | `test/compact/fold-note-honesty-741.test.js` | `①TTL 占位符：笔记为空` |
 | M27 | #741 写入证据必须由**配对结果 + 载荷证实**决定（放行 ⇒ 未配对/`invalid`/解不出的载荷都算「有笔记」） | `src/loop/tool-result-ttl.js` | 169 | `9adf8b005cb0` | 1 | `        if (!payloadConfirms(paired, NOTE_WRITE_OK_STATUSES)) {` | `        if (false) {` | `test/compact/fold-note-honesty-741.test.js` | `证据判定：工具面整族齐全` |
 | M28 | #741 撤销必须真的作废（只清 key 不记账 ⇒ 撤销过的笔记仍被当成可查，且原因退回「无笔记写入」） | `src/loop/tool-result-ttl.js` | 182 | `d6c861400386` | 1 | `        if (live.delete(key)) sawRevoke = true;` | `        if (live.delete(key) && false) sawRevoke = true;` | `test/compact/fold-note-honesty-741.test.js` | `证据判定：工具面整族齐全` |
-**合计 28 条样本 / 14 个目标文件 / 18 个捕获者**
+| M29 | #753 C2 默认 `runJob` 包装层必须把 `nextUserTurn` 转给 `runErixRun` 的 deps（丢掉 ⇒ `action:"steer"` 被接受、`steerPending` 停在 1，而内层 run 从没见过钩子） | `examples/pi-extension/erix-run-jobs.js` | 754 | `18656e4585d7` | 1 | `    ...(opts.nextUserTurn === undefined ? {} : { nextUserTurn: opts.nextUserTurn }),` | `    // 变异：丢掉转发（等价于删掉整行）⇒ core 的 deps 里没有 nextUserTurn` | `test/examples/erix-run-steer.test.js` | `生产默认路径（不注入 runJob）` |
+**合计 29 条样本 / 15 个目标文件 / 19 个捕获者**
 
 > 单元格里的 `\|` 是**转义的竖线**：markdown 表格里写不出裸 `|`（会把整行拆成多列），所以 M6 锚点里的
 > `||` 存成 `\|\|`，脚本读的时候还原成 `||`。这条转义回环由 `--self-test` 的第 ㉒ 例钉住（不转义 ⇒

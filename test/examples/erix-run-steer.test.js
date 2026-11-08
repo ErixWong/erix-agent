@@ -486,3 +486,111 @@ test("diagnostics.steer 与 steerPending 在 status / result / status.json 三�
   const { formatSyncResult } = await import("../../examples/pi-extension/erix-run-format.js");
   assert.match(textOf(formatSyncResult(payload)), /steer：offered=3 injected=2 rejected=1/u);
 });
+
+// ---------------------------------------------------------------------------
+// 7. 生产接缝：`createAsyncRuntime` 的**默认** `runJob`（不注入）→ `runErixRun`
+// ---------------------------------------------------------------------------
+
+/** 有预算的轮询：不抛，只报「到点没等到」——给工具执行当闸门，闸门本身不许弄挂 run。 */
+async function pollUntil(predicate, budgetMs = 3_000) {
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    if (predicate()) return true;
+    if (Date.now() > deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+/** 把发给模型的每轮 user 轮拼成纯文本（#753 C2 第 5 节同口径）。 */
+function userTurnTexts(provider) {
+  return (provider?.requests ?? []).flatMap((request) => (request?.messages ?? [])
+    .filter((message) => message?.role === "user")
+    .map((message) => (typeof message?.content === "string"
+      ? message.content
+      : (message?.content ?? []).map((block) => block?.text ?? "").join(""))));
+}
+
+/**
+ * 本缺陷（#753 C2 落地缺陷）的唯一有效守网：**不注入 `runJob`** 的 `createAsyncRuntime`。
+ *
+ * 上面 13 格全部注入假 `runJob`，钉的是 `start() → runJob` 那一段；而生产（`erix-run.ts` 只传
+ * `registry / sendRegistry / sessionHandles / notify`）用的是 core 外面那层**默认包装**——它把
+ * `opts` 翻成 `runErixRun` 的 deps，漏一个 `nextUserTurn` 就够 steer 整条通道默默失效。
+ * 所以这格只靠 core 已有的 deps 缝（`loadLib` / `loadSlot` / `createProvider` / `createAssembly` /
+ * `createStore`）离线，不新造机制，也不假 `runJob`，跑的就是真 `runToolLoop`。
+ */
+function defaultWrapperRuntime({ sessionDir, provider }) {
+  const registry = createAsyncJobRegistry();
+  /** 闸门只设一次：第二轮工具执行时收件箱已经空了，再等就是白等 3 秒。 */
+  let gateArmed = true;
+  const runtime = createAsyncRuntime({
+    home: sessionDir,
+    registry,
+    notify: () => true,
+    env: {},
+    // ⚠ 故意**不传 `runJob`** ⇒ 用的就是生产那层默认包装（缺陷现场本身）。
+    deps: {
+      loadLib: async () => offlineFakeLib(),
+      loadSlot: async () => ({
+        slot: { endpoint: "https://relay.example/v1", model: "slot-model", apiKey: "k", contextWindowTokens: 200_000, maxOutputTokens: 4_096 },
+        configPath: "/tmp/fake-erix-config.json",
+      }),
+      createProvider: () => provider,
+      createAssembly: ({ runId: innerRunId }) => ({
+        tools: [{ name: "work", replay: "unsafe", inputSchema: { type: "object" } }],
+        // 闸门：第一轮的工具执行等 steer 进收件箱，于是**第二轮的轮边界**一定看得见它
+        // （引擎的消费点在每轮圈顶，见 `src/loop/orchestrator.js` 的 `injectHostSteerTurn(round)`）。
+        // 直接读 job 的收件箱：`action:"list"` 的摘要面**不带** `steerPending`，拿它当闸门会空转。
+        executeTool: async () => {
+          if (gateArmed) {
+            gateArmed = false;
+            await pollUntil(() => (registry.get(innerRunId)?.steerInbox?.length ?? 0) >= 1);
+          }
+          return "ok";
+        },
+      }),
+      createStore: () => createMemoryTranscriptStore(),
+    },
+  });
+  return { runtime, registry };
+}
+
+test("生产默认路径（不注入 runJob）：steer 经默认包装层到达真 runToolLoop，steerPending 从 1 回到 0 且那句话真的进了发给模型的 user 轮", async () => {
+  const sessionDir = await tempDir("erix-run-steer-default-");
+  const provider = createFakeProvider(SCRIPT());
+  const { runtime, registry } = defaultWrapperRuntime({ sessionDir, provider });
+  const STEER_TEXT = "转向：先只改 b.js，不要动 a.js";
+
+  const runId = runtime
+    .start({ task: "原任务：改 a.js", cwd: repoRoot, sessionDir, maxRounds: 4 }, { sessionId: "s-1" })
+    .handle.runId;
+  await waitUntil(() => provider.requests.length >= 1, { label: "内层 run 起来了（第一次 provider 请求）" });
+
+  // ① 投递：接受，队首 1 条
+  const queued = runtime.act({ action: "steer", runId, message: STEER_TEXT });
+  assert.equal(queued.steerPending, 1, "投递后队列里确实有 1 条");
+  assert.equal(runtime.act({ action: "status", runId }).view.steerPending, 1);
+
+  // ② 事实一：那句话被内层 run 本身取走了（不是「钩子被调过」）——失败面就在 steerPending 上。
+  const drained = await pollUntil(() => runtime.act({ action: "status", runId }).view.steerPending === 0, 3_000);
+  const stillPending = runtime.act({ action: "status", runId }).view.steerPending;
+  assert.ok(drained,
+    `steerPending 要从 1 回到 0（默认包装层不转发 nextUserTurn 时它永远停在 1，即本缺陷的现场）；实际=${stillPending}`);
+
+  // ③ 事实二：那句话真的作为一条 **user 轮**发给了模型（第二次请求里）。
+  const userTexts = userTurnTexts(provider);
+  assert.ok(userTexts.some((text) => text.includes(STEER_TEXT)),
+    `发给模型的请求里要有一句转向：${JSON.stringify(userTexts)}`);
+
+  // ④ 终局账目与账本同向：injected ≥ 1、盘上/内存都剩 0 条，run 正常跑完。
+  await waitUntil(() => registry.get(runId)?.status === "completed", { label: "settled" });
+  const status = runtime.act({ action: "status", runId });
+  assert.equal(status.view.steerPending, 0, "终局也不再挂未消费的 steer");
+  assert.ok((status.view.diagnostics?.steer?.injected ?? 0) >= 1,
+    `diagnostics.steer.injected 要≥ 1：${JSON.stringify(status.view.diagnostics?.steer)}`);
+  assert.equal(status.view.termination?.reason, "end_turn");
+
+  const settledJob = registry.get(runId);
+  assert.ok(settledJob !== undefined, "已结算的 job 仍在注册表里（status 读得到）");
+  assert.deepEqual(settledJob.steerInbox, [], "内存收件箱真的空了（不是只把计数器抹平）");
+});
