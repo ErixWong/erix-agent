@@ -21,6 +21,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createOpenAIProvider } from "../src/providers/openai.js";
+import { createAnthropicProvider } from "../src/providers/anthropic.js";
 import { observeSentReasoningParams } from "../src/providers/payload.js";
 import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
@@ -212,5 +213,37 @@ test("F. 宿主自建 provider：引擎观测不到最终 wire body ⇒ 该格�
     Object.hasOwn(rounds[0], "sentRequestParams"),
     false,
     "宿主自建 provider 交不出 wire body ⇒ 缺席读作「未观测」，绝不能被写成「没发」",
+  );
+
+  // 同一条边界对本包自带的 Anthropic provider 也成立：它的载荷由 `canonicalToAnthropicRequest` 拼，
+  // 本片没把观测点接过去 ⇒ 契约里那句「只有 OpenAI provider 交这格」必须能在这里被证。
+  const anthropicFetch = createMockFetch([{
+    json: {
+      id: "x", type: "message", role: "assistant",
+      content: [{ type: "text", text: "ok" }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 1, output_tokens: 1 },
+    },
+  }]);
+  const anthropicResponse = await createAnthropicProvider({
+    endpoint: "https://api.example.test/v1",
+    apiKey: "test-key",
+    model: "claude-test",
+    fetchImpl: anthropicFetch,
+  }).chat({
+    system: "",
+    messages: [{ role: "user", content: "hi" }],
+    maxTokens: 64,
+    thinking: { type: "enabled", budget_tokens: 16 },
+  });
+  assert.equal(
+    Object.hasOwn(anthropicFetch.calls[0].body, "thinking"),
+    true,
+    "Anthropic 侧确实发了 reasoning 相关键（否则这条「未观测」断言在测空气）",
+  );
+  assert.equal(
+    Object.hasOwn(anthropicResponse, "sentRequestParams"),
+    false,
+    "Anthropic provider 当前不交这格：缺席 = 未观测，不是没发",
   );
 });

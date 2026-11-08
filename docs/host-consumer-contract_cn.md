@@ -2927,8 +2927,10 @@ issue #282 之后它收口在终局判定本身，而不是在每个调用点各
 `translated: true`——**翻译后的值绝不冒充宿主输入值**。`source` 写值来自哪条通道，
 `request` > `slotDefault` > `providerOptions` > `extraBody`（与载荷装配的优先级同序，所以这格不可能与 body 打架）。
 **没事实就没键**：四个通道与 body 里都没有 reasoning 相关键 ⇒ 整格缺席——不是 `{}`，也不是故意写一个
-`hostValue: undefined`。**边界（契约级）：只有本包自带的 provider 能交出这格。**宿主自建 provider 自己序列化
-自己的 body，引擎看不见那条 wire ⇒ 该格**缺席**；缺席的意思是**「未观测」，绝不是「没发 reasoning 参数」**。
+`hostValue: undefined`。**边界（契约级）：当前只有本包自带的 OpenAI provider 会交这格**（`chat` 与 `chatStream` 两条路径都接了，
+观测点就在载荷装配点）。**Anthropic provider 与宿主自建 provider 都不交**——前者的载荷由
+`canonicalToAnthropicRequest`（`src/messages/anthropic.js`）拼，本片没把观测点接过去；后者引擎根本看不见它的
+wire body ⇒ 两种情况下该格都**缺席**，而缺席的意思是**「未观测」，绝不是「没发 reasoning 参数」**。
 
 **（3）`reasoningTokens`，以及为什么「缺席」不等于 0。** 规范化 usage 的既有三键逐字不动
 （`input_tokens` / `output_tokens` / `cacheRead`），只加一个可选键 `reasoningTokens`（number）——
@@ -5429,7 +5431,7 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 | `messages` | 模型 | 精确的模型上下文切片，含 `tool_use`/`tool_result` 块与折叠占位符。不要裸渲染；投影从中提取可展示文本与工具调用摘要。issue #335 起，投影里 assistant 条目的**正文正本也以这里为准**（消息一成型就落盘）；`response.content` 只是老账本与宿主手写行的回退。 |
 | `messages[].meta` | 模型 / 引擎 | 保留该对象及未知键。`meta.source` 是引擎保留标记，投影分类与 judge 可见性依赖它；不得复用它承载宿主自己的来源信息。 |
 | `response` | 模型 | 完整的 provider 响应内容（`text`、`reasoning`、`tool_use` 块）、`stopReason`、`usage`。投影展示的正文与块取自 `messages`，不再取自这里；只有 `stopReason`/`usage` 会被抄进投影的 `meta`。其块形状是模型面向的，可能变化。**它的 `usage` 只含本轮最后一发响应**——本轮的完整逐轮账是同级键 `record.usage`（见「用量分账：逐轮账 vs 引擎开销（issue #438）」）。 |
-| `sentRequestParams` | 模型 / 取证 | **纯加法（issue #785 P1）。**本轮 reasoning 相关参数**实际写进请求体**的值：`{ reasoningEffort: { hostValue, sentValue, source, translated? } }`——`hostValue` 是宿主给的值（**取在 payload 翻译之前**），`sentValue` 是真正发出进程的值（GLM `none → low`，ADR-017；两者可以不同，谁也不顶替谁），`source` 是供值通道（`request` / `slotDefault` / `providerOptions` / `extraBody`）。可以当诊断小标题渲染，绝不当模型正文渲染。**没事实就没键**：没有 reasoning 相关键的轮不带这格，而且**宿主自建 provider 永远交不出**（引擎看不见它的 wire body）——缺席要读成*未观测*，不是*没发*。见「`reasoning_effort` 是 provider 自由字符串，它外面四层各自独立（issue #785 P1）」。 |
+| `sentRequestParams` | 模型 / 取证 | **纯加法（issue #785 P1）。**本轮 reasoning 相关参数**实际写进请求体**的值：`{ reasoningEffort: { hostValue, sentValue, source, translated? } }`——`hostValue` 是宿主给的值（**取在 payload 翻译之前**），`sentValue` 是真正发出进程的值（GLM `none → low`，ADR-017；两者可以不同，谁也不顶替谁），`source` 是供值通道（`request` / `slotDefault` / `providerOptions` / `extraBody`）。可以当诊断小标题渲染，绝不当模型正文渲染。**没事实就没键**：没有 reasoning 相关键的轮不带这格，而且**只有本包自带的 OpenAI provider 会交**：Anthropic provider 与宿主自建 provider 都交不出（前者本片没接观测点，后者引擎看不见它的 wire body）——缺席要读成*未观测*，不是*没发*。见「`reasoning_effort` 是 provider 自由字符串，它外面四层各自独立（issue #785 P1）」。 |
 | `l0facts`、`runState`、`runStateMeta`、`compactionStats`、`judge`、`wrapup`、`toolOutputs`、`dedupKey`、`roundKey` | 模型 / 引擎内部 | 给 governor、resume、诊断用的事实。只有 `judge`/`wrapup`/`summary`/`stopReason`/`usage`/`toolUses`/`dedupKey` 被拷进投影的 `meta` 供可选标注；其余不属于展示表面。**`runStateMeta` 是新增键（issue #742 第一刀）**：`{ bytes, capBytes, truncated }`——本轮写下的那份 `runState` 副本的体积账，形状照上面的 `foldedPayloadMeta`（先例就是靠 `capBytes` / `droppedBytes` 才把「归档被夹断」变成可见事实）。`bytes` 用的是与引擎自己的体积夹断**同一把尺**（`Buffer.byteLength(JSON.stringify(copy), "utf8")`），所以它与盘上那一行逐字节相等，不是估算；`capBytes` 取导出常量 `RUN_STATE_MAX_SERIALIZED_BYTES`，不复制字面量。`truncated` 是**两个事实取或**：副本超出 `capBytes`，或引擎已在 `runState.bounds.truncated` 上盖了章（`reason: "serialized_size"` / `omittedTools`）。后一半不是装饰：夹断发生在轮记录写点的**上游**，所以真被挤过的那一轮，落盘副本反而**在 `capBytes` 之内**（实测：夹断后的副本 64 893 B、上限 65 536 B，只差 643 B，同时 `bounds.truncated: true`）——只看前一半就会把真被夹断的轮报成「没截断」。两个事实仍可分开读（`bytes` 与 `bounds`），没有被揉成一个数。**没事实就没这一格**：没有可量的 run-state 副本（宿主自己构造的形状、序列化不了的副本）时整个键缺席——宿主必须把缺格读成「不知道」，不许读成 `truncated: false`；引擎永不写 `{bytes:0,truncated:false}` 充当替身。纯咨询：引擎内没有读者，不参与恢复与停门判据，而且**一个字节也不少**——每轮仍是一份全量副本，账本总量仍随轮数线性增长（那是 #742 后面的切片，不是这一片）。 |
 
 ### 稳定性承诺

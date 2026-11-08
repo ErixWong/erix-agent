@@ -157,10 +157,11 @@ export function applyProviderPayloadOptions(
  *   request > slot 默认 > providerOptions > extraBody。
  * - **无相关键 ⇒ 返回 `undefined`**（无值不产噪声），与 `runStateMeta` / `engineUsage` 同构：没事实就没键。
  *
- * 边界（写在这里，契约 `Which RoundRecord fields a host may render` 那格里也有一句）：只有**引擎自带的两个
- * provider**（`src/providers/openai.js` / `src/providers/anthropic.js`）会交这笔账——它们的 wire body 由
- * 本模块拼装，所以「最终发出去的值」在这里是可证的。**宿主自建 provider**（只满足 `chat`/`chatStream`
- * 端口的）引擎看不见它自己序列化的 body ⇒ 该格缺席，缺席读作**「未观测」，绝不是「没发」**。
+ * 边界（写在这里，契约 `Which RoundRecord fields a host may render` 那格里也有一句）：**当前只有引擎自带的
+ * OpenAI provider**（`src/providers/openai.js`，`chat` 与 `chatStream` 两条路径）会交这笔账——它的 wire body
+ * 由本模块拼装，所以「最终发出去的值」在这里是可证的。**Anthropic provider 与宿主自建 provider 都不交**
+ * （前者的载荷走 `canonicalToAnthropicRequest`，本片没把观测点接过去；后者引擎根本看不见它的 body）
+ * ⇒ 两种情况下该格都缺席，而缺席读作**「未观测」，绝不是「没发」**。
  *
  * @param {{
  *   payload?: Record<string, any>,
