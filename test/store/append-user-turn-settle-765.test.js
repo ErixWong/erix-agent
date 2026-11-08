@@ -26,7 +26,7 @@ import { appendUserTurn } from "../../src/store/append-user-turn.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { foldLedgerMessages } from "../../src/store/message-rows.js";
 import { validateMessages } from "../../src/messages/rounds.js";
-import { UNPERSISTED_TOOL_RESULT_TEXT } from "../../src/loop/pending-tool-result.js";
+import { UNPERSISTED_TOOL_RESULT_TEXT, PENDING_TOOL_RESULT_TEXT } from "../../src/loop/pending-tool-result.js";
 import { runDirect } from "../helpers/run-direct.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
 
@@ -388,6 +388,82 @@ test("#765 端到端（反向对照）：不预写时引擎侧的尾部结清仍
   assert.deepEqual(shapeOf(provider.requests[0].messages).slice(0, 3), [
     "user[text]", "assistant[text,tool_use]", "user[tool_result]",
   ], "宿主没预写 ⇒ 尾行仍是那条 assistant ⇒ 引擎的尾部结清负责补（`answerPendingTailToolUses`）");
+});
+
+// ── 判据 7（反向证）：把「前移结清」短路 ⇒ 本案两条主格子必须回到红 ────────────────────
+
+/**
+ * 反向证夹具：把结清行挡在 store 门外 ⇒ 账本逐字等于「没有前移结清」的今天。
+ *
+ * 为什么不在这里改生产代码：判据要红在**账本事实**上，而不是红在某个被注释掉的调用上（后者每次改文件都得重做
+ * 一遍，且改错了也不会响）。`appendUserTurn` 照常跑结清那一步，只是这一格的 store 不吃这一行 ⇒ 落盘后的形状
+ * 与修前逐字同形（脚本实测过：行数、dedupKey、折叠顺序都对得上修前）。
+ */
+function withoutSettling(inner) {
+  return {
+    ...inner,
+    appendRound: (key, record) => (typeof record?.dedupKey === "string" && record.dedupKey.includes(":settle:")
+      ? Promise.resolve(undefined)
+      : inner.appendRound(key, record)),
+  };
+}
+
+test("#765 反向证（账本面）：没有那条结清行 ⇒ 折叠视图缺 tool_result，本地校验器当场报 issue 里那句原话", async () => {
+  const inner = createMemoryTranscriptStore();
+  const store = withoutSettling(inner);
+  await crashedLedger(store);
+
+  const result = await appendUserTurn(store, { key: RUN, text: "宿主追问", messageId: "m-1" });
+  // 结清那一步跑了，但 `written: true` 不等于落盘（文件头那条「并发去重」口径的同一条），这一格就利用这一点。
+  assert.equal(result.unsettledToolUses.status, "settled");
+
+  const entries = foldLedgerMessages(await inner.load(RUN));
+  assert.deepEqual(shapeOf(entries.map((entry) => entry.message)), [
+    "user[text]", "assistant[text,tool_use]", "user[text]",
+  ], "没有结清行就只剩修前那个形状：宿主的纯文本轮直接接在带 tool_use 的 assistant 后面");
+  assert.throws(
+    () => validateMessages(entries.map((entry) => entry.message)),
+    /assistant tool_use has no immediately following user tool_result/u,
+    "issue #765 现场那句砖化报错必须能从这里重现（不是只断一个抽象的「顺序不对」）",
+  );
+});
+
+test("#765 反向证（端到端）：没有结清行时引擎只能在内存里替一张「从没执行」的桩，而账本里桩行落在宿主轮**后面**", async () => {
+  const inner = createMemoryTranscriptStore();
+  const store = withoutSettling(inner);
+  await crashedLedger(store);
+  await appendUserTurn(store, { key: RUN, text: "宿主追问：刚才那步结果怎么样了？", messageId: "m-1" });
+
+  const provider = createFakeProvider([{ content: [text("续接完成")], stopReason: "end_turn" }]);
+  const result = await runDirect({
+    provider,
+    resume: true,
+    store,
+    runId: RUN,
+    tools: TOOLS,
+    completion: false,
+    wrapup: false,
+    stallDetection: false,
+    maxRounds: 8,
+    executeTool: async () => { throw new Error("不该补跑"); },
+  });
+
+  // 这一格不要求「0 次请求」：实测引擎的续跑复放（#421）会在**内存里**替一张桩把本次上下文顶住。
+  // 它顶的是哪一张桩、以及账本里那一行落在哪，才是本案的代价，所以两条都钉住。
+  assert.equal(result.finalText, "续接完成");
+  const stub = blocksOfMessages(provider.requests[0].messages)
+    .find((block) => block?.type === "tool_result");
+  assert.equal(stub.content, PENDING_TOOL_RESULT_TEXT,
+    "修前上下文里顶上来的是「这个工具调用从未执行」（`PENDING_TOOL_RESULT_TEXT`），而事实是「执行过、结果没落盘」"
+    + "⇒ 模型被告知了一件错事（它不知道那次调用可能有副作用）；若哪天续跑复放改用正确的桩且把桩行折到宿主轮之前，"
+    + "这一格会红，那时本案的动机要重读一遍");
+
+  const shapes = shapeOf(foldLedgerMessages(await inner.load(RUN)).map((entry) => entry.message));
+  const hostIndex = shapes.indexOf("user[text]");
+  const resultIndex = shapes.indexOf("user[tool_result]");
+  assert.ok(hostIndex >= 0 && resultIndex > hostIndex,
+    `事后补的桩行在折叠视图里排在宿主那条纯文本轮**后面**（这就是「位置不对」而不是「没补」）：${JSON.stringify(shapes)}`);
+  assert.deepEqual(settleRowsOf(await inner.load(RUN)), []);
 });
 
 // ── 结构判据：别把同一件事写第二遍 ──────────────────────────────────────────────────────
