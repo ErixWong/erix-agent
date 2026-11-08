@@ -552,6 +552,10 @@ test("中英契约文档引用的 readMoreLines marker 字面与源码产出同�
 // 任何人新增一个 `src/*.js` 都会红在本文件上，而本文件测的是 readFile 的额度事实。现在耦合方向是**单向**的：
 // 清单里的路径必须仍在盘上（删/改名样本文件 = 测过的数失效，必须红），盘上**多出**文件不算失效——
 // 描述里给的是「本仓口径的实测样本」，不是「本仓共有多少个 `.js`」（那个总数对读自己树的宿主也没意义）。
+// 2026-11-09（issue #769 R10，**本清单零改动**）：floor 从 `src/loop/pending-tool-result.js` 换到
+// `src/loop/resume-manager.js` 时先查了这一份：新 floor **本来就在下面 83 个路径里**（当场复算它**同时**是样本
+// floor 与全树 floor，两边都是 3,696 行），所既不往里加也不从里删（旧条目照 #275 的单向包含口径一律保留）。
+// 现算证据：`#453 floor census` 的 `pinnedSampleFewest` 与 `top5[0]` 本轮逐字相同（见 REPORT-769-r10.md）。
 const READ_LINE_CAPACITY_SAMPLE = [
   "src/assembly-validators.js", "src/assembly.js", "src/compact/anchors.js", "src/compact/budget.js",
   "src/compact/enforce-size.js", "src/compact/fold-fidelity.js", "src/compact/fold-llm.js", "src/compact/fold-statistical.js",
