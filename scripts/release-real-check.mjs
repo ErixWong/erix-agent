@@ -30,8 +30,18 @@
 //   不判红，但在汇总里**点名**——不许静默。
 //
 // 每条的汇总形状（issue #678）：`tests/pass/fail/skip` 来自 `node --test` 的 TAP 汇总行，**取不到就是
-// `?`**（不许写 0——「没摘要」与「零失败」是两件事）。第 7 条 `cli-real-smoke.mjs` 打的不是 TAP，
-// 所以它收尾时自报一行 `RELEASE-REAL-SMOKE id=cli-real checks=8 pass=8 fail=0 dry=false failed=- status=ok`
+// `?`**（不许写 0——「没摘要」与「零失败」是两件事）。第 7 条 `cli-real-smoke.mjs` 打的**本来就不是** TAP，
+// 这是设计上唯一「该取不到汇总」的一条（它改自报一行 `RELEASE-REAL-SMOKE …`，见下）；其余各条读回 `?`
+// 都该当异常查。⚠ 这条口径要按**本文件的现状**读，别当成已被 #774 闭死：#774 把 reporter 钉成 TAP 是钉在
+// `package.json` 的 `test` 脚本（`node --test --test-reporter=tap`）里，而 `check:release:real` 是直接
+// `node scripts/release-real-check.mjs`、每步又拿 `process.execPath` 跑下面 STEPS 的 argv（见 childEnv() /
+// runStep）——这份 STEPS **没**在 argv 里钉 reporter，而 Node 24 起 `node --test` 的默认已是 spec（`ℹ tests …`，
+// 既没有 `# tests` 也没有 `# SKIP`），所以一旦在 Node 24 上真跑本清单，其余各条会整批落进 spec 形状、全部
+// 写 `?`。这不是 #774 已闭的口子：要让「取不到汇总」在本文件也只剩第 7 条这一个合法原因，得给每条 argv 显式
+// 加 `--test-reporter=tap`（本仓 `scripts/mutation-sample-check.mjs` 就是这么钉、并配 R1/R1b 反向证）——那是
+// 逻辑改动，#781 按边界只收紧注释口径、没动它。故「runner 的 Node 版本换了」在**别的脚本**里被 #774 钉死了，
+// 但在**本文件**仍是能解释 `?` 的一个真实成因：读到 `?` 先分清是第 7 条的设计性缺失，还是 runner 默认 reporter 不是 TAP。
+// 它收尾时自报一行 `RELEASE-REAL-SMOKE id=cli-real checks=8 pass=8 fail=0 dry=false failed=- status=ok`
 // （格式与解析的唯一真源：`scripts/smoke-summary-line.mjs`），清单把它转成同一行里的额外一格：
 //
 //   [7/8] OK  tests=? pass=? fail=? skip=? cli_real=8/8/0  42.0s  装后 CLI 真机冒烟（scripts/cli-real-smoke.mjs）
