@@ -5789,7 +5789,7 @@ append-only 账本现在**每本 run 多写一个文件**：`<dir>/<runId>.recov
 **轮记录那份一个字节都没变**——仍然是一行恰好一轮，正文也还在原处，没有任何东西从它里面搬走。新文件只装**恢复行**：
 
 - `kind: "recovery"` —— 宿主就按这个字段筛。今天有两种事件：`recoveryEvent: "tool-executed"`（带 `toolUseId`）
-  与 `recoveryEvent: "partial-text"`（只带 `text` 本身，截到 200 字符；**没有** `textLength` 这一项，要长度自己数——恢复行刻意不带任何派生数字）。
+  与 `recoveryEvent: "partial-text"`（只带 `text` 本身：**那一刻的完整累计正文 — 不截断、不设上限**；引擎把整段串原样交给这一行，而且**没有** `textLength` 这一项，要长度自己数——恢复行刻意不带任何派生数字）。
 - 一条一行 = **一个事件**，不是一轮一行。`messages` 恒为 `[]`：恢复行**从不载正文**，所以「账本 + 快照」并排读也
   不会把同一份正文数出两遍。
 - `dedupKey` 就是**事件键**，由 `recovery-rows.js` 里的 `buildRecoveryEventKey` 生成。形状按 store 测试自己的夹具取样：`tool-executed` 行只带光板的 `toolUseId`（`pendingToolUseIds: ["call-7f"]`、`toolUseId: "call-7f"`）；`partial-text` 行带 `text`，判别字段换成那段正文的指纹。同一事件键 + 同一 payload

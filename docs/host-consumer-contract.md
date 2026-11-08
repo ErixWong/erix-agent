@@ -7364,7 +7364,9 @@ nothing moved out of it (message bodies included). This new file only carries *r
 
 - `kind: "recovery"` — the discriminator a host filters on. Two events exist today:
   `recoveryEvent: "tool-executed"` (carries `toolUseId`) and `recoveryEvent: "partial-text"` (carries `text`
-  itself, truncated to 200 characters — there is **no** `textLength` field: a consumer that wants a length counts the
+  itself: **the complete accumulated text as it stood at that moment — not truncated, not capped** — the
+  engine hands the whole string to the row, and there is **no** `textLength` field either, so a consumer that
+  wants a length counts the
   string; the row deliberately carries no derived number).
 - One row = **one event**, never one row per round. `messages: []` always: a recovery row **never carries message
   bodies**, so reading the ledger and the snapshot side by side cannot double a message body.
