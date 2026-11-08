@@ -2607,7 +2607,7 @@ function collectSymbolAnchorSpanErrors(occurrences) {
  *  （`residueStart`（`src/loop/orchestrator.js`） 是新增的那一组），note 自己报「实测 238 组 > 下限 237 组
  *  … 请把 SYMBOL_ANCHOR_MIN_UNIQUE 升到 238」⇒ 按它现报的数抬，不在旧值上做加法。
  *  这里只留判据与写法：`const SYMBOL_ANCHOR_MIN_UNIQUE = <数字>;` 必须保持一行（自测的两例要改这个数）。 */
-const SYMBOL_ANCHOR_MIN_UNIQUE = 238;
+const SYMBOL_ANCHOR_MIN_UNIQUE = 242;
 
 /** 从脚本自己的文本里读下限（走 `fileRecord` ⇒ `--self-test` 的内存副本同样生效）；抽不到返 null。 */
 function symbolAnchorMinUnique() {

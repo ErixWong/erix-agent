@@ -451,9 +451,12 @@ test("judge runs on non-tool rounds only, with reasoning disabled (tool rounds s
 
   // tool_use 轮不调 judge；仅 end_turn 轮调 1 次 → judge_done 停
   assert.equal(judge.requests.length, 1);
-  // 2026-09-20 修复：恢复 reasoning_effort:"none"——实测（glm-5.3-flash-awq）它是该 relay
-  // 上唯一能真正关思考的参数（GLM 把思考放非标准 `reasoning` 字段）；不关则 512 预算被
-  // 思考耗尽 → content 空 → provider 报 missing content。
+  // 端口边界上 judge 恒发 reasoning_effort:"none"（统一语义 = 不思考）。
+  // ⚠ 这里曾经写着「它是该 relay 上唯一能真正关思考的参数」（2026-09-20 的现场结论），那是
+  // ADR-017 **之前**的旧口径，与 `src/providers/payload.js` 的 `none→low` 翻译直接冲突：
+  // GLM 载荷上这个值会被改写成 "low"，所以「发了 none」≠「上游按 none 执行」。
+  // 现行结论与它的不可回放状态见 docs/decisions/017-glm-reasoning-effort-translation.md
+  // 正文与其 2026-11-08 的 Status note。**断言本身没动**：它断的是端口上发出去的值。
   assert.equal(judge.requests[0].reasoning_effort, "none");
   // judge 只输出一段 JSON，maxTokens 收敛到 1024（原 8000 实测致输出漂移变长 4 倍；
   // 512 实测会被 glm 冗长 JSON 截断致 parse 失败）

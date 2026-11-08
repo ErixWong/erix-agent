@@ -2903,6 +2903,61 @@ issue #282 之后它收口在终局判定本身，而不是在每个调用点各
   （引擎桶）；后者在本轮没发起过引擎调用时**缺键**，宿主相加时按 0 读。要分清的是：`record.usage`
   是模型那一份、不是本轮总账——现成的「两桶之和」只有成功结果上的 `result.usage` 一个。
 
+## `reasoning_effort` 是 provider 自由字符串，它外面四层各自独立（issue #785 P1）
+
+在本包里 `reasoning_effort` 是 **provider 专属的自由文本**：引擎不校验取值，本仓库也**不建 vendor 值域枚举**
+（issue #788 已 parked——加枚举不是修，那是一句关于所有后端的断言）。宿主想要的东西与模型真做的事之间隔着
+四层，每层的 owner、载体、证据强度都不同。
+
+| 层 | owner | 事实落在哪 | 它证明什么 |
+|---|---|---|---|
+| **1. 请求值** | 宿主 | 宿主设的那个选项（槽位默认 / 调用点值 / `providerOptions` / `extraBody`） | 只证明「要过这个值」，到此为止 |
+| **2. payload 翻译** | 本包，且只有一处 | `applyProviderPayloadOptions` / `observeSentReasoningParams`（`src/providers/payload.js`）→ `record.sentRequestParams` | **实际写进请求体的**是哪个值 |
+| **3. provider 用量** | 上游 | `normalizeOpenAIUsage`（`src/messages/openai-normalization.js`）→ `response.usage.reasoningTokens` | 上游**回报过**推理 token 数 |
+| **4. 真实采样行为** | 服务栈 | 本仓库里没有任何格子 | 从这里永远证不了 |
+
+第 4 层不是账本的缺口，而是引擎已经对自己证过的一条边界（issue #419 ②：强制收尾那条终态裁定成立的根据，正是
+「引擎确实发出去的那个请求」读不出采样器做了什么）。新增任何格子都不改变这一点，宿主也不许把下面任何一格读成
+「模型想了 / 没想」。
+
+**（2）到底发了什么。** `record.sentRequestParams` 是纯加法：
+`{ reasoningEffort: { hostValue, sentValue, source, translated? } }`。`hostValue` 是宿主给的值，**取在翻译之前**；
+`sentValue` 是过了 payload 翻译与 `extraBody` 之后进了 body 的值。本包只做一处翻译，就是 GLM 的 `none → low`
+（ADR-017），而这格被要求**两个值都留**：GLM 型号上是 `hostValue: "none"` / `sentValue: "low"` /
+`translated: true`——**翻译后的值绝不冒充宿主输入值**。`source` 写值来自哪条通道，
+`request` > `slotDefault` > `providerOptions` > `extraBody`（与载荷装配的优先级同序，所以这格不可能与 body 打架）。
+**没事实就没键**：四个通道与 body 里都没有 reasoning 相关键 ⇒ 整格缺席——不是 `{}`，也不是故意写一个
+`hostValue: undefined`。**边界（契约级）：当前只有本包自带的 OpenAI provider 会交这格**（`chat` 与 `chatStream` 两条路径都接了，
+观测点就在载荷装配点）。**Anthropic provider 与宿主自建 provider 都不交**——前者的载荷由
+`canonicalToAnthropicRequest`（`src/messages/anthropic.js`）拼，本片没把观测点接过去；后者引擎根本看不见它的
+wire body ⇒ 两种情况下该格都**缺席**，而缺席的意思是**「未观测」，绝不是「没发 reasoning 参数」**。
+
+**（3）`reasoningTokens`，以及为什么「缺席」不等于 0。** 规范化 usage 的既有三键逐字不动
+（`input_tokens` / `output_tokens` / `cacheRead`），只加一个可选键 `reasoningTokens`（number）——
+**只有上游回报 `completion_tokens_details.reasoning_tokens` 时才写**。回报了 0 就是测到了，照写 0
+（2026-11-08 探针在 `reasoning_effort: "none"` 那一发实测到的真值就是 0）；**没回报**就**没有这个键**，
+任何一层都不许用 `0` 顶替「没测」——这是两个不同的问题，把它们并成一个数正是本格要暴露的「静默 0」失败模式。
+Anthropic 的 usage 面**根本没有**推理 token 字段（`usageFromResponse`（`src/messages/anthropic.js`）只映射
+`input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens`，别的没有），
+所以 Anthropic 路径**不**长出这个键：那里它是**事实性缺席**，不是漏写。`record.usage`（逐轮账，issue #438）
+一字未改：`reasoningTokens` 随 `record.response.usage`（本轮最后一发）走，**不进**轮账那四个累加字段。
+
+**两族字段形态，且形态差异不可商量。**
+
+| 族 | 字段形态 | 实测行为 |
+|---|---|---|
+| OpenAI 兼容 | **标量** `reasoning_effort` | 未识别的标量会被 **HTTP 400** 拒，错误体回吐**该后端自己**的合法值清单（2026-11-08 探针，`qwen3.8-flash-next` 上的 `"hight"`）；`"none"` 在那里真生效 |
+| GLM（OpenAI 族） | 标量，但是**没有 off 的子集** | `none` 由第 2 层翻译成 `low`（ADR-017）；现场型号当前不可用——见该 ADR 的 status note |
+| Anthropic | **对象形态**（`thinking` / `reasoning`），不是标量 | 它的探针腿**已退役**（本地无端点）：列为文档项，不作验收闸 |
+
+两条措辞纪律，两条都在现实里错过一次：
+
+- **那份 400 错误体不是值域。** 它只是「某个后端在某个时刻对某个型号」说的话
+  （`qwen3.8-flash-next` 的清单不是中继的清单，更不是本包的清单）。把它抄成全局枚举正是 issue #788 拒做的事。
+- **`GET /models` 列出 ≠ 可用。** 2026-11-08 实测：`z-ai/glm-5.2` 在 39 项清单里，仍然回 **HTTP 404**
+  `one_hub_error`（"Model … is not supported for current token"）。可用性由 token 级授权决定，
+  所以「在清单里」最多当一条网关事实引用，永远不能读成「这个 token 能用这个型号」。
+
 ## judge 记录关联字段与 run 级 outcome（issue #165）
 
 judge 决策经 `onJudge` 交给宿主消费（CLI 把它们追加进 `judge.log`，宿主可落任意去处）。
@@ -5376,6 +5431,7 @@ const turns = projectTranscriptForDisplay(await store.load(runId));
 | `messages` | 模型 | 精确的模型上下文切片，含 `tool_use`/`tool_result` 块与折叠占位符。不要裸渲染；投影从中提取可展示文本与工具调用摘要。issue #335 起，投影里 assistant 条目的**正文正本也以这里为准**（消息一成型就落盘）；`response.content` 只是老账本与宿主手写行的回退。 |
 | `messages[].meta` | 模型 / 引擎 | 保留该对象及未知键。`meta.source` 是引擎保留标记，投影分类与 judge 可见性依赖它；不得复用它承载宿主自己的来源信息。 |
 | `response` | 模型 | 完整的 provider 响应内容（`text`、`reasoning`、`tool_use` 块）、`stopReason`、`usage`。投影展示的正文与块取自 `messages`，不再取自这里；只有 `stopReason`/`usage` 会被抄进投影的 `meta`。其块形状是模型面向的，可能变化。**它的 `usage` 只含本轮最后一发响应**——本轮的完整逐轮账是同级键 `record.usage`（见「用量分账：逐轮账 vs 引擎开销（issue #438）」）。 |
+| `sentRequestParams` | 模型 / 取证 | **纯加法（issue #785 P1）。**本轮 reasoning 相关参数**实际写进请求体**的值：`{ reasoningEffort: { hostValue, sentValue, source, translated? } }`——`hostValue` 是宿主给的值（**取在 payload 翻译之前**），`sentValue` 是真正发出进程的值（GLM `none → low`，ADR-017；两者可以不同，谁也不顶替谁），`source` 是供值通道（`request` / `slotDefault` / `providerOptions` / `extraBody`）。可以当诊断小标题渲染，绝不当模型正文渲染。**没事实就没键**：没有 reasoning 相关键的轮不带这格，而且**只有本包自带的 OpenAI provider 会交**：Anthropic provider 与宿主自建 provider 都交不出（前者本片没接观测点，后者引擎看不见它的 wire body）——缺席要读成*未观测*，不是*没发*。见「`reasoning_effort` 是 provider 自由字符串，它外面四层各自独立（issue #785 P1）」。 |
 | `l0facts`、`runState`、`runStateMeta`、`compactionStats`、`judge`、`wrapup`、`toolOutputs`、`dedupKey`、`roundKey` | 模型 / 引擎内部 | 给 governor、resume、诊断用的事实。只有 `judge`/`wrapup`/`summary`/`stopReason`/`usage`/`toolUses`/`dedupKey` 被拷进投影的 `meta` 供可选标注；其余不属于展示表面。**`runStateMeta` 是新增键（issue #742 第一刀）**：`{ bytes, capBytes, truncated }`——本轮写下的那份 `runState` 副本的体积账，形状照上面的 `foldedPayloadMeta`（先例就是靠 `capBytes` / `droppedBytes` 才把「归档被夹断」变成可见事实）。`bytes` 用的是与引擎自己的体积夹断**同一把尺**（`Buffer.byteLength(JSON.stringify(copy), "utf8")`），所以它与盘上那一行逐字节相等，不是估算；`capBytes` 取导出常量 `RUN_STATE_MAX_SERIALIZED_BYTES`，不复制字面量。`truncated` 是**两个事实取或**：副本超出 `capBytes`，或引擎已在 `runState.bounds.truncated` 上盖了章（`reason: "serialized_size"` / `omittedTools`）。后一半不是装饰：夹断发生在轮记录写点的**上游**，所以真被挤过的那一轮，落盘副本反而**在 `capBytes` 之内**（实测：夹断后的副本 64 893 B、上限 65 536 B，只差 643 B，同时 `bounds.truncated: true`）——只看前一半就会把真被夹断的轮报成「没截断」。两个事实仍可分开读（`bytes` 与 `bounds`），没有被揉成一个数。**没事实就没这一格**：没有可量的 run-state 副本（宿主自己构造的形状、序列化不了的副本）时整个键缺席——宿主必须把缺格读成「不知道」，不许读成 `truncated: false`；引擎永不写 `{bytes:0,truncated:false}` 充当替身。纯咨询：引擎内没有读者，不参与恢复与停门判据，而且**一个字节也不少**——每轮仍是一份全量副本，账本总量仍随轮数线性增长（那是 #742 后面的切片，不是这一片）。 |
 
 ### 稳定性承诺

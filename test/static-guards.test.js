@@ -4834,7 +4834,7 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 // 没删例、没 skip，也没动配对判据本身）。
 // 2026-11-08 第十二次重取（**合并树**：本支 `4176b31` + main `e1bd9cf`）——#765 那对中英条目与隔壁 #753/#769 一批
 // 第一次同在一棵树。处置同前：**不抄任何一边**，只取守卫在这棵合并树上打印的读数。
-const CHANGELOG_PAIR_FLOOR = 30;
+const CHANGELOG_PAIR_FLOOR = 31;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

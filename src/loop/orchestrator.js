@@ -6207,6 +6207,14 @@ export async function runToolLoop(options) {
             .map(({ toolUseId, name, content }) => ({ toolUseId, name, content })),
         }
         : {}),
+      // issue #785 P1 ②（新键，纯加法）：**实际写进请求体的** reasoning 相关值，由引擎自带 provider 在
+      // 拼完 payload（含 GLM `none→low` 翻译与 extraBody 注入）之后交上来。`hostValue` 是宿主给的原值，
+      // `sentValue` 是发出去的值——GLM 那一格两者**可以不同**（`none` vs `low`），谁都不是对方的替身。
+      // **无相关键 ⇒ 整个键缺席**（不写空对象）；宿主自建 provider 交不出 ⇒ 同样缺席，读作「未观测」，
+      // 不是「没发」（引擎看不见它的 wire body）。契约里 `Which RoundRecord fields a host may render` 有这格。
+      ...(response?.sentRequestParams === undefined
+        ? {}
+        : { sentRequestParams: response.sentRequestParams }),
     };
     // issue #460：`record` 的字面量推断里没有折叠字段（`folded`/`foldedPayload`/`foldedRoundRange`/
     // `navigationRecord` 本来就在 --checkJs 的名册里），用一个带显式类型的别名承载这些咨询性

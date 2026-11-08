@@ -7,6 +7,8 @@
 > same knob; the authoritative table is in `docs/host-consumer-contract.md`. The body below is left
 > **verbatim on purpose** — rewriting a decision record into today's spelling would forge history.
 
+> **Status note (2026-11-08)** — 本决议的现场模型 `glm-5.3-flash-awq` 对当前 token 已不可用（真上游实测 HTTP 404，网关 `one_hub_error`：Model … is not supported for current token；同族 `z-ai/glm-5.2` 虽在 `GET /models` 清单内仍 404 ⇒ 可用性由 token 级授权决定，不是型号下架）。因此本决议的行为断言**当前不可回放**：要修订或取代它，前置是先取得能跑 GLM 的凭证。另注：网关 404 响应的 `content-type` 是 `text/plain` 而正文是 JSON，错误体解析不能按 content-type 分流。
+
 - Status: Accepted (2026-09-22), implemented in commit `6523ff7`
 - Related: judge/wrapup normalize callers of `reasoning_effort:"none"`; bench evidence in erix-bench REPORT.md (260928 glm run, judge degraded §4)
 - Upstream: vLLM issue #54744, fix PR #54825, frontend fix PR #56994; Z.ai GLM-5.3 docs; unsloth GLM-5.3-GGUF card

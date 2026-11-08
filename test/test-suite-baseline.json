@@ -3,12 +3,26 @@
     "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
     "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
     "expect": {
-        "tests": 3733,
+        "tests": 3743,
         "fail": 0,
         "maxSkipped": 16
     },
     "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。 **（#774 追加的第三个来源，上限 15 → 16）** `test/loop-snapshot-round-residue-735.test.js` 里新增的那格「这台机器上找不到 Node 24 runner」——**它验的正是 Node 24 的默认 reporter 形状**，所以只在拿得到 Node 24 可执行文件的环境真跑：本机 `~/.local/node24/bin/node` 在 ⇒ 本地 13 条；CI 的 `node 24` job 走 `process.execPath` ⇒ 15 条；CI 的 `node 22` job 两个都没有 ⇒ **16 条**。 CI 实测（run `42428178968`，同一棵 `cc08dd4`，两条 job 都跑到过 `check:test-summary`）：`node 24` = `tests=3716 pass=3701 fail=0 skipped=15 ⇒ TEST-SUMMARY-VERDICT ok`；`node 22` = `skipped=16 ⇒ red codes=SKIPPED_OVER`。 **这不是把判据放宽**：那一格在 `node 24` job 上真跑，覆盖面没丢；上限 16 之后**再多跳一条仍然红**（反向证：`# skipped 17` 的日志在本登记值下仍报 `SKIPPED_OVER`）。",
     "observations": [
+        {
+            "date": "2026-11-08",
+            "env": "local",
+            "node": "v22.23.2",
+            "commit": "本笔登记（分支 feat-261108-01-effort-observability；被量的树 = origin/main c5c1118 + 本片 rebase 后的 6 commit）",
+            "branch": "feat-261108-01-effort-observability",
+            "tests": 3743,
+            "pass": 3730,
+            "fail": 0,
+            "skipped": 13,
+            "todo": 0,
+            "cancelled": 0,
+            "why": "tests 地板 3733 → **3743**。算术只有一段且是现测：本片新增 10 格 —— `test/messages/openai-normalization.test.js` +4（`reasoningTokens`：回报了要保 / 不回报就**不许出现该键** / 回报的 0 是真测量不是缺席 / 非数值不写）+ `test/reasoning-sent-params-785.test.js` +6（A–F：GLM 双值留痕、四条来源通道、无键不产噪声、观测值与真请求体同源、轮记录落盘、宿主自建 provider 缺席读作未观测）。3733 + 10 = 3743；同树 `npm test` 打印即此值（`# tests 3743 / # pass 3730 / # fail 0 / # skipped 13`，exit 0，日得 `/tmp/785-final2.log`，在改完地板后的同一棵树上重测——上一次量到 `pass 3729 / fail 1`，红的正是配对地板那一格本身）。`test/judge.test.js` 只改注释不动断言，不新增用例数。maxSkipped 不动（仍取已量到的最大环境 = CI 的 16）。同片另一格：`CHANGELOG_PAIR_FLOOR` 30 → 31，由闸自己在 `## [Unreleased]` 面现测点名（中英各 31 条 / 配对 31 对 / 无对应 0 条）。"
+        },
         {
             "date": "2026-11-08",
             "env": "local",
