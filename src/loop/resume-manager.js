@@ -685,6 +685,13 @@ export async function restoreResume(ctx) {
         || ledgerPartialCrashRound !== undefined;
       // issue #736：快照没认出来（那份快照本身就是写失败的那次，#734）不等于没有崩溃现场——
       // 账本边界成立就是崩溃现场。两者取**或**；快照那条路保留原样（B 集合的补跑集合同样靠它）。
+      // issue #754（裁决 2）：旧格式（pre-261021）档案里「只在快照里」的那段崩溃轮正文，现在一条
+      // 也不喂；这个局部只数「丢了几条」，交给下面那条恢复告示出声用（判据 2：禁止静默）。
+      let legacySnapshotBodyDropped = 0;
+  // 同一条闸门的另两个吐口：被抑制的 `partialText`（0/1）、被放弃补跑的在飞调用（要进告示）。
+  let legacyPartialBodyDropped = 0;
+  /** @type {Array<{id?: unknown, name?: unknown}>} */
+  let legacyPendingDropped = [];
       if (crashSiteRound || ledgerBoundary !== null) {
         // 工单 261021（第三刀）·issue #425 ·锚点的**现算**口径：`persistedTranscriptLength` 过去
         // 读的是快照里那份**采样**（`saveRunSnapshot` 写出的那一刻 write === read），而 partialPersistence
@@ -726,22 +733,17 @@ export async function restoreResume(ctx) {
           message: cloneState(entry.message),
           round: entry.round,
         }));
-        // **升级路径（不是旧逻辑的残留）**：改造前写的账本里，崩溃那一轮的正文**只在快照里**
-        // （旧写侧把整轮正文留到轮末才写，而轮行因崩溃 never landed）。对这类旧账本，快照正文副本
-        // 仍是它们唯一的正文来源 ⇒ 只在「账本在锚点之后一条都没有」时才拿快照里锚点之后的那段补全。
-        // 新账本（逐条入账）永远不满足这个条件：崩溃轮的 assistant 正文/已完成的结果已在锚点之内，
-        // 账本要么相等要么领先于快照 ⇒ 一份快照正文也不会多喂。
-        const snapshotBody = Array.isArray(snapshot.messages)
-          ? snapshot.messages : [];
-        if (ledgerMessages.length === anchor && snapshotBody.length > anchor) {
-          for (const [offset, message] of snapshotBody.slice(anchor).entries()) {
-            const cloned = cloneState(message);
-            ctx.messages.push(cloned);
-            ctx.messageRounds.set(cloned, crashRound);
-          }
-        }
+        // **pre-261021 的档案不再支持恢复（issue #754 裁决 2）**：这里原先把 `snapshot.messages.slice(anchor)`
+        // 补进上下文，而它自己是坏的 —— `anchor` 是**标量**（折叠后的消息条数），不是「哪些下标已入账」的位图
+        // ⇒ 第二跳越过那段正文 ⇒ 第二次恢复在**任何请求之前**就 `invalid_messages`。**已关掉**：只从账本重建。
+        // 剩下的读点只量**条数**、只用于**出声**（判据 2），判据沿用被删那个 `if`。
+        // 完整因果与实测：CHANGELOG 的 `#754` 条目 + `test/loop-snapshot-round-residue-735.test.js`（两跳）。
+        const snapshotBody = Array.isArray(snapshot.messages) ? snapshot.messages : [];
+        legacySnapshotBodyDropped = ledgerMessages.length === anchor && snapshotBody.length > anchor
+          ? snapshotBody.slice(anchor).filter((message) => message !== null && message !== undefined).length
+          : 0;
         // `resumeTranscriptStart` = 锚点（= 已落盘正文的条数）：下面那条 `…:resume` 行只写
-        // **锚点之后**的正文（升级补全的那段 + 本次补跑跑出来的结果），已落盘的正文一行也不会重抄。
+        // **锚点之后**的正文（本次补跑跑出来的结果），已落盘的正文一行也不会重抄。
         ctx.resumeTranscriptStart = anchor;
         // 工单 261021（第三刀）：**补跑出来的工具结果也走「一条消息一成型就落盘」**——它们接在
         // 崩溃轮已落盘的那条聚合消息后面（`partOf` 指认它的首片行），于是下一次恢复折出来的仍是
@@ -795,10 +797,15 @@ export async function restoreResume(ctx) {
           .slice(0, anchor)
           .some((entry) => entry.message?.role === "assistant"
             && entry.round === crashRound);
-        if (typeof partialText === "string" && partialText.length > 0
+        // **第一必修（同源同去留补完）**：`partialText` 与快照 `messages` 是同一条退役通道的**第二个正文
+        // 出口**（同一写侧，引入于 `1aceadf`）。旧格式分支上它也不喂 —— 否则告示那句「只从账本重建」是假的；
+        // 探针 = 0（新格式，这一支通常根本不触发）照旧喂，一字不变。被抑制的那段要**计入**告示的条数。
+        const partialTextPending = typeof partialText === "string" && partialText.length > 0
           && Number.isSafeInteger(partialRound)
           && partialRound === crashRound
-          && !crashRoundAssistantPersisted) {
+          && !crashRoundAssistantPersisted;
+        if (partialTextPending && legacySnapshotBodyDropped > 0) legacyPartialBodyDropped = 1;
+        if (partialTextPending && legacySnapshotBodyDropped === 0) {
           const partialMessage = {
             role: "assistant",
             content: [{ type: "text", text: partialText }],
@@ -839,10 +846,24 @@ export async function restoreResume(ctx) {
         // issue #420：判据是账本（`ledgerToolResultIds`）不是上下文
         // （`ctx.messages`）：升级路径可能已把结果补进上下文，
         // 账本里却仍没有那一行（合并自己按 id 去重）。
-        const replayResults = [...ctx.resumeRunSnapshotResults.values()]
+        const replayResultsAll = [...ctx.resumeRunSnapshotResults.values()]
           .filter((toolResult) => !ledgerToolResultIds.has(toolResult.tool_use_id));
-        if (replayResults.length > 0) {
-          if (mergeToolResultsIntoMessages(ctx.messages, replayResults) === false) {
+        // **同源同去留（issue #754 裁决 2，第二刀）**：崩溃轮的正文与那一轮的结果同来自那个刚被宣布不支持
+        // 的来源。只丢正文、留下结果 = 喂半截 ⇒ 孤儿 `tool_result` ⇒ 任何请求之前就 `invalid_messages`
+        // （#421/#730 只兜反方向：给悬空 `tool_use` 补桩，不兜孤儿结果）。
+        // ⚠ 下面 `ctx.resumeUnpersistedToolResults` 仍拿**全量** ⇒ #424 守卫与
+        // `resume_journal_skipped(crash_round_assistant_not_in_ledger)` 一字不动；新格式（探针 = 0）逐字不变。
+        // **同一把尺子用两次**（第三刀见下面 `resumePendingTools`）：判据 1 禁的是 `invalid_messages` 这个**结局**。
+        const toolUseInRebuiltContext = (/** @type {unknown} */ id) => (id === undefined
+          ? false
+          : ctx.messages.some((/** @type {any} */ message) => blocksFor(message?.content)
+            .some((/** @type {any} */ block) => block?.type === "tool_use" && block.id === id)));
+        const replayResults = legacySnapshotBodyDropped === 0
+          ? replayResultsAll
+          : replayResultsAll.filter((toolResult) => toolUseInRebuiltContext(toolResult?.tool_use_id));
+        if (replayResultsAll.length > 0) {
+          if (replayResults.length > 0
+            && mergeToolResultsIntoMessages(ctx.messages, replayResults) === false) {
             const replayMessage = { role: "user", content: replayResults };
             ctx.messages.push(replayMessage);
             ctx.messageRounds.set(replayMessage, crashRound);
@@ -852,21 +873,33 @@ export async function restoreResume(ctx) {
           // 账本写入一律在 orchestrator（`appendMessageRowToTranscript` / `persist`），
           // 失败语义与 `seq` 计数器只有一处。写入口在 orchestrator 的
           // `journalResumeUnpersistedToolResults`：补跑段之前逐条写成消息行。
-          ctx.resumeUnpersistedToolResults = replayResults;
+          ctx.resumeUnpersistedToolResults = replayResultsAll;
         }
         const pendingTools = snapshot.pendingToolUses
           ?? (snapshot.pendingToolUse
             ? [snapshot.pendingToolUse]
             : []);
-        ctx.resumePendingTools = pendingTools.filter((pendingTool) => (
-          // issue #769：这里改读 `ctx.resumeExecutedToolIds`（= 账本 `tool-executed` 恢复行 ∪ 快照那格），
+        // **第三刀**：`snapshot.pendingToolUses` 与崩溃轮正文同批同来源 ⇒ 旧格式分支上「上下文里已无配对
+        // `tool_use`」的在飞调用**也不补跑**（补跑 = 把结果写进一条没有配对 `assistant` 的上下文）。
+        // 验收面：`test/loop-resume-unpersisted-tool-results.test.js` 的「第三刀验收格」（带反向证）。
+        const replayablePending = pendingTools.filter((/** @type {{ id?: unknown }} */ pendingTool) => (
+          // issue #769：改读 `ctx.resumeExecutedToolIds`（= 账本 `tool-executed` 恢复行 ∪ 快照那格），
           // 不再只看 `snapshot.executedToolIds`：快照是 latest-only，而**恢复行不会被下一轮覆盖**——
           // 「快照说它没执行、账本说它执行了」从此不再把同一副作用重新跑一遍。
+          // 与第三刀共存：旧格式档案（pre-261021，#754 已宣布不再支持）根本没有恢复行文件
+          // ⇒ `resumeExecutedToolIds` 回落到快照那格，本分支行为与第三刀一字不差。
           !ctx.resumeExecutedToolIds.has(pendingTool.id)
           && !ctx.resumeRunSnapshotResults.has(pendingTool.id)
           // 账本已经结清的结果不再补跑（逐条入账后，这是「已落盘」的权威口径）。
           && !ledgerToolResultIds.has(pendingTool.id)
         ));
+        // **代价（认下来）**：那一轮的副作用从此彻底不补。**放弃补跑 ≠ 没有未结清** ⇒ 这批要交给告示
+        // （第二必修），否则模型读到 `RESUME_NOTICE_NO_PENDING` 那句「已成对落账」= 主动陈述假事实。
+        ctx.resumePendingTools = legacySnapshotBodyDropped === 0
+          ? replayablePending
+          : replayablePending.filter((/** @type {{ id?: unknown }} */ pendingTool) => toolUseInRebuiltContext(pendingTool.id));
+        legacyPendingDropped = legacySnapshotBodyDropped === 0 ? []
+          : replayablePending.filter((/** @type {{ id?: unknown }} */ pendingTool) => !toolUseInRebuiltContext(pendingTool.id));
       }
       // ── issue #421：**中段**悬空 `tool_use` 的读侧兜底 ────────────────────────────────────
       // 位置：上下文重建完（含 A 集合的内存合并）之后、**任何模型请求之前**、任何裁剪之前（裁剪只动
@@ -992,7 +1025,10 @@ export async function restoreResume(ctx) {
         ctx.messages = trimmedMessages;
       }
       // issue #404：恢复运行要告诉模型这是复活赛（拼装/幂等见 `src/loop/resume-notice.js`）。
-      ctx.resumeNotice = planResumeNotice(ctx, records, pendingTail);
+      // issue #754（裁决 2）：第 4 实参 =「丢了几段只在快照里的旧格式正文」（锚点后的非空格子 + 被抑制的
+      // `partialText`），第 5 个 =「放弃补跑的在飞调用」。只为告示**多出说明**，不参与任何判据。
+      ctx.resumeNotice = planResumeNotice(ctx, records, pendingTail,
+        legacySnapshotBodyDropped + legacyPartialBodyDropped, legacyPendingDropped);
     } catch (error) {
       const fail = ctx.fail;
       await fail(error);

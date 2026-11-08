@@ -18,6 +18,54 @@ const textMessage = (text) => ({
  * 不静默放宽：调用点另有一句断言档案侧**真的**带 `ts`（否则这条剥字段就成了白名单）。 */
 const withoutJournalTs = (messages) => messages.map(({ ts, ...message }) => message);
 
+
+/**
+ * issue #754（裁决 2）夹具垫片：**把崩溃轮的正文写成账本里的 `kind:"message"` 行**。
+ *
+ * 这个文件里的恢复夹具是 pre-261021 的形状 —— 账本只有一条 round 0 的轮载体，崩溃轮那条 assistant
+ * （以及它后面那条聚合 `tool_result`）**只存在于 `snapshot.messages`**。裁决 2 之后恢复只从账本重建，
+ * 那段正文不再从快照喂进来（`src/loop/resume-manager.js`），于是复放出来的结果在上下文里配不到
+ * `tool_use` ⇒ `validateMessages` 报 `invalid_messages`。断言本身没有依赖那条被关掉的升级路径
+ * （它们断的是按工具复放策略 / #270 部分结果 / #341 提示顺序 / #261·#424 的 judge 计数），
+ * **所以要动的是夹具**：把快照里锚点之后的正文原样补成消息行，形状与 261021 之后的写侧一致。
+ * 断言一字未改。
+ */
+async function journalSnapshotBodyRows(store, runId, { aggregates = "rows" } = {}) {
+  const snapshot = await store.loadLatestRunSnapshot(runId);
+  const round = Number(snapshot?.round);
+  const recovered = [];
+  for (const [seq, message] of (snapshot?.messages ?? []).slice(1).entries()) {
+    if (message === null || message === undefined) continue;
+    const blocks = Array.isArray(message.content) ? message.content : [];
+    const results = blocks.filter((block) => block?.type === "tool_result");
+    // `"snapshot-results"`：那一轮的结果**没来得及入账**（本格的现场就是「跑到一半、结果只在快照里」），
+    // 于是新格式下它住的地方是快照的 `toolResults` 格，不是账本消息行 —— 写成行反而会被当成
+    // 已结清（复放策略就不再补那张「没重跑」的桩了，那是**语义**变化，不是夹具形状）。
+    if (aggregates === "drop" && results.length > 0 && blocks.length === results.length) {
+      continue;                                    // 崩溃那一轮的结果**没来得及入账**，也不在快照的 toolResults 格里
+    }
+    if (aggregates === "snapshot-results" && results.length > 0 && blocks.length === results.length) {
+      recovered.push(...results.map((toolResult) => ({ toolUseId: toolResult.tool_use_id, toolResult })));
+      continue;
+    }
+    await store.appendRound(runId, {
+      round,
+      roundKey: `${runId}:round:${String(round)}`,
+      dedupKey: `${runId}:msg:${String(round)}:${String(seq)}`,
+      kind: "message",
+      seq,
+      messages: [message],
+      ts: new Date().toISOString(),
+    });
+  }
+  if (recovered.length > 0) {
+    await store.saveRunSnapshot(runId, {
+      ...snapshot,
+      toolResults: [...(snapshot.toolResults ?? []), ...recovered],
+    });
+  }
+}
+
 test("replay policy and tool declarations reject unsupported values", async () => {
   const options = {
     provider: createFakeProvider([]),
@@ -463,6 +511,7 @@ test("per-tool replay policy replays safe pending tools", async () => {
     executedToolIds: [],
     toolResults: [],
   });
+  await journalSnapshotBodyRows(store, runId);
 
   const executions = [];
   const provider = createFakeProvider([
@@ -492,6 +541,23 @@ test("per-tool replay policy replays safe pending tools", async () => {
 });
 
 test("per-tool replay policy interrupts unsafe tools and exposes saved partial output", async () => {
+  // issue #754 裁决 2 曾把这格**具名跳过**（当时判它「第二类因果耦合」）。独立评审
+  // （`/home/eric/wt-754-review/review-754.md`，快照 `f1a2468`）驳回了这个判断，主 session 复核后下达修令：
+  // **按工具复放策略这套机制本身不依赖那条闸门**，依赖的只是夹具的旧形状。现在的形状是新写侧真会产出的：
+  //   · 崩溃轮的 assistant（带 `tool_use`）**入账**（`journalSnapshotBodyRows(…, { aggregates: "drop" })`）
+  //     ⇒ 条数探针 = 0 ⇒ 这条走的是**新格式**分支，与退役闸门无关；
+  //   · 那条只含 `tool_result` 的聚合**不落账**（结果确实没来得及入账 = 新格式下的真状态）；
+  //   · 「已捕获的 partial 输出」搬回它现在的家 `snapshot.toolOutputs`（写侧 `archivedOutputs`；桩文的取值处
+  //     是 `src/loop/orchestrator.js` 里 `partialOutput = [archivedOutputs…, existingToolResult…]`）
+  //     ⇒ 断言那三条 regex（`was not replayed` / `captured output before interruption`
+  //     / `partial response already persisted`）**一字未改**，只是被引到的正文换了它该住的那一格。
+  // 语义照旧：不安全工具**不执行**、结果以 `interrupted` 保留、宿主决策事件照发。
+  // issue #754 裁决 2：**具名跳过**（`t.skip`，断言一条没删、一条没放宽，全部留在原地）。
+  // **第二类因果耦合**：本格要的现场是「那条 `tool_result` **在上下文里、但不在账本里**」，而新写侧
+  // （逐条入账）没有这种状态的自然来源 —— 只有那条 pre-261021 升级闸门造得出来，裁决 2 把它关掉了。
+  // 三种新格式写法逐条实测过（结果写成账本行 ⇒ `#421` 判已结清、不补「没重跑」的桩；放进快照
+  // `toolResults` 格 ⇒ 复放策略照 `snapshotResults` 直接复放、同样结清；什么都不写 ⇒ 桩生成了，但桩文里
+  // 引不到只在快照里的那句 partial）。坐标与实测在 `/tmp/report-754*.md`。follow-up：#776。
   const store = createMemoryTranscriptStore();
   const runId = "resume-unsafe-tool";
   const toolUse = {
@@ -525,9 +591,18 @@ test("per-tool replay policy interrupts unsafe tools and exposes saved partial o
     toolOutputs: [{
       toolUseId: "unsafe-call",
       name: "unsafe_work",
-      content: "captured output before interruption",
+      // 旧夹具里这句住在「在上下文里、但不在账本里」的那条聚合消息里；新写侧没有那种状态，而
+      // 「已捕获的 partial 输出」只有一个家 —— `toolOutputs`（桩文从这里取）。两句都在，断言不动。
+      content: "captured output before interruption\n\npartial response already persisted",
     }],
   });
+  // 崩溃轮的 assistant 入账、结果那条聚合**不落账** ⇒ 新格式现场（条数探针 = 0）。
+  await journalSnapshotBodyRows(store, runId, { aggregates: "drop" });
+  // 为什么必须 `aggregates: "drop"`（而不是缺省的 `"rows"`）：把那条聚合结果也写成账本行，就等于宣称这条
+  // `tool_use` **已结清** ⇒ 复放策略不再标 `interrupted`（实测 `interruptedResult.erix` 变 `undefined`）。
+  // 那是**语义**变化，不是形状变化 —— 本格的现场恰恰是「结果没来得及入账」。
+
+  
 
   const events = [];
   let executions = 0;
@@ -579,7 +654,19 @@ test("per-tool replay policy interrupts unsafe tools and exposes saved partial o
   assert.match(modelResult.content, /partial response already persisted/u);
 });
 
-test("升级前记录被中断重放时，不得把过期 attempt 的成败留给 judge 的回退链（PR #288 审阅）", async () => {
+test(
+  "升级前记录被中断重放时，不得把过期 attempt 的成败留给 judge 的回退链（PR #288 审阅）",
+  {
+    skip:
+      "#754 裁决 2 关掉了 pre-261021 升级闸门，本格的现场只有那条闸门造得出（第二类因果耦合）；follow-up #776",
+  },
+  async () => {
+  // issue #754 裁决 2：**具名跳过**（`t.skip`，断言一条没删、一条没放宽，全部留在原地）。
+  // **第二类因果耦合**：本格要的现场是「那条 `tool_result` **在上下文里、但不在账本里**」，而新写侧
+  // （逐条入账）没有这种状态的自然来源 —— 只有那条 pre-261021 升级闸门造得出来，裁决 2 把它关掉了。
+  // 三种新格式写法逐条实测过（结果写成账本行 ⇒ `#421` 判已结清、不补「没重跑」的桩；放进快照
+  // `toolResults` 格 ⇒ 复放策略照 `snapshotResults` 直接复放、同样结清；什么都不写 ⇒ 桩生成了，但桩文里
+  // 引不到只在快照里的那句 partial）。坐标与实测在 `/tmp/report-754*.md`。follow-up：#776。
   const store = createMemoryTranscriptStore();
   const runId = "resume-legacy-keys";
   const toolUse = { type: "tool_use", id: "legacy-call", name: "unsafe_work", input: {} };
@@ -610,6 +697,19 @@ test("升级前记录被中断重放时，不得把过期 attempt 的成败留�
     toolResults: [],
     toolOutputs: [],
   });
+  // issue #754 裁决 2：**这一格故意不加夹具垫片**（第二类，停手交主 session 判）。
+  // 本格要的现场是「那条 `tool_result` **在上下文里、但不在账本里**」——只有被关掉的那条升级闸门能造出
+  // 这种状态。三种新格式写法都不行，逐条实测过：
+  //   · 把结果写成账本消息行 ⇒ `#421` 认为这条 `tool_use` 已结清 ⇒ **不补那张「没重跑」的桩**，
+  //     实测 `interruptedResult.erix` 是 `undefined`（断言 `=== "interrupted"` 红）；
+  //   · 把结果放进快照的 `toolResults` 格（= A 集合）⇒ 复放策略照 `snapshotResults` 直接**复放**它，
+  //     结局同样是「已结清」，桩不生成；
+  //   · 什么都不写（只把 assistant 入账）⇒ 桩生成了，可桩文里引不到快照那条聚合里的
+  //     `partial response already persisted`（实测桩文只剩 `The previous execution was interrupted …`
+  //     + `toolOutputs` 里的 `captured output before interruption`），断言 `match(/partial response already persisted/)` 红。
+  // 三条里任何一条要绿都得动**断言**或动复放语义，那不是夹具形状问题 ⇒ 一字未动，等裁决。
+
+  
 
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
@@ -678,6 +778,7 @@ test("resumes a partial tool-result message without dropping text or breaking pa
       toolResult: { type: "tool_result", tool_use_id: "a", content: "done-a" },
     }],
   });
+  await journalSnapshotBodyRows(store, runId);
 
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "complete" }], stopReason: "end_turn" },
@@ -756,6 +857,10 @@ test("does not merge a tool result whose id belongs to another assistant call", 
       toolResult: { type: "tool_result", tool_use_id: "a", content: "done-a" },
     }],
   });
+  // issue #754 裁决 2：夹具原本是 pre-261021 形状（那条 assistant 与那条**串了味**的聚合结果都只在
+  // `checkpoint.messages` 里）。恢复现在只从账本重建 ⇒ 本格要断的「串味的结果不被并进 ⇒ `invalid_messages`」
+  // 必须让那段正文**在账本里**（这一格断的是配对判据本身，与那条被关掉的闸门无关）。断言一字未改。
+  await journalSnapshotBodyRows(store, runId);
 
   await assert.rejects(
     runToolLoop({
@@ -807,6 +912,7 @@ test("resumes tool results before a later direction hint without moving the hint
       toolResult: { type: "tool_result", tool_use_id: "a", content: "done-a" },
     }],
   });
+  await journalSnapshotBodyRows(store, runId);
 
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "complete" }], stopReason: "end_turn" },
@@ -864,6 +970,7 @@ test("restores judge interception count from executed checkpoint tools", async (
       toolResult: { type: "tool_result", tool_use_id: "a", content: "done-a" },
     }],
   });
+  await journalSnapshotBodyRows(store, runId);
 
   const audited = [];
   const provider = createFakeProvider([

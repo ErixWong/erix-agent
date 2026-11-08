@@ -5,6 +5,74 @@
 
 ### Breaking
 
+- **Archives written before 261021 are no longer resumable (issue #754, verdict 2).** The one place that still
+  read the run snapshot's `messages` cell on the resume path was the pre-261021 upgrade gate in
+  `src/loop/resume-manager.js`: when the ledger had nothing after the resume anchor while the snapshot was
+  longer, it appended `snapshot.messages.slice(anchor)` to the rebuilt context. That gate served dead
+  archives and was itself broken — the anchor is a **scalar** (folded logical-message count), not a bitmap of
+  which snapshot slots were journaled, so after the first resumed hop journaled its own rows, the second hop
+  moved the anchor past that body and the run died **before its first provider request** with
+  ``invalid_messages`` (0 requests; reproduced on `test/fixtures/journal-0.22.0/`, both write-side shapes
+  byte-identical). Two cuts landed together, because dropping one without the other feeds half of a round
+  from the very source this change retires: (1) no resume context is ever taken from `snapshot.messages`
+  again — the only surviving read of that cell is a **count probe** (`ledgerMessages.length === anchor &&
+  snapshotBody.length > anchor`, non-null slots only) used for nothing but signalling; (2) on that same
+  legacy branch, a snapshot `tool_result` whose `tool_use` is no longer in the rebuilt context is not fed
+  either — otherwise the surviving result is an orphan and `validateMessages` rejects it at
+  `src/messages/rounds.js` (the #421 / #730 fallback only answers the opposite direction, a dangling
+  `tool_use`); (3) on that same branch, an in-flight call from `snapshot.pendingToolUses` whose `tool_use`
+  is no longer in the rebuilt context is **not replayed** either — the pending list came from that same
+  retired source in the same batch as the crash-round body, so replaying it writes a result into a context
+  with no matching `assistant` and reproduces the very same `invalid_messages` outcome through a second
+  door. (4) on that same branch the crash round's `snapshot.partialText` is withheld as well — it is the
+  **second body exit** of that same retired channel (same write side, introduced in `1aceadf`, well before
+  261021), and feeding it while announcing "the context is rebuilt from the ledger only" would make that
+  sentence false; when the probe reads 0 (the shape the current write side produces) it is fed byte-for-byte
+  as before. **The accepted cost:** whatever that crash round had still running is never made up — not
+  re-executed, and no result to pick up; the notice sentence is the only trace it ever leaves. The observable outcome is an **explicit degraded rebuild**: the legacy run resumes from the
+  ledger alone, makes its request, and the engine's resume notice (`…:control:resume-notice:<fp>`, model
+  context **and** ledger) says `本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 N 条，该格式已不再支持恢复）`
+  — where N counts every snapshot body segment actually withheld (post-anchor `messages` slots **plus** a
+  suppressed `partialText`), plus a second sentence naming the calls the third door abandoned
+  (`本次恢复放弃补跑这些在飞调用…`), because the notice must not announce `崩溃时尾部没有未结清的 tool_use`
+  about calls this change chose to drop. Stated narrowly, that outcome covers crash scenes satisfying the
+  retired gate's own trigger condition whose snapshot array reports its length truthfully (the write side
+  never shortens it); a payload lying about its length still ends in `invalid_messages`, pinned as a mutation
+  case in `test/loop-snapshot-round-residue-735.test.js` (④b).
+  Nothing is silent and nothing is new on the event surface: no new event type, no new
+  `resume_journal_skipped` reason, and `crash_round_assistant_not_in_ledger` (#424) still fires with the same
+  `count`. The write side is untouched — snapshots keep carrying the round residue at unchanged absolute
+  indices. New-format (per-message journaled) archives change by **zero bytes**; hosts that still need one of
+  those dead pre-261021 runs must accept the shortened context or read the archive themselves.
+- **261021 之前写下的档案不再支持恢复（issue #754，裁决 2）。** 恢复路径上最后一个读 run snapshot 那一格
+  `messages` 的地方，是 `src/loop/resume-manager.js` 里的 pre-261021 升级闸门：账本在恢复锚点之后一条都没有、
+  而快照更长时，它把 `snapshot.messages.slice(anchor)` 接进重建出来的上下文。它服务的是死档案，而它**自己就是
+  坏的**——锚点是一个**标量**（折叠后的逻辑消息条数），不是「快照哪些下标已入账」的位图，所以第一跳续跑一入账，
+  第二跳的锚点就越过那段正文，run 在**发出任何模型请求之前**就 `invalid_messages`（0 次请求；夹具
+  `test/fixtures/journal-0.22.0/` 实测，两种写侧形状逐字同结果）。两刀同批落地，因为只丢一半就是从一个刚被
+  宣布不支持的来源喂半轮：（1）恢复上下文**再也不从** `snapshot.messages` 取正文——这一格剩下的唯一读点是一个
+  **条数探针**（`ledgerMessages.length === anchor && snapshotBody.length > anchor`，只数非 null 格），除了出声
+  不作他用；（2）同一条旧格式分支上，「上下文里已没有配对 `tool_use`」的快照 `tool_result` 也不再喂——否则活下来的
+  那条就是孤儿结果，`src/messages/rounds.js` 的消息校验当场拒掉（#421 / #730 的兜底只管反方向：悬空的
+  `tool_use` 补桩）；（3）同一条分支上，`snapshot.pendingToolUses` 里「上下文已无配对 `tool_use`」的在飞调用
+  **也不再补跑**——那份在飞清单与崩溃轮正文同批、同来源，补跑它等于把结果写进一条已经没有配对 `assistant` 的
+  上下文，同一个 `invalid_messages` 结局从第二个门再来一遍；（4）同一条分支上崩溃轮的 `snapshot.partialText`
+  **也一并抑制**——它是那条退役通道上的**第二个正文出口**（同一写侧、引入于 `1aceadf`，早于 261021），一边喂它
+  一边说「上下文只从账本重建」就是让告示撒谎；探针为 0（现行写侧产出的形状）时它照旧喂，一个字节都不变。
+  **认下来的代价**：崩溃那一轮里还在跑的东西
+  从此彻底不补——既不会重跑，也没有结果可接，只在告示那句弃用说明里留一个痕迹。可观察结局是**明示降级为从账本重建**：旧档案照旧起来、照旧发出请求，而引擎的恢复告示
+  （`…:control:resume-notice:<fp>`，既进模型上下文也进账本）写明
+  `本次恢复丢弃了 pre-261021 档案中只存在于快照的崩溃轮正文（共 N 条，该格式已不再支持恢复）`——N 是**真数**：
+  锚点后 `messages` 的非空格子 **+** 被抑制的那段 `partialText`；第三刀放弃补跑时再多一句点名
+  （`本次恢复放弃补跑这些在飞调用…`），放弃了却对模型说「崩溃时尾部没有未结清的 tool_use」是主动陈述假事实。
+  这个结局**照窄的说**：它只对「满足被关掉那条闸门的原触发条件、且快照数组如实报告自己长度」的崩溃现场成立——
+  谎报长度的载荷仍以 `invalid_messages` 收场，那一形状在 `test/loop-snapshot-round-residue-735.test.js`（④b）
+  里当**变异体**钉着。
+  没有静默，事件面也没有新东西：不新增事件类型、不给 `resume_journal_skipped` 加新 `reason`，
+  `crash_round_assistant_not_in_ledger`（#424）照旧发、`count` 同值。写侧一字未动——快照仍写「本轮残余」，
+  绝对下标不变。新格式（逐条入账）的档案**一个字节都不变**；确实还要复活某个 pre-261021 死档案的宿主，要么接受
+  变短的上下文，要么自己读那份档案。
+
 ### Changed
 - **Added (issue #769): the ledger gains an append-only recovery-row channel — a second file per run, `<dir>/<runId>.recovery.jsonl` — and the three snapshot cells `executedToolIds` / `partialText` / `partialRound` stop being the only place those facts survive a crash.** The round-record file `<dir>/<runId>.jsonl` is **byte-for-byte unchanged** (one line is still one round, message bodies included); the new file carries only recovery rows: `kind: "recovery"` with `recoveryEvent: "tool-executed"` (carries `toolUseId`) or `"partial-text"` (carries `text` itself — the **whole accumulated body of that moment, untruncated**; **no** `textLength` field), **one row per event, `messages: []` always** — a recovery row never carries a message body, so reading ledger and snapshot side by side cannot double a body (the failure mode #729 measured). `dedupKey` is the event key `<runId>:<ns>:round:<n>:recovery:<event>[:<discriminator>]`; re-appending the same key with the same payload is skipped (`appendRecoveryRow` returns `false`), a different payload under the same key is rejected rather than overwritten, and the `partial-text` discriminator is a **fingerprint of the text**, so a longer partial is a new event and the read side takes the **latest** row of that round (`src/store/recovery-rows.js`). The `tool-executed` row is appended **the moment the executor returns**, before the `tool_result` row lands — that ordering is the point: *"`tool_use` with no `tool_result`" does not imply "the tool did not run"*, so "did it run" is carried explicitly and never inferred from a missing row (`src/loop/orchestrator.js:3426`, read side `src/loop/resume-manager.js`). Store surface: `appendRecoveryRow` / `listRecoveryRows` (append order) / `clearRecoveryRows`, **all three optional** — a host store without them is not an error, but the diagnostic face is **not one rule for all three** (wording corrected in R6 after review: the sentence replaced here named an event `capability_skipped` that no code path emits, and it lumped the read side in with the other two). An absent **write** method `appendRecoveryRow` or absent **clear** method `clearRecoveryRows` emits one `persistence_capability_degraded` per method name, deduped for the whole run; an absent **read** method `listRecoveryRows` is **silent** — the resume read returns no rows and says nothing (`readRecoveryRowsOrRefuse` in `src/loop/resume-manager.js`), so a host that needs the answer asks its own store, because every resume of such a store reaches that same branch and an event there would be noise. Both shapes then fall back to the snapshot cells, which stay legal fallbacks and are no longer the only source (no fallback was removed). **R3 pins the two halves apart**: absence stays that legal degradation (one `persistence_capability_degraded` on the write and clear side, nothing on the read side, per the split above), while a `listRecoveryRows` that exists and *rejects* now ends the run with the new terminal error `recovery_rows_unreadable` — swallowing it would replay a tool whose `tool-executed` row already landed. `clearRecoveryRows` is implemented by both shipped stores and called once on a fresh (`resume !== true`) start, **but that clear has two preconditions** (wording corrected in R6 after review: the sentence replaced here stated it unconditionally): persistence on (the `persistence` option is not `"none"`) and the method present on the store. What either missing precondition costs, and what such a host owes instead, is written once in the runId lifecycle of the contract's recovery-row section, which this entry points at instead of duplicating it. The round-record ledger and the latest-only snapshot are not cleared. Measured cost, reported as `#768` requires: **482 B per round of carrier rows** (`tool-executed` 226 B + `partial-text` 256 B, measured in `test/store/ledger-recovery-rows-769.test.js`). **R3 correction: these bytes are not body-free** — that byte cell writes a short sample body into the `partial-text` row and counts **whole-line** bytes, so `256 B` *includes* the sample and grows with the text actually carried; K distinct growing prefixes cost K rows, and there is **no cap** on that growth today; **no net-gain claim is made here** — `#768` measured the storage delta changing sign between 3 and 6 rounds. This slice does **not** retire the run-snapshot channel: `#737` and `#754` remain prerequisites. Contract: both files gained a "Ledger recovery rows" section including what a host that validates strictly must do (unknown `kind`, one-file-per-run assumptions, `*.jsonl` globs); the two-axis table and `scripts/cell-axes-anchors.mjs` register the three new faces.
 - **新增（issue #769）：账本多了一条只追加的恢复行通道 —— 每次 run 多一个文件 `<dir>/<runId>.recovery.jsonl`；快照的 `executedToolIds` / `partialText` / `partialRound` 三格不再是崩溃后这些事实的唯一去处。**轮记录文件 `<dir>/<runId>.jsonl`**逐字节不变**（一行仍是一轮，正文照旧在内），新文件只装恢复行：`kind: "recovery"`，事件 `recoveryEvent: "tool-executed"`（带 `toolUseId`）或 `"partial-text"`（带 `text` 本身，就是**那一刻的完整累计正文，不截断**；**没有** `textLength` 这一项），**一行一个事件、`messages: []` 恒空** —— 恢复行从不载正文，所以账本与快照并排读不会把正文翻倍（就是 #729 量出来的那种坑）。`dedupKey` 是事件键 `<runId>:<ns>:round:<n>:recovery:<event>[:<判别子>]`；同键同 payload 重放被跳过（`appendRecoveryRow` 返回 `false`），同键不同 payload 是**拒绝**而不是覆盖；`partial-text` 的判别子是**正文指纹**，更长的半截正文是新事件，读侧取该轮**最新**一条（`src/store/recovery-rows.js`）。`tool-executed` 行在**执行器一返回就落盘**，排在 `tool_result` 行之前 —— 这个顺序就是全部意义：*「`tool_use` 没有 `tool_result`」推不出「工具没执行」*，所以「到底执行了没」由这一行**明写**，不再从缺行反推（写点 `src/loop/orchestrator.js:3426`，读侧 `src/loop/resume-manager.js`）。store 面新增 `appendRecoveryRow` / `listRecoveryRows`（按追加顺序）/ `clearRecoveryRows`，**三者都是可选能力**：宿主 store 没实现不算错，但诊断面**不是一条规则管三个**（R6 复核后改口：被替掉的那句报了一个没有任何代码路径会发的 `capability_skipped`，还把读侧与另两个挤成一锅）。缺**写侧**的 `appendRecoveryRow` 或缺**清盘侧**的 `clearRecoveryRows` 时，引擎按方法名各发一条 `persistence_capability_degraded`（整轮去重）；缺**读侧**的 `listRecoveryRows` 是**静默**的 —— 续跑期的读侧不返回行也不说任何话（`src/loop/resume-manager.js` 里的 `readRecoveryRowsOrRefuse`），所以想要这个答案的宿主只能自己去查 store，因为没实现读方法的 store 每次续跑都会走进同一个分支，在那里发一条只是噪音。两种形状都回落到快照那三格，那三格仍是合法兜底且不再是唯一来源（**没有删掉任何 fallback**）。**R3 把「没有」与「失败」拆开钉死**：方法缺席仍是上面那种合法降级（写侧与清盘侧各一条 `persistence_capability_degraded`，读侧一句不说），而 `listRecoveryRows` **方法在却 reject** 现在让本次 run 以新终局错误 `recovery_rows_unreadable` 收口 —— 吞掉它会把已经落了 `tool-executed` 行的工具重放。`clearRecoveryRows` 两个随包 store 都实现了，引擎在 `resume !== true` 的新起清一次，**但这一清有两个前提**（R6 复核后补上：被替掉的那句把它写成了无条件）：持久化开着（`persistence` 不是 `"none"`）且 store 实现了这个方法。缺任何一个的后果与宿主义务，在契约「恢复行」一节的 runId 生命周期段里只写了一遍，本条指过去而不是抄一遍。轮记录账本与 latest-only 快照都不清。按 `#768` 的要求同报代价：**每轮载体行 482 B**（`tool-executed` 226 B + `partial-text` 256 B，`test/store/ledger-recovery-rows-769.test.js` 里现测）。**R3 改口**：`256 B` 那一格**含了一段短样例正文**（用例写的是 `"半截正文样例"`，统计的是**整行字节**），真实成本随正文长度增长；K 个互不相同的前缀 = K 行，目前**没有上限**；**本切片不宣称净收益为正** —— `#768` 实测存储净收益在 3 轮到 6 轮之间变号。这一片**没有**退役 run-snapshot 通道：`#737` 与 `#754` 仍是前置。契约：中英两份各新增「Ledger recovery rows / 账本恢复行」一节，含严格校验的宿主必须做什么（未知 `kind`、「一个 run 只有一个文件」的假设、`*.jsonl` 通配）；两轴表与 `scripts/cell-axes-anchors.mjs` 登记了新增的三面。
