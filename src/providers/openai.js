@@ -421,9 +421,12 @@ export function createOpenAIProvider({
         throw new KitError("server", truncateBody(bodyText));
       }
 
-      const canonical = openAIResponseToCanonical(value);
-      if (sentRequestParams !== undefined) canonical.sentRequestParams = sentRequestParams;
-      return canonical;
+      // 咨询性字段走显式类型别名（#460 的先例）：`openAIResponseToCanonical` 的返回类型里没有
+      // `sentRequestParams` 这一格，直接在它上面赋新键会新增 strict 错误（棘轮只许降不许升）。
+      /** @type {Record<string, any>} */
+      const canonicalResponse = openAIResponseToCanonical(value);
+      if (sentRequestParams !== undefined) canonicalResponse.sentRequestParams = sentRequestParams;
+      return canonicalResponse;
     } catch (err) {
       if (signal?.aborted) {
         throw classifyFetchException(abortReason(signal), { signal });
@@ -661,6 +664,7 @@ export function createOpenAIProvider({
       if (text.length > 0) content.push({ type: "text", text });
       content.push(...streamAccumulator.getToolUseBlocks());
 
+      /** @type {Record<string, any>} */
       const chatResponse = {
         content,
         stopReason: normalizeOpenAIStopReason(finishReason),

@@ -163,7 +163,7 @@ export function applyProviderPayloadOptions(
  * 端口的）引擎看不见它自己序列化的 body ⇒ 该格缺席，缺席读作**「未观测」，绝不是「没发」**。
  *
  * @param {{
- *   payload: Record<string, any>,
+ *   payload?: Record<string, any>,
  *   request?: Record<string, any>,
  *   defaults?: Record<string, any>,
  *   provider?: "openai" | "anthropic",
