@@ -5,9 +5,9 @@
   "expect": {
     "tests": 3716,
     "fail": 0,
-    "maxSkipped": 15
+    "maxSkipped": 16
   },
-  "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。抬上限要写清理由并同片改这一格。",
+  "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。 **（#774 追加的第三个来源，上限 15 → 16）** `test/loop-snapshot-round-residue-735.test.js` 里新增的那格「这台机器上找不到 Node 24 runner」——**它验的正是 Node 24 的默认 reporter 形状**，所以只在拿得到 Node 24 可执行文件的环境真跑：本机 `~/.local/node24/bin/node` 在 ⇒ 本地 13 条；CI 的 `node 24` job 走 `process.execPath` ⇒ 15 条；CI 的 `node 22` job 两个都没有 ⇒ **16 条**。 CI 实测（run `42428178968`，同一棵 `cc08dd4`，两条 job 都跑到过 `check:test-summary`）：`node 24` = `tests=3716 pass=3701 fail=0 skipped=15 ⇒ TEST-SUMMARY-VERDICT ok`；`node 22` = `skipped=16 ⇒ red codes=SKIPPED_OVER`。 **这不是把判据放宽**：那一格在 `node 24` job 上真跑，覆盖面没丢；上限 16 之后**再多跳一条仍然红**（反向证：`# skipped 17` 的日志在本登记值下仍报 `SKIPPED_OVER`）。",
   "observations": [
     {
       "date": "2026-11-08",
@@ -21,7 +21,7 @@
       "skipped": 13,
       "todo": 0,
       "cancelled": 0,
-      "why": "tests 地板 3712 → **3716**，两段都是现测： ① 基点 `855d6ff` 的登记值 3712 就是那一片在合并树上现跑的（`# tests 3712 / pass 3699 / fail 0 / skipped 13`）。 ② 本片新增 **4** 格：`test/loop-snapshot-round-residue-735.test.js` 单跑从 `# tests 6` 变成 `# tests 10`（Node 22 与 Node 24 各测一次，都是 10/10/0）——新增的一族是「子进程 reporter 显式钉住之后仍按具名 `not ok` 判」「spec 形状日志判**未判定**而不是回归」「递归 `node --test` 之前必须清 `NODE_TEST_CONTEXT`」（含 `test/suite-summary-reconcile.test.js` 里把 spec 日志喂给闸那格）。⇒ 3712 + 4 = 3716。 本树实测：Node 22.23.2（系统 node，`npm test` 已显式 `--test-reporter=tap`）= `# tests 3716 / # pass 3703 / # fail 0 / # skipped 13`（日志 /tmp/nt774-node22.log）；Node 24.19.0（`/home/eric/.local/node24/bin/node`）同一棵树同一命令 = 同四个数（日志 /tmp/nt24.log）⇒ **计数与 runner 的 Node 版本无关**，这正是本片要的：判定不再跟着 reporter 的形状走。 `fail=0`；`skipped` 实测 13 与基点逐字同值（12 条真上游 / 真 relay 门禁 + 1 条多会话格）⇒ `maxSkipped` 15 不动。既有格子一格没删、没 skip、没放宽断言。 配对地板 `CHANGELOG_PAIR_FLOOR` 本片不动：`node --test test/static-guards.test.js` 在本树现报 58/58，没有配对提示。"
+      "why": "tests 地板 3712 → **3716**，两段都是现测： ① 基点 `855d6ff` 的登记值 3712 就是那一片在合并树上现跑的（`# tests 3712 / pass 3699 / fail 0 / skipped 13`）。 ② 本片新增 **4** 格：`test/loop-snapshot-round-residue-735.test.js` 单跑从 `# tests 6` 变成 `# tests 10`（Node 22 与 Node 24 各测一次，都是 10/10/0）——新增的一族是「子进程 reporter 显式钉住之后仍按具名 `not ok` 判」「spec 形状日志判**未判定**而不是回归」「递归 `node --test` 之前必须清 `NODE_TEST_CONTEXT`」（含 `test/suite-summary-reconcile.test.js` 里把 spec 日志喂给闸那格）。⇒ 3712 + 4 = 3716。 本树实测：Node 22.23.2（系统 node，`npm test` 已显式 `--test-reporter=tap`）= `# tests 3716 / # pass 3703 / # fail 0 / # skipped 13`（日志 /tmp/nt774-node22.log）；Node 24.19.0（`/home/eric/.local/node24/bin/node`）同一棵树同一命令 = 同四个数（日志 /tmp/nt24.log）⇒ **计数与 runner 的 Node 版本无关**，这正是本片要的：判定不再跟着 reporter 的形状走。 `fail=0`；`skipped` 实测 13 与基点逐字同值（12 条真上游 / 真 relay 门禁 + 1 条多会话格）⇒ `maxSkipped` 15 不动。既有格子一格没删、没 skip、没放宽断言。 配对地板 `CHANGELOG_PAIR_FLOOR` 本片不动：`node --test test/static-guards.test.js` 在本树现报 58/58，没有配对提示。 本片另有一处登记改动：`maxSkipped` 15 → **16**，来源与实测见 `skipCeilingWhy`（CI `node 24` = 15 ok / `node 22` = 16，多出的那格是「找不到 Node 24 runner」按设计只在 node-22 job 跳）。"
     },
     {
       "date": "2026-11-08",
