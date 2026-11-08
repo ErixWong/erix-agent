@@ -2945,6 +2945,15 @@ Anthropic 的 usage 面**根本没有**推理 token 字段（`usageFromResponse`
 所以 Anthropic 路径**不**长出这个键：那里它是**事实性缺席**，不是漏写。`record.usage`（逐轮账，issue #438）
 一字未改：`reasoningTokens` 随 `record.response.usage`（本轮最后一发）走，**不进**轮账那四个累加字段。
 
+**（4）响应从不回显本次的档位。** 2026-11-08 对真 OpenAI 兼容上游两种形态都量过（非流式 + SSE，同一个无聊 prompt）：
+非流式返回体的顶层键是 `id` / `object` / `created` / `model` / `choices` / `usage` / `system_fingerprint`，
+SSE 的 chunk 另加 `prompt_token_ids` / `prompt_text`，choice 上每片带 `token_ids` / `stop_reason` ——
+**两种形态里都没有 `reasoning_effort` 这个键**，响应头里也没有（网关回的唯一诊断头是
+`x-oneapi-request-id`）。响应侧与思考相关的只有两条：思维链正文（非流式在 `message.reasoning`，流式在
+`delta.reasoning`）与计数 `completion_tokens_details.reasoning_tokens` —— 而**计数反推不出档位**：
+`"none"` 实测 `0`，`"low"` 在同一个 prompt 上实测 14–45。所以「这一发到底发了哪一档」只能读引擎自己的
+`sentRequestParams`，读响应读不到；这与上面的第 4 层是同一条边界，只不过现在拿的是原始返回体证据，不再是断言。
+
 **两族字段形态，且形态差异不可商量。**
 
 | 族 | 字段形态 | 实测行为 |
