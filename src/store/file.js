@@ -513,7 +513,7 @@ export function createFileTranscriptStore({ dir }) {
      *
      * 为什么必需（不是“打扫”）：事件键只有 `runId + round + event + 判别子`（`src/store/recovery-rows.js`），
      * **没有** run 代际 ⇒ 「这个文件」就是代际边界。引擎在 `resume !== true` 的 fresh start 调一次
-     * （`src/loop/orchestrator.js`）后，「同一 `runId` 上第二次非续跑」不会再把上一代的 `tool-executed`
+     * （`src/loop/orchestrator.js`），**且这一步只在持久化开着时才会走到**：`persistence` 不是 `"none"` 时 `persistenceRequired` 才为真，而 `persistClassified` 第一行 `if (!persistenceRequired) return false;` 就先短路 ⇒ 持久化关着时既不删文件也不发诊断。这一清之后，「同一 `runId` 上第二次非续跑」不会再把上一代的 `tool-executed`
      * 当成新 run 的执行事实。**只清恢复行**：轮记录账本 `<runId>.jsonl` 的历史行不动（那是宿主
      * 的账本，契约里写明了），快照则是 `saveRunSnapshot` 首次写入时自然覆盖。
      *

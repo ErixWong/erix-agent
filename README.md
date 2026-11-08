@@ -810,8 +810,12 @@ Persistence failures use `onPersistenceError`. `onEvent` receives structured
 events including `round_start`, `round_end`, `tool_use`, `tool_result`,
 `attempt`, `recovering`, `recovered`, `delta`, `reasoning_delta`, `tool_call`,
 `usage`, `forced_final`, `final_guard`, and
-`persistence_capability_degraded` (one shot per missing optional store
-capability).
+`persistence_capability_degraded` (one shot per missing method name, deduped
+for the whole run — it fires when an optional store capability the engine would
+call is absent, the recovery-row **write** method `appendRecoveryRow` and
+**clear** method `clearRecoveryRows` among them; the recovery-row **read**
+method `listRecoveryRows` is **not** one of those — its absence is silent, so a
+host that needs that answer checks its own store for the method).
 
 All nine observer callbacks above are error-isolated (issue #173): a throw in any
 of them is reported through `onObserverError(error, {channel, runId?, …})` and

@@ -545,7 +545,7 @@ onUsage
 onEvent
 ```
 
-流式 observer（`onDelta`、`onReasoningDelta`、`onToolCall` 和 `onUsage`）在 observer 抛出异常时通过 `onObserverError` 报告——其余 observer 回调同样如此（issue #173，详见下文）。持久化失败使用 `onPersistenceError`。`onEvent` 接收包括 `round_start`、`round_end`、`tool_use`、`tool_result`、`attempt`、`recovering`、`recovered`、`delta`、`reasoning_delta`、`tool_call`、`usage`、`forced_final`、`final_guard` 和 `persistence_capability_degraded`（每个缺失的可选 store capability 各发一条）在内的结构化事件。
+流式 observer（`onDelta`、`onReasoningDelta`、`onToolCall` 和 `onUsage`）在 observer 抛出异常时通过 `onObserverError` 报告——其余 observer 回调同样如此（issue #173，详见下文）。持久化失败使用 `onPersistenceError`。`onEvent` 接收包括 `round_start`、`round_end`、`tool_use`、`tool_result`、`attempt`、`recovering`、`recovered`、`delta`、`reasoning_delta`、`tool_call`、`usage`、`forced_final`、`final_guard` 和 `persistence_capability_degraded`（按缺失的方法名各发一条、整轮去重：引擎要调用的可选 store 能力缺席时就发，恢复行的**写侧** `appendRecoveryRow` 与**清盘侧** `clearRecoveryRows` 都在其中；恢复行的**读侧** `listRecoveryRows` **不**在这些里 —— 它缺席时一声不响，想要这个答案的宿主只能自己去查 store 有没有实现这个方法）在内的结构化事件。
 
 上述九个观察者回调均已做错误隔离（issue #173）：任何一个抛错都会经 `onObserverError(error, {channel, runId?, …})` 上报，并且 **run 继续跑**——抛错再也改变不了 `termination.reason`。观察者错误是 best-effort，不进持久化错误账本，因此宿主必须自己对 `onObserverError` 计数。要从回调里终结 run，请调 `signal.abort()`（抛出的错误携带 issue #180 载荷）；回调必须同步返回——只有被 await 的 `onRound` 与 `onToolResult` 会额外吸收 rejected Promise。`onToolResult` 是在**改写**工具结果而不是单纯观察：抛错时引擎保留自己的**原始**结果并上报，因此写在这个 hook 里的脱敏逻辑必须自己防住自己。完整契约见 `docs/host-consumer-contract_cn.md`「观察者回调抛错（issue #173）」。
 
