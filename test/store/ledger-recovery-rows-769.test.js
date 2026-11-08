@@ -421,7 +421,7 @@ test("#769 R3（B）listRecoveryRows 拒绝 ⇒ 终局点名 recovery_rows_unrea
   assert.equal(thrown.termination?.reason, "persistence_failed",
     `终局 reason 要走「错误携带持久化信息」那条既有分支，实际 ${JSON.stringify(thrown.termination)}`);
   assert.equal(thrown.termination?.operation, "listRecoveryRows", "operation 要点名到方法，宿主才知道是哪个读口");
-  assert.equal(thrown.termination?.phase, "transcript", "恢复行属账本侧只追加通道 ⇒ 与写侧 appendRecoveryRow 同一格");
+  assert.equal(thrown.termination?.phase, "resume_recovery_rows", "F4：phase 按失败点分格：读失败自成一格，不再与写侧 transcript / 清盘 recovery_rows_clear 混在一起");
   assert.equal(thrown.termination?.sideEffect, "not_started", "发生在续跑期、本 run 尚未执行任何工具 ⇒ 没有已发生的副作用");
   assert.equal(thrown.errorCode, "EIO", "errorCode 是**根因**分类（底层那条错的 code），与 persistence_failed / checkpoint_failed 同规则");
   assert.deepEqual(executedCalls, [],

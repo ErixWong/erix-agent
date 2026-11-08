@@ -1486,8 +1486,12 @@ export async function runToolLoop(options) {
       // issue #769：恢复行与轮记录同属账本侧的只追加通道 ⇒ phase 同走 `transcript`。它既不是快照写点
       // 也不是 run-state 覆盖写，落到下面的 `checkpoint_before_tool` 会把宿主可见的
       // `persistence_error.phase` 编错（那一列是契约面，不是内部诊断）。
-      : method === "appendRecoveryRow" || method === "clearRecoveryRows"
+      // issue #769 R4：`clearRecoveryRows` **另开一格** —— 它发生在 fresh start，坏的是「清盘」这一步，
+      // 与「账本少写了一行」是两种排障现场；取值风格沿用下面 `checkpoint_after_tool` 那种「说在哪一步失败」。
+      : method === "appendRecoveryRow"
         ? "transcript"
+        : method === "clearRecoveryRows"
+          ? "recovery_rows_clear"
         : method === "saveRunState" || method === "markRunState"
         ? "run_state"
         : snapshotStatus === "executed"

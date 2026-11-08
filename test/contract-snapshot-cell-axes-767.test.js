@@ -9,7 +9,7 @@
 //      声明 `written` / `residue` ⇒ 必须**有该键**（夹具取法照 `loop-snapshot-write-side-735.test.js`：
 //      包一层 `saveRunSnapshot` 抓引擎亲自写的那份，不手搓快照）。
 //   2) **读轴对真源码**：契约声明 `read: not-source` ⇒ `src/loop/resume-manager.js` 里**不得有**对该键的
-//      快照读点。扫描**先剥注释与字符串字面量**（否则 `src/loop/resume-manager.js:518` 那句注释里的
+//      快照读点。扫描**先剥注释与字符串字面量**（否则 `src/loop/resume-manager.js:520` 那句注释里的
 //      `snapshot.messages` 会被当成读点 = 假红，而反向证也就废了）。剥逻辑自带反例（G-S1 那条用例）。
 //   3) **表自洽**：10 格齐全（漏格即红）、两轴取值合法、无空单元格、中英两份逐格一致，
 //      且表里每条 `file:line` 都复核：**文件在场 + 行号在范围内 + 那一行确实提到这格的键名**
@@ -81,7 +81,7 @@ const CELL_KEYS = [
   "ts",
 ];
 const WRITE_VOCAB = new Set(["written", "written(conditional)", "residue", "stopped"]);
-/** 条件写入轴值：那一格只在写明的条件成立时才进载荷（写点 `src/loop/orchestrator.js:3039`）。 */
+/** 条件写入轴值：那一格只在写明的条件成立时才进载荷（写点 `src/loop/orchestrator.js:3043`）。 */
 const CONDITIONAL_WRITE = "written(conditional)";
 /** 一个键名底下是两个东西 ⇒ `persistedTranscriptLength` 必须**恰好两行**（盘上格 / 进程内计数器）。 */
 const SPLIT_ROWS = { persistedTranscriptLength: 2 };
@@ -584,7 +584,7 @@ const G4_KEY_NAME_CHECK = (lineText, key) => {
 
 // ── G4 锚点登记表（#772 R2 M1：从「词面匹配」改成「按锚点重算行号再等值对账」）───────────────
 //
-// 为什么词面不够：契约里 `compactionStats` 的写点写 `src/loop/orchestrator.js:3038`，那是
+// 为什么词面不够：契约里 `compactionStats` 的写点写 `src/loop/orchestrator.js:3042`，那是
 // `compactionStats: cloneState(compactionStats),`——**把这一格写进快照载荷的那一句**；而 `:3015` 是一句
 // 讲「测试拿它当指纹」的**注释**，两行都提到键名，所词面匹配与「行号在范围内」都分不开它们。
 // 于是每一格登记一条**能区分这件事的代码形状**（`anchor`），行号由锚点**现算**，表里写的 `path:line`
@@ -1009,14 +1009,14 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
   // 下面的 `at:` 是**锚点现算的命中行号**（不是手填基准）：#769 R3 在 src 里插了行 ⇒ 全部行号按
   // 锚点重算同步过一遍（判据本身没动）。重算口径与 G4 一致：`anchorHitLines()` 的唯一命中。
   const victims = [
-    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6275 },
-    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6255 },
-    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 819 },
-    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 820 },
-    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 777 },
-    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 781 },
-    { key: "persistedTranscriptLength", axis: "read", path: "src/loop/resume-manager.js", at: 91 },
-    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 748 },
+    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6279 },
+    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6259 },
+    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 821 },
+    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 822 },
+    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 779 },
+    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 783 },
+    { key: "persistedTranscriptLength", axis: "read", path: "src/loop/resume-manager.js", at: 93 },
+    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 750 },
   ];
   const droppedKeys = new Set();
   const mutatedAnchors = [...CELL_AXES_ANCHORS];

@@ -27,8 +27,10 @@ import { validateRunState } from "../run-state.js";
  *
  * 字段面（照 `checkpoint_failed` 那一族，取值不新造）：`operation` / `phase` / `sideEffect` 三件套齐全
  * ⇒ `fail`（`src/loop/orchestrator.js#persistenceInfoFor`）据此把终局定为 `persistence_failed` 并透出同名
- * 字段。`phase` 取 `"transcript"`：恢复行属账本侧只追加通道，与写侧 `appendRecoveryRow` 在
- * `orchestrator.js#persistClassified` 里落的是同一格，既不是快照写点也不是 run-state 覆盖写。
+ * 字段。`phase` 取 `"resume_recovery_rows"`（issue #769 R4：**按失败点分格**，取值风格沿用
+ * `checkpoint_after_tool` 那种「说清楚是哪一步坏了」）：写侧 `appendRecoveryRow` 失败仍在 `transcript`
+ * 那一格（同属账本侧只追加通道），而**读**失败与 fresh-start **清盘**失败（`recovery_rows_clear`，见
+ * `orchestrator.js#persistClassified`）各自一格 —— 三者排障现场不同，宿主只看 `phase` 就能分流。
  * `sideEffect` 取 `"not_started"`：失败发生在**续跑期**，本次 run 还没执行过任何工具 ⇒ 没有「已发生的
  * 外部副作用」可宣告（与 `not_started` 的既有含义一致：可以安全重放整个 run，不欠副作用）。
  * `errorCode` 是**根因**分类（底层那条错的 `error.code`，取不到即 `"unknown"`），与两个既有出口同规则；
@@ -55,7 +57,7 @@ function recoveryRowsUnreadableError(cause, runId) {
   // 不写 `@returns` 交叉类型：让 TS 自己从 `Object.assign` 推，推出来的就是真实形状。
   return Object.assign(failure, {
     operation: "listRecoveryRows",
-    phase: "transcript",
+    phase: "resume_recovery_rows",
     sideEffect: "not_started",
     errorCode: terminationErrorCodeForError(cause),
   });
