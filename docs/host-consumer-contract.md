@@ -2260,7 +2260,7 @@ run), never a multi-version checkpoint. The tiers are:
 | Optional run-state | `saveRunState`, `loadRunState`, `markRunState` | run-state persistence skipped; run completes normally |
 | Host-facing optional terminal-status read | `loadRunStateStatus` | not used or validated by the engine; its absence does not emit a degraded-capability event |
 | Optional fast-path pre-write probes (issue #157) | `loadByDedupKey`, `loadMaxRound` | `appendUserTurn` falls back to full `load` (paired: implementing one without the other behaves exactly like implementing neither) |
-| Optional raw-row anchor probe (issue #714) | `loadRawRows` | mid-sequence `tool_result` stubs are anchored on `load()`'s **folded** rows only, so a finished round's first-slice row is unreachable: those stubs repair the run's context and the engine reports `resume_journal_skipped` instead of journaling a row that would land in the wrong message. The same degradation applies when that round's carrier already carries its body (issue #729). No `persistence_capability_degraded` event — the absence is reported per resume on the existing `resume_journal_skipped` channel |
+| Optional raw-row anchor probe (issue #714) | `loadRawRows` | mid-sequence `tool_result` stubs are anchored on `load()`'s **folded** rows only, so a finished round's first-slice row is unreachable: those stubs repair the run's context and the engine reports `resume_journal_skipped` instead of journaling a row that would land in the wrong message. The same degradation applies when that round's carrier already carries its body (issue #729). No `persistence_capability_degraded` event — the absence is reported per resume on the existing `resume_journal_skipped` channel. Since issue #765 it is also the **only** ledger source `appendUserTurn` can consult on the #157 fast path (its dangling-`tool_use` settling), so a host implementing the two #157 probes but not this one keeps pre-writing user turns over a still-open ledger, reported per call as `unsettledToolUses.reason = "ledger_probe_absent"` |
 
 `loadRunStateStatus` resolves to the terminal status **string** —
 `(runId: string) => Promise<string | undefined>`, with `undefined` when no
@@ -2395,6 +2395,11 @@ tail repair: `loadRecords` starts with `repairTranscriptTail(path)`
 (`src/store/file.js`), which opens the file `r+` and isolates/truncates a
 half-written last line, so **a read can rewrite bytes on disk**. What the probe
 does not do is add a write API or change the shape `load()` returns.
+
+The rows must include the host's own `"…:input:…"` rows and every engine message row: both the
+mid-sequence anchor search and `appendUserTurn`'s dangling-`tool_use` check (issue #765) are
+**tail** criteria, so a probe that filters by `kind` or hands back only round carriers hides the
+very row that decides them — the helper then refuses and says so rather than guessing.
 
 Why it exists. A `tool_use` stranded in the middle of the ledger is settled on
 resume by one stub `tool_result` per unsettled id, journaled as a **slice row**
@@ -3046,8 +3051,12 @@ A correct pre-written `RoundRecord` must satisfy:
   turn at round `0`; the built-in CLI instead passes
   `initialMessages`/`initialUserMessage` without `resume` when no records
   exist yet, which is equivalent for the engine.
-- **dedupKey:** namespaced `"<key>:input:<suffix>"`, unique per turn. The
-  engine writes its own rows under `"<runId>:engine:round:<n>"`,
+- **dedupKey:** namespaced `"<key>:input:<suffix>"`, unique per turn. The settling row that
+  `appendUserTurn` may append first (issue #765) uses
+  `"<key>:settle:<round>:<tool_use ids, sorted and joined with +>"` — derived from the ledger alone,
+  with no timestamp and no `messageId`, so a crash-replay or a host retry settles exactly once and
+  both read paths write byte-identical rows.
+  The engine writes its own rows under `"<runId>:engine:round:<n>"`,
   `"…:engine:round:0:seed"` (the seed row), `"…:msg:<round>:<seq>"` (**one row per
   message, several per round** — see the journal row shapes section), `"…:resume"`,
   `"…:control:<slot>"`, and the fact rows `"…:fold:<fp>"` / `"…:ttl:<fp>"` (see the
@@ -3221,13 +3230,31 @@ to `{ key, dedupKey, round, written, record? }` — `written: false` plus the
 existing `record` when the idempotency check hit. The built-in CLI and REPL
 are the reference consumers.
 
+Since issue #765 the result carries one more **optional** field, present only when the ledger
+held a `tool_use` whose id has no `tool_result` anywhere in it:
+`unsettledToolUses` = `{ status: "settled" | "refused", round, toolUseIds, dedupKey, written?, reason? }`.
+Before appending the caller's row the helper appends **one settling row** that answers those ids
+with the engine's own tombstone (`is_error: true`, built by `buildUnpersistedToolResultStub` in
+`src/loop/pending-tool-result.js`). Timing is the whole point: folding keeps file order for rows
+without a round carrier, so an answer appended afterwards lands *after* the caller's plain-text
+row, and the wire order `assistant[tool_use] → user(text) → user[tool_result]` is rejected locally
+before a single request goes out. `status: "refused"` means that row was **not** written and
+`reason` names the cause (`ledger_probe_absent`, `round_not_safe_integer`, `round_carrier_has_body`,
+`tool_use_id_unusable`); the caller's own row is appended either way. Nothing is silent, and
+nothing changes when nothing dangles: the returned key set is then exactly
+`{ key, dedupKey, round, written, record? }`.
+
 `appendUserTurn` additionally accepts a **paired optional fast path** for
 database-backed hosts (issue #157): when `store` implements both
 `loadByDedupKey(key, dedupKey)` and `loadMaxRound(key)`, the helper derives
 the `dedupKey` first, then point-queries `loadByDedupKey` — a hit returns
 immediately (neither `loadMaxRound` nor `load` is called); on a miss it
 derives `round` from `loadMaxRound` and appends. The fast path never calls
-`store.load`. Implementing only one of the two probes behaves exactly like
+`store.load`. Settling a dangling `tool_use` on this path (issue #765) reads the ledger through the
+third probe `loadRawRows(key)` (issue #714) and still never through `load`, so the promise above
+holds; a store without that probe gets `unsettledToolUses.status = "refused"` with
+`reason: "ledger_probe_absent"` on every call until it implements the probe — it does **not** fall
+back to a full `load`. Implementing only one of the two probes behaves exactly like
 implementing neither: the full-`load` path above runs unchanged. A
 `loadByDedupKey` point query must match records by
 `(record.dedupKey ?? record.roundKey) === dedupKey` — the same predicate the

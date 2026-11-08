@@ -534,6 +534,101 @@
 
 ### Fixed
 
+- **A host that pre-writes its next user turn no longer bricks the run it is resuming: `appendUserTurn` now
+  settles a dangling `tool_use` *before* its own `user[text]` row hits the ledger (issue #765).** The incident
+  shape: a crash leaves an `assistant[tool_use]` row whose id has **no `tool_result` anywhere in the ledger**,
+  the host calls `appendUserTurn` to queue its follow-up, and the engine's local validator then refuses the
+  folded ledger before anything goes on the wire (`invalid_messages: assistant tool_use has no immediately
+  following user tool_result`) — the runId is unrecoverable, and the brick is local, so upstream never saw a
+  request. Timing was the whole fix, and "let the host append a row afterwards" was never an option:
+  `foldMessageRows` re-attaches a round's message rows to that round's carrier in `seq` order
+  (`src/store/message-rows.js#attachRoundMessages`), so once the host's plain-text row is in the ledger
+  **(a)** any `user[tool_result]` appended after it folds **after** it — the wire order becomes
+  `assistant[TU] → user(text) → user(TR)`, a provider-side 400 — and **(b)** the tail criterion the engine's own
+  repairers use (`pendingTailToolUses` / `resumeMessagesWithUnpersistedToolResults`, both "the last message is an
+  assistant carrying `tool_use`") stops matching, so the engine no longer sees the dangling call at all.
+  Settling before the write makes the stub row the tail, so the folded order is right by construction. The row
+  reuses existing shapes instead of inventing a fourth one: the block comes from a new exported
+  `buildUnpersistedToolResultStub` in `src/loop/pending-tool-result.js` (the #421 stub, `UNPERSISTED_TOOL_RESULT_TEXT`
+  + `is_error: true`, whose unique-construction-site guard now guards a function rather than an inline literal),
+  and the row carries `kind: "message"` plus a **freshly measured** `seq` from `nextMessageSeqByRound` (a missing
+  `seq` degrades the fold's sort key to `undefined`, and `undefined < undefined` is false ⇒ several stub rows
+  would order by write order). It deliberately carries **no `roundKey`**: `isRoundCarrier` counts a row as a
+  carrier when it has no `dedupKey` and (no `seq` or a `roundKey`), so on a store that omits `seq` a friendly
+  `roundKey` would make this a *second* carrier and the #401 R3 guard would then drop the row we just wrote —
+  silently, which is worse than doing nothing. Idempotency: `dedupKey = <key>:settle:<round>:<sorted ids>`,
+  derived only from the ledger, so crash-replays and host retries settle exactly once and both code paths write
+  byte-identical rows. **Refusal is loud, not silent, and adds no event type**: the store layer has no `onEvent`,
+  so the reason rides on the return value — the result gains `unsettledToolUses`, only when there is something to
+  say (with nothing dangling the returned key set is still exactly `{ key, dedupKey, round, written }`), with
+  `status: "settled" | "refused"` and `reason` from four values (`ledger_probe_absent`, `round_not_safe_integer`,
+  `round_carrier_has_body`, `tool_use_id_unusable`). The literals are spelled like the `resume_journal_skipped`
+  table in `src/loop/resume-manager.js` on purpose (a host reading both reads one vocabulary) but the constants are
+  **local**: that table is the closed set of `detail` values the
+  contract publishes (`docs/host-consumer-contract.md`, the “Optional raw-row anchor probe (issue #714)” table, and
+  its Chinese twin), its four values are pinned literally by `test/loop-resume-abandon-signals-730.test.js`, and the
+  probe case is renamed `ledger_probe_absent` because it is not #730's anchor probe. The probe fast path (#157, which promises `store.load` is never called) reads the ledger
+  through the third probe `loadRawRows` (#714) and **refuses rather than falling back to a full read** — a store
+  with only `loadByDedupKey`/`loadMaxRound` gets `ledger_probe_absent` and must add that probe; that is the
+  host-side follow-up for `erix-station`'s `PostgresTranscriptStore`, which implements the pair but not the third.
+  Why refuse instead of writing anyway: for `round_carrier_has_body` the fold would attach our row to a live
+  carrier whose ordering depends on the least trustworthy `seq` cell (`resume-manager#roundHasBodyCarrier` says the
+  same thing for the same reason), and a refused settle is a *visible* degraded case while a mis-ordered row is a
+  400 later. The host's own row is always written — a missing probe is the host's problem, not the user's input.
+  Pinned by `test/store/append-user-turn-settle-765.test.js` (14 cells), whose **main criterion asserts the folded
+  order** (`assistant[TU] → user[TR] → user(text)` through `foldLedgerMessages`, plus `validateMessages` passing),
+  not "two rows were written"; the rest cover idempotency, the no-dangling byte-for-byte case, both refusals, the
+  probe-absent refusal (with the `store.load` call count pinned at `0`), malformed `tool_use` ids, a `partOf` shard
+  never counting as the tail, the row shape, and two end-to-end cells (the resume really reaches the provider with
+  the stub immediately after that assistant, and the engine's own tail settlement still works when the host did not
+  pre-write). Two old assertions moved because this fix is visible in the ledger, and neither one is weaker:
+  `test/repl.test.js`'s round sequence goes `[0,1,1,1,2]` → `[0,1,1,1,1,2]` **plus** a new assertion naming the
+  extra row (`repl-abort:settle:1:call-1:1`), and `test/tools/file-tools.test.js`'s `fewest` role row is
+  re-measured (25,326→25,939 B / 362→367 lines / capacity 3,746→3,708) — still inside the `[3,700, 3,750)` tier,
+  so the `readFile` description is untouched (#537: same tier, no re-brush). `docs/host-consumer-contract.md` and
+  its Chinese twin are **not** touched here (another session owns them in this window); the lines that need the new
+  return field are listed in the ticket report.
+- **宿主预写下一条用户轮不再把要恢复的那个 run 砖化：`appendUserTurn` 现在在**自己那条 `user[text]` 行落盘
+  之前**先结清悬空的 `tool_use`（issue #765）。** 事故形状：崩溃留下一条 `assistant[tool_use]` 行，它的 id 在
+  **整本账本里没有任何 `tool_result`**，宿主调 `appendUserTurn` 追一条问题，于是引擎的本地校验器在出网前就把折
+  出来的账本判死（`invalid_messages: assistant tool_use has no immediately following user tool_result`）——该
+  runId 永久不可恢复，而且砖是在本地出的，上游一个请求都没见过。时机就是本案全部，而「让宿主事后补一行」从来不是
+  选项：`foldMessageRows` 会把一轮的消息行按 `seq` 折回该轮载体（`src/store/message-rows.js#attachRoundMessages`），
+  所以宿主那条纯文本轮一落盘 ⇒ **(a)** 任何补在它后面的 `user[tool_result]` 在折叠视图里也排在它**后面**，出网顺序
+  成 `assistant[TU] → user(text) → user(TR)`（provider 直接 400），而且 **(b)** 引擎自家修复件的尾部判据
+  （`pendingTailToolUses` / `resumeMessagesWithUnpersistedToolResults`，都是「最后一条是带 `tool_use` 的
+  assistant」）同时失效，引擎再也看不见这笔悬空。写在前面则结清行自己就是尾行，折叠顺序天然正确。行形状复用已有
+  口径而不是再造第四件：块来自 `src/loop/pending-tool-result.js` 新增的导出函数 `buildUnpersistedToolResultStub`
+  （就是 #421 那张桩，`UNPERSISTED_TOOL_RESULT_TEXT` + `is_error: true`，它的「构造点唯一」判据现在守的是一个函数
+  而不是一个内联字面量），行带 `kind: "message"` 加 `nextMessageSeqByRound` **现取**的 `seq`（缺 `seq` 会把折叠的
+  排序键退化成 `undefined`，而 `undefined < undefined` 为假 ⇒ 多条结清行会按写序漂）。它**故意不带 `roundKey`**：
+  `isRoundCarrier` 的判据是「无 `dedupKey` 且（无 `seq` 或有 `roundKey`）」，所以在不写 `seq` 的 store 上多给一个好
+  心的 `roundKey` 会让这行变成**第二个载体**，#401 的 R3 守卫随即把它丢掉——静默丢失，比什么都不做更糟。幂等：
+  `dedupKey = <key>:settle:<round>:<排序后的 id>`，只由账本推出 ⇒ 崩溃重跑与宿主重试只结清一次，两条路径写的行逐字
+  相同。**拒写出声而不静默，也不新增事件类型**：store 层没有 `onEvent`，原因只能搭返回值——结果多一个
+  `unsettledToolUses`，而且**只在该说话时出现**（没悬空时返回对象的键集合仍是 `{ key, dedupKey, round, written }`），
+  `status` 取 `"settled" | "refused"`，`reason` 四条（`ledger_probe_absent` / `round_not_safe_integer` /
+  `round_carrier_has_body` / `tool_use_id_unusable`）。字面值**故意**与 `src/loop/resume-manager.js` 的
+  `resume_journal_skipped` 表同形（宿主两处都读时读到同一套词），但常量是**本地的**：那张表是契约里那张 `detail` 闭集表（英文
+  `docs/host-consumer-contract.md` 的「可选原始行锚点探针（issue #714）」小节，中文同一处），四个取值被
+  `test/loop-resume-abandon-signals-730.test.js` 逐字钉住；而探针那一格改名 `ledger_probe_absent`，
+  因为它不是 #730 那根定锚探针。探针快路径（#157，它承诺全程不调 `store.load`）只能靠第三根探针 `loadRawRows`
+  （#714）读账本，探针缺席就**拒写而不退回整本读**——只实现 `loadByDedupKey`/`loadMaxRound` 的 store 会拿到
+  `ledger_probe_absent` 并且必须补上这根探针；那就是 `erix-station` 的 `PostgresTranscriptStore`（它实现了那对而
+  没有第三根）的宿主侧后续。为什么不写而选择拒写：`round_carrier_has_body` 时折叠会把我们这行挂到活载体上，顺序
+  取决于最不可信的 `seq` 那一格（`resume-manager#roundHasBodyCarrier` 为同一件事给同一个理由），而拒写是一眼可见的
+  降级、排错位的行是晚一步的 400。宿主自己那条行照写：探针缺席是宿主的事，不是用户输入的事。
+  `test/store/append-user-turn-settle-765.test.js`（14 格）钉住本案：**主判据断的是折叠后的顺序**（过
+  `foldLedgerMessages` 断 `assistant[TU] → user[TR] → user(text)`，另加 `validateMessages` 必须过），不是「写了
+  两行」；其余是幂等、无悬空逐字不变、两条拒写、探针缺席拒写（并钉 `store.load` 调用次数 `0`）、id 不合法、
+  `partOf` 分片行不当尾行、行形状，以及两条端到端（恢复真的出网且桩紧跟那条 assistant；宿主没预写时引擎自家的尾部
+  结清仍工作）。两条旧断言因为本案在账本里可见而动了，但都不是放宽：`test/repl.test.js` 的逐轮号序列
+  `[0,1,1,1,2]` → `[0,1,1,1,1,2]`，**并新增**一条点名多出那行的断言（`repl-abort:settle:1:call-1:1`）；
+  `test/tools/file-tools.test.js` 的 `fewest` 角色行按自家度量重测（25,326→25,939 B / 362→367 行 / 容量
+  3,746→3,708）——仍在 `[3,700, 3,750)` 这一档里，所以 `readFile` 描述一个字没改（#537：同档不刷）。
+  `docs/host-consumer-contract.md` 与中文本文单**没动**（本窗口它归另一个 session）：需要补新返回字段的那几行写在
+  工单报告里。
+
 - **The CLI-flag guard had two false greens of its own: an `erix` flag inside `$( … )` never entered the face,
   and the same-length blanking let a negation word exempt the *next* segment's flag (issue #775).** Both came
   in with issue #773's segment cut, and both are pinned RED-first. (1) `$(erix chat --bogus)` was invisible:
