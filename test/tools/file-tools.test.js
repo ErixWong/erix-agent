@@ -670,7 +670,17 @@ const READ_LINE_CAPACITY_ROLES = [
   //   `src/loop/state-view.js` 4,384 行 / CJK 36.6%（记录 4,364 / 37.0%，+0.46% 与 -0.4pt 都在容差里）；
   //   `median` `src/store/file.js` 6,212（与记录逐字相同）；`most` `src/loop/abort.js` 9,407（逐字相同）；
   //   `self` `src/tools/file-tools.js` 4,676（记录 4,678，-0.04%）。
-  { role: "fewest", file: "src/loop/pending-tool-result.js", recorded: { bytes: 25_326, lines: 362, bytesPerLine: 69.9613, capacity: 3_746, cjkShare: 0.38735 } },
+  // 2026-11-08 第十四刷（issue #765，**只动数字：不换人也不跳档**）：本单把中段补桩里那张
+  // `tool_result` 桩抽成导出函数 `buildUnpersistedToolResultStub`（宿主预写用户轮之前的结清行要用同一张桩，
+  // 构造点仍以 `test/loop-resume-unpersisted-tool-results.test.js` 的结构判据为准），就地删了 8 行内联块、
+  // 加了 5 行导出与中文注释 ⇒ bytes 越过 ±2%（**不刷就会拖一个与 readFile 无关的红**）。逐字段旧值 → 新值
+  // （同样由本测试自己的 `measureReadLineCapacity` / `CJK_CHAR` 当场量得）：
+  //     · bytes 25,326 → **25,939**（+2.42%）· lines 362 → **367** · bytesPerLine 69.9613 → **70.6785**
+  //     · capacity 3,746 → **3,708**（仍在 [3,700, 3,750) 这一档里 ⇒ readFile 描述一个字不用改，#537）
+  //     · cjkShare 0.38735 → **0.39138**（新增的还是中文注释；`fewest` 这个角色在描述里没有占比那个数）
+  //   其余四个角色本单一行没碰，当场复测：`densest` 4,384 / 36.6%（记录 4,364 / 37.0%，容差内）、
+  //   `median` 6,212 与 `most` 9,407（与记录逐字相同）、`self` 4,652（记录 4,678，-0.56%，容差内）⇒ 都不刷。
+  { role: "fewest", file: "src/loop/pending-tool-result.js", recorded: { bytes: 25_939, lines: 367, bytesPerLine: 70.6785, capacity: 3_708, cjkShare: 0.39138 } },
   // CJK 字节占比最高的那一个（2026-10-13 到 2026-10-31 一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
   // 2026-10-31 第一刷（issue #246 第一刀）：这个文件第一次被真实接线（`orchestrator.js` 的
   // `runSnapshotContext` 转发面），文件头注释里「本单不接线」那句改成接线事实（+14 B，**行数不变**）。
