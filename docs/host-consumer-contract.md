@@ -3709,6 +3709,18 @@ else), so the Anthropic path does **not** grow the key: it is absent there by fa
 `record.usage` (the round ledger, issue #438) is unchanged: `reasoningTokens` rides on
 `record.response.usage` (the last response of the round), never into the ledger's four summed fields.
 
+**(4) The response never echoes the level.** Measured 2026-11-08 against the real OpenAI-compatible
+upstream in both shapes (non-stream and SSE, same trivial prompt): a non-stream body's top-level keys are
+`id` / `object` / `created` / `model` / `choices` / `usage` / `system_fingerprint`, and the SSE chunks add
+`prompt_token_ids` / `prompt_text` while the choice carries `token_ids` / `stop_reason` per chunk — **no
+`reasoning_effort` key appears anywhere in either shape**, and no response header names it either (the only
+diagnostic header the gateway returns is `x-oneapi-request-id`). The two response-side facts related to
+thinking are the chain-of-thought text (`message.reasoning` non-stream, `delta.reasoning` streamed) and the
+count `completion_tokens_details.reasoning_tokens` — and **a count cannot be inverted into a level**:
+`"none"` measured `0` while `"low"` measured 14–45 on the same prompt. So the question "which level did this
+call send" is answered by the engine's own `sentRequestParams` and never by the response; that is the same
+boundary as layer 4 above, now with raw-body evidence rather than an assertion.
+
 **Two field families, and the shape difference is not negotiable.**
 
 | Family | Field shape | Measured behaviour |
