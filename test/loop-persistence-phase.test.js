@@ -41,12 +41,43 @@ import { makeTmp } from "./helpers/tmp.js";
 // 定时器周期：足够小让一次流式尝试内必然落一条 partial 快照，又足够大避免抖动。
 const PARTIAL_INTERVAL_MS = 20;
 
-const EXPECTED_BY_STATUS = Object.freeze({
-  // 与 `src/loop/run-snapshot-executor.js` 调用点声明 + `persist()` 的 status 映射一致（实测值）。
+// `#178` 的映射：工具前 pending / 工具后 executed。⚠ issue #770：这条映射的**输入**不再是快照载荷里
+// 的 `status` 那一格（已停写），而是下面 `callSiteOf()` 从载荷里的执行事实反推出来的调用点名。
+const EXPECTED_BY_CALL_SITE = Object.freeze({
+  // 与 `src/loop/run-snapshot-executor.js` 调用点声明 + `persistClassified()` 的状态口径一致（实测值）。
   pending: Object.freeze({ phase: "checkpoint_before_tool", sideEffect: "not_started" }),
   executed: Object.freeze({ phase: "checkpoint_after_tool", sideEffect: "executed_uncommitted" }),
   intercepted: Object.freeze({ phase: "checkpoint_before_tool", sideEffect: "not_started" }),
 });
+
+// issue #770：分辨「哪条调用点写下这条快照」的**权威来源**（旧的那格 `snapshot.status` 已停写）。
+// 引擎在每条调用点上都把当时的执行事实写进了 `tool_result` 的 `erix.executionStatus`
+// （`src/tool-fact.js#buildToolResultFact`：`rejected` 见 `run-snapshot-executor.js:330`、
+// `intercepted` 见 `:721`），并只在**工具真的执行过**之后才把 id 记进 `executedToolIds`。于是
+// 四条调用点各自可分辨，用的全部是载荷自己携带的引擎事实（实测写序见 REPORT 步骤 2）：
+//   · 最后一条 `tool_result` 带 `executionStatus: "rejected"` ⇒ 引数被拒那次写；
+//   · 带 `"intercepted"` ⇒ 拦截结果那次写；
+//   · **在飞的那条调用就是最后那条结果**（`pendingToolUse.id === 最后一条结果的 toolUseId`）且
+//     那个 id 在 `executedToolIds` 里 ⇒ 工具后那次写。必须比「同一个 id」而不能只比「集合非空」：
+//     `executedToolIds` 是跨调用点累积的，同一轮里**下一个工具的工具前写**带着上一个工具的结果
+//     （实测写序：`pending(t1) → executed(t1) → pending(t2，带 t1 的结果) → intercepted(t2)`），
+//     只看非空会把那个 pending 误标成 executed；
+//   · 其余（含定时器写：它自己没新增结果，调用点交进来的就是 pending）⇒ pending。
+// @param {Record<string, any>} snapshot
+// @returns {"rejected" | "intercepted" | "executed" | "pending"}
+function callSiteOf(snapshot) {
+  const last = (snapshot.toolResults ?? []).at(-1);
+  const executionStatus = last?.toolResult?.erix?.executionStatus;
+  if (executionStatus === "rejected") return "rejected";
+  if (executionStatus === "intercepted") return "intercepted";
+  const lastToolUseId = last?.toolUseId;
+  if (lastToolUseId !== undefined
+    && snapshot.pendingToolUse?.id === lastToolUseId
+    && (snapshot.executedToolIds ?? []).includes(lastToolUseId)) {
+    return "executed";
+  }
+  return "pending";
+}
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -84,7 +115,7 @@ function createProbeStore({ failWriteAt = -1, storeErrorCode } = {}) {
       writes.push({
         index,
         round: snapshot.round,
-        status: snapshot.status,
+        status: callSiteOf(snapshot),
         // 定时器（partialPersistence）通道的指纹：带 partialText、且没有任何 pending 工具块。
         isPartialTimer: snapshot.partialText !== undefined && snapshot.pendingToolUse == null,
         pendingToolUseId: snapshot.pendingToolUse?.id,
@@ -217,7 +248,7 @@ async function enumerateWrites(cwd) {
   return store.writes;
 }
 
-test("#178 判定 1/5：工具前（status:pending）同一次失败写，猜测通道与显式声明通道给出同一组分类", async () => {
+test("#178 判定 1/5：工具前（调用点 pending）同一次失败写，猜测通道与显式声明通道给出同一组分类", async () => {
   const cwd = await makeTmp("erix-178-a-");
   const writes = await enumerateWrites(cwd);
   const preToolIndex = writes.findIndex((entry) => !entry.isPartialTimer
@@ -240,11 +271,11 @@ test("#178 判定 1/5：工具前（status:pending）同一次失败写，猜测
   );
   assert.deepEqual(guessedChannel(event), {
     operation: "saveRunSnapshot",
-    ...EXPECTED_BY_STATUS.pending,
-  }, `pre-tool pending write must classify as ${describeChannel(EXPECTED_BY_STATUS.pending)}`);
+    ...EXPECTED_BY_CALL_SITE.pending,
+  }, `pre-tool pending write must classify as ${describeChannel(EXPECTED_BY_CALL_SITE.pending)}`);
 });
 
-test("#178 判定 2/5：工具后（status:executed）同一次失败写，两通道同为 checkpoint_after_tool/executed_uncommitted", async () => {
+test("#178 判定 2/5：工具后（调用点 executed）同一次失败写，两通道同为 checkpoint_after_tool/executed_uncommitted", async () => {
   const cwd = await makeTmp("erix-178-b-");
   const writes = await enumerateWrites(cwd);
   const postToolIndex = writes.findIndex((entry) => entry.status === "executed");
@@ -264,8 +295,8 @@ test("#178 判定 2/5：工具后（status:executed）同一次失败写，两�
   );
   assert.deepEqual(guessedChannel(event), {
     operation: "saveRunSnapshot",
-    ...EXPECTED_BY_STATUS.executed,
-  }, `post-tool executed write must classify as ${describeChannel(EXPECTED_BY_STATUS.executed)}`);
+    ...EXPECTED_BY_CALL_SITE.executed,
+  }, `post-tool executed write must classify as ${describeChannel(EXPECTED_BY_CALL_SITE.executed)}`);
 });
 
 test("#178 判定 3/5：partialPersistence 定时器写与工具前显式调用点对同一 status 分类一致——声称的不一致复现失败", async () => {
@@ -302,8 +333,8 @@ test("#178 判定 3/5：partialPersistence 定时器写与工具前显式调用�
   );
   assert.deepEqual(timerChannel, {
     operation: "saveRunSnapshot",
-    ...EXPECTED_BY_STATUS.pending,
-  }, `timer (status:pending) write must classify as ${describeChannel(EXPECTED_BY_STATUS.pending)}`);
+    ...EXPECTED_BY_CALL_SITE.pending,
+  }, `timer (pending 调用点) write must classify as ${describeChannel(EXPECTED_BY_CALL_SITE.pending)}`);
 
   // 分类输入侧的取证：定时器写确实没有任何 pending 工具块（这才是 `not_started` 成立的前提）。
   const timerWrite = timerRun.store.writes[timerIndex];
@@ -348,12 +379,12 @@ test("#178 判定 4/5：守门 sweep——每条可达的快照写强制失败�
       `channel disagreement on write #${String(write.index)}: ${describeChannel(context)}`,
     );
     // 且必须与「status → 分类」的既有映射一致（新增 status 会在这里逼出显式期望值）。
-    const expected = EXPECTED_BY_STATUS[write.status];
-    assert.ok(expected, `write #${String(write.index)} carries unmapped status ${String(write.status)}: ${describeChannel(context)}`);
+    const expected = EXPECTED_BY_CALL_SITE[write.status];
+    assert.ok(expected, `write #${String(write.index)} carries unmapped call site ${String(write.status)}: ${describeChannel(context)}`);
     assert.deepEqual(
       { phase: event.phase, sideEffect: event.sideEffect },
       expected,
-      `status ${String(write.status)} must classify as ${describeChannel(expected)}: ${describeChannel(context)}`,
+      `call site ${String(write.status)} must classify as ${describeChannel(expected)}: ${describeChannel(context)}`,
     );
     observed.push({ index: write.index, status: write.status, ...guessedChannel(event) });
   }

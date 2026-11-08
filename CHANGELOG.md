@@ -74,6 +74,8 @@
   变短的上下文，要么自己读那份档案。
 
 ### Changed
+- **Changed (issue #770): the run snapshot stops writing `status` and `compactionStats`; key presence is host-visible, because `src/store/file.js:523` writes the snapshot with `JSON.stringify(snapshot)` - the key set and its order *are* the bytes on disk.** Neither cell had an engine reader left: the resume side reads `deterministic.compactionStats` from the run state, and the on-disk exit of the compaction log is the round record; the only reader of `status` inside `src/` was the classification channel sniffing it out of the payload, replaced by an explicit `persistClassified(method, status, runId, ...)` argument, so the `status` parameter and all 7 call sites stay as they were. Tests that used either cell as their fingerprint now read the authoritative source: call sites are told apart by `executedToolIds` (a successfully executed tool lands only there) and by `toolResult.erix.executionStatus`, which the engine writes only on rejected / intercepted / interrupted results; the checkpoint face of the compaction-observation case reads the persisted run state. The surviving key order is `round, pendingToolUse, pendingToolUses, messages, persistedTranscriptLength, executedToolIds, toolResults, toolOutputs` (plus `partialText` / `partialRound` on a crash); old archives that still carry the stopped keys are read back verbatim and no fallback was removed. Machine absence assertions live in `test/loop-snapshot-write-side-735.test.js`; the write axis of both contract tables records the two cells as `stopped`, pinned to the comments that explain why there is no write point.
+- **变更（issue #770）：run snapshot 停写 `status` 与 `compactionStats`；键的存在性是宿主可见面——`src/store/file.js:523` 用 `JSON.stringify(snapshot)` 落盘 ⇒ 键集与键序就是盘上字节。**两格在引擎侧已无读者：恢复侧读 run-state 的 `deterministic.compactionStats`，压缩统计的落盘出口是**轮记录**；`status` 在 `src/` 里唯一的读者是分类通道对载荷的嗅探，已换成调用点显式交进来的 `persistClassified(method, status, runId, ...)` 入参，`status` 形参与全仓 7 个调用点一律不动。原先拿这两格当指纹的用例改读**权威来源**：调用点靠 `executedToolIds`（成功执行只进这里）与 `toolResult.erix.executionStatus`（引擎只在被拒 / 被拦 / 被中断的结果上写它）分辨，压缩观测用例的 checkpoint 那一面改读落盘 run-state。停写后的键序是 `round, pendingToolUse, pendingToolUses, messages, persistedTranscriptLength, executedToolIds, toolResults, toolOutputs`（崩溃时多 `partialText` / `partialRound`）；仍带这两格的历史旧档照旧逐字读回，未删任何 `?? ` fallback。机器缺席断言在 `test/loop-snapshot-write-side-735.test.js`；两份契约表的写轴把这两格记成 `stopped`，锚点钉在解释「为什么这里没有写点」的注释上。
 - **The `check:docs` bare-line ratchet got one narrow, explicitly *conditional* exemption, so the two-axis payload table can keep citing `file:line` (issue #772 — gate and docs only, no behaviour change).** The table #767 added writes a write site and a reader into every cell, which pushed `bare-lines` to a measured 78 against the floor `BARE_LINE_REF_BASELINE = 6`; **the floor was not raised.** What is exempt is now defined by position *and* by a machine check, and both have to hold: **(a)** only the lines that sit **between** the `<!-- erix:snapshot-cell-axes:begin -->` / `<!-- erix:snapshot-cell-axes:end -->` markers in both contract files **and** are `|`-prefixed table rows — a bare line number outside those markers is counted line by line exactly as before, and a citation that also appears outside the markers is not exempt at all; **(b)** the exemption is granted only while `test/contract-snapshot-cell-axes-767.test.js` still carries its `G4` case, i.e. the one that reconciles every citation in the table (file present + line inside the file + that line really mentions the cell's payload key). What the gate binds is `G4_KEY_NAME_CHECK`'s **definition (both parameters actually used) plus its call inside `assert.ok(...)`** — not the case title and not a comment — so renaming or deleting that test file, or weakening the key-name check into "the line number exists", voids the exemption and the gate turns red again while naming which half of the guard is gone (an exemption that only needed the range to be valid would have been a free pass). Nothing else was relaxed: out-of-range / missing-target / reversed-range checks still run on the exempted references, and `--verbose` prints the exempt count inside the breakdown rather than quietly dropping it — today that line reads 97 occurrences / 82 unique ranges / 4 declaratively exempted / **72 marked-region exempted** ⇒ measured **6** vs floor 6. `--self-test` gained 4 reverse-proof cases (same reference copied outside the markers → red; guard test emptied → red; key-name check weakened → red; comment-only change → green). The 4 bare line numbers the notes *under* the table had picked up were converted into symbol anchors (`residueStart` / `restoreResume`) — the #286 preferred fix, not floor relief; the register lives in `docs/maintenance/command-reference.md#docs-anchors`.
 - **`check:docs` 的裸行号棘轮拿到一条很窄、且「写明有条件」的豁免，两轴载荷表因此可以继续写 `file:line`（issue #772 — 只动门禁与文档，行为不变）。#767 那张表每格都得写一个写点与一个读者，把 `bare-lines` 顶到实测 78 / 地板 `BARE_LINE_REF_BASELINE = 6`；**地板没抬。** 豁免的范围现在由「位置」与「机器复核」两件事共同定义，两者缺一不可：**(a)** 只豁免中英两份契约里 `<!-- erix:snapshot-cell-axes:begin -->` 与 `<!-- erix:snapshot-cell-axes:end -->` 这对标记**之间**、且以 `|` 开头的表格行 — 标记区**外**的裸行号照旧逐条计数，而同一条引用只要在区外还出现过一次就完全不豁免；**(b)** 只有当 `test/contract-snapshot-cell-axes-767.test.js` 仍带着 `G4` 那条用例时才给豁免，也就是逐条复核表里每条 `file:line` 的那一条（文件在场 + 行号在范围内 + 那一行确实提到这格的键名）。门禁绑的是 `G4_KEY_NAME_CHECK` 的**定义（两个参数都真被用到）加上它在 `assert.ok(…)` 里的调用**——不是用例标题、也不是注释——所以把那个测试文件改名或删除、或把键名判据削弱成「行号存在就行」，豁免立即失效、闸回红，并且会点名说清是哪一半判据没了（若只要求「行号在范围内就算过」，豁免就成了免检通道）。其余一律没放宽：越界 / 目标文件不存在 / 反向区间这三项对被豁免的引用照旧逐条查，而 `--verbose` 会把豁免数写进分解里而不是静默少算——今天那一行读作 出现 97 / 唯一 82 / 声明式豁免 4 / **标记区定点豁免 72** ⇒ 棘轮口径实测 **6** vs 地板 6。`--self-test` 新增 4 条反向证（同一条引用抄到标记区外 → 红；那个测试文件被清空 → 红；键名判据被削弱 → 红；只加一行注释 → 绿）。表**下**口径段自己带上的那 4 处裸行号按 #286 首选修法改成「符号 + 文件」锚点（`residueStart` / `restoreResume`），没有伸手要地板；登记写在 `docs/maintenance/command-reference.md#docs-anchors`。
 - **The real-upstream tool-fact e2e got a new observation face for its "the engine never rewrites history"
@@ -399,6 +401,10 @@
   已排除路径」必备段、「未记录 ⇒ 先 `note_take`」硬指令，以及任何引擎侧自动记笔记机制 —— 引擎仍然什么都不写。
 
 ### Added
+- **Added (issue #785 P1, task 261108-01): reasoning-token fidelity and an "what did we actually send" cell, both additive. (a) Canonical OpenAI usage gains the optional key `reasoningTokens` (number).** `normalizeOpenAIUsage` (`src/messages/openai-normalization.js`) used to build only `input_tokens` / `output_tokens` / `cacheRead`, so a value the upstream really reported at `completion_tokens_details.reasoning_tokens` was thrown away on the way in. The key is written **only when the upstream reports it** — an unreported value produces **no key**, and no layer may write `0` in place of "not measured" (the 2026-11-08 probe measured a real `0` on a `reasoning_effort:"none"` request, so "reported 0" and "not reported" are two different facts and merging them destroys the distinction). The three pre-existing canonical keys keep their meaning verbatim, the Anthropic usage surface has no reasoning-token field to map (`usageFromResponse` (`src/messages/anthropic.js`)) and therefore does not grow the key, and `record.usage` (the round ledger, issue #438) still sums the same four fields — the new key rides on `record.response.usage`, which reaches the transcript untouched. (b) `RoundRecord` gains `sentRequestParams`: `{ reasoningEffort: { hostValue, sentValue, source, translated? } }`, produced by `observeSentReasoningParams` (`src/providers/payload.js`) from the **assembled** payload, so `sentValue` is what left the process after the one translation this package owns (GLM `none → low`, ADR-017) and after `extraBody`, while `hostValue` keeps the host's own pre-translation value — on a GLM model the two differ (`"none"` / `"low"`) and neither stands in for the other. `source` names the supplying channel with the same precedence the payload assembly uses (`request` > `slotDefault` > `providerOptions` > `extraBody`), so the cell cannot disagree with the body. **No fact, no key**: with no reasoning-related key anywhere the cell is absent, never an empty object; and because the observation happens where the payload is assembled, a **host-authored provider never produces it** — the engine cannot see that provider's wire body, so absence means *not observed*, never *not sent*. This class exists because the same probe measured an **unknown top-level body key being swallowed with HTTP 200** (clean answer, usage still showing reasoning): the failure neither errors nor degrades, so the ledger is the only place it can be seen. Both cells are reverse-proved: letting `hostValue` read the translated payload turns 2 cases red, removing the noise guard turns 2 cases red (`test/reasoning-sent-params-785.test.js`), and writing a fabricated `0` turns 4 cases red (`test/messages/openai-normalization.test.js`). The four red lines stand untouched: no value-domain enum (issue #788 stays parked), no change to judge / fold-summary / forced-final semantics, no change to the GLM translation itself, no new per-run API.
+- **变更（issue #785 P1，工单 261108-01）：推理 token 保真 + 一格「实际发了什么」，两者都是纯加法。(a) 规范化 OpenAI usage 新增可选键 `reasoningTokens`（number）。** `normalizeOpenAIUsage`（`src/messages/openai-normalization.js`）过去只造 `input_tokens` / `output_tokens` / `cacheRead` 三个键，上游真回报在 `completion_tokens_details.reasoning_tokens` 的值**在进门这一步就被丢掉**。新键**只在上游回报时写入**——没回报就**没有这个键**，任何一层都不许用 `0` 顶替「没测」（2026-11-08 探针在 `reasoning_effort:"none"` 那一发实测到真值就是 0，所以「回报 0」与「没回报」是两个不同事实，并成一个数就把区别抹了）。既有三个规范键语义一字未改；Anthropic 的 usage 面没有推理 token 字段可映射（`usageFromResponse`（`src/messages/anthropic.js`）），因此那边**不**长这个键；`record.usage`（逐轮账，issue #438）仍只累加原来那四个字段——新键随 `record.response.usage` 走，原样进档案。**(b) `RoundRecord` 新增 `sentRequestParams`**：`{ reasoningEffort: { hostValue, sentValue, source, translated? } }`，由 `observeSentReasoningParams`（`src/providers/payload.js`）在**已装配好的**载荷上取值，所以 `sentValue` 是过了本包唯一那处翻译（GLM `none → low`，ADR-017）与 `extraBody` 之后真正出进程的值，而 `hostValue` 保留宿主给的、翻译前的原值——GLM 型号上两者不同（`"none"` / `"low"`），谁也不顶替谁。`source` 写供值通道，优先级与载荷装配同序（`request` > `slotDefault` > `providerOptions` > `extraBody`），所以这格不可能与 body 打架。**没事实就没键**：哪儿都没有 reasoning 相关键 ⇒ 整格缺席，绝不是空对象；又因为观测点就在装配点，**宿主自建 provider 永远交不出这格**——引擎看不见它的 wire body，缺席读作*未观测*，不是*没发*。这格存在的理由正是同一次探针实测到**顶层未知键被 HTTP 200 静默吞**（正文干净、usage 仍在推理）：它既不报错也不降级，账本是唯一看得见它的地方。两格都做了反向证：让 `hostValue` 去读已翻译的 payload ⇒ 2 格红，撤掉噪声闸 ⇒ 2 格红（`test/reasoning-sent-params-785.test.js`），凭空写 0 ⇒ 4 格红（`test/messages/openai-normalization.test.js`）。四条红线一格没动：不建值域枚举（#788 继续 parked）、不动 judge / 折叠摘要 / 强制收尾语义、不改 GLM 翻译本身、不加 per-run API。
+- **Documented (issue #785 follow-up, task 261108-02): the response never echoes the reasoning level — measured in both shapes. A host that wants to know which level a call sent used to have nowhere to look: the contract said layer 4 (sampled behaviour) is unprovable from this repository, but nothing recorded that **the response itself carries no level either**. Measured 2026-11-08 against the real OpenAI-compatible upstream: a non-stream body's top-level keys are `id` / `object` / `created` / `model` / `choices` / `usage` / `system_fingerprint`, SSE chunks add `prompt_token_ids` / `prompt_text` and per-chunk `token_ids` / `stop_reason`, **no `reasoning_effort` key appears in either shape**, and the only diagnostic response header is `x-oneapi-request-id`. What the response does carry is the chain-of-thought text (`message.reasoning` / `delta.reasoning`) and `completion_tokens_details.reasoning_tokens` — and a count cannot be inverted into a level (`"none"` measured 0, `"low"` measured 14–45 on the same prompt). The contract's reasoning section now states this as its fourth numbered point, so "read the level back from the response" is closed by evidence, not by assertion. Docs only: no behaviour, no surface change.
+- **文档（issue #785 续，工单 261108-02）：响应从不回显本次的思考档位——两种形态都量过。** 宿主想知道「这一发到底发了哪一档」原先没有地方可看：契约说第 4 层（真实采样行为）不可从本仓证明，但**没有任何地方记下「响应自己也不带档位」**。2026-11-08 对真 OpenAI 兼容上游实测：非流式返回体顶层键是 `id` / `object` / `created` / `model` / `choices` / `usage` / `system_fingerprint`，SSE 的 chunk 另带 `prompt_token_ids` / `prompt_text` 与每片的 `token_ids` / `stop_reason`，**两种形态里都没有 `reasoning_effort` 这个键**，响应头里唯一的诊断头是 `x-oneapi-request-id`。响应确实带的是思维链正文（`message.reasoning` / `delta.reasoning`）与 `completion_tokens_details.reasoning_tokens`——而计数反推不出档位（同一个 prompt 上 `"none"` 实测 0，`"low"` 实测 14–45）。契约的 reasoning 那节把它写成第（4）条，于是「从响应里把档位读回来」这条路是被证据关掉的，不是被断言关掉的。纯文档：不改行为、不改公开面。
 - **The run snapshot payload contract is now a two-axis table, and a test reads that table (issue #767, slice S1 — docs and tests only, no behaviour change).** "Retire" had been used for two different claims (the write side stops writing a cell; the read side stops relying on it), and the contract's cell-by-cell list carried it as one label, which is how "zero readers ⇒ it can be retired" got to look like an inference. Both contracts (CN and EN) now carry one row per payload key with two independent axes — `write: written|residue|stopped` and `read: source|fallback(condition)|not-source` — plus an *authority* and a *handoff condition* column for the double-written cells. All 10 payload keys are listed (`round`, `status`, `pendingToolUse`, `pendingToolUses`, `executedToolIds`, `toolResults`, `toolOutputs`, `messages`, `persistedTranscriptLength`, `compactionStats`), and `persistedTranscriptLength` occupies two rows because one key name covers two things: the on-disk cell (recomputed away by the resume path, so its read-side condition is met) and the in-process counter (a bound on the `messages` residue start, so it cannot go away). Three facts the table now states instead of implying: the final guard's evidence source is the **round record** (`bin/final-guard-support.js`), not the latest snapshot, so the guard is no reason to keep the snapshot's `toolOutputs`; `status` and `compactionStats` have zero engine readers **and** live test fingerprints, so `not-source` does not license stopping the write; `messages` can only be `fallback(old-format ledger only)` while the resume side's upgrade path exists. Every line number was re-taken on the base commit and `test/contract-snapshot-cell-axes-767.test.js` re-checks each citation (file present, line in range, that line names the key) — the 0.31.0-era numbers quoted in the issue would go red. The new file's 8 cases also run the two falsifications that did not exist before: a cell declared `stopped` is compared against the payload the engine actually handed to `saveRunSnapshot` (previously `test/loop-snapshot-write-side-735.test.js` *required* those keys to be present, so declaring one stopped could not fail anything), and a cell declared `read: not-source` is compared against a scan of `src/loop/resume-manager.js` with comments and string literals stripped (its own counterexample case proves the stripping works, because a comment in that file contains `snapshot.messages`). Mutations run and restored: `status` → `stopped` ⇒ the payload case red; delete one row ⇒ the self-consistency case red; `messages` → `not-source` ⇒ the read-axis cases red. ⚠ Derived numbers left for the merged tree: the bare-line-reference ratchet in `check:docs` measures 62 against its floor of 6 (the table cites line numbers on purpose), and the suite case total grows by 8.
 - **run snapshot 的契约载荷表现在是「每格两轴」，而且这张表被测试当数据读（issue #767，S1 片：只动文档与测试，行为不变）**。“退役”以前同时被用来指两件事（写侧不再写这格 / 读侧不再靠这格），而逐格清点表把它写成了一个标签——「零读者 ⇒ 可以退役」就是这么看起来像推论的。中英两份契约现在每个 payload 键一行，两条互相独立的轴 `write: written|residue|stopped` 与 `read: source|fallback(条件)|not-source`，双写格额外给「权威源」与「交接条件」两列。10 格全列（`round`、`status`、`pendingToolUse`、`pendingToolUses`、`executedToolIds`、`toolResults`、`toolOutputs`、`messages`、`persistedTranscriptLength`、`compactionStats`），其中 `persistedTranscriptLength` 占两行——一个键名底下是两个东西：盘上那格（恢复侧现算覆盖 ⇒ 读侧条件已满足）与进程内计数器（`messages` 残余上界之一 ⇒ 不能停）。表从此不再“暗含”而是写明三件事：终稿 guard 的证据源是**轮记录**（`bin/final-guard-support.js`）而不是最新快照，所以 guard 不是保留快照那格的理由；`status` 与 `compactionStats` 引擎零读者**同时**被测试当形状指纹钉住，所以 `not-source` 不等于可以停写；只要恢复侧那条旧格式升级路径还在，`messages` 就只能写 `fallback(仅旧格式账本)`。行号全部在基点上重取，`test/contract-snapshot-cell-axes-767.test.js` 逐条复核（文件在场 / 行号在范围内 / 那一行确实提到这格的键名）——照抄 issue 正文里那批 0.31.0 的行号会红。新文件 8 例同时跑了两件以前跑不红的证伪：标 `stopped` 的格要跟引擎亲手交给 `saveRunSnapshot` 的真实载荷对账（以前 `test/loop-snapshot-write-side-735.test.js` 反而**要求**这些格在场，标停写不可能红），标 `read: not-source` 的格要跟一份剔掉注释与字符串字面量的 `src/loop/resume-manager.js` 对账（剥逻辑自带反例用例，因为那个文件里有一句注释就带着 `snapshot.messages`）。变异实测跑完已还原：`status` → `stopped` ⇒ 写轴例红；删一行 ⇒ 自洽例红；`messages` → `not-source` ⇒ 读轴两例红。⚠ 留给合并树的派生数字：`check:docs` 的裸行号棘轮实测 62 / 基线 6（这张表就是故意写行号的），套件用例总数 +8。
 - **Host steer at the turn boundary: `capabilities.hooks.nextUserTurn` (issue #753, C1 engine slice).** The
@@ -599,6 +605,101 @@
   ⇒ 红、版本节被拿掉 ⇒ 红变未判定），变异没落上按失败算而不是按绿算。
 
 ### Fixed
+
+- **A host that pre-writes its next user turn no longer bricks the run it is resuming: `appendUserTurn` now
+  settles a dangling `tool_use` *before* its own `user[text]` row hits the ledger (issue #765).** The incident
+  shape: a crash leaves an `assistant[tool_use]` row whose id has **no `tool_result` anywhere in the ledger**,
+  the host calls `appendUserTurn` to queue its follow-up, and the engine's local validator then refuses the
+  folded ledger before anything goes on the wire (`invalid_messages: assistant tool_use has no immediately
+  following user tool_result`) — the runId is unrecoverable, and the brick is local, so upstream never saw a
+  request. Timing was the whole fix, and "let the host append a row afterwards" was never an option:
+  `foldMessageRows` re-attaches a round's message rows to that round's carrier in `seq` order
+  (`src/store/message-rows.js#attachRoundMessages`), so once the host's plain-text row is in the ledger
+  **(a)** any `user[tool_result]` appended after it folds **after** it — the wire order becomes
+  `assistant[TU] → user(text) → user(TR)`, a provider-side 400 — and **(b)** the tail criterion the engine's own
+  repairers use (`pendingTailToolUses` / `resumeMessagesWithUnpersistedToolResults`, both "the last message is an
+  assistant carrying `tool_use`") stops matching, so the engine no longer sees the dangling call at all.
+  Settling before the write makes the stub row the tail, so the folded order is right by construction. The row
+  reuses existing shapes instead of inventing a fourth one: the block comes from a new exported
+  `buildUnpersistedToolResultStub` in `src/loop/pending-tool-result.js` (the #421 stub, `UNPERSISTED_TOOL_RESULT_TEXT`
+  + `is_error: true`, whose unique-construction-site guard now guards a function rather than an inline literal),
+  and the row carries `kind: "message"` plus a **freshly measured** `seq` from `nextMessageSeqByRound` (a missing
+  `seq` degrades the fold's sort key to `undefined`, and `undefined < undefined` is false ⇒ several stub rows
+  would order by write order). It deliberately carries **no `roundKey`**: `isRoundCarrier` counts a row as a
+  carrier when it has no `dedupKey` and (no `seq` or a `roundKey`), so on a store that omits `seq` a friendly
+  `roundKey` would make this a *second* carrier and the #401 R3 guard would then drop the row we just wrote —
+  silently, which is worse than doing nothing. Idempotency: `dedupKey = <key>:settle:<round>:<sorted ids>`,
+  derived only from the ledger, so crash-replays and host retries settle exactly once and both code paths write
+  byte-identical rows. **Refusal is loud, not silent, and adds no event type**: the store layer has no `onEvent`,
+  so the reason rides on the return value — the result gains `unsettledToolUses`, only when there is something to
+  say (with nothing dangling the returned key set is still exactly `{ key, dedupKey, round, written }`), with
+  `status: "settled" | "refused"` and `reason` from four values (`ledger_probe_absent`, `round_not_safe_integer`,
+  `round_carrier_has_body`, `tool_use_id_unusable`). The literals are spelled like the `resume_journal_skipped`
+  table in `src/loop/resume-manager.js` on purpose (a host reading both reads one vocabulary) but the constants are
+  **local**: that table is the closed set of `detail` values the
+  contract publishes (`docs/host-consumer-contract.md`, the “Optional raw-row anchor probe (issue #714)” table, and
+  its Chinese twin), its four values are pinned literally by `test/loop-resume-abandon-signals-730.test.js`, and the
+  probe case is renamed `ledger_probe_absent` because it is not #730's anchor probe. The probe fast path (#157, which promises `store.load` is never called) reads the ledger
+  through the third probe `loadRawRows` (#714) and **refuses rather than falling back to a full read** — a store
+  with only `loadByDedupKey`/`loadMaxRound` gets `ledger_probe_absent` and must add that probe; that is the
+  host-side follow-up for `erix-station`'s `PostgresTranscriptStore`, which implements the pair but not the third.
+  Why refuse instead of writing anyway: for `round_carrier_has_body` the fold would attach our row to a live
+  carrier whose ordering depends on the least trustworthy `seq` cell (`resume-manager#roundHasBodyCarrier` says the
+  same thing for the same reason), and a refused settle is a *visible* degraded case while a mis-ordered row is a
+  400 later. The host's own row is always written — a missing probe is the host's problem, not the user's input.
+  Pinned by `test/store/append-user-turn-settle-765.test.js` (14 cells), whose **main criterion asserts the folded
+  order** (`assistant[TU] → user[TR] → user(text)` through `foldLedgerMessages`, plus `validateMessages` passing),
+  not "two rows were written"; the rest cover idempotency, the no-dangling byte-for-byte case, both refusals, the
+  probe-absent refusal (with the `store.load` call count pinned at `0`), malformed `tool_use` ids, a `partOf` shard
+  never counting as the tail, the row shape, and two end-to-end cells (the resume really reaches the provider with
+  the stub immediately after that assistant, and the engine's own tail settlement still works when the host did not
+  pre-write). Two old assertions moved because this fix is visible in the ledger, and neither one is weaker:
+  `test/repl.test.js`'s round sequence goes `[0,1,1,1,2]` → `[0,1,1,1,1,2]` **plus** a new assertion naming the
+  extra row (`repl-abort:settle:1:call-1:1`), and `test/tools/file-tools.test.js`'s `fewest` role row is
+  re-measured (25,326→25,939 B / 362→367 lines / capacity 3,746→3,708) — still inside the `[3,700, 3,750)` tier,
+  so the `readFile` description is untouched (#537: same tier, no re-brush). `docs/host-consumer-contract.md` and
+  its Chinese twin are **not** touched here (another session owns them in this window); the lines that need the new
+  return field are listed in the ticket report.
+- **宿主预写下一条用户轮不再把要恢复的那个 run 砖化：`appendUserTurn` 现在在**自己那条 `user[text]` 行落盘
+  之前**先结清悬空的 `tool_use`（issue #765）。** 事故形状：崩溃留下一条 `assistant[tool_use]` 行，它的 id 在
+  **整本账本里没有任何 `tool_result`**，宿主调 `appendUserTurn` 追一条问题，于是引擎的本地校验器在出网前就把折
+  出来的账本判死（`invalid_messages: assistant tool_use has no immediately following user tool_result`）——该
+  runId 永久不可恢复，而且砖是在本地出的，上游一个请求都没见过。时机就是本案全部，而「让宿主事后补一行」从来不是
+  选项：`foldMessageRows` 会把一轮的消息行按 `seq` 折回该轮载体（`src/store/message-rows.js#attachRoundMessages`），
+  所以宿主那条纯文本轮一落盘 ⇒ **(a)** 任何补在它后面的 `user[tool_result]` 在折叠视图里也排在它**后面**，出网顺序
+  成 `assistant[TU] → user(text) → user(TR)`（provider 直接 400），而且 **(b)** 引擎自家修复件的尾部判据
+  （`pendingTailToolUses` / `resumeMessagesWithUnpersistedToolResults`，都是「最后一条是带 `tool_use` 的
+  assistant」）同时失效，引擎再也看不见这笔悬空。写在前面则结清行自己就是尾行，折叠顺序天然正确。行形状复用已有
+  口径而不是再造第四件：块来自 `src/loop/pending-tool-result.js` 新增的导出函数 `buildUnpersistedToolResultStub`
+  （就是 #421 那张桩，`UNPERSISTED_TOOL_RESULT_TEXT` + `is_error: true`，它的「构造点唯一」判据现在守的是一个函数
+  而不是一个内联字面量），行带 `kind: "message"` 加 `nextMessageSeqByRound` **现取**的 `seq`（缺 `seq` 会把折叠的
+  排序键退化成 `undefined`，而 `undefined < undefined` 为假 ⇒ 多条结清行会按写序漂）。它**故意不带 `roundKey`**：
+  `isRoundCarrier` 的判据是「无 `dedupKey` 且（无 `seq` 或有 `roundKey`）」，所以在不写 `seq` 的 store 上多给一个好
+  心的 `roundKey` 会让这行变成**第二个载体**，#401 的 R3 守卫随即把它丢掉——静默丢失，比什么都不做更糟。幂等：
+  `dedupKey = <key>:settle:<round>:<排序后的 id>`，只由账本推出 ⇒ 崩溃重跑与宿主重试只结清一次，两条路径写的行逐字
+  相同。**拒写出声而不静默，也不新增事件类型**：store 层没有 `onEvent`，原因只能搭返回值——结果多一个
+  `unsettledToolUses`，而且**只在该说话时出现**（没悬空时返回对象的键集合仍是 `{ key, dedupKey, round, written }`），
+  `status` 取 `"settled" | "refused"`，`reason` 四条（`ledger_probe_absent` / `round_not_safe_integer` /
+  `round_carrier_has_body` / `tool_use_id_unusable`）。字面值**故意**与 `src/loop/resume-manager.js` 的
+  `resume_journal_skipped` 表同形（宿主两处都读时读到同一套词），但常量是**本地的**：那张表是契约里那张 `detail` 闭集表（英文
+  `docs/host-consumer-contract.md` 的「可选原始行锚点探针（issue #714）」小节，中文同一处），四个取值被
+  `test/loop-resume-abandon-signals-730.test.js` 逐字钉住；而探针那一格改名 `ledger_probe_absent`，
+  因为它不是 #730 那根定锚探针。探针快路径（#157，它承诺全程不调 `store.load`）只能靠第三根探针 `loadRawRows`
+  （#714）读账本，探针缺席就**拒写而不退回整本读**——只实现 `loadByDedupKey`/`loadMaxRound` 的 store 会拿到
+  `ledger_probe_absent` 并且必须补上这根探针；那就是 `erix-station` 的 `PostgresTranscriptStore`（它实现了那对而
+  没有第三根）的宿主侧后续。为什么不写而选择拒写：`round_carrier_has_body` 时折叠会把我们这行挂到活载体上，顺序
+  取决于最不可信的 `seq` 那一格（`resume-manager#roundHasBodyCarrier` 为同一件事给同一个理由），而拒写是一眼可见的
+  降级、排错位的行是晚一步的 400。宿主自己那条行照写：探针缺席是宿主的事，不是用户输入的事。
+  `test/store/append-user-turn-settle-765.test.js`（14 格）钉住本案：**主判据断的是折叠后的顺序**（过
+  `foldLedgerMessages` 断 `assistant[TU] → user[TR] → user(text)`，另加 `validateMessages` 必须过），不是「写了
+  两行」；其余是幂等、无悬空逐字不变、两条拒写、探针缺席拒写（并钉 `store.load` 调用次数 `0`）、id 不合法、
+  `partOf` 分片行不当尾行、行形状，以及两条端到端（恢复真的出网且桩紧跟那条 assistant；宿主没预写时引擎自家的尾部
+  结清仍工作）。两条旧断言因为本案在账本里可见而动了，但都不是放宽：`test/repl.test.js` 的逐轮号序列
+  `[0,1,1,1,2]` → `[0,1,1,1,1,2]`，**并新增**一条点名多出那行的断言（`repl-abort:settle:1:call-1:1`）；
+  `test/tools/file-tools.test.js` 的 `fewest` 角色行按自家度量重测（25,326→25,939 B / 362→367 行 / 容量
+  3,746→3,708）——仍在 `[3,700, 3,750)` 这一档里，所以 `readFile` 描述一个字没改（#537：同档不刷）。
+  `docs/host-consumer-contract.md` 与中文本文单**没动**（本窗口它归另一个 session）：需要补新返回字段的那几行写在
+  工单报告里。
 
 - **The CLI-flag guard had two false greens of its own: an `erix` flag inside `$( … )` never entered the face,
   and the same-length blanking let a negation word exempt the *next* segment's flag (issue #775).** Both came
@@ -1356,6 +1457,49 @@
   现测是**包根 27 个**（101 个错，对着没动的 `BASELINE_ROOT = 103`）与 **`--with-tools` 29 个**（136 个错，
   对着没动的 **138**），于是 `AGENTS.md` / `AGENTS_cn.md` 改成 27 与 29，而基线常量与 `--checkJs`/`--strict`
   的语义一个字都没碰（issue #730）。
+
+- **`erix_run`'s steer channel never reached the inner run on the production path: the default `runJob` wrapper
+  dropped the hook (issue #753, C2 follow-up).** `start()` hands the turn-boundary hook to `runJob` in its
+  **second** argument (`steerHookDeps(job)` → `opts.nextUserTurn`), and `createAsyncRuntime`'s **default** `runJob`
+  — the one used whenever no `runJob` is injected, which is exactly what production is: `erix-run.ts` builds its
+  runtime with only `registry / sendRegistry / sessionHandles / notify` — translated `opts` into `runErixRun`'s
+  deps by forwarding four optional keys, `runId` / `resumeTarget` / `signal` / `onProgress`. `nextUserTurn` was not
+  among them, so `runErixRun`'s own `typeof deps.nextUserTurn === "function"` guard never fired and the engine never
+  saw a hook. The breakage was silent **by construction**: `action:"steer"` returned `steerPending: 1`, nothing
+  errored, the artifacts were complete, and the terminal view still reported the queue — the real-upstream run ended
+  with `steerPending: 1` while the product said `STEER-ACK: NONE`. The forwarding now has the same shape as its
+  neighbours (`...(opts.nextUserTurn === undefined ? {} : { nextUserTurn: opts.nextUserTurn })`): not passed ⇒ no
+  extra key, so the synchronous face still installs no hook at all. **Why the all-green existing suite missed it**:
+  every cell of `test/examples/erix-run-steer.test.js` injected a fake `runJob`, pinning only `start() → runJob`,
+  while the cells that exercise the real `runToolLoop` call `core.runErixRun` directly and never enter this wrapper
+  ⇒ the production seam `default runJob → runErixRun` had no coverage at all. The new guard injects **no** `runJob`
+  and goes offline through seams core already owns (`loadLib` / `loadSlot` / `createProvider` / `createAssembly` /
+  `createStore`), asserting on facts rather than on "the hook was called": `steerPending` returns 1 → 0, and the
+  steered sentence shows up as a `role:"user"` turn inside the request the fake provider received. Reverse proof on
+  that cell: delete the forwarding line ⇒ red **on the `steerPending` assertion** (reported `实际=1`), with the
+  sentence absent from every request and `diagnostics.steer` never created at all; put it back ⇒ green, terminal
+  `diagnostics.steer = {offered:3, injected:1, rejected:0, lastRound:2}`. **Optional-key reconciliation** (checked
+  key by key, written into the report): `start()` puts five keys on that second argument (`signal` / `onProgress` /
+  `runId` / `resumeTarget` / `nextUserTurn`) and `sync()` puts three (`signal` / `onProgress` / `runId: undefined`)
+  — after this fix the wrapper forwards every one of them, and `nextUserTurn` was the only one it dropped.
+- **`erix_run` 的 steer 通道在生产路径上从没到过内层 run：默认 `runJob` 包装层把钩子丢掉了（issue #753，C2 后续）。**
+  `start()` 把轮边界转向钩子放在 `runJob` 的**第二个参数**上（`steerHookDeps(job)` ⇒ `opts.nextUserTurn`），而
+  `createAsyncRuntime` 的**默认** `runJob`（没注入 `runJob` 时用的就是它，而 `erix-run.ts` 建生产 runtime 时只传
+  `registry / sendRegistry / sessionHandles / notify`，所以生产用的正是它）把 `opts` 翻译成 `runErixRun` 的 deps 时
+  只转了 `runId` / `resumeTarget` / `signal` / `onProgress` 四个可选键——`nextUserTurn` 不在里面。于是
+  `runErixRun` 那句 `typeof deps.nextUserTurn === "function"` 永远不成立，引擎那一侧从没见过钩子。这个坏法是**构造出来的沉默**：
+  `action:"steer"` 返回 `steerPending: 1`、不报错、产物不缺、终局视图还报着那个队列——真上游那一跑以
+  `steerPending: 1` 收场，产物里写的是 `STEER-ACK: NONE`。现在那一行的转发形状与旁边的可选键逐字一致
+  （`...(opts.nextUserTurn === undefined ? {} : { nextUserTurn: opts.nextUserTurn })`）：没递就**不多一个键**，
+  同步面照旧一个钩子也不装。**为什么全绿的既有用例抓不到它**：`test/examples/erix-run-steer.test.js` 每一格都注入了假
+  `runJob`，钉的是 `start() → runJob` 那一段；而跑真 `runToolLoop` 的那几格直接调 `core.runErixRun`，**不经过这层包装**
+  ⇒ 生产接缝 `默认 runJob → runErixRun` 一格覆盖都没有。新加的守网**不注入 `runJob`**，只经 core 已有的离线缝
+  （`loadLib` / `loadSlot` / `createProvider` / `createAssembly` / `createStore`），断言落在事实上而不是「钩子被调过」：
+  `steerPending` 从 1 回到 0，且那句话以 `role:"user"` 轮的身份出现在假 provider 收到的请求里。反向证：删掉那行转发
+  ⇒ 红在 `steerPending` 那一断言（报「实际=1」），同时那句话在任何一次请求里都找不到、`diagnostics.steer` 根本不生成；
+  加回来 ⇒ 绿，终局 `diagnostics.steer = {offered:3, injected:1, rejected:0, lastRound:2}`。**可选键对账**（逐字核过写进报告）：
+  `start()` 往第二参放五个键（`signal` / `onProgress` / `runId` / `resumeTarget` / `nextUserTurn`），`sync()` 放三个
+  （`signal` / `onProgress` / `runId: undefined`）——修完之后默认包装层把它们**全部**转发，之前漏的就是 `nextUserTurn` 这一个。
 
 ## [0.31.0] - 2026-11-04
 

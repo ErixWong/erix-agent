@@ -443,10 +443,42 @@ function memoryFiles(map) {
   };
 }
 
-/** 真跑一个捕获者：`node --test <file>`，stdout + stderr 一起交回（TAP 与崩溃信息分处两边）。 */
+/**
+ * spawn `node --test` 时**钉死** reporter（issue #774）。
+ *
+ * Node 24 把 `node --test` 的默认 reporter 换成了 spec，而本脚本只认 `not ok N - <签名>`（通过时的
+ * `ok N -` / `# Subtest:` 不算，见文件头第 3 条）。实测：同一棵树 `PATH=<node24> npm run check:mutation:run`
+ * 会报「28 条样本没按预期咬住（0 条通过）」——不是样本失效，是 reporter 换了形状。
+ * 常量单独放一处，自测里的 R1 / R1b 就盯它。
+ */
+const TEST_SPAWN_ARGS = Object.freeze(["--test", "--test-reporter=tap"]);
+
+/** 真跑一个捕获者：`node --test --test-reporter=tap <file>`，stdout + stderr 一起交回（TAP 与崩溃信息分处两边）。 */
 function realRunTest(catcher) {
-  const r = spawnSync(process.execPath, ["--test", catcher], { cwd: ROOT, encoding: "utf8" });
+  const r = spawnSync(process.execPath, [...TEST_SPAWN_ARGS, catcher], { cwd: ROOT, encoding: "utf8" });
   return { status: r.status, output: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+}
+
+/**
+ * R1 的判据：reporter 钉还在吗（只读源码，不跑子进程；issue #774）。
+ *
+ * @param {string} source 本脚本的源码（真树或变异后的副本）
+ * @returns {string[]}
+ */
+function checkReporterPin(source) {
+  const problems = [];
+  const decl = /const TEST_SPAWN_ARGS = Object\.freeze\(\[([^\]]*)\]\)/u.exec(source);
+  if (!decl) {
+    return ["读不到 `const TEST_SPAWN_ARGS = Object.freeze([…])` —— reporter 钉跑哪去了？"];
+  }
+  if (!/--test-reporter=tap/u.test(decl[1])) {
+    problems.push(`spawn 捕获者的 argv 里没有 --test-reporter=tap（现在是：${decl[1].trim()}）`
+      + "—— Node 24 的默认 reporter 是 spec，只认 `not ok` 的判据会把每一条样本都误报成「红了但不是该报的那条」");
+  }
+  if (!/spawnSync\(process\.execPath,\s*\[\s*\.\.\.TEST_SPAWN_ARGS/u.test(source)) {
+    problems.push("realRunTest 的 spawn 没有展开 TEST_SPAWN_ARGS —— 钉上常量却没接上，等于没钉");
+  }
+  return problems;
 }
 
 // ─────────────────────────────── 命令行 ───────────────────────────────
@@ -999,6 +1031,20 @@ function runSelfTest() {
       continue;
     }
     passed.push(`${who} → ${problems.length} 处红（已点名）`);
+  }
+
+  // issue #774：reporter 钉自己的反向证。真树 ⇒ 绿；把 `tap` 改成 `spec` ⇒ 必须红（#210 R2：变异没落上一律算失败）。
+  const ownSource = fs.readFileSync(new URL(import.meta.url), "utf8");
+  const pinProblems = checkReporterPin(ownSource);
+  if (pinProblems.length) failures.push(`R1（reporter 钉）：${pinProblems.join("；")}`);
+  else passed.push("R1（reporter 钉）→ spawn 捕获者钉着 --test-reporter=tap（Node 24 的默认是 spec）");
+  const pinMutated = ownSource.replace('"--test-reporter=tap"', '"--test-reporter=spec"');
+  if (pinMutated === ownSource) {
+    failures.push("R1b（reporter 钉的反向证）：变异没落上——源码里找不到 \"--test-reporter=tap\" 那个字面量");
+  } else if (checkReporterPin(pinMutated).length === 0) {
+    failures.push("R1b（reporter 钉的反向证）：把 tap 换成 spec 之后判据没红——这一格是常绿的");
+  } else {
+    passed.push("R1b（reporter 钉的反向证）→ 把 tap 换成 spec 当场红并点名 argv");
   }
 
   console.log("mutation-sample-check --self-test：内存夹具上的反向证（改坏 → 红、干净 → 绿、--sync 只改派生列、变异没落上也算失败）");

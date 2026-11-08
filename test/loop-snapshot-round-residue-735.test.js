@@ -61,6 +61,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -72,6 +73,9 @@ const REPO_ROOT = resolve(HERE, "..");
 // 子进程（同一份用例文件、坏引擎），于是「红」是真的退出码，不是自说自话。
 const ENGINE_ROOT = process.env.ERIX_ENGINE_ROOT ?? REPO_ROOT;
 const insideMutationRun = process.env.ERIX_ENGINE_ROOT !== undefined;
+// issue #774：下面那几条「元用例」自己也要 spawn 一份本文件，必须有一道**不递归**闸门，否则
+// 「用另一个 runner 跑整份文件」这一格会无限展开（每层再生一个整份跑的孙子）。
+const insideMetaChildRun = process.env.ERIX_735_META_CHILD !== undefined;
 
 const { createMemoryTranscriptStore } = await import(
   pathToFileURL(join(ENGINE_ROOT, "src/store/memory.js")).href);
@@ -472,6 +476,83 @@ async function mutateEngine(label, search, replace) {
   return root;
 }
 
+// ── ④a 的子进程与判定器（issue #774：判定不许依赖 runner 的 Node 版本）───────────
+//
+// Node 24 把 `node --test` 的**默认 reporter 换成了 spec**（`✖ …` / `ℹ tests …`），而「红在**哪一格**」
+// 这件事只有 TAP 的 `not ok N - <名字>` 答得出来。所以两件事必须分开：
+//   · **spawn 侧**显式 `--test-reporter=tap`——默认 reporter 是 runner 的属性，不是这条用例的判据；
+//   · **判定侧**先验形状：读不到 TAP ⇒ `undetermined`（未判定），**既不判绿**（那是把读不到当通过）
+//     **也不判「③ 没红」**（那是把读不到当判据，假红）——与本仓「读不出真值 ⇒ exit 2」同一口径。
+// 判定**不许退化成只查退出码**：退出码答不出「红在哪一格」，正是本单的两条反向证之一在钉这件事。
+const MUTANT_RED = "③ 快照里不再有锚点之前那段前缀";
+/**
+ * 变异只改载荷大小、不改恢复语义 ⇒ 这几格在变异体上必须照旧绿（否则 ④a 测的就不是 ③）。
+ *
+ * ⚠ **合并树现名**（issue #754 裁决 2 把那两条读侧用例从「记录当前行为」翻成「断言弃用」，格名一起改了）：
+ * main 侧 #774 登记的是改名前的 `① 旧格式账本` / `④b 变异「删掉残余」`，在本树上已经**一格都找不到**
+ * ⇒ 直接抄 main 会让判定器只会打「不该拆掉」的假红（而 #774 那条反向证照样绿，因为它只查 problems 非空）。
+ * 第三条是本片自己加的「出声只在旧格式」（原 HEAD 侧的三条 `assert.match(output, …)`，此处改由判定器统一判，
+ * 覆盖面一格没少）。名字取**唯一子串**，与 `judgeMutationLog` 的 `ok N - <名>` 匹配口径一致。
+ */
+const MUTANT_STILL_GREEN = [
+  "① 旧格式档案（崩溃轮正文只在快照里）不再支持恢复",
+  "④b 载荷面三种写法都不再决定喂入的正文",
+  "#754 判据 2 · 出声只在旧格式",
+];
+
+/**
+ * 纯函数形态的判定（反向证用例直接喂真日志，不靠手工跑一次）。
+ *
+ * @param {{status: number|undefined|null, stdout?: string, stderr?: string}} child
+ * @returns {{verdict: "ok"|"red"|"undetermined", problems: string[], output: string}}
+ */
+function judgeMutationLog({ status, stdout, stderr }) {
+  const output = `${stdout ?? ""}${stderr ?? ""}`;
+  if (!/^TAP version 13$/mu.test(output)) {
+    return {
+      verdict: "undetermined",
+      problems: ["子进程没交回 TAP（没有 `TAP version 13` 头）⇒ **未判定**：spec reporter（Node 24 起 "
+        + "`node --test` 的默认）只有 `✖ …`，答不出「红在哪一格」——spawn 必须显式 --test-reporter=tap"],
+      output,
+    };
+  }
+  const lines = output.split("\n");
+  const problems = [];
+  if (status === 0) problems.push("变异体上整个文件必须非零退出（实测退出码 0）");
+  if (!lines.some((line) => /^not ok \d+ - /u.test(line) && line.includes(MUTANT_RED))) {
+    problems.push(`变异体上必须有一行点名「${MUTANT_RED}」的 "not ok N - …"（只查退出码不算判定）`);
+  }
+  for (const name of MUTANT_STILL_GREEN) {
+    if (!lines.some((line) => /^ok \d+ - /u.test(line) && line.includes(name))) {
+      problems.push(`变异体不该拆掉「${name}」：它只把载荷写胖，恢复语义没变`);
+    }
+  }
+  return { verdict: problems.length ? "red" : "ok", problems, output };
+}
+
+/**
+ * 跑本文件的一份子进程，reporter **写死在 argv 里**（issue #774）。
+ *
+ * @param {{reporter?: "tap"|"spec", engineRoot?: string, runner?: string, metaChild?: boolean}} [options]
+ */
+function spawnFileUnderTest({ reporter = "tap", engineRoot, runner = process.execPath, metaChild = false } = {}) {
+  const inherited = Object.fromEntries(Object.entries(process.env)
+    // `NODE_TEST_CONTEXT` 传下去会让子进程以为自己还在别人的 test run 里（实测警告
+    // 「run() is being called recursively within a test file. skipping running files」⇒ 直接 0 退出），
+    // 必须**删掉**这个键（留空串也一样）。
+    .filter(([key]) => key !== "NODE_TEST_CONTEXT"));
+  return spawnSync(runner, ["--test", `--test-reporter=${reporter}`, "test/loop-snapshot-round-residue-735.test.js"], {
+    cwd: REPO_ROOT,
+    env: {
+      ...inherited,
+      ...(engineRoot ? { ERIX_ENGINE_ROOT: engineRoot } : {}),
+      ...(metaChild ? { ERIX_735_META_CHILD: "1" } : {}),
+    },
+    encoding: "utf8",
+    timeout: 120_000,
+  });
+}
+
 test("#735 切片 2 · ④a 变异「写回整段」（副本引擎）⇒ ③ 的两条判据必须红", async (t) => {
   if (insideMutationRun) {
     t.skip("变异子进程里不再递归跑变异");
@@ -482,32 +563,117 @@ test("#735 切片 2 · ④a 变异「写回整段」（副本引擎）⇒ ③ �
     "messages: cloneState(transcriptForSnapshot),");
   try {
     // 子进程：同一份用例文件 + 坏引擎 ⇒ ③ 那一条必须当场红（真退出码，不是自说自话）。
-    const child = spawnSync(process.execPath, ["--test", "test/loop-snapshot-round-residue-735.test.js"], {
-      cwd: REPO_ROOT,
-      // `NODE_TEST_CONTEXT` 传下去会让子进程以为自己还在别人的 test run 里（实测警告
-      // 「run() is being called recursively within a test file. skipping running files」⇒ 直接 0 退出），
-      // 必须**删掉**这个键（留空串也一样）。
-      env: { ...Object.fromEntries(Object.entries(process.env)
-        .filter(([key]) => key !== "NODE_TEST_CONTEXT")), ERIX_ENGINE_ROOT: mutatedRoot },
-      encoding: "utf8",
-      timeout: 120_000,
-    });
-    const output = `${child.stdout ?? ""}${child.stderr ?? ""}`;
-    assert.match(output, /^not ok .*③ 快照里不再有锚点之前那段前缀/um,
-      `变异体上 ③ 必须红（退出码 ${String(child.status)}）：\n${output.slice(0, 1500)}`);
+    // reporter 显式给 tap：Node 22 的默认是 TAP、Node 24 的默认是 spec，判定只能跟 argv 走。
+    const child = spawnFileUnderTest({ engineRoot: mutatedRoot });
+    const verdict = judgeMutationLog(child);
+    assert.deepEqual(verdict.problems, [],
+      `变异体上 ③ 必须红（退出码 ${String(child.status)}，verdict=${verdict.verdict}）：\n${verdict.output.slice(0, 1500)}`);
     assert.notEqual(child.status, 0, "变异体上整个文件必须非零退出");
-    // 变异只改载荷大小，不改恢复语义 ⇒ 读侧那两条在变异体上仍应绿（否则这条变异测的就不是 ③）。
-    assert.match(output, /^ok .*① 旧格式档案/um,
-      `变异体不该拆掉 ①（它只把载荷写胖，恢复语义没变）：\n${output.slice(0, 1500)}`);
-    assert.match(output, /^ok .*④b 载荷面三种写法/um, "④b 在变异体上必须照旧绿（它测的是读侧）");
-    assert.match(output, /^ok .*#754 判据 2 · 出声只在旧格式/um,
-      "出声那条也不该被载荷变异影响（条数探针只看长度）");
   } finally {
     rmSync(mutatedRoot, { recursive: true, force: true });
   }
   assert.ok(readFileSync(join(ENGINE_ROOT, "src/loop/orchestrator.js"), "utf8")
     .includes("messages: snapshotTranscriptResidue,"),
     "仓内写侧必须仍是轮残余（变异只发生在副本上）");
+});
+
+// ── ④a 判定器自己的反向证（issue #774；口径同 #210 R2：变异没落上 = 这一例没跑起来）──
+
+test("#774 反向证 · 被变异那一侧改回「不该红」⇒ ④a 必须红，且红在点名 ③ 上", async (t) => {
+  if (insideMutationRun) {
+    t.skip("变异子进程里不再递归跑变异");
+    return;
+  }
+  // `replace` 与 `search` 同一个串 ⇒ 副本内容与仓内**逐字相同**，这就是「变异没落上」那一刀：
+  // 子进程里 ③ 是绿的，判定必须因此**红**，而不是安静地「看起来没问题」。
+  const untouchedRoot = await mutateEngine("noop",
+    "messages: snapshotTranscriptResidue,",
+    "messages: snapshotTranscriptResidue,");
+  try {
+    const child = spawnFileUnderTest({ engineRoot: untouchedRoot });
+    const verdict = judgeMutationLog(child);
+    assert.notEqual(verdict.verdict, "ok",
+      `引擎没被改坏时 ④a 不许绿（否则它就是常绿闸）：\n${verdict.problems.join("\n")}`);
+    assert.match(verdict.problems.join("\n"), new RegExp(MUTANT_RED, "u"),
+      `判定必须点名 ③，不许只说「退出码不对」：\n${verdict.problems.join("\n")}`);
+    assert.match(verdict.problems.join("\n"), /非零退出/u, "退出码这一维也要一起点名");
+  } finally {
+    rmSync(untouchedRoot, { recursive: true, force: true });
+  }
+});
+
+test("#774 反向证 · 子进程 reporter 不是 TAP ⇒ 判「未判定」，既不判绿也不把读不到当红", async (t) => {
+  if (insideMutationRun) {
+    t.skip("变异子进程里不再递归跑变异");
+    return;
+  }
+  const mutatedRoot = await mutateEngine("specshape",
+    "messages: snapshotTranscriptResidue,",
+    "messages: cloneState(transcriptForSnapshot),");
+  try {
+    // 同一份变异体、同一个坏引擎，**只**把 reporter 换成 spec（= Node 24 的默认）。
+    const child = spawnFileUnderTest({ engineRoot: mutatedRoot, reporter: "spec" });
+    const verdict = judgeMutationLog(child);
+    assert.equal(verdict.verdict, "undetermined",
+      `spec 日志只能判「未判定」（判绿是假绿，判「③ 没红」是假红）：\n${verdict.problems.join("\n")}`);
+    assert.match(verdict.problems.join("\n"), /未判定/u, "必须明说「未判定」");
+    assert.match(verdict.problems.join("\n"), /TAP/u, "必须说清缺的是 TAP 形状");
+    // 这一格同时钉住「不许退化成只查退出码」：spec 日志里退出码照样非 0，却已经没有 `not ok` 了。
+    assert.notEqual(child.status, 0, "夹具前提：变异体在 spec 下退出码同样非 0");
+    assert.doesNotMatch(verdict.output, /^not ok /mu, "夹具前提：spec 输出里没有 not ok ⇒ 只看退出码会丢格位");
+  } finally {
+    rmSync(mutatedRoot, { recursive: true, force: true });
+  }
+});
+
+// ── runner 版本无关性（issue #774 反向证 ①）──────────────────────────────────
+
+/** 本机上的「另一个 runner」候选：环境变量优先，其次仓内既有约定的 `~/.local/node24/bin/node`。 */
+const ALT_RUNNER_CANDIDATES = [
+  process.env.ERIX_NODE24,
+  join(homedir(), ".local", "node24", "bin", "node"),
+].filter((candidate) => typeof candidate === "string" && candidate !== "");
+
+/** 找一个 major >= `minMajor` 的 node 可执行文件；当前这个就够用时直接返回自己。 */
+function findNodeMajor(minMajor) {
+  if (Number(process.versions.node.split(".")[0]) >= minMajor) return process.execPath;
+  for (const candidate of ALT_RUNNER_CANDIDATES) {
+    const probe = spawnSync(candidate, ["-v"], { encoding: "utf8" });
+    const major = Number(String(probe.stdout ?? "").trim().replace(/^v/u, "").split(".")[0]);
+    if (probe.status === 0 && major >= minMajor) return candidate;
+  }
+  return null;
+}
+
+test("#774 反向证 · 整份文件在**当前 runner**上全绿，且默认 reporter 换成 spec 也全绿", async (t) => {
+  if (insideMutationRun || insideMetaChildRun) {
+    t.skip("元用例的子进程里不再递归跑整份文件");
+    return;
+  }
+  // 这一格不依赖任何外部 runner：把默认 reporter 强制换成 spec（Node 24 的默认形状）再跑整份文件，
+  // 仍然必须 exit 0 —— 证明本文件的判定不跟 runner 的默认走。CI 的 node 24 job 上它就是「24 下全绿」。
+  const child = spawnFileUnderTest({ reporter: "spec", metaChild: true });
+  const output = `${child.stdout ?? ""}${child.stderr ?? ""}`;
+  assert.equal(child.status, 0, `spec 默认形状下整份文件必须 exit 0：\n${output.slice(0, 2000)}`);
+  assert.doesNotMatch(output, /^✖ /mu, "spec 形状下也不许有红格");
+});
+
+test("#774 反向证 · 手上有 Node 24 runner 时，用它跑整份文件必须全绿", async (t) => {
+  if (insideMutationRun || insideMetaChildRun) {
+    t.skip("元用例的子进程里不再递归跑整份文件");
+    return;
+  }
+  const runner = findNodeMajor(24);
+  if (!runner) {
+    t.skip("这台机器上找不到 Node 24 runner（设 ERIX_NODE24=<可执行文件路径>；CI 的 node 24 job 走 process.execPath 那条路）");
+    return;
+  }
+  const child = spawnFileUnderTest({ runner, metaChild: true });
+  const output = `${child.stdout ?? ""}${child.stderr ?? ""}`;
+  assert.equal(child.status, 0, `Node 24 runner 上整份文件必须 exit 0：\n${output.slice(0, 2000)}`);
+  assert.match(output, /^# fail 0$/mu, "Node 24 runner 上 TAP 汇总必须 `# fail 0`");
+  assert.match(output, /^# tests (\d+)$/mu, "必须交回完整的 TAP 汇总块");
+  assert.doesNotMatch(output, /^not ok /mu, "Node 24 runner 上一条都不许红");
 });
 
 // ── ⑥ 两跳恢复：**断言弃用**（issue #754 裁决 2；改判前这条只「记录当前行为」）──────────

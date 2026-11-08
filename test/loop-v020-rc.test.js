@@ -477,7 +477,12 @@ test("checkpoints before tools and resumes without replaying an executed tool", 
   const events = [];
   const originalSaveRunSnapshot = store.saveRunSnapshot;
   store.saveRunSnapshot = async (runId, snapshot) => {
-    events.push(["checkpoint", snapshot.status]);
+    // issue #770：快照里的 `status` 那一格已停写 ⇒ 这里改记载荷里的**执行事实**：
+    // `executedToolIds` 只在工具真的执行过之后才含它的 id（`markToolExecuted`）。
+    // 本用例要钉的仍是同一件事：工具执行**之前**已经落过一次 checkpoint。
+    events.push(["checkpoint", (snapshot.executedToolIds?.length ?? 0) === 0
+      ? "pre-execution"
+      : "post-execution"]);
     return originalSaveRunSnapshot.call(store, runId, snapshot);
   };
   const provider = createFakeProvider([
@@ -497,7 +502,7 @@ test("checkpoints before tools and resumes without replaying an executed tool", 
     config: { run: { completion: false } },
   });
 
-  assert.deepEqual(events.slice(0, 2), [["checkpoint", "pending"], ["tool"]]);
+  assert.deepEqual(events.slice(0, 2), [["checkpoint", "pre-execution"], ["tool"]]);
   assert.equal(await store.loadRunStateStatus("checkpoint-run"), "succeeded");
 
   const resumeStore = createMemoryTranscriptStore();
@@ -607,7 +612,9 @@ test("fails closed after a tool when its executed checkpoint cannot be persisted
   const originalSaveRunSnapshot = store.saveRunSnapshot;
   let executions = 0;
   store.saveRunSnapshot = async (runId, snapshot) => {
-    if (snapshot.status === "executed") {
+    // issue #770：注入点认「工具已执行」这个事实（载荷里的 `executedToolIds`），
+    // 不再读已停写的 `status` 格。
+    if ((snapshot.executedToolIds?.length ?? 0) > 0) {
       throw new Error("snapshot disk full after execution");
     }
     return originalSaveRunSnapshot.call(store, runId, snapshot);

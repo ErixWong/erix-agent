@@ -2260,7 +2260,7 @@ run), never a multi-version checkpoint. The tiers are:
 | Optional run-state | `saveRunState`, `loadRunState`, `markRunState` | run-state persistence skipped; run completes normally |
 | Host-facing optional terminal-status read | `loadRunStateStatus` | not used or validated by the engine; its absence does not emit a degraded-capability event |
 | Optional fast-path pre-write probes (issue #157) | `loadByDedupKey`, `loadMaxRound` | `appendUserTurn` falls back to full `load` (paired: implementing one without the other behaves exactly like implementing neither) |
-| Optional raw-row anchor probe (issue #714) | `loadRawRows` | mid-sequence `tool_result` stubs are anchored on `load()`'s **folded** rows only, so a finished round's first-slice row is unreachable: those stubs repair the run's context and the engine reports `resume_journal_skipped` instead of journaling a row that would land in the wrong message. The same degradation applies when that round's carrier already carries its body (issue #729). No `persistence_capability_degraded` event — the absence is reported per resume on the existing `resume_journal_skipped` channel |
+| Optional raw-row anchor probe (issue #714) | `loadRawRows` | mid-sequence `tool_result` stubs are anchored on `load()`'s **folded** rows only, so a finished round's first-slice row is unreachable: those stubs repair the run's context and the engine reports `resume_journal_skipped` instead of journaling a row that would land in the wrong message. The same degradation applies when that round's carrier already carries its body (issue #729). No `persistence_capability_degraded` event — the absence is reported per resume on the existing `resume_journal_skipped` channel. Since issue #765 it is also the **only** ledger source `appendUserTurn` can consult on the #157 fast path (its dangling-`tool_use` settling), so a host implementing the two #157 probes but not this one keeps pre-writing user turns over a still-open ledger, reported per call as `unsettledToolUses.reason = "ledger_probe_absent"` |
 
 `loadRunStateStatus` resolves to the terminal status **string** —
 `(runId: string) => Promise<string | undefined>`, with `undefined` when no
@@ -2352,21 +2352,21 @@ vocabulary, or a CN/EN axis mismatch all go red.
 <!-- erix:snapshot-cell-axes:begin -->
 | Cell (payload key) | write | read | Authority (double-written cells only) | Handoff condition (double-written cells only) | Today's write site — or, for a cell that no longer writes, the line that documents the stop | Today's readers |
 | --- | --- | --- | --- | --- | --- | --- |
-| `round` | written | source | — | — | `src/loop/orchestrator.js:2986` | `src/loop/resume-manager.js:568`, `src/loop/orchestrator.js:3215` |
-| `status` | written | not-source | — | — | `src/loop/orchestrator.js:3026` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:87`, `test/persistence-diagnostics.test.js:171`, `test/loop-invalid-arguments.test.js:235`, `test/loop-v020-rc.test.js:479`, `test/loop-v020-rc.test.js:605` |
-| `pendingToolUses` | written | source | — | — | `src/loop/orchestrator.js:3028` | `src/loop/resume-manager.js:529`, `src/loop/resume-manager.js:699` |
-| `pendingToolUse` | written | fallback(pendingToolUses absent) | — | — | `src/loop/orchestrator.js:3027` | `src/loop/resume-manager.js:530`, `src/loop/resume-manager.js:700` |
-| `executedToolIds` | written | source | — | — | `src/loop/orchestrator.js:3031` | `src/loop/resume-manager.js:657`, `src/loop/resume-manager.js:704` |
-| `toolResults` | written | source | — | — | `src/loop/orchestrator.js:3032` | `src/loop/resume-manager.js:537`, `src/loop/resume-manager.js:661` |
-| `toolOutputs` | written | source | The final-guard evidence source is **the round record**: `bin/final-guard-support.js:238` (stated in that file's own comment at `bin/final-guard-support.js:218`), which never reads the latest snapshot | The snapshot copy's only reader is the resume-side backfill `src/loop/resume-manager.js:667` ⇒ the two copies retire independently; migrate that backfill before the snapshot copy can be stopped | `src/loop/orchestrator.js:3037` (snapshot) and `src/loop/orchestrator.js:6181` (round record) | snapshot side `src/loop/resume-manager.js:667`; round-record side `bin/final-guard-support.js:238` |
-| `messages` | residue | fallback(old-format ledger only) | The ledger (`load()`) is the authority for message text | This may only become `not-source` once the resume side's old-format upgrade path `src/loop/resume-manager.js:586` is removed; **writing `not-source` today is wrong** | `src/loop/orchestrator.js:3029` | `src/loop/resume-manager.js:586` (condition: the ledger holds nothing past the anchor) |
-| `persistedTranscriptLength` (on-disk cell) | written | not-source | The resume anchor is recomputed from the ledger | Zero engine readers ⇒ this is the only row whose read-side condition is met today; stopping the write still means moving the two test fixtures that use it as their truncation anchor (see the notes below) | `src/loop/orchestrator.js:3030` | The resume side does not trust it: `src/loop/resume-manager.js:16` (a comment that says so) and `src/loop/resume-manager.js:430` (overwritten with the recomputed length) |
-| `persistedTranscriptLength` (in-process counter) | written | source | — (the in-process form of the same variable is never persisted; it is the live write-side value) | **Must stay**: it is one of the two bounds on the `messages` residue start | `src/loop/orchestrator.js:3030` | `src/loop/orchestrator.js:2975` |
-| `partialText` | written(conditional) | source | — | Condition = the round really has a half-finished assistant text (the `partialText === undefined` clamp at the write site): a scene with partial text must carry this cell, a scene without it must leave the cell absent (not write `undefined`) | `src/loop/orchestrator.js:3039` | `src/loop/resume-manager.js:541`, `src/loop/resume-manager.js:634` |
-| `partialRound` | written(conditional) | source | — | **Same write statement and same condition as `partialText`** ⇒ the two cells appear together or not at all; one without the other is a bug | `src/loop/orchestrator.js:3039` | `src/loop/resume-manager.js:635` |
-| `toolUse` | stopped | not-source | — | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:108-118` | `src/loop/orchestrator.js:2997` | Zero readers at the snapshot layer; the same-named `toolUse` on the resume side is only a lambda parameter `src/loop/resume-manager.js:531`, while `toolUseId` and the diagnostic `event.toolUse` are two different things |
-| `ts` | stopped | not-source | the `ts` of the ledger row / message row | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:108-118` | `src/loop/orchestrator.js:3004` | Zero readers at the snapshot layer; the `ts` the resume side really reads is the **ledger row** copy (same key name, different artifact, not this cell) `src/loop/resume-manager.js:460` |
-| `compactionStats` | written | not-source | run-state (the resume path reads `deterministic.compactionStats`: `src/loop/resume-manager.js:346`) and the round record `src/loop/orchestrator.js:6161` | Both sides are alive: round-record side `test/compaction-observability.test.js:73` and snapshot side `test/compaction-observability.test.js:76` ⇒ dropping the snapshot copy means replacing the snapshot-side assertion first | `src/loop/orchestrator.js:3038` (snapshot) and `src/loop/orchestrator.js:6161` (round record) | The resume path goes through run-state `src/loop/resume-manager.js:346` and does not read the snapshot copy; its shape is pinned by `test/compaction-observability.test.js:76` |
+| `round` | written | source | — | — | `src/loop/orchestrator.js:3004` | `src/loop/resume-manager.js:568`, `src/loop/orchestrator.js:3239` |
+| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3029` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:118`, `test/persistence-diagnostics.test.js:171`, `test/loop-invalid-arguments.test.js:235`, `test/loop-v020-rc.test.js:479`, `test/loop-v020-rc.test.js:611` |
+| `pendingToolUses` | written | source | — | — | `src/loop/orchestrator.js:3053` | `src/loop/resume-manager.js:529`, `src/loop/resume-manager.js:699` |
+| `pendingToolUse` | written | fallback(pendingToolUses absent) | — | — | `src/loop/orchestrator.js:3052` | `src/loop/resume-manager.js:530`, `src/loop/resume-manager.js:700` |
+| `executedToolIds` | written | source | — | — | `src/loop/orchestrator.js:3056` | `src/loop/resume-manager.js:657`, `src/loop/resume-manager.js:704` |
+| `toolResults` | written | source | — | — | `src/loop/orchestrator.js:3057` | `src/loop/resume-manager.js:537`, `src/loop/resume-manager.js:661` |
+| `toolOutputs` | written | source | The final-guard evidence source is **the round record**: `bin/final-guard-support.js:238` (stated in that file's own comment at `bin/final-guard-support.js:218`), which never reads the latest snapshot | The snapshot copy's only reader is the resume-side backfill `src/loop/resume-manager.js:667` ⇒ the two copies retire independently; migrate that backfill before the snapshot copy can be stopped | `src/loop/orchestrator.js:3062` (snapshot) and `src/loop/orchestrator.js:6205` (round record) | snapshot side `src/loop/resume-manager.js:667`; round-record side `bin/final-guard-support.js:238` |
+| `messages` | residue | fallback(old-format ledger only) | The ledger (`load()`) is the authority for message text | This may only become `not-source` once the resume side's old-format upgrade path `src/loop/resume-manager.js:586` is removed; **writing `not-source` today is wrong** | `src/loop/orchestrator.js:3054` | `src/loop/resume-manager.js:586` (condition: the ledger holds nothing past the anchor) |
+| `persistedTranscriptLength` (on-disk cell) | written | not-source | The resume anchor is recomputed from the ledger | Zero engine readers ⇒ this is the only row whose read-side condition is met today; stopping the write still means moving the two test fixtures that use it as their truncation anchor (see the notes below) | `src/loop/orchestrator.js:3055` | The resume side does not trust it: `src/loop/resume-manager.js:16` (a comment that says so) and `src/loop/resume-manager.js:430` (overwritten with the recomputed length) |
+| `persistedTranscriptLength` (in-process counter) | written | source | — (the in-process form of the same variable is never persisted; it is the live write-side value) | **Must stay**: it is one of the two bounds on the `messages` residue start | `src/loop/orchestrator.js:3055` | `src/loop/orchestrator.js:2990` |
+| `partialText` | written(conditional) | source | — | Condition = the round really has a half-finished assistant text (the `partialText === undefined` clamp at the write site): a scene with partial text must carry this cell, a scene without it must leave the cell absent (not write `undefined`) | `src/loop/orchestrator.js:3063` | `src/loop/resume-manager.js:541`, `src/loop/resume-manager.js:634` |
+| `partialRound` | written(conditional) | source | — | **Same write statement and same condition as `partialText`** ⇒ the two cells appear together or not at all; one without the other is a bug | `src/loop/orchestrator.js:3063` | `src/loop/resume-manager.js:635` |
+| `toolUse` | stopped | not-source | — | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3017` | Zero readers at the snapshot layer; the same-named `toolUse` on the resume side is only a lambda parameter `src/loop/resume-manager.js:531`, while `toolUseId` and the diagnostic `event.toolUse` are two different things |
+| `ts` | stopped | not-source | the `ts` of the ledger row / message row | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3024` | Zero readers at the snapshot layer; the `ts` the resume side really reads is the **ledger row** copy (same key name, different artifact, not this cell) `src/loop/resume-manager.js:460` |
+| `compactionStats` | stopped | not-source | run-state (the resume path reads `deterministic.compactionStats`: `src/loop/resume-manager.js:346`) and the round record `src/loop/orchestrator.js:6185` | Both sides are alive: round-record side `test/compaction-observability.test.js:73` and snapshot side `test/compaction-observability.test.js:76` ⇒ dropping the snapshot copy means replacing the snapshot-side assertion first | `src/loop/orchestrator.js:3038`、`src/loop/orchestrator.js:6185` | The resume path goes through run-state `src/loop/resume-manager.js:346` and does not read the snapshot copy; its shape is pinned by `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
 
 `—` = that cell is not double-written, so there is no authority or handoff condition to state. The three notes below
@@ -2395,6 +2395,11 @@ tail repair: `loadRecords` starts with `repairTranscriptTail(path)`
 (`src/store/file.js`), which opens the file `r+` and isolates/truncates a
 half-written last line, so **a read can rewrite bytes on disk**. What the probe
 does not do is add a write API or change the shape `load()` returns.
+
+The rows must include the host's own `"…:input:…"` rows and every engine message row: both the
+mid-sequence anchor search and `appendUserTurn`'s dangling-`tool_use` check (issue #765) are
+**tail** criteria, so a probe that filters by `kind` or hands back only round carriers hides the
+very row that decides them — the helper then refuses and says so rather than guessing.
 
 Why it exists. A `tool_use` stranded in the middle of the ledger is settled on
 resume by one stub `tool_result` per unsettled id, journaled as a **slice row**
@@ -3046,8 +3051,12 @@ A correct pre-written `RoundRecord` must satisfy:
   turn at round `0`; the built-in CLI instead passes
   `initialMessages`/`initialUserMessage` without `resume` when no records
   exist yet, which is equivalent for the engine.
-- **dedupKey:** namespaced `"<key>:input:<suffix>"`, unique per turn. The
-  engine writes its own rows under `"<runId>:engine:round:<n>"`,
+- **dedupKey:** namespaced `"<key>:input:<suffix>"`, unique per turn. The settling row that
+  `appendUserTurn` may append first (issue #765) uses
+  `"<key>:settle:<round>:<tool_use ids, sorted and joined with +>"` — derived from the ledger alone,
+  with no timestamp and no `messageId`, so a crash-replay or a host retry settles exactly once and
+  both read paths write byte-identical rows.
+  The engine writes its own rows under `"<runId>:engine:round:<n>"`,
   `"…:engine:round:0:seed"` (the seed row), `"…:msg:<round>:<seq>"` (**one row per
   message, several per round** — see the journal row shapes section), `"…:resume"`,
   `"…:control:<slot>"`, and the fact rows `"…:fold:<fp>"` / `"…:ttl:<fp>"` (see the
@@ -3221,13 +3230,31 @@ to `{ key, dedupKey, round, written, record? }` — `written: false` plus the
 existing `record` when the idempotency check hit. The built-in CLI and REPL
 are the reference consumers.
 
+Since issue #765 the result carries one more **optional** field, present only when the ledger
+held a `tool_use` whose id has no `tool_result` anywhere in it:
+`unsettledToolUses` = `{ status: "settled" | "refused", round, toolUseIds, dedupKey, written?, reason? }`.
+Before appending the caller's row the helper appends **one settling row** that answers those ids
+with the engine's own tombstone (`is_error: true`, built by `buildUnpersistedToolResultStub` in
+`src/loop/pending-tool-result.js`). Timing is the whole point: folding keeps file order for rows
+without a round carrier, so an answer appended afterwards lands *after* the caller's plain-text
+row, and the wire order `assistant[tool_use] → user(text) → user[tool_result]` is rejected locally
+before a single request goes out. `status: "refused"` means that row was **not** written and
+`reason` names the cause (`ledger_probe_absent`, `round_not_safe_integer`, `round_carrier_has_body`,
+`tool_use_id_unusable`); the caller's own row is appended either way. Nothing is silent, and
+nothing changes when nothing dangles: the returned key set is then exactly
+`{ key, dedupKey, round, written, record? }`.
+
 `appendUserTurn` additionally accepts a **paired optional fast path** for
 database-backed hosts (issue #157): when `store` implements both
 `loadByDedupKey(key, dedupKey)` and `loadMaxRound(key)`, the helper derives
 the `dedupKey` first, then point-queries `loadByDedupKey` — a hit returns
 immediately (neither `loadMaxRound` nor `load` is called); on a miss it
 derives `round` from `loadMaxRound` and appends. The fast path never calls
-`store.load`. Implementing only one of the two probes behaves exactly like
+`store.load`. Settling a dangling `tool_use` on this path (issue #765) reads the ledger through the
+third probe `loadRawRows(key)` (issue #714) and still never through `load`, so the promise above
+holds; a store without that probe gets `unsettledToolUses.status = "refused"` with
+`reason: "ledger_probe_absent"` on every call until it implements the probe — it does **not** fall
+back to a full `load`. Implementing only one of the two probes behaves exactly like
 implementing neither: the full-`load` path above runs unchanged. A
 `loadByDedupKey` point query must match records by
 `(record.dedupKey ?? record.roundKey) === dedupKey` — the same predicate the
@@ -3634,6 +3661,83 @@ Four things a host has to read correctly, because getting them wrong silently mi
   **absent** when the round issued no engine call, so a host adding them reads absence as 0.
   What a host must not do is take `record.usage` for the round's whole bill: it is the model's
   share of it, and only `result.usage` (on the success result) is a ready-made sum.
+
+## `reasoning_effort` is a provider string, and the four layers around it are separate (issue #785 P1)
+
+`reasoning_effort` is **provider-specific free text** in this package: the engine never validates the value
+and this repository keeps **no vendor value enum** (issue #788 is parked — adding one is not a fix, it is a
+claim about every backend). Four layers sit between what the host asked for and what the model actually
+did, and each one has a different owner, a different artifact, and a different strength of evidence.
+
+| Layer | Who owns it | Where the fact lives | What it proves |
+|---|---|---|---|
+| **1. request value** | the host | the option the host set (slot default / call-site value / `providerOptions` / `extraBody`) | that a value was asked for — nothing more |
+| **2. payload translation** | this package, one place | `applyProviderPayloadOptions` / `observeSentReasoningParams` (`src/providers/payload.js`) → `record.sentRequestParams` | what was **actually written into the request body** |
+| **3. provider usage** | the upstream | `normalizeOpenAIUsage` (`src/messages/openai-normalization.js`) → `response.usage.reasoningTokens` | that the upstream **reported** a reasoning-token count |
+| **4. sampled behaviour** | the serving stack | nothing in this repository | never provable from here |
+
+Layer 4 is not a gap in the ledger, it is a boundary the engine has already proven about itself (issue #419
+②: the forced-final ruling stands on the fact that a request the engine did send could not be read as
+evidence of what the sampler did). No new key changes that, and a host must not read any cell below as
+"the model did / did not think".
+
+**(2) What was really sent.** `record.sentRequestParams` is additive:
+`{ reasoningEffort: { hostValue, sentValue, source, translated? } }`. `hostValue` is the value the host
+supplied **pre-translation**; `sentValue` is the value in the body after payload translation and
+`extraBody`. The one translation this package performs is the GLM `none → low` rewrite (ADR-017), and the
+cell is required to keep both: on a GLM model `hostValue: "none"` / `sentValue: "low"` / `translated: true`
+— **the translated value is never written as the host value**. `source` names the channel the value came
+from, `request` > `slotDefault` > `providerOptions` > `extraBody` (the same precedence the payload assembly
+uses, so the cell cannot disagree with the body). **No fact, no key**: with no reasoning-related key
+anywhere the whole cell is absent — never `{}`, never `hostValue: undefined` written on purpose.
+**Boundary (contractual): only this package's own OpenAI provider produces the cell** (both `chat` and
+`chatStream`; the observation point sits where the payload is assembled). Neither the Anthropic provider
+(its payload is assembled by `canonicalToAnthropicRequest` (`src/messages/anthropic.js`), which this slice did
+not wire) nor a host-authored provider emits it, so the cell is **absent** in both cases — and absence means
+**"not observed"**, never "no reasoning parameter was sent".
+
+**(3) `reasoningTokens`, and why absence is not zero.** The canonical usage keeps its three keys
+byte-for-byte (`input_tokens` / `output_tokens` / `cacheRead`) and adds one optional key:
+`reasoningTokens` (number) — written **only when the upstream reports
+`completion_tokens_details.reasoning_tokens`**. A reported `0` is a measurement and stays a `0`
+(the 2026-11-08 probe measured exactly that on a `reasoning_effort: "none"` request); an **unreported**
+value produces **no key**, and no layer may substitute `0` for "not measured" — the two facts answer
+different questions and merging them is the silent-0 failure this cell exists to make visible. The Anthropic
+usage surface has no reasoning-token field at all (`usageFromResponse` (`src/messages/anthropic.js`) maps
+`input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens` and nothing
+else), so the Anthropic path does **not** grow the key: it is absent there by fact, not by omission.
+`record.usage` (the round ledger, issue #438) is unchanged: `reasoningTokens` rides on
+`record.response.usage` (the last response of the round), never into the ledger's four summed fields.
+
+**(4) The response never echoes the level.** Measured 2026-11-08 against the real OpenAI-compatible
+upstream in both shapes (non-stream and SSE, same trivial prompt): a non-stream body's top-level keys are
+`id` / `object` / `created` / `model` / `choices` / `usage` / `system_fingerprint`, and the SSE chunks add
+`prompt_token_ids` / `prompt_text` while the choice carries `token_ids` / `stop_reason` per chunk — **no
+`reasoning_effort` key appears anywhere in either shape**, and no response header names it either (the only
+diagnostic header the gateway returns is `x-oneapi-request-id`). The two response-side facts related to
+thinking are the chain-of-thought text (`message.reasoning` non-stream, `delta.reasoning` streamed) and the
+count `completion_tokens_details.reasoning_tokens` — and **a count cannot be inverted into a level**:
+`"none"` measured `0` while `"low"` measured 14–45 on the same prompt. So the question "which level did this
+call send" is answered by the engine's own `sentRequestParams` and never by the response; that is the same
+boundary as layer 4 above, now with raw-body evidence rather than an assertion.
+
+**Two field families, and the shape difference is not negotiable.**
+
+| Family | Field shape | Measured behaviour |
+|---|---|---|
+| OpenAI-compatible | **scalar** `reasoning_effort` | an unrecognized scalar is answered with **HTTP 400**, and the error body lists that backend's accepted values (2026-11-08 probe, `"hight"` on `qwen3.8-flash-next`); `"none"` really takes effect there |
+| GLM (OpenAI family) | scalar, but a **subset with no `off`** | `none` is translated to `low` by layer 2 (ADR-017); the on-site model is currently unavailable — see that ADR's status note |
+| Anthropic | **object** shape (`thinking` / `reasoning`), not a scalar | its probe leg is **retired** (no endpoint available locally): documented, not acceptance-gated |
+
+Two phrasing rules, both of which were wrong in the wild once:
+
+- **That 400 error body is not a value domain.** It is what one backend said about one model at one moment
+  (`qwen3.8-flash-next`'s list is not the relay's list and never the package's). Copying it into a global
+  enum is what issue #788 declined to do.
+- **`GET /models` listing is not availability.** Measured 2026-11-08: `z-ai/glm-5.2` appeared in the
+  39-entry list and still answered **HTTP 404** `one_hub_error` ("Model … is not supported for current
+  token"). Availability is decided by token-level authorization, so "listed" may be cited as a gateway
+  fact but never as "this model works for this token".
 
 ## Judge record correlation and run outcome (issue #165)
 
@@ -6791,6 +6895,7 @@ records must remain unchanged.
 | `messages` | model | The exact model-context slice, including `tool_use`/`tool_result` blocks and fold placeholders. Do not render it raw; the projection extracts displayable text and tool-call summaries from it. Since issue #335 this is also the **canonical source of the projected assistant body** (a message is persisted the moment it forms); `response.content` is only the legacy/host-written fallback. |
 | `messages[].meta` | model / engine | Preserve this object, including unknown keys. `meta.source` is an engine-reserved marker used by projection classification and judge visibility; do not reuse it for host-owned source information. |
 | `response` | model | Full provider response content (`text`, `reasoning`, `tool_use` blocks), `stopReason`, `usage`. Projected display text/blocks come from `messages`, not from here; only `stopReason`/`usage` are copied into the projection's `meta`. Its block shape is model-facing and may change. **Its `usage` is the last response of the round only** — the round's complete ledger is the sibling key `record.usage` (see "Usage accounting: the round ledger vs engine overhead (issue #438)"). |
+| `sentRequestParams` | model / forensics | **Additive (issue #785 P1).** What the engine actually wrote into the request body for the reasoning parameters of this round: `{ reasoningEffort: { hostValue, sentValue, source, translated? } }` — `hostValue` is what the host supplied **before** payload translation, `sentValue` the value that left the process (GLM `none → low`, ADR-017; the two differ and neither replaces the other), `source` the channel that supplied it (`request` / `slotDefault` / `providerOptions` / `extraBody`). Safe to render as a diagnostic caption; never render it as model content. **No fact, no key**: a round with no reasoning-related key carries no such cell, and neither the Anthropic provider (not wired in this slice) nor a **host-authored provider** produces one (the engine cannot see the latter's wire body) — read absence as *not observed*, not as *not sent*. See "`reasoning_effort` is a provider string, and the four layers around it are separate (issue #785 P1)". |
 | `l0facts`, `runState`, `runStateMeta`, `compactionStats`, `judge`, `wrapup`, `toolOutputs`, `dedupKey`, `roundKey` | model / engine internals | Facts for the governor, resume, and diagnostics. Only `judge`/`wrapup`/`summary`/`stopReason`/`usage`/`toolUses`/`dedupKey` are copied into the projection's `meta` for optional labelling; the rest is not part of the display surface. **`runStateMeta` is additive (issue #742, first slice)**: `{ bytes, capBytes, truncated }` — the size account of the `runState` copy this round writes, shaped like the `foldedPayloadMeta` above because that cell is the precedent that made archive truncation visible in the first place. `bytes` is measured with the **one yardstick** the engine's own size clamp uses (`Buffer.byteLength(JSON.stringify(copy), "utf8")`), so it is byte-for-byte what is on disk, not an estimate; `capBytes` is the exported `RUN_STATE_MAX_SERIALIZED_BYTES`, never a copied literal. `truncated` is the **OR of two facts**: the copy exceeds `capBytes`, or the engine already stamped `runState.bounds.truncated` (`reason: "serialized_size"` / `omittedTools`). The second half is not decoration: the clamp runs **upstream** of the round record, so the copy that lands here sits *under* `capBytes` even on a round whose state was squeezed (measured: a compacted copy of 64 893 B against the 65 536 B cap, with `bounds.truncated: true`) — reading only the first half reports a genuinely clamped round as untruncated. The two facts stay separately readable (`bytes` and `bounds`), they are not merged into one number. **No fact, no key**: with no run-state copy to measure (host-shaped rows, an unserializable copy) the whole key is absent — hosts must read absence as *unknown*, never as `truncated: false`; the engine never writes `{bytes:0,truncated:false}` as a stand-in. Advisory only: no in-engine reader, no effect on resume or stop gates, and it **saves no byte** — every round still writes a full copy, so the ledger still grows linearly with the round count (that is a later slice of #742, not this one). |
 
 ### Stability promise

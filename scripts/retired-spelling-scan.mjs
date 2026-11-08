@@ -384,7 +384,12 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 就是「紧接的那条不是 user」）。为躲钉子把 `user` 换成中文说法会把 detail 名和它的含义拆开，所以
   // 不改写法；数取自扫描器现报：`docs/host-consumer-contract.md [contract] verdict=SUSPECT(raised) pin=454 uses=457`
   // （3 处逐条定位：EN :2395 `runId`、:2415/:2416 `user`；CN :1924 `runId`、:1942/:1943 `user`）。
-  "docs/host-consumer-contract.md": 457,
+  // 457 → 458（工单 261108-02）：契约新增「响应从不回显本次档位」那一格（issue #785 的第四层补证），
+  // 它必须逐字列出上游返回体的顶层键名，其中 `model` 是一次同名异义命中（不是扁平选项）。
+  // 不为了躲钉子把键名换成中文说法（那一格验的正是「返回体里没有 `reasoning_effort`」，键名清单就是证据）。
+  // 数取自扫描器现报：`docs/host-consumer-contract.md [contract] verdict=SUSPECT(raised) pin=457 uses=458`
+  // （命中定位：EN :3714 `model`）。
+  "docs/host-consumer-contract.md": 458,
   // 565（片A，切版前补 #569/#568 文档）：CN 契约新增「折叠触发比例与会话续接块」一节，其中 provider 回调的
   // 真实键名 `runId`（`({runId, state, previous}) → {text, version}`）是一次同名异义命中——契约必须写出这个键名，
   // 所以**不为了躲钉子而改写成模糊说法**，按判据把钉子登记成扫描器报的值。EN 侧同一句已把 `context` 写成全路径
@@ -414,7 +419,9 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 树上测的是 569 ⇒ 合并树既不等于 568 也不等于 569。数只取扫描器现报那一行：
   //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=568  uses=571
   // （与 #753 / #714 / #729 同一条先例：契约要能写出真实签名与真实角色名，不为躲钉子改成描述说法。）
-  "docs/host-consumer-contract_cn.md": 571,
+  // 571 → 572（工单 261108-02，中英成对）：新增「响应从不回显本次档位」那一格，同样必须逐字列出返回体
+  // 顶层键名，`model` 是一次同名异义命中。数取自扫描器现报：`pin=571 uses=572`（命中定位：CN :2946 `model`）。
+  "docs/host-consumer-contract_cn.md": 572,
 });
 
 /**

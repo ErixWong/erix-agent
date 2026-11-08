@@ -887,8 +887,9 @@ test("G4-R3 反向证：表里多一条没登记的引用 / 少一条已登记�
 });
 
 test("G4-R4 反向证：锚点登记的「种类」是硬判据 ⇒ 代码锚点指到注释行必红，注释锚点指到代码行也必红（M-A）", () => {
-  // 出厂表的种类事实：39 条全带合法 kind，且只有三格钉的是注释（两格 stopped 的「为什么没有写点」
-  // + `persistedTranscriptLength` 读侧那句「不能信快照里的它」）。种类写错 ⇒ 下面那条判据当场红。
+  // 出厂表的种类事实：39 条全带合法 kind，且只有五格钉的是注释（#735 停写的两格「为什么没有写点」
+  // + #770 停写的 `status` / `compactionStats` 两格 + `persistedTranscriptLength` 读侧那句「不能信快照里的它」）。
+  // 种类写错 ⇒ 下面那条判据当场红。
   assert.ok(
     CELL_AXES_ANCHORS.length === CELL_AXES_REQUIRED_CELLS.length,
     `登记 ${CELL_AXES_ANCHORS.length} 条与人审清单 ${CELL_AXES_REQUIRED_CELLS.length} 格不同数 ⇒ 先对齐两份真值`,
@@ -896,8 +897,8 @@ test("G4-R4 反向证：锚点登记的「种类」是硬判据 ⇒ 代码锚点
   const commentEntries = CELL_AXES_ANCHORS.filter((entry) => entry.kind === "comment");
   assert.deepEqual(
     commentEntries.map((entry) => `${entry.key}|${entry.axis}`).sort(),
-    ["persistedTranscriptLength|read", "toolUse|write", "ts|write"],
-    "注释锚点只许这三条；新增注释锚点必须同批改这里（种类是登记事实，不是机器猜出来的）",
+    ["compactionStats|write", "persistedTranscriptLength|read", "status|write", "toolUse|write", "ts|write"],
+    "注释锚点只许这五条；新增注释锚点必须同批改这里（种类是登记事实，不是机器猜出来的）",
   );
   assert.ok(
     CELL_AXES_ANCHORS.every((entry) => entry.kind === "code" || entry.kind === "comment"),
@@ -995,8 +996,8 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
 
   // ② 评审 M-B 的变异：从 8 个双锚点组各删一条登记，并同步删掉两表对应引用 ⇒ 剩下的全自洽
   const victims = [
-    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6181 },
-    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6161 },
+    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6205 },
+    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6185 },
     { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 699 },
     { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 700 },
     { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 704 },
@@ -1066,19 +1067,25 @@ test("G4-R6 特征用例（已知限度，见 command-reference）：锚点改�
   // 已知限度登记在 docs/maintenance/command-reference.md（#772 R4）；不要再加启发式去堵它。
   const path = "src/loop/orchestrator.js";
   const snapshotAnchor = CELL_AXES_ANCHORS.find(
-    (entry) => entry.key === "compactionStats" && entry.axis === "write" && entry.path === path && entry.kind === "code",
+    (entry) => entry.key === "compactionStats" && entry.axis === "write" && entry.path === path && entry.kind === "comment",
   );
+  // #770 之后这一轴有两条登记：注释（解释快照为什么没有写点）与轮记录的真写点。取「命中唯一且是真代码行」那一条。
   const roundAnchor = CELL_AXES_ANCHORS.find(
-    (entry) => entry.key === "compactionStats" && entry.axis === "write" && entry.path === path && entry !== snapshotAnchor,
+    (entry) => entry.key === "compactionStats" && entry.axis === "write" && entry.path === path && entry !== snapshotAnchor
+      && G4_ANCHOR_LINE_CHECK(G4_LINES_OF(path), entry).length === 1
+      && !anchorLineIsComment(G4_LINES_OF(path)[G4_ANCHOR_LINE_CHECK(G4_LINES_OF(path), entry)[0] - 1]),
   );
   assert.ok(snapshotAnchor !== undefined && roundAnchor !== undefined, "需要 compactionStats 的两条写点锚点在场");
   const [snapshotLine] = G4_ANCHOR_LINE_CHECK(G4_LINES_OF(path), snapshotAnchor);
   const [roundLine] = G4_ANCHOR_LINE_CHECK(G4_LINES_OF(path), roundAnchor);
-  assert.notEqual(snapshotLine, roundLine, "两处写入必须是不同行，否则本例空转");
+  assert.notEqual(snapshotLine, roundLine, "停写解释注释与轮记录真写点必须是不同行，否则本例空转（#770 之后快照那一格是注释锚点）");
   assert.ok(!anchorLineIsComment(G4_LINES_OF(path)[roundLine - 1]), "轮记录那一处必须是真代码行（kind 仍相符）");
 
-  const swapped = CELL_AXES_ANCHORS.map((entry) => (entry === snapshotAnchor ? { ...entry, anchor: roundAnchor.anchor } : entry));
+  const swapped = CELL_AXES_ANCHORS.map((entry) => (
+    entry === snapshotAnchor ? { ...entry, anchor: roundAnchor.anchor, kind: roundAnchor.kind } : entry));
   const { groups, errors } = G4_ANCHOR_GROUPS(swapped, G4_LINES_OF);
+  // #770 之后快照那一格是 comment 锚点：这一形要的是「换成另一处真写入」，所以种类也得跟着换成 code，
+  // 否则机器当场就能认出（那是新增的严格面，不是本例要钉的宽容）。
   assert.deepEqual(errors, [], "种类/唯一命中在这一形上仍然成立（前提）");
   for (const { rows, side } of tables.values()) {
     const synced = rows.map((row) => (row.key === "compactionStats"

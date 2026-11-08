@@ -684,10 +684,17 @@ test("runRepl preserves new input when resuming an aborted tool", async () => {
     // ⇒ 逐轮号序列从 `[0, 0, 1, 2]` 变成 `[0, 1, 1, 2]`，仍是 4 行且一行不多一行不少。
     // issue #404 之后是 5 行：多出的那条 round 1 是**恢复告示**（`…:control:resume-notice:<fp>`，
     // 与 judge-nudge / forced-final 同一个先例），不是多出来的一轮、也不是重复行。
-    assert.deepEqual(
-      (await store.load(session)).map((record) => record.round),
-      [0, 1, 1, 1, 2],
-    );
+    // issue #765 之后是 6 行：崩溃轮的 `assistant[tool_use call-1]` 在 REPL 预写「user-two」之前就被
+    // **结清行**（`…:settle:1:call-1`，一条 `user[tool_result]` + `is_error`）接上 ⇒ 多出的仍是 round 1 那一条。
+    // 不结清的话本单现场正好是砖化形状：那条 tool_use 永远没结果，`validateMessages` 在出网前就报
+    // `assistant tool_use has no immediately following user tool_result`（本用例上面那句「user-two 必须出现在
+    // 请求里」会先红，但红的是 0 次请求而不是某个形状 ⇒ 这里把行数与结清行的身份一起钉住）。
+    const ledger = await store.load(session);
+    assert.deepEqual(ledger.map((record) => record.round), [0, 1, 1, 1, 1, 2]);
+    assert.deepEqual(ledger.filter((record) => typeof record?.dedupKey === "string"
+      && record.dedupKey.includes(":settle:"))
+      .map((record) => `${record.dedupKey}:${String(record.seq)}`), ["repl-abort:settle:1:call-1:1"],
+      "多出的那一行必须是那一条结清行（带现取的 seq=1），不是重复行也不是额外一轮");
   } finally {
     input.destroy();
     output.destroy();
