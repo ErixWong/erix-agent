@@ -657,8 +657,8 @@ export function createSteerHook(job) {
       return null;
     }
     job.steerInjected = (job.steerInjected ?? 0) + 1;
-    // 进度通道是**旁证**（真正的账在引擎的 `diagnostics.steer` 里）：让人从 status.json 的
-    // progressTail 看得出「那句 steer 真的被取走了」。同 `onProgress` 的 400 条上限。
+    // 进度通道只是**旁证**，别把它当账：`jobView` 只把最后 10 行放进 `progressTail`（见上面的 `slice(-10)`），
+    // 真上游实测一个 7 轮、`injected=1` 的 run 里这句已被挤出窗口 ⇒ 权威账只有队面 `steerPending` 与终局 `diagnostics.steer`。
     if (Array.isArray(job.progress)) {
       job.progress.push(`steer 已交给内层 run（队列还剩 ${inbox.length} 条）：${text.slice(0, STEER_PROGRESS_PREVIEW_CHARS)}`);
       if (job.progress.length > 400) job.progress.splice(0, job.progress.length - 400);

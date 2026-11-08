@@ -427,7 +427,7 @@ pi --extension ./examples/pi-extension/erix-run.ts
 | 入历史的形状 | 被取走的那条以**普通用户轮**的身份进内层 run 的历史（带 `seq` 的 `kind:"message"` 行，不是 `:control:` 行），resume 也读得到 | 引擎 C1 |
 | 队列长度 | `steerPending` **恒在场**（没 steer 时是 `0`，不是缺键），入队 +1、被取走 -1 | `jobView` ⇒ `action:"status"`/`"result"` 与盘上 `status.json`（两面同形） |
 | 注入账目 | `diagnostics.steer = {offered, injected, rejected, lastRound}`（引擎的账，本层只**原样透传**） | 同步终局载荷与异步三面**同形**；文本面也有（`steer=offered:…` / `steer：offered=…`） |
-| 进度旁证 | 入队与取走各打一行进度（从 `progressTail` 看得出「那句真被取走了」） | `job.progress` |
+| 进度旁证 | 入队与取走各打一行进度，但 `progressTail` 只是**最后 10 行**的窗口（见上面「异步派工」那段）：多轮 run 里这句会被后面的工具输出挤出窗口（真上游实测：7 轮、`injected=1`，终局 `progressTail` 里已无这句）⇒ **别拿它当账**，队面看 `steerPending`、注入账目看 `diagnostics.steer` | `job.progress` |
 | **送进内层的接缝** | `start()` 把钩子放在 `runJob` 的**第二个参数**上（`steerHookDeps(job)` ⇒ `opts.nextUserTurn`），而 `createAsyncRuntime` 的**默认** `runJob`（没注入时用的就是它，生产也是它）必须把这个键**照其余可选键同形转发**给 `runErixRun` 的 deps：漏一个键 = 整条 steer 通道默默失效 | `erix-run-jobs.js` 的默认包装层；守网是 `test/examples/erix-run-steer.test.js` 里那格**不注入 `runJob`**、只经 core 已有 deps 缝跑真 `runToolLoop` 的用例（见下面「生产接缝」） |
 
 #### 拒绝面：三种收不到，全都不谎称已投递
