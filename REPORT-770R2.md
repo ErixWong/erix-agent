@@ -129,3 +129,32 @@
 ### commit 落点（与纪律的偏差，如实记）
 
 纪律要「每完成一条例子就 commit 一次」。实际 E1–E5 的靶子改造落在同一笔 commit `97b786f`：五条共用同一批助手函数（`cellAxesAnchorTableRow` / `cellAxesWeakenAnchor` / `cellAxesDropStatusWriteAnchor` / `cellAxesWriteColumnIndex` / `rewriteCellAxesRowKind`），拆成五笔会让前四笔处在「助手在场但例子还没换」的中间态。每例的靶子与期望改动可在 `/tmp/770r2e-m1.diff` 里按「例 1 … 例 5」小节的注释定位；例 4 的二轮修正在 `716e47c`（`/tmp/770r2e-m2.diff`）。报告与结果分别落在 `a49fce2`、`bcd596d`、`9484e67`。合档：`git diff 50e1d93..HEAD > /tmp/770r2e-m-all.diff`。
+
+## 判据削弱实跑结果（SA2：字面意义的「削弱判据 ⇒ 该例自己失守」）
+
+第一版影子树 `git archive` 出来的副本没有 `.git`，闸的 `git ls-files` 扫描面失效，59 条 ✗ 里混进大量环境噪声（`/tmp/770r2e-selftest-SA.log`）——那一份只能当参考，不作证据。改用真 worktree 重跑：`git worktree add --detach /tmp/770r2e-SA2 HEAD` + 软链 `node_modules`，只把四道判据本身削弱（`W1` 唯一命中 → 只判 0 命中、`W2` 「没有登记锚点 ⇒ 不再被豁免」那句点名短路掉、`W3` 等值对账短路成恒真、`W4` 种类对账短路成 `null`）；削弱后的**基线** `node scripts/docs-drift-check.mjs` = `docs-drift-check: OK`、`PLAIN_EXIT=0`（削弱只会让闸少报错，不会引入新错），所以 ✗ 都能归因到削弱本身。
+
+`node scripts/docs-drift-check.mjs --self-test` → **`失败 — 10/224 例未达预期`，`SA2_EXIT=1`**（日志 `/tmp/770r2e-selftest-SA2.log`）。失守的 10 条全部落在被削弱判据的覆盖面上，逐条原文（框架给的原因）：
+
+| 被削弱的判据 | 失守的例子 | 框架给的原因（日志原文） |
+|---|---|---|
+| W1 唯一命中（`hits.length !== 1` → `=== 0`） | 例 1「把 `status` 写点锚点削弱成键名 ⇒ 锚点歧义」 | `改了但没红（锚点仍是 fail-open）` |
+| 同上 | R1（还原旧锚点形状 `^ {8}status,$`） | 未命中 `/cell-axes-anchors:/ ; /锚点 0 命中/ ; /没有登记锚点/ ; /不再被豁免/ ; /\`status\`/ …` |
+| W2 「没有登记锚点 ⇒ 不再被豁免」不点名 | 例 2「删掉 `status` 写点登记 ⇒ 不再被豁免」 | `未命中 /没有登记锚点/ ; /不再被豁免/` |
+| 同上 | R2（登记留着、锚点削弱成跑不通的正则） | `未命中 /cell-axes-anchors:/ ; /锚点正则跑不通/ ; /没有登记锚点/ ; /不再被豁免/ ; /\`status\`/` |
+| W3 等值对账短路 | 例 3「CN 表 `:6185` 换成同键名注释行」 | `未命中 /登记锚点不等值/ ; /表写 …/ ; /锚点实际 …/ ; /那一行原文/ ; /bare-lines: 标记区定点豁免的机器复核不在场/` |
+| 同上 | R3（写点格还原成单条引用） | `未命中 /登记锚点不等值/` |
+| W4 种类对账短路 | #772 R4 M-A 正向（`compactionStats` 指到注释） | 连带失守（同一道判据） |
+| 同上 | 例 4「`toolUse` 注释锚点被换成真代码 ⇒ 种类不许逆」 | `改了但没红（锚点仍是 fail-open）` |
+| 同上 | R4（只把 kind 从 comment 改成 code） | 连带失守（同一道判据） |
+| W3 等值对账短路 | R5（两份表只做单侧同步） | 连带失守：它点名的就是那句「不等值」 |
+
+主树里这 10 条（E1–E4 + R1–R5 共 9 条相关例 + M-A 正向）在 r2 全绿；把判据削弱之后它们**各自**失守，且失守原因要么是该例点名那句红不再出现、要么是「改了但没红」——这就是「每条例子还在问它原来那件事」的字面证据。收工后 `git worktree remove --force /tmp/770r2e-SA2`，主树不受影响。
+
+## 未验证
+
+- **`npm test` 全套**：按任务口径没跑，所以除上面点名的两个测试文件与 `static-guards` 之外，其余测试对这次 `scripts/docs-drift-check.mjs` 改动的影响未验证；`test/test-suite-baseline.json` 未碰（若全套里有按例数计数的断言，本轮把 self-test 例数从 218 抬到 223 是否触碰它，未验证）。
+- **三档 typescript 棘轮**（`check:types` / `check:types:strict` / `types:build`）：`src/` 未改（`git diff --name-only 50e1d93..HEAD` 只有 `scripts/docs-drift-check.mjs`、`docs/maintenance/command-reference.md`、`REPORT-770R2.md`），按任务口径未跑。
+- **`check:changelog` / `check:release` / `check:tests` / `check:mutation` 等其它守卫**：没跑，本轮也没加 CHANGELOG 条目（改的是闸自己的自测夹具 + 一句文档行号，不是宿主可见行为）——如果发布日守卫要求这类改动也记一条，会在发布日才暴露。
+- **`docs/maintenance/command-reference_cn.md`**：EN 侧那句「已知限度」的举例行号已从 `src/loop/orchestrator.js:3505` 同步改成 `:3529`（并写明那是 run-state 落盘载荷、不是这格的写点）；CN 版没有对应段落（`grep -rn "compactionStats" docs/maintenance/command-reference_cn.md` 无命中），`check:docs` 与 `check:docs:strict` 都绿，但「CN 是否也该补这一段」未验证。
+- **`--self-test` 只跑了两轮**（r1、r2，r2 收口），r2 之后主树再没改过 `scripts/`（只改了本报告与文档行号那笔在 r2 之前），所以「报告与 diff 落盘后 self-test 仍绿」这一条是按 r2 的时点声明的，未再重跑。
