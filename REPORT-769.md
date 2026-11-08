@@ -60,6 +60,49 @@
 - **M4 宿主可见面**：两份契约（行形状、写入时机、**未知 `kind` 的后果**）+ 锚点登记 + read 轴改口 + CHANGELOG。
 - **M5 全闸 + 报告收口**。
 
+## M3 / M4 收口（换道 + 宿主可见面）
+
+**核心逻辑**（已 commit `issue #769 M3+M4`）：
+- 载体：`src/store/recovery-rows.js` 造两种恢复行（`kind: "recovery"`，`recoveryEvent: "tool-executed" | "partial-text"`，
+  `messages: []` 恒不载正文），事件键 = `dedupKey`（`recoveryEventKey()`）。
+- **换道**：恢复行**不走 `appendRound`**，走新的可选 store 口 `appendRecoveryRow` / `listRecoveryRows` /
+  `clearRecoveryRows`；文件 store 落 **`<dir>/<runId>.recovery.jsonl`**（新文件），`load()` / `loadRawRows()` /
+  轮记录那份 `.jsonl` 一个恢复行都没有（`test/store/ledger-recovery-rows-769.test.js` 里三条断言钉住）。
+- 写点：`src/loop/orchestrator.js:3426`（执行器返回即写 `tool-executed`）、`:3438`（`partialPersistence` 流式路径写
+  `partial-text`）。读点：`src/loop/resume-manager.js:432`（`ctx.store.listRecoveryRows`，没实现就是空集 ⇒ 回落快照）。
+  快照那三格在恢复路径上只剩**兜底**，不再是唯一来源。
+- 宿主可见面：`docs/host-consumer-contract.md` 与 `_cn.md` 各追加一节「恢复行 —— 每本 run 多出的一份 `.jsonl`」，
+  写清行形状、写入时机、三个 store 口是**可选能力**、以及**未知 `kind` 的后果**（本契约**没有**「不认识就忽略」的
+  总承诺 ⇒ 直接写「对未知 kind 抛错的宿主、假设一个 run 只有一个文件的宿主、glob `*.jsonl` 全塞给轮记录解析器的宿主
+  会坏；只读 `<runId>.jsonl` 或 `load()` 的宿主不受影响」）。
+
+**现测字节**（`node --test test/store/ledger-recovery-rows-769.test.js` ⇒ 8 tests / 8 pass / 0 fail）：
+- `#769 新增行字节 / 每轮：tool-executed 226 B + partial-text 256 B = 482 B`（载体行，样例正文 6 个 CJK 字）
+- `#769 真跑一轮实测：一条 tool-executed 恢复行 = 234 B`（`partialPersistence` 关闭 ⇒ 没有 partial-text 行）
+- 没有主张「省了写放大」：latest-only 的 `.state.json`（`saveRunState` 两处写点）本切片一个字节都没少。
+
+**闸（本轮真跑过的）**：
+- `node scripts/mutation-sample-check.mjs --sync test/mutation-samples.md` ⇒ 改动 8 行（只动派生列，手写「期望红话」列
+  一个字没碰）；`--verify` ⇒ 0 处不一致。`--run` **未复跑**（见未验证）。
+- 两轴表引用刷新：机械重算共 **81 处** `file:line`（行号全部由 `scripts/cell-axes-anchors.mjs` 的锚点现算，没手抄数字）。
+- `node --test test/persistence-diagnostics.test.js test/loop-resume.test.js` ⇒ 40 tests / 40 pass / 0 fail
+  （#78 的两处「每缺一个可选能力发一条诊断」计数随新可选能力从 3→4、2→3，并各自点名 `appendRecoveryRow`）。
+- `npm test`（本轮全量，改动前）：tests 3724 / pass 3696 / fail 15；其中 2 条就是上面 #78 那两条（现已绿）。
+
 ## 未验证
 
-（收口前逐条落盘）
+- 全量 `npm test` 需要在最后两处改动（#78 计数）之后**复跑**：上一轮全量是 15 红，现已确认转绿的是
+  `test/persistence-diagnostics.test.js` 与 `test/loop-resume.test.js` 两个文件（40/40）；其余 13 条红的归属：
+  G4 家族 6（`test/contract-snapshot-cell-axes-767.test.js`，两轴表引用与锚点的**配对**还没咬合：`persistedTranscriptLength`
+  写列出现 2997/3062 互指、另有一格少引一条 `src/loop/orchestrator.js:3045`）、#286 符号锚点 2、readFile 容量棘轮 2
+  （`src/store/file.js` 字节数因本切片涨了，记录值待复测）、#417 strict 棘轮 2（并集档实测 2093 > 基线 2090）、
+  版本探针 `--self-test` 1。这些都是**闸面值/棘轮**类，不是恢复行语义类。
+- `npm run check:test-summary`、`npm run check:inventory`（新增测试文件登记）、`check:docs` / `:strict` /
+  `:docs-spelling` / `:syntax` / `:agents-directives` / `:changelog`、`node --test test/static-guards.test.js`、
+  `check:types` / `:strict` / `types:build`（动了 `src/` 要先 `find src -name '*.d.ts' -delete`）
+  —— **本轮没跑到**（轮次预算用尽），交接给下一轮。
+- `.state.json` 的 5,847 B / 7,827 B 与 #768 的 371 B/轮：来自 issue 文本，本树无 #768 报告可复核（见上文取证边界），
+  本切片没有引用它们做结论。
+- 既存问题（**非本切片引入**，基线 worktree @`7181a1b` 同样复现）：恢复一个「跑过工具」的 run 会抛
+  `transcript appendRound dedup conflict (key=<runId>:msg:1:0)`。`#769 幂等（run 层）` 因此 catch 住它，
+  只断言「恢复行不重复、已执行工具不重放」，并显式钉住只允许这一条既存冲突形状。
