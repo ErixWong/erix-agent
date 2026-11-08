@@ -1905,20 +1905,20 @@ latest-only 自动保存（每轮覆盖同一槽位、仅用于中断恢复现�
 <!-- erix:snapshot-cell-axes:begin -->
 | 格（payload 键） | write | read | 权威源（仅双写格） | 交接条件（仅双写格） | 今天的写点（已停写的格＝钉住「为什么停写」那行） | 今天的读者 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `round` | written | source | — | — | `src/loop/orchestrator.js:3043` | `src/loop/resume-manager.js:704`、`src/loop/orchestrator.js:3278` |
+| `round` | written | source | — | — | `src/loop/orchestrator.js:3043` | `src/loop/resume-manager.js:714`、`src/loop/orchestrator.js:3278` |
 | `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3068` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:171`、`test/loop-invalid-arguments.test.js:235`、`test/loop-v020-rc.test.js:479`、`test/loop-v020-rc.test.js:611` |
-| `pendingToolUses` | written | source | — | — | `src/loop/orchestrator.js:3092` | `src/loop/resume-manager.js:657`、`src/loop/resume-manager.js:847` |
-| `pendingToolUse` | written | fallback(pendingToolUses 缺席) | — | — | `src/loop/orchestrator.js:3091` | `src/loop/resume-manager.js:658`、`src/loop/resume-manager.js:848` |
-| `executedToolIds` | written | fallback(账本里没有 `tool-executed` 恢复行) | 「这个 `tool_use` 真的执行过」的权威源是**账本**：`src/store/recovery-rows.js` 在执行器刚返回的那一刻追加一条 append-only 恢复行（`kind: "recovery"`、`recoveryEvent: "tool-executed"`、带 `toolUseId`、`messages: []`）——比结果行早，也比本轮任何后续快照写早（#769）。恢复侧把那些行与这一格取**并集**，所以这个集合只能把「执行过」说得更全、不能更窄；快照那一格是 latest-only，下一轮一写就盖掉 | 这一格要变成 `not-source`，前提是恢复侧会遇到的每本账本都带 `tool-executed` 行——#769 之前写的账本没有，所以在那批账本用尽之前它仍是兜底 | `src/loop/orchestrator.js:3095` | `src/loop/resume-manager.js:805`、`src/store/recovery-rows.js:24` |
-| `toolResults` | written | source | — | — | `src/loop/orchestrator.js:3096` | `src/loop/resume-manager.js:669`、`src/loop/resume-manager.js:809` |
-| `toolOutputs` | written | source | 终稿 guard 的证据源是**轮记录**：`bin/final-guard-support.js:238`（口径写在同文件 `bin/final-guard-support.js:218`），它从不读最新快照 | 快照那份的唯一读者是恢复侧回填 `src/loop/resume-manager.js:815` ⇒ 两格的停止条件彼此独立，先迁回填才可谈停写快照这格 | `src/loop/orchestrator.js:3101`（快照）与 `src/loop/orchestrator.js:6297`（轮记录） | 快照侧 `src/loop/resume-manager.js:815`；轮记录侧 `bin/final-guard-support.js:238` |
-| `messages` | residue | fallback(仅旧格式账本) | 账本（`load()`）是正文的权威来源 | 恢复侧那条旧格式升级路径 `src/loop/resume-manager.js:724` 被移除之后才可转 `not-source`；**今天不许写 `not-source`** | `src/loop/orchestrator.js:3093` | `src/loop/resume-manager.js:724`（条件：账本在锚点之后一条都没有） |
-| `persistedTranscriptLength`（盘上那格） | written | not-source | 恢复锚点在账本上现算 | 引擎侧读者为零 ⇒ 这是表内今天唯一「读侧条件已满足」的格；停写仍要先迁测试侧拿它当截账本夹具锚点的两处（见下方口径） | `src/loop/orchestrator.js:3094` | 恢复侧不信它（被它覆盖的那个值取自进程内计数器——那一处引用在下一行）：`src/loop/resume-manager.js:119`（注释明写不能信快照里的值）与 `src/loop/resume-manager.js:558`（就地用账本长度覆盖） |
+| `pendingToolUses` | written | source | — | — | `src/loop/orchestrator.js:3092` | `src/loop/resume-manager.js:667`、`src/loop/resume-manager.js:857` |
+| `pendingToolUse` | written | fallback(pendingToolUses 缺席) | — | — | `src/loop/orchestrator.js:3091` | `src/loop/resume-manager.js:668`、`src/loop/resume-manager.js:858` |
+| `executedToolIds` | written | fallback(账本里没有 `tool-executed` 恢复行) | 「这个 `tool_use` 真的执行过」的权威源是**账本**：`src/store/recovery-rows.js` 在执行器刚返回的那一刻追加一条 append-only 恢复行（`kind: "recovery"`、`recoveryEvent: "tool-executed"`、带 `toolUseId`、`messages: []`）——比结果行早，也比本轮任何后续快照写早（#769）。恢复侧把那些行与这一格取**并集**，所以这个集合只能把「执行过」说得更全、不能更窄；快照那一格是 latest-only，下一轮一写就盖掉 | 这一格要变成 `not-source`，前提是恢复侧会遇到的每本账本都带 `tool-executed` 行——#769 之前写的账本没有，所以在那批账本用尽之前它仍是兜底 | `src/loop/orchestrator.js:3095` | `src/loop/resume-manager.js:815`、`src/store/recovery-rows.js:24` |
+| `toolResults` | written | source | — | — | `src/loop/orchestrator.js:3096` | `src/loop/resume-manager.js:679`、`src/loop/resume-manager.js:819` |
+| `toolOutputs` | written | source | 终稿 guard 的证据源是**轮记录**：`bin/final-guard-support.js:238`（口径写在同文件 `bin/final-guard-support.js:218`），它从不读最新快照 | 快照那份的唯一读者是恢复侧回填 `src/loop/resume-manager.js:825` ⇒ 两格的停止条件彼此独立，先迁回填才可谈停写快照这格 | `src/loop/orchestrator.js:3101`（快照）与 `src/loop/orchestrator.js:6297`（轮记录） | 快照侧 `src/loop/resume-manager.js:825`；轮记录侧 `bin/final-guard-support.js:238` |
+| `messages` | residue | fallback(仅旧格式账本) | 账本（`load()`）是正文的权威来源 | 恢复侧那条旧格式升级路径 `src/loop/resume-manager.js:734` 被移除之后才可转 `not-source`；**今天不许写 `not-source`** | `src/loop/orchestrator.js:3093` | `src/loop/resume-manager.js:734`（条件：账本在锚点之后一条都没有） |
+| `persistedTranscriptLength`（盘上那格） | written | not-source | 恢复锚点在账本上现算 | 引擎侧读者为零 ⇒ 这是表内今天唯一「读侧条件已满足」的格；停写仍要先迁测试侧拿它当截账本夹具锚点的两处（见下方口径） | `src/loop/orchestrator.js:3094` | 恢复侧不信它（被它覆盖的那个值取自进程内计数器——那一处引用在下一行）：`src/loop/resume-manager.js:119`（注释明写不能信快照里的值）与 `src/loop/resume-manager.js:568`（就地用账本长度覆盖） |
 | `persistedTranscriptLength`（进程内计数器） | written | source | —（同一变量的进程内形态不落盘，它才是写侧的现值） | **不许停**：它是 `messages` 残余起点的夹值之一 | `src/loop/orchestrator.js:3094` | `src/loop/orchestrator.js:3029` |
-| `partialText` | written(conditional) | fallback(崩溃轮没有 `partial-text` 恢复行) | 权威源是账本：崩溃轮那条 `partial-text` 恢复行（#769）——一条一个事件、事件键 = 正文指纹，所以正文变长是**新事件**、已落盘的行从不被改写；恢复侧的正文与轮号都取自**同一行** | 条件＝本轮已有半截正文（写点 `src/loop/orchestrator.js` 的 `partialText === undefined` 夹子）：现场有半截正文 ⇒ 这一格必在；没有 ⇒ 整格缺席（不是写 `undefined`） | `src/loop/orchestrator.js:3102` | `src/loop/resume-manager.js:673`、`src/loop/resume-manager.js:776`、`src/store/recovery-rows.js:24` |
-| `partialRound` | written(conditional) | fallback(崩溃轮没有 `partial-text` 恢复行) | 与 `partialText` 同源同一行：恢复行自带 `round`，所以轮号跟着正文走，绝不与快照轮号拼盘 | 与 `partialText` **同一条写入语句、同一个条件** ⇒ 两格同生同灭，缺一即坏 | `src/loop/orchestrator.js:3102` | `src/loop/resume-manager.js:777`、`src/store/recovery-rows.js:24` |
-| `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3056` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:659`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
-| `ts` | stopped | not-source | 账本行 / 消息行自己的那个 `ts` | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3063` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**（同一个键名的另一个产物，不是这格）`src/loop/resume-manager.js:588` |
+| `partialText` | written(conditional) | fallback(崩溃轮没有 `partial-text` 恢复行) | 权威源是账本：崩溃轮那条 `partial-text` 恢复行（#769）——一条一个事件、事件键 = 正文指纹，所以正文变长是**新事件**、已落盘的行从不被改写；恢复侧的正文与轮号都取自**同一行** | 条件＝本轮已有半截正文（写点 `src/loop/orchestrator.js` 的 `partialText === undefined` 夹子）：现场有半截正文 ⇒ 这一格必在；没有 ⇒ 整格缺席（不是写 `undefined`） | `src/loop/orchestrator.js:3102` | `src/loop/resume-manager.js:683`、`src/loop/resume-manager.js:786`、`src/store/recovery-rows.js:24` |
+| `partialRound` | written(conditional) | fallback(崩溃轮没有 `partial-text` 恢复行) | 与 `partialText` 同源同一行：恢复行自带 `round`，所以轮号跟着正文走，绝不与快照轮号拼盘 | 与 `partialText` **同一条写入语句、同一个条件** ⇒ 两格同生同灭，缺一即坏 | `src/loop/orchestrator.js:3102` | `src/loop/resume-manager.js:787`、`src/store/recovery-rows.js:24` |
+| `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3056` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:669`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
+| `ts` | stopped | not-source | 账本行 / 消息行自己的那个 `ts` | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3063` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**（同一个键名的另一个产物，不是这格）`src/loop/resume-manager.js:598` |
 | `compactionStats` | stopped | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:449`）与轮记录 `src/loop/orchestrator.js:3077` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:73` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3077`、`src/loop/orchestrator.js:6277` | 恢复走 run-state `src/loop/resume-manager.js:449`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
 
@@ -5811,6 +5811,10 @@ store 面：`appendRecoveryRow(runId, row)` → `true`（真落了一行）/ `fa
   （`undefined` / `{}` / 字符串）是同一条坏通道，不是「没有」：引擎抛**同一个** `recovery_rows_unreadable`、
   终局字段面一模一样（**不新增第二个码**），而它的 `errorCode` 是 `unknown`——一个坏形状的返回值根本没有
   底层错误码可透出；实际收到的形状写在 `cause` 里点名。
+  一行**解析得动但形状不合**（`toolUseId` / `round` / `dedupKey` 缺或不合）也是同一条坏通道：它同样以
+  **同一个** `recovery_rows_unreadable` 收口（不合的那个字段写在 `cause` 里），引擎**不**跳过它 —— 跳过
+  正是本节存在的理由要防的那个错：把一次执行的唯一证据当成「没证据」。只有**不认识的 `recoveryEvent`
+  事件名**才被忽略（那是前向兼容，见下面那一段）。
   该终局错误的字段面（与 `checkpoint_failed` 那一族同形）：`reason: "persistence_failed"`、
   `operation: "listRecoveryRows"`、`phase: "resume_recovery_rows"`、`sideEffect: "not_started"` —— 失败发生在**续跑期**，
   本进程还没执行过任何工具，整体重放不欠外部副作用 —— 另有 `errorCode` 携带根因分类（底层拿不到码则 `unknown`），

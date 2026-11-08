@@ -396,7 +396,15 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 逐条定位（本文档现行号）：7393 / 7396 / 7397 / 7398 / 7401 / 7405 / 7409 —— 扫描器按 use 计数，
   // 行数多于命中数；数只取扫描器现报那一行：
   //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=458  uses=462
-  "docs/host-consumer-contract.md": 462,
+  // 462 → 463（issue #769 R5 M3，净 +1）：把生命周期段改成**有条件**时，宿主义务那一句必须写出
+  // 真实旋钮名：`a host that implements appendRecoveryRow / listRecoveryRows but not clearRecoveryRows must
+  // either give every new logical run a new runId or never resume`。`runId` 在 `AMBIGUOUS_KEYS` 里（store 方法
+  // 入参 / 代际标识，与 `config.run.runId` 同名异义），不进退役判据但计入本钉子。
+  // 逐条定位（本文档现行号）：:7431（R2 那句“move to a new runId”位移后的位置）与 :7435（本刀新增那一句）
+  // 共 2 处，R2 旧面同一段只有 1 处 ⇒ 净 +1。同 #714 / #729 / #730 先例：契约要能写出真名，不为躲钉子改写法。
+  // 数只取扫描器现报那一行：
+  //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(raised)  pin=462  uses=463
+  "docs/host-consumer-contract.md": 463,
   // 565（片A，切版前补 #569/#568 文档）：CN 契约新增「折叠触发比例与会话续接块」一节，其中 provider 回调的
   // 真实键名 `runId`（`({runId, state, previous}) → {text, version}`）是一次同名异义命中——契约必须写出这个键名，
   // 所以**不为了躲钉子而改写成模糊说法**，按判据把钉子登记成扫描器报的值。EN 侧同一句已把 `context` 写成全路径
@@ -438,7 +446,13 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 逐条定位（本文档现行号）：5811 / 5812 / 5815 / 5819（同一行可能含多次命中，故行数少于净增数）。
   // 数只取扫描器现报那一行：
   //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=579  uses=584
-  "docs/host-consumer-contract_cn.md": 584,
+  // 584 → 585（issue #769 R5 M3，净 +1）：同一刀的 CN 侧——生命周期段改成有条件后，宿主义务那一句
+  // 也必须写出真名（「必须要么给每个新逻辑 run 换一个**新 `runId`**，要么**永不续跑**」）。
+  // 逐条定位（本文档现行号）：:5825 那一行现在含 3 处 `runId`（R2 那两处 + 本刀新增那一句），
+  // 而 :5839 / :5842 / :5846 三处是 R2 段落旧命中（base 的 :5821 / :5825）随改稿位移 ⇒ 该段 5 → 6，净 +1。
+  // 数只取扫描器现报那一行：
+  //   ✗ docs/host-consumer-contract_cn.md  [contract]  verdict=SUSPECT(raised)  pin=584  uses=585
+  "docs/host-consumer-contract_cn.md": 585,
 });
 
 /**

@@ -531,7 +531,17 @@ export async function restoreResume(ctx) {
       // 由本块的 `catch` → `ctx.fail` 收成终局（`reason: "persistence_failed"` + 同名字段）。
       /** @type {any[]} */
       const recoveryRows = await readRecoveryRowsOrRefuse(ctx);
-      const ledgerExecutedToolIds = readExecutedToolIdRecoveryRows(recoveryRows);
+      // issue #769 R5（M5）：行**解析得动但形状不合**（缺 `dedupKey` / `round: NaN`）也不许静默丢。
+      // 丢掉 = 又一次「唯一证据被当没有」：那一行说的其实是「这个 `tool_use` 执行过了」，只是它坏了；
+      // 把它当「没这回事」会让续跑重放一个副作用已经发生的工具。所以走与 reject / 非数组**同一个码**
+      // （`recovery_rows_unreadable`），底层那条 `TypeError` 把**哪个字段不合**写在 `cause.message` 里。
+      /** @type {Set<string>} */
+      let ledgerExecutedToolIds;
+      try {
+        ledgerExecutedToolIds = readExecutedToolIdRecoveryRows(recoveryRows);
+      } catch (error) {
+        throw recoveryRowsUnreadableError(error, ctx.runId);
+      }
       // 崩溃轮的半截正文同理：先问账本（`partial-text` 恢复行：一条一个事件、事件键 = 正文指纹）。
       // append-only ⇒ 历史轮的行永远在场，所以只有「那一轮的 assistant 正文**没**落账」的那些行才算崩溃
       // 现场；正文已落账的是历史副本，不能把「正常收口后宿主追问」误判成崩溃轮。下面两行的 `@type` 断言只服务 `--strict`：

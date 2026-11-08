@@ -711,3 +711,82 @@ test("#769 R3（D）跨通道顺序：tool-executed 恢复行的落盘调用**�
   assert.ok(recoveryAt < resultAt,
     `契约里那句「恢复行排在 tool_result 之前」必须由调用次序证明：恢复行在第 ${recoveryAt} 次调用、结果行在第 ${resultAt} 次，序列 ${JSON.stringify(calls)}`);
 });
+
+// ── 9) issue #769 R5（M5）：**解析得动但形状坏**的 `tool-executed` 行不许静默丢 ──────────
+//
+// 修前的判据只有一句「`toolUseId` 是非空字符串」⇒ `round: NaN` / 缺 `dedupKey` 的行照样把 ID 并进
+// 「执行过了」集合（复审实测：坏行仍产出 `["t1"]`）。那种行是宿主手写的、半截修复的或被截断的行，
+// 它的身份在场不等于它能作证 ⇒ 判据按 R5 裁决改成**同码硬终止**（不静默丢、也不新造第二个码）。
+
+/** 形状坏但**能解析**的 `tool-executed` 行（三种坏法各一格：轮号坏 / 缺事件键 / 缺 `toolUseId`）。 */
+const malformedToolExecutedRows = () => [
+  { label: "round 非安全整数（JSON 里的 null）", row: {
+    kind: "recovery", recoveryEvent: "tool-executed", toolUseId: "t1", round: null,
+    roundKey: "rec-m5:round:1", dedupKey: "rec-m5:engine:round:1:recovery:tool-executed:t1", messages: [],
+  } },
+  { label: "round 是 NaN（内存 store 里直接写的）", row: {
+    kind: "recovery", recoveryEvent: "tool-executed", toolUseId: "t1", round: Number.NaN,
+    roundKey: "rec-m5:round:1", dedupKey: "rec-m5:engine:round:1:recovery:tool-executed:t1", messages: [],
+  } },
+  { label: "缺 dedupKey", row: {
+    kind: "recovery", recoveryEvent: "tool-executed", toolUseId: "t1", round: 1,
+    roundKey: "rec-m5:round:1", messages: [],
+  } },
+];
+
+test("#769 R5（M5）读侧形状判据：坏 `tool-executed` 行抛错并点名**哪个字段不合**（三种坏法各自点名，不静默丢）", () => {
+  for (const { label, row } of malformedToolExecutedRows()) {
+    const expectedField = label.includes("round") ? "round" : "dedupKey";
+    assert.throws(
+      () => readExecutedToolIdRecoveryRows([row]),
+      (/** @type {TypeError} */ error) => {
+        assert.ok(error instanceof TypeError, `${label}：抛的必须是 TypeError（本模块不造宿主可见错误码）`);
+        assert.match(error.message, new RegExp(`malformed on field "${expectedField}"`),
+          `${label}：消息必须点名不合的那个字段，实际 ${error.message}`);
+        return true;
+      },
+      `${label}：必须抛，不许静默跳过（丢掉就是又一次「唯一证据被当没有」）`,
+    );
+  }
+  // 反向：形状完整的行照旧被收进集合；**不认识的事件名**仍只是跳过（那是前向兼容，不是坏形状）。
+  const good = buildToolExecutedRecoveryRow({ runId: "rec-m5", round: 1, toolUseId: "t9" });
+  assert.deepEqual([...readExecutedToolIdRecoveryRows([good])], ["t9"], "形状完整的行照常作证");
+  assert.deepEqual([...readExecutedToolIdRecoveryRows([
+    { ...good, recoveryEvent: "future-event", toolUseId: "nope" },
+  ])], [], "未知 recoveryEvent 仍被忽略（M6 那条前向兼容承诺的运行面）");
+});
+
+test("#769 R5（M5）续跑现场：坏 `tool-executed` 行 ⇒ 终局点名同一个 recovery_rows_unreadable（不重放工具）", async () => {
+  const inner = await r3CrashScene(createMemoryTranscriptStore(), { snapshotExecutedToolIds: [] });
+  // 现场：t1 的那条执行证据**在**，但它是坏的（缺 dedupKey）——写侧不可能产出这种行，宿主手写可以。
+  const brokenRow = {
+    kind: "recovery", recoveryEvent: "tool-executed", toolUseId: "t1", round: 1,
+    roundKey: `${R3_CRASH_ID}:round:1`, messages: [],
+  };
+  const store = {
+    ...inner,
+    listRecoveryRows: async () => [brokenRow],
+  };
+  /** @type {string[]} */
+  const executedCalls = [];
+  const provider = createFakeProvider([finalRound("resumed")]);
+  const thrown = await directError({
+    provider,
+    initialUserMessage: "start",
+    executeTool: async ({ input }) => { executedCalls.push(input.step); return "out"; },
+    config: { run: { completion: false } },
+    store,
+    runId: R3_CRASH_ID,
+    resume: true,
+  });
+  assert.ok(thrown !== null, "坏行必须让 run 终止：修前它被当成「t1 执行过了」，同一个现场是**绿**的");
+  assert.equal(thrown.code, RECOVERY_ROWS_UNREADABLE,
+    `同码硬终止（M5 的裁决：不新增第二个码），实际 code=${String(thrown.code)}`);
+  assert.equal(thrown.termination?.reason, "persistence_failed",
+    `终局 reason 与读失败那格同轨，实际 ${JSON.stringify(thrown.termination)}`);
+  assert.equal(thrown.termination?.phase, "resume_recovery_rows", "phase 仍走读失败那一格");
+  assert.match(String(thrown.cause?.message ?? ""), /malformed on field "dedupKey"/,
+    `错误要说清是**形状不合**、哪个字段不合，实际 cause=${String(thrown.cause?.message)}`);
+  assert.deepEqual(executedCalls, [], "工具没被执行：这不是「把坏行当没证据然后重放」那条老路");
+  assert.equal(provider.requests.length, 0, "终止在第一次模型请求之前");
+});

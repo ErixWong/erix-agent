@@ -119,14 +119,36 @@ export function isRecoveryRow(row) {
 }
 
 /**
+ * `tool-executed` 恢复行的**形状判据**（issue #769 R5 M5）：返回**第一个不合的字段名**，全合返 `null`。
+ *
+ * 为什么不能只查 `toolUseId`（修前就是那样）：一行能解析不等于它能当证据。`round: NaN` 或没有
+ * `dedupKey` 的行，写侧根本不可能产出（`buildToolExecutedRecoveryRow` 两者都必写）⇒ 它是宿主手写的、
+ * 半截修复的或被截断的行。把这种行的 `toolUseId` 并进「执行过了」集合，等于拿一行的**身份**去坐实
+ * 它自己都说不出的一次执行。
+ *
+ * @param {any} row
+ * @returns {string | null}
+ */
+export function toolExecutedRecoveryRowShapeProblem(row) {
+  if (typeof row?.toolUseId !== "string" || row.toolUseId === "") return "toolUseId";
+  if (!Number.isSafeInteger(row?.round)) return "round";
+  if (typeof row?.dedupKey !== "string" || row.dedupKey === "") return "dedupKey";
+  return null;
+}
+
+/**
  * 账本侧的「执行过没有」真相：全部 `tool-executed` 恢复行携带的 `toolUseId` 集合。
  * 这是快照 `executedToolIds` 格的**继任来源**；读侧把它当首选、快照格退成兜底。
  *
- * 形状守卫与 `src/store/message-rows.js` 同一口径：坏形状的行**跳过**，不抛、不猜
- * （宿主手写的行、半截修复后的行都可能缺字段；这里绝不做「看起来像就算」的推断）。
+ * 形状守卫与 `src/store/message-rows.js` 同一口径：不是本事件类型的行**跳过**（那是「以后新增的事件」）。
+ * 但 `tool-executed` 行本身形状不合时**不跳过、不猜**（issue #769 R5 M5）：这一行是「工具真的执行过了」
+ * 的唯一证据，静默丢掉它就是又一次「唯一证据被当没有」⇒ 抛错，由读侧（`src/loop/resume-manager.js`）
+ * 包成契约面那个 `recovery_rows_unreadable`。抛的是普通 `TypeError`：本模块不造宿主可见错误码，
+ * 消息里点名**哪个字段不合**（排障要知道的是字段，不是错码）。
  *
  * @param {any[]} records `store.load()` / `loadRawRows()` 的输出（恢复行不带 `messages`，折叠层原样透传，两边同结果）
  * @returns {Set<string>}
+ * @throws {TypeError} `tool-executed` 行形状不合（字段清单见 `toolExecutedRecoveryRowShapeProblem`）
  */
 export function readExecutedToolIdRecoveryRows(records) {
   /** @type {Set<string>} */
@@ -134,7 +156,14 @@ export function readExecutedToolIdRecoveryRows(records) {
   for (const row of Array.isArray(records) ? records : []) {
     if (!isRecoveryRow(row)) continue;
     if (row.recoveryEvent !== RECOVERY_EVENT_TOOL_EXECUTED) continue;
-    if (typeof row.toolUseId !== "string" || row.toolUseId === "") continue;
+    const problem = toolExecutedRecoveryRowShapeProblem(row);
+    if (problem !== null) {
+      throw new TypeError(
+        `tool-executed recovery row is malformed on field "${problem}" `
+        + `(toolUseId=${JSON.stringify(row.toolUseId ?? null)}, round=${String(row.round)}, `
+        + `dedupKey=${JSON.stringify(row.dedupKey ?? null)}): refusing to read a malformed row as "no execution evidence"`,
+      );
+    }
     ids.add(row.toolUseId);
   }
   return ids;
