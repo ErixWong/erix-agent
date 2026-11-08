@@ -5,8 +5,76 @@ import { extractL0Facts } from "../reflection/l0.js";
 import { buildTimeline } from "../reflection/judge.js";
 import { pendingTailToolUses, answerPendingMidSequenceToolUses, RESUME_JOURNAL_SKIP_DETAIL_PROBE_ABSENT, RESUME_JOURNAL_SKIP_DETAIL_ROUND_CARRIER_HAS_BODY, RESUME_JOURNAL_SKIP_DETAIL_ROW_NOT_IN_LEDGER } from "./pending-tool-result.js";
 import { planResumeNotice } from "./resume-notice.js";
+// issue #769 R3（B）：恢复行读失败要抛**宿主可见错误码**，因此需要 `KitError` 与根因分类函数
+// （字段面照 `checkpoint_failed` / `persistence_failed` 那一族，见 `recoveryRowsUnreadableError`）。
+import { KitError } from "../providers/errors.js";
+import { terminationErrorCodeForError } from "./termination.js";
 import { injectFoldSummaryIntoHead, planFoldedHistoryTrim } from "../compact/resume-fold-trim.js";
 import { validateRunState } from "../run-state.js";
+
+/**
+ * issue #769 R3（B）：恢复行**读失败**的宿主可见错误码。
+ *
+ * 为什么必须有它（而不是继续 `.catch(() => [])`）：`tool-executed` 恢复行已落、后置快照未落的那个窗口里，
+ * 恢复行是**唯一**的「这个 `tool_use` 真的执行过了」证据。把读失败吞成空集，等于把「执行过了」判成
+ * 「没执行」⇒ 续跑重放该工具、**重放它的外部副作用**。而吞错的几种常见成因（权限错、I/O 错、坏行——
+ * `src/store/file.js#readRecords` 对非 `ENOENT` 一律抛）全都是「读不到」，不是「没有」。
+ *
+ * 与**合法降级**的分界（两件事不能混）：
+ *   · `typeof store.listRecoveryRows !== "function"` ⇒ 可选能力缺席，**维持**读空 + 回落快照（与写侧能力位
+ *     跳过对称，登记在契约的能力分级表里）；
+ *   · 方法在而调用 reject ⇒ 本码，**硬终止**：伪装成「没有恢复行」比失败更贵。
+ *
+ * 字段面（照 `checkpoint_failed` 那一族，取值不新造）：`operation` / `phase` / `sideEffect` 三件套齐全
+ * ⇒ `fail`（`src/loop/orchestrator.js#persistenceInfoFor`）据此把终局定为 `persistence_failed` 并透出同名
+ * 字段。`phase` 取 `"transcript"`：恢复行属账本侧只追加通道，与写侧 `appendRecoveryRow` 在
+ * `orchestrator.js#persistClassified` 里落的是同一格，既不是快照写点也不是 run-state 覆盖写。
+ * `sideEffect` 取 `"not_started"`：失败发生在**续跑期**，本次 run 还没执行过任何工具 ⇒ 没有「已发生的
+ * 外部副作用」可宣告（与 `not_started` 的既有含义一致：可以安全重放整个 run，不欠副作用）。
+ * `errorCode` 是**根因**分类（底层那条错的 `error.code`，取不到即 `"unknown"`），与两个既有出口同规则；
+ * 本码自身在 `code` 上。
+ */
+export const RECOVERY_ROWS_UNREADABLE = "recovery_rows_unreadable";
+
+/**
+ * 造 `recovery_rows_unreadable`（取值口径见 `RECOVERY_ROWS_UNREADABLE`）。
+ * @param {unknown} cause 底层失败（store 抛的那个错）
+ * @param {string} runId
+ */
+function recoveryRowsUnreadableError(cause, runId) {
+  const failure = new KitError(
+    RECOVERY_ROWS_UNREADABLE,
+    `Recovery rows could not be read for runId=${String(runId)}; refusing to treat an unreadable ` +
+      "recovery-row channel as \"no recovery rows\" (a swallowed read error here can replay a tool "
+      + "whose side effect already happened)",
+    { retryable: false, cause },
+  );
+  // **全部** additive 字段走 `Object.assign`（`operation` / `sideEffect` / `errorCode` 都没写进
+  // `KitError` 的 JSDoc，直接赋值会让 `--checkJs` / `--strict` 棘轮各多背一个 TS2339，#214「只减不增」；
+  // 同 `orchestrator.js#makePersistenceFailure` 的处理，那里那几条是既存债）。
+  // 不写 `@returns` 交叉类型：让 TS 自己从 `Object.assign` 推，推出来的就是真实形状。
+  return Object.assign(failure, {
+    operation: "listRecoveryRows",
+    phase: "transcript",
+    sideEffect: "not_started",
+    errorCode: terminationErrorCodeForError(cause),
+  });
+}
+
+/**
+ * 续跑期读恢复行：能力缺席 ⇒ `[]`（合法降级）；调用失败 ⇒ 抛 `recovery_rows_unreadable`。
+ * @param {{ store: any, runId: string }} ctx
+ * @returns {Promise<any[]>}
+ */
+async function readRecoveryRowsOrRefuse(ctx) {
+  if (typeof ctx.store?.listRecoveryRows !== "function") return [];
+  try {
+    const rows = await ctx.store.listRecoveryRows(ctx.runId);
+    return Array.isArray(rows) ? rows : [];
+  } catch (error) {
+    throw recoveryRowsUnreadableError(error, ctx.runId);
+  }
+}
 // issue #769：账本恢复行（`kind: "recovery"`）——快照 `executedToolIds` / `partialText` / `partialRound`
 // 三格的**首选来源**（行形状与事件键见 `src/store/recovery-rows.js`）；快照那三格从「唯一来源」退成兜底。
 import {
@@ -428,10 +496,13 @@ export async function restoreResume(ctx) {
       // 快照的 `executedToolIds` 格退成下面 `ctx.resumeExecutedToolIds` 里**并进来的兜底**，不再是唯一来源。
       // issue #769：恢复行**不进** `records`（那是轮记录通道）——从它自己的读口取。store 没实现
       // `listRecoveryRows` 时是空集，读侧就回落到快照兜底（与写侧的能力位跳过同一对口径）。
+      // issue #769 R3（B）：**能力缺席**与**读失败**是两件事。修前这里是 `.catch(() => [])`，把
+      // 「方法在、但读不动」（权限错 / I/O 错 / 坏行）也吞成「没有恢复行」，随后回落快照——而上面那段
+      // 语义红线正好说明为什么这样做最贵：`tool-executed` 已落、快照未落时恢复行是唯一执行证据。
+      // 现在：方法缺席 ⇒ `[]`（合法降级，回落快照）；调用 reject ⇒ 抛 `recovery_rows_unreadable`，
+      // 由本块的 `catch` → `ctx.fail` 收成终局（`reason: "persistence_failed"` + 同名字段）。
       /** @type {any[]} */
-      const recoveryRows = typeof ctx.store.listRecoveryRows === "function"
-        ? await ctx.store.listRecoveryRows(ctx.runId).catch(() => [])
-        : [];
+      const recoveryRows = await readRecoveryRowsOrRefuse(ctx);
       const ledgerExecutedToolIds = readExecutedToolIdRecoveryRows(recoveryRows);
       // 崩溃轮的半截正文同理：先问账本（`partial-text` 恢复行：一条一个事件、事件键 = 正文指纹）。
       // append-only ⇒ 历史轮的行永远在场，所以只有「那一轮的 assistant 正文**没**落账」的那些行才算崩溃

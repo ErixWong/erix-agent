@@ -1486,7 +1486,7 @@ export async function runToolLoop(options) {
       // issue #769：恢复行与轮记录同属账本侧的只追加通道 ⇒ phase 同走 `transcript`。它既不是快照写点
       // 也不是 run-state 覆盖写，落到下面的 `checkpoint_before_tool` 会把宿主可见的
       // `persistence_error.phase` 编错（那一列是契约面，不是内部诊断）。
-      : method === "appendRecoveryRow"
+      : method === "appendRecoveryRow" || method === "clearRecoveryRows"
         ? "transcript"
         : method === "saveRunState" || method === "markRunState"
         ? "run_state"
@@ -2235,6 +2235,16 @@ export async function runToolLoop(options) {
   //   就会退回 TS2339（… on type 'never'）——本组唯一一行类型注解，一行也没删。
   const resumeExecutedToolIds = new Set();
   const resumeRunSnapshotResults = new Map();
+  // issue #769 R3（阻断 A）：**代际边界 = 恢复行通道的生命周期**。恢复行的事件键只有
+  // `runId + round + event + 判别子`（`src/store/recovery-rows.js#recoveryEventKey`），**没有** run 代际，
+  // 所以「同一个 `runId` 上第二次非续跑」如果不清盘，上一代留下的 `tool-executed` 会在下一次续跑时
+  // 进入恢复集合并参与过滤 pending 工具（`src/loop/resume-manager.js` 的 pending 过滤），
+  // 后果是**跳过那次执行本该发生的副作用**。契约（`docs/host-consumer-contract.md` / `_cn.md` 的
+  // 「Ledger recovery rows」）已写明 `runId` = 一条持久化 run lineage、新逻辑 run 必须换新 ID；
+  // 这句是那个语义的运行面：`resume !== true` ⇒ 先清恢复行（**只**清恢复行，轮记录账本历史不动）。
+  // 走能力位：store 没实现 `clearRecoveryRows` ⇒ `persist` 发一条 `persistence_capability_degraded`
+  // 并跳过（不抛），与其余可选能力同一口径。
+  if (resume !== true) await persist("clearRecoveryRows", runId);
   try {
     await restoreResume({
     resume,

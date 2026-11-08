@@ -1006,15 +1006,17 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
     "groups 地板必须是清单里 key|axis 去重数算出来的");
 
   // ② 评审 M-B 的变异：从 8 个双锚点组各删一条登记，并同步删掉两表对应引用 ⇒ 剩下的全自洽
+  // 下面的 `at:` 是**锚点现算的命中行号**（不是手填基准）：#769 R3 在 src 里插了行 ⇒ 全部行号按
+  // 锚点重算同步过一遍（判据本身没动）。重算口径与 G4 一致：`anchorHitLines()` 的唯一命中。
   const victims = [
-    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6265 },
-    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6245 },
-    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 748 },
-    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 749 },
-    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 706 },
-    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 710 },
-    { key: "persistedTranscriptLength", axis: "read", path: "src/loop/resume-manager.js", at: 23 },
-    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 677 },
+    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6275 },
+    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6255 },
+    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 819 },
+    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 820 },
+    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 777 },
+    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 781 },
+    { key: "persistedTranscriptLength", axis: "read", path: "src/loop/resume-manager.js", at: 91 },
+    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 748 },
   ];
   const droppedKeys = new Set();
   const mutatedAnchors = [...CELL_AXES_ANCHORS];

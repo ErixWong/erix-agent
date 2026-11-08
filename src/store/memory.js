@@ -42,7 +42,7 @@ function copyRecord(record) {
  *   loadLatestRunSnapshot: (runId:string) => Promise<object|undefined>,
  *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
  *   appendCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
- *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>, appendRecoveryRow: (runId:string, record:object) => Promise<boolean>, listRecoveryRows: (runId:string) => Promise<object[]>
+ *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>, appendRecoveryRow: (runId:string, record:object) => Promise<boolean>, listRecoveryRows: (runId:string) => Promise<object[]>, clearRecoveryRows: (runId:string) => Promise<boolean>
  * }}
  */
 export function createMemoryTranscriptStore() {
@@ -121,6 +121,19 @@ export function createMemoryTranscriptStore() {
      */
     async listRecoveryRows(runId) {
       return (recoveryLedger.get(runId) ?? []).map(copyRecord);
+    },
+
+    /**
+     * issue #769 R3（C1，并为阻断 A 提供代际边界；可选能力）：清掉该 runId 的恢复行容器。
+     * 与 file store 的「删 `<runId>.recovery.jsonl`」同语义：只动恢复行通道，`transcripts`（轮记录
+     * 账本）一条不少。引擎在 `resume !== true` 的 fresh start 调它（`src/loop/orchestrator.js`），
+     * 因为事件键里没有 run 代际 ⇒ 「这个容器/文件」就是代际边界。
+     * 幂等：本来没写过 ⇒ `false`，不抛；清掉了东西 ⇒ `true`。
+     *
+     * @param {string} runId @returns {Promise<boolean>}
+     */
+    async clearRecoveryRows(runId) {
+      return recoveryLedger.delete(runId);
     },
 
     async load(runId) {

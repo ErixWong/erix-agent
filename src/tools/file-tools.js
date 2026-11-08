@@ -1131,6 +1131,16 @@ export const FILE_TOOL_DEFINITIONS = [
     //   27,630 字节 / 593 → 636 行，均行字节 42.1939 → **43.4434** ⇒ 容量 6,212 → **6,034**（字节 +10.43%、
     //   容量 −2.87%，都远超 ±2%）。描述那一档 `median 6,212 (42.2)` → `median 6,034 (43.4)`（**同位数
     //   替换 ⇒ 对本文件字节中性**）；本行以上的历史注与其余四档逐字未动，`self` 那一行按新实测刷新。
+    // ⚠ 2026-11-09 第十五刷（issue #769 R3，**`median` 那一档换人**）：同一个文件又被本单长了——
+    //   `clearRecoveryRows()` + 它的路径助手与类型声明把它从 27,630 顶到 29,368 字节 / 636 → 666 行
+    //   （均行字节 43.4434 → **44.0961** ⇒ 容量 6,034 → **5,944**），在 83 个写死样本里按容量排到第 **38/83**，
+    //   而样本中位仍是 **6,157**（`src/loop/error-ledger.js`）⇒ 两条 ±2% 断言（「描述声称的中位行数容量」对样本中位、
+    //   「median 档 == 那个文件当场实测」）的交集只剩 `[6,034, 6,063]`，再没有一个既是实测值又是档位值。
+    //   按 #730 先例把 `median` 角色交给当时真在中位的那一个：`src/loop/error-ledger.js`
+    //   6,727 B / 158 行 ⇒ 均行 42.5759 ⇒ 容量 **6,157**、CJK 29.567%。描述那一档
+    //   `median 6,034 (43.4)` → `median 6,157 (42.6)`（**同位数替换 ⇒ 对本文件字节中性**，`self` 不用重测）；
+    //   `fewest`（`pending-tool-result.js` 3,746）/ `most`（`abort.js` 9,407）/ `densest`（`state-view.js` 4,384，
+    //   记录 4,364，+0.46%）/ `self`（本文件 130,123 B / 2,302 行 ⇒ 4,637）当场复测逐字未越界 ⇒ 一列都没刷。
     description: "Read a text file by line range. "
       + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` continues after line 200); default 0. "
       + "`limit` is a **line count**, default 200. "
@@ -1139,7 +1149,7 @@ export const FILE_TOOL_DEFINITIONS = [
       + "and fold that for the file in hand, instead of assuming a line count. Measured that way on this repo's own `.js` sources "
       + "under `src/`, `bin/` and `examples/` at the default budget (this codebase, not your tree) \u2014 fewest \u2265 3,700 lines "
       + "(70.0 bytes/line, the widest lines; the whole-tree minimum rounded down to the nearest 50, so no file in those three trees reads fewer than 3,700 lines), "
-      + "median 6,034 (43.4), most 9,407 (27.9). "
+      + "median 6,157 (42.6), most 9,407 (27.9). "
       + "The floor is a whole-tree minimum rounded down to a multiple of 50 (a promise, not a per-file estimate); median and most come from a fixed sample of those sources and describe that sample, not every file here. "
       + "Wide lines cut this proportionally and CJK cuts hardest (3 UTF-8 bytes per character): "
       + "the most CJK-dense file in that fixed sample (`src/loop/state-view.js`, 37% of its bytes are CJK) fits 4,387 and "
