@@ -48,6 +48,67 @@ test("preserves legacy usage presence and field filtering", () => {
   );
 });
 
+// issue #785 P1 ①：推理 token 保真。两个方向各自只能被一个写法满足，所以下面三格是反向可证的：
+//   · 把 `openai-normalization.js` 里写 `reasoningTokens` 的那两行删掉 ⇒ 第一格红；
+//   · 把它改成「缺省填 0」⇒ 第二格红（键出现了，且值是 0）；
+//   · 把它改成 `?? 0` 之外还改了上游真的报 0 那一发 ⇒ 第三格红。
+// 上游回报口径只认 `completion_tokens_details.reasoning_tokens`（2026-11-08 真上游实测字段名）。
+test("#785 keeps reasoning_tokens as reasoningTokens when the upstream reports it", () => {
+  assert.deepEqual(
+    normalizeOpenAIUsage({
+      prompt_tokens: 4561,
+      completion_tokens: 20,
+      completion_tokens_details: { reasoning_tokens: 20 },
+    }),
+    { input_tokens: 4561, output_tokens: 20, reasoningTokens: 20 },
+  );
+});
+
+test("#785 leaves the reasoningTokens key ABSENT (never a fabricated 0) when upstream reports nothing", () => {
+  const normalized = normalizeOpenAIUsage({
+    prompt_tokens: 10,
+    completion_tokens: 5,
+  });
+  assert.equal(
+    Object.hasOwn(normalized, "reasoningTokens"),
+    false,
+    `未回报就不许出现该键，实际键集 = ${JSON.stringify(Object.keys(normalized))}`,
+  );
+  assert.deepEqual(normalized, { input_tokens: 10, output_tokens: 5 });
+  // details 在场但没带 reasoning_tokens，同样不许凭空长出一个键
+  const detailsOnly = normalizeOpenAIUsage({
+    prompt_tokens: 1,
+    completion_tokens: 2,
+    completion_tokens_details: { audio_tokens: 3 },
+    prompt_tokens_details: { cached_tokens: 4 },
+  });
+  assert.equal(Object.hasOwn(detailsOnly, "reasoningTokens"), false);
+  assert.deepEqual(detailsOnly, { input_tokens: 1, output_tokens: 2, cacheRead: 4 });
+});
+
+test("#785 keeps a reported zero reasoningTokens as a real measurement, not as absence", () => {
+  // 真上游实测：`reasoning_effort:"none"` 那一发的 reasoning_tokens 真值就是 0。
+  // 「回报了 0」与「没回报」是两个不同的事实，不能混成一个 0。
+  assert.deepEqual(
+    normalizeOpenAIUsage({
+      prompt_tokens: 10,
+      completion_tokens: 3,
+      completion_tokens_details: { reasoning_tokens: 0 },
+    }),
+    { input_tokens: 10, output_tokens: 3, reasoningTokens: 0 },
+  );
+});
+
+test("#785 规范化 usage 原有三键语义一字不改（reasoningTokens 是纯加法）", () => {
+  const before = normalizeOpenAIUsage({
+    prompt_tokens: 8,
+    completion_tokens: 3,
+    prompt_tokens_details: { cached_tokens: 2 },
+  });
+  assert.deepEqual(before, { input_tokens: 8, output_tokens: 3, cacheRead: 2 });
+  assert.equal(Object.hasOwn(before, "reasoningTokens"), false);
+});
+
 test("maps OpenAI stop reasons with fallback and passthrough behavior", () => {
   assert.equal(normalizeOpenAIStopReason("stop"), "end_turn");
   assert.equal(normalizeOpenAIStopReason("tool_calls"), "tool_use");
