@@ -861,7 +861,14 @@ const READ_LINE_CAPACITY_ROLES = [
   //   （+1.81%，仍在 ±2% 内但只剩 0.19pp）/ 2,281 → **2,302** 行 / 均行字节 56.0346 → **56.5261** /
   //   容量 4,678 → **4,637**。按 #271「记录值不许静默过期」当场刷新，**容差常量一个都没动**。
   //   容量 4,637 仍低于样本中位 6,157 ⇒「CJK 按比例压低行数」那句仍成立。
-  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 130_123, lines: 2_302, bytesPerLine: 56.5261, capacity: 4_637, cjkShare: 0.28874 } },
+  // 2026-11-09 第十五刷配套（issue #769 R10）：本文件改了 `fewest` 那一档的两个档位数字与均行字节（都是同位数
+  //   ⇒ 对模型可见面字节中性），**但描述上方的历史注自己长了**（`src/tools/file-tools.js` + 7 行）⇒
+  //   按 #537 同一条先例（「改描述句就会改这个文件自己的字节数」，它当时把 `own source fits` 从 4,784 刷到 4,750）
+  //   当场重测这一行：130,123 → **133,104** 字节 / 2,302 → **2,324** 行 / 均行字节 56.5261 → **57.2737** /
+  //   容量 4,637 → **4,577** / CJK 占比 28.87% → **29.21%**（新增的还是中文注释，仍按本文件 `CJK_CHAR` 口径）。
+  //   描述那句 `this tool's own source fits` 随之 4,637 → **4,577**（**同位数替换**，刷完再测一次：逐字相同
+  //   ⇒ 已收敛，不再取第二轮）。容量 4,577 仍低于样本中位 6,157 ⇒「CJK 按比例压低行数」仍成立。
+  { role: "self", file: "src/tools/file-tools.js", recorded: { bytes: 133_104, lines: 2_324, bytesPerLine: 57.2737, capacity: 4_577, cjkShare: 0.29212 } },
 ];
 
 const READ_LINE_CAPACITY_DIRS = ["src", "bin", "examples"];

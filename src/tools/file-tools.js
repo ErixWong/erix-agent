@@ -1145,8 +1145,13 @@ export const FILE_TOOL_DEFINITIONS = [
     //   `src/loop/resume-manager.js` 的中文注释抬高了它的均行字节（本树实测 **70.9154**），它取代
     //   `src/loop/pending-tool-result.js`（3,708）成为全树一次装得最少的那一个（**3,696**）⇒ 档位从
     //   `[3,700, 3,750)` 掉到 `[3,650, 3,700)`：下面两个档位数字 `fewest \u2265 3,700` 与 `reads fewer than 3,700`
-    //   一起改成 **3,650**，fewest 那一档的均行字节 `70.0` → **70.9**（三处都是**同位数替换 ⇒ 对本文件字节
-    //   中性**，`self` 那一行不用重测）。承诺没写高（`assertTierTight`：3,650 ≤ 3,696 < 3,700，零容差一字未动）、
+    //   一起改成 **3,650**，fewest 那一档的均行字节 `70.0` → **70.9**（两处档位数字都是**同位数替换**）。
+    //   承诺没写高（`assertTierTight` 零容差一字未动：3,650 ≤ 实测 3,696 < 3,700）、也没补 `measured minimum N`
+    //   （#543：实测最小值是证据不是承诺）。⚠ **本注自己给本文件加了字节** ⇒ `self` 那一档按 #537 先例重测：
+    //   130,123 → 132,340 B / 2,302 → 2,319 行 ⇒ 均行 56.5261 → 57.0677 ⇒ 容量 **4,637 → 4,577**（下面那句
+    //   `own source fits` 同位数跟着刷；刷完再测一次 ⇒ 逐字相同 ⇒ 已收敛）。`densest` / `median` / `most`
+    //   本单一行没碰，当场复测未越界 ⇒ 一列没刷（`densest` 4,384 / CJK 36.6%：记录 4,364 / 37.0%，±容差内；
+    //   `median` 6,157 与 `most` 9,407 与记录**逐字相同**）。逐字段旧值→新值写在测试侧角色表那一条。承诺没写高（`assertTierTight`：3,650 ≤ 3,696 < 3,700，零容差一字未动）、
     //   也没补 `measured minimum N`（#543：实测最小值是证据不是承诺）。逐字段旧值→新值写在测试侧角色表那一条。
     description: "Read a text file by line range. "
       + "`offset` is a **0-based** line index (the line numbers printed in the result are 1-based, so `offset=200` continues after line 200); default 0. "
@@ -1160,7 +1165,7 @@ export const FILE_TOOL_DEFINITIONS = [
       + "The floor is a whole-tree minimum rounded down to a multiple of 50 (a promise, not a per-file estimate); median and most come from a fixed sample of those sources and describe that sample, not every file here. "
       + "Wide lines cut this proportionally and CJK cuts hardest (3 UTF-8 bytes per character): "
       + "the most CJK-dense file in that fixed sample (`src/loop/state-view.js`, 37% of its bytes are CJK) fits 4,387 and "
-      + "this tool's own source fits 4,637. "
+      + "this tool's own source fits 4,577. "
       + "Nothing outside this repo "
       + "was measured, so for CJK-heavy code elsewhere fold the formula rather than reusing these numbers. Either way the cap is "
       + "far more than a single `limit` will ask for, so it is rarely what stops you. "
