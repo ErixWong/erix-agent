@@ -83,7 +83,7 @@
     "./contract-tests": "./test/contract/index.js"
   },
   "scripts": {
-    "test": "node --test",
+    "test": "node --test --test-reporter=tap",
     "soak": "node scripts/soak.mjs",
     "check": "node --check src/index.js",
     "check:syntax": "node scripts/syntax-check.mjs",

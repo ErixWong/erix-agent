@@ -31,7 +31,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [22]
+        # issue #774：矩阵从 `[22]` 扩到 `[22, 24]`。理由不是「多一个版本好看」，而是**判定只能跟 argv 走、
+        # 不能跟 runner 走**：`test/loop-snapshot-round-residue-735.test.js` 的变异用例 spawn 子进程时没钉
+        # reporter，Node 24 的默认 reporter 是 spec ⇒ `not ok …③…` 永远匹不上，那一条在 22 上绿、在 24 上红，
+        # 而单一 22 矩阵永远看不见它红。22 仍是 `engines` 下限与宿主实跑版本（见
+        # docs/maintenance/command-reference.md 的 ci 段），24 是 agent 与新宿主实际会跑到的版本。
+        # 加 24 前现测的既有 reporter 类红（都在本片里修了）：
+        #   · `check:mutation:run`：24 下 28 条样本全报「红了但不是该报的那条」（0 通过）⇒ 已钉 `--test-reporter=tap`；
+        #   · `check:test-summary`：24 的 `npm test` 日志是 spec ⇒ 现在报「未判定 / 日志不是 TAP」exit 2，
+        #     而 `npm test` 已钉 tap ⇒ 两个 job 交回的都是 TAP，数字照旧对账。
+        # 不拿 `continue-on-error` 当遮羞布：24 这一格是**阻塞**的。
+        node: [22, 24]
     steps:
       # issue #691：`fetch-depth: 0` 是 CHANGELOG 覆盖闸的**硬前置**——`check:changelog` 要读
       # `git log --first-parent --merges <上一个 tag>..<本版 tag|HEAD>` 与 `git tag`，而默认的浅克隆
@@ -57,6 +67,8 @@ jobs:
       # 正文里，没有任何机器面读它——于是「CI 全绿」是个没有数字的形容词，本地与 CI 的 skip 差几条只能
       # 人肉数。现在这一步把输出**落成文件**，下一步拿它与入库的期望值对账。
       # ⚠ `set -o pipefail` 不能删：没有它，`| tee` 会吃掉 `node --test` 的非 0 退出码（红变绿）。
+      # issue #774：reporter 钉在 `package.json` 的 `test` 脚本里（`node --test --test-reporter=tap`），
+      # 不写在本步的命令行上——这样本地、agent、CI 拿到的都是同一份 TAP 形状；下一步只读 TAP。
       - name: Test suite
         run: |
           set -o pipefail
@@ -68,6 +80,9 @@ jobs:
       # 读不到完整汇总（截断 / 不是 `npm test` 的输出）按 exit 2 红，不按「没问题」处理。
       # 数字漂了的合法处置只有两条：有意增删用例 ⇒ 同片改登记表 + 补一条 observations；意外漂了 ⇒ 修回去。
       # **不许为了对上数字去改测试**（加 skip / 删用例），也不许手改 CI 里的数字——登记表是唯一期望值来源。
+      # issue #774：这一步只读 TAP。上一步的 `npm test` 已钉 `--test-reporter=tap`，所以 node 24 这个 job
+      # 交回的也是 TAP、照样对账；万一 reporter 被改回去，这一步报的是 `NOT_TAP_LOG`「未判定」（exit 2），
+      # 不是「掉了用例」——runner 换默认 reporter 不是回归，但也不许被读成绿。
       - name: Test suite summary reconcile (CI numbers vs registered expectations)
         run: npm run check:test-summary -- --log "$RUNNER_TEMP/test-suite.log"
 
