@@ -530,7 +530,9 @@ export function createFileTranscriptStore({ dir }) {
           await rm(recoveryRowsPath(dir, runId));
           removed = true;
         } catch (error) {
-          if (error?.code !== "ENOENT") throw error;
+          // strict 下 `catch` 的 `error` 是 `{}`，直读 `.code` 就 TS2339（issue #417 棘轮）：就地断言收窄。
+          // 写法沿用同文件 `readTranscriptTailLines` 的先例；**行为一字不变**，仍「非 ENOENT 就重新抛」。
+          if (/** @type {{ code?: string }} */ (error)?.code !== "ENOENT") throw error;
         }
         recoveryDedupCaches.delete(safeRunId(runId));
         return removed;
