@@ -1007,14 +1007,14 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
 
   // ② 评审 M-B 的变异：从 8 个双锚点组各删一条登记，并同步删掉两表对应引用 ⇒ 剩下的全自洽
   const victims = [
-    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6250 },
-    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6230 },
-    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 742 },
-    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 743 },
-    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 700 },
-    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 704 },
+    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6265 },
+    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6245 },
+    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 748 },
+    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 749 },
+    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 706 },
+    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 710 },
     { key: "persistedTranscriptLength", axis: "read", path: "src/loop/resume-manager.js", at: 23 },
-    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 671 },
+    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 677 },
   ];
   const droppedKeys = new Set();
   const mutatedAnchors = [...CELL_AXES_ANCHORS];
