@@ -111,6 +111,12 @@ test("#769 写点：工具执行那一刻账本里就出现 tool-executed 恢复
     runId: "rec-run",
   });
 
+  // 本格钉的是**载体形状**与**不污染轮记录**；「恢复行排在 `tool_result` 之前」那句契约**不在这里**证明——
+  // 事后的两次读（`listRecoveryRows()` / `load()`）是两条独立数组，比不出先后。次序由本文件末尾那条
+  // 「（D）跨通道顺序」用**记录调用序列**的包装 store 证明（`calls` 里比较 `appendRecoveryRow` 与带
+  // `tool_result` 的那次 `appendRound` 谁先）。反向证两条均已实跑：把执行器里那句 await 注释掉 ⇒ 本格与
+  // 次序格一起红；只把恢复行落盘延后到下一次 `appendRound` 之后 ⇒ **只有**次序格红（"恢复行在第 3 次调用、
+  // 结果行在第 2 次"），证明那条断言不是空转。
   // 恢复行走**自己的通道**（第 2 段换道裁决）：读口是 `listRecoveryRows()`，不在轮记录里。
   const executed = (await store.listRecoveryRows("rec-run"))
     .filter((row) => row.recoveryEvent === RECOVERY_EVENT_TOOL_EXECUTED);
