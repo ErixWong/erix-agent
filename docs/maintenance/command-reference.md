@@ -66,7 +66,7 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   added for issue #743 so the CLI guard's two skip reasons are actually checked). Because the bare-line ratchet keys on
   (document, target file, line range) — **never on the doc's own line number** — rewriting
   `` `symbol` (`path:1517-1531`) `` into a bare `path:1517-1531` leaves that count untouched while deleting the
-  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 235`:
+  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 238`:
   dropping below it is red — that is the degeneration being caught, not a ratchet rise — and exceeding it earns a "raise the floor" note.
   Both numbers are read back out of the script's own text, which is what lets `--self-test` prove they are locks.
   The measurement log that used to sit in this parenthetical — every past reading, merge by merge, with the tree
@@ -92,13 +92,92 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   50 unique keys in total; before that 130 came from PR #451 turning the contract's two bare ranges pointing at the
   end-turn wrap-up block into a symbol anchor).
   The number
-  is reproducible with `node scripts/docs-drift-check.mjs --verbose`: 10 unique ranges minus 4 declaratively exempted
+  is reproducible with `node scripts/docs-drift-check.mjs --verbose`, which prints the whole breakdown (occurrences /
+  unique ranges / declaratively exempted / **marked-region exempted** ⇒ effective measured); as of issue #772 that
+  line reads 97 occurrences, 82 unique ranges, 4 declaratively exempted
   example / host-repo paths (`BARE_LINE_EXEMPTIONS`: the entry names one document + one placeholder path, **and** that path plus a
   declaration word must both appear on the referencing line — a leftover "for example" elsewhere is not a declaration; an entry
   nobody uses goes red; and the register carries its own config check, so a declaration pattern that can match the empty
   string (or carries a `g` flag, making `.test()` stateful) is itself an error — same dual-condition family as #286's
   `test/static-guards.test.js`). An out-of-range line number is an
-  error, not an observation. Scope is the document set a host actually reads: the two READMEs, both AGENTS files, both
+  error, not an observation.
+  *Marked-region pinpoint exemption* (issue #772, reworked by R3): the two-axis payload table in both contract
+  files — everything **between** the `<!-- erix:snapshot-cell-axes:begin -->` / `<!-- erix:snapshot-cell-axes:end
+  -->` markers that is a `|`-prefixed table row — is exempt from this ratchet, and the exemption is **conditional
+  on a machine check that the gate performs itself**. The anchor registry lives in `scripts/cell-axes-anchors.mjs`
+  — one entry per cell **and per axis** (`{ key, axis, codePath, anchor, note }`, 39 entries / 27 groups over 14
+  cell names, between the `CELL-AXES-ANCHORS:BEGIN/END` sentinels) — and **both** this gate and
+  `test/contract-snapshot-cell-axes-767.test.js` import that one module, so there is no second copy to drift.
+  An anchor is a **code shape** — the payload-assignment line, the guard's `if`, the return site — never the key
+  name; it must hit its target file **exactly once** (0 hits = the anchor is dead, >1 = ambiguous, and an
+  ambiguous anchor is not a baseline), and the cell's `path:line` must equal the recomputed line, otherwise the
+  failure prints "the table says :N / the anchor says :M" and quotes both lines. The gate re-derives those line
+  numbers **in its own process** — `node scripts/docs-drift-check.mjs` never spawns the test, it is a pure
+  documentation gate — and reconciles each contract file against that file's own numbers, so one cell is checked
+  twice with different answers (EN and CN differ). Exemption is granted **per group**: a reference whose anchor
+  was deleted, weakened into a key name, or left pointing at a moved line drops out of the exemption and back
+  into the ratchet, so deleting the anchor is no longer a way to hide the citation. That is what R3 changed: R2
+  kept the registry inside the test file, re-extracted it with a regex, and matched the test file's *shape*
+  (`G4_KEY_NAME_CHECK`'s definition, an `assert.ok(...)` around it, `G4_ANCHOR_EQ_CHECK`'s call). What that shape
+  matching bought was nothing measurable: pointing a cell at a **comment** that merely mentions `compactionStats`
+  (`orchestrator.js:3015`, which explains a checkpoint test, while the real write site is `:3038`) turned
+  `node --test test/contract-snapshot-cell-axes-767.test.js` red while `npm run check:docs` stayed at exit 0 —
+  the exemption is issued by the gate, and the gate could not recompute. What the gate still asserts about the
+  test is only what it can verify: the file is present and non-empty, and it imports the anchor module (one
+  table, two readers). What it no longer claims: anything about the test's internals — a regex cannot tell a
+  judgement from a weakened one. `--self-test` carries 19 cases in this family (14 red + 5 green controls): a
+  reference copied outside the markers → red; the guard test emptied → red; the module import renamed inside the
+  test → red; an anchor weakened to the bare key name → red, naming the ambiguity and its hit lines; the registry
+  turned into a function call → red; **one anchor entry deleted** → that cell's reference is counted again, so the
+  ratchet goes over its floor, and the missing registration is named by cell and axis; a table cell pointed at
+  that comment line → red with "the table says :N / the anchor says :M" plus both lines; a caliber line added to
+  `CELL_AXES_CALIBER_LINES` that nothing inside the region uses → red ("registered but nobody uses it"), and its
+  live value is now read from this script's own text — that is what makes the self-test overlay of it bite at
+  all, since an overlay changes text, not an already-loaded array (the R2 case for this rule was spinning).
+  Comment-only edits → green. The floor stayed at 6: the exemption accounts for the table's 72 keys, while the
+  bare line numbers the notes *under* the table had acquired were turned into symbol anchors (`residueStart` /
+  `restoreResume`) rather than asking to raise the floor.
+  *Anchor kind* (issue #772 R4 M-A): every registry entry also carries `kind: "code" | "comment"` — `code` for a
+  write site or a reader, `comment` for the three entries whose whole point is a sentence inside a comment (`toolUse`
+  and `ts`, the stop-writing evidence, plus the resume side's "do not trust the snapshot's
+  `persistedTranscriptLength`"). The judgement is one shared function — `anchorKindError()` in
+  `scripts/cell-axes-anchors.mjs`, imported by the gate **and** by the contract test, so neither side owns a second
+  copy of the rule: a `code` anchor whose single hit is a comment line (`^\s*(\/\/|\/\*|\*)`) is red, a `comment`
+  anchor that lands on code is red, and the message names the cell, the axis, the hit line number and that line's
+  raw text. It closes the shape a line-number reconciliation cannot see: pointing the `compactionStats` write anchor
+  at `orchestrator.js:3015` (a comment that merely mentions the key) **while rewriting both contract tables'
+  citation to the same line** is self-consistent — equal numbers, file present, in range — and used to sit at exit 0
+  on both gates. `parseCellAxesAnchorTable()` also refuses the exemption when an entry's `kind` is missing or outside
+  `code / comment`.
+  *Coverage has a second, independent truth* (issue #772 R4 M-B): `CELL_AXES_REQUIRED_CELLS` is the human-reviewed
+  list of `(key, axis, codePath, row)` slots those two tables must cover — 39 slots over 14 cell names, written by
+  hand and never derived from the anchor registry (deriving it would stop being a second opinion). Every slot has to
+  be present in the registry **and** in each contract file, counted per slot rather than "mentioned once"; the shared
+  `checkCellAxesCoverage()` names the missing slot **and which file it is missing from**. The ratchet floors are now
+  derived from that list — `CELL_AXES_ANCHOR_FLOORS = { entries: CELL_AXES_REQUIRED_CELLS.length, groups: distinct
+  key|axis in the list }`, currently 39 / 27 — and must not be hand-tuned. That closes the silent thinning: deleting
+  one entry from each of the eight two-anchor groups **together with** the matching rows in both tables leaves 31
+  entries / 27 groups / 14 cells with every remaining citation still matching its anchor — which the old
+  hand-written floor (30 / 25) waved through.
+  *Known limit: semantics are not machine-checkable* (issue #772 R4, **registered, not patched**). Pointing
+  `compactionStats`' snapshot write anchor at a **different real line that mentions the same key name** —
+  `src/loop/orchestrator.js:3505` is `compactionStats,`, a payload pack, not the snapshot write site at `:3038` —
+  and rewriting both tables' citation to it in the same change stays green today. Everything a machine can ask is
+  answered: the file exists, the anchor hits exactly once, `kind: "code"` matches a code line, both tables equal the
+  recomputed numbers, and the coverage list is still satisfied. What no anchor can express is "*this* line is the
+  event *this* cell is about" — that is a reading judgement and stays with review. The leniency is pinned as a
+  contract rather than quietly hoped away: `--self-test` carries a green-control case for exactly that shape
+  (labelled 「#772 R4 已知限度（特征用例…）」), and `test/contract-snapshot-cell-axes-767.test.js` pins it as
+  `G4-R6 …（已知限度，见 command-reference）`. Do not add heuristics to close it — a heuristic that guesses which
+  event a line is about would itself be the thing nobody can review.
+  *The region holds only the table* (issue #772 R2): every line strictly between the two markers must be a
+  `|`-prefixed table row, a marker line, blank, or a **registered** caliber line (`CELL_AXES_CALIBER_LINES`, matched
+  as whole trimmed text — and an entry nobody uses is itself red, the same no-back-door rule as the declarative
+  exemptions above). Without this the exemption had no **positive** invariant: sliding `begin` three lines up drops a
+  paragraph of ordinary prose into the exempted region and nothing reports it, and prose is exactly what grows next
+  to a table. A cap on the number of exempted references was rejected on purpose — the next row added to the table
+  would only raise it.
+  Scope is the document set a host actually reads: the two READMEs, both AGENTS files, both
   contract files, both architecture docs, both chart docs, both requirements docs, `examples/pi-extension/README.md`,
   the maintenance ledger pair (`docs/maintenance/symbol-anchor-ledger.md` / `docs/maintenance/symbol-anchor-ledger_cn.md`),
   plus **every** `docs/host-upgrade-guide*.md` (discovered from the directory, so a new guide is
