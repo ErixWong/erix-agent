@@ -66,7 +66,7 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   added for issue #743 so the CLI guard's two skip reasons are actually checked). Because the bare-line ratchet keys on
   (document, target file, line range) — **never on the doc's own line number** — rewriting
   `` `symbol` (`path:1517-1531`) `` into a bare `path:1517-1531` leaves that count untouched while deleting the
-  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 242`:
+  symbol check entirely, so `symbols` carries its own **only-up floor** `SYMBOL_ANCHOR_MIN_UNIQUE = 243`:
   dropping below it is red — that is the degeneration being caught, not a ratchet rise — and exceeding it earns a "raise the floor" note.
   Both numbers are read back out of the script's own text, which is what lets `--self-test` prove they are locks.
   The measurement log that used to sit in this parenthetical — every past reading, merge by merge, with the tree

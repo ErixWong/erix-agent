@@ -128,7 +128,7 @@ that gate owns. Do not skip the third column: every trap it names has bitten thi
   nothing references is red too). **A path without a prefix is a path inside this repository and must resolve here** —
   that is the whole point of the marker: it names ownership instead of granting a free pass.
 - **Anchor granularity and doc line anchors** (issues #210 / #286): four gate-owned numbers are the only truth on
-  this page — `BASELINE_ROOT = 102`, the symbol-anchor floor `SYMBOL_ANCHOR_MIN_UNIQUE = 242` (only-up: dropping
+  this page — `BASELINE_ROOT = 102`, the symbol-anchor floor `SYMBOL_ANCHOR_MIN_UNIQUE = 243` (only-up: dropping
   below it is red, that is the degeneration being caught), the bare-line ratchet `BARE_LINE_REF_BASELINE = 6`
   (only-down), and the anchor-face floor `REF_SCAN_DOCS_MINIMUM = 51`. Docs must not lean on bare line numbers:
   point at a symbol with its file (`` `symbol` (`path`) ``), never at `path:123`. The measurement log that used to
