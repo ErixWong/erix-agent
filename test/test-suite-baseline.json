@@ -3,12 +3,28 @@
     "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
     "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
     "expect": {
-        "tests": 3743,
+        "tests": 3749,
         "fail": 0,
         "maxSkipped": 16
     },
-    "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。 **（#774 追加的第三个来源，上限 15 → 16）** `test/loop-snapshot-round-residue-735.test.js` 里新增的那格「这台机器上找不到 Node 24 runner」——**它验的正是 Node 24 的默认 reporter 形状**，所以只在拿得到 Node 24 可执行文件的环境真跑：本机 `~/.local/node24/bin/node` 在 ⇒ 本地 13 条；CI 的 `node 24` job 走 `process.execPath` ⇒ 15 条；CI 的 `node 22` job 两个都没有 ⇒ **16 条**。 CI 实测（run `42428178968`，同一棵 `cc08dd4`，两条 job 都跑到过 `check:test-summary`）：`node 24` = `tests=3716 pass=3701 fail=0 skipped=15 ⇒ TEST-SUMMARY-VERDICT ok`；`node 22` = `skipped=16 ⇒ red codes=SKIPPED_OVER`。 **这不是把判据放宽**：那一格在 `node 24` job 上真跑，覆盖面没丢；上限 16 之后**再多跳一条仍然红**（反向证：`# skipped 17` 的日志在本登记值下仍报 `SKIPPED_OVER`）。",
+    "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。 **（#774 追加的第三个来源，上限 15 → 16）** `test/loop-snapshot-round-residue-735.test.js` 里新增的那格「这台机器上找不到 Node 24 runner」——**它验的正是 Node 24 的默认 reporter 形状**，所以只在拿得到 Node 24 可执行文件的环境真跑：本机 `~/.local/node24/bin/node` 在 ⇒ 本地 13 条；CI 的 `node 24` job 走 `process.execPath` ⇒ 15 条；CI 的 `node 22` job 两个都没有 ⇒ **16 条**。 CI 实测（run `42428178968`，同一棵 `cc08dd4`，两条 job 都跑到过 `check:test-summary`）：`node 24` = `tests=3716 pass=3701 fail=0 skipped=15 ⇒ TEST-SUMMARY-VERDICT ok`；`node 22` = `skipped=16 ⇒ red codes=SKIPPED_OVER`。 **这不是把判据放宽**：那一格在 `node 24` job 上真跑，覆盖面没丢；上限 16 之后**再多跳一条仍然红**（反向证：`# skipped 17` 的日志在本登记值下仍报 `SKIPPED_OVER`）。 **（#754 追加的第四个与第五个来源，上限不动）** 本支两条**无条件** skip：`test/loop-resume.test.js` 的「有锚点而写被拒」家族一格与 `test/loop-resume-abandon-signals-730.test.js` 的格2③（现场只有 pre-261021 升级闸门造得出，闸门已关 ⇒ 第二类因果耦合，follow-up #776）。合并树本机现测 skipped **15** = main 侧同一台机器的 13 + 这两条 ⇒ 仍低于登记上限 16，判据没放宽。⚠ **CI 侧的合并树读数尚未到手**：main 的 16 是在**没有**这两条的树上量到的，本支合进去之后 CI `node 22` 预计 18；这一格按「上限取已量到的最大环境」的口径**不把预计当已测**，等 CI 读数附 run 号再抬（抬之前 CI 若报 `SKIPPED_OVER`，那是这一格在等读数，不是掉了覆盖）。",
     "observations": [
+        {
+            "date": "2026-11-09",
+            "env": "local",
+            "node": "v22.23.2",
+            "commit": "合并树 `2326f1e`（本支 `8bacac6` merge main `4f9b908` = `ac80b6f`，其后一笔只改派生登记；六个数取自这棵已提交树现跑的 `npm test`，日志 /tmp/778f-npmtest-final.log，`check:test-summary -- --log` 同一份日志复核）",
+            "branch": "fix-261108-01-close-legacy-upgrade-gate",
+            "mainSha": "4f9b908",
+            "mergeBase": "28ba2f1",
+            "tests": 3749,
+            "pass": 3724,
+            "fail": 10,
+            "skipped": 15,
+            "todo": 0,
+            "cancelled": 0,
+            "why": "**tests 地板取合并树现测 3749，不是 3743 + 6 猜出来的**：main 登记的 3743 与本支自己的 3718 是两棵不同树上的读数（同格第 N 次双改，口径照旧「以合并树现测为准，不抄任何一边」）。逐格有名有姓地对：`git diff origin/main...HEAD -- test/` 里 `test(` 计数净增 **5** 格 —— `test/loop-resume-unpersisted-tool-results.test.js` 25→29（`#754 第一必修 · partialText 与快照正文同去留`、`#754 第一必修的另一半 · 探针 = 0 ⇒ partialText 照旧喂`、`#754 第二必修 · 不许对模型说「没有未结清」`、`#754 裁决 2 · 第三刀验收格（非普适不变式）`），`test/loop-snapshot-round-residue-735.test.js` 10→11（`#754 判据 2 · 出声只在旧格式`）；**第 6 格是文件本身** `test/helpers/journal-crash-body.js`（main 上不存在、本支新增，它没有 `test()` 但被 `node --test` 算一格 ⇒ 与 084668c 那条记录的「凭空多 1」同一个形状）。⇒ 3743 + 5 + 1 = 3749，与现测逐字相同。`skipped` 15 = main 侧同机 13 + 本支两条具名无条件 skip（见 `skipCeilingWhy`）⇒ 上限 16 不动。**fail 实测 10，而登记值 0 ⇒ 本文件现在会判红（`FAIL_NONZERO`），这 10 格不是本片新写的用例挂了**：7 格在 `test/contract-snapshot-cell-axes-767.test.js`（G4 / G4-R1 / R3 / R4 / R5 / R6 / G6）、2 格在 `test/docs-anchor-ratchet.test.js`（#286 T-b1a 与棘轮对账，二者都只是 spawn `docs-drift-check --verbose` 拿到非零退出）、1 格 `test/version-state-probe-703.test.js` 的 A（其 self-test 在合成宿主里跑 `docs-drift-check --strict`，把同一个红搬进来了）——同一个根因：本片的 `src/loop/resume-manager.js` 让 main 新登记的**两轴载荷表锚点行号**漂移（`scripts/cell-axes-anchors.mjs` 登记 568/699/700/657/704/661/667/586/634/635，合并树实际 575/720/721/664/728/668/674/593/636/637），于是契约两份表与锚点登记表不再等值、标记区定点豁免失效、裸行号棘轮从 6 涨到 34。**归属**：这三份文件是上一段会话在 PR #778 回帖里划给主会话的（同一次改动要连着改契约里「旧档案照原样读」那句弃用措辞），本轮按界线**没有自己动手**。可复核的归因：`git worktree` 上 main `4f9b908` 跑 `docs-drift-check` = **exit 0**，本支合并前的 `8bacac6` 跑 = **exit 1 / 同样 20 处漂移**（⇒ 这个红在本 PR 合并 main `28ba2f1` 那一刻就已存在，不是本次往前合并新造的）。处置选项留给主会话：要么按上面对照表把 10 个行号重登（`cell-axes-anchors.mjs` + 契约两份表，共 20 条漂移），要么先合再在同一片里重登。 另：本轮自己修掉的只有派生格 —— `CHANGELOG_PAIR_FLOOR` 取守卫现报的 33（两侧各自的 32 / 28 都不抄）、变异表与兼容性附表走 `--sync`、两档类型棘轮现测 = 基线 102 / strict 1887 不用降；`SYMBOL_ANCHOR_MIN_UNIQUE` 现测 242 = 登记 242，**不用抬也不用同步五处**。没删例、没 skip 新格、没把任何判据删成恒真：main #774 的 `MUTANT_STILL_GREEN` 登记的是本支改名前的两个旧名（在本树已一格不存），本轮改成合并树现名并把手工三条 `assert.match` 并进判定器统一判，覆盖面一格没少。"
+        },
         {
             "date": "2026-11-08",
             "env": "ci",
