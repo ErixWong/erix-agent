@@ -44,3 +44,53 @@
 - 同键名的**干扰注释行**（`/^ +\/\/ - \`compactionStats\`：/`）唯一命中 → `src/loop/orchestrator.js:3036`
 - 「同一键名的另一处真代码行」`/^ {6}compactionStats,$/` 唯一命中 → `src/loop/orchestrator.js:3529`（`      compactionStats,`，run-state 落盘载荷，**不是**这格的写点）；旧靶子 `:3505` 上的那行已被 #770 删除
 - CN 表 `compactionStats` 行 = `docs/host-consumer-contract_cn.md:1919`（EN = `docs/host-consumer-contract.md:2368`）；写点格现文 = `` `src/loop/orchestrator.js:3038`、`src/loop/orchestrator.js:6185` ``（旧夹具认的「（快照）」字样已不存在，但闸自己读的是 `cells[5]`，见 `cellAxesTableRefs`）
+
+## 例子诚实性对账表（5 行 · 每条一个「新靶子 + 仍在问同一件事的证据」）
+
+行号来源全部是本轮现读：`scripts/cell-axes-anchors.mjs` 的锚点表在 `// CELL-AXES-ANCHORS:BEGIN` 之后（`export const CELL_AXES_ANCHORS = [` 是第 110 行，一条登记占一行）；两轴表 CN 标记区 `docs/host-consumer-contract_cn.md:1903` 起、EN 标记区 `docs/host-consumer-contract.md:2352` 起。
+
+### 例 1 —「把 `status` 写点锚点削弱成键名 ⇒ 锚点歧义」（`docs-drift-check.mjs` 里的 #772 免检通道那一例）
+
+- **原来问什么**：锚点被削弱成「只是提到键名」的词面 ⇒ 词面在源码里命中多处 ⇒ 闸自己重算当场报「锚点歧义」，那条引用掉出逐组豁免 ⇒ 裸行号棘轮回红。
+- **为什么 #770 之后问不到**：旧变异是 `replaceUnique('"^ {8}status,$"', '"status"')`，而 #770 把快照载荷里那行 `status,` 删了 ⇒ 锚点表里再也没有 `"^ {8}status,$"` 这个字面量 ⇒ 变异没落上（框架先报「变异没落到 `scripts/cell-axes-anchors.mjs` 上」，判据根本没被问到）。
+- **新靶子坐标**：`scripts/cell-axes-anchors.mjs:112`（`status`|write，`kind: "comment"`，锚点命中 `src/loop/orchestrator.js:3029`）；定位不再拿整份文件的字面量，改成只在 `export const CELL_AXES_ANCHORS = [` 之后按 `key: "status", axis: "write"` + `anchor:` 现读那一行（`cellAxesAnchorTableRow` / `cellAxesStatusWriteAnchorRow` / `cellAxesWeakenAnchor`）。削弱后的锚点仍是**键名词面** `"status"`。
+- **仍在问同一件事的证据**：① 永久反向证 R1（本轮新增，`--self-test` 里）＝把这一格锚点**还原成 #770 之前的旧形状** `^ {8}status,$` ⇒ 红，点名「锚点 0 命中（正则 ^ {8}status,$）」+「没有登记锚点…也不再被豁免」+ `status` + 棘轮回红；② 判据削弱影子跑 SA-W1（`hits.length !== 1` → `hits.length === 0`）⇒ 本例变红且缺 `/锚点歧义/`（见下表）。
+
+### 例 2 —「删掉 `status` 写点登记 ⇒ 不再被豁免」（#772 R3 删锚点躲过去）
+
+- **原来问什么**：把这一格这一轴的登记条目整条删掉 ⇒ 那条行号没有基准 ⇒ 闸点名「没有登记锚点 ⇒ 也不再被豁免」⇒ 回到裸行号棘轮计数。
+- **为什么 #770 之后问不到**：旧定位要求「整份模块文本里恰好一行同时含 `key: "status", axis: "write"` 与 `anchor:`」；#770 给人审清单 `CELL_AXES_REQUIRED_CELLS`（同文件第 57 行）也补了 `kind`/`anchor` ⇒ 命中 2 行 ⇒ `hit.length !== 1` ⇒ 变异原样返回。
+- **新靶子坐标**：还是 `scripts/cell-axes-anchors.mjs:112` 那一行整行删（`cellAxesDropStatusWriteAnchor`，只在 `CELL_AXES_ANCHORS` 数组段内定位）。问的事一字未改。
+- **仍在问同一件事的证据**：① R2（本轮新增）＝登记那一行**留着**、只把它的锚点削弱成跑不通的正则 `^ {8}status(,$` ⇒ 同样点名「锚点正则跑不通」+「没有登记锚点」+「不再被豁免」+ `status` + 棘轮回红（证的是豁免要的是**能重算的锚点**，不是「表里有一行」）；② SA-W2（`if (anchorLines === undefined) {` 之后直接 `continue`，取消那句点名）⇒ 本例变红且缺 `/没有登记锚点/`。
+
+### 例 3 —「CN 表把写点行号换到同一键名的注释行 ⇒ 闸重算发现行号漂了」（#772 R2 评审第 3 节现场）
+
+- **原来问什么**：表里那条裸行号被改引到**同一键名的另一句注释**上（词面看着像、语义错了）⇒ 闸按登记锚点重算 ⇒「与登记锚点不等值」并把锚点那一行原文印出来。
+- **为什么 #770 之后问不到**：旧 overlay 用 `cells.findIndex((c) => c.includes(CELL_AXES_DRIFT_PROBE) && c.includes("（快照）"))` 认写点列；#770 之后那一格写的是 `` `src/loop/orchestrator.js:3038`、`src/loop/orchestrator.js:6185` ``（解释缺席的注释 + 快照轮记录），「（快照）」字样没了 ⇒ `col < 0` ⇒ 变异空跑（框架报「变异没落到 `docs/host-consumer-contract_cn.md` 上」）。
+- **新靶子坐标**：`docs/host-consumer-contract_cn.md:1920`（`compactionStats` 那一行）的「今天的写点」列；列号由 `cellAxesWriteColumnIndex` 从标记区表头 `docs/host-consumer-contract_cn.md:1904` 现算（闸自己读的是剥掉首尾竖线后的 `cells[5]`，与这里同一列）。打进去的是同键名的干扰注释行 `src/loop/orchestrator.js:3036`（现算自 `/^ +\/\/ - \`compactionStats\`：/`，旧 `CELL_AXES_DISTRACTOR_LINE = 3036` 手抄值现算后**恰好仍是 3036**）。
+- **仍在问同一件事的证据**：① R3（本轮新增）＝把那一格**还原成 #770 之前的单条引用形状**（删掉锚点重算出的第二条 `…:6185`）⇒ 点名「`compactionStats` 的 write 列与登记锚点不等值——表写 `…:3038` / 锚点实际 `…:3038` `…:6185`」+「cn 表里只引了 1 处，人审清单要求 2 处」；② SA-W3（`anchorLinesEqual` 判据被短路成恒真）⇒ 本例变红且缺 `/登记锚点不等值/`。
+
+### 例 4 —「kind=comment 的锚点被换成一句真代码 ⇒ 种类不许逆」（#772 R4 M-A 反方向）
+
+- **原来问什么**：钉「为什么没有写点」的注释锚点被换成**一句真代码** ⇒ 种类对账必须红（`kind=comment` 而命中的不是注释行），并点名 `toolUse`。
+- **为什么 #770 之后问不到**：旧 overlay 拿 `key:"status" && axis:"write"` 那条登记当「一句真代码」；#770 之后 `status` 写点自己就是注释锚点 ⇒ 换进去的还是注释 ⇒ 种类没被逆 ⇒ 实测只剩「行号不等值」+ 计数红，`/锚点种类不符/`、`/kind=comment/`、`/不是注释行/` 三条全不在场。
+- **新靶子坐标**：换入方 = `scripts/cell-axes-anchors.mjs:111`（`round`|write，`kind: "code"`，锚点命中 `src/loop/orchestrator.js:3004`，真代码行），由 `CELL_AXES_R4_REVERSE_CODE_TARGET` 现读（表里第一条 `kind: "code"` 且唯一命中非注释行的写点锚点；`anchorLineIsComment` 判非注释）；被换方 = `scripts/cell-axes-anchors.mjs:124`（`toolUse`|write，注释锚点命中 `:3017`）。
+- **仍在问同一件事的证据**：① R4（本轮新增）＝锚点与两份表引用**都不动**、只把登记的 `kind` 从 `"comment"` 改成 `"code"`（种类登记造假）⇒ 点名「锚点种类不符…`kind=code`…那一行**是注释行**」+ `toolUse` + 棘轮回红；② SA-W4（`anchorKindError` 短路成 `null`）⇒ 本例变红且缺 `/锚点种类不符/`（同族的 M-A 正向例也一起红，是预期的连带，不算把红改绿）。
+
+### 例 5 —「已知限度」特征用例（放行证：机械上必须全绿）
+
+- **原来问什么**：把写点锚点换到**同一键名的另一处真代码行**、并且两份表的引文同步改口 ⇒ 闸机械上问不出问题（全绿）；这一例钉的是「这一族放行是真的放行」，不是恒绿。
+- **为什么 #770 之后问不到**：旧 overlay 把两份表的引文同步到写死的 `"src/loop/orchestrator.js:3505"`，而 #770 删掉的正是那一行；锚点 `^ {6}compactionStats,$` 现在唯一命中 `:3529` ⇒ 表写 `:3505` 与锚点 `:3529` 不等值 ⇒ EN/CN 各一条「不等值」红 + 逐组豁免被撤 ⇒ 裸行号实测 **10 > 6**（这 4 处红里只有计数那条是 #770 的诚实后果，其余 3 条是靶子过时）。
+- **新靶子坐标**：`src/loop/orchestrator.js:3529`（`      compactionStats,`，run-state 落盘载荷——**另一件产物**），由 `CELL_AXES_R4_SAME_NAME_CODE_LINE` 现算（`/^ {6}compactionStats,$/` 唯一命中且非注释行，否则 `null` ⇒ 变异打不上 ⇒ 报红）；配套把 `docs/maintenance/command-reference.md:164` 那句「已知限度」的举例行号从 `:3505` 同步改成 `:3529`，并写清它是 run-state 载荷、不是这格的写点。
+- **仍在问同一件事的证据**：① R5（本轮新增）＝把「两份引文同步改口」只做一半（只改 EN、CN 留着旧行号）⇒ 必须红，点名「cn：`docs/host-consumer-contract_cn.md` 表里 `compactionStats` 的 write 列与登记锚点不等值」——证的是这条放行证的绿**依赖两份表真的同步**；② 把靶子还原成旧形状（`:3505`）就是本轮基线那一跑：`/tmp/770r2e-selftest-base.log` 里这条 ✗ 点名自己（`表写 …:3505 / 锚点实际 …:3529`）。
+
+## 判据削弱影子跑（SA）——「削弱判据 ⇒ 该例自己变红并点名」的字面证据
+
+跑法：`git archive HEAD | tar -x -C /tmp/770r2e-SA` + `ln -s` 主树 `node_modules`，只在影子里改**判据本身**（不改 fixture、不改 docs），然后 `node scripts/docs-drift-check.mjs --self-test`，日志 `/tmp/770r2e-selftest-SA.log`。
+
+| 削弱 | 改在哪 | 该例结果 |
+|---|---|---|
+| W1 | `docs-drift-check.mjs` 逐组重算的 `if (hits.length !== 1) {` → `if (hits.length === 0) {`（歧义锚点也算基准） | 例 1 ✗（缺 `/锚点歧义/`） |
+| W2 | 同文件 `if (anchorLines === undefined) {` 之后直接 `continue`（不再点名「没有登记锚点 ⇒ 不再被豁免」） | 例 2 ✗（缺 `/没有登记锚点/`） |
+| W3 | 同文件 `if (!cellAxesAnchorLinesEqual(cited, anchorLines)) {` → `if (false && …)`（等值对账短路） | 例 3 ✗（缺 `/登记锚点不等值/`） |
+| W4 | 同文件 `const kindError = cellAxesAnchorKindError(...)` → `const kindError = null`（种类对账不判） | 例 4 ✗（缺 `/锚点种类不符/`；M-A 正向例连带 ✗） |
