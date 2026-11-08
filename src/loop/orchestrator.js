@@ -6166,6 +6166,14 @@ export async function runToolLoop(options) {
       // 读这个。上面 `response.usage` 仍是「最后一次响应的 usage」（历史形状，逐字不动：续写轮里
       // 它只有最后一发）。零值恒在（`{input_tokens:0, output_tokens:0}`），不是缺字段。
       usage: { ...roundUsage },
+      // issue #785 P1 ②（新键，纯加法）：**实际写进请求体的** reasoning 相关值，由引擎自带 provider 在
+      // 拼完 payload（含 GLM `none→low` 翻译与 extraBody 注入）之后交上来。`hostValue` 是宿主给的原值，
+      // `sentValue` 是发出去的值——GLM 那一格两者**可以不同**（`none` vs `low`），谁都不是对方的替身。
+      // **无相关键 ⇒ 整个键缺席**（不写空对象）；宿主自建 provider 交不出 ⇒ 同样缺席，读作「未观测」，
+      // 不是「没发」（引擎看不见它的 wire body）。契约里 `Which RoundRecord fields a host may render` 有这格。
+      ...(response?.sentRequestParams === undefined
+        ? {}
+        : { sentRequestParams: response.sentRequestParams }),
       // 本轮**引擎自发起的调用**（round judge / 收尾归一化 / 折叠摘要）的用量。缺键 = 本轮没有
       // 这类调用；有键才写（同 `judge`/`compactionStats` 的缺省口径）。强制收尾发生在最后一条轮记录
       // 之后 ⇒ 它只出现在 run 级 `result.engineUsage` 里。

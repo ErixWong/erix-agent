@@ -17,6 +17,7 @@ import {
 } from "../messages/openai-normalization.js";
 import {
   applyProviderPayloadOptions,
+  observeSentReasoningParams,
   resolveProviderTimeouts,
 } from "./payload.js";
 import { createProviderTimeoutContext } from "./timeout.js";
@@ -310,6 +311,14 @@ export function createOpenAIProvider({
     const payload = injection.applyExtraBody(
       buildPayload(req, false, selectedModel, payloadDefaults),
     );
+    // issue #785 P1 ②：把「宿主给的值」与「最终写进 body 的值」分开记一笔，随响应交给轮记录。
+    const sentRequestParams = observeSentReasoningParams({
+      payload,
+      request: req,
+      defaults: payloadDefaults,
+      provider: "openai",
+      extraBody,
+    });
 
     const controller = new AbortController();
     const signal = req?.signal;
@@ -412,7 +421,9 @@ export function createOpenAIProvider({
         throw new KitError("server", truncateBody(bodyText));
       }
 
-      return openAIResponseToCanonical(value);
+      const canonical = openAIResponseToCanonical(value);
+      if (sentRequestParams !== undefined) canonical.sentRequestParams = sentRequestParams;
+      return canonical;
     } catch (err) {
       if (signal?.aborted) {
         throw classifyFetchException(abortReason(signal), { signal });
@@ -441,6 +452,14 @@ export function createOpenAIProvider({
     const payload = injection.applyExtraBody(
       buildPayload(req, true, selectedModel, payloadDefaults),
     );
+    // issue #785 P1 ②：同 `chat()`，流式路径也要留痕（真上游那条 200 静默吞的探针走的正是流式）。
+    const sentRequestParams = observeSentReasoningParams({
+      payload,
+      request: req,
+      defaults: payloadDefaults,
+      provider: "openai",
+      extraBody,
+    });
     const requestTimeouts = resolveProviderTimeouts({
       ...providerTimeoutOptions,
       ...req,
@@ -646,6 +665,7 @@ export function createOpenAIProvider({
         content,
         stopReason: normalizeOpenAIStopReason(finishReason),
       };
+      if (sentRequestParams !== undefined) chatResponse.sentRequestParams = sentRequestParams;
       const usage = normalizeOpenAIUsage(lastUsage);
       if (usage !== undefined) {
         chatResponse.usage = usage;
