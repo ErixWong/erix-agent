@@ -13,7 +13,7 @@
       "date": "2026-11-08",
       "env": "local",
       "node": "v22.23.2",
-      "commit": "本笔登记（分支 fix-261107-20-steer-hook-forward；被量的树 = `origin/main b44669e` + 本片前 4 笔 + 本笔；六个数取自这一棵树现跑的 `npm test`）",
+      "commit": "本笔登记（分支 fix-261107-20-steer-hook-forward；被量的树 = `origin/main 7181a1b` + 本片；六个数取自这一棵树现跑的 `npm test`，日志 /tmp/c3b-npmtest.log）",
       "branch": "fix-261107-20-steer-hook-forward",
       "tests": 3717,
       "pass": 3704,
@@ -21,7 +21,7 @@
       "skipped": 13,
       "todo": 0,
       "cancelled": 0,
-      "why": "tests 地板 3716 → **3717**。算术两段都是现测，不是加法猜的：① `origin/main b44669e`（#780 已合）自己现跑是 **3716 / pass 3703 / fail 0 / skipped 13**（在 `git worktree add --detach /home/eric/wt-c3base origin/main` 上单独跑 `npm test`，日志 /tmp/c3base-npmtest.log；主干登记的地板 3716 与它自己的现测相等）；② 本片新增 **1** 格：`test/examples/erix-run-steer.test.js` 的「生产默认路径（不注入 runJob）：steer 经默认包装层到达真 `runToolLoop`，`steerPending` 从 1 回到 0 且那句话真的进了发给模型的 user 轮」⇒ 3716 + 1 = 3717（本支 rebase 前自己那笔登记（旧树 3695→3696）在 rebase 时让位给主干，**不在旧值上做加法**）。**登记之前**同一棵树现跑是 fail 1（配对地板那一格：守卫现报 28 对 ≠ 旧常量 27），与登记同一笔提交转绿，所以本行不留那份中间态；`pass` 3704 是登记之后同一棵树的数（`# tests 3717 / pass 3704 / fail 0 / skipped 13 / todo 0 / cancelled 0`，日志 /tmp/c3-npmtest2.log）。`skipped` 实测 13 与主干同值 ⇒ `maxSkipped` 不动（主干那格 15→16 与本支无关）。没删例、没 skip、没放宽断言。"
+      "why": "tests 地板 3716 → **3717**。算术两段都是现测，不是加法猜的：① `origin/main 7181a1b`（#784 / issue #770 已合）自己现跑是 **3716 / pass 3703 / fail 0 / skipped 13**（在 `git worktree add --detach /home/eric/wt-c3base2 origin/main` 上单独跑 `npm test`，日志 /tmp/c3base2-npmtest.log；与上一个基点 `b44669e` 的现跑同值，主干登记的地板 3716 与它自己的现测相等）；② 本片新增 **1** 格：`test/examples/erix-run-steer.test.js` 第 7 节「生产默认路径（不注入 `runJob`）：steer 经默认包装层到达真 `runToolLoop`，`steerPending` 从 1 回到 0 且那句话真的进了发给模型的 user 轮」⇒ 3716 + 1 = 3717。本支 rebase 前自己那笔登记（旧树 3695→3696、3716→3717 的旧基点）在 rebase 时**让位给主干**，不在旧值上做加法。**登记之前**同一棵树现跑是 fail 1（配对地板那一格：守卫现报 29 对 ≠ 旧常量 28），与登记同一笔提交转绿，所以本行不留那份中间态；`pass` 3704 是登记之后同一棵树的数（`# tests 3717 / pass 3704 / fail 0 / skipped 13 / todo 0 / cancelled 0`）。`skipped` 实测 13 与主干同值 ⇒ `maxSkipped` 不动（主干 #774 那格 15→16 与本支无关）。没删例、没 skip、没放宽断言。"
     },
     {
       "date": "2026-11-08",
