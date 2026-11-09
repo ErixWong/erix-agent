@@ -290,3 +290,29 @@ CHANGELOG 解析器**：扫描面就是 `test/static-guards.test.js` 已经在�
 
 ## pitfall-4
 4. 对于无浏览器 + 非 TTY 的认证流程（已于 2026-09 验证，在没有桌面环境的机器上）：用 Python pty 包装 npm（`pty.fork()` + `select` 读取输出），使用 `setsid nohup` 完全脱离进程组，防止 bash 工具清理它；在脚本中使用正则将 `https://www.npmjs.com/(login|auth/cli)/[0-9a-f-]+` 提取到文件，然后读取 URL 并交给用户在浏览器中操作；**不要自动按 ENTER**（见上文）。登录成功会将 token 写入 `~/.npmrc`；发布成功由日志行 `+ erix-agent@<ver>` 标记；参考实现 `/tmp/npm-pty-login5.py`。
+
+## pitfall-1
+1. 改 `package.json` 用 node 脚本，不要用 `sed` 删行：那样删掉 `private` 那行会留下尾逗号，JSON 直接解析失败。
+   改完自己验一次：`node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"`。
+
+## pitfall-2
+2. 发布前先 unlink 本地 link（`npm unlink -g <旧包名>`；`@erix/llm-kit` 是历史遗留），否则 `npm i -g` 报文件冲突。
+
+## pitfall-3
+3. npm 政策动得很快：新的 TOTP 注册返回 404，细粒度 bypass-2FA token 从 2026-08 起失去发布权限。遇到 `403` / `EOTP`，
+   先读 npm 官方 changelog，再来调本仓的配置。
+
+## publish-prerequisites
+这里全是最终态；把它逼出来的过程在上面 `## npm-policy`。
+- `package.json` 里必须去掉 `private`（否则发布 PUT 是 `403`）；`repository.url` 用 `git+https://…` 形态，或跑 `npm pkg fix`。
+- `files` 是一份很长的显式白名单，`test/contract/*` 是**逐文件**列出的（没有目录条目，所以它们旁边的 `*.test.js`
+  永远不进包）。`package.json` 是唯一真值：**别把那份清单抄进任何文档**。用 `npm publish --dry-run` 看产物。
+- **版本号一发布就被烧掉。** 判断某个号是否空闲只看**退出码**（`npm view <pkg>@<ver> version`），不要 grep 输出：
+  「找不到」的报错文案里也带着那个版本号，grep 会把一个空闲的号读成「已占用」。改版本用
+  `npm version <x.y.z> --no-git-tag-version`；功能完整的首发版本不要用 `0.0.0`。
+- `0.24.0` 从未发布到 registry（已发布序列是 0.23.0 → 0.25.0），且刻意不回填：`0.25.0` 已取代它，`CHANGELOG.md`
+  里 0.24.0 那段保留为「那一刻为真」的历史。
+- **锚点覆盖不到的人工一步**（打 tag 之前）：手工走一遍三类声称值——**默认值**（`default X` / 默认的 `X`）、
+  **数字**（N 步 / N 项 / 某个常量的值）与**名称集合**（策略名、工具名、旗标），范围是两份 README、两份 AGENTS
+  与两份契约文档。锚点只覆盖有人登记过的维度，而默认值是「最容易改、改错最贵」的一类：#614 把 CLI 槽位的缺省折叠
+  策略换掉了，机器闸一路全绿。发现某条声称其实可以机器化，就在当场把锚点加上。

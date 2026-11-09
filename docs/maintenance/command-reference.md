@@ -495,3 +495,36 @@ One more human pass before the tag, and it is the only thing standing between an
 
 ## pitfall-12
 12. **npm publish triggers its own device-flow auth EVERY time (2026 policy) — including after a fresh `npm login`**; the publish URL (`npmjs.com/auth/cli/<uuid>`) must be captured via pty in headless environments and surfaced to the user immediately (see pitfall 4/6).
+
+## pitfall-1
+1. Edit `package.json` with a node script, never by deleting a line with `sed`: removing the `private` line that way
+   leaves a trailing comma and the JSON stops parsing. Validate after editing:
+   `node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"`.
+
+## pitfall-2
+2. Unlink any local link before publishing (`npm unlink -g <old name>`; `@erix/llm-kit` is a historical leftover) —
+   otherwise `npm i -g` fails on a file conflict.
+
+## pitfall-3
+3. npm policy moves fast: new TOTP enrollment returns 404, and granular bypass-2FA tokens lost publishing rights in
+   2026-08. On `403` / `EOTP`, read the official npm changelog before debugging this repository's setup.
+
+## publish-prerequisites
+Everything here is the end state; the route that produced it is `## npm-policy` above.
+- `private` must be absent from `package.json` (otherwise the publish PUT is `403`); `repository.url` in
+  `git+https://…` form, or run `npm pkg fix`.
+- `files` is a long explicit allowlist, including `test/contract/*` enumerated file by file (no directory entry, which
+  is why the `*.test.js` suites sitting next to them never ship). `package.json` is the only truth: never transcribe
+  that list into a document. Inspect the artifact with `npm publish --dry-run`.
+- **A version number is consumed by publishing it.** Check the number is free by **exit code**
+  (`npm view <pkg>@<ver> version`), not by grepping the output: the not-found message repeats the version, so a grep
+  reads a free number as taken. Use `npm version <x.y.z> --no-git-tag-version`; never `0.0.0` for a feature-complete
+  first release.
+- `0.24.0` was never published to the registry (the published line runs 0.23.0 → 0.25.0) and is deliberately not
+  back-filled: `0.25.0` supersedes it, and `CHANGELOG.md` keeps its 0.24.0 section as what was true at that moment.
+- **Human walkthrough that no anchor covers** (before the tag): walk the three classes of claimed values by hand —
+  **defaults** (`default X` / the default `X`), **numbers** (N steps / N items / a constant's value) and **name sets**
+  (strategy names, tool names, flags) — across both READMEs, both AGENTS files and both contract documents. An anchor
+  only covers the dimensions somebody registered, and defaults are the class easiest to change and most expensive to
+  get wrong: #614 flipped the CLI slot default compaction strategy while every machine gate stayed green. When a
+  claim turns out to be machine-checkable, add the anchor while you are in there.
