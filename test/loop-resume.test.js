@@ -679,7 +679,8 @@ test(
   //   恢复行，它就并进 `resumeExecutedToolIds`，而那正是「执行过了 ⇒ 不补跑也不再说中断」的判据；实测
   //   结局变成 `#789` 那句「从未执行」的桩（`PENDING_TOOL_RESULT_TEXT`）、`erix` 整块不存在。
   //   ⇒「执行过了」与「按工具复放要出声中断」在这一格是**互斥**的现场；本格要的是后者，坐标与实测见
-  //   `docs/delivery/261109-776-worker-report.md`。
+  //   `docs/delivery/261109-776-worker-report.md`（`docs/delivery/` 是 `.gitignore` 里的冷层，干净检出里
+  //   可能不可解析；承重理由上面几行已写完，那个指针只当冷层线索）。
   const store = createMemoryTranscriptStore();
   const runId = "resume-legacy-keys";
   const toolUse = { type: "tool_use", id: "legacy-call", name: "unsafe_work", input: {} };

@@ -36,7 +36,8 @@
 // 跳过。现在两对悬空都写成 `kind:"message"` 账本行，「写被拒」改由**假 store 拒掉那一写**给出 ⇒
 // 本格不再 skip。随之只有该事件的 `detail`/`round` 两个取值换人（`round_not_safe_integer`/`"2"` ⇒
 // `append_row_not_persisted`/`3`）：前者在当前树上已**不可达**（取证坐标写在格 2③ 那段注释里，实测与
-// 完整推理见 `docs/delivery/261109-776-worker-report.md`），不是被悄悄改宽——事件必须发、必须恰好一条、
+// 完整推理见 `docs/delivery/261109-776-worker-report.md`；那是 `.gitignore` 里的冷层，干净检出里
+// 可能不可解析，所以承重的取证坐标都已抄在本文件里），不是被悄悄改宽——事件必须发、必须恰好一条、
 // 必须点名是哪一种，这些一条没动。
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -371,7 +372,7 @@ function storeThatRefusesOneStubWrite(inner) {
  *     provider 的 id 不保证 run 内唯一，issue #284）。
  * 两条聚合消息的**首片行都在** ⇒ 两张桩各自拿得到 `partOf` 锚点（「锚点缺失」那条成因必须不出现）；
  * 两轮轮号都是安全整数 ⇒ 被拒那一张的成因只能是「这一写没落盘」。
- * 旧夹具的那两对第二对**只写在 `snapshot.messages` 里**，靠已退役的 pre-261021 闸门补进上下文（#754
+ * 旧夹具里第二对**只写在 `snapshot.messages` 里**，靠已退役的 pre-261021 闸门补进上下文（#754
  * 裁决 2 之后不再有那条闸门）；现在两对都是 `kind:"message"` 行 ⇒ 「两张桩都进上下文」不再依赖闸门。
  */
 async function twoMidSequencePairsScene(store) {
@@ -394,7 +395,8 @@ test(
     // （`twoMidSequencePairsScene`），「写被拒」由假 store 拒掉那一写给出（`storeThatRefusesOneStubWrite`）。
     // **只有 `detail` 与 `round` 两个取值随现场换人**（`round_not_safe_integer`/`"2"` ⇒
     // `append_row_not_persisted`/`3`），断言的形状（恰好一条、点名是哪一种、哪一轮、几个）逐字不动。
-    // 被换掉的那个取值不是被删的判据而是**当前树上不可达**的一格，取证见 #776 交付报告（要点：
+    // 被换掉的那个取值不是被删的判据而是**当前树上不可达**的一格，取证见 #776 交付报告
+    // （冷层，不入库；承重要点已拄在下面这几行）：
     // 桩所属轮的轮号只来自 `ctx.messageRounds`，而账本来源的轮号被折叠层归成安全整数
     // （`src/store/message-rows.js` 的 `Number.isSafeInteger(record?.round) ? record.round : 0`），
     // 唯一能带非安全整数轮号的消息是 A 集合 push 的那一条（`src/loop/resume-manager.js` 里
