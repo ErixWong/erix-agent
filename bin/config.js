@@ -14,6 +14,8 @@ import {
   CONTINUITY_WRITE_MODES,
 } from "../src/loop/continuity-block.js";
 import { PROVIDER_PHASE_TIMEOUT_FIELDS, assertPhaseTimeoutValue } from "./provider-timeouts.js";
+// issue #798：`reasoning_effort` 的三通道优先级只有这一处实现（旗标 > env > slot）。
+import { normalizeReasoningEffort, resolveReasoningEffort } from "./reasoning-effort.js";
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 16384;
 
@@ -250,7 +252,15 @@ function missingConfigError(missing) {
   );
 }
 
-export async function loadCliConfig({ configPath, model: modelOverride } = {}) {
+/**
+ * issue #798：`reasoning_effort` 的 **env 消费方**（此前 `LLM_KIT_REASONING_EFFORT` 没有任何人读，
+ * 尽管映射早在 `src/config/env.js`）。优先级 `--effort` > env > `slots.default.reasoning_effort`，
+ * 与同函数里的 `model` **故意不同**：`model` 是 env **压过**旗标的历史形状，本字段取「旗标最优先」。
+ * 值域不在这里校验（#788 parked）；空值 ⇒ 视为未提供。裁决实现见 `bin/reasoning-effort.js`。
+ *
+ * @param {{ configPath?: string, model?: string, effort?: string }} [input]
+ */
+export async function loadCliConfig({ configPath, model: modelOverride, effort: effortOverride } = {}) {
   const fileConfig = await loadFileConfig(configPath ?? defaultConfigPath());
   const endpoint = readEnvironmentValue("LLM_KIT_ENDPOINT") ?? fileConfig.endpoint;
   const apiKey = readEnvironmentValue("LLM_KIT_API_KEY") ?? fileConfig.apiKey;
@@ -270,6 +280,14 @@ export async function loadCliConfig({ configPath, model: modelOverride } = {}) {
     : resolveCompactionStrategyName(fileConfig.compaction);
   // issue #598：config 字段 continuity（同上：非法值在 load 期就报错，带合法值列表）
   const continuity = buildContinuityConfig({ continuity: fileConfig.continuity });
+  // issue #798：这里只**裁决**，**不**把它写进下面的 `modelOptions.reasoning_effort`——那条路在引擎
+  // 眼里是 `slotDefault`，会把「本次 CLI 覆盖」与「配置文件里写的」混成一格。取到的值与通道随配置
+  // 交给 `bin/cli.js` / `bin/repl.js`，由它们注进**请求通道**（观测面因此报 `source:"request"`）。
+  const reasoningEffort = resolveReasoningEffort({
+    flag: effortOverride,
+    env: process.env,
+    slot: fileConfig.reasoning_effort,
+  });
   const missing = [];
 
   if (!endpoint) missing.push("LLM_KIT_ENDPOINT");
@@ -303,10 +321,22 @@ export async function loadCliConfig({ configPath, model: modelOverride } = {}) {
   ];
   const modelOptions = {};
   for (const field of forwardedFields) {
-    if (fileConfig[field] === undefined) continue;
+    // issue #798：`reasoning_effort` 的**空值口径**在这一格也成立。循环原先只跳 `undefined`，于是
+    // 配置文件写 `"reasoning_effort": ""` 时空串一路穿过 provider 构造参数、进 payload，直接违反本单
+    // 自己承诺的「空值 = 未提供（不发字段）」——旗标/env 那两条走 resolver 是干净的，slot 这条不是。
+    // 这里**复用** resolver 那一份归一化，不写第二处空白判断（同一句理由：一个口径只许有一处实现）。
+    // 归一化成 `undefined` ⇒ 这一格根本不写进 `modelOptions`（钉住它的用例是 wire 层那一条：断请求体里
+    // **没有这个键**，见 `test/cli-reasoning-effort-798.test.js` 的「空值(slot 那条路)」。
+    // ⚠ 这道闸只管**字符串**：非字符串（含 `null`、数字）不在这里改判，照旧原样交下去让上游说话——
+    // 本单没有本地值域枚举（#788 parked），把 `reasoning_effort: 5` 静默吞掉也是一种本地裁判。）
+    const raw = fileConfig[field];
+    const value = field === "reasoning_effort" && typeof raw === "string"
+      ? normalizeReasoningEffort(raw)
+      : raw;
+    if (value === undefined) continue;
     modelOptions[field] = PROVIDER_PHASE_TIMEOUT_FIELDS.includes(field)
-      ? assertPhaseTimeoutValue(field, fileConfig[field])
-      : fileConfig[field];
+      ? assertPhaseTimeoutValue(field, value)
+      : value;
   }
 
   return {
@@ -316,6 +346,8 @@ export async function loadCliConfig({ configPath, model: modelOverride } = {}) {
     ...modelOptions,
     maxOutputTokens,
     contextWindowTokens,
+    // 没事实就不产键（与统计行同一条口径）。
+    ...(reasoningEffort.value === undefined ? {} : { reasoningEffort }),
     ...(compactBudgetTokens === undefined ? {} : { compactBudgetTokens }),
     ...(compaction === undefined ? {} : { compaction }),
     ...(continuity === undefined ? {} : { continuity }),

@@ -4897,7 +4897,19 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 //
 // ⇒ 地板 = **35**。⚠ **不是 34 + 1**：取的是守卫在这棵树上自报的读数（口径同 #765 / #769-R2 / #769-R9 四任）；
 // 无对应 0 条 ⇒ 本片那对中英确实成对（两侧 issue 引用集合相同）。无删例、无 skip、配对判据本身一字未动。
-const CHANGELOG_PAIR_FLOOR = 35;
+//
+// issue #798：`## [Unreleased] ### Added` 新增一对（`reasoning_effort` 的 CLI 面，两侧 issue 引用集合都是 `#798`）
+// ⇒ 面没挪（仍是 `## [Unreleased]`，顶部 Unreleased 有内容），配对从 35 变成 36。地板照同一口径取**守卫在这
+// 棵树上自报的读数**，不是 35 + 1。先把守卫原文贴在这里（判词与观测行逐字来自 `node --test
+// test/static-guards.test.js --test-name-pattern="配对地板"` 在最终树上的输出）：
+//
+//     配对地板：判据面 = ## [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 36 条 / 英文 36 条 / 配对 36 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 35（校准面 ## [Unreleased]）
+//     配对地板：实测 36 对 > 地板 35 对 ⇒ 可以抬地板到 36
+//     AssertionError：校准面（## [Unreleased]）上实测 36 对 ≠ 地板 35 对：地板必须恰等于校准面上的实测值（否则「掉一条就穿底」证不出来）。配对变多了 ⇒ 请抬地板到实测值
+//
+// ⇒ 地板 = **36**，与它校准所在的那一对是同一个事实（所以刷地板与写条目同片，见 #769 R10 的同一口径）。
+// 无删例、无 skip、配对判据本身一字未动；无对应 0 条。
+const CHANGELOG_PAIR_FLOOR = 36;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

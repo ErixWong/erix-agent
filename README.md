@@ -839,8 +839,8 @@ headless runtime's product interface.
 ```text
 erix --version, -v
 erix --help, -h
-erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes] [--no-todo] [--no-agents] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>]
-erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--no-agents]
+erix chat "<prompt>" [--stream] [--tools <names>] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes] [--no-todo] [--no-agents] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--effort <level>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>]
+erix repl [--tools <names>] [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--effort <level>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--no-agents]
 erix skills [--skills-dir <path>]
 erix mcp [--config <path>]
 ```
@@ -1033,6 +1033,19 @@ The shared CLI flags are:
   hits the provider's retryable phase deadline first (issue #441), and
   `erix repl` has no retry.
 - `--compact-budget <tokens>` overrides the automatic compaction budget.
+- `--effort <level>` sets the reasoning effort (`reasoning_effort`, issue #798) for this run.
+  The precedence is **`--effort` > `LLM_KIT_REASONING_EFFORT` > `slots.default.reasoning_effort`**,
+  which differs **on purpose** from `--model`, where the environment variable beats the flag: a flag
+  is the intent of *this one* invocation, so it wins. The value is **not validated locally** (issue
+  #788 stays parked) — it goes to the upstream verbatim, and an illegal one is answered by that
+  upstream's own 4xx, which lists its legal values (the qwen family lists 8, the GLM family 7, so any
+  local enum would be wrong). `--effort ""` means **not provided**: the field is not sent, an empty
+  string never is, and an empty `slots.default.reasoning_effort` in the config file is treated the
+  same way — the three channels share one emptiness rule. At start-up the CLI names the channel that
+  supplied the value (stderr), and the
+  closing `=== 统计 ===` line gains `reasoningTokens=…` **only when the upstream reported it** —
+  nothing is printed rather than a `0` standing in for "did not think" (the issue #785 P1 rule) —
+  plus `effort=none→low` when the engine's one GLM translation (ADR-017) fired.
 - `--compaction <name>` selects the compaction strategy
   (`sliding-window | fold-statistical | fold-llm`; the CLI slot default is `fold-llm`, also
   settable as the `slots.default.compaction` config field). `fold-llm` costs one extra

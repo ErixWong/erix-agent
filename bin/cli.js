@@ -75,14 +75,22 @@ import {
   resolveDelegationDir,
 } from "./delegation.js";
 import { formatGuardMetrics } from "./guard-metrics.js";
+// issue #798：`reasoning_effort` 的 CLI 面（旗标/env/slot 三通道裁决 + 请求通道注入 + 统计行）。
+import {
+  cliReasoningOverride,
+  createReasoningEffortStats,
+  reasoningStatsSuffix,
+  resolveReasoningEffort,
+  withCliReasoningEffort,
+} from "./reasoning-effort.js";
 
 const DEFAULT_MAX_ROUNDS = 64;
 
 const HELP_TEXT = `用法：
   erix --version, -v
   erix --help, -h
-  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes] [--no-todo] [--no-agents] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
-  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--tools <逗号分隔工具名>] [--no-agents]  （交互式模式）
+  erix chat "<prompt>" [--stream] [--reflection <on|off>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--no-notes] [--no-todo] [--no-agents] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--timeout <ms>] [--cwd <dir>] [--config <path>] [--skills-dir <path>] [--session <id>] [-c|--continue] [-r] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--effort <level>] [--max-rounds <n>] [--idle-timeout <seconds>] [--idle-retry-budget <seconds>] [--judge-log <path>] [--error-log <path>] [--tools <逗号分隔工具名>]
+  erix repl [--config <path>] [--skills-dir <path>] [--session <id>] [--dir <path>] [--compact-budget <tokens>] [--compaction <name>] [--effort <level>] [--max-rounds <n>] [--idle-timeout <seconds>] [--final-guard|--no-final-guard] [--require-deliverable [<path>]] [--require-deliverable-content] [--delegate] [--delegate-max-children <n>] [--delegate-timeout-ms <n>] [--tools <逗号分隔工具名>] [--no-agents]  （交互式模式）
   erix skills [--skills-dir <path>]  列出已发现的技能
   erix mcp [--config <path>]       列出 MCP 配置和连接状态
   （无参数直接进入交互式模式，等同 erix repl）
@@ -152,12 +160,24 @@ const HELP_TEXT = `用法：
                       summarizer_failed：run 以 failed 结束、退出码 5，不会退回统计摘要。想要
                       「一次 LLM 都不调、永不失败」的折叠就显式选 fold-statistical（零 LLM）。
                       也可用 config 字段 compaction 固定（旗标优先）。
+  --effort <值>       思考强度（reasoning_effort，issue #798）。优先级 **--effort >
+                      LLM_KIT_REASONING_EFFORT > slots.default.reasoning_effort**——与既有 --model
+                      （env **压过**旗标）**故意不同**：旗标是「就这一轮」的意图，应当赢。
+                      **不校验值域**（#788 parked）：值原样透传，非法值由上游的 4xx 列出它的合法清单
+                      （qwen 族报 8 项、GLM 族报 7 项，两族不同 ⇒ 任何本地枚举都是错的）。
+                      --effort "" 视为**未提供**（不发这个字段，不是发一个空串）；配置文件里的空值
+                      （slots.default.reasoning_effort 写成 ""）同样算未提供，三条通道一个口径。
+                      启动时 stderr 会打一行「本次值 / 来源哪个通道」；终局统计行在**上游真的回报了**
+                      reasoning_tokens 时才打 reasoningTokens=…（没回报就不打，绝不拿 0 冒充
+                      「没思考」）；引擎把 GLM 的 none 翻成 low（ADR-017）时另打 effort=none→low。
 
 环境变量：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
   LLM_KIT_API_KEY    API 密钥（必填）
   LLM_KIT_MODEL      模型名称（必填，除非配置文件或 ERIX_DEFAULT_MODEL 已提供）
   ERIX_DEFAULT_MODEL 无配置模型时使用的显式默认模型（可选）
+  LLM_KIT_REASONING_EFFORT 思考强度（可选；优先级低于 --effort、高于 slots.default.reasoning_effort，
+                      issue #798；值域同上：不本地校验，空串 = 未提供）
   ERIX_EXEC_TIMEOUT_MS exec 前台命令超时毫秒数（默认：120000）
   ERIX_NO_TOOL_ROUNDS 模型连续无工具调用几轮后强制完成（默认：3，最小：1）
   ERIX_MAX_ROUNDS     工具循环最大轮数（默认：64，最小：1）
@@ -524,6 +544,8 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       || argument === "--judge-log"
       || argument === "--error-log"
       || argument === "--tools"
+      // issue #798：思考强度。值不做本地枚举校验（#788 parked）；`--effort ""` 视为未提供。
+      || argument === "--effort"
       || argument === "--delegate-max-children"
       || argument === "--delegate-timeout-ms"
     ) {
@@ -544,6 +566,7 @@ export function parseChatArgs(args, cwd = process.cwd()) {
           || argument === "--judge-log"
           || argument === "--error-log"
           || argument === "--tools"
+          || argument === "--effort"
           || argument === "--delegate-max-children"
           || argument === "--delegate-timeout-ms")
         && rawValue.startsWith("--")
@@ -587,6 +610,10 @@ export function parseChatArgs(args, cwd = process.cwd()) {
       } else if (argument === "--tools") {
         if (rawValue.trim() === "") usageError("--tools 不能为空");
         options.tools = rawValue;
+      } else if (argument === "--effort") {
+        // issue #798：值**不校验值域**（qwen 族与 GLM 族的合法清单不同，#788 parked）。
+        // 空串照工单口径「视为未提供」——不是 usage error，也不是发一个空串。
+        options.effort = rawValue;
       } else if (argument === "--delegate-max-children") {
         options.delegateMaxChildren = parseIntegerOption(argument, rawValue, 1);
       } else if (argument === "--delegate-timeout-ms") {
@@ -1058,6 +1085,8 @@ async function runChatWithNotes({
   noticeLog = (line) => console.error(line),
   // issue #617 P2：派生工具（**默认关**）与它的三个旋钮。
   // `delegationDir` / `delegateNotify` 是给测试与嵌入方留的口（不是新旗标）。
+  // issue #798：`--effort <值>`（思考强度）。非法值不在这里挡（#788 parked），空串视为未提供。
+  effort,
   delegate = false,
   delegateMaxChildren,
   delegateTimeoutMs,
@@ -1075,11 +1104,27 @@ async function runChatWithNotes({
   const cwd = cwdOption ?? process.cwd();
   const runId = _notesRunId ?? session ?? defaultSessionId(cwd, { unique: true });
   const explicitSession = sessionExplicit ?? session !== undefined;
-  const loadedConfig = configOverride ?? await loadCliConfig({ configPath });
+  const loadedConfig = configOverride ?? await loadCliConfig({ configPath, effort });
   // --compaction 覆盖 config.compaction（名字仍往下传字符串，引擎负责实例化）
   const config = compaction === undefined
     ? loadedConfig
     : { ...loadedConfig, compaction };
+  // issue #798：思考强度的三通道裁决（旗标 > env > slot）。配置面（`loadCliConfig`）已带着
+  // `reasoningEffort` 回来；宿主直接注入 `config` 时那里没有这一格，就在**入口处**用同一个
+  // `resolveReasoningEffort` 现算——同一个函数、同一个次序，两条路不可能给出不一致的优先级。
+  const reasoningEffort = config.reasoningEffort
+    ?? resolveReasoningEffort({ flag: effort, slot: config.reasoning_effort });
+  // 只有**旗标/env** 的值才注进请求通道；slot 的值照旧走 provider 构造参数（观测面因此分得清
+  // 「本次覆盖」与「配置文件」——判据 ① 的全部内容）。
+  const cliEffort = cliReasoningOverride(reasoningEffort);
+  // 有事实才出声（与统计行同口径）：三处都没配 ⇒ 一行都不打，也不打「未设置」噪声。
+  if (reasoningEffort.value !== undefined && reasoningEffort.label !== undefined) {
+    noticeLog(
+      `[reasoning_effort] 本次值=${reasoningEffort.value} 来源=${reasoningEffort.label}`
+      + "（优先级 --effort > LLM_KIT_REASONING_EFFORT > slots.default.reasoning_effort；"
+      + "实际发出的值看轮记录 sentRequestParams，GLM 的 none→low 会在统计行里现形）",
+    );
+  }
   // issue #598 —— `config.continuity.handoff`（续接块默认写者的开关）。`loadCliConfig` 已经在
   // load 期校过一遍（非法值直接抛），这里只是把它取成**规位**形状：`undefined` ⇒ 下面
   // `loopOptions.config` 连这个键都不写（默认关 = 零行为变更）；否则 `{ handoff }` 原样交给引擎。
@@ -1100,7 +1145,7 @@ async function runChatWithNotes({
     config,
     warn: (line) => console.error(line),
   });
-  const provider = providerOverride ?? createOpenAIProvider({
+  const provider = withCliReasoningEffort(providerOverride ?? createOpenAIProvider({
     ...config,
     endpoint: config.endpoint,
     apiKey: config.apiKey,
@@ -1108,7 +1153,7 @@ async function runChatWithNotes({
     ...providerPhaseTimeouts,
     timeoutMs: config.timeout ?? 300_000,
     maxTokens,
-  });
+  }), cliEffort);
   const assemblyRoot = _assemblyRoot ?? createCliAssemblyRoot({
     dir,
     runId,
@@ -1155,6 +1200,8 @@ async function runChatWithNotes({
   // loud 日志——不启动即报错（bench 两臂就是 exec==idle，硬报错会把现成调用打断），判据是
   // 「终局不得是 idle_timeout」。日志走 `idleLog`（测试可注入，缺省 stderr）。
   const execCeilingMs = resolveExecCeiling(idleTimeout, { warn: (line) => idleLog(line) });
+  // 统计行的思考分解（issue #798 判据 3）：从**轮记录**取事实，没事实就不打那一项。
+  const reasoningStats = createReasoningEffortStats();
   const resolvedMaxRounds = resolveMaxRounds(maxRounds);
   // issue #617 P2：`delegate` **默认关**，只有显式 `--delegate` 才装配。
   // 装配点在这里（不是 `createCliTools` 里）：子 run 怎么跑是宿主的事，`bin/tools.js` 只负责
@@ -1165,15 +1212,20 @@ async function runChatWithNotes({
   const delegateAssembly = delegateEnabled
     ? createCliDelegation({
       // 模型名只能来自配置（AGENTS §8）：未指定时用父 run 这个 provider，指定时按同一槽位另造一个。
-      buildProvider: (modelOverride) => (modelOverride === undefined || modelOverride === config.model
-        ? provider
-        : createOpenAIProvider({
-          ...config,
-          model: modelOverride,
-          ...providerPhaseTimeouts,
-          timeoutMs: config.timeout ?? 300_000,
-          maxTokens,
-        })),
+      buildProvider: (modelOverride) => withCliReasoningEffort(
+        // issue #798：两个分支都要过同一层包装——同名模型复用已包的 `provider`（包装对同一值
+        // 幂等），换模型的子 run 走新造的那个。否则「旗标只管父 run」会静默漂成「子 run 另一个值」。
+        modelOverride === undefined || modelOverride === config.model
+          ? provider
+          : createOpenAIProvider({
+            ...config,
+            model: modelOverride,
+            ...providerPhaseTimeouts,
+            timeoutMs: config.timeout ?? 300_000,
+            maxTokens,
+          }),
+        cliEffort,
+      ),
       config,
       cwd,
       todo: !todoDisabled,
@@ -1464,6 +1516,7 @@ async function runChatWithNotes({
         },
         onRound: (info) => {
           idle?.touch();
+          reasoningStats.observe(info);
           console.log(`[round ${info.round}]${info.folded ? "（含折叠）" : ""}`);
         },
         onJudge,
@@ -1625,7 +1678,7 @@ async function runChatWithNotes({
     const foldSummaryLine = formatCompactionFoldSummary(result.compactionStats);
     if (foldSummaryLine !== null) console.log(foldSummaryLine);
     console.log(
-      `\n=== 统计 === model=${config.model} rounds=${result.rounds} truncated=${result.truncated} termination=${result.termination?.reason ?? "unknown"} usage=${JSON.stringify(result.usage)} compacted=${compacted} ${formatGuardMetrics(result.verification)}`,
+      `\n=== 统计 === model=${config.model} rounds=${result.rounds} truncated=${result.truncated} termination=${result.termination?.reason ?? "unknown"} usage=${JSON.stringify(result.usage)} compacted=${compacted} ${formatGuardMetrics(result.verification)}${reasoningStatsSuffix(reasoningStats)}`,
     );
     return result;
   } catch (error) {
