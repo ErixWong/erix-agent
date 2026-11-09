@@ -349,6 +349,17 @@ export function globalAsyncJobRegistry() {
 export function createSessionHandleRegistry() {
   /** @type {Map<string, object>} */
   const handles = new Map();
+  /**
+   * issue #800 判据 1：被**归属校验**挡下来的摘键次数（`sessionId` → 次数）。
+   *
+   * 为什么要有这一格计数：`release` 拒一次就是拒一次，但「拒了」这件事如果只落在调用方的
+   * 一个 `if` 里，盘上没有任何痕迹 —— 而这条判据的整个存在理由就是**上一次有人把活会话的句柄
+   * 抹掉了却没人知道**（`status.json` 上只留下 `delivery:"orphaned"`，看起来像「会话真的走了」）。
+   * 计数挂在注册表上（`Symbol.for` 挂 globalThis 那一份 ⇒ `/reload` 之后仍在），投递记账时抄进
+   * `job.handleReleaseRefusals` ⇒ `jobView` / `status.json` 读得到（见 `jobView` 同名字段）。
+   * @type {Map<string, number>}
+   */
+  const refusedReleases = new Map();
   const usable = (sessionId) => typeof sessionId === "string" && sessionId !== "";
   return {
     set(sessionId, handle) {
@@ -360,9 +371,38 @@ export function createSessionHandleRegistry() {
     get: (sessionId) => (usable(sessionId) ? handles.get(sessionId) : undefined),
     has: (sessionId) => usable(sessionId) && handles.has(sessionId),
     delete: (sessionId) => handles.delete(sessionId),
+    /**
+     * **带归属校验的摘键**（issue #800 判据 1）：只有表里这一条**就是** `handle` 才删。
+     *
+     * 与裸 `delete(sessionId)` 的差别是本函数存在的唯一理由：`sessionHandle` 是 **factory 作用域**的
+     * （每会话、每次 factory 调用一份），而键是 `sessionId`。同一个 `sessionId` 可以被**两次**
+     * `session_start` 登记（pi 的 `/reload`、以及宿主以同一个 id 重建会话），此时**旧**实例迟到的
+     * `session_shutdown` 拿裸 `delete` 就会抹掉**活**实例的登记 —— 而唯一的再登记时机是 `session_start`，
+     * 已经过去了 ⇒ 此后那个会话的 job 结算永远查不到句柄，永远 `orphaned`。
+     *
+     * 不匹配时**保留**（不删）并**计数**：调用方拿到 `reason` 自己决定要不要再出声，但盘上这一格
+     * 不许静默（`jobView.handleReleaseRefusals`）。
+     *
+     * @param {string} sessionId
+     * @param {object} [handle] 调用方**自己那个**句柄；没给 = 调用方主张「我不认领归属，照旧删」
+     * @returns {{released:boolean, reason:"released"|"held-by-other-instance"|"absent"|"no-session-id"}}
+     */
+    release(sessionId, handle) {
+      if (!usable(sessionId)) return { released: false, reason: "no-session-id" };
+      const current = handles.get(sessionId);
+      if (current === undefined) return { released: false, reason: "absent" };
+      if (handle !== undefined && handle !== null && current !== handle) {
+        refusedReleases.set(sessionId, (refusedReleases.get(sessionId) ?? 0) + 1);
+        return { released: false, reason: "held-by-other-instance" };
+      }
+      handles.delete(sessionId);
+      return { released: true, reason: "released" };
+    },
+    /** 这个 owner 名下被归属校验挡下来的摘键次数（没有就是 0 —— 恒在场，不返回 `undefined`）。 */
+    releaseRefusals: (sessionId) => (usable(sessionId) ? refusedReleases.get(sessionId) ?? 0 : 0),
     ids: () => [...handles.keys()],
     get size() { return handles.size; },
-    clear: () => handles.clear(),
+    clear: () => { handles.clear(); refusedReleases.clear(); },
   };
 }
 
@@ -613,6 +653,12 @@ export function jobView(job, { now = () => Date.now() } = {}) {
     // 恒在场：没尝试过 / 投成功（`sent` 不贴噪音）时是 `null`。
     deliveryNote: job.deliveryNote ?? null,
     deduped: job.deduped ?? 0,
+    // issue #800 判据 1：这个 job 的 **owner 会话**名下，有几次「摘句柄」被**归属校验**挡了下来。
+    // 恒在场（没挡过是 `0`，不是缺键）。它不是一条投递事实，而是投递事实的**根因候选**：
+    // `0` 与 `N>0` 分开的正是「owner 真的走了」与「有个旧扩展实例迟到了，但它没摸掉活的登记」。
+    // 计数的真值源在 `createSessionHandleRegistry().release`，`recordDelivery` 把它抄进 job（否则
+    // 只读 `status.json` 的会话看不见）。
+    handleReleaseRefusals: job.handleReleaseRefusals ?? 0,
     // issue #753 C2：**转向收件箱的队列长度**（可观测面，判据 4）。恒在场（没 steer 时是 `0` 而不是
     // 缺键），与 `delivery` 同族：`status.json` 的内容就是这个函数的返回 ⇒ 盘上那一份与
     // `action:"status"` / `"result"` 的视图**同形**，不必自己数。它是**内存队列**的当下长度
@@ -777,6 +823,10 @@ export function createAsyncRuntime(options = {}) {
     // `null` 也是事实（“没有目标会话”），只有 `undefined`（= 调用方没提供）才不动旧值。
     if (facts.target !== undefined) job.notifyTargetSessionId = facts.target;
     job.notifyError = facts.error;
+    // issue #800 判据 1「不许静默」：把该 owner 名下被**归属校验**挡下来的摘键次数抄进 job。
+    // 为什么抄在这里而不是只在注册表里：盘上只读 `status.json` 的会话读不到注册表，而「有人试过摘
+    // 这个会话的句柄、没摘成」恰好是「为什么这条投递看起来怪」的根因候选。恒在场（没挡过 = 0）。
+    job.handleReleaseRefusals = sessionHandles.releaseRefusals?.(job.ownerSessionId) ?? 0;
     // #665：投递事实一变就把那句人话重写一遍（原位替换，不是追加）。
     refreshDeliveryNote(job);
     return delivery;
