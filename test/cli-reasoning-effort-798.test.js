@@ -235,6 +235,34 @@ test("#798 空值闸不许顺手变成裁判：slot 写成非字符串时照旧�
   });
 });
 
+test("#798 空值(slot 写 null)：省略由**引擎**定，CLI 不另造一套口径", async () => {
+  await withEnv("LLM_KIT_REASONING_EFFORT", undefined, async () => {
+    // `null` 与 `""` 走的是**两条不同的路**，这个区别必须钉住：
+    // - `""` 在 **CLI 装配层**就被判成未提供（`bin/config.js` 对这一格套 `normalizeReasoningEffort`）；
+    // - `null` 穿得过装配层（`typeof null !== "string"`，本支刻意不扩那道闸——扩了就是 CLI 自己
+    //   判值域，而 #788 已裁「值域归上游」），由**引擎**统一省略：`src/providers/payload.js`
+    //   对**每一个**字段都是 `value !== undefined && value !== null`。
+    // ⇒ 「null 不发」是引擎的既有**全局**语义，不是本支给 reasoning 开的特例。这一格钉的是
+    // **可观察结果**：将来谁把那个判断改成只跳 `undefined`（让 null 真发到上游去撞 4xx），这里会红。
+    const cfgDir = await sandbox("erix-798-null-cfg-");
+    const configPath = join(cfgDir, "erix.json");
+    await writeFile(configPath, JSON.stringify({
+      slots: { default: { endpoint: ENDPOINT, apiKey: "k", model: QWEN, reasoning_effort: null } },
+    }), "utf8");
+    const loaded = await loadCliConfig({ configPath });
+    assert.equal(
+      Object.hasOwn(loaded, "reasoning_effort"),
+      true,
+      "CLI 装配层**不许**吞 null：吞了就把「引擎省略」这条事实挪到 CLI，等于同一件事两套口径",
+    );
+    assert.equal(loaded.reasoningEffort, undefined, "null 不是「本次覆盖」，不得造出来源记录");
+    const run = await chatOnce({ model: QWEN, configFile: configPath });
+    assert.equal(Object.hasOwn(run.body ?? {}, "reasoning_effort"), false,
+      "最终请求体里没有这个键（引擎对 null 的既有全局语义），也就不会拿它去撞上游");
+    assert.doesNotMatch(run.notices, /reasoning_effort/u, "null 没有来源记录 ⇒ 没有事实，就不许打「本次值/来源」");
+  });
+});
+
 test("#798 空值(env 那条路)：LLM_KIT_REASONING_EFFORT=\" \" 同样不发字段", async () => {
   await withEnv("LLM_KIT_REASONING_EFFORT", "   ", async () => {
     const run = await chatOnce({ model: QWEN });
