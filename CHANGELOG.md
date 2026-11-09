@@ -1605,6 +1605,132 @@
   `test/loop-resume-abandon-signals-730.test.js` 在一格里记下这个行为变化（那一类形状现在能起来，而它的 census
   事件与「账本里零桩」两条断言逐字不动），并补了一条「相邻两条 assistant 那一格不许被这一层修」的反向断言。
 
+- **The finalGuard evidence surface was the compacted context itself, so a long run that had genuinely
+  collected its evidence could never converge (issue #797).** The host-side base-provenance gate read
+  `collectToolResultText(payload.messages)`, and `payload.messages` **is** the thing context compaction
+  rewrites: by the time the guard runs, `ctx.messages` is the surviving window plus a fold notice. A value
+  journaled verbatim at `appendRound` before the last fold is invisible to the predicate afterwards, so the
+  run is sentenced for having measured too early — three attempts, all `revise`, then the engine's
+  `unverified / max_retries`, with the model never told what else it could do. A real case
+  (`/tmp/762/segment-09`, 68 rounds, fold ceiling 57 at round 62) declared a literal that sat verbatim in
+  round 23's `tool_result` and was still rejected three times. **The evidence surface is now the surviving
+  window ∪ this run's ledger**, host-side only (`examples/pi-extension`; `src/` and `bin/` are byte-for-byte
+  unchanged — `git diff --name-only` against the pre-fix commit contains no `src/` entry). Reading the
+  ledger lives in `erix-run-core.js` (`readLedgerEvidence`, which gets exactly one injected port: the store;
+  `loadRawRows` first — raw rows, every `tool_result` verbatim — falling back to `load`, i.e. folded rows,
+  and neither port means *no ledger*, not *empty ledger*), while the matching stays in `erix-run-final-guard.js`
+  (`buildLedgerEvidence` takes plain data, so the predicate layer still never touches the filesystem and hits
+  are decided by the same `isBaseTraceable` — one rule, not a second one, and `assistant` restating a value
+  is still not evidence: only `tool_result` counts). Fold facts come from the ledger alone:
+  `foldRows` counts rows carrying `foldedRoundRange`, `foldCeiling` is `max(foldedRoundRange.to)`, and no
+  fold row means `foldCeiling: null` — *compaction was not observed*, not "folded down to round 0".
+  `diagnostics.finalGuard.evidence` names every declared literal with `source` (`"messages"` / `"ledger"`),
+  `round`, and **`survivesLastCompaction`** (`true` / `false` against `foldCeiling`, **`null`** when no
+  compaction was observed — a three-state fact may not be flattened into two); a repeated value is attributed
+  to its **latest** hit. That field is for humans and takes no part in the decision. Honesty at the terminal:
+  `honestVerificationReason` rewrites `verification.reason` to `not_in_ledger` **only** when all four hold —
+  the engine said `unverified` + `max_retries`, the last attempt produced a non-empty `notInLedgerBases`, the
+  ledger was read completely, and compaction was observed — and it touches **that one key only**: `status`
+  stays `unverified` (no new status value, no new event type), `guardVerdict` and `metrics` pass through, and
+  the engine's own value is kept as `verification.engineReason`; any single condition missing reproduces
+  today's `max_retries` byte-for-byte. **An incomplete ledger may not conclude "0 hits"**: a failed read, a
+  missing probe, or the row cap (`LEDGER_EVIDENCE_ROW_LIMIT = 4000` — the order is *slice the newest N raw
+  rows first, then build the evidence face from them*, which is also where the fold facts and the
+  `truncated` flag get computed) only sets `ledgerComplete: false` and writes 账本不完整 into the terminal
+  line — the old reason survives rather than a new claim being invented; the diagnostics list itself is
+  capped at `LEDGER_LITERAL_LIMIT = 20` with `literalsTruncated` (bound the payload, never silently, same
+  rule as #386). A ledger that reads back **zero rows is not an evidence surface either**: reading nothing
+  is still "read" (`source` and 账本 0 行 stay in the diagnostics), but "0 hits across the whole ledger"
+  cannot be inferred from it, so `ledgerComplete` is `false`.
+  `summarizeFinalGuard` appends the evidence tail, so with no evidence the line is unchanged and the existing
+  `/calls=0/`, `/revise=0\/2/` and `disabled` assertions were not touched. `buildLedgerEvidence` is the
+  **only producer of that metadata** (audit rework F1): whether rows came from a store probe, from an
+  injected array, or from an injected *already-shaped evidence object*, the latter may contribute exactly
+  two things — its `rows` and its `source` — while `ledgerComplete` / `truncated` / `foldCeiling` /
+  `foldRows` are always recomputed; otherwise a caller could hand in `{rows: [], ledgerComplete: true}`
+  and walk straight past the rule above (and `rowLimit` would be bypassed too). A throwing injected
+  reader is swallowed into `source: "injected:error"` with `readFailed: true` (F2 — which is what makes the
+  reader's "never throws" promise true rather than aspirational). `evidence.bases[]` now carries
+  `firstRound` next to `round`/`lastRound`, and the tail spells out 首次命中第 X 轮（≤ 水位）／最后一次第 Y 轮
+  when the two differ (F4): the **gate stays "is one hit still alive after the fold"**, because judging by
+  first occurrence would call the real sample (`/tmp/762/segment-09`, value present at r23/r59/r61 and
+  again at r67 against a ceiling of 62) "no surviving evidence" and would contradict the issue's own
+  reverse proof (evidence before the fold, final draft after it ⇒ must `accept` after the fix);
+  `firstRound` is diagnostics that makes the "only a repeated hit survives" self-echo risk visible, not a
+  gate. **Known limit, deliberately not
+  fixed:** there is still no provenance chain — the ledger row carrying the literal may itself be a `grep` of
+  the model's own report (self-echo still counts as traceable), and after a resume, values taken in earlier
+  segments still count as this run's evidence; changing that would move the bar #787 already nailed down
+  (`docs/host-consumer-contract_cn.md`, "`verified` ≠ provenance chain") and needs its own issue.
+  Predicate cells **P1–P10** (`erix-run-final-guard.test.mjs`: P1–P6 plus the P1b/P2b/P4b/P5b siblings and
+  the audit-rework P7–P10) and host cells **H1–H7** (`test/examples/erix-run-core.test.js`) landed red
+  first, then green: H1 (ledger seeded with a
+  pre-compaction `tool_result`, surviving window lacking the value ⇒ `accept` ⇒ `verified`) and H2 (**same
+  fixture**, only `deps.finalGuardLedger: false` ⇒ red again as `final_guard_unverified` +
+  `unverified/max_retries`) sit in the same suite, which is the two-sided reverse proof that the bite is in
+  the evidence surface. H5 had to change shape — the issue's "a store with neither `loadRawRows` nor `load`"
+  cannot reach a run at all, because the engine itself requires `store.load` (`required persistence store is
+  missing methods: store.load`), so the same discipline is pinned three ways instead: probe missing ⇒ falls
+  back to `load` and still verifies; probe throws ⇒ behaviour returns to today's `max_retries` with
+  `ledgerSource: "loadRawRows:error"` and `ledgerReadError` recorded and `notInLedgerBases` empty; the
+  both-probes-missing / store-absent shapes are probed directly on `readLedgerEvidence` (`no_probe` /
+  `no_store`) rather than claimed end-to-end. The predicate's revise wording gained one sentence **only**
+  when the ledger is complete and nothing matched (rerun the probe, or move the value to "## 未验证");
+  `revise` as an action and the decision's shape are unchanged (#648 / #436 / #435 cells untouched).
+- **finalGuard 的证据面就是被压缩改写的那份上下文，于是「真的取过证」的长 run 永远收敛不了（issue #797）。**
+  宿主的基点溯源闸读的是 `collectToolResultText(payload.messages)`，而 `payload.messages` **正是**上下文压缩
+  会改写的那一份：guard 跑的时候 `ctx.messages` 只剩存活窗口加一条折叠告知。一个在最后一次折叠前就逐字
+  `appendRound` 入账的值，折叠之后对谓词就是隐身的 ⇒ run 因「取址太早」被判罪：三次 attempt 全部 `revise`，
+  然后引擎兜成 `unverified / max_retries`，而模型从头到尾不知道还能做什么。真机一例
+  （`/tmp/762/segment-09`，68 轮、62 轮折到 57 层）：声明的那个字面值第 23 轮的 `tool_result` 里逐字在账，
+  照样连拒三次。**取证面现在是「存活窗口 ∪ 本次 run 的账本」**，只改宿主侧（`examples/pi-extension`；
+  `src/` 与 `bin/` 一字节未改——对修前 commit 的 `git diff --name-only` 里没有 `src/`）。账本的**读**在
+  `erix-run-core.js`（`readLedgerEvidence` 只递一个注入端口 store；优先 `loadRawRows`——原始行、每条
+  `tool_result` 逐字在账——没有就回落 `store.load` 的折叠行，两个都没有是**没有账本**而不是「账本是空」），
+  **匹配**留在 `erix-run-final-guard.js`（`buildLedgerEvidence` 只收纯数据 ⇒ 谓词层照旧不碰文件系统，且命中
+  判定复用同一条 `isBaseTraceable`：一套判据而不是两套，assistant 自己复述一遍依旧不算取证、只看
+  `tool_result`）。折叠事实只从账本推：`foldRows` 数带 `foldedRoundRange` 的行，`foldCeiling` 取
+  `max(foldedRoundRange.to)`，没有折叠行 ⇒ `foldCeiling: null`——**本次没观察到压缩**，不是「折到第 0 轮」。
+  `diagnostics.finalGuard.evidence` 逐条记下每个声明值命中在哪里：`source`（`"messages"` / `"ledger"`）、
+  `round`、以及 **`survivesLastCompaction`**（对着 `foldCeiling` 比出 `true` / `false`，没观察到压缩时是
+  **`null`**——三态事实不许被压成两态）；同一个值多次命中取**最新**那次。这一项是给人读的，**不参与判据**。
+  终局上的诚实：`honestVerificationReason` 只在四条同时成立（引擎给的是 `unverified` + `max_retries`、末次
+  attempt 有一批 `notInLedgerBases`、账本读全、观察到压缩）时把 `verification.reason` 改写成 `not_in_ledger`，
+  且**只动这一个键**：`status` 仍是 `unverified`（**没新增状态取值，也没新增事件类型**），`guardVerdict` 与
+  `metrics` 原样，引擎原值留在 `verification.engineReason`；四条少一条就逐字回到今天的 `max_retries`。
+  **账本不完整就不许下「0 命中」的结论**：读失败、探针缺席、行超限（`LEDGER_EVIDENCE_ROW_LIMIT = 4000`，
+  次序只有一种：**先把最新的 N 条原始行 `slice` 出来，再由这批行构造证据面**——折叠事实与 `truncated`
+  都在这一步算）三种形态只把 `ledgerComplete` 置 `false`、让终局面那一行写下
+  「账本不完整」——宁可留旧原因，也不造新假话；diagnostics 清单自己有 `LEDGER_LITERAL_LIMIT = 20` 与
+  `literalsTruncated`（载荷有界且不许静默，#386 同一条纪律）。**读到 0 行的账本也不是证据面**：读到空
+  仍然是「读到」（`source` 与「账本 0 行」照实写在那里），但从空账本推不出「全账本 0 命中」⇒
+  `ledgerComplete` 是 `false`。`buildLedgerEvidence` 是这份元数据的**唯一生产者**（审计返工 F1）：
+  不论行是从 store 探针读回来的、还是注入读口返的数组、还是注入的一个「成形证据」对象，后者只许贡献
+  两样——它的 `rows` 与它的 `source`；`ledgerComplete` / `truncated` / `foldCeiling` / `foldRows` **一律重算**，
+  否则调用方递一份 `{rows: [], ledgerComplete: true}` 就能绕过上面那条纪律（`rowLimit` 也会一起被绕过）。
+  注入函数自己抛错被吞成 `source: "injected:error"` + `readFailed: true`（F2 —— 读口那句「永不抛」从此
+  是事实而不是愿望）。`evidence.bases[]` 在 `round`/`lastRound` 旁边多一个 `firstRound`，两者不同时尾巴
+  写明「首次命中第 X 轮（≤ 水位）／最后一次第 Y 轮」（F4）：**闸门仍是「折叠后还剩没剩一处命中」**，
+  因为按首次出现判会把真机样本（`/tmp/762/segment-09`，值在 r23/r59/r61 与 r67 都有、水位 62）判成
+  「没有存活证据」，而且与 issue 自己的反向证（取证在折叠前、终稿在折叠后 ⇒ 修后必须 `accept`）直接
+  冲突；`firstRound` 是让人看见「只剩重复命中」这个自指回显风险的**诊断项，不是闸门**。
+  `summarizeFinalGuard` 的证据面那一段是**追加**
+  的尾巴 ⇒ 没有证据面时那一行逐字不变，既有 `/calls=0/`、`/revise=0\/2/`、`disabled` 断言一条没动。
+  **已知局限，故意不在本单修**：依旧没有出处链——账本里那条含字面值的 `tool_result` 很可能只是模型对自己
+  报告的 `grep`（自指回显也算可溯源），续跑后前段轮次取到的值同样算「本次 run 取证」；要改它就得动 #787
+  已钉下的口径（`docs/host-consumer-contract_cn.md`「`verified` ≠ 出处链」），另开单。谓词层 **P1–P10**
+  （`erix-run-final-guard.test.mjs`：P1–P6 与 P1b/P2b/P4b/P5b 四个同族变体，加上审计返工补的 P7–P10）
+  与宿主层 **H1–H7**（`test/examples/erix-run-core.test.js`）先红后绿：
+  H1（预置折叠前取证行、存活窗口不含该值 ⇒ `accept` ⇒ `verified`）与 H2（**同一棵 fixture**、只加
+  `deps.finalGuardLedger: false` ⇒ 重新红成 `final_guard_unverified` + `unverified/max_retries`）在同一份
+  套件里 ⇒ 这就是「咬的确实是证据面」的两半反向证。H5 换了形状——工单写的「store 既没 `loadRawRows`
+  也没 `load`」端到端根本到不了 run：引擎自己要求 `store.load`（`required persistence store is missing
+  methods: store.load`），所以同一条纪律改由三格钉：探针缺席 ⇒ 回落 `load` 且仍能 `verified`；探针抛错 ⇒
+  行为逐字回到今天的 `max_retries`，并留下 `ledgerSource: "loadRawRows:error"` 与 `ledgerReadError`、
+  `notInLedgerBases` 为空；「两个探针都没有 / store 缺位」直接探 `readLedgerEvidence`（`no_probe` /
+  `no_store`），不假称端到端跑过。谓词的 revise 文案只在「账本完整且两处都找不到」时**追加**一条出路
+  （重跑取证，或把该值移到「## 未验证」）；`revise` 这个动作与决策返回形状都没动（#648 / #436 / #435
+  的格子一条没碰）。
 
 ## [0.31.0] - 2026-11-04
 

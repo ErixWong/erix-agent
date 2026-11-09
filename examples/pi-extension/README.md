@@ -12,12 +12,14 @@
 | 文件 | 作用 |
 |---|---|
 | `erix-run.ts` | pi 扩展本体：`defineTool` 注册 `erix_run`、参数 schema、分流（同步 / 异步派工 / `action` 查询）、进度通道（`onUpdate`）、完成通知投递与生命周期接线。**结果形状不在这里**（→ `erix-run-format.js`） |
-| `erix-run-core.js` | 纯逻辑：库装载、配置装配、`runToolLoop` 选项装配、事件→进度、终局载荷组装。**不 import pi**，`node --test` 可测 |
+| `erix-run-core.js` | 纯逻辑：库装载、配置装配、`runToolLoop` 选项装配、事件→进度、终局载荷组装。**不 import pi**，`node --test` 可测。终稿核验的开关与**账本读口**（`readLedgerEvidence` / `deps.finalGuardLedger`，#797）在这层，谓词本体不在 |
 | `erix-run-format.js` | **结果形状层（issue #237）**：`outcome` / 同步载荷 → `AgentToolResult`（`content` / `details` / `structuredContent` / `isError` / `usage`）。按 `kind` 组装 `details`，只放纯数据，**`details` 必须可 JSON 序列化**这条由它保证。同样**不 import pi**，`node --test` 可测 |
 | `erix-run-jobs.js` | **异步执行层（issue #234）**：job 注册表 + `status.json` 落盘（tmp + rename 原子写，写失败开 `deps` 注入缝，#237 R4）+ 立即返回句柄 + `action` 面（`status`/`result`/`list`/`cancel`）+ run 级超时看门狗 + 完成投递去重注册表 + 唤醒策略。同样**不 import pi** |
+| `erix-run-final-guard.js` | **#314：终稿核验的谓词层**（零依赖：不 import `src/**`、不读配置、不碰网络）：四段存在性、**基点溯源**（#797 起：证据面 = **存活窗口 ∪ 本次 run 的账本**，见下文「证据面」）、比值提醒、成本计数 `tally`、`summarizeFinalGuard`（含证据面那段尾巴）。开关与透传在 `erix-run-core.js` |
 | `erix-run-parent-wake.js` | 唤醒父会话的双分支（idle 真触发 / 忙时追加 + `deliverAs:"steer"` 排队）+ `WAKE_PENDING_MS` pending 窗口 + `Symbol.for` WeakMap（`/reload` 不丢）。**逐分支对照** `pi-subagents` 的 `src/shared/parent-wake.js`（全文 46 行，分支结构一一对应，另多一个测试用的 `peekReservation`），**不 import pi** |
 | `index.ts` | 目录形态的入口（pi 把「含 `index.ts` 的子目录」当成一条扩展加载） |
-| `../../test/examples/erix-run-core.test.js` | core 单测（fake provider / 注入 fake lib，全离线） |
+| `../../test/examples/erix-run-core.test.js` | core 单测（fake provider / 注入 fake lib，全离线）；**#797 的 H1–H6** 是「证据面 = 存活窗口 ∪ 账本」的宿主格（预置折叠前取证行 ⇒ `verified`；**同一棵 fixture 只关掉账本回落 ⇒ 重新红**；账本 0 命中 ⇒ `not_in_ledger`；无折叠行 / 读失败 ⇒ 逐字回到今天；默认关 ⇒ 一条读口也不建） |
+| `erix-run-final-guard.test.mjs` | **#314：谓词层单测**（四段存在性 / 基点溯源 / 比值提醒 / 成本计数 / `summarizeFinalGuard`）；**#797 的 P1–P6** 钉证据面回落：只在账本里 ⇒ `accept` 并记 `source:"ledger"` / `round` / `survivesLastCompaction`，两处都找不到 ⇒ `notInLedger`，账本不完整 ⇒ **不许下 0 命中的结论**，`ledger` 不给 ⇒ 判定与返回形状逐字照今天 |
 | `../../test/examples/erix-run-async.test.js` | **#234 异步面单测**：立即返回、`status`→`result` 生命周期、`cancel` 终局 `aborted`、`status.json` 落盘与跨 `/reload` 回落读盘、去重注册表、parent-wake 两条分支 + pending 窗口 + reload 安全、run 级看门狗、`quiet` 唤醒策略；**#276 八条**钉住「异步终局视图覆盖同步结果的每个字段」（字段表从 core 载荷构造器派生、`UNPROJECTED_SYNC_FIELDS` 恒空、`result`/`status`/`status.json` 三处同形、未终局零值形状、句柄/摘要子集钉死）；**#654 七条**按会话隔离投递句柄与投递可观测性；**#658** 一条钉 `shutdown` 按会话归属收口（A 的 `session_shutdown` 不摘 B 的看门狗，B 到点仍写 `aborted`）；**#659** 八条钉有界重试（假时钟推三档）/ `isPending()` 的补偿回路（`agent_end` 与 `session_start`）/ `sent` 的上界 / reload 窗口内的失败事实 / `no-owner` 的根因 / 顶层 `resume` 坐标 |
 | `../../test/examples/erix-run-core.smoke.test.js` | 真机冒烟（一次真 relay 调用，默认跳过） |
 | `../../test/examples/erix-run-pi-load.test.js` | 用 **pi 自己的装载器**（jiti + 虚拟模块）加载 `.ts`，断言注册成功、失败路径不抛错；#237 之后还拿**真 `execute()`** 把每条返回路径的 `details` 序列化一遍 |
@@ -990,12 +992,77 @@ judge 闸门关着 = `0`（根本没额度），闸门开着且没传参 = 引�
 1. **格式 / 存段（提示词与 guard 双写）**：开启时系统提示词多一段槽位要求，终稿必须依次含
    `## 取证边界` / `## 基点` / `## 结论`（每条带「文件:行」）/ `## 未验证`；缺哪段就在 revise 文案里点名哪段。
    默认关时提示词**一个字节不变**。
-2. **基点溯源 = 唯一硬闸**：从「## 基点」抠声明值（反引号包裹 / 裸 SHA / 版本号），只在**本次** `messages` 的
-   `tool_result` 文本里逐字找（十六进制忽大小写）。找不到 ⇒ `revise`；段里没声明值（写「无」）⇒ `revise`；
-   重试用尽 ⇒ `unverified`（`max_retries`）。**任何分支都不 accept**（fail closed）。assistant 自己复述过
-   一遍不算取证（只看 `tool_result`）。
+2. **基点溯源 = 唯一硬闸**：从「## 基点」抠声明值（反引号包裹 / 裸 SHA / 版本号），在**本次** `messages` 的
+   `tool_result` 文本里逐字找（十六进制忽大小写）；**存活窗口里没有再看本次 run 的账本**（#797，见下文
+   「证据面」）。两处都找不到 ⇒ `revise`；段里没声明值（写「无」）⇒ `revise`；重试用尽 ⇒ `unverified`
+   （`max_retries`；#797 之后还有一种诚实的 `not_in_ledger`）。**任何分支都不 accept**（fail closed）。
+   assistant 自己复述过一遍不算取证（**只看 `tool_result`，换了证据面也不松动这条**）。
 3. **比值 / 总量只提醒**：`1:N`、百分比、「总计」类进 `diagnostics.finalGuard.ratioFlags`，**不硬拒**。
 4. 「至少一条非文件系统探针」**不做**（一条 `date` 就能糊弄）。
+
+### 证据面：存活窗口 ∪ 账本（issue #797）
+
+一句话：**`payload.messages` 就是被上下文压缩改写的那一份**。拿「终稿声明的字面值能不能在 `messages`
+的 `tool_result` 里逐字找到」当硬闸，等于惩罚「取证发生在折叠之前」的 run：值在 `appendRound` 那一刻就
+逐字进了账本，压缩把它从存活窗口拿走之后谓词就再也看不见它。真机一例（`/tmp/762/segment-09`，68 轮、
+62 轮折 57 层）：「## 基点」里那个值在第 23 轮的 `tool_result` 里**逐字在账**，三次 attempt 全被判「本次
+工具返回里逐字找不到」⇒ 用尽 ⇒ `unverified / max_retries`。**模型照提示词做了，是谓词看不见**。
+
+现在的取证面是**存活窗口 ∪ 本次 run 的账本**，两条并集里都找不到才算找不到：
+
+- **账本的读在宿主**（`erix-run-core.js` 的 `readLedgerEvidence`，只递 `store` 这个注入端口）：优先
+  `store.loadRawRows`（原始行，每条 `tool_result` 逐字在账）→ 没有就回落 `store.load`（折叠后的行）→
+  两个都没有就是**没有账本**。谓词层依旧不读盘（`buildLedgerEvidence` 只收纯数据），且**只在开了
+  `finalGuard` 时才建这条读口** ⇒ 默认关的载荷与选项面一个字节都不多。
+- **判据不另开一套**：账本行的命中判定复用同一条 `isBaseTraceable`（依旧只看 `tool_result`）；「同一个值
+  在折叠前后都命中」取**最新**那次。
+- **折叠事实只从账本推**：`foldRows` = 带 `foldedRoundRange` 的行数，`foldCeiling` = `max(foldedRoundRange.to)`
+  （最后一次压缩折到哪一轮）；账本里没有折叠行 ⇒ `foldCeiling` 是 **`null`**（本次**没观察到**压缩，
+  不是「折到第 0 轮」）。
+- **`diagnostics.finalGuard.evidence`** 逐条记 `source`（`"messages"` = 存活窗口里就有 / `"ledger"` = 只在账本）、
+  `round`（账本里命中那一轮的轮号）、**`survivesLastCompaction`**（这个值在最后一次压缩**之后**还活不活）：
+  命中轮号 > `foldCeiling` ⇒ `true`；≤ ⇒ `false`；没观察到压缩 ⇒ **`null`**（既不是 `true` 也不是 `false`）。
+  这一项只给人读「误判发生在折叠前还是折叠后」，**不参与判据**。
+- **诚实的终局**：四条同时成立才把 `verification.reason` 改写成 `not_in_ledger`（引擎原值留在
+  `verification.engineReason`）：① 引擎给的是 `unverified` + `max_retries`；② 末次 attempt 有一批「两处
+  都没有」的字面值（`notInLedgerBases` 非空）；③ 账本读全了；④ 观察到了压缩。**只动 `reason` 一个键**：
+  `status` 仍是 `unverified`（**没新增状态取值，也没新增事件类型**），`guardVerdict` / `metrics` 原样；
+  四条有一条不成立就逐字回到今天的 `max_retries`（判据本体：`honestVerificationReason`）。
+- **账本不完整 ⇒ 不许下 0 命中的结论**：读失败 / 探针缺席 / 行超限截断三种形态都只让 `ledgerComplete`
+  为 `false`、让终局面那一行写下「账本不完整」，行为逐字回到今天的 `max_retries` —— **宁可留旧原因，
+  也不造新假话**。
+- **两个上限**（照 #386 的纪律：载荷有界且**不许静默**）：证据面 `LEDGER_EVIDENCE_ROW_LIMIT = 4000` 行
+  （次序只有一种：**先保留最新的 N 条原始行**（`slice`），**再由这批行构造证据面**——折叠事实与
+  `truncated` 标记都在这一步算；超限置 `truncated` ⇒ 账本不完整 ⇒ 不说 `not_in_ledger`）；diagnostics
+  清单 `LEDGER_LITERAL_LIMIT = 20` 条（超限置 `literalsTruncated`，只丢清单条目、**不丢判定**）。
+- **元数据的唯一生产者就是 `buildLedgerEvidence`**（R2 F1）：不论账本是从 `store` 探针读回来的、
+  还是注入读口返的行数组、还是注入的一个「成形证据」对象，后者只许贡献**两样东西**——它的 `rows`
+  与它的 `source`；`ledgerComplete` / `truncated` / `foldCeiling` / `foldRows` **一律重算**。
+  否则调用方递一份 `{rows: [], ledgerComplete: true}` 就能把上面那条「不完整 ⇒ 不下结论」的纪律
+  饶过去，`rowLimit` 也会一起被绕过（守网：P9 / H7）。注入函数自己抛错被读口吞成
+  `source: "injected:error"` 的不完整证据（R2 F2；读口那句「永不抛」因此是真的，守网：P10）。
+  同理，**0 行的账本也不是证据面**：读到空仍然是「读到」（`source` 与「账本 0 行」会照实写出来），
+  但从空账本推不出「全账本 0 命中」⇒ `ledgerComplete` 是 `false`。
+- **判据 ② 的机器判法是「折叠后是否还有一处命中」**，不是「首次出现在哪一轮」（R2 F4）：
+  `evidence.bases[]` 里 `round` 与 `lastRound` 都是**最后一次**命中的轮号（向后兼容），
+  `survivesLastCompaction` 就是 `lastRound > foldCeiling`；`firstRound` 是**诊断项、不是闸门**，
+  它与 `lastRound` 不同时终局面那行会写明「首次命中第 X 轮（≤ 水位）／最后一次第 Y 轮」，
+  让人看得见「只剩重复命中」这个自指回显风险。不用「首次出现轮」当闸门有两个理由：真机样本
+  （`/tmp/762/segment-09`，值在 r23/r59/r61 与 r67 都有、水位 62）会被它误判成「没有存活证据」；
+  而它与 issue 自己的反向证（取证在折叠前、终稿在折叠后 ⇒ 修后必须 `accept`）直接冲突。
+  守网：P7（两者不同）、P8（只在折叠前命中 ⇒ `survivesLastCompaction:false` 但**仍 accept**）。
+- **注入面（不是工具参数）**：`deps.finalGuardLedger` 缺省 = 开；`false` = 关掉账本回落（只留
+  `ctx.messages`，即修前口径 —— 反向证的第二半就是它）；函数 = 替掉默认读口（它的返回值**一律被重建**，
+  见上一条）。`deps.finalGuardLedgerRowLimit` 给小上限，用来造「截断 ⇒ 不下结论」那一格。
+- **已知局限（不在本单解决）**：谓词依旧没有**出处链**——账本里那条含字面值的 `tool_result` 很可能只是
+  对自家报告的 `grep`（自指回显也算「可溯源」），续跑时前段轮次取到的值同样算「本次 run 取证」。要修
+  出处链得改判据，会动摇 #787 已钉下的口径（`docs/host-consumer-contract_cn.md`「`verified` ≠ 出处链」），
+  另开单。
+- **反向证两半同时在套件里**：H1（预置折叠前取证行 + 存活窗口不含该值 ⇒ `accept` ⇒ 终局 `verified`）与
+  H2（**同一棵 fixture** 只加 `deps.finalGuardLedger: false` ⇒ 重新红成 `final_guard_unverified` +
+  `unverified/max_retries`）⇒ 咬的确实是证据面，不是别处。R2 还多一格反向证：H7（同一棵 fixture 把读口
+  换成一份**自称完整、其实 0 行**的成形证据 ⇒ 仍得 `max_retries`，不许 `not_in_ledger`）。格子清单：谓词层 P1–P6 在
+  `erix-run-final-guard.test.mjs`，宿主层 H1–H6 在 `test/examples/erix-run-core.test.js`。
 
 ### 交付物判据的两种语义：布尔 vs 命名（issue #391）
 
@@ -1044,6 +1111,11 @@ judge 闸门关着 = `0`（根本没额度），闸门开着且没传参 = 引�
   `scripts/release-check.mjs` 的断言一字未改）。
 - 引擎一字未改：`src/loop/termination.js`、`src/loop/orchestrator.js`（`finalGuardMaxRetries` 默认 2、
   `finalGuardTimeoutMs` 默认 30000、`FINAL_GUARD_NON_CONTINUABLE_REASONS` 三个原因）。
+- **#797 同样一字未改引擎**：`src/` 与 `bin/` 零字节（账本读口与 `not_in_ledger` 的改写全在宿主）。
+  `verification.status` 的取值集合没动（`verified|skipped|unverified|error`），事件面没新增类型，只多了一个
+  `verification.reason` 取值 `not_in_ledger`（那一格里引擎原值挪到 `verification.engineReason`），以及
+  `diagnostics.finalGuard` 下追加的 `evidence` / `notInLedgerBases` / `ledgerComplete` / `compactionObserved`
+  / `ledgerSource` / `ledgerReadError`。异步面 `erix-run-jobs.js` 整块投 `payload.verification` ⇒ 自动同形。
 - 真机 e2e 默认段仍断 `skipped`，只**新增**一条「显式开启 ⇒ `verification` 不再是 `skipped`」（`ERIX_E2E_REAL=1` 才跑）。
 
 ## 测试
