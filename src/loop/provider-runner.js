@@ -5,7 +5,7 @@ import { throwIfAborted } from "./abort.js";
 import { validateMessages } from "../messages/rounds.js";
 import { foldToolResultsForRequest } from "./tool-result-ttl.js";
 import { ensureUserTurnView } from "./request-user-view.js";
-import { pendingTailToolUses } from "./pending-tool-result.js";
+import { pendingTailToolUses, stubUnsettledToolUsesForRequestView } from "./pending-tool-result.js";
 import { appendRunStateToRequestView } from "../run-state.js";
 
 /**
@@ -128,15 +128,39 @@ export async function callProvider(ctx, {
   const streaming = streamsThisRun(ctx);
   while (true) {
     normalizeMessages(ctx.messages);
-    validateMessages(ctx.messages, { allowPendingToolUse });
+    // issue #790：请求视图兜底 —— **只改这一份要出网的数组**，`ctx.messages` 一个块都不加。
+    //
+    // 盖住的两类（#789 把结清前移到宿主预写用户轮**之前**，但两类它管不到）：
+    //   ① 已经砖化的**归档**档案（那条预写用户轮早就落盘，重放不回来）；
+    //   ② 绕开 `appendUserTurn`、直接 `store.appendRound` 的宿主。
+    // 两者在下一次续跑时仍旧在**任何请求出网之前**被本库自己的校验器拒掉（实测 0 次 HTTP、那个 runId
+    // 永久起不来），而账本侧的中段兜底只会同页合并、不会插页（#421 纪律 ④）。
+    //
+    // 为什么必须在 `normalizeMessages` **之后**、`validateMessages` **之前**：合并相邻 assistant 会改变
+    // 「哪一条是那一单的宿主」，而校验器看的就是合并后的那份；插在两者中间会插错位置。
+    // 为什么零风险改动：无可补时它返回**同一个数组引用**（健库路径逐字等价，一行不多一个对象不多）。
+    // 为什么不写进 `ctx.messages`：① `extractL0Facts(ctx.messages)` 会把桩当**真工具结果**（它只认
+    // `tool_result` + `is_error`）；② `ctx.persistedTranscriptLength` 是「已落盘正文条数」（在
+    // `src/loop/resume-manager.js` 里 `ctx.messages.length` 赋值），桩进去就把它虚抬。
+    const requestView = stubUnsettledToolUsesForRequestView(ctx.messages, {
+      // 「执行过没有」的证据：账本 `tool-executed` 恢复行**优先**，快照那格只作兜底（顺位在
+      // `restoreResume` 里定，本层只读）；没有那一格 ⇒ 只能说「未知」（绝不猜「没执行」）。
+      executedToolIds: ctx.executedEvidenceToolIds,
+    });
+    if (requestView.stubs.length > 0) {
+      // 出声：补了几条、给哪些 id（沿 #730 的 `resume_journal_skipped` 通道，事件类型不新增）。
+      // 本模块不持有事件面字段（`runId` / `parentRunId` 在 orchestrator），所以交回调。
+      ctx.recordRequestViewStub?.({ round, stubs: requestView.stubs });
+    }
+    validateMessages(requestView.messages, { allowPendingToolUse });
     // TTL 折叠（issue #35）：只替换请求视图，ctx.messages 本身不动（run snapshot 仍存全文）。
     // toolResultFold 是 orchestrator 的配置 getter（含终稿保护口径），每次 attempt 重新读取；
     // null/undefined = 本轮不折叠。
     const foldConfig = ctx.toolResultFold ?? null;
     const ttlStats = {};
     let requestMessages = foldConfig === null || foldConfig === undefined
-      ? ctx.messages
-      : foldToolResultsForRequest(ctx.messages, {
+      ? requestView.messages
+      : foldToolResultsForRequest(requestView.messages, {
         currentRound: round,
         ttl: foldConfig.ttl,
         minTokens: foldConfig.minTokens,

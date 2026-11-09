@@ -36,6 +36,8 @@ import {
   // issue #730：「引擎放弃兜底」的成因码只在 `pending-tool-result.js` 里定义一份（事件在这里发，
   // 码在那一份里），中英两份契约的成因表与它们是双向对账的（`test/loop-resume-abandon-signals-730.test.js`）。
   MID_SEQUENCE_ABANDON_ROW_WRITE_REFUSED,
+  // issue #790：「只视图修了、账本仍开着」那一格（同上：码只定义一份，中英两份契约双向对账）。
+  MID_SEQUENCE_REQUEST_VIEW_STUB,
   RESUME_JOURNAL_SKIP_DETAIL_APPEND_SKIPPED,
   RESUME_JOURNAL_SKIP_DETAIL_ROUND_NOT_SAFE_INTEGER,
 } from "./pending-tool-result.js";
@@ -2238,6 +2240,15 @@ export async function runToolLoop(options) {
   //   `set resumeRunSnapshot` 访问器赋值，控制流分析看不见那条赋值，注解丢了 `resumeRunSnapshot.round`
   //   就会退回 TS2339（… on type 'never'）——本组唯一一行类型注解，一行也没删。
   const resumeExecutedToolIds = new Set();
+  // issue #790：**只服务出网措辞**的「执行过没有」证据集，与上面那格**分开**。
+  // 为什么不开一个共用：`resumeExecutedToolIds` 只在「有崩溃现场」那个分支里被填（见
+  // `src/loop/resume-manager.js` 里 `if (crashSiteRound || ledgerBoundary !== null)` 那一段），而本单
+  // 要补的那一类砖化档案**根本没有崩溃现场**（悬空在**中段**、后面还有引擎正文）⇒ 读那一格永远是空集
+  // ⇒ 「执行过」会被说成「无证据」。而把账本恢复行无条件并进去那一格会挪到复放判据
+  // （`executedToolIds.has(id) && recordedToolResult !== undefined`）与快照那格的字节，超出本单范围
+  // ⇒ 宁可多一个只读证据格：它**不参与**任何复放/去重判据，只决定桩的那一句怎么说。
+  // 顺位与 #769 一致：账本 `tool-executed` 恢复行**优先**，快照 `executedToolIds` 格只作兜底。
+  const executedEvidenceToolIds = new Set();
   const resumeRunSnapshotResults = new Map();
   // issue #769 R3（阻断 A）：**代际边界 = 恢复行通道的生命周期**。恢复行的事件键只有
   // `runId + round + event + 判别子`（`src/store/recovery-rows.js#recoveryEventKey`），**没有** run 代际，
@@ -2412,6 +2423,8 @@ export async function runToolLoop(options) {
       runLoopState.resumeToolResultRowKey = value;
     },
     resumeExecutedToolIds,
+    // issue #790：出网桩措辞的证据格（上面那段为什么与 `resumeExecutedToolIds` 分开）。
+    executedEvidenceToolIds,
     resumeRunSnapshotResults,
     toolStats,
     governorState,
@@ -2782,6 +2795,14 @@ export async function runToolLoop(options) {
   };
   const toolCallKeyForFragment = (fragment) => toolCallKeys.keyForFragment(fragment);
 
+  // issue #790：本 run 已经报过的**请求视图桩**（去重面：同一张桩每轮重补只报一次）。
+  // 身份 = `(那一单的下标, tool_use id)`——`tool_use_id` 不保证 run 内唯一（#284 实测过 id 复用），
+  // 只用 id 会把第二单同一 id 的那张桩说成「已经报过」。集合在本闭包外面，因为它是**跨轮**去重面。
+  const requestViewStubSeen = new Set();
+  const requestViewStubKey = (stub) => typeof stub?.toolUseId === "string" && stub.toolUseId !== ""
+    ? `${String(stub.assistantIndex)}\u0000${stub.toolUseId}`
+    : undefined;
+
   const providerContext = {
     provider,
     mainSystem,
@@ -2812,6 +2833,38 @@ export async function runToolLoop(options) {
     backoffBaseMs,
     backoffMaxMs,
     emitEvent,
+    // issue #790：出网桩措辞的证据格（上面与 `resumeExecutedToolIds` 分开的那段注释）。
+    executedEvidenceToolIds,
+    // issue #790：请求视图里插了桩必须能被宿主看到（沿 #730 的 `resume_journal_skipped` 口径，
+    // **不新增事件类型**，`reason` 是新值、`detail` 沿用既有两个取值）。去重靠 `requestViewStubSeen`：
+    // 砖化的形状**每一轮**都会重新补同一批桩（账本不修），逐轮重报会把一个静态事实当噪声重报
+    // （#769 对 `listRecoveryRows` 缺席保持沉默是同一口径）。
+    recordRequestViewStub: ({ round, stubs }) => {
+      const fresh = (Array.isArray(stubs) ? stubs : []).filter((stub) => {
+        const key = requestViewStubKey(stub);
+        if (key === undefined || requestViewStubSeen.has(key)) return false;
+        requestViewStubSeen.add(key);
+        return true;
+      });
+      if (fresh.length === 0) return;
+      // 同一批里不同成因（`detail`）各一条，与 #730 的「共享 `(reason, detail)` 归并成一条」同口径。
+      for (const group of groupResumeJournalSkips(fresh.map((stub) => ({
+        reason: MID_SEQUENCE_REQUEST_VIEW_STUB,
+        detail: stub?.detail,
+        round,
+      })))) {
+        emitResumeJournalSkip({
+          round: group.round,
+          reason: group.reason,
+          count: group.count,
+          detail: group.detail,
+          // 「给哪些 id」只在新增的这一格里带（既有四条事件逐字不变，#730 钉过旧形状不许动）。
+          toolUseIds: fresh
+            .filter((stub) => String(stub?.detail) === String(group.detail))
+            .map((stub) => stub.toolUseId),
+        });
+      }
+    },
     // issue #292（additive 仓内可观测信号）：请求视图定稿处的 user 轮守卫生效过一次，
     // 就记一条带 userTurnGuard 的压缩统计（并走同一条 compaction 事件通道）。
     recordUserTurnGuard: ({
@@ -3330,9 +3383,10 @@ export async function runToolLoop(options) {
   //      账本真没那一行），这三件事对宿主完全不同：只有第一种补上探针就能闭合。
   //   ④ 有锚点、该落账，而 `appendMessageRowToTranscript` 返回 `undefined`（轮号不是安全整数，或
   //      写被返回 `false`）——修前这里一声不响，账本里没那一行而宿主以为已闭合。
-  /** 同一条 `resume_journal_skipped` 的形状只在这里拼一次（`detail` 缺席时**不带**那个键）。 */
-  /** @param {{round: any, reason: string, count?: number, detail?: string}} skip */
-  const emitResumeJournalSkip = ({ round, reason, count, detail }) => emitEvent({
+  /** 同一条 `resume_journal_skipped` 的形状只在这里拼一次（`detail` 缺席时**不带**那个键）。
+   * issue #790：`toolUseIds` 同样「缺席就不带」⇒ 既有四条事件的字节逐字不变（纯加法）。
+   * @param {{round: any, reason: string, count?: number, detail?: string, toolUseIds?: any[]}} skip */
+  const emitResumeJournalSkip = ({ round, reason, count, detail, toolUseIds }) => emitEvent({
     type: "resume_journal_skipped",
     runId,
     ...(parentRunId === undefined ? {} : { parentRunId }),
@@ -3340,6 +3394,7 @@ export async function runToolLoop(options) {
     reason,
     count,
     ...(detail === undefined || detail === null ? {} : { detail }),
+    ...(Array.isArray(toolUseIds) && toolUseIds.length > 0 ? { toolUseIds } : {}),
   });
 
   /** 同一批成因按 `(reason, detail)` 归并成**一条**事件（数量在 `count`，轮号取第一条）。 */

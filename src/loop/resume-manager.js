@@ -542,6 +542,15 @@ export async function restoreResume(ctx) {
       } catch (error) {
         throw recoveryRowsUnreadableError(error, ctx.runId);
       }
+      // issue #790：把「执行过」的证据**无条件**另存一份到 `ctx.executedEvidenceToolIds`。
+      // 为什么不能等到下面崩溃现场分支里再读那一摞恢复行：那一支的入场券是「有崩溃现场」
+      // （`if (crashSiteRound || ledgerBoundary !== null)`），而 #790 要补的那一类砖化档案**没有**崩溃现场
+      // （悬空在中段、后面还有引擎正文）⇒ 不提到这里，请求视图那一层拿到的永远是空集，「执行过」会被
+      // 说成「无证据」（措辞错了是事实错，不是噪声）。本层仍**不**动 `ctx.resumeExecutedToolIds`：那一格
+      // 参与复放/去重判据与快照字节，抬它的口径超出本单（见 `orchestrator.js` 里那两个集合并列的注释）。
+      for (const id of ledgerExecutedToolIds) {
+        ctx.executedEvidenceToolIds?.add(id);
+      }
       // 崩溃轮的半截正文同理：先问账本（`partial-text` 恢复行：一条一个事件、事件键 = 正文指纹）。
       // append-only ⇒ 历史轮的行永远在场，所以只有「那一轮的 assistant 正文**没**落账」的那些行才算崩溃
       // 现场；正文已落账的是历史副本，不能把「正常收口后宿主追问」误判成崩溃轮。下面两行的 `@type` 断言只服务 `--strict`：

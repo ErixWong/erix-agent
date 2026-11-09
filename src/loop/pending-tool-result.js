@@ -180,6 +180,18 @@ export const MID_SEQUENCE_ABANDON_SHAPE_NOT_SUPPORTED = "mid_sequence_shape_not_
 /** 有锚点、该落账，但写侧返回 `undefined`（轮号不是安全整数 / 写被跳过）——在 orchestrator 那一侧发。 */
 export const MID_SEQUENCE_ABANDON_ROW_WRITE_REFUSED = "mid_sequence_stub_row_write_refused";
 
+/**
+ * issue #790（**只视图修了、账本仍开着**）：需要插页那一类中段悬空，已在**请求视图**里插了一张纯
+ * `tool_result` 的 user 页 ⇒ run 能起来，而**账本一个字节都没动**（本单不代笔补那一行）。
+ *
+ * 为什么不复用上面那个 `mid_sequence_shape_not_supported`（新 `reason` 的代价：中英两份契约的表 +
+ * `SOURCE_REASONS` 同笔刷新）：那四个成因说的全部是「**账本**这一格放弃了」，而这一格说的是
+ * 「视图修好了、账本还没修」。复用会让同一次续跑发出两条 `(reason, detail, count, round)` 逐字相同
+ * 而含义相反的事件，而「宿主能不能分清这两种」恰好是 #730 开单要钉的那件事。
+ * **事件类型未新增**（仍骑在 `resume_journal_skipped` 上），`detail` 也沿用下面两个既有取值。
+ */
+export const MID_SEQUENCE_REQUEST_VIEW_STUB = "mid_sequence_request_view_stub";
+
 /** `mid_sequence_shape_not_supported`：紧接的那条消息不是 `user`（相邻两条 assistant）。 */
 export const MID_SEQUENCE_ABANDON_DETAIL_NEXT_NOT_USER = "next_message_is_not_user";
 /** `mid_sequence_shape_not_supported`：紧接的 user 一条 `tool_result` 都没有（需要插页）。 */
@@ -276,6 +288,137 @@ export function pendingMidSequenceToolUses(messages) {
  */
 export function buildUnpersistedToolResultStub(toolUseId) {
   return buildToolResultFact({ toolUseId, content: UNPERSISTED_TOOL_RESULT_TEXT, isError: true });
+}
+
+/**
+ * 「**没有证据**判断这条调用执行过没有」的桩正文（issue #790）。
+ *
+ * 与上面两句的分工（三句不许合并成一句，也不要拿错）：
+ *   · `PENDING_TOOL_RESULT_TEXT` —— 引擎**知道**这条没跑（循环在跑之前就停了）；
+ *   · `UNPERSISTED_TOOL_RESULT_TEXT` —— 引擎**有证据**说它跑过（账本里有该 id 的 `tool-executed` 恢复行，
+ *     或快照 `executedToolIds` 那格记着它），只是结果从没进账；
+ *   · 本句 —— 两样证据都没有。这时**唯一诚实的说法是「未知」**：执行发生在结果行落盘**之前**
+ *     （`src/store/recovery-rows.js` 文件头的语义红线），「没跑」与「跑了而结果行没落 / 被宿主拒」
+ *     在账本里形状相同 ⇒ 从「没有 `tool_result`」推不出「没执行」，那是一句伪报的事实。
+ * 开头的 `[erix]` 是 marker（引擎自写，不是工具输出）。导出只为让测试断言这一份唯一来源。
+ */
+export const NO_EVIDENCE_TOOL_RESULT_TEXT = "[erix] The result of this tool call is missing from the "
+  + "transcript ledger, and the engine holds no evidence either way about whether it ran: the ledger "
+  + "carries no tool-executed record and no tool_result for it. Do not read that as the call having "
+  + "not run — side effects may already have happened. Re-issue the call if the task still needs it.";
+
+/**
+ * 造一张「执行过没有**无证据**」的 `tool_result` 桩（issue #790）。
+ *
+ * 与 `buildUnpersistedToolResultStub` 同住本文件、同走 `buildToolResultFact`（全仓唯一构造点），
+ * 也**不写** `executionStatus`（那是 `intercepted / interrupted / rejected` 的闭集）。两张桩的差别只在
+ * 正文那一句，块形状逐字相同 —— 措辞分两种是 issue #790 的硬要求：有执行证据说「执行过、结果没入账」，
+ * 没证据说「未知」，一律说「没执行」会把一个副作用已经发生的工具说成没发生。
+ *
+ * @param {string} toolUseId 悬空那个 `tool_use` 的 id；非空字符串由调用方判（纪律 ⑤）
+ */
+export function buildNoEvidenceToolResultStub(toolUseId) {
+  return buildToolResultFact({ toolUseId, content: NO_EVIDENCE_TOOL_RESULT_TEXT, isError: true });
+}
+
+/**
+ * issue #790：「需要**插页**才能闭合」那一类中段悬空的**请求视图**兜底（只读账本、只改视图）。
+ *
+ * 病根：#789 把结清时机前移到宿主预写用户轮**之前**（`src/store/append-user-turn.js`），但仍有两类
+ * 账本结不到：① 已经砖化的**归档**档案（那条预写用户轮早就落盘了，重放不回来）；② 绕开
+ * `appendUserTurn`、直接 `store.appendRound` 的宿主。它们在下一次续跑时仍旧在**任何请求出网之前**被
+ * 本库自己的校验器拒掉（`assistant tool_use has no immediately following user tool_result`，0 次 HTTP，
+ * 那个 runId 永久起不来），而账本侧的中段兜底只会同页合并、不会插页（纪律 ④）。
+ *
+ * 这一层补的就是「插页」那一支，而它**只**存在于交给 provider 的那份数组里：
+ *   · 不碰 `messages`（一个块都不加、一个对象都不改）⇒ `extractL0Facts(ctx.messages)` 不会把桩当成
+ *     真工具结果，`ctx.persistedTranscriptLength`（`src/loop/resume-manager.js` 在重建上下文之后赋值）
+ *     也不会长；
+ *   · 不调任何 `store.append*` ⇒ 账本字节一字不差，「账本仍未修」这件事实仍由既有那条
+ *     `mid_sequence_shape_not_supported` 如实说（本函数另发一条 `mid_sequence_request_view_stub` 说
+ *     「视图修了」，两件事是两件事）。
+ *
+ * 判据（四条，全部是「插进去之后 `validateMessages` 必须过」的充分条件）：
+ *   ① **整段上下文**里找不到该 assistant 任一 `tool_use` 的 `tool_result`（#765 的「整本账本」口径）。
+ *      这是**整组**判据：部分结清时插页会把已有的那份结果挤成孤儿（`user tool_result has no matching
+ *      assistant tool_use`），与 `deriveLedgerCrashBoundary` 取舍 ① 同规则 ⇒ 宁可不插。
+ *      它同时保证**不会双结清**：#789 结清过的那些 id 已经在账本里 ⇒ 这一组直接跳过。
+ *   ② 紧跟的那条消息里一条 `tool_result` 都没有（有结果 = #421 的同页合并那一支，插页会打散它）。
+ *   ③ id 全部可用（沿用 `isUsableToolUseId`，不发明第三种兜底 —— 畸形块让今天那句如实报错）。
+ *   ④ 不是最后一条消息（尾部悬空归 #394 / #736 / #789 那三支结清；`allowPendingToolUse: true` 的
+ *      在飞尾巴因此永远不被本函数碰）。
+ *
+ * @param {any[]} messages canonical 消息数组（**只读**）
+ * @param {{executedToolIds?: Set<any>, pendingResultIds?: Set<any>}} [options]
+ *   `executedToolIds` = 「执行过」的证据（账本 `tool-executed` 恢复行优先、快照那格兜底，顺位由调用方
+ *   决定），命中 ⇒ 用 `UNPERSISTED_TOOL_RESULT_TEXT`；
+ *   `pendingResultIds` = 本进程马上会产出真结果的 id（与 #421 的排除集同一口径），一律不补桩。
+ * @returns {{messages: any[], stubs: Array<{toolUseId: any, assistantIndex: number, detail: string, executed: boolean}>}}
+ *   `messages` 没有可补时是**同一个数组引用**（健康路径零改动、逐字等价）；补了才是新数组。
+ *   `stubs` 是「补了几条、给哪些 id、哪一种措辞」的事实，出声归调用方（事件面一直在 orchestrator）。
+ */
+export function stubUnsettledToolUsesForRequestView(messages, options = {}) {
+  const list = Array.isArray(messages) ? messages : [];
+  const evidence = options.executedToolIds instanceof Set ? options.executedToolIds : undefined;
+  const inFlight = options.pendingResultIds instanceof Set ? options.pendingResultIds : undefined;
+  // 整段上下文里已有的结果 id（判据 ① 的排除集，也是「不双结清」的那一道：#789 结清的行就在其中）。
+  const settled = new Set(list
+    .flatMap((message) => blocksFor(message?.content))
+    .filter((block) => block?.type === "tool_result")
+    .map((block) => block?.tool_use_id));
+  /** @type {Array<{toolUseId: any, assistantIndex: number, detail: string, executed: boolean}>} */
+  const stubs = [];
+  /** 插页位置（下标全部是**原数组**里的，两阶段拼接到下面）；空数组 = 一条都不补。 */
+  /** @type {Array<{afterIndex: number, page: object}>} */
+  const insertions = [];
+  for (let index = 0; index < list.length - 1; index += 1) {
+    const assistant = list[index];
+    if (assistant?.role !== "assistant") continue;
+    const uses = blocksFor(assistant.content).filter((block) => block?.type === "tool_use");
+    if (uses.length === 0) continue;
+    // 判据 ①（整组）：任一 id 在整段上下文里已有结果 ⇒ 这一单不是「整单没结清」，不插页
+    // （部分结清时插页会把已有那份结果挤成孤儿）。它同时保证不双结清：#789 结清过的 id 在其中。
+    if (uses.some((block) => settled.has(block?.id))) continue;
+    // 判据 ③ 与在飞排除集（与 #421 同口径：马上会有真结果的 id 不许被桩顶掉）。
+    const usable = uses.filter((block) => isUsableToolUseId(block)
+      && !(inFlight !== undefined && inFlight.has(block.id)));
+    if (usable.length !== uses.length) continue;
+    const next = list[index + 1];
+    // 判据 ②：紧跟的那一页已有结果 = #421 同页合并那一支，插页会打散它。
+    if (blocksFor(next?.content).some((block) => block?.type === "tool_result")) continue;
+    const detail = next?.role === "user"
+      ? MID_SEQUENCE_ABANDON_DETAIL_AGGREGATE_HAS_NO_RESULT
+      : MID_SEQUENCE_ABANDON_DETAIL_NEXT_NOT_USER;
+    const page = {
+      role: "user",
+      // **独立的一页**，只装 `tool_result`（与 `answerPendingTailToolUses` 同形状）：全仓档案里
+      // 「同时带 `text` 与 `tool_result` 的混合 user 页」是 0 个，本单不许使它不为 0（OpenAI 转换层
+      // 会把那种页拆成 `user` + `tool` 两段，顺序与 Anthropic 相反）。
+      content: usable.map((block) => {
+        const executed = evidence?.has(block.id) === true;
+        // `assistantIndex` 是**原数组**里那一单的下标：它与 id 一起才是「哪一张桩」的身份
+        //（`tool_use_id` 不保证全局唯一，issue #284），宿主的去重也要靠它。
+        stubs.push({ toolUseId: block.id, assistantIndex: index, detail, executed });
+        return executed
+          ? buildUnpersistedToolResultStub(block.id)
+          : buildNoEvidenceToolResultStub(block.id);
+      }),
+    };
+    // 桩**不进 `messages`**：只往新视图里插这一页。
+    insertions.push({ afterIndex: index, page });
+  }
+  if (insertions.length === 0) return { messages: list, stubs };
+  // 两阶段拼接：一段一段把原数组搬过去，每段末尾插它自己那一页（写死 `index + 1` 会在第二条
+  // 悬空那里插错 —— 新数组的下标已经比原数组走前了）。
+  const view = [];
+  let cursor = 0;
+  for (const insertion of insertions) {
+    view.push(...list.slice(cursor, insertion.afterIndex + 1));
+    view.push(insertion.page);
+    cursor = insertion.afterIndex + 1;
+  }
+  view.push(...list.slice(cursor));
+  return { messages: view, stubs };
 }
 
 /**

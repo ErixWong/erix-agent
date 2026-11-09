@@ -1017,15 +1017,20 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
   // 先在合并前的本支 tip（`git show 586d6e8:`）上找「`at` == 旧值」的那条锚点，拿它的 `anchor` 正则
   // 到合并后的本树求唯一命中（脚本 `/tmp/r9-remap-at.mjs`，现报：857→878 / 858→879 / 815→822 /
   // 819→826 / 786→788；`6297` / `6277` / `119` 三条在合并树上是同一条锚点的现行命中，未变）。
+  // ⚠ issue #790 再同步一次（同一条口径：值由 `anchorHitLines()` 现算打印，不是手抄）：#790 在
+  // `src/loop/orchestrator.js`（新增一个证据集合 + 一条出网事件出口）与 `src/loop/resume-manager.js`
+  // （恢复行读取处多一段无条件另存）各插了行 ⇒ 同一条锚点的命中行又漂一次。逐条现报：
+  //   6297→6352 / 6277→6332 / 878→887 / 879→888 / 822→831 / 826→835 / 788→797（`119` 那条是注释锚点，未变）。
+  //   现算命令：`node -e` 逐条 `anchorHitLines(readLines(e.codePath), e)`（与 G4 同源，脚本 `/tmp/refresh-cell-axes.mjs`）。
   const victims = [
-    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6297 },
-    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6277 },
-    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 878 },
-    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 879 },
-    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 822 },
-    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 826 },
+    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6352 },
+    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6332 },
+    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 887 },
+    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 888 },
+    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 831 },
+    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 835 },
     { key: "persistedTranscriptLength", axis: "read", path: "src/loop/resume-manager.js", at: 119 },
-    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 788 },
+    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 797 },
   ];
   const droppedKeys = new Set();
   const mutatedAnchors = [...CELL_AXES_ANCHORS];
