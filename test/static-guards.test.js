@@ -1441,13 +1441,9 @@ function claimedValueReport({ readText, constants = CLAIMED_VALUE_CONSTANTS, doc
       const claims = extractDocClaims(text, name);
       row.claims.push(...claims.map((c) => ({ doc, ...c })));
       byDoc.set(doc, claims);
-      // 只对**登记过的** (文档, 常量) 对要求「至少一处」：README 不提某常量是合法的，
-      // 但登记了的那一句被删 ⇒ 红（#210 那族：句子没了不能算绿）
-      if (requires.includes(name) && claims.length === 0) {
-        errors.push(`claimed-values: ${doc} 里一处 \`${name} = <数字>\` 声称都没有——`
-          + "这份文档的声称面登记了它，句子被删也要红（否则这个常量就脱离了机器校对；"
-          + `真值在 ${script}）`);
-      }
+      // issue #802：这里**不再**要求「登记过的 (文档, 常量) 对必须至少出现一处」。那条判据抓的是
+      // 「这句散文被删了」，不是「数字错了」；正当的文档改写（搬走一句、改成表格式叙述）都会被它拦下。
+      // 现在的口径只有一条：**出现了就必须等于真值**（下面那个 for）。
       for (const c of claims) {
         if (c.value !== truth) {
           errors.push(`claimed-values: ${doc}:${c.line} 声称 \`${name} = ${c.value}\`，但 ${script} 里的真值是 ${truth}——`
@@ -1516,7 +1512,6 @@ function baselineTierCoverage(readText, tiers = ["withTools", "sum"]) {
   const rules = blocks.map((b) => ({
     id: b.match(/\bid:\s*"([^"]*)"/)?.[1] ?? "(无 id)",
     tier: b.match(/\btier:\s*"([^"]*)"/)?.[1] ?? null,
-    required: /\brequired:\s*true\b/.test(b),
     rels: [...b.matchAll(/\brel:\s*([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]),
   }));
   const enDoc = src.match(/^const AGENTS_EN = "([^"]+)";/m)?.[1];
@@ -1526,10 +1521,11 @@ function baselineTierCoverage(readText, tiers = ["withTools", "sum"]) {
       + `（实测 ${JSON.stringify(enDoc)} / ${JSON.stringify(cnDoc)}）——覆盖面断言下面的 rel 名字会对到别的文件上`);
   }
   for (const tier of tiers) {
-    const hit = rules.filter((r) => r.tier === tier && r.required && r.rels.includes("AGENTS_EN") && r.rels.includes("AGENTS_CN"));
+    // issue #802：`required` 已从规则表里删掉，覆盖面判据改成「这条 tier 的规则还在、且仍覆盖中英两份 AGENTS」。
+    const hit = rules.filter((r) => r.tier === tier && r.rels.includes("AGENTS_EN") && r.rels.includes("AGENTS_CN"));
     if (hit.length === 0) {
-      errors.push(`claimed-values: ${DRIFT_SRC} 的 \`BASELINE_CLAIM_RULES\` 里已经没有 \`tier: "${tier}"\` 且 \`required: true\`、`
-        + "同时覆盖两份 AGENTS 的规则了——这条现值句式的锚点被删/被降级/被缩面，文档里的那个数从此没人校（#274 那族）");
+      errors.push(`claimed-values: ${DRIFT_SRC} 的 \`BASELINE_CLAIM_RULES\` 里已经没有 \`tier: "${tier}"\`、`
+        + "同时覆盖两份 AGENTS 的规则了——这条现值句式的锚点被删/被改名/被缩面，文档里的那个数从此没人校（#274 那族）");
     }
   }
   return { errors, rules };
@@ -1596,37 +1592,36 @@ describe("静态守卫：文档声称值与脚本常量（issue #310）", () => 
       ["AGENTS.md", "AGENTS_cn.md", "README.md", "README_cn.md", "examples/pi-extension/README.md"],
       "规则 4 的声称面被改窄了（#359 要求两份随包 README 与 erix_run 的 README 都在面内）",
     );
-    // 正面证据：登记过的 (文档, 常量) 对**真的**有声称，而不是靠别的文档盖住
-    for (const { doc, requires } of CLAIMED_VALUE_DOC_RULES) {
-      const claimed = new Set(rows.filter((r) => r.claims.some((c) => c.doc === doc)).map((r) => r.name));
-      for (const name of requires) {
-        assert.ok(claimed.has(name), `${doc} 里没有 \`${name} = <数字>\` 声称（登记了却没出现 ⇒ 该文档这一条没人校）`);
-      }
-      assert.ok(claimed.size > 0, `${doc} 在声称面里却一处声称都没有：它凭什么占一个位置`);
-    }
+    // issue #802：这里**不再**断言「登记过的 (文档, 常量) 对必须真的出现」。原来那组断言是
+    // 「句子必须存在」的散文警察：把一句话搬走/改写成表格式叙述就会红，而它抓不到任何行为问题。
+    // 现在只留一条：**凡是出现的声称都必须等于真值**（下面那一行）。
     for (const row of rows) {
       assert.ok(row.claims.every((c) => c.value === row.truth), `\`${row.name}\` 有声称不等于真值 ${row.truth}`);
     }
   });
 
   it("规则 4 的覆盖面：`BASELINE_WITH_TOOLS` 的现值句式必须仍被 check:docs 校着（自带反向证）", (t) => {
-    const { errors, rules } = baselineTierCoverage(realReadText);
+    // issue #802：`required` 这个概念已从 `BASELINE_CLAIM_RULES` 里删掉（句子不在不红）。
+    // 这里改为锁**规则本身还在**：withTools 档的句式规则必须仍在校，且仍覆盖中英两份 AGENTS。
+    const { errors, rules } = baselineTierCoverage(realReadText, ["withTools"]);
     assert.deepEqual(errors, [], `baseline 句式覆盖面掉了：\n${errors.join("\n")}`);
     assert.ok(
-      rules.some((r) => r.tier === "withTools" && r.required),
-      "抽出来的规则表里一条 withTools + required 都没有——抽取口径可能失效了",
+      rules.some((r) => r.tier === "withTools" && r.rels.includes("AGENTS_EN") && r.rels.includes("AGENTS_CN")),
+      "抽出来的规则表里一条 withTools 档、覆盖中英两份 AGENTS 的规则都没有——抽取口径可能失效了",
     );
 
-    // 反向证 ①：把 withTools 那条规则的 required 改成 false ⇒ 必须红
+    // 反向证 ①：把 withTools 那条规则的 tier 改名 ⇒ 必须红
+    // 两条 withTools 档的规则都要改掉：`String.replace` 只换第一处，只改一条时另一条仍然覆盖中英
+    // ⇒ 那一格不会红，反向证就变成空转（#210 R2 的同族坑）。
     const downgraded = mutateText(
       realReadText(DRIFT_SRC),
-      'tier: "withTools",\n    required: true,',
-      'tier: "withTools",\n    required: false,',
-      "降级 withTools 规则",
-    );
-    const downgradedErrors = baselineTierCoverage((rel) => (rel === DRIFT_SRC ? downgraded : realReadText(rel))).errors;
-    assert.match(downgradedErrors.join("\n"), /没有 \`tier: "withTools"\` 且 \`required: true\`/);
-    t.diagnostic(`withTools 规则 required → false ⇒ ${downgradedErrors.length} 处红：\n${downgradedErrors.join("\n")}`);
+      'tier: "withTools",',
+      'tier: "withTools-dropped",',
+      "withTools 规则降级",
+    ).split('tier: "withTools",').join('tier: "withTools-dropped",');
+    const downgradedErrors = baselineTierCoverage((rel) => (rel === DRIFT_SRC ? downgraded : realReadText(rel)), ["withTools"]).errors;
+    assert.match(downgradedErrors.join("\n"), /没有 `tier: "withTools"`、/);
+    t.diagnostic(`withTools 规则 tier 改名 ⇒ ${downgradedErrors.length} 处红：\n${downgradedErrors.join("\n")}`);
 
     // 反向证 ②：从那条规则的 claims 里删掉中文那份（rel 名字被换掉）⇒ 必须红
     const shrunk = mutateText(
@@ -1635,8 +1630,11 @@ describe("静态守卫：文档声称值与脚本常量（issue #310）", () => 
       "{ rel: AGENTS_EN, re: /基线\\s*",
       "withTools 规则缩面",
     );
-    const shrunkErrors = baselineTierCoverage((rel) => (rel === DRIFT_SRC ? shrunk : realReadText(rel))).errors;
-    assert.match(shrunkErrors.join("\n"), /没有 \`tier: "withTools"\` 且 \`required: true\`/);
+    // 两条 withTools 档的规则各有一条 CN 声称，都要缩掉：只缩一条时另一条仍然中英齐 ⇒ 不会红。
+    const shrunkBoth = shrunk
+      .split("{ rel: AGENTS_CN, re: /BASELINE_WITH_TOOLS\\s*").join("{ rel: AGENTS_EN, re: /BASELINE_WITH_TOOLS\\s*");
+    const shrunkErrors = baselineTierCoverage((rel) => (rel === DRIFT_SRC ? shrunkBoth : realReadText(rel)), ["withTools"]).errors;
+    assert.match(shrunkErrors.join("\n"), /没有 `tier: "withTools"`、/);
     t.diagnostic(`withTools 规则的 claims 缩掉中文那份 ⇒ ${shrunkErrors.length} 处红：\n${shrunkErrors.join("\n")}`);
 
     // 反向证 ③：AGENTS_CN 常量被改指向别的文件 ⇒ 必须红（rel 名字对、指向错，也会漏）
@@ -1785,12 +1783,12 @@ describe("静态守卫：文档声称值与脚本常量（issue #310）", () => 
     assert.deepEqual(report().errors, [], "两边同时改必须绿");
     t.diagnostic("③ 两边同时改（脚本 8 + 中英都 8）⇒ 0 处红（绿）");
 
-    // ④ 把文档里那句整段删掉 ⇒ 因「每份至少一次」而红（不是靠数值不等才红）
+    // ④ issue #802：把文档里那句整段删掉 ⇒ **绿**（句子不在就没有声称值可对；不再是「每份至少一次」）
     seed();
     write("AGENTS_cn.md", mutateText(read("AGENTS_cn.md"),
       `- 覆盖面下限：\`REF_SCAN_DOCS_MINIMUM = ${V.REF_SCAN_DOCS_MINIMUM}\`\n`, "", "删掉 CN 那句声称"));
-    assert.match(report().errors.join("\n"), /AGENTS_cn\.md 里一处 \`REF_SCAN_DOCS_MINIMUM = <数字>\` 声称都没有/);
-    t.diagnostic(`④ 删掉 CN 那句声称 ⇒ ${report().errors.length} 处红：\n${report().errors.join("\n")}`);
+    assert.deepEqual(report().errors, [], "issue #802：删掉一处声称不该判红（出现才校）");
+    t.diagnostic(`④ 删掉 CN 那句声称 ⇒ ${report().errors.length} 处红（绿）`);
 
     // ⑤ 脚本里把常量整行删掉 ⇒ 抽不到真值就红（#164 口径，不许静默放行）
     seed();
@@ -1836,19 +1834,19 @@ describe("静态守卫：文档声称值与脚本常量（issue #310）", () => 
     assert.match(wakeScriptOnly.join("\n"), /examples\/pi-extension\/README\.md:\d+ 声称 \`WAKE_PENDING_MS = 10000\`，但 examples\/pi-extension\/erix-run-parent-wake\.js 里的真值是 20000/);
     t.diagnostic(`⑨ 只改脚本常量（WAKE 10_000 → 20_000）⇒ ${wakeScriptOnly.length} 处红：\n${wakeScriptOnly.join("\n")}`);
 
-    // ⑩ 把 `examples/pi-extension/README.md` 里那句整段删掉 ⇒ 因「登记了就必须在」而红
+    // ⑩ issue #802：把 `examples/pi-extension/README.md` 里那句整段删掉 ⇒ **绿**（不再是「登记了就必须在」）
     seed();
     write("examples/pi-extension/README.md", mutateText(read("examples/pi-extension/README.md"),
       `- **\`WAKE_PENDING_MS = ${WAKE_LITERAL}\` pending 窗口**：窗口内不重复排 steer。\n`, "", "删掉 erix_run README 那句声称"));
-    assert.match(report().errors.join("\n"), /examples\/pi-extension\/README\.md 里一处 \`WAKE_PENDING_MS = <数字>\` 声称都没有/);
-    t.diagnostic(`⑩ 删掉 erix_run README 那句声称 ⇒ ${report().errors.length} 处红：\n${report().errors.join("\n")}`);
+    assert.deepEqual(report().errors, [], "issue #802：删掉一处声称不该判红（出现才校）");
+    t.diagnostic(`⑩ 删掉 erix_run README 那句声称 ⇒ ${report().errors.length} 处红（绿）`);
 
-    // ⑪ 把 `README_cn.md` 里那句整段删掉 ⇒ 同样红（两份随包 README 各一格）
+    // ⑪ 把 `README_cn.md` 里那句整段删掉 ⇒ 同样绿（两份随包 README 各一格）
     seed();
     write("README_cn.md", mutateText(read("README_cn.md"),
       `- 实扫文档：共 13 份（\`REF_SCAN_DOCS_MINIMUM = ${V.REF_SCAN_DOCS_MINIMUM}\`）\n`, "", "删掉 README_cn 那句声称"));
-    assert.match(report().errors.join("\n"), /README_cn\.md 里一处 \`REF_SCAN_DOCS_MINIMUM = <数字>\` 声称都没有/);
-    t.diagnostic(`⑪ 删掉 README_cn.md 那句声称 ⇒ ${report().errors.length} 处红：\n${report().errors.join("\n")}`);
+    assert.deepEqual(report().errors, [], "issue #802：删掉一处声称不该判红（出现才校）");
+    t.diagnostic(`⑪ 删掉 README_cn.md 那句声称 ⇒ ${report().errors.length} 处红（绿）`);
 
     // ⑫ 五份文档 + 两个脚本**同时**改到同一个新值 ⇒ 绿（证明扩面后的判据不是恒红）
     seed();
@@ -2096,8 +2094,9 @@ function selfTestFalseRedReport({ readText, docs = SELF_TEST_PROSE_DOCS, codeFil
   return { errors, rows };
 }
 
-/** 覆盖面：两份 AGENTS 的 `--self-test` 那一行必须在，且必须提到 `#302`（句子被删也要红）。 */
-const SELF_TEST_ROW_DOCS = Object.freeze(["AGENTS.md", "AGENTS_cn.md"]);
+/** 覆盖面判据的默认面。issue #802 起**不再对真实文档求值**（那是措辞警察）：真实树只留「出现即对账」，
+ *  这个函数只给合成夹具的反向证用，所以默认面是一份合成文档。 */
+const SELF_TEST_ROW_DOCS = Object.freeze(["synthetic.md"]);
 
 function selfTestRowCoverageErrors({ readText, docs = SELF_TEST_ROW_DOCS }) {
   const errors = [];
@@ -2152,13 +2151,9 @@ describe("静态守卫：`--self-test` 的散文不许拿「已知假红」冒�
       t.diagnostic(`  ${row.doc}:${row.line}「${row.phrase}」← 时态标记在 ${row.markerLine === null ? "（无）" : `:${row.markerLine}`}`);
     }
     assert.deepEqual(errors, [], `有句子拿「已知假红」冒充现状：\n${errors.join("\n")}`);
-    // 真实树上确实**有**命中（不是恒绿）：两份 AGENTS 各一处，且都带时态标记
-    for (const doc of SELF_TEST_ROW_DOCS) {
-      const hit = rows.find((r) => r.doc === doc);
-      assert.ok(hit, `${doc} 里一处「已知假红 / known false red」都没有：若句子被改成别的措辞，`
-        + "请同步本规则的靶子（恒绿比红更糟）");
-      assert.notEqual(hit.markerLine, null, `${doc}:${hit.line} 的时态标记没被认出来`);
-    }
+    // issue #802：这里**不再**要求「两份 AGENTS 各有一处 known false red」。那是散文警察——
+    // 句子被搬走或改写就会红，而它抓不到任何行为问题。真实树上只留「出现即对账」（上面那一行）；
+    // 「标记缺席 ⇒ 红」这半由下面用**合成夹具**反向证（fixture 里想造什么形状都行，不受文档改写影响）。
     // 覆盖面：扫描面本身不许缩水（五份文档 + 顶层 docs/*.md）
     assert.deepEqual(
       SELF_TEST_PROSE_DOCS.slice(0, CLAIMED_VALUE_DOC_RULES.length),
@@ -2169,9 +2164,8 @@ describe("静态守卫：`--self-test` 的散文不许拿「已知假红」冒�
     assert.ok(SELF_TEST_PROSE_DOCS.includes("docs/host-upgrade-guide-0.19.0_cn.md"),
       "0.19.0 指南（中英成对）不在面内：本单修的那两段就没人看住了");
 
-    const coverage = selfTestRowCoverageErrors({ readText: realReadText });
-    assert.deepEqual(coverage, [], `两份 AGENTS 的 \`--self-test\` 行覆盖面掉了：\n${coverage.join("\n")}`);
-    t.diagnostic("规则 5 覆盖面：AGENTS.md / AGENTS_cn.md 的 `--self-test` 行都在，且都提到 #302");
+    // issue #802：`selfTestRowCoverageErrors` 不再对**真实文档**求值（它要求「那一行必须在、且必须提 #302」，
+    // 同样是措辞警察）。函数留着，供合成夹具反向证使用。
 
     // 代码面（#384）：门禁脚本 + 测试的注释也在面内，且面本身不许缩水
     assert.ok(SELF_TEST_PROSE_CODE_FILES.includes("scripts/docs-drift-check.mjs"), "门禁脚本不在代码面里");
@@ -2188,61 +2182,52 @@ describe("静态守卫：`--self-test` 的散文不许拿「已知假红」冒�
     t.diagnostic(`规则 5 代码面：${SELF_TEST_PROSE_CODE_FILES.length} 份（scripts/*.mjs + test/**），命中 ${codeRows.length} 处`);
   });
 
-  it("规则 5 反向证：删掉时态标记 ⇒ 红（中英各一格；变异没落上也算失败）", (t) => {
-    // ① EN：把「Before #302 it was the other way round」的时态标记删掉 ⇒ AGENTS.md 那一行红
-    const enBroken = mutateText(realReadText("AGENTS.md"),
-      "Before #302 it was the other way round:", "It used to be the other way round:", "删掉 EN 时态标记");
-    const enReport = selfTestFalseRedReport({
-      readText: (rel) => (rel === "AGENTS.md" ? enBroken : realReadText(rel)), codeFiles: [],
+  it("规则 5 反向证：删掉时态标记 ⇒ 红（合成夹具；issue #802 起不再拿真实文档原文当靶子）", (t) => {
+    // issue #802：原来①②④⑤ 都拿真实 AGENTS 的原文当变异靶子，于是「有人改写那句散文」= 测试红，
+    // 而那正是本票要拆掉的那类判据。现在靶子全部是合成夹具：形状自己造，文档怎么改都不影响这组反向证。
+    const fixture = (lines) => lines.join("\n");
+    const report = (text, docs = ["synthetic.md"]) => selfTestFalseRedReport({
+      readText: () => text, docs, codeFiles: [],
     });
-    assert.equal(enReport.errors.length, 1, `只删 EN 时态标记应恰好 1 处红，实测：\n${enReport.errors.join("\n")}`);
-    assert.match(enReport.errors.join("\n"), /self-test-prose: AGENTS\.md:\d+ 用「known false red」/);
-    t.diagnostic(`① 删掉 AGENTS.md 的「Before #302」⇒ ${enReport.errors.length} 处红：\n${enReport.errors.join("\n")}`);
 
-    // ② CN：把「#302 之前是另一回事」的时态标记删掉 ⇒ AGENTS_cn.md 那一行红
-    const cnBroken = mutateText(realReadText("AGENTS_cn.md"),
-      "#302 之前是另一回事", "曾经是另一回事", "删掉 CN 时态标记");
-    const cnReport = selfTestFalseRedReport({
-      readText: (rel) => (rel === "AGENTS_cn.md" ? cnBroken : realReadText(rel)), codeFiles: [],
+    // ① 段落里出现「known false red」但没有时态标记 ⇒ 红
+    const noMarker = report(fixture(["`node scripts/docs-drift-check.mjs --self-test` 的树形用例：",
+      "  3 例 known false reds 是已知的。"]));
+    assert.equal(noMarker.errors.length, 1, `缺时态标记应恰好 1 处红，实测：\n${noMarker.errors.join("\n")}`);
+    assert.match(noMarker.errors.join("\n"), /self-test-prose: synthetic\.md:\d+ 用「known false red」/);
+    t.diagnostic(`① 无时态标记 ⇒ ${noMarker.errors.length} 处红`);
+
+    // ② 中文侧同一形状 ⇒ 红（中英两侧都在射程内）
+    const cnNoMarker = report(fixture(["`--self-test` 在干净检出里有 3 例已知假红。"]));
+    assert.equal(cnNoMarker.errors.length, 1, `CN 缺时态标记应恰好 1 处红，实测：\n${cnNoMarker.errors.join("\n")}`);
+    assert.match(cnNoMarker.errors.join("\n"), /self-test-prose: synthetic\.md:\d+ 用「已知假红」/);
+    t.diagnostic(`② 中文侧无时态标记 ⇒ ${cnNoMarker.errors.length} 处红`);
+
+    // ③ 时态标记在**同一段落**的另一行 ⇒ 绿（段落级口径：折行不算漏）
+    assert.deepEqual(report(fixture(["`--self-test` 在干净检出里曾有 3 例 known false reds，",
+      "before #302 it was; now 0."])).errors, [], "时态标记折行时被误判成红");
+    t.diagnostic("③ 标记折到下一行 ⇒ 0 处红（段落级口径有效）");
+
+    // ④ 覆盖面函数本身：合成夹具里那一行被删 ⇒ 红；提 #302 的句子还在 ⇒ 绿
+    const rowText = fixture(["| `node scripts/docs-drift-check.mjs --self-test` | x — **Since issue #302** y | z |"]);
+    assert.deepEqual(selfTestRowCoverageErrors({ readText: () => rowText, docs: ["synthetic.md"] }), [],
+      "带 #302 的那一行被误判成红");
+    const rowGone = selfTestRowCoverageErrors({ readText: () => fixture(["# 没有那一行"]), docs: ["synthetic.md"] });
+    assert.equal(rowGone.length, 1, `整行删掉应恰好 1 处红，实测：\n${rowGone.join("\n")}`);
+    assert.match(rowGone.join("\n"), /synthetic\.md 里找不到/);
+    const noIssue = selfTestRowCoverageErrors({
+      readText: () => fixture(["| `node scripts/docs-drift-check.mjs --self-test` | 合成树夹具 | z |"]),
+      docs: ["synthetic.md"],
     });
-    assert.equal(cnReport.errors.length, 1, `只删 CN 时态标记应恰好 1 处红，实测：\n${cnReport.errors.join("\n")}`);
-    assert.match(cnReport.errors.join("\n"), /self-test-prose: AGENTS_cn\.md:\d+ 用「已知假红」/);
-    t.diagnostic(`② 删掉 AGENTS_cn.md 的「#302 之前」⇒ ${cnReport.errors.length} 处红：\n${cnReport.errors.join("\n")}`);
+    assert.match(noIssue.join("\n"), /synthetic\.md 的 `--self-test` 那一行不再提 #302/);
+    t.diagnostic(`④ 覆盖面函数：缺行 ⇒ ${rowGone.length} 处红；缺 #302 ⇒ ${noIssue.length} 处红`);
 
-    // ③ 把 0.19.0 指南的时态标记删掉（中文那半）⇒ 红：证明修好的历史叙述也被同一条规则看住
-    const guide = "docs/host-upgrade-guide-0.19.0_cn.md";
-    const guideBroken = mutateText(realReadText(guide), "**那是 #302 之前的事**", "**那批红仍然在**", "删掉指南时态标记");
-    const guideReport = selfTestFalseRedReport({
-      readText: (rel) => (rel === guide ? guideBroken : realReadText(rel)), codeFiles: [],
-    });
-    assert.equal(guideReport.errors.length, 1, `只删指南时态标记应恰好 1 处红，实测：\n${guideReport.errors.join("\n")}`);
-    assert.match(guideReport.errors.join("\n"), /docs\/host-upgrade-guide-0\.19\.0_cn\.md:\d+ 用「已知假红」/);
-    t.diagnostic(`③ 删掉 0.19.0 指南（CN）的「#302 之前」⇒ ${guideReport.errors.length} 处红：\n${guideReport.errors.join("\n")}`);
-
-    // ④ 覆盖面那一刀：把 AGENTS.md 那一行里的 #302 全抹掉 ⇒ 红（句子还在但事实被抽走）
-    const noVerdict = mutateText(realReadText("AGENTS.md"),
-      "**Since issue #302 the tree it runs in does not change the verdict**", "**Run it in the development tree**",
-      "抹掉 AGENTS.md 那行的 #302（前半句）");
-    const rowBroken = mutateText(noVerdict,
-      "Before #302 it was the other way round:", "It used to be the other way round:",
-      "抹掉 AGENTS.md 那行的 #302（后半句）");
-    assert.ok(!rowBroken.split(/\r?\n/).find((l) => l.includes("`node scripts/docs-drift-check.mjs --self-test`")).includes("#302"),
-      "变异没落上：AGENTS.md 那一行里还找得到 #302");
-    const rowErrors = selfTestRowCoverageErrors({ readText: (rel) => (rel === "AGENTS.md" ? rowBroken : realReadText(rel)) });
-    assert.equal(rowErrors.length, 1, `抹掉那一行的 #302 应恰好 1 处红，实测：\n${rowErrors.join("\n")}`);
-    assert.match(rowErrors.join("\n"), /AGENTS\.md 的 `--self-test` 那一行不再提 #302/);
-    t.diagnostic(`④ 抹掉 AGENTS.md 那一行的 #302 ⇒ ${rowErrors.length} 处红：\n${rowErrors.join("\n")}`);
-
-    // ⑤ 把那一行整行删掉 ⇒ 红（#210 那族：句子被删也要红，否则上面那条禁令恒绿）
-    const rowLineRe = /^\|\s*`node scripts\/docs-drift-check\.mjs --self-test`\s*\|/;
-    const lines = realReadText("AGENTS.md").split(/\r?\n/);
-    const rowIndex = lines.findIndex((l) => rowLineRe.test(l));
-    assert.notEqual(rowIndex, -1, "变异没落上：AGENTS.md 里找不到 `--self-test` 那一行");
-    const rowDeleted = lines.filter((_, i) => i !== rowIndex).join("\n");
-    const delErrors = selfTestRowCoverageErrors({ readText: (rel) => (rel === "AGENTS.md" ? rowDeleted : realReadText(rel)) });
-    assert.equal(delErrors.length, 1, `整行删掉应恰好 1 处红，实测：\n${delErrors.join("\n")}`);
-    assert.match(delErrors.join("\n"), /AGENTS\.md 里找不到/);
-    t.diagnostic(`⑤ 整行删掉 AGENTS.md 的 \`--self-test\` 行 ⇒ ${delErrors.length} 处红：\n${delErrors.join("\n")}`);
+    // ⑤ 变异器空转证（#210 R2）：靶子打不上时必须抛，不许冒充「变异后仍绿」
+    assert.throws(
+      () => mutateText("合成文本", "不存在的靶子", "x", "空转证"),
+      /变异「空转证」没落上/,
+    );
+    t.diagnostic("⑤ 靶子打不上 ⇒ 变异器抛错（不冒充绿）");
   });
 
   it("规则 5 的放行证与范围证（不是恒红、也不是全仓禁词）", (t) => {
@@ -4931,7 +4916,14 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 //     实测 37 对 ≠ 地板 36 对：地板必须恰等于校准面上的实测值
 // ⇒ 地板 = 37。上面两块分别是 #798 与 #790 各自树上的读数，
 //   本块才是合并树上的最终值（本片自己没算数，只取现报）。
-const CHANGELOG_PAIR_FLOOR = 38;
+// 2026-11-09 第十九次重取（issue #802：`## [Unreleased] ### Changed` 新增一对 CI 分层的中英条目；
+// 基点已 rebase 到 origin/main 658f1d0，上游 #800 第四轮记的是 38，本片在**最终树**上现测）：
+//
+//     # 配对地板：判据面 = ## [Unreleased]（第 4 行）；中文 39 条 / 英文 39 条 / 配对 39 对；无对应 0 条；地板 38
+//     # 配对地板：实测 39 对 > 地板 38 对 ⇒ 可以抬地板到 39
+//
+// ⇒ 地板 = **39**。取守卫在这棵树上自报的读数，不是「38 + 1」现算。
+const CHANGELOG_PAIR_FLOOR = 39;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

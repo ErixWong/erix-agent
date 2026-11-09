@@ -449,14 +449,16 @@ function budgetGateAllowance(file) {
   return Number(entry[1]);
 }
 
-test("#721 上限 64 KiB：预算闸允许的单页正文（33,792 字节）必须整份注入，不得切尾", async () => {
+test("#721 上限 64 KiB：预算闸允许的单页正文必须整份注入，不得切尾", async () => {
   const dir = await makeTmp("erix-721-limit-");
   try {
-    // 33,792 = 预算闸给本仓这一页允许的上限：它**大于旧上限 32,768**、小于新上限 65,536，
-    // 正是「预算闸说合法、注入面装不下」的那一段（issue #721 缺陷本体）。
+    // 预算闸给本仓这一页允许的上限（现读，不在这里抄一份）：注入面必须装得下它。
+    // 261109 指令面瘦身后这一格从 33,792 降到 18,432（由 `--sync` 从实测推出），所以这里只断链子关系：
+    // 「预算闸说合法」⇒「注入面装得下」，反向证把上限改到比允许值小 1 字节（旧上限 32 KiB 那一刀已
+    // 被页面瘦身跨过去，不再是可用的反向证）。
     const allowance = budgetGateAllowance(PROJECT_INSTRUCTIONS_FILENAME);
-    assert.equal(allowance, 33792, "预算闸那一格是现读的：漂了就红，别手改本用例");
-    assert.ok(allowance > 32 * 1024, "夹具必须落在旧上限之上，否则这一例考不到上限本身");
+    assert.ok(allowance > 0 && allowance < PROJECT_INSTRUCTIONS_MAX_BYTES,
+      `预算闸那一格（${allowance}）必须是止于注入上限的正数：漂了就红，别手改本用例`);
     const body = syntheticBody(allowance);
     assert.equal(Buffer.byteLength(body, "utf8"), allowance, "夹具字节数必须逐字等于预算闸的允许值");
     writeAgents(dir, body);
@@ -473,8 +475,9 @@ test("#721 上限 64 KiB：预算闸允许的单页正文（33,792 字节）必�
     assert.ok(section.trimEnd().endsWith(TAIL_SENTINEL_721), "整份注入 ⇒ 文件最后一行也在提示末尾");
     assert.ok(!section.includes(DECLARATION_MARKER), "没截断就别往提示词里塞声明");
 
-    // 反向证（这一例不是恒真格）：同一份文件在旧上限下**确实**被切尾 ⇒ 判据考的就是上限本身。
-    const legacy = discoverProjectInstructions({ cwd: dir, maxBytes: 32 * 1024 });
+    // 反向证（这一例不是恒真格）：同一份文件在「比允许值小 4 KiB」的上限下**确实**被切尾（切掉的量必须盖过尾哨兵那一行，否则切尾切不到它）
+    // ⇒ 判据考的就是上限本身。
+    const legacy = discoverProjectInstructions({ cwd: dir, maxBytes: allowance - 4096 });
     assert.equal(legacy.truncated, true, "反向证失败：旧上限下这份本该被切尾");
     const legacySection = buildProjectInstructionsSection(legacy);
     const legacyAt = legacySection.indexOf(DECLARATION_MARKER);
@@ -577,10 +580,11 @@ test("#721 两道闸互相知道：预算闸允许的最坏两页组合装得进
   const globalPageAllowance = 30720;
   const repoPageAllowance = budgetGateAllowance(PROJECT_INSTRUCTIONS_FILENAME);
   const worstCase = globalPageAllowance + repoPageAllowance;
-  assert.equal(worstCase, 64512, "裁决里的算术：30,720 + 33,792 = 64,512 字节");
+  assert.ok(worstCase <= PROJECT_INSTRUCTIONS_MAX_BYTES, "最坏组合不得超过注入上限（下面一条把它当缺陷本体报）");
   assert.ok(PROJECT_INSTRUCTIONS_MAX_BYTES >= worstCase,
     `注入上限 ${PROJECT_INSTRUCTIONS_MAX_BYTES} 装不下预算闸允许的最坏组合 ${worstCase}：`
     + "预算闸说合法的正文注入面装不下 = issue #721 的缺陷本体回来了");
-  assert.equal(PROJECT_INSTRUCTIONS_MAX_BYTES - worstCase, 1024, "余量就是裁决里写的那 1,024 字节");
+  assert.ok(PROJECT_INSTRUCTIONS_MAX_BYTES - worstCase >= 1024,
+    "余量不得少于裁决里写的那 1,024 字节（页面瘦身只会把它抬更高，降低 = 预算闸又长长了）");
   assert.ok(32 * 1024 < worstCase, "反向证：旧上限本来就装不下这个组合 ⇒ 本判据不是恒真格");
 });

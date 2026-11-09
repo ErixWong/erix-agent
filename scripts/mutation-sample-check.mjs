@@ -275,14 +275,16 @@ function verify({ files, tableText, minSamples = MIN_SAMPLES }) {
     }
     const hits = lineHits(text, row.anchor);
     if (hits.length === 0) {
-      problems.push(`${where}：锚点已不在该文件里（样本死了：真值改了就 --sync，表被手改过就改回来）`);
+      problems.push(`DEAD_SAMPLE ${where}：锚点已不在该文件里（要人判：样本死了 —— 真值改了就改锚点再 --sync）`);
     } else if (hits.length > 1) {
       problems.push(`${where}：锚点在该文件里出现 ${hits.length} 次（变异会打偏，锚点必须唯一）`);
     } else if (hits[0] !== row.line) {
-      problems.push(`${where}：行号 表 ${row.line} / 树 ${hits[0]}（表漂了 ⇒ 跑 --sync，不许手改）`);
+      // issue #802：红因分层——「表漂了」是派生列过期（跑 --sync 就好），与「锚点没了 / 变异打偏」
+      // 那种要人判的红必须能分开读，否则读的人只会以为闸坏了。
+      problems.push(`STALE_TABLE ${where}：行号 表 ${row.line} / 树 ${hits[0]}（派生列过期 ⇒ 跑 --sync，不许手改）`);
     }
     if (row.hits !== hits.length) {
-      problems.push(`${where}：命中数 表 ${row.hits} / 树 ${hits.length}`);
+      problems.push(`STALE_TABLE ${where}：命中数 表 ${row.hits} / 树 ${hits.length}（派生列过期 ⇒ 跑 --sync）`);
     }
     const sha = anchorSha(row.anchor);
     if (row.sha !== sha) {
@@ -667,7 +669,7 @@ const SELF_TEST_CASES = [
   {
     label: "② 手改行号 ⇒ 红并点名该条（派生列只能由 --sync 改）",
     mutateTable: { from: "| M3 | 自测面 3 | `src/zz-selftest-target.js` | 3 |", to: "| M3 | 自测面 3 | `src/zz-selftest-target.js` | 9 |" },
-    expect: [/^M3（src\/zz-selftest-target\.js）：行号 表 9 \/ 树 3/u],
+    expect: [/^STALE_TABLE M3（src\/zz-selftest-target\.js）：行号 表 9 \/ 树 3/u],
   },
   {
     label: "③ 手改锚点 sha256 ⇒ 红并点名该条（锚点文本被改宽/改窄时行号与命中数照样对，只有摘要抓得住）",
@@ -677,7 +679,7 @@ const SELF_TEST_CASES = [
   {
     label: "④ 锚点已不在树里（真值改名）⇒ 红「样本死了」，不许静默通过",
     mutateTree: { file: FAKE_TARGET, from: "const Z5 = 5;", to: "const Z5 = 55;" },
-    expect: [/^M5（src\/zz-selftest-target\.js）：锚点已不在该文件里/u],
+    expect: [/^DEAD_SAMPLE M5（src\/zz-selftest-target\.js）：锚点已不在该文件里/u],
   },
   {
     label: "⑤ 锚点在树里出现两次 ⇒ 红「变异会打偏」（唯一性是判据，不是巧合）",
@@ -766,7 +768,7 @@ const SELF_TEST_CASES = [
     label: "⑲ run 先验表：真值已被改掉（锚点不在）⇒ 红「样本死了」，不许当「变异没落地也就没红」糊过去",
     runTree: { file: FAKE_TARGET, from: "const Z1 = 1;", to: "const Z1 = 100;" },
     runScript: { red: { status: 0, output: "" }, green: { status: 0, output: "" } },
-    expect: [/^M1（src\/zz-selftest-target\.js）：锚点已不在该文件里/u],
+    expect: [/^DEAD_SAMPLE M1（src\/zz-selftest-target\.js）：锚点已不在该文件里/u],
   },
   {
     label: "⑳ run：整条链对（变异 → 红在该报的断言上 → 还原 → 绿）⇒ 0 处问题、8 条全过",

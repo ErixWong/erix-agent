@@ -255,7 +255,8 @@ test("被 import 时零副作用：只有被当命令直接跑才执行门禁", 
 });
 
 // ── 声称对账（工单 261021-03 任务 A）：文档里的「装包应列 N 个 .d.ts」必须等于随包声明数 ────
-// 反向证口径与 #210/#286 同构：声称对 ⇒ 绿；声称错 ⇒ 红且点名文档与行；抽不到 ⇒ 红（不许空跑）。
+// 反向证口径与 #210/#286 同构：声称对 ⇒ 绿；声称错 ⇒ 红且点名文档与行；抽不到 ⇒ **绿**（issue #802：
+// 句子不在就没有声称值可对，那是措辞警察不是真值对账）。
 // 真值只取自注入的 pack 清单，所以这里不跑 npm、不跑 tsc。
 
 /** 写一份带「装包应列 N 个 .d.ts」声称的入口文档。 */
@@ -293,14 +294,14 @@ test(".d.ts 声称对账的反向证：声称 ≠ 随包声明数 → 红，且�
   assert.match(text, /这个数由本门禁与包内容对账，不许手抄/);
 });
 
-test(".d.ts 声称对账不许空跑：四份文档在树里、却一句声明都没抽到 → 红", async () => {
+test("issue #802：四份文档在树里、却一句声明都没抽到 → **不红**，只留一条 note（句子不在 ≠ 声称值错了）", async () => {
   const root = await makeProject({ existing: [] });
   await writeClaimDoc(root, "README.md", "# fake\n\nNo numeric claim here.\n");
 
   const out = capture(() => checkDeclarationClaims({ root, packedDeclarationCount: 69, reclaim: { removed: 69, kept: 0 } }));
 
-  assert.equal(out.code, 1);
-  assert.match(out.stderr.join("\n"), /一句「装包应列 N 个 \.d\.ts」的声明位都没抽到.*对账在空跑/);
+  assert.equal(out.code, 0, `零声称不该判红（stderr=${out.stderr.join("\n")}）`);
+  assert.match(out.stdout.join("\n"), /没有「装包应列 N 个 \.d\.ts」的声明位.*不判红（issue #802/);
 });
 
 test("合成测试树里没有那四份文档 → 对账不适用，不判红（不拿缺失当漂移）", async () => {
