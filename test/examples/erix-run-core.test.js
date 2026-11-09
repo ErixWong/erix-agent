@@ -2112,3 +2112,207 @@ test("#661：引擎抛 summarizer_failed 时 harness 的终局不是静默成功
   // 反向锁：这条 run 的载荷里不许出现任何降级替代物的痕迹。
   assert.doesNotMatch(JSON.stringify(payload), /已降级为统计摘要/u);
 });
+
+// ---------------------------------------------------------------------------
+// #797：guard 的证据面 = 存活窗口 ∪ 账本（宿主级 H1–H5）
+//
+// 缺陷：宿主递给谓词的 `payload.messages` 就是被上下文压缩改写的那一份 ⇒ 「取证在折叠前、
+// 终稿在折叠后」的长 run 判 revise 到重试用尽（`unverified / max_retries`）。本段格子全部
+// **真 `runToolLoop` + 假 provider + 预置 store**（全离线，不打模型）：账本里预置一条折叠行
+// （`foldedRoundRange`）与一条取证行（其 `tool_result` 逐字含终稿声明的字面值），而存活消息里
+// 没有那个值。
+// ---------------------------------------------------------------------------
+
+const H797_SHA = "cafe123";
+const H797_RUN_ID = "erix-run-797-fixture";
+const H797_FOLD_TO = 60;
+
+/** 四段齐全、基点声明 `H797_SHA` 的终稿（那个值只存在于预置账本，不在存活消息里）。 */
+const H797_DRAFT = {
+  content: [{
+    type: "text",
+    text: "任务已完成\n\n## 取证边界\n只跑了取基点的命令\n\n## 基点\n"
+      + `- ${H797_SHA}\n\n## 结论\n一切就绪\n\n## 未验证\n无`,
+  }],
+  stopReason: "end_turn",
+  usage: { input_tokens: 3, output_tokens: 2 },
+};
+
+/**
+ * 预置账本：一条折叠行（最后一次压缩折到第 `H797_FOLD_TO` 轮）+ 一条取证行
+ * （round < 折叠上界，`tool_result` 逐字含 `H797_SHA`）。dedupKey 显式给，避开本次 run 自己的行键。
+ */
+async function seed797Store({ fold = true, withEvidence = true } = {}) {
+  const store = createMemoryTranscriptStore();
+  if (withEvidence) {
+    await store.appendRound(H797_RUN_ID, {
+      round: 23,
+      dedupKey: "fixture:797:evidence",
+      messages: [
+        { role: "assistant", content: [{ type: "tool_use", id: "fx1", name: "exec", input: { command: "git rev-parse --short HEAD" } }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "fx1", content: `HEAD detached at ${H797_SHA}\n` }] },
+      ],
+    });
+  }
+  if (fold) {
+    await store.appendRound(H797_RUN_ID, {
+      round: H797_FOLD_TO,
+      dedupKey: "fixture:797:fold",
+      folded: true,
+      foldedRoundRange: { from: 1, to: H797_FOLD_TO },
+      messages: [],
+    });
+  }
+  return store;
+}
+
+test("#797 H1（判据 ① 主格）取证在折叠前、终稿在折叠后 ⇒ 接上账本即 accept，终局 verified", async () => {
+  const store = await seed797Store();
+  const payload = await core.runErixRun(
+    { task: "改一行", cwd: repoRoot, maxRounds: 6, finalGuard: true },
+    makeDeps({
+      provider: createFakeProvider([H797_DRAFT]),
+      extra: { createStore: () => store, runId: H797_RUN_ID },
+    }),
+  );
+  // 存活窗口里确实没有那个值 —— 没有这一条，这一格测的就不是证据面。
+  const liveToolResults = JSON.stringify(payload.diagnostics.compaction ?? {});
+  assert.doesNotMatch(liveToolResults, new RegExp(H797_SHA, "u"));
+
+  assert.equal(payload.termination.reason, "end_turn", JSON.stringify(payload.termination));
+  assert.notEqual(payload.termination.reason, "final_guard_unverified");
+  assert.equal(payload.verification.status, "verified", JSON.stringify(payload.verification));
+  assert.equal(payload.diagnostics.finalGuard.reviseRounds, 0);
+  const evidence = payload.diagnostics.finalGuard.evidence;
+  const entry = evidence?.bases?.find((item) => item.literal === H797_SHA);
+  assert.ok(entry, `证据清单必须点名该值：${JSON.stringify(evidence)}`);
+  assert.equal(entry.source, "ledger", "这个值只存在于账本 ⇒ 出处必须记 ledger 而不是 messages");
+  assert.equal(entry.round, 23);
+  assert.equal(evidence.foldCeiling, H797_FOLD_TO);
+  assert.ok(evidence.foldRows >= 1);
+  assert.equal(evidence.ledgerComplete, true);
+  assert.equal(evidence.ledgerSource, "loadRawRows", "优先用 #714 的原始行读口");
+});
+
+test("#797 H2（反向证第二半）同一棵树只把账本回落关掉 ⇒ 必须重新红（证明咬的是证据面）", async () => {
+  const store = await seed797Store();
+  const payload = await core.runErixRun(
+    { task: "改一行", cwd: repoRoot, maxRounds: 6, finalGuard: true },
+    makeDeps({
+      provider: createFakeProvider([{ ...H797_DRAFT, times: 6 }]),
+      extra: { createStore: () => store, runId: H797_RUN_ID, finalGuardLedger: false },
+    }),
+  );
+  assert.equal(payload.termination.reason, "final_guard_unverified", JSON.stringify(payload.termination));
+  assert.equal(payload.verification.status, "unverified", JSON.stringify(payload.verification));
+  assert.equal(payload.verification.reason, "max_retries");
+  assert.equal(Object.hasOwn(payload.verification, "engineReason"), false,
+    "没观察到压缩以外的证据面时不许改口，也不许多出 engineReason");
+  assert.equal(payload.diagnostics.finalGuard.reviseRounds, 3);
+  assert.deepEqual(payload.diagnostics.finalGuard.untraceableBases, [H797_SHA]);
+  // 关掉账本 ⇒ 没有证据面这一格（不是「有账本但 0 命中」）
+  assert.equal(payload.diagnostics.finalGuard.evidence, undefined);
+  assert.match(core.formatPayloadForModel(payload), /verification=unverified\/max_retries/u);
+});
+
+test("#797 H3（判据 ②）账本有折叠行但没有任何 tool_result 含该值 ⇒ 显式 not_in_ledger，不静默 revise 到用尽", async () => {
+  const store = await seed797Store({ withEvidence: false });
+  const payload = await core.runErixRun(
+    { task: "改一行", cwd: repoRoot, maxRounds: 6, finalGuard: true },
+    makeDeps({
+      provider: createFakeProvider([{ ...H797_DRAFT, times: 6 }]),
+      extra: { createStore: () => store, runId: H797_RUN_ID },
+    }),
+  );
+  assert.equal(payload.verification.status, "unverified", JSON.stringify(payload.verification));
+  assert.equal(payload.verification.reason, "not_in_ledger", "全账本 0 命中就报事实，不许含糊成 max_retries");
+  assert.notEqual(payload.verification.reason, "max_retries");
+  assert.equal(payload.verification.engineReason, "max_retries", "引擎原值留着可审计");
+  assert.equal(payload.verification.guardVerdict?.action, "revise", "guardVerdict / metrics 不许被动过");
+  assert.equal(payload.termination.reason, "final_guard_unverified");
+  assert.deepEqual(payload.diagnostics.finalGuard.notInLedgerBases, [H797_SHA]);
+  assert.equal(payload.diagnostics.finalGuard.ledgerComplete, true);
+  assert.equal(payload.diagnostics.finalGuard.compactionObserved, true);
+  const text = core.formatPayloadForModel(payload);
+  assert.match(text, /verification=unverified\/not_in_ledger/u);
+});
+
+test("#797 H4（非压缩回归锚）账本有行但没折叠行 ⇒ 逐字回到今天（reason 仍是 max_retries，无 engineReason）", async () => {
+  const store = await seed797Store({ fold: false, withEvidence: false });
+  const payload = await core.runErixRun(
+    { task: "改一行", cwd: repoRoot, maxRounds: 6, finalGuard: true },
+    makeDeps({
+      provider: createFakeProvider([{ ...H797_DRAFT, times: 6 }]),
+      extra: { createStore: () => store, runId: H797_RUN_ID },
+    }),
+  );
+  assert.equal(payload.verification.status, "unverified");
+  assert.equal(payload.verification.reason, "max_retries", JSON.stringify(payload.verification));
+  assert.equal(Object.hasOwn(payload.verification, "engineReason"), false);
+  assert.equal(payload.diagnostics.finalGuard.compactionObserved, false);
+  assert.equal(payload.diagnostics.finalGuard.evidence.foldCeiling, null);
+  assert.deepEqual(payload.diagnostics.finalGuard.notInLedgerBases, [H797_SHA]);
+  assert.match(core.formatPayloadForModel(payload), /verification=unverified\/max_retries/u);
+});
+
+test("#797 H5（没有账本 / 读失败）行为逐字回到今天，且 diagnostics 如实留痕、不假称已核验", async () => {
+  // ① 探针全无：既没 loadRawRows 也没 load。
+  const bare = {
+    appendRound: async () => {},
+    markRunState: async () => {},
+    saveRunState: async () => {},
+    loadRunState: async () => undefined,
+    loadRunStateStatus: async () => undefined,
+    saveRunSnapshot: async () => {},
+    loadLatestRunSnapshot: async () => undefined,
+  };
+  const noProbe = await core.runErixRun(
+    { task: "改一行", cwd: repoRoot, maxRounds: 6, finalGuard: true },
+    makeDeps({
+      provider: createFakeProvider([{ ...H797_DRAFT, times: 6 }]),
+      extra: { createStore: () => bare, runId: H797_RUN_ID },
+    }),
+  );
+  assert.equal(noProbe.verification.reason, "max_retries", JSON.stringify(noProbe.verification));
+  assert.equal(noProbe.verification.status, "unverified");
+  assert.equal(Object.hasOwn(noProbe.verification, "engineReason"), false);
+  assert.equal(noProbe.diagnostics.finalGuard.ledgerComplete, false);
+  assert.match(String(noProbe.diagnostics.finalGuard.ledgerSource), /no_probe|probe/u);
+  assert.deepEqual(noProbe.diagnostics.finalGuard.notInLedgerBases, [], "账本不完整 ⇒ 不许下 0 命中的结论");
+  assert.match(core.formatPayloadForModel(noProbe), /账本不完整/u);
+
+  // ② 探针在但读失败（抛错）⇒ 同一条纪律：行为回今天 + 留痕。
+  const throwing = createMemoryTranscriptStore();
+  throwing.loadRawRows = async () => { throw new Error("ledger read exploded (fixture)"); };
+  const readFailed = await core.runErixRun(
+    { task: "改一行", cwd: repoRoot, maxRounds: 6, finalGuard: true },
+    makeDeps({
+      provider: createFakeProvider([{ ...H797_DRAFT, times: 6 }]),
+      extra: { createStore: () => throwing, runId: H797_RUN_ID },
+    }),
+  );
+  assert.equal(readFailed.verification.reason, "max_retries", JSON.stringify(readFailed.verification));
+  assert.equal(readFailed.diagnostics.finalGuard.ledgerComplete, false);
+  assert.match(String(readFailed.diagnostics.finalGuard.ledgerReadError), /ledger read exploded/u);
+  assert.deepEqual(readFailed.diagnostics.finalGuard.notInLedgerBases, []);
+  assert.equal(readFailed.termination.reason, "final_guard_unverified");
+});
+
+test("#797 H6：默认关（没开 finalGuard）⇒ 一条账本读口也不建，options 面与提示词零变化", async () => {
+  const store = await seed797Store();
+  const captured = {};
+  const payload = await core.runErixRun(
+    { task: "改一行", cwd: repoRoot, maxRounds: 4 },
+    makeDeps({
+      provider: createFakeProvider([H797_DRAFT]),
+      captured,
+      extra: { createStore: () => store, runId: H797_RUN_ID },
+    }),
+  );
+  assert.equal(Object.hasOwn(captured.options.capabilities.hooks, "finalGuard"), false);
+  assert.equal(payload.verification.status, "skipped");
+  assert.equal(payload.diagnostics.finalGuard.enabled, false);
+  assert.equal(payload.diagnostics.finalGuard.evidence, undefined,
+    "默认关 ⇒ 不许建账本回落管道，也不许多出 evidence 键");
+  assert.match(core.formatPayloadForModel(payload), /finalGuard=disabled/u);
+});
