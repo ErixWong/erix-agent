@@ -134,8 +134,11 @@ export const PREFLIGHT_STEPS = Object.freeze([
     probe: "unreleasedCarry",
     docCommand: "CHANGELOG [Unreleased] carry",
   },
-  { id: "docs", label: "check:docs", argv: ["npm", "run", "check:docs"] },
-  { id: "docs-strict", label: "check:docs:strict", argv: ["npm", "run", "check:docs:strict"] },
+  // 261109（issue #802 后续，用户裁决）：**文档面不再进发版前置**。理由不是「文档不重要」，而是
+  // 「脚本判不了文档」——它能判的只有措辞（必须出现某句 / 中英处数相等），那类判据已按 #802 删掉；
+  // 剩下真正值钱的两类（引用完整性、派生值抄件）改由**定期由 agent 跑一次全面文档检查**承担
+  // （清单与口径见 `docs/maintenance/doc-review-pass.md`），发版只保留值对账与打包那一族。
+  // ⇒ 七步变五步；两份 AGENTS 的 §4 清单同批改成 5 行（`test/release-day.test.js` 逐格对账）。
   {
     id: "release-real",
     label: "ERIX_E2E_REAL=1 check:release:real",
