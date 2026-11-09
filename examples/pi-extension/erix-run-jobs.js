@@ -174,8 +174,13 @@ export function deliveryNoteText(job) {
     return `failed (${reason}, 已重试 ${retries} 次)`;
   }
   if (delivery === "orphaned") {
+    // 判据 4（issue #800）：这句**不许断言 owner 会话不存在** —— 「句柄表里查不到」与「会话已不在」是
+    // 两件事：`sessionHandle` 是 factory 作用域的，同一个 `sessionId` 可以被两次 `session_start` 登记
+    // （`/reload`、宿主以同一个 id 重建会话），旧实例的迟到 shutdown 曾把活实例的登记抹掉 ⇒ 会话明明
+    // 还在同一个 id 上跑，句柄却查不到。只描述**机制**与**当时的事实**，不替会话的存在性打包票。
     const target = text(job?.notifyTargetSessionId) ?? "（未记录）";
-    return `orphaned (owner 会话 ${target} 已不在，不投给任何存活会话)`;
+    return `orphaned (owner 会话 ${target} 的句柄查不到，不投给任何存活会话；`
+      + "成因可能是会话已关，也可能只是扩展实例换了（同一个 sessionId 稍后重新登记后会补投一次）)";
   }
   if (delivery === "no-owner") {
     const cause = text(job?.ownerSessionError);
@@ -349,6 +354,17 @@ export function globalAsyncJobRegistry() {
 export function createSessionHandleRegistry() {
   /** @type {Map<string, object>} */
   const handles = new Map();
+  /**
+   * issue #800 判据 1：被**归属校验**挡下来的摘键次数（`sessionId` → 次数）。
+   *
+   * 为什么要有这一格计数：`release` 拒一次就是拒一次，但「拒了」这件事如果只落在调用方的
+   * 一个 `if` 里，盘上没有任何痕迹 —— 而这条判据的整个存在理由就是**上一次有人把活会话的句柄
+   * 抹掉了却没人知道**（`status.json` 上只留下 `delivery:"orphaned"`，看起来像「会话真的走了」）。
+   * 计数挂在注册表上（`Symbol.for` 挂 globalThis 那一份 ⇒ `/reload` 之后仍在），投递记账时抄进
+   * `job.handleReleaseRefusals` ⇒ `jobView` / `status.json` 读得到（见 `jobView` 同名字段）。
+   * @type {Map<string, number>}
+   */
+  const refusedReleases = new Map();
   const usable = (sessionId) => typeof sessionId === "string" && sessionId !== "";
   return {
     set(sessionId, handle) {
@@ -360,9 +376,38 @@ export function createSessionHandleRegistry() {
     get: (sessionId) => (usable(sessionId) ? handles.get(sessionId) : undefined),
     has: (sessionId) => usable(sessionId) && handles.has(sessionId),
     delete: (sessionId) => handles.delete(sessionId),
+    /**
+     * **带归属校验的摘键**（issue #800 判据 1）：只有表里这一条**就是** `handle` 才删。
+     *
+     * 与裸 `delete(sessionId)` 的差别是本函数存在的唯一理由：`sessionHandle` 是 **factory 作用域**的
+     * （每会话、每次 factory 调用一份），而键是 `sessionId`。同一个 `sessionId` 可以被**两次**
+     * `session_start` 登记（pi 的 `/reload`、以及宿主以同一个 id 重建会话），此时**旧**实例迟到的
+     * `session_shutdown` 拿裸 `delete` 就会抹掉**活**实例的登记 —— 而唯一的再登记时机是 `session_start`，
+     * 已经过去了 ⇒ 此后那个会话的 job 结算永远查不到句柄，永远 `orphaned`。
+     *
+     * 不匹配时**保留**（不删）并**计数**：调用方拿到 `reason` 自己决定要不要再出声，但盘上这一格
+     * 不许静默（`jobView.handleReleaseRefusals`）。
+     *
+     * @param {string} sessionId
+     * @param {object} [handle] 调用方**自己那个**句柄；没给 = 调用方主张「我不认领归属，照旧删」
+     * @returns {{released:boolean, reason:"released"|"held-by-other-instance"|"absent"|"no-session-id"}}
+     */
+    release(sessionId, handle) {
+      if (!usable(sessionId)) return { released: false, reason: "no-session-id" };
+      const current = handles.get(sessionId);
+      if (current === undefined) return { released: false, reason: "absent" };
+      if (handle !== undefined && handle !== null && current !== handle) {
+        refusedReleases.set(sessionId, (refusedReleases.get(sessionId) ?? 0) + 1);
+        return { released: false, reason: "held-by-other-instance" };
+      }
+      handles.delete(sessionId);
+      return { released: true, reason: "released" };
+    },
+    /** 这个 owner 名下被归属校验挡下来的摘键次数（没有就是 0 —— 恒在场，不返回 `undefined`）。 */
+    releaseRefusals: (sessionId) => (usable(sessionId) ? refusedReleases.get(sessionId) ?? 0 : 0),
     ids: () => [...handles.keys()],
     get size() { return handles.size; },
-    clear: () => handles.clear(),
+    clear: () => { handles.clear(); refusedReleases.clear(); },
   };
 }
 
@@ -613,6 +658,22 @@ export function jobView(job, { now = () => Date.now() } = {}) {
     // 恒在场：没尝试过 / 投成功（`sent` 不贴噪音）时是 `null`。
     deliveryNote: job.deliveryNote ?? null,
     deduped: job.deduped ?? 0,
+    // issue #800 判据 1：这个 job 的 **owner 会话**名下，有几次「摘句柄」被**归属校验**挡了下来。
+    // 恒在场（没挡过是 `0`，不是缺键）。它不是一条投递事实，而是投递事实的**根因候选**：
+    // `0` 与 `N>0` 分开的正是「owner 真的走了」与「有个旧扩展实例迟到了，但它没摸掉活的登记」。
+    // 计数的真值源在 `createSessionHandleRegistry().release`，`recordDelivery` 把它抄进 job（否则
+    // 只读 `status.json` 的会话看不见）。
+    handleReleaseRefusals: job.handleReleaseRefusals ?? 0,
+    // issue #800 判据 5：有几次迟到实例的 `session_shutdown` 想清这个 job 的定时器、被**归属校验**挡下。
+    // 恒在场（没挡过是 `0`）。它是「为什么这个 job 的看门狗还活着」的直接答案：没这个计数，读者只能
+    // 从「还活着」反推「有人模过但它没清掉」。真值源在 `shutdown(ownerSessionId, sessionHandle)`。
+    shutdownTimerSkips: job.shutdownTimerSkips ?? 0,
+    // issue #800 判据 3：这个 job 被判 `orphaned` 之后，因 owner 重新登记而被**补投**过几次。
+    // 恒在场（没补过是 `0`）。与 `delivery` 一样是结构化事实：只看 `delivery: "sent"` 分不出「一次就投成」
+    // 与「owner 回来后补投才成」，而这两个事实对调用方是不同回事（后者中间确实静默过一段）。
+    // `orphanRecoveries > 0` 与 `delivery === "sent"` 同时成立 ⇒ 这一条是补回来的。
+    orphanRecoveries: job.orphanRecoveries ?? 0,
+    orphanRecoveredAt: job.orphanRecoveredAt ?? null,
     // issue #753 C2：**转向收件箱的队列长度**（可观测面，判据 4）。恒在场（没 steer 时是 `0` 而不是
     // 缺键），与 `delivery` 同族：`status.json` 的内容就是这个函数的返回 ⇒ 盘上那一份与
     // `action:"status"` / `"result"` 的视图**同形**，不必自己数。它是**内存队列**的当下长度
@@ -777,6 +838,10 @@ export function createAsyncRuntime(options = {}) {
     // `null` 也是事实（“没有目标会话”），只有 `undefined`（= 调用方没提供）才不动旧值。
     if (facts.target !== undefined) job.notifyTargetSessionId = facts.target;
     job.notifyError = facts.error;
+    // issue #800 判据 1「不许静默」：把该 owner 名下被**归属校验**挡下来的摘键次数抄进 job。
+    // 为什么抄在这里而不是只在注册表里：盘上只读 `status.json` 的会话读不到注册表，而「有人试过摘
+    // 这个会话的句柄、没摘成」恰好是「为什么这条投递看起来怪」的根因候选。恒在场（没挡过 = 0）。
+    job.handleReleaseRefusals = sessionHandles.releaseRefusals?.(job.ownerSessionId) ?? 0;
     // #665：投递事实一变就把那句人话重写一遍（原位替换，不是追加）。
     refreshDeliveryNote(job);
     return delivery;
@@ -927,6 +992,48 @@ export function createAsyncRuntime(options = {}) {
     }
     persistStatus(job);
     return result;
+  };
+
+  /**
+   * owner 会话**重新登记**之后，把它名下曾被判 `orphaned` 的 job **补投一次**（issue #800 判据 3）。
+   *
+   * 为什么需要这个回路：`orphaned` 不是「这条 run 没结局」，它只是「**投递那一刻** owner 的句柄查不到」。
+   * 而句柄查不到的两种成因里有一种是**会好的**：会话只是换了扩展实例（`/reload`、或旧实例迟到的
+   * `session_shutdown` 把活实例的登记抹了 —— 后者已由判据 1 挡下，但盘上**已有**的那些 orphaned job 不会
+   * 自己变好）。再登记只发生在 `session_start`，而 `session_start` 不重放任何旧 job ⇒ 没有这个回路，
+   * owner 以同一个 `sessionId` 回来后那些 run 的终局就**永远停在 `orphaned`**（看门狗又早被清掉 ⇒
+   * `status.json` 连终局都没有，正是 issue 里那张图）。
+   *
+   * 三条界：
+   * - **只补一次**（`orphanRecoveries > 0` 就跳过）：补投又没成时回到 #659 的有界重试链，
+   *   不在这里开第二个重试循环。
+   * - **只补自己 owner**（按 `job.ownerSessionId` 筛，口径同 #654/#658：不捐别人的会话）。
+   * - **不双投**：走的就是 `notifyThenPersist` ⇒ `sendRegistry.claim(job.notifyKey ?? runId)` 那道闸一道不少：
+   *   orphan 当时 `claim.settle(false)` 把去重位**放了回去**（#656），所以这里能重新领到；若真被别的
+   *   结算路径抢先投了，`claim.owned !== true` ⇒ 只计 `deduped`，**不重复投**。
+   *
+   * @param {string} [ownerSessionId] 刚刚重新登记了句柄的那个会话
+   * @returns {string[]} 本次真的补投过的 `runId`（没可补的 ⇒ 空数组）
+   */
+  const requeueOrphaned = (ownerSessionId) => {
+    const owner = typeof ownerSessionId === "string" && ownerSessionId !== "" ? ownerSessionId : undefined;
+    if (owner === undefined) return [];
+    // 没句柄就补投只是把同一句 orphaned 再写一遍，还白占那一次机会。
+    if (sessionHandles.get(owner) === undefined) return [];
+    const recovered = [];
+    for (const job of registry.list()) {
+      if (job.ownerSessionId !== owner) continue;
+      if (job.delivery !== "orphaned") continue;
+      if ((job.orphanRecoveries ?? 0) > 0) continue;
+      // 计数在投递**之前**：补投又没成也不再来第二次（上面的那条界）。
+      job.orphanRecoveries = (job.orphanRecoveries ?? 0) + 1;
+      job.orphanRecoveredAt = now();
+      // 同一条投递链（去重 + `recordDelivery` + `refreshDeliveryNote` 整句重算 + 落盘）——
+      // 所以补成之后 `delivery` 是 `sent`、`deliveryNote` 按结构化事实回到「不贴噪音」，而不是手抹文案。
+      notifyThenPersist(job);
+      recovered.push(job.runId);
+    }
+    return recovered;
   };
 
   const settle = (job, payload) => {
@@ -1229,14 +1336,30 @@ export function createAsyncRuntime(options = {}) {
    *   扩展重载 / 会话切换时把人家正在跑的活掐掉不是清理，是破坏。
    *
    * @param {string} [ownerSessionId] 触发 `session_shutdown` 的那个会话（#654 的 `sessionId`）
-   * @returns {boolean} 这次是否真的清掉了东西（第二次调用 ⇒ false，幂等）
+   * @param {object} [sessionHandle] **调用方自己那个**会话句柄（issue #800 判据 5）。递了才参与归属比较；
+   *   没递 = 调用方不认领归属，照旧 #658 清自己会话名下的 job（旧调用方不退）
+   * @returns {boolean} 这次是否真的清掉了东西（第二次调用 / 被归属挡下 ⇒ false）
    */
-  const shutdown = (ownerSessionId) => {
+  const shutdown = (ownerSessionId, sessionHandle) => {
     const owner = typeof ownerSessionId === "string" && ownerSessionId !== "" ? ownerSessionId : undefined;
     if (owner === undefined) return false;
+    // 判据 5（issue #800）：迟到实例不得清**不属于它**的定时器。判据与判据 1 逐字同源：表里这一条
+    // 还是调用方**自己那个**句柄 ⇒ 会话真的走了（或调用方不递句柄认领 ⇒ 照旧 #658）；表里是
+    // **别人**的句柄 ⇒ 这个会话仍被一个活实例管着，它的 job 还能投出去 —— 那些定时器不是垃圾，
+    // 是那些 run 唯一会写出终局的路径。
+    const current = sessionHandles.get(owner);
+    const heldByOther = sessionHandle !== undefined && sessionHandle !== null
+      && current !== undefined && current !== sessionHandle;
     let cleared = 0;
     for (const job of registry.list()) {
       if (job.ownerSessionId !== owner) continue;
+      if (heldByOther) {
+        // 被挡下来要**记账**（不许静默）：这个 job 的定时器被一次迟到 shutdown 摸过但没被清。
+        if (job.watchdog !== undefined || job.notifyRetry !== undefined) {
+          job.shutdownTimerSkips = (job.shutdownTimerSkips ?? 0) + 1;
+        }
+        continue;
+      }
       if (job.watchdog !== undefined || job.notifyRetry !== undefined) cleared += 1;
       clearJobTimers(job);
     }
@@ -1245,7 +1368,7 @@ export function createAsyncRuntime(options = {}) {
 
   return {
     start, sync, act, dispatch, shutdown, registry, sendRegistry, sessionHandles,
-    notifySettled, settle, persistStatus, notifyThenPersist, jobs: registry.jobs,
+    notifySettled, settle, persistStatus, notifyThenPersist, requeueOrphaned, jobs: registry.jobs,
   };
 
   function dispatch(params, opts = {}) {

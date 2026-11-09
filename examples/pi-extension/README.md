@@ -382,11 +382,46 @@ pi --extension ./examples/pi-extension/erix-run.ts
 |---|---|
 | `sent` / 还没尝试 | **一句都不加**（`deliveryNote` 是 `null`）。正常路径不贴噪音 |
 | `failed` | `delivery: failed (<notifyError 根因>, 已重试 N 次)` |
-| `orphaned` | `delivery: orphaned (owner 会话 <id> 已不在，不投给任何存活会话)` |
+| `orphaned` | `delivery: orphaned (owner 会话 <id> 的句柄查不到，不投给任何存活会话；成因可能是会话已关，也可能只是扩展实例换了（同一个 sessionId 稍后重新登记后会补投一次）)` |
 | `no-owner` | `delivery: no-owner (派工时拿不到会话身份；ownerSessionError=<原文>)` |
 | `deduped` | `delivery: deduped (本次结算被去重注册表挡下，投递已由同一 run 的另一次结算完成)` |
 
 判据式的口径：**只要 `delivery` 不是 `sent`，文案里就必须有一句解释**；`sent` 时不许添噪音。
+
+⚠ **`orphaned` 不许被写成「owner 会话已不在」（issue #800）**：「句柄表里查不到」与「会话不存在」
+是两件事。句柄是按 `sessionId` 登记的，而 `sessionHandle` 是**每次扩展实例化一份**；同一个
+`sessionId` 可以被两次 `session_start` 登记（`/reload`、或宿主以同一个 id 重建会话）。于是旧实例迟到的
+`session_shutdown` 会把**活实例**的登记抹掉，而那个会话还在同一个 id 上跑轮 —— 现场就是盘上连着几条
+`delivery:"orphaned"` + `notifyRetries:3`，而 `notifyTargetSessionId` 逐字就是当前会话。所以那句只描述
+**机制与那一刻的事实**，不替会话的存在性打包票（生成仍走 `deliveryNoteText`，不另起一处硬编码）。
+
+##### 摘句柄要有归属，owner 回来要补投（issue #800）
+
+三个机制，一起搊才能把上面那个现场从「永久静默」变成「看得见 + 会自愈」：
+
+1. **摘键带归属**（`createSessionHandleRegistry().release(sessionId, handle)`）：只有表里这一条**就是**
+   调用方自己那个句柄时才删。不匹配 ⇒ **保留**（不拿 `delete` 抹别人的登记）并计数。
+2. **owner 回来补投一次**（`requeueOrphaned(ownerSessionId)`，由 `session_start` 在重新登记句柄后调）：
+   `orphaned` 只是「投递那一刻句柄查不到」，它**不会自己变好**——`session_start` 不重放旧 job。
+   现在它会把该 owner 名下 `delivery === "orphaned"` 且**从未补投过**的 job 补投一次：走的是同一条
+   `notifyThenPersist` 链（#659 的去重注册表一道不少 ⇒ **同一个 `runId` 不双投**），所以 `delivery` 从
+   `orphaned` 变 `sent`、`deliveryNote` 按结构化事实整句重算（`sent` 不贴噪音），不是手抹文案。
+   只补一次：补投又没成时回到上面那条有界重试链，不在这里开第二个循环。
+3. **迟到实例不得清别人的定时器**（`shutdown(ownerSessionId, sessionHandle)`）：表里这个 owner 现在是
+   **别人**的句柄 ⇒ 会话还活着，那些 job 的看门狗与投递重试定时器一个都不清（它们是那些 run 唯一
+   会写终局的路径；被摘掉的症状就是 `status.json` 永远停在 `running`）。归属匹配时照旧 #658 清自己会话名下的。
+
+这三个机制的计数**恒在场**（没发生过是 `0`，不是缺键），三处 `jobView` 都读得到（`action:"status"` /
+`action:"result"` / `status.json` 是同一份投影）：
+
+| 字段 | 读法 |
+|---|---|
+| `handleReleaseRefusals` | 这个 job 的 **owner 会话**名下，有几次「摘句柄」被归属校验挡下来。`0` 与 `N>0` 分开的正是「owner 真的走了」与「有个旧扩展实例迟到了，但它没摸掉活的登记」 |
+| `orphanRecoveries` / `orphanRecoveredAt` | 这条 job 被判 `orphaned` 之后被**补投**过几次 / 什么时候。与 `delivery:"sent"` 同时成立 ⇒ 这一条是**补回来的**（中间确实静默过一段），不是「一次就投成」 |
+| `shutdownTimerSkips` | 有几次迟到实例的 `session_shutdown` 想清这条 job 的定时器、被归属挡下。它是「为什么这条 job 的看门狗还活着」的直接答案 |
+
+⚠ 三个计数都是**当时那一刻**的事实：它们只在 `jobView` 生成时从真值源（句柄注册表 / runtime）抄过来，
+所以只读 `status.json` 的会话看到的是**最后一次落盘前**的值（与 `delivery` 同一条口径，不是实时值）。
 
 **多次重试只留最后一条**：诊断句由 `erix-run-jobs.js` 维护，写法是**正文与整句分开存**——
 `deliveryNoteText(job)` 按**结构化事实**（`delivery` / `notifyError` / `notifyRetries` /

@@ -626,10 +626,19 @@ export default function (pi: ExtensionAPI) {
     sessionId = owner.sessionId;
     // 同一个 factory 实例被换了会话（newSession / fork / switchSession）：旧键得摘掉，
     // 否则它指向一个已经不属于它的会话 id。
-    if (previous !== undefined && previous !== sessionId) globalSessionHandleRegistry().delete(previous);
+    // issue #800 判据 1：**带归属校验**地摘（`release` 只在表里这一条就是本实例的句柄时才删）。
+    // 不匹配 = 这个 id 已被另一个实例接管 ⇒ 保留，不拿 `delete` 去抹别人的登记。
+    if (previous !== undefined && previous !== sessionId) globalSessionHandleRegistry().release(previous, sessionHandle);
     // 登记到进程级**按会话键**的句柄表：别的会话（以及 /reload 之后的新实例）投递时按 owner 查到它。
     if (sessionId !== undefined) globalSessionHandleRegistry().set(sessionId, sessionHandle);
     asyncRuntime();
+    // issue #800 判据 3（恢复回路）：上面那个 `set` 可能就是「同一个 `sessionId` 的**再登记**」（`/reload`，
+    // 或旧实例迟到的 quit 把活实例的登记抹了之后 owner 又回来）。那些旧 run 的终局已经停在
+    // `delivery:"orphaned"` 上 —— 那是「投递那一刻句柄查不到」的事实，它**不会自己变好**：
+    // `session_start` 不重放任何旧 job，之后再没人事后提它们 ⇒ 只能在这个唯一的新登记点补投一次。
+    // 只补一次、按 owner 筛、走同一条带去重注册表的投递链（同一个 `runId` 不双投），补没补过在盘上
+    // 读得到（`jobView.orphanRecoveries` / `orphanRecoveredAt`）；口径见 `erix-run-jobs.js:requeueOrphaned`。
+    if (sessionId !== undefined) asyncRuntime().requeueOrphaned(sessionId);
     // #659 第 2 格（观察侧补偿回路）：`reload` 期间保留的 pending 在这里被消费——旧实例排的 steer
     // 没换来一轮（没有 `agent_start`）就被 `/reload` 打断了，新实例拿着同一个 reservation，
     // `isPending()` 仍为 true ⇒ 补排一次 steer，而不是干等 `WAKE_PENDING_MS` 超时。
@@ -652,14 +661,24 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", (event) => {
     // 幂等清理：定时器清掉、唤醒 pending 按 reload 与否分别处理；重复调用不抛。
     // #658：**按会话归属**清（只清本会话 owner 的看门狗与投递重试），不再无差别清全进程。
-    asyncRuntime().shutdown(sessionId);
+    // issue #800 判据 5：再叠一层**实例归属**——同一个 `sessionId` 已被新实例接管时，本实例是迟到的那个，
+    // 那些 job 的定时器已不归它清。必须递上**自己那个** `sessionHandle`，runtime 才比得出「不属于它」；
+    // 不递 = 比不出来 ⇒ 只能照旧清掉（所以接线本身就是判据，`erix-run-async.test.js` 有一格守它）。
+    asyncRuntime().shutdown(sessionId, sessionHandle);
     const reason = (event as { reason?: string })?.reason;
     sessionHandle.sessionShutdown(reason);
     // #654：会话真的走了就把句柄摘掉 —— 之后那个会话的 job 结算时按 owner 查不到句柄，
     // 记 `delivery:"orphaned"`（而不是投进一个已经不存在的会话）。
     // `reload` 不算走了：新实例会以同一个 sessionId 重新注册，摘掉反而会制造一段假 orphaned 窗口。
+    //
+    // issue #800 判据 1：摘得**带归属**。以前这里是裸 `delete(sessionId)`，而键是 `sessionId`、
+    // 句柄是 factory 作用域的（每次 factory 调用一份）⇒ 「同一个 `sessionId` 被两次 `session_start`」
+    // 时（接管 / `/reload` 后旧实例迟到的 quit），旧实例会把**活实例**的登记抹掉；而唯一的再登记时机
+    // 是 `session_start`，已经过去了 ⇒ 这个会话之后每一条 job 都永远 `orphaned`（现场：同一 owner
+    // 在 3 次结算里全 `orphaned` + `notifyRetries:3` 而会话一直在跑轮）。
+    // `release` 不匹配时**保留并计数**（`jobView.handleReleaseRefusals`，不静默）。
     if (reason !== "reload" && sessionId !== undefined) {
-      globalSessionHandleRegistry().delete(sessionId);
+      globalSessionHandleRegistry().release(sessionId, sessionHandle);
     }
   });
 }

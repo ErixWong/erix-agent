@@ -4931,7 +4931,7 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 //     实测 37 对 ≠ 地板 36 对：地板必须恰等于校准面上的实测值
 // ⇒ 地板 = 37。上面两块分别是 #798 与 #790 各自树上的读数，
 //   本块才是合并树上的最终值（本片自己没算数，只取现报）。
-const CHANGELOG_PAIR_FLOOR = 37;
+const CHANGELOG_PAIR_FLOOR = 38;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。

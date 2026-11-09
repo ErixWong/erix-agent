@@ -1710,6 +1710,233 @@ test("#654 缺陷1 / #659 第4格：quit 摘句柄；reload 保留 —— 但 re
   }
 });
 
+// ---------------------------------------------------------------------------
+// issue #800（判据 1 + 判据 2）：**同一个 `sessionId` 被两次 `session_start`**时的摘键归属。
+//
+// 现场（盘上 `status.json`）：同一个 owner 会话先 `delivery:"sent"`，随后三次结算全 `orphaned`
+// + `notifyRetries:3` 全空，而这期间该会话一直在正常跑轮。`notifyTargetSessionId === ownerSessionId`
+// ⇒ 没投错人，是**查不到句柄**。根因：`erix-run.ts` 两处摘键都是裸 `delete(sessionId)`，
+// 不检查「表里这一条还是不是我那个句柄」，而句柄是 **factory 作用域**的（每次 factory 调用一份）、
+// 键却是 `sessionId` ⇒ 旧实例迟到的 `session_shutdown("quit")` 会抹掉**活实例**的登记，
+// 而唯一的再登记时机是 `session_start`，已经过去了 ⇒ 此后永不恢复。
+//
+// ⚠ 上面那格 `#654 缺陷1`（手工 `sessionHandles.delete(sessionA)` 模拟会话走了）**不是**本形状的
+// 覆盖：它从不走「同 id 双实例 + 旧实例迟到 shutdown」这个顺序。本格是这个形状的第一份覆盖。
+//
+// ⚠ **断言顺序是载荷**：`delivery` 那条必须在「句柄身份」那条**之前**。反向证（把 `release` 的
+// 归属校验拆掉 ⇒ 退回裸 `delete`）要求红在 `delivery`；把身份断言放前面就会红在那条上，
+// 拿不到「投递链真的断了」这一条证据。
+// ---------------------------------------------------------------------------
+
+test("#800 判据1+2：同一个 sessionId 两个实例 ⇒ 旧实例迟到的 quit 不许抹掉活实例的句柄（活实例结算仍 sent）", async () => {
+  const env = await offlineRunEnv();
+  const sessionDir = await tempDir("erix-run-800-owner-");
+  const sessionHandles = jobsApi.globalSessionHandleRegistry();
+  const owner = "800-same-session-id";
+  try {
+    const extension = await loadExtensionModule();
+
+    // ① 同一个 `sessionId` 走两次 `session_start` = 接管（真 pi 的 `/reload`、或宿主以同一个 id
+    //    重建会话）。两次都是**真的** factory 调用 ⇒ 两个不同的 `sessionHandle` 对象。
+    const a = startSession(extension, { sessionId: owner });
+    const handleA = sessionHandles.get(owner);
+    assert.notEqual(handleA, undefined, "session_start 之后表里必须有 A 的句柄");
+    const b = startSession(extension, { sessionId: owner });
+    const handleB = sessionHandles.get(owner);
+    assert.notEqual(handleB, handleA, "第二次 session_start 必须以**新实例自己的**句柄覆盖登记");
+
+    // ② 缺陷本体：A **后发** `session_shutdown("quit")`。以前这里是一句裸 `delete(sessionId)`，
+    //    它抹掉的是 B 刚登记的那一条。
+    a.handlers.get("session_shutdown")({ reason: "quit" });
+
+    // ③ 活实例 B 派一张真异步 job 并结算（离线：`HOME` 指空临时目录 ⇒ `config_missing` 当场终局，
+    //    走的是**真的** settle → notify 链）。拆掉归属校验时红就红在这一条。
+    const { job } = await dispatchAndSettle(extension, b, {
+      task: "t", cwd: sessionDir, sessionDir, async: true, maxRounds: 2,
+    });
+    assert.equal(jobView(job).delivery, "sent",
+      "摘键要有归属：A 迟到的 quit 不许抹掉 B 的登记，抹掉了这条就是 orphaned（现场那三条全空重试）");
+    assert.equal(jobView(job).notifyTargetSessionId, owner, "投递目标仍是同一个 owner（没投错人，只是查得到/查不到的差别）");
+
+    // ④ 结构事实：表里这一条**还是** B 的那个句柄对象（不是「有个句柄就行」）。
+    assert.equal(sessionHandles.get(owner), handleB,
+      "归属不匹配 ⇒ **保留**：表里这条必须逐字是 B 的句柄，A 无权删一条已经不是它的登记");
+
+    // ⑤ 出声（不许静默）：被归属校验挡下来的摘键次数进 `jobView` / `status.json`。
+    assert.equal(jobView(job).handleReleaseRefusals, 1,
+      "拒一次就要在盘上数得出来：这一格是「有人试过摘这个 owner 的句柄但没摘成」的唯一痕迹");
+    const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId: job.runId }), "utf8"));
+    assert.equal(disk.delivery, "sent", "status.json 上也是 sent（先投递后落盘的顺序坑没退化）");
+    assert.equal(disk.handleReleaseRefusals, 1, "同一份计数在盘上读得到（只读 status.json 的会话也看得见）");
+
+    // ⑥ 对照：B 自己走 quit（归属**匹配**）⇒ 该摘还得摘，别修成「谁也摘不掉」。
+    b.handlers.get("session_shutdown")({ reason: "quit" });
+    assert.equal(sessionHandles.has(owner), false,
+      "归属匹配时 `quit` 照常摘句柄（owner 真走了 ⇒ 之后的 job 该记 orphaned，#654 那条语义不许退）");
+    assert.equal(sessionHandles.releaseRefusals(owner), 1, "匹配的那次摘键不算拒绝（计数不动）");
+  } finally {
+    sessionHandles.delete(owner);
+    env.restore();
+  }
+});
+
+test("#800 判据3：owner 以同一个 sessionId 回来 ⇒ session_start 把它名下 orphaned 的 job 补投一次（只一次、不双投）", async () => {
+  const env = await offlineRunEnv();
+  const sessionDir = await tempDir("erix-run-800-recover-");
+  const sessionHandles = jobsApi.globalSessionHandleRegistry();
+  const owner = "800-orphan-returns";
+  try {
+    const extension = await loadExtensionModule();
+    // ① owner 真的走了一次：A 派工后**自己** quit（归属**匹配** ⇒ `release` 真摘，判据 1 的界不挡这条）。
+    //    结算发生在句柄已摘之后 ⇒ 这一条落在 `orphaned` 上，就是 issue 里盘上那三条的形状。
+    const a = startSession(extension, { sessionId: owner });
+    const dispatched = await extension.erixRunTool.execute(
+      "tc-800-orphan", { task: "t", cwd: sessionDir, sessionDir, async: true, maxRounds: 2 }, undefined, undefined, a.ctx,
+    );
+    a.handlers.get("session_shutdown")({ reason: "quit" });
+    const runId = dispatched.details.handle.runId;
+    const registry = jobsApi.globalAsyncJobRegistry();
+    await waitUntil(() => registry.get(runId)?.delivery !== undefined, { label: "#800 orphaned 落账", timeoutMs: 5_000 });
+    const job = registry.get(runId);
+    assert.equal(jobView(job).delivery, "orphaned",
+      `前置事实：owner 走了 ⇒ 投递那一刻记 orphaned（实测 note=${JSON.stringify(jobView(job).deliveryNote)}）`);
+    assert.match(jobView(job).deliveryNote, /句柄查不到/u, "判据 4：orphaned 那句说机制，不断言会话不存在");
+    assert.equal(jobView(job).orphanRecoveries, 0, "还没补投过 ⇒ 计数在 0");
+    assert.equal(sessionHandles.has(owner), false, "表里这条真的没了（不然下面就不是「owner 回来」）");
+    const diskOrphaned = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId }), "utf8"));
+    assert.equal(diskOrphaned.delivery, "orphaned", "盘上那一份也停在 orphaned（这就是修前的终态）");
+
+    // ② owner 以**同一个 sessionId** 回来（新 factory 实例、新 `session_start`）⇒ 恢复回路补投一次。
+    //    把补投那一环拆掉，红就红在下面这条 `delivery`（不是文案断言）。
+    const b = startSession(extension, { sessionId: owner });
+    assert.equal(jobView(job).delivery, "sent",
+      "重新登记后要补投：orphaned 只是「那一刻句柄查不到」，会话回来了它就该变（否则盘上永远停在孤儿）");
+    assert.equal(jobView(job).notifyTargetSessionId, owner, "补投目标仍是 owner 自己那个会话（不捐给任何存活会话）");
+    assert.equal(jobView(job).orphanRecoveries, 1, "「补过」本身是结构化事实，要在视图上数得出");
+    assert.notEqual(jobView(job).orphanRecoveredAt, null, "什么时候补的也要看得见");
+    assert.equal(jobView(job).deliveryNote, null, "#670 口径：整句按结构化事实重算 ⇒ sent 不贴噪音（不是手抹文案）");
+    assert.equal(jobView(job).deduped, 0, "第一次补投是真投出去了，不是被去重挡下");
+    assert.equal(b.calls.sendMessage.length, 1, "补投真的进了重新登记的那个会话（新实例自己的 ctx / 投递口）");
+    const diskSent = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId }), "utf8"));
+    assert.equal(diskSent.delivery, "sent", "盘上那份也要跟着变（查询侧不能停在 orphaned）");
+    assert.equal(diskSent.orphanRecoveries, 1, "status.json 上也是 1（同一份 jobView，不是两处拼装）");
+
+    // ③ 有界：owner 再回来一次不许再投同一个 `runId`（`orphanRecoveries` 那道闸在前，去重注册表在后）。
+    const c = startSession(extension, { sessionId: owner });
+    assert.equal(b.calls.sendMessage.length, 1, "同一个 runId 不双投：再登记也不许第三次投它");
+    assert.equal(c.calls.sendMessage.length, 0, "新实例自己没派过工 ⇒ 一声不响");
+    assert.equal(jobView(job).orphanRecoveries, 1, "计数停在 1");
+  } finally {
+    sessionHandles.delete(owner);
+    env.restore();
+  }
+});
+
+test("#800 判据5：同一个 sessionId 跨实例 ⇒ 旧实例迟到的 shutdown 不许清掉活实例名下 job 的定时器", async () => {
+  const clock = fakeClock();
+  const sessionDir = await tempDir("erix-run-800-timers-");
+  const sessionHandles = jobsApi.createSessionHandleRegistry();
+  const owner = "800-timers";
+  const handleA = { deliver: () => true };
+  const handleB = { deliver: () => true };
+  sessionHandles.set(owner, handleA);
+  const runtime = createAsyncRuntime({
+    home: await tempDir("erix-run-800-timers-home-"),
+    registry: createAsyncJobRegistry(),
+    sendRegistry: createCompletionSendRegistry(),
+    sessionHandles,
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    // 永不 settle：看门狗是这些 job 唯一的终局来源（被摘掉就永远停在 running —— issue 里那张图）。
+    runJob: gatedJob().job,
+    notify: () => "sent",
+  });
+  const params = { task: "t", cwd: sessionDir, sessionDir, async: true, timeoutMs: core.MIN_TIMEOUT_MS };
+  const first = runtime.start(params, { sessionId: owner });
+  const jobOld = runtime.registry.get(first.handle.runId);
+  // 同一个 id 被新实例接管（`/reload`）：`release` 不摘，这条现在是 B 的句柄
+  sessionHandles.set(owner, handleB);
+  const second = runtime.start(params, { sessionId: owner });
+  const jobLive = runtime.registry.get(second.handle.runId);
+  assert.notEqual(jobOld.watchdog, undefined);
+  assert.notEqual(jobLive.watchdog, undefined, "派工后定时器必须在");
+
+  // 旧实例迟到的 `session_shutdown`（递上**自己那个**句柄）⇒ 一个定时器都不许清。
+  assert.equal(runtime.shutdown(owner, handleA), false, "归属不匹配 ⇒ 什么都没清（返回 false）");
+  assert.notEqual(jobLive.watchdog, undefined,
+    "活实例名下 job 的看门狗不能被旧实例摘掉（摘了就没有任何路径再写终局 ⇒ status.json 永远 running）");
+  assert.notEqual(jobOld.watchdog, undefined,
+    "旧实例自己派的那条也保留：owner 会话**还活着**（只是实例换了），它的 run 还能投出去");
+  assert.equal(jobView(jobLive).shutdownTimerSkips, 1, "被归属挡下来要出声（不许静默）");
+  assert.equal(jobView(jobOld).shutdownTimerSkips, 1);
+
+  // 端到端事实：到点仍写 aborted 并投递（定时器活着才有这一步）。`clock.tick()` 一次只推**最早**那一根，
+  // 两条 job 都还挂着 ⇒ 要 tick 两次（旧实例派的那条也仍然会自己走到终局）。
+  assert.equal(clock.tick(), true, "两根看门狗都还挂着（被旧实例模过但没清掉）");
+  assert.equal(clock.tick(), true);
+  assert.equal(clock.tick(), false, "只有两根 ⇒ 没有第三根定时器（迟到的 shutdown 一个也没清、也没多清）");
+  assert.equal(jobLive.status, "aborted", "B 名下 job 的超时终局还得发生");
+  assert.equal(jobOld.status, "aborted", "旧实例派的那条也得有终局（修前它直接被摘了看门狗 ⇒ 永远 running）");
+  assert.equal(jobLive.timedOut, true);
+  assert.equal(jobLive.delivery, "sent", "迟到 shutdown 之后定时器仍到点，终局仍按 owner 现在那个句柄投出去");
+  const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId: second.handle.runId }), "utf8"));
+  assert.equal(disk.status, "aborted");
+  assert.equal(disk.timeout, true, "盘上要读得到「是超时终局」，不能永远停在 running");
+
+  // 对照：活实例自己走（归属**匹配**）⇒ 照旧 #658 清掉，别修成「谁也清不掉」。
+  const third = runtime.start(params, { sessionId: owner });
+  const jobThird = runtime.registry.get(third.handle.runId);
+  assert.notEqual(jobThird.watchdog, undefined);
+  assert.equal(runtime.shutdown(owner, handleB), true, "归属匹配时 quit 照常清自己会话名下的定时器");
+  assert.equal(jobThird.watchdog, undefined, "匹配的那次要真清掉");
+  assert.equal(jobView(jobThird).shutdownTimerSkips, 0, "匹配的清理事件不计数");
+});
+
+test("#800 判据5（接线）：真 session_shutdown 会递上自己那个句柄 ⇒ 迟到的 quit 清不掉活实例名下正在跑的 job 的定时器", async () => {
+  // 上面那格拿的是注入过的 runtime，**碰不到 `erix-run.ts` 的接线**（拆掉接线它照样绿，实测 62/62）。
+  // 这一格拿的是**真 factory + 真 handler**：要证的正是「`session_shutdown` 有没有把自己那个句柄递下去」。
+  const env = await offlineRunEnv();
+  const sessionDir = await tempDir("erix-run-800-wire-");
+  const sessionHandles = jobsApi.globalSessionHandleRegistry();
+  const owner = "800-wire-timers";
+  try {
+    const extension = await loadExtensionModule();
+    const a = startSession(extension, { sessionId: owner });
+    const handleA = sessionHandles.get(owner);
+    const b = startSession(extension, { sessionId: owner });
+    assert.notEqual(handleA, undefined);
+    assert.notEqual(sessionHandles.get(owner), handleA, "前置：同一个 id 已被 B 的句柄接管");
+
+    const registry = jobsApi.globalAsyncJobRegistry();
+    const before = [...registry.jobs.keys()];
+    // **不 await** 就下一句：`async:true` 的派工在 `execute` 的同步段里就落了注册表，而内层 run 要到
+    // 终局还得过至少一个轮转 + I/O ⇒ 下一句就是「这张 job 正在跑、定时器挂在上面」那一刻。
+    const pending = extension.erixRunTool.execute(
+      "tc-800-wire", { task: "t", cwd: sessionDir, sessionDir, async: true, maxRounds: 2 }, undefined, undefined, b.ctx,
+    );
+    const [runId] = [...registry.jobs.keys()].filter((key) => !before.includes(key));
+    assert.equal(typeof runId, "string", "派工必须已在注册表里（这一格的前提）");
+    const job = registry.get(runId);
+    assert.notEqual(job.watchdog, undefined, "派工后看门狗必须在");
+
+    // 迟到的旧实例现在走。拆掉接线（`shutdown(sessionId)` 不递句柄）⇒ 下面两条必红：没句柄就比不出归属，
+    // runtime 只能照旧 #658 清掉活实例的定时器。
+    a.handlers.get("session_shutdown")({ reason: "quit" });
+    assert.notEqual(job.watchdog, undefined,
+      "真接线：迟到的 quit 不许摸掉活实例名下 job 的看门狗（不递句柄就比不出归属 ⇒ 这里会变成 undefined）");
+    assert.equal(jobView(job).shutdownTimerSkips, 1, "真接线：归属不匹配要数得出来（不递句柄 ⇒ 永远是 0）");
+
+    // 定时器留着不是搁着：这张 job 之后照旧结算、照旧投给现在那个句柄。
+    await pending;
+    await waitUntil(() => !["queued", "running"].includes(job.status), { label: "#800 接线 settle", timeoutMs: 5_000 });
+    assert.equal(jobView(job).delivery, "sent", "迟到 quit 之后那张 job 仍要正常投递（本会话自己那个句柄）");
+  } finally {
+    sessionHandles.delete(owner);
+    env.restore();
+  }
+});
+
 test("#659 第2格：agent_end / session_start 发现 pending 且从未起轮 ⇒ 补排一次 steer（isPending 的生产消费者）", async () => {
   const env = await offlineRunEnv();
   const sessionHandles = jobsApi.globalSessionHandleRegistry();
@@ -1966,7 +2193,7 @@ test("#665：投递失败（failed）⇒ 文案里带 notifyError 根因与已�
   assert.deepEqual(deliveryLines(statusText), lines, "action:\"status\" 与 action:\"result\" 是同一句");
 });
 
-test("#665：owner 会话已不在（orphaned）⇒ 文案说清「owner 会话已不在」，并点名本该投给谁", async () => {
+test("#665：owner 句柄查不到（orphaned）⇒ 文案说清机制并点名本该投给谁（#800 判据 4：不断言会话不存在）", async () => {
   let attempts = 0;
   // 句柄表里**没有** owner：会话关了 / 扩展实例换了（#654 缺陷 1 的 orphaned 那一档）
   const { runtime, sessionDir, runId } = await deliveryRuntime({
@@ -1982,7 +2209,13 @@ test("#665：owner 会话已不在（orphaned）⇒ 文案说清「owner 会话�
   assert.equal(lines.length, 1, `orphaned 必须有一句解释（且只有一句），实测 ${JSON.stringify(lines)}`);
   assert.match(lines[0], /^delivery: orphaned \(/u);
   assert.match(lines[0], /665-gone/u, "要点名**本来该投给**哪个会话");
-  assert.match(lines[0], /已不在/u, "说清是「owner 会话已不在」，不是笼统的「没投出去」");
+  // 判据 4（issue #800）：这句要说**机制**（句柄查不到）并交代「会话可能只是换了实例、稍后会回来」，
+  // 不许断言 owner 会话不存在 —— 那正是与同文件机制注释（「会话关了 / 扩展实例换了」）互相矛盾的地方。
+  assert.match(lines[0], /句柄查不到/u, "要说「句柄查不到」这个机制，不是笼统的「没投出去」");
+  assert.match(lines[0], /扩展实例换了/u, "要说出「可能只是实例换了」这个成因（否则读的人只会去查会话在不在）");
+  assert.match(lines[0], /补投/u, "要交代 owner 以同一个 sessionId 回来后会发生什么（恢复回路的存在也是事实）");
+  assert.doesNotMatch(lines[0], /已不在/u,
+    "不许写「owner 会话已不在」：同 id 双实例时那句话是假的（现场：同一 owner 三次全 orphaned 而会话一直在跑轮）");
 
   // 盘上那一句与文本面逐字相同（同一处拼装：只读 status.json 的会话读到的是同一句人话）
   const disk = JSON.parse(readFileSync(statusFilePath({ sessionDir, runId }), "utf8"));
