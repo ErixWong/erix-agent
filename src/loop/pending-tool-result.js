@@ -1,49 +1,32 @@
 // @ts-check
 /**
-   * issue #394：把「结清尾部悬空 `tool_use`」提成**共享实现**（原 #393 的闭包
-   * ，只活在
+ * issue #394：把「结清尾部悬空 `tool_use`」提成**共享实现**（原 #393 的闭包，只活在
  * `src/loop/orchestrator.js` 里、只被 `applyGovernorExtension` 调用过）。
  *
-   * 为什么必须提出来：引擎有**两个**往尾部注入 user 控制消息的注入点，
-   * 而结清动作原先只有**一个**
+ * 为什么必须提出来：引擎有**两个**往尾部注入 user 控制消息的注入点，而结清动作原先只有**一个**
  * 调用点（中途扩轮 / guard 补跑桥共用的那个闭包）：
  *   1. `src/loop/orchestrator.js#applyGovernorExtension`（中途扩轮 + guard 补跑桥）；
-   *   2. `src/loop/termination.js#forceFinalIfNeeded`（强制收尾：【强制收尾】指令注
-   * 入之前）；
-   *   3. 兄弟洞：`src/loop/orchestrator.js` 的 stop 分支里 finalGuard 判 `revise` 那条
-   * 续跑消息。
-   * 2 与 3 都在 #394 之前**没有**结清动作，于是「尾部是 `assistant[tool_use]`」
-   * 时注入把 `tool_use`
-   * 与它应有的 `tool_result` 隔开 ⇒ **本库自己的消息校验器**在任何请求发
-   * 出**之前**就本地抛
+ *   2. `src/loop/termination.js#forceFinalIfNeeded`（强制收尾：【强制收尾】指令注入之前）；
+ *   3. 兄弟洞：`src/loop/orchestrator.js` 的 stop 分支里 finalGuard 判 `revise` 那条续跑消息。
+ * 2 与 3 都在 #394 之前**没有**结清动作，于是「尾部是 `assistant[tool_use]`」时注入把 `tool_use`
+ * 与它应有的 `tool_result` 隔开 ⇒ **本库自己的消息校验器**在任何请求发出**之前**就本地抛
  * `invalid_messages`
-   * （`assistant tool_use has no immediately following user tool_result`）拒掉整份历史，
-   * 宿主拿到
-   * `termination: failed`，终稿丢失。缺口不在判据、不在构造器，而在「只有
-   * 一个结清点」。
-   * 归因（2026-10-22 实测更正，别写回「provider 拒」）：那次失败**零 HTTP**，
-   * 栈落在
-   * `src/messages/rounds.js#validateMessages`；规矩按本库说的两协议里**最严的那一
-   * 档**立
-   * （Anthropic 形状对这个形状回 400），而实跑的 OpenAI 兼容中转会回 **200** 
-   * 并让模型**自己编**一个结局。
+ * （`assistant tool_use has no immediately following user tool_result`）拒掉整份历史，宿主拿到
+ * `termination: failed`，终稿丢失。缺口不在判据、不在构造器，而在「只有一个结清点」。
+ * 归因（2026-10-22 实测更正，别写回「provider 拒」）：那次失败**零 HTTP**，栈落在
+ * `src/messages/rounds.js#validateMessages`；规矩按本库说的两协议里**最严的那一档**立
+ * （Anthropic 形状对这个形状回 400），而实跑的 OpenAI 兼容中转会回 **200** 并让模型**自己编**一个结局。
  *
  * 三条纪律（本模块存在的全部理由，改它之前先读）：
  *   - **判据复用既有那一份**：`pendingTrailingToolUses`（`src/messages/rounds.js`，与
-   *     `validateMessages` 的配对规则同源）。这里**不**另写一套配对逻辑——
-   * 第二份判据就是下一个
+ *     `validateMessages` 的配对规则同源）。这里**不**另写一套配对逻辑——第二份判据就是下一个
  *     #394。
-   *   - **结果块复用唯一构造点**：`buildToolResultFact`（`src/tool-fact.js`），`isErr
-   * or: true` 打在
-   *     块上，正文用 `PENDING_TOOL_RESULT_TEXT`（以 `[erix]` marker 开头）。全仓「
-   * 造 `is_error`
-   *     收尾 `tool_result`」的构造点只有这一处，由 `test/loop-pending-tool-result.tes
-   * t.js` 的
+ *   - **结果块复用唯一构造点**：`buildToolResultFact`（`src/tool-fact.js`），`isError: true` 打在
+ *     块上，正文用 `PENDING_TOOL_RESULT_TEXT`（以 `[erix]` marker 开头）。全仓「造 `is_error`
+ *     收尾 `tool_result`」的构造点只有这一处，由 `test/loop-pending-tool-result.test.js` 的
  *     结构判据钉住。
-   *   - **入账走 `:control:` 行**（由调用方经 `onMessage` 注入，本模块不碰 store
-   * ）：**不能**改成
-   *     `kind:"message"` 消息行——消息行会被 `foldMessageRows` 折回轮载体行，恢
-   * 复时插到注入的
+ *   - **入账走 `:control:` 行**（由调用方经 `onMessage` 注入，本模块不碰 store）：**不能**改成
+ *     `kind:"message"` 消息行——消息行会被 `foldMessageRows` 折回轮载体行，恢复时插到注入的
  *     控制文本之前，把配对重新打散（#393 的结论）。
  */
 
@@ -53,17 +36,12 @@ import { blocksFor } from "./block-helpers.js";
 import { mergeToolResultsIntoAssistantNextMessage } from "./messages.js";
 
 /**
-   * 尾部悬空 `tool_use` 的**读侧**入口（issue #404）：内容就是 `pendingTrailingTool
-   * Uses` 那一份，
-   * 这里只是把它挂到共享实现的出口上。为什么需要这一层：`src/` 里**除
-   * 本文件外**不许再引用判据符号
-   * （`test/loop-pending-tool-result.test.js` 的结构判据钉着——任何别处再写一遍
-   * 配对逻辑就是下一个
-   * #394），而恢复路径也要读一眼尾部形状（告示里要列「哪些调用没结果
-   * 」）。
+ * 尾部悬空 `tool_use` 的**读侧**入口（issue #404）：内容就是 `pendingTrailingToolUses` 那一份，
+ * 这里只是把它挂到共享实现的出口上。为什么需要这一层：`src/` 里**除本文件外**不许再引用判据符号
+ * （`test/loop-pending-tool-result.test.js` 的结构判据钉着——任何别处再写一遍配对逻辑就是下一个
+ * #394），而恢复路径也要读一眼尾部形状（告示里要列「哪些调用没结果」）。
  *
-   * 只读、不结清、不碰 `messages`：结清仍然只有 `answerPendingTailToolUses` 一条
-   * 路。
+ * 只读、不结清、不碰 `messages`：结清仍然只有 `answerPendingTailToolUses` 一条路。
  *
  * @param {any[]} messages
  * @returns {object[]} 末条 assistant 消息里的 `tool_use` 块（可能为空数组）
@@ -75,12 +53,9 @@ export function pendingTailToolUses(messages) {
 /**
  * 给「末轮那条**未执行**的 `tool_use`」补的 `tool_result` 正文。
  *
-   * 这是引擎自写的**事实陈述**，不是任何工具的输出：那条调用真的没跑
-   * （预算掐停 / 强制收尾期间
-   * 模型仍回了工具调用），所以下一轮模型可以重新发起。开头的 `[erix]` 
-   * 是 marker —— 宿主、judge、
-   * 审计凭它一眼认出「引擎自写」，不会把这句话当成工具结果。导出只
-   * 为让测试断言这一份唯一来源，
+ * 这是引擎自写的**事实陈述**，不是任何工具的输出：那条调用真的没跑（预算掐停 / 强制收尾期间
+ * 模型仍回了工具调用），所以下一轮模型可以重新发起。开头的 `[erix]` 是 marker —— 宿主、judge、
+ * 审计凭它一眼认出「引擎自写」，不会把这句话当成工具结果。导出只为让测试断言这一份唯一来源，
  * 不属公开契约面（`src/index.js` 不转出）。
  */
 export const PENDING_TOOL_RESULT_TEXT = "[erix] This tool call was never executed: the loop stopped "
@@ -88,13 +63,10 @@ export const PENDING_TOOL_RESULT_TEXT = "[erix] This tool call was never execute
   + "Re-issue the call if the task still needs it.";
 
 /**
-   * `tool_use` 的 id 能不能补出一条**合法**的 `tool_result`（#393 的退路 B 的判据
-   * ，单点）。
+ * `tool_use` 的 id 能不能补出一条**合法**的 `tool_result`（#393 的退路 B 的判据，单点）。
  *
-   * canonical 的配对要求（`src/messages/rounds.js#validateMessages`）是「`tool_use` 的 id
-   *  必须是非空
-   * 字符串」，所以连 id 都读不出来的畸形尾巴补不出合法结果 —— 这一
-   * 格**不结清**，让今天那条
+ * canonical 的配对要求（`src/messages/rounds.js#validateMessages`）是「`tool_use` 的 id 必须是非空
+ * 字符串」，所以连 id 都读不出来的畸形尾巴补不出合法结果 —— 这一格**不结清**，让今天那条
  * `invalid_messages` 继续如实报（不在这一层发明第三种兜底）。
  *
  * @param {any} block
@@ -105,13 +77,10 @@ function isUsableToolUseId(block) {
 }
 
 /**
-   * 尾部悬空 `tool_use` 是否**补得出**合法的 `tool_result`（`#393` 退路 B 的判据
-   * ）。
+ * 尾部悬空 `tool_use` 是否**补得出**合法的 `tool_result`（`#393` 退路 B 的判据）。
  *
-   * 「尾部没有悬空 `tool_use`」也算 answerable（空数组的 `every` 为真）：调用
-   * 方问的是「能不能继续
-   * 往尾部注入 user 消息」，没有悬空块时答案当然是能。`extendAfterGuard` 用
-   * 的就是这一条。
+ * 「尾部没有悬空 `tool_use`」也算 answerable（空数组的 `every` 为真）：调用方问的是「能不能继续
+ * 往尾部注入 user 消息」，没有悬空块时答案当然是能。`extendAfterGuard` 用的就是这一条。
  *
  * @param {any[]} messages
  * @returns {boolean}
@@ -121,22 +90,16 @@ export function pendingTailToolUsesAreAnswerable(messages) {
 }
 
 /**
-   * 结清尾部悬空 `tool_use`：往 `messages` 尾部追加**一条** user 消息，装齐全
-   * 部缺失的 `tool_result`。
+ * 结清尾部悬空 `tool_use`：往 `messages` 尾部追加**一条** user 消息，装齐全部缺失的 `tool_result`。
  *
-   * 幂等判据是「尾部形状」本身（结清之后再调一次返回 `false`）：调用方
-   * 可以在任何注入点之前无条件
+ * 幂等判据是「尾部形状」本身（结清之后再调一次返回 `false`）：调用方可以在任何注入点之前无条件
  * 调它，不必自己判断尾部。
  *
  * @param {any[]} messages canonical 消息数组（就地追加）
-   * @param {{round?: number, messageRounds?: Map<any, any> | WeakMap<any, any>, onMessage?: (messag
-   * e: any, round?: number) => any}} [options]
-   *   `messageRounds` 与主循环同一份口径（轮号表——主循环用的是 `WeakMap`，t
-   * ermination 侧原样转交）；`onMessage` 是**入账回调**，由 orchestrator 注入
-   *   （本模块不持有 store、不碰 persist —— journal 写入一直是 orchestrator 的
-   * 职责面）。
-   * @returns {Promise<boolean>} true = 真的补了一条 user 消息；false = 尾部没有可结
-   * 清的悬空块
+ * @param {{round?: number, messageRounds?: Map<any, any> | WeakMap<any, any>, onMessage?: (message: any, round?: number) => any}} [options]
+ *   `messageRounds` 与主循环同一份口径（轮号表——主循环用的是 `WeakMap`，termination 侧原样转交）；`onMessage` 是**入账回调**，由 orchestrator 注入
+ *   （本模块不持有 store、不碰 persist —— journal 写入一直是 orchestrator 的职责面）。
+ * @returns {Promise<boolean>} true = 真的补了一条 user 消息；false = 尾部没有可结清的悬空块
  *   （含「畸形尾巴补不出合法结果」那一格）
  */
 export async function answerPendingTailToolUses(messages, options = {}) {
@@ -223,15 +186,11 @@ export async function answerPendingTailToolUses(messages, options = {}) {
  // essages` 继续如实报。
 
 /**
-   * 「结果**没有落盘**」的桩正文（与 `PENDING_TOOL_RESULT_TEXT` 的语义不同，别
-   * 合并成一句）。
+ * 「结果**没有落盘**」的桩正文（与 `PENDING_TOOL_RESULT_TEXT` 的语义不同，别合并成一句）。
  *
-   * 那条调用**跑过**（工具真的执行了、副作用可能已经发生），但它的 `to
-   * ol_result` 从没进账本 —— 引擎无法
-   * 凭账本复述结果，于是只能把「结果丢了」这件事实如实说给模型听。
-   * 开头的 `[erix]` 是 marker（引擎自写，
-   * 不是工具输出），与尾部那句同一个约定。导出只为让测试断言这一份
-   * 唯一来源，不属公开契约面。
+ * 那条调用**跑过**（工具真的执行了、副作用可能已经发生），但它的 `tool_result` 从没进账本 —— 引擎无法
+ * 凭账本复述结果，于是只能把「结果丢了」这件事实如实说给模型听。开头的 `[erix]` 是 marker（引擎自写，
+ * 不是工具输出），与尾部那句同一个约定。导出只为让测试断言这一份唯一来源，不属公开契约面。
  */
 export const UNPERSISTED_TOOL_RESULT_TEXT = "[erix] The result of this tool call is not available: "
   + "the call was made, but its tool_result was never persisted to the transcript ledger, so the "
@@ -259,21 +218,14 @@ export const MID_SEQUENCE_ABANDON_SHAPE_NOT_SUPPORTED = "mid_sequence_shape_not_
 export const MID_SEQUENCE_ABANDON_ROW_WRITE_REFUSED = "mid_sequence_stub_row_write_refused";
 
 /**
-   * issue #790（**只视图修了、账本仍开着**）：需要插页那一类中段悬空，已
-   * 在**请求视图**里插了一张纯
-   * `tool_result` 的 user 页 ⇒ run 能起来，而**账本一个字节都没动**（本单不
-   * 代笔补那一行）。
+ * issue #790（**只视图修了、账本仍开着**）：需要插页那一类中段悬空，已在**请求视图**里插了一张纯
+ * `tool_result` 的 user 页 ⇒ run 能起来，而**账本一个字节都没动**（本单不代笔补那一行）。
  *
-   * 为什么不复用上面那个 `mid_sequence_shape_not_supported`（新 `reason` 的代价：
-   * 中英两份契约的表 +
-   * `SOURCE_REASONS` 同笔刷新）：那四个成因说的全部是「**账本**这一格放弃
-   * 了」，而这一格说的是
-   * 「视图修好了、账本还没修」。复用会让同一次续跑发出两条 `(reason, det
-   * ail, count, round)` 逐字相同
-   * 而含义相反的事件，而「宿主能不能分清这两种」恰好是 #730 开单要钉
-   * 的那件事。
-   * **事件类型未新增**（仍骑在 `resume_journal_skipped` 上），`detail` 也沿用下
-   * 面两个既有取值。
+ * 为什么不复用上面那个 `mid_sequence_shape_not_supported`（新 `reason` 的代价：中英两份契约的表 +
+ * `SOURCE_REASONS` 同笔刷新）：那四个成因说的全部是「**账本**这一格放弃了」，而这一格说的是
+ * 「视图修好了、账本还没修」。复用会让同一次续跑发出两条 `(reason, detail, count, round)` 逐字相同
+ * 而含义相反的事件，而「宿主能不能分清这两种」恰好是 #730 开单要钉的那件事。
+ * **事件类型未新增**（仍骑在 `resume_journal_skipped` 上），`detail` 也沿用下面两个既有取值。
  */
 export const MID_SEQUENCE_REQUEST_VIEW_STUB = "mid_sequence_request_view_stub";
 
@@ -309,22 +261,16 @@ export const RESUME_JOURNAL_SKIP_DETAIL_ROUND_NOT_SAFE_INTEGER = "round_not_safe
 export const RESUME_JOURNAL_SKIP_DETAIL_APPEND_SKIPPED = "append_row_not_persisted";
 
 /**
-   * 「普查」那一份实现（issue #730）：一趟扫描同时分出两类，**配对判据
-   * 只有这一份**（纪律 ①）：
-   *   · `answerable` = 可同页合并的那些组（`pendingMidSequenceToolUses` 的逐字返回
-   * 值）；
-   *   · `unanswerable` = 确实悬空、但形状不是同页合并那一种（紧接的不是 use
-   * r / 紧接的 user 一条
-   *     `tool_result` 都没有）。修前它们从不出现在任何返回值里 ⇒ 引擎放弃
-   * 了这一格而无人知道。
+ * 「普查」那一份实现（issue #730）：一趟扫描同时分出两类，**配对判据只有这一份**（纪律 ①）：
+ *   · `answerable` = 可同页合并的那些组（`pendingMidSequenceToolUses` 的逐字返回值）；
+ *   · `unanswerable` = 确实悬空、但形状不是同页合并那一种（紧接的不是 user / 紧接的 user 一条
+ *     `tool_result` 都没有）。修前它们从不出现在任何返回值里 ⇒ 引擎放弃了这一格而无人知道。
  *
  * @param {any[]} messages
  * @returns {{answerable: Array<{assistantIndex: number, resultIndex: number, missing: any[]}>,
  *            unanswerable: Array<{assistantIndex: number, detail: string, unsettled: any[]}>}}
-   *   两块数组装的是消息里**原样的** `tool_use` 块（消息面是 `any[]`，这里不
-   * 重述它的形状；写成
-   *   `object[]` 会让 strict 下每一次 `block.id` 都成错——那些 id 正是调用方要
-   * 报给宿主的东西）。
+ *   两块数组装的是消息里**原样的** `tool_use` 块（消息面是 `any[]`，这里不重述它的形状；写成
+ *   `object[]` 会让 strict 下每一次 `block.id` 都成错——那些 id 正是调用方要报给宿主的东西）。
  */
 function scanMidSequence(messages) {
   const list = Array.isArray(messages) ? messages : [];
@@ -362,44 +308,31 @@ function scanMidSequence(messages) {
 }
 
 /**
-   * **中段**悬空 `tool_use` 的读侧判据（issue #421）：返回「紧跟的那条 user 消
-   * 息没结清它」的每一组。
+ * **中段**悬空 `tool_use` 的读侧判据（issue #421）：返回「紧跟的那条 user 消息没结清它」的每一组。
  *
-   * 只认**同页合并**这一支（纪律 ④）：assistant 的下一条必须是一条**已经
-   * 有 `tool_result`** 的 user
-   * 消息，缺的 id 才补得进去。下一条不是 user / 没有任何 `tool_result`（那需
-   * 要在中间插一条消息）⇒
-   * 本函数不返回它，交由 `validateMessages` 如实报错（而 issue #730 之后它不再
-   * 是**无声**的：那一格在
-   * `scanMidSequence().unanswerable` 里，由 `answerPendingMidSequenceToolUses` 经 `onAbandon` 
-   * 报出）。
+ * 只认**同页合并**这一支（纪律 ④）：assistant 的下一条必须是一条**已经有 `tool_result`** 的 user
+ * 消息，缺的 id 才补得进去。下一条不是 user / 没有任何 `tool_result`（那需要在中间插一条消息）⇒
+ * 本函数不返回它，交由 `validateMessages` 如实报错（而 issue #730 之后它不再是**无声**的：那一格在
+ * `scanMidSequence().unanswerable` 里，由 `answerPendingMidSequenceToolUses` 经 `onAbandon` 报出）。
  *
  * 只读、不结清、不碰 `messages`。
  *
  * @param {any[]} messages canonical 消息数组
  * @returns {Array<{assistantIndex: number, resultIndex: number, missing: any[]}>}
-   *   `missing` = 该 assistant 里「紧跟的 user 消息没有对应 `tool_result`」的 `tool_u
-   * se` 块
+ *   `missing` = 该 assistant 里「紧跟的 user 消息没有对应 `tool_result`」的 `tool_use` 块
  */
 export function pendingMidSequenceToolUses(messages) {
   return scanMidSequence(messages).answerable;
 }
 
 /**
-   * 造一张「执行过、结果没落盘」的 `tool_result` 桩 —— **全仓唯一构造点*
-   * *（上面纪律 ③ 的家），正文只有限面那一句。
-   * 这次调用**跑过**、结果没进账本：wire 上「没产出可用结果」的唯一出
-   * 口是 `is_error`（与尾部结清、续跑复放的
-   * `interrupted` 同口径）；**不写 `executionStatus`** —— 那是闭集 `intercepted / in
-   * terrupted / rejected`（
-   * `src/tool-fact.js#TOOL_RESULT_CONTRACT`），加第四个值要动中英两份契约 + `test/co
-   * ntract/tool-result-envelope.js`。
-   * 导出只为让块形状只有一份：issue #765 把结清时机前移到宿主预写用户轮
-   * **之前**（`src/store/append-user-turn.js`），
-   * 那条结清行与本模块中段补桩造的是同一张桩，各自手搭块形状就是下
-   * 一个 #394（两份事实）。
-   * @param {string} toolUseId 悬空那个 `tool_use` 的 id；非空字符串由调用方判（#42
-   * 1 纪律 ⑤「不发明第三种兜底」）
+ * 造一张「执行过、结果没落盘」的 `tool_result` 桩 —— **全仓唯一构造点**（上面纪律 ③ 的家），正文只有限面那一句。
+ * 这次调用**跑过**、结果没进账本：wire 上「没产出可用结果」的唯一出口是 `is_error`（与尾部结清、续跑复放的
+ * `interrupted` 同口径）；**不写 `executionStatus`** —— 那是闭集 `intercepted / interrupted / rejected`（
+ * `src/tool-fact.js#TOOL_RESULT_CONTRACT`），加第四个值要动中英两份契约 + `test/contract/tool-result-envelope.js`。
+ * 导出只为让块形状只有一份：issue #765 把结清时机前移到宿主预写用户轮**之前**（`src/store/append-user-turn.js`），
+ * 那条结清行与本模块中段补桩造的是同一张桩，各自手搭块形状就是下一个 #394（两份事实）。
+ * @param {string} toolUseId 悬空那个 `tool_use` 的 id；非空字符串由调用方判（#421 纪律 ⑤「不发明第三种兜底」）
  */
 export function buildUnpersistedToolResultStub(toolUseId) {
   return buildToolResultFact({ toolUseId, content: UNPERSISTED_TOOL_RESULT_TEXT, isError: true });
@@ -409,19 +342,13 @@ export function buildUnpersistedToolResultStub(toolUseId) {
  * 「**没有证据**判断这条调用执行过没有」的桩正文（issue #790）。
  *
  * 与上面两句的分工（三句不许合并成一句，也不要拿错）：
-   *   · `PENDING_TOOL_RESULT_TEXT` —— 引擎**知道**这条没跑（循环在跑之前就停
-   * 了）；
-   *   · `UNPERSISTED_TOOL_RESULT_TEXT` —— 引擎**有证据**说它跑过（账本里有该 id
-   *  的 `tool-executed` 恢复行，
+ *   · `PENDING_TOOL_RESULT_TEXT` —— 引擎**知道**这条没跑（循环在跑之前就停了）；
+ *   · `UNPERSISTED_TOOL_RESULT_TEXT` —— 引擎**有证据**说它跑过（账本里有该 id 的 `tool-executed` 恢复行，
  *     或快照 `executedToolIds` 那格记着它），只是结果从没进账；
-   *   · 本句 —— 两样证据都没有。这时**唯一诚实的说法是「未知」**：执
-   * 行发生在结果行落盘**之前**
-   *     （`src/store/recovery-rows.js` 文件头的语义红线），「没跑」与「跑了而
-   * 结果行没落 / 被宿主拒」
-   *     在账本里形状相同 ⇒ 从「没有 `tool_result`」推不出「没执行」，那是
-   * 一句伪报的事实。
-   * 开头的 `[erix]` 是 marker（引擎自写，不是工具输出）。导出只为让测试断
-   * 言这一份唯一来源。
+ *   · 本句 —— 两样证据都没有。这时**唯一诚实的说法是「未知」**：执行发生在结果行落盘**之前**
+ *     （`src/store/recovery-rows.js` 文件头的语义红线），「没跑」与「跑了而结果行没落 / 被宿主拒」
+ *     在账本里形状相同 ⇒ 从「没有 `tool_result`」推不出「没执行」，那是一句伪报的事实。
+ * 开头的 `[erix]` 是 marker（引擎自写，不是工具输出）。导出只为让测试断言这一份唯一来源。
  */
 export const NO_EVIDENCE_TOOL_RESULT_TEXT = "[erix] The result of this tool call is missing from the "
   + "transcript ledger, and the engine holds no evidence either way about whether it ran: the ledger "
@@ -431,81 +358,52 @@ export const NO_EVIDENCE_TOOL_RESULT_TEXT = "[erix] The result of this tool call
 /**
  * 造一张「执行过没有**无证据**」的 `tool_result` 桩（issue #790）。
  *
-   * 与 `buildUnpersistedToolResultStub` 同住本文件、同走 `buildToolResultFact`（全仓唯
-   * 一构造点），
-   * 也**不写** `executionStatus`（那是 `intercepted / interrupted / rejected` 的闭集）。
-   * 两张桩的差别只在
-   * 正文那一句，块形状逐字相同 —— 措辞分两种是 issue #790 的硬要求：有
-   * 执行证据说「执行过、结果没入账」，
-   * 没证据说「未知」，一律说「没执行」会把一个副作用已经发生的工具
-   * 说成没发生。
+ * 与 `buildUnpersistedToolResultStub` 同住本文件、同走 `buildToolResultFact`（全仓唯一构造点），
+ * 也**不写** `executionStatus`（那是 `intercepted / interrupted / rejected` 的闭集）。两张桩的差别只在
+ * 正文那一句，块形状逐字相同 —— 措辞分两种是 issue #790 的硬要求：有执行证据说「执行过、结果没入账」，
+ * 没证据说「未知」，一律说「没执行」会把一个副作用已经发生的工具说成没发生。
  *
-   * @param {string} toolUseId 悬空那个 `tool_use` 的 id；非空字符串由调用方判（纪
-   * 律 ⑤）
+ * @param {string} toolUseId 悬空那个 `tool_use` 的 id；非空字符串由调用方判（纪律 ⑤）
  */
 export function buildNoEvidenceToolResultStub(toolUseId) {
   return buildToolResultFact({ toolUseId, content: NO_EVIDENCE_TOOL_RESULT_TEXT, isError: true });
 }
 
 /**
-   * issue #790：「需要**插页**才能闭合」那一类中段悬空的**请求视图**兜底
-   * （只读账本、只改视图）。
+ * issue #790：「需要**插页**才能闭合」那一类中段悬空的**请求视图**兜底（只读账本、只改视图）。
  *
-   * 病根：#789 把结清时机前移到宿主预写用户轮**之前**（`src/store/append-user-
-   * turn.js`），但仍有两类
-   * 账本结不到：① 已经砖化的**归档**档案（那条预写用户轮早就落盘了，
-   * 重放不回来）；② 绕开
-   * `appendUserTurn`、直接 `store.appendRound` 的宿主。它们在下一次续跑时仍旧在*
-   * *任何请求出网之前**被
-   * 本库自己的校验器拒掉（`assistant tool_use has no immediately following user tool_res
-   * ult`，0 次 HTTP，
-   * 那个 runId 永久起不来），而账本侧的中段兜底只会同页合并、不会插页
-   * （纪律 ④）。
+ * 病根：#789 把结清时机前移到宿主预写用户轮**之前**（`src/store/append-user-turn.js`），但仍有两类
+ * 账本结不到：① 已经砖化的**归档**档案（那条预写用户轮早就落盘了，重放不回来）；② 绕开
+ * `appendUserTurn`、直接 `store.appendRound` 的宿主。它们在下一次续跑时仍旧在**任何请求出网之前**被
+ * 本库自己的校验器拒掉（`assistant tool_use has no immediately following user tool_result`，0 次 HTTP，
+ * 那个 runId 永久起不来），而账本侧的中段兜底只会同页合并、不会插页（纪律 ④）。
  *
-   * 这一层补的就是「插页」那一支，而它**只**存在于交给 provider 的那份数
-   * 组里：
-   *   · 不碰 `messages`（一个块都不加、一个对象都不改）⇒ `extractL0Facts(ctx.m
-   * essages)` 不会把桩当成
-   *     真工具结果，`ctx.persistedTranscriptLength`（`src/loop/resume-manager.js` 在重建
-   * 上下文之后赋值）
+ * 这一层补的就是「插页」那一支，而它**只**存在于交给 provider 的那份数组里：
+ *   · 不碰 `messages`（一个块都不加、一个对象都不改）⇒ `extractL0Facts(ctx.messages)` 不会把桩当成
+ *     真工具结果，`ctx.persistedTranscriptLength`（`src/loop/resume-manager.js` 在重建上下文之后赋值）
  *     也不会长；
-   *   · 不调任何 `store.append*` ⇒ 账本字节一字不差，「账本仍未修」这件事
-   * 实仍由既有那条
-   *     `mid_sequence_shape_not_supported` 如实说（本函数另发一条 `mid_sequence_request_
-   * view_stub` 说
+ *   · 不调任何 `store.append*` ⇒ 账本字节一字不差，「账本仍未修」这件事实仍由既有那条
+ *     `mid_sequence_shape_not_supported` 如实说（本函数另发一条 `mid_sequence_request_view_stub` 说
  *     「视图修了」，两件事是两件事）。
  *
-   * 判据（四条，全部是「插进去之后 `validateMessages` 必须过」的充分条件）
-   * ：
-   *   ① **整段上下文**里找不到该 assistant 任一 `tool_use` 的 `tool_result`（#765 
-   * 的「整本账本」口径）。
-   *      这是**整组**判据：部分结清时插页会把已有的那份结果挤成孤儿（`u
-   * ser tool_result has no matching
-   *      assistant tool_use`），与 `deriveLedgerCrashBoundary` 取舍 ① 同规则 ⇒ 宁可
-   * 不插。
-   *      它同时保证**不会双结清**：#789 结清过的那些 id 已经在账本里 ⇒ 这
-   * 一组直接跳过。
-   *   ② 紧跟的那条消息里一条 `tool_result` 都没有（有结果 = #421 的同页合并
-   * 那一支，插页会打散它）。
-   *   ③ id 全部可用（沿用 `isUsableToolUseId`，不发明第三种兜底 —— 畸形块
-   * 让今天那句如实报错）。
-   *   ④ 不是最后一条消息（尾部悬空归 #394 / #736 / #789 那三支结清；`allowPen
-   * dingToolUse: true` 的
+ * 判据（四条，全部是「插进去之后 `validateMessages` 必须过」的充分条件）：
+ *   ① **整段上下文**里找不到该 assistant 任一 `tool_use` 的 `tool_result`（#765 的「整本账本」口径）。
+ *      这是**整组**判据：部分结清时插页会把已有的那份结果挤成孤儿（`user tool_result has no matching
+ *      assistant tool_use`），与 `deriveLedgerCrashBoundary` 取舍 ① 同规则 ⇒ 宁可不插。
+ *      它同时保证**不会双结清**：#789 结清过的那些 id 已经在账本里 ⇒ 这一组直接跳过。
+ *   ② 紧跟的那条消息里一条 `tool_result` 都没有（有结果 = #421 的同页合并那一支，插页会打散它）。
+ *   ③ id 全部可用（沿用 `isUsableToolUseId`，不发明第三种兜底 —— 畸形块让今天那句如实报错）。
+ *   ④ 不是最后一条消息（尾部悬空归 #394 / #736 / #789 那三支结清；`allowPendingToolUse: true` 的
  *      在飞尾巴因此永远不被本函数碰）。
  *
  * @param {any[]} messages canonical 消息数组（**只读**）
  * @param {{executedToolIds?: Set<any>, pendingResultIds?: Set<any>}} [options]
-   *   `executedToolIds` = 「执行过」的证据（账本 `tool-executed` 恢复行优先、快
-   * 照那格兜底，顺位由调用方
+ *   `executedToolIds` = 「执行过」的证据（账本 `tool-executed` 恢复行优先、快照那格兜底，顺位由调用方
  *   决定），命中 ⇒ 用 `UNPERSISTED_TOOL_RESULT_TEXT`；
-   *   `pendingResultIds` = 本进程马上会产出真结果的 id（与 #421 的排除集同一口
-   * 径），一律不补桩。
-   * @returns {{messages: any[], stubs: Array<{toolUseId: any, assistantIndex: number, detail: strin
-   * g, executed: boolean}>}}
-   *   `messages` 没有可补时是**同一个数组引用**（健康路径零改动、逐字等价
-   * ）；补了才是新数组。
-   *   `stubs` 是「补了几条、给哪些 id、哪一种措辞」的事实，出声归调用方
-   * （事件面一直在 orchestrator）。
+ *   `pendingResultIds` = 本进程马上会产出真结果的 id（与 #421 的排除集同一口径），一律不补桩。
+ * @returns {{messages: any[], stubs: Array<{toolUseId: any, assistantIndex: number, detail: string, executed: boolean}>}}
+ *   `messages` 没有可补时是**同一个数组引用**（健康路径零改动、逐字等价）；补了才是新数组。
+ *   `stubs` 是「补了几条、给哪些 id、哪一种措辞」的事实，出声归调用方（事件面一直在 orchestrator）。
  */
 export function stubUnsettledToolUsesForRequestView(messages, options = {}) {
   const list = Array.isArray(messages) ? messages : [];
@@ -582,48 +480,32 @@ export function stubUnsettledToolUsesForRequestView(messages, options = {}) {
 }
 
 /**
-   * 结清**中段**悬空 `tool_use`（issue #421）：把每个缺失的结果桩**并进**它所
-   * 属 assistant 紧接的那条
+ * 结清**中段**悬空 `tool_use`（issue #421）：把每个缺失的结果桩**并进**它所属 assistant 紧接的那条
  * user 消息，并把「补了哪几张桩、该往账本哪一行写」交给调用方。
  *
-   * 幂等：合并之后再调一次，`pendingMidSequenceToolUses` 返回空（那条 user 消息
-   * 现在带着桩），
-   * 所以本函数可以在恢复路径上无条件调用。账本侧的幂等**同样**由这条
-   * 逐对讲据保证：桩落账后折回来就在
-   * 那条聚合消息里（issue #730 之前靠调用方交进来的全 run id 集合，见纪律 
-   * ②）。
+ * 幂等：合并之后再调一次，`pendingMidSequenceToolUses` 返回空（那条 user 消息现在带着桩），
+ * 所以本函数可以在恢复路径上无条件调用。账本侧的幂等**同样**由这条逐对讲据保证：桩落账后折回来就在
+ * 那条聚合消息里（issue #730 之前靠调用方交进来的全 run id 集合，见纪律 ②）。
  *
-   * @param {any[]} messages canonical 消息数组（就地合并，消息对象身份不变 ⇒ 
-   * 轮号表仍然查得到）
+ * @param {any[]} messages canonical 消息数组（就地合并，消息对象身份不变 ⇒ 轮号表仍然查得到）
  * @param {{
  *   pendingResultIds?: Set<any>,
-   *   onStub?: (entry: {toolResult: object, target: object, round: any, partOf: any, anchorMissDeta
-   * il?: string}, context: {assistantIndex: number}) => any,
-   *   onAbandon?: (entry: {reason: string, detail: string|undefined, round: any, toolUseIds: any[],
-   *  assistantIndex: number}) => any,
+ *   onStub?: (entry: {toolResult: object, target: object, round: any, partOf: any, anchorMissDetail?: string}, context: {assistantIndex: number}) => any,
+ *   onAbandon?: (entry: {reason: string, detail: string|undefined, round: any, toolUseIds: any[], assistantIndex: number}) => any,
  *   roundOf?: (message: any) => any,
  *   anchorOf?: (message: any) => any,
  * }} [options]
-   *   `pendingResultIds` = **本进程马上会产出真结果**的 `tool_use` id（A 集合：结
-   * 果已成型、只差入账；
-   *   B 集合：补跑段会重跑）——与「哪一对」无关，一律不补桩（#421 的
-   * 排除集）；
-   *   `onStub` = 入账回调（本模块不持有 store、不碰 persist——账本写入一直
-   * 是调用方的职责面），
-   *   参数带 `partOf`（= 那条聚合消息**首片**行的 key，`undefined` = 账本里找不
-   * 到可接的锚点）；
-   *   `onAbandon` = **放弃这一格**的回调（issue #730：普查判它悬空，而引擎补
-   * 不出合法桩）。本模块只
+ *   `pendingResultIds` = **本进程马上会产出真结果**的 `tool_use` id（A 集合：结果已成型、只差入账；
+ *   B 集合：补跑段会重跑）——与「哪一对」无关，一律不补桩（#421 的排除集）；
+ *   `onStub` = 入账回调（本模块不持有 store、不碰 persist——账本写入一直是调用方的职责面），
+ *   参数带 `partOf`（= 那条聚合消息**首片**行的 key，`undefined` = 账本里找不到可接的锚点）；
+ *   `onAbandon` = **放弃这一格**的回调（issue #730：普查判它悬空，而引擎补不出合法桩）。本模块只
  *   交出事实，发事件归调用方（事件面一直在 orchestrator）；
-   *   `roundOf` / `anchorOf` 由调用方提供：本模块不认识轮号表，也不认识落盘
-   * 行。
-   * @returns {Promise<Array<{toolResult: object, target: object, round: any, partOf: any, anchorMis
-   * sDetail?: string}>>}
+ *   `roundOf` / `anchorOf` 由调用方提供：本模块不认识轮号表，也不认识落盘行。
+ * @returns {Promise<Array<{toolResult: object, target: object, round: any, partOf: any, anchorMissDetail?: string}>>}
  *   本次真的补进去的桩（空数组 = 没有可补的，或补不出合法结果）。
-   *   `anchorMissDetail` 是**调用方事后补上的注记**（issue #730：`partOf` 为空时「
-   * 为什么接不上」的细分成因，
-   *   取值见 `RESUME_JOURNAL_SKIP_DETAIL_*`）——本模块算不出它（锚点探针对本
-   * 模块不可见），所以它是可选的。
+ *   `anchorMissDetail` 是**调用方事后补上的注记**（issue #730：`partOf` 为空时「为什么接不上」的细分成因，
+ *   取值见 `RESUME_JOURNAL_SKIP_DETAIL_*`）——本模块算不出它（锚点探针对本模块不可见），所以它是可选的。
  */
 export async function answerPendingMidSequenceToolUses(messages, options = {}) {
   const census = scanMidSequence(messages);

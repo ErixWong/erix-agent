@@ -311,7 +311,11 @@ const BASELINE_WITH_TOOLS = 137;
 //   里 `nextUserTurnHook` 注入闭包与 `finish` 包装的隐式 any 参数，TS7006 一族——与上面那条 1872 记录里的同一族，
 //   本轮不还、在这里点名，收它要动宿主可见的 JSDoc，另开单更划算）。1877 仍比主干登记的 1892 低 **15**。
 //   带错文件数 **72** 未变。
-const BASELINE_STRICT_ROOT = 1887;
+// 2026-11-09 抬档（issue #790 请求视图兜底）：
+// 两档各 +3，取现报值 1890 / 2103（同一笔提交一起抬，口径同 #417 / #765）。
+// 三处都是 TS7006 隐式 any 参数，与存量 962 条同一类，
+// 属「已知债 + 本轮不还」；非 strict 两档没动（仍 102 / 137）。
+const BASELINE_STRICT_ROOT = 1890;
 // 2026-11-01 重测下调 2128 → 2124（−4 = `f55eb8f` 一行 `@returns` 补 `facts`；包根档同笔复测未动）
 // 下调记录：**2122 → 2085**（issue #753 C1，2026-11-07，与上三档同一次测量、同一笔提交）：主干那一侧并集
 //   档实测 **2081 / 78 文件**、本支 **2085 / 78**（同一个 +4，出处见 `BASELINE_STRICT_ROOT` 那条：TS7006 一族，
@@ -320,7 +324,7 @@ const BASELINE_STRICT_ROOT = 1887;
 //   主干那一侧并集档逐字输出 `strict 实测：2086 个错误 / 78 个文件`（比基线 2122 少 36 个），本支在同一棵树上
 //   **2090 / 78** —— 同一个 +4（出处见上面 `BASELINE_STRICT_ROOT` 那条：TS7006 一族，本轮不还），另 +5 属 #735 slice2。
 //   两档仍在同一笔提交里一起测、一起取，2090 比主干登记的 2122 低 **32**。
-const BASELINE_STRICT_WITH_TOOLS = 2100;
+const BASELINE_STRICT_WITH_TOOLS = 2103;
 
 const argv = process.argv.slice(2);
 const WITH_TOOLS = argv.includes("--with-tools");
