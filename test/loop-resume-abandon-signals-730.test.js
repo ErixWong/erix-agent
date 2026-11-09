@@ -23,6 +23,13 @@
 //
 // 反向证（issue #210 R2 的规矩）：每格都把新增的发射/收窄代码拿掉跑过，红在**本格**那条断言上，
 // 原文贴在 `/tmp/report-730.md`。不许 skip、不许放宽既有断言。
+//
+// ⚠ issue #790 对本文件的改动（**只改了一格的结局，一条断言都没删、没放宽**）：格 2② 的「紧跟的 user
+// 一条结果都没有」那一格，从「run 失败、0 次请求」改成「run 能起来、请求视图合法」——#790 在**请求视图**
+// 里为这一类形状插了一张纯 `tool_result` 页（账本仍未修：census 事件与「账本里零桩」两条逐字不动，而
+// 「零桩」是本单新加的一条）。同一类的另一形状（相邻两条 assistant）**行为不变**：那一单在
+// `normalizeMessages` 合成一条 assistant 后 `t2` 已有结果 ⇒「整单未结清」不成立，插页会把那份真结果
+// 挤成孤儿（归 #421 同页合并）——本文件为它补了一条「不许发 `mid_sequence_request_view_stub`」的反向断言。
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -38,11 +45,13 @@ import {
   MID_SEQUENCE_ABANDON_MERGE_REFUSED,
   MID_SEQUENCE_ABANDON_ROW_WRITE_REFUSED,
   MID_SEQUENCE_ABANDON_SHAPE_NOT_SUPPORTED,
+  MID_SEQUENCE_REQUEST_VIEW_STUB,
   RESUME_JOURNAL_SKIP_DETAIL_APPEND_SKIPPED,
   RESUME_JOURNAL_SKIP_DETAIL_PROBE_ABSENT,
   RESUME_JOURNAL_SKIP_DETAIL_ROUND_CARRIER_HAS_BODY,
   RESUME_JOURNAL_SKIP_DETAIL_ROW_NOT_IN_LEDGER,
   RESUME_JOURNAL_SKIP_DETAIL_ROUND_NOT_SAFE_INTEGER,
+  NO_EVIDENCE_TOOL_RESULT_TEXT,
   UNPERSISTED_TOOL_RESULT_TEXT,
 } from "../src/loop/pending-tool-result.js";
 import { validateMessages } from "../src/messages/rounds.js";
@@ -268,6 +277,11 @@ test("格2② 相邻两条 assistant ⇒ reason=mid_sequence_shape_not_supported
     round: 2,
     count: 1,
   }], "必须点名「紧接的不是 user」这一格（修前这一格连判据都不进）");
+  // issue #790 的请求视图兜底**不搭这一格**，而这不是漏做：`normalizeMessages`（每次请求视图都跑）会把
+  // 相邻两条 assistant 合成为一条 `assistant[t1, t2]`，而 `t2` 的结果在**再下一页**里 ⇒ 「整单未结清」
+  // 不成立 ⇒ 插页会把 `t2` 那份已有结果挤成孤儿。那一支归 #421 的同页合并（在恢复路径里做）。
+  assert.deepEqual(skipEvents(events, MID_SEQUENCE_REQUEST_VIEW_STUB), [],
+    "部分结清那一单不许被请求视图插页（插了就会把另一单的真结果弄成孤儿）");
 });
 
 test("格2② 紧跟的 user 一条结果都没有 ⇒ detail=aggregate_has_no_tool_result（需要插页那一类）", async () => {
@@ -279,14 +293,28 @@ test("格2② 紧跟的 user 一条结果都没有 ⇒ detail=aggregate_has_no_t
   const events = [];
   const provider = createFakeProvider([endTurn("不该被请求")]);
   const resumed = await runLoop({ store: inner, events, provider });
-  assert.equal(resumed.ok, false, "需要插页 ⇒ 本函数不发明形状，行为不变（纪律 ④）");
-  assert.equal(provider.requests.length, 0);
+  // ⚠ **issue #790 把这一格的结局从「run 起不来」改成了「run 能起来」**（而账本那一格仍然没修）：
+  // 请求视图那一层为「需要插页」这一类形状插了一张纯 `tool_result` 页（主判据在
+  // `test/loop-request-view-stub-790.test.js`）。下面那条 census 事件与「账本里一张桩都不许多写」**逐字不动**
+  // —— 它们说的都是账本侧，而 #790 只改出网视图。这不是放宽既有断言：它记的是**行为变了**这件事实。
+  assert.equal(resumed.ok, true,
+    "#790 之后这类形状必须能续起来（修前：`invalid_messages`、0 次请求、该 runId 永久起不来）；实测："
+    + String(resumed.error));
+  assert.ok(provider.requests.length >= 1,
+    `必须**真的**发过模型请求（修前 0 次），实测 ${String(provider.requests.length)}`);
+  const stubRows = (await inner.loadRawRows(RUN_ID)).filter((row) => {
+    const json = JSON.stringify(row?.messages ?? []);
+    return json.includes(UNPERSISTED_TOOL_RESULT_TEXT) || json.includes(NO_EVIDENCE_TOOL_RESULT_TEXT);
+  });
+  assert.deepEqual(stubRows, [], "视图里插的那一页不许落账：账本里一张桩都不许多写（#790 的硬边界）");
   assert.deepEqual(skipEvents(events, MID_SEQUENCE_ABANDON_SHAPE_NOT_SUPPORTED), [{
     reason: MID_SEQUENCE_ABANDON_SHAPE_NOT_SUPPORTED,
     detail: MID_SEQUENCE_ABANDON_DETAIL_AGGREGATE_HAS_NO_RESULT,
     round: 2,
     count: 1,
-  }], "必须点名「聚合消息里一条结果都没有」这一格");
+  }], "必须点名「聚合消息里一条结果都没有」这一格（账本侧的成因，与 #790 无关，逐字不变）");
+  assert.equal(skipEvents(events, MID_SEQUENCE_REQUEST_VIEW_STUB).length, 1,
+    "同一格现在两条事件各有分工：账本没修（上面那条）/ 视图修了（本条）");
 });
 
 // ─────── 用例 5（格 2③）：有锚点而写被拒（轮号不是安全整数）⇒ mid_sequence_stub_row_write_refused ───────
@@ -458,6 +486,9 @@ const SOURCE_REASONS = [
   MID_SEQUENCE_ABANDON_MERGE_REFUSED,
   MID_SEQUENCE_ABANDON_SHAPE_NOT_SUPPORTED,
   MID_SEQUENCE_ABANDON_ROW_WRITE_REFUSED,
+  // issue #790：「只视图修了、账本仍开着」那一格（新值，中英两份契约同笔到账；为什么不能复用上面那个
+  // shape_not_supported：见 `src/loop/pending-tool-result.js` 里那条常量的注释）。
+  MID_SEQUENCE_REQUEST_VIEW_STUB,
 ];
 const SOURCE_DETAILS = [
   RESUME_JOURNAL_SKIP_DETAIL_PROBE_ABSENT,

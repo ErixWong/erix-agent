@@ -1509,6 +1509,98 @@
   `start()` 往第二参放五个键（`signal` / `onProgress` / `runId` / `resumeTarget` / `nextUserTurn`），`sync()` 放三个
   （`signal` / `onProgress` / `runId: undefined`）——修完之后默认包装层把它们**全部**转发，之前漏的就是 `nextUserTurn` 这一个。
 
+- **Fixed (issue #790): an archived ledger that was already bricked by a mid-sequence dangling `tool_use`
+  resumes again — the engine now repairs the **request view**, not the ledger.** #789 moved the settling
+  *before* the host's pre-written user row (`src/store/append-user-turn.js`), and that closes the shape it
+  can reach, but two classes stay open: **(a)** archives that bricked **before** that fix — the host's plain-text
+  row is already in the ledger, so nothing ever calls `appendUserTurn` for them again, and **(b)** hosts that
+  bypass `appendUserTurn` and call `store.appendRound` directly. Both died identically and locally: the ledger
+  folds to `assistant[tool_use]` followed by a `user` page carrying **only text**, the engine's own validator
+  refuses the whole history before a single byte leaves the process, and that `runId` never boots again
+  (measured on this tree before the change: `invalid_messages: Invalid message at index 1: assistant tool_use
+  has no immediately following user tool_result`, **0 provider requests**, stack at the `validateMessages` call
+  in `src/loop/provider-runner.js` — not at a provider, and not at the termination layer). The ledger-side
+  mid-sequence fallback cannot help: it only merges into an existing page (issue #421 discipline ④), and this
+  shape needs a page **inserted**. `stubUnsettledToolUsesForRequestView`
+  (`src/loop/pending-tool-result.js`) is now run inside `callProvider` after `normalizeMessages` and before
+  `validateMessages`, and it changes **only the array handed to the provider**: it inserts a **pure**
+  `tool_result` page right after that `assistant`, and nothing else. Four conditions, each sufficient for
+  "after insertion `validateMessages` passes": no `tool_result` for **any** id of that order exists anywhere in
+  the context (an all-or-nothing rule, same shape as `deriveLedgerCrashBoundary`'s choice ① — and it is what
+  keeps #789's settled orders from being settled twice), the following page holds no `tool_result` at all
+  (otherwise the insert would orphan a result that already exists — that order is #421's, and it is now
+  asserted to stay untouched), every id is usable (issue #421 discipline ⑤), and the assistant is not the last
+  message (tails belong to #394 / #736 / #789, and an in-flight tail under `allowPendingToolUse` is never
+  touched). **What it never touches:** no `store.append*` / `appendRound` / `saveRunState` is called — the
+  transcript file's existing bytes are byte-for-byte identical (reverse-proved with a real file store by
+  comparing the append-only prefix, not by asserting a row count), and no stub text appears anywhere in the
+  ledger; nothing is pushed into `ctx.messages`, so `extractL0Facts(ctx.messages)` cannot read a stub as a
+  real tool result and `persistedTranscriptLength` is not inflated; and no mixed `user` page is ever produced
+  (the archive reading of "text + tool_result on one page = 0" stays 0 — merging into the host's page would
+  also make OpenAI's conversion emit `user` before `tool`, measured through `canonicalToOpenAIMessages`).
+  **The wording is two-valued, on purpose** (issue #769's semantic line: execution happens *before* the result
+  row lands, so "no result row" cannot mean "did not run"): a `tool-executed` recovery row for that id reuses
+  the existing "the call was made, but its `tool_result` was never persisted" sentence, while no evidence at
+  all gets the new `NO_EVIDENCE_TOOL_RESULT_TEXT` ("the engine holds no evidence either way"). The engine never
+  claims "never executed" here, and no fourth `executionStatus` value was invented. Evidence precedence follows
+  #769: ledger recovery rows first, the snapshot's `executedToolIds` cell only as the fallback it was demoted
+  to — which is why the resume side now copies those rows into a dedicated read-only evidence set
+  (`executedEvidenceToolIds`) instead of reading `resumeExecutedToolIds`: that set is filled only inside the
+  crash-scene branch, and a mid-sequence brick has **no** crash scene, so the honest answer would have come out
+  as "no evidence". **Observability reuses the existing `resume_journal_skipped` channel (no new event type)**
+  with one new `reason`, `mid_sequence_request_view_stub`, and the two existing `detail` values, plus an
+  optional `toolUseIds` the other codes never carry (absent key ⇒ the four older events stay byte-identical);
+  it does **not** reuse `mid_sequence_shape_not_supported` because that one says "the ledger gave up", and one
+  resume of a bricked archive now legitimately reports **both** codes for one shape — with `count` alone the
+  host could not tell "still unrepaired and dying" from "still unrepaired but running", which is precisely the
+  distinction issue #730 was opened for. Repeated rounds re-insert the same page, so the notice is deduplicated
+  per `(order, id)` within a run. Reverse proofs, each red on its own assertion
+  (`test/loop-request-view-stub-790.test.js`, 11 cases): removing the pass reproduces `invalid_messages` with
+  0 requests, inserting the page after the host's text page reproduces the same pairing sentence, merging it
+  into that page goes red on the no-mixed-page assertion plus the real OpenAI role order, and a
+  #789-settled order gets exactly one result page and no event. `test/loop-resume-abandon-signals-730.test.js`
+  records the behaviour change in one cell (that shape now boots, while its census event and its
+  "zero stub rows in the ledger" assertion are unchanged) and adds a reverse assertion that the
+  adjacent-assistants shape stays un-repaired by this layer.
+
+- **修复（issue #790）：已经被「中段悬空 `tool_use`」砖化的归档档案又能续跑了——引擎修的是**请求视图**，
+  不是账本。** #789 把结清时机前移到宿主预写用户轮**之前**（`src/store/append-user-turn.js`），它管得到的那
+  一类确实闭合了，但还剩两类敞开：**(a)** 在那个修复**之前**就砖化的档案——宿主的纯文本轮早就在账本里，再也没
+  人替它们调一次 `appendUserTurn`；**(b)** 绕开 `appendUserTurn`、直接调 `store.appendRound` 的宿主。两类的死法
+  一模一样而且是本地的：账本折出来是 `assistant[tool_use]` 后面紧跟一条**只有纯文本**的 `user` 页，本库自己的
+  校验器在任何字节出网之前拒掉整份历史，那个 `runId` 永久起不来（本树改动前实测：`invalid_messages: Invalid
+  message at index 1: assistant tool_use has no immediately following user tool_result`、**0 次 provider 请求**、
+  栈落在 `src/loop/provider-runner.js` 里那次 `validateMessages`——不在 provider，也不在终局层）。账本侧的中段
+  兜底救不了它：只会同页合并（issue #421 纪律 ④），而这个形状需要**插一页**。`stubUnsettledToolUsesForRequestView`
+  （`src/loop/pending-tool-result.js`）现在在 `callProvider` 里跑在 `normalizeMessages` 之后、`validateMessages`
+  之前，而它**只改交给 provider 的那份数组**：在那条 `assistant` 之后插一张**纯** `tool_result` 页，别的一律不动。
+  四条判据，每一条都是「插完之后 `validateMessages` 必过」的充分条件：这一单的**任一** id 在整段上下文里都找不
+  到 `tool_result`（整组判据，与 `deriveLedgerCrashBoundary` 取舍 ① 同形——也正是它让 #789 结清过的单不被结第二次）、
+  紧跟那一页一条 `tool_result` 都没有（否则插页会把已有的那份结果挤成孤儿——那一单归 #421，现在还补了一条断言
+  钉住它不许被动）、每个 id 都可用（#421 纪律 ⑤）、以及那条 assistant 不是最后一条（尾部归 #394 / #736 / #789，
+  `allowPendingToolUse` 下的在飞尾巴永远不被碰）。**它绝不碰什么：** 一次 `store.append*` / `appendRound` /
+  `saveRunState` 都不调——档案文件原有的那些字节逐字节相同（反向证用真文件 store 比 append-only 前缀，不是比
+  行数），账本里任何位置都不出现桩正文；一个块都不塞进 `ctx.messages`，所以 `extractL0Facts(ctx.messages)` 不会
+  把桩当成真工具结果，`persistedTranscriptLength` 也不会被虚抬；也绝不产出混合 `user` 页（「同一页同时带 `text`
+  与 `tool_result`」在全仓档案里是 0 条，本单之后仍是 0——并进宿主那一页还会让 OpenAI 转换把 `user` 排在 `tool`
+  之前，这条是拿 `canonicalToOpenAIMessages` 实测的）。**措辞分两种，是故意的**（issue #769 的语义红线：执行发生
+  在结果行落盘之前，「没有结果行」推不出「没跑」）：账本里有该 id 的 `tool-executed` 恢复行 ⇒ 复用既有那句「执行过、
+  结果没入账」；两样证据都没有 ⇒ 走新加的 `NO_EVIDENCE_TOOL_RESULT_TEXT`（「引擎两边都没证据」）。这一层从不说
+  「从未执行」，也没发明第四个 `executionStatus`。证据顺位照 #769：账本恢复行优先，快照的 `executedToolIds` 格只
+  当它被降级成的那个兜底——这也是为什么恢复侧现在把那些恢复行**另存**进一个只读证据集合（`executedEvidenceToolIds`）
+  而不去读 `resumeExecutedToolIds`：后者只在「有崩溃现场」那个分支里被填，而中段砖化**没有**崩溃现场，读它就会
+  把诚实的答案写成「无证据」。**出声仍走既有 `resume_journal_skipped` 通道（不新增事件类型）**，只加一个新 `reason`
+  `mid_sequence_request_view_stub`、`detail` 沿用既有两个取值，另加一个可选 `toolUseIds`（其余成因永远不带 ⇒ 那
+  四条既有事件字节逐字不变）；**没有**复用 `mid_sequence_shape_not_supported`，因为那句说的是「账本这一格放弃了」，
+  而一次砖化档案的续跑现在会**同时**合法地发这两个码——只给 `count` 的宿主分不开「仍没修且要死」与「仍没修但能跑」，
+  而这正是 issue #730 开单要钉的那件区别。同一批桩每轮都会重补，所以同一条 `(那一单, id)` 在一个 run 里只报一次。
+  反向证每条红在自己的断言上（`test/loop-request-view-stub-790.test.js`，11 格）：把这一层拿掉 ⇒ 逐字回到
+  `invalid_messages` 且 0 次请求；把页插到宿主纯文本页之后 ⇒ 红在同一句配对判词；并进那一页 ⇒ 红在「不许混合页」
+  那条断言与真 OpenAI 的角色顺序上；#789 结清过的单 ⇒ 整份请求只有一张结果页且不发事件。
+  `test/loop-resume-abandon-signals-730.test.js` 在一格里记下这个行为变化（那一类形状现在能起来，而它的 census
+  事件与「账本里零桩」两条断言逐字不动），并补了一条「相邻两条 assistant 那一格不许被这一层修」的反向断言。
+
+
 ## [0.31.0] - 2026-11-04
 
 ### Breaking
