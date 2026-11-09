@@ -1,12 +1,30 @@
 # REPORT-800 — issue #800：旧扩展实例迟到的 `session_shutdown` 把活会话的后台 run 弄成永久静默
 
-分支 `fix-261109-05-handle-owner-guard`（从 `origin/main = f405264` 切出）。
-本轮 = **第二轮**：判据 3（恢复回路）+ 判据 4（措辞诚实）+ 判据 5（兄弟洞）+ 文档 + 派生登记。
-判据 1+2 已在第一轮交付并被上级复验收下（反向证由上级自己重跑过一遍）。
+分支 `fix-261109-05-handle-owner-guard`（从 `origin/main = f405264` 切出，**第三轮已 rebase 到
+`origin/main = 6507ed1`**）。三轮的分工：
+
+- **第一轮**：判据 1（摘句柄要有归属）+ 判据 2（同 id 双实例顺序）——已被上级复验收下（反向证他也重跑过）。
+- **第二轮**：判据 3（补投回路）+ 判据 4（措辞诚实）+ 判据 5（迟到实例不清别人的定时器）+ README/CHANGELOG
+  + 当时那批派生登记。
+- **本轮（第三轮）**：主干前进 13 笔（PR #801 = #798）→ **rebase 到 `6507ed1`**，冲突只允许在登记面，
+  两边的旧读数全丢掉后在最终树上重取；其余四刀的代码**本轮一行没改**（rebase 没碰到任何 js/ts）。
+
+下文「判据 3 / 4 / 5」那三节仍是第二轮的交付（代码未变，本轮只**重跑**了它们与两条反向证，见
+「rebase 与登记重取」那一节末尾）。
 
 ## 取证边界
 
-**本轮逐字读过的**（只在这些范围内下结论）：
+**本轮（rebase）逐字看过 / 现跑过的**：
+
+- `git log --oneline HEAD..origin/main`（主干那 13 笔的**逐笔主题**，确认它们动的是 `bin/` 的
+  `reasoning_effort` 面 + 它自己的登记回填 `8d7be88` / `362ee3c` / `ef26eef` 与配对地板 `b2acde1`）。
+- rebase 冲突体的两侧：`test/test-suite-baseline.json` 的 `expect.tests`（主干 3786 vs 本支 3772）与
+  `test/static-guards.test.js` 的 `CHANGELOG_PAIR_FLOOR`（两侧都是 36，但各 自校准在不同树上），
+  以及主干在 `## [Unreleased]` 里新加的 `#798` 中英条目（现查在 `CHANGELOG.md:409-410`，本支那对在 `:617-618`）。
+- 最终树上四个登记打印面：`check:test-summary -- --log`（六个数 + HINT）、配对地板守卫的判词与观测行、
+  `check:mutation` / `check:inventory` 的「0 处不一致」原文（逐字抄进注释与本报告）。
+
+**第二轮逐字读过的**（只在这些范围内下结论）：
 
 - `examples/pi-extension/erix-run-jobs.js`：`deliveryNoteText`（判据 4 的唯一文案真值源）、
   `createSessionHandleRegistry`（上一轮加的 `release` / `releaseRefusals`）、`jobView` 的投递字段族、
@@ -34,60 +52,45 @@
 `status.json` 停在 `running`。
 
 ## 基点
+（第三轮：本支已 **rebase 到 `origin/main = 6507ed1`**（PR #801 = issue #798 的 CLI `reasoning_effort` 面）。
+旧基点 `f405264` 上量到的 `3772` / `PAIR_FLOOR 36` 已作废，理由见「结论 → rebase 与登记重取」。）
 
-`git log --oneline origin/main..HEAD`（现跑，非空）：
-
-```
-b388aa5 chore(#800): 派生登记现测回填（套件基线 3768→3772 + observation、CHANGELOG_PAIR_FLOOR 35→36 取守卫自报值、变异样本表 --sync 刷 M29 行号）
-5b5a758 docs(#800): README 补「摘句柄要有归属 / owner 回来会补投 / 三个计数怎么读」一节并按判据 4 改准 delivery 值表；CHANGELOG 中英成对条目（不写 TAP 计数）
-bb19cfa fix(#800): orphaned 之后 owner 回来要补投一次；orphaned 措辞改机制表述；迟到的 shutdown 不得清活实例的定时器
-966e3b2 docs(#800): 回填基点两行（git log / git diff --numstat 现跑值，测量点 e95fcf0，只动本报告）
-e95fcf0 docs(#800): 交付报告四格（取证边界 / 基点 / 结论 / 未验证）—— 本轮只交判据 1+2
-eab6609 fix(#800): erix_run 摘会话句柄要有归属 —— 旧扩展实例迟到的 session_shutdown 不再抹掉活实例的登记
-```
-
-`git diff --numstat origin/main..HEAD`（现跑，逐字；⚠ 见下面那条界）：
+`git log --oneline origin/main..HEAD`（现跑，非空；测量点 = `886cdf0`）：
 
 ```
-3	3	CHANGELOG.md
-2	15	README.md
-3	4	README_cn.md
-181	0	REPORT-800.md
-15	68	bin/cli.js
-4	36	bin/config.js
-0	187	bin/reasoning-effort.js
-7	45	bin/repl.js
-36	1	examples/pi-extension/README.md
-128	5	examples/pi-extension/erix-run-jobs.js
-22	3	examples/pi-extension/erix-run.ts
-0	490	test/cli-reasoning-effort-798.test.js
-0	1	test/compat-pin-inventory.md
-235	2	test/examples/erix-run-async.test.js
-1	1	test/mutation-samples.md
-7	10	test/static-guards.test.js
-18	49	test/test-suite-baseline.json
+886cdf0 chore(#800): rebase 到 6507ed1 后在最终树重取派生登记（TAP 地板 3786→3790 + observation、CHANGELOG_PAIR_FLOOR 36→37 取守卫自报值）
+5172bfa docs(#800): 报告四格按第二轮补全（判据 3/4/5 的反向证现场、门禁逐条退出码、派生登记取值来源、未验证边界）
+af07b9f chore(#800): 变异样本表 --sync 刷 M29 行号（rebase 后登记常量两边都丢掉，改在最终树现测）
+868c9be docs(#800): README 补「摘句柄要有归属 / owner 回来会补投 / 三个计数怎么读」一节并按判据 4 改准 delivery 值表；CHANGELOG 中英成对条目（不写 TAP 计数）
+b6736a3 fix(#800): orphaned 之后 owner 回来要补投一次；orphaned 措辞改机制表述；迟到的 shutdown 不得清活实例的定时器
+4ab75b0 docs(#800): 回填基点两行（git log / git diff --numstat 现跑值，测量点 e95fcf0，只动本报告）
+2fa806b docs(#800): 交付报告四格（取证边界 / 基点 / 结论 / 未验证）—— 本轮只交判据 1+2
+99950a4 fix(#800): erix_run 摘会话句柄要有归属 —— 旧扩展实例迟到的 session_shutdown 不再抹掉活实例的登记
 ```
 
-⚠ **上面这块不能当本片的内容读**：`origin/main` 在本支切出之后已经前进到 `6507ed1`（本支**没有**合它，
-纪律是不动分支/不 push），所以 `origin/main..HEAD` 里混进了主干新加的文件的**反向差异**
-（`bin/reasoning-effort.js 0 187`、`test/cli-reasoning-effort-798.test.js 0 490` 那些「只有删、没有加」的行
-就是主干有而本支没有的东西）。本片**自己的内容**要看 merge base 那一版（同一命令换坐标，现跑）：
-
-`git diff --numstat f405264..HEAD`：
+`git diff --numstat origin/main..HEAD`（现跑，逐字）：
 
 ```
 3	0	CHANGELOG.md
-181	0	REPORT-800.md
+228	0	REPORT-800.md
 36	1	examples/pi-extension/README.md
 128	5	examples/pi-extension/erix-run-jobs.js
 22	3	examples/pi-extension/erix-run.ts
 235	2	test/examples/erix-run-async.test.js
 1	1	test/mutation-samples.md
-10	1	test/static-guards.test.js
+14	1	test/static-guards.test.js
 18	1	test/test-suite-baseline.json
 ```
 
-- 两版都**非空** ✓。测量点 = `b388aa5`（登记回填那一笔提交之后）；把本报告抄进 `REPORT-800.md`
+- 两行都**非空** ✓。rebase 后这一版**只剩本片自己的改动**：上一版里那几行「只有删、没有加」的
+  `bin/reasoning-effort.js 0 187` / `test/cli-reasoning-effort-798.test.js 0 490` 假象已消失
+  （现查 `git diff --numstat origin/main..HEAD | grep -c bin/` = **0**），`bin/` 一个字节没动 ✓。
+- 基点核对：`git merge-base --is-ancestor origin/main HEAD` ⇒ `origin/main = 6507ed1` **是** HEAD 的祖先 ✓
+  （rebase 基点正确；`git status --porcelain` 空）。
+- ⚠ 测量点是 `886cdf0`。把本报告抄进 `REPORT-800.md` 的那一笔（以及之后回填的那一笔）**只动
+  `REPORT-800.md`**（上面 `228 0 REPORT-800.md` 就是它们叠加的结果），不动代码。抄进来会让这一行
+  再变一次 —— 那是自指不是造假：标测量点就是为了让下一个读者能逐字复现
+  （`git log --oneline origin/main..886cdf0` / `git diff --numstat origin/main..886cdf0`）。
   的下一笔**只动** `REPORT-800.md`，不动代码（自指，标测量点即可复现）。
 - `src/` 与 `bin/` 在 merge-base 那一版里**一行都没有** ⇒ 「不动引擎」这条纪律是盘上事实，不是自称。
 
@@ -164,46 +167,82 @@ not ok 50 - \#800 判据3：owner 以同一个 sessionId 回来 ⇒ session_star
   - 接线 `shutdown(sessionId, sessionHandle)` → `shutdown(sessionId)` ⇒ **只有**接线格红（`:1926`，
     `watchdog` 变 `undefined`），`# fail 1` ✓。
 
-### 文档与登记
+### rebase 到最新主干与登记重取（第三轮）
 
-- `examples/pi-extension/README.md`：`delivery` 值表按判据 4 改准；新增小节
-  「摘句柄要有归属，owner 回来要补投（issue #800）」，写三条机制 + 三个新字段（`handleReleaseRefusals` /
-  `orphanRecoveries` / `orphanRecoveredAt` / `shutdownTimerSkips`）怎么读，并写明这些计数是
-  **最后一次落盘前**的值（与 `delivery` 同一条口径，不是实时值）。
-- `CHANGELOG.md`：`## [Unreleased] → ### Fixed` 顶部中英**成对**一条，不含 TAP 计数
-  （`check:changelog` rc=0，配对闸把这一对算进去了 —— 见下条实测）。
-- 派生登记**全部现跑现取，零算术**：
+`git fetch origin` 直连就通（未动代理），`git rebase origin/main` 基点 = **`6507ed1`**（PR #801 = #798）。
+主干领先的 13 笔里自己动过派生登记（TAP 地板 `3768 → 3781 → 3785 → 3786`、配对地板也被它取过一次
+守卫自报值），所以冲突只出现在登记面：
 
-  | 登记 | 取到的值 | 取值来源（命令自己打印的原文） |
-  |---|---|---|
-  | `test/test-suite-baseline.json` `expect.tests` | `3772` | `npm run check:test-summary -- --log /tmp/800-npm-test2.log` 打的是 `TEST-SUMMARY tests=3772 pass=3757 fail=0 skipped=15 todo=0 cancelled=0` + `TEST-SUMMARY-HINT 登记值可抬到 3772（当前登记值 3768，本次实测 3772，+4）` |
-  | 同文件的 observation | 新增一条（六个数 + 环境 + 测量点 + 为什么是 +4） | 主干那侧的现测值 `3768` 不是我这一笔的算术，是文件里 #769 那条 observation 逐字在案的读数（`ad1ddd5` 合入后的合并树）；本支未合 main（`origin/main` 已到 `6507ed1`，merge base 仍是 `f405264`），所以 observation 里写明「下一片合主干时按合并树现测再取，登记值不做跨分支加法」。`skipped 15` 未变 ⇒ `maxSkipped 18` 不动 |
-  | `test/static-guards.test.js` `CHANGELOG_PAIR_FLOOR` | `35 → 36` | 守卫在这棵树上自报（逐字抄进注释）：`校准面（## [Unreleased]）上实测 36 对 ≠ 地板 35 对：… 配对变多了 ⇒ 请抬地板到实测值` + 观测行 `中文 36 条 / 英文 36 条 / 配对 36 对 …/ 无对应 0 条`。**不是 35+1** |
-  | `test/mutation-samples.md` | 刷了 1 行派生列（M29 行号 `754 → 815`） | `node scripts/mutation-sample-check.mjs --sync test/mutation-samples.md` 打印「改动 1 行（派生列由真树重算；手写列一个字都没碰）… 刷完复验：0 处不一致」；起因是我在它上面插了行 |
-  | `test/compat-pin-inventory.md` | **未动** | 本仓没有 `compat-pin-sync` 脚本，这张表由 `check:inventory`（`flat-count-inventory.mjs --verify`）验；它 rc=0「逐文件：0 处不一致」⇒ 不需要 `--sync`。也确认了它**不钉** orphaned 那句文案（表里 grep `orphaned` 零命中），所以判据 4 改文案不会踩它 |
+| 冲突件 | 解法 |
+|---|---|
+| `test/test-suite-baseline.json` | **两边的值与本支那条旧 observation 全丢掉**（`git checkout --ours` 取主干那一份），不在旧读数上做算术 |
+| `test/static-guards.test.js` | 同上（主干已把地板取到 36，本支旧笔也是 36 但那是**旧基点**的读数） |
+| `test/mutation-samples.md` | 没冲突；保留本支那行 `--sync` 结果（M29 行号），rebase 后 `check:mutation` 仍 rc=0 ⇒ 不需要再刷 |
+| `test/compat-pin-inventory.md` | 没冲突（主干 `--sync` 过，本支未动）；`check:inventory` rc=0 |
+| `CHANGELOG.md` | **没冲突**：主干那笔 `#798` 在 `### Added`，本支 `#800` 在 `### Fixed`，两条**并列**各自一字未动（现查：`CHANGELOG.md:409-410` 是 #798 中英，`:617-618` 是 #800 中英） |
+
+冲突那笔提交（原 `b388aa5`）的内容因解冲突而变了，已 `reword` 成 `af07b9f`（只说它真留下的那一行：
+变异样本表的 M29 锚点行号），**没改内容**。
+
+**登记值全部在 rebase 后的最终树上重取（零算术）**，两边旧读数都不进账：
+
+| 登记 | 取到的值 | 取值来源（命令自己打印的原文） |
+|---|---|---|
+| `test/test-suite-baseline.json` `expect.tests` | `3786 → 3790` | `npm run check:test-summary -- --log /tmp/800-r3-npmtest2.log`：`TEST-SUMMARY tests=3790 pass=3775 fail=0 skipped=15 todo=0 cancelled=0` + `TEST-SUMMARY-HINT 登记值可抬到 3790（当前登记值 3786，本次实测 3790，+4）`（抬完 HINT 消失，`VERDICT ok`） |
+| 同文件的 observation | 新增一条（六个数 + 环境 + 测量点 + 为何 +4 + 写明「两边旧读数都不进账」） | 主干侧 3786 是它自己在 `ef26eef` 那笔里现测的（在案），本支旧基点的 3772 只是历史 ⇒ 重取的是**这棵合并后的唯一真树**；`+4` 在 observation 里逐名列出是 #800 新增哪四格。`skipped 15` 未变 ⇒ `maxSkipped 18` 不动 |
+| `test/static-guards.test.js` `CHANGELOG_PAIR_FLOOR` | `36 → 37` | 守卫在这棵最终树上自报（逐字抄进注释）：`校准面（## [Unreleased]）上实测 37 对 ≠ 地板 36 对：… 配对变多了 ⇒ 请抬地板到实测值` + `# 配对地板：实测 37 对 > 地板 36 对 ⇒ 可以抬地板到 37` + `中文 37 条 / 英文 37 条 / 配对 37 对 … / 无对应 0 条`。**不是 36+1**，也不是旧读数加一 |
+| `test/mutation-samples.md` | **本轮未再动** | `check:mutation` 在最终树上 rc=0：「逐条：0 处不一致（行号 / 锚点 sha256 / 命中数 / 捕获者 / 合计行 / 重复样本）」⇒ 上轮 `--sync` 的 M29 行号在新树上仍对（#798 没碰 `erix-run-jobs.js`） |
+| `test/compat-pin-inventory.md` | **未动** | 本仓没 `compat-pin-sync` 脚本，这张表由 `check:inventory` 验；最终树上 rc=0「逐文件：0 处不一致」。表里 grep `orphaned` 零命中 ⇒ 判据 4 改文案踩不到它 |
 
 - `AGENTS.md` 未动（字节预算）。
 
-### 门禁（本轮指示的那一组，**串行**，逐条退出码）
+**rebase 没碰坏 #800，且两条反向证仍红在该红的位置**（都在最终树上重跑，跑完 `git checkout` 还原干净，
+`git status --porcelain` 空）：
+
+- `node --test --test-name-pattern "#800" test/examples/erix-run-async.test.js` ⇒
+  `# tests 5 / # pass 5 / # fail 0 / # skipped 0`（四格新测试 + 被判据 4 改写过的 `#665` 文案格）。
+- **MUT-800-3**（`requeueOrphaned` 里 `notifyThenPersist(job);` 整行换掉）⇒ `not ok 50`，
+  `expected: 'sent' / actual: 'orphaned'`，栈顶仍是指向 `erix-run-async.test.js:1812` 的 **`delivery`**
+  断言，`# tests 63 / # pass 62 / # fail 1` ⇒ 红点仍在 `delivery`，没跑到文案上。
+- **MUT-800-5**（`if (heldByOther)` → `if (false && heldByOther)`）⇒ `not ok 51`，
+  `expected: false / actual: true`，栈顶 `:1866` 仍是指向 `shutdown(...)` 返回值的断言，
+  接线格 `:1926`（`watchdog` 变 `undefined`）同时红，`# tests 63 / # pass 61 / # fail 2` ⇒
+  与第二轮同形（红的就是这两格，别的 61 格全绿）。
+- 还原后整文件：`# tests 63 / # pass 63 / # fail 0`。
+
+### 文档
+
+- `examples/pi-extension/README.md`：`delivery` 值表按判据 4 改准；新增小节
+  「摘句柄要有归属，owner 回来要补投（issue #800）」，写三条机制 + 四个新字段（`handleReleaseRefusals` /
+  `orphanRecoveries` / `orphanRecoveredAt` / `shutdownTimerSkips`）怎么读，并写明这些计数是
+  **最后一次落盘前**的值（与 `delivery` 同一条口径，不是实时值）。
+- `CHANGELOG.md`：`## [Unreleased] → ### Fixed` 顶部中英**成对**一条，不含 TAP 计数；rebase 后与主干
+  `#798` 那条**并列**（不覆盖、不合并措辞），`check:changelog` rc=0。
+
+
+### 门禁（第三轮指示的那一组，**串行**，逐条退出码；全部在 rebase 后的最终树上）
 
 | # | 命令 | rc | 关键输出 |
 |---|---|---|---|
-| 1 | `node --check examples/pi-extension/erix-run-jobs.js`（改到的 js） | 0 | 无输出 = 过 |
-| 2 | `node --check test/examples/erix-run-async.test.js` | 0 | 同上 |
-| 3 | `find src -name '*.d.ts' -delete` | 0 | 现测前清干净（`find … \| wc -l` = 0） |
-| 4 | `npm test`（整套一次） | **0** | `# tests 3772 / # pass 3757 / # fail 0 / # cancelled 0 / # skipped 15 / # todo 0`（`/tmp/800-npm-test2.log:24045`）。⚠ 第一趟 `rc=1 / fail=1` 的唯一红项是配对地板（新增一对中英），取守卫自报值抬到 36 后第二趟全绿 |
-| 5 | `npm run check:test-summary -- --log /tmp/800-npm-test2.log` | 0 | `TEST-SUMMARY-VERDICT ok`，回填登记值后 `EXPECTED tests=3772`，HINT 消失 |
+| 1 | `git fetch origin` → `git rebase origin/main` | 0 | 基点 `6507ed1`；`git merge-base --is-ancestor origin/main HEAD` 通过 |
+| 2 | `find src -name '*.d.ts' -delete` | 0 | 现测前清干净（`find … \| wc -l` = 0） |
+| 3 | `npm test`（整套，第一趟） | 1 | `# tests 3790 / # pass 3774 / # fail 1 / # skipped 15`；唯一红项 = 配对地板（新增一对中英） |
+| 4 | （取守卫自报值抬 `CHANGELOG_PAIR_FLOOR` → 37）后 `npm test`（第二趟） | **0** | `# tests 3790 / # pass 3775 / # fail 0 / # cancelled 0 / # skipped 15 / # todo 0`（`/tmp/800-r3-npmtest2.log:24182`） |
+| 5 | `npm run check:test-summary -- --log /tmp/800-r3-npmtest2.log` | 0 | 抬之前 `VERDICT ok` + `HINT 登记值可抬到 3790（+4）`；回填后 `EXPECTED tests=3790`、HINT 消失 |
 | 6 | `npm run check:changelog` | 0 | `changelog-coverage: OK …（命中 8 / 登记豁免 0 / 缺项 0）` |
-| 7 | `npm run check:docs` | 0 | `docs-drift-check: OK … 126 项对齐 0.31.0 与源码` + `docs-sync-check: OK（117 节，锚点齐全）` |
-| 8 | `npm run check:docs:strict` | 0 | 同上（strict 档） |
-| 9 | `npm run check:inventory` | 0 | 「逐文件：0 处不一致」 |
-| 10 | `npm run check:mutation` | 0 | 「逐条：0 处不一致（行号 / 锚点 sha256 / 命中数 / 捕获者 / 合计行 / 重复样本）」（先 `--sync` 刷了 M29 的行号） |
-| 11 | `npm run -s check:syntax` | 0 | `syntax-check: OK — 全量 499 个跟踪的 .js/.mjs/.cjs 文件 node --check 全过` |
-| — | `node --test test/examples/erix-run-async.test.js`（本轮反复跑的主战场） | 0 | `# tests 63 / # pass 63 / # fail 0` |
-| — | 相邻套件 `erix-run-{details,pi-load,steer}.test.js` + `erix-run-e2e.test.mjs` | 0 | `# tests 36 / # pass 33 / # fail 0 / # skipped 3`（skip = `ERIX_E2E_REAL` 闸门关） |
+| 7 | `npm run check:docs` | 0 | `docs-sync-check: OK — 中英契约标题结构对齐（117 节，锚点齐全）` |
+| 8 | `npm run check:docs:strict` | 0 | `docs-drift-check: OK … 126 项对齐 package.json 0.31.0 与源码` |
+| 9 | `npm run check:docs-spelling` | 0 | `--strict: OK — 0 处红` |
+| 10 | `npm run check:docs-examples` | 0 | 文档里的可执行例全过（`# duration_ms 4755`） |
+| 11 | `npm run check:inventory` | 0 | 「逐文件：0 处不一致」 |
+| 12 | `npm run check:mutation` | 0 | 「逐条：0 处不一致（行号 / 锚点 sha256 / 命中数 / 捕获者 / 合计行 / 重复样本）」 |
+| 13 | `npm run -s check:syntax` | 0 | `syntax-check: OK — 全量 501 个跟踪的 .js/.mjs/.cjs 文件 node --check 全过`（比上轮 +2 = 主干 #798 带进来的 `bin/reasoning-effort.js` 与它的测试） |
+| — | `node --test --test-name-pattern "#800" test/examples/erix-run-async.test.js` | 0 | `# tests 5 / # pass 5 / # fail 0 / # skipped 0`（rebase 没碰坏 #800 那几格） |
+| — | `node --test test/examples/erix-run-async.test.js`（整文件，还原后） | 0 | `# tests 63 / # pass 63 / # fail 0` |
 
-判读 `check:docs` / `:strict` 时**同棵树上没有 `npm test` 在跑**（第 4/5 步已跑完退净才开第 7 步），
-按主干冷层新立的那条纪律排开。
+判读 `check:docs` / `:strict` / `docs-spelling` / `docs-examples` 时**同棵树上没有 `npm test` 在跑**
+（第 4/5 步已跑完退净才开第 7 步），按主干冷层那条并发判读禁令排开。`node --check` 本轮不必单独跑：
+rebase 没有改动任何 js/ts 内容（只有 md 与两个登记件），第 13 步的 `check:syntax` 是全量 501 文件的超集。
 
 ## 未验证
 
@@ -219,10 +258,17 @@ not ok 50 - \#800 判据3：owner 以同一个 sessionId 回来 ⇒ session_star
 - `shutdownTimerSkips` / `orphanRecoveries` 的**上盘时机**：字段在 `jobView` 里恒在场，但 `status.json`
   只在投递/终局/取消那一刻重写 ⇒ 迟到 shutdown 之后、下一次落盘之前，盘上那一份还是旧值（内存视图
   `action:"status"` 是新的）。README 里写了这条口径，但没有为「盘上滞后」单独设闸。
-- **本地未跑**（按指示交给 PR 的 CI）：`check:release`、`check:pack-links`、`check:docs-spelling`、
-  `check:docs-examples`、`check:agents-directives`、`check:exports:deprecated`、四档类型棘轮 +
-  `check:types-build`、`check:cli-real`、各 `--self-test`（含 `docs-drift-check --self-test`）、
-  `check:mutation:run`（常驻变异样本真跑）、`check:config-leaf-values` ⇒ 这些**不声称绿也不声称红**。
+- **登记面本轮已覆盖到的**：TAP 地板与配对地板都在最终树现取（见上表），`skipped` 维（上限 18）本轮
+  实测仍是 15 ⇒ 未动；**未覆盖到**的是 `maxSkipped` 的已量最大环境仍拿的是 CI 那侧的历史读数
+  （本轮没在 CI 环下重跑），以及 `test/compat-pin-inventory.md` / `test/mutation-samples.md` 本轮靠
+  `check:inventory` / `check:mutation` 的 rc=0 间接确认「不需刷」，而不是自己重算一遍表内每个数。
+- **本地未跑**（按指示交给 PR 的 CI）：`check:release`、`check:pack-links`、`check:agents-directives`、
+  `check:exports:deprecated`、四档类型棘轮 + `check:types-build`、`check:cli-real`、
+  各 `--self-test`（含 `docs-drift-check --self-test`）、`check:mutation:run`（常驻变异样本真跑）、
+  `check:config-leaf-values` ⇒ 这些**不声称绿也不声称红**。
 - **真上游未跑**：`ERIX_E2E_REAL=1` 的 e2e 那 3 格仍是 skip；「pi 真会以同一个 `sessionId` 再跑一次
   factory」这个成因归属仍是 issue 现场 + 代码路径推断，本轮没有真上游复现。
-- 未 push、未开 PR、未动分支、未合 `origin/main`（它已前进到 `6507ed1`）。
+- 未 push、未开 PR、未新建/切换分支。已 **rebase 到 `origin/main = 6507ed1`**（本轮做的正是这件事），
+  rebase 后的 `git rebase -i` 只 `reword` 了一笔提交说明（`b388aa5 → af07b9f`），**没改任何内容**；
+  主干新带进来的 `bin/reasoning-effort.js` / `test/cli-reasoning-effort-798.test.js` 等一概未动
+  （`git diff --numstat origin/main..HEAD` 里 `bin/` 行数为 0）。
