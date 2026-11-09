@@ -224,18 +224,12 @@ test("AGENTS §4 的 preflight 清单与 PREFLIGHT_STEPS 逐格对账（中英�
   }
 });
 
-test("npm script、中英 AGENTS 与 CI 三处接线（成对，且说明里不抄判据条数）", () => {
+test("npm script 与 CI 两处接线（指令面的措辞不再由测试钉住）", () => {
+  // issue #802：原来还要求两份 AGENTS 的表格行里必须出现 `scripts/release-day.mjs` / `--stage` / `--sync`
+  // 且不许出现「N 条判据」。那是措辞警察（文档一改写就红，抓不到行为）。承重的两处 wiring 留着：
+  // npm script 真的指向这个脚本，CI 里真的有那一步阻塞自测。
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
   assert.equal(pkg.scripts["release:day"], "node scripts/release-day.mjs", "npm script 必须指向这个脚本");
-  for (const doc of ["AGENTS.md", "AGENTS_cn.md"]) {
-    const rows = readFileSync(join(ROOT, doc), "utf8")
-      .split("\n").filter((line) => line.startsWith("| `npm run release:day` |"));
-    assert.equal(rows.length, 1, `${doc} 的「开发命令」表里要有且只有一行 \`npm run release:day\`（中英成对）`);
-    assert.match(rows[0], /scripts\/release-day\.mjs/u, `${doc} 那一行要点名脚本（check:docs 会核这个路径存在）`);
-    assert.match(rows[0], /--stage/u, `${doc} 那一行要写清阶段口径`);
-    assert.match(rows[0], /--sync/u, `${doc} 那一行要写清回写面是 --sync（窄面纪律的落点）`);
-    assert.doesNotMatch(rows[0], /\d+\s*条判据/u, `${doc} 那一行不许抄判据条数（条数由命令自己打印）`);
-  }
   const ci = readFileSync(join(ROOT, ".github/workflows/ci.yml"), "utf8");
   assert.match(ci, /name: Release-day command self-test\n\s+run: node scripts\/release-day\.mjs --self-test/u,
     "CI 要有这一步阻塞自测（issue #689 的接线要求）");

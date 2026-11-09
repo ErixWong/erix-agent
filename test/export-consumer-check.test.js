@@ -382,21 +382,12 @@ test("反向证（磁盘上，临时副本）：删掉一个真消费者 ⇒ 候
   assert.deepEqual(countCandidates(mutated), original, "加回来后候选数必须回到原值");
 });
 
-test("npm script 与中英 AGENTS 各有一行（成对，且写清「清点、不判定」）", () => {
+test("npm script 指向本脚本（指令面的措辞不再由测试钉住）", () => {
+  // issue #802：原来这里要求两份 AGENTS 的表格行里必须出现「不判定」「scripts/export-consumer-check.mjs」
+  // 「test/contract」「internal-only」这几个字面。那是措辞警察：文档一改写就红，抓不到任何行为问题。
+  // 承重的只剩 wiring 本身——npm script 真的指向这个脚本。
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
   assert.equal(pkg.scripts["check:exports"], "node scripts/export-consumer-check.mjs", "npm script 必须指向这个脚本");
-  for (const doc of ["AGENTS.md", "AGENTS_cn.md"]) {
-    const rows = readFileSync(join(ROOT, doc), "utf8")
-      .split("\n").filter((line) => line.startsWith("| `npm run check:exports` |"));
-    assert.equal(rows.length, 1, `${doc} 的「开发命令」表里要有且只有一行 \`npm run check:exports\`（中英成对）`);
-    assert.match(rows[0], /不判定|no gate, no judgement/u, `${doc} 那一行必须写清「清点、不判定」——这是本票的红线，不是修辞`);
-    assert.match(rows[0], /scripts\/export-consumer-check\.mjs/u, `${doc} 那一行要点名脚本（check:docs 会核这个路径存在）`);
-    // #429 口径漏洞①：入口是三个，声称句不能还写「两个」。
-    assert.match(rows[0], /test\/contract/u, `${doc} 那一行必须写上第三个入口（test/contract/index.js，./contract-tests）`);
-    // #429 口径漏洞②③：分档（发布面消费者 / internal-only）也要在声称句里看得见。
-    assert.match(rows[0], /internal-only/u, `${doc} 那一行要点名 internal-only 这一档（不是死导出）`);
-    assert.match(rows[0], /test\/contract/u, `${doc} 那一行要写清 test/contract/ 是发布面消费者`);
-  }
 });
 
 test("computeInventory 是纯函数：同一份记录跑两遍结果一致，且不写盘", () => {

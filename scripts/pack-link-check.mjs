@@ -98,8 +98,9 @@ const DECLARATION_CLAIM_PATTERNS = [
  *
  * 三条判据：
  *   ① 每一处声明位的 N 必须等于随包声明数，不等 ⇒ 红，并点名文档与行；
- *   ② 覆盖面里**一处声明都抽不到** ⇒ 红（#164 口径：抽不到真值就报错，别静默空跑）；
- *      四份文档在树里全都不存在（合成测试树）时不适用，只提示不判红。
+ *   ② 一处声明都抽不到 ⇒ **不红**，只记一条 note（issue #802）。原口径是 #164 的「抽不到真值就报错，
+ *      别静默空跑」，但它实际咬的是「这句散文被删/被改写」——那是措辞警察，不是真值对账：句子不在了，
+ *      就没有「声称值」可以错。只要**有**一处声明，它就必须等于实测值（判据 ①）。
  *   ③ 随包声明数与回收清点（新生成 + 跑前已在场）不一致 ⇒ 红——两个读法应当同值，对不上说明清点或解析失效。
  *
  * @param {{root: string, packedDeclarationCount: number|null, reclaim?: {removed: number, kept: number}}} params
@@ -134,11 +135,11 @@ export function checkDeclarationClaims({ root, packedDeclarationCount, reclaim }
     }
   }
   if (!claims) {
-    console.error(
-      `pack-link-check: 覆盖面（${present.join(", ")}）里一句「装包应列 N 个 .d.ts」的声明位都没抽到——` 
-      + "对账在空跑：要么句式被改写了（同步改本脚本的 DECLARATION_CLAIM_PATTERNS），要么声称被删了（把它加回来）。",
+    // issue #802：零声称不判红。它是「这句散文不在」的形状，不是「声称值错了」的形状。
+    console.log(
+      `pack-link-check: 覆盖面（${present.join(", ")}）里没有「装包应列 N 个 .d.ts」的声明位——`
+      + "不判红（issue #802：句子不在就没有声称值可对；句式若改名，同步改 DECLARATION_CLAIM_PATTERNS 才能重新咬住）。",
     );
-    failed = true;
   }
   if (reclaim) {
     const inventoried = reclaim.removed + reclaim.kept;

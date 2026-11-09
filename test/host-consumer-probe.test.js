@@ -147,16 +147,10 @@ test("--self-test：反向证（含覆盖判据三态）exit 0", () => {
   assert.match(result.stdout, /host-consumer-probe --self-test: OK/u);
 });
 
-test("npm script 与中英 AGENTS 各有一行（成对，且写清「给目录才判、CI 不跑」）", () => {
+test("npm script 指向本脚本（指令面的措辞不再由测试钉住）", () => {
+  // issue #802：原来这里要求两份 AGENTS 的表格行里必须出现 `--hosts` / `CI` / `computeInventory` /
+  // 脚本路径这几个字面。那是措辞警察：文档一改写就红，抓不到任何行为问题（「CI 不跑」这件真事由
+  // `.github/workflows/ci.yml` 本身与 `check:host-consumers` 的门控判据承担）。承重的只剩 wiring。
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
   assert.equal(pkg.scripts["check:host-consumers"], "node scripts/host-consumer-probe.mjs", "npm script 必须指向这个脚本");
-  for (const doc of ["AGENTS.md", "AGENTS_cn.md"]) {
-    const rows = readFileSync(join(ROOT, doc), "utf8")
-      .split("\n").filter((line) => line.startsWith("| `npm run check:host-consumers` |"));
-    assert.equal(rows.length, 1, `${doc} 的「开发命令」表里要有且只有一行 \`npm run check:host-consumers\`（中英成对）`);
-    assert.match(rows[0], /scripts\/host-consumer-probe\.mjs/u, `${doc} 那一行要点名脚本（check:docs 会核这个路径存在）`);
-    assert.match(rows[0], /--hosts/u, `${doc} 那一行必须写清「给了宿主目录才判」`);
-    assert.match(rows[0], /CI/u, `${doc} 那一行必须写清 CI 不跑（不能变成宿主仓的硬依赖）`);
-    assert.match(rows[0], /computeInventory/u, `${doc} 那一行必须写清候选清单是现算的、不抄第二份名单`);
-  }
 });

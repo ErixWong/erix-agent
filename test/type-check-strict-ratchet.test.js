@@ -367,19 +367,10 @@ test("#417 strict 没污染非 strict 棘轮：TSC_ARGS 里没有 --strict，它
   }
 });
 
-test("#417 文档中英成对：两份 AGENTS 都写明它是棘轮 / 会阻塞，且都没把那两个数抄进指令面", () => {
-  const rows = {
-    "AGENTS.md": { ratchet: /strict ratchet/i, blocks: /it blocks/i, notCopied: /do not copy them here/i },
-    "AGENTS_cn.md": { ratchet: /strict 棘轮/, blocks: /阻塞门禁/, notCopied: /本文不抄/ },
-  };
-  for (const [rel, wants] of Object.entries(rows)) {
-    const text = read(rel);
-    const row = text.split("\n").find((line) => line.startsWith("| `npm run check:types:strict`"));
-    assert.ok(row, `${rel} 的开发命令表里没有 \`npm run check:types:strict\` 那一行——中英成对义务要求两侧都写`);
-    assert.match(row, wants.ratchet, `${rel} 那一行没写明它是**棘轮**（实际：${row}）`);
-    assert.match(row, wants.blocks, `${rel} 那一行没写明它会**阻塞**——漏了这句就会被读成 #416 的「只观测」`);
-    assert.match(row, wants.notCopied, `${rel} 那一行没写明「数字不许抄进本文」——下一个读者会把快照当现值`);
-  }
+test("#417 两份 AGENTS 的指令面上不许出现 strict 基线的现值（数字正本住在脚本里）", () => {
+  // issue #802：原来这一格还要求「那一行必须出现 strict ratchet / it blocks / 本文不抄 这几个字」——
+  // 那是措辞警察：判据只能抓「有人改了措辞」，抓不到行为，代价是每次文档改写都要把词凑回去。
+  // 现在只留真正承重的那半：**数字不许抄进指令面**（下面那一段），它咬的是「把快照当现值」这件真事。
   // 票面原话「别把具体数字抄进 AGENTS」的机器化：常量里的数字串在指令面上一处都不许出现。
   // （这条只咬 strict 的两个常量：非 strict 那对走的是 `BASELINE_ROOT = N` 的现场对账，另一套机制。）
   for (const name of ["BASELINE_STRICT_ROOT", "BASELINE_STRICT_WITH_TOOLS"]) {
