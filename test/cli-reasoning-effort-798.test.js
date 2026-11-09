@@ -222,6 +222,19 @@ test("#798 空值(slot 那条路)：slots.default.reasoning_effort = \"\" ⇒ �
   });
 });
 
+test("#798 空值闸不许顺手变成裁判：slot 写成非字符串时照旧原样透传（没有本地值域枚举）", async () => {
+  await withEnv("LLM_KIT_REASONING_EFFORT", undefined, async () => {
+    const cfgDir = await sandbox("erix-798-odd-cfg-");
+    const configPath = join(cfgDir, "erix.json");
+    await writeFile(configPath, JSON.stringify({
+      slots: { default: { endpoint: ENDPOINT, apiKey: "k", model: QWEN, reasoning_effort: 5 } },
+    }), "utf8");
+    const run = await chatOnce({ model: QWEN, configFile: configPath });
+    // 「空」与「没校验过」是两件事：空串不发，非字符串照发（非法值归上游 4xx 判，见判据 4）
+    assert.equal(run.body?.reasoning_effort, 5);
+  });
+});
+
 test("#798 空值(env 那条路)：LLM_KIT_REASONING_EFFORT=\" \" 同样不发字段", async () => {
   await withEnv("LLM_KIT_REASONING_EFFORT", "   ", async () => {
     const run = await chatOnce({ model: QWEN });

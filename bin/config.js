@@ -326,10 +326,13 @@ export async function loadCliConfig({ configPath, model: modelOverride, effort: 
     // 自己承诺的「空值 = 未提供（不发字段）」——旗标/env 那两条走 resolver 是干净的，slot 这条不是。
     // 这里**复用** resolver 那一份归一化，不写第二处空白判断（同一句理由：一个口径只许有一处实现）。
     // 归一化成 `undefined` ⇒ 这一格根本不写进 `modelOptions`（钉住它的用例是 wire 层那一条：断请求体里
-    // **没有这个键**，见 `test/cli-reasoning-effort-798.test.js` 的「空值(slot 那条路)」。）
-    const value = field === "reasoning_effort"
-      ? normalizeReasoningEffort(fileConfig[field])
-      : fileConfig[field];
+    // **没有这个键**，见 `test/cli-reasoning-effort-798.test.js` 的「空值(slot 那条路)」。
+    // ⚠ 这道闸只管**字符串**：非字符串（含 `null`、数字）不在这里改判，照旧原样交下去让上游说话——
+    // 本单没有本地值域枚举（#788 parked），把 `reasoning_effort: 5` 静默吞掉也是一种本地裁判。）
+    const raw = fileConfig[field];
+    const value = field === "reasoning_effort" && typeof raw === "string"
+      ? normalizeReasoningEffort(raw)
+      : raw;
     if (value === undefined) continue;
     modelOptions[field] = PROVIDER_PHASE_TIMEOUT_FIELDS.includes(field)
       ? assertPhaseTimeoutValue(field, value)
