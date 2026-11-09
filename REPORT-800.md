@@ -272,3 +272,21 @@ rebase 没有改动任何 js/ts 内容（只有 md 与两个登记件），第 1
   rebase 后的 `git rebase -i` 只 `reword` 了一笔提交说明（`b388aa5 → af07b9f`），**没改任何内容**；
   主干新带进来的 `bin/reasoning-effort.js` / `test/cli-reasoning-effort-798.test.js` 等一概未动
   （`git diff --numstat origin/main..HEAD` 里 `bin/` 行数为 0）。
+
+---
+
+## 第四轮（rebase 到 `a72a9cc` + 登记重取，由上级主会话自收）
+
+**为什么还有一轮**：第三轮交回时 `origin/main` 已是 `6507ed1`；等我把 PR #804 推上去准备合并，主干又前进 **12 笔**（PR #803 = issue #790 请求视图兜底）⇒ `gh pr merge` 直接回 `Pull Request has merge conflicts`。这 12 笔**没碰扩展面**（`git diff --numstat 6507ed1..a72a9cc -- examples/pi-extension` 为空），所以纯登记冲突，主会话自己收，没有再占执行体的轮次。
+
+| 项 | 现跑值 |
+|---|---|
+| rebase 基点 | `origin/main = a72a9cc`（`git merge-base HEAD origin/main`） |
+| 冲突文件 | 只有 `test/test-suite-baseline.json` 与 `test/static-guards.test.js` |
+| 解法 | 两处都 `git checkout --ours`（**取主干值**），本支第三轮量的 `3772 / 3790` 与配对地板 `36 / 37` **全部作废**，不做跨分支加法；`CHANGELOG.md` 与 `test/mutation-samples.md`、`test/compat-pin-inventory.md` 自动合并干净（`#790` 的中英条目与本支那条并列） |
+| 套件基线 | 最终树现测 `npm test` exit 0 ⇒ `# tests 3801 / pass 3786 / fail 0 / skipped 15 / todo 0 / cancelled 0`（`/tmp/verify800-d-npmtest.log`）⇒ `expect.tests` `3797 → 3801`，`observations` 追加第 78 条（写明主干侧 `a72a9cc` 自己登记 3797、本支加的是 `test/examples/erix-run-async.test.js` 里 #800 的 4 格） |
+| 配对地板 | `CHANGELOG_PAIR_FLOOR` `37 → 38`，取守卫在同树自报原文：`配对地板：实测 38 对 > 地板 37 ⇒ 可以抬地板到 38` |
+| 门禁（串行） | `npm test` rc=0、`check:test-summary -- --log` = `TEST-SUMMARY-VERDICT ok`（`tests=3801 … registry=test/test-suite-baseline.json`）、`check:changelog` / `check:docs` / `check:docs:strict` / `check:docs-spelling` / `check:docs-examples` / `check:inventory` / `check:mutation` / `check:syntax` **逐条 rc=0**（`/tmp/verify800-e.log`） |
+| 反向证复跑 | 判据 3：把 `requeueOrphaned` 里的 `notifyThenPersist(job);`（`:1033`）换成 `void job;` ⇒ `not ok 2 - #800 判据3 …  expected: 'sent' / actual: 'orphaned'`，`# fail 1`（只红这一格），跑完 `git checkout` 还原。判据 1 与判据 5 在第三轮那棵树上由主会话亲手跑过（红在 `delivery` / `shutdown` 返回值），本批 rebase **未改 `examples/` 任何文件**（见上），故不重跑 |
+
+**未验证（不变）**：跨进程 / 跨重启不恢复（`list()` 只含本进程内存里的 job）；宿主以同一 `sessionId` 重建却不发 `session_start` 时补投不触发；`check:release` / `check:pack-links` / `check:cli-real` / 四档类型棘轮交 CI。
