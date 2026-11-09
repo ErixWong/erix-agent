@@ -1746,6 +1746,10 @@ function decisionFacts(input) {
  * 本函数只递一个**注入端口**（store），不 `import node:fs`——谓词层依旧零依赖不读盘，读盘
  * 发生在真 store 里（文件 store 或内存 store）。
  *
+ * **输出一律是 `buildLedgerEvidence` 重算出来的那份**（R2 F1）：包括注入读口返「成形证据对象」时
+ * 也只取它的 `rows` 与 `source`，元数据全部重建；注入函数自己抛错被吞成 `source:"injected:error"`
+ * 的不完整证据（R2 F2）——这两个口子都是为了让「不完整 ⇒ 不下 `not_in_ledger`」没法被调用方饶过。
+ *
  * @param {{store?:object, runId?:string, deps?:object}} input
  * @returns {Promise<object>} `buildLedgerEvidence` 的输出（**永不抛**：读账本失败不能把 guard 带死）
  */
@@ -1753,14 +1757,31 @@ export async function readLedgerEvidence({ store, runId, deps = {} } = {}) {
   const rowLimit = Number.isSafeInteger(deps.finalGuardLedgerRowLimit) && deps.finalGuardLedgerRowLimit > 0
     ? deps.finalGuardLedgerRowLimit
     : undefined;
-  // 注入缝：`deps.finalGuardLedger` 是函数时**替掉默认读口**（返行数组，或返已成形的证据面）。
+  // 注入缝：`deps.finalGuardLedger` 是函数时**替掉默认读口**（返行数组，或返一个「成形」的证据对象）。
   if (typeof deps.finalGuardLedger === "function") {
-    const given = await deps.finalGuardLedger({ runId, store });
-    if (given !== null && typeof given === "object" && !Array.isArray(given) && Array.isArray(given.rows)) {
-      return given;
+    let given;
+    try {
+      given = await deps.finalGuardLedger({ runId, store });
+    } catch (error) {
+      // R2 F2：注入函数抛错 / 拒绝不能逃出读口（上面那句 JSDoc 承诺「永不抛」）。
+      // 它与「store 探针抛错」同格：返一份**不完整**的证据，行为逐字回到今天的 `max_retries`。
+      return buildLedgerEvidence(undefined, {
+        source: "injected:error",
+        readError: textOf(error?.message ?? error),
+        ...(rowLimit === undefined ? {} : { rowLimit }),
+      });
     }
-    return buildLedgerEvidence(Array.isArray(given) ? given : undefined, {
-      source: "injected",
+    // R2 F1：**不论注入的是行数组还是成形证据对象，一律重建**。成形对象只许贡献两样东西：
+    // 它的 `rows`（当那是数组时）与它的 `source` 字符串（缺省 `"injected"`）。
+    // `ledgerComplete` / `truncated` / `foldCeiling` / `foldRows` 这些元数据**不读注入值**——
+    // 否则调用方递 `{rows:[], truncated:true, ledgerComplete:true}` 就能把「账本不完整 ⇒ 不下结论」
+    // 这条安全纪律饶过去，`rowLimit` 也会一起被绕过（copilot 审计的 F1，主会话复现探针①②）。
+    const preformed = given !== null && typeof given === "object" && !Array.isArray(given) ? given : undefined;
+    const rows = Array.isArray(given)
+      ? given
+      : (Array.isArray(preformed?.rows) ? preformed.rows : undefined);
+    return buildLedgerEvidence(rows, {
+      source: typeof preformed?.source === "string" && preformed.source !== "" ? preformed.source : "injected",
       ...(rowLimit === undefined ? {} : { rowLimit }),
     });
   }

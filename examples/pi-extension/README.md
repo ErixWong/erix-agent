@@ -1032,18 +1032,36 @@ judge 闸门关着 = `0`（根本没额度），闸门开着且没传参 = 引�
   为 `false`、让终局面那一行写下「账本不完整」，行为逐字回到今天的 `max_retries` —— **宁可留旧原因，
   也不造新假话**。
 - **两个上限**（照 #386 的纪律：载荷有界且**不许静默**）：证据面 `LEDGER_EVIDENCE_ROW_LIMIT = 4000` 行
-  （超限只留**最新** N 行、折完再截，并置 `truncated` ⇒ 账本不完整 ⇒ 不说 `not_in_ledger`）；diagnostics
+  （次序只有一种：**先保留最新的 N 条原始行**（`slice`），**再由这批行构造证据面**——折叠事实与
+  `truncated` 标记都在这一步算；超限置 `truncated` ⇒ 账本不完整 ⇒ 不说 `not_in_ledger`）；diagnostics
   清单 `LEDGER_LITERAL_LIMIT = 20` 条（超限置 `literalsTruncated`，只丢清单条目、**不丢判定**）。
+- **元数据的唯一生产者就是 `buildLedgerEvidence`**（R2 F1）：不论账本是从 `store` 探针读回来的、
+  还是注入读口返的行数组、还是注入的一个「成形证据」对象，后者只许贡献**两样东西**——它的 `rows`
+  与它的 `source`；`ledgerComplete` / `truncated` / `foldCeiling` / `foldRows` **一律重算**。
+  否则调用方递一份 `{rows: [], ledgerComplete: true}` 就能把上面那条「不完整 ⇒ 不下结论」的纪律
+  饶过去，`rowLimit` 也会一起被绕过（守网：P9 / H7）。注入函数自己抛错被读口吞成
+  `source: "injected:error"` 的不完整证据（R2 F2；读口那句「永不抛」因此是真的，守网：P10）。
+  同理，**0 行的账本也不是证据面**：读到空仍然是「读到」（`source` 与「账本 0 行」会照实写出来），
+  但从空账本推不出「全账本 0 命中」⇒ `ledgerComplete` 是 `false`。
+- **判据 ② 的机器判法是「折叠后是否还有一处命中」**，不是「首次出现在哪一轮」（R2 F4）：
+  `evidence.bases[]` 里 `round` 与 `lastRound` 都是**最后一次**命中的轮号（向后兼容），
+  `survivesLastCompaction` 就是 `lastRound > foldCeiling`；`firstRound` 是**诊断项、不是闸门**，
+  它与 `lastRound` 不同时终局面那行会写明「首次命中第 X 轮（≤ 水位）／最后一次第 Y 轮」，
+  让人看得见「只剩重复命中」这个自指回显风险。不用「首次出现轮」当闸门有两个理由：真机样本
+  （`/tmp/762/segment-09`，值在 r23/r59/r61 与 r67 都有、水位 62）会被它误判成「没有存活证据」；
+  而它与 issue 自己的反向证（取证在折叠前、终稿在折叠后 ⇒ 修后必须 `accept`）直接冲突。
+  守网：P7（两者不同）、P8（只在折叠前命中 ⇒ `survivesLastCompaction:false` 但**仍 accept**）。
 - **注入面（不是工具参数）**：`deps.finalGuardLedger` 缺省 = 开；`false` = 关掉账本回落（只留
-  `ctx.messages`，即修前口径 —— 反向证的第二半就是它）；函数 = 替掉默认读口。`deps.finalGuardLedgerRowLimit`
-  给小上限，用来造「截断 ⇒ 不下结论」那一格。
+  `ctx.messages`，即修前口径 —— 反向证的第二半就是它）；函数 = 替掉默认读口（它的返回值**一律被重建**，
+  见上一条）。`deps.finalGuardLedgerRowLimit` 给小上限，用来造「截断 ⇒ 不下结论」那一格。
 - **已知局限（不在本单解决）**：谓词依旧没有**出处链**——账本里那条含字面值的 `tool_result` 很可能只是
   对自家报告的 `grep`（自指回显也算「可溯源」），续跑时前段轮次取到的值同样算「本次 run 取证」。要修
   出处链得改判据，会动摇 #787 已钉下的口径（`docs/host-consumer-contract_cn.md`「`verified` ≠ 出处链」），
   另开单。
 - **反向证两半同时在套件里**：H1（预置折叠前取证行 + 存活窗口不含该值 ⇒ `accept` ⇒ 终局 `verified`）与
   H2（**同一棵 fixture** 只加 `deps.finalGuardLedger: false` ⇒ 重新红成 `final_guard_unverified` +
-  `unverified/max_retries`）⇒ 咬的确实是证据面，不是别处。格子清单：谓词层 P1–P6 在
+  `unverified/max_retries`）⇒ 咬的确实是证据面，不是别处。R2 还多一格反向证：H7（同一棵 fixture 把读口
+  换成一份**自称完整、其实 0 行**的成形证据 ⇒ 仍得 `max_retries`，不许 `not_in_ledger`）。格子清单：谓词层 P1–P6 在
   `erix-run-final-guard.test.mjs`，宿主层 H1–H6 在 `test/examples/erix-run-core.test.js`。
 
 ### 交付物判据的两种语义：布尔 vs 命名（issue #391）

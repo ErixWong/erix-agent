@@ -249,6 +249,12 @@ export function findDerivedConclusionFlags(finalText) {
  * 完整性纪律（宁可留今天的 `max_retries`，也不造新假话）：读失败 / 探针缺席 / 行数截断
  * 任一成立 ⇒ `ledgerComplete = false` ⇒ 谓词**不许**下 `not_in_ledger` 结论。
  *
+ * **这个函数是元数据的唯一生产者**（R2 F1）：宿主读口把任何来源（store 探针、注入的数组、
+ * 注入的「成形证据」对象）都只当成**行数据**递进来，`truncated` / `readFailed` / `foldCeiling` /
+ * `foldRows` / `ledgerComplete` 一律在这里重算，**不读调用方自报的那一份** ⇒ 没人能拿一份
+ * 自称完整的证据面把上面那条完整性纪律饶过去。脏行（`null` 一类）在这里就被安全化。
+ * 上限的次序也只有一种：先保留**最新的 N 条原始行**（`slice`），再由这些行构造证据面。
+ *
  * @param {Array<{round?:number, messages?:unknown[], foldedRoundRange?:{from?:number,to?:number}}>|undefined|null} rows
  * @param {{source?:string, rowLimit?:number, readFailed?:boolean, readError?:string}} [options]
  * @returns {{rows:Array<{round:number|null,text:string}>, foldRows:number, foldCeiling:number|null,
@@ -279,6 +285,11 @@ export function buildLedgerEvidence(rows, { source = "unknown", rowLimit = LEDGE
     });
   }
   const failed = readFailed === true || notRead;
+  // **0 行的账本不是证据面**（R2 F1）：从空账本推不出「全账本 0 命中」，所以它**不许**撑起
+  // `not_in_ledger`。注意这与「没读到」仍是两件事：读到空仍然是**读到**，`source` 与
+  // `ledgerRows:0` 就是这件事的记录（尾巴上会写「账本 0 行 … 账本不完整」）；而调用方自报的
+  // `ledgerComplete:true` 不算数（上面那段：完整性只从 rows 推）。
+  const emptyLedger = shaped.length === 0;
   return {
     rows: shaped,
     foldRows,
@@ -286,8 +297,10 @@ export function buildLedgerEvidence(rows, { source = "unknown", rowLimit = LEDGE
     truncated,
     readFailed: failed,
     source: notRead && source === "unknown" ? "not_read" : source,
-    readError: readError ?? (notRead ? "账本读口没返回数组 ⇒ 本次没有账本可读" : null),
-    ledgerComplete: !failed && !truncated,
+    readError: readError ?? (notRead
+      ? "账本读口没返回数组 ⇒ 本次没有账本可读"
+      : (emptyLedger ? "账本读到 0 行 ⇒ 没有可引用的取证，推不出「全账本 0 命中」" : null)),
+    ledgerComplete: !failed && !truncated && !emptyLedger,
     rowLimit: limit,
   };
 }
@@ -296,30 +309,49 @@ export function buildLedgerEvidence(rows, { source = "unknown", rowLimit = LEDGE
  * 逐字面值定位：存活窗口（`payload.messages` 的 `tool_result`）优先，其次账本。
  * 命中判定复用 `isBaseTraceable`——**不新开第二套匹配口径**（十六进制忽大小写，其余逐字）。
  *
+ * **为什么闸门是「折叠后还剩没剩一处」而不是「首次出现在哪一轮」（R2 F4，主会话已判审计的
+ * 「必须按首次出现轮判」不成立）**：issue 判据 ② 的**判据本体**是「最后一次压缩与 guard 首轮之间
+ * 还留有被引用的 `tool_result`」，「首次出现所在的轮」只是它建议的判法。按首次出现判会在真机样本
+ * （`/tmp/762/segment-09`：那个值在 r23/r59/r61 与 r67 都有）上得出错的答案——它会判「没有存活
+ * 证据」，而 r67 > 水位 62 确实还留有一处；它还与 issue 自己的反向证（取证在折叠前、终稿在折叠后
+ * ⇒ 修后必须 `accept`）直接冲突。所以 `accept` / `revise` 的判定一个字不改，`firstRound` **只是诊断项**：
+ * 它让人看得见「首次命中已被折叠、只剩重复命中」这个自指回显风险（出处链本单不修）。
+ *
  * @param {string} literal
  * @param {string} toolResultText 存活窗口的取证文本池
  * @param {object|undefined} ledger `buildLedgerEvidence` 的输出；`undefined` = 没有账本
- * @returns {{literal:string, source:"messages"|"ledger"|"none", round?:number|null, survivesLastCompaction?:boolean|null}}
+ * @returns {{literal:string, source:"messages"|"ledger"|"none", round?:number|null,
+ *   firstRound?:number|null, lastRound?:number|null, survivesLastCompaction?:boolean|null}}
  */
 function locateLiteral(literal, toolResultText, ledger) {
   if (isBaseTraceable(literal, toolResultText)) return { literal, source: "messages" };
   if (ledger === undefined) return { literal, source: "none" };
-  let round = null;
+  let firstRound = null;
+  let lastRound = null;
   let found = false;
   for (const row of ledger.rows ?? []) {
-    if (row.text === "" || !isBaseTraceable(literal, row.text)) continue;
+    // 脏行（`rows:[null]` 一类）只能当「没文本」，不许把谓词炸掉（R2 F1/P10：fail closed 而不是 TypeError）。
+    const text = row?.text ?? "";
+    if (text === "" || !isBaseTraceable(literal, text)) continue;
     found = true;
-    // 多次命中取**最新**那次：判据 ② 要的是「最后一次压缩之后还剩没留有可引用的 tool_result」。
-    if (Number.isSafeInteger(row.round) && (round === null || row.round > round)) round = row.round;
+    const round = Number.isSafeInteger(row?.round) ? row.round : null;
+    if (round === null) continue;
+    // 多次命中：`lastRound` 取**最新**那次（判据 ② 要的是「最后一次压缩之后还剩没留有可引用的
+    // `tool_result`」），`firstRound` 取最早那次（只当诊断，不当闸门）。
+    if (firstRound === null || round < firstRound) firstRound = round;
+    if (lastRound === null || round > lastRound) lastRound = round;
   }
   if (!found) return { literal, source: "none" };
   return {
     literal,
     source: "ledger",
-    round,
-    survivesLastCompaction: round === null || ledger.foldCeiling === null
+    // `round` 保持 = `lastRound`（向后兼容：既有 P1b 钉的是「取最新」，这个键的语义不许动）。
+    round: lastRound,
+    firstRound,
+    lastRound,
+    survivesLastCompaction: lastRound === null || ledger.foldCeiling === null
       ? null
-      : round > ledger.foldCeiling,
+      : lastRound > ledger.foldCeiling,
   };
 }
 
@@ -593,10 +625,20 @@ function summarizeEvidenceFace(tally) {
   const evidence = tally.evidence;
   if (evidence === undefined || evidence === null) return "";
   const fromLedger = (evidence.bases ?? []).filter((entry) => entry.source === "ledger").length;
+  // R2 F4：首次命中与最后一次命中不在同一侧（首次 ≤ 水位、最后 > 水位）时写进尾巴——
+  // 这是「只剩重复命中」的自指回显风险信号。它是**诊断**，不是闸门（`accept` / `revise` 不读它）。
+  const ceiling = evidence.foldCeiling;
+  const repeats = (evidence.bases ?? []).filter((entry) => entry.source === "ledger"
+    && Number.isSafeInteger(entry.firstRound) && Number.isSafeInteger(entry.lastRound)
+    && entry.firstRound !== entry.lastRound);
+  const repeatNote = repeats.length === 0 ? "" : repeats.map((entry) => `，首次命中第 ${entry.firstRound} 轮`
+    + `${Number.isSafeInteger(ceiling) && entry.firstRound <= ceiling ? "（≤ 水位）" : ""}`
+    + `／最后一次第 ${entry.lastRound} 轮（闸门按最后一次，首次命中只当诊断）`).join("");
   return ` ｜ 证据面=存活窗口∪账本（来源 ${evidence.ledgerSource ?? "unknown"}`
     + `，账本 ${evidence.ledgerRows ?? 0} 行，折叠 ${evidence.foldRows ?? 0} 层`
     + `，最后一次压缩≤第 ${evidence.foldCeiling ?? "?"} 轮`
     + `，账本捞回 ${fromLedger} 条 / 全账本 0 命中 ${(evidence.notInLedger ?? []).length} 条`
+    + repeatNote
     + (evidence.ledgerComplete === true
       ? "，账本完整）"
       : `，账本不完整⇒不下 not_in_ledger 结论${evidence.ledgerTruncated === true ? "（已截断）" : ""}${evidence.ledgerReadError ? `：${evidence.ledgerReadError}` : ""}）`);
