@@ -4923,7 +4923,15 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 //     # 配对地板：实测 39 对 > 地板 38 对 ⇒ 可以抬地板到 39
 //
 // ⇒ 地板 = **39**。取守卫在这棵树上自报的读数，不是「38 + 1」现算。
-const CHANGELOG_PAIR_FLOOR = 39;
+// 2026-11-09 第二十次重取（issue #797：`## [Unreleased] ### Changed` 新增一对 finalGuard 证据面的中英；
+// 本片在**rebase 到 origin/main `8d83347c` 之后**的最终树上现测，上游记的是 39）：
+//
+//     # 配对地板：判据面 = ## [Unreleased]（第 4 行，由 resolveChangelogScanSurface 选出：顶部 Unreleased 有内容）；中文 40 条 / 英文 40 条 / 配对 40 对（其中按「无 issue 引用 + 紧邻」配的 0 对）/ 无对应 0 条；地板 39（校准面 ## [Unreleased]）
+//     # 配对地板：实测 40 对 > 地板 39 对 ⇒ 可以抬地板到 40
+//
+// ⇒ 地板 = **40**。取守卫在这棵树上自报的读数，不是「39 + 1」现算；无对应 0 条 ⇒ 本片那对中英确实成对
+// （两侧 issue 引用集合都是 `#797`）。无删例、无 skip、配对判据本身一字未动。
+const CHANGELOG_PAIR_FLOOR = 40;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
