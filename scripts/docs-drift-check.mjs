@@ -1987,7 +1987,7 @@ const SYMBOL_DOCS_STATIC = [README_EN, README_CN, AGENTS_EN, AGENTS_CN, CONTRACT
  *  实扫几份 = 下限）由 `collectRefScanCountClaimErrors()` 逐格对账（#635 ①）。
  *  历史（每一次抬高的理由：哪份指南落地、哪七份活文档纳面）在 `docs/maintenance/symbol-anchor-ledger.md`。
  *  写法必须保持这一行不变形（自测要改这个数）。 */
-const REF_SCAN_DOCS_MINIMUM = 51;
+const REF_SCAN_DOCS_MINIMUM = 53;
 
 /** #280 同款的「树形口子」，只给 `--self-test` 用（**不是豁免开关**）：模拟「某份指南改名到不匹配模式」。 */
 let SIM_RENAMED_GUIDE = null;

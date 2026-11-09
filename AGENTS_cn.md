@@ -102,7 +102,7 @@
   这里解析得到。**
 - **锚点**：本页只有四个数归门禁、也只有它们是现值——`BASELINE_ROOT = 102`、符号锚点地板
   `SYMBOL_ANCHOR_MIN_UNIQUE = 243`（只升：掉到地板以下就红，那是锚点在退化被抓住）、裸行号棘轮
-  `BARE_LINE_REF_BASELINE = 6`（只降）、锚点覆盖面地板 `REF_SCAN_DOCS_MINIMUM = 51`。文档不得依赖裸行号：指位置要写
+  `BARE_LINE_REF_BASELINE = 6`（只降）、锚点覆盖面地板 `REF_SCAN_DOCS_MINIMUM = 53`。文档不得依赖裸行号：指位置要写
   符号 + 它的文件（`` `符号`（`路径`） ``），不写 `路径:123`。实测流水住在
   `docs/maintenance/symbol-anchor-ledger_cn.md`——那是历史，不是现状。加锚点或搬锚点之前先读 `#docs-anchors`。
 

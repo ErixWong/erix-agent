@@ -62,6 +62,8 @@ const GUIDE_DOCS_PINNED = [
   "docs/host-upgrade-guide-0.30.0_cn.md",
   "docs/host-upgrade-guide-0.31.0.md",
   "docs/host-upgrade-guide-0.31.0_cn.md",
+  "docs/host-upgrade-guide-0.32.0.md",
+  "docs/host-upgrade-guide-0.32.0_cn.md",
   "docs/host-upgrade-guide-v030.md",
   "docs/host-upgrade-guide-v030_cn.md",
 ];
@@ -88,7 +90,7 @@ const DOCS = [
   ...readdirSync(join(ROOT, "docs")).filter((f) => /^host-upgrade-guide.*\.md$/.test(f)).sort().map((f) => `docs/${f}`),
 ];
 
-test("#286 覆盖面（返工 R2 + 工单 261021-03 B1 + 261021-12 + 261022-17 + docs-261031-01）：脚本侧实扫的指南清单必须等于测试侧硬编码的那 36 份，且下限常量 = 15 份点名 + 36 份指南 = 51", () => {
+test("#286 覆盖面（返工 R2 + 工单 261021-03 B1 + 261021-12 + 261022-17 + docs-261031-01 + issue #765 工单 261109-08）：脚本侧实扫的指南清单必须等于测试侧硬编码的那 38 份，且下限常量 = 15 份点名 + 38 份指南 = 53", () => {
   const discovered = readdirSync(join(ROOT, "docs")).filter((f) => /^host-upgrade-guide.*\.md$/.test(f))
     .map((f) => `docs/${f}`).sort();   // 与清单同形状（都带 docs/ 前缀），免得比出假差集
   const missing = GUIDE_DOCS_PINNED.filter((f) => !discovered.includes(f));
@@ -99,7 +101,7 @@ test("#286 覆盖面（返工 R2 + 工单 261021-03 B1 + 261021-12 + 261022-17 +
     + "\n  新增指南请把名字补进 test/docs-anchor-ratchet.test.js 的 GUIDE_DOCS_PINNED，并把脚本侧 REF_SCAN_DOCS_MINIMUM 升上去");
   const script = read("scripts/docs-drift-check.mjs");
   const minimum = Number(script.match(/^const REF_SCAN_DOCS_MINIMUM = (\d+);/m)?.[1] ?? NaN);
-  assert.equal(minimum, 51, "覆盖面下限常量被改了：应为 15 份点名文档 + 36 份指南 = 51"
+  assert.equal(minimum, 53, "覆盖面下限常量被改了：应为 15 份点名文档 + 38 份指南 = 53"
     + "（15 份 = README×2 + AGENTS×2 + 契约×2 + 架构×2 + 图表×2 + 需求对照×2 + erix_run README + 维护账本×2，"
     + "工单 261021-03 B1 由 6 抬到 13、issue #644 ③ 再由 13 抬到 15；新增一份就抬一次）");
   assert.equal(NAMED_DOCS_PINNED.length + GUIDE_DOCS_PINNED.length, minimum, "测试侧清单份数与脚本侧下限不一致（两处必须同步）");

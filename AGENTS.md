@@ -116,7 +116,7 @@ One row per gate: the command, what it judges, and the cold-layer anchor to read
 - **Anchors**: four gate-owned numbers are the only truth on this page — `BASELINE_ROOT = 102`, the symbol-anchor
   floor `SYMBOL_ANCHOR_MIN_UNIQUE = 243` (only-up: falling below it is red, that is anchor degeneration being
   caught), the bare-line ratchet `BARE_LINE_REF_BASELINE = 6` (only-down), and the anchor-face floor
-  `REF_SCAN_DOCS_MINIMUM = 51`. Docs must not lean on bare line numbers: point at a symbol with its file
+  `REF_SCAN_DOCS_MINIMUM = 53`. Docs must not lean on bare line numbers: point at a symbol with its file
   (`` `symbol` (`path`) ``), never at `path:123`. The measurement log lives in
   `docs/maintenance/symbol-anchor-ledger.md` — history, not current state. Read `#docs-anchors` before adding or
   moving an anchor.
