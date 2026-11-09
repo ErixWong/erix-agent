@@ -616,10 +616,9 @@ function reconcileDocFileCounts({ errors, tierBaseline, tierId, tierName, otherB
     }
     const hits = [...src.matchAll(new RegExp(doc.re.source, doc.re.flags))];
     if (!hits.length) {
-      out.push({ kind: "unreadable", text: `${doc.rel} 里一处「${doc.form}」都抽不到——该声称句被整句删了或改了形，`
-        + `这条对账在这个文件已经失效（真值：本次实测 ${measuredTotal} 个错 / ${measuredFiles} 个文件，${tierName}）。`
-        + "\n      要改句式就同步本脚本的 `DOC_FILE_COUNT_CLAIMS`（与 `docs-drift-check.mjs` 的 `BASELINE_CLAIM_RULES` 一起改），"
-        + "别让规则静默空转。" });
+      // issue #802：零命中不再判红（与 `docs-drift-check.mjs` 的 `BASELINE_CLAIM_RULES` 同口径）。
+      // 「这句散文被删/被改写」不是回归；句子在的时候，那个 M 仍必须等于本次实测。
+      deferred += 1;
       continue;
     }
     for (const hit of hits) {
@@ -777,13 +776,15 @@ function runDocClaimSelfTest() {
   ok("历史值（218 / 75 / 46→7 / 45→9 / 其余 27 / 142 / 185 / 65 / 58 / 56）改成任意数 ⇒ 仍绿",
     histGreen.errors.length === 0 && histGreen.judged === 4, JSON.stringify(histGreen.errors));
 
-  // ⑨ 整句被删 ⇒ 读不到（exit 2 那一路），不是静默绿。
+  // ⑨ issue #802 起：整句被删 ⇒ **不判红**，只记进 deferred（与 `docs-drift-check.mjs` 的
+  // `BASELINE_CLAIM_RULES` 同口径：「句子不在」不是回归，「句子在而数错」才是）。
+  // 这一格同时是那条放宽的反向证：它必须**真的**被记为 deferred，而不是悄悄当绿（`judged` 不增）。
   const deleted = synthDocs({ enM: 41, cnM: 41 });
   deleted["AGENTS.md"] = deleted["AGENTS.md"].replace("(41 files)", "(files)");
   const deletedVerdict = run({ tier: "root", errors: synthErrors(60, 41), docs: deleted });
-  ok("英文侧那句被删 ⇒ 一条 unreadable", deletedVerdict.errors.length === 1
-    && deletedVerdict.errors[0].kind === "unreadable" && deletedVerdict.errors[0].text.includes("AGENTS.md"),
-  JSON.stringify(deletedVerdict.errors));
+  ok("英文侧那句被删 ⇒ 0 处红、且记进 deferred（#802：句子不在不是回归）",
+    deletedVerdict.errors.length === 0 && deletedVerdict.deferred > 0,
+    JSON.stringify(deletedVerdict));
 
   // ⑩ 文档不在 ⇒ 读不到（不因为「缺一份」而绿）。
   const missingCn = run({ tier: "root", errors: synthErrors(60, 41), docs: { "AGENTS.md": synthDocs({ enM: 41, cnM: 41 })["AGENTS.md"] } });

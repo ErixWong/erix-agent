@@ -3904,20 +3904,14 @@ function collectCompactionDefaultErrors() {
     }
   }
 
-  for (const { doc, layer } of COMPACTION_CLAIM_REQUIRED) {
-    if ((counts.get(`${doc}|${layer}`) ?? 0) > 0) continue;
-    errors.push(`compaction-default: ${doc} 里一处「${layerName[layer]}默认」声明都没有——`
-      + `该组合登记为必须命中（整句被删掉、或标记词被改写，检查面在这份文档就失效了）`);
-  }
-  for (const [en, cn] of COMPACTION_DOC_PAIRS) {
-    for (const layer of ["library", "cli"]) {
-      const a = counts.get(`${en}|${layer}`) ?? 0;
-      const b = counts.get(`${cn}|${layer}`) ?? 0;
-      if (a === b) continue;
-      errors.push(`compaction-default: 声明点处数中英不齐：${en} ${a} 处 vs ${cn} ${b} 处（${layerName[layer]}）`
-        + "——中英是成对译文，只在一侧删掉整句声明就是这种形状");
-    }
-  }
+  const unmarkedCensusMismatch = [];
+  // issue #802：「登记为必须命中」与「中英处数必须相等」这两条都删了。它们只能抓「这句散文被删/被改写」，
+  // 抓不到任何行为问题；正当的文档改写（把一句默认声明搬进表格、或合并两句）都会被判红。
+  // 保留的是真值对账：**句子在的时候**，它说的默认策略必须等于源码里的现值（上面那几组判据）。
+  // 缺哪一格现在只进 note，由人判断「是不是该在文档里说这件事」。
+  const missingDefaults = COMPACTION_CLAIM_REQUIRED
+    .filter(({ doc, layer }) => (counts.get(`${doc}|${layer}`) ?? 0) === 0)
+    .map(({ doc, layer }) => `${doc}/${layerName[layer]}`);
 
   // ── ③ 无标记的默认声称（issue #668 ① 的残留盲区）────────────────────────────
   // ①② 都靠标记词定位句子，于是「新写一句不带标记的默认声称」整句落在面外。这一节反过来：
@@ -3955,13 +3949,16 @@ function collectCompactionDefaultErrors() {
     const a = unmarked.get(en) ?? 0;
     const b = unmarked.get(cn) ?? 0;
     if (a === b) continue;
-    errors.push(`compaction-default/unmarked: 未标记的默认声称处数中英不齐：${en} ${a} 处 vs ${cn} ${b} 处`
-      + "——中英是成对译文，只在一侧写了这句（或只在一侧改过）就是这种形状");
+    // issue #802：不再判红——「只在一侧写了这句」是散文事实，不是行为回归（下面 ③ 的真值判据照旧：
+    // 无标记的默认声称只要**句子存在**，它就必须与源码现值一致）。只记 note。
+    unmarkedCensusMismatch.push(`${en} ${a} / ${cn} ${b}`);
   }
 
   notes.push(`compaction-default: 压缩策略默认值分层对账（库层 \`${truth.library}\` ← ${COMPACTION_PIPELINE_SRC} 的兜底层；`
     + `CLI 层 \`${truth.cli}\` ← ${COMPACTION_CLI_SRC} 帮助文本 + ${COMPACTION_CLI_CONST_SRC} 常量；`
+    + (missingDefaults.length ? `登记过但今天没出现的（不判红，issue #802）：${missingDefaults.join(", ")}；` : "")
     + `${COMPACTION_DEFAULT_DOCS.length} 份活文档逐处对账，退役句式 ${mixedShapes.length} 种；`
+    + (unmarkedCensusMismatch.length ? `；中英处数不齐（不判红，issue #802）：${unmarkedCensusMismatch.join("；")}` : "")
     + `③ 无标记的默认声称 ${unmarkedTotal} 处（入库 Markdown 面 ${face.docs.length} 份，历史类不判，判据词 ${compactionDefaultWords().length} 条））`);
   collectCompactionDefaultErrors.notes = notes;
   return errors;
@@ -4210,19 +4207,15 @@ function collectRetiredSemanticsErrors() {
       + "改源码真值不改文档就是这种形状，两侧必须一起动");
   }
 
-  for (const doc of RETIRED_SEMANTICS_REQUIRED) {
-    if ((perDoc.get(doc) ?? 0) > 0) continue;
-    errors.push(`retired-semantics: ${doc} 里一处「退役语义」陈述都没有——该文件登记为必须命中`
-      + "（整句被删掉、或措辞改到判据够不着，检查面在这份文档就失效了）");
-  }
-  const counts = {};
-  for (const doc of RETIRED_SEMANTICS_PAIRS.flat()) counts[doc] = perDoc.get(doc) ?? 0;
-  assertPairCensus(errors, { rule: "retired-semantics", counts, docs: RETIRED_SEMANTICS_PAIRS.flat() });
+  // issue #802：同 compaction 那族——「必须命中」与中英处数普查都删了。留下的真值判据是上面那两条：
+  // 源码真值说「失败即终局」时，活面上**不许**有相反的声称；句子不在就不判。
+  const missingRetired = RETIRED_SEMANTICS_REQUIRED.filter((doc) => (perDoc.get(doc) ?? 0) === 0);
 
   notes.push(`retired-semantics: 「摘要器失败 ⇒ 降级/兜底为统计摘要」这条退役语义（#668 ②）在 `
     + `${face.docs.length} 份入库活文件上逐行对账（Markdown + \`bin/\`/\`src/\` 的 JS，历史类按路径不判）：`
     + `声称 ${claims.length} 处（红）/ 带标记的保留形态 ${mentions.length} 处；源码真值 \`summarizer_failed\` `
-    + `${truth.terminal ? "在" : "缺"}、退役横幅 ${truth.bannerGone ? "已不在代码面里" : "又回到代码面里"}`);
+    + `${truth.terminal ? "在" : "缺"}、退役横幅 ${truth.bannerGone ? "已不在代码面里" : "又回到代码面里"}`
+    + (missingRetired.length ? `；登记过但今天没出现的（不判红，issue #802）：${missingRetired.join(", ")}` : ""));
   collectRetiredSemanticsErrors.notes = notes;
   return errors;
 }
@@ -9425,10 +9418,11 @@ const SELF_TEST_CASES = [
     expectFiles: [CONTRACT_CN],
   },
   {
-    label: "#668 ①：删掉中文契约那半句 CLI 槽位默认 ⇒ 红（覆盖面 + 中英处数不齐，两个方向都点名）",
+    // issue #802：删掉整句**不再判红**（覆盖面与中英处数都只进 note）。这一格改成它真正承重的那半：
+    // 删掉之后必须**没有**红（否则放宽没落地），而「句子在而值错」那一格由上面 #668 ① 的第一例守着。
+    label: "#668 ①：删掉中文契约那半句 CLI 槽位默认 ⇒ **不红**（#802：句子不在不是回归）",
     overlay: { [CONTRACT_CN]: (t) => t.replace("**CLI 槽位默认**是 `fold-llm`", "**CLI 槽位**不是库默认") },
-    expect: [/compaction-default: docs\/host-consumer-contract_cn\.md 里一处「CLI 层默认」声明都没有/,
-      /compaction-default: 声明点处数中英不齐：docs\/host-consumer-contract\.md 1 处 vs docs\/host-consumer-contract_cn\.md 0 处（CLI 层）/],
+    expectGreen: true,
     expectFiles: [CONTRACT_CN],
   },
   {
@@ -9455,8 +9449,8 @@ const SELF_TEST_CASES = [
       [CONTRACT_CN]: replaceUnique("  没有任何一层默认 `fold-statistical`：",
         "  未配策略时默认用 `fold-statistical`。\n  没有任何一层默认 `fold-statistical`："),
     },
-    expect: [/compaction-default\/unmarked: docs\/host-consumer-contract_cn\.md:\d+ 说默认是 `fold-statistical`/,
-      /compaction-default\/unmarked: 未标记的默认声称处数中英不齐：docs\/host-consumer-contract\.md 0 处 vs docs\/host-consumer-contract_cn\.md 1 处/],
+    // issue #802：处数普查不再判红，所以这里只留**真值判据**那一条（那句话本身是谎 ⇒ 红）。
+    expect: [/compaction-default\/unmarked: docs\/host-consumer-contract_cn\.md:\d+ 说默认是 `fold-statistical`/],
     expectFiles: [CONTRACT_CN],
   },
   {

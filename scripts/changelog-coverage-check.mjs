@@ -924,10 +924,11 @@ export function checkWiring(ciText, pkg, agentsTexts) {
   if (typeof script !== "string" || !script.includes("scripts/changelog-coverage-check.mjs")) {
     problems.push(`package.json 的 \`check:changelog\` 没有指向 scripts/changelog-coverage-check.mjs（实测：${JSON.stringify(script)}）`);
   }
-  for (const [index, text] of agentsTexts.entries()) {
-    const rel = index === 0 ? "AGENTS.md" : "AGENTS_cn.md";
-    if (!text.includes("npm run check:changelog")) problems.push(`${rel} 的命令表里没有 \`npm run check:changelog\``);
-  }
+  // issue #802：这里原来要求两份 AGENTS 的命令表里必须出现 `npm run check:changelog` 这串字。
+  // 那是措辞警察——句子一改写/搬走就红，抓不到行为；而「这一步真的存在」由上面 ci.yml 的那条判据
+  // 与 `package.json` 的 script 判据承担（那两处才是承重的接线）。现在只报一处 note，不进 problems。
+  const agentsMentioning = agentsTexts.filter((text) => text.includes("npm run check:changelog")).length;
+  checkWiring.notes = [`AGENTS 命令表提到 \`npm run check:changelog\` 的份数：${agentsMentioning}/${agentsTexts.length}（不判定，issue #802）`];
   return problems;
 }
 

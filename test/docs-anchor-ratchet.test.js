@@ -125,8 +125,8 @@ test("#286 棘轮基线常量与 AGENTS 中英两侧声称的数一致（口径�
   assert.ok(Number(baseline) <= 244, `棘轮只能降不能抬：工单 #286 T-a 登记的是 244，现在是 ${baseline}——抬上去要在提交信息里写「这次允许变差」的理由`);
   for (const doc of ["AGENTS.md", "AGENTS_cn.md"]) {
     const claims = [...read(doc).matchAll(/BARE_LINE_REF_BASELINE\s*=\s*(\d+)/g)].map((m) => m[1]);
-    assert.ok(claims.length >= 1, `${doc} 没写 BARE_LINE_REF_BASELINE——中英成对义务要求两侧都写（工单 R4）`);
-    assert.deepEqual([...new Set(claims)], [baseline],
+    // issue #802：不再要求「两侧都必须写」（那是措辞警察）。**写了就必须等于常量**这一半留着。
+    assert.deepEqual([...new Set(claims)].filter((v) => v !== baseline), [],
       `${doc} 声称的基线与脚本常量不一致：${claims.join(" / ")} vs ${baseline}`);
   }
 });
