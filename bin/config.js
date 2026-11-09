@@ -15,7 +15,7 @@ import {
 } from "../src/loop/continuity-block.js";
 import { PROVIDER_PHASE_TIMEOUT_FIELDS, assertPhaseTimeoutValue } from "./provider-timeouts.js";
 // issue #798：`reasoning_effort` 的三通道优先级只有这一处实现（旗标 > env > slot）。
-import { resolveReasoningEffort } from "./reasoning-effort.js";
+import { normalizeReasoningEffort, resolveReasoningEffort } from "./reasoning-effort.js";
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 16384;
 
@@ -321,10 +321,19 @@ export async function loadCliConfig({ configPath, model: modelOverride, effort: 
   ];
   const modelOptions = {};
   for (const field of forwardedFields) {
-    if (fileConfig[field] === undefined) continue;
-    modelOptions[field] = PROVIDER_PHASE_TIMEOUT_FIELDS.includes(field)
-      ? assertPhaseTimeoutValue(field, fileConfig[field])
+    // issue #798：`reasoning_effort` 的**空值口径**在这一格也成立。循环原先只跳 `undefined`，于是
+    // 配置文件写 `"reasoning_effort": ""` 时空串一路穿过 provider 构造参数、进 payload，直接违反本单
+    // 自己承诺的「空值 = 未提供（不发字段）」——旗标/env 那两条走 resolver 是干净的，slot 这条不是。
+    // 这里**复用** resolver 那一份归一化，不写第二处空白判断（同一句理由：一个口径只许有一处实现）。
+    // 归一化成 `undefined` ⇒ 这一格根本不写进 `modelOptions`（钉住它的用例是 wire 层那一条：断请求体里
+    // **没有这个键**，见 `test/cli-reasoning-effort-798.test.js` 的「空值(slot 那条路)」。）
+    const value = field === "reasoning_effort"
+      ? normalizeReasoningEffort(fileConfig[field])
       : fileConfig[field];
+    if (value === undefined) continue;
+    modelOptions[field] = PROVIDER_PHASE_TIMEOUT_FIELDS.includes(field)
+      ? assertPhaseTimeoutValue(field, value)
+      : value;
   }
 
   return {

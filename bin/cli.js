@@ -165,7 +165,8 @@ const HELP_TEXT = `用法：
                       （env **压过**旗标）**故意不同**：旗标是「就这一轮」的意图，应当赢。
                       **不校验值域**（#788 parked）：值原样透传，非法值由上游的 4xx 列出它的合法清单
                       （qwen 族报 8 项、GLM 族报 7 项，两族不同 ⇒ 任何本地枚举都是错的）。
-                      --effort "" 视为**未提供**（不发这个字段，不是发一个空串）。
+                      --effort "" 视为**未提供**（不发这个字段，不是发一个空串）；配置文件里的空值
+                      （slots.default.reasoning_effort 写成 ""）同样算未提供，三条通道一个口径。
                       启动时 stderr 会打一行「本次值 / 来源哪个通道」；终局统计行在**上游真的回报了**
                       reasoning_tokens 时才打 reasoningTokens=…（没回报就不打，绝不拿 0 冒充
                       「没思考」）；引擎把 GLM 的 none 翻成 low（ADR-017）时另打 effort=none→low。

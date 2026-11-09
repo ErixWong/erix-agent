@@ -81,7 +81,7 @@ async function withEnv(name, value, run) {
  *   status?: number, body?: string}} input
  */
 async function chatOnce(input) {
-  const { model, effort, config = {}, reasoningTokens, status = 200, body } = input;
+  const { model, effort, config = {}, reasoningTokens, status = 200, body, configFile } = input;
   const dir = await sandbox("erix-798-store-");
   const cwd = await sandbox("erix-798-cwd-");
   const mcpConfigPath = join(dir, "mcp.json");
@@ -95,12 +95,20 @@ async function chatOnce(input) {
   ]);
   // 宿主注入 provider 时，真 CLI 那边会把 slot 字段交给自己造的 provider；这里把 `config` 里的 slot 值同样交进去，
   // 否则 slot 那一臂根本不在场，"env 压 slot」就变成了「env 压一个不存在的东西」。
+  // 宿主注入 provider 时，真 CLI 会把 slot 字段交给它**自己造**的那个 provider；这里把同一个值交进去，否则
+  // slot 那一臂根本不在场，「env 压 slot」就变成「env 压一个不存在的东西」。
+  // `configFile` 在场时**照 `bin/cli.js` 的做法从配置文件现读**——装配层那一格的缺陷只有这条路看得见：
+  // 空串一旦穿过 `forwardedFields`，它就会在这里进 provider 构造参数，再进 wire body。
+  const sourced = configFile === undefined
+    ? config
+    : await loadCliConfig({ configPath: configFile });
+  const slotEffort = sourced.reasoning_effort;
   const provider = createOpenAIProvider({
     endpoint: ENDPOINT,
     apiKey: "k",
     model,
     fetchImpl,
-    ...(config.reasoning_effort === undefined ? {} : { reasoning_effort: config.reasoning_effort }),
+    ...(slotEffort === undefined ? {} : { reasoning_effort: slotEffort }),
   });
   /** @type {string[]} */
   const notices = [];
@@ -119,8 +127,12 @@ async function chatOnce(input) {
       dir,
       cwd,
       provider,
-      configPath: mcpConfigPath,
-      config: { endpoint: ENDPOINT, apiKey: "k", model, ...config },
+      // `configFile` 在场 ⇒ 让 `runChat` 自己去读那份配置文件（slot 那条路的入口就是它），
+      // MCP 配置另给一份空的，两者不互相污染。
+      configPath: configFile ?? mcpConfigPath,
+      ...(configFile === undefined
+        ? { config: { endpoint: ENDPOINT, apiKey: "k", model, ...config } }
+        : {}),
       maxRounds: 1,
       reflection: false,
       idleTimeout: 0,
@@ -183,6 +195,37 @@ test("#798 判据2(wire 对账)：旗标压 env、env 压 slot ⇒ 进请求体�
 
     const envWins = await chatOnce({ model: QWEN, config: { reasoning_effort: "medium" } });
     assert.equal(envWins.body?.reasoning_effort, "minimal", "env 必须压过 slots.default.reasoning_effort");
+  });
+});
+
+test("#798 空值(slot 那条路)：slots.default.reasoning_effort = \"\" ⇒ 请求体里**没有这个键**", async () => {
+  await withEnv("LLM_KIT_REASONING_EFFORT", undefined, async () => {
+    // 走真 `loadCliConfig`（配置文件是那一条路的入口），而不是直接注 `config`：
+    // 缺陷就在 `forwardedFields` 那一格——它以前只跳 `undefined`，空串穿得过去。
+    const cfgDir = await sandbox("erix-798-empty-cfg-");
+    const configPath = join(cfgDir, "erix.json");
+    await writeFile(configPath, JSON.stringify({
+      slots: { default: { endpoint: ENDPOINT, apiKey: "k", model: QWEN, reasoning_effort: "" } },
+    }), "utf8");
+    const loaded = await loadCliConfig({ configPath });
+    assert.equal(
+      Object.hasOwn(loaded, "reasoning_effort"),
+      false,
+      "空串必须在**装配层**就被判成未提供：它一旦进了 config，就会进 provider 构造参数再进 payload",
+    );
+    assert.equal(loaded.reasoningEffort, undefined, "也不得造出一条「来源 slots」的覆盖记录");
+    // 装配层不给键 ⇒ 请求体里也真的没有这个键（断**键不存在**，不是断它等于空串）
+    const run = await chatOnce({ model: QWEN, configFile: configPath });
+    assert.equal(Object.hasOwn(run.body ?? {}, "reasoning_effort"), false,
+      "空串绝不能被发进请求体（那是「未提供」，不是「提供了一个空值」）");
+    assert.doesNotMatch(run.notices, /reasoning_effort/u, "空串 = 未提供 ⇒ 没有事实，就不许打「本次值/来源」行");
+  });
+});
+
+test("#798 空值(env 那条路)：LLM_KIT_REASONING_EFFORT=\" \" 同样不发字段", async () => {
+  await withEnv("LLM_KIT_REASONING_EFFORT", "   ", async () => {
+    const run = await chatOnce({ model: QWEN });
+    assert.equal(Object.hasOwn(run.body ?? {}, "reasoning_effort"), false);
   });
 });
 
@@ -363,6 +406,32 @@ test("#798 防漂移：被钉表的 provider 成员全部可见，函数成员�
   assert.deepEqual(invoked[1][1], { reasoning_effort: "high" });
   // 没给值 ⇒ 原对象原样返回（零行为变化：不配就与接线前逐字一致）
   assert.equal(withCliReasoningEffort(underlying, undefined), underlying);
+});
+
+test("#798 防漂移(将来那条路)：只在原型上、表里也没登记的成员，包装后仍可见且真调到底层", async () => {
+  // 这一格钉的是**将来**：`PROVIDER_MEMBER_SURFACE` 是今天的名册，明天 provider 长出新成员时没人
+  // 会记得来改这张表——那时唯一拦住「包装层静默吞掉新方法」的就是包装的**写法**本身。
+  // ⚠ 别把「把 `Object.create(provider)` 换成 `{...provider}` 今天不红」当缺陷报：那是**等价变异**
+  // （`createOpenAIProvider` 交回的是闭包对象，成员全是自有属性、`this` 不参与），今天两种写法
+  // 逐字同形。下面这个 fixture 故意把成员挂在**原型**上，浅拷贝当场就丢，这一格才咬得住。
+  /** @type {Array<string>} */
+  const reached = [];
+  const base = {
+    // 未登记 + 只在原型上：浅拷贝 `{...provider}` 之后它就是 `undefined`
+    futureProbe: async () => { reached.push("futureProbe"); return "from-prototype"; },
+    futureValue: 42,
+  };
+  const provider = Object.create(base);
+  provider.chat = async (/** @type {any} */ req) => { reached.push(`chat:${req?.reasoning_effort}`); return { ok: true }; };
+  provider.chatStream = async () => ({ ok: true });
+  const wrapped = withCliReasoningEffort(provider, "high");
+  assert.equal(typeof wrapped.futureProbe, "function", "原型上的新成员被包装层吞了");
+  assert.equal(wrapped.futureValue, 42, "原型上的数据成员同样不许丢");
+  assert.equal(await wrapped.futureProbe(), "from-prototype");
+  assert.deepEqual(reached, ["futureProbe"], "必须真调到底层，而不是包装层自己应付出一个东西");
+  // 注入仍照常工作（同一层写法：换掉包装身份这行也会当场红在这里）
+  await wrapped.chat({ maxTokens: 1 });
+  assert.deepEqual(reached.at(-1), "chat:high");
 });
 
 test("#798 统计器口径：没事实就是空串，翻译只记一次", () => {

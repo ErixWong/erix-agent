@@ -1040,7 +1040,9 @@ The shared CLI flags are:
   #788 stays parked) — it goes to the upstream verbatim, and an illegal one is answered by that
   upstream's own 4xx, which lists its legal values (the qwen family lists 8, the GLM family 7, so any
   local enum would be wrong). `--effort ""` means **not provided**: the field is not sent, an empty
-  string never is. At start-up the CLI names the channel that supplied the value (stderr), and the
+  string never is, and an empty `slots.default.reasoning_effort` in the config file is treated the
+  same way — the three channels share one emptiness rule. At start-up the CLI names the channel that
+  supplied the value (stderr), and the
   closing `=== 统计 ===` line gains `reasoningTokens=…` **only when the upstream reported it** —
   nothing is printed rather than a `0` standing in for "did not think" (the issue #785 P1 rule) —
   plus `effort=none→low` when the engine's one GLM translation (ADR-017) fired.

@@ -117,8 +117,13 @@ const REQUEST_METHODS = Object.freeze(["chat", "chatStream"]);
  */
 export function withCliReasoningEffort(provider, value) {
   if (value === undefined || provider === null || typeof provider !== "object") return provider;
-  // 原型委托：将来 provider 多出来的成员**自动**可见，包装层不可能静默吞掉一个新方法
-  // （`PROVIDER_MEMBER_SURFACE` 那张表钉的是「今天被取走的成员仍在」，这行兜住明天新增的）。
+  // 原型委托：将来 provider 多出来的成员**自动**可见，包装层不会静默吞掉一个新方法
+  // （`PROVIDER_MEMBER_SURFACE` 那张表钉的是「今天被取走的成员仍在」，这一行兜住明天新增的）。
+  // ⚠ 「自动可见」这句今天**不是靠手写逐字段转发**证的，而是靠上面这一行的写法证的：把 `Object.create`
+  // 换成浅拷贝 `{...provider}` 在今天是**等价变异**（`createOpenAIProvider` 交回的是闭包对象，成员全是
+  // 自有属性、`this` 不参与），所以它不会当场红——别把那当缺陷报。真正钉住这条路的是
+  // `test/cli-reasoning-effort-798.test.js` 里「只在原型上、表里也没登记的成员」那一格：那里的 fixture
+  // 把成员挂在原型上，浅拷贝当场就丢（实测 `not ok`），原型委托则照样可见且能调到底层。
   const wrapped = Object.create(provider);
   for (const name of REQUEST_METHODS) {
     const original = provider[name];
