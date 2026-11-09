@@ -34,26 +34,30 @@
 
 ## 基点
 
-`git log --oneline origin/main..HEAD`（现跑，代码那一笔 `eab6609` 之后、下面「回填基点」那一笔之前）：
+`git log --oneline origin/main..HEAD`（现跑，测量点 = `e95fcf0`，即报告第一版已提交之后）：
 
 ```
+e95fcf0 docs(#800): 交付报告四格（取证边界 / 基点 / 结论 / 未验证）—— 本轮只交判据 1+2
 eab6609 fix(#800): erix_run 摘会话句柄要有归属 —— 旧扩展实例迟到的 session_shutdown 不再抹掉活实例的登记
 ```
 
-`git diff --numstat origin/main..HEAD`（同一次现跑）：
+`git diff --numstat origin/main..HEAD`（同一次现跑，同一棵树）：
 
 ```
-50	0	REPORT-800.md
+177	0	REPORT-800.md
 51	1	examples/pi-extension/erix-run-jobs.js
 11	2	examples/pi-extension/erix-run.ts
 70	0	test/examples/erix-run-async.test.js
 ```
 
-- 非空。本轮起点 = HEAD = `f405264`（= `origin/main`，当时 `git status --porcelain` 0 行、
-  `git diff --numstat origin/main..HEAD` 为空 ⇒ 基点核对过，工作树与主干逐字一致）。
-- ⚠ 上面两块的**测量点**是 `eab6609`。把本文件提交掉的那一笔（以及回填这两个数的那一笔）
-  只动 `REPORT-800.md`，不动代码 —— 这是本仓「抄进来的派生值不许做算术」的同一条纪律：
-  数只能在**已提交的那棵树**上现跑，抄进文件本身又会让 numstat 再动一次，所以标测量点。
+- **两行都非空** ✓。本轮起点 = HEAD = `f405264`（= `origin/main`；当时 `git status --porcelain` 0 行、
+  `git diff --numstat origin/main..HEAD` 为空 ⇒ 基点核对过：工作树与主干逐字一致，上一轮确实一个字节都没写下）。
+- ⚠ **测量点是 `e95fcf0`**：把上面两块抄进本文件的那一笔（以及之后回填的那一笔）**只动
+  `REPORT-800.md`**，不动代码。抄进来会让 REPORT-800.md 那一行的行数再变一次 —— 那是自指，
+  不是造假：标测量点就是为了下一个读者能自己复现（`git log --oneline origin/main..e95fcf0` 与
+  `git diff --numstat origin/main..e95fcf0` 逐字可得上面两块）。
+- 代码那一笔（`eab6609`）的 numstat（同一命令现跑，当时只有一笔）：
+  `50 0 REPORT-800.md` / `51 1 examples/pi-extension/erix-run-jobs.js` / `11 2 examples/pi-extension/erix-run.ts` / `70 0 test/examples/erix-run-async.test.js`。
 
 ## 结论
 
