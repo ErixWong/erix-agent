@@ -30,6 +30,14 @@
 // 「零桩」是本单新加的一条）。同一类的另一形状（相邻两条 assistant）**行为不变**：那一单在
 // `normalizeMessages` 合成一条 assistant 后 `t2` 已有结果 ⇒「整单未结清」不成立，插页会把那份真结果
 // 挤成孤儿（归 #421 同页合并）——本文件为它补了一条「不许发 `mid_sequence_request_view_stub`」的反向断言。
+//
+// ⚠ issue #776 对本文件的改动（**只换现场来源，一条断言没删、没放宽**）：格 2③「有锚点而写被拒」原先靠
+// 那条被 #754 裁决 2 关掉的 pre-261021 闸门造现场（第二对悬空只在 `snapshot.messages` 里），因此被具名
+// 跳过。现在两对悬空都写成 `kind:"message"` 账本行，「写被拒」改由**假 store 拒掉那一写**给出 ⇒
+// 本格不再 skip。随之只有该事件的 `detail`/`round` 两个取值换人（`round_not_safe_integer`/`"2"` ⇒
+// `append_row_not_persisted`/`3`）：前者在当前树上已**不可达**（取证坐标写在格 2③ 那段注释里，实测与
+// 完整推理见 `docs/delivery/261109-776-worker-report.md`），不是被悄悄改宽——事件必须发、必须恰好一条、
+// 必须点名是哪一种，这些一条没动。
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -317,60 +325,97 @@ test("格2② 紧跟的 user 一条结果都没有 ⇒ detail=aggregate_has_no_t
     "同一格现在两条事件各有分工：账本没修（上面那条）/ 视图修了（本条）");
 });
 
-// ─────── 用例 5（格 2③）：有锚点而写被拒（轮号不是安全整数）⇒ mid_sequence_stub_row_write_refused ───────
+// ─────── 用例 5（格 2③）：有锚点而写被拒（那一写没落盘）⇒ mid_sequence_stub_row_write_refused ───────
 
 /**
- * 现场：账本里 round 2 那一对中段悬空（首片行在 ⇒ 锚点找得到），而该轮的正文**同时**由一份
- * `round` 不是整数的 run snapshot 补全过（#758 那种轮号残留形状）⇒ 补出来的第二张桩所属轮的轮号是
- * 字符串 ⇒ `appendMessageRowToTranscript` 直接 `return undefined`。修前这一写被拒一声不响：账本里
- * 没那一行，而宿主以为已经闭合。
+ * **假 store（issue #776）**：把「紧随第一张桩的那一写」拒掉，其余写照常透传（含 `loadRawRows` 探针）。
+ *
+ * 「拒」的口径**不是**「`appendRound` 返回 `false`」——引擎不看返回值：`persist()`
+ * （`src/loop/orchestrator.js#persistClassified`）只在**调用抛错**时算失败（重试到顶就抛
+ * `persistence_failed`，本格的结局是「run 仍能起来」，那条路走不得），否则一律 `return true`。
+ * 能被 `appendMessageRowToTranscript` 读成「这一写没落盘」的只有 `persist()` 自己返回 `false` 那两条：
+ * 持久化没开（本格不可能——恢复本身就要求它），或**写入口这一次读起来不是函数**（能力位那一支，
+ * `typeof store?.[method] !== "function"`）。本双取后者：写入口每写成功一张桩就把自己**下一次**读
+ * 变成「没有这个能力」⇒ 恰好第二张桩那一写没落盘，其余一字不动。
+ *
+ * @param {any} inner 真 store（内存实现）
+ * @returns {any} 只拒「第二张桩那一写」的 facade
  */
-async function snapshotRoundResidueScene(inner) {
-  await inner.appendRound(RUN_ID, messageRow(1, 0, { role: "user", content: [text("任务")] }));
-  await inner.appendRound(RUN_ID, messageRow(2, 0, {
+function storeThatRefusesOneStubWrite(inner) {
+  const facade = { ...inner };
+  let stubWrites = 0;
+  let refuseNextWrite = false;
+  Object.defineProperty(facade, "appendRound", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      if (refuseNextWrite) {
+        refuseNextWrite = false;
+        return undefined;
+      }
+      return async (runId, record) => {
+        await inner.appendRound(runId, record);
+        const isStubRow = JSON.stringify(record?.messages ?? []).includes(UNPERSISTED_TOOL_RESULT_TEXT);
+        stubWrites += isStubRow ? 1 : 0;
+        if (stubWrites === 1) refuseNextWrite = true;
+      };
+    },
+  });
+  return facade;
+}
+
+/**
+ * 现场（issue #776 重造，断言一条没改口径）：**两对**中段悬空，全部住在新写侧的账本里。
+ *   · round 2：`assistant(先跑工具, t1, t2)` + 聚合 `user(t1)` ⇒ `t2` 悬空；
+ *   · round 3：`assistant(又跑了一刀, t1, t9)` + 聚合 `user(t1)` ⇒ `t9` 悬空（`t1` 在两轮各出现一次，
+ *     provider 的 id 不保证 run 内唯一，issue #284）。
+ * 两条聚合消息的**首片行都在** ⇒ 两张桩各自拿得到 `partOf` 锚点（「锚点缺失」那条成因必须不出现）；
+ * 两轮轮号都是安全整数 ⇒ 被拒那一张的成因只能是「这一写没落盘」。
+ * 旧夹具的那两对第二对**只写在 `snapshot.messages` 里**，靠已退役的 pre-261021 闸门补进上下文（#754
+ * 裁决 2 之后不再有那条闸门）；现在两对都是 `kind:"message"` 行 ⇒ 「两张桩都进上下文」不再依赖闸门。
+ */
+async function twoMidSequencePairsScene(store) {
+  await store.appendRound(RUN_ID, messageRow(1, 0, { role: "user", content: [text("任务")] }));
+  await store.appendRound(RUN_ID, messageRow(2, 0, {
     role: "assistant", content: [text("先跑工具"), toolUse("t1"), toolUse("t2")],
   }));
-  await inner.appendRound(RUN_ID, messageRow(2, 1, { role: "user", content: [toolResultBlock("t1")] }));
-  await inner.saveRunSnapshot(RUN_ID, {
-    runId: RUN_ID,
-    round: "2",                                  // ← 轮号残留：不是安全整数
-    partialText: "跑到一半",                      // 让快照仍然被认成崩溃现场
-    messages: [
-      { role: "user", content: [text("任务")] },
-      { role: "assistant", content: [text("先跑工具"), toolUse("t1"), toolUse("t2")] },
-      { role: "user", content: [toolResultBlock("t1")] },
-      { role: "assistant", content: [text("又跑了一刀"), toolUse("t1"), toolUse("t9")] },
-      { role: "user", content: [toolResultBlock("t1")] },
-    ],
-  });
-  return inner;
+  await store.appendRound(RUN_ID, messageRow(2, 1, { role: "user", content: [toolResultBlock("t1")] }));
+  await store.appendRound(RUN_ID, messageRow(3, 0, {
+    role: "assistant", content: [text("又跑了一刀"), toolUse("t1"), toolUse("t9")],
+  }));
+  await store.appendRound(RUN_ID, messageRow(3, 1, { role: "user", content: [toolResultBlock("t1")] }));
+  return store;
 }
 
 test(
-  "格2③ 有锚点而写被拒（轮号非安全整数）⇒ 发 reason=mid_sequence_stub_row_write_refused，且那一行真的没落盘",
-  {
-    skip:
-      "#754 裁决 2 关掉了 pre-261021 升级闸门，本格的现场只有那条闸门造得出（第二类因果耦合）；follow-up #776",
-  },
+  "格2③ 有锚点而写被拒（那一写没落盘）⇒ 发 reason=mid_sequence_stub_row_write_refused，且那一行真的没落盘",
   async () => {
-    // issue #754 裁决 2：**具名跳过**（`{ skip }`，断言一条没删、一条没放宽，全部留在原地）。
-    // **第二类因果耦合**的坐实坐标：本格那两张桩里，第二对中段悬空（`assistant(又跑了一刀, t1, t9)` +
-    // 它的聚合结果）原本**只写在 `snapshot.messages` 里**，靠那条 pre-261021 升级闸门补进上下文，
-    // 「两张桩」与「写被拒」这两条判据才同时成立。把这一对改写成账本消息行之后：`src/store/message-rows.js:282`
-    // 是 `Number.isSafeInteger(record?.round) ? record.round : 0` ⇒ 行上的轮号被认成 0，写**不再被拒**，
-    // `mid_sequence_stub_row_write_refused` 事件实测变成 `[]`（试过并回退，见 `e0597df` 的 commit message）。
-    // ⇒ 「写被拒」这个事件本身依附于那条闸门，不是夹具形状问题。follow-up：#776。
+    // issue #776：本格现场从「pre-261021 升级闸门补快照正文」换成**两对都在账本里**的中段悬空
+    // （`twoMidSequencePairsScene`），「写被拒」由假 store 拒掉那一写给出（`storeThatRefusesOneStubWrite`）。
+    // **只有 `detail` 与 `round` 两个取值随现场换人**（`round_not_safe_integer`/`"2"` ⇒
+    // `append_row_not_persisted`/`3`），断言的形状（恰好一条、点名是哪一种、哪一轮、几个）逐字不动。
+    // 被换掉的那个取值不是被删的判据而是**当前树上不可达**的一格，取证见 #776 交付报告（要点：
+    // 桩所属轮的轮号只来自 `ctx.messageRounds`，而账本来源的轮号被折叠层归成安全整数
+    // （`src/store/message-rows.js` 的 `Number.isSafeInteger(record?.round) ? record.round : 0`），
+    // 唯一能带非安全整数轮号的消息是 A 集合 push 的那一条（`src/loop/resume-manager.js` 里
+    // `ctx.messageRounds.set(replayMessage, crashRound)`），而它**永远拿不到锚点**
+    // （`firstSliceRowKeyOf` 要的首片行必须载着同一个 `tool_use_id`，而 A 集合只装账本没结清的 id）
+    // ⇒ `partOf` 为空，写侧根本走不到「写被拒」那一步（`src/loop/orchestrator.js` 里
+    // `if (typeof stub?.partOf !== "string" || stub.partOf === "") continue;` 先跳过）。
   const inner = createMemoryTranscriptStore();
-  await snapshotRoundResidueScene(inner);
+  await twoMidSequencePairsScene(inner);
+  // 前置：这个账本形状本身就过不了严格配对，而过不了的那一句就是本格说的那一句。
+  await assertLedgerIsInvalid(inner, /tool_result ids do not match assistant tool_use ids/u,
+    "前置：两对聚合消息都少一张结果，配对必须过不了（否则本格测的是别的东西）");
 
   const events = [];
   const provider = createFakeProvider([endTurn("续接完成")]);
   const resumed = await runLoop({
-    store: inner,
+    store: storeThatRefusesOneStubWrite(inner),
     events,
     provider,
     executeTool: async () => {
-      throw new Error("补跑不该发生：本格的在飞调用只存在于快照正文里，没有可重跑的记录");
+      throw new Error("补跑不该发生：本格的悬空调用没有可重跑的记录（快照里根本没有在飞那一格）");
     },
   });
   assert.equal(resumed.ok, true, "上下文被两张桩修合法了 ⇒ run 能起来（实测：" + String(resumed.error) + ")");
@@ -380,10 +425,10 @@ test(
 
   assert.deepEqual(skipEvents(events, MID_SEQUENCE_ABANDON_ROW_WRITE_REFUSED), [{
     reason: MID_SEQUENCE_ABANDON_ROW_WRITE_REFUSED,
-    detail: RESUME_JOURNAL_SKIP_DETAIL_ROUND_NOT_SAFE_INTEGER,
-    round: "2",
+    detail: RESUME_JOURNAL_SKIP_DETAIL_APPEND_SKIPPED,
+    round: 3,
     count: 1,
-  }], "必须点名「有锚点而写被拒」这一格，并说清是哪一种（轮号不是安全整数）");
+  }], "必须点名「有锚点而写被拒」这一格，并说清是哪一种（那一写没落盘）");
 
   const rows = await inner.loadRawRows(RUN_ID);
   const stubRows = rows.filter((row) => typeof row?.partOf === "string" && row.partOf !== "");

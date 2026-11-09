@@ -656,60 +656,68 @@ test("per-tool replay policy interrupts unsafe tools and exposes saved partial o
 
 test(
   "升级前记录被中断重放时，不得把过期 attempt 的成败留给 judge 的回退链（PR #288 审阅）",
-  {
-    skip:
-      "#754 裁决 2 关掉了 pre-261021 升级闸门，本格的现场只有那条闸门造得出（第二类因果耦合）；follow-up #776",
-  },
   async () => {
-  // issue #754 裁决 2：**具名跳过**（`t.skip`，断言一条没删、一条没放宽，全部留在原地）。
-  // **第二类因果耦合**：本格要的现场是「那条 `tool_result` **在上下文里、但不在账本里**」，而新写侧
-  // （逐条入账）没有这种状态的自然来源 —— 只有那条 pre-261021 升级闸门造得出来，裁决 2 把它关掉了。
-  // 三种新格式写法逐条实测过（结果写成账本行 ⇒ `#421` 判已结清、不补「没重跑」的桩；放进快照
-  // `toolResults` 格 ⇒ 复放策略照 `snapshotResults` 直接复放、同样结清；什么都不写 ⇒ 桩生成了，但桩文里
-  // 引不到只在快照里的那句 partial）。坐标与实测在 `/tmp/report-754*.md`。follow-up：#776。
+  // issue #776：本格现场从「被 #754 裁决 2 关掉的 pre-261021 升级闸门」换成**还活着的那条通道**——
+  // run snapshot 的 A 集合（`toolResults`）。它的定义就是本格要的那件事（`src/loop/resume-manager.js`
+  // 里 `replayResultsAll` 那句：「崩溃前已产出、但**没来得及落盘**的结果：账本里没有 ⇒ 从快照接回来」），
+  // 而它**不是**那条被关掉的闸门：闸门关的是「拿 `snapshot.messages` 补崩溃轮正文」，A 集合照旧喂。
+  // 三件事各自的家：
+  //   · 崩溃轮那条 `assistant(tool_use)` 写成账本 `kind:"message"` 行 ⇒ 重建的上下文里有配对的 `tool_use`；
+  //   · 那条**升级前形状**的 `tool_result`（顶层既有引擎旧同名键、也有宿主摊平键）**不落账**，
+  //     由 A 集合带进上下文 ⇒「在上下文里、但不在账本里」这件状态在新写侧仍有自然来源；
+  //   · 在飞那一单留在 `pendingToolUses`（`replay: "unsafe"`）⇒ 复放侧走中断支路并**就地**改写那份
+  //     旧块（`src/loop/orchestrator.js` 里 `if (existingToolResult)` 那一支）。本格的断言全落在那次
+  //     改写身上：过期 attempt 的顶层 `success` / `duration` / `executionStatus` 必须被扫掉（judge 的
+  //     `erix.success ?? block.success` 不许回退出一个 `true`），而 `erixRound`（TTL 的年龄来源）与
+  //     宿主摊平键不许跟着扫。
+  // ⚠ A 集合的**认领键**必须与块内 `tool_use_id` 异名（下面写的是那次过期 attempt 自己的身份）：读侧按
+  //   `entry.toolUseId` 建 `resumeRunSnapshotResults`，而它是 `resumePendingTools` 的排除项之一
+  //   （`src/loop/resume-manager.js` 里的 `replayablePending`）。同名键 ⇒ 这条调用被判「结果已成型」⇒
+  //   不再走中断支路，实测那份旧块原样留在上下文（`erix` 还是过期那份、`tool_replay_decision_required`
+  //   变空），本格第一条断言就红。异名才是本格的现场：这份结果属于**过期 attempt**，没被本次在飞那一单认领。
+  // ⚠ 工单 §3 建议的 #769 恢复行通道在本格**实测不成立**（不是没试）：给这个 id 写一条 `tool-executed`
+  //   恢复行，它就并进 `resumeExecutedToolIds`，而那正是「执行过了 ⇒ 不补跑也不再说中断」的判据；实测
+  //   结局变成 `#789` 那句「从未执行」的桩（`PENDING_TOOL_RESULT_TEXT`）、`erix` 整块不存在。
+  //   ⇒「执行过了」与「按工具复放要出声中断」在这一格是**互斥**的现场；本格要的是后者，坐标与实测见
+  //   `docs/delivery/261109-776-worker-report.md`。
   const store = createMemoryTranscriptStore();
   const runId = "resume-legacy-keys";
   const toolUse = { type: "tool_use", id: "legacy-call", name: "unsafe_work", input: {} };
   await store.appendRound(runId, { round: 0, messages: [textMessage("resume carefully")] });
+  // 崩溃轮那条 assistant 入账（261021 之后的写侧形状：`kind:"message"` + 轮内 `seq`）。
+  await store.appendRound(runId, {
+    round: 1,
+    roundKey: `${runId}:round:1`,
+    dedupKey: `${runId}:msg:1:0`,
+    kind: "message",
+    seq: 0,
+    messages: [{ role: "assistant", content: [toolUse] }],
+    ts: new Date().toISOString(),
+  });
   await store.saveRunSnapshot(runId, {
     round: 1,
     status: "pending",
     pendingToolUses: [{ ...toolUse, replay: "unsafe" }],
-    messages: [
-      textMessage("resume carefully"),
-      { role: "assistant", content: [toolUse] },
-      {
-        role: "user",
-        content: [{
-          type: "tool_result",
-          tool_use_id: "legacy-call",
-          content: "partial from the lost attempt",
-          // 升级前落盘的形状：顶层既有引擎旧同名键，也有宿主摊平键。
-          erixRound: 0,
-          executionStatus: "ok",
-          success: true,
-          duration: 900,
-          artifactStatus: "done",
-        }],
-      },
-    ],
+    // 崩溃轮正文不再从快照喂（那条闸门已关）：除了 A 集合那一格，快照一格都不给。
+    messages: [],
     executedToolIds: [],
-    toolResults: [],
+    toolResults: [{
+      // 认领键 = 那次过期 attempt 自己的身份（**不是** `legacy-call`，理由见上面那条 ⚠）。
+      toolUseId: "legacy-attempt",
+      // 升级前落盘的形状：顶层既有引擎旧同名键，也有宿主摊平键。
+      toolResult: {
+        type: "tool_result",
+        tool_use_id: "legacy-call",
+        content: "partial from the lost attempt",
+        erixRound: 0,
+        executionStatus: "ok",
+        success: true,
+        duration: 900,
+        artifactStatus: "done",
+      },
+    }],
     toolOutputs: [],
   });
-  // issue #754 裁决 2：**这一格故意不加夹具垫片**（第二类，停手交主 session 判）。
-  // 本格要的现场是「那条 `tool_result` **在上下文里、但不在账本里**」——只有被关掉的那条升级闸门能造出
-  // 这种状态。三种新格式写法都不行，逐条实测过：
-  //   · 把结果写成账本消息行 ⇒ `#421` 认为这条 `tool_use` 已结清 ⇒ **不补那张「没重跑」的桩**，
-  //     实测 `interruptedResult.erix` 是 `undefined`（断言 `=== "interrupted"` 红）；
-  //   · 把结果放进快照的 `toolResults` 格（= A 集合）⇒ 复放策略照 `snapshotResults` 直接**复放**它，
-  //     结局同样是「已结清」，桩不生成；
-  //   · 什么都不写（只把 assistant 入账）⇒ 桩生成了，可桩文里引不到快照那条聚合里的
-  //     `partial response already persisted`（实测桩文只剩 `The previous execution was interrupted …`
-  //     + `toolOutputs` 里的 `captured output before interruption`），断言 `match(/partial response already persisted/)` 红。
-  // 三条里任何一条要绿都得动**断言**或动复放语义，那不是夹具形状问题 ⇒ 一字未动，等裁决。
-
-  
 
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
