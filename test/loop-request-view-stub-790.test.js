@@ -30,9 +30,9 @@
 // 本文件与 `test/loop-resume-abandon-signals-730.test.js` 的红由 `REPORT-790.md` 贴原文。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { makeTmp } from "./helpers/tmp.js";
 
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { callProvider } from "../src/loop/provider-runner.js";
@@ -159,7 +159,7 @@ async function assertLedgerIsInvalid(store, pattern) {
 // ─────────── T1（工单主判据）：砖化归档 + 真文件 store —— 视图合法、桩夹在中间、账本一字不差 ───────────
 
 test("T1 砖化归档续跑：出网前视图合法（桩夹在 assistant[TU] 与宿主纯文本页之间）且账本文件字节一字不差", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "erix-790-t1-"));
+  const dir = await makeTmp("erix-790-t1-");
   const store = createFileTranscriptStore({ dir });
   await brickedArchive(store);
   // 前置：账本本身过不了配对，且过不了的那一句就是工单那一句（实测 index 1）。
