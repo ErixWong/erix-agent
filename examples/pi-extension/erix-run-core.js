@@ -18,15 +18,19 @@ import path from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { createHash, randomBytes } from "node:crypto";
 
-// #314：终稿核验（finalGuard）谓词层。本文件只做「开关 + 透传 + 成本计数」，
+// #314：终稿核验（finalGuard）谓词层。本文件只做「开关 + 透传 + 成本计数 + 账本读口」，
 // 谓词本体（四段存在性 / 基点溯源 / 派生结论提醒）在 erix-run-final-guard.js。
+// issue #797：证据面从「只有存活窗口」换成「存活窗口 ∪ 账本」——账本的**读**在本文件
+// （`readLedgerEvidence`：只有 store 这个注入端口，谓词层依旧不读盘），**匹配**在谓词层。
 import {
+  buildLedgerEvidence,
   createFinalGuardTally,
   createFinalGuardVerify,
   finalGuardWorstCaseMs,
   FINAL_DRAFT_PROMPT,
   FINAL_GUARD_TIMEOUT_MS,
   FINAL_GUARD_WORST_CASE_MS,
+  honestVerificationReason,
   summarizeFinalGuard,
 } from "./erix-run-final-guard.js";
 
@@ -1732,6 +1736,74 @@ function decisionFacts(input) {
 }
 
 /**
+ * issue #797：读本次 run 的**账本**并折成谓词能用的证据面。只在**开了 `finalGuard`** 时被调，
+ * 且调用点在 guard 回调内部（不是装配期，也不是 run 之前）。
+ *
+ * 读口优先级（#714）：`store.loadRawRows`（原始行，每条 `tool_result` 逐字在账）→ 回落
+ * `store.load`（折叠后的行）→ 两个都没有 = **没有账本**。三种失败形态（探针缺席 / 读抛错 /
+ * 行超限截断）都**只记录事实、不改行为**：`ledgerComplete:false` ⇒ 谓词不许下 `not_in_ledger`。
+ *
+ * 本函数只递一个**注入端口**（store），不 `import node:fs`——谓词层依旧零依赖不读盘，读盘
+ * 发生在真 store 里（文件 store 或内存 store）。
+ *
+ * @param {{store?:object, runId?:string, deps?:object}} input
+ * @returns {Promise<object>} `buildLedgerEvidence` 的输出（**永不抛**：读账本失败不能把 guard 带死）
+ */
+export async function readLedgerEvidence({ store, runId, deps = {} } = {}) {
+  const rowLimit = Number.isSafeInteger(deps.finalGuardLedgerRowLimit) && deps.finalGuardLedgerRowLimit > 0
+    ? deps.finalGuardLedgerRowLimit
+    : undefined;
+  // 注入缝：`deps.finalGuardLedger` 是函数时**替掉默认读口**（返行数组，或返已成形的证据面）。
+  if (typeof deps.finalGuardLedger === "function") {
+    const given = await deps.finalGuardLedger({ runId, store });
+    if (given !== null && typeof given === "object" && !Array.isArray(given) && Array.isArray(given.rows)) {
+      return given;
+    }
+    return buildLedgerEvidence(Array.isArray(given) ? given : undefined, {
+      source: "injected",
+      ...(rowLimit === undefined ? {} : { rowLimit }),
+    });
+  }
+  if (store === null || typeof store !== "object") {
+    return buildLedgerEvidence(undefined, { source: "no_store" });
+  }
+  const probe = typeof store.loadRawRows === "function"
+    ? "loadRawRows"
+    : (typeof store.load === "function" ? "load" : "no_probe");
+  if (probe === "no_probe") {
+    // 「宿主没给探针」与「账本真的空」是两件事（#714 已把这条口径定死），必须分得开。
+    return buildLedgerEvidence(undefined, {
+      source: "no_probe",
+      readError: "store 既不提供 loadRawRows 也不提供 load ⇒ 本次没有账本可读",
+      ...(rowLimit === undefined ? {} : { rowLimit }),
+    });
+  }
+  try {
+    const rows = await store[probe](runId);
+    return buildLedgerEvidence(rows, { source: probe, ...(rowLimit === undefined ? {} : { rowLimit }) });
+  } catch (error) {
+    return buildLedgerEvidence(undefined, {
+      source: `${probe}:error`,
+      readError: textOf(error?.message ?? error),
+      ...(rowLimit === undefined ? {} : { rowLimit }),
+    });
+  }
+}
+
+/**
+ * issue #797 判据 ①：把终局 `verification` 按诚实原因改写一次（判据本体在谓词层的
+ * `honestVerificationReason`，这里只做载荷装配）。
+ *
+ * 只在判到 `not_in_ledger` 时产出**新对象**，且只动 `reason` 一个键（`status` / `guardVerdict` /
+ * `metrics` 原样），引擎原值留在 `engineReason` 供审计；其余情形**逐字递回引擎那份对象**。
+ */
+function honestVerification(verification, tally) {
+  const rewritten = honestVerificationReason({ verification, tally });
+  if (rewritten === null) return verification ?? undefined;
+  return { ...verification, reason: rewritten, engineReason: verification.reason };
+}
+
+/**
  * 正常返回 → 结构化载荷。
  *
  * @param {any} result runToolLoop 的返回值
@@ -1750,7 +1822,10 @@ export function buildSuccessPayload(result, input) {
     truncated: result?.truncated === true,
     usage: result?.usage ?? zeroUsage(),
     termination: { ...termination },
-    verification: result?.verification ?? undefined,
+    // issue #797 判据 ①：开了 guard 且**触发过压缩**的 run，不得含糊地因 `max_retries` 落到
+    // unverified；基点真的不在账本里就报 `not_in_ledger`（只改 `reason`，引擎原值留在
+    // `engineReason`）。不成立时 `honestVerification` 原样递回引擎那份对象（载荷逐字回到今天）。
+    verification: honestVerification(result?.verification, input.finalGuardTally),
     timeout: input.timeout === true,
     aborted: input.aborted === true,
     ...decisionFacts(input),
@@ -2175,6 +2250,12 @@ export function newRunId(now = () => Date.now()) {
  *   runId?:string,             // 显式 runId（异步层派工时给；与 resume 指向的 runId 必须一致）
  *   resumeTarget?:object,      // 已解析的续跑坐标（异步层先解一次，免得两边各解一份）
  *   readFile?:Function, exists?:Function, sizeOf?:Function,  // resolveResumeTarget 的注入缝
+ *   finalGuardInspect?:(payload:object)=>object|Promise<object>,  // #314：guard 谓词注入缝
+ *   // #797：证据面的**账本回落**。缺省 = 开（`store.loadRawRows` → 回落 `store.load`）；
+ *   // `false` = 关掉回落（只留 `ctx.messages`，即修前口径，反向证第二半靠它）；
+ *   // 函数 = 替掉默认读口（返行数组或已成形的证据面）。只在开了 finalGuard 时生效。
+ *   finalGuardLedger?:false|((input:{runId?:string, store?:object})=>any|Promise<any>),
+ *   finalGuardLedgerRowLimit?:number,  // #797：证据面行上限（缺省 LEDGER_EVIDENCE_ROW_LIMIT；截断格用小值）
  * }} [deps]
  */
 export async function runErixRun(rawParams = {}, deps = {}) {
@@ -2301,6 +2382,9 @@ export async function runErixRun(rawParams = {}, deps = {}) {
         deliverableCriteria,
       })
       : undefined;
+    // issue #797：guard 回调要读账本，而 store / runId 要到下面才存；读口只能拿引用，
+    // 不能拿值 ⇒ 这个 holder 与 `finalGuardVerify` 同生命周期（只在 guard 被调时读）。
+    const ledgerTarget = { store: undefined, runId: undefined };
     finalGuardVerify = finalGuardTally === undefined
       ? undefined
       : createFinalGuardVerify({
@@ -2311,6 +2395,14 @@ export async function runErixRun(rawParams = {}, deps = {}) {
         ...(deps.finalGuardInspect === undefined
           ? {}
           : { inspect: deps.finalGuardInspect }),
+        // issue #797：证据面 = 存活窗口 ∪ 账本。**只在开了 finalGuard 时建这条管道**（默认关 ⇒
+        // options 面一个字节都不许多）。`deps.finalGuardLedger`：缺省 = 开；`false` = 关掉账本
+        // 回落（只留 `ctx.messages`，即修前口径）；函数 = 替掉默认读口。
+        // 读账本发生在 **guard 回调内部**，而 store 要到下面才装配 ⇒ 这里递一个**迟到绑定**的
+        // 读口：它只在 run 里被调，那时 `ledgerTarget` 两个字段都已赋上（见下方 `ledgerTarget.store = …`）。
+        ...(finalGuardTally === undefined || deps.finalGuardLedger === false
+          ? {}
+          : { readLedger: (payload) => readLedgerEvidence({ store: ledgerTarget.store, runId: payload?.runId ?? ledgerTarget.runId, deps }) }),
       });
     // 坑 ①：guard 的等待（最多 1 + 2 次 × `finalGuardTimeoutMs`）发生在 stop 判定之后，
     // 而引擎只在**轮边界**查截止线（`src/loop/orchestrator.js` 的 `remainingMs()`），
@@ -2421,6 +2513,9 @@ export async function runErixRun(rawParams = {}, deps = {}) {
         },
       });
     const store = runPersistence.store;
+    // issue #797：账本证据面的读口到这才真能读到东西（上面只建了回调）。
+    ledgerTarget.store = store;
+    ledgerTarget.runId = runId;
     const appendJudgeLogRecord = runPersistence.appendJudgeLogRecord;
     context.sessionDir = params.sessionDir;
     persistence = {

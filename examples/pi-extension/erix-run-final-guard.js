@@ -7,12 +7,21 @@
 //
 // 分层纪律（工单 R2，别自己加硬闸）：
 //   ① 格式/存在性 → 提示词与这里**双写**，缺段就点名缺哪段；
-//   ② **基点溯源 = 唯一的硬闸**：只在本次 `messages` 的 `tool_result` 文本里找声明值，
-//      找不到 ⇒ revise；任何分支都不许 accept（fail closed）；重试用尽由引擎兜成 unverified；
+//   ② **基点溯源 = 唯一的硬闸**：在本次 `messages` 的 `tool_result` 文本里找声明值，找不到再看
+//      **本次 run 的账本**（issue #797：`payload.messages` 就是被上下文压缩改写的那一份，
+//      只看存活窗口会把「取证在折叠前」的真基点误判成凭记忆写的）；两处都没有 ⇒ revise；
+//      任何分支都不许 accept（fail closed）；重试用尽由引擎兜成 unverified（#797 之后：
+//      账本读全且观察到压缩时，宿主把那一格的 `reason` 改写成 `not_in_ledger`，见
+//      `honestVerificationReason`）；assistant 自己复述一遍不算取证——**只看 `tool_result`，
+//      这条纪律不因换了证据面而松动**；
 //   ③ 比值/总量（`1:N`、百分比、「总计」）→ **只提醒**，不硬拒（同口径判定要先有观测基线）；
 //   ④ 「至少一条非文件系统探针」不做（一条 `date` 就能糊弄）。
 //
-// 零依赖红线：只用 node: 内置；纯 ESM；不联网、不读盘。
+// 已知局限（不在本层解决）：谓词没有**出处链**——账本里那条含字面值的 `tool_result` 很可能只是
+// 对自家报告的 grep（自指回显也算「可溯源」）。修出处链要另开单：改判据会动摇 #787 钉下的文档口径。
+//
+// 零依赖红线：只用 node: 内置；纯 ESM；不联网、不读盘。#797 没有破这条线：账本的**读**在宿主
+// （`erix-run-core.js` 的 `readLedgerEvidence`，只递 store 这个注入端口），本层只收纯数据。
 
 /** 终稿必须依次出现的四段（顺序即契约；提示词槽位与本常量同源，见 `FINAL_DRAFT_PROMPT`）。 */
 export const FINAL_DRAFT_SECTIONS = Object.freeze([
@@ -63,6 +72,21 @@ export function finalGuardWorstCaseMs({ deliverableCriteria = 0 } = {}) {
 
 /** 未声明交付物判据时的最坏额外开销（既有常量，语义与数值都未变）。 */
 export const FINAL_GUARD_WORST_CASE_MS = finalGuardWorstCaseMs();
+
+/**
+ * issue #797：账本证据面的**行数上限**（照 #386 的纪律：每个可变长键都有上限，超限打截断标记）。
+ *
+ * 为什么要有它：账本是**整份转录**（一轮一行，长 run 几千行），而 guard 的等待预算只有
+ * `finalGuardTimeoutMs`。超限时**只留最新的 N 行**（基点取证绝大多数在尾部），并且把
+ * `truncated` 如实报出去——账本被截断 ⇒ 「全账本 0 命中」这个结论就下不了（见 `buildLedgerEvidence`）。
+ */
+export const LEDGER_EVIDENCE_ROW_LIMIT = 4000;
+
+/**
+ * issue #797：`diagnostics` 里**逐字面值出处清单**的条数上限（超限打 `literalsTruncated`）。
+ * 这是观测面（给人看的清单），不是判定面：判定永远扫全部声明值。
+ */
+export const LEDGER_LITERAL_LIMIT = 20;
 
 /** 每段要模型写什么（提示词里的槽位说明；段名才是 guard 的判定对象）。 */
 const SECTION_HINTS = {
@@ -210,25 +234,123 @@ export function findDerivedConclusionFlags(finalText) {
 }
 
 /**
- * 纯谓词：终稿 + 本次消息 → guard 决策与可观测字段（不做计数，计数在
- * `createFinalGuardVerify`）。
+ * issue #797：把**宿主读好的**账本行折成谓词能用的证据面（本函数不读盘、不联网，只做整理）。
  *
- * @param {{finalText?:unknown, messages?:unknown[]}} payload
- * @returns {{action:"accept"|"revise", message?:string, missingSections:string[],
- *   declaredBases:string[], untraceableBases:string[], ratioFlags:object[]}}
+ * 为什么需要它（缺陷一句话）：引擎给 guard 的 `payload.messages` 是 `cloneState(ctx.messages)`，
+ * 也就是**被上下文压缩改写的那一份** ⇒ 「取证发生在折叠之前」的长 run，声明的字面值明明逐字
+ * 入账过，谓词却看不见 ⇒ `revise` 到重试用尽 ⇒ `unverified / max_retries`。修法是证据面换成
+ * 「存活窗口 ∪ 账本」：账本（`store.loadRawRows` 的原始行，#714）里每条 `tool_result` 都在。
+ *
+ * 折叠事实**只从账本推**（不引第二份来源）：
+ *   · `foldRows` = 带 `foldedRoundRange` 的行数；
+ *   · `foldCeiling` = `max(foldedRoundRange.to)` = 最后一次压缩折到了哪一轮；
+ *   · 没有折叠行 ⇒ `foldCeiling = null` = **本次没观察到压缩**（不是 0，也不是「折到第 0 轮」）。
+ *
+ * 完整性纪律（宁可留今天的 `max_retries`，也不造新假话）：读失败 / 探针缺席 / 行数截断
+ * 任一成立 ⇒ `ledgerComplete = false` ⇒ 谓词**不许**下 `not_in_ledger` 结论。
+ *
+ * @param {Array<{round?:number, messages?:unknown[], foldedRoundRange?:{from?:number,to?:number}}>|undefined|null} rows
+ * @param {{source?:string, rowLimit?:number, readFailed?:boolean, readError?:string}} [options]
+ * @returns {{rows:Array<{round:number|null,text:string}>, foldRows:number, foldCeiling:number|null,
+ *   truncated:boolean, readFailed:boolean, source:string, readError:string|null, ledgerComplete:boolean,
+ *   rowLimit:number}}
  */
-export function inspectFinalDraft({ finalText, messages } = {}) {
+export function buildLedgerEvidence(rows, { source = "unknown", rowLimit = LEDGER_EVIDENCE_ROW_LIMIT, readFailed = false, readError } = {}) {
+  const limit = Number.isSafeInteger(rowLimit) && rowLimit > 0 ? rowLimit : LEDGER_EVIDENCE_ROW_LIMIT;
+  const given = Array.isArray(rows) ? rows : [];
+  // 非数组（store 的探针返回了 undefined / 抛错被上层吞掉）＝**没读到**，与「读到 0 行」不同：
+  // 后者是账本真的空，前者是读口没给出事实，两者都必须能区分（`not_read`）。
+  const notRead = !Array.isArray(rows);
+  const truncated = given.length > limit;
+  const kept = truncated ? given.slice(given.length - limit) : given;
+  let foldRows = 0;
+  let foldCeiling = null;
+  const shaped = [];
+  for (const row of kept) {
+    const range = row?.foldedRoundRange;
+    if (range !== null && typeof range === "object") {
+      foldRows += 1;
+      const to = Number.isSafeInteger(range.to) ? range.to : null;
+      if (to !== null && (foldCeiling === null || to > foldCeiling)) foldCeiling = to;
+    }
+    shaped.push({
+      round: Number.isSafeInteger(row?.round) ? row.round : null,
+      text: collectToolResultText(row?.messages),
+    });
+  }
+  const failed = readFailed === true || notRead;
+  return {
+    rows: shaped,
+    foldRows,
+    foldCeiling,
+    truncated,
+    readFailed: failed,
+    source: notRead && source === "unknown" ? "not_read" : source,
+    readError: readError ?? (notRead ? "账本读口没返回数组 ⇒ 本次没有账本可读" : null),
+    ledgerComplete: !failed && !truncated,
+    rowLimit: limit,
+  };
+}
+
+/**
+ * 逐字面值定位：存活窗口（`payload.messages` 的 `tool_result`）优先，其次账本。
+ * 命中判定复用 `isBaseTraceable`——**不新开第二套匹配口径**（十六进制忽大小写，其余逐字）。
+ *
+ * @param {string} literal
+ * @param {string} toolResultText 存活窗口的取证文本池
+ * @param {object|undefined} ledger `buildLedgerEvidence` 的输出；`undefined` = 没有账本
+ * @returns {{literal:string, source:"messages"|"ledger"|"none", round?:number|null, survivesLastCompaction?:boolean|null}}
+ */
+function locateLiteral(literal, toolResultText, ledger) {
+  if (isBaseTraceable(literal, toolResultText)) return { literal, source: "messages" };
+  if (ledger === undefined) return { literal, source: "none" };
+  let round = null;
+  let found = false;
+  for (const row of ledger.rows ?? []) {
+    if (row.text === "" || !isBaseTraceable(literal, row.text)) continue;
+    found = true;
+    // 多次命中取**最新**那次：判据 ② 要的是「最后一次压缩之后还剩没留有可引用的 tool_result」。
+    if (Number.isSafeInteger(row.round) && (round === null || row.round > round)) round = row.round;
+  }
+  if (!found) return { literal, source: "none" };
+  return {
+    literal,
+    source: "ledger",
+    round,
+    survivesLastCompaction: round === null || ledger.foldCeiling === null
+      ? null
+      : round > ledger.foldCeiling,
+  };
+}
+
+/**
+ * 纯谓词：终稿 + 本次消息（+ issue #797 的账本证据面）→ guard 决策与可观测字段。
+ *
+ * `ledger` **不给 ⇒ 判定与今天逐字一致**（回归锚，`P6`）：既不许多改判据，也不许多出 `evidence` 键。
+ *
+ * @param {{finalText?:unknown, messages?:unknown[], ledger?:object}} payload
+ * @returns {{action:"accept"|"revise", message?:string, missingSections:string[],
+ *   declaredBases:string[], untraceableBases:string[], ratioFlags:object[], evidence?:object}}
+ */
+export function inspectFinalDraft({ finalText, messages, ledger } = {}) {
   const { found, missing } = splitFinalDraft(finalText);
   const ratioFlags = findDerivedConclusionFlags(finalText);
   const declared = missing.includes("## 基点")
     ? []
     : extractDeclaredBases(found["## 基点"]);
   const declaredBases = declared.map((entry) => entry.literal);
+  const toolResultText = collectToolResultText(messages);
+  const hasLedger = ledger !== undefined;
+  const located = declaredBases.map((literal) => locateLiteral(literal, toolResultText, ledger));
+  const untraceable = located.filter((entry) => entry.source === "none").map((entry) => entry.literal);
+  // 账本不完整（读失败 / 探针缺席 / 截断）⇒ 一条 `not_in_ledger` 也不下。
+  const notInLedger = hasLedger && ledger.ledgerComplete === true ? untraceable : [];
   const base = {
     missingSections: missing,
     declaredBases,
-    untraceableBases: [],
+    untraceableBases: untraceable,
     ratioFlags,
+    ...(hasLedger ? { evidence: buildEvidenceReport(located, notInLedger, ledger) } : {}),
   };
 
   // ① 格式/存在性：缺段先打回，文案点名缺哪段（C1）。
@@ -241,7 +363,7 @@ export function inspectFinalDraft({ finalText, messages } = {}) {
     };
   }
 
-  // ② 基点溯源 = 唯一硬闸（C2）。
+  // ② 基点溯源 = 唯一硬闸（C2）。证据面 = 存活窗口 ∪ 账本（issue #797）。
   if (declaredBases.length === 0) {
     return {
       ...base,
@@ -250,8 +372,12 @@ export function inspectFinalDraft({ finalText, messages } = {}) {
         + "请逐字照抄本次工具返回里出现过的值（commit SHA / tag / 版本号），一行一个。",
     };
   }
-  const toolResultText = collectToolResultText(messages);
-  const untraceable = declaredBases.filter((literal) => !isBaseTraceable(literal, toolResultText));
+  // 取证文本池只在这里摄一次：`locateLiteral` 与旧口径共用同一份 `collectToolResultText`。
+  const ledgerRoute = notInLedger.length > 0
+    // 只在**账本完整**时才给这条出路（上面已挡：不完整 ⇒ notInLedger 恒空）。
+    ? `上述值在本次 run 的**全部账本**里 0 命中：要么重跑取基点的命令把返回原文取回，`
+      + `要么把它从「## 基点」删掉、写进「## 未验证」。`
+    : "";
   if (untraceable.length > 0) {
     return {
       ...base,
@@ -259,12 +385,56 @@ export function inspectFinalDraft({ finalText, messages } = {}) {
       action: "revise",
       message: `「## 基点」声明的 ${untraceable.join("、")} 在本次 run 的工具返回里**逐字找不到**`
         + `（基点必须来自本次取证，不许凭记忆写）。`
-        + `请重跑取基点的命令（如 git rev-parse --short HEAD），并把返回里的字面值原样写进「## 基点」。`,
+        + `请重跑取基点的命令（如 git rev-parse --short HEAD），并把返回里的字面值原样写进「## 基点」。`
+        + ledgerRoute,
     };
   }
 
   // ③ 比值/总量只提醒：出现在 ratioFlags 里，不拦 accept（C4）。
   return { ...base, action: "accept" };
+}
+
+/** `diagnostics` 里的证据面报告（只加键不改键；清单有小上限，判定不受上限影响）。 */
+function buildEvidenceReport(located, notInLedger, ledger) {
+  const basesTruncated = located.length > LEDGER_LITERAL_LIMIT;
+  const notInLedgerCapped = notInLedger.slice(0, LEDGER_LITERAL_LIMIT);
+  return {
+    bases: located.slice(0, LEDGER_LITERAL_LIMIT),
+    notInLedger: notInLedgerCapped,
+    ...(basesTruncated || notInLedger.length > notInLedgerCapped.length ? { literalsTruncated: true } : {}),
+    foldCeiling: ledger.foldCeiling ?? null,
+    foldRows: ledger.foldRows ?? 0,
+    ledgerRows: (ledger.rows ?? []).length,
+    ledgerComplete: ledger.ledgerComplete === true,
+    ledgerSource: ledger.source ?? "unknown",
+    ...(ledger.truncated === true ? { ledgerTruncated: true } : {}),
+    ...(ledger.readFailed === true ? { ledgerReadFailed: true } : {}),
+    ...(ledger.readError ? { ledgerReadError: ledger.readError } : {}),
+  };
+}
+
+/**
+ * issue #797 判据 ①：把「重试用尽」这一格改写成**诚实的**原因——纯函数，便于单测（`P5`）。
+ *
+ * 返回 `"not_in_ledger"` 当且仅当四条**同时**成立（一条不成立就返回 `null`，载荷逐字回到今天）：
+ *   1. `verification.status === "unverified"` 且 `verification.reason === "max_retries"`（引擎原话）；
+ *   2. 末次 attempt 记下了**非空**的 `notInLedgerBases`；
+ *   3. `ledgerComplete === true`（账本读全了：探针在、没读失败、没截断）；
+ *   4. `compactionObserved === true`（账本里有折叠行 ⇒ 判据 ① 的「触发过压缩」）。
+ *
+ * 只改 `reason` 一个键：`status` 的取值集合（`verified|skipped|unverified|error`）一个字没动，
+ * 也不新增事件类型；引擎原值由调用方留在 `verification.engineReason`（可审计）。
+ *
+ * @param {{verification?:object, tally?:object}} input
+ * @returns {"not_in_ledger"|null}
+ */
+export function honestVerificationReason({ verification, tally } = {}) {
+  if (verification?.status !== "unverified" || verification?.reason !== "max_retries") return null;
+  if (tally === null || typeof tally !== "object") return null;
+  if (!Array.isArray(tally.notInLedgerBases) || tally.notInLedgerBases.length === 0) return null;
+  if (tally.ledgerComplete !== true) return null;
+  if (tally.compactionObserved !== true) return null;
+  return "not_in_ledger";
 }
 
 /** guard 计数器的初始形状（挂在 diagnostics.finalGuard 上，见 `summarizeFinalGuard`）。 */
@@ -289,6 +459,12 @@ export function createFinalGuardTally({
     missingSections: [],
     declaredBases: [],
     untraceableBases: [],
+    // issue #797：证据面（存活窗口 ∪ 账本）的末次 attempt 事实。**没建账本管道时一个键也不添**
+    // （下面 `createFinalGuardVerify` 只在看到 `inspected.evidence` 时才写这些键）。
+    evidence: undefined,
+    notInLedgerBases: [],
+    ledgerComplete: false,
+    compactionObserved: false,
     finalGuardTimeoutMs: timeoutMs,
     // #391 R5：判据条数（0 = 没声明 `requireDeliverable`）与据此算出的最坏额外开销。
     deliverableCriteria: criteria,
@@ -302,7 +478,12 @@ export function createFinalGuardTally({
  * 引擎侧另有 `guardMetrics`（`src/loop/orchestrator.js`），本层记的是**宿主视角**的成本，
  * 两者口径不同（引擎记决策次数，本层记墙钟耗时与被打回的轮数），所以各留一份、都写来源。
  *
- * @param {{inspect?:(payload:object)=>object, tally?:object, now?:()=>number, onObserve?:(summary:object)=>void}} deps
+ * issue #797：**读账本发生在本回调内部**（本函数已经是 async、已经 `await inspect`，天然放得下）。
+ * `readLedger` 是宿主递进来的读口（见 `erix-run-core.js` 的 `deps.finalGuardLedger`）：它返回
+ * `buildLedgerEvidence(...)` 的纯数据，或 `undefined`（没建管道）。没建 ⇒ 谓词一条行为也不变。
+ *
+ * @param {{inspect?:(payload:object)=>object, tally?:object, now?:()=>number, onObserve?:(summary:object)=>void,
+ *   readLedger?:undefined|((payload:object)=>Promise<object|undefined>|object|undefined)}} deps
  * @returns {(payload:object)=>Promise<{action:string, message?:string, reason?:string}>}
  */
 export function createFinalGuardVerify({
@@ -310,15 +491,27 @@ export function createFinalGuardVerify({
   tally = createFinalGuardTally(),
   now = Date.now,
   onObserve,
+  readLedger,
 } = {}) {
   return async function finalGuardVerify(payload = {}) {
     tally.calls += 1;
     const startedAt = now();
     let decision;
     try {
+      // 读账本失败**不能**把 guard 带死：退化成「没有账本」⇒ 行为逐字回到今天（宁可留 max_retries）。
+      let ledger;
+      if (typeof readLedger === "function") {
+        try {
+          ledger = await readLedger(payload);
+        } catch (error) {
+          ledger = undefined;
+          tally.ledgerReadError = error?.message === undefined ? String(error) : error.message;
+        }
+      }
       // 谓词**允许是异步的**（真 guard 要读盘 / 跑一次小模型调用），这里必须 await：
       // 不 await 就会把一个 Promise 当成决策交给引擎，引擎报「invalid decision」→ 白跑。
-      const inspected = (await inspect(payload)) ?? { action: "revise", message: "guard 谓词没返回决策" };
+      const inspected = (await inspect(ledger === undefined ? payload : { ...payload, ledger }))
+        ?? { action: "revise", message: "guard 谓词没返回决策" };
       decision = { action: inspected.action, message: inspected.message, reason: inspected.reason };
       tally.reviseRounds += inspected.action === "revise" ? 1 : 0;
       tally.accepted += inspected.action === "accept" ? 1 : 0;
@@ -326,6 +519,7 @@ export function createFinalGuardVerify({
       tally.missingSections = inspected.missingSections ?? [];
       tally.declaredBases = inspected.declaredBases ?? [];
       tally.untraceableBases = inspected.untraceableBases ?? [];
+      applyEvidenceToTally(tally, inspected.evidence);
     } catch {
       // 谓词自己炸了也不要把 accept 当默认值送出去（fail closed）。
       tally.invalidDecisions += 1;
@@ -342,6 +536,30 @@ export function createFinalGuardVerify({
     }
     return decision;
   };
+}
+
+/**
+ * 把谓词给出的证据面事实挂到 tally 上（**末次 attempt 覆盖前一次**，与 `untraceableBases` 同口径）。
+ * `honestVerificationReason` 读的就是这里的 `notInLedgerBases` / `ledgerComplete` / `compactionObserved`。
+ */
+function applyEvidenceToTally(tally, evidence) {
+  if (evidence === undefined || evidence === null) {
+    // 没看到证据面（没建管道 / 注入的谓词不报证据）⇒ 不把一堆空值当成「看过账本」。
+    tally.evidence = undefined;
+    tally.notInLedgerBases = [];
+    tally.ledgerComplete = false;
+    tally.compactionObserved = false;
+    tally.ledgerSource = undefined;
+    return;
+  }
+  tally.evidence = evidence;
+  tally.notInLedgerBases = evidence.notInLedger ?? [];
+  tally.ledgerComplete = evidence.ledgerComplete === true;
+  // 账本读口是哪个（`loadRawRows` / `load` / `no_probe` / `xxx:error` / `injected`）——审计要看得见。
+  tally.ledgerSource = evidence.ledgerSource ?? "unknown";
+  // 「观察到压缩」= 账本里有折叠行（判据 ① 的第 4 条）；foldCeiling 为 null 就是本次没压缩。
+  tally.compactionObserved = evidence.foldCeiling !== null && evidence.foldCeiling !== undefined;
+  tally.ledgerReadError = evidence.ledgerReadError ?? tally.ledgerReadError;
 }
 
 /**
@@ -364,5 +582,22 @@ export function summarizeFinalGuard(tally) {
       : ""}）`
     + ` ｜ 声明基点 ${tally.declaredBases?.length ?? 0} 条 / 逐字对不上 ${(tally.untraceableBases ?? []).length} 条`
     + ` ｜ 派生结论提醒 ${tally.ratioFlags?.length ?? 0} 条（只提醒不硬拒）`
-    + ` ｜ 来源 ${tally.source ?? "unknown"}`;
+    + ` ｜ 来源 ${tally.source ?? "unknown"}`
+    // issue #797：**只在真有证据面时**追加这一段（没证据面时整行与今天逐字一致，
+    // 既有断言 `/calls=0/`、`/revise=0\/2/`、`disabled` 那几条不受影响）。
+    + summarizeEvidenceFace(tally);
+}
+
+/** 证据面那一段尾巴（`evidence` 缺席时是空串 ⇒ 前面的行与 #314 逐字一致）。 */
+function summarizeEvidenceFace(tally) {
+  const evidence = tally.evidence;
+  if (evidence === undefined || evidence === null) return "";
+  const fromLedger = (evidence.bases ?? []).filter((entry) => entry.source === "ledger").length;
+  return ` ｜ 证据面=存活窗口∪账本（来源 ${evidence.ledgerSource ?? "unknown"}`
+    + `，账本 ${evidence.ledgerRows ?? 0} 行，折叠 ${evidence.foldRows ?? 0} 层`
+    + `，最后一次压缩≤第 ${evidence.foldCeiling ?? "?"} 轮`
+    + `，账本捞回 ${fromLedger} 条 / 全账本 0 命中 ${(evidence.notInLedger ?? []).length} 条`
+    + (evidence.ledgerComplete === true
+      ? "，账本完整）"
+      : `，账本不完整⇒不下 not_in_ledger 结论${evidence.ledgerTruncated === true ? "（已截断）" : ""}${evidence.ledgerReadError ? `：${evidence.ledgerReadError}` : ""}）`);
 }

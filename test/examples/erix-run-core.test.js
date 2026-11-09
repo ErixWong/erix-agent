@@ -2256,33 +2256,26 @@ test("#797 H4（非压缩回归锚）账本有行但没折叠行 ⇒ 逐字回�
 });
 
 test("#797 H5（没有账本 / 读失败）行为逐字回到今天，且 diagnostics 如实留痕、不假称已核验", async () => {
-  // ① 探针全无：既没 loadRawRows 也没 load。
-  const bare = {
-    appendRound: async () => {},
-    markRunState: async () => {},
-    saveRunState: async () => {},
-    loadRunState: async () => undefined,
-    loadRunStateStatus: async () => undefined,
-    saveRunSnapshot: async () => {},
-    loadLatestRunSnapshot: async () => undefined,
-  };
-  const noProbe = await core.runErixRun(
+  // ① 探针缺席 ⇒ 回落 `store.load`（工单 §3.1：`loadRawRows` 没有就退回 `load`）。
+  //    ⚠ 为什么不是「两个读口都没有」：引擎自己把 `store.load` 列为**必需方法**
+  //    （`required persistence store is missing methods: store.load`）⇒ 那种 store 根本进不到 run。
+  //    「两个都没有」这一格在下面 ③ 直接探读口（宿主侧 `readLedgerEvidence`），不假称端到端跑过。
+  const noRawProbe = await seed797Store();
+  delete noRawProbe.loadRawRows;
+  const fellBack = await core.runErixRun(
     { task: "改一行", cwd: repoRoot, maxRounds: 6, finalGuard: true },
     makeDeps({
-      provider: createFakeProvider([{ ...H797_DRAFT, times: 6 }]),
-      extra: { createStore: () => bare, runId: H797_RUN_ID },
+      provider: createFakeProvider([H797_DRAFT]),
+      extra: { createStore: () => noRawProbe, runId: H797_RUN_ID },
     }),
   );
-  assert.equal(noProbe.verification.reason, "max_retries", JSON.stringify(noProbe.verification));
-  assert.equal(noProbe.verification.status, "unverified");
-  assert.equal(Object.hasOwn(noProbe.verification, "engineReason"), false);
-  assert.equal(noProbe.diagnostics.finalGuard.ledgerComplete, false);
-  assert.match(String(noProbe.diagnostics.finalGuard.ledgerSource), /no_probe|probe/u);
-  assert.deepEqual(noProbe.diagnostics.finalGuard.notInLedgerBases, [], "账本不完整 ⇒ 不许下 0 命中的结论");
-  assert.match(core.formatPayloadForModel(noProbe), /账本不完整/u);
+  assert.equal(fellBack.verification.status, "verified", JSON.stringify(fellBack.verification));
+  assert.equal(fellBack.diagnostics.finalGuard.evidence.ledgerSource, "load",
+    "没探针就退回 load（折叠后的行），这条回落链必须在 diagnostics 里看得见");
+  assert.equal(fellBack.diagnostics.finalGuard.ledgerComplete, true);
 
-  // ② 探针在但读失败（抛错）⇒ 同一条纪律：行为回今天 + 留痕。
-  const throwing = createMemoryTranscriptStore();
+  // ② 探针在但读失败（抛错）⇒ 行为逐字回到今天的 `max_retries`，但**留痕说清是哪一种**。
+  const throwing = await seed797Store();
   throwing.loadRawRows = async () => { throw new Error("ledger read exploded (fixture)"); };
   const readFailed = await core.runErixRun(
     { task: "改一行", cwd: repoRoot, maxRounds: 6, finalGuard: true },
@@ -2292,10 +2285,35 @@ test("#797 H5（没有账本 / 读失败）行为逐字回到今天，且 diagno
     }),
   );
   assert.equal(readFailed.verification.reason, "max_retries", JSON.stringify(readFailed.verification));
-  assert.equal(readFailed.diagnostics.finalGuard.ledgerComplete, false);
-  assert.match(String(readFailed.diagnostics.finalGuard.ledgerReadError), /ledger read exploded/u);
-  assert.deepEqual(readFailed.diagnostics.finalGuard.notInLedgerBases, []);
+  assert.equal(readFailed.verification.status, "unverified", "读失败绝不许当成已核验");
+  assert.equal(Object.hasOwn(readFailed.verification, "engineReason"), false);
   assert.equal(readFailed.termination.reason, "final_guard_unverified");
+  assert.equal(readFailed.diagnostics.finalGuard.ledgerComplete, false);
+  assert.match(String(readFailed.diagnostics.finalGuard.ledgerSource), /loadRawRows:error/u);
+  assert.match(String(readFailed.diagnostics.finalGuard.ledgerReadError), /ledger read exploded/u);
+  assert.deepEqual(readFailed.diagnostics.finalGuard.notInLedgerBases, [], "账本不完整 ⇒ 不许下 0 命中的结论");
+  assert.match(core.formatPayloadForModel(readFailed), /账本不完整/u);
+  assert.match(core.formatPayloadForModel(readFailed), /verification=unverified\/max_retries/u);
+
+  // ③ 两个读口都没有 / store 缺位 ⇒ 读口自己的形状（这一格到不了 run：引擎要求 store.load）。
+  const noProbe = await core.readLedgerEvidence({ store: { appendRound: async () => {} }, runId: H797_RUN_ID });
+  assert.equal(noProbe.ledgerSource ?? noProbe.source, "no_probe");
+  assert.equal(noProbe.ledgerComplete, false);
+  assert.equal(noProbe.rows.length, 0);
+  const noStore = await core.readLedgerEvidence({ runId: H797_RUN_ID });
+  assert.equal(noStore.source, "no_store");
+  assert.equal(noStore.ledgerComplete, false);
+  // 注入读口返 `undefined` ⇒ 同一个「不完整 ⇒ 不下结论」纪律（宿主把读口换掉了也要守同一条）。
+  const injectedNothing = await core.readLedgerEvidence({ runId: H797_RUN_ID, deps: { finalGuardLedger: () => undefined } });
+  assert.equal(injectedNothing.source, "injected");
+  assert.equal(injectedNothing.ledgerComplete, false);
+  // 注入读口返**行数组** ⇒ 走同一个 `buildLedgerEvidence` 折形（不另开一份口径）。
+  const injectedRows = await core.readLedgerEvidence({
+    runId: H797_RUN_ID,
+    deps: { finalGuardLedger: () => [{ round: 1, messages: [{ role: "user", content: [{ type: "tool_result", content: "x" }] }] }] },
+  });
+  assert.equal(injectedRows.rows.length, 1);
+  assert.equal(injectedRows.ledgerComplete, true);
 });
 
 test("#797 H6：默认关（没开 finalGuard）⇒ 一条账本读口也不建，options 面与提示词零变化", async () => {
