@@ -184,7 +184,7 @@ Reverse-proof self-test of the list/unit/enum anchors (issue #210): change one d
   plus **every** `docs/host-upgrade-guide*.md` (discovered from the directory, so a new guide is
   covered the moment it exists). Directory discovery has a silent failure mode — renaming a guide away from that
   pattern shrinks the coverage in the script **and** in the test that mirrors the same glob, so both numbers still
-  agree: `REF_SCAN_DOCS_MINIMUM = 51` is the floor, and the count it stands for (pinned documents + the guides the
+  agree: `REF_SCAN_DOCS_MINIMUM = 53` is the floor, and the count it stands for (pinned documents + the guides the
   directory scan finds) is machine-checked: `check:docs` reads the stated numbers back out of every document that
   states them (both READMEs and the ledger) and compares them with the scan, so a stale copy is red, not prose.
   `test/docs-anchor-ratchet.test.js` keeps its own pinned list of the same documents plus the discovered guide set

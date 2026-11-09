@@ -78,7 +78,7 @@
   行号越界是**错误**，不是观察项。覆盖面是宿主真会读的那批文档：两份 README、中英 AGENTS、中英契约、中英架构、中英图表、中英需求对照、`examples/pi-extension/README.md`、维护账本中英（`docs/maintenance/symbol-anchor-ledger.md` / `docs/maintenance/symbol-anchor-ledger_cn.md`），加上
   **全部** `docs/host-upgrade-guide*.md`（按目录实扫，新指南一落地就自动在面内）。按目录实扫有一个静默失效的形状：
   把某份指南改名到不再匹配那个模式，脚本侧和用同一个 glob 的测试侧**一起**少一份，两边数字仍然相等 ⇒ 覆盖面悄悄缩面。
-  所以有 `REF_SCAN_DOCS_MINIMUM = 51` 这道下限，它代表的份数（点名文档 + 目录实扫到的指南）是**机器对账**的：
+  所以有 `REF_SCAN_DOCS_MINIMUM = 53` 这道下限，它代表的份数（点名文档 + 目录实扫到的指南）是**机器对账**的：
   `check:docs` 会把**声称这组数**的文档（两份 README 与 `docs/maintenance/symbol-anchor-ledger_cn.md`）里的数读回来跟实扫结果比，
   抄错一格就红并点名是哪一份的哪个数。并且 `test/docs-anchor-ratchet.test.js` 里另硬编码了同一批点名文档 + 实扫到的指南清单做对照：改名或新增指南，两处不同步就红。`CHANGELOG.md` 明确**不参与**：
   它的行号记的是「发版那一刻为真」的事实，改掉等于伪造历史（与 #278 的简称登记表同一套理由）。

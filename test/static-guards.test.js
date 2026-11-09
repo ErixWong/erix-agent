@@ -4937,7 +4937,7 @@ const CHANGELOG_PAIR_ADJACENT_GAP = 1;
 // 2026-11-09 第二十一次重取（261109 裁决：文档检查移出流水线，CHANGELOG 新增一对中英条目）：
 //     # 配对地板：实测 42 对 > 地板 41 对 ⇒ 可以抬地板到 42
 // ⇒ 地板 = **42**（守卫自报值）。
-const CHANGELOG_PAIR_FLOOR = 42;
+const CHANGELOG_PAIR_FLOOR = 43;
 
 /**
  * 一节里的 bullet（解析单位与规则 8 一致：`- ` 行 + 后续非空、非 bullet、非标题的行）。
