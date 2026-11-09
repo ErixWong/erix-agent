@@ -37,6 +37,13 @@ import {
 } from "./config.js";
 // issue #441：与 `bin/cli.js` **同一份**取值口径（静默相位截止按 `--idle-timeout` 派生）。
 import { resolveProviderPhaseTimeouts } from "./provider-timeouts.js";
+// issue #798：`reasoning_effort` 的 CLI 面（与 `bin/cli.js` 共用同一套裁决与统计器）。
+import {
+  createReasoningEffortStats,
+  reasoningStatsSuffix,
+  resolveReasoningEffort,
+  withCliReasoningEffort,
+} from "./reasoning-effort.js";
 import {
   buildCaptureRecoveryHint,
   buildCaptureStub,
@@ -208,6 +215,8 @@ export function parseReplArgs(argv, cwd = process.cwd(), home = homedir()) {
       || argument === "--max-rounds"
       || argument === "--idle-timeout"
       || argument === "--tools"
+      // issue #798：思考强度（旗标最优先，与 `--model` 的「env 压过旗标」故意不同）。
+      || argument === "--effort"
       || argument === "--delegate-max-children"
       || argument === "--delegate-timeout-ms"
     ) {
@@ -244,6 +253,9 @@ export function parseReplArgs(argv, cwd = process.cwd(), home = homedir()) {
       } else if (argument === "--tools") {
         if (rawValue.trim() === "") usageError("--tools 不能为空");
         options.tools = rawValue;
+      } else if (argument === "--effort") {
+        // issue #798：不校验值域（#788 parked）；空串 = 未提供（不是 usage error）。
+        options.effort = rawValue;
       } else if (argument === "--delegate-max-children") {
         options.delegateMaxChildren = parseIntegerOption(argument, rawValue, 1);
       } else if (argument === "--delegate-timeout-ms") {
@@ -546,11 +558,29 @@ export async function runRepl(argv, io = {}) {
     store,
   } = assemblyRoot;
   const storedRecords = await store.load(options.session);
-  const baseConfig = io.config ?? await loadCliConfig({ configPath: options.configPath });
+  const baseConfig = io.config ?? await loadCliConfig({
+    configPath: options.configPath,
+    // issue #798：旗标是输入面的一部分，env 读不到它 ⇒ 一起交给配置面去裁决。
+    effort: options.effort,
+  });
   // --compaction 覆盖 config.compaction（名字以字符串形态继续下传，实例化交给引擎）
   const config = options.compaction === undefined
     ? baseConfig
     : { ...baseConfig, compaction: options.compaction };
+  // issue #798：与 `bin/cli.js` 同一个裁决（旗标 > env > slot）。`io.config` 是宿主直接注入的，
+  // 那上面没有 `reasoningEffort` 这一格 ⇒ 入口处用同一个函数现算，两条路不会给出不一致的次序。
+  const reasoningEffort = config.reasoningEffort
+    ?? resolveReasoningEffort({ flag: options.effort, slot: config.reasoning_effort });
+  // 有事实才出声（与统计行同口径）：三处都没配 ⇒ 一行不打。
+  if (reasoningEffort.value !== undefined && reasoningEffort.label !== undefined) {
+    writeLine(
+      output,
+      `思考强度：${reasoningEffort.value}（来源 ${reasoningEffort.label}；`
+      + "优先级 --effort > LLM_KIT_REASONING_EFFORT > slots.default.reasoning_effort）",
+    );
+  }
+  // 会话累计的思考分解（`/tokens` 用）；逐轮那一份在 `handleInput` 里现建。
+  const sessionReasoning = createReasoningEffortStats();
   const providerFactory = io.providerFactory
     ?? ((providerOptions) => createOpenAIProvider(providerOptions));
   // issue #433 T0：exec 天花板按 `--idle-timeout` 收口（repl 默认 0 = 不启用 ⇒ 不钳、不打日志）。
@@ -572,7 +602,7 @@ export async function runRepl(argv, io = {}) {
   const delegateEnabled = options.delegate === true;
   const delegateAssembly = delegateEnabled
     ? createCliDelegation({
-      buildProvider: (modelOverride) => providerFactory({
+      buildProvider: (modelOverride) => withCliReasoningEffort(providerFactory({
         ...config,
         endpoint: config.endpoint,
         apiKey: config.apiKey,
@@ -580,7 +610,7 @@ export async function runRepl(argv, io = {}) {
         ...providerPhaseTimeouts,
         timeoutMs: config.timeout ?? 300_000,
         maxTokens: config.maxOutputTokens,
-      }),
+      }), reasoningEffort.value),
       config,
       cwd,
       todo: !todoDisabled,
@@ -829,7 +859,7 @@ export async function runRepl(argv, io = {}) {
       return;
     }
     if (command.command === "tokens") {
-      writeLine(output, `累计 usage=${JSON.stringify(usage)}`);
+      writeLine(output, `累计 usage=${JSON.stringify(usage)}${reasoningStatsSuffix(sessionReasoning)}`);
       return;
     }
     if (command.command === "model") {
@@ -850,7 +880,7 @@ export async function runRepl(argv, io = {}) {
     if (line.startsWith("/")) {
       await handleCommand(parseCommand(line));
     } else if (line.length > 0) {
-      const provider = await providerFactory({
+      const provider = withCliReasoningEffort(await providerFactory({
         ...config,
         endpoint: config.endpoint,
         apiKey: config.apiKey,
@@ -858,7 +888,9 @@ export async function runRepl(argv, io = {}) {
         ...providerPhaseTimeouts,
         timeoutMs: config.timeout ?? 300_000,
         maxTokens: config.maxOutputTokens,
-      });
+      }), reasoningEffort.value);
+      // issue #798：逐轮一份（本行的分解）与会话累计一份（`/tokens` 的分解），同一个收集器类。
+      const turnReasoning = createReasoningEffortStats();
       const roundMessages = [
         ...messages,
         { role: "user", content: [{ type: "text", text: line }] },
@@ -1004,6 +1036,9 @@ export async function runRepl(argv, io = {}) {
             },
             onRound: (info) => {
               idle?.touch();
+              // issue #798：从轮记录里取思考分解的事实（上游没报 `reasoning_tokens` 就不产格）。
+              turnReasoning.observe(info);
+              sessionReasoning.observe(info);
               writeLine(
                 output,
                 `\n[round ${info.round}]${info.folded ? "（含折叠）" : ""}`,
@@ -1040,7 +1075,7 @@ export async function runRepl(argv, io = {}) {
         writeLine(output);
         writeLine(
           output,
-          `[rounds=${result.rounds} usage=${JSON.stringify(result.usage)} compacted=${compacted} ${formatGuardMetrics(result.verification)}]`,
+          `[rounds=${result.rounds} usage=${JSON.stringify(result.usage)} compacted=${compacted} ${formatGuardMetrics(result.verification)}${reasoningStatsSuffix(turnReasoning)}]`,
         );
         if (result.termination?.reason === "final_guard_unverified") {
           writeLine(
