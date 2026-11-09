@@ -860,7 +860,8 @@ export function runSelfTest() {
         "⑧b 把 CI 里那一行删掉 ⇒ 接线检查必须点名（变异没落上算失败）",
         `⑧b 变异后没红：落上=${mutationApplied}，问题=${afterMutation.join(" / ") || "无"}`,
       );
-      const noDepth = ciText.replace(/^\s*fetch-depth: 0\s*$/mu, "");
+      // 三处 checkout 全去掉（只去掉一处时另两处还在 ⇒ 按份数判的接线检查不会红，这一例就成了空转）。
+      const noDepth = ciText.replace(/^\s*fetch-depth: 0\s*$/gmu, "");
       const depthApplied = noDepth !== ciText;
       expect(
         depthApplied && checkWiring(noDepth, pkg, agents).some((p) => p.includes("fetch-depth")),
@@ -908,8 +909,16 @@ export function checkWiring(ciText, pkg, agentsTexts) {
   if (stepLine >= 0 && docsLine >= 0 && stepLine > docsLine) {
     problems.push("`check:changelog` 排在了 `check:docs` **之后**（接线口径：check:docs 之前）");
   }
-  if (!/^\s*fetch-depth:\s*0\s*$/mu.test(ciText)) {
-    problems.push("checkout 没有 `fetch-depth: 0`——浅克隆里既没有 tag 也没有合并史，本闸只能 exit 2");
+  // 每个 `actions/checkout` 都要带 `fetch-depth: 0`（issue #802 起 CI 有三个 job、三处 checkout）：
+  // 少一处就少一个 job 里的 tag 与合并史，那一族的闸只能 exit 2（未判定）。按「份数」判而不是「至少一处」，
+  // 否则新加一个 job 忘了带 depth 时这一格是假绿。
+  const checkoutCount = (ciText.match(/uses:\s*actions\/checkout@/g) ?? []).length;
+  const depthCount = (ciText.match(/^\s*fetch-depth:\s*0\s*$/gmu) ?? []).length;
+  if (checkoutCount === 0) {
+    problems.push("ci.yml 里一处 `actions/checkout` 都没有——接线检查失去靶子");
+  } else if (depthCount < checkoutCount) {
+    problems.push(`checkout 少带了 \`fetch-depth: 0\`（${depthCount} 处 depth / ${checkoutCount} 处 checkout）——`
+      + "浅克隆里既没有 tag 也没有合并史，那一 job 里的本闸只能 exit 2");
   }
   const script = pkg.scripts?.["check:changelog"];
   if (typeof script !== "string" || !script.includes("scripts/changelog-coverage-check.mjs")) {

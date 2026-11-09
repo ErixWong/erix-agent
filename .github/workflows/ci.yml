@@ -132,7 +132,11 @@ jobs:
     timeout-minutes: 20
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     steps:
+      # `fetch-depth: 0` 同样不能省：`check:inventory` / `check:mutation` 读的是树，但
+      # `check:changelog` 一族读 tag 与合并史（见 `real` 那个 job 的注释）。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -190,7 +194,13 @@ jobs:
     timeout-minutes: 30
     continue-on-error: ${{ github.event_name == 'pull_request' }}
     steps:
+      # ⚠ 默认浅克隆（depth 1、不带 tag）会让 `check:docs` 直接 exit 2「未判定 TAG_MISSING」——
+      # 它的 changelog-date 判据要拿 registry 的 `dist-tags.latest` 对仓库里的 tag（本 PR 第一次跑 CI
+      # 就撞上了：registry 说 0.31.0 已发布，而浅克隆里没有 `v0.31.0`）。未判定既不是绿也不是红，
+      # 所以这一格必须取全 tag。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
