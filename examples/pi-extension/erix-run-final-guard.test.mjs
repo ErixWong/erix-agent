@@ -7,6 +7,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import * as guardModule from "./erix-run-final-guard.js";
+// R2 P9/P10 要探宿主的读口（core 不 import pi，`node --test` 可测）；懒取命名空间，缺导出时在格子里红而不是链接期红。
+import * as coreModule from "./erix-run-core.js";
 import {
   createFinalGuardTally,
   createFinalGuardVerify,
@@ -532,4 +534,128 @@ test("P5b 观测面：证据面存在时 summarizeFinalGuard 追加尾巴，没�
 
   const incomplete = { ...tally.evidence, ledgerComplete: false, notInLedger: [SHA] };
   assert.match(summarizeFinalGuard({ ...tally, evidence: incomplete }), /账本不完整/u);
+});
+
+// ---------------------------------------------------------------------------
+// R2（审计返工）：F1/F2 是读口的信任边界，F4 是诊断粒度。**accept/revise 的判定一个字没改**，
+// 这几格钉的是「不许把不完整的证据面当成完整」+「折叠前后都命中时，两个轮号都要看得见」。
+// 工单：docs/tasks/active/261109-797-finalguard-evidence-surface/ticket-r2.md
+// ---------------------------------------------------------------------------
+
+test("P7 首次命中在折叠前、最后一次在折叠后 ⇒ round=lastRound、firstRound 如实、survivesLastCompaction:true", () => {
+  // 真机样本的形状（`/tmp/762/segment-09`）：同一个值在 r23/r59/r61 与 r67 都命中，水位 62。
+  const ledger = buildLedgerEvidence([
+    ledgerRow({ round: 23, text: `HEAD at ${SHA}` }),
+    ledgerRow({ round: 59, text: `re-printed ${SHA}` }),
+    foldRow({}),
+    ledgerRow({ round: 67, text: `still there ${SHA}` }),
+  ], { source: "loadRawRows" });
+  const decision = inspectFinalDraft({ finalText: completeDraft(), messages: messagesWith("无关文本"), ledger });
+  assert.equal(decision.action, "accept", JSON.stringify(decision));
+  const entry = decision.evidence.bases.find((item) => item.literal === SHA);
+  assert.equal(entry.lastRound, 67);
+  assert.equal(entry.firstRound, 23, "首次命中轮必须如实露出来（它是诊断项）");
+  assert.equal(entry.round, 67, "round 仍 = lastRound（既有 P1b 的「取最新」语义不许动）");
+  assert.equal(entry.survivesLastCompaction, true, "闸门问的是「折叠后还剩没剩一处」，r67 > 62 ⇒ 有");
+  assert.equal(decision.evidence.foldCeiling, FOLD_CEILING);
+  // 尾巴必须把「首次已被折叠、只剩重复命中」写出来（自指回显风险要可见；出处链本单不修）。
+  const tally = createFinalGuardTally();
+  tally.evidence = decision.evidence;
+  assert.match(summarizeFinalGuard(tally), /首次命中第 23 轮（≤ 水位）／最后一次第 67 轮/u);
+});
+
+test("P8 只在折叠前命中 ⇒ survivesLastCompaction:false 但**仍然 accept**（issue 反向证要求的格）", () => {
+  // issue #797 自己的反向证：取证发生在折叠前、终稿在折叠后 ⇒ 修后必须 accept。
+  // 若把闸门改成「按首次出现轮判」，这一格就会翻成 revise —— 所以判定口径不许动。
+  const ledger = buildLedgerEvidence([
+    ledgerRow({ round: 12, text: `HEAD at ${SHA}` }),
+    ledgerRow({ round: 40, text: `again ${SHA}` }),
+    foldRow({}),
+  ], { source: "loadRawRows" });
+  const decision = inspectFinalDraft({ finalText: completeDraft(), messages: messagesWith("无关文本"), ledger });
+  assert.equal(decision.action, "accept", "折叠前取过证就是取过证：证据面里逐字在账 ⇒ accept");
+  const entry = decision.evidence.bases.find((item) => item.literal === SHA);
+  assert.equal(entry.survivesLastCompaction, false, "折叠后一处不剩 ⇒ 这一项如实是 false（只当诊断）");
+  assert.equal(entry.firstRound, 12);
+  assert.equal(entry.round, 40);
+  assert.deepEqual(decision.evidence.notInLedger, [], "命中了就不该进 0 命中名单");
+});
+
+test("P9 注入的「成形证据」必须被重建：自报的 ledgerComplete / truncated / foldCeiling 一律不算数", async () => {
+  const readLedgerEvidence = (...args) => coreModule.readLedgerEvidence(...args);
+  // ① 自称完整 + 自称截断 + 其实空账本：不许原样返回，也不许据此说 not_in_ledger。
+  const preformed = {
+    rows: [], foldRows: 1, foldCeiling: 62, truncated: true, readFailed: false,
+    source: "injected", ledgerComplete: true, rowLimit: 4000,
+  };
+  const rebuilt = await readLedgerEvidence({ runId: "r", deps: { finalGuardLedger: () => preformed } });
+  assert.notEqual(rebuilt, preformed, "必须重建：原样返回就是让调用方自己填元数据");
+  assert.equal(rebuilt.ledgerComplete, false, "0 行的账本撑不起「全账本 0 命中」⇒ 不完整");
+  assert.equal(rebuilt.foldCeiling, null, "注入的 foldCeiling:62 不算数（折叠事实只从 rows 推）");
+  assert.equal(rebuilt.foldRows, 0);
+  assert.equal(rebuilt.source, "injected", "注入对象只许贡献 rows 与 source 两样");
+  const decision = inspectFinalDraft({
+    finalText: completeDraft({ base: OTHER_SHA }),
+    messages: messagesWith("存活窗口里没有那个值"),
+    ledger: rebuilt,
+  });
+  assert.equal(decision.action, "revise");
+  assert.deepEqual(decision.evidence.notInLedger, [], "账本不完整 ⇒ 不许下 0 命中的结论");
+  assert.equal(honestVerificationReason({
+    verification: { status: "unverified", reason: "max_retries" },
+    tally: {
+      notInLedgerBases: decision.evidence.notInLedger,
+      ledgerComplete: decision.evidence.ledgerComplete,
+      compactionObserved: decision.evidence.foldCeiling !== null,
+    },
+  }), null, "自称完整的空账本不许把 reason 改成 not_in_ledger");
+
+  // ② `rowLimit` 也不许被绕过：注入一份「已经成形」的 4001 行证据 + rowLimit:1 ⇒ 重建后必须 ≤1 行且 truncated。
+  const many = Array.from({ length: guardModule.LEDGER_EVIDENCE_ROW_LIMIT + 1 }, (_, i) => ({ round: i + 1, messages: [] }));
+  const capped = await readLedgerEvidence({
+    runId: "r",
+    deps: {
+      finalGuardLedger: () => buildLedgerEvidence(many, { source: "injected" }),
+      finalGuardLedgerRowLimit: 1,
+    },
+  });
+  assert.ok(capped.rows.length <= 1, `重建后必须吃到 rowLimit，实得 ${capped.rows.length} 行`);
+  assert.equal(capped.truncated, true);
+  assert.equal(capped.rowLimit, 1);
+});
+
+test("P10 注入函数抛错必须被读口吞掉；脏行（rows:[null]）不许把谓词炸掉", async () => {
+  const readLedgerEvidence = (...args) => coreModule.readLedgerEvidence(...args);
+  let threw = null;
+  let evidence = null;
+  try {
+    evidence = await readLedgerEvidence({
+      runId: "r",
+      deps: { finalGuardLedger: () => { throw new Error("inject boom"); } },
+    });
+  } catch (error) {
+    threw = error;
+  }
+  assert.equal(threw, null, `读口承诺「永不抛」：注入函数抛错必须在读口里吞掉（实际抛了 ${threw?.message}）`);
+  assert.equal(evidence.source, "injected:error");
+  assert.equal(evidence.readFailed, true);
+  assert.equal(evidence.ledgerComplete, false);
+  assert.match(String(evidence.readError), /inject boom/u, "吞掉不等于不记账：原因要留在 diagnostics");
+  // 脏行：谓词**直接**拿到 rows:[null] 也不许 TypeError，必须 fail closed 判 revise。
+  const dirty = inspectFinalDraft({
+    finalText: completeDraft({ base: OTHER_SHA }),
+    messages: messagesWith("无关文本"),
+    ledger: { rows: [null], foldCeiling: null, foldRows: 0, ledgerComplete: true },
+  });
+  assert.equal(dirty.action, "revise", JSON.stringify(dirty));
+  assert.deepEqual(dirty.untraceableBases, [OTHER_SHA]);
+  // 同一条脏行从读口进来（注入成形对象）也要被重建掉。
+  const rebuilt = await readLedgerEvidence({ runId: "r", deps: { finalGuardLedger: () => ({ rows: [null] }) } });
+  const viaRebuild = inspectFinalDraft({
+    finalText: completeDraft({ base: OTHER_SHA }),
+    messages: messagesWith("无关文本"),
+    ledger: rebuilt,
+  });
+  assert.equal(viaRebuild.action, "revise");
+  assert.deepEqual(viaRebuild.untraceableBases, [OTHER_SHA]);
 });

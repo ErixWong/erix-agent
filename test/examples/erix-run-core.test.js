@@ -2334,3 +2334,35 @@ test("#797 H6：默认关（没开 finalGuard）⇒ 一条账本读口也不建�
     "默认关 ⇒ 不许建账本回落管道，也不许多出 evidence 键");
   assert.match(core.formatPayloadForModel(payload), /finalGuard=disabled/u);
 });
+
+test("#797 H7（R2 F1）注入的「成形证据」自称完整 ⇒ 也不许据此说 not_in_ledger，终局仍是 max_retries", async () => {
+  // 同一棵 H1 的 fixture（折叠前取证行 + 折叠行都在），只把读口换成「返一份自称完整的成形证据」：
+  // 修前这条会被调用方的元数据饶过去（原样返回 ⇒ 自报 ledgerComplete:true + foldCeiling:62 ⇒
+  // `not_in_ledger` 落在一个其实 0 行的账本上）。修后必须重建 ⇒ 完整性只从 rows 推。
+  const store = await seed797Store();
+  const payload = await core.runErixRun(
+    { task: "改一行", cwd: repoRoot, maxRounds: 6, finalGuard: true },
+    makeDeps({
+      provider: createFakeProvider([{ ...H797_DRAFT, times: 6 }]),
+      extra: {
+        createStore: () => store,
+        runId: H797_RUN_ID,
+        finalGuardLedger: () => ({
+          rows: [], foldRows: 1, foldCeiling: 62, truncated: true, readFailed: false,
+          ledgerComplete: true, source: "injected",
+        }),
+      },
+    }),
+  );
+  assert.equal(payload.verification.status, "unverified", JSON.stringify(payload.verification));
+  assert.equal(payload.verification.reason, "max_retries",
+    `自称完整的空账本不许把 reason 改成 not_in_ledger：${JSON.stringify(payload.verification)}`);
+  assert.equal(Object.hasOwn(payload.verification, "engineReason"), false,
+    "四条判据有一条不成立就不许出现 engineReason 这个键");
+  assert.equal(payload.termination.reason, "final_guard_unverified");
+  assert.equal(payload.diagnostics.finalGuard.ledgerComplete, false, "完整性只从 rows 推，不读注入值");
+  assert.deepEqual(payload.diagnostics.finalGuard.notInLedgerBases, [], "不完整 ⇒ 一条 0 命中也不下");
+  assert.equal(payload.diagnostics.finalGuard.ledgerSource, "injected", "读口来源要如实留痕");
+  assert.match(core.formatPayloadForModel(payload), /verification=unverified\/max_retries/u);
+  assert.match(core.formatPayloadForModel(payload), /账本不完整/u);
+});
