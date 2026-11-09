@@ -39,6 +39,7 @@ import {
 import { resolveProviderPhaseTimeouts } from "./provider-timeouts.js";
 // issue #798：`reasoning_effort` 的 CLI 面（与 `bin/cli.js` 共用同一套裁决与统计器）。
 import {
+  cliReasoningOverride,
   createReasoningEffortStats,
   reasoningStatsSuffix,
   resolveReasoningEffort,
@@ -579,6 +580,8 @@ export async function runRepl(argv, io = {}) {
       + "优先级 --effort > LLM_KIT_REASONING_EFFORT > slots.default.reasoning_effort）",
     );
   }
+  // 只有旗标/env 的值才注进请求通道（slot 的值照旧走 provider 构造参数，口径与 `bin/cli.js` 一致）。
+  const cliEffort = cliReasoningOverride(reasoningEffort);
   // 会话累计的思考分解（`/tokens` 用）；逐轮那一份在 `handleInput` 里现建。
   const sessionReasoning = createReasoningEffortStats();
   const providerFactory = io.providerFactory
@@ -610,7 +613,7 @@ export async function runRepl(argv, io = {}) {
         ...providerPhaseTimeouts,
         timeoutMs: config.timeout ?? 300_000,
         maxTokens: config.maxOutputTokens,
-      }), reasoningEffort.value),
+      }), cliEffort),
       config,
       cwd,
       todo: !todoDisabled,
@@ -888,7 +891,7 @@ export async function runRepl(argv, io = {}) {
         ...providerPhaseTimeouts,
         timeoutMs: config.timeout ?? 300_000,
         maxTokens: config.maxOutputTokens,
-      }), reasoningEffort.value);
+      }), cliEffort);
       // issue #798：逐轮一份（本行的分解）与会话累计一份（`/tokens` 的分解），同一个收集器类。
       const turnReasoning = createReasoningEffortStats();
       const roundMessages = [

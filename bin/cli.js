@@ -77,6 +77,7 @@ import {
 import { formatGuardMetrics } from "./guard-metrics.js";
 // issue #798：`reasoning_effort` 的 CLI 面（旗标/env/slot 三通道裁决 + 请求通道注入 + 统计行）。
 import {
+  cliReasoningOverride,
   createReasoningEffortStats,
   reasoningStatsSuffix,
   resolveReasoningEffort,
@@ -159,15 +160,15 @@ const HELP_TEXT = `用法：
                       summarizer_failed：run 以 failed 结束、退出码 5，不会退回统计摘要。想要
                       「一次 LLM 都不调、永不失败」的折叠就显式选 fold-statistical（零 LLM）。
                       也可用 config 字段 compaction 固定（旗标优先）。
-  --effort <值>       思考强度（`reasoning_effort`，issue #798）。优先级 **--effort >
-                      LLM_KIT_REASONING_EFFORT > slots.default.reasoning_effort**——与既有 `--model`
+  --effort <值>       思考强度（reasoning_effort，issue #798）。优先级 **--effort >
+                      LLM_KIT_REASONING_EFFORT > slots.default.reasoning_effort**——与既有 --model
                       （env **压过**旗标）**故意不同**：旗标是「就这一轮」的意图，应当赢。
                       **不校验值域**（#788 parked）：值原样透传，非法值由上游的 4xx 列出它的合法清单
                       （qwen 族报 8 项、GLM 族报 7 项，两族不同 ⇒ 任何本地枚举都是错的）。
-                      `--effort ""` 视为**未提供**（不发这个字段，不是发一个空串）。
+                      --effort "" 视为**未提供**（不发这个字段，不是发一个空串）。
                       启动时 stderr 会打一行「本次值 / 来源哪个通道」；终局统计行在**上游真的回报了**
-                      `reasoning_tokens` 时才打 `reasoningTokens=…`（没回报就不打，绝不拿 0 冒充
-                      「没思考」）；引擎把 GLM 的 `none` 翻成 `low`（ADR-017）时另打 `effort=none→low`。
+                      reasoning_tokens 时才打 reasoningTokens=…（没回报就不打，绝不拿 0 冒充
+                      「没思考」）；引擎把 GLM 的 none 翻成 low（ADR-017）时另打 effort=none→low。
 
 环境变量：
   LLM_KIT_ENDPOINT   OpenAI 兼容 API 地址（必填）
@@ -1112,6 +1113,9 @@ async function runChatWithNotes({
   // `resolveReasoningEffort` 现算——同一个函数、同一个次序，两条路不可能给出不一致的优先级。
   const reasoningEffort = config.reasoningEffort
     ?? resolveReasoningEffort({ flag: effort, slot: config.reasoning_effort });
+  // 只有**旗标/env** 的值才注进请求通道；slot 的值照旧走 provider 构造参数（观测面因此分得清
+  // 「本次覆盖」与「配置文件」——判据 ① 的全部内容）。
+  const cliEffort = cliReasoningOverride(reasoningEffort);
   // 有事实才出声（与统计行同口径）：三处都没配 ⇒ 一行都不打，也不打「未设置」噪声。
   if (reasoningEffort.value !== undefined && reasoningEffort.label !== undefined) {
     noticeLog(
@@ -1148,7 +1152,7 @@ async function runChatWithNotes({
     ...providerPhaseTimeouts,
     timeoutMs: config.timeout ?? 300_000,
     maxTokens,
-  }), reasoningEffort.value);
+  }), cliEffort);
   const assemblyRoot = _assemblyRoot ?? createCliAssemblyRoot({
     dir,
     runId,
@@ -1219,7 +1223,7 @@ async function runChatWithNotes({
             timeoutMs: config.timeout ?? 300_000,
             maxTokens,
           }),
-        reasoningEffort.value,
+        cliEffort,
       ),
       config,
       cwd,

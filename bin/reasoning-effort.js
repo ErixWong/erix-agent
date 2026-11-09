@@ -63,6 +63,21 @@ export function resolveReasoningEffort({ flag, env = process.env, slot } = {}) {
 }
 
 /**
+ * 「本次 CLI 覆盖」的那一份值：只有**旗标或 env** 给的值才注进请求通道。
+ *
+ * slot 的值**不注**——它本来就走 provider 构造参数那条路，硬注会让观测面把配置文件里的默认
+ * 也报成 `request`，「这次覆盖的」与「配置文件里写的」那个二分（判据 ① 的全部内容）就地消失。
+ *
+ * @param {{ value?: string, source?: string }} resolved `resolveReasoningEffort` 的返回值
+ * @returns {string|undefined}
+ */
+export function cliReasoningOverride(resolved) {
+  return resolved?.source === "cliFlag" || resolved?.source === "cliEnv"
+    ? resolved.value
+    : undefined;
+}
+
+/**
  * 引擎与 CLI 会从 provider 对象上取走的成员名册（**防漂移表**，由
  * `test/cli-reasoning-effort-798.test.js` 钉住：漏一个转发就红）。
  *
