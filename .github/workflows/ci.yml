@@ -25,9 +25,12 @@ concurrency:
 #                    声明生成、离线打包、变异样本真跑。**每次事件都阻塞**，矩阵 22 + 24。
 #   · `registries` —— 「提交进库的表必须与真树对得上」那一族。PR 上**看得见但不停车**
 #                    （job 级 `continue-on-error`），`main` / 手工重跑上阻塞。
-#   · `docs`      —— 文档面 + 指令面那一族。同样：PR 上看得见不停车，`main` 上阻塞。
+#   · ~~`docs`~~ —— **已按用户裁决整个移出 CI**（261109）：脚本判不了文档，它能判的只有措辞；
+#                    剩下真值钱的两类（引用完整性、派生值抄件）改由**定期由 agent 跑一次全面文档检查**
+#                    承担（清单见 `docs/maintenance/doc-review-pass.md`）。文档闸仍可手动跑
+#                    （`npm run docs:pass`），但不再有任何 CI 事件会因它红。
 #
-# 严格度一点没降：**发版前置** `npm run release:day -- --stage preflight` 把这三族全部当阻塞项跑
+# 严格度一点没降：**发版前置** `npm run release:day -- --stage preflight` 把这两族全部当阻塞项跑
 # （它的步骤表在 `scripts/release-day.mjs` 的 `PREFLIGHT_STEPS`，文档见
 # `docs/maintenance/command-reference.md#release-day`）。分层只改变「PR 停不停车」，不改变「发版前必须全绿」。
 
@@ -184,57 +187,3 @@ jobs:
       # issue #689：发版日那条命令自己的反向证（全离线：合成树 + 假 runner）。
       - name: Release-day command self-test
         run: node scripts/release-day.mjs --self-test
-
-  # ══════════════════════════════════════════════════════════════════════════════
-  # 3. docs —— 文档面 + 指令面。同样是 PR 不停车、main 阻塞。
-  # ══════════════════════════════════════════════════════════════════════════════
-  docs:
-    name: docs · node 22
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    continue-on-error: ${{ github.event_name == 'pull_request' }}
-    steps:
-      # ⚠ 默认浅克隆（depth 1、不带 tag）会让 `check:docs` 直接 exit 2「未判定 TAG_MISSING」——
-      # 它的 changelog-date 判据要拿 registry 的 `dist-tags.latest` 对仓库里的 tag（本 PR 第一次跑 CI
-      # 就撞上了：registry 说 0.31.0 已发布，而浅克隆里没有 `v0.31.0`）。未判定既不是绿也不是红，
-      # 所以这一格必须取全 tag。
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install dev dependencies (no lockfile in this repo by design)
-        run: npm install --include=dev
-
-      - name: Documentation drift check
-        run: npm run check:docs
-
-      # issue #187：这条今天已经是绿的，所以它阻塞（`continue-on-error` 在 job 级，PR 上不停车）。
-      - name: Documentation drift check (strict)
-        run: npm run check:docs:strict
-
-      # issue #642：AGENTS 指令面的硬门（状态句 / 会过期的抄件 / 裸坐标 / 字节预算）。
-      - name: AGENTS instruction-face gate (status claims / expiring numbers / bare source lines)
-        run: npm run check:agents-directives
-
-      # 上一条自己的反向证（合成树夹具，不碰真文档）。
-      - name: AGENTS instruction-face gate self-test
-        run: node scripts/agents-directive-scan.mjs --self-test
-
-      # issue #560：退役扁平拼写的硬门，外加它自己的反向证。
-      - name: Retired flat-spelling gate
-        run: npm run check:docs-spelling
-
-      - name: Retired flat-spelling gate self-test
-        run: node scripts/retired-spelling-scan.mjs --self-test
-
-      - name: Doc example fences
-        run: npm run check:docs-examples
-
-      # issue #302：锚点自己的反向证。实测 ~7 分钟（本机独占，261109），是整条流水线最贵的一格，
-      # 而它只跟 `scripts/docs-drift-check.mjs` 及其夹具有关 ⇒ **PR 上不跑**（issue #802），
-      # `main` 与手工重跑上跑；发版前置里也跑（那里是阻塞项）。
-      - name: docs-drift-check self-test
-        if: github.event_name != 'pull_request'
-        run: node scripts/docs-drift-check.mjs --self-test

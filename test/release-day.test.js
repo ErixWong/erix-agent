@@ -85,14 +85,12 @@ test("--self-test：离线反向证 exit 0", () => {
 test("preflight 第 2 步（issue #715）：`[Unreleased]` 漏搬三态——红 exit 1 / 未判定 exit 2 / 绿 exit 0（真 CLI）", async () => {
   // 合成树：`npm run <script>` 全部替成 `node -e 0 --`（`--` 之后是 npm 追加的 `--hosts …`，不 `--` 的话
   // `node` 会把它当自己的选项而 exit 9）。第 2 步读的是 `package.json` + `CHANGELOG.md`，
-  // 其余六步在合成树上没有意义；真值面只有第 2 步，其余门禁在 `--self-test` 里另有反向证）。
+  // 其余四步在合成树上没有意义；真值面只有第 2 步，其余门禁在 `--self-test` 里另有反向证）。
   const dir = await makeTmp("erix-release-day-715-");
   const tree = join(dir, "tree");
   mkdirSync(tree, { recursive: true });
   const scripts = {
     "check:changelog": "node -e 0 --",
-    "check:docs": "node -e 0 --",
-    "check:docs:strict": "node -e 0 --",
     "check:release:real": "node -e 0 --",
     "check:release": "node -e 0 --",
     "check:host-consumers": "node -e 0 --",
@@ -114,7 +112,7 @@ test("preflight 第 2 步（issue #715）：`[Unreleased]` 漏搬三态——红
   // ① 红：版本节已开（未发布形态）+ 条目还停在 `[Unreleased]`
   const red = run(redChangelog, ["--hosts", tree]);
   assert.equal(red.status, 1, `漏搬形态必须 exit 1：\n${red.stdout}\n${red.stderr}`);
-  assert.match(red.stdout, /\[2\/7\][^\n]*\*\*红\*\*/u, "红要落在第 2 步上（不是第 1 步、也不是笼统一句失败）");
+  assert.match(red.stdout, /\[2\/5\][^\n]*\*\*红\*\*/u, "红要落在第 2 步上（不是第 1 步、也不是笼统一句失败）");
   assert.match(red.stdout, /2 条未入账条目停在/u, "判词要点名条数");
   assert.match(red.stdout, /4963293/u, "判词要自带可执行动作（4963293 的形状）");
   assert.match(red.stdout, /停在这一步/u, "红了就停，后面的前置不跑");
@@ -122,13 +120,13 @@ test("preflight 第 2 步（issue #715）：`[Unreleased]` 漏搬三态——红
   // ② 未判定：本版还没有版本节（还没切版）⇒ exit 2，不是绿也不是红
   const notJudged = run(redChangelog.replace(`${heading}\n\n`, ""), ["--hosts", tree]);
   assert.equal(notJudged.status, 2, `还没切版必须 exit 2：\n${notJudged.stdout}\n${notJudged.stderr}`);
-  assert.match(notJudged.stdout, /\[2\/7\][^\n]*\*\*未判定\*\*/u, "未判定要落在第 2 步上");
+  assert.match(notJudged.stdout, /\[2\/5\][^\n]*\*\*未判定\*\*/u, "未判定要落在第 2 步上");
   assert.match(notJudged.stdout, /还没切版/u, "读数要说清「还没切版」");
 
   // ③ 绿：版本节已开 且 `[Unreleased]` 为空 ⇒ 整趟 preflight 全绿 exit 0
   const green = run(["# Changelog", "", "## [Unreleased]", "", heading, "", "- older", ""].join("\n"), ["--hosts", tree]);
   assert.equal(green.status, 0, `版本节已开 + \`[Unreleased]\` 空必须 exit 0：\n${green.stdout}\n${green.stderr}`);
-  assert.match(green.stdout, /\[2\/7\][^\n]*→ 绿/u, "第 2 步要报绿");
+  assert.match(green.stdout, /\[2\/5\][^\n]*→ 绿/u, "第 2 步要报绿");
 });
 
 
@@ -164,30 +162,30 @@ test("AGENTS §4 的 preflight 清单与 PREFLIGHT_STEPS 逐格对账（中英�
   // ── 反向证：每格单独关一次 ⇒ 必须红（把文档里的数字改错 / 命令那侧变了而文档没跟上，两个方向都要咬） ──
   const cases = [
     {
-      name: "分母抄错（[2/7] → [2/8]）",
-      text: replaceOnce(texts["AGENTS.md"], "[2/7]", "[2/8]", "分母"),
+      name: "分母抄错（[2/5] → [2/8]）",
+      text: replaceOnce(texts["AGENTS.md"], "[2/5]", "[2/8]", "分母"),
       expect: /分母是 \/8/u,
     },
     {
-      name: "文档少一行（删掉 [4/7] 那一行）",
-      text: replaceOnce(texts["AGENTS.md"], "#   [4/7] check:docs:strict", "#   [4/7] ~~", "第 4 行")
-        .replace(/^#   \[4\/7\].*$/mu, ""),
-      expect: /清单列了 6 步，而 PREFLIGHT_STEPS 有 7 步/u,
+      name: "文档少一行（删掉 [4/5] 那一行）",
+      text: replaceOnce(texts["AGENTS.md"], "#   [4/5] check:release ", "#   [4/5] ~~", "第 4 行")
+        .replace(/^#   \[4\/5\].*$/mu, ""),
+      expect: /清单列了 4 步，而 PREFLIGHT_STEPS 有 5 步/u,
     },
     {
-      name: "步骤改名（check:docs:strict → check:docs-strict）",
-      text: replaceOnce(texts["AGENTS.md"], "[4/7] check:docs:strict", "[4/7] check:docs-strict", "第 4 步命令"),
-      expect: /命令列是.*check:docs-strict.*要求.*check:docs:strict/u,
+      name: "步骤改名（check:release → check:release-x）",
+      text: replaceOnce(texts["AGENTS.md"], "[4/5] check:release ", "[4/5] check:release-x ", "第 4 步命令"),
+      expect: /命令列是.*check:release-x.*要求.*check:release/u,
     },
     {
-      name: "序号跳号（[3/7] → [9/7]）",
-      text: replaceOnce(texts["AGENTS_cn.md"], "[3/7] check:docs", "[9/7] check:docs", "第 3 步序号"),
+      name: "序号跳号（[3/5] → [9/5]）",
+      text: replaceOnce(texts["AGENTS_cn.md"], "[3/5] ERIX_E2E_REAL=1 check:release:real", "[9/5] ERIX_E2E_REAL=1 check:release:real", "第 3 步序号"),
       expect: /按行序应为 \[3\//u,
     },
     {
       name: "命令那侧加了一步，文档没跟上（真值变了 ⇒ 两份文档都得红）",
       steps: [...PREFLIGHT_STEPS, { id: "new-gate", label: "check:new-gate", argv: ["npm", "run", "check:new-gate"] }],
-      expect: /PREFLIGHT_STEPS 有 8 步/u,
+      expect: /PREFLIGHT_STEPS 有 6 步/u,
     },
     {
       name: "新加的内联判据步骤忘了声明 docCommand（那一列无从推导）",

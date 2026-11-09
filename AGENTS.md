@@ -71,11 +71,12 @@ One row per gate: the command, what it judges, and the cold-layer anchor to read
 | `npm run check:config-leaf-values` | the config-leaf value tables against a live probe | `#check-config-leaf-values` |
 | `node bin/cli.js …` | the CLI locally, for debugging | `#cli-local` |
 
-- CI (`.github/workflows/ci.yml`) is **three jobs by judgement class** (issue #802): `real` (behaviour — blocking on
-  every event, node 22 **and** 24), `registries` (committed tables vs the tree) and `docs` (document/instruction
-  face) — the last two are visible but **not blocking on `pull_request`**. A release is still strict: `release:day
-  --stage preflight` runs all three as blocking steps. Install is `npm install --include=dev`, never `npm ci`.
-  Editing the workflow ⇒ `#ci` first. `check:host-consumers` and `npm run soak` stay out of CI.
+- CI (`.github/workflows/ci.yml`) is **two jobs by judgement class** (issue #802): `real` (behaviour — blocking on
+  every event, node 22 **and** 24) and `registries` (committed tables vs the tree, visible but **not blocking on
+  `pull_request`**). **There is no documentation job**: a script cannot judge a document, so documentation review is
+  a periodic agent pass (`docs/maintenance/doc-review-pass.md`), not a gate. Install is `npm install
+  --include=dev`, never `npm ci`. Editing the workflow ⇒ `#ci` first. `check:host-consumers` and `npm run soak` stay
+  out of CI.
 - **Gate reproducibility**: `check:docs` and `check:docs:strict` must exit 0 in a development worktree *and* on a
   fresh clone. A gate that needs `node_modules` (`check:inventory`, the `tsc` ratchets, `check:pack-links`,
   `check:release`) failing with `Cannot find module 'typescript'` in a bare checkout means **the gate could not
@@ -122,18 +123,16 @@ One row per gate: the command, what it judges, and the cold-layer anchor to read
 
 ## 4. Release day
 
-Four commands, in this order. The seven checklist rows below are reconciled row by row against `PREFLIGHT_STEPS` in
+Four commands, in this order. The five checklist rows below are reconciled row by row against `PREFLIGHT_STEPS` in
 `scripts/release-day.mjs`, and what each step means is `#release-day`:
 
 ```bash
 npm run release:day -- --stage preflight --hosts <host repo dirs>
-#   [1/7] check:changelog                       every public-surface merge named in this version's section
-#   [2/7] CHANGELOG [Unreleased] carry          entries still parked under `## [Unreleased]`
-#   [3/7] check:docs                            documentation audit (drift + EN/CN sync)
-#   [4/7] check:docs:strict                     the same, warnings block too
-#   [5/7] ERIX_E2E_REAL=1 check:release:real    real upstream; without the env a gate runs nothing = NOT judged
-#   [6/7] check:release                         offline: tarball / installed package / TS host / CLI fake upstream
-#   [7/7] check:host-consumers -- --hosts …     every host hit must already be covered by this version's guide
+#   [1/5] check:changelog                       every public-surface merge named in this version's section
+#   [2/5] CHANGELOG [Unreleased] carry          entries still parked under `## [Unreleased]`
+#   [3/5] ERIX_E2E_REAL=1 check:release:real    real upstream; without the env a gate runs nothing = NOT judged
+#   [4/5] check:release                         offline: tarball / installed package / TS host / CLI fake upstream
+#   [5/5] check:host-consumers -- --hosts …     every host hit must already be covered by this version's guide
 npm run release:day -- --stage publish       # prints the operation sheet, exits 3; run `npm publish` yourself
 npm run release:day -- --stage writeback --version <x.y.z> --published <x.y.z> [--published-date <YYYY-MM-DD>]
 npm run release:day -- --stage finalize      # tag the version cut → dual push → verify both sides → doc gates

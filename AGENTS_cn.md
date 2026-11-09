@@ -67,11 +67,11 @@
 | `npm run check:config-leaf-values` | 配置叶取值状态表对着一次实跑探针 | `#check-config-leaf-values` |
 | `node bin/cli.js …` | 本地跑 CLI，只为调试 | `#cli-local` |
 
-- CI（`.github/workflows/ci.yml`）**按判据性质分三个 job**（issue #802）：`real`（行为面，每次事件都阻塞，
-  node 22 **与** 24）、`registries`（提交进库的表 vs 树）、`docs`（文档/指令面）——后两个在 `pull_request` 上
-  看得见但**不停车**。发版仍然一样严：`release:day --stage preflight` 把三族全当阻塞步骤跑。装依赖用
-  `npm install --include=dev`——从不用 `npm ci`。改它 ⇒ 先读 `#ci`。`check:host-consumers` 与 `npm run soak`
-  必须留在 CI 之外。
+- CI（`.github/workflows/ci.yml`）**按判据性质分两个 job**（issue #802）：`real`（行为面，每次事件都阻塞，
+  node 22 **与** 24）与 `registries`（提交进库的表 vs 树，在 `pull_request` 上看得见但**不停车**）。
+  **没有文档 job**：脚本判不了文档，所以文档检查是**定期由 agent 跑的一趟检查**
+  （`docs/maintenance/doc-review-pass_cn.md`），不是闸。装依赖用 `npm install --include=dev`——从不用 `npm ci`。
+  改它 ⇒ 先读 `#ci`。`check:host-consumers` 与 `npm run soak` 必须留在 CI 之外。
 - **闸的可复现性**：`check:docs` 与 `check:docs:strict` 必须在开发工作树里**和**在全新克隆里都 exit 0。需要
   `node_modules` 的那些闸（`check:inventory`、三个 `tsc` 棘轮、`check:pack-links`、`check:release`）在裸克隆里以
   `Cannot find module 'typescript'` 失败，含义是**这道闸没能跑**，永远不是回归 ⇒ `#gate-reproducibility`。
@@ -108,18 +108,16 @@
 
 ## 4. 发版日
 
-四条命令，按这个顺序。下面七行清单与 `scripts/release-day.mjs` 里的 `PREFLIGHT_STEPS` 逐行对账，每一步判什么写在
+四条命令，按这个顺序。下面五行清单与 `scripts/release-day.mjs` 里的 `PREFLIGHT_STEPS` 逐行对账，每一步判什么写在
 `#release-day`：
 
 ```bash
 npm run release:day -- --stage preflight --hosts <host repo dirs>
-#   [1/7] check:changelog                       每个公共面合并都在本版段落里有名字
-#   [2/7] CHANGELOG [Unreleased] carry          还停在 `## [Unreleased]` 下的条目
-#   [3/7] check:docs                            文档审计（漂移 + 中英同步）
-#   [4/7] check:docs:strict                     同上，且告警也阻塞
-#   [5/7] ERIX_E2E_REAL=1 check:release:real    真实上游；没带那个环境变量 ⇒ 什么都没跑 = 未判定
-#   [6/7] check:release                         离线：包形状 / 装好的包 / TS 宿主 / CLI 假上游
-#   [7/7] check:host-consumers -- --hosts …     每个宿主命中都必须已被本版升级指南覆盖
+#   [1/5] check:changelog                       每个公共面合并都在本版段落里有名字
+#   [2/5] CHANGELOG [Unreleased] carry          还停在 `## [Unreleased]` 下的条目
+#   [3/5] ERIX_E2E_REAL=1 check:release:real    真实上游；没带那个环境变量 ⇒ 什么都没跑 = 未判定
+#   [4/5] check:release                         离线：包形状 / 装好的包 / TS 宿主 / CLI 假上游
+#   [5/5] check:host-consumers -- --hosts …     每个宿主命中都必须已被本版升级指南覆盖
 npm run release:day -- --stage publish       # 打印操作单，exit 3；`npm publish` 由你自己在终端跑
 npm run release:day -- --stage writeback --version <x.y.z> --published <x.y.z> [--published-date <YYYY-MM-DD>]
 npm run release:day -- --stage finalize      # 给切版打 tag → 双推 → 两侧各验一次 → 文档闸
