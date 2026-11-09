@@ -71,9 +71,11 @@ One row per gate: the command, what it judges, and the cold-layer anchor to read
 | `npm run check:config-leaf-values` | the config-leaf value tables against a live probe | `#check-config-leaf-values` |
 | `node bin/cli.js …` | the CLI locally, for debugging | `#cli-local` |
 
-- CI (`.github/workflows/ci.yml`) runs those blocking steps in a fixed order on node 22 **and** 24, and installs with
-  `npm install --include=dev` — never `npm ci`. Editing the workflow ⇒ `#ci` first (it names the two shapes that are
-  red on purpose). `check:host-consumers` and `npm run soak` must stay out of CI.
+- CI (`.github/workflows/ci.yml`) is **three jobs by judgement class** (issue #802): `real` (behaviour — blocking on
+  every event, node 22 **and** 24), `registries` (committed tables vs the tree) and `docs` (document/instruction
+  face) — the last two are visible but **not blocking on `pull_request`**. A release is still strict: `release:day
+  --stage preflight` runs all three as blocking steps. Install is `npm install --include=dev`, never `npm ci`.
+  Editing the workflow ⇒ `#ci` first. `check:host-consumers` and `npm run soak` stay out of CI.
 - **Gate reproducibility**: `check:docs` and `check:docs:strict` must exit 0 in a development worktree *and* on a
   fresh clone. A gate that needs `node_modules` (`check:inventory`, the `tsc` ratchets, `check:pack-links`,
   `check:release`) failing with `Cannot find module 'typescript'` in a bare checkout means **the gate could not

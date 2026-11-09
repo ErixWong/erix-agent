@@ -391,7 +391,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 
 | 文件 | 扁平写点 | 它断言的是哪一面 |
 | --- | --- | --- |
-| `test/examples/erix-run-core.test.js` | 21（`finalGuard`×19, `onEvent`×1, `onObserverError`×1） | `buildLoopOptions` 的完整装配形状（含 `finalGuard` 与两条观察者出口） |
+| `test/examples/erix-run-core.test.js` | 27（`finalGuard`×19, `onEvent`×1, `onObserverError`×1） | `buildLoopOptions` 的完整装配形状（含 `finalGuard` 与两条观察者出口） |
 | `test/examples/erix-run-details.test.js` | 0 | 装配形状的细节字段（本文件当前只有壳内写点） |
 | `test/examples/erix-run-readchain.test.js` | 0 | 读链装配（本文件当前没有上表口径内的写点） |
 | `test/examples/erix-run-tool-list.test.js` | 0 | 工具清单装配（本文件当前只有 `tools` / `prompt` 壳内写点） |
@@ -428,7 +428,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | 文件 | 写点 | 明细 | 分类 |
 | --- | --- | --- | --- |
 | `test/loop-deliverables.test.js` | 24 | `deliverables`×11, `finalGuard`×11, `onEvent`×2 | MIGRATE · 含 COMPAT-PIN 格 |
-| `test/examples/erix-run-core.test.js` | 21 | `finalGuard`×19, `onEvent`×1, `onObserverError`×1 | OWNED-BY-S6 |
+| `test/examples/erix-run-core.test.js` | 27 | `finalGuard`×25, `onEvent`×1, `onObserverError`×1 | OWNED-BY-S6 |
 | `test/loop-capabilities-namespace-498.test.js` | 20 | `deliverables`×9, `onEvent`×5, `finalGuard`×4, `onRound`×2 | COMPAT-PIN |
 | `test/loop-config-namespace-497.test.js` | 16 | `onEvent`×13, `finalGuard`×2, `onObserverError`×1 | COMPAT-PIN |
 | `test/loop-option-gate-496.test.js` | 15 | `onFoldSummary`×7, `finalGuard`×6, `deliverables`×2 | COMPAT-PIN |
@@ -506,8 +506,8 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `MIGRATE · NOT-OPTION-SURFACE`（重分类：不是 `runToolLoop` 选项面，**没有规位**） | 10 | 31 |  <!-- #741：`test/compact/fold-note-honesty-741.test.js` 并入本类（文件数 9→10，写点 0→0）：它的 `onEvent` 落在 `capabilities.hooks` 规位里，扁平写点实测 0 -->
 | `COMPAT-PIN` | 13 | 81 |  <!-- #436 又新增 7 点（`test/loop-deliverables-gap-436.test.js`）；小结按 --verify 打印的 AST 真值对齐 -->  <!-- #519 新增 4 点：`test/loop-direct-route-conflict-519.test.js`；小结由 --verify 打印的 AST 真值（逐点归片 73）对齐 -->
 | `OWNED-BY-S5` | 5 | 13 |
-| `OWNED-BY-S6` | 5 | 21 |
-| **合计（现在实测）** | **70** | **194** |
+| `OWNED-BY-S6` | 5 | 27 |
+| **合计（现在实测）** | **70** | **200** |
 
 脚注：
 
@@ -732,7 +732,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-v020-rc.test.js` | 3 | `session`×2, `stallDetection`×1 |
 | `test/loop-resume-notice.test.js` | 10 | `tools`×9, `reflection`×1 |
 | `test/loop.test.js` | 31 | `completion`×15, `stallDetection`×12, `reflection`×2, `onToolResult`×1, `tools`×1, `wrapup`×1 |
-| `test/examples/erix-run-core.test.js` | 26 | `finalGuard`×19, `tools`×15, `strategy`×5, `context`×3, `reflection`×3, `onEvent`×1, `onObserverError`×1 |
+| `test/examples/erix-run-core.test.js` | 26 | `finalGuard`×25, `tools`×15, `strategy`×5, `context`×3, `reflection`×3, `onEvent`×1, `onObserverError`×1 |
 | `test/loop-capabilities-namespace-498.test.js` | 14 | `deliverables`×9, `onEvent`×5, `finalGuard`×4, `retry`×3, `onRound`×2, `completion`×1, `context`×1, `modelMetadata`×1, `outputHygiene`×1, `partialPersistence`×1, `reflection`×1, `resume`×1, `session`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/loop-option-normalization.test.js` | 16 | `session`×8, `tools`×5, `wrapup`×3 |
 | `test/reflection.test.js` | 23 | `completion`×12, `reflection`×10, `resume`×1 |

@@ -1,19 +1,10 @@
-# issue #187：最小 CI —— node 22/24 矩阵 + 全量语法检查 + 本地门禁全套。
-# 口径来自工单 docs/tasks/261016-min-ci.md（issue #187 那份提案写于「零依赖 + 1154 用例」的年代，已过期）：
-#   - 仓库**故意没有 lockfile**（`package-lock.json` 被 .gitignore），所以是 `npm install --include=dev`，
-#     不是 `npm ci`（后者会直接报 "can only install with an existing package lock"）。
-#   - devDependencies 确实存在（`typescript` + `@types/node`，issue #213 授权，只为产 `.d.ts`）：
-#     `check:types` / `check:types-build` / `check:pack-links` / `check:release` 缺 `tsc` 会 exit 1，
-#     所以「零依赖不需要装」这一条不能再照抄。
-#   - `npm run soak` 需要真实 relay 配置与 key ⇒ **不进 CI**。
-#   - 不加缓存、不加 Windows/macOS（首版求简单；后者的前置 #185/#186 未做）。
 name: ci
 
 on:
   pull_request:
   push:
     branches: [main]
-  # 手工重跑入口（也是本单验收 C2 的验证通道）
+  # 手工重跑入口
   workflow_dispatch:
 
 permissions:
@@ -23,30 +14,39 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# ── 三个 job，按「判据性质」分层（issue #802）────────────────────────────────────
+#
+# 病根（261109 实测）：最近 200 次运行 138 成功 / 49 失败 / 13 取消（红率 25%）；抽 12 次失败，
+# **9 次落在「committed 表 vs 树」这类登记闸上**（兼容性钉子表 5、套件汇总 2、drift 自测 2、
+# 变异表 1、配置叶表 1、随包链接 1），真测试套件只红 1 次。于是 PR 的红基本不表示「坏了」，
+# 而表示「你动了一棵树，某张派生表该刷了」——那不是判定，那是税。
+#
+#   · `real`      —— 真的坏了才会红：语法、全量套件、套件汇总、CHANGELOG 覆盖、`tsc` 棘轮、
+#                    声明生成、离线打包、变异样本真跑。**每次事件都阻塞**，矩阵 22 + 24。
+#   · `registries` —— 「提交进库的表必须与真树对得上」那一族。PR 上**看得见但不停车**
+#                    （job 级 `continue-on-error`），`main` / 手工重跑上阻塞。
+#   · `docs`      —— 文档面 + 指令面那一族。同样：PR 上看得见不停车，`main` 上阻塞。
+#
+# 严格度一点没降：**发版前置** `npm run release:day -- --stage preflight` 把这三族全部当阻塞项跑
+# （它的步骤表在 `scripts/release-day.mjs` 的 `PREFLIGHT_STEPS`，文档见
+# `docs/maintenance/command-reference.md#release-day`）。分层只改变「PR 停不停车」，不改变「发版前必须全绿」。
+
 jobs:
+  # ══════════════════════════════════════════════════════════════════════════════
+  # 1. real —— 行为面。真的坏了才会红。
+  # ══════════════════════════════════════════════════════════════════════════════
   test:
-    name: node ${{ matrix.node }}
+    name: real · node ${{ matrix.node }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        # issue #774：矩阵从 `[22]` 扩到 `[22, 24]`。理由不是「多一个版本好看」，而是**判定只能跟 argv 走、
-        # 不能跟 runner 走**：`test/loop-snapshot-round-residue-735.test.js` 的变异用例 spawn 子进程时没钉
-        # reporter，Node 24 的默认 reporter 是 spec ⇒ `not ok …③…` 永远匹不上，那一条在 22 上绿、在 24 上红，
-        # 而单一 22 矩阵永远看不见它红。22 仍是 `engines` 下限与宿主实跑版本（见
-        # docs/maintenance/command-reference.md 的 ci 段），24 是 agent 与新宿主实际会跑到的版本。
-        # 加 24 前现测的既有 reporter 类红（都在本片里修了）：
-        #   · `check:mutation:run`：24 下 28 条样本全报「红了但不是该报的那条」（0 通过）⇒ 已钉 `--test-reporter=tap`；
-        #   · `check:test-summary`：24 的 `npm test` 日志是 spec ⇒ 现在报「未判定 / 日志不是 TAP」exit 2，
-        #     而 `npm test` 已钉 tap ⇒ 两个 job 交回的都是 TAP，数字照旧对账。
-        # 不拿 `continue-on-error` 当遮羞布：24 这一格是**阻塞**的。
+        # issue #774：22 是 `engines` 下限与宿主实跑版本，24 是 agent 与新宿主实际会跑到的版本。
+        # 「只在 22 上成立的判断不是判断」：reporter 类红就是只在一个 runner 上出现的那一类。
         node: [22, 24]
     steps:
-      # issue #691：`fetch-depth: 0` 是 CHANGELOG 覆盖闸的**硬前置**——`check:changelog` 要读
-      # `git log --first-parent --merges <上一个 tag>..<本版 tag|HEAD>` 与 `git tag`，而默认的浅克隆
-      # （depth 1、不带 tag）两样都没有：那时它按设计 exit 2（读不出真值 ≠ 绿），CI 会一直红。
-      # 取全历史 + 全 tag 是这一步唯一的目的；本仓体积小，代价可以忽略。
+      # issue #691：`fetch-depth: 0` 是 CHANGELOG 覆盖闸的硬前置（它要读 first-parent 合并历史与 tag）。
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -55,251 +55,176 @@ jobs:
         with:
           node-version: "${{ matrix.node }}"
 
-      # 没有 lockfile ⇒ npm install（不是 npm ci）。依赖只有 2 个 dev 包，故不配缓存。
+      # 没有 lockfile（本仓刻意 gitignore `package-lock.json`）⇒ `npm install`，**永远不用 `npm ci`**。
       - name: Install dev dependencies (no lockfile in this repo by design)
         run: npm install --include=dev
 
-      # issue #187：全量语法检查（旧的 `npm run check` 只看 src/index.js 一个文件，bin/ 语法错不会红）
       - name: Syntax check (all tracked .js/.mjs/.cjs)
         run: npm run check:syntax
 
-      # issue #301：`npm test` 的 TAP 汇总（`# tests` / `# pass` / `# fail` / `# skipped`）此前只活在日志
-      # 正文里，没有任何机器面读它——于是「CI 全绿」是个没有数字的形容词，本地与 CI 的 skip 差几条只能
-      # 人肉数。现在这一步把输出**落成文件**，下一步拿它与入库的期望值对账。
-      # ⚠ `set -o pipefail` 不能删：没有它，`| tee` 会吃掉 `node --test` 的非 0 退出码（红变绿）。
-      # issue #774：reporter 钉在 `package.json` 的 `test` 脚本里（`node --test --test-reporter=tap`），
-      # 不写在本步的命令行上——这样本地、agent、CI 拿到的都是同一份 TAP 形状；下一步只读 TAP。
+      # issue #301 / #774：reporter 钉在 `package.json` 的 test 脚本里（`--test-reporter=tap`），
+      # 这样本地 / agent / CI 交回同一份 TAP 形状；`set -o pipefail` 不能删（否则 `| tee` 会吃掉退出码）。
       - name: Test suite
         run: |
           set -o pipefail
           npm test 2>&1 | tee "$RUNNER_TEMP/test-suite.log"
 
-      # 阻塞（issue #301）：把上一步落盘的 TAP 汇总与 `test/test-suite-baseline.json` 逐项对账，
-      # 打印固定前缀 `TEST-SUMMARY`（可 grep / 可 diff）并写进 `$GITHUB_STEP_SUMMARY`（运行页直接看得到数字，
-      # 不必再下日志包）。三条红线：`tests` 必须逐字等于登记值、`fail` 必须为 0、`skipped` **不得高于**登记上限；
-      # 读不到完整汇总（截断 / 不是 `npm test` 的输出）按 exit 2 红，不按「没问题」处理。
-      # 数字漂了的合法处置只有两条：有意增删用例 ⇒ 同片改登记表 + 补一条 observations；意外漂了 ⇒ 修回去。
-      # **不许为了对上数字去改测试**（加 skip / 删用例），也不许手改 CI 里的数字——登记表是唯一期望值来源。
-      # issue #774：这一步只读 TAP。上一步的 `npm test` 已钉 `--test-reporter=tap`，所以 node 24 这个 job
-      # 交回的也是 TAP、照样对账；万一 reporter 被改回去，这一步报的是 `NOT_TAP_LOG`「未判定」（exit 2），
-      # 不是「掉了用例」——runner 换默认 reporter 不是回归，但也不许被读成绿。
+      # 套件汇总与登记值对账：`tests` 逐字相等、`fail` 为 0、`skipped` 不超登记上限；
+      # 读不到完整汇总按 exit 2 红（「未判定」不等于绿）。数字漂了的合法处置只有改登记表 + 补 observations。
       - name: Test suite summary reconcile (CI numbers vs registered expectations)
         run: npm run check:test-summary -- --log "$RUNNER_TEMP/test-suite.log"
 
-      # 阻塞：上一条自己的反向证（合成 TAP 夹具 + 合成登记表，不落盘、不跑测试）——
-      # 登记值改错必须红并点名差值、`skipped` 超上限必须红、`fail` 非 0 必须红、汇总行自相矛盾必须红、
-      # 读不到汇总必须 exit 2（不许假绿）、两段汇总按 `--pick` 取对，外加 ci.yml 自己的接线
-      # （Test suite 落文件 + 本步骤存在 + 登记表形状）——删掉接线的那一刀在这里红。
-      # 为什么不并进上一条：那条证的是「今天的数字与登记值对得上」，这条证的是「判据还拦得住」。
+      # 上一条自己的反向证（合成 TAP 夹具 + 合成登记表）：判据还拦得住吗。
       - name: Test suite summary reconcile self-test
         run: npm run check:test-summary -- --self-test
 
-      # 阻塞（issue #691）：**碰到公开面的 first-parent 合并必须在本版 CHANGELOG 段里被点名**。
-      # 病根：既有 CHANGELOG 门禁只查「已有条目是否中英成对」，不查「该不该有一条」——0.30.0 发布时
-      # 段里只点名 9 个号，而区间里 53 个合并碰到了公开面（src/ / bin/ / package.json / 公开文档集），
-      # 其中 48 个一个号都没写。复盘时人工「主题式阅读」只找出 4 条，机械按路径类别判是 48 条。
-      # 判据只查一边（碰到公开面的合并号 ⊆ 本版段号 ∪ 带 why 的豁免登记），反向不查：散文里引用历史
-      # issue 号是合法的，反向会把它们判成假红。只碰 test/ / 内部 docs/ / scripts/ / delivery/ 的合并
-      # 归**类别豁免**（规则在脚本里，不逐条登记）；只有「类别判成豁免、但确实行为可见」才逐条登记，
-      # 且空 why / 空转条目 / 条数双向漂移都红。读不出真值（区间无 tag、段读不到、git 不可用）exit 2。
-      # 放在 `Test suite` / `check:test-summary` 之后：本闸读的是 CHANGELOG 与 git 历史，与用例跑没跑过无关，
-      # 但排在测试之后能让「这一版到底改了什么」在测试已经绿的前提下判；放在 `check:docs` 之前：
-      # 它是文档面里最便宜的一条，且它红了就没有必要再跑那一族。
+      # issue #691：碰到公开面的 first-parent 合并必须在本版 CHANGELOG 段里被点名。
       - name: CHANGELOG coverage of public-surface merges
         run: npm run check:changelog
 
-      - name: Documentation drift check
-        run: npm run check:docs
-
-      # 阻塞（issue #187 原本写 continue-on-error 先观察，今天它已经是绿的 ⇒ 直接当阻塞门禁）
-      - name: Documentation drift check (strict)
-        run: npm run check:docs:strict
-
-      # 阻塞（issue #642）：**AGENTS 指令面**的硬门——`AGENTS.md` / `AGENTS_cn.md` 是每次会话自动注入、
-      # 模型不查证就照着执行的那一页，所以上面三类「住在别处、会过期」的可变量不许写进去：工单状态句
-      # （工单号 + 状态词）、会过期的实测抄件（实测动词 + 数字）、裸源码坐标（带行号的 src 路径）。
-      # 例外是显式登记表 + 理由（空转条目即红），常量那一类当场与 scripts/*.mjs 的现值对账；
-      # 存量命中按「文件 × 类别」钉上限（棘轮：清账不红、超上限红）。上限本身是派生态：这一步还跑
-      # `--verify`，逐格要求「表 == 实测」（手改派生数 = 伪造，抄高抄低都是红；唯一合法改法是 `--sync`，
-      # issue #644 ②）。
-      # 位置紧跟 `Documentation drift check` 一族：它和 check:docs:strict 一样是「文档面」的门。
-      - name: AGENTS instruction-face gate (status claims / expiring numbers / bare source lines)
-        run: npm run check:agents-directives
-
-      # 阻塞：上一条自己的反向证（**合成树夹具**，不碰真文档）——往夹具的 AGENTS 里注入「上限 − 实测 + 1」条
-      # 状态断言 / 实测数 / 裸坐标都必须红并点名文件:行（注入数自适应，所以清过账之后这例不会自己变红，
-      # issue #644 ①），塞一条登记过的例外必须绿，登记表里留一条用不上的必须红（#210 R2），同一句塞进
-      # CHANGELOG 或 docs/ 必须绿（历史一侧只计数不判定），变异没落上也算失败；整套用例在三种欠账形态
-      # （贴上限 / 余量 +1 / 余量 +5）下裁决必须完全相同。
-      # 为什么不并进上一条：那条证的是「今天的指令面干净」，这条证的是「判据还拦得住」。
-      - name: AGENTS instruction-face gate self-test
-        run: node scripts/agents-directive-scan.mjs --self-test
-
-      # 阻塞（issue #560）：退役扁平拼写的硬门（#523 的扫描器）。
-      # 现状类（architecture* / charts* / requirements* / testing* / maintenance-policy* / soak.md）
-      # 出现退役扁平写点 ⇒ 红；历史类与契约类的命中数必须等于钉子（SUSPECT / UNPINNED 同样红）；
-      # 未登记的 `docs/**.md` 按现状类照扫（「这张单没管到」不是豁免理由）。
-      - name: Retired flat-spelling gate
-        run: npm run check:docs-spelling
-
-      # 阻塞：上面那道门的反向证（内存夹具，不写盘）——同一套判据里改一处必须红、不改必须绿，
-      # 分类清单必须按路径覆盖 EN/CN，未登记路径必须归现状类，钉子空转/抬升/掉落都必须红（#210 R2）。
-      # 为什么不并进上面那条：那条证的是「今天的文档干净」，这条证的是「判据还拦得住」。
-      - name: Retired flat-spelling gate self-test
-        run: node scripts/retired-spelling-scan.mjs --self-test
-
-      - name: Doc example fences
-        run: npm run check:docs-examples
-
-      - name: Packaged markdown link closure
-        run: npm run check:pack-links
-
-      # 阻塞（issue #505）：`test/contract/` 发布面判据自己的反向证——同一套判据跑在**内存夹具**上
-      # （不跑 npm pack、不联网、不写盘）：从 files 删一条真实存在的 test/contract/*.js 必须红并点名、
-      # 加一条不存在的 test/contract/ghost.js 必须红并点名、什么都不改必须绿，登记表空转（文件没了 /
-      # 其实随包了 / why 为空 / path 不是具体文件 / 条数偏离上限）也必须红，变异没落上同样算失败（#210 R2）。
-      # 为什么不并进上面那条：那条证的是「今天的树对得上」，这条证的是「判据还拦得住」——把判据改坏时
-      # 前者照样 exit 0（判据 1 一旦只查 files→包方向，漏包方向就再也红不了）。
-      - name: Pack-link contract publish-surface self-test
-        run: node scripts/pack-link-check.mjs --self-test
-
-      # 阻塞（issue #534）：清点表 `test/compat-pin-inventory.md` 自称「逐行零误差」，但在此之前
-      # **没有任何东西跑它的 `--verify`**——表漂移完全静默（活证：A12 以 3 处不一致交上来，
-      # 只因主 agent 手跑 `--verify` 才被抓到）。成本实测 1.82 s / 150 MB，比 check:release 便宜一个量级。
-      # 放在 Test suite 之后：表是对 test/**.js 的清点，测试还没跑就验表没意义。
-      # ⚠ 表漂了**不许手改数字**：改测试文件里的兼容钉子必须同片机器刷表
-      #   `node scripts/flat-count-inventory.mjs . --sync test/compat-pin-inventory.md`。
-      - name: Compatibility-pin inventory verify
-        run: npm run check:inventory
-
-      # 阻塞（issue #689）：发版日那条命令（`npm run release:day`）自己的反向证。
-      # 病根：0.30.0 发布当天两件事都是**人工串步骤**漏掉的——发布态没回写（文档还写着「未发布 / latest 0.29.0」），
-      # 以及指南说「16 个导出已在 0.30 删除」而运行时全在。本步守的是那条命令**拦得住**：
-      # preflight 某步红必须停在那一步并点名、闸门关着的真上游与不在的 `--hosts` 目录必须判「未判定」而不是绿、
-      # 回写失败必须留下可续跑的「已发布、未回写」状态且重跑从 writeback 续（不重复发布）、没回写就 finalize 必须红
-      # （不许没发布就打 tag）、两侧 `ls-remote` 不一致必须红、`--dry` 一个字节都不写、`--sync` 只动发布态那几句。
-      # 全离线：合成树 + 假 runner，不联网、不装包、不碰 ~/.erix 与真实 ~/.npmrc；例数由命令自己打印。
-      # 与 `Compatibility-pin inventory verify` 挨着放：同一族是「提交进库的东西必须与真树对得上」——
-      # 那张表是清点，这条是发版日那张状态机与回写面。
-      - name: Release-day command self-test
-        run: node scripts/release-day.mjs --self-test
-
-      # 阻塞（issue #586）：配置叶子「值类型 / 值域」现状表 docs/config-leaf-value-status{,_cn}.md 由探针
-      # 生成（43 叶 × 8 错值 = 344 格，每格过一次真的两轮 runToolLoop），这里重跑探针并把重算出来的两张表
-      # 与入库的逐字比对：漂了或手改过 ⇒ exit 1 并点名文件。实测约 0.8 秒，所以它阻塞。
-      # ⚠ 表漂了**不许手改数字**：`node scripts/config-leaf-value-probe.mjs --sync docs/config-leaf-value-status.md docs/config-leaf-value-status_cn.md`。
-      # 探针自己还有两道自检（`configSchemaSelfCheck` 红 / 三次基线跑的指纹不一致 ⇒ exit 2），所以「探针坏了」
-      # 不会静默成一张漂亮的红表。
-      - name: Config-leaf value status verify
-        run: npm run check:config-leaf-values
-      # 阻塞（issue #257 T7）：常驻变异样本表 `test/mutation-samples.md` 的**验表**。
-      # 表里第 4/5/6 列（行号 / 锚点 sha256 / 命中数）与合计行由真树重算，手改数字 = 伪造 ⇒ 本步红。
-      # 放在 Compatibility-pin inventory verify 之后：两条是同一族（**提交进库的表必须与真树对得上**），
-      # 挨着放，红了能一眼看出是哪张表漂了。本步只读 `src/` / `bin/` 与表，不依赖测试跑没跑过。
-      # ⚠ 表漂了**不许手改数字**：`node scripts/mutation-sample-check.mjs --sync test/mutation-samples.md`。
-      - name: Mutation sample table verify
-        run: npm run check:mutation
-
-      # 阻塞：上一条自己的反向证——同一套判据跑在**内存夹具**上（不落盘、不碰真树）：
-      # 手改行号 / sha / 合计行必须红，锚点死了 / 锚点重复 / 捕获者没了 / 空变异 / 签名被削弱必须红，
-      # 删一条样本（含「删了再 --sync 把合计刷对」）必须红在样本数下限，`--sync` 只许改派生列，
-      # 变异没落上也必须判红（#210 R2）。为什么不并进上一条：那条证的是「今天的表与树对得上」，
-      # 这条证的是「判据还拦得住」——把判据改坏时前者照样 exit 0。
-      - name: Mutation sample check self-test
-        run: node scripts/mutation-sample-check.mjs --self-test
-
-      # 阻塞（issue #429）：零消费者导出 × `@deprecated` 登记的对账门。
-      # 候选清单由 `check:exports` 的 `computeInventory()` **现算**（import 进来，不抄第二份）；
-      # 登记取自源码里**紧贴声明**的那个 JSDoc 块（贴错位置 tsc 会静默丢掉，所以位置本身是判据）。
-      # 红：候选没登记（R1）/ 有消费者的名字被标删除（R2）/ 版本不是 0.30（R3）/ 没写迁移目标（R4）/
-      # 标记块没贴声明（R5）/ 认不出贴给谁（R6），逐条点名 `符号 @ 文件:行`。
-      # 它**只证仓内**零消费者：宿主仓不在扫描面里 ⇒ 删前另核宿主，本步不代表「可以删了」。
-      - name: Deprecated-export registry reconciliation
-        run: npm run check:exports:deprecated
-
-      # 阻塞：上一条自己的反向证（真树内存副本，不写盘）——基线绿、删一条登记 ⇒ 红并点名、
-      # 还原 ⇒ 绿、**给有消费者的符号也标上 ⇒ 红并点名**、版本写错 / 迁移目标指到空气里 /
-      # 块与声明之间夹空行 / internal-only 被标删除 都要红，变异没落上一律算失败（#210 R2）。
-      - name: Deprecated-export registry self-test
-        run: node scripts/deprecated-export-check.mjs --self-test
-
-      # 阻塞（issue #687）：上上条那一族都只在**文档与登记**这一侧对账，没有一条把「指南说了什么」与
-      # 「装好的包真的导出什么」放在一起比——0.30.0 指南声称那一批导出已删除，而发布物
-      # 一个都没删，这一态可以一路绿到发布之后。真正的对账在 `npm run check:release` 第 2 步（用**装好的包**
-      # 的运行时导出面判，红就点名 `名字 @ 指南文件:行 @ 入口`，读不出 ⇒ exit 2）；本步是那条闸自己的反向证
-      # （合成夹具 + 真指南只读，不装包）：登记表清空 ⇒ 逐名红、空 `why` ⇒ 红、空转条目 ⇒ 红、
-      # 表解析不出 ⇒ exit 2，变异没落上一律算失败（#210 R2）。例数由命令自己打印。
-      - name: Guide removal gate self-test
-        run: node scripts/guide-removal-gate.mjs --self-test
-
+      # issue #374：test/ 卫生（`makeTmp` 而不是裸 `mkdtemp`），外加它自己的反向证。
       - name: Test hygiene guard
         run: npm run check:tests
 
-      # 阻塞（issue #374）：守卫自己的反向证——同一张规则表跑在**内存假文件集合**上（不落盘、不碰 test/）。
-      # `mkdtempSync` / `mkdtemp` / `fs.mkdtemp` 必须红，`makeTmp` 必须绿，`test-hygiene-exempt: <理由>` 绿而
-      # 缺理由红且点名行号，`test/helpers/tmp.js` 自身不计数，变异没落上也算失败（#210 R2）。
-      # 为什么不并进上面那条：那条证的是「今天的 test/ 干净」，这条证的是「规则表还拦得住」——改坏规则表时
-      # 前者照样 exit 0（实测：把 bare-mkdtemp 的 Sync 变体删掉 ⇒ check:tests 仍绿，本步 3 例红）。
       - name: Test hygiene guard self-test
         run: node scripts/test-hygiene-check.mjs --self-test
 
-      # --checkJs 棘轮（issue #214）：只减不增。
-      # ⚠ 基线的**唯一真值**是 `scripts/type-check-ratchet.mjs` 里的 `BASELINE_ROOT` / `BASELINE_WITH_TOOLS`；
-      #   本行不抄那两个数（抄件没有闸、会腐烂）：要现值就跑 `npm run check:types -- --baseline`。
-      # 干净 checkout 里没有生成的 src/**/*.d.ts；若残留会让棘轮脚本自己硬失败（假绿防线）。
+      # --checkJs 棘轮（issue #214）：只减不增。基线真值在 `scripts/type-check-ratchet.mjs`，本文件不抄。
+      # 干净 checkout 里没有生成的 `src/**/*.d.ts`；残留会让棘轮自己硬失败（假绿防线）。
       - name: Type-error ratchet
         run: npm run check:types
 
-      # 工具档（`--with-tools`）是**另一档基线**：`src/tools/file-tools.js` 与 `src/skills/loader.js` 不在包根的
-      # import 图里，于是 `BASELINE_WITH_TOOLS` 曾经没有任何 CI 闸看着（issue #653）——那个常量漂了也看不见。
-      # ⚠ 基线的**唯一真值**仍是 `scripts/type-check-ratchet.mjs` 的 `BASELINE_WITH_TOOLS`，本行不抄那个数。
+      # issue #653：工具档是**另一档基线**，不跑它那个常量漂了也看不见。
       - name: Type-error ratchet (tools entry tier)
         run: npm run check:types -- --with-tools
 
-      # issue #417：strict 口径的**棘轮**（阻塞）——与上面那条是**同一张依赖图**，只多一个 `--strict`。
-      # 它卡的是「新增的 strict 错」，不是存量：基线（`BASELINE_STRICT_ROOT` / `BASELINE_STRICT_WITH_TOOLS`）
-      # 就是本票落地那一刻的实测值，存量按文件切片在后续 PR 里一档一档降。
-      # ⚠ 假绿防线仍然在：tsc 起不来 / tsc 非 0 退出却一条错都没解析出来 / 共用的陈旧声明守卫撞上残留的
-      # `src/**/*.d.ts`（实测：`npm run types:build` 之后直接跑本步 ⇒ exit 1，因为声明会把实现遮成 0 个错）；
-      # 另外「实测 0 而基线 > 0」也按检查面失效判红。两档基线必须同一笔提交里一起测、一起降。
+      # issue #417：strict 口径的棘轮（阻塞）。它卡的是「新增的 strict 错」，不是存量。
       - name: Type-error strict ratchet
         run: npm run check:types:strict
 
-      # 同一档的工具档（issue #653）：两档必须同一笔提交里一起测、一起降，那就得两档都在 CI 上被判。
-      # ⚠ 基线真值是 `scripts/type-check-ratchet.mjs` 的 `BASELINE_STRICT_WITH_TOOLS`，本行不抄。
       - name: Type-error strict ratchet (tools entry tier)
         run: npm run check:types:strict -- --with-tools
 
       - name: Declaration build assertion
         run: npm run check:types-build
 
-      # 闸门（ERIX_E2E_REAL=1）在 CI 里是关着的 ⇒ 这条 exit 0 并打印分类原因：
-      # 它验的是「装好的 CLI 打真上游」这套自检装置本身没坏，不代表真上游可用。
+      # 闸门（ERIX_E2E_REAL=1）在 CI 里是关着的 ⇒ 这条 exit 0 并打印分类原因（验的是装置本身没坏）。
       - name: Gated real-upstream CLI smoke (gate closed in CI)
         run: npm run check:cli-real
 
-      # 离线、自清洁、约 15 s，但矩阵里跑两遍纯浪费 ⇒ 只在 node 22 跑一次
+      # 离线、自清洁、约 15 s，矩阵里跑两遍纯浪费 ⇒ 只在 node 22 跑一次。
       - name: Release check (offline pack → install → contract suites → tsc --strict → CLI smoke)
         if: matrix.node == 22
         run: npm run check:release
 
-      # 阻塞（issue #302）：--self-test 的期望集合与「本机有没有 docs/tasks/」彻底解耦——那两条 `#280`
-      # 树形用例现在跑在**合成树夹具**上（无档案目录 / 空档案目录 / 有档案目录，三种形状各跑一遍），
-      # 落地检查比对的是夹具声明的档案清单，而不是这台机器上的真实实物数。于是同一提交在干净检出
-      # （CI）与开发机上给同一个结论：三种树形实测各 **103 例全绿、0 红**（造树方式见报告：
-      # `git archive HEAD | tar -x` 之后分别不建 / 建空 / 建带文件的 `docs/tasks/` 各跑一遍）。
-      # #281 时期那条 `continue-on-error: true` 的理由（干净克隆里预期红 3 条）已经不成立，故摘掉转阻塞。
-      # ⚠ 红一条就是回归，按回归查——别再把它当「观测项」。
-      - name: docs-drift-check self-test
-        run: node scripts/docs-drift-check.mjs --self-test
-
-      # 阻塞（issue #257 T7）：样本表里每一条**真的会被闸咬住**的机器证据——逐条把变异写进真文件、
-      # 跑该条的捕获者、要求它**红且红在该报的那条断言上**（只认 `not ok N - …`，通过时的 `ok N -`
-      # 不算），再还原、再跑一遍要求**绿**（否则这条红不能归因给变异）。
-      # 为什么放在**最后**：① 它跑的是单个测试文件，前面 `Test suite` 已经绿了，「变异后的红」才可归因；
-      # ② 它是整条流水线里**唯一会临时改写 tracked 源文件**的步骤（`src/` / `bin/`），放在末尾，
-      #    后面没有任何步骤会读到一个刚被变异-还原过的树；还原由脚本自己逐条校验（内容与变异前不一致
-      #    就停手并红），并挂了 SIGINT/SIGTERM 还原钩子。实测 8 条 × (变异后 + 还原后) 共 16 次
-      #    `node --test <单文件>`，约 4.5 s。
+      # issue #257 T7：样本表里每一条**真的会被闸咬住**的机器证据。放最后：它跑单个测试文件
+      # （前面 `Test suite` 已绿，变异后的红才可归因），且是唯一会临时改写 tracked 源文件的步骤。
       - name: Mutation samples actually bite (mutate → red → restore → green)
         run: npm run check:mutation:run
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # 2. registries —— 「提交进库的表必须与真树对得上」。
+  #    PR 上不停车（看得见、不阻塞合并）；main / 手工重跑上阻塞。发版前置里仍然是阻塞项。
+  # ══════════════════════════════════════════════════════════════════════════════
+  registries:
+    name: registries · node 22
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dev dependencies (no lockfile in this repo by design)
+        run: npm install --include=dev
+
+      # issue #534：清点表 `test/compat-pin-inventory.md` 的 `--verify`。
+      # ⚠ 表漂了不许手改数字：`node scripts/flat-count-inventory.mjs . --sync test/compat-pin-inventory.md`
+      # （issue #802 起单归属分派行的写点也是派生值，`--sync` 能自己刷；跨片行仍是人工格，会点名 MANUAL_CELL）。
+      - name: Compatibility-pin inventory verify
+        run: npm run check:inventory
+
+      # issue #586：配置叶「值类型 / 值域」现状表由探针重算再逐字比对。
+      # ⚠ 刷表：`node scripts/config-leaf-value-probe.mjs --sync docs/config-leaf-value-status.md docs/config-leaf-value-status_cn.md`
+      - name: Config-leaf value status verify
+        run: npm run check:config-leaf-values
+
+      # issue #257 T7：变异样本表的验表（第 4/5/6 列与合计行由真树重算）。
+      # ⚠ 刷表：`node scripts/mutation-sample-check.mjs --sync test/mutation-samples.md`
+      - name: Mutation sample table verify
+        run: npm run check:mutation
+
+      # 上一条自己的反向证（内存夹具，不落盘、不碰真树）。
+      - name: Mutation sample check self-test
+        run: node scripts/mutation-sample-check.mjs --self-test
+
+      - name: Packaged markdown link closure
+        run: npm run check:pack-links
+
+      # issue #505：`test/contract/` 发布面判据自己的反向证（内存夹具）。
+      - name: Pack-link contract publish-surface self-test
+        run: node scripts/pack-link-check.mjs --self-test
+
+      # issue #429：零消费者候选表 × `@deprecated` 登记表，外加它自己的反向证。
+      - name: Deprecated-export registry reconciliation
+        run: npm run check:exports:deprecated
+
+      - name: Deprecated-export registry self-test
+        run: node scripts/deprecated-export-check.mjs --self-test
+
+      # issue #687：移除闸的反向证（装好的包 × 运行时导出面）。
+      - name: Guide removal gate self-test
+        run: node scripts/guide-removal-gate.mjs --self-test
+
+      # issue #689：发版日那条命令自己的反向证（全离线：合成树 + 假 runner）。
+      - name: Release-day command self-test
+        run: node scripts/release-day.mjs --self-test
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # 3. docs —— 文档面 + 指令面。同样是 PR 不停车、main 阻塞。
+  # ══════════════════════════════════════════════════════════════════════════════
+  docs:
+    name: docs · node 22
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dev dependencies (no lockfile in this repo by design)
+        run: npm install --include=dev
+
+      - name: Documentation drift check
+        run: npm run check:docs
+
+      # issue #187：这条今天已经是绿的，所以它阻塞（`continue-on-error` 在 job 级，PR 上不停车）。
+      - name: Documentation drift check (strict)
+        run: npm run check:docs:strict
+
+      # issue #642：AGENTS 指令面的硬门（状态句 / 会过期的抄件 / 裸坐标 / 字节预算）。
+      - name: AGENTS instruction-face gate (status claims / expiring numbers / bare source lines)
+        run: npm run check:agents-directives
+
+      # 上一条自己的反向证（合成树夹具，不碰真文档）。
+      - name: AGENTS instruction-face gate self-test
+        run: node scripts/agents-directive-scan.mjs --self-test
+
+      # issue #560：退役扁平拼写的硬门，外加它自己的反向证。
+      - name: Retired flat-spelling gate
+        run: npm run check:docs-spelling
+
+      - name: Retired flat-spelling gate self-test
+        run: node scripts/retired-spelling-scan.mjs --self-test
+
+      - name: Doc example fences
+        run: npm run check:docs-examples
+
+      # issue #302：锚点自己的反向证。实测 ~7 分钟（本机独占，261109），是整条流水线最贵的一格，
+      # 而它只跟 `scripts/docs-drift-check.mjs` 及其夹具有关 ⇒ **PR 上不跑**（issue #802），
+      # `main` 与手工重跑上跑；发版前置里也跑（那里是阻塞项）。
+      - name: docs-drift-check self-test
+        if: github.event_name != 'pull_request'
+        run: node scripts/docs-drift-check.mjs --self-test

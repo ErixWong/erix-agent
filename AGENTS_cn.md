@@ -67,9 +67,11 @@
 | `npm run check:config-leaf-values` | 配置叶取值状态表对着一次实跑探针 | `#check-config-leaf-values` |
 | `node bin/cli.js …` | 本地跑 CLI，只为调试 | `#cli-local` |
 
-- CI（`.github/workflows/ci.yml`）按固定顺序跑那些阻塞步骤，跑在 node 22 **与** 24 上，装依赖用
-  `npm install --include=dev`——从不用 `npm ci`。改它 ⇒ 先读 `#ci`（那里写着两种「故意红」的形状）。
-  `check:host-consumers` 与 `npm run soak` 必须留在 CI 之外。
+- CI（`.github/workflows/ci.yml`）**按判据性质分三个 job**（issue #802）：`real`（行为面，每次事件都阻塞，
+  node 22 **与** 24）、`registries`（提交进库的表 vs 树）、`docs`（文档/指令面）——后两个在 `pull_request` 上
+  看得见但**不停车**。发版仍然一样严：`release:day --stage preflight` 把三族全当阻塞步骤跑。装依赖用
+  `npm install --include=dev`——从不用 `npm ci`。改它 ⇒ 先读 `#ci`。`check:host-consumers` 与 `npm run soak`
+  必须留在 CI 之外。
 - **闸的可复现性**：`check:docs` 与 `check:docs:strict` 必须在开发工作树里**和**在全新克隆里都 exit 0。需要
   `node_modules` 的那些闸（`check:inventory`、三个 `tsc` 棘轮、`check:pack-links`、`check:release`）在裸克隆里以
   `Cannot find module 'typescript'` 失败，含义是**这道闸没能跑**，永远不是回归 ⇒ `#gate-reproducibility`。

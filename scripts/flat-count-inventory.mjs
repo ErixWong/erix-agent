@@ -106,8 +106,14 @@ const CELL_OWNERSHIP = Object.freeze({
     manual: Object.freeze([]),
   }),
   dispatchList: Object.freeze({
-    generated: Object.freeze([]),
-    manual: Object.freeze(["row", "points"]),
+    // issue #802：`points` 从「全人工」改成**单归属时生成**。病根是实测出来的：一个只出现在**一张**
+    // 分派清单里的文件，它的行必须等于该文件的 AST 总数（`--verify` 就是按文件汇总这么核的），
+    // 所以那一格是**派生值**，却被标成人工 ⇒ 树一动就红，而 `--sync` 一个字不碰、人只能手改
+    // （261109 实测：`check:inventory` 在干净树上就是红的，红因是「分派清单 … 表合计 21 / AST 27」，
+    // 跑 `--sync` 修不好）。只有**跨片**的文件（同一文件被两片各分一段，如 `loop-callback-this`
+    // S7b 3 + S7c 1）才真正是人工格：单文件 AST 总数不等于任何一行。
+    generated: Object.freeze(["pointsWhenSingleOwner"]),
+    manual: Object.freeze(["row", "points（跨片：同一文件被多张清单分段）"]),
   }),
   summary: Object.freeze({
     generated: Object.freeze(["row", "points", "files"]),
@@ -352,6 +358,20 @@ function sync(root, mdPath) {
     }
   }
 
+  // 分派清单：**单归属**的行按 AST 重写写点（括号里的明细原样保留——它是人写的口径说明，
+  // 不是派生数；`--verify` 也只核括号前那个数）。跨片行不动，它们是人工格。
+  if (generates("dispatchList", "pointsWhenSingleOwner")) {
+    const ownerCount = new Map();
+    for (const row of doc.listRows) ownerCount.set(row.file, (ownerCount.get(row.file) ?? 0) + 1);
+    for (const row of doc.listRows) {
+      if ((ownerCount.get(row.file) ?? 0) !== 1) continue;
+      const v = per.get(row.file);
+      const cells = lines[row.lineIdx].split("|");
+      cells[2] = cells[2].replace(/^(\s*)(\d+)/, `$1${v?.cap ?? 0}`);
+      rewritten.set(row.lineIdx, cells.join("|"));
+    }
+  }
+
   // 主表漏行：AST 有能力面写点、主表里没有这一行，且它也不由某张**已迁完切片**清单归口
   // （S7a/S7b/S7c 的文件只活在清单里，主表本来就不列 —— 这是表头口径，不是漏行）。
   // 注意：非切片清单（COMPAT-PIN / OWNED-BY-* / 含 COMPAT-PIN 格）的文件**两边都该有**，
@@ -436,7 +456,7 @@ function sync(root, mdPath) {
   const changed = [...rewritten.values()].length;
   console.log(`刷表：重写 ${changed} 行、补 ${inserted.length} 行 ⇒ ${mdPath}`);
   for (const note of inserted) console.log(`  + ${note}`);
-  console.log(`  人工维护格（生成器不写）：主表「分类」列 / 分派清单「写点」列 / 小结「类」列`
+  console.log(`  人工维护格（生成器不写）：主表「分类」列 / 分派清单「写点」（仅跨片行） / 小结「类」列`
     + ` / 无清单可数行的「文件数」——数字依据 --verify 打印的 AST 真值`);
   return 0;
 }
@@ -461,8 +481,16 @@ function verify(root, mdPath) {
   // 同一文件可能被两片各分一段（如 `loop-callback-this`：S7b 3 + S7c 1）⇒ 按文件汇总后再与 AST 对账。
   const perFileClaimed = new Map();
   for (const row of doc.listRows) perFileClaimed.set(row.file, (perFileClaimed.get(row.file) ?? 0) + row.claimed);
+  const ownerCount = new Map();
+  for (const row of doc.listRows) ownerCount.set(row.file, (ownerCount.get(row.file) ?? 0) + 1);
   for (const [f, claimed] of perFileClaimed) {
-    if (claimed !== astCap(f)) bad.push(`分派清单 ${f}：表合计 ${claimed} / AST ${astCap(f)}`);
+    if (claimed === astCap(f)) continue;
+    const single = (ownerCount.get(f) ?? 0) === 1;
+    // issue #802：红因要能分层。单归属那一格是派生值 ⇒ 这是「表过期」，跑 --sync 就好；
+    // 跨片那一格是人工裁决 ⇒ 这是「要人判」。两者混在一句里，读的人只会以为闸坏了。
+    bad.push(single
+      ? `STALE_TABLE 分派清单 ${f}：表合计 ${claimed} / AST ${astCap(f)}（单归属行是派生值 ⇒ 跑 --sync 即可）`
+      : `MANUAL_CELL 分派清单 ${f}：表合计 ${claimed} / AST ${astCap(f)}（跨片行是人手裁决 ⇒ 要人判，--sync 不动它）`);
   }
 
   // ② 合计与覆盖面（与行无关的性质：某个文件从 0 点长出写点、而它本来就没有行 —— 旧版看不见）。
