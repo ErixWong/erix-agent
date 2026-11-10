@@ -393,6 +393,21 @@ Compatibility-pin inventory verification (issue #534): `node scripts/flat-count-
 ## check-config-leaf-values
 Config-leaf value status table verification (issue #586): `node scripts/config-leaf-value-probe.mjs --verify docs/config-leaf-value-status.md docs/config-leaf-value-status_cn.md` re-runs the probe (every schema leaf × 8 fixed wrong values, each fed through a real two-round `runToolLoop`) and compares the regenerated EN/CN tables with the committed ones — any drift exits 1 and names the file. The probe **measures** the verdict per cell instead of asserting a wish: `G` / `V` refuse at the `config` gate / semantic phase, `S` refuses at run startup **and names the leaf**, `C` blows up at startup **without** naming it, `U` throws only after the first request, `A` is accepted-and-live (the run's fingerprint changed), `·` is accepted-and-inert (identical fingerprint). The refusal layer comes from the **stack frame** (file + function, never a line number, so unrelated refactors cannot redden it) and the effect from the **first differing path** in the fingerprint, so "silently accepted" is a location plus a pair of values rather than an adjective. `--sync` is the only legitimate way to refresh the table (hand-editing a number is fabrication), and the probe refuses to emit a table at all (`exit 2`) when `configSchemaSelfCheck` is red or when three baseline runs disagree — an unstable fingerprint would turn `A` / `·` into noise. It prints its own elapsed time (about a second), so it blocks in CI as `Config-leaf value status verify`, right after `Compatibility-pin inventory verify`. **It narrows nothing**: every type check shrinks the accepted surface ⇒ it must be booked as Breaking, and that ruling stays with the maintainer
 
+## registry-updates
+Use the table's owning generator to refresh derived cells; do not hand-edit them.
+
+| Registry | Only generated update command |
+|---|---|
+| Compatibility-pin inventory | `node scripts/flat-count-inventory.mjs . --sync test/compat-pin-inventory.md` |
+| Mutation samples | `node scripts/mutation-sample-check.mjs --sync test/mutation-samples.md` |
+| Config-leaf status (EN and CN) | `node scripts/config-leaf-value-probe.mjs --sync docs/config-leaf-value-status.md docs/config-leaf-value-status_cn.md` |
+
+The TAP floor in `test/test-suite-baseline.json` has no `--sync`. It is an expectation, not a measurement: the
+reconciler only reports a suggested increase, and changing the registered floor is a human decision. Automatically
+copying a run's measurement would permanently legitimize how many tests happened to run that time, while fewer tests
+may mean coverage was lost. `CHANGELOG_PAIR_FLOOR` in `test/static-guards.test.js` has no `--sync` either; raising
+that registration is likewise a human action, not an automatic copy of the latest measurement.
+
 ## cli-local
 Run the CLI locally (no installation required)
 

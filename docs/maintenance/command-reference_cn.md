@@ -220,6 +220,20 @@ CHANGELOG 解析器**：扫描面就是 `test/static-guards.test.js` 已经在�
 ## check-config-leaf-values
 配置叶子值类型现状表校验（issue #586）：`node scripts/config-leaf-value-probe.mjs --verify docs/config-leaf-value-status.md docs/config-leaf-value-status_cn.md` 重跑探针（每个 schema 叶子 × 8 个固定错值，每一格都过一次真的两轮 `runToolLoop`），再把重算出来的中英两张表与入库的那两张对账——任何漂移都 exit 1 并点名文件。探针**实测**每一格的结局，而不是断言愿望：`G` / `V` 在 `config` 闸口 / 语义相被拒，`S` 在 run 启动期被拒**且判词点名该叶子**，`C` 在启动期炸但**不点名**，`U` 到第一发请求之后才抛，`A` 是被接受且**真的生效**（run 的指纹变了），`·` 是被接受但**无差异**（指纹逐字相同）。「拒在哪一层」取自**栈帧**（文件名 + 函数名，从不取行号 ⇒ 无关重构撞不红它），「生效在哪」取自指纹的**第一个差异路径**，所以「悄悄接受」是一个位置加一对值，不是形容词。`--sync` 是刷这张表**唯一合法**的姿势（手改数字就是造假）；`configSchemaSelfCheck` 红、或三次基线跑的指纹不一致时，探针**拒绝出表**（`exit 2`）——指纹不稳会把 `A` / `·` 变成噪声。它自己打印耗时（约一秒级），所以在 CI 里是**阻塞**步骤 `Config-leaf value status verify`，紧跟 `Compatibility-pin inventory verify`。**它一个字都没收窄接受面**：每条类型校验都是收窄 ⇒ 要记 Breaking，裁定权留在维护者手里
 
+## registry-updates
+派生格只用该登记表所属的生成器刷新，不手改：
+
+| 登记表 | 唯一的机器更新命令 |
+|---|---|
+| 兼容钉子清点表 | `node scripts/flat-count-inventory.mjs . --sync test/compat-pin-inventory.md` |
+| 变异样本表 | `node scripts/mutation-sample-check.mjs --sync test/mutation-samples.md` |
+| 配置叶子现状表（中英） | `node scripts/config-leaf-value-probe.mjs --sync docs/config-leaf-value-status.md docs/config-leaf-value-status_cn.md` |
+
+`test/test-suite-baseline.json` 的 TAP 地板没有 `--sync`。它是期望值，不是测量值：对账器只提示可抬登记，
+抬地板是人的决定。机器自动把一次实测抄成登记值，会把「这一次恰好跑了多少」永久合法化，而用例变少
+可能意味着覆盖丢失。`test/static-guards.test.js` 的 `CHANGELOG_PAIR_FLOOR` 也没有 `--sync`；抬这项登记
+同样是人的动作，不能自动照抄最新测量。
+
 ## cli-local
 本地运行 CLI（无需安装）
 
