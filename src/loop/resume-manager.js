@@ -352,6 +352,9 @@ function firstSliceRowKeyOf(rows, message, round) {
     if (row?.kind !== MESSAGE_ROW_KIND) continue;
     if (!Number.isSafeInteger(row.seq)) continue;
     if (typeof row.partOf === "string" && row.partOf !== "") continue;
+    // issue #811：轮号不可用的候选行**也不当锚点**（#729：折叠层不认它 ⇒ 桩落成孤儿 `user` 消息）：
+    // 修前下面那条严格相等顺带挡住了它（坏轮号被归成 `0` ⇒ `round` 恒是整数），现在轮号可以是「未知」。
+    if (!Number.isSafeInteger(row.round)) continue;
     // issue #729：轮号是整数时 `row.round` 必须**严格相等**。旧写法把「`row.round` 不是安全整数」
     // 当成「不排除」，而折叠层（`src/store/message-rows.js`）对没有整数 `round` 的行一律不当折叠
     // 目标 ⇒ 命中那种行等于保证桩落成**孤儿 `user` 消息**（`user tool_result has no matching
@@ -789,7 +792,8 @@ export async function restoreResume(ctx) {
             ? rowKeyOf(record) : found
         ), undefined);
         // 崩溃现场的轮号：账本里本轮的行可能已落（逐条入账），故取两者的较大值，绝不回退轮号。
-        ctx.rounds = Math.max(ctx.rounds, crashRound);
+        // #811：轮号不可用时不参与取较大值（`Math.max(n, undefined)` 是 `NaN`，会把计数器带坑）。
+        if (Number.isSafeInteger(crashRound)) ctx.rounds = Math.max(ctx.rounds, crashRound);
         // issue #769：半截正文的**首选来源是账本**（`partial-text` 恢复行，一条一个事件）；
         // 快照的 `partialText`/`partialRound` 两格退成兜底（账本里那一轮没有任何可用行才读它们）。
         // 顺序就是口径：`ledgerPartial` 在场 ⇒ 两格都跟着账本走，不许出现「正文取账本、轮号取快照」的拼盘。

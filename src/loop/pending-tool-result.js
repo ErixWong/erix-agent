@@ -253,9 +253,6 @@ export const RESUME_JOURNAL_SKIP_DETAIL_ROUND_CARRIER_HAS_BODY = "round_carrier_
  // `mid_sequence_aggregate_row_not_in_ledger`：探针给了、轮也干净，账本里确实没有
  // 那条首片行。 */
 export const RESUME_JOURNAL_SKIP_DETAIL_ROW_NOT_IN_LEDGER = "aggregate_row_not_in_ledger";
- // `mid_sequence_stub_row_write_refused`：桩所属轮的轮号不是安全整数 ⇒ 写侧直接
- // 退回去。 */
-export const RESUME_JOURNAL_SKIP_DETAIL_ROUND_NOT_SAFE_INTEGER = "round_not_safe_integer";
  // `mid_sequence_stub_row_write_refused`：轮号合法，但 `appendRound` 这一写被返回 `fal
  // se`。 */
 export const RESUME_JOURNAL_SKIP_DETAIL_APPEND_SKIPPED = "append_row_not_persisted";

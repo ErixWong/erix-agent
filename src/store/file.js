@@ -4,7 +4,9 @@ import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/prom
 import { join } from "node:path";
 import { boundRunState } from "../run-state.js";
 import { foldMessageRows } from "./message-rows.js";
-import { dedupConflictError, payloadFingerprint, recordKey } from "./transcript-dedup.js";
+import {
+  assertSafeRound, dedupConflictError, payloadFingerprint, recordKey,
+} from "./transcript-dedup.js";
 
 const HASHED_RUN_ID_PREFIX = "run-h-";
 
@@ -474,6 +476,9 @@ export function createFileTranscriptStore({ dir }) {
 
   return {
     async appendRound(runId, record) {
+      // issue #811：轮号不可用的行**进不来**（`TypeError` ⇒ 宿主映射 4xx）。守卫在拿锁与建目录
+      // 之前：一次被拒的写不留目录、不留文件、不进锁队列。读侧照旧宽容。
+      assertSafeRound("appendRound", { runId, record });
       await withAppendLock(runId, async () => {
         await mkdir(dir, { recursive: true });
         // dedup 在 appendRecord 内修复尾部后判断（防无 LF 尾部绕过幂等）；issue #160：
@@ -490,6 +495,8 @@ export function createFileTranscriptStore({ dir }) {
      * @returns {Promise<boolean>} 真正落了一行才是 `true`
      */
     async appendRecoveryRow(runId, record) {
+      // issue #811：与 `appendRound` 同一份写侧判据（恢复行的事件键同样含轮号）。
+      assertSafeRound("appendRecoveryRow", { runId, record });
       return await withAppendLock(runId, async () => {
         await mkdir(dir, { recursive: true });
         return await appendRecord(recoveryRowsPath(dir, runId), runId, record, recoveryDedupCaches);

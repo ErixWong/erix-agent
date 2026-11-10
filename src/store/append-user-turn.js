@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { buildUnpersistedToolResultStub } from "../loop/pending-tool-result.js";
 import { blocksFor } from "../loop/block-helpers.js";
 import { MESSAGE_ROW_KIND, isRoundCarrier, nextMessageSeqByRound } from "./message-rows.js";
+import { assertSafeRound } from "./transcript-dedup.js";
 
 // ── issue #765：宿主预写用户轮**落盘之前**先结清账本尾部的悬空 `tool_use`──────────────
 //
@@ -29,7 +30,6 @@ import { MESSAGE_ROW_KIND, isRoundCarrier, nextMessageSeqByRound } from "./messa
 // 同一套词；同名的 `anchor_probe_absent` 这里叫 `ledger_probe_absent` 是刻意的：#730 那一格问的是「聚合消息的
 // 首片行找不找得到锥点」，本格问的是「这一路根本没有读账本的能力」——共用一个词会让读事件的人以为同一件事。
 const SETTLE_REFUSED_LEDGER_PROBE_ABSENT = "ledger_probe_absent";
-const SETTLE_REFUSED_ROUND_NOT_SAFE_INTEGER = "round_not_safe_integer";
 const SETTLE_REFUSED_ROUND_CARRIER_HAS_BODY = "round_carrier_has_body";
 const SETTLE_REFUSED_TOOL_USE_ID_UNUSABLE = "tool_use_id_unusable";
 
@@ -68,6 +68,12 @@ function trailingToolUseRow(rows) {
  * - `clean`：账本里没有悬空（调用方**不**把结果放进返回值 ⇒ 今天的返回形状逐字不变）；
  * - `settled`：结清行已落盘（`written: true`），或同 `dedupKey` 的结清行已在账本里（`written: false`）；
  * - `refused`：该结清而没结清，`reason` 点名为什么（调用方原样带在返回值里，不许静默）。
+ *
+ * **抛错与拒写的分界（issue #811）**：剩下三条 `refused` 都是**可恢复的降级**（请求视图兜底在后面接手），
+ * 所以它们返回而不抛。而「账本尾行的轮号不可用」不是降级，是**调用方/宿主 store 交错了**：
+ * 结清行的 `dedupKey` / `seq` 地板全部由那个轮号派生，拿不了它的轮号就没法写这一行 ⇒ 当场抛
+ * `TypeError`（宿主只把 `TypeError` 映射成 4xx）。原先它是一条 `refused`，与上面三条降级同一个形状，
+ * 于是「参数错了」被伪装成「降级发生了」。
  * @param {{ appendRound: (key:string, record:object)=>Promise<unknown> }} store
  * @param {string} key
  * @param {object[]|undefined} rows 结清用的账本行：全量路径 = 已经拿到的 `load(key)` 结果（不重读）；
@@ -97,9 +103,15 @@ async function settleUnsettledToolUses(store, key, rows, ts) {
     return { status: "refused", reason: SETTLE_REFUSED_TOOL_USE_ID_UNUSABLE, round: tail.row?.round, toolUseIds: dangling };
   }
   const round = tail.row?.round;
-  if (!Number.isSafeInteger(round)) {
-    return { status: "refused", reason: SETTLE_REFUSED_ROUND_NOT_SAFE_INTEGER, round, toolUseIds: dangling };
-  }
+  // issue #811：轮号不可用 = 调用方参数错了，不是可恢复的降级 ⇒ 抛 `TypeError`（与两个内置 store
+  // 的写侧守卫同一份实现）。读侧对既有档案仍宽容：那种行读得回来，只是**不参与折叠**。
+  assertSafeRound("appendUserTurn", {
+    runId: key,
+    record: tail.row,
+    detail: "that round is not the caller's argument: it is the round of the ledger row holding the"
+      + " dangling `tool_use` this call is settling, and the settle row's dedupKey and seq are both"
+      + " derived from it — settle it with a usable round (or settle nothing) instead",
+  });
   // 同轮载体已带正文（引擎崩溃前写过 `assistant[text]` 行）时，折叠会把它当**活载体**（`isRoundCarrier`，
   // 判据里 `messages.length === 0` 那一支），我们这条结清行被并进去之后排在哪由 seq 决定，而 seq 恰恰
   // 是最不可信的那一格（`resume-manager#roundHasBodyCarrier` 那段注释：`nextMessageSeqByRound` 只数消息行）。
@@ -176,6 +188,8 @@ async function maxRoundFromProbe(store, key) {
  *   `status` 只有 `settled` / `refused` 两种——**拒写也要出声**（原因在 `reason` 里），本函数不静默。
  *   探针快路径（上条）要读账本只能走 `loadRawRows`；三根探针都没有的宿主 ⇒ `reason:
  *   "ledger_probe_absent"`，既不静默也不退回去整本读一次。
+ *   **例外（issue #811）**：账本尾行的 `round` 不是安全整数时不返回 `refused`，而是**抛 `TypeError`**
+ *   （点名入口 / 哪一行 / 收到的值与类型）——那是调用方交进来的行不合法，不是可恢复的降级。
  *
  * ⚠ 两个坑（issue #213 R4 实测，都是**静默**退化）：
  *   1. 本块必须紧贴 `export async function appendUserTurn`——它曾经孤悬在
@@ -209,7 +223,7 @@ async function maxRoundFromProbe(store, key) {
  *     round?: number,      // 被结清的那一轮（= 悬空 assistant 所在轮）
  *     toolUseIds?: string[],
  *     dedupKey?: string,   // `<key>:settle:<round>:<排序后的 id>`
- *     reason?: string      // refused 的成因，四条取值见文件顶部 SETTLE_REFUSED_*
+ *     reason?: string      // refused 的成因，三条取值见文件顶部 SETTLE_REFUSED_*（轮号不可用那格已改成抛 `TypeError`）
  *   }
  * }>
  */

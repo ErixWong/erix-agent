@@ -1,6 +1,8 @@
 import { boundRunState } from "../run-state.js";
 import { foldMessageRows } from "./message-rows.js";
-import { dedupConflictError, payloadFingerprint, recordKey } from "./transcript-dedup.js";
+import {
+  assertSafeRound, dedupConflictError, payloadFingerprint, recordKey,
+} from "./transcript-dedup.js";
 
 /**
  * @typedef {{
@@ -64,6 +66,8 @@ export function createMemoryTranscriptStore() {
      * 判据与 file store 共用 `src/store/transcript-dedup.js`，两侧不得各抄一套。
      */
     async appendRound(runId, record) {
+      // issue #811：轮号不可用的行**进不来**（`TypeError` ⇒ 宿主映射 4xx）。读侧照旧宽容。
+      assertSafeRound("appendRound", { runId, record });
       const records = transcripts.get(runId) ?? [];
       const key = recordKey(runId, record);
       const existing = records.find((item) => recordKey(runId, item) === key);
@@ -92,6 +96,8 @@ export function createMemoryTranscriptStore() {
      * @param {string} runId @param {object} record @returns {Promise<boolean>}
      */
     async appendRecoveryRow(runId, record) {
+      // issue #811：恢复行的事件键含轮号 ⇒ 轮号不可用就当场拒（与 `appendRound` 同一份判据）。
+      assertSafeRound("appendRecoveryRow", { runId, record });
       const rows = recoveryLedger.get(runId) ?? [];
       const key = recordKey(runId, record);
       const existing = rows.find((item) => recordKey(runId, item) === key);

@@ -39,7 +39,6 @@ import {
   // issue #790：「只视图修了、账本仍开着」那一格（同上：码只定义一份，中英两份契约双向对账）。
   MID_SEQUENCE_REQUEST_VIEW_STUB,
   RESUME_JOURNAL_SKIP_DETAIL_APPEND_SKIPPED,
-  RESUME_JOURNAL_SKIP_DETAIL_ROUND_NOT_SAFE_INTEGER,
 } from "./pending-tool-result.js";
 import { MESSAGE_ROW_KIND } from "../store/message-rows.js";
 // issue #769：快照独有格的 append-only 恢复行载体（行形状与事件键的单一定义在 `src/store/recovery-rows.js`）。
@@ -482,8 +481,7 @@ function mergeFoldedRoundRanges(first, second) {
  *   那个键** ⇒ 既有事件形状不变，是纯加法）：`anchor_probe_absent` / `round_carrier_has_body` /
  *   `aggregate_row_not_in_ledger`（同一个 `mid_sequence_aggregate_row_not_in_ledger` 下三件不同的事，
  *   只有第一种是「宿主补上 `loadRawRows` 就能闭合」）、`aggregate_carries_foreign_result_ids`、
- *   `next_message_is_not_user` / `aggregate_has_no_tool_result`、`round_not_safe_integer` /
- *   `append_row_not_persisted`。
+ *   `next_message_is_not_user` / `aggregate_has_no_tool_result`、`append_row_not_persisted`。
  * @property {string} [toolUseId] Tool invocation requiring host replay decision.
  * @property {string} [toolName] Tool name requiring host replay decision.
  * @property {boolean} [requiresHostDecision] Whether the host must decide whether to retry.
@@ -3204,6 +3202,14 @@ export async function runToolLoop(options) {
   /** @param {any} message @param {number} roundNumber @param {{ partOf?: string }} [options] */
   const appendMessageRowToTranscript = async (message, roundNumber, options = {}) => {
     if (message === undefined || message === null) return undefined;
+    // 轮号不可用 ⇒ 不写这一行（返回 `undefined` = 调用方自己报「那一写没落盘」）。
+    // 为什么这里**不**抛 `TypeError`（与两个内置 store 的写侧守卫不同，#811）：送进来的轮号是
+    // **引擎自己推出来的**（续跑路径上从账本行 / `messageRounds` 算的），不是宿主直接交的原始行；
+    // 而 #811 第 2 条之后非整数轮号的行**根本不参与折叠**，那种值到不了这一格。所以这一格是
+    // **存储边界上的最后一道防御**，而「交错了」的响亮信号放在**宿主直接调用的写 API**（store 的
+    // append 系列 + `appendUserTurn`）——那才是宿主听得到的地方；在这里抛只会为一个构造上到不了的
+    // 输入新增一条 run 级致命路径。调用方里唯一可能递坏轮号的那一格（④ 中段桩）已在发射前自己
+    // 跳过它，不令这一道防御替它说话。
     if (!Number.isSafeInteger(roundNumber)) return undefined;
     const seq = runLoopState.messageSeqByRound.get(roundNumber) ?? 0;
     runLoopState.messageSeqByRound.set(roundNumber, seq + 1);
@@ -3438,6 +3444,14 @@ export async function runToolLoop(options) {
     const writeRefused = [];
     for (const stub of stubs) {
       if (typeof stub?.partOf !== "string" || stub.partOf === "") continue;
+      // issue #811（裁决 A）：轮号不可用的桩**不进 ④ 的发射路径**，也不写。
+      // 为什么不是「写被拒」：④ 那句话讲的是「store 收了这一行却没落盘」，而这里 **store 根本没被
+      // 调用过**；借用那个码会把「轮号不可用」报成「append 没落盘」，那是假话。为什么不抛：这一格的
+      // 轮号是**引擎自己从账本推出来的**（不是宿主交进来的原始行），而 #811 第 2 条之后非整数轮号的
+      // 行根本不参与折叠 ⇒ 这条路已经关掉；为一个构造上到不了的输入新增一条 run 级致命路径，正是
+      // 本单在删的那类债。取值集不许新增 ⇒ 「跳过不发射」是唯一诚实的形状：桩仍活在本次上下文
+      // （合法性不塌），只是不落账，下一次恢复还得再补（与 #421 的降级同一代价）。
+      if (!Number.isSafeInteger(stub.round)) continue;
       const persistedRowKey = await appendMessageRowToTranscript(
         { role: "user", content: [stub.toolResult] },
         stub.round,
@@ -3447,9 +3461,8 @@ export async function runToolLoop(options) {
       if (persistedRowKey === undefined) {
         writeRefused.push({
           reason: MID_SEQUENCE_ABANDON_ROW_WRITE_REFUSED,
-          detail: Number.isSafeInteger(stub.round)
-            ? RESUME_JOURNAL_SKIP_DETAIL_APPEND_SKIPPED
-            : RESUME_JOURNAL_SKIP_DETAIL_ROUND_NOT_SAFE_INTEGER,
+          // 轮号合法已经在上面那行守卫里担下了 ⇒ 这一格只剩「store 自己没收」这一件事。
+          detail: RESUME_JOURNAL_SKIP_DETAIL_APPEND_SKIPPED,
           round: stub.round,
         });
       }
