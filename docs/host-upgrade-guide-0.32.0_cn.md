@@ -82,7 +82,11 @@ if ( round === undefined ) continue;   // 那一轮从重建视图里消失
 
 所以请把数值类型一路保住。丢它的通常不是引擎：PG 列建成了 `text`，或者 MySQL 驱动开了
 `bigNumberStrings`，整数就变成 `"2"`，那一轮于是消失。走引擎自己的写手写出来的行是安全的；
-你手写的行归你管。
+你手写的行归你管。**#811 把这道检查前移到写侧**：两个内置 store 的 `appendRound` /
+`appendMessageRow` / `appendRecoveryRow` 与 `appendUserTurn`，交回的 `round` 不是 JS 安全整数时**直接抛
+`TypeError`**——错误信息点名哪个入口、收到的值与类型；选 `TypeError` 是故意的，宿主错误映射会把它
+当成客户端错误而不是服务端错误。**已经在档案里的行不会被追溯拒收**：读侧依旧宽容，两条折叠
+现在也口径一致地让它**不参与折叠**（以前其中一条会把它挂到 round `0`，崩溃边界与整张轮次表都被它拖跑）。
 
 ### 3.2 恢复行（#769）——账本成了恢复侧的主通道
 
@@ -117,13 +121,13 @@ if (r.unsettledToolUses) {
 }
 ```
 
-**没有东西要结清时这个字段不存在**——除非你想统计，否则不必为它加分支。四条拒写原因，
+**没有东西要结清时这个字段不存在**——除非你想统计，否则不必为它加分支。三条拒写原因（issue #811 删掉了 `round_not_safe_integer`：这种 `round`
+现在在写侧就抛了，见 §3.1），
 而「拒」不是错误：你那行照样写入，run 照样能续跑（#790 的请求视图兜底在后面接手）：
 
 | reason | 含义 | 你能做什么 |
 |---|---|---|
 | `ledger_probe_absent` | 你的 store 没有 `loadRawRows` | 补上它（§3.1） |
-| `round_not_safe_integer` | 原始行的 `round` 回来时不是整数 | 修类型（§3.1） |
 | `round_carrier_has_body` | 那一轮的载体已带正文，桩会被折进错的页 | 没办法 |
 | `tool_use_id_unusable` | `tool_use` 这个 id 本身不可用 | 没办法 |
 
@@ -141,10 +145,12 @@ dedup 命名空间新增 `<key>:settle:<round>:<tool_use id 排序后用 + 连�
   `mid_sequence_request_view_stub`（#790）。`mid_sequence_aggregate_row_not_in_ledger` 下的 `detail`
   现在区分 `anchor_probe_absent` / `round_carrier_has_body` / `aggregate_row_not_in_ledger`。
   **没有新事件类型**——放弃结算都挂在这条既有事件上。
-- **一个写在契约里、当前发不出来的值**：作为 `mid_sequence_stub_row_write_refused` 的事件 **detail**，
-  `round_not_safe_integer` 这一版**没有可达的产生点**——账本来源的轮号在造桩之前就被归一化了，
-  而没有锚点的桩在更早一步就停下。同一个字符串作为 **`appendUserTurn` 的 reason** 是活的（§4）。
-  请把事件那个 detail 当作预留值：不要照它写行为，也不要在契约改动之前删掉你的分支。
+- **一个从契约里退场的值**（#811）：`round_not_safe_integer` 现在**不存在了**——既不是
+  `mid_sequence_stub_row_write_refused` 的事件 **detail**，也不是 `appendUserTurn` 的 **reason**，也不在
+  #730 那个枚举闭集里。校验前移到了写侧（非法轮号在那里抛 `TypeError`，见 §3.1），会发它的那条分支
+  于是构造性不可达，连同两个常量与中英两份契约里的行一起删了。#811 **没加事件类型、也没加
+  reason/detail 取值**；一行带着不可用的轮号走到引擎时根本不发放弃结算事件（「store 拒写」与
+  「轮号不可用」不再被当成同一件事）。
 - **新增导出，帮你决定该留哪些行**（#743）：`EVENT_TIERS`、`eventTierOf`、`EVENT_TIER_VALUES`、
   `HOST_SIDE_EVENT_TYPE_NAMES`、`RUN_TERMINAL_STATUSES`、`RUN_CLEANUP_SAFE_STATUSES`、
   `streamCleanupEligible()`。引擎不会替你删任何东西；这些是你自己保留策略的查表面。

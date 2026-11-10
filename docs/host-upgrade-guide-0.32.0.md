@@ -91,6 +91,13 @@ if (round === undefined) continue;   // that round disappears from the rebuilt v
 So keep the numeric type end to end. The usual way to lose it is not the engine: a PG column typed
 `text`, or a MySQL driver with `bigNumberStrings` on, turns your integer into `"2"` and that round
 vanishes. Rows you wrote through the engine's own writers are safe; rows you hand-write are yours.
+**#811 moved that check to the write side**: the built-in store append APIs (`appendRound` /
+`appendMessageRow` / `appendRecoveryRow`) and `appendUserTurn` now **throw `TypeError`** for a `round` that is
+not a JS safe integer — the message names the entry point and the value and its type, and `TypeError` is
+deliberate because host error mapping turns it into a client error rather than a server error. Rows **already**
+sitting in an archive are not rejected retroactively: the read side stays tolerant, and both folds now agree such
+a row simply does not participate (one of them used to mis-attribute it to round `0`, dragging the crash boundary
+and the round tables with it).
 
 ### 3.2 Recovery rows (#769) — the ledger became the primary recovery channel
 
@@ -129,13 +136,13 @@ if (r.unsettledToolUses) {
 ```
 
 The field is **absent** when there was nothing to settle — you do not need to branch on it unless you
-want to. Four refusal reasons, and a refusal is not an error: your row still gets written and the run
+want to. Three refusal reasons (issue #811 removed `round_not_safe_integer`: such a `round` now throws at the
+write side, §3.1), and a refusal is not an error: your row still gets written and the run
 still resumes (the request-view fallback of #790 handles it later):
 
 | reason | what it means | what you can do |
 |---|---|---|
 | `ledger_probe_absent` | your store has no `loadRawRows` | implement it (§3.1) |
-| `round_not_safe_integer` | a raw row's `round` came back non-integer | fix the type (§3.1) |
 | `round_carrier_has_body` | that round's carrier already has body text; a stub would fold into the wrong page | nothing |
 | `tool_use_id_unusable` | the `tool_use` id itself is unusable | nothing |
 
@@ -153,11 +160,13 @@ every call — that is the current state of the PostgreSQL store in `erix-statio
   `mid_sequence_request_view_stub` (#790). Under `mid_sequence_aggregate_row_not_in_ledger` the
   `detail` now distinguishes `anchor_probe_absent` / `round_carrier_has_body` /
   `aggregate_row_not_in_ledger`. **No new event type** — abandonments ride this event.
-- **A documented value that is not currently emitted**: `round_not_safe_integer` as an event **detail**
-  of `mid_sequence_stub_row_write_refused` has no reachable producer in this version — ledger rounds
-  are normalized before a stub can be built, and an anchorless stub stops earlier. The same word is
-  live as an **`appendUserTurn` reason** (§4). Treat the event detail as reserved; do not build
-  behavior on it, and do not remove your branch until the contract says otherwise.
+- **One value left the contract** (#811): `round_not_safe_integer` no longer exists — not as an event **detail**
+  of `mid_sequence_stub_row_write_refused`, not as an `appendUserTurn` **reason**, and not in the closed set the
+  #730 test enumerates. Validation moved to the write side (a bad `round` throws `TypeError`, §3.1), so the
+  branch that would have emitted it became constructively impossible and was deleted along with its two
+  constants and its rows in both contract languages. **No new event type, and no new reason/detail value**
+  was added by #811; if a row reaches the engine with an unusable round, no abandonment event is emitted at all
+  (a store refusal and an unusable round are no longer conflated).
 - **New exports to help you decide what to keep** (#743): `EVENT_TIERS`, `eventTierOf`,
   `EVENT_TIER_VALUES`, `HOST_SIDE_EVENT_TYPE_NAMES`, `RUN_TERMINAL_STATUSES`,
   `RUN_CLEANUP_SAFE_STATUSES`, `streamCleanupEligible()`. The engine deletes nothing from your side;
