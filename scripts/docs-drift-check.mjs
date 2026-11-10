@@ -31,7 +31,7 @@
 //                 输出串，必须逐字等于从 `src/tools/file-tools.js` 的模板 + `NEXT_STEP_CLAUSE` 渲染
 //                 出来的那份（文档占位符 `N`/`M`/`K`/`<size>` 与插值表达式的对应表就写在规则里，
 //                 模板里出现**未登记的插值**会直接红）；逐处比对，另加中英引用处数对账
-//   9. baseline   `AGENTS*.md` 里声称的 `--checkJs` 棘轮**当前值**（issue #274）：与
+//   9. baseline   `AGENTS*.md` 与冷层 command-reference 里声称的 `--checkJs` 棘轮**当前值**（issue #274）：与
 //                 `scripts/type-check-ratchet.mjs` 的 `BASELINE_ROOT` / `BASELINE_WITH_TOOLS` 逐处比，
 //                 额外核「`164 = 121 + 27 + 16`」这类分解式的算术闭合（首项必须 = 包根基线、
 //                 总和必须 = 并集基线），中英句式处数成对
@@ -279,6 +279,8 @@ const CONTRACT_EN = "docs/host-consumer-contract.md";
 const CONTRACT_CN = "docs/host-consumer-contract_cn.md";
 const AGENTS_EN = "AGENTS.md";
 const AGENTS_CN = "AGENTS_cn.md";
+const CMDREF_EN = "docs/maintenance/command-reference.md";
+const CMDREF_CN = "docs/maintenance/command-reference_cn.md";
 const PI_EXT_README = "examples/pi-extension/README.md";
 const ARCH_EN = "docs/architecture.md";
 const ARCH_CN = "docs/architecture_cn.md";
@@ -1774,6 +1776,8 @@ const BASELINE_CLAIM_RULES = [
     claims: [
       { rel: AGENTS_EN, re: /BASELINE_ROOT\s*=\s*(\d+)/g },
       { rel: AGENTS_CN, re: /BASELINE_ROOT\s*=\s*(\d+)/g },
+      { rel: CMDREF_EN, re: /BASELINE_ROOT\s*=\s*(\d+)/g },
+      { rel: CMDREF_CN, re: /BASELINE_ROOT\s*=\s*(\d+)/g },
     ],
   },
   {
@@ -1782,6 +1786,8 @@ const BASELINE_CLAIM_RULES = [
     claims: [
       { rel: AGENTS_EN, re: /baseline constant\s*\*\*(\d+)\*\*/g },
       { rel: AGENTS_CN, re: /基线常量\s*\*\*(\d+)\*\*/g },
+      { rel: CMDREF_EN, re: /baseline constant\s*\*\*(\d+)\*\*/g },
+      { rel: CMDREF_CN, re: /基线常量\s*\*\*(\d+)\*\*/g },
     ],
   },
   {
@@ -1790,6 +1796,8 @@ const BASELINE_CLAIM_RULES = [
     claims: [
       { rel: AGENTS_EN, re: /errors — (\d+) of them/g },
       { rel: AGENTS_CN, re: /——(\d+) 个错/g },
+      { rel: CMDREF_EN, re: /errors — (\d+) of them/g },
+      { rel: CMDREF_CN, re: /——(\d+) 个错/g },
     ],
   },
   {
@@ -1798,6 +1806,8 @@ const BASELINE_CLAIM_RULES = [
     claims: [
       { rel: AGENTS_EN, re: /\d+ of the (\d+)/g },
       { rel: AGENTS_CN, re: /(\d+) 个里有/g },
+      { rel: CMDREF_EN, re: /\d+ of the (\d+)/g },
+      { rel: CMDREF_CN, re: /(\d+) 个里有/g },
     ],
   },
   {
@@ -1806,6 +1816,8 @@ const BASELINE_CLAIM_RULES = [
     claims: [
       { rel: AGENTS_EN, re: /\*\*(\d+) errors?\*\*\s+with\s+none\s+present/g },
       { rel: AGENTS_CN, re: /无\s*`\.d\.ts`\s*=\s*(\d+)\s*个错/g },
+      { rel: CMDREF_EN, re: /\*\*(\d+) errors?\*\*\s+with\s+none\s+present/g },
+      { rel: CMDREF_CN, re: /无\s*`\.d\.ts`\s*=\s*(\d+)\s*个错/g },
     ],
   },
   {
@@ -1814,6 +1826,8 @@ const BASELINE_CLAIM_RULES = [
     claims: [
       { rel: AGENTS_EN, re: /= (\d+) \+ (\d+) \+ (\d+)/g },
       { rel: AGENTS_CN, re: /= (\d+) \+ (\d+) \+ (\d+)/g },
+      { rel: CMDREF_EN, re: /= (\d+) \+ (\d+) \+ (\d+)/g },
+      { rel: CMDREF_CN, re: /= (\d+) \+ (\d+) \+ (\d+)/g },
     ],
   },
   {
@@ -1827,6 +1841,8 @@ const BASELINE_CLAIM_RULES = [
     claims: [
       { rel: AGENTS_EN, re: /baseline\s+\*\*(\d+)\*\*\s*\/\s*\d+\s*files/g },
       { rel: AGENTS_CN, re: /基线\s*\*\*(\d+)\*\*\s*\/\s*\d+\s*个文件/g },
+      { rel: CMDREF_EN, re: /baseline\s+\*\*(\d+)\*\*\s*\/\s*\d+\s*files/g },
+      { rel: CMDREF_CN, re: /基线\s*\*\*(\d+)\*\*\s*\/\s*\d+\s*个文件/g },
     ],
   },
   {
@@ -1836,6 +1852,8 @@ const BASELINE_CLAIM_RULES = [
     claims: [
       { rel: AGENTS_EN, re: /BASELINE_WITH_TOOLS\s*=\s*(\d+)/g },
       { rel: AGENTS_CN, re: /BASELINE_WITH_TOOLS\s*=\s*(\d+)/g },
+      { rel: CMDREF_EN, re: /BASELINE_WITH_TOOLS\s*=\s*(\d+)/g },
+      { rel: CMDREF_CN, re: /BASELINE_WITH_TOOLS\s*=\s*(\d+)/g },
     ],
   },
   // ── issue #672：两族「M 个文件」现状声称的**句式对账**（真值不在这里，在棘轮那一步）────────
@@ -1925,7 +1943,7 @@ function collectBaselineClaimErrors() {
     // issue #802：这里**不再**做中英处数普查（`assertPairCensus`）。那条判据只能抓「有人单边删了一句散文」，
     // 抓不到任何行为问题，代价却是每一次正当改写都要把两侧句数凑平。
   }
-  notes.push(`baseline: AGENTS 中英共 ${total} 处现值声明（含分解式算术闭合与 #672 的句式对账）——`
+  notes.push(`baseline: 指令面与冷层共 ${total} 处现值声明（含分解式算术闭合与 #672 的句式对账）——`
     + `凡是出现的数全部等于 ${RATCHET_SRC} 的 BASELINE_ROOT=${truth.root} / BASELINE_WITH_TOOLS=${truth.withTools}；`
     + "#672 那两族的 M 由 `scripts/type-check-ratchet.mjs` 对实测"
     + (missing.length ? `；未出现的声称（不判红，issue #802）：${missing.join(", ")}` : "；每条规则都至少命中一处"));
@@ -8743,6 +8761,12 @@ const SELF_TEST_CASES = [
     overlay: { [AGENTS_CN]: (t) => t.replace(`BASELINE_ROOT = ${B_ROOT}`, `BASELINE_ROOT = ${B_ROOT - 1}`) },
     expect: [new RegExp(`baseline\\/常量写法 \`BASELINE_ROOT = N\`: AGENTS_cn\\.md:\\d+ 声称 ${B_ROOT - 1}，但 .* BASELINE_ROOT 是 ${B_ROOT}`)],
     expectFiles: [AGENTS_CN],
+  },
+  {
+    label: `command-reference EN 把棘轮值写错 → 点名冷层文档行`,
+    overlay: { [CMDREF_EN]: (t) => t.replace(`BASELINE_ROOT = ${B_ROOT}`, `BASELINE_ROOT = ${B_ROOT - 1}`) },
+    expect: [new RegExp(`baseline\\/常量写法 .*docs\\/maintenance\\/command-reference\\.md:\\d+ 声称 ${B_ROOT - 1}，但 .* BASELINE_ROOT 是 ${B_ROOT}`)],
+    expectFiles: [CMDREF_EN],
   },
   {
     label: "棘轮常量自己降 1 → 中英两侧的当前值句式全红",
