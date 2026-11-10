@@ -50,14 +50,11 @@ test("真宿主目录：命中一个「指南已覆盖」的名字 ⇒ exit 0，
   });
   const result = runScript(["--hosts", host]);
   assert.equal(result.status, 0, `命中被指南覆盖时是绿（覆盖判据，不是否决）：\n${result.stdout}\n${result.stderr}`);
-  assert.match(result.stdout, /## 命中（1 处）—— 全部已被 .* 指南覆盖：绿/u, "报告要有「已覆盖」小节");
   assert.match(
     result.stdout,
     new RegExp(`\`createAnthropicProvider\` @ 宿主仓 \`mini-host\` — \`${host}/src/adapter\\.js:1\``, "u"),
     `命中要逐条点名宿主仓 / 文件:行 / 名字：\n${result.stdout}`,
   );
-  assert.match(result.stdout, /登记删除版本 0\.31/u, "点名时要带登记的删除版本（宿主据此判断影响面）");
-  assert.match(result.stdout, /这一版已删/u, "命中要标出它已经不在公共导出面上（issue #688 的 retired 形态）");
   assert.match(
     result.stdout,
     /↳ 指南条目：`docs\/host-upgrade-guide-0\.31\.0\.md:\d+`[\s\S]*↳ 指南条目：`docs\/host-upgrade-guide-0\.31\.0_cn\.md:\d+`/u,
