@@ -2455,7 +2455,12 @@ Semantics, stated as a contract:
   `round` is not an integer is never a fold target, so anchoring a stub there
   would strand it as an orphan `user` message (`user tool_result has no matching
   assistant tool_use` — the other `invalid_messages`). Rows whose `round` is not
-  a safe integer are therefore never used as anchors.
+  a safe integer are therefore never used as anchors. **Scope (issue #811)**: a row
+  written through the engine's write boundary can no longer carry such a round —
+  `appendRound` / `appendRecoveryRow` / `appendUserTurn` reject it with a `TypeError`
+  (see “The row `round` must be a safe integer” below). The read side stays tolerant of
+  archives that already contain one: the row is still returned in full, only its round
+  stops participating in folding (it is no longer attached to a fabricated round `0`).
 - Both built-in stores implement it (`createMemoryTranscriptStore`,
   `createFileTranscriptStore`); a minimal third-party store need not.
 
@@ -2499,8 +2504,7 @@ before its first request.
 | `aggregate_carries_foreign_result_ids` | detail | `mid_sequence_merge_refused` | That aggregated message already carries a `tool_result` **from a different call** ⇒ the merge's id guard stops it from extending a message that is already mixed |
 | `next_message_is_not_user` | detail | `mid_sequence_shape_not_supported`, `mid_sequence_request_view_stub` | The message right after that assistant is not a `user` message (two adjacent assistants, one order each) ⇒ a page would have to be inserted between them. After issue #790 the request view inserts that page **only when none of that order's ids was settled anywhere** — a partially settled order (one id already answered in a later page) is left alone, because inserting a page would orphan the result that already exists |
 | `aggregate_has_no_tool_result` | detail | `mid_sequence_shape_not_supported`, `mid_sequence_request_view_stub` | The following `user` message holds no `tool_result` at all ⇒ insertion again (`validateMessages` reports it with a different sentence) |
-| `round_not_safe_integer` | detail | `mid_sequence_stub_row_write_refused` | The round the stub belongs to is not a safe integer (its round came from a run snapshot with round residue) ⇒ the write returns "not persisted" and no row is written |
-| `append_row_not_persisted` | detail | `mid_sequence_stub_row_write_refused` | The round number is legal while the `appendRound` write itself did not land ⇒ same "no row in the ledger" as above, different why |
+| `append_row_not_persisted` | detail | `mid_sequence_stub_row_write_refused` | The `appendRound` write itself did not land ⇒ that stub lives only in this run's context (since issue #811 this is the **only** way that reason can fire: a stub whose own round is not a safe integer is skipped **before** the write and emits nothing — the store was never asked, so "not persisted" would be a lie, and no new value may be added) |
 
 Payload: `{type, runId, parentRunId?, round, reason, count, detail?, toolUseIds?}` — `count` is
 how many `tool_use` blocks (or stubs) this abandonment covers, and causes sharing
@@ -3215,6 +3219,25 @@ the exclusion list is exactly those four names, nested `ts` values are payload,
 and everything else — `messages`, `response`, `foldedPayload`, `usage`,
 `runState`, and every host-owned unknown field — must match.
 
+### The row `round` must be a safe integer (issue #811)
+
+Every entry point that can hand a row to the ledger validates its `round` **before** writing:
+`appendRound(runId, record)` and `appendRecoveryRow(runId, record)` on both built-in stores, and the
+settling path inside `appendUserTurn` (whose `dedupKey` and `seq` are derived from that round). A
+value that is not a safe integer — a driver returning a string for an `int8` column, `2.5`, `null`,
+or the key simply absent — throws a `TypeError`:
+
+- The exception type is part of the contract, not a style choice: hosts map `TypeError` to a 4xx and
+  every other exception to a 5xx, and an unusable round is a caller error.
+- The message names the entry (`appendRound` / `appendRecoveryRow` / `appendUserTurn`), the row it
+  rejected (its `dedupKey`/`roundKey`), and the value **and type** it received
+  (`received "2" (string)`, `received null`, `received undefined (the row carries no round key at all)`).
+- The rejection is inert: no directory, no file, no row, and no run-state write is left behind.
+- Read-side tolerance is unchanged (issue #729): a ledger that already contains such a row still
+  reads back in full. Only the **round** stops participating — the fold no longer attaches those
+  messages to a fabricated round `0`, so everything derived from round numbers (crash boundary,
+  resume anchor, the round table) stays honest instead of silently wrong.
+
 ### Load order
 
 `load(runId)` must return records in persistence append order for the entire
@@ -3261,8 +3284,13 @@ with the engine's own tombstone (`is_error: true`, built by `buildUnpersistedToo
 without a round carrier, so an answer appended afterwards lands *after* the caller's plain-text
 row, and the wire order `assistant[tool_use] → user(text) → user[tool_result]` is rejected locally
 before a single request goes out. `status: "refused"` means that row was **not** written and
-`reason` names the cause (`ledger_probe_absent`, `round_not_safe_integer`, `round_carrier_has_body`,
-`tool_use_id_unusable`); the caller's own row is appended either way. Nothing is silent, and
+`reason` names the cause (`ledger_probe_absent`, `round_carrier_has_body`, `tool_use_id_unusable` —
+three values; issue #811 removed the fourth); the caller's own row is appended either way.
+**The one exception (issue #811)**: when the ledger row holding that dangling `tool_use` carries a
+`round` that is not a safe integer, the helper does **not** return `refused` — it throws a
+`TypeError` naming the entry, the row, and the value and type it received. That case is a
+caller/store error (the settle row's `dedupKey` and `seq` are both derived from that round), not a
+recoverable degradation, so the caller's `:input:` row is not appended either. Nothing is silent, and
 nothing changes when nothing dangles: the returned key set is then exactly
 `{ key, dedupKey, round, written, record? }`.
 

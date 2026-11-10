@@ -73,6 +73,43 @@
   绝对下标不变。新格式（逐条入账）的档案**一个字节都不变**；确实还要复活某个 pre-261021 死档案的宿主，要么接受
   变短的上下文，要么自己读那份档案。
 
+- **A row whose `round` is not a safe integer is now rejected at the write boundary with `TypeError` (issue #811).**
+  Every entry point that can hand a row to the ledger validates it before writing: `appendRound` and
+  `appendRecoveryRow` on both built-in stores, plus the settling path inside `appendUserTurn` (that row's
+  `dedupKey` and `seq` are both derived from the round). The exception type is the contract: hosts map
+  `TypeError` to a 4xx and every other exception to a 5xx, and an unusable round is a caller error — the
+  message names the entry, the row (`dedupKey`/`roundKey`) and the value **and type** it received
+  (`received "2" (string)` … `received undefined (the row carries no round key at all)`), and the rejection is
+  inert (no directory, no file, no row). Three consequences are stated together because they are one surface:
+  (1) `appendUserTurn`'s fourth refusal reason is gone — an invalid round on the ledger row it is settling is
+  no longer a recoverable `status: "refused"`, it throws, so the contract's reason list drops to three values
+  (`ledger_probe_absent` / `round_carrier_has_body` / `tool_use_id_unusable`) and the caller's `:input:` row is
+  not appended either; (2) the `resume_journal_skipped` detail `round_not_safe_integer` is deleted together with
+  the branch that could have emitted it and both contract rows — the public value set only shrinks, no new
+  reason or detail appears anywhere; (3) read-side tolerance is untouched (issue #729 stays the written
+  contract): a ledger that already contains such a row still reads back in full. **Measured premise, so the
+  cost today is zero:** the three real hosts store rounds in integer columns (`erix-station` PG `int`,
+  `fde-workshop` `integer`, `touwaka` `INT`) and 129 local archives hold 1,283 rounds with zero string and zero
+  fractional values. The door gets closed anyway because the cheapest way to make it real is a driver detail —
+  a PG driver returns `int8`/`bigint` as a JS string, and the one host that escaped did so only because its
+  column is `int`. Hosts that ever passed a string round through silently now get a loud 4xx instead of an
+  archive whose derived facts are quietly wrong.
+- **轮号不是安全整数的行，现在在写侧边界被 `TypeError` 拒掉（issue #811）。** 所有能把一行交进账本的入口，
+  在写**之前**校验它：两个内置 store 的 `appendRound` 与 `appendRecoveryRow`，以及 `appendUserTurn` 里那条结清
+  路径（结清行的 `dedupKey` 与 `seq` 都由那个轮号派生）。异常类型就是契约：宿主只把 `TypeError` 映射成 4xx、
+  其它异常一律 5xx，而轮号不可用是**调用方的错**——消息点名哪个入口、哪一行（`dedupKey`/`roundKey`）、收到的
+  **值与类型**（`received "2" (string)` … `received undefined (the row carries no round key at all)`），且拒绝是
+  惰性的（不建目录、不建文件、不落行）。三条后果同属一个面，一起说：（1）`appendUserTurn` 的第四条拒写成因消失
+  ——它要结清的那条账本行轮号不合法，不再是「可恢复的 `status: "refused"`」，而是抛错，于是契约的 reason 列表
+  降到三项（`ledger_probe_absent` / `round_carrier_has_body` / `tool_use_id_unusable`），调用方那条 `:input:` 行
+  也不落盘；（2）`resume_journal_skipped` 的 detail `round_not_safe_integer` 连同可能发出它的那条分支、以及中英
+  两份契约里那两行一起删除——公共取值集这一版**只缩不扩**，没有任何新的 reason/detail 出现；（3）读侧宽容一字
+  未动（issue #729 仍是契约明文）：已经含那种行的账本照旧完整读回。**实测前提，所以今天的代价是零**：三个真宿主
+  的轮号列都是整型（`erix-station` PG `int`、`fde-workshop` `integer`、`touwaka` `INT`），本机 129 份归档里
+  1,283 个轮号字符串 0 个、小数 0 个。还是要把这扇门关掉，因为把它变真的最省事一条路是驱动细节——PG 驱动对
+  `int8`/`bigint` 默认返回 JS 字符串，而唯一躲过的那家只是因为列建成了 `int`。曾经把字符串轮号静默写进去的宿主，
+  现在拿到一声响亮的 4xx，而不是一份「派生事实悄悄错掉」的档案。
+
 ### Changed
 - **Documentation review leaves the pipeline entirely: CI loses its `docs` job and the release preflight drops from seven steps to five (261109, operator ruling).** The reasoning is a property of scripts, not of documents: a gate can only judge **wording** ("this sentence must exist", "both languages must have the same occurrence count"), and that class produced the 25% red rate while catching almost no real defect; the two classes that do matter — **reference integrity** (a document pointing at a file that no longer exists) and **derived-value copies** (a quoted version or count the source no longer says) — need a reader. So: the `docs` job is deleted from `.github/workflows/ci.yml` (CI is now `real` + `registries`), `PREFLIGHT_STEPS` in `scripts/release-day.mjs` drops `check:docs` and `check:docs:strict` (5 steps: `check:changelog` → the `[Unreleased]` carry → `check:release:real` → `check:release` → `check:host-consumers`), and both AGENTS §4 checklists shrink to five rows in step with it. What replaces them is a **periodic agent pass**, written down as a checklist rather than a gate (`docs/maintenance/doc-review-pass.md` / `_cn.md`): what to compare by hand (defaults, numbers, name sets, version claims, reference integrity, retired semantics), how to report (one finding per line, each with the command that proves it), and an explicit "a silent all-clear is indistinguishable from having read nothing". The commands survive as a manual entry point — `npm run docs:pass` runs the mechanical half and prints it, and **its exit code is evidence about the scripts, not about the documents**. Every gate that compares a committed table against the tree (`check:inventory`, `check:config-leaf-values`, `check:mutation`), the packaged-link closure (`check:pack-links`), the CHANGELOG coverage gate and the suite-summary guard stay: none of them judges prose.
 - **文档检查整族移出流水线：CI 去掉 `docs` job，发版前置从七步降到五步（261109，用户裁决）。** 理由是关于脚本的性质、不是关于文档：闸只能判**措辞**（「这句必须存在」「中英出现次数相等」），而这一类造出了 25% 的红率，却几乎抓不到真缺陷；真正值钱的两类——**引用完整性**（文档指向已不存在的文件）与**派生值抄件**（引用的版本号或计数源码已不这么说）——需要一个读者。于是：`.github/workflows/ci.yml` 里 `docs` job 整个删除（CI 只剩 `real` + `registries`）；`scripts/release-day.mjs` 的 `PREFLIGHT_STEPS` 摘掉 `check:docs` 与 `check:docs:strict`（五步：`check:changelog` → `[Unreleased]` 漏搬 → `check:release:real` → `check:release` → `check:host-consumers`），两份 AGENTS 的 §4 清单同批降到五行。替代它们的是**定期 agent 检查**，写成清单而不是闸（`docs/maintenance/doc-review-pass.md` / `_cn.md`）：手工对什么（默认值、数字、名称集合、版本声称、引用完整性、退役语义）、怎么报（一条发现一行，每条都带证明它的命令）、以及明写「沉默的『一切正常』与『我什么都没读』无法区分」。命令本身保留为手动入口——`npm run docs:pass` 跑机械那一半并打印，**它的退出码是关于脚本的证据，不是关于文档的证据**。凡「提交进库的表 vs 树」那一族（`check:inventory`、`check:config-leaf-values`、`check:mutation`）、随包链接闭合（`check:pack-links`）、CHANGELOG 覆盖闸与套件汇总守卫全部保留：它们没有一处判散文。
@@ -1738,6 +1775,37 @@
   `no_store`），不假称端到端跑过。谓词的 revise 文案只在「账本完整且两处都找不到」时**追加**一条出路
   （重跑取证，或把该值移到「## 未验证」）；`revise` 这个动作与决策返回形状都没动（#648 / #436 / #435
   的格子一条没碰）。
+
+- **`foldLedgerMessages` no longer folds a row with an unusable `round` into round `0` (issue #811).** The two
+  exported folds disagreed on the same bad input: `foldMessageRows` skipped such a row from grouping onward
+  (`src/store/message-rows.js:164`), while `foldLedgerMessages` wrote `Number.isSafeInteger(round) ? round : 0`
+  (`:282`) — so in one view the row did not exist and in the other its messages were attached to **round 0**.
+  Attaching is the worse half: the crash boundary, the resume anchor and the round table are all derived from
+  round numbers, so a fabricated `0` makes them wrong without saying so — worse than losing a row. Now both
+  folds answer the same way: the row's **content is still returned** (read-side tolerance, issue #729), while
+  the round stops participating — the entry carries `undefined` instead of a made-up number, and a shard's
+  `partOf` still joins by key (that is content assembly, not round arithmetic), so a ledger whose rounds are
+  *all* strings still folds into a correct timeline with every round unknown. Three consequences ride along:
+  `firstSliceRowKeyOf` also refuses candidate rows whose own round is unusable (issue #729's guarantee used to
+  hold only because the fold coerced bad rounds to `0`; with rounds now legitimately unknown, the lenient branch
+  has to block them itself, or a stub lands as an orphan `user` message), the round counter is no longer fed
+  `Math.max(n, undefined)` (that is `NaN`), and a mid-sequence stub whose round is unusable is skipped **before**
+  the write and emits nothing — the store was never asked, so reporting it as `append_row_not_persisted` would
+  be a lie, and no new value may be invented for it. A host store that hands back string rounds therefore keeps
+  resuming: no throw, the stub still repairs this run's context, and the honest signal remains
+  `mid_sequence_aggregate_row_not_in_ledger` / `aggregate_row_not_in_ledger` with the round reported as unknown.
+- **`foldLedgerMessages` 不再把轮号不可用的行折进 round `0`（issue #811）。** 两条公共导出的折叠对同一个坏输入
+  答案不同：`foldMessageRows` 从分组那一刻就跳过它（`src/store/message-rows.js:164`），而 `foldLedgerMessages`
+  写的是 `Number.isSafeInteger(round) ? round : 0`（`:282`）——于是同一本账本里那一行在一条折叠里不存在、在另一条
+  里被挂到 **round 0**。挂上去是更坏的那一半：崩溃边界、续跑锚点、轮号表全部由轮号推出来，一个造出来的 `0` 会让
+  它们错而不吭声——比丢一行更坏。现在两条同答案：那一行的**正文照常给回**（读侧宽容，#729），而轮号退出折叠——
+  条目带的是 `undefined`，不再是编出来的数字；分片的 `partOf` 仍按 key 接回（那是正文装配，不是轮号运算），于是
+  「整本轮号都是字符串」的档案照样折成正确的时间线，只是轮号全部未知。三条后果一起跟上来：`firstSliceRowKeyOf`
+  同样拒掉自己轮号不可用的候选行（#729 那条纪律原先只是因为折叠层把坏轮号归成 `0` 才顺带成立；轮号如今可以真的
+  未知，宽松档必须自己挡，否则桩会落成孤儿 `user` 消息），轮号计数器不再被喂 `Math.max(n, undefined)`（那是
+  `NaN`），而轮号不可用的中段桩在写**之前**就被跳过且不发射——store 根本没被问过，报成 `append_row_not_persisted`
+  是假话，也不许为它编一个新取值。于是交回字符串轮号的宿主 store 照样能续跑：不抛、桩仍修好本次上下文，诚实的
+  信号仍是 `mid_sequence_aggregate_row_not_in_ledger` / `aggregate_row_not_in_ledger`，且轮号如实报为「未知」。
 
 ## [0.31.0] - 2026-11-04
 

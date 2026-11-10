@@ -1980,6 +1980,10 @@ issue #754（裁决 2）起它**作为恢复来源已被弃用**——恢复路�
 - **候选行的 `round` 必须严格相等（issue #729）**：`round` 不是整数的行从来不是折叠目标，把桩锚在
   它上面只会让桩落成孤儿 `user` 消息（`user tool_result has no matching assistant tool_use`，另一种
   `invalid_messages`）。所以 `round` 不是安全整数的行永不当锚点。
+  **范围（issue #811）**：经引擎写侧边界写入的行再也带不上这种轮号——`appendRound` /
+  `appendRecoveryRow` / `appendUserTurn` 会以 `TypeError` 拒掉（见下面「行的 `round` 必须是安全
+  整数」那一节）。读侧对已含那种行的既有档案照旧宽容：行仍完整给回，只有那个轮号不再参与折叠
+  （不再被挂到一个造出来的 `round: 0` 上）。
 - 内置两个 store 都实现（`createMemoryTranscriptStore`、`createFileTranscriptStore`）；
   宿主最小实现可以不提供。
 
@@ -2016,8 +2020,7 @@ issue #754（裁决 2）起它**作为恢复来源已被弃用**——恢复路�
 | `aggregate_carries_foreign_result_ids` | detail | `mid_sequence_merge_refused` | 那条聚合消息里已有**不属于这一单**的 `tool_result` ⇒ 合并的 id 守卫不让在同一页继续加工 |
 | `next_message_is_not_user` | detail | `mid_sequence_shape_not_supported`、`mid_sequence_request_view_stub` | 紧接的那条消息不是 `user`（相邻两条 assistant 各带一单）⇒ 要在两条之间插页。#790 之后请求视图只在**这一单的 id 一个都没在上下文里结清过**时才插那一页；部分结清（某个 id 已在后面那页有结果）不动，因为插页会把已有的那份真结果挤成孤儿 |
 | `aggregate_has_no_tool_result` | detail | `mid_sequence_shape_not_supported`、`mid_sequence_request_view_stub` | 紧接的 `user` 一条 `tool_result` 都没有 ⇒ 同样要插页（`validateMessages` 会以另一句如实报错）|
-| `round_not_safe_integer` | detail | `mid_sequence_stub_row_write_refused` | 这张桩所属轮的轮号不是安全整数（轮号来自一份轮号残留的 run snapshot）⇒ 写侧直接退回，一行都不写 |
-| `append_row_not_persisted` | detail | `mid_sequence_stub_row_write_refused` | 轮号合法，而 `appendRound` 那一写没落地 ⇒ 与上一条同为「账本里没那一行」，区别只在为什么 |
+| `append_row_not_persisted` | detail | `mid_sequence_stub_row_write_refused` | `appendRound` 那一写本身没落地 ⇒ 那张桩只活在本次上下文（issue #811 之后这是该成因**唯一**的来路：轮号不可用的桩在写**之前**就被跳过且不发射——store 根本没被问过，说「没落盘」是假话，而不许新增取值） |
 
 事件载荷：`{type, runId, parentRunId?, round, reason, count, detail?, toolUseIds?}`——`count` 是这次放弃涉及几张
 `tool_use`（或几张桩），同一 `(reason, detail)` 的成因归并成**一条**事件。`toolUseIds` 是 issue #790
@@ -2578,6 +2581,23 @@ symbol 成员按 `JSON.stringify` 的同样取舍丢掉——最后这一条正�
 有这四个名字，嵌套的 `ts` 算内容，其余一律算 payload：`messages`、`response`、
 `foldedPayload`、`usage`、`runState`，以及宿主自有的未知字段。
 
+### 行的 `round` 必须是安全整数（issue #811）
+
+所有能把一行交进账本的入口，在写**之前**校验它的 `round`：两个内置 store 的
+`appendRound(runId, record)` 与 `appendRecoveryRow(runId, record)`，以及 `appendUserTurn` 里那条结清
+路径（结清行的 `dedupKey` 与 `seq` 都由那个轮号派生）。值不是安全整数——驱动把 `int8` 列返回成
+JS 字符串、`2.5`、`null`，或者压根没这个键——抛 `TypeError`：
+
+- 异常类型是契约的一部分，不是风格：宿主只把 `TypeError` 映射成 4xx，其它异常一律 5xx，而轮号
+  错了是**调用方的错**。
+- 消息点名：哪个入口（`appendRound` / `appendRecoveryRow` / `appendUserTurn`）、拒的是哪一行（它的
+  `dedupKey`/`roundKey`）、收到的**值与类型**（`received "2" (string)`、`received null`、
+  `received undefined (the row carries no `round` key at all)`）。
+- 拒绝是惰性的：不建目录、不建文件、不落行，也不动 run-state。
+- 读侧的宽容不变（issue #729）：已经含那种行的账本仍完整读回。退出的只有**轮号**——折叠不再把
+  那一行的消息挂到一个造出来的 `round: 0` 上，于是由轮号推出来的东西（崩溃边界、续跑锚点、
+  轮号表）保持诚实，而不是跟着错。
+
 ### load 返回顺序
 
 `load(runId)` 必须按持久化追加顺序返回全部记录；尤其是同一 `round` 的多条记录必须保留
@@ -2611,8 +2631,11 @@ dedupKey, written?, reason? }`。在追写调用方那一行**之前**，助手�
 构造）答掉这些 id。时机就是本单全部：没有轮载体的行，折叠保持文件顺序，所「后补」的答话
 会落在调用方那条纯文本行**后面**，而出网顺序 `assistant[tool_use] → user(text) → user[tool_result]`
 在本地就被判死，一个请求都发不出去。`status: "refused"` 表示那一行**没写**，`reason` 点名成因
-（`ledger_probe_absent` / `round_not_safe_integer` / `round_carrier_has_body` / `tool_use_id_unusable`）；
-调用方那一行两种情况下都照写。这里不静默，而没悬空时一切如旧：返回键集仍恰好是
+（`ledger_probe_absent` / `round_carrier_has_body` / `tool_use_id_unusable`——三条，issue #811 删掉了
+第四项）；调用方那一行两种情况下都照写。**唯一的例外（issue #811）**：账本里那条挂着悬空
+`tool_use` 的行自己的 `round` 不是安全整数时，助手**不返回** `refused`，而是抛 `TypeError`，消息点名
+入口、哪一行、收到的值与类型。那不是「可恢复的降级」而是调用方/宿主 store 交错了（结清行的
+`dedupKey` 与 `seq` 都由那个轮号派生）⇒ 调用方那条 `:input:` 行同样不落盘。这里不静默，而没悬空时一切如旧：返回键集仍恰好是
 `{ key, dedupKey, round, written, record? }`。
 
 `appendUserTurn` 另为数据库型宿主提供**成对可选快路径**（issue #157）：当 `store`
