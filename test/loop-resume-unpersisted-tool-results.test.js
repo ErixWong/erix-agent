@@ -43,6 +43,7 @@ import { foldLedgerMessages } from "../src/store/message-rows.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { withUnvalidatedAppends } from "./helpers/unvalidated-store.js";
 import { withSeed } from "./helpers/run-direct.js";
 import { makeTmp } from "./helpers/tmp.js";
 
@@ -1437,7 +1438,10 @@ test("#729 中段悬空（载体已带正文 + 同轮消息行）· 不给锚点
 // 修后：「`round` 是整数时 `row.round` 必须**严格相等**」。
 
 test("#729 轮号过滤 · 候选行的 `round` 不是整数（折叠层不认它）⇒ 不给锚点、不写桩、二次恢复仍 ok", async () => {
-  const inner = createMemoryTranscriptStore();
+  // issue #811 之后那种行**进不了内置 store**（写侧当场抛 `TypeError`），所以现场由
+  // `withUnvalidatedAppends` 落：宿主自研 store（驱动把整型列返回成字符串）或写侧守卫之前的档案。
+  // 断言一条没改：读侧对那种行照旧宽容，而它照样**不许当锚点**。
+  const inner = withUnvalidatedAppends(createMemoryTranscriptStore());
   const ts = () => new Date().toISOString();
   await inner.appendRound(RUN_ID, {
     round: 1, roundKey: `${RUN_ID}:round:1`, dedupKey: `${RUN_ID}:msg:1:0`, kind: "message", seq: 0,

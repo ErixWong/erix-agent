@@ -1910,21 +1910,21 @@ issue #754（裁决 2）起它**作为恢复来源已被弃用**——恢复路�
 <!-- erix:snapshot-cell-axes:begin -->
 | 格（payload 键） | write | read | 权威源（仅双写格） | 交接条件（仅双写格） | 今天的写点（已停写的格＝钉住「为什么停写」那行） | 今天的读者 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `round` | written | source | — | — | `src/loop/orchestrator.js:3096` | `src/loop/resume-manager.js:730`、`src/loop/orchestrator.js:3331` |
-| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3121` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:171`、`test/loop-invalid-arguments.test.js:235`、`test/loop-v020-rc.test.js:480`、`test/loop-v020-rc.test.js:616` |
-| `pendingToolUses` | written | source | — | — | `src/loop/orchestrator.js:3145` | `src/loop/resume-manager.js:676`、`src/loop/resume-manager.js:887` |
-| `pendingToolUse` | written | fallback(pendingToolUses 缺席) | — | — | `src/loop/orchestrator.js:3144` | `src/loop/resume-manager.js:677`、`src/loop/resume-manager.js:888` |
-| `executedToolIds` | written | fallback(账本里没有 `tool-executed` 恢复行) | 「这个 `tool_use` 真的执行过」的权威源是**账本**：`src/store/recovery-rows.js` 在执行器刚返回的那一刻追加一条 append-only 恢复行（`kind: "recovery"`、`recoveryEvent: "tool-executed"`、带 `toolUseId`、`messages: []`）——比结果行早，也比本轮任何后续快照写早（#769）。恢复侧把那些行与这一格取**并集**，所以这个集合只能把「执行过」说得更全、不能更窄；快照那一格是 latest-only，下一轮一写就盖掉 | 这一格要变成 `not-source`，前提是恢复侧会遇到的每本账本都带 `tool-executed` 行——#769 之前写的账本没有，所以在那批账本用尽之前它仍是兜底 | `src/loop/orchestrator.js:3148` | `src/loop/resume-manager.js:831`、`src/store/recovery-rows.js:24` |
-| `toolResults` | written | source | — | — | `src/loop/orchestrator.js:3149` | `src/loop/resume-manager.js:688`、`src/loop/resume-manager.js:835` |
-| `toolOutputs` | written | source | 终稿 guard 的证据源是**轮记录**：`bin/final-guard-support.js:238`（口径写在同文件 `bin/final-guard-support.js:218`），它从不读最新快照 | 快照那份的唯一读者是恢复侧回填 `src/loop/resume-manager.js:841` ⇒ 两格的停止条件彼此独立，先迁回填才可谈停写快照这格 | `src/loop/orchestrator.js:3154`（快照）与 `src/loop/orchestrator.js:6352`（轮记录） | 快照侧 `src/loop/resume-manager.js:841`；轮记录侧 `bin/final-guard-support.js:238` |
-| `messages` | residue | fallback(仅旧格式，只数条数) | 账本（`load()`）是正文的权威来源 | `not-source` **今天仍不许写**：过去把这段正文喂进上下文的那条分支已经没了（issue #754 裁决 2），但只数条数的那个读点 `src/loop/resume-manager.js:750` 还在场 ⇒ 要等那个读点也没了才可转 `not-source` | `src/loop/orchestrator.js:3146` | `src/loop/resume-manager.js:750`（条件：账本在锚点之后一条都没有；自 issue #754 起这里只**数条数**，不再把它喂进上下文） |
-| `persistedTranscriptLength`（盘上那格） | written | not-source | 恢复锚点在账本上现算 | 引擎侧读者为零 ⇒ 这是表内今天唯一「读侧条件已满足」的格；停写仍要先迁测试侧拿它当截账本夹具锚点的两处（见下方口径） | `src/loop/orchestrator.js:3147` | 恢复侧不信它：`src/loop/resume-manager.js:119`（注释明写不能信快照里的值）与 `src/loop/resume-manager.js:577`（就地用账本长度覆盖） |
-| `persistedTranscriptLength`（进程内计数器） | written | source | —（同一变量的进程内形态不落盘，它才是写侧的现值） | **不许停**：它是 `messages` 残余起点的夹值之一 | `src/loop/orchestrator.js:3147` | `src/loop/orchestrator.js:3082` |
-| `partialText` | written(conditional) | fallback(崩溃轮没有 `partial-text` 恢复行) | 权威源是账本：崩溃轮那条 `partial-text` 恢复行（#769）——一条一个事件、事件键 = 正文指纹，所以正文变长是**新事件**、已落盘的行从不被改写；恢复侧的正文与轮号都取自**同一行** | 条件＝本轮已有半截正文（写点 `src/loop/orchestrator.js` 的 `partialText === undefined` 夹子）：现场有半截正文 ⇒ 这一格必在；没有 ⇒ 整格缺席（不是写 `undefined`） | `src/loop/orchestrator.js:3155` | `src/loop/resume-manager.js:692`、`src/loop/resume-manager.js:797`、`src/store/recovery-rows.js:24` |
-| `partialRound` | written(conditional) | fallback(崩溃轮没有 `partial-text` 恢复行) | 与 `partialText` 同源同一行：恢复行自带 `round`，所以轮号跟着正文走，绝不与快照轮号拼盘 | 与 `partialText` **同一条写入语句、同一个条件** ⇒ 两格同生同灭，缺一即坏 | `src/loop/orchestrator.js:3155` | `src/loop/resume-manager.js:798`、`src/store/recovery-rows.js:24` |
-| `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3109` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:678`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
-| `ts` | stopped | not-source | 账本行 / 消息行自己的那个 `ts` | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3116` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**（同一个键名的另一个产物，不是这格）`src/loop/resume-manager.js:607` |
-| `compactionStats` | stopped | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:449`）与轮记录 `src/loop/orchestrator.js:6332` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:73` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3130`、`src/loop/orchestrator.js:6332` | 恢复走 run-state `src/loop/resume-manager.js:449`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
+| `round` | written | source | — | — | `src/loop/orchestrator.js:3094` | `src/loop/resume-manager.js:733`、`src/loop/orchestrator.js:3337` |
+| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3119` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:171`、`test/loop-invalid-arguments.test.js:235`、`test/loop-v020-rc.test.js:480`、`test/loop-v020-rc.test.js:616` |
+| `pendingToolUses` | written | source | — | — | `src/loop/orchestrator.js:3143` | `src/loop/resume-manager.js:679`、`src/loop/resume-manager.js:891` |
+| `pendingToolUse` | written | fallback(pendingToolUses 缺席) | — | — | `src/loop/orchestrator.js:3142` | `src/loop/resume-manager.js:680`、`src/loop/resume-manager.js:892` |
+| `executedToolIds` | written | fallback(账本里没有 `tool-executed` 恢复行) | 「这个 `tool_use` 真的执行过」的权威源是**账本**：`src/store/recovery-rows.js` 在执行器刚返回的那一刻追加一条 append-only 恢复行（`kind: "recovery"`、`recoveryEvent: "tool-executed"`、带 `toolUseId`、`messages: []`）——比结果行早，也比本轮任何后续快照写早（#769）。恢复侧把那些行与这一格取**并集**，所以这个集合只能把「执行过」说得更全、不能更窄；快照那一格是 latest-only，下一轮一写就盖掉 | 这一格要变成 `not-source`，前提是恢复侧会遇到的每本账本都带 `tool-executed` 行——#769 之前写的账本没有，所以在那批账本用尽之前它仍是兜底 | `src/loop/orchestrator.js:3146` | `src/loop/resume-manager.js:835`、`src/store/recovery-rows.js:24` |
+| `toolResults` | written | source | — | — | `src/loop/orchestrator.js:3147` | `src/loop/resume-manager.js:691`、`src/loop/resume-manager.js:839` |
+| `toolOutputs` | written | source | 终稿 guard 的证据源是**轮记录**：`bin/final-guard-support.js:238`（口径写在同文件 `bin/final-guard-support.js:218`），它从不读最新快照 | 快照那份的唯一读者是恢复侧回填 `src/loop/resume-manager.js:845` ⇒ 两格的停止条件彼此独立，先迁回填才可谈停写快照这格 | `src/loop/orchestrator.js:3152`（快照）与 `src/loop/orchestrator.js:6365`（轮记录） | 快照侧 `src/loop/resume-manager.js:845`；轮记录侧 `bin/final-guard-support.js:238` |
+| `messages` | residue | fallback(仅旧格式，只数条数) | 账本（`load()`）是正文的权威来源 | `not-source` **今天仍不许写**：过去把这段正文喂进上下文的那条分支已经没了（issue #754 裁决 2），但只数条数的那个读点 `src/loop/resume-manager.js:753` 还在场 ⇒ 要等那个读点也没了才可转 `not-source` | `src/loop/orchestrator.js:3144` | `src/loop/resume-manager.js:753`（条件：账本在锚点之后一条都没有；自 issue #754 起这里只**数条数**，不再把它喂进上下文） |
+| `persistedTranscriptLength`（盘上那格） | written | not-source | 恢复锚点在账本上现算 | 引擎侧读者为零 ⇒ 这是表内今天唯一「读侧条件已满足」的格；停写仍要先迁测试侧拿它当截账本夹具锚点的两处（见下方口径） | `src/loop/orchestrator.js:3145` | 恢复侧不信它：`src/loop/resume-manager.js:119`（注释明写不能信快照里的值）与 `src/loop/resume-manager.js:580`（就地用账本长度覆盖） |
+| `persistedTranscriptLength`（进程内计数器） | written | source | —（同一变量的进程内形态不落盘，它才是写侧的现值） | **不许停**：它是 `messages` 残余起点的夹值之一 | `src/loop/orchestrator.js:3145` | `src/loop/orchestrator.js:3080` |
+| `partialText` | written(conditional) | fallback(崩溃轮没有 `partial-text` 恢复行) | 权威源是账本：崩溃轮那条 `partial-text` 恢复行（#769）——一条一个事件、事件键 = 正文指纹，所以正文变长是**新事件**、已落盘的行从不被改写；恢复侧的正文与轮号都取自**同一行** | 条件＝本轮已有半截正文（写点 `src/loop/orchestrator.js` 的 `partialText === undefined` 夹子）：现场有半截正文 ⇒ 这一格必在；没有 ⇒ 整格缺席（不是写 `undefined`） | `src/loop/orchestrator.js:3153` | `src/loop/resume-manager.js:695`、`src/loop/resume-manager.js:801`、`src/store/recovery-rows.js:24` |
+| `partialRound` | written(conditional) | fallback(崩溃轮没有 `partial-text` 恢复行) | 与 `partialText` 同源同一行：恢复行自带 `round`，所以轮号跟着正文走，绝不与快照轮号拼盘 | 与 `partialText` **同一条写入语句、同一个条件** ⇒ 两格同生同灭，缺一即坏 | `src/loop/orchestrator.js:3153` | `src/loop/resume-manager.js:802`、`src/store/recovery-rows.js:24` |
+| `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3107` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:681`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
+| `ts` | stopped | not-source | 账本行 / 消息行自己的那个 `ts` | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3114` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**（同一个键名的另一个产物，不是这格）`src/loop/resume-manager.js:610` |
+| `compactionStats` | stopped | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:452`）与轮记录 `src/loop/orchestrator.js:6345` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:73` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3128`、`src/loop/orchestrator.js:6345` | 恢复走 run-state `src/loop/resume-manager.js:452`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
 
 `—` = 该格不双写，没有权威源/交接条件可谈。表下三条口径只划边界，不改变上面的轴值：
@@ -1980,6 +1980,10 @@ issue #754（裁决 2）起它**作为恢复来源已被弃用**——恢复路�
 - **候选行的 `round` 必须严格相等（issue #729）**：`round` 不是整数的行从来不是折叠目标，把桩锚在
   它上面只会让桩落成孤儿 `user` 消息（`user tool_result has no matching assistant tool_use`，另一种
   `invalid_messages`）。所以 `round` 不是安全整数的行永不当锚点。
+  **范围（issue #811）**：经引擎写侧边界写入的行再也带不上这种轮号——`appendRound` /
+  `appendRecoveryRow` / `appendUserTurn` 会以 `TypeError` 拒掉（见下面「行的 `round` 必须是安全
+  整数」那一节）。读侧对已含那种行的既有档案照旧宽容：行仍完整给回，只有那个轮号不再参与折叠
+  （不再被挂到一个造出来的 `round: 0` 上）。
 - 内置两个 store 都实现（`createMemoryTranscriptStore`、`createFileTranscriptStore`）；
   宿主最小实现可以不提供。
 
@@ -2016,8 +2020,7 @@ issue #754（裁决 2）起它**作为恢复来源已被弃用**——恢复路�
 | `aggregate_carries_foreign_result_ids` | detail | `mid_sequence_merge_refused` | 那条聚合消息里已有**不属于这一单**的 `tool_result` ⇒ 合并的 id 守卫不让在同一页继续加工 |
 | `next_message_is_not_user` | detail | `mid_sequence_shape_not_supported`、`mid_sequence_request_view_stub` | 紧接的那条消息不是 `user`（相邻两条 assistant 各带一单）⇒ 要在两条之间插页。#790 之后请求视图只在**这一单的 id 一个都没在上下文里结清过**时才插那一页；部分结清（某个 id 已在后面那页有结果）不动，因为插页会把已有的那份真结果挤成孤儿 |
 | `aggregate_has_no_tool_result` | detail | `mid_sequence_shape_not_supported`、`mid_sequence_request_view_stub` | 紧接的 `user` 一条 `tool_result` 都没有 ⇒ 同样要插页（`validateMessages` 会以另一句如实报错）|
-| `round_not_safe_integer` | detail | `mid_sequence_stub_row_write_refused` | 这张桩所属轮的轮号不是安全整数（轮号来自一份轮号残留的 run snapshot）⇒ 写侧直接退回，一行都不写 |
-| `append_row_not_persisted` | detail | `mid_sequence_stub_row_write_refused` | 轮号合法，而 `appendRound` 那一写没落地 ⇒ 与上一条同为「账本里没那一行」，区别只在为什么 |
+| `append_row_not_persisted` | detail | `mid_sequence_stub_row_write_refused` | `appendRound` 那一写本身没落地 ⇒ 那张桩只活在本次上下文（issue #811 之后这是该成因**唯一**的来路：轮号不可用的桩在写**之前**就被跳过且不发射——store 根本没被问过，说「没落盘」是假话，而不许新增取值） |
 
 事件载荷：`{type, runId, parentRunId?, round, reason, count, detail?, toolUseIds?}`——`count` 是这次放弃涉及几张
 `tool_use`（或几张桩），同一 `(reason, detail)` 的成因归并成**一条**事件。`toolUseIds` 是 issue #790
@@ -2578,6 +2581,23 @@ symbol 成员按 `JSON.stringify` 的同样取舍丢掉——最后这一条正�
 有这四个名字，嵌套的 `ts` 算内容，其余一律算 payload：`messages`、`response`、
 `foldedPayload`、`usage`、`runState`，以及宿主自有的未知字段。
 
+### 行的 `round` 必须是安全整数（issue #811）
+
+所有能把一行交进账本的入口，在写**之前**校验它的 `round`：两个内置 store 的
+`appendRound(runId, record)` 与 `appendRecoveryRow(runId, record)`，以及 `appendUserTurn` 里那条结清
+路径（结清行的 `dedupKey` 与 `seq` 都由那个轮号派生）。值不是安全整数——驱动把 `int8` 列返回成
+JS 字符串、`2.5`、`null`，或者压根没这个键——抛 `TypeError`：
+
+- 异常类型是契约的一部分，不是风格：宿主只把 `TypeError` 映射成 4xx，其它异常一律 5xx，而轮号
+  错了是**调用方的错**。
+- 消息点名：哪个入口（`appendRound` / `appendRecoveryRow` / `appendUserTurn`）、拒的是哪一行（它的
+  `dedupKey`/`roundKey`）、收到的**值与类型**（`received "2" (string)`、`received null`、
+  `received undefined (the row carries no `round` key at all)`）。
+- 拒绝是惰性的：不建目录、不建文件、不落行，也不动 run-state。
+- 读侧的宽容不变（issue #729）：已经含那种行的账本仍完整读回。退出的只有**轮号**——折叠不再把
+  那一行的消息挂到一个造出来的 `round: 0` 上，于是由轮号推出来的东西（崩溃边界、续跑锚点、
+  轮号表）保持诚实，而不是跟着错。
+
 ### load 返回顺序
 
 `load(runId)` 必须按持久化追加顺序返回全部记录；尤其是同一 `round` 的多条记录必须保留
@@ -2611,8 +2631,11 @@ dedupKey, written?, reason? }`。在追写调用方那一行**之前**，助手�
 构造）答掉这些 id。时机就是本单全部：没有轮载体的行，折叠保持文件顺序，所「后补」的答话
 会落在调用方那条纯文本行**后面**，而出网顺序 `assistant[tool_use] → user(text) → user[tool_result]`
 在本地就被判死，一个请求都发不出去。`status: "refused"` 表示那一行**没写**，`reason` 点名成因
-（`ledger_probe_absent` / `round_not_safe_integer` / `round_carrier_has_body` / `tool_use_id_unusable`）；
-调用方那一行两种情况下都照写。这里不静默，而没悬空时一切如旧：返回键集仍恰好是
+（`ledger_probe_absent` / `round_carrier_has_body` / `tool_use_id_unusable`——三条，issue #811 删掉了
+第四项）；调用方那一行两种情况下都照写。**唯一的例外（issue #811）**：账本里那条挂着悬空
+`tool_use` 的行自己的 `round` 不是安全整数时，助手**不返回** `refused`，而是抛 `TypeError`，消息点名
+入口、哪一行、收到的值与类型。那不是「可恢复的降级」而是调用方/宿主 store 交错了（结清行的
+`dedupKey` 与 `seq` 都由那个轮号派生）⇒ 调用方那条 `:input:` 行同样不落盘。这里不静默，而没悬空时一切如旧：返回键集仍恰好是
 `{ key, dedupKey, round, written, record? }`。
 
 `appendUserTurn` 另为数据库型宿主提供**成对可选快路径**（issue #157）：当 `store`

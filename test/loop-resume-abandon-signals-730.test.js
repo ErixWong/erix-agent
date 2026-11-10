@@ -34,8 +34,9 @@
 // ⚠ issue #776 对本文件的改动（**只换现场来源，一条断言没删、没放宽**）：格 2③「有锚点而写被拒」原先靠
 // 那条被 #754 裁决 2 关掉的 pre-261021 闸门造现场（第二对悬空只在 `snapshot.messages` 里），因此被具名
 // 跳过。现在两对悬空都写成 `kind:"message"` 账本行，「写被拒」改由**假 store 拒掉那一写**给出 ⇒
-// 本格不再 skip。随之只有该事件的 `detail`/`round` 两个取值换人（`round_not_safe_integer`/`"2"` ⇒
-// `append_row_not_persisted`/`3`）：前者在当前树上已**不可达**（取证坐标写在格 2③ 那段注释里，实测与
+// 本格不再 skip。随之只有该事件的 `detail`/`round` 两个取值换人（轮号那一格 ⇒
+// `append_row_not_persisted`/`3`；那个 detail 取值本身已在 issue #811 连同分支与两份契约一起删除，
+// 取证坐标写在格 2③ 那段注释里）：它当时就已**不可达**（实测与
 // 完整推理见 `docs/delivery/261109-776-worker-report.md`；那是 `.gitignore` 里的冷层，干净检出里
 // 可能不可解析，所以承重的取证坐标都已抄在本文件里），不是被悄悄改宽——事件必须发、必须恰好一条、
 // 必须点名是哪一种，这些一条没动。
@@ -59,7 +60,6 @@ import {
   RESUME_JOURNAL_SKIP_DETAIL_PROBE_ABSENT,
   RESUME_JOURNAL_SKIP_DETAIL_ROUND_CARRIER_HAS_BODY,
   RESUME_JOURNAL_SKIP_DETAIL_ROW_NOT_IN_LEDGER,
-  RESUME_JOURNAL_SKIP_DETAIL_ROUND_NOT_SAFE_INTEGER,
   NO_EVIDENCE_TOOL_RESULT_TEXT,
   UNPERSISTED_TOOL_RESULT_TEXT,
 } from "../src/loop/pending-tool-result.js";
@@ -67,6 +67,7 @@ import { validateMessages } from "../src/messages/rounds.js";
 import { foldLedgerMessages } from "../src/store/message-rows.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { withUnvalidatedAppends } from "./helpers/unvalidated-store.js";
 import { withSeed } from "./helpers/run-direct.js";
 
 const RUN_ID = "resume-abandon-signals-730";
@@ -393,17 +394,17 @@ test(
   async () => {
     // issue #776：本格现场从「pre-261021 升级闸门补快照正文」换成**两对都在账本里**的中段悬空
     // （`twoMidSequencePairsScene`），「写被拒」由假 store 拒掉那一写给出（`storeThatRefusesOneStubWrite`）。
-    // **只有 `detail` 与 `round` 两个取值随现场换人**（`round_not_safe_integer`/`"2"` ⇒
-    // `append_row_not_persisted`/`3`），断言的形状（恰好一条、点名是哪一种、哪一轮、几个）逐字不动。
-    // 被换掉的那个取值不是被删的判据而是**当前树上不可达**的一格，取证见 #776 交付报告
-    // （冷层，不入库；承重要点已拄在下面这几行）：
-    // 桩所属轮的轮号只来自 `ctx.messageRounds`，而账本来源的轮号被折叠层归成安全整数
-    // （`src/store/message-rows.js` 的 `Number.isSafeInteger(record?.round) ? record.round : 0`），
-    // 唯一能带非安全整数轮号的消息是 A 集合 push 的那一条（`src/loop/resume-manager.js` 里
-    // `ctx.messageRounds.set(replayMessage, crashRound)`），而它**永远拿不到锚点**
-    // （`firstSliceRowKeyOf` 要的首片行必须载着同一个 `tool_use_id`，而 A 集合只装账本没结清的 id）
-    // ⇒ `partOf` 为空，写侧根本走不到「写被拒」那一步（`src/loop/orchestrator.js` 里
-    // `if (typeof stub?.partOf !== "string" || stub.partOf === "") continue;` 先跳过）。
+    // **只有 `detail` 与 `round` 两个取值随现场换人**（轮号那一格 ⇒ `append_row_not_persisted`/`3`），
+    // 断言的形状（恰好一条、点名是哪一种、哪一轮、几个）逐字不动。
+    // 被换掉的那一格（当时的 detail 叫轮号不可用）在 #776 那一次是「当前树上不可达」（取证见 #776
+    // 交付报告，冷层不入库；承重要点抄在下面这几行），issue #811 把它**连同分支与契约一起删了**：
+    // 写侧守卫之后那种轮号进不了账本，而读侧不再把它归成 `0`（`foldLedgerMessages` 给 `undefined`），
+    // 定锚侧另钉了一条「轮号不可用的候选行不当锚点」（#729 那条纪律在轮号可未知之后必须自己挡）。
+    // 于是这一格只剩「store 自己没收」这一件事可说，也就是本用例钉的那一种。
+    // 桩所属轮的轮号只来自 `ctx.messageRounds`；唯一能带未知轮号的消息是 A 集合 push 的那一条
+    // （`src/loop/resume-manager.js` 里 `ctx.messageRounds.set(replayMessage, crashRound)`），而它
+    // **永远拿不到锚点**（`firstSliceRowKeyOf` 要的首片行必须载着同一个 `tool_use_id`，而 A 集合只装
+    // 账本没结清的 id）⇒ `partOf` 为空，写侧走不到「写被拒」那一步。
   const inner = createMemoryTranscriptStore();
   await twoMidSequencePairsScene(inner);
   // 前置：这个账本形状本身就过不了严格配对，而过不了的那一句就是本格说的那一句。
@@ -443,7 +444,13 @@ test(
 
 // ─────── 用例 6（重叠语义）：同一个 reason 下的三种成因，用 detail 分开 ───────
 
-/** 中段悬空 + 可选锚点探针的各种形状（issue #714/#729 的三种「拿不到锚点」）。 */
+/**
+ * 中段悬空 + 可选锚点探针的各种形状（issue #714/#729 的三种「拿不到锚点」）。
+ *
+ * ⚠ issue #811：`aggregateRound` 交非整数（`"2"`）时，这个 store 必须是 `withUnvalidatedAppends`
+ * 包过的那一层 —— 写侧守卫现在也认不了那种轮号，它只能来自宿主自研 store / 守卫之前的档案
+ * （读侧照旧宽容：行读得回来，只是**不参与折叠**）。
+ */
 async function danglingWithRoundString(inner, { aggregateRound = 2 }) {
   await inner.appendRound(RUN_ID, messageRow(1, 0, { role: "user", content: [text("任务")] }));
   await inner.appendRound(RUN_ID, messageRow(2, 0, {
@@ -453,9 +460,41 @@ async function danglingWithRoundString(inner, { aggregateRound = 2 }) {
   return inner;
 }
 
+test("#811 裁决 A：宿主 store 交回非整数轮号 ⇒ 不发 `mid_sequence_stub_row_write_refused`、不抛、run 继续", async () => {
+  // 现场（issue #811 动机的形状）：宿主自研 store（PG 驱动对 `int8` 默认返回 JS **字符串**）把崩溃轮
+  // 那条聚合消息的轮号交成了 `"2"`。写侧守卫管不到它（那道守卫在**内置 store 的写入口**），能管到的
+  // 只有读侧。本格钉的是两件事：
+  //   ① **不许报成「写被拒」**：`mid_sequence_stub_row_write_refused` 那句话讲的是「store 收了这一行
+  //      却没落盘」，而这里 store 根本没被调用过——#811 删掉 `round_not_safe_integer` 那条 detail 之后，
+  //      再让轮号不可用走进发射路径，事件就变成假话（只剩 `append_row_not_persisted` 可选）。
+  //   ② **不抛、run 继续**：轮号不可用不能把一次续跑变成 run 级致命（读侧对既有档案宽容是 #729 的
+  //      契约明文），也不能把桩弄丢（本次上下文的合法性靠它）。
+  const store = withUnvalidatedAppends(createMemoryTranscriptStore());
+  await danglingWithRoundString(store, { aggregateRound: "2" });
+  const events = [];
+  const provider = createFakeProvider([endTurn("续")]);
+  const resumed = await runLoop({ store, events, provider });
+  assert.equal(resumed.ok, true,
+    `轮号不可用只是降级，run 必须还能起来（实测：${String(resumed.error)}）`);
+  assert.deepEqual(skipEvents(events, "mid_sequence_stub_row_write_refused"), [],
+    "轮号不可用不得借用「store 拒了」那个语义（那一写根本没发生 ⇒ 不发射，也不新增取值）");
+  assert.deepEqual(skipEvents(events, "mid_sequence_aggregate_row_not_in_ledger"), [{
+    reason: "mid_sequence_aggregate_row_not_in_ledger",
+    detail: RESUME_JOURNAL_SKIP_DETAIL_ROW_NOT_IN_LEDGER,
+    // 轮号未知（不是 `0`）：#811 第 2 条——折叠层不再猜轮号，事件也就不再拿一个假轮号发言。
+    round: undefined,
+    count: 1,
+  }], "真发生的那件事（拿不到合法锚点）必须照旧如实说");
+  assert.deepEqual(stubBlocks(provider.requests[0].messages), ["t2"],
+    "桩仍补进本次上下文（合法性不塌：模型看得见「这次调用的结果没了」）");
+  const rows = await store.loadRawRows(RUN_ID);
+  assert.equal(rows.filter((row) => typeof row?.partOf === "string" && row.partOf !== "").length, 0,
+    "零桩行：一轮也不许多写（写入口现在也会当场拒非整数轮号，#811 第 1 条）");
+});
+
 test("重叠语义：mid_sequence_aggregate_row_not_in_ledger 用 detail 分出「探针没给」与「账本真没那一行」", async () => {
   // 形状相同，唯一差别是宿主给不给 `loadRawRows`：这两种对宿主是完全不同的处置（补探针 ⇒ 下次闭合）。
-  const withProbe = createMemoryTranscriptStore();
+  const withProbe = withUnvalidatedAppends(createMemoryTranscriptStore());
   await danglingWithRoundString(withProbe, { aggregateRound: "2" });
   const withProbeEvents = [];
   const first = await runLoop({ store: withProbe, events: withProbeEvents, provider: createFakeProvider([endTurn("续")]) });
@@ -463,14 +502,16 @@ test("重叠语义：mid_sequence_aggregate_row_not_in_ledger 用 detail 分出�
   assert.deepEqual(skipEvents(withProbeEvents, "mid_sequence_aggregate_row_not_in_ledger"), [{
     reason: "mid_sequence_aggregate_row_not_in_ledger",
     detail: RESUME_JOURNAL_SKIP_DETAIL_ROW_NOT_IN_LEDGER,
-    round: 0,
+    // #811 第 2 条：折叠层不再把不可用的轮号当 `0` ⇒ 事件里的轮号是**未知**（`undefined`），
+    // 而不是一个假轮号。
+    round: undefined,
     count: 1,
   }], "探针给了、轮也干净，而账本里没有合法首片行 ⇒ detail 必须是 aggregate_row_not_in_ledger");
 
   // 同一个 store，把探针摘掉（issue #714 之前那一刻的行为）⇒ detail 必须是 anchor_probe_absent。
   const probeAbsent = { ...withProbe, loadRawRows: undefined };
   delete probeAbsent.loadRawRows;
-  const ledger2 = createMemoryTranscriptStore();
+  const ledger2 = withUnvalidatedAppends(createMemoryTranscriptStore());
   await danglingWithRoundString(ledger2, { aggregateRound: "2" });
   const probeRows = await ledger2.loadRawRows(RUN_ID);
   for (const row of probeRows) await probeAbsent.appendRound(RUN_ID, row);
@@ -480,7 +521,7 @@ test("重叠语义：mid_sequence_aggregate_row_not_in_ledger 用 detail 分出�
   assert.deepEqual(skipEvents(secondEvents, "mid_sequence_aggregate_row_not_in_ledger"), [{
     reason: "mid_sequence_aggregate_row_not_in_ledger",
     detail: RESUME_JOURNAL_SKIP_DETAIL_PROBE_ABSENT,
-    round: 0,
+    round: undefined,
     count: 1,
   }], "没有探针时 detail 必须是 anchor_probe_absent（宿主据此才知道该补探针）");
   assert.notDeepEqual(skipEvents(withProbeEvents)[0].detail, skipEvents(secondEvents)[0].detail,
@@ -544,7 +585,6 @@ const SOURCE_DETAILS = [
   MID_SEQUENCE_ABANDON_DETAIL_FOREIGN_IDS,
   MID_SEQUENCE_ABANDON_DETAIL_NEXT_NOT_USER,
   MID_SEQUENCE_ABANDON_DETAIL_AGGREGATE_HAS_NO_RESULT,
-  RESUME_JOURNAL_SKIP_DETAIL_ROUND_NOT_SAFE_INTEGER,
   RESUME_JOURNAL_SKIP_DETAIL_APPEND_SKIPPED,
 ];
 

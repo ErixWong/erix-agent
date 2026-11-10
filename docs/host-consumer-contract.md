@@ -2361,21 +2361,21 @@ vocabulary, or a CN/EN axis mismatch all go red.
 <!-- erix:snapshot-cell-axes:begin -->
 | Cell (payload key) | write | read | Authority (double-written cells only) | Handoff condition (double-written cells only) | Today's write site — or, for a cell that no longer writes, the line that documents the stop | Today's readers |
 | --- | --- | --- | --- | --- | --- | --- |
-| `round` | written | source | — | — | `src/loop/orchestrator.js:3096` | `src/loop/resume-manager.js:730`, `src/loop/orchestrator.js:3331` |
-| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3121` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:118`, `test/persistence-diagnostics.test.js:171`, `test/loop-invalid-arguments.test.js:235`, `test/loop-v020-rc.test.js:480`, `test/loop-v020-rc.test.js:616` |
-| `pendingToolUses` | written | source | — | — | `src/loop/orchestrator.js:3145` | `src/loop/resume-manager.js:676`, `src/loop/resume-manager.js:887` |
-| `pendingToolUse` | written | fallback(pendingToolUses absent) | — | — | `src/loop/orchestrator.js:3144` | `src/loop/resume-manager.js:677`, `src/loop/resume-manager.js:888` |
-| `executedToolIds` | written | fallback(no `tool-executed` recovery row in the ledger) | For "this `tool_use` really executed", the authority is the ledger: an append-only recovery row (`kind: "recovery"`, `recoveryEvent: "tool-executed"`, `toolUseId`, `messages: []`) written by `src/store/recovery-rows.js` at the moment the executor returns — before the result row and before any later snapshot write (#769). The resume side **unions** those rows with this cell, so the set can only say "executed" more broadly, never narrower; the snapshot copy is latest-only and a later round overwrites it | This cell may become `not-source` only once every ledger the resume path can meet carries `tool-executed` rows — ledgers written before #769 do not, so it stays the fallback until those age out | `src/loop/orchestrator.js:3148` | `src/loop/resume-manager.js:831`, `src/store/recovery-rows.js:24` |
-| `toolResults` | written | source | — | — | `src/loop/orchestrator.js:3149` | `src/loop/resume-manager.js:688`, `src/loop/resume-manager.js:835` |
-| `toolOutputs` | written | source | The final-guard evidence source is **the round record**: `bin/final-guard-support.js:238` (stated in that file's own comment at `bin/final-guard-support.js:218`), which never reads the latest snapshot | The snapshot copy's only reader is the resume-side backfill `src/loop/resume-manager.js:841` ⇒ the two copies retire independently; migrate that backfill before the snapshot copy can be stopped | `src/loop/orchestrator.js:3154` (snapshot) and `src/loop/orchestrator.js:6352` (round record) | snapshot side `src/loop/resume-manager.js:841`; round-record side `bin/final-guard-support.js:238` |
-| `messages` | residue | fallback(old-format slot count only) | The ledger (`load()`) is the authority for message text | `not-source` is **still not writable today**: the branch that used to feed these bodies into the context is gone (issue #754 verdict 2), but the counting read `src/loop/resume-manager.js:750` is still there ⇒ the axis may only become `not-source` when that read goes away | `src/loop/orchestrator.js:3146` | `src/loop/resume-manager.js:750` (condition: the ledger holds nothing past the anchor; since issue #754 this cell is only **counted** here, never fed into the context) |
-| `persistedTranscriptLength` (on-disk cell) | written | not-source | The resume anchor is recomputed from the ledger | Zero engine readers ⇒ this is the only row whose read-side condition is met today; stopping the write still means moving the two test fixtures that use it as their truncation anchor (see the notes below) | `src/loop/orchestrator.js:3147` | The resume side does not trust it: `src/loop/resume-manager.js:119` (a comment that says so) and `src/loop/resume-manager.js:577` (overwritten with the recomputed length) |
-| `persistedTranscriptLength` (in-process counter) | written | source | — (the in-process form of the same variable is never persisted; it is the live write-side value) | **Must stay**: it is one of the two bounds on the `messages` residue start | `src/loop/orchestrator.js:3147` | `src/loop/orchestrator.js:3082` |
-| `partialText` | written(conditional) | fallback(no `partial-text` recovery row for the crash round) | The authority is the ledger: the `partial-text` recovery row of the crash round (#769) — one row per distinct half-finished text, event key = a fingerprint of the text, so a longer text is a **new** event and nothing ever rewrites a row that already landed. The resume side takes the text **and** its round from that same row | Condition = the round really has a half-finished assistant text (the `partialText === undefined` clamp at the write site): a scene with partial text must carry this cell, a scene without it must leave the cell absent (not write `undefined`) | `src/loop/orchestrator.js:3155` | `src/loop/resume-manager.js:692`, `src/loop/resume-manager.js:797`, `src/store/recovery-rows.js:24` |
-| `partialRound` | written(conditional) | fallback(no `partial-text` recovery row for the crash round) | Same row as `partialText`: the recovery row carries its own `round`, so the round number follows the text and never gets mixed with a snapshot round | **Same write statement and same condition as `partialText`** ⇒ the two cells appear together or not at all; one without the other is a bug | `src/loop/orchestrator.js:3155` | `src/loop/resume-manager.js:798`, `src/store/recovery-rows.js:24` |
-| `toolUse` | stopped | not-source | — | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3109` | Zero readers at the snapshot layer; the same-named `toolUse` on the resume side is only a lambda parameter `src/loop/resume-manager.js:678`, while `toolUseId` and the diagnostic `event.toolUse` are two different things |
-| `ts` | stopped | not-source | the `ts` of the ledger row / message row | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3116` | Zero readers at the snapshot layer; the `ts` the resume side really reads is the **ledger row** copy (same key name, different artifact, not this cell) `src/loop/resume-manager.js:607` |
-| `compactionStats` | stopped | not-source | run-state (the resume path reads `deterministic.compactionStats`: `src/loop/resume-manager.js:449`) and the round record `src/loop/orchestrator.js:6332` | Both sides are alive: round-record side `test/compaction-observability.test.js:73` and snapshot side `test/compaction-observability.test.js:76` ⇒ dropping the snapshot copy means replacing the snapshot-side assertion first | `src/loop/orchestrator.js:3130`、`src/loop/orchestrator.js:6332` | The resume path goes through run-state `src/loop/resume-manager.js:449` and does not read the snapshot copy; its shape is pinned by `test/compaction-observability.test.js:76` |
+| `round` | written | source | — | — | `src/loop/orchestrator.js:3094` | `src/loop/resume-manager.js:733`, `src/loop/orchestrator.js:3337` |
+| `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3119` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:118`, `test/persistence-diagnostics.test.js:171`, `test/loop-invalid-arguments.test.js:235`, `test/loop-v020-rc.test.js:480`, `test/loop-v020-rc.test.js:616` |
+| `pendingToolUses` | written | source | — | — | `src/loop/orchestrator.js:3143` | `src/loop/resume-manager.js:679`, `src/loop/resume-manager.js:891` |
+| `pendingToolUse` | written | fallback(pendingToolUses absent) | — | — | `src/loop/orchestrator.js:3142` | `src/loop/resume-manager.js:680`, `src/loop/resume-manager.js:892` |
+| `executedToolIds` | written | fallback(no `tool-executed` recovery row in the ledger) | For "this `tool_use` really executed", the authority is the ledger: an append-only recovery row (`kind: "recovery"`, `recoveryEvent: "tool-executed"`, `toolUseId`, `messages: []`) written by `src/store/recovery-rows.js` at the moment the executor returns — before the result row and before any later snapshot write (#769). The resume side **unions** those rows with this cell, so the set can only say "executed" more broadly, never narrower; the snapshot copy is latest-only and a later round overwrites it | This cell may become `not-source` only once every ledger the resume path can meet carries `tool-executed` rows — ledgers written before #769 do not, so it stays the fallback until those age out | `src/loop/orchestrator.js:3146` | `src/loop/resume-manager.js:835`, `src/store/recovery-rows.js:24` |
+| `toolResults` | written | source | — | — | `src/loop/orchestrator.js:3147` | `src/loop/resume-manager.js:691`, `src/loop/resume-manager.js:839` |
+| `toolOutputs` | written | source | The final-guard evidence source is **the round record**: `bin/final-guard-support.js:238` (stated in that file's own comment at `bin/final-guard-support.js:218`), which never reads the latest snapshot | The snapshot copy's only reader is the resume-side backfill `src/loop/resume-manager.js:845` ⇒ the two copies retire independently; migrate that backfill before the snapshot copy can be stopped | `src/loop/orchestrator.js:3152` (snapshot) and `src/loop/orchestrator.js:6365` (round record) | snapshot side `src/loop/resume-manager.js:845`; round-record side `bin/final-guard-support.js:238` |
+| `messages` | residue | fallback(old-format slot count only) | The ledger (`load()`) is the authority for message text | `not-source` is **still not writable today**: the branch that used to feed these bodies into the context is gone (issue #754 verdict 2), but the counting read `src/loop/resume-manager.js:753` is still there ⇒ the axis may only become `not-source` when that read goes away | `src/loop/orchestrator.js:3144` | `src/loop/resume-manager.js:753` (condition: the ledger holds nothing past the anchor; since issue #754 this cell is only **counted** here, never fed into the context) |
+| `persistedTranscriptLength` (on-disk cell) | written | not-source | The resume anchor is recomputed from the ledger | Zero engine readers ⇒ this is the only row whose read-side condition is met today; stopping the write still means moving the two test fixtures that use it as their truncation anchor (see the notes below) | `src/loop/orchestrator.js:3145` | The resume side does not trust it: `src/loop/resume-manager.js:119` (a comment that says so) and `src/loop/resume-manager.js:580` (overwritten with the recomputed length) |
+| `persistedTranscriptLength` (in-process counter) | written | source | — (the in-process form of the same variable is never persisted; it is the live write-side value) | **Must stay**: it is one of the two bounds on the `messages` residue start | `src/loop/orchestrator.js:3145` | `src/loop/orchestrator.js:3080` |
+| `partialText` | written(conditional) | fallback(no `partial-text` recovery row for the crash round) | The authority is the ledger: the `partial-text` recovery row of the crash round (#769) — one row per distinct half-finished text, event key = a fingerprint of the text, so a longer text is a **new** event and nothing ever rewrites a row that already landed. The resume side takes the text **and** its round from that same row | Condition = the round really has a half-finished assistant text (the `partialText === undefined` clamp at the write site): a scene with partial text must carry this cell, a scene without it must leave the cell absent (not write `undefined`) | `src/loop/orchestrator.js:3153` | `src/loop/resume-manager.js:695`, `src/loop/resume-manager.js:801`, `src/store/recovery-rows.js:24` |
+| `partialRound` | written(conditional) | fallback(no `partial-text` recovery row for the crash round) | Same row as `partialText`: the recovery row carries its own `round`, so the round number follows the text and never gets mixed with a snapshot round | **Same write statement and same condition as `partialText`** ⇒ the two cells appear together or not at all; one without the other is a bug | `src/loop/orchestrator.js:3153` | `src/loop/resume-manager.js:802`, `src/store/recovery-rows.js:24` |
+| `toolUse` | stopped | not-source | — | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3107` | Zero readers at the snapshot layer; the same-named `toolUse` on the resume side is only a lambda parameter `src/loop/resume-manager.js:681`, while `toolUseId` and the diagnostic `event.toolUse` are two different things |
+| `ts` | stopped | not-source | the `ts` of the ledger row / message row | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3114` | Zero readers at the snapshot layer; the `ts` the resume side really reads is the **ledger row** copy (same key name, different artifact, not this cell) `src/loop/resume-manager.js:610` |
+| `compactionStats` | stopped | not-source | run-state (the resume path reads `deterministic.compactionStats`: `src/loop/resume-manager.js:452`) and the round record `src/loop/orchestrator.js:6345` | Both sides are alive: round-record side `test/compaction-observability.test.js:73` and snapshot side `test/compaction-observability.test.js:76` ⇒ dropping the snapshot copy means replacing the snapshot-side assertion first | `src/loop/orchestrator.js:3128`、`src/loop/orchestrator.js:6345` | The resume path goes through run-state `src/loop/resume-manager.js:452` and does not read the snapshot copy; its shape is pinned by `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
 
 `—` = that cell is not double-written, so there is no authority or handoff condition to state. The three notes below
@@ -2455,7 +2455,12 @@ Semantics, stated as a contract:
   `round` is not an integer is never a fold target, so anchoring a stub there
   would strand it as an orphan `user` message (`user tool_result has no matching
   assistant tool_use` — the other `invalid_messages`). Rows whose `round` is not
-  a safe integer are therefore never used as anchors.
+  a safe integer are therefore never used as anchors. **Scope (issue #811)**: a row
+  written through the engine's write boundary can no longer carry such a round —
+  `appendRound` / `appendRecoveryRow` / `appendUserTurn` reject it with a `TypeError`
+  (see “The row `round` must be a safe integer” below). The read side stays tolerant of
+  archives that already contain one: the row is still returned in full, only its round
+  stops participating in folding (it is no longer attached to a fabricated round `0`).
 - Both built-in stores implement it (`createMemoryTranscriptStore`,
   `createFileTranscriptStore`); a minimal third-party store need not.
 
@@ -2499,8 +2504,7 @@ before its first request.
 | `aggregate_carries_foreign_result_ids` | detail | `mid_sequence_merge_refused` | That aggregated message already carries a `tool_result` **from a different call** ⇒ the merge's id guard stops it from extending a message that is already mixed |
 | `next_message_is_not_user` | detail | `mid_sequence_shape_not_supported`, `mid_sequence_request_view_stub` | The message right after that assistant is not a `user` message (two adjacent assistants, one order each) ⇒ a page would have to be inserted between them. After issue #790 the request view inserts that page **only when none of that order's ids was settled anywhere** — a partially settled order (one id already answered in a later page) is left alone, because inserting a page would orphan the result that already exists |
 | `aggregate_has_no_tool_result` | detail | `mid_sequence_shape_not_supported`, `mid_sequence_request_view_stub` | The following `user` message holds no `tool_result` at all ⇒ insertion again (`validateMessages` reports it with a different sentence) |
-| `round_not_safe_integer` | detail | `mid_sequence_stub_row_write_refused` | The round the stub belongs to is not a safe integer (its round came from a run snapshot with round residue) ⇒ the write returns "not persisted" and no row is written |
-| `append_row_not_persisted` | detail | `mid_sequence_stub_row_write_refused` | The round number is legal while the `appendRound` write itself did not land ⇒ same "no row in the ledger" as above, different why |
+| `append_row_not_persisted` | detail | `mid_sequence_stub_row_write_refused` | The `appendRound` write itself did not land ⇒ that stub lives only in this run's context (since issue #811 this is the **only** way that reason can fire: a stub whose own round is not a safe integer is skipped **before** the write and emits nothing — the store was never asked, so "not persisted" would be a lie, and no new value may be added) |
 
 Payload: `{type, runId, parentRunId?, round, reason, count, detail?, toolUseIds?}` — `count` is
 how many `tool_use` blocks (or stubs) this abandonment covers, and causes sharing
@@ -3215,6 +3219,25 @@ the exclusion list is exactly those four names, nested `ts` values are payload,
 and everything else — `messages`, `response`, `foldedPayload`, `usage`,
 `runState`, and every host-owned unknown field — must match.
 
+### The row `round` must be a safe integer (issue #811)
+
+Every entry point that can hand a row to the ledger validates its `round` **before** writing:
+`appendRound(runId, record)` and `appendRecoveryRow(runId, record)` on both built-in stores, and the
+settling path inside `appendUserTurn` (whose `dedupKey` and `seq` are derived from that round). A
+value that is not a safe integer — a driver returning a string for an `int8` column, `2.5`, `null`,
+or the key simply absent — throws a `TypeError`:
+
+- The exception type is part of the contract, not a style choice: hosts map `TypeError` to a 4xx and
+  every other exception to a 5xx, and an unusable round is a caller error.
+- The message names the entry (`appendRound` / `appendRecoveryRow` / `appendUserTurn`), the row it
+  rejected (its `dedupKey`/`roundKey`), and the value **and type** it received
+  (`received "2" (string)`, `received null`, `received undefined (the row carries no round key at all)`).
+- The rejection is inert: no directory, no file, no row, and no run-state write is left behind.
+- Read-side tolerance is unchanged (issue #729): a ledger that already contains such a row still
+  reads back in full. Only the **round** stops participating — the fold no longer attaches those
+  messages to a fabricated round `0`, so everything derived from round numbers (crash boundary,
+  resume anchor, the round table) stays honest instead of silently wrong.
+
 ### Load order
 
 `load(runId)` must return records in persistence append order for the entire
@@ -3261,8 +3284,13 @@ with the engine's own tombstone (`is_error: true`, built by `buildUnpersistedToo
 without a round carrier, so an answer appended afterwards lands *after* the caller's plain-text
 row, and the wire order `assistant[tool_use] → user(text) → user[tool_result]` is rejected locally
 before a single request goes out. `status: "refused"` means that row was **not** written and
-`reason` names the cause (`ledger_probe_absent`, `round_not_safe_integer`, `round_carrier_has_body`,
-`tool_use_id_unusable`); the caller's own row is appended either way. Nothing is silent, and
+`reason` names the cause (`ledger_probe_absent`, `round_carrier_has_body`, `tool_use_id_unusable` —
+three values; issue #811 removed the fourth); the caller's own row is appended either way.
+**The one exception (issue #811)**: when the ledger row holding that dangling `tool_use` carries a
+`round` that is not a safe integer, the helper does **not** return `refused` — it throws a
+`TypeError` naming the entry, the row, and the value and type it received. That case is a
+caller/store error (the settle row's `dedupKey` and `seq` are both derived from that round), not a
+recoverable degradation, so the caller's `:input:` row is not appended either. Nothing is silent, and
 nothing changes when nothing dangles: the returned key set is then exactly
 `{ key, dedupKey, round, written, record? }`.
 

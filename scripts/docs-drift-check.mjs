@@ -8227,6 +8227,13 @@ const dropCellAxesCitations = (text) => {
   return out;
 };
 
+// issue #811：下面 #635 ① 那三例的锚点份数**由 `refScanCountTruth()` 现算**，不再写死。
+// 写死那一份要求「每次覆盖面落地都有人记得回来改脚本」——0.32.0 中英指南落地把
+// README 的 51/36 改成 53/38 那一刻没人想起来 ⇒ 变异落空、`--self-test` 2/224 未达预期，
+// 而 `ci.yml` 不跑这条 ⇒ 在 main 上静默红着（PR #810 后发现）。锚点改取事实面之后
+// 覆盖面再涨也不漂；变异改的仍是**当前真值**，判据一点没松（反向证：手写错一个份数仍红）。
+const REF_SCAN_TRUTH = refScanCountTruth();
+
 const SELF_TEST_CASES = [
   // —— pkg-block / exports：#210 报的四种破坏，**前两种修前是绿的** ——
   {
@@ -9660,20 +9667,20 @@ const SELF_TEST_CASES = [
   },
   // ══ issue #635 ①：文档里的「点名几份 + 实扫几份 = 下限」份数声称必须等于实测 ══════════
   {
-    label: "#635 ①：把账本英文侧的「点名文档」数从 15 改成 16 ⇒ 红并点名那份文档的哪个数（份数声称是散文时没人校，正是本单的病根）",
-    overlay: { [LEDGER_EN]: (t) => t.replace("**15 pinned documents", "**16 pinned documents") },
-    expect: [/ref-scan-claims: docs\/maintenance\/symbol-anchor-ledger\.md:\d+ 声称「点名文档」16，但脚本实测 15/],
+    label: `#635 ①：把账本英文侧的「点名文档」数从 ${REF_SCAN_TRUTH.pinned} 改成 ${REF_SCAN_TRUTH.pinned + 1} ⇒ 红并点名那份文档的哪个数（份数声称是散文时没人校，正是本单的病根）`,
+    overlay: { [LEDGER_EN]: (t) => t.replace(`**${REF_SCAN_TRUTH.pinned} pinned documents`, `**${REF_SCAN_TRUTH.pinned + 1} pinned documents`) },
+    expect: [new RegExp(`ref-scan-claims: docs/maintenance/symbol-anchor-ledger[.]md:[0-9]+ 声称「点名文档」${REF_SCAN_TRUTH.pinned + 1}，但脚本实测 ${REF_SCAN_TRUTH.pinned}`, "u")],
     expectFiles: [LEDGER_EN],
   },
   {
-    label: "#635 ①：把 README 英文侧的「That is 51 documents」改回 43 ⇒ 红（份数声称与实扫不一致）",
-    overlay: { [README_EN]: (t) => t.replace("That is 51 documents", "That is 43 documents") },
-    expect: [/ref-scan-claims: README\.md:\d+ 声称「文档合计」43，但脚本实测 51/],
+    label: `#635 ①：把 README 英文侧的「That is ${REF_SCAN_TRUTH.total} documents」改成 ${REF_SCAN_TRUTH.total - 8} ⇒ 红（份数声称与实扫不一致）`,
+    overlay: { [README_EN]: (t) => t.replace(`That is ${REF_SCAN_TRUTH.total} documents`, `That is ${REF_SCAN_TRUTH.total - 8} documents`) },
+    expect: [new RegExp(`ref-scan-claims: README[.]md:[0-9]+ 声称「文档合计」${REF_SCAN_TRUTH.total - 8}，但脚本实测 ${REF_SCAN_TRUTH.total}`, "u")],
     expectFiles: [README_EN],
   },
   {
-    label: "#635 ①（句子被删也要红）：把中文 README 里「（当前 36 份，按目录实扫）」整句删掉 ⇒ 红（删句子 = 合法逃逸）",
-    overlay: { [README_CN]: (t) => t.replace("（当前 36 份，按目录实扫）", "") },
+    label: `#635 ①（句子被删也要红）：把中文 README 里「（当前 ${REF_SCAN_TRUTH.guides} 份，按目录实扫）」整句删掉 ⇒ 红（删句子 = 合法逃逸）`,
+    overlay: { [README_CN]: (t) => t.replace(`（当前 ${REF_SCAN_TRUTH.guides} 份，按目录实扫）`, "") },
     expect: [/ref-scan-claims: README_cn\.md 里找不到「按目录实扫到的升级指南份数」那条份数声称/],
     expectFiles: [README_CN],
   },

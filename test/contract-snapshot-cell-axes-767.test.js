@@ -1022,15 +1022,19 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
   // （恢复行读取处多一段无条件另存）各插了行 ⇒ 同一条锚点的命中行又漂一次。逐条现报：
   //   6297→6352 / 6277→6332 / 878→887 / 879→888 / 822→831 / 826→835 / 788→797（`119` 那条是注释锚点，未变）。
   //   现算命令：`node -e` 逐条 `anchorHitLines(readLines(e.codePath), e)`（与 G4 同源，脚本 `/tmp/refresh-cell-axes.mjs`）。
+  // ⚠ issue #811 再同步一次（同一条口径：值由 `anchorHitLines()` 现算打印，不是手抄）：#811 在
+  // `src/loop/orchestrator.js`（写侧轮号守卫的调用方注释与 ④ 的跳过分支）与 `src/loop/resume-manager.js`
+  // （定锚侧的轮号守卫、轮号计数器那格）各插了几行 ⇒ 同一条锚点的命中行又漂一次。逐条现报：
+  //   6352→6365 / 6332→6345 / 887→891 / 888→892 / 831→835 / 835→839 / 797→801（`119` 仍未变）。
   const victims = [
-    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6352 },
-    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6332 },
-    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 887 },
-    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 888 },
-    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 831 },
-    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 835 },
+    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6365 },
+    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6345 },
+    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 891 },
+    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 892 },
+    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 835 },
+    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 839 },
     { key: "persistedTranscriptLength", axis: "read", path: "src/loop/resume-manager.js", at: 119 },
-    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 797 },
+    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 801 },
   ];
   const droppedKeys = new Set();
   const mutatedAnchors = [...CELL_AXES_ANCHORS];

@@ -75,6 +75,60 @@ export function recordKey(runId, record) {
     ?? `${String(runId)}:round:${String(record?.round)}`;
 }
 
+// ── 第二件共用的写侧判据：轮号必须可用（issue #811）────────────────────────
+// 为什么同一条规则放在这里（而不是每个 store 各写一遍）：本模块的存在理由就是「两个内置 store
+// 与写侧助手共用同一份写侧判据」，而轮号正是同一种判据 —— 账本的键就是轮号（`recordKey` 的兜底
+// `<runId>:round:<n>`、消息行的 `<runId>:msg:<round>:<seq>`、恢复行的事件键都含它）。轮号不可用
+// 的行落进账本，**写侧不会有任何信号**（今天的实测：`src/store/file.js` / `memory.js` 零校验），
+// 而读侧两条折叠对它的处理**本来就不一致**（`foldMessageRows` 丢掉该行不参与折叠，
+// `foldLedgerMessages` 旧口径把它当 `round: 0`）—— 一个没人管、没人验的写入口。
+// 最省事的一条把它变真的路：PG 驱动对 `int8`/`bigint` 列默认返回 JS **字符串**（本机 129 份归档
+// 1,283 个轮号全是整数 ⇒ 到今天代价仍为零）。所以：**写侧响亮地拒绝，读侧对既有档案保持宽容。**
+//
+// 异常类型是**契约**，不是风格：宿主只把 `TypeError` 映射成 4xx，其他异常一律 5xx
+// （`erix-station:portal/src/sessions.js`）。调用方参数错了 = 4xx。
+
+/**
+ * 把收到的轮号说成一句能指认的话：**值**与**类型**都要在（「不是整数」不够 —— 宿主拿到的是
+ * 驱动返回的 `"2"`、`2.5`、`null` 还是压根没这个键，修法各不相同）。
+ * @param {any} value
+ * @returns {string}
+ */
+function describeRoundValue(value) {
+  if (value === undefined) return "undefined (the row carries no `round` key at all)";
+  if (value === null) return "null";
+  const type = typeof value;
+  if (type === "string") return `${JSON.stringify(value)} (string)`;
+  if (type === "number") return `${String(value)} (number)`;
+  if (type === "object") return Array.isArray(value) ? "an array (object)" : "an object";
+  return `${String(value)} (${type})`;
+}
+
+/**
+ * 写侧轮号守卫：一条行交进账本之前，它的 `round` 必须是**安全整数**。
+ *
+ * 只挡**写**：读侧（`src/store/message-rows.js` 的两条折叠、`loadRawRows`）对既有档案照旧宽容，
+ * 那种行读得回来，只是**不参与折叠**（issue #811 第 2 条）。所以这句话的范围是「经写侧边界写入的
+ * 行不可能带非整数轮号」，不是「账本里不可能有非整数轮号」。
+ *
+ * @param {string} entry 交进来了的入口名（错误消息要点名它：`appendRound` / `appendRecoveryRow` /
+ *   `appendUserTurn`）
+ * @param {{ runId?: any, record?: any, detail?: string }} at 哪一次写（`record` = 要落的行；
+ *   `detail` 是可选的补充一句，用于「轮号不是调用方直接交的、而是从账本里读回来的」那种入口）
+ * @returns {void}
+ * @throws {TypeError} 轮号不是安全整数（宿主据此映射 4xx）
+ */
+export function assertSafeRound(entry, { runId, record, detail = "" }) {
+  const round = record?.round;
+  if (Number.isSafeInteger(round)) return;
+  const key = record?.dedupKey ?? record?.roundKey ?? "<no dedupKey/roundKey>";
+  throw new TypeError(
+    `${entry}: the row \`${String(key)}\` (runId=${String(runId)}) carries a \`round\` that is`
+      + ` not a safe integer — received ${describeRoundValue(round)}.`
+      + (detail === "" ? "" : ` ${detail}`),
+  );
+}
+
 /** @param {any} value @param {WeakSet<object>} seen @returns {string} */
 function canonicalJson(value, seen) {
   if (value === null) return "null";

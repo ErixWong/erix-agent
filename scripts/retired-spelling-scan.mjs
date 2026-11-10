@@ -303,6 +303,13 @@ const HISTORY_BODY_PINS = Object.freeze({
   // `temperature` / `stream`），按 AMBIGUOUS_KEYS 一律标 ambiguous——它们不是 runToolLoop 的输入面拼写。
   "docs/host-upgrade-guide-0.30.0.md": 12,
   "docs/host-upgrade-guide-0.30.0_cn.md": 12,
+  // issue #811 那一段工作里落地的 0.32.0 中英指南（PR #810）：三份命中全部是**同名异义**
+  // （EN 124 / CN 113 的 `runId` = `loadRawRows(runId)` 的**形参**，不是已退役的半扁平选项；
+  //  EN 232 的 `resume` = 散文里的「续跑」；EN 233 / CN 215 的 `user` = 一页用户消息），
+  // 与 0.30.0 那两份的 provider 工厂参数同一个形状。值取自扫描器自己报的 `uses=3` / `uses=2`，
+  // 不是手算；历史类钉的只是「这一段没被改写成规位形态」。
+  "docs/host-upgrade-guide-0.32.0.md": 3,
+  "docs/host-upgrade-guide-0.32.0_cn.md": 2,
   "docs/host-upgrade-guide-0.6.0.md": 12,
   "docs/host-upgrade-guide-v030.md": 49,
   "docs/host-upgrade-guide-v030_cn.md": 49,

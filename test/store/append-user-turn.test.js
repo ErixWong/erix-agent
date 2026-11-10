@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { appendUserTurn } from "../../src/store/append-user-turn.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { makeTmp } from "../helpers/tmp.js";
+import { withUnvalidatedAppends } from "../helpers/unvalidated-store.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
@@ -17,11 +18,16 @@ test("appendUserTurn: round 复用现有最大 round（与既有 CLI 行为对�
   assert.equal(records.at(-1).round, 3);
 });
 
-test("appendUserTurn: 非法 round 字段按 0 处理", async () => {
-  const store = createMemoryTranscriptStore();
+test("appendUserTurn: 轮号不可用的行不参与最大轮号派生（读侧宽容，#811）", async () => {
+  // 那种行只能来自**不经内置写入口**的现场（宿主自研 store / 守卫装上之前的档案）：#811 之后
+  // 内置 store 的 `appendRound` 会当场拒掉它，所以夹具把行换成「不校验轮号」的那一层落进去。
+  const store = withUnvalidatedAppends(createMemoryTranscriptStore());
   await store.appendRound("run-1", { round: "nope", messages: [], dedupKey: "k-a" });
   const result = await appendUserTurn(store, { key: "run-1", text: "x" });
+  // 不可用的轮号在 max 里退成**中性下界 0**（那不是「把那一行当成 round 0」：派生出来的轮号只用
+  // 在要写的这一行上；读侧对那一行**不猜轮号**，见 `foldLedgerMessages`，#811 第 2 条）。
   assert.equal(result.round, 0);
+  assert.equal(result.written, true, "读侧宽容 ⇒ 最大轮号算得出来就照写，不因为那一行坏形状而拒");
 });
 
 test("appendUserTurn: 空 store 种子路径 round=0 且正常写入", async () => {
