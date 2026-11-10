@@ -17,14 +17,17 @@
 //   · 行形状：`kind: "message"` + 现取 `seq`（引擎写侧 `src/loop/orchestrator.js#appendMessageRowToTranscript`
 //     同口径），**不写 `roundKey`**（`isRoundCarrier` 会把缺 `seq` 时的 `roundKey` 当第二个轮载体 ⇒ R3 守卫
 //     反过来丢掉我们刚写的行）；
-//   · 拒写时机：`resume-manager` 的 `resume_journal_skipped` 有同名成因，但那是**事件面**的闭集表，
-//     store 层不发事件 ⇒ 原因走返回值（用例 5 / 6 / 7 钉住「拒写必须出声，不许静默」）。
+//   · 拒写时机：`resume-manager` 的 `resume_journal_skipped` 曾有一条同名的轮号成因，但那是**事件面**的
+//     闭集表，store 层不发事件 ⇒ 原因走返回值（用例 5 / 6 / 7 钉住「拒写必须出声，不许静默」）。
+//     issue #811 把**轮号**那一格从两边同时删了：事件面那条构造性不可能（写侧已挡），store 层这一格
+//     改成抛 `TypeError`（调用方参数错了不是降级）⇒ 现在 `reason` 只剩三条降级成因。
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import { appendUserTurn } from "../../src/store/append-user-turn.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { foldLedgerMessages } from "../../src/store/message-rows.js";
+import { withUnvalidatedAppends } from "../helpers/unvalidated-store.js";
 import { validateMessages } from "../../src/messages/rounds.js";
 import { UNPERSISTED_TOOL_RESULT_TEXT, PENDING_TOOL_RESULT_TEXT } from "../../src/loop/pending-tool-result.js";
 import { runDirect } from "../helpers/run-direct.js";
@@ -205,21 +208,30 @@ test("#765 分片行（带 partOf）不新起一条逻辑消息，因此不当�
 
 // ── 判据 3：拒写必须出声（不许新增事件类型，也不许静默）────────────────────────────────
 
-test("#765 拒写 A：崩溃轮的轮号不是安全整数 ⇒ 宿主行照写，返回值点名原因", async () => {
-  const store = createMemoryTranscriptStore();
+test("#811 抛错（原 #765 拒写 A）：崩溃轮的轮号不是安全整数 ⇒ 抛 TypeError，一行都不写", async () => {
+  // 现场：账本尾行（带悬空 `tool_use` 的 assistant）自己的轮号不是安全整数。#811 之前这是一条
+  // `refused`（与下面三条降级同一个形状），而它根本不是「可恢复的降级」而是**调用方/宿主 store
+  // 交错了**：结清行的 `dedupKey` 与 `seq` 都由那个轮号派生 ⇒ 现在当场抛 `TypeError`。
+  // 行为什么由 `withUnvalidatedAppends` 落：内置 store 的写入口现在也认不了那种行（#811 第 1 条），
+  // 它只能来自宿主自研 store（驱动把整型列返回成字符串）或守卫之前的档案。
+  const store = withUnvalidatedAppends(createMemoryTranscriptStore());
   await store.appendRound(RUN, messageRow(1, 0, { role: "user", content: [text("任务")] }));
   await store.appendRound(RUN, messageRow("nope", 0, { role: "assistant", content: [toolUse("t1")] }));
 
-  const result = await appendUserTurn(store, { key: RUN, text: "追问", messageId: "m-1" });
-
-  assert.deepEqual(result.unsettledToolUses, {
-    status: "refused",
-    reason: "round_not_safe_integer",
-    round: "nope",
-    toolUseIds: ["t1"],
-  });
-  assert.equal(result.written, true, "宿主那条输入不许因为结清失败而丢");
-  assert.deepEqual(settleRowsOf(await store.load(RUN)), [], "拒写 = 一行都不写");
+  // 类型是契约：宿主只把 `TypeError` 映射成 4xx，其他异常一律 5xx。
+  const error = await appendUserTurn(store, { key: RUN, text: "追问", messageId: "m-1" })
+    .then(() => null, (caught) => caught);
+  assert.ok(error instanceof TypeError, `必须抛 TypeError（宿主据此映射 4xx），实得：${String(error)}`);
+  // 错误信息必须点名：哪个入口、哪一行、收到的值与类型。
+  assert.match(error.message, /^appendUserTurn: /u, `必须点名入口，实得：${String(error?.message)}`);
+  assert.match(error.message, /msg:nope:0/u, `必须点名是哪一行，实得：${String(error?.message)}`);
+  assert.match(error.message, /"nope" \(string\)/u,
+    `必须点名收到的值与类型，实得：${String(error?.message)}`);
+  assert.match(error.message, /not a safe integer/u, `实得：${String(error?.message)}`);
+  const rows = await store.load(RUN);
+  assert.deepEqual(settleRowsOf(rows), [], "抛错在写之前 ⇒ 结清行一行都不写");
+  assert.equal(rows.filter((row) => row?.dedupKey === `${RUN}:input:m-1`).length, 0,
+    "宿主那条输入同样不落盘：抛的就是「这次调用没法算出写在哪一轮」，宿主修好轮号再重发");
 });
 
 test("#765 拒写 B：同轮载体已带正文 ⇒ 折叠顺序不可信，宁可不写也要点名", async () => {

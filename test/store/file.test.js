@@ -715,3 +715,60 @@ test("file#160: 空 store 首次 append 走空集快速路径，随后同 key �
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// ---- issue #811：写侧轮号守卫（`round` 不是安全整数 ⇒ `TypeError`，连文件都不建）──────────────
+// 与 `test/store/memory.test.js` 同一条判据、各钉一份：守卫的**实现**共用
+// （`src/store/transcript-dedup.js#assertSafeRound`），但守卫**装在哪**是各自对外的写入口。
+// file 版多钉两格介质事实：守卫跑在拿锁与建目录**之前** ⇒ 一次被拒的写不留空目录、不留空文件、
+// 也不进该 runId 的追加锁队列（否则宿主按「有文件」判断有没有写过，会被一次失败的写骗到）。
+// 类型是契约的一部分：宿主只把 `TypeError` 映射成 4xx，其它异常一律 5xx。
+
+/** `[现场, 那一行的 round 写法, 错误信息里必须出现的「收到的值与类型」]`。 */
+const UNSAFE_ROUNDS = [
+  ["驱动把整型列返回成字符串", "2", '"2" (string)'],
+  ["小数轮号", 2.5, "2.5 (number)"],
+  ["null", null, "null"],
+  ["压根没有 `round` 键", undefined, "undefined (the row carries no `round` key at all)"],
+];
+
+test("file: 非安全整数的 round 当场拒收（TypeError，点名入口/哪一行/收到的值与类型，且不留文件）", async () => {
+  const root = await makeTempDir();
+  try {
+    const store = createFileTranscriptStore({ dir: root });
+    for (const [label, round, expected] of UNSAFE_ROUNDS) {
+      const record = round === undefined
+        ? { dedupKey: "run-1:absent", messages: [] }
+        : { dedupKey: `run-1:${String(round)}`, round, messages: [] };
+      await assert.rejects(
+        () => store.appendRound("run-1", record),
+        (error) => {
+          assert.ok(error instanceof TypeError, `${label}：必须 TypeError（宿主据此映射 4xx），实得 ${String(error)}`);
+          assert.match(error.message, /^appendRound: /u, `${label}：必须点名入口，实得 ${error?.message}`);
+          assert.match(error.message, /run-1:(absent|2|2\.5|null)/u,
+            `${label}：必须点名是哪一行（dedupKey），实得 ${error?.message}`);
+          assert.ok(error.message.includes(expected),
+            `${label}：必须点名收到的值与类型「${expected}」，实得 ${error?.message}`);
+          assert.match(error.message, /not a safe integer/u, `${label}：实得 ${error?.message}`);
+          return true;
+        },
+        `${label} 必须被当场拒掉`,
+      );
+      // 介质事实：被拒的写不建目录里的任何文件（读起来仍是「没写过」）。
+      assert.deepEqual(await readdir(root), [], `${label}：被拒之后目录里不许多出文件`);
+      // 同一份判据也装在恢复行通道上（恢复行的事件键含轮号）。
+      await assert.rejects(
+        () => store.appendRecoveryRow("run-1", { dedupKey: "r-1", round: "3", kind: "recovery" }),
+        (error) => error instanceof TypeError && /^appendRecoveryRow: /u.test(error.message),
+        "appendRecoveryRow 同样拒非整数轮号",
+      );
+      assert.deepEqual(await store.listRecoveryRows("run-1"), [], "被拒的恢复行也不留");
+      assert.deepEqual(await readdir(root), [], "恢复行那一写同样不留文件");
+    }
+    // 正向对照：合法轮号照写（守卫只挡不可用的值，不改变任何合法写）。
+    await store.appendRound("run-1", { round: 0, dedupKey: "run-1:zero", messages: [] });
+    await store.appendRound("run-1", { round: Number.MAX_SAFE_INTEGER, dedupKey: "run-1:max", messages: [] });
+    assert.equal((await store.load("run-1")).length, 2, "round=0 与最大安全整数都是合法写");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -20,6 +20,7 @@ import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { createFileTranscriptStore } from "../../src/store/file.js";
 import { appendUserTurn } from "../../src/store/append-user-turn.js";
 import { makeTmp } from "../helpers/tmp.js";
+import { withUnvalidatedAppends } from "../helpers/unvalidated-store.js";
 
 const RUN = "r1";
 const text = (t) => ({ type: "text", text: t });
@@ -496,4 +497,77 @@ test("261021 fold: nextMessageSeqByRound 按轮取 max(seq)+1，忽略无 seq/�
     roundRow(9, [msg("assistant", "轮行")]),
   ]);
   assert.deepEqual([...next.entries()], [[1, 4]]);
+});
+
+// ── issue #811：两条折叠对**同一个坏轮号**必须给同一个答案 ─────────────────────────────
+// 修前的分歧（工单实测那两行坐标）：`foldMessageRows` 从分组那一刻就跳过它（`:164`），
+// `foldLedgerMessages` 却把它当 `0`（`:282`）——于是同一本账本里那一行**在一条折叠里不存在、在另一条
+// 里挂在 round 0**。挂 round 0 是更坏的那一半：崩溃边界、续跑锚点、轮号表全是从轮号推出来的。
+// 现在两边同一条口径：**那一行不参与折叠，但正文不丢**（读侧对既有档案宽容是 #729 的契约明文）。
+test("#811 两条折叠口径一致：轮号不可用的行不参与折叠，也不挂到 round 0", () => {
+  /** 缺键与「键在但值是 undefined」是两种写法，都得试。 */
+  const withRound = (row, round) => {
+    const next = { ...row };
+    if (round === "absent") delete next.round;
+    else next.round = round;
+    return next;
+  };
+  for (const badRound of ["2", 2.5, null, NaN, "absent"]) {
+    const label = `round=${badRound === "absent" ? "<缺键>" : JSON.stringify(badRound) ?? String(badRound)}`;
+    const bad = withRound(messageRow(2, 1, msg("user", "坏轮号的行")), badRound);
+    const rows = [roundRow(2), messageRow(2, 0, msg("assistant", "本轮正文")), bad];
+    // 形状本身完全合格（`kind` + `seq` 都在）⇒ 把它挡下来的**只有**轮号那一格。
+    assert.ok(isFoldableMessageRow(bad), `${label}：前置——这一行形状合格，只有轮号不可用`);
+
+    // ① `foldMessageRows`：不被吸进载体（原样留在数组里），载体的正文里也没有它。
+    const folded = foldMessageRows(rows);
+    // 载体 + 那一行 = 两条（round 2 那条合法消息行被吸进载体，是**本来就该折**的那一条）。
+    assert.equal(folded.length, 2, `${label}：坏轮号的行必须原样留着（不丢内容），实得 ${folded.length} 行`);
+    assert.ok(folded.some((row) => row.dedupKey === bad.dedupKey), `${label}：被拒的那一行不许凭空消失`);
+    assert.deepEqual(contentOf(folded[0]), [msg("assistant", "本轮正文").content],
+      `${label}：坏轮号的行不许拼进该轮载体的正文`);
+
+    // ② `foldLedgerMessages`：消息仍在，但轮号**不猜**——是「未知」，不是 `0`。
+    const entries = foldLedgerMessages(rows);
+    assert.deepEqual(entries.map((entry) => entry.message.content[0].text),
+      ["本轮正文", "坏轮号的行"], `${label}：两条折叠都不许丢正文`);
+    assert.deepEqual(entries.map((entry) => entry.round), [2, undefined],
+      `${label}：轮号必须是不明（undefined），不是被造出来的 0`);
+
+    // ③ 分片行的 `partOf` 拼接按 **key**（那是正文装配，与轮号无关），所以坏轮号的分片照样接回
+    //    它指认的那条消息，而**折出来的那条消息取的是首片那一行的轮号**——两个方向都不许出现造出来的
+    //    `0`：坏轮号既冒充不了自己的轮，也污染不了它并入的那一轮。
+    const shard = withRound(messageRow(2, 2, msg("user", "坏轮号的分片"), { partOf: `${RUN}:msg:2:0` }), badRound);
+    const shardEntries = foldLedgerMessages([...rows.slice(0, 2), shard]);
+    assert.equal(shardEntries.length, 1, `${label}：分片接回首片 ⇒ 仍是一条逻辑消息（正文不丢、也不新起一条）`);
+    assert.deepEqual(shardEntries[0].message.content.map((block) => block.text),
+      ["本轮正文", "坏轮号的分片"], `${label}：分片正文必须接回首片那条消息`);
+    assert.deepEqual(shardEntries.map((entry) => entry.round), [2],
+      `${label}：折出来的轮号取首片那一行，不是坏轮号、也不是 0`);
+
+    // ④ 反方向：坏轮号的行当**首片**，合法轮号的后续分片接进来 ⇒ 轮号仍是「未知」（不许因为
+    //    分片轮号合法就把那一轮抬成某个值，更不许抬成 `0`）。
+    const head = withRound(messageRow(2, 0, msg("assistant", "坏轮号的首片")), badRound);
+    const tail = messageRow(2, 1, msg("user", "合法轮号的分片"), { partOf: head.dedupKey });
+    const mixed = foldLedgerMessages([roundRow(2), head, tail]);
+    assert.equal(mixed.length, 1, `${label}：分片接回首片 ⇒ 一条逻辑消息`);
+    assert.deepEqual(mixed.map((entry) => entry.round), [undefined],
+      `${label}：首片轮号不可用 ⇒ 整条消息的轮号未知，不是 0`);
+  }
+});
+
+test("#811 读侧仍宽容：轮号不可用的行读得回来，只是不参与折叠（与写侧当场抛错分界）", async () => {
+  // 那种行**进不了内置 store**（#811 第 1 条：写侧当场抛 `TypeError`，见 `test/store/file.test.js`
+  // 与 `test/store/memory.test.js`），只能来自宿主自研 store 或守卫之前的档案 ⇒ 现场由
+  // `withUnvalidatedAppends` 落。这一格钉的是分界：**写侧响亮拒绝，读侧照旧给回内容**。
+  const store = withUnvalidatedAppends(createMemoryTranscriptStore());
+  await store.appendRound(RUN, roundRow(2));
+  await store.appendRound(RUN, messageRow(2, 0, msg("assistant", "本轮正文")));
+  await store.appendRound(RUN, { ...messageRow(2, 1, msg("user", "坏轮号的行")), round: "2" });
+  const rows = await store.load(RUN);
+  // 载体把那条**合法**消息行吸走（本来就该折），坏轮号的行原样留着 ⇒ 两条。
+  assert.equal(rows.length, 2, "读侧宽容：合法行照常折、坏轮号的行照给回（不丢内容）");
+  const entries = foldLedgerMessages(rows);
+  assert.deepEqual(entries.map((entry) => entry.round), [2, undefined],
+    "恢复路径读到的轮号是未知，不是 0（挂到 round 0 会把崩溃边界与续跑锚点带错）");
 });
