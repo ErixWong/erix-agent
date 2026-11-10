@@ -22,12 +22,14 @@
 // 3. **老账本原样透传**：整个数组里没有可折叠消息行 ⇒ 直接返回**入参本身**（同一个引用、同一批
 //    对象），不复制不改写 ⇒ 改造前的账本（轮行自带 `messages`、没有消息行）读出来逐字不变。
 //
-// 轮号不可用的行（issue #811）：**两条折叠同一条口径 —— 该行不参与折叠**。`round` 不是安全整数
+// 轮号不可用的行（issue #811）：**两条折叠同一条口径 —— 那个轮号不参与折叠**。`round` 不是安全整数
 // 的行（宿主驱动把整型列返回成字符串、手写行、小数轮号…）：`foldMessageRows` 从分组那一刻就跳过
 // 它（既不当载体也不被吸进载体，原样留在数组里），`foldLedgerMessages` 也不给它猜一个轮号（旧口径
 // 填 `0` ⇒ 那一行的消息被挂到 round 0 那一组，由轮号推的东西全跟着错）。两条都不**丢**内容
-// （读侧对既有档案宽容，#729 是契约明文），只是不再让一个不可用的轮号冒充事实。写侧已把这种行
-// 拒在账本外（`src/store/transcript-dedup.js#assertSafeRound`，抛 `TypeError` ⇒ 宿主映射 4xx）。
+// （读侧对既有档案宽容，#729 是契约明文），只是不再让一个不可用的轮号冒充事实：分片的 `partOf`
+// 拼接按 **key**（那是正文装配，与轮号无关），折出来的那条消息取**首片那一行**的轮号 —— 坏轮号既
+// 冒充不了自己那一轮，也污染不了它并入的那一轮。写侧已把这种行拒在账本外
+// （`src/store/transcript-dedup.js#assertSafeRound`，抛 `TypeError` ⇒ 宿主映射 4xx）。
 //
 // 两个刻意的设计约束：
 // · **只有带 `seq` 的消息行参与折叠**。宿主经 `src/store/append-user-turn.js` 写的 `:input:` 行
@@ -277,12 +279,14 @@ export function nextMessageSeqByRound(records) {
  * 这些消息，见 `src/compact/fold-summary-journal.js`）在 resume 后变一次——同一份折叠输入被判成
  * 新输入，重启一次多调一次付费摘要器（实测 1 次）。所以恢复上下文一律回到「规范化消息」。
  *
- * **轮号不可用的行不参与折叠（issue #811，与 `foldMessageRows` 同一条口径）**：`round` 不是安全
- * 整数（宿主驱动把整型列返回成字符串、手写行、小数轮号…）时，这一行的正文**照常交出去**（读侧
+ * **轮号不可用的行：轮号不参与折叠（issue #811，与 `foldMessageRows` 同一条口径）**：`round` 不是
+ * 安全整数（宿主驱动把整型列返回成字符串、手写行、小数轮号…）时，这一行的正文**照常交出去**（读侧
  * 对既有档案宽容，不丢内容），但它的轮号**不猜**：旧口径在这里填 `0`，于是那一行的消息被挂到
  * **round 0 那一组** —— 由轮号推出来的东西（崩溃边界、续跑锚点、轮号表 `messageRounds`）跟着错，
  * 那比丢一行更坏。现在那种行的 `round` 是 `undefined`：下游每一格都得自己回答「轮号未知怎么办」，
  * 而不是拿一个假的 `0` 当事实（写侧已把这种行拒在账本外面，#811 第 1 条）。
+ * 只有**轮号**退出：分片的 `partOf` 拼接按 key 走（正文装配与轮号无关），折出来的那条消息取首片
+ * 那一行的轮号 ⇒ 一整本「轮号全是字符串」的档案仍能拼回正确的时间线，只是轮号全部未知。
  *
  * @param {Array<{ round?: number, kind?: string, partOf?: string, messages?: object[], dedupKey?: string, roundKey?: string, ts?: string }>} records
  * @returns {Array<{ message: object, round: number | undefined }>} 逻辑消息序列（轮号不可用的行给 `undefined`）
