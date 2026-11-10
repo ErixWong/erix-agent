@@ -1,11 +1,11 @@
 // @ts-check
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { makeTmp } from "./helpers/tmp.js";
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(TEST_DIR);
@@ -34,7 +34,7 @@ function changeClaimedCount(lines, row) {
   lines[row.index] = cells.join("|");
 }
 
-test("inventory mismatch diagnostics include the canonical --sync command", () => {
+test("inventory mismatch diagnostics include the canonical --sync command", async () => {
   const lines = readFileSync(INVENTORY, "utf8").split("\n");
   const mainRows = dataRowsInSection(lines, "## MIGRATE");
   const appendixRows = dataRowsInSection(lines, "## 附表");
@@ -48,31 +48,27 @@ test("inventory mismatch diagnostics include the canonical --sync command", () =
   changeClaimedCount(lines, appendixWrongRow);
   lines.splice(appendixMissingRow.index, 1);
 
-  const tempDir = mkdtempSync(join(tmpdir(), "erix-flat-count-inventory-"));
+  const tempDir = await makeTmp("erix-flat-count-inventory-");
   const fixture = join(tempDir, "compat-pin-inventory.md");
-  try {
-    writeFileSync(fixture, lines.join("\n"), "utf8");
-    const result = spawnSync(process.execPath, [SCRIPT, ".", "--verify", fixture], {
-      cwd: ROOT,
-      encoding: "utf8",
-    });
-    const output = `${result.stdout}\n${result.stderr}`;
-    assert.equal(result.status, 1, `mutated inventory must fail its existing checks:\n${output}`);
+  writeFileSync(fixture, lines.join("\n"), "utf8");
+  const result = spawnSync(process.execPath, [SCRIPT, ".", "--verify", fixture], {
+    cwd: ROOT,
+    encoding: "utf8",
+  });
+  const output = `${result.stdout}\n${result.stderr}`;
+  assert.equal(result.status, 1, `mutated inventory must fail its existing checks:\n${output}`);
 
-    const diagnostics = output.split(/\r?\n/u).filter((line) => line.startsWith("  ✗ "));
-    const expected = [
-      `主表 ${mainRow.file}：`,
-      `附表 ${appendixWrongRow.file}：`,
-      "主表合计：",
-      "附表合计：",
-      `附表漏行 ${appendixMissingRow.file}：`,
-    ];
-    for (const prefix of expected) {
-      const line = diagnostics.find((diagnostic) => diagnostic.includes(prefix));
-      assert.ok(line, `缺少判据 ${prefix}：\n${output}`);
-      assert.ok(line.includes(SYNC_COMMAND), `判据 ${prefix} 缺少合法更新命令：\n${line}`);
-    }
-  } finally {
-    rmSync(tempDir, { recursive: true, force: true });
+  const diagnostics = output.split(/\r?\n/u).filter((line) => line.startsWith("  ✗ "));
+  const expected = [
+    `主表 ${mainRow.file}：`,
+    `附表 ${appendixWrongRow.file}：`,
+    "主表合计：",
+    "附表合计：",
+    `附表漏行 ${appendixMissingRow.file}：`,
+  ];
+  for (const prefix of expected) {
+    const line = diagnostics.find((diagnostic) => diagnostic.includes(prefix));
+    assert.ok(line, `缺少判据 ${prefix}：\n${output}`);
+    assert.ok(line.includes(SYNC_COMMAND), `判据 ${prefix} 缺少合法更新命令：\n${line}`);
   }
 });
