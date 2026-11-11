@@ -3,6 +3,8 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+## [0.32.0]（未发布 / unpublished）
+
 ### Breaking
 
 - **Archives written before 261021 are no longer resumable (issue #754, verdict 2).** The one place that still
