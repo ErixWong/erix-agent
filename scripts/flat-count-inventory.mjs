@@ -468,15 +468,20 @@ function verify(root, mdPath) {
   const lines = fs.readFileSync(mdPath, "utf8").split("\n");
   const doc = analyze(lines);
   const bad = [];
+  const syncHint = "合法更新：`node scripts/flat-count-inventory.mjs . --sync test/compat-pin-inventory.md`";
   const astCap = (f) => (per.get(f)?.cap ?? 0);
   const astData = (f) => (per.get(f)?.data ?? 0);
 
   // ① 逐行：生成器写的那两列必须等于 AST 实测。
   for (const row of doc.mainRows) {
-    if (row.claimed !== astCap(row.file)) bad.push(`主表 ${row.file}：表 ${row.claimed} / AST ${astCap(row.file)}`);
+    if (row.claimed !== astCap(row.file)) {
+      bad.push(`主表 ${row.file}：表 ${row.claimed} / AST ${astCap(row.file)}（${syncHint}）`);
+    }
   }
   for (const row of doc.appRows) {
-    if (row.claimed !== astData(row.file)) bad.push(`附表 ${row.file}：表 ${row.claimed} / AST ${astData(row.file)}`);
+    if (row.claimed !== astData(row.file)) {
+      bad.push(`附表 ${row.file}：表 ${row.claimed} / AST ${astData(row.file)}（${syncHint}）`);
+    }
   }
   // 同一文件可能被两片各分一段（如 `loop-callback-this`：S7b 3 + S7c 1）⇒ 按文件汇总后再与 AST 对账。
   const perFileClaimed = new Map();
@@ -498,10 +503,12 @@ function verify(root, mdPath) {
   const appSum = doc.appRows.reduce((s, r) => s + r.claimed, 0);
   const astMain = [...per.values()].reduce((s, v) => s + v.cap, 0);
   const astApp = [...per.values()].reduce((s, v) => s + v.data, 0);
-  if (mainSum !== astMain) bad.push(`主表合计：表 ${mainSum} / AST ${astMain}`);
-  if (appSum !== astApp) bad.push(`附表合计：表 ${appSum} / AST ${astApp}`);
+  if (mainSum !== astMain) bad.push(`主表合计：表 ${mainSum} / AST ${astMain}（${syncHint}）`);
+  if (appSum !== astApp) bad.push(`附表合计：表 ${appSum} / AST ${astApp}（${syncHint}）`);
   for (const [f, v] of per) {
-    if (v.data > 0 && !doc.appRows.some((r) => r.file === f)) bad.push(`附表漏行 ${f}：AST ${v.data} 点，表里没有这一行`);
+    if (v.data > 0 && !doc.appRows.some((r) => r.file === f)) {
+      bad.push(`附表漏行 ${f}：AST ${v.data} 点，表里没有这一行（${syncHint}）`);
+    }
     // 只有「已迁完切片清单」里的文件允许不出现在主表（表头口径）；非切片清单的文件两边都该有。
     if (v.cap > 0 && !doc.mainRows.some((r) => r.file === f) && !ownedBySliceList(f, doc.listRows)) {
       bad.push(`主表漏行 ${f}：AST ${v.cap} 点，表里没有这一行（--sync 会补一行，分类列写 TODO）`);

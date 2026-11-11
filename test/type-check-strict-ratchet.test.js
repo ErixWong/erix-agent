@@ -18,8 +18,8 @@
 //      `package.json` 再软链 `node_modules`，跑完即删（`makeTmp` 的 `after()` 清理）。
 //   ③ **两档各自有基线**：包根入口与 `--with-tools` 并集各跑一次，输出里打印的基线必须等于脚本里对应的常量
 //      （#214 的教训：两档分两次测就会悄悄漂开一格），且两档都在绿的一侧（实测 ≤ 基线）。
-//   ④ **文档不再说「只观测」**：中英两份 AGENTS 的命令表都得写明它是棘轮、会阻塞，并且**都不许抄那两个数**
-//      （本用例直接把常量里的数字串拿去 AGENTS 里搜——抄进去就红，这条是「不许把数字抄进指令面」的机器化）。
+//   ④ **指令面不暴露 strict 基线值**：中英两份 AGENTS 不得声明 strict 基线数；检查的是有语义上下文的
+//      基线字段，而不是在整篇文本里搜一个数字子串，避免与无关历史编号碰撞。
 //   ⑤ **接线**：`package.json` 的 `check:types:strict` 传的是 `--strict`，CI 那一步没有 `continue-on-error`，
 //      且**两档都有 CI 步骤**（包根档与 `--with-tools` 档）——没有那一步，工具档的基线常量漂了也看不见
 //      （issue #653：`grep with-tools .github/workflows/ci.yml` 曾经一处都没有）。
@@ -52,6 +52,18 @@ function constant(name) {
   const m = read(RATCHET_REL).match(new RegExp(`^const ${name} = (\\d+);`, "m"));
   assert.ok(m, `抽不到 \`const ${name} = <数字>;\`——strict 棘轮的基线常量被删或改了写法`);
   return Number(m[1]);
+}
+
+const STRICT_BASELINE_CLAIM = /\bBASELINE_STRICT_(?:ROOT|WITH_TOOLS)\s*=\s*\d+\b|\bstrict(?:\s+ratchet)?\s+baseline(?:\s+(?:is|of))?\s*[:=]?\s*\**\d+\**|strict\s*棘轮基线(?:\s*(?:是|为|[:：=]))?\s*\**\d+\**/iu;
+
+function strictBaselineClaimErrors(readDoc) {
+  const errors = [];
+  for (const rel of ["AGENTS.md", "AGENTS_cn.md"]) {
+    readDoc(rel).split(/\r?\n/u).forEach((line, index) => {
+      if (STRICT_BASELINE_CLAIM.test(line)) errors.push(`${rel}:${index + 1} contains a strict-baseline claim`);
+    });
+  }
+  return errors;
 }
 
 /**
@@ -367,21 +379,32 @@ test("#417 strict 没污染非 strict 棘轮：TSC_ARGS 里没有 --strict，它
   }
 });
 
-test("#417 两份 AGENTS 的指令面上不许出现 strict 基线的现值（数字正本住在脚本里）", () => {
-  // issue #802：原来这一格还要求「那一行必须出现 strict ratchet / it blocks / 本文不抄 这几个字」——
-  // 那是措辞警察：判据只能抓「有人改了措辞」，抓不到行为，代价是每次文档改写都要把词凑回去。
-  // 现在只留真正承重的那半：**数字不许抄进指令面**（下面那一段），它咬的是「把快照当现值」这件真事。
-  // 票面原话「别把具体数字抄进 AGENTS」的机器化：常量里的数字串在指令面上一处都不许出现。
-  // （这条只咬 strict 的两个常量：非 strict 那对走的是 `BASELINE_ROOT = N` 的现场对账，另一套机制。）
-  for (const name of ["BASELINE_STRICT_ROOT", "BASELINE_STRICT_WITH_TOOLS"]) {
-    const value = String(constant(name));
-    for (const rel of ["AGENTS.md", "AGENTS_cn.md"]) {
-      assert.ok(
-        !read(rel).includes(value),
-        `${rel} 里出现了 strict 基线 ${name} 的现值（${value}）——指令面上不许抄这个数（check:agents-directives 的口径：数字正本住在脚本里）`,
-      );
-    }
-  }
+test("#417 指令面没有 strict 基线声明，且显式声明会被识别", () => {
+  const docs = new Map(["AGENTS.md", "AGENTS_cn.md"].map((rel) => [rel, read(rel)]));
+  const readDoc = (rel) => docs.get(rel);
+  assert.deepEqual(strictBaselineClaimErrors(readDoc), [], "AGENTS 指令面不得声明 strict 基线值");
+
+  const incidental = new Map(docs);
+  incidental.set("AGENTS.md", `${docs.get("AGENTS.md")}\nUnrelated historical reference: ${constant("BASELINE_STRICT_ROOT")}.\n`);
+  assert.deepEqual(
+    strictBaselineClaimErrors((rel) => incidental.get(rel)),
+    [],
+    "没有 strict-baseline 语义上下文的同值历史编号不应被误判",
+  );
+
+  const injected = new Map(docs);
+  injected.set(
+    "AGENTS.md",
+    `${docs.get("AGENTS.md")}\nStrict ratchet baseline is ${constant("BASELINE_STRICT_ROOT")}.\n`,
+  );
+  injected.set(
+    "AGENTS_cn.md",
+    `${docs.get("AGENTS_cn.md")}\nBASELINE_STRICT_WITH_TOOLS = ${constant("BASELINE_STRICT_WITH_TOOLS")}\n`,
+  );
+  const errors = strictBaselineClaimErrors((rel) => injected.get(rel));
+  assert.equal(errors.length, 2, `显式 strict 基线声明应各有一处命中：\n${errors.join("\n")}`);
+  assert.match(errors[0], /^AGENTS\.md:\d+ contains a strict-baseline claim/u);
+  assert.match(errors[1], /^AGENTS_cn\.md:\d+ contains a strict-baseline claim/u);
 });
 
 test("#417/#653 接线：`check:types:strict` 传的是 `--strict`，CI 那一步不带 continue-on-error，且**两档都有 CI 步骤**", () => {

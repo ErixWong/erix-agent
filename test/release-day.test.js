@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 
 import { makeTmp } from "./helpers/tmp.js";
 // issue #731 T7：中英 AGENTS 的手工清单要与**脚本自己的**步骤表对账，所以真值从脚本现读（不抄）。
-import { PREFLIGHT_STEPS, preflightDocCommand, reconcilePreflightChecklist } from "../scripts/release-day.mjs";
+import { EXIT, PREFLIGHT_STEPS, preflightDocCommand, reconcilePreflightChecklist } from "../scripts/release-day.mjs";
 
 const ROOT = dirname(fileURLToPath(new URL(".", import.meta.url)));
 const SCRIPT = fileURLToPath(new URL("../scripts/release-day.mjs", import.meta.url));
@@ -33,7 +33,12 @@ test("--help：四个阶段与退出码都写清，exit 0", () => {
   for (const stage of ["preflight", "publish", "writeback", "finalize"]) {
     assert.match(result.stdout, new RegExp(`--stage ${stage}`, "u"), `--help 要点名 ${stage} 阶段`);
   }
-  assert.match(result.stdout, /3 preflight 全绿、等你发布/u, "退出码 3 = 等人工发布，必须写清（否则会被读成失败）");
+});
+
+test("默认 publish 阶段以 AWAITING_PUBLISH 退出码停在人工交接点", () => {
+  const result = runScript(["--stage", "publish", "--dry"]);
+  assert.equal(result.status, EXIT.AWAITING_PUBLISH,
+    `publish 默认只给出操作单，不得隐式执行发布：\n${result.stdout}\n${result.stderr}`);
 });
 
 test("参数闸：什么都不给 ⇒ exit 2 并打用法（不是 0，也不是 1）", () => {

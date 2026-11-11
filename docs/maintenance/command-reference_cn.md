@@ -160,23 +160,23 @@ CHANGELOG 解析器**：扫描面就是 `test/static-guards.test.js` 已经在�
 断言式门禁：`tsc` exit 0 / 声明文件数 > 0 / `src/index.d.ts` 含 `runToolLoop` / `src/tools/index.d.ts` 含 `createFileTools`，跑完删掉生成物（issue #213；需要先 `npm install --include=dev`）
 
 ## type-ratchets
-`--checkJs` **棘轮**：统计从 `src/index.js` 可达的类型错误总数，超过 `scripts/type-check-ratchet.mjs` 里写死的基线常量 **103** 就失败（issue #214；棘轮 = 只减不增，低于基线仍通过并提示「可下调至 N」；每次下调都**两档一起数、同一笔提交里一起降**，而逐轮流水账（哪一轮降了几个、落在哪个文件）写在 `scripts/type-check-ratchet.mjs` 的头注释里——命令自己打印当前总数、每文件分布与「可下调至 N」的提示，所以除了两个基线之外本文不抄任何数）。**跑之前先删掉生成的 `src/**/*.d.ts`**——见下面「`--checkJs` 棘轮规则」。加 `-- --with-tools` 可把范围扩到 `./tools` 入口（基线 **138** / 28 个文件）
-- `--checkJs` 棘轮规则（issue #214）：`npm run check:types` **不追求清零**——103 个错（涉 26 个文件）是已接受的债（#214 首测是 218，issue #177 刀 1 给 `src/loop/orchestrator.js` 还掉 1 个；PR #249（即 #213 的两个 provider 工厂 JSDoc）又还掉 75 个，**全部落在那两个工厂文件**：`src/providers/openai.js` 46 → 7、`src/providers/anthropic.js` 45 → 9，其余 27 个带错文件一个没动；issue #265 把 `src/store/notes.js` 的端口语义抽进两个新模块后又还掉 21 个，**同样全部落在那一个文件**：`src/store/notes.js` 27 → 6，两个首行 `// @ts-check` 的新模块（`src/store/notes-port.js`、`src/store/notes-memory.js`）各自贡献 0 个，其余 28 个带错文件一个没动——逐文件对账用的是 `git archive` 取出的 `7354fab^` 对照树，它在同一条命令下逐字复现 142 / 185）。
-  它保证的是**只减不增**：总数与 `scripts/type-check-ratchet.mjs` 里的 `BASELINE_ROOT = 103` 常量比较（两档**在同一笔提交里一起数、一起降**；逐轮流水账——哪一轮降了几个、落在哪个文件——写在那个脚本自己的头注释里，本文不抄）。
-  **先还哪一半**：103 个里有 74 个落在**宿主真的能碰到的公共面**上，其余 29 个住在同样的 9 个宿主点不到名的纯实现内部文件里；`src/store/notes.js` 那次重构还掉的 21 个因此全落在公共面那半边（`src/store/notes.js` 本来就在公共闭包里）。哪份文件在哪半边由 `src/index.js` 的引用闭包决定：每文件计数由 `node scripts/type-check-ratchet.mjs --verbose` 打印、单条错由 `--show-errors N` 定位，所以本文既不抄这份切分，也不抄逐轮流水账——每一轮降基线都在**降它的那笔提交**里写清哪个文件减了几个。准入规则：
+`--checkJs` **棘轮**：统计从 `src/index.js` 可达的类型错误总数，超过 `scripts/type-check-ratchet.mjs` 里写死的基线常量 **102** 就失败（issue #214；棘轮 = 只减不增，低于基线仍通过并提示「可下调至 N」；每次下调都**两档一起数、同一笔提交里一起降**，而逐轮流水账（哪一轮降了几个、落在哪个文件）写在 `scripts/type-check-ratchet.mjs` 的头注释里——命令自己打印当前总数、每文件分布与「可下调至 N」的提示，所以除了两个基线之外本文不抄任何数）。**跑之前先删掉生成的 `src/**/*.d.ts`**——见下面「`--checkJs` 棘轮规则」。加 `-- --with-tools` 可把范围扩到 `./tools` 入口（基线 **137** / 28 个文件）
+- `--checkJs` 棘轮规则（issue #214）：`npm run check:types` **不追求清零**——102 个错（涉 26 个文件）是已接受的债（#214 首测是 218，issue #177 刀 1 给 `src/loop/orchestrator.js` 还掉 1 个；PR #249（即 #213 的两个 provider 工厂 JSDoc）又还掉 75 个，**全部落在那两个工厂文件**：`src/providers/openai.js` 46 → 7、`src/providers/anthropic.js` 45 → 9，其余 27 个带错文件一个没动；issue #265 把 `src/store/notes.js` 的端口语义抽进两个新模块后又还掉 21 个，**同样全部落在那一个文件**：`src/store/notes.js` 27 → 6，两个首行 `// @ts-check` 的新模块（`src/store/notes-port.js`、`src/store/notes-memory.js`）各自贡献 0 个，其余 28 个带错文件一个没动——逐文件对账用的是 `git archive` 取出的 `7354fab^` 对照树，它在同一条命令下逐字复现 142 / 185）。
+  它保证的是**只减不增**：总数与 `scripts/type-check-ratchet.mjs` 里的 `BASELINE_ROOT = 102` 常量比较（两档**在同一笔提交里一起数、一起降**；逐轮流水账——哪一轮降了几个、落在哪个文件——写在那个脚本自己的头注释里，本文不抄）。
+  **先还哪一半**：一部分错误落在**宿主可及的文件**，另一部分住在纯实现内部；`src/store/notes.js` 那次重构还掉的 21 个因此全落在公共面那半边（`src/store/notes.js` 本来就在公共闭包里）。哪份文件在哪半边由 `src/index.js` 的引用闭包决定：每文件计数由 `node scripts/type-check-ratchet.mjs --verbose` 打印、单条错由 `--show-errors N` 定位，所以本文既不抄这份切分，也不抄逐轮流水账——每一轮降基线都在**降它的那笔提交**里写清哪个文件减了几个。准入规则：
   - **新增文件必须首行开 `// @ts-check`。** 它是「这份文件愿意被检查」的声明，**不是范围开关**：`--checkJs` 加上
     `src/index.js` 已经会把整张 import 图拉进来（`--listFiles` 打印单入口能到 `src/` 下多少个文件（这个数由那条命令打印、本文不抄；2026-10-21 记的 65、2026-10-13 记的 58、#265 之前的 56 都是**历史值**），其中 **26 个带错**），
     所以「只编入口」根本限制不了范围；白名单只能按文件加，这正是 #214 R2 要的事。
   - **改动某个文件时，若它的错误数能降就是顺路机会**（#179 那一类：随本就在改这个文件的 PR 消化，不单开单）。
     总数降下来后，把基线常量的下调**单独一次提交**，并在提交信息里写清哪个文件减了几个——棘轮的全部价值在于「这个数只会变小」。
   - ⚠ **跑之前先删掉生成物。** tsc 解析 `./x.js` 时**优先命中同目录的 `x.d.ts`**，所以 `npm run types:build`/`prepack`
-    之后，本门禁会变成「在检查声明而不是实现」：**无 `.d.ts` = 103 个错**（即常量那个值），**声明在场 = 0 个错**
+    之后，本门禁会变成「在检查声明而不是实现」：**无 `.d.ts` = 102 个错**（即常量那个值），**声明在场 = 0 个错**
     （`--skipLibCheck` 直接跳过声明文件），去掉 `--skipLibCheck` 会得到一小批错、且全部落在 `.d.ts` 上（条数与涉及文件由同一条 tsc 命令打印）。生成物数量见 `npm run types:build` 的输出（它就是随包声明数，`check:pack-links` 与 tarball 对账；更早的读数都是**历史值**，按当时为真保留）。
     「0 < 基线」在这里是**假绿**，所以脚本对残留的 `src/**/*.d.ts` 直接变红（仓库提交了 0 个 `.d.ts`，存在即生成物）；
     清掉即可：`find src -name '*.d.ts' -delete`（生成物不入库、可随时重建）。
   - 故意留着的盲区（规格就是这么定的）：第二个公共入口 `src/tools/index.js` 会拉进包根图里**到不了**的
     `src/tools/file-tools.js`（20 个错）与 `src/skills/loader.js`（16 个），所以这两个文件的新错默认**卡不住**；
-    `npm run check:types -- --with-tools` 卡并集（基线 **138** / 28 个文件 = 103 + 19 + 16，与压低它的那笔修同一笔提交里一起数；**两档在 CI 上都有自己的步骤**——`--with-tools` 那两步紧跟包根档，所以常量在这里过期会像别处一样红，issue #653）。并集背后的每文件计数由命令打印（`--verbose`），每一轮降基线都在**降它的那笔提交**里写清哪个文件减了几个（issue #409 的 `parseToolArguments` 改走、`parseJsonWithRepair` 的 `@returns` 拍平、issue #356 的 `markerCount` 窄化）；将来收紧就走这条路，不要拿它当「反正卡不住」的理由。
+    `npm run check:types -- --with-tools` 卡并集（基线 **137** / 28 个文件 = 102 + 19 + 16，与压低它的那笔修同一笔提交里一起数；**两档在 CI 上都有自己的步骤**——`--with-tools` 那两步紧跟包根档，所以常量在这里过期会像别处一样红，issue #653）。并集背后的每文件计数由命令打印（`--verbose`），每一轮降基线都在**降它的那笔提交**里写清哪个文件减了几个（issue #409 的 `parseToolArguments` 改走、`parseJsonWithRepair` 的 `@returns` 拍平、issue #356 的 `markerCount` 窄化）；将来收紧就走这条路，不要拿它当「反正卡不住」的理由。
     ⚠ 退役的 261 里悄悄留着 #177 已经还掉的那 1 个（那一档当时没跟着复测）：**下调基线必须两档在同一笔提交里一起复测、一起降**。
   - 工具链许可（issue #213，#214 重申）：`typescript` + `@types/node` 只能待在 dev——零运行时依赖红线约束的是
     `src/`/`bin/` 的 import（`node:` 内置 + 相对路径），本门禁也不新增依赖（只用 `node:` 内置，不建 tsconfig、不引入新工具）。
@@ -219,6 +219,20 @@ CHANGELOG 解析器**：扫描面就是 `test/static-guards.test.js` 已经在�
 
 ## check-config-leaf-values
 配置叶子值类型现状表校验（issue #586）：`node scripts/config-leaf-value-probe.mjs --verify docs/config-leaf-value-status.md docs/config-leaf-value-status_cn.md` 重跑探针（每个 schema 叶子 × 8 个固定错值，每一格都过一次真的两轮 `runToolLoop`），再把重算出来的中英两张表与入库的那两张对账——任何漂移都 exit 1 并点名文件。探针**实测**每一格的结局，而不是断言愿望：`G` / `V` 在 `config` 闸口 / 语义相被拒，`S` 在 run 启动期被拒**且判词点名该叶子**，`C` 在启动期炸但**不点名**，`U` 到第一发请求之后才抛，`A` 是被接受且**真的生效**（run 的指纹变了），`·` 是被接受但**无差异**（指纹逐字相同）。「拒在哪一层」取自**栈帧**（文件名 + 函数名，从不取行号 ⇒ 无关重构撞不红它），「生效在哪」取自指纹的**第一个差异路径**，所以「悄悄接受」是一个位置加一对值，不是形容词。`--sync` 是刷这张表**唯一合法**的姿势（手改数字就是造假）；`configSchemaSelfCheck` 红、或三次基线跑的指纹不一致时，探针**拒绝出表**（`exit 2`）——指纹不稳会把 `A` / `·` 变成噪声。它自己打印耗时（约一秒级），所以在 CI 里是**阻塞**步骤 `Config-leaf value status verify`，紧跟 `Compatibility-pin inventory verify`。**它一个字都没收窄接受面**：每条类型校验都是收窄 ⇒ 要记 Breaking，裁定权留在维护者手里
+
+## registry-updates
+派生格只用该登记表所属的生成器刷新，不手改：
+
+| 登记表 | 唯一的机器更新命令 |
+|---|---|
+| 兼容钉子清点表 | `node scripts/flat-count-inventory.mjs . --sync test/compat-pin-inventory.md` |
+| 变异样本表 | `node scripts/mutation-sample-check.mjs --sync test/mutation-samples.md` |
+| 配置叶子现状表（中英） | `node scripts/config-leaf-value-probe.mjs --sync docs/config-leaf-value-status.md docs/config-leaf-value-status_cn.md` |
+
+`test/test-suite-baseline.json` 的 TAP 地板没有 `--sync`。它是期望值，不是测量值：对账器只提示可抬登记，
+抬地板是人的决定。机器自动把一次实测抄成登记值，会把「这一次恰好跑了多少」永久合法化，而用例变少
+可能意味着覆盖丢失。`test/static-guards.test.js` 的 `CHANGELOG_PAIR_FLOOR` 也没有 `--sync`；抬这项登记
+同样是人的动作，不能自动照抄最新测量。
 
 ## cli-local
 本地运行 CLI（无需安装）
