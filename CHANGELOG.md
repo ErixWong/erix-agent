@@ -242,7 +242,8 @@
   同一个落点），**不是抬 `LENGTH_BUDGETS`**：抬一档（512 字节）就只剩 512 字节余量，下一次任何人加一句都会把组合推过 64 KiB——
   那正是 #721 刚修掉的缺陷。
 
-- **The shipped `TranscriptStore` contract suite now enforces its own optionality (issue #739).** The suite's
+- **The shipped `TranscriptStore` contract suite now enforces its own optionality (issue #739, PR #745;
+  merge a177083).** The suite's
   header said run snapshot and run-state are optional capabilities and `src/assembly-validators.js` agreed
   (`OPTIONAL_TRANSCRIPT_STORE_METHODS`), but the suite body called `store.saveRunSnapshot` / `store.saveRunState`
   unconditionally while `loadRawRows` and the `#157` probes each carried a one-way guard — so a host store
@@ -275,7 +276,8 @@
   argument `optionalCapabilities`; the two-argument host call sites in the contract keep working. The contract's
   `transcript-store.js` inventory row states the measured cell count (27 on the base tree vs the registered 22 —
   already stale before this slice — and 28 with the accounting case).
-- **随包 `TranscriptStore` 契约套件现在自己保证自己的「可选」是真的（issue #739）。** 套件头注释说 run snapshot 与
+- **随包 `TranscriptStore` 契约套件现在自己保证自己的「可选」是真的（issue #739，PR #745；合并
+  a177083）。** 套件头注释说 run snapshot 与
   run-state 是可选 capability、`src/assembly-validators.js` 也这么登记（`OPTIONAL_TRANSCRIPT_STORE_METHODS`），
   而套件体里 `store.saveRunSnapshot` / `store.saveRunState` 是**无条件调用**，同时 `loadRawRows` 与 `#157` 探针却各带
   一个单向守卫 ⇒ 只实现必需面（`appendRound` + `load`）的宿主 store 能过装配校验、却在随包一致性套件上撞
@@ -340,8 +342,8 @@
   `note_list`, if the per-file `note_*` literal table moves without a docs change, or if `src/` starts
   importing `bin/` — reverse-proved by reverting each of those (each produced exit 1).
 
-- **The fold substitute and the TTL placeholder no longer assert that notes exist (issue #741, branch
-  `fix-261107-02`).** Both model-visible strings used to claim a retrieval path unconditionally: the fold
+- **The fold substitute and the TTL placeholder no longer assert that notes exist (issue #741, PR #749;
+  merge a415878, branch `fix-261107-02`).** Both model-visible strings used to claim a retrieval path unconditionally: the fold
   summary's closing line said “re-read the file or look at the durable notes”, and the TTL placeholder said
   “use `note_list` then `note_read` … the essentials are already in the notes/conclusions above”, while the
   warning round told the model to `note_take`. The engine writes no notes itself, and it never checked
@@ -416,7 +418,8 @@
   会在下列情况变红：措辞退回无范围全称、某处不再 import 那道门、governor 里长出硬编码 `note_list`、
   逐文件 `note_*` 字面表动了却没改文档、或 `src/` 反过来 import `bin/`——五条都做了反向实测（各自 exit 1）。
 
-- **折叠替代物与 TTL 降级占位符不再断言「有笔记」（issue #741，分支 `fix-261107-02`）。** 两处模型可见文本
+- **折叠替代物与 TTL 降级占位符不再断言「有笔记」（issue #741，PR #749；合并 a415878，分支
+  `fix-261107-02`）。** 两处模型可见文本
   从前都无条件宣称有一条取回路：折叠替代物的末句是「需要原文请重读文件或查看持久笔记」，TTL 占位符是
   「后续需要时先用 `note_list` 查找，再用 `note_read` 读取…；要点见对话中已有笔记/结论」，预警轮还叫模型去
   `note_take`。而引擎自己一个字节的笔记都不写，也从来没核实过宿主到底有没有把 `note_*` 放进工具面。
@@ -574,8 +577,8 @@
 
 
 
-- **A round record now says how big its own `runState` copy is, and whether that copy was truncated (issue #742, first slice: purely additive).** Every round writes a full run-state copy, and the ledger could already say two things about its size (`runState.bounds.maxSerializedBytes`, `runState.bounds.truncated`) but not **how many bytes** this round's copy costs, so a host watching the slope of "one full copy per round" (measured on a production ledger: 41 MB across 500 rounds) had nothing to alert on. Each engine round record now carries a sibling key `runStateMeta: { bytes, capBytes, truncated }`, shaped like the `foldedPayloadMeta` that already sits on the fold archive — that cell is exactly the precedent which made *archive* truncation visible, and the reason #742 asked for the same shape here. Three rules are pinned in code rather than prose: `bytes` reuses `serializedBytes`, i.e. the same `Buffer.byteLength(JSON.stringify(value), "utf8")` that `boundRunState` uses to decide `bounds.truncated` (two rulers would let `truncated` and `bounds.truncated` disagree about the same copy, which is worse than no observability); `capBytes` reads the exported `RUN_STATE_MAX_SERIALIZED_BYTES` and is **not** the literal `65536` (a copied literal is a second ruler that goes quietly stale when the constant moves — pinned by a source-scanning case, because writing the literal and using the constant are *equal in value today* and no value assertion can tell them apart); `truncated` is the **OR** of two facts, over-cap **or** the engine's own clamp stamp. The second half is not decoration and was not known before the end-to-end test was written: the clamp runs **upstream** of the round record, so a round whose state really was squeezed lands its copy *under* the cap (measured fixture: 128 tools + 128 files + 64 todo items + 1200 CJK semantic characters ⇒ copy 64 893 B against the 65 536 B cap, while `bounds.truncated: true` / `omittedTools: 1`) — so `truncated = bytes > capBytes` alone would be **permanently false** in real runs. The two facts stay separately readable (`bytes` / `runState.bounds`); nothing is merged. **No fact, no key**: with no copy to measure (no `runState`, a non-object copy, or one `JSON.stringify` cannot encode) the whole key is absent and the engine never writes `{bytes:0,truncated:false}` as a stand-in, so absence reads as *unknown*, never as "not truncated". The measurement is taken on `cloneState(roundRunState)` — the object actually written — not on the live original; measuring the original could report a byte count that never reached the disk. Mutations measured (restored afterwards): `capBytes: 65536` ⇒ 9 pass / 1 fail; `truncated: false` ⇒ 6 pass / 4 fail. ⚠ **This slice does not reduce a single byte**: every round still writes a full copy and the ledger total still grows linearly with the round count — that is the next slice of #742, not this one. `runState` content, `bounds` semantics and the `onRound` shape are untouched; nothing in the engine reads `runStateMeta`, so resume and stop gates cannot be affected. The golden capture's additive-key exemption grew by the measured amount (`usage` / `engineUsage` / `runStateMeta` per engine round row, 13 / 12 keys across the two scenarios, still pinned row by row).
-- **轮记录现在会说自己那份 `runState` 副本有多大、有没有被夹断（issue #742，第一刀：纯加法）。** 每轮写一份全量 run-state 副本，账本本来就能说两件事（`runState.bounds.maxSerializedBytes`、`runState.bounds.truncated`），却说不出**这一轮的副本花了多少字节**，于是盯着「每轮一份全量副本」这条斜率的宿主无警可报（现网账本实测：500 轮 41 MB）。每条引擎轮记录从此多一个兄弟键 `runStateMeta: { bytes, capBytes, truncated }`，形状照折叠归档上已有的 `foldedPayloadMeta`——那一格正是把*归档*截断变成可见事实的先例，#742 要的就是这个形状。三条口径钉在代码里而不是 prose 里：`bytes` 复用 `serializedBytes`，也就是 `boundRunState` 判 `bounds.truncated` 用的那一句 `Buffer.byteLength(JSON.stringify(value), "utf8")`（两把尺会让 `truncated` 与 `bounds.truncated` 对同一份副本打架，那比没有观测更糟）；`capBytes` 取导出常量 `RUN_STATE_MAX_SERIALIZED_BYTES`，**不是**字面量 `65536`（复制一份字面量就是第二把尺，常量以后调整时它会静默说谎——钉在扫源码那格，因为「写字面量」与「用常量」今天**恰好同值**，任何值断言都分不开）；`truncated` 是**两个事实取或**：超出上限，**或**引擎自己盖的夹断章。后一半不是装饰，也不是先验结论，是写完端到端测试才量出来的：夹断发生在轮记录写点的**上游**，真被挤过的那一轮落盘副本反而**在上限之内**（夹具实测：128 工具 + 128 文件 + 64 条 todo + 1200 字 semantic ⇒ 副本 64 893 B / 上限 65 536 B，同时 `bounds.truncated: true` / `omittedTools: 1`）⇒ 只写 `bytes > capBytes` 会在全真实 run 里**永远为假**。两个事实仍可分开读（`bytes` / `runState.bounds`），没有揉成一个数。**没事实就没这一格**：没有可量的副本（没有 `runState`、副本不是普通对象、`JSON.stringify` 编不了）时整个键缺席，引擎永不写 `{bytes:0,truncated:false}` 充当替身 ⇒ 缺格读成「不知道」，不是「没截断」。量的是 `cloneState(roundRunState)`——真正被写下去的那个对象——而不是活的原件；量原件会报出一个从未上过盘的字节数。变异实测（跑完已还原）：`capBytes: 65536` ⇒ 9 pass / 1 fail；`truncated: false` ⇒ 6 pass / 4 fail。⚠ **本片一个字节也没少**：每轮仍是一份全量副本，账本总量仍随轮数线性增长——那是 #742 的下一刀，不是这一片。`runState` 内容、`bounds` 语义、`onRound` 形状均未动；引擎内不读 `runStateMeta`，resume 与停门判据不可能受影响。金样捕获的新增键豁免面按实测长大（每条引擎轮记录行 `usage` / `engineUsage` / `runStateMeta`，两个场景 13 / 12 个键，仍逐行钉住，一条没合并）。
+- **A round record now says how big its own `runState` copy is, and whether that copy was truncated (issue #742, PR #750; merge fd07d27, first slice: purely additive).** Every round writes a full run-state copy, and the ledger could already say two things about its size (`runState.bounds.maxSerializedBytes`, `runState.bounds.truncated`) but not **how many bytes** this round's copy costs, so a host watching the slope of "one full copy per round" (measured on a production ledger: 41 MB across 500 rounds) had nothing to alert on. Each engine round record now carries a sibling key `runStateMeta: { bytes, capBytes, truncated }`, shaped like the `foldedPayloadMeta` that already sits on the fold archive — that cell is exactly the precedent which made *archive* truncation visible, and the reason #742 asked for the same shape here. Three rules are pinned in code rather than prose: `bytes` reuses `serializedBytes`, i.e. the same `Buffer.byteLength(JSON.stringify(value), "utf8")` that `boundRunState` uses to decide `bounds.truncated` (two rulers would let `truncated` and `bounds.truncated` disagree about the same copy, which is worse than no observability); `capBytes` reads the exported `RUN_STATE_MAX_SERIALIZED_BYTES` and is **not** the literal `65536` (a copied literal is a second ruler that goes quietly stale when the constant moves — pinned by a source-scanning case, because writing the literal and using the constant are *equal in value today* and no value assertion can tell them apart); `truncated` is the **OR** of two facts, over-cap **or** the engine's own clamp stamp. The second half is not decoration and was not known before the end-to-end test was written: the clamp runs **upstream** of the round record, so a round whose state really was squeezed lands its copy *under* the cap (measured fixture: 128 tools + 128 files + 64 todo items + 1200 CJK semantic characters ⇒ copy 64 893 B against the 65 536 B cap, while `bounds.truncated: true` / `omittedTools: 1`) — so `truncated = bytes > capBytes` alone would be **permanently false** in real runs. The two facts stay separately readable (`bytes` / `runState.bounds`); nothing is merged. **No fact, no key**: with no copy to measure (no `runState`, a non-object copy, or one `JSON.stringify` cannot encode) the whole key is absent and the engine never writes `{bytes:0,truncated:false}` as a stand-in, so absence reads as *unknown*, never as "not truncated". The measurement is taken on `cloneState(roundRunState)` — the object actually written — not on the live original; measuring the original could report a byte count that never reached the disk. Mutations measured (restored afterwards): `capBytes: 65536` ⇒ 9 pass / 1 fail; `truncated: false` ⇒ 6 pass / 4 fail. ⚠ **This slice does not reduce a single byte**: every round still writes a full copy and the ledger total still grows linearly with the round count — that is the next slice of #742, not this one. `runState` content, `bounds` semantics and the `onRound` shape are untouched; nothing in the engine reads `runStateMeta`, so resume and stop gates cannot be affected. The golden capture's additive-key exemption grew by the measured amount (`usage` / `engineUsage` / `runStateMeta` per engine round row, 13 / 12 keys across the two scenarios, still pinned row by row).
+- **轮记录现在会说自己那份 `runState` 副本有多大、有没有被夹断（issue #742，PR #750；合并 fd07d27，第一刀：纯加法）。** 每轮写一份全量 run-state 副本，账本本来就能说两件事（`runState.bounds.maxSerializedBytes`、`runState.bounds.truncated`），却说不出**这一轮的副本花了多少字节**，于是盯着「每轮一份全量副本」这条斜率的宿主无警可报（现网账本实测：500 轮 41 MB）。每条引擎轮记录从此多一个兄弟键 `runStateMeta: { bytes, capBytes, truncated }`，形状照折叠归档上已有的 `foldedPayloadMeta`——那一格正是把*归档*截断变成可见事实的先例，#742 要的就是这个形状。三条口径钉在代码里而不是 prose 里：`bytes` 复用 `serializedBytes`，也就是 `boundRunState` 判 `bounds.truncated` 用的那一句 `Buffer.byteLength(JSON.stringify(value), "utf8")`（两把尺会让 `truncated` 与 `bounds.truncated` 对同一份副本打架，那比没有观测更糟）；`capBytes` 取导出常量 `RUN_STATE_MAX_SERIALIZED_BYTES`，**不是**字面量 `65536`（复制一份字面量就是第二把尺，常量以后调整时它会静默说谎——钉在扫源码那格，因为「写字面量」与「用常量」今天**恰好同值**，任何值断言都分不开）；`truncated` 是**两个事实取或**：超出上限，**或**引擎自己盖的夹断章。后一半不是装饰，也不是先验结论，是写完端到端测试才量出来的：夹断发生在轮记录写点的**上游**，真被挤过的那一轮落盘副本反而**在上限之内**（夹具实测：128 工具 + 128 文件 + 64 条 todo + 1200 字 semantic ⇒ 副本 64 893 B / 上限 65 536 B，同时 `bounds.truncated: true` / `omittedTools: 1`）⇒ 只写 `bytes > capBytes` 会在全真实 run 里**永远为假**。两个事实仍可分开读（`bytes` / `runState.bounds`），没有揉成一个数。**没事实就没这一格**：没有可量的副本（没有 `runState`、副本不是普通对象、`JSON.stringify` 编不了）时整个键缺席，引擎永不写 `{bytes:0,truncated:false}` 充当替身 ⇒ 缺格读成「不知道」，不是「没截断」。量的是 `cloneState(roundRunState)`——真正被写下去的那个对象——而不是活的原件；量原件会报出一个从未上过盘的字节数。变异实测（跑完已还原）：`capBytes: 65536` ⇒ 9 pass / 1 fail；`truncated: false` ⇒ 6 pass / 4 fail。⚠ **本片一个字节也没少**：每轮仍是一份全量副本，账本总量仍随轮数线性增长——那是 #742 的下一刀，不是这一片。`runState` 内容、`bounds` 语义、`onRound` 形状均未动；引擎内不读 `runStateMeta`，resume 与停门判据不可能受影响。金样捕获的新增键豁免面按实测长大（每条引擎轮记录行 `usage` / `engineUsage` / `runStateMeta`，两个场景 13 / 12 个键，仍逐行钉住，一条没合并）。
 - **The engine now publishes a retention tier for every event type it emits (issue #743).**
   `src/loop/event-tiers.js` exports `EVENT_TIERS` (`fact` / `stream` / `derived`), `eventTierOf()`,
   `EVENT_TIER_VALUES` and the three tier names, `HOST_SIDE_EVENT_TYPE_NAMES`, `RUN_TERMINAL_STATUSES`,
@@ -900,7 +903,8 @@
   通过 `flagMentions` 端到端跑在本机不入库的 `docs/tasks/` 临时文件上——旗标塞在 npm 段不红、且同一行的 `--version` 仍在面里，
   塞在 erix 段必红并点名那一行。扫描面覆盖一字未动：切段前 83 次提及，切段后 83 次。
 
-- **The resume crash boundary is derived from the ledger, not from the run snapshot (issue #736).**
+- **The resume crash boundary is derived from the ledger, not from the run snapshot
+  (issue #736, PR #747; merge da35840).**
   `crashSiteRound` — the predicate deciding whether a resume faces a crash site or a normally closed run —
   read only the run snapshot, while #734 had just established that the write which failed **is the snapshot
   itself** (a rejected `checkpoint_before_tool` leaves the previous, older snapshot as the newest readable
@@ -934,7 +938,8 @@
   resume of the same run folds back into the same mid-sequence hole (pinned as-is by a test that must flip
   once the landing-order issue is fixed).
 
-- **恢复的崩溃边界现在从账本推，不从 run snapshot 推（issue #736）。** 判定「这次恢复面对的是崩溃现场还是正常收口」
+- **恢复的崩溃边界现在从账本推，不从 run snapshot 推（issue #736，PR #747；合并 da35840）。**
+  判定「这次恢复面对的是崩溃现场还是正常收口」
   的那格（`crashSiteRound`）过去只读 run snapshot，而 #734 刚刚查实：**失败的那次写正是快照本身**（被拒的
   `checkpoint_before_tool` 让最新可读快照停在更早那一刻）⇒ 探测器跟现场一起消失 ⇒ 既不裁锚点、也不结清尾部 ⇒
   账本里那条已落盘的悬空 `tool_use` 坐在上下文**中段**，而 #421 的「同页合并」纪律（`results.length === 0`）恰好
@@ -1204,8 +1209,8 @@
   (`by construction`, `Nothing can lose`, `Every slot below that anchor is in the ledger`, `resume anchor`,
   `the cap is what makes the elision safe`); into **CN** ⇒ 5 patterns (`按构造`, `就不会丢`, `锚点之前每一格`,
   `恢复锚点`, `封顶正是`); after restoring both ⇒ green.
-- **The run snapshot stops writing two cells nobody reads (issue #735, slice 1).** `persistRunSnapshot`
-  built one payload with four candidate cells; after re-measuring instead of trusting the ticket, two of
+- **The run snapshot stops writing two cells nobody reads (issue #735, PR #744; merge d824dc7, slice 1).**
+  `persistRunSnapshot` built one payload with four candidate cells; after re-measuring instead of trusting the ticket, two of
   them really have no reader. `toolUse` was a **second, independent `cloneState()` call over the same
   source value** as `pendingToolUse` (`cloneState(snapshotPendingToolUse)` written twice — equal content,
   **different objects**, not one call aliased under two names). Its zero-reader evidence is a surface, not
@@ -1327,7 +1332,7 @@
   （`by construction`、`Nothing can lose`、`Every slot below that anchor is in the ledger`、`resume anchor`、
   `the cap is what makes the elision safe`）；塞回 **CN** ⇒ 5 条（`按构造`、`就不会丢`、`锚点之前每一格`、
   `恢复锚点`、`封顶正是`）；还原 ⇒ 绿。
-- **run snapshot 停写两格没有人读的字段（issue #735，切片 1）。** `persistRunSnapshot` 构造的那份
+- **run snapshot 停写两格没有人读的字段（issue #735，PR #744；合并 d824dc7，切片 1）。** `persistRunSnapshot` 构造的那份
   payload 里有 4 格候选冗余，**不按工单口径、改成自己重测**之后只有 2 格真的无人读：`toolUse` 与
   `pendingToolUse` 是**对同一个源值各自调一次 `cloneState()`**（`cloneState(snapshotPendingToolUse)`
   写了两遍）⇒ 内容等值但**是两个对象**，不是「一次调用换个名字」。
@@ -1381,7 +1386,7 @@
 
 
 - **Resume replays the fold summary byte-for-byte wherever the ledger can prove the exact bytes
-  (issue #738, slice 1: purely additive).** `fold-llm` feeds the model `compactedSummary` — the summarizer
+  (issue #738, PR #748; merge aa94463, slice 1: purely additive).** `fold-llm` feeds the model `compactedSummary` — the summarizer
   output **plus** the recovery hint, the size-clamp output and the mechanical fidelity section — while
   `record.foldedSummary.summary` is the **raw** summarizer return, and the resume read side preferred
   `.summary`. So after any fold, the resumed context carried a summary whose bytes were **not** the ones the
@@ -1422,7 +1427,8 @@
   empties it) reds `#462 规划器：裁掉水位线以下的轮` on `plan.applied === true` first, exit 1. Not in this
   slice: tightening the read-side priority — step two, which waits for `byteEqual` to be stably `equal` in
   real ledgers.
-- **续跑在有精确证据的地方逐字回放折叠摘要（issue #738，切片 1：纯加法）。** `fold-llm` 喂给模型的是
+- **续跑在有精确证据的地方逐字回放折叠摘要（issue #738，PR #748；合并 aa94463，切片 1：纯加法）。**
+  `fold-llm` 喂给模型的是
   `compactedSummary`——摘要器原文**加上**恢复提示、尺寸夹断的产物、机械保真节；而
   `record.foldedSummary.summary` 是摘要器的**原始**返回值，续跑读侧偏偏优先 `.summary`。⇒ 只要折过一次，
   续跑上下文里那份摘要的字节就**不是**模型当年看过的那一串。而且没有闸会红：退化的方向是「少喂一层装饰」，
