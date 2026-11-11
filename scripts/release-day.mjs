@@ -32,8 +32,15 @@
 //   finalize   清 `src/**/*.d.ts` → 打附注 tag `v<版本>`（指向**切版提交**，不指向回写提交；依据是
 //              `git blame` 现读的 `package.json` version 行，先例 `v0.30.0`）→ `git push origin main` 与
 //              `git push origin v<版本>`（`origin` 是双推：GitHub + Gitea）→ 两个 URL 各 `git ls-remote` 现验
-//              （不一致就红）→ 再跑一遍 `check:docs` / `check:docs:strict`。**永不 `--force`**：main 有分支
-//              保护，禁 force-push；非快进就让 push 自己失败。
+//              （不一致就红）→ 再跑一遍 `check:docs` / `check:docs:strict`。
+//              **永不 `--force`**：拦住它的是这条纪律自己，不是外部闸门——
+//              main 当前没有分支保护，CI 红目前也拦不住任何合并（闸门实况
+//              现验见 finalize ④ 注释）。真实危险在 `remote.origin.pushurl`：
+//              两条各跑各的（GitHub 在前、Gitea 在后），而 mirror cron
+//              `sync-erix-mirror.sh` 是关着的 ⇒ force-push 会改写 GitHub 上
+//              **已发布**的历史，还可能只推上一侧、另一侧静默落后，
+//              而唯一的探测器是 ⑤ 的 `git ls-remote` 互验——它跑在 push
+//              之后。所以非快进必须让 push 自己失败。
 //
 // ── 为什么脚本不自己 publish（照 AGENTS §4 的坑写死）──────────────────────────────
 //   · npm 12 在 `~/.npm-global/bin/npm`，被 `/usr/bin/npm`（10.x）遮蔽 ⇒ 必须绝对路径，否则 404/401 PUT
@@ -946,7 +953,11 @@ export function runFinalize({
     }
   }
 
-  // ── ④ 双推（`origin` = GitHub + Gitea；永不 --force：main 有分支保护） ──
+  // ── ④ 双推（`origin` = GitHub + Gitea；永不 --force：拦住它的是这条纪律，不是闸门） ──
+  //    闸门实况（全仓**只这一份**抄件，别处一律用散文指到这里）：261111 现验
+  //    `gh api repos/ErixWong/erix-agent/rulesets` ⇒ `[]`（0 条 ruleset），分支保护那一条也回
+  //    404 `Branch not protected`，而同一时刻这个仓的 permissions.admin 是 true ⇒ 404 不是读不到，
+  //    是真没有闸门。CI 同样不拦合并。所以没有任何外力挡得住 force。
   if (dry) {
     log(`finalize ④ （--dry）会推 \`origin main\` 与 \`origin ${tag}\`（不 force）`);
   } else {
@@ -955,7 +966,11 @@ export function runFinalize({
       const pushed = run(["git", "push", "origin", ref], { cwd: root, env });
       if (pushed.status !== 0) {
         log(`finalize ④ → **红**：\`git push origin ${ref}\` exit ${pushed.status}`
-          + "（非快进就让 push 自己失败——main 有分支保护，脚本不许 force）");
+          + "（非快进 ⇒ push 自己失败。**没有**分支保护在拦你：main 当前没有分支保护，CI 红也拦不住合并，"
+          + "红是因为本脚本自己不带 `--force`。下一步：`git fetch` 看清远端多出来的提交 → rebase → 重跑 finalize。"
+          + "别拿 force 兜：两条 push URL 各跑各的（GitHub 在前、Gitea 在后）而 mirror cron 关着，"
+          + "force 会改写 GitHub 上**已发布**的历史，还可能只推上一侧、另一侧静默落后，"
+          + "而唯一的探测器是 ⑤ 的 `git ls-remote` 互验——它跑在 push 之后。");
         return EXIT.RED;
       }
     }
@@ -2248,7 +2263,7 @@ function runSelfTest() {
         "⑤ 对照组双推了两个 ref（main + tag），且没有 `--force`",
         `⑤ 双推的 argv 不对：${agreed.calls.filter((l) => l.startsWith("git push")).join(" | ")}`);
       expect(!agreed.calls.some((line) => line.startsWith("git push") && line.includes("--force")),
-        "⑤ 任何 `git push` 都没带 `--force`（main 有分支保护）",
+        "⑤ 任何 `git push` 都没带 `--force`（拦它的是脚本这条纪律，不是分支保护）",
         `⑤ 出现了 force-push：${agreed.calls.filter((l) => l.includes("--force")).join(" | ")}`);
     } finally {
       rmSync(tree, { recursive: true, force: true });
