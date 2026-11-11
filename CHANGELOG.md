@@ -450,6 +450,29 @@
 - **Changed (issue #769 R10, with #453 / #537 / #543): the `readFile` line-capacity tier moved 3,700 → 3,650, because the whole-tree minimum changed hands — `src/loop/resume-manager.js` is now the file that fits the fewest lines (3,696), replacing `src/loop/pending-tool-result.js` (3,708, byte-for-byte unchanged this round).** Measured with the test's own `measureReadLineCapacity` on this tree, not transcribed from anywhere: `resume-manager.js` 74,603 B / 1,052 lines ⇒ 70.9154 bytes per line ⇒ **3,696** lines at the default 262,144-byte budget. The cause is this branch's own, not a defect in `readFile`: the recovery-row channel of #769 and main's #754 both wrote their Chinese commentary into that one file, and average bytes per line is the only thing the byte budget is divided by — 70.6785 → 70.9154 is enough to overtake the retiring floor. Nothing was relaxed to make this pass: #543's tier tightness is zero-tolerance and untouched (`3,650 ≤ 3,696 < 3,700`, and the promise still lands on a 50-line boundary), the promise was **not** written up to 3,700, no `measured minimum N` was added back to the model-facing text (#543 pins its absence with a `doesNotMatch`), and no case was deleted or skipped. Synced in one slice, because a half-sync is exactly the failure #453 exists to catch: both tier numbers in the description (`fewest ≥` and `no file in those three trees reads fewer than`) plus that tier's average line width (70.0 → 70.9, both same-digit-count replacements), the `fewest` role record (all five values re-measured here), and the fixed sample list — **unchanged**, since the new floor was already one of those 83 paths and is now the sample minimum and the whole-tree minimum at once, and #275's coupling stays one-directional (nothing deleted). Two consequences of touching the text itself, both re-measured rather than guessed: the note added above the description grew `src/tools/file-tools.js` to 133,104 B / 2,324 lines ⇒ its own capacity 4,637 → **4,577** (so `this tool's own source fits` moved with it, the same precedent #537 set), and the `densest` / `median` / `most` anchors were re-measured and none crossed its tolerance (`median` 6,157 and `most` 9,407 byte-identical to the record, `densest` −0.45% bytes / +0.46% capacity / −0.40 pt CJK), so none was refreshed. The CHANGELOG pair floor in `test/static-guards.test.js` is re-taken from the guard's own report on this tree, not computed as 34 + 1.
 - **变更（issue #769 R10，同 #453 / #537 / #543）：`readFile` 的行数容量档位从 3,700 → 3,650，原因是全树最小值**换了人**——现任是 `src/loop/resume-manager.js`（一次装 3,696 行），离任是 `src/loop/pending-tool-result.js`（3,708，本轮逐字未动）。** 数字全部由测试自己的 `measureReadLineCapacity` 在这棵树现算（不是抄来的）：`resume-manager.js` 74,603 B / 1,052 行 ⇒ 均行 70.9154 字节 ⇒ 默认 262,144 字节额度下装 **3,696** 行。成因就是本支自己，不是 `readFile` 坏了：#769 的恢复行通道与主干 #754 都把中文注释写进了这一个文件，而均行字节正是字节额度唯一的分母——70.6785 → 70.9154 就足以超过离任。**判据一条都没放宽**：#543 的档位紧致性零容差一字未动（`3,650 ≤ 3,696 < 3,700`，承诺仍落在 50 行档边界上）、承诺**没**写高到 3,700、面向模型的文案里也没补 `measured minimum N`（#543 用 `doesNotMatch` 钉着它的缺席）、没删例也没 skip。四处同片同步，因为半截同步正是 #453 存在的理由：描述里两个档位数字（`fewest ≥` 与 `no file in those three trees reads fewer than`）加该档的均行字节（70.0 → 70.9，两处都是同位数替换）、测试里 `fewest` 角色行的五个记录值，以及写死样本清单——**清单零增删**：新 floor 本来就在那 83 个路径里，现在它同时是样本最小值与全树最小值，而 #275 的耦合方向仍是单向包含（没删一条）。两个**改文案自身带来的**后果都是现测而不是猜的：描述上方新加的注把 `src/tools/file-tools.js` 长到 133,104 B / 2,324 行 ⇒ 它自己的容量 4,637 → **4,577**（所以 `this tool's own source fits` 跟着刷，先例就是 #537 那一刷把它从 4,784 刷到 4,750）；`densest` / `median` / `most` 三个锚点当场复测都没越界故一列没刷（`median` 6,157 与 `most` 9,407 与记录**逐字相同**，`densest` −0.45% 字节 / +0.46% 容量 / −0.40pt CJK）。`test/static-guards.test.js` 的配对地板取守卫在这棵树上**自己报出的**实测值，不是 34 + 1。
 
+- **The 0.31.0 cut lands inside this window, with the §4 the docs gate reads (issue #698, PR #707;
+  merge 54a2d52).** This pair is booked here for one mechanical reason and it does not re-tell the
+  `[0.31.0]` entry above: the release commit `ecc95603` is **not** an ancestor of this merge's first
+  parent (the `v0.31.0` tag sits on that commit, reached only through the second parent), so
+  `git diff 54a2d52^1 54a2d52` carries the version face into `main` **inside** the 0.32.0 range, and
+  #691's gate books a merge by what its first-parent diff touches. The public-surface bytes it moves:
+  `package.json` `"version": 0.30.0 → 0.31.0`; the release line of both READMEs (one line in
+  `README.md` — `Current release: **v0.31.0** (2026-11-03)` — and two in `README_cn.md`);
+  `docs/requirements.md` and `docs/requirements_cn.md`, each with the same three claims moved
+  0.30.0 → 0.31.0 (the header sentence, §4's opening sentence, and the `v0.9.0–v0.31.0` row of the
+  phase table). What is missing from this section is the **name**, not the story — which is exactly
+  what issue #691 exists to catch (issue #686's post-mortem measured 48 unwritten merges where a
+  human reading by topic found 4).
+- **0.31.0 那一刀落在本窗口里，连同门禁要读的那一节 §4（issue #698，PR #707；合并 54a2d52）。**
+  这对条目进这一节的理由只有一个机械事实，它不复述上面 `[0.31.0]` 那条：切版提交 `ecc95603` 不是
+  本次合并第一父的祖先（tag `v0.31.0` 落在那一笔上，只能经第二父到达），于是
+  `git diff 54a2d52^1 54a2d52` 在 0.32.0 区间内把版本面送进 `main`，而 #691 那道闸按「第一父 diff 碰到
+  什么」算账。它挪动的公开面字节：`package.json` 的 `"version": 0.30.0 → 0.31.0`；两份 README 的发布行
+  （`README.md` 一行 —— `Current release: **v0.31.0** (2026-11-03)` —— 与 `README_cn.md` 两行）；
+  `docs/requirements.md` 与 `docs/requirements_cn.md` 各自同三处声称 0.30.0 → 0.31.0（开头那句、§4
+  开头那句、阶段表里 `v0.9.0–v0.31.0` 那一行）。本段缺的是那个**号**，不是那段叙述——而这正是 issue #691
+  存在的理由（issue #686 的复盘实测：48 个没写到的合并，人按主题只找出 4 个）。
+
 ### Added
 - **Added (issue #765, task 261109-08): the 0.32.0 host upgrade guide, in both languages and on the publish surface.** `docs/host-upgrade-guide-0.32.0.md` and `docs/host-upgrade-guide-0.32.0_cn.md` cover, against source rather than changelog wording: the pre-261021 archives that no longer resume (#754), the four run-snapshot cells this line stopped writing and the `messages`-residue semantics (#735, #770, #767), the 64 KiB project-instructions cap (#721), the optional store capabilities and exactly what skipping each one costs (`loadRawRows` #714, the recovery-row trio and `recovery_rows_unreadable` #769, the contract suite's honest third parameter #739), `appendUserTurn`'s `unsettledToolUses` with its four reasons and the `round`-type trap that turns `2` into `"2"` (#765), every new event/reason/detail value including the one documented detail this version cannot currently emit, the additive record fields, the `--effort` precedence that is deliberately opposite to `--model` (#798), and the extension face kept in its own section. Both files are added to `package.json` `files` and to both README publish lists; the guide is written ahead of the version cut, the way 0.31.0's was (`79173606`).
 - **变更（issue #765，工单 261109-08）：0.32.0 宿主升级指南，中英两份，且进了发布面。** `docs/host-upgrade-guide-0.32.0.md` 与 `docs/host-upgrade-guide-0.32.0_cn.md` 按源码而非 changelog 措辞覆盖：不再能续跑的 pre-261021 归档（#754）、这条线停写的四格 run snapshot 载荷与 `messages` 只交残余的语义（#735、#770、#767）、64 KiB 项目约定上限（#721）、各项可选 store 能力以及跳过每一项的**确切**代价（`loadRawRows` #714、恢复行三件套与 `recovery_rows_unreadable` #769、契约套件那个诚实的第三参数 #739）、`appendUserTurn` 的 `unsettledToolUses` 与它的四条拒写原因、以及把 `2` 变成 `"2"` 的那个 `round` 类型坑（#765）、每一个新增的 event/reason/detail 取值（含本版**写进契约但当前发不出来**的那一个 detail）、纯加法的记录字段、与 `--model` 故意相反的 `--effort` 优先级（#798），扩展面单列一节。两份文件都加进了 `package.json` 的 `files` 与两份 README 的发布清单；指南写在切版之前，与 0.31.0 那份同法（`79173606`）。
@@ -659,6 +682,51 @@
   红并点名「找不到版本节」，不静默放过），日期形状用 `docs-drift-check.mjs` 自己那一条，版本号从
   `package.json` 现读而不是写死。`--self-test` 新增三态与三条反向证（按判词给的形状搬运 ⇒ 转绿、顶部标题被改名
   ⇒ 红、版本节被拿掉 ⇒ 红变未判定），变异没落上按失败算而不是按绿算。
+
+- **`erix chat` and `erix repl` read `<cwd>/AGENTS.md` and inject it into the system prompt (issue #716,
+  PR #719; merge 1ec1367).** New `src/project-instructions.js` exports
+  `discoverProjectInstructions({ cwd, maxBytes })`, `PROJECT_INSTRUCTIONS_FILENAME = "AGENTS.md"` and
+  `PROJECT_INSTRUCTIONS_MAX_BYTES = 32 * 1024` — 32 KiB **as shipped here**; `PROJECT_INSTRUCTIONS_MAX_BYTES`
+  reaching 64 KiB is issue #721's slice, not this one. The discovery face is one layer deep on purpose:
+  it opens `path.resolve(cwd)` + `AGENTS.md` only, never walks parent directories and never touches
+  `home` (the home tier is issue #717, still undecided), and `cwd` is mandatory — a non-string or blank
+  `cwd` throws a `TypeError`, because the library never guesses a path (a wrong guess presents as "found
+  nothing", the hardest kind of wrong to see). No file ⇒ an **empty discovery, not a throw** (most
+  directories have no `AGENTS.md`; throwing would stop the CLI from starting); `ENOENT` / `ENOTDIR` take
+  that path, while anything else that exists but cannot be used (a directory, `EACCES`) is reported in
+  `skipped[]` with its `code`, so the notice says *unavailable* rather than claiming there are no
+  project instructions. Over-limit content is cut at a **UTF-8 code-point boundary** — a half
+  multi-byte character would put U+FFFD in front of the model, which is fabricated content, not a
+  truncation. New `bin/system-prompt.js` holds `buildCliSystemPrompt`, the assembler both edges now
+  share; before this each of `bin/cli.js` and `bin/repl.js` built its own prompt in place
+  (`buildCliToolsSystemPrompt` plus the archive notice and the MCP notice, written out twice), and the
+  only difference left between them is `planDirective`, chat's "state the plan in ≤30 characters
+  first" line. The convention section is appended last and a 0-byte file adds **zero** bytes to the
+  prompt ("injected 0 bytes" is a stderr fact, not a licence to pad the prompt), and the stderr notice
+  has two shapes fixed verbatim: `[项目约定] 已注入 <n> 个文件 / <bytes> 字节 (<paths>)` and
+  `[项目约定] 未发现 AGENTS.md` — stderr because the transcript never persists the system prompt, so
+  without that line nobody could show the injection happened. Injection is **on by default**; the new
+  `--no-agents` turns it off on both edges with the same default and the same `seenOptions` duplicate
+  check as `--no-todo`, and both READMEs gained the module-map row for `project-instructions.js` and
+  the flag in both usage lines.
+- **`erix chat` 与 `erix repl` 读 `<cwd>/AGENTS.md` 并把它拼进系统提示（issue #716，PR #719；合并
+  1ec1367）。** 新增 `src/project-instructions.js`，导出 `discoverProjectInstructions({ cwd, maxBytes })`、
+  `PROJECT_INSTRUCTIONS_FILENAME = "AGENTS.md"` 与 `PROJECT_INSTRUCTIONS_MAX_BYTES = 32 * 1024`——这里是
+  **按发货那一刻的** 32 KiB 记的，抬到 64 KiB 是 issue #721 那一刀，不是这一刀。发现面故意只做一层：
+  它只开 `path.resolve(cwd)` + `AGENTS.md`，不上溯父目录、不碰 `home`（home 那一层是 issue #717，尚未
+  裁决），且 `cwd` 必填——非字符串或空白 `cwd` 抛 `TypeError`，因为库内从不猜路径（猜错的表现是「什么都没
+  发现」，最难查的那种坏）。没有文件 ⇒ **空发现，不抛**（绝大多数目录没有 `AGENTS.md`，抛异常会让 CLI 起
+  不来）；`ENOENT` / `ENOTDIR` 走那条路，而「路径在但用不了」（目录、`EACCES` 之类）带着 `code` 进
+  `skipped[]`，于是留痕行说的是「不可用」，不会宣称「这个目录没有项目约定」。超限正文按 **UTF-8 码点
+  边界**截断——切在多字节字符中间会把 U+FFFD 摆到模型面前，那是伪造内容，不是截断。新增
+  `bin/system-prompt.js`，里面是两条边现在共用的 `buildCliSystemPrompt`；此前 `bin/cli.js` 与
+  `bin/repl.js` 都在原地各拼自己的提示词（`buildCliToolsSystemPrompt` 加归档留痕加 MCP 留痕，抄了两
+  份），修完只剩 `planDirective` 一处差别（chat 末尾那句「每轮先用 ≤30 字说明计划」）。约定段拼在最末，
+  而 0 字节的文件让提示词**一个字节都不许多**（「已注入 0 字节」是 stderr 的事实，不是往提示词里塞废话的
+  许可），stderr 留痕行两种形状逐字固定：`[项目约定] 已注入 <n> 个文件 / <字节数> 字节 (<路径列表>)` 与
+  `[项目约定] 未发现 AGENTS.md`——走 stderr 是因为 transcript 从不落 system，没有这一行就没人能证明注入真
+  的发生了。注入**默认开**，新加的 `--no-agents` 在两条边都关掉它，缺省与去重口径与 `--no-todo` 完全一致
+  （同一张 `seenOptions`），两份 README 都补了 `project-instructions.js` 的模块地图行与两份用法行里的旗标。
 
 ### Fixed
 
@@ -906,8 +974,9 @@
   而版本面由自测合成：要切的那一版取种子里**已发布段**的最高一版，上一版取低于它的最高已发布段，
   高于它的段整段拿掉，段首「未发布」形状走 `docs-drift-check --sync` 而不是手改字节。另有两例专门变异这些
   夹具（把在飞段整段拿掉 / 把夹具 `package.json` 抬到高于所有段），它们必须**自己**红并点名落点缺失。
-- **A `tool_use` stranded in the middle of the ledger no longer bricks the run (issue #421, with the
-  tail settled in #394 and the write side in #414 / #420 / #424 / #430).** The engine requires every
+- **A `tool_use` stranded in the middle of the ledger no longer bricks the run (issue #421, PR #712;
+  merge 39427f1 — with the tail settled in #394 and the write side in #414 / #420 / #424 / #430).**
+  The engine requires every
   `tool_use` of an assistant message to be settled by the **immediately following** user message with
   exactly the same id set (`src/messages/rounds.js#validateMessages`); a ledger that breaks this fails
   locally as `invalid_messages` with **zero HTTP requests**, and that `runId` never starts again. The
@@ -928,8 +997,8 @@
   would land in the wrong message (issue #714 closes that gap for a store that exposes its raw rows;
   see the entry below).
 - **A finished round's mid-sequence stub now reaches the ledger too: the store gains an optional
-  raw-row probe (issue #714, closing the boundary stated in the #421 entry above; the anchor
-  discipline is #430's).** Folding is a read-side transform: an already-finished round's
+  raw-row probe (issue #714, PR #723; merge 5c0db9d — closing the boundary stated in the #421 entry
+  above; the anchor discipline is #430's).** Folding is a read-side transform: an already-finished round's
   `kind: "message"` rows are absorbed into the round carrier, so `load()` no longer exposes the
   aggregated message's first-slice row and the stub had no `partOf` target — the host's own `load()`
   therefore kept folding a ledger that can never pass `validateMessages`, and nothing in the archive
@@ -944,8 +1013,8 @@
   emits no `persistence_capability_degraded` event because the existing channel already reports it. No
   new `executionStatus` value, no change to the tail (`control_capture`) path, no rewriting of folded
   history.
-- **账本中段悬空的 `tool_use` 不再让 run 永久起不来（issue #421，尾部在 #394、写侧在 #414 / #420 /
-  #424 / #430 已经修过）。** 引擎要求一条 assistant 消息里的每个 `tool_use` 都由**紧接其后**的那条 user
+- **账本中段悬空的 `tool_use` 不再让 run 永久起不来（issue #421，PR #712；合并 39427f1——尾部在 #394、
+  写侧在 #414 / #420 / #424 / #430 已经修过）。** 引擎要求一条 assistant 消息里的每个 `tool_use` 都由**紧接其后**的那条 user
   消息以**一模一样**的 id 集合结清（`src/messages/rounds.js#validateMessages`）；账本违反这一条就在本地
   以 `invalid_messages` 失败、**0 次 HTTP**，而且那个 `runId` 再也起不来。尾部与写侧都已经修过，这是剩下
   的那一半：恢复时、任何模型请求发出之前，每个「**账本里没有任何一行结清过**」的中段 `tool_use` 都补一张
@@ -959,8 +1028,8 @@
   轮载体行时，折叠后的 `load()` 里没有 `partOf` 目标——那一格只修本次上下文，引擎如实报
   `resume_journal_skipped`，而不是写一行会落进错消息的分片（issue #714 给「能交出原始行的 store」
   补上了这条闭合路径，见下一条）。
-- **已完成轮的中段补桩现在也能落账：store 面多了一个可选的原始行读口（issue #714，补的是上一条 #421
-  写明的边界，锚点纪律仍是 #430 的）。** 折叠是读侧变换：已完成轮的 `kind: "message"` 行被吸进轮载体，
+- **已完成轮的中段补桩现在也能落账：store 面多了一个可选的原始行读口（issue #714，PR #723；合并 5c0db9d，
+  补的是上一条 #421 写明的边界，锚点纪律仍是 #430 的）。** 折叠是读侧变换：已完成轮的 `kind: "message"` 行被吸进轮载体，
   于是 `load()` 不再暴露那条聚合消息的首片行，桩也就没有 `partOf` 目标——宿主自己的 `load()` 因此永远
   折出一份过不了 `validateMessages` 的账本，而档案里**没有任何痕迹**记着「补过桩」。引擎现在读 store 上
   **可选**的 `loadRawRows(runId)`——`load()` 读到的、尚未折叠的行（同一顺序、同一内容；与 `load()` 同一条
@@ -970,7 +1039,8 @@
   行为（桩只修本次上下文、发一条 `resume_journal_skipped`）而不是失败，且这个缺席**不发**
   `persistence_capability_degraded`（既有通道已经报过了）。不新增 `executionStatus` 值、不动尾部
   （`control_capture`）那条路、不改写折叠档案。
-- **Anchoring no longer treats a round whose carrier already carries its body as stub-able (issue #729).**
+- **Anchoring no longer treats a round whose carrier already carries its body as stub-able
+  (issue #729, PR #732; merge 06bc023).**
   The optional raw-row probe from #714 used to anchor the stub on a first-slice row even when the host keeps
   **both** the folded round carrier (the row with `messages`) and that round's original message rows — the
   very shape #401 R3 exists for. Once the stub lands, the fold layer's R3 guard (carrier body vs the body
@@ -986,7 +1056,8 @@
   "read side only" wording with the factual one: it is the same read path as `load()` (including the tail
   half-line repair, so a read **can** rewrite bytes on disk); what it does not add is a write API or a new
   `load()` shape.
-- **定锚不再把「该轮载体已经带着正文」的轮次当成可落桩的轮次 (issue #729).** #714 给的那个可选原始行
+- **定锚不再把「该轮载体已经带着正文」的轮次当成可落桩的轮次（issue #729，PR #732；合并 06bc023）。**
+  #714 给的那个可选原始行
   读口在宿主把**折好的轮载体**（带 `messages` 那一行）与那一轮的**原始消息行**两份都留时（#401 R3 存在
   就是为了这个形状）会把桩锚到首片行上，而桩一落账，折叠层的 R3 守卫（载体现有正文 vs 从消息行折出来的
   正文逐字段深比较）就判不等，于是走 `attached` 分支把**整轮正文再拼一遍**——实测 `load()` 折出 3 条变 5
@@ -1022,7 +1093,7 @@
   于是变异锚点是**夹具这一轮刚写下的字符串**：发版再也红不到它们。与 #713（那件工具的版本面也是自己合成）
   同族。例数仍是 199：没删例、没跳过、没放宽断言，且「已发布面」与「合成发版窗口面」两副版本面上都绿。
 - **The project-instruction injection cap moves to 64 KiB, and a truncated page now says so inside the
-  injected text (issue #721).** The cap was `PROJECT_INSTRUCTIONS_MAX_BYTES = 32 * 1024` while the length
+  injected text (issue #721, PR #740; merge f6c2566).** The cap was `PROJECT_INSTRUCTIONS_MAX_BYTES = 32 * 1024` while the length
   gate (`scripts/agents-directive-scan.mjs`'s `LENGTH_BUDGETS`) lets this repository's page grow to 33,792
   bytes — so a page the length gate called legal did not fit the injection face: the hot page measures
   32,698 bytes, i.e. **70 bytes of headroom**, and 71 more bytes would have cut its tail off silently while
@@ -1040,7 +1111,7 @@
   aspiration. The `--no-agents` entry in the CLI help text (`bin/cli.js`, what `erix --help` /
   `erix chat --help` print) now states 64 KiB and says the declaration exists; the repl help lists the
   flag without the byte limit, exactly as before.
-- **项目约定注入上限抬到 64 KiB，被截断的一页现在在**注入正文里**自己说明（issue #721）。** 上限原是
+- **项目约定注入上限抬到 64 KiB，被截断的一页现在在**注入正文里**自己说明（issue #721，PR #740；合并 f6c2566）。** 上限原是
   `PROJECT_INSTRUCTIONS_MAX_BYTES = 32 * 1024`，而长度闸（`scripts/agents-directive-scan.mjs` 的
   `LENGTH_BUDGETS`）允许本仓这一页长到 33,792 字节——闸说合法的正文注入面装不下：热层实测 32,698 字节，
   **余量 70 字节**，再长 71 字节就会静默切尾而闸一路绿。「两道闸互相不知道」就是缺陷本体。64 KiB 是算术不是
