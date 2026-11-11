@@ -301,7 +301,7 @@
   `optionalCapabilities`，契约里两参调用写法照旧可用。契约的 `transcript-store.js` 清单行改为现取数
   （基点实测 27 条 vs 原登记的 22 条——本片之前就已失真——加上收尾用例是 28 条）。
 - **No remaining prompt site tells the model to look up notes unless there are notes to look up
-  (issue #746, branch `fix-261107-10-prompt-note-evidence`).** #741 gated exactly two sites and its own
+  (issue #746, PR #756; merge 47b69bf, branch `fix-261107-10-prompt-note-evidence`).** #741 gated exactly two sites and its own
   entry says so; the other model-visible strings kept issuing the same unconditional order — "first
   `note_list`, then `note_read`" — under `--no-notes` / `ERIX_NO_NOTES=1`, where those tools are not on
   the surface at all, and even with notes assembled they reported "I do not know whether anything was
@@ -388,7 +388,8 @@
   so every existing consumer sees the previous shape byte-for-byte. Out of scope per the issue's decision
   comment: mandatory “conclusions / ruled-out paths” sections in the substitute, a hard “call `note_take`
   first” instruction, and any engine-side auto-note mechanism — the engine still writes nothing.
-- **其余提示位不再无条件教模型去查笔记（issue #746，分支 `fix-261107-10-prompt-note-evidence`）。**
+- **其余提示位不再无条件教模型去查笔记（issue #746，PR #756；合并 47b69bf，分支
+  `fix-261107-10-prompt-note-evidence`）。**
   #741 只接了两处，它自己那条也这么写；其余模型可见文本仍旧照发同一条命令——「先用 `note_list` 查找，
   再用 `note_read` 读取」——而 `--no-notes` / `ERIX_NO_NOTES=1` 下这些工具根本不在场上；即便装了笔记，
   那句也把「我不知道有没有记录」报成了「有记录可查」。工单点名的六处，外加它坐标没覆盖到的一面（见工作
@@ -455,7 +456,7 @@
 
 - **The 0.31.0 cut lands inside this window, with the §4 the docs gate reads (issue #698, PR #707;
   merge 54a2d52).** This pair is booked here for one mechanical reason and it does not re-tell the
-  `[0.31.0]` entry above: the release commit `ecc95603` is **not** an ancestor of this merge's first
+  `[0.31.0]` entry below: the release commit `ecc95603` is **not** an ancestor of this merge's first
   parent (the `v0.31.0` tag sits on that commit, reached only through the second parent), so
   `git diff 54a2d52^1 54a2d52` carries the version face into `main` **inside** the 0.32.0 range, and
   #691's gate books a merge by what its first-parent diff touches. The public-surface bytes it moves:
@@ -463,17 +464,33 @@
   `README.md` — `Current release: **v0.31.0** (2026-11-03)` — and two in `README_cn.md`);
   `docs/requirements.md` and `docs/requirements_cn.md`, each with the same three claims moved
   0.30.0 → 0.31.0 (the header sentence, §4's opening sentence, and the `v0.9.0–v0.31.0` row of the
-  phase table). What is missing from this section is the **name**, not the story — which is exactly
-  what issue #691 exists to catch (issue #686's post-mortem measured 48 unwritten merges where a
-  human reading by topic found 4).
+  phase table). The same merge is also what lands §4 of the two 0.31.0 guides: the single paragraph
+  claiming "everything else on the input surface" is replaced by per-cell rows (40 added lines in the
+  EN half, 29 in the CN half) for the six surfaces the docs gate names — options, defaults, observer
+  events, diagnostic fields, on-disk formats, final payload — each row naming the members it covers,
+  all six saying **unchanged**, plus a closing row for the notes tool surface, the file tools, the
+  delegation bookkeeping modules, the provider protocol helpers and the zero-dependency rule. That
+  direction has the version's own truth behind it (the delivery report measures 28 distinct backticked
+  names in the `[0.31.0]` section, **0** of them inside any of the six cells), and the six cell ids,
+  both language name sets and both marker regexes were read out of `SURFACE_CELLS` in
+  `scripts/docs-drift-check.mjs` rather than hand-copied (`delivery/698-guide-031-unchanged.md`).
+  What was missing from this section is the **name**, not the story — which is exactly what issue #691
+  exists to catch (issue #686's post-mortem measured 48 unwritten merges where a human reading by
+  topic found 4).
 - **0.31.0 那一刀落在本窗口里，连同门禁要读的那一节 §4（issue #698，PR #707；合并 54a2d52）。**
-  这对条目进这一节的理由只有一个机械事实，它不复述上面 `[0.31.0]` 那条：切版提交 `ecc95603` 不是
+  这对条目进这一节的理由只有一个机械事实，它不复述下面 `[0.31.0]` 那条：切版提交 `ecc95603` 不是
   本次合并第一父的祖先（tag `v0.31.0` 落在那一笔上，只能经第二父到达），于是
   `git diff 54a2d52^1 54a2d52` 在 0.32.0 区间内把版本面送进 `main`，而 #691 那道闸按「第一父 diff 碰到
   什么」算账。它挪动的公开面字节：`package.json` 的 `"version": 0.30.0 → 0.31.0`；两份 README 的发布行
   （`README.md` 一行 —— `Current release: **v0.31.0** (2026-11-03)` —— 与 `README_cn.md` 两行）；
   `docs/requirements.md` 与 `docs/requirements_cn.md` 各自同三处声称 0.30.0 → 0.31.0（开头那句、§4
-  开头那句、阶段表里 `v0.9.0–v0.31.0` 那一行）。本段缺的是那个**号**，不是那段叙述——而这正是 issue #691
+  开头那句、阶段表里 `v0.9.0–v0.31.0` 那一行）。同一笔合并也落下 0.31.0 两份指南的 §4：原先那句
+  「其余输入面一个都没动」的散文被换成逐格说的行（英文半边新增 40 行、中文半边 29 行），覆盖门禁点名的
+  六面——选项、默认值、观察者事件、诊断字段、磁盘格式、终局载荷——每格点名自己覆盖哪些成员，六格全部写
+  **不变**，末尾再加一行 notes 工具面、文件工具、delegation 记账模块、各 provider 协议助手与零依赖规则。
+  这个方向有本版真值作证（交付报告实测 `[0.31.0]` 段里 28 个不同的反引号名字，落进六格的是 **0 个**），
+  而六格的 id、中英格名与标记正则都是从 `scripts/docs-drift-check.mjs` 的 `SURFACE_CELLS` 现读的，
+  没手抄（`delivery/698-guide-031-unchanged.md`）。本段缺的是那个**号**，不是那段叙述——而这正是 issue #691
   存在的理由（issue #686 的复盘实测：48 个没写到的合并，人按主题只找出 4 个）。
 
 ### Added
@@ -579,7 +596,8 @@
 
 - **A round record now says how big its own `runState` copy is, and whether that copy was truncated (issue #742, PR #750; merge fd07d27, first slice: purely additive).** Every round writes a full run-state copy, and the ledger could already say two things about its size (`runState.bounds.maxSerializedBytes`, `runState.bounds.truncated`) but not **how many bytes** this round's copy costs, so a host watching the slope of "one full copy per round" (measured on a production ledger: 41 MB across 500 rounds) had nothing to alert on. Each engine round record now carries a sibling key `runStateMeta: { bytes, capBytes, truncated }`, shaped like the `foldedPayloadMeta` that already sits on the fold archive — that cell is exactly the precedent which made *archive* truncation visible, and the reason #742 asked for the same shape here. Three rules are pinned in code rather than prose: `bytes` reuses `serializedBytes`, i.e. the same `Buffer.byteLength(JSON.stringify(value), "utf8")` that `boundRunState` uses to decide `bounds.truncated` (two rulers would let `truncated` and `bounds.truncated` disagree about the same copy, which is worse than no observability); `capBytes` reads the exported `RUN_STATE_MAX_SERIALIZED_BYTES` and is **not** the literal `65536` (a copied literal is a second ruler that goes quietly stale when the constant moves — pinned by a source-scanning case, because writing the literal and using the constant are *equal in value today* and no value assertion can tell them apart); `truncated` is the **OR** of two facts, over-cap **or** the engine's own clamp stamp. The second half is not decoration and was not known before the end-to-end test was written: the clamp runs **upstream** of the round record, so a round whose state really was squeezed lands its copy *under* the cap (measured fixture: 128 tools + 128 files + 64 todo items + 1200 CJK semantic characters ⇒ copy 64 893 B against the 65 536 B cap, while `bounds.truncated: true` / `omittedTools: 1`) — so `truncated = bytes > capBytes` alone would be **permanently false** in real runs. The two facts stay separately readable (`bytes` / `runState.bounds`); nothing is merged. **No fact, no key**: with no copy to measure (no `runState`, a non-object copy, or one `JSON.stringify` cannot encode) the whole key is absent and the engine never writes `{bytes:0,truncated:false}` as a stand-in, so absence reads as *unknown*, never as "not truncated". The measurement is taken on `cloneState(roundRunState)` — the object actually written — not on the live original; measuring the original could report a byte count that never reached the disk. Mutations measured (restored afterwards): `capBytes: 65536` ⇒ 9 pass / 1 fail; `truncated: false` ⇒ 6 pass / 4 fail. ⚠ **This slice does not reduce a single byte**: every round still writes a full copy and the ledger total still grows linearly with the round count — that is the next slice of #742, not this one. `runState` content, `bounds` semantics and the `onRound` shape are untouched; nothing in the engine reads `runStateMeta`, so resume and stop gates cannot be affected. The golden capture's additive-key exemption grew by the measured amount (`usage` / `engineUsage` / `runStateMeta` per engine round row, 13 / 12 keys across the two scenarios, still pinned row by row).
 - **轮记录现在会说自己那份 `runState` 副本有多大、有没有被夹断（issue #742，PR #750；合并 fd07d27，第一刀：纯加法）。** 每轮写一份全量 run-state 副本，账本本来就能说两件事（`runState.bounds.maxSerializedBytes`、`runState.bounds.truncated`），却说不出**这一轮的副本花了多少字节**，于是盯着「每轮一份全量副本」这条斜率的宿主无警可报（现网账本实测：500 轮 41 MB）。每条引擎轮记录从此多一个兄弟键 `runStateMeta: { bytes, capBytes, truncated }`，形状照折叠归档上已有的 `foldedPayloadMeta`——那一格正是把*归档*截断变成可见事实的先例，#742 要的就是这个形状。三条口径钉在代码里而不是 prose 里：`bytes` 复用 `serializedBytes`，也就是 `boundRunState` 判 `bounds.truncated` 用的那一句 `Buffer.byteLength(JSON.stringify(value), "utf8")`（两把尺会让 `truncated` 与 `bounds.truncated` 对同一份副本打架，那比没有观测更糟）；`capBytes` 取导出常量 `RUN_STATE_MAX_SERIALIZED_BYTES`，**不是**字面量 `65536`（复制一份字面量就是第二把尺，常量以后调整时它会静默说谎——钉在扫源码那格，因为「写字面量」与「用常量」今天**恰好同值**，任何值断言都分不开）；`truncated` 是**两个事实取或**：超出上限，**或**引擎自己盖的夹断章。后一半不是装饰，也不是先验结论，是写完端到端测试才量出来的：夹断发生在轮记录写点的**上游**，真被挤过的那一轮落盘副本反而**在上限之内**（夹具实测：128 工具 + 128 文件 + 64 条 todo + 1200 字 semantic ⇒ 副本 64 893 B / 上限 65 536 B，同时 `bounds.truncated: true` / `omittedTools: 1`）⇒ 只写 `bytes > capBytes` 会在全真实 run 里**永远为假**。两个事实仍可分开读（`bytes` / `runState.bounds`），没有揉成一个数。**没事实就没这一格**：没有可量的副本（没有 `runState`、副本不是普通对象、`JSON.stringify` 编不了）时整个键缺席，引擎永不写 `{bytes:0,truncated:false}` 充当替身 ⇒ 缺格读成「不知道」，不是「没截断」。量的是 `cloneState(roundRunState)`——真正被写下去的那个对象——而不是活的原件；量原件会报出一个从未上过盘的字节数。变异实测（跑完已还原）：`capBytes: 65536` ⇒ 9 pass / 1 fail；`truncated: false` ⇒ 6 pass / 4 fail。⚠ **本片一个字节也没少**：每轮仍是一份全量副本，账本总量仍随轮数线性增长——那是 #742 的下一刀，不是这一片。`runState` 内容、`bounds` 语义、`onRound` 形状均未动；引擎内不读 `runStateMeta`，resume 与停门判据不可能受影响。金样捕获的新增键豁免面按实测长大（每条引擎轮记录行 `usage` / `engineUsage` / `runStateMeta`，两个场景 13 / 12 个键，仍逐行钉住，一条没合并）。
-- **The engine now publishes a retention tier for every event type it emits (issue #743).**
+- **The engine now publishes a retention tier for every event type it emits
+  (issue #743, PR #752; merge bea46bb).**
   `src/loop/event-tiers.js` exports `EVENT_TIERS` (`fact` / `stream` / `derived`), `eventTierOf()`,
   `EVENT_TIER_VALUES` and the three tier names, `HOST_SIDE_EVENT_TYPE_NAMES`, `RUN_TERMINAL_STATUSES`,
   `RUN_CLEANUP_SAFE_STATUSES` and `streamCleanupEligible()`, all re-exported from the package root, so
@@ -620,7 +638,7 @@
   `locator.lineStart` / `lineEnd`) and the artifact and deliverable files on disk — **not** `command`,
   and `legacy` is a marker the guard writes onto its own captures, not a manifest field — and never a
   stream fragment; `recall` does not appear in `src/` at all.
-- **引擎现在为它发出的每一个事件类型公开一个保留档位（issue #743）。**
+- **引擎现在为它发出的每一个事件类型公开一个保留档位（issue #743，PR #752；合并 bea46bb）。**
   `src/loop/event-tiers.js` 导出 `EVENT_TIERS`（`fact` / `stream` / `derived`）、`eventTierOf()`、
   `EVENT_TIER_VALUES` 与三个档位名、`HOST_SIDE_EVENT_TYPE_NAMES`、`RUN_TERMINAL_STATUSES`、
   `RUN_CLEANUP_SAFE_STATUSES` 与 `streamCleanupEligible()`，全部从包入口再导出——于是把 `onEvent` 记录入库的宿主第一次拿到「哪一行可以走」
@@ -1457,7 +1475,8 @@
   没有精确保存值时它拒绝报 `equal`（报 `differ` 同样是谎）。反向证（工单判据 4）：把旧路径优先级**字面**反转
   （优先 `.text`，剥空之后不回头），`#462 规划器：裁掉水位线以下的轮` 先在 `plan.applied === true` 上红，
   退出码 1。不在本切片：收紧读侧优先级——那是第二步，要等 `byteEqual` 在现网稳定为 `equal`。
-- **The 0.31.0 guide told hosts to import a name no entry has ever exported (issue #710).** The row for
+- **The 0.31.0 guide told hosts to import a name no entry has ever exported
+  (issue #710, PR #757; merge fe81810).** The row for
   `serializeFoldedMessages` in both halves of the guide carried the migration clause naming
   `serializeFoldedMessagesWithMeta` while the entry column said `.` — but that name is on neither entry:
   not in the published `erix-agent@0.31.0` tarball, not in `0.30.0` either (both were unpacked and
@@ -1483,7 +1502,8 @@
   published `0.31.0` guide already prints it. The marker now carries the same `no in-tree replacement`
   clause as the page (comment text only: `removed in 0.31` untouched, signature/implementation untouched,
   `R4` accepts this clause shape, no export added).
-- **0.31.0 指南让宿主去 import 一个任何入口从没导出过的名字（issue #710）。** 中英两份指南里
+- **0.31.0 指南让宿主去 import 一个任何入口从没导出过的名字（issue #710，PR #757；合并
+  fe81810）。** 中英两份指南里
   `serializeFoldedMessages` 那一行的迁移条款格都指向 `serializeFoldedMessagesWithMeta`，而入口格写着 `.`——
   可这个名字两个入口上都没有：已发布的 `erix-agent@0.31.0` 没有，`0.30.0` 也没有（两个 tarball 都解开在两个
   入口上 `import` 实测过，而 `package.json` 的 exports 只有 `.` / `./tools` / `./contract-tests`，没有深路径
