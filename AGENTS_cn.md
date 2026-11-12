@@ -128,7 +128,7 @@ npm run release:day -- --stage finalize      # 给切版打 tag → 双推 → �
 - publish 会烧掉那个版本号；`+ erix-agent@<ver>` 那一行不等于可用（registry 有延迟）⇒ 先轮询
   `npm view erix-agent version --prefer-online`，再用 `--prefer-online` 安装，然后跑
   `erix --version && erix chat "…"`。
-- 当前版本：`package.json` 写 `0.32.0`（本仓版本），发布行——npm 的 `dist-tags.latest`——是 `0.31.0`。
+- 当前版本：`package.json` 写 `0.32.0`（本仓版本），发布行——npm 的 `dist-tags.latest`——是 `0.32.0`。
   `check:docs` 每次运行都拿 `package.json` 与 registry **当场**对这两个数，所以两句都不带测量日期。改版本用
   `npm version <x.y.z> --no-git-tag-version`。
 - `package.json` 那一面：去掉 `private`、`repository.url` 用 `git+https://…` 形态、`files` 是一份很长的显式

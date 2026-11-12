@@ -138,7 +138,7 @@ npm run release:day -- --stage finalize      # tag the version cut → dual push
 - Publish burns the version number; a `+ erix-agent@<ver>` line is not availability (the registry lags) ⇒ poll
   `npm view erix-agent version --prefer-online`, then install with `--prefer-online` and run
   `erix --version && erix chat "…"`.
-- Current version: `package.json` says `0.32.0` (the repo version) and the published line — npm's `dist-tags.latest` — is `0.31.0`.
+- Current version: `package.json` says `0.32.0` (the repo version) and the published line — npm's `dist-tags.latest` — is `0.32.0`.
   `check:docs` reconciles both numbers **live** against `package.json` and the registry on every run, so neither
   carries a measurement date. Use `npm version <x.y.z> --no-git-tag-version`.
 - `package.json` face: `private` absent, `repository.url` in `git+https://…` form, `files` a long explicit allowlist

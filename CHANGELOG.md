@@ -3,7 +3,7 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
-## [0.32.0]（未发布 / unpublished）
+## [0.32.0] - 2026-11-12
 
 ### Breaking
 
