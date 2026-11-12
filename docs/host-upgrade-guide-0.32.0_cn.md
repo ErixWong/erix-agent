@@ -97,7 +97,18 @@ if ( round === undefined ) continue;   // 那一轮从重建视图里消失
   `RECOVERY_ROWS_UNREADABLE`（`src/loop/resume-manager.js`；发到线上的值是该名的小写形式）
   ——**要么老实实现，要么干脆没有**；
 - 写侧或清盘侧方法缺失的 store，每个 run 各得一条 `persistence_capability_degraded`；
-- dedup 命名空间新增 `<key>:recovery:<seq>`，与轮行/消息行不撞。
+- 恢复事件键是新出现的，与轮行/消息行不撞：`<runId>:engine:round:<n>:recovery:<event>:<discriminator>`
+  （`recoveryEventKey`，`src/store/recovery-rows.js`）。判别位对 `tool-executed` 是 `toolUseId`，
+  对 `partial-text` 是**正文指纹**——更长的半截正文是一个新事件，绝不是覆盖旧行；
+- **那份新文件和账本同后缀 `.jsonl`**：`<dir>/<runId>.recovery.jsonl`（`recoveryRowsPath`，
+  `src/store/file.js`）。在 store 目录里按 `*.jsonl` 枚举的宿主从此**每个 run 看到两份文件**，
+  所有“一个 run 只有一个文件”的假设都会碎——契约的恢复行一节把这个坑
+  当作严格校验的宿主必须处理的东西点名了出来；
+- **已知限制，挂在 issue #791**：`partial-text` 行没有前缀上限、没有 TTL，每次成功的 partial commit
+  都把**该轮到那时为止已写的整段正文**整段追写一行；那个文件只追加，只在一开始重开 run 时清盘
+  （`clearRecoveryRows`，而且只在持久化开着、且 store 真有这个方法时清）⇒ 一个轮存下的字节数
+  随提交次数平方级增长。本版没有任何东西限制它——半截正文很大的宿主应当把它算进预算，
+  因为“删旧行”不是这一版会做的事。
 
 ### 3.3 契约套件不再逼你撒谎（#739）
 
@@ -191,10 +202,28 @@ dedup 命名空间新增 `<key>:settle:<round>:<tool_use id 排序后用 + 连�
 
 ## 9. 没有变的东西
 
+- **选项——本版变了一处，变的是载荷语义，不是键集合。**0.31 的每一个选项键含义照旧（唯一的增添是
+  CLI 旗标 `--effort`，§6）；变的是 `snapshot.messages` 如今只装**残余**，而不是宿主以为能从那里
+  读到的消息列表，所以正文要回到账本去读（#735 第二刀、#770、#767）；
+- **默认值照 0.31 列的那样**——同一套默认面、嵌套位置照旧（`run.maxRounds`、`folding.toolResultTtl`、
+  `guard.finalGuardMaxRetries`、`timing.timeoutMs` 等）。这里抬的是上限而不是默认值：
+  `PROJECT_INSTRUCTIONS_MAX_BYTES` 从 32 KiB 抬到 64 KiB，超限的内容被截断并留一行标记，
+  `droppedSections` 报出没塞进去的小节，不是整份丢（§2.3）；
+- **观察者事件与 0.31 一致**：每一个既有事件名、每一个既有 `reason` 的含义不变，原本没有 `detail` 的
+  事件依旧没有。本版增添的是两个名字（`context_pack_failed` §5、`persistence_capability_degraded` §3.2），
+  不是改名；
+- **诊断字段——`compactionStats` 本版改了一处：run snapshot 的载荷不再带它**（#770）。
+  `createCompactionStat` 产出的条目形状与轮记录里那一份都没动，所以原先读快照那一格的宿主现在读轮记录；
+- **磁盘格式——本版变了一处：一个 run 不再只有一个文件。**轮记录 `<dir>/<runId>.jsonl` 逐字不变，
+  `seq` 也没动（CHANGELOG 提到它只作为行序键，#811 / #765）；新增的是每 run 的第二份文件与恢复事件键
+  （§3.2）；
+- **终局载荷——本版改了一个紧挨着它的字段，格子本身没动。**终局载荷的键集合就是 0.31 那一套。本版 CHANGELOG 点名的
+  `truncated` 是轮记录里的一格（`runState.bounds.truncated`，0.31 就有；#742 在它旁边加了“这一轮副本
+  多少字节”），所以宿主从一个已完成的 run 里读出来的东西没有挪；
 - 没有删除导出、没有改名、`files` / `exports` 里没删过任何条目；
 - `executionStatus` 的闭集仍是 `intercepted / interrupted / rejected`；
-- 账本行格式不变；新增的 dedup 命名空间只有 `<key>:settle:<round>:<ids>`（§4）与
-  `<key>:recovery:<seq>`（§3.2）；
+- 账本行格式不变；新增的 dedup 键只有 `<key>:settle:<round>:<ids>`（§4）与恢复事件键
+  `<runId>:engine:round:<n>:recovery:<event>:<discriminator>`（§3.2）；
 - 每一个既有事件名、每一个既有 reason 的含义不变；原本没有 `detail` 的事件形状逐字不变；
 - `readFile` 的承诺没改，但它的模型可见容量行换到了更低一档（3,700 → 3,650 行），因为全树最紧的
   那个文件换了主人——这是提示词文案变了，不是行为变了。

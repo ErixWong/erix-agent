@@ -109,7 +109,21 @@ home. Consequences for you:
   `RECOVERY_ROWS_UNREADABLE` (`src/loop/resume-manager.js`; the value on the wire is the lower-cased
   form of that name) — implement it honestly or not at all;
 - a store whose write or clear method is missing gets one `persistence_capability_degraded` per run;
-- the dedup namespace `<key>:recovery:<seq>` is new and does not collide with round/message rows.
+- the recovery dedup key is new and does not collide with round/message rows:
+  `<runId>:engine:round:<n>:recovery:<event>:<discriminator>` (`recoveryEventKey`,
+  `src/store/recovery-rows.js`), where the discriminator is the `toolUseId` for `tool-executed`
+  and a **fingerprint of the text** for `partial-text` — a longer partial is a new event, never
+  an update;
+- **that second file shares the `.jsonl` suffix with the ledger**: `<dir>/<runId>.recovery.jsonl`
+  (`recoveryRowsPath`, `src/store/file.js`) — a host that globs `*.jsonl` in the store directory now
+  sees **two files per run**, so every "one file per run" assumption breaks (the contract's
+  recovery-row section names exactly this as what a strictly-validating host must handle);
+- **known limitation, tracked as issue #791**: `partial-text` rows have no prefix cap and no TTL,
+  and every successful partial commit appends **the whole body accumulated in that round so far**
+  as a new row; the file is append-only and is cleared only on a fresh start (`clearRecoveryRows`,
+  and only with persistence on and the method present) ⇒ the bytes stored for one round grow
+  quadratically with its commit count. Nothing bounds it today — a host whose partial bodies are
+  large should budget for it, because deleting rows is not something this version does.
 
 ### 3.3 The contract suite stopped forcing you to lie (#739)
 
@@ -210,10 +224,34 @@ by all three items:
 
 ## 9. What does not change
 
+- **Options — one thing changed in this release, and it is payload semantics, not the key set.**
+  Every 0.31 option key still means what it meant (the one addition is the `--effort` CLI flag, §6);
+  what changed is that `snapshot.messages` now carries the **residue** rather than the message
+  list a host thought it was reading — bodies are read from the ledger (#735 slice 2, #770, #767);
+- **Defaults stay as 0.31 lists them** — the same defaults face at the same nesting
+  (`run.maxRounds`, `folding.toolResultTtl`, `guard.finalGuardMaxRetries`, `timing.timeoutMs` and
+  the rest). What this release raises is a ceiling, not a default: `PROJECT_INSTRUCTIONS_MAX_BYTES`
+  went 32 KiB → 64 KiB, and an over-cap file is truncated with a marker line plus
+  `droppedSections` naming what did not fit — it is not dropped whole (§2.3);
+- **Observer events stay as in 0.31**: every existing name and every existing `reason` keeps its
+  meaning, and an event that carried no `detail` still carries none. What this release adds are two
+  names (`context_pack_failed` §5, `persistence_capability_degraded` §3.2), not renames;
+- **Diagnostic fields — `compactionStats` changed in this release in one place: the run-snapshot
+  payload no longer carries it** (#770). The entry shape `createCompactionStat` produces and the
+  copy in the round record are untouched, so a host that read the snapshot cell reads the round
+  record now;
+- **On-disk formats — one thing changed in this release: a run is no longer one file.** The round
+  record `<dir>/<runId>.jsonl` stays byte-for-byte the same, and `seq` is untouched (the changelog
+  names it only as the row ordering key, #811 / #765); what is new is the second per-run file and
+  the recovery event key (§3.2);
+- **Final payload — changed in this release only beside it, not inside it.** The terminal payload's
+  key set is 0.31's. The `truncated` this version's changelog names is a round-record cell
+  (`runState.bounds.truncated`, already present in 0.31; #742 added the byte count of that round's
+  copy next to it), so nothing a host reads out of a finished run has moved;
 - no export removed, no export renamed, no entry deleted from `files`/`exports`;
 - the closed set of `executionStatus` values stays `intercepted / interrupted / rejected`;
-- ledger row format unchanged; the only new dedup namespaces are `<key>:settle:<round>:<ids>` (§4)
-  and `<key>:recovery:<seq>` (§3.2);
+- ledger row format unchanged; the only new dedup keys are `<key>:settle:<round>:<ids>` (§4) and the
+  recovery event key `<runId>:engine:round:<n>:recovery:<event>:<discriminator>` (§3.2);
 - every existing event name and every existing reason keeps its meaning; events with no `detail`
   keep their exact shape;
 - `readFile`'s promise is unchanged, but its model-facing capacity line moved to a lower tier
