@@ -62,13 +62,16 @@ import {
   existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { createFileTranscriptStore } from "../src/index.js";
 import { foldLedgerMessages, foldMessageRows, MESSAGE_ROW_KIND } from "../src/store/message-rows.js";
-import { safeRunId } from "../src/store/file.js";
+import {
+  RECOVERY_EVENTS, RECOVERY_EVENT_TOOL_EXECUTED, RECOVERY_ROW_KIND,
+} from "../src/store/recovery-rows.js";
+import { recoveryRowsPath, safeRunId, transcriptPath } from "../src/store/file.js";
 import {
   formatSkip, printableEndpoint, resolveRealUpstream, TMP_PREFIX,
 } from "./e2e-real-gate.mjs";
@@ -76,9 +79,40 @@ import {
 const CLI = resolve(fileURLToPath(new URL("../bin/cli.js", import.meta.url)));
 /** `bin/cli.js` 帮助里承诺的退出码：没有 `--final-guard` 的成功 run 是 4（verification=skipped）。 */
 const EXIT_NOT_VERIFIED = 4;
-/** 账本主文件名后缀；`.corrupt.*` 隔离文件**不带**它，因此天然不在 `listLedgerFiles()` 名单里。 */
-const LEDGER_SUFFIX = ".jsonl";
+/**
+ * 账本主文件名后缀；`.corrupt.*` 隔离文件**不带**它，因此天然不在 `listLedgerFiles()` 名单里。
+ *
+ * **不是手抄的字面量**：它由 `transcriptPath()`（`src/store/file.js`，「命名口径的唯一实现」）现场推出来，
+ * 与离线自检里那条 `LEDGER_SUFFIX === ".jsonl"` 一起钉住「仓内落盘助手 ↔ 本文件的判据」这根线；
+ * 助手改名 ⇒ 这里跟着走，而那条自检红。
+ */
+const LEDGER_SUFFIX = suffixOfTranscriptName();
+/**
+ * issue #769 **恢复行通道侧车**独有的那段后缀（`<dir>/<safeRunId(runId)>.recovery.jsonl`）。
+ * 同样由 `recoveryRowsPath()` 现场推，不手抄。它**以 `LEDGER_SUFFIX` 结尾**——这正是本文件
+ * 曾经误判的根因（见 `listLedgerFiles()` 的注释），所以离线自检把它当成一条**事实**钉住。
+ */
+const RECOVERY_SUFFIX = suffixOfRecoveryName();
 const CORRUPT_MARK = ".corrupt.";
+
+/**
+ * 从落盘路径助手推出「某种文件的名字后缀」（探针 runId 是安全 id ⇒ 文件名 = `<探针><后缀>`）。
+ * 探针自己钉住：`safeRunId` 不改写它、助手给的确实是以探针开头的一个文件名，否则后缀是猜的。
+ */
+function suffixFrom(pathFor, label) {
+  const probe = "probe-suffix-probe";
+  const name = basename(pathFor("/", probe));
+  if (!name.startsWith(safeRunId(probe)) || name === safeRunId(probe)) {
+    throw new Error(`${label} 的文件名形状不是 <safeRunId(runId)><后缀>（实得 ${name}）⇒ 后缀推不出来`);
+  }
+  return name.slice(safeRunId(probe).length);
+}
+function suffixOfTranscriptName() {
+  return suffixFrom(transcriptPath, "transcriptPath");
+}
+function suffixOfRecoveryName() {
+  return suffixFrom(recoveryRowsPath, "recoveryRowsPath");
+}
 
 // ---------------------------------------------------------------------------
 // 读账本 / 折叠口径（读侧**不调** store.load：那会先修复尾部，把 D 的分支提前吃掉）
@@ -98,26 +132,57 @@ function isToolResultMessageRow(row) {
     && messagesOf(row).some((message) => blocksOf(message).some((block) => block?.type === "tool_result"));
 }
 
-function listLedgerFiles(dir) {
-  return existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith(LEDGER_SUFFIX)).sort() : [];
+/** 恢复行侧车的名字：`<safeRunId(runId)>.recovery.jsonl`（实现见 `recoveryRowsPath`）。 */
+function isRecoverySidecarName(name) {
+  return name.endsWith(RECOVERY_SUFFIX);
 }
 
-function listCorruptFiles(dir) {
+/**
+ * 「这个 `*.jsonl` 文件是不是一本**账本**」——issue #769 之后目录里有两种 `*.jsonl`：
+ * 轮记录账本 `<safeRunId>.jsonl`（`transcriptPath`）与恢复行侧车 `<safeRunId>.recovery.jsonl`
+ * （`recoveryRowsPath`）。后者**不是一本账本**：它一行都不是轮记录（`messages: []`，不载正文），
+ * `store.load()` / `loadRawRows()` 也读不到它（`src/store/file.js#recoveryRowsPath` 的换道裁决）。
+ *
+ * 所以「同一个 `--dir` 里不许出现两份真账本（脑裂）」这条不变量的正确形状是：
+ * **以 `.jsonl` 结尾，且不是恢复行侧车**。收窄只排掉「恰好是侧车形状」的名字：
+ * 多出来的任何 `*.jsonl`（另一个 run 的账本、手拼错名的第二份账本……）仍然算第二份账本，
+ * `readLedger()` 照旧抛——离线自检第 ⑦ 条就是拿「真两份账本」反向证这一点的。
+ */
+function isLedgerName(name) {
+  return name.endsWith(LEDGER_SUFFIX) && !isRecoverySidecarName(name);
+}
+
+function listLedgerFiles(dir) {
+  return existsSync(dir) ? readdirSync(dir).filter(isLedgerName).sort() : [];
+}
+
+/**
+ * 恢复行侧车的名单。它与 `listLedgerFiles()` **互补**：目录里全部 `*.jsonl` = 账本 ∪ 侧车，
+ * 谁都不许「既不数也不判」（互补性由 F1 钉）。
+ */
+function listRecoverySidecarFiles(dir) {
+  return existsSync(dir) ? readdirSync(dir).filter(isRecoverySidecarName).sort() : [];
+}
+
+/** 账本自己的隔离文件（`repairTrailingFragment` 的名字形状是 `<被修复的文件名>.corrupt.<ts>.<uuid>`）。 */
+function listCorruptFiles(dir, ofFile) {
+  if (!existsSync(dir)) return [];
+  const prefix = `${basename(ofFile)}${CORRUPT_MARK}`;
+  return readdirSync(dir).filter((name) => name.startsWith(prefix)).sort();
+}
+
+/** 目录里**所有**隔离文件（不分通道）：D2 用它对账「除账本那份之外没有别的隔离文件」。 */
+function listAllCorruptFiles(dir) {
   return existsSync(dir) ? readdirSync(dir).filter((name) => name.includes(CORRUPT_MARK)).sort() : [];
 }
 
 /**
- * 原始读账本（**不修复尾部**，只把「完整的行」与「末尾残段」分开）。
+ * 把一个 `*.jsonl` 的原始字节摊成「完整行 + 末尾残段 + 中间坏行」——账本与恢复行侧车**同一个读法**。
  *
  * `partial` 是最后一个 `\n` 之后的那段：干净收尾时是 `""`；被杀在写行中途时是半行残段。
  * 中间行解析失败单独记在 `parseErrors` 里（那是另一种损坏，不该被当成尾部残段放过）。
  */
-function readLedger(dir) {
-  const files = listLedgerFiles(dir);
-  if (files.length === 0) return { file: null, raw: "", rows: [], partial: "", parseErrors: [] };
-  if (files.length > 1) throw new Error(`临时 --dir 下出现了多份账本（不该发生）：${files.join(",")}`);
-  const file = join(dir, files[0]);
-  const raw = readFileSync(file, "utf8");
+function splitJsonl(raw) {
   const lines = raw.split("\n");
   const partial = lines[lines.length - 1];
   const rows = [];
@@ -130,7 +195,23 @@ function readLedger(dir) {
       parseErrors.push(`${line.slice(0, 80)}（${error?.message ?? ""}）`);
     }
   }
-  return { file, raw, rows, partial, parseErrors };
+  return { rows, partial, parseErrors };
+}
+
+/** 原始读一个 `*.jsonl`（不修复尾部）：账本与侧车共用。 */
+function readJsonlFile(file) {
+  const raw = readFileSync(file, "utf8");
+  return { file, raw, ...splitJsonl(raw) };
+}
+
+/**
+ * 原始读账本（**不修复尾部**，只把「完整的行」与「末尾残段」分开）。
+ */
+function readLedger(dir) {
+  const files = listLedgerFiles(dir);
+  if (files.length === 0) return { file: null, raw: "", rows: [], partial: "", parseErrors: [] };
+  if (files.length > 1) throw new Error(`临时 --dir 下出现了多份账本（不该发生）：${files.join(",")}`);
+  return readJsonlFile(join(dir, files[0]));
 }
 
 /** 尾部残段判据：末尾那段既没换行、也不是一个完整 JSON 对象 ⇒ 半行。 */
@@ -521,7 +602,16 @@ test("真上游 e2e：跑一半 SIGKILL → 同 --session 续跑 → 账本闭�
     const rawBeforeResume = readFileSync(ledgerAfterKill.file, "utf8");
     // 「续跑不许改写已落盘的历史」的基线 = 最后一个换行之前的全部字节（自然半行会被修复截掉）。
     const cleanPrefix = rawBeforeResume.slice(0, rawBeforeResume.lastIndexOf("\n") + 1);
-    const corruptBeforeResume = listCorruptFiles(transcripts);
+    const corruptBeforeResume = listCorruptFiles(transcripts, ledgerAfterKill.file);
+    // ---- 恢复行侧车在**被杀那一刻**的现场（不修复尾部、容忍末尾残段）----
+    // 为什么现在就留一份：#769 的语义红线是「工具执行事实在**执行器返回时**入账，早于结果行」
+    // （`src/loop/run-snapshot-executor.js`：`executedToolIds.add` 与 `appendToolExecutedRecoveryRow`
+    // 都在结果行之前）。所以杀点那份侧车里就该有「已落盘结果的那个 tool_use」的 `tool-executed` 行——
+    // 这个顺序只能靠真 SIGKILL 现场证，事后补读就看不见了（F2 用的就是这份现场）。
+    const sidecarNamesAfterKill = listRecoverySidecarFiles(transcripts);
+    const sidecarAfterKill = sidecarNamesAfterKill.length === 1
+      ? readJsonlFile(join(transcripts, sidecarNamesAfterKill[0]))
+      : null;
 
     // ---- 续跑：同一个 --session 再跑一次 ----
     const resumePrompt = `续跑验证 ${resumeMarker}：上一轮进程在第一个工具结果落盘后被 SIGKILL。`
@@ -550,7 +640,15 @@ test("真上游 e2e：跑一半 SIGKILL → 同 --session 续跑 → 账本闭�
     const ledgerAfter = readLedger(transcripts);
     const rowsAfter = ledgerAfter.rows;
     const resultsAfter = toolResultsIn(messagesAfter);
-    const corruptAfterResume = listCorruptFiles(transcripts);
+    const corruptAfterResume = listCorruptFiles(transcripts, ledgerAfter.file);
+    const allCorruptAfterResume = listAllCorruptFiles(transcripts);
+    // ---- 恢复行通道（issue #769）的读侧现场：目录里的侧车 + store 的侧车读口 ----
+    const sidecarNamesAfterResume = listRecoverySidecarFiles(transcripts);
+    const sidecarAfterResume = sidecarNamesAfterResume.length === 1
+      ? readJsonlFile(join(transcripts, sidecarNamesAfterResume[0]))
+      : null;
+    const recoveryRowsViaStore = await store.listRecoveryRows(runId);
+    const expectedSidecarName = basename(recoveryRowsPath(transcripts, runId));
 
     // ================= A 账本闭合 =================
     check("A1 行级：每个 dedupKey 恰好 1 行、消息行 (round,seq) 不重号", () => {
@@ -662,7 +760,19 @@ test("真上游 e2e：跑一半 SIGKILL → 同 --session 续跑 → 账本闭�
       assert.equal(secondExit.code, EXIT_NOT_VERIFIED,
         `续跑退出码 ${secondExit.code}（期望 ${EXIT_NOT_VERIFIED}）——半行不该把续跑弄死`);
     }, `来源=${naturalHalfLine ? "自然（杀点留下）" : "确定性注入（本轮自然未命中）"}`
-      + `｜隔离文件=${corruptAfterResume.join(",") || "无"}`);
+      + `｜账本隔离文件=${corruptAfterResume.join(",") || "无"}`);
+
+    check("D2 隔离文件只可能属于账本：目录里没有「第二个 .corrupt.*」（侧车那一侧没留半行）", () => {
+      // D1 数的是**账本那一份**隔离文件（名字前缀 = 被修复的那个文件名）。这一条补上另一半：
+      // 目录里不许出现「不属于账本」的隔离文件——那只会是**侧车**被修复出来的半行。
+      // 它不该出现：杀点判据是「账本里一条完整的 tool_result 行」，而侧车那一行在执行器返回时
+      // 就写完了（早于结果行）⇒ 我们看到杀点时侧车已收尾。
+      const ledgerOwned = new Set(corruptAfterResume);
+      const others = allCorruptAfterResume.filter((name) => !ledgerOwned.has(name));
+      assert.deepEqual(others, [],
+        `目录里出现了不属于账本的隔离文件（侧车那一侧被修复出了半行）：${others.join(",")}`
+        + `｜账本那份=${JSON.stringify(corruptAfterResume)}`);
+    }, `目录全部隔离文件=${JSON.stringify(allCorruptAfterResume)}`);
 
     // ================= E 续跑真的接上了 =================
     const rowsAdded = rowsAfter.slice(rowsBefore.length);
@@ -762,12 +872,97 @@ test("真上游 e2e：跑一半 SIGKILL → 同 --session 续跑 → 账本闭�
       assert.equal(stats.termination, "end_turn", `续跑终止原因=${String(stats.termination)}`);
     }, stats === undefined ? "统计行缺失" : stats.line);
 
+    // ================= F 恢复行通道（issue #769）：侧车在不在、载的是什么 =================
+    // 为什么这里**必须**判它（本单 261111-04）：本版把恢复行落到**同目录的第二份 `*.jsonl`**
+    // （`src/store/file.js#recoveryRowsPath`）。之前 `listLedgerFiles()` 把它当成第二份账本（假红）；
+    // 但反过来「不数也不判」同样是漏——那样「这次 run 根本没走恢复行通道」也会绿。
+    // ⇒ 侧车的**存在性 + 文件名 + 内容**三件事各自钉一条，同时「一份真账本」那条不变量照旧在位
+    // （它现在由 `isLedgerName()` 的形状守卫，离线自检里拿「真两份账本」反向证它仍会响）。
+    const toolExecutedRows = (sidecarAfterResume?.rows ?? [])
+      .filter((row) => row?.recoveryEvent === RECOVERY_EVENT_TOOL_EXECUTED);
+    const preKillExecutedIds = new Set((sidecarAfterKill?.rows ?? [])
+      .filter((row) => row?.recoveryEvent === RECOVERY_EVENT_TOOL_EXECUTED)
+      .map((row) => String(row?.toolUseId)));
+
+    check("F1 目录里的 *.jsonl 恰好是「一份账本 + 一份恢复行侧车」，侧车名逐字 = recoveryRowsPath", () => {
+      const ledgers = listLedgerFiles(transcripts);
+      assert.deepEqual(ledgers, [`${safeRunId(runId)}${LEDGER_SUFFIX}`],
+        `账本必须恰好一份（>1 = 脑裂，0 = 没落盘），实得 ${JSON.stringify(ledgers)}`);
+      assert.deepEqual(sidecarNamesAfterResume, [expectedSidecarName],
+        `恢复行侧车必须恰好一份、名字逐字等于 ` + "`recoveryRowsPath()`" + ` 算出的那个（${expectedSidecarName}）：`
+        + `实得 ${JSON.stringify(sidecarNamesAfterResume)}`);
+      // 两份名单互补：侧车名字不许出现在账本名单里（那正是本单修的那个误判）。
+      assert.equal(ledgers.includes(expectedSidecarName), false,
+        "侧车被当成账本数了（「多份账本」那条会因它假红）");
+      const allJsonl = readdirSync(transcripts).filter((name) => name.endsWith(LEDGER_SUFFIX)).sort();
+      assert.deepEqual([...ledgers, ...sidecarNamesAfterResume].sort(), allJsonl,
+        `目录里全部 *.jsonl 必须 = 账本 ∪ 侧车（既不许有第三种形状漏数，也不许双数）：${JSON.stringify(allJsonl)}`);
+    }, `账本=${JSON.stringify(listLedgerFiles(transcripts))}｜侧车=${JSON.stringify(sidecarNamesAfterResume)}`);
+
+    check("F2 侧车载的确实是本次 run 的恢复行：kind/事件/不载正文/属于本 runId；读口与盘上同一批", () => {
+      assert.ok(sidecarAfterResume !== undefined,
+        `侧车没读成一份（名单=${JSON.stringify(sidecarNamesAfterResume)}），内容判据落空`);
+      const rows = sidecarAfterResume.rows;
+      assert.ok(rows.length >= 1,
+        "侧车一行都没有 ⇒ 本次真上游 run 根本没走恢复行通道（那是判据落空，不是绿）");
+      assert.deepEqual(sidecarAfterResume.parseErrors, [],
+        `侧车中间行解析失败：${sidecarAfterResume.parseErrors.join(" | ")}`);
+      assert.equal(sidecarAfterResume.partial, "", "续跑收尾后侧车必须以换行结尾（不该留残段）");
+      const problems = [];
+      for (const [index, row] of rows.entries()) {
+        if (row?.kind !== RECOVERY_ROW_KIND) problems.push(`#${index}: kind=${String(row?.kind)}（应为 "${RECOVERY_ROW_KIND}"）`);
+        if (!RECOVERY_EVENTS.includes(String(row?.recoveryEvent))) {
+          problems.push(`#${index}: recoveryEvent=${String(row?.recoveryEvent)} 不在认识集合 ${JSON.stringify(RECOVERY_EVENTS)}`);
+        }
+        if (Array.isArray(row?.messages) ? row.messages.length !== 0 : true) {
+          problems.push(`#${index}: messages 非空 ⇒ 侧车不许载正文（` + "`restoreResume`" + " 的 flatMap 会双喂）");
+        }
+        if (!Number.isSafeInteger(row?.round)) problems.push(`#${index}: round 不是安全整数`);
+        const key = String(row?.dedupKey ?? "");
+        if (!key.startsWith(`${runId}:`)) problems.push(`#${index}: dedupKey 不属于本次 runId：${key}`);
+        if (!key.includes(":recovery:")) problems.push(`#${index}: dedupKey 不在 :recovery: 命名空间：${key}`);
+      }
+      assert.deepEqual(problems, [], problems.join(" ｜ "));
+      // 通道分离：恢复行只能在侧车那份里，**不许**混进轮记录账本（否则宿主读轮记录要先滤 kind，
+      // 而本文件的 A2「独立计数 = 折叠输出」会被它们撑开）。
+      assert.equal(rowsAfter.filter((row) => row?.kind === RECOVERY_ROW_KIND).length, 0,
+        "轮记录账本里混进了 kind:\"recovery\" 行（两个通道串了）");
+      assert.deepEqual(recoveryRowsViaStore, rows,
+        `读口 ` + "`store.listRecoveryRows()`" + ` 与盘上原始行必须是同一批：读口 ${recoveryRowsViaStore.length} 行 / 盘上 ${rows.length} 行`);
+    }, `侧车 ${sidecarAfterResume?.rows.length ?? 0} 行，其中 tool-executed ${toolExecutedRows.length} 行`);
+
+    check("F3 被杀前已落盘结果的每个 tool_use，在**杀点那一刻的侧车**里已有 tool-executed 行（#769 的顺序红线）", () => {
+      // #769 的语义红线：「没有 tool_result 行」推不出「没执行」——`src/loop/run-snapshot-executor.js`
+      // 在**执行器返回时**就落这行，**早于**结果行。所以杀点那份侧车里必须已经有它。
+      // 这个顺序只有真 SIGKILL 现场能证：事后补读（两代恢复行混在同一份 append-only 文件里）看不出来。
+      assert.ok(sidecarAfterKill !== undefined,
+        `杀点时刻目录里没有侧车（名单=${JSON.stringify(sidecarNamesAfterKill)}）⇒ 「执行事实先于结果行入账」没被证到`);
+      assert.ok(preKillResults.length >= 1, "杀点账本里一个 tool_result 都没有（前置判据落空）");
+      const missing = [...new Set(preKillResults.map((block) => String(block?.tool_use_id)))]
+        .filter((id) => !preKillExecutedIds.has(id));
+      assert.deepEqual(missing, [],
+        `被杀前已落盘结果的 tool_use 在杀点那份侧车里没有 tool-executed 行：${missing.join(",")}`
+        + `（杀点侧车已有的执行事实=${JSON.stringify([...preKillExecutedIds])}）`);
+      // 反向：侧车记的执行事实必须是账本里真存在的 tool_use（不是空壳、不是别的 run 串进来）。
+      const ledgerUseIds = new Set(toolUsesIn(messagesAfter).map((block) => String(block?.id)));
+      const orphan = [...new Set(toolExecutedRows.map((row) => String(row?.toolUseId)))]
+        .filter((id) => !ledgerUseIds.has(id));
+      assert.deepEqual(orphan, [], `侧车里有 tool-executed 行指的 tool_use 不在账本里：${orphan.join(",")}`);
+    }, `杀点侧车执行事实=${JSON.stringify([...preKillExecutedIds])}｜被杀前结果=${preKillResults.length} 个`);
+
+    notes.push(`F 侧车实测：${expectedSidecarName} 共 ${sidecarAfterResume?.rows.length ?? 0} 行`
+      + `（tool-executed ${toolExecutedRows.length}），杀点那一刻它已有 ${preKillExecutedIds.size} 条执行事实`
+      + `｜同目录两份 *.jsonl：${JSON.stringify(readdirSync(transcripts).filter((name) => name.endsWith(LEDGER_SUFFIX)))}`);
+
     // ================= 隔离对账（真实 ~/.erix 一个字节都不许动）=================
     check("Z1 真实 ~/.erix 没被写：选中配置哈希不变 + 真实 transcripts 下没有本次 runId 的产物", () => {
       assert.equal(hashFileIfExists(gate.configPath), configHashBefore,
         `闸门选中的配置 ${gate.configPath} 被改写了（${configHashBefore} → ${hashFileIfExists(gate.configPath)}）`);
-      const leaked = [`${safeRunId(runId)}.jsonl`, `${safeRunId(runId)}.snapshot.json`, `${safeRunId(runId)}.status.json`]
-        .filter((name) => existsSync(join(realTranscripts, name)));
+      const leaked = [
+        `${safeRunId(runId)}${LEDGER_SUFFIX}`, `${safeRunId(runId)}.snapshot.json`, `${safeRunId(runId)}.status.json`,
+        // 恢复行侧车也算泄露：`--dir` 被丢掉时它**也会**落进真实目录（而且它可能比账本更新）。
+        `${safeRunId(runId)}${RECOVERY_SUFFIX}`,
+      ].filter((name) => existsSync(join(realTranscripts, name)));
       assert.deepEqual(leaked, [], `真实 ~/.erix/transcripts 下出现了本次 run 的文件（--dir 没生效？）：${leaked.join(",")}`);
       assert.equal(existsSync(join(realErix, "outputs", safeRunId(runId))), false,
         `真实 ~/.erix/outputs 下出现了本次 run 的归档目录`);
