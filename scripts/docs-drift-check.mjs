@@ -7545,6 +7545,39 @@ function declaredSurfaceChanges(version, truths) {
   return { byCell, namesSeen, anyMember, changedCount, line: sect.line };
 }
 
+/**
+ * 例「纯加法的名字不是变更证据」的靶子必须**现选一格**（0.32 切版树逼出来的改法）。
+ *
+ * 那条反向证要证的是：一个**纯加法**的名字不算变更证据 ⇒ 那一格写「不变」保持绿。它的前提是
+ * **那一格本版没有变更证据** —— 那是本版的事实，不是恒真。0.32 的 `options` 格真的变了
+ * （`snapshot.messages` 只交残余），拿固定的 `options` 当靶子时「写不变」本该红，于是这条
+ * `expectGreen` 的例在整个发布窗口里恒红（实测 2 处红：中英各一条「写着不变而本版声明变了」）。
+ *
+ * 所以格子从本版事实里挑：六格真值齐、且本版**无**变更证据的第一格。一格都挑不出 ⇒ 落回
+ * `options`，让这一例当场红 —— 那种形状（六格全有变更）需要人看一眼，不该被静默放行。
+ *
+ * 两半都得写：点名的 `config.metadata.modelMetadata.budgetTokens` 含代码侧清单里的
+ * `config.metadata.model` / `config.metadata.modelMetadata` 两个叶子名，只写一侧等于凭空造一处
+ * 中英背离，`guide-coverage` 会红在成对那一半上，而不是本例要考的事情（issue #703 的 S1 探针树暴露）。
+ */
+function surfaceAdditiveProbe(lang, text) {
+  const ADDITIVE = "config.metadata.modelMetadata.budgetTokens";
+  const truths = new Map();
+  for (const cell of SURFACE_CELLS) {
+    const truth = cell.truth();
+    if (truth) truths.set(cell.id, truth);
+  }
+  const declared = declaredSurfaceChanges(PKG_VERSION, truths);
+  const free = SURFACE_CELLS.find((c) => truths.has(c.id) && (declared?.byCell.get(c.id)?.size ?? 1) === 0);
+  const cell = free ?? SURFACE_CELLS.find((c) => c.id === "options");
+  const body = lang === "en"
+    ? `* **${cell.en} — unchanged.** Nothing in this surface moved in this release; the added\n`
+      + `  \`${ADDITIVE}\` leaf changes no existing member (§4.1).`
+    : `* **${cell.cn}——不变。** 这一版没有改动这一格的任何成员；本版**新增**的\n`
+      + `  \`${ADDITIVE}\` 叶子不改动任何既有成员（§4.1）。`;
+  return putSurfaceBullet(lang, cell.id, body)(text);
+}
+
 /** 那一节（到第一个 `###` 子节或下一个 `##` 为止）。找不到返 null。 */
 function unchangedSurfaceSection(rel, lang) {
   const rec = fileRecord(rel);
@@ -9991,7 +10024,9 @@ const SELF_TEST_CASES = [
   {
     label: "#690 读不出（①）：§4 那一节被改名 ⇒ 红，且是「读不出」那一族（exit 2）",
     overlay: {
-      [SURFACE_GUIDE_EN]: replaceUnique("## 4. What does not change", "## 4. Notes on what moved"),
+      // 节号别抄：`§4` 是 0.31 那份指南的编号，0.32 那份是 §9 ⇒ 抄一个号，切版当天变异就打不上，
+      // 自测红的是「变异没落上」（0.32 切版树实测）。按判据自己的标题形状改，编号是几都落得上。
+      [SURFACE_GUIDE_EN]: (t) => t.replace(/^## \d+\. What does not change\b/mu, "## 4. Notes on what moved"),
     },
     expect: [guideExpectRe("unchanged-surface", SURFACE_GUIDE_EN, / 里找不到「不变」那一节/)],
   },
@@ -10001,21 +10036,12 @@ const SELF_TEST_CASES = [
     expect: [new RegExp(`unchanged-surface: 读不到 CHANGELOG 的 ${esc(PKG_VERSION)} 段`, "u")],
   },
   {
-    label: "#690（反向证）纯加法的名字不是变更证据：选项格写「不变」仍绿",
-    // 这一例的靶子是「本版段里那一笔纯加法」（0.30 段里的 `config.metadata.modelMetadata.budgetTokens`）：
-    // 它**不需要**证据注入（前提本来就是「这一格没有变更证据」），但 §4 是散文形状时也要落得上（#699 ③(a)）。
-    // **中英两半都得写**：这条声明点名的 `config.metadata.modelMetadata.budgetTokens` 里含着代码侧清单里的
-    // `config.metadata.model` / `config.metadata.modelMetadata` 两个叶子名，只写 EN 一侧就等于凭空造一处中英背离
-    // ——`guide-coverage` 的中英成对那一半会红，而它红的不是本例要考的「加法 ≠ 变更证据」。0.30 两半指南本来就
-    // 都提过这两个叶子（所以历史上没红），0.31 两半都没提 ⇒ 只改一侧就红（issue #703 的 S1 探针树暴露）。
+    label: "#690（反向证）纯加法的名字不是变更证据：本版「无变更证据」那一格写「不变」仍绿",
+    // 靶子那一格由 `surfaceAdditiveProbe` 现选（前提「这一格本版没有变更证据」是本版事实而非恒真；
+    // 0.32 的 `options` 真变了 ⇒ 写死 `options` 会让这条 expectGreen 在整个发布窗口恒红）。
     overlay: {
-      [SURFACE_GUIDE_EN]: putSurfaceBullet("en", "options",
-        "* **Options — unchanged.** The `runToolLoop` input surface, the `capabilities` shape, and every\n"
-          + "  existing configuration leaf. The added `config.metadata.modelMetadata.budgetTokens` leaf\n"
-          + "  changes no existing leaf (§4.1)."),
-      [SURFACE_GUIDE_CN]: putSurfaceBullet("cn", "options",
-        "* **选项——不变。** `runToolLoop` 的输入面、`capabilities` 形状与每一个既有配置叶子都没动；"
-          + "本版**新增**的 `config.metadata.modelMetadata.budgetTokens` 叶子不改动任何既有叶子（§4.1）。"),
+      [SURFACE_GUIDE_EN]: (t) => surfaceAdditiveProbe("en", t),
+      [SURFACE_GUIDE_CN]: (t) => surfaceAdditiveProbe("cn", t),
     },
     expectGreen: true,
   },
