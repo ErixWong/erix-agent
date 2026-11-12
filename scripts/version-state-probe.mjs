@@ -445,15 +445,46 @@ function buildSelfTestSeed(hostSrc) {
   // ── issue #731 C7：让「摘掉高于本版的段」这一格**不是空转** ──────────────────────────────
   // 配方第 3 步在今天这棵树上恰好无事可做：`next` 就是最高的**已发布**段，比它高的段一个都没有
   // ⇒ `dropSectionsAbove` 实测返回空数组，那三十行代码在主分支上从来没真的执行过，坏了也没人红。
-  // 所以这里先往种子里插一段**更高的未发布段**，再让**真函数**去摘它：一次跑同时钉住两件事——
+  // 所以分两阶段跑：阶段一按本意把 `next` 之上既有的段摘掉，产物当基准；阶段二往基准上塞一段
+  // **更高的未发布段**，再让**真函数**去摘它，一次跑同时钉住两件事——
   //   · 摘得掉（更高段确实进了摘除清单）；
-  //   · 只摘它（摘完之后与插入前**逐字节**一致，没有顺手多删一行）。
+  //   · 只摘它（摘完之后与基准**逐字节**一致，没有顺手多删一行）。
   // 这一段跑在 `assert` 那套记账之前（种子在所有宿主之前建，`problems` 还在 TDZ），所以失败走 `fail()`：
   // 种子建不出来，后面每一例都无从跑起，比记一条问题更诚实。
   const seedChangelog = path.join(seed, "CHANGELOG.md");
-  const beforeInjection = readFileSync(seedChangelog, "utf8");
+  // 阶段一：按本意先摘一次。宿主在切版与发布回写之间时，`next` 上面压着一条**真的**未发布段
+  // （切版那一刻必然如此），那条段本来就是这一步该摘的东西 —— 见 `dropSectionsAbove` 的注释：
+  // 它定义的是种子的版本面。这一步的产物就是阶段二的基准。
+  // 阶段一自己也不能空转（和 C7 当初治的是同一个病：主分支顶上就是最高已发布段，真树上无事可做，
+  // 坏掉没人红），所以先塞一条「宿主已切到下一版」的未发布段 —— 发布窗口里的真形状 —— 再让真函数摘。
+  // 这一格钉四件事：真摘了（进了清单）、清单里没有不该摘的（每一项都真高于 `next`）、摘干净了
+  // （标题与正文都不在盘上）、没多摘（`next` 那条段还在盘上）。
+  const windowVersion = `${Number(next.split(".")[0])}.99.99`;   // 高于 `next`、低于 canary
+  const windowSentinel = "自测塞进来的「宿主已切版」段（阶段一）";
+  const windowLines = readFileSync(seedChangelog, "utf8").split("\n");
+  const windowAt = windowLines.findIndex((line) => /^##\s/u.test(line));
+  if (windowAt === -1) {
+    fail(`${seedChangelog} 里找不到任何 \`## \` 标题 ⇒ 「宿主已切版」那段无处可插（阶段一只能空转）`,
+      "SEED_UNREADABLE");
+  }
+  windowLines.splice(windowAt, 0, `## [${windowVersion}]（未发布 / unpublished）`, "",
+    `- ${windowSentinel}，必须被按本意整段摘掉`, "");
+  writeFileSync(seedChangelog, windowLines.join("\n"), "utf8");
+  const droppedPre = dropSectionsAbove(seed, next);
+  const baseline = readFileSync(seedChangelog, "utf8");
+  if (!droppedPre.includes(windowVersion) || droppedPre.some((v) => cmpSemver(v, next) <= 0)
+    || baseline.includes(`## [${windowVersion}]`) || baseline.includes(windowSentinel)
+    || !baseline.includes(`## [${next}]`)) {
+    fail(`阶段一（按本意摘掉高于 ${next} 的段）坏了：清单 ${JSON.stringify(droppedPre)} · `
+      + `盘上还留着 ${windowVersion}=${baseline.includes(`## [${windowVersion}]`)} · `
+      + `正文残留=${baseline.includes(windowSentinel)} · 要切的那一版还在=${baseline.includes(`## [${next}]`)}`
+      + " ⇒ 配方第 3 步坏掉也从来没人红（它在主分支上是空转）", "SEED_UNREADABLE");
+  }
   const canary = `${Number(next.split(".")[0]) + 1}.0.0`;   // 一定高于 `next`（主版本号 +1）
-  const seedLines = beforeInjection.split("\n");
+  // 阶段二的基准是阶段一的产物，不是「还没插 canary 的那份」：拿后者当基准，发布窗口里的正常状态
+  // 会被读成配方坏了（0.32.0 切版实测：摘除清单 ["1.0.0","0.32.0"] ⇒ `SEED_UNREADABLE`）。
+  // 换基准不削弱这一格 —— 阶段二仍然是「只摘 canary、逐字节不多删」那一格硬证。
+  const seedLines = baseline.split("\n");
   const topAt = seedLines.findIndex((line) => /^##\s/u.test(line));
   if (topAt === -1) {
     fail(`${seedChangelog} 里找不到任何 \`## \` 标题 ⇒ C7 那一段更高的未发布段无处可插（配方第 3 步只能空转）`,
@@ -463,22 +494,22 @@ function buildSelfTestSeed(hostSrc) {
   writeFileSync(seedChangelog, seedLines.join("\n"), "utf8");
   const droppedCanary = dropSectionsAbove(seed, next);
   const afterDrop = readFileSync(seedChangelog, "utf8");
-  if (!droppedCanary.includes(canary) || afterDrop !== beforeInjection) {
+  if (!droppedCanary.includes(canary) || afterDrop !== baseline) {
     fail(`自测插进去的更高段没被摘干净（canary=${canary}，实测摘除清单 ${JSON.stringify(droppedCanary)}，`
-      + `摘完之后${afterDrop === beforeInjection ? "与插入前一致" : "与插入前**不**一致"}）`
+      + `摘完之后${afterDrop === baseline ? "与基准一致" : "与基准**不**一致"}）`
       + " ⇒ 配方第 3 步（`dropSectionsAbove`）坏了：它今天在主分支上是空转，坏掉也从来没人红",
       "SEED_UNREADABLE");
   }
-  console.log(`         [C7] 先塞一段更高的未发布段 ${canary} 再让真函数摘：摘除清单 ${JSON.stringify(droppedCanary)} · `
-    + "摘完之后与塞之前逐字节一致 ⇒ 这一格不是空转");
+  console.log(`         [C7] 阶段一按本意摘掉高于 ${next} 的段（含自测塞的 ${windowVersion}）：`
+    + `${JSON.stringify(droppedPre)} · 要切的那一版那条段还在盘上 · `
+    + `阶段二塞入 ${canary} 再摘：清单 ${JSON.stringify(droppedCanary)} · 与基准逐字节一致 ⇒ 两阶段都不是空转`);
 
-  const dropped = dropSectionsAbove(seed, next);
   setVersion(seed, next);
   stampReleaseState(seed, { published: previous, date: null });
   console.log(`  [种子] 合成种子宿主 ${seed}：入库清单 ${built.files} 个文件从宿主树 ${hostSrc} 机械复制，`
     + "**版本面由自测合成**（宿主停在哪一版都不影响）");
   console.log(`         要切的那一版 ${next}（种子里最高的已发布段） · 上一版 ${previous} · `
-    + `摘掉高于 ${next} 的段：${dropped.length ? dropped.join(" / ") : "（无）"} · `
+    + `摘掉高于 ${next} 的段：${droppedPre.length ? droppedPre.join(" / ") : "（无）"} · `
     + "段首「未发布」形状走 --sync（不手改字节）");
   return seed;
 }
