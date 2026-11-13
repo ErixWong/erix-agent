@@ -47,9 +47,9 @@
 | `npm run check:docs-examples` | 两份契约与两份 README 里的 JS 代码围栏 | `#check-docs-examples` |
 | `npm run check:pack-links` | 随包 Markdown 链接 + `.d.ts` 与发布面声称 | `#check-pack-links` |
 | `npm run check:release` | 离线发布前检查清单合成一条命令 | `#check-release` |
-| `npm run check:release:real` | 真实上游清单（门控 `ERIX_E2E_REAL=1`） | `#check-release-real` |
+| `npm run check:release:model-e2e` | 真模型端点 e2e 清单（门控 `ERIX_E2E_MODEL=1`） | `#check-release-real` |
 | `npm run release:day` | 发版日的四个 `--stage` | `#release-day` |
-| `npm run check:cli-real` | 装好的 CLI 打真实上游（受门控） | `#check-cli-real` |
+| `npm run check:cli:model-e2e` | 装好的 CLI 打真模型端点（受门控） | `#check-cli-real` |
 | `npm run check:docs-spelling` | 活文档里退役的扁平选项拼写 | `#check-docs-spelling` |
 | `npm run check:agents-directives` | 本页：状态句、会过期的抄件、裸坐标、字节预算 | `#check-agents-directives` |
 | `npm run types:build` | 生成随包发布的 `src/**/*.d.ts` | `#type-surface` |

@@ -51,9 +51,9 @@ One row per gate: what it judges, and the anchor to read before editing what it 
 | `npm run check:docs-examples` | JS fences of both contract docs and both READMEs | `#check-docs-examples` |
 | `npm run check:pack-links` | packaged Markdown links + `.d.ts` / publish-surface claims | `#check-pack-links` |
 | `npm run check:release` | offline pre-release checklist as one command | `#check-release` |
-| `npm run check:release:real` | real-upstream checklist (gated by `ERIX_E2E_REAL=1`) | `#check-release-real` |
+| `npm run check:release:model-e2e` | real model endpoint checklist (gated by `ERIX_E2E_MODEL=1`) | `#check-release-real` |
 | `npm run release:day` | the release day in four `--stage`s | `#release-day` |
-| `npm run check:cli-real` | the installed CLI against the real upstream (gated) | `#check-cli-real` |
+| `npm run check:cli:model-e2e` | the installed CLI against the real model endpoint (gated) | `#check-cli-real` |
 | `npm run check:docs-spelling` | retired flat option spellings in living docs | `#check-docs-spelling` |
 | `npm run check:agents-directives` | this page: status claims, expiring copies, bare coordinates, byte budget | `#check-agents-directives` |
 | `npm run types:build` | generates the published `src/**/*.d.ts` | `#type-surface` |
