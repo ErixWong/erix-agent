@@ -3,7 +3,7 @@
     "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
     "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
     "expect": {
-        "tests": 3830,
+        "tests": 3835,
         "fail": 0,
         "maxSkipped": 18
     },
@@ -1150,6 +1150,22 @@
             "todo": 0,
             "cancelled": 0,
             "why": "issue #802 第 1、2 刀（去掉「措辞必须在场」那一半 + 让登记表能被机器读出合法更新路径）**rebase 到 origin/main c51c8e6e 之后**在最终树上现测：`npm test` 跑前 `find src -name '*.d.ts' -delete`、pgrep 确认本树无并发套件（本仓 #799：docs 判读与套件并发会出假绿），日志 /tmp/tap-final.log；随后在含本条登记的最终树上复跑同一命令并由 `node scripts/suite-summary-reconcile.mjs --log <同一份日志>` 复核，六个计数逐字相同 ⇒ 登记值不是只能从某一棵恰好被挑中的树上量出来；非手抄、⚠ 不写 TAP 行号（行号随任意一条用例的打印行数漂）。**增量 +2 逐格有名有姓**：① `test/flat-count-inventory.test.js`「inventory mismatch diagnostics include the canonical --sync command」（把五条 ✗ 必须自带 `--sync …` 钉成单测，判别力实证：把其中一条的 `--sync` 改成 `syncX` ⇒ 该格 `not ok 1`、还原即绿）；② `test/release-day.test.js`「默认 publish 阶段以 AWAITING_PUBLISH 退出码停在人工交接点」（替掉原来那条比字面句子「3 preflight 全绿、等你发布」的断言）。**依据是用例注册数不是绿灯**：本片的删改全部是「把措辞在场断言换成语义/退出码/计数对账」，`test/static-guards.test.js` 58 → 58 格、`test/host-consumer-probe.test.js` 8 → 8 格、`test/type-check-strict-ratchet.test.js` 8 → 8 格（静态注册数逐文件比对），一个格子没少、没加 skip、没把断言改成恒真。主干自己那棵树登记的 3828 是**历史读数**，不是本数的推导依据；本条只取本树现测。skipped 13 与上游同数（12 条真上游/真 relay 门禁 + 1 条真上游多会话格），`maxSkipped` 上限 18 不动。"
-        }
+        },
+    {
+        "date": "2026-11-13",
+        "env": "本地单开发机，`npm test` 默认（真模型端点闸门关）",
+        "node": "v22.23.2",
+        "commit": "0c57bfd9（被测量那一棵树的内容；登记这笔提交在它之后，只改这个 JSON）",
+        "branch": "fix-261113-02-model-e2e-rename",
+        "mergeBase": "ea9629e0",
+        "mainSha": "ea9629e0",
+        "tests": 3835,
+        "pass": 3822,
+        "fail": 0,
+        "skipped": 13,
+        "todo": 0,
+        "cancelled": 0,
+        "why": "issue #817（工单 261113-02）改名这一片的 +5，**两边各跑一次同一批文件取差**（控制树 = main `ea9629e0`，同一台机器、同一 node），不是拿 main 登记值加本支增量猜：`examples/e2e-real-gate.test.mjs` **+4**（新文件：别名 `ERIX_E2E_REAL` 仍开闸、命中必打弃用告警、新旧名同时给时新名胜、闸门关着仍 skip —— 判据 4 要求的别名证明不许静默生效，所以这四格是判据本身）；`test/observation-scripts-exit-codes.test.js` **3→4**（多一条：脚本在只有旧名时也必须认闸合并打同一行告警）。其余改动文件 Δ=0 并已逐个实测对账：`test/release-day.test.js` 10→10、`test/release-real-step7-678.test.js` 17→17；8 个真模型端点套件只改**标题措辞**（`真上游` → `真模型端点`）与 skip 文案，用例行数不变。`skipped` 本机 13 ⇒ `maxSkipped` **不动**（18 是 CI `node 22` 已量到的上限）。`fail` 实测 0。同片其余登记闸不加 `--sync` 也 exit 0：`check:inventory` / `check:mutation` / `check:pack-links` / `check:exports` / `check:config-leaf-values` / `check:docs*` / `check:agents-directives`（指令面措辞本次没变长，「假上游 / fake upstream」按 issue 里记录的收窄不在本单范围）。没删例、没新增 skip、没把任何判据删成恒真。"
+    }
     ]
 }
