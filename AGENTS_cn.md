@@ -106,11 +106,11 @@
 
 ```bash
 npm run release:day -- --stage preflight --hosts <host repo dirs>
-#   [1/5] check:changelog                       每个公共面合并都在本版段落里有名字
-#   [2/5] CHANGELOG [Unreleased] carry          还停在 `## [Unreleased]` 下的条目
-#   [3/5] ERIX_E2E_REAL=1 check:release:real    真实上游；没带那个环境变量 ⇒ 什么都没跑 = 未判定
-#   [4/5] check:release                         离线：包形状 / 装好的包 / TS 宿主 / CLI 假上游
-#   [5/5] check:host-consumers -- --hosts …     每个宿主命中都必须已被本版升级指南覆盖
+#   [1/5] check:changelog                           每个公共面合并都在本版段落里有名字
+#   [2/5] CHANGELOG [Unreleased] carry              还停在 `## [Unreleased]` 下的条目
+#   [3/5] ERIX_E2E_MODEL=1 check:release:model-e2e  真模型端点；没带那个环境变量 ⇒ 什么都没跑 = 未判定
+#   [4/5] check:release                             离线：包形状 / 装好的包 / TS 宿主 / CLI 假上游
+#   [5/5] check:host-consumers -- --hosts …         每个宿主命中都必须已被本版升级指南覆盖
 npm run release:day -- --stage publish       # 打印操作单，exit 3；`npm publish` 由你自己在终端跑
 npm run release:day -- --stage writeback --version <x.y.z> --published <x.y.z> [--published-date <YYYY-MM-DD>]
 npm run release:day -- --stage finalize      # 给切版打 tag → 双推 → 两侧各验一次 → 文档闸

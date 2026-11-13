@@ -111,9 +111,9 @@ jobs:
       - name: Declaration build assertion
         run: npm run check:types-build
 
-      # 闸门（ERIX_E2E_REAL=1）在 CI 里是关着的 ⇒ 这条 exit 0 并打印分类原因（验的是装置本身没坏）。
-      - name: Gated real-upstream CLI smoke (gate closed in CI)
-        run: npm run check:cli-real
+      # 闸门（ERIX_E2E_MODEL=1）在 CI 里是关着的 ⇒ 这条 exit 0 并打印分类原因（验的是装置本身没坏）。
+      - name: Gated real-model-endpoint CLI smoke (gate closed in CI)
+        run: npm run check:cli:model-e2e
 
       # 离线、自清洁、约 15 s，矩阵里跑两遍纯浪费 ⇒ 只在 node 22 跑一次。
       - name: Release check (offline pack → install → contract suites → tsc --strict → CLI smoke)

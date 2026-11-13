@@ -96,7 +96,7 @@ test("preflight 第 2 步（issue #715）：`[Unreleased]` 漏搬三态——红
   mkdirSync(tree, { recursive: true });
   const scripts = {
     "check:changelog": "node -e 0 --",
-    "check:release:real": "node -e 0 --",
+    "check:release:model-e2e": "node -e 0 --",
     "check:release": "node -e 0 --",
     "check:host-consumers": "node -e 0 --",
   };
@@ -110,7 +110,7 @@ test("preflight 第 2 步（issue #715）：`[Unreleased]` 漏搬三态——红
   const run = (changelog, extra = []) => {
     writeFileSync(join(tree, "CHANGELOG.md"), changelog, "utf8");
     return runScript(["--stage", "preflight", "--root", tree, "--state", join(dir, "state.json"), ...extra], {
-      env: { ...process.env, ERIX_E2E_REAL: "1", RELEASE_DAY_STATE: join(dir, "state.json") },
+      env: { ...process.env, ERIX_E2E_MODEL: "1", RELEASE_DAY_STATE: join(dir, "state.json") },
     });
   };
 
@@ -184,7 +184,7 @@ test("AGENTS §4 的 preflight 清单与 PREFLIGHT_STEPS 逐格对账（中英�
     },
     {
       name: "序号跳号（[3/5] → [9/5]）",
-      text: replaceOnce(texts["AGENTS_cn.md"], "[3/5] ERIX_E2E_REAL=1 check:release:real", "[9/5] ERIX_E2E_REAL=1 check:release:real", "第 3 步序号"),
+      text: replaceOnce(texts["AGENTS_cn.md"], "[3/5] ERIX_E2E_MODEL=1 check:release:model-e2e", "[9/5] ERIX_E2E_MODEL=1 check:release:model-e2e", "第 3 步序号"),
       expect: /按行序应为 \[3\//u,
     },
     {

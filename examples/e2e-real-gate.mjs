@@ -34,8 +34,10 @@ export const LEGACY_REAL_GATE_ENV = "ERIX_E2E_REAL";
 
 /**
  * 别名命中时打的那一行告警（issue #817 判据 4 的原文，逐字不许改：报告和门禁都按它核对）。
- * 走 **stderr**：它是一条警告，不是被门禁汇总的输出面（`check:release:model-e2e` 汇总读的是 stdout 的
- * TAP 与 `RELEASE-REAL-SMOKE` 行，别名告警混进 stdout 只会给解析添噪声）。
+ * 默认缺的是一行 **stderr**：它是一条警告，不是被门禁汇总的输出面（`check:release:model-e2e` 汇总读的是
+ * stdout 的 TAP 与 `RELEASE-REAL-SMOKE` 行，混进去只会给解析添噪声）。消费方可以注入自己的 `warn`
+ * 把它接到自己的输出通道上（`scripts/release-day.mjs` 就接进 `log()`，这样 `--self-test` 能离线断到它）——
+ * 可以换通道，**不许换掉这一行本身**。
  */
 export const DEPRECATED_GATE_WARNING = "旧名 ERIX_E2E_REAL 已弃用，将在下一版退役，请改用 ERIX_E2E_MODEL";
 

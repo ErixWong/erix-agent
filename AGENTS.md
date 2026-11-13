@@ -116,11 +116,11 @@ Four commands, in this order. The five checklist rows are reconciled row by row 
 
 ```bash
 npm run release:day -- --stage preflight --hosts <host repo dirs>
-#   [1/5] check:changelog                       every public merge named in this version's section
-#   [2/5] CHANGELOG [Unreleased] carry          entries still parked under [Unreleased]
-#   [3/5] ERIX_E2E_REAL=1 check:release:real    real upstream; without the env nothing ran
-#   [4/5] check:release                         offline: tarball / installed package / TS host / CLI fake upstream
-#   [5/5] check:host-consumers -- --hosts …     every host hit covered by this version's upgrade guide
+#   [1/5] check:changelog                           every public merge named in this version's section
+#   [2/5] CHANGELOG [Unreleased] carry              entries still parked under [Unreleased]
+#   [3/5] ERIX_E2E_MODEL=1 check:release:model-e2e  real model endpoint; without the env nothing ran
+#   [4/5] check:release                             offline: tarball / installed package / TS host / CLI fake upstream
+#   [5/5] check:host-consumers -- --hosts …         every host hit covered by this version's upgrade guide
 npm run release:day -- --stage publish       # prints the operation sheet, exits 3; run `npm publish` yourself
 npm run release:day -- --stage writeback --version <x.y.z> --published <x.y.z> [--published-date <YYYY-MM-DD>]
 npm run release:day -- --stage finalize      # tag the version cut → dual push → verify both sides → doc gates

@@ -1,6 +1,6 @@
 // issue #619 真机 e2e：**默认压缩策略**（`fold-llm`）在真上游下的完整形态。
 //
-// 为什么要有这一条：`check:release:real` 原来的 5 步（工具事实 / 崩溃续跑 / 跨版本 / pi extension /
+// 为什么要有这一条：`check:release:model-e2e` 原来的 5 步（工具事实 / 崩溃续跑 / 跨版本 / pi extension /
 // 装后 CLI）**没有一步碰压缩**，而 #611（摘要器提示词加「## 教训与坑」）与 #614（CLI 默认策略从
 // `fold-statistical` 换成 `fold-llm`）改的正是这条路径。唯一碰折叠的真机脚本
 // `examples/fold-605-real-e2e.mjs` 钉死 `strategy: "fold-statistical"` ⇒ **#614 之后，默认路径

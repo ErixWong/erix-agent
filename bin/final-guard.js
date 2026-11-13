@@ -171,7 +171,7 @@ function normalizeDeclarations(findings) {
  * 收尾时都必须真的在盘上」。它读 `fileWrites`（原始 `tool_use.input[pathKey]`，见 issue #388），
  * 不读 `filesWritten`——后者是 40 码点摘要，拿去 `existsSync()` 会把长路径的 run 系统性误杀。
  *
- * 为什么默认关闭：CLI 的退出码承诺（`check:release` / `check:cli-real` 冒烟）以
+ * 为什么默认关闭：CLI 的退出码承诺（`check:release` / `check:cli:model-e2e` 冒烟）以
  * 「成功 + 无 `--final-guard` ⇒ exit 4」为准；一条默认开启的判据会把「正常收尾但没写文件」
  * 的 run 判成 `unverified`（exit 2），那是**另一个**产品承诺，必须是宿主的显式选择。
  *

@@ -1,4 +1,4 @@
-// issue #678：`npm run check:release:real` 的第 7 步 `cli-real-smoke` 必须进清单汇总。
+// issue #678：`npm run check:release:model-e2e` 的第 7 步 `cli-real-smoke` 必须进清单汇总。
 //
 // 病根（票面原话：只看 `tests=?` 会误判成「跑过但不知道证了什么」）：第 7 步跑的是
 // `scripts/cli-real-smoke.mjs`，它打的不是 `node --test` 的 TAP，于是清单里的 `parseTapSummary()`
@@ -14,8 +14,8 @@
 //      `--dry` 写 `dry=true`、脚本自身抛了写 `status=error`。
 //   C. **生产端真跑一次**（`node scripts/cli-real-smoke.mjs --dry` + 本地 TCP 假端点）：只跑 C8 ⇒
 //      自报 `checks=1`（这一格同时证明计数**不是**写死的 8），`dry=true`，退出码 0，
-//      行首没有 `[check:cli-real]` 前缀（要能 `grep '^RELEASE-REAL-SMOKE'`），假 HOME 一个字节没被写。
-//   D. **闸门关着仍无副作用**（`node scripts/release-real-check.mjs`，`ERIX_E2E_REAL` 未设）：exit 0、
+//      行首没有 `[check:cli:model-e2e]` 前缀（要能 `grep '^RELEASE-REAL-SMOKE'`），假 HOME 一个字节没被写。
+//   D. **闸门关着仍无副作用**（`node scripts/release-real-check.mjs`，`ERIX_E2E_MODEL` 未设）：exit 0、
 //      一步都不跑、不出现 `=== [i/N]` 步骤横幅、也不出现汇总行（没跑过就没有可汇总的东西）。
 //   E. **反向证：冒烟的结果变了，清单汇总必须跟着变**（issue #678 评论 id 6577783318 点名要求的那一格）。
 //      变异打在**真脚本的副本**上（不碰真树，同 `agents-directive-scan --self-test` 的先例）：往副本的
@@ -88,7 +88,7 @@ test("#678 行契约：全绿那次是 checks/pass/fail + dry=false + failed=- +
   // 行首就是前缀：`grep '^RELEASE-REAL-SMOKE'` 必须能命中（日志前缀会让它不再是机器可读行）。
   assert.ok(line.startsWith(`${SMOKE_PREFIX} `), "汇总行必须以前缀开头");
 
-  const parsed = parseSmokeLine(`[check:cli-real] 一些日志\n${line}\n`);
+  const parsed = parseSmokeLine(`[check:cli:model-e2e] 一些日志\n${line}\n`);
   assert.deepEqual(parsed, {
     id: "cli-real", checks: 8, pass: 8, fail: 0, dry: false, failed: [], status: "ok",
   });
@@ -266,7 +266,7 @@ test("#678 展示：TAP 步骤的汇总一字不变，也不带 cli_real 那一�
 });
 
 test("#678 展示：非 TAP 步骤取不到 TAP 仍写 ?，第 7 步读不到汇总就写 cli_real=?（不省略、不补 0）", () => {
-  assert.equal(summaryLine(parseTapSummary("[check:cli-real] 没有 TAP 行\n")),
+  assert.equal(summaryLine(parseTapSummary("[check:cli:model-e2e] 没有 TAP 行\n")),
     "tests=? pass=? fail=? skip=?");
   assert.equal(summaryLine(parseTapSummary(""), { smoke: undefined, expectsSmoke: true }),
     "tests=? pass=? fail=? skip=? cli_real=?",
@@ -316,7 +316,7 @@ test("#678 生产端：--dry 真跑一次，自报 checks=1 / dry=true / status=
       },
     }, null, 2), "utf8");
 
-    const env = { ...process.env, HOME: home, ERIX_E2E_REAL: "1", ERIX_E2E_CONFIG: configPath };
+    const env = { ...process.env, HOME: home, ERIX_E2E_MODEL: "1", ERIX_E2E_CONFIG: configPath };
     const result = spawnSync(process.execPath, [SMOKE_SCRIPT, "--dry"], {
       cwd: ROOT, env, encoding: "utf8", timeout: 120_000,
     });
@@ -349,9 +349,12 @@ test("#678 生产端：--dry 真跑一次，自报 checks=1 / dry=true / status=
 
 // ── D. 闸门关着仍无副作用 ────────────────────────────────────────────────────
 
-test("#678 闸门关着：check:release:real 一步都不跑、exit 0、不产汇总行", async () => {
+test("#678 闸门关着：check:release:model-e2e 一步都不跑、exit 0、不产汇总行", async () => {
   const env = { ...process.env };
-  delete env.ERIX_E2E_REAL; // 缺省形态：真上游不是任何默认门禁的硬依赖
+  // 缺省形态：真模型端点不是任何默认门禁的硬依赖。两个名字都要清（issue #817 后旧名仍是别名，
+  // 只清新名会让外层带旧名跑的人看见「闸门开着」的假现场）。
+  delete env.ERIX_E2E_MODEL;
+  delete env.ERIX_E2E_REAL;
   const result = spawnSync(process.execPath, [CHECKLIST_SCRIPT], {
     cwd: ROOT, env, encoding: "utf8", timeout: 120_000,
   });
@@ -413,7 +416,7 @@ async function makeSmokeTree(mutate) {
 
 /** 在一棵（可能是变异的）冒烟树上跑一次 `--dry`，返回 `{ status, stdout }`。 */
 async function runSmokeTree(tree, { home, configPath, port }) {
-  const env = { ...process.env, HOME: home, ERIX_E2E_REAL: "1", ERIX_E2E_CONFIG: configPath };
+  const env = { ...process.env, HOME: home, ERIX_E2E_MODEL: "1", ERIX_E2E_CONFIG: configPath };
   const result = spawnSync(process.execPath, [tree.script, "--dry"], {
     cwd: tree.dir, env, encoding: "utf8", timeout: 120_000,
   });

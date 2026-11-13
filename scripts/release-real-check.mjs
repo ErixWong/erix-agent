@@ -1,28 +1,28 @@
 #!/usr/bin/env node
-// 发版前真机清单：把七条真上游 e2e + 装后 CLI 真机冒烟串成**一条**命令（共 8 步；工单 261021-13 / #619，
+// 发版前真机清单：把七条真模型端点 e2e + 装后 CLI 真机冒烟串成**一条**命令（共 8 步；工单 261021-13 / #619，
 // issue #617 P2 补的是第 ② 条「派生：父 run 派生子 run 并取回结果」，issue #637 补的是第 ③ 条
 // 「归一化兜底的截断判别」）。
 //
-//   ERIX_E2E_REAL=1 npm run check:release:real
+//   ERIX_E2E_MODEL=1 npm run check:release:model-e2e
 //
-// 为什么要有：0.23.0 是在「文档审计没跑 + 四条真上游 e2e 没跑」的状态下发出去的。每一条单独看
+// 为什么要有：0.23.0 是在「文档审计没跑 + 四条真模型端点 e2e 没跑」的状态下发出去的。每一条单独看
 // 都是「记得手动跑就绿、忘了就红」的东西，而**记性不是机制**。这条命令把那七条按固定顺序串起来、
 // 逐条点名、红就汇总 ⇒ 「忘了跑」从一件没有痕迹的事变成一个能看见的缺口：发布前跑一条命令。
 //
 // 与既有命令的关系（**不是**替代，是叠加）：
 // - `npm run check:release`：离线、不打模型，管 tarball 形状 / 装后导入 / TS 宿主 / CLI 假上游；
-// - `npm run check:cli-real`：真上游，但只管装后 CLI 那一条（= 本清单第 ⑥ 条）；
+// - `npm run check:cli:model-e2e`：真模型端点，但只管装后 CLI 那一条（= 本清单第 ⑥ 条）；
 // - `npm run check:docs`：文档事实（版本声明、命令存在性、中英成对……）；
-// - 本条：真上游全景（库层工具事实 / 派生 / 崩溃续跑 / 跨版本读窗口 / pi extension / 装后 CLI /
+// - 本条：真模型端点全景（库层工具事实 / 派生 / 崩溃续跑 / 跨版本读窗口 / pi extension / 装后 CLI /
 //   默认压缩策略 `fold-llm`）。
 //
 // 闸门（与 `examples/e2e-real-gate.mjs` 同一口径，绝不另造一套）：
-// - `ERIX_E2E_REAL` 不是 `1` ⇒ **一步都不跑**、exit 0、打分类原因。真上游不许变成任何默认门禁
+// - `ERIX_E2E_MODEL` 不是 `1` ⇒ **一步都不跑**、exit 0、打分类原因。真模型端点不许变成任何默认门禁
 //   的硬依赖（AGENTS.md 测试隔离条）；CI 里这条命令的闸门是关着的，它自证的是装置没坏，
 //   不是上游可用。
-// - 闸门开着、但配置/凭据/端点不可用 ⇒ **exit 1**。这是本脚本唯一一处比 `check:cli-real` 更严
+// - 闸门开着、但配置/凭据/端点不可用 ⇒ **exit 1**。这是本脚本唯一一处比 `check:cli:model-e2e` 更严
 //   的地方，理由是命令的用途：那边是「有就顺手验一下」，这边是**发版前的必跑项**——操作者已经
-//   声明「我要打真上游了」，此时「跳过」等于「发版清单根本没跑」，报成绿就是 PR #289 阻断 1 的
+//   声明「我要打真模型端点了」，此时「跳过」等于「发版清单根本没跑」，报成绿就是 PR #289 阻断 1 的
 //   镜像错误（那边是「闸门说 ok 其实跑不起来」，这边是「跳过冒充通过」）。
 // - 子进程里若出现 `[gate_missing]` / `[config_*]` / `[api_key_*]` / `[endpoint_unreachable]`
 //   这类**闸门/配置类** skip，同样判该条红：本脚本的预检说 ok 而子进程说不可用 ⇒ 两处口径打架，
@@ -33,7 +33,7 @@
 // `?`**（不许写 0——「没摘要」与「零失败」是两件事）。第 7 条 `cli-real-smoke.mjs` 打的**本来就不是** TAP，
 // 这是设计上唯一「该取不到汇总」的一条（它改自报一行 `RELEASE-REAL-SMOKE …`，见下）；其余各条读回 `?`
 // 都该当异常查。⚠ 这条口径要按**本文件的现状**读，别当成已被 #774 闭死：#774 把 reporter 钉成 TAP 是钉在
-// `package.json` 的 `test` 脚本（`node --test --test-reporter=tap`）里，而 `check:release:real` 是直接
+// `package.json` 的 `test` 脚本（`node --test --test-reporter=tap`）里，而 `check:release:model-e2e` 是直接
 // `node scripts/release-real-check.mjs`、每步又拿 `process.execPath` 跑下面 STEPS 的 argv（见 childEnv() /
 // runStep）——这份 STEPS **没**在 argv 里钉 reporter，而 Node 24 起 `node --test` 的默认已是 spec（`ℹ tests …`，
 // 既没有 `# tests` 也没有 `# SKIP`），所以一旦在 Node 24 上真跑本清单，其余各条会整批落进 spec 形状、全部
@@ -68,7 +68,7 @@ import { parseSmokeLine } from "./smoke-summary-line.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
-/** 每条子命令的硬超时（超时算红、继续下一条；真上游的用例自身超时是 20 分钟，这里留 15 分钟余量）。 */
+/** 每条子命令的硬超时（超时算红、继续下一条；真模型端点的用例自身超时是 20 分钟，这里留 15 分钟余量）。 */
 const STEP_TIMEOUT_MS = 900_000;
 
 /** 红的时候回放的现场行数（够看到第一个 `not ok` 与它的 `error:` 段，又不至于刷屏）。 */
@@ -102,7 +102,7 @@ const STEPS = [
   },
   {
     id: "resume-real",
-    label: "真上游崩溃/续跑（examples/resume-real-e2e.test.mjs）",
+    label: "真模型端点崩溃/续跑（examples/resume-real-e2e.test.mjs）",
     argv: ["--test", "examples/resume-real-e2e.test.mjs"],
   },
   {
@@ -221,7 +221,7 @@ function runStep(step, index, total) {
     const child = spawn(process.execPath, step.argv, {
       cwd: ROOT,
       env: childEnv(),
-      // 独立进程组：超时时整组 SIGKILL，不留还在打真上游的孙进程。
+      // 独立进程组：超时时整组 SIGKILL，不留还在打真模型端点的孙进程。
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -338,7 +338,7 @@ function printTail(output) {
 }
 
 /**
- * 预检：能不能打真上游。返回 `{ proceed: true }` 或 `{ proceed: false, exitCode }`。
+ * 预检：能不能打真模型端点。返回 `{ proceed: true }` 或 `{ proceed: false, exitCode }`。
  * @returns {Promise<{ proceed: boolean, exitCode?: number }>}
  */
 async function preflight() {
@@ -349,21 +349,21 @@ async function preflight() {
   }
   log(`SKIP — ${formatSkip(gate)}`);
   if (gate.code === GAP_CODES.GATE_MISSING) {
-    // 缺省形态：一步都不跑、exit 0。真上游不是默认门禁的硬依赖。
+    // 缺省形态：一步都不跑、exit 0。真模型端点不是默认门禁的硬依赖。
     log("");
-    log(`闸门没开 ⇒ 本清单一步都没跑（exit 0，这**不是**真上游可用的信号）。`);
-    log(`发版前请这样跑：${REAL_GATE_ENV}=1 npm run check:release:real`);
+    log(`闸门没开 ⇒ 本清单一步都没跑（exit 0，这**不是**真模型端点可用的信号）。`);
+    log(`发版前请这样跑：${REAL_GATE_ENV}=1 npm run check:release:model-e2e`);
     return { proceed: false, exitCode: 0 };
   }
   log("");
-  log(`闸门开着（${REAL_GATE_ENV}=1）但真上游不可用 ⇒ 本清单**根本没跑**，按红处理。`);
+  log(`闸门开着（${REAL_GATE_ENV}=1）但真模型端点不可用 ⇒ 本清单**根本没跑**，按红处理。`);
   log(`理由：发版前的必跑项被「跳过」冒充成「通过」正是这条命令要防的事；先修好上面那条分类原因再跑。`);
   return { proceed: false, exitCode: 1 };
 }
 
 async function main() {
   const startedAt = Date.now();
-  log("=== 发版前真机清单（npm run check:release:real）===");
+  log("=== 发版前真机清单（npm run check:release:model-e2e）===");
   log(`仓库：${ROOT}`);
   log("");
   const gate = await preflight();
@@ -411,7 +411,7 @@ async function main() {
 }
 
 // 直接跑才进 main：导出的解析器（`parseTapSummary` / `skipReasons` / `gateGapSkips` / `summaryLine` /
-// `smokeSummaryLine`）要能被单独引用而不触发「预检 + 跑七条真上游」——脚本被 import 一次就烧一遍真金
+// `smokeSummaryLine`）要能被单独引用而不触发「预检 + 跑七条真模型端点」——脚本被 import 一次就烧一遍真金
 // 是不可接受的副作用。
 const invokedDirectly = process.argv[1] !== undefined
   && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

@@ -2,7 +2,7 @@
 //
 // ⚠ **本脚本是「统计臂」（`strategy: "fold-statistical"`）的回归，不是默认路径的覆盖。**
 // #614 之后 CLI 的默认策略是 `fold-llm`，所以这里钉死 `fold-statistical` 意味着**它验的不再是默认
-// 那条路**。默认臂（`fold-llm`）的覆盖在 `examples/fold-default-real-e2e.mjs`（= `check:release:real`
+// 那条路**。默认臂（`fold-llm`）的覆盖在 `examples/fold-default-real-e2e.mjs`（= `check:release:model-e2e`
 // 第 ⑥ 步，issue #619），那边断言的是「语义分节在场 / 摘要器请求 ≥1 / 被折轮次 TOK 标记逐字保留 /
 // 摘要器超时降级」——比这里更贴近默认路径。
 //

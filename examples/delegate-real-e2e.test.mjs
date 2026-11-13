@@ -16,7 +16,7 @@
 //     真上游永远不是默认门禁的硬依赖（AGENTS 测试隔离条）。
 //   · 闸门**开着**但配置/凭据/端点不可用 ⇒ **`assert.fail`**，不是 skip。理由与
 //     `scripts/release-real-check.mjs` 的预检同一条：「没跑成」不许报成绿——发版清单里的必跑项
-//     被「跳过」冒充成「通过」，正是 PR #289 阻断 1 的镜像错误。`check:release:real` 那侧另有一道
+//     被「跳过」冒充成「通过」，正是 PR #289 阻断 1 的镜像错误。`check:release:model-e2e` 那侧另有一道
 //     闸（子进程里出现 `[gate_*]` / `[config_*]` / `[api_key_*]` / `[endpoint_unreachable]` 类 skip
 //     同样判红），两层都要在。
 //
@@ -75,7 +75,7 @@ async function writeEmptyMcpConfig(dir) {
   return path;
 }
 
-test("派生真上游件已接进 check:release:real 步骤表（始终跑，不联网）", () => {
+test("派生真上游件已接进 check:release:model-e2e 步骤表（始终跑，不联网）", () => {
   // 反向证：把本文件从步骤表里摘掉 ⇒ 这一格红。否则「补了 e2e 但没进门禁」会静默存活，
   // 而发版清单是唯一会真的跑它的地方。
   const script = readFileSync(new URL("../scripts/release-real-check.mjs", import.meta.url), "utf8");

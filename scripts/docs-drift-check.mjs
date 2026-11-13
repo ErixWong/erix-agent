@@ -120,7 +120,7 @@
 //                 `package.json`，后者对 registry 的 `dist-tags.latest`；两类句子都不许带测量日期/「实测」
 //                 （日期自己不会过期，留着它就是给「过期」留一个合法位置）。全文扫描还看守
 //                 「`dist-tags.latest` 后面紧跟的版本号」与「X 从未发布」两形状。
-//                 registry 取不到（离线 / 无缓存）⇒ **降级为告警**并打印原因与来源，不判红（与 `check:cli-real`
+//                 registry 取不到（离线 / 无缓存）⇒ **降级为告警**并打印原因与来源，不判红（与 `check:cli:model-e2e`
 //                 的闸门分类同一口径：网络不可得不是文档漂移）；`--offline` 直接不读 registry；
 //                 `--registry-json <file>`（issue #703）把这份事实换成一个**探针桩**（只给合成树用，读不出 = exit 2，
 //                 CI 不传 ⇒ 生产口径不变）。
@@ -6418,7 +6418,7 @@ function changelogReach(version, byVersion, publishedSet) {
 // ── 17. CHANGELOG 版本段的发布态（issue #511 判据 3）────────────────────────────
 // 判据 3：带日期的版本段（`## [X.Y.Z] - YYYY-MM-DD`）若**不在 registry**，必须在该段首行标注
 // 「（未发布 / unpublished）」，否则红。口径参照本仓 0.24.0 先例（从未发布、不回填、保留为历史）。
-// registry 取不到（离线 / 无缓存）⇒ 跳过并在输出里明说原因，**不判红**（与 `check:cli-real` 的
+// registry 取不到（离线 / 无缓存）⇒ 跳过并在输出里明说原因，**不判红**（与 `check:cli:model-e2e` 的
 // 闸门分类同一口径：网络不可得不是文档漂移）。
 const UNPUBLISHED_MARK_RE = /未发布|unpublished/i;
 
