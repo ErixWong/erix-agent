@@ -4,20 +4,21 @@
 ## [Unreleased]
 
 ### Changed
-- **The gate family formerly called "real upstream" is renamed to say which side is real: it is the
-  model service endpoint, not the scenario (issue #817, PR #822; task 261113-02).**
-  `npm run check:release:real` → `check:release:model-e2e`, `npm run check:cli-real` →
-  `check:cli:model-e2e`, and `ERIX_E2E_REAL=1` → `ERIX_E2E_MODEL=1`. The old environment name still
-  opens the gate, but a run that hits it prints `旧名 ERIX_E2E_REAL 已弃用，将在下一版退役，请改用
-  ERIX_E2E_MODEL` — a silently accepted alias cannot be deleted next version, so the warning is the
-  load-bearing part of the alias, not decoration. Scope calls recorded on the issue, because they are
-  what keeps the next reader from "finishing" this rename: 「假上游 / fake upstream」 is **out of scope**
-  (it names `fixtures/upstream.mjs`, an in-process peer that really is fake and costs no credentials —
-  the sentence does not lie); eight `src/` comments and two `examples/pi-extension` notes are
-  **incident narration** ("measured against the real endpoint: 7 rounds…") and keep the old wording, as
-  do the three older upgrade guides, which name the command that existed at *their* version.
-  `docs/requirements*` said "preserve the real upstream message" about a provider error body — that is
-  a generic reference, reworded to remove the shape without touching the requirement.
+- **The gate family formerly called "real upstream" is renamed to say which side is real: it is
+  the model service endpoint, not the scenario (issue #817, PR #822; task 261113-02).**
+  `npm run check:release:real` -> `check:release:model-e2e`, `npm run check:cli-real` ->
+  `check:cli:model-e2e`, and `ERIX_E2E_REAL=1` -> `ERIX_E2E_MODEL=1`. The old environment name
+  still opens the gate, but a run that hits it prints a one-line deprecation warning naming both
+  names (the literal lives in `DEPRECATED_GATE_WARNING` in `examples/e2e-real-gate.mjs`) -- a
+  silently accepted alias cannot be deleted next version, so the warning is the load-bearing part
+  of the alias, not decoration. Three scope calls are recorded on the issue, because they are what
+  keeps the next reader from "finishing" this rename: "fake upstream" is **out of scope** (it
+  names `fixtures/upstream.mjs`, an in-process peer that really is fake and needs no credentials --
+  that sentence does not lie); eight `src/` comments and two `examples/pi-extension` notes are
+  **incident narration** ("measured against the real endpoint: 7 rounds ...") and keep the old
+  wording, as do the three older upgrade guides, which name the command that existed at *their*
+  version; `docs/requirements*` said "preserve the real upstream message" about a provider error
+  body -- a generic reference, reworded to remove the shape without touching the requirement.
 - **「真上游」这一族闸门改名，把「哪一面是真的」说出口：真的是模型服务端点，不是场景（issue #817；
   PR #822；工单 261113-02）。** `check:release:real` → `check:release:model-e2e`、`check:cli-real` →
   `check:cli:model-e2e`、`ERIX_E2E_REAL=1` → `ERIX_E2E_MODEL=1`。旧环境变量名仍能开闸，但命中它的那一次
