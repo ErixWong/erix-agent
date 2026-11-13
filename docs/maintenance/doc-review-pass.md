@@ -45,6 +45,11 @@ is true-looking and wrong.
    `<repo>:<path>` references.)
 6. **Retired semantics** — anything the code stopped doing but the documents still promise. Read the CHANGELOG's
    Breaking sections of the last two versions and confirm each one is reflected where a host would look.
+7. **CHANGELOG entry pairs** — an entry that disappeared from **both** language faces at once. The pairing guard
+   proves every Chinese entry has an English counterpart and the reverse, and it registers no count (the old
+   `CHANGELOG_PAIR_FLOOR` was deleted in PR #826 because it went stale at every release window), so "a pair was
+   removed" is this pass's judgement, not a machine's. Compare the section against the merges it is supposed to
+   name (`npm run check:changelog` covers the named-merge half).
 
 ## How to report
 
