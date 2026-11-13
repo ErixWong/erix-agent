@@ -7535,8 +7535,12 @@ nothing moved out of it (message bodies included). This new file only carries *r
   discriminator. Re-appending the
   same event key with the same payload is skipped (`appendRecoveryRow` returns `false`); a different payload under the
   same key is rejected, not overwritten. A longer partial text is a *new* event that **takes over the round's slot**:
-  the round's previous row disappears in the rewrite, so the file holds only the latest full text (older rounds'
-  rows and all `tool-executed` rows are untouched by that rewrite). A host that tails this file for an incremental
+  the round's previous row disappears in the rewrite, so the file holds only the latest full text. Since #827 slice 2
+  that same rewrite **also prunes older rounds'** `partial-text` rows: the reader only ever asks for the crash round
+  (`readPartialTextRecoveryRow(records, crashRound)`, and the resume side takes
+  `readPartialTextRecoveryRounds().at(-1)`), so an older round's slot is a dead row the moment a newer round's row
+  arrives. Every `tool-executed` row survives that rewrite — such rows are cleared **only at run start**, by
+  `clearRecoveryRows` (a whole-file `rm`, deliberately not at round start). A host that tails this file for an incremental
   mirror **will see rows vanish** — mirror by re-reading the file (or treat each `partial-text` write as replacing
   that round's last one); do not assume a line, once read, stays in the file.
 

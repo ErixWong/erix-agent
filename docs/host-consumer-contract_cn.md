@@ -5922,8 +5922,11 @@ append-only 账本现在**每本 run 多写一个文件**：`<dir>/<runId>.recov
   不会把同一份正文数出两遍。
 - `dedupKey` 就是**事件键**，由 `recovery-rows.js` 里的 `buildRecoveryEventKey` 生成。形状按 store 测试自己的夹具取样：`tool-executed` 行只带光板的 `toolUseId`（`pendingToolUseIds: ["call-7f"]`、`toolUseId: "call-7f"`）；`partial-text` 行带 `text`，判别字段换成那段正文的指纹。同一事件键 + 同一 payload
   重放会被跳过（`appendRecoveryRow` 返回 `false`）；同键不同 payload 是**拒绝**，不是覆盖。正文变长算**新事件**，
-  它会**接管该轮的槽**：该轮上一条在重写中消失，文件里只剩最新全文那一条（其它轮的行与所有
-  `tool-executed` 行都不被这次重写波及）。宿主若 tail 这份文件做增量镜像，会**看到行消失**——镜像要么整份
+  它会**接管该轮的槽**：该轮上一条在重写中消失，文件里只剩最新全文那一条。自 #827 第 2 刀起，同一次重写
+  还会**剪掉旧轮的 `partial-text` 行**：读侧只认崩溃轮（`readPartialTextRecoveryRow(records, crashRound)`，
+  续跑侧取 `readPartialTextRecoveryRounds().at(-1)`），新一轮的行一到，旧轮那条就是死行。所有
+  `tool-executed` 行都不受这次重写波及——它们**只在 run 起跑时**由 `clearRecoveryRows`（整文件 `rm`，
+  刻意不是轮起跑）清掉。宿主若 tail 这份文件做增量镜像，会**看到行消失**——镜像要么整份
   重读，要么把每次 `partial-text` 写入视为对该轮最后一条的替换；不要假定一行落盘后就永远在文件里。
 
 写入时机：`tool-executed` 行在**执行器返回的那一刻**追加 —— 比 `tool_result` 行落盘更早，因此也比本轮任何快照写更早。

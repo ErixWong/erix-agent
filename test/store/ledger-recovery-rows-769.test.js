@@ -188,9 +188,9 @@ test("#827 槽化（判据 1）：同一轮连写 3 次 partial-text ⇒ 只剩 
         buildToolExecutedRecoveryRow({ runId, round: 7, toolUseId: "t-a" })), true, `${label}：tool 行照旧`);
       assert.equal(await store.appendRecoveryRow(runId,
         buildToolExecutedRecoveryRow({ runId, round: 7, toolUseId: "t-b" })), true, `${label}：第二条 tool 行照旧`);
-      assert.equal(await store.appendRecoveryRow(runId,
-        buildPartialTextRecoveryRow({ runId, round: 8, text: "邻轮正文" })), true, `${label}：邻轮槽独立`);
       // 再重放一次最新正文（同键同 payload）⇒ 幂等跳过，不新增行也不动文件。
+      // 注：本轮**不**写邻轮 —— 自第 2 刀的跨轮自剪枝，新一轮的 partial 行到场就会把本轮的槽位
+      // 掉掉，「邻轮互不干扰」不再是最终形状（那部分判据在下面的「判据 4」里按新口径钉）。
       assert.equal(await store.appendRecoveryRow(runId,
         buildPartialTextRecoveryRow({ runId, round: 7, text: "第一段第二段第三段" })), false,
         `${label}：同槽同正文重放必须报「跳过」`);
@@ -204,8 +204,6 @@ test("#827 槽化（判据 1）：同一轮连写 3 次 partial-text ⇒ 只剩 
       const toolRows = rows.filter((r) => r.recoveryEvent === RECOVERY_EVENT_TOOL_EXECUTED);
       assert.deepEqual(toolRows.map((r) => r.toolUseId), ["t-a", "t-b"],
         `${label}：tool-executed 不受槽化影响：一行一事件、只追加、永不替换（含同轮两条）`);
-      assert.equal(rows.filter((r) => r.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT && r.round === 8).length, 1,
-        `${label}：槽是**同轮同事件**替换，不得误伤邻轮的槽`);
 
       if (fileDir !== null) {
         // 落盘面：原子整写后文件仍是逐行合法的 JSONL，partial 行物理上只有一条。
@@ -240,6 +238,88 @@ test("#827 槽化（判据 3）：替换后重放**被替换掉的那份正文**
   const partials = rows.filter((r) => r.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT);
   assert.equal(partials.length, 1, "重放后该轮仍然只有一条（槽语义不因重放而破坏）");
   assert.equal(partials[0].text, "aaaa", "内容必须是重放的那份正文，而不是被静默丢弃后停在 bbbb");
+});
+
+test("#827 跨轮自剪枝（判据 4）：第 2 轮的部分行到场后，文件里只剩第 2 轮那一条 partial，两轮的 tool 行全在",
+  async () => {
+    const dir = await makeTmp("erix-827-prune-");
+    await assertCrossRoundPruning(createFileTranscriptStore({ dir }), "prune-file", (runId) => {
+      // 落盘面：不是「追加了再让读侧忽略」，而是旧轮那条真的不在文件里了。
+      return readFileSync(recoveryRowsPath(dir, runId), "utf8")
+        .split("\n").filter((line) => line.length > 0).map((line) => JSON.parse(line));
+    });
+  });
+
+test("#827 跨轮自剪枝（memory 同语义）：与 file store 跑同一套断言，两份实现不得分叉", async () => {
+  await assertCrossRoundPruning(createMemoryTranscriptStore(), "prune-memory", null);
+});
+
+/**
+ * 跳轮现场的共同断言（file / memory 各跑一次）。
+ * 现场：第 1 轮若干了几次 partial 提交 + 1 条 tool-executed，第 2 轮同理。
+ * 形状：partial 只剩第 2 轮那一条（旧轮的是死行，读侧只认崩溃轮）；tool 行两轮的都在。
+ *
+ * @param {any} store @param {string} runId @param {((runId:string)=>any[])|null} rawRows 盘上行（file 专用）
+ */
+async function assertCrossRoundPruning(store, runId, rawRows) {
+  /** @param {object} row @returns {Promise<void>} */
+  const write = async (row) => {
+    assert.equal(await store.appendRecoveryRow(runId, row), true, `${runId}：必须报「真落了一行」`);
+  };
+  // 第 1 轮：三次 partial 提交 + 一条 tool-executed。
+  await write(buildPartialTextRecoveryRow({ runId, round: 1, text: "一" }));
+  await write(buildPartialTextRecoveryRow({ runId, round: 1, text: "一二" }));
+  await write(buildPartialTextRecoveryRow({ runId, round: 1, text: "一二三" }));
+  await write(buildToolExecutedRecoveryRow({ runId, round: 1, toolUseId: "t-r1" }));
+  // 第 2 轮：两次 partial 提交 + 一条 tool-executed（跳轮）。
+  await write(buildPartialTextRecoveryRow({ runId, round: 2, text: "甲" }));
+  await write(buildToolExecutedRecoveryRow({ runId, round: 2, toolUseId: "t-r2" }));
+  await write(buildPartialTextRecoveryRow({ runId, round: 2, text: "甲乙" }));
+
+  const rows = recoveryRows(await store.listRecoveryRows(runId));
+  const partials = rows.filter((r) => r.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT);
+  assert.deepEqual(partials.map((r) => r.round), [2],
+    `${runId}：partial-text 只剩崩溃轮（第 2 轮）那一条，第 1 轮的死行已被自剪枝`);
+  assert.equal(partials[0].text, "甲乙", `${runId}：留下的必须是本轮最新全文`);
+  assert.deepEqual(readPartialTextRecoveryRounds(rows), [2],
+    `${runId}：读侧的轮号台账只知本轮（.at(-1) 取到的就是崩溃轮，与剪枝前同值）`);
+  assert.deepEqual(readPartialTextRecoveryRow(rows, 2), { text: "甲乙", round: 2 },
+    `${runId}：崩溃轮从唯一那条读出最新全文`);
+  assert.equal(readPartialTextRecoveryRow(rows, 1), undefined,
+    `${runId}：旧轮正文已不在账上 ⇒ 读侧该轮返 undefined（它本来就不是崩溃轮）`);
+  const toolRows = rows.filter((r) => r.recoveryEvent === RECOVERY_EVENT_TOOL_EXECUTED);
+  assert.deepEqual(toolRows.map((r) => r.toolUseId), ["t-r1", "t-r2"],
+    `${runId}：tool-executed 一行不丢——第 1 轮的那条必须活到 run 结束（工具真跑过、结果可能没入账）`);
+  assert.deepEqual(rows.map((r) => r.recoveryEvent),
+    ["tool-executed", "tool-executed", "partial-text"],
+    `${runId}：整个恢复行文件的组成 = 本轮 1 条 partial + 本次 run 的 tool 行（与正文长度无关）`);
+
+  if (rawRows !== null) {
+    const onDisk = rawRows(runId);
+    assert.deepEqual(onDisk.filter((r) => r.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT).map((r) => r.round), [2],
+      "file：盘上旧轮的 partial 行真的没了（不是读侧忽略）");
+    assert.equal(onDisk.filter((r) => r.recoveryEvent === RECOVERY_EVENT_TOOL_EXECUTED).length, 2,
+      "file：盘上两轮的 tool-executed 行都在");
+  }
+}
+
+test("#827 跳轮之后重放旧轮正文 ⇒ 真写回（旧键不得被缓存认成「已写过」）", async () => {
+  // 自剪枝把旧轮那行从文件里拿掉了，而它的键若还留在 `recoveryDedupCaches` 里，重放会被判
+  // 「已写过」而静默丢行 —— 跳轮面的幂等口径必须仍是「按盘上真存在的行判」。
+  const dir = await makeTmp("erix-827-prune-cache-");
+  const store = createFileTranscriptStore({ dir });
+  const runId = "prune-cache";
+  assert.equal(await store.appendRecoveryRow(runId,
+    buildPartialTextRecoveryRow({ runId, round: 1, text: "aaaa", ts: "2024-01-01T00:00:00.000Z" })), true);
+  assert.equal(await store.appendRecoveryRow(runId,
+    buildPartialTextRecoveryRow({ runId, round: 2, text: "bbbb" })), true, "跳轮：旧轮那行被剪掉");
+  assert.equal(await store.appendRecoveryRow(runId,
+    buildPartialTextRecoveryRow({ runId, round: 1, text: "aaaa", ts: "2024-01-01T00:00:00.000Z" })), true,
+    "重放被剪掉的旧轮行必须报「真落了一行」，而不是静默返 false");
+  const partials = recoveryRows(await store.listRecoveryRows(runId))
+    .filter((r) => r.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT);
+  assert.deepEqual(partials.map((r) => [r.round, r.text]), [[1, "aaaa"]],
+    "重放之后只剩重放那一条（本轮写入场又把旧轮剪掉，同一口径）");
 });
 
 test("#769 R3（D）幂等（run 层）：续跑后又执行下一个工具 ⇒ 出现第二条**不同键**的恢复行，第一条无重复", async () => {

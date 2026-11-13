@@ -71,7 +71,8 @@ export function transcriptPath(dir, runId) {
  * 而恢复行**不是一轮**，它带的是「某个 `tool_use` 执行过了」/「某轮有一段半截正文」这种事件。
  * ⇒ 同目录另开一份 append-only 文件：**轮记录通道的每一个读口零改动**，恢复行走自己的读口
  * `listRecoveryRows()`。两者都是只追加；但 `partial-text` 自 issue #827 第 1 刀起是**一轮一条的槽**
- * （同轮新正文原子替换旧行，见 `replacePartialTextSlot`），`tool-executed` 一行一个事件、永不改写。
+ * （同轮新正文原子替换旧行，见 `replacePartialTextSlot`），第 2 刀起还**跨轮自剪枝**（旧轮的槽位
+ * 在新一轮的行到场时一并丢掉），`tool-executed` 一行一个事件、永不改写、永不丢弃。
  * @param {string} dir @param {string} runId @returns {string}
  */
 export function recoveryRowsPath(dir, runId) {
@@ -413,6 +414,18 @@ async function appendRecord(path, runId, record, dedupCaches) {
  * `TranscriptDedupConflictError`）：同键行必然落在同一个槽（键含 round 与事件名），所以判定就在
  * 读出的行里做，跳过时**不动文件**。
  *
+ * issue #827 第 2 刀：**跨轮自剪枝**——丢掉的是**全部** `partial-text` 行（含 `round !== 本 round`
+ * 的旧轮槽位），理由三条：
+ * ① **旧轮的 partial 行永远是死行**：读侧只认崩溃轮 —— `readPartialTextRecoveryRow(records,
+ *   crashRound)` 按轮筛，`resume-manager` 取 `readPartialTextRecoveryRounds().at(-1)`，两者都只看
+ *   最新那一轮 ⇒ 更早轮的槽位写下去就再没人读，留着只是占字节、并在每次整写时原样重抄一遍。
+ * ② **`tool-executed` 一行都不许丢**：工具真跑过、结果可能没入账（进程崩在两者之间），那行必须
+ *   活到 run 结束，跨轮仍然要 ⇒ 它不在上面这个 `continue` 里，只在 run 起跑时由
+ *   `clearRecoveryRows`（整文件 `rm`）清，**不能**挪到轮起跑。
+ * ③ **整文件重写不会二次方**：自剪枝之后文件里只有「当前轮 1 条 partial + 本次 run 的
+ *   `tool-executed` 行」，行数与正文长度无关 ⇒ 每次整写的字节数是线性的。没有自剪枝时旧轮槽位
+ *   永远在场，整写才会退化成字节平方（K 轮 × 每轮正文长度 × K 次重写）。
+ *
  * @param {string} path 恢复行文件路径
  * @param {string} runId
  * @param {any} record 新的 `partial-text` 行（已过 `assertSafeRound`）
@@ -438,10 +451,10 @@ async function replacePartialTextSlot(path, runId, record, dedupCaches) {
   const kept = [];
   for (const row of rows) {
     if (row !== null && recordKey(runId, row) === key) sameKeyRow = row;
-    if (row !== null
-      && row.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT
-      && row.round === record.round) {
-      continue; // 本槽的旧行：只保留即将写入的这一条
+    if (row !== null && row.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT) {
+      // 同 round 同事件：本槽的旧行，只保留即将写入的这一条。
+      // round !== 本 round：旧轮的槽位是**死行**，跨轮自剪枝一并丢掉（见函数头注释 ①）。
+      continue;
     }
     kept.push(row);
   }
@@ -567,7 +580,8 @@ export function createFileTranscriptStore({ dir }) {
      * 幂等与轮记录通道同口径（共用 `src/store/transcript-dedup.js`）：同事件键 + 同 payload ⇒
      * 跳过并返回 `false`；同键异 payload ⇒ 抛 `TranscriptDedupConflictError`（既不覆盖也不静默丢）。
      * issue #827 第 1 刀：`recoveryEvent === "partial-text"` 的行是**槽**——同 round 同事件只保留一条、
-     * 原子替换（见 `replacePartialTextSlot`）；`tool-executed` 等其余事件照旧**只追加、永不替换**。
+     * 原子替换（见 `replacePartialTextSlot`）；第 2 刀起该替换连带**跨轮自剪枝**（旧轮的 partial 行
+     * 一并丢，读侧只认崩溃轮）；`tool-executed` 等其余事件照旧**只追加、永不替换、一行不丢**。
      * @param {string} runId @param {object} record 恢复行（形状见 `src/store/recovery-rows.js`）
      * @returns {Promise<boolean>} 真正落了一行才是 `true`
      */

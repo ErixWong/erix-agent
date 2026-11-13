@@ -95,7 +95,9 @@ export function createMemoryTranscriptStore() {
      * issue #769（可选能力）：追加一条恢复行（`kind: "recovery"`）到恢复行通道。
      * 幂等与 `appendRound` 同口径（同键同 payload ⇒ 跳过并返回 `false`；同键异 payload ⇒ 抛冲突）。
      * issue #827 第 1 刀：`recoveryEvent === "partial-text"` 是**槽**——同 round 同事件只保留一条
-     * （新行替旧行，与 file store 的原子整写同语义）；其余事件照旧只追加、永不替换。
+     * （新行替旧行，与 file store 的原子整写同语义）；第 2 刀起该分支连带**跨轮自剪枝**：旧轮的
+     * partial 行在新轮的行到场时一并丢掉（读侧只认崩溃轮）。其余事件（`tool-executed`）照旧只追加、
+     * 永不替换、一行不丢。
      * @param {string} runId @param {object} record @returns {Promise<boolean>}
      */
     async appendRecoveryRow(runId, record) {
@@ -121,10 +123,12 @@ export function createMemoryTranscriptStore() {
       }
       if (record !== null && record !== undefined
         && record.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT) {
-        // 槽替换：丢掉同 round 同事件的旧行，新行落在尾部（与 file store 的整写同位置）。
+        // 槽替换 + 跨轮自剪枝：丢掉**全部** `partial-text` 旧行（同 round 同事件的那一条，以及
+        // 旧轮的死行），新行落在尾部（与 file store 的整写同位置）。`tool-executed` 一行不丢：
+        // 工具真跑过、结果可能没入账，那行必须活到 run 结束（只由 `clearRecoveryRows` 在 run
+        // 起跑时清）。理由与 file store 的 `replacePartialTextSlot` 逐字同口径，两份不得分叉。
         const kept = rows.filter((item) => !(item !== null
-          && item.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT
-          && item.round === record.round));
+          && item.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT));
         kept.push(copyRecord(record));
         recoveryLedger.set(runId, kept);
         return true;
