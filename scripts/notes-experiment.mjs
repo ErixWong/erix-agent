@@ -16,9 +16,9 @@ import { fileURLToPath } from "node:url";
 
 import { safeRunId } from "../src/store/file.js";
 // 真模型实验的闸口与真模型端点 e2e 共用**一个**读取点（`examples/e2e-real-gate.mjs`，issue #817 把旧名
-// `ERIX_E2E_REAL` 留在弃用期当别名）：先例是 `scripts/cli-real-smoke.mjs` / `scripts/release-real-check.mjs`，
+// 旧名 `ERIX_E2E_REAL` 已退役：设了判红，不再开闸）：先例是 `scripts/cli-real-smoke.mjs` / `scripts/release-real-check.mjs`，
 // 它们也是从这里读的。旧名只在闸门里读，本脚本不自己拄一份——别名下一版要删，两处拄就得多改一处。
-import { REAL_GATE_ENV, readRealGate } from "../examples/e2e-real-gate.mjs";
+import { REAL_GATE_ENV, readRealGate, retiredGateMessage } from "../examples/e2e-real-gate.mjs";
 import {
   DEFAULT_MAX_CALLS,
   estimateHistoricalUsage,
@@ -1005,15 +1005,23 @@ async function runJob(job, context) {
  * 真模型实验的**闸口**（#546）：照 `scripts/cli-real-smoke.mjs` / `scripts/release-real-check.mjs`
  * 的先例，`ERIX_E2E_MODEL=1` 才跑，否则**退出码 0 + 分类说明**——真模型端点不许变成任何默认门禁的硬依赖。
  *
- * 闸门读取走 `examples/e2e-real-gate.mjs#readRealGate()`（issue #817：旧名 `ERIX_E2E_REAL` 仍在弃用期内
- * 当别名用，命中时由闸门自己打那一行弃用告警）——本脚本**不另抄一份旧名**，否则别名要改三处。
+ * 闸门读取走 `examples/e2e-real-gate.mjs#readRealGate()`（issue #817：旧名 `ERIX_E2E_REAL` 已退役 ⇒ 设了不开闸而是判红）
+ * ——本脚本**不另抄一份旧名**，否则这一族的名字要改三处。
  *
  * 位置刻意在成本闸口**之前**：没开闸时连「计划调用数超上限」都不该抢答——那会把「没跑」
  * 说成「跑不了」，而本脚本此前正是以退出码 1 收场（“看起来 skip” 的反面：它是真失败）。
- * 退出码：`0` = 闸口未开（一步都没跑）/ 跑完；`1` = 真失败（与既有行为一致）。
+ * 退出码：`0` = 闸口未开（一步都没跑）/ 跑完；`1` = 真失败（含旧名 `ERIX_E2E_REAL` 已退役却还在环境里）。
  */
 function skipUnlessRealE2E() {
-  if (readRealGate().open) return false;
+  const gate = readRealGate();
+  if (gate.open) return false;
+  if (gate.retired) {
+    // 旧名已退役（issue #817）：**判红而不是 skip**（理由同 `notes-why-experiment.mjs`：
+    // exit 0 + `[skip]` 会把配错显示成「闸门关着所以没跑」）。
+    console.error(retiredGateMessage(gate.value));
+    process.exitCode = 1;
+    return true;
+  }
   console.log(`[skip] ${REAL_GATE_ENV} 未设为 1：真模型矩阵实验一步都没跑（本脚本会打真模型端点/真模型）。`
     + ` 要跑：${REAL_GATE_ENV}=1 node scripts/notes-experiment.mjs --yes [--runs N] [--max-calls N]`);
   return true;

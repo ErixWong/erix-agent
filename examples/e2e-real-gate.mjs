@@ -7,9 +7,10 @@
 // 闸门：`ERIX_E2E_MODEL=1` 才跑；缺省**一律跳过**——`npm test` 必须离线可重复（AGENTS.md 测试隔离条），
 // 真模型端点不许变成 `npm test` 的硬依赖（同 `examples/exec-demo.test.mjs` 的 LLM_KIT_E2E 先例）。
 //
-// 旧名 `ERIX_E2E_REAL` 保留成**别名**（issue #817 判据 4）：它仍然生效，但命中它的那一次必须打一行
-// `DEPRECATED_GATE_WARNING`——**静默生效的别名下一版删不掉**，所以告警不许省、不许只在 debug 级别。
-// 别名只有这一个读取点（本文件），消费点一律读 `REAL_GATE_ENV`，下一版删掉 `LEGACY_REAL_GATE_ENV` 就干净收口。
+// 旧名 `ERIX_E2E_REAL` 已**退役**（issue #817：改名 PR #822 在同一发布窗口内直接收口——两个宿主
+// 现量 `ERIX_E2E_REAL` 各 0 命中，所留的弃用期没有消费者可护）。退役不等于删掉：旧名仍被认出，
+// 但**不开闸而是判红**——静默 skip 会把「环境里还写着旧名」显示成「闸门关着所以没跑」，
+// 而那正是这一族最坏的失败形状（「没跑成」被当成绿）。
 //
 // 缺席原因必须**分类**（工单第 2 项：gate 缺失 / 无配置 / 无 key / 端点不可达要分别说清）：
 // 一律报「skipped」会把「机器其实坏了」伪装成「没开闸」。缺席代号见 GAP_CODES，
@@ -29,51 +30,66 @@ import { connect } from "node:net";
 export const REAL_GATE_ENV = "ERIX_E2E_MODEL";
 export const CONFIG_PATH_ENV = "ERIX_E2E_CONFIG";
 
-/** 旧名（issue #817 之前这一族叫「真上游」）。只作**别名**存在，命中即打弃用告警，下一版退役。 */
-export const LEGACY_REAL_GATE_ENV = "ERIX_E2E_REAL";
+/** 旧名（issue #817 之前这一族叫「真上游」）。已退役：**不再开闸**，设了判红。 */
+export const RETIRED_GATE_ENV = "ERIX_E2E_REAL";
 
 /**
- * 别名命中时打的那一行告警（issue #817 判据 4 的原文，逐字不许改：报告和门禁都按它核对）。
- * 默认缺的是一行 **stderr**：它是一条警告，不是被门禁汇总的输出面（`check:release:model-e2e` 汇总读的是
- * stdout 的 TAP 与 `RELEASE-REAL-SMOKE` 行，混进去只会给解析添噪声）。消费方可以注入自己的 `warn`
- * 把它接到自己的输出通道上（`scripts/release-day.mjs` 就接进 `log()`，这样 `--self-test` 能离线断到它）——
- * 可以换通道，**不许换掉这一行本身**。
+ * 退役名命中时的判红消息（消费方经 `formatSkip` 打进它已有的红分支，不必各自拄一份）。
+ * 措辞里不许出现版本号或里程碑（本仓红线：不许拿未发布版本号承接工作）。
+ * @param {string|undefined} value 现场看到的旧名值
+ * @returns {string}
  */
-export const DEPRECATED_GATE_WARNING = "旧名 ERIX_E2E_REAL 已弃用，将在下一版退役，请改用 ERIX_E2E_MODEL";
-
-/**
- * 读闸门：新名优先，旧名作别名兜底（别名命中 ⇒ 调用 `warn` 打一行弃用告警）。
- *
- * 新名在场就**不读**旧名（两个都设时新名说了算，也不打告警——已经改名的人不该被旧名绊一次）。
- * 本函数**不自己存状态**：每一次旧名命中都打一次告警（存「只打一次」的账在 `resolveRealUpstream` 那一层），
- * 这样它可以被自测直接拿注入的 `warn` 验到「告警不许省」与「告警只有一行」两件事。
- *
- * @param {{ env?: NodeJS.ProcessEnv, warn?: (line: string) => void }} [options]
- * @returns {{ open: boolean, legacy: boolean, value: string|undefined }} `open` = 允许打真模型端点；
- *   `legacy` = 这一行是旧名打开的（调用方文案里要带上，便于事后从日志看出这次用的还是旧名）
- */
-export function readRealGate({ env = process.env, warn = (line) => process.stderr.write(`${line}\n`) } = {}) {
-  if (env[REAL_GATE_ENV] === "1") return { open: true, legacy: false, value: env[REAL_GATE_ENV] };
-  if (env[LEGACY_REAL_GATE_ENV] === "1") {
-    warn(DEPRECATED_GATE_WARNING);
-    return { open: true, legacy: true, value: env[LEGACY_REAL_GATE_ENV] };
-  }
-  return { open: false, legacy: false, value: env[REAL_GATE_ENV] };
+export function retiredGateMessage(value) {
+  return `${RETIRED_GATE_ENV}=${JSON.stringify(value ?? null)} 已退役，不再开闸`
+    + ` ⇒ 请改用 ${REAL_GATE_ENV}=1。旧名留在环境里是配错而不是「闸门关着」⇒ 判红而不是 skip。`;
 }
 
-/** 一个进程只警告一次：一次真跑会 spawn 多个子进程，每个进程各打一行就够了，反复打会淹掉现场。 */
-let legacyGateWarned = false;
+/**
+ * 消费点在「闸门没开」那一路**先调它**：命中退役名就抛（⇒ 判红），别让它落到 `t.skip()`。
+ *
+ * 为什么需要这么一颗钉子：`examples/` 里大多数真跑套件收场的是 `if (!gate.ok) t.skip(...)`
+ * ——**无条件** skip。对「闸门关着」这没错，但退役名也走这一路就变成「配错被显示成没开闸」。
+ * 已经按分类判红的消费点不必调它（调了也只是重复确认）。
+ *
+ * @param {{ retired?: boolean, message?: string, code?: string }} gate `resolveRealUpstream` 的失败结果
+ * @returns {void}
+ */
+export function assertGateNotRetired(gate) {
+  if (!gate || !gate.retired) return;
+  throw new Error(formatSkip(gate));
+}
 
-/** 闸门没开时的分类原因（新名在前，旧名只在括号里作为「还能用但在弃用期」的提示）。 */
+/**
+ * 读闸门：只认新名。旧名已退役 ⇒ 不开闸但标出 `retired`（调用方要判红，不是 skip）。
+ *
+ * 两个都设时新名开闸且不标退役（已经在跑的 run 不该被一个没清干净的变量绊住）；
+ * 旧名值是空串或 `"0"` 不算设过（那是主动关掉，不该红）。退役判定只在这一处，消费点一律读新名。
+ *
+ * @param {{ env?: NodeJS.ProcessEnv }} [options]
+ * @returns {{ open: boolean, retired: boolean, value: string|undefined }} `open` = 允许打真模型端点；
+ *   `retired` = 现场还写着退役的旧名（这一格必须是红，不是 skip）
+ */
+export function readRealGate({ env = process.env } = {}) {
+  if (env[REAL_GATE_ENV] === "1") return { open: true, retired: false, value: env[REAL_GATE_ENV] };
+  const retired = env[RETIRED_GATE_ENV];
+  if (retired !== undefined && retired !== "" && retired !== "0") {
+    return { open: false, retired: true, value: retired };
+  }
+  return { open: false, retired: false, value: env[REAL_GATE_ENV] };
+}
+
+/** 闸门没开时的分类原因（新名在前；旧名只作为「设了也不会开闸」的提醒）。 */
 function gateMissingMessage(gate) {
   return `${REAL_GATE_ENV} 未设为 1（当前 ${JSON.stringify(gate.value ?? null)}）——真机门禁默认跳过，`
     + `跑法：${REAL_GATE_ENV}=1 node --test <file>`
-    + `（旧名 ${LEGACY_REAL_GATE_ENV} 仍在弃用期内生效）`;
+    + `（旧名 ${RETIRED_GATE_ENV} 已退役：设了不会开闸，会直接判红）`;
 }
 
 /** 缺席原因的稳定代号（进 skip 文案，便于事后 grep 到底是哪一类）。 */
 export const GAP_CODES = Object.freeze({
   GATE_MISSING: "gate_missing",
+  /** 环境里还写着退役的旧名 ⇒ 配错；消费点现有的红分支接住它（不是 skip）。 */
+  GATE_RETIRED: "gate_retired",
   CONFIG_MISSING: "config_missing",
   CONFIG_UNPARSABLE: "config_unparsable",
   CONFIG_INCOMPLETE: "config_incomplete",
@@ -229,13 +245,12 @@ export async function resolveRealUpstream({
   probeTimeoutMs = 8_000,
   slot: slotName = "default",
 } = {}) {
-  const gate = readRealGate({
-    env,
-    warn: legacyGateWarned ? () => {} : (line) => {
-      legacyGateWarned = true;
-      process.stderr.write(`${line}\n`);
-    },
-  });
+  const gate = readRealGate({ env });
+  if (gate.retired) {
+    // 这个 code 不在 `GATE_MISSING` 里，所以十一个消费点现有的「闸门开着但不可用 ⇒ 红」分支会直接
+    // 接住它，`formatSkip` 把旧名与替换名都带进红文（本文件不依赖任何消费点改文案）。
+    return { ok: false, retired: true, code: GAP_CODES.GATE_RETIRED, message: retiredGateMessage(gate.value) };
+  }
   if (!gate.open) {
     return {
       ok: false,
@@ -320,8 +335,7 @@ export async function resolveRealUpstream({
     endpoint,
     apiKey: credential.apiKey,
     slot: providerSlot,
-    gateEnv: `${gate.legacy ? LEGACY_REAL_GATE_ENV : REAL_GATE_ENV}=1`,
-    legacyGateEnv: gate.legacy,
+    gateEnv: `${REAL_GATE_ENV}=1`,
   };
 }
 

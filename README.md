@@ -508,8 +508,8 @@ cache and userconfig, fake `HOME`), deletes its temporary tree and the generated
 declarations again, and names the failing step when it goes red.
 
 The real model endpoint half is one command as well (ticket 261021-13; the gate is
-`ERIX_E2E_MODEL=1`, whose pre-#817 name `ERIX_E2E_REAL` still opens it as a deprecated alias but prints
-one warning line): `npm run check:release:model-e2e` runs the four gated real model endpoint e2e suites
+`ERIX_E2E_MODEL=1`, whose pre-#817 name `ERIX_E2E_REAL` is retired -- setting it no longer opens the gate, it
+fails the run with a line naming both names): `npm run check:release:model-e2e` runs the four gated real model endpoint e2e suites
 (`examples/tool-fact-e2e.test.mjs`, `examples/resume-real-e2e.test.mjs`,
 `examples/cross-version-real-e2e.test.mjs`, `examples/pi-extension/erix-run-e2e.test.mjs`)
 and then `npm run check:cli:model-e2e`, in that order, each with its own 900 s hard timeout; it

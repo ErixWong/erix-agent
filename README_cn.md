@@ -326,8 +326,8 @@ file for module 'erix-agent/contract-tests'`），这是诚实的口径——而
 键必须被 `TS2353` 拒掉——这就是「类型面不是 `any`」的证据）并把编译产物真跑一遍，最后拿本地假上游冒烟装好的
 命令行。它全程离线（一次性 npm cache 与 userconfig、假 `HOME`）、跑完把临时目录和生成的声明一并清掉，红的时候点名第几步。
 
-真模型端点那一半也是一条命令（工单 261021-13；闸门是 `ERIX_E2E_MODEL=1`，旧名 `ERIX_E2E_REAL` 是仍在生效的
-弃用别名）：`npm run check:release:model-e2e` 按顺序跑四条同闸门的真模型端点 e2e 套件
+真模型端点那一半也是一条命令（工单 261021-13；闸门是 `ERIX_E2E_MODEL=1`，旧名 `ERIX_E2E_REAL` 已退役：设了不开闸，
+而是带着两个名字判红）：`npm run check:release:model-e2e` 按顺序跑四条同闸门的真模型端点 e2e 套件
 （`examples/tool-fact-e2e.test.mjs`、`examples/resume-real-e2e.test.mjs`、
 `examples/cross-version-real-e2e.test.mjs`、`examples/pi-extension/erix-run-e2e.test.mjs`），
 再跑 `npm run check:cli:model-e2e`；每条单独 900 秒硬超时，跑完整张清单才判红并点名是哪几条。

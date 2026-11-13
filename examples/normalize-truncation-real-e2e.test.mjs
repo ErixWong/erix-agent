@@ -28,7 +28,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { normalizeModelJson } from "../src/index.js";
-import { formatSkip, printableEndpoint, resolveRealUpstream } from "./e2e-real-gate.mjs";
+import { assertGateNotRetired, formatSkip, printableEndpoint, resolveRealUpstream } from "./e2e-real-gate.mjs";
 
 /** 要被归一化的「模型原文」：一句短到不必省 token 的话（截断只由 `maxTokens` 造成）。 */
 const RAW_TEXT = "把这句话原样搬进 JSON：折叠日志里第 3 行丢了 TOK-637-deadbeef。";
@@ -46,6 +46,8 @@ const TRUNCATING_STOP_REASONS = ["max_tokens", "length"];
 async function gateOrSkip(t) {
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
   if (!gate.ok) {
+    // 旧名 `ERIX_E2E_REAL` 已退役 ⇒ 必须红，不许落到下面那条无条件 skip（#817）。
+    assertGateNotRetired(gate);
     t.skip(`真模型端点不可用/闸门关：${formatSkip(gate)}`);
     return undefined;
   }

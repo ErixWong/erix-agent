@@ -90,7 +90,7 @@ import { SUMMARIZER_PROMPT_GUIDE } from "../src/compact/fold-llm.js";
 import { FOLD_SUMMARY_MARKER } from "../src/compact/fold-statistical.js";
 import { DEFAULT_COMPACTION_STRATEGY, resolveCompactionStrategyName } from "../bin/config.js";
 import { estimateMessageTokens } from "../src/tokens.js";
-import { formatSkip, printableEndpoint, resolveRealUpstream } from "./e2e-real-gate.mjs";
+import { assertGateNotRetired, formatSkip, printableEndpoint, resolveRealUpstream } from "./e2e-real-gate.mjs";
 
 /**
  * 摘要器提示词指南的**首行**：包装 provider 靠它把「摘要器那一发」与「主循环那一发」分开。
@@ -394,6 +394,8 @@ function reportArm(label, arm, strategyName) {
 async function gateOrSkip(t) {
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
   if (!gate.ok) {
+    // 旧名 `ERIX_E2E_REAL` 已退役 ⇒ 必须红，不许落到下面那条无条件 skip（#817）。
+    assertGateNotRetired(gate);
     t.skip(`真模型端点不可用/闸门关：${formatSkip(gate)}`);
     return undefined;
   }
