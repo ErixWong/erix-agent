@@ -4,9 +4,9 @@
 // （`/tmp/e2e-tool-fact/e2e.mjs` + `recheck.mjs` + `e2e-b.mjs`，25 条断言全绿），但脚本在 /tmp、
 // 一次性的。本文件把那批断言**原样搬进仓库**（含它踩过的坑），使其成为可重复的门禁。
 //
-// 用法：ERIX_E2E_REAL=1 node --test examples/tool-fact-e2e.test.mjs
+// 用法：ERIX_E2E_MODEL=1 node --test examples/tool-fact-e2e.test.mjs
 // 闸门 / 配置解析 / 模型名来源共用 examples/e2e-real-gate.mjs：
-//   `ERIX_E2E_REAL=1` 才跑；缺省 skip，且 **gate 缺失 / 配置不存在 / JSON 坏了 / 缺字段 /
+//   `ERIX_E2E_MODEL=1` 才跑；缺省 skip，且 **gate 缺失 / 配置不存在 / JSON 坏了 / 缺字段 /
 //   凭据引用解不出值（变量未设·文件不存在·值为空）/ 端点不可达** 分别报（不许一律「skipped」）；模型从 `slots.default` 解析
 //   （`ERIX_E2E_CONFIG=<path>` 可覆盖路径），源码里不出现任何模型名。
 // 不污染真实 ~/.erix：store 一律 `mkdtemp`，工作目录也是 `mkdtemp`。
@@ -144,7 +144,7 @@ function collectKeys(value, acc = new Set()) {
 //   · 只 accessor（不 freeze）：②③④ 只在**活到收针**时才看得见 ⇒ 「加了又删」零痕迹。
 //
 // 实验结论（两条都实测过才留下 freeze）：
-//   · 不打断引擎合法行为：`ERIX_E2E_REAL=1 node --test examples/tool-fact-e2e.test.mjs` 3/3 绿
+//   · 不打断引擎合法行为：`ERIX_E2E_MODEL=1 node --test examples/tool-fact-e2e.test.mjs` 3/3 绿
 //     （日志 /tmp/f9b/freeze-1.log）——引擎的合法改写发生在 `cloneState()` 之后的副本上，冻不到。
 //   · 瞬态真被拦：临时在 `src/loop/resume-manager.js` 的恢复处写 `b.erix = {}; delete b.erix;`
 //     ⇒ 当场 `TypeError: Cannot add property erix, object is not extensible`（栈顶
@@ -408,7 +408,7 @@ const resumePrompt = (attempt) => `第 ${attempt} 次要求：必须调用 searc
 // 闸格给替身即可（名称闸只读 `Object.keys`，一个值都不看）。
 //
 // #498 S3 把一片扁平拼写退役进 `config.*`，退役后唯一的执行点是名称闸口；而本套件默认
-// `npm test` **整份 skip**，所以「调用点还写着扁平名」这种漂移只有 `ERIX_E2E_REAL=1` 才露头。
+// `npm test` **整份 skip**，所以「调用点还写着扁平名」这种漂移只有 `ERIX_E2E_MODEL=1` 才露头。
 // `runId` / `maxRounds`（场景 A）与 `resume` / `runId` / `maxRounds`（场景 C）就是这一片最后
 // 漏掉的调用点：0.28 发版清单上 [1/5] 红，报 `unknown runToolLoop option: "runId"`。
 // ---------------------------------------------------------------------------
@@ -553,7 +553,7 @@ test("观察记录的身份/来源/在场判据自带牙齿（负控固化，始
 // 上面那条「断言集自身的不变量」查的是 `tool_result` 的键集合，与「网络格怎么调 runToolLoop」
 // 毫无关系——所以它不是已有覆盖（这正是要补的洞）。
 //
-// 为什么这条要进默认 CI：真上游格整份受 `ERIX_E2E_REAL` 门控，默认 `npm test` 直接 skip；
+// 为什么这条要进默认 CI：真上游格整份受 `ERIX_E2E_MODEL` 门控，默认 `npm test` 直接 skip；
 // 于是「调用点写着退役名」可以在整夜全绿里活到发版清单。选项名闸本身**不联网、不花模型钱**，
 // 没有任何理由跟着网络格一起被 skip。
 test("选项名闸：本文件交给 runToolLoop 的两份参数对象都合法（始终跑，不联网）", () => {

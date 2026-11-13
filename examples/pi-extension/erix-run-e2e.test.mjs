@@ -5,9 +5,9 @@
 // **没有任何断言看过进度行的耗时、也没有任何断言看过 transcript 里 tool_result 的字段面**。
 // 第 1 项那个「进度行静默丢耗时」的缺陷正是在这块空白里活过了 T2 停写。
 //
-// 用法：ERIX_E2E_REAL=1 node --test examples/pi-extension/erix-run-e2e.test.mjs
+// 用法：ERIX_E2E_MODEL=1 node --test examples/pi-extension/erix-run-e2e.test.mjs
 // 闸门与配置解析与 examples/tool-fact-e2e.test.mjs、scripts/cli-real-smoke.mjs 共用
-// examples/e2e-real-gate.mjs（`ERIX_E2E_REAL=1` 才跑；模型名从配置 slots.default 读，不硬编码；
+// examples/e2e-real-gate.mjs（`ERIX_E2E_MODEL=1` 才跑；模型名从配置 slots.default 读，不硬编码；
 // 闸门关着 / 无配置 / 无 key / 端点不可达**分别**报 skip 原因）。
 //
 // 本文件另有一段**始终跑、不联网**的确定性用例（formatLoopEvent 的耗时读法），因为第 1 项的
@@ -139,7 +139,7 @@ test("erix_run core 的源码不再把退役名当唯一耗时来源（静态守
 // #373：`layers.truncationNote` 念的是 **state.json 里的窗口账**，不是写死的条数。
 //
 // 这一格是离线可跑的（不联网、不打模型），所以放在本文件里「始终跑」的那一半：
-// 真机段（`ERIX_E2E_REAL=1`）是补充证据，不能当这条回归的唯一证据。
+// 真机段（`ERIX_E2E_MODEL=1`）是补充证据，不能当这条回归的唯一证据。
 //
 // 能杀什么：
 //   - 把文案改回写死条数（不管写成 32 还是别的常数）→ 第 ①② 格当场红（文案跟文件里的数字对不上）；
@@ -281,7 +281,7 @@ test("#373 静态守卫：core 里不再有写死条数的截断文案（不联�
 // 为什么这条属于本文件：erix_run 的**唯一** `runToolLoop` 调用点在 `erix-run-core.js` 的
 // `buildLoopOptions()`，而它也是本文件真机段实际走的那条路径（子进程 → runErixRun →
 // buildLoopOptions）。#498 S3 把一大片扁平拼写退役进 `config.*` / `capabilities.*` 之后，
-// 唯一的执行点就是名称闸口；真机段整份受 `ERIX_E2E_REAL` 门控，默认 `npm test` 直接 skip，
+// 唯一的执行点就是名称闸口；真机段整份受 `ERIX_E2E_MODEL` 门控，默认 `npm test` 直接 skip，
 // 所以「装配点写着退役名」可以一路活到发版清单（0.28 的发版清单 [1/5] 红就是这么来的）。
 //
 // 能杀什么：把 `buildLoopOptions` 里任何一个规位键（`config.run.runId` / `config.run.maxRounds` /
@@ -317,7 +317,7 @@ test("选项名闸：erix_run 交给 runToolLoop 的选项对象合法（始终�
 });
 
 // ---------------------------------------------------------------------------
-// 真机段（ERIX_E2E_REAL=1）：一次真 run + 真落盘 + 真进度行
+// 真机段（ERIX_E2E_MODEL=1）：一次真 run + 真落盘 + 真进度行
 // ---------------------------------------------------------------------------
 
 const NOTES_TEXT = "T5-ERIX-RUN-E2E 标记行：needle-in-a-haystack\n第二行没有关键字\n";
@@ -827,7 +827,7 @@ test("erix_run 真机 e2e（#654 多会话）：两个会话先注册完（A 先
       return;
     }
     // 闸门开着而配置/凭据/端点不可用 ⇒ **必须红**：预发布清单不能把「没跑成」报成绿。
-    assert.fail(`ERIX_E2E_REAL=1 但真上游不可用 ⇒ 这条用例必须红（不许 skip）：${formatSkip(gate)}`);
+    assert.fail(`ERIX_E2E_MODEL=1 但真上游不可用 ⇒ 这条用例必须红（不许 skip）：${formatSkip(gate)}`);
   }
 
   const dir = mkdtempSync(path.join(tmpdir(), TMP_PREFIX.erixRun));

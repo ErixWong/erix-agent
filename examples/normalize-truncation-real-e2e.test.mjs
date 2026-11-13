@@ -8,7 +8,7 @@
 // `max_tokens` / `length` 且没产出可用的值时给 `error:"truncated"`（原值另挂在 `stopReason` 上）。
 //
 // 用法（闸门与其余真机脚本同一口径，缺省 skip + 分类原因 + exit 0）：
-//   ERIX_E2E_REAL=1 node --test examples/normalize-truncation-real-e2e.test.mjs
+//   ERIX_E2E_MODEL=1 node --test examples/normalize-truncation-real-e2e.test.mjs
 //
 // ---------------------------------------------------------------------------
 // 为什么判据是「预算收紧 ⇒ truncated；预算放宽 ⇒ 不是 truncated」，而不是「模型输出被截断」
@@ -76,7 +76,7 @@ test("[637] 离线：同一段正文只换 stopReason ⇒ 判别值必须不同�
 });
 
 // ---------------------------------------------------------------------------
-// 真机臂（ERIX_E2E_REAL=1 才跑）
+// 真机臂（ERIX_E2E_MODEL=1 才跑）
 // ---------------------------------------------------------------------------
 
 test("[637] 真机：maxTokens 收到 1 ⇒ error 是 truncated（不是 unparsable / no_candidate）", async (t) => {

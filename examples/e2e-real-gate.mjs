@@ -1,11 +1,15 @@
-// 真上游 e2e 的「闸门 + 配置解析」——工单 docs/tasks/261015-e2e-harness.md（T5）第 2/3/4 项共用。
+// 真模型端点 e2e 的「闸门 + 配置解析」——工单 docs/tasks/261015-e2e-harness.md（T5）第 2/3/4 项共用。
 //
 // 为什么单独一个文件：三处消费点（`examples/tool-fact-e2e.test.mjs`、
 // `examples/pi-extension/erix-run-e2e.test.mjs`、`scripts/cli-real-smoke.mjs`）必须对
-// 「什么时候允许打真上游、模型名从哪来」口径一致。三处各写一份 = 最松的那一份说了算。
+// 「什么时候允许打真模型端点、模型名从哪来」口径一致。三处各写一份 = 最松的那一份说了算。
 //
-// 闸门：`ERIX_E2E_REAL=1` 才跑；缺省**一律跳过**——`npm test` 必须离线可重复（AGENTS.md 测试隔离条），
-// 真上游不许变成 `npm test` 的硬依赖（同 `examples/exec-demo.test.mjs` 的 LLM_KIT_E2E 先例）。
+// 闸门：`ERIX_E2E_MODEL=1` 才跑；缺省**一律跳过**——`npm test` 必须离线可重复（AGENTS.md 测试隔离条），
+// 真模型端点不许变成 `npm test` 的硬依赖（同 `examples/exec-demo.test.mjs` 的 LLM_KIT_E2E 先例）。
+//
+// 旧名 `ERIX_E2E_REAL` 保留成**别名**（issue #817 判据 4）：它仍然生效，但命中它的那一次必须打一行
+// `DEPRECATED_GATE_WARNING`——**静默生效的别名下一版删不掉**，所以告警不许省、不许只在 debug 级别。
+// 别名只有这一个读取点（本文件），消费点一律读 `REAL_GATE_ENV`，下一版删掉 `LEGACY_REAL_GATE_ENV` 就干净收口。
 //
 // 缺席原因必须**分类**（工单第 2 项：gate 缺失 / 无配置 / 无 key / 端点不可达要分别说清）：
 // 一律报「skipped」会把「机器其实坏了」伪装成「没开闸」。缺席代号见 GAP_CODES，
@@ -22,8 +26,48 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "node:net";
 
-export const REAL_GATE_ENV = "ERIX_E2E_REAL";
+export const REAL_GATE_ENV = "ERIX_E2E_MODEL";
 export const CONFIG_PATH_ENV = "ERIX_E2E_CONFIG";
+
+/** 旧名（issue #817 之前这一族叫「真上游」）。只作**别名**存在，命中即打弃用告警，下一版退役。 */
+export const LEGACY_REAL_GATE_ENV = "ERIX_E2E_REAL";
+
+/**
+ * 别名命中时打的那一行告警（issue #817 判据 4 的原文，逐字不许改：报告和门禁都按它核对）。
+ * 走 **stderr**：它是一条警告，不是被门禁汇总的输出面（`check:release:model-e2e` 汇总读的是 stdout 的
+ * TAP 与 `RELEASE-REAL-SMOKE` 行，别名告警混进 stdout 只会给解析添噪声）。
+ */
+export const DEPRECATED_GATE_WARNING = "旧名 ERIX_E2E_REAL 已弃用，将在下一版退役，请改用 ERIX_E2E_MODEL";
+
+/**
+ * 读闸门：新名优先，旧名作别名兜底（别名命中 ⇒ 调用 `warn` 打一行弃用告警）。
+ *
+ * 新名在场就**不读**旧名（两个都设时新名说了算，也不打告警——已经改名的人不该被旧名绊一次）。
+ * 本函数**不自己存状态**：每一次旧名命中都打一次告警（存「只打一次」的账在 `resolveRealUpstream` 那一层），
+ * 这样它可以被自测直接拿注入的 `warn` 验到「告警不许省」与「告警只有一行」两件事。
+ *
+ * @param {{ env?: NodeJS.ProcessEnv, warn?: (line: string) => void }} [options]
+ * @returns {{ open: boolean, legacy: boolean, value: string|undefined }} `open` = 允许打真模型端点；
+ *   `legacy` = 这一行是旧名打开的（调用方文案里要带上，便于事后从日志看出这次用的还是旧名）
+ */
+export function readRealGate({ env = process.env, warn = (line) => process.stderr.write(`${line}\n`) } = {}) {
+  if (env[REAL_GATE_ENV] === "1") return { open: true, legacy: false, value: env[REAL_GATE_ENV] };
+  if (env[LEGACY_REAL_GATE_ENV] === "1") {
+    warn(DEPRECATED_GATE_WARNING);
+    return { open: true, legacy: true, value: env[LEGACY_REAL_GATE_ENV] };
+  }
+  return { open: false, legacy: false, value: env[REAL_GATE_ENV] };
+}
+
+/** 一个进程只警告一次：一次真跑会 spawn 多个子进程，每个进程各打一行就够了，反复打会淹掉现场。 */
+let legacyGateWarned = false;
+
+/** 闸门没开时的分类原因（新名在前，旧名只在括号里作为「还能用但在弃用期」的提示）。 */
+function gateMissingMessage(gate) {
+  return `${REAL_GATE_ENV} 未设为 1（当前 ${JSON.stringify(gate.value ?? null)}）——真机门禁默认跳过，`
+    + `跑法：${REAL_GATE_ENV}=1 node --test <file>`
+    + `（旧名 ${LEGACY_REAL_GATE_ENV} 仍在弃用期内生效）`;
+}
 
 /** 缺席原因的稳定代号（进 skip 文案，便于事后 grep 到底是哪一类）。 */
 export const GAP_CODES = Object.freeze({
@@ -183,12 +227,18 @@ export async function resolveRealUpstream({
   probeTimeoutMs = 8_000,
   slot: slotName = "default",
 } = {}) {
-  if (env[REAL_GATE_ENV] !== "1") {
+  const gate = readRealGate({
+    env,
+    warn: legacyGateWarned ? () => {} : (line) => {
+      legacyGateWarned = true;
+      process.stderr.write(`${line}\n`);
+    },
+  });
+  if (!gate.open) {
     return {
       ok: false,
       code: GAP_CODES.GATE_MISSING,
-      message: `${REAL_GATE_ENV} 未设为 1（当前 ${JSON.stringify(env[REAL_GATE_ENV] ?? null)}）——真机门禁默认跳过，`
-        + `跑法：ERIX_E2E_REAL=1 node --test <file>`,
+      message: gateMissingMessage(gate),
     };
   }
   const configPath = defaultConfigPath({ env, home });
@@ -268,7 +318,8 @@ export async function resolveRealUpstream({
     endpoint,
     apiKey: credential.apiKey,
     slot: providerSlot,
-    gateEnv: `${REAL_GATE_ENV}=1`,
+    gateEnv: `${gate.legacy ? LEGACY_REAL_GATE_ENV : REAL_GATE_ENV}=1`,
+    legacyGateEnv: gate.legacy,
   };
 }
 

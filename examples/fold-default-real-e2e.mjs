@@ -8,7 +8,7 @@
 // （超时 / 不守分节格式 / 超输出预算 / 空返回 / 摘要没用），脚本化夹具永远给不出 ⇒ 这一条必须真跑。
 //
 // 用法（闸门与其余真机脚本同一口径，缺省 skip + 分类原因 + exit 0）：
-//   ERIX_E2E_REAL=1 node --test examples/fold-default-real-e2e.mjs
+//   ERIX_E2E_MODEL=1 node --test examples/fold-default-real-e2e.mjs
 //
 // issue #661（破坏性，本文件已跟上）：**摘要器失败不再是降级**。改前失败那一折返回一份统计摘要
 // 替代物（块里多一段 `[fold-llm 摘要失败，已降级为统计摘要（原因: …）]`），run 照常 `end_turn`；

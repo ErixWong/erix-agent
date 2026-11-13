@@ -19,13 +19,13 @@
 //
 // 用法：
 //   node --test examples/cross-version-real-e2e.test.mjs                      # 夹具那半（离线、必跑）
-//   ERIX_E2E_REAL=1 node --test examples/cross-version-real-e2e.test.mjs      # 夹具那半 + 续跑那半
+//   ERIX_E2E_MODEL=1 node --test examples/cross-version-real-e2e.test.mjs      # 夹具那半 + 续跑那半
 //
 // 两半的分界（**闸门只挡续跑，不挡夹具**）：
 //   ① 夹具那半（L1–L3 / R1–R3 / X1–X3）：**始终跑、不联网、不花模型钱**。读夹具 + `store.load()`
 //      折叠 + 反向证（临时破坏透传分支 ⇒ R1/R2 必须红）。
 //   ② 续跑那半（S1–S6 / Z1）：要**真模型**，共用 `examples/e2e-real-gate.mjs` 的闸门
-//      （`ERIX_E2E_REAL=1` 才跑；gate 缺失 / 配置缺失 / JSON 坏了 / 缺字段 / 凭据引用解不出值 /
+//      （`ERIX_E2E_MODEL=1` 才跑；gate 缺失 / 配置缺失 / JSON 坏了 / 缺字段 / 凭据引用解不出值 /
 //      端点不可达各自分类打日志）。闸门关时这一半**不打 skip**：夹具那半照跑，续跑那半打一行
 //      「闸门关 ⇒ 本次没跑续跑」的日志后结束（`t.skip()` 会让整条用例变 skipped，把夹具那半的绿也吞掉）。
 //   ③ 可选分支（L4）：机器上**恰好**有 0.22.0 的 CLI 时（默认 `~/.npm-global/bin/erix`，可用

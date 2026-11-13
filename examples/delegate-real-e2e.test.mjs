@@ -1,6 +1,6 @@
 // 真上游 e2e（issue #617 P2）：**父 run 派生一个子 run 并取回结果**——走 CLI 的真实装配。
 //
-// 用法：ERIX_E2E_REAL=1 node --test examples/delegate-real-e2e.test.mjs
+// 用法：ERIX_E2E_MODEL=1 node --test examples/delegate-real-e2e.test.mjs
 //
 // 与 `examples/delegate-e2e.test.mjs`（离线、始终跑、脚本化假 provider）分工不同：那边钉的是库与
 // 宿主注入面的形状，这边钉的是**真模型 + 真 relay** 下这条链路真的通：
@@ -12,7 +12,7 @@
 //     → 模型调 `delegate action=result` 取回终局
 //
 // 闸门口径与 `examples/e2e-real-gate.mjs` 逐字同源（不另造一套）：
-//   · `ERIX_E2E_REAL` 不是 `1` ⇒ 本文件**一步都不跑**，`t.skip()` 打印分类原因（`GAP_CODES`）。
+//   · `ERIX_E2E_MODEL` 不是 `1` ⇒ 本文件**一步都不跑**，`t.skip()` 打印分类原因（`GAP_CODES`）。
 //     真上游永远不是默认门禁的硬依赖（AGENTS 测试隔离条）。
 //   · 闸门**开着**但配置/凭据/端点不可用 ⇒ **`assert.fail`**，不是 skip。理由与
 //     `scripts/release-real-check.mjs` 的预检同一条：「没跑成」不许报成绿——发版清单里的必跑项

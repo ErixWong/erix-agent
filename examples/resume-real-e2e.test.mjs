@@ -6,8 +6,8 @@
 // 真实进程被杀时账本停在哪一行、run snapshot 与账本谁领先、`repairTranscriptTail` 会不会吃掉
 // 已落盘的行、续跑那次会不会把同一段话喂两遍——只有真 CLI 子进程 + 真上游 + 真工具能给。
 //
-// 用法：ERIX_E2E_REAL=1 node --test examples/resume-real-e2e.test.mjs
-// 闸门 / 配置解析 / 模型名来源共用 `examples/e2e-real-gate.mjs`：`ERIX_E2E_REAL=1` 才跑；缺省
+// 用法：ERIX_E2E_MODEL=1 node --test examples/resume-real-e2e.test.mjs
+// 闸门 / 配置解析 / 模型名来源共用 `examples/e2e-real-gate.mjs`：`ERIX_E2E_MODEL=1` 才跑；缺省
 // skip 并按分类报原因（gate 缺失 / 配置缺失 / JSON 坏了 / 缺字段 / 凭据引用解不出值 / 端点不可达），
 // **不许**变成默认门禁的硬依赖（`npm test` 必须离线可重复）。
 //
