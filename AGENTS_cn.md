@@ -145,6 +145,11 @@ npm run release:day -- --stage finalize      # 给切版打 tag → 双推 → �
   （`git.erix.vip/eric/erix-llm-kit`）；`git push origin <ref>` 两边一起更新。这一对推送得你自己做——
   `sync-erix-mirror.sh` 那个 cron 是关着的且必须保持关，某个 push URL 失败时那一侧会静默落后：
   **推完两侧各验一次**。
+- **`main` 上被拒的推送是远端的回答，不是权限问题**：`GH013` / “required status checks are expected”
+  说的是**正在推的那个 sha** 上检查没跑过——同一个 sha 跑绿之后直推就放行，所以「被拒」从不
+  等于「必须走 PR」。规则内容要现验（`gh api repos/<owner>/<repo>/rulesets`），不行抄——这里
+  抄过一份「没有分支保护」，下一版就被拒了。永不 `--force`：上面两条 push URL 各跑各的，
+  被拒的推送可能让镜像跑在 GitHub 前面——决定下一步前先把两侧都回读一遍。
 - **GitHub 是工作流的真值**：issue、PR、评审都在那里。Gitea 只是代码镜像（没有 Actions 流水线；它的 issue/PR 区
   是一份冻结的历史归档——不要在那边开单或回帖）。
 - 贡献流程：动到公共面的东西从 `feat-YYMMDD-NN-<描述>` / `fix-YYMMDD-NN-<描述>` 开分支 → PR 进 `main`；小修复与

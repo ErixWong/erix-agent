@@ -156,6 +156,12 @@ npm run release:day -- --stage finalize      # tag the version cut → dual push
   (`git.erix.vip/eric/erix-llm-kit`); `git push origin <ref>` updates both. Push the pair yourself — the
   `sync-erix-mirror.sh` cron is off and must stay off, so a failing push URL leaves that side lagging silently:
   **verify both sides after pushing**.
+- **A rejected push to `main` is the remote's answer, not a permission problem**: `GH013` / "required status
+  checks are expected" says the checks have not run on **the sha being pushed** — once that sha shows them green
+  a direct push goes through, so a rejection never means "must go by PR". Rule content you measure
+  (`gh api repos/<owner>/<repo>/rulesets`), never copy — a copy here once said "no branch protection" and was
+  contradicted by the next release. Never `--force`: the two push URLs above run independently, so a rejected
+  push can leave the mirror ahead of GitHub — read both sides back before deciding anything.
 - **GitHub is the workflow truth**: issues, PRs and reviews live there. Gitea is a code mirror only (no Actions
   pipeline; its issue/PR area is a frozen archive — do not open or reply there).
 - Contribution flow: branch `feat-YYMMDD-NN-<描述>` / `fix-YYMMDD-NN-<描述>` → PR into `main` for anything touching
