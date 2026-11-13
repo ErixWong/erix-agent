@@ -23,7 +23,7 @@
 // 用法（**只有显式开门才跑**，缺省打印 skip 并退出 0）：
 //   ERIX_E2E_MODEL=1 ERIX_NO_REFLECTION=1 node examples/fold-605-real-e2e.mjs
 //
-// 真上游一律走 `examples/e2e-real-gate.mjs#resolveRealUpstream()`：模型名从 `gate.slot.model` 取，
+// 真模型端点一律走 `examples/e2e-real-gate.mjs#resolveRealUpstream()`：模型名从 `gate.slot.model` 取，
 // 源码里不写死任何模型名；缺配置 / 凭据解不出 / 端点不可达分别报分类原因（不伪装成 skipped）。
 //
 // 三条断言（issue 正文判据 5）：

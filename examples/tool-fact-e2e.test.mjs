@@ -1,4 +1,4 @@
-// 真上游 e2e：工具事实契约面（#284 / #285）—— 工单 docs/tasks/261015-e2e-harness.md 第 2 项（T5）。
+// 真模型端点 e2e：工具事实契约面（#284 / #285）—— 工单 docs/tasks/261015-e2e-harness.md 第 2 项（T5）。
 //
 // 来历：#284/#285 两刀的验收此前**全打在 createFakeProvider 上**。主 agent 后来手做了真机 e2e
 // （`/tmp/e2e-tool-fact/e2e.mjs` + `recheck.mjs` + `e2e-b.mjs`，25 条断言全绿），但脚本在 /tmp、
@@ -22,12 +22,12 @@
 //    按轮拼完整历史。→ 需要完整历史处（TTL 折叠、投影）一律走 `collapseHistory()`；
 //      把最后一条 RoundRecord 当成全量历史去折叠，就会得到「foldedCount=0」这种假红。
 //
-// ③ **真上游格整份 skip，所以「调用点写错」看不见**（0.28 发版清单 [1/5] 红就是这么来的）：
+// ③ **真模型端点格整份 skip，所以「调用点写错」看不见**（0.28 发版清单 [1/5] 红就是这么来的）：
 //    #498 S3 把一片扁平拼写退役进 `config.*`，退役后唯一的执行点是名称闸口；而本文件默认
 //    `npm test` 直接 skip，于是「调用点还写着扁平 `runId`」能一路活到发版清单。
 //    → 本文件因此有**两格「始终跑、不联网」**：
 //      · 「断言集自身的不变量」：查 `tool_result` 的允许键集合 / 退役名单（与调用方式无关）；
-//      · 「选项名闸」：把**真上游格实际用的那两份参数对象**（`loopOptionsA` / `loopOptionsC`）
+//      · 「选项名闸」：把**真模型端点格实际用的那两份参数对象**（`loopOptionsA` / `loopOptionsC`）
 //        交给 `assertRunToolLoopOptionNames` 过一遍。两份对象各只有一个装配点，闸格与网络格共用
 //        同一份——所以调用点写回扁平名时，红的是这一格，而不是（被 skip 的）网络格。
 // ---------------------------------------------------------------------------
@@ -47,7 +47,7 @@ import {
 } from "../src/index.js";
 import { foldToolResultsForRequest } from "../src/loop/tool-result-ttl.js";
 // 选项名闸（`RUN_TOOL_LOOP_OPTION_NAMES` 的唯一执行点）。本文件下面那条「始终跑、不联网」的
-// 前置格用它把**真上游格实际交给 `runToolLoop` 的那两份对象**过一遍——理由见文件头 ③。
+// 前置格用它把**真模型端点格实际交给 `runToolLoop` 的那两份对象**过一遍——理由见文件头 ③。
 import { assertRunToolLoopOptionNames } from "../src/loop/option-normalization.js";
 import { formatSkip, printableEndpoint, resolveRealUpstream, TMP_PREFIX } from "./e2e-real-gate.mjs";
 
@@ -171,7 +171,7 @@ function createBoundaryProbe(store) {
   const snapshots = [];
   // 身份账（#760 二轮必修1）：**谁**在**哪一次**读口调用里返回过**哪个对象**。
   // 只靠 `Object.isFrozen(target)` / `isExtensible(target)` 判不了「这就是被观察的那一块」——
-  // 随便一个冻结的空对象都能过（评审的紧邻负控：把 target 换成 `Object.freeze({})`，真上游仍 3/3 绿）。
+  // 随便一个冻结的空对象都能过（评审的紧邻负控：把 target 换成 `Object.freeze({})`，真模型端点仍 3/3 绿）。
   // 于是这里记下读口真正返回过的对象身份，断言拿去核对 ⇒ 冒充者过不了。
   const faceCalls = new Map();
   const producedBy = new Map();
@@ -402,7 +402,7 @@ const resumePrompt = (attempt) => `第 ${attempt} 次要求：必须调用 searc
 // ---------------------------------------------------------------------------
 // 交给 `runToolLoop` 的两份参数对象：**各只有一个装配点**。
 //
-// 为什么抽成函数（本片的结构性修法）：真上游格与下面那条「始终跑、不联网」的选项名闸格必须查
+// 为什么抽成函数（本片的结构性修法）：真模型端点格与下面那条「始终跑、不联网」的选项名闸格必须查
 // **同一份对象**。闸格若另抄一份键表，调用点漂移时它照样绿——那不是覆盖，是第二份真相。
 // 这两个函数只负责**名字与结构**；真件（provider / executeTool / store / 回调）由调用方给，
 // 闸格给替身即可（名称闸只读 `Object.keys`，一个值都不看）。
@@ -413,7 +413,7 @@ const resumePrompt = (attempt) => `第 ${attempt} 次要求：必须调用 searc
 // 漏掉的调用点：0.28 发版清单上 [1/5] 红，报 `unknown runToolLoop option: "runId"`。
 // ---------------------------------------------------------------------------
 
-/** 场景 A：真上游 + 真执行 + 流式。 */
+/** 场景 A：真模型端点 + 真执行 + 流式。 */
 function loopOptionsA({ provider, executeTool, store, onEvent, onToolCall }) {
   return {
     provider,
@@ -488,7 +488,7 @@ test("断言集自身的不变量：允许键集合与退役名单没被偷偷�
 
 // #760 二轮必修1：**身份判据必须自己有牙齿**，而且是负控自证（不联网、不花钱、始终跑）。
 //
-// 评审的紧邻负控：把观察快照里的 `target` 换成**另一个已冻结的空对象** ⇒ 真上游 e2e 仍 3/3 绿。
+// 评审的紧邻负控：把观察快照里的 `target` 换成**另一个已冻结的空对象** ⇒ 真模型端点 e2e 仍 3/3 绿。
 // 根因：`Object.isFrozen(x)` / `Object.isExtensible(x)` 对**任何**冻结对象都通过，它们不证明
 // 「这就是被观察的那一块」。上一版 `target: undefined` 之所以红，是后面的**瞬态匹配器**顺手抓到的，
 // 不是身份判据判的 ⇒ 那条断言当时没有独立的牙齿。这里把负控固化成常驻格：每种空转都必须红在
@@ -553,7 +553,7 @@ test("观察记录的身份/来源/在场判据自带牙齿（负控固化，始
 // 上面那条「断言集自身的不变量」查的是 `tool_result` 的键集合，与「网络格怎么调 runToolLoop」
 // 毫无关系——所以它不是已有覆盖（这正是要补的洞）。
 //
-// 为什么这条要进默认 CI：真上游格整份受 `ERIX_E2E_MODEL` 门控，默认 `npm test` 直接 skip；
+// 为什么这条要进默认 CI：真模型端点格整份受 `ERIX_E2E_MODEL` 门控，默认 `npm test` 直接 skip；
 // 于是「调用点写着退役名」可以在整夜全绿里活到发版清单。选项名闸本身**不联网、不花模型钱**，
 // 没有任何理由跟着网络格一起被 skip。
 test("选项名闸：本文件交给 runToolLoop 的两份参数对象都合法（始终跑，不联网）", () => {
@@ -569,7 +569,7 @@ test("选项名闸：本文件交给 runToolLoop 的两份参数对象都合法�
     /unknown runToolLoop option: "resume" \(its canonical home is config\.run\.resume; the flat spelling is rejected\)/u,
     "名称闸必须拒绝扁平 `resume` 并点名 config.run.resume");
 
-  // ② 本体：两份对象来自**真上游格用的同一个装配函数**（不是另抄的键表）。
+  // ② 本体：两份对象来自**真模型端点格用的同一个装配函数**（不是另抄的键表）。
   //    替身只填值、不参与判定：名称闸只读 `Object.keys`，provider / store 一个成员都不碰。
   const stubValue = {};
   const stubFn = () => {};
@@ -581,12 +581,12 @@ test("选项名闸：本文件交给 runToolLoop 的两份参数对象都合法�
   })), "场景 C 的选项对象里有顶层键不在 RUN_TOOL_LOOP_OPTION_NAMES 内（多半是退役名写回了扁平位）");
 });
 
-test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 投影 / 一代读窗口）", {
+test("真模型端点 e2e：工具事实契约面（两线同键 / 字段面 / wire / 投影 / 一代读窗口）", {
   timeout: 12 * 60 * 1000,
 }, async (t) => {
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
   if (!gate.ok) {
-    t.skip(`真上游不可用/闸门关：${formatSkip(gate)}`);
+    t.skip(`真模型端点不可用/闸门关：${formatSkip(gate)}`);
     return;
   }
   const providerFields = {
@@ -620,7 +620,7 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
 
   const root = await mkdtemp(join(tmpdir(), TMP_PREFIX.toolFact));
   try {
-    // =============== 场景 A：真上游 + 真执行 + 流式 ===============
+    // =============== 场景 A：真模型端点 + 真执行 + 流式 ===============
     const dirA = join(root, "proj-a");
     await mkdir(dirA, { recursive: true });
     await makeProject(dirA);
@@ -692,7 +692,7 @@ test("真上游 e2e：工具事实契约面（两线同键 / 字段面 / wire / 
     }, `事件=${evIds.length} 落盘=${persistedIds.length}，` 
       + `块侧 key 集合=${new Set(keyByToolUseId.values()).size}`);
 
-    // 第 2 条：流式分片上的身份键（只有真上游能覆盖这条分支——假 provider 不给分片）
+    // 第 2 条：流式分片上的身份键（只有真模型端点能覆盖这条分支——假 provider 不给分片）
     check("F2 流式 tool_call 分片带 toolCallKey，且每个值都在块侧 key 集合里", () => {
       assert.ok(fragments.length > 0, `onToolCall 一个分片也没收到（stream=true 未生效？）`);
       const keys = fragments.map((f) => f?.toolCallKey);

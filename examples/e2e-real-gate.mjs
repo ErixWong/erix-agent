@@ -213,7 +213,7 @@ export function probeEndpointReachability(endpoint, { timeoutMs = 8_000 } = {}) 
 }
 
 /**
- * 解析「能不能打真上游」。
+ * 解析「能不能打真模型端点」。
  *
  * @param {{ env?: NodeJS.ProcessEnv, home?: string, probe?: boolean, probeTimeoutMs?: number, slot?: string }} [options]
  * @returns {Promise<{
@@ -347,7 +347,7 @@ export const TMP_PREFIX = {
   cliReal: "erix-cli-real-",
   resumeReal: "erix-resume-real-e2e-",
   crossVersion: "erix-cross-version-e2e-",
-  // issue #617 P2：派生真上游（父 run 派生子 run）——前缀唯一，残留一眼能认。
+  // issue #617 P2：派生真模型端点 run（父 run 派生子 run）——前缀唯一，残留一眼能认。
   delegateReal: "erix-delegate-real-e2e-",
 };
 

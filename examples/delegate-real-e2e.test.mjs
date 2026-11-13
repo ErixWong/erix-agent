@@ -1,4 +1,4 @@
-// 真上游 e2e（issue #617 P2）：**父 run 派生一个子 run 并取回结果**——走 CLI 的真实装配。
+// 真模型端点 e2e（issue #617 P2）：**父 run 派生一个子 run 并取回结果**——走 CLI 的真实装配。
 //
 // 用法：ERIX_E2E_MODEL=1 node --test examples/delegate-real-e2e.test.mjs
 //
@@ -6,14 +6,14 @@
 // 宿主注入面的形状，这边钉的是**真模型 + 真 relay** 下这条链路真的通：
 //   父 `runChat`（真 CLI 装配：`createCliDelegation` + `createDelegateTool`）
 //     → 模型调 `delegate action=run background=true`
-//     → 子 run 是**同进程嵌套的真 `runToolLoop`**（同一个真上游 provider）
+//     → 子 run 是**同进程嵌套的真 `runToolLoop`**（同一个真模型端点）
 //     → 子 run 写自己的名册记录 / transcript
 //     → 完成时经 `notifyParent` 唤醒父侧**恰好一次**
 //     → 模型调 `delegate action=result` 取回终局
 //
 // 闸门口径与 `examples/e2e-real-gate.mjs` 逐字同源（不另造一套）：
 //   · `ERIX_E2E_MODEL` 不是 `1` ⇒ 本文件**一步都不跑**，`t.skip()` 打印分类原因（`GAP_CODES`）。
-//     真上游永远不是默认门禁的硬依赖（AGENTS 测试隔离条）。
+//     真模型端点永远不是默认门禁的硬依赖（AGENTS 测试隔离条）。
 //   · 闸门**开着**但配置/凭据/端点不可用 ⇒ **`assert.fail`**，不是 skip。理由与
 //     `scripts/release-real-check.mjs` 的预检同一条：「没跑成」不许报成绿——发版清单里的必跑项
 //     被「跳过」冒充成「通过」，正是 PR #289 阻断 1 的镜像错误。`check:release:model-e2e` 那侧另有一道
@@ -63,7 +63,7 @@ const PARENT_PROMPT = [
 /**
  * 父首轮用户消息的取证锚点：**从 `PARENT_PROMPT` 本身切出来**，不在断言里另抄一份。
  * （实测漂移过一次：断言手写成「派生（delegate）工具的验证任务」，漏了提示词里的 `）」`，
- * 于是真上游跑永远红——虽然功能全对。锚点必须是派生值，不能是第二份手抄。）
+ * 于是真模型端点跑永远红——虽然功能全对。锚点必须是派生值，不能是第二份手抄。）
  */
 const FIRST_TURN_MARK = PARENT_PROMPT.slice(0, 18);
 
@@ -75,7 +75,7 @@ async function writeEmptyMcpConfig(dir) {
   return path;
 }
 
-test("派生真上游件已接进 check:release:model-e2e 步骤表（始终跑，不联网）", () => {
+test("派生真模型端点件已接进 check:release:model-e2e 步骤表（始终跑，不联网）", () => {
   // 反向证：把本文件从步骤表里摘掉 ⇒ 这一格红。否则「补了 e2e 但没进门禁」会静默存活，
   // 而发版清单是唯一会真的跑它的地方。
   const script = readFileSync(new URL("../scripts/release-real-check.mjs", import.meta.url), "utf8");
@@ -86,18 +86,18 @@ test("派生真上游件已接进 check:release:model-e2e 步骤表（始终跑�
   assert.ok(prefixes.includes(TMP_PREFIX.delegateReal));
 });
 
-test("真上游 e2e：父 run 派生子 run → 名册归属/终态 → 唤醒恰好一次 → 取回结果（#617 P2）", {
+test("真模型端点 e2e：父 run 派生子 run → 名册归属/终态 → 唤醒恰好一次 → 取回结果（#617 P2）", {
   timeout: 15 * 60 * 1000,
 }, async (t) => {
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
   if (!gate.ok) {
     if (gate.code === GAP_CODES.GATE_MISSING) {
       // 缺省形态：一步都不跑。分类原因照 `formatSkip` 打（gate/config/key/endpoint 四类分得开）。
-      t.skip(`真上游门禁默认关闭：${formatSkip(gate)}（跑法：${REAL_GATE_ENV}=1 node --test examples/delegate-real-e2e.test.mjs）`);
+      t.skip(`真模型端点门禁默认关闭：${formatSkip(gate)}（跑法：${REAL_GATE_ENV}=1 node --test examples/delegate-real-e2e.test.mjs）`);
       return;
     }
-    // 闸门开着但真上游不可用：**红**。「没跑成」不是「通过」。
-    assert.fail(`闸门开着（${REAL_GATE_ENV}=1）但真上游不可用 ⇒ 本用例没跑成，不许报绿：${formatSkip(gate)}`);
+    // 闸门开着但真模型端点不可用：**红**。「没跑成」不是「通过」。
+    assert.fail(`闸门开着（${REAL_GATE_ENV}=1）但真模型端点不可用 ⇒ 本用例没跑成，不许报绿：${formatSkip(gate)}`);
   }
   console.log(`[6] model=${gate.model} endpoint=${printableEndpoint(gate.endpoint)} config=${gate.configPath}`);
 
@@ -174,7 +174,7 @@ test("真上游 e2e：父 run 派生子 run → 名册归属/终态 → 唤醒�
     //   `src/loop/orchestrator.js` 的 `roundKey = <runId>:round:<n>`）。
     // ⇒ 「子 run 追加进了父的会话文件」是可判定的结构事实，不必挑一个字符串去猜。
     // ⚠ 原先这里断言的是「子会话文件里应有子 run 自己的系统提示」——**那条断言本身不成立**：
-    //   transcript 不落系统提示（`src/store/` 里没有任何 system 行），于是真上游跑永远红（#617 P2 实测）。
+    //   transcript 不落系统提示（`src/store/` 里没有任何 system 行），于是真模型端点跑永远红（#617 P2 实测）。
     const rowsOf = (text) => text.split("\n").filter(Boolean).map((line) => JSON.parse(line));
     const parentRows = rowsOf(parentText);
     const childRows = rowsOf(await readFile(childTranscript, "utf8"));

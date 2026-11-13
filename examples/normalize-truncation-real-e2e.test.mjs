@@ -1,4 +1,4 @@
-// issue #637 真机 e2e：归一化兜底（L2）在**真上游**上把「被 token 上限截断」与「模型输出垃圾」
+// issue #637 真机 e2e：归一化兜底（L2）在**真模型端点**上把「被 token 上限截断」与「模型输出垃圾」
 // 判成两档，而不是压成同一个 error。
 //
 // 病根（#419 的真机形状，`maxTokens:120`、输出契约要求把原文回显 ⇒ 输出长度 ≈ 输入长度 ⇒ 结构上
@@ -42,11 +42,11 @@ const ROOMY_MAX_TOKENS = 512;
 /** 被截断的两个拼写（canonical 与 OpenAI 原始）：与源码里的 `TRUNCATING_STOP_REASONS` 同一口径。 */
 const TRUNCATING_STOP_REASONS = ["max_tokens", "length"];
 
-/** 真上游闸门：关着 ⇒ `t.skip` 分类原因（与其余真机脚本同形，`npm test` 必须离线可重复）。 */
+/** 真模型端点闸门：关着 ⇒ `t.skip` 分类原因（与其余真机脚本同形，`npm test` 必须离线可重复）。 */
 async function gateOrSkip(t) {
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
   if (!gate.ok) {
-    t.skip(`真上游不可用/闸门关：${formatSkip(gate)}`);
+    t.skip(`真模型端点不可用/闸门关：${formatSkip(gate)}`);
     return undefined;
   }
   console.log(`[637] 闸门开：model=${gate.model} endpoint=${printableEndpoint(gate.endpoint)}`

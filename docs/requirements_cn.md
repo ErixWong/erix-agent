@@ -53,7 +53,7 @@
 | FR-1.1 | OpenAI 兼容（`chat/completions`）和 Anthropic（`messages`）协议，均支持流式与非流式 | **已交付。** `createOpenAIProvider` 暴露 `chat` 与 `chatStream`；Anthropic 适配器是内部件，走 Anthropic 的宿主自己提供 provider 对象（协议助手仍然公开）。 |
 | FR-1.2 | 将两种协议归一为一种内部块格式（`text` / `tool_use` / `tool_result`） | **已交付。** `src/messages/canonical.js` 和 `src/messages/anthropic.js` 还会在需要时保留 `raw`、图片和 reasoning 块。 |
 | FR-1.3 | 通用错误类别：`timeout` / `rate_limited` / `auth` / `network` / `server`，并带有可重试标记 | **已交付。** `src/providers/errors.js` 提供 `KitError`、HTTP 分类、fetch 异常分类和 `retryable`；它还暴露显式的 `aborted`、`provider_config`、`invalid_messages` 及相关不可重试错误。 |
-| FR-1.4 | 对于包含错误正文的 HTTP 2xx 响应，保留真实上游消息，而不是报告误导性的 missing-choice 错误 | **已交付。** 两个 provider 都会检查成功响应正文中的 provider 错误并保留上游消息；缺少 `choices` 的 OpenAI 响应会包含有界的响应预览。 |
+| FR-1.4 | 对于包含错误正文的 HTTP 2xx 响应，保留上游返回的错误正文，而不是报告误导性的 missing-choice 错误 | **已交付。** 两个 provider 都会检查成功响应正文中的 provider 错误并保留上游消息；缺少 `choices` 的 OpenAI 响应会包含有界的响应预览。 |
 | FR-1.5 | 将模型元数据（`contextWindowTokens` / `maxOutputTokens`）传入循环，使其能够推导压缩预算 | **已交付，并带有明确的输入契约。** Provider 工厂会返回这些元数据字段，`runToolLoop` 可从 `modelConfig`、`config.metadata.modelMetadata`、`config.metadata.model`、`provider` 或 `config.folding.context` 接收它们，并在两个值都可用时调用 `computeBudget`。任一值缺失时都不会推断预算。 |
 
 ### FR-2 工具循环（`runToolLoop`）

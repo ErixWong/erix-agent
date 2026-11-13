@@ -15,7 +15,7 @@
  *       就住在 `bin/config.js`，只扫 `src/` 会把这张票最核心的历史证据漏掉。
  *  表 2 行为 → 守护题（按 `src/` 模块聚合）：每个模块被多少测试文件引用、其中哪些按工单号命名
  *       （`-\d{3}\.test\.js`）、是否「冗余守护候选」（同模块被 ≥3 个工单号文件覆盖）。
- *  表 3 测试文件画像：spawn 子进程 / 依赖真上游（`ERIX_E2E_MODEL`）/ 有 `skip` / 工单号命名 / 用例数。
+ *  表 3 测试文件画像：spawn 子进程 / 依赖真模型端点（`ERIX_E2E_MODEL`）/ 有 `skip` / 工单号命名 / 用例数。
  *  表 4 只有离线、没有真机：`src/` 模块被 `test/` 覆盖、但**静态证据里**不出现在发版真机清单
  *       （`scripts/release-real-check.mjs` 的 STEPS）的覆盖面里；按 `src/` 分区汇总出「真机空白面」。
  *
@@ -719,12 +719,12 @@ export function renderReport(inv, { root = DEFAULT_ROOT } = {}) {
   L.push("");
 
   // 表 3
-  L.push(`## 表 3：测试文件画像（${inv.table3.length} 行；spawn ${s.spawnTests} · 真上游 ${s.realUpstreamTests} · skip ${s.skipTests} · 工单号命名 ${s.issueNamedTests}）`);
+  L.push(`## 表 3：测试文件画像（${inv.table3.length} 行；spawn ${s.spawnTests} · 真模型端点 ${s.realUpstreamTests} · skip ${s.skipTests} · 工单号命名 ${s.issueNamedTests}）`);
   L.push("");
   L.push(`用例数合计 **${s.caseCountEstimate}**（${CRITERIA.caseCount}）`);
   if (s.zeroCaseFiles.length) L.push(`估算口径抓不到的 0 行（it( 形态或纯表驱动）：${s.zeroCaseFiles.map((f) => `\`${f}\``).join("、")}`);
   L.push("");
-  L.push("| 文件 | spawn | 真上游 | skip | 工单号 | 用例数(估) |");
+  L.push("| 文件 | spawn | 真模型端点 | skip | 工单号 | 用例数(估) |");
   L.push("|---|---|---|---|---|---|");
   for (const row of inv.table3) {
     L.push(`| \`${row.file}\` | ${row.spawn ? "✔" : ""} | ${row.realUpstream ? "✔" : ""} | ${row.skip ? "✔" : ""} | ${row.issueNamed ? "✔" : ""} | ${row.caseCount} |`);

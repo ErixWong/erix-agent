@@ -255,4 +255,4 @@ pi 的「折叠」有两条机制：**compaction**（上下文超限或 `/compac
 - **仍未做（裁决：等实测）**：最后一个工具定义上的断点；可配置的 1h 缓存 TTL（今天只有协议默认的 5 分钟 `ephemeral`，且**没有配置叶**）。
 - **与 pi 的对照口径**（别再把两侧说成同一件事）：pi 是 system + **最后一个 tool 定义** + 最后一条 user/system 消息的尾块；erix 是 system + **首条 user** + 持久历史尾部。差异有两处——「首条 user vs 最后一个 tool」，以及「消息尾块」的定义（erix 排除每请求块与每轮移位的续接块）。
 - **与折叠的关系**：TTL 折叠改写的是中段字节 ⇒ 发生折叠的那一轮，上一轮的尾部断点前缀失配，请求退回两个静态断点；只追加的稳态轮次照常命中。这是**有意取舍**（折叠在支持缓存的端点上仍净赚，见 `docs/research/2026-09-26-strategy-variance-and-cache-economics.md`），不是「漏做」。
-- **测量边界**：断点落点离线可核（就在请求载荷里）；**命中率必须真上游**（`usage.cacheRead` / `cacheWrite` 来自上游的 `cache_read_input_tokens` / `cache_creation_input_tokens`）。本仓没有 Anthropic 凭据，所以 #192 的本地证据只到「载荷形状 + 轮间只追加前缀性质 + 记账链打通」，不冒充命中率。
+- **测量边界**：断点落点离线可核（就在请求载荷里）；**命中率必须真模型端点**（`usage.cacheRead` / `cacheWrite` 来自上游的 `cache_read_input_tokens` / `cache_creation_input_tokens`）。本仓没有 Anthropic 凭据，所以 #192 的本地证据只到「载荷形状 + 轮间只追加前缀性质 + 记账链打通」，不冒充命中率。
