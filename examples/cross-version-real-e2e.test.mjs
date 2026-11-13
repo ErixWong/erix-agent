@@ -102,7 +102,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createFileTranscriptStore } from "../src/index.js";
 import { foldLedgerMessages, foldMessageRows, MESSAGE_ROW_KIND } from "../src/store/message-rows.js";
-import { safeRunId } from "../src/store/file.js";
+import { recoveryRowsPath, safeRunId, transcriptPath } from "../src/store/file.js";
 import {
   formatSkip, printableEndpoint, resolveRealUpstream, TMP_PREFIX,
 } from "./e2e-real-gate.mjs";
@@ -117,7 +117,18 @@ const ROWS_FILE = fileURLToPath(new URL("../src/store/message-rows.js", import.m
 const SRC_DIR = fileURLToPath(new URL("../src/", import.meta.url));
 /** `bin/cli.js` 帮助里承诺的退出码：没有 `--final-guard` 的成功 run 是 4（verification=skipped）。 */
 const EXIT_NOT_VERIFIED = 4;
-const LEDGER_SUFFIX = ".jsonl";
+/**
+ * 账本后缀 `<safeRunId(runId)>.jsonl` 的那段尾巴，由 `transcriptPath()`（`src/store/file.js`，
+ * 「命名口径的唯一实现」）**现场推**，不手抄字面量（同 `resume-real-e2e`）。
+ */
+const LEDGER_SUFFIX = suffixFrom(transcriptPath, "transcriptPath");
+/**
+ * 恢复行侧车 `<safeRunId(runId)>.recovery.jsonl` 的尾巴（`recoveryRowsPath`，issue #769）。
+ * 它**也以 `LEDGER_SUFFIX` 结尾**——这正是本文件误判的根因：目录里出现侧车时，
+ * 「同一 `--dir` 只许一本账本」那条判据会把侧车数成第二本账本并抛（真模型端点上随机命中，
+ * 因为侧车只在部分文本被刷出时才落盘）。`resume-real-e2e` 在 0.32.0 修过同一形状，这里跟上。
+ */
+const RECOVERY_SUFFIX = suffixFrom(recoveryRowsPath, "recoveryRowsPath");
 const CORRUPT_MARK = ".corrupt.";
 /** 旧 CLI 默认位置（不在默认 PATH 里，必须绝对路径）——**只给可选分支 L4 用**。 */
 const LEGACY_CLI_ENV = "ERIX_LEGACY_CLI";
@@ -344,8 +355,38 @@ export function resolveLegacyCli({ env = process.env, home = homedir() } = {}) {
 // 账本读侧（原始读：**不修复尾部**，只把「完整行」与「末尾残段」分开）
 // ---------------------------------------------------------------------------
 
+/** 从落盘助手的返回值里剥出后缀（形状必须是 `<safeRunId(probe>><后缀>`，否则推不出就抛）。 */
+function suffixFrom(pathFor, label) {
+  const probe = "suffix-probe-cross-version";
+  const name = pathFor("/", probe).split("/").pop();
+  if (!name.startsWith(safeRunId(probe)) || name === safeRunId(probe)) {
+    throw new Error(`${label} 的文件名形状不是 <safeRunId(runId)><后缀>（实得 ${name}）⇒ 后缀推不出来`);
+  }
+  return name.slice(safeRunId(probe).length);
+}
+
+/** 恢复行侧车的名字（`<safeRunId(runId)>.recovery.jsonl`，实现见 `src/store/file.js#recoveryRowsPath`）。 */
+function isRecoverySidecarName(name) {
+  return name.endsWith(RECOVERY_SUFFIX);
+}
+
+/**
+ * 「这个 `*.jsonl` 是不是一本**账本**」：以 `LEDGER_SUFFIX` 结尾，且**不是**恢复行侧车。
+ * 侧车不是一本账本（一行都不是轮记录，`store.load()` / `loadRawRows()` 也读不到它）。
+ * 收窄只排掉「恰好是侧车形状」的名字——多出来的任何 `*.jsonl`（另一个 run 的账本、手拼错名的
+ * 第二本）仍然算第二本账本，`readLedger()` 照旧抛（离线自检 ⑦ 拿真两份反向证这一点）。
+ */
+function isLedgerName(name) {
+  return name.endsWith(LEDGER_SUFFIX) && !isRecoverySidecarName(name);
+}
+
 function listLedgerFiles(dir) {
-  return existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith(LEDGER_SUFFIX)).sort() : [];
+  return existsSync(dir) ? readdirSync(dir).filter(isLedgerName).sort() : [];
+}
+
+/** 侧车名单：与 `listLedgerFiles()` **互补**——目录里全部 `*.jsonl` = 账本 ∪ 侧车，谁都不许「既不数也不判」。 */
+function listRecoverySidecarFiles(dir) {
+  return existsSync(dir) ? readdirSync(dir).filter(isRecoverySidecarName).sort() : [];
 }
 
 function listCorruptFiles(dir) {
@@ -669,6 +710,27 @@ test("断言集自身的不变量：旧形状/新形状判据、原样透传、�
   const stdout = "噪声\n=== 终稿 ===\nTOKEN-1 是答案\n=== 统计 === model=m rounds=1\n";
   assert.equal(finalDraft(stdout), "TOKEN-1 是答案", "终稿解析必须只取正文段");
   assert.equal(finalDraft("没有终稿"), "", "没有终稿时返回空串（不许抛）");
+
+  // ⑦ 账本名字判据（issue #769 的侧车形状）。真模型端点上侧车**随机出现**（只有部分文本被刷出
+  //    时才落盘），所以这一格必须离线跑：它是那条随机红的唯一常驻防线。
+  assert.equal(LEDGER_SUFFIX, ".jsonl", `账本后缀应与 CLI 承诺的一致，实测 ${LEDGER_SUFFIX}`);
+  assert.equal(RECOVERY_SUFFIX, ".recovery.jsonl", `侧车后缀应点名恢复行文件，实测 ${RECOVERY_SUFFIX}`);
+  assert.ok(LEDGER_SUFFIX.endsWith(".jsonl") && RECOVERY_SUFFIX.endsWith(LEDGER_SUFFIX),
+    "侧车名以账本后缀结尾——这正是数成第二本账本那个坑的形状，判据必须建立在这一点上");
+  const nameBox = mkdtempSync(join(tmpdir(), "erix-xversion-names-"));
+  try {
+    writeFileSync(join(nameBox, `run-a${LEDGER_SUFFIX}`), "{}\n", "utf8");
+    writeFileSync(join(nameBox, `run-a${RECOVERY_SUFFIX}`), "{}\n", "utf8");
+    assert.deepEqual(listLedgerFiles(nameBox), [`run-a${LEDGER_SUFFIX}`],
+      "侧车不许被数成第二本账本（真模型端点上随机命中，这条判据就是那条红的离线替身）");
+    assert.deepEqual(listRecoverySidecarFiles(nameBox), [`run-a${RECOVERY_SUFFIX}`],
+      "侧车要被**数到**：全部 *.jsonl = 账本 ∪ 侧车，没有第三种名字");
+    writeFileSync(join(nameBox, `run-b${LEDGER_SUFFIX}`), "{}\n", "utf8");
+    assert.throws(() => readLedger(nameBox), /多份账本/u,
+      "真出现第二本账本（脑裂）时仍须抛——收窄不能把不变量一起关掉");
+  } finally {
+    rmSync(nameBox, { recursive: true, force: true });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -979,6 +1041,16 @@ test("跨版本 e2e：0.22.0 夹具账本 → 0.23.0 读（原样透传/恰好�
     }
 
     const afterLedger = readLedger(transcripts);
+    // 目录里全部 `*.jsonl` 必须**恰好**分成「一本账本 + 0..n 个恢复行侧车」：侧车可以出现
+    // （续跑时部分文本被刷出就落盘），但除这两种名字外不许有第三种，也不许出现第二本账本。
+    {
+      const allJsonl = readdirSync(transcripts).filter((name) => name.endsWith(LEDGER_SUFFIX)).sort();
+      const ledgers = listLedgerFiles(transcripts);
+      const sidecars = listRecoverySidecarFiles(transcripts);
+      assert.deepEqual(allJsonl, [...ledgers, ...sidecars].sort(),
+        `出现既不算账本也不算侧车的 *.jsonl（判据漏了一类文件）：${allJsonl.join(",")}`);
+      assert.equal(ledgers.length, 1, `续跑后应当只有一本账本（脑裂）：${ledgers.join(",")}`);
+    }
     const afterRaw = afterLedger.raw;
     const afterRows = afterLedger.rows;
     const appended = afterRows.slice(oldRows.length);
