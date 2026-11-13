@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { boundRunState } from "../run-state.js";
+import { RECOVERY_EVENT_PARTIAL_TEXT } from "./recovery-rows.js";
 import { foldMessageRows } from "./message-rows.js";
 import {
   assertSafeRound, dedupConflictError, payloadFingerprint, recordKey,
@@ -69,7 +70,8 @@ export function transcriptPath(dir, runId) {
  * final guard、聚合预算、`onRound` 观察器、261021 golden 夹具）都会读到它，实测弄红 29 例；
  * 而恢复行**不是一轮**，它带的是「某个 `tool_use` 执行过了」/「某轮有一段半截正文」这种事件。
  * ⇒ 同目录另开一份 append-only 文件：**轮记录通道的每一个读口零改动**，恢复行走自己的读口
- * `listRecoveryRows()`。两者都是只追加、都不改写已落的行。
+ * `listRecoveryRows()`。两者都是只追加；但 `partial-text` 自 issue #827 第 1 刀起是**一轮一条的槽**
+ * （同轮新正文原子替换旧行，见 `replacePartialTextSlot`），`tool-executed` 一行一个事件、永不改写。
  * @param {string} dir @param {string} runId @returns {string}
  */
 export function recoveryRowsPath(dir, runId) {
@@ -394,6 +396,79 @@ async function appendRecord(path, runId, record, dedupCaches) {
 }
 
 /**
+ * issue #827 第 1 刀（工单 261113-07）：**`partial-text` 行是槽，不是日志**。
+ *
+ * 同一轮的 `partial-text` 只保留一条，内容是**最新全文**：读出现有行、丢掉**同 round 同事件**的
+ * 旧行，连同其余行与新行一起**原子整写**（tmp + `rename`，手法照 `saveRunSnapshot` / `markRunState`）。
+ * 改前每提交一次就追加一条全量前缀 ⇒ 一轮正文的落盘字节是 O(n²)（issue #791 的账）；读侧
+ * （`readPartialTextRecoveryRow`）本来就只取最后一条，槽化只是把落盘形状改回读侧一直假设的语义，
+ * **读侧零改动**。
+ *
+ * 去重缓存必须一起处理：被替换那条的键若还留在 `recoveryDedupCaches` 里，文件已经没这行了而缓存
+ * 还认它 ⇒ 同一份正文重放会被判「已写过」而**静默丢行**（本刀唯一的静默失败面）。这里整条缓存
+ * 作废（delete 该 run 的条目）：下一次写会按新文件流式重建 key 集，「keys 恒等于文件里全部记录的
+ * key」这条不变量自动恢复，比外科手术式删单键更难写错。
+ *
+ * 幂等与冲突判定与 `appendRecord` 同口径（同键同 payload ⇒ 跳过返 `false`；同键异 payload ⇒ 抛
+ * `TranscriptDedupConflictError`）：同键行必然落在同一个槽（键含 round 与事件名），所以判定就在
+ * 读出的行里做，跳过时**不动文件**。
+ *
+ * @param {string} path 恢复行文件路径
+ * @param {string} runId
+ * @param {any} record 新的 `partial-text` 行（已过 `assertSafeRound`）
+ * @param {Map<string, any>} dedupCaches 恢复行通道的去重缓存（调用方传 `recoveryDedupCaches`）
+ * @returns {Promise<boolean>} 真落了一行才是 `true`
+ */
+async function replacePartialTextSlot(path, runId, record, dedupCaches) {
+  // 读口径与 `loadRecords` 一致：先修尾部（半行残段隔离 .corrupt.*），再流式读。
+  await repairTranscriptTail(path);
+  /** @type {any[]} */
+  const rows = [];
+  try {
+    for await (const row of readRecords(path)) rows.push(row);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error(`Transcript contains a malformed line: ${path}`, { cause: error });
+    }
+    throw error;
+  }
+  const key = recordKey(runId, record);
+  /** @type {any|undefined} */
+  let sameKeyRow;
+  const kept = [];
+  for (const row of rows) {
+    if (row !== null && recordKey(runId, row) === key) sameKeyRow = row;
+    if (row !== null
+      && row.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT
+      && row.round === record.round) {
+      continue; // 本槽的旧行：只保留即将写入的这一条
+    }
+    kept.push(row);
+  }
+  if (sameKeyRow !== undefined) {
+    const existingFingerprint = payloadFingerprint(sameKeyRow);
+    const incomingFingerprint = payloadFingerprint(record);
+    if (existingFingerprint !== incomingFingerprint) {
+      throw dedupConflictError({
+        runId,
+        key,
+        existing: sameKeyRow,
+        incoming: record,
+        existingFingerprint,
+        incomingFingerprint,
+      });
+    }
+    return false; // 同键同 payload ⇒ 幂等跳过（与 `appendRecord` 逐字同口径，文件不动）
+  }
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  const body = `${[...kept, record].map((row) => JSON.stringify(row)).join("\n")}\n`;
+  await writeFile(temporary, body, "utf8");
+  await rename(temporary, path);
+  dedupCaches.delete(safeRunId(runId));
+  return true;
+}
+
+/**
  * Create a JSONL-backed transcript store.
  *
  * 并发模型：**单写者**（每 runId 单进程写入——宿主单实例/CLI 单跑）。appendRound 的
@@ -488,9 +563,11 @@ export function createFileTranscriptStore({ dir }) {
     },
 
     /**
-     * issue #769（可选能力）：追加一条**恢复行**（`kind: "recovery"`，一条一个事件）到恢复行通道。
+     * issue #769（可选能力）：追加一条**恢复行**（`kind: "recovery"`）到恢复行通道。
      * 幂等与轮记录通道同口径（共用 `src/store/transcript-dedup.js`）：同事件键 + 同 payload ⇒
      * 跳过并返回 `false`；同键异 payload ⇒ 抛 `TranscriptDedupConflictError`（既不覆盖也不静默丢）。
+     * issue #827 第 1 刀：`recoveryEvent === "partial-text"` 的行是**槽**——同 round 同事件只保留一条、
+     * 原子替换（见 `replacePartialTextSlot`）；`tool-executed` 等其余事件照旧**只追加、永不替换**。
      * @param {string} runId @param {object} record 恢复行（形状见 `src/store/recovery-rows.js`）
      * @returns {Promise<boolean>} 真正落了一行才是 `true`
      */
@@ -499,7 +576,12 @@ export function createFileTranscriptStore({ dir }) {
       assertSafeRound("appendRecoveryRow", { runId, record });
       return await withAppendLock(runId, async () => {
         await mkdir(dir, { recursive: true });
-        return await appendRecord(recoveryRowsPath(dir, runId), runId, record, recoveryDedupCaches);
+        const path = recoveryRowsPath(dir, runId);
+        if (record !== null && record !== undefined
+          && record.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT) {
+          return await replacePartialTextSlot(path, runId, record, recoveryDedupCaches);
+        }
+        return await appendRecord(path, runId, record, recoveryDedupCaches);
       });
     },
 

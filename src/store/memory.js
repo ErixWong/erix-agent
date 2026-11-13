@@ -1,4 +1,5 @@
 import { boundRunState } from "../run-state.js";
+import { RECOVERY_EVENT_PARTIAL_TEXT } from "./recovery-rows.js";
 import { foldMessageRows } from "./message-rows.js";
 import {
   assertSafeRound, dedupConflictError, payloadFingerprint, recordKey,
@@ -91,8 +92,10 @@ export function createMemoryTranscriptStore() {
     },
 
     /**
-     * issue #769（可选能力）：追加一条恢复行（`kind: "recovery"`，一条一个事件）到恢复行通道。
+     * issue #769（可选能力）：追加一条恢复行（`kind: "recovery"`）到恢复行通道。
      * 幂等与 `appendRound` 同口径（同键同 payload ⇒ 跳过并返回 `false`；同键异 payload ⇒ 抛冲突）。
+     * issue #827 第 1 刀：`recoveryEvent === "partial-text"` 是**槽**——同 round 同事件只保留一条
+     * （新行替旧行，与 file store 的原子整写同语义）；其余事件照旧只追加、永不替换。
      * @param {string} runId @param {object} record @returns {Promise<boolean>}
      */
     async appendRecoveryRow(runId, record) {
@@ -115,6 +118,16 @@ export function createMemoryTranscriptStore() {
           });
         }
         return false;
+      }
+      if (record !== null && record !== undefined
+        && record.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT) {
+        // 槽替换：丢掉同 round 同事件的旧行，新行落在尾部（与 file store 的整写同位置）。
+        const kept = rows.filter((item) => !(item !== null
+          && item.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT
+          && item.round === record.round));
+        kept.push(copyRecord(record));
+        recoveryLedger.set(runId, kept);
+        return true;
       }
       rows.push(copyRecord(record));
       recoveryLedger.set(runId, rows);
