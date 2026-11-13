@@ -51,9 +51,9 @@ One row per gate: what it judges, and the anchor to read before editing what it 
 | `npm run check:docs-examples` | JS fences of both contract docs and both READMEs | `#check-docs-examples` |
 | `npm run check:pack-links` | packaged Markdown links + `.d.ts` / publish-surface claims | `#check-pack-links` |
 | `npm run check:release` | offline pre-release checklist as one command | `#check-release` |
-| `npm run check:release:real` | real-upstream checklist (gated by `ERIX_E2E_REAL=1`) | `#check-release-real` |
+| `npm run check:release:model-e2e` | real model endpoint checklist (gated by `ERIX_E2E_MODEL=1`) | `#check-release-real` |
 | `npm run release:day` | the release day in four `--stage`s | `#release-day` |
-| `npm run check:cli-real` | the installed CLI against the real upstream (gated) | `#check-cli-real` |
+| `npm run check:cli:model-e2e` | the installed CLI against the real model endpoint (gated) | `#check-cli-real` |
 | `npm run check:docs-spelling` | retired flat option spellings in living docs | `#check-docs-spelling` |
 | `npm run check:agents-directives` | this page: status claims, expiring copies, bare coordinates, byte budget | `#check-agents-directives` |
 | `npm run types:build` | generates the published `src/**/*.d.ts` | `#type-surface` |
@@ -116,11 +116,11 @@ Four commands, in this order. The five checklist rows are reconciled row by row 
 
 ```bash
 npm run release:day -- --stage preflight --hosts <host repo dirs>
-#   [1/5] check:changelog                       every public merge named in this version's section
-#   [2/5] CHANGELOG [Unreleased] carry          entries still parked under [Unreleased]
-#   [3/5] ERIX_E2E_REAL=1 check:release:real    real upstream; without the env nothing ran
-#   [4/5] check:release                         offline: tarball / installed package / TS host / CLI fake upstream
-#   [5/5] check:host-consumers -- --hosts …     every host hit covered by this version's upgrade guide
+#   [1/5] check:changelog                           every public merge named in this version's section
+#   [2/5] CHANGELOG [Unreleased] carry              entries still parked under [Unreleased]
+#   [3/5] ERIX_E2E_MODEL=1 check:release:model-e2e  real model endpoint; without the env nothing ran
+#   [4/5] check:release                             offline: tarball / installed package / TS host / CLI fake upstream
+#   [5/5] check:host-consumers -- --hosts …         every host hit covered by this version's upgrade guide
 npm run release:day -- --stage publish       # prints the operation sheet, exits 3; run `npm publish` yourself
 npm run release:day -- --stage writeback --version <x.y.z> --published <x.y.z> [--published-date <YYYY-MM-DD>]
 npm run release:day -- --stage finalize      # tag the version cut → dual push → verify both sides → doc gates

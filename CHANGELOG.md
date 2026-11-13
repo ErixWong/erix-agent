@@ -3,6 +3,32 @@
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)；版本号遵循语义化版本。
 ## [Unreleased]
 
+### Changed
+- **The gate family formerly called "real upstream" is renamed to say which side is real: it is
+  the model service endpoint, not the scenario (issue #817, PR #822; task 261113-02).**
+  `npm run check:release:real` -> `check:release:model-e2e`, `npm run check:cli-real` ->
+  `check:cli:model-e2e`, and `ERIX_E2E_REAL=1` -> `ERIX_E2E_MODEL=1`. The old environment name
+  still opens the gate, but a run that hits it prints a one-line deprecation warning naming both
+  names (the literal lives in `DEPRECATED_GATE_WARNING` in `examples/e2e-real-gate.mjs`) -- a
+  silently accepted alias cannot be deleted next version, so the warning is the load-bearing part
+  of the alias, not decoration. Three scope calls are recorded on the issue, because they are what
+  keeps the next reader from "finishing" this rename: "fake upstream" is **out of scope** (it
+  names `fixtures/upstream.mjs`, an in-process peer that really is fake and needs no credentials --
+  that sentence does not lie); eight `src/` comments and two `examples/pi-extension` notes are
+  **incident narration** ("measured against the real endpoint: 7 rounds ...") and keep the old
+  wording, as do the three older upgrade guides, which name the command that existed at *their*
+  version; `docs/requirements*` said "preserve the real upstream message" about a provider error
+  body -- a generic reference, reworded to remove the shape without touching the requirement.
+- **「真上游」这一族闸门改名，把「哪一面是真的」说出口：真的是模型服务端点，不是场景（issue #817；
+  PR #822；工单 261113-02）。** `check:release:real` → `check:release:model-e2e`、`check:cli-real` →
+  `check:cli:model-e2e`、`ERIX_E2E_REAL=1` → `ERIX_E2E_MODEL=1`。旧环境变量名仍能开闸，但命中它的那一次
+  必须打一行弃用告警——**静默生效的别名下一版删不掉**，所以告警是别名里承重的部分，不是装饰。
+  三处口径记在 issue 上，因为它们正是防止后来者「把改名做完」的东西：「假上游 / fake upstream」**不在本单
+  范围**（它说的是 `fixtures/upstream.mjs` 那个进程内对端，确实是假的、也不要凭据——那句话没说谎）；
+  `src/` 里 8 处与 `examples/pi-extension` 两处是**事故叙述**（「真上游实测：7 轮…」），三份老版本升级指南
+  写的是**它那个版本**的命令名，都按历史面保留；`docs/requirements*` 里的 "real upstream message" 指
+  provider 的错误正文，属泛指，已改词去形状、不动语义。
+
 ## [0.32.0] - 2026-11-12
 
 ### Breaking

@@ -15,10 +15,10 @@
 //                2 `[Unreleased]` 漏搬（**本脚本内联判据，不 spawn**，issue #715）——三态，见下面那一节
 //                3 `npm run check:docs`                 文档漂移 + 中英同步
 //                4 `npm run check:docs:strict`          同上，告警也阻塞
-//                5 `ERIX_E2E_REAL=1 npm run check:release:real`   真上游；**闸门关着 ⇒ 未判定**
+//                5 `ERIX_E2E_MODEL=1 npm run check:release:model-e2e`   真模型端点；**闸门关着 ⇒ 未判定**
 //                6 `npm run check:release`              离线：tarball / 装好的包 / TS 宿主 / 假上游 CLI
 //                7 `npm run check:host-consumers -- --hosts …`   宿主侧探针；**没给目录或目录不在 ⇒ 未判定**
-//              未判定（not-judged）**不是绿**：`ERIX_E2E_REAL` 缺失时那一族一步都不跑，脚本明说「未判定」，
+//              未判定（not-judged）**不是绿**：`ERIX_E2E_MODEL` 缺失时那一族一步都不跑，脚本明说「未判定」，
 //              整体 exit 2（不是 0）。目录不存在按探针自己的口径（`HOST_DIR_MISSING` / `HOST_DIR_NOT_DIR`）判未判定。
 //              第 2 步同样会答「未判定」（exit 2）：**还没切版**时它判不了「搬没搬」，那时整趟 preflight 就是
 //              未判定——先切版（bump `package.json` + 开节 + 把标题行插到条目之前），再跑 preflight。
@@ -78,6 +78,9 @@
 //   npm run release:day -- --all --dry                # 什么都不改、什么都不发、不写盘
 //   npm run release:day -- --self-test                # 离线反向证（合成树 / 假 runner，不联网、不装包）
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+// 真模型端点闸门的读取与 e2e 那一族共用同一个点（issue #817：旧名 `ERIX_E2E_REAL` 在弃用期内作别名）。
+// 告警接到本脚本的 `log()`：发版日那一行必须出现在操作者看得见的输出里，而 `--self-test` 要能离线断到它。
+import { DEPRECATED_GATE_WARNING, readRealGate } from "../examples/e2e-real-gate.mjs";
 // issue #731 N4/N3：CHANGELOG 的「版本节标题 / 段首日期 / bullet」三条口径是**共享**的，不是各抄一份。
 // 日期正则此前是两侧字面拷贝，标题正则已经分叉（这里 `^##\s*\[`，`docs-drift-check` 那边字面单空格）
 // ⇒ `##  [0.31.0]`（双空格）两个读者两个答案。口径与理由住在 `scripts/changelog-heading.mjs` 里。
@@ -121,7 +124,8 @@ export const PHASE = Object.freeze({
  *   · `argv`   —— spawn 一个子进程跑 npm script；
  *   · `probe`  —— **内联判据**（`PREFLIGHT_PROBES` 里的函数，只读文件、不 spawn），issue #715 的漏搬格就是它。
  * `gate` 非空 ⇒ 这一步可能是「未判定」：
- *   · `ERIX_E2E_REAL` —— 环境变量闸门关着时真上游那一族**一步都不跑**；
+ *   · `ERIX_E2E_MODEL` —— 环境变量闸门关着时真模型端点那一族**一步都不跑**（旧名 `ERIX_E2E_REAL` 在弃用期内
+ *     仍算开闸，但会经 `readRealGate()` 打一行弃用告警 —— 别名不静默生效，否则下一版删不掉）；
  *   · `hosts`         —— 没给 `--hosts` 或给的目录都不在时，探针自己也是「未判定」。
  * `probe` 步骤自己也会答「未判定」（读不出搬运事实时），口径与本文件其余 gate 一致：未判定不是绿。
  *
@@ -149,10 +153,10 @@ export const PREFLIGHT_STEPS = Object.freeze([
   // ⇒ 七步变五步；两份 AGENTS 的 §4 清单同批改成 5 行（`test/release-day.test.js` 逐格对账）。
   {
     id: "release-real",
-    label: "ERIX_E2E_REAL=1 check:release:real",
-    argv: ["npm", "run", "check:release:real"],
-    env: { ERIX_E2E_REAL: "1" },
-    gate: "ERIX_E2E_REAL",
+    label: "ERIX_E2E_MODEL=1 check:release:model-e2e",
+    argv: ["npm", "run", "check:release:model-e2e"],
+    env: { ERIX_E2E_MODEL: "1" },
+    gate: "ERIX_E2E_MODEL",
   },
   { id: "release", label: "check:release", argv: ["npm", "run", "check:release"] },
   { id: "host-consumers", label: "check:host-consumers -- --hosts …", argv: ["npm", "run", "check:host-consumers"], gate: "hosts" },
@@ -168,7 +172,7 @@ const PREFLIGHT_CHECKLIST_ROW_RE = /^#\s+\[(\d+)\/(\d+)\]\s+(.+)$/u;
  * 这一步在**两份 AGENTS 清单里必须出现的那一列命令**——唯一来源是这一步自己的定义，不是文档抄件。
  *
  * 推导规则（全机械，不引入第二份名单）：
- *   · `env` 里的键值对写成 `K=V` 前缀（第 5 步 ⇒ `ERIX_E2E_REAL=1 check:release:real`）；
+ *   · `env` 里的键值对写成 `K=V` 前缀（第 5 步 ⇒ `ERIX_E2E_MODEL=1 check:release:model-e2e`）；
  *   · 有 `argv` 的 spawn 步骤取 npm script 名（`argv[2]`）；`gate: "hosts"` 的补上 ` -- --hosts …`；
  *   · 内联判据步骤（没有 `argv`）只能显式声明 `docCommand`——**没有默认值**，缺了就红（fail-closed）。
  *
@@ -547,10 +551,10 @@ export function runPreflight({ root = DEFAULT_ROOT, hosts = [], deps = defaultDe
       steps.push({ id: step.id, verdict: VERDICT.PASS, why: found.why });
       continue;
     }
-    if (step.gate === "ERIX_E2E_REAL" && !env.ERIX_E2E_REAL) {
-      const why = "ERIX_E2E_REAL 未开：真上游那一族在闸门关着时一步都不跑";
+    if (step.gate === "ERIX_E2E_MODEL" && !readRealGate({ env, warn: (line) => log(line) }).open) {
+      const why = "ERIX_E2E_MODEL 未开：真模型端点那一族在闸门关着时一步都不跑";
       log(`${head} → **未判定**（${why}）`);
-      log("     要人开闸才有判定：`ERIX_E2E_REAL=1 npm run check:release:real`（它自己会点名红在第几步）");
+      log("     要人开闸才有判定：`ERIX_E2E_MODEL=1 npm run check:release:model-e2e`（它自己会点名红在第几步）");
       steps.push({ id: step.id, verdict: VERDICT.NOT_JUDGED, why });
       continue;
     }
@@ -602,7 +606,7 @@ export function runPreflight({ root = DEFAULT_ROOT, hosts = [], deps = defaultDe
  *   · `open-gate`：闸门关着 ⇒ 那一步**一步都没跑**，人开个开关（环境变量 / `--hosts`）就有判定；
  *   · `cut-version`：这一格读的是树上的**事实**（`package.json` + `CHANGELOG.md`），**没有任何开关能造出判定**，
  *     缺的那件事只有人做得到：**切版**。第 2 步（`changelog-unreleased`，issue #715）就是这一类。
- * 把两类压成一句「把闸开起来再发（`ERIX_E2E_REAL=1` / `--hosts …`）」就是 N1 记的那笔谎：
+ * 把两类压成一句「把闸开起来再发（`ERIX_E2E_MODEL=1` / `--hosts …`）」就是 N1 记的那笔谎：
  * 第 2 步未判定时照着做的人会原地打转（没有这样一个闸可开）。逐格那两行动作本来就打出来了，
  * 所以这是「结语与实况不符」，不是「人无从得知」——修它就要修结语本身。
  *
@@ -614,7 +618,7 @@ export const UNJUDGED_ACTIONS = Object.freeze({
     action: "**先切版**（bump `package.json` 到要发的那一版 + 开 `## [<版本>]（未发布 / unpublished）`，"
       + "把标题行插到条目之前），再重跑本命令——这一格**没有闸可开**",
   },
-  "release-real": { kind: "open-gate", action: "把闸开起来再发（`ERIX_E2E_REAL=1 npm run check:release:real`）" },
+  "release-real": { kind: "open-gate", action: "把闸开起来再发（`ERIX_E2E_MODEL=1 npm run check:release:model-e2e`）" },
   "host-consumers": { kind: "open-gate", action: "把宿主仓目录带上再发（`--hosts <宿主仓目录> …`）" },
 });
 
@@ -1790,7 +1794,7 @@ function selfTestUnreleasedCarry(checker) {
   {
     const tree = treeFor(RED_CHANGELOG);
     try {
-      const deps = fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_REAL: "1" } });
+      const deps = fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_MODEL: "1" } });
       const result = runPreflight({ root: tree, hosts: [tree], deps, dry: true });
       expect(result.verdict === VERDICT.FAIL && result.failedAt === 2 && result.failedId === "changelog-unreleased",
         "⑭h 漏搬格红 ⇒ preflight 停在第 2 步并点名 changelog-unreleased",
@@ -1801,7 +1805,7 @@ function selfTestUnreleasedCarry(checker) {
 
       const notJudgedTree = treeFor(RED_CHANGELOG.replace(`${heading}\n\n`, ""));
       try {
-        const okDeps = fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_REAL: "1" } });
+        const okDeps = fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_MODEL: "1" } });
         const overall = runPreflight({ root: notJudgedTree, hosts: [notJudgedTree], deps: okDeps, dry: true });
         expect(overall.verdict === VERDICT.NOT_JUDGED,
           "⑭h 这一格未判定（还没切版）⇒ 整趟 preflight 未判定（exit 2），不是绿",
@@ -1818,7 +1822,7 @@ function selfTestUnreleasedCarry(checker) {
 /**
  * ⑮ issue #731 N1：`--all` 在 preflight 未判定时的结语。
  *
- * 旧文案是一句硬写的「把闸开起来再发（`ERIX_E2E_REAL=1` / `--hosts …`）」——对第 5/7 步是对的，
+ * 旧文案是一句硬写的「把闸开起来再发（`ERIX_E2E_MODEL=1` / `--hosts …`）」——对第 5/7 步是对的，
  * 对第 2 步（`changelog-unreleased`）是空话：那一格判未判定是因为**还没切版**，没有任何开关能造出判定。
  * 这一族把「按 id 分叉」钉成判据：含第 2 步 ⇒ 文案是「先切版」且**不许**出现「把闸开起来再发」。
  */
@@ -1843,8 +1847,8 @@ function selfTestUnjudgedConclusion(checker) {
     expect(/把闸开起来再发/u.test(head) && !/先把版切了/u.test(head),
       `⑮b 只有闸门类格子未判定 ⇒ 结语是「把闸开起来再发」（head=${head}）`,
       `⑮b 闸门类格子的结语串了切版那一句：${head}`);
-    expect(/ERIX_E2E_REAL/u.test(lines.join("\n")) && /--hosts/u.test(lines.join("\n")),
-      "⑮b 逐格动作各自点名自己的开关（`ERIX_E2E_REAL` 与 `--hosts` 都要点名）",
+    expect(/ERIX_E2E_MODEL/u.test(lines.join("\n")) && /--hosts/u.test(lines.join("\n")),
+      "⑮b 逐格动作各自点名自己的开关（`ERIX_E2E_MODEL` 与 `--hosts` 都要点名）",
       `⑮b 逐格动作缺开关名：${lines.join(" | ")}`);
   }
 
@@ -1879,7 +1883,7 @@ function selfTestUnjudgedConclusion(checker) {
         "utf8");
       const logged = [];
       const deps = {
-        ...fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_REAL: "1" } }),
+        ...fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_MODEL: "1" } }),
         log(...args) { logged.push(args.join(" ")); },
       };
       const status = runAll({ root: tree, deps, stateFile: path.join(tree, "state.json"), dry: true, hosts: [tree] });
@@ -2077,7 +2081,7 @@ function runSelfTest() {
     });
   }
 
-  // ② ERIX_E2E_REAL 缺失 ⇒ 未判定，不是绿；那一步一步都没跑
+  // ② ERIX_E2E_MODEL 缺失 ⇒ 未判定，不是绿；那一步一步都没跑
   {
     const deps = fakeDeps();
     withPreflightFixture((tree) => {
@@ -2087,9 +2091,30 @@ function runSelfTest() {
         `② release-real 判成了 ${realStep?.verdict}`);
       expect(result.verdict === VERDICT.NOT_JUDGED, "② 整体判未判定（不是全绿）",
         `② 整体判成了 ${result.verdict}`);
-      expect(!deps.calls.some((line) => line.includes("check:release:real")),
-        "② 闸门关着时真上游那一族一步都没跑（没跑 ≠ 绿）",
-        `② 闸门关着却跑了真上游：${deps.calls.filter((line) => line.includes("check:release:real")).join(", ")}`);
+      expect(!deps.calls.some((line) => line.includes("check:release:model-e2e")),
+        "② 闸门关着时真模型端点那一族一步都没跑（没跑 ≠ 绿）",
+        `② 闸门关着却跑了真模型端点：${deps.calls.filter((line) => line.includes("check:release:model-e2e")).join(", ")}`);
+    });
+  }
+
+  // ②d 别名（issue #817）：只设**旧名** `ERIX_E2E_REAL=1` 也算开闸（别名还生效 ⇒ 不是未判定），
+  //     但命中当次必须打那一行弃用告警（静默生效的别名下一版删不掉）。
+  {
+    /** @type {string[]} */
+    const logged = [];
+    const deps = {
+      ...fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_REAL: "1" } }),
+      log: (line = "") => { logged.push(String(line)); },
+    };
+    withPreflightFixture((tree) => {
+      const result = runPreflight({ root: tree, hosts: [tree], deps, dry: true });
+      const realStep = result.steps.find((step) => step.id === "release-real");
+      expect(realStep?.verdict === VERDICT.PASS,
+        "②d 旧名 ERIX_E2E_REAL=1 仍算开闸：release-real 真跑了（别名不许提前删）",
+        `②d 旧名开闸时 release-real 判成了 ${realStep?.verdict}`);
+      expect(logged.some((line) => line.includes(DEPRECATED_GATE_WARNING)),
+        "②d 别名命中当次必须打那一行弃用告警（逐字：旧名已弃用 / 下一版退役 / 请改用新名）",
+        `②d 输出里没有弃用告警那一行：${logged.join(" | ").slice(0, 300)}`);
     });
   }
 
@@ -2111,14 +2136,14 @@ function runSelfTest() {
 
   // ②c 全绿 ⇒ pass（对照组：上面三条不是恒红）
   {
-    const deps = fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_REAL: "1" } });
+    const deps = fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_MODEL: "1" } });
     withPreflightFixture((tree) => {
       const result = runPreflight({ root: tree, hosts: [tree], deps, dry: true });
       expect(result.verdict === VERDICT.PASS && result.steps.length === PREFLIGHT_STEPS.length,
         "②c 闸门开 + 宿主目录在 + 每一步都全绿 ⇒ pass（对照组）",
         `②c 对照组不绿：verdict=${result.verdict} steps=${JSON.stringify(result.steps)}`);
-      expect(deps.calls.some((line) => line.includes("check:release:real")) && deps.calls.some((line) => line.includes("--hosts")),
-        "②c 闸门开着时真上游与宿主探针都真跑了",
+      expect(deps.calls.some((line) => line.includes("check:release:model-e2e")) && deps.calls.some((line) => line.includes("--hosts")),
+        "②c 闸门开着时真模型端点与宿主探针都真跑了",
         `②c 闸门开着却没跑：${deps.calls.join(" | ")}`);
     });
   }
@@ -2151,7 +2176,7 @@ function runSelfTest() {
       const resumed = fakeDeps({ capture: gitPlumbing({ version: "0.31.0" }) });
       const allStatus = runAll({ root: tree, deps: resumed, stateFile, dry: false, version: "0.31.0" });
       const preflightOnly = resumed.calls.filter((line) => line === "npm run check:release"
-        || line.includes("check:release:real") || line.includes("check:host-consumers"));
+        || line.includes("check:release:model-e2e") || line.includes("check:host-consumers"));
       expect(preflightOnly.length === 0,
         "③ 续跑**没有**重跑 preflight 的发布前置（不重复发布）",
         `③ 续跑又跑了 preflight：${preflightOnly.join(" | ")}`);
@@ -2281,7 +2306,7 @@ function runSelfTest() {
       writeFixtureTree(tree);
       writeFileSync(path.join(tree, "package.json"), '{\n  "name": "erix-agent",\n  "version": "0.31.0"\n}\n', "utf8");
       const before = snapshotTree(tree);
-      const deps = fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_REAL: "1" }, capture: gitPlumbing({ version: "0.31.0" }) });
+      const deps = fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_MODEL: "1" }, capture: gitPlumbing({ version: "0.31.0" }) });
       const status = runAll({ root: tree, deps, stateFile: path.join(tree, "state.json"), dry: true, hosts: [DEFAULT_ROOT] });
       const changes = diffSnapshot(before, snapshotTree(tree));
       expect(changes.length === 0, "⑥ `--all --dry` 前后快照逐字相同（一个字节都不写）", `⑥ --dry 写了：${changes.join(", ")}`);

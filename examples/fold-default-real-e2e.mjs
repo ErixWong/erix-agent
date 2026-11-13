@@ -1,6 +1,6 @@
-// issue #619 真机 e2e：**默认压缩策略**（`fold-llm`）在真上游下的完整形态。
+// issue #619 真机 e2e：**默认压缩策略**（`fold-llm`）在真模型端点下的完整形态。
 //
-// 为什么要有这一条：`check:release:real` 原来的 5 步（工具事实 / 崩溃续跑 / 跨版本 / pi extension /
+// 为什么要有这一条：`check:release:model-e2e` 原来的 5 步（工具事实 / 崩溃续跑 / 跨版本 / pi extension /
 // 装后 CLI）**没有一步碰压缩**，而 #611（摘要器提示词加「## 教训与坑」）与 #614（CLI 默认策略从
 // `fold-statistical` 换成 `fold-llm`）改的正是这条路径。唯一碰折叠的真机脚本
 // `examples/fold-605-real-e2e.mjs` 钉死 `strategy: "fold-statistical"` ⇒ **#614 之后，默认路径
@@ -8,7 +8,7 @@
 // （超时 / 不守分节格式 / 超输出预算 / 空返回 / 摘要没用），脚本化夹具永远给不出 ⇒ 这一条必须真跑。
 //
 // 用法（闸门与其余真机脚本同一口径，缺省 skip + 分类原因 + exit 0）：
-//   ERIX_E2E_REAL=1 node --test examples/fold-default-real-e2e.mjs
+//   ERIX_E2E_MODEL=1 node --test examples/fold-default-real-e2e.mjs
 //
 // issue #661（破坏性，本文件已跟上）：**摘要器失败不再是降级**。改前失败那一折返回一份统计摘要
 // 替代物（块里多一段 `[fold-llm 摘要失败，已降级为统计摘要（原因: …）]`），run 照常 `end_turn`；
@@ -253,7 +253,7 @@ function foldBlockOf(messages, originalText) {
 const isSummarizerRequest = (request) => JSON.stringify(request?.messages ?? []).includes(GUIDE_FIRST_LINE);
 
 // ---------------------------------------------------------------------------
-// 跑一条臂（真上游；provider 包一层计数，折叠钩子留快照）
+// 跑一条臂（真模型端点；provider 包一层计数，折叠钩子留快照）
 // ---------------------------------------------------------------------------
 
 /**
@@ -390,11 +390,11 @@ function reportArm(label, arm, strategyName) {
   console.log(`[619] ${label} 模型终稿=${JSON.stringify(String(result?.finalText ?? "").slice(0, 200))}`);
 }
 
-/** 真上游闸门：关着 ⇒ `t.skip` 分类原因（与其余真机脚本同形，`npm test` 必须离线可重复）。 */
+/** 真模型端点闸门：关着 ⇒ `t.skip` 分类原因（与其余真机脚本同形，`npm test` 必须离线可重复）。 */
 async function gateOrSkip(t) {
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
   if (!gate.ok) {
-    t.skip(`真上游不可用/闸门关：${formatSkip(gate)}`);
+    t.skip(`真模型端点不可用/闸门关：${formatSkip(gate)}`);
     return undefined;
   }
   console.log(`[619] 闸门开：model=${gate.model} endpoint=${printableEndpoint(gate.endpoint)}`
@@ -464,7 +464,7 @@ test("断言集自身的不变量：摘要器分类 / 折叠块定位 / 机械�
 // 判据 ①②③：默认策略（`bin/config.js#DEFAULT_COMPACTION_STRATEGY`）那一臂
 // ---------------------------------------------------------------------------
 
-test("真上游 e2e（默认策略臂）：默认 fold-llm ⇒ 块在 + 语义分节 + 摘要器请求 ≥1 + 被折轮次标记逐字保留", {
+test("真模型端点 e2e（默认策略臂）：默认 fold-llm ⇒ 块在 + 语义分节 + 摘要器请求 ≥1 + 被折轮次标记逐字保留", {
   timeout: 10 * 60 * 1000,
 }, async (t) => {
   const gate = await gateOrSkip(t);
@@ -513,7 +513,7 @@ test("真上游 e2e（默认策略臂）：默认 fold-llm ⇒ 块在 + 语义�
 // 判据 ④：显式统计策略那一臂 ⇒ 摘要器 **0** 次（反向证：判据 ② 测的是真的）
 // ---------------------------------------------------------------------------
 
-test("真上游 e2e（统计臂反向证）：显式 fold-statistical ⇒ 统计块在但摘要器 0 次", {
+test("真模型端点 e2e（统计臂反向证）：显式 fold-statistical ⇒ 统计块在但摘要器 0 次", {
   timeout: 10 * 60 * 1000,
 }, async (t) => {
   const gate = await gateOrSkip(t);
@@ -542,7 +542,7 @@ test("真上游 e2e（统计臂反向证）：显式 fold-statistical ⇒ 统计
 // 判据 ⑤（issue #661 反转）：摘要器超时 1ms ⇒ 终局 `summarizer_failed`，没有降级替代物
 // ---------------------------------------------------------------------------
 
-test("真上游 e2e（失败路）：摘要器超时 1ms ⇒ 终局 summarizer_failed（kind=timeout），块里没有降级标记", {
+test("真模型端点 e2e（失败路）：摘要器超时 1ms ⇒ 终局 summarizer_failed（kind=timeout），块里没有降级标记", {
   timeout: 10 * 60 * 1000,
 }, async (t) => {
   const gate = await gateOrSkip(t);

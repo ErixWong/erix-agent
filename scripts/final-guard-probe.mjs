@@ -404,7 +404,7 @@ try {
   //   S6a 未声明 ⇒ 仍然 verified（证明闸门是**纯加法**：不声明就一个字都不改）；
   //   S6b 声明了 + accept ⇒ 必须 unverified:deliverables_failed（**机器闸门**真的压过 guard 意见）；
   //   S6c 声明了 + **skip** + 判据全通过 ⇒ 必须 verified:machine_only（#392 的现场：今天这一格是
-  //       `skipped`，于是真上游「文件真在盘上」的 run 退出码是 4）；
+  //       `skipped`，于是真模型端点「文件真在盘上」的 run 退出码是 4）；
   //   S6d 声明了 + **skip** + 判据有失败 ⇒ 必须 unverified:deliverables_failed（状态不许再说「没验」）。
   // 四格合起来才是完整证据：单看 S6b 无法排除「顺手把 accept 改严了」，单看 S6a 无法证明闸门有效，
   // 单看 S6c 无法排除「skip 一律当通过」，单看 S6d 无法排除「skip 一律当失败」。

@@ -6311,7 +6311,7 @@ Consequences for a host store and for host readers:
   precede the crash round's body in `load()` output; the model context is not
   affected by that order — `restoreResume` (`src/loop/resume-manager.js`) keeps
   the `:input:` row as a tail and splices it after the replayed results.
-  Real-upstream guard: `examples/resume-real-e2e.test.mjs` (`ERIX_E2E_REAL=1`:
+  Real model endpoint guard: `examples/resume-real-e2e.test.mjs` (`ERIX_E2E_MODEL=1`:
   real process SIGKILL → same `--session` resume → ledger closure / no loss /
   no duplicate execution / half-line quarantine).
 - **Read the ledger through `load()`, never by re-folding raw rows by hand.**

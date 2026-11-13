@@ -15,6 +15,11 @@
 // 隔离：第三例把 `HOME` / `XDG_CONFIG_HOME` 指到一棵**不存在**的路径上（脚本只读
 // `<home>/.erix/config.json`，读到 ENOENT 就当空配置；这一路在 dry-run 返回前不会写任何东西），
 // 所以不碰真 `~/.erix`，也不需要临时目录。
+//
+// #817 加的一格：这一族的闸门改名 `ERIX_E2E_MODEL`，旧名 `ERIX_E2E_REAL` 在弃用期内**仍算开闸**、
+// 但命中当次必须打一行弃用告警 ⇒ 第四例钉的就是「别名照旧生效 + 告警不许静默」。
+// 上面两例因此把**两个名字都清掉**再断言「没开闸」：只清新名，会让外层带旧名跑 `npm test` 时
+// 这两例走错分支（闸门的别名判据本身是对的，红的是测试的夹具）。
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -57,10 +62,11 @@ test("#533: normalization-parity 真跑完并退出 0（每一格都比过，含
 });
 
 test("#532: notes-why 闸口未开 ⇒ 退出 0 + [skip] 分类说明（不是启动期抛错）", () => {
-  const result = runScript("notes-why-experiment.mjs", { ERIX_E2E_REAL: "" });
+  // 两个名字都要清：新名没设而旧名在外层被设成 1 ⇒ 那是「别名开闸」，不是「闸口未开」（#817）。
+  const result = runScript("notes-why-experiment.mjs", { ERIX_E2E_MODEL: "", ERIX_E2E_REAL: "" });
   assert.equal(result.status, 0,
     `闸口未开时必须退出 0，实测 ${result.status}\n${result.stderr.slice(0, 2000)}`);
-  assert.match(result.stdout, /\[skip\] ERIX_E2E_REAL/u);
+  assert.match(result.stdout, /\[skip\] ERIX_E2E_MODEL/u);
   // 反向面：这一路不许出现 import 期的 SyntaxError（#532 的病根形状）。
   assert.doesNotMatch(result.stderr, /SyntaxError/u);
 });
@@ -68,7 +74,8 @@ test("#532: notes-why 闸口未开 ⇒ 退出 0 + [skip] 分类说明（不是�
 test("#532: notes-why 闸口开但无可用模型配置 ⇒ 非 0 + 分类原因（真失败不许报绿）", () => {
   const missingHome = path.join(ROOT, "test", ".no-home-532-533");
   const result = runScript("notes-why-experiment.mjs", {
-    ERIX_E2E_REAL: "1",
+    ERIX_E2E_MODEL: "1",
+    ERIX_E2E_REAL: "",   // 只让新名开闸：这一例不许被旧名的别名分叉
     HOME: missingHome,
     XDG_CONFIG_HOME: "",
     ERIX_EXPERIMENT_MODEL: "",
@@ -77,4 +84,29 @@ test("#532: notes-why 闸口开但无可用模型配置 ⇒ 非 0 + 分类原因
     "闸口开着又跑不了时必须非 0（一份没跑的实验不许报绿）");
   assert.match(result.stderr, /未找到实验模型/u,
     `非 0 必须带分类原因，实测 stderr：${result.stderr.slice(0, 500)}`);
+  // 新名开闸时**不许**打弃用告警（告警只在旧名别名命中时出现）。
+  assert.doesNotMatch(result.stderr, /旧名 ERIX_E2E_REAL 已弃用/u,
+    `新名开闸却被打了旧名告警：${result.stderr.slice(0, 300)}`);
+});
+
+test("#817: 旧名 ERIX_E2E_REAL=1 仍是别名——照样开闸，但当次必须打那一行弃用告警", () => {
+  const missingHome = path.join(ROOT, "test", ".no-home-532-533");
+  const result = runScript("notes-why-experiment.mjs", {
+    ERIX_E2E_MODEL: "",   // 新名不在场：只能靠旧名把闸打开
+    ERIX_E2E_REAL: "1",
+    HOME: missingHome,
+    XDG_CONFIG_HOME: "",
+    ERIX_EXPERIMENT_MODEL: "",
+  });
+  // ① 别名仍然生效：走到了「闸开但没模型配置」那一路（非 0 + 分类原因），而不是 `[skip]`。
+  assert.notEqual(result.status, 0,
+    `旧名开闸必须真的开闸（走 skip 那一路就是别名失效了），实测 ${result.status}\n${result.stdout.slice(0, 500)}`);
+  assert.doesNotMatch(result.stdout, /\[skip\]/u, `旧名开闸却打了 [skip]：${result.stdout.slice(0, 300)}`);
+  assert.match(result.stderr, /未找到实验模型/u,
+    `旧名开闸后要走到真失败那一路，实测 stderr：${result.stderr.slice(0, 500)}`);
+  // ② 告警逐字在场（issue #817 判据 4 的原文；静默生效的别名下一版删不掉）。
+  assert.match(result.stderr, /^旧名 ERIX_E2E_REAL 已弃用，将在下一版退役，请改用 ERIX_E2E_MODEL$/mu,
+    `别名命中必须逐字打出弃用告警那一行，实测 stderr：${result.stderr.slice(0, 500)}`);
+  assert.equal(result.stderr.split("\n").filter((line) => /旧名 ERIX_E2E_REAL 已弃用/u.test(line)).length, 1,
+    "弃用告警只许一行：反复打会淹掉真失败的分类原因");
 });

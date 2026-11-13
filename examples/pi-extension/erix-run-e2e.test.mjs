@@ -5,9 +5,9 @@
 // **没有任何断言看过进度行的耗时、也没有任何断言看过 transcript 里 tool_result 的字段面**。
 // 第 1 项那个「进度行静默丢耗时」的缺陷正是在这块空白里活过了 T2 停写。
 //
-// 用法：ERIX_E2E_REAL=1 node --test examples/pi-extension/erix-run-e2e.test.mjs
+// 用法：ERIX_E2E_MODEL=1 node --test examples/pi-extension/erix-run-e2e.test.mjs
 // 闸门与配置解析与 examples/tool-fact-e2e.test.mjs、scripts/cli-real-smoke.mjs 共用
-// examples/e2e-real-gate.mjs（`ERIX_E2E_REAL=1` 才跑；模型名从配置 slots.default 读，不硬编码；
+// examples/e2e-real-gate.mjs（`ERIX_E2E_MODEL=1` 才跑；模型名从配置 slots.default 读，不硬编码；
 // 闸门关着 / 无配置 / 无 key / 端点不可达**分别**报 skip 原因）。
 //
 // 本文件另有一段**始终跑、不联网**的确定性用例（formatLoopEvent 的耗时读法），因为第 1 项的
@@ -139,7 +139,7 @@ test("erix_run core 的源码不再把退役名当唯一耗时来源（静态守
 // #373：`layers.truncationNote` 念的是 **state.json 里的窗口账**，不是写死的条数。
 //
 // 这一格是离线可跑的（不联网、不打模型），所以放在本文件里「始终跑」的那一半：
-// 真机段（`ERIX_E2E_REAL=1`）是补充证据，不能当这条回归的唯一证据。
+// 真机段（`ERIX_E2E_MODEL=1`）是补充证据，不能当这条回归的唯一证据。
 //
 // 能杀什么：
 //   - 把文案改回写死条数（不管写成 32 还是别的常数）→ 第 ①② 格当场红（文案跟文件里的数字对不上）；
@@ -281,7 +281,7 @@ test("#373 静态守卫：core 里不再有写死条数的截断文案（不联�
 // 为什么这条属于本文件：erix_run 的**唯一** `runToolLoop` 调用点在 `erix-run-core.js` 的
 // `buildLoopOptions()`，而它也是本文件真机段实际走的那条路径（子进程 → runErixRun →
 // buildLoopOptions）。#498 S3 把一大片扁平拼写退役进 `config.*` / `capabilities.*` 之后，
-// 唯一的执行点就是名称闸口；真机段整份受 `ERIX_E2E_REAL` 门控，默认 `npm test` 直接 skip，
+// 唯一的执行点就是名称闸口；真机段整份受 `ERIX_E2E_MODEL` 门控，默认 `npm test` 直接 skip，
 // 所以「装配点写着退役名」可以一路活到发版清单（0.28 的发版清单 [1/5] 红就是这么来的）。
 //
 // 能杀什么：把 `buildLoopOptions` 里任何一个规位键（`config.run.runId` / `config.run.maxRounds` /
@@ -317,7 +317,7 @@ test("选项名闸：erix_run 交给 runToolLoop 的选项对象合法（始终�
 });
 
 // ---------------------------------------------------------------------------
-// 真机段（ERIX_E2E_REAL=1）：一次真 run + 真落盘 + 真进度行
+// 真机段（ERIX_E2E_MODEL=1）：一次真 run + 真落盘 + 真进度行
 // ---------------------------------------------------------------------------
 
 const NOTES_TEXT = "T5-ERIX-RUN-E2E 标记行：needle-in-a-haystack\n第二行没有关键字\n";
@@ -364,7 +364,7 @@ test("erix_run 真机 e2e：真 run 的终局四件套 + transcript 新形状 + 
 }, async (t) => {
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
   if (!gate.ok) {
-    t.skip(`真上游不可用/闸门关：${formatSkip(gate)}`);
+    t.skip(`真模型端点不可用/闸门关：${formatSkip(gate)}`);
     return;
   }
 
@@ -530,7 +530,7 @@ test("erix_run 真机 e2e：真 run 的终局四件套 + transcript 新形状 + 
 // ---------------------------------------------------------------------------
 // #314 R1：显式开启 finalGuard ⇒ `verification` 不再是 `skipped`（**加法**用例）。
 // 上面 E4 那条（默认关 ⇒ 恒 `skipped`）原样保留，两条一起才说明「开关真的在开关」。
-// 只在真上游可用时跑；闸门关着 / 没配置 / 端点不可达一律 skip（不红）。
+// 只在真模型端点可用时跑；闸门关着 / 没配置 / 端点不可达一律 skip（不红）。
 // ---------------------------------------------------------------------------
 
 test("erix_run 真机：显式 finalGuard:true ⇒ verification 不再是 skipped，成本进 diagnostics", {
@@ -538,7 +538,7 @@ test("erix_run 真机：显式 finalGuard:true ⇒ verification 不再是 skippe
 }, async (t) => {
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
   if (!gate.ok) {
-    t.skip(`真上游不可用/闸门关：${formatSkip(gate)}`);
+    t.skip(`真模型端点不可用/闸门关：${formatSkip(gate)}`);
     return;
   }
 
@@ -592,13 +592,13 @@ test("erix_run 真机：显式 finalGuard:true ⇒ verification 不再是 skippe
 });
 
 // ---------------------------------------------------------------------------
-// #654 / #665 / #670 第 2 格：真上游的**多会话**维 —— A、B 各自 `session_start`（A 先 B 后）
+// #654 / #665 / #670 第 2 格：真模型端点的**多会话**维 —— A、B 各自 `session_start`（A 先 B 后）
 // **之后** A 才派工 ⇒ 完成通知只能回 A。
 //
-// 为什么这一格必须走真上游：`test/examples/erix-run-async.test.js` 的 #654 那七条已经用假 pi 钉住了
+// 为什么这一格必须走真模型端点：`test/examples/erix-run-async.test.js` 的 #654 那七条已经用假 pi 钉住了
 // 「按 owner 查句柄」，但注入的是假 runtime / 假 lib，**没有一条**在真 `erix_run` 链路上
 // （真扩展 factory × 2 + 真 `runToolLoop` + 真落盘）走过「两个会话、owner 是 A、最后注册的是 B」这个形状。
-// 于是「通知投给最后一次 `session_start` 的会话」那类缺陷，在真上游回归面上是**零防护**：
+// 于是「通知投给最后一次 `session_start` 的会话」那类缺陷，在真模型端点回归面上是**零防护**：
 // 下次有人重构 `session_shutdown` 或投递路由，`npm test` 会全绿而缺陷长回来。
 //
 // 形状（三件事必须同时成立，否则这条用例证明不了任何事）：
@@ -619,7 +619,7 @@ test("erix_run 真机：显式 finalGuard:true ⇒ verification 不再是 skippe
 // 早于 B 注册，于是「最后注册的句柄 = B」与「owner = A」在任何时序下都可区分 ⇒ 假绿不可能。
 // 下面紧跟的那条**离线反向自证**用「派工后立即结算」的假 provider 把这件事量出来（不联网、始终跑）。
 //
-// 闸门口径（与 `check:release:real` 同一套）：闸门**没开**一律 skip（`npm test` 必须离线可重复）；
+// 闸门口径（与 `check:release:model-e2e` 同一套）：闸门**没开**一律 skip（`npm test` 必须离线可重复）；
 // 闸门**开着**而配置/凭据/端点不可用时**红**——发版清单不能把「没跑成」报成绿（PR #289 阻断 1 的镜像）。
 // ---------------------------------------------------------------------------
 
@@ -823,11 +823,11 @@ test("erix_run 真机 e2e（#654 多会话）：两个会话先注册完（A 先
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
   if (!gate.ok) {
     if (gate.code === GAP_CODES.GATE_MISSING) {
-      t.skip(`真上游闸门关着（离线可重复）：${formatSkip(gate)}`);
+      t.skip(`真模型端点闸门关着（离线可重复）：${formatSkip(gate)}`);
       return;
     }
     // 闸门开着而配置/凭据/端点不可用 ⇒ **必须红**：预发布清单不能把「没跑成」报成绿。
-    assert.fail(`ERIX_E2E_REAL=1 但真上游不可用 ⇒ 这条用例必须红（不许 skip）：${formatSkip(gate)}`);
+    assert.fail(`ERIX_E2E_MODEL=1 但真模型端点不可用 ⇒ 这条用例必须红（不许 skip）：${formatSkip(gate)}`);
   }
 
   const dir = mkdtempSync(path.join(tmpdir(), TMP_PREFIX.erixRun));
@@ -893,11 +893,11 @@ test("erix_run 真机 e2e（#654 多会话）：两个会话先注册完（A 先
       + `sendUserMessage=${a.calls.sendUserMessage.length}；B 收件箱：sendMessage=${b.calls.sendMessage.length} `
       + `sendUserMessage=${b.calls.sendUserMessage.length}`);
 
-    // —— 先证明「这真是一次真上游的 run」（否则下面的投递断言在「run 没跑」的世界里也可能绿）——
+    // —— 先证明「这真是一次真模型端点的 run」（否则下面的投递断言在「run 没跑」的世界里也可能绿）——
     assert.equal(job.payload?.termination?.reason, "end_turn",
       `内层 run 必须自然收尾（maxRounds=3 的任务只需两轮），实测 ${JSON.stringify(job.payload?.termination)}`);
     assert.ok(job.payload?.usage?.input_tokens > 0 && job.payload?.usage?.output_tokens > 0,
-      `真上游必须真的打了一次模型，实测 usage=${JSON.stringify(job.payload?.usage)}`);
+      `真模型端点必须真的打了一次模型，实测 usage=${JSON.stringify(job.payload?.usage)}`);
 
     // —— 投递落点：A（派工的那个会话），不是 B（最后 session_start 的那个）——
     assert.equal(a.calls.sendMessage.length, 1,

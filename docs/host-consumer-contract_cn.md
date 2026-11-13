@@ -4950,7 +4950,7 @@ navigation digest，并在适用时包含 JSON skeleton；配对的 `tool_use` �
   `:input:` 行**之后**，而折叠把正文挤到载体行的位置上（`load()` 按追加顺序返回），所以
   `load()` 里「续跑提示」可能排在崩溃轮正文之前；模型上下文不受这个顺序影响——
   `restoreResume`（`src/loop/resume-manager.js`）把 `:input:` 行当 tail，延后到补跑结果之后才拼。
-  真上游守卫：`examples/resume-real-e2e.test.mjs`（`ERIX_E2E_REAL=1`：真进程 SIGKILL → 同
+  真模型端点守卫：`examples/resume-real-e2e.test.mjs`（`ERIX_E2E_MODEL=1`：真进程 SIGKILL → 同
   `--session` 续跑 → 账本闭合 / 不丢 / 不重复执行 / 半行隔离）。
 - **读账本一律过 `load()`，不要自己拿原始行再折一遍。**
   `foldMessageRows`（`src/store/message-rows.js`）是唯一的读侧，而且自 issue #401 起它是**公共 API**：

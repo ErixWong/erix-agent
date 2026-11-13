@@ -31,7 +31,7 @@ ERIX_E2E_CONFIG=~/.erix/config.json node scripts/soak.mjs --provider real --roun
 的 `EXPECTED_ASSERTIONS` 逐条钉住（加一条或漏一条都红）。fake 路径下**每一条都必须 `pass:true`**：
 「非阻断观察项」不是免罪符。覆盖：
 
-- **长轮回放**：真上游**允许提前 `end_turn` / `judge_done` 收尾**（那不是缺陷），判据是「干净收口 +
+- **长轮回放**：真模型端点**允许提前 `end_turn` / `judge_done` 收尾**（那不是缺陷），判据是「干净收口 +
   轮数够逼出压缩」；`max_rounds_cap` 带 `truncated:true` 是引擎的正确标记。`no_tool` **不算**干净收口
   （它是 prose 停滞被治理层撑住后的停局，见 `noTool`（`src/reflection/governor.js`）的 stop 分支）。
   **强制压缩**靠把 `context.budgetTokens` 调到几个轮次的量级逼出来（不指望自然触发）。

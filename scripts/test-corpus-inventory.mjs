@@ -5,7 +5,7 @@
  * 为什么要有：`#614` 把 CLI 默认压缩策略从 `fold-statistical` 换成 `fold-llm`，发现方式不是
  * 「某个守护者报警」，而是「3 个测试文件意外变红」——**在此之前，「CLI 默认是 fold-statistical」
  * 这件事没有任何一条题在守护**。同型问题：题库按**工单**长（`test/compact/` 里大量 `-601/-603/-605`
- * 这类文件名），同一行为被多文件重复守护；真机层（`check:release:real`）有整片空白。
+ * 这类文件名），同一行为被多文件重复守护；真机层（`check:release:model-e2e`）有整片空白。
  * 本脚本只把事实摆成四张表，**不改、不删、不合并任何测试**——处置另开单。
  *
  * ── 四张表 ────────────────────────────────────────────────────────────────────
@@ -15,7 +15,7 @@
  *       就住在 `bin/config.js`，只扫 `src/` 会把这张票最核心的历史证据漏掉。
  *  表 2 行为 → 守护题（按 `src/` 模块聚合）：每个模块被多少测试文件引用、其中哪些按工单号命名
  *       （`-\d{3}\.test\.js`）、是否「冗余守护候选」（同模块被 ≥3 个工单号文件覆盖）。
- *  表 3 测试文件画像：spawn 子进程 / 依赖真上游（`ERIX_E2E_REAL`）/ 有 `skip` / 工单号命名 / 用例数。
+ *  表 3 测试文件画像：spawn 子进程 / 依赖真模型端点（`ERIX_E2E_MODEL`）/ 有 `skip` / 工单号命名 / 用例数。
  *  表 4 只有离线、没有真机：`src/` 模块被 `test/` 覆盖、但**静态证据里**不出现在发版真机清单
  *       （`scripts/release-real-check.mjs` 的 STEPS）的覆盖面里；按 `src/` 分区汇总出「真机空白面」。
  *
@@ -517,7 +517,7 @@ export function analyze(corpus, opts = {}) {
       // 方法调用**不算**（`(?<![\w$.])` 就是为此），否则 22 个文件里有一半是假阳性。
       spawn: /child_process/u.test(code)
         || /(?<![\w$.])(?:spawn|spawnSync|execFile|execFileSync|exec|execSync|fork)\s*\(/u.test(code),
-      realUpstream: /ERIX_E2E_REAL/u.test(text),
+      realUpstream: /ERIX_E2E_MODEL/u.test(text),
       skip: /\b(?:test|it|describe|suite|t)\.skip\s*\(/u.test(text) || /\bskip\s*:\s*(?:true|["'`])/u.test(text),
       issueNamed: ISSUE_NAMED_RE.test(rel),
       caseCount: [...text.matchAll(/\btest\s*\(/gu)].length,
@@ -719,12 +719,12 @@ export function renderReport(inv, { root = DEFAULT_ROOT } = {}) {
   L.push("");
 
   // 表 3
-  L.push(`## 表 3：测试文件画像（${inv.table3.length} 行；spawn ${s.spawnTests} · 真上游 ${s.realUpstreamTests} · skip ${s.skipTests} · 工单号命名 ${s.issueNamedTests}）`);
+  L.push(`## 表 3：测试文件画像（${inv.table3.length} 行；spawn ${s.spawnTests} · 真模型端点 ${s.realUpstreamTests} · skip ${s.skipTests} · 工单号命名 ${s.issueNamedTests}）`);
   L.push("");
   L.push(`用例数合计 **${s.caseCountEstimate}**（${CRITERIA.caseCount}）`);
   if (s.zeroCaseFiles.length) L.push(`估算口径抓不到的 0 行（it( 形态或纯表驱动）：${s.zeroCaseFiles.map((f) => `\`${f}\``).join("、")}`);
   L.push("");
-  L.push("| 文件 | spawn | 真上游 | skip | 工单号 | 用例数(估) |");
+  L.push("| 文件 | spawn | 真模型端点 | skip | 工单号 | 用例数(估) |");
   L.push("|---|---|---|---|---|---|");
   for (const row of inv.table3) {
     L.push(`| \`${row.file}\` | ${row.spawn ? "✔" : ""} | ${row.realUpstream ? "✔" : ""} | ${row.skip ? "✔" : ""} | ${row.issueNamed ? "✔" : ""} | ${row.caseCount} |`);
@@ -759,7 +759,7 @@ export function renderReport(inv, { root = DEFAULT_ROOT } = {}) {
   const foldOnlyOrphan = inv.table4.filter((r) => r.area === "compact" && r.orphanOnly);
   if (foldOnlyOrphan.length) {
     L.push(`  · 压缩/折叠面（\`src/compact/*\`）：真机覆盖 0 —— 静态引用它、却不在发版清单里的只有孤儿真机件 `
-      + `${inv.orphanFiles.map((f) => `\`${f}\``).join("、")}，而发版清单（\`npm run check:release:real\`）的 ${s.releaseSteps} 步里没有它。`
+      + `${inv.orphanFiles.map((f) => `\`${f}\``).join("、")}，而发版清单（\`npm run check:release:model-e2e\`）的 ${s.releaseSteps} 步里没有它。`
       + `这就是「改一次折叠行为，真机层一无所知」的机械口径。`);
   }
   L.push("");
@@ -780,7 +780,7 @@ export function renderReport(inv, { root = DEFAULT_ROOT } = {}) {
   L.push("处置建议（**本单不做**：不合并、不删除、不改写任何测试）：");
   L.push("  · 零守护条目 ⇒ 补一条行为题（先补断言，再谈删旧题）；");
   L.push("  · 冗余守护候选 ⇒ 逐组读一遍，分清「契约断言」与「某工单的现场快照」，后者并进前者；");
-  L.push("  · 真机空白面 ⇒ 另开单补 `check:release:real` 的第 6 步（压缩/折叠面优先）。");
+  L.push("  · 真机空白面 ⇒ 另开单补 `check:release:model-e2e` 的第 6 步（压缩/折叠面优先）。");
   return L.join("\n");
 }
 

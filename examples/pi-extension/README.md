@@ -26,7 +26,7 @@
 | `../../test/examples/erix-run-resume.test.js` | **#207 R2 续跑单测**：第一次 run 停在 `max_rounds_cap` ⇒ 第二次从账本接着跑（历史 / 轮号 / 账本都不重置）、纯续跑不追加用户轮、三种坐标（transcript / `runId`+`sessionDir` / `status.json`）指到同一份账本、坐标不存在 / 空账本 / 坏 `status.json` 的明确报错、`bad_params` 形状校验、异步面「`status.json` 即续跑坐标 + job 沿用原 `runId`」 |
 | `../../test/examples/erix-run-details.test.js` | **#237 R2：`details` 必须可 JSON 序列化**。对 `started` / `status` / `result` / `list` / `cancel` / `unknown-run` / `error` / `crashed` + **同步终局**逐条断言 `JSON.stringify(details)` 不抛、`content[0].text` 非空、`details` 只含 plain 数据（+#276：视图带了嵌套 `diagnostics`/`verification` 后仍不触发 `detailsDropped`，失败终局的文本面要点名 `termination.errorCode`）（无函数 / 定时器 / promise / 循环引用），并把每个 `kind` 的键集合钉死 |
 | `../../test/examples/plain-data.js` | 测试侧**独立实现**的「活对象」扫描器与 `assertMachineReadableResult`（故意不回读生产码的守卫，否则两边错在一起就是自证） |
-| `erix-run-e2e.test.mjs` | 本目录的**真上游 e2e**（`ERIX_E2E_REAL=1` 才跑，闸门关着一律 skip；闸门开着而配置/凭据/端点不可用则**红**）：真 run 的终局四件套 + transcript 新形状 + 进度行带耗时（`#284/#285`）、显式 `finalGuard` 后 `verification` 不再是 `skipped`（`#314`）、以及 **`#654` 多会话**一格——同一个扩展工厂对 A/B 两个会话各调一次、**两个会话先注册完（A 先 B 后）再派工**（#670 第 2 格：注册顺序在派工之前就定死 ⇒ 「run 比 B 快」的假绿窗口从结构上不存在），断言完成通知只回到 A（`notifyTargetSessionId` / `delivery:"sent"` / B 收件箱为空 / `status.json` 里 `delivery`、`notifyTargetSessionId`、`deliveryNote` 恒在场）。另有一段**始终跑、不联网**的确定性回归（`formatLoopEvent` 的耗时读法、`#373` 的窗口账、选项名闸、以及多会话格的**形状自证**：零延迟结算下「取最后注册的句柄」与「按 owner 查」仍可区分） |
+| `erix-run-e2e.test.mjs` | 本目录的**真模型端点 e2e**（`ERIX_E2E_MODEL=1` 才跑，闸门关着一律 skip；闸门开着而配置/凭据/端点不可用则**红**）：真 run 的终局四件套 + transcript 新形状 + 进度行带耗时（`#284/#285`）、显式 `finalGuard` 后 `verification` 不再是 `skipped`（`#314`）、以及 **`#654` 多会话**一格——同一个扩展工厂对 A/B 两个会话各调一次、**两个会话先注册完（A 先 B 后）再派工**（#670 第 2 格：注册顺序在派工之前就定死 ⇒ 「run 比 B 快」的假绿窗口从结构上不存在），断言完成通知只回到 A（`notifyTargetSessionId` / `delivery:"sent"` / B 收件箱为空 / `status.json` 里 `delivery`、`notifyTargetSessionId`、`deliveryNote` 恒在场）。另有一段**始终跑、不联网**的确定性回归（`formatLoopEvent` 的耗时读法、`#373` 的窗口账、选项名闸、以及多会话格的**形状自证**：零延迟结算下「取最后注册的句柄」与「按 owner 查」仍可区分） |
 
 ## 安装
 
@@ -497,7 +497,7 @@ pi --extension ./examples/pi-extension/erix-run.ts
 **生产走的就是这一层**（`erix-run.ts` 建 runtime 只传 `registry / sendRegistry / sessionHandles / notify`），
 而这层最初只转 `runId` / `resumeTarget` / `signal` / `onProgress` —— `nextUserTurn` 被丢在包装层里。
 它的坏法是沉默的：`act({action:"steer"})` 回 `steerPending:1`、零报错、产物不缺、终局视图还报着队列，
-而内层 run 一次也没被问过（真上游实测：终局 `steerPending:1`，产物写 `STEER-ACK: NONE`）。
+而内层 run 一次也没被问过（真模型端点实测：终局 `steerPending:1`，产物写 `STEER-ACK: NONE`）。
 
 **为什么既有用例抓不到它**：每一格都注入了假 `runJob`（钉的是 `start() → runJob`），而跑真 `runToolLoop` 的那几格
 直接调 `core.runErixRun`，**不经过这层包装** ⇒ 生产接缝 `默认 runJob → runErixRun` 零覆盖。
@@ -941,7 +941,7 @@ judge 闸门关着 = `0`（根本没额度），闸门开着且没传参 = 引�
 「没写 `erix` 的旧记录 / 旧事件」时作**一代回退** —— 与仓内其余读路径同一口径（`erix` 优先、顶层只兜旧记录）。
 只写 `event.toolResult.duration` 在 T2 停写顶层摊平字段之后是一个**静默缺陷**（不报错，耗时的
 那一截直接消失），现由 `examples/pi-extension/erix-run-e2e.test.mjs` 钉住（其中**不联网那一段始终跑**，
-真机段 `ERIX_E2E_REAL=1` 再拿一次真进度行的证据）。
+真机段 `ERIX_E2E_MODEL=1` 再拿一次真进度行的证据）。
 
 ⚠ **部署同步义务**：本目录是**源码**，宿主真正加载的是 `~/.pi/agent/extensions/erix-run/` 那份**安装副本**——
 改了这里不等于改了那里。每次改动都要把 `erix-run-core.js` / `erix-run-jobs.js` / `erix-run-format.js` /
@@ -1116,7 +1116,7 @@ judge 闸门关着 = `0`（根本没额度），闸门开着且没传参 = 引�
   `verification.reason` 取值 `not_in_ledger`（那一格里引擎原值挪到 `verification.engineReason`），以及
   `diagnostics.finalGuard` 下追加的 `evidence` / `notInLedgerBases` / `ledgerComplete` / `compactionObserved`
   / `ledgerSource` / `ledgerReadError`。异步面 `erix-run-jobs.js` 整块投 `payload.verification` ⇒ 自动同形。
-- 真机 e2e 默认段仍断 `skipped`，只**新增**一条「显式开启 ⇒ `verification` 不再是 `skipped`」（`ERIX_E2E_REAL=1` 才跑）。
+- 真机 e2e 默认段仍断 `skipped`，只**新增**一条「显式开启 ⇒ `verification` 不再是 `skipped`」（`ERIX_E2E_MODEL=1` 才跑）。
 
 ## 测试
 

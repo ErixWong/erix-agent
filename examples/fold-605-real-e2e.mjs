@@ -2,7 +2,7 @@
 //
 // ⚠ **本脚本是「统计臂」（`strategy: "fold-statistical"`）的回归，不是默认路径的覆盖。**
 // #614 之后 CLI 的默认策略是 `fold-llm`，所以这里钉死 `fold-statistical` 意味着**它验的不再是默认
-// 那条路**。默认臂（`fold-llm`）的覆盖在 `examples/fold-default-real-e2e.mjs`（= `check:release:real`
+// 那条路**。默认臂（`fold-llm`）的覆盖在 `examples/fold-default-real-e2e.mjs`（= `check:release:model-e2e`
 // 第 ⑥ 步，issue #619），那边断言的是「语义分节在场 / 摘要器请求 ≥1 / 被折轮次 TOK 标记逐字保留 /
 // 摘要器超时降级」——比这里更贴近默认路径。
 //
@@ -21,9 +21,9 @@
 // `{ budgetTokens: 4000, strategy: "fold-statistical" }` + `maxRounds: 60` + `ERIX_NO_REFLECTION=1`。
 //
 // 用法（**只有显式开门才跑**，缺省打印 skip 并退出 0）：
-//   ERIX_E2E_REAL=1 ERIX_NO_REFLECTION=1 node examples/fold-605-real-e2e.mjs
+//   ERIX_E2E_MODEL=1 ERIX_NO_REFLECTION=1 node examples/fold-605-real-e2e.mjs
 //
-// 真上游一律走 `examples/e2e-real-gate.mjs#resolveRealUpstream()`：模型名从 `gate.slot.model` 取，
+// 真模型端点一律走 `examples/e2e-real-gate.mjs#resolveRealUpstream()`：模型名从 `gate.slot.model` 取，
 // 源码里不写死任何模型名；缺配置 / 凭据解不出 / 端点不可达分别报分类原因（不伪装成 skipped）。
 //
 // 三条断言（issue 正文判据 5）：

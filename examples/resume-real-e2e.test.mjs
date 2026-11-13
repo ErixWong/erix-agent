@@ -1,13 +1,13 @@
-// 真上游崩溃/续跑 e2e（工单 261021-10）：真 relay + 真工具下「跑一半被杀 → 续跑 → 账本闭合」。
+// 真模型端点崩溃/续跑 e2e（工单 261021-10）：真 relay + 真工具下「跑一半被杀 → 续跑 → 账本闭合」。
 //
 // 为什么还要这一条：崩溃恢复此前只有**脚本化上游**的用例（`test/loop-message-rows-crash-matrix.test.js`
 // 用 `createFakeProvider` + 包一层 store 在第 N 次 `appendRound` 上抛错）。那种注入证明的是
 // 「折叠层能重建上下文」，不证明**真进程被 SIGKILL** 之后「同一个 `--session` 再跑一次」能接上：
 // 真实进程被杀时账本停在哪一行、run snapshot 与账本谁领先、`repairTranscriptTail` 会不会吃掉
-// 已落盘的行、续跑那次会不会把同一段话喂两遍——只有真 CLI 子进程 + 真上游 + 真工具能给。
+// 已落盘的行、续跑那次会不会把同一段话喂两遍——只有真 CLI 子进程 + 真模型端点 + 真工具能给。
 //
-// 用法：ERIX_E2E_REAL=1 node --test examples/resume-real-e2e.test.mjs
-// 闸门 / 配置解析 / 模型名来源共用 `examples/e2e-real-gate.mjs`：`ERIX_E2E_REAL=1` 才跑；缺省
+// 用法：ERIX_E2E_MODEL=1 node --test examples/resume-real-e2e.test.mjs
+// 闸门 / 配置解析 / 模型名来源共用 `examples/e2e-real-gate.mjs`：`ERIX_E2E_MODEL=1` 才跑；缺省
 // skip 并按分类报原因（gate 缺失 / 配置缺失 / JSON 坏了 / 缺字段 / 凭据引用解不出值 / 端点不可达），
 // **不许**变成默认门禁的硬依赖（`npm test` 必须离线可重复）。
 //
@@ -42,7 +42,7 @@
 //     必须真的产生了新轮（轮号严格前进）且写下了 `:input:` 行（`appendUserTurn`，只有续跑路径才写），
 //     并且 `--dir` 里的 `store.load()` 折叠输出包含被杀前的正文——只看退出码不够。
 //     模型可见面（终稿里说出被杀前那个 token）只作**旁证**：前提（续跑那次没再读 a.txt）不成立
-//     就只记备注，不判红——真上游照不照抄标记是模型自由（同 `scripts/cli-real-smoke.mjs` 的 C2）。
+//     就只记备注，不判红——真模型端点照不照抄标记是模型自由（同 `scripts/cli-real-smoke.mjs` 的 C2）。
 //
 // 反向证（报告里贴实测）：把「续跑只从账本重建」破坏掉（临时让 resume 无视账本里已结清的结果，
 // 见报告）⇒ A / C 必须红。`src/` 的产品逻辑本单**零改动**。
@@ -258,7 +258,7 @@ function expectedLogicalCount(rows) {
   return count;
 }
 
-/** 折叠输出里的全部 tool_result 块（真上游段与离线自检共用）。 */
+/** 折叠输出里的全部 tool_result 块（真模型端点段与离线自检共用）。 */
 function toolResultsIn(messages) {
   return messages
     .flatMap((message) => blocksOf(message))
@@ -484,15 +484,15 @@ test("断言集自身的不变量：杀点判据 / 半行判据 / 指纹计数�
 });
 
 // ---------------------------------------------------------------------------
-// 真上游段
+// 真模型端点段
 // ---------------------------------------------------------------------------
 
-test("真上游 e2e：跑一半 SIGKILL → 同 --session 续跑 → 账本闭合 / 不丢 / 不重复 / 半行 / 接上了", {
+test("真模型端点 e2e：跑一半 SIGKILL → 同 --session 续跑 → 账本闭合 / 不丢 / 不重复 / 半行 / 接上了", {
   timeout: 15 * 60 * 1000,
 }, async (t) => {
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
   if (!gate.ok) {
-    t.skip(`真上游不可用/闸门关：${formatSkip(gate)}`);
+    t.skip(`真模型端点不可用/闸门关：${formatSkip(gate)}`);
     return;
   }
   console.log(`[10] 闸门开：model=${gate.model} endpoint=${printableEndpoint(gate.endpoint)}`);
@@ -841,7 +841,7 @@ test("真上游 e2e：跑一半 SIGKILL → 同 --session 续跑 → 账本闭�
       // 硬判据在 E1/E2/E3（账本结构）。这一条是**模型可见面**的旁证：被杀前 a.txt 的 token 只在账本里，
       // 续跑进程若**没有**再读 a.txt，模型能说出它就只能是从历史里看到的。
       // 前提不成立（模型又调了一次 readFile a.txt）时不判红，只记备注——`examples/tool-fact-e2e.test.mjs`
-      // 与 `scripts/cli-real-smoke.mjs` 的 C2 同一条纪律：真上游是否照抄标记是模型自由，拿它判红会把门禁
+      // 与 `scripts/cli-real-smoke.mjs` 的 C2 同一条纪律：真模型端点是否照抄标记是模型自由，拿它判红会把门禁
       // 跑成随机假红。注意「新结果」要按 tool_use_id 排掉杀点之前就落盘的那一份（它本身就含 tokenA）。
       const preKillIds = new Set(preKillResults.map((block) => String(block?.tool_use_id)));
       const reread = resultsAfter.filter((block) => !preKillIds.has(String(block?.tool_use_id))
@@ -904,7 +904,7 @@ test("真上游 e2e：跑一半 SIGKILL → 同 --session 续跑 → 账本闭�
         `侧车没读成一份（名单=${JSON.stringify(sidecarNamesAfterResume)}），内容判据落空`);
       const rows = sidecarAfterResume.rows;
       assert.ok(rows.length >= 1,
-        "侧车一行都没有 ⇒ 本次真上游 run 根本没走恢复行通道（那是判据落空，不是绿）");
+        "侧车一行都没有 ⇒ 本次真模型端点 run 根本没走恢复行通道（那是判据落空，不是绿）");
       assert.deepEqual(sidecarAfterResume.parseErrors, [],
         `侧车中间行解析失败：${sidecarAfterResume.parseErrors.join(" | ")}`);
       assert.equal(sidecarAfterResume.partial, "", "续跑收尾后侧车必须以换行结尾（不该留残段）");

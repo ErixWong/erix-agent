@@ -1,24 +1,24 @@
 #!/usr/bin/env node
-// 装后 CLI 打**真上游**（工单 docs/tasks/261015-e2e-harness.md 第 4 项，T5）。
+// 装后 CLI 打**真模型端点**（工单 docs/tasks/261015-e2e-harness.md 第 4 项，T5）。
 //
-//   ERIX_E2E_REAL=1 npm run check:cli-real
+//   ERIX_E2E_MODEL=1 npm run check:cli:model-e2e
 //
-//   ERIX_E2E_REAL=1 node scripts/cli-real-smoke.mjs --dry
+//   ERIX_E2E_MODEL=1 node scripts/cli-real-smoke.mjs --dry
 //     ↑ 只跑「真实 HOME / 选中配置」的污染对账（C8），不打包、不安装、不打模型。
 //       C8 有「默认路径」与「ERIX_E2E_CONFIG 覆盖」两个分支，`--dry` 就是让这两个分支能就地自证；
 //       **它不是发版门禁的跑法**（C1–C7 未跑），发版前复验仍走上面那条。
 //
 // 为什么还要这一条：`check:release` 的第 5 步（CLI 冒烟）打的是**本地假上游**，
 // 它证明的是「装好的包能跑通一次退出码/归档」，不证明「装好的包在真服务端 + 真模型
-// 的分片行为下仍然如此」。真 relay 的分片、真工具执行、真轮数节奏只有真上游能给
+// 的分片行为下仍然如此」。真 relay 的分片、真工具执行、真轮数节奏只有真模型端点能给
 // （`examples/tool-fact-e2e.test.mjs` 覆盖的是**库 API**，这里是**装后的 CLI 二进制**）。
 //
 // 闸门与配置来源与两个 gate 测试共用 `examples/e2e-real-gate.mjs`：
-// `ERIX_E2E_REAL=1` 才跑，否则**退出码 0 + 分类说明**（gate 缺失 / 配置缺失 / JSON 坏了 /
-// 缺字段 / 端点不可达），真上游不许变成任何默认门禁的硬依赖。
+// `ERIX_E2E_MODEL=1` 才跑，否则**退出码 0 + 分类说明**（gate 缺失 / 配置缺失 / JSON 坏了 /
+// 缺字段 / 端点不可达），真模型端点不许变成任何默认门禁的硬依赖。
 //
 // 收尾的**机器可读汇总行**（issue #678）：本脚本打的不是 `node --test` 的 TAP，所以
-// `npm run check:release:real` 的清单里它那一格原本只剩 `tests=? pass=? fail=? skip=?`——`?` 是诚实的
+// `npm run check:release:model-e2e` 的清单里它那一格原本只剩 `tests=? pass=? fail=? skip=?`——`?` 是诚实的
 // （取不到不许写 0），但它把「C1–C8 全跑全过」与「一条都没跑」压成同一个符号。收尾印一行
 // （格式与解析都在 `scripts/smoke-summary-line.mjs`，生产/消费共用一份）：
 //
@@ -83,7 +83,7 @@ const SLOT_KEYS_TO_COPY = [
   "protocol", "endpoint", "apiKey",
   "contextWindowTokens", "maxOutputTokens", "compaction",
 ];
-/** 终稿里必须出现的固定标记（证明真上游回了我们要求的内容，而不是只跑了个流程）。 */
+/** 终稿里必须出现的固定标记（证明真模型端点回了我们要求的内容，而不是只跑了个流程）。 */
 const MARKER = "T5-CLI-REAL-SMOKE-OK";
 /** `hashFileIfExists()` 对「文件不存在」的稳定编码（跟真实哈希同样是字符串，便于直接比）。 */
 const ABSENT = "（不存在）";
@@ -108,7 +108,7 @@ process.on("exit", () => {
 });
 
 function log(message) {
-  console.log(`[check:cli-real] ${message}`);
+  console.log(`[check:cli:model-e2e] ${message}`);
 }
 
 function run(command, args, { cwd, env, timeoutMs = 180_000, label } = {}) {
@@ -224,7 +224,7 @@ function assert(condition, message) {
  * 这里只负责把**真实**的三个数交出去：`checksRun`（`check()` 自己数）、`failures`（红的那几条 id）、
  * `DRY_RUN`（`--dry` 自报，不许把 C1–C7 未跑说成全过）。
  *
- * 行首不加 `[check:cli-real]` 日志前缀：它是给机器 grep 的（`^RELEASE-REAL-SMOKE`），
+ * 行首不加 `[check:cli:model-e2e]` 日志前缀：它是给机器 grep 的（`^RELEASE-REAL-SMOKE`），
  * 加了前缀就不再是「固定前缀的机器可读行」。
  *
  * @param {"ok"|"fail"|"error"} [statusOverride] 脚本自身抛了时传 `error`（可能一条断言都没跑到）
@@ -354,7 +354,7 @@ async function main() {
   if (DRY_RUN) {
     // 只跑污染对账：不 pack、不装、不打模型（一条请求也不发）。详见 `DRY_RUN` 的注释。
     checkHomePollution(pollutionTarget);
-    notes.push("--dry：C1–C7 未跑（没打包、没安装、没打真上游），只验了 C8 的两个分支");
+    notes.push("--dry：C1–C7 未跑（没打包、没安装、没打真模型端点），只验了 C8 的两个分支");
     for (const note of notes) log(`备注：${note}`);
     assertDeepEqual(failures, [], `失败的断言：${failures.join(", ")}`);
     log(`--dry 全绿：C8 在对账目标 ${pollutionTarget.selectedConfigPath} 上通过`);
@@ -423,7 +423,7 @@ async function main() {
   assert(configPath !== undefined && existsSync(configPath), "假 HOME 的配置没写出来");
   const env = childEnv({ home });
 
-  // ④ 用**装好的 erix**（不是 node bin/cli.js）打真上游，跑一个 ≥2 次工具的任务
+  // ④ 用**装好的 erix**（不是 node bin/cli.js）打真模型端点，跑一个 ≥2 次工具的任务
   const workDir = join(tmpRoot, "work");
   mkdirSync(workDir, { recursive: true });
   writeFileSync(join(workDir, "notes.md"), "T5 真机装后冒烟标记行：needle-in-a-haystack\n第二行没有关键字\n", "utf8");
@@ -442,7 +442,7 @@ async function main() {
     "--reflection", "off",
     "--no-notes",
     "--no-todo",
-  ], { cwd: workDir, env, label: "erix chat（真上游）", timeoutMs: 420_000 });
+  ], { cwd: workDir, env, label: "erix chat（真模型端点）", timeoutMs: 420_000 });
 
   log(`CLI 退出码=${cliResult.status}${cliResult.timedOut ? "（超时）" : ""}`);
   log(`CLI stdout 尾部：\n${cliResult.stdout.slice(-1200).split("\n").map((l) => `      ${l}`).join("\n")}`);
@@ -456,11 +456,11 @@ async function main() {
   });
   // 「真打了模型」的硬判据在 C4（输出 token > 0）。这里只核**终稿可读**：固定标记是否照抄是模型自由
   // （实测 22k token 前缀、3 轮真跑也会不照抄），拿它判红会把门禁跑成随机假红（issue #284 收尾实测）。
-  check("C2 真上游回了可读终稿（固定标记只作旁证，缺失不判红）", () => {
+  check("C2 真模型端点回了可读终稿（固定标记只作旁证，缺失不判红）", () => {
     const text = cliResult.stdout.trim();
-    assert(text.length >= 20, `stdout 太短，不像真上游回的终稿：${JSON.stringify(text.slice(0, 120))}`);
+    assert(text.length >= 20, `stdout 太短，不像真模型端点回的终稿：${JSON.stringify(text.slice(0, 120))}`);
     if (!text.includes(MARKER)) {
-      log(`旁证缺失（不判红）：stdout 没照抄 ${MARKER}；真上游的硬判据是 C4 的输出 token`);
+      log(`旁证缺失（不判红）：stdout 没照抄 ${MARKER}；真模型端点的硬判据是 C4 的输出 token`);
     }
   }, `stdout ${cliResult.stdout.trim().length} 字符，标记${cliResult.stdout.includes(MARKER) ? "在场" : "未照抄（旁证缺失）"}`);
 
@@ -617,7 +617,7 @@ async function main() {
 
   for (const note of notes) log(`备注：${note}`);
   assertDeepEqual(failures, [], `失败的断言：${failures.join(", ")}`);
-  log(`全绿：装后的 erix@${PACKAGE_VERSION} 打真上游（模型 ${gate.model}）退出码 4，`
+  log(`全绿：装后的 erix@${PACKAGE_VERSION} 打真模型端点（模型 ${gate.model}）退出码 4，`
     + `工具 ${results.length} 次，↑${usage.input}/↓${usage.output}`);
 }
 
