@@ -75,6 +75,7 @@ import { recoveryRowsPath, safeRunId, transcriptPath } from "../src/store/file.j
 import {
   formatSkip, printableEndpoint, resolveRealUpstream, TMP_PREFIX,
 } from "./e2e-real-gate.mjs";
+import { assertGateNotRetired } from "./e2e-real-gate.mjs";
 
 const CLI = resolve(fileURLToPath(new URL("../bin/cli.js", import.meta.url)));
 /** `bin/cli.js` 帮助里承诺的退出码：没有 `--final-guard` 的成功 run 是 4（verification=skipped）。 */
@@ -492,6 +493,8 @@ test("真模型端点 e2e：跑一半 SIGKILL → 同 --session 续跑 → 账�
 }, async (t) => {
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
   if (!gate.ok) {
+    // 旧名 `ERIX_E2E_REAL` 已退役 ⇒ 必须红，不许落到下面那条无条件 skip（#817）。
+    assertGateNotRetired(gate);
     t.skip(`真模型端点不可用/闸门关：${formatSkip(gate)}`);
     return;
   }

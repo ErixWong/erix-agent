@@ -106,6 +106,7 @@ import { recoveryRowsPath, safeRunId, transcriptPath } from "../src/store/file.j
 import {
   formatSkip, printableEndpoint, resolveRealUpstream, TMP_PREFIX,
 } from "./e2e-real-gate.mjs";
+import { assertGateNotRetired } from "./e2e-real-gate.mjs";
 
 const CLI = resolve(fileURLToPath(new URL("../bin/cli.js", import.meta.url)));
 /**
@@ -741,6 +742,8 @@ test("跨版本 e2e：0.22.0 夹具账本 → 0.23.0 读（原样透传/恰好�
   timeout: 20 * 60 * 1000,
 }, async () => {
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
+    // 旧名 `ERIX_E2E_REAL` 已退役 ⇒ 必须红，不许落到下面那条无条件 skip（#817）。
+    assertGateNotRetired(gate);
   const fixture = loadFixtureJournal();
   console.log(`[13] 老账本来源 = 仓内夹具 ${fixture.dir}`
     + `（runId=${fixture.runId}，${fixture.rows.length} 行 / ${fixture.raw.length} 字节）`);

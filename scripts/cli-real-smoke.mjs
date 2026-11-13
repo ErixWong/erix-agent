@@ -327,6 +327,12 @@ function resolveRunIdForTranscript(dir, jsonlName, safeRunId) {
 async function main() {
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
   if (!gate.ok) {
+    if (gate.retired) {
+      // 旧名已退役 ⇒ **红**：设旧名的人说了「要跑真机」，SKIP + exit 0 会把配错显示成「没开闸」。
+      log(`FAIL — ${formatSkip(gate)}`);
+      process.exitCode = 1;
+      return;
+    }
     log(`SKIP — ${formatSkip(gate)}`);
     process.exitCode = 0;
     return;

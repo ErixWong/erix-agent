@@ -78,9 +78,9 @@
 //   npm run release:day -- --all --dry                # 什么都不改、什么都不发、不写盘
 //   npm run release:day -- --self-test                # 离线反向证（合成树 / 假 runner，不联网、不装包）
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-// 真模型端点闸门的读取与 e2e 那一族共用同一个点（issue #817：旧名 `ERIX_E2E_REAL` 在弃用期内作别名）。
+// 真模型端点闸门的读取与 e2e 那一族共用同一个点（issue #817：旧名 `ERIX_E2E_REAL` 已退役 ⇒ 闸门关着且这一步判红，不是未判定）。
 // 告警接到本脚本的 `log()`：发版日那一行必须出现在操作者看得见的输出里，而 `--self-test` 要能离线断到它。
-import { DEPRECATED_GATE_WARNING, readRealGate } from "../examples/e2e-real-gate.mjs";
+import { readRealGate, retiredGateMessage } from "../examples/e2e-real-gate.mjs";
 // issue #731 N4/N3：CHANGELOG 的「版本节标题 / 段首日期 / bullet」三条口径是**共享**的，不是各抄一份。
 // 日期正则此前是两侧字面拷贝，标题正则已经分叉（这里 `^##\s*\[`，`docs-drift-check` 那边字面单空格）
 // ⇒ `##  [0.31.0]`（双空格）两个读者两个答案。口径与理由住在 `scripts/changelog-heading.mjs` 里。
@@ -124,8 +124,9 @@ export const PHASE = Object.freeze({
  *   · `argv`   —— spawn 一个子进程跑 npm script；
  *   · `probe`  —— **内联判据**（`PREFLIGHT_PROBES` 里的函数，只读文件、不 spawn），issue #715 的漏搬格就是它。
  * `gate` 非空 ⇒ 这一步可能是「未判定」：
- *   · `ERIX_E2E_MODEL` —— 环境变量闸门关着时真模型端点那一族**一步都不跑**（旧名 `ERIX_E2E_REAL` 在弃用期内
- *     仍算开闸，但会经 `readRealGate()` 打一行弃用告警 —— 别名不静默生效，否则下一版删不掉）；
+ *   · `ERIX_E2E_MODEL` —— 环境变量闸门关着时真模型端点那一族**一步都不跑**；旧名 `ERIX_E2E_REAL`
+ *     已退役（issue #817）：它**不开闸也不算未判定，而是直接判红**——设旧名的人已经说明了
+ *     「要跑真机」，答成未判定就等于把配错显示成「闸门关着所以没跑」；
  *   · `hosts`         —— 没给 `--hosts` 或给的目录都不在时，探针自己也是「未判定」。
  * `probe` 步骤自己也会答「未判定」（读不出搬运事实时），口径与本文件其余 gate 一致：未判定不是绿。
  *
@@ -551,7 +552,16 @@ export function runPreflight({ root = DEFAULT_ROOT, hosts = [], deps = defaultDe
       steps.push({ id: step.id, verdict: VERDICT.PASS, why: found.why });
       continue;
     }
-    if (step.gate === "ERIX_E2E_MODEL" && !readRealGate({ env, warn: (line) => log(line) }).open) {
+    const modelGate = readRealGate({ env });
+    if (step.gate === "ERIX_E2E_MODEL" && modelGate.retired) {
+      // 旧名退役：**红，不是未判定**。设旧名的人已经表达了「要跑真机」，给他一个未判定就是
+      // 把配错显示成「闸门关着所以没跑」（这一族最坏的失败形状）。文案由闸门自己出。
+      const why = retiredGateMessage(modelGate.value);
+      log(`${head} → **红**（${why}）`);
+      steps.push({ id: step.id, verdict: VERDICT.FAIL, why });
+      continue;
+    }
+    if (step.gate === "ERIX_E2E_MODEL" && !modelGate.open) {
       const why = "ERIX_E2E_MODEL 未开：真模型端点那一族在闸门关着时一步都不跑";
       log(`${head} → **未判定**（${why}）`);
       log("     要人开闸才有判定：`ERIX_E2E_MODEL=1 npm run check:release:model-e2e`（它自己会点名红在第几步）");
@@ -2097,24 +2107,19 @@ function runSelfTest() {
     });
   }
 
-  // ②d 别名（issue #817）：只设**旧名** `ERIX_E2E_REAL=1` 也算开闸（别名还生效 ⇒ 不是未判定），
-  //     但命中当次必须打那一行弃用告警（静默生效的别名下一版删不掉）。
+  // ②d 退役名（issue #817）：只设**旧名** `ERIX_E2E_REAL=1` ⇒ 这一步必须**判红**，不许退成未判定：
+  //     设旧名的人明确说了「要跑真机」，答成未判定就是把配错显示成「闸门关着所以没跑」。
   {
-    /** @type {string[]} */
-    const logged = [];
-    const deps = {
-      ...fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_REAL: "1" } }),
-      log: (line = "") => { logged.push(String(line)); },
-    };
+    const deps = fakeDeps({ env: { PATH: "/usr/bin", HOME: "/nonexistent-home", ERIX_E2E_REAL: "1" } });
     withPreflightFixture((tree) => {
       const result = runPreflight({ root: tree, hosts: [tree], deps, dry: true });
       const realStep = result.steps.find((step) => step.id === "release-real");
-      expect(realStep?.verdict === VERDICT.PASS,
-        "②d 旧名 ERIX_E2E_REAL=1 仍算开闸：release-real 真跑了（别名不许提前删）",
-        `②d 旧名开闸时 release-real 判成了 ${realStep?.verdict}`);
-      expect(logged.some((line) => line.includes(DEPRECATED_GATE_WARNING)),
-        "②d 别名命中当次必须打那一行弃用告警（逐字：旧名已弃用 / 下一版退役 / 请改用新名）",
-        `②d 输出里没有弃用告警那一行：${logged.join(" | ").slice(0, 300)}`);
+      expect(realStep?.verdict === VERDICT.FAIL,
+        "②d 旧名 ERIX_E2E_REAL 已退役：这一步必须判红，不许退成未判定",
+        `②d 实测 verdict = ${realStep?.verdict ?? "（没这一步）"}，期望 fail`);
+      expect(String(realStep?.why ?? "").includes("ERIX_E2E_MODEL"),
+        "②d 红文必须点名该改用谁（只说旧名退役，人还得自己去查新名）",
+        `②d 红文里没有新名：${realStep?.why ?? "（无 why）"}`);
     });
   }
 

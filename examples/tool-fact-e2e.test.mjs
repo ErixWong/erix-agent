@@ -49,7 +49,7 @@ import { foldToolResultsForRequest } from "../src/loop/tool-result-ttl.js";
 // 选项名闸（`RUN_TOOL_LOOP_OPTION_NAMES` 的唯一执行点）。本文件下面那条「始终跑、不联网」的
 // 前置格用它把**真模型端点格实际交给 `runToolLoop` 的那两份对象**过一遍——理由见文件头 ③。
 import { assertRunToolLoopOptionNames } from "../src/loop/option-normalization.js";
-import { formatSkip, printableEndpoint, resolveRealUpstream, TMP_PREFIX } from "./e2e-real-gate.mjs";
+import { assertGateNotRetired, formatSkip, printableEndpoint, resolveRealUpstream, TMP_PREFIX } from "./e2e-real-gate.mjs";
 
 /** 退役名（TOOL_RESULT_CONTRACT.legacy.aliases 的键，去掉宿主摊平那条描述性键）。 */
 const RETIRED = Object.keys(TOOL_RESULT_CONTRACT.legacy.aliases)
@@ -586,6 +586,8 @@ test("真模型端点 e2e：工具事实契约面（两线同键 / 字段面 / w
 }, async (t) => {
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
   if (!gate.ok) {
+    // 旧名 `ERIX_E2E_REAL` 已退役 ⇒ 必须红，不许落到下面那条无条件 skip（#817）。
+    assertGateNotRetired(gate);
     t.skip(`真模型端点不可用/闸门关：${formatSkip(gate)}`);
     return;
   }

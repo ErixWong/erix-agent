@@ -39,6 +39,7 @@ import {
   resolveRealUpstream,
   TMP_PREFIX,
 } from "../e2e-real-gate.mjs";
+import { assertGateNotRetired } from "../e2e-real-gate.mjs";
 // 选项名闸（`RUN_TOOL_LOOP_OPTION_NAMES` 的唯一执行点）：见下面那条「始终跑、不联网」的前置格。
 import { assertRunToolLoopOptionNames } from "../../src/loop/option-normalization.js";
 import * as core from "./erix-run-core.js";
@@ -364,6 +365,8 @@ test("erix_run 真机 e2e：真 run 的终局四件套 + transcript 新形状 + 
 }, async (t) => {
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
   if (!gate.ok) {
+    // 旧名 `ERIX_E2E_REAL` 已退役 ⇒ 必须红，不许落到下面那条无条件 skip（#817）。
+    assertGateNotRetired(gate);
     t.skip(`真模型端点不可用/闸门关：${formatSkip(gate)}`);
     return;
   }
@@ -538,6 +541,8 @@ test("erix_run 真机：显式 finalGuard:true ⇒ verification 不再是 skippe
 }, async (t) => {
   const gate = await resolveRealUpstream({ probeTimeoutMs: 8_000 });
   if (!gate.ok) {
+    // 旧名 `ERIX_E2E_REAL` 已退役 ⇒ 必须红，不许落到下面那条无条件 skip（#817）。
+    assertGateNotRetired(gate);
     t.skip(`真模型端点不可用/闸门关：${formatSkip(gate)}`);
     return;
   }

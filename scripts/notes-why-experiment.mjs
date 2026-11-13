@@ -27,9 +27,9 @@ import {
   runFailFast,
   validateCostPlan,
 } from "./experiment-guardrails.mjs";
-// 真模型实验的闸口与真模型端点 e2e 共用**一个**读取点（issue #817：旧名 `ERIX_E2E_REAL` 留在弃用期当别名，
+// 真模型实验的闸口与真模型端点 e2e 共用**一个**读取点（issue #817：旧名 `ERIX_E2E_REAL` 已退役 ⇒ 设了判红，不再开闸
 // 命中时由闸门自己打那一行弃用告警）。先例同 `scripts/cli-real-smoke.mjs` / `scripts/release-real-check.mjs`。
-import { REAL_GATE_ENV, readRealGate } from "../examples/e2e-real-gate.mjs";
+import { REAL_GATE_ENV, readRealGate, retiredGateMessage } from "../examples/e2e-real-gate.mjs";
 // #532：这两个符号在 notes 瘦身（9fd2277）里被改名/删除，import 站不住 ⇒ 按**今天真实的导出面**改写调用点：
 //   · `buildArchiveSystemPrompt` → `buildArchiveNotice`（同一个角色：把归档目录拼进 system prompt）；
 //   · `buildArchiveRecoveryHint` → **已删除**，今天没有字符串形态的归档恢复提示（归档路径只经
@@ -723,12 +723,20 @@ export function parseArgs(args) {
 /**
  * 真模型实验的**闸口**（#546）：照 `scripts/cli-real-smoke.mjs` / `scripts/release-real-check.mjs`
  * 的先例，`ERIX_E2E_MODEL=1` 才跑，否则**退出码 0 + 分类说明**。
- * 闸门读取同样走 `examples/e2e-real-gate.mjs#readRealGate()`（旧名 `ERIX_E2E_REAL` 在弃用期内当别名，
+ * 闸门读取同样走 `examples/e2e-real-gate.mjs#readRealGate()`（旧名 `ERIX_E2E_REAL` 已退役：期内当别名，
  * 命中时由闸门自己打那一行弃用告警）。
  * 退出码：`0` = 闸口未开（一步都没跑）/ 跑完；`1` = 真失败（与既有行为一致）。
  */
 function skipUnlessRealE2E() {
-  if (readRealGate().open) return false;
+  const gate = readRealGate();
+  if (gate.open) return false;
+  if (gate.retired) {
+    // 旧名已退役（issue #817）：**判红而不是 skip**。设旧名的人已经说了「要跑真机」，
+    // 给他 exit 0 + `[skip]` 就是把配错显示成「闸门关着所以没跑」。
+    console.error(retiredGateMessage(gate.value));
+    process.exitCode = 1;
+    return true;
+  }
   console.log(`[skip] ${REAL_GATE_ENV} 未设为 1：真模型变体实验一步都没跑（本脚本会打真模型端点/真模型）。`
     + ` 要跑：${REAL_GATE_ENV}=1 node scripts/notes-why-experiment.mjs --yes [--runs N] [--max-calls N]`);
   return true;
