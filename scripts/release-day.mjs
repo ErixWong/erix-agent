@@ -30,12 +30,13 @@
 //              ② 把回写提交掉（`git commit -a`，只提交已跟踪文件的改动）
 //              ③ **立刻重跑 `npm run check:docs`** 证明回写自洽
 //   finalize   清 `src/**/*.d.ts` → 打附注 tag `v<版本>`（指向**切版提交**，不指向回写提交；依据是
-//              `git blame` 现读的 `package.json` version 行，先例 `v0.30.0`）→ `git push origin main` 与
-//              `git push origin v<版本>`（`origin` 是双推：GitHub + Gitea）→ 两个 URL 各 `git ls-remote` 现验
+//              `git blame` 现读的 `package.json` version 行，先例 `v0.30.0`）→ 先 `git push origin v<版本>`
+//              再 `git push origin main`（**先 tag 后 main**，理由见 finalize ④ 注释；`origin` 是双推：
+//              GitHub + Gitea）→ 两个 URL 各 `git ls-remote` 现验
 //              （不一致就红）→ 再跑一遍 `check:docs` / `check:docs:strict`。
-//              **永不 `--force`**：拦住它的是这条纪律自己，不是外部闸门——
-//              main 当前没有分支保护，CI 红目前也拦不住任何合并（闸门实况
-//              现验见 finalize ④ 注释）。真实危险在 `remote.origin.pushurl`：
+//              **永不 `--force`**：外面有没有闸门要现验（`gh api repos/<owner>/<repo>/rulesets`），
+//              这里不抄它的结论——抄过一次「没有分支保护」，下一版就被远端拒了推送；推失败时
+//              finalize ④ 让远端自己那句原文说话。真实危险在 `remote.origin.pushurl`：
 //              两条各跑各的（GitHub 在前、Gitea 在后），而 mirror cron
 //              `sync-erix-mirror.sh` 是关着的 ⇒ force-push 会改写 GitHub 上
 //              **已发布**的历史，还可能只推上一侧、另一侧静默落后，
@@ -954,23 +955,26 @@ export function runFinalize({
   }
 
   // ── ④ 双推（`origin` = GitHub + Gitea；永不 --force：拦住它的是这条纪律，不是闸门） ──
-  //    闸门实况（全仓**只这一份**抄件，别处一律用散文指到这里）：261111 现验
-  //    `gh api repos/ErixWong/erix-agent/rulesets` ⇒ `[]`（0 条 ruleset），分支保护那一条也回
-  //    404 `Branch not protected`，而同一时刻这个仓的 permissions.admin 是 true ⇒ 404 不是读不到，
-  //    是真没有闸门。CI 同样不拦合并。所以没有任何外力挡得住 force。
+  //    **先 tag 后 main**（261112）：远端为写回提交跑 CI 时要读得到本版 tag。tag 不在远端时，
+  //    两个符号锚点用例的事实（来自 `check:docs --verbose`）读不出来、note 根本不打，于是它们红在
+  //    「闸门读不出」上而不是红在自己要考的东西上。因果用 `git clone --no-tags` 复现过：同一对用例，
+  //    红与绿只差那一个 tag。把顺序换回去 = 每发一版送一次「main 上一片红，红因与改动无关」的窗口。
+  //    闸门现状（有没有 ruleset、要哪几条检查）**不抄在这里**：这里抄过一份「没有分支保护」，
+  //    下一版就被远端拒了推送。现状要现验：`gh api repos/<owner>/<repo>/rulesets`。
   if (dry) {
-    log(`finalize ④ （--dry）会推 \`origin main\` 与 \`origin ${tag}\`（不 force）`);
+    log(`finalize ④ （--dry）会先推 \`origin ${tag}\` 再推 \`origin main\`（不 force）`);
   } else {
-    for (const ref of ["main", tag]) {
+    for (const ref of [tag, "main"]) {
       log(`finalize ④ \`git push origin ${ref}\`（双推：GitHub + Gitea；不 force）`);
       const pushed = run(["git", "push", "origin", ref], { cwd: root, env });
       if (pushed.status !== 0) {
-        log(`finalize ④ → **红**：\`git push origin ${ref}\` exit ${pushed.status}`
-          + "（非快进 ⇒ push 自己失败。**没有**分支保护在拦你：main 当前没有分支保护，CI 红也拦不住合并，"
-          + "红是因为本脚本自己不带 `--force`。下一步：`git fetch` 看清远端多出来的提交 → rebase → 重跑 finalize。"
-          + "别拿 force 兜：两条 push URL 各跑各的（GitHub 在前、Gitea 在后）而 mirror cron 关着，"
-          + "force 会改写 GitHub 上**已发布**的历史，还可能只推上一侧、另一侧静默落后，"
-          + "而唯一的探测器是 ⑤ 的 `git ls-remote` 互验——它跑在 push 之后。");
+        log(`finalize ④ → **红**：\`git push origin ${ref}\` exit ${pushed.status}。`);
+        log("      下一步看上面那段远端自己打的原文（它比本脚本知道得多）：非快进就 `git fetch` → rebase →"
+          + " 重跑；被仓库规则拒（GH013 / 「required status checks are expected」）则不是「必须走 PR」，"
+          + "而是那个 sha 上检查缺席：同一个 sha 的必需检查跑绿之后直推就放行（261112 实测）。");
+        log("      别拿 force 兜：两条 push URL 各跑各的（GitHub 在前、Gitea 在后）而 mirror cron 关着，"
+          + "force 会改写 GitHub 上**已发布**的历史，还可能只推上一侧、另一侧静默落后（本脚本就是："
+          + "GitHub 拒了 main、Gitea 已吃进去），而唯一的探测器是 ⑤ 的 `git ls-remote` 互验——它跑在 push 后。");
         return EXIT.RED;
       }
     }
