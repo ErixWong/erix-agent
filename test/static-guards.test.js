@@ -5052,10 +5052,11 @@ describe("静态守卫：CHANGELOG 未发布节的中英配对地板（issue #56
     // issue #571：真实面上的条数**跟着面走**（新生节可能只有 1 对），所以「恒真 / 死代码」的证据
     // 不能挂在「真实面恰好有 N 条」上——那是成熟度。真实面只证「两侧都有真样本」，
     // 两个方向、两条分支的真样本放在**合成形状夹具**上（同一份判定函数、同一份配对逻辑）。
+    // ⇒ 真实面上不得再挂**内容风格**条件：PR #822 撞过一次，当时守卫自报「中文 1 / 英文 1 / 无对应 0」
+    // （配对完好），只因那条英文条目引了一句中文文案就判红——它拿「英文条目零 CJK」当判定器完整性证据，
+    // 而零 CJK 是风格；判定器的两个方向上面夹具已经两侧钉住了。
     assert.ok(problems.cn.length >= 1 && problems.en.length >= 1,
       `判据面上没有两侧样本（中文 ${problems.cn.length} / 英文 ${problems.en.length}）：配对会退化成数条数`);
-    assert.ok(problems.en.some((bullet) => bullet.ratio === 0),
-      "没有一条零 CJK 的英文条目：语言判定可能恒判中文");
     const shape = collectChangelogPairingProblems(changelogSyntheticSectionText());
     assert.equal(shape.found, true, "形状夹具上找不到判据面：这一格失去对照组");
     assert.ok(shape.cn.some((bullet) => bullet.ratio > 0.5),
