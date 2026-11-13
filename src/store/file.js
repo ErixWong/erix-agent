@@ -591,8 +591,9 @@ export function createFileTranscriptStore({ dir }) {
       return await withAppendLock(runId, async () => {
         await mkdir(dir, { recursive: true });
         const path = recoveryRowsPath(dir, runId);
-        if (record !== null && record !== undefined
-          && record.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT) {
+        // 只读一个字段，不做形状收窄（`--strict` 下 `record` 是 `object`，直接点字段就是 TS2339）。
+        const recoveryEvent = /** @type {{ recoveryEvent?: unknown }} */ (record)?.recoveryEvent;
+        if (record !== null && record !== undefined && recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT) {
           return await replacePartialTextSlot(path, runId, record, recoveryDedupCaches);
         }
         return await appendRecord(path, runId, record, recoveryDedupCaches);

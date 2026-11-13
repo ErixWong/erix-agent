@@ -121,14 +121,15 @@ export function createMemoryTranscriptStore() {
         }
         return false;
       }
-      if (record !== null && record !== undefined
-        && record.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT) {
+      // 只读一个字段，不做形状收窄（`--strict` 下 `record` / `item` 是 `object`，直接点字段就是 TS2339）。
+      const recoveryEvent = /** @type {{ recoveryEvent?: unknown }} */ (record)?.recoveryEvent;
+      if (record !== null && record !== undefined && recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT) {
         // 槽替换 + 跨轮自剪枝：丢掉**全部** `partial-text` 旧行（同 round 同事件的那一条，以及
         // 旧轮的死行），新行落在尾部（与 file store 的整写同位置）。`tool-executed` 一行不丢：
         // 工具真跑过、结果可能没入账，那行必须活到 run 结束（只由 `clearRecoveryRows` 在 run
         // 起跑时清）。理由与 file store 的 `replacePartialTextSlot` 逐字同口径，两份不得分叉。
-        const kept = rows.filter((item) => !(item !== null
-          && item.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT));
+        const kept = rows.filter((item) => item === null
+          || /** @type {{ recoveryEvent?: unknown }} */ (item).recoveryEvent !== RECOVERY_EVENT_PARTIAL_TEXT);
         kept.push(copyRecord(record));
         recoveryLedger.set(runId, kept);
         return true;
