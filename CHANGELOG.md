@@ -34,6 +34,30 @@
   provider 的错误正文，属泛指，已改词去形状、不动语义。
 
 ### Changed
+- **`round_end`'s payload is now contract, not implementation detail (issue #835).** The engine has
+  always emitted `{ round, finalText, stopReason, usage }` on `round_end`, but the contract only
+  called it "round boundary", so the keys were never promised. The downstream host reads `finalText`
+  as the durable text of a finished round (1,008 `round_end` rows in its dev database, 437 with a
+  non-empty `final_text`), which made "upstream slims the event channel" and "downstream treats it
+  as truth" a silent break waiting to happen. The event table now names the four keys and their
+  types, and states the constraint in both directions: `finalText` is the **event face** of the same
+  fact the ledger message rows carry, so it must not be removed, renamed, moved into the round
+  record, or dropped during a file-layout migration (the retirement work in #827); removing it is a
+  breaking change with an upgrade guide, not slimming. A new contract test pins the keys and their
+  types, and asserts at least one emitted `finalText` is non-empty so "key present but always empty"
+  cannot pass.
+- **`round_end` 的 payload 现在是契约，不是实现细节（issue #835）。**
+  引擎一直在发 `{ round, finalText, stopReason, usage }`，但契约只写了「轮边界」，
+  四个键从没被承诺过。
+  四个键从没被承诺过。下游把 `finalText` 当「已完成轮次的 durable 正文」
+  读（它 dev 库 1,008 行 `round_end`、437 行 `final_text` 非空），
+  于是「上游瘦身事件通道」与「下游把它当真值」之间是个无声的破坏。
+  现在事件表点名这四个键与类型，并把约束写成双向：`finalText`
+  是账本消息行所承载**同一事实的事件面**，不许删、不许改名、
+  不许挪进轮记录、不许在文件布局迁移（#827 的退役工作）里顺手瘦身；
+  删它属于破坏性变更，必须配升级指南，不能算「瘦身」。
+  同时新增一条契约测试钉住键与类型，并断言至少一条 `finalText` 非空 ——
+  让「键在但永远空」过不去。
 - **The interrupted stub now says which of the two situations it is, using the
   `tool-executed` row as the evidence (issue #833 follow-up, task 261114-05).** A pending call whose
   result never landed used to get one text ("was not replayed; the host must decide"). Two different

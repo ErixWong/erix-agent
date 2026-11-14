@@ -6632,7 +6632,7 @@ at the emission site, and two of them were wrong in the first draft of this sect
 | `tool_result` | `fact` | no | The fact clone. It is emitted **before** the `RoundRecord` exists, and `content` is explicitly outside the event↔record equation (a fold may rewrite the record's copy), so this event can be the only pre-fold copy. |
 | `tool_replay_decision_required` | `fact` | no | The ask itself. Nothing durable else records it, and the host's answer has to be joinable to it. |
 | `round_start` | `fact` | no | Round boundary. |
-| `round_end` | `fact` | no | Round boundary and the per-round ledger line. |
+| `round_end` | `fact` | no | Round boundary and the per-round ledger line. **Payload is contract, not implementation detail** (issue #835): `round` (number), `finalText` (string, the round's complete accumulated assistant text — `""` when the round produced none), `stopReason` (string, the provider's own spelling) and `usage` (object, the same accounting shape as the `usage` event). Hosts read `finalText` as the durable text of a finished round; it is the **event face** of the same fact the ledger message rows carry, so it must not be removed, renamed, moved into the round record, or dropped in a file-layout migration (see the retirement work in #827). Removing it is a breaking change with an upgrade guide, not a "slimming" change. |
 | `usage` | `fact` | no | The accounting line the round-ledger-vs-engine-overhead reading depends on. |
 | `attempt` | `fact` | no | One per retry attempt. Delete it and "which attempt produced this" is gone, including the retried-call count. |
 | `compaction` | `fact` | no | That a compaction happened at this round is the fact. |
