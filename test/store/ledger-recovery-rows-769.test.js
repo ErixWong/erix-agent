@@ -1035,11 +1035,13 @@ test("#827 第 3 刀（a）：写 partial-text 不改变 .recovery.jsonl 的字�
       buildPartialTextRecoveryRow({ runId, round: 1, text })), true, `槽写「${text}」必须报真落`);
   }
   const after = statSync(eventsFile);
+  // 先钉住「事件文件没被动过」再去看槽文件：反向证（把 partial 落点改回 `recoveryRowsPath`）时
+  // 红的就是这两行，而不是「.partial.jsonl 不存在」这种旁证。
+  assert.equal(after.size, before.size, "写 partial-text 不许改变 .recovery.jsonl 的字节数");
+  assert.equal(after.mtimeMs, before.mtimeMs, "写 partial-text 不许改变 .recovery.jsonl 的 mtime");
   t.diagnostic(`#827-3(a) 连写 3 次槽：事件文件 ${before.size} B / mtimeMs ${String(before.mtimeMs)}`
     + ` → ${String(after.size)} B / mtimeMs ${String(after.mtimeMs)}`
     + `；槽文件 ${String(statSync(partialSlotPath(dir, runId)).size)} B`);
-  assert.equal(after.size, before.size, "写 partial-text 不许改变 .recovery.jsonl 的字节数");
-  assert.equal(after.mtimeMs, before.mtimeMs, "写 partial-text 不许改变 .recovery.jsonl 的 mtime");
   const slotRows = readRowFile(partialSlotPath(dir, runId));
   assert.equal(slotRows.length, 1, "三次替换后 .partial.jsonl 恒为 1 行");
   assert.equal(slotRows[0].text, "第一段第二段第三段", "留下的必须是最后一次的全量正文");
@@ -1053,6 +1055,7 @@ test("#827 第 3 刀（b）：追加 tool-executed 不改变 .partial.jsonl", as
   const slotFile = partialSlotPath(dir, runId);
   assert.equal(await store.appendRecoveryRow(runId,
     buildPartialTextRecoveryRow({ runId, round: 1, text: "半截正文" })), true, "前置：槽先落");
+  assert.equal(existsSync(slotFile), true, "槽必须落在 .partial.jsonl（不在场就是分流没生效）");
   const before = statSync(slotFile);
   for (const toolUseId of ["t-1", "t-2"]) {
     assert.equal(await store.appendRecoveryRow(runId,

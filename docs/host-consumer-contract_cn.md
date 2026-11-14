@@ -5906,15 +5906,29 @@ table-driven 各跑一遍。它们共用**同一份**端口语义实现（`src/s
   反馈，而不是 fork 套件：fork 掉就丢掉了哨兵。
 
 
-## 恢复行 —— 每本 run 多出的一份 `.jsonl`（issue #769）
+## 恢复行 —— 每本 run 多出两份 `.jsonl`（issue #769、#827 第 3 刀）
 
-append-only 账本现在**每本 run 多写一个文件**：`<dir>/<runId>.recovery.jsonl`，与既有的 `<dir>/<runId>.jsonl` 并列。
-**轮记录那份一个字节都没变**——仍然是一行恰好一轮，正文也还在原处，没有任何东西从它里面搬走。新文件只装**恢复行**：
+append-only 账本现在在既有的 `<dir>/<runId>.jsonl` 旁边**每本 run 多写两份文件**：
+`<dir>/<runId>.recovery.jsonl`（**事件**：`tool-executed`，只追加、永不改写）与
+`<dir>/<runId>.partial.jsonl`（**那个槽**：`partial-text`，恒为 0 或 1 行，整文件重写）。
+**拆成两份就是 #827 第 3 刀**：两个通道同住一份文件时，每次槽重写都要把全部事件行重抄一遍
+（实测 200 条工具行 = 45,204 B，一轮 300 次提交 ⇒ 累计重写 12.9 MB）；分流之后一次重写只碰
+那一条行（≈ 2.2 KB），**事件文件不再被改写**。**轮记录那份一个字节都没变**——仍然是一行恰好一轮，
+正文也还在原处，没有任何东西从它里面搬走。
 
-- `kind: "recovery"` —— 宿主就按这个字段筛。今天有两种事件：`recoveryEvent: "tool-executed"`（带 `toolUseId`）
+- `kind: "recovery"` —— 宿主就按这个字段筛。两份文件加起来只装**恢复行**。今天有两种事件：
+  `recoveryEvent: "tool-executed"`（带 `toolUseId`）
   与 `recoveryEvent: "partial-text"`（只带 `text` 本身：**那一刻的完整累计正文 — 不截断、不设上限**；引擎把整段串原样交给这一行，而且**没有** `textLength` 这一项，要长度自己数——恢复行刻意不带任何派生数字）。
+- 哪一条行住在哪一份文件里是契约的一部分（两份名字都由 `src/store/file.js` 里的
+  `partialSlotPath` / `recoveryRowsPath` 现场推——不要把后缀写成字面量）：`tool-executed` → `.recovery.jsonl`，
+  `partial-text` → `.partial.jsonl`。`listRecoveryRows` **合并两份文件**，返回顺序写死：先事件行（落盘序），
+  再槽行。读侧按 `recoveryEvent` 筛、不依赖这个顺序，但直接读文件的宿主依赖 ⇒ 它不许改。
+  **分流前**写的旧数据：残在 `.recovery.jsonl` 里的 `partial-text` 行仍从那里返回——旧账本依旧读得动，
+  而那份混写的文件不会被重写成新形状。
 - `tool-executed` 行：一条一行 = **一个事件**，只追加、永不替换也永不改写，一轮多条是常态（每个不同的
-  `toolUseId` 一条）。`partial-text` 行（issue #827 第 1 刀，#791 那张字节账）：**一轮一个槽**——该轮只保留
+  `toolUseId` 一条）。自 #827 第 3 刀起它们住在一份**只会被追加、只会被 `rm`** 的文件里 ⇒
+  落进去的行就一直在那儿，直到 `clearRecoveryRows`。
+  `partial-text` 行（issue #827 第 1 刀，#791 那张字节账）：**一轮一个槽**——该轮只保留
   一条，内容是**最新全文**；每次新提交**替换**掉该轮上一条，实现是整文件原子重写（tmp + `rename`，与
   `saveRunSnapshot` 同一手法）。这不是日志而是槽，理由写在明处：读侧（`readPartialTextRecoveryRow`）本来就
   只取该轮最后一条，追加 N 条前缀就是把一份越来越长的正文存 N 遍。
@@ -5931,16 +5945,21 @@ append-only 账本现在**每本 run 多写一个文件**：`<dir>/<runId>.recov
   写者插队就**重新读、重新合并**（连续撞则退化成一次普通追加，可能留下两条 `partial-text`，读侧取最后
   一条 ⇒ 语义仍对）。这条通道仍假设**一个 run 一个写者**：那把追加锁挂在 store 实例上、不是目录级 ⇒
   宿主拿两个实例写同一个目录时必须在宿主边界串行（与上面 notes 适配器同一条规则）；上面那两条是尽力
-  而为的兜底，不是跨进程锁。`tool-executed` 行都不受这次重写波及——它们**只在 run 起跑时**由 `clearRecoveryRows`（整文件 `rm`，
-  刻意不是轮起跑）清掉。宿主若 tail 这份文件做增量镜像，会**看到行消失**——镜像要么整份
+  而为的兜底，不是跨进程锁。`tool-executed` 行都不受这次重写波及——它们现在在另一份文件里，
+  而那次重写根本不会打开它。`tool-executed` 行**只在 run 起跑时**由 `clearRecoveryRows`
+  （整文件 `rm`，**两个文件都删**，刻意不是轮起跑）清掉。
+  **tail 槽文件**（`.partial.jsonl`）：宿主若做增量镜像，会**看到那条行消失或被替换**——镜像要么整份
   重读，要么把每次 `partial-text` 写入视为对该轮最后一条的替换；不要假定一行落盘后就永远在文件里。
+  **tail 事件文件**（`.recovery.jsonl`）就不需要这份小心：第 3 刀之后没人再重写它，一条行出现过就
+  一直在，直到 run 起跑那次清除。
 
 写入时机：`tool-executed` 行在**执行器返回的那一刻**追加 —— 比 `tool_result` 行落盘更早，因此也比本轮任何快照写更早。
 这正是它的存在理由：**「有 `tool_use` 但没有 `tool_result`」推不出「工具没执行」**，所以「执行过没有」由这一行
 **显式携带**，绝不靠「另一行在不在」去猜。
 
 store 面：`appendRecoveryRow(runId, row)` → `true`（真落了一行）/ `false`（被去重跳过，或被「旧轮不许挤掉新轮」那道守卫挡下），`listRecoveryRows(runId)` →
-按追加顺序返回，`clearRecoveryRows(runId)` → 真删了一个文件返 `true`、本来没东西可删返 `false`。三者都是**可选能力**，而「没有」与「失败」是两件事：
+返回**两份文件**的行（先事件行、后槽行），`clearRecoveryRows(runId)` → 删**两个文件**，至少真删了一个返 `true`、
+两个都不在场返 `false`。三者都是**可选能力**，而「没有」与「失败」是两件事：
 
 - **方法缺席**（store 上根本没有这个方法）是合法降级：引擎跳过这一步，回落到快照那三格
   （`executedToolIds` / `partialText` / `partialRound`），那三格仍是合法兜底，且**不是唯一来源**。

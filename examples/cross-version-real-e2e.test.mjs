@@ -102,7 +102,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createFileTranscriptStore } from "../src/index.js";
 import { foldLedgerMessages, foldMessageRows, MESSAGE_ROW_KIND } from "../src/store/message-rows.js";
-import { recoveryRowsPath, safeRunId, transcriptPath } from "../src/store/file.js";
+import { partialSlotPath, recoveryRowsPath, safeRunId, transcriptPath } from "../src/store/file.js";
 import {
   formatSkip, printableEndpoint, resolveRealUpstream, TMP_PREFIX,
 } from "./e2e-real-gate.mjs";
@@ -130,6 +130,13 @@ const LEDGER_SUFFIX = suffixFrom(transcriptPath, "transcriptPath");
  * 因为侧车只在部分文本被刷出时才落盘）。`resume-real-e2e` 在 0.32.0 修过同一形状，这里跟上。
  */
 const RECOVERY_SUFFIX = suffixFrom(recoveryRowsPath, "recoveryRowsPath");
+/**
+ * 「半截正文」那个槽的尾巴 `<safeRunId(runId)>.partial.jsonl`（`partialSlotPath`，issue #827
+ * 第 3 刀）。它**同样以 `LEDGER_SUFFIX` 结尾**，所以和 `RECOVERY_SUFFIX` 一样必须从「这是不是
+ * 一本账本」的判据里排掉——否则开了 `partialPersistence` 的现场一旦刷出一条半截正文，这个
+ * e2e 就会把槽文件数成第二本账本并抛。后缀照旧**从 store 的 helper 现推**，不写字面量。
+ */
+const PARTIAL_SUFFIX = suffixFrom(partialSlotPath, "partialSlotPath");
 const CORRUPT_MARK = ".corrupt.";
 /** 旧 CLI 默认位置（不在默认 PATH 里，必须绝对路径）——**只给可选分支 L4 用**。 */
 const LEGACY_CLI_ENV = "ERIX_LEGACY_CLI";
@@ -371,6 +378,11 @@ function isRecoverySidecarName(name) {
   return name.endsWith(RECOVERY_SUFFIX);
 }
 
+/** 半截正文槽的名字（`<safeRunId(runId)>.partial.jsonl`，见 `partialSlotPath`）。 */
+function isPartialSlotName(name) {
+  return name.endsWith(PARTIAL_SUFFIX);
+}
+
 /**
  * 「这个 `*.jsonl` 是不是一本**账本**」：以 `LEDGER_SUFFIX` 结尾，且**不是**恢复行侧车。
  * 侧车不是一本账本（一行都不是轮记录，`store.load()` / `loadRawRows()` 也读不到它）。
@@ -378,16 +390,18 @@ function isRecoverySidecarName(name) {
  * 第二本）仍然算第二本账本，`readLedger()` 照旧抛（离线自检 ⑦ 拿真两份反向证这一点）。
  */
 function isLedgerName(name) {
-  return name.endsWith(LEDGER_SUFFIX) && !isRecoverySidecarName(name);
+  return name.endsWith(LEDGER_SUFFIX) && !isRecoverySidecarName(name) && !isPartialSlotName(name);
 }
 
 function listLedgerFiles(dir) {
   return existsSync(dir) ? readdirSync(dir).filter(isLedgerName).sort() : [];
 }
 
-/** 侧车名单：与 `listLedgerFiles()` **互补**——目录里全部 `*.jsonl` = 账本 ∪ 侧车，谁都不许「既不数也不判」。 */
+/** 侧车名单：与 `listLedgerFiles()` **互补**——目录里全部 `*.jsonl` = 账本 ∪ 侧车（两种），谁都不许「既不数也不判」。 */
 function listRecoverySidecarFiles(dir) {
-  return existsSync(dir) ? readdirSync(dir).filter(isRecoverySidecarName).sort() : [];
+  return existsSync(dir)
+    ? readdirSync(dir).filter((name) => isRecoverySidecarName(name) || isPartialSlotName(name)).sort()
+    : [];
 }
 
 function listCorruptFiles(dir) {
@@ -716,15 +730,20 @@ test("断言集自身的不变量：旧形状/新形状判据、原样透传、�
   //    时才落盘），所以这一格必须离线跑：它是那条随机红的唯一常驻防线。
   assert.equal(LEDGER_SUFFIX, ".jsonl", `账本后缀应与 CLI 承诺的一致，实测 ${LEDGER_SUFFIX}`);
   assert.equal(RECOVERY_SUFFIX, ".recovery.jsonl", `侧车后缀应点名恢复行文件，实测 ${RECOVERY_SUFFIX}`);
+  assert.equal(PARTIAL_SUFFIX, ".partial.jsonl", `槽后缀应点名半截正文文件，实测 ${PARTIAL_SUFFIX}`);
+  assert.ok(PARTIAL_SUFFIX.endsWith(LEDGER_SUFFIX),
+    "槽名也以账本后缀结尾——同一个坑（#827 第 3 刀拆文件时新长出来的），判据必须建在它上面");
   assert.ok(LEDGER_SUFFIX.endsWith(".jsonl") && RECOVERY_SUFFIX.endsWith(LEDGER_SUFFIX),
     "侧车名以账本后缀结尾——这正是数成第二本账本那个坑的形状，判据必须建立在这一点上");
   const nameBox = mkdtempSync(join(tmpdir(), "erix-xversion-names-"));
   try {
     writeFileSync(join(nameBox, `run-a${LEDGER_SUFFIX}`), "{}\n", "utf8");
     writeFileSync(join(nameBox, `run-a${RECOVERY_SUFFIX}`), "{}\n", "utf8");
+    writeFileSync(join(nameBox, `run-a${PARTIAL_SUFFIX}`), "{}\n", "utf8");
     assert.deepEqual(listLedgerFiles(nameBox), [`run-a${LEDGER_SUFFIX}`],
       "侧车不许被数成第二本账本（真模型端点上随机命中，这条判据就是那条红的离线替身）");
-    assert.deepEqual(listRecoverySidecarFiles(nameBox), [`run-a${RECOVERY_SUFFIX}`],
+    assert.deepEqual(listRecoverySidecarFiles(nameBox),
+      [`run-a${PARTIAL_SUFFIX}`, `run-a${RECOVERY_SUFFIX}`].sort(),
       "侧车要被**数到**：全部 *.jsonl = 账本 ∪ 侧车，没有第三种名字");
     writeFileSync(join(nameBox, `run-b${LEDGER_SUFFIX}`), "{}\n", "utf8");
     assert.throws(() => readLedger(nameBox), /多份账本/u,
