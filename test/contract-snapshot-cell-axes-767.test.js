@@ -265,11 +265,13 @@ test("G2 写轴对真载荷：声明 written/residue ⇒ 键必须在场，声�
     rows.some((row) => row.write === "stopped"),
     "表里必须至少有一格 `write: stopped`，否则本用例的 stopped 分支是空转（#767 S1r 缺陷 2）",
   );
-  assert.ok(
-    rows.some((row) => row.write === CONDITIONAL_WRITE),
-    "表里必须至少有一格 `write: written(conditional)`，否则条件写入没人复核（#767 S1r 缺陷 1）",
-  );
-  for (const row of rows) {
+  // #827 第 5 刀：半截正文停写之后条件写入格是**空集**（原来那两格变成了 `stopped`）。这条断言
+  // 随之从「至少一格」翻成「必须为空」——反过来钉住「别把条件写入悄悄加回来而不说明条件」。
+  assert.equal(
+    rows.filter((row) => row.write === CONDITIONAL_WRITE).length,
+    0,
+    "条件写入格应当为空：半截正文已改走账本恢复行（#827 第 5 刀）",
+  );  for (const row of rows) {
     if (row.write === CONDITIONAL_WRITE) {
       // 条件写入不能按「每条载荷都必须在场」判 ⇒ 交给 G2c 按两种现场双向判。
       continue;
@@ -314,8 +316,9 @@ function createPartialStreamProvider({ deltas, turns }) {
   };
 }
 
-async function capturePartialRun(deltas, runId, { withRecoveryChannel = true } = {}) {
+async function capturePartialRun(deltas, runId, { withRecoveryChannel = true, keepStore } = {}) {
   const store = createMemoryTranscriptStore();
+  if (typeof keepStore === "function") keepStore(store);
   // #827 第 4 刀：有账本恢复行通道时半截正文只落那一行（快照两格不写）；通道缺席时才回落到快照。
   // 摘掉方法即可模拟「宿主没实现 appendRecoveryRow」——引擎按能力探测处理（`persist` 返回 false）。
   if (!withRecoveryChannel) delete store.appendRecoveryRow;
@@ -353,6 +356,21 @@ async function capturePartialRun(deltas, runId, { withRecoveryChannel = true } =
 }
 
 let partialScenes = null;
+/** 半截正文在账本恢复行里的现场（#827 第 5 刀之后这是它唯一的落点）。 */
+let partialRecoveryRows = null;
+async function capturePartialRecoveryRows() {
+  if (partialRecoveryRows !== null) return partialRecoveryRows;
+  partialRecoveryRows = await capturePartialRunRecoveryRows();
+  return partialRecoveryRows;
+}
+
+async function capturePartialRunRecoveryRows() {
+  let kept;
+  await capturePartialRun(["我先", "读一下 a.txt。"], "contract-snapshot-axes-767-partial-rows",
+    { keepStore: (store) => { kept = store; } });
+  return await kept.listRecoveryRows("contract-snapshot-axes-767-partial-rows");
+}
+
 async function capturePartialScenes() {
   if (partialScenes !== null) return partialScenes;
   partialScenes = {
@@ -366,49 +384,34 @@ async function capturePartialScenes() {
   return partialScenes;
 }
 
-test("G2c 条件写入格：账本通道在场 ⇒ 快照两格整格缺席；通道缺席 ⇒ 必须落快照（#827 第 4 刀）", async () => {
+test("G2c 条件写入格：账本通道出现之后这两格已停写 ⇒ 任何现场都不许再写（#827 第 5 刀）", async () => {
   const keys = tables.get("cn").rows
     .filter((row) => row.write === CONDITIONAL_WRITE)
     .map((row) => row.key);
-  assert.deepEqual(keys, ["partialText", "partialRound"], "条件写入格只有这两格，多一格少一格都不行");
+  // 半截正文的落点从「快照两格」搬到了「账本恢复行」：条件写入格因此是**空集**。这条断言是
+  // 「条件分支没被悄悄加回来」的守卫；要加新格必须先把它写进契约表并说明条件。
+  assert.deepEqual(keys, [], "条件写入格应当为空（半截正文只落账本恢复行）");
+  const stopped = tables.get("cn").rows
+    .filter((row) => row.write === "stopped")
+    .map((row) => row.key);
+  assert.ok(stopped.includes("partialText") && stopped.includes("partialRound"),
+    "这两格必须登记成 stopped（机器缺席断言在 test/loop-snapshot-write-side-735.test.js 判据 1）");
   const { withText, withoutText, noChannel } = await capturePartialScenes();
-  // ① 通道在场（内存 store 实现了 `appendRecoveryRow`）：快照**一格都不许带**半截正文 —— 权威是账本
-  //    恢复行，再写一份就是每次提交多付一整份快照（下游实测均 8,681 B）。这条是 #827 第 4 刀的主判据。
-  assert.ok(
-    withText.every((payload) => !Object.hasOwn(payload, "partialText")
-      && !Object.hasOwn(payload, "partialRound")),
-    `账本通道在场时快照仍写了半截正文 ⇒ 又写了两份（keys：${JSON.stringify(withText.map(
-      (payload) => Object.keys(payload)))})`,
-  );
-  // ② 通道缺席：半截正文必须落进快照，否则崩溃现场一处都没有（这条是上一条的反向证）。
-  const fallback = noChannel.filter((payload) => Object.hasOwn(payload, "partialText"));
-  assert.ok(fallback.length > 0,
-    "账本通道缺席时快照也没写 partialText ⇒ 半截正文一处都没落，崩溃即全丢");
-  // ③ 没有半截正文：两格都缺席（条件假时是整格不写，不是写 undefined）。
-  assert.ok(
-    withoutText.every((payload) => !Object.hasOwn(payload, "partialText")
-      && !Object.hasOwn(payload, "partialRound")),
-    `没有半截正文的现场里仍有载荷写了该格（keys：${JSON.stringify(Object.keys(withoutText[0] ?? {}))}）`,
-  );
-  for (const payload of [...withText, ...noChannel, ...withoutText]) {
-    // 同生同灭：只写一半 ⇒ 恢复侧读到 undefined 轮号或 undefined 正文，都是坏现场。
-    assert.equal(
-      Object.hasOwn(payload, "partialText"),
-      Object.hasOwn(payload, "partialRound"),
-      `两格必须同生同灭（keys：${JSON.stringify(Object.keys(payload))}）`,
-    );
-    for (const key of keys) {
-      if (!Object.hasOwn(payload, key)) continue;
-      assert.notEqual(payload[key], undefined, `\`${key}\` 在场时取值不能是 undefined（写 undefined 等于没写）`);
+  // 三种现场（有正文 / 无正文 / 没有账本通道）都不许出现这两格：引擎不再写它们。
+  for (const [name, payloads] of [["withText", withText], ["withoutText", withoutText],
+    ["noChannel", noChannel]]) {
+    for (const payload of payloads) {
+      for (const key of ["partialText", "partialRound"]) {
+        assert.ok(!Object.hasOwn(payload, key),
+          `${name} 现场仍有快照载荷写了 \`${key}\`（keys：${JSON.stringify(Object.keys(payload))}）`);
+        assert.equal(payload[key], undefined, `\`${key}\` 的取值也必须是 undefined`);
+      }
     }
   }
-  for (const payload of fallback) {
-    assert.equal(typeof payload.partialText, "string");
-    assert.ok(payload.partialText.length > 0, "在场的 partialText 必须是非空正文");
-    assert.ok(Number.isSafeInteger(payload.partialRound), "partialRound 必须是安全整数");
-    assert.equal(payload.partialRound, payload.round, "partialRound 必须等于该条载荷的 round");
-    assert.match(payload.partialText, /我先读一下/);
-  }
+  // 反过来：正文**没有丢** —— 它落在账本恢复行里（这才是这条通道的权威）。
+  const rows = await capturePartialRecoveryRows();
+  assert.ok(rows.some((row) => row.recoveryEvent === "partial-text" && row.text.length > 0),
+    "有半截正文的现场里账本恢复行必须带着它 ⇒ 停写快照那两格不是丢事实");
 });
 
 

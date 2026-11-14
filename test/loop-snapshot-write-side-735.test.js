@@ -107,7 +107,9 @@ function fullestPayload(payloads) {
 test("#735 切片 1 + #770：写侧 payload 不再带 toolUse / ts / status / compactionStats 这四格零读者字段", async () => {
   const { payloads } = await captureWriteSidePayloads();
   for (const payload of payloads) {
-    for (const stopped of ["toolUse", "ts", "status", "compactionStats"]) {
+    // #827 第 5 刀：`partialText` / `partialRound` 也进了停写清单（半截正文只落账本恢复行）。
+    for (const stopped of ["toolUse", "ts", "status", "compactionStats",
+      "partialText", "partialRound"]) {
       assert.ok(
         !Object.hasOwn(payload, stopped),
         `\`${stopped}\` 已停写，不该出现在写侧 payload 里（实测 keys：${JSON.stringify(Object.keys(payload))}）`,

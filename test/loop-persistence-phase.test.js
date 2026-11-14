@@ -299,57 +299,14 @@ test("#178 判定 2/5：工具后（调用点 executed）同一次失败写，�
   }, `post-tool executed write must classify as ${describeChannel(EXPECTED_BY_CALL_SITE.executed)}`);
 });
 
-test("#178 判定 3/5：partialPersistence 定时器写与工具前显式调用点对同一 status 分类一致——声称的不一致复现失败", async () => {
-  const cwd = await makeTmp("erix-178-c-");
-  const writes = await enumerateWrites(cwd);
-  const timerIndex = writes.findIndex((entry) => entry.isPartialTimer);
-  assert.ok(
-    timerIndex >= 0,
-    `partialPersistence timer must write a partial snapshot, got ${describeChannel(writes)}`,
-  );
-  const preToolIndex = writes.findIndex((entry) => !entry.isPartialTimer
-    && entry.status === "pending"
-    && entry.pendingToolUseId !== undefined);
-
-  // 定时器通道：该写只被通道 A 分类（抛的是 persist() 自己的 persistence_failed）。
-  const timerRun = await runScenario({ failWriteAt: timerIndex, cwd });
-  const timerEvent = timerRun.store.events.at(-1);
-  assert.ok(timerEvent, "timer write failure must emit a persistence_error event");
-  assert.equal(timerRun.thrown?.code, "persistence_failed", "the timer channel has no explicit declaration site");
-  const timerChannel = guessedChannel(timerEvent);
-
-  // 显式声明通道：同一 status（pending）的快照写，由工具前调用点显式声明分类。
-  const preToolRun = await runScenario({ failWriteAt: preToolIndex, cwd });
-  const explicitChannel = thrownChannel(preToolRun.thrown);
-  assert.equal(preToolRun.thrown?.code, "checkpoint_failed");
-
-  // #178 正文 A7 的具体主张：定时器写被「猜成」checkpoint_before_tool，与显式通道不一致。
-  // 实测两者逐字段相同 → 主张不成立，这条断言即守门线。
-  assert.deepEqual(
-    timerChannel,
-    explicitChannel,
-    `timer channel ${describeChannel(timerChannel)} vs explicit pre-tool channel `
-      + `${describeChannel(explicitChannel)} — #178 claims these differ`,
-  );
-  assert.deepEqual(timerChannel, {
-    operation: "saveRunSnapshot",
-    ...EXPECTED_BY_CALL_SITE.pending,
-  }, `timer (pending 调用点) write must classify as ${describeChannel(EXPECTED_BY_CALL_SITE.pending)}`);
-
-  // 分类输入侧的取证：定时器写确实没有任何 pending 工具块（这才是 `not_started` 成立的前提）。
-  const timerWrite = timerRun.store.writes[timerIndex];
-  assert.equal(timerWrite.status, "pending", "the timer channel always writes status:\"pending\"");
-  assert.equal(timerWrite.pendingToolUseId, undefined);
-  assert.equal(timerWrite.pendingToolUseCount, 0);
-  assert.deepEqual(timerWrite.executedToolIds, [], "round boundary clears executedToolIds before the next round streams");
-});
-
 test("#178 判定 4/5：守门 sweep——每条可达的快照写强制失败，两通道值相等且与 status 的既有映射一致", async () => {
   const cwd = await makeTmp("erix-178-d-");
   const writes = await enumerateWrites(cwd);
-  assert.ok(writes.length >= 5, `scenario must reach every snapshot write site, got ${writes.length}`);
+  // #827 第 5 刀：partialPersistence 定时器不再写快照 ⇒ 可达写点少一条（原来 ≥5，现在 ≥4）。
+  assert.ok(writes.length >= 4, `scenario must reach every snapshot write site, got ${writes.length}`);
   // 覆盖面自证：定时器 / 工具前 / 工具后 / 拦截结果 四类写都必须出现，否则守门线形同虚设。
-  assert.ok(writes.some((entry) => entry.isPartialTimer), "coverage: partialPersistence timer write");
+  assert.ok(!writes.some((entry) => entry.isPartialTimer),
+    "partialPersistence 定时器不许再写快照（#827 第 5 刀：半截正文只落账本恢复行）");
   assert.ok(writes.some((entry) => entry.status === "executed"), "coverage: post-tool write");
   assert.ok(writes.some((entry) => entry.status === "intercepted"), "coverage: intercept result write");
   assert.ok(writes.some((entry) => !entry.isPartialTimer
@@ -393,135 +350,17 @@ test("#178 判定 4/5：守门 sweep——每条可达的快照写强制失败�
   console.log("#178 sweep classification:", JSON.stringify(observed));
 });
 
-test("#178 附带不变量：persistence_error 事件与抛出错误的字段形状一致（正文 A7）", async () => {
-  const cwd = await makeTmp("erix-178-e-");
-  const writes = await enumerateWrites(cwd);
-  const timerIndex = writes.findIndex((entry) => entry.isPartialTimer);
-  const executorIndex = writes.findIndex((entry) => entry.status === "executed");
-  const EVENT_KEYS = [
-    "error", "fatal", "operation", "phase", "port", "runId", "sideEffect", "ts", "type",
-  ];
-
-  for (const [label, index] of [["timer", timerIndex], ["executor", executorIndex]]) {
-    const { store, thrown } = await runScenario({ failWriteAt: index, cwd });
-    const event = store.events.at(-1);
-    assert.ok(event && thrown, `${label}: scenario must produce both an event and a thrown error`);
-    const injected = store.storeError;
-    assert.ok(injected, `${label}: store must expose the injected root cause`);
-
-    // 事件形状（宿主可见契约）：键集合与取值口径。
-    assert.deepEqual(Object.keys(event).sort(), EVENT_KEYS, label);
-    assert.equal(event.type, "persistence_error", label);
-    assert.equal(event.port, "transcript", label);
-    assert.equal(event.runId, `phase-channels-write-${String(index)}`, label);
-    assert.equal(event.fatal, true, label);
-    assert.equal(typeof event.ts, "string", label);
-    assert.deepEqual(Object.keys(event.error).sort(), ["message", "name", "stack"], label);
-    assert.equal(event.error.name, injected.name, label);
-    assert.equal(event.error.message, injected.message, label);
-    assert.equal(event.error.stack, String(injected.stack), label);
-
-    // 抛出错误必须携带**同一个**事件对象与同一组诊断字段。
-    assert.equal(thrown.persistenceError, event, `${label}: thrown error must carry the emitted event`);
-    assert.equal(thrown.persistence.event, event, `${label}: persistence.event must be the same object`);
-    assert.equal(thrown.operation, event.operation, label);
-    assert.equal(thrown.phase, event.phase, label);
-    assert.equal(thrown.sideEffect, event.sideEffect, label);
-    assert.deepEqual(
-      {
-        operation: thrown.persistence.operation,
-        phase: thrown.persistence.phase,
-        sideEffect: thrown.persistence.sideEffect,
-      },
-      { operation: event.operation, phase: event.phase, sideEffect: event.sideEffect },
-      `${label}: persistence payload must mirror the event`,
-    );
-    // 终局载荷同源（宿主在 termination 上看到的三值 == 事件三值）。
-    assert.equal(thrown.termination.reason, "persistence_failed", label);
-    assert.equal(thrown.termination.operation, event.operation, label);
-    assert.equal(thrown.termination.phase, event.phase, label);
-    assert.equal(thrown.termination.sideEffect, event.sideEffect, label);
-  }
-
-  // issue #230：两个出口描述的是**同一次底层故障**，字段面必须对称——宿主按「是否可恢复 /
-  // 要不要重放」分流时不该去解析 `message` 字符串（那正是 #176 要消灭的用法）。
-  // 对称分两层：**键名**（下面这段对撞）与**取值类型**（紧随其后的断言）。
-  // 这里不手写两份字段清单各自断言（那样漏一个字段两边都不红），而是把两个错误的**可枚举字段
-  // 集合**直接对撞：任一侧多/少一个键，这条就红。
-  const timerRun = await runScenario({ failWriteAt: timerIndex, cwd });
-  const executorRun = await runScenario({ failWriteAt: executorIndex, cwd });
-  assert.equal(timerRun.thrown.code, "persistence_failed", "timer channel keeps persistence_failed");
-  assert.equal(executorRun.thrown.code, "checkpoint_failed");
-  assert.deepEqual(
-    Object.keys(executorRun.thrown).sort(),
-    Object.keys(timerRun.thrown).sort(),
-    "#230: checkpoint_failed 与 persistence_failed 的可枚举字段集合必须对称（缺字段就红）",
-  );
-  // `cause` 在 `Error` 上是**不可枚举**自有属性（`persistence_failed` 也是构造函数传的）⇒
-  // 只比 `Object.keys` 会看不见它。这里再对撞一次**全部自有属性名**，把不可枚举的那层也钉住。
-  assert.deepEqual(
-    Object.getOwnPropertyNames(executorRun.thrown).sort(),
-    Object.getOwnPropertyNames(timerRun.thrown).sort(),
-    "#230: 全部自有字段名（含不可枚举的 cause）也必须对称",
-  );
-  // 两个出口都**无条件**带这三个字段（「有条件存在」等于没契约）。
-  for (const [label, thrown] of [
-    ["persistence_failed", timerRun.thrown],
-    ["checkpoint_failed", executorRun.thrown],
-  ]) {
-    for (const key of ["cause", "errorCode", "unpersisted"]) {
-      assert.ok(Object.hasOwn(thrown, key), `${label} must carry ${key} (#230)`);
-    }
-  }
-
-  // —— 取值类型对称（本单判据，#230 的第二层）：同名字段不许两种类型 ——
-  // 宿主写 `err.cause?.code` / `err.unpersisted.length` 必须两个出口都能用；「只要分类结果」的宿主
-  // 则写 `err.errorCode`，同样是两个出口都能用。任一侧把类型换回去（字符串 / `{count,items}`）即红。
-  const OUTLETS = [["persistence_failed", timerRun.thrown], ["checkpoint_failed", executorRun.thrown]];
-  for (const [label, thrown] of OUTLETS) {
-    assert.equal(typeof thrown.cause, "object", `${label}: cause 必须是错误对象（不是分类字符串）`);
-    assert.ok(thrown.cause instanceof Error, `${label}: cause 必须是 Error 实例`);
-    assert.equal(typeof thrown.cause.code, "undefined", `${label}: 未注入 code 时 cause.code 不可读（无假值）`);
-    assert.ok(Array.isArray(thrown.unpersisted), `${label}: unpersisted 必须是原始数组（不是 {count,items}）`);
-    assert.equal(typeof thrown.errorCode, "string", `${label}: errorCode 必须是字符串`);
-    assert.equal(thrown.errorCode, "unknown", `${label}: 根因无 code ⇒ errorCode === "unknown"`);
-  }
-  assert.equal(timerRun.thrown.cause, timerRun.store.storeError, "persistence_failed keeps the cause object");
-  assert.equal(
-    executorRun.thrown.cause,
-    executorRun.store.storeError,
-    "checkpoint_failed 的 cause 是链上最深那一环（同一个 store 错对象），不是字符串",
-  );
-  assert.equal(
-    timerRun.thrown.unpersisted.length,
-    timerRun.store.events.length,
-    "两个出口的账单都来自同一个 errorLedger（事件条数即账单条数）",
-  );
-  assert.equal(
-    executorRun.thrown.unpersisted.length,
-    executorRun.store.events.length,
-    "checkpoint_failed 的 unpersisted 与 persistence_failed 同源同形状",
-  );
-  assert.equal(executorRun.thrown.unpersisted.at(-1).operation, "saveRunSnapshot", "账单条目点名失败的写");
-
-  // 同输入同值：注入一个带分类码的 store 错，两侧 `errorCode` 必须是同一个字符串，且不能从
-  // message 里抠出来（抠得出来就说明它只是文本，不是分类结果）。
-  const codedTimer = await runScenario({ failWriteAt: timerIndex, cwd, storeErrorCode: "ETIMEDOUT" });
-  const codedExecutor = await runScenario({ failWriteAt: executorIndex, cwd, storeErrorCode: "ETIMEDOUT" });
-  assert.equal(codedTimer.thrown.errorCode, "ETIMEDOUT", "persistence_failed 透出根因 code");
-  assert.equal(codedExecutor.thrown.errorCode, "ETIMEDOUT", "checkpoint_failed 透出同一个根因 code");
-  assert.equal(
-    codedExecutor.thrown.errorCode,
-    codedTimer.thrown.errorCode,
-    "#230: 同一次底层故障在两个出口上的 errorCode 必须相等",
-  );
-  assert.equal(codedExecutor.thrown.message.includes("ETIMEDOUT"), false,
-    "the code must not be recoverable by parsing the checkpoint_failed message");
-  for (const [label, thrown] of [["persistence_failed", codedTimer.thrown], ["checkpoint_failed", codedExecutor.thrown]]) {
-    assert.equal(typeof thrown.cause, "object", `${label}: 带 code 时 cause 仍是错误对象`);
-    assert.equal(thrown.cause.code, "ETIMEDOUT", `${label}: 分类码读自 cause.code（与 errorCode 同源）`);
-    assert.ok(Array.isArray(thrown.unpersisted), `${label}: 带 code 时 unpersisted 仍是数组`);
-  }
+// #827 第 5 刀：partialPersistence 定时器不再写快照 ⇒ 本片里**没有**「靠 `persist()` 猜分类」的
+// 快照写点了（剩下的三类写全部有显式声明）。这条判据原本拿「定时器（猜）」与「工具后（显式）」
+// 对撞，检查 `persistence_failed` 与 `checkpoint_failed` 两种出口的字段面必须对称（#230）。
+// 停写之后另一侧不存在 ⇒ **不在本片里改薄它**（把两侧都换成显式通道会静默改掉判据语义），
+// 改成显式 skip 并在 #767 上记一条：退役整个快照写侧时，把「猜测通道」的取样换到一个非快照
+// 写点（例如 `saveRunState` 失败），或者连同 `persistence_failed` 这一档一起裁掉。
+// 原判据全文在 `git show 0cf7f978:test/loop-persistence-phase.test.js` 里（同一段 `#178 附带不变量`）。
+test("#178 附带不变量：persistence_error 事件与抛出错误的字段形状一致（正文 A7）", {
+  skip: "随快照通道退役重判（#767 / #827 第 5 刀）：定时器不再写快照 ⇒ 猜测通道已无取样面",
+}, () => {
+  // 有意留空：判据本体在快照写侧删净时一并重写，见上面那段注释。
 });
 
 test("用例卫生：run 使用注入的临时 cwd 与内存 store，未改动真实 ~/.erix", async () => {

@@ -3540,7 +3540,7 @@ export async function runToolLoop(options) {
     }));
   };
 
-  if (partialPersistenceConfig !== undefined && hasRunSnapshotStore) {
+  if (partialPersistenceConfig !== undefined) {
     const { intervalMs, minBytes } = partialPersistenceConfig;
     const maxTimerDelay = 2_147_483_647;
     let partialAttempt;
@@ -3559,16 +3559,17 @@ export async function runToolLoop(options) {
       attempt.dirty = false;
       const write = (async () => {
         try {
-          // #769：正文先落账本行再写快照（行落了而快照没落仍可重放）。
-          // #827 第 4 刀：行落了就不写快照（每次提交省一整份快照）。
-          // 只有账本通道缺席（`persist` 返回 false）时才写。
-          const ledgerRowLanded = await appendPartialTextRecoveryRow(partialText, attempt.round);
-          if (!ledgerRowLanded) await persistRunSnapshot({
-            round: attempt.round,
-            status: "pending",
-            partialText,
-            partialRound: attempt.round,
-          });
+          // #769：半截正文落账本恢复行（`partial-text`），这条通道是崩溃现场的唯一权威。
+          // #827 第 5 刀：**不再写快照的 `partialText`/`partialRound` 两格**。理由有三条：
+          //   ① 读侧一直首选账本行（`resume-manager.js#readPartialTextRecoveryRow`），快照那两格
+          //      只服务「账本通道出现之前」写的旧档案 ⇒ 新档案写它等于白付一整份快照（#830 实测：
+          //      下游均 8,681 B/次、重会话到 2 MB 级）。
+          //   ② 快照通道正在整体退役（#767）⇒ 继续给它加写点只会让退役那一步多一处要拆。
+          //   ③ 旧档案兜底仍能工作：读侧的 `snapshot.partialText` 分支没动，只是引擎不再产出它。
+          // 账本通道缺席（`persist` 返回 false）时不再回落到快照：那是宿主的选择（没实现
+          // `appendRecoveryRow`），引擎如实降级——半截正文不落盘，而不再偷偷多写一份快照。
+          // 顺序仍然是「先账本行、后其它」：这条写成功了，崩溃现场就有据可查。
+          await appendPartialTextRecoveryRow(partialText, attempt.round);
           if (runLoopState.lastPersistenceFailure !== undefined) throw runLoopState.lastPersistenceFailure;
           attempt.persistedText = partialText;
         } catch (error) {
@@ -3635,10 +3636,9 @@ export async function runToolLoop(options) {
       try {
         if (attempt.inFlight !== undefined) await attempt.inFlight;
         if (attempt.failure !== undefined) throw attempt.failure;
-        if (retrying && attempt.persistedText !== undefined) {
-          await persistRunSnapshot({ round, status: "pending" });
-          if (runLoopState.lastPersistenceFailure !== undefined) throw runLoopState.lastPersistenceFailure;
-        }
+        // #827 第 5 刀：这里原本只写 `{ round, status: "pending" }` 一份无内容快照；`status` 早已
+        // `stopped`、`round` 有账本来源 ⇒ 一并删掉，重试路径不再产生任何快照写。
+        void retrying;
       } finally {
         if (partialAttempt === attempt) partialAttempt = undefined;
       }
