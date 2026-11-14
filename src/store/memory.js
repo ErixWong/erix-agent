@@ -50,9 +50,13 @@ function copyRecord(record) {
  */
 export function createMemoryTranscriptStore() {
   const transcripts = new Map();
-  // issue #769：恢复行通道（与轮记录 `transcripts` **两份容器**，语义与 file store 的
-  // `<runId>.recovery.jsonl` 对齐：`load()` / `loadRawRows()` 永远看不到恢复行）。值类型写出来不是装饰：`rows.find((item) => …)` 的 `item` 要靠它推断，否则 `--strict` 报 TS7006。
-  const recoveryLedger = /** @type {Map<string, object[]>} */ (new Map());
+  // issue #769：恢复行通道（与轮记录 `transcripts` **分开**，语义与 file store 对齐：
+  // `load()` / `loadRawRows()` 永远看不到恢复行）。值类型写出来不是装饰：`rows.find((item) => …)` 的
+  // `item` 要靠它推断，否则 `--strict` 报 TS7006。
+  // issue #827 第 3 刀（工单 261113-08）：**两份容器 = file store 的两份文件**（`.recovery.jsonl` /
+  // `.partial.jsonl`）。幂等与冲突判定只在**同一份容器内**比（与 file store 的按文件分缓存同口径）。
+  const recoveryEvents = /** @type {Map<string, object[]>} */ (new Map());
+  const partialSlots = /** @type {Map<string, object[]>} */ (new Map());
   const runSnapshots = new Map();
   const runStates = new Map();
   const runStatuses = new Map();
@@ -98,12 +102,20 @@ export function createMemoryTranscriptStore() {
      * （新行替旧行，与 file store 的原子整写同语义）；第 2 刀起该分支连带**跨轮自剪枝**：旧轮的
      * partial 行在新轮的行到场时一并丢掉（读侧只认崩溃轮）。其余事件（`tool-executed`）照旧只追加、
      * 永不替换、一行不丢。
+     * issue #827 第 3 刀（工单 261113-08）：**两份容器分流**（事件 / 槽）= file store 的两份文件。
+     * 幂等与冲突只在**同一份容器内**比（与 file store 的按文件分缓存同口径）；两份实现不得分叉。
      * @param {string} runId @param {object} record @returns {Promise<boolean>}
      */
     async appendRecoveryRow(runId, record) {
       // issue #811：恢复行的事件键含轮号 ⇒ 轮号不可用就当场拒（与 `appendRound` 同一份判据）。
       assertSafeRound("appendRecoveryRow", { runId, record });
-      const rows = recoveryLedger.get(runId) ?? [];
+      // 分流：槽进 `partialSlots`（= `.partial.jsonl`），其余进 `recoveryEvents`（= `.recovery.jsonl`）。
+      // 容器与分流条件**一次算定**：两处分开算就会漏配（本刀要钉的 bug）。
+      const isPartialSlot = record !== null
+        && record !== undefined
+        && /** @type {{ recoveryEvent?: unknown }} */ (record).recoveryEvent
+          === RECOVERY_EVENT_PARTIAL_TEXT;
+      const rows = (isPartialSlot ? partialSlots : recoveryEvents).get(runId) ?? [];
       const key = recordKey(runId, record);
       const existing = rows.find((item) => recordKey(runId, item) === key);
       if (existing !== undefined) {
@@ -122,8 +134,7 @@ export function createMemoryTranscriptStore() {
         return false;
       }
       // 只读一个字段，不做形状收窄（`--strict` 下 `record` / `item` 是 `object`，直接点字段就是 TS2339）。
-      const recoveryEvent = /** @type {{ recoveryEvent?: unknown }} */ (record)?.recoveryEvent;
-      if (record !== null && record !== undefined && recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT) {
+      if (isPartialSlot) {
         // 槽替换 + 跨轮自剪枝：丢掉**全部** `partial-text` 旧行（同 round 同事件的那一条，以及
         // 旧轮的死行），新行落在尾部（与 file store 的整写同位置）。`tool-executed` 一行不丢：
         // 工具真跑过、结果可能没入账，那行必须活到 run 结束（只由 `clearRecoveryRows` 在 run
@@ -132,32 +143,35 @@ export function createMemoryTranscriptStore() {
         // 更新的槽——读侧只认「文件里最后一个 partial 轮的轮号」，被旧行挤掉就等于把崩溃轮弄丢了。
         let newestPartialRound = -Infinity;
         for (const item of rows) {
-          const prior = /** @type {{ recoveryEvent?: unknown, round?: unknown }} */ (item);
+          const prior = /** @type {{ round?: unknown }} */ (item);
           if (prior === null || prior === undefined) continue;
-          if (prior.recoveryEvent !== RECOVERY_EVENT_PARTIAL_TEXT) continue;
           if (typeof prior.round === "number" && prior.round > newestPartialRound) {
             newestPartialRound = prior.round;
           }
         }
         const incomingRound = /** @type {{ round?: unknown }} */ (record).round;
         if (typeof incomingRound === "number" && incomingRound < newestPartialRound) return false;
-        const kept = rows.filter((item) => item === null
-          || /** @type {{ recoveryEvent?: unknown }} */ (item).recoveryEvent !== RECOVERY_EVENT_PARTIAL_TEXT);
-        kept.push(copyRecord(record));
-        recoveryLedger.set(runId, kept);
+        // 分流后容器里只留新行那一条（= file store 对 `.partial.jsonl` 的整写：恒 0 或 1 行）。
+        // `tool-executed` 一行不丢：它们在另一份容器里，本分支碰不到（分流前靠 `kept` 滤保留，
+        // 分流后天然不丢）。守卫 ②（并发盖写）是文件层的事，内存 store 没有那个面。
+        partialSlots.set(runId, [copyRecord(record)]);
         return true;
       }
       rows.push(copyRecord(record));
-      recoveryLedger.set(runId, rows);
+      recoveryEvents.set(runId, rows);
       return true;
     },
 
     /**
      * issue #769（可选能力）：读回恢复行通道的全部行（落盘顺序）。没写过 ⇒ `[]`。
+     * issue #827 第 3 刀：顺序与 file store 同为**先事件行、后槽行**（契约：读侧不依赖但宿主会看）。
      * @param {string} runId @returns {Promise<object[]>}
      */
     async listRecoveryRows(runId) {
-      return (recoveryLedger.get(runId) ?? []).map(copyRecord);
+      return [
+        ...(recoveryEvents.get(runId) ?? []),
+        ...(partialSlots.get(runId) ?? []),
+      ].map(copyRecord);
     },
 
     /**
@@ -167,10 +181,13 @@ export function createMemoryTranscriptStore() {
      * 因为事件键里没有 run 代际 ⇒ 「这个容器/文件」就是代际边界。
      * 幂等：本来没写过 ⇒ `false`，不抛；清掉了东西 ⇒ `true`。
      *
+     * issue #827 第 3 刀：**两份容器都清**，任一份真清了才是 `true`；两份都没写过 ⇒ `false`，不抛。
      * @param {string} runId @returns {Promise<boolean>}
      */
     async clearRecoveryRows(runId) {
-      return recoveryLedger.delete(runId);
+      const removedEvents = recoveryEvents.delete(runId);
+      const removedSlot = partialSlots.delete(runId);
+      return removedEvents || removedSlot;
     },
 
     async load(runId) {

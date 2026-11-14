@@ -79,6 +79,28 @@ export function recoveryRowsPath(dir, runId) {
   return join(dir, `${safeRunId(runId)}.recovery.jsonl`);
 }
 
+/**
+ * issue #827 第 3 刀（工单 261113-08）：**`partial-text` 槽**自己的文件
+ * `<dir>/<safeRunId(runId)>.partial.jsonl`。恒为 0 或 1 行。
+ *
+ * 为什么再拆一份：槽是**整文件原子重写**的（`replacePartialTextSlot`）。
+ * 从前它与 `tool-executed` 同住 `.recovery.jsonl` ⇒ 每次重写都要把全部事件行重抄一遍
+ * （实测 200 条工具行 = 45,204 B；一轮 300 次提交 ⇒ 累计重写 12.9 MB）。
+ * 搬进自己那份之后，一次重写只碰那一条行（≈ 2.2 KB），事件行**不再被改写**。
+ *
+ * 读侧无感：`listRecoveryRows()` 合并两份（先事件、后槽），`src/loop/**` 零改动。
+ * @param {string} dir @param {string} runId @returns {string}
+ */
+export function partialSlotPath(dir, runId) {
+  return join(dir, `${safeRunId(runId)}.partial.jsonl`);
+}
+
+// 去重缓存的**文件后缀**：同一个 runId 现在有两份恢复行文件 ⇒ 缓存必须按文件分开。
+// 少了这层后缀，「事件文件里那条 key」会让槽文件把同号的正文判成「已写过」——
+// 正是被本刀要钉死的那个静默 bug（重放被替换掉的正文被判成已写过）。
+const RECOVERY_CACHE_SUFFIX_EVENTS = ":events";
+const RECOVERY_CACHE_SUFFIX_PARTIAL = ":partial";
+
 function snapshotPath(dir, runId) {
   return join(dir, `${safeRunId(runId)}.snapshot.json`);
 }
@@ -288,9 +310,10 @@ async function repairTranscriptTail(path) {
  * @param {string} runId
  * @param {{size:number|null, mtimeMs:number|null}} stamp 修复尾部后的当前戳
  * @param {Map<string, {keys:Set<string>, size:number|null, mtimeMs:number|null}>} dedupCaches
+ * @param {string} [cacheKeySuffix] 同一 runId 下区分**哪一份文件**（默认空 = 轮记录账本）
  */
-async function dedupKeysFor(path, runId, stamp, dedupCaches) {
-  const cacheKey = safeRunId(runId);
+async function dedupKeysFor(path, runId, stamp, dedupCaches, cacheKeySuffix = "") {
+  const cacheKey = `${safeRunId(runId)}${cacheKeySuffix}`;
   const cached = dedupCaches.get(cacheKey);
   if (cached && stampsMatch(cached, stamp)) return cached;
 
@@ -351,7 +374,7 @@ async function findRecordByKey(path, runId, key) {
   return undefined;
 }
 
-async function appendRecord(path, runId, record, dedupCaches) {
+async function appendRecord(path, runId, record, dedupCaches, cacheKeySuffix = "") {
   const handle = await open(path, "a+");
   try {
     await repairTrailingFragment(path, handle);
@@ -359,7 +382,7 @@ async function appendRecord(path, runId, record, dedupCaches) {
     // dedup key 缓存（修复尾部后 stat 戳一致即命中，O(1)，不再全文读）；不一致时
     // 流式重建（见 dedupKeysFor）
     const stamp = await statStamp(path);
-    const entry = await dedupKeysFor(path, runId, stamp, dedupCaches);
+    const entry = await dedupKeysFor(path, runId, stamp, dedupCaches, cacheKeySuffix);
     const key = recordKey(runId, record);
     if (entry.keys.has(key)) {
       // issue #326 事实①：命中同 key 不再直接丢弃来写的 payload。同 payload → 幂等 no-op
@@ -535,10 +558,11 @@ async function writeSidecarAtomically(path, rows, stamp) {
  *
  * @param {Map<string, any>} dedupCaches
  * @param {string} runId
+ * @param {string} cacheKeySuffix 只抖**本次要重写的那一份文件**的缓存
  * @returns {void}
  */
-function invalidateRecoveryDedupCache(dedupCaches, runId) {
-  dedupCaches.delete(safeRunId(runId));
+function invalidateRecoveryDedupCache(dedupCaches, runId, cacheKeySuffix) {
+  dedupCaches.delete(`${safeRunId(runId)}${cacheKeySuffix}`);
 }
 
 /**
@@ -548,9 +572,10 @@ function invalidateRecoveryDedupCache(dedupCaches, runId) {
  * @param {string} runId
  * @param {any} record 新的 `partial-text` 行（已过 `assertSafeRound`）
  * @param {Map<string, any>} dedupCaches 恢复行通道的去重缓存（调用方传 `recoveryDedupCaches`）
+ * @param {string} cacheKeySuffix 槽文件的缓存后缀（调用方传 `RECOVERY_CACHE_SUFFIX_PARTIAL`）
  * @returns {Promise<boolean>} 真落了一行才是 `true`（幂等命中或被守卫挡下都是 `false`）
  */
-async function replacePartialTextSlot(path, runId, record, dedupCaches) {
+async function replacePartialTextSlot(path, runId, record, dedupCaches, cacheKeySuffix) {
   for (let attempt = 1; attempt <= SLOT_MERGE_ATTEMPTS; attempt += 1) {
     const merged = await mergePartialTextSlot(path, runId, record);
     if (merged.skip) return false;
@@ -560,14 +585,14 @@ async function replacePartialTextSlot(path, runId, record, dedupCaches) {
     // 最后落到下面的追加退路，同样不丢行。也就是说「重新合并」是省掉无谓退路的优化，真正兜住不丢事实
     // 的是**戳复核 + 追加退路**这两件；测试判的是那条不变量，不是这条优化。
     if (await writeSidecarAtomically(path, merged.rows, merged.stamp)) {
-      invalidateRecoveryDedupCache(dedupCaches, runId);
+      invalidateRecoveryDedupCache(dedupCaches, runId, cacheKeySuffix);
       return true;
     }
   }
   // 连续 SLOT_MERGE_ATTEMPTS 轮都有并发写者 ⇒ 退化成一次普通追加：可能留下两行 partial（读侧取最后
   // 一条 ⇒ 语义仍对），但绝不丢别人的行。这是「宁可长，不丢事实」的取舍，不是失败。
-  invalidateRecoveryDedupCache(dedupCaches, runId);
-  return appendRecord(path, runId, record, dedupCaches);
+  invalidateRecoveryDedupCache(dedupCaches, runId, cacheKeySuffix);
+  return appendRecord(path, runId, record, dedupCaches, cacheKeySuffix);
 }
 /**
  * Create a JSONL-backed transcript store.
@@ -670,6 +695,9 @@ export function createFileTranscriptStore({ dir }) {
      * issue #827 第 1 刀：`recoveryEvent === "partial-text"` 的行是**槽**——同 round 同事件只保留一条、
      * 原子替换（见 `replacePartialTextSlot`）；第 2 刀起该替换连带**跨轮自剪枝**（旧轮的 partial 行
      * 一并丢，读侧只认崩溃轮）；`tool-executed` 等其余事件照旧**只追加、永不替换、一行不丢**。
+     * issue #827 第 3 刀（工单 261113-08）：**两个文件分流**——槽落 `partialSlotPath()`
+     * （`.partial.jsonl`，整文件重写），事件落 `recoveryRowsPath()`（`.recovery.jsonl`，只追加）。
+     * 分流前一次槽重写会把事件行全部重抄一遍；分流后事件文件的字节与 mtime 都不动。
      * @param {string} runId @param {object} record 恢复行（形状见 `src/store/recovery-rows.js`）
      * @returns {Promise<boolean>} 真正落了一行才是 `true`
      */
@@ -678,24 +706,37 @@ export function createFileTranscriptStore({ dir }) {
       assertSafeRound("appendRecoveryRow", { runId, record });
       return await withAppendLock(runId, async () => {
         await mkdir(dir, { recursive: true });
-        const path = recoveryRowsPath(dir, runId);
-        // 只读一个字段，不做形状收窄（`--strict` 下 `record` 是 `object`，直接点字段就是 TS2339）。
-        const recoveryEvent = /** @type {{ recoveryEvent?: unknown }} */ (record)?.recoveryEvent;
-        if (record !== null && record !== undefined && recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT) {
-          return await replacePartialTextSlot(path, runId, record, recoveryDedupCaches);
+        // 文件与缓存后缀**成对选**：两者分开选就会漏配（那正是本刀要钉的 bug）。
+        const isPartialSlot = record !== null
+          && record !== undefined
+          && /** @type {{ recoveryEvent?: unknown }} */ (record).recoveryEvent
+            === RECOVERY_EVENT_PARTIAL_TEXT;
+        const path = isPartialSlot ? partialSlotPath(dir, runId) : recoveryRowsPath(dir, runId);
+        const cacheKeySuffix = isPartialSlot
+          ? RECOVERY_CACHE_SUFFIX_PARTIAL
+          : RECOVERY_CACHE_SUFFIX_EVENTS;
+        if (isPartialSlot) {
+          return await replacePartialTextSlot(
+            path, runId, record, recoveryDedupCaches, cacheKeySuffix);
         }
-        return await appendRecord(path, runId, record, recoveryDedupCaches);
+        return await appendRecord(path, runId, record, recoveryDedupCaches, cacheKeySuffix);
       });
     },
 
     /**
-     * issue #769（可选能力）：读回恢复行通道的全部行（落盘顺序）。文件不在场 ⇒ `[]`。
+     * issue #769（可选能力）：读回恢复行通道的全部行。两份都不在场 ⇒ `[]`。
+     *
+     * issue #827 第 3 刀：合并两份文件，顺序是**契约**（已写进 `docs/host-consumer-contract.md`）：
+     * 先 `.recovery.jsonl` 的事件行（落盘序），再 `.partial.jsonl` 的槽行（0 或 1 条）。
+     * 读侧不依赖这个顺序（它按 `recoveryEvent` 筛），但宿主会看 ⇒ 不得随意改。
+     * 旧数据兼容：升级前混写的 `.recovery.jsonl` 里残留的 partial 行仍从这里返回。
      * @param {string} runId @returns {Promise<object[]>}
      */
     async listRecoveryRows(runId) {
       /** @type {object[]} */
       const rows = [];
       for await (const row of readRecords(recoveryRowsPath(dir, runId))) rows.push(row);
+      for await (const row of readRecords(partialSlotPath(dir, runId))) rows.push(row);
       return rows;
     },
 
@@ -710,23 +751,29 @@ export function createFileTranscriptStore({ dir }) {
      * 的账本，契约里写明了），快照则是 `saveRunSnapshot` 首次写入时自然覆盖。
      *
      * 与追写共用 `withAppendLock`：同一 `runId` 上「清」与「追加」不得交叉（交叉会把新行连文件一起删）。
-     * 幂等：文件不在场（含从无恢复行）⇒ `false`，**不抛**；真删了一个文件 ⇒ `true`。
-     * 同时抖掉该 run 的去重键缓存：文件已不在，旧键集不能再参与幂等判定。
+     * 幂等：两份都不在场（含从无恢复行）⇒ `false`，**不抛**；真删了其中任一个文件 ⇒ `true`。
+     * issue #827 第 3 刀：**删两个文件**（`.recovery.jsonl` 与 `.partial.jsonl`），并抖掉**两份**
+     * 去重键缓存：只抖一份就会让另一份的旧键集继续答「已写过」。
      *
      * @param {string} runId @returns {Promise<boolean>} 真的删掉了文件才是 `true`
      */
     async clearRecoveryRows(runId) {
       return await withAppendLock(runId, async () => {
         let removed = false;
-        try {
-          await rm(recoveryRowsPath(dir, runId));
-          removed = true;
-        } catch (error) {
-          // strict 下 `catch` 的 `error` 是 `{}`，直读 `.code` 就 TS2339（issue #417 棘轮）：就地断言收窄。
-          // 写法沿用同文件 `readTranscriptTailLines` 的先例；**行为一字不变**，仍「非 ENOENT 就重新抛」。
-          if (/** @type {{ code?: string }} */ (error)?.code !== "ENOENT") throw error;
+        for (const path of [recoveryRowsPath(dir, runId), partialSlotPath(dir, runId)]) {
+          try {
+            await rm(path);
+            removed = true;
+          } catch (error) {
+            // strict 下 `catch` 的 `error` 是 `{}`，直读 `.code` 就 TS2339（issue #417 棘轮）：就地断言收窄。
+            // 写法沿用同文件 `readTranscriptTailLines` 的先例；**行为一字不变**，仍「非 ENOENT 就重新抛」。
+            if (/** @type {{ code?: string }} */ (error)?.code !== "ENOENT") throw error;
+          }
         }
-        recoveryDedupCaches.delete(safeRunId(runId));
+        // 两个后缀都抖：文件已不在，旧键集不能再参与幂等判定。
+        for (const suffix of [RECOVERY_CACHE_SUFFIX_EVENTS, RECOVERY_CACHE_SUFFIX_PARTIAL]) {
+          recoveryDedupCaches.delete(`${safeRunId(runId)}${suffix}`);
+        }
         return removed;
       });
     },
