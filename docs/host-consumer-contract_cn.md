@@ -1920,7 +1920,7 @@ issue #754（裁决 2）起它**作为恢复来源已被弃用**——恢复路�
 | `messages` | residue | fallback(仅旧格式，只数条数) | 账本（`load()`）是正文的权威来源 | `not-source` **今天仍不许写**：过去把这段正文喂进上下文的那条分支已经没了（issue #754 裁决 2），但只数条数的那个读点 `src/loop/resume-manager.js:753` 还在场 ⇒ 要等那个读点也没了才可转 `not-source` | `src/loop/orchestrator.js:3144` | `src/loop/resume-manager.js:753`（条件：账本在锚点之后一条都没有；自 issue #754 起这里只**数条数**，不再把它喂进上下文） |
 | `persistedTranscriptLength`（盘上那格） | written | not-source | 恢复锚点在账本上现算 | 引擎侧读者为零 ⇒ 这是表内今天唯一「读侧条件已满足」的格；停写仍要先迁测试侧拿它当截账本夹具锚点的两处（见下方口径） | `src/loop/orchestrator.js:3145` | 恢复侧不信它：`src/loop/resume-manager.js:119`（注释明写不能信快照里的值）与 `src/loop/resume-manager.js:580`（就地用账本长度覆盖） |
 | `persistedTranscriptLength`（进程内计数器） | written | source | —（同一变量的进程内形态不落盘，它才是写侧的现值） | **不许停**：它是 `messages` 残余起点的夹值之一 | `src/loop/orchestrator.js:3145` | `src/loop/orchestrator.js:3080` |
-| `partialText` | written(conditional) | fallback(崩溃轮没有 `partial-text` 恢复行) | 权威源是账本：崩溃轮那条 `partial-text` 恢复行（#769）——一条一个事件、事件键 = 正文指纹，所以正文变长是**新事件**、已落盘的行从不被改写；恢复侧的正文与轮号都取自**同一行** | 条件＝本轮已有半截正文（写点 `src/loop/orchestrator.js` 的 `partialText === undefined` 夹子）：现场有半截正文 ⇒ 这一格必在；没有 ⇒ 整格缺席（不是写 `undefined`） | `src/loop/orchestrator.js:3153` | `src/loop/resume-manager.js:695`、`src/loop/resume-manager.js:801`、`src/store/recovery-rows.js:24` |
+| `partialText` | written(conditional) | fallback(崩溃轮没有 `partial-text` 恢复行) | 权威源是账本：崩溃轮那条 `partial-text` 恢复行（#769）——自 #827 第 1 刀起它是**一轮一个槽**：事件键 = 正文指纹，正文变长是新事件并**原子替换**该轮上一条，在飞轮恒只有一条、载最新全文；恢复侧的正文与轮号都取自**同一行** | 条件＝本轮已有半截正文（写点 `src/loop/orchestrator.js` 的 `partialText === undefined` 夹子）：现场有半截正文 ⇒ 这一格必在；没有 ⇒ 整格缺席（不是写 `undefined`） | `src/loop/orchestrator.js:3153` | `src/loop/resume-manager.js:695`、`src/loop/resume-manager.js:801`、`src/store/recovery-rows.js:24` |
 | `partialRound` | written(conditional) | fallback(崩溃轮没有 `partial-text` 恢复行) | 与 `partialText` 同源同一行：恢复行自带 `round`，所以轮号跟着正文走，绝不与快照轮号拼盘 | 与 `partialText` **同一条写入语句、同一个条件** ⇒ 两格同生同灭，缺一即坏 | `src/loop/orchestrator.js:3153` | `src/loop/resume-manager.js:802`、`src/store/recovery-rows.js:24` |
 | `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3107` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:681`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
 | `ts` | stopped | not-source | 账本行 / 消息行自己的那个 `ts` | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3114` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**（同一个键名的另一个产物，不是这格）`src/loop/resume-manager.js:610` |
@@ -5913,17 +5913,33 @@ append-only 账本现在**每本 run 多写一个文件**：`<dir>/<runId>.recov
 
 - `kind: "recovery"` —— 宿主就按这个字段筛。今天有两种事件：`recoveryEvent: "tool-executed"`（带 `toolUseId`）
   与 `recoveryEvent: "partial-text"`（只带 `text` 本身：**那一刻的完整累计正文 — 不截断、不设上限**；引擎把整段串原样交给这一行，而且**没有** `textLength` 这一项，要长度自己数——恢复行刻意不带任何派生数字）。
-- 一条一行 = **一个事件**，不是一轮一行。`messages` 恒为 `[]`：恢复行**从不载正文**，所以「账本 + 快照」并排读也
+- `tool-executed` 行：一条一行 = **一个事件**，只追加、永不替换也永不改写，一轮多条是常态（每个不同的
+  `toolUseId` 一条）。`partial-text` 行（issue #827 第 1 刀，#791 那张字节账）：**一轮一个槽**——该轮只保留
+  一条，内容是**最新全文**；每次新提交**替换**掉该轮上一条，实现是整文件原子重写（tmp + `rename`，与
+  `saveRunSnapshot` 同一手法）。这不是日志而是槽，理由写在明处：读侧（`readPartialTextRecoveryRow`）本来就
+  只取该轮最后一条，追加 N 条前缀就是把一份越来越长的正文存 N 遍。
+  所有事件的 `messages` 恒为 `[]`：恢复行**从不载消息正文**，所以「账本 + 快照」并排读也
   不会把同一份正文数出两遍。
 - `dedupKey` 就是**事件键**，由 `recovery-rows.js` 里的 `buildRecoveryEventKey` 生成。形状按 store 测试自己的夹具取样：`tool-executed` 行只带光板的 `toolUseId`（`pendingToolUseIds: ["call-7f"]`、`toolUseId: "call-7f"`）；`partial-text` 行带 `text`，判别字段换成那段正文的指纹。同一事件键 + 同一 payload
   重放会被跳过（`appendRecoveryRow` 返回 `false`）；同键不同 payload 是**拒绝**，不是覆盖。正文变长算**新事件**，
-  已经落盘的行永远不被改写。
+  它会**接管该轮的槽**：该轮上一条在重写中消失，文件里只剩最新全文那一条。自 #827 第 2 刀起，同一次重写
+  还会**剪掉旧轮的 `partial-text` 行**：读侧只认崩溃轮（`readPartialTextRecoveryRow(records, crashRound)`，
+  续跑侧取 `readPartialTextRecoveryRounds().at(-1)`），新一轮的行一到，旧轮那条就是死行。所有
+  两条守卫防止剪枝吃掉活着的事实（都是独立验收发现的，#827）：入参 `round` **小于**盘上已有的最新
+  `partial-text` 轮号时，这次写被**整次忽略**（`appendRecoveryRow` 返回 `false`）而不是替换它 —— 一条已经
+  死掉的旧轮槽不许挤掉唯一活着的那条；整文件先记侧车的 `(size, mtimeMs)` 戳，`rename` 之前复核，被别的
+  写者插队就**重新读、重新合并**（连续撞则退化成一次普通追加，可能留下两条 `partial-text`，读侧取最后
+  一条 ⇒ 语义仍对）。这条通道仍假设**一个 run 一个写者**：那把追加锁挂在 store 实例上、不是目录级 ⇒
+  宿主拿两个实例写同一个目录时必须在宿主边界串行（与上面 notes 适配器同一条规则）；上面那两条是尽力
+  而为的兜底，不是跨进程锁。`tool-executed` 行都不受这次重写波及——它们**只在 run 起跑时**由 `clearRecoveryRows`（整文件 `rm`，
+  刻意不是轮起跑）清掉。宿主若 tail 这份文件做增量镜像，会**看到行消失**——镜像要么整份
+  重读，要么把每次 `partial-text` 写入视为对该轮最后一条的替换；不要假定一行落盘后就永远在文件里。
 
 写入时机：`tool-executed` 行在**执行器返回的那一刻**追加 —— 比 `tool_result` 行落盘更早，因此也比本轮任何快照写更早。
 这正是它的存在理由：**「有 `tool_use` 但没有 `tool_result`」推不出「工具没执行」**，所以「执行过没有」由这一行
 **显式携带**，绝不靠「另一行在不在」去猜。
 
-store 面：`appendRecoveryRow(runId, row)` → `true`（真落了一行）/ `false`（被去重跳过），`listRecoveryRows(runId)` →
+store 面：`appendRecoveryRow(runId, row)` → `true`（真落了一行）/ `false`（被去重跳过，或被「旧轮不许挤掉新轮」那道守卫挡下），`listRecoveryRows(runId)` →
 按追加顺序返回，`clearRecoveryRows(runId)` → 真删了一个文件返 `true`、本来没东西可删返 `false`。三者都是**可选能力**，而「没有」与「失败」是两件事：
 
 - **方法缺席**（store 上根本没有这个方法）是合法降级：引擎跳过这一步，回落到快照那三格
@@ -5987,4 +6003,5 @@ store 面：`appendRecoveryRow(runId, row)` → `true`（真落了一行）/ `fa
 这两组数字有两个引用限制：**482 B** 是一份**样例实测**，它的 `partial-text` 行里本来就含一段短样例正文
 ——那行载的是**那一刻的完整累计正文，不截断**，所以真实开销随正文增长（同一个文件里的字节用例钉住了「把 `text`
 挖空就少一段字节」）。而「每轮」那格算的是**不同事件**：一轮里 `K` 个不同的 `tool_use_id` 前缀就是 `K` 行，
-**目前无上限** —— 那条增长已单开 issue #791。
+自 issue #827 第 1 刀起 `partial-text` 不再每次提交追加一条——一轮恰好保留一个槽行（它的字节仍随全文增长）；
+剩下的无上限增长只有一轮内 `tool-executed` 的事件数，那条已在飞侧退役的字节增长归 issue #791 记账。
