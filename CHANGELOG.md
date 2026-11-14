@@ -34,6 +34,24 @@
   provider 的错误正文，属泛指，已改词去形状、不动语义。
 
 ### Changed
+- **Resume reads `toolOutputs` from the ledger round record, not from the snapshot
+  (issue #827 slice 6, task 261114-03; #767 direction).** The write side already put
+  `{toolUseId, name, content}` into every round record (`appendRound`), so the snapshot copy was a
+  second, latest-only copy of the same fact. Resume now reads the crash round's records first and
+  falls back to `snapshot.toolOutputs` only for archives written before this change -- so archived
+  tool output stays byte-faithful after a crash without any snapshot read. That removes one of the
+  three `read: source` cells the snapshot still owned; two remain (`pendingToolUses`,
+  `toolResults`) before the channel can be deleted.
+- **续跑侧改读账本轮记录里的 `toolOutputs`，不再读快照
+  （issue #827 第 6 刀，工单 261114-03；#767 方向）。** 写侧本来就把
+  `{toolUseId, name, content}` 写进每轮的轮记录（`appendRound`），所以快照那份
+  是同一事实的第二份、且是 latest-only。现在续跑侧先读崩溃轮的轮记录，
+  只有
+  「这次改动之前写的档案」才回落到 `snapshot.toolOutputs`
+  —— 崩溃后归档输出
+  的字节保真不再依赖任何快照读。快照还占着的三个 `read: source` 格
+  因此少了
+  一个，剩 `pendingToolUses` 与 `toolResults` 两格，搬完才能删通道。
 - **`partialPersistence` no longer needs a run-snapshot store, and the snapshot stops carrying the
   half-written text at all (issue #827 slice 5, task 261114-02).** Two cells leave the snapshot
   write side: `partialText` and `partialRound` move from `written(conditional)` to `stopped`. The

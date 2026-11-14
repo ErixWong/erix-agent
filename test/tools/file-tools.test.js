@@ -708,7 +708,12 @@ const READ_LINE_CAPACITY_ROLES = [
   //   （记录 130,123 / 2,302 / 4,637 ⇒ +0.99% / +0.43% / −0.56%，±2% 内；本单对描述只做同位数替换 ⇒ 字节中性）。
   //   样本清单这一侧**零改动**：新 floor `src/loop/resume-manager.js` 本来就在 83 个写死样本里（当场实测它
   //   **同时**是样本 floor，见下面 #453 那格的 `pinnedSampleFewest`），单向包含关系不需要动清单。
-  { role: "fewest", file: "src/loop/resume-manager.js", recorded: { bytes: 74_603, lines: 1_052, bytesPerLine: 70.9154, capacity: 3_696, cjkShare: 0.37370 } },
+    // 2026-11-14 复测（#827 第 6 刀，工单 261114-03）：`toolOutputs` 的读侧从快照搬到账本轮记录，
+  // `resume-manager.js` +2,122 B / +21 行（新增一段注释 + 账本推导）⇒ 字节 74,603 → **76,725**
+  // （+2.84%，越过 ±2%）。按本测试自己的口径复测这一行：行数 1,052 → 1,073、
+  // 平均行字节 70.9154 → 71.5051、容量 3,696 → **3,666**、CJK 占比 0.36 → **0.3758**。
+  // 描述里引用的 floor 那句（`fewest`）不写具体容量 ⇒ 描述不动。
+  { role: "fewest", file: "src/loop/resume-manager.js", recorded: { bytes: 76_725, lines: 1_073, bytesPerLine: 71.5051, capacity: 3_666, cjkShare: 0.3758 } },
   // CJK 字节占比最高的那一个（2026-10-13 到 2026-10-31 一字未动，所以四个数仍与 #271 的原始记录逐字相同）。
   // 2026-10-31 第一刷（issue #246 第一刀）：这个文件第一次被真实接线（`orchestrator.js` 的
   // `runSnapshotContext` 转发面），文件头注释里「本单不接线」那句改成接线事实（+14 B，**行数不变**）。
