@@ -415,7 +415,11 @@ test("partial persistence restores the latest committed text after an interrupti
 
   controller.abort();
   await assert.rejects(interrupted, /aborted|abort/i);
-  assert.equal(store.latestSnapshot.partialText, "committed partial ");
+  const committed = (await store.listRecoveryRows("partial-resume"))
+    .filter((row) => row.recoveryEvent === "partial-text").at(-1);
+  assert.equal(committed?.text, "committed partial ",
+    "中断时最后一条已提交的半截正文必须在账本恢复行里（快照不再写它）");
+  assert.equal(store.latestSnapshot?.partialText, undefined, "快照不该再有 partialText 那一格");
 
   let resumedRequest;
   const resumed = await runDirect({
@@ -487,7 +491,7 @@ test("partial persistence respects interval and minBytes with single-flight writ
   const firstEligibleDeltaAt = Date.now();
   await waitFor(() => store.partialWrites.length === 1);
   assert.ok(store.partialWrites[0].startedAt - firstEligibleDeltaAt >= intervalMs - 2);
-  assert.equal(store.partialWrites[0].snapshot.partialText, "aé");
+  assert.equal(store.partialWrites[0].record.text, "aé");
 
   streamedRequest.onDelta("b");
   await delay(intervalMs * 2 + 10);
@@ -499,8 +503,8 @@ test("partial persistence respects interval and minBytes with single-flight writ
   assert.equal(store.partialWrites.length, 1, "writes are throttled to the configured interval");
   await waitFor(() => store.partialWrites.length === 2);
   assert.ok(store.partialWrites[1].startedAt - secondEligibleDeltaAt >= intervalMs - 2);
-  assert.equal(store.maxActiveWrites, 1, "snapshot writes never overlap");
-  assert.equal(store.partialWrites[1].snapshot.partialText, "aébxy");
+  assert.equal(store.maxActiveWrites, 1, "recovery-row writes never overlap");
+  assert.equal(store.partialWrites[1].record.text, "aébxy");
 
   resolveStream({
     content: [{ type: "text", text: "finished" }],
@@ -546,13 +550,21 @@ test("partial snapshot from a retryable attempt is cleared before retry", async 
 
   assert.equal(result.finalText, "recovered");
   assert.equal(calls, 2);
-  assert.equal(store.partialWrites.length, 1);
-  assert.equal(store.latestSnapshot.partialText, undefined);
+  // 语义变了，判据跟着变（#827 第 5 刀）：恢复行通道是**只追加**的，没有「清掉上一条」这个动作。
+  // 旧行为靠快照那次 `{round, status}` 覆盖写把半截正文抹掉；快照停写之后这条路没了 ⇒ 现在
+  // 第 1 次尝试那条行会留在盘上，直到第 2 次尝试自己写下一条（读侧取最后一条）。
+  // ⚠ 这条限制不是本刀引入的：账本恢复行一直是首选来源，旧实现里那条行也一直在。
+  assert.equal(store.partialWrites.length, 1, "第 1 次尝试落了一条半截正文（第 2 次没等够一个窗口就收口）");
+  assert.equal(store.partialWrites[0].record.text, "discarded partial");
+  assert.equal(store.latestSnapshot?.partialText, undefined, "快照不该再写 partialText 那一格");
 });
 
 function createSnapshotStore({ writeDelayMs = 0 } = {}) {
   const records = [];
+  // #827 第 5 刀：半截正文的落点**只有账本恢复行**了（快照那两格已停写）⇒ 观察面跟着搬到这里。
+  // 字段名保留 `partialWrites`，但每条现在装的是恢复行（`record`）而不是快照载荷。
   const partialWrites = [];
+  const recoveryRows = [];
   let latestSnapshot;
   let activeWrites = 0;
   let maxActiveWrites = 0;
@@ -571,17 +583,28 @@ function createSnapshotStore({ writeDelayMs = 0 } = {}) {
     async load() {
       return records.map((record) => structuredClone(record));
     },
-    async saveRunSnapshot(_runId, snapshot) {
+    async appendRecoveryRow(_runId, record) {
       activeWrites += 1;
       maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
       const startedAt = Date.now();
       try {
-        if (snapshot.partialText !== undefined) {
-          partialWrites.push({
-            startedAt,
-            snapshot: structuredClone(snapshot),
-          });
+        recoveryRows.push(structuredClone(record));
+        if (record.recoveryEvent === "partial-text") {
+          partialWrites.push({ startedAt, record: structuredClone(record) });
         }
+        if (writeDelayMs > 0) await delay(writeDelayMs);
+      } finally {
+        activeWrites -= 1;
+      }
+      return true;
+    },
+    async listRecoveryRows() {
+      return recoveryRows.map((row) => structuredClone(row));
+    },
+    async saveRunSnapshot(_runId, snapshot) {
+      activeWrites += 1;
+      maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
+      try {
         if (writeDelayMs > 0) await delay(writeDelayMs);
         latestSnapshot = structuredClone(snapshot);
       } finally {

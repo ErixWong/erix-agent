@@ -34,6 +34,37 @@
   provider 的错误正文，属泛指，已改词去形状、不动语义。
 
 ### Changed
+- **`partialPersistence` no longer needs a run-snapshot store, and the snapshot stops carrying the
+  half-written text at all (issue #827 slice 5, task 261114-02).** Two cells leave the snapshot
+  write side: `partialText` and `partialRound` move from `written(conditional)` to `stopped`. The
+  half-written text lands only in the ledger `partial-text` recovery row, which the resume side
+  already preferred; slice 4 had narrowed the snapshot copy to stores without that channel, and this
+  slice removes it entirely, because the whole snapshot channel is being retired (#767). The feature
+  itself stops requiring a snapshot store: a host that implements `appendRecoveryRow` gets crash
+  recovery with no snapshot port at all. A host that implements neither gets nothing written -- the
+  engine degrades visibly instead of quietly writing a second copy. **Reading side unchanged**: the
+  `snapshot.partialText` fallback still works, it now only ever serves archives written before this
+  change. One consequence is recorded rather than papered over: the `#178` "both exit shapes must
+  agree" invariant loses its *guessed-channel* sample (the timer write was the only snapshot write
+  without an explicit classification), so that judgement is skipped here and re-judged together with
+  the rest of the snapshot write side in #767.
+- **`partialPersistence` 不再需要快照 store，快照也不再携带半截正文
+  （issue #827 第 5 刀，工单 261114-02）。** 两格离开快照写侧：
+  `partialText` 与 `partialRound` 从 `written(conditional)` 变成
+  **`stopped`**。半截正文只落账本的 `partial-text` 恢复行 —— 续跑侧本来
+  就首选它；第 4 刀把快照那份收窄到「没有账本通道的 store」，这一刀
+  彻底删掉，因为整个快照通道正在退役（#767）。这个功能本身也不再要求
+  快照 store：实现了 `appendRecoveryRow` 的宿主不需要快照端口就能拿到
+  崩溃恢复。
+  两者都没实现的宿主什么也写不下 —— 引擎**如实降级**，不再偷偷多写
+  一份。
+  **读侧一个字没改**：`snapshot.partialText` 兜底仍然工作，只是从此只服务
+  这次改动之前写的档案。有一条后果被**如实记下而不是糊过去**：
+  `#178` 那条
+  「两种出口字段形状必须对称」的判据失去了「猜测通道」的取样面
+  （定时器写
+  是唯一没有显式分类的快照写），所以本片把它显式 skip，留到与快照写侧
+  其余部分一起在 #767 里重判。
 - **A half-written-text commit no longer also rewrites the whole run snapshot (issue #827 slice 4,
   task 261114-01).** With `partialPersistence` on, every commit wrote the text twice: once as the
   ledger `partial-text` recovery row (the authority -- the resume side reads it first) and once into
