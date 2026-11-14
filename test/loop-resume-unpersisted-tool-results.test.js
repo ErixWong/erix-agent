@@ -34,6 +34,7 @@ import {
   PENDING_TOOL_RESULT_TEXT,
   UNPERSISTED_TOOL_RESULT_TEXT,
 } from "../src/loop/pending-tool-result.js";
+import { RECOVERY_EVENT_TOOL_RESULT_UNLEDGERED } from "../src/store/recovery-rows.js";
 import {
   mergeToolResultsIntoAssistantNextMessage,
   mergeToolResultsIntoMessages,
@@ -84,7 +85,15 @@ const ledgerResults = (records) => blocksOf(records.flatMap((record) => record.m
   .map((block) => `${String(block.tool_use_id)}=${String(block.content).split("\n")[0]}`);
 
 /** 跑一次 runToolLoop，把失败压成 `{ ok, error }`（崩溃注入与 `invalid_messages` 都是预期路径）。 */
-async function runLoop({ store, provider, executeTool, resume = true, initialUserMessage, capabilities }) {
+async function runLoop({
+  store,
+  provider,
+  executeTool,
+  resume = true,
+  initialUserMessage,
+  capabilities,
+  maxRounds = 8,
+}) {
   try {
     const result = await runToolLoop(withSeed({
       provider,
@@ -99,7 +108,7 @@ async function runLoop({ store, provider, executeTool, resume = true, initialUse
       stallDetection: false,
       // 8 而不是 3：预算提示会以「[预算] 本轮后仅剩 N 轮…」的形式拼进最后一条 tool_result
       // 的正文里，那会让「内容逐字相同」这条断言测到别的东西。
-      maxRounds: 8,
+      maxRounds,
       ...(initialUserMessage === undefined ? {} : { initialUserMessage }),
       ...(capabilities === undefined ? {} : { capabilities }),
       executeTool,
@@ -1919,4 +1928,52 @@ test("#754 第二必修 · 放弃补跑在飞调用时，不许对模型说「�
   assert.match(noticeText, /放弃补跑这些在飞调用/u, "必须换成明示「放弃补跑」那一句");
   assert.match(noticeText, /t9/u, "要点名到具体是哪条调用被放弃（宿主/模型都得知道丢了哪一次副作用）");
   assert.match(noticeText, /共 1 条/u, "正文条数照旧为真（快照 3 格 - 锚点 2 = 1，本格无 partialText）");
+});
+
+test("#838 S1 C1：结果行拒写时将同一结果存入恢复行，resume 后入账且只喂模型一次", async () => {
+  const inner = createMemoryTranscriptStore();
+  let rejected = false;
+  const store = {
+    ...inner,
+    async appendRound(runId, record) {
+      const target = record?.kind === "message"
+        && (record.messages ?? []).some((message) => (message?.content ?? [])
+          .some((block) => block?.type === "tool_result" && block.tool_use_id === "t1"));
+      if (target && !rejected) {
+        rejected = true;
+        throw new Error("simulated appendRound rejection for t1");
+      }
+      return inner.appendRound(runId, record);
+    },
+  };
+  const first = await runLoop({
+    store,
+    provider: createFakeProvider([toolTurn(["t1"]), endTurn("run stopped")]),
+    executeTool: async () => "exact output",
+    resume: false,
+    initialUserMessage: "任务",
+  });
+  assert.equal(first.ok, true, `结果兜底已持久化时应继续收口（实测：${String(first.error)}）`);
+
+  const fallback = (await inner.listRecoveryRows(RUN_ID))
+    .find((row) => row.recoveryEvent === RECOVERY_EVENT_TOOL_RESULT_UNLEDGERED);
+  assert.equal(fallback?.notYetLedgered, true, "appendRound 被拒后必须写 notYetLedgered 兜底行");
+  assert.equal(fallback?.toolUseId, "t1");
+  assert.equal(fallback?.toolResult?.content, "exact output", "兜底行必须保留原结果内容");
+
+  const provider = createFakeProvider([endTurn("续接完成")]);
+  const resumed = await runLoop({
+    store: inner,
+    provider,
+    executeTool: async () => {
+      throw new Error("已存有结果，不应补跑");
+    },
+  });
+  assert.equal(resumed.ok, true, `恢复必须成功（实测：${String(resumed.error)}）`);
+  assert.equal(provider.requests.length, 1, "恢复后必须真的请求模型一次");
+  assert.equal(resultsFor(provider.requests[0].messages, "t1").length, 1,
+    "原结果在模型上下文中必须恰好一份");
+  assert.equal(resultsFor(provider.requests[0].messages, "t1")[0].content, "exact output");
+  assert.deepEqual(ledgerResults(await inner.load(RUN_ID)), ["t1=exact output"],
+    "恢复必须先把兜底结果补进账本");
 });

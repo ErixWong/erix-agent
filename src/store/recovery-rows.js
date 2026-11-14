@@ -11,10 +11,9 @@
 //     `messages: []`（不载正文）、`dedupKey` 带**唯一事件键**（同事件重放幂等、不同事件换键）。
 //
 // 语义红线（本模块存在的理由，也是契约里那句话的出处）：
-//   **「`tool_use` 没有对应 `tool_result`」推不出「工具没执行」**——执行发生在结果行落盘**之前**
-//   （`src/loop/run-snapshot-executor.js`：`executedToolIds.add` 在前，结果行更晚），所以
-//   「没执行」与「执行了但没入账」在账本里形状相同。⇒「执行过没有」必须由这里的
-//   `tool-executed` 行**显式携带** `toolUseId`，不许由「缺结果行」反推。
+//   **「`tool_use` 没有对应 `tool_result`」推不出「工具没执行」**——工具副作用先于结果行落盘；
+//   若结果行写入被拒，`tool-result-unledgered` 行会保留同一份结果内容，避免只剩身份。
+//   `tool-executed` 行继续显式携带 `toolUseId`，不许由「缺结果行」反推。
 //
 // 宿主可见面：账本 `.jsonl` 里从此多一种 `kind: "recovery"` 的行。它是**新行类型**，
 // 契约（`docs/host-consumer-contract.md` / `_cn.md` 的「Ledger recovery rows」一节）写清了形状、
@@ -32,12 +31,16 @@ export const RECOVERY_ROW_KIND = "recovery";
 /** 事件：某个 `tool_use` **真的执行过了**（副作用已发生）。一格一条，事件键 = `toolUseId`。 */
 export const RECOVERY_EVENT_TOOL_EXECUTED = "tool-executed";
 
+/** 事件：结果正文尚未写入消息账本，事件键 = `toolUseId`。 */
+export const RECOVERY_EVENT_TOOL_RESULT_UNLEDGERED = "tool-result-unledgered";
+
 /** 事件：一段**半截 assistant 正文**（`stream: true` + `partialPersistence` 才存在）。事件键 = 正文指纹。 */
 export const RECOVERY_EVENT_PARTIAL_TEXT = "partial-text";
 
 /** 本模块认识的恢复事件（**不认识的 `recoveryEvent` 一律忽略**：行类型内部的扩展与行类型本身一样是 add-on）。 */
 export const RECOVERY_EVENTS = Object.freeze([
   RECOVERY_EVENT_TOOL_EXECUTED,
+  RECOVERY_EVENT_TOOL_RESULT_UNLEDGERED,
   RECOVERY_EVENT_PARTIAL_TEXT,
 ]);
 
@@ -82,6 +85,27 @@ export function buildToolExecutedRecoveryRow({ runId, round, toolUseId, ts }) {
     kind: RECOVERY_ROW_KIND,
     recoveryEvent: RECOVERY_EVENT_TOOL_EXECUTED,
     toolUseId,
+    messages: [],
+    ts: ts ?? new Date().toISOString(),
+  };
+}
+
+/**
+ * A settled result that could not be written to the message ledger.
+ * @param {{ runId: string, round: number, toolUseId: string, toolResult: object, ts?: string }} input
+ * @returns {{round:number, roundKey:string, dedupKey:string, kind:string, recoveryEvent:string,
+ *   notYetLedgered:true, toolUseId:string, toolResult:object, messages: object[], ts:string}}
+ */
+export function buildUnledgeredToolResultRecoveryRow({ runId, round, toolUseId, toolResult, ts }) {
+  return {
+    round: Number(round),
+    roundKey: `${String(runId)}:round:${String(round)}`,
+    dedupKey: recoveryEventKey(runId, round, RECOVERY_EVENT_TOOL_RESULT_UNLEDGERED, toolUseId),
+    kind: RECOVERY_ROW_KIND,
+    recoveryEvent: RECOVERY_EVENT_TOOL_RESULT_UNLEDGERED,
+    notYetLedgered: true,
+    toolUseId,
+    toolResult,
     messages: [],
     ts: ts ?? new Date().toISOString(),
   };
@@ -167,6 +191,36 @@ export function readExecutedToolIdRecoveryRows(records) {
     ids.add(row.toolUseId);
   }
   return ids;
+}
+
+/**
+ * Read result payloads saved as a fallback for failed message-row writes.
+ * @param {any[]} records
+ * @returns {Array<{round:number, toolUseId:string, toolResult:object}>}
+ */
+export function readUnledgeredToolResultRecoveryRows(records) {
+  /** @type {Array<{round:number, toolUseId:string, toolResult:object}>} */
+  const results = [];
+  for (const row of Array.isArray(records) ? records : []) {
+    if (!isRecoveryRow(row)) continue;
+    if (row.recoveryEvent !== RECOVERY_EVENT_TOOL_RESULT_UNLEDGERED) continue;
+    let problem = null;
+    if (row.notYetLedgered !== true) problem = "notYetLedgered";
+    else if (typeof row.toolUseId !== "string" || row.toolUseId === "") problem = "toolUseId";
+    else if (!Number.isSafeInteger(row.round)) problem = "round";
+    else if (typeof row.dedupKey !== "string" || row.dedupKey === "") problem = "dedupKey";
+    else if (row.toolResult?.type !== "tool_result") problem = "toolResult";
+    else if (row.toolResult.tool_use_id !== row.toolUseId) problem = "toolResult.tool_use_id";
+    if (problem !== null) {
+      throw new TypeError(`tool-result-unledgered recovery row is malformed on field "${problem}"`);
+    }
+    results.push({
+      round: row.round,
+      toolUseId: row.toolUseId,
+      toolResult: row.toolResult,
+    });
+  }
+  return results;
 }
 
 /**

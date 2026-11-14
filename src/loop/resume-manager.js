@@ -108,12 +108,56 @@ import {
   readExecutedToolIdRecoveryRows,
   readPartialTextRecoveryRounds,
   readPartialTextRecoveryRow,
+  readUnledgeredToolResultRecoveryRows,
 } from "../store/recovery-rows.js";
 
 const rowKeyOf = (record) => {
   const key = record?.dedupKey ?? record?.roundKey;
   return typeof key === "string" ? key : "";
 };
+
+function insertRecoveredToolResult(ledgerEntries, recovered) {
+  const { round, toolUseId, toolResult } = recovered;
+  if (ledgerEntries.some((entry) => entry.round === round
+    && blocksFor(entry.message?.content).some((block) => (
+      block?.type === "tool_result" && block.tool_use_id === toolUseId
+    )))) return false;
+  const assistantIndex = ledgerEntries.findIndex((entry) => entry.round === round
+    && entry.message?.role === "assistant"
+    && blocksFor(entry.message?.content).some((block) => (
+      block?.type === "tool_use" && block.id === toolUseId
+    )));
+  if (assistantIndex < 0) return false;
+  const assistant = ledgerEntries[assistantIndex].message;
+  const next = ledgerEntries[assistantIndex + 1];
+  if (next?.round === round && next.message?.role === "user"
+    && blocksFor(next.message.content).some((block) => block?.type === "tool_result")) {
+    const uses = blocksFor(assistant.content)
+      .filter((block) => block?.type === "tool_use")
+      .map((block) => block.id);
+    const results = [
+      ...blocksFor(next.message.content).filter((block) => block?.type === "tool_result"),
+      toolResult,
+    ];
+    results.sort((left, right) => uses.indexOf(left.tool_use_id) - uses.indexOf(right.tool_use_id));
+    ledgerEntries[assistantIndex + 1] = {
+      ...next,
+      message: {
+        ...next.message,
+        content: [
+          ...results,
+          ...blocksFor(next.message.content).filter((block) => block?.type !== "tool_result"),
+        ],
+      },
+    };
+  } else {
+    ledgerEntries.splice(assistantIndex + 1, 0, {
+      message: { role: "user", content: [toolResult] },
+      round,
+    });
+  }
+  return true;
+}
 
 // issue #425：**恢复锚点必须在恢复时现算**。`persistedTranscriptLength` 不是账本锚点；
 // `countResumeAnchor(records)` 才能排除尾部宿主追问并保留中间历史消息。
@@ -503,11 +547,38 @@ export async function restoreResume(ctx) {
           restoreRunState(latestStateRecord.runState);
         }
       }
+      /** @type {any[]} */
+      const recoveryRows = await readRecoveryRowsOrRefuse(ctx);
+      /** @type {Set<string>} */
+      let ledgerExecutedToolIds;
+      /** @type {Array<{round:number, toolUseId:string, toolResult:object}>} */
+      let unledgeredToolResults;
+      try {
+        ledgerExecutedToolIds = readExecutedToolIdRecoveryRows(recoveryRows);
+        unledgeredToolResults = readUnledgeredToolResultRecoveryRows(recoveryRows);
+      } catch (error) {
+        throw recoveryRowsUnreadableError(error, ctx.runId);
+      }
       const ledgerEntries = foldLedgerMessages(records);
+      const pendingRecoveryResults = [];
+      for (const recovered of unledgeredToolResults) {
+        ledgerExecutedToolIds.add(recovered.toolUseId);
+        if (insertRecoveredToolResult(ledgerEntries, recovered)) {
+          const anchor = records.find((record) => record?.round === recovered.round
+            && record?.kind === MESSAGE_ROW_KIND
+            && Number.isSafeInteger(record.seq)
+            && typeof record.partOf !== "string"
+            && (record.messages ?? []).some((message) => blocksFor(message?.content)
+              .some((block) => block?.type === "tool_result")));
+          pendingRecoveryResults.push({
+            ...recovered,
+            ...(anchor === undefined ? {} : { partOf: rowKeyOf(anchor) }),
+          });
+        }
+      }
+      ctx.resumeUnledgeredToolResults = pendingRecoveryResults;
       const ledgerMessages = ledgerEntries.map((entry) => entry.message);
-      // 账本里**已经有结果行**的 `tool_use` id（「已结清」的权威口径，issue #420）。
-      // 提到这里（原本在下面快照分支里）是因为 issue #421 的中段兜底也要它，而那条路
-      // 与「有没有快照」无关：判据是账本，不是快照。
+      // 账本里**已经有结果行或内容兜底行**的 `tool_use` id（「已结清」的权威口径）。
       const ledgerToolResultIds = new Set(ledgerMessages
         .flatMap((message) => blocksFor(message?.content))
         .filter((block) => block?.type === "tool_result")
@@ -524,19 +595,10 @@ export async function restoreResume(ctx) {
       // 语义红线正好说明为什么这样做最贵：`tool-executed` 已落、快照未落时恢复行是唯一执行证据。
       // 现在：方法缺席 ⇒ `[]`（合法降级，回落快照）；调用 reject ⇒ 抛 `recovery_rows_unreadable`，
       // 由本块的 `catch` → `ctx.fail` 收成终局（`reason: "persistence_failed"` + 同名字段）。
-      /** @type {any[]} */
-      const recoveryRows = await readRecoveryRowsOrRefuse(ctx);
       // issue #769 R5（M5）：行**解析得动但形状不合**（缺 `dedupKey` / `round: NaN`）也不许静默丢。
       // 丢掉 = 又一次「唯一证据被当没有」：那一行说的其实是「这个 `tool_use` 执行过了」，只是它坏了；
       // 把它当「没这回事」会让续跑重放一个副作用已经发生的工具。所以走与 reject / 非数组**同一个码**
       // （`recovery_rows_unreadable`），底层那条 `TypeError` 把**哪个字段不合**写在 `cause.message` 里。
-      /** @type {Set<string>} */
-      let ledgerExecutedToolIds;
-      try {
-        ledgerExecutedToolIds = readExecutedToolIdRecoveryRows(recoveryRows);
-      } catch (error) {
-        throw recoveryRowsUnreadableError(error, ctx.runId);
-      }
       // issue #790：把「执行过」的证据**无条件**另存一份到 `ctx.executedEvidenceToolIds`。
       // 为什么不能等到下面崩溃现场分支里再读那一摞恢复行：那一支的入场券是「有崩溃现场」
       // （`if (crashSiteRound || ledgerBoundary !== null)`），而 #790 要补的那一类砖化档案**没有**崩溃现场
@@ -660,6 +722,7 @@ export async function restoreResume(ctx) {
       // 放大器）。`toolResults` 那一项与 `unfinishedToolUses` 是**同一件事的两种算法**，账本
       // 口径下二者恒等价 ⇒ 删掉冗余的那一项。
       const crashSiteRound = unfinishedToolUses.length > 0
+        || pendingRecoveryResults.length > 0
         || ledgerPartialCrashRound !== undefined;
       if (crashSiteRound || ledgerBoundary !== null) {
         // 锚点从账本现算：`countResumeAnchor(records)` 去掉尾部宿主追问行后得到逻辑消息条数。
@@ -670,7 +733,10 @@ export async function restoreResume(ctx) {
         // 为什么不是「边界成立就用边界」：#425 的锚点还兜着「尾部宿主行不算进现场」与「中间夹着的
         // 历史追问要算」两条纪律，而边界只看「崩溃行之后是否全是宿主/控制行」；取较早者只会把
         // 现场切得**更小**（悬空块仍在尾部），不会把已落盘正文挤进尾队列（那才是 #425 的现场）。
-        const resumeAnchor = countResumeAnchor(records);
+        const resumeAnchor = Math.min(
+          ledgerEntries.length,
+          countResumeAnchor(records) + pendingRecoveryResults.length,
+        );
         const anchor = ledgerBoundary === null
           ? resumeAnchor
           : Math.min(resumeAnchor, ledgerBoundary + 1);
