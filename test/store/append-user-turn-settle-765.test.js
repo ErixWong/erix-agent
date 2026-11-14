@@ -12,8 +12,8 @@
 // tool_result`，issue 现场就是这条）。所以主判据必须断**折叠后的顺序**，断「写了两行」不算数。
 //
 // 与本仓既有三件同形状东西的分工（本案刻意复用而不是再造第四件）：
-//   · 桩的块形状：`src/loop/pending-tool-result.js#buildUnpersistedToolResultStub`（#421 那张桩，
-//     `content = UNPERSISTED_TOOL_RESULT_TEXT` + `is_error: true`）—— 全仓唯一构造点仍在共享实现里；
+//   · 桩的块形状：`src/loop/pending-tool-result.js#buildSettlementStubFor`（有证据 = `UNPERSISTED`,
+//     无证据 = `NO_EVIDENCE`，两者都 `is_error: true`）—— 全仓唯一选择入口仍在共享实现里；
 //   · 行形状：`kind: "message"` + 现取 `seq`（引擎写侧 `src/loop/orchestrator.js#appendMessageRowToTranscript`
 //     同口径），**不写 `roundKey`**（`isRoundCarrier` 会把缺 `seq` 时的 `roundKey` 当第二个轮载体 ⇒ R3 守卫
 //     反过来丢掉我们刚写的行）；
@@ -29,7 +29,14 @@ import { createMemoryTranscriptStore } from "../../src/store/memory.js";
 import { foldLedgerMessages } from "../../src/store/message-rows.js";
 import { withUnvalidatedAppends } from "../helpers/unvalidated-store.js";
 import { validateMessages } from "../../src/messages/rounds.js";
-import { UNPERSISTED_TOOL_RESULT_TEXT, PENDING_TOOL_RESULT_TEXT } from "../../src/loop/pending-tool-result.js";
+import {
+  NO_EVIDENCE_TOOL_RESULT_TEXT,
+  UNPERSISTED_TOOL_RESULT_TEXT,
+} from "../../src/loop/pending-tool-result.js";
+import {
+  buildToolExecutedRecoveryRow,
+  buildUnledgeredToolResultRecoveryRow,
+} from "../../src/store/recovery-rows.js";
 import { runDirect } from "../helpers/run-direct.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
 
@@ -53,6 +60,65 @@ const messageRow = (round, seq, message, extra = {}) => ({
   messages: [message],
   ts: "2026-02-01T00:00:00.000Z",
   ...extra,
+});
+
+test("#838 宿主预写结清：tool-executed 与 unledgered 结果恢复行都算执行证据", async () => {
+  const evidenceCases = [
+    ["tool-executed", (store) => store.appendRecoveryRow(RUN, buildToolExecutedRecoveryRow({
+      runId: RUN, round: 2, toolUseId: "t1",
+    }))],
+    ["unledgered-result", (store) => store.appendRecoveryRow(RUN, buildUnledgeredToolResultRecoveryRow({
+      runId: RUN,
+      round: 2,
+      toolUseId: "t1",
+      toolResult: toolResult("t1"),
+    }))],
+  ];
+
+  for (const [label, addEvidence] of evidenceCases) {
+    const store = createMemoryTranscriptStore();
+    await crashedLedger(store);
+    await addEvidence(store);
+    await appendUserTurn(store, { key: RUN, text: "追问", messageId: `evidence-${label}` });
+
+    const [settleRow] = settleRowsOf(await store.load(RUN));
+    assert.equal(settleRow.messages[0].content[0].content, UNPERSISTED_TOOL_RESULT_TEXT,
+      `${label} 恢复行是正执行证据`);
+  }
+});
+
+test("#838 宿主预写结清：快路径也从恢复行读执行证据", async () => {
+  const inner = createMemoryTranscriptStore();
+  await crashedLedger(inner);
+  await inner.appendRecoveryRow(RUN, buildToolExecutedRecoveryRow({
+    runId: RUN, round: 2, toolUseId: "t1",
+  }));
+  const rowsOf = async (key) => inner.loadRawRows(key);
+  const store = {
+    ...inner,
+    loadByDedupKey: async (key, dedupKey) => (await rowsOf(key))
+      .find((row) => (row?.dedupKey ?? row?.roundKey) === dedupKey) ?? null,
+    loadMaxRound: async (key) => (await rowsOf(key))
+      .reduce((max, row) => Math.max(max, Number.isSafeInteger(row?.round) ? row.round : 0), 0),
+    loadRawRows: rowsOf,
+  };
+
+  await appendUserTurn(store, { key: RUN, text: "追问", messageId: "fast-evidence" });
+  const [settleRow] = settleRowsOf(await inner.load(RUN));
+  assert.equal(settleRow.messages[0].content[0].content, UNPERSISTED_TOOL_RESULT_TEXT);
+});
+
+test("#838 宿主预写结清：已有账本 tool_result 已结清该 id，不再造桩", async () => {
+  const store = createMemoryTranscriptStore();
+  await crashedLedger(store);
+  await store.appendRound(RUN, messageRow(2, 1, {
+    role: "user",
+    content: [toolResult("t1")],
+  }));
+
+  const result = await appendUserTurn(store, { key: RUN, text: "追问", messageId: "ledger-result" });
+  assert.equal("unsettledToolUses" in result, false);
+  assert.deepEqual(settleRowsOf(await store.load(RUN)), []);
 });
 
 /** 崩溃现场：一条用户种子轮 + 一条带 `tool_use` 的 assistant 行，没有结果行、没有轮载体行。 */
@@ -102,7 +168,7 @@ test("#765 主判据：结清行在宿主纯文本轮之前落盘，折叠视图
     content: [{
       type: "tool_result",
       tool_use_id: "t1",
-      content: UNPERSISTED_TOOL_RESULT_TEXT,
+      content: NO_EVIDENCE_TOOL_RESULT_TEXT,
       is_error: true,
     }],
   }]);
@@ -369,7 +435,7 @@ test("#765 端到端：预写之后 runToolLoop(resume) 能跑通，桩在请求
   const stub = blocksOfMessages(messages).find((block) => block?.type === "tool_result");
   assert.equal(stub.tool_use_id, "t1");
   assert.equal(stub.is_error, true);
-  assert.equal(stub.content, UNPERSISTED_TOOL_RESULT_TEXT);
+  assert.equal(stub.content, NO_EVIDENCE_TOOL_RESULT_TEXT);
 
   // 结清已经发生在写侧 ⇒ 引擎续跑侧无事可做，不该再发降级事件（发了就说明两侧都在补，那是两份事实）。
   assert.deepEqual(events.filter((event) => event.type === "resume_journal_skipped"), [],
@@ -440,7 +506,7 @@ test("#765 反向证（账本面）：没有那条结清行 ⇒ 折叠视图缺 
   );
 });
 
-test("#765 反向证（端到端）：没有结清行时引擎只能在内存里替一张「从没执行」的桩，而账本里桩行落在宿主轮**后面**", async () => {
+test("#765 反向证（端到端）：没有结清行时引擎只能在内存里替一张「未知」的桩，而账本里桩行落在宿主轮**后面**", async () => {
   const inner = createMemoryTranscriptStore();
   const store = withoutSettling(inner);
   await crashedLedger(store);
@@ -465,10 +531,8 @@ test("#765 反向证（端到端）：没有结清行时引擎只能在内存里
   assert.equal(result.finalText, "续接完成");
   const stub = blocksOfMessages(provider.requests[0].messages)
     .find((block) => block?.type === "tool_result");
-  assert.equal(stub.content, PENDING_TOOL_RESULT_TEXT,
-    "修前上下文里顶上来的是「这个工具调用从未执行」（`PENDING_TOOL_RESULT_TEXT`），而事实是「执行过、结果没落盘」"
-    + "⇒ 模型被告知了一件错事（它不知道那次调用可能有副作用）；若哪天续跑复放改用正确的桩且把桩行折到宿主轮之前，"
-    + "这一格会红，那时本案的动机要重读一遍");
+  assert.equal(stub.content, NO_EVIDENCE_TOOL_RESULT_TEXT,
+    "没有执行证据时必须如实说未知，不能把缺失结果说成「从未执行」");
 
   const shapes = shapeOf(foldLedgerMessages(await inner.load(RUN)).map((entry) => entry.message));
   const hostIndex = shapes.indexOf("user[text]");
@@ -484,8 +548,8 @@ test("#765 结构：桩块走共享构造点，store 层不许自己手搭块形
   const { readFileSync } = await import("node:fs");
   const source = readFileSync(new URL("../../src/store/append-user-turn.js", import.meta.url), "utf8");
 
-  assert.match(source, /buildUnpersistedToolResultStub\(/u,
-    "结清行的块必须由 `src/loop/pending-tool-result.js` 那个唯一构造点造（同一个桩只有一份形状）");
+  assert.match(source, /buildSettlementStubFor\(/u,
+    "结清行的块必须由 `src/loop/pending-tool-result.js` 那个唯一选择入口造（同一个桩只有一份形状）");
   assert.doesNotMatch(source, /type:\s*"tool_result"/u,
     "store 层不许手搭 `tool_result` 块：那会把 #421 那张桩变成第二份事实（正文/`is_error` 各写一遍）");
   assert.doesNotMatch(source, /buildToolResultFact\(/u,

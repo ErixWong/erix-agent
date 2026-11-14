@@ -4919,7 +4919,7 @@ export async function runToolLoop(options) {
     // 2026-10-22 更正归因：**零 HTTP**，拒的是 `validateMessages`，不是 provider）。
     //
     // 判据（`pendingTrailingToolUses`，与 `validateMessages` 的配对规则同源）、结果块（唯一构造点
-    // `buildToolResultFact`）、正文（`PENDING_TOOL_RESULT_TEXT`）三件事实都在共享实现
+    // `buildToolResultFact`）与正文选择（`buildSettlementStubFor`）都在共享实现
     // `src/loop/pending-tool-result.js` 里；本文件只注入**入账口径**：
     //   · `:control:` 行（**不是** `kind:"message"` 消息行：消息行会被 `foldMessageRows` 折回轮
     //     载体行，从而在恢复时插到「强制收尾」那两条控制消息**之前**，把配对重新打散）；

@@ -14,6 +14,8 @@ import test from "node:test";
 import { PENDING_TOOL_RESULT_TEXT } from "../src/loop/orchestrator.js";
 import {
   answerPendingTailToolUses,
+  buildSettlementStubFor,
+  NO_EVIDENCE_TOOL_RESULT_TEXT,
   UNPERSISTED_TOOL_RESULT_TEXT,
 } from "../src/loop/pending-tool-result.js";
 import { runDirect } from "./helpers/run-direct.js";
@@ -45,7 +47,7 @@ const codeOf = (rel) => textOf(rel)
   .replace(/\/\*[\s\S]*?\*\//gu, "")
   .replace(/^\s*\/\/.*$/gmu, "");
 
-test("#394 R1 结构判据：造「is_error 收尾 tool_result」的构造点全仓只有一处（共享实现）", () => {
+test("#394 R1 结构判据：造「is_error 收尾 tool_result」的构造点都在共享实现", () => {
   // 正文常量的**定义**只有一处（`export const`，不是再导出）。
   const definitions = files.filter((rel) => (
     /export const PENDING_TOOL_RESULT_TEXT\s*=/u.test(textOf(rel))
@@ -53,16 +55,15 @@ test("#394 R1 结构判据：造「is_error 收尾 tool_result」的构造点全
   assert.deepEqual(definitions, [SHARED],
     "`PENDING_TOOL_RESULT_TEXT` 的定义点必须唯一（第二份正文就是第二份事实）");
 
-  // 构造点：`buildToolResultFact({ … PENDING_TOOL_RESULT_TEXT … })`。块内没有嵌套花括号，
-  // 所以这个正则正好圈住「用那条正文造结果块」的那一个调用，不会误伤普通结果构造。
-  const construction = /buildToolResultFact\(\{(?:[^{}]*)PENDING_TOOL_RESULT_TEXT(?:[^{}]*)\}\)/gu;
+  // 三种引擎自写正文都必须经共享模块的 `buildToolResultFact` 构造，不允许在别处手搭桩。
+  const construction = /buildToolResultFact\(\{(?:[^{}]*)(?:PENDING|UNPERSISTED|NO_EVIDENCE)_TOOL_RESULT_TEXT(?:[^{}]*)\}\)/gu;
   const sites = [];
   for (const rel of files) {
     const hits = [...textOf(rel).matchAll(construction)];
     for (let index = 0; index < hits.length; index += 1) sites.push(rel);
   }
-  assert.deepEqual(sites, [SHARED],
-    `「造 is_error 收尾 tool_result」的构造点必须全仓唯一，实测 ${JSON.stringify(sites)}`);
+  assert.deepEqual(sites, [SHARED, SHARED],
+    `两种结清桩正文都必须只在共享模块里构造，实测 ${JSON.stringify(sites)}`);
 });
 
 // ── R5-1 兄弟洞正面：`end_turn` + `tool_use` + guard 判 `revise` ⇒ 不再 reject，run 继续走 guard 流程 ──
@@ -99,9 +100,20 @@ test("#838 尾部结清按执行证据选择话术，不把已执行调用说成
   const results = messages[2].content;
   assert.equal(results[0].content, UNPERSISTED_TOOL_RESULT_TEXT,
     "有执行证据的 t1 必须说结果不可用，而不是从未执行");
-  assert.equal(results[1].content, PENDING_TOOL_RESULT_TEXT,
-    "没有执行证据的 t2 才能使用从未执行的话术");
+  assert.equal(results[1].content, NO_EVIDENCE_TOOL_RESULT_TEXT,
+    "没有执行证据的 t2 必须说未知，不能断言从未执行");
   validateMessages(messages);
+});
+
+test("#838 C-a 有执行证据 ⇒ 结清桩正文是 UNPERSISTED", () => {
+  const stub = buildSettlementStubFor("t1", { executed: true });
+  assert.equal(stub.content, UNPERSISTED_TOOL_RESULT_TEXT);
+});
+
+test("#838 C-b 无执行证据 ⇒ 结清桩正文是 NO_EVIDENCE，且不等于 PENDING", () => {
+  const stub = buildSettlementStubFor("t1", { executed: false });
+  assert.equal(stub.content, NO_EVIDENCE_TOOL_RESULT_TEXT);
+  assert.notEqual(stub.content, PENDING_TOOL_RESULT_TEXT);
 });
 
 test("#394 R5-1 兄弟洞：end_turn + 悬空 tool_use + guard 判 revise ⇒ 不再 reject，续跑请求真的发出去了", async () => {
@@ -188,7 +200,7 @@ test("#394 R5-2 入账形状：结清产生的 tool_result 落在 `:control:forc
   assert.deepEqual(result.termination, { reason: "continuation_exhausted", forcedFinal: true });
 
   const records = await store.load(runId);
-  const carriers = rowsCarrying(records, PENDING_TOOL_RESULT_TEXT);
+  const carriers = rowsCarrying(records, NO_EVIDENCE_TOOL_RESULT_TEXT);
   assert.equal(carriers.length, 1,
     `带那条结清正文的行必须**恰好** 1 行（0 = 没入账，2 = 双喂；实测 ${JSON.stringify(records.map((record) => record.dedupKey))}）`);
   // `:control:` 行（不带 `seq` 的引擎控制行），**不是** `kind:"message"` 消息行：消息行会被

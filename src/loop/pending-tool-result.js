@@ -20,10 +20,9 @@
  * 三条纪律（本模块存在的全部理由，改它之前先读）：
  *   - **配对只在 `findUnpairedToolUseGroups` 判一次**：按每条 assistant 与紧邻 user 的结果 id 比较；
  *     resume、请求视图和尾部结清都从它取缺口，不使用跨轮 id 集合。
- *   - **结果块复用唯一构造点**：`buildToolResultFact`（`src/tool-fact.js`），`isError: true` 打在
- *     块上，正文用 `PENDING_TOOL_RESULT_TEXT`（以 `[erix]` marker 开头）。全仓「造 `is_error`
- *     收尾 `tool_result`」的构造点只有这一处，由 `test/loop-pending-tool-result.test.js` 的
- *     结构判据钉住。
+ *   - **结清文案统一选择**：`buildSettlementStubFor` 按正执行证据在「执行过、结果不可用」与「未知」间选择；
+ *     缺证据不许推成 `PENDING_TOOL_RESULT_TEXT` 的「从未执行」。三种结果块都经
+ *     两种结清结果块都经 `buildToolResultFact`（`src/tool-fact.js`）设 `isError: true`，由结构判据钉住构造归属。
  *   - **入账走 `:control:` 行**（由调用方经 `onMessage` 注入，本模块不碰 store）：**不能**改成
  *     `kind:"message"` 消息行——消息行会被 `foldMessageRows` 折回轮载体行，恢复时插到注入的
  *     控制文本之前，把配对重新打散（#393 的结论）。
@@ -129,12 +128,14 @@ export function pendingTailToolUsesAreAnswerable(messages) {
 
 /**
  * 结清尾部悬空 `tool_use`：往 `messages` 尾部追加**一条** user 消息，装齐全部缺失的 `tool_result`。
+ * 正执行证据命中时说「执行过、结果不可用」；证据缺席时说「未知」，绝不把缺证据说成「从未执行」。
  *
  * 幂等判据是「尾部形状」本身（结清之后再调一次返回 `false`）：调用方可以在任何注入点之前无条件
  * 调它，不必自己判断尾部。
  *
  * @param {any[]} messages canonical 消息数组（就地追加）
  * @param {{round?: number, executedToolIds?: Set<any>, messageRounds?: Map<any, any> | WeakMap<any, any>, onMessage?: (message: any, round?: number) => any}} [options]
+ *   `executedToolIds` = 正向执行证据集合；id 不在其中时只能说「未知」。
  *   `messageRounds` 与主循环同一份口径（轮号表——主循环用的是 `WeakMap`，termination 侧原样转交）；`onMessage` 是**入账回调**，由 orchestrator 注入
  *   （本模块不持有 store、不碰 persist —— journal 写入一直是 orchestrator 的职责面）。
  * @returns {Promise<boolean>} true = 真的补了一条 user 消息；false = 尾部没有可结清的悬空块
@@ -145,16 +146,8 @@ export async function answerPendingTailToolUses(messages, options = {}) {
   if (pending.length === 0) return false;
   if (!pending.every(isUsableToolUseId)) return false;
   const executed = options.executedToolIds instanceof Set ? options.executedToolIds : undefined;
-  const toolResults = pending.map((block) => buildToolResultFact({
-    toolUseId: block.id,
-    content: executed?.has(block.id)
-      ? UNPERSISTED_TOOL_RESULT_TEXT
-      : PENDING_TOOL_RESULT_TEXT,
-     // 这条调用确实没有结果（不是成功，也不是工具自己报的错）：`is_erro
-     // r` 是 wire 上
-     // 「这次调用没产出可用结果」的唯一出口，与续跑复放写 `interrupted` 
-     // 的口径一致。
-    isError: true,
+  const toolResults = pending.map((block) => buildSettlementStubFor(block.id, {
+    executed: executed?.has(block.id) === true,
   }));
   const message = { role: "user", content: toolResults };
   messages.push(message);
@@ -412,6 +405,18 @@ export function buildNoEvidenceToolResultStub(toolUseId) {
 }
 
 /**
+ * Select the honest settlement wording from positive execution evidence.
+ * @param {string} toolUseId
+ * @param {{executed?:boolean}} [evidence]
+ * @returns {object}
+ */
+export function buildSettlementStubFor(toolUseId, evidence = {}) {
+  return evidence.executed === true
+    ? buildUnpersistedToolResultStub(toolUseId)
+    : buildNoEvidenceToolResultStub(toolUseId);
+}
+
+/**
  * issue #790：「需要**插页**才能闭合」那一类中段悬空的**请求视图**兜底（只读账本、只改视图）。
  *
  * 病根：#789 把结清时机前移到宿主预写用户轮**之前**（`src/store/append-user-turn.js`），但仍有两类
@@ -468,9 +473,7 @@ export function stubUnsettledToolUsesForRequestView(messages, options = {}) {
         detail,
         executed,
       });
-      return executed
-        ? buildUnpersistedToolResultStub(block.id)
-        : buildNoEvidenceToolResultStub(block.id);
+      return buildSettlementStubFor(block.id, { executed });
     });
     if (group.results.length > 0 && group.resultIndex !== undefined) {
       const current = replacements.get(group.resultIndex) ?? group.next;

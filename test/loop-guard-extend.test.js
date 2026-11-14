@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runDirect } from "./helpers/run-direct.js";
-import { PENDING_TOOL_RESULT_TEXT } from "../src/loop/orchestrator.js";
+import { NO_EVIDENCE_TOOL_RESULT_TEXT } from "../src/loop/pending-tool-result.js";
 import { FINAL_GUARD_EXTENDABLE_REASONS, FINAL_GUARD_NON_CONTINUABLE_REASONS } from "../src/loop/termination.js";
 import { pendingTrailingToolUses, validateMessages } from "../src/messages/rounds.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
@@ -631,9 +631,9 @@ test("#393 末轮带 tool_use + opt-in：注入前先结清尾部，终局不是
   // 引擎自写的那条 `tool_result`：补齐了强制收尾那条 `tool_use`，且**不是**任何工具的真实输出
   const repaired = toolResultFor(result.messages, "wrap-tool");
   assert.ok(repaired !== undefined, "强制收尾那条 tool_use 没有配到 tool_result");
-  assert.equal(repaired.is_error, true, "未执行的调用必须标成 is_error（wire 上「没有可用结果」的出口）");
-  assert.equal(repaired.content, PENDING_TOOL_RESULT_TEXT,
-    "补的正文必须来自唯一来源 PENDING_TOOL_RESULT_TEXT（宿主 / judge 靠 [erix] marker 认出是引擎自写）");
+  assert.equal(repaired.is_error, true, "没有可用结果的调用必须标成 is_error（wire 上的唯一出口）");
+  assert.equal(repaired.content, NO_EVIDENCE_TOOL_RESULT_TEXT,
+    "没有执行证据时必须用「未知」正文（宿主 / judge 靠 [erix] marker 认出是引擎自写）");
   assert.deepEqual(executed, ["w1", "fix"],
     "补的那条 result 只是事实陈述：它对应的调用不许被执行，补跑那一轮的工具照常执行");
   assert.equal(toolResultFor(result.messages, "fix")?.is_error, undefined,
@@ -696,7 +696,7 @@ test("#393 末轮带多个 tool_use + opt-in：一条 user 消息补齐全部 id
   assert.doesNotThrow(() => validateMessages(result.messages),
     "多 id 的尾巴只补一部分 ⇒ canonical 校验会以 tool_result ids do not match 报红");
   for (const id of ["wa", "wb"]) {
-    assert.equal(toolResultFor(result.messages, id)?.content, PENDING_TOOL_RESULT_TEXT,
+    assert.equal(toolResultFor(result.messages, id)?.content, NO_EVIDENCE_TOOL_RESULT_TEXT,
       `tool_use ${id} 没有被补齐`);
   }
 });

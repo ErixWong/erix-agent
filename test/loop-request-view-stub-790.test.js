@@ -287,12 +287,12 @@ test("T3 #789 结清过的形状（宿主预写用户轮之前已落结清行）
   assert.equal((await resumeRun({ store: inner, provider, events })).ok, true);
 
   const messages = provider.requests[0].messages;
-  assert.deepEqual(stubIdsOf(messages, UNPERSISTED_TOOL_RESULT_TEXT), ["t1"],
-    "结清行那一张桩原样在场（它就是账本里的那一行）");
+  assert.deepEqual(stubIdsOf(messages, NO_EVIDENCE_TOOL_RESULT_TEXT), ["t1"],
+    "结清行那一张无证据桩原样在场（它就是账本里的那一行）");
   assert.equal(blocksOf(messages).filter((block) => block?.type === "tool_result").length, 1,
     "整份请求里 `t1` 的结果必须**只有一张**（双结清 = 两份事实）");
-  assert.equal(blocksOf(messages).filter((block) => block?.content === NO_EVIDENCE_TOOL_RESULT_TEXT).length, 0,
-    "已结清的那一单不许被本单再补一张");
+  assert.equal(blocksOf(messages).filter((block) => block?.content === UNPERSISTED_TOOL_RESULT_TEXT).length, 0,
+    "没有执行证据时结清结果不能写成「执行过」");
   assert.deepEqual(skipEvents(events, MID_SEQUENCE_REQUEST_VIEW_STUB), [],
     "没有插任何桩 ⇒ 一条事件都不许发（否则宿主读不出「这次真补了」）");
 });

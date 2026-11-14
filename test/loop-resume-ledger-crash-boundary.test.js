@@ -24,10 +24,9 @@
 //     （`resume-manager.js` 的 `midSequenceInFlightIds` 那格，issue #730 之前叫 `midSequenceSettledIds`）
 //     ⇒ 同一条聚合消息里只有一个同 id 结果。
 //
-// ⚠ 桩的**文案**：工单正文写的是 `UNPERSISTED_TOOL_RESULT_TEXT`（#421 中段那条「执行过但结果没落盘」），
-// 而本单规定的出口是既有的**尾部**结清 `answerPendingTailToolUses`（注入告示之前那一步），它写的是
-// `PENDING_TOOL_RESULT_TEXT`（「从未执行」）。#734 的现场正是 `sideEffect=not_started`（工具根本没跑），
-// 所以尾部那句才是真话。下面按**实际落地的这一句**断言，差异记进报告的 `## 未验证`。
+// ⚠ 桩的**文案**：没有正执行证据时，尾部结清 `answerPendingTailToolUses` 必须用
+// `NO_EVIDENCE_TOOL_RESULT_TEXT`（「未知」），不能从缺少结果推成「从未执行」。
+// #734 的现场即使停在 `sideEffect=not_started`，本条账本也没有能传给选择器的正证据。
 import test from "node:test";
 import assert from "node:assert/strict";
 
@@ -35,7 +34,11 @@ import { runDirect } from "./helpers/run-direct.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { appendUserTurn } from "../src/store/append-user-turn.js";
-import { PENDING_TOOL_RESULT_TEXT, UNPERSISTED_TOOL_RESULT_TEXT } from "../src/loop/pending-tool-result.js";
+import {
+  NO_EVIDENCE_TOOL_RESULT_TEXT,
+  PENDING_TOOL_RESULT_TEXT,
+  UNPERSISTED_TOOL_RESULT_TEXT,
+} from "../src/loop/pending-tool-result.js";
 import {
   RESUME_NOTICE_NO_PENDING,
   RESUME_NOTICE_PENDING_HEADER,
@@ -160,8 +163,8 @@ test("#736 夹具：陈旧快照 + 宿主预写行盖住崩溃现场 ⇒ 修前 
   const stubs = resultsFor(sent, "t1");
   assert.equal(stubs.length, 1, "上下文里要有且只有一张 `t1` 的结果桩");
   assert.equal(stubs[0].is_error, true, "桩是 wire 上「这次调用没产出可用结果」的唯一出口");
-  assert.equal(String(stubs[0].content), PENDING_TOOL_RESULT_TEXT,
-    "尾部结清（`answerPendingTailToolUses`）的正文，以 `[erix]` marker 开头");
+  assert.equal(String(stubs[0].content), NO_EVIDENCE_TOOL_RESULT_TEXT,
+    "缺少执行证据时，尾部结清必须用「未知」正文，以 `[erix]` marker 开头");
   assert.match(String(stubs[0].content), /^\[erix\]/u, "引擎自写：宿主/judge/审计凭 marker 认出这不是工具输出");
 
   const lastBlocks = blocksOf(sent.slice(-1));
