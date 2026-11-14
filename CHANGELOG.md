@@ -34,6 +34,43 @@
   provider 的错误正文，属泛指，已改词去形状、不动语义。
 
 ### Changed
+- **A resumed run no longer replays pending tools by default: the engine fills an interrupted
+  result and the model decides (issue #833, task 261114-04; #767 direction).** `replayPolicy` now
+  defaults to `"per-tool-declaration"` instead of `"always-replay"`. Nothing declares
+  `replay: "safe"`, so on every resume a tool whose result never landed comes back as a
+  `tool_result` with `is_error: true`, `erix.executionStatus: "interrupted"` and a text that tells
+  the model it was not replayed and that it may re-issue the call itself (inspecting the world
+  first if the call may have written something). Three reasons, all recorded on the issue: the
+  engine cannot tell a safe retry from a dangerous one (tool schemas carry no `readOnly`
+  metadata); its only evidence was the absence of a `tool-executed` row, and a crash is exactly
+  what breaks that record, so absence is not evidence of "did not run"; and the decision belongs
+  to the model, which already gets the resume notice listing every unanswered call. **Hosts that
+  want the old behaviour opt in** with `config.run.replayPolicy: "always-replay"`; that path is
+  unchanged and still covered. Cost, accepted: one extra model turn per resume, because the model
+  has to re-issue the call. Side benefit: `pendingToolUses` no longer needs to be written by the
+  snapshot at all -- the unanswered set is derivable from the ledger -- which removes the hardest
+  cell from the snapshot-retirement inventory (#767).
+- **续跑默认不再替宿主补跑工具：引擎补一条「已中断」结果，让模型
+  自己决定
+  （issue #833，工单 261114-04；#767 方向）。** `replayPolicy` 的默认值从
+  `"always-replay"` 改成 **`"per-tool-declaration"`**。出厂工具一个都没声明
+  `replay: "safe"`，所以每次续跑里「结果没落盘」的调用都会变成一条
+  `tool_result`：`is_error: true`、`erix.executionStatus: "interrupted"`，
+  正文告诉模型它**没有被重放**、需要的话自己重发（如果这次调用可能
+  写过东西，
+  先勘验现状）。三条理由都记在 issue 上：引擎分不清「安全重试」与
+  「危险重试」
+  （工具 schema 里没有 `readOnly` 元数据）；它唯一的判据是「没有
+  `tool-executed` 行」，而崩溃破坏的正是记录 ⇒ 缺席不是「没执行」
+  的证据；
+  决定权该在模型手里，而信息已经齐了（恢复告示本来就会逐条列出
+  没有结果的调用）。
+  **想要旧行为的宿主显式 opt-in**：`config.run.replayPolicy: "always-replay"`，
+  那条路一字未改、仍有用例覆盖。认下来的代价：每次续跑多一次模型
+  往返。
+  顺带收益：`pendingToolUses` 不再需要快照写侧 —— 「没结清的集合」可以从
+  账本
+  推出来 ⇒ 退役清单里最难的一格消失了（#767）。
 - **Resume reads `toolOutputs` from the ledger round record, not from the snapshot
   (issue #827 slice 6, task 261114-03; #767 direction).** The write side already put
   `{toolUseId, name, content}` into every round record (`appendRound`), so the snapshot copy was a

@@ -408,6 +408,8 @@ async function resumeWithHostRow(keyShape, { landedT1 = false } = {}) {
   const provider = createFakeProvider([{ content: [text("done")], stopReason: "end_turn" }]);
   const result = await runDirect({
     provider,
+    // #833：这三格测的是「宿主追问行的键形态」，不是默认重放语义 ⇒ 钉住旧档，现场保持补跑。
+    config: { run: { replayPolicy: "always-replay" } },
     resume: true,
     store,
     runId: RUN_ID,

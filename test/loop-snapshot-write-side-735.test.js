@@ -304,6 +304,8 @@ test("#735 切片 1 + #770：引擎亲笔写下的**新形状**崩溃现场（�
     store,
     runId: CRASH_RUN_ID,
     maxRounds: 3,
+    // #833：本格测的是补跑机制本身 ⇒ 钉住仍受支持的 always-replay 档。
+    config: { run: { replayPolicy: "always-replay" } },
     resume: true,
     initialUserMessage: "继续",
   });

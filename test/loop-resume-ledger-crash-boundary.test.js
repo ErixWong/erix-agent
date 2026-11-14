@@ -105,6 +105,8 @@ async function resumeOnce({ store, runId, script = [endTurn("恢复了")], execu
   const provider = createFakeProvider(script);
   const outcome = await runDirect({
     provider,
+    // #833：本格测的是补跑机制本身 ⇒ 钉住仍受支持的 always-replay 档。
+    config: { run: { replayPolicy: "always-replay" } },
     resume: true,
     store,
     runId,
@@ -212,6 +214,8 @@ test("#736 边界在「**根本没有可用快照**」时同样成立（#734 的
   const provider = createFakeProvider([endTurn("恢复了")]);
   const outcome = await runDirect({
     provider,
+    // #833：本格测的是补跑机制本身 ⇒ 钉住仍受支持的 always-replay 档。
+    config: { run: { replayPolicy: "always-replay" } },
     resume: true,
     store,
     runId: RUN_ID,
@@ -337,6 +341,8 @@ test("#736 边界与快照的**存在性**也无关：store 根本没有快照�
   const provider = createFakeProvider([endTurn("恢复了")]);
   const outcome = await runDirect({
     provider,
+    // #833：本格测的是补跑机制本身 ⇒ 钉住仍受支持的 always-replay 档。
+    config: { run: { replayPolicy: "always-replay" } },
     resume: true,
     store,
     runId: RUN_ID,

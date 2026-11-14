@@ -749,7 +749,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/messages-identity.test.js` | 17 | `strategy`×12, `completion`×2, `tools`×2, `context`×1 |
 | `test/loop-request-user-invariant.test.js` | 16 | `initialMessages`×5, `completion`×4, `stallDetection`×3, `tools`×3, `resume`×1 |
 | `test/loop-stream.test.js` | 14 | `completion`×5, `partialPersistence`×4, `wrapup`×4, `resume`×1 |
-| `test/output-aggregate-budget.test.js` | 14 | `outputHygiene`×7, `completion`×4, `reflection`×2, `resume`×1 |
+| `test/output-aggregate-budget.test.js` | 15 | `outputHygiene`×7, `completion`×4, `reflection`×2, `context`×1, `resume`×1 |
 | `test/output-hygiene.test.js` | 14 | `completion`×7, `outputHygiene`×6, `resume`×1 |
 | `test/wrapup.test.js` | 14 | `completion`×11, `reflection`×3 |
 | `test/loop-context-on-fold-summary-retired-499.test.js` | 16 | `context`×7, `onFoldSummary`×7, `completion`×2, `stallDetection`×2, `tools`×2, `wrapup`×2, `onEvent`×1, `session`×1 |
@@ -912,6 +912,7 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/reasoning-sent-params-785.test.js` | 6 | `completion`×3, `stallDetection`×3 |
 | `test/cli-reasoning-effort-798.test.js` | 3 | `prompt`×1, `reflection`×1, `session`×1 |
 | `test/loop-request-view-stub-790.test.js` | 6 | `tools`×2, `completion`×1, `resume`×1, `stallDetection`×1, `wrapup`×1 |
+| `test/loop-resume-default-replay-833.test.js` | 1 | `tools`×1 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 

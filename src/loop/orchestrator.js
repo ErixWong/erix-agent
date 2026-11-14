@@ -802,7 +802,7 @@ export async function runToolLoop(options) {
     writeToolNames = DEFAULT_WRITE_TOOL_NAMES,
     writeToolPathKeys = ["path", "file_path"],
     executeTool,
-    replayPolicy = "always-replay",
+    replayPolicy = "per-tool-declaration",
     // issue #409 需求②：引数解析失败 ⇒ 不执行该工具（默认），判词经 `is_error` 的 `tool_result`
     // 回给模型。`"execute"` 是显式回退，行为逐字等于 #409 之前。
     invalidArguments = "reject",
@@ -5529,7 +5529,7 @@ export async function runToolLoop(options) {
           const toolResult = buildToolResultFact({
             toolUseId: resumePendingTool.id,
             content: "The previous execution was interrupted before its outcome could be recorded. "
-              + "This unsafe tool was not replayed; the host must decide whether to retry it."
+              + "It was not replayed; re-issue it yourself if you still need it (inspect before writing)."
               + (typeof partialOutput === "string" && partialOutput.length > 0
                 ? `\n\nPreviously captured partial output:\n${partialOutput}`
                 : ""),

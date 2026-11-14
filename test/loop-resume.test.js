@@ -435,7 +435,7 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
   ]);
   const result = await runToolLoop({
     provider: resumedProvider,
-    config: { run: { resume: true, runId: "resume-pending-tools", completion: false } },
+    config: { run: { replayPolicy: "always-replay", resume: true, runId: "resume-pending-tools", completion: false } },
     store,
     tools,
     capabilities: {
@@ -794,7 +794,7 @@ test("resumes a partial tool-result message without dropping text or breaking pa
   ]);
   await runToolLoop({
     provider,
-    config: { run: { resume: true, runId, completion: false } },
+    config: { run: { replayPolicy: "always-replay", resume: true, runId, completion: false } },
     store,
     executeTool: async ({ id }) => `done-${id}`,
   });
@@ -1002,7 +1002,7 @@ test("restores judge interception count from executed checkpoint tools", async (
     provider,
     // #530: the retired `reflection` shell is a mixed shell — data goes to
     // `config.run.reflection`, the judge evaluator to `capabilities.ports.judgeProvider`.
-    config: { run: { resume: true, runId, completion: false, reflection: { enabled: true, roundJudge: false, judgeIntervalRound: 1 } } },
+    config: { run: { replayPolicy: "always-replay", resume: true, runId, completion: false, reflection: { enabled: true, roundJudge: false, judgeIntervalRound: 1 } } },
     store,
     executeTool: async ({ id }) => `done-${id}`,
     capabilities: {
@@ -1249,7 +1249,7 @@ test("archives replayed tool results without duplicating multiple resume tails",
   ]);
   await runToolLoop({
     provider: resumedProvider,
-    config: { run: { resume: true, runId: "multi-tail", completion: false } },
+    config: { run: { replayPolicy: "always-replay", resume: true, runId: "multi-tail", completion: false } },
     store,
     executeTool: async () => "tool-output",
   });
