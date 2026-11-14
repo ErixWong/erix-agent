@@ -56,10 +56,15 @@ function streamingProvider({ bodies, store, runId, waitForPartial = false }) {
         await sleep(20);
       }
       if (waitForPartial) {
+        // #827 第 4 刀：半截正文的权威是**账本恢复行**，快照那两格不再写（账本通道在场时）。
+        // 这一格要等的是「完整正文已落盘」，所以等恢复行，而不是等快照。
         const deadline = Date.now() + 2000;
         for (;;) {
-          const snapshot = await store.loadLatestRunSnapshot(runId);
-          if (snapshot?.partialText === body) break;
+          const rows = await store.listRecoveryRows(runId);
+          const partial = rows
+            .filter((row) => row.recoveryEvent === "partial-text")
+            .at(-1);
+          if (partial?.text === body) break;
           assert.ok(Date.now() < deadline, "partialPersistence 定时器必须在超时前落下完整半截正文");
           await sleep(5);
         }
@@ -145,11 +150,15 @@ test("#425 stream + partialPersistence：恢复后终稿正文只出现一次（
     executeTool: async () => "unused",
   });
 
-  // 前提（这一格测的是不是「陈旧锚点」现场）：快照里锚点只到 seed，账本已经多出终稿正文。
+  // 前提（这一格测的是不是「陈旧锚点」现场）：快照里锚点只到 seed，账本已落终稿 assistant。
+  // #827 第 4 刀之后引擎**不再在流式期间写快照**（半截正文的权威是账本恢复行），所以这个现场改成
+  // 按新形状造：恢复行带着完整终稿正文，快照那两格整格缺席 —— 后者本身就是这一刀的行为判据。
   const snapshot = await inner.loadLatestRunSnapshot(RUN_ID);
   const ledger = foldLedgerMessages(await inner.load(RUN_ID));
-  assert.equal(snapshot?.partialText, BODY, "前提：最后一份 partial 快照带着完整终稿正文");
-  assert.equal(snapshot?.persistedTranscriptLength, 1, "前提：快照锚点是正文落盘之前的采样");
+  const partialRows = (await inner.listRecoveryRows(RUN_ID))
+    .filter((row) => row.recoveryEvent === "partial-text");
+  assert.equal(partialRows.at(-1)?.text, BODY, "前提：最后一条恢复行带着完整终稿正文");
+  assert.equal(snapshot?.partialText, undefined, "账本通道在场时快照不该再写 partialText（#827 第 4 刀）");
   assert.equal(ledger.length, 2, "前提：账本里已有 seed + 终稿 assistant");
 
   const resumedProvider = streamingProvider({ bodies: ["追问的答复"], store: inner, runId: RUN_ID });

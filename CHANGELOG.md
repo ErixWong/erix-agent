@@ -34,6 +34,33 @@
   provider 的错误正文，属泛指，已改词去形状、不动语义。
 
 ### Changed
+- **A half-written-text commit no longer also rewrites the whole run snapshot (issue #827 slice 4,
+  task 261114-01).** With `partialPersistence` on, every commit wrote the text twice: once as the
+  ledger `partial-text` recovery row (the authority -- the resume side reads it first) and once into
+  the run snapshot's `partialText`/`partialRound` cells, which only ever served as a fallback for
+  archives written before that channel existed. The snapshot copy cost a whole snapshot per commit
+  (measured average 8,681 B on the downstream host, up to 2 MB on heavy runs) and bought nothing.
+  The engine now writes those two cells **only when the store has no `appendRecoveryRow`** -- so a
+  host without the ledger channel still gets the half-written text somewhere. `partialText` /
+  `partialRound` keep their `written(conditional)` state; the condition narrows. **Reading side
+  unchanged**: the recovery row is still preferred, the snapshot cells still work as the fallback.
+  Combined with slices 1-3 the per-commit cost of enabling this switch drops from O(every tool row
+  + one snapshot) to O(one slot row).
+- **一次「半截正文」提交不再连整份 run snapshot 一起重写
+  （issue #827 第 4 刀，工单 261114-01）。** 开着 `partialPersistence` 时每次提交
+  都把正文写两遍：一遍是账本的 `partial-text` 恢复行（权威，续跑侧首选
+  它），
+  一遍进快照的 `partialText` / `partialRound` 两格 —— 后者只服务「账本通道
+  出现
+  之前」写的旧档案兜底。快照那份要付一整份快照（下游实测均 8,681 B，
+  重会话到 2 MB 级），却什么也没多买。现在引擎**只在 store 没有
+  `appendRecoveryRow` 时**才写这两格 —— 没有账本通道的宿主照样能把半截
+  正文
+  落在某个地方。两格的 `written(conditional)` 状态不变，变的是条件的收窄。
+  **读侧一个字没改**：恢复行仍被优先读，快照那两格仍作兜底。配合
+  前三刀，
+  打开这个开关的每提交成本从「全部工具行 + 一整份快照」降到
+  「一条槽行」。
 - **The crash-recovery sidecar splits into two files, so a half-written-text commit no longer
   rewrites every tool event (issue #827 slice 3, task 261113-08).** `partial-text` (one slot per
   round, rewritten whole-file) and `tool-executed` (append-only events) used to share
