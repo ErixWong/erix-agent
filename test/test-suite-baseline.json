@@ -3,12 +3,28 @@
     "subject": "npm test（node --test）自己打印的 TAP 汇总行：`# tests` / `# pass` / `# fail` / `# skipped` / `# todo` / `# cancelled`",
     "truth": "真值 = 当次 `node --test` 打印的汇总行（命令现算，随环境变：真上游门禁开没开、pi 装载器装没装，都会改 skipped）。本文件是**期望值 + 下限/上限**，不是实测抄件：`expect.tests` 只许**不低于**登记值（少一格就是掉了覆盖 ⇒ 红；多出来是绿，脚本另打一行 `TEST-SUMMARY-HINT` 提示可抬到多少）、`expect.fail` 必须为 0、`expect.maxSkipped` 只许不低于实测。数字漂了只有两条合法处置——有意增删用例就同片改这里并补一条 observations（写清 commit / 环境 / 为什么差），意外的就修回去；**绝不许为了对上数字去改测试**（加 skip、删用例、把断言删成恒真）。本文件没有 `--sync`：机器只读它，不改它。",
     "expect": {
-        "tests": 3842,
+        "tests": 3849,
         "fail": 0,
         "maxSkipped": 18
     },
     "skipCeilingWhy": "上限取的是**已量到的最大环境**（CI）。CI 镜像里没装 @earendil-works/pi-coding-agent，那两条装载器用例按环境跳过，于是 CI 比本地多 2 条 skip；上限按 CI 定，本地跳得更少是绿（棘轮方向：多跳才红）。 **（#774 追加的第三个来源，上限 15 → 16）** `test/loop-snapshot-round-residue-735.test.js` 里新增的那格「这台机器上找不到 Node 24 runner」——**它验的正是 Node 24 的默认 reporter 形状**，所以只在拿得到 Node 24 可执行文件的环境真跑：本机 `~/.local/node24/bin/node` 在 ⇒ 本地 13 条；CI 的 `node 24` job 走 `process.execPath` ⇒ 15 条；CI 的 `node 22` job 两个都没有 ⇒ **16 条**。 CI 实测（run `42428178968`，同一棵 `cc08dd4`，两条 job 都跑到过 `check:test-summary`）：`node 24` = `tests=3716 pass=3701 fail=0 skipped=15 ⇒ TEST-SUMMARY-VERDICT ok`；`node 22` = `skipped=16 ⇒ red codes=SKIPPED_OVER`。 **这不是把判据放宽**：那一格在 `node 24` job 上真跑，覆盖面没丢；上限 16 之后**再多跳一条仍然红**（反向证：`# skipped 17` 的日志在本登记值下仍报 `SKIPPED_OVER`）。 **（#754 追加的第四个与第五个来源，上限不动）** 本支两条**无条件** skip：`test/loop-resume.test.js` 的「有锚点而写被拒」家族一格与 `test/loop-resume-abandon-signals-730.test.js` 的格2③（现场只有 pre-261021 升级闸门造得出，闸门已关 ⇒ 第二类因果耦合，follow-up #776）。合并树本机现测 skipped **15** = main 侧同一台机器的 13 + 这两条 ⇒ 仍低于登记上限 16，判据没放宽。⚠ **CI 侧的合并树读数尚未到手**：main 的 16 是在**没有**这两条的树上量到的，本支合进去之后 CI `node 22` 预计 18；这一格按「上限取已量到的最大环境」的口径**不把预计当已测**，等 CI 读数附 run 号再抬（抬之前 CI 若报 `SKIPPED_OVER`，那是这一格在等读数，不是掉了覆盖）。 **（#754 的 CI 读数已到手，上限 16 → 18）** CI run `42504772098`、树 `476b369`（本支 `adac4a3` merge main `d41165b`）两条 job 都跑到 `check:test-summary`：`node 24` = `tests=3749 pass=3732 fail=0 skipped=17`、`node 22` = `tests=3749 pass=3731 fail=0 skipped=18` ⇒ 除这一维外全绿。多出的两条是本支 #754 裁决 2 的**具名无条件跳过**（`test/loop-resume.test.js` 的「有锚点而写被拒」家族一格、`test/loop-resume-abandon-signals-730.test.js` 的格2③；现场只有已关的 pre-261021 升级闸门造得出，follow-up #776）。抬到 18 = 「取已量到的最大环境」，**不是放宽判据**：再多跳一条仍然红，且这两条断言一条没删、留在原地。",
     "observations": [
+        {
+            "date": "2026-11-14",
+            "env": "开发机（`/home/eric/projects/worktrees/partial-slot`；**没跑过 `npm install`**：本 worktree 本来没有 `node_modules`，拿符号链接指到主 worktree `/home/eric/projects/erix-llm-kit/node_modules` 才跑得动全量（否则 `test/flat-count-inventory.test.js` 因 `Cannot find module 'typescript'` 红））",
+            "node": "node 22.23.2（系统 node）",
+            "commit": "本支 `29b890de`（M1 store 分流那笔；登记这笔在它之后）",
+            "branch": "fix-261113-08-partial-slot-file",
+            "mainSha": "0cf7f978",
+            "mergeBase": "0cf7f978",
+            "tests": 3849,
+            "pass": 3836,
+            "fail": 0,
+            "skipped": 13,
+            "todo": 0,
+            "cancelled": 0,
+            "why": "**tests 3842 → 3849：净 +7，逐格有名**（#827 第 3 刀 / 工单 261113-08：把 `partial-text` 槽从 `<runId>.recovery.jsonl` 搬进自己的 `<runId>.partial.jsonl`，全部加在 `test/store/ledger-recovery-rows-769.test.js`）：①「#827 第 3 刀（a）：写 partial-text 不改变 `.recovery.jsonl` 的字节与 mtime」（本刀的全部意义，实测事件文件 654 B / mtimeMs 1794617598887.2222 连写 3 次槽一字不变，槽文件 263 B）、②「（b）：追加 `tool-executed` 不改变 `.partial.jsonl`」（实测 248 B / mtime 不变）、③「（c）：`listRecoveryRows` 两份都收且顺序是事件在前、槽在后（file）」、④「（c/memory）同一套顺序断言」（两份实现不得分叉）、⑤「（d）：`clearRecoveryRows` 删两个文件；两份都不在 ⇒ `false` 且不抛」（含「只有槽在场仍要 `true`」与「从无恢复行的 runId」）、⑥「（d2）：clear 把**两份**去重缓存都抖掉」（同 payload 重放要能真落；漏抖任何一份就会静默 `false`）、⑦「（e）：两份文件的幂等命名空间是分开的（file / memory 同语义，故意撞同一条 `dedupKey`；顺手把 #326 的「同键同 payload ⇒ `false`、同键异 payload ⇒ 抛 `TranscriptDedupConflictError`」在分流后的两份上各钉一次）。**另有 3 格现有用例按分流改了断言但没改名、没改数**（它们直按 `recoveryRowsPath` 数行/量字节）：「#827 槽化（判据 1）」、「#827 跳轮自剪枝（判据 4）」、「#769 字节：一次工具执行新增的账本行字节」——改的是“partial 行现在在 `.partial.jsonl`”这个事实，断言只多不少。数字取本树 `npm test` 自己打印的汇总行（日志 `/tmp/g-m2-full.log`），经 `node scripts/suite-summary-reconcile.mjs --log` 同一份日志复核，非手抄。skipped 13 与 `maxSkipped` 18 不动（真模型端点/真 relay 门禁关着的那几条）。"
+        },
         {
             "date": "2026-11-13",
             "env": "开发机（`/home/eric/projects/worktrees/inflight-slot`，`npm install --include=dev` 装齐）",

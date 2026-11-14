@@ -13,7 +13,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 // 卫生规则 B（scripts/test-hygiene-check.mjs）：test/** 里不许裸用 mkdtemp/mkdtempSync，临时目录只走本夹具。
 import { makeTmp } from "../helpers/tmp.js";
@@ -21,7 +21,7 @@ import { makeTmp } from "../helpers/tmp.js";
 import { runDirect, directError } from "../helpers/run-direct.js";
 import { createFakeProvider } from "../helpers/fake-provider.js";
 import { createMemoryTranscriptStore } from "../../src/store/memory.js";
-import { createFileTranscriptStore, recoveryRowsPath } from "../../src/store/file.js";
+import { createFileTranscriptStore, partialSlotPath, recoveryRowsPath } from "../../src/store/file.js";
 // issue #769 R3（B）：新错误码从读侧导出，测试**不**拼字面量（拼错了不会红在真正要钉的地方）。
 import { RECOVERY_ROWS_UNREADABLE } from "../../src/loop/resume-manager.js";
 import {
@@ -210,14 +210,18 @@ test("#827 槽化（判据 1）：同一轮连写 3 次 partial-text ⇒ 只剩 
         `${label}：tool-executed 不受槽化影响：一行一事件、只追加、永不替换（含同轮两条）`);
 
       if (fileDir !== null) {
-        // 落盘面：原子整写后文件仍是逐行合法的 JSONL，partial 行物理上只有一条。
-        const lines = readFileSync(recoveryRowsPath(fileDir, runId), "utf8")
-          .split("\n").filter((line) => line.length > 0);
-        const parsed = lines.map((line) => JSON.parse(line));
-        assert.equal(parsed.filter((r) => r.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT && r.round === 7).length, 1,
+        // 落盘面（#827 第 3 刀分流后）：partial 在 `.partial.jsonl`，tool 在 `.recovery.jsonl`，
+        // 两份都是逐行合法的 JSONL；槽文件不装事件行，事件文件不装槽。
+        const partialParsed = readRowFile(partialSlotPath(fileDir, runId));
+        const eventParsed = readRowFile(recoveryRowsPath(fileDir, runId));
+        assert.equal(partialParsed.filter((r) => r.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT
+          && r.round === 7).length, 1,
           "file：盘上那一轮的 partial 行只有一条（不是「追加了再让读侧忽略」）");
-        assert.equal(parsed.filter((r) => r.recoveryEvent === RECOVERY_EVENT_TOOL_EXECUTED).length, 2,
+        assert.equal(eventParsed.filter((r) => r.recoveryEvent === RECOVERY_EVENT_TOOL_EXECUTED).length, 2,
           "file：盘上两条 tool-executed 行都在");
+        assert.equal(partialParsed.length, 1, "file：槽文件恒为 1 行，不装任何事件行");
+        assert.equal(eventParsed.some((r) => r.recoveryEvent === RECOVERY_EVENT_PARTIAL_TEXT), false,
+          "file：事件文件里一行 partial 也不应当有（分流不彻底就是这里红）");
       }
     }
   });
@@ -248,9 +252,9 @@ test("#827 跨轮自剪枝（判据 4）：第 2 轮的部分行到场后，文�
   async () => {
     const dir = await makeTmp("erix-827-prune-");
     await assertCrossRoundPruning(createFileTranscriptStore({ dir }), "prune-file", (runId) => {
-      // 落盘面：不是「追加了再让读侧忽略」，而是旧轮那条真的不在文件里了。
-      return readFileSync(recoveryRowsPath(dir, runId), "utf8")
-        .split("\n").filter((line) => line.length > 0).map((line) => JSON.parse(line));
+      // 落盘面：不是「追加了再让读侧忽略」，而是旧轮那条真的不在盘上了。
+      // #827 第 3 刀：行现在分居两份文件 ⇒ 合并两份再交给断言（合并顺序与 `listRecoveryRows` 同）。
+      return [...readRowFile(recoveryRowsPath(dir, runId)), ...readRowFile(partialSlotPath(dir, runId))];
     });
   });
 
@@ -483,15 +487,24 @@ test("#769 字节：一次工具执行新增的账本行字节（现测，写进
   await store.appendRecoveryRow(runId, buildToolExecutedRecoveryRow({ runId, round: 1, toolUseId: "call-1" }));
   await store.appendRecoveryRow(runId, buildPartialTextRecoveryRow({ runId, round: 1, text: "半截正文样例" }));
 
-  // 恢复行落在**自己的文件**里（`<runId>.recovery.jsonl`）：轮记录那份 `.jsonl` 一个字节都不许多。
+  // 恢复行落在**自己的文件**里：#827 第 3 刀分流后是**两份**——事件在 `<runId>.recovery.jsonl`、
+  // 槽在 `<runId>.partial.jsonl`；轮记录那份 `.jsonl` 一个字节都不许多。
   // 写侧是 fire-and-forget（「记账失败绝不拖垮这一轮」），所以这里要等它落盘，不能假设已写完。
   const recoveryFile = runId + ".recovery.jsonl";
-  for (let i = 0; i < 50 && !readdirSync(dir).includes(recoveryFile); i += 1) {
+  const partialFile = runId + ".partial.jsonl";
+  for (let i = 0; i < 50 && !(readdirSync(dir).includes(recoveryFile)
+    && readdirSync(dir).includes(partialFile)); i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   const listed = readdirSync(dir);
   assert.ok(listed.includes(recoveryFile), `前置：目录里应当有恢复行文件 ${recoveryFile}，实际 ${JSON.stringify(listed)}`);
-  const lines = readFileSync(join(dir, recoveryFile), "utf8").split("\n").filter((line) => line.length > 0);
+  assert.ok(listed.includes(partialFile), `前置：目录里应当有槽文件 ${partialFile}，实际 ${JSON.stringify(listed)}`);
+  // 分流断言：事件文件只剩 tool 那一行，槽文件只剩 partial 那一行（合起来才是改前的两行）。
+  const eventLines = readFileSync(join(dir, recoveryFile), "utf8").split("\n").filter((l) => l.length > 0);
+  const slotLines = readFileSync(join(dir, partialFile), "utf8").split("\n").filter((l) => l.length > 0);
+  assert.equal(eventLines.length, 1, "分流后事件文件只装 tool-executed（恰好 1 行）");
+  assert.equal(slotLines.length, 1, "分流后槽文件只装 partial-text（恰好 1 行）");
+  const lines = [...eventLines, ...slotLines];
   assert.equal(lines.length, 2, "两行都真落盘了");
   const bytesOf = (/** @type {string} */ kind) => lines
     .filter((line) => JSON.parse(line).recoveryEvent === kind)
@@ -992,3 +1005,170 @@ test("#769 R5（M5）续跑现场：坏 `tool-executed` 行 ⇒ 终局点名同�
   assert.deepEqual(executedCalls, [], "工具没被执行：这不是「把坏行当没证据然后重放」那条老路");
   assert.equal(provider.requests.length, 0, "终止在第一次模型请求之前");
 });
+
+// ── 8) issue #827 第 3 刀（工单 261113-08）：两个文件分流 ─────────────────────
+//
+// 判据（工单「M2」那六格）：(a) 写槽不动事件文件的字节与 mtime；(b) 追事件不动槽文件；
+// (c) `listRecoveryRows` 两份都收、顺序「事件在前、槽在后」；(d) `clearRecoveryRows` 两份都删；
+// (e) memory 同语义；(f) 反向证是**手工临时改一行**跑出来的（输出贴在 `.scratch/REPORT-827-3.md`）。
+
+/** 读一份 JSONL 的盘上行；文件不在场时 `readFileSync` 抛 ENOENT，调用方自己保证它在场。 */
+function readRowFile(/** @type {string} */ path) {
+  return readFileSync(path, "utf8").split("\n").filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line));
+}
+
+test("#827 第 3 刀（a）：写 partial-text 不改变 .recovery.jsonl 的字节数与 mtime", async (t) => {
+  const dir = await makeTmp("erix-827-3-a-");
+  const store = createFileTranscriptStore({ dir });
+  const runId = "split-a";
+  const eventsFile = recoveryRowsPath(dir, runId);
+  // 先垫 3 条事件行：改前每一次槽重写都会把它们连同分隔符全部重抄一遍（本刀要消灭的重写）。
+  for (const toolUseId of ["t-1", "t-2", "t-3"]) {
+    assert.equal(await store.appendRecoveryRow(runId,
+      buildToolExecutedRecoveryRow({ runId, round: 1, toolUseId })), true, `前置：${toolUseId} 要真落`);
+  }
+  const before = statSync(eventsFile);
+  assert.equal(existsSync(partialSlotPath(dir, runId)), false, "前置：写第一条槽之前 .partial.jsonl 不在场");
+  for (const text of ["第一段", "第一段第二段", "第一段第二段第三段"]) {
+    assert.equal(await store.appendRecoveryRow(runId,
+      buildPartialTextRecoveryRow({ runId, round: 1, text })), true, `槽写「${text}」必须报真落`);
+  }
+  const after = statSync(eventsFile);
+  // 先钉住「事件文件没被动过」再去看槽文件：反向证（把 partial 落点改回 `recoveryRowsPath`）时
+  // 红的就是这两行，而不是「.partial.jsonl 不存在」这种旁证。
+  assert.equal(after.size, before.size, "写 partial-text 不许改变 .recovery.jsonl 的字节数");
+  assert.equal(after.mtimeMs, before.mtimeMs, "写 partial-text 不许改变 .recovery.jsonl 的 mtime");
+  t.diagnostic(`#827-3(a) 连写 3 次槽：事件文件 ${before.size} B / mtimeMs ${String(before.mtimeMs)}`
+    + ` → ${String(after.size)} B / mtimeMs ${String(after.mtimeMs)}`
+    + `；槽文件 ${String(statSync(partialSlotPath(dir, runId)).size)} B`);
+  const slotRows = readRowFile(partialSlotPath(dir, runId));
+  assert.equal(slotRows.length, 1, "三次替换后 .partial.jsonl 恒为 1 行");
+  assert.equal(slotRows[0].text, "第一段第二段第三段", "留下的必须是最后一次的全量正文");
+  assert.equal(readRowFile(eventsFile).length, 3, "事件文件仍是那 3 行，一条没动");
+});
+
+test("#827 第 3 刀（b）：追加 tool-executed 不改变 .partial.jsonl", async (t) => {
+  const dir = await makeTmp("erix-827-3-b-");
+  const store = createFileTranscriptStore({ dir });
+  const runId = "split-b";
+  const slotFile = partialSlotPath(dir, runId);
+  assert.equal(await store.appendRecoveryRow(runId,
+    buildPartialTextRecoveryRow({ runId, round: 1, text: "半截正文" })), true, "前置：槽先落");
+  assert.equal(existsSync(slotFile), true, "槽必须落在 .partial.jsonl（不在场就是分流没生效）");
+  const before = statSync(slotFile);
+  for (const toolUseId of ["t-1", "t-2"]) {
+    assert.equal(await store.appendRecoveryRow(runId,
+      buildToolExecutedRecoveryRow({ runId, round: 1, toolUseId })), true, `${toolUseId} 必须真落`);
+  }
+  const after = statSync(slotFile);
+  t.diagnostic(`#827-3(b) 追加 2 条事件行：槽文件 ${before.size} B / mtimeMs ${String(before.mtimeMs)}`
+    + ` → ${String(after.size)} B / mtimeMs ${String(after.mtimeMs)}`);
+  assert.equal(after.size, before.size, "追加 tool-executed 不许动 .partial.jsonl 的字节数");
+  assert.equal(after.mtimeMs, before.mtimeMs, "追加 tool-executed 不许动 .partial.jsonl 的 mtime");
+  assert.equal(readRowFile(slotFile).length, 1, "槽文件仍是 1 行（事件行没被顺手抄进去）");
+});
+
+test("#827 第 3 刀（c）：listRecoveryRows 两份都收，顺序是「事件在前、槽在后」（file）", async () => {
+  const dir = await makeTmp("erix-827-3-c-");
+  await assertMergeOrder(createFileTranscriptStore({ dir }), "file");
+  // 落盘顺序与读回顺序相反：槽在墙钟上最先写，合并结果里它仍然排最后。
+  const rows = readRowFile(recoveryRowsPath(dir, "merge-file"));
+  assert.equal(rows.every((row) => row.recoveryEvent === RECOVERY_EVENT_TOOL_EXECUTED), true,
+    "file：事件文件里只有事件行（顺序契约的另一半：读侧不是「读一份文件」）");
+});
+
+test("#827 第 3 刀（c/memory）：同一套合并顺序断言，两份实现不得分叉", async () => {
+  await assertMergeOrder(createMemoryTranscriptStore(), "memory");
+});
+
+/** 合并顺序的共同断言（file / memory 各跑一次）。 */
+async function assertMergeOrder(/** @type {any} */ store, /** @type {string} */ label) {
+  const runId = `merge-${label}`;
+  // 先写槽（墙钟在前），再写两条事件 ⇒ 合并结果仍必须「事件在前、槽在后」。
+  assert.equal(await store.appendRecoveryRow(runId,
+    buildPartialTextRecoveryRow({ runId, round: 1, text: "正文" })), true, `${label}：前置槽要落`);
+  assert.equal(await store.appendRecoveryRow(runId,
+    buildToolExecutedRecoveryRow({ runId, round: 1, toolUseId: "t-1" })), true, `${label}：事件 1 要落`);
+  assert.equal(await store.appendRecoveryRow(runId,
+    buildToolExecutedRecoveryRow({ runId, round: 2, toolUseId: "t-2" })), true, `${label}：事件 2 要落`);
+  const rows = recoveryRows(await store.listRecoveryRows(runId));
+  assert.deepEqual(rows.map((row) => row.recoveryEvent),
+    [RECOVERY_EVENT_TOOL_EXECUTED, RECOVERY_EVENT_TOOL_EXECUTED, RECOVERY_EVENT_PARTIAL_TEXT],
+    `${label}：合并顺序 = 先事件、后槽（契约写死的顺序，读侧不依赖但宿主会看）`);
+  assert.deepEqual(rows.map((row) => row.toolUseId ?? null), ["t-1", "t-2", null],
+    `${label}：事件行保持自己的落盘序，没被槽插到前面`);
+  assert.deepEqual([...readExecutedToolIdRecoveryRows(rows)], ["t-1", "t-2"], `${label}：读侧台账两条都在`);
+  assert.deepEqual(readPartialTextRecoveryRow(rows, 1), { text: "正文", round: 1 },
+    `${label}：读侧从合并结果里仍拿到那段半截正文`);
+}
+
+test("#827 第 3 刀（d）：clearRecoveryRows 删两个文件；两份都不在 ⇒ false 且不抛", async () => {
+  const dir = await makeTmp("erix-827-3-d-");
+  const store = createFileTranscriptStore({ dir });
+  const runId = "split-clear";
+  assert.equal(await store.appendRecoveryRow(runId,
+    buildToolExecutedRecoveryRow({ runId, round: 1, toolUseId: "t-1" })), true, "前置：事件行要落");
+  assert.equal(await store.appendRecoveryRow(runId,
+    buildPartialTextRecoveryRow({ runId, round: 1, text: "正文" })), true, "前置：槽要落");
+  assert.equal(existsSync(recoveryRowsPath(dir, runId)), true, "前置：事件文件在场");
+  assert.equal(existsSync(partialSlotPath(dir, runId)), true, "前置：槽文件在场");
+  assert.equal(await store.clearRecoveryRows(runId), true, "两份都在 ⇒ 必须 true");
+  assert.equal(existsSync(recoveryRowsPath(dir, runId)), false, "事件文件必须真的被删掉了");
+  assert.equal(existsSync(partialSlotPath(dir, runId)), false, "槽文件必须真的被删掉了");
+  assert.equal(await store.clearRecoveryRows(runId), false, "两份都不在 ⇒ false");
+  // 只有一份在场（只有槽）也必须 true：不能因为事件文件 ENOENT 就漏掉那一格。
+  assert.equal(await store.appendRecoveryRow(runId,
+    buildPartialTextRecoveryRow({ runId, round: 3, text: "只有槽" })), true, "前置：只写一条槽");
+  assert.equal(await store.clearRecoveryRows(runId), true, "只有槽文件在场 ⇒ 仍要 true");
+  assert.equal(await store.clearRecoveryRows(runId), false, "清干净之后再清 ⇒ false，不抛");
+  assert.equal(await store.clearRecoveryRows("never-written"), false, "从无恢复行的 runId ⇒ false，不抛");
+});
+
+test("#827 第 3 刀（d2）：clear 把**两份**去重缓存都抖掉（同 payload 重放要能真落）", async () => {
+  const dir = await makeTmp("erix-827-3-d2-");
+  const store = createFileTranscriptStore({ dir });
+  const runId = "split-clear-cache";
+  const toolRow = buildToolExecutedRecoveryRow({ runId, round: 1, toolUseId: "t-1" });
+  const slotRow = buildPartialTextRecoveryRow({ runId, round: 1, text: "同一段正文" });
+  assert.equal(await store.appendRecoveryRow(runId, toolRow), true, "前置：事件行落");
+  assert.equal(await store.appendRecoveryRow(runId, slotRow), true, "前置：槽落");
+  assert.equal(await store.appendRecoveryRow(runId, { ...toolRow }), false, "前置：同键同 payload ⇒ 幂等 false");
+  assert.equal(await store.appendRecoveryRow(runId, { ...slotRow }), false, "前置：槽同键同 payload ⇒ 幂等 false");
+  assert.equal(await store.clearRecoveryRows(runId), true, "前置：清掉两份");
+  assert.equal(await store.appendRecoveryRow(runId, { ...toolRow }), true,
+    "clear 之后事件必须能真落：漏抖事件那份缓存就会静默 false");
+  assert.equal(await store.appendRecoveryRow(runId, { ...slotRow }), true,
+    "clear 之后槽必须能真落：漏抖槽那份缓存就会静默 false");
+});
+
+test("#827 第 3 刀（e）：两份文件的幂等命名空间是分开的（file / memory 同语义）", async () => {
+  await assertSplitDedup(createFileTranscriptStore({ dir: await makeTmp("erix-827-3-e-") }), "file");
+  await assertSplitDedup(createMemoryTranscriptStore(), "memory");
+});
+
+/**
+ * 同一条 `dedupKey` 同时出现在事件与槽上：分流前它们同住一份容器/文件 ⇒ 槽会被判「已写过」
+ * （file 侧还要靠 `:events` / `:partial` 两个缓存后缀，见 `src/store/file.js`）。
+ */
+async function assertSplitDedup(/** @type {any} */ store, /** @type {string} */ label) {
+  const runId = `split-dedup-${label}`;
+  const slotRow = buildPartialTextRecoveryRow({ runId, round: 1, text: "半截正文" });
+  const eventRow = {
+    ...buildToolExecutedRecoveryRow({ runId, round: 1, toolUseId: "t-1" }),
+    dedupKey: slotRow.dedupKey, // 刻意撞键：分流不彻底就是这里红
+  };
+  assert.equal(await store.appendRecoveryRow(runId, eventRow), true, `${label}：事件行先落`);
+  assert.equal(await store.appendRecoveryRow(runId, slotRow), true,
+    `${label}：同键的槽必须真落——分流之后「已写过」只认自己那份文件/容器`);
+  const rows = recoveryRows(await store.listRecoveryRows(runId));
+  assert.equal(byEvent(rows, RECOVERY_EVENT_TOOL_EXECUTED).length, 1, `${label}：事件行还在`);
+  assert.deepEqual(readPartialTextRecoveryRow(rows, 1), { text: "半截正文", round: 1 },
+    `${label}：槽正文也在（没被同键事件行挤掉）`);
+  // 幂等口径不放宽（#326）：同键同 payload 仍幂等 false，同键异 payload 仍响亮冲突。
+  assert.equal(await store.appendRecoveryRow(runId, { ...slotRow }), false, `${label}：同键同 payload ⇒ false`);
+  assert.rejects(store.appendRecoveryRow(runId, {
+    ...slotRow, round: 1, text: "同一段正文但换了内容", dedupKey: slotRow.dedupKey,
+  }), { name: "TranscriptDedupConflictError" },
+    `${label}：同键异 payload 必须抛，不许静默覆盖`);
+}

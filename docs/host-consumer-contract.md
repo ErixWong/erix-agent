@@ -7509,20 +7509,35 @@ packaged engine (upstream-side, i.e. a pure drift sentinel).
   suite: the fork loses the sentinel.
 
 
-## Ledger recovery rows — a second `.jsonl` per run (issue #769)
+## Ledger recovery rows — two extra `.jsonl` files per run (issue #769, #827 slice 3)
 
-The append-only ledger now writes **a second file per run**: `<dir>/<runId>.recovery.jsonl`, next to the existing
-`<dir>/<runId>.jsonl`. **The round-record file is byte-for-byte unchanged** — one line is still exactly one round, and
-nothing moved out of it (message bodies included). This new file only carries *recovery rows*:
+The append-only ledger now writes **two files per run** next to the existing `<dir>/<runId>.jsonl`:
+`<dir>/<runId>.recovery.jsonl` (**events**: `tool-executed`, append-only, never rewritten) and
+`<dir>/<runId>.partial.jsonl` (**the slot**: `partial-text`, always 0 or 1 line, whole-file rewrite).
+**Splitting them is issue #827 slice 3**: while both channels shared one file, every slot rewrite
+re-copied every event line (measured: 200 tool rows = 45,204 B, and 300 commits in one round
+re-wrote 12.9 MB cumulatively). Now a slot rewrite touches only that one line (≈ 2.2 KB) and
+**the event file is never rewritten at all**. **The round-record file is byte-for-byte unchanged** —
+one line is still exactly one round, and nothing moved out of it (message bodies included).
 
-- `kind: "recovery"` — the discriminator a host filters on. Two events exist today:
+- `kind: "recovery"` — the discriminator a host filters on. Both files together carry only *recovery rows*.
+  Two events exist today:
   `recoveryEvent: "tool-executed"` (carries `toolUseId`) and `recoveryEvent: "partial-text"` (carries `text`
   itself: **the complete accumulated text as it stood at that moment — not truncated, not capped** — the
   engine hands the whole string to the row, and there is **no** `textLength` field either, so a consumer that
   wants a length counts the
   string; the row deliberately carries no derived number).
+- Which line lives in which file is part of the contract (`partialSlotPath` / `recoveryRowsPath` in
+  `src/store/file.js` derive both names — do not hard-code the suffixes): `tool-executed` → `.recovery.jsonl`,
+  `partial-text` → `.partial.jsonl`. `listRecoveryRows` **merges both files** and the order it returns is fixed:
+  event lines first (in append order), then the slot line. Readers select by `recoveryEvent` and do not depend on
+  that order, but a host reading the file directly does — so it may not change. For a ledger written **before**
+  this split, a `partial-text` row left inside `.recovery.jsonl` is still returned from there: old data stays
+  readable, and a legacy mixed file is never rewritten into the new shape.
 - `tool-executed` rows: one row = **one event**, appended, never replaced and never rewritten — more than one per
-  round is normal (one per distinct `toolUseId`). `partial-text` rows (issue #827 slice 1, the #791 byte bill):
+  round is normal (one per distinct `toolUseId`). Since #827 slice 3 they live in a file that is only ever
+  appended to and `rm`'d, so a line that landed there stays put until `clearRecoveryRows`.
+  `partial-text` rows (issue #827 slice 1, the #791 byte bill):
   **one slot per round** — the round keeps exactly one row whose content is the **latest full text**, and each new
   commit **replaces** the round's previous row via an atomic whole-file rewrite (tmp + `rename`, same technique as
   `saveRunSnapshot`). This is deliberately not an append log: the reader (`readPartialTextRecoveryRow`) always took
@@ -7547,11 +7562,13 @@ nothing moved out of it (message bodies included). This new file only carries *r
   `partial-text` rows; readers take the last, so the semantics hold). This channel still assumes **one writer per
   run**: the append lock lives on the store instance, not on the directory, so a host pointing two instances at one
   directory must serialize at the host boundary (the same rule the notes adapter states above) — those guards are
-  best-effort, not a cross-process lock. Every `tool-executed` row survives that rewrite — such rows are
-  cleared **only at run start**, by
-  `clearRecoveryRows` (a whole-file `rm`, deliberately not at round start). A host that tails this file for an incremental
-  mirror **will see rows vanish** — mirror by re-reading the file (or treat each `partial-text` write as replacing
-  that round's last one); do not assume a line, once read, stays in the file.
+  best-effort, not a cross-process lock. Every `tool-executed` row survives that rewrite — it lives in the other
+  file now, which the rewrite never opens. `tool-executed` rows are cleared **only at run start**, by
+  `clearRecoveryRows` (it removes **both** files with a whole-file `rm`, deliberately not at round start).
+  **Tailing the slot file** (`.partial.jsonl`): a host mirroring it incrementally **will see the line vanish or
+  get replaced** — re-read the file, or treat each `partial-text` write as replacing that round's last line; do
+  not assume a line, once read, stays in the file. **Tailing the event file** (`.recovery.jsonl`) needs no such
+  care: since slice 3 nothing rewrites it, so a line that appeared stays until the run-start clear.
 
 Write timing: the `tool-executed` row is appended **the moment the executor returns** — before the `tool_result` row
 lands, and therefore before any snapshot write of that round. That ordering is the whole point: *"`tool_use` with no
@@ -7559,8 +7576,9 @@ lands, and therefore before any snapshot write of that round. That ordering is t
 inferred from the absence of another row.
 
 Store surface: `appendRecoveryRow(runId, row)` → `true` (appended) / `false` (deduped), `listRecoveryRows(runId)` →
-rows in append order, `clearRecoveryRows(runId)` → `true` when a file was removed / `false` when there was nothing to
-remove. All three are **optional**, and absence and failure are two different things:
+rows of **both files**, event lines first then the slot line, `clearRecoveryRows(runId)` → removes **both files**,
+`true` when at least one of them was removed / `false` when neither was there. All three are **optional**,
+and absence and failure are two different things:
 
 - **Absent** (the method is not on the store) is a legal degradation: the engine skips that step and reads the
   snapshot cells (`executedToolIds` / `partialText` / `partialRound`), which stay legal fallbacks and are never the

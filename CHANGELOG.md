@@ -33,6 +33,32 @@
   写的是**它那个版本**的命令名，都按历史面保留；`docs/requirements*` 里的 "real upstream message" 指
   provider 的错误正文，属泛指，已改词去形状、不动语义。
 
+### Changed
+- **The crash-recovery sidecar splits into two files, so a half-written-text commit no longer
+  rewrites every tool event (issue #827 slice 3, task 261113-08).** `partial-text` (one slot per
+  round, rewritten whole-file) and `tool-executed` (append-only events) used to share
+  `<runId>.recovery.jsonl`, which meant each slot rewrite also rewrote every tool row: measured
+  45,204 B for 200 tool rows, times ~300 commits in a long round. They now live apart --
+  `<runId>.recovery.jsonl` keeps the events (append-only, never rewritten) and
+  `<runId>.partial.jsonl` holds the slot (0 or 1 row, rewritten whole-file). Measured after the
+  split: writing three partial texts leaves the event file's byte count **and** mtime unchanged,
+  while one slot rewrite costs 2,224 B. `listRecoveryRows` merges both files (events first, then
+  the slot) so no reader changed; `clearRecoveryRows` removes both. **Hosts that read the files
+  directly must know which name holds which event** -- both names are derived in
+  `src/store/file.js` (`recoveryRowsPath` / `partialSlotPath`), so derive them instead of hard-coding
+  the suffixes. Rows written before this split stay readable where they are: a `partial-text` row
+  still sitting in the event file is returned from there and is never rewritten into the new shape.
+- **崩溃现场侧车拆成两个文件：一次「半截正文」提交不再重写全部工具事件（issue #827 第 3 刀，
+  工单 261113-08）。** `partial-text`（一轮一个槽，整文件重写）与 `tool-executed`（只追加的事件）
+  原本同住 `<runId>.recovery.jsonl`，于是每次槽重写都要把全部工具行重写一遍：实测 200 条工具行
+  = 45,204 B，长轮里约 300 次提交。现在分居两处 —— `<runId>.recovery.jsonl` 只装事件（只追加、
+  永不改写），`<runId>.partial.jsonl` 装那个槽（0 或 1 行，整文件重写）。拆分后实测：连写三次
+  半截正文，事件文件的字节数与 mtime **都不变**，而一次槽重写只花 2,224 B。`listRecoveryRows`
+  合并两份（先事件行、再槽行），所以读侧一个字都没改；`clearRecoveryRows` 删两份。**直接读文件
+  的宿主必须知道哪个名字装哪种事件** —— 两个名字都由 `src/store/file.js` 现推
+  （`recoveryRowsPath` / `partialSlotPath`），请照样推导而不是写死后缀。拆分**之前**写的行仍留在
+  原处可读：还躺在事件文件里的 `partial-text` 行就从那里返回，不会被改写成新形状。
+
 ## [0.32.0] - 2026-11-12
 
 ### Breaking
