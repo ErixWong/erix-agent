@@ -258,47 +258,5 @@ test("archive stub warns about side effects of the truncated command", async () 
   assert.match(stub, /若未记录且无法确定性重算，请省略对应 findings 声明/);
 });
 
-test("crash mid-round: archived output survives via checkpoint", async () => {
-  const store = createMemoryTranscriptStore();
-  const controller = new AbortController();
-  const firstProvider = createFakeProvider([
-    {
-      content: [
-        { type: "tool_use", id: "big-1", name: "big", input: {} },
-        { type: "tool_use", id: "boom-1", name: "boom", input: {} },
-      ],
-      stopReason: "tool_use",
-    },
-  ]);
-  await assert.rejects(
-    runDirect({
-      provider: firstProvider,
-      initialUserMessage: "run",
-      executeTool: async ({ id }) => {
-        if (id === "boom-1") controller.abort();
-        return id === "big-1" ? bigOutput() : "unused";
-      },
-      store,
-      runId: "hygiene-crash",
-      signal: controller.signal,
-      completion: false,
-    }),
-    /abort/i,
-  );
-
-  const resumedProvider = createFakeProvider([
-    { content: [{ type: "text", text: "recovered" }], stopReason: "end_turn" },
-  ]);
-  const result = await runToolLoop(withSeed({
-    provider: resumedProvider,
-    resume: true,
-    store,
-    runId: "hygiene-crash",
-    executeTool: async () => "unused",
-    completion: false,
-  }));
-  // resumed round record 也带全量（字节保真落盘）
-  const records = await store.load("hygiene-crash");
-  const archived = records.flatMap((record) => record.toolOutputs ?? []);
-  assert.ok(archived.some((output) => output.content.includes(BIG_TAIL)));
-});
+// 载体已退役（#838 S2）：runSnapshot 的 toolOutputs 副本不再存在；结果正文未进入账本时无从恢复，
+// 因此不再断言崩溃后还能从 checkpoint 取回完整输出。

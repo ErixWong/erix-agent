@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
+import { buildToolExecutedRecoveryRow } from "../src/store/recovery-rows.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 
 // issue #177 刀5 **F-2** 的行为锚定测试（纯新增，不改任何既有断言语义）——M2 两格。
@@ -107,6 +108,11 @@ test("F-2 judgeInterceptCount 经 restoreResume ctx：resume 播种已执行工�
       messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "done-a" }] }],
       ts: new Date().toISOString(),
     });
+    await store.appendRecoveryRow(runId, buildToolExecutedRecoveryRow({
+      runId,
+      round: 1,
+      toolUseId: "a",
+    }));
     const provider = createFakeProvider([
       { content: [{ type: "text", text: '{"done":true,"output":"收尾"}' }], stopReason: "end_turn" },
     ]);

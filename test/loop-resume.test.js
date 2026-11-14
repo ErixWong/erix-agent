@@ -6,8 +6,13 @@ import { renderConversation } from "../src/reflection/judge.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createDeterministicRunState } from "../src/run-state.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
+import { buildToolExecutedRecoveryRow } from "../src/store/recovery-rows.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { appendLedgerMessages } from "./helpers/journal-crash-body.js";
+import {
+  NO_EVIDENCE_TOOL_RESULT_TEXT,
+  UNPERSISTED_TOOL_RESULT_TEXT,
+} from "../src/loop/pending-tool-result.js";
 
 const textMessage = (text) => ({
   role: "user",
@@ -18,6 +23,12 @@ const textMessage = (text) => ({
  * 内存里的消息没有——比较「档案 = 完整正文」时剥掉信封字段，**逐字比正文**。
  * 不静默放宽：调用点另有一句断言档案侧**真的**带 `ts`（否则这条剥字段就成了白名单）。 */
 const withoutJournalTs = (messages) => messages.map(({ ts, ...message }) => message);
+
+async function addExecutedEvidence(store, runId, round, toolUseId) {
+  const rows = await store.listRecoveryRows(runId);
+  if (rows.some((row) => row.recoveryEvent === "tool-executed" && row.toolUseId === toolUseId)) return;
+  await store.appendRecoveryRow(runId, buildToolExecutedRecoveryRow({ runId, round, toolUseId }));
+}
 
 
 test("replay policy and tool declarations reject unsupported values", async () => {
@@ -308,19 +319,15 @@ test("resumes after three rounds without replaying paid provider calls", async (
   });
 
   assert.equal(resumedProvider.requests.length, 1);
-  // issue #404（工单 BB）：恢复运行会在**上下文之后、第一次请求之前**注入一条「复活赛告示」。
-  // 断言强度不降：除最后那一条告示之外，请求正文与崩溃那一刻的账本**逐字一致**。
-  const notice = resumedProvider.requests[0].messages.at(-1);
-  assert.match(JSON.stringify(notice), /【恢复运行】/u,
-    `恢复的第一次请求末尾必须是那条告示，实测 ${JSON.stringify(notice).slice(0, 120)}`);
   // #439 A：恢复上下文用的是**规范化消息**（不含档案信封的逐条 `ts`，见
   // `src/store/message-rows.js#foldLedgerMessages`），所以这里剥掉它再逐字比。
+  const notice = resumedProvider.requests[0].messages.at(-1);
+  assert.match(JSON.stringify(notice), /【恢复运行】/u);
   assert.deepEqual(resumedProvider.requests[0].messages.slice(0, -1), withoutJournalTs(storedMessages));
   assert.equal(resumedResult.rounds, 4);
   assert.equal(resumedResult.finalText, "round four");
   assert.deepEqual(
     (await store.load("resume-run")).map((record) => record.round),
-    // 末位那条 round 3 的 `:control:resume-notice` 行是 #404 的告示（`round` 取恢复时的身份轮号）。
     [0, 1, 2, 3, 3, 4],
   );
   assert.deepEqual(resumedResult.messages, [
@@ -330,7 +337,7 @@ test("resumes after three rounds without replaying paid provider calls", async (
   ]);
 });
 
-test("resumes every pending tool in order after a mid-turn crash", async () => {
+test("resumes only provably unreached tools after a mid-turn crash", async () => {
   const store = createMemoryTranscriptStore();
   const controller = new AbortController();
   const firstExecutions = [];
@@ -387,6 +394,9 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
     ["a"],
     "崩溃时只把已结清的 a 写成结果行",
   );
+  // The execute callback for b ran before abort, so seed the positive ledger evidence that its result row lacks.
+  await addExecutedEvidence(store, "resume-pending-tools", 1, "a");
+  await addExecutedEvidence(store, "resume-pending-tools", 1, "b");
 
   const resumedExecutions = [];
   const resumedEvents = [];
@@ -409,7 +419,8 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
     },
   });
 
-  assert.deepEqual(resumedExecutions, ["b", "c"]);
+  assert.deepEqual(resumedExecutions, ["c"],
+    "b 有 tool-executed 正证据，不能重跑；c 无证据时只由显式 always-replay 策略补跑");
   assert.ok(resumedEvents
     .filter((event) => event.type === "tool_use")
     .every((event) => !Object.hasOwn(event.toolUse, "replay")));
@@ -424,7 +435,14 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
     .map((block) => block.tool_use_id);
   assert.deepEqual(toolUseIds, ["a", "b", "c"]);
   assert.deepEqual(toolResultIds, ["a", "b", "c"]);
-  // issue #404：最后一条是恢复告示，补跑出来的那条聚合结果紧排在它前面（位置与强度都不降）。
+  const bResult = resumedProvider.requests[0].messages
+    .flatMap((message) => message.content ?? [])
+    .find((block) => block.type === "tool_result" && block.tool_use_id === "b");
+  assert.equal(bResult.content, UNPERSISTED_TOOL_RESULT_TEXT,
+    "b 已执行但结果正文没落账，恢复上下文必须使用 UNPERSISTED 桩");
+  const executedRows = (await store.listRecoveryRows("resume-pending-tools"))
+    .filter((row) => row.recoveryEvent === "tool-executed" && row.toolUseId === "b");
+  assert.equal(executedRows.length, 1, "b 的执行证据不能因恢复而重复");
   assert.match(JSON.stringify(resumedProvider.requests[0].messages.at(-1)), /【恢复运行】/u);
   assert.deepEqual(
     resumedProvider.requests[0].messages.at(-2).content.map((block) => block.tool_use_id),
@@ -448,6 +466,12 @@ test("per-tool replay policy replays safe pending tools", async () => {
     input: { step: 1 },
     replay: "safe",
   };
+  const completedPrefix = {
+    type: "tool_use",
+    id: "completed-call",
+    name: "safe_work",
+    input: { step: 0 },
+  };
   const storedToolUse = {
     type: toolUse.type,
     id: toolUse.id,
@@ -460,8 +484,12 @@ test("per-tool replay policy replays safe pending tools", async () => {
   });
   await appendLedgerMessages(store, runId, {
     round: 1,
-    messages: [{ role: "assistant", content: [storedToolUse] }],
+    messages: [
+      { role: "assistant", content: [completedPrefix, storedToolUse] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "completed-call", content: "done" }] },
+    ],
   });
+  await addExecutedEvidence(store, runId, 1, "completed-call");
 
   const executions = [];
   const provider = createFakeProvider([
@@ -490,36 +518,10 @@ test("per-tool replay policy replays safe pending tools", async () => {
   assert.equal(replayedResult.content, "replayed safely");
 });
 
-// 载体已退役（#838 S2），本格随之退役。
-
-// #838 S3a 留给 S3b：本格依赖 A 集合快照结果与在飞调用的配对语义。
+// #838 S2 retired the stale-attempt snapshot body. Keep the live ledger-only case: absent evidence is unknown.
 test(
-  "升级前记录被中断重放时，不得把过期 attempt 的成败留给 judge 的回退链（PR #288 审阅）",
+  "无执行证据的旧调用不编造执行状态或过期成败（PR #288 审阅）",
   async () => {
-  // issue #776：本格现场从「被 #754 裁决 2 关掉的 pre-261021 升级闸门」换成**还活着的那条通道**——
-  // run snapshot 的 A 集合（`toolResults`）。它的定义就是本格要的那件事（`src/loop/resume-manager.js`
-  // 里 `replayResultsAll` 那句：「崩溃前已产出、但**没来得及落盘**的结果：账本里没有 ⇒ 从快照接回来」），
-  // 而它**不是**那条被关掉的闸门：闸门关的是「拿 `snapshot.messages` 补崩溃轮正文」，A 集合照旧喂。
-  // 三件事各自的家：
-  //   · 崩溃轮那条 `assistant(tool_use)` 写成账本 `kind:"message"` 行 ⇒ 重建的上下文里有配对的 `tool_use`；
-  //   · 那条**升级前形状**的 `tool_result`（顶层既有引擎旧同名键、也有宿主摊平键）**不落账**，
-  //     由 A 集合带进上下文 ⇒「在上下文里、但不在账本里」这件状态在新写侧仍有自然来源；
-  //   · 在飞那一单留在 `pendingToolUses`（`replay: "unsafe"`）⇒ 复放侧走中断支路并**就地**改写那份
-  //     旧块（`src/loop/orchestrator.js` 里 `if (existingToolResult)` 那一支）。本格的断言全落在那次
-  //     改写身上：过期 attempt 的顶层 `success` / `duration` / `executionStatus` 必须被扫掉（judge 的
-  //     `erix.success ?? block.success` 不许回退出一个 `true`），而 `erixRound`（TTL 的年龄来源）与
-  //     宿主摊平键不许跟着扫。
-  // ⚠ A 集合的**认领键**必须与块内 `tool_use_id` 异名（下面写的是那次过期 attempt 自己的身份）：读侧按
-  //   `entry.toolUseId` 建 `resumeRunSnapshotResults`，而它是 `resumePendingTools` 的排除项之一
-  //   （`src/loop/resume-manager.js` 里的 `replayablePending`）。同名键 ⇒ 这条调用被判「结果已成型」⇒
-  //   不再走中断支路，实测那份旧块原样留在上下文（`erix` 还是过期那份、`tool_replay_decision_required`
-  //   变空），本格第一条断言就红。异名才是本格的现场：这份结果属于**过期 attempt**，没被本次在飞那一单认领。
-  // ⚠ 工单 §3 建议的 #769 恢复行通道在本格**实测不成立**（不是没试）：给这个 id 写一条 `tool-executed`
-  //   恢复行，它就并进 `resumeExecutedToolIds`，而那正是「执行过了 ⇒ 不补跑也不再说中断」的判据；实测
-  //   结局变成 `#789` 那句「未知」的桩（`NO_EVIDENCE_TOOL_RESULT_TEXT`）、`erix` 整块不存在。
-  //   ⇒「执行过了」与「按工具复放要出声中断」在这一格是**互斥**的现场；本格要的是后者，坐标与实测见
-  //   `docs/delivery/261109-776-worker-report.md`（`docs/delivery/` 是 `.gitignore` 里的冷层，干净检出里
-  //   可能不可解析；承重理由上面几行已写完，那个指针只当冷层线索）。
   const store = createMemoryTranscriptStore();
   const runId = "resume-legacy-keys";
   const toolUse = { type: "tool_use", id: "legacy-call", name: "unsafe_work", input: {} };
@@ -534,31 +536,6 @@ test(
     messages: [{ role: "assistant", content: [toolUse] }],
     ts: new Date().toISOString(),
   });
-  await store.saveRunSnapshot(runId, {
-    round: 1,
-    status: "pending",
-    pendingToolUses: [{ ...toolUse, replay: "unsafe" }],
-    // 崩溃轮正文不再从快照喂（那条闸门已关）：除了 A 集合那一格，快照一格都不给。
-    messages: [],
-    executedToolIds: [],
-    toolResults: [{
-      // 认领键 = 那次过期 attempt 自己的身份（**不是** `legacy-call`，理由见上面那条 ⚠）。
-      toolUseId: "legacy-attempt",
-      // 升级前落盘的形状：顶层既有引擎旧同名键，也有宿主摊平键。
-      toolResult: {
-        type: "tool_result",
-        tool_use_id: "legacy-call",
-        content: "partial from the lost attempt",
-        erixRound: 0,
-        executionStatus: "ok",
-        success: true,
-        duration: 900,
-        artifactStatus: "done",
-      },
-    }],
-    toolOutputs: [],
-  });
-
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
@@ -576,17 +553,13 @@ test(
     .find((block) => block.type === "tool_result" && block.tool_use_id === "legacy-call");
   for (const [label, messages] of [["落盘侧", result.messages], ["递给模型", provider.requests[0].messages]]) {
     const block = forBlock(messages);
-    assert.equal(block.erix.executionStatus, "interrupted", `${label}：新事实住在 erix`);
-    assert.equal(Object.hasOwn(block.erix, "success"), false, `${label}：中断不编造成败`);
-    for (const retired of ["executionStatus", "success", "duration"]) {
-      assert.equal(Object.hasOwn(block, retired), false, `${label}：过期 attempt 的顶层 ${retired} 必须被扫掉`);
+    assert.equal(block.content, NO_EVIDENCE_TOOL_RESULT_TEXT,
+      `${label}：缺少任何执行和结果证据必须如实标成未知`);
+    assert.equal(block.is_error, true, `${label}：未知结果必须是错误桩`);
+    assert.equal(block.erix, undefined, `${label}：不得虚构执行状态或过期成败`);
+    for (const retired of ["executionStatus", "success", "duration", "erixRound", "artifactStatus"]) {
+      assert.equal(Object.hasOwn(block, retired), false, `${label}：不应出现无证据的旧字段 ${retired}`);
     }
-    // 钉住真正的危害点：judge.js:128 / l0.js:50,68 就是这个表达式——它必须是 undefined（未知），
-    // 而不是回退出上一次 attempt 的 true。
-    assert.equal(block.erix?.success ?? block.success, undefined, `${label}：judge 的成败回退链不得拿到过期值`);
-    // 但创建轮不能跟着扫：readRoundMarker 在 erix.round 缺席时正是回退到它算年龄的。
-    assert.equal(block.erixRound, 0, `${label}：erixRound 是 TTL 的年龄来源，扫掉=这条记录永不折叠`);
-    assert.equal(block.artifactStatus, "done", `${label}：宿主摊平键不承载引擎事实，不由引擎代扫`);
   }
 });
 
@@ -616,6 +589,7 @@ test("resumes a partial tool-result message without dropping text or breaking pa
       },
     ],
   });
+  await addExecutedEvidence(store, runId, 1, "a");
 
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "complete" }], stopReason: "end_turn" },
@@ -716,6 +690,7 @@ test("resumes tool results before a later direction hint without moving the hint
       { role: "user", content: [{ type: "text", text: "（附方向提示：换一种方法）" }] },
     ],
   });
+  await addExecutedEvidence(store, runId, 1, "a");
 
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "complete" }], stopReason: "end_turn" },
@@ -727,17 +702,24 @@ test("resumes tool results before a later direction hint without moving the hint
     executeTool: async ({ id }) => `done-${id}`,
   });
 
-  // issue #404：恢复告示排在方向提示之后（提示仍是「宿主/引擎最后一句」之前的那一条）。
-  assert.deepEqual(
-    provider.requests[0].messages.slice(-4).map((message) => message.role),
-    ["assistant", "user", "user", "user"],
-  );
-  assert.deepEqual(
-    provider.requests[0].messages.at(-3).content.map((block) => block.tool_use_id),
-    ["a", "b"],
-  );
-  assert.match(provider.requests[0].messages.at(-2).content[0].text, /附方向提示/);
-  assert.match(provider.requests[0].messages.at(-1).content[0].text, /【恢复运行】/);
+  const messages = provider.requests[0].messages;
+  const resultIndex = messages.findIndex((message) => (
+    Array.isArray(message.content)
+    && message.content.some((block) => block.type === "tool_result" && block.tool_use_id === "b")
+  ));
+  const hintIndex = messages.findIndex((message) => (
+    Array.isArray(message.content)
+    && message.content.some((block) => block.text?.includes("附方向提示"))
+  ));
+  assert.ok(resultIndex >= 0, "b 的结清结果必须在请求中");
+  assert.ok(hintIndex > resultIndex, "b 的结果必须在后续方向提示之前");
+  const noticeIndex = messages.findIndex((message) => (
+    Array.isArray(message.content)
+    && message.content.some((block) => block.text?.includes("【恢复运行】"))
+  ));
+  assert.ok(noticeIndex > hintIndex, "恢复告示必须位于方向提示之后");
+  const resultBlocks = messages[resultIndex].content.filter((block) => block.type === "tool_result");
+  assert.deepEqual(resultBlocks.map((block) => block.tool_use_id), ["a", "b"]);
 });
 
 test("restores judge interception count from executed checkpoint tools", async () => {
@@ -760,6 +742,7 @@ test("restores judge interception count from executed checkpoint tools", async (
       { role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "done-a" }] },
     ],
   });
+  await addExecutedEvidence(store, runId, 1, "a");
 
   const audited = [];
   const provider = createFakeProvider([
@@ -978,7 +961,7 @@ test("keeps the initial input when request-view injection meets a tiny budget", 
   );
 });
 
-test("archives replayed tool results without duplicating multiple resume tails", async () => {
+test("archives unknown tool results without duplicating multiple resume tails", async () => {
   const store = createMemoryTranscriptStore();
   const controller = new AbortController();
   const firstProvider = createFakeProvider([{
@@ -1015,12 +998,17 @@ test("archives replayed tool results without duplicating multiple resume tails",
   const resumedProvider = createFakeProvider([
     { content: [{ type: "text", text: "resumed" }] },
   ]);
+  const resumedExecutions = [];
   await runToolLoop({
     provider: resumedProvider,
     config: { run: { replayPolicy: "always-replay", resume: true, runId: "multi-tail", completion: false } },
     store,
-    executeTool: async () => "tool-output",
+    executeTool: async () => {
+      resumedExecutions.push("call-1");
+      return "tool-output";
+    },
   });
+  assert.deepEqual(resumedExecutions, [], "没有执行正证据的旧调用不得因 always-replay 而盲目重复");
 
   const requestMessages = resumedProvider.requests[0].messages;
   assert.deepEqual(
@@ -1031,11 +1019,12 @@ test("archives replayed tool results without duplicating multiple resume tails",
   const archived = JSON.stringify(records);
   assert.equal((archived.match(/user-two/g) ?? []).length, 1);
   assert.equal((archived.match(/user-three/g) ?? []).length, 1);
-  assert.equal((archived.match(/tool-output/g) ?? []).length, 1);
-  const resumedRound = records.find((record) => record.round === 1);
-  assert.ok(resumedRound.messages.some((message) => (
-    message.content?.some((block) => block.type === "tool_result")
-  )));
+  const resultBlocks = records.flatMap((record) => record.messages ?? [])
+    .flatMap((message) => message.content ?? [])
+    .filter((block) => block.type === "tool_result" && block.tool_use_id === "call-1");
+  assert.equal(resultBlocks.length, 1, "该 id 的 tool_result 必须恰有一份");
+  assert.equal(resultBlocks[0].content, NO_EVIDENCE_TOOL_RESULT_TEXT,
+    "没有任何可读执行证据时必须使用 NO_EVIDENCE 桩");
 
   const secondProvider = createFakeProvider([
     { content: [{ type: "text", text: "second resume" }] },
@@ -1047,6 +1036,11 @@ test("archives replayed tool results without duplicating multiple resume tails",
     executeTool: async () => "unused",
   });
   assert.equal(secondProvider.requests.length, 1);
+  const secondRecords = await store.load("multi-tail");
+  assert.equal(secondRecords.flatMap((record) => record.messages ?? [])
+    .flatMap((message) => message.content ?? [])
+    .filter((block) => block.type === "tool_result" && block.tool_use_id === "call-1").length, 1,
+  "重复恢复不得再写一份同 id 的 tool_result");
 });
 
 test("resumed session gets its own round budget and persists the continuation rounds (issue #32 #8)", async () => {
@@ -1131,8 +1125,7 @@ test("resumed session gets its own round budget and persists the continuation ro
   // issue #326（B1）多出的那一条 round=2 是引擎的**强制收尾补充记录**（指令 + 终稿 assistant）：
   // 它产生时 round 2 的轮记录早已落盘，不当场补一笔就永远不会进档案。
   // 顺序：引擎轮记录 → 收尾补充记录（同轮号，独立 dedupKey）→ 宿主追问行 → 续接轮。
-  // issue #404：多出的那条 round 2 是**恢复告示**（`…:control:resume-notice:<fp>`，轮号取恢复时的
-  // 身份轮号），它与下面第 6 条那条「收尾补充记录」同一个先例：宿主看到行数多于轮数。
+  // 恢复告示与收尾补充记录共存；宿主仍看到多于轮数的行。
   assert.deepEqual(records.map((record) => record.round), [0, 1, 2, 2, 2, 2, 3, 4]);
   const flatMessages = records.flatMap((record) => record.messages ?? []);
   assert.equal(

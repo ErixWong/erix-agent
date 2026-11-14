@@ -94,6 +94,19 @@ function blocksOfMessages(messages, type) {
     .filter((block) => block?.type === type);
 }
 
+async function appendToolExecutedEvidence(store, runId, round, toolUseId) {
+  await store.appendRecoveryRow(runId, {
+    round,
+    roundKey: `${runId}:round:${round}`,
+    dedupKey: `${runId}:engine:round:${round}:recovery:tool-executed:${toolUseId}`,
+    kind: "recovery",
+    recoveryEvent: "tool-executed",
+    toolUseId,
+    messages: [],
+    ts: new Date().toISOString(),
+  });
+}
+
 /** 模型可见的那一份事实：从**上一次请求**里取（与 `execute-tool.js` 同一观测点，不加私有出口）。 */
 function fedBackToolResult(provider, toolUseId) {
   const last = provider.requests.at(-1);
@@ -697,6 +710,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
       seq: 1,
       messages: [{ role: "user", content: [recorded] }],
     });
+    await appendToolExecutedEvidence(store, runId, 3, "done-1");
 
     let calls = 0;
     const events = [];
@@ -758,6 +772,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
       seq: 1,
       messages: [{ role: "user", content: [recorded] }],
     });
+    await appendToolExecutedEvidence(store, runId, 2, "old-1");
 
     let calls = 0;
     const events = [];
@@ -919,16 +934,43 @@ export function toolResultEnvelopeContract(label, getEntry) {
       seq: 0,
       messages: [{
         role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "completed-prefix",
+            name: "exec",
+            input: { cmd: "echo complete" },
+            erix: { toolCallKey: "tc_cafecafecafe" },
+          },
+          {
+            type: "tool_use",
+            id: "pending-1",
+            name: "exec",
+            input: { cmd: "rm -rf" },
+            erix: { toolCallKey: "tc_deadbeefcafe" },
+          },
+        ],
+      }],
+      ts: new Date().toISOString(),
+    });
+    await store.appendRound(runId, {
+      round: 3,
+      roundKey: `${runId}:round:3`,
+      dedupKey: `${runId}:msg:3:1`,
+      kind: "message",
+      seq: 1,
+      messages: [{
+        role: "user",
         content: [{
-          type: "tool_use",
-          id: "pending-1",
-          name: "exec",
-          input: { cmd: "rm -rf" },
-          erix: { toolCallKey: "tc_deadbeefcafe" },
+          type: "tool_result",
+          tool_use_id: "completed-prefix",
+          content: "completed before the crash",
+          erix: { toolCallKey: "tc_cafecafecafe", round: 3, durationMs: 2 },
         }],
       }],
       ts: new Date().toISOString(),
     });
+    await appendToolExecutedEvidence(store, runId, 3, "completed-prefix");
 
     const events = [];
     await runToolLoop({

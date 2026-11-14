@@ -134,14 +134,12 @@ test("required persistence retries appendRound and terminates with a transcript 
 
 // 载体已退役（#838 S2），上述四格随之退役。
 
-test("appendRound failure after a tool reports executed_uncommitted", async () => {
+test("appendRound failure after a tool preserves the result in the recovery ledger", async () => {
   const store = fullStore();
   const originalAppendRound = store.appendRound.bind(store);
   // 工单 261021 写侧之后，一轮里不再只有一条 `appendRound`：本轮 assistant 正文行（seq 0）在
   // **工具执行前**就落盘，工具结果行（seq 1）才是「工具已经执行」之后的那一条。
-  // 本用例钉的保证没变：**工具已执行、结果未能入账 ⇒ 必须报 `sideEffect: executed_uncommitted`**，
-  // 所以故障注入点跟着语义边界走：只对「带走 `tool_result` 的那条入账」报错。
-  // （改造前「round === 1」刚好只命中工具执行后的那一次写入，两者在此用例里等价。）
+  // 结果行拒写后，`tool-result-unledgered` 恢复行是其正文载体；只对带走 `tool_result` 的行注入故障。
   store.appendRound = async (runId, record) => {
     const carriesToolResult = (record.messages ?? []).some((message) => (
       (Array.isArray(message?.content) ? message.content : [])
@@ -153,27 +151,32 @@ test("appendRound failure after a tool reports executed_uncommitted", async () =
   const events = [];
   let executions = 0;
 
-  await assert.rejects(
-    runDirect({
-      provider: toolProvider("append-after-tool"),
-      store,
-      runId: "append-after-tool",
-      initialUserMessage: "work",
-      executeTool: async () => {
-        executions += 1;
-        return "executed";
-      },
-      completion: false,
-      diagnostics: { error: (event) => events.push(event) },
-    }),
-    (error) => error.termination?.reason === "persistence_failed"
-      && error.operation === "appendRound"
-      && error.phase === "transcript" // status 快照格已随载体退役（#838 S2）。
-      && error.sideEffect === "executed_uncommitted",
-  );
+  const provider = createFakeProvider([
+    { content: [{ type: "tool_use", id: "append-after-tool", name: "work", input: {} }], stopReason: "tool_use" },
+    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
+  ]);
+  const result = await runDirect({
+    provider,
+    store,
+    runId: "append-after-tool",
+    initialUserMessage: "work",
+    executeTool: async () => {
+      executions += 1;
+      return "executed";
+    },
+    completion: false,
+    diagnostics: { error: (event) => events.push(event) },
+  });
+  assert.equal(result.finalText, "done");
+  assert.equal(provider.requests.length, 2);
   assert.equal(executions, 1);
-  assert.equal(events.at(-1).operation, "appendRound");
-  assert.equal(events.at(-1).sideEffect, "executed_uncommitted");
+  const recovered = (await store.listRecoveryRows("append-after-tool"))
+    .filter((row) => row.recoveryEvent === "tool-result-unledgered");
+  assert.equal(recovered.length, 1, "无法写消息行的结果必须恰有一条恢复行");
+  assert.equal(recovered[0].toolResult.content, "executed",
+    "恢复行必须保留本次执行的正文，而不是声称执行状态未知");
+  assert.ok(events.some((event) => event.operation === "appendRound"),
+    "结果行写入失败仍必须经 diagnostics 暴露");
 });
 
 test("appendRound failure preserves the independent failed run-state", async () => {

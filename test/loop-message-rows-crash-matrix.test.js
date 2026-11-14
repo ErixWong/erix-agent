@@ -28,12 +28,28 @@ const TOOLS = [{ name: "work", replay: "safe", inputSchema: { type: "object" } }
 /** 第 N 次 appendRound 抛错的 store 包装：前面的行已经落盘，之后的写入全部没发生。 */
 function crashOnNthAppend(inner, shouldCrash) {
   let attempts = 0;
+  const failedResultIds = new Set();
   return {
     ...inner,
     async appendRound(runId, record) {
       attempts += 1;
-      if (shouldCrash(attempts, record)) throw new Error(`simulated crash #${String(attempts)}`);
+      if (shouldCrash(attempts, record)) {
+        for (const id of (record.messages ?? []).flatMap((message) => (
+          (Array.isArray(message?.content) ? message.content : [])
+            .filter((block) => block?.type === "tool_result")
+            .map((block) => block.tool_use_id)
+        ))) {
+          failedResultIds.add(id);
+        }
+        throw new Error(`simulated crash #${String(attempts)}`);
+      }
       return inner.appendRound(runId, record);
+    },
+    async appendRecoveryRow(runId, record) {
+      if (record.recoveryEvent === "tool-result-unledgered" && failedResultIds.has(record.toolUseId)) {
+        throw new Error(`simulated crash recovery for ${String(record.toolUseId)}`);
+      }
+      return inner.appendRecoveryRow(runId, record);
     },
   };
 }
@@ -42,7 +58,7 @@ function crashOnNthAppend(inner, shouldCrash) {
 async function runUntilCrash(shouldCrash) {
   const inner = createMemoryTranscriptStore();
   const store = crashOnNthAppend(inner, shouldCrash);
-  let thrown = "";
+  let thrown;
   try {
     await runDirect({
       tools: TOOLS,
@@ -60,10 +76,14 @@ async function runUntilCrash(shouldCrash) {
       ]),
     });
   } catch (error) {
-    thrown = error?.message ?? String(error);
+    thrown = error;
   }
-  if (shouldCrash === neverCrash) assert.equal(thrown, "", "前置：没注入崩溃时不该报错");
-  else assert.match(thrown, /simulated crash/u, "前置：必须真的崩在注入点");
+  if (shouldCrash === neverCrash) assert.equal(thrown, undefined, "前置：没注入崩溃时不该报错");
+  else {
+    const messages = [thrown?.message, ...(thrown?.errors ?? []).map((error) => error?.message)];
+    assert.ok(messages.some((message) => /simulated crash/u.test(String(message))),
+      "前置：必须真的崩在注入点");
+  }
   // 折叠层的读侧口径就是恢复路径的读法：不直接吃 run snapshot。
   const records = await inner.load(RUN_ID);
   return {
@@ -80,12 +100,16 @@ const toolResultsIn = (messages) => messages
 
 const hasRow = (records, matches) => records.some((record) => matches(record));
 const isMessageRow = (record) => record?.kind === "message";
+const carriesToolResult = (record) => (record?.messages ?? []).some((message) => (
+  (Array.isArray(message?.content) ? message.content : [])
+    .some((block) => block?.type === "tool_result")
+));
 
 test("崩溃点矩阵 · state1 模型消息已写、工具结果未写、轮行未写：assistant 正文靠折叠就在", async () => {
   // 第 2 次 appendRound = 本轮 assistant 消息行（第 1 次是 round 0 种子行）⇒ 让它落盘，
   // 下一次（第一条工具结果行）崩掉 ⇒ 账本里只有种子行 + assistant 正文。
   const { messages, records } = await runUntilCrash((_attempts, record) => (
-    record?.kind === "message" && record?.seq === 1
+    record?.seq === 1 && carriesToolResult(record)
   ));
   assert.ok(hasRow(records, (record) => isMessageRow(record) && record.seq === 0),
     "本轮 assistant 必须已经单独成行（不等轮行）");
@@ -101,7 +125,7 @@ test("崩溃点矩阵 · state1 模型消息已写、工具结果未写、轮行
 test("崩溃点矩阵 · state2 第一条工具结果已写：已执行的结果必须在，未执行的不在", async () => {
   // 第 3 次 appendRound = 第二条工具结果行 ⇒ 第一条已落盘、第二条与轮行都没写。
   const { messages, records } = await runUntilCrash((_attempts, record) => (
-    record?.kind === "message" && record?.seq === 2
+    record?.seq === 2 && carriesToolResult(record)
   ));
   assert.ok(!hasRow(records, (record) => record?.dedupKey === `${RUN_ID}:engine:round:1`),
     "前置：轮行没写，正文没有任何一处兜着它");

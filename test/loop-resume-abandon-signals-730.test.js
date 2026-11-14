@@ -64,6 +64,7 @@ import {
 import { validateMessages } from "../src/messages/rounds.js";
 import { foldLedgerMessages } from "../src/store/message-rows.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
+import { buildToolExecutedRecoveryRow } from "../src/store/recovery-rows.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { withUnvalidatedAppends } from "./helpers/unvalidated-store.js";
 import { withSeed } from "./helpers/run-direct.js";
@@ -461,6 +462,11 @@ async function danglingWithRoundString(inner, { aggregateRound = 2 }) {
     role: "assistant", content: [text("先跑工具"), toolUse("t1"), toolUse("t2")],
   }));
   await inner.appendRound(RUN_ID, messageRow(aggregateRound, 1, { role: "user", content: [toolResultBlock("t1")] }));
+  await inner.appendRecoveryRow(RUN_ID, buildToolExecutedRecoveryRow({
+    runId: RUN_ID,
+    round: 2,
+    toolUseId: "t2",
+  }));
   return inner;
 }
 
@@ -512,13 +518,11 @@ test("重叠语义：mid_sequence_aggregate_row_not_in_ledger 用 detail 分出�
     count: 1,
   }], "探针给了、轮也干净，而账本里没有合法首片行 ⇒ detail 必须是 aggregate_row_not_in_ledger");
 
-  // 同一个 store，把探针摘掉（issue #714 之前那一刻的行为）⇒ detail 必须是 anchor_probe_absent。
-  const probeAbsent = { ...withProbe, loadRawRows: undefined };
-  delete probeAbsent.loadRawRows;
+  // 独立铺同一份账本，只摘掉原始行探针，避免复用第一次恢复已经写入桩的 store。
   const ledger2 = withUnvalidatedAppends(createMemoryTranscriptStore());
   await danglingWithRoundString(ledger2, { aggregateRound: "2" });
-  const probeRows = await ledger2.loadRawRows(RUN_ID);
-  for (const row of probeRows) await probeAbsent.appendRound(RUN_ID, row);
+  const probeAbsent = { ...ledger2, loadRawRows: undefined };
+  delete probeAbsent.loadRawRows;
   const secondEvents = [];
   const second = await runLoop({ store: probeAbsent, events: secondEvents, provider: createFakeProvider([endTurn("续")]) });
   assert.equal(second.ok, true, "探针缺席也只是降级，不失败（实测：" + String(second.error) + ")");

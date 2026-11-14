@@ -19,6 +19,7 @@ import assert from "node:assert/strict";
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
+import { buildToolExecutedRecoveryRow } from "../src/store/recovery-rows.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { appendLedgerMessages } from "./helpers/journal-crash-body.js";
 
@@ -248,17 +249,30 @@ test("erix.success 迁移等价：复放已完成结果 ⇒ 沿用原记录的�
     messages: [
       {
         role: "assistant",
-        content: [{
-          type: "tool_use",
-          id: "done-1",
-          name: "work",
-          input: {},
-          erix: { toolCallKey: "tc_1234567890ab" },
-        }],
+        content: [
+          {
+            type: "tool_use",
+            id: "done-1",
+            name: "work",
+            input: {},
+            erix: { toolCallKey: "tc_1234567890ab" },
+          },
+          {
+            type: "tool_use",
+            id: "pending-2",
+            name: "unsafe_work",
+            input: {},
+          },
+        ],
       },
       { role: "user", content: [recorded] },
     ],
   });
+  await store.appendRecoveryRow(runId, buildToolExecutedRecoveryRow({
+    runId,
+    round: 3,
+    toolUseId: "done-1",
+  }));
 
   let calls = 0;
   const events = [];

@@ -386,6 +386,11 @@ test("#736 评审补格：崩溃行带**两个** tool_use（`t1` 已入账、`t2
     messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "out-t1" }] }],
     ts: new Date().toISOString(),
   });
+  await store.appendRecoveryRow(RUN_ID, buildToolExecutedRecoveryRow({
+    runId: RUN_ID,
+    round: 1,
+    toolUseId: "t1",
+  }));
   const executed = [];
   const { provider, outcome } = await resumeOnce({
     store,

@@ -22,6 +22,7 @@ import test from "node:test";
 
 import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
+import { buildToolExecutedRecoveryRow } from "../src/store/recovery-rows.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { makeTmp } from "./helpers/tmp.js";
@@ -304,6 +305,11 @@ test("#326 续（方向提示·resume flush）：store.load() 全部行里**恰�
       { role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "done-a" }] },
     ],
   });
+  await store.appendRecoveryRow(runId, buildToolExecutedRecoveryRow({
+    runId,
+    round: 1,
+    toolUseId: "a",
+  }));
 
   // `a` 的已结清结果从账本给 `judgeInterceptCount` 播种（resume-manager），于是补跑 b 时
   // intercept 立刻开审 ⇒ 提示在 resume 补跑段入队，由 resume 路径的 flush 点发出。
