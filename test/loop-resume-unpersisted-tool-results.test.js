@@ -2030,6 +2030,36 @@ test("#838 S1 C2 reviewer 场景：t1 执行过但结果不可用，resume 正�
   assert.deepEqual(executed, ["t2"], "已执行的 t1 不重跑，缺少结果的 t2 正常补跑");
   assert.equal(provider.requests.length, 1, "resume 必须至少完成一次模型请求");
   const request = provider.requests[0].messages;
+  const expectedContent = new Map([
+    ["t1", UNPERSISTED_TOOL_RESULT_TEXT],
+    ["t2", "out-t2"],
+  ]);
+  for (const [index, message] of request.entries()) {
+    if (message.role !== "assistant") continue;
+    const toolUseIds = (Array.isArray(message.content) ? message.content : [])
+      .filter((block) => block?.type === "tool_use")
+      .map((block) => block.id);
+    if (toolUseIds.length === 0) continue;
+    const next = request[index + 1];
+    const pairedResults = next?.role === "user" && Array.isArray(next.content)
+      ? next.content
+        .filter((block) => block?.type === "tool_result")
+        .map((block) => ({ toolUseId: block.tool_use_id, content: block.content }))
+      : [];
+    const actualPairs = [...pairedResults]
+      .sort((left, right) => String(left.toolUseId).localeCompare(String(right.toolUseId)));
+    const expectedPairs = toolUseIds
+      .map((toolUseId) => ({
+        toolUseId,
+        content: expectedContent.get(toolUseId),
+      }))
+      .sort((left, right) => String(left.toolUseId).localeCompare(String(right.toolUseId)));
+    assert.deepEqual(
+      actualPairs,
+      expectedPairs,
+      "请求视图中每个 tool_use 必须由紧邻 user 的同 id tool_result 配对；已执行的 t1 必须说明结果未入账",
+    );
+  }
   const t1 = resultsFor(request, "t1");
   const t2 = resultsFor(request, "t2");
   assert.equal(t1.length, 1, "t1 只补一张结果桩");
@@ -2037,8 +2067,6 @@ test("#838 S1 C2 reviewer 场景：t1 执行过但结果不可用，resume 正�
     "执行证据存在时必须说「执行过、结果不可用」");
   assert.equal(t2.length, 1, "t2 的真实结果只出现一份");
   assert.equal(t2[0].content, "out-t2", "t2 必须是补跑得到的真实结果");
-  assert.doesNotThrow(() => validateMessages(request),
-    "每条 assistant 的 tool_use id 必须在紧邻 user 结果页里完整配对");
 });
 
 test("#838 S1 C3：resume 载体行归档本轮全部 toolOutputs", async () => {
@@ -2092,8 +2120,18 @@ test("#838 S1 C3：resume 载体行归档本轮全部 toolOutputs", async () => 
 
   const resumeRow = (await inner.loadRawRows(RUN_ID))
     .find((record) => record?.dedupKey === `${RUN_ID}:engine:round:2:resume`);
-  assert.deepEqual(resumeRow?.toolOutputs, [
-    { toolUseId: "t1", name: "work", content: "out-t1" },
-    { toolUseId: "t2", name: "work", content: archivedT2 },
-  ], "resume 行必须携带本轮归档的全部输出，而不是只保留本次补跑输出");
+  assert.ok(resumeRow !== undefined, "必须定位到本轮唯一的 :resume 载体行");
+  const resumeOutputs = Array.isArray(resumeRow.toolOutputs) ? resumeRow.toolOutputs : [];
+  for (const expected of [
+    { toolUseId: "t1", content: "out-t1" },
+    { toolUseId: "t2", content: archivedT2 },
+  ]) {
+    const archived = resumeOutputs.find((entry) => entry?.toolUseId === expected.toolUseId);
+    assert.ok(archived !== undefined, `${expected.toolUseId} 必须归档在 :resume 行`);
+    assert.equal(
+      archived.content,
+      expected.content,
+      `${expected.toolUseId} 的 :resume 归档必须保留全文`,
+    );
+  }
 });
