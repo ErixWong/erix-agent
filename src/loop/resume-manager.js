@@ -676,9 +676,14 @@ export async function restoreResume(ctx) {
       // **恢复时现算**的 `countResumeAnchor(records)`，issue #425），
       // 口径是**纯账本口径**：崩溃时刻账本里已落盘的逻辑消息条数（见下面
       // `ledgerMessages` 与 `anchor`）。
-      const crashToolUses = ctx.resumeRunSnapshot?.pendingToolUses
-        ?? (ctx.resumeRunSnapshot?.pendingToolUse ? [ctx.resumeRunSnapshot.pendingToolUse] : []);
-      const unfinishedToolUses = crashToolUses.filter((toolUse) => (
+      // #827 B1：**在飞工具一律从账本算**，不再问快照。
+      // 账本里每条 `tool_use` 都在工具执行**之前**就落了行（`appendMessageRowToTranscript`），
+      // 而结果行在 settle 之后 ⇒ 「有 `tool_use`、没有对应 `tool_result`」就是崩溃现场，
+      // 与快照有没有写、写没写成功无关。快照那格（`pendingToolUses`）因此不再是判据来源。
+      const ledgerToolUseBlocks = ledgerMessages
+        .flatMap((message) => blocksFor(message?.content))
+        .filter((block) => block?.type === "tool_use");
+      const unfinishedToolUses = ledgerToolUseBlocks.filter((toolUse) => (
         toolUse?.id !== undefined && !ledgerToolResultIds.has(toolUse.id)
       ));
       // 「崩溃现场」的判据：快照里还有账本没结清的在飞工具/半截正文。没有（正常收口后追问）
@@ -687,13 +692,12 @@ export async function restoreResume(ctx) {
       // `partial-text` 恢复行同样算崩溃现场（`ledgerPartialCrashRound` 已经把正文已落账的历史行筛掉了）。
       // 为什么需要它：写侧现在是「先落账本恢复行、再写快照」⇒「行落了、快照没落」是可达的，
       // 只看快照会把那一轮当成正常收口（#767 停写快照后，快照那一侧的判据整块会空）。
+      // #827 B1：三个判据全部改成账本口径（快照那三项——`pendingToolUses` / `toolResults` /
+      // `partialText`——不再参与）。理由同上：写侧已经把这三类事实都落在账本里，而快照是
+      // latest-only 覆盖写 ⇒ 拿它当判据等于让「有没有崩溃现场」取决于缓存写没写成功（#734 的
+      // 放大器）。`toolResults` 那一项与 `unfinishedToolUses` 是**同一件事的两种算法**，账本
+      // 口径下二者恒等价 ⇒ 删掉冗余的那一项。
       const crashSiteRound = unfinishedToolUses.length > 0
-        || (ctx.resumeRunSnapshot?.toolResults ?? []).some((entry) => (
-          entry?.toolResult?.tool_use_id !== undefined
-          && !ledgerToolResultIds.has(entry.toolResult.tool_use_id)
-        ))
-        || (typeof ctx.resumeRunSnapshot?.partialText === "string"
-          && ctx.resumeRunSnapshot.partialText.length > 0)
         || ledgerPartialCrashRound !== undefined;
       // issue #736：快照没认出来（那份快照本身就是写失败的那次，#734）不等于没有崩溃现场——
       // 账本边界成立就是崩溃现场。两者取**或**；快照那条路保留原样（B 集合的补跑集合同样靠它）。
@@ -730,8 +734,19 @@ export async function restoreResume(ctx) {
         // issue #769：快照没给轮号、账本边界也不成立时，崩溃轮退成「账本里最后一条
         // **正文未落账的** `partial-text` 恢复行的那一轮」（`ledgerPartialCrashRound`）；
         // 没有那种行时这个 `??` 不改变旧口径（仍是 `snapshot.round`）。
-        const crashRound = Number.isSafeInteger(snapshot.round)
-          ? snapshot.round
+        // #827 B1：崩溃轮轮号也改成账本口径 —— 最后一个未结清 `tool_use` 所在那一行的轮号
+        // （没有在飞工具时退成 `ledgerPartialCrashRound`，再退成边界行/快照）。
+        const unfinishedIds = new Set(unfinishedToolUses.map((toolUse) => toolUse.id));
+        let ledgerCrashRound;
+        for (let index = ledgerEntries.length - 1; index >= 0; index -= 1) {
+          const blocks = blocksFor(ledgerEntries[index].message?.content);
+          if (blocks.some((block) => block?.type === "tool_use" && unfinishedIds.has(block.id))) {
+            ledgerCrashRound = ledgerEntries[index].round;
+            break;
+          }
+        }
+        const crashRound = Number.isSafeInteger(ledgerCrashRound)
+          ? ledgerCrashRound
           : ledgerBoundary === null
             ? (Number.isSafeInteger(ledgerPartialCrashRound)
               ? ledgerPartialCrashRound
