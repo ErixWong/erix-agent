@@ -298,7 +298,7 @@ function blocksOf(messages, type) {
  *
  * 文件名是 `safeRunId(runId).jsonl`：安全 id 的文件名与 runId 逐字相等，不安全 id 被换成
  * `run-h-<sha256[:24]>`（不可逆）⇒ 先按文件名试，再拿同一个 run 的 `.state.json` /
- * `.status.json` / `.snapshot.json` 里记的 `runId` 兜底，最后用「`safeRunId(候选)` 对应的
+ * `.status.json` 里记的 `runId` 兜底，最后用「`safeRunId(候选)` 对应的
  * transcript 文件确实是这一份」确认选中。`safeRunId` 由调用方从**装好的包**里传进来（不在这
  * 里重实现一份：文件名规则只有一份真源）。
  *
@@ -310,7 +310,8 @@ function blocksOf(messages, type) {
 function resolveRunIdForTranscript(dir, jsonlName, safeRunId) {
   const base = jsonlName.replace(/\.jsonl$/, "");
   const candidates = [base];
-  for (const suffix of [".state.json", ".status.json", ".snapshot.json"]) {
+  // #838：`run snapshot` 已退役，不再作为 runId 的兜底来源。
+  for (const suffix of [".state.json", ".status.json"]) {
     try {
       const parsed = JSON.parse(readFileSync(join(dir, `${base}${suffix}`), "utf8"));
       if (typeof parsed?.runId === "string" && parsed.runId !== "") candidates.push(parsed.runId);
