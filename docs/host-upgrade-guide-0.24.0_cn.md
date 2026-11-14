@@ -82,7 +82,8 @@
 | `errorCode` | **字符串** | 与 `termination.errorCode` 同一套分类，由 `terminationErrorCodeForError`（`src/loop/termination.js`）产出：取根因自己的 `code`，取不到即 `"unknown"` |
 | `unpersisted` | **原始数组** | 与 `persistence_failed` 一直以来的形状相同（`errorLedger.toUnpersisted()`），于是 `err.unpersisted.length` 两侧同读 |
 
-工具调用点那一侧由 `assertSnapshotPersisted`（`src/loop/run-snapshot-executor.js`）写；run 末尾那一侧由
+0.24.0 的工具调用点写侧是 `assertSnapshotPersisted`；当前工具结果由
+`journalToolResult`（`src/loop/orchestrator.js`）入账。run 末尾那一侧由
 `makePersistenceFailure`（`src/loop/orchestrator.js`）写。三个字段**两侧都无条件写**，且两侧都经 `KitError`
 的 `{ cause }` 选项进构造函数 ⇒ 两侧的 `cause` 都是**不可枚举**自有属性，`Object.keys(err)` 与 `{ ...err }`
 给出同一形状。

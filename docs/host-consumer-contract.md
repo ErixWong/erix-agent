@@ -2306,7 +2306,7 @@ vocabulary, or a CN/EN axis mismatch all go red.
 | Cell (payload key) | write | read | Authority (double-written cells only) | Handoff condition (double-written cells only) | Today's write site — or, for a cell that no longer writes, the line that documents the stop | Today's readers |
 | --- | --- | --- | --- | --- | --- | --- |
 | `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3345` | Zero engine readers; its shape is pinned by tests: `test/loop-persistence-phase.test.js:118`, `test/persistence-diagnostics.test.js:171`, `test/loop-invalid-arguments.test.js:235`, `test/loop-v020-rc.test.js:480`, `test/loop-v020-rc.test.js:616` |
-| `toolUse` | stopped | not-source | — | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3347` | Zero readers at the snapshot layer; the same-named `toolUse` on the resume side is only a lambda parameter `src/loop/resume-manager.js:728`, while `toolUseId` and the diagnostic `event.toolUse` are two different things |
+| `toolUse` | stopped | not-source | — | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3348` | Zero readers at the snapshot layer; the same-named `toolUse` on the resume side is only a lambda parameter `src/loop/resume-manager.js:722`, while `toolUseId` and the diagnostic `event.toolUse` are two different things |
 | `ts` | stopped | not-source | the `ts` of the ledger row / message row | Stopped by issue #735 slice 1; the machine absence assertion lives at `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3348` | Zero readers at the snapshot layer; the `ts` the resume side really reads is the **ledger row** copy (same key name, different artifact, not this cell) `src/loop/resume-manager.js:651` |
 | `compactionStats` | stopped | not-source | run-state (the resume path reads `deterministic.compactionStats`: `src/loop/resume-manager.js:483`) and the round record `src/loop/orchestrator.js:6064` | Both sides are alive: round-record side `test/compaction-observability.test.js:73` and snapshot side `test/compaction-observability.test.js:76` ⇒ dropping the snapshot copy means replacing the snapshot-side assertion first | `src/loop/orchestrator.js:3349`、`src/loop/orchestrator.js:6064` | The resume path goes through run-state `src/loop/resume-manager.js:483` and does not read the snapshot copy; its shape is pinned by `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
@@ -3028,7 +3028,7 @@ A correct pre-written `RoundRecord` must satisfy:
     the tool block, while the round record is written at the bottom of the same
     iteration in `src/loop/orchestrator.js`. Its body is therefore carried by the round
     record itself — and on the resume path by the `"…:resume"` row, whose round is the
-    restored run snapshot's round (`resumeRunSnapshot`, `src/loop/orchestrator.js`). Exactly
+    ledger-derived `runLoopState` (`src/loop/orchestrator.js`). Exactly
     one copy is in `load()`, and `restoreResume` (`src/loop/resume-manager.js`) rebuilds
     it exactly once. Adding a `:control:` row for this text would store the same body
     twice and make `restoreResume` feed it to the model twice — hosts must not expect a
@@ -6176,7 +6176,7 @@ Consequences for a host store and for host readers:
   `erix.toolCallKey`, same `tool_use_id`) — **every** result becomes a row, not
   only the ones a resume re-executes. Results that had already finished
   executing when the process died (outcome formed, no row in the ledger) are
-  written by `journalResumeUnpersistedToolResults` (`src/loop/orchestrator.js`)
+  written by `journalResumeUnledgeredToolResults` (`src/loop/orchestrator.js`)
   **before** the replay section, through the same writer a replayed result uses;
   both kinds are attached to the crash round's aggregated `tool_result` message
   through `partOf` instead of becoming a new message. The anchor is the row key
@@ -6190,7 +6190,9 @@ Consequences for a host store and for host readers:
   of its own. So **every** result of one crash round folds back into **one**
   aggregated `user` message, no matter how many there are (never one `user`
   message per result), and the `<runId>:msg:<round>:<seq>` sequence keeps the
-  issue #326 order. Pinned by the `#430` end-to-end cases in
+  issue #326 order. The separate mid-sequence stub path,
+  `journalResumeMidSequenceToolResults` (`src/loop/orchestrator.js`), uses that same first-slice anchor.
+  Pinned by the `#430` end-to-end cases in
   `test/loop-resume-unpersisted-tool-results.test.js` (the shared crash scene is
   `threeToolCrashScene` (`test/loop-resume-unpersisted-tool-results.test.js`)),
   plus the four-row unit case in `test/store/message-rows-fold.test.js`; before
@@ -6205,7 +6207,7 @@ Consequences for a host store and for host readers:
   written before the per-message rows existed keeps the crash round's `assistant`
   body only in the run snapshot, so journaling those results would leave
   `tool_result` rows with no matching `assistant` and the next resume would fail
-  the same way. `journalResumeUnpersistedToolResults` (`src/loop/orchestrator.js`)
+  the same way. `journalResumeUnledgeredToolResults` (`src/loop/orchestrator.js`)
   therefore first checks a fact `restoreResume` (`src/loop/resume-manager.js`)
   computed over the **folded** ledger entries — does the crash round's body
   already contain an `assistant` message? If it does not, the whole batch is

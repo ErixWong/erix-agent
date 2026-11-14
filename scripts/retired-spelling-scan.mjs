@@ -403,10 +403,11 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // 口径同 #714 / #729 / #730 / #753 / #769-R5：契约要能写出真实签名与真实角色名，不为了躲钉子改成描述说法。
   // 466 → 464（**合并树现测 · R7 之后**：本支 `fix-261108-27-recovery-read-strict-erix` + main `4f9b908` + R7 文案修 `fix-261109-01-capability-docs-audit`）：
   // R7 把能力表那一行「只留两个前提 + 一句指向」，删掉的展开后果里有同名异义命中 ⇒ EN 侧**降 2**。
-  // ⚠ 这不是 466 − 2 的算术结论，是扫描器在这棵树上现报的那一行：
+  // ⚠ 这不是 466 − 2 的算术结论，是上一次重钉前扫描器在这棵树上报的那一行：
   //   ✗ docs/host-consumer-contract.md  [contract]  verdict=SUSPECT(dropped)  pin=466  uses=464
   // 钉子随文案走、不许反推：改文案 ⇒ 现测 ⇒ 重钉（口径同 #714 / #729 / #730 / #753 / #769-R5）。
-  "docs/host-consumer-contract.md": 464,
+  // #838 S2 closeout: current strict-scan measurement.
+  "docs/host-consumer-contract.md": 465,
   // 457 → 458（issue #769 R2，净 +1）：本单新增的「恢复行」那两节把**契约面写实的签名与叶名**都写了
   // 进代码语境（同名异义，`AMBIGUOUS_KEYS`，不进退役判据但计入本钉子）：EN 新增行里的 6 处命中在
   // :3740（`completion` × 2 与 `wrapup`）、:3744（`maxTokenContinuations` 与其内的 `maxTokens`）、
@@ -477,8 +478,9 @@ const CONTRACT_BODY_PINS = Object.freeze({
   // **两份文件**，新增正文里点了 `<runId>.partial.jsonl` / `<runId>.recovery.jsonl` 两次，其中
   // 一次 `runId` 落在扫描器的扁平拼写命中面上（形如 `config.run.runId` 的同名异义）。这是正文
   // **有意新增**的一处（文件名是字面量，改写成模糊说法会让宿主对不上真文件名），所以抬钉子而
-  // 不是躲它——口径同上面 #714 / #729 / #730 那几条：数取自扫描器在这棵树上现报的 `uses=589`。
-  "docs/host-consumer-contract_cn.md": 589,
+  // 不是躲它——口径同上面 #714 / #729 / #730 那几条：数取自扫描器当时在这棵树上报的 `uses=589`。
+  // #838 S2 closeout: current strict-scan measurement.
+  "docs/host-consumer-contract_cn.md": 590,
   // 571 → 579（issue #769 R2，净 +8）：CN 新增的「恢复行」那两节里同名异义命中多 10 处，而同一刀删改
   // 的行带走了 2 处旧命中 ⇒ 净 +8。逐条定位（行号是现树）：:2965 `maxTokenContinuations` 与其内的
   // `maxTokens`；:5786 / :5793 / :5801 / :5802 / :5807 共 6 处 `runId`（store 方法入参名

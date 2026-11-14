@@ -1868,7 +1868,7 @@ run-snapshot 持久化不再是引擎能力。当前 TranscriptStore 分级如�
 | 格（payload 键） | write | read | 权威源（仅双写格） | 交接条件（仅双写格） | 今天的写点（已停写的格＝钉住「为什么停写」那行） | 今天的读者 |
 | --- | --- | --- | --- | --- | --- | --- |
 | `status` | stopped | not-source | — | — | `src/loop/orchestrator.js:3345` | 引擎零读者；形状被测试钉住：`test/loop-persistence-phase.test.js:118`、`test/persistence-diagnostics.test.js:171`、`test/loop-invalid-arguments.test.js:235`、`test/loop-v020-rc.test.js:480`、`test/loop-v020-rc.test.js:616` |
-| `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3347` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:728`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
+| `toolUse` | stopped | not-source | — | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3348` | 快照那一层零读者；恢复侧同名的 `toolUse` 只是 lambda 形参 `src/loop/resume-manager.js:722`，`toolUseId` 与诊断事件的 `event.toolUse` 是另两回事 |
 | `ts` | stopped | not-source | 账本行 / 消息行自己的那个 `ts` | 已由 #735 切片 1 停写，机器缺席断言在 `test/loop-snapshot-write-side-735.test.js:107-118` | `src/loop/orchestrator.js:3348` | 快照那一层零读者；恢复侧真读的 `ts` 是**账本行**（同一个键名的另一个产物，不是这格）`src/loop/resume-manager.js:651` |
 | `compactionStats` | stopped | not-source | run-state（恢复读 `deterministic.compactionStats`：`src/loop/resume-manager.js:483`）与轮记录 `src/loop/orchestrator.js:6064` | 两侧都活着：轮记录侧 `test/compaction-observability.test.js:73` 与快照侧 `test/compaction-observability.test.js:76` ⇒ 停写快照这格要先把快照侧那半句断言换掉 | `src/loop/orchestrator.js:3349`、`src/loop/orchestrator.js:6064` | 恢复走 run-state `src/loop/resume-manager.js:483`，不读快照这格；测试钉形状 `test/compaction-observability.test.js:76` |
 <!-- erix:snapshot-cell-axes:end -->
@@ -2436,7 +2436,7 @@ slot 拿预算元数据。一个确实需要换模型的 run 应当结束，随�
     （`src/loop/reflection.js`））被 flush 成一条独立 `user` 消息的时机，在本轮自己的
     `appendRound` **之前**（flush 点在工具块里，而轮记录是在同一次迭代的圈底写的），
     所以它的正文是由轮记录本身带走的——resume 路径上则是由 `"…:resume"` 那一行带走，
-    轮号取回放的 run 快照 `resumeRunSnapshot`（`src/loop/orchestrator.js`）。于是
+    轮号取自账本推导的 `runLoopState`（`src/loop/orchestrator.js`）。于是
     `load()` 里恰好只有一份，`restoreResume`（`src/loop/resume-manager.js`）也只重建
     一份。给方向提示再补一条 `:control:` 行会把同一份正文存两遍，并让 `restoreResume`
     把它给模型喂两遍——宿主**不要**指望上面那个 slot 清单里有 `direction-hint`，
@@ -4851,7 +4851,7 @@ navigation digest，并在适用时包含 JSON skeleton；配对的 `tool_use` �
   每条逻辑消息**恰好出现一次**，一次工具调用也**恰好一份结果**（同 `erix.toolCallKey`、同
   `tool_use_id`）——**每一个**结果都会落成行，不只是续跑重新执行的那批：崩溃时**已经执行完**
   （结果已成型、账本里还没有对应行）的那批结果，由
-  `journalResumeUnpersistedToolResults`（`src/loop/orchestrator.js`）在补跑段**之前**用同一条
+  `journalResumeUnledgeredToolResults`（`src/loop/orchestrator.js`）在补跑段**之前**用同一条
   写侧写下去。两类结果都用 `partOf` 接回崩溃轮那条聚合 `tool_result` 消息，不新增消息；锚点就是
   `restoreResume`（`src/loop/resume-manager.js`）从账本里读出的 `resumeToolResultRowKey`。
   崩溃轮**一条结果行都没落**时，首片自己就是那条聚合消息、并成为后续分片的锚点。锚点永远是**首片**，
@@ -4862,14 +4862,15 @@ navigation digest，并在适用时包含 JSON skeleton；配对的 `tool_use` �
   `test/loop-resume-unpersisted-tool-results.test.js` 里的 `#430` 端到端用例（前两例共用同一份崩溃
   现场：`threeToolCrashScene`（`test/loop-resume-unpersisted-tool-results.test.js`））与
   `test/store/message-rows-fold.test.js` 的四行单元用例；修前三个工具调用实测折成 `[[t1,t2],[t3]]`、
-  第二次恢复 `invalid_messages`（issue #430）。
+  第二次恢复 `invalid_messages`（issue #430）。中段悬空工具的桩由
+  `journalResumeMidSequenceToolResults`（`src/loop/orchestrator.js`）写入，同样只锚定首片。
   issue #420 之前这半批结果靠 `resumeUnpersistedToolResults` 交出去，
   注释承诺「交给 orchestr 逐条入账」，而全仓没有读取方：它唯一的载体是 latest-only 覆盖写的 run
   snapshot，下一轮真跑一个工具就被覆盖 ⇒ 那个 `runId` 从此不可恢复（第一次模型请求之前就
   `invalid_messages`，0 次请求）。**升级路径的守卫（issue #424）**：逐条消息行出现之前写下的账本里，
   崩溃轮的 `assistant` 正文只存在于 run snapshot，此时把那批结果入账就会留下「没有配对 `assistant`」
   的 `tool_result` 行，下一次恢复同样 `invalid_messages`。因此
-  `journalResumeUnpersistedToolResults`（`src/loop/orchestrator.js`）先看一个由
+  `journalResumeUnledgeredToolResults`（`src/loop/orchestrator.js`）先看一个由
   `restoreResume`（`src/loop/resume-manager.js`）在**折叠后的**账本条目上算好的事实——崩溃轮的正文里
   是否已有 `assistant` 消息；没有就**整段跳过**入账（退回 #420 之前的语义：只进内存、由快照兜住），
   账本内容与 #420 之前的档案逐字一致，并在既有 `onEvent` 通道上恰好发一条

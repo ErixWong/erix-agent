@@ -93,7 +93,8 @@ same value types**:
 | `errorCode` | **string** | same classification as `termination.errorCode`, produced by `terminationErrorCodeForError` (`src/loop/termination.js`): the root cause's own `code`, or `"unknown"` |
 | `unpersisted` | **raw array** | the same shape `persistence_failed` has always had (`errorLedger.toUnpersisted()`), so `err.unpersisted.length` reads the same on both |
 
-`assertSnapshotPersisted` (`src/loop/run-snapshot-executor.js`) writes the tool-call-site side;
+The tool-call-site helper in 0.24.0 was `assertSnapshotPersisted`; current tool-result journaling uses
+`journalToolResult` (`src/loop/orchestrator.js`).
 `makePersistenceFailure` (`src/loop/orchestrator.js`) writes the run-end side. Both write all three
 **unconditionally**, and both put `cause` in through `KitError`'s `{ cause }` option, so on both exits
 `cause` is a **non-enumerable** own property — `Object.keys(err)` and `{ ...err }` agree.

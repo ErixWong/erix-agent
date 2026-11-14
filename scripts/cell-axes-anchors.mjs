@@ -74,9 +74,9 @@ export const CELL_AXES_ANCHOR_FLOORS = {
 // CELL-AXES-ANCHORS:BEGIN —— 哨兵之间必须是**数组字面量**（闸在 --self-test 里要能抽文本重算）
 export const CELL_AXES_ANCHORS = [
   { key: "status", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ {8}// #827 第 5 刀：这里原本只写 .*", note: "停写解释锚点：状态格已不再写入 run snapshot（#827）" },
-  { key: "toolUse", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ {8}// The retired run-snapshot cells are not restored from the ledger: `toolUse` comes from tool-use rows\\.$", note: "停写解释锚点：待恢复工具从账本工具行重建" },
-  { key: "ts", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ {8}// A message `ts` belongs to its ledger row, not a run snapshot\\.$", note: "停写解释锚点：消息时间戳属于账本行" },
-  { key: "compactionStats", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ {8}// `compactionStats` is restored from run-state and retained in round records, not in run snapshots\\.$", note: "停写解释锚点：该字段来自 run-state 与轮记录" },
+  { key: "toolUse", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ {8}// `toolUse` comes from tool-use rows, message `ts` belongs to its ledger row, and$", note: "停写解释锚点：待恢复工具从账本工具行重建" },
+  { key: "ts", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ {8}// `toolUse` comes from tool-use rows, message `ts` belongs to its ledger row, and$", note: "停写解释锚点：消息时间戳属于账本行" },
+  { key: "compactionStats", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ {8}// `compactionStats` is restored from run-state and retained in round records\\.$", note: "停写解释锚点：该字段来自 run-state 与轮记录" },
   { key: "compactionStats", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}\\? \\{ compactionStats: cloneState\\(compactionStats\\.slice\\(compactionStatsStart\\)\\) \\}$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 ? { compactionStats: cloneState(compactionStats.slice(compactionStatsS" },
   { key: "toolUse", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "^ +const unfinishedIds = new Set\\(unfinishedToolUses\\.map\\(\\(toolUse\\) => toolUse\\.id\\)\\);$", note: "读取证据锚点：仅由账本恢复出的工具调用参与未结清集合" },
   { key: "ts", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "^ +record\\.ts,$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 record.ts," },

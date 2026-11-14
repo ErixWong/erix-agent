@@ -776,13 +776,13 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/compact/resume-fold-trim.test.js` | 9 | `strategy`×5, `resume`×3, `completion`×1 |
 | `test/loop-governance-switch-cells.test.js` | 10 | `completion`×4, `reflection`×4, `wrapup`×2 |
 | `test/loop-persist-compaction-facts.test.js` | 8 | `completion`×3, `reflection`×3, `resume`×1, `strategy`×1 |
-| `test/loop-resume-unpersisted-tool-results.test.js` | 10 | `resume`×6, `completion`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
+| `test/loop-resume-unpersisted-tool-results.test.js` | 11 | `resume`×7, `completion`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-tool-list.test.js` | 9 | `tools`×7, `prompt`×2 |
 | `test/loop-resume-fold-immunity.test.js` | 2 | `tools`×2 |
 | `test/notes-candidates-and-scopes.test.js` | 9 | `session`×7, `finalGuard`×2, `prompt`×2 |
 | `test/repl.test.js` | 9 | `session`×6, `completion`×1, `finalGuard`×1, `prompt`×1, `tools`×1 |
 | `test/governor.test.js` | 8 | `completion`×4, `stallDetection`×4 |
-| `test/loop-error-budget-cells.test.js` | 3 | `stallDetection`×3 |
+| `test/loop-error-budget-cells.test.js` | 2 | `stallDetection`×2 |
 | `test/loop-guard-slice-498s3e.test.js` | 6 | `completion`×2, `wrapup`×2, `context`×1, `finalGuard`×1, `reflection`×1 |
 | `test/app-container-p0.test.js` | 6 | `completion`×3, `stallDetection`×3 |
 | `test/compact/folded-facts.test.js` | 6 | `strategy`×4, `completion`×1, `reflection`×1 |
@@ -900,20 +900,21 @@ S9 退役的是引擎的扁平键，不是 CLI 的入参）、`test/host-cwd-wir
 | `test/loop-resume-ledger-crash-boundary.test.js` | 15 | `completion`×3, `resume`×3, `stallDetection`×3, `tools`×3, `wrapup`×3 |
 | `test/compact/fold-fed-summary-738.test.js` | 6 | `completion`×2, `reflection`×2, `resume`×2 |
 | `test/run-state-meta-742.test.js` | 1 | `tools`×1 |
-| `test/loop-snapshot-round-residue-735.test.js` | 19 | `completion`×4, `stallDetection`×4, `tools`×4, `wrapup`×4, `resume`×3 |
+| `test/loop-snapshot-round-residue-735.test.js` | 0 | |
 | `test/prompt-note-evidence-746.test.js` | 3 | `tools`×2, `completion`×1 |
 | `test/loop-host-steer-turn-753.test.js` | 6 | `onEvent`×6, `onObserverError`×2, `completion`×1, `reflection`×1, `resume`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/prompt-note-coverage-746.test.js` | 1 | `tools`×1 |
 | `test/loop-resume-abandon-signals-730.test.js` | 5 | `completion`×1, `resume`×1, `stallDetection`×1, `tools`×1, `wrapup`×1 |
 | `test/examples/erix-run-steer.test.js` | 4 | `tools`×3, `strategy`×1 |
 | `test/store/ledger-recovery-rows-769.test.js` | 6 | `resume`×6, `onEvent`×2 |
-| `test/contract-snapshot-cell-axes-767.test.js` | 3 | `tools`×2, `partialPersistence`×1 |
+| `test/contract-snapshot-cell-axes-767.test.js` | 0 | |
 | `test/store/append-user-turn-settle-765.test.js` | 15 | `completion`×3, `resume`×3, `stallDetection`×3, `tools`×3, `wrapup`×3 |
 | `test/reasoning-sent-params-785.test.js` | 6 | `completion`×3, `stallDetection`×3 |
 | `test/cli-reasoning-effort-798.test.js` | 3 | `prompt`×1, `reflection`×1, `session`×1 |
 | `test/loop-request-view-stub-790.test.js` | 6 | `tools`×2, `completion`×1, `resume`×1, `stallDetection`×1, `wrapup`×1 |
 | `test/loop-resume-default-replay-833.test.js` | 1 | `tools`×1 |
 | `test/contract-round-end-payload-835.test.js` | 2 | `completion`×2 |
+| `test/loop-journal-order-838.test.js` | 2 | `completion`×1, `tools`×1 |
 
 ## 数据面 1354 的垂直切片方案（S7d / S7e / S7f / S7g）——**按配置组垂直切**（S3 前口径；今实测 1269）
 

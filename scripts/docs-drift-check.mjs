@@ -2007,8 +2007,8 @@ const SYMBOL_DOCS_STATIC = [README_EN, README_CN, AGENTS_EN, AGENTS_CN, CONTRACT
  *  写法必须保持这一行不变形（自测要改这个数）。 */
 const REF_SCAN_DOCS_MINIMUM = 53;
 
-/** #280 同款的「树形口子」，只给 `--self-test` 用（**不是豁免开关**）：模拟「某份指南改名到不匹配模式」。 */
-let SIM_RENAMED_GUIDE = null;
+/** #280 同款的「树形口子」，只给 `--self-test` 用（**不是豁免开关**）：模拟指南改名到不匹配模式。 */
+let SIM_RENAMED_GUIDES = new Set();
 let LAST_SCAN_DOC_COUNT = -1;   // 自测据此判断树形口子有没有真的落上（#279 的「变异没落上」同一条纪律）
 
 /** 覆盖面：13 份点名文档 + `docs/host-upgrade-guide*.md` 全部（实扫，新增指南自动纳面）。 */
@@ -2016,7 +2016,7 @@ function refScanDocs() {
   const guides = readdirSync(path.join(ROOT, "docs"))
     .filter((f) => /^host-upgrade-guide.*\.md$/.test(f))
     .map((f) => `docs/${f}`)
-    .filter((f) => f !== SIM_RENAMED_GUIDE)
+    .filter((f) => !SIM_RENAMED_GUIDES.has(f))
     .sort();
   const docs = [...SYMBOL_DOCS_STATIC, ...guides];
   LAST_SCAN_DOC_COUNT = docs.length;
@@ -8080,7 +8080,7 @@ const CELL_AXES_PROBE_REF = (() => {
 })();
 
 /** #772 R2：锚点一族反向证共用的两个探针——都从**现树现读**，不抄活文档里的行号（#621 口径）：
- *  CN 表里 `compactionStats` 写点的第一条引用，与 orchestrator 里那句「讲测试拿它当指纹」的注释行。
+ *  CN 表里 `compactionStats` 写点的第一条引用，与 orchestrator 里说明其 state / round-record 来源的注释行。
  *  抽不到 → 变异打不上 → 「变异没落上」判据报红，不会假绿。 */
 const CELL_AXES_DRIFT_PROBE = (() => {
   const lines = textOf(CONTRACT_CN).split("\n");
@@ -8104,7 +8104,7 @@ const liftCellAxesBegin = (linesUp) => (text) => {
 
 const CELL_AXES_DISTRACTOR_LINE = (() => {
   const lines = textOf("src/loop/orchestrator.js").split("\n");
-  const hits = lines.map((l, i) => (/^ +\/\/ - `compactionStats`：/u.test(l) ? i + 1 : 0)).filter((n) => n > 0);
+  const hits = lines.map((l, i) => (/^ +\/\/ `compactionStats` is restored from run-state and retained in round records\.$/u.test(l) ? i + 1 : 0)).filter((n) => n > 0);
   return hits.length === 1 ? hits[0] : null;
 })();
 
@@ -8169,11 +8169,20 @@ const rewriteCellAxesRowKind = (text, key, axis, kind) => {
  */
 const CELL_AXES_R4_KIND_PROBE = (() => {
   const entry = CELL_AXES_ANCHORS_SHIPPED.find((e) => e.key === "compactionStats" && e.axis === "write" && e.kind === "code");
-  if (entry === undefined) return null;
+  const commentEntry = CELL_AXES_ANCHORS_SHIPPED.find((e) => e.key === "compactionStats"
+    && e.axis === "write" && e.kind === "comment");
+  if (entry === undefined || commentEntry === undefined) return null;
   const lines = textOf(entry.codePath).split("\n");
   const real = cellAxesAnchorHitLines(lines, entry).hits ?? [];
-  if (real.length !== 1 || CELL_AXES_DISTRACTOR_LINE === null) return null;
-  return { entry, literal: JSON.stringify(entry.anchor), realLine: real[0], commentLine: CELL_AXES_DISTRACTOR_LINE };
+  const comment = cellAxesAnchorHitLines(lines, commentEntry).hits ?? [];
+  if (real.length !== 1 || comment.length !== 1) return null;
+  return {
+    entry,
+    literal: JSON.stringify(entry.anchor),
+    realLine: real[0],
+    commentLine: comment[0],
+    commentAnchor: commentEntry.anchor,
+  };
 })();
 
 /** 把两份契约里某条 `path:line` 同步改口到另一行（#772 R4：“两份引文同步改口”那个形状）。 */
@@ -8250,7 +8259,7 @@ const CELL_AXES_R4_PAIR_VICTIMS = (() => {
     if (hits.length !== 1) continue;
     out.push({ entry, literal: JSON.stringify(entry.anchor), citation: `${entry.codePath}:${hits[0]}` });
   }
-  return out.length >= 4 ? out : null;
+  return out.length > 0 ? out : null;
 })();
 
 /** #772 R4 M-B：把双锚点组里那 N 条登记从表里摸掉（每条靠自己的锚点字面量定位）。 */
@@ -8995,7 +9004,7 @@ const SELF_TEST_CASES = [
     label: `#772 R4 M-A：把 \`compactionStats\` 写点的 kind=code 锚点指到同一键名的那句注释（:${CELL_AXES_R4_KIND_PROBE?.commentLine ?? "?"}），并把 EN/CN 两份引文同步改口 ⇒ 行号自洽但**种类**红`,
     overlay: {
       [CELL_AXES_ANCHOR_MODULE]: (t) => (CELL_AXES_R4_KIND_PROBE === null ? t
-        : t.split(CELL_AXES_R4_KIND_PROBE.literal).join(JSON.stringify("^ {8}// - .*compactionStats.*："))),
+        : t.split(CELL_AXES_R4_KIND_PROBE.literal).join(JSON.stringify(CELL_AXES_R4_KIND_PROBE.commentAnchor))),
       [CONTRACT_EN]: (t) => (CELL_AXES_R4_KIND_PROBE === null ? t
         : syncCellAxesCitation(`src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.realLine}`, `src/loop/orchestrator.js:${CELL_AXES_R4_KIND_PROBE.commentLine}`)(t)),
       [CONTRACT_CN]: (t) => (CELL_AXES_R4_KIND_PROBE === null ? t
@@ -9258,11 +9267,15 @@ const SELF_TEST_CASES = [
 
   // —— 返工 R2（评审阻断项）：覆盖面会因为改名而**静默缩面**。脚本按
   // `^host-upgrade-guide.*\.md$` 实扫、测试侧用同一个 glob ⇒ 改一份名字就两边一起少一份，照样绿。
-  // 树形口子 `SIM_RENAMED_GUIDE` 只影响清单、不动任何文本（与 #280 的 SIM_ABSENT_TASK_ARCHIVE 同款纪律，
+  // 树形口子 `SIM_RENAMED_GUIDES` 只影响清单、不动任何文本（与 #280 的 SIM_ABSENT_TASK_ARCHIVE 同款纪律，
   // 并且同样要证「口子真的落上了」，见 runSelfTest 里的覆盖面份数比对）。
   {
-    label: `#286 返工 R2：模拟一份升级指南改名到不匹配实扫模式 ⇒ 覆盖面 ${REF_SCAN_DOCS_MINIMUM - 1} < ${REF_SCAN_DOCS_MINIMUM} 必须红（改名 = 静默缩面，两边 glob 一起少）`,
-    simulateRenamedGuide: "docs/host-upgrade-guide-0.16.0.md",
+    label: `#286 返工 R2：模拟三份升级指南改名到不匹配实扫模式 ⇒ 覆盖面 ${REF_SCAN_DOCS_MINIMUM - 1} < ${REF_SCAN_DOCS_MINIMUM} 必须红（改名 = 静默缩面，两边 glob 一起少）`,
+    simulateRenamedGuides: [
+      "docs/host-upgrade-guide-0.16.0.md",
+      "docs/host-upgrade-guide-0.17.0.md",
+      "docs/host-upgrade-guide-0.18.0.md",
+    ],
     expect: [new RegExp(`ref-scan: 「符号锚点 \\+ 裸行号棘轮」的覆盖面只剩 ${REF_SCAN_DOCS_MINIMUM - 1} 份文档，低于下限 \\*\\*${REF_SCAN_DOCS_MINIMUM}\\*\\* 份`),
       /静默缩面/, /test\/docs-anchor-ratchet\.test\.js/],
   },
@@ -10316,14 +10329,14 @@ function runSelfTest() {
     // #302：树形用合成树夹具模拟（只影响实物清单与那一个谓词，声明一侧一律不动），跑完必须还原。
     const simSaved = SIM_TREE_SHAPE;
     SIM_TREE_SHAPE = shape ?? null;
-    const guideSaved = SIM_RENAMED_GUIDE;                       // #286 返工 R2：覆盖面缩面的树形口子
-    SIM_RENAMED_GUIDE = c.simulateRenamedGuide ?? null;
+    const guidesSaved = SIM_RENAMED_GUIDES;                     // #286 返工 R2：覆盖面缩面的树形口子
+    SIM_RENAMED_GUIDES = new Set(c.simulateRenamedGuides ?? []);
     const scanCountBefore = LAST_SCAN_DOC_COUNT;
     let looseDeclSaved = null;                                  // #286 返工 R4：豁免判据的配置口子
     if (c.simulateLooseDecl) {
       const target = BARE_LINE_EXEMPTIONS.find((x) => x.doc === c.simulateLooseDecl.doc && x.target === c.simulateLooseDecl.target);
       if (!target) {
-        OVERLAY.clear(); SIM_RENAMED_GUIDE = guideSaved; SIM_TREE_SHAPE = simSaved;
+        OVERLAY.clear(); SIM_RENAMED_GUIDES = guidesSaved; SIM_TREE_SHAPE = simSaved;
         return { pass: false, msg: `${label}：配置口子没落上（豁免表里找不到 ${c.simulateLooseDecl.doc} / ${c.simulateLooseDecl.target}）` };
       }
       looseDeclSaved = [target, target.decl];
@@ -10362,7 +10375,7 @@ function runSelfTest() {
       const unknown = c.simulateCompactionDropWordIds
         .filter((id) => !COMPACTION_DEFAULT_WORDS.some((word) => word.id === id));
       if (unknown.length) {
-        OVERLAY.clear(); SIM_TREE_SHAPE = simSaved; SIM_RENAMED_GUIDE = guideSaved;
+        OVERLAY.clear(); SIM_TREE_SHAPE = simSaved; SIM_RENAMED_GUIDES = guidesSaved;
         return { pass: false, msg: `${label}：配置口子没落上（判据词表里没有 ${unknown.join(", ")}）` };
       }
       SIM_COMPACTION_DROP_WORD_IDS = c.simulateCompactionDropWordIds;
@@ -10375,7 +10388,7 @@ function runSelfTest() {
       if (shape && LAST_IGN) landing = treeFixtureLanding(LAST_IGN);
       if (c.assertAfter) afterWhy = c.assertAfter({ errs });
     } finally {
-      SIM_TREE_SHAPE = simSaved; SIM_RENAMED_GUIDE = guideSaved;
+      SIM_TREE_SHAPE = simSaved; SIM_RENAMED_GUIDES = guidesSaved;
       SIM_CLI_FLAG_EXEMPTIONS = cliExemptSaved;   // 放行表一条也不许留在全局
       SIM_REGISTRY = registrySaved;                // #511：registry 夹具同上
       SIM_TAG_FACTS = tagFactsSaved;               // #697：tag 面夹具同上
@@ -10391,9 +10404,9 @@ function runSelfTest() {
     }
     // #279 的教训：「变异没落上」的空跑会交出一条假的绿。树形口子也一样——但判据是**夹具声明与索引是否
     // 一致**（`treeFixtureLanding`），不是「本机实物掉了几条」（那条在空目录的机器上恒真地误报，#302）。
-    // #286 返工 R2：树形口子也要证「真的落上了」——说要模拟一份指南改名，覆盖面份数却没变就是没接进 refScanDocs。
-    if (c.simulateRenamedGuide && LAST_SCAN_DOC_COUNT > 0 && LAST_SCAN_DOC_COUNT === scanCountBefore) {
-      return { pass: false, msg: `${label}：覆盖面树形口子没落上（说要模拟 \`c.simulateRenamedGuide\` 改名，但 refScanDocs() 的份数没变）` };
+    // #286 返工 R2：树形口子也要证「真的落上了」——说要模拟指南改名，覆盖面份数却没变就是没接进 refScanDocs。
+    if (c.simulateRenamedGuides?.length > 0 && LAST_SCAN_DOC_COUNT > 0 && LAST_SCAN_DOC_COUNT === scanCountBefore) {
+      return { pass: false, msg: `${label}：覆盖面树形口子没落上（说要模拟指南改名，但 refScanDocs() 的份数没变）` };
     }
     if (landing) return { pass: false, msg: `${label}：树形夹具没落上——${landing}` };
     // #337：绿只说明「静态分类不再报」，证不到扫描面——这里让用例自己再问一句生产谓词（如
