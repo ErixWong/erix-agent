@@ -34,7 +34,10 @@ import {
   PENDING_TOOL_RESULT_TEXT,
   UNPERSISTED_TOOL_RESULT_TEXT,
 } from "../src/loop/pending-tool-result.js";
-import { RECOVERY_EVENT_TOOL_RESULT_UNLEDGERED } from "../src/store/recovery-rows.js";
+import {
+  buildToolExecutedRecoveryRow,
+  RECOVERY_EVENT_TOOL_RESULT_UNLEDGERED,
+} from "../src/store/recovery-rows.js";
 import {
   mergeToolResultsIntoAssistantNextMessage,
   mergeToolResultsIntoMessages,
@@ -1719,11 +1722,16 @@ test("#421 结构判据：桩正文只有一个定义点，且只由共享实现
   // 两种「没有结果」必须是两句话（尾部的「从未执行」 vs 本单的「执行过、结果没落盘」）。
   assert.notEqual(UNPERSISTED_TOOL_RESULT_TEXT, PENDING_TOOL_RESULT_TEXT,
     "「从未执行」与「执行过但结果没落盘」语义不同，正文不许共用一句");
-  // 配对判据也只有一份：`pendingMidSequenceToolUses` 的定义点在本模块。
+  // 配对判据只有一份，resume / 中段 / 请求视图 / 尾部都依赖这个共享定义。
+  assert.deepEqual(
+    files.filter((rel) => /export function findUnpairedToolUseGroups\s*\(/u.test(textOf(rel))),
+    [shared],
+    "tool_use 与紧邻 tool_result 的配对判据必须只有一个定义点",
+  );
   assert.deepEqual(
     files.filter((rel) => /export function pendingMidSequenceToolUses\s*\(/u.test(textOf(rel))),
     [shared],
-    "中段判据必须只有一份实现（任何别处再写一遍配对就是下一个 #394）",
+    "中段判据 wrapper 必须保持唯一（任何别处再写一遍配对就是下一个 #394）",
   );
 });
 
@@ -1976,4 +1984,59 @@ test("#838 S1 C1：结果行拒写时将同一结果存入恢复行，resume 后
   assert.equal(resultsFor(provider.requests[0].messages, "t1")[0].content, "exact output");
   assert.deepEqual(ledgerResults(await inner.load(RUN_ID)), ["t1=exact output"],
     "恢复必须先把兜底结果补进账本");
+});
+
+test("#838 S1 C2 reviewer 场景：t1 执行过但结果不可用，resume 正常补跑 t2", async () => {
+  const inner = createMemoryTranscriptStore();
+  const ts = new Date().toISOString();
+  await inner.appendRound(RUN_ID, {
+    round: 1,
+    roundKey: `${RUN_ID}:round:1`,
+    dedupKey: `${RUN_ID}:msg:1:0`,
+    kind: "message",
+    seq: 0,
+    messages: [{ role: "user", content: [text("任务")] }],
+    ts,
+  });
+  await inner.appendRound(RUN_ID, {
+    round: 2,
+    roundKey: `${RUN_ID}:round:2`,
+    dedupKey: `${RUN_ID}:msg:2:0`,
+    kind: "message",
+    seq: 0,
+    messages: [{ role: "assistant", content: [text("开始"), toolUse("t1"), toolUse("t2")] }],
+    ts,
+  });
+  // This is the legacy crash shape written before C1: execution evidence exists for t1,
+  // but no result content was persisted; t2 never started and must be replayed.
+  await inner.appendRecoveryRow(RUN_ID, buildToolExecutedRecoveryRow({
+    runId: RUN_ID,
+    round: 2,
+    toolUseId: "t1",
+  }));
+
+  const executed = [];
+  const provider = createFakeProvider([endTurn("续接完成")]);
+  const resumed = await runLoop({
+    store: inner,
+    provider,
+    executeTool: async ({ id }) => {
+      executed.push(id);
+      return `out-${String(id)}`;
+    },
+  });
+
+  assert.equal(resumed.ok, true, `resume 必须成功（实测：${String(resumed.error)}）`);
+  assert.deepEqual(executed, ["t2"], "已执行的 t1 不重跑，缺少结果的 t2 正常补跑");
+  assert.equal(provider.requests.length, 1, "resume 必须至少完成一次模型请求");
+  const request = provider.requests[0].messages;
+  const t1 = resultsFor(request, "t1");
+  const t2 = resultsFor(request, "t2");
+  assert.equal(t1.length, 1, "t1 只补一张结果桩");
+  assert.equal(t1[0].content, UNPERSISTED_TOOL_RESULT_TEXT,
+    "执行证据存在时必须说「执行过、结果不可用」");
+  assert.equal(t2.length, 1, "t2 的真实结果只出现一份");
+  assert.equal(t2[0].content, "out-t2", "t2 必须是补跑得到的真实结果");
+  assert.doesNotThrow(() => validateMessages(request),
+    "每条 assistant 的 tool_use id 必须在紧邻 user 结果页里完整配对");
 });

@@ -612,6 +612,7 @@ export function createTerminationManager(ctx) {
     // `validateMessages` 继续如实报 `invalid_messages`（不在这里发明第三种兜底）。
     await answerPendingTailToolUses(ctx.messages, {
       round: ctx.rounds,
+      executedToolIds: ctx.executedToolIds,
       messageRounds: ctx.messageRounds,
       onMessage: ctx.journalPendingTailToolResult,
     });

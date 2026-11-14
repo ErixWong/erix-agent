@@ -23,7 +23,7 @@
 // **一律写「没执行」是伪报**：执行发生在结果行落盘之前，「没跑」与「跑了而结果没落」在账本里形状相同。
 //
 // 出声：仍走 `resume_journal_skipped`（**不新增事件类型**），`reason` 用 `mid_sequence_request_view_stub`
-// （为什么必须是新值：见 `src/loop/pending-tool-result.js` 里那条常量的注释），`detail` 复用既有两个取值，
+// （为什么必须是新值：见 `src/loop/pending-tool-result.js` 里那条常量的注释），`detail` 说明插页形状或同页缺口，
 // payload 追加**可选** `toolUseIds`（缺席就不带那个键 ⇒ 既有四条事件逐字不变）。
 //
 // 反向证（issue #210 R2 的规矩）：见 T5 / T6 / T8 三格，红点都写在断言文案里；整层兜底注释掉之后
@@ -46,6 +46,7 @@ import { canonicalToOpenAIMessages } from "../src/messages/canonical.js";
 import { extractL0Facts } from "../src/reflection/l0.js";
 import {
   MID_SEQUENCE_ABANDON_DETAIL_AGGREGATE_HAS_NO_RESULT,
+  MID_SEQUENCE_REQUEST_VIEW_DETAIL_UNPAIRED_RESULT,
   MID_SEQUENCE_ABANDON_SHAPE_NOT_SUPPORTED,
   MID_SEQUENCE_REQUEST_VIEW_STUB,
   NO_EVIDENCE_TOOL_RESULT_TEXT,
@@ -252,7 +253,8 @@ test("T2b 没有任何证据 ⇒ 措辞是「未知/无证据」，且三句桩�
   const inner = createMemoryTranscriptStore();
   await brickedArchive(inner);
   const provider = createFakeProvider([endTurn("续接完成")]);
-  assert.equal((await resumeRun({ store: inner, provider })).ok, true);
+  const resumed = await resumeRun({ store: inner, provider });
+  assert.equal(resumed.ok, true, `resume must succeed: ${String(resumed.error)}`);
 
   const messages = provider.requests[0].messages;
   const stub = blocksOf(messages).find((block) => block?.type === "tool_result");
@@ -263,6 +265,10 @@ test("T2b 没有任何证据 ⇒ 措辞是「未知/无证据」，且三句桩�
   assert.notEqual(NO_EVIDENCE_TOOL_RESULT_TEXT, UNPERSISTED_TOOL_RESULT_TEXT, "两句是三件事里的第二件");
   assert.notEqual(NO_EVIDENCE_TOOL_RESULT_TEXT, PENDING_TOOL_RESULT_TEXT, "两句是三件事里的第三件");
   assert.ok(NO_EVIDENCE_TOOL_RESULT_TEXT.startsWith("[erix] "), "引擎自写的 marker 约定（与既有两句一致）");
+  assert.match(NO_EVIDENCE_TOOL_RESULT_TEXT, /inspect the current files and command state/u,
+    "无证据时必须要求先检查文件与命令现场");
+  assert.match(NO_EVIDENCE_TOOL_RESULT_TEXT, /do not blindly repeat the call/u,
+    "无证据时必须明确禁止盲目重发");
 });
 
 // ───────────── T3（不双结清）：#789 已经结清过的那一单，本单不许再补第二张桩 ─────────────
@@ -332,6 +338,33 @@ test("T4b 无可补时返回**同一个数组引用**（健康路径逐字等价
   const tail = messages.slice(0, 2);
   const tailOut = stubUnsettledToolUsesForRequestView(tail, {});
   assert.equal(tailOut.messages, tail, "尾部悬空不许被插页（`allowPendingToolUse: true` 的在飞尾巴同一条判据）");
+});
+
+test("#838 配对缺口按 assistant 与紧邻 user 检查：部分结果同页补桩且不改原消息", () => {
+  const messages = [
+    { role: "assistant", content: [toolUse("t1"), toolUse("t2")] },
+    { role: "user", content: [toolResultBlock("t2")] },
+    { role: "assistant", content: [text("继续")] },
+  ];
+  const before = structuredClone(messages);
+  const repaired = stubUnsettledToolUsesForRequestView(messages, {
+    executedToolIds: new Set(["t1"]),
+  });
+
+  assert.notEqual(repaired.messages, messages, "有缺口时请求视图必须返回新数组");
+  assert.deepEqual(messages, before, "请求视图修复不能改写账本消息对象");
+  assert.equal(repaired.messages[1].role, "user", "不能在部分结果页前插新页");
+  assert.deepEqual(
+    stubIdsOf([repaired.messages[1]]).sort(),
+    ["t1", "t2"],
+    "现有 t2 真结果必须保留，且缺失的 t1 必须补进同一页",
+  );
+  assert.deepEqual(stubIdsOf([repaired.messages[1]], UNPERSISTED_TOOL_RESULT_TEXT), ["t1"],
+    "t1 有执行证据，必须用「执行过、结果不可用」话术");
+  assert.deepEqual(repaired.stubs.map((stub) => stub.detail),
+    [MID_SEQUENCE_REQUEST_VIEW_DETAIL_UNPAIRED_RESULT],
+    "事件 detail 必须准确说明聚合页已有结果但仍有未配对调用");
+  assert.doesNotThrow(() => validateMessages(repaired.messages));
 });
 
 // ─────────────── T5（反向证 a）：桩页放错位置 ⇒ 红在「没有紧随的 tool_result」 ───────────────

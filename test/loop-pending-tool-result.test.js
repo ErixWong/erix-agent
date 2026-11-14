@@ -12,6 +12,10 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 
 import { PENDING_TOOL_RESULT_TEXT } from "../src/loop/orchestrator.js";
+import {
+  answerPendingTailToolUses,
+  UNPERSISTED_TOOL_RESULT_TEXT,
+} from "../src/loop/pending-tool-result.js";
 import { runDirect } from "./helpers/run-direct.js";
 import { pendingTrailingToolUses, validateMessages } from "../src/messages/rounds.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
@@ -76,6 +80,29 @@ const endTurnWithToolUse = (id) => ({
 });
 
 const textTurn = (value) => ({ content: [{ type: "text", text: value }], stopReason: "end_turn" });
+
+test("#838 尾部结清按执行证据选择话术，不把已执行调用说成从未执行", async () => {
+  const messages = [
+    { role: "user", content: [{ type: "text", text: "任务" }] },
+    {
+      role: "assistant",
+      content: [
+        { type: "tool_use", id: "t1", name: "work", input: {} },
+        { type: "tool_use", id: "t2", name: "work", input: {} },
+      ],
+    },
+  ];
+
+  assert.equal(await answerPendingTailToolUses(messages, {
+    executedToolIds: new Set(["t1"]),
+  }), true);
+  const results = messages[2].content;
+  assert.equal(results[0].content, UNPERSISTED_TOOL_RESULT_TEXT,
+    "有执行证据的 t1 必须说结果不可用，而不是从未执行");
+  assert.equal(results[1].content, PENDING_TOOL_RESULT_TEXT,
+    "没有执行证据的 t2 才能使用从未执行的话术");
+  validateMessages(messages);
+});
 
 test("#394 R5-1 兄弟洞：end_turn + 悬空 tool_use + guard 判 revise ⇒ 不再 reject，续跑请求真的发出去了", async () => {
   const provider = createFakeProvider([
@@ -194,13 +221,16 @@ test("#394 R5-2 load() 顺序（file store 真落盘）：tool_use 之后紧跟�
 
 // ── R5-3 结构判据：两个注入点共用同一实现（R1 那条 grep 判据的测试化）────────────────────
 test("#394 R5-3 结构判据：结清动作只有一份实现，且两个注入点都调它", () => {
-  // ① 配对判据只有一份消费者：`pendingTrailingToolUses` 在 src/ 里只被定义处与共享实现引用
-  //    （任何别处再写一遍配对逻辑 = 第二个 #394）。
-  const pairingConsumers = files.filter((rel) => (
-    rel !== "src/messages/rounds.js" && codeOf(rel).includes("pendingTrailingToolUses")
+  // ① 统一配对判据只有一份定义，外部只允许 resume-manager 调用它；中段、请求视图和尾部都在共享模块内。
+  const pairingDefinitions = files.filter((rel) => (
+    /export function findUnpairedToolUseGroups\s*\(/u.test(codeOf(rel))
   ));
-  assert.deepEqual(pairingConsumers, [SHARED],
-    `配对判据的消费者必须只有共享实现，实测 ${JSON.stringify(pairingConsumers)}`);
+  assert.deepEqual(pairingDefinitions, [SHARED],
+    `配对判据的定义点必须只有共享实现，实测 ${JSON.stringify(pairingDefinitions)}`);
+  const pairingConsumers = files.filter((rel) => rel !== SHARED
+    && codeOf(rel).includes("findUnpairedToolUseGroups"));
+  assert.deepEqual(pairingConsumers, ["src/loop/resume-manager.js"],
+    `共享配对判据的外部消费者只能是 resume-manager，实测 ${JSON.stringify(pairingConsumers)}`);
 
   // ② 结清动作的**实现**只有一处（`export async function`），调用点只有那两个注入点所在的两个文件。
   const implementations = files.filter((rel) => (

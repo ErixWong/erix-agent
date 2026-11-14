@@ -18,9 +18,8 @@
  * （Anthropic 形状对这个形状回 400），而实跑的 OpenAI 兼容中转会回 **200** 并让模型**自己编**一个结局。
  *
  * 三条纪律（本模块存在的全部理由，改它之前先读）：
- *   - **判据复用既有那一份**：`pendingTrailingToolUses`（`src/messages/rounds.js`，与
- *     `validateMessages` 的配对规则同源）。这里**不**另写一套配对逻辑——第二份判据就是下一个
- *     #394。
+ *   - **配对只在 `findUnpairedToolUseGroups` 判一次**：按每条 assistant 与紧邻 user 的结果 id 比较；
+ *     resume、请求视图和尾部结清都从它取缺口，不使用跨轮 id 集合。
  *   - **结果块复用唯一构造点**：`buildToolResultFact`（`src/tool-fact.js`），`isError: true` 打在
  *     块上，正文用 `PENDING_TOOL_RESULT_TEXT`（以 `[erix]` marker 开头）。全仓「造 `is_error`
  *     收尾 `tool_result`」的构造点只有这一处，由 `test/loop-pending-tool-result.test.js` 的
@@ -30,24 +29,63 @@
  *     控制文本之前，把配对重新打散（#393 的结论）。
  */
 
-import { pendingTrailingToolUses } from "../messages/rounds.js";
 import { buildToolResultFact } from "../tool-fact.js";
 import { blocksFor } from "./block-helpers.js";
 import { mergeToolResultsIntoAssistantNextMessage } from "./messages.js";
 
 /**
- * 尾部悬空 `tool_use` 的**读侧**入口（issue #404）：内容就是 `pendingTrailingToolUses` 那一份，
- * 这里只是把它挂到共享实现的出口上。为什么需要这一层：`src/` 里**除本文件外**不许再引用判据符号
+ * 尾部悬空 `tool_use` 的**读侧**入口（issue #404）：从统一配对函数取末条 assistant 的缺失结果。
+ * 为什么需要这一层：`src/` 里**除本文件外**不许再引用判据符号
  * （`test/loop-pending-tool-result.test.js` 的结构判据钉着——任何别处再写一遍配对逻辑就是下一个
  * #394），而恢复路径也要读一眼尾部形状（告示里要列「哪些调用没结果」）。
  *
  * 只读、不结清、不碰 `messages`：结清仍然只有 `answerPendingTailToolUses` 一条路。
  *
  * @param {any[]} messages
- * @returns {object[]} 末条 assistant 消息里的 `tool_use` 块（可能为空数组）
+ * @returns {object[]} 末条 assistant 消息里缺少 `tool_result` 的 `tool_use` 块（可能为空数组）
  */
 export function pendingTailToolUses(messages) {
-  return pendingTrailingToolUses(messages);
+  const list = Array.isArray(messages) ? messages : [];
+  return findUnpairedToolUseGroups(list)
+    .find((group) => group.isTail)?.missing ?? [];
+}
+
+/**
+ * assistant 与紧邻 user 的唯一 tool_use/tool_result 配对判据。
+ * @param {any[]} messages
+ * @returns {Array<{assistantIndex:number, resultIndex:number|undefined, uses:any[], missing:any[],
+ *   results:any[], foreignResultIds:any[], next:any, isTail:boolean}>}
+ */
+export function findUnpairedToolUseGroups(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  const groups = [];
+  for (let assistantIndex = 0; assistantIndex < list.length; assistantIndex += 1) {
+    const assistant = list[assistantIndex];
+    if (assistant?.role !== "assistant") continue;
+    const uses = blocksFor(assistant.content).filter((block) => block?.type === "tool_use");
+    if (uses.length === 0) continue;
+    const next = list[assistantIndex + 1];
+    const results = next?.role === "user"
+      ? blocksFor(next.content).filter((block) => block?.type === "tool_result")
+      : [];
+    const resultIds = new Set(results.map((block) => block?.tool_use_id));
+    const useIds = new Set(uses.map((block) => block?.id));
+    const missing = uses.filter((block) => !resultIds.has(block?.id));
+    if (missing.length === 0) continue;
+    groups.push({
+      assistantIndex,
+      resultIndex: next?.role === "user" ? assistantIndex + 1 : undefined,
+      uses,
+      missing,
+      results,
+      foreignResultIds: results
+        .map((block) => block?.tool_use_id)
+        .filter((id) => !useIds.has(id)),
+      next,
+      isTail: assistantIndex === list.length - 1,
+    });
+  }
+  return groups;
 }
 
 /**
@@ -86,7 +124,7 @@ function isUsableToolUseId(block) {
  * @returns {boolean}
  */
 export function pendingTailToolUsesAreAnswerable(messages) {
-  return pendingTrailingToolUses(messages).every(isUsableToolUseId);
+  return pendingTailToolUses(messages).every(isUsableToolUseId);
 }
 
 /**
@@ -96,19 +134,22 @@ export function pendingTailToolUsesAreAnswerable(messages) {
  * 调它，不必自己判断尾部。
  *
  * @param {any[]} messages canonical 消息数组（就地追加）
- * @param {{round?: number, messageRounds?: Map<any, any> | WeakMap<any, any>, onMessage?: (message: any, round?: number) => any}} [options]
+ * @param {{round?: number, executedToolIds?: Set<any>, messageRounds?: Map<any, any> | WeakMap<any, any>, onMessage?: (message: any, round?: number) => any}} [options]
  *   `messageRounds` 与主循环同一份口径（轮号表——主循环用的是 `WeakMap`，termination 侧原样转交）；`onMessage` 是**入账回调**，由 orchestrator 注入
  *   （本模块不持有 store、不碰 persist —— journal 写入一直是 orchestrator 的职责面）。
  * @returns {Promise<boolean>} true = 真的补了一条 user 消息；false = 尾部没有可结清的悬空块
  *   （含「畸形尾巴补不出合法结果」那一格）
  */
 export async function answerPendingTailToolUses(messages, options = {}) {
-  const pending = pendingTrailingToolUses(messages);
+  const pending = pendingTailToolUses(messages);
   if (pending.length === 0) return false;
   if (!pending.every(isUsableToolUseId)) return false;
+  const executed = options.executedToolIds instanceof Set ? options.executedToolIds : undefined;
   const toolResults = pending.map((block) => buildToolResultFact({
     toolUseId: block.id,
-    content: PENDING_TOOL_RESULT_TEXT,
+    content: executed?.has(block.id)
+      ? UNPERSISTED_TOOL_RESULT_TEXT
+      : PENDING_TOOL_RESULT_TEXT,
      // 这条调用确实没有结果（不是成功，也不是工具自己报的错）：`is_erro
      // r` 是 wire 上
      // 「这次调用没产出可用结果」的唯一出口，与续跑复放写 `interrupted` 
@@ -195,7 +236,8 @@ export async function answerPendingTailToolUses(messages, options = {}) {
 export const UNPERSISTED_TOOL_RESULT_TEXT = "[erix] The result of this tool call is not available: "
   + "the call was made, but its tool_result was never persisted to the transcript ledger, so the "
   + "engine cannot replay it. Treat the outcome as unknown (it may have had side effects) and "
-  + "re-issue the call if the task still needs it.";
+  + "first inspect the current files and command state before deciding whether to re-issue it; do "
+  + "not blindly repeat the call.";
 
  // ── issue #730：「引擎放弃了这一格」的**成因名**（宿主可读面，中英契
  // 约逐条对齐）───────────────
@@ -218,16 +260,18 @@ export const MID_SEQUENCE_ABANDON_SHAPE_NOT_SUPPORTED = "mid_sequence_shape_not_
 export const MID_SEQUENCE_ABANDON_ROW_WRITE_REFUSED = "mid_sequence_stub_row_write_refused";
 
 /**
- * issue #790（**只视图修了、账本仍开着**）：需要插页那一类中段悬空，已在**请求视图**里插了一张纯
- * `tool_result` 的 user 页 ⇒ run 能起来，而**账本一个字节都没动**（本单不代笔补那一行）。
+ * issue #790（**只视图修了、账本仍开着**）：中段悬空已在**请求视图**里补齐 ⇒ run 能起来，而
+ * **账本一个字节都没动**（本单不代笔补那一行）。
  *
  * 为什么不复用上面那个 `mid_sequence_shape_not_supported`（新 `reason` 的代价：中英两份契约的表 +
  * `SOURCE_REASONS` 同笔刷新）：那四个成因说的全部是「**账本**这一格放弃了」，而这一格说的是
  * 「视图修好了、账本还没修」。复用会让同一次续跑发出两条 `(reason, detail, count, round)` 逐字相同
  * 而含义相反的事件，而「宿主能不能分清这两种」恰好是 #730 开单要钉的那件事。
- * **事件类型未新增**（仍骑在 `resume_journal_skipped` 上），`detail` 也沿用下面两个既有取值。
+ * **事件类型未新增**（仍骑在 `resume_journal_skipped` 上），detail 用下方既有形状码，或在部分结果时
+ * 用 `aggregate_has_unpaired_tool_use_result`。
  */
 export const MID_SEQUENCE_REQUEST_VIEW_STUB = "mid_sequence_request_view_stub";
+export const MID_SEQUENCE_REQUEST_VIEW_DETAIL_UNPAIRED_RESULT = "aggregate_has_unpaired_tool_use_result";
 
  // `mid_sequence_shape_not_supported`：紧接的那条消息不是 `user`（相邻两条 assistant
  // ）。 */
@@ -273,33 +317,33 @@ function scanMidSequence(messages) {
   const list = Array.isArray(messages) ? messages : [];
   const answerable = [];
   const unanswerable = [];
-  for (let index = 0; index < list.length - 1; index += 1) {
-    const assistant = list[index];
-    if (assistant?.role !== "assistant") continue;
-    const uses = blocksFor(assistant.content).filter((block) => block?.type === "tool_use");
-    if (uses.length === 0) continue;
-    const next = list[index + 1];
-    if (next?.role !== "user") {
+  for (const group of findUnpairedToolUseGroups(list)) {
+    if (group.isTail) continue;
+    if (group.next?.role !== "user") {
        // 相邻两条 assistant（要在那两条之间**插页**）——非目标形状，但今
        // 天它同样让整份历史被拒。
-      unanswerable.push({ assistantIndex: index, detail: MID_SEQUENCE_ABANDON_DETAIL_NEXT_NOT_USER, unsettled: uses });
-      continue;
-    }
-    const results = blocksFor(next.content).filter((block) => block?.type === "tool_result");
-     // 一条结果都没有 ⇒ 需要**插页**（非目标）；`validateMessages` 会以另一
-     // 句如实报错。
-    if (results.length === 0) {
       unanswerable.push({
-        assistantIndex: index,
-        detail: MID_SEQUENCE_ABANDON_DETAIL_AGGREGATE_HAS_NO_RESULT,
-        unsettled: uses,
+        assistantIndex: group.assistantIndex,
+        detail: MID_SEQUENCE_ABANDON_DETAIL_NEXT_NOT_USER,
+        unsettled: group.uses,
       });
       continue;
     }
-    const settled = new Set(results.map((block) => block?.tool_use_id));
-    const missing = uses.filter((block) => !settled.has(block.id));
-    if (missing.length === 0) continue;
-    answerable.push({ assistantIndex: index, resultIndex: index + 1, missing });
+     // 一条结果都没有 ⇒ 需要**插页**（非目标）；`validateMessages` 会以另一
+     // 句如实报错。
+    if (group.results.length === 0) {
+      unanswerable.push({
+        assistantIndex: group.assistantIndex,
+        detail: MID_SEQUENCE_ABANDON_DETAIL_AGGREGATE_HAS_NO_RESULT,
+        unsettled: group.uses,
+      });
+      continue;
+    }
+    answerable.push({
+      assistantIndex: group.assistantIndex,
+      resultIndex: /** @type {number} */ (group.resultIndex),
+      missing: group.missing,
+    });
   }
   return { answerable, unanswerable };
 }
@@ -350,7 +394,8 @@ export function buildUnpersistedToolResultStub(toolUseId) {
 export const NO_EVIDENCE_TOOL_RESULT_TEXT = "[erix] The result of this tool call is missing from the "
   + "transcript ledger, and the engine holds no evidence either way about whether it ran: the ledger "
   + "carries no tool-executed record and no tool_result for it. Do not read that as the call having "
-  + "not run — side effects may already have happened. Re-issue the call if the task still needs it.";
+  + "not run — side effects may already have happened. First inspect the current files and command "
+  + "state, then decide whether re-issuing is safe; do not blindly repeat the call.";
 
 /**
  * 造一张「执行过没有**无证据**」的 `tool_result` 桩（issue #790）。
@@ -375,23 +420,16 @@ export function buildNoEvidenceToolResultStub(toolUseId) {
  * 本库自己的校验器拒掉（`assistant tool_use has no immediately following user tool_result`，0 次 HTTP，
  * 那个 runId 永久起不来），而账本侧的中段兜底只会同页合并、不会插页（纪律 ④）。
  *
- * 这一层补的就是「插页」那一支，而它**只**存在于交给 provider 的那份数组里：
+ * 这一层只改交给 provider 的请求视图：
  *   · 不碰 `messages`（一个块都不加、一个对象都不改）⇒ `extractL0Facts(ctx.messages)` 不会把桩当成
  *     真工具结果，`ctx.persistedTranscriptLength`（`src/loop/resume-manager.js` 在重建上下文之后赋值）
  *     也不会长；
  *   · 不调任何 `store.append*` ⇒ 账本字节一字不差，「账本仍未修」这件事实仍由既有那条
- *     `mid_sequence_shape_not_supported` 如实说（本函数另发一条 `mid_sequence_request_view_stub` 说
- *     「视图修了」，两件事是两件事）。
+ *     账本保持原样（本函数另发一条 `mid_sequence_request_view_stub` 说「视图修了」）。
  *
- * 判据（四条，全部是「插进去之后 `validateMessages` 必须过」的充分条件）：
- *   ① **整段上下文**里找不到该 assistant 任一 `tool_use` 的 `tool_result`（#765 的「整本账本」口径）。
- *      这是**整组**判据：部分结清时插页会把已有的那份结果挤成孤儿（`user tool_result has no matching
- *      assistant tool_use`），与 `deriveLedgerCrashBoundary` 取舍 ① 同规则 ⇒ 宁可不插。
- *      它同时保证**不会双结清**：#789 结清过的那些 id 已经在账本里 ⇒ 这一组直接跳过。
- *   ② 紧跟的那条消息里一条 `tool_result` 都没有（有结果 = #421 的同页合并那一支，插页会打散它）。
- *   ③ id 全部可用（沿用 `isUsableToolUseId`，不发明第三种兜底 —— 畸形块让今天那句如实报错）。
- *   ④ 不是最后一条消息（尾部悬空归 #394 / #736 / #789 那三支结清；`allowPendingToolUse: true` 的
- *      在飞尾巴因此永远不被本函数碰）。
+ * 判据：配对缺口来自 `findUnpairedToolUseGroups`；已有的匹配结果保留，只补该 assistant 自己缺失的 id。
+ * 若紧邻 user 已有部分结果，就把桩同页合并（拒绝外来 id）；否则在非尾部请求视图里插入纯结果页。
+ * 畸形 id、在飞结果和真正尾部都不碰，分别留给校验器、执行器和尾部结清路径处理。
  *
  * @param {any[]} messages canonical 消息数组（**只读**）
  * @param {{executedToolIds?: Set<any>, pendingResultIds?: Set<any>}} [options]
@@ -406,65 +444,54 @@ export function stubUnsettledToolUsesForRequestView(messages, options = {}) {
   const list = Array.isArray(messages) ? messages : [];
   const evidence = options.executedToolIds instanceof Set ? options.executedToolIds : undefined;
   const inFlight = options.pendingResultIds instanceof Set ? options.pendingResultIds : undefined;
-   // 整段上下文里已有的结果 id（判据 ① 的排除集，也是「不双结清」的
-   // 那一道：#789 结清的行就在其中）。
-  const settled = new Set(list
-    .flatMap((message) => blocksFor(message?.content))
-    .filter((block) => block?.type === "tool_result")
-    .map((block) => block?.tool_use_id));
   /** @type {Array<{toolUseId: any, assistantIndex: number, detail: string, executed: boolean}>} */
   const stubs = [];
-   // 插页位置（下标全部是**原数组**里的，两阶段拼接到下面）；空数组 = 
-   // 一条都不补。 */
   /** @type {Array<{afterIndex: number, page: object}>} */
   const insertions = [];
-  for (let index = 0; index < list.length - 1; index += 1) {
-    const assistant = list[index];
-    if (assistant?.role !== "assistant") continue;
-    const uses = blocksFor(assistant.content).filter((block) => block?.type === "tool_use");
-    if (uses.length === 0) continue;
-     // 判据 ①（整组）：任一 id 在整段上下文里已有结果 ⇒ 这一单不是「
-     // 整单没结清」，不插页
-     // （部分结清时插页会把已有那份结果挤成孤儿）。它同时保证不双结
-     // 清：#789 结清过的 id 在其中。
-    if (uses.some((block) => settled.has(block?.id))) continue;
-     // 判据 ③ 与在飞排除集（与 #421 同口径：马上会有真结果的 id 不许被
-     // 桩顶掉）。
-    const usable = uses.filter((block) => isUsableToolUseId(block)
+  /** @type {Map<number, any>} */
+  const replacements = new Map();
+  for (const group of findUnpairedToolUseGroups(list)) {
+    if (group.isTail || group.foreignResultIds.length > 0) continue;
+    const usable = group.missing.filter((block) => isUsableToolUseId(block)
       && !(inFlight !== undefined && inFlight.has(block.id)));
-    if (usable.length !== uses.length) continue;
-    const next = list[index + 1];
-     // 判据 ②：紧跟的那一页已有结果 = #421 同页合并那一支，插页会打散
-     // 它。
-    if (blocksFor(next?.content).some((block) => block?.type === "tool_result")) continue;
-    const detail = next?.role === "user"
-      ? MID_SEQUENCE_ABANDON_DETAIL_AGGREGATE_HAS_NO_RESULT
+    if (usable.length !== group.missing.length) continue;
+    const detail = group.next?.role === "user"
+      ? group.results.length > 0
+        ? MID_SEQUENCE_REQUEST_VIEW_DETAIL_UNPAIRED_RESULT
+        : MID_SEQUENCE_ABANDON_DETAIL_AGGREGATE_HAS_NO_RESULT
       : MID_SEQUENCE_ABANDON_DETAIL_NEXT_NOT_USER;
-    const page = {
-      role: "user",
-       // **独立的一页**，只装 `tool_result`（与 `answerPendingTailToolUses` 同形状）
-       // ：全仓档案里
-       // 「同时带 `text` 与 `tool_result` 的混合 user 页」是 0 个，本单不许使它
-       // 不为 0（OpenAI 转换层
-      // 会把那种页拆成 `user` + `tool` 两段，顺序与 Anthropic 相反）。
-      content: usable.map((block) => {
-        const executed = evidence?.has(block.id) === true;
-         // `assistantIndex` 是**原数组**里那一单的下标：它与 id 一起才是「哪一
-         // 张桩」的身份
-        //（`tool_use_id` 不保证全局唯一，issue #284），宿主的去重也要靠它。
-        stubs.push({ toolUseId: block.id, assistantIndex: index, detail, executed });
-        return executed
-          ? buildUnpersistedToolResultStub(block.id)
-          : buildNoEvidenceToolResultStub(block.id);
-      }),
-    };
-    // 桩**不进 `messages`**：只往新视图里插这一页。
-    insertions.push({ afterIndex: index, page });
+    const toolResults = usable.map((block) => {
+      const executed = evidence?.has(block.id) === true;
+      stubs.push({
+        toolUseId: block.id,
+        assistantIndex: group.assistantIndex,
+        detail,
+        executed,
+      });
+      return executed
+        ? buildUnpersistedToolResultStub(block.id)
+        : buildNoEvidenceToolResultStub(block.id);
+    });
+    if (group.results.length > 0 && group.resultIndex !== undefined) {
+      const current = replacements.get(group.resultIndex) ?? group.next;
+      const target = {
+        ...current,
+        content: Array.isArray(current?.content) ? [...current.content] : current?.content,
+      };
+      const view = list.slice();
+      view[group.resultIndex] = target;
+      if (mergeToolResultsIntoAssistantNextMessage(view, group.assistantIndex, toolResults)) {
+        replacements.set(group.resultIndex, target);
+        continue;
+      }
+      stubs.splice(stubs.length - toolResults.length, toolResults.length);
+      continue;
+    }
+    const page = { role: "user", content: toolResults };
+    insertions.push({ afterIndex: group.assistantIndex, page });
   }
-  if (insertions.length === 0) return { messages: list, stubs };
-   // 两阶段拼接：一段一段把原数组搬过去，每段末尾插它自己那一页（写
-   // 死 `index + 1` 会在第二条
-  // 悬空那里插错 —— 新数组的下标已经比原数组走前了）。
+  if (insertions.length === 0 && replacements.size === 0) return { messages: list, stubs };
+  // Two-phase assembly keeps insertion indexes anchored to the original message array.
   const view = [];
   let cursor = 0;
   for (const insertion of insertions) {
@@ -473,6 +500,10 @@ export function stubUnsettledToolUsesForRequestView(messages, options = {}) {
     cursor = insertion.afterIndex + 1;
   }
   view.push(...list.slice(cursor));
+  for (const [index, replacement] of replacements) {
+    const insertionCount = insertions.filter((item) => item.afterIndex < index).length;
+    view[index + insertionCount] = replacement;
+  }
   return { messages: view, stubs };
 }
 

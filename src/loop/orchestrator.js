@@ -2738,7 +2738,7 @@ export async function runToolLoop(options) {
     // issue #790：出网桩措辞的证据格（上面与 `resumeExecutedToolIds` 分开的那段注释）。
     executedEvidenceToolIds,
     // issue #790：请求视图里插了桩必须能被宿主看到（沿 #730 的 `resume_journal_skipped` 口径，
-    // **不新增事件类型**，`reason` 是新值、`detail` 沿用既有两个取值）。去重靠 `requestViewStubSeen`：
+    // **不新增事件类型**，`reason` 是新值，`detail` 说明插页形状或同页缺口）。去重靠 `requestViewStubSeen`：
     // 砖化的形状**每一轮**都会重新补同一批桩（账本不修），逐轮重报会把一个静态事实当噪声重报
     // （#769 对 `listRecoveryRows` 缺席保持沉默是同一口径）。
     recordRequestViewStub: ({ round, stubs }) => {
@@ -3761,6 +3761,10 @@ export async function runToolLoop(options) {
     },
     // issue #394：结清尾部悬空 `tool_use` 的入账回调（强制收尾那一路；见上面那个 WeakSet）。
     journalPendingTailToolResult,
+    // Tail wording uses the same execution evidence as request-view repair.
+    get executedToolIds() {
+      return new Set([...executedToolIds, ...executedEvidenceToolIds]);
+    },
     // 下面三对手写访问器读的是 `runLoopState` 的格子（issue #246 第 1 步把存储搬过去了）；
     // 本 ctx 自己的迁移是正文 §4 的 step 3，届时这三对也换成同一套视图（不要提前删）。
     get finalText() {
@@ -4926,6 +4930,7 @@ export async function runToolLoop(options) {
       messages,
       {
         round: roundNumber,
+        executedToolIds: new Set([...executedToolIds, ...executedEvidenceToolIds]),
         messageRounds,
         onMessage: (message, round) => appendEngineMessagesToTranscript(message, round, slot),
       },

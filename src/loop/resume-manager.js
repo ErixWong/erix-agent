@@ -3,7 +3,7 @@ import { blocksFor } from "./messages.js";
 import { MESSAGE_ROW_KIND, isRoundCarrier, nextMessageSeqByRound, foldLedgerMessages, foldMessageRows } from "../store/message-rows.js";
 import { extractL0Facts } from "../reflection/l0.js";
 import { buildTimeline } from "../reflection/judge.js";
-import { pendingTailToolUses, answerPendingMidSequenceToolUses, RESUME_JOURNAL_SKIP_DETAIL_PROBE_ABSENT, RESUME_JOURNAL_SKIP_DETAIL_ROUND_CARRIER_HAS_BODY, RESUME_JOURNAL_SKIP_DETAIL_ROW_NOT_IN_LEDGER } from "./pending-tool-result.js";
+import { findUnpairedToolUseGroups, pendingTailToolUses, answerPendingMidSequenceToolUses, RESUME_JOURNAL_SKIP_DETAIL_PROBE_ABSENT, RESUME_JOURNAL_SKIP_DETAIL_ROUND_CARRIER_HAS_BODY, RESUME_JOURNAL_SKIP_DETAIL_ROW_NOT_IN_LEDGER } from "./pending-tool-result.js";
 import { planResumeNotice } from "./resume-notice.js";
 // issue #769 R3（B）：恢复行读失败要抛**宿主可见错误码**，因此需要 `KitError` 与根因分类函数
 // （字段面照 `checkpoint_failed` / `persistence_failed` 那一族，见 `recoveryRowsUnreadableError`）。
@@ -251,9 +251,8 @@ export function countResumeAnchor(records) {
  * 边界依据账本中的未结清工具行与恢复行，不依赖可覆盖的缓存状态。
  *
  * 所以边界只吃账本。判据（工单 #736 原文，别改写成第二套）：
- *   最大下标 `i`，使 `ledgerEntries[i]` 是带 `tool_use` 的 assistant、其 id 不在
- *   `settledToolResultIds`（#420 的权威口径）里，且 `i` **之后**的每一行要么带 `tool_result`、
- *   要么是宿主预写的纯文本用户行、要么是引擎控制行。
+ *   最大下标 `i`，使 `ledgerEntries[i]` 是一条所有 `tool_use` 都缺少紧邻 `tool_result` 的 assistant，
+ *   且 `i` **之后**的每一行要么带 `tool_result`、要么是宿主预写的纯文本用户行、要么是引擎控制行。
  *
  * 三条实现取舍（都有理由，别顺手简化）：
  *   ① **候选行要求「该条 assistant 的 `tool_use` 全部未结清」**（不是「有一个未结清就算」）。
@@ -273,16 +272,14 @@ export function countResumeAnchor(records) {
  * 「插页」在有边界之后不需要）。
  *
  * @param {Array<{message?: any, round?: number}>} ledgerEntries `foldLedgerMessages(records)` 的输出
- * @param {Set<any>} settledToolResultIds 账本里已有结果行的 `tool_use` id 集合（#420 口径）
  * @param {(entry: any, index: number) => boolean|undefined} [isEngineRow] 这一行的**归属**：
  *   `true` = 引擎行，`false` = 宿主行，`undefined` = 未知（取舍 ③）。判据本身是 `isEngineLedgerRow`。
  * @returns {number|null} 最大下标 `i`；`null` = 边界不成立（正常收口，不结清也不裁切）
  */
-export function deriveLedgerCrashBoundary(ledgerEntries, settledToolResultIds, isEngineRow) {
+export function deriveLedgerCrashBoundary(ledgerEntries, isEngineRow) {
   const entries = Array.isArray(ledgerEntries) ? ledgerEntries : [];
-  const settled = settledToolResultIds instanceof Set ? settledToolResultIds : new Set();
-  const toolUsesOf = (entry) => blocksFor(entry?.message?.content)
-    .filter((block) => block?.type === "tool_use");
+  const unpairedByIndex = new Map(findUnpairedToolUseGroups(entries.map((entry) => entry?.message))
+    .map((group) => [group.assistantIndex, group]));
   // 取舍 ②：`i` 之后允许出现的行
   // ——结果行 / 宿主预写行 / 引擎控制行，三者共有的特征是
   // 「这一行不可能是崩溃**之前**的对话正文」。
@@ -300,10 +297,9 @@ export function deriveLedgerCrashBoundary(ledgerEntries, settledToolResultIds, i
     return message?.role === "user" && message?.meta?.source === "judge-control";
   };
   for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const uses = toolUsesOf(entries[index]);
-    if (entries[index]?.message?.role !== "assistant" || uses.length === 0) continue;
-    // 取舍 ①：只要有一个 id 已在账本结清，这一行就不是尾部结清的料（那是 #421 的中段格子）。
-    if (uses.some((block) => settled.has(block?.id))) continue;
+    const group = unpairedByIndex.get(index);
+    if (group === undefined || group.missing.length !== group.uses.length) continue;
+    // Partially paired groups belong to the same-page repair path, not tail settlement.
     // 「最大下标」+ 取舍 ②：后缀里只要有一行是崩溃**之前**的正文，边界就不成立（更早的下标后缀更长，
     // 同样不成立 ⇒ 直接返回 null，不必继续回溯）。
     for (let tail = index + 1; tail < entries.length; tail += 1) {
@@ -578,13 +574,8 @@ export async function restoreResume(ctx) {
       }
       ctx.resumeUnledgeredToolResults = pendingRecoveryResults;
       const ledgerMessages = ledgerEntries.map((entry) => entry.message);
-      // 账本里**已经有结果行或内容兜底行**的 `tool_use` id（「已结清」的权威口径）。
-      const ledgerToolResultIds = new Set(ledgerMessages
-        .flatMap((message) => blocksFor(message?.content))
-        .filter((block) => block?.type === "tool_result")
-        .map((block) => block.tool_use_id));
       // issue #769 ── 账本侧的「工具**执行过没有**」，**首选**来源。
-      // 为什么不能靠上面的 `ledgerToolResultIds` 反推（语义红线，同 `src/store/recovery-rows.js` 文件头）：
+      // 为什么不能靠结果行反推（语义红线，同 `src/store/recovery-rows.js` 文件头）：
       // 执行发生在结果行落盘**之前** ⇒「没执行」与「执行了但结果行还没落 / 被宿主拒」在账本里形状相同。
       // 所以这里读的是**显式携带 `toolUseId` 的 `tool-executed` 恢复行**，不是「结果行在不在」；
       // 快照的 `executedToolIds` 格退成下面 `ctx.resumeExecutedToolIds` 里**并进来的兜底**，不再是唯一来源。
@@ -697,19 +688,14 @@ export async function restoreResume(ctx) {
       // 这里只交出下标 `i`（崩溃轮那条带未结清 `tool_use` 的 assistant），切片/结清全部复用既有机械。
       const ledgerBoundary = deriveLedgerCrashBoundary(
         ledgerEntries,
-        ledgerToolResultIds,
         ledgerRowAttribution(records, ledgerEntries.length),
       );
       // 恢复正文、未结清工具、工具结果与部分文本都只从账本读取。
       // 账本里每条 `tool_use` 都在工具执行**之前**就落了行（`appendMessageRowToTranscript`），
       // 而结果行在 settle 之后 ⇒ 「有 `tool_use`、没有对应 `tool_result`」就是崩溃现场，
       // 与写入是否成功无关。
-      const ledgerToolUseBlocks = ledgerMessages
-        .flatMap((message) => blocksFor(message?.content))
-        .filter((block) => block?.type === "tool_use");
-      const unfinishedToolUses = ledgerToolUseBlocks.filter((toolUse) => (
-        toolUse?.id !== undefined && !ledgerToolResultIds.has(toolUse.id)
-      ));
+      const unfinishedToolUses = findUnpairedToolUseGroups(ledgerMessages)
+        .flatMap((group) => group.missing);
       // 「崩溃现场」的判据：快照里还有账本没结清的在飞工具/半截正文。没有（正常收口后追问）
       // ⇒ 上下文就是完整账本，一条快照正文都不需要。
       // issue #769：半截正文这一判据不再只看快照——账本里有「那一轮 assistant 正文未落账」的
@@ -719,8 +705,7 @@ export async function restoreResume(ctx) {
       // #827 B1：三个判据全部改成账本口径（快照那三项——`pendingToolUses` / `toolResults` /
       // `partialText`——不再参与）。理由同上：写侧已经把这三类事实都落在账本里，而快照是
       // latest-only 覆盖写 ⇒ 拿它当判据等于让「有没有崩溃现场」取决于缓存写没写成功（#734 的
-      // 放大器）。`toolResults` 那一项与 `unfinishedToolUses` 是**同一件事的两种算法**，账本
-      // 口径下二者恒等价 ⇒ 删掉冗余的那一项。
+      // 放大器）。工具缺口由统一的逐对配对函数计算，不再用全 run 的结果 id 集合。
       const crashSiteRound = unfinishedToolUses.length > 0
         || pendingRecoveryResults.length > 0
         || ledgerPartialCrashRound !== undefined;
@@ -856,10 +841,23 @@ export async function restoreResume(ctx) {
           .filter((entry) => entry.round === crashRound)
           .flatMap((entry) => blocksFor(entry.message?.content))
           .filter((block) => block?.type === "tool_use");
-        ctx.resumePendingTools = pendingTools.filter((/** @type {{ id?: unknown }} */ pendingTool) => (
-          !ctx.resumeExecutedToolIds.has(pendingTool.id)
-          && !ledgerToolResultIds.has(pendingTool.id)
-        ));
+        const replayableToolUses = new Set();
+        for (const group of findUnpairedToolUseGroups(ledgerMessages)) {
+          if (ledgerEntries[group.assistantIndex]?.round !== crashRound) continue;
+          let earlierCallCompleted = false;
+          for (const toolUse of group.uses) {
+            const missing = group.missing.includes(toolUse);
+            if (ctx.resumeExecutedToolIds.has(toolUse?.id)) {
+              earlierCallCompleted = true;
+            } else if (missing && earlierCallCompleted) {
+              replayableToolUses.add(toolUse);
+            }
+          }
+        }
+        // Without positive progress evidence, an unpaired call is unknown rather than safe to replay.
+        // Once an earlier call in the same assistant batch is known complete, later missing calls
+        // were not reached by the sequential executor and can be replayed.
+        ctx.resumePendingTools = pendingTools.filter((toolUse) => replayableToolUses.has(toolUse));
       }
       // ── issue #421：**中段**悬空 `tool_use` 的读侧兜底 ────────────────────────────────────
       // 位置：上下文重建完之后、**任何模型请求之前**、任何裁剪之前（裁剪只动

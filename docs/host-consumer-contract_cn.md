@@ -2001,9 +2001,10 @@ issue #754（裁决 2）起它**作为恢复来源已被弃用**——恢复路�
 **没带 `detail` 的既有事件形状逐字不变**（该字段缺席时引擎不带那个键）⇒ 纯加法。
 
 **issue #790 往这张表里多加了一个码，而它不是第五条放弃路径。**下面四个码说的都是「**账本**这一格
-放弃了」；`mid_sequence_request_view_stub` 说的是「**请求视图**这一格没放弃」：需要插页那一类形状，引擎
-会在交给 provider 的那份数组里插一张纯 `tool_result` 页，既不进 `ctx.messages`，也不进账本。两件事以
-分开报为故意：一份砖化的归档仍会发 `mid_sequence_shape_not_supported`（它的账本确实没修，一行都没
+放弃了」；`mid_sequence_request_view_stub` 说的是「**请求视图**这一格没放弃」：紧邻 user 已有部分结果时，
+引擎会把缺失结果合进同一页；否则就在交给 provider 的数组里插一张纯 `tool_result` 页。两种修复都不进
+`ctx.messages`，也不改账本。两件事以分开报为故意：一份砖化的归档仍会发 `mid_sequence_shape_not_supported`
+（它的账本确实没修，一行都没
 多写），而 run 现在能起来，不再死在第一次请求之前。
 
 | 码 | 种类 | 挂在哪条 `reason` | 含义 / 宿主读得到什么 |
@@ -2013,13 +2014,14 @@ issue #754（裁决 2）起它**作为恢复来源已被弃用**——恢复路�
 | `mid_sequence_merge_refused` | reason | （事件自身）| 普查判它缺结果，而同页合并自己拒了 ⇒ 这一格**补不出**合法桩，run 仍旧 `invalid_messages`；行为没变，只是不再无声 |
 | `mid_sequence_shape_not_supported` | reason | （事件自身）| 悬空是真的悬空，但形状不是同页合并那一种（需要插页）⇒ 引擎不发明形状（issue #421 纪律 ④），具体哪一种看 `detail` |
 | `mid_sequence_stub_row_write_refused` | reason | （事件自身）| 锚点找到了、该落账，而写侧返回「没落盘」⇒ 那张桩只活在本次上下文里，下一次恢复还得再补 |
-| `mid_sequence_request_view_stub` | reason | （事件自身）| **issue #790——视图修了，账本没修。**「需要插页」那一类形状只在**请求视图**里插了一张**纯** `tool_result` 页（不进 `ctx.messages`、也不进账本：不调任何 `store.append*`）⇒ run 能起来，而归档账本仍旧逐字节开着。`detail` 说哪一种形状，`toolUseIds` 交出是哪些 id。**它不是放弃**，所以没复用 `mid_sequence_shape_not_supported`：同一次续跑现在会对同一个形状发**两个**码——那个说「账本仍未修」，这个说「请求照样发得出去」——只留 `count` 宿主就分不开这两件事 |
+| `mid_sequence_request_view_stub` | reason | （事件自身）| **issue #790——视图修了，账本没修。**中段缺失结果只在**请求视图**里补齐（不进 `ctx.messages`、也不进账本：不调任何 `store.append*`）⇒ run 能起来，而归档账本仍旧逐字节开着。部分结清时把缺失结果合进同一 user 页；否则插一张纯 `tool_result` 页。`detail` 说哪一种形状，`toolUseIds` 交出是哪些 id。**它不是放弃**，所以没复用 `mid_sequence_shape_not_supported`：同一次续跑现在会对同一个形状发**两个**码——那个说「账本仍未修」，这个说「请求照样发得出去」——只留 `count` 宿主就分不开这两件事 |
 | `anchor_probe_absent` | detail | `mid_sequence_aggregate_row_not_in_ledger` | store 没提供 `loadRawRows` ⇒ **补上这个探针，下一次恢复账本就闭合**（这是四种里唯一宿主能自己修好的一种）|
 | `round_carrier_has_body` | detail | `mid_sequence_aggregate_row_not_in_ledger` | 该轮载体已带正文（issue #729 的「两份都留」）⇒ 有行也不给用；补探针也闭合不了，因为写进去会把整轮正文拼第二遍 |
 | `aggregate_row_not_in_ledger` | detail | `mid_sequence_aggregate_row_not_in_ledger` | 探针给了、轮也干净，而账本里确实没有那条首片行（例如它的 `round` 不是安全整数，issue #729）⇒ 这一轮的正文本来就不以消息行存在 |
 | `aggregate_carries_foreign_result_ids` | detail | `mid_sequence_merge_refused` | 那条聚合消息里已有**不属于这一单**的 `tool_result` ⇒ 合并的 id 守卫不让在同一页继续加工 |
-| `next_message_is_not_user` | detail | `mid_sequence_shape_not_supported`、`mid_sequence_request_view_stub` | 紧接的那条消息不是 `user`（相邻两条 assistant 各带一单）⇒ 要在两条之间插页。#790 之后请求视图只在**这一单的 id 一个都没在上下文里结清过**时才插那一页；部分结清（某个 id 已在后面那页有结果）不动，因为插页会把已有的那份真结果挤成孤儿 |
+| `next_message_is_not_user` | detail | `mid_sequence_shape_not_supported`、`mid_sequence_request_view_stub` | 紧接的那条消息不是 `user`（相邻两条 assistant）⇒ 只在请求视图里给该 assistant 后插页；配对按每条 assistant 单独判定，不从另一轮相同 id 的结果推断 |
 | `aggregate_has_no_tool_result` | detail | `mid_sequence_shape_not_supported`、`mid_sequence_request_view_stub` | 紧接的 `user` 一条 `tool_result` 都没有 ⇒ 同样要插页（`validateMessages` 会以另一句如实报错）|
+| `aggregate_has_unpaired_tool_use_result` | detail | `mid_sequence_request_view_stub` | 紧接的 `user` 已有结果，但该 assistant 仍有未配对的 `tool_use`；只把缺失结果桩合进同一页 |
 | `append_row_not_persisted` | detail | `mid_sequence_stub_row_write_refused` | `appendRound` 那一写本身没落地 ⇒ 那张桩只活在本次上下文（issue #811 之后这是该成因**唯一**的来路：轮号不可用的桩在写**之前**就被跳过且不发射——store 根本没被问过，说「没落盘」是假话，而不许新增取值） |
 
 事件载荷：`{type, runId, parentRunId?, round, reason, count, detail?, toolUseIds?}`——`count` 是这次放弃涉及几张
