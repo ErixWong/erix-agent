@@ -1047,8 +1047,8 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
   const victims = [
     { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6365 },
     { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6345 },
-    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 891 },
-    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 892 },
+    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 899 },
+    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 900 },
     { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 835 },
     { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 839 },
     { key: "persistedTranscriptLength", axis: "read", path: "src/loop/resume-manager.js", at: 119 },

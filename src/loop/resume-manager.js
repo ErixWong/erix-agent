@@ -842,7 +842,15 @@ export async function restoreResume(ctx) {
           }
         }
         // 崩溃前已归档的全量输出回填引擎缓冲，保持证据的字节保真。
-        for (const output of snapshot.toolOutputs ?? []) {
+        // issue #827 第 6 刀（#767 方向）：**首选账本的轮记录**——写侧每轮 `appendRound` 都带
+        // `toolOutputs`（`{toolUseId, name, content}`，与快照那格同形），所以这一格在账本里
+        // 一直有权威来源；快照那格从此只服务旧档案（这次改动之前写的、轮记录里没有该键的）。
+        const ledgerOutputs = records
+          .filter((record) => record?.round === crashRound && Array.isArray(record.toolOutputs))
+          .flatMap((record) => record.toolOutputs)
+          .filter((entry) => entry !== null && typeof entry === "object");
+        const archivedSource = ledgerOutputs.length > 0 ? ledgerOutputs : (snapshot.toolOutputs ?? []);
+        for (const output of archivedSource) {
           if (typeof output?.content === "string" && output.content.length > 0) {
             ctx.archivedOutputs.push({
               toolUseId: output.toolUseId,
