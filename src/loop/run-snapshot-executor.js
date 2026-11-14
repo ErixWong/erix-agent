@@ -1,21 +1,12 @@
-// 工具执行器（issue #83：原「checkpoint 执行器」统一更名为 run snapshot 执行器）：执行工具块、
-// judge 拦截审计、以及工具前后的 run snapshot 落盘。
+// 工具执行器：执行工具块与 judge 拦截审计，并处理工具结果。
 //
-// 本模块有意保留的旧术语（宿主可见契约，改名属破坏性变更，issue #83 不动）：
-//   - 错误码 `checkpoint_failed`：docs/host-upgrade-guide-v030*.md / docs/decisions/002-* 已对外文档化
-//   - 诊断 phase `checkpoint_before_tool` / `checkpoint_after_tool`：随 `persistence_error` 事件
-//     与抛出的 KitError 暴露给宿主（test/persistence-diagnostics.test.js 断言）
-//   - 抛出错误的英文 message 文本：宿主日志/正则可能匹配
-import { KitError } from "../providers/errors.js";
 import { cloneState } from "./budget.js";
 import { throwIfAborted } from "./abort.js";
 import {
-  mergeToolResultsIntoMessages,
   toolResultContent,
   toolResultData,
 } from "./messages.js";
 import { JUDGE_DONE_CONFIDENCE_THRESHOLD, directionHintText, judgeDoneAdvisoryText } from "./reflection.js";
-import { terminationErrorCodeForError } from "./termination.js";
 import { buildToolResultFact } from "../tool-fact.js";
 import { describeToolArgumentsParseError } from "../messages/tool-arguments.js";
 import {
@@ -27,54 +18,6 @@ import {
 // issue #746：逐条输出卫生桩（与聚合桩同一条句式）也不得无条件命令模型去查 `note_*`。
 // 证据从 `ctx.noteTools`（orchestrator 从宿主 `tools` 现推）+ `ctx.messages`（可见账本）来。
 import { noteRecallHint } from "./note-prompt-hint.js";
-
-// run snapshot 落盘失败的 fail-closed 收口（issue #174：原先四处 pre/post-tool 检查逐字重复）：
-// 计数 +1，并把底层持久化失败明细并入对外的 `checkpoint_failed` KitError（宿主可见契约）。
-// phase/sideEffect 由调用点给出（工具是否已执行、是否留下外部副作用），
-// operation/persistence/persistenceError 从 lastPersistenceFailure 透传；
-// 落盘成功或本次 run 没有 snapshot store 时静默返回（语义与合并前的四段 if 完全一致）。
-//
-// issue #230：两个出口（run 末尾的 `persistence_failed` 与工具调用点的 `checkpoint_failed`）描述的
-// 是同一次底层故障，字段面必须对称——宿主分流「可恢复/要不要重放」时不该去解析 `message` 字符串
-// （那正是 #176 要消灭的用法）。对称的不只是**键名**，还有**取值类型**：同名字段两种类型同样等于
-// 「宿主只能靠读源码才知道」。因此这里补三个字段，且**不另造口径**：
-//   · `cause`       —— **错误对象本身**，与 `persistence_failed.cause` 同型：取链上最深那一环
-//                     （`lastPersistenceFailure.cause` 是 store 自己抛的那个错），没有 store 失败明细时
-//                     退回本次持久化失败（`lastPersistenceFailure` 本身）；
-//   · `errorCode`   —— 字符串，走 `terminationErrorCodeForError`（`error.code`，取不到即 `"unknown"`），
-//                     与 `termination.errorCode` 同一个根因分类函数、同一套口径 ⇒ 「只要分类结果的宿主」
-//                     仍然一步拿到，不必自己从 `cause` 上摸 `.code`；
-//   · `unpersisted` —— 与 `persistence_failed` 同一形状：**原始数组**（`errorLedger.toUnpersisted()`，#109
-//                     冻结的 schema）。`{ count, items }` 投影只属于 `state.json` 那条路径
-//                     （`run-state.js` 的 `deterministic.errors.unpersisted`），不塞进错误对象。
-// 三个字段**无条件写**：缺字段会让「对称」这条契约变成有条件成立。可达性上这也成立——能走到这里的
-// 前提是 `ctx.hasRunSnapshotStore`（= `persistenceRequired && snapshotSaveMethod !== undefined`），
-// 而 `persist()` 只在同一条件下才可能返回 `false`（方法缺失时它直接返回且不置 `lastPersistenceFailure`），
-// 所以 `previous` 恒为本次那次失败的 `persistence_failed`。
-// `cause` 经 `KitError` 的 `{ cause }` 选项进构造函数（不是事后赋值）：`Error` 把 `cause` 定义为
-// **不可枚举**自有属性，`persistence_failed` 的 `cause` 也是这么来的——字段面要对称就不能一边
-// 可枚举一边不可枚举（`Object.keys` / `{ ...error }` 会给出不同形状）。
-function assertSnapshotPersisted(ctx, persisted, { phase, sideEffect, message }) {
-  if (persisted || !ctx.hasRunSnapshotStore) return;
-  ctx.runSnapshotFailureCount += 1;
-  const previous = ctx.lastPersistenceFailure;
-  const rootCause = previous?.cause ?? previous;
-  const failure = new KitError("checkpoint_failed", message, { cause: rootCause });
-  if (previous) {
-    failure.operation = previous.operation;
-    failure.phase = phase;
-    failure.sideEffect = sideEffect;
-    failure.persistence = previous.persistence;
-    failure.persistenceError = previous.persistenceError;
-  }
-  // `KitError` 的 JSDoc 没声明这两个 additive 字段（改 `providers/errors.js` 的类形状会动公共面）⇒
-  // 用 `Object.assign` 写入：`--checkJs` 棘轮因此不多背 TS2339（#214 的「只减不增」）。
-  Object.assign(failure, {
-    errorCode: terminationErrorCodeForError(rootCause),
-    unpersisted: ctx.errorLedger?.toUnpersisted?.() ?? [],
-  });
-  throw failure;
-}
 
 // 只读工具集合（issue #33 C）：拦截 judge 对这类工具放行——只读调用无外部副作用，
 // uncertain/off_track 时拦它净收益为负（实测 readFile 被拦后缺陷反而漏出）。
@@ -116,7 +59,7 @@ export function createRunSnapshotExecutor(ctx) {
     // 归档通道不存在（理论上 outputHygiene 已保证，这里只做防御）→ 聚合层关闭，不产生假 stub
     budgetTokens: Array.isArray(ctx.archivedOutputs) ? ctx.aggregateBudgetTokens : undefined,
     archivedOutputs: ctx.archivedOutputs ?? [],
-    listRoundResults: () => [...(ctx.snapshotResults?.values() ?? [])],
+    listRoundResults: () => [...(ctx.toolResultsById?.values() ?? [])],
   });
   // 终止态事件每轮只报一次（诊断用；不参与判定，故无恢复语义）
   const aggregateTerminalRounds = new Set();
@@ -196,17 +139,8 @@ export function createRunSnapshotExecutor(ctx) {
       : "";
   };
 
-  const messagesWithToolResults = (toolResults) => {
-    const snapshot = cloneState(ctx.messages);
-    if (toolResults.length === 0) return snapshot;
-    if (mergeToolResultsIntoMessages(snapshot, toolResults) !== false) return snapshot;
-    snapshot.push({ role: "user", content: cloneState(toolResults) });
-    return snapshot;
-  };
-
-  // 单轮聚合预算（issue #32 #2）：在 onToolResult 改写 + 逐条 outputHygiene 之后、后置 run snapshot
-  // **之前**立即判定内联或归档+stub。声明顺序与 tool_use_id 不变、不重排、不做批末回写——
-  // 因此已随 run snapshot 落盘的 tool_result 永远不会被回写，resume 语义与改动前一致。
+  // 单轮聚合预算（issue #32 #2）：在 onToolResult 改写 + 逐条 outputHygiene 之后判定内联或归档+stub。
+  // 声明顺序与 tool_use_id 不变、不重排、不做批末回写。
   const applyRoundAggregate = (block, round, toolName, execution, failed) => {
     if (!aggregateGate.enabled) return execution;
     // 聚合层要求稳定的 tool_use id（OpenAI/Anthropic 双协议都强制提供）：归档条目的幂等与
@@ -308,7 +242,7 @@ export function createRunSnapshotExecutor(ctx) {
   // 同一套存在性口径：缺失 = unknown，不是 0），只写 `erix.toolCallKey` 与
   // `erix.executionStatus: "rejected"`。落盘一次（`status: "rejected"`，`sideEffect: "not_started"`）：
   // 工具没跑过，所以不需要「执行前」那个 checkpoint。
-  const rejectInvalidArguments = async (block, round, toolResults, pendingToolUses) => {
+  const rejectInvalidArguments = async (block, round, toolResults) => {
     const parseError = argumentsParseErrorOf(block);
     const schema = typeof ctx.toolSchemaFor === "function"
       ? ctx.toolSchemaFor(String(block.name ?? ""))
@@ -330,45 +264,19 @@ export function createRunSnapshotExecutor(ctx) {
         executionStatus: "rejected",
       },
     });
-    if (block.id !== undefined) ctx.snapshotResults.set(block.id, toolResult);
+    if (block.id !== undefined) ctx.toolResultsById.set(block.id, toolResult);
     toolResults.push(toolResult);
-    const persistRunSnapshotForReject = ctx.persistRunSnapshot;
-    const rejectedRunSnapshotPersisted = await persistRunSnapshotForReject({
-      round,
-      pendingToolUse: block,
-      pendingToolUses,
-      toolResults,
-      status: "rejected",
-      messagesOverride: messagesWithToolResults(toolResults),
-    });
-    assertSnapshotPersisted(ctx, rejectedRunSnapshotPersisted, {
-      phase: "checkpoint_after_tool",
-      sideEffect: "not_started",
-      message: `Checkpoint persistence failed after rejected tool call: the call never ran but its result was not persisted (toolUseId=${String(block.id)}, runId=${String(ctx.runId)}, round=${round})`,
-    });
     return toolResult;
   };
 
-  const executeToolBlock = async (block, round, toolResults, pendingToolUses = []) => {
+  const executeToolBlock = async (block, round, toolResults) => {
     if (argumentsParseErrorOf(block) !== undefined) {
-      return rejectInvalidArguments(block, round, toolResults, pendingToolUses);
+      return rejectInvalidArguments(block, round, toolResults);
     }
     const toolName = String(block.name ?? "");
     const toolStat = ctx.toolStats.get(toolName) ?? { calls: 0, failures: 0 };
     toolStat.calls += 1;
     ctx.toolStats.set(toolName, toolStat);
-    const persistRunSnapshot = ctx.persistRunSnapshot;
-    const runSnapshotPersisted = await persistRunSnapshot({
-      round,
-      pendingToolUse: block,
-      pendingToolUses,
-      toolResults,
-    });
-    assertSnapshotPersisted(ctx, runSnapshotPersisted, {
-      phase: "checkpoint_before_tool",
-      sideEffect: "not_started",
-      message: `Checkpoint persistence failed before tool execution (runId=${String(ctx.runId)}, round=${round})`,
-    });
     const startedAt = Date.now();
     let execution;
     let isError = false;
@@ -474,7 +382,7 @@ export function createRunSnapshotExecutor(ctx) {
     const failed = isError || execution.success === false;
     // 年龄标记（issue #35）：TTL 折叠按创建轮判定，现在只住在 `erix.round` 上（T2 停写了顶层
     // `erixRound`）。附加字段穿过 cloneState/协议转换（wire 上被 canonicalToOpenAI/Anthropic 丢弃）
-    // /validateMessages 均安全，run snapshot persist/restore 后仍在（resume-manager 原样带回）。
+    // /validateMessages 均安全，ledger restore 后仍在（resume-manager 原样带回）。
     const budgetHint = budgetHintFor();
     const toolResult = buildToolResultFact({
       toolUseId: block.id,
@@ -506,27 +414,13 @@ export function createRunSnapshotExecutor(ctx) {
     toolResults.push(toolResult);
     if (block.id !== undefined) ctx.executedToolIds.add(block.id);
     // issue #769：同一个时刻往**账本**追加一条「这个 `tool_use` 执行过了」的恢复行，位置就在
-    // `executedToolIds.add` 之后、结果行与下面的 `status: "executed"` 快照写之前——这条事实必须在
+    // `executedToolIds.add` 之后、结果行之前——这条事实必须在
     // 「工具已执行、账本还没有结果行」那个窄窗口里就存在，否则崩溃后只能从「缺结果行」反推，
     // 而「没执行」与「执行了但没入账」形状相同（语义红线，见 `src/store/recovery-rows.js` 文件头）。
-    // 它是**只追加**的：下一轮不会把它盖掉（快照那一格会），所以读侧能把它当首选来源。
+    // 它是**只追加**的，所以读侧能把它当首选来源。
     // `?.`：执行器的 ctx 在单测里是手搓的；引擎自己注入处见 `orchestrator.js#appendToolExecutedRecoveryRow`。
     await ctx.appendToolExecutedRecoveryRow?.(block.id, round);
-    ctx.snapshotResults.set(block.id, toolResult);
-    const persistRunSnapshotAfter = ctx.persistRunSnapshot;
-    const postRunSnapshotPersisted = await persistRunSnapshotAfter({
-      round,
-      pendingToolUse: block,
-      pendingToolUses,
-      toolResults,
-      status: "executed",
-      messagesOverride: messagesWithToolResults(toolResults),
-    });
-    assertSnapshotPersisted(ctx, postRunSnapshotPersisted, {
-      phase: "checkpoint_after_tool",
-      sideEffect: "executed_uncommitted",
-      message: `Checkpoint persistence failed after tool execution: tool already executed but result was not persisted (toolUseId=${String(block.id)}, runId=${String(ctx.runId)}, round=${round})`,
-    });
+    if (block.id !== undefined) ctx.toolResultsById.set(block.id, toolResult);
     return toolResult;
   };
 
@@ -547,12 +441,11 @@ export function createRunSnapshotExecutor(ctx) {
     block,
     round,
     toolResults,
-    pendingToolUses = [],
   ) => {
     // issue #409：引数解析不了就不必花一次 judge 调用去审它——判词是确定性的，且这次调用
     // 根本不会执行。**不消耗 intercept 计数**（它没走到执行器；拦截是审计的产物，不是同一件事）。
     if (argumentsParseErrorOf(block) !== undefined) {
-      return executeToolBlock(block, round, toolResults, pendingToolUses);
+      return executeToolBlock(block, round, toolResults);
     }
     // 最后一轮（无 tools 请求）跳过 intercept 审计：无工具可审（2026-09-20 预算兜底修复）。
     // 用 budgetRounds 而非身份轮号：resume 后身份轮号已到顶，会误判剩余轮数（issue #32 #8 同口径）。
@@ -562,21 +455,8 @@ export function createRunSnapshotExecutor(ctx) {
       && ctx.judgeInterceptCount >= ctx.judgeIntervalRound;
     if (!interceptEnabled) {
       ctx.judgeInterceptCount += 1;
-      return executeToolBlock(block, round, toolResults, pendingToolUses);
+      return executeToolBlock(block, round, toolResults);
     }
-
-    const persistRunSnapshotAfterIntercept = ctx.persistRunSnapshot;
-    const runSnapshotPersisted = await persistRunSnapshotAfterIntercept({
-      round,
-      pendingToolUse: block,
-      pendingToolUses,
-      toolResults,
-    });
-    assertSnapshotPersisted(ctx, runSnapshotPersisted, {
-      phase: "checkpoint_before_tool",
-      sideEffect: "not_started",
-      message: `Checkpoint persistence failed before intercepted tool execution (runId=${String(ctx.runId)}, round=${round})`,
-    });
     let decision;
     let judgeUsage;
     let judgeRaw;
@@ -691,7 +571,7 @@ export function createRunSnapshotExecutor(ctx) {
     if (onTrackPassThrough || readOnlyPassThrough || decision?.done !== false) {
       offerJudgeDoneAdvisory(decision);
       try {
-        const toolResult = await executeToolBlock(block, round, toolResults, pendingToolUses);
+        const toolResult = await executeToolBlock(block, round, toolResults);
         const directionHint = directionHintText(
           decision?.direction,
           decision?.directionReason,
@@ -728,36 +608,8 @@ export function createRunSnapshotExecutor(ctx) {
         executionStatus: "intercepted",
       },
     });
-    if (block.id !== undefined) ctx.snapshotResults.set(block.id, toolResult);
+    if (block.id !== undefined) ctx.toolResultsById.set(block.id, toolResult);
     toolResults.push(toolResult);
-    const overriddenMessages = [
-      ...ctx.messages,
-      { role: "user", content: cloneState(toolResults) },
-    ];
-    if (pendingDirectionHints.length > 0) {
-      overriddenMessages.push({
-        role: "user",
-        // issue #323：blocked 路径落快照的方向提示是 judge 自己的控制意见，打 marker 防二次
-        // resume 后被 judge 当普通用户输入读回（主模型侧仍可见；tool_result 事实不受影响）。
-        meta: { source: "judge-control" },
-        content: pendingDirectionHints.map((text) => ({ type: "text", text })),
-      });
-    }
-    const persistRunSnapshotForInterceptResult = ctx.persistRunSnapshot;
-    const resultRunSnapshotPersisted = await persistRunSnapshotForInterceptResult({
-      round,
-      pendingToolUse: block,
-      pendingToolUses,
-      toolResults,
-      status: "intercepted",
-      messagesOverride: overriddenMessages,
-    });
-    // 被拦截的工具从未执行，因此丢失这份判定/结果没有外部副作用 → not_started。
-    assertSnapshotPersisted(ctx, resultRunSnapshotPersisted, {
-      phase: "checkpoint_before_tool",
-      sideEffect: "not_started",
-      message: `Checkpoint persistence failed after intercept result (runId=${String(ctx.runId)}, round=${round})`,
-    });
     return toolResult;
   };
 
