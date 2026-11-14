@@ -464,7 +464,7 @@ describe("真起 CLI 子进程：参数、退出码、stdout/stderr、落盘（i
     const sessionFile = listJsonl(sandbox.transcriptsDir)[0];
     assert.ok(sessionFile, "这次 run 必须落一份 transcript");
     const journal = readFileSync(join(sandbox.transcriptsDir, sessionFile), "utf8");
-    assert.match(journal, /This tool call was never executed/u,
+    assert.match(journal, /engine holds no evidence either way about whether it ran/u,
       "结清产生的 tool_result 必须入账（引擎自写正文）");
     assert.match(journal, /forced-final-tool-result/u,
       "入账行必须是 :control:forced-final-tool-result（不是 kind:message 消息行）");

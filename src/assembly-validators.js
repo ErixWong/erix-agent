@@ -28,26 +28,13 @@ export const FOLD_SUMMARIZER_CAP_NAMES = [
 
 /**
  * The required TranscriptStore surface (issue #78): only the transcript
- * append/load pair is mandatory. Everything else — run snapshots and
- * run-state — is an optional capability; a store without those methods
+ * append/load pair is mandatory. Run-state is an optional capability; a store
+ * without those methods
  * still runs, it just cannot resume a crashed run mid-flight.
  */
 export const TRANSCRIPT_STORE_METHODS = [
   "appendRound",
   "load",
-];
-
-/**
- * Optional run-snapshot capability (issue #78). Semantics are latest-only
- * overwrite — a run snapshot is an autosave of the in-flight run used only
- * for crash resume, not a multi-version checkpoint. `appendCheckpoint` was
- * merged into `saveRunSnapshot` because both were identical overwrite
- * writes. Reference for diagnostics/documentation; NOT enforced by
- * validateTranscriptStore.
- */
-export const RUN_SNAPSHOT_STORE_METHODS = [
-  "saveRunSnapshot",
-  "loadLatestRunSnapshot",
 ];
 
 /**
@@ -63,11 +50,9 @@ export const RUN_STATE_STORE_METHODS = [
 ];
 
 /**
- * Full optional surface: run snapshots + run-state. Convenience aggregate
- * of RUN_SNAPSHOT_STORE_METHODS and RUN_STATE_STORE_METHODS.
+ * Full optional surface: run-state persistence methods.
  */
 export const OPTIONAL_TRANSCRIPT_STORE_METHODS = [
-  ...RUN_SNAPSHOT_STORE_METHODS,
   ...RUN_STATE_STORE_METHODS,
 ];
 
@@ -103,8 +88,7 @@ export function validateModelConfigResolver(modelConfig) {
 
 /**
  * TranscriptStore required-method check (issue #78): only `appendRound` and
- * `load` are required; missing optional capabilities (run snapshot /
- * run-state) are reported by the engine as a one-time diagnostic and the
+ * `load` are required; missing optional run-state methods are reported by the engine as a one-time diagnostic and the
  * corresponding persistence is skipped. Returns one `store.<method>` entry
  * per missing required method. Callers own the surrounding semantics
  * (optional vs required store, error prefix).

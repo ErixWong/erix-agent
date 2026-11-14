@@ -699,8 +699,7 @@ function missingAssemblyMethods(port) {
  *   Tool definitions and the structured ToolExecutor.
  * @property {object} [store]
  *   Optional TranscriptStore. Required: `appendRound`, `load`. Optional
- *   capabilities (issue #78): run snapshot (`saveRunSnapshot`,
- *   `loadLatestRunSnapshot`) and run-state (`markRunState`, `saveRunState`,
+ *   capabilities (issue #78): run-state (`markRunState`, `saveRunState`,
  *   `loadRunState`); missing optional methods degrade, they do not fail.
  *   `loadRunStateStatus` is an optional host-facing terminal-status reader;
  *   the engine does not consume or validate it.

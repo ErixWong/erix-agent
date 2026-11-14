@@ -1,25 +1,11 @@
 // issue #767 切片 S1 · B 组：**契约载荷表与代码之间的证伪连接**。
 //
-// 病根（#767 三方分析裁定的那件）：契约里那张逐格清点表是**散文**，代码改了它不会红。
-// 今天把某格在契约里标成 `write: stopped` 而代码照写，**没有任何测试会红**——
-// `test/loop-snapshot-write-side-735.test.js` 第 127-142 行反而要求这 10 格**必须在场**，
-// 于是「停写」这件事在测试面上是隐形的；把某格标成 `read: not-source` 而恢复侧照读，同样隐形。
-// 本文件把三件事接上：
-//   1) **写轴对真载荷**：契约声明 `stopped` ⇒ 引擎亲手交给 `saveRunSnapshot` 的 payload 必须**无该键**；
-//      声明 `written` / `residue` ⇒ 必须**有该键**（夹具取法照 `loop-snapshot-write-side-735.test.js`：
-//      包一层 `saveRunSnapshot` 抓引擎亲自写的那份，不手搓快照）。
-//   2) **读轴对真源码**：契约声明 `read: not-source` ⇒ `src/loop/resume-manager.js` 里**不得有**对该键的
-//      快照读点。扫描**先剥注释与字符串字面量**（否则 `src/loop/resume-manager.js:520` 那句注释里的
-//      `snapshot.messages` 会被当成读点 = 假红，而反向证也就废了）。剥逻辑自带反例（G-S1 那条用例）。
-//   3) **表自洽**：10 格齐全（漏格即红）、两轴取值合法、无空单元格、中英两份逐格一致，
-//      且表里每条 `file:line` 都复核：**文件在场 + 行号在范围内 + 那一行确实提到这格的键名**
-//      （⇒ #767 正文里那批 0.31.0 的旧行号抄进来会红）。
-//
-// ⚠ `read` 轴的口径只量**恢复侧**（`src/loop/resume-manager.js` 里对快照对象那一层的属性读取）。
-//   「引擎不读」不等于「没人碰这格」：`status` 与 `compactionStats` 引擎零读者，却被测试当形状指纹钉住，
-//   那两格在契约里写 `not-source` 是**真话**，而「因此可以停写」不是——后者由表里的「交接条件」列承担。
-//
-// 零 LLM、零写盘、零子进程（夹具只跑 fake provider）。
+// Run snapshots are retired. This file keeps the remaining four historical cells honest:
+//   1) the EN/CN tables contain exactly those four cells and mark every write axis stopped;
+//   2) the resume path has no snapshot-property reads for them;
+//   3) live citations match a unique registered anchor; retired test evidence has an explicit marker.
+// The shared anchor registry is also consumed by `docs-drift-check`, so contract drift fails both
+// the test suite and the documentation gate.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -27,11 +13,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createMemoryTranscriptStore } from "../src/store/memory.js";
-import { runDirect } from "./helpers/run-direct.js";
-import { createFakeProvider } from "./helpers/fake-provider.js";
-
-// issue #772 R3：14 格两轴的锚点登记表住在 `scripts/cell-axes-anchors.mjs`，**闸与这份测试 import 同一份**
+// issue #772 R3：两轴载荷表的锚点登记表住在 `scripts/cell-axes-anchors.mjs`，**闸与这份测试 import 同一份**
 // （R2 之前表住在下面这个文件里、闸再用正则把它抽出来 ⇒ 豁免是闸发的、锚点却住在测试里，只有
 // `node --test` 会重算行号，`npm run check:docs` 看不见）。命中语义（唯一命中 / 等值 / 组键）也同源。
 import {
@@ -60,31 +42,16 @@ const DOCS = [
 const BEGIN = "<!-- erix:snapshot-cell-axes:begin -->";
 const END = "<!-- erix:snapshot-cell-axes:end -->";
 
-/** 契约必须列全的 14 个格名（issue #767 的清点面；表里是 **15 行**——一个键名
- *  `persistedTranscriptLength` 底下是两个东西，占两行，见 `SPLIT_ROWS`）。 */
+/** 契约两轴表保留的四个格名。 */
 const CELL_KEYS = [
-  "round",
   "status",
-  "pendingToolUse",
-  "pendingToolUses",
-  "executedToolIds",
-  "toolResults",
-  "toolOutputs",
-  "messages",
-  "persistedTranscriptLength",
   "compactionStats",
-  // S1r 补的 4 格：前两格是**条件写入**（「载荷里必须在场的键」那种清单天然看不见它们），
-  // 后两格是**已停写**（机器缺席断言见 test/loop-snapshot-write-side-735.test.js 判据 1）。
-  "partialText",
-  "partialRound",
   "toolUse",
   "ts",
 ];
 const WRITE_VOCAB = new Set(["written", "written(conditional)", "residue", "stopped"]);
-/** 条件写入轴值：那一格只在写明的条件成立时才进载荷（写点 `src/loop/orchestrator.js:3043`）。 */
 const CONDITIONAL_WRITE = "written(conditional)";
-/** 一个键名底下是两个东西 ⇒ `persistedTranscriptLength` 必须**恰好两行**（盘上格 / 进程内计数器）。 */
-const SPLIT_ROWS = { persistedTranscriptLength: 2 };
+const SPLIT_ROWS = {};
 
 /** 读轴：`source` / `not-source` / `fallback(条件)`；只取头一段做中英比对（括号里的条件按语言写）。 */
 function readAxisHead(value) {
@@ -93,7 +60,7 @@ function readAxisHead(value) {
   return fallback === null ? null : "fallback";
 }
 
-/** 表内一个键名（允许一个括注，用于 `persistedTranscriptLength` 的两行）。 */
+/** 表内一个 payload 键名。 */
 function parseKey(cell) {
   const match = /^\s*`([A-Za-z][A-Za-z0-9]*)`\s*(?:[（(][^|]*[)）])?\s*$/u.exec(cell);
   return match === null ? null : match[1];
@@ -101,6 +68,9 @@ function parseKey(cell) {
 
 /** 表内出现的 `file:line` 引用（只认仓库内路径，避免把 `40a518d` / `0.31.0` 当成引用）。 */
 const CITATION = /(?:src|bin|test|docs|examples|scripts)\/[A-Za-z0-9_./-]+\.(?:js|mjs|md):[0-9]+/gu;
+const RETIRED_CELL_EVIDENCE = new Map([
+  ["test/loop-snapshot-write-side-735.test.js", "// 载体已退役（#838 S2），本格随之退役。"],
+]);
 
 function splitRow(line) {
   const trimmed = line.trim().replace(/^\|/u, "").replace(/\|$/u, "");
@@ -154,7 +124,7 @@ const tables = new Map(DOCS.map((doc) => [doc.side, loadTable(doc)]));
 
 // ── G1 表自洽（漏格即红、两轴词表、无空值、中英一致）────────────────────────────
 
-test("G1 载荷表自洽：14 格齐全、两轴取值合法、无空值", () => {
+test("G1 载荷表自洽：四格齐全、两轴取值合法、无空值", () => {
   for (const { side, rows } of tables.values()) {
     const counts = new Map();
     for (const row of rows) {
@@ -163,7 +133,7 @@ test("G1 载荷表自洽：14 格齐全、两轴取值合法、无空值", () =>
     assert.deepEqual(
       [...counts.keys()].sort(),
       [...CELL_KEYS].sort(),
-      `${side}：表里的格名集合必须**恰好**是这 14 个（漏一格 = 集合缺项，多一格 = 多项）`,
+      `${side}：表里的格名集合必须**恰好**是这四个（漏一格 = 集合缺项，多一格 = 多项）`,
     );
     for (const [key, expected] of Object.entries(SPLIT_ROWS)) {
       assert.equal(
@@ -199,7 +169,7 @@ test("G5 中英两份逐格一致（格序、write 轴、read 轴头）", () => 
   assert.deepEqual(
     cn.map((row) => row.key),
     en.map((row) => row.key),
-    "中英两份的格序列必须逐位相同（`persistedTranscriptLength` 的两行也按序对齐）",
+    "中英两份的格序列必须逐位相同",
   );
   for (const [index, cnRow] of cn.entries()) {
     const enRow = en[index];
@@ -216,202 +186,23 @@ test("G5 中英两份逐格一致（格序、write 轴、read 轴头）", () => 
   }
 });
 
-// ── G2 写轴对真载荷（B1）───────────────────────────────────────────────────────
+// ── G2 写轴：保留格只能声明停写 ────────────────────────────────────────────────
 
-const READ_FILE_SCHEMA = {
-  name: "readFile",
-  description: "Read a file",
-  input_schema: {
-    type: "object",
-    properties: { path: { type: "string" } },
-    required: ["path"],
-  },
-};
-const TOOL_BLOCK = { type: "tool_use", id: "call-767", name: "readFile", input: { path: "a.txt" } };
-
-/** 抓**真实**写侧载荷（夹具取法照 `test/loop-snapshot-write-side-735.test.js`：包一层 store）。 */
-let captured = null;
-async function capturePayloads() {
-  if (captured !== null) return captured;
-  const store = createMemoryTranscriptStore();
-  const payloads = [];
-  const saveRunSnapshot = store.saveRunSnapshot.bind(store);
-  store.saveRunSnapshot = async (runId, snapshot) => {
-    payloads.push(structuredClone(snapshot));
-    return saveRunSnapshot(runId, snapshot);
-  };
-  const result = await runDirect({
-    provider: createFakeProvider([
-      { content: [TOOL_BLOCK], stopReason: "tool_use" },
-      { content: [{ type: "text", text: "读完了" }], stopReason: "end_turn", times: 4 },
-    ]),
-    tools: [READ_FILE_SCHEMA],
-    executeTool: async () => ({ content: "a.txt 的内容" }),
-    store,
-    runId: "contract-snapshot-cell-axes-767",
-    maxRounds: 4,
-    initialUserMessage: "读一下 a.txt",
-  });
-  assert.ok(payloads.length > 0, "引擎必须真的写过 run snapshot（否则本用例是空转）");
-  assert.equal(result.finalText, "读完了", "run 必须正常收口（否则现场是个 failed 的 run）");
-  captured = { payloads, result };
-  return captured;
-}
-
-test("G2 写轴对真载荷：声明 written/residue ⇒ 键必须在场，声明 stopped ⇒ 键必须缺席", async () => {
-  const { payloads } = await capturePayloads();
+test("G2 写轴：保留在表里的 run-snapshot 格都已停写", () => {
   const rows = tables.get("cn").rows;
-  assert.ok(
-    rows.some((row) => row.write === "stopped"),
-    "表里必须至少有一格 `write: stopped`，否则本用例的 stopped 分支是空转（#767 S1r 缺陷 2）",
-  );
-  // #827 第 5 刀：半截正文停写之后条件写入格是**空集**（原来那两格变成了 `stopped`）。这条断言
-  // 随之从「至少一格」翻成「必须为空」——反过来钉住「别把条件写入悄悄加回来而不说明条件」。
-  assert.equal(
-    rows.filter((row) => row.write === CONDITIONAL_WRITE).length,
-    0,
-    "条件写入格应当为空：半截正文已改走账本恢复行（#827 第 5 刀）",
-  );  for (const row of rows) {
-    if (row.write === CONDITIONAL_WRITE) {
-      // 条件写入不能按「每条载荷都必须在场」判 ⇒ 交给 G2c 按两种现场双向判。
-      continue;
-    }
-    if (row.write === "stopped") {
-      for (const payload of payloads) {
-        assert.ok(
-          !Object.hasOwn(payload, row.key),
-          `契约把 \`${row.key}\` 标成 stopped，但引擎仍把该键交给 saveRunSnapshot（keys：${JSON.stringify(Object.keys(payload))}）`,
-        );
-      }
-    } else {
-      for (const payload of payloads) {
-        assert.ok(
-          Object.hasOwn(payload, row.key),
-          `契约把 \`${row.key}\` 标成 ${row.write}，但有一条写侧载荷缺该键（keys：${JSON.stringify(Object.keys(payload))}）`,
-        );
-      }
-    }
-  }
+  assert.ok(rows.every((row) => row.write === "stopped"),
+    "run snapshot 退役后，剩余格也不得声明有写入");
+  assert.equal(rows.filter((row) => row.write === CONDITIONAL_WRITE).length, 0,
+    "不得重新登记条件快照写入");
 });
 
-// ── G2c 条件写入格：两种现场双向判（#767 S1r 缺陷 1）──────────────────────────
-
-/** 流式夹具：`deltas` 非空 ⇒ 本轮真有半截正文；为空 ⇒ 其余配置完全相同但一句正文都没吐。 */
-function createPartialStreamProvider({ deltas, turns }) {
-  let index = 0;
-  const respond = async (request, streaming) => {
-    const step = turns[Math.min(index, turns.length - 1)];
-    index += 1;
-    if (streaming) {
-      for (const chunk of deltas) request.onDelta(chunk);
-      await new Promise((resolve) => setTimeout(resolve, 60));
-    }
-    return { content: step.content, stopReason: step.stopReason };
-  };
-  return {
-    protocol: "fake",
-    model: "fake-model",
-    async chat(request) { return respond(request, false); },
-    async chatStream(request) { return respond(request, true); },
-  };
-}
-
-async function capturePartialRun(deltas, runId, { withRecoveryChannel = true, keepStore } = {}) {
-  const store = createMemoryTranscriptStore();
-  if (typeof keepStore === "function") keepStore(store);
-  // #827 第 4 刀：有账本恢复行通道时半截正文只落那一行（快照两格不写）；通道缺席时才回落到快照。
-  // 摘掉方法即可模拟「宿主没实现 appendRecoveryRow」——引擎按能力探测处理（`persist` 返回 false）。
-  if (!withRecoveryChannel) delete store.appendRecoveryRow;
-  const payloads = [];
-  const saveRunSnapshot = store.saveRunSnapshot.bind(store);
-  store.saveRunSnapshot = async (id, snapshot) => {
-    payloads.push(structuredClone(snapshot));
-    return saveRunSnapshot(id, snapshot);
-  };
-  const result = await runDirect({
-    provider: createPartialStreamProvider({
-      deltas,
-      turns: deltas.length > 0
-        ? [
-          { content: [{ type: "text", text: "我先读一下 a.txt。" }, TOOL_BLOCK], stopReason: "tool_use" },
-          { content: [{ type: "text", text: "读完了" }], stopReason: "end_turn" },
-        ]
-        : [
-          { content: [TOOL_BLOCK], stopReason: "tool_use" },
-          { content: [{ type: "text", text: "读完了" }], stopReason: "end_turn" },
-        ],
-    }),
-    tools: [READ_FILE_SCHEMA],
-    executeTool: async () => ({ content: "a.txt 的内容" }),
-    store,
-    runId,
-    maxRounds: 4,
-    initialUserMessage: "读一下 a.txt",
-    stream: true,
-    partialPersistence: { intervalMs: 40 },
-  });
-  assert.equal(result.finalText, "读完了", `${runId} 必须正常收口（否则现场是个 failed 的 run）`);
-  assert.ok(payloads.length > 0, `${runId} 必须真的写过 run snapshot`);
-  return payloads;
-}
-
-let partialScenes = null;
-/** 半截正文在账本恢复行里的现场（#827 第 5 刀之后这是它唯一的落点）。 */
-let partialRecoveryRows = null;
-async function capturePartialRecoveryRows() {
-  if (partialRecoveryRows !== null) return partialRecoveryRows;
-  partialRecoveryRows = await capturePartialRunRecoveryRows();
-  return partialRecoveryRows;
-}
-
-async function capturePartialRunRecoveryRows() {
-  let kept;
-  await capturePartialRun(["我先", "读一下 a.txt。"], "contract-snapshot-axes-767-partial-rows",
-    { keepStore: (store) => { kept = store; } });
-  return await kept.listRecoveryRows("contract-snapshot-axes-767-partial-rows");
-}
-
-async function capturePartialScenes() {
-  if (partialScenes !== null) return partialScenes;
-  partialScenes = {
-    withText: await capturePartialRun(["我先", "读一下 a.txt。"],
-      "contract-snapshot-axes-767-partial"),
-    withoutText: await capturePartialRun([], "contract-snapshot-axes-767-no-partial"),
-    noChannel: await capturePartialRun(["我先", "读一下 a.txt。"],
-      "contract-snapshot-axes-767-partial-no-channel", { withRecoveryChannel: false }),
-  };
-
-  return partialScenes;
-}
-
-test("G2c 条件写入格：账本通道出现之后这两格已停写 ⇒ 任何现场都不许再写（#827 第 5 刀）", async () => {
+test("G2c 已退役的半截正文格不在契约表中", () => {
   const keys = tables.get("cn").rows
     .filter((row) => row.write === CONDITIONAL_WRITE)
     .map((row) => row.key);
-  // 半截正文的落点从「快照两格」搬到了「账本恢复行」：条件写入格因此是**空集**。这条断言是
-  // 「条件分支没被悄悄加回来」的守卫；要加新格必须先把它写进契约表并说明条件。
   assert.deepEqual(keys, [], "条件写入格应当为空（半截正文只落账本恢复行）");
-  const stopped = tables.get("cn").rows
-    .filter((row) => row.write === "stopped")
-    .map((row) => row.key);
-  assert.ok(stopped.includes("partialText") && stopped.includes("partialRound"),
-    "这两格必须登记成 stopped（机器缺席断言在 test/loop-snapshot-write-side-735.test.js 判据 1）");
-  const { withText, withoutText, noChannel } = await capturePartialScenes();
-  // 三种现场（有正文 / 无正文 / 没有账本通道）都不许出现这两格：引擎不再写它们。
-  for (const [name, payloads] of [["withText", withText], ["withoutText", withoutText],
-    ["noChannel", noChannel]]) {
-    for (const payload of payloads) {
-      for (const key of ["partialText", "partialRound"]) {
-        assert.ok(!Object.hasOwn(payload, key),
-          `${name} 现场仍有快照载荷写了 \`${key}\`（keys：${JSON.stringify(Object.keys(payload))}）`);
-        assert.equal(payload[key], undefined, `\`${key}\` 的取值也必须是 undefined`);
-      }
-    }
-  }
-  // 反过来：正文**没有丢** —— 它落在账本恢复行里（这才是这条通道的权威）。
-  const rows = await capturePartialRecoveryRows();
-  assert.ok(rows.some((row) => row.recoveryEvent === "partial-text" && row.text.length > 0),
-    "有半截正文的现场里账本恢复行必须带着它 ⇒ 停写快照那两格不是丢事实");
+  assert.ok(!tables.get("cn").rows.some((row) => ["partialText", "partialRound"].includes(row.key)),
+    "已从契约载荷表移除的半截正文格不应重新登记");
 });
 
 
@@ -556,36 +347,15 @@ test("G3-B 剥逻辑有效：反例（注释/字符串里的读点不算，代�
   assert.match(stripped, /codeRead\s*=\s*snapshot\.toolOutputs;/u);
 });
 
-test("G3-C 真实文件上的反例：注释里那句 snapshot.messages 不算读点，代码里那句算", () => {
+test("G3-C 真实文件上的反例：恢复侧不再保留任何 run-snapshot 读点", () => {
   const raw = readFileSync(join(ROOT, RESUME_FILE), "utf8");
   const rawLines = raw.split("\n");
   const stripped = stripCommentsAndStrings(raw);
   const strippedLines = stripped.split("\n");
   assert.equal(strippedLines.length, rawLines.length, "剥完必须保持行数一致，否则行号对不上原文");
-
-  // 原文里注释里确实出现过 `snapshot.<key>`（不写死行号，避免一挪动就红）
-  const commentRead = (line) => new RegExp(`${SNAPSHOT_OBJECTS}\\s*\\??\\s*\\.\\s*messages\\b`, "u").test(line);
-  const commentLineNumbers = rawLines
-    .map((line, index) => (commentRead(line) && /^\s*(?:\/\/|\*)/u.test(line) ? index + 1 : 0))
-    .filter((number) => number > 0);
-  const commentOnly = commentLineNumbers.map((number) => rawLines[number - 1]);
-  assert.ok(commentOnly.length > 0, "原文必须仍带着那句注释里的 snapshot.messages（这条反例的前提）");
-  const codeReads = snapshotReadLines(stripped, "messages");
-  assert.ok(codeReads.length > 0, "代码里的 snapshot.messages 读点必须被找到（否则 not-source 判定是空转）");
-  for (const lineNumber of commentLineNumbers) {
-    assert.ok(
-      !codeReads.includes(lineNumber),
-      `第 ${lineNumber} 行是注释（${rawLines[lineNumber - 1].trim()}）却被算成读点`,
-    );
-    assert.ok(
-      new RegExp(`${SNAPSHOT_OBJECTS}\\s*\\??\\s*\\.\\s*messages\\b`, "u").test(strippedLines[lineNumber - 1]) === false,
-      `第 ${lineNumber} 行剥完仍带着 snapshot.messages ⇒ 注释没被剥掉`,
-    );
+  for (const key of CELL_KEYS) {
+    assert.deepEqual(snapshotReadLines(stripped, key), [], `恢复侧仍读取已退役的 snapshot.${key}`);
   }
-
-  // 反向对照：契约里被引为读点的行，剥完必须真的带着那次读点（读轴与源码互相对账）
-  const cited = tables.get("cn").rows.filter((row) => row.readers.includes(RESUME_FILE));
-  assert.ok(cited.length > 0);
 });
 
 /**
@@ -746,7 +516,7 @@ function G4_SIDE_RECONCILE({ side, rows, groups, linesOf }) {
 const G4_DISTRACTOR_PROBE = {
   key: "compactionStats",
   path: "src/loop/orchestrator.js",
-  anchor: "^ +// - `compactionStats`：",
+  anchor: "^ +// 写进 `compactionStats\\[\\]\\.foldSummary`",
 };
 
 test("G4 表里每条 file:line 都复核：文件在场 + 行号在范围内 + 该行确实提到这格的键名 + 两轴引用必须等于登记锚点重算的行号", () => {
@@ -756,8 +526,18 @@ test("G4 表里每条 file:line 都复核：文件在场 + 行号在范围内 + 
       const rowText = [row.authority, row.handoff, row.writeSite, row.readers].join(" ");
       for (const citation of rowText.match(CITATION) ?? []) {
         const [rel, lineText] = citation.split(":");
-        const lineNumber = Number(lineText);
         const fileLines = G4_LINES_OF(rel);
+        const retiredMarker = RETIRED_CELL_EVIDENCE.get(rel);
+        if (retiredMarker !== undefined) {
+          assert.ok(["toolUse", "ts"].includes(row.key),
+            `${side}：${rel} 是退役测试证据，只能被它原来覆盖的格引用`);
+          assert.equal(fileLines[0], retiredMarker, `${side}：${rel} 必须保留一行退役标记`);
+          assert.ok(fileLines.slice(1).every((line) => line === ""),
+            `${side}：${rel} 除退役标记外不得残留测试内容`);
+          checked += 1;
+          continue;
+        }
+        const lineNumber = Number(lineText);
         assert.ok(
           Number.isSafeInteger(lineNumber) && lineNumber >= 1 && lineNumber <= fileLines.length,
           `${side}：\`${row.key}\` 引用 ${citation} 的行号越界（${rel} 只有 ${fileLines.length} 行）`,
@@ -779,7 +559,7 @@ test("G4 表里每条 file:line 都复核：文件在场 + 行号在范围内 + 
   ));
   assert.ok(
     CELL_AXES_ANCHORS.length >= CELL_AXES_ANCHOR_FLOORS.entries && groupsSeen.size >= CELL_AXES_ANCHOR_FLOORS.groups,
-    `锚点登记表只剩 ${CELL_AXES_ANCHORS.length} 条 / ${groupsSeen.size} 组（建单时 39 条 / 27 组，地板读 scripts/cell-axes-anchors.mjs 的 CELL_AXES_ANCHOR_FLOORS）——登记表被削薄了`,
+    `锚点登记表只剩 ${CELL_AXES_ANCHORS.length} 条 / ${groupsSeen.size} 组（地板读 scripts/cell-axes-anchors.mjs 的 CELL_AXES_ANCHOR_FLOORS）——登记表被削薄了`,
   );
   const { groups, errors: anchorErrors } = G4_ANCHOR_GROUPS(CELL_AXES_ANCHORS, G4_LINES_OF);
   assert.deepEqual(anchorErrors, [], "锚点登记表自己就不成立（唯一命中判据）");
@@ -864,22 +644,19 @@ test("G4-R1 反向证：写点被换成「同一键名的注释行」⇒ 词面�
 
 test("G4-R2 反向证：锚点被放宽到命中两行（歧义）⇒ 必红并点名「锚点歧义」", () => {
   const victim = CELL_AXES_ANCHORS.find(
-    (entry) => entry.key === "toolOutputs" && entry.axis === "write" && entry.anchor.includes("cloneState"),
+    (entry) => entry.key === "compactionStats" && entry.axis === "write" && entry.kind === "code",
   );
-  assert.ok(victim !== undefined, "反向证需要 toolOutputs 的快照写点锚点在场");
+  assert.ok(victim !== undefined, "反向证需要 compactionStats 的代码写点锚点在场");
   const [unique] = G4_ANCHOR_LINE_CHECK(G4_LINES_OF(victim.path), victim);
-  const trimmed = G4_LINES_OF(victim.path)[unique - 1].trim();
-  // 放宽到「只到第一个冒号」= 退化成旧 G4 那种键名词面：同一键名在别处也写过 ⇒ 命中多行
-  const fragment = trimmed.slice(0, trimmed.indexOf(":") + 1).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-  const loose = { ...victim, prev: undefined, anchor: `^ +${fragment}` };
+  const loose = { ...victim, prev: undefined, anchor: "compactionStats" };
   const looseHits = G4_ANCHOR_LINE_CHECK(G4_LINES_OF(loose.path), loose);
-  assert.ok(looseHits.length > 1, `键名前缀锚点本该命中多行（拿它证歧义），实际 ${looseHits.length} 行`);
+  assert.ok(looseHits.length > 1, `键名锚点本该命中多行（拿它证歧义），实际 ${looseHits.length} 行`);
   const mutated = CELL_AXES_ANCHORS.map((entry) => (entry === victim ? loose : entry));
   assert.notEqual(mutated, CELL_AXES_ANCHORS);
   const { errors } = G4_ANCHOR_GROUPS(mutated, G4_LINES_OF);
   assert.ok(errors.length > 0, "锚点命中两行却全绿 ⇒ 歧义锚点被当成了基准");
   assert.match(errors.join("\n"), /锚点歧义/u);
-  assert.match(errors.join("\n"), /toolOutputs/u);
+  assert.match(errors.join("\n"), /compactionStats/u);
   // 恢复：原表 0 错
   assert.deepEqual(G4_ANCHOR_GROUPS(CELL_AXES_ANCHORS, G4_LINES_OF).errors, [], "原锚点表必须 0 错（恢复证）");
 });
@@ -888,26 +665,23 @@ test("G4-R3 反向证：表里多一条没登记的引用 / 少一条已登记�
   const groups = G4_ANCHOR_GROUPS(CELL_AXES_ANCHORS, G4_LINES_OF).groups;
   const base = G4_SIDE_RECONCILE({ side: "en", rows: tables.get("en").rows, groups, linesOf: G4_LINES_OF });
   assert.deepEqual(base.errors, [], "原表必须 0 错（本例两条判据的前提）");
-  // ① 多一条没登记的引用（给 `round` 的读者列再引一处 `bin/final-guard-support.js`：形状合法、词面也过，
-  //    但那一格那一轴在该文件上没有锚点 ⇒ 那条行号没有基准）
-  const extra = tables.get("en").rows.map((r) => (r.key === "round"
+  // ① 多一条没登记的引用（给 `status` 的读者列再引一处 `bin/final-guard-support.js`，但该文件没有锚点）
+  const extra = tables.get("en").rows.map((r) => (r.key === "status"
     ? { ...r, readers: `${r.readers}、bin/final-guard-support.js:218` }
     : r));
   const extraVerdict = G4_SIDE_RECONCILE({ side: "en", rows: extra, groups, linesOf: G4_LINES_OF });
   assert.ok(extraVerdict.errors.length === 1, `只该多出一条红，实际：${JSON.stringify(extraVerdict.errors)}`);
   assert.ok(extraVerdict.errors.some((e) => e.includes("没有登记锚点")), JSON.stringify(extraVerdict.errors));
-  // ② 少一条已登记的引用（把 round 写点那半句删掉 ⇒ 锚点躺着、表里没人引）
-  const dropped = tables.get("en").rows.map((r) => (r.key === "round"
-    ? { ...r, writeSite: "见 `persistRound`（`src/loop/orchestrator.js`）" }
+  // ② 少一条已登记的引用（把 status 的写点引文删掉 ⇒ 锚点躺着、表里没人引）
+  const dropped = tables.get("en").rows.map((r) => (r.key === "status"
+    ? { ...r, writeSite: "见停写说明" }
     : r));
   const droppedVerdict = G4_SIDE_RECONCILE({ side: "en", rows: dropped, groups, linesOf: G4_LINES_OF });
   assert.ok(droppedVerdict.errors.some((e) => e.includes("已经不再引它")), JSON.stringify(droppedVerdict.errors));
 });
 
 test("G4-R4 反向证：锚点登记的「种类」是硬判据 ⇒ 代码锚点指到注释行必红，注释锚点指到代码行也必红（M-A）", () => {
-  // 出厂表的种类事实：41 条全带合法 kind，且只有八条钉的是注释（#735 停写的两格「为什么没有写点」
-  // + #770 停写的 `status` / `compactionStats` 两格 + `persistedTranscriptLength` 读侧那句「不能信快照里的它」
-  // + #769 的三格读轴 `executedToolIds` / `partialRound` / `partialText` 的账本来源）。
+  // 出厂表的八条锚点全带合法 kind，其中四条钉的是停写解释注释。
   // 种类写错 ⇒ 下面那条判据当场红。
   assert.ok(
     CELL_AXES_ANCHORS.length === CELL_AXES_REQUIRED_CELLS.length,
@@ -918,17 +692,11 @@ test("G4-R4 反向证：锚点登记的「种类」是硬判据 ⇒ 代码锚点
     commentEntries.map((entry) => `${entry.key}|${entry.axis}`).sort(),
     [
       "compactionStats|write",
-      // issue #769：三格读轴的**账本来源**钉在 `src/store/recovery-rows.js` 的格名注释上（那里是行形状的定义处，
-      // 没有「读这一格」的代码行可读；读轴的代码引用仍留在恢复侧真读点上，G6 那条判据据此仍然咬得住）。
-      "executedToolIds|read",
-      "partialRound|read",
-      "partialText|read",
-      "persistedTranscriptLength|read",
       "status|write",
       "toolUse|write",
       "ts|write",
     ],
-    "注释锚点只许这八条（上面数组几条，这句话就写几条；新增注释锚点必须同批改这里，种类是登记事实，不是机器猜出来的）",
+    "注释锚点只许这四条（新增注释锚点必须同批改这里，种类是登记事实，不是机器猜出来的）",
   );
   assert.ok(
     CELL_AXES_ANCHORS.every((entry) => entry.kind === "code" || entry.kind === "comment"),
@@ -1012,8 +780,7 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
   };
   const refsByDoc = [...tables.values()].map(({ rows, side }) => refsOf({ side, rows }));
 
-  // ① 正向：出厂的登记 + 两份表必须把这 34 个槽位全覆盖（R9 在合并树上现算：登记 41 条 / 组键 34 组 / `key|axis` 27 格，
-  //  三个数字都取 `CELL_AXES_ANCHORS` + `CELL_AXES_REQUIRED_CELLS` 现算，不是手填）（清单 → 登记 → EN → CN 四处）
+  // ① 正向：出厂的登记 + 两份表必须覆盖清单中的每个槽位（清单 → 登记 → EN → CN 四处）
   const clean = checkCellAxesCoverage({ anchors: CELL_AXES_ANCHORS, refsByDoc });
   assert.deepEqual(clean.errors, [], JSON.stringify(clean.errors));
   assert.equal(clean.slots, new Set(CELL_AXES_REQUIRED_CELLS.map((cell) => cellAxesRequiredSlotKey(cell))).size,
@@ -1025,34 +792,12 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
     new Set(CELL_AXES_REQUIRED_CELLS.map((cell) => `${cell.key}|${cell.axis}`)).size,
     "groups 地板必须是清单里 key|axis 去重数算出来的");
 
-  // ② 评审 M-B 的变异：从 8 个双锚点组各删一条登记，并同步删掉两表对应引用 ⇒ 剩下的全自洽
-  // 下面的 `at:` 是**锚点现算的命中行号**（不是手填基准）：#769 R3 / R5 在 src 里插了行 ⇒ 全部行号按
-  // 锚点重算同步过一遍（判据本身没动）。重算口径与 G4 一致：`anchorHitLines()` 的唯一命中。
-  // #769 R5 那一次同步的对应（M1/M2/M5 在两个文件里插了行）：6279→6297 / 6259→6277 /
-  // 821→857 / 822→858 / 779→815 / 783→819 / 93→119 / 750→786。
-  // R9（合并 `origin/main = ad1ddd5`，含 #778 / #754）再同步一次：#754 改了 `resume-manager.js` 的读侧、
-  // #769 也在同两处插了行，于是**同一条锚点**的命中行又漂了一次。逐条取法与上面同一条：
-  // 先在合并前的本支 tip（`git show 586d6e8:`）上找「`at` == 旧值」的那条锚点，拿它的 `anchor` 正则
-  // 到合并后的本树求唯一命中（脚本 `/tmp/r9-remap-at.mjs`，现报：857→878 / 858→879 / 815→822 /
-  // 819→826 / 786→788；`6297` / `6277` / `119` 三条在合并树上是同一条锚点的现行命中，未变）。
-  // ⚠ issue #790 再同步一次（同一条口径：值由 `anchorHitLines()` 现算打印，不是手抄）：#790 在
-  // `src/loop/orchestrator.js`（新增一个证据集合 + 一条出网事件出口）与 `src/loop/resume-manager.js`
-  // （恢复行读取处多一段无条件另存）各插了行 ⇒ 同一条锚点的命中行又漂一次。逐条现报：
-  //   6297→6352 / 6277→6332 / 878→887 / 879→888 / 822→831 / 826→835 / 788→797（`119` 那条是注释锚点，未变）。
-  //   现算命令：`node -e` 逐条 `anchorHitLines(readLines(e.codePath), e)`（与 G4 同源，脚本 `/tmp/refresh-cell-axes.mjs`）。
-  // ⚠ issue #811 再同步一次（同一条口径：值由 `anchorHitLines()` 现算打印，不是手抄）：#811 在
-  // `src/loop/orchestrator.js`（写侧轮号守卫的调用方注释与 ④ 的跳过分支）与 `src/loop/resume-manager.js`
-  // （定锚侧的轮号守卫、轮号计数器那格）各插了几行 ⇒ 同一条锚点的命中行又漂一次。逐条现报：
-  //   6352→6365 / 6332→6345 / 887→891 / 888→892 / 831→835 / 835→839 / 797→801（`119` 仍未变）。
+  // ② 反向变异：从已登记槽位中删一条锚点，并同步删除两份表里对应引用，覆盖面检查必须报红。
+  const statusAnchor = CELL_AXES_ANCHORS.find((entry) => entry.key === "status" && entry.axis === "write");
+  assert.ok(statusAnchor !== undefined, "需要 status 写轴锚点");
+  const [statusLine] = G4_ANCHOR_LINE_CHECK(G4_LINES_OF(statusAnchor.path), statusAnchor);
   const victims = [
-    { key: "toolOutputs", axis: "write", path: "src/loop/orchestrator.js", at: 6368 },
-    { key: "compactionStats", axis: "write", path: "src/loop/orchestrator.js", at: 6348 },
-    { key: "pendingToolUses", axis: "read", path: "src/loop/resume-manager.js", at: 899 },
-    { key: "pendingToolUse", axis: "read", path: "src/loop/resume-manager.js", at: 900 },
-    { key: "executedToolIds", axis: "read", path: "src/loop/resume-manager.js", at: 835 },
-    { key: "toolResults", axis: "read", path: "src/loop/resume-manager.js", at: 839 },
-    { key: "persistedTranscriptLength", axis: "read", path: "src/loop/resume-manager.js", at: 119 },
-    { key: "partialText", axis: "read", path: "src/loop/resume-manager.js", at: 801 },
+    { key: "status", axis: "write", path: statusAnchor.path, at: statusLine },
   ];
   const droppedKeys = new Set();
   const mutatedAnchors = [...CELL_AXES_ANCHORS];
@@ -1078,7 +823,7 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
       assert.ok(!rows.some((row) => row[field].includes(citation)), `${side}：${citation} 没被删干净`);
     }
   }
-  assert.equal(mutatedAnchors.length, CELL_AXES_ANCHORS.length - 8, "变异应当只删 8 条登记");
+  assert.equal(mutatedAnchors.length, CELL_AXES_ANCHORS.length - victims.length, "变异应当只删目标登记");
   const mutatedGroups = G4_ANCHOR_GROUPS(mutatedAnchors, G4_LINES_OF);
   assert.deepEqual(mutatedGroups.errors, [], "剩下的那些锚点必须各自仍成立（变异是削薄，不是打坏）");
   for (const [side, rows] of mutatedRows) {
@@ -1087,7 +832,7 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
   }
   // 但覆盖面真值看得见：登记那一侧 + EN + CN 每一处都要报出缺的那一格
   const after = checkCellAxesCoverage({ anchors: mutatedAnchors, refsByDoc: [...mutatedRows.entries()].map(([side, rows]) => refsOf({ side, rows })) });
-  assert.ok(after.errors.length > 0, "成对删掉 8 格之后覆盖面判据仍然全绿 ⇒ M-B 没关掉");
+  assert.ok(after.errors.length > 0, "成对删掉一个登记槽与两份引文后仍然全绿 ⇒ M-B 没关掉");
   assert.ok(after.errors.some((text) => text.includes("CELL_AXES_REQUIRED_CELLS")), JSON.stringify(after.errors.slice(0, 3)));
   for (const gk of droppedKeys) {
     const [key] = gk.split("|");
@@ -1096,19 +841,16 @@ test("G4-R5 反向证：成对删掉登记条目与两份表里的对应引用 �
   assert.ok(
     after.errors.some((text) => text.includes("en 表")) && after.errors.some((text) => text.includes("cn 表")),
     "红话必须点名缺在哪一份（EN / CN）");
-  // 地板也不再是手填数：削到 33 条必须低于由清单算出的 41（两个数都取现算：41 − 8 = 33 / 清单条数）
+  // 地板由清单现算：删一条登记必须低于 8 条的地板。
   assert.ok(mutatedAnchors.length < CELL_AXES_ANCHOR_FLOORS.entries,
     `削到 ${mutatedAnchors.length} 条必须低于地板 ${CELL_AXES_ANCHOR_FLOORS.entries}（地板由清单算出）`);
   // ③ 恢复证
   assert.deepEqual(checkCellAxesCoverage({ anchors: CELL_AXES_ANCHORS, refsByDoc }).errors, [], "原样必须 0 错（恢复证）");
-  // 削薄是「无声」的那一种：格名与组数看起来一个没少（评审当年量出来的是 31 条 / 27 组 / 14 格；
-  // 本树同一变异现算（`anchorTableShape`）是 33 条 / 27 组 / 14 格 ⇒ 组数与格名数确实一条没少，见下面三条 assert）
-  // ⇒ 拿组数当哨兵不够，要拿人审清单逐格问。
   const before = anchorTableShape(CELL_AXES_ANCHORS);
   const afterShape = anchorTableShape(mutatedAnchors);
-  assert.equal(afterShape.entries, before.entries - 8, `应剩 ${before.entries - 8} 条，实际 ${afterShape.entries}`);
-  assert.equal(afterShape.groups, before.groups, "组数不该变（无声削薄的典型形状）");
-  assert.equal(afterShape.cells, before.cells, "格名数不该变（无声削薄的典型形状）");
+  assert.equal(afterShape.entries, before.entries - victims.length, `应剩 ${before.entries - victims.length} 条，实际 ${afterShape.entries}`);
+  assert.equal(afterShape.groups, before.groups - 1, "删掉 status 写轴应当少一个组");
+  assert.equal(afterShape.cells, before.cells - 1, "删掉 status 唯一的锚点后应当少一个格名");
 });
 
 test("G4-R6 特征用例（已知限度，见 command-reference）：锚点改成「同一键名的另一处真写入」+ 两份引文同步改口 ⇒ 现在不红", () => {
@@ -1176,5 +918,5 @@ test("G6 表里被引为读点的恢复侧行号，必须是剥完源码里真�
       verified += 1;
     }
   }
-  assert.ok(verified >= 5, `恢复侧读点对账只跑了 ${verified} 条，覆盖面不足以证伪`);
+  assert.equal(verified, 0, "四个保留格都声明 not-source，不应存在 snapshot 属性读点");
 });

@@ -6,7 +6,13 @@ import { renderConversation } from "../src/reflection/judge.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createDeterministicRunState } from "../src/run-state.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
+import { buildToolExecutedRecoveryRow } from "../src/store/recovery-rows.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { appendLedgerMessages } from "./helpers/journal-crash-body.js";
+import {
+  NO_EVIDENCE_TOOL_RESULT_TEXT,
+  UNPERSISTED_TOOL_RESULT_TEXT,
+} from "../src/loop/pending-tool-result.js";
 
 const textMessage = (text) => ({
   role: "user",
@@ -18,53 +24,12 @@ const textMessage = (text) => ({
  * 不静默放宽：调用点另有一句断言档案侧**真的**带 `ts`（否则这条剥字段就成了白名单）。 */
 const withoutJournalTs = (messages) => messages.map(({ ts, ...message }) => message);
 
-
-/**
- * issue #754（裁决 2）夹具垫片：**把崩溃轮的正文写成账本里的 `kind:"message"` 行**。
- *
- * 这个文件里的恢复夹具是 pre-261021 的形状 —— 账本只有一条 round 0 的轮载体，崩溃轮那条 assistant
- * （以及它后面那条聚合 `tool_result`）**只存在于 `snapshot.messages`**。裁决 2 之后恢复只从账本重建，
- * 那段正文不再从快照喂进来（`src/loop/resume-manager.js`），于是复放出来的结果在上下文里配不到
- * `tool_use` ⇒ `validateMessages` 报 `invalid_messages`。断言本身没有依赖那条被关掉的升级路径
- * （它们断的是按工具复放策略 / #270 部分结果 / #341 提示顺序 / #261·#424 的 judge 计数），
- * **所以要动的是夹具**：把快照里锚点之后的正文原样补成消息行，形状与 261021 之后的写侧一致。
- * 断言一字未改。
- */
-async function journalSnapshotBodyRows(store, runId, { aggregates = "rows" } = {}) {
-  const snapshot = await store.loadLatestRunSnapshot(runId);
-  const round = Number(snapshot?.round);
-  const recovered = [];
-  for (const [seq, message] of (snapshot?.messages ?? []).slice(1).entries()) {
-    if (message === null || message === undefined) continue;
-    const blocks = Array.isArray(message.content) ? message.content : [];
-    const results = blocks.filter((block) => block?.type === "tool_result");
-    // `"snapshot-results"`：那一轮的结果**没来得及入账**（本格的现场就是「跑到一半、结果只在快照里」），
-    // 于是新格式下它住的地方是快照的 `toolResults` 格，不是账本消息行 —— 写成行反而会被当成
-    // 已结清（复放策略就不再补那张「没重跑」的桩了，那是**语义**变化，不是夹具形状）。
-    if (aggregates === "drop" && results.length > 0 && blocks.length === results.length) {
-      continue;                                    // 崩溃那一轮的结果**没来得及入账**，也不在快照的 toolResults 格里
-    }
-    if (aggregates === "snapshot-results" && results.length > 0 && blocks.length === results.length) {
-      recovered.push(...results.map((toolResult) => ({ toolUseId: toolResult.tool_use_id, toolResult })));
-      continue;
-    }
-    await store.appendRound(runId, {
-      round,
-      roundKey: `${runId}:round:${String(round)}`,
-      dedupKey: `${runId}:msg:${String(round)}:${String(seq)}`,
-      kind: "message",
-      seq,
-      messages: [message],
-      ts: new Date().toISOString(),
-    });
-  }
-  if (recovered.length > 0) {
-    await store.saveRunSnapshot(runId, {
-      ...snapshot,
-      toolResults: [...(snapshot.toolResults ?? []), ...recovered],
-    });
-  }
+async function addExecutedEvidence(store, runId, round, toolUseId) {
+  const rows = await store.listRecoveryRows(runId);
+  if (rows.some((row) => row.recoveryEvent === "tool-executed" && row.toolUseId === toolUseId)) return;
+  await store.appendRecoveryRow(runId, buildToolExecutedRecoveryRow({ runId, round, toolUseId }));
 }
+
 
 test("replay policy and tool declarations reject unsupported values", async () => {
   const options = {
@@ -354,19 +319,15 @@ test("resumes after three rounds without replaying paid provider calls", async (
   });
 
   assert.equal(resumedProvider.requests.length, 1);
-  // issue #404（工单 BB）：恢复运行会在**上下文之后、第一次请求之前**注入一条「复活赛告示」。
-  // 断言强度不降：除最后那一条告示之外，请求正文与崩溃那一刻的账本**逐字一致**。
-  const notice = resumedProvider.requests[0].messages.at(-1);
-  assert.match(JSON.stringify(notice), /【恢复运行】/u,
-    `恢复的第一次请求末尾必须是那条告示，实测 ${JSON.stringify(notice).slice(0, 120)}`);
   // #439 A：恢复上下文用的是**规范化消息**（不含档案信封的逐条 `ts`，见
   // `src/store/message-rows.js#foldLedgerMessages`），所以这里剥掉它再逐字比。
+  const notice = resumedProvider.requests[0].messages.at(-1);
+  assert.match(JSON.stringify(notice), /【恢复运行】/u);
   assert.deepEqual(resumedProvider.requests[0].messages.slice(0, -1), withoutJournalTs(storedMessages));
   assert.equal(resumedResult.rounds, 4);
   assert.equal(resumedResult.finalText, "round four");
   assert.deepEqual(
     (await store.load("resume-run")).map((record) => record.round),
-    // 末位那条 round 3 的 `:control:resume-notice` 行是 #404 的告示（`round` 取恢复时的身份轮号）。
     [0, 1, 2, 3, 3, 4],
   );
   assert.deepEqual(resumedResult.messages, [
@@ -376,7 +337,7 @@ test("resumes after three rounds without replaying paid provider calls", async (
   ]);
 });
 
-test("resumes every pending tool in order after a mid-turn crash", async () => {
+test("resumes only provably unreached tools after a mid-turn crash", async () => {
   const store = createMemoryTranscriptStore();
   const controller = new AbortController();
   const firstExecutions = [];
@@ -414,19 +375,28 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
   );
   assert.deepEqual(firstExecutions, ["a", "b"]);
   assert.equal(firstProvider.requests[0].tools[0].replay, undefined);
-  const pendingSnapshot = await store.loadLatestRunSnapshot("resume-pending-tools");
+  const interruptedMessages = (await store.load("resume-pending-tools"))
+    .flatMap((record) => record.messages ?? []);
   assert.deepEqual(
-    pendingSnapshot.pendingToolUses.map(({ id, name, input, replay }) => ({
-      id,
-      name,
-      input,
-      replay,
-    })),
-    [
-      { id: "b", name: "work", input: { step: "b" }, replay: "unsafe" },
-      { id: "c", name: "work", input: { step: "c" }, replay: "unsafe" },
-    ],
+    interruptedMessages
+      .filter((message) => message.role === "assistant")
+      .flatMap((message) => message.content ?? [])
+      .filter((block) => block.type === "tool_use")
+      .map((block) => block.id),
+    ["a", "b", "c"],
+    "崩溃轮 assistant 行必须在账本里带着三条调用",
   );
+  assert.deepEqual(
+    interruptedMessages
+      .flatMap((message) => message.content ?? [])
+      .filter((block) => block.type === "tool_result")
+      .map((block) => block.tool_use_id),
+    ["a"],
+    "崩溃时只把已结清的 a 写成结果行",
+  );
+  // The execute callback for b ran before abort, so seed the positive ledger evidence that its result row lacks.
+  await addExecutedEvidence(store, "resume-pending-tools", 1, "a");
+  await addExecutedEvidence(store, "resume-pending-tools", 1, "b");
 
   const resumedExecutions = [];
   const resumedEvents = [];
@@ -449,12 +419,11 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
     },
   });
 
-  assert.deepEqual(resumedExecutions, ["b", "c"]);
+  assert.deepEqual(resumedExecutions, ["c"],
+    "b 有 tool-executed 正证据，不能重跑；c 无证据时只由显式 always-replay 策略补跑");
   assert.ok(resumedEvents
     .filter((event) => event.type === "tool_use")
     .every((event) => !Object.hasOwn(event.toolUse, "replay")));
-  const replaySnapshot = await store.loadLatestRunSnapshot("resume-pending-tools");
-  assert.ok(replaySnapshot.pendingToolUses.every((toolUse) => toolUse.replay === "unsafe"));
   assert.equal(resumedProvider.requests.length, 1);
   const toolUseIds = result.messages
     .flatMap((message) => message.content ?? [])
@@ -466,7 +435,14 @@ test("resumes every pending tool in order after a mid-turn crash", async () => {
     .map((block) => block.tool_use_id);
   assert.deepEqual(toolUseIds, ["a", "b", "c"]);
   assert.deepEqual(toolResultIds, ["a", "b", "c"]);
-  // issue #404：最后一条是恢复告示，补跑出来的那条聚合结果紧排在它前面（位置与强度都不降）。
+  const bResult = resumedProvider.requests[0].messages
+    .flatMap((message) => message.content ?? [])
+    .find((block) => block.type === "tool_result" && block.tool_use_id === "b");
+  assert.equal(bResult.content, UNPERSISTED_TOOL_RESULT_TEXT,
+    "b 已执行但结果正文没落账，恢复上下文必须使用 UNPERSISTED 桩");
+  const executedRows = (await store.listRecoveryRows("resume-pending-tools"))
+    .filter((row) => row.recoveryEvent === "tool-executed" && row.toolUseId === "b");
+  assert.equal(executedRows.length, 1, "b 的执行证据不能因恢复而重复");
   assert.match(JSON.stringify(resumedProvider.requests[0].messages.at(-1)), /【恢复运行】/u);
   assert.deepEqual(
     resumedProvider.requests[0].messages.at(-2).content.map((block) => block.tool_use_id),
@@ -490,6 +466,12 @@ test("per-tool replay policy replays safe pending tools", async () => {
     input: { step: 1 },
     replay: "safe",
   };
+  const completedPrefix = {
+    type: "tool_use",
+    id: "completed-call",
+    name: "safe_work",
+    input: { step: 0 },
+  };
   const storedToolUse = {
     type: toolUse.type,
     id: toolUse.id,
@@ -500,18 +482,14 @@ test("per-tool replay policy replays safe pending tools", async () => {
     round: 0,
     messages: [textMessage("continue safely")],
   });
-  await store.saveRunSnapshot(runId, {
+  await appendLedgerMessages(store, runId, {
     round: 1,
-    status: "pending",
-    pendingToolUses: [toolUse],
     messages: [
-      textMessage("continue safely"),
-      { role: "assistant", content: [storedToolUse] },
+      { role: "assistant", content: [completedPrefix, storedToolUse] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "completed-call", content: "done" }] },
     ],
-    executedToolIds: [],
-    toolResults: [],
   });
-  await journalSnapshotBodyRows(store, runId);
+  await addExecutedEvidence(store, runId, 1, "completed-call");
 
   const executions = [];
   const provider = createFakeProvider([
@@ -540,147 +518,10 @@ test("per-tool replay policy replays safe pending tools", async () => {
   assert.equal(replayedResult.content, "replayed safely");
 });
 
-test("per-tool replay policy interrupts unsafe tools and exposes saved partial output", async () => {
-  // issue #754 裁决 2 曾把这格**具名跳过**（当时判它「第二类因果耦合」）。独立评审
-  // （`/home/eric/wt-754-review/review-754.md`，快照 `f1a2468`）驳回了这个判断，主 session 复核后下达修令：
-  // **按工具复放策略这套机制本身不依赖那条闸门**，依赖的只是夹具的旧形状。现在的形状是新写侧真会产出的：
-  //   · 崩溃轮的 assistant（带 `tool_use`）**入账**（`journalSnapshotBodyRows(…, { aggregates: "drop" })`）
-  //     ⇒ 条数探针 = 0 ⇒ 这条走的是**新格式**分支，与退役闸门无关；
-  //   · 那条只含 `tool_result` 的聚合**不落账**（结果确实没来得及入账 = 新格式下的真状态）；
-  //   · 「已捕获的 partial 输出」搬回它现在的家 `snapshot.toolOutputs`（写侧 `archivedOutputs`；桩文的取值处
-  //     是 `src/loop/orchestrator.js` 里 `partialOutput = [archivedOutputs…, existingToolResult…]`）
-  //     ⇒ 断言那三条 regex（`was not replayed` / `captured output before interruption`
-  //     / `partial response already persisted`）**一字未改**，只是被引到的正文换了它该住的那一格。
-  // 语义照旧：不安全工具**不执行**、结果以 `interrupted` 保留、宿主决策事件照发。
-  // issue #754 裁决 2：**具名跳过**（`t.skip`，断言一条没删、一条没放宽，全部留在原地）。
-  // **第二类因果耦合**：本格要的现场是「那条 `tool_result` **在上下文里、但不在账本里**」，而新写侧
-  // （逐条入账）没有这种状态的自然来源 —— 只有那条 pre-261021 升级闸门造得出来，裁决 2 把它关掉了。
-  // 三种新格式写法逐条实测过（结果写成账本行 ⇒ `#421` 判已结清、不补「没重跑」的桩；放进快照
-  // `toolResults` 格 ⇒ 复放策略照 `snapshotResults` 直接复放、同样结清；什么都不写 ⇒ 桩生成了，但桩文里
-  // 引不到只在快照里的那句 partial）。坐标与实测在 `/tmp/report-754*.md`。follow-up：#776。
-  const store = createMemoryTranscriptStore();
-  const runId = "resume-unsafe-tool";
-  const toolUse = {
-    type: "tool_use",
-    id: "unsafe-call",
-    name: "unsafe_work",
-    input: { action: "publish" },
-  };
-  await store.appendRound(runId, {
-    round: 0,
-    messages: [textMessage("resume carefully")],
-  });
-  await store.saveRunSnapshot(runId, {
-    round: 1,
-    status: "pending",
-    pendingToolUses: [{ ...toolUse, replay: "unsafe" }],
-    messages: [
-      textMessage("resume carefully"),
-      { role: "assistant", content: [toolUse] },
-      {
-        role: "user",
-        content: [{
-          type: "tool_result",
-          tool_use_id: "unsafe-call",
-          content: "partial response already persisted",
-        }],
-      },
-    ],
-    executedToolIds: [],
-    toolResults: [],
-    toolOutputs: [{
-      toolUseId: "unsafe-call",
-      name: "unsafe_work",
-      // 旧夹具里这句住在「在上下文里、但不在账本里」的那条聚合消息里；新写侧没有那种状态，而
-      // 「已捕获的 partial 输出」只有一个家 —— `toolOutputs`（桩文从这里取）。两句都在，断言不动。
-      content: "captured output before interruption\n\npartial response already persisted",
-    }],
-  });
-  // 崩溃轮的 assistant 入账、结果那条聚合**不落账** ⇒ 新格式现场（条数探针 = 0）。
-  await journalSnapshotBodyRows(store, runId, { aggregates: "drop" });
-  // 为什么必须 `aggregates: "drop"`（而不是缺省的 `"rows"`）：把那条聚合结果也写成账本行，就等于宣称这条
-  // `tool_use` **已结清** ⇒ 复放策略不再标 `interrupted`（实测 `interruptedResult.erix` 变 `undefined`）。
-  // 那是**语义**变化，不是形状变化 —— 本格的现场恰恰是「结果没来得及入账」。
-
-  
-
-  const events = [];
-  let executions = 0;
-  const provider = createFakeProvider([
-    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
-  ]);
-  const result = await runToolLoop({
-    provider,
-    // #498 S3（`run` 片 A11）：扁平 `replayPolicy` 已退役，规位是 `config.run.replayPolicy`。
-    config: { run: { resume: true, replayPolicy: "per-tool-declaration", runId, completion: false } },
-    tools: [{
-      name: "unsafe_work",
-      inputSchema: { type: "object" },
-      replay: "unsafe",
-    }],
-    store,
-    capabilities: {
-      hooks: {
-        onEvent: (event) => events.push(event),
-      },
-    },
-    executeTool: async () => {
-      executions += 1;
-      return "must not run";
-    },
-  });
-
-  assert.equal(executions, 0);
-  const interruptedResult = result.messages
-    .flatMap((message) => message.content ?? [])
-    .find((block) => block.type === "tool_result" && block.tool_use_id === "unsafe-call");
-  // 执行状态只住在 `erix.executionStatus`（工单 261014 T2 停写了顶层旧同名键）。
-  assert.equal(interruptedResult.erix.executionStatus, "interrupted");
-  assert.equal(Object.hasOwn(interruptedResult, "executionStatus"), false, "顶层旧键已退役");
-  assert.equal(interruptedResult.is_error, true);
-  assert.match(interruptedResult.content, /was not replayed/u);
-  assert.match(interruptedResult.content, /captured output before interruption/u);
-  assert.match(interruptedResult.content, /partial response already persisted/u);
-  const decisionEvent = events.find((event) => event.type === "tool_replay_decision_required");
-  assert.equal(decisionEvent.toolUseId, "unsafe-call");
-  assert.equal(decisionEvent.requiresHostDecision, true);
-  assert.equal(decisionEvent.partialOutputAvailable, true);
-  const modelResult = provider.requests[0].messages
-    .flatMap((message) => message.content ?? [])
-    .find((block) => block.type === "tool_result" && block.tool_use_id === "unsafe-call");
-  assert.equal(modelResult.erix.executionStatus, "interrupted");
-  assert.equal(Object.hasOwn(modelResult, "executionStatus"), false, "递给模型的那一份同样不再有顶层旧键");
-  assert.match(modelResult.content, /captured output before interruption/u);
-  assert.match(modelResult.content, /partial response already persisted/u);
-});
-
+// #838 S2 retired the stale-attempt snapshot body. Keep the live ledger-only case: absent evidence is unknown.
 test(
-  "升级前记录被中断重放时，不得把过期 attempt 的成败留给 judge 的回退链（PR #288 审阅）",
+  "无执行证据的旧调用不编造执行状态或过期成败（PR #288 审阅）",
   async () => {
-  // issue #776：本格现场从「被 #754 裁决 2 关掉的 pre-261021 升级闸门」换成**还活着的那条通道**——
-  // run snapshot 的 A 集合（`toolResults`）。它的定义就是本格要的那件事（`src/loop/resume-manager.js`
-  // 里 `replayResultsAll` 那句：「崩溃前已产出、但**没来得及落盘**的结果：账本里没有 ⇒ 从快照接回来」），
-  // 而它**不是**那条被关掉的闸门：闸门关的是「拿 `snapshot.messages` 补崩溃轮正文」，A 集合照旧喂。
-  // 三件事各自的家：
-  //   · 崩溃轮那条 `assistant(tool_use)` 写成账本 `kind:"message"` 行 ⇒ 重建的上下文里有配对的 `tool_use`；
-  //   · 那条**升级前形状**的 `tool_result`（顶层既有引擎旧同名键、也有宿主摊平键）**不落账**，
-  //     由 A 集合带进上下文 ⇒「在上下文里、但不在账本里」这件状态在新写侧仍有自然来源；
-  //   · 在飞那一单留在 `pendingToolUses`（`replay: "unsafe"`）⇒ 复放侧走中断支路并**就地**改写那份
-  //     旧块（`src/loop/orchestrator.js` 里 `if (existingToolResult)` 那一支）。本格的断言全落在那次
-  //     改写身上：过期 attempt 的顶层 `success` / `duration` / `executionStatus` 必须被扫掉（judge 的
-  //     `erix.success ?? block.success` 不许回退出一个 `true`），而 `erixRound`（TTL 的年龄来源）与
-  //     宿主摊平键不许跟着扫。
-  // ⚠ A 集合的**认领键**必须与块内 `tool_use_id` 异名（下面写的是那次过期 attempt 自己的身份）：读侧按
-  //   `entry.toolUseId` 建 `resumeRunSnapshotResults`，而它是 `resumePendingTools` 的排除项之一
-  //   （`src/loop/resume-manager.js` 里的 `replayablePending`）。同名键 ⇒ 这条调用被判「结果已成型」⇒
-  //   不再走中断支路，实测那份旧块原样留在上下文（`erix` 还是过期那份、`tool_replay_decision_required`
-  //   变空），本格第一条断言就红。异名才是本格的现场：这份结果属于**过期 attempt**，没被本次在飞那一单认领。
-  // ⚠ 工单 §3 建议的 #769 恢复行通道在本格**实测不成立**（不是没试）：给这个 id 写一条 `tool-executed`
-  //   恢复行，它就并进 `resumeExecutedToolIds`，而那正是「执行过了 ⇒ 不补跑也不再说中断」的判据；实测
-  //   结局变成 `#789` 那句「从未执行」的桩（`PENDING_TOOL_RESULT_TEXT`）、`erix` 整块不存在。
-  //   ⇒「执行过了」与「按工具复放要出声中断」在这一格是**互斥**的现场；本格要的是后者，坐标与实测见
-  //   `docs/delivery/261109-776-worker-report.md`（`docs/delivery/` 是 `.gitignore` 里的冷层，干净检出里
-  //   可能不可解析；承重理由上面几行已写完，那个指针只当冷层线索）。
   const store = createMemoryTranscriptStore();
   const runId = "resume-legacy-keys";
   const toolUse = { type: "tool_use", id: "legacy-call", name: "unsafe_work", input: {} };
@@ -695,31 +536,6 @@ test(
     messages: [{ role: "assistant", content: [toolUse] }],
     ts: new Date().toISOString(),
   });
-  await store.saveRunSnapshot(runId, {
-    round: 1,
-    status: "pending",
-    pendingToolUses: [{ ...toolUse, replay: "unsafe" }],
-    // 崩溃轮正文不再从快照喂（那条闸门已关）：除了 A 集合那一格，快照一格都不给。
-    messages: [],
-    executedToolIds: [],
-    toolResults: [{
-      // 认领键 = 那次过期 attempt 自己的身份（**不是** `legacy-call`，理由见上面那条 ⚠）。
-      toolUseId: "legacy-attempt",
-      // 升级前落盘的形状：顶层既有引擎旧同名键，也有宿主摊平键。
-      toolResult: {
-        type: "tool_result",
-        tool_use_id: "legacy-call",
-        content: "partial from the lost attempt",
-        erixRound: 0,
-        executionStatus: "ok",
-        success: true,
-        duration: 900,
-        artifactStatus: "done",
-      },
-    }],
-    toolOutputs: [],
-  });
-
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
   ]);
@@ -737,17 +553,13 @@ test(
     .find((block) => block.type === "tool_result" && block.tool_use_id === "legacy-call");
   for (const [label, messages] of [["落盘侧", result.messages], ["递给模型", provider.requests[0].messages]]) {
     const block = forBlock(messages);
-    assert.equal(block.erix.executionStatus, "interrupted", `${label}：新事实住在 erix`);
-    assert.equal(Object.hasOwn(block.erix, "success"), false, `${label}：中断不编造成败`);
-    for (const retired of ["executionStatus", "success", "duration"]) {
-      assert.equal(Object.hasOwn(block, retired), false, `${label}：过期 attempt 的顶层 ${retired} 必须被扫掉`);
+    assert.equal(block.content, NO_EVIDENCE_TOOL_RESULT_TEXT,
+      `${label}：缺少任何执行和结果证据必须如实标成未知`);
+    assert.equal(block.is_error, true, `${label}：未知结果必须是错误桩`);
+    assert.equal(block.erix, undefined, `${label}：不得虚构执行状态或过期成败`);
+    for (const retired of ["executionStatus", "success", "duration", "erixRound", "artifactStatus"]) {
+      assert.equal(Object.hasOwn(block, retired), false, `${label}：不应出现无证据的旧字段 ${retired}`);
     }
-    // 钉住真正的危害点：judge.js:128 / l0.js:50,68 就是这个表达式——它必须是 undefined（未知），
-    // 而不是回退出上一次 attempt 的 true。
-    assert.equal(block.erix?.success ?? block.success, undefined, `${label}：judge 的成败回退链不得拿到过期值`);
-    // 但创建轮不能跟着扫：readRoundMarker 在 erix.round 缺席时正是回退到它算年龄的。
-    assert.equal(block.erixRound, 0, `${label}：erixRound 是 TTL 的年龄来源，扫掉=这条记录永不折叠`);
-    assert.equal(block.artifactStatus, "done", `${label}：宿主摊平键不承载引擎事实，不由引擎代扫`);
   }
 });
 
@@ -758,14 +570,9 @@ test("resumes a partial tool-result message without dropping text or breaking pa
     round: 0,
     messages: [{ role: "user", content: "task" }],
   });
-  await store.saveCheckpoint(runId, {
+  await appendLedgerMessages(store, runId, {
     round: 1,
-    pendingToolUses: [
-      { type: "tool_use", id: "a", name: "work", input: { step: "a" } },
-      { type: "tool_use", id: "b", name: "work", input: { step: "b" } },
-    ],
     messages: [
-      { role: "user", content: "task" },
       {
         role: "assistant",
         content: [
@@ -781,13 +588,8 @@ test("resumes a partial tool-result message without dropping text or breaking pa
         ],
       },
     ],
-    executedToolIds: ["a"],
-    toolResults: [{
-      toolUseId: "a",
-      toolResult: { type: "tool_result", tool_use_id: "a", content: "done-a" },
-    }],
   });
-  await journalSnapshotBodyRows(store, runId);
+  await addExecutedEvidence(store, runId, 1, "a");
 
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "complete" }], stopReason: "end_turn" },
@@ -840,14 +642,9 @@ test("does not merge a tool result whose id belongs to another assistant call", 
     round: 0,
     messages: [{ role: "user", content: "task" }],
   });
-  await store.saveCheckpoint(runId, {
+  await appendLedgerMessages(store, runId, {
     round: 1,
-    pendingToolUses: [
-      { type: "tool_use", id: "a", name: "work", input: {} },
-      { type: "tool_use", id: "b", name: "work", input: {} },
-    ],
     messages: [
-      { role: "user", content: "task" },
       {
         role: "assistant",
         content: [
@@ -855,21 +652,9 @@ test("does not merge a tool result whose id belongs to another assistant call", 
           { type: "tool_use", id: "b", name: "work", input: {} },
         ],
       },
-      {
-        role: "user",
-        content: [{ type: "tool_result", tool_use_id: "wrong", content: "wrong" }],
-      },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "wrong", content: "wrong" }] },
     ],
-    executedToolIds: ["a"],
-    toolResults: [{
-      toolUseId: "a",
-      toolResult: { type: "tool_result", tool_use_id: "a", content: "done-a" },
-    }],
   });
-  // issue #754 裁决 2：夹具原本是 pre-261021 形状（那条 assistant 与那条**串了味**的聚合结果都只在
-  // `checkpoint.messages` 里）。恢复现在只从账本重建 ⇒ 本格要断的「串味的结果不被并进 ⇒ `invalid_messages`」
-  // 必须让那段正文**在账本里**（这一格断的是配对判据本身，与那条被关掉的闸门无关）。断言一字未改。
-  await journalSnapshotBodyRows(store, runId);
 
   await assert.rejects(
     runToolLoop({
@@ -891,14 +676,9 @@ test("resumes tool results before a later direction hint without moving the hint
     round: 0,
     messages: [{ role: "user", content: "task" }],
   });
-  await store.saveCheckpoint(runId, {
+  await appendLedgerMessages(store, runId, {
     round: 1,
-    pendingToolUses: [
-      { type: "tool_use", id: "a", name: "work", input: {} },
-      { type: "tool_use", id: "b", name: "work", input: {} },
-    ],
     messages: [
-      { role: "user", content: "task" },
       {
         role: "assistant",
         content: [
@@ -906,22 +686,11 @@ test("resumes tool results before a later direction hint without moving the hint
           { type: "tool_use", id: "b", name: "work", input: {} },
         ],
       },
-      {
-        role: "user",
-        content: [{ type: "tool_result", tool_use_id: "a", content: "done-a" }],
-      },
-      {
-        role: "user",
-        content: [{ type: "text", text: "（附方向提示：换一种方法）" }],
-      },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "done-a" }] },
+      { role: "user", content: [{ type: "text", text: "（附方向提示：换一种方法）" }] },
     ],
-    executedToolIds: ["a"],
-    toolResults: [{
-      toolUseId: "a",
-      toolResult: { type: "tool_result", tool_use_id: "a", content: "done-a" },
-    }],
   });
-  await journalSnapshotBodyRows(store, runId);
+  await addExecutedEvidence(store, runId, 1, "a");
 
   const provider = createFakeProvider([
     { content: [{ type: "text", text: "complete" }], stopReason: "end_turn" },
@@ -933,17 +702,24 @@ test("resumes tool results before a later direction hint without moving the hint
     executeTool: async ({ id }) => `done-${id}`,
   });
 
-  // issue #404：恢复告示排在方向提示之后（提示仍是「宿主/引擎最后一句」之前的那一条）。
-  assert.deepEqual(
-    provider.requests[0].messages.slice(-4).map((message) => message.role),
-    ["assistant", "user", "user", "user"],
-  );
-  assert.deepEqual(
-    provider.requests[0].messages.at(-3).content.map((block) => block.tool_use_id),
-    ["a", "b"],
-  );
-  assert.match(provider.requests[0].messages.at(-2).content[0].text, /附方向提示/);
-  assert.match(provider.requests[0].messages.at(-1).content[0].text, /【恢复运行】/);
+  const messages = provider.requests[0].messages;
+  const resultIndex = messages.findIndex((message) => (
+    Array.isArray(message.content)
+    && message.content.some((block) => block.type === "tool_result" && block.tool_use_id === "b")
+  ));
+  const hintIndex = messages.findIndex((message) => (
+    Array.isArray(message.content)
+    && message.content.some((block) => block.text?.includes("附方向提示"))
+  ));
+  assert.ok(resultIndex >= 0, "b 的结清结果必须在请求中");
+  assert.ok(hintIndex > resultIndex, "b 的结果必须在后续方向提示之前");
+  const noticeIndex = messages.findIndex((message) => (
+    Array.isArray(message.content)
+    && message.content.some((block) => block.text?.includes("【恢复运行】"))
+  ));
+  assert.ok(noticeIndex > hintIndex, "恢复告示必须位于方向提示之后");
+  const resultBlocks = messages[resultIndex].content.filter((block) => block.type === "tool_result");
+  assert.deepEqual(resultBlocks.map((block) => block.tool_use_id), ["a", "b"]);
 });
 
 test("restores judge interception count from executed checkpoint tools", async () => {
@@ -953,14 +729,9 @@ test("restores judge interception count from executed checkpoint tools", async (
     round: 0,
     messages: [{ role: "user", content: "task" }],
   });
-  await store.saveCheckpoint(runId, {
+  await appendLedgerMessages(store, runId, {
     round: 1,
-    pendingToolUses: [
-      { type: "tool_use", id: "a", name: "work", input: { step: 1 } },
-      { type: "tool_use", id: "b", name: "work", input: { step: 2 } },
-    ],
     messages: [
-      { role: "user", content: "task" },
       {
         role: "assistant",
         content: [
@@ -968,18 +739,10 @@ test("restores judge interception count from executed checkpoint tools", async (
           { type: "tool_use", id: "b", name: "work", input: { step: 2 } },
         ],
       },
-      {
-        role: "user",
-        content: [{ type: "tool_result", tool_use_id: "a", content: "done-a" }],
-      },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "done-a" }] },
     ],
-    executedToolIds: ["a"],
-    toolResults: [{
-      toolUseId: "a",
-      toolResult: { type: "tool_result", tool_use_id: "a", content: "done-a" },
-    }],
   });
-  await journalSnapshotBodyRows(store, runId);
+  await addExecutedEvidence(store, runId, 1, "a");
 
   const audited = [];
   const provider = createFakeProvider([
@@ -1083,18 +846,6 @@ test("resumes folded checkpoints from the persisted transcript anchor", async ()
       /aborted|abort/i,
     );
 
-    const checkpoint = await store.loadLatestCheckpoint(`fold-${keepRounds}`);
-    // 锁点 = 崩溃那一刻账本里已落盘的**逻辑消息数**（分片不加）。工单 261021 写侧之后，
-    // 崩溃轮（round 3）的 assistant 正文已「一成型就落盘」，所以下标比改造前多 1：
-    // 1（种子行）+ 2（round 1）+ 2（round 2）+ **1（round 3 已落盘的 assistant）**= 6。
-    // 这一条不是可以动的装饰：少 1 就是把崩溃轮那条带 pending tool_use 的 assistant 切进
-    // 尾队列，补跑结果将找不到对应的 tool_use（`validateMessages` 当场 invalid_messages）。
-    // ⚠ issue #425 注记（上面这段原文保留）：这句断言的**对象**是**写侧增量账**
-    // （`persistedTranscriptLength`）——写侧自增点一字未动，6 仍然正确；但上面描述的那个**失效模式**
-    // 已由恢复侧**现算**接管：恢复不再读这个采样值，锚点由 `countResumeAnchor(records)`
-    // 在账本上现算（`src/loop/resume-manager.js`）。所以「少 1 ⇒ 切进尾队列」不再随这个数字发生，
-    // 数字与恢复正确性已经解耦：改它是改写侧口径，不会把崩溃轮 assistant 挤进尾队列。
-    assert.equal(checkpoint.persistedTranscriptLength, 6);
     await store.appendRound(`fold-${keepRounds}`, {
       round: 2,
       dedupKey: `fold-${keepRounds}:input`,
@@ -1210,7 +961,7 @@ test("keeps the initial input when request-view injection meets a tiny budget", 
   );
 });
 
-test("archives replayed tool results without duplicating multiple resume tails", async () => {
+test("archives unknown tool results without duplicating multiple resume tails", async () => {
   const store = createMemoryTranscriptStore();
   const controller = new AbortController();
   const firstProvider = createFakeProvider([{
@@ -1247,12 +998,17 @@ test("archives replayed tool results without duplicating multiple resume tails",
   const resumedProvider = createFakeProvider([
     { content: [{ type: "text", text: "resumed" }] },
   ]);
+  const resumedExecutions = [];
   await runToolLoop({
     provider: resumedProvider,
     config: { run: { replayPolicy: "always-replay", resume: true, runId: "multi-tail", completion: false } },
     store,
-    executeTool: async () => "tool-output",
+    executeTool: async () => {
+      resumedExecutions.push("call-1");
+      return "tool-output";
+    },
   });
+  assert.deepEqual(resumedExecutions, [], "没有执行正证据的旧调用不得因 always-replay 而盲目重复");
 
   const requestMessages = resumedProvider.requests[0].messages;
   assert.deepEqual(
@@ -1263,11 +1019,12 @@ test("archives replayed tool results without duplicating multiple resume tails",
   const archived = JSON.stringify(records);
   assert.equal((archived.match(/user-two/g) ?? []).length, 1);
   assert.equal((archived.match(/user-three/g) ?? []).length, 1);
-  assert.equal((archived.match(/tool-output/g) ?? []).length, 1);
-  const resumedRound = records.find((record) => record.round === 1);
-  assert.ok(resumedRound.messages.some((message) => (
-    message.content?.some((block) => block.type === "tool_result")
-  )));
+  const resultBlocks = records.flatMap((record) => record.messages ?? [])
+    .flatMap((message) => message.content ?? [])
+    .filter((block) => block.type === "tool_result" && block.tool_use_id === "call-1");
+  assert.equal(resultBlocks.length, 1, "该 id 的 tool_result 必须恰有一份");
+  assert.equal(resultBlocks[0].content, NO_EVIDENCE_TOOL_RESULT_TEXT,
+    "没有任何可读执行证据时必须使用 NO_EVIDENCE 桩");
 
   const secondProvider = createFakeProvider([
     { content: [{ type: "text", text: "second resume" }] },
@@ -1279,6 +1036,11 @@ test("archives replayed tool results without duplicating multiple resume tails",
     executeTool: async () => "unused",
   });
   assert.equal(secondProvider.requests.length, 1);
+  const secondRecords = await store.load("multi-tail");
+  assert.equal(secondRecords.flatMap((record) => record.messages ?? [])
+    .flatMap((message) => message.content ?? [])
+    .filter((block) => block.type === "tool_result" && block.tool_use_id === "call-1").length, 1,
+  "重复恢复不得再写一份同 id 的 tool_result");
 });
 
 test("resumed session gets its own round budget and persists the continuation rounds (issue #32 #8)", async () => {
@@ -1363,8 +1125,7 @@ test("resumed session gets its own round budget and persists the continuation ro
   // issue #326（B1）多出的那一条 round=2 是引擎的**强制收尾补充记录**（指令 + 终稿 assistant）：
   // 它产生时 round 2 的轮记录早已落盘，不当场补一笔就永远不会进档案。
   // 顺序：引擎轮记录 → 收尾补充记录（同轮号，独立 dedupKey）→ 宿主追问行 → 续接轮。
-  // issue #404：多出的那条 round 2 是**恢复告示**（`…:control:resume-notice:<fp>`，轮号取恢复时的
-  // 身份轮号），它与下面第 6 条那条「收尾补充记录」同一个先例：宿主看到行数多于轮数。
+  // 恢复告示与收尾补充记录共存；宿主仍看到多于轮数的行。
   assert.deepEqual(records.map((record) => record.round), [0, 1, 2, 2, 2, 2, 3, 4]);
   const flatMessages = records.flatMap((record) => record.messages ?? []);
   assert.equal(
@@ -1431,10 +1192,9 @@ test("engine round records are not deduped away by a host row with the same roun
   ))));
 });
 
-test("resume with a store lacking snapshot/run-state loaders degrades with one diagnostic each (issue #78)", async () => {
-  // 最小 store：必需两方法 + run-state/snapshot 写入方法，但缺所有 loader。
-  // resume 想消费 loadRunState / loadLatestRunSnapshot 而不可得——必须各发一条
-  // 单条去重诊断（不能静默降级），run 本身正常跑完。
+test("resume with a store lacking a run-state loader degrades with one diagnostic (issue #78)", async () => {
+  // 最小 store：必需两方法 + run-state 写入方法，但缺 run-state loader。
+  // resume 想消费 loadRunState 而不可得——必须发一条单条去重诊断（不能静默降级），run 本身正常跑完。
   const stored = [{
     round: 0,
     ts: "2026-09-29T00:00:00.000Z",
@@ -1442,15 +1202,11 @@ test("resume with a store lacking snapshot/run-state loaders degrades with one d
     summary: "missing",
     l0facts: { errors: 0 },
   }];
-  const appended = [];
   const store = {
-    appendRound: async (runId, record) => {
-      appended.push(record);
-    },
+    appendRound: async () => {},
     load: async () => stored.map((record) => structuredClone(record)),
     markRunState: async () => {},
     saveRunState: async () => {},
-    saveRunSnapshot: async () => {},
   };
   const events = [];
   const provider = createFakeProvider([
@@ -1485,11 +1241,9 @@ test("resume with a store lacking snapshot/run-state loaders degrades with one d
 
   const degraded = events.filter((event) => event.type === "persistence_capability_degraded");
   const methods = degraded.map((event) => event.method);
-  // issue #769：恢复行通道（`appendRecoveryRow`）也是可选能力 ⇒ 恢复跑执行工具时同样要发一条诊断，
-  // 否则宿主会以为恢复行已经落盘了。三格各自一条，不多不少。
-  assert.equal(degraded.length, 3, `恰好三条诊断，实际：${methods.join(",")}`);
+  // issue #769：恢复行通道（`appendRecoveryRow`）也是可选能力 ⇒ 恢复跑执行工具时同样要发一条诊断。
+  assert.equal(degraded.length, 2, `恰好两条诊断，实际：${methods.join(",")}`);
   assert.ok(methods.includes("loadRunState"), "缺 loadRunState 必须诊断");
-  assert.ok(methods.includes("loadLatestRunSnapshot"), "缺 loadLatestRunSnapshot 必须诊断");
   assert.ok(methods.includes("appendRecoveryRow"), "缺 appendRecoveryRow 必须诊断（恢复行写不进账本要说出来）");
   for (const event of degraded) {
     assert.equal(event.runId, "resume-no-loaders");
@@ -1497,67 +1251,7 @@ test("resume with a store lacking snapshot/run-state loaders degrades with one d
   }
 });
 
-test("resume with a stale snapshot (loader present, round behind transcript) does not emit capability diagnostics (issue #78)", async () => {
-  // 回归锁定：loader 存在但返回过round落后的快照时，走 loader 路径（而非缺失 else 分支），
-  // 静默丢弃过期现场是正常语义——绝不得误发 persistence_capability_degraded。
-  const stored = [
-    {
-      round: 0,
-      ts: "2026-09-29T00:00:00.000Z",
-      messages: [textMessage("seed")],
-      summary: "missing",
-      l0facts: { errors: 0 },
-    },
-    {
-      round: 1,
-      ts: "2026-09-29T00:01:00.000Z",
-      messages: [{ role: "assistant", content: [{ type: "text", text: "earlier" }] }],
-      summary: "missing",
-      l0facts: { errors: 0 },
-    },
-  ];
-  let snapshotCalls = 0;
-  const store = {
-    appendRound: async () => {},
-    load: async () => stored.map((record) => structuredClone(record)),
-    markRunState: async () => {},
-    saveRunState: async () => {},
-    loadRunState: async () => undefined,
-    // loader 存在但快照 round 落后（transcript 已到 round 1，快照还在 round 0）
-    loadLatestRunSnapshot: async () => {
-      snapshotCalls += 1;
-      return { round: 0, status: "executed", messages: [textMessage("seed")] };
-    },
-  };
-  const events = [];
-  const provider = createFakeProvider([
-    { content: [{ type: "text", text: "continued past stale snapshot" }], stopReason: "end_turn" },
-  ]);
-
-  const result = await runDirect({
-    provider,
-    store,
-    runId: "resume-stale-snapshot",
-    resume: true,
-    initialUserMessage: "ignored on resume",
-    executeTool: async () => "unused",
-    config: { run: { completion: false } },
-    capabilities: {
-      hooks: {
-        onEvent: (event) => events.push(event),
-      },
-    },
-  });
-
-  assert.equal(result.finalText, "continued past stale snapshot");
-  assert.equal(snapshotCalls, 1, "loader 必须被调用（走 loader 路径，不是缺失 else 分支）");
-  const degraded = events.filter((event) => event.type === "persistence_capability_degraded");
-  assert.deepEqual(
-    degraded.map((event) => event.method),
-    [],
-    `loader 存在时不得误发能力降级诊断，实际：${degraded.map((event) => event.method).join(",")}`,
-  );
-});
+// 载体已退役（#838 S2），本格随之退役。
 
 test("#323 强制收尾指令对主模型可见、但不进 judge 输入（renderConversation 产物）", async () => {
   const provider = createFakeProvider([

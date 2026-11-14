@@ -580,11 +580,11 @@ test("runRepl wires persistence diagnostics to stderr", async () => {
     await run;
 
     captured.diagnostics.error({
-      operation: "saveCheckpoint",
+      operation: "appendRound",
       phase: "checkpoint_before_tool",
       runId: "repl-diagnostics",
     });
-    assert.match(String(errorOutput.read()), /Persistence error: saveCheckpoint during checkpoint_before_tool/);
+    assert.match(String(errorOutput.read()), /Persistence error: appendRound during checkpoint_before_tool/);
   } finally {
     input.destroy();
     output.destroy();

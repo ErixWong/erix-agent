@@ -94,6 +94,19 @@ function blocksOfMessages(messages, type) {
     .filter((block) => block?.type === type);
 }
 
+async function appendToolExecutedEvidence(store, runId, round, toolUseId) {
+  await store.appendRecoveryRow(runId, {
+    round,
+    roundKey: `${runId}:round:${round}`,
+    dedupKey: `${runId}:engine:round:${round}:recovery:tool-executed:${toolUseId}`,
+    kind: "recovery",
+    recoveryEvent: "tool-executed",
+    toolUseId,
+    messages: [],
+    ts: new Date().toISOString(),
+  });
+}
+
 /** 模型可见的那一份事实：从**上一次请求**里取（与 `execute-tool.js` 同一观测点，不加私有出口）。 */
 function fedBackToolResult(provider, toolUseId) {
   const last = provider.requests.at(-1);
@@ -665,7 +678,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
     const { runToolLoop, createMemoryTranscriptStore } = await entry();
     const store = createMemoryTranscriptStore();
     const runId = "contract-replay-recorded";
-    // 崩溃前已执行完的调用：run snapshot 里同时带着 tool_use 块与结果块，两者共用一个身份键。
+    // 崩溃前已执行完的调用：账本里同时带着 tool_use 块与已结清结果，两者共用一个身份键。
     const recorded = {
       type: "tool_result",
       tool_use_id: "done-1",
@@ -674,30 +687,35 @@ export function toolResultEnvelopeContract(label, getEntry) {
       erix: { toolCallKey: "tc_1234567890ab", round: 3, durationMs: 777 },
     };
     await store.appendRound(runId, { round: 0, messages: [{ role: "user", content: "task" }] });
-    await store.saveCheckpoint(runId, {
+    await store.appendRound(runId, {
       round: 3,
-      pendingToolUses: [{ type: "tool_use", id: "done-1", name: "work", input: {} }],
-      messages: [
-        { role: "user", content: "task" },
-        {
-          role: "assistant",
-          content: [{
-            type: "tool_use",
-            id: "done-1",
-            name: "work",
-            input: {},
-            erix: { toolCallKey: "tc_1234567890ab" },
-          }],
-        },
-      ],
-      executedToolIds: ["done-1"],
-      toolResults: [{ toolUseId: "done-1", toolResult: recorded }],
+      dedupKey: `${runId}:msg:3:0`,
+      kind: "message",
+      seq: 0,
+      messages: [{
+        role: "assistant",
+        content: [{
+          type: "tool_use",
+          id: "done-1",
+          name: "work",
+          input: {},
+          erix: { toolCallKey: "tc_1234567890ab" },
+        }, toolUseBlock("pending-2")],
+      }],
     });
+    await store.appendRound(runId, {
+      round: 3,
+      dedupKey: `${runId}:msg:3:1`,
+      kind: "message",
+      seq: 1,
+      messages: [{ role: "user", content: [recorded] }],
+    });
+    await appendToolExecutedEvidence(store, runId, 3, "done-1");
 
     let calls = 0;
     const events = [];
     await runToolLoop({
-      // 模型把己执行过的调用又发了一遍（复放路径），下一轮自然收尾。
+      // 未结清的后续调用让这段成为崩溃现场，已结清结果由账本复放进请求。
       provider: scriptedProvider([toolRound("done-1"), DONE]),
       config: { run: { resume: true, runId, completion: false } },
       store,
@@ -732,7 +750,7 @@ export function toolResultEnvelopeContract(label, getEntry) {
     const { runToolLoop, createMemoryTranscriptStore } = await entry();
     const store = createMemoryTranscriptStore();
     const runId = "contract-replay-pre-contract-record";
-    // 升级前（0.19 及更早）写下的 run snapshot：结果与块里都**没有 `erix`** —— 那时还没有这套字段。
+    // 升级前（0.19 及更早）写下的结果与块里都**没有 `erix`** —— 那时还没有这套字段。
     const recorded = {
       type: "tool_result",
       tool_use_id: "old-1",
@@ -740,16 +758,24 @@ export function toolResultEnvelopeContract(label, getEntry) {
       erixRound: 2,
     };
     await store.appendRound(runId, { round: 0, messages: [{ role: "user", content: "task" }] });
-    await store.saveCheckpoint(runId, {
+    await store.appendRound(runId, {
       round: 2,
-      pendingToolUses: [{ type: "tool_use", id: "old-1", name: "work", input: {} }],
-      messages: [
-        { role: "user", content: "task" },
-        { role: "assistant", content: [{ type: "tool_use", id: "old-1", name: "work", input: {} }] },
-      ],
-      executedToolIds: ["old-1"],
-      toolResults: [{ toolUseId: "old-1", toolResult: recorded }],
+      dedupKey: `${runId}:msg:2:0`,
+      kind: "message",
+      seq: 0,
+      messages: [{
+        role: "assistant",
+        content: [toolUseBlock("old-1"), toolUseBlock("pending-2")],
+      }],
     });
+    await store.appendRound(runId, {
+      round: 2,
+      dedupKey: `${runId}:msg:2:1`,
+      kind: "message",
+      seq: 1,
+      messages: [{ role: "user", content: [recorded] }],
+    });
+    await appendToolExecutedEvidence(store, runId, 2, "old-1");
 
     let calls = 0;
     const events = [];
@@ -897,27 +923,6 @@ export function toolResultEnvelopeContract(label, getEntry) {
       round: 0,
       messages: [{ role: "user", content: "task" }],
     });
-    await store.saveCheckpoint(runId, {
-      round: 3,
-      pendingToolUses: [{ type: "tool_use", id: "pending-1", name: "exec", input: { cmd: "rm -rf" } }],
-      messages: [
-        { role: "user", content: "task" },
-        {
-          role: "assistant",
-          content: [
-            {
-              type: "tool_use",
-              id: "pending-1",
-              name: "exec",
-              input: { cmd: "rm -rf" },
-              erix: { toolCallKey: "tc_deadbeefcafe" },
-            },
-          ],
-        },
-      ],
-      executedToolIds: [],
-      toolResults: [],
-    });
     // issue #754 裁决 2（2026-11-08）：夹具原本把崩溃轮那条 assistant **只**写在快照的 `messages` 里
     // ——那是 pre-261021 的形状。恢复路径上那条「从快照补正文」的升级闸门已被关掉，现在上下文只从账本
     // 重建；而「上下文里已没有配对 `tool_use`」的在飞调用也不再补跑（同源同去留）。所以本格要断的
@@ -932,16 +937,43 @@ export function toolResultEnvelopeContract(label, getEntry) {
       seq: 0,
       messages: [{
         role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "completed-prefix",
+            name: "exec",
+            input: { cmd: "echo complete" },
+            erix: { toolCallKey: "tc_cafecafecafe" },
+          },
+          {
+            type: "tool_use",
+            id: "pending-1",
+            name: "exec",
+            input: { cmd: "rm -rf" },
+            erix: { toolCallKey: "tc_deadbeefcafe" },
+          },
+        ],
+      }],
+      ts: new Date().toISOString(),
+    });
+    await store.appendRound(runId, {
+      round: 3,
+      roundKey: `${runId}:round:3`,
+      dedupKey: `${runId}:msg:3:1`,
+      kind: "message",
+      seq: 1,
+      messages: [{
+        role: "user",
         content: [{
-          type: "tool_use",
-          id: "pending-1",
-          name: "exec",
-          input: { cmd: "rm -rf" },
-          erix: { toolCallKey: "tc_deadbeefcafe" },
+          type: "tool_result",
+          tool_use_id: "completed-prefix",
+          content: "completed before the crash",
+          erix: { toolCallKey: "tc_cafecafecafe", round: 3, durationMs: 2 },
         }],
       }],
       ts: new Date().toISOString(),
     });
+    await appendToolExecutedEvidence(store, runId, 3, "completed-prefix");
 
     const events = [];
     await runToolLoop({

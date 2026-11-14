@@ -371,7 +371,7 @@ test("does not stream unless explicitly enabled", async () => {
 
 test("partial persistence restores the latest committed text after an interruption mid-window", async () => {
   const intervalMs = 60;
-  const store = createSnapshotStore();
+  const store = createPartialStore();
   const controller = new AbortController();
   let streamedRequest;
   let resolveStreamStarted;
@@ -419,7 +419,6 @@ test("partial persistence restores the latest committed text after an interrupti
     .filter((row) => row.recoveryEvent === "partial-text").at(-1);
   assert.equal(committed?.text, "committed partial ",
     "中断时最后一条已提交的半截正文必须在账本恢复行里（快照不再写它）");
-  assert.equal(store.latestSnapshot?.partialText, undefined, "快照不该再有 partialText 那一格");
 
   let resumedRequest;
   const resumed = await runDirect({
@@ -453,7 +452,7 @@ test("partial persistence restores the latest committed text after an interrupti
 
 test("partial persistence respects interval and minBytes with single-flight writes", async () => {
   const intervalMs = 40;
-  const store = createSnapshotStore({ writeDelayMs: intervalMs * 1.5 });
+  const store = createPartialStore({ writeDelayMs: intervalMs * 1.5 });
   let streamedRequest;
   let resolveStreamStarted;
   let resolveStream;
@@ -514,9 +513,9 @@ test("partial persistence respects interval and minBytes with single-flight writ
   assert.equal(result.finalText, "finished");
 });
 
-test("partial snapshot from a retryable attempt is cleared before retry", async () => {
+test("partial recovery row from a retryable attempt remains available", async () => {
   const intervalMs = 20;
-  const store = createSnapshotStore();
+  const store = createPartialStore();
   let calls = 0;
   const result = await runDirect({
     provider: {
@@ -556,24 +555,19 @@ test("partial snapshot from a retryable attempt is cleared before retry", async 
   // ⚠ 这条限制不是本刀引入的：账本恢复行一直是首选来源，旧实现里那条行也一直在。
   assert.equal(store.partialWrites.length, 1, "第 1 次尝试落了一条半截正文（第 2 次没等够一个窗口就收口）");
   assert.equal(store.partialWrites[0].record.text, "discarded partial");
-  assert.equal(store.latestSnapshot?.partialText, undefined, "快照不该再写 partialText 那一格");
 });
 
-function createSnapshotStore({ writeDelayMs = 0 } = {}) {
+function createPartialStore({ writeDelayMs = 0 } = {}) {
   const records = [];
   // #827 第 5 刀：半截正文的落点**只有账本恢复行**了（快照那两格已停写）⇒ 观察面跟着搬到这里。
   // 字段名保留 `partialWrites`，但每条现在装的是恢复行（`record`）而不是快照载荷。
   const partialWrites = [];
   const recoveryRows = [];
-  let latestSnapshot;
   let activeWrites = 0;
   let maxActiveWrites = 0;
 
   return {
     partialWrites,
-    get latestSnapshot() {
-      return latestSnapshot;
-    },
     get maxActiveWrites() {
       return maxActiveWrites;
     },
@@ -600,19 +594,6 @@ function createSnapshotStore({ writeDelayMs = 0 } = {}) {
     },
     async listRecoveryRows() {
       return recoveryRows.map((row) => structuredClone(row));
-    },
-    async saveRunSnapshot(_runId, snapshot) {
-      activeWrites += 1;
-      maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
-      try {
-        if (writeDelayMs > 0) await delay(writeDelayMs);
-        latestSnapshot = structuredClone(snapshot);
-      } finally {
-        activeWrites -= 1;
-      }
-    },
-    async loadLatestRunSnapshot() {
-      return latestSnapshot === undefined ? undefined : structuredClone(latestSnapshot);
     },
   };
 }

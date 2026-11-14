@@ -38,15 +38,10 @@ const MODEL_CONFIG = { resolve: async () => ({}) };
 const textMessage = (text) => ({ role: "user", content: [{ type: "text", text }] });
 const thrown = async (promise) => promise.then(() => null, (error) => error);
 
-/** 形状 4 需要一个可续跑的账本 + 快照；每次现建，避免形状之间互相污染。 */
+/** 形状 4 需要一个可续跑的账本；每次现建，避免形状之间互相污染。 */
 async function resumableStore() {
   const store = createMemoryTranscriptStore();
   await store.appendRound("r-552-resume", { round: 0, messages: [textMessage("seed")] });
-  await store.saveRunSnapshot("r-552-resume", {
-    round: 0,
-    status: "completed",
-    messages: [textMessage("seed")],
-  });
   return store;
 }
 
@@ -90,7 +85,7 @@ const SHAPES = [
     }),
   },
   {
-    name: "④ loadLatestRunSnapshot 续跑",
+    name: "④ 账本续跑",
     run: async (session) => runToolLoop({
       provider: createFakeProvider(DONE),
       executeTool: async () => "ok",
@@ -142,7 +137,7 @@ test("#552 A：六种形状都走不到细粒度闸口——非对象 session �
     ["① 完整装配口", { id: "s-552" }, null],
     ["② 细粒度直连", { id: "s-552" }, null],
     ["③ policy 翻译后填充（policy.runId → config.run.runId）", { id: "s-552" }, null],
-    ["④ loadLatestRunSnapshot 续跑", { id: "s-552" }, null],
+    ["④ 账本续跑", { id: "s-552" }, null],
     ["⑤ 缺 modelConfig", { id: "s-552" }, "assembly port is missing methods: modelConfig.resolve"],
     ["⑥ 缺 session.id", {}, "assembly port is missing methods: session.id"],
   ];

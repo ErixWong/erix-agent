@@ -24,12 +24,9 @@
 // 反向证（issue #210 R2 的规矩）：每格都把新增的发射/收窄代码拿掉跑过，红在**本格**那条断言上，
 // 原文贴在 `/tmp/report-730.md`。不许 skip、不许放宽既有断言。
 //
-// ⚠ issue #790 对本文件的改动（**只改了一格的结局，一条断言都没删、没放宽**）：格 2② 的「紧跟的 user
-// 一条结果都没有」那一格，从「run 失败、0 次请求」改成「run 能起来、请求视图合法」——#790 在**请求视图**
-// 里为这一类形状插了一张纯 `tool_result` 页（账本仍未修：census 事件与「账本里零桩」两条逐字不动，而
-// 「零桩」是本单新加的一条）。同一类的另一形状（相邻两条 assistant）**行为不变**：那一单在
-// `normalizeMessages` 合成一条 assistant 后 `t2` 已有结果 ⇒「整单未结清」不成立，插页会把那份真结果
-// 挤成孤儿（归 #421 同页合并）——本文件为它补了一条「不许发 `mid_sequence_request_view_stub`」的反向断言。
+// ⚠ issue #790/#838：请求视图兜底既能为纯文本后继插纯结果页，也能在部分结果页中同页补缺失 id；
+// 相邻 assistant 被 normalize 合并后，已有的 t2 结果必须保留、缺失的 t1 用桩补齐。账本侧的
+// census 仍报告原始形状，请求视图另报 `mid_sequence_request_view_stub`。
 //
 // ⚠ issue #776 对本文件的改动（**只换现场来源，一条断言没删、没放宽**）：格 2③「有锚点而写被拒」原先靠
 // 那条被 #754 裁决 2 关掉的 pre-261021 闸门造现场（第二对悬空只在 `snapshot.messages` 里），因此被具名
@@ -55,6 +52,7 @@ import {
   MID_SEQUENCE_ABANDON_MERGE_REFUSED,
   MID_SEQUENCE_ABANDON_ROW_WRITE_REFUSED,
   MID_SEQUENCE_ABANDON_SHAPE_NOT_SUPPORTED,
+  MID_SEQUENCE_REQUEST_VIEW_DETAIL_UNPAIRED_RESULT,
   MID_SEQUENCE_REQUEST_VIEW_STUB,
   RESUME_JOURNAL_SKIP_DETAIL_APPEND_SKIPPED,
   RESUME_JOURNAL_SKIP_DETAIL_PROBE_ABSENT,
@@ -66,6 +64,7 @@ import {
 import { validateMessages } from "../src/messages/rounds.js";
 import { foldLedgerMessages } from "../src/store/message-rows.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
+import { buildToolExecutedRecoveryRow } from "../src/store/recovery-rows.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { withUnvalidatedAppends } from "./helpers/unvalidated-store.js";
 import { withSeed } from "./helpers/run-direct.js";
@@ -279,19 +278,25 @@ test("格2② 相邻两条 assistant ⇒ reason=mid_sequence_shape_not_supported
   const events = [];
   const provider = createFakeProvider([endTurn("不该被请求")]);
   const resumed = await runLoop({ store: inner, events, provider });
-  assert.equal(resumed.ok, false, "非目标形状仍然补不出来（行为不变）");
-  assert.equal(provider.requests.length, 0);
+  assert.equal(resumed.ok, true,
+    "normalize 合并相邻 assistant 后，请求视图必须同页补齐 t1、保留 t2 的真结果（实测："
+    + String(resumed.error) + ")");
+  assert.equal(provider.requests.length, 1, "补齐请求视图后必须发出一次模型请求");
   assert.deepEqual(skipEvents(events, MID_SEQUENCE_ABANDON_SHAPE_NOT_SUPPORTED), [{
     reason: MID_SEQUENCE_ABANDON_SHAPE_NOT_SUPPORTED,
     detail: MID_SEQUENCE_ABANDON_DETAIL_NEXT_NOT_USER,
     round: 2,
     count: 1,
   }], "必须点名「紧接的不是 user」这一格（修前这一格连判据都不进）");
-  // issue #790 的请求视图兜底**不搭这一格**，而这不是漏做：`normalizeMessages`（每次请求视图都跑）会把
-  // 相邻两条 assistant 合成为一条 `assistant[t1, t2]`，而 `t2` 的结果在**再下一页**里 ⇒ 「整单未结清」
-  // 不成立 ⇒ 插页会把 `t2` 那份已有结果挤成孤儿。那一支归 #421 的同页合并（在恢复路径里做）。
-  assert.deepEqual(skipEvents(events, MID_SEQUENCE_REQUEST_VIEW_STUB), [],
-    "部分结清那一单不许被请求视图插页（插了就会把另一单的真结果弄成孤儿）");
+  const request = provider.requests[0].messages;
+  assert.doesNotThrow(() => validateMessages(request),
+    "请求视图必须保留 t2 真结果，并同页补上 t1，不能制造孤儿结果");
+  assert.deepEqual(skipEvents(events, MID_SEQUENCE_REQUEST_VIEW_STUB), [{
+    reason: MID_SEQUENCE_REQUEST_VIEW_STUB,
+    detail: MID_SEQUENCE_REQUEST_VIEW_DETAIL_UNPAIRED_RESULT,
+    round: 3,
+    count: 1,
+  }], "部分结果的缺口只在请求视图中同页补桩，账本侧仍报告原始形状");
 });
 
 test("格2② 紧跟的 user 一条结果都没有 ⇒ detail=aggregate_has_no_tool_result（需要插页那一类）", async () => {
@@ -457,6 +462,11 @@ async function danglingWithRoundString(inner, { aggregateRound = 2 }) {
     role: "assistant", content: [text("先跑工具"), toolUse("t1"), toolUse("t2")],
   }));
   await inner.appendRound(RUN_ID, messageRow(aggregateRound, 1, { role: "user", content: [toolResultBlock("t1")] }));
+  await inner.appendRecoveryRow(RUN_ID, buildToolExecutedRecoveryRow({
+    runId: RUN_ID,
+    round: 2,
+    toolUseId: "t2",
+  }));
   return inner;
 }
 
@@ -508,13 +518,11 @@ test("重叠语义：mid_sequence_aggregate_row_not_in_ledger 用 detail 分出�
     count: 1,
   }], "探针给了、轮也干净，而账本里没有合法首片行 ⇒ detail 必须是 aggregate_row_not_in_ledger");
 
-  // 同一个 store，把探针摘掉（issue #714 之前那一刻的行为）⇒ detail 必须是 anchor_probe_absent。
-  const probeAbsent = { ...withProbe, loadRawRows: undefined };
-  delete probeAbsent.loadRawRows;
+  // 独立铺同一份账本，只摘掉原始行探针，避免复用第一次恢复已经写入桩的 store。
   const ledger2 = withUnvalidatedAppends(createMemoryTranscriptStore());
   await danglingWithRoundString(ledger2, { aggregateRound: "2" });
-  const probeRows = await ledger2.loadRawRows(RUN_ID);
-  for (const row of probeRows) await probeAbsent.appendRound(RUN_ID, row);
+  const probeAbsent = { ...ledger2, loadRawRows: undefined };
+  delete probeAbsent.loadRawRows;
   const secondEvents = [];
   const second = await runLoop({ store: probeAbsent, events: secondEvents, provider: createFakeProvider([endTurn("续")]) });
   assert.equal(second.ok, true, "探针缺席也只是降级，不失败（实测：" + String(second.error) + ")");
@@ -585,6 +593,7 @@ const SOURCE_DETAILS = [
   MID_SEQUENCE_ABANDON_DETAIL_FOREIGN_IDS,
   MID_SEQUENCE_ABANDON_DETAIL_NEXT_NOT_USER,
   MID_SEQUENCE_ABANDON_DETAIL_AGGREGATE_HAS_NO_RESULT,
+  MID_SEQUENCE_REQUEST_VIEW_DETAIL_UNPAIRED_RESULT,
   RESUME_JOURNAL_SKIP_DETAIL_APPEND_SKIPPED,
 ];
 

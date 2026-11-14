@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { KitError } from "../src/providers/errors.js";
 import { renderConversation } from "../src/reflection/judge.js";
 import { createRunSnapshotExecutor } from "../src/loop/run-snapshot-executor.js";
 
@@ -12,32 +11,14 @@ const TOOL_BLOCK = {
   input: { path: "README.md" },
 };
 
-function createHarness({
-  persistenceResults = [true, true],
-  executeTool = async () => ({ content: "file contents" }),
-} = {}) {
-  const persistenceCalls = [];
+function createHarness({ executeTool = async () => ({ content: "file contents" }) } = {}) {
   const executionCalls = [];
   let markToolExecutedCount = 0;
   const ctx = {
     aggregateBudgetTokens: undefined,
     archivedOutputs: [],
-    snapshotResults: new Map(),
     toolStats: new Map(),
-    persistRunSnapshot: async (snapshot) => {
-      persistenceCalls.push({
-        ...snapshot,
-        toolResults: [...snapshot.toolResults],
-      });
-      return persistenceResults[persistenceCalls.length - 1];
-    },
-    hasRunSnapshotStore: true,
-    runSnapshotFailureCount: 0,
-    lastPersistenceFailure: {
-      operation: "saveRunSnapshot",
-      persistence: "file",
-      persistenceError: new Error("snapshot write failed"),
-    },
+    toolResultsById: new Map(),
     runId: "run-snapshot-executor-test",
     baseToolContext: { cwd: "/virtual/project" },
     toolSignal: undefined,
@@ -63,7 +44,6 @@ function createHarness({
   return {
     ctx,
     executor: createRunSnapshotExecutor(ctx),
-    persistenceCalls,
     executionCalls,
     get markToolExecutedCount() {
       return markToolExecutedCount;
@@ -71,7 +51,7 @@ function createHarness({
   };
 }
 
-test("createRunSnapshotExecutor persists before and after execution and indexes the result by tool id", async () => {
+test("createRunSnapshotExecutor executes a tool and indexes its result by tool id", async () => {
   const harness = createHarness();
   const toolResults = [];
   const pendingToolUses = [TOOL_BLOCK];
@@ -83,21 +63,6 @@ test("createRunSnapshotExecutor persists before and after execution and indexes 
     pendingToolUses,
   );
 
-  assert.equal(harness.persistenceCalls.length, 2);
-  const [before, after] = harness.persistenceCalls;
-  assert.equal(before.round, 4);
-  assert.equal(before.pendingToolUse, TOOL_BLOCK);
-  assert.equal(before.pendingToolUses, pendingToolUses);
-  assert.deepEqual(before.toolResults, []);
-  assert.equal(Object.hasOwn(before, "status"), false);
-
-  assert.equal(after.round, 4);
-  assert.equal(after.pendingToolUse, TOOL_BLOCK);
-  assert.equal(after.pendingToolUses, pendingToolUses);
-  assert.deepEqual(after.toolResults, [result]);
-  assert.equal(after.status, "executed");
-  assert.ok(Array.isArray(after.messagesOverride));
-
   assert.equal(harness.executionCalls.length, 1);
   assert.deepEqual(harness.executionCalls[0], {
     id: TOOL_BLOCK.id,
@@ -107,45 +72,7 @@ test("createRunSnapshotExecutor persists before and after execution and indexes 
     signal: undefined,
   });
   assert.equal(harness.markToolExecutedCount, 1);
-  assert.strictEqual(harness.ctx.snapshotResults.get(TOOL_BLOCK.id), result);
-});
-
-test("createRunSnapshotExecutor fails closed when the pre-execution snapshot fails", async () => {
-  const harness = createHarness({ persistenceResults: [false] });
-
-  await assert.rejects(
-    harness.executor.executeToolBlock(TOOL_BLOCK, 2, []),
-    (error) => error instanceof KitError
-      && error.code === "checkpoint_failed"
-      && error.phase === "checkpoint_before_tool",
-  );
-
-  assert.equal(harness.ctx.runSnapshotFailureCount, 1);
-  assert.equal(harness.persistenceCalls.length, 1);
-  assert.equal(harness.executionCalls.length, 0);
-  assert.equal(harness.markToolExecutedCount, 0);
-});
-
-test("createRunSnapshotExecutor reports post-execution snapshot failure after running the tool", async () => {
-  const harness = createHarness({ persistenceResults: [true, false] });
-  const toolResults = [];
-
-  await assert.rejects(
-    harness.executor.executeToolBlock(TOOL_BLOCK, 3, toolResults),
-    (error) => error instanceof KitError
-      && error.code === "checkpoint_failed"
-      && error.phase === "checkpoint_after_tool",
-  );
-
-  assert.equal(harness.ctx.runSnapshotFailureCount, 1);
-  assert.equal(harness.persistenceCalls.length, 2);
-  assert.equal(harness.executionCalls.length, 1);
-  assert.equal(harness.markToolExecutedCount, 1);
-  assert.equal(toolResults.length, 1);
-  assert.strictEqual(
-    harness.ctx.snapshotResults.get(TOOL_BLOCK.id),
-    toolResults[0],
-  );
+  assert.strictEqual(harness.ctx.toolResultsById.get(TOOL_BLOCK.id), result);
 });
 
 test("只读放行集合含 searchText（issue #195：继任入口不得比 rg 别名更容易被拦）", async () => {
@@ -159,7 +86,7 @@ test("只读放行集合含 searchText（issue #195：继任入口不得比 rg �
   assert.equal(READONLY_INTERCEPT_TOOLS.has("exec"), false, "exec 有副作用，不属只读");
 });
 
-test("#323 blocked 分支落快照的方向提示带 judge-control marker：主模型侧仍在消息里、judge 输入排除，tool_result 事实不受影响", async () => {
+test("#323 blocked 分支把方向提示与被拦结果分开，tool_result 事实不受影响", async () => {
   const blockedTool = {
     type: "tool_use",
     id: "call-blocked-1",
@@ -187,24 +114,12 @@ test("#323 blocked 分支落快照的方向提示带 judge-control marker：主�
   const toolResults = [];
   await harness.executor.executeToolWithIntercept(blockedTool, 3, toolResults, [blockedTool]);
 
-  const interceptedSnapshot = harness.persistenceCalls.find(
-    (call) => call.status === "intercepted",
-  );
-  assert.ok(interceptedSnapshot, "blocked 路径必须落一条 intercepted 快照");
-  const overridden = interceptedSnapshot.messagesOverride;
-  const hintMessage = overridden.find(
-    (message) => JSON.stringify(message).includes("#323-hint-probe"),
-  );
-  assert.ok(hintMessage, "方向提示必须仍写进快照消息（resume 后主模型可见）");
-  // tool_result 里的「被拦未执行」是事实，必须仍进 judge 输入。
-  assert.ok(
-    toolResults.some((result) => JSON.stringify(result).includes("【审计拦截】")),
-  );
-  const rendered = renderConversation(overridden);
-  assert.ok(
-    !rendered.includes("#323-hint-probe"),
-    "judge 输入不得含方向提示原文（摘掉 meta.source marker 本断言必须变红）",
-  );
-  assert.match(rendered, /【审计拦截】|控制事件/u, "被拦事实必须仍进 judge 输入");
-  assert.equal(hintMessage.meta?.source, "judge-control");
+  assert.ok(harness.executor.pendingDirectionHints.some((text) => text.includes("#323-hint-probe")),
+    "方向提示必须独立交给调用方");
+  assert.ok(toolResults.some((result) => JSON.stringify(result).includes("【审计拦截】")),
+    "被拦结果仍应作为 tool_result 事实返回");
+  const rendered = renderConversation([{ role: "assistant", content: [blockedTool] },
+    { role: "tool", content: toolResults }]);
+  assert.ok(!rendered.includes("#323-hint-probe"), "方向提示不得被混入 judge 可见的工具结果");
+  assert.match(rendered, /【审计拦截】/u, "被拦事实必须仍进 judge 输入");
 });

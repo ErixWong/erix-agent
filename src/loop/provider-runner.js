@@ -137,7 +137,7 @@ export async function callProvider(ctx, {
     // 永久起不来），而账本侧的中段兜底只会同页合并、不会插页（#421 纪律 ④）。
     //
     // 为什么必须在 `normalizeMessages` **之后**、`validateMessages` **之前**：合并相邻 assistant 会改变
-    // 「哪一条是那一单的宿主」，而校验器看的就是合并后的那份；插在两者中间会插错位置。
+    // 「哪一条是那一单的宿主」，而校验器看的就是合并后的那份；插页或同页合并都要在此之后定位。
     // 为什么零风险改动：无可补时它返回**同一个数组引用**（健库路径逐字等价，一行不多一个对象不多）。
     // 为什么不写进 `ctx.messages`：① `extractL0Facts(ctx.messages)` 会把桩当**真工具结果**（它只认
     // `tool_result` + `is_error`）；② `ctx.persistedTranscriptLength` 是「已落盘正文条数」（在

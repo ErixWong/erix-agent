@@ -101,15 +101,6 @@ export function partialSlotPath(dir, runId) {
 const RECOVERY_CACHE_SUFFIX_EVENTS = ":events";
 const RECOVERY_CACHE_SUFFIX_PARTIAL = ":partial";
 
-function snapshotPath(dir, runId) {
-  return join(dir, `${safeRunId(runId)}.snapshot.json`);
-}
-
-// 旧后缀（issue #78 更名前）：仅用于读取兼容，不再写入。
-function legacyCheckpointPath(dir, runId) {
-  return join(dir, `${safeRunId(runId)}.checkpoint.json`);
-}
-
 function statePath(dir, runId) {
   return join(dir, `${safeRunId(runId)}.state.json`);
 }
@@ -612,11 +603,9 @@ async function replacePartialTextSlot(path, runId, record, dedupCaches, cacheKey
  *   loadRunState: (runId:string) => Promise<object|undefined>,
  *   loadRunStateStatus: (runId:string) => Promise<string|undefined>,
  *   loadRawRows: (runId:string) => Promise<RoundRecord[]>,
- *   saveRunSnapshot: (runId:string, snapshot:object) => Promise<void>,
- *   loadLatestRunSnapshot: (runId:string) => Promise<object|undefined>,
- *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
- *   appendCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
- *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>, appendRecoveryRow: (runId:string, record:object) => Promise<boolean>, listRecoveryRows: (runId:string) => Promise<object[]>, clearRecoveryRows: (runId:string) => Promise<boolean>
+ *   appendRecoveryRow: (runId:string, record:object) => Promise<boolean>,
+ *   listRecoveryRows: (runId:string) => Promise<object[]>,
+ *   clearRecoveryRows: (runId:string) => Promise<boolean>
  * }}
  */
 export function createFileTranscriptStore({ dir }) {
@@ -748,7 +737,7 @@ export function createFileTranscriptStore({ dir }) {
      * **没有** run 代际 ⇒ 「这个文件」就是代际边界。引擎在 `resume !== true` 的 fresh start 调一次
      * （`src/loop/orchestrator.js`），**且这一步只在持久化开着时才会走到**：`persistence` 不是 `"none"` 时 `persistenceRequired` 才为真，而 `persistClassified` 第一行 `if (!persistenceRequired) return false;` 就先短路 ⇒ 持久化关着时既不删文件也不发诊断。这一清之后，「同一 `runId` 上第二次非续跑」不会再把上一代的 `tool-executed`
      * 当成新 run 的执行事实。**只清恢复行**：轮记录账本 `<runId>.jsonl` 的历史行不动（那是宿主
-     * 的账本，契约里写明了），快照则是 `saveRunSnapshot` 首次写入时自然覆盖。
+     * 的账本，契约里写明了）。
      *
      * 与追写共用 `withAppendLock`：同一 `runId` 上「清」与「追加」不得交叉（交叉会把新行连文件一起删）。
      * 幂等：两份都不在场（含从无恢复行）⇒ `false`，**不抛**；真删了其中任一个文件 ⇒ `true`。
@@ -829,51 +818,6 @@ export function createFileTranscriptStore({ dir }) {
       delete persisted.state;
       await writeFile(temporary, `${JSON.stringify(persisted)}\n`, "utf8");
       await rename(temporary, target);
-    },
-
-    async saveRunSnapshot(runId, snapshot) {
-      await mkdir(dir, { recursive: true });
-      const target = snapshotPath(dir, runId);
-      const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-      await writeFile(temporary, `${JSON.stringify(snapshot)}\n`, "utf8");
-      await rename(temporary, target);
-    },
-
-    async loadLatestRunSnapshot(runId) {
-      // 优先读新后缀 .snapshot.json；不存在回落旧后缀 .checkpoint.json（读取兼容，不做迁移）
-      try {
-        return JSON.parse(await readFile(snapshotPath(dir, runId), "utf8"));
-      } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
-      }
-      try {
-        return JSON.parse(await readFile(legacyCheckpointPath(dir, runId), "utf8"));
-      } catch (error) {
-        if (error?.code === "ENOENT") return undefined;
-        throw error;
-      }
-    },
-
-    /**
-     * @deprecated issue #78：checkpoint 更名 run snapshot。请改用 saveRunSnapshot。
-     */
-    async saveCheckpoint(runId, checkpoint) {
-      await this.saveRunSnapshot(runId, checkpoint);
-    },
-
-    /**
-     * @deprecated issue #78：append 语义与 save 相同（latest-only 覆盖写），
-     * 别名已合并——请改用 saveRunSnapshot。
-     */
-    async appendCheckpoint(runId, checkpoint) {
-      await this.saveRunSnapshot(runId, checkpoint);
-    },
-
-    /**
-     * @deprecated issue #78：请改用 loadLatestRunSnapshot（新方法兼容读取旧 .checkpoint.json）。
-     */
-    async loadLatestCheckpoint(runId) {
-      return this.loadLatestRunSnapshot(runId);
     },
 
     async loadRunState(runId) {

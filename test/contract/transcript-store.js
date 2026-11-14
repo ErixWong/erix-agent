@@ -5,23 +5,17 @@
 //   transcriptStoreContract("mariadb", () => createMariaTranscriptStore(...));
 // 实现特有行为（崩溃恢复/连接管理/清理）由实现方自行补充测试，不进契约。
 //
-// issue #78 capability 分级：必需方法只有 appendRound/load；run snapshot
-// （saveRunSnapshot/loadLatestRunSnapshot，latest-only 覆盖写，非多版本 checkpoint）
-// 与 run-state（saveRunState/loadRunState/markRunState）为可选 capability。
+// issue #78 capability 分级：必需方法只有 appendRound/load；run-state
+// （saveRunState/loadRunState/markRunState）为可选 capability。
 // issue #157 追加成对可选快路径探针（loadByDedupKey/loadMaxRound）：宿主 store
 // 实现时 appendUserTurn 走零 load 点查路径，实现则必须与 load 事实一致（见下）。
 //
 // issue #739：可选性在**本套件内**做实（修前它只在头注释与装配校验里成立）。
-// 修前的矛盾：必需面（`appendRound` + `load`）的宿主 store 能过装配校验
-// （`src/assembly-validators.js` 的 `OPTIONAL_TRANSCRIPT_STORE_METHODS` 把 snapshot/run-state
-// 全部列为可选），却过不了随包的本套件——snapshot / run-state 那批用例**无条件**调用
-// `store.saveRunSnapshot` / `store.saveRunState`（`TypeError: store.saveRunSnapshot is not a function`），
-// 而同样可选的 `loadRawRows`（原 :423）与 `loadByDedupKey`/`loadMaxRound`（原 :507）却各带守卫。
-// ⇒ 「文档 / 装配校验 / 契约套件」三套口径并存，正是 #730 记过账的病根。
+// 修前的矛盾：可选 run-state 与读口能力需要在契约中成对守卫，不能因最小 store 缺席而报错，
+// 也不能让内置实现删掉已声明能力时静默通过。
 //
 // 修后的口径（只此一处，别再抄第二份）：
-//   1. 可选能力名单从装配校验现推（下面的 `OPTIONAL_CAPABILITIES` 直接引
-//      `RUN_SNAPSHOT_STORE_METHODS` / `RUN_STATE_STORE_METHODS`），不是手抄副本；
+//   1. run-state 能力名单直接引装配校验；run snapshot 的方法名单仅在本套件内定义；
 //   2. 每一格可选能力的用例都走同一个守卫 `capabilityPresent`，而守卫**成对**：
 //      整组方法缺席 ⇒ 判决记 `skipped`，用例直接返回（⇒ 最小 store 整套通过）；
 //      整组方法在场 ⇒ 断言必须真跑完并调用 `capabilityAsserted` 记 `exercised`；
@@ -45,7 +39,6 @@ import assert from "node:assert/strict";
 
 import { foldMessageRows } from "../../src/store/message-rows.js";
 import {
-  RUN_SNAPSHOT_STORE_METHODS,
   RUN_STATE_STORE_METHODS,
 } from "../../src/assembly-validators.js";
 
@@ -106,8 +99,7 @@ function countingView(host, calls) {
 }
 
 /**
- * 可选 capability 的**唯一名单**（issue #739）。组的来源是装配校验（`runSnapshot`/`runState`
- * 直接引 `src/assembly-validators.js` 的两张表，不手抄），另三组是同样「实现时才测」的
+ * 可选 capability 的**唯一名单**（issue #739）。run-state 组直接引装配校验，另三组是同样「实现时才测」的
  * 读口：`loadRunStateStatus`（宿主面向的终态读口，装配校验刻意不列它）、`loadRawRows`（#714）、
  * `loadByDedupKey`+`loadMaxRound`（#157，成对）。
  *
@@ -118,7 +110,6 @@ function countingView(host, calls) {
  * @type {Record<string, readonly string[]>}
  */
 const OPTIONAL_CAPABILITIES = Object.freeze({
-  runSnapshot: RUN_SNAPSHOT_STORE_METHODS,
   runState: RUN_STATE_STORE_METHODS,
   runStateStatus: Object.freeze(["loadRunStateStatus"]),
   rawRows: Object.freeze(["loadRawRows"]),
@@ -134,20 +125,14 @@ const OPTIONAL_CAPABILITIES = Object.freeze({
  * @type {Record<string, readonly string[]>}
  */
 const CAPABILITY_CELLS = Object.freeze({
-  runSnapshot: Object.freeze([
-    "snapshot-latest-only",
-    "snapshot-missing-run",
-    "snapshot-state-isolation",
-    "snapshot-state-write-failure",
-  ]),
   runState: Object.freeze([
     "run-state-without-terminal-state",
-    "snapshot-state-isolation",
-    "snapshot-state-write-failure",
+    "run-state-isolation",
+    "run-state-write-failure",
     "run-state-fidelity",
     "run-state-missing-run",
   ]),
-  runStateStatus: Object.freeze(["snapshot-state-isolation", "run-state-fidelity"]),
+  runStateStatus: Object.freeze(["run-state-isolation", "run-state-fidelity"]),
   rawRows: Object.freeze(["raw-rows-same-source-as-load"]),
   fastPathProbes: Object.freeze(["probe-consistency-with-load", "probe-nullish-predicate"]),
 });
@@ -172,7 +157,7 @@ const ROUND_2 = {
  * @param {() => object | Promise<object>} createStore 每次调用返回干净的新 store
  * @param {{ optionalCapabilities?: string[] }} [options] `optionalCapabilities`：本实现**声明**
  *   提供的可选能力名（`OPTIONAL_CAPABILITIES` 的键）。声明了却没在任何格子上跑出 `exercised`
- *   判决 ⇒ 收尾用例红（内置 memory/file store 因此把 `runSnapshot`/`runState`/`runStateStatus`/`rawRows`
+ *   判决 ⇒ 收尾用例红（内置 memory/file store 因此把 `runState`/`runStateStatus`/`rawRows`
  *   声明出来：删掉任一实现就会红，而不是被守卫静默跳过）。不声明 ⇒ 只按 store 实测面核对
  *   「实现了就必须真断言」，最小实现（只 `appendRound` + `load`）整套通过。
  */
@@ -305,76 +290,18 @@ export function transcriptStoreContract(label, createStore, options = {}) {
     assert.equal((await store.load("run-b"))[0].round, 2);
   });
 
-  test(`${label}: run snapshot 往返保真与 latest-only 覆盖语义`, async () => {
+  // 载体已退役（#838 S2），上述两格随之退役。
+
+  test(`${label}: run-state 多 runId 隔离`, async () => {
     const store = await traced();
-    if (!capabilityPresent(store, "runSnapshot", "snapshot-latest-only")) return; // 可选能力：最小实现不提供
-    const first = {
-      round: 1,
-      ts: "2026-08-29T00:01:00.000Z",
-      status: "pending",
-      pendingToolUse: { id: "tool-1", name: "inspect", input: { path: "." } },
-      messages: [{ role: "assistant", content: "before" }],
-    };
-    const latest = {
-      round: 2,
-      status: "executed",
-      pendingToolUse: { id: "tool-2", name: "write", input: { path: "out" } },
-      pendingToolUses: [{
-        id: "tool-2",
-        name: "write",
-        input: { path: "out" },
-        replay: "unsafe",
-      }],
-      toolResults: [{ toolUseId: "tool-2", toolResult: { content: "ok" } }],
-    };
-
-    // issue #78：appendCheckpoint 已并入 saveRunSnapshot（两者同为覆盖写），
-    // 第二次保存覆盖第一次——latest-only autosave 语义。
-    await store.saveRunSnapshot("snapshot-run", first);
-    await store.saveRunSnapshot("snapshot-run", latest);
-
-    assert.deepEqual(await store.loadLatestRunSnapshot("snapshot-run"), latest);
-    capabilityAsserted("runSnapshot", "snapshot-latest-only");
-  });
-
-  test(`${label}: run snapshot 未知 runId 返回 undefined`, async () => {
-    const store = await traced();
-    if (!capabilityPresent(store, "runSnapshot", "snapshot-missing-run")) return; // 可选能力：最小实现不提供
-    assert.equal(await store.loadLatestRunSnapshot("missing-snapshot-run"), undefined);
-    capabilityAsserted("runSnapshot", "snapshot-missing-run");
-  });
-
-  test(`${label}: run snapshot/run-state 多 runId 隔离`, async () => {
-    const store = await traced();
-    // 两个能力各自成对守卫：只实现 run-state（或只实现 snapshot）的宿主 store 也必须能跑完本格子
-    // 它实现的那一半，而不是被一个整格守卫静默跳过。
-    const hasSnapshot = capabilityPresent(store, "runSnapshot", "snapshot-state-isolation");
-    const hasRunState = capabilityPresent(store, "runState", "snapshot-state-isolation");
+    const hasRunState = capabilityPresent(store, "runState", "run-state-isolation");
     const loadStatus = async (runId) => {
       if (typeof store.loadRunStateStatus === "function") {
         return store.loadRunStateStatus(runId);
       }
-      // Legacy path for third-party stores that still embed terminal state in the snapshot.
+      // Legacy path for third-party stores that still embed terminal state in run-state.
       return (await store.loadRunState(runId))?.state;
     };
-
-    if (hasSnapshot) {
-      await store.saveRunSnapshot("run-a", {
-        round: 1,
-        ts: "2026-08-29T00:01:00.000Z",
-        status: "pending",
-        pendingToolUse: { id: "a" },
-      });
-      await store.saveRunSnapshot("run-b", {
-        round: 2,
-        ts: "2026-08-29T00:02:00.000Z",
-        status: "executed",
-        pendingToolUse: { id: "b" },
-      });
-      assert.equal((await store.loadLatestRunSnapshot("run-a")).pendingToolUse.id, "a");
-      assert.equal((await store.loadLatestRunSnapshot("run-b")).pendingToolUse.id, "b");
-      capabilityAsserted("runSnapshot", "snapshot-state-isolation");
-    }
 
     if (hasRunState) {
       await store.saveRunState("run-a", { stateVersion: 1, deterministic: { rounds: 1 } });
@@ -385,9 +312,9 @@ export function transcriptStoreContract(label, createStore, options = {}) {
       assert.equal(await loadStatus("run-b"), "succeeded");
       assert.equal((await store.loadRunState("run-a")).stateVersion, 1);
       assert.equal((await store.loadRunState("run-b")).stateVersion, 2);
-      capabilityAsserted("runState", "snapshot-state-isolation");
+      capabilityAsserted("runState", "run-state-isolation");
     }
-    recordVerdict("runStateStatus", "snapshot-state-isolation", statusReaderOutcome(store, hasRunState));
+    recordVerdict("runStateStatus", "run-state-isolation", statusReaderOutcome(store, hasRunState));
   });
 
   test(`${label}: 新写入的 run-state 快照不包含终态 state`, async () => {
@@ -404,31 +331,23 @@ export function transcriptStoreContract(label, createStore, options = {}) {
     capabilityAsserted("runState", "run-state-without-terminal-state");
   });
 
-  test(`${label}: run snapshot/run-state 写失败向上抛出`, async () => {
+  test(`${label}: run-state 写失败向上抛出`, async () => {
     const store = await traced();
-    // 按能力分组：缺席的能力整组不跑（写桩再调用对未实现者是**恒真**的假绿），实现的能力必须真抛真接。
-    const writeFailures = [
-      ["runSnapshot", [["saveRunSnapshot", ["failed-run", { round: 1 }]]]],
-      ["runState", [
-        ["saveRunState", ["failed-run", { stateVersion: 1 }]],
-        ["markRunState", ["failed-run", "failed"]],
-      ]],
-    ];
-
-    for (const [capability, methods] of writeFailures) {
-      if (!capabilityPresent(store, capability, "snapshot-state-write-failure")) continue;
-      for (const [method, args] of methods) {
-        const expected = new Error(`${method} unavailable`);
-        store[method] = async () => {
-          throw expected;
-        };
-        await assert.rejects(
-          store[method](...args),
-          (error) => error === expected,
-        );
-      }
-      capabilityAsserted(capability, "snapshot-state-write-failure");
+    if (!capabilityPresent(store, "runState", "run-state-write-failure")) return;
+    for (const [method, args] of [
+      ["saveRunState", ["failed-run", { stateVersion: 1 }]],
+      ["markRunState", ["failed-run", "failed"]],
+    ]) {
+      const expected = new Error(`${method} unavailable`);
+      store[method] = async () => {
+        throw expected;
+      };
+      await assert.rejects(
+        store[method](...args),
+        (error) => error === expected,
+      );
     }
+    capabilityAsserted("runState", "run-state-write-failure");
   });
 
   test(`${label}: run-state 快照保真且终态独立读取`, async () => {

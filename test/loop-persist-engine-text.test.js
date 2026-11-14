@@ -22,10 +22,11 @@ import test from "node:test";
 
 import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
+import { buildToolExecutedRecoveryRow } from "../src/store/recovery-rows.js";
 import { createFileTranscriptStore } from "../src/store/file.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
 import { makeTmp } from "./helpers/tmp.js";
-import { journalSnapshotBodyRows } from "./helpers/journal-crash-body.js";
+import { appendLedgerMessages } from "./helpers/journal-crash-body.js";
 
 const text = (value) => ({ type: "text", text: value });
 const toolUse = (id) => ({ type: "tool_use", id, name: "work", input: { step: id } });
@@ -291,14 +292,9 @@ test("#326 续（方向提示·resume flush）：store.load() 全部行里**恰�
   const store = createMemoryTranscriptStore();
   const runId = "326-hint-resume";
   await store.appendRound(runId, { round: 0, messages: [{ role: "user", content: "local task" }] });
-  await store.saveCheckpoint(runId, {
+  await appendLedgerMessages(store, runId, {
     round: 1,
-    pendingToolUses: [
-      { type: "tool_use", id: "a", name: "work", input: { step: 1 } },
-      { type: "tool_use", id: "b", name: "work", input: { step: 2 } },
-    ],
     messages: [
-      { role: "user", content: "local task" },
       {
         role: "assistant",
         content: [
@@ -308,19 +304,14 @@ test("#326 续（方向提示·resume flush）：store.load() 全部行里**恰�
       },
       { role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "done-a" }] },
     ],
-    executedToolIds: ["a"],
-    toolResults: [{
-      toolUseId: "a",
-      toolResult: { type: "tool_result", tool_use_id: "a", content: "done-a" },
-    }],
   });
+  await store.appendRecoveryRow(runId, buildToolExecutedRecoveryRow({
+    runId,
+    round: 1,
+    toolUseId: "a",
+  }));
 
-  // issue #754 裁决 2：夹具是 pre-261021 形状（崩溃轮那条 assistant 只在快照的 `messages` 里）⇒ 把正文
-  // 写成账本消息行；`a` 的结果**不落账**（本格要的是「从快照复放 + 补跑 b」这条活路径，而本格断的是
-  // 「带 marker 的行恰有一条」，是**条数**判据，与正文/告示指纹无关）。
-  await journalSnapshotBodyRows(store, runId, { aggregates: "drop" });
-
-  // `executedToolIds: ["a"]` 给 `judgeInterceptCount` 播种（resume-manager），于是补跑 b 时
+  // `a` 的已结清结果从账本给 `judgeInterceptCount` 播种（resume-manager），于是补跑 b 时
   // intercept 立刻开审 ⇒ 提示在 resume 补跑段入队，由 resume 路径的 flush 点发出。
   const provider = createFakeProvider([toolTurn("c"), endTurn("收尾结论")]);
   const { tools, ...withoutTools } = hintOptions({ marker });
@@ -340,7 +331,7 @@ test("#326 续（方向提示·resume flush）：store.load() 全部行里**恰�
   const carriers = rowsWith(records, marker);
   assert.equal(carriers.length, 1, "只能有一行带这条正文");
   assert.equal(carriers[0].dedupKey, "326-hint-resume:engine:round:1:resume",
-    "resume flush 的正文由 `…:resume` 那行带走（轮号 = resumeRunSnapshot.round）");
+    "resume flush 的正文由 `…:resume` 那行带走（轮号 = resume 轮号）");
 });
 
 test("#326 续（方向提示·resume 侧重建）：模型只收到 **1 条**，不是被 flatMap 喂成 2 条", async () => {

@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { runToolLoop } from "../src/loop/orchestrator.js";
 import { runDirect } from "./helpers/run-direct.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
+import { buildToolExecutedRecoveryRow } from "../src/store/recovery-rows.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
-import { journalSnapshotBodyRows } from "./helpers/journal-crash-body.js";
 
 // issue #177 刀5 **F-2** 的行为锚定测试（纯新增，不改任何既有断言语义）——M2 两格。
 //
@@ -84,27 +84,35 @@ test("F-2 judgeInterceptCount 经 restoreResume ctx：resume 播种已执行工�
     const store = createMemoryTranscriptStore();
     const runId = "resume-intercept-seed";
     await store.appendRound(runId, { round: 0, messages: [{ role: "user", content: "task" }] });
-    await store.saveCheckpoint(runId, {
+    await store.appendRound(runId, {
       round: 1,
-      pendingToolUses: [{ type: "tool_use", id: "b", name: "work", input: { step: "b" } }],
-      messages: [
-        { role: "user", content: "task" },
-        {
-          role: "assistant",
-          content: [
-            { type: "tool_use", id: "a", name: "work", input: { step: "a" } },
-            { type: "tool_use", id: "b", name: "work", input: { step: "b" } },
-          ],
-        },
-        { role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "done-a" }] },
-      ],
-      executedToolIds: ["a"],
-      toolResults: [{ toolUseId: "a", toolResult: { type: "tool_result", tool_use_id: "a", content: "done-a" } }],
+      roundKey: `${runId}:round:1`,
+      dedupKey: `${runId}:msg:1:0`,
+      kind: "message",
+      seq: 0,
+      messages: [{
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "a", name: "work", input: { step: "a" } },
+          { type: "tool_use", id: "b", name: "work", input: { step: "b" } },
+        ],
+      }],
+      ts: new Date().toISOString(),
     });
-    // issue #754 裁决 2：夹具原本是 pre-261021 形状（崩溃轮那条 assistant 只在 `checkpoint.messages` 里）。
-    // 关掉那条升级闸门之后，「续接的第一次工具就被审计」要成立，那条 `tool_use` 必须在**账本**里
-    // （否则第三刀会把它连同结果一起丢掉 ⇒ 一次工具都不跑 ⇒ 0 次审计）。断言一字未动。
-    await journalSnapshotBodyRows(store, runId);
+    await store.appendRound(runId, {
+      round: 1,
+      roundKey: `${runId}:round:1`,
+      dedupKey: `${runId}:msg:1:1`,
+      kind: "message",
+      seq: 1,
+      messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "a", content: "done-a" }] }],
+      ts: new Date().toISOString(),
+    });
+    await store.appendRecoveryRow(runId, buildToolExecutedRecoveryRow({
+      runId,
+      round: 1,
+      toolUseId: "a",
+    }));
     const provider = createFakeProvider([
       { content: [{ type: "text", text: '{"done":true,"output":"收尾"}' }], stopReason: "end_turn" },
     ]);

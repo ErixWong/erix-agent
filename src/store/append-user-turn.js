@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { buildUnpersistedToolResultStub } from "../loop/pending-tool-result.js";
+import { buildSettlementStubFor } from "../loop/pending-tool-result.js";
 import { blocksFor } from "../loop/block-helpers.js";
 import { MESSAGE_ROW_KIND, isRoundCarrier, nextMessageSeqByRound } from "./message-rows.js";
+import {
+  readExecutedToolIdRecoveryRows,
+  readUnledgeredToolResultRecoveryRows,
+} from "./recovery-rows.js";
 import { assertSafeRound } from "./transcript-dedup.js";
 
 // ── issue #765：宿主预写用户轮**落盘之前**先结清账本尾部的悬空 `tool_use`──────────────
@@ -13,10 +17,10 @@ import { assertSafeRound } from "./transcript-dedup.js";
 // ② `pendingTailToolUses` / `resumeMessagesWithUnpersistedToolResults` 的**尾部**判据同时失效（尾行不再是
 // 带 `tool_use` 的 assistant），引擎侧再也看不见这笔悬空。结清行自己当尾行则顺序天然正确，不需要事后修补。
 //
-// 结清行的形状（逐条有出处，不在这里重新发明）：块走唯一构造点 `buildUnpersistedToolResultStub`
-// （#421 那一块：`content = UNPERSISTED_TOOL_RESULT_TEXT` + `is_error: true`）；`kind` / `seq` 与引擎写的
-// 消息行同口径（`MESSAGE_ROW_KIND` + `nextMessageSeqByRound` 现取：不传 `seq` 就落 `seq: undefined` ⇒
-// `foldMessageRows` 里 `undefined < undefined` 为假 ⇒ 多条补行乱序，见 `src/store/message-rows.js:201`）；
+// 结清行的形状（逐条有出处，不在这里重新发明）：块走唯一选择入口 `buildSettlementStubFor`，按恢复行与账本
+// 结果的证据选择「执行过」或「未知」；`kind` / `seq` 与引擎写的消息行同口径（`MESSAGE_ROW_KIND` +
+// `nextMessageSeqByRound` 现取：不传 `seq` 就落 `seq: undefined` ⇒ `foldMessageRows` 里 `undefined < undefined` 为假
+// ⇒ 多条补行乱序，见 `src/store/message-rows.js:201`）；
 // **不写 `roundKey`** —— `isRoundCarrier` 认「无 `dedupKey` 且（无 `seq` 或有 `roundKey`）」，带 `dedupKey` 已
 // 不算轮载体，但缺 `seq` 的 store 上一旦多给个 `roundKey` 就会被当成**第二个载体**，R3 守卫随即丢掉我们
 // 刚写的这条（静默丢失，比什么都不做更糟）。幂等：`dedupKey = <key>:settle:<round>:<排序后的 id 列表>`
@@ -119,6 +123,26 @@ async function settleUnsettledToolUses(store, key, rows, ts) {
   if (rows.some((row) => isRoundCarrier(row, round) && messagesOfRow(row).length > 0)) {
     return { status: "refused", reason: SETTLE_REFUSED_ROUND_CARRIER_HAS_BODY, round, toolUseIds: dangling };
   }
+  const recoveryRows = typeof store.listRecoveryRows === "function"
+    ? await store.listRecoveryRows(key)
+    : [];
+  if (!Array.isArray(recoveryRows)) {
+    throw new TypeError(
+      "appendUserTurn: store contract violation — listRecoveryRows(key) must resolve to an array of recovery rows",
+    );
+  }
+  const executedToolIds = readExecutedToolIdRecoveryRows(recoveryRows);
+  for (const recovered of readUnledgeredToolResultRecoveryRows(recoveryRows)) {
+    executedToolIds.add(recovered.toolUseId);
+  }
+  for (const message of allMessages(rows)) {
+    for (const block of blocksFor(message?.content)) {
+      if (block?.type === "tool_result"
+        && typeof block.tool_use_id === "string" && block.tool_use_id !== "") {
+        executedToolIds.add(block.tool_use_id);
+      }
+    }
+  }
   const toolUseIds = [...new Set(dangling)];
   const dedupKey = `${key}:settle:${round}:${[...toolUseIds].sort().join("+")}`;
   const report = { status: "settled", round, toolUseIds, dedupKey };
@@ -128,7 +152,12 @@ async function settleUnsettledToolUses(store, key, rows, ts) {
   if (rows.some((row) => (row?.dedupKey ?? row?.roundKey) === dedupKey)) return { ...report, written: false };
   const record = {
     round,
-    messages: [{ role: "user", content: toolUseIds.map((toolUseId) => buildUnpersistedToolResultStub(toolUseId)) }],
+    messages: [{
+      role: "user",
+      content: toolUseIds.map((toolUseId) => buildSettlementStubFor(toolUseId, {
+        executed: executedToolIds.has(toolUseId),
+      })),
+    }],
     dedupKey,
     kind: MESSAGE_ROW_KIND,
     // 没有这一行 = `seq: undefined` ⇒ 折叠时排序键退化成 undefined，多条补行相对顺序随写序漂移。
@@ -186,7 +215,9 @@ async function maxRoundFromProbe(store, key) {
  *   `tool_result`，先落一条 `user[tool_result]` 结清行（`kind: "message"` + 现取 `seq`，块 = #421 那张桩）。
  *   没有悬空时不写这一行，返回形状与今天逐字相同；有悬空时返回值多一个 `unsettledToolUses`，
  *   `status` 只有 `settled` / `refused` 两种——**拒写也要出声**（原因在 `reason` 里），本函数不静默。
- *   探针快路径（上条）要读账本只能走 `loadRawRows`；三根探针都没有的宿主 ⇒ `reason:
+ *   探针快路径（上条）要读消息账本只能走 `loadRawRows`；执行证据另走可选 `listRecoveryRows`，其内的
+ *   `tool-executed` 行与 `tool-result-unledgered` 兜底行都算正证据，消息账本里的 `tool_result` 同样算；
+ *   三根消息探针都没有的宿主 ⇒ `reason:
  *   "ledger_probe_absent"`，既不静默也不退回去整本读一次。
  *   **例外（issue #811）**：账本尾行的 `round` 不是安全整数时不返回 `refused`，而是**抛 `TypeError`**
  *   （点名入口 / 哪一行 / 收到的值与类型）——那是调用方交进来的行不合法，不是可恢复的降级。
@@ -203,7 +234,8 @@ async function maxRoundFromProbe(store, key) {
  *   appendRound: (key:string, record:object) => Promise<unknown>,
  *   loadByDedupKey?: (key:string, dedupKey:string) => Promise<object|null|undefined>, // 可选快路径探针，issue #157
  *   loadMaxRound?: (key:string) => Promise<number|null|undefined>,                     // 与上者成对生效
- *   loadRawRows?: (key:string) => Promise<object[]>                                    // 可选，仅 #765 结清悬空 tool_use 时读（未折叠行；快路径唯一的账本来源）
+ *   loadRawRows?: (key:string) => Promise<object[]>,                                   // 可选，仅 #765 结清悬空 tool_use 时读（未折叠行；快路径唯一的账本来源）
+ *   listRecoveryRows?: (key:string) => Promise<object[]>                               // 可选，执行证据读口（与恢复路径同口径）
  * }} store
  * @param {{
  *   key: string,               // transcript key (runId / session id)

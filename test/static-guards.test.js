@@ -241,10 +241,8 @@ const RETIRED_ADAPTER_METHODS = Object.freeze([
  * 本规则不会红（这是已知代价，不是 bug；要「漏项就红」得去抽真值，而那需要另一套机制）。
  *
  * **面内两种名字不同范围**（issue #739 独立评审点名要写清）：
- * · `appendRound`/`load`/`markRunState`/`saveRunState`/`saveRunSnapshot`/`loadLatestRunSnapshot`/
- * `loadRunState`/`loadRunStateStatus`/`saveCheckpoint`/`appendCheckpoint`/`loadLatestCheckpoint`/
- * `loadRawRows` —— 这些是**内置 store 真返回的成员**（`src/store/memory.js` / `src/store/file.js`；
- * `saveCheckpoint`/`appendCheckpoint`/`loadLatestCheckpoint` 是 issue #78 保留的 deprecated 别名），
+ * · `appendRound`/`load`/`markRunState`/`saveRunState`/`loadRunState`/`loadRunStateStatus`/
+ * `loadRawRows` —— 这些是**内置 store 真返回的成员**（`src/store/memory.js` / `src/store/file.js`），
  * 宿主适配器如果装的是内置 store，`store.loadRawRows(...)` 这样的调用是现役的。
  * · `loadByDedupKey`/`loadMaxRound` —— 这两个**不是**内置 store 返回对象的成员（内置 store 不实现），
  * 它们是 #157 那对成对可选快路径探针：引擎侧 `src/store/append-user-turn.js` **探测并调用**它们
@@ -255,8 +253,7 @@ const RETIRED_ADAPTER_METHODS = Object.freeze([
  * 所以补全并把每一格的**范围**写在这。
  */
 const CURRENT_STORE_API = Object.freeze([
-  "appendRound", "load", "markRunState", "saveRunState", "saveRunSnapshot", "loadLatestRunSnapshot",
-  "saveCheckpoint", "appendCheckpoint", "loadLatestCheckpoint", "loadRunState", "loadRunStateStatus",
+  "appendRound", "load", "markRunState", "saveRunState", "loadRunState", "loadRunStateStatus",
   "loadRawRows", "loadByDedupKey", "loadMaxRound",
 ]);
 

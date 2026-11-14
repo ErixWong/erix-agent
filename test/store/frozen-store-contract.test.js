@@ -4,8 +4,7 @@
 // 赋值外面包了一层 try/catch 说「计数器不可用就继续跑」。那句注释与行为互相矛盾：模块是严格模式，
 // 往 `Object.freeze` 过的对象上赋属性**抛 TypeError**，被 catch 吞掉 ⇒ 调用计数恒 0 ⇒ 收尾那条
 // 「实现 ⇒ 每个方法调用计数 > 0」的核对把一具好实现判成红。评审实跑冻结 memory store = exit 1，
-// 本片在同一棵树上复现到同样的两格红（`run snapshot/run-state 写失败向上抛出` 撞
-// `Cannot assign to read only property 'saveRunSnapshot'`，收尾格停在 `pending`）。
+// 本片在同一棵树上复现到同样的两格红（run-state 写失败撞冻结属性，收尾格停在 `pending`）。
 //
 // 选定的策略是**支持冻结 store**：计数与「写失败」临时桩都只落在套件自己造的浅壳上
 // （`test/contract/transcript-store.js` 的 `countingView`），宿主对象一个字段也不写。
@@ -40,7 +39,7 @@ transcriptStoreContract("frozen-memory", () => {
   return store;
 }, {
   // 与内置注册同一份声明：冻结不改变「实现了哪些可选能力」这件事。
-  optionalCapabilities: ["runSnapshot", "runState", "runStateStatus", "rawRows"],
+  optionalCapabilities: ["runState", "runStateStatus", "rawRows"],
 });
 
 /** 只有必需面 + `rawRows` 的 class 实现：方法挂在**原型**上，且实例被冻结。 */
@@ -92,9 +91,6 @@ test("frozen-memory: 套件跑完之后宿主 store 的 own 属性面一字未�
     assert.ok(Object.isFrozen(store), `第 ${index} 个夹具不再生成冻结 store ⇒ 解冻等于把本单的钉子拔掉`);
     assert.deepEqual(Object.keys(store).sort(), [...MEMORY_SURFACE],
       `第 ${index} 个宿主 store 的 own 属性面被改写了（多半是又把计数器 wrapper 赋到宿主身上）`);
-    // wrapper 落在宿主上时，方法自身会带计数闭包：原函数的源码里不含这些名字，逐个方法核对一遍。
-    assert.doesNotMatch(String(store.saveRunSnapshot), /calls\.set/,
-      "宿主方法被换成了计数器 wrapper：契约套件不许写宿主对象");
   }
 });
 

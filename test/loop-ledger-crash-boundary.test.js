@@ -7,8 +7,8 @@
 // 拒掉（真机一例：7 次同类 `run_end`，报错 index 从 685 漂到 693）。
 //
 // 所以边界必须与快照的新鲜度/存在性**无关**，只吃账本：
-//   最大下标 `i`，使 `ledgerEntries[i]` 是带 `tool_use` 的 assistant、其 id 不在 `settledToolResultIds`
-//   里，且 `i` 之后的每一行要么带 `tool_result`、要么是宿主预写行、要么是引擎控制行（#736 原文）。
+//   最大下标 `i`，使 `ledgerEntries[i]` 的所有 `tool_use` 都缺少紧邻 `tool_result`，且 `i` 之后的每一行
+//   要么带 `tool_result`、要么是宿主预写行、要么是引擎控制行（#736 原文）。
 //
 // 本文件只做**纯函数**这一格（端到端夹具在 `test/loop-resume-ledger-crash-boundary.test.js`）：
 //   ① 崩溃轮 assistant 行 + 其后一条宿主 `:input:` 预写行 ⇒ 返回那个下标；
@@ -60,14 +60,9 @@ const resultRow = (runId, round, seq, id) => ({
   messages: [{ role: "user", content: [toolResult(id)] }],
 });
 
-/** 与 `restoreResume` 同一口径：`foldLedgerMessages` + `#420` 的结果 id 集合。 */
+/** 与 `restoreResume` 同一口径：账本逻辑消息序列。 */
 function ledgerOf(rows) {
-  const entries = foldLedgerMessages(rows);
-  const settled = new Set(entries
-    .flatMap((entry) => (Array.isArray(entry.message?.content) ? entry.message.content : []))
-    .filter((block) => block?.type === "tool_result")
-    .map((block) => block.tool_use_id));
-  return { entries, settled };
+  return foldLedgerMessages(rows);
 }
 
 /**
@@ -86,8 +81,8 @@ function attributionOf(rows, expected) {
 }
 
 const derive = (rows) => {
-  const { entries, settled } = ledgerOf(rows);
-  return deriveLedgerCrashBoundary(entries, settled, attributionOf(rows, entries.length));
+  const entries = ledgerOf(rows);
+  return deriveLedgerCrashBoundary(entries, attributionOf(rows, entries.length));
 };
 
 test("#736 边界：崩溃轮 assistant 行 + 其后宿主 `:input:` 预写行 ⇒ 返回崩溃行的下标", () => {
@@ -184,8 +179,8 @@ test("#736 边界：部分结清（`assistant[X,Y]` + `user[result X]`）⇒ nul
 });
 
 test("#736 边界：形状与缺参的兜底（不抛、不误判）", () => {
-  assert.equal(deriveLedgerCrashBoundary(undefined, undefined, undefined), null);
-  assert.equal(deriveLedgerCrashBoundary([], new Set(), undefined), null);
+  assert.equal(deriveLedgerCrashBoundary(undefined, undefined), null);
+  assert.equal(deriveLedgerCrashBoundary([], undefined), null);
   // 归属未知（没给 `isEngineRow`）时只放行「带 tool_result」与「judge-control 控制行」两支：
   // 宿主预写行因此不再被放行 ⇒ 宁可判成「边界不成立」（= 修复前的行为），也不误裁。
   const RUN_ID = "b736-unknown";
@@ -194,9 +189,22 @@ test("#736 边界：形状与缺参的兜底（不抛、不误判）", () => {
     assistantRow(RUN_ID, 1, 0, [text("开工"), toolUse("t1")]),
     hostRow(RUN_ID, "怎么样了？"),
   ];
-  const { entries, settled } = ledgerOf(rows);
-  assert.equal(deriveLedgerCrashBoundary(entries, settled, undefined), null,
+  const entries = ledgerOf(rows);
+  assert.equal(deriveLedgerCrashBoundary(entries, undefined), null,
     "归属未知 ⇒ 宿主追问行放行不了 ⇒ null（宽松档只放开带 marker 的引擎控制行与结果行）");
-  assert.equal(deriveLedgerCrashBoundary(entries, settled, () => false), 1,
+  assert.equal(deriveLedgerCrashBoundary(entries, () => false), 1,
     "全部行判宿主 ⇒ 崩溃行之后放行，边界仍在崩溃行（判据的另一半单独成立）");
+});
+
+test("#838 配对按紧邻消息而非全 run id 集合：跨轮复用 id 不得遮住崩溃行", () => {
+  const RUN_ID = "b838-reused-id";
+  const rows = [
+    seedRow(RUN_ID),
+    assistantRow(RUN_ID, 1, 0, [toolUse("same")]),
+    resultRow(RUN_ID, 1, 1, "same"),
+    assistantRow(RUN_ID, 2, 0, [toolUse("same")]),
+    hostRow(RUN_ID, "崩溃后的宿主行", 2),
+  ];
+  assert.equal(derive(rows), 3,
+    "round 1 的 `same` id 不能把 round 2 那条 assistant 错判成已结清");
 });

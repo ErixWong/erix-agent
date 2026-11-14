@@ -131,8 +131,8 @@ export const EVENT_TIERS = Object.freeze({
   // 上限多少」这两个数就没有第二份副本 ⇒ 不满足 derived 的门槛。
   recovering: EVENT_TIER_FACT,
   // `recovered` 是**重试成功**通知（同一文件里 provider 成功返回之后发，条件是本轮先前失败过一次），
-  // 不是 resume 通知。账本里那条 assistant 消息不记「它是第几次尝试成的」，`loadLatestRunSnapshot`
-  // 也不是这条通知的持久副本 ⇒ 没有第二份。
+  // 不是 resume 通知。账本里的 assistant 消息不记「它是第几次尝试成的」，恢复行也不记录尝试次数
+  // ⇒ 没有第二份。
   recovered: EVENT_TIER_FACT,
   // 载荷是**判定字段**：`action` / `reason` / `budgetTokens` / `inlineTokens` / `costTokens` /
   // `projectedTokens` / `contentLength`（`src/loop/run-snapshot-executor.js` 的 `emitAggregate`）。
@@ -394,4 +394,3 @@ if (RUN_CLEANUP_SAFE_STATUSES.length === 0 || RUN_CLEANUP_SAFE_STATUSES.length =
   );
 }
 assertPredicateAgreesWithTable();
-

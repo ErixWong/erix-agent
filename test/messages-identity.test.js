@@ -3,7 +3,7 @@
 // 这组用例**不检验理想语义**，只把 `src/loop/orchestrator.js` 今天**实际发生**的行为钉死，
 // 因为 #246（状态视图定形）step 1–4 会把编排器里手写的 `get/set` 访问器换成
 // `makeStateView()` 生成的视图，而 `messages` 是其中最危险的一个：它同时出现在
-// `baseToolContext` / `providerContext`（可读写）、`terminationContext` / `runSnapshotContext`
+// `baseToolContext` / `providerContext`（可读写）、`terminationContext` / `toolExecutorContext`
 // （只有 getter）三类协作者上下文里，还有压缩回写与终局载荷两处「宿主直接读」的出口。
 //
 // 下面每条注释都写明「当前行为」与「接线后如果这条变红意味着什么」。
@@ -332,14 +332,14 @@ function contextSource(name, nextAnchor) {
   return ORCHESTRATOR_SOURCE.slice(start, end);
 }
 
-test("D1 只有 getter 的 messages 访问器：今天恰是 terminationContext 与 runSnapshotContext", () => {
+test("D1 只有 getter 的 messages 访问器：今天恰是 terminationContext 与 toolExecutorContext", () => {
   const shapes = {
     // 宿主工具上下文与 provider 上下文：读写都要有（providerContext 里 forceFinal 之外还有整体赋值）
     baseToolContext: ["const providerContext = {", true],
     providerContext: ["const terminationContext = {", true],
-    // 终局上下文与 run snapshot 上下文：只有 getter
-    terminationContext: ["const runSnapshotContext = {", false],
-    runSnapshotContext: ["const runSnapshotExecutor = ", false],
+    // 终局上下文与工具执行器上下文：只有 getter
+    terminationContext: ["const toolExecutorContext = {", false],
+    toolExecutorContext: ["const toolExecutor = createRunSnapshotExecutor(toolExecutorContext);", false],
   };
   for (const [name, [anchor, expectSetter]] of Object.entries(shapes)) {
     const body = contextSource(name, anchor);
@@ -398,7 +398,7 @@ test("D2 只读语境里改数组内容必须仍然生效（强制收尾经 gett
 
 test("D3 getOnly 视图的机制口径：整体赋值抛 TypeError，改内容仍然生效", () => {
   // 与 test/state-view.test.js 的分工：那边测 makeStateView 本身；这里钉的是
-  // 「#246 把 terminationContext/runSnapshotContext 接成视图后，messages 必须仍满足
+  // 「#246 把 terminationContext/toolExecutorContext 接成视图后，messages 必须仍满足
   // 整体赋值抛 TypeError + 原地改内容生效」这组契约——本模块是 ESM，严格模式生效。
   const internal = [{ role: "user", content: [{ type: "text", text: "start" }] }];
   const state = { messages: internal };

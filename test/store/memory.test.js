@@ -7,19 +7,10 @@ import { transcriptStoreContract } from "../contract/transcript-store.js";
 // 内置 memory store 全量实现除快路径探针外的全部可选能力（issue #739：声明出来，
 // 于是「把某个可选实现删了」会在这套件的收尾核对里红，而不是被守卫静默跳过）。
 transcriptStoreContract("memory", () => createMemoryTranscriptStore(), {
-  optionalCapabilities: ["runSnapshot", "runState", "runStateStatus", "rawRows"],
+  optionalCapabilities: ["runState", "runStateStatus", "rawRows"],
 });
 
-// ---- issue #78：deprecated 别名委托 ----
-
-test("memory: deprecated 别名 saveCheckpoint/appendCheckpoint/loadLatestCheckpoint 委托新方法", async () => {
-  const store = createMemoryTranscriptStore();
-  await store.saveCheckpoint("run-1", { round: 1, status: "pending" });
-  await store.appendCheckpoint("run-1", { round: 2, status: "executed" });
-
-  assert.deepEqual(await store.loadLatestCheckpoint("run-1"), { round: 2, status: "executed" });
-  assert.deepEqual(await store.loadLatestRunSnapshot("run-1"), { round: 2, status: "executed" });
-});
+// 载体已退役（#838 S2），上述别名格随之退役。
 
 // ---- issue #811：写侧轮号守卫（`round` 不是安全整数 ⇒ `TypeError`，一行都不写）──────────────
 // 为什么两个内置 store 各钉一份：守卫的**实现**共用（`src/store/transcript-dedup.js#assertSafeRound`），

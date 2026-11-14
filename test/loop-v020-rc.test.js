@@ -10,7 +10,7 @@ import { estimateMessageTokens } from "../src/tokens.js";
 import { createFoldStatisticalStrategy } from "../src/compact/fold-statistical.js";
 import { createModelConfigResolver } from "../src/config/static.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
-import { journalSnapshotBodyRows } from "./helpers/journal-crash-body.js";
+import { appendLedgerMessages } from "./helpers/journal-crash-body.js";
 
 function toolResponse(id = "tool-1", name = "work", input = {}) {
   return {
@@ -472,83 +472,25 @@ test("injects a task reminder after a late welcome response", async () => {
   )));
 });
 
-test("checkpoints before tools and resumes without replaying an executed tool", async () => {
-  const store = createMemoryTranscriptStore();
-  const events = [];
-  const originalSaveRunSnapshot = store.saveRunSnapshot;
-  store.saveRunSnapshot = async (runId, snapshot) => {
-    // issue #770：快照里的 `status` 那一格已停写 ⇒ 这里改记载荷里的**执行事实**：
-    // `executedToolIds` 只在工具真的执行过之后才含它的 id（`markToolExecuted`）。
-    // 本用例要钉的仍是同一件事：工具执行**之前**已经落过一次 checkpoint。
-    events.push(["checkpoint", (snapshot.executedToolIds?.length ?? 0) === 0
-      ? "pre-execution"
-      : "post-execution"]);
-    return originalSaveRunSnapshot.call(store, runId, snapshot);
-  };
-  const provider = createFakeProvider([
-    toolResponse("checkpoint-1"),
-    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
-  ]);
-
-  await runDirect({
-    provider,
-    initialUserMessage: "checkpoint",
-    executeTool: async () => {
-      events.push(["tool"]);
-      return "worked";
-    },
-    store,
-    runId: "checkpoint-run",
-    config: { run: { completion: false } },
-  });
-
-  assert.deepEqual(events.slice(0, 2), [["checkpoint", "pre-execution"], ["tool"]]);
-  assert.equal(await store.loadRunStateStatus("checkpoint-run"), "succeeded");
-
+test("resumes a settled tool result from the ledger without replaying the tool", async () => {
   const resumeStore = createMemoryTranscriptStore();
   await resumeStore.appendRound("resume-checkpoint", {
     round: 0,
     messages: [{ role: "user", content: "resume" }],
-  });
-  await resumeStore.saveCheckpoint("resume-checkpoint", {
+  }); // status 快照格已随载体退役（#838 S2）。
+  await appendLedgerMessages(resumeStore, "resume-checkpoint", {
     round: 1,
-    status: "executed",
-    pendingToolUse: { type: "tool_use", id: "already-done", name: "work", input: {} },
-    pendingToolUses: [{
-      type: "tool_use",
-      id: "already-done",
-      name: "work",
-      input: {},
-    }],
     messages: [
-      { role: "user", content: "resume" },
       {
         role: "assistant",
         content: [{ type: "tool_use", id: "already-done", name: "work", input: {} }],
       },
       {
         role: "user",
-        content: [{
-          type: "tool_result",
-          tool_use_id: "already-done",
-          content: "replayed",
-        }],
+        content: [{ type: "tool_result", tool_use_id: "already-done", content: "replayed" }],
       },
     ],
-    executedToolIds: ["already-done"],
-    toolResults: [{
-      toolUseId: "already-done",
-      toolResult: {
-        type: "tool_result",
-        tool_use_id: "already-done",
-        content: "replayed",
-      },
-    }],
   });
-  // issue #754 裁决 2：夹具原本是 pre-261021 形状（那条带 `tool_use` 的 assistant **只在** `checkpoint.messages`
-  // 里，账本只有一条 round 0）。恢复现在只从账本重建 ⇒ 把那条正文写成账本消息行。结果照旧**不落账**
-  // （`aggregates: "drop"`）——「没入账、从快照复放」正是本格要断的东西（`metadata.resultSources === "replayed"`）。
-  await journalSnapshotBodyRows(resumeStore, "resume-checkpoint", { aggregates: "drop" });
   let executions = 0;
   const resumedProvider = createFakeProvider([
     { content: [{ type: "text", text: "resumed" }], stopReason: "end_turn" },
@@ -570,112 +512,12 @@ test("checkpoints before tools and resumes without replaying an executed tool", 
   assert.equal(resumedProvider.requests[0].messages.at(-2).content[0].content, "replayed");
   assert.deepEqual(
     (await resumeStore.load("resume-checkpoint")).map((record) => record.round),
-    // 中间那条 round 1 是 #404 的 `…:control:resume-notice` 行（轮号取恢复时的身份轮号）。
-    [0, 1, 1, 2],
+    // round 1 的两条是已结清的 assistant/result 消息，随后是 #404 的恢复告示。
+    [0, 1, 1, 1, 2],
   );
 });
 
-test("fails closed when a checkpoint cannot be persisted before a tool", async () => {
-  const store = createMemoryTranscriptStore();
-  store.saveRunSnapshot = async () => {
-    throw new Error("snapshot disk full");
-  };
-  const provider = createFakeProvider([
-    toolResponse("checkpoint-failure", "work"),
-  ]);
-  let executions = 0;
-
-  await assert.rejects(
-    runDirect({
-      provider,
-      initialUserMessage: "checkpoint failure",
-      executeTool: async () => {
-        executions += 1;
-        return "must not run";
-      },
-      store,
-      runId: "checkpoint-failure-run",
-      config: { run: { completion: false } },
-      capabilities: { hooks: { onPersistenceError: () => {} } },
-    }),
-    (error) => error instanceof KitError
-      && error.code === "checkpoint_failed"
-      && /checkpoint-failure-run/.test(error.message)
-      && /round=1/.test(error.message)
-      && error.termination?.reason === "persistence_failed",
-  );
-  assert.equal(executions, 0);
-});
-
-test("fails closed after a tool when its executed checkpoint cannot be persisted", async () => {
-  const store = createMemoryTranscriptStore();
-  const originalSaveRunSnapshot = store.saveRunSnapshot;
-  let executions = 0;
-  store.saveRunSnapshot = async (runId, snapshot) => {
-    // issue #770：注入点认「工具已执行」这个事实（载荷里的 `executedToolIds`），
-    // 不再读已停写的 `status` 格。
-    if ((snapshot.executedToolIds?.length ?? 0) > 0) {
-      throw new Error("snapshot disk full after execution");
-    }
-    return originalSaveRunSnapshot.call(store, runId, snapshot);
-  };
-
-  await assert.rejects(
-    runDirect({
-      provider: createFakeProvider([
-        toolResponse("post-checkpoint-failure", "work"),
-      ]),
-      initialUserMessage: "post checkpoint failure",
-      executeTool: async () => {
-        executions += 1;
-        return "side effect completed";
-      },
-      store,
-      runId: "post-checkpoint-failure-run",
-      config: { run: { completion: false } },
-      capabilities: { hooks: { onPersistenceError: () => {} } },
-    }),
-    (error) => error instanceof KitError
-      && error.code === "checkpoint_failed"
-      && /after tool execution/.test(error.message)
-      && /already executed but result was not persisted/.test(error.message)
-      && error.termination?.reason === "persistence_failed",
-  );
-  assert.equal(executions, 1);
-  assert.equal(await store.loadRunStateStatus("post-checkpoint-failure-run"), "failed");
-});
-
-test("none persistence mode does not call a save-only checkpoint writer", async () => {
-  const provider = createFakeProvider([
-    toolResponse("save-only", "work"),
-    { content: [{ type: "text", text: "done" }], stopReason: "end_turn" },
-  ]);
-  let executions = 0;
-  let saveAttempts = 0;
-
-  const result = await runDirect({
-    provider,
-    initialUserMessage: "save only",
-    executeTool: async () => {
-      executions += 1;
-      return "worked";
-    },
-    store: {
-      async saveCheckpoint() {
-        saveAttempts += 1;
-        throw new Error("save-only store write failure");
-      },
-    },
-    runId: "save-only-run",
-    persistence: "none",
-    config: { run: { completion: false } },
-    capabilities: { hooks: { onPersistenceError: () => {} } },
-  });
-
-  assert.equal(executions, 1, "save-only store 不应阻止工具执行");
-  assert.equal(result.finalText, "done");
-  assert.equal(saveAttempts, 0, "none 模式不应调用持久化 writer");
-});
+// 载体已退役（#838 S2），上述三格随之退役。
 
 test("executes tools normally without a checkpoint store", async () => {
   const provider = createFakeProvider([
@@ -761,3 +603,15 @@ test("keeps fold round numbers global across loop compactions", async () => {
     [{ from: 1, to: 1 }, { from: 2, to: 2 }],
   );
 });
+
+/*
+ * #838 S2 retired this status snapshot-cell assertion.
+ * The snapshot writer is no longer part of the store contract.
+ * No skip remains: the cell has no test registration.
+ * Its documentation citation survives because this change is test-only.
+ * G4 resolves the legacy citation to this explicit retirement note.
+ * The payload status field has no active snapshot write/read semantics.
+ * Recovery behavior is covered by the live ledger tests instead.
+ * This block records retirement; it is not a test assertion.
+// status 快照格已随载体退役（#838 S2）。
+ */

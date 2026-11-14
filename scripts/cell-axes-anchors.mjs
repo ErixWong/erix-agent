@@ -1,7 +1,7 @@
 /**
  * `scripts/cell-axes-anchors.mjs` — 两轴载荷表（`docs/host-consumer-contract.md` /
  * `docs/host-consumer-contract_cn.md` 里 `<!-- erix:snapshot-cell-axes:begin/end -->` 之间那张表）
- * 的**锚点登记表**，14 格 × 两轴，是「表里每条 `path:line` 到底钉在哪一行」的唯一真值。
+ * 的**锚点登记表**，覆盖四个剩余格名，是「表里每条 `path:line` 到底钉在哪一行」的唯一真值。
  *
  * 为什么住在 `scripts/` 而不是住在测试里（issue #772 R3）：
  *   R2 把登记表放在 `test/contract-snapshot-cell-axes-767.test.js`，闸（`docs-drift-check.mjs`）
@@ -22,16 +22,14 @@
  * 注意 note 是**给人读的说明**，不参与任何判据（判据只认 `anchor` 现算的命中行号）。
  *
  * 每条还带 `kind`（issue #772 R4 M-A）：`"code"` = 钉的是真代码行（写入位置 / 读取点），
- * `"comment"` = 钉的是**解释性注释**（只有 `toolUse` / `ts` 两格的「为什么已经没有写点」证据，
- * 以及 `persistedTranscriptLength` 读侧那条「不能信快照里的它」的注释）。
+ * `"comment"` = 钉的是**解释性注释**（`status` / `toolUse` / `ts` / `compactionStats` 的停写说明）。
  * 判据在 `anchorKindError()` 这一份函数里（闸与测试共用，禁止两处各写一遍）：
  * `kind: "code"` 而唯一命中的那一行是注释行 ⇒ 红，`kind: "comment"` 而命中的不是注释行 ⇒ 红。
  * 它堵的是「锚点指到一条只是**提到**键名的注释、两份契约表的引文同步改口」——那种形状下
  * 行号等值对账是自洽的（表写的就是锚点算出的那一行），光比行号看不见（#772 R4 评审 M-A）。
  *
  * 覆盖面另有一份**与登记表无关的独立真值** `CELL_AXES_REQUIRED_CELLS`（#772 R4 M-B）：
- * 登记表的地板以前是手填的 `30 / 25`，于是「成对删掉登记条目 + 两份表里的对应引文」可以
- * 把 39 条削到 31 条而两道闸照绿（覆盖面无声削薄）。现在地板由那份清单算出来，
+ * 登记表与契约引文曾可被成对删除而不触发检查（覆盖面无声削薄）。现在地板由那份清单算出来，
  * 且每一格都要在清单、登记、EN 表、CN 表四处各自在场（`checkCellAxesCoverage()`）。
  */
 
@@ -41,61 +39,23 @@ export const CELL_AXES_ANCHOR_MODULE = "scripts/cell-axes-anchors.mjs";
 /**
  * **必须存在的格子**（#772 R4 M-B，独立于登记表的第二份真值）：人审过的那份 `(key, axis)` 清单，
  * 就是这两份契约表**应当**覆盖的全部格子——每一条 = 一个必须存在的槽位（同 key+axis+codePath+row
- * 重复出现 N 次 = 这一格这一轴在这个文件上必须有 N 条引用/登记，例：`toolOutputs` 的 write 同时钉
- * 快照侧与轮记录侧两条）。它**不许**从 `CELL_AXES_ANCHORS` 现算出来（那就不是第二份真值了），
+ * 重复出现 N 次 = 这一格这一轴在这个文件上必须有 N 条引用/登记。它**不许**从
+ * `CELL_AXES_ANCHORS` 现算出来（那就不是第二份真值了），
  * 只能人审手写；闸与测试共同 import 它。
  *
  * 判据在 `checkCellAxesCoverage()`：每一格都要在 ① 这份清单 ② `CELL_AXES_ANCHORS` 的登记
  * ③ EN 表 ④ CN 表四处各自在场，缺任一处 ⇒ 红，并点名「缺哪一格、缺在哪一份里」。
  * 为什么需要它：以前只有「删登记、**留**引文」会红（引文没有基准）；把登记条目和两份表里的
- * 引文**成对**删掉，剩下的那些仍然自洽 ⇒ 覆盖面可以无声削薄（#772 R4 评审 M-B：削到 31 条 / 27 组，
- * 手填地板 30 / 25 照过）。
+ * 引文**成对**删掉，剩下的那些仍然自洽 ⇒ 覆盖面可以无声削薄。
  */
 export const CELL_AXES_REQUIRED_CELLS = [
-  // ── 写入侧（快照对象那一层 + 轮记录侧）──
-  { key: "round", axis: "write", codePath: "src/loop/orchestrator.js" },
-  { key: "status", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ {8}// ⇒ `status` 停写的理由：", note: "停写解释锚点：这里没有写点，钉解释「为什么这里没有写点」的那行注释（#770）" },
-  { key: "pendingToolUse", axis: "write", codePath: "src/loop/orchestrator.js" },
-  { key: "pendingToolUses", axis: "write", codePath: "src/loop/orchestrator.js" },
-  { key: "executedToolIds", axis: "write", codePath: "src/loop/orchestrator.js" },
-  { key: "toolResults", axis: "write", codePath: "src/loop/orchestrator.js" },
-  { key: "toolOutputs", axis: "write", codePath: "src/loop/orchestrator.js" },
-  { key: "toolOutputs", axis: "write", codePath: "src/loop/orchestrator.js" },        // 轮记录侧那一条
-  { key: "messages", axis: "write", codePath: "src/loop/orchestrator.js" },
-  { key: "persistedTranscriptLength", axis: "write", codePath: "src/loop/orchestrator.js" },      // 表里第 1 行（on-disk 格）
-  { key: "persistedTranscriptLength", axis: "write", codePath: "src/loop/orchestrator.js", row: 1 },  // 表里第 2 行（in-process 格）
-  { key: "partialText", axis: "write", codePath: "src/loop/orchestrator.js" },
-  { key: "partialRound", axis: "write", codePath: "src/loop/orchestrator.js" },
+  // ── 写入侧 ──
+  { key: "status", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ {8}// #827 第 5 刀：这里原本只写 .*", note: "停写解释锚点：状态格已不再写入 run snapshot（#827）" },
   { key: "toolUse", axis: "write", codePath: "src/loop/orchestrator.js" },             // stopped：注释行（kind=comment）
   { key: "ts", axis: "write", codePath: "src/loop/orchestrator.js" },                  // stopped：注释行（kind=comment）
   { key: "compactionStats", axis: "write", codePath: "src/loop/orchestrator.js" },
   { key: "compactionStats", axis: "write", codePath: "src/loop/orchestrator.js" },      // 轮记录侧那一条
   // ── 读取侧 ──
-  { key: "round", axis: "read", codePath: "src/loop/resume-manager.js" },
-  { key: "round", axis: "read", codePath: "src/loop/orchestrator.js" },
-  { key: "pendingToolUses", axis: "read", codePath: "src/loop/resume-manager.js" },
-  { key: "pendingToolUses", axis: "read", codePath: "src/loop/resume-manager.js" },
-  { key: "pendingToolUse", axis: "read", codePath: "src/loop/resume-manager.js" },
-  { key: "pendingToolUse", axis: "read", codePath: "src/loop/resume-manager.js" },
-  { key: "executedToolIds", axis: "read", codePath: "src/loop/resume-manager.js" },
-  // issue #769：读轴的**账本来源**（`tool-executed` 恢复行）——快照那一格从此是兜底，读者多一个。
-  { key: "toolResults", axis: "read", codePath: "src/loop/resume-manager.js" },
-  { key: "toolResults", axis: "read", codePath: "src/loop/resume-manager.js" },
-  { key: "toolOutputs", axis: "read", codePath: "src/loop/resume-manager.js" },         // 快照侧回填
-  { key: "toolOutputs", axis: "read", codePath: "bin/final-guard-support.js" },         // 轮记录侧 final guard
-  { key: "messages", axis: "read", codePath: "src/loop/resume-manager.js" },
-  { key: "persistedTranscriptLength", axis: "read", codePath: "src/loop/resume-manager.js" },  // 注释「不能信它」那一条
-  { key: "persistedTranscriptLength", axis: "read", codePath: "src/loop/resume-manager.js" },  // 现算覆盖那一条
-  { key: "persistedTranscriptLength", axis: "read", codePath: "src/loop/orchestrator.js", row: 1 },  // in-process 格的读者
-  { key: "partialText", axis: "read", codePath: "src/loop/resume-manager.js" },
-  { key: "partialText", axis: "read", codePath: "src/loop/resume-manager.js" },
-  // issue #769：半截正文的读轴多一个**账本来源**（`partial-text` 恢复行）；下面 `partialRound` 同理
-  // （两格仍共用同一条写语句，读侧也共用同一行 `ledgerPartial`）。
-  { key: "partialRound", axis: "read", codePath: "src/loop/resume-manager.js" },
-  // issue #769：这三格的**账本来源**（`kind: "recovery"` 行）——契约读者列钉的是 src/store/recovery-rows.js 那一行格名注释。
-  { key: "executedToolIds", axis: "read", codePath: "src/store/recovery-rows.js" },
-  { key: "partialText", axis: "read", codePath: "src/store/recovery-rows.js" },
-  { key: "partialRound", axis: "read", codePath: "src/store/recovery-rows.js" },
   { key: "toolUse", axis: "read", codePath: "src/loop/resume-manager.js" },
   { key: "ts", axis: "read", codePath: "src/loop/resume-manager.js" },
   { key: "compactionStats", axis: "read", codePath: "src/loop/resume-manager.js" },
@@ -103,56 +63,22 @@ export const CELL_AXES_REQUIRED_CELLS = [
 
 /**
  * 登记表的地板：**由 `CELL_AXES_REQUIRED_CELLS` 算出来，这两个数不许手调**（#772 R4 M-B）。
- * 手填数（曾是 30 / 25，出厂表 39 / 27）留 9 条余量 ⇒ 「成对删登记 + 删引文」削到 31 条仍过地板，
- * 覆盖面无声削薄。现在条目下限就是清单条数、组数下限就是清单里的 `key|axis` 去重数：
+ * 现在条目下限就是清单条数、组数下限就是清单里的 `key|axis` 去重数：
  * 少一条 = 这一格不再被钉 ⇒ 豁免不能给（要削格子必须同批改这份人审清单）。
  */
 export const CELL_AXES_ANCHOR_FLOORS = {
   entries: CELL_AXES_REQUIRED_CELLS.length,
   groups: new Set(CELL_AXES_REQUIRED_CELLS.map((cell) => `${cell.key}|${cell.axis}`)).size,
-};   // 现算：40 条 / 27 组（14 格），推导见上面的注释——只许随清单涨，不许手调
+};   // 现算：8 条 / 7 组（4 格），推导见上面的注释——只许随清单涨，不许手调
 
 // CELL-AXES-ANCHORS:BEGIN —— 哨兵之间必须是**数组字面量**（闸在 --self-test 里要能抽文本重算）
 export const CELL_AXES_ANCHORS = [
-  { key: "round", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}round,$", prev: "^ +return await persistClassified\\(method, status, runId, \\{$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 round," },
-  { key: "status", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ {8}// ⇒ `status` 停写的理由：", note: "停写解释锚点：这里没有写点，钉解释「为什么这里没有写点」的那行注释（#770）" },
-  { key: "pendingToolUse", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}pendingToolUse: cloneState\\(snapshotPendingToolUse\\),$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 pendingToolUse: cloneState(snapshotPendingToolUse)," },
-  { key: "pendingToolUses", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}pendingToolUses: cloneState\\(snapshotPendingToolUses\\),$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 pendingToolUses: cloneState(snapshotPendingToolUses)," },
-  { key: "executedToolIds", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}executedToolIds: \\[\\.\\.\\.executedToolIds\\],$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 executedToolIds: [...executedToolIds]," },
-  { key: "toolResults", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}toolResults: toolResults\\.map\\(\\(toolResult\\) => \\(\\{$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 toolResults: toolResults.map((toolResult) => ({" },
-  { key: "toolOutputs", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}toolOutputs: cloneState\\(archivedOutputs\\.filter", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 toolOutputs: cloneState(archivedOutputs.filter((entry) => entry.round " },
-  { key: "toolOutputs", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {10}toolOutputs: archivedOutputs$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 toolOutputs: archivedOutputs" },
-  { key: "messages", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}messages: snapshotTranscriptResidue,$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 messages: snapshotTranscriptResidue," },
-  { key: "persistedTranscriptLength", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}persistedTranscriptLength: runLoopState\\.persistedTranscriptLength,$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 persistedTranscriptLength: runLoopState.persistedTranscriptLength," },
-  { key: "persistedTranscriptLength", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}persistedTranscriptLength: runLoopState\\.persistedTranscriptLength,$", row: 1, note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 persistedTranscriptLength: runLoopState.persistedTranscriptLength,（同名第 2 次出现）" },
-  { key: "partialText", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}\\.\\.\\.\\(partialText === undefined \\? \\{\\} : \\{ partialText, partialRound \\}\\),$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 ...(partialText === undefined ? {} : { partialText, partialRound })," },
-  { key: "partialRound", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}\\.\\.\\.\\(partialText === undefined \\? \\{\\} : \\{ partialText, partialRound \\}\\),$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 ...(partialText === undefined ? {} : { partialText, partialRound })," },
-  { key: "toolUse", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "里面\\*\\*没有\\*\\* `toolUse` 也没有 `ts`", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 //   `pendingToolUses` / `round` / `toolOutputs` / `toolResults`，里面**没" },
-  { key: "ts", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ +// - `ts`：同上口径，快照对象那一层没人读它", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 // - `ts`：同上口径，快照对象那一层没人读它；读侧确实处理的 `ts` 是**账本行 / 消息行**的 `ts`" },
-  { key: "compactionStats", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ {8}// ⇒ `compactionStats` 停写的理由：", note: "停写解释锚点：快照这一格没有写点（钉解释注释）；同轴另一条登记的是轮记录那处真写点（#770）" },
+  { key: "status", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ {8}// #827 第 5 刀：这里原本只写 .*", note: "停写解释锚点：状态格已不再写入 run snapshot（#827）" },
+  { key: "toolUse", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ {8}// `toolUse` comes from tool-use rows, message `ts` belongs to its ledger row, and$", note: "停写解释锚点：待恢复工具从账本工具行重建" },
+  { key: "ts", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ {8}// `toolUse` comes from tool-use rows, message `ts` belongs to its ledger row, and$", note: "停写解释锚点：消息时间戳属于账本行" },
+  { key: "compactionStats", axis: "write", kind: "comment", codePath: "src/loop/orchestrator.js", anchor: "^ {8}// `compactionStats` is restored from run-state and retained in round records\\.$", note: "停写解释锚点：该字段来自 run-state 与轮记录" },
   { key: "compactionStats", axis: "write", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ {8}\\? \\{ compactionStats: cloneState\\(compactionStats\\.slice\\(compactionStatsStart\\)\\) \\}$", note: "写入位置锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 ? { compactionStats: cloneState(compactionStats.slice(compactionStatsS" },
-  { key: "round", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "const crashRound = Number\\.isSafeInteger\\(snapshot\\.round\\)", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 const crashRound = Number.isSafeInteger(snapshot.round)" },
-  { key: "round", axis: "read", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "const crashRound = runLoopState\\.resumeRunSnapshot\\?\\.round;$", note: "停写/读取证据锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 const crashRound = runLoopState.resumeRunSnapshot?.round;" },
-  { key: "pendingToolUses", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "const crashToolUses = ctx\\.resumeRunSnapshot\\?\\.pendingToolUses$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 const crashToolUses = ctx.resumeRunSnapshot?.pendingToolUses" },
-  { key: "pendingToolUses", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "const pendingTools = snapshot\\.pendingToolUses$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 const pendingTools = snapshot.pendingToolUses" },
-  { key: "pendingToolUse", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "\\?\\? \\(ctx\\.resumeRunSnapshot\\?\\.pendingToolUse \\? \\[ctx\\.resumeRunSnapshot\\.pendingToolUse\\] : \\[\\]\\);$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 ?? (ctx.resumeRunSnapshot?.pendingToolUse ? [ctx.resumeRunSnapshot.pen" },
-  { key: "pendingToolUse", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "^ +\\?\\? \\(snapshot\\.pendingToolUse$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 ?? (snapshot.pendingToolUse" },
-  { key: "executedToolIds", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "for \\(const id of snapshot\\.executedToolIds \\?\\? \\[\\]\\) \\{$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 for (const id of snapshot.executedToolIds ?? []) {" },
-  { key: "toolResults", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "\\|\\| \\(ctx\\.resumeRunSnapshot\\?\\.toolResults \\?\\? \\[\\]\\)\\.some\\(\\(entry\\) => \\($", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 || (ctx.resumeRunSnapshot?.toolResults ?? []).some((entry) => (" },
-  { key: "toolResults", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "for \\(const entry of snapshot\\.toolResults \\?\\? \\[\\]\\) \\{$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 for (const entry of snapshot.toolResults ?? []) {" },
-  { key: "toolOutputs", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "const archivedSource = ledgerOutputs\\.length > 0 \\? ledgerOutputs : \\(snapshot\\.toolOutputs \\?\\? \\[\\]\\);$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 for (const output of snapshot.toolOutputs ?? []) {" },
-  { key: "toolOutputs", axis: "read", kind: "code", codePath: "bin/final-guard-support.js", anchor: "\\(Array\\.isArray\\(record\\?\\.toolOutputs\\) \\? record\\.toolOutputs : \\[\\]\\)$", note: "停写/读取证据锚点：在 bin/final-guard-support.js 里唯一命中的那一行是 (Array.isArray(record?.toolOutputs) ? record.toolOutputs : [])" },
-  { key: "messages", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "const snapshotBody = Array\\.isArray\\(snapshot\\.messages\\)", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 const snapshotBody = Array.isArray(snapshot.messages)" },
-  { key: "persistedTranscriptLength", axis: "read", kind: "comment", codePath: "src/loop/resume-manager.js", anchor: "不能信快照里的 `persistedTranscriptLength`", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 // issue #425：**恢复锚点必须在恢复时现算**，不能信快照里的 `persistedTranscriptLength`——" },
-  { key: "persistedTranscriptLength", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "^ +ctx\\.persistedTranscriptLength = ctx\\.messages\\.length;$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 ctx.persistedTranscriptLength = ctx.messages.length;" },
-  { key: "persistedTranscriptLength", axis: "read", kind: "code", codePath: "src/loop/orchestrator.js", anchor: "^ +runLoopState\\.persistedTranscriptLength \\?\\? 0,$", row: 1, note: "停写/读取证据锚点：在 src/loop/orchestrator.js 里唯一命中的那一行是 runLoopState.persistedTranscriptLength ?? 0,（同名第 2 次出现）" },
-  { key: "partialText", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "\\|\\| \\(typeof ctx\\.resumeRunSnapshot\\?\\.partialText === \"string\"$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 || (typeof ctx.resumeRunSnapshot?.partialText === \"string\"" },
-  { key: "partialText", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "^ +const partialText = ledgerPartial !== undefined \\? ledgerPartial\\.text : snapshot\\.partialText;", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 const partialText = ledgerPartial !== undefined ? ledgerPartial.text : snapshot.partialText;（账本优先、快照兜底）" },
-  { key: "partialRound", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "^ +const partialRound = ledgerPartial !== undefined \\? ledgerPartial\\.round : snapshot\\.partialRound;", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 const partialRound = ledgerPartial !== undefined ? ledgerPartial.round : snapshot.partialRound;（轮号跟正文走，不许拼盘）" },
-  { key: "executedToolIds", axis: "read", kind: "comment", codePath: "src/store/recovery-rows.js", anchor: "快照侧对应的三格（", note: "账本来源锚点（issue #769）：钉的是 src/store/recovery-rows.js 里点名「快照侧 executedToolIds 这一格在恢复路径上退成兜底」的那行注释——账本恢复行（kind: recovery）才是这一格的首选来源，行形状与事件键就定义在这注释下面的模块里" },
-  { key: "partialText", axis: "read", kind: "comment", codePath: "src/store/recovery-rows.js", anchor: "快照侧对应的三格（", note: "账本来源锚点（issue #769）：钉的是 src/store/recovery-rows.js 里点名「快照侧 partialText 这一格在恢复路径上退成兜底」的那行注释——账本恢复行（kind: recovery）才是这一格的首选来源，行形状与事件键就定义在这注释下面的模块里" },
-  { key: "partialRound", axis: "read", kind: "comment", codePath: "src/store/recovery-rows.js", anchor: "快照侧对应的三格（", note: "账本来源锚点（issue #769）：钉的是 src/store/recovery-rows.js 里点名「快照侧 partialRound 这一格在恢复路径上退成兜底」的那行注释——账本恢复行（kind: recovery）才是这一格的首选来源，行形状与事件键就定义在这注释下面的模块里" },
-  { key: "toolUse", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "const unfinishedToolUses = crashToolUses\\.filter\\(\\(toolUse\\) => \\($", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 const unfinishedToolUses = crashToolUses.filter((toolUse) => (" },
+  { key: "toolUse", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "^ +const unfinishedIds = new Set\\(unfinishedToolUses\\.map\\(\\(toolUse\\) => toolUse\\.id\\)\\);$", note: "读取证据锚点：仅由账本恢复出的工具调用参与未结清集合" },
   { key: "ts", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "^ +record\\.ts,$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 record.ts," },
   { key: "compactionStats", axis: "read", kind: "code", codePath: "src/loop/resume-manager.js", anchor: "^ +ctx\\.compactionStats = deterministic\\.compactionStats;$", note: "停写/读取证据锚点：在 src/loop/resume-manager.js 里唯一命中的那一行是 ctx.compactionStats = deterministic.compactionStats;" },
 ];

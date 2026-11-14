@@ -1,10 +1,10 @@
 // @ts-check
-// issue #769：run snapshot「只有快照载着」那几格的 **append-only 账本恢复行**（载体 + 写点 + 幂等 + 字节）。
+// issue #769 / #838：执行事实与结果兜底的 **append-only 账本恢复行**（载体 + 写点 + 幂等 + 字节）。
 //
 // 这个文件测的是「载体本身」，不测快照通道（那是 #767/#770 的地盘）：
 //   1) **形状**：一条一个事件、`messages: []`（不载正文 ⇒ `restoreResume` 的 `records.flatMap(record.messages)`
 //      不会把同一份正文恢复两遍，工单 261021 的「正文翻倍」不再被重新造出来）；
-//   2) **写点**：工具执行那一刻就入账，位置在 `tool_result` 行**之前**（语义红线：执行发生在结果行落盘之前）；
+//   2) **写点**：`tool_result` 内容行先于 `tool-executed` 身份恢复行；
 //   3) **幂等**：唯一事件键 ⇒ 同一事件重放只有一行（`appendRound` 的同 key 同 payload 跳过）；
 //   4) **latest-only vs append-only**：快照那一格会被下一轮盖掉，恢复行不会 ⇒ 读侧的首选来源只能是后者；
 //   5) **字节**：并列报出「新增行字节 / 每轮」（现测，不抄 #768 的 371）。
@@ -27,15 +27,18 @@ import { RECOVERY_ROWS_UNREADABLE } from "../../src/loop/resume-manager.js";
 import {
   RECOVERY_EVENT_PARTIAL_TEXT,
   RECOVERY_EVENT_TOOL_EXECUTED,
+  RECOVERY_EVENT_TOOL_RESULT_UNLEDGERED,
   RECOVERY_EVENTS,
   RECOVERY_ROW_KIND,
   buildPartialTextRecoveryRow,
   buildToolExecutedRecoveryRow,
+  buildUnledgeredToolResultRecoveryRow,
   isRecoveryRow,
   partialTextEventDiscriminator,
   readExecutedToolIdRecoveryRows,
   readPartialTextRecoveryRow,
   readPartialTextRecoveryRounds,
+  readUnledgeredToolResultRecoveryRows,
   recoveryEventKey,
 } from "../../src/store/recovery-rows.js";
 
@@ -59,21 +62,38 @@ const byEvent = (/** @type {any[]} */ records, /** @type {string} */ event) =>
 
 test("#769 载体形状：恢复行一条一个事件、messages 为空（不载正文），两种事件各带自己的判别字段", () => {
   const executed = buildToolExecutedRecoveryRow({ runId: "r1", round: 3, toolUseId: "call-9" });
+  const unledgered = buildUnledgeredToolResultRecoveryRow({
+    runId: "r1",
+    round: 3,
+    toolUseId: "call-9",
+    toolResult: { type: "tool_result", tool_use_id: "call-9", content: "output" },
+  });
   const partial = buildPartialTextRecoveryRow({ runId: "r1", round: 3, text: "写到一半" });
 
-  for (const [name, row] of [["tool-executed", executed], ["partial-text", partial]]) {
+  for (const [name, row] of [
+    ["tool-executed", executed],
+    ["tool-result-unledgered", unledgered],
+    ["partial-text", partial],
+  ]) {
     assert.equal(row.kind, RECOVERY_ROW_KIND, `${name}：行类型必须是 "${RECOVERY_ROW_KIND}"（宿主看的就是这个 kind）`);
-    assert.deepEqual(row.messages, [], `${name}：恢复行**不载正文**，否则 restoreResume 会把同一份正文恢复两遍`);
+    assert.deepEqual(row.messages, [], `${name}：恢复行不使用 messages 载荷`);
     assert.equal(row.round, 3, `${name}：顶层轮号要在（读侧按轮筛）`);
     assert.equal(row.roundKey, "r1:round:3", `${name}：roundKey 与引擎其它行同形`);
     assert.ok(RECOVERY_EVENTS.includes(row.recoveryEvent), `${name}：recoveryEvent 必须在已知事件清单里`);
     assert.ok(typeof row.ts === "string" && row.ts.length > 0, `${name}：ts 要在（宿主时间线）`);
-    assert.ok(!JSON.stringify(row).includes('"content"'), `${name}：整行不许出现消息 content（正文翻倍的前置条件）`);
   }
   assert.equal(executed.recoveryEvent, RECOVERY_EVENT_TOOL_EXECUTED);
   assert.equal(executed.toolUseId, "call-9", "「执行过没有」必须由行**显式携带** toolUseId，不许靠推断");
+  assert.equal(unledgered.recoveryEvent, RECOVERY_EVENT_TOOL_RESULT_UNLEDGERED);
+  assert.equal(unledgered.notYetLedgered, true);
+  assert.equal(unledgered.toolResult.content, "output", "兜底行必须保存完整结果内容");
   assert.equal(partial.recoveryEvent, RECOVERY_EVENT_PARTIAL_TEXT);
   assert.equal(partial.text, "写到一半");
+  assert.deepEqual(readUnledgeredToolResultRecoveryRows([unledgered]), [{
+    round: 3,
+    toolUseId: "call-9",
+    toolResult: unledgered.toolResult,
+  }]);
 });
 
 test("#769 事件键：同一事件重放必得同一个键，不同事件必换键（幂等与「一条一个事件」的支点）", () => {
@@ -104,7 +124,7 @@ test("#769 事件键：同一事件重放必得同一个键，不同事件必换
 
 // ── 2) 写点：执行那一刻就入账，比结果行早 ─────────────────────────────────────
 
-test("#769 写点：工具执行那一刻账本里就出现 tool-executed 恢复行，且排在 tool_result 行之前", async () => {
+test("#838 S1 C1 写点：结果账本行先落，随后出现 tool-executed 恢复行", async () => {
   const store = createMemoryTranscriptStore();
   await runDirect({
     provider: createFakeProvider([toolUseRound("call-1"), finalRound("done")]),
@@ -115,12 +135,8 @@ test("#769 写点：工具执行那一刻账本里就出现 tool-executed 恢复
     runId: "rec-run",
   });
 
-  // 本格钉的是**载体形状**与**不污染轮记录**；「恢复行排在 `tool_result` 之前」那句契约**不在这里**证明——
-  // 事后的两次读（`listRecoveryRows()` / `load()`）是两条独立数组，比不出先后。次序由本文件末尾那条
-  // 「（D）跨通道顺序」用**记录调用序列**的包装 store 证明（`calls` 里比较 `appendRecoveryRow` 与带
-  // `tool_result` 的那次 `appendRound` 谁先）。反向证两条均已实跑：把执行器里那句 await 注释掉 ⇒ 本格与
-  // 次序格一起红；只把恢复行落盘延后到下一次 `appendRound` 之后 ⇒ **只有**次序格红（"恢复行在第 3 次调用、
-  // 结果行在第 2 次"），证明那条断言不是空转。
+  // 本格钉的是**载体形状**与**不污染轮记录**；跨通道先后由调用序列测试证明，确保结果正文行排在
+  // `tool-executed` 身份恢复行之前。
   // 恢复行走**自己的通道**（第 2 段换道裁决）：读口是 `listRecoveryRows()`，不在轮记录里。
   const executed = (await store.listRecoveryRows("rec-run"))
     .filter((row) => row.recoveryEvent === RECOVERY_EVENT_TOOL_EXECUTED);
@@ -373,26 +389,25 @@ test("#827 守卫 ②（file）：同目录两个 store 实例交错写 ⇒ 一�
   assert.equal(readPartialTextRecoveryRow(records, 2)?.text.length, 4000, "A 那条 partial 也必须在场");
 });
 
-test("#769 R3（D）幂等（run 层）：续跑后又执行下一个工具 ⇒ 出现第二条**不同键**的恢复行，第一条无重复", async () => {
+test("#838 S1 C1：结果写失败后内容兜底，续跑再执行新工具时两条执行事实各一条", async () => {
   const inner = createMemoryTranscriptStore();
   /** @type {string[]} */
   const executedCalls = [];
-  // 崩溃现场是**真造**的：进程崩在「`tool-executed` 恢复行已落、`tool_result` 行还没落」那一刻——
-  // 那一瞬间账本里没有结果行，唯一还活着的执行证据就是恢复行（本模块存在的理由）。
-  // 修前那格（R3 验收点 D）用「非续跑的第二次调用 + 既存 `<runId>:msg:1:0` dedup 冲突」当恢复结果：
-  // 第二次调用压根没传 `resume`，所以它测的是「同 runId 重跑」而不是「续跑」，既没证明续跑走完，
-  // 也没证明第一条恢复行不被重复。这里换成手写崩溃现场 + 真 `resume: true`。
+  let rejectResultRow = true;
   const store = {
     ...inner,
     async appendRound(/** @type {string} */ runId, /** @type {any} */ record) {
       const hasResult = (record?.messages ?? []).some((/** @type {any} */ message) =>
         (Array.isArray(message?.content) ? message.content : [])
           .some((/** @type {any} */ block) => block?.type === "tool_result"));
-      if (hasResult) throw new Error("simulated crash: tool_result row not persisted yet");
+      if (hasResult && rejectResultRow) {
+        rejectResultRow = false;
+        throw new Error("simulated failure: tool_result row rejected");
+      }
       return inner.appendRound(runId, record);
     },
   };
-  const phaseOne = await directError({
+  const phaseOne = await runDirect({
     provider: createFakeProvider([toolUseRound("call-1"), finalRound("done")]),
     initialUserMessage: "start",
     executeTool: async ({ input }) => { executedCalls.push(input.step); return `done-${input.step}`; },
@@ -400,13 +415,16 @@ test("#769 R3（D）幂等（run 层）：续跑后又执行下一个工具 ⇒ 
     store,
     runId: "rec-resume",
   });
-  assert.match(String(phaseOne?.message ?? ""), /simulated crash/u,
-    "前置：第一段必须真崩在结果行的写点上（否则就不是「只有恢复行知道执行过了」的现场）");
+  assert.equal(phaseOne.termination?.reason, "end_turn", "写失败有内容兜底时第一段仍应正常收口");
   assert.deepEqual(executedCalls, ["call-1"], "前置：工具真执行了一次，副作用已经发生");
-  const afterCrash = (await inner.listRecoveryRows("rec-resume"))
-    .filter((row) => row.recoveryEvent === RECOVERY_EVENT_TOOL_EXECUTED);
-  assert.deepEqual(afterCrash.map((row) => row.toolUseId), ["call-1"],
-    "前置：崩溃现场里唯一还在账本里的执行证据，就是那一条 tool-executed 恢复行");
+  const afterFailure = await inner.listRecoveryRows("rec-resume");
+  const resultFallbacks = afterFailure
+    .filter((row) => row.recoveryEvent === RECOVERY_EVENT_TOOL_RESULT_UNLEDGERED);
+  assert.equal(resultFallbacks.length, 1, "结果写失败必须保留一条内容兜底行");
+  assert.equal(resultFallbacks[0].toolResult.content, "done-call-1");
+  assert.deepEqual(afterFailure
+    .filter((row) => row.recoveryEvent === RECOVERY_EVENT_TOOL_EXECUTED)
+    .map((row) => row.toolUseId), ["call-1"], "内容兜底后仍保留执行身份行");
 
   // 第二段：**真续跑**，脚本交出**下一个**工具调用（call-2）⇒ 恢复行应当变成两条、键不同。
   const resumed = await runDirect({
@@ -573,11 +591,10 @@ const r3ToolUse = (/** @type {string} */ id) => ({ type: "tool_use", id, name: "
 /**
  * 崩溃现场（形状取自 `test/loop-resume-unpersisted-tool-results.test.js` 的既有夹具）：
  * 账本里只有 round 1 的载体行（assistant 带着 `tool_use: t1`，**没有** `tool_result` 行），
- * run snapshot 说「t1 还挂着」，恢复行说「t1 执行过了」——两格谁也没说漏，但**来源不同**。
+ * 恢复行说「t1 执行过了」。
  * @param {any} inner
- * @param {{ snapshotExecutedToolIds: string[] }} opts
  */
-async function r3CrashScene(inner, { snapshotExecutedToolIds }) {
+async function r3CrashScene(inner) {
   const messages = [
     { role: "user", content: [r3Text("任务")] },
     { role: "assistant", content: [r3Text("答复"), r3ToolUse("t1")] },
@@ -590,19 +607,6 @@ async function r3CrashScene(inner, { snapshotExecutedToolIds }) {
     summary: "missing",
     ts: "2020-01-01T00:00:00.000Z",
   });
-  await inner.saveRunSnapshot(R3_CRASH_ID, {
-    round: 1,
-    messages,
-    persistedTranscriptLength: messages.length,
-    executedToolIds: snapshotExecutedToolIds,
-    pendingToolUses: [r3ToolUse("t1")],
-    toolResults: [],
-    toolOutputs: [],
-    compactionStats: [],
-    partialRound: 1,
-    partialText: "答复",
-    ts: "2020-01-01T00:00:00.000Z",
-  });
   await inner.appendRecoveryRow(R3_CRASH_ID, buildToolExecutedRecoveryRow({
     runId: R3_CRASH_ID, round: 1, toolUseId: "t1",
   }));
@@ -610,7 +614,7 @@ async function r3CrashScene(inner, { snapshotExecutedToolIds }) {
 }
 
 test("#769 R3（B）listRecoveryRows 拒绝 ⇒ 终局点名 recovery_rows_unreadable（**不许**吞成空集后回落绿）", async () => {
-  const inner = await r3CrashScene(createMemoryTranscriptStore(), { snapshotExecutedToolIds: [] });
+  const inner = await r3CrashScene(createMemoryTranscriptStore());
   const store = {
     ...inner,
     listRecoveryRows: async () => {
@@ -646,7 +650,7 @@ test("#769 R3（B）listRecoveryRows 拒绝 ⇒ 终局点名 recovery_rows_unrea
 });
 
 test("#769 R5（M1）listRecoveryRows **resolve 出非数组**（undefined）⇒ 终局点名**同一个** recovery_rows_unreadable（不许吞成空集）", async () => {
-  const inner = await r3CrashScene(createMemoryTranscriptStore(), { snapshotExecutedToolIds: [] });
+  const inner = await r3CrashScene(createMemoryTranscriptStore());
   const store = {
     ...inner,
     // 不是抛错，而是「调用成功但返回坏形状」——上一段只封了 reject，非数组仍被 `: []` 吞成空集。
@@ -680,42 +684,7 @@ test("#769 R5（M1）listRecoveryRows **resolve 出非数组**（undefined）⇒
   assert.equal(provider.requests.length, 0, "终止在第一次模型请求之前：吞成空集会先回落快照再发请求");
 });
 
-test("#769 R3（B）负控制：store **没有** listRecoveryRows ⇒ 仍是合法降级，走快照回落且不发新错误码（三格各自值点名）", async () => {
-  const inner = await r3CrashScene(createMemoryTranscriptStore(), { snapshotExecutedToolIds: ["t1"] });
-  const store = { ...inner };
-  delete store.listRecoveryRows;
-  assert.equal(typeof store.listRecoveryRows, "undefined", "前置：方法必须真的缺席（不是抛错的替身）");
-  // 快照那三格的**各自值**（读侧在能力缺席时唯一的来源）——写现场时就先点名，别事后靠内存猜。
-  const snapshot = await inner.loadLatestRunSnapshot(R3_CRASH_ID);
-  assert.deepEqual(snapshot?.executedToolIds, ["t1"], "快照格 1：executedToolIds = [\"t1\"]（这是降级后唯一的「执行过了」来源）");
-  assert.equal(snapshot?.partialRound, 1, "快照格 2：partialRound = 1");
-  assert.equal(snapshot?.partialText, "答复", "快照格 3：partialText = \"答复\"");
-
-  /** @type {any[]} */
-  const events = [];
-  /** @type {string[]} */
-  const executedCalls = [];
-  const provider = createFakeProvider([finalRound("resumed")]);
-  const resumed = await runDirect({
-    provider,
-    initialUserMessage: "start",
-    executeTool: async ({ input }) => { executedCalls.push(input.step); return "out"; },
-    config: { run: { completion: false } },
-    store,
-    runId: R3_CRASH_ID,
-    resume: true,
-    onEvent: (/** @type {any} */ event) => events.push(event),
-  });
-  assert.equal(resumed.termination?.reason, "end_turn",
-    `能力缺席必须是**降级**而不是失败（对照上面那格的 persistence_failed），实际 ${JSON.stringify(resumed.termination)}`);
-  assert.equal(resumed.finalText, "resumed", "降级路径仍跑完了脚本：回落没有把 run 卡在恢复段");
-  assert.deepEqual(executedCalls, [],
-    "快照那格把 t1 记成已执行 ⇒ 降级路径也没重放它（回落是真的落到了快照，不是恰好没工具）");
-  assert.equal(provider.requests.length, 1, "回落路径要真发第一次模型请求（与硬终止那格的 0 请求对照）");
-  const unreadable = events.filter((event) => event?.type === "recovery_rows_unreadable"
-    || String(event?.code ?? "") === RECOVERY_ROWS_UNREADABLE);
-  assert.deepEqual(unreadable, [], "降级路径不许冒出新的宿主可见错误：那是「读失败」专用的");
-});
+// 载体已退役（#838 S2），依赖快照回落的负控制格随之退役。
 
 // ── 7) issue #769 R3（A/C1）：`clearRecoveryRows` 的实现 + fresh start 的代际边界 ───
 
@@ -887,16 +856,16 @@ test("#769 R5（M2）fresh start 清盘**抛错** ⇒ 终局硬终止：terminat
   assert.equal(clearErrors[0]?.fatal, true, "清盘失败是 fatal 诊断（与其余账本侧写失败同口径）");
 });
 
-// ── 8) issue #769 R3（D）：跨通道**先后顺序**要有调用次序证据 ────────────────────
+// ── 8) S1：结果正文必须先于任何「已执行」身份恢复写入 ────────────────────────────
 
-test("#769 R3（D）跨通道顺序：tool-executed 恢复行的落盘调用**早于**写 tool_result 的那次 appendRound", async () => {
+test("#838 S1 C1：每条 tool_result 账本行先于该工具的其它持久写", async () => {
   const inner = createMemoryTranscriptStore();
   /** @type {Array<{channel:string, note:string}>} */
-  const calls = [];
+  const operations = [];
   const store = {
     ...inner,
     async appendRecoveryRow(/** @type {string} */ runId, /** @type {any} */ record) {
-      calls.push({ channel: "recovery", note: `${record?.recoveryEvent}:${record?.toolUseId ?? "-"}` });
+      operations.push({ channel: "recovery", note: `${record?.recoveryEvent}:${record?.toolUseId ?? "-"}` });
       return inner.appendRecoveryRow(runId, record);
     },
     async appendRound(/** @type {string} */ runId, /** @type {any} */ record) {
@@ -904,7 +873,7 @@ test("#769 R3（D）跨通道顺序：tool-executed 恢复行的落盘调用**�
         Array.isArray(m?.content) ? m.content : []);
       const ids = blocks.filter((/** @type {any} */ b) => b?.type === "tool_result")
         .map((/** @type {any} */ b) => b.tool_use_id);
-      calls.push({
+      operations.push({
         channel: "round",
         note: ids.length > 0 ? `tool_result:${ids.join("+")}` : "no-tool-result",
       });
@@ -912,19 +881,34 @@ test("#769 R3（D）跨通道顺序：tool-executed 恢复行的落盘调用**�
     },
   };
   await runDirect({
-    provider: createFakeProvider([toolUseRound("order-1"), finalRound("done")]),
+    provider: createFakeProvider([{
+      content: [
+        { type: "tool_use", id: "order-1", name: "work", input: { step: "order-1" } },
+        { type: "tool_use", id: "order-2", name: "work", input: { step: "order-2" } },
+      ],
+      stopReason: "tool_use",
+    }, finalRound("done")]),
     initialUserMessage: "start",
-    executeTool: async () => "ok",
+    executeTool: async ({ id }) => {
+      operations.push({ channel: "settled", note: id });
+      return `ok-${String(id)}`;
+    },
     config: { run: { completion: false } },
     store,
     runId: "rec-order",
   });
-  const recoveryAt = calls.findIndex((call) => call.channel === "recovery" && call.note === `tool-executed:order-1`);
-  const resultAt = calls.findIndex((call) => call.channel === "round" && call.note === "tool_result:order-1");
-  assert.ok(recoveryAt >= 0, `必须真的写过 order-1 的 tool-executed 恢复行，实际调用序列 ${JSON.stringify(calls)}`);
-  assert.ok(resultAt >= 0, `必须真的写过带 tool_result:order-1 的轮记录，实际调用序列 ${JSON.stringify(calls)}`);
-  assert.ok(recoveryAt < resultAt,
-    `契约里那句「恢复行排在 tool_result 之前」必须由调用次序证明：恢复行在第 ${recoveryAt} 次调用、结果行在第 ${resultAt} 次，序列 ${JSON.stringify(calls)}`);
+  for (const id of ["order-1", "order-2"]) {
+    const settledAt = operations.findIndex((call) => call.channel === "settled" && call.note === id);
+    const resultAt = operations.findIndex((call) => call.channel === "round" && call.note === `tool_result:${id}`);
+    const recoveryAt = operations.findIndex((call) => call.channel === "recovery"
+      && call.note === `tool-executed:${id}`);
+    assert.ok(resultAt >= 0, `必须真的写过 ${id} 的账本结果行，调用序列 ${JSON.stringify(operations)}`);
+    assert.ok(recoveryAt >= 0, `必须真的写过 ${id} 的 tool-executed 行，调用序列 ${JSON.stringify(operations)}`);
+    assert.equal(operations[settledAt + 1]?.channel, "round",
+      `${id} settle 后第一个持久写必须是结果行，调用序列 ${JSON.stringify(operations)}`);
+    assert.ok(resultAt < recoveryAt,
+      `${id} 结果账本行必须早于 tool-executed 恢复行，调用序列 ${JSON.stringify(operations)}`);
+  }
 });
 
 // ── 9) issue #769 R5（M5）：**解析得动但形状坏**的 `tool-executed` 行不许静默丢 ──────────
@@ -972,7 +956,7 @@ test("#769 R5（M5）读侧形状判据：坏 `tool-executed` 行抛错并点名
 });
 
 test("#769 R5（M5）续跑现场：坏 `tool-executed` 行 ⇒ 终局点名同一个 recovery_rows_unreadable（不重放工具）", async () => {
-  const inner = await r3CrashScene(createMemoryTranscriptStore(), { snapshotExecutedToolIds: [] });
+  const inner = await r3CrashScene(createMemoryTranscriptStore());
   // 现场：t1 的那条执行证据**在**，但它是坏的（缺 dedupKey）——写侧不可能产出这种行，宿主手写可以。
   const brokenRow = {
     kind: "recovery", recoveryEvent: "tool-executed", toolUseId: "t1", round: 1,

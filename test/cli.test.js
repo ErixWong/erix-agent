@@ -940,6 +940,69 @@ test("chat 用 --session 命名新会话时（未声明 sessionExplicit）仍照
   }
 });
 
+test("chat resume warns for a retired snapshot file and stays silent when absent", async () => {
+  const dir = await makeTmp("erix-cli-retired-snapshot-test-");
+  const session = "retired-snapshot";
+  const snapshotPath = join(dir, `${session}.snapshot.json`);
+  const config = { model: "fake-model", maxOutputTokens: 1000 };
+  const warningLine =
+    "[erix] 忽略旧版本写下的 run snapshot（本版本不再读写快照）；"
+      + "从账本恢复，被中断那一轮的尾部正文可能丢失。该文件可以删掉。";
+  try {
+    const configPath = await writeEmptyMcpConfig(dir);
+    await runChat({
+      prompt: "initial",
+      session,
+      cwd: dir,
+      dir,
+      notesDir: join(dir, "notes"),
+      skillsDir: join(dir, "skills"),
+      configPath,
+      provider: createFakeProvider([{ content: [{ type: "text", text: "done" }] }]),
+      config,
+      maxRounds: 1,
+      idleTimeout: 0,
+    });
+    await writeFile(snapshotPath, "not-json");
+
+    const captureResumeStderr = async (prompt) => {
+      let output = "";
+      const originalWrite = process.stderr.write;
+      process.stderr.write = (chunk) => {
+        output += String(chunk);
+        return true;
+      };
+      try {
+        await runChat({
+          prompt,
+          session,
+          sessionExplicit: true,
+          cwd: dir,
+          dir,
+          notesDir: join(dir, "notes"),
+          skillsDir: join(dir, "skills"),
+          configPath,
+          provider: createFakeProvider([{ content: [{ type: "text", text: "resumed" }] }]),
+          config,
+          maxRounds: 1,
+          idleTimeout: 0,
+        });
+      } finally {
+        process.stderr.write = originalWrite;
+      }
+      return output;
+    };
+
+    const withSnapshot = await captureResumeStderr("resume-with-stale-snapshot");
+    assert.equal(withSnapshot.split(warningLine).length - 1, 1);
+    await rm(snapshotPath);
+    const withoutSnapshot = await captureResumeStderr("resume-without-snapshot");
+    assert.equal(withoutSnapshot.split(warningLine).length - 1, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("chat creates distinct default sessions and preserves the second prompt", async () => {
   const dir = await makeTmp("erix-cli-default-session-test-");
   try {

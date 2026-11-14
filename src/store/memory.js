@@ -41,11 +41,9 @@ function copyRecord(record) {
  *   loadRunState: (runId:string) => Promise<object|undefined>,
  *   loadRunStateStatus: (runId:string) => Promise<string|undefined>,
  *   loadRawRows: (runId:string) => Promise<RoundRecord[]>,
- *   saveRunSnapshot: (runId:string, snapshot:object) => Promise<void>,
- *   loadLatestRunSnapshot: (runId:string) => Promise<object|undefined>,
- *   saveCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
- *   appendCheckpoint: (runId:string, checkpoint:object) => Promise<void>,
- *   loadLatestCheckpoint: (runId:string) => Promise<object|undefined>, appendRecoveryRow: (runId:string, record:object) => Promise<boolean>, listRecoveryRows: (runId:string) => Promise<object[]>, clearRecoveryRows: (runId:string) => Promise<boolean>
+ *   appendRecoveryRow: (runId:string, record:object) => Promise<boolean>,
+ *   listRecoveryRows: (runId:string) => Promise<object[]>,
+ *   clearRecoveryRows: (runId:string) => Promise<boolean>
  * }}
  */
 export function createMemoryTranscriptStore() {
@@ -57,7 +55,6 @@ export function createMemoryTranscriptStore() {
   // `.partial.jsonl`）。幂等与冲突判定只在**同一份容器内**比（与 file store 的按文件分缓存同口径）。
   const recoveryEvents = /** @type {Map<string, object[]>} */ (new Map());
   const partialSlots = /** @type {Map<string, object[]>} */ (new Map());
-  const runSnapshots = new Map();
   const runStates = new Map();
   const runStatuses = new Map();
   /** 落盘行的**副本**（`load()` 与 `loadRawRows` 的共同输入；折叠只发生在 `load()` 那一侧）。
@@ -217,37 +214,6 @@ export function createMemoryTranscriptStore() {
       });
       delete persisted.state;
       runStates.set(runId, persisted);
-    },
-
-    async saveRunSnapshot(runId, snapshot) {
-      runSnapshots.set(runId, copyRecord(snapshot));
-    },
-
-    async loadLatestRunSnapshot(runId) {
-      const snapshot = runSnapshots.get(runId);
-      return snapshot === undefined ? undefined : copyRecord(snapshot);
-    },
-
-    /**
-     * @deprecated issue #78：checkpoint 更名 run snapshot。请改用 saveRunSnapshot。
-     */
-    async saveCheckpoint(runId, checkpoint) {
-      await this.saveRunSnapshot(runId, checkpoint);
-    },
-
-    /**
-     * @deprecated issue #78：append 语义与 save 相同（latest-only 覆盖写），
-     * 别名已合并——请改用 saveRunSnapshot。
-     */
-    async appendCheckpoint(runId, checkpoint) {
-      await this.saveRunSnapshot(runId, checkpoint);
-    },
-
-    /**
-     * @deprecated issue #78：请改用 loadLatestRunSnapshot。
-     */
-    async loadLatestCheckpoint(runId) {
-      return this.loadLatestRunSnapshot(runId);
     },
 
     async loadRunState(runId) {

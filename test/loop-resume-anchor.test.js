@@ -18,7 +18,9 @@ import { runDirect } from "./helpers/run-direct.js";
 import { countResumeAnchor } from "../src/loop/resume-manager.js";
 import { createMemoryTranscriptStore } from "../src/store/memory.js";
 import { foldLedgerMessages } from "../src/store/message-rows.js";
+import { buildToolExecutedRecoveryRow } from "../src/store/recovery-rows.js";
 import { createFakeProvider } from "./helpers/fake-provider.js";
+import { NO_EVIDENCE_TOOL_RESULT_TEXT } from "../src/loop/pending-tool-result.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -37,8 +39,7 @@ function requestTexts(message) {
 
 /**
  * 流式假 provider：分三段吐 delta（每段之间让出事件循环，partialPersistence 的定时器才有机会
- * 落快照），然后在返回前**等最后一份 partial 快照带上完整正文**——否则最后一份快照可能停在
- * 前缀上，这一格的前提（陈旧锚点 + 终稿正文已在快照里）就不成立。零 LLM 成本。
+ * 写恢复行），然后在返回前等完整半截正文落账。零 LLM 成本。
  */
 function streamingProvider({ bodies, store, runId, waitForPartial = false }) {
   const requests = [];
@@ -150,15 +151,11 @@ test("#425 stream + partialPersistence：恢复后终稿正文只出现一次（
     executeTool: async () => "unused",
   });
 
-  // 前提（这一格测的是不是「陈旧锚点」现场）：快照里锚点只到 seed，账本已落终稿 assistant。
-  // #827 第 4 刀之后引擎**不再在流式期间写快照**（半截正文的权威是账本恢复行），所以这个现场改成
-  // 按新形状造：恢复行带着完整终稿正文，快照那两格整格缺席 —— 后者本身就是这一刀的行为判据。
-  const snapshot = await inner.loadLatestRunSnapshot(RUN_ID);
+  // 前提：恢复行带着完整终稿正文，账本已落 seed + 终稿 assistant。
   const ledger = foldLedgerMessages(await inner.load(RUN_ID));
   const partialRows = (await inner.listRecoveryRows(RUN_ID))
     .filter((row) => row.recoveryEvent === "partial-text");
   assert.equal(partialRows.at(-1)?.text, BODY, "前提：最后一条恢复行带着完整终稿正文");
-  assert.equal(snapshot?.partialText, undefined, "账本通道在场时快照不该再写 partialText（#827 第 4 刀）");
   assert.equal(ledger.length, 2, "前提：账本里已有 seed + 终稿 assistant");
 
   const resumedProvider = streamingProvider({ bodies: ["追问的答复"], store: inner, runId: RUN_ID });
@@ -178,7 +175,8 @@ test("#425 stream + partialPersistence：恢复后终稿正文只出现一次（
   const context = resumedProvider.requests[0].messages;
   const bodyHits = context.flatMap(requestTexts).filter((value) => value === BODY).length;
   assert.equal(bodyHits, 1, `终稿正文在 provider 上下文里必须只出现一次，实际出现 ${bodyHits} 次`);
-  assert.equal(context.length, 3, "上下文 = seed + 终稿 assistant + 恢复告示（3 条，不是 4 条）");
+  assert.equal(context.length, 3, "上下文 = seed + 终稿 assistant + 恢复运行告示");
+  assert.match(requestTexts(context.at(-1)).join(" "), /【恢复运行】/u);
 });
 
 // ── ③ 反向证：现算锚点少 1 ⇒ invalid_messages + 零请求 ──────────────────────────────
@@ -214,18 +212,6 @@ test("#425 反向证：现算锚点人为少 1 ⇒ 配对断裂，invalid_messag
   const buildStore = async (rows) => {
     const store = createMemoryTranscriptStore();
     for (const row of rows) await store.appendRound(RUN_ID, row);
-    // 快照写「新鲜」锚点：这样失败只可能来自**现算**值，快照不能背锅。
-    await store.saveRunSnapshot(RUN_ID, {
-      round: 1,
-      messages: [userText("任务"), { role: "assistant", content: [text("开工"), toolUse("t1"), toolUse("t2")] }],
-      persistedTranscriptLength: freshAnchor,
-      executedToolIds: [],
-      pendingToolUses: [toolUse("t2")],
-      toolResults: [],
-      toolOutputs: [],
-      compactionStats: [],
-      ts: new Date().toISOString(),
-    });
     return store;
   };
 
@@ -266,76 +252,14 @@ test("#425 反向证：现算锚点人为少 1 ⇒ 配对断裂，invalid_messag
     }),
     (error) => {
       assert.equal(error?.code, "invalid_messages");
-      assert.match(String(error?.message), /tool_result ids do not match assistant tool_use ids/u);
+      assert.match(String(error?.message), /user tool_result has no matching assistant tool_use/u);
       return true;
     },
   );
   assert.equal(brokenProvider.requests.length, 0, "锚点偏移一格 = 零请求（本地校验器先拒）");
 });
 
-// ── ④ 恢复**不消费**快照里的锚点：把它写成 0 / 超大，上下文必须一模一样 ─────────────────
-test("#425 恢复不读快照锚点：写成 0（旧口径下必然 invalid_messages）或超大都不改变上下文", async () => {
-  const RUN_ID = "anchor-ignored";
-  const engineRows = [
-    { round: 0, dedupKey: `${RUN_ID}:engine:round:0:seed`, messages: [userText("任务")] },
-    { round: 1, dedupKey: `${RUN_ID}:engine:round:1` },
-    {
-      round: 1,
-      dedupKey: `${RUN_ID}:msg:1:0`,
-      kind: "message",
-      seq: 0,
-      messages: [{ role: "assistant", content: [text("开工"), toolUse("t1"), toolUse("t2")] }],
-    },
-    { round: 1, dedupKey: `${RUN_ID}:msg:1:1`, kind: "message", seq: 1, messages: [toolResult("t1")] },
-  ];
-  const runOnce = async (snapshotAnchor) => {
-    const store = createMemoryTranscriptStore();
-    for (const row of engineRows) await store.appendRound(RUN_ID, row);
-    await store.saveRunSnapshot(RUN_ID, {
-      round: 1,
-      messages: [userText("任务"), { role: "assistant", content: [text("开工"), toolUse("t1"), toolUse("t2")] }],
-      persistedTranscriptLength: snapshotAnchor,
-      executedToolIds: [],
-      pendingToolUses: [toolUse("t2")],
-      toolResults: [],
-      toolOutputs: [],
-      compactionStats: [],
-      ts: new Date().toISOString(),
-    });
-    const provider = createFakeProvider([{ content: [text("done")], stopReason: "end_turn" }]);
-    await runDirect({
-      provider,
-      resume: true,
-      store,
-      runId: RUN_ID,
-      tools: TOOLS,
-      maxRounds: 8,
-      completion: false,
-      wrapup: false,
-      stallDetection: false,
-      executeTool: async ({ id }) => `replayed-${id}`,
-    });
-    return provider.requests[0].messages;
-  };
-
-  // `toolCallKey` 是每次执行现场分配的身份（不参与语义），比较前投影掉。
-  const shapeOf = (messages) => messages.map((message) => ({
-    role: message.role,
-    blocks: (Array.isArray(message.content) ? message.content : []).map((block) => (
-      block?.type === "tool_result"
-        ? `result:${block.tool_use_id}`
-        : block?.type === "tool_use"
-          ? `use:${block.id}`
-          : `text:${String(block?.text ?? "")}`
-    )),
-  }));
-
-  const fresh = await runOnce(3); // 3 = 现算值（= 账本条数）
-  const zero = await runOnce(0);  // 旧口径：slice(0, 0) ⇒ 全部正文进尾队列 ⇒ 配对断裂
-  const oversized = await runOnce(99); // 写侧多算的形态：旧口径靠 Math.min 夹到账本条数
-  assert.deepEqual(shapeOf(zero), shapeOf(fresh), "快照锚点 0 不得改变恢复上下文（恢复只认现算值）");
-  assert.deepEqual(shapeOf(oversized), shapeOf(fresh), "快照锚点超大不得改变恢复上下文（恢复只认现算值）");
-});
+// 载体已退役（#838 S2），本格随之退役。
 
 // ── ⑤ 宿主预写行的**键形态**不得决定边界归属（issue #425 评审阻塞） ─────────────────────
 //
@@ -388,24 +312,20 @@ function sequenceOf(messages) {
 }
 
 /** 跑一遍「崩溃现场 + 宿主预写行」的恢复，返回现算锚点、provider 与结果。 */
-async function resumeWithHostRow(keyShape, { landedT1 = false } = {}) {
+async function resumeWithHostRow(keyShape, { landedT1 = false, executedToolIds = [] } = {}) {
   const RUN_ID = `anchor-host-key-${keyShape}${landedT1 ? "-landed" : ""}`;
   const rows = crashScene(RUN_ID, { tail: hostPreWriteRow(RUN_ID, keyShape), landedT1 });
   const store = createMemoryTranscriptStore();
   for (const row of rows) await store.appendRound(RUN_ID, row);
-  await store.saveRunSnapshot(RUN_ID, {
-    round: 1,
-    messages: [userText("任务"), { role: "assistant", content: [text("开工"), toolUse("t1"), toolUse("t2")] }],
-    // 快照锚点写「新鲜」值：失败只可能来自**现算**，快照不能背锅（同 ③ 的做法）。
-    persistedTranscriptLength: landedT1 ? 3 : 2,
-    executedToolIds: [],
-    pendingToolUses: landedT1 ? [toolUse("t2")] : [toolUse("t1"), toolUse("t2")],
-    toolResults: [],
-    toolOutputs: [],
-    compactionStats: [],
-    ts: new Date().toISOString(),
-  });
+  for (const toolUseId of executedToolIds) {
+    await store.appendRecoveryRow(RUN_ID, buildToolExecutedRecoveryRow({
+      runId: RUN_ID,
+      round: 1,
+      toolUseId,
+    }));
+  }
   const provider = createFakeProvider([{ content: [text("done")], stopReason: "end_turn" }]);
+  const executed = [];
   const result = await runDirect({
     provider,
     // #833：这三格测的是「宿主追问行的键形态」，不是默认重放语义 ⇒ 钉住旧档，现场保持补跑。
@@ -418,23 +338,27 @@ async function resumeWithHostRow(keyShape, { landedT1 = false } = {}) {
     completion: false,
     wrapup: false,
     stallDetection: false,
-    executeTool: async ({ id }) => `replayed-${id}`,
+    executeTool: async ({ id }) => {
+      executed.push(id);
+      return `replayed-${id}`;
+    },
   });
-  return { rows, provider, result, anchor: countResumeAnchor(rows) };
+  return { rows, store, runId: RUN_ID, provider, result, anchor: countResumeAnchor(rows), executed };
 }
 
-/** ①②③ 共用的断言面：恢复成功、宿主追问是最后一条、告示在它之前。 */
-function assertHostTailIsLast({ provider, result, anchor }, label) {
+/** ①②③ 共用的断言面：恢复成功、缺证调用不自动重跑、告示先于宿主追问。 */
+function assertHostTailIsLast({ provider, result, anchor, executed }, label) {
   const messages = provider.requests[0]?.messages ?? [];
   const sequence = sequenceOf(messages);
   assert.equal(anchor, 2, `${label}：尾部宿主预写行不算进崩溃现场（锚点 = seed + assistant）`);
   assert.equal(provider.requests.length, 1, `${label}：恢复必须成功发出 1 次请求（0 = 本地校验器先拒）。实测序列：${sequence}`);
   assert.equal(result.finalText, "done", `${label}：恢复必须跑完（实测序列：${sequence}）`);
+  assert.deepEqual(executed, [], `${label}：缺乏正向执行证据的调用不得自动重跑`);
   const last = messages.at(-1);
   assert.deepEqual(requestTexts(last), ["宿主追问"],
     `${label}：宿主这次追问必须仍是**最后一条**（模型对最后一条 user 权重最高，且这是既有可观察形状）。实测序列：${sequence}`);
   assert.match(String(messages.at(-2)?.content?.[0]?.text ?? ""), /^【恢复运行】/u,
-    `${label}：恢复告示排在宿主追问**之前**（契约的形状：先告示、再宿主真请求）。实测序列：${sequence}`);
+    `${label}：恢复告示排在宿主追问之前。实测序列：${sequence}`);
   assert.deepEqual(
     (messages[2]?.content ?? []).map((block) => [block?.type, block?.tool_use_id]),
     [["tool_result", "t1"], ["tool_result", "t2"]],
@@ -442,8 +366,8 @@ function assertHostTailIsLast({ provider, result, anchor }, label) {
   );
   assert.deepEqual(
     (messages[2]?.content ?? []).map((block) => block?.content),
-    ["replayed-t1", "replayed-t2"],
-    `${label}：两条补跑结果（t1 的账本行没落）都接在那条聚合 user 消息里。实测序列：${sequence}`,
+    [NO_EVIDENCE_TOOL_RESULT_TEXT, NO_EVIDENCE_TOOL_RESULT_TEXT],
+    `${label}：无执行与结果证据的两条结果必须是 NO_EVIDENCE 桩。实测序列：${sequence}`,
   );
 }
 
@@ -459,20 +383,28 @@ test("#425 宿主追问行的键是引擎形态 `<runId>:msg:<round>:<seq>`：�
   assertHostTailIsLast(await resumeWithHostRow("msg"), "`:msg:` 键");
 });
 
-test("#425 已落 1 条结果行时，默认键宿主追问仍排在【恢复运行】告示**之后**（不静默改序）", async () => {
-  const scene = await resumeWithHostRow("default", { landedT1: true });
+test("#425 已落 1 条结果行时，默认键宿主追问仍在末尾且不静默改序", async () => {
+  const scene = await resumeWithHostRow("default", { landedT1: true, executedToolIds: ["t1"] });
   const messages = scene.provider.requests[0]?.messages ?? [];
   const sequence = sequenceOf(messages);
   assert.equal(scene.anchor, 3, "锚点 = seed + assistant + 已落盘的 t1 结果（宿主行不算）");
   assert.equal(scene.provider.requests.length, 1, `实测序列：${sequence}`);
   assert.deepEqual(requestTexts(messages.at(-1)), ["宿主追问"], `宿主追问必须是最后一条。实测序列：${sequence}`);
   assert.match(String(messages.at(-2)?.content?.[0]?.text ?? ""), /^【恢复运行】/u,
-    `告示必须排在宿主追问之前。实测序列：${sequence}`);
+    `恢复告示必须排在宿主追问之前。实测序列：${sequence}`);
   assert.deepEqual(
     (messages[2]?.content ?? []).map((block) => block?.tool_use_id),
     ["t1", "t2"],
     `已落盘的 t1 与补跑的 t2 必须折在同一条 user 消息里。实测序列：${sequence}`,
   );
+  assert.deepEqual(
+    (messages[2]?.content ?? []).map((block) => block?.content),
+    ["out-t1", "replayed-t2"],
+    `已有正文的 t1 保留账本内容，已证明未到达的 t2 必须续接补跑。实测序列：${sequence}`,
+  );
+  assert.deepEqual(scene.executed, ["t2"], "只补跑已有 t1 结果可证明未到达的 t2");
+  assert.equal((await scene.store.listRecoveryRows(scene.runId))
+    .filter((row) => row.recoveryEvent === "tool-executed" && row.toolUseId === "t2").length, 1);
 });
 
 // ── ⑥ 反向钉：形状像预写、但**键**归引擎的行不算宿主 ───────────────────────────────
@@ -522,17 +454,6 @@ test("#425 方向敏感复证：默认键现场下锚点人为少 1 ⇒ 仍 inva
   const runOnce = async (rows) => {
     const store = createMemoryTranscriptStore();
     for (const row of rows) await store.appendRound(RUN_ID, row);
-    await store.saveRunSnapshot(RUN_ID, {
-      round: 1,
-      messages: [userText("任务"), { role: "assistant", content: [text("开工"), toolUse("t1"), toolUse("t2")] }],
-      persistedTranscriptLength: freshAnchor,
-      executedToolIds: [],
-      pendingToolUses: [toolUse("t2")],
-      toolResults: [],
-      toolOutputs: [],
-      compactionStats: [],
-      ts: new Date().toISOString(),
-    });
     const provider = createFakeProvider([{ content: [text("done")], stopReason: "end_turn" }]);
     const error = await runDirect({
       provider,
@@ -556,7 +477,7 @@ test("#425 方向敏感复证：默认键现场下锚点人为少 1 ⇒ 仍 inva
   const broken = await runOnce(shrunkRows);
   assert.ok(broken.error, "锚点少 1 必须让本地校验器先拒（不是静默放过）");
   assert.equal(broken.error?.code, "invalid_messages");
-  assert.match(String(broken.error?.message), /tool_result ids do not match assistant tool_use ids/u);
+  assert.match(String(broken.error?.message), /user tool_result has no matching assistant tool_use/u);
   assert.equal(broken.provider.requests.length, 0, "锚点偏移一格 = 零请求（方向敏感）");
 });
 
@@ -588,18 +509,13 @@ test("#425 边界：`:round:` 键 + `kind:\"message\"` 的尾行判引擎（anch
 
   const store = createMemoryTranscriptStore();
   for (const row of rows) await store.appendRound(RUN_ID, row);
-  await store.saveRunSnapshot(RUN_ID, {
+  await store.appendRecoveryRow(RUN_ID, buildToolExecutedRecoveryRow({
+    runId: RUN_ID,
     round: 1,
-    messages: [userText("任务"), { role: "assistant", content: [text("开工"), toolUse("t1"), toolUse("t2")] }],
-    persistedTranscriptLength: 3,
-    executedToolIds: [],
-    pendingToolUses: [toolUse("t1"), toolUse("t2")],
-    toolResults: [],
-    toolOutputs: [],
-    compactionStats: [],
-    ts: new Date().toISOString(),
-  });
+    toolUseId: "t1",
+  }));
   const provider = createFakeProvider([{ content: [text("done")], stopReason: "end_turn" }]);
+  const executed = [];
   const error = await runDirect({
     provider,
     resume: true,
@@ -610,10 +526,14 @@ test("#425 边界：`:round:` 键 + `kind:\"message\"` 的尾行判引擎（anch
     completion: false,
     wrapup: false,
     stallDetection: false,
-    executeTool: async ({ id }) => `replayed-${id}`,
+    executeTool: async ({ id }) => {
+      executed.push(id);
+      return `replayed-${id}`;
+    },
   }).then(() => undefined, (thrown) => thrown);
-  assert.ok(error, "这一现场在本地校验器上必须被拒（不是静默放过）");
+  assert.ok(error, "执行证据使 t2 必须补跑，锚点计入契约外尾行后校验器必须拒绝错位结果");
   assert.equal(error?.code, "invalid_messages", "判引擎 ⇒ 补跑结果排到宿主行之后 ⇒ 配对断裂");
-  assert.match(String(error?.message), /assistant tool_use has no immediately following user tool_result/u);
+  assert.match(String(error?.message), /user tool_result has no matching assistant tool_use/u);
+  assert.deepEqual(executed, ["t2"], "t1 有正向执行证据，顺序执行只允许补跑 t2");
   assert.equal(provider.requests.length, 0, "零请求（契约外形状的边界，与 main 的 1 请求不同）");
 });

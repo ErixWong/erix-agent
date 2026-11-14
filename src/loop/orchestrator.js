@@ -41,8 +41,12 @@ import {
   RESUME_JOURNAL_SKIP_DETAIL_APPEND_SKIPPED,
 } from "./pending-tool-result.js";
 import { MESSAGE_ROW_KIND } from "../store/message-rows.js";
-// issue #769：快照独有格的 append-only 恢复行载体（行形状与事件键的单一定义在 `src/store/recovery-rows.js`）。
-import { buildPartialTextRecoveryRow, buildToolExecutedRecoveryRow } from "../store/recovery-rows.js";
+// issue #769：执行与部分文本的 append-only 恢复行载体（行形状与事件键的单一定义在 `src/store/recovery-rows.js`）。
+import {
+  buildPartialTextRecoveryRow,
+  buildToolExecutedRecoveryRow,
+  buildUnledgeredToolResultRecoveryRow,
+} from "../store/recovery-rows.js";
 // issue #568：会话续接块（受预算约束 / 请求尾部 / 计入本地估算 / 骨架三段不降采样）。
 // issue #598：同一个模块的末尾一段是**默认写者**（指令 / 解析 / store / 派生的 project-key）。
 // 渲染与预算只属上面那四个导出，本单一个字节的渲染逻辑都没动。
@@ -381,10 +385,8 @@ function makePersistenceFailure({ operation, phase, sideEffect, runId, error, ev
     event,
   };
   failure.persistenceError = event;
-  // issue #230：与 `checkpoint_failed`（`src/loop/run-snapshot-executor.js#assertSnapshotPersisted`）
-  // **取值也对称**——两个出口是同一次底层故障的两张脸，同名字段两种类型等于把「宿主只能读源码
-  // 才知道」换了个坑。`errorCode` 与 `termination.errorCode` 同一套口径（`terminationErrorCodeForError`：
-  // 取根因自己的 `code`，取不到即 `"unknown"`），`cause` 仍是底层错误对象（既有形状，不动）。
+  // `errorCode` 与 `termination.errorCode` 同一套口径（`terminationErrorCodeForError`：取根因自己的
+  // `code`，取不到即 `"unknown"`），`cause` 仍是底层错误对象（既有形状，不动）。
   // 用 `Object.assign` 写入：`KitError` 的 JSDoc 没声明这个 additive 字段，直接赋值会让 `--checkJs`
   // 棘轮多背一个 TS2339（#214 的「只减不增」）。
   Object.assign(failure, { errorCode: terminationErrorCodeForError(error) });
@@ -609,7 +611,6 @@ function mergeFoldedRoundRanges(first, second) {
  *   modelConfig?: {contextWindowTokens?:number, maxOutputTokens?:number},
  *   session?:any,
  *   store?: {appendRound?: Function, load?:Function, // required pair (issue #78)
- *     saveRunSnapshot?:Function, loadLatestRunSnapshot?:Function, // optional run-snapshot capability
  *     markRunState?:Function, saveRunState?:Function, loadRunState?:Function}, // optional run-state capability
  *   diagnostics?: {error:(event:object)=>void|Promise<void>},
  *   onRound?: (record:object) => void,      // 观察者（issue #173 PR-B）：抛错/rejected Promise 均被隔离
@@ -660,8 +661,8 @@ function mergeFoldedRoundRanges(first, second) {
  *   stub text and per-result framing included; intercepted control results excluded,
  *   failed results counted). Budget base is the engine's existing budgetTokens
  *   (computeBudget / context.budgetTokens) — no second window source. Admission is
- *   incremental in arrival order: results keep declaration order and ids, nothing is
- *   rewritten after its run snapshot, so snapshot/resume semantics are unchanged.
+ *   incremental in arrival order: results keep declaration order and ids, nothing is rewritten after its
+ *   round record, so resume semantics are unchanged.
  *   The layer is off when budgetTokens is absent or outputHygiene is false.
  *
  * `config.run.writeToolNames`:
@@ -673,9 +674,6 @@ function mergeFoldedRoundRanges(first, second) {
  * `config.run.stallDetection`:
  *   {window:4, mode:"consecutive"} (the entire window must hold the same signature);
  *   ERIX_STALL_MODE overrides the mode unless the option is explicitly false.
- *
- * `store`:
- *   Deprecated aliases still honoured at runtime: saveCheckpoint/appendCheckpoint/loadLatestCheckpoint.
  *
  * `config`:
  *   issue #497（S2）：`config` 是一棵**嵌套命名空间**，叶子是既有顶层扁平键的别名（别名 = schema
@@ -1081,20 +1079,8 @@ export async function runToolLoop(options) {
   // 后到的四个符号在原声明点之前没有任何语句能读到（逐符号 `rg` 核过），把它们从 TDZ 变成
   // 已初始化不改变可观察行为；其余声明（含 `emitEvent` 在 `notifyModelMetadataMissing` 下方
   // 这个次序）一行没动。
-  // 【C resume 尾队列】`resumePendingTools` / `resumeTailMessages` / `resumeRunSnapshotMessages`
-  //   （原 :1266 / :1267 / :1269，初值都是空数组 `[]`）与 `persistedTranscriptLength`（原 :1270，
-  //   初值是数字 `0`）。本组**只加格子**：扁平放置、不套子对象，【A】【B】的格子一行没动。
-  // TDZ：这四个符号在原声明点（:1266/:1267/:1269/:1270）之前没有任何语句能读到（逐符号 `rg` 核过，
-  //   原声明点就是它们在文件里的首次出现），把它们从 TDZ 变成已初始化不改变可观察行为。
-  // 【C resume 尾队列（续）】`resumeTranscriptStart`（原 :1268）与 `lastPersistenceFailure`（原 :1273）
-  //   ——两个**无初值**的格子，原 `let X;` 就是 `undefined`，故新格子显式写 `undefined`（不拿 `null`/`0`
-  //   假冒初值：“未发生过”与“发生过但为空”在 `!== undefined` 判定上是两种语义——resume 续写守卫
-  //   （`runLoopState.resumeTranscriptStart !== undefined`）与 partialPersistence 的两处抛出点
-  //   （`runLoopState.lastPersistenceFailure !== undefined`）全部依赖这个区分）。
-  //   TDZ 同理：原声明点就是它们的全文件首次出现，提先初始化不可观察。
-  // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值）——原 :1264 那行
-  //   `@type {Record<string, any>|undefined}` 注解随字段逐字搬走（它存不存在的理由见下面格子上的注解）。
-  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeTailMessages: any[], persistedTranscriptLength: number, resumeToolResultRowKey: string|undefined, resumeTranscriptStart: number|undefined, lastPersistenceFailure: any, resumeRunSnapshot: Record<string, any>|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, runSnapshotFailureCount: number, aggregateBudgetHit: boolean, lastToolCall: { summary: string, streak?: number }|undefined, budgetBelowWorkingSetStreak: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number>, usage: { input_tokens: number, output_tokens: number, cacheRead?: number, cacheWrite?: number }, latestApiInputTokens: number|undefined, latestApiEstimatedTokens: number|undefined, finalText: string, declaredFindings: any, roundStopReason: string|undefined, roundEventDeltas: any[] }} */
+  // 【C resume 尾队列】`resumePendingTools` / `resumeTailMessages` 与 `resumeTranscriptStart`。
+  /** @type {{ rounds: number, foldedThrough: number, modelMetadataNoticeSent: boolean, runOutcomeEmitted: boolean, toolExecutedThisRound: boolean, hadToolUse: boolean, stallStreak: number, lastStallSignature: any, resumePendingTools: any[], resumeUnledgeredToolResults: any[], resumeTailMessages: any[], resumeToolResultRowKey: string|undefined, resumeTranscriptStart: number|undefined, runStateVersion: number, runStateAvailability: any, todoState: any, semanticState: any, currentRunState: any, ttlInjectArmed: boolean, ttlInjectConsumed: boolean, lowBudgetInjectFired: boolean, foldedRoundCount: number, navigationRecordCount: number, lowBudgetPrompted: boolean, toolErrorCount: number, aggregateBudgetHit: boolean, lastToolCall: { summary: string, streak?: number }|undefined, budgetBelowWorkingSetStreak: number, currentTerminationReason: string, readLoopPayload: () => { usage: any; rounds: number; finalText: string }, verificationReader: () => any, judgeRecordCorrelation: Record<string, any>, judgeRecordCount: number, roundJudgeEnabled: boolean, roundJudgeFailures: number, wrapupNormalizationEnabled: boolean, judgeInterceptCount: number, interceptJudgeDecision: any, messageSeqByRound: Map<number, number>, usage: { input_tokens: number, output_tokens: number, cacheRead?: number, cacheWrite?: number }, latestApiInputTokens: number|undefined, latestApiEstimatedTokens: number|undefined, finalText: string, declaredFindings: any, roundStopReason: string|undefined, roundEventDeltas: any[] }} */
   const runLoopState = {
     rounds: 0,
     foldedThrough: 0,
@@ -1106,29 +1092,16 @@ export async function runToolLoop(options) {
     lastStallSignature: null,
     // 【C resume 尾队列】（初值与语义与原闭包 `let` 逐字一致）
     resumePendingTools: [],
+    resumeUnledgeredToolResults: [],
     resumeTailMessages: [],
     // 工单 261021（第三刀·恢复只认账本）：崩溃轮里那条已落盘的 `tool_result` 聚合消息的首片行 key，
     // 由 `restoreResume` 从账本读出；补跑跑出来的结果靠 `partOf` 接回它（见 resume 补跑段）。
     resumeToolResultRowKey: undefined,
-    persistedTranscriptLength: 0,
-    // 工单 261021（第二刀·写侧）：轮内消息序号计数器（`round → 下一个可用 seq`），与
-    // `persistedTranscriptLength` 同族的「已落盘」状态；`seq` 从 0 单调递增，写进展见
-    // `appendMessageRowToTranscript`，读侧口径见 `src/store/message-rows.js`。
+    // 工单 261021（第二刀·写侧）：轮内消息序号计数器（`round → 下一个可用 seq`）；`seq` 从 0 单调递增，
+    // 写进展见 `appendMessageRowToTranscript`，读侧口径见 `src/store/message-rows.js`。
     messageSeqByRound: new Map(),
     // 【C resume 尾队列（续）】无初值格子：原 `let X;` 的初值就是 undefined，逐字保住。
     resumeTranscriptStart: undefined,
-    // issue #735 切片 2：本轮正文在 `messages` 里的起点（圈顶 `messages.length` 的副本）。
-    // 只服务写侧：`persistRunSnapshot` 据此把「账本里早就有」的前缀从快照 `messages` 里省掉。
-    roundMessageStart: undefined,
-    lastPersistenceFailure: undefined,
-    // 【C resume 尾队列（收尾）】`resumeRunSnapshot`（原 :1265，无初值 → undefined）。
-    // 下面这行注解是原 :1264 那行**逐字搬过来的**（issue #177 刀1 加的，只为喂给 `--checkJs`（#214
-    // 棘轮），零运行时影响）：这个值只由 `restoreResume` 经 `set resumeRunSnapshot` 访问器赋值，
-    // 控制流分析看不见那条赋值，丢了注解就把这个格子当成 `undefined`，于是
-    // `if (resumeRunSnapshot && …)` 里的 `resumeRunSnapshot.round` 退回 TS2339（… on type 'never'）、
-    // 棘轮立刻红。snapshot 的形状由宿主 store 决定，这里不假装精确。
-    /** @type {Record<string, any>|undefined} */
-    resumeRunSnapshot: undefined,
     // 【D run-state 可用性】`runStateVersion`（原 :1188）与 `runStateAvailability`（原 :1193）——
     //   两个**有初值**的格子，初值逐字原样搬（`0` 与 `{ status: "available" }`）：版本号的起点决定
     //   落盘 run-state 的 `stateVersion` 与 semantic stale 判定基准，availability 的起点决定「未发生
@@ -1171,24 +1144,10 @@ export async function runToolLoop(options) {
     //   `grep -nE "(^|[^.a-zA-Z0-9_])<符号>\b"` 数过：7 / 7 行，全部在声明之后），提先初始化不可观察。
     foldedRoundCount: 0,
     navigationRecordCount: 0,
-    // 【E 轮内量（三）】`lowBudgetPrompted`（原 :1203）、`toolErrorCount`（原 :1206）、
-    //   `runSnapshotFailureCount`（原 :1207）——三个**有初值**的格子，初值逐字原样搬（`false` /
-    //   `0` / `0`）。这三格是**同一符号挂在两个不同 ctx 对象上各一对 get/set**的形状：
-    //   `restoreResume` 的 ctx（`resume-manager.js` 写：`ctx.lowBudgetPrompted = false` 等三处）与
-    //   `runSnapshotContext`（`run-snapshot-executor.js` 读写：`ctx.toolErrorCount += 1`、
-    //   `ctx.runSnapshotFailureCount += 1`、`ctx.lowBudgetPrompted = true`）——**两个对象都改了**，
-    //   漏一个就是「一个 ctx 读到格子、另一个读到已死的闭包变量」。访问器形状一律没动
-    //   （六对 get/set 全部只改函数体，没有补、没有删、没有合并）。
-    //   ⚠ 对象简写陷阱两处（`toolResultFold` 里的 `lowBudgetPrompted,` 与 run-state 调用里的
-    //   `lowBudgetPrompted,` / `toolErrorCount,`）已改成 `键: runLoopState.符号`，键名一字未动；
-    //   `runSnapshotFailureCount` 的导出键名是**旧名** `checkpointFailureCount`（issue #83），只改值。
-    //   TDZ：原声明点（:1203/:1206/:1207）就是这三个符号的全文件首次出现（逐符号
-    //   `grep -nE "(^|[^.a-zA-Z0-9_])<符号>\b"` 数过：11 / 10 / 10 行，全部在声明之后），提先初始化不可观察。
     lowBudgetPrompted: false,
     toolErrorCount: 0,
-    runSnapshotFailureCount: 0,
     // issue #386 切片 3：**单轮聚合输出预算**是否已经撞过线（本 run 内一旦为真就不再复位）。
-    // 写者只有 `runSnapshotContext.markAggregateBudgetHit`（聚合层把某条工具输出归档/stub 化时记账），
+    // 写者只有 `toolExecutorContext.markAggregateBudgetHit`（聚合层把某条工具输出归档/stub 化时记账），
     // 读者只有 guard 补跑桥的预算闸——它回答「再补一轮会不会继续撕输出预算」。
     // 初值 `false` 逐字照「未发生过」；不入 run-state（它只影响本次进程的补跑决定，
     // 而配额本身已经由 `governorState.guardExtensionUsed` 落盘，不需要第二个跨 resume 判据）。
@@ -1268,8 +1227,8 @@ export async function runToolLoop(options) {
     // 【F-2 双 ctx 拦截记账】`judgeInterceptCount`（原 :1228，初值是常量 `0` ⇒ 直接进字面量，无 TDZ）
     //   与 `interceptJudgeDecision`（原 :1229，**无初值** ⇒ 显式写 `undefined`）。
     //   这两格在 orchestrator 内**没有任何裸读写点**，全部经**两个 ctx 对象上的四枚访问器**
-    //   （`restoreResume` 入参 ctx 一对，现 `:1585`–`:1596`；`runSnapshotContext` 一对，现 `:2376`–`:2387`）被跳文件读写：
-    //   `run-snapshot-executor.js` 的 `:377` 读（`>= ctx.judgeIntervalRound`）、`:379` `+= 1`、
+    //   （`restoreResume` 入参 ctx 一对，现 `:1585`–`:1596`；`toolExecutorContext` 一对）被跳文件读写：
+    //   工具执行器读写 `judgeInterceptCount` 与 `interceptJudgeDecision`；
     //   `:416` 与 `:516` 复位 `= 0`、`:424` 判 `ctx.interceptJudgeDecision === undefined`、
     //   `:425` 写入 decision；`resume-manager.js:227` 用已执行工具数给计数播种。
     //   ⚠ `interceptJudgeDecision` 的 `undefined` **本身就是语义**：`:424` 那一判是「本轮尚未
@@ -1372,8 +1331,7 @@ export async function runToolLoop(options) {
     }
     console.error("Observer callback error:", error, detail);
   };
-  // issue #78：可选 capability（run snapshot / run-state）缺失时跳过对应持久化，
-  // 只发一次诊断事件（不每轮刷屏）；run 正常执行，仅不支持中途 crash resume。
+  // issue #78：可选 run-state capability 缺失时跳过对应持久化，只发一次诊断事件（不每轮刷屏）。
   const skippedCapabilityMethods = new Set();
   const notifyCapabilitySkipped = (method) => {
     if (skippedCapabilityMethods.has(method)) return;
@@ -1462,20 +1420,12 @@ export async function runToolLoop(options) {
       });
     }
   };
-  // issue #770：`snapshotStatus` 是**快照写专用**的显式分类输入——调用点把自己的执行状态交进来。
-  // 为什么必须有它：以前这句是 `args.at(-1)?.status === "executed"`，也就是**读自己刚写进快照载荷的
-  // 那一格**（那是 `status` 在 `src/` 里唯一的读者）。把该格从载荷里停写后，工具后那次写会被降级
-  // 猜成 `checkpoint_before_tool` ⇒ 宿主可见的 `persistence_error.phase` / 抛出的
-  // `checkpoint_failed.phase` 都会跟着变。改成显式传入之后，猜测通道的取值口径与显式声明通道
-  // （`src/loop/run-snapshot-executor.js` 的 `assertSnapshotPersisted`）同源，行为逐字不变。
   /**
    * @param {string} method store 方法名
-   * @param {string | undefined} snapshotStatus 快照写点的调用点状态（`pending` / `executed` /
-   *   `intercepted` / `rejected`）；非快照写传 `undefined`（那些方法的分类本来就不看状态）
    * @param {...any} args 交给 store 的原样参数
    * @returns {Promise<boolean>}
    */
-  const persistClassified = async (method, snapshotStatus, ...args) => {
+  const persistClassified = async (method, ...args) => {
     if (!persistenceRequired) return false;
     if (typeof store?.[method] !== "function") {
       notifyCapabilitySkipped(method);
@@ -1483,25 +1433,19 @@ export async function runToolLoop(options) {
     }
     const phase = method === "appendRound"
       ? "transcript"
-      // issue #769：恢复行与轮记录同属账本侧的只追加通道 ⇒ phase 同走 `transcript`。它既不是快照写点
-      // 也不是 run-state 覆盖写，落到下面的 `checkpoint_before_tool` 会把宿主可见的
-      // `persistence_error.phase` 编错（那一列是契约面，不是内部诊断）。
+      // issue #769：恢复行与轮记录同属账本侧的只追加通道 ⇒ phase 同走 `transcript`。
       // issue #769 R4：`clearRecoveryRows` **另开一格** —— 它发生在 fresh start，坏的是「清盘」这一步，
-      // 与「账本少写了一行」是两种排障现场；取值风格沿用下面 `checkpoint_after_tool` 那种「说在哪一步失败」。
+      // 与「账本少写了一行」是两种排障现场；phase 仍点名当前失败的账本操作。
       : method === "appendRecoveryRow"
         ? "transcript"
         : method === "clearRecoveryRows"
           ? "recovery_rows_clear"
-        : method === "saveRunState" || method === "markRunState"
-        ? "run_state"
-        : snapshotStatus === "executed"
-          ? "checkpoint_after_tool"
-          : "checkpoint_before_tool";
+          : method === "saveRunState" || method === "markRunState"
+          ? "run_state"
+          : "transcript";
     const sideEffect = method === "appendRound"
       ? (runLoopState.toolExecutedThisRound ? "executed_uncommitted" : "not_started")
-      : phase === "checkpoint_after_tool"
-        ? "executed_uncommitted"
-        : "not_started";
+      : "not_started";
     let lastError;
     for (let attempt = 0; attempt <= retryAttempts; attempt += 1) {
       throwIfAborted(signal);
@@ -1538,8 +1482,7 @@ export async function runToolLoop(options) {
       errorLedger,
     });
   };
-  /** `persistClassified()` 的非快照写简写（轮记录 / run-state 那些写的分类不看调用点状态）。 */
-  const persist = async (method, ...args) => persistClassified(method, undefined, ...args);
+  const persist = async (method, ...args) => persistClassified(method, ...args);
   const markRunState = async (state) => {
     await persist("markRunState", runId, state);
   };
@@ -2001,7 +1944,7 @@ export async function runToolLoop(options) {
   const judgeProviderPort = capabilityPorts.judgeProvider;
   const wrapupEvaluator = judgeProviderPort ?? judgeConfig?.provider ?? provider;
   // issue #165：接管 judge 记录的关联字段——每个 judge 决策（round / intercept / degraded，
-  // 含 run-snapshot-executor 里的拦截决策）都经下方 `emitJudge` 这个唯一收口打上 runId 与
+  // 含工具执行器里的拦截决策）都经下方 `emitJudge` 这个唯一收口打上 runId 与
   // 模型标识。模型名一律从 run 选项/provider 配置探（`judge-record.js`），探不到就不写字段；
   // judge 走独立 evaluator 时额外写 `judgeModel`，与 run 同名时不写（无冗余字段）。
   runLoopState.judgeRecordCorrelation = judgeRecordFields({
@@ -2068,8 +2011,7 @@ export async function runToolLoop(options) {
   // `lowBudgetPrompted` 已迁入 `runLoopState`（issue #177 刀5-E）。
   // `foldedRoundCount` / `navigationRecordCount`
   //   已迁入 `runLoopState`（issue #177 刀5-E）。
-  // `toolErrorCount` / `runSnapshotFailureCount`
-  //   已迁入 `runLoopState`（issue #177 刀5-E）。
+  // `toolErrorCount` 已迁入 `runLoopState`（issue #177 刀5-E）。
   // `runStateVersion` / `runStateAvailability` / `currentRunState` / `todoState` / `semanticState`
   //   已迁入 `runLoopState`（issue #177 刀5-D）。
   // `ttlInjectArmed` / `ttlInjectConsumed` / `lowBudgetInjectFired`
@@ -2186,15 +2128,6 @@ export async function runToolLoop(options) {
   // guard 补跑桥绕回主循环时不会再注入一次。
   /** @type {{ text: string, slot: string, round: number } | undefined} */
   let resumeNotice;
-  // issue #420（A 集合入账）：`restoreResume` 从 run snapshot 接回来的那批「崩溃前**已执行完、结果已成型、
-  // 账本里没有对应 `tool_result` 行**」的结果（A 集合）。它同样是「已成型但未落盘」的消息，必须和补跑
-  // 跑出来的结果（B 集合）走**同一条写侧**（`appendMessageRowToTranscript` + `partOf`）。
-  // 写成**普通局部变量 + 一对访问器**（与紧邻的 `resumeNotice` / `taskBriefSource` 同一个先例）：
-  // `restoreResume` 的 resume 分支只读 transcript 账本；账本写入一律在本文件
-  // （`appendMessageRowToTranscript` / `persist`），失败语义与 `seq` 计数器只有一处。它只负责把批次
-  // 交出来，写入口是本文件的 `journalResumeUnpersistedToolResults`，由它在补跑段之前逐条入账。
-  /** @type {any[]} */
-  let resumeUnpersistedToolResults = [];
   // issue #421（中段悬空 `tool_use` 的读侧兜底）：`restoreResume` 在重建好的上下文里找到的「中段悬空、
   // 账本里也没有任何一行结清过它」的 `tool_use`，已经就地补了桩 `tool_result`（并进了它所属那条
   // assistant 紧接的下一条 user 消息）。这里交出来的是**待入账的那几张桩**，每张带自己的 `partOf`
@@ -2209,17 +2142,12 @@ export async function runToolLoop(options) {
   // 下一次请求出网前的 `invalid_messages`（0 次 HTTP），读不出「引擎放弃了这个 run」。
   /** @type {Array<{reason: string, detail?: string, round: any}>} */
   let resumeMidSequenceAbandons = [];
-  // issue #424（守卫）：崩溃轮的正文里**是否已有 assistant 行**（`restoreResume` 在已折叠的账本条目上算好
-  // 交过来）。`false` = 升级路径（崩溃轮的 assistant 正文只在快照里）⇒ A 集合整段不入账，退回修前的
-  // 「只进内存」语义。`undefined` = 本次不是崩溃现场恢复（没有 A 集合，走不到守卫）。
-  /** @type {boolean|undefined} */
-  let resumeCrashRoundAssistantPersisted;
   const messageRounds = new WeakMap();
   for (const message of messages) messageRounds.set(message, 0);
   // 双计数器约定（issue #32 #8）——改这两处语义前先读这里：
   // - `rounds`：**身份**轮号。跨 resume 单调递增（resume 从 transcript 最大 round 续起），
   //   用于 round 编号 / `roundKey` / messageRounds / judge 的"已运行轮数"展示 /
-  //   run snapshot round / 结果 `result.rounds`。它**不是**轮预算。
+  //   结果 `result.rounds`。它**不是**轮预算。
   // - `budgetRounds`：**本次 runToolLoop 的预算消耗**。每次调用从 0 起计，
   //   resume **不**继承历史（否则续接轮轮号已到顶，主循环一次进不去，
   //   直接被 max_rounds_cap 强制收尾）。用于主循环条件 / `remainingRounds` /
@@ -2229,25 +2157,18 @@ export async function runToolLoop(options) {
   // `budgetRounds` 是**另一个**计数器（本次调用的预算消耗），本组未动。
   let budgetRounds = 0;
   // `foldedThrough` 已迁入 `runLoopState.foldedThrough`（issue #177 刀5）。
-  // 【C 组第1刀】`resumePendingTools` / `resumeTailMessages` / `resumeRunSnapshotMessages` /
-  //   `persistedTranscriptLength` 已迁入 `runLoopState`（issue #177 刀5 C 组，格子在状态对象末尾）。
-  // 【C 组第2刀】`resumeTranscriptStart`（原 :1268）/ `lastPersistenceFailure`（原 :1273）同上。
-  // 【C 组第3刀】`resumeRunSnapshot`（原 :1265）也已迁入 `runLoopState.resumeRunSnapshot`，它的
-  //   `@type {Record<string, any>|undefined}` 注解（原 :1264，issue #177 刀1 为喂 `--checkJs` #214 棘轮
-  //   而加，零运行时影响）**随字段逐字搬到状态对象那一格上**：这个值只由 `restoreResume` 经
-  //   `set resumeRunSnapshot` 访问器赋值，控制流分析看不见那条赋值，注解丢了 `resumeRunSnapshot.round`
-  //   就会退回 TS2339（… on type 'never'）——本组唯一一行类型注解，一行也没删。
+  // 【C 组】`resumePendingTools` / `resumeTailMessages` / `resumeTranscriptStart` 位于 `runLoopState`。
   const resumeExecutedToolIds = new Set();
   // issue #790：**只服务出网措辞**的「执行过没有」证据集，与上面那格**分开**。
   // 为什么不开一个共用：`resumeExecutedToolIds` 只在「有崩溃现场」那个分支里被填（见
   // `src/loop/resume-manager.js` 里 `if (crashSiteRound || ledgerBoundary !== null)` 那一段），而本单
   // 要补的那一类砖化档案**根本没有崩溃现场**（悬空在**中段**、后面还有引擎正文）⇒ 读那一格永远是空集
   // ⇒ 「执行过」会被说成「无证据」。而把账本恢复行无条件并进去那一格会挪到复放判据
-  // （`executedToolIds.has(id) && recordedToolResult !== undefined`）与快照那格的字节，超出本单范围
+  // （`executedToolIds.has(id) && recordedToolResult !== undefined`）与账本结算状态，超出本单范围
   // ⇒ 宁可多一个只读证据格：它**不参与**任何复放/去重判据，只决定桩的那一句怎么说。
-  // 顺位与 #769 一致：账本 `tool-executed` 恢复行**优先**，快照 `executedToolIds` 格只作兜底。
+  // 恢复措辞只认账本 `tool-executed` 恢复行；没有账本证据时不推断工具是否执行过。
   const executedEvidenceToolIds = new Set();
-  const resumeRunSnapshotResults = new Map();
+  const resumeLedgerToolResults = new Map();
   // issue #769 R3（阻断 A）：**代际边界 = 恢复行通道的生命周期**。恢复行的事件键只有
   // `runId + round + event + 判别子`（`src/store/recovery-rows.js#recoveryEventKey`），**没有** run 代际，
   // 所以「同一个 `runId` 上第二次非续跑」如果不清盘，上一代留下的 `tool-executed` 会在下一次续跑时
@@ -2283,8 +2204,7 @@ export async function runToolLoop(options) {
     persistenceRequired,
     runId,
     archivedOutputs,
-    // issue #78 验收修正：resume 消费可选能力（loadRunState / snapshot loader）
-    // 缺失时走与 persist 守卫同一的单条去重诊断通道。
+    // issue #78 验收修正：resume 消费可选能力（loadRunState）缺失时走与 persist 守卫同一的单条去重诊断通道。
     notifyCapabilitySkipped,
     // issue #326（wo-C）：恢复时把**已入账的折叠摘要**灌回引擎的复用账本 ⇒ 同一折叠输入不再调摘要器。
     // 写成「属性 + 箭头函数」（`test/loop-callback-this.test.js` 钉住的口径），不是方法简写。
@@ -2343,12 +2263,6 @@ export async function runToolLoop(options) {
     set resumeNotice(value) {
       resumeNotice = value;
     },
-    get resumeUnpersistedToolResults() {
-      return resumeUnpersistedToolResults;
-    },
-    set resumeUnpersistedToolResults(value) {
-      resumeUnpersistedToolResults = value;
-    },
     get resumeMidSequenceToolResults() {
       return resumeMidSequenceToolResults;
     },
@@ -2360,12 +2274,6 @@ export async function runToolLoop(options) {
     },
     set resumeMidSequenceAbandons(value) {
       resumeMidSequenceAbandons = Array.isArray(value) ? value : [];
-    },
-    get resumeCrashRoundAssistantPersisted() {
-      return resumeCrashRoundAssistantPersisted;
-    },
-    set resumeCrashRoundAssistantPersisted(value) {
-      resumeCrashRoundAssistantPersisted = value;
     },
     messageRounds,
     get rounds() {
@@ -2379,12 +2287,6 @@ export async function runToolLoop(options) {
     },
     set foldedThrough(value) {
       runLoopState.foldedThrough = value;
-    },
-    get resumeRunSnapshot() {
-      return runLoopState.resumeRunSnapshot;
-    },
-    set resumeRunSnapshot(value) {
-      runLoopState.resumeRunSnapshot = value;
     },
     get resumePendingTools() {
       return runLoopState.resumePendingTools;
@@ -2404,12 +2306,6 @@ export async function runToolLoop(options) {
     set resumeTranscriptStart(value) {
       runLoopState.resumeTranscriptStart = value;
     },
-    get persistedTranscriptLength() {
-      return runLoopState.persistedTranscriptLength;
-    },
-    set persistedTranscriptLength(value) {
-      runLoopState.persistedTranscriptLength = value;
-    },
     // 工单 261021（第三刀）：恢复路径要从账本播 `seq` 计数器与崩溃轮的首片行 key。
     get messageSeqByRound() {
       return runLoopState.messageSeqByRound;
@@ -2420,10 +2316,16 @@ export async function runToolLoop(options) {
     set resumeToolResultRowKey(value) {
       runLoopState.resumeToolResultRowKey = value;
     },
+    get resumeUnledgeredToolResults() {
+      return runLoopState.resumeUnledgeredToolResults;
+    },
+    set resumeUnledgeredToolResults(value) {
+      runLoopState.resumeUnledgeredToolResults = Array.isArray(value) ? value : [];
+    },
     resumeExecutedToolIds,
     // issue #790：出网桩措辞的证据格（上面那段为什么与 `resumeExecutedToolIds` 分开）。
     executedEvidenceToolIds,
-    resumeRunSnapshotResults,
+    resumeLedgerToolResults,
     toolStats,
     governorState,
     resolvedWriteToolNames,
@@ -2461,12 +2363,6 @@ export async function runToolLoop(options) {
     },
     set toolErrorCount(value) {
       runLoopState.toolErrorCount = value;
-    },
-    get runSnapshotFailureCount() {
-      return runLoopState.runSnapshotFailureCount;
-    },
-    set runSnapshotFailureCount(value) {
-      runLoopState.runSnapshotFailureCount = value;
     },
     get semanticState() {
       return runLoopState.semanticState;
@@ -2735,8 +2631,8 @@ export async function runToolLoop(options) {
   // 跳通道身份键（工单 261014 T1 / issue #284）：一次调用只分配一次，同值从「第一个可识别的
   // 流式片段」一路带到 tool_use 块、onToolCall fragment、tool_result、事件与投影。
   // 一个 provider attempt 一具注册表：被重试丢弃的那次 attempt 不该与真正执行的那次共用身份；
-  // 而 resume/run snapshot 复放的块带着旧值回来，`ensureToolCallKeyOnBlock` 只复用不重生。
-  // provider `id` / `tool_use_id` 是协议配对键（`src/messages/rounds.js` 的配对校验、快照复放
+  // 而 resume 复放的块带着旧值回来，`ensureToolCallKeyOnBlock` 只复用不重生。
+  // provider `id` / `tool_use_id` 是协议配对键（`src/messages/rounds.js` 的配对校验、结果复放
   // 查找都靠它），本单只读它、绝不改写它。
   let toolCallKeys = createToolCallKeyRegistry();
   const beginToolCallAttempt = () => {
@@ -2749,11 +2645,11 @@ export async function runToolLoop(options) {
     if (known !== undefined) return known;
     return toolCallKeys.claimForBlock(block, confirmedReplay);
   };
-  // resume 崩溃现场里那条**尚未产出结果**的 pending 调用：上下文（含 snapshot.messages 带回的
-  // 历史）里同 id、且**没有配对 tool_result** 的那个 tool_use 块就是它本人，它的 key 就是要沿用
+  // resume 崩溃现场里那条**尚未产出结果**的 pending 调用：账本重建的上下文里同 id、且**没有配对
+  // tool_result** 的那个 tool_use 块就是它本人，它的 key 就是要沿用
   // 的旧值（工单 261014 T1-fix 第 1 项明列的两个确认继承路之一）。已配过结果的同 id 旧块一律
   // 排除 —— 那正是 provider id 跳轮重复时会串号的那一类，所以这里不是「按 id 扫历史」。
-  // 确认不到（升级前的旧快照，两端都没有该字段）则交回调用点现场分配：本轮的 tool_use 与
+  // 确认不到（升级前的旧账本，两端都没有该字段）则交回调用点现场分配：本轮的 tool_use 与
   // 它的 interrupted 结果共用同一个新值，两端仍然一致。
   const crashSitePendingKey = (
     /** @type {any} */ block,
@@ -2774,11 +2670,11 @@ export async function runToolLoop(options) {
   };
   // `toolCallKey` 的继承**只认「能确认是同一次调用的复放」**（工单 261014 T1-fix 第 1、2 项）：
   //   · 块上已带值 —— `claimToolCallKey` 的 `peek` 那条路；
-  //   · 本轮复放窗口 `snapshotResults` 命中（与下面 `:2985` 那条复放分支同一份数据、同一个键），
+  //   · 本轮复放窗口 `toolResultsById` 命中（与工具循环的复放分支同一份数据、同一个键），
   //     此时这次调用的身份**就是那条已记录结果里的身份**。
   // 绝不按 provider `id` 扫历史消息继承：provider 的 tool-call id **不保证 run 内唯一**（轮内
   // index 前缀，或畸形响应兜底成常量 `call_legacy`，见 issue #284），扫历史等于把串号从 `id`
-  // 原样搬进 `toolCallKey`；`12968ee` 的复放也只按 `snapshotResults` 取，没有「扫历史」这一路。
+  // 原样搬进 `toolCallKey`；复放也只按结果缓存取，没有「扫历史」这一路。
   // id 仍是协议配对键：只读，不改写，也不拼进 key。
   // 返回 `null` = **本轮不认领任何 key**：复放的记录是升级前写入的（没有 `erix.toolCallKey`），
   // 于是 `tool_use` 与 `tool_result` **两端一致地缺失**——给老记录补一个 key 会比两端都缺更糟
@@ -2834,7 +2730,7 @@ export async function runToolLoop(options) {
     // issue #790：出网桩措辞的证据格（上面与 `resumeExecutedToolIds` 分开的那段注释）。
     executedEvidenceToolIds,
     // issue #790：请求视图里插了桩必须能被宿主看到（沿 #730 的 `resume_journal_skipped` 口径，
-    // **不新增事件类型**，`reason` 是新值、`detail` 沿用既有两个取值）。去重靠 `requestViewStubSeen`：
+    // **不新增事件类型**，`reason` 是新值，`detail` 说明插页形状或同页缺口）。去重靠 `requestViewStubSeen`：
     // 砖化的形状**每一轮**都会重新补同一批桩（账本不修），逐轮重报会把一个静态事实当噪声重报
     // （#769 对 `listRecoveryRows` 缺席保持沉默是同一口径）。
     recordRequestViewStub: ({ round, stubs }) => {
@@ -2993,18 +2889,7 @@ export async function runToolLoop(options) {
   const callProvider = (options) => runProvider(providerContext, options);
 
   const executedToolIds = new Set(resumeExecutedToolIds);
-  const snapshotResults = new Map(resumeRunSnapshotResults);
-  // issue #78：run snapshot 是可选 capability。优先新方法 saveRunSnapshot；
-  // 旧名（saveCheckpoint/appendCheckpoint）作为过渡期 fallback 继续支持第三方 store；
-  // 三者皆无 → 无快照能力：跳过快照持久化，工具照常执行（仅失去中途 crash resume）。
-  const snapshotSaveMethod = typeof store?.saveRunSnapshot === "function"
-    ? "saveRunSnapshot"
-    : typeof store?.saveCheckpoint === "function"
-      ? "saveCheckpoint"
-      : typeof store?.appendCheckpoint === "function"
-        ? "appendCheckpoint"
-        : undefined;
-  const hasRunSnapshotStore = persistenceRequired && snapshotSaveMethod !== undefined;
+  const toolResultsById = new Map(resumeLedgerToolResults);
   const replayForToolUse = (toolUse) => {
     const resumedToolUse = runLoopState.resumePendingTools.find((candidate) => (
       candidate?.id === toolUse?.id
@@ -3018,148 +2903,6 @@ export async function runToolLoop(options) {
       : undefined;
     return definition?.replay === "safe" ? "safe" : "unsafe";
   };
-  const withReplayDeclaration = (toolUse) => (
-    toolUse && typeof toolUse === "object"
-      ? { ...toolUse, replay: replayForToolUse(toolUse) }
-      : toolUse
-  );
-  const persistRunSnapshot = async ({
-    round,
-    pendingToolUse,
-    pendingToolUses = [],
-    toolResults = [],
-    status = "pending",
-    messagesOverride,
-    partialText,
-    partialRound,
-  }) => {
-    runLoopState.lastPersistenceFailure = undefined;
-    const method = snapshotSaveMethod;
-    if (method === undefined) {
-      // 无快照能力：单条诊断（Set 去重，不每轮刷屏），工具照常执行。
-      // persistence "none" 模式本来就不要求持久化，不诊断。
-      if (persistenceRequired) notifyCapabilitySkipped("saveRunSnapshot");
-      return false;
-    }
-    try {
-      const snapshotPendingToolUse = withReplayDeclaration(pendingToolUse);
-      // issue #735 切片 2（写侧只交轮残余）：本格以前写的是**整段会话正文**的副本，而 #734 实测
-      // 宿主侧 2 MiB 超限的大头就是它（每轮都重写一遍从种子到现在的全文）。
-      //
-      // **写什么**：`messages[index]` 仍是**同一绝对下标**上的那一格（索引空间不变，不落盘的格子置
-      // `null`），于是读侧的 `snapshot.messages.slice(anchor)` 一行不用改就能拿到同样的那一段。
-      //
-      // **写侧依赖的那一件事（实测口径，不是承诺）**：
-      //   `residueStart <= 本次恢复现场算出的 anchor`，且 `residueStart <= 本轮正文起点`；读侧只切
-      //   `snapshot.messages.slice(anchor)` ⇒ **它永远读不到被置 `null` 的那段格子**。取
-      //   `residueStart = min(本轮起点 roundMessageStart, persistedTranscriptLength, 长度)`：
-      //   1. `persistedTranscriptLength` 只累加**本进程亲手落盘成功**的逻辑消息（两处写点都带
-      //      `if (persisted)` 守卫），而恢复侧的锚点 `countResumeAnchor(records)` 量的就是这本账在
-      //      更晚时刻的折叠条数（账本只追加，不重写）⇒ 前者 <= 后者。
-      //   2. 「本轮起点」之前的正文都是上一轮（及更早）的，逐条入账（工单 261021 第二刀）+ #326 的
-      //      引擎补充行已经把它们写进账本 ⇒ 它们 <= 锚点；折叠（compaction）只把内存里的那段变短，
-      //      账本不缩 ⇒ 锚点只会更靠后。
-      //
-      //   **这里只证到「读者永不读到」，没证「信息一定还在」**（两个是不同的命题）。只有一个已知
-      //   例外，而它**不是本片引入的**：恢复时从快照补进内存、却被 #424 的守卫故意留在账本之外的那段
-      //   旧正文，在**下一次恢复**时会落在 `slice(anchor)` 起点之前——因为 `anchor` 是标量（折叠后的
-      //   逻辑消息条数），不是「快照哪些下标已入账」的位图，而它会在第一跳后续跑中从 3 涨到 5
-      //   （夹具实测）。⇒ 写侧无论怎么写（整段 / 残余 / 按锚点封顶）都取不回它：两棵树并排跑同一套
-      //   两跳场景交出**逐字相同**的结果（都是 `invalid_messages`、都是 0 次模型请求、旧正文都取不到）。
-      //   那是**读侧切片下标语义**的缺陷，已开 **issue #754** 承接（常驻用例：本文件的
-      //   「两跳恢复记录当前行为」）。所以：**不要拿「按构造不会丢信息」这句跨恢复的话来为写侧背书**。
-      //   反向证明（常驻用例）：`test/loop-snapshot-round-residue-735.test.js`。
-      //
-      // **不许动的面**：键名/键序/这一格的位置逐字不变（`src/store/file.js` 直接 `JSON.stringify`）；
-      // 读侧的 `Array.isArray(snapshot.messages) ? … : []` 容忍面原样保留（旧快照仍是整段正文，照旧
-      // 能被读）；`store/` 层逐字透传；不新增错误码。
-      const transcriptForSnapshot = messagesOverride ?? messages;
-      const residueStart = Math.max(0, Math.min(
-        transcriptForSnapshot.length,
-        runLoopState.roundMessageStart ?? transcriptForSnapshot.length,
-        runLoopState.persistedTranscriptLength ?? 0,
-      ));
-      const snapshotTranscriptResidue = transcriptForSnapshot.map((message, index) => (
-        index < residueStart ? null : cloneState(message)
-      ));
-      const snapshotPendingToolUses = pendingToolUses.length > 0
-        ? pendingToolUses.map(withReplayDeclaration)
-        : pendingToolUse === undefined
-          ? pendingToolUses
-          : [snapshotPendingToolUse];
-      // issue #770：分类输入由调用点**显式**交进来（`persistClassified` 的第二个参数），不再靠
-      // 载荷里那一格 `status`（下面已停写）。工具后那次写的 `executed` 因此仍会被分类成
-      // `checkpoint_after_tool` / `executed_uncommitted`，与通道 B（executor 调用点的显式声明）一致。
-      return await persistClassified(method, status, runId, {
-        round,
-        // issue #735 切片 1 + issue #770（写侧去冗余）：本格曾写 4 个候选冗余字段；#735 切片 1 按
-        // **实跑复核**只停掉当时真零读者的两格，#770 把剩下两格的读者/断言换成权威来源后把它们也停掉
-        // ⇒ **四格全部停写**。**键序与基点逐字一致**（`src/store/file.js:523` 直接 `JSON.stringify(snapshot)`
-        // ⇒ 键序是宿主可见的落盘字节），所以 #770 在本格上的净改动就是**再删两行**，保留格的相对
-        // 位置一律不动（机器缺席断言：`test/loop-snapshot-write-side-735.test.js` 判据 1）。
-        //
-        // **已停写（#735 切片 1 那两格，登记原样保留）**
-        // - `toolUse`：它与 `pendingToolUse` 是**两次独立 `cloneState()` 调用仍同一个源值**
-        //   （`cloneState(snapshotPendingToolUse)` 写两遍）⇒ 内容等值但**不同址**，不是同一对象的别名。
-        //   零读者的证据不是名字而面：**恢复侧读快照对象那一层只出现 9 个字段** —— 穷举
-        //   `grep -rhoE "resumeRunSnapshot\??\.[A-Za-z_]+" src/ | sed 's/.*\.//' | sort -u`（31 个读点）得
-        //   `executedToolIds` / `messages` / `partialRound` / `partialText` / `pendingToolUse` /
-        //   `pendingToolUses` / `round` / `toolOutputs` / `toolResults`，里面**没有** `toolUse` 也没有 `ts`；
-        //   而 `grep -rn "\.toolUse\b" src/ bin/` 在基点 `f6c2566` 上只命中 1 行（`orchestrator.js:2853`），
-        //   那是 `...toolUse` 展开运算符的末尾点号，**不是属性访问** ⇒ 真属性访问面为空。
-        //   （注意：“`grep "snapshot\.toolUse\b"` 零命中”证不了零读者——基点树上这个字面串本来就不存在。
-        //   另需注意 `event.toolUse`（诊断事件面）与 `toolUseId`（结果条目键）都是**另一回事**，不算读者。）
-        //   恢复侧只走 `pendingToolUse` / `pendingToolUses` 的 fallback（`src/loop/resume-manager.js:386-388,538-541`）
-        //   ⇒ **`pendingToolUse` 原样保留**。
-        // - `ts`：同上口径，快照对象那一层没人读它；读侧确实处理的 `ts` 是**账本行 / 消息行**的 `ts`
-        //   （`src/store/message-rows.js:114-115,326-328` 与 `src/loop/resume-manager.js:336` 的 `record.ts`），
-        //   另一个产物、另一张面。
-        //
-        // **已停写（#770 这两格——下面两行就是「为什么这里没有写点」）**
-        // ⇒ `status` 停写的理由：宿主面确实零读者（`src/store/file.js:587` 的 `persisted.status` 读的是
-        //   `<runId>.status.json` **另一个产物**），而它在 `src/` 里唯一的读者是分类通道对载荷的嗅探
-        //   （旧 `persist()` 的 `args.at(-1)?.status === "executed"`）——#770 先把那个读者搬成调用点**显式**
-        //   交进来的 `persistClassified(method, status, runId, …)`（见本文件上面那一段），测试侧原先拿
-        //   它当指纹的四处（#178 两通道守门、被拒崩溃夹具、两处注入失败的开关）也同批改读载荷里的
-        //   引擎事实（成功执行只进 `executedToolIds`，被拒/被拦才在结果条目上打
-        //   `toolResult.erix.executionStatus`），才在这里删行。
-        // - `compactionStats`：曾经被 `test/compaction-observability.test.js` 从 `loadLatestCheckpoint()`
-        //   读到（当时算「五面露出」里的 checkpoint 那一面），#770 把那一面改指落盘 run-state。
-        // ⇒ `compactionStats` 停写的理由：恢复侧读的是 run-state 的 `deterministic.compactionStats`
-        //   （`src/loop/resume-manager.js` 的 `ctx.compactionStats = deterministic.compactionStats`），
-        //   压缩观测的**落盘**出口是**轮记录**（本文件下面那处 `compactionStats.slice(compactionStatsStart)`），
-        //   run 返回值那一份走 `src/loop/termination.js` ⇒ 三本账都不依赖快照这一格。
-        //
-        // 处置口径：**先改指向、再停写**（#770 的顺序，反过来就是拿实现迁就测试）。上面那些读者与
-        // 断言全部换成权威来源并跑绿之后才删这两行。历史旧快照里这 4 格的存在仍然被读侧容忍
-        // （未删任何 `?? ` fallback，store 层逐字透传；旧档面由 `test/loop-snapshot-write-side-735.test.js`
-        // 的旧档用例钉）。
-        // 入参 `status` 与签名不动：全仓 7 个调用点（本文件 2 个 + `src/loop/run-snapshot-executor.js` 5 个），
-        // 其中 5 个显式传状态（`pending` / `rejected` / `executed` / `intercepted`），两个靠默认值；
-        // 它现在只喂分类（`persistClassified`），不再落盘。
-        // `persistedTranscriptLength` 仍是旧口径（有测试侧真读者当截账本夹具的锚点）；`messages` 已于
-        // 切片 2 改成「轮残余」（见上面 `snapshotTranscriptResidue` 那段），两格本身的位置都不动。
-        pendingToolUse: cloneState(snapshotPendingToolUse),
-        pendingToolUses: cloneState(snapshotPendingToolUses),
-        messages: snapshotTranscriptResidue,
-        persistedTranscriptLength: runLoopState.persistedTranscriptLength,
-        executedToolIds: [...executedToolIds],
-        toolResults: toolResults.map((toolResult) => ({
-          toolUseId: toolResult.tool_use_id,
-          toolResult: cloneState(toolResult),
-        })),
-        // 本 round 已归档的全量输出随 run snapshot 落盘，保证崩溃恢复后证据仍可核验
-        toolOutputs: cloneState(archivedOutputs.filter((entry) => entry.round === round)),
-        ...(partialText === undefined ? {} : { partialText, partialRound }),
-      });
-    } catch (error) {
-      if (persistenceInfoFor(error) !== undefined) {
-        runLoopState.lastPersistenceFailure = error;
-        return false;
-      }
-      throw error;
-    }
-  };
 
   // issue #326（B1）：**引擎自产文本的「产生即入账」**。
   // 轮记录只写 `messages.slice(roundStart)`，而 `roundStart` 在下一次进圈时重新取 `messages.length`
@@ -3172,8 +2915,6 @@ export async function runToolLoop(options) {
   //     （注入内容本身带 #323 的 `meta.source === "judge-control"`，本轮不新造 marker）；
   //   - dedupKey 沿用 `:resume` 先例（引擎命名空间 + 轮号 + 槽位名）⇒ 宿主用默认键写过同行号的行
   //     不会被去重丢掉，同轮同槽位重放幂等（崩溃后重跑不产生第二行）；
-  //   - 计入 `persistedTranscriptLength`：让 resume 快照锚点继续等于「journal 已落盘的消息总数」，
-  //     不再把这条已落盘的消息当成「快照里没存过」而重复入账。
   const appendEngineMessagesToTranscript = async (produced, roundNumber, slot) => {
     const messagesToJournal = Array.isArray(produced) ? produced : [produced];
     if (messagesToJournal.length === 0) return false;
@@ -3184,7 +2925,6 @@ export async function runToolLoop(options) {
       messages: cloneState(messagesToJournal),
       ts: new Date().toISOString(),
     });
-    if (persisted) runLoopState.persistedTranscriptLength += messagesToJournal.length;
     return persisted;
   };
 
@@ -3197,8 +2937,6 @@ export async function runToolLoop(options) {
   //   · `kind: "message"` + `seq` 是折叠的两把钥匙（无 `seq` 的引擎控制文本行不参与折叠，原样透传）；
   //   · `partOf` = 同一逻辑消息首片行的 `dedupKey`：一轮的多个 `tool_result` 改造前是同一条 user
   //     消息的多个 content block，现在每个结果单独成行，靠 `partOf` 接回同一条消息。
-  // `persistedTranscriptLength` 的口径仍然是「折叠后已落盘的**逻辑消息**总数」（= `restoreResume`
-  // 的 `records.flatMap(record.messages).length`）⇒ 分片行（`partOf`）加 0，否则 resume 锚点会偏。
   /** @param {any} message @param {number} roundNumber @param {{ partOf?: string }} [options] */
   const appendMessageRowToTranscript = async (message, roundNumber, options = {}) => {
     if (message === undefined || message === null) return undefined;
@@ -3226,8 +2964,6 @@ export async function runToolLoop(options) {
       ...(partOf === "" ? {} : { partOf }),
     });
     if (!persisted) return undefined;
-    // 分片只往已有那条逻辑消息里加 block，不新增消息 ⇒ 锥点计数不变。
-    if (partOf === "") runLoopState.persistedTranscriptLength += 1;
     return dedupKey;
   };
 
@@ -3301,71 +3037,10 @@ export async function runToolLoop(options) {
     return true;
   };
 
-  // issue #420（A 集合入账）：把 `restoreResume` 交回来的那批「崩溃前已执行完、结果已成型、账本里没有
-  // `tool_result` 行」的结果**逐条走与 B 集合同一条写侧**。
-  //
-  // 为什么写在这里（而不是让 `restoreResume` 自己写）：`restoreResume` 的 resume 分支只读 transcript 账本；
-  // 账本写入一律在本文件（`appendMessageRowToTranscript` / `persist`），失败语义（`ctx.fail`）与 `seq`
-  // 计数器只有一处。交接到主循环前由这一小段入账，与补跑段共用同一个 `resumeToolResultRowKey` 锚点。
-  //
-  // 锚点的两种情形（探查票点名的边界）：
-  //   · 崩溃轮**已有**结果行落盘（`resumeToolResultRowKey` 有值）⇒ 首片用 `partOf` 接回那条聚合消息；
-  //   · 崩溃轮**一条结果行都没落**（`resumeToolResultRowKey === undefined`）⇒ 首片不带 `partOf`，
-  //     它**自己**就是新起的那条聚合消息（在账本里也是一条独立逻辑消息，`persistedTranscriptLength`
-  //     随 `appendMessageRowToTranscript` 的 `partOf === ""` 分支 +1，与账本折叠后的逻辑消息数
-  //     （`foldLedgerMessages`）对齐），然后把**它自己的** `dedupKey` 写回 `resumeToolResultRowKey`
-  //     当后续分片（含 B 集合）的锚点。否则每个结果都会各起一条 user 消息：合法但形状变了，
-  //     `#326` 的 `<runId>:msg:<round>:<seq>` 序号语义也跟着散掉。
-  //
-  // issue #430：**锚点写一次就钉住，不随分片推进**。分片行的 key 不是合法的 `partOf` 寻址目标——
-  // 读侧折叠（`src/store/message-rows.js#foldLedgerMessages` / `#foldMessageRows`）对分片行不新增
-  // 逻辑消息，于是它的 key 指向的是「下一条消息」。把锚点推进成「刚写那条分片的 `dedupKey`」时，
-  // 第三片起就落空并**新起一条消息**（实测 `[[t1,t2],[t3]]`），第二次恢复永久 `invalid_messages`。
-  // 所以下面只在**首片**写成功后落定一次 `rowKey`，之后一律 `partOf` 指向它。
-  //
-  // issue #424（守卫）：**崩溃轮的 assistant 正文不在账本里时，整段跳过入账**。升级路径（旧账本 +
-  // 快照补全）上崩溃轮的 assistant 正文只存在于 run snapshot，`restoreResume` 只把它补进内存
-  // `messages`（账本里没有那一行）；此时把 A 集合写成 `kind:"message"` 结果行，账本里就出现
-  // 「有 `tool_result`、没有配对 `assistant`」的孤儿 ⇒ 下一次恢复在第一次模型请求之前就
-  // `invalid_messages`（实测 issue #424）。跳过 ⇒ 账本内容与 #420 之前逐字一致（那批结果只进内存、
-  // 由快照兜住），不可能比修前更坏；判据事实由 `restoreResume` 从**已折叠的账本条目**里算好交过来。
-  const journalResumeUnpersistedToolResults = async () => {
-    const unpersisted = resumeUnpersistedToolResults;
-    if (!Array.isArray(unpersisted) || unpersisted.length === 0) return;
-    // 一次性交接：无论下面写不写成，这批都不得在本次 run 里被第二次入账（guard 补跑桥会回到主循环）。
-    resumeUnpersistedToolResults = [];
-    const crashRound = runLoopState.resumeRunSnapshot?.round;
-    if (resumeCrashRoundAssistantPersisted === false) {
-      // 可观测：走既有 `onEvent` 通道（不新造机制）。宿主可据此知道「这批结果只在本次上下文里、
-      // 没有入账」，下一次恢复仍要靠快照兜住。
-      emitEvent({
-        type: "resume_journal_skipped",
-        runId,
-        ...(parentRunId === undefined ? {} : { parentRunId }),
-        round: crashRound,
-        reason: "crash_round_assistant_not_in_ledger",
-        count: unpersisted.length,
-      });
-      return;
-    }
-    let rowKey = runLoopState.resumeToolResultRowKey;
-    for (const toolResult of unpersisted) {
-      const persistedRowKey = await appendMessageRowToTranscript(
-        { role: "user", content: [toolResult] },
-        crashRound,
-        rowKey === undefined ? {} : { partOf: rowKey },
-      );
-      // issue #430：只在首片写成功后落定锚点，之后**不推进**（分片 key 不能当 `partOf` 目标）。
-      if (rowKey === undefined && persistedRowKey !== undefined) rowKey = persistedRowKey;
-    }
-    if (rowKey !== undefined) runLoopState.resumeToolResultRowKey = rowKey;
-  };
-
   // issue #421（中段悬空 `tool_use` 的读侧兜底）：把 `restoreResume` 补在上下文里的那几张桩
   // **落进账本**。
   //
-  // 写侧复用 A 集合那条已验证通道的形状（`appendMessageRowToTranscript` 消息行 + `partOf`），但
-  // 锚点**逐张自带**（不是 A 集合那个单一的 `resumeToolResultRowKey`）：中段悬空可能发生在**任何一轮**，
+  // 写侧复用消息行 + `partOf`，锚点**逐张自带**（中段悬空可能发生在**任何一轮**），
   // 而每张桩只能并进它自己那条聚合消息。锚点由 `restoreResume` 在**落盘行**上算好
   // （`firstSliceRowKeyOf` = 该聚合消息**首片**行的 key）—— #430 的纪律在这里同样成立：
   //   · 锚点只在首片；分片 key 不是合法的 `partOf` 目标（`foldLedgerMessages` 对分片不新增条目，
@@ -3419,9 +3094,39 @@ export async function runToolLoop(options) {
     return [...groups.values()];
   };
 
+  const journalResumeUnledgeredToolResults = async () => {
+    const recovered = runLoopState.resumeUnledgeredToolResults;
+    runLoopState.resumeUnledgeredToolResults = [];
+    /** @type {Map<number, string>} */
+    const anchors = new Map();
+    for (const entry of recovered) {
+      if (!Number.isSafeInteger(entry?.round)) {
+        throw new Error("unledgered tool_result recovery row has an invalid round");
+      }
+      const anchor = entry.partOf ?? anchors.get(entry.round)
+        ?? (entry.round === runLoopState.rounds ? runLoopState.resumeToolResultRowKey : undefined);
+      const persistedRowKey = await appendMessageRowToTranscript(
+        { role: "user", content: [entry.toolResult] },
+        entry.round,
+        typeof anchor === "string" && anchor !== "" ? { partOf: anchor } : {},
+      );
+      if (persistedRowKey === undefined) {
+        throw new Error(`unledgered tool_result ${String(entry.toolUseId)} could not be restored to the message ledger`);
+      }
+      if (typeof anchor === "string" && anchor !== "") {
+        anchors.set(entry.round, anchor);
+      } else {
+        anchors.set(entry.round, persistedRowKey);
+      }
+      if (entry.round === runLoopState.rounds && runLoopState.resumeToolResultRowKey === undefined) {
+        runLoopState.resumeToolResultRowKey = anchors.get(entry.round);
+      }
+    }
+  };
+
   const journalResumeMidSequenceToolResults = async () => {
     const stubs = resumeMidSequenceToolResults;
-    // 一次性交接（与 A 集合同一条纪律）：guard 补跑桥会回到主循环，这批不得被第二次入账。
+    // 一次性交接：guard 补跑桥会回到主循环，这批不得被第二次入账。
     resumeMidSequenceToolResults = [];
     const abandons = resumeMidSequenceAbandons;
     resumeMidSequenceAbandons = [];
@@ -3497,7 +3202,7 @@ export async function runToolLoop(options) {
     return persisted;
   };
 
-  // ── issue #769：快照独有格的**恢复行写入口**（两种事件各一个）───────────────────────────
+  // ── issue #769：恢复事实的**恢复行写入口**（两种事件各一个）─────────────────────────────
   // 形状沿用上面 `appendEngineFactToTranscript` 那条先例：一条一个事件、`messages: []`（**不载正文**，
   // 否则 `restoreResume` 的 `records.flatMap(record.messages)` 会把同一份正文恢复两遍）、
   // `dedupKey` = 唯一事件键（同事件重放 = 同 key 同 payload = `appendRound` 幂等跳过；payload 指纹
@@ -3512,12 +3217,11 @@ export async function runToolLoop(options) {
   // 同目录、同样 append-only、同样靠 `src/store/transcript-dedup.js` 幂等，但**不进** `load()` /
   // `loadRawRows()`（实现：`src/store/file.js#recoveryRowsPath` 与 `src/store/memory.js`）。
   // store 没实现 `appendRecoveryRow` 时走现成的能力位机制：`persistClassified` 开头那一问就会
-  // **跳过并上报一次** `persistence_capability_degraded`，**不抛**（同一方法只报一次）；那时快照那几格
-  // 仍是唯一来源——本切片不删快照写点，所以「store 不支持」不会比改前更差。
+  // **跳过并上报一次** `persistence_capability_degraded`，**不抛**（同一方法只报一次）；恢复只信账本，
+  // 不再依赖 run snapshot 兜底。
   /**
-   * 「这个 `tool_use` 真的执行过了」——在**执行器刚返回的那一刻**落账，比结果行早。
-   * 为什么必须有它（语义红线）：「没有 `tool_result` 行」推不出「没执行」，两者形状相同；
-   * 而快照的 `executedToolIds` 是 latest-only，下一轮一写就把这条事实盖掉。
+   * 「这个 `tool_use` 真的执行过了」的身份事实；结果内容行或内容兜底行先落，再写这条恢复行。
+   * 「没有 `tool_result` 行」仍推不出「没执行」，所以读侧还需要显式执行证据。
    * @param {string|undefined} toolUseId @param {number} roundNumber @returns {Promise<boolean>}
    */
   const appendToolExecutedRecoveryRow = async (toolUseId, roundNumber) => {
@@ -3525,6 +3229,18 @@ export async function runToolLoop(options) {
     if (!Number.isSafeInteger(roundNumber)) return false;
     return persist("appendRecoveryRow", runId, buildToolExecutedRecoveryRow({
       runId, round: roundNumber, toolUseId,
+    }));
+  };
+  /**
+   * Preserve the exact result when its message row is rejected.
+   * @param {any} toolResult @param {number} roundNumber @returns {Promise<boolean>}
+   */
+  const appendUnledgeredToolResultRecoveryRow = async (toolResult, roundNumber) => {
+    const toolUseId = toolResult?.tool_use_id;
+    if (typeof toolUseId !== "string" || toolUseId === "") return false;
+    if (!Number.isSafeInteger(roundNumber)) return false;
+    return persist("appendRecoveryRow", runId, buildUnledgeredToolResultRecoveryRow({
+      runId, round: roundNumber, toolUseId, toolResult: cloneState(toolResult),
     }));
   };
   /**
@@ -3552,25 +3268,15 @@ export async function runToolLoop(options) {
       }
     };
 
-    const commitPartialSnapshot = async (attempt) => {
+    const commitPartialText = async (attempt) => {
       if (attempt.closed || attempt.inFlight !== undefined
         || !attempt.dirty || attempt.failure !== undefined) return;
       const partialText = attempt.text;
       attempt.dirty = false;
       const write = (async () => {
         try {
-          // #769：半截正文落账本恢复行（`partial-text`），这条通道是崩溃现场的唯一权威。
-          // #827 第 5 刀：**不再写快照的 `partialText`/`partialRound` 两格**。理由有三条：
-          //   ① 读侧一直首选账本行（`resume-manager.js#readPartialTextRecoveryRow`），快照那两格
-          //      只服务「账本通道出现之前」写的旧档案 ⇒ 新档案写它等于白付一整份快照（#830 实测：
-          //      下游均 8,681 B/次、重会话到 2 MB 级）。
-          //   ② 快照通道正在整体退役（#767）⇒ 继续给它加写点只会让退役那一步多一处要拆。
-          //   ③ 旧档案兜底仍能工作：读侧的 `snapshot.partialText` 分支没动，只是引擎不再产出它。
-          // 账本通道缺席（`persist` 返回 false）时不再回落到快照：那是宿主的选择（没实现
-          // `appendRecoveryRow`），引擎如实降级——半截正文不落盘，而不再偷偷多写一份快照。
-          // 顺序仍然是「先账本行、后其它」：这条写成功了，崩溃现场就有据可查。
+          // 半截正文只写入账本恢复行。缺少 appendRecoveryRow 时按可选能力降级。
           await appendPartialTextRecoveryRow(partialText, attempt.round);
-          if (runLoopState.lastPersistenceFailure !== undefined) throw runLoopState.lastPersistenceFailure;
           attempt.persistedText = partialText;
         } catch (error) {
           attempt.failure = error;
@@ -3583,7 +3289,7 @@ export async function runToolLoop(options) {
       if (attempt.closed || attempt.failure !== undefined || !attempt.dirty) return;
       if (attempt.commitDue) {
         attempt.commitDue = false;
-        void commitPartialSnapshot(attempt);
+        void commitPartialText(attempt);
       }
     };
 
@@ -3601,7 +3307,7 @@ export async function runToolLoop(options) {
           attempt.commitDue = true;
           return;
         }
-        void commitPartialSnapshot(attempt);
+        void commitPartialText(attempt);
       };
       attempt.timer = setTimeout(onTimer, Math.min(intervalMs, maxTimerDelay));
     };
@@ -3638,6 +3344,9 @@ export async function runToolLoop(options) {
         if (attempt.failure !== undefined) throw attempt.failure;
         // #827 第 5 刀：这里原本只写 `{ round, status: "pending" }` 一份无内容快照；`status` 早已
         // `stopped`、`round` 有账本来源 ⇒ 一并删掉，重试路径不再产生任何快照写。
+        // Retired run-snapshot cells now use their live ledger/state sources:
+        // `toolUse` comes from tool-use rows, message `ts` belongs to its ledger row, and
+        // `compactionStats` is restored from run-state and retained in round records.
         void retrying;
       } finally {
         if (partialAttempt === attempt) partialAttempt = undefined;
@@ -3675,10 +3384,6 @@ export async function runToolLoop(options) {
       navigationRecords: runLoopState.navigationRecordCount,
       terminationReason: runLoopState.currentTerminationReason,
       toolErrorCount: runLoopState.toolErrorCount,
-      // 键名保持旧名 checkpointFailureCount（issue #83）：它是 createDeterministicRunState 的
-      // 导出选项键，且其值以 `errors.checkpoint` 落盘、渲染进模型可见的 run-state 文本行——
-      // 三处均属宿主/持久化契约，改名是破坏性变更，故此处只改引擎内部变量名、不改键名。
-      checkpointFailureCount: runLoopState.runSnapshotFailureCount,
       unpersisted: errorLedger.toUnpersisted(),
       compactionStats,
       // issue #386 切片 3：guard 补跑配额随 run-state 落盘（**跨 resume 不重置**的成本闸）。
@@ -4047,6 +3752,10 @@ export async function runToolLoop(options) {
     },
     // issue #394：结清尾部悬空 `tool_use` 的入账回调（强制收尾那一路；见上面那个 WeakSet）。
     journalPendingTailToolResult,
+    // Tail wording uses the same execution evidence as request-view repair.
+    get executedToolIds() {
+      return new Set([...executedToolIds, ...executedEvidenceToolIds]);
+    },
     // 下面三对手写访问器读的是 `runLoopState` 的格子（issue #246 第 1 步把存储搬过去了）；
     // 本 ctx 自己的迁移是正文 §4 的 step 3，届时这三对也换成同一套视图（不要提前删）。
     get finalText() {
@@ -4149,7 +3858,7 @@ export async function runToolLoop(options) {
   // 为什么入账口放在调用点而不是 termination.js 内部：那个模块不持有 store、不碰 persist（journal
   // 写入一直是 orchestrator 的职责面），而它又被 #271 的 readFile 行容量锚钉在 ±2% 内（HEAD 已用
   // 到 +1.5%，再加不下一行注释）。代价：崩溃正好落在收尾那一次 provider 调用里时，这两条要等
-  // resume 重跑收尾时才会入账——那个窗口里本来也没有任何消息落盘（resume 靠 run snapshot 重建现场）。
+  // resume 重跑收尾时才会入账——那个窗口里本来也没有任何消息落盘（resume 从账本重建现场）。
   const forceFinalAndJournal = async (reason) => {
     const producedFrom = messages.length;
     await forceFinalIfNeeded(reason);
@@ -4187,7 +3896,7 @@ export async function runToolLoop(options) {
     toolSchemaByName.set(tool.name, tool.inputSchema ?? tool.input_schema);
   }
 
-  const runSnapshotContext = {
+  const toolExecutorContext = {
     runId,
     executeTool,
     invalidArguments,
@@ -4209,8 +3918,6 @@ export async function runToolLoop(options) {
     // issue #173 PR-B：onToolResult 的异常 fallback（保留原始结果）要把错误记回同一个观察者
     // 通道，故在此透传 reportObserverError（不新建平行机制）。
     reportObserverError,
-    persistRunSnapshot,
-    hasRunSnapshotStore,
     toolStats,
     governorState,
     get budgetRounds() {
@@ -4236,18 +3943,18 @@ export async function runToolLoop(options) {
       runLoopState.aggregateBudgetHit = true;
     },
     executedToolIds,
-    // issue #769：工具**执行那一刻**往账本追加一条 `kind: "recovery"` / `recoveryEvent: "tool-executed"`
-    // 的恢复行（比结果行早，也比本轮任何后续快照写早）。它把「执行过没有」从「只能从 latest-only
-    // 快照推断」变成「账本里显式携带、按事件重放」，而 `executedToolIds` 那一格从此在恢复路径上
-    // 退成兜底。注入而不是在执行器里自己拼行：入账口径（引擎命名空间、`persist` 的失败与重试分类）
+    journalToolResult: async (/** @type {any} */ _toolResult, /** @type {number} */ _round) => {},
+    // issue #769：工具执行后追加 `tool-executed` 恢复行；执行器先确保结果内容行或其兜底已落盘。
+    // 它把「执行过没有」改为账本事实，而 `executedToolIds` 那一格在恢复路径上退成兜底。注入而不是在
+    // 执行器里自己拼行：入账口径（引擎命名空间、`persist` 的失败与重试分类）
     // 住在 orchestrator，与 `appendEngineMessagesToTranscript` / `appendEngineFactToTranscript` 同一先例。
     appendToolExecutedRecoveryRow,
-    snapshotResults,
+    toolResultsById,
     // 「没存上」账本（ADR-016）：聚合层 fail-closed 丢原文时必须留痕——
     // main 退役了 run-state 的 errors.archive 计数，账本是其继任通道
     errorLedger,
   };
-  // issue #246 第一刀：`runSnapshotContext` 的 **run-state 转发面**（原本是上面字面量里的 6 对
+  // issue #246 第一刀：`toolExecutorContext` 的 **run-state 转发面**（原本是上面字面量里的 6 对
   // 手写 get/set）改由 `makeStateView()` 按这份**显式字段清单**生成：清单 = 本 ctx 能碰的 run-state
   // 字段白名单，语义与手写版逐字相同（活引用、可写）。`budgetRounds` / `messages` 留在字面量里，
   // 因为它们读的是**闭包 `let`** 而不是 run-state 的格子（`messages` 整组留到 #246 第 5 步）。
@@ -4255,24 +3962,22 @@ export async function runToolLoop(options) {
   // ⚠ 挂回 ctx 只能用 `getOwnPropertyDescriptors`（搬**描述符**：get/set 闭包原样搬过去 ⇒ 仍是活引用）。
   // `Object.assign` / `{ ...view }` / `{ key: view.key }` 都会**调用** getter 把值快照下来，于是
   // `ctx.toolErrorCount += 1` 这类读-改-写只写进快照、回不到 `runLoopState`，run-state 的 `errors.tool` /
-  // `errors.checkpoint` / `budget.lowBudgetPrompted` 与 judge 拦截计数会静默停在初值
+  // `budget.lowBudgetPrompted` 与 judge 拦截计数会静默停在初值
   // （捕获者：`test/loop-error-budget-cells.test.js`、`test/loop-intercept-count-cells.test.js`）。
-  Object.defineProperties(runSnapshotContext, Object.getOwnPropertyDescriptors(
+  Object.defineProperties(toolExecutorContext, Object.getOwnPropertyDescriptors(
     makeStateView(runLoopState, [
       "lowBudgetPrompted",
       "toolErrorCount",
-      "runSnapshotFailureCount",
-      "lastPersistenceFailure",
       "judgeInterceptCount",
       "interceptJudgeDecision",
     ]),
   ));
-  const runSnapshotExecutor = createRunSnapshotExecutor(runSnapshotContext);
+  const toolExecutor = createRunSnapshotExecutor(toolExecutorContext);
   const {
     executeToolWithIntercept,
     pendingDirectionHints,
     pendingJudgeDoneAdvisory,
-  } = runSnapshotExecutor;
+  } = toolExecutor;
 
   // issue #322：达成 advisory 的**单槽**投递。正常 flush 与 resume flush 共用本函数，两处
   // 策略逐字一致；它**不**并入 `pendingDirectionHints` 那条 FIFO（也不参与它的 `slice(0, 2)`
@@ -5205,7 +4910,7 @@ export async function runToolLoop(options) {
     // 2026-10-22 更正归因：**零 HTTP**，拒的是 `validateMessages`，不是 provider）。
     //
     // 判据（`pendingTrailingToolUses`，与 `validateMessages` 的配对规则同源）、结果块（唯一构造点
-    // `buildToolResultFact`）、正文（`PENDING_TOOL_RESULT_TEXT`）三件事实都在共享实现
+    // `buildToolResultFact`）与正文选择（`buildSettlementStubFor`）都在共享实现
     // `src/loop/pending-tool-result.js` 里；本文件只注入**入账口径**：
     //   · `:control:` 行（**不是** `kind:"message"` 消息行：消息行会被 `foldMessageRows` 折回轮
     //     载体行，从而在恢复时插到「强制收尾」那两条控制消息**之前**，把配对重新打散）；
@@ -5216,6 +4921,7 @@ export async function runToolLoop(options) {
       messages,
       {
         round: roundNumber,
+        executedToolIds: new Set([...executedToolIds, ...executedEvidenceToolIds]),
         messageRounds,
         onMessage: (message, round) => appendEngineMessagesToTranscript(message, round, slot),
       },
@@ -5451,7 +5157,7 @@ export async function runToolLoop(options) {
     // 放在 `refreshRunState()` 之后：provider 的 `state` 入参拿到的就是本次 run 的第一份确定性状态。
     await refreshContinuity({ round: 0 });
     // resume 后注入旗标按本次 run 重置；后续 TTL 折叠/低预算会重新注入请求视图，
-    // 无需把 run-state 写入 run snapshot 或持久 transcript。
+    // 无需把 run-state 写入持久 transcript。
     runLoopState.ttlInjectArmed = false;
     runLoopState.ttlInjectConsumed = false;
     runLoopState.lowBudgetInjectFired = false;
@@ -5459,27 +5165,19 @@ export async function runToolLoop(options) {
     // 工单 261021（第三刀）：resume 补跑段新产生的**引擎控制正文**（方向提示 / 达成 advisory）在此
     // 暂存，由下面那条 `…:resume` 行带走（它是该轮的折叠载体）。工具结果不走这里。
     const resumeEngineText = [];
-    // issue #420：**A 集合先入账**（崩溃前已执行完、结果已成型、账本里没有 `tool_result` 行的那批）。
-    // 必须在补跑段（B 集合）之前：
-    //   · `seq` 顺序 = 崩溃那一刻的真实发生顺序（A 集合先于 B 集合被产出），折叠后聚合消息里的
-    //     block 顺序与内存里的 `messages` 一致；
-    //   · `resumeToolResultRowKey` 由本段**落定一次**（`undefined` 时首个 A 结果就是新的聚合消息锚点；
-    //     issue #430 起不随分片推进），补跑段读到的正是这个首片锚点 ⇒ 两种集合接回**同一条**聚合消息。
-    await journalResumeUnpersistedToolResults();
-    // issue #421：中段悬空的桩紧跟其后入账（同一写侧、同一种 `partOf` 首片锚点）。放在 A 集合之后
-    // 是因为 A 集合的真结果先于桩（后者是「什么都没有」那一格，判据上已把它们排除掉了）；
-    // 放在补跑段（B 集合）之前是因为补跑段也读 `resumeToolResultRowKey`，而本段只写自带的锚点。
+    await journalResumeUnledgeredToolResults();
+    // issue #421：中段悬空的桩先于补跑工具入账；每张桩按账本首片锚点接回所属消息。
     await journalResumeMidSequenceToolResults();
     if (runLoopState.resumePendingTools.length > 0) {
       const resumedToolResults = [];
       // 工单 261021（第三刀）：**补跑跑出来的工具结果也逐条入账**，用 `partOf` 接回崩溃轮里
       // 已落盘的那条聚合消息（`ctx.resumeToolResultRowKey`，从账本里读）。于是：
-      //   · 「崩溃在轮中途 ⇒ 已产出的工具输出必须还在」在新结构下不但成立，而且不再依赖快照正文副本；
+      //   · 「崩溃在轮中途 ⇒ 已产出的工具输出必须还在」由账本中已有的 assistant/tool_result 行保证；
       //   · 下一次恢复折出来的 `flatMap(record.messages)` 仍是**一条**含全部结果的 user 消息，
       //     `validateMessages` 的严格配对不会报重复 id（旧写法靠 `…:resume` 行重抄整条聚合消息，
       //     逐条入账后就会把已完成的那个结果存两遍）。
       // issue #430：锚点同样**只在首片落定一次**，不随分片推进（分片行的 key 不是合法的 `partOf`
-      // 寻址目标，链到上一片会让第三片起新起一条消息）。A 集合已经首片落地时这里拿到的就是首片 key。
+      // 寻址目标，链到上一片会让第三片起新起一条消息）。
       const journaledResumedResults = new Set();
       let resumedResultRowKey = runLoopState.resumeToolResultRowKey;
       const journalResumedToolResults = async () => {
@@ -5499,14 +5197,13 @@ export async function runToolLoop(options) {
       for (const [index, resumePendingTool] of runLoopState.resumePendingTools.entries()) {
         const resumedToolUse = { ...resumePendingTool };
         delete resumedToolUse.replay;
-        // 续跑复放的调用：旧快照里带回来的 key 一律沿用（不重生）；只有改动前就落盘的旧快照
-        // （根本没有该字段）才现场补一个，让中断的 tool_result 与后续处置仍然能归到同一张卡。
+        // 续跑复放的调用沿用账本 tool_use 上的 key；旧账本缺少该字段时才现场补一个。
         const resumedToolCallKey = ensureToolCallKeyOnBlock(
           resumedToolUse,
           claimToolCallKey(resumedToolUse, crashSitePendingKey(resumedToolUse)),
         );
         emitEvent({ type: "tool_use", round: runLoopState.rounds, toolUse: cloneState(resumedToolUse) });
-        if (replayPolicy === "per-tool-declaration" && resumePendingTool.replay !== "safe") {
+        if (replayPolicy === "per-tool-declaration" && replayForToolUse(resumePendingTool) !== "safe") {
           const existingToolResult = messages
             .flatMap((message) => (Array.isArray(message?.content) ? message.content : []))
             .find((block) => (
@@ -5591,7 +5288,6 @@ export async function runToolLoop(options) {
           resumedToolUse,
           runLoopState.rounds,
           resumedToolResults,
-          runLoopState.resumePendingTools.slice(index),
         );
         await journalResumedToolResults();
       }
@@ -5619,28 +5315,27 @@ export async function runToolLoop(options) {
       if (resumeAdvisoryMessage !== undefined) resumeEngineText.push(resumeAdvisoryMessage);
       runLoopState.resumePendingTools = [];
     }
-    if (runLoopState.resumeRunSnapshot && runLoopState.resumeTranscriptStart !== undefined) {
+    if (runLoopState.resumeTranscriptStart !== undefined) {
       // 锚点之后新产生的**引擎控制正文**（方向提示 / 达成 advisory）。**工具结果不在这里**——
       // 它们已按「一条消息一成型就落盘」逐条入账（上面那段 `journalResumedToolResults`），
       // 在这里重抄就是同一份正文存两遍（第三次刀要销掉的正是这种双喂）。
-      const persisted = await persist("appendRound", runId, {
-        round: runLoopState.resumeRunSnapshot.round,
-        roundKey: `${String(runId)}:round:${String(runLoopState.resumeRunSnapshot.round)}`,
+      await persist("appendRound", runId, {
+        round: runLoopState.rounds,
+        roundKey: `${String(runId)}:round:${String(runLoopState.rounds)}`,
         // 引擎命名空间：宿主可能已用默认键 `${runId}:round:N` 写入自己的行（追问/历史种子），
         // 同键会被 appendRound 去重 → 续接轮（含补跑工具结果）落盘被静默丢弃，
         // transcript 只剩宿主那条近空行（issue #32 #8）。`:resume` 幂等，重启重跑不重复写。
-        dedupKey: `${String(runId)}:engine:round:${String(runLoopState.resumeRunSnapshot.round)}:resume`,
+        dedupKey: `${String(runId)}:engine:round:${String(runLoopState.rounds)}:resume`,
         messages: cloneState(resumeEngineText),
-        ...(archivedOutputs.some((entry) => entry.round === runLoopState.resumeRunSnapshot.round)
+        ...(archivedOutputs.some((entry) => entry.round === runLoopState.rounds)
           ? {
             toolOutputs: archivedOutputs
-              .filter((entry) => entry.round === runLoopState.resumeRunSnapshot.round)
+              .filter((entry) => entry.round === runLoopState.rounds)
               .map(({ toolUseId, name, content }) => ({ toolUseId, name, content })),
           }
           : {}),
         ts: new Date().toISOString(),
       });
-      if (persisted) runLoopState.persistedTranscriptLength += resumeEngineText.length;
       runLoopState.resumeTranscriptStart = undefined;
     }
     // ── issue #404（工单 BB「复活赛告示」）：恢复运行告诉模型「这是复活赛」────────────────
@@ -5740,9 +5435,6 @@ export async function runToolLoop(options) {
     // 改写上一轮的折叠账；它到**下一次**折叠才可见。
     await injectHostSteerTurn(round);
     const roundStart = messages.length;
-    // issue #735 切片 2：把圈顶起点留给写侧（`persistRunSnapshot` 在闭包里看不到 `roundStart`，
-    // 它定义在圈外）。每轮进圈重取一次，与 `roundStart` 同源同值。
-    runLoopState.roundMessageStart = roundStart;
     // 工单 261021 写侧：轮末才入账的引擎控制文本（方向提示 / 达成 advisory）在此暂存，
     // 在本轮轮记录落盘**之后**写成 `…:control:` 行（不带 `seq`，折叠层原样透传）：
     // 它们的 `messages.push` 位置不动（模型下一轮照旧看得见），只是档案行改排在轮行后面，
@@ -5876,7 +5568,7 @@ export async function runToolLoop(options) {
     // `peek`、重复认领幂等），否则账本里的 tool_use 块会少了改造前就有的 `erix.toolCallKey`。
     for (const block of content) {
       if (block?.type !== "tool_use") continue;
-      const claimedKey = acceptedToolCallKey(block, snapshotResults.get(block.id));
+      const claimedKey = acceptedToolCallKey(block, toolResultsById.get(block.id));
       if (claimedKey !== null) ensureToolCallKeyOnBlock(block, claimedKey);
     }
     await appendMessageRowToTranscript(
@@ -5898,12 +5590,46 @@ export async function runToolLoop(options) {
       // 工单 261021 写侧：本轮 `tool_result` 聚合消息的首片行 key（后续结果靠 `partOf` 接回同一条）。
       let toolResultRowKey = undefined;
       const journaledToolResults = new Set();
-      const pendingToolUses = content.filter((candidate) => candidate?.type === "tool_use");
+      const journalToolResult = async (toolResult, roundNumber) => {
+        if (journaledToolResults.has(toolResult)) return;
+        journaledToolResults.add(toolResult);
+        if (!persistenceRequired) return;
+        let persistedRowKey;
+        let ledgerError;
+        try {
+          persistedRowKey = await appendMessageRowToTranscript(
+            { role: "user", content: [toolResult] },
+            roundNumber,
+            toolResultRowKey === undefined ? {} : { partOf: toolResultRowKey },
+          );
+        } catch (error) {
+          ledgerError = error;
+        }
+        if (persistedRowKey === undefined) {
+          try {
+            const recovered = await appendUnledgeredToolResultRecoveryRow(toolResult, roundNumber);
+            if (!recovered) {
+              throw new Error("tool_result could not be written to the message ledger or recovery rows");
+            }
+          } catch (recoveryError) {
+            if (ledgerError !== undefined) {
+              throw new AggregateError(
+                [ledgerError, recoveryError],
+                "tool_result could not be persisted in either ledger channel",
+              );
+            }
+            throw recoveryError;
+          }
+          return;
+        }
+        if (toolResultRowKey === undefined) toolResultRowKey = persistedRowKey;
+      };
+      toolExecutorContext.journalToolResult = journalToolResult;
       for (const block of content) {
         if (block?.type !== "tool_use") continue;
         // 复放判定**先于**身份键认领（工单 261014 T1-fix 第 1、2 项）：本轮要走复放的话，
         // 这次调用的身份就是那条已记录结果里的身份，而不是现分配的一个新值。
-        const recordedToolResult = snapshotResults.get(block.id);
+        const recordedToolResult = toolResultsById.get(block.id);
         const acceptedKey = acceptedToolCallKey(block, recordedToolResult);
         // 调用被接受时认领身份键（就地挂到块上：assistant.content 与 RoundRecord.response.content
         // 是同一引用，所以持久化块、事事件克隆、投影拿到的都是同一个值）。`acceptedKey === null`
@@ -5942,26 +5668,16 @@ export async function runToolLoop(options) {
             block,
             round,
             toolResults,
-            pendingToolUses.slice(pendingToolUses.findIndex((candidate) => candidate === block)),
           );
-        if (!toolResults.includes(toolResult)) toolResults.push(toolResult);
-        if (!journaledToolResults.has(toolResult)) {
-          journaledToolResults.add(toolResult);
-          // 工单 261021 写侧：**工具结果一产生就写**——这是全循环里唯一有外部副作用的边界，
-          // 改造前它与同轮其余结果挤在同一条 user 消息里、等轮末才落盘。
-          // 去重口径不能拄 `toolResults.includes(...)`：执行器自己也会把结果 push 进 `toolResults`，
-          // 那个判据在正常路径下恒为真 ⇒ 一个结果都不会入账 ⇒ 按身份集合自己记。
-          const persistedRowKey = await appendMessageRowToTranscript(
-            { role: "user", content: [toolResult] },
-            round,
-            toolResultRowKey === undefined ? {} : { partOf: toolResultRowKey },
-          );
-          // issue #430：锚点 = 本轮聚合消息的**首片** key，写成功后**不再推进**（分片 key 不能当
-          // `partOf` 目标）。链到上一片时第三个结果起就折不回聚合消息（崩溃在轮行落盘之前时可见）。
-          if (toolResultRowKey === undefined && persistedRowKey !== undefined) {
-            toolResultRowKey = persistedRowKey;
+          if (!toolResults.includes(toolResult)) toolResults.push(toolResult);
+          if (!journaledToolResults.has(toolResult)) {
+            // 工单 261021 写侧：**工具结果一产生就写**——这是全循环里唯一有外部副作用的边界，
+            // 改造前它与同轮其余结果挤在同一条 user 消息里、等轮末才落盘。
+            // 去重口径不能拄 `toolResults.includes(...)`：执行器自己也会把结果 push 进 `toolResults`，
+            // 那个判据在正常路径下恒为真 ⇒ 一个结果都不会入账 ⇒ 按身份集合自己记。
+            // 执行器已先写结果行；这里只覆盖没有经过执行器写点的结果来源。
+            await journalToolResult(toolResult, round);
           }
-        }
         emitEvent({ type: "tool_result", round, toolResult: cloneState(toolResult) });
       }
       if (toolResults.length > 0) {
@@ -6456,7 +6172,7 @@ export async function runToolLoop(options) {
     }
 
     executedToolIds.clear();
-    snapshotResults.clear();
+    toolResultsById.clear();
     runLoopState.toolExecutedThisRound = false;
     emitEvent({
       type: "round_end",

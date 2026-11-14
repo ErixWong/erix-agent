@@ -1,5 +1,5 @@
 // @ts-check
-// issue #769：run snapshot「只有快照载着」那几格的 **append-only 恢复行载体**（#767 退役快照通道的硬前置）。
+// issue #769：run-snapshot 退役后承载恢复事实的 **append-only ledger rows**。
 //
 // 为什么是「新增一种账本行」而不是「往既有行上加字段」：
 //   · `:control:<slot>` 行（`src/loop/orchestrator.js#appendEngineMessagesToTranscript`）**载着
@@ -11,19 +11,18 @@
 //     `messages: []`（不载正文）、`dedupKey` 带**唯一事件键**（同事件重放幂等、不同事件换键）。
 //
 // 语义红线（本模块存在的理由，也是契约里那句话的出处）：
-//   **「`tool_use` 没有对应 `tool_result`」推不出「工具没执行」**——执行发生在结果行落盘**之前**
-//   （`src/loop/run-snapshot-executor.js`：`executedToolIds.add` 在前，结果行更晚），所以
-//   「没执行」与「执行了但没入账」在账本里形状相同。⇒「执行过没有」必须由这里的
-//   `tool-executed` 行**显式携带** `toolUseId`，不许由「缺结果行」反推。
+//   **「`tool_use` 没有对应 `tool_result`」推不出「工具没执行」**——工具副作用先于结果行落盘；
+//   若结果行写入被拒，`tool-result-unledgered` 行会保留同一份结果内容，避免只剩身份。
+//   `tool-executed` 行继续显式携带 `toolUseId`，不许由「缺结果行」反推。
 //
 // 宿主可见面：账本 `.jsonl` 里从此多一种 `kind: "recovery"` 的行。它是**新行类型**，
 // 契约（`docs/host-consumer-contract.md` / `_cn.md` 的「Ledger recovery rows」一节）写清了形状、
 // 写入时机，以及**宿主遇到不认识的 `kind` 该怎么办**——在此之前契约里**没有**「未知 kind 忽略」
 // 这句承诺（现查：两份契约里 `unrecognized/未知 kind` 只出现在 provider 槽位 / notes 计数 / JSON 字段三处）。
 
-// 快照侧对应的三格（`executedToolIds` / `partialText` / `partialRound`）在恢复路径上退成兜底（#769）。
-// 恢复侧第一顺位读的是本模块这些行（`src/loop/resume-manager.js#restoreResume`）：两轴载荷表把这三格的
-// 账本来源钉在上面那一行，改本模块的形状记得同步改 `scripts/cell-axes-anchors.mjs` 的登记。
+// run snapshot 退役后，这三类恢复事实只通过本模块的恢复行读写
+// （`src/loop/resume-manager.js#restoreResume`）；没有快照兜底。载荷表将其账本来源钉在上面那一行，
+// 改本模块的形状记得同步改 `scripts/cell-axes-anchors.mjs` 的登记。
 import { createHash } from "node:crypto";
 
 /** 行类型判别键（宿主过滤账本行时看的就是它）。与 `kind: "message"`（`src/store/message-rows.js`）并列。 */
@@ -32,12 +31,16 @@ export const RECOVERY_ROW_KIND = "recovery";
 /** 事件：某个 `tool_use` **真的执行过了**（副作用已发生）。一格一条，事件键 = `toolUseId`。 */
 export const RECOVERY_EVENT_TOOL_EXECUTED = "tool-executed";
 
+/** 事件：结果正文尚未写入消息账本，事件键 = `toolUseId`。 */
+export const RECOVERY_EVENT_TOOL_RESULT_UNLEDGERED = "tool-result-unledgered";
+
 /** 事件：一段**半截 assistant 正文**（`stream: true` + `partialPersistence` 才存在）。事件键 = 正文指纹。 */
 export const RECOVERY_EVENT_PARTIAL_TEXT = "partial-text";
 
 /** 本模块认识的恢复事件（**不认识的 `recoveryEvent` 一律忽略**：行类型内部的扩展与行类型本身一样是 add-on）。 */
 export const RECOVERY_EVENTS = Object.freeze([
   RECOVERY_EVENT_TOOL_EXECUTED,
+  RECOVERY_EVENT_TOOL_RESULT_UNLEDGERED,
   RECOVERY_EVENT_PARTIAL_TEXT,
 ]);
 
@@ -82,6 +85,27 @@ export function buildToolExecutedRecoveryRow({ runId, round, toolUseId, ts }) {
     kind: RECOVERY_ROW_KIND,
     recoveryEvent: RECOVERY_EVENT_TOOL_EXECUTED,
     toolUseId,
+    messages: [],
+    ts: ts ?? new Date().toISOString(),
+  };
+}
+
+/**
+ * A settled result that could not be written to the message ledger.
+ * @param {{ runId: string, round: number, toolUseId: string, toolResult: object, ts?: string }} input
+ * @returns {{round:number, roundKey:string, dedupKey:string, kind:string, recoveryEvent:string,
+ *   notYetLedgered:true, toolUseId:string, toolResult:object, messages: object[], ts:string}}
+ */
+export function buildUnledgeredToolResultRecoveryRow({ runId, round, toolUseId, toolResult, ts }) {
+  return {
+    round: Number(round),
+    roundKey: `${String(runId)}:round:${String(round)}`,
+    dedupKey: recoveryEventKey(runId, round, RECOVERY_EVENT_TOOL_RESULT_UNLEDGERED, toolUseId),
+    kind: RECOVERY_ROW_KIND,
+    recoveryEvent: RECOVERY_EVENT_TOOL_RESULT_UNLEDGERED,
+    notYetLedgered: true,
+    toolUseId,
+    toolResult,
     messages: [],
     ts: ts ?? new Date().toISOString(),
   };
@@ -138,7 +162,7 @@ export function toolExecutedRecoveryRowShapeProblem(row) {
 
 /**
  * 账本侧的「执行过没有」真相：全部 `tool-executed` 恢复行携带的 `toolUseId` 集合。
- * 这是快照 `executedToolIds` 格的**继任来源**；读侧把它当首选、快照格退成兜底。
+ * 这是旧快照 `executedToolIds` 格的**继任来源**；恢复只读恢复行，不再回落到快照。
  *
  * 形状守卫与 `src/store/message-rows.js` 同一口径：不是本事件类型的行**跳过**（那是「以后新增的事件」）。
  * 但 `tool-executed` 行本身形状不合时**不跳过、不猜**（issue #769 R5 M5）：这一行是「工具真的执行过了」
@@ -170,6 +194,36 @@ export function readExecutedToolIdRecoveryRows(records) {
 }
 
 /**
+ * Read result payloads saved as a fallback for failed message-row writes.
+ * @param {any[]} records
+ * @returns {Array<{round:number, toolUseId:string, toolResult:object}>}
+ */
+export function readUnledgeredToolResultRecoveryRows(records) {
+  /** @type {Array<{round:number, toolUseId:string, toolResult:object}>} */
+  const results = [];
+  for (const row of Array.isArray(records) ? records : []) {
+    if (!isRecoveryRow(row)) continue;
+    if (row.recoveryEvent !== RECOVERY_EVENT_TOOL_RESULT_UNLEDGERED) continue;
+    let problem = null;
+    if (row.notYetLedgered !== true) problem = "notYetLedgered";
+    else if (typeof row.toolUseId !== "string" || row.toolUseId === "") problem = "toolUseId";
+    else if (!Number.isSafeInteger(row.round)) problem = "round";
+    else if (typeof row.dedupKey !== "string" || row.dedupKey === "") problem = "dedupKey";
+    else if (row.toolResult?.type !== "tool_result") problem = "toolResult";
+    else if (row.toolResult.tool_use_id !== row.toolUseId) problem = "toolResult.tool_use_id";
+    if (problem !== null) {
+      throw new TypeError(`tool-result-unledgered recovery row is malformed on field "${problem}"`);
+    }
+    results.push({
+      round: row.round,
+      toolUseId: row.toolUseId,
+      toolResult: row.toolResult,
+    });
+  }
+  return results;
+}
+
+/**
  * 账本里**有** `partial-text` 恢复行的轮号（落盘顺序去重）：读侧用它判断「账本知不知道某一轮跑到一半」，
  * 而不必先把正文全文抓出来。轮号不合法（非安全整数）的行跳过。
  *
@@ -191,11 +245,11 @@ export function readPartialTextRecoveryRounds(records) {
 
 /**
  * 账本侧的半截正文：`round` 那一轮**最后**落盘的那条 `partial-text` 行的正文。
- * append-only ⇒ 「最新」= 文件里最后一条，读侧按落盘顺序覆盖，绝不取第一条。
+ * 每轮当前只保留一个槽；遇到旧格式的多条数据时按落盘顺序取最后一条。
  *
  * @param {any[]} records
  * @param {number} round 崩溃轮（与 `restoreResume` 的 `crashRound` 同值）
- * @returns {{ text: string, round: number } | undefined} 该轮没有任何可用恢复行 ⇒ `undefined`（读侧才允许回落快照）
+ * @returns {{ text: string, round: number } | undefined} 该轮没有任何可用恢复行 ⇒ `undefined`（无快照兜底）
  */
 export function readPartialTextRecoveryRow(records, round) {
   /** @type {{ text: string, round: number } | undefined} */

@@ -12,7 +12,7 @@
 
 ## 1. 本文件里唯一一个「现状」数
 
-锚点覆盖面是 **15 份点名文档 + 按目录实扫到的 38 份升级指南 = 53**（`REF_SCAN_DOCS_MINIMUM = 53`）。
+锚点覆盖面是 **15 份点名文档 + 按目录实扫到的 40 份升级指南 = 55**（`REF_SCAN_DOCS_MINIMUM = 53`）。
 `check:docs` 会把**每一份**声称这组数的文档（本对与两份 README）里的数读回来跟实扫结果比，所以这句话不会悄悄过期。
 
 ## 2. 声称链（逐字）
@@ -31,7 +31,7 @@
   此前 issue #430 的「分片锚点钉在首片」——同一崩溃轮的结果无论几条都折回**一条**聚合 `user` 消息——让契约中英各多一处锚点，指向新的钉住用例（`threeToolCrashScene`，`test/loop-resume-unpersisted-tool-results.test.js` 里的共用崩溃现场）之后实测 **121 组** / **341 处**（+1 组 / +2 处），下限随之抬到 121；
   两支合流后两支的锚点同时在树上（中英 AGENTS 的声称句自己也各多一处锚点：`AGENTS.md` 因合并多出 `threeToolCrashScene`）⇒ 实测 **122 组** / **346 处**（契约 EN 97 / CN 93），下限随之抬到 122；
   此前 issue #424 的「升级路径守卫」让契约中英各多两处既有锚点（`journalResumeUnpersistedToolResults`、`restoreResume`）之后实测 **120 组** / **339 处**（+0 组 / +4 处），下限不变；
-  此前 issue #420 把「续跑后账本闭合」从补跑那批扩到**所有**结果之后实测 **120 组** / **335 处**（+1 组：`journalResumeUnpersistedToolResults`（`src/loop/orchestrator.js`），契约中英各一处 + 本文件声称句一处；契约 EN 92 / CN 88），下限随之抬到 120；
+  此前 issue #420 把「续跑后账本闭合」从补跑那批扩到**所有**结果之后实测 **120 组** / **335 处**（+1 组：当时的写侧名 `journalResumeUnpersistedToolResults`，契约中英各一处 + 本文件声称句一处；契约 EN 92 / CN 88），下限随之抬到 120；
   此前 issue #409 的「工具引数解析失败 ⇒ 不执行该工具 + 把解析器原判词作为 `is_error` 的 `tool_result` 退给模型」落成契约中英成对的一节之后实测 **119 组** / **327 处**（+5 组，各中英两处：`REPAIR_RULES` 与 `parseJsonWithRepair`（`src/text/repair-json.js`）、`parseToolArguments` 与 `describeToolArgumentsParseError`（`src/messages/tool-arguments.js`）、`RUN_TOOL_LOOP_OPTION_NAMES`（`src/loop/option-normalization.js`）；契约 EN 85 → 90 / CN 81 → 86），下限随之抬到 119；
   此前 issue #407 的流式思考别名（只认 `delta.reasoning_content` ⇒ 走引擎自己拼的请求时**两个模型的思考 100% 丢失**）落成 CHANGELOG + 契约中英「推理文本」各一句 + 0.24.0 指南中英 §15 之后实测 **114 组** / **317 处**（+5 组，引入 5 个新锚点：`streamReasoningText` / `REASONING_DELTA_FIELDS` / `chatStream` / `probeStreamUsage`（`src/providers/openai.js`）、`openAIResponseToCanonical`（`src/messages/canonical.js`）；**声称句自己也入锚点面**（`AGENTS.md` 从 0 组变 2 组、`AGENTS_cn.md` 15 → 17）；契约 EN 84 → 85 / CN 80 → 81，0.24.0 指南 EN 21 → 29 / CN 24 → 32），下限随之抬到 114（下限不跟着升，#286 返工 R1 的两例自测会因「实测 ≫ 下限」而 fail-open：109 的下限在 114 组上空转，两例从 ✓ 变红，而 `--self-test` 是 CI 的阻断步）；
   此前 issue #394 的「强制收尾 / guard 续跑注入前结清悬空 `tool_use`」小节落成契约 + 0.24.0 指南中英成对之后实测 **109 组** / **287 处**（+4 组：`answerPendingTailToolUses` / `PENDING_TOOL_RESULT_TEXT`（`src/loop/pending-tool-result.js`）、`pendingTrailingToolUses`（`src/messages/rounds.js`）、`buildToolResultFact`（`src/tool-fact.js`）、`exitCodeForVerification`（`bin/cli.js`）），下限随之抬到 109；
