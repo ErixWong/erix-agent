@@ -987,8 +987,8 @@ const EVIDENCE_DIAGNOSTICS = {
   ],
   "resume-run-succeeds": [
     {
-      keys: ["snapshotPresent", "...(spread)"],
-      reason: "旁证 + 运行摘要：条件是 resumeInfo.ok === true（续跑能从 jsonl 恢复，snapshot 在不在不是判据）；展开项是 rounds/usage/terminationReason 这些宿主面的运行摘要",
+      keys: ["recoveryRows", "...(spread)"],
+      reason: "旁证 + 运行摘要：条件是 resumeInfo.ok === true（续跑能从账本恢复）。`recoveryRows` 是续跑前 `.recovery.jsonl` 的行数 —— #838 之后快照已退役，崩溃现场的证据载体是恢复行，不是快照。",
     },
   ],
   "resume-history-bytes-unchanged": [
@@ -1976,7 +1976,10 @@ async function main() {
     track.phase = "resume";
     const resumeCounter = createEventCounter({ resultOrigins });
     const resumeRunId = abortRunId;
-    const snapshotFile = path.join(storeDir, `${resumeRunId}.snapshot.json`);
+    // #838：`run snapshot` 已彻底退役 ⇒ 观测项改成**账本口径**：
+    // 看 `.recovery.jsonl`（`tool-executed` 等恢复行）在续跑前是否已经在盘上，
+    // 那才是「崩溃现场有没有留下证据」的真实载体。
+    const recoveryFile = path.join(storeDir, `${resumeRunId}.recovery.jsonl`);
     try {
       const resumed = await runToolLoop({
         ...common,
@@ -2007,10 +2010,12 @@ async function main() {
         terminationReason: error?.termination?.reason,
       };
     }
-    const snapshotExisted = existsSync(snapshotFile);
+    const recoveryRowCount = existsSync(recoveryFile)
+      ? (await readFile(recoveryFile, "utf8")).split("\n").filter((line) => line.trim() !== "").length
+      : 0;
     ledger.check("resume-run-succeeds", resumeInfo.ok === true, {
-      snapshotFile: path.basename(snapshotFile),
-      snapshotPresent: snapshotExisted,
+      recoveryFile: path.basename(recoveryFile),
+      recoveryRows: recoveryRowCount,
       ...resumeInfo,
     });
 

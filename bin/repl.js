@@ -454,7 +454,9 @@ async function deleteSession(dir, session) {
 
 async function deleteTranscript(dir, session) {
   const base = join(String(dir), safeRunId(session));
-  for (const suffix of [".jsonl", ".snapshot.json", ".checkpoint.json", ".state.json"]) {
+  // #838：`run snapshot` 已彻底退役（引擎不再写 `<runId>.snapshot.json` /
+  // `.checkpoint.json`），删除时不再枚举这两个后缀；`.state.json` 仍在写，保留。
+  for (const suffix of [".jsonl", ".state.json"]) {
     try {
       await unlink(`${base}${suffix}`);
     } catch (error) {
